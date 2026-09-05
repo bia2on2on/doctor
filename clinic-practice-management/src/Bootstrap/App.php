@@ -305,19 +305,18 @@ final class App
      */
     public static function medicalFileService(): MedicalFileService
     {
-        static $files = null;
-        if ($files === null) {
-            $configured = trim((string) self::settings()->get('files.storage_path', ''));
-            $storage = new LocalFileStorage($configured !== '' ? $configured : LocalFileStorage::defaultBasePath());
-            $files = new MedicalFileService(
-                new MedicalFileRepository(self::db()),
-                $storage,
-                self::settings(),
-                self::audit()
-            );
-        }
+        // عمداً بدون کش: مسیر ذخیره از Setting خوانده می‌شود و باید در هر
+        // ساخت (Request/تست) تازه باشد — singleton مسیر اولین boot را قفل
+        // می‌کرد و تغییر files.storage_path بی‌اثر می‌شد. ساخت Object سبک است.
+        $configured = trim((string) self::settings()->get('files.storage_path', ''));
+        $storage = new LocalFileStorage($configured !== '' ? $configured : LocalFileStorage::defaultBasePath());
 
-        return $files;
+        return new MedicalFileService(
+            new MedicalFileRepository(self::db()),
+            $storage,
+            self::settings(),
+            self::audit()
+        );
     }
 
     public static function patientService(): PatientService

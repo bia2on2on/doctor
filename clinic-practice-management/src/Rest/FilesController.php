@@ -104,6 +104,11 @@ final class FilesController extends RestBase
         if ($nonce instanceof WP_Error) {
             return $nonce;
         }
+        // احراز هویت (لایه 1) — Stream Capability واحد ندارد؛ مجوز در Service
+        // سطح Resource بررسی می‌شود، ولی کاربر ناشناس قبل از آن 401 می‌گیرد.
+        if (!wp_get_current_user()->exists()) {
+            return $this->error('CLINIC_UNAUTHORIZED', 401, 'وارد نشده‌اید');
+        }
 
         try {
             $file = $this->files->stream($this->userId($r), (int) $r['id']);
