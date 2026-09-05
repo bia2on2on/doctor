@@ -7,6 +7,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [1.0.0] - 2026-09-05
 
 ### Added
+- **F4 (Core) — Visit/Queue flow, Real-time polling (R1), Secretary dashboard:**
+  - جریان مراجعه کامل: `POST /visits/checkin` (D6 — با مسیر ER-06 دیرهنگام: نوبت past-grace → `no_show` + Visit فوری Walk-in-like با حفظ ارجاع)، `POST /visits/walk-in` (D7، `clinician_id` الزامی)، `POST /visits/{id}/status` (D8 — نگاشت `to_status` منشی → event ماشین: enqueue/cancel/invoice_ready/waive)، `POST /visits/{id}/checkout` (D16 — `paid → check_out` یا معافیت با دلیل الزامی)
+  - داشبوردها: `GET /secretary/today` (D1 — آمار + صف زنده)، `GET /doctor/today` (E1)، `GET /queue` (E2)؛ اکشن‌های پزشک E3–E6 (call/recall/start/skip) + E14 (complete)
+  - Real-time V1 (ADR-0007): `GET /rt/queue?since={event_id}` با ETag/If-None-Match → 304 + Rate limit per-user؛ فید از `cpms_visit_status_history` (append-only، محدود به امروز)
+  - `VisitService`: اجرای کامل ماشین V1–V15 با Row-Lock (J-1 یکتایی complete)، تاریخچه append-only (J-3)، ترتیب صف FIFO + نوبت فوری از `is_walkin_express` (J-4 بدون تغییر Schema)، ویزیت فعال واحد بیمار×پزشک×روز با قفل بیمار (J-5 → `CLINIC_DUPLICATE_ACTIVE_VISIT`)، سقف recall از `queue.max_recalls` (J-6)، تکمیل نوبت مرجع در خروج (T9) + `VisitRepository` (ADR-0021) + `VisitException`
+  - No-show خودکار (FR-5.5): sweep داخلی Check-in (lazy) + جاب تکرارشونده `visits.no_show` (هر دقیقه؛ فقط نوبت‌های confirmed بدون Visit فعال پس از `queue.no_show_grace_minutes`)
+  - `SecretaryQueuePage` (WP-Admin، `cpms_queue_read`): داشبورد زنده امروز/Drawer گردش کار/Walk-in/Keyboard (W/C/R//Esc) با polling 3s + توقف روی تب مخفی (Page Visibility) — بدون endpoint جدید
+  - کدهای خطای جدید: `CLINIC_INVALID_APPOINTMENT_STATE`، `CLINIC_RECALL_LIMIT_REACHED`
+  - تست‌ها: `VisitFlowTest` (TP-19 جریان‌های دیرهنگام/no-show)، `VisitConcurrencyTest` (TP-03b سه‌لایه: fork موازی DB-level + سرویس + Row-Lock واقعی)، `RestQueueTest` (TP-04/07/09 + R1 ETag/304)، `JobQueueTest` (چرخه جاب تکرارشونده) — Integration: ۱۳۳ تست/۵۷۵ assertion، ۰ skip در CI
 - **F3 (Core) — Booking flow, Patient self-service, Staff endpoints, Schedule API, REST hardening, CI:**
   - جریان رزرو آنلاین کامل B1–B6: `availability`, `booking/quote`, `booking/hold` (TTL + RateLimit), `booking/confirm` (+ Idempotency-Key الزامی و Replay)، `appointments/mine`, `appointments/{id}/cancel|reschedule` (+ Idempotency-Key)، `booking/resume` — روی namespace `clinic/v1` (روت‌های `{id}` با الگوی regex صحیح `(?P<id>\d+)` ثبت شده‌اند)
   - خودخدمتی بیمار C1/C2 (`GET/PUT /patient/me` با Whitelist فیلدها — فیلدهای بالینی هرگز از مسیر خودخدمت قابل تغییر نیستند)
@@ -51,6 +60,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - `bin/cpms jobs list|retry`, `bin/cpms health`
   - Appointment duration: 4-layer resolution + booking-time snapshot (ADR-0017)
   - Settings defaults per client decision D3 (documented in `docs/settings-reference.md`)
+
+### Fixed
+- **Envelope خطای REST — تداخل کلید `status`:** Data خطای دامنه‌ای (مثلاً `status: 'waiting'`) با `array_merge` روی HTTP Status رسمی Envelope می‌نشست (پاسخ با status نامعتبر/0) — `RestBase::error()` اکنون `status` رسمی را در آخرین اولویت merge می‌کند؛ کدهای دامنه از کلیدهای `visit_status/appointment_status` استفاده می‌کنند.
+- **جاب‌های تکرارشونده یک‌باره بودند (میراث F1):** `scheduleRecurringJobs()` فقط هنگام Activate اجرا می‌شد و Dispatcher دوباره زمان‌بندی نمی‌کرد — `cpms_jobs_tick` اکنون پیش از dispatch دوباره (Idempotent، بدون نسخه Queued تکراری) زمان‌بندی می‌کند (`RECURRING_JOBS` در `App`). برای `holds.expire`/`slots.generate`/`visits.no_show` حیاتی بود.
 
 ### Notes
 - Commercial/proprietary plugin. License & Update System planned as phase F10
