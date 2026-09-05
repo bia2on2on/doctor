@@ -118,6 +118,22 @@ final class CpmsDb
     }
 
     /**
+     * آیا روی این اتصال تراکنشی باز است؟ (تشخیص SAVEPOINT در transactional)
+     *
+     * MySQL فاقد متغیر سیستمی @@in_transaction است (مخصوص MariaDB)؛
+     * راه پرتابل برای هر دو: شمارش تراکنش‌های InnoDB اتصال جاری — هر
+     * اتصال همیشه تراکنش خودش را می‌بیند (نیازی به PROCESS ندارد).
+     */
+    private function inTransaction(): bool
+    {
+        $count = $this->wpdb->get_var(
+            'SELECT COUNT(*) FROM information_schema.INNODB_TRX WHERE trx_mysql_thread_id = CONNECTION_ID()'
+        );
+
+        return $count !== null && (int) $count > 0;
+    }
+
+    /**
      * Transaction + Row Lock انتخابی.
      *
      * اگر از بیرون تراکنشی باز باشد (تست‌های WP Test Suite، یا ترکیب
@@ -134,9 +150,7 @@ final class CpmsDb
      */
     public function transactional(callable $fn)
     {
-        $inTransaction = (int) $this->wpdb->get_var('SELECT @@IN_TRANSACTION') === 1;
-
-        if ($inTransaction) {
+        if ($this->inTransaction()) {
             $sp = 'cpms_sp_' . bin2hex(random_bytes(6));
             $this->wpdb->query('SAVEPOINT ' . $sp); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
             try {

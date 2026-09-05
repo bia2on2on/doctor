@@ -15,6 +15,9 @@ use WP_UnitTestCase;
  */
 final class MigrationTest extends WP_UnitTestCase
 {
+    /** آخرین Migration موجود در src/Migrations (با افزودن Migration جدید به‌روز شود). */
+    private const LATEST_VERSION = '2026_09_05_0003';
+
     private const EXPECTED_TABLES = [
         'cpms_clinics', 'cpms_clinicians', 'cpms_patients', 'cpms_patient_user_links',
         'cpms_patient_merges', 'cpms_otp_tokens', 'cpms_idempotency_keys', 'cpms_schedule',
@@ -49,7 +52,8 @@ final class MigrationTest extends WP_UnitTestCase
             $exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table)); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
             $this->assertSame($table, $exists, "missing table: {$short}");
         }
-        $this->assertSame('2026_09_05_0001', App::migrations()->currentVersion());
+        // آخرین Migration اعمال‌شده — با افزودن 0002/0003 به‌روز شد
+        $this->assertSame(self::LATEST_VERSION, App::migrations()->currentVersion());
     }
 
     public function testDefaultClinicSeeded(): void
@@ -57,7 +61,8 @@ final class MigrationTest extends WP_UnitTestCase
         global $wpdb;
         $row = $wpdb->get_row(
             $wpdb->prepare(
-                'SELECT id, slug, timezone FROM ' . $wpdb->prefix . 'cpms_clinics WHERE id = 1' // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                'SELECT id, slug, timezone FROM ' . $wpdb->prefix . 'cpms_clinics WHERE id = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                1
             ),
             ARRAY_A
         );
