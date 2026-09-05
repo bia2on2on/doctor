@@ -258,9 +258,10 @@ final class ConcurrencyTest extends WP_UnitTestCase
 
     private function atomicBookSql(): string
     {
+        // آینه SlotRepository::atomicBook — ظرفیت آزاد واقعی (منهای Holdهای فعال)
         return 'UPDATE ' . $this->table('cpms_schedule_slots') .
             ' SET booked_count = booked_count + 1, updated_at = ?' .
-            ' WHERE id = ? AND is_open = 1 AND capacity - booked_count > 0';
+            ' WHERE id = ? AND is_open = 1 AND capacity - booked_count - held_count > 0';
     }
 
     private function releaseHoldSql(): string

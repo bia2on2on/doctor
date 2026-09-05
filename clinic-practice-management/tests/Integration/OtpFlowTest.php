@@ -93,7 +93,7 @@ final class OtpFlowTest extends WP_UnitTestCase
                 'SELECT meta_value FROM ' . $wpdb->prefix . 'usermeta um
                  JOIN ' . $wpdb->prefix . 'users u ON u.ID = um.user_id
                  WHERE um.meta_key = %s AND u.ID = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                'wp_capabilities',
+                $wpdb->prefix . 'capabilities',
                 $result['user_id']
             )
         );
