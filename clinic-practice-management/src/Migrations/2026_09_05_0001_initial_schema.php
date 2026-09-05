@@ -734,7 +734,7 @@ return [
         // Seed: کلینیک پیش‌فرض (V1: واحد)
         $db->query(
             'INSERT IGNORE INTO ' . $db->table('cpms_clinics') . " (id, name, slug, timezone, created_at, updated_at)
-             VALUES (1, 'کلینیک پیش‌فرض', 'default', 'Asia/Tehran', {$now}, {$now})"
+             VALUES (1, 'کلینیک پیش‌فرض', 'default', 'Asia/Tehran', '{$now}', '{$now}')"
         );
     },
 

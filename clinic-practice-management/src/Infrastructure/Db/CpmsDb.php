@@ -81,7 +81,9 @@ final class CpmsDb
      */
     public function insert(string $table, array $data): bool
     {
-        return $this->wpdb->insert($this->table($table), $data); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+        // wpdb::insert در موفقیت int (تعداد ردیف) و در خطا false برمی‌گرداند —
+        // نه bool؛ بدون این نرمال‌سازی هر insert موفق TypeError می‌داد.
+        return $this->wpdb->insert($this->table($table), $data) !== false; // phpcs:ignore WordPress.DB.DirectDatabaseQuery
     }
 
     /**

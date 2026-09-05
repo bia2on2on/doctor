@@ -37,13 +37,22 @@ final class OpLogger
     private function write(string $level, string $message, array $context): void
     {
         try {
-            $this->db->insert('cpms_operational_logs', [
-                'level' => $level,
-                'message' => mb_substr($message, 0, 500),
-                'context_json' => json_encode($this->sanitize($context), JSON_UNESCAPED_UNICODE) ?: null,
-                'request_id' => $this->requestId(),
-                'created_at' => $this->db->nowUtcSql(),
-            ]);
+            // نمایش خطای DB خاموش — نوشتن Log عملیاتی هرگز نباید خروجی Request/
+            // Bootstrap را آلوده کند (مثلاً وقتی خود جدولِ Log هنوز ساخته نشده).
+            $wpdb = $this->db->wpdb();
+            $hadSuppression = $wpdb->suppress_errors;
+            $wpdb->suppress_errors(true);
+            try {
+                $this->db->insert('cpms_operational_logs', [
+                    'level' => $level,
+                    'message' => mb_substr($message, 0, 500),
+                    'context_json' => json_encode($this->sanitize($context), JSON_UNESCAPED_UNICODE) ?: null,
+                    'request_id' => $this->requestId(),
+                    'created_at' => $this->db->nowUtcSql(),
+                ]);
+            } finally {
+                $wpdb->suppress_errors($hadSuppression);
+            }
         } catch (\Throwable) {
             // Log هرگز نباید Request را شکست بدهد
             error_log('[cpms] op-log write failed: ' . $message);
