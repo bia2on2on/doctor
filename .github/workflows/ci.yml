@@ -85,11 +85,10 @@ jobs:
       - name: Surface test failures
         if: failure()
         run: |
-          awk '
-            /^[0-9]+\) / { hdr=$0; if ((getline msg) <= 0) msg=""; print "::error::" hdr " :: " msg }
-            /^Fatal error|^PHP Fatal error|^Parse error/ { print "::error::" $0 }
-          ' /tmp/phpunit-int.log | head -10
-          grep -E "^Tests: |^OK |No tests executed" /tmp/phpunit-int.log | head -3 | while IFS= read -r l; do
-            echo "::notice::$l"
+          echo "::notice::log-lines=$(wc -l < /tmp/phpunit-int.log)"
+          head -n 3 /tmp/phpunit-int.log | while IFS= read -r l; do
+            echo "::notice::HEAD| ${l:0:500}"
           done
-          exit 1
+          tail -n 7 /tmp/phpunit-int.log | while IFS= read -r l; do
+            echo "::error::TAIL| ${l:0:500}"
+          done
