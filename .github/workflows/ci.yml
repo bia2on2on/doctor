@@ -1,0 +1,79 @@
+name: CI
+
+# نکته: این فایل باید در ریشه ریپازیتوری بماند — GitHub فقط
+# .github/workflows ریشه را اجرا می‌کند (نسخه قبلی داخل
+# clinic-practice-management/.github هرگز اجرا نمی‌شد).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: clinic-practice-management
+
+jobs:
+  unit:
+    name: Unit Tests (PHP ${{ matrix.php }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['8.1', '8.2', '8.3', '8.4']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: mbstring, xml
+          coverage: none
+
+      - name: Install dependencies
+        run: composer install --prefer-dist --no-progress --no-interaction
+
+      - name: Run unit tests (no WP)
+        run: php -d memory_limit=512M vendor/bin/phpunit --testsuite Unit
+
+  integration:
+    name: Integration (WP 6.7 + MySQL 8)
+    runs-on: ubuntu-latest
+    needs: unit
+
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=20
+
+    env:
+      WP_TESTS_DIR: /tmp/wordpress-test-lib
+      WP_CORE_DIR: /tmp/wordpress
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mbstring, xml, mysqli, pcntl, curl
+          coverage: none
+
+      - name: Install dependencies
+        run: composer install --prefer-dist --no-progress --no-interaction
+
+      - name: Prepare WordPress test suite
+        run: bash tests/bin/install-wp-tests.sh wordpress_test root root 127.0.0.1 6.7.2
+
+      # REST-level + Concurrency (pcntl_fork روی اتصال‌های مستقل واقعی MySQL)
+      - name: Run integration tests
+        run: php -d memory_limit=1G vendor/bin/phpunit --testsuite Integration --bootstrap tests/integration-bootstrap.php
