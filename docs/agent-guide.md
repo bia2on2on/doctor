@@ -67,16 +67,18 @@ tests/
 | F2.5 — پیامک Provider-Agnostic (ADR-0025) | ✅ | `report-f2.5-sms.md` |
 | F3 — نوبت‌دهی (Schedule/Slot/Booking API/Patient CRUD) | ✅ CI سبز | `report-f3.md` |
 | **F4 — مراجعه/صف (Check-in/Walk-in/Queue SM/Real-time/داشبورد منشی)** | ✅ **CI سبز** | `report-f4.md` |
+| F5 — بالینی (Notes/نسخه/توصیه/پیگیری/فایل/جستجو/داشبورد پزشک + Drift بسته) | ✅ CI سبز | `report-f5.md` |
+| **F6 — مالی (Invoice/Payment/Adjustment/Void/Refund/Receipt/Summary + تعرفه‌ها + داشبورد مالی منشی + ADR-0026)** | ✅ **CI سبز** | `report-f6.md` |
 
 ### آخرین وضعیت فنی (verify شده)
 
-- **HEAD فعلی:** پایان F5 — وضعیت CI نهایی در report-f5.md
+- **HEAD فعلی:** پایان F6 (7121d56) — وضعیت CI نهایی در report-f6.md
 - **PR #1:** OPEN — هر ۵ چک (Unit PHP 8.1/8.2/8.3/8.4 + Integration WP 6.7.2 + MySQL 8)
-- **تست‌ها:** Unit ≈ ۲۱۰ تست سبز (CI)؛ Integration بعد از F5 = ۱۸۴+ تست (ClinicalFlowTest ۲۶ + MedicalFilesTest ۱۲ + قبلی‌ها)، ۰ skip — شامل concurrency با fork واقعی
+- **تست‌ها:** Unit سبز روی PHP 8.1–8.4؛ Integration بعد از F6 = ۲۰۳ تست (FinanceFlowTest ۱۷ + قبلی‌ها)، ۰ skip — شامل concurrency با fork واقعی
 - **Schema:** ۳۹ جدول `cpms_*` (مهاجرت‌های 0001–0003)؛ جدول فایل = `cpms_medical_attachments`
 - **Capabilities:** drift ۴۹/۴۶ در F5 بسته شد — ماتریس مبنا (۴۶)؛ مفرغ‌ها (files/search) مطابق ماتریس اضافه شدند؛ registerRole اکنون stray capهای `cpms_*` را هم پاک می‌کند (self-healing — 998ee81)
 
-### نقشه قابلیت‌های ساخته‌شده (Backend کامل تا F4)
+### نقشه قابلیت‌های ساخته‌شده (Backend کامل تا F6)
 
 - **Auth/OTP:** ثبت‌نام/ورود بیمار با OTP موبایل، Patient↔WP-User link، rate limit
 - **SMS:** Provider-agnostic (Log/Generic API)، Vault، Queue، Templates، SSRF guard
@@ -84,6 +86,7 @@ tests/
 - **Patient:** CRUD + جستجو + پروفایل
 - **Queue/Visits (F4):** Check-in/Walk-in، ماشین کامل V1–V15 با Row-Lock و تاریخچه append-only، صف FIFO + نوبت فوری، R1 polling با ETag/304، No-show خودکار (lazy + cron)، Checkout/Waive، داشبورد منشی WP-Admin
 - **Clinical (F5):** E7 پرونده کامل، E8/E9 Notes + نسخه‌بندی append-only، E10/E11 نسخه Draft/Finalize/Void، E12/E13 توصیه/پیگیری، E14/E15 پایان/بازگشایی با Validation، C5/C6/C7 نمای بیمار (فقط patient_visible)، E16/E17/C3/C4 فایل محافظت‌شده، E18 جستجوی جامع Role-Aware، داشبورد + صفحه ویزیت پزشک (WP-Admin)
+- **Finance (F6):** تعرفه‌ها (G2 — soft-delete)، D12 صدور فاکتور (V11 سیستمی)، D13 پرداخت Idempotent (M-1 روی خود جدول، 201/200+Replay)، D14 ابطال (همان‌روز)، P3 بازپرداخت، D15 اصلاح Credit/Debit (کلید تسویه مؤثر)، D17 رسید Deterministic (جلالی + چاپ UI)، D18 خلاصه مالی، V14 گارد NOT_SETTLED در Checkout؛ INV/PAY سریال با قفل کلینیک؛ محاسبات ریالِ صحیح (InvoiceCalc — TP-18)؛ داشبورد مالی منشی (WP-Admin)
 
 ---
 
@@ -248,15 +251,13 @@ final class XxxService {
 
 | فاز | محتوا | DoD/تست |
 |---|---|---|
-| **F5** | بالینی: صفحه ویزیت، Notes+Versions (E8/E9)، Prescriptions (E10/E11)، Recommendations (E12)، Follow-ups (E13)، E7 پرونده کامل، **E15 Reopen/Correction**، File Upload/Stream (E16/E17)، جستجوی جامع (E18)، داشبورد پزشک (UI + Call flow) | TP-06, TP-08, TP-10 |
-| **F6** | مالی: Services، Invoice/Payment/Adjustment/Void/Refund (D12–D15)، Receipt PDF (D17)، داشبورد مالی منشی، Checkout Flow کامل (D18) | TP-02, TP-18 + TP-01 بخش مالی |
-| **F7** | دست‌خط: Canvas (Pressure/Tools/Zoom/Multi-page)، Stroke Storage، Auto-save + Offline Sync (IndexedDB) + Conflict | TP-12 |
+| **F7** | دست‌خط: Canvas (Pressure/Tools/Zoom/Multi-page — Responsive طبق ADR-0026 D-14)، Stroke Storage، Auto-save + Offline Sync (IndexedDB) + Conflict | TP-12 |
 | **F8** | اعلان + گزارش: Notification Layer + Templates (Jalali)، ۱۲ گزارش + Export (Watermark/Audit) | TP-13 |
 | **F9** | Hardening: Security Review (T-01..T-24)، Performance، Backup/Restore Test، Accessibility، مستندات کاربری، Pilot | TP-16 + DoD V1 |
 | **V1.5** | OCR فارسی، 2FA (TOTP)، Merge UI، ClamAV/Encryption | TP-OCR + 2FA |
 | **V2** | Multi-clinic، پرداخت آنلاین، بیمه/آزمایشگاه، Push، Mobile API | — |
 
-**مایلستون‌ها:** M1 (پایان F3) ✓ رسیده — بیمار آنلاین نوبت می‌گیرد | M2 (پایان F5+F6) — چرخه کامل مطب، Pilot داخلی | M3 (پایان F9) — Go-Live V1.
+**مایلستون‌ها:** M1 (پایان F3) ✓ | M2 (پایان F5+F6) ✓ رسیده — چرخه کامل مطب (منشی→پزشک→مالی)، آماده Pilot داخلی | M3 (پایان F9) — Go-Live V1.
 
 ### تصمیمات باز (نیازمند کارفرما)
 
@@ -266,13 +267,18 @@ final class XxxService {
 4. **`SmsController::can()`** — envelope استاندارد `CLINIC_*` ندارد (بدهی F2.5 → F8/patch).
 5. **ADR-0023 Licensing** هنوز نوشته نشده (برای F10/licensing phase).
 
-### نکات فنی برای F6 (آماده‌شده‌ها از F5)
+### نکات فنی برای F7 (آماده‌شده‌ها از F6)
 
-- E14 (complete) از QueueController به ClinicalController منتقل شد (Validation FR-8.7 قبل از transition)؛ DOCTOR_EVENTS صف فقط call/recall/start/skip است.
-- Audit کدهای FORBIDDEN باید خارج از Transaction نوشته شوند وگرنه با Rollback از بین می‌روند (الگوی updateNote — بررسی pre-check بیرون + قفل FOR UPDATE داخل).
-- Factories وابسته به Setting (مثل `medicalFileService` با `files.storage_path`) نباید singleton کش شوند — مقدار در اولین boot قفل می‌شود.
-- ستون‌های NOT NULL بدون default (مثل `prescriptions.clinic_id`) همیشه در insert صریح مقدار بگیرند — MySQL غیر-strict مقدار 0 می‌گذارد و فیلترهای clinic_id می‌شکنند.
-- UI پزشک: DoctorDashboardPage (صف + صفحه ویزیت)؛ دست‌خط/Canvas/Jalali جزو F6 هستند (ADR-0014).
+- **ADR-0026 (تصریح کارفرما 2026-09-06) برای همه فازهای بعد الزامی است:** Authorization فقط Capability (`cpms_*`) — هرگز `if role == X` در کد جدید؛ نقش‌های سفارشی باید بدون تغییر Business Logic کار کنند؛ همه داشبوردهای ستادی Responsive (دست‌خط = بهینه‌سازی قلم روی تبلت، نه محدودیت دستگاه — Canvas باید Resize/Orientation/DPR/Touch-Stylus را بدون از‌دست‌رفتن Stroke مدیریت کند). نقشه مهاجرت Debt نقش-محور در خود ADR.
+- `VisitService::applyTransition()` اکنون public است با `$forceRole` (فقط نقش system برای V11/V12) — عمل مالی + Transition در یک Transaction (الگوی FinanceService — M-7).
+- الگوی Idempotency مالی (M-1): بدون جدول عمومی — `UNIQUE(invoice_id, idempotency_key)` روی خود جدول؛ اولین 201، تکرار همان کلید 200 + `code=CLINIC_IDEMPOTENCY_REPLAY` + همان payment_id؛ برای درجِ رقابت‌زده fallback به findByIdempotencyKey.
+- محاسبات پولی: ریالِ صحیح (integer) همه‌جا؛ خالص در `InvoiceCalc` (تست Unit موجود)؛ کلید تسویه مؤثر = total − credit + debit.
+- عددگیری سریال: قفل ردیف کلینیک (`SELECT ... FOR UPDATE` روی cpms_clinics) قبل از MAX+1.
+- Audit مبلغی با کلیدهای نقطه‌دار (`invoice.balance`)؛ اکشن‌های مرجع در audit-strategy §2 (PAYMENT_CAPTURE نه PAYMENT_CAPTURED)؛ json_encode با فاصله بعد از «:» — تست‌ها JSON را decode کنند نه substring.
+- Checkout: گارد `CLINIC_NOT_SETTLED` فقط مسیر paid→check_out را می‌بندد؛ مسیر معافیت (waive با دلیل) عمداً باز است.
+- بازگشت از paid (void/refund) وضعیت ویزیت را برنمی‌گرداند (V12 یک‌طرفه — Deviation مستند در report-f6 §7).
+- J-5 در تست‌ها: هر ویزیت جدید در همان روز = بیمار تازه (helper makePatient) — وگرنه CLINIC_DUPLICATE_ACTIVE_VISIT.
+- F5 نکات همچنان معتبر: Audit FORBIDDEN خارج از Transaction؛ Factories وابسته به Setting بدون singleton-cache؛ ستون‌های NOT NULL بدون default همیشه صریح.
 
 ---
 
@@ -380,3 +386,9 @@ final class XxxService {
 - CI: پس از push بررسی و ثبت می‌شود (در ورودی بعدی تکمیل می‌گردد).
 - وضعیت tree: پس از docs-commit → clean
 - گام بعد: **F5 — Clinical با تأیید کارفرما آغاز می‌شود**؛ قدم اول: بستن Capability Drift طبق Permission Matrix و Least Privilege (Technical Alignment)، سپس استخراج Scope F5 از اسناد + cross-check با کد.
+
+### [2026-09-06 23:00 UTC] — ایجنت F6 — مالی کامل + ADR-0026
+
+- **F6 کامل شد** (جزئیات: `report-f6.md`): FinanceService/Controller/UI/Repos + ۱۷ تست Integration؛ CI سبز ۵/۵ روی 7121d56 (run 33996401245)؛ Integration = ۲۰۳ تست.
+- **ADR-0026** ثبت شد (تصریح کارفرما: نقش‌های پویا/Capability/Scope/Responsive) — بررسی معماری بدون Blocker؛ نقشه مهاجرت Debt نقش-محور در ADR؛ مستندات SRS/Permission/Security/Roadmap هم‌راستا.
+- **توقف طبق پروتکل:** F7 (دست‌خط) شروع نشده — منتظر تأیید کارفرما.
