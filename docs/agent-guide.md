@@ -70,7 +70,7 @@ tests/
 
 ### آخرین وضعیت فنی (verify شده)
 
-- **HEAD فعلی:** `acb8103` روی شاخه `arena/01a071c4-doctor` — همه push شده، tree clean
+- **HEAD فعلی:** `4fbcbed` روی شاخه `arena/01a071c4-doctor` — همه push شده، tree clean
 - **PR #1:** OPEN — هر ۵ چک SUCCESS (Unit PHP 8.1/8.2/8.3/8.4 + Integration WP 6.7.2 + MySQL 8)
 - **آخرین run سبز:** 33988080619 روی `acb8103` (هر ۵ job)
 - **تست‌ها:** Unit ≈ ۲۱۰ تست/۳۳,۳۲۹ assertion سبز (CI)؛ Integration = **۱۳۳ تست/۵۷۵ assertion سبز، ۰ skip** — شامل تست‌های concurrency با fork واقعی
@@ -329,4 +329,9 @@ final class XxxService {
 
 ### [2026-09-05 ~20:00 UTC] — ایجنت Arena — این فایل راهنما
 - اقدامات: ایجاد `docs/agent-guide.md` (همین فایل) به‌عنوان راهنمای جامع ادامه پروژه + پروتکل لاگ ایجنت‌ها.
+- کامیت: 4fbcbed | CI: 33988491339 = SUCCESS (هر ۵ job).
 - مورد باز: **ورود به F5 نیازمند تأیید کارفرما** (طبق Governance). تصمیم باز پیشنهادی: بستن drift capability قبل از F5.
+
+### [2026-09-05 ~20:15 UTC] — ایجنت Arena — رفرش snapshot
+- اقدامات: درخواست مجدد کارفرما برای راهنما → verify شد (فایل موجود، CI سبز)؛ فقط HEAD در snapshot به‌روز شد (4fbcbed). بدون تغییر محتوایی دیگر.
+- وضعیت tree: clean
