@@ -1,6 +1,6 @@
 # Permission Matrix — CPMS
 
-نسخه 1.2 | 2026-09-05 | فاز 2 (تصمیم F1-D2 اعمال شد) + **F2.5**: `cpms_sms_config` (ADR-0025)
+نسخه 1.3 | 2026-09-05 | فاز 2 (تصمیم F1-D2 اعمال شد) + **F2.5**: `cpms_sms_config` (ADR-0025) + **F5 هم‌ترازی**: تفکیک سطر Patient در §3 (تفصیل در یادداشت §3)
 
 ## 1. اصول
 
@@ -115,7 +115,8 @@
 
 | Capability | بیمار | منشی | پزشک | Admin (WP) |
 |---|:-:|:-:|:-:|:-:|
-| cpms_patient_read / create / update | — | ✅ | ✅ | ❌ |
+| cpms_patient_read / update | — | ✅ | ✅ | ❌ |
+| cpms_patient_create | — | ✅ | ❌ | ❌ |
 | cpms_patient_archive / merge | — | ❌ | ❌ | ❌ (اعطای موردی) |
 | cpms_appt_read / create | — | ✅ | ✅ | ❌ |
 | cpms_appt_confirm / cancel / reschedule / no_show | — | ✅ | ✅ | ❌ |
@@ -146,6 +147,8 @@
 > **Admin:** فقط `cpms_config` + `cpms_sms_config` (فنی). `cpms_medical_read`/`cpms_audit_read`/`cpms_export` فقط با اعطای صریح به کاربر.
 > **منشی/پزشک:** `cpms_sms_config` ندارند (در صورت نیاز به مدیریت پنل، اعطای موردی به کاربر خاص).
 > نقش پنجم `clinic_manager` (مدیر مطب) به‌عنوان گسترش آماده — بدون تغییر مدل.
+>
+> **یادداشت هم‌ترازی F5 (2026-09-05 — TP-10):** سطر قبلی «`cpms_patient_read / create / update`» به‌صورت گروهی برای پزشک ✅ بود و با **§4.3 (مرجع)** تناقض داشت (Create برای پزشک: ❌؛ Update: «فیلدهای پزشکی» ✅). طبق §4.3 + اصل Least Privilege تفکیک شد: `cpms_patient_update` برای پزشک ✅ (الزام FR-8.1 — ویرایش فیلدهای پزشکی پروفایل در صفحه ویزیت)، `cpms_patient_create` فقط منشی. کد (`DOCTOR_CAPS`) هم مطابق همین هم‌تراز شد؛ تست TP-10 (`tests/Integration/PermissionMatrixTest.php`) از این پس تطابق سند↔کد را قفل می‌کند. اگر کارفرما Create برای پزشک را بخواهد، هر دو (سند+کد) با هم تغییر می‌کنند.
 
 ## 4. ماتریس Resource × نقش (مرجع)
 

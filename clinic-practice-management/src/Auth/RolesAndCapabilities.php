@@ -120,6 +120,7 @@ final class RolesAndCapabilities
 
     public const DOCTOR_CAPS = [
         self::PATIENT_READ,
+        self::PATIENT_UPDATE,
         self::APPT_READ, self::APPT_CREATE, self::APPT_CONFIRM, self::APPT_CANCEL, self::APPT_RESCHEDULE, self::APPT_NO_SHOW,
         self::VISIT_READ, self::QUEUE_READ, self::QUEUE_CALL,
         self::CONSULT_START, self::CONSULT_COMPLETE, self::CONSULT_REOPEN,
