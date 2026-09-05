@@ -143,7 +143,9 @@ final class MigrationRunner
      */
     private function migrationFiles(): array
     {
-        $files = glob(rtrim($this->migrationsDir, '/') . '/[0-9]{4}_[0-9]{2}_[0-9]{2}_[0-9]{4}_*.php') ?: [];
+        // توجه: glob() از quantifier مثل {4} پشتیبانی نمی‌کند (literal می‌گیرد) —
+        // الگوی صحیح با «?» تک‌کاراکتری است: YYYY_MM_DD_NNNN_*.php
+        $files = glob(rtrim($this->migrationsDir, '/') . '/????_??_??_????_*.php') ?: [];
         sort($files);
 
         return array_map(
