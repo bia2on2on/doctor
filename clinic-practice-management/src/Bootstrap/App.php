@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ClinicCore\Bootstrap;
 
 use ClinicCore\Admin\SettingsAdmin;
+use ClinicCore\Admin\DoctorDashboardPage;
 use ClinicCore\Admin\SecretaryQueuePage;
 use ClinicCore\Admin\SmsSettingsPage;
 use ClinicCore\Application\Auth\OtpService;
@@ -140,6 +141,7 @@ final class App
         SettingsAdmin::register();
         SmsSettingsPage::register();
         SecretaryQueuePage::register();
+        DoctorDashboardPage::register();
     }
 
     public static function activate(): void
@@ -289,7 +291,8 @@ final class App
                 new FollowUpRepository($db),
                 self::settings(),
                 self::audit(),
-                new PatientRepository($db)
+                new PatientRepository($db),
+                new MedicalFileRepository($db)
             );
         }
 

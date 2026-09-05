@@ -28,6 +28,10 @@ final class PrescriptionRepository
     {
         $now = $this->db->nowUtcSql();
         $row += [
+            // ADR-0003 — هر ردیف Clinic خودش را دارد (single-tenant V1: 1)؛
+            // بدون این، ستون NOT NULL بدون Default مقدار ضمنی 0 می‌گرفت و
+            // فیلترهای clinic_id (مثل E18) ردیف را گم می‌کردند.
+            'clinic_id' => 1,
             'status' => 'draft',
             'is_patient_visible' => 1,
             'void_reason' => null,

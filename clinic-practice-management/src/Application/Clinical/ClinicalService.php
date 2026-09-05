@@ -10,6 +10,7 @@ use ClinicCore\Infrastructure\Audit\AuditLogger;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Repository\ClinicalNoteRepository;
 use ClinicCore\Infrastructure\Repository\FollowUpRepository;
+use ClinicCore\Infrastructure\Repository\MedicalFileRepository;
 use ClinicCore\Infrastructure\Repository\PatientRepository;
 use ClinicCore\Infrastructure\Repository\PrescriptionRepository;
 use ClinicCore\Infrastructure\Repository\RecommendationRepository;
@@ -57,7 +58,8 @@ final class ClinicalService
         private readonly FollowUpRepository $followUps,
         private readonly Settings $settings,
         private readonly AuditLogger $audit,
-        private readonly PatientRepository $patients
+        private readonly PatientRepository $patients,
+        private readonly MedicalFileRepository $files
     ) {
     }
 
@@ -120,6 +122,17 @@ final class ClinicalService
             'prescriptions' => $rxList,
             'recommendations' => array_map([$this, 'presentRecommendation'], $this->recommendations->forVisit($visitId)),
             'follow_ups' => array_map([$this, 'presentFollowUp'], $this->followUps->forVisit($visitId)),
+            // E7 contract: فایل‌های ویزیت (پزشک همه Visibilityها را می‌بیند — ماتریس §4.3)
+            'files' => array_map(static fn (array $f): array => [
+                'id' => (int) $f['id'],
+                'original_filename' => (string) $f['original_filename'],
+                'category' => (string) $f['category'],
+                'visibility' => (string) $f['visibility'],
+                'mime_type' => (string) $f['mime_type'],
+                'file_size' => (int) $f['file_size'],
+                'uploaded_by_wp_user_id' => (int) $f['uploaded_by_wp_user_id'],
+                'created_at' => (string) $f['created_at'],
+            ], $this->files->forVisit($visitId)),
             'past_visits' => array_map(static fn (array $v): array => [
                 'id' => (int) $v['id'],
                 'visit_date' => (string) $v['visit_date'],

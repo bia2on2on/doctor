@@ -367,10 +367,12 @@ final class ClinicalFlowTest extends WP_UnitTestCase
         $this->assertStringNotContainsString('content_text', (string) json_encode($byDrug), 'نتیجه جستجو Snippet است نه متن کامل');
 
         $byRx = $this->clinical()->globalSearch($this->doctorUserId, 'دیگوکسین', 'rx');
-        $this->assertSame([(int) $rx['id']], array_map(static fn (array $r): int => $r['id'], $byRx['results']['prescriptions']));
+        $rxIds = array_map(static fn (array $r): int => $r['id'], $byRx['results']['prescriptions']);
+        $this->assertSame([(int) $rx['id']], $rxIds, 'rx search hit ids (expected the created draft id)');
 
         $byPatient = $this->clinical()->globalSearch($this->doctorUserId, 'MR-CF-0001', 'patient');
-        $this->assertSame([$this->patientAId], array_map(static fn (array $p): int => $p['id'], $byPatient['results']['patients']));
+        $patIds = array_map(static fn (array $p): int => $p['id'], $byPatient['results']['patients']);
+        $this->assertSame([$this->patientAId], $patIds, 'patient search hit ids (expected patientA id)');
 
         // Audit جستجو (FR-21.1)
         $audit = App::db()->fetchValue(
@@ -461,6 +463,13 @@ final class ClinicalFlowTest extends WP_UnitTestCase
         $this->assertMatchesRegularExpression('/^RX-\d{6}$/', $draft['prescription_number']);
         $this->assertCount(2, $draft['items']);
         $this->assertSame('استامینوفن', $draft['items'][0]['generic_name']);
+
+        // ADR-0003 — رجستری: ستون clinic_id باید 1 باشد (نه پیش‌فرض ضمنی 0)
+        $clinicId = App::db()->fetchValue(
+            'SELECT clinic_id FROM ' . App::db()->table('cpms_prescriptions') . ' WHERE id = %d',
+            [(int) $draft['id']]
+        );
+        $this->assertSame(1, (int) $clinicId, 'prescriptions.clinic_id must be set (ADR-0003)');
 
         $final = $this->clinical()->finalizePrescription($this->doctorUserId, (int) $draft['id']);
         $this->assertSame('finalized', $final['status']);
@@ -693,6 +702,15 @@ final class ClinicalFlowTest extends WP_UnitTestCase
             'items' => [['generic_name' => 'متفورمین', 'dose' => '1', 'frequency' => 'روزانه']],
         ]);
         $this->clinical()->finalizePrescription($this->doctorUserId, (int) $rx['id']);
+        $tmp = tempnam(sys_get_temp_dir(), 'cpms_rec_');
+        file_put_contents((string) $tmp, "%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n%%EOF\n");
+        App::medicalFileService()->upload($this->doctorUserId, [
+            'name' => 'lab.pdf',
+            'tmp_name' => $tmp,
+            'size' => (int) filesize((string) $tmp),
+            'error' => 0,
+            'type' => 'application/octet-stream',
+        ], $this->patientAId, $visitId, 'lab_result', 'patient_visible');
 
         $record = $this->clinical()->record($this->doctorUserId, $visitId);
 
@@ -703,6 +721,11 @@ final class ClinicalFlowTest extends WP_UnitTestCase
         $this->assertCount(1, $record['prescriptions']);
         $this->assertSame('finalized', $record['prescriptions'][0]['status']);
         $this->assertNotEmpty($record['past_visits']);
+
+        // E7 contract: فایل‌های ویزیت هم در پرونده هستند (لابراتوار)
+        $this->assertCount(1, $record['files']);
+        $this->assertSame('lab.pdf', $record['files'][0]['original_filename']);
+        $this->assertSame('lab_result', $record['files'][0]['category']);
     }
 
     // ================= C5 — لیست ویزیت‌های بیمار =================
