@@ -259,9 +259,9 @@ final class XxxService {
 
 ### تصمیمات باز (نیازمند کارفرما)
 
-1. **Drift ماتریس Capability (۴۹ ثابت کد / ۴۶ ماتریس)** — پیشنهاد: قبل از F5 بسته شود (E7–E13 حساس‌اند). شامل بحث «ثبت استثنای روزانه منشی/مدیریت برنامه پزشک» بدون cap موجود.
+1. **Drift ماتریس Capability (۴۹ ثابت کد / ۴۶ ماتریس)** — **دستور F5 کارفرما (رسماً):** پیش از توسعه endpoints بالینی، drift طبق Permission Matrix و Least Privilege بسته شود؛ مبنای تصمیم = Permission Matrix و تصمیمات مصوب؛ بدون capability اضافی بدون Use Case واقعی؛ تفکیک صریح capهای حساس Clinical/Private Notes/Prescription/Files. اگر اصلاح drift نیازمند تغییر واقعی Permission Model یا Product Decision باشد → STOP Policy؛ در غیر این صورت Technical Alignment + تست.
 2. **Availability UI (تقویم/OTP/Profile)** — تصمیم قبلی: فاز UI مستقل پس از فازهای Backend.
-3. **PHPStan** — با baseline + وابستگی composer در فاز آینده.
+3. **PHPStan** — طبق دستور F5: Blocker نیست؛ اگر بدون اختلاف قابل اضافه‌شدن است طبق roadmap انجام شود ولی توسعه Clinical متوقف نشود.
 4. **`SmsController::can()`** — envelope استاندارد `CLINIC_*` ندارد (بدهی F2.5 → F8/patch).
 5. **ADR-0023 Licensing** هنوز نوشته نشده (برای F10/licensing phase).
 
@@ -346,3 +346,35 @@ final class XxxService {
 - فاز/محدوده: مستندسازی
 - اقدامات: کارفرما همان درخواست را پنجمین بار فرستاد → وضعیت verify شد (فایل موجود با ۸ ورودی لاگ، کشف‌پذیر از README ریشه/docs/README/README افزونه، CI سبز روی 96a69c6 = run 33989243385، tree clean). هیچ کار جدیدی باقی نمانده بود؛ این ورودی صرفاً برای صداقت لاگ. سؤال مستقیم از کارفرما برای تعیین قدم بعد (F5 / مشکل نمایش / نیاز متفاوت).
 - وضعیت tree: clean
+
+### [2026-09-05 — منتقل‌شده] — ایجنت Arena-2 (شاخه `arena/01a07281-doctor` / PR #2) — بازبینی اولیه و ساخت دفترچه تحویل
+> ورودی از `AGENTS.md` ریشهٔ شاخهٔ Agent دوم (b9467da) به اینجا منتقل شد (ادغام راهنماها — §5.3 گزارش F4). متن اصلی حفظ شده است.
+
+- **هدف درخواست:** مطالعه وضعیت پروژه و ایجاد راهنمای پایدار برای Agentهای بعدی.
+- **وضعیت قبل از شروع:** Repository شامل مستندات کامل و کد F1/F2/F2.5 و بخش‌هایی از F3 بود؛ F3 در Roadmap در حال انجام ثبت شده است.
+- **اقدامات:** بررسی ساختار کامل Repository/مستندات/کد/تست‌ها؛ ایجاد `AGENTS.md`؛ ثبت وضعیت فازها، اصول توسعه، کارهای باقی‌مانده و قالب لاگ.
+- **تست‌های اجراشده:** بدون اجرای تست (فقط بررسی Repository).
+- **وضعیت Git:** commit 7b7131a روی شاخه `arena/01a07281-doctor` (base: main 210d437).
+- **یادداشت ایجنت فعلی:** بخش‌های مفید این دفترچه (پروتکل لاگ، چک‌لیست پایان کار، ترتیب فازها) در همین راهنمای واحد جذب شد؛ `AGENTS.md` ریشه به پوینتر کوتاه تبدیل شد.
+
+### [2026-09-05 — منتقل‌شده] — ایجنت Arena-2 (شاخه `arena/01a07281-doctor` / PR #2) — شروع F4 / Visit و Queue Slice 1
+> ورودی از `AGENTS.md` ریشهٔ شاخهٔ Agent دوم (b9467da) به اینجا منتقل شد. کد این slice در Audit رسمی F4 (گزارش `report-f4.md` §5) بررسی شد: باگ‌های واقعی (permission_callback همیشه 403، نقش‌نگاشت غلط سرور، duplicate→existing به‌جای 409، race در walk-in) و نبود تست؛ merge نشد — ایده‌های خوب (Fallback Throwable، پروتکل لاگ صادقانه) اتخاذ و در شاخه اصلی پیاده شد.
+
+- **هدف درخواست:** شروع فاز F4 پس از تکمیل نسبی F3.
+- **وضعیت قبل از شروع:** State Machine و Schema مربوط به Visit/Queue از قبل وجود داشتند، اما Service، Repository و REST Controller فاز F4 وجود نداشتند. تغییرات F3 در PR شماره 1 در این شاخه merge نشده بودند.
+- **اقدامات:** `VisitRepository` + `VisitService` (Check-in/Walk-in/Enqueue/Transition/Recall/Audit/History) + `VisitController` + wiring `App.php` + گزارش شروع F4.
+- **تست‌های اجراشده:** PHP در محیط فعلی نصب نبود — PHPUnit و lint اجرا نشد.
+- **ریسک‌های گزارش‌شده توسط خود Agent:** تست Integration، REST Argument Validation، IDOR، Today Dashboard، Real-time Polling و هماهنگی با F3 باقی مانده بود.
+- **وضعیت Git:** commit b9467da روی شاخه `arena/01a07281-doctor`.
+
+### [2026-09-05 ~21:45 UTC] — ایجنت Arena — Audit PR #2 + تکمیل §18 لایسنس صف/مراجعه → بستن F4
+- فاز/محدوده: F4 close-out (دستور ۳۴-بندی کارفرما)
+- اقدامات:
+  - **Audit کامل PR #2** (`arena/01a07281-doctor` @ b9467da؛ base اشتباه 210d437 بدون fixهای F3): ۴ باگ واقعی (permission_callback `=== null` همیشه 403؛ نقش‌نگاشت سرور patient→secretary؛ duplicate→existing به‌جای 409 قرارداد §10؛ race در walk-in بدون قفل بیمار + recall هاردکد + بدون تست). عدم merge مستند؛ PR با کامنت Audit بسته شد (شاخه حفظ شد). جزئیات: `report-f4.md` §5.
+  - **سیاست لایسنس §18 پیاده شد:** `LicenseGate` تزریقی در `VisitService` (الگوی BookingService؛ بدون Network Call)؛ Walk-in مستقل در Read-Only → `CLINIC_LICENSE_BLOCKED/503`؛ Check-in نوبت موجود و Transitionهای ویزیت در جریان مجاز. تست `VisitLicenseGateTest` (۵ تست با Gate تزریقی).
+  - غنی‌سازی آمار داشبورد (`appointments_today/appointments_no_show/walk_in_today`)؛ حذف PHI غیرضروری از SELECT صف؛ Fallback `Throwable` در `QueueController::guard` (اتخاذ از PR #2).
+  - انتقال لاگ‌های Agent-2 به همین فایل؛ `AGENTS.md` ریشه → پوینتر به این راهنما.
+- کامیت‌ها: 4eb8eaa (کد+تست) + کامیت docs همین ورودی (شاخه arena/01a071c4-doctor)
+- CI: پس از push بررسی و ثبت می‌شود (در ورودی بعدی تکمیل می‌گردد).
+- وضعیت tree: پس از docs-commit → clean
+- گام بعد: **F5 — Clinical با تأیید کارفرما آغاز می‌شود**؛ قدم اول: بستن Capability Drift طبق Permission Matrix و Least Privilege (Technical Alignment)، سپس استخراج Scope F5 از اسناد + cross-check با کد.

@@ -17,6 +17,8 @@
 
 تست‌های نقشه راه همه سبز: **TP-19** (جریان no-show/دیرهنگام)، **TP-03b** (دو complete هم‌زمان: fork موازی DB-level + سرویس + Row-Lock)، **TP-07** (IDOR بخش ویزیت/صف).
 
+**تکمیلات پس از تأیید اولیه (دستور ۳۴-بندی کارفرما):** ممیزی کامل PR #2 (Agent دوم — شاخه موازی، §5)؛ پیاده‌سازی **سیاست لایسنس §18** روی صف/مراجعه (`LicenseGate` تزریقی در `VisitService` — Walk-in مستقل در Read-Only = `CLINIC_LICENSE_BLOCKED/503`؛ Check-in نوبت از پیش موجود و Transitionهای ویزیت در جریان = مجاز) با تست تزریق Gate (`VisitLicenseGateTest`)؛ غنی‌سازی آمار داشبورد امروز (`appointments_today/appointments_no_show/walk_in_today`)؛ حذف PHI غیرضروری از SELECT صف؛ Fallback `Throwable` در guard صف (بند ۵ §5).
+
 ## 2. ماتریس Acceptance Criteria
 
 | # | معیار | وضعیت | شاهد |
@@ -64,6 +66,7 @@
 | `a79f5c3` | feat(admin): داشبورد صف منشی (امروز/Drawer/Walk-in/Keyboard) |
 | `39b8d7b` | fix(jobs): جاب‌های تکرارشونده یک‌باره بودند — زمان‌بندی Idempotent در هر tick |
 | `9078ef0` + `349d557` | fix: typo FQCN |
+| `4eb8eaa` | feat(visits): LicenseGate §18 + اتخاذ یافته‌های Audit PR #2 (§5) |
 
 **زنجیره CI:** run 33985879588 (5d46a11، قرمز — 6F/2E همه تشخیص و ریشه‌یابی شد) → **33986638561 (b5c1eb7 ✓)** → **33986863341 (a79f5c3 ✓)** → 33986951258 (39b8d7b، قرمز — typo FQCN در تست) → 33987173206 (9078ef0، قرمز — همان typo در App) → **33987189105 (349d557 ✓ هر ۵ job: Unit 8.1–8.4 + Integration WP 6.7/MySQL 8 — ۱۳۳ تست/۵۷۵ assertion)** → **33987457187 (73390d3 ✓ = HEAD نهایی، docs-only)**. PR #1 rollup: ۵/۵ SUCCESS.
 
@@ -79,15 +82,50 @@
 8. **Race-safety جاب/چک‌این:** sweep داخل Row Lock نوبت دوباره وضعیت را چک می‌کند (`active_visit_id` ست شده → skip)؛ Check-in با قفل رکورد بیمار serialize می‌شود (J-5) و هر دو مسیر با ماشین سازگار می‌مانند.
 9. **داشبورد منشی — بدون endpoint جدید:** لیست پزشکان server-side رندر شد؛ جستجوی بیمار از D2، نوبت‌های امروز از D9 (هر دو موجود از F3). هیچ PHI در HTML اولیه نیست — همه داده‌ها از REST با همان Authorization لایه‌بندی‌شده.
 
-## 5. موارد باز / نیازمند تصمیم کارفرما (پیش از F5)
+## 5. Audit PR #2 (Agent دوم — شاخه موازی `arena/01a07281-doctor` @ b9467da) و ادغام ایده‌های خوب
+
+کارفرما Audit کامل PR #2 را به‌عنوان بخش تکمیلی F4 واگذار کرد. یافته‌ها:
+
+### 5.1 وضعیت شاخه
+
+- Base = `210d437` (main اولیه) — **بدون هیچ fix فاز F3** (زنجیره 0e77f6a…349d557 در آن نیست).
+- ۲ کامیت: `7b7131a` (فقط `AGENTS.md` ریشه ۳۰۳ خطی) + `b9467da` (کد F4 اولیه: `VisitService` ۲۲۵ خط، `VisitRepository` ۱۴۲، `VisitController` ۱۲۵، wiring در `App.php`، گزارش f4 اولیه).
+- همپوشانی کامل با F4 تکمیل‌شده این شاخه (PR #1) — به‌صورت مجموعه‌ای ناقص‌تر.
+
+### 5.2 باگ‌های واقعی در کد PR #2 (دلایل عدم merge)
+
+1. **permission_callback معیوب:** الگوی `requireCap(...) === null` — متد bool|WP_Error برمی‌گرداند و هرگز null نیست → هر ۴ endpoint همیشه 403.
+2. **نگاشت نقش سرور غلط:** doctor→`doctor`، بقیه همه (حتی patient)→`secretary` از WP roles — نقض مدل نقش افزونه.
+3. **نقض قرارداد duplicate visit:** بازگرداندن existing به‌جای خطای `409 CLINIC_DUPLICATE_ACTIVE_VISIT` (قرارداد §10).
+4. **Race در Walk-in:** بدون قفل رکورد بیمار → double-submit = دو ویزیت؛ recall هاردکد 3 (نابل به تنظیم)؛ enqueue بدون machineCheck؛ بدون args schema در REST؛ **بدون هیچ تستی**؛ R1/D1/D16/E1–E6/no-show/ER-06/T9/express پوشش داده نشده بودند.
+
+**تصمیم:** merge نشد (base غلط + همپوشان + ناقص)؛ PR با کامنت Audit بسته شد (شاخه حفظ شد). بخش‌های Correct/Secure/Architecturally-compatible حفظ و در شاخه اصلی اتخاذ شد.
+
+### 5.3 ایده‌های خوب اتخاذشده از PR #2
+
+1. **Fallback `catch (Throwable)` → `CLINIC_INTERNAL_ERROR/500`** در guard صف (`QueueController::guard`) — Envelope استاندارد بدون نشت جزئیات داخلی؛ کلاس Exception فقط در error_log سرور.
+2. **لاگ‌های صادقانه کار ایجنت** — دو ورودی لاگ Agent-2 (بازبینی اولیه + F4 slice 1) با نسبت‌دهی به `docs/agent-guide.md §10` منتقل شد؛ `AGENTS.md` ریشه به فایل پوینتر کوتاه به راهنمای واحد تبدیل شد.
+3. **اشاره صریح F10 در فازها** — الگوی ذکر فازهای وابسته (مثل Licensing) در مستندات فاز.
+
+### 5.4 تغییرات تکمیلی این بخش (شاخه اصلی)
+
+| فایل | تغییر |
+|---|---|
+| `VisitService.php` | پارامتر ششم `LicenseGate` + `assertLicense()` (الگوی BookingService، بدون op-log؛ **بدون Network Call** — قرارداد ADR-0023)؛ `walkIn()` → `assertLicense(OP_VISIT_CHECKIN)` |
+| `App.php` | wiring `self::licenseGate()` در `visitService()` |
+| `VisitRepository.php` | `statsFor`: `+appointments_today/appointments_no_show/walk_in_today`؛ `queueFor`: حذف `patient_mobile/patient_national_id` از SELECT (PHI غیرضروری — مجوز Field-Access لایه ۴) |
+| `QueueController.php` | `catch (Throwable)` → `CLINIC_INTERNAL_ERROR/500` |
+| `tests/Integration/VisitLicenseGateTest.php` | ۵ تست: Walk-in در Read-Only → 503 + بدون نوشتن؛ کنترل Walk-in با Gate فعال؛ Check-in نوبت موجود در Read-Only مجاز؛ Transitionهای ویزیت در جریان (call/start/complete) در Read-Only مجاز |
+
+## 6. موارد باز / نیازمند تصمیم کارفرما (پیش از F5)
 
 1. ~~Availability UI~~ — تصمیم قبلی: فاز UI مستقل پس از فازهای Backend (مطبق تأیید ورود F4).
-2. ~~Drift ماتریس Capability (49 ثابت/46 ماتریس)~~ — طبق تأیید، بازبینی در همین فاز انجام نشد و به‌عنوان تصمیم باز باقی است؛ پیشنهاد: در F5 قبل از endpoints بالینی بسته شود (E7–E13 به capهای دقیق حساس‌اند).
-3. **PHPStan** — همان توصیه F3: فاز بعدی با baseline و وابستگی composer.
+2. ~~Drift ماتریس Capability (49 ثابت/46 ماتریس)~~ — **دستور F5 کارفرما:** پیش از توسعه endpoints بالینی، drift طبق Permission Matrix و Least Privilege بسته شود (Technical Alignment؛ در صورت نیاز به تغییر واقعی Permission Model → STOP Policy).
+3. **PHPStan** — طبق دستور F5: Blocker نیست؛ در صورت امکان بدون اختلاف اضافه شود ولی توسعه بالینی متوقف نشود.
 4. **`SmsController::can()`** — بدهی F2.5 (F8/patch).
-5. **UI پزشک (E1 dashboard/Call):** roadmap آن را در F5 (داشبورد پزشک) می‌خواهد — Backend E1/E2/E3 از همین فاز آماده است.
+5. **UI پزشک (E1 dashboard/Call):** بخشی از F5 (داشبورد پزشک) — Backend E1/E2/E3 از همین فاز آماده است.
 
-## 6. گام بعدی (F5 — بالینی؛ پس از تأیید این گزارش)
+## 7. گام بعدی (F5 — بالینی؛ تأیید ورود دریافت شد)
 
 - صفحه ویزیت، Notes+Versions (E8/E9)، Prescriptions (E10/E11)، Recommendations (E12)، Follow-ups (E13)، E7 پرونده کامل، **E15 Reopen/Correction**، File Upload/Stream (E16/E17)، جستجوی جامع (E18)، داشبورد پزشک (E1 UI + Call flow)
 - Validation فیلدهای بالینی روی E14 (Chief Complaint پیش‌فرض — FR-8.x)
