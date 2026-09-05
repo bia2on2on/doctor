@@ -476,7 +476,7 @@ final class App
         foreach (self::RECURRING_JOBS as $type => $priority) {
             $alreadyQueued = self::db()->fetchValue(
                 'SELECT id FROM ' . self::db()->table('cpms_jobs') . ' WHERE type = %s AND status = %s LIMIT 1',
-                [$type, \ClinCore\Infrastructure\Queue\JobQueue::QUEUED]
+                [$type, \ClinicCore\Infrastructure\Queue\JobQueue::QUEUED]
             );
             if ($alreadyQueued === null) {
                 $queue->enqueue($type, [], $now, priority: $priority);
