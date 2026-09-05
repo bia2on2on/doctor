@@ -186,9 +186,60 @@ final class ClinicalController extends RestBase
                 'permission_callback' => '__return_true',
             ],
         ]);
+
+        // ================= E18 — جستجوی جامع Role-Aware =================
+        // cpms_search: منشی + پزشک؛ نتایج note/rx فقط پزشک (ماتریس §4 — Service
+        // فیلتر می‌کند، منشی فقط بیمار می‌بیند → TP-08 در جستجو هم برقرار است).
+        register_rest_route(self::NS, '/search', [
+            [
+                'methods' => WP_REST_Server::READABLE,
+                'callback' => fn (WP_REST_Request $r) => $this->staff($r, RolesAndCapabilities::SEARCH,
+                    fn () => $this->clinical->globalSearch(
+                        $this->userId($r),
+                        (string) $r['q'],
+                        (string) ($r['type'] ?? 'all'),
+                        $r['from'] ?? null,
+                        $r['to'] ?? null
+                    )),
+                'permission_callback' => '__return_true',
+                'args' => [
+                    'q' => ['required' => true, 'type' => 'string'],
+                    'type' => [
+                        'required' => false,
+                        'type' => 'string',
+                        'enum' => ['patient', 'note', 'rx', 'all'],
+                        'default' => 'all',
+                    ],
+                    'from' => ['required' => false, 'type' => 'string'],
+                    'to' => ['required' => false, 'type' => 'string'],
+                ],
+            ],
+        ]);
     }
 
     // ================= Guards =================
+
+    /**
+     * Endpoint کارمند (پزشک/منشی) — Nonce + Capability؛ نقش در Service
+     * فیلتر نتایج را تعیین می‌کند (E18: منشی فقط بیمار، پزشک همه).
+     *
+     * @template T
+     *
+     * @param callable(): T $fn
+     */
+    private function staff(WP_REST_Request $r, string $cap, callable $fn): WP_REST_Response|WP_Error
+    {
+        $nonce = $this->requireNonce($r);
+        if ($nonce instanceof WP_Error) {
+            return $nonce;
+        }
+        $perm = $this->requireCap($cap);
+        if ($perm instanceof WP_Error) {
+            return $perm;
+        }
+
+        return $this->wrap($fn);
+    }
 
     /**
      * Endpoint پزشک — Nonce + Capability + Envelope خطای بالینی.

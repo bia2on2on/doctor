@@ -346,6 +346,89 @@ final class ClinicalFlowTest extends WP_UnitTestCase
         $this->assertNotContains($visitB, $ids);
     }
 
+    // ================= E18 — جستجوی جامع Role-Aware =================
+
+    public function testDoctorGlobalSearchFindsPatientNoteAndRx(): void
+    {
+        $visitId = $this->makeConsultation($this->patientAId);
+        $this->clinical()->addNote($this->doctorUserId, $visitId, [
+            'category' => 'diagnosis',
+            'visibility' => 'patient_visible',
+            'content_text' => 'تشخیص آزمایشی: کمبود دیگوکسین‌پذیری قلبی',
+        ]);
+        $rx = $this->clinical()->createPrescription($this->doctorUserId, $visitId, [
+            'items' => [['generic_name' => 'دیگوکسین', 'dose' => '0.25mg', 'frequency' => '۱ بار در روز']],
+        ]);
+
+        // پزشک: هر سه نوع نتیجه (بیمار با MRN، یادداشت با متن، نسخه با دارو)
+        $byDrug = $this->clinical()->globalSearch($this->doctorUserId, 'دیگوکسین', 'note');
+        $this->assertSame(1, count($byDrug['results']['notes']));
+        $this->assertSame($visitId, $byDrug['results']['notes'][0]['visit_id']);
+        $this->assertStringNotContainsString('content_text', (string) json_encode($byDrug), 'نتیجه جستجو Snippet است نه متن کامل');
+
+        $byRx = $this->clinical()->globalSearch($this->doctorUserId, 'دیگوکسین', 'rx');
+        $this->assertSame([(int) $rx['id']], array_map(static fn (array $r): int => $r['id'], $byRx['results']['prescriptions']));
+
+        $byPatient = $this->clinical()->globalSearch($this->doctorUserId, 'MR-CF-0001', 'patient');
+        $this->assertSame([$this->patientAId], array_map(static fn (array $p): int => $p['id'], $byPatient['results']['patients']));
+
+        // Audit جستجو (FR-21.1)
+        $audit = App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . " WHERE action = 'SEARCH_EXECUTED'",
+            []
+        );
+        $this->assertGreaterThanOrEqual(3, (int) $audit);
+    }
+
+    public function testSecretarySearchReturnsPatientsOnly(): void
+    {
+        $visitId = $this->makeConsultation($this->patientAId);
+        $this->clinical()->addNote($this->doctorUserId, $visitId, [
+            'category' => 'diagnosis',
+            'visibility' => 'patient_visible',
+            'content_text' => 'تشخیص دیگوکسین',
+        ]);
+        $this->clinical()->createPrescription($this->doctorUserId, $visitId, [
+            'items' => [['generic_name' => 'دیگوکسین', 'dose' => '0.25mg', 'frequency' => 'روزانه']],
+        ]);
+
+        // منشی cpms_search دارد اما نتایج بالینی (TP-08 + ماتریس §4) برایش خالی است
+        $result = $this->clinical()->globalSearch($this->secretaryUserId, 'دیگوکسین', 'all');
+        $this->assertSame([], $result['results']['notes']);
+        $this->assertSame([], $result['results']['prescriptions']);
+        $this->assertSame([], $result['results']['patients'], 'بیماری با این عبارت مطابقت ندارد');
+
+        // جستجوی بیمار برای منشی کار می‌کند (هم‌ارز D2)
+        $byMrn = $this->clinical()->globalSearch($this->secretaryUserId, 'MR-CF-0001', 'patient');
+        $this->assertSame([$this->patientAId], array_map(static fn (array $p): int => $p['id'], $byMrn['results']['patients']));
+    }
+
+    public function testSearchRejectsShortQueryAndPatientRole(): void
+    {
+        // Validation: حداقل ۲ کاراکتر
+        try {
+            $this->clinical()->globalSearch($this->doctorUserId, 'د', 'all');
+            $this->fail('Expected CLINIC_VALIDATION_FAILED');
+        } catch (ClinicalException $e) {
+            $this->assertSame('CLINIC_VALIDATION_FAILED', $e->errorCode);
+        }
+
+        // بیمار فاقد cpms_search (ماتریس §4) → 403
+        try {
+            $this->clinical()->globalSearch($this->patientAUser, 'MR-CF-0001', 'all');
+            $this->fail('Expected CLINIC_PERMISSION_DENIED');
+        } catch (ClinicalException $e) {
+            $this->assertSame('CLINIC_PERMISSION_DENIED', $e->errorCode);
+            $this->assertSame(403, $e->httpStatus);
+        }
+
+        // REST: بدون Cap → 403 (لایه کنترلر)
+        wp_set_current_user($this->patientAUser);
+        $response = $this->dispatch('GET', self::NS . '/search', ['q' => 'MR-CF-0001']);
+        $this->assertSame(403, $response->get_status());
+        $this->assertSame('CLINIC_PERMISSION_DENIED', $response->get_data()['code'] ?? null);
+    }
+
     // ================= E10/E11 — نسخه دارویی =================
 
     public function testPrescriptionDraftFinalizeFlow(): void

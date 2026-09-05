@@ -288,7 +288,8 @@ final class App
                 new RecommendationRepository($db),
                 new FollowUpRepository($db),
                 self::settings(),
-                self::audit()
+                self::audit(),
+                new PatientRepository($db)
             );
         }
 

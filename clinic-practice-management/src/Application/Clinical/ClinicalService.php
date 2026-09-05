@@ -10,6 +10,7 @@ use ClinicCore\Infrastructure\Audit\AuditLogger;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Repository\ClinicalNoteRepository;
 use ClinicCore\Infrastructure\Repository\FollowUpRepository;
+use ClinicCore\Infrastructure\Repository\PatientRepository;
 use ClinicCore\Infrastructure\Repository\PrescriptionRepository;
 use ClinicCore\Infrastructure\Repository\RecommendationRepository;
 use ClinicCore\Infrastructure\Repository\VisitRepository;
@@ -55,7 +56,8 @@ final class ClinicalService
         private readonly RecommendationRepository $recommendations,
         private readonly FollowUpRepository $followUps,
         private readonly Settings $settings,
-        private readonly AuditLogger $audit
+        private readonly AuditLogger $audit,
+        private readonly PatientRepository $patients
     ) {
     }
 
@@ -716,6 +718,89 @@ final class ClinicalService
         )];
     }
 
+    // ================= E18 — جستجوی جامع Role-Aware =================
+
+    /**
+     * E18 — جستجوی جامع (بیمار/یادداشت/نسخه) با فیلتر نقش (ماتریس §4).
+     *
+     * `cpms_search`: منشی + پزشک. نتایج بالینی فقط برای پزشک — منشی فاقد
+     * cpms_note_read/cpms_rx_read/cpms_medical_read است و نتایج note/rx برایش
+     * خالی برمی‌گردد (TP-08 — doctor_private هرگز نشت نمی‌کند؛ حتی در جستجو).
+     *
+     * @param string $type patient|note|rx|all
+     * @return array<string, mixed>
+     */
+    public function globalSearch(int $actorUserId, string $q, string $type = 'all', ?string $from = null, ?string $to = null): array
+    {
+        $this->requireCap($actorUserId, RolesAndCapabilities::SEARCH, 'search');
+
+        $q = trim($q);
+        if (mb_strlen($q) < 2) {
+            throw ClinicalException::of('CLINIC_VALIDATION_FAILED', 'عبارت جستجو باید حداقل ۲ کاراکتر باشد', 422);
+        }
+        if (!in_array($type, ['patient', 'note', 'rx', 'all'], true)) {
+            throw ClinicalException::of('CLINIC_VALIDATION_FAILED', 'type باید patient|note|rx|all باشد', 422);
+        }
+        $from = $from ?? '2000-01-01';
+        $to = $to ?? gmdate('Y-m-d', strtotime('+1 day'));
+        foreach (['from' => $from, 'to' => $to] as $label => $date) {
+            $dt = \DateTimeImmutable::createFromFormat('Y-m-d', $date);
+            if ($dt === false || $dt->format('Y-m-d') !== $date) {
+                throw ClinicalException::of('CLINIC_VALIDATION_FAILED', "پارامتر {$label} باید تاریخ YYYY-MM-DD باشد", 422);
+            }
+        }
+
+        // Role-Aware: نتایج بالینی فقط پزشک (ماتریس §4 — منشی فاقد Capهای خواندن بالینی)
+        $user = get_userdata($actorUserId);
+        $isDoctor = $user !== false && in_array(RolesAndCapabilities::ROLE_DOCTOR, (array) ($user->roles ?? []), true);
+
+        $results = ['patients' => [], 'notes' => [], 'prescriptions' => []];
+        if ($type === 'all' || $type === 'patient') {
+            $results['patients'] = array_map(
+                fn (array $row): array => [
+                    'id' => (int) $row['id'],
+                    'mrn' => (string) $row['mrn'],
+                    'first_name' => (string) $row['first_name'],
+                    'last_name' => (string) $row['last_name'],
+                    'mobile' => (string) $row['mobile'],
+                    'status' => (string) $row['status'],
+                ],
+                $this->patients->search(1, $q, 20)
+            );
+        }
+        if ($isDoctor && ($type === 'all' || $type === 'note')) {
+            $results['notes'] = array_map(
+                fn (array $row): array => $this->presentSearchHit($row),
+                $this->notes->search(1, $q, null, $from, $to, 20)
+            );
+        }
+        if ($isDoctor && ($type === 'all' || $type === 'rx')) {
+            $results['prescriptions'] = array_map(
+                fn (array $rx): array => $this->presentPrescription($rx, $this->prescriptions->itemsFor((int) $rx['id'])),
+                $this->prescriptions->searchByDrug(1, $q, $from, $to, 20)
+            );
+        }
+
+        $this->audit->log(
+            'SEARCH_EXECUTED',
+            $this->actor($actorUserId, $isDoctor ? 'doctor' : 'secretary'),
+            'search',
+            null,
+            null,
+            null,
+            null,
+            [
+                'q' => mb_substr($q, 0, 100),
+                'type' => $type,
+                'from' => $from,
+                'to' => $to,
+                'counts' => array_map('count', $results),
+            ]
+        );
+
+        return ['query' => $q, 'type' => $type, 'results' => $results];
+    }
+
     // ================= Helpers — مجوز و داده =================
 
     /**
@@ -901,6 +986,26 @@ final class ClinicalService
             'current_medications' => $this->decodeJson($patient['current_medications'] ?? null),
             'medical_history' => $patient['medical_history'],
             'surgery_history' => $patient['surgery_history'],
+        ];
+    }
+
+    /**
+     * نتیجه جستجوی یادداشت (E18) — Snippet کوتاه، بدون متن کامل (کمترین افشا).
+     *
+     * @param array<string, mixed> $row
+     *
+     * @return array<string, mixed>
+     */
+    private function presentSearchHit(array $row): array
+    {
+        return [
+            'id' => (int) $row['id'],
+            'visit_id' => (int) $row['visit_id'],
+            'patient_id' => (int) $row['patient_id'],
+            'category' => (string) $row['category'],
+            'visibility' => (string) $row['visibility'],
+            'snippet' => mb_substr((string) $row['content_text'], 0, 120),
+            'created_at' => (string) $row['created_at'],
         ];
     }
 
