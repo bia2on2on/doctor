@@ -15,6 +15,7 @@
 | Versioning | `clinic/v1` — شکست‌های بعدی → `v2` (compat window). |
 | Security | هر Endpoint: Capability Check + Data-Access (Permission Matrix). 404 برای «داده دیگری» (افشای وجود ندهد) + Audit `FORBIDDEN_ACCESS_ATTEMPT`. |
 | CORS | Same-origin فقط؛ Origin خارجی → 403. |
+| نکات اعتبارسنجی WP (F3) | پارامترهای الزامی/نوعی که WP REST قبل از Handler می‌سنجد، با خطای بومی WP برمی‌گردند: `rest_missing_callback_param` (پارامتر الزامی حذف‌شده) و `rest_invalid_param` (نوع نامعتبر) — هر دو 400 با ساختار استاندارد WP (`{code, message, data:{status}}`). کدهای دامنه/سیاست همیشه `CLINIC_*` خودمان هستند. همچنین Nonce اشتباه در درخواست Cookie-Authenticated ممکن است پیش از رسیدن به لایه ما با `rest_cookie_invalid_nonce` (403 بومی WP) رد شود — گم‌شدن Nonce همیشه با `CLINIC_INVALID_NONCE` پاسخ می‌شود. |
 
 ## 1. Public (بدون Auth)
 
@@ -25,7 +26,7 @@
 | A3 | `POST /otp/verify` | `{mobile, code}` | `{user_id, patient_links:[{patient_id, mrn, first_name,last_name}], is_new_user}` |
 | A4 | `POST /booking/quote` | `{clinician_id, slot_date, slot_time}` — پیش‌بررسی آزاد بودن (بدون Hold) | `{available:bool, capacity_left}` |
 
-> A2/A3: `otp/verify` برای کاربر جدید، اکانت ساخت **نمی‌کند** — فقط هویت موبایل؛ اکانت در گام بعد (A5/A6) ساخته می‌شود تا Profile کامل شود.
+> A2/A3 (به‌روزرسانی F2/F3 — رفع GAP-2): `otp/verify` برای کاربر جدید، **اکانت `cpms_patient` می‌سازد** و به رکورد Patient موجود (بر اساس موبایل) لینک می‌کند (تصمیم نهایی F2: Auto-Creation + Linking؛ تست‌شده). شماره‌گذاری قدیمی «A5/A6» از نسخه پیشین مستندات باقی‌مانده بود و در پیاده‌سازی وجود خارجی ندارد؛ تکمیل/ویرایش پروفایل از طریق C1/C2 و ساخت بیمار توسط منشی (D3) پوشش داده می‌شود.
 
 ## 2. Booking (Authenticated: patient)
 
@@ -112,7 +113,8 @@
 
 | # | Method/Path | Cap |
 |---|---|---|
-| G1 | CRUD `/config/schedules` | `cpms_config` |
+| G1 | `GET/POST /config/schedules` + `PUT/DELETE /config/schedules/{id}` — برنامه هفتگی هر پزشک (یک رکورد به‌ازای هر روز هفته؛ `day_of_week` 0=شنبه..6=جمعه؛ `start_time/end_time` HH:MM؛ `appointment_duration_min` 5–240؛ `slot_capacity` 1–50؛ بازه استراحت اختیاری داخل بازه کاری). تغییر/حذف → حذف Slotهای **خالیِ آینده** و بازتولید اتمیک (ADR-0004)؛ Slot دارای رزرو/hold هرگز حذف نمی‌شود. | `cpms_config` |
+| G1b | `GET/POST /config/schedule-exceptions` + `DELETE /config/schedule-exceptions/{id}` — استثنائات (`holiday`/`leave` = تعطیلی کل روز؛ `blocked`/`open_override` = بازه ساعتی الزامی). تاریخ باید آینده باشد. ثبت/حذف همان سیاست Regeneration را اجرا می‌کند. (ثبت افزایشی F3 — خارج از شماره‌گذاری اصلی) | `cpms_config` |
 | G2 | CRUD `/config/services` | `cpms_config` |
 | G3 | PUT `/settings` | `cpms_config` |
 | G4 | GET `/audit?filters` | `cpms_audit_read` (Explicit) — **تأیید Admin** |

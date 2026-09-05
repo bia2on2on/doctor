@@ -1,6 +1,8 @@
 # Settings Reference — CPMS (واحد و semantics هر Setting)
 
-نسخه 1.2 | 2026-09-05 | جدول `cpms_settings` (کلید/مقدار JSON) + پیش‌فرض‌های `Settings::DEFAULTS`
+نسخه 1.3 | 2026-09-05 | جدول `cpms_settings` (کلید/مقدار JSON) + پیش‌فرض‌های `Settings::DEFAULTS`
+
+> **تغییر 1.3:** همگام‌سازی با کد (F3): `booking.cancel_deadline_hours` و `booking.reschedule_deadline_hours` از `12` به `24` (مطابق SRS FR-4.9/FR-4.10 و `Settings::DEFAULTS`).
 
 > همه مقادیر زیر **Default/Seed** هستند (تصمیم کارفرما 2026-09-05) و از Settings قابل تغییرند (کاربر دارای `cpms_config`). **Hard-Code نیستند.**
 > Secret/API Key در این جدول ذخیره نمی‌شود — فقط از `wp-config.php`/Environment (تصمیم F1-D3).
@@ -18,8 +20,8 @@
 | `booking.slot_capacity_default` | `1` | تعداد | ظرفیت پیش‌فرض هر Slot. |
 | `booking.min_lead_hours` | `2` | ساعت | حداقل فاصله زمانی تا زودترین نوبت قابل رزرو. |
 | `booking.max_future_days` | `60` | روز | افق حداکثری رزرو آنلاین. |
-| `booking.cancel_deadline_hours` | `12` | ساعت | حداقل Fاصله تا نوبت برای لغو آنلاین (Policy). |
-| `booking.reschedule_deadline_hours` | `12` | ساعت | حداقل فاصله تا نوبت برای جابه‌جایی آنلاین. |
+| `booking.cancel_deadline_hours` | `24` | ساعت | حداقل فاصله تا نوبت برای لغو آنلاین (Policy — FR-4.9). |
+| `booking.reschedule_deadline_hours` | `24` | ساعت | حداقل فاصله تا نوبت برای جابه‌جایی آنلاین (FR-4.10). |
 | `booking.hold_ttl_sec` | `600` | ثانیه | مهلت نگهداری Hold Slot در جریان رزرو آنلاین. |
 | `booking.buffer_pre_default_min` | `0` | دقیقه | Buffer پیش از ویزیت (V2؛ V1 غیرفعال). |
 | `booking.buffer_post_default_min` | `0` | دقیقه | Buffer بعد از ویزیت (V2؛ V1 غیرفعال). |

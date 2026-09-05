@@ -8,6 +8,7 @@
 - کدها **Stable** و machine-readable هستند؛ تغییر Code = **Breaking Change** (فقط در ریلیزهای Major با اعلان).
 - **`code`** = ثابت ماشین‌خوان (API/Log/Monitoring) — **`message`** = متن فارسی کاربر (بدون جزئیات فنی).
 - HTTP Statuss استاندارد: `400` validation · `401` unauthenticated · `403` forbidden/nonce · `404` not-found (به‌عنوان 403 for IDOR) · `409` conflict · `422` business-rule · `429` rate/lockout · `502` provider-downstream · `500` internal.
+- **Envelope (روتین F3):** در پاسخ REST، خودِ `code` top-level همان ثابت `CLINIC_*` است (`{"code":"CLINIC_*","message":"...","data":{"status":<http>,...}}`) — از نسخه F3 به بعد هیچ کد snake-case مشتق‌شده (`cpms_clinic_*`) در سطح top-level وجود ندارد. خطاهای اعتبارسنجی پارامتر توسط خود WP REST قبل از رسیدن به Handler ممکن است با کدهای بومی `rest_missing_callback_param`/`rest_invalid_param` (و در Cookie-Auth با Nonce اشتباه: `rest_cookie_invalid_nonce`) برگردند — اینها خارج از Registry ما هستند (قرارداد §0).
 
 ## Auth / OTP (بیمار)
 
