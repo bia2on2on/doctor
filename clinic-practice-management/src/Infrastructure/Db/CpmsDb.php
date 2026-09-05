@@ -52,6 +52,17 @@ final class CpmsDb
     }
 
     /**
+     * اجرای نوشتاری با برگرداندن تعداد سطرهای اثرگرفته (برخلاف query که bool است).
+     * خطای SQL → 0 (رفتار soft؛ برای لاگ/پاک‌سازی‌های دوره‌ای کافی است).
+     */
+    public function execute(string $sql, array $params = []): int
+    {
+        $result = $this->wpdb->query($this->prepare($sql, $params)); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+        return is_int($result) ? $result : 0;
+    }
+
+    /**
      * @return array<string, mixed>|null
      */
     public function fetchRow(string $sql, array $params = []): ?array

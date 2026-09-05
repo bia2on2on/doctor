@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Rest;
 
-use ClinicCore\Application\Booking\BookingException;
+use ClinicCore\Domain\Booking\BookingException;
 use ClinicCore\Application\Booking\BookingService;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;

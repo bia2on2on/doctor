@@ -54,7 +54,7 @@ final class RateLimiter
     {
         $cutoff = intdiv(time() - $olderThanSec, 86400);
 
-        return $this->db->query(
+        return $this->db->execute(
             'DELETE FROM ' . $this->db->table('cpms_rate_limits') . ' WHERE window_id < %d',
             [$cutoff]
         );

@@ -105,6 +105,8 @@ jobs:
             echo '```'
             echo "--- HEAD (first 25 lines) ---"
             head -n 25 /tmp/phpunit-int.log
+            echo "--- DIAG ---"
+            grep -a "DIAG\[" /tmp/phpunit-int.log | head -n 12 || true
             echo "--- ERRORS (name + first lines each) ---"
             awk '/^There were [0-9]+ errors?:/{flag=1;next}/^There were [0-9]+ failures?:/{flag=0}flag' /tmp/phpunit-int.log \
               | grep -A 3 -E '^[0-9]+\) ' | head -n 200

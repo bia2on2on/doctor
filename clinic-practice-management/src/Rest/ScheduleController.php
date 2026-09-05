@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Rest;
 
-use ClinicCore\Application\Booking\BookingException;
+use ClinicCore\Domain\Booking\BookingException;
 use ClinicCore\Application\Booking\ScheduleService;
 use ClinicCore\Auth\RolesAndCapabilities;
 use WP_Error;

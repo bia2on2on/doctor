@@ -58,7 +58,13 @@ final class TransactionDiagnosticTest extends WP_UnitTestCase
     {
         global $wpdb;
 
-        $mysqliTx = ($wpdb->dbh instanceof \mysqli) ? var_export($wpdb->dbh->in_transaction, true) : 'not-mysqli';
+        $mysqliTx = 'unavailable';
+        if ($wpdb->dbh instanceof \mysqli) {
+            // isset → بدون Warning برای propertyهای احتمالاً غایب در build خاص
+            $mysqliTx = isset($wpdb->dbh->in_transaction)
+                ? var_export($wpdb->dbh->in_transaction, true)
+                : 'property-missing';
+        }
         $innodbTrx = $wpdb->get_var(
             'SELECT COUNT(*) FROM information_schema.INNODB_TRX WHERE trx_mysql_thread_id = CONNECTION_ID()'
         );
