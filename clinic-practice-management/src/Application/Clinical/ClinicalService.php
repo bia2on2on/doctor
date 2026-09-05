@@ -217,6 +217,34 @@ final class ClinicalService
             throw ClinicalException::of('CLINIC_VALIDATION_FAILED', 'دلیل اصلاح (change_reason) الزامی است', 422);
         }
 
+        // ماتریس 4.3 — ویرایش یادداشت: «خودش» (پزشک نویسنده). بررسی‌های رد و Capability
+        // عمداً خارج از تراکنش انجام می‌شوند تا Audit تلاش غیرمجاز (FR-21.1/P-7)
+        // با Rollback تراکنش از بین نرود. created_by ستون تغییرناپذیر است و pre-check
+        // race-safe است؛ داخل تراکنش دوباره با قفل FOR UPDATE اعتبارسنجی می‌شود.
+        $existing = $this->notes->find($noteId);
+        if ($existing === null) {
+            throw ClinicalException::of('CLINIC_NOT_FOUND', 'یادداشت یافت نشد', 404);
+        }
+        if ((int) $existing['is_archived'] === 1) {
+            throw ClinicalException::of('CLINIC_POLICY_VIOLATION', 'یادداشت آرشیو شده قابل ویرایش نیست', 409);
+        }
+        if ((int) $existing['created_by_wp_user_id'] !== $actorUserId) {
+            $this->auditAndThrow(
+                $actorUserId,
+                'note',
+                $noteId,
+                (int) $existing['patient_id'],
+                'یادداشت به این پزشک تعلق ندارد (ماتریس 4.3 — ویرایش فقط توسط نویسنده)'
+            );
+        }
+
+        // Capability متناسب با Visibility (P-6)
+        if ((string) $existing['visibility'] === 'doctor_private') {
+            $this->requireCap($actorUserId, RolesAndCapabilities::PRIVATE_NOTE_UPDATE, 'private_note');
+        } else {
+            $this->requireCap($actorUserId, RolesAndCapabilities::NOTE_UPDATE, 'note');
+        }
+
         $note = $this->db->transactional(function () use ($actorUserId, $noteId, $content, $reason): array {
             $note = $this->notes->findForUpdate($noteId);
             if ($note === null) {
@@ -224,23 +252,6 @@ final class ClinicalService
             }
             if ((int) $note['is_archived'] === 1) {
                 throw ClinicalException::of('CLINIC_POLICY_VIOLATION', 'یادداشت آرشیو شده قابل ویرایش نیست', 409);
-            }
-            // ماتریس 4.3 — ویرایش یادداشت: «خودش» (پزشک نویسنده)
-            if ((int) $note['created_by_wp_user_id'] !== $actorUserId) {
-                $this->auditAndThrow(
-                    $actorUserId,
-                    'note',
-                    $noteId,
-                    (int) $note['patient_id'],
-                    'یادداشت به این پزشک تعلق ندارد (ماتریس 4.3 — ویرایش فقط توسط نویسنده)'
-                );
-            }
-
-            // Capability متناسب با Visibility (P-6)
-            if ((string) $note['visibility'] === 'doctor_private') {
-                $this->requireCap($actorUserId, RolesAndCapabilities::PRIVATE_NOTE_UPDATE, 'private_note');
-            } else {
-                $this->requireCap($actorUserId, RolesAndCapabilities::NOTE_UPDATE, 'note');
             }
 
             // 1) Snapshot نسخه فعلی — append-only، قبل از هر تغییر

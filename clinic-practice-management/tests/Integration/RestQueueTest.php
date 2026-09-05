@@ -351,6 +351,12 @@ final class RestQueueTest extends WP_UnitTestCase
         wp_set_current_user($this->doctorUserId);
         $this->dispatch('POST', self::NS . '/visits/' . $visitId . '/call', []);
         $this->dispatch('POST', self::NS . '/visits/' . $visitId . '/start', []);
+        // FR-8.7 (F5): complete فقط با Chief Complaint غیرخالی — پیش‌نیاز را می‌سازیم
+        App::clinicalService()->addNote($this->doctorUserId, $visitId, [
+            'category' => 'chief_complaint',
+            'visibility' => 'patient_visible',
+            'content_text' => 'سردرد برای تست تکمیل ویزیت',
+        ]);
         $this->dispatch('POST', self::NS . '/visits/' . $visitId . '/complete', []);
         wp_set_current_user($this->secretaryUserId);
         $this->dispatch('POST', self::NS . '/visits/' . $visitId . '/status', [

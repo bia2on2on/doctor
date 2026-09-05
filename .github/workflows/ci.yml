@@ -103,13 +103,13 @@ jobs:
           {
             echo "### Integration test failures (run ${{ github.run_id }})"
             echo '```'
-            echo "--- HEAD (first 25 lines) ---"
-            head -n 25 /tmp/phpunit-int.log
-            echo "--- ERRORS (name + first lines each) ---"
-            awk '/^There were [0-9]+ errors?:/{flag=1;next}/^There were [0-9]+ failures?:/{flag=0}flag' /tmp/phpunit-int.log \
-              | grep -A 3 -E '^[0-9]+\) ' | head -n 200
-            echo "--- FAILURES (name + diff, last 90 lines) ---"
-            tail -n 90 /tmp/phpunit-int.log
+            echo "--- SUMMARY ---"
+            grep -E "^(Tests:|OK \()" /tmp/phpunit-int.log | tail -n 2
+            echo "--- FAILURE/ERROR DETAILS (test + message + location) ---"
+            awk '/^There (were|was)/{flag=1;next}/^--$/{}flag' /tmp/phpunit-int.log \
+              | grep -B 1 -A 8 -E '^[0-9]+\) ' | grep -vE '^--$' | head -n 300
+            echo "--- TAIL (last 40 lines) ---"
+            tail -n 40 /tmp/phpunit-int.log
             echo '```'
           } > /tmp/pr-body.md
           if [ -n "$PR_NUMBER" ]; then

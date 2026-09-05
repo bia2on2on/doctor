@@ -271,7 +271,10 @@ final class ClinicalFlowTest extends WP_UnitTestCase
         $detail = $this->clinical()->patientVisitDetail($this->patientAUser, $visitId);
         $this->assertCount(1, $detail['notes']);
         $this->assertSame('patient_visible', $detail['notes'][0]['visibility']);
-        $this->assertNotContains('SECRET-PRIVATE-MARKER', json_encode($detail, JSON_UNESCAPED_UNICODE));
+        $this->assertStringNotContainsString(
+            'SECRET-PRIVATE-MARKER',
+            (string) json_encode($detail, JSON_UNESCAPED_UNICODE)
+        );
 
         // سطح API (REST dispatch واقعی)
         wp_set_current_user($this->patientAUser);
@@ -478,7 +481,7 @@ final class ClinicalFlowTest extends WP_UnitTestCase
             'reason' => 'کنترل فشار خون',
         ]);
         $this->assertSame('pending', $fu['status']);
-        $this->assertSame('+14 days date', gmdate('Y-m-d', strtotime('+14 days')), $fu['suggested_date']);
+        $this->assertSame(gmdate('Y-m-d', strtotime('+14 days')), $fu['suggested_date']);
     }
 
     public function testFollowUpRequiresDateOrInterval(): void

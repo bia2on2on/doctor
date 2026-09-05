@@ -194,17 +194,15 @@ final class QueueController extends RestBase
     // ================= Handlers =================
 
     /**
-     * E3–E6 + E14: call/recall/start/skip/complete — Capability متمایز هر اکشن.
+     * E3–E6: call/recall/start/skip — Capability متمایز هر اکشن.
      *
-     * E14 (complete) در F4 ثبت شده چون D16 (Checkout — قرارداد F4) بدون رسیدن
-     * به consultation_completed قابل استفاده نیست؛ Validation فیلدهای بالینی
-     * در E15/E7+ (F5) تکمیل می‌شود.
+     * E14 (complete) از F5 به ClinicalController منتقل شده (Validation بالینی
+     * FR-8.7)؛ اینجا فقط اکشن‌های صف اعمال می‌شوند.
      */
     private function doctorAction(WP_REST_Request $r, string $event): WP_REST_Response|WP_Error
     {
         $cap = match ($event) {
             'start' => RolesAndCapabilities::CONSULT_START,
-            'complete' => RolesAndCapabilities::CONSULT_COMPLETE,
             default => RolesAndCapabilities::QUEUE_CALL, // call/recall/skip
         };
 
