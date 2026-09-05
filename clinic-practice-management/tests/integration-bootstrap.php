@@ -49,6 +49,9 @@ require $_tests_dir . '/includes/bootstrap.php';
  */
 App::migrations()->migrate();
 
+fwrite(STDERR, 'BOOTSTRAP-DIAG cpms_version_defined=' . var_export(defined('CPMS_VERSION'), true)
+    . ' fn_request_id=' . var_export(function_exists('cpms_request_id'), true) . "\n");
+
 /*
  * بازنویسی تراکنش‌های Service به SAVEPOINT (الگوی خود WP برای CREATE TABLE):
  * WP Test Suite داخل هر تست یک تراکنش باز می‌کند و در tear_down همه را
