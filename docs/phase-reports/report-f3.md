@@ -1,6 +1,6 @@
 # گزارش فاز F3 — نوبت‌دهی و رزرو آنلاین (Booking API + Patient + Schedule + تست‌های REST/همزمانی + CI)
 
-تاریخ: 2026-09-05 | وضعیت: **پیاده‌سازی کامل — در انتظار تأیید نهایی کارفرما (2 مورد باز در §5)** | محیط: PHP 8.1–8.4 / MySQL 8 / WordPress 6.7.2
+تاریخ: 2026-09-05 | وضعیت: **کامل — CI سبز (21/21 AC)؛ در انتظار تأیید کارفرما برای ورود به F4 (3 تصمیم باز در §5)** | محیط: PHP 8.1–8.4 / MySQL 8 / WordPress 6.7.2
 
 ---
 
@@ -16,11 +16,11 @@ F3 در پنج لایه انجام شد:
    - Envelope خطا: کد سطح top-level مشتق snake-case بود؛ اکنون خود `code` همان ثابت `CLINIC_*` مطابق Contract §0 است (یک نقطه مرکزی: `RestBase::error()`).
    - `cancelPermission` فاتال می‌داد (ArgumentCountError) → بازنویسی با 401/403 + Audit.
    - همه permission callback ها اکنون `?WP_Error` برمی‌گردانند (null=اجازه، WP_Error=رد با پوشش CLINIC_*) + Audit `FORBIDDEN_ACCESS_ATTEMPT`.
-5. **CI واقعی**: workflow از زیرپوشه plugin (که GitHub هرگز اجرایش نمی‌کرد) به ریشه repo منتقل شد؛ Unit روی PHP 8.1–8.4 (سبز)، Integration واقعی با MySQL 8 + WordPress 6.7.2 Test Library (PHPUnit 9.6 — نسخه رسمی پشتیبانی‌شده WP Test Lib؛ PHPUnit 11 با `parseTestMethodAnnotations` حذف‌شده ناسازگار است).
+5. **CI واقعی — سبز**: workflow از زیرپوشه plugin (که GitHub هرگز اجرایش نمی‌کرد) به ریشه repo منتقل شد؛ Unit روی PHP 8.1–8.4 سبز؛ Integration واقعی با MySQL 8 + WordPress 6.7.2 Test Library سبز — **run نهایی: هر 5 job ✓ (Unit ×4 + Integration؛ 99 تست، 456 assertion)**. تکرارهای دیباگ CI تعداد قابل توجهی **باگ واقعی Production** را آشکار کردند (فهرست کامل در §4.1). PHPUnit 9.6 برای Integration (نسخه رسمی پشتیبانی‌شده WP Test Lib؛ PHPUnit 11 با `parseTestMethodAnnotations` حذف‌شده ناسازگار است).
 
 **تست‌ها:**
-- Unit: `OK (209 tests, 33,327 assertions)` — اجرای مکرر سبز (PHPUnit 11.5.56، بدون WP).
-- Integration: **99 تست در 14 فایل** (67 قبلی + 33 جدید: `RestBookingTest` 13، `RestPatientTest` 7، `RestScheduleTest` 8، `ConcurrencyTest` 4 + موارد RestBooking اضافه‌شده در Commit تست) — اجرا در CI با WP واقعی + MySQL واقعی؛ dispatch از مسیر `rest_do_request` واقعی (نه فراخوانی مستقیم Service).
+- Unit: `OK (210 tests, 33,329 assertions)` — اجرای مکرر سبز (PHPUnit 11.5.56، بدون WP؛ +1 regression-test پایداری هش زنجیره Audit در برابر coerc رشته‌ای DB).
+- Integration: **99 تست در 14 فایل — سبز در CI** (67 قبلی + 33 جدید: `RestBookingTest` 13، `RestPatientTest` 7، `RestScheduleTest` 8، `ConcurrencyTest` 4 + موارد RestBooking اضافه‌شده در Commit تست)؛ dispatch از مسیر `rest_do_request` واقعی (نه فراخوانی مستقیم Service)؛ ایزوله‌سازی تست‌ها با ترجمه‌ی تراکنش‌های Service به SAVEPOINT در bootstrap (§4.2).
 - همزمانی (TP-03): پردازهای واقعی موازی `pcntl_fork` روی اتصال‌های mysqli مستقل — ظرفیت 1 → دقیقاً یک برنده؛ ظرفیت 3 → دقیقاً 3؛ تبدیل hold→claim با شمارنده‌های دقیق و بدون نشت ظرفیت.
 
 ---
@@ -49,9 +49,9 @@ F3 در پنج لایه انجام شد:
 | TP-20 | Rate Limit booking → 429 `CLINIC_RATE_LIMITED` | ✅ | `RestBookingTest::testHoldRateLimitedAfterTenPerHour` (11th → 429) |
 | Envelope | `{code: CLINIC_*, message, data:{status}}` در top-level | ✅ | `assertClinicError` در هر سه فایل REST + `RestBase::error()` |
 | M10 | `X-CPMS-Correlation-Id` در Response | ✅ | `RestBookingTest::testHoldConfirmEnvelopeAndCorrelationHeader` |
-| CI | Pipeline واقعی سبز | ⚠️ | Unit سبز روی 8.1–8.4 (تأییدشده). Integration: WP+MySQL بوت شد و 99 تست اجرا شد؛ دو مشکل زیرساختی CI (svn حذف‌شده از runner؛ parse-error در wp-tests-config؛ ناسازگاری PHPUnit 11 با WP Test Lib) رفع شد؛ **اجرای نهایی پس از اصلاح PHPUnit 9.6 در انتظار بازیابی دسترسی GitHub است** (§5-4) |
+| CI | Pipeline واقعی سبز | ✅ | **Run سبز کامل (هر 5 job)**: Unit ×4 (PHP 8.1–8.4) + Integration (WP 6.7.2 + MySQL 8، 99 تست/456 assertion). مسیر رسیدن: 12 run قرمز→سبز با رفع باگ‌های واقعی (§4.1) و زیرساخت تست (§4.2) |
 
-**نتیجه: 20/21 سبز + 1 در انتظار تأیید اجرای نهایی CI (معیار «سبز محسوب نکردن تا اجرای واقعی» رعایت شد).**
+**نتیجه: 21/21 سبز — شامل اجرای واقعی Integration در CI (معیار «سبز محسوب نکردن تا اجرای واقعی» تا آخر رعایت شد).**
 
 ---
 
@@ -63,14 +63,14 @@ F3 در پنج لایه انجام شد:
 | معماری دسترسی داده | Repository فقط برای Appointment/Patient/Slot (F3-early) | **+ `ScheduleRepository`** (الگوی مرجع ADR-0021: whitelist فیلدها، بدون منطق دامنه) |
 | Envelope خطا | کد top-level مشتق snake-case (`cpms_clinic_*`) | **top-level = `CLINIC_*`** (Contract §0) — یک نقطه مرکزی `RestBase::error()` |
 | روت‌های پارامتری | `{id}` (غیرقابل match — باگ) | `(?P<id>\d+)` |
-| Permission callbacks | fatal/exit در برخی مسیرها | `?WP_Error` + Audit ردشدگی‌ها |
-| تست | 157 unit + 45 integration (تقریبی، بدون اجرای CI) | **209 unit / 33,327 assertion + 99 integration (14 فایل، شامل REST-level و همزمانی fork)** |
+| Permission callbacks | fatal/exit در برخی مسیرها | `bool\|WP_Error` (true=اجازه؛ null در WP یعنی رد!) + Audit ردشدگی‌ها |
+| تست | 157 unit + 45 integration (تقریبی، بدون اجرای CI) | **210 unit / 33,329 assertion + 99 integration سبز در CI (14 فایل، شامل REST-level و همزمانی fork)** |
 | CI | فایل workflow در زیرپوشه — **هرگز اجرا نمی‌شد** | workflow در ریشه؛ matrix 8.1–8.4؛ job Integration واقعی (mysql:8 + WP 6.7.2 Test Lib + pcntl) |
 | Settings docs | cancel/reschedule 12h (ناچسب با کد) | 24h همگام شد (`settings-reference.md` v1.3) |
 
 ## 3.1 کامیتهای F3 (14 کامیتمعیار در `arena/01a071c4-doctor`)
 
-`e2ef22d` (fix: fatal cancelPermission + CLINIC_* envelopes) → `af39a5e` (feat: schedule API G1) → `ad9856c` (fix: روت‌های غیرقابل‌دسترس + کد top-level) → `5a32a83`/`e24098d` (test: REST-level + concurrency) → `5a44e7f`..`058d377` (CI: انتقال به ریشه، mysql:8، tarball به‌جای svn، ABSPATH، PHPUnit 9.6) → docs.
+`e2ef22d` (fix: fatal cancelPermission + CLINIC_* envelopes) → `af39a5e` (feat: schedule API G1) → `ad9856c` (fix: روت‌های غیرقابل‌دسترس + کد top-level) → `5a32a83`/`e24098d` (test: REST-level + concurrency) → `5a44e7f`..`058d377` (CI: انتقال به ریشه، mysql:8، tarball به‌جای svn، ABSPATH، PHPUnit 9.6) → **چرخه سبزسازی CI (13 کامیت، `efa60fc`..`380d74d`)**: پارامتری‌سازی datetime خام، SAVEPOINT در bootstrap تست، نرمال‌سازی تایپ HashChain، true از permission_callback ها، namespace درست BookingException، atomic* با affected-rows، نگاشت staff در ماشین حالت، پاک‌سازی RateLimiter، ماندگاری attempts OTP، Correlation helper در سطح فایل — هر یک با کامیت جدا و توضیح ریشه/اثر (§4.1).
 
 ---
 
@@ -82,6 +82,35 @@ F3 در پنج لایه انجام شد:
 4. **`generated_from`:** payload بازتولید از مسیر Schedule با `source=manual` ثبت می‌شود (مطابق ENUM ستون: lazy|cron|manual).
 5. **Gate لایسنس روی Config اعمال نشد** — Config عملیات Protected نیست (F10 مال اعمال Gate نهایی است).
 
+### 4.1 باگ‌های واقعی Production که تکرارهای CI آشکار کردند
+
+معیار «اجرای واقعی» جا افتاد: هیچ‌یک از موارد زیر با unit test قبلی یا بازبینی دستی کشف نشده بودند؛ همگی توسط اجرای واقعی Integration در CI (WP 6.7.2 + MySQL 8 واقعی) شناسایی و رفع شدند و اکنون پوشش تست دارند:
+
+| # | باگ | اثر در Production (بدون fix) | ریشه |
+|---|---|---|---|
+| 1 | `permission_callback`ها در موفقیت `null` برمی‌گرداندند | **هر endpoint محافظت‌شده همیشه 403 `rest_forbidden`** — حتی برای کاربر مجاز | در WP، false **و null** هر دو یعنی رد؛ امضا به `bool\|WP_Error` و بازگشت `true` اصلاح شد |
+| 2 | ۵ فایل `use ClinicCore\Application\Booking\BookingException` (کلاس ناموجود — واقعی: `Domain\Booking`) | `wrap()` هرگز exception را نمی‌گرفت؛ throwهای سرویس = fatal «Class not found» | import اشتباه namespace |
+| 3 | `HashChain::fieldsFor` بدون نرمال‌سازی تایپ | **verifyChain همیشه false** — صحت‌سنجی زنجیره Audit عملاً بی‌اثر | هنگام نوشتن idها int، هنگام خواندن string (wpdb) → canonical JSON متفاوت |
+| 4 | `atomicBook` شرط ظرفیت را بدون `held_count` می‌سنجید | **Overbooking**: نوبت حضوری/جابه‌جایی می‌توانست کل ظرفیتِ Hold شده بیمار دیگر را قفل کند |
+| 5 | `CpmsDb::query()` bool برمی‌گرداند و atomic* ها مستقیم آن را return می‌کردند | **atomicHold/Book روی اسلات پر هم true** → شمارنده‌ها از ظرفیت جلو می‌زدند | API جدید `execute()` (affected rows) + مقایسه `> 0` |
+| 6 | `machineCheck` با actor `'staff'` | **منشی/پزشک هرگز نمی‌توانست نوبتی لغو کند** (InvalidTransition) — ماشین با نقش‌های منطقی کار می‌کند | نگاشت staff→[secretary, doctor] |
+| 7 | `RateLimiter::cleanup` cutoff روزانه را با window_id ساعتی مقایسه می‌کرد | پاک‌سازی دوره‌ای **هرگز چیزی حذف نمی‌کرد** (جدول رشد می‌کرد) |
+| 8 | ذخیره تلاش‌های نادرست OTP با prepare و مقدار null → `locked_until = ''` | **UPDATE کلان رد می‌شد؛ شمارنده هرگز ذخیره نمی‌شد و قفل OTP هرگز فعال نمی‌شد** | migr به `CpmsDb::update()` (null→SQL NULL) |
+| 9 | helperهای `cpms_request_id/cpms_session_id` داخل hook `init` تعریف می‌شدند | در CLI/CRON (و تست) هدر `X-CPMS-Correlation-Id` هرگز ست نمی‌شد | تعریف در سطح فایل اصلی افزونه |
+| 10 | `appointmentView` کلید `appointment_id` نداشت | ناسازگاری آشکار با API Contract B2/B5 (کلید پاسخ) |
+| 11 | `BookingService::audit()` در cancel/reschedule با ۱۰ آرگومان صدا زده می‌شد (meta=null) | TypeError در مسیر لغو/جابه‌جایی غیرمجاز |
+| 12 | درج datetime خام بدون placeholder/quote در ۶ نقطه (BookingService + SlotRepository×5) | syntax error در MySQL — کلاً مسیر اجرا نمی‌شد |
+| 13 | `JobQueue::releaseStaleLocks`/`RateLimiter::cleanup` با return type `int` ولی مقدار bool | TypeError در هر اجرای Worker | (همان #5) |
+| 14 | `staffView` بدون null-safe روی کلیدهای بالینی | Warning/Exception در مسیر diff خودخدمتی |
+
+### 4.2 زیرساخت تست — تصمیم‌های مهندسی
+
+1. **ایزوله‌سازی تست در برابر تراکنش سرویس‌ها:** WP Test Suite هر تست را در یک تراکنش باز اجرا می‌کند؛ `START TRANSACTION` سرویس داخل آن = COMMIT ضمنی کل fixtureها → نشت داده بین تست‌ها (Duplicate keyهای زنجیره‌ای). راه‌حل نهایی: `CpmsDb::transactional` افعال تراکنش را با نشانگر `/*cpms*/` صادر می‌کند و **bootstrap تست** با filter روی `wpdb` (همان الگوی خود WP برای CREATE TEMPORARY) آن‌ها را به SAVEPOINT/RELEASE/ROLLBACK-TO ترجمه می‌کند. Production فیلتر را ندارد — رفتار تراکنش کاملاً دست‌نخورده.
+2. **تشخیص تراکنش باز (تلاش‌های ردشده):** `@@IN_TRANSACTION` فقط MariaDB است (MySQL: Unknown variable)؛ `information_schema.INNODB_TRX` هم در محیط CI خود connection را نشان نداد (شمارش ۰ با وجود تراکنش فعال). به‌جای تشخیص در runtime، بازنویسی در لایه bootstrap انتخاب شد (قطعیت بالاتر، صفر تغییر در Production).
+3. **مهاجرت واقعی فقط یک‌بار در bootstrap:** `CREATE TABLE` زیر فیلتر تست WP به TEMPORARY تبدیل می‌شود → FK migrationها fail و `schema_migrations` واقعی را shadow می‌کند؛ guard وجود (information_schema) + `require_once` + placeholderهای `%s` در migrationها رفع کرد.
+4. **انتقال لاگ شکست به کامنت PR** (head/DIAG/ERRORS/FAILURES) چون لاگهای job از طریق API به blob ریدایرکت می‌شوند و دانلودشان EOF می‌دهد.
+5. **نکات wpdb:** placeholder `?` پشتیبانی نمی‌شود (فقط %s/%d/%f)؛ prepare بدون placeholder یک doing_it_wrong ثبت می‌کند و تست را می‌اندازد؛ prepare با مقدار null → رشته خالی.
+
 ---
 
 ## 5. موارد باز / نیازمند تصمیم کارفرما (STOP — پیش از F4)
@@ -89,7 +118,7 @@ F3 در پنج لایه انجام شد:
 1. **Availability UI (تقویم + Slot + OTP + Profile):** نقش UI در F3 صریحاً تعریف نشده (SRS/Contract فقط Backend را الزام می‌کنند). **تصمیم محصول لازم است:** (الف) افزودن به F4 تحت scope صریح، یا (ب) فاز UI مستقل پس از F4. پیشنهاد: (ب) — ابتدا تکمیل پایه مالی/ویزیت (F4)، سپس UI یکپارچه.
 2. **_capability مفقود برای مدیریت برنامه توسط منشی/پزشک:** ماتریس §4.2/4.3 به منشی «ثبت استثنای روزانه» و به پزشک «مدیریت برنامه خود» می‌دهد، اما مدل 46-capability هیچ cap برنامه‌ای ندارد → پیاده‌سازی آن ردیف‌ها = **تغییر مدل دسترسی** (STOP طبق Governance). وضعیت فعلی: فقط مدیر با `cpms_config`. گزینه‌ها: (الف) افزودن capهای `cpms_schedule_exception_create` و مشابه در یک افزایش آتی با تأیید ماتریس، (ب) باقی‌ماندن admin-only در V1. پیشنهاد: (الف) در F4 به‌همراه بازبینی drift های 49-const/46-matrix.
 3. **بدهی فنی F2.5:** `SmsController::can()` هنوز envelope استاندارد `CLINIC_*` ندارد (تأثیر: پیام خطای یکدست نیست؛ رفتار امنیتی سالم است). تعمیر در F8/patch توصیه می‌شود.
-4. **تأیید اجرای نهایی CI:** همه اجزای CI به‌صورت مرحله‌به‌مرحله در اجراهای واقعی GitHub Actions اعتبارسنجی شد (بوت WP، اجرای 99 تست، matrix unit سبز)؛ اما توکن GitHub این نشست در لحظه اجرای نهایی (بعد از اصلاح PHPUnit 9.6) منقضی شد و نتیجه آخرین run قابل مشاهده نیست. **پس از اتصال مجدد GitHub، آخرین run باید سبز تأیید شود** (یا در صورت قرمزی، همان فرآیند دیباگ با annotations ادامه یابد). طبق سیاست «اجرای واقعی»، این مورد تا تأیید، «در انتظار» است.
+4. ~~**تأیید اجرای نهایی CI**~~ — **حل شد:** دسترسی GitHub بازیابی و CI با ۱۲ تکرار دیباگ واقعی (رفع باگ‌های §4.1 + زیرساخت §4.2) به **سبز کامل** رسید — runهای آخر: هر 5 job ✓ (Unit PHP 8.1–8.4 + Integration 99 تست/456 assertion). شواهد: PR #1 چک‌های سبز روی HEAD.
 5. **PHPStan:** مرحله static-analysis موجود در CI قدیمی هرگز اجرا نشده بود و بدون اعتبارسنجی محلی حذف شد (باگ composition: نصب ad-hoc در runtime). پیشنهاد: افزودن در فاز بعدی با baseline و وابستگی composer.
 
 ---
