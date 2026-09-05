@@ -76,4 +76,20 @@ jobs:
 
       # REST-level + Concurrency (pcntl_fork روی اتصال‌های مستقل واقعی MySQL)
       - name: Run integration tests
-        run: php -d memory_limit=1G vendor/bin/phpunit --testsuite Integration --bootstrap tests/integration-bootstrap.php
+        run: |
+          set -o pipefail
+          php -d memory_limit=1G vendor/bin/phpunit --testsuite Integration \
+            --bootstrap tests/integration-bootstrap.php 2>&1 | tee /tmp/phpunit-int.log
+
+      # خروجی PHPUnit به‌صورت annotation منتشر می‌شود تا از طریق API هم قابل خواندن باشد
+      - name: Surface test failures
+        if: failure()
+        run: |
+          awk '
+            /^[0-9]+\) / { hdr=$0; if ((getline msg) <= 0) msg=""; print "::error::" hdr " :: " msg }
+            /^Fatal error|^PHP Fatal error|^Parse error/ { print "::error::" $0 }
+          ' /tmp/phpunit-int.log | head -10
+          grep -E "^Tests: |^OK |No tests executed" /tmp/phpunit-int.log | head -3 | while IFS= read -r l; do
+            echo "::notice::$l"
+          done
+          exit 1
