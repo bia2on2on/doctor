@@ -85,10 +85,8 @@ jobs:
       - name: Surface test failures
         if: failure()
         run: |
-          echo "::notice::log-lines=$(wc -l < /tmp/phpunit-int.log)"
-          head -n 3 /tmp/phpunit-int.log | while IFS= read -r l; do
-            echo "::notice::HEAD| ${l:0:500}"
-          done
-          tail -n 7 /tmp/phpunit-int.log | while IFS= read -r l; do
-            echo "::error::TAIL| ${l:0:500}"
-          done
+          awk '
+            /^[0-9]+\) / { print "::error::" $0; c=2; next }
+            c>0 { print "::error::  >" $0; c-- }
+            /^Tests: / { print "::notice::" $0 }
+          ' /tmp/phpunit-int.log | head -10
