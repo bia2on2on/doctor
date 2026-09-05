@@ -10,7 +10,7 @@ use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Repository\HandwritingRepository;
 use ClinicCore\Infrastructure\Repository\VisitRepository;
 use ClinicCore\Infrastructure\Security\Idempotency;
-use ClinicCore\Infrastructure\Security\Settings;
+use ClinicCore\Settings\Settings;
 use Throwable;
 
 /**
