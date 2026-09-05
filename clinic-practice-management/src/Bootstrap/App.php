@@ -10,6 +10,7 @@ use ClinicCore\Admin\SmsSettingsPage;
 use ClinicCore\Application\Auth\OtpService;
 use ClinicCore\Application\Booking\BookingService;
 use ClinicCore\Application\Booking\ScheduleService;
+use ClinicCore\Application\Clinical\ClinicalService;
 use ClinicCore\Application\Patients\PatientService;
 use ClinicCore\Application\Jobs\HoldsExpireHandler;
 use ClinicCore\Application\Jobs\JobsDispatcher;
@@ -29,7 +30,11 @@ use ClinicCore\Infrastructure\Logging\CorrelationId;
 use ClinicCore\Infrastructure\Logging\OpLogger;
 use ClinicCore\Infrastructure\Queue\JobQueue;
 use ClinicCore\Infrastructure\Repository\AppointmentRepository;
+use ClinicCore\Infrastructure\Repository\ClinicalNoteRepository;
+use ClinicCore\Infrastructure\Repository\FollowUpRepository;
 use ClinicCore\Infrastructure\Repository\PatientRepository;
+use ClinicCore\Infrastructure\Repository\PrescriptionRepository;
+use ClinicCore\Infrastructure\Repository\RecommendationRepository;
 use ClinicCore\Infrastructure\Repository\ScheduleRepository;
 use ClinicCore\Infrastructure\Repository\SlotRepository;
 use ClinicCore\Infrastructure\Repository\VisitRepository;
@@ -42,6 +47,7 @@ use ClinicCore\Infrastructure\Sms\SmsProviderInterface;
 use ClinicCore\Infrastructure\Sms\SmsProviderRegistry;
 use ClinicCore\Migrations\MigrationRunner;
 use ClinicCore\Rest\BookingController;
+use ClinicCore\Rest\ClinicalController;
 use ClinicCore\Rest\HealthController;
 use ClinicCore\Rest\OtpController;
 use ClinicCore\Rest\PatientController;
@@ -91,7 +97,8 @@ final class App
             (new PatientController(self::patientService()))->register_routes();
             (new QueueController(self::visitService()))->register_routes();
             (new ScheduleController(self::scheduleService()))->register_routes();
-            // Endpointهای فازهای بعد (F4+) — مطابق API Contract.
+            (new ClinicalController(self::clinicalService()))->register_routes();
+            // Endpointهای فازهای بعد (F5+ فایل‌ها/جستجو) — مطابق API Contract.
         });
 
         // Cron: اولویت با Cron OS-level (bin/cpms jobs tick) — WP-Cron به‌عنوان Fallback
@@ -257,6 +264,30 @@ final class App
         }
 
         return $schedule;
+    }
+
+    /**
+     * سرویس بالینی (F5) — E7–E15 + C5–C7.
+     */
+    public static function clinicalService(): ClinicalService
+    {
+        static $clinical = null;
+        if ($clinical === null) {
+            $db = self::db();
+            $clinical = new ClinicalService(
+                $db,
+                new VisitRepository($db),
+                self::visitService(),
+                new ClinicalNoteRepository($db),
+                new PrescriptionRepository($db),
+                new RecommendationRepository($db),
+                new FollowUpRepository($db),
+                self::settings(),
+                self::audit()
+            );
+        }
+
+        return $clinical;
     }
 
     public static function patientService(): PatientService

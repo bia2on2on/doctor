@@ -32,8 +32,8 @@ final class QueueController extends RestBase
         'checked_out' => 'waive',
     ];
 
-    /** E3–E6 + E14: اکشنهای پزشک → Event ماشین. */
-    private const DOCTOR_EVENTS = ['call', 'recall', 'start', 'skip', 'complete'];
+    /** E3–E6: اکشنهای صف پزشک → Event ماشین (E14 complete از F5 در ClinicalController است). */
+    private const DOCTOR_EVENTS = ['call', 'recall', 'start', 'skip'];
 
     public function __construct(private readonly VisitService $visits)
     {
