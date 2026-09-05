@@ -85,7 +85,7 @@
 
 ## 9. تست و CI
 
-- **CI نهایی (سبز):** run **33996401245** — HEAD **7121d56** — ۵/۵ چک (Unit PHP 8.1/8.2/8.3/8.4 + Integration WP 6.7.2/MySQL 8). Integration = ۲۰۳ تست، ۰ skip (FinanceFlowTest = ۱۷).
+- **CI نهایی (سبز):** آخرین HEAD بررسی‌شده **73b8001** — run **33996797749** — ۵/۵ چک (Unit PHP 8.1/8.2/8.3/8.4 + Integration WP 6.7.2/MySQL 8). کد کامل F6 (7121d56) با run **33996401245** سبز شد؛ کامیت‌های پس از آن فقط مستندات‌اند. Integration = ۲۰۳ تست، ۰ skip (FinanceFlowTest = ۱۷).
 - چرخه CI در فاز: 33995895811 (۷ خطا/شکست → رفع)، 33996278341 (۳ شکست انتظار تست → رفع)، 33996401245 (سبز).
 - رگرسیون کامل قبلی‌ها: RestQueueTest (مسیرهای Checkout بدون فاکتور)، IdempotencyTest، VisitConcurrencyTest، PermissionMatrixTest (TP-10 doc↔کد) همه سبز ماندند.
 
