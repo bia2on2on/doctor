@@ -198,11 +198,14 @@
 | Patient Visible Note | ✅ | ✅ | ✅ (خودش) | Archive | با مجوز |
 | Prescription | ✅ | ✅ (ویزیت خودش) | Correction (نسخه جدید) | Void (دلیل) | با مجوز |
 | Recommendation/Follow-Up | ✅ | ✅ | — | — | — |
+| Handwriting Document/Page (F7) | ✅ `cpms_medical_read` | ✅ `cpms_note_create` (سند/صفحه/ذخیره) | ✅ ذخیره صفحه فقط با پروتکل Revision (ADR-0014) | — (نسخه‌ها append-only؛ GC خودکار) | با مجوز |
 | Attachment | ✅ (هر visibility) | ✅ | — | Soft (با مجوز) | با مجوز |
 | Invoice | ✅ | ✅ (ثبت خدمات) | — | ❌ | با مجوز |
 | Payment | مبلغ | ❌ (ثبت عادی با منشی) | — | Void/Refund (با مجوز) | با مجوز |
 | Audit | ❌ (مگر `cpms_audit_read` صریح) | — | — | — | — |
 | Schedule/Settings | برنامه خودش | برنامه خودش | استثنائات خودش | — | — |
+
+> **دست‌خط (F7 — 2026-09-06):** همه عملیات دست‌خط (ایجاد سند/صفحه، ذخیره، خواندن) علاوه بر Capability فقط روی **ویزیت خودِ پزشک** (clinician متصل به wp_user — الگوی §4.3) مجاز است؛ نقض → 404 + `FORBIDDEN_ACCESS_ATTEMPT`. منشی/بیمار هیچ Capability دست‌خط ندارند. Audit: `HW_DOC_CREATE` / `HW_PAGE_ADD` / `HW_PAGE_SAVE` (+ meta تضاد/`conflict_reason`).
 
 ### 4.4 WP Administrator (فنی)
 | دسته | پیش‌فرض | با اعطای صریح |

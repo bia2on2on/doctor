@@ -6,6 +6,7 @@ namespace ClinicCore\Bootstrap;
 
 use ClinicCore\Admin\SettingsAdmin;
 use ClinicCore\Admin\DoctorDashboardPage;
+use ClinicCore\Admin\DoctorHandwritingPage;
 use ClinicCore\Admin\SecretaryFinancePage;
 use ClinicCore\Admin\SecretaryQueuePage;
 use ClinicCore\Admin\SmsSettingsPage;
@@ -15,7 +16,9 @@ use ClinicCore\Application\Booking\ScheduleService;
 use ClinicCore\Application\Clinical\ClinicalService;
 use ClinicCore\Application\Clinical\MedicalFileService;
 use ClinicCore\Application\Finance\FinanceService;
+use ClinicCore\Application\Handwriting\HandwritingService;
 use ClinicCore\Application\Patients\PatientService;
+use ClinicCore\Application\Jobs\HandwritingGcHandler;
 use ClinicCore\Application\Jobs\HoldsExpireHandler;
 use ClinicCore\Application\Jobs\JobsDispatcher;
 use ClinicCore\Application\Jobs\OtpCleanupHandler;
@@ -36,6 +39,7 @@ use ClinicCore\Infrastructure\Queue\JobQueue;
 use ClinicCore\Infrastructure\Repository\AppointmentRepository;
 use ClinicCore\Infrastructure\Repository\ClinicalNoteRepository;
 use ClinicCore\Infrastructure\Repository\FollowUpRepository;
+use ClinicCore\Infrastructure\Repository\HandwritingRepository;
 use ClinicCore\Infrastructure\Repository\InvoiceRepository;
 use ClinicCore\Infrastructure\Repository\MedicalFileRepository;
 use ClinicCore\Infrastructure\Repository\PaymentRepository;
@@ -59,6 +63,7 @@ use ClinicCore\Rest\BookingController;
 use ClinicCore\Rest\ClinicalController;
 use ClinicCore\Rest\FilesController;
 use ClinicCore\Rest\FinanceController;
+use ClinicCore\Rest\HandwritingController;
 use ClinicCore\Rest\HealthController;
 use ClinicCore\Rest\OtpController;
 use ClinicCore\Rest\PatientController;
@@ -111,7 +116,8 @@ final class App
             (new ClinicalController(self::clinicalService()))->register_routes();
             (new FilesController(self::medicalFileService()))->register_routes();
             (new FinanceController(self::financeService()))->register_routes();
-            // Endpointهای فازهای بعد (F5 جستجوی جامع) — مطابق API Contract.
+            (new HandwritingController(self::handwritingService()))->register_routes();
+            // Endpointهای فازهای بعد (F8+) — مطابق API Contract.
         });
 
         // Cron: اولویت با Cron OS-level (bin/cpms jobs tick) — WP-Cron به‌عنوان Fallback
@@ -150,6 +156,7 @@ final class App
         SecretaryQueuePage::register();
         SecretaryFinancePage::register();
         DoctorDashboardPage::register();
+        DoctorHandwritingPage::register();
     }
 
     public static function activate(): void
@@ -328,6 +335,27 @@ final class App
         }
 
         return $finance;
+    }
+
+    /**
+     * سرویس دست‌خط پزشک (F7) — FR-9.1..9.3 / ADR-0009 / ADR-0014.
+     */
+    public static function handwritingService(): HandwritingService
+    {
+        static $handwriting = null;
+        if ($handwriting === null) {
+            $db = self::db();
+            $handwriting = new HandwritingService(
+                $db,
+                new HandwritingRepository($db),
+                new VisitRepository($db),
+                self::settings(),
+                self::audit(),
+                new Idempotency($db)
+            );
+        }
+
+        return $handwriting;
     }
 
     /**
@@ -540,7 +568,8 @@ final class App
                 ->register('cleanup.rate_limits', new RateLimitCleanupHandler(self::rate()))
                 ->register('slots.generate', new SlotsGenerateHandler($db, $settings, $op))
                 ->register('sms.send', new SmsSendJobHandler(self::smsService()))
-                ->register('visits.no_show', new VisitsNoShowHandler(self::visitService()));
+                ->register('visits.no_show', new VisitsNoShowHandler(self::visitService()))
+                ->register('handwriting.gc', new HandwritingGcHandler(self::handwritingService()));
 
             self::$dispatcher = $dispatcher;
         }
@@ -561,6 +590,7 @@ final class App
         'holds.expire' => 8,
         'slots.generate' => 3,
         'visits.no_show' => 5, // FR-5.5 — no-show خودکار نوبت‌ها
+        'handwriting.gc' => 2, // ADR-0009 — سیاست نگهداری نسخه‌ها (idempotent هر Tick)
     ];
 
     public static function scheduleRecurringJobs(): void

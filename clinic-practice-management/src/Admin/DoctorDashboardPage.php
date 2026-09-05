@@ -16,7 +16,8 @@ use ClinicCore\Bootstrap\App;
  * - Visit View: پرونده (E7) + ثبت یادداشت/Correction (E8/E9) + نسخه Draft/Finalize
  *   (E10/E11) + توصیه/پیگیری (E12/E13) + پایان/بازگشایی (E14/E15) + فایل (E16/E17)
  * - هیچ PHI در HTML اولیه؛ همه از REST (Authorization لایه‌بندی‌شده)
- * - ویرایشگر دست‌خط و تاریخ Jalali جزو فاز 6 هستند (ADR-0014) — این‌جا نیست
+ * - ویرایشگر دست‌خط (F7) صفحه مستقل DoctorHandwritingPage است — از این‌جا با
+ *   دکمه «🖋️ دست‌خط» باز می‌شود (تاریخ Jalali جزو فازهای بعدی).
  */
 final class DoctorDashboardPage
 {
@@ -86,6 +87,7 @@ final class DoctorDashboardPage
             'can_start' => current_user_can(RolesAndCapabilities::CONSULT_START),
             'can_complete' => current_user_can(RolesAndCapabilities::CONSULT_COMPLETE),
             'can_upload' => current_user_can(RolesAndCapabilities::FILE_UPLOAD),
+            'can_handwriting' => current_user_can(RolesAndCapabilities::NOTE_CREATE),
         ];
         ?>
 <div class="wrap" dir="rtl" id="cpms-doc-wrap">
@@ -323,12 +325,19 @@ window.CPMS_DOC = <?php echo wp_json_encode($config); ?>;
 
         var statusBadge = '<span class="cpms-doc-badge status-' + esc(v.status) + '">' + (STATUS_LABELS[v.status] || esc(v.status)) + '</span>';
         var headActions = '';
+        if (CFG.can_handwriting) {
+            // FR-9 — ویرایشگر دست‌خط (F7) در هدر بیمار (wireframes/doctor.md §2)
+            headActions += '<a class="button cpms-doc-btn" href="admin.php?page=cpms-handwriting&visit_id=' + v.id + '">🖋️ دست‌خط</a>';
+        }
         if (CFG.can_call && v.status === 'called') {
             headActions += '<button class="button cpms-doc-btn" data-act="call" data-id="' + v.id + '">📣 فراخوانی مجدد</button>';
         }
         var completeBar = '';
         if (v.status === 'in_consultation' && CFG.can_complete) {
             completeBar = '<div class="cpms-doc-complete-bar">' +
+                (CFG.can_handwriting
+                    ? '<a class="button button-hero cpms-doc-big" href="admin.php?page=cpms-handwriting&visit_id=' + v.id + '">🖋️ دست‌خط (Canvas)</a>'
+                    : '') +
                 '<button class="button button-primary button-hero cpms-doc-big" data-act="complete" data-id="' + v.id + '">✅ پایان ویزیت</button>' +
                 '<span class="description">پایان ویزیت نیازمند ثبت «شکایت اصلی» است (FR-8.7).</span></div>';
         } else if (v.status === 'consultation_completed') {

@@ -105,9 +105,11 @@
 
 | # | Method/Path | توضیح |
 |---|---|---|
-| F1 | `POST /handwriting/documents` | `{visit_id, title?, pages:[]}` → Document |
-| F2 | `PUT /handwriting/pages/{id}` | `{page_index, stroke_data (gzip+base64), width, height, client_revision}` — `Idempotency-Key`؛ Conflict → `CLINIC_CONFLICT` (دریافت‌نکردن/ادغام) |
-| F3 | `GET /handwriting/pages/{id}` | Stroke data + preview |
+| F1 | `POST /handwriting/documents` | `{visit_id, title?, pages:[]}` → Document + صفحات اولیه (پیش‌فرض: یک صفحه A4 خط‌دار) — Cap `cpms_note_create` + مالکیت ویزیت (§4.3)؛ Audit `HW_DOC_CREATE` |
+| F1b | `GET /handwriting/documents?visit_id=` | آخرین سند ویزیت + فهرست صفحات (id/revision/version) برای بازکردن مجدد ویرایشگر — Cap `cpms_medical_read` + مالکیت |
+| F1c | `POST /handwriting/documents/{id}/pages` | افزودن صفحه در انتها (`width/height/background_template?/background_attachment_id?`) — Cap `cpms_note_create` + مالکیت؛ Audit `HW_PAGE_ADD` |
+| F2 | `PUT /handwriting/pages/{id}` | `{stroke_data (base64(gzip(JSON)) **یا** base64(JSON) — تشخیص magic gzip سمت سرور), width, height, client_revision, saved_by?, background_template?, background_attachment_id?, conflict_reason?}` — `Idempotency-Key` **الزامی** (بدون هدر → 400)؛ پروتکل ADR-0014: apply فقط اگر `client_revision == server.client_revision + 1` → `version++` + INSERT نسخه append-only؛ در غیر این صورت `409 CLINIC_CONFLICT` + `data.server` (revision/version/strokes) برای دیالوگ «نسخه من/سرور» — **بدون ادغام خودکار**؛ بازنویسی پس از تضاد = load سرور سپس Save با `conflict_reason` (Audit meta). رترای همان کلید = پاسخ ذخیره‌شده بدون version bump |
+| F3 | `GET /handwriting/pages/{id}` | `{width, height, background_template, background_attachment_id, client_revision, version, strokes[] (decode شده)}` — Cap `cpms_medical_read` + مالکیت؛ Preview PNG سمت کلاینت Render می‌شود |
 | F4 | `POST /handwriting/pages/{id}/ocr` | `{provider?}` → OCR Job (V1.5) |
 | F5 | `GET /ocr/jobs/{id}` | وضعیت + extracted_text (تا تأیید: `review_status=pending`) |
 | F6 | `PUT /ocr/jobs/{id}/review` | `{confirmed_text (ویرایش‌شده), action: confirm\|reject}` |

@@ -57,6 +57,8 @@ final class Settings
         // دست‌خط
         'hw.local_retain' => 'off', // off|last|always
         'hw.autosave_sec' => 5,
+        'hw.version_keep' => 10, // ADR-0009 — حداقل نسخه‌های نگهداری‌شده هر صفحه (GC)
+        'hw.version_max_age_days' => 30, // ADR-0009 — حذف نسخه‌های قدیمی‌تر (handwriting.gc)
         // فایل (تصمیم F1-D3: 10MB)
         'files.max_upload_bytes' => 10485760,
         'files.encrypt_at_rest' => false,
