@@ -1,0 +1,182 @@
+#!/usr/bin/env php
+<?php
+/**
+ * CLI CPMS — System Cron + عملیات فنی (ADR-0016).
+ *
+ * Production crontab (هر دقیقه):
+ *   * * * * * cd /var/www/wp && php bin/cpms jobs tick --limit=20 >> /var/log/cpms-tick.log 2>&1
+ *
+ *   bin/cpms migrate                       # اجرای Migrationها
+ *   bin/cpms jobs tick [--limit=20]        # پردازش Jobها (با GET_LOCK — بدون Duplicate Runner)
+ *   bin/cpms jobs list [--status=failed]   # لیست Jobها
+ *   bin/cpms jobs retry <id>               # Retry یک Job شکست‌خورده
+ *   bin/cpms audit verify [10000]          # صحت‌سنجی زنجیر هش Audit
+ *   bin/cpms slots generate [--days=30]    # تولید Slotهای آینده
+ *   bin/cpms health                        # Health (شامل Queue Stale detection)
+ *   bin/cpms status                        # وضعیت کلی
+ */
+
+if (PHP_SAPI !== 'cli') {
+    exit(1);
+}
+
+$root = dirname(__DIR__);
+$abspath = getenv('WP_HOME') ?: dirname($root);
+define('ABSPATH', rtrim($abspath, '/') . '/');
+if (!is_file(ABSPATH . 'wp-load.php')) {
+    fwrite(STDERR, "ABSPATH not found: {$abspath}\n");
+    exit(1);
+}
+
+require_once ABSPATH . 'wp-load.php';
+
+use ClinicCore\Bootstrap\App;
+
+$cmd = $argv[1] ?? 'status';
+$sub = $argv[2] ?? '';
+$limit = 20;
+$verify = 10_000;
+$days = 30;
+$status = 'failed';
+$jobId = null;
+for ($i = 2; $i < count($argv); $i++) {
+    if (str_starts_with($argv[$i], '--limit=')) {
+        $limit = (int) substr($argv[$i], 8);
+    }
+    if (str_starts_with($argv[$i], '--days=')) {
+        $days = (int) substr($argv[$i], 7);
+    }
+    if (str_starts_with($argv[$i], '--status=')) {
+        $status = substr($argv[$i], 9);
+    }
+}
+if ($sub !== '' && is_numeric($sub) && in_array($cmd, ['audit', 'jobs'], true)) {
+    if ($cmd === 'jobs') {
+        $jobId = (int) $sub;
+    } else {
+        $verify = (int) $sub;
+    }
+}
+
+App::boot();
+
+switch ($cmd) {
+    case 'migrate':
+        $applied = App::migrations()->migrate();
+        echo $applied === [] ? 'Schema already up to date.' : 'Applied: ' . implode(', ', $applied) . "\n";
+        break;
+
+    case 'jobs':
+        switch ($sub) {
+            case 'tick':
+                // Lock Runner (ADR-0016): اگر Runner دیگری فعال است، بدون Duplicate خارج می‌شود
+                global $wpdb;
+                $lock = $wpdb->get_var("SELECT GET_LOCK('cpms_jobs_tick', 0)");
+                if ((int) $lock !== 1) {
+                    echo "Another tick is running; skipped.\n";
+                    break;
+                }
+                App::recordTick();
+                $n = App::dispatcher()->tick($limit);
+                $wpdb->query("SELECT RELEASE_LOCK('cpms_jobs_tick')");
+                echo "Processed {$n} job(s)\n";
+                break;
+
+            case 'list':
+                $rows = $wpdb->get_results(
+                    $wpdb->prepare(
+                        'SELECT id, type, status, attempts, max_attempts, last_error, created_at
+                         FROM ' . $wpdb->prefix . 'cpms_jobs
+                         WHERE status = %s
+                         ORDER BY id DESC LIMIT 100', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                        $status
+                    ),
+                    ARRAY_A
+                );
+                if ($rows === []) {
+                    echo "No {$status} jobs.\n";
+                    break;
+                }
+                foreach ($rows as $r) {
+                    printf(
+                        "#%d  %-22s %-10s %d/%d  %s  %s\n",
+                        (int) $r['id'],
+                        $r['type'],
+                        $r['status'],
+                        (int) $r['attempts'],
+                        (int) $r['max_attempts'],
+                        $r['last_error'] ?? '-',
+                        $r['created_at']
+                    );
+                }
+                break;
+
+            case 'retry':
+                if ($jobId === null) {
+                    fwrite(STDERR, "Usage: bin/cpms jobs retry <id>\n");
+                    exit(1);
+                }
+                $updated = $wpdb->query(
+                    $wpdb->prepare(
+                        'UPDATE ' . $wpdb->prefix . 'cpms_jobs
+                         SET status = %s, run_after = %s, last_error = NULL
+                         WHERE id = %d AND status = %s', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                        'queued',
+                        gmdate('Y-m-d H:i:s') . '.000',
+                        $jobId,
+                        'failed'
+                    )
+                );
+                echo $updated ? "Job #{$jobId} re-queued.\n" : "Job #{$jobId} not found or not in failed state.\n";
+                break;
+
+            default:
+                fwrite(STDERR, "Usage: bin/cpms jobs [tick|list|retry] [args]\n");
+                exit(1);
+        }
+        break;
+
+    case 'audit':
+        if ($sub === 'verify') {
+            $result = App::audit()->verifyChain($verify);
+            if ($result['ok']) {
+                echo "Audit chain OK (checked {$result['checked']} rows)\n";
+                exit(0);
+            }
+            fwrite(STDERR, "AUDIT CHAIN BROKEN at row {$result['broken_at']} (checked {$result['checked']})\n");
+            exit(2);
+        }
+        fwrite(STDERR, "Usage: bin/cpms audit verify [limit]\n");
+        exit(1);
+
+    case 'slots':
+        if ($sub === 'generate') {
+            App::jobs()->enqueue('slots.generate', ['horizon_days' => $days, 'source' => 'manual'], priority: 9);
+            $n = App::dispatcher()->tick(10);
+            echo "Enqueued slots.generate; processed {$n} job(s)\n";
+        } else {
+            fwrite(STDERR, "Usage: bin/cpms slots generate [--days=N]\n");
+            exit(1);
+        }
+        break;
+
+    case 'health':
+        $q = App::queueHealth();
+        echo "Queue health\n";
+        echo '  last_tick: ' . ($q['last_tick_at'] ? gmdate('c', (int) $q['last_tick_at']) : 'never') . "\n";
+        echo '  stale:     ' . ($q['stale'] ? 'YES — بررسی Cron/Queue!' : 'no') . "\n";
+        echo '  queued:    ' . $q['queued'] . "\n";
+        echo '  failed:    ' . $q['failed'] . "\n";
+        exit($q['stale'] ? 3 : 0);
+
+    case 'status':
+    default:
+        $tables = $wpdb->get_var("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name LIKE 'cpms_%'"); // phpcs:ignore
+        $q = App::queueHealth();
+        echo "CPMS status\n";
+        echo '  version: ' . (defined('CPMS_VERSION') ? CPMS_VERSION : 'dev') . "\n";
+        echo '  schema:  ' . (App::migrations()->currentVersion() ?? 'none') . "\n";
+        echo '  tables:  ' . (int) $tables . "\n";
+        echo '  queue:   last_tick=' . ($q['last_tick_at'] ?: 'never') . ' failed=' . $q['failed'] . ' stale=' . ($q['stale'] ? 'YES' : 'no') . "\n";
+        break;
+}

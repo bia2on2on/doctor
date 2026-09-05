@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  unit:
+    name: Unit Tests (no WP)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        php: ['8.1', '8.2', '8.3', '8.4']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: mbstring, xml
+      - name: Run unit tests
+        run: |
+          php -d memory_limit=512M vendor/bin/phpunit --testsuite Unit
+      - name: Static analysis (gate)
+        run: |
+          composer require --dev phpstan/phpstan
+          vendor/bin/phpstan analyse src --level=6 --memory-limit=1G --error-format=table
+
+  integration:
+    name: Integration (WP + MySQL)
+    runs-on: ubuntu-latest
+    needs: unit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          coverage: none
+      - name: Install WordPress
+        uses: wordpress-library/wordpress.github-action@v1
+        with:
+          wordpress_version: latest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install -g @wordpress/jest-console || true
+      - name: Prepare WP test suite
+        run: |
+          sudo service mysql start
+          mysql -e "CREATE DATABASE IF NOT EXISTS wordpress_test; CREATE USER IF NOT EXISTS 'wp'@'localhost' IDENTIFIED BY 'wp'; GRANT ALL ON wordpress_test.* TO 'wp'@'localhost';"
+          svn co --quiet https://develop.svn.wordpress.org/trunk/tests/phpunit/includes/ /tmp/wp-tests/includes
+          cat > /tmp/wp-tests/wp-tests-config.php <<'EOF'
+          <?php
+          define( 'ABSPATH', getenv('WP_HOME') . '/wp/' );
+          define( 'DB_NAME', 'wordpress_test' );
+          define( 'DB_USER', 'wp' );
+          define( 'DB_PASSWORD', 'wp' );
+          define( 'DB_HOST', 'localhost' );
+          define( 'DB_CHARSET', 'utf8' );
+          define( 'DB_COLLATE', '' );
+          define( 'WP_TESTS_DOMAIN', 'example.org' );
+          define( 'WP_TESTS_EMAIL', 'admin@example.org' );
+          define( 'WP_TESTS_TITLE', 'CPMS Tests' );
+          define( 'WP_PHP_BINARY', 'php' );
+          define( 'WPLC_SETUP', true );
+          EOF
+      - name: Run integration tests
+        env:
+          WP_HOME: ${{ github.workspace }}
+        run: |
+          composer install --quiet
+          php -d memory_limit=1G vendor/bin/phpunit --testsuite Integration --bootstrap tests/integration-bootstrap.php
