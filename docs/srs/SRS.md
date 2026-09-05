@@ -96,6 +96,8 @@ Section 54 Master Prompt → پوشه‌های /docs: SRS(1)، Use Cases(2)، Pe
 | FR-1.10 | ورود با نام کاربری/رمز برای بیمار **غیرفعال** است (فقط OTP). | M |
 | FR-1.11 | حساب‌های تکراری: قابلیت ادغام (Merge) بیمار با نگاشت کامل رکوردها (MVP: ابزار داخلی، V1.5 UI؛ ADR-0015). | H |
 | FR-1.12 | Rate Limit کلی روی Endpointهای احراز هویت (مثلاً 10 OTP/ساعت/IP+Mobile). | M |
+| FR-1.13 | **نقش‌های پویا (ADR-0026):** Authorization فقط بر پایه Capability (`cpms_*`)، نه نام نقش؛ نقش‌های ستادی سفارشی (دستیار/حسابدار/مدیر مطب/…) با هر زیرمجموعه مجاز از Capabilityها بدون تغییر Business Logic کار می‌کنند. مدیریت نقش (ساخت/ویرایش/اعطای مجوز/آرشیو + Clone از Template + Audit `ROLE_*`/`PERMISSION_*`) در V2. | M (معماری از V1) / C (UI V2) |
+| FR-1.14 | **محافظت از Escalation (ADR-0026 D-9):** اعطای Capability فقط زیرمجموعه‌ی Capabilityهای اعطاکننده و فقط سمت سرور؛ هیچ کاربری نمی‌تواند مجوزی که خود ندارد بدهد. | M (از V2 با مدیریت نقش) |
 
 ### 3.2 مدیریت بیمار
 
@@ -357,6 +359,8 @@ Section 54 Master Prompt → پوشه‌های /docs: SRS(1)، Use Cases(2)، Pe
 | NFR-SEC-10 | API Error Response بدون افشای جزئیات داخلی (Stack/SQL). |
 | NFR-SEC-11 | Dependency Updates + آفلاین‌کردن Endpointهای غیرضروری (XMLRPC غیرفعال در Production). |
 | NFR-SEC-12 | Security Review قبل از Production (فاز 13) شامل:渗透(تست نفوذ) محدود، Review Threat Model، Checklist. |
+| NFR-SEC-13 | (ADR-0026) منطق کسب‌وکار مجوز را با «نام نقش» تصمیم نمی‌گیرد — فقط Capability (+ Scope در V2). مقایسه نقش فقط برچسب Audit است. |
+| NFR-SEC-14 | (ADR-0020/0026) 2FA برای حساب **Privileged** الزامی است — تعریف Privileged بر پایه داشتن دسترسی حساس (PHI/مالی حساس/Export/Audit/تنظیمات حساس)، نه نام نقش؛ شامل نقش‌های سفارشی آینده. |
 
 ### 4.2 عملکرد (Performance)
 
@@ -393,6 +397,8 @@ Section 54 Master Prompt → پوشه‌های /docs: SRS(1)، Use Cases(2)، Pe
 | NFR-UI-2 | Three Dashboard جدا (بیمار/منشی/پزشک) — wp-admin محیط کار روزمره نیست. |
 | NFR-UI-3 | Accessibility: Keyboard Nav، کنتراست AA، Touch Target ≥ 44px، پیام خطای واضح. |
 | NFR-UI-4 | i18n-ready (fa پیش‌فرض، en آتی). |
+| NFR-UI-5 | (ADR-0026 D-14) **Responsive همه داشبوردها:** پزشک/منشی/نقش‌های ستادی آینده (دستیار/حسابدار/مدیر مطب) روی دسکتاپ/لپ‌تاپ/تبلت (عمودی+افقی)/موبایل — یک UI واحد بدون اپ تکراری. «تبلت/قلم-محور» فقط بهینه‌سازی تجربه دست‌خط است، نه محدودیت دستگاه. موبایل: تک‌ستون تطبیقی/Tab/Drawer، Touch-friendly، بدون رفتار Hover-only و بدون Overflow افقی. Canvas دست‌خط (F7) Resize/Orientation/DPR/Touch-Stylus را بدون از‌دست‌رفتن Stroke مدیریت می‌کند. |
+| NFR-UI-6 | (ADR-0026 D-13) ترکیب داشبورد هر نقش از Capabilityهای معتبر Backend ساخته می‌شود (مثال: حسابدار=ماژول‌های مالی)؛ پنهان‌سازی صرف CSS/JS ممنوع (P-1). |
 
 ### 4.6 نگهداری و ساختار کد
 | ID | نیازمندی |

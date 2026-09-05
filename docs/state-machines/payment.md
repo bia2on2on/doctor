@@ -77,7 +77,10 @@ stateDiagram-v2
 | Code | موقعیت |
 |---|---|
 | `CLINIC_OVERPAYMENT` | M-3 |
-| `DUPLICATE_IDEMPOTENCY` (→ idempotent replay، خطا نیست) | M-1 |
-| `VOID_WINDOW_EXPIRED` | P2 خارج از بازه |
-| `INVOICE_NOT_MODIFIABLE` | عمل روی فاکتور `paid/voided` |
+| `CLINIC_IDEMPOTENCY_REPLAY` (→ idempotent replay با 200، خطا نیست) | M-1 |
+| `CLINIC_VOID_WINDOW_EXPIRED` | P2 خارج از بازه |
+| `CLINIC_INVOICE_NOT_MODIFIABLE` | عمل روی فاکتور `paid/voided` |
 | `CLINIC_PERMISSION_DENIED` | مجوز مالی |
+| `CLINIC_NOT_SETTLED` | خروج با فاکتور باز (V14 — در visit-queue.md) |
+
+> **تفسیر M-6 (هم‌راستا با `InvoiceMachine`):** «Refund/Void روی فاکتور paid یا voided ممنوع» به **عملیات سطح فاکتور** (اصلاح D15 و ابطال خود فاکتور I4) مربوط است؛ ابطال/بازپرداختِ **پرداخت** (P2/P3) طبق Side-Effect خودش (`Invoice: بازگردانی paid_amount/balance`) فاکتور را بازگردانی می‌کند و فقط روی فاکتور `voided` مسدود است.

@@ -1,6 +1,6 @@
 # Permission Matrix — CPMS
 
-نسخه 1.3 | 2026-09-05 | فاز 2 (تصمیم F1-D2 اعمال شد) + **F2.5**: `cpms_sms_config` (ADR-0025) + **F5 هم‌ترازی**: تفکیک سطر Patient در §3 (تفصیل در یادداشت §3)
+نسخه 1.4 | 2026-09-06 | فاز 2 (تصمیم F1-D2) + **F2.5**: `cpms_sms_config` (ADR-0025) + **F5 هم‌ترازی** (تفکیک سطر Patient §3) + **ADR-0026**: نقش‌های پویا + Scope + Capهای حساس (P-9..P-12، §6)
 
 ## 1. اصول
 
@@ -12,6 +12,10 @@
 - **P-6** `doctor_private` در سطح Query فیلتر می‌شود + Capability مجزا (دو لایه: Capability → Data-Access → Field/Row Filter).
 - **P-7** هر عدم مجوز → 403/404 + Audit `FORBIDDEN_ACCESS_ATTEMPT`.
 - **P-8** Ownership/Resource-Level Authorization **علاوه بر** WordPress Capability بررسی می‌شود (دو لایه مستقل).
+- **P-9** (ADR-0026) **نام نقش هرگز مکانیزم Authorization نیست** — تصمیم فقط بر پایه Capability (+ Scope در V2). نقش‌های سفارشی ستادی (دستیار/حسابدار/مدیر مطب/…) با هر زیرمجموعه `cpms_*` معتبرند؛ نقش‌های V1 فقط Template پیش‌فرض‌اند.
+- **P-10** (ADR-0026) حوزه‌های دسترسی **مستقل**اند: مالی ⊥ بالینی ⊥ هویت/دموگرافیک ⊥ یادداشت خصوصی ⊥ فایل. Cap مالی هرگز Cap بالینی را ضمنی نمی‌دهد و بالعکس.
+- **P-11** (ADR-0026) Capهای **حساس** هرگز در Template عمومی «راحت» قرار نمی‌گیرند و در UI مدیریت نقش (V2) با هشدار جدا نمایش داده می‌شوند: `cpms_private_note_*`، `cpms_export`، `cpms_audit_read`، `cpms_payment_void`، `cpms_payment_refund`، `cpms_invoice_void`، `cpms_invoice_adjust`، `cpms_patient_archive`، `cpms_patient_merge`، `cpms_consult_reopen`، `cpms_config`، `cpms_sms_config` (+ آینده: Cap مدیریت نقش).
+- **P-12** (ADR-0026) **Scope منبع** (V2): `OWN`/`ASSIGNED_DOCTORS`/`BRANCH`/`CLINIC`/`ALL_ALLOWED` — بعد از Capability و قبل از Data-Access ارزیابی می‌شود؛ تا V2 عملیاتی = CLINIC (`clinic_id=1`، ADR-0003).
 
 ## 2. فهرست نهایی Capability Slugها (تأییدشده 2026-09-05)
 
@@ -216,3 +220,18 @@
 - TP-09: Admin بدون Capability صریح → 403 روی PHI/Audit
 - TP-10: Matrix Parametrized (تولید خودکار از این فایل)
 - TP-11: Audit Integrity
+
+## 6. نقش‌های پویا، Scope و گزارشگری (ADR-0026 — تعریف، پیاده‌سازی فاز V2)
+
+| موضوع | تعریف |
+|---|---|
+| نقش سفارشی | هر زیرمجموعه از ۴۶ Capability بالا (مثال «حسابدار»: `invoice_read`+`payment_create`+`finance_read`، بدون هیچ Cap بالینی؛ مثال «دستیار»: `patient_read`+`appt_*`+`queue_*`، بدون `medical_read`) |
+| Templateها | Doctor/Secretary/Assistant/Accountant/Clinic Manager = بسته‌های پیش‌نهادی UI (نرمال‌کننده نیستند)؛ شروع از Clone و سپس تنظیم مجاز است |
+| عملیات نقش (V2) | Create/Rename/Assign-permissions/Modify/Assign-to-user/Archive (ایمن، بدون یتیم‌کردن کاربر یا اعطای خاموش)؛ نقش‌های سیستم حساس محافظت‌شده |
+| Scope (V2) | `OWN` (پزشک: درآمد/ویزیت‌های خودش) / `ASSIGNED_DOCTORS` / `BRANCH` / `CLINIC` / `ALL_ALLOWED` — Enforcement در Backend روی `clinic_id`/`clinician_id` موجود؛ فیلتر Frontend ملاک نیست |
+| گزارش مالی (F8/V2) | per-doctor (درآمد/ویزیت/باقیمانده)، per-service، بازه‌ای، Methods، Refund/Void — تفکیک **Aggregate** (مدیر: جمع مطب + تفکیک پزشک، بدون پرونده بیمار) از **Detail** (نیازمند Cap جزئیات) |
+| Escalation | اعطای Cap فقط توسط `cpms_config`-دار و فقط زیرمجموعه Capهای خودش (Server-side) |
+| Audit نقش | `ROLE_CREATED`/`ROLE_UPDATED`/`ROLE_ARCHIVED`/`ROLE_ASSIGNED`/`ROLE_REMOVED`/`PERMISSION_GRANTED`/`PERMISSION_REVOKED`/`STAFF_SCOPE_CHANGED` (before/after بدون PHI) |
+| 2FA | Privileged = دارنده هر Cap حساس (P-11) — ADR-0020 (Access-based، نه نام نقش) |
+
+> **وضعیت کد (بررسی ADR-0026، 2026-09-06):** لایه REST و سرویس‌های مالی (F6) کاملاً Capability-محورند؛ Debt نقش-محور باقی‌مانده (بازیگر ماشین Visit/Clinical + `requireRole` بالینی + انشعاب visibility فایل) و نقشه مهاجرت آن در ADR-0026 ثبت شد. Blocker معماری وجود ندارد.

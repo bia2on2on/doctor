@@ -67,13 +67,16 @@
 | D9 | `GET /appointments?date&status` | `cpms_appt_read` | لیست نوبت‌های روز |
 | D10 | `POST /appointments` | `cpms_appt_create` | نوبت حضوری/فوری `{patient_id, clinician_id (الزامی), slot_date, slot_time, reason?}` — بدون min-lead (فوری/حضوری)؛ `is_walkin_express` اگر روز جاری. (GAP-1/G-3) |
 | D11 | `POST /appointments/{id}/cancel` | `cpms_appt_cancel` | با دلیل |
-| D12 | `POST /invoices` | `cpms_invoice_create` | `{visit_id, items:[{service_id?, description, qty, price}], discount?, tax?}` |
-| D13 | `POST /invoices/{id}/payments` | `cpms_payment_create` | `{amount, method, transaction_ref?}` + **Idempotency-Key** |
-| D14 | `POST /payments/{id}/void` | `cpms_payment_void` | `{reason}` |
-| D15 | `POST /invoices/{id}/adjustments` | `cpms_invoice_adjust` | `{type, amount, reason}` |
-| D16 | `POST /visits/{id}/checkout` | `cpms_queue_checkout` | `{waive_invoice?: {reason}}` |
-| D17 | `GET /invoices/{id}/receipt` | `cpms_invoice_read` | Receipt (PDF) |
-| D18 | `GET /finance/summary?from&to` | `cpms_finance_read` | آمار مالی (Revenue, Open Balances, Methods) |
+| D12 | `POST /invoices` | `cpms_invoice_create` | `{visit_id, items:[{service_id?, description, quantity|qty, unit_price|price, discount?}], discount?, tax?}` — مبالغ ریالِ صحیح (TP-18)؛ وضعیت ویزیت `consultation_completed`/`awaiting_payment`؛ V11 سیستمی؛ **201** |
+| D12b | `GET /invoices/{id}` | `cpms_invoice_read` | نمای کامل فاکتور (اقلام/پرداخت‌ها/اصلاحات) — UI تسویه |
+| D12c | `GET /visits/{id}/invoice` | `cpms_invoice_read` | فاکتور فعال ویزیت (رفع ویزیت→فاکتور در UI)؛ بدون فاکتور → 404 |
+| D13 | `POST /invoices/{id}/payments` | `cpms_payment_create` | `{amount, method, transaction_ref?}` + **Idempotency-Key** (الزامی — بدون آن 400)؛ اولین ثبت **201**، تکرار همان کلید **200** + `code=CLINIC_IDEMPOTENCY_REPLAY` + همان `payment_id` (M-1/TP-02) |
+| D14 | `POST /payments/{id}/void` | `cpms_payment_void` | `{reason}` — فقط همان روز ثبت (UTC؛ `CLINIC_VOID_WINDOW_EXPIRED`)؛ Invoice بازگردانی؛ ویزیت دست‌نخورده (V12 یک‌طرفه) |
+| P3 | `POST /payments/{id}/refund` | `cpms_payment_refund` | `{reason, amount?}` — پیش‌فرض: کل مبلغ باقیماندهٔ قابل بازگردانی؛ جزئی → `captured` می‌ماند، کامل → `refunded` |
+| D15 | `POST /invoices/{id}/adjustments` | `cpms_invoice_adjust` | `{type: credit|debit, amount, reason}` — فقط فاکتور `open/partial` (M-6) |
+| D16 | `POST /visits/{id}/checkout` | `cpms_queue_checkout` | `{waive_invoice?: {reason}}` — فاکتور باز → `CLINIC_NOT_SETTLED` (V14) مگر مسیر معافیت |
+| D17 | `GET /invoices/{id}/receipt` | `cpms_invoice_read` | رسید **JSON ساخت‌یافته + نمای چاپ UI (window.print)** — Deterministic (M-5) + تاریخ جلالی؛ PDF سمت سرور = Backlog (بدون Dependency جدید) |
+| D18 | `GET /finance/summary?from&to` | `cpms_finance_read` | آمار مالی (Revenue, By-Method, Refunded, Open Balances, آخرین پرداخت‌ها) — تاریخ‌ها `YYYY-MM-DD` (پیش‌فرض امروز UTC) |
 
 ## 5. Doctor (Authenticated: `clinic_doctor` + Capabilities)
 
@@ -115,7 +118,7 @@
 |---|---|---|
 | G1 | `GET/POST /config/schedules` + `PUT/DELETE /config/schedules/{id}` — برنامه هفتگی هر پزشک (یک رکورد به‌ازای هر روز هفته؛ `day_of_week` 0=شنبه..6=جمعه؛ `start_time/end_time` HH:MM؛ `appointment_duration_min` 5–240؛ `slot_capacity` 1–50؛ بازه استراحت اختیاری داخل بازه کاری). تغییر/حذف → حذف Slotهای **خالیِ آینده** و بازتولید اتمیک (ADR-0004)؛ Slot دارای رزرو/hold هرگز حذف نمی‌شود. | `cpms_config` |
 | G1b | `GET/POST /config/schedule-exceptions` + `DELETE /config/schedule-exceptions/{id}` — استثنائات (`holiday`/`leave` = تعطیلی کل روز؛ `blocked`/`open_override` = بازه ساعتی الزامی). تاریخ باید آینده باشد. ثبت/حذف همان سیاست Regeneration را اجرا می‌کند. (ثبت افزایشی F3 — خارج از شماره‌گذاری اصلی) | `cpms_config` |
-| G2 | CRUD `/config/services` | `cpms_config` |
+| G2 | CRUD `/config/services` | نوشتن: `cpms_config` (admin فنی)؛ خواندن: `cpms_invoice_read` (منشی/پزشک — برای فاکتورسازی سریع FR-14.9) | `GET ?scope=active|all`، `POST`، `PUT /{id}`، `DELETE /{id}` (غیرفعال‌سازی منطقی)؛ `{code, name, price}` — کد یکتا per-clinic |
 | G3 | PUT `/settings` | `cpms_config` |
 | G4 | GET `/audit?filters` | `cpms_audit_read` (Explicit) — **تأیید Admin** |
 | G5 | GET `/reports/{type}?from&to` + `POST /reports/{type}/export` | `cpms_report_read` / `cpms_export` |

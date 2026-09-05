@@ -52,10 +52,13 @@
 | `CLINIC_INVALID_APPOINTMENT_STATE` | 409 | نوبت در وضعیت غیرقابل Check-in است (لغو/جابه‌جایی/تکمیل) |
 | `CLINIC_RECALL_LIMIT_REACHED` | 409 | سقف فراخوان مجدد (queue.max_recalls) پر شده است |
 
-## Finance (F1)
+## Finance (F1/F6)
 
 | Code | HTTP | Meaning |
 |---|---|---|
+| `CLINIC_NOT_SETTLED` | 409 | خروج (Checkout) با فاکتور تسویه‌نشده — V14؛ data: `open_invoices`, `balance` |
+| `CLINIC_VOID_WINDOW_EXPIRED` | 409 | ابطال پرداخت خارج از بازه مجاز (پیش‌فرض همان روز ثبت — P2) |
+| `CLINIC_INVOICE_NOT_MODIFIABLE` | 409 | عمل روی فاکتور نهایی‌شده (`paid`/`voided`) — M-6 |
 | `CLINIC_ADJUSTMENT_EXCEEDS` | 422 | تخفیف/حساب بیشتر از مبلغ مجاز |
 | `CLINIC_ADJUSTMENT_INVALID` | 400 | مقدار Adjust نامعتبر |
 | `CLINIC_DISCOUNT_EXCEEDS` | 422 | تخفیف بیشتر از مبلغ آیتم |

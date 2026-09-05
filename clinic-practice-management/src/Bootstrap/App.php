@@ -6,6 +6,7 @@ namespace ClinicCore\Bootstrap;
 
 use ClinicCore\Admin\SettingsAdmin;
 use ClinicCore\Admin\DoctorDashboardPage;
+use ClinicCore\Admin\SecretaryFinancePage;
 use ClinicCore\Admin\SecretaryQueuePage;
 use ClinicCore\Admin\SmsSettingsPage;
 use ClinicCore\Application\Auth\OtpService;
@@ -13,6 +14,7 @@ use ClinicCore\Application\Booking\BookingService;
 use ClinicCore\Application\Booking\ScheduleService;
 use ClinicCore\Application\Clinical\ClinicalService;
 use ClinicCore\Application\Clinical\MedicalFileService;
+use ClinicCore\Application\Finance\FinanceService;
 use ClinicCore\Application\Patients\PatientService;
 use ClinicCore\Application\Jobs\HoldsExpireHandler;
 use ClinicCore\Application\Jobs\JobsDispatcher;
@@ -34,11 +36,14 @@ use ClinicCore\Infrastructure\Queue\JobQueue;
 use ClinicCore\Infrastructure\Repository\AppointmentRepository;
 use ClinicCore\Infrastructure\Repository\ClinicalNoteRepository;
 use ClinicCore\Infrastructure\Repository\FollowUpRepository;
+use ClinicCore\Infrastructure\Repository\InvoiceRepository;
 use ClinicCore\Infrastructure\Repository\MedicalFileRepository;
+use ClinicCore\Infrastructure\Repository\PaymentRepository;
 use ClinicCore\Infrastructure\Repository\PatientRepository;
 use ClinicCore\Infrastructure\Repository\PrescriptionRepository;
 use ClinicCore\Infrastructure\Repository\RecommendationRepository;
 use ClinicCore\Infrastructure\Repository\ScheduleRepository;
+use ClinicCore\Infrastructure\Repository\ServiceRepository;
 use ClinicCore\Infrastructure\Repository\SlotRepository;
 use ClinicCore\Infrastructure\Repository\VisitRepository;
 use ClinicCore\Infrastructure\Security\Idempotency;
@@ -53,6 +58,7 @@ use ClinicCore\Migrations\MigrationRunner;
 use ClinicCore\Rest\BookingController;
 use ClinicCore\Rest\ClinicalController;
 use ClinicCore\Rest\FilesController;
+use ClinicCore\Rest\FinanceController;
 use ClinicCore\Rest\HealthController;
 use ClinicCore\Rest\OtpController;
 use ClinicCore\Rest\PatientController;
@@ -104,6 +110,7 @@ final class App
             (new ScheduleController(self::scheduleService()))->register_routes();
             (new ClinicalController(self::clinicalService()))->register_routes();
             (new FilesController(self::medicalFileService()))->register_routes();
+            (new FinanceController(self::financeService()))->register_routes();
             // Endpointهای فازهای بعد (F5 جستجوی جامع) — مطابق API Contract.
         });
 
@@ -141,6 +148,7 @@ final class App
         SettingsAdmin::register();
         SmsSettingsPage::register();
         SecretaryQueuePage::register();
+        SecretaryFinancePage::register();
         DoctorDashboardPage::register();
     }
 
@@ -297,6 +305,29 @@ final class App
         }
 
         return $clinical;
+    }
+
+    /**
+     * سرویس مالی (F6) — D12–D18 + P3 + G2 (تعرفه‌ها).
+     */
+    public static function financeService(): FinanceService
+    {
+        static $finance = null;
+        if ($finance === null) {
+            $db = self::db();
+            $finance = new FinanceService(
+                $db,
+                new ServiceRepository($db),
+                new InvoiceRepository($db),
+                new PaymentRepository($db),
+                new VisitRepository($db),
+                self::visitService(),
+                new PatientRepository($db),
+                self::audit()
+            );
+        }
+
+        return $finance;
     }
 
     /**

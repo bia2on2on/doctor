@@ -198,14 +198,22 @@ final class VisitService
      * اجرای Transition روی Visit از قبل Lock شده — **بدون** Transaction
      * (فراخواننده باید داخل transactional باشد؛ J-1 با Row Lock).
      *
+     * F6: public شده برای FinanceService (M-7 — عمل مالی و Transition در
+     * یک Transaction واحد)؛ $forceRole فقط برای نقش سیستم (V11/V12) است.
+     *
      * @param array<string, mixed> $visit
      * @param array<string, mixed> $meta
      * @return array<string, mixed>
      */
-    private function applyTransition(int $actorUserId, array $visit, string $event, array $meta): array
-    {
+    public function applyTransition(
+        int $actorUserId,
+        array $visit,
+        string $event,
+        array $meta = [],
+        ?string $forceRole = null
+    ): array {
         $visitId = (int) $visit['id'];
-        $actorRole = $this->roleForUser($actorUserId) ?? 'secretary';
+        $actorRole = $forceRole ?? ($this->roleForUser($actorUserId) ?? 'secretary');
         $fromStatus = (string) $visit['status'];
 
         $toStatus = $this->machineCheck($fromStatus, $event, $actorRole);
@@ -339,9 +347,38 @@ final class VisitService
                 );
             }
 
+            // V14 guard (visit-queue.md): خروج با فاکتور تسویه‌نشده ممنوع — NOT_SETTLED.
+            // اینجا فقط paid→check_out می‌رسد؛ فاکتور باز یعنی بدهی واقعی مانده است.
+            $unsettled = $this->unsettledInvoiceBalance($visitId);
+            if ($unsettled['count'] > 0) {
+                throw VisitException::of(
+                    'CLINIC_NOT_SETTLED',
+                    'فاکتور این ویزیت تسویه نشده است — ابتدا پرداخت را کامل کنید یا از مسیر معافیت اقدام کنید',
+                    409,
+                    ['open_invoices' => $unsettled['count'], 'balance' => $unsettled['balance']]
+                );
+            }
+
             // paid → check_out (V14)؛ سایر وضعیت‌ها → ماشین خطای transition می‌دهد
             return $this->applyTransition($actorUserId, $visit, 'check_out', []);
         });
+    }
+
+    /**
+     * بدهی فعال ویزیت — گارد NOT_SETTLED (V14)؛ concurrent-safe چون همیشه
+     * داخل Transaction با قفل ردیف Visit اجرا می‌شود.
+     *
+     * @return array{balance: float, count: int}
+     */
+    private function unsettledInvoiceBalance(int $visitId): array
+    {
+        $row = $this->db->fetchRow(
+            'SELECT COUNT(*) AS n, COALESCE(SUM(balance), 0) AS bal FROM ' . $this->db->table('cpms_invoices') .
+            " WHERE visit_id = %d AND status IN ('open', 'partial')",
+            [$visitId]
+        );
+
+        return ['balance' => (float) ($row['bal'] ?? 0), 'count' => (int) ($row['n'] ?? 0)];
     }
 
     // ================= FR-5.5 — No-show خودکار (Cron) =================

@@ -67,6 +67,9 @@ final class SecretaryQueuePage
             'can_checkin' => current_user_can(RolesAndCapabilities::QUEUE_CHECKIN),
             'can_advance' => current_user_can(RolesAndCapabilities::QUEUE_ADVANCE),
             'can_checkout' => current_user_can(RolesAndCapabilities::QUEUE_CHECKOUT),
+            // F6: دکمه «آماده‌سازی صورتحساب» به داشبورد مالی می‌رود (صدور فاکتور واقعی)
+            'finance_url' => current_user_can(RolesAndCapabilities::FINANCE_READ)
+                ? admin_url('admin.php?page=cpms-finance') : null,
         ];
         $clinicians = self::activeClinicians();
         ?>
@@ -414,6 +417,8 @@ window.CPMS_Q = <?php echo wp_json_encode($config); ?>;
             return;
         }
         if (act === 'invoice') {
+            // F6: صدور فاکتور واقعی در داشبورد مالی (D12) — V11 آنجا به‌صورت سیستمی اعمال می‌شود
+            if (CFG.finance_url) { window.location.href = CFG.finance_url + '&visit=' + id; return; }
             doPost('visits/' + id + '/status', { to_status: 'awaiting_payment' }, 'در انتظار پرداخت');
             return;
         }

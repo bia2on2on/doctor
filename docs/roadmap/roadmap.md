@@ -17,10 +17,10 @@
 | **F5** | بالینی: صفحه ویزیت، Notes+Versions، Prescriptions، Recommendations، Follow-ups، Complete/Reopen، File Upload/Stream، داشبورد پزشک (امروز/صف/Call) | TP-06, TP-08, TP-10 | 3 هفته |
 | **F6** | مالی: Services، Invoice/Payment/Adjustment/Void/Refund، Receipt، داشبورد مالی منشی، Checkout Flow | TP-02, TP-18 + TP-01 (بخش مالی) | 2 هفته |
 | **F7** | دست‌خط: Canvas کامل (Pressure/Tools/Zoom/Full-screen/Multi-page/Template)، Stroke Storage، Auto-save + **Offline Sync** (IndexedDB) + Conflict | TP-12 | 2.5 هفته |
-| **F8** | اعلان + گزارش: Notification Layer کامل + Templates (Jalali)، 12 گزارش + Export (Watermark/Audit) | TP-13 + Report Tests | 1.5 هفته |
+| **F8** | اعلان + گزارش: Notification Layer کامل + Templates (Jalali)، 12 گزارش + Export (Watermark/Audit) — گزارش‌های مالی با تفکیک **Aggregate از Detail** و آماده Scope (ADR-0026) | TP-13 + Report Tests | 1.5 هفته |
 | **F9** | Hardening: Security Review (تهدیدها T-01..T-24)، Performance (NFR-PERF-1)، Backup/Restore Test (TP-16)، Accessibility Pass، مستندات کاربری، Pilot | Security Checklist امضا + TP-16 + DoD V1 | 2 هفته |
 | **V1.5** | OCR (انتخاب Provider + Acceptance Test فارسی)، 2FA، Merge UI، ClamAV/Encryption (تصمیم R-06) | TP-OCR + 2FA Tests | 3–4 هفته |
-| **V2** | Multi-clinic/Team، Online Payment، Insurance/Lab، Push، Mobile API (JWT) | — | بر اساس نیاز |
+| **V2** | **Role Management کامل (ADR-0026): نقش‌های سفارشی + UI مدیریت + Scope (OWN/ASSIGNED_DOCTORS/BRANCH/CLINIC) + Audit `ROLE_*`/`PERMISSION_*` + گزارشگری مالی Scope-دار (per-doctor/per-service/Aggregate-تفکیک-از-Detail)**، Multi-clinic/Team، Online Payment، Insurance/Lab، Push، Mobile API (JWT) | ADR-0026 + تست Escalation/Scope | بر اساس نیاز |
 
 ## مایلستون‌ها
 - **M1 (پایان F3):** بیمار واقعی می‌تواند آنلاین نوبت بگیرد (به‌صورت داخلی).
