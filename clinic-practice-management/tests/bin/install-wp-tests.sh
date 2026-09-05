@@ -29,6 +29,15 @@ WP_VERSION="${5:-6.7.2}"
 WP_TESTS_DIR="${WP_TESTS_DIR:-/tmp/wordpress-test-lib}"
 WP_CORE_DIR="${WP_CORE_DIR:-/tmp/wordpress}"
 
+# بررسی پیش‌نیازها — خطای شفاف به‌جای exit 127 مبهم
+for _cmd in curl tar mysql; do
+    if ! command -v "$_cmd" >/dev/null 2>&1; then
+        echo "required command not found: $_cmd" >&2
+        exit 127
+    fi
+done
+unset _cmd
+
 download() {
     if command -v curl >/dev/null 2>&1; then
         curl -fsSL "$1" -o "$2"
@@ -56,12 +65,16 @@ install_test_suite() {
         echo "Test library already present at $WP_TESTS_DIR"
         return
     fi
-    mkdir -p "$WP_TESTS_DIR/includes"
-    echo "Checking out WP test library ${WP_VERSION} (svn) ..."
-    svn co -q "https://develop.svn.wordpress.org/tags/${WP_VERSION}/tests/phpunit/includes/" \
-        "$WP_TESTS_DIR/includes"
-    download "https://develop.svn.wordpress.org/tags/${WP_VERSION}/wp-tests-config-sample.php" \
-        "$WP_TESTS_DIR/wp-tests-config.php"
+    mkdir -p "$WP_TESTS_DIR"
+    echo "Fetching WP test library ${WP_VERSION} (github tarball — runner images have no svn) ..."
+    local archive
+    archive="$(mktemp)"
+    download "https://github.com/WordPress/wordpress-develop/archive/refs/tags/${WP_VERSION}.tar.gz" "$archive"
+    tar -xzf "$archive" -C "$WP_TESTS_DIR" --strip-components=3 \
+        "wordpress-develop-${WP_VERSION}/tests/phpunit/includes"
+    tar -xzf "$archive" -O "wordpress-develop-${WP_VERSION}/wp-tests-config-sample.php" \
+        > "$WP_TESTS_DIR/wp-tests-config.php"
+    rm -f "$archive"
 }
 
 install_db() {
