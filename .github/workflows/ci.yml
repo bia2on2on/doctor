@@ -105,8 +105,6 @@ jobs:
             echo '```'
             echo "--- HEAD (first 25 lines) ---"
             head -n 25 /tmp/phpunit-int.log
-            echo "--- DIAG ---"
-            grep -a "DIAG\[" /tmp/phpunit-int.log | head -n 12 || true
             echo "--- ERRORS (name + first lines each) ---"
             awk '/^There were [0-9]+ errors?:/{flag=1;next}/^There were [0-9]+ failures?:/{flag=0}flag' /tmp/phpunit-int.log \
               | grep -A 3 -E '^[0-9]+\) ' | head -n 200
@@ -117,13 +115,6 @@ jobs:
           if [ -n "$PR_NUMBER" ]; then
             gh pr comment "$PR_NUMBER" --body-file /tmp/pr-body.md || echo "::notice::PR comment failed (permissions?)"
           fi
-
-      - name: Diagnose schema state
-        if: failure()
-        run: |
-          mysql -N -h 127.0.0.1 -u root -proot 2>/dev/null -e "SELECT CONCAT('tables_total=', COUNT(*)) FROM information_schema.tables WHERE table_schema='wordpress_test';" | while IFS= read -r l; do echo "::notice::$l"; done
-          mysql -N -h 127.0.0.1 -u root -proot 2>/dev/null -e "SELECT CONCAT('cpms_tables=', COUNT(*)) FROM information_schema.tables WHERE table_schema='wordpress_test' AND table_name LIKE '%cpms%';" | while IFS= read -r l; do echo "::notice::$l"; done
-          mysql -N -h 127.0.0.1 -u root -proot 2>/dev/null -e "SELECT CONCAT('migrations_applied=', IFNULL(GROUP_CONCAT(version), 'NONE')) FROM wordpress_test.wptests_cpms_schema_migrations;" | while IFS= read -r l; do echo "::notice::$l"; done || echo "::notice::migrations_table=MISSING"
 
       # خروجی PHPUnit به‌صورت annotation هم منتشر می‌شود (سقف GitHub: 10 به‌ازای Step)
       - name: Surface test failures (part 1)
