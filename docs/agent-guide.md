@@ -70,12 +70,11 @@ tests/
 
 ### آخرین وضعیت فنی (verify شده)
 
-- **HEAD فعلی:** `4fbcbed` روی شاخه `arena/01a071c4-doctor` — همه push شده، tree clean
-- **PR #1:** OPEN — هر ۵ چک SUCCESS (Unit PHP 8.1/8.2/8.3/8.4 + Integration WP 6.7.2 + MySQL 8)
-- **آخرین run سبز:** 33988080619 روی `acb8103` (هر ۵ job)
-- **تست‌ها:** Unit ≈ ۲۱۰ تست/۳۳,۳۲۹ assertion سبز (CI)؛ Integration = **۱۳۳ تست/۵۷۵ assertion سبز، ۰ skip** — شامل تست‌های concurrency با fork واقعی
-- **Schema:** ۳۹ جدول `cpms_*` (مهاجرت‌های 0001–0003)
-- **Capabilities:** ۴۹ ثابت کد در برابر ۴۶ ماتریس سند (drift باز — بند §8-2)
+- **HEAD فعلی:** پایان F5 — وضعیت CI نهایی در report-f5.md
+- **PR #1:** OPEN — هر ۵ چک (Unit PHP 8.1/8.2/8.3/8.4 + Integration WP 6.7.2 + MySQL 8)
+- **تست‌ها:** Unit ≈ ۲۱۰ تست سبز (CI)؛ Integration بعد از F5 = ۱۸۴+ تست (ClinicalFlowTest ۲۶ + MedicalFilesTest ۱۲ + قبلی‌ها)، ۰ skip — شامل concurrency با fork واقعی
+- **Schema:** ۳۹ جدول `cpms_*` (مهاجرت‌های 0001–0003)؛ جدول فایل = `cpms_medical_attachments`
+- **Capabilities:** drift ۴۹/۴۶ در F5 بسته شد — ماتریس مبنا (۴۶)؛ مفرغ‌ها (files/search) مطابق ماتریس اضافه شدند؛ registerRole اکنون stray capهای `cpms_*` را هم پاک می‌کند (self-healing — 998ee81)
 
 ### نقشه قابلیت‌های ساخته‌شده (Backend کامل تا F4)
 
@@ -84,6 +83,7 @@ tests/
 - **Booking:** تقویم/اسلات/ظرفیت، Hold→Confirm (اتمیک DB-level ضد double-booking)، Idempotency-Key، Reschedule/Cancel با policy، Duration snapshot
 - **Patient:** CRUD + جستجو + پروفایل
 - **Queue/Visits (F4):** Check-in/Walk-in، ماشین کامل V1–V15 با Row-Lock و تاریخچه append-only، صف FIFO + نوبت فوری، R1 polling با ETag/304، No-show خودکار (lazy + cron)، Checkout/Waive، داشبورد منشی WP-Admin
+- **Clinical (F5):** E7 پرونده کامل، E8/E9 Notes + نسخه‌بندی append-only، E10/E11 نسخه Draft/Finalize/Void، E12/E13 توصیه/پیگیری، E14/E15 پایان/بازگشایی با Validation، C5/C6/C7 نمای بیمار (فقط patient_visible)، E16/E17/C3/C4 فایل محافظت‌شده، E18 جستجوی جامع Role-Aware، داشبورد + صفحه ویزیت پزشک (WP-Admin)
 
 ---
 
@@ -259,18 +259,19 @@ final class XxxService {
 
 ### تصمیمات باز (نیازمند کارفرما)
 
-1. **Drift ماتریس Capability (۴۹ ثابت کد / ۴۶ ماتریس)** — **دستور F5 کارفرما (رسماً):** پیش از توسعه endpoints بالینی، drift طبق Permission Matrix و Least Privilege بسته شود؛ مبنای تصمیم = Permission Matrix و تصمیمات مصوب؛ بدون capability اضافی بدون Use Case واقعی؛ تفکیک صریح capهای حساس Clinical/Private Notes/Prescription/Files. اگر اصلاح drift نیازمند تغییر واقعی Permission Model یا Product Decision باشد → STOP Policy؛ در غیر این صورت Technical Alignment + تست.
+1. ~~Drift ماتریس Capability (۴۹/۴۶)~~ — **بسته شد (F5):** ماتریس مبنا شد؛ مفرغ‌ها (files/search) از ماتریس اضافه شدند؛ غیرماتریسی‌ها حذف؛ باگ registerRole (stray cap هرگز پاک نمی‌شد) در 998ee81 اصلاح — جزئیات report-f5.md §3.
 2. **Availability UI (تقویم/OTP/Profile)** — تصمیم قبلی: فاز UI مستقل پس از فازهای Backend.
 3. **PHPStan** — طبق دستور F5: Blocker نیست؛ اگر بدون اختلاف قابل اضافه‌شدن است طبق roadmap انجام شود ولی توسعه Clinical متوقف نشود.
 4. **`SmsController::can()`** — envelope استاندارد `CLINIC_*` ندارد (بدهی F2.5 → F8/patch).
 5. **ADR-0023 Licensing** هنوز نوشته نشده (برای F10/licensing phase).
 
-### نکات فنی برای F5 (آماده‌شده‌ها)
+### نکات فنی برای F6 (آماده‌شده‌ها از F5)
 
-- Backend صف پزشک (E1/E2/E3/E4/E5/E6/E14) از F4 آماده است؛ فقط UI پزشک می‌ماند.
-- ماشین Visit منطق V10 (complete) و V15 (reopen) را از F4 دارد — سرویس `transition()` آماده؛ endpoint E15 با validation بالینی در F5.
-- فایل‌ها/Notes/Prescriptions schema از migration 0001 موجود (جدول‌های `cpms_clinical_notes`, `cpms_prescriptions`, `cpms_files`, …) — قبل از پیاده‌سازی ERD بخش 5 را بخوان.
-- `completeReferencedAppointment` (T9) و ماشین‌ها را تغییر نده — تست‌های سبز وابسته‌اند.
+- E14 (complete) از QueueController به ClinicalController منتقل شد (Validation FR-8.7 قبل از transition)؛ DOCTOR_EVENTS صف فقط call/recall/start/skip است.
+- Audit کدهای FORBIDDEN باید خارج از Transaction نوشته شوند وگرنه با Rollback از بین می‌روند (الگوی updateNote — بررسی pre-check بیرون + قفل FOR UPDATE داخل).
+- Factories وابسته به Setting (مثل `medicalFileService` با `files.storage_path`) نباید singleton کش شوند — مقدار در اولین boot قفل می‌شود.
+- ستون‌های NOT NULL بدون default (مثل `prescriptions.clinic_id`) همیشه در insert صریح مقدار بگیرند — MySQL غیر-strict مقدار 0 می‌گذارد و فیلترهای clinic_id می‌شکنند.
+- UI پزشک: DoctorDashboardPage (صف + صفحه ویزیت)؛ دست‌خط/Canvas/Jalali جزو F6 هستند (ADR-0014).
 
 ---
 

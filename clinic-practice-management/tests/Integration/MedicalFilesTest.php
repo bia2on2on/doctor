@@ -41,7 +41,7 @@ final class MedicalFilesTest extends WP_UnitTestCase
         // ذخیره‌سازی تست در Temp (جدا از wp-content) — Cleanup در tearDown
         $this->storagePath = sys_get_temp_dir() . '/cpms-files-test-' . bin2hex(random_bytes(4));
         App::settings()->set('files.storage_path', $this->storagePath);
-        App::settings()->set('files.max_size_mb', 20);
+        App::settings()->set('files.max_upload_bytes', 10485760);
 
         global $wpdb;
         $now = App::db()->nowUtcSql();
@@ -178,7 +178,7 @@ final class MedicalFilesTest extends WP_UnitTestCase
 
     public function testSizeLimitIsEnforced(): void
     {
-        App::settings()->set('files.max_size_mb', 1);
+        App::settings()->set('files.max_upload_bytes', 1048576);
         \ClinicCore\Settings\Settings::flushCache();
 
         $file = $this->makeUploadedFile('big.pdf', $this->pdfContent() . str_repeat('x', 2 * 1024 * 1024));

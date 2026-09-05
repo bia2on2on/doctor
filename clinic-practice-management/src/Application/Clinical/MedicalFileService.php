@@ -15,7 +15,7 @@ use ClinicCore\Settings\Settings;
  *
  * Security Baseline (file-storage.md / FR-13.x):
  *  - **F-3:** اعتبارسنجی MIME واقعی با finfo (نه Extension) + تطابق
- *    Extension↔MIME از Whitelist + سقف حجم (Setting `files.max_size_mb`،
+ *    Extension↔MIME از Whitelist + سقف حجم (Setting `files.max_upload_bytes`،
  *    پیش‌فرض 20) → عدم انطباق = `CLINIC_FILE_INVALID` بدون ذخیره.
  *  - **F-1:** خروجی فقط از Stream مجوزیافته؛ نام ذخیره تصادفی (F-2).
  *  - **F-4:** هر خواندن doctor_private/lab_result → Audit FILE_READ.
@@ -242,7 +242,7 @@ final class MedicalFileService
         }
 
         // F-3: حجم (سقف از Setting)
-        $maxBytes = max(1, (int) $this->settings->get('files.max_size_mb', 20)) * 1024 * 1024;
+        $maxBytes = max(1, (int) $this->settings->get('files.max_upload_bytes', 10485760));
         $size = (int) ($file['size'] ?? 0);
         if ($size <= 0 || $size > $maxBytes) {
             throw ClinicalException::of('CLINIC_FILE_INVALID', 'حجم فایل خارج از محدوده مجاز است', 400, ['max_mb' => (int) ($maxBytes / 1048576)]);

@@ -33,7 +33,9 @@
 | `patient.profile_invoices_visible` | `false` | bool | نمایش فاکتور/رسید به بیمار (تصمیم D2). |
 | `hw.local_retain` | `off` | enum: `off\|last\|always` | نگهداری Local دست‌خط در Tablet بعد از Sync (T-16). |
 | `hw.autosave_sec` | `5` | ثانیه | فاصله Auto-save ویرایشگر دست‌خط. |
-| `files.max_upload_bytes` | `10485760` | بایت | حداکثر حجم فایل پزشکی (10 MB). |
+| `files.storage_path` | `` | مسیر مطلق | پوشه ذخیرهفایلهای پزشکی فاز F5 — خالی = `wp-content/clinic-files/` (خارج uploads) با گارد `.htaccess` deny + `index.php`. توصیه file-storage.md: مسیر مطلق خارج DocumentRoot. تغییر در هر Request خوانده می‌شود (بدون کش). |
+| `files.max_upload_bytes` | `10485760` | بایت | سقف حجم آپلود E16/C3 — پیشفرض 10 MB؛ اعملای سرور (F-3) با خطای `CLINIC_FILE_INVALID` 400. |
+| `clinical.require_chief_complaint` | `true` | bool | الزام ثبت شکایت اصلی قبل از Complete (FR-8.7 — E14). |
 | `files.encrypt_at_rest` | `false` | bool | رمزنگاری هر-فایل (تصمیم D6؛ V1.5). |
 | `retention.audit_years` | `10` | سال | نگهداری Audit (تابع قانون محل — D7). |
 | `retention.record_years` | `15` | سال | نگهداری پرونده. |
