@@ -11,6 +11,7 @@ use ClinicCore\Application\Auth\OtpService;
 use ClinicCore\Application\Booking\BookingService;
 use ClinicCore\Application\Booking\ScheduleService;
 use ClinicCore\Application\Clinical\ClinicalService;
+use ClinicCore\Application\Clinical\MedicalFileService;
 use ClinicCore\Application\Patients\PatientService;
 use ClinicCore\Application\Jobs\HoldsExpireHandler;
 use ClinicCore\Application\Jobs\JobsDispatcher;
@@ -32,6 +33,7 @@ use ClinicCore\Infrastructure\Queue\JobQueue;
 use ClinicCore\Infrastructure\Repository\AppointmentRepository;
 use ClinicCore\Infrastructure\Repository\ClinicalNoteRepository;
 use ClinicCore\Infrastructure\Repository\FollowUpRepository;
+use ClinicCore\Infrastructure\Repository\MedicalFileRepository;
 use ClinicCore\Infrastructure\Repository\PatientRepository;
 use ClinicCore\Infrastructure\Repository\PrescriptionRepository;
 use ClinicCore\Infrastructure\Repository\RecommendationRepository;
@@ -45,9 +47,11 @@ use ClinicCore\Infrastructure\Sms\Providers\GenericApiSmsProvider;
 use ClinicCore\Infrastructure\Sms\Providers\LogSmsProvider;
 use ClinicCore\Infrastructure\Sms\SmsProviderInterface;
 use ClinicCore\Infrastructure\Sms\SmsProviderRegistry;
+use ClinicCore\Infrastructure\Storage\LocalFileStorage;
 use ClinicCore\Migrations\MigrationRunner;
 use ClinicCore\Rest\BookingController;
 use ClinicCore\Rest\ClinicalController;
+use ClinicCore\Rest\FilesController;
 use ClinicCore\Rest\HealthController;
 use ClinicCore\Rest\OtpController;
 use ClinicCore\Rest\PatientController;
@@ -98,7 +102,8 @@ final class App
             (new QueueController(self::visitService()))->register_routes();
             (new ScheduleController(self::scheduleService()))->register_routes();
             (new ClinicalController(self::clinicalService()))->register_routes();
-            // Endpointهای فازهای بعد (F5+ فایل‌ها/جستجو) — مطابق API Contract.
+            (new FilesController(self::medicalFileService()))->register_routes();
+            // Endpointهای فازهای بعد (F5 جستجوی جامع) — مطابق API Contract.
         });
 
         // Cron: اولویت با Cron OS-level (bin/cpms jobs tick) — WP-Cron به‌عنوان Fallback
@@ -288,6 +293,30 @@ final class App
         }
 
         return $clinical;
+    }
+
+    /**
+     * سرویس فایل‌های پزشکی (F5) — E16/E17 + C3/C4.
+     *
+     * مسیر ذخیره: Setting `files.storage_path` (مطلق، خارج DocumentRoot —
+     * توصیه file-storage.md) یا پیش‌فرض `wp-content/clinic-files` با
+     * .htaccess deny + index.php خالی.
+     */
+    public static function medicalFileService(): MedicalFileService
+    {
+        static $files = null;
+        if ($files === null) {
+            $configured = trim((string) self::settings()->get('files.storage_path', ''));
+            $storage = new LocalFileStorage($configured !== '' ? $configured : LocalFileStorage::defaultBasePath());
+            $files = new MedicalFileService(
+                new MedicalFileRepository(self::db()),
+                $storage,
+                self::settings(),
+                self::audit()
+            );
+        }
+
+        return $files;
     }
 
     public static function patientService(): PatientService
