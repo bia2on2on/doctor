@@ -31,6 +31,22 @@ final class MigrationRunner
     public function ensureSchemaTable(): void
     {
         $t = $this->db->table(self::SCHEMA_TABLE);
+
+        /*
+         * جدول واقعی موجود است → CREATE نزن.
+         * زیر WP Test Suite فیلتری روی query فعال است که CREATE TABLE را به
+         * CREATE TEMPORARY TABLE بازنویسی می‌کند؛ روی جدولِ موجود، جدول
+         * «سایه» خالی می‌سازد که نسخه‌های اعمال‌شده را مخفی می‌کند و باعث
+         * اجرای دوباره کل Migrationها (و خطای FK جدول‌های موقت) می‌شود.
+         */
+        $exists = $this->db->fetchValue(
+            'SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = %s',
+            [$t]
+        );
+        if ((int) $exists > 0) {
+            return;
+        }
+
         $this->db->query(
             "CREATE TABLE IF NOT EXISTS {$t} (
                 `version` VARCHAR(64) NOT NULL,
@@ -57,7 +73,7 @@ final class MigrationRunner
                 continue;
             }
 
-            $migration = require $file['path'];
+            $migration = require_once $file['path'];
             if (!is_array($migration) || !isset($migration['up'])) {
                 throw new RuntimeException("Invalid migration file: {$file['name']}");
             }
@@ -96,7 +112,7 @@ final class MigrationRunner
             if ($this->versionOf($file['name']) !== $last['version']) {
                 continue;
             }
-            $migration = require $file['path'];
+            $migration = require_once $file['path'];
             if (!isset($migration['down'])) {
                 throw new RuntimeException("Migration {$last['version']} has no down() — manual restore from backup required");
             }
