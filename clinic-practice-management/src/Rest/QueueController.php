@@ -298,6 +298,12 @@ final class QueueController extends RestBase
             return $this->success($fn(), 200);
         } catch (VisitException $e) {
             return $this->error($e->errorCode, $e->httpStatus, $e->getMessage(), $e->data);
+        } catch (\Throwable $e) {
+            // Fallback غیرمنتظره (اتخاذ از Audit Agent-2): Envelope خطای داخلی
+            // استاندارد — جزئیات Exception هرگز به کلاینت نشت نمی‌کند؛ فقط کلاس
+            // برای Debug لاگ‌شده در سمت سرور (Error Log استاندارد PHP/WP).
+            error_log('[CPMS][QueueController] unexpected: ' . get_class($e) . ': ' . $e->getMessage());
+            return $this->error('CLINIC_INTERNAL_ERROR', 500, 'خطای داخلی سرور — لطفاً دوباره تلاش کنید');
         }
     }
 }

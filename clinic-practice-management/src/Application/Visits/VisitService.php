@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ClinicCore\Application\Visits;
 
 use ClinicCore\Auth\RolesAndCapabilities;
+use ClinicCore\Domain\Licensing\LicenseGate;
 use ClinicCore\Domain\Machine\AppointmentMachine;
 use ClinicCore\Domain\Machine\InvalidTransitionException;
 use ClinicCore\Domain\Machine\VisitMachine;
@@ -45,7 +46,8 @@ final class VisitService
         private readonly VisitRepository $visits,
         private readonly AppointmentRepository $appointments,
         private readonly Settings $settings,
-        private readonly AuditLogger $audit
+        private readonly AuditLogger $audit,
+        private readonly LicenseGate $licenseGate
     ) {
     }
 
@@ -136,6 +138,11 @@ final class VisitService
     public function walkIn(int $actorUserId, int $patientId, int $clinicianId, array $meta = []): array
     {
         $this->requireSecretary($actorUserId, 'create_walk_in');
+
+        // سیاست لایسنس (§18 دستور کارفرما F4): «ویزیت مستقل جدید» در حالت
+        // Expired/Restricted (Read-Only) ممنوع — Walk-in بدون نوبت است.
+        $this->assertLicense(LicenseGate::OP_VISIT_CHECKIN);
+
         $actorRole = 'secretary';
 
         return $this->db->transactional(function () use ($actorUserId, $actorRole, $patientId, $clinicianId, $meta): array {
@@ -667,6 +674,22 @@ final class VisitService
     {
         if (!user_can($wpUserId, RolesAndCapabilities::QUEUE_READ)) {
             throw VisitException::of('CLINIC_PERMISSION_DENIED', 'دسترسی به صف ندارید', 403);
+        }
+    }
+
+    /**
+     * Seam مرکزی مجوز (الگوی BookingService) — **بدون Network Call**؛
+     * Gate وضعیت local را می‌خواند (ADR-0023). Read-Only → عملیات جدید ممنوع.
+     */
+    private function assertLicense(string $operation): void
+    {
+        $decision = $this->licenseGate->assert($operation);
+        if (!$decision->allowed) {
+            throw VisitException::of(
+                'CLINIC_LICENSE_BLOCKED',
+                'سیستم در حالت Read-Only است (مجازت) — ثبت مراجعه جدید مجاز نیست',
+                503
+            );
         }
     }
 

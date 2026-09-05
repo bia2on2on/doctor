@@ -234,7 +234,8 @@ final class App
                 new VisitRepository($db),
                 new AppointmentRepository($db),
                 self::settings(),
-                self::audit()
+                self::audit(),
+                self::licenseGate()
             );
         }
 

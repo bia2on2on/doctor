@@ -157,7 +157,6 @@ final class VisitRepository
 
         $rows = $this->db->fetchAll(
             'SELECT v.*, p.first_name AS patient_first_name, p.last_name AS patient_last_name,' .
-            ' p.mobile AS patient_mobile, p.national_id AS patient_national_id,' .
             ' c.full_name AS clinician_name,' .
             ' a.is_walkin_express AS express' .
             ' FROM ' . $this->db->table('cpms_visits') . ' v' .
@@ -174,6 +173,12 @@ final class VisitRepository
 
     /**
      * آمار روز (D1/E1) — شمارش بر اساس status.
+     *
+     * غنی‌سازی داشبورد امروز (§16 دستور F4): علاوه بر شمارش ویزیت‌ها بر اساس
+     * status، سه شمارش سبک دیگر:
+     *  - appointments_today: کل نوبت‌های schedule شده برای امروز (هر status)
+     *  - appointments_no_show: زیرمجموعه با status=no_show
+     *  - walk_in_today: ویزیت‌های امروز بدون نوبت (walk-in مستقل)
      *
      * @return array<string, int>
      */
@@ -196,6 +201,22 @@ final class VisitRepository
             $stats[$key] = (int) $r['n'];
             $stats['total'] += (int) $r['n'];
         }
+
+        $appts = $this->db->fetchRow(
+            'SELECT COUNT(*) AS total, COALESCE(SUM(status = %s), 0) AS no_show' .
+            ' FROM ' . $this->db->table('cpms_appointments') .
+            ' WHERE clinic_id = %d AND slot_date = %s',
+            ['no_show', $clinicId, $date]
+        );
+        $stats['appointments_today'] = $appts === null ? 0 : (int) ($appts['total'] ?? 0);
+        $stats['appointments_no_show'] = $appts === null ? 0 : (int) ($appts['no_show'] ?? 0);
+
+        $walkIn = $this->db->fetchRow(
+            'SELECT COUNT(*) AS n FROM ' . $this->db->table('cpms_visits') .
+            ' WHERE clinic_id = %d AND visit_date = %s AND appointment_id IS NULL',
+            [$clinicId, $date]
+        );
+        $stats['walk_in_today'] = $walkIn === null ? 0 : (int) ($walkIn['n'] ?? 0);
 
         return $stats;
     }
