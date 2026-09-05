@@ -201,7 +201,8 @@ final class VisitRepository
     }
 
     /**
-     * Feed رویدادهای Real-time (R1 — ADR-0007): تغییرات صف بعد از event_id.
+     * Feed رویدادهای Real-time (R1 — ADR-0007): تغییرات صف امروز بعد از event_id.
+     * محدود به ویزیت‌های امروز — فید «صف» است نه تاریخچه کامل.
      *
      * @return list<array<string, mixed>>
      */
@@ -213,8 +214,8 @@ final class VisitRepository
             ' v.patient_id, v.status AS visit_status' .
             ' FROM ' . $this->db->table('cpms_visit_status_history') . ' h' .
             ' JOIN ' . $this->db->table('cpms_visits') . ' v ON v.id = h.visit_id' .
-            ' WHERE h.id > %d AND v.clinic_id = %d ORDER BY h.id ASC LIMIT %d',
-            [$sinceEventId, $clinicId, $limit]
+            ' WHERE h.id > %d AND v.clinic_id = %d AND v.visit_date = %s ORDER BY h.id ASC LIMIT %d',
+            [$sinceEventId, $clinicId, gmdate('Y-m-d'), $limit]
         );
 
         return is_array($rows) ? $rows : [];
@@ -229,8 +230,8 @@ final class VisitRepository
             'SELECT MAX(h.id) AS max_id' .
             ' FROM ' . $this->db->table('cpms_visit_status_history') . ' h' .
             ' JOIN ' . $this->db->table('cpms_visits') . ' v ON v.id = h.visit_id' .
-            ' WHERE v.clinic_id = %d',
-            [$clinicId]
+            ' WHERE v.clinic_id = %d AND v.visit_date = %s',
+            [$clinicId, gmdate('Y-m-d')]
         );
 
         return $row === null ? 0 : (int) ($row['max_id'] ?? 0);
