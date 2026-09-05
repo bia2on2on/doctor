@@ -228,11 +228,7 @@ final class RestBookingTest extends WP_UnitTestCase
         $this->assertNotEmpty($holdData['data']['expires_at']);
         $this->assertSame($this->clinicianId, $holdData['data']['slot']['clinician_id']);
         // M10: Correlation ID در Response
-        $this->assertNotEmpty(
-            $holdResponse->get_headers()['X-CPMS-Correlation-Id'] ?? null,
-            'headers=' . wp_json_encode($holdResponse->get_headers())
-            . ' fn_exists=' . var_export(function_exists('cpms_request_id'), true)
-        );
+        $this->assertNotEmpty($holdResponse->get_headers()['X-CPMS-Correlation-Id'] ?? null);
 
         $key = $this->uuid();
         $confirmResponse = $this->dispatch('POST', self::NS . '/booking/confirm', [
