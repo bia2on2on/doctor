@@ -48,3 +48,40 @@ require $_tests_dir . '/includes/bootstrap.php';
  * برقرار است (الگوی استاندارد تست Integration افزونه‌های WP).
  */
 App::migrations()->migrate();
+
+/*
+ * بازنویسی تراکنش‌های Service به SAVEPOINT (الگوی خود WP برای CREATE TABLE):
+ * WP Test Suite داخل هر تست یک تراکنش باز می‌کند و در tear_down همه را
+ * ROLLBACK می‌کند؛ اما START TRANSACTION سرویس داخل آن = COMMIT ضمنی کل
+ * Fixtureهای تست → نشت داده بین تست‌ها (Duplicate keyهای پی‌درپی).
+ * راه‌حل: filter روی wpdb (فقط در تست) افعال تراکنشِ علامت‌گذاری‌شده با
+ * /*cpms*/ را به SAVEPOINT/RELEASE/ROLLBACK-TO تبدیل می‌کند — تراکنش بیرونی
+ * تست دست‌نخورده می‌ماند و Production این filter را ندارد.
+ */
+$GLOBALS['__cpms_sp_stack'] = [];
+tests_add_filter('query', static function ($query) {
+    $q = trim((string) $query);
+    if (!str_starts_with($q, '/*cpms*/')) {
+        return $query;
+    }
+    $verb = trim(substr($q, strlen('/*cpms*/')));
+    $stack = &$GLOBALS['__cpms_sp_stack'];
+    if ($verb === 'START TRANSACTION') {
+        $name = 'cpms_sp_' . count($stack);
+        $stack[] = $name;
+
+        return 'SAVEPOINT ' . $name;
+    }
+    if ($verb === 'COMMIT') {
+        $name = array_pop($stack);
+
+        return $name === null ? $verb : 'RELEASE SAVEPOINT ' . $name;
+    }
+    if ($verb === 'ROLLBACK') {
+        $name = array_pop($stack);
+
+        return $name === null ? $verb : 'ROLLBACK TO SAVEPOINT ' . $name;
+    }
+
+    return $query;
+});

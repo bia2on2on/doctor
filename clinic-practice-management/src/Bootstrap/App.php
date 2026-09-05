@@ -115,7 +115,9 @@ final class App
         // Correlation ID برای Trace (Audit + OpLog + هدر REST) — Baseline §26 / M10.
         // کلاینت می‌تواند X-CPMS-Correlation-Id بفرستد (فقط Whitelist کاراکتر؛ بدون
         // PHI/Credential) — در غیر این‌صورت Server-Generated.
-        add_filter('init', static function (): void {
+        // تعریف مستقیم (نه در hook init): در WP Test Suite/CLI هیچ درخواستی
+        // وجود ندارد و init اجرا نمی‌شود؛ helper باید همیشه در دسترس باشد.
+        (static function (): void {
             if (!function_exists('cpms_request_id')) {
                 function cpms_request_id(): ?string {
                     static $id = null;
@@ -133,7 +135,7 @@ final class App
                     return session_id() ?: null;
                 }
             }
-        });
+        })();
 
         SettingsAdmin::register();
         SmsSettingsPage::register();

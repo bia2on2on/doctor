@@ -129,29 +129,12 @@ final class CpmsDb
     }
 
     /**
-     * آیا روی این اتصال تراکنشی باز است؟ (تشخیص SAVEPOINT در transactional)
-     *
-     * MySQL فاقد متغیر سیستمی @@in_transaction است (مخصوص MariaDB)؛
-     * راه پرتابل برای هر دو: شمارش تراکنش‌های InnoDB اتصال جاری — هر
-     * اتصال همیشه تراکنش خودش را می‌بیند (نیازی به PROCESS ندارد).
-     */
-    private function inTransaction(): bool
-    {
-        $count = $this->wpdb->get_var(
-            'SELECT COUNT(*) FROM information_schema.INNODB_TRX WHERE trx_mysql_thread_id = CONNECTION_ID()'
-        );
-
-        return $count !== null && (int) $count > 0;
-    }
-
-    /**
      * Transaction + Row Lock انتخابی.
      *
-     * اگر از بیرون تراکنشی باز باشد (تست‌های WP Test Suite، یا ترکیب
-     * Serviceها در آینده)، به‌جای START TRANSACTION جدید — که تراکنش بیرونی را
-     * به‌طور ضمنی Rollback می‌کند و ایزوله‌سازی را خراب می‌کند — از SAVEPOINT
-     * استفاده می‌شود؛ خطا فقط تا Savepoint برمی‌گردد و تراکنش بیرونی سالم
-     * می‌ماند.
+     * در Test-Bootstrap، افعال تراکنش (با نشانگر /*cpms*/) به SAVEPOINT/
+     * RELEASE/ROLLBACK-TO بازنویسی می‌شوند تا داخل تراکنش بازِ WP Test Suite
+     * بدون COMMIT ضمنی اجرا شوند (نشت Fixture بین تست‌ها). رفتار Production
+     * بدون تغییر است.
      *
      * @template T
      *
@@ -159,32 +142,22 @@ final class CpmsDb
      *
      * @return T
      */
-    public function transactional(callable $fn)
+public function transactional(callable $fn)
     {
-        if ($this->inTransaction()) {
-            $sp = 'cpms_sp_' . bin2hex(random_bytes(6));
-            $this->wpdb->query('SAVEPOINT ' . $sp); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-            try {
-                $result = $fn();
-                $this->wpdb->query('RELEASE SAVEPOINT ' . $sp); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-
-                return $result;
-            } catch (\Throwable $e) {
-                $this->wpdb->query('ROLLBACK TO SAVEPOINT ' . $sp); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                throw $e;
-            }
-        }
-
-        $this->wpdb->query('START TRANSACTION');
+        // نشانگر /*cpms*/ در ابتدای افعال تراکنش: فقط برای بازنویسی در
+        // Test-Bootstrap (SAVEPOINT) — در Production این Comment نادیده
+        // گرفته می‌شود و رفتار کلاسیک START TRANSACTION/COMMIT برقرار است.
+        $this->wpdb->query('/*cpms*/ START TRANSACTION'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         try {
             $result = $fn();
-            $this->wpdb->query('COMMIT');
+            $this->wpdb->query('/*cpms*/ COMMIT'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
             return $result;
         } catch (\Throwable $e) {
-            $this->wpdb->query('ROLLBACK');
+            $this->wpdb->query('/*cpms*/ ROLLBACK'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
             throw $e;
         }
+    }
     }
 
     /**

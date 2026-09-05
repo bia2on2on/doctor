@@ -442,7 +442,7 @@ final class PatientService
         $view['current_medications'] = $this->jsonField($row['current_medications'] ?? null);
         $view['medical_history'] = ($row['medical_history'] ?? null) !== null ? (string) $row['medical_history'] : null;
         $view['surgery_history'] = ($row['surgery_history'] ?? null) !== null ? (string) $row['surgery_history'] : null;
-        $view['status'] = (string) $row['status'];
+        $view['status'] = (string) ($row['status'] ?? '');
 
         return $view;
     }

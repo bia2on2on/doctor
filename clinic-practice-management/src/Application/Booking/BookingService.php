@@ -454,7 +454,7 @@ final class BookingService
                     throw BookingException::of('CLINIC_NOT_FOUND', 'نوبت یافت نشد', 404);
                 }
                 if (!$this->userHasPatient($wpUserId, (int) $appt['patient_id'])) {
-                    $this->audit('FORBIDDEN_ACCESS_ATTEMPT', $wpUserId, 'patient', 'appointment', $appointmentId, (int) $appt['patient_id'], null, null, null, [
+                    $this->audit('FORBIDDEN_ACCESS_ATTEMPT', $wpUserId, 'patient', 'appointment', $appointmentId, (int) $appt['patient_id'], null, null, [
                         'mobile' => MobileValidator::mask((string) ($appt['patient_mobile'] ?? '')),
                     ]);
                     throw BookingException::of('CLINIC_PERMISSION_DENIED', 'به این نوبت دسترسی ندارید', 403);
