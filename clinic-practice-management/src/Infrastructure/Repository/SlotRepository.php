@@ -94,12 +94,12 @@ final class SlotRepository
      */
     public function atomicHold(int $slotId): bool
     {
-        return $this->db->execute((
+        return $this->db->execute(
             'UPDATE ' . $this->db->table('cpms_schedule_slots') . '
              SET held_count = held_count + 1, updated_at = %s
              WHERE id = %d AND is_open = 1 AND capacity - booked_count - held_count > 0',
             [$this->nowSql(), $slotId]
-        ) > 0);
+        ) > 0;
     }
 
     /**
@@ -120,12 +120,12 @@ final class SlotRepository
      */
     public function atomicClaim(int $slotId): bool
     {
-        return $this->db->execute((
+        return $this->db->execute(
             'UPDATE ' . $this->db->table('cpms_schedule_slots') . '
              SET held_count = GREATEST(held_count - 1, 0), booked_count = booked_count + 1, updated_at = %s
              WHERE id = %d AND held_count > 0',
             [$this->nowSql(), $slotId]
-        ) > 0);
+        ) > 0;
     }
 
     /**
@@ -134,12 +134,12 @@ final class SlotRepository
      */
     public function atomicBook(int $slotId): bool
     {
-        return $this->db->execute((
+        return $this->db->execute(
             'UPDATE ' . $this->db->table('cpms_schedule_slots') . '
              SET booked_count = booked_count + 1, updated_at = %s
              WHERE id = %d AND is_open = 1 AND capacity - booked_count - held_count > 0',
             [$this->nowSql(), $slotId]
-        ) > 0);
+        ) > 0;
     }
 
     /**

@@ -202,6 +202,11 @@ final class OtpFlowTest extends WP_UnitTestCase
 
     public function testDailyLimitBlocksNewRequests(): void
     {
+        // سناریوی Daily-Limit: Cooldown را صفر می‌کنیم تا چهار درخواستِ پشت‌سرهم
+        // به جای Cooldown به سقف روزانه (۳) برسند.
+        \ClinicCore\Settings\Settings::flushCache();
+        App::settings()->set('otp.cooldown_sec', 0);
+
         $service = $this->service();
         $service->request(self::MOBILE);
         $service->request(self::MOBILE);
