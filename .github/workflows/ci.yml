@@ -68,18 +68,25 @@ jobs:
           extensions: mbstring, xml, mysqli, pcntl, curl
           coverage: none
 
-      - name: Install dependencies
-        run: composer install --prefer-dist --no-progress --no-interaction
+      # WP 6.7 test lib به PHPUnit\Util\Test::parseTestMethodAnnotations() وابسته است
+      # که در PHPUnit 10/11 حذف شده (polyfills این بخش را پوشش نمی‌دهد) → برای
+      # Integration نسخه رسمی پشتیبانی‌شده WP یعنی PHPUnit 9.6 نصب می‌شود؛
+      # Unit job ها روی PHPUnit 11/10.5 باقی می‌مانند.
+      - name: Install dependencies (PHPUnit 9.6 for WP test lib)
+        run: |
+          composer install --prefer-dist --no-progress --no-interaction
+          composer require --dev phpunit/phpunit:^9.6 --no-interaction --no-progress --with-all-dependencies
 
       - name: Prepare WordPress test suite
         run: bash tests/bin/install-wp-tests.sh wordpress_test root root 127.0.0.1 6.7.2
 
-      # REST-level + Concurrency (pcntl_fork روی اتصال‌های مستقل واقعی MySQL)
+      # REST-level + Concurrency (pcntl_fork روی اتصال‌های مستقل واقعی MySQL)؛
+      # --no-configuration چون phpunit.xml با schema مخصوص PHPUnit 11 است.
       - name: Run integration tests
         run: |
           set -o pipefail
-          php -d memory_limit=1G vendor/bin/phpunit --testsuite Integration \
-            --bootstrap tests/integration-bootstrap.php 2>&1 | tee /tmp/phpunit-int.log
+          php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
+            --bootstrap tests/integration-bootstrap.php tests/Integration 2>&1 | tee /tmp/phpunit-int.log
 
       # خروجی PHPUnit به‌صورت annotation منتشر می‌شود تا از طریق API هم قابل خواندن باشد
       - name: Surface test failures
