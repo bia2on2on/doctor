@@ -91,7 +91,7 @@ final class VisitService
                     'CLINIC_INVALID_APPOINTMENT_STATE',
                     'این نوبت ' . $this->appointmentStatusLabel($status) . ' است و قابل Check-in نیست',
                     409,
-                    ['status' => $status]
+                    ['appointment_status' => $status]
                 );
             }
             if ($status === 'no_show') {
@@ -216,8 +216,8 @@ final class VisitService
 
         $visit = array_merge($visit, $row, ['status' => $toStatus]);
 
-        // T9: خروج → نوبت مرجع completed
-        if ($event === 'check_out' && !empty($visit['appointment_id'])) {
+        // T9: خروج نهایی (پرداخت‌شده یا معافیت) → نوبت مرجع completed
+        if (in_array($event, ['check_out', 'waive'], true) && !empty($visit['appointment_id'])) {
             $this->completeReferencedAppointment((int) $visit['appointment_id'], $actorUserId);
         }
 
@@ -226,7 +226,7 @@ final class VisitService
             'to_status' => $toStatus,
         ]);
 
-        return $visit;
+        return $this->presentVisit($visit);
     }
 
     // ================= D1/E1 — داشبورد امروز =================
@@ -317,7 +317,7 @@ final class VisitService
                         'CLINIC_POLICY_VIOLATION',
                         'پرداخت هنوز ثبت نشده است — معافیت (waive) نیاز به دلیل دارد یا ابتدا پرداخت را ثبت کنید',
                         409,
-                        ['status' => $status]
+                        ['visit_status' => $status]
                     );
                 }
 
@@ -328,7 +328,7 @@ final class VisitService
                     'CLINIC_POLICY_VIOLATION',
                     'ابتدا وضعیت مالی ویزیت را مشخص کنید (فاکتور/معافیت)',
                     409,
-                    ['status' => $status]
+                    ['visit_status' => $status]
                 );
             }
 
@@ -455,13 +455,11 @@ final class VisitService
         }
 
         // FR-6.1: Enqueue خودکار (پیش‌فرض روشن) — actor=system مجاز ماشین V3
-        $visit = ['id' => $visitId, 'status' => 'checked_in', 'patient_id' => $patientId];
         if ((bool) $this->settings->get('queue.auto_enqueue', true)) {
             $this->applyEnqueue($visitId, 'checked_in', $actorUserId, $now);
-            $visit['status'] = 'waiting';
         }
 
-        return array_merge($visit, $this->visits->find($visitId) ?? []);
+        return $this->presentVisit($this->visits->find($visitId) ?? ['id' => $visitId]);
     }
 
     /**
@@ -599,7 +597,7 @@ final class VisitService
                 'CLINIC_DUPLICATE_ACTIVE_VISIT',
                 'این بیمار امروز ویزیت فعال (در جریان) دارد',
                 409,
-                ['visit_id' => (int) $existing['id'], 'status' => (string) $existing['status']]
+                ['visit_id' => (int) $existing['id'], 'visit_status' => (string) $existing['status']]
             );
         }
     }
@@ -760,6 +758,7 @@ final class VisitService
             'consultation_completed_at' => $visit['consultation_completed_at'],
             'checked_out_at' => $visit['checked_out_at'],
             'recall_count' => (int) $visit['recall_count'],
+            'active' => (int) ($visit['active'] ?? 1) === 1,
             'skip_reason' => $visit['skip_reason'] ?? null,
             'cancel_reason' => $visit['cancel_reason'] ?? null,
         ];

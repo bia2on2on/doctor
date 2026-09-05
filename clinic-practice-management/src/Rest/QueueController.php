@@ -32,8 +32,8 @@ final class QueueController extends RestBase
         'checked_out' => 'waive',
     ];
 
-    /** E3–E6: اکشنهای پزشک → Event ماشین. */
-    private const DOCTOR_EVENTS = ['call', 'recall', 'start', 'skip'];
+    /** E3–E6 + E14: اکشنهای پزشک → Event ماشین. */
+    private const DOCTOR_EVENTS = ['call', 'recall', 'start', 'skip', 'complete'];
 
     public function __construct(private readonly VisitService $visits)
     {
@@ -194,14 +194,18 @@ final class QueueController extends RestBase
     // ================= Handlers =================
 
     /**
-     * E3–E6: call/recall/start/skip — Capability متمایز هر اکشن.
+     * E3–E6 + E14: call/recall/start/skip/complete — Capability متمایز هر اکشن.
+     *
+     * E14 (complete) در F4 ثبت شده چون D16 (Checkout — قرارداد F4) بدون رسیدن
+     * به consultation_completed قابل استفاده نیست؛ Validation فیلدهای بالینی
+     * در E15/E7+ (F5) تکمیل می‌شود.
      */
     private function doctorAction(WP_REST_Request $r, string $event): WP_REST_Response|WP_Error
     {
         $cap = match ($event) {
-            'call', 'recall', 'skip' => RolesAndCapabilities::QUEUE_CALL,
             'start' => RolesAndCapabilities::CONSULT_START,
-            default => RolesAndCapabilities::QUEUE_CALL,
+            'complete' => RolesAndCapabilities::CONSULT_COMPLETE,
+            default => RolesAndCapabilities::QUEUE_CALL, // call/recall/skip
         };
 
         return $this->guard($r, $cap, fn () => $this->visits->transition(

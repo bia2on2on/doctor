@@ -34,6 +34,9 @@ final class VisitConcurrencyTest extends WP_UnitTestCase
     /** @var list<int> */
     private array $patientIds = [];
 
+    /** @var list<int> */
+    private array $userIds = [];
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -71,6 +74,13 @@ final class VisitConcurrencyTest extends WP_UnitTestCase
         }
         if ($this->clinicianId > 0) {
             App::db()->query('DELETE FROM ' . App::db()->table('cpms_clinicians') . ' WHERE id = %d', [$this->clinicianId]);
+        }
+        // usersها با COMMIT واقعی تست leak شده‌اند → حذف دستی (ایجاد دوباره در تست
+        // بعدی همین کلاس با همان login → WP_Error)
+        global $wpdb;
+        foreach ($this->userIds as $userId) {
+            $wpdb->delete($wpdb->usermeta, ['user_id' => $userId], ['%d']);
+            $wpdb->delete($wpdb->users, ['ID' => $userId], ['%d']);
         }
         parent::tearDown();
     }
@@ -155,6 +165,9 @@ final class VisitConcurrencyTest extends WP_UnitTestCase
         // بعد از آزادسازی → همان عملیات موفق
         $visit = App::visitService()->transition($this->doctorUserId, $visitId, 'complete', []);
         $this->assertSame('consultation_completed', $visit['status']);
+
+        // بازگردانی timeout پیش‌فرض session مشترک برای تست‌های بعدی
+        $wpdb->query('SET SESSION innodb_lock_wait_timeout = DEFAULT'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
     }
 
     // ================= Fixture (committed) =================
@@ -276,11 +289,15 @@ final class VisitConcurrencyTest extends WP_UnitTestCase
 
     private function makeUser(string $login, string $role): int
     {
+        // نام یکتا در هر تست — این کلاس COMMIT واقعی می‌زند و users والد
+        // transaction تست را نشت می‌دهد؛ تکرار login در تست بعدی WP_Error می‌دهد.
+        $login .= '_' . bin2hex(random_bytes(4));
         $userId = (int) wp_create_user($login, 'pass-12345', $login . '@test.local');
         $user = get_userdata($userId);
         if ($user !== false) {
             $user->set_role($role);
         }
+        $this->userIds[] = $userId;
 
         return $userId;
     }

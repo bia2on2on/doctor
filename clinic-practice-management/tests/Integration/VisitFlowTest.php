@@ -280,7 +280,7 @@ final class VisitFlowTest extends WP_UnitTestCase
 
         $v = App::visitService()->transition($this->doctorUserId, $visitId, 'skip', ['reason' => 'بیمار موقتاً خارج شد']);
         $this->assertSame('skipped', $v['status']);
-        $this->assertSame(0, (int) $v['active']);
+        $this->assertFalse((bool) $v['active']);
     }
 
     public function testCancelRequiresReason(): void

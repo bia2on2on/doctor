@@ -93,7 +93,9 @@ abstract class RestBase
      */
     protected function error(string $code, int $http, string $message, array $data = []): WP_Error
     {
-        return new WP_Error($code, $message, array_merge(['status' => $http], $data));
+        // «status» کلید رزرو Envelope است — حتی اگر Data خطا هم‌نام داشته باشد،
+        // HTTP Status رسمی Envelope اولویت دارد (مصون از تداخل کلید).
+        return new WP_Error($code, $message, array_merge($data, ['status' => $http]));
     }
 
     /**
