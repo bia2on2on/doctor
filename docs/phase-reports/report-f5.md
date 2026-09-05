@@ -130,7 +130,7 @@
 
 - **Integration (WP 6.7.2 + MySQL 8):** **۱۸۴ تست / ۸۳۵ assertion — ۰ skip، ۰ failure** — شامل ClinicalFlowTest (۲۵) و MedicalFilesTest (۱۲) و تمام رگرسیون F2–F4 (Booking/Queue/SMS/OTP/PermissionMatrix/Concurrency با fork واقعی).
 - **Unit:** PHP 8.1/8.2/8.3/8.4 سبز.
-- **Run سبز نهایی:** 33993154803 روی `7866c39` (هر ۵ job) — HEAD فاز؛ tree clean و push شده.
+- **Run سبز نهایی:** 33993450499 روی HEAD نهایی `0bfc497` (هر ۵ job)؛ کد عمده فاز = `7866c39` با همان نتیجه (33993154803) — tree clean و push شده.
 
 ## 10. جمع‌بندی
 
