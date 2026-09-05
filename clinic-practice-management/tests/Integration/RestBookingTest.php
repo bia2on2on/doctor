@@ -238,14 +238,14 @@ final class RestBookingTest extends WP_UnitTestCase
         $confirmData = $confirmResponse->get_data();
         $this->assertSame('confirmed', $confirmData['data']['status']);
         $this->assertMatchesRegularExpression('/^AP-\d{8}-\d{2}$/', $confirmData['data']['reference_code']);
-        $appointmentId = (int) $confirmData['data']['appointment_id'];
+        $appointmentId = (int) $confirmData['data']['id'];
 
         // Replay با همان کلید = همان Appointment (بدون رکورد دوم)
         $replay = $this->dispatch('POST', self::NS . '/booking/confirm', [
             'hold_token' => $holdData['data']['hold_token'],
         ], idempotencyKey: $key);
         $this->assertSame(200, $replay->get_status());
-        $this->assertSame($appointmentId, (int) $replay->get_data()['data']['appointment_id']);
+        $this->assertSame($appointmentId, (int) $replay->get_data()['data']['id']);
 
         $count = (int) App::db()->fetchValue(
             'SELECT COUNT(*) FROM ' . App::db()->table('cpms_appointments') . ' WHERE id = %d',
@@ -354,7 +354,7 @@ final class RestBookingTest extends WP_UnitTestCase
         $this->assertSame('confirmed', $create->get_data()['data']['status']);
         // فردا = آینده → is_walkin_express فقط برای روز جاری
         $this->assertSame(0, (int) $create->get_data()['data']['is_walkin_express']);
-        $appointmentId = (int) $create->get_data()['data']['appointment_id'];
+        $appointmentId = (int) $create->get_data()['data']['id'];
 
         // تکرار همان Patient/Slot → 409
         $dup = $this->dispatch('POST', self::NS . '/appointments', [
@@ -498,7 +498,7 @@ final class RestBookingTest extends WP_UnitTestCase
         $hold = $this->holdViaService($slot);
         $view = App::bookingService()->confirm($hold['hold_token'], $this->patientUserId, null, $this->uuid());
 
-        return ['id' => (int) $view['appointment_id']];
+        return ['id' => (int) $view['id']];
     }
 
     private function uuid(): string
