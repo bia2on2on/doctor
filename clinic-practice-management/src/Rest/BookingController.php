@@ -63,7 +63,7 @@ final class BookingController extends RestBase
             [
                 'methods' => WP_REST_Server::CREATABLE,
                 'callback' => fn (WP_REST_Request $request) => $this->hold($request),
-                'permission_callback' => fn (WP_REST_Request $request) => $this->requirePatient($request) !== null,
+                'permission_callback' => fn (WP_REST_Request $request) => $this->requirePatient($request),
                 'args' => [
                     'clinician_id' => ['required' => true, 'type' => 'integer'],
                     'slot_date' => ['required' => true, 'type' => 'string'],
@@ -76,7 +76,7 @@ final class BookingController extends RestBase
             [
                 'methods' => WP_REST_Server::CREATABLE,
                 'callback' => fn (WP_REST_Request $request) => $this->confirm($request),
-                'permission_callback' => fn (WP_REST_Request $request) => $this->requirePatient($request) !== null,
+                'permission_callback' => fn (WP_REST_Request $request) => $this->requirePatient($request),
                 'args' => [
                     'hold_token' => ['required' => true, 'type' => 'string'],
                     'reason' => ['required' => false, 'type' => 'string'],
@@ -88,7 +88,7 @@ final class BookingController extends RestBase
             [
                 'methods' => WP_REST_Server::READABLE,
                 'callback' => fn (WP_REST_Request $request) => $this->resume($request),
-                'permission_callback' => fn (WP_REST_Request $request) => $this->requirePatient($request) !== null,
+                'permission_callback' => fn (WP_REST_Request $request) => $this->requirePatient($request),
                 'args' => [
                     'hold_token' => ['required' => true, 'type' => 'string'],
                 ],
@@ -99,7 +99,7 @@ final class BookingController extends RestBase
             [
                 'methods' => WP_REST_Server::READABLE,
                 'callback' => fn (WP_REST_Request $request) => $this->mine($request),
-                'permission_callback' => fn (WP_REST_Request $request) => $this->requirePatient($request) !== null,
+                'permission_callback' => fn (WP_REST_Request $request) => $this->requirePatient($request),
                 'args' => [
                     'from' => ['required' => false, 'type' => 'string', 'default' => gmdate('Y-m-d')],
                     'to' => ['required' => false, 'type' => 'string', 'default' => gmdate('Y-m-d', time() + 365 * 86400)],
@@ -111,7 +111,7 @@ final class BookingController extends RestBase
             [
                 'methods' => WP_REST_Server::CREATABLE,
                 'callback' => fn (WP_REST_Request $request) => $this->reschedule($request),
-                'permission_callback' => fn (WP_REST_Request $request) => $this->requirePatient($request) !== null,
+                'permission_callback' => fn (WP_REST_Request $request) => $this->requirePatient($request),
                 'args' => [
                     'id' => ['required' => true, 'type' => 'integer'],
                     'slot_date' => ['required' => true, 'type' => 'string'],
@@ -126,7 +126,7 @@ final class BookingController extends RestBase
             [
                 'methods' => WP_REST_Server::READABLE,
                 'callback' => fn (WP_REST_Request $request) => $this->staffList($request),
-                'permission_callback' => fn () => $this->requireCap(RolesAndCapabilities::APPT_READ) === null,
+                'permission_callback' => fn () => $this->requireCap(RolesAndCapabilities::APPT_READ),
                 'args' => [
                     'date' => ['required' => false, 'type' => 'string', 'default' => gmdate('Y-m-d')],
                     'clinician_id' => ['required' => true, 'type' => 'integer'],
@@ -136,7 +136,7 @@ final class BookingController extends RestBase
             [
                 'methods' => WP_REST_Server::CREATABLE,
                 'callback' => fn (WP_REST_Request $request) => $this->staffCreate($request),
-                'permission_callback' => fn () => $this->requireCap(RolesAndCapabilities::APPT_CREATE) === null,
+                'permission_callback' => fn () => $this->requireCap(RolesAndCapabilities::APPT_CREATE),
                 'args' => [
                     'patient_id' => ['required' => true, 'type' => 'integer'],
                     'clinician_id' => ['required' => true, 'type' => 'integer'],
@@ -308,6 +308,9 @@ final class BookingController extends RestBase
 
     /**
      * Patient-Endpoint: Nonce (CSRF) + وجود Session + نقش بیمار (یا Staff با Cap مربوطه).
+     *
+     * خطاها با Envelope استاندارد `CLINIC_*` (ADR-0019) — permission_callback
+     * مستقیماً WP_Error برمی‌گرداند (نه false) تا پاسخ، کد/شکل Contract §0 بگیرد.
      */
     private function requirePatient(WP_REST_Request $request): ?WP_Error
     {
@@ -338,19 +341,37 @@ final class BookingController extends RestBase
         return null;
     }
 
-    private function cancelPermission(WP_REST_Request $request): bool
+    /**
+     * B4/D11: بیمار (نقش) یا Staff با `cpms_appt_cancel`.
+     */
+    private function cancelPermission(WP_REST_Request $request): ?WP_Error
     {
-        $nonceError = $this->requireNonce();
+        $nonceError = $this->requireNonce($request);
         if ($nonceError instanceof WP_Error) {
-            return false;
+            return $nonceError;
         }
         $user = wp_get_current_user();
         if (!$user->exists()) {
-            return false;
+            return $this->error('CLINIC_UNAUTHORIZED', 401, 'وارد نشده‌اید');
         }
 
-        return in_array(RolesAndCapabilities::ROLE_PATIENT, (array) $user->roles, true)
+        $allowed = in_array(RolesAndCapabilities::ROLE_PATIENT, (array) $user->roles, true)
             || $user->has_cap(RolesAndCapabilities::APPT_CANCEL);
+        if (!$allowed) {
+            App::audit()->log(
+                'FORBIDDEN_ACCESS_ATTEMPT',
+                ['wp_user_id' => (int) $user->ID, 'role' => $user->roles[0] ?? 'unknown'],
+                'capability',
+                null,
+                null,
+                null,
+                ['cap' => RolesAndCapabilities::APPT_CANCEL]
+            );
+
+            return $this->error('CLINIC_PERMISSION_DENIED', 403, 'دسترسی ندارید');
+        }
+
+        return null;
     }
 
     /**

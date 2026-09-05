@@ -6,6 +6,7 @@ namespace ClinicCore\Rest;
 
 use ClinicCore\Application\Booking\BookingException;
 use ClinicCore\Application\Patients\PatientService;
+use ClinicCore\Bootstrap\App;
 use ClinicCore\Auth\RolesAndCapabilities;
 use WP_Error;
 use WP_REST_Request;
@@ -31,12 +32,12 @@ final class PatientController extends RestBase
             [
                 'methods' => WP_REST_Server::READABLE,
                 'callback' => fn (WP_REST_Request $request) => $this->me($request),
-                'permission_callback' => fn (WP_REST_Request $request) => $this->requirePatient($request) !== null,
+                'permission_callback' => fn (WP_REST_Request $request) => $this->requirePatient($request),
             ],
             [
                 'methods' => WP_REST_Server::EDITABLE,
                 'callback' => fn (WP_REST_Request $request) => $this->updateMe($request),
-                'permission_callback' => fn (WP_REST_Request $request) => $this->requirePatient($request) !== null,
+                'permission_callback' => fn (WP_REST_Request $request) => $this->requirePatient($request),
                 'args' => [
                     'first_name' => ['required' => false, 'type' => 'string'],
                     'last_name' => ['required' => false, 'type' => 'string'],
@@ -56,7 +57,7 @@ final class PatientController extends RestBase
             [
                 'methods' => WP_REST_Server::READABLE,
                 'callback' => fn (WP_REST_Request $request) => $this->search($request),
-                'permission_callback' => fn () => $this->requireCap(RolesAndCapabilities::PATIENT_READ) === null,
+                'permission_callback' => fn () => $this->requireCap(RolesAndCapabilities::PATIENT_READ),
                 'args' => [
                     'q' => ['required' => true, 'type' => 'string'],
                     'limit' => ['required' => false, 'type' => 'integer', 'default' => 25],
@@ -68,7 +69,7 @@ final class PatientController extends RestBase
             [
                 'methods' => WP_REST_Server::READABLE,
                 'callback' => fn (WP_REST_Request $request) => $this->get($request),
-                'permission_callback' => fn () => $this->requireCap(RolesAndCapabilities::PATIENT_READ) === null,
+                'permission_callback' => fn () => $this->requireCap(RolesAndCapabilities::PATIENT_READ),
                 'args' => [
                     'id' => ['required' => true, 'type' => 'integer'],
                 ],
@@ -76,7 +77,7 @@ final class PatientController extends RestBase
             [
                 'methods' => WP_REST_Server::EDITABLE,
                 'callback' => fn (WP_REST_Request $request) => $this->update($request),
-                'permission_callback' => fn () => $this->requireCap(RolesAndCapabilities::PATIENT_UPDATE) === null,
+                'permission_callback' => fn () => $this->requireCap(RolesAndCapabilities::PATIENT_UPDATE),
                 'args' => [
                     'id' => ['required' => true, 'type' => 'integer'],
                 ],
@@ -87,7 +88,7 @@ final class PatientController extends RestBase
             [
                 'methods' => WP_REST_Server::CREATABLE,
                 'callback' => fn (WP_REST_Request $request) => $this->create($request),
-                'permission_callback' => fn () => $this->requireCap(RolesAndCapabilities::PATIENT_CREATE) === null,
+                'permission_callback' => fn () => $this->requireCap(RolesAndCapabilities::PATIENT_CREATE),
                 'args' => [
                     'first_name' => ['required' => true, 'type' => 'string'],
                     'last_name' => ['required' => true, 'type' => 'string'],
@@ -160,6 +161,17 @@ final class PatientController extends RestBase
             return $this->error('CLINIC_UNAUTHORIZED', 401, 'وارد نشده‌اید');
         }
         if (!in_array(RolesAndCapabilities::ROLE_PATIENT, (array) $user->roles, true)) {
+            App::audit()->log(
+                'FORBIDDEN_ACCESS_ATTEMPT',
+                ['wp_user_id' => (int) $user->ID, 'role' => $user->roles[0] ?? 'unknown'],
+                'patient',
+                null,
+                null,
+                null,
+                null,
+                ['reason' => 'patient_role_required']
+            );
+
             return $this->error('CLINIC_PERMISSION_DENIED', 403, 'دسترسی ندارید');
         }
 
