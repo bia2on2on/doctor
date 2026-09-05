@@ -166,8 +166,8 @@ final class BookingService
         // N-4: Hold Active موجود همان بیمار/اسلات → Idempotent (بازگردانی همان Token)
         $existing = $this->db->fetchRow(
             'SELECT * FROM ' . $this->db->table('cpms_slot_holds') .
-            ' WHERE holder_wp_user_id = %d AND slot_id = %d AND status = %s AND expires_at > ' . $this->db->nowUtcSql() . ' LIMIT 1',
-            [$wpUserId, (int) $slot['id'], 'active']
+            ' WHERE holder_wp_user_id = %d AND slot_id = %d AND status = %s AND expires_at > %s LIMIT 1',
+            [$wpUserId, (int) $slot['id'], 'active', $this->db->nowUtcSql()]
         );
         if ($existing !== null) {
             return [

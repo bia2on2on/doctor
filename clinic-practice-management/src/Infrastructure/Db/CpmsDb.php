@@ -120,6 +120,12 @@ final class CpmsDb
     /**
      * Transaction + Row Lock انتخابی.
      *
+     * اگر از بیرون تراکنشی باز باشد (تست‌های WP Test Suite، یا ترکیب
+     * Serviceها در آینده)، به‌جای START TRANSACTION جدید — که تراکنش بیرونی را
+     * به‌طور ضمنی Rollback می‌کند و ایزوله‌سازی را خراب می‌کند — از SAVEPOINT
+     * استفاده می‌شود؛ خطا فقط تا Savepoint برمی‌گردد و تراکنش بیرونی سالم
+     * می‌ماند.
+     *
      * @template T
      *
      * @param callable $fn
@@ -128,6 +134,22 @@ final class CpmsDb
      */
     public function transactional(callable $fn)
     {
+        $inTransaction = (int) $this->wpdb->get_var('SELECT @@IN_TRANSACTION') === 1;
+
+        if ($inTransaction) {
+            $sp = 'cpms_sp_' . bin2hex(random_bytes(6));
+            $this->wpdb->query('SAVEPOINT ' . $sp); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            try {
+                $result = $fn();
+                $this->wpdb->query('RELEASE SAVEPOINT ' . $sp); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+                return $result;
+            } catch (\Throwable $e) {
+                $this->wpdb->query('ROLLBACK TO SAVEPOINT ' . $sp); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                throw $e;
+            }
+        }
+
         $this->wpdb->query('START TRANSACTION');
         try {
             $result = $fn();
