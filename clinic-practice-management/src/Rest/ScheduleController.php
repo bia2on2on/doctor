@@ -182,7 +182,7 @@ final class ScheduleController extends RestBase
     /**
      * موتانت Config: Capability `cpms_config` + Nonce (CSRF).
      */
-    private function configMutation(WP_REST_Request $request): ?WP_Error
+    private function configMutation(WP_REST_Request $request): bool|WP_Error
     {
         $nonceError = $this->requireNonce($request);
         if ($nonceError instanceof WP_Error) {

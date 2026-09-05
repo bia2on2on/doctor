@@ -312,7 +312,7 @@ final class BookingController extends RestBase
      * خطاها با Envelope استاندارد `CLINIC_*` (ADR-0019) — permission_callback
      * مستقیماً WP_Error برمی‌گرداند (نه false) تا پاسخ، کد/شکل Contract §0 بگیرد.
      */
-    private function requirePatient(WP_REST_Request $request): ?WP_Error
+    private function requirePatient(WP_REST_Request $request): bool|WP_Error
     {
         $nonceError = $this->requireNonce($request);
         if ($nonceError instanceof WP_Error) {
@@ -338,13 +338,13 @@ final class BookingController extends RestBase
             return $this->error('CLINIC_PERMISSION_DENIED', 403, 'دسترسی ندارید');
         }
 
-        return null;
+        return true;
     }
 
     /**
      * B4/D11: بیمار (نقش) یا Staff با `cpms_appt_cancel`.
      */
-    private function cancelPermission(WP_REST_Request $request): ?WP_Error
+    private function cancelPermission(WP_REST_Request $request): bool|WP_Error
     {
         $nonceError = $this->requireNonce($request);
         if ($nonceError instanceof WP_Error) {
@@ -371,7 +371,7 @@ final class BookingController extends RestBase
             return $this->error('CLINIC_PERMISSION_DENIED', 403, 'دسترسی ندارید');
         }
 
-        return null;
+        return true;
     }
 
     /**

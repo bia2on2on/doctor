@@ -35,18 +35,28 @@ final class HashChain
      */
     public static function fieldsFor(array $row): array
     {
+        // نرمال‌سازی تایپ: در زمان نوشتن، idها از PHP با int می‌آیند اما در
+        // زمان خواندن (verify) wpdb همه‌چیز را string برمی‌گرداند — بدون cast،
+        // canonical JSON دو مسیر متفاوت می‌شد و زنجیره همیشه شکسته دیده می‌شد.
+        $intOrNull = static function ($value): ?int {
+            return ($value === null || $value === '') ? null : (int) $value;
+        };
+        $stringOrNull = static function ($value): ?string {
+            return ($value === null || $value === '') ? null : (string) $value;
+        };
+
         return [
-            'clinic_id' => $row['clinic_id'] ?? null,
-            'actor_wp_user_id' => $row['actor_wp_user_id'] ?? null,
-            'actor_role' => $row['actor_role'] ?? null,
-            'action' => $row['action'] ?? null,
-            'resource_type' => $row['resource_type'] ?? null,
-            'resource_id' => $row['resource_id'] ?? null,
-            'patient_id' => $row['patient_id'] ?? null,
-            'ip_hash' => $row['ip_hash'] ?? null,
-            'session_id' => $row['session_id'] ?? null,
-            'request_id' => $row['request_id'] ?? null,
-            'created_at' => $row['created_at'] ?? null,
+            'clinic_id' => $intOrNull($row['clinic_id'] ?? null),
+            'actor_wp_user_id' => $intOrNull($row['actor_wp_user_id'] ?? null),
+            'actor_role' => $stringOrNull($row['actor_role'] ?? null),
+            'action' => $stringOrNull($row['action'] ?? null),
+            'resource_type' => $stringOrNull($row['resource_type'] ?? null),
+            'resource_id' => $intOrNull($row['resource_id'] ?? null),
+            'patient_id' => $intOrNull($row['patient_id'] ?? null),
+            'ip_hash' => $stringOrNull($row['ip_hash'] ?? null),
+            'session_id' => $stringOrNull($row['session_id'] ?? null),
+            'request_id' => $stringOrNull($row['request_id'] ?? null),
+            'created_at' => $stringOrNull($row['created_at'] ?? null),
         ];
     }
 

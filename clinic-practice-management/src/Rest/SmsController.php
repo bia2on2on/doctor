@@ -87,7 +87,8 @@ final class SmsController extends RestBase
 
     private function status(WP_REST_Request $request): \WP_REST_Response|\WP_Error
     {
-        if ($e = $this->requireNonce($request)) {
+        $e = $this->requireNonce($request);
+        if ($e instanceof \WP_Error) {
             return $e;
         }
 
@@ -96,7 +97,8 @@ final class SmsController extends RestBase
 
     private function providers(WP_REST_Request $request): \WP_REST_Response|\WP_Error
     {
-        if ($e = $this->requireNonce($request)) {
+        $e = $this->requireNonce($request);
+        if ($e instanceof \WP_Error) {
             return $e;
         }
 
@@ -105,7 +107,8 @@ final class SmsController extends RestBase
 
     private function saveSettings(WP_REST_Request $request): \WP_REST_Response|\WP_Error
     {
-        if ($e = $this->requireNonce($request)) {
+        $e = $this->requireNonce($request);
+        if ($e instanceof \WP_Error) {
             return $e;
         }
         try {
@@ -117,7 +120,8 @@ final class SmsController extends RestBase
 
     private function testConnection(WP_REST_Request $request): \WP_REST_Response|\WP_Error
     {
-        if ($e = $this->requireNonce($request)) {
+        $e = $this->requireNonce($request);
+        if ($e instanceof \WP_Error) {
             return $e;
         }
         $rl = $this->rateLimit($request, 'sms-test-' . $this->userId(), 10, 3600);
@@ -130,7 +134,8 @@ final class SmsController extends RestBase
 
     private function testSend(WP_REST_Request $request): \WP_REST_Response|\WP_Error
     {
-        if ($e = $this->requireNonce($request)) {
+        $e = $this->requireNonce($request);
+        if ($e instanceof \WP_Error) {
             return $e;
         }
         $rl = $this->rateLimit($request, 'sms-send-' . $this->userId(), 10, 3600);
@@ -157,7 +162,8 @@ final class SmsController extends RestBase
 
     private function saveTemplate(WP_REST_Request $request): \WP_REST_Response|\WP_Error
     {
-        if ($e = $this->requireNonce($request)) {
+        $e = $this->requireNonce($request);
+        if ($e instanceof \WP_Error) {
             return $e;
         }
         $params = $request->get_json_params() ?: [];
@@ -172,7 +178,8 @@ final class SmsController extends RestBase
 
     private function testTemplate(WP_REST_Request $request): \WP_REST_Response|\WP_Error
     {
-        if ($e = $this->requireNonce($request)) {
+        $e = $this->requireNonce($request);
+        if ($e instanceof \WP_Error) {
             return $e;
         }
         $rl = $this->rateLimit($request, 'sms-tmpl-' . $this->userId(), 20, 3600);
@@ -195,7 +202,8 @@ final class SmsController extends RestBase
 
     private function logs(WP_REST_Request $request): \WP_REST_Response|\WP_Error
     {
-        if ($e = $this->requireNonce($request)) {
+        $e = $this->requireNonce($request);
+        if ($e instanceof \WP_Error) {
             return $e;
         }
 
@@ -210,7 +218,8 @@ final class SmsController extends RestBase
 
     private function balance(WP_REST_Request $request): \WP_REST_Response|\WP_Error
     {
-        if ($e = $this->requireNonce($request)) {
+        $e = $this->requireNonce($request);
+        if ($e instanceof \WP_Error) {
             return $e;
         }
 

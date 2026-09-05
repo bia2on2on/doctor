@@ -150,7 +150,7 @@ final class PatientController extends RestBase
 
     // ---------- Helpers ----------
 
-    private function requirePatient(WP_REST_Request $request): ?WP_Error
+    private function requirePatient(WP_REST_Request $request): bool|WP_Error
     {
         $nonceError = $this->requireNonce($request);
         if ($nonceError instanceof WP_Error) {
@@ -175,7 +175,7 @@ final class PatientController extends RestBase
             return $this->error('CLINIC_PERMISSION_DENIED', 403, 'دسترسی ندارید');
         }
 
-        return null;
+        return true;
     }
 
     /**

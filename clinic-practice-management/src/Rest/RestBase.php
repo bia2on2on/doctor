@@ -27,14 +27,14 @@ abstract class RestBase
     /**
      * Nonce check برای Requestهای Authenticated (CSRF).
      */
-    protected function requireNonce(WP_REST_Request $request): ?WP_Error
+    protected function requireNonce(WP_REST_Request $request): bool|WP_Error
     {
         $nonce = $request->get_header('X-WP-Nonce');
         if (!is_string($nonce) || !wp_verify_nonce($nonce, 'wp_rest')) {
             return $this->error('CLINIC_INVALID_NONCE', 403, 'Nonce نامعتبر است (CSRF)');
         }
 
-        return null;
+        return true;
     }
 
     /**
@@ -42,7 +42,7 @@ abstract class RestBase
      *
      * @param string|string[] $caps
      */
-    protected function requireCap(string|array $caps): ?WP_Error
+    protected function requireCap(string|array $caps): bool|WP_Error
     {
         $user = wp_get_current_user();
         if (!$user->exists()) {
@@ -65,7 +65,7 @@ abstract class RestBase
             }
         }
 
-        return null;
+        return true;
     }
 
     /**
