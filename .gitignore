@@ -1,0 +1,6 @@
+/tmp/
+*.log
+.DS_Store
+phpunit.phar
+.phpunit.cache/
+vendor/
