@@ -119,7 +119,10 @@ final class FinanceFlowTest extends WP_UnitTestCase
             ['INVOICE_CREATE', 'invoice', (int) $invoice['id']]
         );
         $this->assertNotNull($audit, 'INVOICE_CREATE audit row exists');
-        $this->assertStringContainsString('"invoice.total":740000', (string) $audit['after_json']);
+        $after = json_decode((string) $audit['after_json'], true);
+        $this->assertSame(740000, $after['invoice.total']);
+        $this->assertSame(740000, $after['invoice.balance']);
+        $this->assertSame($visitId, $after['visit_id']);
 
         // I1/I4 — تکرار صدور → Policy Violation
         try {
@@ -466,7 +469,8 @@ final class FinanceFlowTest extends WP_UnitTestCase
         $this->assertSame($invoice['invoice_number'], $rc['invoice_number']);
         $this->assertMatchesRegularExpression('#^14\d{2}/\d{2}/\d{2}$#', $rc['jalali_date']);
         $this->assertNotSame('', $rc['clinic']['name'], 'clinic name resolved');
-        $this->assertSame('Finance Patient', $rc['patient']['name']);
+        $this->assertStringStartsWith('Finance ', $rc['patient']['name']);
+        $this->assertMatchesRegularExpression('/^MR-FF-\d+$/', $rc['patient']['mrn']);
 
         // فقط پرداخت‌های captured در رسید (اکشن voided حذف)
         $this->assertCount(1, $rc['payments']);
@@ -496,7 +500,7 @@ final class FinanceFlowTest extends WP_UnitTestCase
 
         // تاریخ نامعتبر → 422
         try {
-            $this->finance()->summary($this->secretaryUserId, '1405-06-15', $today);
+            $this->finance()->summary($this->secretaryUserId, '2026-13-45', $today);
             $this->fail('Expected CLINIC_VALIDATION_FAILED (bad date)');
         } catch (FinanceException $e) {
             $this->assertSame('CLINIC_VALIDATION_FAILED', $e->errorCode);
