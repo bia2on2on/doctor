@@ -972,6 +972,8 @@ final class BookingService
 
         return [
             'id' => (int) $row['id'],
+            // API Contract B2/B5: کلید پاسخ Confirm/Reschedule = appointment_id
+            'appointment_id' => (int) $row['id'],
             'reference_code' => (string) $row['reference_code'],
             'date' => $date,
             'time' => substr((string) $row['slot_time'], 0, 5),

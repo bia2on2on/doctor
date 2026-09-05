@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Tests\Integration;
 
-use ClinicCore\Application\Booking\BookingException;
+use ClinicCore\Domain\Booking\BookingException;
 use ClinicCore\Bootstrap\App;
 use WP_UnitTestCase;
 
