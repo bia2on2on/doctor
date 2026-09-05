@@ -272,6 +272,25 @@ OCR فارسی، TOTP 2FA، Merge UI پیشرفته، پرداخت آنلاین�
 
 ---
 
+### 2026-09-05 — Agent: Arena Agent — شروع F4 / Visit و Queue Slice 1
+
+- **هدف درخواست:** شروع فاز F4 پس از تکمیل نسبی F3.
+- **وضعیت قبل از شروع:** State Machine و Schema مربوط به Visit/Queue از قبل وجود داشتند، اما Service، Repository و REST Controller فاز F4 وجود نداشتند. تغییرات F3 ایجنت دیگر در PR شماره 1 هنوز در این شاخه Merge نشده‌اند.
+- **اقدامات انجام‌شده:**
+  - `clinic-practice-management/src/Infrastructure/Repository/VisitRepository.php`: Repository برای Visit، Queue و Status History.
+  - `clinic-practice-management/src/Application/Visits/VisitService.php`: Check-in، Walk-in، Duplicate Active Visit، Enqueue، Transition، Recall Limit، Audit و History.
+  - `clinic-practice-management/src/Rest/VisitController.php`: Endpointهای اولیه Check-in، Walk-in، Status و Queue.
+  - `clinic-practice-management/src/Bootstrap/App.php`: اتصال Service و Controller به DI و REST registration.
+  - `docs/phase-reports/report-f4.md`: گزارش شروع F4 و فهرست Scope باقی‌مانده.
+- **تصمیم‌ها و فرض‌ها:** Enqueue بلافاصله بعد از Check-in/Walk-in انجام می‌شود، مطابق Default مستندات. Invoice، Payment، Clinical و Checkout به F5/F6 واگذار شدند.
+- **تست‌های اجراشده:** PHP در محیط فعلی نصب نیست (`php: command not found`)؛ بنابراین تست PHPUnit و PHP lint اجرا نشد. `git diff --check` باید قبل از Commit اجرا شود.
+- **مستندات به‌روزشده:** `docs/phase-reports/report-f4.md` و همین فایل.
+- **ریسک‌ها یا موارد باز:** تست Integration، REST Argument Validation، IDOR/Clinic Scoping، Today Dashboard، Real-time Polling و هماهنگ‌سازی با F3 هنوز باقی است.
+- **گام پیشنهادی Agent بعدی:** ابتدا روی محیط دارای PHP lint و Unit/Integration تست را اجرا کند، سپس تست‌های F4 برای Check-in/Walk-in/History/IDOR را اضافه کند و بعد Today Dashboard را پیاده‌سازی کند.
+- **وضعیت Git / Commit:** تغییرات F4 هنوز Commit/Push نشده‌اند.
+
+---
+
 ## 8. چک‌لیست کوتاه پایان کار
 
 - [ ] تغییرات با فاز و سند مرجع سازگار است.

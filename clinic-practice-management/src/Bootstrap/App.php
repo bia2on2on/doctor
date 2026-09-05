@@ -9,6 +9,7 @@ use ClinicCore\Admin\SmsSettingsPage;
 use ClinicCore\Application\Auth\OtpService;
 use ClinicCore\Application\Booking\BookingService;
 use ClinicCore\Application\Patients\PatientService;
+use ClinicCore\Application\Visits\VisitService;
 use ClinicCore\Application\Jobs\HoldsExpireHandler;
 use ClinicCore\Application\Jobs\JobsDispatcher;
 use ClinicCore\Application\Jobs\OtpCleanupHandler;
@@ -19,6 +20,7 @@ use ClinicCore\Application\Notifications\SmsService;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Domain\Licensing\ActiveLicenseGate;
 use ClinicCore\Domain\Licensing\LicenseGate;
+use ClinicCore\Domain\Machine\VisitMachine;
 use ClinicCore\Infrastructure\Audit\AuditLogger;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Logging\CorrelationId;
@@ -27,6 +29,7 @@ use ClinicCore\Infrastructure\Queue\JobQueue;
 use ClinicCore\Infrastructure\Repository\AppointmentRepository;
 use ClinicCore\Infrastructure\Repository\PatientRepository;
 use ClinicCore\Infrastructure\Repository\SlotRepository;
+use ClinicCore\Infrastructure\Repository\VisitRepository;
 use ClinicCore\Infrastructure\Security\Idempotency;
 use ClinicCore\Infrastructure\Security\RateLimiter;
 use ClinicCore\Infrastructure\Sms\CredentialVault;
@@ -40,6 +43,7 @@ use ClinicCore\Rest\HealthController;
 use ClinicCore\Rest\OtpController;
 use ClinicCore\Rest\PatientController;
 use ClinicCore\Rest\SmsController;
+use ClinicCore\Rest\VisitController;
 use ClinicCore\Settings\Settings;
 
 /**
@@ -81,7 +85,7 @@ final class App
             (new SmsController(self::smsService()))->register_routes();
             (new BookingController(self::bookingService()))->register_routes();
             (new PatientController(self::patientService()))->register_routes();
-            // Endpointهای فازهای بعد (F4+) — مطابق API Contract.
+            (new VisitController(self::visitService()))->register_routes();
         });
 
         // Cron: اولویت با Cron OS-level (bin/cpms jobs tick) — WP-Cron به‌عنوان Fallback
@@ -245,6 +249,22 @@ final class App
         }
 
         return $patients;
+    }
+
+    public static function visitService(): VisitService
+    {
+        static $visits = null;
+        if ($visits === null) {
+            $visits = new VisitService(
+                self::db(),
+                new VisitRepository(self::db()),
+                VisitMachine::create(),
+                self::audit(),
+                self::op()
+            );
+        }
+
+        return $visits;
     }
 
     public static function otpService(): OtpService
