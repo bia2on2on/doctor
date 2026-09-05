@@ -179,5 +179,12 @@ final class RolesAndCapabilities
                 $existing->remove_cap($cap);
             }
         }
+        // Self-healing کامل (TP-10): هر Capability با پیشوند cpms_ خارج از فهرست
+        // مجاز این نقش (مثلاً drift دستی/قدیمی) هم پاک می‌شود — Least Privilege.
+        foreach (array_keys($existing->capabilities) as $cap) {
+            if (is_string($cap) && str_starts_with($cap, 'cpms_') && !array_key_exists($cap, $caps)) {
+                $existing->remove_cap($cap);
+            }
+        }
     }
 }
