@@ -16,7 +16,9 @@ use ClinicCore\Application\Jobs\OtpCleanupHandler;
 use ClinicCore\Application\Jobs\RateLimitCleanupHandler;
 use ClinicCore\Application\Jobs\SmsSendJobHandler;
 use ClinicCore\Application\Jobs\SlotsGenerateHandler;
+use ClinicCore\Application\Jobs\VisitsNoShowHandler;
 use ClinicCore\Application\Notifications\SmsService;
+use ClinicCore\Application\Visits\VisitService;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Domain\Licensing\ActiveLicenseGate;
 use ClinicCore\Domain\Licensing\LicenseGate;
@@ -29,6 +31,7 @@ use ClinicCore\Infrastructure\Repository\AppointmentRepository;
 use ClinicCore\Infrastructure\Repository\PatientRepository;
 use ClinicCore\Infrastructure\Repository\ScheduleRepository;
 use ClinicCore\Infrastructure\Repository\SlotRepository;
+use ClinicCore\Infrastructure\Repository\VisitRepository;
 use ClinicCore\Infrastructure\Security\Idempotency;
 use ClinicCore\Infrastructure\Security\RateLimiter;
 use ClinicCore\Infrastructure\Sms\CredentialVault;
@@ -41,6 +44,7 @@ use ClinicCore\Rest\BookingController;
 use ClinicCore\Rest\HealthController;
 use ClinicCore\Rest\OtpController;
 use ClinicCore\Rest\PatientController;
+use ClinicCore\Rest\QueueController;
 use ClinicCore\Rest\ScheduleController;
 use ClinicCore\Rest\SmsController;
 use ClinicCore\Settings\Settings;
@@ -84,6 +88,7 @@ final class App
             (new SmsController(self::smsService()))->register_routes();
             (new BookingController(self::bookingService()))->register_routes();
             (new PatientController(self::patientService()))->register_routes();
+            (new QueueController(self::visitService()))->register_routes();
             (new ScheduleController(self::scheduleService()))->register_routes();
             // Endpointهای فازهای بعد (F4+) — مطابق API Contract.
         });
@@ -212,6 +217,23 @@ final class App
         }
 
         return $booking;
+    }
+
+    public static function visitService(): VisitService
+    {
+        static $visits = null;
+        if ($visits === null) {
+            $db = self::db();
+            $visits = new VisitService(
+                $db,
+                new VisitRepository($db),
+                new AppointmentRepository($db),
+                self::settings(),
+                self::audit()
+            );
+        }
+
+        return $visits;
     }
 
     public static function scheduleService(): ScheduleService
@@ -417,7 +439,8 @@ final class App
                 ->register('cleanup.otp', new OtpCleanupHandler($db))
                 ->register('cleanup.rate_limits', new RateLimitCleanupHandler(self::rate()))
                 ->register('slots.generate', new SlotsGenerateHandler($db, $settings, $op))
-                ->register('sms.send', new SmsSendJobHandler(self::smsService()));
+                ->register('sms.send', new SmsSendJobHandler(self::smsService()))
+                ->register('visits.no_show', new VisitsNoShowHandler(self::visitService()));
 
             self::$dispatcher = $dispatcher;
         }
@@ -435,5 +458,6 @@ final class App
 
         $queue->enqueue('holds.expire', [], $now, priority: 8);
         $queue->enqueue('slots.generate', [], $now, priority: 3);
+        $queue->enqueue('visits.no_show', [], $now, priority: 5);
     }
 }
