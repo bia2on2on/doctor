@@ -87,7 +87,8 @@ install_db() {
 write_config() {
     cd "$WP_TESTS_DIR"
     # tarball رسمی wordpress.org ساختار /src ندارد (برخلاف repo develop)
-    sed -i.bak "s:dirname( __FILE__ ) . '/src/':$WP_CORE_DIR:" wp-tests-config.php
+    # مقدار جایگزین باید داخل quotes بماند وگرنه parse-error می‌شود
+    sed -i.bak "s:dirname( __FILE__ ) . '/src/':'$WP_CORE_DIR':" wp-tests-config.php
     sed -i.bak "s/youremptytestdbnamehere/$DB_NAME/" wp-tests-config.php
     sed -i.bak "s/yourusernamehere/$DB_USER/" wp-tests-config.php
     sed -i.bak "s/yourpasswordhere/$DB_PASS/" wp-tests-config.php
