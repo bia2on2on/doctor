@@ -55,7 +55,7 @@ App::migrations()->migrate();
  * ROLLBACK می‌کند؛ اما START TRANSACTION سرویس داخل آن = COMMIT ضمنی کل
  * Fixtureهای تست → نشت داده بین تست‌ها (Duplicate keyهای پی‌درپی).
  * راه‌حل: filter روی wpdb (فقط در تست) افعال تراکنشِ علامت‌گذاری‌شده با
- * /*cpms*/ را به SAVEPOINT/RELEASE/ROLLBACK-TO تبدیل می‌کند — تراکنش بیرونی
+ * نشانگر cpms را به SAVEPOINT/RELEASE/ROLLBACK-TO تبدیل می‌کند — تراکنش بیرونی
  * تست دست‌نخورده می‌ماند و Production این filter را ندارد.
  */
 $GLOBALS['__cpms_sp_stack'] = [];
