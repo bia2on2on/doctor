@@ -103,7 +103,10 @@ jobs:
           {
             echo "### Integration test failures (run ${{ github.run_id }})"
             echo '```'
-            grep -E "^[0-9]+\) |^Tests: |^OK |^ERRORS|^FAILURES|WordPress database error|WP die|Fatal|syntax" /tmp/phpunit-int.log | head -100
+            echo "--- HEAD (first 25 lines) ---"
+            head -n 25 /tmp/phpunit-int.log
+            echo "--- TAIL (last 90 lines) ---"
+            tail -n 90 /tmp/phpunit-int.log
             echo '```'
           } > /tmp/pr-body.md
           if [ -n "$PR_NUMBER" ]; then
@@ -113,9 +116,9 @@ jobs:
       - name: Diagnose schema state
         if: failure()
         run: |
-          mysql -N -h 127.0.0.1 -u root -proot 2>/dev/null -e "SELECT CONCAT('tables_total=', COUNT(*)) FROM information_schema.tables WHERE table_schema='wordpress_test';"
-          mysql -N -h 127.0.0.1 -u root -proot 2>/dev/null -e "SELECT CONCAT('cpms_tables=', COUNT(*)) FROM information_schema.tables WHERE table_schema='wordpress_test' AND table_name LIKE '%cpms%';"
-          mysql -N -h 127.0.0.1 -u root -proot 2>/dev/null -e "SELECT CONCAT('migrations_applied=', IFNULL(GROUP_CONCAT(version), 'NONE')) FROM wordpress_test.wptests_cpms_schema_migrations;" || echo "::notice::migrations_table=MISSING"
+          mysql -N -h 127.0.0.1 -u root -proot 2>/dev/null -e "SELECT CONCAT('tables_total=', COUNT(*)) FROM information_schema.tables WHERE table_schema='wordpress_test';" | while IFS= read -r l; do echo "::notice::$l"; done
+          mysql -N -h 127.0.0.1 -u root -proot 2>/dev/null -e "SELECT CONCAT('cpms_tables=', COUNT(*)) FROM information_schema.tables WHERE table_schema='wordpress_test' AND table_name LIKE '%cpms%';" | while IFS= read -r l; do echo "::notice::$l"; done
+          mysql -N -h 127.0.0.1 -u root -proot 2>/dev/null -e "SELECT CONCAT('migrations_applied=', IFNULL(GROUP_CONCAT(version), 'NONE')) FROM wordpress_test.wptests_cpms_schema_migrations;" | while IFS= read -r l; do echo "::notice::$l"; done || echo "::notice::migrations_table=MISSING"
 
       # خروجی PHPUnit به‌صورت annotation هم منتشر می‌شود (سقف GitHub: 10 به‌ازای Step)
       - name: Surface test failures (part 1)
