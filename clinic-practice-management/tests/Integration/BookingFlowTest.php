@@ -329,7 +329,9 @@ final class BookingFlowTest extends WP_UnitTestCase
         );
         $this->assertSame(0, (int) $row['booked_count'], 'لغو باید ظرفیت آزاد کند');
 
-        // نوبت 30 ساعت بعد → داخل Window لغو 24h → ممنوع
+        // بخش دوم: نوبت داخل Window — برای قطعیت مستقل از ساعت اجرای تست،
+        // سقف Deadline را بالاتر از فاصله واقعی slot قرار می‌دهیم (47-54h < 96h).
+        App::settings()->set('booking.cancel_deadline_hours', 96);
         $slotNear = $this->makeSlot(2, '23:00', 1);
         $holdNear = $this->booking()->hold($this->patientUserId, $this->clinicianId, $slotNear['date'], $slotNear['time']);
         $near = $this->booking()->confirm($holdNear['hold_token'], $this->patientUserId, null, $this->uuid());

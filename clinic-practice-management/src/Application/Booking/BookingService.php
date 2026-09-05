@@ -737,11 +737,19 @@ final class BookingService
 
     private function machineCheck(string $from, string $event, string $actor): string
     {
-        try {
-            return AppointmentMachine::create()->machine()->assert($from, $event, $actor);
-        } catch (InvalidTransitionException) {
-            throw BookingException::of('CLINIC_INVALID_TRANSITION', 'این عمل برای وضعیت فعلی نوبت مجاز نیست', 409);
+        // «staff» یک گروه است نه نقش — ماشین با نقش‌های منطقی (secretary/doctor)
+        // کار می‌کند؛ در نبود نقش مشخص، هر دو نقش کارکن امتحان می‌شوند.
+        $candidates = $actor === 'staff' ? ['secretary', 'doctor'] : [$actor];
+        $last = null;
+        foreach ($candidates as $candidate) {
+            try {
+                return AppointmentMachine::create()->machine()->assert($from, $event, $candidate);
+            } catch (InvalidTransitionException $e) {
+                $last = $e;
+            }
         }
+
+        throw BookingException::of('CLINIC_INVALID_TRANSITION', 'این عمل برای وضعیت فعلی نوبت مجاز نیست', 409);
     }
 
     private function assertWindow(string $slotDate, string $slotTime, int $minLeadHours): void

@@ -313,10 +313,13 @@ final class ConcurrencyTest extends WP_UnitTestCase
 
     private function assertSlotState(int $slotId, int $booked, int $held): void
     {
-        $row = App::db()->fetchRow(
-            'SELECT booked_count, held_count FROM ' . App::db()->table('cpms_schedule_slots') . ' WHERE id = %d',
-            [$slotId]
-        );
+        // خواندن با اتصال تازه: تراکنشِ بازِ WP Test Suite روی اتصال wpdb با
+        // REPEATABLE READ اسنپ‌شات قدیمی می‌دهد و تغییرات commit‌شده‌ی اتصال‌های
+        // مستقل را نمی‌بیند؛ برای شمارنده‌های دقیق باید خارج از آن خواند.
+        $conn = $this->freshMysqli();
+        $res = $conn->query('SELECT booked_count, held_count FROM ' . $this->table('cpms_schedule_slots') . ' WHERE id = ' . (int) $slotId);
+        $row = $res !== false ? $res->fetch_assoc() : null;
+        $conn->close();
         $this->assertNotNull($row, 'Slot row must exist');
         $this->assertSame($booked, (int) $row['booked_count'], 'booked_count must be exact');
         $this->assertSame($held, (int) $row['held_count'], 'held_count must be exact');
