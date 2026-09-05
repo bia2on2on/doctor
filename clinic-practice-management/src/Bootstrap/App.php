@@ -8,6 +8,7 @@ use ClinicCore\Admin\SettingsAdmin;
 use ClinicCore\Admin\SmsSettingsPage;
 use ClinicCore\Application\Auth\OtpService;
 use ClinicCore\Application\Booking\BookingService;
+use ClinicCore\Application\Booking\ScheduleService;
 use ClinicCore\Application\Patients\PatientService;
 use ClinicCore\Application\Jobs\HoldsExpireHandler;
 use ClinicCore\Application\Jobs\JobsDispatcher;
@@ -26,6 +27,7 @@ use ClinicCore\Infrastructure\Logging\OpLogger;
 use ClinicCore\Infrastructure\Queue\JobQueue;
 use ClinicCore\Infrastructure\Repository\AppointmentRepository;
 use ClinicCore\Infrastructure\Repository\PatientRepository;
+use ClinicCore\Infrastructure\Repository\ScheduleRepository;
 use ClinicCore\Infrastructure\Repository\SlotRepository;
 use ClinicCore\Infrastructure\Security\Idempotency;
 use ClinicCore\Infrastructure\Security\RateLimiter;
@@ -39,6 +41,7 @@ use ClinicCore\Rest\BookingController;
 use ClinicCore\Rest\HealthController;
 use ClinicCore\Rest\OtpController;
 use ClinicCore\Rest\PatientController;
+use ClinicCore\Rest\ScheduleController;
 use ClinicCore\Rest\SmsController;
 use ClinicCore\Settings\Settings;
 
@@ -81,6 +84,7 @@ final class App
             (new SmsController(self::smsService()))->register_routes();
             (new BookingController(self::bookingService()))->register_routes();
             (new PatientController(self::patientService()))->register_routes();
+            (new ScheduleController(self::scheduleService()))->register_routes();
             // Endpointهای فازهای بعد (F4+) — مطابق API Contract.
         });
 
@@ -227,6 +231,23 @@ final class App
         }
 
         return $booking;
+    }
+
+    public static function scheduleService(): ScheduleService
+    {
+        static $schedule = null;
+        if ($schedule === null) {
+            $db = self::db();
+            $schedule = new ScheduleService(
+                $db,
+                new ScheduleRepository($db),
+                self::jobs(),
+                self::audit(),
+                self::op()
+            );
+        }
+
+        return $schedule;
     }
 
     public static function patientService(): PatientService
