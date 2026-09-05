@@ -196,9 +196,11 @@ final class FinanceController extends RestBase
         register_rest_route(self::NS, '/config/services', [
             [
                 'methods' => WP_REST_Server::READABLE,
+                // Cap در Service چک می‌شود (OR): cpms_invoice_read (فاکتورسازی)
+                // یا cpms_config (مدیریت admin فنی — P-3)
                 'callback' => fn (WP_REST_Request $r) => $this->staff(
                     $r,
-                    RolesAndCapabilities::INVOICE_READ,
+                    null,
                     fn () => $this->finance->listServices($this->userId($r), $r->get_param('scope') !== 'all')
                 ),
                 'permission_callback' => '__return_true',
@@ -262,7 +264,7 @@ final class FinanceController extends RestBase
      */
     private function staff(
         WP_REST_Request $r,
-        string $cap,
+        ?string $cap,
         callable $fn,
         ?int $status = null,
         ?callable $statusFn = null
@@ -271,9 +273,11 @@ final class FinanceController extends RestBase
         if ($nonce instanceof WP_Error) {
             return $nonce;
         }
-        $perm = $this->requireCap($cap);
-        if ($perm instanceof WP_Error) {
-            return $perm;
+        if ($cap !== null) {
+            $perm = $this->requireCap($cap);
+            if ($perm instanceof WP_Error) {
+                return $perm;
+            }
         }
 
         try {

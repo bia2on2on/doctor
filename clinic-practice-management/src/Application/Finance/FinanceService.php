@@ -64,7 +64,12 @@ final class FinanceService
      */
     public function listServices(int $actorUserId, bool $onlyActive = true): array
     {
-        $this->requireCap($actorUserId, RolesAndCapabilities::INVOICE_READ, 'services.read');
+        // خواندن تعرفه: منشی/پزشک (برای فاکتورسازی FR-14.9) یا admin فنی
+        // (مدیریت تعرفه‌ها) — admin فنی cpms_invoice_read ندارد (P-3).
+        if (!user_can($actorUserId, RolesAndCapabilities::INVOICE_READ)
+            && !user_can($actorUserId, RolesAndCapabilities::CONFIG)) {
+            throw FinanceException::of('CLINIC_PERMISSION_DENIED', 'دسترسی لازم را ندارید', 403, ['scope' => 'services.read']);
+        }
 
         return array_map(static fn (array $s): array => [
             'id' => (int) $s['id'],

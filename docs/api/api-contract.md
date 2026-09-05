@@ -118,7 +118,7 @@
 |---|---|---|
 | G1 | `GET/POST /config/schedules` + `PUT/DELETE /config/schedules/{id}` — برنامه هفتگی هر پزشک (یک رکورد به‌ازای هر روز هفته؛ `day_of_week` 0=شنبه..6=جمعه؛ `start_time/end_time` HH:MM؛ `appointment_duration_min` 5–240؛ `slot_capacity` 1–50؛ بازه استراحت اختیاری داخل بازه کاری). تغییر/حذف → حذف Slotهای **خالیِ آینده** و بازتولید اتمیک (ADR-0004)؛ Slot دارای رزرو/hold هرگز حذف نمی‌شود. | `cpms_config` |
 | G1b | `GET/POST /config/schedule-exceptions` + `DELETE /config/schedule-exceptions/{id}` — استثنائات (`holiday`/`leave` = تعطیلی کل روز؛ `blocked`/`open_override` = بازه ساعتی الزامی). تاریخ باید آینده باشد. ثبت/حذف همان سیاست Regeneration را اجرا می‌کند. (ثبت افزایشی F3 — خارج از شماره‌گذاری اصلی) | `cpms_config` |
-| G2 | CRUD `/config/services` | نوشتن: `cpms_config` (admin فنی)؛ خواندن: `cpms_invoice_read` (منشی/پزشک — برای فاکتورسازی سریع FR-14.9) | `GET ?scope=active|all`، `POST`، `PUT /{id}`، `DELETE /{id}` (غیرفعال‌سازی منطقی)؛ `{code, name, price}` — کد یکتا per-clinic |
+| G2 | CRUD `/config/services` | نوشتن: `cpms_config` (admin فنی)؛ خواندن: `cpms_invoice_read` (منشی/پزشک — فاکتورسازی سریع FR-14.9) **یا** `cpms_config` (admin فنی — P-3) | `GET ?scope=active|all`، `POST`، `PUT /{id}`، `DELETE /{id}` (غیرفعال‌سازی منطقی)؛ `{code, name, price}` — کد یکتا per-clinic |
 | G3 | PUT `/settings` | `cpms_config` |
 | G4 | GET `/audit?filters` | `cpms_audit_read` (Explicit) — **تأیید Admin** |
 | G5 | GET `/reports/{type}?from&to` + `POST /reports/{type}/export` | `cpms_report_read` / `cpms_export` |

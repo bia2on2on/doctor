@@ -95,12 +95,13 @@ final class FinanceFlowTest extends WP_UnitTestCase
             'tax' => 10000,
         ]);
 
-        // Totals (InvoiceCalc): اقلام 500k + (2×150k−20k) = 780k؛ تخفیف کل 70k؛ مالیات 10k
+        // Totals (InvoiceCalc): اقلام 500k + (2×150k) = 800k gross؛ تخفیف قلم 20k
+        // → subtotal 780k؛ تخفیف فاکتور 50k → base 730k؛ مالیات 10k → total 740k
         $this->assertSame(780000.0, $invoice['subtotal']);
         $this->assertSame(70000.0, $invoice['discount']);
         $this->assertSame(10000.0, $invoice['tax']);
-        $this->assertSame(720000.0, $invoice['total']);
-        $this->assertSame(720000.0, $invoice['balance']);
+        $this->assertSame(740000.0, $invoice['total']);
+        $this->assertSame(740000.0, $invoice['balance']);
         $this->assertSame('open', $invoice['status']);
         $this->assertMatchesRegularExpression('/^INV-\d{6}-\d{3,}$/', $invoice['invoice_number']);
         $this->assertCount(2, $invoice['items']);
@@ -118,7 +119,7 @@ final class FinanceFlowTest extends WP_UnitTestCase
             ['INVOICE_CREATE', 'invoice', (int) $invoice['id']]
         );
         $this->assertNotNull($audit, 'INVOICE_CREATE audit row exists');
-        $this->assertStringContainsString('"invoice.total":720000', (string) $audit['after_json']);
+        $this->assertStringContainsString('"invoice.total":740000', (string) $audit['after_json']);
 
         // I1/I4 — تکرار صدور → Policy Violation
         try {
@@ -579,7 +580,7 @@ final class FinanceFlowTest extends WP_UnitTestCase
         } catch (FinanceException $e) {
             $this->assertSame('CLINIC_PERMISSION_DENIED', $e->errorCode);
         }
-        $docInvoice = $this->makeInvoice(200000, $this->makeCompletedVisit());
+        $docInvoice = $this->makeInvoice(200000);
         $docPay = $this->finance()->recordPayment($this->secretaryUserId, (int) $docInvoice['id'], ['amount' => 200000, 'method' => 'cash'], $this->uuid());
         // پزشک مجاز به void/refund است (ماتریس §3) — تست روی فاکتور مستقل
         $this->finance()->voidPayment($this->doctorUserId, (int) $docPay['payment_id'], 'ابطال توسط پزشک');
@@ -620,16 +621,17 @@ final class FinanceFlowTest extends WP_UnitTestCase
 
     public function testCheckoutWithoutInvoiceStillWorks(): void
     {
-        // بدون فاکتور: awaiting_payment → waive OK (رفتار قبلی حفظ شده)
+        // بدون فاکتور: awaiting_payment → waive = خروج مستقیم (V13 — checked_out)
         $visitId = $this->makeCompletedVisit();
         App::visitService()->transition($this->secretaryUserId, $visitId, 'invoice_ready');
         $waived = App::visitService()->checkout($this->secretaryUserId, $visitId, 'معافیت بیمار خاص');
-        $this->assertSame('paid', $waived['status']);
+        $this->assertSame('checked_out', $waived['status']);
 
-        // paid → check_out بدون فاکتور OK (RestQueueTest regression)
+        // paid (تسویه سیستمی بدون فاکتور — فقره باز V14 بدون فاکتور) → check_out OK
         $visitId2 = $this->makeCompletedVisit();
         App::visitService()->transition($this->secretaryUserId, $visitId2, 'invoice_ready');
-        App::visitService()->checkout($this->secretaryUserId, $visitId2, 'معافیت');
+        $visit = App::db()->fetchRow('SELECT * FROM ' . App::db()->table('cpms_visits') . ' WHERE id = %d', [$visitId2]);
+        App::visitService()->applyTransition($this->secretaryUserId, $visit, 'settled', [], 'system');
         $out = App::visitService()->checkout($this->secretaryUserId, $visitId2, null);
         $this->assertSame('checked_out', $out['status']);
     }
@@ -648,8 +650,10 @@ final class FinanceFlowTest extends WP_UnitTestCase
         return sprintf('%s-%s-4%s-%s-%s', $d(8), $d(4), substr($d(3), 0, 3), substr($d(4), 0, 4), $d(12));
     }
 
-    private function makeConsultation(int $patientId): int
+    /** ویزیت واقعی تا in_consultation — هر فراخوانی بیمار تازه (J-5: ویزیت فعال واحد در روز). */
+    private function makeConsultation(?int $patientId = null): int
     {
+        $patientId ??= $this->makePatient();
         $visit = App::visitService()->walkIn($this->secretaryUserId, $patientId, $this->clinicianId);
         $id = (int) $visit['id'];
         App::visitService()->transition($this->doctorUserId, $id, 'call');
@@ -658,10 +662,32 @@ final class FinanceFlowTest extends WP_UnitTestCase
         return $id;
     }
 
-    /** ویزیت تا consultation_completed (با Chief Complaint — FR-8.7). */
+    private function makePatient(): int
+    {
+        global $wpdb;
+        $now = App::db()->nowUtcSql();
+        $seq = random_int(1000, 999999);
+        $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_patients
+                     (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at)
+                 VALUES (1, %s, %s, %s, %s, "active", %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                'MR-FF-' . $seq,
+                'Finance',
+                'P' . $seq,
+                '0912' . sprintf('%07d', $seq),
+                $now,
+                $now
+            )
+        );
+
+        return (int) $wpdb->insert_id;
+    }
+
+    /** ویزیت تا consultation_completed (با Chief Complaint — FR-8.7)؛ بیمار تازه در هر فراخوانی. */
     private function makeCompletedVisit(): int
     {
-        $visitId = $this->makeConsultation($this->patientId);
+        $visitId = $this->makeConsultation();
         App::clinicalService()->addNote($this->doctorUserId, $visitId, [
             'category' => 'chief_complaint',
             'visibility' => 'patient_visible',
@@ -677,7 +703,7 @@ final class FinanceFlowTest extends WP_UnitTestCase
         return (int) $this->finance()->createService($this->adminUserId, ['code' => $code, 'name' => $name, 'price' => $price])['id'];
     }
 
-    /** فاکتور باز با یک قلم (پیش‌فرض: ویزیت مستقل بدون ویزیت مرجع؟ خیر — همیشه با ویزیت واقعی). */
+    /** فاکتور باز با یک قلم — ویزیت completed تازه (بیمار تازه) مگر این‌که ویزیت پاس شود. */
     private function makeInvoice(int $total, ?int $visitId = null): array
     {
         $visitId ??= $this->makeCompletedVisit();

@@ -19,7 +19,7 @@
 | # | From | To | Trigger | Actor | شرایط | Side-Effects |
 |---|---|---|---|---|---|---|
 | I1 | — | `open` | `issue` | منشی/پزشک | Visit در `consultation_completed`/`awaiting_payment` | `invoice_number` یکتا؛ Visit→`awaiting_payment` (V11) |
-| I2 | `open` | `partial` | `payment_captured` | سیستم (در Transaction ثبت Payment) | `paid_total < total` | به‌روزرسانی `paid_amount/balance` |
+| I2 | `open` | `partial` | `payment_captured` | سیستم (در Transaction ثبت Payment) | `paid_total < total` | به‌روزرسانی `paid_amount/balance`؛ پرداخت ناقص بعدی روی `partial` یک **self-loop** است (وضعیت ثابت — M-3 تجمیع `paid_amount`) |
 | I3 | `open` / `partial` | `paid` | `payment_captured` | سیستم | `paid_total ≥ total` (حداکثر = total؛ بیش‌پرداخت ممنوع → خطا) | Visit→`paid` (V12) |
 | I4 | `open` | `voided` | `void` | منشی (مجوز `cpms_invoice_void`) | **هیچ** Payment فعال ندارد؛ دلیل الزامی | Visit می‌تواند به `in_consultation` برگردد یا Checkout بدون فاکتور (V13)؛ Audit |
 
