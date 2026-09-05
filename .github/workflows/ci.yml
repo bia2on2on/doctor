@@ -10,6 +10,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+  pull-requests: write
+
 defaults:
   run:
     working-directory: clinic-practice-management
@@ -88,25 +92,44 @@ jobs:
           php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
             --bootstrap tests/integration-bootstrap.php tests/Integration 2>&1 | tee /tmp/phpunit-int.log
 
-      # خروجی PHPUnit به‌صورت annotation منتشر می‌شود تا از طریق API هم قابل خواندن باشد
-      # (سقف GitHub: 10 annotation به‌ازای هر Step)
+      # انتقال لاگ شکست‌ها به PR — لاگ‌های job از API به blob ریدایرکت می‌شوند و
+      # از محیط sandbox قابل دانلود نیستند؛ کامنت PR از طریق API خواندنی است.
+      - name: Post failures to PR
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          {
+            echo "### Integration test failures (run ${{ github.run_id }})"
+            echo '```'
+            grep -E "^[0-9]+\) |^Tests: |^OK |^ERRORS|^FAILURES|WordPress database error|WP die|Fatal|syntax" /tmp/phpunit-int.log | head -100
+            echo '```'
+          } > /tmp/pr-body.md
+          if [ -n "$PR_NUMBER" ]; then
+            gh pr comment "$PR_NUMBER" --body-file /tmp/pr-body.md || echo "::notice::PR comment failed (permissions?)"
+          fi
+
+      - name: Diagnose schema state
+        if: failure()
+        run: |
+          mysql -N -h 127.0.0.1 -u root -proot 2>/dev/null -e "SELECT CONCAT('tables_total=', COUNT(*)) FROM information_schema.tables WHERE table_schema='wordpress_test';"
+          mysql -N -h 127.0.0.1 -u root -proot 2>/dev/null -e "SELECT CONCAT('cpms_tables=', COUNT(*)) FROM information_schema.tables WHERE table_schema='wordpress_test' AND table_name LIKE '%cpms%';"
+          mysql -N -h 127.0.0.1 -u root -proot 2>/dev/null -e "SELECT CONCAT('migrations_applied=', IFNULL(GROUP_CONCAT(version), 'NONE')) FROM wordpress_test.wptests_cpms_schema_migrations;" || echo "::notice::migrations_table=MISSING"
+
+      # خروجی PHPUnit به‌صورت annotation هم منتشر می‌شود (سقف GitHub: 10 به‌ازای Step)
       - name: Surface test failures (part 1)
         if: failure()
         run: |
-          awk '
-            /^[0-9]+\) / { print "::error::" $0; c=2; next }
-            c>0 { print "::error::  >" $0; c-- }
-          ' /tmp/phpunit-int.log | head -10
+          grep -oE "^[0-9]+\) [A-Za-z\\\\]+Test::[A-Za-z_]+" /tmp/phpunit-int.log | sort -u | head -10 | while IFS= read -r l; do
+            echo "::error::${l:0:400}"
+          done
+          grep -E "^Tests: " /tmp/phpunit-int.log | head -1 | while IFS= read -r l; do
+            echo "::notice::${l:0:400}"
+          done
       - name: Surface test failures (part 2)
         if: failure()
         run: |
-          awk '
-            /^[0-9]+\) / { print "::error::" $0; c=2; next }
-            c>0 { print "::error::  >" $0; c-- }
-          ' /tmp/phpunit-int.log | sed -n '10,20p'
-      - name: Surface summary
-        if: failure()
-        run: |
-          grep -E "^Tests: |^OK |No tests executed|^ERRORS|^FAILURES" /tmp/phpunit-int.log | head -10 | while IFS= read -r l; do
-            echo "::notice::${l:0:400}"
+          grep -oE "^[0-9]+\) [A-Za-z\\\\]+Test::[A-Za-z_]+" /tmp/phpunit-int.log | sort -u | sed -n '11,20p' | while IFS= read -r l; do
+            echo "::error::${l:0:400}"
           done

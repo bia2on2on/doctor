@@ -198,15 +198,32 @@ final class ConcurrencyTest extends WP_UnitTestCase
                 $this->fail('pcntl_fork failed');
             }
             if ($pid === 0) {
-                // ---- Child: اتصال مستقل + یک UPDATE اتمیک ----
-                $mysqli = $this->freshMysqli();
-                $stmt = $mysqli->prepare($sql);
-                $now = gmdate('Y-m-d H:i:s') . '.000';
-                $stmt->bind_param('si', $now, $slotId);
-                $stmt->execute();
-                $exitCode = $stmt->affected_rows === 1 ? 0 : 1;
-                $stmt->close();
-                $mysqli->close();
+                /*
+                 * ---- Child: اتصال مستقل + یک UPDATE اتمیک ----
+                 * هر خطا باید به exit() منجر شود: اگر استثنایی (حتی
+                 * markTestSkipped) از فرزند فرار کند، PHPUnitِ کپی‌شده در فرزند
+                 * «ادامه» می‌دهد و کل Suite را دوباره اجرا می‌کند (zombie) —
+                 * خروجی‌ها interleave شده و اتصال مشترک والد خراب می‌شود.
+                 */
+                $exitCode = 1;
+                $mysqli = null;
+                try {
+                    $mysqli = $this->freshMysqli();
+                    $stmt = $mysqli->prepare($sql);
+                    if ($stmt !== false) {
+                        $now = gmdate('Y-m-d H:i:s') . '.000';
+                        if ($stmt->bind_param('si', $now, $slotId)) {
+                            $stmt->execute();
+                            $exitCode = $stmt->affected_rows === 1 ? 0 : 1;
+                            $stmt->close();
+                        }
+                    }
+                } catch (\Throwable $e) {
+                    $exitCode = 1;
+                }
+                if ($mysqli instanceof \mysqli) {
+                    @$mysqli->close();
+                }
                 exit($exitCode);
             }
             $pids[] = $pid;
