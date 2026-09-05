@@ -6,6 +6,8 @@
 
 declare(strict_types=1);
 
+use ClinicCore\Bootstrap\App;
+
 $_tests_dir = getenv('WP_TESTS_DIR') ?: '/tmp/wp-tests';
 
 if (!is_file($_tests_dir . '/includes/functions.php')) {
