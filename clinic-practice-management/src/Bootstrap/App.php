@@ -107,6 +107,9 @@ final class App
         }
         add_action('cpms_jobs_tick', static function (): void {
             self::recordTick();
+            // جاب‌های تکرارشونده را (Idempotent) دوباره زمان‌بندی کن — بدون
+            // این، هر جاب فقط یک‌بار (بعد از Activate) اجرا می‌شد (FR-5.5).
+            self::scheduleRecurringJobs();
             self::dispatcher()->tick(20);
         });
 
@@ -453,13 +456,31 @@ final class App
     /**
      * Schedule Jobهای دوره‌ای (بعد از activation) — V1: فوری + یادآوری روزانه.
      */
+    /**
+     * جاب‌های تکرارشونده — **Idempotent**: اگر نسخه Queued از نوع جاب در صف
+     * باشد، نسخه جدید ثبت نمی‌شود (tick هر دقیقه صدا می‌زند).
+     *
+     * @var array<string, int> type => priority
+     */
+    private const RECURRING_JOBS = [
+        'holds.expire' => 8,
+        'slots.generate' => 3,
+        'visits.no_show' => 5, // FR-5.5 — no-show خودکار نوبت‌ها
+    ];
+
     public static function scheduleRecurringJobs(): void
     {
         $queue = self::jobs();
         $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
 
-        $queue->enqueue('holds.expire', [], $now, priority: 8);
-        $queue->enqueue('slots.generate', [], $now, priority: 3);
-        $queue->enqueue('visits.no_show', [], $now, priority: 5);
+        foreach (self::RECURRING_JOBS as $type => $priority) {
+            $alreadyQueued = self::db()->fetchValue(
+                'SELECT id FROM ' . self::db()->table('cpms_jobs') . ' WHERE type = %s AND status = %s LIMIT 1',
+                [$type, \ClinCore\Infrastructure\Queue\JobQueue::QUEUED]
+            );
+            if ($alreadyQueued === null) {
+                $queue->enqueue($type, [], $now, priority: $priority);
+            }
+        }
     }
 }

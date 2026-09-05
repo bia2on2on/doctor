@@ -113,6 +113,34 @@ final class JobQueueTest extends WP_UnitTestCase
         $this->assertSame(5, $calls, 'تکرار tick نباید دوباره اجرا کند');
     }
 
+    /**
+     * FR-5.5 — جاب‌های تکرارشونده: بعد از اجرا (complete) دوباره
+     * زمان‌بندی می‌شوند و بدون نسخه Queued دوباره ثبت نمی‌شوند (Idempotent).
+     */
+    public function testRecurringJobsAreRescheduledIdempotently(): void
+    {
+        // اولین زمان‌بندی: هر سه جاب تکرارشونده در صف
+        App::scheduleRecurringJobs();
+        $queuedCount = static fn (): int => (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_jobs') . ' WHERE type = %s AND status = %s',
+            ['visits.no_show', \ClinCore\Infrastructure\Queue\JobQueue::QUEUED]
+        );
+        $this->assertSame(1, $queuedCount());
+
+        // دوباره صدا زدن → هیچ نسخه جدیدی (dedup)
+        App::scheduleRecurringJobs();
+        $this->assertSame(1, $queuedCount());
+
+        // اجرای tick واقعی → جاب پردازش شد → صف خالی از no_show
+        $processed = App::dispatcher()->tick(20);
+        $this->assertGreaterThanOrEqual(1, $processed);
+        $this->assertSame(0, $queuedCount());
+
+        // زمان‌بندی دوباره (مثل cpms_jobs_tick بعدی) → باز در صف
+        App::scheduleRecurringJobs();
+        $this->assertSame(1, $queuedCount());
+    }
+
     public function testFailedJobAlertsOpLog(): void
     {
         $jobId = $this->queue->enqueue('test.doomed', [], null, 5, 1);
