@@ -131,10 +131,10 @@ final class CpmsDb
     /**
      * Transaction + Row Lock انتخابی.
      *
-     * در Test-Bootstrap، افعال تراکنش (با نشانگر /*cpms*/) به SAVEPOINT/
-     * RELEASE/ROLLBACK-TO بازنویسی می‌شوند تا داخل تراکنش بازِ WP Test Suite
-     * بدون COMMIT ضمنی اجرا شوند (نشت Fixture بین تست‌ها). رفتار Production
-     * بدون تغییر است.
+     * در Test-Bootstrap، افعال تراکنش (با نشانگر cpms در ابتدای SQL) به
+     * SAVEPOINT/RELEASE/ROLLBACK-TO بازنویسی می‌شوند تا داخل تراکنش بازِ
+     * WP Test Suite بدون COMMIT ضمنی اجرا شوند (نشت Fixture بین تست‌ها).
+     * رفتار Production بدون تغییر است — MySQL comment را نادیده می‌گیرد.
      *
      * @template T
      *
@@ -142,11 +142,8 @@ final class CpmsDb
      *
      * @return T
      */
-public function transactional(callable $fn)
+    public function transactional(callable $fn)
     {
-        // نشانگر /*cpms*/ در ابتدای افعال تراکنش: فقط برای بازنویسی در
-        // Test-Bootstrap (SAVEPOINT) — در Production این Comment نادیده
-        // گرفته می‌شود و رفتار کلاسیک START TRANSACTION/COMMIT برقرار است.
         $this->wpdb->query('/*cpms*/ START TRANSACTION'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         try {
             $result = $fn();
@@ -157,7 +154,6 @@ public function transactional(callable $fn)
             $this->wpdb->query('/*cpms*/ ROLLBACK'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
             throw $e;
         }
-    }
     }
 
     /**
