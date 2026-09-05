@@ -65,7 +65,7 @@ final class PatientController extends RestBase
             ],
         ]);
 
-        register_rest_route(self::NS, '/patients/{id}', [
+        register_rest_route(self::NS, '/patients/(?P<id>\d+)', [
             [
                 'methods' => WP_REST_Server::READABLE,
                 'callback' => fn (WP_REST_Request $request) => $this->get($request),

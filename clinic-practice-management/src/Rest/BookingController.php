@@ -107,7 +107,7 @@ final class BookingController extends RestBase
             ],
         ]);
 
-        register_rest_route(self::NS, '/appointments/{id}/reschedule', [
+        register_rest_route(self::NS, '/appointments/(?P<id>\d+)/reschedule', [
             [
                 'methods' => WP_REST_Server::CREATABLE,
                 'callback' => fn (WP_REST_Request $request) => $this->reschedule($request),
@@ -147,7 +147,7 @@ final class BookingController extends RestBase
             ],
         ]);
 
-        register_rest_route(self::NS, '/appointments/{id}/cancel', [
+        register_rest_route(self::NS, '/appointments/(?P<id>\d+)/cancel', [
             [
                 'methods' => WP_REST_Server::CREATABLE,
                 'callback' => fn (WP_REST_Request $request) => $this->cancel($request),

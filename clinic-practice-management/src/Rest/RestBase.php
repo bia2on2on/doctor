@@ -87,14 +87,13 @@ abstract class RestBase
     }
 
     /**
-     * پاسخ خطای استاندارد.
+     * پاسخ خطای استاندارد (Contract §0 / ADR-0019):
+     * top-level `code` = ثابت ماشین‌خوان `CLINIC_*` (Stable) — `message` = فارسی
+     * کاربر — `data.status` = HTTP. جزئیات فنی فقط در Log.
      */
     protected function error(string $code, int $http, string $message, array $data = []): WP_Error
     {
-        $error = new WP_Error('cpms_' . strtolower($code), $message, ['status' => $http]);
-        $error->add_data(array_merge(['code' => $code], $data));
-
-        return $error;
+        return new WP_Error($code, $message, array_merge(['status' => $http], $data));
     }
 
     /**
