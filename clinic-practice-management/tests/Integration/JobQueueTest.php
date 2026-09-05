@@ -123,7 +123,7 @@ final class JobQueueTest extends WP_UnitTestCase
         App::scheduleRecurringJobs();
         $queuedCount = static fn (): int => (int) App::db()->fetchValue(
             'SELECT COUNT(*) FROM ' . App::db()->table('cpms_jobs') . ' WHERE type = %s AND status = %s',
-            ['visits.no_show', \ClinCore\Infrastructure\Queue\JobQueue::QUEUED]
+            ['visits.no_show', \ClinicCore\Infrastructure\Queue\JobQueue::QUEUED]
         );
         $this->assertSame(1, $queuedCount());
 
