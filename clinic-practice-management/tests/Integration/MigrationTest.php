@@ -45,7 +45,7 @@ final class MigrationTest extends WP_UnitTestCase
         global $wpdb;
 
         foreach (self::EXPECTED_TABLES as $short) {
-            $table = $wpdb->prefix . str_replace('cpms_', '', $short);
+            $table = App::db()->table($short);
             $exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table)); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
             $this->assertSame($table, $exists, "missing table: {$short}");
         }
@@ -87,7 +87,7 @@ final class MigrationTest extends WP_UnitTestCase
     private function hasUnique(string $short, array $columns): bool
     {
         global $wpdb;
-        $table = $wpdb->prefix . str_replace('cpms_', '', $short);
+        $table = App::db()->table($short);
         $indexes = $wpdb->get_results("SHOW INDEX FROM {$table}", ARRAY_A); // phpcs:ignore WordPress.DB.PreparedSQL
         foreach ($indexes as $idx) {
             $col = $idx['Column_name'];

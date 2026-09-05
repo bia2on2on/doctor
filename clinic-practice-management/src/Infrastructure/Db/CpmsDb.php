@@ -18,9 +18,18 @@ final class CpmsDb
     {
     }
 
+    /**
+     * نام فیزیکی جدول: `{wp_prefix}cpms_{name}`.
+     *
+     * پیشوند `cpms_` بخشی از قرارداد مستند (ERD/SRS/دیتادیکشنری) است و همیشه
+     * در نام نهایی حفظ می‌شود؛ str_replace فقط تحمل فراخوانی با/بدون پیشوند
+     * را می‌دهد (table('cpms_patients') === table('patients')).
+     */
     public function table(string $short): string
     {
-        return $this->wpdb->prefix . str_replace('cpms_', '', $short);
+        $name = preg_replace('/^' . preg_quote($this->prefix, '/') . '/', '', $short);
+
+        return $this->wpdb->prefix . $this->prefix . $name;
     }
 
     public function dbPrefix(): string

@@ -30,7 +30,7 @@ final class Idempotency
     {
         $existing = $this->db->fetchRow(
             'SELECT response_code, response_json, status FROM ' . $this->db->table('cpms_idempotency_keys') .
-            ' WHERE key = %s AND endpoint = %s AND (wp_user_id <=> %d) AND (context_id <=> %d) LIMIT 1',
+            ' WHERE `key` = %s AND endpoint = %s AND (wp_user_id <=> %d) AND (context_id <=> %d) LIMIT 1',
             [$key, $endpoint, $userId, $contextId]
         );
 
@@ -72,7 +72,7 @@ final class Idempotency
         $this->db->query(
             'UPDATE ' . $this->db->table('cpms_idempotency_keys') .
             ' SET status = %d, response_code = %d, response_json = %s
-             WHERE key = %s AND endpoint = %s AND (wp_user_id <=> %d) AND (context_id <=> %d)',
+             WHERE `key` = %s AND endpoint = %s AND (wp_user_id <=> %d) AND (context_id <=> %d)',
             [
                 self::STATUS_DONE,
                 $responseCode,
@@ -92,7 +92,7 @@ final class Idempotency
     {
         $this->db->query(
             'DELETE FROM ' . $this->db->table('cpms_idempotency_keys') .
-            ' WHERE key = %s AND endpoint = %s AND (wp_user_id <=> %d) AND (context_id <=> %d) AND status = %d',
+            ' WHERE `key` = %s AND endpoint = %s AND (wp_user_id <=> %d) AND (context_id <=> %d) AND status = %d',
             [$key, $endpoint, $userId, $contextId, self::STATUS_PENDING]
         );
     }

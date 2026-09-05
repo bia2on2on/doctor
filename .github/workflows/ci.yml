@@ -89,11 +89,24 @@ jobs:
             --bootstrap tests/integration-bootstrap.php tests/Integration 2>&1 | tee /tmp/phpunit-int.log
 
       # خروجی PHPUnit به‌صورت annotation منتشر می‌شود تا از طریق API هم قابل خواندن باشد
-      - name: Surface test failures
+      # (سقف GitHub: 10 annotation به‌ازای هر Step)
+      - name: Surface test failures (part 1)
         if: failure()
         run: |
           awk '
             /^[0-9]+\) / { print "::error::" $0; c=2; next }
             c>0 { print "::error::  >" $0; c-- }
-            /^Tests: / { print "::notice::" $0 }
           ' /tmp/phpunit-int.log | head -10
+      - name: Surface test failures (part 2)
+        if: failure()
+        run: |
+          awk '
+            /^[0-9]+\) / { print "::error::" $0; c=2; next }
+            c>0 { print "::error::  >" $0; c-- }
+          ' /tmp/phpunit-int.log | sed -n '10,20p'
+      - name: Surface summary
+        if: failure()
+        run: |
+          grep -E "^Tests: |^OK |No tests executed|^ERRORS|^FAILURES" /tmp/phpunit-int.log | head -10 | while IFS= read -r l; do
+            echo "::notice::${l:0:400}"
+          done
