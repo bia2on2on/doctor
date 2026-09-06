@@ -70,6 +70,7 @@ jobs:
       - name: Runtime probe — WordPress 6.4/6.5/6.6 (PHP 8.2, fresh from ZIP)
         run: |
           set -u
+          set +e
           PLUGIN="$GITHUB_WORKSPACE/clinic-practice-management"
           EVID="$GITHUB_WORKSPACE/closure-evidence"
           mkdir -p "$EVID" "$STORAGE_OUT"
@@ -396,6 +397,7 @@ jobs:
       - name: Runtime probe — PHP ${{ matrix.php }} + WP 6.7.2 (fresh from ZIP)
         run: |
           set -u
+          set +e
           PLUGIN="$GITHUB_WORKSPACE/clinic-practice-management"
           EVID="$GITHUB_WORKSPACE/closure-evidence"
           mkdir -p "$EVID" "$STORAGE_OUT"
@@ -553,7 +555,7 @@ jobs:
           echo "INFO core-level php diagnostics during probe: {$coreInfo}\n";
           echo "PROBE OK\n";
           PHPEOF
-          php -l /tmp/runtime-probe.php >/dev/null
+          php -l /tmp/runtime-probe.php >> "$EVIDF" 2>&1 || echo "php-l rc=$?" >> "$EVIDF"
           WP_HOME="$WDIR" STORAGE_OUT="$STORAGE_OUT" php /tmp/runtime-probe.php > "/tmp/probe-php${{ matrix.php }}.log" 2>&1
           RC=$?
           cp "/tmp/probe-php${{ matrix.php }}.log" "$EVIDF"
