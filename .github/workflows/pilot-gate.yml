@@ -327,15 +327,30 @@ jobs:
       - name: Background Jobs — recurring + بدون failed
         run: |
           cd "$WP_DIR/wp-content/plugins/clinic-practice-management"
-          WP_HOME="$WP_DIR" php bin/cpms jobs tick --limit=50
+          # دو Tick پشت‌سرهم: Tick اول recurring را re-enqueue و اجرا می‌کند؛
+          # Tick دوم «فقط» اگر زمان‌بندی دوره‌ای زنده باشد دوباره اجرا می‌کند
+          # (Regression: bin/cpms قبلاً scheduleRecurringJobs را صدا نمی‌زد)
+          set -o pipefail
+          WP_HOME="$WP_DIR" php bin/cpms jobs tick --limit=50 2>&1 | tee /tmp/tick-1.log
+          WP_HOME="$WP_DIR" php bin/cpms jobs tick --limit=50 2>&1 | tee /tmp/tick-2.log
+          N2=$(grep -oE 'Processed [0-9]+' /tmp/tick-2.log | tail -1 | grep -oE '[0-9]+' || echo 0)
+          [ "${N2:-0}" -ge 10 ] || { echo "TICK2 processed only ${N2:-0} job(s) — recurring re-schedule broken (10 types expected)"; exit 1; }
           echo '--- failed jobs (expect none) ---'
           WP_HOME="$WP_DIR" php bin/cpms jobs list --status=failed | tee /tmp/failed-jobs.txt
           ! grep -qE '^#[0-9]+' /tmp/failed-jobs.txt || { echo 'FAILED JOBS EXIST'; exit 1; }
-          echo '--- queued recurring jobs ---'
+          echo '--- queued jobs (dump) ---'
           mysql -h127.0.0.1 -P3306 -uroot -proot -N -e "SELECT CONCAT(type,':',COUNT(*)) FROM ${DB_MAIN}.cpmswp_cpms_jobs WHERE status='queued' GROUP BY type ORDER BY type;" | tee /tmp/jobs-queued.txt
-          for J in cleanup.idem cleanup.otp cleanup.rate_limits notif.dispatch appt.reminder fu.reminder; do
-            grep -q "^$J:" /tmp/jobs-queued.txt || { echo "$J NOT SCHEDULED"; exit 1; }
+          echo '--- executed recurring jobs (status=success, per type — expect all 10 types) ---'
+          mysql -h127.0.0.1 -P3306 -uroot -proot -N -e "SELECT CONCAT(type,':',COUNT(*)) FROM ${DB_MAIN}.cpmswp_cpms_jobs WHERE status='success' GROUP BY type ORDER BY type;" | tee /tmp/jobs-success.txt
+          for J in holds.expire slots.generate visits.no_show handwriting.gc notif.dispatch appt.reminder fu.reminder cleanup.otp cleanup.rate_limits cleanup.idem; do
+            grep -q "^$J:" /tmp/jobs-success.txt || { echo "$J NEVER RAN"; exit 1; }
           done
+          {
+            echo '## Background Jobs'
+            echo '```'
+            cat /tmp/jobs-success.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # ---------- Protected medical file access ----------
       - name: Protected files — .htaccess deny (Apache واقعی) + مسیر فعال خارج webroot
@@ -584,7 +599,8 @@ jobs:
             echo "### Pilot Gate FAILURE — job: ${GITHUB_JOB} (run ${{ github.run_id }})"
             echo '```'
             for f in /tmp/apt.log /tmp/seed.json /tmp/smoke.log /tmp/bench.txt /tmp/ab.txt /tmp/headers.txt \
-                     /tmp/perms.txt /tmp/audit-actions.txt /tmp/jobs-queued.txt /tmp/failed-jobs.txt \
+                     /tmp/perms.txt /tmp/audit-actions.txt /tmp/jobs-queued.txt /tmp/jobs-success.txt /tmp/failed-jobs.txt \
+                     /tmp/tick-1.log /tmp/tick-2.log \
                      /tmp/health.json /tmp/avail.json /tmp/unauth.json /tmp/probe-body.txt \
                      /tmp/leak.txt /tmp/leak2.txt /tmp/cpms-tick.log /tmp/tick-manual.log /tmp/health-check.log /tmp/pw.log /tmp/resp.log; do
               if [ -f "$f" ]; then echo "--- $f (tail 50) ---"; tail -50 "$f"; fi
@@ -621,6 +637,9 @@ jobs:
             /tmp/backup-hashes.txt
             /tmp/audit-actions.txt
             /tmp/jobs-queued.txt
+            /tmp/jobs-success.txt
+            /tmp/tick-1.log
+            /tmp/tick-2.log
           retention-days: 14
           if-no-files-found: ignore
 
@@ -747,7 +766,8 @@ jobs:
             echo "### Pilot Gate FAILURE — job: ${GITHUB_JOB} (run ${{ github.run_id }})"
             echo '```'
             for f in /tmp/apt.log /tmp/seed.json /tmp/smoke.log /tmp/bench.txt /tmp/ab.txt /tmp/headers.txt \
-                     /tmp/perms.txt /tmp/audit-actions.txt /tmp/jobs-queued.txt /tmp/failed-jobs.txt \
+                     /tmp/perms.txt /tmp/audit-actions.txt /tmp/jobs-queued.txt /tmp/jobs-success.txt /tmp/failed-jobs.txt \
+                     /tmp/tick-1.log /tmp/tick-2.log \
                      /tmp/health.json /tmp/avail.json /tmp/unauth.json /tmp/probe-body.txt \
                      /tmp/leak.txt /tmp/leak2.txt /tmp/cpms-tick.log /tmp/tick-manual.log /tmp/health-check.log /tmp/pw.log /tmp/resp.log; do
               if [ -f "$f" ]; then echo "--- $f (tail 50) ---"; tail -50 "$f"; fi
@@ -891,7 +911,8 @@ jobs:
             echo "### Pilot Gate FAILURE — job: ${GITHUB_JOB} (run ${{ github.run_id }})"
             echo '```'
             for f in /tmp/apt.log /tmp/seed.json /tmp/smoke.log /tmp/bench.txt /tmp/ab.txt /tmp/headers.txt \
-                     /tmp/perms.txt /tmp/audit-actions.txt /tmp/jobs-queued.txt /tmp/failed-jobs.txt \
+                     /tmp/perms.txt /tmp/audit-actions.txt /tmp/jobs-queued.txt /tmp/jobs-success.txt /tmp/failed-jobs.txt \
+                     /tmp/tick-1.log /tmp/tick-2.log \
                      /tmp/health.json /tmp/avail.json /tmp/unauth.json /tmp/probe-body.txt \
                      /tmp/leak.txt /tmp/leak2.txt /tmp/cpms-tick.log /tmp/tick-manual.log /tmp/health-check.log /tmp/pw.log /tmp/resp.log; do
               if [ -f "$f" ]; then echo "--- $f (tail 50) ---"; tail -50 "$f"; fi

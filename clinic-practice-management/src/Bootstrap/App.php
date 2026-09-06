@@ -145,11 +145,7 @@ final class App
             wp_schedule_event(time() + 60, 'cpms_minute', 'cpms_jobs_tick');
         }
         add_action('cpms_jobs_tick', static function (): void {
-            self::recordTick();
-            // جاب‌های تکرارشونده را (Idempotent) دوباره زمان‌بندی کن — بدون
-            // این، هر جاب فقط یک‌بار (بعد از Activate) اجرا می‌شد (FR-5.5).
-            self::scheduleRecurringJobs();
-            self::dispatcher()->tick(20);
+            self::runTick(20);
         });
 
         // Migration خودکار و ایمن (idempotent) — هنگام admin_init و rest_api_init
@@ -675,6 +671,24 @@ final class App
         'cleanup.rate_limits' => 1,
         'cleanup.idem' => 1, // Idempotency::cleanup — رشد بی‌کران را می‌بندد
     ];
+
+    /**
+     * یک چرخه کامل Runner — مسیر واحد برای WP-Cron و `bin/cpms jobs tick`:
+     * ثبت Heartbeat + زمان‌بندی مجدد (Idempotent) جاب‌های دوره‌ای + پردازش صف.
+     *
+     * Regression (Pilot Gate): bin/cpms قبلاً scheduleRecurringJobs را صدا
+     * نمی‌زد → در استقرار system-cron (J-4) جاب‌های دوره‌ای فقط یک‌بار
+     * (بعد از Activate) اجرا و بعد برای همیشه متوقف می‌شدند (FR-5.5).
+     */
+    public static function runTick(int $limit = 20): int
+    {
+        self::recordTick();
+        // جاب‌های تکرارشونده را (Idempotent) دوباره زمان‌بندی کن — بدون
+        // این، هر جاب فقط یک‌بار (بعد از Activate) اجرا می‌شد (FR-5.5).
+        self::scheduleRecurringJobs();
+
+        return self::dispatcher()->tick($limit);
+    }
 
     public static function scheduleRecurringJobs(): void
     {
