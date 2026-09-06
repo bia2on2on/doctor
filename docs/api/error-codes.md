@@ -108,6 +108,21 @@
 | `CLINIC_LICENSE_MALFORMED` | 502 | پاسخ سرور لایسنس ساختار نامعتبر داشت | — |
 | `CLINIC_LICENSE_ENDPOINT_INSECURE` | 500 | Endpoint لایسنس باید HTTPS باشد | — |
 | `CLINIC_LICENSE_NOT_CONFIGURED` | 500 | آدرس سرور لایسنس تنظیم نشده (عملیات به‌صورت NOT_CONFIGURED ادامه دارد؛ Setup در Health/Admin) | — |
+| `CLINIC_LICENSE_NOT_ACTIVATED` | 409 | Refresh بدون فعال‌سازی قبلی (ابتدا Activate با کلید/سند) | — |
+
+## Backup / Restore (F10 — spec §22–§25)
+
+| Code | HTTP | Meaning | Retry-able |
+|---|---|---|---|
+| `CLINIC_BACKUP_INVALID_ID` | 400 | شناسهٔ بکاپ خارج از گرامر امن `[0-9a-z][0-9a-z._-]{3,120}` است | — |
+| `CLINIC_BACKUP_EXISTS` | 409 | بکاپی با این شناسه از قبل وجود دارد | — |
+| `CLINIC_BACKUP_NOT_FOUND` | 404 | بکاپ/فایل خواسته‌شده یافت نشد | — |
+| `CLINIC_BACKUP_IO` | 500 | خطای I/O (mkdir/copy/read) در ساخت/بازیابی بکاپ | — |
+| `CLINIC_BACKUP_NO_TABLES` | 500 | هیچ جدول `cpms_*` برای Dump یافت نشد (شکست امن — بکاپ خالی ساخته نمی‌شود) | — |
+| `CLINIC_BACKUP_MANIFEST` | 500 | مانیفست نامعتبر/ناقص است (ساختار یا امضای هش) | — |
+| `CLINIC_BACKUP_INVALID_PATH` | 400 | مسیر نسبیِ فایل در مانیفست ناامن است (فقط زیرپوشه‌های عادی؛ بدون `..`/مطلق/بک‌اسلش) | — |
+| `CLINIC_BACKUP_CONFIRM_REQUIRED` | 409 | Restore نیازمند تأیید صریح (CLI `--yes` / فرم Admin) است؛ از Job خودکار هرگز اجرا نمی‌شود | — |
+| `CLINIC_BACKUP_PREFLIGHT_FAILED` | 409 | Preflight Restore رد شد (تمامیت بکاپ یا دسترس‌پذیری DB) — چیزی تغییر نکرده است | — |
 
 ## Rule ثبت کد جدید
 
