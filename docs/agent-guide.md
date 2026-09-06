@@ -402,3 +402,18 @@ final class XxxService {
 - **CI نهایی سبز ۵/۵:** run **34011934801** @ **4286aff** — Integration = ۲۱۸ تست ۰ خطا (اصلاح آخر: مقایسه Idempotent-replay با ksort — JSON objectها بدون‌ترتیب‌اند؛ ترتیب کلیدهای پاسخ ذخیره‌شده در decode با پاسخ تازه فرق داشت، مقادیر یکسان).
 - **مشاهده برای F9 (Hardening):** ایندکس یونیک `cpms_idempotency_keys.u_idem_key` فقط روی `key` است ولی SELECT کتاب‌keeping چهار ستونی است (key, endpoint, wp_user_id, context_id) — کلید تکراری بین Contextها → INSERT بی‌صدا می‌افتد (بنر Duplicate در لاگ تست‌ها، بی‌ضرر فعلی). بازبینی ایندکس در F9 (جزئیات: report-f7 §9).
 - **F7 بسته شد** — HEAD نهایی: **cf290be** (کد 4286aff + docs) — CI نهایی روی HEAD: run **34012034597** سبز ۵/۵. Tree پاک. توقف طبق پروتکل: F8 (اعلان+گزارش) منتظر تأیید کارفرما.
+
+### [2026-09-07 ~00:30 UTC] — ایجنت Arena — شروع F8 (اعلان + گزارش)
+
+- **ورود به F8 پس از تأیید کارفرما.** Scope: Notification Layer (رویداد→queue→adapter؛ N-1..N-6)، رویدادهای FR-20.2، SMS روی معماری Provider-agnostic موجود (ADR-0025)، Jalali در Templates، Queue/Retry/Dedupe، یادآوری نوبت/Follow-up، ۱۲ گزارش FR-19.2 با مدل مجوز+scope (ADR-0026/D-8)، Export (CSV محافظت فرمول‌اینجکشن، Watermark، Audit EXPORT، دانلود محافظت‌شده)، TP-13 + Report Tests.
+- **تحقیق تکمیل:** notifications.md (کامل)، background-jobs.md (appt.reminder/notif.dispatch/fu.reminder/report.export)، SRS FR-19/20/21، api-contract G5/G6/R2، data-dictionary §32/33، permission-matrix §2/§3/§6، ADR-0026، performance-baseline (Export async)، file-storage (محافظت ساختاری)، wireframes (Toast منشی).
+- **کد پایه موجود:** SmsService provider-agnostic کامل (templates/dedupe/queue/retry) + SmsSendJobHandler + ارسال APPTconfirmed/cancelled/rescheduled از BookingService (Jalali از قبل). cpms_notifications موجود ولی بدون NotificationService و بدون ستون read_at (نیاز Migration 0005). RolesAndCapabilities: REPORT_READ/EXPORT/FINANCE_READ موجود. FinanceService.summary موجود (D18) ولی بدون Scope پزشک.
+- **تصمیم‌های طراحی F8:**
+  - Internal channel = cpms_notifications (جدید NotificationService)؛ SMS = پایپ‌لاین موجود cpms_sms_messages (بدون دو-صف کردن)؛ Email/Push = V1 رها (اختیاری در کاتالوگ). PAYMENT.receipt اختیاری → V1 رها.
+  - cpms_notifications باقی می‌ماند queue-native (N-2): INSERT queued؛ Job `notif.dispatch` (هر دقیقه، RECURRING) → queued→sent + Archive>90d (retention delete).
+  - Dedupe: الگوی SmsService (SELECT قبل INSERT؛ UNIQUE dedupe_key)؛ کلید per-recipient (`apt:{id}:confirm:u{userId}` / `:p{patientId}`).
+  - Scope گزارش‌ها: پزشکِ متصل (cpms_clinicians.wp_user_id) = OWN سرور-side (فیلتر clinician_id اجباری)؛ Aggregate مطب فقط برای دارنده cpms_report_read بدون Clinician-Link (اعطای صریح، الگوی حسابدار ماتریس §6)؛ پزشک متصل هرگز Aggregate کل مطب نمی‌گیرد (403) — D-8/D-15 + قواعد کارفرما.
+  - تفکیک Aggregate⊥Detail: گزارش مالی (revenue/payment_methods/open_balances) = جمعی بدون نام بیمار + نیاز finance_read؛ گزارش عملیاتی با نام بیمار = نیاز patient_read؛ follow_ups_due = نیاز medical_read. Notes خصوصی هرگز در هیچ گزارشی نیست (کوئری نمی‌شوند).
+  - Export: POST → Job `report.export` (async طبق baseline §18) → CSV (BOM + ساکس فرمول‌اینجکشن) در LocalFileStorage (خارج webroot) + اعلان Internal «آماده شد» به درخواست‌دهنده (الگوی background-jobs: «فایل + اعلان»)؛ دانلود فقط مالک + cpms_export + Audit EXPORT (request و download). PDF سرور = Backlog (پیش‌زمینه F6)؛ Print View با Watermark (کاربر+زمان) برای چاپ مرورگر.
+  - یادآوری‌ها: appt.reminder/fu.reminder به‌صورت RECURRING per-tick + dedupe (J-2)؛ Quiet hours 08:00–21:00 فقط روی SMS غیرتعاملی (یادآوری‌ها)؛ OTP مستثنا (مسیر inline موجود دست‌نخورده).
+- قدم بعد: Migration 0005 → NotificationService/Repository → Jobs → Wiring (Visit/Booking) → Controllers (G5/G6/R2) → ReportService/Export → UI Badge → تست‌ها → docs.
