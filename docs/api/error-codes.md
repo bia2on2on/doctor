@@ -124,6 +124,16 @@
 | `CLINIC_BACKUP_CONFIRM_REQUIRED` | 409 | Restore نیازمند تأیید صریح (CLI `--yes` / فرم Admin) است؛ از Job خودکار هرگز اجرا نمی‌شود | — |
 | `CLINIC_BACKUP_PREFLIGHT_FAILED` | 409 | Preflight Restore رد شد (تمامیت بکاپ یا دسترس‌پذیری DB) — چیزی تغییر نکرده است | — |
 
+## Update (F10 — ADR-0029)
+
+| Code | HTTP | Meaning | Retry-able |
+|---|---|---|---|
+| `CLINIC_UPDATE_UNAVAILABLE` | 409 | به‌روزرسانی در لحظهٔ نصب دیگر در دسترس نیست (مانیفست/امضا منقضی یا کانال عوض شده) | — |
+| `CLINIC_UPDATE_SOURCE_MISMATCH` | 409 | آدرس بسته با مانیفست امضاشده هم‌خوان نیست | — |
+| `CLINIC_UPDATE_IO` | 500 | دانلود/یکپارچگی ممکن نیست (download_url در دسترس نیست) | — |
+| `CLINIC_UPDATE_DOWNLOAD_FAILED` | 502 | دانلود بسته از سرور انتشار ناموفق بود | ✅ |
+| `CLINIC_UPDATE_INTEGRITY` | 409 | sha256 بسته با مانیفست امضاشده تطابق ندارد — نصب متوقف شد (هرگز بستهٔ تأییدنشده نصب نمی‌شود) | — |
+
 ## Rule ثبت کد جدید
 
 1. قبل از Merge هر Feature: کدهای جدید این فایل ثبت شوند (PR بدون ثبت Code = ناقص).

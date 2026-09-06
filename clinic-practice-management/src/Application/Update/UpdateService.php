@@ -34,6 +34,20 @@ final class UpdateService
     }
 
     /**
+     * کانال فعال به‌روزرسانی (stable|beta) از Settings — پیش‌فرض stable.
+     */
+    public function channel(): string
+    {
+        try {
+            $channel = (string) $this->settings->get('update.channel', 'stable');
+        } catch (\Throwable) {
+            $channel = 'stable';
+        }
+
+        return ($channel === 'beta' || $channel === 'stable') ? $channel : 'stable';
+    }
+
+    /**
      * آیا این نصب اجازه‌ی دریافت به‌روزرسانی دارد؟
      */
     public function isUpdateEntitled(): bool

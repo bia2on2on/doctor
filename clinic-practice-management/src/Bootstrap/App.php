@@ -54,6 +54,7 @@ use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Licensing\HttpVendorGateway;
 use ClinicCore\Infrastructure\Licensing\VendorGateway;
 use ClinicCore\Infrastructure\Logging\CorrelationId;
+use ClinicCore\Infrastructure\Update\WpUpdateBridge;
 use ClinicCore\Infrastructure\Logging\OpLogger;
 use ClinicCore\Infrastructure\Queue\JobQueue;
 use ClinicCore\Infrastructure\Repository\AppointmentRepository;
@@ -169,6 +170,13 @@ final class App
         add_action('rest_api_init', static function (): void {
             self::ensureMigrated();
         });
+
+        // F10 — به‌روزرسانی امن (ADR-0029): فقط slug خودمان؛ کش‌شده؛ بدون شبکه در
+        // صفحات عادی. صحت sha256 بسته پیش از نصب (upgrader_pre_download).
+        $updateBridge = self::wpUpdateBridge();
+        add_filter('pre_set_site_transient_update_plugins', [$updateBridge, 'injectUpdatePlugins']);
+        add_filter('plugins_api', [$updateBridge, 'injectPluginInfo'], 10, 3);
+        add_filter('upgrader_pre_download', [$updateBridge, 'verifyPackageBeforeInstall'], 10, 4);
 
         // Correlation helperها (cpms_request_id/cpms_session_id) در فایل اصلی
         // افزونه تعریف می‌شوند — خارج از boot تا در همه Contextها (CLI، Test،
@@ -720,6 +728,20 @@ final class App
         }
 
         return $updates;
+    }
+
+    /**
+     * پل هوک‌های به‌روزرسانی وردپرس (F10 / ADR-0029) — transient + plugins_api +
+     * صحت بسته پیش از نصب. بدون حالت؛ singleton برای یک‌بار ثبت هوک.
+     */
+    public static function wpUpdateBridge(): WpUpdateBridge
+    {
+        static $bridge = null;
+        if ($bridge === null) {
+            $bridge = new WpUpdateBridge(self::updateService());
+        }
+
+        return $bridge;
     }
 
     /**

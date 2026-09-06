@@ -152,11 +152,13 @@ final class BackupService
         // شناسهٔ داخل مانیفست باید با نام پوشه یکی باشد (جابه‌جایی/دستکاری مانیفست)
         $idMatches = (string) ($raw['backup_id'] ?? '') === $backupId;
         // Quick check (ارزان برای لیست) — تأیید کامل هش فایل‌ها = verifyBackup()
+        // مانیفستِ خراب/دستکاری‌شده نباید لیست را بشکند: ردیف با integrity=corrupt
+        // و فیلدهای پیش‌فرض برمی‌گردد تا اپراتور بکاپِ آلوده را ببیند و حذف کند.
         $integrity = BackupManifest::isValid($raw) && $manifestShaOk && $idMatches ? 'ok_quick' : 'corrupt';
 
         return [
             'backup_id' => $backupId,
-            'created_at' => (string) $raw['created_at'],
+            'created_at' => (string) ($raw['created_at'] ?? ''),
             'note' => (string) ($raw['note'] ?? ''),
             'tables' => count((array) ($raw['db']['tables'] ?? [])),
             'rows' => array_sum(array_map(static fn (array $t): int => (int) $t['rows'], (array) ($raw['db']['tables'] ?? []))),
