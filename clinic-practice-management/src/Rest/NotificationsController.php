@@ -22,7 +22,7 @@ use WP_REST_Server;
  */
 final class NotificationsController extends RestBase
 {
-    private const NS = 'clinic/v1';
+    protected const NS = 'clinic/v1';
 
     public function __construct(private readonly NotificationService $notifications)
     {
