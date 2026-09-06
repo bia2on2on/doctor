@@ -23,7 +23,7 @@
 
 ## 1. معرفی پروژه
 
-**CPMS** = سیستم مدیریت مطب (Clinic Practice Management System) به‌صورت **افزونه WordPress** (PHP 8.1+، MySQL 8، WP 6.7+) — تک‌کلینیک در V1، تجاری با لایسنس.
+**CPMS** = سیستم مدیریت مطب (Clinic Practice Management System) به‌صورت **افزونه WordPress** (PHP 8.1+، MySQL 8، WP 6.4+ — runtime تأییدشده روی WP 6.4/6.5/6.6/6.7.2 و PHP 8.1–8.4) — تک‌کلینیک در V1، تجاری با لایسنس.
 
 - مسیر افزونه: `clinic-practice-management/`
 - Namespace: `ClinicCore\` → `clinic-practice-management/src/`

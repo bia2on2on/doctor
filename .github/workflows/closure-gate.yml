@@ -319,7 +319,11 @@ jobs:
             RC=$?
             echo "marker post-probe rc=$RC log-bytes=$(stat -c '%s' "/tmp/probe-${MAJ}.log" 2>/dev/null || echo missing)" >> "$EVIDF"
             if [ "$RC" -eq 0 ]; then
+              grep -q '^PROBE OK' "/tmp/probe-${MAJ}.log" || { echo "FAIL WP $VER runtime — PROBE OK missing" | tee -a "$EVIDF"; RC=1; }
+            fi
+            if [ "$RC" -eq 0 ]; then
               echo "PASS WP $VER runtime (PHP 8.2) — fresh install from release ZIP" | tee -a "$EVIDF"
+              tail -n 4 "/tmp/probe-${MAJ}.log" >> "$EVIDF"
             else
               echo "FAIL WP $VER runtime (PHP 8.2) — rc=$RC" | tee -a "$EVIDF"
               sed -n '1,120p' "/tmp/probe-${MAJ}.log" >> "$EVIDF"
@@ -568,7 +572,7 @@ jobs:
           {
             echo '=== probe (PHP ${{ matrix.php }} + WP 6.7.2) — tail ==='
             tail -n 60 "/tmp/probe-php${{ matrix.php }}.log"
-            if [ "$RC" -eq 0 ]; then echo "PASS PHP ${{ matrix.php }} full runtime (WP 6.7.2)"; else echo "FAIL PHP ${{ matrix.php }} full runtime (rc=$RC)"; fi
+            if [ "$RC" -eq 0 ] && grep -q '^PROBE OK' "/tmp/probe-php${{ matrix.php }}.log"; then echo "PASS PHP ${{ matrix.php }} full runtime (WP 6.7.2)"; RC=0; else echo "FAIL PHP ${{ matrix.php }} full runtime (rc=$RC)"; RC=1; fi
           } >> "$EVIDF"
           [ "$RC" -eq 0 ]
 

@@ -1,6 +1,7 @@
 # CPMS — سیستم مدیریت مطب (Clinic Practice Management System)
 
-افزونه WordPress تجاری برای مدیریت کامل مطب — PHP 8.1+ / MySQL 8 / WordPress 6.7+ — تک‌کلینیک در V1.
+افزونه WordPress تجاری برای مدیریت کامل مطب — PHP 8.1+ / MySQL 8 / WordPress 6.4+ — تک‌کلینیک در V1.
+سازگاری (شواهد Closure Gate): runtime کامل از ZIP ریلیز روی WP 6.4 / 6.5 / 6.6 / 6.7.2 و PHP 8.1–8.4 — PASS.
 
 > ## 🤖 ایجنت‌ها (AI/انسان) — قبل از هر کاری:
 > **[`docs/agent-guide.md`](docs/agent-guide.md)** را کامل بخوانید — راهنمای جامع ادامه پروژه:
