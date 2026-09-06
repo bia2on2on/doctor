@@ -155,9 +155,10 @@ jobs:
           ok('rest-route-health-registered', isset($routes['/clinic/v1/health']));
           $req = new WP_REST_Request('GET', '/clinic/v1/health');
           $resp = rest_do_request($req);
-          $data = $resp->get_data();
+          $payload = $resp->get_data();
+          $data = is_array($payload) ? ($payload['data'] ?? $payload) : [];
           ok('rest-health-http-200', $resp->get_status() === 200, 'http=' . $resp->get_status());
-          ok('rest-health-body-ok', is_array($data) && ($data['ok'] ?? false) === true);
+          ok('rest-health-body-ok', is_array($data) && ($data['ok'] ?? false) === true, 'body=' . substr((string) wp_json_encode($payload), 0, 220));
 
           // ===== C. DateTime / DB clock =====
           $nowSql = App::db()->nowUtcSql();
@@ -468,8 +469,9 @@ jobs:
           ok('rest-route-health', isset($routes['/clinic/v1/health']));
           $req = new WP_REST_Request('GET', '/clinic/v1/health');
           $resp = rest_do_request($req);
-          $data = $resp->get_data();
-          ok('rest-health', $resp->get_status() === 200 && is_array($data) && ($data['ok'] ?? false) === true, 'http=' . $resp->get_status());
+          $payload = $resp->get_data();
+          $data = is_array($payload) ? ($payload['data'] ?? $payload) : [];
+          ok('rest-health', $resp->get_status() === 200 && is_array($data) && ($data['ok'] ?? false) === true, 'http=' . $resp->get_status() . ' body=' . substr((string) wp_json_encode($payload), 0, 220));
           $nowSql = App::db()->nowUtcSql();
           ok('db-utc-clock', strtotime((string) $nowSql) !== false && abs(time() - strtotime((string) $nowSql)) < 86400, (string) $nowSql);
           $mkUser = static function (string $login, string $role): int {
