@@ -108,6 +108,9 @@ final class Settings
         'backup.keep_count' => 14, // Retention: N نسخه‌ی آخر (V1 — بدون Tiering)
         'backup.storage_path' => '', // '' = {WP_CONTENT_DIR}/cpms-backups (محافظت‌شده)
         'backup.last_run_at' => 0, // ts آخرین بکاپ موفق (Job)
+        // F10 — به‌روزرسانی امن (ADR-0029)
+        'update.check_interval_hours' => 24,
+        'update.channel' => 'stable', // stable|beta
     ];
 
     /** @var array<string, mixed>|null */

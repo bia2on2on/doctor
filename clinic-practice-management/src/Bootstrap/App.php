@@ -39,6 +39,7 @@ use ClinicCore\Application\Notifications\NotificationService;
 use ClinicCore\Application\Notifications\SmsService;
 use ClinicCore\Application\Reports\ExportService;
 use ClinicCore\Application\Reports\ReportService;
+use ClinicCore\Application\Update\UpdateService;
 use ClinicCore\Application\Visits\VisitService;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Domain\Licensing\LicenseGate;
@@ -77,6 +78,7 @@ use ClinicCore\Infrastructure\Sms\Providers\LogSmsProvider;
 use ClinicCore\Infrastructure\Sms\SmsProviderInterface;
 use ClinicCore\Infrastructure\Sms\SmsProviderRegistry;
 use ClinicCore\Infrastructure\Storage\LocalFileStorage;
+use ClinicCore\Infrastructure\Update\HttpUpdateMetadataGateway;
 use ClinicCore\Migrations\MigrationRunner;
 use ClinicCore\Rest\BookingController;
 use ClinicCore\Rest\ClinicalController;
@@ -692,6 +694,29 @@ final class App
         }
 
         return $backups;
+    }
+
+    /**
+     * سرویس به‌روزرسانی امن (ADR-0029) — بررسی دستی/کش؛ بدون شبکه در
+     * صفحات عادی. Entitlement از LicenseService (feature `updates`).
+     */
+    public static function updateService(): UpdateService
+    {
+        static $updates = null;
+        if ($updates === null) {
+            try {
+                $serverUrl = (string) self::settings()->get('license.server_url', '');
+            } catch (\Throwable) {
+                $serverUrl = '';
+            }
+            $updates = new UpdateService(
+                self::settings(),
+                self::licenseService(),
+                new HttpUpdateMetadataGateway(['server_url' => $serverUrl])
+            );
+        }
+
+        return $updates;
     }
 
     public static function dispatcher(): JobsDispatcher
