@@ -1,6 +1,6 @@
-# گزارش فاز F10 — خودمختاری تجاری (لایسنس، بکاپ، بهروزرسانی امن، Health) — وضعیت اجرا
+# گزارش فاز F10 — خودمختاری تجاری (لایسنس، بکاپ، بهروزرسانی امن، Health) — گزارش تکمیل (§50)
 
-تاریخ: 2026-09-06 | وضعیت: **IN_PROGRESS — کد کامل؛ تأیید CI در انتظار push/PR** | شاخه: `arena/01a076ad-doctor`
+تاریخ: 2026-09-06 (بهروز 2026-09-06 پس از تصمیم کارفرما دربارهٔ NOT_CONFIGURED) | وضعیت: **IMPLEMENTATION COMPLETE — منتظر تأیید کارفرما (§51)** | شاخه: `arena/01a076ad-doctor` | HEAD: `3ca77ce`
 مراجع: F10 spec §1–§52؛ ADR-0023/0028/0029؛ docs/agent-guide.md §10؛ `/home/user/cpms-handover-audit-report.md` (خط پایه)
 
 ## 1. خط پایه و بازبینی دلتا
@@ -8,15 +8,15 @@
 - Git delta: HEAD `a68241bce…` == `origin/main`؛ شاخه `arena/01a076ad-doctor`؛ tree تمیز در شروع؛ PR #1 merged / PR #2 closed — هیچ تغییری از ممیزی. **بدون FOUNDATIONAL_CONFLICT.**
 - طبقهبندی دامنههای F10: Licensing = MISSING (seam READY)؛ Backup/Restore = MISSING؛ Update = MISSING؛ Cron/Jobs = READY؛ Health/Compatibility = PARTIAL؛ همه بهصورت پشت Seamهای موجود پیاده شد.
 
-## 2. آنچه پیاده شد (Commitها e8e058a → e90b186)
+## 2. آنچه پیاده شد (Commitها 1ddf51a → 3ca77ce؛ مسیر کامل e8e058a → 3ca77ce)
 | حوزه | شواهد |
 |---|---|
 | **بنیان معماری** | ADR-0023 (پروتکل لایسنس: state محلیِ امضاشده، مهلت ۷ روز GRACE، قطع شبکه ≠ نامعتبر، REVOKED/SUSPENDED فقط از سند معتبر)؛ ADR-0028 (مرز Data/Control Plane + Allowlist ابرداده؛ بدون PHI)؛ ADR-0029 (امضای Ed25519 جدا برای انتشار؛ بدون eval/کد راه دور) |
-| **لایسنس** | Domain: `LicenseStatus/Policy/StateMachine/EntitlementRegistry/SignedLicenseGate/LicenseSignature/LicenseKeys`؛ Infra: `VendorGateway + HttpVendorGateway` (HTTPS+SSRF+Timeout)، `LicenseRepository`، Migration `2026_09_07_0008`؛ App: `LicenseService` (فعالسازی سرور/آفلاین، refresh Backoff)؛ `App::licenseGate()` واقعی؛ Job `license.refresh`؛ نصب فعالنشده = `NOT_CONFIGURED` (مجاز ولی برجسته — اولویت §1) |
+| **لایسنس** | Domain: `LicenseStatus/Policy/StateMachine/EntitlementRegistry/SignedLicenseGate/LicenseSignature/LicenseKeys`؛ Infra: `VendorGateway + HttpVendorGateway` (HTTPS+SSRF+Timeout)، `LicenseRepository`، Migration `2026_09_07_0008`؛ App: `LicenseService` (فعالسازی سرور/آفلاین، refresh Backoff)؛ `App::licenseGate()` واقعی؛ Job `license.refresh`؛ سیاست نصب-بدون-سند طبق تصمیم کارفرما 2026-09-06: `ACTIVATION_PENDING` (تازه؛ پنجرهٔ ۷ روزه) و `ACTIVATION_GRACE` (pre-F10؛ مهلت ۳۰ روزه) → پایان بدون سند = `RESTRICTED`؛ dev-mode فقط صریح (`CPMS_DEV_MODE`/فیلتر)؛ anti-reset؛ مرجع زمان سرور |
 | **بکاپ/بازیابی** | موتور داخل افزونه (بدون mysqldump؛ snapshot سازگار؛ فقط cpms_*) + mirror storage + مانیفست sha256؛ ProtectedBackupStore؛ Job `backup.run`؛ Retention؛ Preflight + Safety Backup + Restore با تأیید صریح؛ CLI `bin/cpms backup …`؛ تنظیمات `backup.*` |
 | **بهروزرسانی امن** | `ReleaseManifest/Signature/Keys` + `HttpUpdateMetadataGateway` + `UpdateService` (entitlement گیت `updates`؛ کش؛ بدون شبکه در صفحات عادی)؛ تنظیمات `update.*` |
 | **Health/UX** | `SystemHealthService` (چکهای بدون PHI؛ Host Capability SUPPORTED/WARNINGS/UNSUPPORTED) + صفحه «CPMS (سیستم)» (مجوز/Health/بکاپ/Restore/بهروزرسانی؛ `cpms_config`+nonce؛ بدون PHI)؛ `bin/cpms status` → وضعیت مجوز |
-| **تستها (افزوده)** | واحد خالص ۳۲ تست (StateMachine، Entitlement، SignedLicenseGate، Signature سدیم-گیت، Manifest، Splitter، HostClassification، ReleaseManifest)؛ Integration (CI): LicenseLifecycle (۱۰)، BackupEngine (۶)، UpdateService (۷)، SlotCapacityOneHundredWay (§27/§28؛ ۱۰۰ فرایند + اتصال مستقل MySQL روی `atomicBook` واقعی) |
+| **تستها (افزوده)** | واحد خالص (StateMachine، Entitlement، SignedLicenseGate، Signature سدیم-گیت، Manifest، Splitter، HostClassification، ReleaseManifest، **LicenseActivationWindow ۱۱ تست مرز پنجره/anti-extension**، **DevMode**)؛ Integration (CI): LicenseLifecycle، **LicenseActivationWindowIntegration (۱۱ سناریوی تصمیم کارفرما)**، BackupEngine، UpdateService، SlotCapacityOneHundredWay (§27/§28؛ ۱۰۰ فرایند + اتصال مستقل MySQL روی `atomicBook` واقعی) |
 | **Error codes** | ثبت کامل `CLINIC_LICENSE_*` در docs/api/error-codes.md (ADR-0019) |
 
 ## 3. وضعیت شواهد (صادقانه)
