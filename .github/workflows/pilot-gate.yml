@@ -507,10 +507,15 @@ jobs:
       # ---------- Full Restore Drill ----------
       - name: Restore Drill — محیط جداگانه (DB دوم + WP tree دوم) + Integrity
         run: |
+          # همه خروجی step به /tmp/restore.log می‌رود (دیاگ در صورت شکست)
+          set -o pipefail
+          exec > >(tee -i /tmp/restore.log) 2>&1
           T0=$(date +%s)
+          echo 'PHASE 1: DB restore (mysql دوم @3307)'
           mysql -h 127.0.0.1 -P 3307 -uroot -proot -e "CREATE DATABASE $DB_RESTORE CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
           gunzip -c /tmp/backup-db.sql.gz | mysql -h127.0.0.1 -P3307 -uroot -proot "$DB_RESTORE"
           T1=$(date +%s)
+          echo 'PHASE 2: storage + WP tree دوم + config'
           mkdir -p /home/runner/restore-clinic-storage
           tar -xzf /tmp/backup-storage.tar.gz -C /home/runner/restore-clinic-storage --strip-components=1
           cp -R "$WP_DIR" "$WP_RESTORE_DIR"
@@ -522,6 +527,7 @@ jobs:
           wp config set DISABLE_WP_CRON true --raw --allow-root
           sudo chmod -R a+rX "$WP_RESTORE_DIR"
           T2=$(date +%s)
+          echo 'PHASE 3: integrity checks'
           cat > /tmp/restore-config.php <<'PHPEOF'
           <?php
           require getenv('WP_HOME') . '/wp-load.php';
@@ -529,7 +535,7 @@ jobs:
           echo 'config restore: files.storage_path=/home/runner/restore-clinic-storage', "\n";
           PHPEOF
           WP_HOME="$WP_RESTORE_DIR" php /tmp/restore-config.php
-          echo '== Integrity 1: شمارش همه جداول (main vs restore) =='
+          echo 'PHASE 3a: شمارش همه جداول (main vs restore)'
           MAIN_TABLES=$(mysql -h127.0.0.1 -P3306 -uroot -proot -N -e "SELECT table_name FROM information_schema.tables WHERE table_schema='$DB_MAIN' AND table_name LIKE 'cpmswp_%' ORDER BY table_name;")
           FAIL=0
           while read -r T; do
@@ -539,14 +545,14 @@ jobs:
           done <<< "$MAIN_TABLES"
           NT=$(wc -l <<< "$MAIN_TABLES")
           [ $FAIL -eq 0 ] && echo "همه $NT جدول: شمارش یکسان ✓" || exit 1
-          echo '== Integrity 2: schema + audit chain روی Restore =='
+          echo 'PHASE 3b: schema + audit chain روی Restore'
           WP_HOME="$WP_RESTORE_DIR" php "$WP_RESTORE_DIR/wp-content/plugins/clinic-practice-management/bin/cpms" status
           WP_HOME="$WP_RESTORE_DIR" php "$WP_RESTORE_DIR/wp-content/plugins/clinic-practice-management/bin/cpms" audit verify 100000
-          echo '== Integrity 3: فایلهای محافظت‌شده (checksum byte-to-byte) =='
+          echo 'PHASE 3c: فایلهای محافظت‌شده (checksum byte-to-byte)'
           (cd "$STORAGE_OUT" && find . -type f -exec sha256sum {} \; | sort) > /tmp/orig-files.txt
           (cd /home/runner/restore-clinic-storage && find . -type f -exec sha256sum {} \; | sort) > /tmp/restored-files.txt
           diff /tmp/orig-files.txt /tmp/restored-files.txt && echo "storage: $(wc -l < /tmp/orig-files.txt) فایل byte-to-byte یکسان ✓" || exit 1
-          echo '== Integrity 4: نمونه کسب‌وکار =='
+          echo 'PHASE 3d: نمونه کسب‌وکار'
           cat > /tmp/restore-sample.php <<'PHPEOF'
           <?php
           require getenv('WP_HOME') . '/wp-load.php';
@@ -603,7 +609,7 @@ jobs:
             echo '```'
             for f in /tmp/apt.log /tmp/seed.json /tmp/smoke.log /tmp/bench.txt /tmp/ab.txt /tmp/headers.txt \
                      /tmp/perms.txt /tmp/audit-actions.txt /tmp/jobs-queued.txt /tmp/jobs-success.txt /tmp/failed-jobs.txt \
-                     /tmp/tick-1.log /tmp/tick-2.log \
+                     /tmp/tick-1.log /tmp/tick-2.log /tmp/restore.log /tmp/orig-files.txt /tmp/restored-files.txt /tmp/backup-hashes.txt \
                      /tmp/health.json /tmp/avail.json /tmp/unauth.json /tmp/probe-body.txt \
                      /tmp/leak.txt /tmp/leak2.txt /tmp/cpms-tick.log /tmp/tick-manual.log /tmp/health-check.log /tmp/pw.log /tmp/resp.log; do
               if [ -f "$f" ]; then echo "--- $f (tail 50) ---"; tail -50 "$f"; fi
@@ -643,6 +649,9 @@ jobs:
             /tmp/jobs-success.txt
             /tmp/tick-1.log
             /tmp/tick-2.log
+            /tmp/restore.log
+            /tmp/orig-files.txt
+            /tmp/restored-files.txt
           retention-days: 14
           if-no-files-found: ignore
 
@@ -770,7 +779,7 @@ jobs:
             echo '```'
             for f in /tmp/apt.log /tmp/seed.json /tmp/smoke.log /tmp/bench.txt /tmp/ab.txt /tmp/headers.txt \
                      /tmp/perms.txt /tmp/audit-actions.txt /tmp/jobs-queued.txt /tmp/jobs-success.txt /tmp/failed-jobs.txt \
-                     /tmp/tick-1.log /tmp/tick-2.log \
+                     /tmp/tick-1.log /tmp/tick-2.log /tmp/restore.log /tmp/orig-files.txt /tmp/restored-files.txt /tmp/backup-hashes.txt \
                      /tmp/health.json /tmp/avail.json /tmp/unauth.json /tmp/probe-body.txt \
                      /tmp/leak.txt /tmp/leak2.txt /tmp/cpms-tick.log /tmp/tick-manual.log /tmp/health-check.log /tmp/pw.log /tmp/resp.log; do
               if [ -f "$f" ]; then echo "--- $f (tail 50) ---"; tail -50 "$f"; fi
@@ -915,7 +924,7 @@ jobs:
             echo '```'
             for f in /tmp/apt.log /tmp/seed.json /tmp/smoke.log /tmp/bench.txt /tmp/ab.txt /tmp/headers.txt \
                      /tmp/perms.txt /tmp/audit-actions.txt /tmp/jobs-queued.txt /tmp/jobs-success.txt /tmp/failed-jobs.txt \
-                     /tmp/tick-1.log /tmp/tick-2.log \
+                     /tmp/tick-1.log /tmp/tick-2.log /tmp/restore.log /tmp/orig-files.txt /tmp/restored-files.txt /tmp/backup-hashes.txt \
                      /tmp/health.json /tmp/avail.json /tmp/unauth.json /tmp/probe-body.txt \
                      /tmp/leak.txt /tmp/leak2.txt /tmp/cpms-tick.log /tmp/tick-manual.log /tmp/health-check.log /tmp/pw.log /tmp/resp.log; do
               if [ -f "$f" ]; then echo "--- $f (tail 50) ---"; tail -50 "$f"; fi
