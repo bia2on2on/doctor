@@ -73,6 +73,19 @@
 - **امنیت Generic API:** SSRF Guard (IP خصوصی/Loopback مسدود) + بدون Code/eval + Timeout اجباری.
 - **OTP:** کد خام **هرگز** در جدول پیام‌ها ذخیره نمی‌شود (متن Mask + بدون vars)؛ بدون Queue-Retry برای OTP.
 
+## F10 — مجوز / بکاپ / بهروزرسانی (کلیدهای جدید 2026-09-06)
+
+| کلید | پیشفرض | نوع | توضیح |
+|---|---|---|---|
+| `license.server_url` | `''` | string (https) | آدرس سرور لایسنس/بهروزرسانی فروشنده (کنترلپلین؛ ADR-0028). خالی = فعالسازی آفلاین/دستی با سند امضاشده |
+| `backup.enabled` | `false` | bool | بکاپ دورهای (Job `backup.run`) — فعالسازی آگاهانه |
+| `backup.interval_hours` | `24` | int | فاصله بکاپ دورهای |
+| `backup.keep_count` | `14` | int | Retention: نگهداری N نسخه آخر (V1 بدون Tiering) |
+| `backup.storage_path` | `''` | string | مسیر مطلق مخزن بکاپ؛ خالی = `{WP_CONTENT_DIR}/cpms-backups` (گارد سرور خودکار) |
+| `backup.last_run_at` | `0` | int (ts) | آخرین بکاپ موفق (نوشتهشده توسط Job/دستی) |
+| `update.check_interval_hours` | `24` | int | TTL کش بررسی بهروزرسانی (transient) |
+| `update.channel` | `stable` | enum stable\|beta | کانال انتشار |
+
 ## Secrets (نظم)
 | Secret | محل | ممنوع |
 |---|---|---|

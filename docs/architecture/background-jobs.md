@@ -29,7 +29,8 @@
 | `cleanup.holds` | روزانه | حذف رکوردهای hold >7 روز | — |
 | `audit.chain_verify` | روزانه | صحت‌سنجی Hash Chain Audit (آخرین 10k + نمونه) | Report only |
 | `report.export` | رویدادی | Exportهای سنگین (CSV/PDF) → فایل + اعلان | Job row |
-| `backup.trigger` | روزانه | اجرای برنامه بکاپ (docs/backup) | Lock + last_success |
+| `backup.run` | هر Tick (چک) / دورهای با `backup.interval_hours` | بکاپ DB cpms_* + storage + مانیفست (F10 — موتور داخل افزونه؛ spec §22؛ جانشین `backup.trigger` مفهومی) | `backup.enabled` + سررسید + Lock صف |
+| `license.refresh` | هر Tick (چک) / Backoff | refresh سند مجوز از سرور فروشنده (F10/ADR-0023) — هرگز در مسیر درخواست | `refreshDue()` + Backoff بر اساس شکستهای پیاپی |
 | `temp.cleanup` | روزانه | فایل‌های موقت/Preview مهلت‌گذشته | — |
 
 ## 3. Alert و پایش

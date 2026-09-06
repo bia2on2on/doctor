@@ -455,3 +455,15 @@ final class XxxService {
 - **درس‌های F9 برای فازهای بعد:** ① در تستهای namespaced همیشه `\\RuntimeException` بک‌اسلش‌دار؛ ② هیچ تست State-mutatingی بدون `finally` بازیابی وقتی DDL دارد (implicit commit تراکنش WP تست را می‌شکند)؛ ③ مسیر REST در تست‌ها همیشه با اسلش ابتدای namespace (`/clinic/v1/...`)؛ ④ امضاهای `:int` هرگز مقدار `query():bool` برنگردانند — برای تعداد سطر `execute()`؛ ⑤ فایلهای Migration باید side-effect-free باشند تا `require` (نه require_once) امن باشد.
 - **Docs sync:** report-f9.md، CHANGELOG (F9)، roadmap F9 ✅، api-contract §0 (دامنه Idempotency چه‌گانه)، user-guide.md (از کامیت کد).
 - **F9 بسته شد.** طبق پروتокол و دستور صریح کارفرما: **گزارش Completion ارائه شد و توقف تا تأیید F10 (Go-Live/Pilot عملیاتی) — بدون تأیید وارد فاز جدید نمی‌شویم.**
+
+### [2026-09-06 ~13:10 UTC] — ایجنت Arena — F10 شروع: بنیان لایسنس، بکاپ، بهروزرسانی امن، Health/UX، تست ۱۰۰-راهی (اجرای فاز؛ CI در انتظار)
+
+- **F10 طبق اسپک کارفرما آغاز شد** (اجازه ویرایش/commit/push/PR؛ بدون merge به main). Git delta علیه ممیزی: HEAD `a68241bce` دستنخورده (clean). هیچ FOUNDATIONAL_CONFLICT یافت نشد.
+- **ADR-0023 (پروتکل لایسنس)** + **ADR-0028 (مرز Data/Control Plane)** + **ADR-0029 (تحویل امن بهروزرسانی)** پذیرفته و ثبت شد.
+- **لایسنس (مکمل Seam F3):** Domain خالص (LicenseStatus/Policy/StateMachine/EntitlementRegistry fail-closed/SignedLicenseGate/LicenseSignature Ed25519) + Infra (VendorGateway + HttpVendorGateway HTTPS/SSRF/Timeout؛ LicenseRepository + Migration `2026_09_07_0008`) + App/LicenseService (فعالسازی سرور و آفلاین-سند؛ وضعیت محلی امضاشده؛ refresh فقط در Job با Backoff). `App::licenseGate()` حالا واقعی است؛ نصب فعالنشده = NOT_CONFIGURED (مجاز ولی برجسته — اولویت ایمنی §1). وضعیتها: ACTIVE/EXPIRING/GRACE/RESTRICTED/SUSPENDED/REVOKED/INVALID/UNREACHABLE؛ قطع شبکه ≠ نامعتبر.
+- **بکاپ/بازیابی:** موتور داخل افزونه (db.sql تمام cpms_* با snapshot سازگار بدون mysqldump + mirror storage + مانیفست sha256) در ProtectedBackupStore؛ Job دوره‌ای `backup.run`؛ Retention؛ Preflight + Safety Backup + Restore با تأیید صریح (فقط cpms_*)؛ CLI `bin/cpms backup …`.
+- **بهروزرسانی امن:** مانیفست انتشار Ed25519 با کلید جدا (ReleaseKeys)، بدون eval/کد از راه دور؛ entitlement گیت feature `updates`؛ UpdateService + کش transient.
+- **Health/UX:** SystemHealthService (چکهای بدون PHI + Host Capability SUPPORTED/WARNINGS/UNSUPPORTED) + صفحه «CPMS (سیستم)» (مجوز/Health/بکاپ/Restore/بهروزرسانی؛ cap `cpms_config`؛ nonce؛ بدون PHI).
+- **آزمون پذیرش ۱۰۰-راهی (§27/§28):** `SlotCapacityOneHundredWayTest` — ۱۰۰ فرایند همزمان با اتصال مستقل MySQL روی مسیر واقعی `SlotRepository::atomicBook`؛ ظرفیت ۱ → دقیقاً ۱ برنده؛ ظرفیت ۳ → دقیقاً ۳ (در CI اجرا میشود؛ این sandbox MySQL ندارد).
+- **واحدتست محلی (WASM PHP 8.2):** ۲۷۰ تست، ۱۶٬۶۰۵ اِسert، ۰ شکست (۸ خطای محیطی شناختهشده 32-bit؛ ۸ skip نیازمند sodium). Integration/CI در انتظار push + PR (BLOCKED_BY_ENVIRONMENT برای اجرای محلی WP/MySQL).
+- **گزارش F10 و توقف تا تأیید کارفرما** طبق §49–§51 در ادامه همین لاگ ثبت خواهد شد.
