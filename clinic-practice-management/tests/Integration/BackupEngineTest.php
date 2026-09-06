@@ -88,8 +88,8 @@ final class BackupEngineTest extends WP_UnitTestCase
         $meta = $this->backups->createBackup('tamper');
         $dir = $this->tmpBase . '/backups/' . $meta['backup_id'];
 
-        // دستکاری یک فایل ذخیره‌سازی
-        file_put_contents($this->filesBase . '/1/a3/' . str_repeat('b', 32) . '.pdf', 'TAMPERED');
+        // دستکاری کپیِ فایلِ ذخیره‌سازی داخل آرتیفکت بکاپ (نه منبع اصلی)
+        file_put_contents($dir . '/storage/1/a3/' . str_repeat('b', 32) . '.pdf', 'TAMPERED');
         $verify = $this->backups->verifyBackup($meta['backup_id']);
         $this->assertFalse($verify['ok']);
         $this->assertNotEmpty($verify['errors']);
