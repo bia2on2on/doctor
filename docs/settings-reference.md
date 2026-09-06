@@ -38,6 +38,12 @@
 | `files.storage_path` | `` | مسیر مطلق | پوشه ذخیرهفایلهای پزشکی فاز F5 — خالی = `wp-content/clinic-files/` (خارج uploads) با گارد `.htaccess` deny + `index.php`. توصیه file-storage.md: مسیر مطلق خارج DocumentRoot. تغییر در هر Request خوانده می‌شود (بدون کش). |
 | `files.max_upload_bytes` | `10485760` | بایت | سقف حجم آپلود E16/C3 — پیشفرض 10 MB؛ اعملای سرور (F-3) با خطای `CLINIC_FILE_INVALID` 400. |
 | `clinical.require_chief_complaint` | `true` | bool | الزام ثبت شکایت اصلی قبل از Complete (FR-8.7 — E14). |
+| `notif.quiet_hours_start` | `08:00` | `HH:MM` محلی | شروع بازه ارسال SMS غیرتعاملی (یادآوری‌ها — F8 notifications §5؛ OTP مستثنا). |
+| `notif.quiet_hours_end` | `21:00` | `HH:MM` محلی | پایان بازه Quiet Hours (پشتیبانی بازه overnight به وقت Timezone کلینیک). |
+| `notif.archive_days` | `90` | روز | Retention اعلان‌های Internal — purgeExpired داخل Job `notif.dispatch` (sent/read قدیمی حذف می‌شود). |
+| `reports.max_range_days` | `366` | روز | سقف بازه گزارش/Export — بزرگ‌تر → 422 `CLINIC_VALIDATION_FAILED`. |
+| `reports.export_retention_days` | `7` | روز | نگهداری فایل Export قبل از حذف (فایل + ردیف؛ دانلود منقضی → 410 `CLINIC_EXPORT_EXPIRED`). |
+| `reports.export_max_rows` | `10000` | ردیف | سقف ردیف‌های Export (async — performance-baseline §18). |
 | `files.encrypt_at_rest` | `false` | bool | رمزنگاری هر-فایل (تصمیم D6؛ V1.5). |
 | `retention.audit_years` | `10` | سال | نگهداری Audit (تابع قانون محل — D7). |
 | `retention.record_years` | `15` | سال | نگهداری پرونده. |
