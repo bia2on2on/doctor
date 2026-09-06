@@ -309,8 +309,11 @@ jobs:
             wp plugin install "$PLUGIN/dist/clinic-practice-management-1.0.0.zip" --activate --path="$WDIR" --allow-root > /tmp/wp-plugin-install.log 2>&1 || {
               echo "FAIL wp plugin install/activate on WP $VER" | tee -a "$EVIDF"; tail -5 /tmp/wp-plugin-install.log >> "$EVIDF"; FAILED=1; continue; }
             WP_HOME="$WDIR" php "$WDIR/wp-content/plugins/clinic-practice-management/bin/cpms" migrate >> "$EVIDF" 2>&1 || true
-            WP_HOME="$WDIR" STORAGE_OUT="$STORAGE_OUT" php /tmp/runtime-probe.php > "/tmp/probe-${MAJ}.log" 2>&1
+            echo "marker pre-probe (WP $VER)" >> "$EVIDF"
+            php -l /tmp/runtime-probe.php >> "$EVIDF" 2>&1 || echo "php-l-failed rc=$?" >> "$EVIDF"
+            WP_HOME="$WDIR" STORAGE_OUT="$STORAGE_OUT" timeout 300 php /tmp/runtime-probe.php > "/tmp/probe-${MAJ}.log" 2>&1
             RC=$?
+            echo "marker post-probe rc=$RC log-bytes=$(stat -c '%s' "/tmp/probe-${MAJ}.log" 2>/dev/null || echo missing)" >> "$EVIDF"
             if [ "$RC" -eq 0 ]; then
               echo "PASS WP $VER runtime (PHP 8.2) — fresh install from release ZIP" | tee -a "$EVIDF"
             else
@@ -413,6 +416,8 @@ jobs:
           wp plugin install "$PLUGIN/dist/clinic-practice-management-1.0.0.zip" --activate --path="$WDIR" --allow-root > /tmp/wp-plugin-install.log 2>&1 || { echo 'plugin install/activate FAILED'; cat /tmp/wp-plugin-install.log; exit 1; }
           WP_HOME="$WDIR" php "$WDIR/wp-content/plugins/clinic-practice-management/bin/cpms" migrate || true
 
+          : > "$EVIDF"
+          echo "start $(date -u) php=${{ matrix.php }} wp=6.7.2" >> "$EVIDF"
           cat > /tmp/runtime-probe.php <<'PHPEOF'
           <?php
           error_reporting(E_ALL);
