@@ -257,7 +257,12 @@ final class HandwritingFlowTest extends WP_UnitTestCase
         ], $key);
 
         $this->assertSame(200, $replay['status']);
-        $this->assertSame($first['response'], $replay['response']);
+        // JSON objectها ذاتاً بدون‌ترتیب‌اند (RFC 8259 §4) — مقایسه Value-wise با ksort
+        $expected = $first['response'];
+        $actual = $replay['response'];
+        ksort($expected);
+        ksort($actual);
+        $this->assertSame($expected, $actual);
         // فقط یک نسخه — bump دوباره نداشتیم
         $this->assertSame(1, $this->versionCount($pageId));
     }
