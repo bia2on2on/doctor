@@ -238,3 +238,5 @@
 | 2FA | Privileged = دارنده هر Cap حساس (P-11) — ADR-0020 (Access-based، نه نام نقش) |
 
 > **وضعیت کد (بررسی ADR-0026، 2026-09-06):** لایه REST و سرویس‌های مالی (F6) کاملاً Capability-محورند؛ Debt نقش-محور باقی‌مانده (بازیگر ماشین Visit/Clinical + `requireRole` بالینی + انشعاب visibility فایل) و نقشه مهاجرت آن در ADR-0026 ثبت شد. Blocker معماری وجود ندارد.
+
+> **تصمیم محصول ADR-0027 (2026-09-06 — یک محصول چندپزشکی):** Scope منبع (بالا) از «آینده‌نگری V2» به **قید دائمی محصول** ارتقا یافت — مطب تک‌پزشکی = زیرمجموعه UX درمانگاه چندپزشکی. بازبینی آمادگی: `docs/architecture/multi-doctor-readiness-review.md` — بدون تغییر Foundational؛ موارد باقی‌مانده: ① گارد مالکیت Transition صف برای پزشک‌ها (فاز F9 — پزشک فقط روی ویزیت خودش call/recall/start) ② Enforcement کامل Scope + جدول انتساب Staff (V2) ③ گزارش‌های Breakdown per-doctor/service/specialty (V2). تا آن زمان: دید Queue/مالی دارنده Cap = CLINIC (`clinic_id=1`، ADR-0003) — گزارش‌های F8 از الان Scope سرور-side دارند (الگوی مرجع).

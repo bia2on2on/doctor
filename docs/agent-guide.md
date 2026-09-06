@@ -424,3 +424,14 @@ final class XxxService {
 - **CI کد:** run **34015519073** @ **f11f6e0** سبز ۵/۵ — Integration = **۲۴۰ تست، ۰ خطا** (۲۱۸ قبلی + ۲۲ جدید). **CI docs نهایی:** run **34015846043** @ **c433416** سبز ۵/۵.
 - **سه درس رفع‌شده در دو iteration CI:** ① `private const NS` نمی‌تواند protected والد را override کند (Fatal — بازتعریف ثابت فقط گسترده‌تر)؛ ② **`rest_do_request` رشته کوئری در route را پارس نمی‌کند** (regex مسیر `$`-انکر → 404) — پارامترهای GET در تست‌ها با `set_param` ست شوند؛ ③ ارجاع `&$this->prop` به typed property مقداردهی‌نشده در PHP 8.1+ خطاست (مقدار اولیه `= 0`).
 - **F8 بسته شد** — HEAD کد: **f11f6e0** + docs نهایی؛ CI روی docs نهایی هم سبز (run 34015846043، ۵/۵). Tree پاک. توقف طبق پروتکل: F9 (Hardening) منتظر تأیید کارفرما.
+
+### [2026-09-06 ~07:20 UTC] — ایجنت Arena — تصمیم محصول ADR-0027 (یک محصول چندپزشکی) + بازبینی آمادگی معماری
+
+- **تصمیم نهایی کارفرما ثبت شد (ADR-0027):** One Product / One Core / One Database / Adaptive UX — مطب تک‌پزشکی = زیرمجموعه درمانگاه چندپزشکی؛ دو Plugin/Codebase/Fork ممنوع؛ Scope همیشه سرور-side؛ Specialty = دامنه (نه نقش Authorization)؛ Patient = clinic-level؛ مالی هرگز به بالینی imply نمی‌شود.
+- **بازبینی آمادگی انجام شد** (`docs/architecture/multi-doctor-readiness-review.md`): ممیزی ۳۷ جدول + کد + اسناد روی ۱۰ محور درخواستی. **نتیجه: ۰ FOUNDATIONAL CHANGE REQUIRED، هیچ STOP-blocker؛ ۱۱ قلم Minor Alignment به فازها نگاشت شد**.
+  - شواهد کلیدی: `clinician_id` از روز اول در Schedule/Slot/Appointment/Visit/Note/RX/FollowUp (ADR-0003)؛ Patient clinic-level + MRN کلینیک‌سوئیپ؛ Booking با clinician_id الزامی (B1/D10)؛ صف با فیلتر clinician؛ داشبورد پزشک ownClinician()؛ F8 Scope سرور-side گزارش‌ها (الگوی Enforcement اثبات‌شده)؛ LicenseGate بدون فرض تعداد پزشک؛ `u_slot(clinician_id, slot_date, slot_time)` از قبل ضد-تعارض بین-مکانی است.
+  - Minor Alignmentها (phase-mapped، بدون پیاده‌سازی زودهنگام طبق قاعده کارفرما): گارد مالکیت Transition صف برای پزشک + UNIQUE Index روی clinicians.wp_user_id (تضمین 1:1) → **F9**؛ UX حالت مطب (Skip خودکار Picker با ۱ پزشک) → V1.5؛ Specialty M:N + Booking تخصص‌محور/First-available + سرویس per-clinician + Breakdown Reports + Staff Assignments/Scope + Branch + Department/Room → V2؛ Entitlement لایسنس per-doctor → F10.
+  - سه مورد تصمیم‌محور با فرمت ISSUE/CURRENT/TARGET/IMPACT/MIGRATION/OPTIONS/RECOMMENDATION در §2 سند بازبینی ثبت شد (Specialty، Schedule شعبه‌ای + u_sched_day، Enforcement Scope) — توصیه همه: فاز خودشان.
+- **Docs sync:** ADR-0027 جدید؛ SRS §1.1/§1.2/§2.1/§2.4 (A-1 بازنویسی، A-5 ابطال‌شده توسط F5، FR-4.11 جدید)؛ permission-matrix §6 یادداشت ADR-0027؛ roadmap v1.1 (F9/V1.5/V2 اقلام چندپزشکی)؛ wireframes/patient.md §10 (رزرو تطبیقی).
+- **SRS A-5 ابطال ثبت شد:** فرض قدیمی «دسترسی پزشک به Private Notes سایر پزشکان در V1» — پیاده‌سازی F5 از ابتدا سخت‌گیرانه‌تر بود (مالکیت ویزیت خودش، تست 404) و ADR-0027 آن را قطعی کرد.
+- توقف طبق پروتکل: F9 (Hardening) همچنان منتظر تأیید کارفرما؛ Backlog چندپزشکی در فازهای نگاشت‌شده اجرا می‌شود.
