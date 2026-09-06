@@ -109,9 +109,10 @@ F4–F6 (OCR طبق قرارداد) خارج از F7 باقی ماندند (V1.5
 |---|---|---|
 | 7cf4426 (کد اول F7) | 33998533694 | ❌ 20E+5F — ریشه: import غلط Settings (`Infrastructure\Security\Settings` به‌جای `Settings\Settings`) — TypeError در ساخت سرویس، آبشاری به REST/Jobs همه کلاس‌ها |
 | b3875ea (اصلاح import) | 33999112434 | ❌ 10E+7F — ریشه: `pageRow` بدون `document_id` (INSERT می‌افتاد → insert_id کهنه → findPage=null در همه تست‌های HW) + Flakiness نیمه‌شب UTC در تست‌های Visit/Queue (تاریخِ `gmdate('Y-m-d')` با ساعتِ `time()±N` جفت می‌شد؛ اجرای 23:00–00:00 UTC مسیر lazy no-show → 'walk_in' می‌گرفت) |
-| 190d8c5 (اصلاح document_id + رول‌اوور) | **در انتظار push** | توکن GitHub وسط جلسه منقضی شد؛ پس از اتصال مجدد push و CI نهایی ثبت می‌شود |
+| 75cf798 (اصلاح document_id + رول‌اوور — بازسازی‌شده پس از reprovision سندباکس؛ محتوای 190d8c5+130cb73) | 34011598550 | ❌ 1F — تست Idempotent-replay با ترتیب کلیدهای متفاوت شکست خورد (مقادیر یکسان؛ JSON objectها ذاتاً بدون‌ترتیب‌اند — RFC 8259 §4) → مقایسه ksort شد |
+| **4286aff (اصلاح تست replay)** | **34011934801** | ✅ **سبز ۵/۵** (Unit PHP 8.1/8.2/8.3/8.4 + Integration WP 6.7+MySQL 8) — **Integration: ۲۱۸ تست، ۰ خطا** |
 
-**وضعیت فعلی:** کامیت اصلاحی 190d8c5 به‌صورت محلی آماده است؛ Unit تست‌ها (PHP 8.1–8.4) در هر دو Run قبلی سبز بودند؛ انتظار: Integration سبز کامل پس از push.
+**نکته‌ی ثبت‌شده برای F9 (Hardening):** ایندکس یونیک `cpms_idempotency_keys` فقط روی `key` است (`u_idem_key`) در حالی که SELECT کتاب‌keeping روی چهار ستون (key, endpoint, wp_user_id, context_id) است — کلید تکراری بین Contextهای مختلف → INSERT بی‌صدا می‌افتد (بنر «Duplicate entry» در لاگ تست‌ها؛ رفتار فعلی بی‌ضرر چون check نتیجه insert را نادیده می‌گیرد و مسیر تازه ادامه می‌یابد) — بازبینی ایندکس در F9 توصیه می‌شود (رفتار F7 تحت تأثیر نیست؛ کلیدهای دست‌خط UUID تازه در هر Save هستند).
 
 ## 10. Docs Sync (بسته‌شده در همین فاز)
 
@@ -123,5 +124,5 @@ F4–F6 (OCR طبق قرارداد) خارج از F7 باقی ماندند (V1.5
 
 ## 11. تحویل و گام بعد
 
-- **DoD F7:** کد ✓ + تست‌های Integration ✓ (۱۵ تست جدید، ۲۱۸ کل) + CI ⏳ (push در انتظار اتصال مجدد GitHub) + این گزارش ✓
+- **DoD F7:** کد ✓ + تست‌های Integration ✓ (۱۵ تست جدید؛ کل ۲۱۸ سبز) + **CI سبز ۵/۵ (run 34011934801 @ 4286aff)** + این گزارش ✓
 - **گام بعد (با تأیید کارفرما):** F8 — اعلان + گزارش (Notification Layer + Templates جلالی + ۱۲ گزارش + Export) طبق roadmap.

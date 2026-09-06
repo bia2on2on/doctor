@@ -16,7 +16,7 @@
 | **F4** ✅ کامل شد — CI سبز (گزارش: [report-f4.md](phase-reports/report-f4.md)) | مراجعه/صف: Check-in/Walk-in، Queue State Machine + History، Real-time Polling، داشبورد منشی (امروز/Drawer/Walk-in/Keyboard) | TP-19 + TP-03b + TP-07 | 2.5 هفته |
 | **F5** | بالینی: صفحه ویزیت، Notes+Versions، Prescriptions، Recommendations، Follow-ups، Complete/Reopen، File Upload/Stream، داشبورد پزشک (امروز/صف/Call) | TP-06, TP-08, TP-10 | 3 هفته |
 | **F6** ✅ کامل شد — CI سبز (گزارش: [report-f6.md](phase-reports/report-f6.md)) | مالی: Services، Invoice/Payment/Adjustment/Void/Refund، Receipt، داشبورد مالی منشی، Checkout Flow + **ADR-0026** (نقش‌های پویا — تصریح کارفرما) | TP-02, TP-18 + TP-01 (بخش مالی) | 2 هفته |
-| **F7** | دست‌خط: Canvas کامل (Pressure/Tools/Zoom/Full-screen/Multi-page/Template)، Stroke Storage، Auto-save + **Offline Sync** (IndexedDB) + Conflict | TP-12 | 2.5 هفته |
+| **F7** ✅ کامل شد — CI سبز (گزارش: [report-f7.md](phase-reports/report-f7.md)) | دست‌خط: Canvas کامل (Pressure/Tools/Zoom/Full-screen/Multi-page/Template)، Stroke Storage، Auto-save + **Offline Sync** (IndexedDB) + Conflict | TP-12 | 2.5 هفته |
 | **F8** | اعلان + گزارش: Notification Layer کامل + Templates (Jalali)، 12 گزارش + Export (Watermark/Audit) — گزارش‌های مالی با تفکیک **Aggregate از Detail** و آماده Scope (ADR-0026) | TP-13 + Report Tests | 1.5 هفته |
 | **F9** | Hardening: Security Review (تهدیدها T-01..T-24)، Performance (NFR-PERF-1)، Backup/Restore Test (TP-16)، Accessibility Pass، مستندات کاربری، Pilot | Security Checklist امضا + TP-16 + DoD V1 | 2 هفته |
 | **V1.5** | OCR (انتخاب Provider + Acceptance Test فارسی)، 2FA، Merge UI، ClamAV/Encryption (تصمیم R-06) | TP-OCR + 2FA Tests | 3–4 هفته |
