@@ -68,6 +68,16 @@ final class VisitLicenseGateTest extends WP_UnitTestCase
 
         $this->secretaryUserId = $this->makeUser('lic_secretary', 'cpms_secretary');
         $this->doctorUserId = $this->makeUser('lic_doctor', 'cpms_doctor');
+
+        // F9 (ADR-0027): گارد مالکیت ویزیت پزشکها را با wp_user_id تطبیق می‌دهد —
+        // بدون پیوند، هر transition پزشک به‌اشتباه 403 می‌شود.
+        $wpdb->query(
+            $wpdb->prepare(
+                'UPDATE ' . $wpdb->prefix . 'cpms_clinicians SET wp_user_id = %d WHERE id = %d',
+                $this->doctorUserId,
+                $this->clinicianId
+            )
+        );
     }
 
     // ================= §18 — Read-Only Blocks New Independent Visit =================

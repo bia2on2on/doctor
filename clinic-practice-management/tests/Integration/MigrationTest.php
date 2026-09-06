@@ -179,8 +179,8 @@ final class MigrationTest extends WP_UnitTestCase
                 )
             );
         }
-        // همان کلید در دو ردیف → پس از نرمال‌سازی در دامنه هدف تکراری
-        $wpdb->query($wpdb->prepare("UPDATE {$t} SET `key` = %s WHERE id = %d", 'corrupt-key-same', (int) $wpdb->insert_id)); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        // همان کلید در هر دو ردیف → پس از نرمال‌سازی در دامنه هدف تکراری
+        $wpdb->query($wpdb->prepare("UPDATE {$t} SET `key` = %s WHERE `key` LIKE 'corrupt-key-%%'", 'corrupt-key-same')); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
         try {
             try {

@@ -120,7 +120,9 @@ final class Idempotency
     {
         $cutoff = gmdate('Y-m-d H:i:s', time() - $olderThanDays * 86400) . '.000';
 
-        return $this->db->query(
+        // execute() (تعداد سطرهای اثرگرفته) — query() bool برمی‌گرداند و با
+        // امضای :int سازگار نیست (TypeError هنگام اجرای Job پاک‌سازی).
+        return $this->db->execute(
             'DELETE FROM ' . $this->db->table('cpms_idempotency_keys') . ' WHERE created_at < %s',
             [$cutoff]
         );

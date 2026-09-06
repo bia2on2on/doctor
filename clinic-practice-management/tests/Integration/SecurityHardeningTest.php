@@ -23,7 +23,7 @@ use WP_UnitTestCase;
  */
 final class SecurityHardeningTest extends WP_UnitTestCase
 {
-    private const NS = 'clinic/v1';
+    private const NS = '/clinic/v1';
 
     private int $doctorAUserId = 0;
     private int $doctorBUserId = 0;
