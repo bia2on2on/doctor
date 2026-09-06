@@ -256,14 +256,14 @@ final class NotificationService
             return null;
         }
 
-        // N-5 Dedupe — الگوی SmsService: در-پرواز/فرستاده‌شده → skip؛
+        // N-5 Dedupe — الگوی SmsService: در-پرواز/فرستاده‌شده → skip (null)؛
         // cancelled/failed → نسل جدید (پیشگیری از برخورد UNIQUE)
         if ($dedupeKey !== null) {
             $existing = $this->notifications->findByDedupeKey($dedupeKey);
             if ($existing !== null) {
                 $status = (string) $existing['status'];
                 if ($status === 'queued' || $status === 'sent' || $status === 'delivered') {
-                    return (int) $existing['id'];
+                    return null;
                 }
                 $dedupeKey .= '-' . (int) $existing['id'];
             }

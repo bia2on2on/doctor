@@ -71,13 +71,16 @@ final class ApptReminderHandler
                         (int) $row['id']
                     );
                 }
-                $this->notifications->publishToPatient(
+                $fresh = $this->notifications->publishToPatient(
                     (int) $row['patient_id'],
                     \ClinicCore\Domain\Notifications\NotificationEvents::APPT_REMINDER,
                     $vars,
                     'apt:' . (int) $row['id'] . ':remind:' . $phase
-                );
-                $reminded++;
+                ) !== null;
+                if ($fresh) {
+                    // فقط نوبت‌های «جدید» شمرده می‌شوند — rerun همان روز = 0 (J-2)
+                    $reminded++;
+                }
             } catch (Throwable $e) {
                 // یادآوری هرگز نباید Job/صف را زمین بزند (الگوی BookingService)
                 $this->op->warning('appt.reminder_failed', [

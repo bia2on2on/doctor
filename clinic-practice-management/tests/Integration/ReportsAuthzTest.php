@@ -31,15 +31,15 @@ final class ReportsAuthzTest extends WP_UnitTestCase
 
     private const PRIVATE_MARKER = 'SECRET-PRIVATE-NOTE-MARKER-98765';
 
-    private int $clinicianAId;
-    private int $clinicianBId;
+    private int $clinicianAId = 0;
+    private int $clinicianBId = 0;
     private int $doctorAUserId;
     private int $doctorBUserId;
     private int $secretaryUserId;
     private int $accountantUserId; // report_read + finance_read (اعطای صریح، بدون Clinician-Link)
     private int $opsUserId; // فقط report_read (بدون patient_read/finance_read)
-    private int $patientAId;
-    private int $patientBId;
+    private int $patientAId = 0;
+    private int $patientBId = 0;
     private int $visitAId;
     private string $today;
 
@@ -150,7 +150,7 @@ final class ReportsAuthzTest extends WP_UnitTestCase
         wp_set_current_user($this->doctorAUserId);
 
         // ویزیت‌ها — فقط پزشک A (۲ ویزیت seed شده)؛ ویزیت B هرگز
-        $res = $this->dispatch('GET', self::NS . '/reports/visits?from=' . $this->today . '&to=' . $this->today);
+        $res = $this->dispatch('GET', self::NS . '/reports/visits', ['from' => $this->today, 'to' => $this->today]);
         $this->assertSame(200, $res->get_status());
         $data = $this->payload($res);
         $this->assertSame('own', $data['scope']);
@@ -160,7 +160,7 @@ final class ReportsAuthzTest extends WP_UnitTestCase
         }
 
         // درآمد — فقط پرداخت A (100,000)؛ پرداخت B (250,000) هرگز
-        $rev = $this->payload($this->dispatch('GET', self::NS . '/reports/revenue?from=' . $this->today . '&to=' . $this->today));
+        $rev = $this->payload($this->dispatch('GET', self::NS . '/reports/revenue', ['from' => $this->today, 'to' => $this->today]));
         $this->assertSame(100000, $rev['summary']['net']);
         $this->assertSame(1, $rev['summary']['payment_count']);
 
@@ -173,7 +173,7 @@ final class ReportsAuthzTest extends WP_UnitTestCase
     {
         // حسابدار (report_read + finance_read، بدون Clinician-Link) → Aggregate مطب
         wp_set_current_user($this->accountantUserId);
-        $rev = $this->dispatch('GET', self::NS . '/reports/revenue?from=' . $this->today . '&to=' . $this->today);
+        $rev = $this->dispatch('GET', self::NS . '/reports/revenue', ['from' => $this->today, 'to' => $this->today]);
         $this->assertSame(200, $rev->get_status());
         $data = $this->payload($rev);
         $this->assertSame('clinic', $data['scope']);
@@ -185,16 +185,16 @@ final class ReportsAuthzTest extends WP_UnitTestCase
 
         // کاربر فقط-report_read: مالی 403 (بدون finance_read)
         wp_set_current_user($this->opsUserId);
-        $denied = $this->dispatch('GET', self::NS . '/reports/revenue?from=' . $this->today . '&to=' . $this->today);
+        $denied = $this->dispatch('GET', self::NS . '/reports/revenue', ['from' => $this->today, 'to' => $this->today]);
         $this->assertSame(403, $denied->get_status());
         $this->assertSame('CLINIC_PERMISSION_DENIED', $this->errorCode($denied));
 
         // عملیاتیِ دارای نام بیمار: بدون patient_read → 403 (فقط داده اعطاشده صریح)
-        $visits = $this->dispatch('GET', self::NS . '/reports/visits?from=' . $this->today . '&to=' . $this->today);
+        $visits = $this->dispatch('GET', self::NS . '/reports/visits', ['from' => $this->today, 'to' => $this->today]);
         $this->assertSame(403, $visits->get_status());
 
         // Aggregate عملیاتیِ بدون PHI (میانگین انتظار) → مجاز
-        $wait = $this->dispatch('GET', self::NS . '/reports/avg_waiting?from=' . $this->today . '&to=' . $this->today);
+        $wait = $this->dispatch('GET', self::NS . '/reports/avg_waiting', ['from' => $this->today, 'to' => $this->today]);
         $this->assertSame(200, $wait->get_status());
         $waitData = $this->payload($wait);
         $this->assertSame('clinic', $waitData['scope']);
@@ -206,7 +206,7 @@ final class ReportsAuthzTest extends WP_UnitTestCase
         // D-8: دسترسی مالی → هیچ داده بالینی؛ revenue فقط عدد است (تست منفی:
         // محتوای پاسخ revenue نباید فیلد بالینی داشته باشد)
         wp_set_current_user($this->doctorAUserId);
-        $rev = $this->payload($this->dispatch('GET', self::NS . '/reports/revenue?from=' . $this->today . '&to=' . $this->today));
+        $rev = $this->payload($this->dispatch('GET', self::NS . '/reports/revenue', ['from' => $this->today, 'to' => $this->today]));
         $flat = json_encode($rev, JSON_UNESCAPED_UNICODE);
         $this->assertStringNotContainsString('chief_complaint', (string) $flat);
         $this->assertStringNotContainsString('diagnosis', (string) $flat);
@@ -218,15 +218,15 @@ final class ReportsAuthzTest extends WP_UnitTestCase
     {
         wp_set_current_user($this->doctorAUserId);
 
-        $wait = $this->payload($this->dispatch('GET', self::NS . '/reports/avg_waiting?from=' . $this->today . '&to=' . $this->today));
+        $wait = $this->payload($this->dispatch('GET', self::NS . '/reports/avg_waiting', ['from' => $this->today, 'to' => $this->today]));
         // ویزیت‌های A: 600s + 300s → میانگین 450s (ویزیت B خارج scope پزشک A)
         $this->assertSame(450, $wait['summary']['avg_sec']);
         $this->assertSame(2, $wait['summary']['visits']);
 
-        $dur = $this->payload($this->dispatch('GET', self::NS . '/reports/visit_duration?from=' . $this->today . '&to=' . $this->today));
+        $dur = $this->payload($this->dispatch('GET', self::NS . '/reports/visit_duration', ['from' => $this->today, 'to' => $this->today]));
         $this->assertSame(900, $dur['summary']['avg_sec'], '15m مشاوره ویزیت A');
 
-        $methods = $this->payload($this->dispatch('GET', self::NS . '/reports/payment_methods?from=' . $this->today . '&to=' . $this->today));
+        $methods = $this->payload($this->dispatch('GET', self::NS . '/reports/payment_methods', ['from' => $this->today, 'to' => $this->today]));
         $cash = null;
         foreach ($methods['rows'] as $r) {
             if ($r['method'] === 'cash') {
@@ -237,32 +237,32 @@ final class ReportsAuthzTest extends WP_UnitTestCase
         $this->assertSame(100000, (int) $cash['amount']);
         $this->assertSame(1, (int) $cash['payments']);
 
-        $open = $this->payload($this->dispatch('GET', self::NS . '/reports/open_balances?from=' . $this->today . '&to=' . $this->today));
+        $open = $this->payload($this->dispatch('GET', self::NS . '/reports/open_balances', ['from' => $this->today, 'to' => $this->today]));
         $this->assertSame(50000, $open['summary']['total_balance']);
         $this->assertSame(1, $open['summary']['invoice_count']);
         $this->assertArrayNotHasKey('patient_name', $open['rows'][0], 'D-8: بدون نام بیمار');
 
-        $noshow = $this->payload($this->dispatch('GET', self::NS . '/reports/no_shows?from=' . $this->today . '&to=' . $this->today));
+        $noshow = $this->payload($this->dispatch('GET', self::NS . '/reports/no_shows', ['from' => $this->today, 'to' => $this->today]));
         $this->assertSame(1, $noshow['summary']['count']);
 
-        $walkins = $this->payload($this->dispatch('GET', self::NS . '/reports/walk_ins?from=' . $this->today . '&to=' . $this->today));
+        $walkins = $this->payload($this->dispatch('GET', self::NS . '/reports/walk_ins', ['from' => $this->today, 'to' => $this->today]));
         $this->assertSame(1, $walkins['summary']['count']);
 
-        $cancels = $this->payload($this->dispatch('GET', self::NS . '/reports/cancellations?from=' . $this->today . '&to=' . $this->today));
+        $cancels = $this->payload($this->dispatch('GET', self::NS . '/reports/cancellations', ['from' => $this->today, 'to' => $this->today]));
         $this->assertSame(1, $cancels['summary']['count']);
 
-        $fus = $this->payload($this->dispatch('GET', self::NS . '/reports/follow_ups_due?from=' . $this->today . '&to=' . $this->today));
+        $fus = $this->payload($this->dispatch('GET', self::NS . '/reports/follow_ups_due', ['from' => $this->today, 'to' => $this->today]));
         $this->assertSame(1, $fus['summary']['count']);
     }
 
     public function testRangeValidationIsBounded(): void
     {
         wp_set_current_user($this->doctorAUserId);
-        $res = $this->dispatch('GET', self::NS . '/reports/visits?from=2020-01-01&to=' . $this->today);
+        $res = $this->dispatch('GET', self::NS . '/reports/visits', ['from' => '2020-01-01', 'to' => $this->today]);
         $this->assertSame(422, $res->get_status());
         $this->assertSame('CLINIC_VALIDATION_FAILED', $this->errorCode($res));
 
-        $bad = $this->dispatch('GET', self::NS . '/reports/visits?from=notadate&to=' . $this->today);
+        $bad = $this->dispatch('GET', self::NS . '/reports/visits', ['from' => 'notadate', 'to' => $this->today]);
         $this->assertSame(422, $bad->get_status());
 
         $unknown = $this->dispatch('GET', self::NS . '/reports/does_not_exist');
@@ -374,7 +374,7 @@ final class ReportsAuthzTest extends WP_UnitTestCase
     public function testPrintViewContainsWatermarkAndRows(): void
     {
         wp_set_current_user($this->doctorAUserId);
-        $res = $this->dispatch('GET', self::NS . '/reports/visits/print?from=' . $this->today . '&to=' . $this->today);
+        $res = $this->dispatch('GET', self::NS . '/reports/visits/print', ['from' => $this->today, 'to' => $this->today]);
         $this->assertSame(200, $res->get_status());
         $html = (string) $res->get_data();
         $this->assertStringContainsString('watermark', $html);

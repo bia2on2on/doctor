@@ -201,7 +201,7 @@ final class NotificationFlowTest extends WP_UnitTestCase
         $this->assertSame(304, $notModified->get_status());
 
         // since → رویداد جدید نیست
-        $rt2 = $this->dispatch('GET', self::NS . '/rt/notifications?since=' . $lastId);
+        $rt2 = $this->dispatch('GET', self::NS . '/rt/notifications', ['since' => $lastId]);
         $rt2Data = $this->payload($rt2);
         $this->assertSame([], $rt2Data['notifications']);
 
