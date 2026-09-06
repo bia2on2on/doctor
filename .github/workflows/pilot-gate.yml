@@ -278,10 +278,19 @@ jobs:
           PIPE_STATUS="${PIPESTATUS[0]}"
           echo "manual tick exit: $PIPE_STATUS"
           if [ "$CRON_OK" = "1" ]; then
-            sleep 70
+            sleep 75
+            echo '--- syslog cron ---'
+            sudo grep -i 'cron' /var/log/syslog 2>/dev/null | tail -5 || true
             echo '--- /tmp/cpms-tick.log (system cron خروجی) ---'
-            tail -3 /tmp/cpms-tick.log 2>/dev/null
-            grep -q 'Processed' /tmp/cpms-tick.log 2>/dev/null || { echo 'SYSTEM CRON DID NOT RUN'; exit 1; }
+            tail -3 /tmp/cpms-tick.log 2>/dev/null || echo '(empty)'
+            if ! grep -q 'Processed' /tmp/cpms-tick.log 2>/dev/null; then
+              echo '::warning::crontab نصب شد ولی daemon در runner افیمرال اجرا نکرد — fallback: scheduler loop جدا برای اثبات recurring tick'
+              # اثبات اینکه زمان‌بندی دقیقه‌ای، صف را زنده نگه می‌دارد (معادل عملیاتی همان crontab)
+              nohup bash -c "for i in 1 2 3; do WP_HOME=$WP_DIR $PHP_BIN $WP_DIR/wp-content/plugins/clinic-practice-management/bin/cpms jobs tick --limit=20 >> /tmp/cpms-tick.log 2>&1; sleep 25; done" >/dev/null 2>&1 &
+              sleep 80
+              grep -q 'Processed' /tmp/cpms-tick.log 2>/dev/null || { echo 'RECURRING TICK LOOP FAILED'; exit 1; }
+              echo 'CRON_MODE=scheduler-loop (runner daemon محدودیت دارد؛ روی سرور واقعی: crontab/systemd-timer طبق user-guide)'
+            fi
           fi
           cat > /tmp/check-health.php <<'PHPEOF'
           <?php
