@@ -274,7 +274,9 @@ jobs:
             echo '::warning::cron daemon در دسترس نیست — فقط دستور tick دستی verify می‌شود (Production: systemd-timer/crontab طبق user-guide)'
           fi
           # دستور واقعی تولید (همان که crontab اجرا می‌کند) — یک‌بار دستی:
-          WP_HOME="$WP_DIR" php "$WP_DIR/wp-content/plugins/clinic-practice-management/bin/cpms" jobs tick --limit=20
+          WP_HOME="$WP_DIR" php "$WP_DIR/wp-content/plugins/clinic-practice-management/bin/cpms" jobs tick --limit=20 2>&1 | tee /tmp/tick-manual.log
+          PIPE_STATUS="${PIPESTATUS[0]}"
+          echo "manual tick exit: $PIPE_STATUS"
           if [ "$CRON_OK" = "1" ]; then
             sleep 70
             echo '--- /tmp/cpms-tick.log (system cron خروجی) ---'
@@ -288,7 +290,9 @@ jobs:
           echo json_encode($q), "\n";
           exit($q['stale'] ? 3 : 0);
           PHPEOF
-          WP_HOME="$WP_DIR" php /tmp/check-health.php
+          WP_HOME="$WP_DIR" php /tmp/check-health.php 2>&1 | tee /tmp/health-check.log
+          HP_STATUS="${PIPESTATUS[0]}"
+          echo "health exit: $HP_STATUS"
 
       # ---------- Synthetic Seed ----------
       - name: Synthetic Seed (بدون داده واقعی بیمار)
@@ -565,7 +569,7 @@ jobs:
             for f in /tmp/apt.log /tmp/seed.json /tmp/smoke.log /tmp/bench.txt /tmp/ab.txt /tmp/headers.txt \
                      /tmp/perms.txt /tmp/audit-actions.txt /tmp/jobs-queued.txt /tmp/failed-jobs.txt \
                      /tmp/health.json /tmp/avail.json /tmp/unauth.json /tmp/probe-body.txt \
-                     /tmp/leak.txt /tmp/leak2.txt /tmp/cpms-tick.log /tmp/check-health.php /tmp/pw.log /tmp/resp.log; do
+                     /tmp/leak.txt /tmp/leak2.txt /tmp/cpms-tick.log /tmp/tick-manual.log /tmp/health-check.log /tmp/pw.log /tmp/resp.log; do
               if [ -f "$f" ]; then echo "--- $f (tail 50) ---"; tail -50 "$f"; fi
             done
             echo '--- apache diagnostics ---'
@@ -728,7 +732,7 @@ jobs:
             for f in /tmp/apt.log /tmp/seed.json /tmp/smoke.log /tmp/bench.txt /tmp/ab.txt /tmp/headers.txt \
                      /tmp/perms.txt /tmp/audit-actions.txt /tmp/jobs-queued.txt /tmp/failed-jobs.txt \
                      /tmp/health.json /tmp/avail.json /tmp/unauth.json /tmp/probe-body.txt \
-                     /tmp/leak.txt /tmp/leak2.txt /tmp/cpms-tick.log /tmp/check-health.php /tmp/pw.log /tmp/resp.log; do
+                     /tmp/leak.txt /tmp/leak2.txt /tmp/cpms-tick.log /tmp/tick-manual.log /tmp/health-check.log /tmp/pw.log /tmp/resp.log; do
               if [ -f "$f" ]; then echo "--- $f (tail 50) ---"; tail -50 "$f"; fi
             done
             echo '--- apache diagnostics ---'
@@ -872,7 +876,7 @@ jobs:
             for f in /tmp/apt.log /tmp/seed.json /tmp/smoke.log /tmp/bench.txt /tmp/ab.txt /tmp/headers.txt \
                      /tmp/perms.txt /tmp/audit-actions.txt /tmp/jobs-queued.txt /tmp/failed-jobs.txt \
                      /tmp/health.json /tmp/avail.json /tmp/unauth.json /tmp/probe-body.txt \
-                     /tmp/leak.txt /tmp/leak2.txt /tmp/cpms-tick.log /tmp/check-health.php /tmp/pw.log /tmp/resp.log; do
+                     /tmp/leak.txt /tmp/leak2.txt /tmp/cpms-tick.log /tmp/tick-manual.log /tmp/health-check.log /tmp/pw.log /tmp/resp.log; do
               if [ -f "$f" ]; then echo "--- $f (tail 50) ---"; tail -50 "$f"; fi
             done
             echo '--- apache diagnostics ---'
