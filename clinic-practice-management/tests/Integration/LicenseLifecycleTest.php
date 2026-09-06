@@ -64,7 +64,7 @@ final class LicenseLifecycleTest extends WP_UnitTestCase
 
             public function activate(array $request): array
             {
-                return $this->doc($request, 30 * 86400);
+                return $this->docFor($request);
             }
 
             public function refresh(array $request): array
@@ -74,6 +74,22 @@ final class LicenseLifecycleTest extends WP_UnitTestCase
                         throw new LicenseGatewayException('down', true, 'CLINIC_LICENSE_SERVER_ERROR');
                     case 'permanent':
                         throw new LicenseGatewayException('rejected', false, 'CLINIC_LICENSE_ACTIVATION_FAILED');
+                    default:
+                        return $this->docFor($request);
+                }
+            }
+
+            /**
+             * پاسخِ امضاشده با توجه به mode — برای activate و refresh مشترک است
+             * تا هر دو مسیر دقیقاً همان سندهای دستکاری‌شده/ناسازگار را ببینند.
+             *
+             * @param array<string, mixed> $request
+             *
+             * @return array{payload: array<string, mixed>, signature_b64: string}
+             */
+            private function docFor(array $request): array
+            {
+                switch ($this->t->mode) {
                     case 'expired':
                         return $this->doc($request, -10 * 86400);
                     case 'revoked':
@@ -83,6 +99,7 @@ final class LicenseLifecycleTest extends WP_UnitTestCase
                     case 'wrong_install':
                         return $this->doc($request, 30 * 86400, overrideInstall: 'deadbeef' . str_repeat('0', 24));
                     case 'tampered':
+                        // سندِ امضاشده، سپس تغییر بعد از امضا (تقلب در payload)
                         $out = $this->doc($request, 30 * 86400);
                         $out['payload']['expires_at'] = $out['payload']['expires_at'] + 86400 * 365;
 
@@ -165,6 +182,7 @@ final class LicenseLifecycleTest extends WP_UnitTestCase
 
     public function testTamperedSignatureRejectedAndNothingStored(): void
     {
+        $this->mode = 'tampered'; // سندِ امضاشده، سپس expires_at دستکاری شده بعد از امضا
         $svc = $this->service();
         try {
             $svc->activateWithKey('key-tamper');

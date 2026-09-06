@@ -10,7 +10,7 @@ namespace ClinicCore\Domain\Backup;
  * ساختار (schema_version=1):
  *   {
  *     "schema_version": 1,
- *     "backup_id": "...32hex...",
+ *     "backup_id": "...slug (پایین‌نویسه/رقم/._-، هم‌گرامرِ ProtectedBackupStore)...",
  *     "engine": "cpms-backup",
  *     "engine_version": "1.0.0",
  *     "created_at": "2026-09-06T10:00:00+00:00",
@@ -40,7 +40,7 @@ final class BackupManifest
         if (($raw['engine'] ?? '') !== self::ENGINE) {
             $errors[] = 'unknown engine';
         }
-        if (!is_string($raw['backup_id'] ?? null) || !preg_match('/^[0-9a-f]{16,64}$/', $raw['backup_id'])) {
+        if (!is_string($raw['backup_id'] ?? null) || !preg_match('/^[0-9a-z][0-9a-z._-]{3,120}$/', $raw['backup_id'])) {
             $errors[] = 'invalid backup_id';
         }
         if (!is_string($raw['created_at'] ?? null) || strtotime((string) $raw['created_at']) === false) {

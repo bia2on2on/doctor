@@ -149,8 +149,10 @@ final class BackupService
         }
         $manifestShaOk = @file_get_contents($dir . '/manifest.json.sha256') === false
             || trim((string) @file_get_contents($dir . '/manifest.json.sha256')) === hash_file('sha256', $dir . '/manifest.json');
+        // شناسهٔ داخل مانیفست باید با نام پوشه یکی باشد (جابه‌جایی/دستکاری مانیفست)
+        $idMatches = (string) ($raw['backup_id'] ?? '') === $backupId;
         // Quick check (ارزان برای لیست) — تأیید کامل هش فایل‌ها = verifyBackup()
-        $integrity = BackupManifest::isValid($raw) && $manifestShaOk ? 'ok_quick' : 'corrupt';
+        $integrity = BackupManifest::isValid($raw) && $manifestShaOk && $idMatches ? 'ok_quick' : 'corrupt';
 
         return [
             'backup_id' => $backupId,
@@ -180,6 +182,10 @@ final class BackupService
         $actualManifestSha = hash_file('sha256', $dir . '/manifest.json');
         if ($expectedManifestSha !== false && trim((string) $expectedManifestSha) !== $actualManifestSha) {
             return ['ok' => false, 'errors' => ['manifest.json tampered'], 'warnings' => []];
+        }
+        // مانیفستِ داخل این پوشه باید متعلق به همین پوشه باشد
+        if ((string) ($raw['backup_id'] ?? '') !== $backupId) {
+            return ['ok' => false, 'errors' => ['manifest backup_id mismatch'], 'warnings' => []];
         }
 
         $result = BackupManifest::verifyFiles($raw, function (string $rel) use ($dir): ?array {
