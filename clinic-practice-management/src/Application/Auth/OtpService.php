@@ -181,10 +181,16 @@ final class OtpService
 
         if (!hash_equals(OtpPolicy::hashCode($code, $this->pepper()), (string) $row['code_hash'])) {
             $failed = $policy->registerFailedAttempt($state, $now);
-            $this->db->query(
-                'UPDATE ' . $this->db->table('cpms_otp_tokens') .
-                ' SET attempts = %d, locked_until = %s WHERE id = %d',
-                [$failed->attempts, $failed->lockedUntil?->format('Y-m-d H:i:s.000'), (int) $row['id']]
+            // update() (نه prepare): wpdb::prepare مقدار null را به رشته خالی
+            // تبدیل می‌کند و `locked_until = ''` در MySQL خطا می‌دهد → UPDATE
+            // کلاً رد می‌شد و شمارنده تلاش‌ها هرگز ذخیره نمی‌شد.
+            $this->db->update(
+                'cpms_otp_tokens',
+                [
+                    'attempts' => $failed->attempts,
+                    'locked_until' => $failed->lockedUntil?->format('Y-m-d H:i:s.000'),
+                ],
+                ['id' => (int) $row['id']]
             );
             $this->audit('OTP_VERIFY_FAIL', null, $mobile, $ip, ['remaining' => $policy->remainingAttempts($failed)]);
             throw new OtpException(

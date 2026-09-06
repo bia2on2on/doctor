@@ -11,7 +11,7 @@ if (!$wipe) {
 }
 
 global $wpdb;
-$prefix = 'cpms_';
+$prefix = $wpdb->prefix . 'cpms_'; // نام فیزیکی جداول: {wp_prefix}cpms_*
 $tables = $wpdb->get_col("SHOW TABLES LIKE '{$prefix}%'");
 foreach ($tables as $t) {
     $wpdb->query("DROP TABLE IF EXISTS {$t}"); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared — نام‌ها از SHOW TABLES معتبرند

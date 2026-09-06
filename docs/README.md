@@ -1,8 +1,12 @@
 # سیستم مدیریت مطب — Clinical Practice Management System (CPMS)
 
-مستندات معماری و نیازمندی‌ها — نسخه 1.0 — 2026-09-05
+مستندات معماری و نیازمندی‌ها — نسخه 1.1 — 2026-09-06
 
-> **وضعیت:** Phase 1–8 (مستندات) تأیید شد (2026-09-05) → **F1 (Core & Migrations) انجام و تأیید شد** (157 تست / 232 assertion سبز) → **F2 (احراز هویت OTP) در حال ساخت**
+> **🤖 راهنمای ایجنت‌ها (الزام شروع کار):** هر ایجنت (AI یا انسان) پیش از هر کاری [`agent-guide.md`](agent-guide.md) را کامل بخواند — وضعیت فازها، قواعد الزامی کارفرما، الگوهای کد، دام‌های شناخته‌شده، فازهای باقی‌مانده و **پروتکل لاگ کار ایجنت‌ها (§9–10: هر ایجنت ورودی خود را append می‌کند)**.
+
+> **وضعیت:** فازهای F1..F8 کامل و CI سبز (گزارش‌ها: [`phase-reports/`](phase-reports/)) — F9 (Hardening) منتظر تأیید کارفرما.
+
+> **🎯 تصمیم محصول نهایی (ADR-0027، 2026-09-06):** **یک محصول واحد چندپزشکی** — مطب تک‌پزشکی = زیرمجموعه UX درمانگاه چندپزشکی؛ یک Core/یک Schema/Features تطبیقی. بازبینی آمادگی معماری: [`architecture/multi-doctor-readiness-review.md`](architecture/multi-doctor-readiness-review.md) (۰ FOUNDATIONAL — ۱۱ قلم Minor به فازها نگاشت).
 
 ## شاخه‌بندی مستندات (مطابق Section 56 Master Prompt)
 
@@ -27,6 +31,7 @@
 | [architecture/handwriting-storage.md](architecture/handwriting-storage.md) | معماری ذخیره دست‌خط | 7 | منتظر تأیید |
 | [architecture/handwriting-recognition.md](architecture/handwriting-recognition.md) | معماری تشخیص دست‌خط | 7 | منتظر تأیید |
 | [architecture/notifications.md](architecture/notifications.md) | معماری اعلان | 7 | منتظر تأیید |
+| [architecture/multi-doctor-readiness-review.md](architecture/multi-doctor-readiness-review.md) | بازبینی آمادگی چندپزشکی (ADR-0027) + Backlog هم‌ترازی | — | Accepted |
 | [architecture/background-jobs.md](architecture/background-jobs.md) | معماری Background Jobs | 7 | منتظر تأیید |
 | [backup/backup-recovery.md](backup/backup-recovery.md) | برنامه Backup/DR | 7 | منتظر تأیید |
 | [testing/testing-plan.md](testing/testing-plan.md) | برنامه تست | 8 | منتظر تأیید |

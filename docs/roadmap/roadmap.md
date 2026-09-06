@@ -1,8 +1,10 @@
 # نقشه راه توسعه — CPMS
 
-نسخه 1.0 | 2026-09-05 | فاز 8 | پیش‌فرض: تیم 2 (1 PHP/WP Senior + 1 Frontend)؛ زمان‌بندی تقریبی
+نسخه 1.1 | 2026-09-06 | فاز 8 | پیش‌فرض: تیم 2 (1 PHP/WP Senior + 1 Frontend)؛ زمان‌بندی تقریبی
 
 > **قانون Gate (Section 56):** هر فاز فقط بعد از تأیید خروجی+Acceptance Criteria فاز قبل.
+
+> **تصمیم محصول نهایی (ADR-0027، 2026-09-06):** **یک محصول واحد چندپزشکی** — مطب تک‌پزشکی = زیرمجموعه UX درمانگاه چندپزشکی؛ یک Core/یک Schema/Features تطبیقی. بازبینی آمادگی معماری: `docs/architecture/multi-doctor-readiness-review.md` (۰ FOUNDATIONAL — ۱۱ قلم Minor Alignment به F9/V1.5/V2/F10 نگاشت شدند).
 
 ## فازها
 
@@ -12,15 +14,16 @@
 | **F1** | Core Architecture: Skeleton افزونه، لایه‌ها، Migration System + مigrations اولیه، Roles/Capabilities، Settings، Audit/Operational Base، Rate Limit/Idempotency Middleware، Job Queue + Dispatcher، CI | تست Migration + Audit + Queue سبز | 2 هفته |
 | **F2** ✅ | احراز هویت: OTP کامل، Session/Security، Patient User Links، Rate Limit (157/232 سبز؛ + 4 تصمیم کارفرما D1–D4) | TP-04, TP-05, TP-17 | 1.5 هفته |
 | **F2.5** ✅ | ماژول پیامک Provider-Agnostic (ADR-0025 — تأییدشده): Settings/Templates/Test/Log/Balance + Generic API (SSRF) + Vault + Queue SMS (187/346 سبز) | SmsFlowTest (CI) + 30 تست Unit | 1 هفته |
-| **F3** 🔄 در حال انجام | نوبت‌دهی: Schedule/Exceptions، Slot generation، Hold/Claim، Booking API (A/B)، Patient Profile CRUD، Availability UI (تقویم+Slot+OTP+Profile) — **گام ۱ (کدهای `CLINIC_*` — ADR-0019) انجام شد** | TP-03, TP-14, TP-15, TP-20 + سناریوی رزرو E2E | 2.5 هفته |
-| **F4** | مراجعه/صف: Check-in/Walk-in، Queue State Machine + History، Real-time Polling، داشبورد منشی (امروز/Drawer/Walk-in/Keyboard) | TP-19 + TP-03b + TP-07 | 2.5 هفته |
+| **F3** ✅ کامل شد — CI سبز (گزارش: [report-f3.md](phase-reports/report-f3.md)) | نوبت‌دهی: Schedule/Exceptions، Slot generation، Hold/Claim، Booking API (A/B)، Patient Profile CRUD — **Availability UI = تصمیم محصول (گزارش §5-1)** | TP-03, TP-14, TP-15, TP-20 + سناریوی رزرو E2E | 2.5 هفته |
+| **F4** ✅ کامل شد — CI سبز (گزارش: [report-f4.md](phase-reports/report-f4.md)) | مراجعه/صف: Check-in/Walk-in، Queue State Machine + History، Real-time Polling، داشبورد منشی (امروز/Drawer/Walk-in/Keyboard) | TP-19 + TP-03b + TP-07 | 2.5 هفته |
 | **F5** | بالینی: صفحه ویزیت، Notes+Versions، Prescriptions، Recommendations، Follow-ups، Complete/Reopen، File Upload/Stream، داشبورد پزشک (امروز/صف/Call) | TP-06, TP-08, TP-10 | 3 هفته |
-| **F6** | مالی: Services، Invoice/Payment/Adjustment/Void/Refund، Receipt، داشبورد مالی منشی، Checkout Flow | TP-02, TP-18 + TP-01 (بخش مالی) | 2 هفته |
-| **F7** | دست‌خط: Canvas کامل (Pressure/Tools/Zoom/Full-screen/Multi-page/Template)، Stroke Storage، Auto-save + **Offline Sync** (IndexedDB) + Conflict | TP-12 | 2.5 هفته |
-| **F8** | اعلان + گزارش: Notification Layer کامل + Templates (Jalali)، 12 گزارش + Export (Watermark/Audit) | TP-13 + Report Tests | 1.5 هفته |
-| **F9** | Hardening: Security Review (تهدیدها T-01..T-24)، Performance (NFR-PERF-1)، Backup/Restore Test (TP-16)، Accessibility Pass، مستندات کاربری، Pilot | Security Checklist امضا + TP-16 + DoD V1 | 2 هفته |
-| **V1.5** | OCR (انتخاب Provider + Acceptance Test فارسی)، 2FA، Merge UI، ClamAV/Encryption (تصمیم R-06) | TP-OCR + 2FA Tests | 3–4 هفته |
-| **V2** | Multi-clinic/Team، Online Payment، Insurance/Lab، Push، Mobile API (JWT) | — | بر اساس نیاز |
+| **F6** ✅ کامل شد — CI سبز (گزارش: [report-f6.md](phase-reports/report-f6.md)) | مالی: Services، Invoice/Payment/Adjustment/Void/Refund، Receipt، داشبورد مالی منشی، Checkout Flow + **ADR-0026** (نقش‌های پویا — تصریح کارفرما) | TP-02, TP-18 + TP-01 (بخش مالی) | 2 هفته |
+| **F7** ✅ کامل شد — CI سبز (گزارش: [report-f7.md](phase-reports/report-f7.md)) | دست‌خط: Canvas کامل (Pressure/Tools/Zoom/Full-screen/Multi-page/Template)، Stroke Storage، Auto-save + **Offline Sync** (IndexedDB) + Conflict | TP-12 | 2.5 هفته |
+| **F8** ✅ کامل شد — CI سبز (گزارش: [report-f8.md](phase-reports/report-f8.md)) | اعلان + گزارش: Notification Layer کامل + Templates (Jalali)، 12 گزارش + Export (Watermark/Audit) — گزارش‌های مالی با تفکیک **Aggregate از Detail** و آماده Scope (ADR-0026) | TP-13 + Report Tests | 1.5 هفته |
+| **F9** ✅ کامل شد — CI سبز (گزارش: [report-f9.md](phase-reports/report-f9.md)) | Hardening: Security Review کامل T-01..T-24 (رفع root cause سه حفره واقعی: Idempotency Replay/In-flight خاموش، گارد مالکیت ویزیت پزشک، UNIQUE wp_user_id با Preflight)، پاک‌سازی سه Job مرده + دو Fatal عملیاتی، Performance NFR-PERF-1 (تأیید پوشش ایندکس؛ Benchmark ران‌تایم = چک‌لیست Pilot طبق متدولوژی baseline)، TP-16 (مسیر ارتقا/Restore تست‌شده + Runbook)، Accessibility Pass (NFR-UI-3)، user-guide Pilot | Security Checklist + TP-16 + DoD V1 | 2 هفته |
+| **Pilot/Staging Gate** 🔄 در حال اجرا — ۱۴ run (گزارش زنده: [report-pilot-gate.md](phase-reports/report-pilot-gate.md)) | اثبات آمادگی V1 در محیط واقعی: Release Artifact clean، Fresh Install، Upgrade F8→RC، Apache/Cron/Storage، Seed Synthetic، ۹ Smoke نقش‌ها، Benchmark، Security، Audit، Backup/Restore Drill با Integrity؛ **یک باگ واقعی تولید کشف و ریشه‌یابی شد** (recurring jobs در مسیر CLI می‌ایستاد → `App::runTick()` واحد + regression test) | چک‌لیست ۲۵ قلم کارفرما + Verdict سه‌حالته | ۱ هفته |
+| **V1.5** | OCR (انتخاب Provider + Acceptance Test فارسی)، 2FA، Merge UI، ClamAV/Encryption (تصمیم R-06) + **UX حالت مطب (ADR-0027: Skip خودکار انتخاب پزشک با ۱ Clinician فعال)** | TP-OCR + 2FA Tests | 3–4 هفته |
+| **V2** | **Role Management کامل (ADR-0026): نقش‌های سفارشی + UI مدیریت + Scope (OWN/ASSIGNED_DOCTORS/BRANCH/CLINIC) + Audit `ROLE_*`/`PERMISSION_*` + گزارشگری مالی Scope-دار (per-doctor/per-service/Aggregate-تفکیک-از-Detail)**، **قابلیت‌های چندپزشکی کامل (ADR-0027): مدل Specialty (M:N) + Booking «تخصص→خدمت→پزشک» و «اولین پزشک آزاد» + سرویس per-clinician + Staff Assignments/Scope Enforcement (صف/مالی) + Branch + Department/Room + Clinic Manager Dashboard**، Multi-clinic/Team، Online Payment، Insurance/Lab، Push، Mobile API (JWT) | ADR-0026/0027 + تست Escalation/Scope | بر اساس نیاز |
 
 ## مایلستون‌ها
 - **M1 (پایان F3):** بیمار واقعی می‌تواند آنلاین نوبت بگیرد (به‌صورت داخلی).

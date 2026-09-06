@@ -8,6 +8,7 @@
 - **J-2** **Idempotency اجباری:** هر Job Handler باید تکرارپذیر باشد (Lock + Status Check).
 - **J-3** Single Worker V1: یک Runner با Row Lock (`locked_by + lock_expires_at`) → بدون Duplicate اجرا؛ V2: Worker خارجی (CLI daemon) بدون تغییر Handler.
 - **J-4** Tick: Cron OS-level هر دقیقه `wp cron` / `bin/jobs tick` (نه فقط WP-Cron که وابسته به ترافیک است).
+  - هر دو مسیر Runner (اکشن WP-Cron `cpms_jobs_tick` و `bin/cpms jobs tick`) از `App::runTick()` واحد عبور می‌کنند: ثبت Heartbeat + **زمان‌بندی مجدد Idempotent جاب‌های دوره‌ای** (`scheduleRecurringJobs`) + پردازش صف. بدون این، در استقرار system-cron جاب‌های دوره‌ای فقط یک‌بار (بعد از Activate) اجرا می‌شدند (FR-5.5 — Regression Pilot Gate 2026-09-06).
 - **J-5** Retry: `attempts < max_attempts` → `run_after += backoff(attempts)` (1m/5m/15m/1h)؛ شکست نهایی → `failed` + Operational Log + Alert (Internal Notification به مدیر فنی).
 
 ## 2. فهرست Jobها

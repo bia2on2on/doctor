@@ -4,3 +4,7 @@
 phpunit.phar
 .phpunit.cache/
 vendor/
+# Pilot Gate — خروجیهای موقت build (artifact در CI ساخته می‌شود)
+clinic-practice-management/dist/
+clinic-practice-management/pilot-screenshots/
+clinic-practice-management/pilot-responsive-results.json

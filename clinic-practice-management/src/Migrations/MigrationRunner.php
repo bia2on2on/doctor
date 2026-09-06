@@ -31,6 +31,22 @@ final class MigrationRunner
     public function ensureSchemaTable(): void
     {
         $t = $this->db->table(self::SCHEMA_TABLE);
+
+        /*
+         * جدول واقعی موجود است → CREATE نزن.
+         * زیر WP Test Suite فیلتری روی query فعال است که CREATE TABLE را به
+         * CREATE TEMPORARY TABLE بازنویسی می‌کند؛ روی جدولِ موجود، جدول
+         * «سایه» خالی می‌سازد که نسخه‌های اعمال‌شده را مخفی می‌کند و باعث
+         * اجرای دوباره کل Migrationها (و خطای FK جدول‌های موقت) می‌شود.
+         */
+        $exists = $this->db->fetchValue(
+            'SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = %s',
+            [$t]
+        );
+        if ((int) $exists > 0) {
+            return;
+        }
+
         $this->db->query(
             "CREATE TABLE IF NOT EXISTS {$t} (
                 `version` VARCHAR(64) NOT NULL,
@@ -57,6 +73,9 @@ final class MigrationRunner
                 continue;
             }
 
+            // require (نه require_once): فایل فقط آرایه برمی‌گرداند و بدون
+            // side-effect است؛ require_once در re-run پس از rollback() در همان
+            // process مقدار true برمی‌گرداند و Migration را می‌شکند (F9).
             $migration = require $file['path'];
             if (!is_array($migration) || !isset($migration['up'])) {
                 throw new RuntimeException("Invalid migration file: {$file['name']}");
@@ -143,7 +162,9 @@ final class MigrationRunner
      */
     private function migrationFiles(): array
     {
-        $files = glob(rtrim($this->migrationsDir, '/') . '/[0-9]{4}_[0-9]{2}_[0-9]{2}_[0-9]{4}_*.php') ?: [];
+        // توجه: glob() از quantifier مثل {4} پشتیبانی نمی‌کند (literal می‌گیرد) —
+        // الگوی صحیح با «?» تک‌کاراکتری است: YYYY_MM_DD_NNNN_*.php
+        $files = glob(rtrim($this->migrationsDir, '/') . '/????_??_??_????_*.php') ?: [];
         sort($files);
 
         return array_map(

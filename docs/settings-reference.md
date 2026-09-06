@@ -1,6 +1,8 @@
 # Settings Reference — CPMS (واحد و semantics هر Setting)
 
-نسخه 1.2 | 2026-09-05 | جدول `cpms_settings` (کلید/مقدار JSON) + پیش‌فرض‌های `Settings::DEFAULTS`
+نسخه 1.3 | 2026-09-05 | جدول `cpms_settings` (کلید/مقدار JSON) + پیش‌فرض‌های `Settings::DEFAULTS`
+
+> **تغییر 1.3:** همگام‌سازی با کد (F3): `booking.cancel_deadline_hours` و `booking.reschedule_deadline_hours` از `12` به `24` (مطابق SRS FR-4.9/FR-4.10 و `Settings::DEFAULTS`).
 
 > همه مقادیر زیر **Default/Seed** هستند (تصمیم کارفرما 2026-09-05) و از Settings قابل تغییرند (کاربر دارای `cpms_config`). **Hard-Code نیستند.**
 > Secret/API Key در این جدول ذخیره نمی‌شود — فقط از `wp-config.php`/Environment (تصمیم F1-D3).
@@ -18,8 +20,8 @@
 | `booking.slot_capacity_default` | `1` | تعداد | ظرفیت پیش‌فرض هر Slot. |
 | `booking.min_lead_hours` | `2` | ساعت | حداقل فاصله زمانی تا زودترین نوبت قابل رزرو. |
 | `booking.max_future_days` | `60` | روز | افق حداکثری رزرو آنلاین. |
-| `booking.cancel_deadline_hours` | `12` | ساعت | حداقل Fاصله تا نوبت برای لغو آنلاین (Policy). |
-| `booking.reschedule_deadline_hours` | `12` | ساعت | حداقل فاصله تا نوبت برای جابه‌جایی آنلاین. |
+| `booking.cancel_deadline_hours` | `24` | ساعت | حداقل فاصله تا نوبت برای لغو آنلاین (Policy — FR-4.9). |
+| `booking.reschedule_deadline_hours` | `24` | ساعت | حداقل فاصله تا نوبت برای جابه‌جایی آنلاین (FR-4.10). |
 | `booking.hold_ttl_sec` | `600` | ثانیه | مهلت نگهداری Hold Slot در جریان رزرو آنلاین. |
 | `booking.buffer_pre_default_min` | `0` | دقیقه | Buffer پیش از ویزیت (V2؛ V1 غیرفعال). |
 | `booking.buffer_post_default_min` | `0` | دقیقه | Buffer بعد از ویزیت (V2؛ V1 غیرفعال). |
@@ -31,7 +33,17 @@
 | `patient.profile_invoices_visible` | `false` | bool | نمایش فاکتور/رسید به بیمار (تصمیم D2). |
 | `hw.local_retain` | `off` | enum: `off\|last\|always` | نگهداری Local دست‌خط در Tablet بعد از Sync (T-16). |
 | `hw.autosave_sec` | `5` | ثانیه | فاصله Auto-save ویرایشگر دست‌خط. |
-| `files.max_upload_bytes` | `10485760` | بایت | حداکثر حجم فایل پزشکی (10 MB). |
+| `hw.version_keep` | `10` | عدد ≥1 | حداقل تعداد نسخه اخیر هر صفحه که GC (`handwriting.gc`) هرگز حذف نمی‌کند (ADR-0009). |
+| `hw.version_max_age_days` | `30` | روز ≥1 | نسخه‌های قدیمی‌تر از این سن (و خارج از `hw.version_keep`) در جاب روزانه پاک‌سازی می‌شوند. |
+| `files.storage_path` | `` | مسیر مطلق | پوشه ذخیرهفایلهای پزشکی فاز F5 — خالی = `wp-content/clinic-files/` (خارج uploads) با گارد `.htaccess` deny + `index.php`. توصیه file-storage.md: مسیر مطلق خارج DocumentRoot. تغییر در هر Request خوانده می‌شود (بدون کش). |
+| `files.max_upload_bytes` | `10485760` | بایت | سقف حجم آپلود E16/C3 — پیشفرض 10 MB؛ اعملای سرور (F-3) با خطای `CLINIC_FILE_INVALID` 400. |
+| `clinical.require_chief_complaint` | `true` | bool | الزام ثبت شکایت اصلی قبل از Complete (FR-8.7 — E14). |
+| `notif.quiet_hours_start` | `08:00` | `HH:MM` محلی | شروع بازه ارسال SMS غیرتعاملی (یادآوری‌ها — F8 notifications §5؛ OTP مستثنا). |
+| `notif.quiet_hours_end` | `21:00` | `HH:MM` محلی | پایان بازه Quiet Hours (پشتیبانی بازه overnight به وقت Timezone کلینیک). |
+| `notif.archive_days` | `90` | روز | Retention اعلان‌های Internal — purgeExpired داخل Job `notif.dispatch` (sent/read قدیمی حذف می‌شود). |
+| `reports.max_range_days` | `366` | روز | سقف بازه گزارش/Export — بزرگ‌تر → 422 `CLINIC_VALIDATION_FAILED`. |
+| `reports.export_retention_days` | `7` | روز | نگهداری فایل Export قبل از حذف (فایل + ردیف؛ دانلود منقضی → 410 `CLINIC_EXPORT_EXPIRED`). |
+| `reports.export_max_rows` | `10000` | ردیف | سقف ردیف‌های Export (async — performance-baseline §18). |
 | `files.encrypt_at_rest` | `false` | bool | رمزنگاری هر-فایل (تصمیم D6؛ V1.5). |
 | `retention.audit_years` | `10` | سال | نگهداری Audit (تابع قانون محل — D7). |
 | `retention.record_years` | `15` | سال | نگهداری پرونده. |

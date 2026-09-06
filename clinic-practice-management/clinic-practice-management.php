@@ -35,6 +35,29 @@ spl_autoload_register(function (string $class): void {
 
 use ClinicCore\Bootstrap\App;
 
+// Correlation ID برای Trace (Audit + OpLog + هدر REST) — Baseline §26 / M10.
+// تعریف در سطح فایل اصلی (نه داخل hook): در WP Test Suite/CLI هیچ درخواستی
+// وجود ندارد و init اجرا نمی‌شود؛ helper باید همیشه در دسترس باشد. کلاینت
+// می‌تواند X-CPMS-Correlation-Id بفرستد (فقط Whitelist کاراکتر؛ بدون PHI).
+if (!function_exists('cpms_request_id')) {
+    function cpms_request_id(): ?string {
+        static $id = null;
+        if ($id === null) {
+            $header = $_SERVER['HTTP_X_CPMS_CORRELATION_ID'] ?? null;
+            $id = \ClinicCore\Infrastructure\Logging\CorrelationId::fromHeader(
+                is_string($header) ? $header : null
+            );
+        }
+
+        return $id;
+    }
+}
+if (!function_exists('cpms_session_id')) {
+    function cpms_session_id(): ?string {
+        return session_id() ?: null;
+    }
+}
+
 register_activation_hook(__FILE__, [App::class, 'activate']);
 register_deactivation_hook(__FILE__, [App::class, 'deactivate']);
 

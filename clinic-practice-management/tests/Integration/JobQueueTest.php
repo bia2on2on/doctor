@@ -113,6 +113,74 @@ final class JobQueueTest extends WP_UnitTestCase
         $this->assertSame(5, $calls, 'تکرار tick نباید دوباره اجرا کند');
     }
 
+    /**
+     * FR-5.5 — جاب‌های تکرارشونده: بعد از اجرا (complete) دوباره
+     * زمان‌بندی می‌شوند و بدون نسخه Queued دوباره ثبت نمی‌شوند (Idempotent).
+     */
+    public function testRecurringJobsAreRescheduledIdempotently(): void
+    {
+        // اولین زمان‌بندی: هر سه جاب تکرارشونده در صف
+        App::scheduleRecurringJobs();
+        $queuedCount = static fn (): int => (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_jobs') . ' WHERE type = %s AND status = %s',
+            ['visits.no_show', \ClinicCore\Infrastructure\Queue\JobQueue::QUEUED]
+        );
+        $this->assertSame(1, $queuedCount());
+
+        // دوباره صدا زدن → هیچ نسخه جدیدی (dedup)
+        App::scheduleRecurringJobs();
+        $this->assertSame(1, $queuedCount());
+
+        // اجرای tick واقعی → جاب پردازش شد → صف خالی از no_show
+        $processed = App::dispatcher()->tick(20);
+        $this->assertGreaterThanOrEqual(1, $processed);
+        $this->assertSame(0, $queuedCount());
+
+        // زمان‌بندی دوباره (مثل cpms_jobs_tick بعدی) → باز در صف
+        App::scheduleRecurringJobs();
+        $this->assertSame(1, $queuedCount());
+    }
+
+    /**
+     * Regression (Pilot Gate / J-4): مسیر CLI (`bin/cpms jobs tick`) و WP-Cron
+     * باید یکسان باشند — هر Tick جاب‌های دوره‌ای را (Idempotent) دوباره
+     * زمان‌بندی «و در همان Tick اجرا» کند. قبلاً bin/cpms فقط dispatcher()
+     * را صدا می‌زد → در استقرار system-cron جاب‌های دوره‌ای بعد از اولین
+     * اجرا برای همیشه متوقف می‌شدند (FR-5.5).
+     */
+    public function testRunTickReschedulesAndProcessesRecurringJobs(): void
+    {
+        $successCount = static fn (): int => (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_jobs') . ' WHERE type = %s AND status = %s',
+            ['visits.no_show', \ClinicCore\Infrastructure\Queue\JobQueue::SUCCESS]
+        );
+
+        // خالی کردن صف (Tick قبل از تست — بدون re-schedule)
+        App::dispatcher()->tick(50);
+        $before = $successCount();
+        $this->assertSame(
+            0,
+            (int) App::db()->fetchValue(
+                'SELECT COUNT(*) FROM ' . App::db()->table('cpms_jobs') . ' WHERE status = %s',
+                [\ClinicCore\Infrastructure\Queue\JobQueue::QUEUED]
+            ),
+            'پیش‌شرط: صف باید خالی باشد'
+        );
+
+        // runTick = مسیر مشترک WP-Cron و CLI: re-enqueue + اجرا در همان چرخه
+        $processed = App::runTick(50);
+        $this->assertGreaterThanOrEqual(1, $processed, 'runTick باید جاب‌های دوره‌ای re-enqueue شده را اجرا کند');
+        $this->assertSame(
+            $before + 1,
+            $successCount(),
+            'جاب دوره‌ای باید در همان runTick دوباره زمان‌بندی و اجرا شود (FR-5.5)'
+        );
+
+        // چرخه دوم هم باید دوباره اجرا کند (پیوستگی زمان‌بندی دوره‌ای)
+        $this->assertGreaterThanOrEqual(1, App::runTick(50));
+        $this->assertSame($before + 2, $successCount());
+    }
+
     public function testFailedJobAlertsOpLog(): void
     {
         $jobId = $this->queue->enqueue('test.doomed', [], null, 5, 1);

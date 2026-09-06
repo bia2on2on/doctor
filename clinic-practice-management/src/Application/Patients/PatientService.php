@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Application\Patients;
 
-use ClinicCore\Application\Booking\BookingException;
+use ClinicCore\Domain\Booking\BookingException;
 use ClinicCore\Domain\Licensing\LicenseGate;
 use ClinicCore\Domain\Validators\MobileValidator;
 use ClinicCore\Domain\Validators\NationalIdValidator;
@@ -435,14 +435,14 @@ final class PatientService
     private function staffView(array $row): array
     {
         $view = $this->publicView($row);
-        $view['blood_group'] = $row['blood_group'] !== null ? (string) $row['blood_group'] : null;
+        $view['blood_group'] = ($row['blood_group'] ?? null) !== null ? (string) $row['blood_group'] : null;
         $view['medication_allergies'] = $this->jsonField($row['medication_allergies'] ?? null);
         $view['other_allergies'] = $this->jsonField($row['other_allergies'] ?? null);
         $view['chronic_conditions'] = $this->jsonField($row['chronic_conditions'] ?? null);
         $view['current_medications'] = $this->jsonField($row['current_medications'] ?? null);
-        $view['medical_history'] = $row['medical_history'] !== null ? (string) $row['medical_history'] : null;
-        $view['surgery_history'] = $row['surgery_history'] !== null ? (string) $row['surgery_history'] : null;
-        $view['status'] = (string) $row['status'];
+        $view['medical_history'] = ($row['medical_history'] ?? null) !== null ? (string) $row['medical_history'] : null;
+        $view['surgery_history'] = ($row['surgery_history'] ?? null) !== null ? (string) $row['surgery_history'] : null;
+        $view['status'] = (string) ($row['status'] ?? '');
 
         return $view;
     }

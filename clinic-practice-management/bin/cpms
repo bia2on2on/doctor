@@ -76,8 +76,7 @@ switch ($cmd) {
                     echo "Another tick is running; skipped.\n";
                     break;
                 }
-                App::recordTick();
-                $n = App::dispatcher()->tick($limit);
+                $n = App::runTick($limit);
                 $wpdb->query("SELECT RELEASE_LOCK('cpms_jobs_tick')");
                 echo "Processed {$n} job(s)\n";
                 break;

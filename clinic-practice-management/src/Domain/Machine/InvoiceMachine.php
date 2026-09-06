@@ -30,6 +30,9 @@ final class InvoiceMachine
 
         $m->addTransition(self::NEW, 'issue', self::OPEN, ['secretary', 'doctor']);
         $m->addTransition(self::OPEN, 'pay_partial', self::PARTIAL, ['system']);
+        // M-3: پرداخت ناقص بعدی وضعیت را عوض نمی‌کند (self-loop) —
+        // paid_amount روی فاکتور تجمیع می‌شود و I2 فقط بار اول partial می‌سازد.
+        $m->addTransition(self::PARTIAL, 'pay_partial', self::PARTIAL, ['system']);
         $m->addTransition(self::OPEN, 'pay_full', self::PAID, ['system']);
         $m->addTransition(self::PARTIAL, 'pay_full', self::PAID, ['system']);
         $m->addTransition(self::OPEN, 'void', self::VOIDED, ['secretary']);

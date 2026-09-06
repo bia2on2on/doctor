@@ -1,6 +1,6 @@
 # Permission Matrix — CPMS
 
-نسخه 1.2 | 2026-09-05 | فاز 2 (تصمیم F1-D2 اعمال شد) + **F2.5**: `cpms_sms_config` (ADR-0025)
+نسخه 1.4 | 2026-09-06 | فاز 2 (تصمیم F1-D2) + **F2.5**: `cpms_sms_config` (ADR-0025) + **F5 هم‌ترازی** (تفکیک سطر Patient §3) + **ADR-0026**: نقش‌های پویا + Scope + Capهای حساس (P-9..P-12، §6)
 
 ## 1. اصول
 
@@ -12,6 +12,10 @@
 - **P-6** `doctor_private` در سطح Query فیلتر می‌شود + Capability مجزا (دو لایه: Capability → Data-Access → Field/Row Filter).
 - **P-7** هر عدم مجوز → 403/404 + Audit `FORBIDDEN_ACCESS_ATTEMPT`.
 - **P-8** Ownership/Resource-Level Authorization **علاوه بر** WordPress Capability بررسی می‌شود (دو لایه مستقل).
+- **P-9** (ADR-0026) **نام نقش هرگز مکانیزم Authorization نیست** — تصمیم فقط بر پایه Capability (+ Scope در V2). نقش‌های سفارشی ستادی (دستیار/حسابدار/مدیر مطب/…) با هر زیرمجموعه `cpms_*` معتبرند؛ نقش‌های V1 فقط Template پیش‌فرض‌اند.
+- **P-10** (ADR-0026) حوزه‌های دسترسی **مستقل**اند: مالی ⊥ بالینی ⊥ هویت/دموگرافیک ⊥ یادداشت خصوصی ⊥ فایل. Cap مالی هرگز Cap بالینی را ضمنی نمی‌دهد و بالعکس.
+- **P-11** (ADR-0026) Capهای **حساس** هرگز در Template عمومی «راحت» قرار نمی‌گیرند و در UI مدیریت نقش (V2) با هشدار جدا نمایش داده می‌شوند: `cpms_private_note_*`، `cpms_export`، `cpms_audit_read`، `cpms_payment_void`، `cpms_payment_refund`، `cpms_invoice_void`، `cpms_invoice_adjust`، `cpms_patient_archive`، `cpms_patient_merge`، `cpms_consult_reopen`، `cpms_config`، `cpms_sms_config` (+ آینده: Cap مدیریت نقش).
+- **P-12** (ADR-0026) **Scope منبع** (V2): `OWN`/`ASSIGNED_DOCTORS`/`BRANCH`/`CLINIC`/`ALL_ALLOWED` — بعد از Capability و قبل از Data-Access ارزیابی می‌شود؛ تا V2 عملیاتی = CLINIC (`clinic_id=1`، ADR-0003).
 
 ## 2. فهرست نهایی Capability Slugها (تأییدشده 2026-09-05)
 
@@ -115,7 +119,8 @@
 
 | Capability | بیمار | منشی | پزشک | Admin (WP) |
 |---|:-:|:-:|:-:|:-:|
-| cpms_patient_read / create / update | — | ✅ | ✅ | ❌ |
+| cpms_patient_read / update | — | ✅ | ✅ | ❌ |
+| cpms_patient_create | — | ✅ | ❌ | ❌ |
 | cpms_patient_archive / merge | — | ❌ | ❌ | ❌ (اعطای موردی) |
 | cpms_appt_read / create | — | ✅ | ✅ | ❌ |
 | cpms_appt_confirm / cancel / reschedule / no_show | — | ✅ | ✅ | ❌ |
@@ -146,6 +151,8 @@
 > **Admin:** فقط `cpms_config` + `cpms_sms_config` (فنی). `cpms_medical_read`/`cpms_audit_read`/`cpms_export` فقط با اعطای صریح به کاربر.
 > **منشی/پزشک:** `cpms_sms_config` ندارند (در صورت نیاز به مدیریت پنل، اعطای موردی به کاربر خاص).
 > نقش پنجم `clinic_manager` (مدیر مطب) به‌عنوان گسترش آماده — بدون تغییر مدل.
+>
+> **یادداشت هم‌ترازی F5 (2026-09-05 — TP-10):** سطر قبلی «`cpms_patient_read / create / update`» به‌صورت گروهی برای پزشک ✅ بود و با **§4.3 (مرجع)** تناقض داشت (Create برای پزشک: ❌؛ Update: «فیلدهای پزشکی» ✅). طبق §4.3 + اصل Least Privilege تفکیک شد: `cpms_patient_update` برای پزشک ✅ (الزام FR-8.1 — ویرایش فیلدهای پزشکی پروفایل در صفحه ویزیت)، `cpms_patient_create` فقط منشی. کد (`DOCTOR_CAPS`) هم مطابق همین هم‌تراز شد؛ تست TP-10 (`tests/Integration/PermissionMatrixTest.php`) از این پس تطابق سند↔کد را قفل می‌کند. اگر کارفرما Create برای پزشک را بخواهد، هر دو (سند+کد) با هم تغییر می‌کنند.
 
 ## 4. ماتریس Resource × نقش (مرجع)
 
@@ -191,11 +198,14 @@
 | Patient Visible Note | ✅ | ✅ | ✅ (خودش) | Archive | با مجوز |
 | Prescription | ✅ | ✅ (ویزیت خودش) | Correction (نسخه جدید) | Void (دلیل) | با مجوز |
 | Recommendation/Follow-Up | ✅ | ✅ | — | — | — |
+| Handwriting Document/Page (F7) | ✅ `cpms_medical_read` | ✅ `cpms_note_create` (سند/صفحه/ذخیره) | ✅ ذخیره صفحه فقط با پروتکل Revision (ADR-0014) | — (نسخه‌ها append-only؛ GC خودکار) | با مجوز |
 | Attachment | ✅ (هر visibility) | ✅ | — | Soft (با مجوز) | با مجوز |
 | Invoice | ✅ | ✅ (ثبت خدمات) | — | ❌ | با مجوز |
 | Payment | مبلغ | ❌ (ثبت عادی با منشی) | — | Void/Refund (با مجوز) | با مجوز |
 | Audit | ❌ (مگر `cpms_audit_read` صریح) | — | — | — | — |
 | Schedule/Settings | برنامه خودش | برنامه خودش | استثنائات خودش | — | — |
+
+> **دست‌خط (F7 — 2026-09-06):** همه عملیات دست‌خط (ایجاد سند/صفحه، ذخیره، خواندن) علاوه بر Capability فقط روی **ویزیت خودِ پزشک** (clinician متصل به wp_user — الگوی §4.3) مجاز است؛ نقض → 404 + `FORBIDDEN_ACCESS_ATTEMPT`. منشی/بیمار هیچ Capability دست‌خط ندارند. Audit: `HW_DOC_CREATE` / `HW_PAGE_ADD` / `HW_PAGE_SAVE` (+ meta تضاد/`conflict_reason`).
 
 ### 4.4 WP Administrator (فنی)
 | دسته | پیش‌فرض | با اعطای صریح |
@@ -213,3 +223,20 @@
 - TP-09: Admin بدون Capability صریح → 403 روی PHI/Audit
 - TP-10: Matrix Parametrized (تولید خودکار از این فایل)
 - TP-11: Audit Integrity
+
+## 6. نقش‌های پویا، Scope و گزارشگری (ADR-0026 — تعریف، پیاده‌سازی فاز V2)
+
+| موضوع | تعریف |
+|---|---|
+| نقش سفارشی | هر زیرمجموعه از ۴۶ Capability بالا (مثال «حسابدار»: `invoice_read`+`payment_create`+`finance_read`، بدون هیچ Cap بالینی؛ مثال «دستیار»: `patient_read`+`appt_*`+`queue_*`، بدون `medical_read`) |
+| Templateها | Doctor/Secretary/Assistant/Accountant/Clinic Manager = بسته‌های پیش‌نهادی UI (نرمال‌کننده نیستند)؛ شروع از Clone و سپس تنظیم مجاز است |
+| عملیات نقش (V2) | Create/Rename/Assign-permissions/Modify/Assign-to-user/Archive (ایمن، بدون یتیم‌کردن کاربر یا اعطای خاموش)؛ نقش‌های سیستم حساس محافظت‌شده |
+| Scope (V2) | `OWN` (پزشک: درآمد/ویزیت‌های خودش) / `ASSIGNED_DOCTORS` / `BRANCH` / `CLINIC` / `ALL_ALLOWED` — Enforcement در Backend روی `clinic_id`/`clinician_id` موجود؛ فیلتر Frontend ملاک نیست |
+| گزارش مالی (F8/V2) | per-doctor (درآمد/ویزیت/باقیمانده)، per-service، بازه‌ای، Methods، Refund/Void — تفکیک **Aggregate** (مدیر: جمع مطب + تفکیک پزشک، بدون پرونده بیمار) از **Detail** (نیازمند Cap جزئیات) |
+| Escalation | اعطای Cap فقط توسط `cpms_config`-دار و فقط زیرمجموعه Capهای خودش (Server-side) |
+| Audit نقش | `ROLE_CREATED`/`ROLE_UPDATED`/`ROLE_ARCHIVED`/`ROLE_ASSIGNED`/`ROLE_REMOVED`/`PERMISSION_GRANTED`/`PERMISSION_REVOKED`/`STAFF_SCOPE_CHANGED` (before/after بدون PHI) |
+| 2FA | Privileged = دارنده هر Cap حساس (P-11) — ADR-0020 (Access-based، نه نام نقش) |
+
+> **وضعیت کد (بررسی ADR-0026، 2026-09-06):** لایه REST و سرویس‌های مالی (F6) کاملاً Capability-محورند؛ Debt نقش-محور باقی‌مانده (بازیگر ماشین Visit/Clinical + `requireRole` بالینی + انشعاب visibility فایل) و نقشه مهاجرت آن در ADR-0026 ثبت شد. Blocker معماری وجود ندارد.
+
+> **تصمیم محصول ADR-0027 (2026-09-06 — یک محصول چندپزشکی):** Scope منبع (بالا) از «آینده‌نگری V2» به **قید دائمی محصول** ارتقا یافت — مطب تک‌پزشکی = زیرمجموعه UX درمانگاه چندپزشکی. بازبینی آمادگی: `docs/architecture/multi-doctor-readiness-review.md` — بدون تغییر Foundational؛ موارد باقی‌مانده: ① گارد مالکیت Transition صف برای پزشک‌ها (فاز F9 — پزشک فقط روی ویزیت خودش call/recall/start) ② Enforcement کامل Scope + جدول انتساب Staff (V2) ③ گزارش‌های Breakdown per-doctor/service/specialty (V2). تا آن زمان: دید Queue/مالی دارنده Cap = CLINIC (`clinic_id=1`، ADR-0003) — گزارش‌های F8 از الان Scope سرور-side دارند (الگوی مرجع).

@@ -52,9 +52,10 @@ final class RateLimiter
      */
     public function cleanup(int $olderThanSec = 86400): int
     {
-        $cutoff = intdiv(time() - $olderThanSec, 86400);
+        // window_id بر مبنای «ساعت» است (intdiv(ts, 3600)) — cutoff باید هم‌واحد باشد
+        $cutoff = intdiv(time() - $olderThanSec, 3600);
 
-        return $this->db->query(
+        return $this->db->execute(
             'DELETE FROM ' . $this->db->table('cpms_rate_limits') . ' WHERE window_id < %d',
             [$cutoff]
         );

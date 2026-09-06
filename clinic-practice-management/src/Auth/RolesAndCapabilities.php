@@ -120,6 +120,7 @@ final class RolesAndCapabilities
 
     public const DOCTOR_CAPS = [
         self::PATIENT_READ,
+        self::PATIENT_UPDATE,
         self::APPT_READ, self::APPT_CREATE, self::APPT_CONFIRM, self::APPT_CANCEL, self::APPT_RESCHEDULE, self::APPT_NO_SHOW,
         self::VISIT_READ, self::QUEUE_READ, self::QUEUE_CALL,
         self::CONSULT_START, self::CONSULT_COMPLETE, self::CONSULT_REOPEN,
@@ -175,6 +176,13 @@ final class RolesAndCapabilities
                 $existing->add_cap($cap);
             }
             if (!array_key_exists($cap, $caps) && $existing->has_cap($cap)) {
+                $existing->remove_cap($cap);
+            }
+        }
+        // Self-healing کامل (TP-10): هر Capability با پیشوند cpms_ خارج از فهرست
+        // مجاز این نقش (مثلاً drift دستی/قدیمی) هم پاک می‌شود — Least Privilege.
+        foreach (array_keys($existing->capabilities) as $cap) {
+            if (is_string($cap) && str_starts_with($cap, 'cpms_') && !array_key_exists($cap, $caps)) {
                 $existing->remove_cap($cap);
             }
         }

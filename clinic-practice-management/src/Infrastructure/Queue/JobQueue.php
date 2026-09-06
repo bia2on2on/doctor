@@ -128,7 +128,7 @@ final class JobQueue
      */
     public function releaseStaleLocks(): int
     {
-        return $this->db->query(
+        return $this->db->execute(
             'UPDATE ' . $this->db->table('cpms_jobs') .
             ' SET status = %s, locked_by = NULL, lock_expires_at = NULL
              WHERE status = %s AND lock_expires_at < %s',

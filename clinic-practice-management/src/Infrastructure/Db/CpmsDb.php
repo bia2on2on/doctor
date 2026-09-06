@@ -18,9 +18,18 @@ final class CpmsDb
     {
     }
 
+    /**
+     * نام فیزیکی جدول: `{wp_prefix}cpms_{name}`.
+     *
+     * پیشوند `cpms_` بخشی از قرارداد مستند (ERD/SRS/دیتادیکشنری) است و همیشه
+     * در نام نهایی حفظ می‌شود؛ str_replace فقط تحمل فراخوانی با/بدون پیشوند
+     * را می‌دهد (table('cpms_patients') === table('patients')).
+     */
     public function table(string $short): string
     {
-        return $this->wpdb->prefix . str_replace('cpms_', '', $short);
+        $name = preg_replace('/^' . preg_quote($this->prefix, '/') . '/', '', $short);
+
+        return $this->wpdb->prefix . $this->prefix . $name;
     }
 
     public function dbPrefix(): string
@@ -40,6 +49,17 @@ final class CpmsDb
     public function query(string $sql, array $params = []): bool
     {
         return $this->wpdb->query($this->prepare($sql, $params)) !== false; // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+    }
+
+    /**
+     * اجرای نوشتاری با برگرداندن تعداد سطرهای اثرگرفته (برخلاف query که bool است).
+     * خطای SQL → 0 (رفتار soft؛ برای لاگ/پاک‌سازی‌های دوره‌ای کافی است).
+     */
+    public function execute(string $sql, array $params = []): int
+    {
+        $result = $this->wpdb->query($this->prepare($sql, $params)); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+        return is_int($result) ? $result : 0;
     }
 
     /**
@@ -72,7 +92,9 @@ final class CpmsDb
      */
     public function insert(string $table, array $data): bool
     {
-        return $this->wpdb->insert($this->table($table), $data); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+        // wpdb::insert در موفقیت int (تعداد ردیف) و در خطا false برمی‌گرداند —
+        // نه bool؛ بدون این نرمال‌سازی هر insert موفق TypeError می‌داد.
+        return $this->wpdb->insert($this->table($table), $data) !== false; // phpcs:ignore WordPress.DB.DirectDatabaseQuery
     }
 
     /**
@@ -109,6 +131,11 @@ final class CpmsDb
     /**
      * Transaction + Row Lock انتخابی.
      *
+     * در Test-Bootstrap، افعال تراکنش (با نشانگر cpms در ابتدای SQL) به
+     * SAVEPOINT/RELEASE/ROLLBACK-TO بازنویسی می‌شوند تا داخل تراکنش بازِ
+     * WP Test Suite بدون COMMIT ضمنی اجرا شوند (نشت Fixture بین تست‌ها).
+     * رفتار Production بدون تغییر است — MySQL comment را نادیده می‌گیرد.
+     *
      * @template T
      *
      * @param callable $fn
@@ -117,14 +144,14 @@ final class CpmsDb
      */
     public function transactional(callable $fn)
     {
-        $this->wpdb->query('START TRANSACTION');
+        $this->wpdb->query('/*cpms*/ START TRANSACTION'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         try {
             $result = $fn();
-            $this->wpdb->query('COMMIT');
+            $this->wpdb->query('/*cpms*/ COMMIT'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
             return $result;
         } catch (\Throwable $e) {
-            $this->wpdb->query('ROLLBACK');
+            $this->wpdb->query('/*cpms*/ ROLLBACK'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
             throw $e;
         }
     }

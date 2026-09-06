@@ -10,11 +10,12 @@
 | Format | JSON UTF-8. زمان‌ها ISO-8601 UTC (`2026-09-05T12:30:00.000Z`) + فیلدهای نمایش Jalali جفت (مثلاً `slot_date_jalali`). |
 | خطا | `{ "code": "CLINIC_*", "message": "...", "data": {} }` + HTTP مناسب (400 validation, 403 forbidden, 404 not-found-as-forbidden برای Patient, 409 conflict). **تمام کدها با پیشوند ثابت `CLINIC_*`** — فهرست مرکزی: `docs/api/error-codes.md` (ADR-0019). |
 | Pagination | `?page=1&per_page=20` → header `X-Total-Count`. |
-| Idempotency | هدر `Idempotency-Key: <uuid>` روی Endpointهای `payment`, `booking/confirm`, `handwriting/page` (موتانت‌های حساس). |
+| Idempotency | هدر `Idempotency-Key: <uuid>` روی Endpointهای `payment`, `booking/confirm`, `handwriting/page` (موتانت‌های حساس). دامنهٔ یکتایی = `(key, endpoint, wp_user_id, context_id)` — یعنی همان کلید در Endpoint/کاربر/زمینه (مثلاً PageId دست‌خط) مختلف مانعه‌ی هم نیست و هر جفتِ Request/Response را جدا نگه می‌دارد (F9: UNIQUE چهارستونه + نرمال‌سازی NULL→0). |
 | Rate Limit | `X-RateLimit-Limit/Remaining/Reset`. محدودیت‌ها: OTP (10/hr), booking (10/hr), login (20/hr), upload (10/hr). |
 | Versioning | `clinic/v1` — شکست‌های بعدی → `v2` (compat window). |
 | Security | هر Endpoint: Capability Check + Data-Access (Permission Matrix). 404 برای «داده دیگری» (افشای وجود ندهد) + Audit `FORBIDDEN_ACCESS_ATTEMPT`. |
 | CORS | Same-origin فقط؛ Origin خارجی → 403. |
+| نکات اعتبارسنجی WP (F3) | پارامترهای الزامی/نوعی که WP REST قبل از Handler می‌سنجد، با خطای بومی WP برمی‌گردند: `rest_missing_callback_param` (پارامتر الزامی حذف‌شده) و `rest_invalid_param` (نوع نامعتبر) — هر دو 400 با ساختار استاندارد WP (`{code, message, data:{status}}`). کدهای دامنه/سیاست همیشه `CLINIC_*` خودمان هستند. همچنین Nonce اشتباه در درخواست Cookie-Authenticated ممکن است پیش از رسیدن به لایه ما با `rest_cookie_invalid_nonce` (403 بومی WP) رد شود — گم‌شدن Nonce همیشه با `CLINIC_INVALID_NONCE` پاسخ می‌شود. |
 
 ## 1. Public (بدون Auth)
 
@@ -25,7 +26,7 @@
 | A3 | `POST /otp/verify` | `{mobile, code}` | `{user_id, patient_links:[{patient_id, mrn, first_name,last_name}], is_new_user}` |
 | A4 | `POST /booking/quote` | `{clinician_id, slot_date, slot_time}` — پیش‌بررسی آزاد بودن (بدون Hold) | `{available:bool, capacity_left}` |
 
-> A2/A3: `otp/verify` برای کاربر جدید، اکانت ساخت **نمی‌کند** — فقط هویت موبایل؛ اکانت در گام بعد (A5/A6) ساخته می‌شود تا Profile کامل شود.
+> A2/A3 (به‌روزرسانی F2/F3 — رفع GAP-2): `otp/verify` برای کاربر جدید، **اکانت `cpms_patient` می‌سازد** و به رکورد Patient موجود (بر اساس موبایل) لینک می‌کند (تصمیم نهایی F2: Auto-Creation + Linking؛ تست‌شده). شماره‌گذاری قدیمی «A5/A6» از نسخه پیشین مستندات باقی‌مانده بود و در پیاده‌سازی وجود خارجی ندارد؛ تکمیل/ویرایش پروفایل از طریق C1/C2 و ساخت بیمار توسط منشی (D3) پوشش داده می‌شود.
 
 ## 2. Booking (Authenticated: patient)
 
@@ -66,13 +67,16 @@
 | D9 | `GET /appointments?date&status` | `cpms_appt_read` | لیست نوبت‌های روز |
 | D10 | `POST /appointments` | `cpms_appt_create` | نوبت حضوری/فوری `{patient_id, clinician_id (الزامی), slot_date, slot_time, reason?}` — بدون min-lead (فوری/حضوری)؛ `is_walkin_express` اگر روز جاری. (GAP-1/G-3) |
 | D11 | `POST /appointments/{id}/cancel` | `cpms_appt_cancel` | با دلیل |
-| D12 | `POST /invoices` | `cpms_invoice_create` | `{visit_id, items:[{service_id?, description, qty, price}], discount?, tax?}` |
-| D13 | `POST /invoices/{id}/payments` | `cpms_payment_create` | `{amount, method, transaction_ref?}` + **Idempotency-Key** |
-| D14 | `POST /payments/{id}/void` | `cpms_payment_void` | `{reason}` |
-| D15 | `POST /invoices/{id}/adjustments` | `cpms_invoice_adjust` | `{type, amount, reason}` |
-| D16 | `POST /visits/{id}/checkout` | `cpms_queue_checkout` | `{waive_invoice?: {reason}}` |
-| D17 | `GET /invoices/{id}/receipt` | `cpms_invoice_read` | Receipt (PDF) |
-| D18 | `GET /finance/summary?from&to` | `cpms_finance_read` | آمار مالی (Revenue, Open Balances, Methods) |
+| D12 | `POST /invoices` | `cpms_invoice_create` | `{visit_id, items:[{service_id?, description, quantity|qty, unit_price|price, discount?}], discount?, tax?}` — مبالغ ریالِ صحیح (TP-18)؛ وضعیت ویزیت `consultation_completed`/`awaiting_payment`؛ V11 سیستمی؛ **201** |
+| D12b | `GET /invoices/{id}` | `cpms_invoice_read` | نمای کامل فاکتور (اقلام/پرداخت‌ها/اصلاحات) — UI تسویه |
+| D12c | `GET /visits/{id}/invoice` | `cpms_invoice_read` | فاکتور فعال ویزیت (رفع ویزیت→فاکتور در UI)؛ بدون فاکتور → 404 |
+| D13 | `POST /invoices/{id}/payments` | `cpms_payment_create` | `{amount, method, transaction_ref?}` + **Idempotency-Key** (الزامی — بدون آن 400)؛ اولین ثبت **201**، تکرار همان کلید **200** + `code=CLINIC_IDEMPOTENCY_REPLAY` + همان `payment_id` (M-1/TP-02) |
+| D14 | `POST /payments/{id}/void` | `cpms_payment_void` | `{reason}` — فقط همان روز ثبت (UTC؛ `CLINIC_VOID_WINDOW_EXPIRED`)؛ Invoice بازگردانی؛ ویزیت دست‌نخورده (V12 یک‌طرفه) |
+| P3 | `POST /payments/{id}/refund` | `cpms_payment_refund` | `{reason, amount?}` — پیش‌فرض: کل مبلغ باقیماندهٔ قابل بازگردانی؛ جزئی → `captured` می‌ماند، کامل → `refunded` |
+| D15 | `POST /invoices/{id}/adjustments` | `cpms_invoice_adjust` | `{type: credit|debit, amount, reason}` — فقط فاکتور `open/partial` (M-6) |
+| D16 | `POST /visits/{id}/checkout` | `cpms_queue_checkout` | `{waive_invoice?: {reason}}` — فاکتور باز → `CLINIC_NOT_SETTLED` (V14) مگر مسیر معافیت |
+| D17 | `GET /invoices/{id}/receipt` | `cpms_invoice_read` | رسید **JSON ساخت‌یافته + نمای چاپ UI (window.print)** — Deterministic (M-5) + تاریخ جلالی؛ PDF سمت سرور = Backlog (بدون Dependency جدید) |
+| D18 | `GET /finance/summary?from&to` | `cpms_finance_read` | آمار مالی (Revenue, By-Method, Refunded, Open Balances, آخرین پرداخت‌ها) — تاریخ‌ها `YYYY-MM-DD` (پیش‌فرض امروز UTC) |
 
 ## 5. Doctor (Authenticated: `clinic_doctor` + Capabilities)
 
@@ -101,9 +105,11 @@
 
 | # | Method/Path | توضیح |
 |---|---|---|
-| F1 | `POST /handwriting/documents` | `{visit_id, title?, pages:[]}` → Document |
-| F2 | `PUT /handwriting/pages/{id}` | `{page_index, stroke_data (gzip+base64), width, height, client_revision}` — `Idempotency-Key`؛ Conflict → `CLINIC_CONFLICT` (دریافت‌نکردن/ادغام) |
-| F3 | `GET /handwriting/pages/{id}` | Stroke data + preview |
+| F1 | `POST /handwriting/documents` | `{visit_id, title?, pages:[]}` → Document + صفحات اولیه (پیش‌فرض: یک صفحه A4 خط‌دار) — Cap `cpms_note_create` + مالکیت ویزیت (§4.3)؛ Audit `HW_DOC_CREATE` |
+| F1b | `GET /handwriting/documents?visit_id=` | آخرین سند ویزیت + فهرست صفحات (id/revision/version) برای بازکردن مجدد ویرایشگر — Cap `cpms_medical_read` + مالکیت |
+| F1c | `POST /handwriting/documents/{id}/pages` | افزودن صفحه در انتها (`width/height/background_template?/background_attachment_id?`) — Cap `cpms_note_create` + مالکیت؛ Audit `HW_PAGE_ADD` |
+| F2 | `PUT /handwriting/pages/{id}` | `{stroke_data (base64(gzip(JSON)) **یا** base64(JSON) — تشخیص magic gzip سمت سرور), width, height, client_revision, saved_by?, background_template?, background_attachment_id?, conflict_reason?}` — `Idempotency-Key` **الزامی** (بدون هدر → 400)؛ پروتکل ADR-0014: apply فقط اگر `client_revision == server.client_revision + 1` → `version++` + INSERT نسخه append-only؛ در غیر این صورت `409 CLINIC_CONFLICT` + `data.server` (revision/version/strokes) برای دیالوگ «نسخه من/سرور» — **بدون ادغام خودکار**؛ بازنویسی پس از تضاد = load سرور سپس Save با `conflict_reason` (Audit meta). رترای همان کلید = پاسخ ذخیره‌شده بدون version bump |
+| F3 | `GET /handwriting/pages/{id}` | `{width, height, background_template, background_attachment_id, client_revision, version, strokes[] (decode شده)}` — Cap `cpms_medical_read` + مالکیت؛ Preview PNG سمت کلاینت Render می‌شود |
 | F4 | `POST /handwriting/pages/{id}/ocr` | `{provider?}` → OCR Job (V1.5) |
 | F5 | `GET /ocr/jobs/{id}` | وضعیت + extracted_text (تا تأیید: `review_status=pending`) |
 | F6 | `PUT /ocr/jobs/{id}/review` | `{confirmed_text (ویرایش‌شده), action: confirm\|reject}` |
@@ -112,12 +118,19 @@
 
 | # | Method/Path | Cap |
 |---|---|---|
-| G1 | CRUD `/config/schedules` | `cpms_config` |
-| G2 | CRUD `/config/services` | `cpms_config` |
+| G1 | `GET/POST /config/schedules` + `PUT/DELETE /config/schedules/{id}` — برنامه هفتگی هر پزشک (یک رکورد به‌ازای هر روز هفته؛ `day_of_week` 0=شنبه..6=جمعه؛ `start_time/end_time` HH:MM؛ `appointment_duration_min` 5–240؛ `slot_capacity` 1–50؛ بازه استراحت اختیاری داخل بازه کاری). تغییر/حذف → حذف Slotهای **خالیِ آینده** و بازتولید اتمیک (ADR-0004)؛ Slot دارای رزرو/hold هرگز حذف نمی‌شود. | `cpms_config` |
+| G1b | `GET/POST /config/schedule-exceptions` + `DELETE /config/schedule-exceptions/{id}` — استثنائات (`holiday`/`leave` = تعطیلی کل روز؛ `blocked`/`open_override` = بازه ساعتی الزامی). تاریخ باید آینده باشد. ثبت/حذف همان سیاست Regeneration را اجرا می‌کند. (ثبت افزایشی F3 — خارج از شماره‌گذاری اصلی) | `cpms_config` |
+| G2 | CRUD `/config/services` | نوشتن: `cpms_config` (admin فنی)؛ خواندن: `cpms_invoice_read` (منشی/پزشک — فاکتورسازی سریع FR-14.9) **یا** `cpms_config` (admin فنی — P-3) | `GET ?scope=active|all`، `POST`، `PUT /{id}`، `DELETE /{id}` (غیرفعال‌سازی منطقی)؛ `{code, name, price}` — کد یکتا per-clinic |
 | G3 | PUT `/settings` | `cpms_config` |
 | G4 | GET `/audit?filters` | `cpms_audit_read` (Explicit) — **تأیید Admin** |
-| G5 | GET `/reports/{type}?from&to` + `POST /reports/{type}/export` | `cpms_report_read` / `cpms_export` |
-| G6 | GET `/notifications` (Internal, منشی/پزشک/بیمار) | نقش خود |
+| G5 | GET `/reports` — کاتالوگ ۱۲ گزارش مجاز Actor (label/missing/scope) | `cpms_report_read` (پیش‌فرض فقط پزشک — ماتریس §3) |
+| G5 | GET `/reports/{type}?from&to` — اجرای گزارش. **type ∈** `appointments_today, appointments_week, cancellations, no_shows, walk_ins, visits, avg_waiting, visit_duration, revenue, payment_methods, open_balances, follow_ups_due`. Scope سرور-side (ADR-0026): پزشکِ متصل به Clinician = **OWN** (فیلتر `clinician_id` اجباری — cross-doctor هرگز)؛ Aggregate مطب فقط برای دارنده `cpms_report_read` **بدون** Clinician-Link (اعطای صریح — الگوی حسابدار ماتریس §6). تفکیک Aggregate⊥Detail (D-8): مالی (`revenue/payment_methods/open_balances`) نیاز `cpms_finance_read` و بدون نام بیمار؛ عملیاتیِ دارای نام بیمار نیاز `cpms_patient_read`؛ `follow_ups_due` نیاز `cpms_medical_read` (بدون reason). بازه bounded (`reports.max_range_days`، پیش‌فرض ۳۶۶)؛ Audit `REPORT_READ` | `cpms_report_read` + Cap نوع |
+| G5 | GET `/reports/{type}/print?from&to` — نسخه چاپی HTML با **Watermark** (کاربر+زمان+Scope) برای چاپ/PDF مرورگر (PDF سرور = Backlog، پیش‌زمینه F6) | همان `GET /reports/{type}` |
+| G5 | POST `/reports/{type}/export` — درخواست CSV **async** (Job `report.export` — performance-baseline §18) → `{job_id, status:"queued"}`؛ Audit `EXPORT` (filters)؛ فایل CSV با BOM + محافظت Formula-Injection در Storage محافظت‌شده (خارج webroot) + اعلان Internal «آماده شد»؛ Retention `reports.export_retention_days` | `cpms_report_read` + Cap نوع + **`cpms_export`** (هیچ‌کس پیش‌فرض) |
+| G5 | GET `/reports/exports` — فهرست Exportهای خود Actor (از اعلان‌های `report_export_ready`) | `cpms_report_read` + `cpms_export` |
+| G5 | GET `/reports/exports/{id}/download` — دانلود محافظت‌شده: فقط مالک اعلان؛ منقضی → `410 CLINIC_EXPORT_EXPIRED`؛ Audit `EXPORT` | `cpms_report_read` + `cpms_export` + مالکیت |
+| G6 | GET `/notifications?unread=&limit=` — Inbox نقش خود (منشی/پزشک → گیرنده WP؛ بیمار متصل → `recipient_patient_id`) + `unread_count`؛ فقط رکوردهای خود Actor (IDOR-safe) | نقش CPMS (staff یا بیمار متصل) |
+| G6 | POST `/notifications/read` — `{ids:[..]}` یا `{all:true}` → علامت‌گذاری خوانده‌شده (فقط رکوردهای خود Actor) | نقش CPMS |
 
 ## 8. Payload نمونه‌ها
 
@@ -147,7 +160,7 @@
 | # | Method/Path | توضیح |
 |---|---|---|
 | R1 | `GET /rt/queue?since={event_id}` | تغییرات جدید صف از آخرین event (Etag-like)؛ منشی 3s، پزشک 5s؛ `ETag`/`304` برای کاهش بار |
-| R2 | `GET /rt/notifications` | اعلان‌های Internal جدید (badge) |
+| R2 | `GET /rt/notifications?since={id}` | اعلان‌های Internal جدید (badge) — `{notifications[], last_id, unread_count}`؛ `ETag`/`304` (الگوی R1)؛ Rate 60/min؛ منشی/پزشک/بیمار — Inbox خودشان (F8) |
 
 > Transport Layer (ADR-0007): کلاینت فقط یک `Transport` interface دارد؛ تعویض با WebSocket/SSE بعداً بدون تغییر BUI.
 

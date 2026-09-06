@@ -12,6 +12,7 @@ Jobهای حیاتی (انقضای Hold، ارسال SMS/Notification، Reminder
    ```
    + توصیه `DISABLE_WP_CRON` در wp-config برای قطع وابستگی.
 2. **WP-Cron:** فقط Fallback — افزودنی `cpms_minute` (60s) با همان Action `cpms_jobs_tick`. در Dev/Staging می‌توان System Cron را نشد و روی Fallback بود.
+3. **Recurring:** هر Tick (WP-Cron و CLI) از `App::runTick()` واحد می‌گذرد و جاب‌های دوره‌ای را Idempotent دوباره زمان‌بندی می‌کند (FR-5.5).
 3. **Concurrency/Lock:** `bin/cpms jobs tick` ابتدا `GET_LOCK('cpms_jobs_tick', 0)` (MySQL named lock) را می‌گیرد؛ اگر Runner دیگری فعال است، بدون کاری خارج می‌شود. خود Claim Jobها نیز Row Lock + UPDATE شرطی دارد (لایه دوم). دو Runner هم‌زمان = صفر Duplicate اجرا.
 4. **Idempotency:** هر Handler تکرارپذیر است (تست TP-13). ارسال SMS با `dedupe_key` در جدول notifications (هر رویداد = حداکثر یک اعلان فعال) + Jobهای retry فقط برای موارد `failed`.
 5. **Retry/Failure:** `cpms_jobs` با `attempts/max_attempts/last_error/status` + Backoff (1s/5s/15s/60s/300s). پیش‌فرض `max_attempts = 3` (Setting `jobs.default_max_attempts`، تصمیم کارفرما). Jobهای `failed`:

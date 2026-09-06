@@ -63,7 +63,7 @@ final class RateLimiterTest extends WP_UnitTestCase
 
         App::rate()->cleanup(86400);
 
-        $left = $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$table} WHERE window_key = 'old-key'", 0)); // phpcs:ignore
+        $left = $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$table} WHERE window_key = %s", 'old-key')); // phpcs:ignore
         $this->assertSame(0, (int) $left);
     }
 }

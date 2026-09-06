@@ -96,4 +96,40 @@ final class HashChainTest extends TestCase
         $this->assertTrue($result['ok']);
         $this->assertSame(0, $result['checked']);
     }
+
+    /**
+     * Regression (F3 CI): در زمان نوشتن idها int هستند اما wpdb هنگام خواندن
+     * string برمی‌گرداند — canonical باید مستقل از تایپ ورودی باشد وگرنه
+     * زنجیره در verify همیشه شکسته دیده می‌شود.
+     */
+    public function testHashStableAcrossDbStringCoercion(): void
+    {
+        $writeRow = [
+            'clinic_id' => 1,
+            'actor_wp_user_id' => 7,
+            'actor_role' => 'clinic_secretary',
+            'action' => 'PATIENT_CREATE',
+            'resource_type' => 'patient',
+            'resource_id' => 42,
+            'patient_id' => 42,
+            'ip_hash' => 'abc123',
+            'session_id' => null,
+            'request_id' => 'req-1',
+            'created_at' => '2026-09-05 10:00:00.000',
+        ];
+        $hashOnWrite = HashChain::computeRowHash(HashChain::GENESIS, HashChain::fieldsFor($writeRow));
+
+        // شبیه‌سازی همان رکورد بعد از خواندن از MySQL (همه‌چیز string)
+        $readRow = array_map(
+            static fn ($v) => is_int($v) ? (string) $v : $v,
+            $writeRow
+        );
+        $hashOnRead = HashChain::computeRowHash(HashChain::GENESIS, HashChain::fieldsFor($readRow));
+
+        $this->assertSame($hashOnWrite, $hashOnRead);
+        $this->assertTrue(HashChain::verify([array_merge($readRow, [
+            'prev_hash' => HashChain::GENESIS,
+            'row_hash' => $hashOnWrite,
+        ])])['ok']);
+    }
 }

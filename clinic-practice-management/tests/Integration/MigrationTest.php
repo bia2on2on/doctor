@@ -15,6 +15,9 @@ use WP_UnitTestCase;
  */
 final class MigrationTest extends WP_UnitTestCase
 {
+    /** آخرین Migration موجود در src/Migrations (با افزودن Migration جدید به‌روز شود). */
+    private const LATEST_VERSION = '2026_09_07_0007';
+
     private const EXPECTED_TABLES = [
         'cpms_clinics', 'cpms_clinicians', 'cpms_patients', 'cpms_patient_user_links',
         'cpms_patient_merges', 'cpms_otp_tokens', 'cpms_idempotency_keys', 'cpms_schedule',
@@ -45,11 +48,12 @@ final class MigrationTest extends WP_UnitTestCase
         global $wpdb;
 
         foreach (self::EXPECTED_TABLES as $short) {
-            $table = $wpdb->prefix . str_replace('cpms_', '', $short);
+            $table = App::db()->table($short);
             $exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table)); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
             $this->assertSame($table, $exists, "missing table: {$short}");
         }
-        $this->assertSame('2026_09_05_0001', App::migrations()->currentVersion());
+        // آخرین Migration اعمال‌شده — با افزودن 0002/0003 به‌روز شد
+        $this->assertSame(self::LATEST_VERSION, App::migrations()->currentVersion());
     }
 
     public function testDefaultClinicSeeded(): void
@@ -57,7 +61,8 @@ final class MigrationTest extends WP_UnitTestCase
         global $wpdb;
         $row = $wpdb->get_row(
             $wpdb->prepare(
-                'SELECT id, slug, timezone FROM ' . $wpdb->prefix . 'cpms_clinics WHERE id = 1' // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                'SELECT id, slug, timezone FROM ' . $wpdb->prefix . 'cpms_clinics WHERE id = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                1
             ),
             ARRAY_A
         );
@@ -84,10 +89,177 @@ final class MigrationTest extends WP_UnitTestCase
         $this->assertTrue($this->hasUnique('cpms_payments', ['invoice_id', 'idempotency_key']));
     }
 
+    public function testIdempotencyScopeUnique(): void
+    {
+        // F9 (بدهی F7 §9): دامنه یکتایی = همان چهار ستون کتاب‌keeping
+        $this->assertTrue($this->hasUnique('cpms_idempotency_keys', ['key', 'endpoint', 'wp_user_id', 'context_id']));
+        $this->assertFalse($this->hasUnique('cpms_idempotency_keys', ['key']), 'u_idem_key قدیمی باید حذف شده باشد');
+    }
+
+    public function testClinicianUserUnique(): void
+    {
+        // F9 (ADR-0027 Minor #12): یکپارچگی 1:1 Clinician ↔ WP User
+        $this->assertTrue($this->hasUnique('cpms_clinicians', ['wp_user_id']));
+    }
+
+    /**
+     * F9 — Upgrade Path: دیتابیسِ حالت قدیمی (0005: ستون‌های Nullable +
+     * u_idem_key تک‌ستونی) → migrate() → نرمال‌سازی NULL→0 + ایندکس جدید؛
+     * داده موجود حفظ می‌شود (بدون حذف/merge).
+     */
+    public function testUpgradePathFromLegacyIdempotencyState(): void
+    {
+        global $wpdb;
+        $t = App::db()->table('cpms_idempotency_keys');
+
+        // بازگشت به حالت پیش از 0006/0007 (rollback دو مرحله‌ای)
+        $this->assertSame('2026_09_07_0007', App::migrations()->rollbackOne());
+        $this->assertSame('2026_09_07_0006', App::migrations()->rollbackOne());
+
+        // شکل قدیمی: ستون Nullable + u_idem_key
+        $col = $wpdb->get_row("SHOW COLUMNS FROM {$t} LIKE 'context_id'", ARRAY_A); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $this->assertSame('YES', $col['Null']);
+        $this->assertNotNull($wpdb->get_row("SHOW INDEX FROM {$t} WHERE Key_name = 'u_idem_key'")); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+        // داده legacy (context NULL — الگوی booking/confirm قبل از F9)
+        $now = App::db()->nowUtcSql();
+        $wpdb->query(
+            $wpdb->prepare(
+                "INSERT INTO {$t} (`key`, clinic_id, wp_user_id, endpoint, context_id, status, created_at) VALUES (%s, 1, 7, 'booking/confirm', NULL, 0, %s)", // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                'legacy-key-0001',
+                $now
+            )
+        );
+        $legacyId = (int) $wpdb->insert_id;
+
+        // Upgrade
+        $applied = App::migrations()->migrate();
+        $this->assertContains('2026_09_07_0006', $applied);
+        $this->assertContains('2026_09_07_0007', $applied);
+
+        // ستون‌ها NOT NULL + ایندکس جدید؛ u_idem_key حذف
+        $col = $wpdb->get_row("SHOW COLUMNS FROM {$t} LIKE 'context_id'", ARRAY_A); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $this->assertSame('NO', $col['Null']);
+        $this->assertNotNull($wpdb->get_row("SHOW INDEX FROM {$t} WHERE Key_name = 'u_idem_scope'")); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $this->assertNull($wpdb->get_row("SHOW INDEX FROM {$t} WHERE Key_name = 'u_idem_key'")); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+        // داده legacy حفظ + نرمال‌سازی NULL→0 (نه حذف، نه merge)
+        $row = $wpdb->get_row($wpdb->prepare("SELECT wp_user_id, context_id FROM {$t} WHERE id = %d", $legacyId), ARRAY_A); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $this->assertSame(7, (int) $row['wp_user_id']);
+        $this->assertSame(0, (int) $row['context_id']);
+
+        // سرویسِ جدید ردیف legacy را پیدا می‌کند (کتاب‌keeping سالم پس از Upgrade)
+        $svc = new \ClinicCore\Infrastructure\Security\Idempotency(App::db());
+        $check = $svc->check('legacy-key-0001', 'booking/confirm', 7, null);
+        $this->assertTrue($check['is_replay'], 'کلید PENDING قدیمی باید به‌عنوان in-flight شناسایی شود');
+        $this->assertSame(409, $check['response_code']);
+    }
+
+    /**
+     * F9 — Preflight: تکراری در دامنه هدف → Migration با خطا متوقف می‌شود؛
+     * بدون تغییر داده (نه حذف، نه merge خودکار) و بدون ثبت version.
+     */
+    public function testPreflightAbortsOnDuplicateIdempotencyScope(): void
+    {
+        global $wpdb;
+        $t = App::db()->table('cpms_idempotency_keys');
+
+        // شبیه‌سازی داده معیوب: u_idem_key حذف + دو ردیف هم‌دامنه (مثلاً حاصل Restore/Import)
+        $this->assertSame('2026_09_07_0007', App::migrations()->rollbackOne());
+        $this->assertSame('2026_09_07_0006', App::migrations()->rollbackOne());
+        $wpdb->query("ALTER TABLE {$t} DROP INDEX `u_idem_key`"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+        $now = App::db()->nowUtcSql();
+        foreach ([11, 12] as $i) {
+            $wpdb->query(
+                $wpdb->prepare(
+                    "INSERT INTO {$t} (`key`, clinic_id, wp_user_id, endpoint, context_id, status, created_at) VALUES (%s, 1, 7, 'booking/confirm', NULL, 0, %s)", // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                    'corrupt-key-' . $i,
+                    $now
+                )
+            );
+        }
+        // همان کلید در هر دو ردیف → پس از نرمال‌سازی در دامنه هدف تکراری
+        $wpdb->query($wpdb->prepare("UPDATE {$t} SET `key` = %s WHERE `key` LIKE 'corrupt-key-%%'", 'corrupt-key-same')); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+        try {
+            try {
+                App::migrations()->migrate();
+                $this->fail('Preflight باید Migration را متوقف می‌کرد');
+            } catch (\RuntimeException $e) {
+                $this->assertStringContainsString('duplicate idempotency rows', $e->getMessage());
+            }
+
+            // بدون تغییر داده + بدون ثبت version → 0006 هنوز اعمال‌نشده
+            $applied = (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . App::db()->table('cpms_schema_migrations') . " WHERE version = '2026_09_07_0006'"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $this->assertSame(0, $applied);
+            $count = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$t} WHERE `key` = 'corrupt-key-same'"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $this->assertSame(2, $count, 'هیچ ردیفی حذف/merge نشده است');
+        } finally {
+            // پاک‌سازی دستی (مثل سناریوی واقعی) — حتی اگر assertion شکست بخورد تا
+            // tearDown/migrate سوئیچ بعدی سالم بماند (DDL تراکنش تست را می‌شکند)
+            $wpdb->query("DELETE FROM {$t} WHERE `key` = 'corrupt-key-same' AND id > (SELECT min_id FROM (SELECT MIN(id) min_id FROM {$t} WHERE `key` = 'corrupt-key-same') x)"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        }
+
+        $applied = App::migrations()->migrate();
+        $this->assertContains('2026_09_07_0006', $applied);
+    }
+
+    /**
+     * F9 — Preflight ایندکس Clinician: تکراری wp_user_id → توقف بدون تغییر.
+     */
+    public function testPreflightAbortsOnDuplicateClinicianUser(): void
+    {
+        global $wpdb;
+        $t = App::db()->table('cpms_clinicians');
+        $now = App::db()->nowUtcSql();
+
+        // شبیه‌سازی نصب قدیمی: ایندکس نیست + دو پزشک به یک کاربر متصل
+        $wpdb->query("ALTER TABLE {$t} DROP INDEX `u_clinician_user`"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $wpdb->delete(App::db()->table('cpms_schema_migrations'), ['version' => '2026_09_07_0007']);
+
+        $uid = (int) wp_create_user('mig_dup_doctor', 'pass-12345', 'mig_dup@test.local');
+        $u = get_userdata($uid);
+        if ($u !== false) {
+            $u->set_role('cpms_doctor');
+        }
+        foreach ([1, 2] as $i) {
+            $wpdb->query(
+                $wpdb->prepare(
+                    "INSERT INTO {$t} (clinic_id, full_name, wp_user_id, is_active, created_at, updated_at) VALUES (1, %s, %d, 1, %s, %s)", // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                    'Dr Dup ' . $i,
+                    $uid,
+                    $now,
+                    $now
+                )
+            );
+        }
+
+        try {
+            try {
+                App::migrations()->migrate();
+                $this->fail('Preflight باید Migration را متوقف می‌کرد');
+            } catch (\RuntimeException $e) {
+                $this->assertStringContainsString('share the same wp_user_id', $e->getMessage());
+            }
+
+            // بدون تغییر داده
+            $count = (int) $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$t} WHERE wp_user_id = %d", $uid)); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $this->assertSame(2, $count);
+            $this->assertNull($wpdb->get_row("SHOW INDEX FROM {$t} WHERE Key_name = 'u_clinician_user'")); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        } finally {
+            // رفع دستی (NULL کردن پیوند اضافی) — حتی اگر assertion شکست بخورد
+            $wpdb->query($wpdb->prepare("UPDATE {$t} SET wp_user_id = NULL WHERE wp_user_id = %d AND full_name = 'Dr Dup 2'", $uid)); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        }
+
+        $applied = App::migrations()->migrate();
+        $this->assertContains('2026_09_07_0007', $applied);
+    }
+
     private function hasUnique(string $short, array $columns): bool
     {
         global $wpdb;
-        $table = $wpdb->prefix . str_replace('cpms_', '', $short);
+        $table = App::db()->table($short);
         $indexes = $wpdb->get_results("SHOW INDEX FROM {$table}", ARRAY_A); // phpcs:ignore WordPress.DB.PreparedSQL
         foreach ($indexes as $idx) {
             $col = $idx['Column_name'];

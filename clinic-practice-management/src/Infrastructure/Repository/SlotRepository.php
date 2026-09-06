@@ -94,12 +94,12 @@ final class SlotRepository
      */
     public function atomicHold(int $slotId): bool
     {
-        return $this->db->query(
+        return $this->db->execute(
             'UPDATE ' . $this->db->table('cpms_schedule_slots') . '
-             SET held_count = held_count + 1, updated_at = ' . $this->nowSql() . '
+             SET held_count = held_count + 1, updated_at = %s
              WHERE id = %d AND is_open = 1 AND capacity - booked_count - held_count > 0',
-            [$slotId]
-        );
+            [$this->nowSql(), $slotId]
+        ) > 0;
     }
 
     /**
@@ -109,9 +109,9 @@ final class SlotRepository
     {
         $this->db->query(
             'UPDATE ' . $this->db->table('cpms_schedule_slots') . '
-             SET held_count = GREATEST(held_count - 1, 0), updated_at = ' . $this->nowSql() . '
+             SET held_count = GREATEST(held_count - 1, 0), updated_at = %s
              WHERE id = %d AND held_count > 0',
-            [$slotId]
+            [$this->nowSql(), $slotId]
         );
     }
 
@@ -120,25 +120,26 @@ final class SlotRepository
      */
     public function atomicClaim(int $slotId): bool
     {
-        return $this->db->query(
+        return $this->db->execute(
             'UPDATE ' . $this->db->table('cpms_schedule_slots') . '
-             SET held_count = GREATEST(held_count - 1, 0), booked_count = booked_count + 1, updated_at = ' . $this->nowSql() . '
+             SET held_count = GREATEST(held_count - 1, 0), booked_count = booked_count + 1, updated_at = %s
              WHERE id = %d AND held_count > 0',
-            [$slotId]
-        );
+            [$this->nowSql(), $slotId]
+        ) > 0;
     }
 
     /**
-     * Book مستقیم بدون Hold (D10 staff-create) — ظرفیت آزاد باید > 0.
+     * Book مستقیم بدون Hold (D10 staff-create) — ظرفیت آزاد واقعی (منهای
+     * Holdهای فعال بیماران دیگر) باید > 0؛ وگرنه Hold بیمار دیگری Overbook می‌شد.
      */
     public function atomicBook(int $slotId): bool
     {
-        return $this->db->query(
+        return $this->db->execute(
             'UPDATE ' . $this->db->table('cpms_schedule_slots') . '
-             SET booked_count = booked_count + 1, updated_at = ' . $this->nowSql() . '
-             WHERE id = %d AND is_open = 1 AND capacity - booked_count > 0',
-            [$slotId]
-        );
+             SET booked_count = booked_count + 1, updated_at = %s
+             WHERE id = %d AND is_open = 1 AND capacity - booked_count - held_count > 0',
+            [$this->nowSql(), $slotId]
+        ) > 0;
     }
 
     /**
@@ -148,9 +149,9 @@ final class SlotRepository
     {
         $this->db->query(
             'UPDATE ' . $this->db->table('cpms_schedule_slots') . '
-             SET booked_count = GREATEST(booked_count - 1, 0), updated_at = ' . $this->nowSql() . '
+             SET booked_count = GREATEST(booked_count - 1, 0), updated_at = %s
              WHERE id = %d AND booked_count > 0',
-            [$slotId]
+            [$this->nowSql(), $slotId]
         );
     }
 

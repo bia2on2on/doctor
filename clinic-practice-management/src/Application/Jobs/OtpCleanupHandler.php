@@ -19,7 +19,7 @@ final class OtpCleanupHandler
     {
         $cutoff = gmdate('Y-m-d H:i:s', time() - 86400) . '.000';
 
-        return $this->db->query(
+        return $this->db->execute(
             'DELETE FROM ' . $this->db->table('cpms_otp_tokens') . ' WHERE created_at < %s',
             [$cutoff]
         );

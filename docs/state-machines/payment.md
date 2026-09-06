@@ -19,7 +19,7 @@
 | # | From | To | Trigger | Actor | شرایط | Side-Effects |
 |---|---|---|---|---|---|---|
 | I1 | — | `open` | `issue` | منشی/پزشک | Visit در `consultation_completed`/`awaiting_payment` | `invoice_number` یکتا؛ Visit→`awaiting_payment` (V11) |
-| I2 | `open` | `partial` | `payment_captured` | سیستم (در Transaction ثبت Payment) | `paid_total < total` | به‌روزرسانی `paid_amount/balance` |
+| I2 | `open` | `partial` | `payment_captured` | سیستم (در Transaction ثبت Payment) | `paid_total < total` | به‌روزرسانی `paid_amount/balance`؛ پرداخت ناقص بعدی روی `partial` یک **self-loop** است (وضعیت ثابت — M-3 تجمیع `paid_amount`) |
 | I3 | `open` / `partial` | `paid` | `payment_captured` | سیستم | `paid_total ≥ total` (حداکثر = total؛ بیش‌پرداخت ممنوع → خطا) | Visit→`paid` (V12) |
 | I4 | `open` | `voided` | `void` | منشی (مجوز `cpms_invoice_void`) | **هیچ** Payment فعال ندارد؛ دلیل الزامی | Visit می‌تواند به `in_consultation` برگردد یا Checkout بدون فاکتور (V13)؛ Audit |
 
@@ -77,7 +77,10 @@ stateDiagram-v2
 | Code | موقعیت |
 |---|---|
 | `CLINIC_OVERPAYMENT` | M-3 |
-| `DUPLICATE_IDEMPOTENCY` (→ idempotent replay، خطا نیست) | M-1 |
-| `VOID_WINDOW_EXPIRED` | P2 خارج از بازه |
-| `INVOICE_NOT_MODIFIABLE` | عمل روی فاکتور `paid/voided` |
+| `CLINIC_IDEMPOTENCY_REPLAY` (→ idempotent replay با 200، خطا نیست) | M-1 |
+| `CLINIC_VOID_WINDOW_EXPIRED` | P2 خارج از بازه |
+| `CLINIC_INVOICE_NOT_MODIFIABLE` | عمل روی فاکتور `paid/voided` |
 | `CLINIC_PERMISSION_DENIED` | مجوز مالی |
+| `CLINIC_NOT_SETTLED` | خروج با فاکتور باز (V14 — در visit-queue.md) |
+
+> **تفسیر M-6 (هم‌راستا با `InvoiceMachine`):** «Refund/Void روی فاکتور paid یا voided ممنوع» به **عملیات سطح فاکتور** (اصلاح D15 و ابطال خود فاکتور I4) مربوط است؛ ابطال/بازپرداختِ **پرداخت** (P2/P3) طبق Side-Effect خودش (`Invoice: بازگردانی paid_amount/balance`) فاکتور را بازگردانی می‌کند و فقط روی فاکتور `voided` مسدود است.

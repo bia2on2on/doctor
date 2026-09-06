@@ -1,6 +1,6 @@
 # طراحی احراز هویت و مجوز — CPMS
 
-نسخه 1.0 | 2026-09-05 | وابسته به: SRS §3.1, Permission Matrix
+نسخه 1.1 | 2026-09-06 (هم‌ترازی ADR-0026: نقش‌های پویا + Scope) | وابسته به: SRS §3.1, Permission Matrix, ADR-0002/0003/0020/0026
 
 ## 1. مدل احراز هویت (Authentication)
 
@@ -73,6 +73,19 @@ interface AccessPolicy {
 ### 2.4 Ownership (Patient)
 `can_access(patient, *, *, patientId) ⇔ exists patient_user_links(user, patientId)`.
 Endpointهای `/{id}` برای بیمار: ابتدا Ownership → اگر نه: **404** (نه 403؛ افشای وجود) + Audit.
+
+### 2.5 نقش‌های پویا و Scope (ADR-0026 — تصریح کارفرما 2026-09-06)
+
+مدل Authorization فوق **نقش‌محور نیست** — لایه ۲ (Capability) ملاک تصمیم است:
+
+- **نقش‌های سفارشی ستادی** (دستیار/حسابدار/مدیر مطب/پرستار/پذیرش/Custom) با هر زیرمجموعه از Capabilityهای `cpms_*` قابل تعریف‌اند (`add_role` وردپرس) و همان لحظه روی همه Endpointهای Capability-محور کار می‌کنند — بدون تغییر Business Logic. نقش‌های فعلی (بیمار/منشی/پزشک) فقط **Template** پیش‌فرض‌اند.
+- **قانون سخت (D-1):** منطق کسب‌وکار هرگز `if role == X` نمی‌نویسد؛ فقط `user_can(cap)`. نام نقش فقط برچسب Audit است. (Debtهای تاریخی محدود و نقشه مهاجرتشان: ADR-0026.)
+- **تفکیک حوزه‌ها:** مالی ⊥ بالینی ⊥ هویت/دموگرافیک ⊥ یادداشت خصوصی ⊥ فایل ⊥ نسخه. `cpms_private_note_*` هرگز ضمنی از هیچ Cap عمومی/نقش (حتی `administrator`) نیست. حسابدار (فقط Cap مالی) یا دستیار (فقط هویت+صف، بدون `cpms_medical_read`) همین امروز پروفایل‌های معتبرند.
+- **Resource Scope (مدل آینده — V2):** `OWN` / `ASSIGNED_DOCTORS` / `BRANCH` / `CLINIC` / `ALL_ALLOWED` روی `clinic_id`/`clinician_id` موجود + `AccessPolicy::visibleRows`. تا آن فاز، Scope عملیاتی = مطب (`clinic_id=1` طبق ADR-0003).
+- **Aggregate ⊥ Detail:** مجوز گزارش تجمیعی هرگز به خواندن رکورد جزئی بالینی/بیمار تبدیل نمی‌شود.
+- **محافظت از Escalation (D-9):** اعطای Capability فقط توسط برخوردار از `cpms_config` و فقط زیرمجموعه‌ای که خودش دارد؛ هر تغییر نقش/مجوز → Audit (`ROLE_*`/`PERMISSION_*`/`STAFF_SCOPE_CHANGED` — D-10).
+- **2FA (D-11):** Privileged = «دارنده هر Cap حساس» نه نام نقش (ADR-0020 از ابتدا Access-based).
+- **UI (D-13/D-14):** ترکیب داشبورد از Capabilityهای واقعی Backend؛ همه داشبوردهای ستادی Responsive (دستگاه‌محدود نیستند).
 
 ## 3. طراحی OTP (جزئیات امنیتی)
 
