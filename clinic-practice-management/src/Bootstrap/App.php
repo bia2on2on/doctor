@@ -11,6 +11,7 @@ use ClinicCore\Admin\SecretaryFinancePage;
 use ClinicCore\Admin\SecretaryQueuePage;
 use ClinicCore\Admin\SmsSettingsPage;
 use ClinicCore\Application\Auth\OtpService;
+use ClinicCore\Application\Backup\BackupService;
 use ClinicCore\Application\Booking\BookingService;
 use ClinicCore\Application\Booking\ScheduleService;
 use ClinicCore\Application\Clinical\ClinicalService;
@@ -19,6 +20,7 @@ use ClinicCore\Application\Finance\FinanceService;
 use ClinicCore\Application\Handwriting\HandwritingService;
 use ClinicCore\Application\Patients\PatientService;
 use ClinicCore\Application\Jobs\ApptReminderHandler;
+use ClinicCore\Application\Jobs\BackupRunHandler;
 use ClinicCore\Application\Jobs\FollowUpReminderHandler;
 use ClinicCore\Application\Jobs\HandwritingGcHandler;
 use ClinicCore\Application\Jobs\HoldsExpireHandler;
@@ -43,6 +45,8 @@ use ClinicCore\Domain\Licensing\LicenseGate;
 use ClinicCore\Domain\Licensing\LicensePolicy;
 use ClinicCore\Domain\Licensing\SignedLicenseGate;
 use ClinicCore\Infrastructure\Audit\AuditLogger;
+use ClinicCore\Infrastructure\Backup\BackupSqlDumper;
+use ClinicCore\Infrastructure\Backup\ProtectedBackupStore;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Licensing\HttpVendorGateway;
 use ClinicCore\Infrastructure\Licensing\VendorGateway;
@@ -664,6 +668,32 @@ final class App
         return self::$migrations;
     }
 
+    /**
+     * سرویس بکاپ/بازیابی (F10 — spec §22–§25). مقصد = ProtectedBackupStore
+     * محلی؛ Remote (S3/SFTP) = V1.1 (Runbook در docs/backup).
+     */
+    public static function backupService(): BackupService
+    {
+        static $backups = null;
+        if ($backups === null) {
+            $backups = new BackupService(
+                self::db(),
+                new ProtectedBackupStore(
+                    trim((string) self::settings()->get('backup.storage_path', '')) !== ''
+                        ? (string) self::settings()->get('backup.storage_path', '')
+                        : ProtectedBackupStore::defaultBasePath()
+                ),
+                new BackupSqlDumper(self::db()),
+                self::settings(),
+                self::audit(),
+                self::op(),
+                self::localFileStorage()->basePath()
+            );
+        }
+
+        return $backups;
+    }
+
     public static function dispatcher(): JobsDispatcher
     {
         if (self::$dispatcher === null) {
@@ -685,7 +715,8 @@ final class App
                 ->register('appt.reminder', new ApptReminderHandler($db, $settings, self::smsService(), self::notificationService(), $op))
                 ->register('fu.reminder', new FollowUpReminderHandler($db, $settings, self::smsService(), self::notificationService(), $op))
                 ->register('report.export', new ReportExportHandler(self::exportService()))
-                ->register('license.refresh', new LicenseRefreshHandler(self::licenseService(), $op));
+                ->register('license.refresh', new LicenseRefreshHandler(self::licenseService(), $op))
+                ->register('backup.run', new BackupRunHandler(self::backupService(), self::settings(), $op));
 
             self::$dispatcher = $dispatcher;
         }
@@ -717,6 +748,9 @@ final class App
         // F10 — refresh مجوز: هر Tick چک می‌شود ولی شبکه فقط در refreshDue
         // (Backoff بر اساس شکست‌های پیاپی) لمس می‌شود — ADR-0023/ADR-0016
         'license.refresh' => 9,
+        // F10 — بکاپ دوره‌ای: هر Tick چک می‌شود ولی فقط در صورت
+        // backup.enabled + سررسید اجرا می‌شود (spec §22–§24)
+        'backup.run' => 1,
     ];
 
     /**
