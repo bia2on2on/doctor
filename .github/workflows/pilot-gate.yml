@@ -1,0 +1,746 @@
+name: Pilot/Staging Readiness Gate
+
+# Pilot Gate — NOT feature development. اثبات آمادگی V1 در محیط واقعی
+# (Ubuntu VM + MySQL 8 + Apache + mod_php) طبق docs: user-guide, backup-recovery,
+# performance-baseline, threat-model, file-storage.
+# هیچ نتیجه‌ای بدون اجرای واقعی ثبت نمی‌شود؛ موارد وابسته به زیرساخت واقعی
+# (Domain/TLS/SMS Provider واقعی/سرور مرجع) در گزارش BLOCKED_BY_ENVIRONMENT
+# با Runbook ثبت می‌شوند.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, 'arena/**']
+
+permissions:
+  contents: read
+  actions: read
+
+defaults:
+  run:
+    working-directory: clinic-practice-management
+
+env:
+  WP_DIR: /tmp/www
+  WP_URL: http://localhost:8080
+  WP_RESTORE_DIR: /tmp/www-restore
+  DB_MAIN: cpms_main
+  DB_RESTORE: cpms_restore
+  STORAGE_OUT: /tmp/clinic-storage
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  # ============================================================
+  # 1) Release Artifact — ZIP تمیز + Policy + Manifest
+  # ============================================================
+  release-artifact:
+    name: Release Artifact (build + policy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build release ZIP (whitelist-only)
+        run: bash bin/build-release.sh
+
+      - name: Policy — forbidden content scan (اسمبل ZIP)
+        run: |
+          unzip -l dist/clinic-practice-management-1.0.0.zip > /tmp/ziplist.txt
+          if grep -Eqi '\.git|\.env|tests/|phpunit|composer\.(json|lock)|vendor/|\.log|pilot-(seed|smoke|responsive)' /tmp/ziplist.txt; then
+            echo 'FORBIDDEN CONTENT FOUND:' >&2
+            grep -Ei '\.git|\.env|tests/|phpunit|composer|vendor|\.log|pilot-' /tmp/ziplist.txt >&2
+            exit 1
+          fi
+          mkdir -p /tmp/zscan && unzip -qq dist/clinic-practice-management-1.0.0.zip -d /tmp/zscan
+          if grep -rniE "(api[_-]?key|secret|password|token)[^a-z0-9]{0,3}(=>|:|=)[\"'][A-Za-z0-9+/]{16,}[\"']" /tmp/zscan --include='*.php' | grep -viE 'placeholder|example|your-'; then
+            echo 'POSSIBLE SECRET IN ARTIFACT' >&2
+            exit 1
+          fi
+          echo 'ZIP policy scan: CLEAN'
+          {
+            echo '## Release Artifact'
+            echo '```'
+            echo "zip: $(du -h dist/clinic-practice-management-1.0.0.zip | cut -f1) — $(wc -l < dist/clinic-practice-management-1.0.0-manifest.txt) files"
+            cat dist/clinic-practice-management-1.0.0.zip.sha256
+            echo '```'
+            echo '### Policy: **CLEAN** — بدون .git/.env/tests/phpunit/composer/vendor/logs/pilot-tools/secrets'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-zip
+          path: clinic-practice-management/dist/
+          retention-days: 14
+
+  # ============================================================
+  # 2) Staging Gate — fresh install → smoke → perf → backup → restore
+  # ============================================================
+  staging-gate:
+    name: Staging Gate (fresh install → restore drill)
+    runs-on: ubuntu-latest
+    needs: release-artifact
+
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1"
+          --health-interval=10s --health-timeout=5s --health-retries=20
+      mysql-restore:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports: ['3307:3306']
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1"
+          --health-interval=10s --health-timeout=5s --health-retries=20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mysqli, curl, mbstring, xml, zip, gd
+          coverage: none
+
+      - name: Tooling (wp-cli, mysql-client, apache, ab, bc)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq mysql-client apache2 libapache2-mod-php php-mysql php-mbstring php-xml php-curl php-zip php-gd apache2-utils bc > /tmp/apt.log 2>&1 || { tail -20 /tmp/apt.log; exit 1; }
+          curl -sS https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o /tmp/wp-cli.phar
+          sudo mv /tmp/wp-cli.phar /usr/local/bin/wp && sudo chmod +x /usr/local/bin/wp
+          wp --allow-root --version
+
+      - name: Environment specs (گزارش واقعی محیط)
+        run: |
+          {
+            echo '## Staging Environment (واقعی — نه شبیه‌سازی)'
+            echo '```'
+            echo "runner:  $RUNNER_NAME ($RUNNER_OS)"
+            echo "cpu:     $(nproc) vCPU"
+            free -h | head -2
+            php -v | head -1
+            APACHE_PHP=$(ls /usr/lib/php/ | head -1); echo "apache php: $APACHE_PHP (mod_php, opcache default)"
+            mysql --version
+            apache2 -v | head -1
+            echo 'db:      mysql:8 docker (main@3306, restore@3307)'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ---------- Clean deployment از Release Artifact ----------
+      - name: WordPress 6.7.2 + wp-config (production-like)
+        run: |
+          curl -sS https://wordpress.org/wordpress-6.7.2.tar.gz -o /tmp/wp.tar.gz
+          tar -xzf /tmp/wp.tar.gz -C /tmp && mv /tmp/wordpress "$WP_DIR"
+          mysql -h 127.0.0.1 -P 3306 -uroot -proot -e "CREATE DATABASE $DB_MAIN CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+          cd "$WP_DIR"
+          wp config create --dbname="$DB_MAIN" --dbuser=root --dbpass=root --dbhost=127.0.0.1:3306 --dbprefix=cpmswp_ --skip-salts --allow-root
+          wp config shuffle-salts --allow-root
+          wp config set WP_DEBUG false --raw --allow-root
+          wp config set WP_DEBUG_LOG false --raw --allow-root
+          wp config set WP_DEBUG_DISPLAY false --raw --allow-root
+          wp config set DISABLE_WP_CRON true --raw --allow-root
+          wp config set DISALLOW_FILE_EDIT true --raw --allow-root
+          wp core install --url="$WP_URL" --title="CPMS Pilot Staging" --admin_user=pilot_admin --admin_password='Pilot-Gate-2026!' --admin_email=admin@pilot-staging.local --skip-email --allow-root
+          echo 'wp-config (production-like): WP_DEBUG off, salts unique, prefix cpmswp_, DISABLE_WP_CRON (system cron mode), DISALLOW_FILE_EDIT'
+
+      - name: Deploy release ZIP (مثل آپلود واقعی افزونه در wp-admin)
+        run: |
+          gh run download -n release-zip -D /tmp/release --repo "$GITHUB_REPOSITORY"
+          unzip -q /tmp/release/clinic-practice-management-1.0.0.zip -d "$WP_DIR/wp-content/plugins/"
+          wp plugin activate clinic-practice-management --path="$WP_DIR" --allow-root
+          echo 'deployed from release artifact (نه از checkout)'
+
+      - name: Fresh install — جداول/Schema/Roles/Cron-event
+        run: |
+          cd "$WP_DIR/wp-content/plugins/clinic-practice-management"
+          WP_HOME="$WP_DIR" php bin/cpms status
+          echo '--- roles ---'
+          wp role list --path="$WP_DIR" --allow-root | grep -E 'cpms_(doctor|secretary|patient)' || { echo 'ROLES MISSING'; exit 1; }
+          echo '--- wp-cron event (fallback) ---'
+          wp cron event list --path="$WP_DIR" --allow-root | grep 'cpms_jobs_tick' || { echo 'cpms_jobs_tick NOT scheduled'; exit 1; }
+          TABLES=$(mysql -h127.0.0.1 -P3306 -uroot -proot -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='$DB_MAIN' AND table_name LIKE 'cpmswp_cpms_%';")
+          echo "cpms tables: $TABLES"
+          [ "$TABLES" -ge 30 ] || { echo "TOO FEW TABLES ($TABLES)"; exit 1; }
+          cat > /tmp/check-schema.php <<'PHPEOF'
+          <?php
+          require getenv('WP_HOME') . '/wp-load.php';
+          $v = \ClinicCore\Bootstrap\App::migrations()->currentVersion();
+          echo "schema: $v\n";
+          exit($v === '2026_09_07_0007' ? 0 : 1);
+          PHPEOF
+          WP_HOME="$WP_DIR" php /tmp/check-schema.php
+
+      - name: کاربران Pilot + Clinicianها + Storage خارج webroot
+        run: |
+          wp user create pilot_secretary 'sec@pilot-staging.local' --user_pass='Pilot-Gate-2026!' --role=cpms_secretary --path="$WP_DIR" --allow-root
+          wp user create pilot_doctor 'doc@pilot-staging.local' --user_pass='Pilot-Gate-2026!' --role=cpms_doctor --path="$WP_DIR" --allow-root
+          cat > /tmp/setup-pilot.php <<'PHPEOF'
+          <?php
+          require getenv('WP_HOME') . '/wp-load.php';
+          global $wpdb;
+          $db = \ClinicCore\Bootstrap\App::db();
+          $now = $db->nowUtcSql();
+          $uid = (int) get_user_by('login', 'pilot_doctor')->ID;
+          $wpdb->query($wpdb->prepare(
+              'INSERT INTO ' . $db->table('cpms_clinicians') . ' (clinic_id, full_name, wp_user_id, is_active, created_at, updated_at) VALUES (1, %s, %d, 1, %s, %s)',
+              'دکتر پایلوت (Synthetic)', $uid, $now, $now));
+          $wpdb->query($wpdb->prepare(
+              'INSERT INTO ' . $db->table('cpms_clinicians') . ' (clinic_id, full_name, wp_user_id, is_active, created_at, updated_at) VALUES (1, %s, NULL, 1, %s, %s)',
+              'دکتر دوم بدون پیوند (Synthetic)', $now, $now));
+          \ClinicCore\Bootstrap\App::settings()->set('files.storage_path', getenv('STORAGE_OUT'));
+          echo 'clinicians OK (one linked, one NULL); files.storage_path=' . getenv('STORAGE_OUT') . "\n";
+          PHPEOF
+          mkdir -p "$STORAGE_OUT"
+          WP_HOME="$WP_DIR" STORAGE_OUT="$STORAGE_OUT" php /tmp/setup-pilot.php
+          sudo chmod -R 777 "$STORAGE_OUT"
+
+      # ---------- Apache (production-like) ----------
+      - name: Apache + mod_php + hardening
+        run: |
+          sudo tee /etc/apache2/sites-available/pilot.conf >/dev/null <<CONF
+          <VirtualHost *:8080>
+            DocumentRoot $WP_DIR
+            <Directory $WP_DIR>
+              AllowOverride All
+              Require all granted
+            </Directory>
+            ErrorLog \${APACHE_LOG_DIR}/pilot-error.log
+            CustomLog \${APACHE_LOG_DIR}/pilot-access.log combined
+          </VirtualHost>
+          CONF
+          sudo sed -i 's/^Listen 80$/Listen 8080/' /etc/apache2/ports.conf
+          sudo a2dissite 000-default >/dev/null && sudo a2ensite pilot >/dev/null
+          sudo sed -i 's/^ServerTokens .*/ServerTokens Prod/' /etc/apache2/conf-available/security.conf
+          sudo sed -i 's/^ServerSignature .*/ServerSignature Off/' /etc/apache2/conf-available/security.conf
+          PHP_INI=$(ls /etc/php/*/apache2/php.ini | head -1)
+          sudo sed -i 's/^expose_php = .*/expose_php = Off/' "$PHP_INI"
+          sudo sed -i 's/^display_errors = .*/display_errors = Off/' "$PHP_INI"
+          sudo chmod -R a+rX "$WP_DIR"
+          sudo chown -R www-data:www-data "$WP_DIR/wp-content/uploads" 2>/dev/null || true
+          sudo apache2ctl configtest && sudo service apache2 start
+          sleep 2
+          curl -s -o /dev/null -w '%{http_code}\n' "$WP_URL/wp-json/" | grep -q 200 || { echo 'APACHE/WP NOT SERVING'; exit 1; }
+
+      # ---------- System Cron verification ----------
+      - name: System Cron — daemon واقعی + bin/cpms (دستور تولید طبق user-guide)
+        run: |
+          PHP_BIN=$(which php)
+          CRON_OK=1
+          (sudo service cron start && sleep 1 && pgrep -x cron >/dev/null) || CRON_OK=0
+          if [ "$CRON_OK" = "1" ]; then
+            (crontab -l 2>/dev/null; echo "* * * * * WP_HOME=$WP_DIR $PHP_BIN $WP_DIR/wp-content/plugins/clinic-practice-management/bin/cpms jobs tick --limit=20 >> /tmp/cpms-tick.log 2>&1") | crontab -
+            echo "crontab installed: $(crontab -l | tail -1)"
+          else
+            echo '::warning::cron daemon در دسترس نیست — فقط دستور tick دستی verify می‌شود (Production: systemd-timer/crontab طبق user-guide)'
+          fi
+          # دستور واقعی تولید (همان که crontab اجرا می‌کند) — یک‌بار دستی:
+          WP_HOME="$WP_DIR" php "$WP_DIR/wp-content/plugins/clinic-practice-management/bin/cpms" jobs tick --limit=20
+          if [ "$CRON_OK" = "1" ]; then
+            sleep 70
+            echo '--- /tmp/cpms-tick.log (system cron خروجی) ---'
+            tail -3 /tmp/cpms-tick.log 2>/dev/null
+            grep -q 'Processed' /tmp/cpms-tick.log 2>/dev/null || { echo 'SYSTEM CRON DID NOT RUN'; exit 1; }
+          fi
+          cat > /tmp/check-health.php <<'PHPEOF'
+          <?php
+          require getenv('WP_HOME') . '/wp-load.php';
+          $q = \ClinicCore\Bootstrap\App::queueHealth();
+          echo json_encode($q), "\n";
+          exit($q['stale'] ? 3 : 0);
+          PHPEOF
+          WP_HOME="$WP_DIR" php /tmp/check-health.php
+
+      # ---------- Synthetic Seed ----------
+      - name: Synthetic Seed (بدون داده واقعی بیمار)
+        run: |
+          PILOT_PATIENTS=400 PILOT_DAYS=30 PILOT_SLOTS_PER_DAY=15 wp eval-file bin/pilot-seed.php --path="$WP_DIR" --allow-root | tee /tmp/seed.json
+          tail -1 /tmp/seed.json | grep -q '"ok":true' || { echo 'SEED FAILED'; cat /tmp/seed.json; exit 1; }
+          {
+            echo '## Synthetic Dataset'
+            echo '```'
+            tail -1 /tmp/seed.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ---------- Background Jobs verification ----------
+      - name: Background Jobs — recurring + بدون failed
+        run: |
+          cd "$WP_DIR/wp-content/plugins/clinic-practice-management"
+          WP_HOME="$WP_DIR" php bin/cpms jobs tick --limit=50
+          echo '--- failed jobs (expect none) ---'
+          WP_HOME="$WP_DIR" php bin/cpms jobs list --status=failed | tee /tmp/failed-jobs.txt
+          ! grep -qE '^#[0-9]+' /tmp/failed-jobs.txt || { echo 'FAILED JOBS EXIST'; exit 1; }
+          echo '--- queued recurring jobs ---'
+          mysql -h127.0.0.1 -P3306 -uroot -proot -N -e "SELECT CONCAT(type,':',COUNT(*)) FROM ${DB_MAIN}.cpmswp_cpms_jobs WHERE status='queued' GROUP BY type ORDER BY type;" | tee /tmp/jobs-queued.txt
+          for J in cleanup.idem cleanup.otp cleanup.rate_limits notif.dispatch appt.reminder fu.reminder; do
+            grep -q "^$J:" /tmp/jobs-queued.txt || { echo "$J NOT SCHEDULED"; exit 1; }
+          done
+
+      # ---------- Protected medical file access ----------
+      - name: Protected files — .htaccess deny (Apache واقعی) + مسیر فعال خارج webroot
+        run: |
+          # ۱) مسیر پیش‌فرض داخل webroot → باید 403 بدهد (.htaccess توسط خود افزونه نوشته می‌شود)
+          cat > /tmp/store-probe.php <<'PHPEOF'
+          <?php
+          require getenv('WP_HOME') . '/wp-load.php';
+          // مسیر پیش‌فرض (files.storage_path خالی) — شیء Storage مستقیم
+          $storage = new \ClinicCore\Infrastructure\Storage\LocalFileStorage(
+              \ClinicCore\Infrastructure\Storage\LocalFileStorage::defaultBasePath()
+          );
+          echo $storage->store('PILOT-PROBE synthetic — NOT PHI', 1, 'txt'), "\n";
+          PHPEOF
+          PROBE=$(WP_HOME="$WP_DIR" php /tmp/store-probe.php | tail -1)
+          echo "probe file (default path): $PROBE"
+          sudo chmod -R a+rX "$WP_DIR/wp-content/clinic-files"
+          CODE=$(curl -s -o /tmp/probe-body.txt -w '%{http_code}' "$WP_URL/wp-content/clinic-files/$PROBE")
+          echo "direct URL status: $CODE (expect 403)"
+          [ "$CODE" = "403" ] || { echo 'HTACCESS GUARD FAILED'; cat /tmp/probe-body.txt; exit 1; }
+          # ۲) مسیر فعال (Setting) — خارج webroot
+          cat > /tmp/active-storage.php <<'PHPEOF'
+          <?php
+          require getenv('WP_HOME') . '/wp-load.php';
+          echo \ClinicCore\Bootstrap\App::localFileStorage()->basePath(), "\n";
+          PHPEOF
+          ACTIVE=$(WP_HOME="$WP_DIR" php /tmp/active-storage.php)
+          echo "active storage: $ACTIVE"
+          case "$ACTIVE" in "$WP_DIR"*) echo 'STORAGE INSIDE WEBROOT'; exit 1;; *) echo 'active storage outside webroot ✓';; esac
+
+      # ---------- Smoke workflows (S1..S9) ----------
+      - name: Workflow Smokes (Patient/Secretary/Doctor/Handwriting/Reports/SMS/Files/Idempotency)
+        run: |
+          wp eval-file bin/pilot-smoke.php --path="$WP_DIR" --allow-root | tee /tmp/smoke.log
+          NPASS=$(grep -c '^PASS' /tmp/smoke.log || true)
+          echo "smoke PASS count: $NPASS/9"
+          ! grep -q '^FAIL' /tmp/smoke.log || { echo 'SMOKE FAILURES'; exit 1; }
+          [ "$NPASS" -ge 9 ] || { echo 'NOT ALL SCENARIOS RAN'; exit 1; }
+
+      # ---------- REST-level spot checks ----------
+      - name: REST public endpoints (health + availability + 401 envelope)
+        run: |
+          curl -s "$WP_URL/wp-json/clinic/v1/health" -o /tmp/health.json -w 'health: HTTP %{http_code}\n'
+          head -c 300 /tmp/health.json; echo
+          grep -q '"ok":true' /tmp/health.json || { echo 'HEALTH NOT OK'; exit 1; }
+          grep -q '"stale":false' /tmp/health.json || { echo 'HEALTH: QUEUE STALE'; exit 1; }
+          FROM=$(date -u +%F); TO=$(date -u -d "+29 days" +%F)
+          curl -s "$WP_URL/wp-json/clinic/v1/availability?clinician_id=1&from=$FROM&to=$TO" -o /tmp/avail.json -w 'availability: HTTP %{http_code}\n'
+          grep -q '"days"' /tmp/avail.json || { echo 'AVAILABILITY SHAPE WRONG'; head -c 300 /tmp/avail.json; exit 1; }
+          curl -s "$WP_URL/wp-json/clinic/v1/queue" -o /tmp/unauth.json -w 'unauth: HTTP %{http_code}\n'
+          grep -q 'CLINIC_UNAUTHORIZED' /tmp/unauth.json || { echo 'UNAUTH ENVELOPE WRONG'; cat /tmp/unauth.json; exit 1; }
+          echo 'REST envelope checks ✓'
+
+      # ---------- Performance benchmark ----------
+      - name: Performance benchmark — ab (p50/p95/p99 + RPS + error rate)
+        run: |
+          FROM=$(date -u +%F); TO=$(date -u -d "+29 days" +%F)
+          : > /tmp/bench.txt
+          bench() {
+            URL="$1"; N="$2"; C="$3"; L="$4"
+            curl -s -o /dev/null "$URL"; curl -s -o /dev/null "$URL"  # warm (opcache + mysql buffer)
+            ab -q -n "$N" -c "$C" "$URL" > /tmp/ab.txt 2>&1
+            RPS=$(grep -m1 'Requests per second' /tmp/ab.txt | grep -oE '[0-9.]+')
+            P50=$(grep -m1 '^ *50%' /tmp/ab.txt | grep -oE '[0-9.]+$')
+            P95=$(grep -m1 '^ *95%' /tmp/ab.txt | grep -oE '[0-9.]+$')
+            P99=$(grep -m1 '^ *99%' /tmp/ab.txt | grep -oE '[0-9.]+$')
+            FAILN=$(grep -m1 'Failed requests' /tmp/ab.txt | grep -oE '[0-9]+$')
+            NON2XX=$(grep -m1 'Non-2xx responses' /tmp/ab.txt | grep -oE '[0-9]+$' || echo 0)
+            [ -n "$RPS" ] && [ -n "$P95" ] || { echo "AB PARSE FAIL ($L c=$C)"; cat /tmp/ab.txt; exit 1; }
+            echo "$L | c=$C | p50=${P50}ms p95=${P95}ms p99=${P99}ms | rps=$RPS | failed=$FAILN non2xx=${NON2XX:-0}" | tee -a /tmp/bench.txt
+            [ "${NON2XX:-0}" = "0" ] || { echo "NON-2xx RESPONSES: $L c=$C"; exit 1; }
+          }
+          for C in 10 50 100; do bench "$WP_URL/wp-json/clinic/v1/health" 3000 "$C" "GET /health (عمومی)"; done
+          for C in 10 50 100; do bench "$WP_URL/wp-json/clinic/v1/availability?clinician_id=1&from=$FROM&to=$TO" 1500 "$C" "GET /availability (تقویم — NFR-PERF-1)"; done
+          bench "$WP_URL/wp-json/" 1000 50 "GET /wp-json/ (مرجع WP core)"
+          {
+            echo '## Performance Benchmark (ab — اندازه‌گیری واقعی)'
+            echo '```'
+            cat /tmp/bench.txt
+            echo
+            echo "dataset: $(tail -1 /tmp/seed.json)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ---------- Security configuration review ----------
+      - name: Security config review (debug/salts/prefix/headers/perms/PHI-leak)
+        run: |
+          echo '== wp-config =='
+          [ "$(wp config get WP_DEBUG --path="$WP_DIR" --allow-root)" = "" ] || [ "$(wp config get WP_DEBUG --path="$WP_DIR" --allow-root)" = "false" ] || { echo 'WP_DEBUG ON'; exit 1; }
+          for K in AUTH_KEY SECURE_AUTH_KEY LOGGED_IN_KEY NONCE_KEY AUTH_SALT SECURE_AUTH_SALT LOGGED_IN_SALT NONCE_SALT; do
+            V=$(wp config get "$K" --path="$WP_DIR" --allow-root)
+            [ -n "$V" ] && [ "$V" != "put your unique phrase here" ] || { echo "SALT $K EMPTY/DEFAULT"; exit 1; }
+          done
+          PREFIX=$(wp db prefix --path="$WP_DIR" --allow-root)
+          echo "table_prefix: $PREFIX"
+          [ "$PREFIX" != "wp_" ] || { echo 'DEFAULT PREFIX'; exit 1; }
+          [ ! -f "$WP_DIR/wp-content/debug.log" ] || { echo 'debug.log EXISTS'; exit 1; }
+          echo 'wp-config hardening ✓ (DEBUG off, salts unique, prefix non-default)'
+          echo '== HTTP headers =='
+          curl -sI "$WP_URL/wp-json/clinic/v1/health" | tee /tmp/headers.txt
+          ! grep -qi 'x-powered-by' /tmp/headers.txt || { echo 'PHP VERSION EXPOSED'; exit 1; }
+          echo 'headers: no X-Powered-By ✓ (ServerTokens Prod / expose_php Off)'
+          echo '== file permissions =='
+          stat -c '%a %n' "$WP_DIR/wp-config.php" "$WP_DIR/wp-content" "$STORAGE_OUT" | tee /tmp/perms.txt
+          echo '== PHI leakage scan در لاگهای فایل =='
+          sudo grep -rilE 'SYN-SMOKE-001|09120009999|0912000[0-9]{4}|SYNAP-[0-9]+|بیمار آزمایشی' /var/log/apache2/pilot-error.log /tmp/cpms-tick.log "$WP_DIR/wp-content/debug.log" 2>/dev/null > /tmp/leak.txt || true
+          [ -s /tmp/leak.txt ] && { echo 'PHI IN LOGS:'; cat /tmp/leak.txt; exit 1; } || echo 'no PHI in error/tick logs ✓'
+          sudo grep -E 'SYN-|0912000' /var/log/apache2/pilot-access.log > /tmp/leak2.txt 2>/dev/null || true
+          [ -s /tmp/leak2.txt ] && { echo 'PHI IN ACCESS LOG URLS:'; cat /tmp/leak2.txt; exit 1; } || echo 'no PHI in access-log URLs ✓'
+
+      # ---------- Audit verification ----------
+      - name: Audit verification (hash chain + رخدادها)
+        run: |
+          cd "$WP_DIR/wp-content/plugins/clinic-practice-management"
+          WP_HOME="$WP_DIR" php bin/cpms audit verify 100000
+          mysql -h127.0.0.1 -P3306 -uroot -proot -N -e "SELECT DISTINCT action FROM ${DB_MAIN}.cpmswp_cpms_audit_logs ORDER BY action;" | tr '\n' ' ' | tee /tmp/audit-actions.txt
+          echo
+          N=$(mysql -h127.0.0.1 -P3306 -uroot -proot -N -e "SELECT COUNT(*) FROM ${DB_MAIN}.cpmswp_cpms_audit_logs;")
+          echo "audit rows: $N"
+          [ "$N" -gt 20 ] || { echo 'TOO FEW AUDIT ROWS'; exit 1; }
+          {
+            echo '## Audit'
+            echo '```'
+            echo "chain verify: OK"
+            echo "rows: $N"
+            cat /tmp/audit-actions.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ---------- Backup creation ----------
+      - name: Backup creation (DB + protected storage + checksums)
+        run: |
+          T0=$(date +%s)
+          mysqldump -h127.0.0.1 -P3306 -uroot -proot --single-transaction --routines --triggers --no-tablespaces "$DB_MAIN" | gzip > /tmp/backup-db.sql.gz
+          T1=$(date +%s)
+          tar -czf /tmp/backup-storage.tar.gz -C /tmp clinic-storage
+          cp "$WP_DIR/wp-config.php" /tmp/backup-wp-config.txt
+          T2=$(date +%s)
+          sha256sum /tmp/backup-db.sql.gz /tmp/backup-storage.tar.gz | tee /tmp/backup-hashes.txt
+          {
+            echo '## Backup'
+            echo '```'
+            echo "db dump:     $(du -h /tmp/backup-db.sql.gz | cut -f1) ($(bc -l <<< "$T1 - $T0")s, mysqldump --single-transaction)"
+            echo "storage tar: $(du -h /tmp/backup-storage.tar.gz | cut -f1) ($(bc -l <<< "$T2 - $T1")s)"
+            echo "storage files: $(tar -tzf /tmp/backup-storage.tar.gz | grep -vc '/$')"
+            cat /tmp/backup-hashes.txt
+            echo 'wp-config: جدا از Artifact نگه داشته شد (backup امن خودش Runbook دارد)'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ---------- Full Restore Drill ----------
+      - name: Restore Drill — محیط جداگانه (DB دوم + WP tree دوم) + Integrity
+        run: |
+          T0=$(date +%s)
+          mysql -h 127.0.0.1 -P 3307 -uroot -proot -e "CREATE DATABASE $DB_RESTORE CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+          gunzip -c /tmp/backup-db.sql.gz | mysql -h127.0.0.1 -P3307 -uroot -proot "$DB_RESTORE"
+          T1=$(date +%s)
+          mkdir -p /tmp/restore-clinic-storage
+          tar -xzf /tmp/backup-storage.tar.gz -C /tmp/restore-clinic-storage --strip-components=1
+          cp -R "$WP_DIR" "$WP_RESTORE_DIR"
+          rm -f "$WP_RESTORE_DIR/wp-config.php"
+          cd "$WP_RESTORE_DIR"
+          wp config create --dbname="$DB_RESTORE" --dbuser=root --dbpass=root --dbhost=127.0.0.1:3307 --dbprefix=cpmswp_ --skip-salts --allow-root
+          wp config shuffle-salts --allow-root
+          wp config set WP_DEBUG false --raw --allow-root
+          wp config set DISABLE_WP_CRON true --raw --allow-root
+          sudo chmod -R a+rX "$WP_RESTORE_DIR"
+          T2=$(date +%s)
+          cat > /tmp/restore-config.php <<'PHPEOF'
+          <?php
+          require getenv('WP_HOME') . '/wp-load.php';
+          \ClinicCore\Bootstrap\App::settings()->set('files.storage_path', '/tmp/restore-clinic-storage');
+          echo 'config restore: files.storage_path=/tmp/restore-clinic-storage', "\n";
+          PHPEOF
+          WP_HOME="$WP_RESTORE_DIR" php /tmp/restore-config.php
+          echo '== Integrity 1: شمارش همه جداول (main vs restore) =='
+          MAIN_TABLES=$(mysql -h127.0.0.1 -P3306 -uroot -proot -N -e "SELECT table_name FROM information_schema.tables WHERE table_schema='$DB_MAIN' AND table_name LIKE 'cpmswp_%' ORDER BY table_name;")
+          FAIL=0
+          while read -r T; do
+            A=$(mysql -h127.0.0.1 -P3306 -uroot -proot -N -e "SELECT COUNT(*) FROM \`$DB_MAIN\`.\`$T\`;")
+            B=$(mysql -h127.0.0.1 -P3307 -uroot -proot -N -e "SELECT COUNT(*) FROM \`$DB_RESTORE\`.\`$T\`;")
+            [ "$A" = "$B" ] || { echo "COUNT MISMATCH $T: $A vs $B"; FAIL=1; }
+          done <<< "$MAIN_TABLES"
+          NT=$(wc -l <<< "$MAIN_TABLES")
+          [ $FAIL -eq 0 ] && echo "همه $NT جدول: شمارش یکسان ✓" || exit 1
+          echo '== Integrity 2: schema + audit chain روی Restore =='
+          WP_HOME="$WP_RESTORE_DIR" php "$WP_RESTORE_DIR/wp-content/plugins/clinic-practice-management/bin/cpms" status
+          WP_HOME="$WP_RESTORE_DIR" php "$WP_RESTORE_DIR/wp-content/plugins/clinic-practice-management/bin/cpms" audit verify 100000
+          echo '== Integrity 3: فایلهای محافظت‌شده (checksum byte-to-byte) =='
+          (cd /tmp/clinic-storage && find . -type f -exec sha256sum {} \; | sort) > /tmp/orig-files.txt
+          (cd /tmp/restore-clinic-storage && find . -type f -exec sha256sum {} \; | sort) > /tmp/restored-files.txt
+          diff /tmp/orig-files.txt /tmp/restored-files.txt && echo "storage: $(wc -l < /tmp/orig-files.txt) فایل byte-to-byte یکسان ✓" || exit 1
+          echo '== Integrity 4: نمونه کسب‌وکار =='
+          cat > /tmp/restore-sample.php <<'PHPEOF'
+          <?php
+          require getenv('WP_HOME') . '/wp-load.php';
+          global $wpdb;
+          $db = \ClinicCore\Bootstrap\App::db();
+          $checks = [
+              'patients' => 'cpms_patients',
+              'visits' => 'cpms_visits',
+              'invoices' => 'cpms_invoices',
+              'payments' => 'cpms_payments',
+              'notifications' => 'cpms_notifications',
+              'sms_messages' => 'cpms_sms_messages',
+              'audit_logs' => 'cpms_audit_logs',
+          ];
+          foreach ($checks as $label => $t) {
+              echo $label . '=' . (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $db->table($t)) . ' ';
+          }
+          echo "\n";
+          $attach = $wpdb->get_row('SELECT storage_path FROM ' . $db->table('cpms_medical_attachments') . ' LIMIT 1', ARRAY_A);
+          if ($attach) {
+              $abs = \ClinicCore\Bootstrap\App::localFileStorage()->absolutePath((string) $attach['storage_path']);
+              echo 'sample attachment: ' . ($abs && is_file($abs) ? "readable ($abs)" : 'MISSING!') . "\n";
+              exit($abs && is_file($abs) ? 0 : 1);
+          }
+          PHPEOF
+          WP_HOME="$WP_RESTORE_DIR" php /tmp/restore-sample.php
+          T3=$(date +%s)
+          {
+            echo '## Restore Drill (محیط جداگانه — MySQL دوم @3307 + WP tree دوم)'
+            echo '```'
+            echo "db restore:    $(bc -l <<< "$T1 - $T0")s"
+            echo "files+config:  $(bc -l <<< "$T2 - $T1")s"
+            echo "integrity:     $(bc -l <<< "$T3 - $T2")s"
+            echo "TOTAL:         $(bc -l <<< "$T3 - $T0")s  (هدف RTO ≤ 4h)"
+            echo 'integrity:     شمارش جداول + schema + audit chain + checksum فایلها + نمونه کسب‌وکار — همه identical ✓'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: جمع‌بندی Gate
+        if: always()
+        run: |
+          {
+            echo '## Workflow Smokes (خدمات واقعی روی محیط نصب‌شده)'
+            echo '```'
+            grep -E '^(PASS|FAIL)' /tmp/smoke.log 2>/dev/null || echo '(smoke not reached)'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gate-logs
+          path: |
+            /tmp/seed.json
+            /tmp/smoke.log
+            /tmp/bench.txt
+            /tmp/headers.txt
+            /tmp/perms.txt
+            /tmp/backup-hashes.txt
+            /tmp/audit-actions.txt
+            /tmp/jobs-queued.txt
+          retention-days: 14
+          if-no-files-found: ignore
+
+  # ============================================================
+  # 3) Upgrade path — main (F8) → RC (F9) روی نصب واقعی
+  # ============================================================
+  upgrade-test:
+    name: Upgrade path (main → RC)
+    runs-on: ubuntu-latest
+    needs: release-artifact
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1"
+          --health-interval=10s --health-timeout=5s --health-retries=20
+    env:
+      WP_DIR: /tmp/www
+      WP_URL: http://localhost:8080
+      DB_MAIN: cpms_main
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: shivammathur/setup-php@v2
+        with: { php-version: '8.2', extensions: 'mysqli, curl, mbstring, xml', coverage: none }
+      - name: Tooling
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq mysql-client
+          curl -sS https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o /tmp/wp-cli.phar
+          sudo mv /tmp/wp-cli.phar /usr/local/bin/wp && sudo chmod +x /usr/local/bin/wp
+      - name: WP + نصب نسخه قبلی (origin/main = F8)
+        run: |
+          mysql -h127.0.0.1 -P3306 -uroot -proot -e "CREATE DATABASE $DB_MAIN;"
+          curl -sS https://wordpress.org/wordpress-6.7.2.tar.gz -o /tmp/wp.tar.gz
+          tar -xzf /tmp/wp.tar.gz -C /tmp && mv /tmp/wordpress "$WP_DIR"
+          cd "$WP_DIR"
+          wp config create --dbname="$DB_MAIN" --dbuser=root --dbpass=root --dbhost=127.0.0.1:3306 --dbprefix=cpmswp_ --skip-salts --allow-root
+          wp config shuffle-salts --allow-root
+          wp core install --url="$WP_URL" --title="Upgrade Test" --admin_user=up_admin --admin_password='Up-2026!' --admin_email=up@local.test --skip-email --allow-root
+          git archive origin/main clinic-practice-management | tar -x -C /tmp
+          mv /tmp/clinic-practice-management "$WP_DIR/wp-content/plugins/"
+          wp plugin activate clinic-practice-management --path="$WP_DIR" --allow-root
+          cat > /tmp/check-schema.php <<'PHPEOF'
+          <?php
+          require getenv('WP_HOME') . '/wp-load.php';
+          $v = \ClinicCore\Bootstrap\App::migrations()->currentVersion();
+          echo "schema on main: $v\n";
+          exit($v === '2026_09_07_0005' ? 0 : 1);
+          PHPEOF
+          WP_HOME="$WP_DIR" php /tmp/check-schema.php
+      - name: داده Legacy (نصب فعال با داده واقعی‌نما Synthetic)
+        run: |
+          wp user create up_doctor 'doc@up.local' --user_pass='Up-2026!' --role=cpms_doctor --path="$WP_DIR" --allow-root
+          cat > /tmp/legacy-seed.php <<'PHPEOF'
+          <?php
+          require getenv('WP_HOME') . '/wp-load.php';
+          global $wpdb;
+          $db = \ClinicCore\Bootstrap\App::db();
+          $now = $db->nowUtcSql();
+          $uid = (int) get_user_by('login', 'up_doctor')->ID;
+          $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_clinicians') . ' (clinic_id, full_name, wp_user_id, is_active, created_at, updated_at) VALUES (1, %s, %d, 1, %s, %s)', 'دکتر ارتقا (Synthetic)', $uid, $now, $now));
+          $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_clinicians') . ' (clinic_id, full_name, wp_user_id, is_active, created_at, updated_at) VALUES (1, %s, NULL, 1, %s, %s)', 'دکتر بدون پیوند (Synthetic)', $now, $now));
+          $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_patients') . ' (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at) VALUES (1, %s, %s, %s, %s, %s, %s, %s)', 'SYN-UP-001', 'بیمار', 'ارتقا (Synthetic)', '09120007777', 'active', $now, $now));
+          // idempotency legacy: context_id = NULL (پیش از Migration 0006) + یک کلید در دو endpoint
+          $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_idempotency_keys') . ' (`key`, clinic_id, wp_user_id, endpoint, context_id, status, response_code, response_json, created_at) VALUES (%s, 1, %d, %s, NULL, 1, 200, %s, %s)', 'up-legacy-key-1', $uid, 'booking/confirm', '{}', $now));
+          $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_idempotency_keys') . ' (`key`, clinic_id, wp_user_id, endpoint, context_id, status, response_code, response_json, created_at) VALUES (%s, 1, %d, %s, NULL, 1, 200, %s, %s)', 'up-legacy-key-1', $uid, 'invoices/payments', '{}', $now));
+          echo "legacy data: 2 clinicians (1 linked) + 1 patient + 2 legacy idem rows (NULL context)\n";
+          PHPEOF
+          WP_HOME="$WP_DIR" php /tmp/legacy-seed.php
+      - name: آپدیت به RC (جایگزینی فایلها + migrate = همان فرایند تولید)
+        run: |
+          gh run download -n release-zip -D /tmp/release --repo "$GITHUB_REPOSITORY"
+          rm -rf "$WP_DIR/wp-content/plugins/clinic-practice-management"
+          unzip -q /tmp/release/clinic-practice-management-1.0.0.zip -d "$WP_DIR/wp-content/plugins/"
+          cd "$WP_DIR/wp-content/plugins/clinic-practice-management"
+          WP_HOME="$WP_DIR" php bin/cpms migrate
+          WP_HOME="$WP_DIR" php bin/cpms status
+          echo '== post-upgrade verification =='
+          cat > /tmp/upgrade-check.php <<'PHPEOF'
+          <?php
+          require getenv('WP_HOME') . '/wp-load.php';
+          global $wpdb;
+          $db = \ClinicCore\Bootstrap\App::db();
+          $v = \ClinicCore\Bootstrap\App::migrations()->currentVersion();
+          echo "schema: $v\n";
+          if ($v !== '2026_09_07_0007') { exit(1); }
+          foreach ($wpdb->get_results('SELECT `key`, endpoint, context_id, status FROM ' . $db->table('cpms_idempotency_keys'), ARRAY_A) as $r) {
+              echo 'idem: ' . $r['key'] . ' @ ' . $r['endpoint'] . ' ctx=' . var_export($r['context_id'], true) . ' status=' . $r['status'] . "\n";
+          }
+          echo 'patients=' . (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $db->table('cpms_patients')) . "\n";
+          echo 'clinicians=' . (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $db->table('cpms_clinicians')) . "\n";
+          // NULL→0 نرمال‌سازی
+          $nullCtx = (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $db->table('cpms_idempotency_keys') . ' WHERE context_id IS NULL');
+          if ($nullCtx !== 0) { echo "context_id NULL remains: $nullCtx\n"; exit(1); }
+          echo "context_id normalized to 0 ✓\n";
+          PHPEOF
+          WP_HOME="$WP_DIR" php /tmp/upgrade-check.php
+          IDX=$(mysql -h127.0.0.1 -P3306 -uroot -proot -N -e "SELECT DISTINCT index_name FROM information_schema.statistics WHERE table_schema='$DB_MAIN' AND table_name='cpmswp_cpms_idempotency_keys';" | tr '\n' ' ')
+          echo "idem indexes: $IDX"
+          echo "$IDX" | grep -q 'u_idem_4col' || { echo 'u_idem_4col MISSING'; exit 1; }
+          IDX2=$(mysql -h127.0.0.1 -P3306 -uroot -proot -N -e "SELECT DISTINCT index_name FROM information_schema.statistics WHERE table_schema='$DB_MAIN' AND table_name='cpmswp_cpms_clinicians';" | tr '\n' ' ')
+          echo "clinician indexes: $IDX2"
+          echo "$IDX2" | grep -q 'u_clinician_user' || { echo 'u_clinician_user MISSING'; exit 1; }
+          echo 'UPGRADE PATH OK ✓'
+          {
+            echo '## Upgrade Path (main/F8 → RC/F9 روی نصب واقعی)'
+            echo '```'
+            echo 'main schema: 2026_09_07_0005 → RC schema: 2026_09_07_0007'
+            echo 'legacy idem NULL→0 normalized; u_idem_4col + u_clinician_user present; داده دست‌نخورده'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ============================================================
+  # 4) Responsive smoke — Chromium واقعی × 4 viewport × 4 صفحه
+  # ============================================================
+  responsive:
+    name: Responsive smoke (Chromium ×4 viewport)
+    runs-on: ubuntu-latest
+    needs: release-artifact
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1"
+          --health-interval=10s --health-timeout=5s --health-retries=20
+    env:
+      WP_DIR: /tmp/www
+      WP_URL: http://localhost:8080
+      DB_MAIN: cpms_main
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with: { php-version: '8.2', extensions: 'mysqli, curl, mbstring, xml', coverage: none }
+      - name: Tooling (wp-cli + apache + playwright)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq mysql-client apache2 libapache2-mod-php php-mysql php-mbstring php-xml php-curl > /tmp/apt.log 2>&1 || { tail -5 /tmp/apt.log; exit 1; }
+          curl -sS https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o /tmp/wp-cli.phar
+          sudo mv /tmp/wp-cli.phar /usr/local/bin/wp && sudo chmod +x /usr/local/bin/wp
+          (pip install --quiet playwright 2>/dev/null || pip install --quiet --break-system-packages playwright)
+          python3 -m playwright install --with-deps chromium > /tmp/pw.log 2>&1 || { tail -10 /tmp/pw.log; exit 1; }
+      - name: WP + Plugin از Artifact + داده حداقلی Synthetic
+        run: |
+          mysql -h127.0.0.1 -P3306 -uroot -proot -e "CREATE DATABASE $DB_MAIN;"
+          curl -sS https://wordpress.org/wordpress-6.7.2.tar.gz -o /tmp/wp.tar.gz && tar -xzf /tmp/wp.tar.gz -C /tmp && mv /tmp/wordpress "$WP_DIR"
+          cd "$WP_DIR"
+          wp config create --dbname="$DB_MAIN" --dbuser=root --dbpass=root --dbhost=127.0.0.1:3306 --dbprefix=cpmswp_ --skip-salts --allow-root
+          wp config shuffle-salts --allow-root
+          wp config set WP_DEBUG false --raw --allow-root
+          wp core install --url="$WP_URL" --title="Responsive" --admin_user=pilot_admin --admin_password='Pilot-Gate-2026!' --admin_email=a@b.local --skip-email --allow-root
+          gh run download -n release-zip -D /tmp/release --repo "$GITHUB_REPOSITORY"
+          unzip -q /tmp/release/clinic-practice-management-1.0.0.zip -d "$WP_DIR/wp-content/plugins/"
+          wp plugin activate clinic-practice-management --path="$WP_DIR" --allow-root
+          wp user create pilot_secretary 'sec@r.local' --user_pass='Pilot-Gate-2026!' --role=cpms_secretary --path="$WP_DIR" --allow-root
+          wp user create pilot_doctor 'doc@r.local' --user_pass='Pilot-Gate-2026!' --role=cpms_doctor --path="$WP_DIR" --allow-root
+          cat > /tmp/resp-fixture.php <<'PHPEOF'
+          <?php
+          require getenv('WP_HOME') . '/wp-load.php';
+          global $wpdb;
+          $db = \ClinicCore\Bootstrap\App::db();
+          $now = $db->nowUtcSql();
+          $uid = (int) get_user_by('login', 'pilot_doctor')->ID;
+          $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_clinicians') . ' (clinic_id, full_name, wp_user_id, is_active, created_at, updated_at) VALUES (1, %s, %d, 1, %s, %s)', 'دکتر ریسپانسیو (Synthetic)', $uid, $now, $now));
+          $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_patients') . ' (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at) VALUES (1, %s, %s, %s, %s, %s, %s, %s)', 'SYN-RESP-001', 'بیمار', 'ریسپانسیو (Synthetic)', '09120008888', 'active', $now, $now));
+          $pid = (int) $wpdb->insert_id;
+          $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_visits') . ' (clinic_id, clinician_id, patient_id, source, status, visit_date, check_in_at, waiting_since, active, created_at, updated_at) VALUES (1, 1, %d, %s, %s, %s, %s, %s, 1, %s, %s)', $pid, 'walk_in', 'waiting', gmdate('Y-m-d'), $now, $now, $now, $now));
+          echo 'fixture: clinician+patient+waiting visit #' . (int) $wpdb->insert_id . "\n";
+          PHPEOF
+          WP_HOME="$WP_DIR" php /tmp/resp-fixture.php
+      - name: Apache up
+        run: |
+          sudo tee /etc/apache2/sites-available/pilot.conf >/dev/null <<CONF
+          <VirtualHost *:8080>
+            DocumentRoot $WP_DIR
+            <Directory $WP_DIR>
+              AllowOverride All
+              Require all granted
+            </Directory>
+          </VirtualHost>
+          CONF
+          sudo sed -i 's/^Listen 80$/Listen 8080/' /etc/apache2/ports.conf
+          sudo a2dissite 000-default >/dev/null; sudo a2ensite pilot >/dev/null
+          sudo chmod -R a+rX "$WP_DIR"
+          sudo apache2ctl configtest && sudo service apache2 start && sleep 2
+          curl -s -o /dev/null -w '%{http_code}\n' "$WP_URL/wp-json/" | grep -q 200
+      - name: Responsive smoke (4 viewport × 4 صفحه — بدون overflow افقی)
+        env:
+          BASE: http://localhost:8080
+          RESP_PASS: 'Pilot-Gate-2026!'
+          RESP_DOCTOR_PASS: 'Pilot-Gate-2026!'
+        run: |
+          python3 bin/pilot-responsive.py | tee /tmp/resp.log
+          {
+            echo '## Responsive Smoke (Chromium واقعی — NFR-UI-3/5)'
+            echo '```'
+            grep -E '^(PASS|FAIL)' /tmp/resp.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: responsive-screenshots
+          path: clinic-practice-management/pilot-screenshots/
+          retention-days: 14
+          if-no-files-found: ignore
