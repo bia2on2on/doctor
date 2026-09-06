@@ -155,7 +155,7 @@ final class SecretaryQueuePage
 </div>
 
 <!-- Drawer جزئیات ویزیت -->
-<div id="cpms-q-drawer" class="cpms-q-drawer" dir="rtl" style="display:none">
+<div id="cpms-q-drawer" class="cpms-q-drawer" dir="rtl" style="display:none" role="dialog" aria-modal="true" aria-labelledby="cpms-q-drawer-title">
     <div class="cpms-q-drawer-head">
         <strong id="cpms-q-drawer-title">جزئیات مراجعه</strong>
         <button type="button" class="button" id="cpms-q-drawer-close" title="Esc">✕</button>
@@ -409,11 +409,16 @@ window.CPMS_Q = <?php echo wp_json_encode($config); ?>;
         document.getElementById('cpms-q-drawer-backdrop').style.display = 'block';
         var title = v ? (v.patient_name + ' — ' + (STATUS_LABELS[v.status] || v.status)) : 'جزئیات';
         document.getElementById('cpms-q-drawer-title').textContent = title;
+        // NFR-UI-3: فوکوس کیبورد در ابتدای دیالوگ (Esc آن را می‌بندد)
+        document.getElementById('cpms-q-drawer-close').focus();
     }
 
     function closeDrawer() {
         document.getElementById('cpms-q-drawer').style.display = 'none';
         document.getElementById('cpms-q-drawer-backdrop').style.display = 'none';
+        // NFR-UI-3: بازگشت فوکوس به جستجوی صف پس از بستن دیالوگ
+        var s = document.getElementById('cpms-q-walkin-search');
+        if (s) { s.focus(); }
     }
 
     // ---------- اکشن‌ها ----------

@@ -142,7 +142,7 @@ final class DoctorDashboardPage
 .cpms-doc-badge.status-in_consultation { background: #edfaef; color: #00a32a; border: 1px solid #00a32a; }
 .cpms-doc-badge.status-waiting { background: #fcf9e8; color: #996800; border: 1px solid #996800; }
 .cpms-doc-badge.status-called { background: #f0f6fc; color: #2271b1; border: 1px solid #2271b1; }
-.cpms-doc-btn { min-height: 40px; }
+.cpms-doc-btn { min-height: 44px; } /* NFR-UI-3: Touch Target >= 44px */
 .cpms-doc-patient-head { display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
     background: #fff; border: 1px solid #dcdcde; border-radius: 4px; padding: 12px 16px; margin: 10px 0; }
 .cpms-doc-patient-head h2 { margin: 0; }

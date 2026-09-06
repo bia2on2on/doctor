@@ -10,7 +10,7 @@
 | Format | JSON UTF-8. زمان‌ها ISO-8601 UTC (`2026-09-05T12:30:00.000Z`) + فیلدهای نمایش Jalali جفت (مثلاً `slot_date_jalali`). |
 | خطا | `{ "code": "CLINIC_*", "message": "...", "data": {} }` + HTTP مناسب (400 validation, 403 forbidden, 404 not-found-as-forbidden برای Patient, 409 conflict). **تمام کدها با پیشوند ثابت `CLINIC_*`** — فهرست مرکزی: `docs/api/error-codes.md` (ADR-0019). |
 | Pagination | `?page=1&per_page=20` → header `X-Total-Count`. |
-| Idempotency | هدر `Idempotency-Key: <uuid>` روی Endpointهای `payment`, `booking/confirm`, `handwriting/page` (موتانت‌های حساس). |
+| Idempotency | هدر `Idempotency-Key: <uuid>` روی Endpointهای `payment`, `booking/confirm`, `handwriting/page` (موتانت‌های حساس). دامنهٔ یکتایی = `(key, endpoint, wp_user_id, context_id)` — یعنی همان کلید در Endpoint/کاربر/زمینه (مثلاً PageId دست‌خط) مختلف مانعه‌ی هم نیست و هر جفتِ Request/Response را جدا نگه می‌دارد (F9: UNIQUE چهارستونه + نرمال‌سازی NULL→0). |
 | Rate Limit | `X-RateLimit-Limit/Remaining/Reset`. محدودیت‌ها: OTP (10/hr), booking (10/hr), login (20/hr), upload (10/hr). |
 | Versioning | `clinic/v1` — شکست‌های بعدی → `v2` (compat window). |
 | Security | هر Endpoint: Capability Check + Data-Access (Permission Matrix). 404 برای «داده دیگری» (افشای وجود ندهد) + Audit `FORBIDDEN_ACCESS_ATTEMPT`. |
