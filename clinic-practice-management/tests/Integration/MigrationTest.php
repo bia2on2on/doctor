@@ -183,20 +183,24 @@ final class MigrationTest extends WP_UnitTestCase
         $wpdb->query($wpdb->prepare("UPDATE {$t} SET `key` = %s WHERE id = %d", 'corrupt-key-same', (int) $wpdb->insert_id)); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
         try {
-            App::migrations()->migrate();
-            $this->fail('Preflight باید Migration را متوقف می‌کرد');
-        } catch (RuntimeException $e) {
-            $this->assertStringContainsString('duplicate idempotency rows', $e->getMessage());
+            try {
+                App::migrations()->migrate();
+                $this->fail('Preflight باید Migration را متوقف می‌کرد');
+            } catch (\RuntimeException $e) {
+                $this->assertStringContainsString('duplicate idempotency rows', $e->getMessage());
+            }
+
+            // بدون تغییر داده + بدون ثبت version → 0006 هنوز اعمال‌نشده
+            $applied = (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . App::db()->table('cpms_schema_migrations') . " WHERE version = '2026_09_07_0006'"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $this->assertSame(0, $applied);
+            $count = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$t} WHERE `key` = 'corrupt-key-same'"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $this->assertSame(2, $count, 'هیچ ردیفی حذف/merge نشده است');
+        } finally {
+            // پاک‌سازی دستی (مثل سناریوی واقعی) — حتی اگر assertion شکست بخورد تا
+            // tearDown/migrate سوئیچ بعدی سالم بماند (DDL تراکنش تست را می‌شکند)
+            $wpdb->query("DELETE FROM {$t} WHERE `key` = 'corrupt-key-same' AND id > (SELECT min_id FROM (SELECT MIN(id) min_id FROM {$t} WHERE `key` = 'corrupt-key-same') x)"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         }
 
-        // بدون تغییر داده + بدون ثبت version → 0006 هنوز اعمال‌نشده
-        $applied = (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . App::db()->table('cpms_schema_migrations') . " WHERE version = '2026_09_07_0006'"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        $this->assertSame(0, $applied);
-        $count = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$t} WHERE `key` = 'corrupt-key-same'"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        $this->assertSame(2, $count, 'هیچ ردیفی حذف/merge نشده است');
-
-        // پاک‌سازی دستی (مثل سناریوی واقعی) → re-run موفق
-        $wpdb->query("DELETE FROM {$t} WHERE `key` = 'corrupt-key-same' AND id > (SELECT min_id FROM (SELECT MIN(id) min_id FROM {$t} WHERE `key` = 'corrupt-key-same') x)"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         $applied = App::migrations()->migrate();
         $this->assertContains('2026_09_07_0006', $applied);
     }
@@ -232,19 +236,22 @@ final class MigrationTest extends WP_UnitTestCase
         }
 
         try {
-            App::migrations()->migrate();
-            $this->fail('Preflight باید Migration را متوقف می‌کرد');
-        } catch (RuntimeException $e) {
-            $this->assertStringContainsString('share the same wp_user_id', $e->getMessage());
+            try {
+                App::migrations()->migrate();
+                $this->fail('Preflight باید Migration را متوقف می‌کرد');
+            } catch (\RuntimeException $e) {
+                $this->assertStringContainsString('share the same wp_user_id', $e->getMessage());
+            }
+
+            // بدون تغییر داده
+            $count = (int) $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$t} WHERE wp_user_id = %d", $uid)); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $this->assertSame(2, $count);
+            $this->assertNull($wpdb->get_row("SHOW INDEX FROM {$t} WHERE Key_name = 'u_clinician_user'")); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        } finally {
+            // رفع دستی (NULL کردن پیوند اضافی) — حتی اگر assertion شکست بخورد
+            $wpdb->query($wpdb->prepare("UPDATE {$t} SET wp_user_id = NULL WHERE wp_user_id = %d AND full_name = 'Dr Dup 2'", $uid)); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         }
 
-        // بدون تغییر داده
-        $count = (int) $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$t} WHERE wp_user_id = %d", $uid)); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        $this->assertSame(2, $count);
-        $this->assertNull($wpdb->get_row("SHOW INDEX FROM {$t} WHERE Key_name = 'u_clinician_user'")); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-
-        // رفع دستی (NULL کردن پیوند اضافی) → re-run موفق
-        $wpdb->query($wpdb->prepare("UPDATE {$t} SET wp_user_id = NULL WHERE wp_user_id = %d AND full_name = 'Dr Dup 2'", $uid)); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         $applied = App::migrations()->migrate();
         $this->assertContains('2026_09_07_0007', $applied);
     }
