@@ -401,7 +401,10 @@ jobs:
           curl -s "$WP_URL/wp-json/clinic/v1/availability?clinician_id=1&from=$FROM&to=$TO" -o /tmp/avail.json -w 'availability: HTTP %{http_code}\n'
           grep -q '"days"' /tmp/avail.json || { echo 'AVAILABILITY SHAPE WRONG'; head -c 300 /tmp/avail.json; exit 1; }
           curl -s "$WP_URL/wp-json/clinic/v1/queue" -o /tmp/unauth.json -w 'unauth: HTTP %{http_code}\n'
-          grep -q 'CLINIC_UNAUTHORIZED' /tmp/unauth.json || { echo 'UNAUTH ENVELOPE WRONG'; cat /tmp/unauth.json; exit 1; }
+          # طبق api-contract.md/error-codes.md: درخواست بدون Nonce همیشه 403 CLINIC_INVALID_NONCE
+          # (Guard استاندارد: Nonce → Capability) — envelope ساختاریافته، نه خطای خام/داده
+          grep -q 'CLINIC_INVALID_NONCE' /tmp/unauth.json || { echo 'UNAUTH ENVELOPE WRONG'; cat /tmp/unauth.json; exit 1; }
+          grep -q '"status":403' /tmp/unauth.json || { echo 'UNAUTH STATUS WRONG'; cat /tmp/unauth.json; exit 1; }
           echo 'REST envelope checks ✓'
 
       # ---------- Performance benchmark ----------

@@ -51,7 +51,7 @@ Environment: Ubuntu 24.04 VM (4 vCPU)، MySQL 8 (Docker)، Apache 2.4.58 + mod_p
 3. **Roles:** `cpms_doctor` / `cpms_secretary` / `cpms_patient` ثبت شدند (قابلیت‌ها از ماتریس).
 4. **Cron-event:** `cpms_jobs_tick` زمان‌بندی شد (fallback WP-Cron) + مسیر تولید system cron فعال.
 5. **Health:** `GET /wp-json/clinic/v1/health` → 200 با `{ok:true, version:1.0.0, schema:0007, jobs:{stale:false}}` از Apache واقعی.
-6. **REST عمومی:** `GET /availability` → 200 با envelope استاندارد و داده تقویم seed شده؛ درخواست بدون احراز → 401 `CLINIC_UNAUTHORIZED` (نه خطای خام).
+6. **REST عمومی:** `GET /availability` → 200 با envelope استاندارد و داده تقویم seed شده؛ درخواست بدون Nonce → 403 `CLINIC_INVALID_NONCE` با envelope ساختاریافته (طبق api-contract.md: گم‌شدن Nonce همیشه CLINIC_INVALID_NONCE؛ Guard استاندارد Nonce→Capability) — بدون داده/PHI.
 
 ## 4. Upgrade / Migration Test (main/F8 → RC/F9)
 
