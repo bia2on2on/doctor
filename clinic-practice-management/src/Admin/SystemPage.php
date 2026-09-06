@@ -92,12 +92,15 @@ final class SystemPage
                     <?php echo esc_html($lic['reason'] !== '' ? ' (' . $lic['reason'] . ')' : ''); ?></td></tr>
                 <tr><th>نصب</th><td dir="ltr"><?php echo esc_html((string) $lic['install_id_masked']); ?></td></tr>
                 <tr><th>شناسه مجوز</th><td dir="ltr"><?php echo esc_html((string) $lic['license_id']); ?></td></tr>
+                <?php if (($lic['activation_window_type'] ?? null) !== null && ($lic['configured'] ?? true) === false) : ?>
+                    <tr><th>پنجرهٔ فعال‌سازی</th><td dir="ltr"><?php echo esc_html($lic['activation_window_type'] === 'migration' ? 'migration (۳۰ روز)' : 'fresh (۷ روز)'); ?></td></tr>
+                <?php endif; ?>
                 <?php if ($lic['expires_at'] !== null) : ?>
-                    <tr><th>انقضا (UTC)</th><td><?php echo esc_html(gmdate('Y-m-d H:i', (int) $lic['expires_at'])); ?></td></tr>
+                    <tr><th>انقضا/مهلت (UTC)</th><td><?php echo esc_html(gmdate('Y-m-d H:i', (int) $lic['expires_at'])); ?></td></tr>
                 <?php endif; ?>
                 <tr><th>Refresh</th><td><?php echo esc_html((string) ($lic['last_refresh_error'] !== null && $lic['last_refresh_error'] !== '' ? 'خطا: ' . $lic['last_refresh_error'] : ($lic['verified_at'] !== null ? 'آخرین تأیید: ' . $lic['verified_at'] : '—'))); ?></td></tr>
             </table>
-            <?php if (in_array($lic['status'], [LicenseStatus::NOT_CONFIGURED, LicenseStatus::UNREACHABLE, LicenseStatus::INVALID, LicenseStatus::RESTRICTED], true)) : ?>
+            <?php if (in_array($lic['status'], [LicenseStatus::NOT_CONFIGURED, LicenseStatus::ACTIVATION_PENDING, LicenseStatus::ACTIVATION_GRACE, LicenseStatus::UNREACHABLE, LicenseStatus::INVALID, LicenseStatus::RESTRICTED], true)) : ?>
                 <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
                     <?php wp_nonce_field('cpms_license_activate'); ?>
                     <input type="hidden" name="action" value="cpms_license_activate">
@@ -338,6 +341,21 @@ final class SystemPage
 
     private static function licenseLabel(string $status): string
     {
-        return strtoupper((string) $status);
+        return match ($status) {
+            LicenseStatus::ACTIVE => '✅ ACTIVE (فعال)',
+            LicenseStatus::EXPIRING => '⚠️ EXPIRING (نزدیک انقضا)',
+            LicenseStatus::GRACE => '⚠️ GRACE (مهلت تمدید)',
+            LicenseStatus::RESTRICTED => '⛔ RESTRICTED (محدود)',
+            LicenseStatus::ACTIVATION_PENDING => '⏳ ACTIVATION_PENDING (پنجرهٔ فعال‌سازی ۷ روزه)',
+            LicenseStatus::ACTIVATION_GRACE => '⏳ ACTIVATION_GRACE (مهلت مهاجرت ۳۰ روزه)',
+            LicenseStatus::DEVELOPMENT => '🧪 DEVELOPMENT (حالت توسعه/تست صریح)',
+            LicenseStatus::NOT_CONFIGURED => '➖ NOT_CONFIGURED',
+            LicenseStatus::UNREACHABLE => '📡 UNREACHABLE (سرور مجوز در دسترس نیست)',
+            LicenseStatus::INVALID => '⛔ INVALID (سند نامعتبر)',
+            LicenseStatus::SUSPENDED => '⛔ SUSPENDED',
+            LicenseStatus::REVOKED => '⛔ REVOKED',
+            LicenseStatus::THROTTLED => '⏱ THROTTLED',
+            default => strtoupper((string) $status),
+        };
     }
 }

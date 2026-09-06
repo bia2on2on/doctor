@@ -22,11 +22,18 @@ final class LicenseRepository
 
     /**
      * شناسه‌ی نصب — می‌سازد اگر نبود (Idempotent). آنتروپی بالا (32 hex).
+     *
+     * پنجرهٔ فعال‌سازی (تصمیم کارفرما):
+     *  - ردیفِ id=1 معمولاً در Migration 0008 با activation_window_started_at
+     *    و نوع (fresh|migration) ساخته می‌شود؛ این متد فقط در غیاب ردیف
+     *    (مثلاً تست بدون Migration) یک ردیفِ پیش‌فرضِ fresh با start=now می‌سازد.
+     *  - هرگز start/type موجود را بازنویسی نمی‌کند (anti-reset: deactivate/
+     *    reactivate/reinstall پنجره را از نو شروع نمی‌کند).
      */
     public function installId(): string
     {
         $row = $this->db->fetchRow(
-            'SELECT install_id FROM ' . $this->db->table('cpms_license_install') . ' ORDER BY id ASC LIMIT 1'
+            'SELECT id, install_id FROM ' . $this->db->table('cpms_license_install') . ' ORDER BY id ASC LIMIT 1'
         );
         if ($row !== null && (string) $row['install_id'] !== '') {
             return (string) $row['install_id'];
@@ -36,12 +43,39 @@ final class LicenseRepository
         $id = bin2hex(random_bytes(16));
         $this->db->query(
             'INSERT INTO ' . $this->db->table('cpms_license_install') .
-            ' (install_id, environment, created_at, updated_at) VALUES (%s, %s, %s, %s)
+            ' (install_id, environment, activation_window_started_at, activation_window_type, created_at, updated_at)' .
+            ' VALUES (%s, %s, %s, %s, %s, %s)
              ON DUPLICATE KEY UPDATE updated_at = VALUES(updated_at)',
-            [$id, $this->environment(), $now, $now]
+            [$id, $this->environment(), $now, 'fresh', $now, $now]
         );
 
         return $id;
+    }
+
+    /**
+     * ردیفِ پنجرهٔ فعال‌سازی (id=1) — شروع + نوع (fresh|migration).
+     *
+     * @return array<string, mixed>|null
+     */
+    public function activationWindow(): ?array
+    {
+        return $this->db->fetchRow(
+            'SELECT install_id, activation_window_started_at, activation_window_type, created_at
+             FROM ' . $this->db->table('cpms_license_install') . ' ORDER BY id ASC LIMIT 1'
+        );
+    }
+
+    /**
+     * به‌روزرسانی زمانِ شروع پنجره — فقط برای تست/ابزار تشخیص؛ در مسیرهای
+     * عادی هرگز صدا زده نمی‌شود (anti-reset در UI/Deactivate/Reinstall).
+     */
+    public function setActivationWindowStart(string $utcSql): void
+    {
+        $this->db->update(
+            'cpms_license_install',
+            ['activation_window_started_at' => $utcSql, 'updated_at' => $this->db->nowUtcSql()],
+            ['id' => 1]
+        );
     }
 
     /**

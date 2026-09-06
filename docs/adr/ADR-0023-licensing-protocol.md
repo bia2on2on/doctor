@@ -22,14 +22,26 @@ F1–F9 shipped CPMS with a deliberate licensing **seam**: `Domain/Licensing/Lic
 - A background job (`license.refresh`) periodically fetches a fresh document; all state transitions are computed **locally** from the last successfully verified document + wall-clock expiry. Ordinary page loads never hit the network.
 - Installation identity: high-entropy random install UUID stored locally (`cpms_license_install`), registered with the server at activation. Domain is metadata only (normalization documented), never the sole identity (spec §18).
 
-### 3. State semantics (spec §15)
+### 3. State semantics (spec §15) — amended by employer decision 2026-09-06
 Distinct states, stored + exposed:
 - `ACTIVE`, `EXPIRING` (within grace boundary, warnings only), `GRACE` (default 7 days, renewal path; read/write of new business allowed with persistent warning — policy), `RESTRICTED` (new independent licensed activity blocked per entitlement; historical access, safe export, and finishing in-progress workflow allowed), plus `SUSPENDED`/`REVOKED` (from a *verified signed* document), `INVALID` (signature/authenticity failure), `UNKNOWN/UNREACHABLE` (network failure with no usable cache).
 
+**Pre-activation states (employer decision — never conflate with normal license GRACE):**
+- `NOT_CONFIGURED` — defensive only: no install/window row exists yet (pre-migration or broken env). Open, but Health/Admin flag it.
+- `ACTIVATION_PENDING` — fresh commercial install inside its **activation window (default 7 days)** from first CPMS initialization. Setup + launch activity permitted; if no valid signed license document exists by window end → `RESTRICTED`.
+- `ACTIVATION_GRACE` — pre-F10 installation upgraded to the licensing system gets a **migration grace (default 30 days)** from the first licensing migration; migration never disrupts historical data or in-progress workflows; after 30 days without a valid license → `RESTRICTED`.
+- `DEVELOPMENT` — explicit, documented dev/test mode only: `CPMS_DEV_MODE` constant (wp-config.php) or `cpms_license_dev_mode` filter. **No** automatic environment/domain/localhost detection, no hidden or universal developer license in the production package; while active it is clearly visible in Admin (`🧪 DEVELOPMENT`) and the constant is documented.
+
+**Anti-reset & time authority (employer decision):**
+- Window start (`activation_window_started_at`) and type (`fresh|migration`) are persisted server-side (migration 0008, row id=1) and **never restarted** by deactivate/reactivate/reinstall while CPMS data remains; Admin UI offers no reset; ordinary license deactivation does not create a fresh trial/window. Destructive DRM is explicitly out of scope (self-hosted PHP is not tamper-proof; integrity of data always outranks anti-tamper).
+- Window math uses server time from persisted state; browser clock is never authoritative. A server clock rolled back cannot extend the window beyond its configured duration (start clamped so the window never exceeds the policy length).
+
 Critical distinctions enforced in code and tests:
 - network unreachable ≠ invalid (bounded grace on last good state);
+- vendor outage after valid activation has nothing to do with pre-activation windows — cached signed entitlement + existing grace/unreachable policy apply;
 - signed revoked/suspended ≠ network failure;
-- signature/authenticity failure ≠ network failure (treat as INVALID → restricted; never auto-destruct).
+- signature/authenticity failure ≠ network failure (treat as INVALID → restricted; never auto-destruct);
+- offline activation uses a signed document through the same authenticity/install-binding/expiry validation as the online path; no shared secret or private signing key ships in the plugin.
 
 ### 4. License → Entitlements → Capabilities
 - Central `EntitlementRegistry`: a signed entitlement set maps feature keys (`handwriting`, `ocr`, `reports.advanced`, `multi_doctor`, `staff`, `backup.remote`, `updates`) and numeric limits (`doctors`, `staff`, `branches`). Business logic asks the registry; no scattered `if plan == X` (spec §17).

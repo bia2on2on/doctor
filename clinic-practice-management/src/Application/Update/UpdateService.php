@@ -49,11 +49,15 @@ final class UpdateService
 
     /**
      * آیا این نصب اجازه‌ی دریافت به‌روزرسانی دارد؟
+     *
+     * پیش از فعال‌سازی (NOT_CONFIGURED/ACTIVATION_PENDING/ACTIVATION_GRACE) و
+     * حالت توسعه = آزاد (راه‌اندازی/توسعه — ADR-0023 §5)؛ پس از فعال‌سازی،
+     * feature `updates` باید در سند باشد.
      */
     public function isUpdateEntitled(): bool
     {
         $status = $this->licenses->currentState()['status'];
-        if ($status === LicenseStatus::NOT_CONFIGURED) {
+        if (in_array($status, LicenseStatus::PRE_ACTIVATION, true) || $status === LicenseStatus::DEVELOPMENT) {
             return true;
         }
 

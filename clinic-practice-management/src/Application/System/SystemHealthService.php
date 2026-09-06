@@ -138,12 +138,14 @@ final class SystemHealthService
         $licenseStatus = match ($state['status']) {
             LicenseStatus::ACTIVE => self::PASS,
             LicenseStatus::EXPIRING, LicenseStatus::GRACE => self::WARNING,
+            LicenseStatus::ACTIVATION_PENDING, LicenseStatus::ACTIVATION_GRACE => self::WARNING,
+            LicenseStatus::DEVELOPMENT => self::WARNING,
             LicenseStatus::NOT_CONFIGURED => self::NOT_CONFIGURED,
             default => self::FAIL, // RESTRICTED/SUSPENDED/REVOKED/INVALID/UNREACHABLE
         };
         $licenseDetail = $state['status'] . ($state['reason'] !== '' ? ' (' . $state['reason'] . ')' : '');
         if ($state['expires_at'] !== null && $state['status'] !== LicenseStatus::NOT_CONFIGURED) {
-            $licenseDetail .= ' | expires ' . gmdate('Y-m-d', (int) $state['expires_at']);
+            $licenseDetail .= ' | مهلت/انقضا ' . gmdate('Y-m-d', (int) $state['expires_at']);
         }
         $add('license.state', 'مجوز', $licenseStatus, $licenseDetail);
         $add(

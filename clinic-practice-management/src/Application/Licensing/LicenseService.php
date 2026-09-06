@@ -44,31 +44,79 @@ final class LicenseService implements LicenseStateProvider
 
     public function currentState(): array
     {
-        $row = $this->stateRowSafe();
-        if ($row === null) {
-            // فعال‌سازی‌نشده → NOT_CONFIGURED (مجاز ولی برجسته در Health/Admin).
-            // هرگز UNREACHABLE نیست — «قطع شبکه با داشتن سند» جای خودش است.
+        // حالت توسعه/تست — فقط مکانیسم صریحِ مستند (ثابت CPMS_DEV_MODE یا
+        // فیلتر cpms_license_dev_mode). هرگز تشخیص خودکارِ محیط/دامنه/localhost.
+        if (self::devModeEnabled()) {
             return [
-                'status' => LicenseStatus::NOT_CONFIGURED,
-                'reason' => 'not_configured',
+                'status' => LicenseStatus::DEVELOPMENT,
+                'reason' => 'dev_mode',
                 'expires_at' => null,
                 'needs_renewal' => false,
             ];
         }
 
-        $payload = $this->decodePayload((string) ($row['payload_json'] ?? ''));
-        $verdict = ($row['last_refresh_error'] === null || $row['last_refresh_error'] === '')
-            ? LicenseStateMachine::VERIFIED
-            : LicenseStateMachine::UNREACHABLE;
+        $row = $this->stateRowSafe();
+        if ($row !== null) {
+            $payload = $this->decodePayload((string) ($row['payload_json'] ?? ''));
+            $verdict = ($row['last_refresh_error'] === null || $row['last_refresh_error'] === '')
+                ? LicenseStateMachine::VERIFIED
+                : LicenseStateMachine::UNREACHABLE;
 
-        $out = LicenseStateMachine::compute($payload, $verdict, time(), $this->policy);
+            $out = LicenseStateMachine::compute($payload, $verdict, time(), $this->policy);
 
-        return [
-            'status' => $out['status'],
-            'reason' => $out['reason'],
-            'expires_at' => $out['expires_at'],
-            'needs_renewal' => $out['needs_renewal'],
-        ];
+            return [
+                'status' => $out['status'],
+                'reason' => $out['reason'],
+                'expires_at' => $out['expires_at'],
+                'needs_renewal' => $out['needs_renewal'],
+            ];
+        }
+
+        // بدون سند معتبر → وضعیتِ پنجرهٔ فعال‌سازی (تصمیم کارفرما):
+        //   fresh (نصب تازه، ۷ روز) → ACTIVATION_PENDING → RESTRICTED
+        //   migration (pre-F10، ۳۰ روز) → ACTIVATION_GRACE → RESTRICTED
+        // هرگز UNREACHABLE نیست — «قطع شبکه با داشتن سند» جای خودش است.
+        return $this->activationWindowState(time());
+    }
+
+    /**
+     * @return array{status:string, reason:string, expires_at:int|null, needs_renewal:bool, renewal_in_sec:int|null}
+     */
+    private function activationWindowState(int $now): array
+    {
+        try {
+            $win = $this->repo->activationWindow();
+        } catch (\Throwable) {
+            $win = null; // قبل از Migration / جدول ناقص — دفاعی
+        }
+        $startedAt = null;
+        $type = 'fresh';
+        if (is_array($win) && isset($win['activation_window_started_at']) && $win['activation_window_started_at'] !== null) {
+            $ts = strtotime((string) $win['activation_window_started_at']);
+            if ($ts !== false) {
+                $startedAt = $ts;
+            }
+        }
+        if (is_array($win) && ($win['activation_window_type'] ?? '') === 'migration') {
+            $type = 'migration';
+        }
+
+        return LicenseStateMachine::computeActivationWindow($startedAt, $type, $now, $this->policy);
+    }
+
+    /**
+     * حالت توسعه/تست صریح — ثابت `CPMS_DEV_MODE` (wp-config.php) یا
+     * فیلتر `cpms_license_dev_mode`. هیچ تشخیص خودکار محیط/دامنه وجود ندارد
+     * و هیچ unlock مخفی/جهانی در package نیست (ADR-0023؛ مستند).
+     */
+    public static function devModeEnabled(): bool
+    {
+        $declared = defined('CPMS_DEV_MODE') && CPMS_DEV_MODE;
+        if (function_exists('apply_filters')) {
+            return (bool) apply_filters('cpms_license_dev_mode', $declared);
+        }
+
+        return $declared;
     }
 
     public function entitlements(): EntitlementRegistry
@@ -95,6 +143,15 @@ final class LicenseService implements LicenseStateProvider
         $row = $this->stateRowSafe();
         $state = $this->currentState();
         $install = $this->installId();
+        $winType = null;
+        try {
+            $win = $this->repo->activationWindow();
+            if (is_array($win)) {
+                $winType = ($win['activation_window_type'] ?? '') === 'migration' ? 'migration' : 'fresh';
+            }
+        } catch (\Throwable) {
+            $winType = null;
+        }
 
         return [
             'configured' => $row !== null,
@@ -105,6 +162,7 @@ final class LicenseService implements LicenseStateProvider
             'reason' => $state['reason'],
             'expires_at' => $state['expires_at'],
             'needs_renewal' => $state['needs_renewal'],
+            'activation_window_type' => $winType,
             'verified_at' => $row !== null ? (string) ($row['verified_at'] ?? '') : null,
             'last_refresh_attempt_at' => $row !== null ? (string) ($row['last_refresh_attempt_at'] ?? '') : null,
             'last_refresh_error' => $row !== null ? (string) ($row['last_refresh_error'] ?? '') : null,

@@ -86,6 +86,15 @@
 | `update.check_interval_hours` | `24` | int | TTL کش بررسی بهروزرسانی (transient) |
 | `update.channel` | `stable` | enum stable\|beta | کانال انتشار |
 
+> **حالت توسعه/تست مجوز (نه یک Setting):** ثابت `CPMS_DEV_MODE` در `wp-config.php`
+> یا فیلتر `cpms_license_dev_mode` → وضعیت `DEVELOPMENT` (فعالیت باز، برچسب
+> «🧪 DEVELOPMENT» در Admin). فقط مکانیسم صریح — هیچ تشخیص خودکارِ
+> environment/دامنه/localhost برای دور زدن مجوز وجود ندارد (ADR-0023).
+>
+> **پنجره‌های فعال‌سازی (نه Setting):** شروع و نوع پنجره (`fresh` ۷ روز /
+> `migration` ۳۰ روز) در `cpms_license_install` (Migration 0008) persist
+> می‌شود — کلید تنظیمی ندارد و UI قابلیت Reset ندارد (تصمیم کارفرما 2026-09-06).
+
 ## Secrets (نظم)
 | Secret | محل | ممنوع |
 |---|---|---|

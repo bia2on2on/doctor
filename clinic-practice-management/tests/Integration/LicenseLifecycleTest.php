@@ -149,11 +149,11 @@ final class LicenseLifecycleTest extends WP_UnitTestCase
         );
     }
 
-    public function testFreshInstallIsNotConfiguredAndOpen(): void
+    public function testFreshInstallWithinActivationWindowIsOpen(): void
     {
         $svc = $this->service();
         $state = $svc->currentState();
-        $this->assertSame(LicenseStatus::NOT_CONFIGURED, $state['status']);
+        $this->assertSame(LicenseStatus::ACTIVATION_PENDING, $state['status']);
 
         $gate = new SignedLicenseGate($svc);
         $this->assertTrue($gate->assert(LicenseGate::OP_APPOINTMENT_BOOK)->allowed);
@@ -190,7 +190,8 @@ final class LicenseLifecycleTest extends WP_UnitTestCase
         } catch (LicenseGatewayException $e) {
             $this->assertSame('CLINIC_LICENSE_INVALID', $e->apiCode());
         }
-        $this->assertSame(LicenseStatus::NOT_CONFIGURED, $svc->currentState()['status']);
+        // چیزی ذخیره نشده؛ نصب هنوز داخل پنجرهٔ فعال‌سازی است (بدون سند)
+        $this->assertSame(LicenseStatus::ACTIVATION_PENDING, $svc->currentState()['status']);
     }
 
     public function testWrongInstallIdRejected(): void
@@ -203,7 +204,8 @@ final class LicenseLifecycleTest extends WP_UnitTestCase
         } catch (LicenseGatewayException $e) {
             $this->assertSame('CLINIC_LICENSE_INVALID', $e->apiCode());
         }
-        $this->assertSame(LicenseStatus::NOT_CONFIGURED, $svc->currentState()['status']);
+        // چیزی ذخیره نشده؛ نصب هنوز داخل پنجرهٔ فعال‌سازی است (بدون سند)
+        $this->assertSame(LicenseStatus::ACTIVATION_PENDING, $svc->currentState()['status']);
     }
 
     public function testRevokedDocumentRestrictsNewBusiness(): void

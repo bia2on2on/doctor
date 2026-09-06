@@ -96,6 +96,51 @@ final class LicenseStateMachine
     }
 
     /**
+     * وضعیتِ «بدون سند معتبر» بر اساس پنجرهٔ فعال‌سازی (تصمیم کارفرما):
+     *  - نصب تازه  (window_type=fresh)     → ACTIVATION_PENDING به‌مدت activationWindowDays
+     *  - نصب pre-F10 (window_type=migration) → ACTIVATION_GRACE به‌مدت migrationGraceDays
+     *  - پایان پنجره بدون سند معتبر → RESTRICTED (فعالیت مستقل جدید مسدود؛
+     *    تاریخچه/Export/تکمیل گردش‌کار جاری هرگز مسدود نمی‌شود — §16)
+     *  - null (بدون ردیف پنجره/قبل از Migration) → NOT_CONFIGURED (دفاعی)
+     *
+     * مرجع زمان = سرور (persisted). اگر started_at در آیندهٔ دورتر از skew باشد
+     * (عقب‌کشیدن ساعت)، شروع مؤثر = now در نظر گرفته می‌شود تا پنجره هرگز
+     * از مقدارِ مقرر بلندتر نشود؛ بدون DRM مخرب.
+     *
+     * @return array{status:string, reason:string, expires_at:int|null, needs_renewal:bool, renewal_in_sec:int|null}
+     */
+    public static function computeActivationWindow(
+        ?int $startedAt,
+        string $windowType,
+        int $nowTs,
+        LicensePolicy $policy = new LicensePolicy()
+    ): array {
+        if ($startedAt === null || $startedAt <= 0) {
+            return self::outcome(LicenseStatus::NOT_CONFIGURED, 'not_configured', null, false);
+        }
+
+        // ساعت به عقب کشیده شده؟ شروعِ مؤثر جلوتر از now نمی‌رود (ضد-تمدید).
+        $effectiveStart = $startedAt <= $nowTs + $policy->maxClockSkewSeconds ? $startedAt : $nowTs;
+
+        if ($windowType === 'migration') {
+            $end = $effectiveStart + $policy->migrationGraceSeconds();
+            if ($nowTs <= $end) {
+                return self::outcome(LicenseStatus::ACTIVATION_GRACE, 'migration_grace', $end, true);
+            }
+
+            return self::outcome(LicenseStatus::RESTRICTED, 'migration_grace_expired', $end, true);
+        }
+
+        // fresh (پیش‌فرض)
+        $end = $effectiveStart + $policy->activationWindowSeconds();
+        if ($nowTs <= $end) {
+            return self::outcome(LicenseStatus::ACTIVATION_PENDING, 'activation_pending', $end, true);
+        }
+
+        return self::outcome(LicenseStatus::RESTRICTED, 'activation_window_expired', $end, true);
+    }
+
+    /**
      * @return array{status:string, reason:string, expires_at:int|null, needs_renewal:bool, renewal_in_sec:int|null}
      */
     private static function outcome(string $status, string $reason, ?int $expiresAt, bool $needsRenewal): array

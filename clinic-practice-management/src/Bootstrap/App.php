@@ -540,8 +540,10 @@ final class App
      * می‌شود — **ممنوع:** Network Call به License Server در مسیر Booking
      * (فقط Job refresh شبکه می‌رود).
      *
-     * نصب فعال‌نشده → NOT_CONFIGURED (مجاز ولی برجسته در Health/Admin) —
-     * ایمنی بیمار هرگز به‌خاطر فعال‌سازی قفل نمی‌شود (الویت §1).
+     * نصب بدون سند معتبر → پنجرهٔ فعال‌سازی (تصمیم کارفرما): نصب تازه
+     * ACTIVATION_PENDING (۷ روز) / نصب pre-F10 ACTIVATION_GRACE (۳۰ روز)؛
+     * پایان پنجره بدون سند → RESTRICTED. حالت توسعه فقط صریح (CPMS_DEV_MODE
+     * یا فیلتر cpms_license_dev_mode). ایمنی بیمار هرگز قفل نمی‌شود (§1).
      */
     public static function licenseGate(): LicenseGate
     {
