@@ -5,12 +5,14 @@ declare(strict_types=1);
 namespace ClinicCore\Bootstrap;
 
 use ClinicCore\Admin\SettingsAdmin;
+use ClinicCore\Admin\SystemPage;
 use ClinicCore\Admin\DoctorDashboardPage;
 use ClinicCore\Admin\DoctorHandwritingPage;
 use ClinicCore\Admin\SecretaryFinancePage;
 use ClinicCore\Admin\SecretaryQueuePage;
 use ClinicCore\Admin\SmsSettingsPage;
 use ClinicCore\Application\Auth\OtpService;
+use ClinicCore\Application\Backup\BackupService;
 use ClinicCore\Application\Booking\BookingService;
 use ClinicCore\Application\Booking\ScheduleService;
 use ClinicCore\Application\Clinical\ClinicalService;
@@ -19,11 +21,13 @@ use ClinicCore\Application\Finance\FinanceService;
 use ClinicCore\Application\Handwriting\HandwritingService;
 use ClinicCore\Application\Patients\PatientService;
 use ClinicCore\Application\Jobs\ApptReminderHandler;
+use ClinicCore\Application\Jobs\BackupRunHandler;
 use ClinicCore\Application\Jobs\FollowUpReminderHandler;
 use ClinicCore\Application\Jobs\HandwritingGcHandler;
 use ClinicCore\Application\Jobs\HoldsExpireHandler;
-use ClinicCore\Application\Jobs\JobsDispatcher;
 use ClinicCore\Application\Jobs\IdemCleanupHandler;
+use ClinicCore\Application\Jobs\JobsDispatcher;
+use ClinicCore\Application\Jobs\LicenseRefreshHandler;
 use ClinicCore\Application\Jobs\NotifDispatchHandler;
 use ClinicCore\Application\Jobs\OtpCleanupHandler;
 use ClinicCore\Application\Jobs\RateLimitCleanupHandler;
@@ -31,17 +35,26 @@ use ClinicCore\Application\Jobs\ReportExportHandler;
 use ClinicCore\Application\Jobs\SmsSendJobHandler;
 use ClinicCore\Application\Jobs\SlotsGenerateHandler;
 use ClinicCore\Application\Jobs\VisitsNoShowHandler;
+use ClinicCore\Application\Licensing\LicenseService;
 use ClinicCore\Application\Notifications\NotificationService;
 use ClinicCore\Application\Notifications\SmsService;
 use ClinicCore\Application\Reports\ExportService;
 use ClinicCore\Application\Reports\ReportService;
+use ClinicCore\Application\System\SystemHealthService;
+use ClinicCore\Application\Update\UpdateService;
 use ClinicCore\Application\Visits\VisitService;
 use ClinicCore\Auth\RolesAndCapabilities;
-use ClinicCore\Domain\Licensing\ActiveLicenseGate;
 use ClinicCore\Domain\Licensing\LicenseGate;
+use ClinicCore\Domain\Licensing\LicensePolicy;
+use ClinicCore\Domain\Licensing\SignedLicenseGate;
 use ClinicCore\Infrastructure\Audit\AuditLogger;
+use ClinicCore\Infrastructure\Backup\BackupSqlDumper;
+use ClinicCore\Infrastructure\Backup\ProtectedBackupStore;
 use ClinicCore\Infrastructure\Db\CpmsDb;
+use ClinicCore\Infrastructure\Licensing\HttpVendorGateway;
+use ClinicCore\Infrastructure\Licensing\VendorGateway;
 use ClinicCore\Infrastructure\Logging\CorrelationId;
+use ClinicCore\Infrastructure\Update\WpUpdateBridge;
 use ClinicCore\Infrastructure\Logging\OpLogger;
 use ClinicCore\Infrastructure\Queue\JobQueue;
 use ClinicCore\Infrastructure\Repository\AppointmentRepository;
@@ -49,6 +62,7 @@ use ClinicCore\Infrastructure\Repository\ClinicalNoteRepository;
 use ClinicCore\Infrastructure\Repository\FollowUpRepository;
 use ClinicCore\Infrastructure\Repository\HandwritingRepository;
 use ClinicCore\Infrastructure\Repository\InvoiceRepository;
+use ClinicCore\Infrastructure\Repository\LicenseRepository;
 use ClinicCore\Infrastructure\Repository\MedicalFileRepository;
 use ClinicCore\Infrastructure\Repository\NotificationRepository;
 use ClinicCore\Infrastructure\Repository\PaymentRepository;
@@ -67,6 +81,7 @@ use ClinicCore\Infrastructure\Sms\Providers\LogSmsProvider;
 use ClinicCore\Infrastructure\Sms\SmsProviderInterface;
 use ClinicCore\Infrastructure\Sms\SmsProviderRegistry;
 use ClinicCore\Infrastructure\Storage\LocalFileStorage;
+use ClinicCore\Infrastructure\Update\HttpUpdateMetadataGateway;
 use ClinicCore\Migrations\MigrationRunner;
 use ClinicCore\Rest\BookingController;
 use ClinicCore\Rest\ClinicalController;
@@ -156,11 +171,19 @@ final class App
             self::ensureMigrated();
         });
 
+        // F10 — به‌روزرسانی امن (ADR-0029): فقط slug خودمان؛ کش‌شده؛ بدون شبکه در
+        // صفحات عادی. صحت sha256 بسته پیش از نصب (upgrader_pre_download).
+        $updateBridge = self::wpUpdateBridge();
+        add_filter('pre_set_site_transient_update_plugins', [$updateBridge, 'injectUpdatePlugins']);
+        add_filter('plugins_api', [$updateBridge, 'injectPluginInfo'], 10, 3);
+        add_filter('upgrader_pre_download', [$updateBridge, 'verifyPackageBeforeInstall'], 10, 4);
+
         // Correlation helperها (cpms_request_id/cpms_session_id) در فایل اصلی
         // افزونه تعریف می‌شوند — خارج از boot تا در همه Contextها (CLI، Test،
         // درخواست‌های زودهنگام) قطعاً موجود باشند.
 
         SettingsAdmin::register();
+        SystemPage::register();
         SmsSettingsPage::register();
         SecretaryQueuePage::register();
         SecretaryFinancePage::register();
@@ -512,17 +535,56 @@ final class App
     }
 
     /**
-     * LicenseGate (Seam — ADR-0023/C3): F3 = همیشه ACTIVE.
-     * در F10 با Gate واقعی جایگزین می‌شود — Business Services تغییر نمی‌کنند.
-     * **ممنوع:** Network Call به License Server در مسیر Booking (فقط خواندن وضعیت local).
+     * LicenseGate (Seam — ADR-0023): F10 = Gate واقعی (SignedLicenseGate).
+     * Business Services تغییر نمی‌کنند؛ وضعیت از state محلیِ امضاشده خوانده
+     * می‌شود — **ممنوع:** Network Call به License Server در مسیر Booking
+     * (فقط Job refresh شبکه می‌رود).
+     *
+     * نصب بدون سند معتبر → پنجرهٔ فعال‌سازی (تصمیم کارفرما): نصب تازه
+     * ACTIVATION_PENDING (۷ روز) / نصب pre-F10 ACTIVATION_GRACE (۳۰ روز)؛
+     * پایان پنجره بدون سند → RESTRICTED. حالت توسعه فقط صریح (CPMS_DEV_MODE
+     * یا فیلتر cpms_license_dev_mode). ایمنی بیمار هرگز قفل نمی‌شود (§1).
      */
     public static function licenseGate(): LicenseGate
     {
         if (self::$licenseGate === null) {
-            self::$licenseGate = new ActiveLicenseGate();
+            self::$licenseGate = new SignedLicenseGate(self::licenseService());
         }
 
         return self::$licenseGate;
+    }
+
+    /**
+     * سرویس لایسنس (F10) — وضعیت محلی + همگام‌سازی با سرور فروشنده (Job).
+     */
+    public static function licenseService(): LicenseService
+    {
+        static $licenses = null;
+        if ($licenses === null) {
+            $licenses = new LicenseService(
+                new LicenseRepository(self::db()),
+                self::licenseGateway(),
+                self::db(),
+                new LicensePolicy()
+            );
+        }
+
+        return $licenses;
+    }
+
+    public static function licenseGateway(): VendorGateway
+    {
+        static $gateway = null;
+        if ($gateway === null) {
+            try {
+                $serverUrl = (string) self::settings()->get('license.server_url', '');
+            } catch (\Throwable) {
+                $serverUrl = ''; // قبل از Migration — غیرفعال (NOT_CONFIGURED)
+            }
+            $gateway = new HttpVendorGateway(['server_url' => $serverUrl]);
+        }
+
+        return $gateway;
     }
 
     public static function smsService(): SmsService
@@ -621,6 +683,89 @@ final class App
         return self::$migrations;
     }
 
+    /**
+     * سرویس بکاپ/بازیابی (F10 — spec §22–§25). مقصد = ProtectedBackupStore
+     * محلی؛ Remote (S3/SFTP) = V1.1 (Runbook در docs/backup).
+     */
+    public static function backupService(): BackupService
+    {
+        static $backups = null;
+        if ($backups === null) {
+            $backups = new BackupService(
+                self::db(),
+                new ProtectedBackupStore(
+                    trim((string) self::settings()->get('backup.storage_path', '')) !== ''
+                        ? (string) self::settings()->get('backup.storage_path', '')
+                        : ProtectedBackupStore::defaultBasePath()
+                ),
+                new BackupSqlDumper(self::db()),
+                self::settings(),
+                self::audit(),
+                self::op(),
+                self::localFileStorage()->basePath()
+            );
+        }
+
+        return $backups;
+    }
+
+    /**
+     * سرویس به‌روزرسانی امن (ADR-0029) — بررسی دستی/کش؛ بدون شبکه در
+     * صفحات عادی. Entitlement از LicenseService (feature `updates`).
+     */
+    public static function updateService(): UpdateService
+    {
+        static $updates = null;
+        if ($updates === null) {
+            try {
+                $serverUrl = (string) self::settings()->get('license.server_url', '');
+            } catch (\Throwable) {
+                $serverUrl = '';
+            }
+            $updates = new UpdateService(
+                self::settings(),
+                self::licenseService(),
+                new HttpUpdateMetadataGateway(['server_url' => $serverUrl])
+            );
+        }
+
+        return $updates;
+    }
+
+    /**
+     * پل هوک‌های به‌روزرسانی وردپرس (F10 / ADR-0029) — transient + plugins_api +
+     * صحت بسته پیش از نصب. بدون حالت؛ singleton برای یک‌بار ثبت هوک.
+     */
+    public static function wpUpdateBridge(): WpUpdateBridge
+    {
+        static $bridge = null;
+        if ($bridge === null) {
+            $bridge = new WpUpdateBridge(self::updateService());
+        }
+
+        return $bridge;
+    }
+
+    /**
+     * Health/سازگاری سیستم (F10 — spec §40). بدون PHI.
+     */
+    public static function systemHealthService(): SystemHealthService
+    {
+        static $health = null;
+        if ($health === null) {
+            $health = new SystemHealthService(
+                self::db(),
+                self::settings(),
+                self::licenseService(),
+                self::backupService(),
+                self::updateService(),
+                self::op()
+            );
+        }
+
+        return $health;
+    }
+
     public static function dispatcher(): JobsDispatcher
     {
         if (self::$dispatcher === null) {
@@ -641,7 +786,9 @@ final class App
                 ->register('notif.dispatch', new NotifDispatchHandler(self::notificationService(), self::exportService()))
                 ->register('appt.reminder', new ApptReminderHandler($db, $settings, self::smsService(), self::notificationService(), $op))
                 ->register('fu.reminder', new FollowUpReminderHandler($db, $settings, self::smsService(), self::notificationService(), $op))
-                ->register('report.export', new ReportExportHandler(self::exportService()));
+                ->register('report.export', new ReportExportHandler(self::exportService()))
+                ->register('license.refresh', new LicenseRefreshHandler(self::licenseService(), $op))
+                ->register('backup.run', new BackupRunHandler(self::backupService(), self::settings(), $op));
 
             self::$dispatcher = $dispatcher;
         }
@@ -670,6 +817,12 @@ final class App
         'cleanup.otp' => 1,
         'cleanup.rate_limits' => 1,
         'cleanup.idem' => 1, // Idempotency::cleanup — رشد بی‌کران را می‌بندد
+        // F10 — refresh مجوز: هر Tick چک می‌شود ولی شبکه فقط در refreshDue
+        // (Backoff بر اساس شکست‌های پیاپی) لمس می‌شود — ADR-0023/ADR-0016
+        'license.refresh' => 9,
+        // F10 — بکاپ دوره‌ای: هر Tick چک می‌شود ولی فقط در صورت
+        // backup.enabled + سررسید اجرا می‌شود (spec §22–§24)
+        'backup.run' => 1,
     ];
 
     /**

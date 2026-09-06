@@ -93,11 +93,46 @@
 
 > `SMS_FAILED` یک **روداد Log** (Operational) است، نه Code خطای API.
 
-## Licensing (Seam — F10 تکمیل می‌کند)
+## Licensing (F10 — ADR-0023)
 
-| Code | HTTP | Meaning |
-|---|---|---|
-| `CLINIC_LICENSE_BLOCKED` | 503 | لایسنس اجازه عملیات جدید را نمی‌دهد (Read-Only: Read/Export آزاد) — در F3 تعریف شد (Seam)، در F10 با جزئیات State تکمیل می‌شود |
+| Code | HTTP | Meaning | Retry-able |
+|---|---|---|---|
+| `CLINIC_LICENSE_BLOCKED` | 503 | لایسنس اجازه عملیات جدید را نمی‌دهد (RESTRICTED/SUSPENDED/REVOKED/INVALID/UNREACHABLE) — Read/تاریخچه/Export آزاد (spec §16) | — |
+| `CLINIC_LICENSE_UNREACHABLE` | 503 | سرویس لایسنس دسترس‌نیست (Network/Timeout/5xx) — قطع شبکه ≠ نامعتبر | ✅ |
+| `CLINIC_LICENSE_INVALID` | 503 | سند/امضا نامعتبر یا مربوط به نصب دیگر — با داده‌ی معتبرِ جدید رفع می‌شود | — |
+| `CLINIC_LICENSE_ENTITLEMENT` | 403 | Feature شامل سند جاری نیست (fail-closed برای کلید ناشناخته) | — |
+| `CLINIC_LICENSE_LIMIT_REACHED` | 409 | سقف مجاز (پزشک/کارمند/شعبه) در سند پر شده — تراکنشی و قطعی | — |
+| `CLINIC_LICENSE_ACTIVATION_FAILED` | 403 | کلید مجوز توسط سرور رد شد (401/403) | — |
+| `CLINIC_LICENSE_RATE_LIMITED` | 429 | سرور لایسنس Rate Limit — Backoff در Job | ✅ |
+| `CLINIC_LICENSE_SERVER_ERROR` | 502 | خطای گذرای سرور لایسنس | ✅ |
+| `CLINIC_LICENSE_MALFORMED` | 502 | پاسخ سرور لایسنس ساختار نامعتبر داشت | — |
+| `CLINIC_LICENSE_ENDPOINT_INSECURE` | 500 | Endpoint لایسنس باید HTTPS باشد | — |
+| `CLINIC_LICENSE_NOT_CONFIGURED` | 500 | آدرس سرور لایسنس تنظیم نشده (عملیات به‌صورت NOT_CONFIGURED ادامه دارد؛ Setup در Health/Admin) | — |
+| `CLINIC_LICENSE_NOT_ACTIVATED` | 409 | Refresh بدون فعال‌سازی قبلی (ابتدا Activate با کلید/سند) | — |
+
+## Backup / Restore (F10 — spec §22–§25)
+
+| Code | HTTP | Meaning | Retry-able |
+|---|---|---|---|
+| `CLINIC_BACKUP_INVALID_ID` | 400 | شناسهٔ بکاپ خارج از گرامر امن `[0-9a-z][0-9a-z._-]{3,120}` است | — |
+| `CLINIC_BACKUP_EXISTS` | 409 | بکاپی با این شناسه از قبل وجود دارد | — |
+| `CLINIC_BACKUP_NOT_FOUND` | 404 | بکاپ/فایل خواسته‌شده یافت نشد | — |
+| `CLINIC_BACKUP_IO` | 500 | خطای I/O (mkdir/copy/read) در ساخت/بازیابی بکاپ | — |
+| `CLINIC_BACKUP_NO_TABLES` | 500 | هیچ جدول `cpms_*` برای Dump یافت نشد (شکست امن — بکاپ خالی ساخته نمی‌شود) | — |
+| `CLINIC_BACKUP_MANIFEST` | 500 | مانیفست نامعتبر/ناقص است (ساختار یا امضای هش) | — |
+| `CLINIC_BACKUP_INVALID_PATH` | 400 | مسیر نسبیِ فایل در مانیفست ناامن است (فقط زیرپوشه‌های عادی؛ بدون `..`/مطلق/بک‌اسلش) | — |
+| `CLINIC_BACKUP_CONFIRM_REQUIRED` | 409 | Restore نیازمند تأیید صریح (CLI `--yes` / فرم Admin) است؛ از Job خودکار هرگز اجرا نمی‌شود | — |
+| `CLINIC_BACKUP_PREFLIGHT_FAILED` | 409 | Preflight Restore رد شد (تمامیت بکاپ یا دسترس‌پذیری DB) — چیزی تغییر نکرده است | — |
+
+## Update (F10 — ADR-0029)
+
+| Code | HTTP | Meaning | Retry-able |
+|---|---|---|---|
+| `CLINIC_UPDATE_UNAVAILABLE` | 409 | به‌روزرسانی در لحظهٔ نصب دیگر در دسترس نیست (مانیفست/امضا منقضی یا کانال عوض شده) | — |
+| `CLINIC_UPDATE_SOURCE_MISMATCH` | 409 | آدرس بسته با مانیفست امضاشده هم‌خوان نیست | — |
+| `CLINIC_UPDATE_IO` | 500 | دانلود/یکپارچگی ممکن نیست (download_url در دسترس نیست) | — |
+| `CLINIC_UPDATE_DOWNLOAD_FAILED` | 502 | دانلود بسته از سرور انتشار ناموفق بود | ✅ |
+| `CLINIC_UPDATE_INTEGRITY` | 409 | sha256 بسته با مانیفست امضاشده تطابق ندارد — نصب متوقف شد (هرگز بستهٔ تأییدنشده نصب نمی‌شود) | — |
 
 ## Rule ثبت کد جدید
 

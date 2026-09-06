@@ -193,9 +193,27 @@ jobs:
           require getenv('WP_HOME') . '/wp-load.php';
           $v = \ClinicCore\Bootstrap\App::migrations()->currentVersion();
           echo "schema: $v\n";
-          exit($v === '2026_09_07_0007' ? 0 : 1);
+          exit($v === '2026_09_07_0008' ? 0 : 1);
           PHPEOF
           WP_HOME="$WP_DIR" php /tmp/check-schema.php
+          # F10 — نصب تازه: پنجرهٔ فعال‌سازی (fresh، بدون دادهٔ legacy) باید
+          # ACTIVATION_PENDING باشد نه ACTIVATION_GRACE/migration (تصمیم کارفرما)
+          cat > /tmp/check-f10-fresh.php <<'PHPEOF'
+          <?php
+          require getenv('WP_HOME') . '/wp-load.php';
+          $db = \ClinicCore\Bootstrap\App::db();
+          foreach (['cpms_license_install', 'cpms_license_state'] as $t) {
+              $row = $db->fetchRow('SELECT 1 FROM ' . $db->table($t) . ' LIMIT 1');
+              if ($row === null && $t === 'cpms_license_state') { continue; } // state تا فعال‌سازی خالی است
+              if ($row === null) { echo "MISSING ROW: $t\n"; exit(1); }
+          }
+          $meta = \ClinicCore\Bootstrap\App::licenseService()->statusMeta();
+          echo 'license: ' . $meta['status'] . ' (window=' . (string) ($meta['activation_window_type'] ?? 'n/a') . ")\n";
+          if ($meta['status'] !== 'activation_pending') { fwrite(STDERR, "expected ACTIVATION_PENDING on fresh install, got " . $meta['status'] . "\n"); exit(1); }
+          if (($meta['activation_window_type'] ?? '') !== 'fresh') { fwrite(STDERR, "expected window type fresh\n"); exit(1); }
+          echo "F10 fresh-install license window OK (ACTIVATION_PENDING / fresh)\n";
+          PHPEOF
+          WP_HOME="$WP_DIR" php /tmp/check-f10-fresh.php
 
       - name: کاربران Pilot + Clinicianها + Storage خارج webroot
         run: |
@@ -766,7 +784,7 @@ jobs:
           $db = \ClinicCore\Bootstrap\App::db();
           $v = \ClinicCore\Bootstrap\App::migrations()->currentVersion();
           echo "schema: $v\n";
-          if ($v !== '2026_09_07_0007') { exit(1); }
+          if ($v !== '2026_09_07_0008') { exit(1); }
           foreach ($wpdb->get_results('SELECT `key`, endpoint, context_id, status FROM ' . $db->table('cpms_idempotency_keys'), ARRAY_A) as $r) {
               echo 'idem: ' . $r['key'] . ' @ ' . $r['endpoint'] . ' ctx=' . var_export($r['context_id'], true) . ' status=' . $r['status'] . "\n";
           }
@@ -776,6 +794,14 @@ jobs:
           $nullCtx = (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $db->table('cpms_idempotency_keys') . ' WHERE context_id IS NULL');
           if ($nullCtx !== 0) { echo "context_id NULL remains: $nullCtx\n"; exit(1); }
           echo "context_id normalized to 0 ✓\n";
+          // F10 — نصب pre-F10 با دادهٔ legacy: باید ACTIVATION_GRACE (مهلت ۳۰ روزه)
+          // بگیرد نه ACTIVATION_PENDING (تصمیم کارفرما — بدون اختلال ناگهانی)
+          $state = \ClinicCore\Bootstrap\App::licenseService()->currentState();
+          $meta = \ClinicCore\Bootstrap\App::licenseService()->statusMeta();
+          echo 'license: ' . $state['status'] . ' (' . $state['reason'] . ') window=' . (string) ($meta['activation_window_type'] ?? 'n/a') . "\n";
+          if ($state['status'] !== 'activation_grace') { echo "expected ACTIVATION_GRACE on pre-F10 upgrade, got " . $state['status'] . "\n"; exit(1); }
+          if (($meta['activation_window_type'] ?? '') !== 'migration') { echo "expected window type migration\n"; exit(1); }
+          echo "F10 migration grace OK (ACTIVATION_GRACE / migration — 30 days)\n";
           PHPEOF
           WP_HOME="$WP_DIR" php /tmp/upgrade-check.php
           IDX=$(mysql -h127.0.0.1 -P3306 -uroot -proot -N -e "SELECT DISTINCT index_name FROM information_schema.statistics WHERE table_schema='$DB_MAIN' AND table_name='cpmswp_cpms_idempotency_keys';" | tr '\n' ' ')
@@ -788,8 +814,9 @@ jobs:
           {
             echo '## Upgrade Path (main/F8 → RC/F9 روی نصب واقعی)'
             echo '```'
-            echo 'F8 schema: 2026_09_07_0005 → RC schema: 2026_09_07_0007'
+            echo 'F8 schema: 2026_09_07_0005 → RC schema: 2026_09_07_0008 (شامل مهاجرت لایسنس F10)'
             echo 'legacy idem NULL→0 normalized; u_idem_scope + u_clinician_user present; داده دست‌نخورده'
+            echo 'pre-F10 install: ACTIVATION_GRACE (مهلت مهاجرت ۳۰ روزه) — بدون اختلال ناگهانی'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 

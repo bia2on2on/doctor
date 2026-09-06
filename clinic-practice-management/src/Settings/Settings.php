@@ -100,6 +100,17 @@ final class Settings
         'reports.max_range_days' => 366, // سقف بازه گزارش/Export (bounded)
         'reports.export_retention_days' => 7, // نگهداری فایل Export قبل از حذف
         'reports.export_max_rows' => 10000, // سقف ردیف‌های Export
+        // F10 — لایسنس (ADR-0023). Secret هرگز اینجا نیست (Vault/env).
+        'license.server_url' => '', // https://… — بدون مقدار = activation دستی/آفلاین
+        // F10 — بکاپ (spec §22–§24). پیش‌فرض خاموش: فعال‌سازی آگاهانه در Admin/CLI.
+        'backup.enabled' => false,
+        'backup.interval_hours' => 24,
+        'backup.keep_count' => 14, // Retention: N نسخه‌ی آخر (V1 — بدون Tiering)
+        'backup.storage_path' => '', // '' = {WP_CONTENT_DIR}/cpms-backups (محافظت‌شده)
+        'backup.last_run_at' => 0, // ts آخرین بکاپ موفق (Job)
+        // F10 — به‌روزرسانی امن (ADR-0029)
+        'update.check_interval_hours' => 24,
+        'update.channel' => 'stable', // stable|beta
     ];
 
     /** @var array<string, mixed>|null */

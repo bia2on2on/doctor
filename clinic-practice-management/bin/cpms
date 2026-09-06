@@ -12,8 +12,14 @@
  *   bin/cpms jobs retry <id>               # Retry یک Job شکست‌خورده
  *   bin/cpms audit verify [10000]          # صحت‌سنجی زنجیر هش Audit
  *   bin/cpms slots generate [--days=30]    # تولید Slotهای آینده
+ *   bin/cpms backup run                    # بکاپ دستی (DB cpms_* + storage)
+ *   bin/cpms backup list                   # فهرست بکاپ‌ها
+ *   bin/cpms backup verify <id>            # تأیید تمامیت یک بکاپ
+ *   bin/cpms backup prune                  # اعمال Retention
+ *   bin/cpms backup restore <id> --yes     # بازیابی (Safety Backup خودکار؛ مخرب)
+ *   bin/cpms update check [--channel=X]   # بررسی به‌روزرسانی امضاشده (ADR-0029)
  *   bin/cpms health                        # Health (شامل Queue Stale detection)
- *   bin/cpms status                        # وضعیت کلی
+ *   bin/cpms status                        # وضعیت کلی (شامل وضعیت مجوز)
  */
 
 if (PHP_SAPI !== 'cli') {
@@ -34,6 +40,7 @@ use ClinicCore\Bootstrap\App;
 
 $cmd = $argv[1] ?? 'status';
 $sub = $argv[2] ?? '';
+$arg3 = $argv[3] ?? '';
 $limit = 20;
 $verify = 10_000;
 $days = 30;
@@ -159,6 +166,34 @@ switch ($cmd) {
         }
         break;
 
+    case 'update':
+        // bin/cpms update check [--channel=stable|beta]
+        // نصب واقعی توسط installer استاندارد وردپرس انجام می‌شود (صفحهٔ
+        // به‌روزرسانی یا `wp plugin update clinic-practice-management` —
+        // صحت sha256 در upgrader_pre_download تضمین شده؛ ADR-0029).
+        $channel = 'stable';
+        foreach ($argv as $a) {
+            if (str_starts_with($a, '--channel=')) {
+                $c = substr($a, 10);
+                $channel = ($c === 'beta' || $c === 'stable') ? $c : 'stable';
+            }
+        }
+        if ($sub !== 'check') {
+            fwrite(STDERR, "Usage: bin/cpms update check [--channel=stable|beta]\n");
+            exit(1);
+        }
+        $r = App::updateService()->checkForUpdates(true, $channel);
+        if (($r['available'] ?? false) === true) {
+            echo "Update available [{$channel}]\n";
+            echo '  version:       ' . $r['version'] . "\n";
+            echo '  package_sha256: ' . $r['package_sha256'] . "\n";
+            echo '  package_url:   ' . $r['package_url'] . "\n";
+            echo "  install:       صفحهٔ به‌روزرسانی وردپرس یا `wp plugin update clinic-practice-management` (یکپارچگی خودکار)\n";
+            exit(0);
+        }
+        echo 'No update available [' . $channel . '] (' . ($r['reason'] ?? '') . ")\n";
+        break;
+
     case 'health':
         $q = App::queueHealth();
         echo "Queue health\n";
@@ -167,6 +202,55 @@ switch ($cmd) {
         echo '  queued:    ' . $q['queued'] . "\n";
         echo '  failed:    ' . $q['failed'] . "\n";
         exit($q['stale'] ? 3 : 0);
+
+    case 'backup':
+        $backups = App::backupService();
+        switch ($sub) {
+            case 'run':
+                $meta = $backups->createBackup('manual-cli');
+                echo "Backup created: {$meta['backup_id']}\n";
+                break;
+            case 'list':
+                foreach ($backups->listBackups() as $b) {
+                    printf(
+                        "%-52s %-25s tables=%-3d rows=%-8d files=%-4d integrity=%s\n",
+                        $b['backup_id'],
+                        $b['created_at'],
+                        (int) $b['tables'],
+                        (int) $b['rows'],
+                        (int) $b['storage_files'],
+                        $b['integrity']
+                    );
+                }
+                break;
+            case 'verify':
+                if ($arg3 === '') {
+                    fwrite(STDERR, "Usage: bin/cpms backup verify <backup_id>\n");
+                    exit(1);
+                }
+                $v = $backups->verifyBackup($arg3);
+                echo $v['ok'] ? "OK — backup verified\n" : 'CORRUPT: ' . implode('; ', $v['errors']) . "\n";
+                exit($v['ok'] ? 0 : 2);
+            case 'prune':
+                $removed = $backups->prune();
+                echo $removed === [] ? "Nothing to prune.\n" : 'Removed: ' . implode(', ', $removed) . "\n";
+                break;
+            case 'restore':
+                // bin/cpms backup restore <backup_id> --yes  (تأیید صریح)
+                $yes = in_array('--yes', $argv, true);
+                if ($arg3 === '' || !$yes) {
+                    fwrite(STDERR, "Usage: bin/cpms backup restore <backup_id> --yes  (همراه با تأیید صریح؛ Safety Backup خودکار)\n");
+                    exit(1);
+                }
+                $pre = $backups->restoreApply($arg3, true);
+                echo "Restore applied (backup {$arg3}). Safety backup created first. preflight:\n";
+                echo '  integrity_ok=' . ($pre['integrity_ok'] ? 'yes' : 'no') . ' tables=' . (int) $pre['tables'] . " rows=" . (int) $pre['rows'] . "\n";
+                break;
+            default:
+                fwrite(STDERR, "Usage: bin/cpms backup [run|list|verify <id>|prune|restore <id> --yes]\n");
+                exit(1);
+        }
+        break;
 
     case 'status':
     default:
@@ -177,5 +261,7 @@ switch ($cmd) {
         echo '  schema:  ' . (App::migrations()->currentVersion() ?? 'none') . "\n";
         echo '  tables:  ' . (int) $tables . "\n";
         echo '  queue:   last_tick=' . ($q['last_tick_at'] ?: 'never') . ' failed=' . $q['failed'] . ' stale=' . ($q['stale'] ? 'YES' : 'no') . "\n";
+        $lic = App::licenseService()->currentState();
+        echo '  license: ' . $lic['status'] . ($lic['reason'] !== '' ? " ({$lic['reason']})" : '') . "\n";
         break;
 }

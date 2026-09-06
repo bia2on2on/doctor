@@ -1,0 +1,823 @@
+name: Closure Gate (GO-LIVE evidence closure)
+
+# بستن شکاف‌های شواهد GO-LIVE که در sandbox قابل اجرا نبودند اما در CI
+# (Ubuntu VM + MySQL 8 + PHP real) قابل اثبات‌اند:
+#   A) runtime واقعی روی WordPress 6.4/6.5/6.6 از ZIP ریلیز
+#   B) runtime کامل PHP 8.1/8.3/8.4 (WordPress 6.7.2 واقعی)
+#   C) restoreApply مخرب در محیط یک‌بارمصرف + ورودی‌های خراب/دستکاری‌شده
+# هر job نتیجه را در کامنت PR (در دسترس بازبین) + artifact منتشر می‌کند.
+# این فاز «بستن شواهد» است — بدون توسعه‌ی ویژگی؛ فقط محیط‌های یک‌بارمصرف.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, 'arena/**']
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: write
+
+defaults:
+  run:
+    working-directory: clinic-practice-management
+
+env:
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  # ============================================================
+  # A) WordPress 6.4 / 6.5 / 6.6 — runtime از آرتیفکت ZIP
+  # ============================================================
+  compat-wp:
+    name: Closure — WP 6.4/6.5/6.6 runtime
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1"
+          --health-interval=10s --health-timeout=5s --health-retries=20
+    env:
+      STORAGE_OUT: /home/runner/closure-storage
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mysqli, mbstring, xml, curl, zip
+          coverage: none
+
+      - name: Tooling (mysql-client + wp-cli)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq mysql-client > /tmp/apt.log 2>&1
+          curl -fsSL https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o /tmp/wp-cli.phar
+          sudo mv /tmp/wp-cli.phar /usr/local/bin/wp && sudo chmod +x /usr/local/bin/wp
+          wp --version --allow-root
+
+      - name: Build release ZIP (whitelist-only)
+        run: |
+          bash bin/build-release.sh
+          mkdir -p "$GITHUB_WORKSPACE/closure-evidence"
+          cat dist/clinic-practice-management-1.0.0.zip.sha256 > "$GITHUB_WORKSPACE/closure-evidence/release-sha.txt"
+          echo "zip: $(du -h dist/clinic-practice-management-1.0.0.zip | cut -f1) — files: $(wc -l < dist/clinic-practice-management-1.0.0-manifest.txt)"
+          cat dist/clinic-practice-management-1.0.0.zip.sha256
+
+      - name: Runtime probe — WordPress 6.4/6.5/6.6 (PHP 8.2, fresh from ZIP)
+        run: |
+          set -u
+          set +e
+          PLUGIN="$GITHUB_WORKSPACE/clinic-practice-management"
+          EVID="$GITHUB_WORKSPACE/closure-evidence"
+          mkdir -p "$EVID" "$STORAGE_OUT"
+          EVIDF="$EVID/compat-wp.txt"
+          : > "$EVIDF"
+          FAILED=0
+
+          # ---------- probe مشترک (هر نسخه روی WP تازه) ----------
+          cat > /tmp/runtime-probe.php <<'PHPEOF'
+          <?php
+          // Closure runtime probe — روی WP واقعی + PHP واقعی (یک فایل، چند runtime)
+          error_reporting(E_ALL);
+          $home = (string) getenv('WP_HOME');
+          if (!is_file(rtrim($home, '/') . '/wp-load.php')) { fwrite(STDERR, 'WP_HOME invalid: ' . $home . "\n"); exit(3); }
+          require rtrim($home, '/') . '/wp-load.php';
+
+          use ClinicCore\Bootstrap\App;
+          use ClinicCore\Domain\Licensing\LicenseSignature;
+
+          global $wpdb;
+          $pluginDir = defined('CPMS_PLUGIN_DIR') ? rtrim((string) CPMS_PLUGIN_DIR, '/') : '';
+
+          $captured = [];
+          set_error_handler(static function (int $sev, string $msg, string $file = '', int $line = 0) use (&$captured): bool {
+          $captured[] = ['sev' => $sev, 'msg' => $msg, 'file' => $file, 'line' => $line];
+          return false;
+          });
+
+          function uuid4(): string
+          {
+          $d = random_bytes(16);
+          $d[6] = chr((ord($d[6]) & 0x0f) | 0x40);
+          $d[8] = chr((ord($d[8]) & 0x3f) | 0x80);
+
+          return vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($d), 4));
+          }
+          function ok(string $label, bool $cond, string $detail = ''): void
+          {
+          echo ($cond ? 'PASS ' : 'FAIL ') . $label . ($detail !== '' ? ' — ' . $detail : '') . "\n";
+          if (!$cond) {
+          fwrite(STDERR, 'ABORT at: ' . $label . "\n");
+          exit(1);
+          }
+          }
+
+          // --- storage خارج webroot (اختیاری: BACKUP_OUT) ---
+          $sto = (string) (getenv('STORAGE_OUT') ?: WP_CONTENT_DIR . '/closure-files');
+          if (!is_dir($sto)) { mkdir($sto, 0750, true); }
+          App::settings()->set('files.storage_path', $sto);
+          $bo = (string) getenv('BACKUP_OUT');
+          if ($bo !== '') {
+          if (!is_dir($bo)) { mkdir($bo, 0750, true); }
+          App::settings()->set('backup.storage_path', $bo);
+          }
+
+          // ===== A. نسخه / schema / نقش‌ها / پنجره‌ی لایسنس (نصب تازه) =====
+          ok('plugin-version', defined('CPMS_VERSION') && CPMS_VERSION === '1.0.0', defined('CPMS_VERSION') ? (string) CPMS_VERSION : '?');
+          $schema = App::migrations()->currentVersion();
+          ok('schema-0008', $schema === '2026_09_07_0008', (string) $schema);
+          $cpmsPrefixLike = addcslashes($wpdb->prefix . 'cpms_', '_%\\');
+          $tables = (int) $wpdb->get_var("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name LIKE '{$cpmsPrefixLike}%'");
+          ok('cpms-tables', $tables >= 30, 'tables=' . $tables);
+          $roleDoctor = get_role('cpms_doctor');
+          $roleSec = get_role('cpms_secretary');
+          $rolePat = get_role('cpms_patient');
+          ok('roles-registered', $roleDoctor !== null && $roleSec !== null && $rolePat !== null);
+          ok('caps-doctor-private-note', $roleDoctor !== null && $roleDoctor->has_cap('cpms_private_note_read'));
+          ok('caps-secretary-finance', $roleSec !== null && $roleSec->has_cap('cpms_finance_read'));
+          $patCaps = $rolePat !== null ? array_keys(array_filter($rolePat->capabilities, static fn ($c) => str_starts_with((string) $c, 'cpms_'))) : ['n/a'];
+          ok('caps-patient-no-cpms', $patCaps === [], 'patient caps=' . implode(',', $patCaps));
+
+          $meta = App::licenseService()->statusMeta();
+          ok('license-fresh-status', ($meta['status'] ?? '') === 'activation_pending', json_encode(['status' => $meta['status'] ?? null, 'window' => $meta['activation_window_type'] ?? null]));
+          ok('license-fresh-window', ($meta['activation_window_type'] ?? '') === 'fresh', 'window=' . (string) ($meta['activation_window_type'] ?? 'n/a'));
+
+          // ===== B. REST bootstrap + endpoint عمومی (مسیر واقعی REST server) =====
+          if (!function_exists('rest_get_server')) {
+          require_once ABSPATH . 'wp-includes/rest-api.php';
+          }
+          if (!did_action('rest_api_init')) { do_action('rest_api_init'); }
+          $routes = rest_get_server()->get_routes();
+          ok('rest-route-health-registered', isset($routes['/clinic/v1/health']));
+          $req = new WP_REST_Request('GET', '/clinic/v1/health');
+          $resp = rest_do_request($req);
+          $payload = $resp->get_data();
+          $data = is_array($payload) ? ($payload['data'] ?? $payload) : [];
+          ok('rest-health-http-200', $resp->get_status() === 200, 'http=' . $resp->get_status());
+          ok('rest-health-body-ok', is_array($data) && ($data['ok'] ?? false) === true, 'body=' . substr((string) wp_json_encode($payload), 0, 220));
+
+          // ===== C. DateTime / DB clock =====
+          $nowSql = App::db()->nowUtcSql();
+          ok('db-utc-clock', strtotime((string) $nowSql) !== false && abs(time() - strtotime((string) $nowSql)) < 86400, (string) $nowSql);
+
+          // ===== D. کاربران + Fixture (همان الگوی pilot-smoke؛ Synthetic) =====
+          $mkUser = static function (string $login, string $role): int {
+          $existing = username_exists($login);
+          if ($existing) { return (int) $existing; }
+          $id = wp_create_user($login, 'Closure-' . bin2hex(random_bytes(8)) . '!a', $login . '@closure.test');
+          if (!is_int($id) || $id <= 0) { throw new RuntimeException('user create failed: ' . $login); }
+          $u = get_userdata($id);
+          if ($u !== false) { $u->set_role($role); }
+          return $id;
+          };
+          $doctorUserId = $mkUser('closure_doctor', 'cpms_doctor');
+          $secretaryId = $mkUser('closure_secretary', 'cpms_secretary');
+          $patientUserId = $mkUser('closure_patient', 'cpms_patient');
+
+          $db = App::db();
+          $now = $db->nowUtcSql();
+          $wpdb->query($wpdb->prepare(
+          'INSERT INTO ' . $db->table('cpms_clinicians') . ' (clinic_id, full_name, wp_user_id, is_active, created_at, updated_at) VALUES (1, %s, %d, 1, %s, %s)',
+          'دکتر Closure (Synthetic)', $doctorUserId, $now, $now
+          ));
+          $clinicianId = (int) $wpdb->insert_id;
+          $wpdb->query($wpdb->prepare(
+          'INSERT INTO ' . $db->table('cpms_patients') . ' (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at) VALUES (1, %s, %s, %s, %s, %s, %s, %s)',
+          'SYN-CLOSURE-RT-001', 'بیمار', 'Closure (Synthetic)', '09120001234', 'active', $now, $now
+          ));
+          $patientId = (int) $wpdb->insert_id;
+          $wpdb->query($wpdb->prepare(
+          'INSERT INTO ' . $db->table('cpms_patient_user_links') . ' (clinic_id, patient_id, wp_user_id, mobile_at_link, is_primary, linked_at) VALUES (1, %d, %d, %s, 1, %s)',
+          $patientId, $patientUserId, '09120001234', $now
+          ));
+          $slotDate = gmdate('Y-m-d', time() + 86400);
+          $wpdb->query($wpdb->prepare(
+          'INSERT IGNORE INTO ' . $db->table('cpms_schedule_slots') . ' (clinic_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at) VALUES (1, %d, %s, %s, 20, 1, 0, 0, 1, %s, %s)',
+          $clinicianId, $slotDate, '10:00', $now, $now
+          ));
+
+          // ===== E. Booking (نقش بیمار — مسیر real service) =====
+          $otp = App::otpService()->request('09120001234');
+          ok('otp-request', isset($otp['expires_in']));
+          $hold = App::bookingService()->hold($patientUserId, $clinicianId, $slotDate, '10:00');
+          ok('booking-hold', !empty($hold['hold_token']));
+          $appt = App::bookingService()->confirm((string) $hold['hold_token'], $patientUserId, 'بستن Closure (Synthetic)', uuid4());
+          ok('booking-confirm', ($appt['status'] ?? '') === 'confirmed', json_encode(['status' => $appt['status'] ?? null]));
+          ok('booking-reference', str_starts_with((string) ($appt['reference_code'] ?? ''), 'AP-'), (string) ($appt['reference_code'] ?? 'none'));
+
+          // ===== F. گردش‌کار منشی/پزشک + مالی (مثل S2/S3) =====
+          $visit = App::visitService()->walkIn($secretaryId, $patientId, $clinicianId);
+          ok('walk-in', ($visit['status'] ?? '') === 'waiting', json_encode($visit));
+          $visitId = (int) $visit['id'];
+          $v = App::visitService()->transition($doctorUserId, $visitId, 'call', ['room' => '1']);
+          ok('visit-call', ($v['status'] ?? '') === 'called');
+          $v = App::visitService()->transition($doctorUserId, $visitId, 'start', []);
+          ok('visit-start', ($v['status'] ?? '') === 'in_consultation');
+          $note = App::clinicalService()->addNote($doctorUserId, $visitId, ['category' => 'chief_complaint', 'visibility' => 'patient_visible', 'content_text' => 'سردرد خفیف (Synthetic closure)']);
+          ok('clinical-note', isset($note['id']));
+          $v = App::visitService()->transition($doctorUserId, $visitId, 'complete', []);
+          ok('visit-complete', ($v['status'] ?? '') === 'consultation_completed');
+          $inv = App::financeService()->issueInvoice($secretaryId, ['visit_id' => $visitId, 'items' => [['description' => 'ویزیت (Synthetic)', 'quantity' => 1, 'unit_price' => 250000]]]);
+          ok('invoice-issue', isset($inv['id']));
+          $key = uuid4();
+          $pay = App::financeService()->recordPayment($secretaryId, (int) $inv['id'], ['amount' => 250000, 'method' => 'cash'], $key);
+          $replay = App::financeService()->recordPayment($secretaryId, (int) $inv['id'], ['amount' => 250000, 'method' => 'cash'], $key);
+          ok('payment-idempotent-replay', ($pay['payment_id'] ?? -1) === ($replay['payment_id'] ?? -2), 'pay=' . ($pay['payment_id'] ?? '?') . ' replay=' . ($replay['payment_id'] ?? '?'));
+
+          // ===== G. Cron / Job (مسیر runTick واقعی + recurring) =====
+          App::scheduleRecurringJobs();
+          App::runTick(60);
+          $q = App::queueHealth();
+          ok('queue-health-no-stale-no-failed', empty($q['stale']) && (int) $q['failed'] === 0, json_encode($q));
+
+          // ===== H. Audit (نوشتن + زنجیر) =====
+          App::audit()->log('CLOSURE_RUNTIME_PROBE', null, 'system', null, null, null, null, ['purpose' => 'closure-runtime']);
+          App::audit()->log('CLOSURE_RUNTIME_PROBE', null, 'system', null, null, null, null, ['purpose' => 'closure-runtime']);
+          $chain = App::audit()->verifyChain(100);
+          ok('audit-chain-ok', ($chain['ok'] ?? false) === true, json_encode($chain));
+
+          // ===== I. Sodium / امضا (Ed25519) + Vault (AES-256-GCM) =====
+          ok('sodium-available', LicenseSignature::available());
+          $kp = sodium_crypto_sign_keypair();
+          $pkB64 = base64_encode(sodium_crypto_sign_publickey($kp));
+          $doc = LicenseSignature::canonicalJson(['v' => 1, 'ts' => time(), 'scope' => 'closure-probe']);
+          $sig = sodium_crypto_sign_detached($doc, sodium_crypto_sign_secretkey($kp));
+          ok('signature-validates', LicenseSignature::verify($doc, base64_encode($sig), $pkB64));
+          ok('signature-tamper-fails', !LicenseSignature::verify($doc . 'x', base64_encode($sig), $pkB64));
+          $vault = App::vault();
+          $sealed = $vault->encrypt('synthetic-secret');
+          ok('vault-roundtrip', $vault->decrypt($sealed) === 'synthetic-secret');
+          $bad = $sealed;
+          $bad['data'] = base64_encode(str_repeat('x', 24));
+          ok('vault-tamper-null', $vault->decrypt($bad) === null);
+
+          // ===== J. Filesystem / storage محافظت‌شده =====
+          $rel = App::localFileStorage()->store('closure-sentinel-' . time(), 1, 'txt');
+          $abs = App::localFileStorage()->absolutePath((string) $rel);
+          ok('storage-write', $abs !== null && is_file((string) $abs), (string) $abs);
+          ok('storage-read', @file_get_contents((string) $abs) !== false);
+
+          // ===== K. بکاپ واقعی (موتور داخلی) =====
+          $bk = App::backupService()->createBackup('closure-runtime');
+          ok('backup-create', !empty($bk['backup_id']), json_encode($bk));
+          $bv = App::backupService()->verifyBackup((string) $bk['backup_id']);
+          ok('backup-verify-ok', ($bv['ok'] ?? false) === true, implode('; ', (array) ($bv['errors'] ?? [])));
+
+          // ===== L. اسکن دپرکیت/هشدار در کد افزونه =====
+          restore_error_handler();
+          $sevNames = [E_WARNING => 'E_WARNING', E_NOTICE => 'E_NOTICE', E_DEPRECATED => 'E_DEPRECATED', E_USER_DEPRECATED => 'E_USER_DEPRECATED', E_STRICT => 'E_STRICT', E_RECOVERABLE_ERROR => 'E_RECOVERABLE_ERROR'];
+          $bad = [];
+          $coreInfo = 0;
+          foreach ($captured as $c) {
+          if (!isset($sevNames[(int) $c['sev']])) { continue; }
+          $file = (string) $c['file'];
+          if ($pluginDir !== '' && str_starts_with($file, $pluginDir)) {
+          $bad[] = $sevNames[(int) $c['sev']] . ' ' . $c['msg'] . ' @ ' . basename($file) . ':' . $c['line'];
+          } else {
+          $coreInfo++;
+          }
+          }
+          foreach ($bad as $b) {
+          echo "FAIL plugin-$b\n";
+          }
+          ok('no-plugin-deprecation-warning', $bad === [], implode(' | ', $bad));
+          echo "INFO core-level php diagnostics during probe: {$coreInfo}\n";
+          echo "PROBE OK\n";
+          PHPEOF
+          php -l /tmp/runtime-probe.php >/dev/null || exit 1
+
+          for MAJ in 6.4 6.5 6.6; do
+            VER=""
+            VER=$(curl -fsSL "https://api.wordpress.org/core/stable-check/1.0/" \
+                | python3 -c "import json,sys;d=json.load(sys.stdin);vs=[v for v in d if v.startswith('$MAJ.') and d[v]!='development'];print(max(vs,key=lambda x:tuple(int(p) for p in x.split('.'))))" 2>/dev/null) \
+              || { echo "FAIL resolve latest WP $MAJ.x" | tee -a "$EVIDF"; FAILED=1; continue; }
+            WDIR="/home/runner/www-wp${MAJ//./}"
+            DB="cpms_wp${MAJ//./}"
+            echo "--- WP $VER (branch $MAJ) ---" | tee -a "$EVIDF"
+            rm -rf "$WDIR" /home/runner/wordpress
+            if ! curl -fsSL "https://wordpress.org/wordpress-${VER}.tar.gz" -o /tmp/wp.tar.gz; then
+              echo "FAIL download wordpress-${VER}.tar.gz" | tee -a "$EVIDF"; FAILED=1; continue
+            fi
+            tar -xzf /tmp/wp.tar.gz -C /home/runner
+            mv /home/runner/wordpress "$WDIR"
+            mysql -h127.0.0.1 -P3306 -uroot -proot -e "CREATE DATABASE \`$DB\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+            cd "$WDIR"
+            wp config create --dbname="$DB" --dbuser=root --dbpass=root --dbhost=127.0.0.1:3306 --dbprefix=cpmswp_ --skip-salts --allow-root
+            wp config shuffle-salts --allow-root
+            wp config set WP_DEBUG false --raw --allow-root
+            wp core install --url="http://wp${MAJ//./}.closure.test" --title="Closure WP $VER" --admin_user=cl_admin --admin_password='Closure-2026!' --admin_email=cl@closure.test --skip-email --allow-root
+            wp plugin install "$PLUGIN/dist/clinic-practice-management-1.0.0.zip" --activate --path="$WDIR" --allow-root > /tmp/wp-plugin-install.log 2>&1 || {
+              echo "FAIL wp plugin install/activate on WP $VER" | tee -a "$EVIDF"; tail -5 /tmp/wp-plugin-install.log >> "$EVIDF"; FAILED=1; continue; }
+            WP_HOME="$WDIR" php "$WDIR/wp-content/plugins/clinic-practice-management/bin/cpms" migrate >> "$EVIDF" 2>&1 || true
+            echo "marker pre-probe (WP $VER)" >> "$EVIDF"
+            php -l /tmp/runtime-probe.php >> "$EVIDF" 2>&1 || echo "php-l-failed rc=$?" >> "$EVIDF"
+            WP_HOME="$WDIR" STORAGE_OUT="$STORAGE_OUT" timeout 300 php /tmp/runtime-probe.php > "/tmp/probe-${MAJ}.log" 2>&1
+            RC=$?
+            echo "marker post-probe rc=$RC log-bytes=$(stat -c '%s' "/tmp/probe-${MAJ}.log" 2>/dev/null || echo missing)" >> "$EVIDF"
+            if [ "$RC" -eq 0 ]; then
+              grep -q '^PROBE OK' "/tmp/probe-${MAJ}.log" || { echo "FAIL WP $VER runtime — PROBE OK missing" | tee -a "$EVIDF"; RC=1; }
+            fi
+            if [ "$RC" -eq 0 ]; then
+              echo "PASS WP $VER runtime (PHP 8.2) — fresh install from release ZIP" | tee -a "$EVIDF"
+              tail -n 4 "/tmp/probe-${MAJ}.log" >> "$EVIDF"
+            else
+              echo "FAIL WP $VER runtime (PHP 8.2) — rc=$RC" | tee -a "$EVIDF"
+              sed -n '1,120p' "/tmp/probe-${MAJ}.log" >> "$EVIDF"
+              FAILED=1
+            fi
+          done
+
+          echo '=== compat evidence (tail) ==='
+          tail -n 80 "$EVIDF"
+          [ "$FAILED" -eq 0 ]
+
+      - name: Post closure evidence to PR
+        if: always()
+        run: |
+          EVIDF="$GITHUB_WORKSPACE/closure-evidence/compat-wp.txt"
+          {
+            echo "### Closure Gate — compat-wp (run ${{ github.run_id }}, ${{ github.sha }})"
+            echo '```'
+            if [ -f "$EVIDF" ]; then tail -n 100 "$EVIDF"; else echo '(job failed before evidence)'; fi
+            echo '```'
+          } > /tmp/closure-comment.md
+          PR=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number' 2>/dev/null || true)
+          if [ -n "$PR" ]; then
+            gh pr comment "$PR" --body-file /tmp/closure-comment.md || true
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: closure-evidence
+          path: closure-evidence/
+          retention-days: 14
+
+  # ============================================================
+  # B) PHP 8.1 / 8.3 / 8.4 — runtime کامل WordPress 6.7.2
+  # ============================================================
+  runtime-php:
+    name: Closure — PHP ${{ matrix.php }} runtime (WP 6.7.2)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['8.1', '8.3', '8.4']
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1"
+          --health-interval=10s --health-timeout=5s --health-retries=20
+    env:
+      STORAGE_OUT: /home/runner/closure-storage
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: mysqli, mbstring, xml, curl, zip
+          coverage: none
+
+      - name: Tooling (mysql-client + wp-cli)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq mysql-client > /tmp/apt.log 2>&1
+          curl -fsSL https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o /tmp/wp-cli.phar
+          sudo mv /tmp/wp-cli.phar /usr/local/bin/wp && sudo chmod +x /usr/local/bin/wp
+          php -v | head -1
+          php -m | grep -E 'sodium|mysqli|openssl' || true
+
+      - name: Build release ZIP (whitelist-only)
+        run: |
+          bash bin/build-release.sh
+          mkdir -p "$GITHUB_WORKSPACE/closure-evidence"
+          cat dist/clinic-practice-management-1.0.0.zip.sha256 > "$GITHUB_WORKSPACE/closure-evidence/release-sha.txt"
+
+      - name: Runtime probe — PHP ${{ matrix.php }} + WP 6.7.2 (fresh from ZIP)
+        run: |
+          set -u
+          set +e
+          PLUGIN="$GITHUB_WORKSPACE/clinic-practice-management"
+          EVID="$GITHUB_WORKSPACE/closure-evidence"
+          mkdir -p "$EVID" "$STORAGE_OUT"
+          EVIDF="$EVID/runtime-php-${{ matrix.php }}.txt"
+          VER=6.7.2
+          WDIR="/home/runner/www-php${{ matrix.php }}"
+          DB="cpms_rt${{ matrix.php }}"
+          rm -rf "$WDIR" /home/runner/wordpress
+          curl -fsSL "https://wordpress.org/wordpress-${VER}.tar.gz" -o /tmp/wp.tar.gz
+          tar -xzf /tmp/wp.tar.gz -C /home/runner
+          mv /home/runner/wordpress "$WDIR"
+          mysql -h127.0.0.1 -P3306 -uroot -proot -e "CREATE DATABASE \`$DB\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+          cd "$WDIR"
+          wp config create --dbname="$DB" --dbuser=root --dbpass=root --dbhost=127.0.0.1:3306 --dbprefix=cpmswp_ --skip-salts --allow-root
+          wp config shuffle-salts --allow-root
+          wp config set WP_DEBUG false --raw --allow-root
+          wp core install --url="http://php${{ matrix.php }}.closure.test" --title="Closure PHP ${{ matrix.php }}" --admin_user=cl_admin --admin_password='Closure-2026!' --admin_email=cl@closure.test --skip-email --allow-root
+          wp plugin install "$PLUGIN/dist/clinic-practice-management-1.0.0.zip" --activate --path="$WDIR" --allow-root > /tmp/wp-plugin-install.log 2>&1 || { echo 'plugin install/activate FAILED'; cat /tmp/wp-plugin-install.log; exit 1; }
+          WP_HOME="$WDIR" php "$WDIR/wp-content/plugins/clinic-practice-management/bin/cpms" migrate || true
+
+          : > "$EVIDF"
+          echo "start $(date -u) php=${{ matrix.php }} wp=6.7.2" >> "$EVIDF"
+          cat > /tmp/runtime-probe.php <<'PHPEOF'
+          <?php
+          error_reporting(E_ALL);
+          $home = (string) getenv('WP_HOME');
+          if (!is_file(rtrim($home, '/') . '/wp-load.php')) { fwrite(STDERR, 'WP_HOME invalid: ' . $home . "\n"); exit(3); }
+          require rtrim($home, '/') . '/wp-load.php';
+          use ClinicCore\Bootstrap\App;
+          use ClinicCore\Domain\Licensing\LicenseSignature;
+          global $wpdb;
+          $pluginDir = defined('CPMS_PLUGIN_DIR') ? rtrim((string) CPMS_PLUGIN_DIR, '/') : '';
+          $captured = [];
+          set_error_handler(static function (int $sev, string $msg, string $file = '', int $line = 0) use (&$captured): bool {
+          $captured[] = ['sev' => $sev, 'msg' => $msg, 'file' => $file, 'line' => $line];
+          return false;
+          });
+          function uuid4(): string
+          {
+          $d = random_bytes(16);
+          $d[6] = chr((ord($d[6]) & 0x0f) | 0x40);
+          $d[8] = chr((ord($d[8]) & 0x3f) | 0x80);
+          return vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($d), 4));
+          }
+          function ok(string $label, bool $cond, string $detail = ''): void
+          {
+          echo ($cond ? 'PASS ' : 'FAIL ') . $label . ($detail !== '' ? ' — ' . $detail : '') . "\n";
+          if (!$cond) { fwrite(STDERR, 'ABORT at: ' . $label . "\n"); exit(1); }
+          }
+          $sto = (string) (getenv('STORAGE_OUT') ?: WP_CONTENT_DIR . '/closure-files');
+          if (!is_dir($sto)) { mkdir($sto, 0750, true); }
+          App::settings()->set('files.storage_path', $sto);
+          ok('plugin-version', defined('CPMS_VERSION') && CPMS_VERSION === '1.0.0', defined('CPMS_VERSION') ? (string) CPMS_VERSION : '?');
+          $schema = App::migrations()->currentVersion();
+          ok('schema-0008', $schema === '2026_09_07_0008', (string) $schema);
+          $cpmsPrefixLike = addcslashes($wpdb->prefix . 'cpms_', '_%\\');
+          $tables = (int) $wpdb->get_var("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name LIKE '{$cpmsPrefixLike}%'");
+          ok('cpms-tables', $tables >= 30, 'tables=' . $tables);
+          $roleDoctor = get_role('cpms_doctor');
+          ok('roles-registered', $roleDoctor !== null && get_role('cpms_secretary') !== null && get_role('cpms_patient') !== null);
+          $meta = App::licenseService()->statusMeta();
+          ok('license-fresh', ($meta['status'] ?? '') === 'activation_pending' && ($meta['activation_window_type'] ?? '') === 'fresh', json_encode($meta));
+          if (!function_exists('rest_get_server')) { require_once ABSPATH . 'wp-includes/rest-api.php'; }
+          if (!did_action('rest_api_init')) { do_action('rest_api_init'); }
+          $routes = rest_get_server()->get_routes();
+          ok('rest-route-health', isset($routes['/clinic/v1/health']));
+          $req = new WP_REST_Request('GET', '/clinic/v1/health');
+          $resp = rest_do_request($req);
+          $payload = $resp->get_data();
+          $data = is_array($payload) ? ($payload['data'] ?? $payload) : [];
+          ok('rest-health', $resp->get_status() === 200 && is_array($data) && ($data['ok'] ?? false) === true, 'http=' . $resp->get_status() . ' body=' . substr((string) wp_json_encode($payload), 0, 220));
+          $nowSql = App::db()->nowUtcSql();
+          ok('db-utc-clock', strtotime((string) $nowSql) !== false && abs(time() - strtotime((string) $nowSql)) < 86400, (string) $nowSql);
+          $mkUser = static function (string $login, string $role): int {
+          $existing = username_exists($login);
+          if ($existing) { return (int) $existing; }
+          $id = wp_create_user($login, 'Closure-' . bin2hex(random_bytes(8)) . '!a', $login . '@closure.test');
+          if (!is_int($id) || $id <= 0) { throw new RuntimeException('user create failed: ' . $login); }
+          $u = get_userdata($id);
+          if ($u !== false) { $u->set_role($role); }
+          return $id;
+          };
+          $doctorUserId = $mkUser('closure_doctor', 'cpms_doctor');
+          $secretaryId = $mkUser('closure_secretary', 'cpms_secretary');
+          $patientUserId = $mkUser('closure_patient', 'cpms_patient');
+          $db = App::db();
+          $now = $db->nowUtcSql();
+          $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_clinicians') . ' (clinic_id, full_name, wp_user_id, is_active, created_at, updated_at) VALUES (1, %s, %d, 1, %s, %s)', 'دکتر Closure (Synthetic)', $doctorUserId, $now, $now));
+          $clinicianId = (int) $wpdb->insert_id;
+          $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_patients') . ' (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at) VALUES (1, %s, %s, %s, %s, %s, %s, %s)', 'SYN-CLOSURE-RT-001', 'بیمار', 'Closure (Synthetic)', '09120001234', 'active', $now, $now));
+          $patientId = (int) $wpdb->insert_id;
+          $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_patient_user_links') . ' (clinic_id, patient_id, wp_user_id, mobile_at_link, is_primary, linked_at) VALUES (1, %d, %d, %s, 1, %s)', $patientId, $patientUserId, '09120001234', $now));
+          $slotDate = gmdate('Y-m-d', time() + 86400);
+          $wpdb->query($wpdb->prepare('INSERT IGNORE INTO ' . $db->table('cpms_schedule_slots') . ' (clinic_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at) VALUES (1, %d, %s, %s, 20, 1, 0, 0, 1, %s, %s)', $clinicianId, $slotDate, '10:00', $now, $now));
+          $otp = App::otpService()->request('09120001234');
+          ok('otp-request', isset($otp['expires_in']));
+          $hold = App::bookingService()->hold($patientUserId, $clinicianId, $slotDate, '10:00');
+          ok('booking-hold', !empty($hold['hold_token']));
+          $appt = App::bookingService()->confirm((string) $hold['hold_token'], $patientUserId, 'بستن Closure (Synthetic)', uuid4());
+          ok('booking-confirm', ($appt['status'] ?? '') === 'confirmed', json_encode(['status' => $appt['status'] ?? null]));
+          $visit = App::visitService()->walkIn($secretaryId, $patientId, $clinicianId);
+          ok('walk-in', ($visit['status'] ?? '') === 'waiting');
+          $visitId = (int) $visit['id'];
+          $v = App::visitService()->transition($doctorUserId, $visitId, 'call', ['room' => '1']);
+          ok('visit-call', ($v['status'] ?? '') === 'called');
+          $v = App::visitService()->transition($doctorUserId, $visitId, 'start', []);
+          ok('visit-start', ($v['status'] ?? '') === 'in_consultation');
+          $note = App::clinicalService()->addNote($doctorUserId, $visitId, ['category' => 'chief_complaint', 'visibility' => 'patient_visible', 'content_text' => 'سردرد (Synthetic closure)']);
+          ok('clinical-note', isset($note['id']));
+          $v = App::visitService()->transition($doctorUserId, $visitId, 'complete', []);
+          ok('visit-complete', ($v['status'] ?? '') === 'consultation_completed');
+          $inv = App::financeService()->issueInvoice($secretaryId, ['visit_id' => $visitId, 'items' => [['description' => 'ویزیت (Synthetic)', 'quantity' => 1, 'unit_price' => 250000]]]);
+          ok('invoice-issue', isset($inv['id']));
+          $key = uuid4();
+          $pay = App::financeService()->recordPayment($secretaryId, (int) $inv['id'], ['amount' => 250000, 'method' => 'cash'], $key);
+          $replay = App::financeService()->recordPayment($secretaryId, (int) $inv['id'], ['amount' => 250000, 'method' => 'cash'], $key);
+          ok('payment-idempotent-replay', ($pay['payment_id'] ?? -1) === ($replay['payment_id'] ?? -2));
+          App::scheduleRecurringJobs();
+          App::runTick(60);
+          $q = App::queueHealth();
+          ok('queue-health', empty($q['stale']) && (int) $q['failed'] === 0, json_encode($q));
+          App::audit()->log('CLOSURE_RUNTIME_PROBE', null, 'system', null, null, null, null, ['purpose' => 'closure-runtime']);
+          App::audit()->log('CLOSURE_RUNTIME_PROBE', null, 'system', null, null, null, null, ['purpose' => 'closure-runtime']);
+          $chain = App::audit()->verifyChain(100);
+          ok('audit-chain-ok', ($chain['ok'] ?? false) === true, json_encode($chain));
+          ok('sodium-available', LicenseSignature::available());
+          $kp = sodium_crypto_sign_keypair();
+          $pkB64 = base64_encode(sodium_crypto_sign_publickey($kp));
+          $doc = LicenseSignature::canonicalJson(['v' => 1, 'ts' => time()]);
+          $sig = sodium_crypto_sign_detached($doc, sodium_crypto_sign_secretkey($kp));
+          ok('signature-validates', LicenseSignature::verify($doc, base64_encode($sig), $pkB64));
+          ok('signature-tamper-fails', !LicenseSignature::verify($doc . 'x', base64_encode($sig), $pkB64));
+          $vault = App::vault();
+          $sealed = $vault->encrypt('synthetic-secret');
+          ok('vault-roundtrip', $vault->decrypt($sealed) === 'synthetic-secret');
+          $rel = App::localFileStorage()->store('closure-sentinel-' . time(), 1, 'txt');
+          $abs = App::localFileStorage()->absolutePath((string) $rel);
+          ok('storage-write-read', $abs !== null && is_file((string) $abs) && @file_get_contents((string) $abs) !== false, (string) $abs);
+          $bk = App::backupService()->createBackup('closure-runtime');
+          ok('backup-create', !empty($bk['backup_id']));
+          $bv = App::backupService()->verifyBackup((string) $bk['backup_id']);
+          ok('backup-verify-ok', ($bv['ok'] ?? false) === true, implode('; ', (array) ($bv['errors'] ?? [])));
+          restore_error_handler();
+          $sevNames = [E_WARNING => 'E_WARNING', E_NOTICE => 'E_NOTICE', E_DEPRECATED => 'E_DEPRECATED', E_USER_DEPRECATED => 'E_USER_DEPRECATED', E_STRICT => 'E_STRICT', E_RECOVERABLE_ERROR => 'E_RECOVERABLE_ERROR'];
+          $bad = [];
+          $coreInfo = 0;
+          foreach ($captured as $c) {
+          if (!isset($sevNames[(int) $c['sev']])) { continue; }
+          $file = (string) $c['file'];
+          if ($pluginDir !== '' && str_starts_with($file, $pluginDir)) {
+          $bad[] = $sevNames[(int) $c['sev']] . ' ' . $c['msg'] . ' @ ' . basename($file) . ':' . $c['line'];
+          } else {
+          $coreInfo++;
+          }
+          }
+          foreach ($bad as $b) { echo "FAIL plugin-$b\n"; }
+          ok('no-plugin-deprecation-warning', $bad === [], implode(' | ', $bad));
+          echo "INFO core-level php diagnostics during probe: {$coreInfo}\n";
+          echo "PROBE OK\n";
+          PHPEOF
+          php -l /tmp/runtime-probe.php >> "$EVIDF" 2>&1 || echo "php-l rc=$?" >> "$EVIDF"
+          WP_HOME="$WDIR" STORAGE_OUT="$STORAGE_OUT" php /tmp/runtime-probe.php > "/tmp/probe-php${{ matrix.php }}.log" 2>&1
+          RC=$?
+          cp "/tmp/probe-php${{ matrix.php }}.log" "$EVIDF"
+          {
+            echo '=== probe (PHP ${{ matrix.php }} + WP 6.7.2) — tail ==='
+            tail -n 60 "/tmp/probe-php${{ matrix.php }}.log"
+            if [ "$RC" -eq 0 ] && grep -q '^PROBE OK' "/tmp/probe-php${{ matrix.php }}.log"; then echo "PASS PHP ${{ matrix.php }} full runtime (WP 6.7.2)"; RC=0; else echo "FAIL PHP ${{ matrix.php }} full runtime (rc=$RC)"; RC=1; fi
+          } >> "$EVIDF"
+          [ "$RC" -eq 0 ]
+
+      - name: Post closure evidence to PR
+        if: always()
+        run: |
+          EVIDF="$GITHUB_WORKSPACE/closure-evidence/runtime-php-${{ matrix.php }}.txt"
+          {
+            echo "### Closure Gate — runtime-php ${{ matrix.php }} (run ${{ github.run_id }}, ${{ github.sha }})"
+            echo '```'
+            if [ -f "$EVIDF" ]; then tail -n 100 "$EVIDF"; else echo '(job failed before evidence)'; fi
+            echo '```'
+          } > /tmp/closure-comment.md
+          PR=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number' 2>/dev/null || true)
+          if [ -n "$PR" ]; then
+            gh pr comment "$PR" --body-file /tmp/closure-comment.md || true
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: closure-evidence
+          path: closure-evidence/
+          retention-days: 14
+
+  # ============================================================
+  # C) RestoreApply مخرب — محیط یک‌بارمصرف (PHP 8.2 + WP 6.7.2 + MySQL 8)
+  # ============================================================
+  restore-apply:
+    name: Closure — destructive restoreApply (isolated)
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1"
+          --health-interval=10s --health-timeout=5s --health-retries=20
+    env:
+      WP_DIR: /home/runner/www
+      STORAGE_OUT: /home/runner/closure-storage
+      BACKUP_OUT: /home/runner/closure-backups
+      DB_MAIN: cpms_restore_test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mysqli, mbstring, xml, curl, zip
+          coverage: none
+
+      - name: Tooling (mysql-client + wp-cli)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq mysql-client > /tmp/apt.log 2>&1
+          curl -fsSL https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o /tmp/wp-cli.phar
+          sudo mv /tmp/wp-cli.phar /usr/local/bin/wp && sudo chmod +x /usr/local/bin/wp
+
+      - name: Build release ZIP + WP 6.7.2 install (از آرتیفکت)
+        run: |
+          set -e
+          cd "$GITHUB_WORKSPACE/clinic-practice-management"
+          bash bin/build-release.sh
+          mkdir -p "$GITHUB_WORKSPACE/closure-evidence" "$STORAGE_OUT" "$BACKUP_OUT"
+          cat dist/clinic-practice-management-1.0.0.zip.sha256 > "$GITHUB_WORKSPACE/closure-evidence/release-sha.txt"
+          mysql -h127.0.0.1 -P3306 -uroot -proot -e "CREATE DATABASE \`$DB_MAIN\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+          rm -rf "$WP_DIR" /home/runner/wordpress
+          curl -fsSL https://wordpress.org/wordpress-6.7.2.tar.gz -o /tmp/wp.tar.gz
+          tar -xzf /tmp/wp.tar.gz -C /home/runner && mv /home/runner/wordpress "$WP_DIR"
+          cd "$WP_DIR"
+          wp config create --dbname="$DB_MAIN" --dbuser=root --dbpass=root --dbhost=127.0.0.1:3306 --dbprefix=cpmswp_ --skip-salts --allow-root
+          wp config shuffle-salts --allow-root
+          wp config set WP_DEBUG false --raw --allow-root
+          wp core install --url="http://restore.closure.test" --title="Restore Apply Test" --admin_user=cl_admin --admin_password='Closure-2026!' --admin_email=cl@closure.test --skip-email --allow-root
+          wp plugin install "$GITHUB_WORKSPACE/clinic-practice-management/dist/clinic-practice-management-1.0.0.zip" --activate --path="$WP_DIR" --allow-root > /tmp/wp-plugin-install.log 2>&1 || { cat /tmp/wp-plugin-install.log; exit 1; }
+          WP_HOME="$WP_DIR" php "$WP_DIR/wp-content/plugins/clinic-practice-management/bin/cpms" migrate || true
+          # storage خارج webroot + بکاپ‌ها (persisted در settings)
+          cat > /tmp/configure.php <<'PHPEOF'
+          <?php
+          require getenv('WP_HOME') . '/wp-load.php';
+          use ClinicCore\Bootstrap\App;
+          App::settings()->set('files.storage_path', (string) getenv('STORAGE_OUT'));
+          App::settings()->set('backup.storage_path', (string) getenv('BACKUP_OUT'));
+          echo 'configured: files=' . App::settings()->get('files.storage_path') . " backup=" . App::settings()->get('backup.storage_path') . "\n";
+          PHPEOF
+          WP_HOME="$WP_DIR" STORAGE_OUT="$STORAGE_OUT" BACKUP_OUT="$BACKUP_OUT" php /tmp/configure.php
+
+      - name: Seed synthetic state A + real CPMS backup
+        run: |
+          set -e
+          cat > /tmp/seed-a.php <<'PHPEOF'
+          <?php
+          require getenv('WP_HOME') . '/wp-load.php';
+          use ClinicCore\Bootstrap\App;
+          global $wpdb;
+          $db = App::db();
+          $now = $db->nowUtcSql();
+          $u = get_user_by('login', 'cl_admin');
+          if ($u === false) { throw new RuntimeException('admin missing'); }
+          $uid = (int) $u->ID;
+          $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_clinicians') . ' (clinic_id, full_name, wp_user_id, is_active, created_at, updated_at) VALUES (1, %s, %d, 1, %s, %s)', 'دکتر Restore (Synthetic)', $uid, $now, $now));
+          $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_patients') . ' (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at) VALUES (1, %s, %s, %s, %s, %s, %s, %s)', 'SYN-CLOSURE-R1', 'بیمار', 'Original-LastName', '09120007777', 'active', $now, $now));
+          $pid = (int) $wpdb->insert_id;
+          $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_patient_user_links') . ' (clinic_id, patient_id, wp_user_id, mobile_at_link, is_primary, linked_at) VALUES (1, %d, %d, %s, 1, %s)', $pid, $uid, '09120007777', $now));
+          App::audit()->log('CLOSURE_SEED', ['wp_user_id' => $uid, 'role' => 'administrator'], 'patient', $pid, $pid, null, ['seed' => 'state-A'], ['phase' => 'closure']);
+          App::audit()->log('CLOSURE_SEED', ['wp_user_id' => $uid, 'role' => 'administrator'], 'patient', $pid, $pid, null, ['seed' => 'state-A-2'], ['phase' => 'closure']);
+          $sto = (string) getenv('STORAGE_OUT');
+          file_put_contents($sto . '/sentinel-closure.txt', 'ORIGINAL-SENTINEL-CONTENT');
+          echo json_encode(['clinician' => 1, 'patient' => $pid, 'sentinel' => $sto . '/sentinel-closure.txt']) . "\n";
+          PHPEOF
+          WP_HOME="$WP_DIR" STORAGE_OUT="$STORAGE_OUT" BACKUP_OUT="$BACKUP_OUT" php /tmp/seed-a.php
+          echo '--- seed patient ---'
+          mysql -h127.0.0.1 -P3306 -uroot -proot -N -e "SELECT id,mrn,last_name FROM \`$DB_MAIN\`.cpmswp_cpms_patients ORDER BY id;" | tee /tmp/pre-list.txt
+          echo '--- backup run ---'
+          WP_HOME="$WP_DIR" STORAGE_OUT="$STORAGE_OUT" BACKUP_OUT="$BACKUP_OUT" php "$WP_DIR/wp-content/plugins/clinic-practice-management/bin/cpms" backup run 2>&1 | tee /tmp/backup-a.log
+          grep -oE 'Backup created: [0-9a-z._-]+' /tmp/backup-a.log | awk '{print $3}' > /tmp/backup-a.id
+          echo "backup A id: $(cat /tmp/backup-a.id)"
+          WP_HOME="$WP_DIR" STORAGE_OUT="$STORAGE_OUT" BACKUP_OUT="$BACKUP_OUT" php "$WP_DIR/wp-content/plugins/clinic-practice-management/bin/cpms" backup verify "$(cat /tmp/backup-a.id)"
+          echo "backup list (expect 1): $(WP_HOME="$WP_DIR" php "$WP_DIR/wp-content/plugins/clinic-practice-management/bin/cpms" backup list | wc -l)"
+          [ -s /tmp/backup-a.id ] || { echo 'NO BACKUP ID'; exit 1; }
+
+      - name: Mutate to state B + RestoreApply (destructive) + verify state A
+        run: |
+          set -e
+          B0=$(cat /tmp/backup-a.id)
+          # --- state B: تخریب مصنوعی (Synthetic) ---
+          cat > /tmp/mutate-b.php <<'PHPEOF'
+          <?php
+          require getenv('WP_HOME') . '/wp-load.php';
+          use ClinicCore\Bootstrap\App;
+          global $wpdb;
+          $db = App::db();
+          // M1: تغییر نام بیمار (اصلاح مخرب)
+          $wpdb->query($wpdb->prepare('UPDATE ' . $db->table('cpms_patients') . ' SET last_name = %s WHERE mrn = %s', 'MUTATED-LastName', 'SYN-CLOSURE-R1'));
+          // M2: درج بیمار مزاحم (داده‌ی بیگانه)
+          $now = $db->nowUtcSql();
+          $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_patients') . ' (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at) VALUES (1, %s, %s, %s, %s, %s, %s, %s)', 'SYN-INTRUDER-9', 'Intruder', 'Patient', '09120005555', 'active', $now, $now));
+          // M3: حذف یک ردیف Audit میانی (دستکاری زنجیر)
+          $wpdb->query('DELETE FROM ' . $db->table('cpms_audit_logs') . ' ORDER BY id ASC LIMIT 1');
+          // M4: حذف فایل محافظت‌شده + افزودن فایل بیگانه
+          $sto = (string) getenv('STORAGE_OUT');
+          @unlink($sto . '/sentinel-closure.txt');
+          file_put_contents($sto . '/garbage-intruder.bin', 'GARBAGE');
+          echo "state B applied (rename/insert/audit-delete/sentinel-gone)\n";
+          PHPEOF
+          WP_HOME="$WP_DIR" STORAGE_OUT="$STORAGE_OUT" BACKUP_OUT="$BACKUP_OUT" php /tmp/mutate-b.php
+          echo '--- verify state B (تخریب اعمال شده) ---'
+          mysql -h127.0.0.1 -P3306 -uroot -proot -N -e "SELECT COUNT(*) FROM \`$DB_MAIN\`.cpmswp_cpms_patients WHERE mrn='SYN-INTRUDER-9';" | tee /tmp/intruder.txt
+          mysql -h127.0.0.1 -P3306 -uroot -proot -N -e "SELECT last_name FROM \`$DB_MAIN\`.cpmswp_cpms_patients WHERE mrn='SYN-CLOSURE-R1';" | tee /tmp/lastname-b.txt
+          [ "$(cat /tmp/intruder.txt)" = "1" ] || { echo 'MUTATION M2 NOT APPLIED'; exit 1; }
+          [ "$(cat /tmp/lastname-b.txt)" = "MUTATED-LastName" ] || { echo 'MUTATION M1 NOT APPLIED'; exit 1; }
+          [ ! -f "$STORAGE_OUT/sentinel-closure.txt" ] || { echo 'MUTATION M4 NOT APPLIED (sentinel still present)'; exit 1; }
+          # زنجیر Audit در state B باید شکسته باشد (حذف ردیف) — فقط گزارش، نه گیت مستقل
+          set +e
+          WP_HOME="$WP_DIR" php "$WP_DIR/wp-content/plugins/clinic-practice-management/bin/cpms" audit verify 1000 > /tmp/audit-b.log 2>&1
+          AUDITB_RC=$?
+          set -e
+          echo "audit verify in state B rc=$AUDITB_RC (nonzero = chain tamper detected)"
+          grep -qi 'broken' /tmp/audit-b.log && echo 'audit chain detect in state B ✓ (M3 delete applied)' || tail -2 /tmp/audit-b.log || true
+          echo '--- RestoreApply (مخرب — با Safety Backup خودکار) ---'
+          WP_HOME="$WP_DIR" STORAGE_OUT="$STORAGE_OUT" BACKUP_OUT="$BACKUP_OUT" php "$WP_DIR/wp-content/plugins/clinic-practice-management/bin/cpms" backup restore "$B0" --yes 2>&1 | tee /tmp/restore-apply.log
+          RC=${PIPESTATUS[0]}
+          [ "$RC" -eq 0 ] || { echo 'RESTORE APPLY FAILED'; exit 1; }
+          grep -q 'Restore applied' /tmp/restore-apply.log || { echo 'RESTORE OUTPUT WRONG'; exit 1; }
+          LISTN=$(WP_HOME="$WP_DIR" STORAGE_OUT="$STORAGE_OUT" BACKUP_OUT="$BACKUP_OUT" php "$WP_DIR/wp-content/plugins/clinic-practice-management/bin/cpms" backup list | wc -l)
+          echo "backup list after restore: $LISTN (expect >= 2: A + safety)"
+          [ "$LISTN" -ge 2 ] || { echo 'SAFETY BACKUP NOT CREATED'; exit 1; }
+          echo '--- verify state A بازگشته است ---'
+          mysql -h127.0.0.1 -P3306 -uroot -proot -N -e "SELECT last_name FROM \`$DB_MAIN\`.cpmswp_cpms_patients WHERE mrn='SYN-CLOSURE-R1';" | tee /tmp/lastname-a.txt
+          mysql -h127.0.0.1 -P3306 -uroot -proot -N -e "SELECT COUNT(*) FROM \`$DB_MAIN\`.cpmswp_cpms_patients WHERE mrn='SYN-INTRUDER-9';" | tee /tmp/intruder2.txt
+          [ "$(cat /tmp/lastname-a.txt)" = "Original-LastName" ] || { echo 'RESTORE: NAME NOT REVERTED'; exit 1; }
+          [ "$(cat /tmp/intruder2.txt)" = "0" ] || { echo 'RESTORE: INTRUDER NOT REMOVED'; exit 1; }
+          [ -f "$STORAGE_OUT/sentinel-closure.txt" ] || { echo 'RESTORE: SENTINEL FILE NOT RESTORED'; exit 1; }
+          [ "$(cat "$STORAGE_OUT/sentinel-closure.txt")" = "ORIGINAL-SENTINEL-CONTENT" ] || { echo 'RESTORE: SENTINEL CONTENT WRONG'; exit 1; }
+          WP_HOME="$WP_DIR" php "$WP_DIR/wp-content/plugins/clinic-practice-management/bin/cpms" audit verify 1000 2>&1 | tee /tmp/audit-a.log
+          WP_HOME="$WP_DIR" php "$WP_DIR/wp-content/plugins/clinic-practice-management/bin/cpms" status 2>&1 | tee /tmp/status-a.log
+          grep -q 'schema:  2026_09_07_0008' /tmp/status-a.log || { echo 'SCHEMA NOT 0008 AFTER RESTORE'; exit 1; }
+          grep -q 'license: activation_pending' /tmp/status-a.log || { echo 'LICENSE NOT FRESH AFTER RESTORE'; exit 1; }
+          echo 'RESTORE APPLY: state A fully restored ✓'
+
+      - name: Negative — corrupt db.sql / tampered manifest rejection
+        run: |
+          set -e
+          # دو بکاپ سالم تازه
+          WP_HOME="$WP_DIR" STORAGE_OUT="$STORAGE_OUT" BACKUP_OUT="$BACKUP_OUT" php "$WP_DIR/wp-content/plugins/clinic-practice-management/bin/cpms" backup run > /tmp/b1.log
+          B1=$(grep -oE '[0-9a-z._-]+' /tmp/b1.log | tail -1)
+          WP_HOME="$WP_DIR" STORAGE_OUT="$STORAGE_OUT" BACKUP_OUT="$BACKUP_OUT" php "$WP_DIR/wp-content/plugins/clinic-practice-management/bin/cpms" backup run > /tmp/b2.log
+          B2=$(grep -oE '[0-9a-z._-]+' /tmp/b2.log | tail -1)
+          echo "B1=$B1 B2=$B2"
+          # --- corrupt db.sql (B1) ---
+          echo '-- GARBAGE-APPENDED-BY-CLOSURE-NEGATIVE-TEST' >> "$BACKUP_OUT/$B1/db.sql"
+          set +e
+          WP_HOME="$WP_DIR" STORAGE_OUT="$STORAGE_OUT" BACKUP_OUT="$BACKUP_OUT" php "$WP_DIR/wp-content/plugins/clinic-practice-management/bin/cpms" backup verify "$B1" > /tmp/verify-b1.log 2>&1
+          RC1=$?
+          set -e
+          echo "verify B1 rc=$RC1 (expect 2/CORRUPT)"; cat /tmp/verify-b1.log
+          [ "$RC1" -eq 2 ] || { echo 'VERIFY DID NOT REJECT CORRUPT'; exit 1; }
+          set +e
+          WP_HOME="$WP_DIR" STORAGE_OUT="$STORAGE_OUT" BACKUP_OUT="$BACKUP_OUT" php "$WP_DIR/wp-content/plugins/clinic-practice-management/bin/cpms" backup restore "$B1" --yes > /tmp/restore-b1.log 2>&1
+          RC2=$?
+          set -e
+          echo "restore B1 rc=$RC2 (expect nonzero)"; tail -5 /tmp/restore-b1.log
+          [ "$RC2" -ne 0 ] || { echo 'RESTORE ACCEPTED CORRUPT BACKUP'; exit 1; }
+          grep -qi 'preflight failed\|CLINIC_BACKUP' /tmp/restore-b1.log || { echo 'UNEXPECTED ERROR MESSAGE'; tail -20 /tmp/restore-b1.log; exit 1; }
+          # --- tampered manifest (B2) بدون به‌روزرسانی sha ---
+          echo '   ' >> "$BACKUP_OUT/$B2/manifest.json"
+          set +e
+          WP_HOME="$WP_DIR" STORAGE_OUT="$STORAGE_OUT" BACKUP_OUT="$BACKUP_OUT" php "$WP_DIR/wp-content/plugins/clinic-practice-management/bin/cpms" backup verify "$B2" > /tmp/verify-b2.log 2>&1
+          RC3=$?
+          WP_HOME="$WP_DIR" STORAGE_OUT="$STORAGE_OUT" BACKUP_OUT="$BACKUP_OUT" php "$WP_DIR/wp-content/plugins/clinic-practice-management/bin/cpms" backup restore "$B2" --yes > /tmp/restore-b2.log 2>&1
+          RC4=$?
+          set -e
+          echo "verify B2 rc=$RC3 (expect 2/CORRUPT)"; cat /tmp/verify-b2.log
+          echo "restore B2 rc=$RC4 (expect nonzero)"; tail -5 /tmp/restore-b2.log
+          [ "$RC3" -eq 2 ] || { echo 'VERIFY DID NOT REJECT TAMPERED MANIFEST'; exit 1; }
+          [ "$RC4" -ne 0 ] || { echo 'RESTORE ACCEPTED TAMPERED MANIFEST'; exit 1; }
+          # --- هیچ Safety Backup در ردشدن‌ها ساخته نشده و داده دست‌نخورده ---
+          LISTN=$(WP_HOME="$WP_DIR" STORAGE_OUT="$STORAGE_OUT" BACKUP_OUT="$BACKUP_OUT" php "$WP_DIR/wp-content/plugins/clinic-practice-management/bin/cpms" backup list | wc -l)
+          echo "backup list after negatives: $LISTN (state A reverted + safety + B1 + B2 = 4)"
+          [ "$LISTN" -eq 4 ] || { echo 'UNEXPECTED BACKUP COUNT (safety created on rejected restore?)'; exit 1; }
+          mysql -h127.0.0.1 -P3306 -uroot -proot -N -e "SELECT COUNT(*) FROM \`$DB_MAIN\`.cpmswp_cpms_patients WHERE mrn='SYN-INTRUDER-9';" | grep -qx '0' || { echo 'DATA CHANGED BY REJECTED RESTORE'; exit 1; }
+          echo 'NEGATIVES: corrupt db.sql + tampered manifest both rejected, data untouched ✓'
+          echo 'RESTORE-APPLY GATE OK'
+
+      - name: Post closure evidence to PR
+        if: always()
+        run: |
+          {
+            echo "### Closure Gate — restore-apply (run ${{ github.run_id }}, ${{ github.sha }})"
+            echo '```'
+            for f in /tmp/backup-a.log /tmp/restore-apply.log /tmp/audit-a.log /tmp/status-a.log /tmp/verify-b1.log /tmp/restore-b1.log /tmp/verify-b2.log /tmp/restore-b2.log; do
+              if [ -f "$f" ]; then echo "--- $(basename "$f") (tail 25) ---"; tail -25 "$f"; fi
+            done
+            echo '```'
+          } > /tmp/closure-comment.md
+          PR=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number' 2>/dev/null || true)
+          if [ -n "$PR" ]; then
+            gh pr comment "$PR" --body-file /tmp/closure-comment.md || true
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: closure-evidence
+          path: closure-evidence/
+          retention-days: 14

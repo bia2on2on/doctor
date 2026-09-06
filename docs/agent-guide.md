@@ -23,7 +23,7 @@
 
 ## 1. معرفی پروژه
 
-**CPMS** = سیستم مدیریت مطب (Clinic Practice Management System) به‌صورت **افزونه WordPress** (PHP 8.1+، MySQL 8، WP 6.7+) — تک‌کلینیک در V1، تجاری با لایسنس.
+**CPMS** = سیستم مدیریت مطب (Clinic Practice Management System) به‌صورت **افزونه WordPress** (PHP 8.1+، MySQL 8، WP 6.4+ — runtime تأییدشده روی WP 6.4/6.5/6.6/6.7.2 و PHP 8.1–8.4) — تک‌کلینیک در V1، تجاری با لایسنس.
 
 - مسیر افزونه: `clinic-practice-management/`
 - Namespace: `ClinicCore\` → `clinic-practice-management/src/`
@@ -455,3 +455,15 @@ final class XxxService {
 - **درس‌های F9 برای فازهای بعد:** ① در تستهای namespaced همیشه `\\RuntimeException` بک‌اسلش‌دار؛ ② هیچ تست State-mutatingی بدون `finally` بازیابی وقتی DDL دارد (implicit commit تراکنش WP تست را می‌شکند)؛ ③ مسیر REST در تست‌ها همیشه با اسلش ابتدای namespace (`/clinic/v1/...`)؛ ④ امضاهای `:int` هرگز مقدار `query():bool` برنگردانند — برای تعداد سطر `execute()`؛ ⑤ فایلهای Migration باید side-effect-free باشند تا `require` (نه require_once) امن باشد.
 - **Docs sync:** report-f9.md، CHANGELOG (F9)، roadmap F9 ✅، api-contract §0 (دامنه Idempotency چه‌گانه)، user-guide.md (از کامیت کد).
 - **F9 بسته شد.** طبق پروتокол و دستور صریح کارفرما: **گزارش Completion ارائه شد و توقف تا تأیید F10 (Go-Live/Pilot عملیاتی) — بدون تأیید وارد فاز جدید نمی‌شویم.**
+
+### [2026-09-06 ~13:10 UTC] — ایجنت Arena — F10 شروع: بنیان لایسنس، بکاپ، بهروزرسانی امن، Health/UX، تست ۱۰۰-راهی (اجرای فاز؛ CI در انتظار)
+
+- **F10 طبق اسپک کارفرما آغاز شد** (اجازه ویرایش/commit/push/PR؛ بدون merge به main). Git delta علیه ممیزی: HEAD `a68241bce` دستنخورده (clean). هیچ FOUNDATIONAL_CONFLICT یافت نشد.
+- **ADR-0023 (پروتکل لایسنس)** + **ADR-0028 (مرز Data/Control Plane)** + **ADR-0029 (تحویل امن بهروزرسانی)** پذیرفته و ثبت شد.
+- **لایسنس (مکمل Seam F3):** Domain خالص (LicenseStatus/Policy/StateMachine/EntitlementRegistry fail-closed/SignedLicenseGate/LicenseSignature Ed25519) + Infra (VendorGateway + HttpVendorGateway HTTPS/SSRF/Timeout؛ LicenseRepository + Migration `2026_09_07_0008`) + App/LicenseService (فعالسازی سرور و آفلاین-سند؛ وضعیت محلی امضاشده؛ refresh فقط در Job با Backoff). `App::licenseGate()` حالا واقعی است؛ نصب فعالنشده دیگر «بازِ ابدی» نیست — تصمیم کارفرما 2026-09-06: `ACTIVATION_PENDING` (نصب تازه؛ پنجرهٔ ۷ روزه از Migration 0008) و `ACTIVATION_GRACE` (نصب pre-F10؛ مهلت ۳۰ روزه)؛ پایان پنجره بدون سند → RESTRICTED؛ `NOT_CONFIGURED` فقط دفاعی؛ حالت توسعه فقط صریح (`CPMS_DEV_MODE`/فیلتر `cpms_license_dev_mode` → `DEVELOPMENT`) بدون تشخیص خودکار محیط؛ anti-reset + مرجع زمان سرور. وضعیتها: ACTIVE/EXPIRING/GRACE/RESTRICTED/SUSPENDED/REVOKED/INVALID/UNREACHABLE؛ قطع شبکه ≠ نامعتبر/پنجره.
+- **بکاپ/بازیابی:** موتور داخل افزونه (db.sql تمام cpms_* با snapshot سازگار بدون mysqldump + mirror storage + مانیفست sha256) در ProtectedBackupStore؛ Job دوره‌ای `backup.run`؛ Retention؛ Preflight + Safety Backup + Restore با تأیید صریح (فقط cpms_*)؛ CLI `bin/cpms backup …`.
+- **بهروزرسانی امن:** مانیفست انتشار Ed25519 با کلید جدا (ReleaseKeys)، بدون eval/کد از راه دور؛ entitlement گیت feature `updates`؛ UpdateService + کش transient.
+- **Health/UX:** SystemHealthService (چکهای بدون PHI + Host Capability SUPPORTED/WARNINGS/UNSUPPORTED) + صفحه «CPMS (سیستم)» (مجوز/Health/بکاپ/Restore/بهروزرسانی؛ cap `cpms_config`؛ nonce؛ بدون PHI).
+- **آزمون پذیرش ۱۰۰-راهی (§27/§28):** `SlotCapacityOneHundredWayTest` — ۱۰۰ فرایند همزمان با اتصال مستقل MySQL روی مسیر واقعی `SlotRepository::atomicBook`؛ ظرفیت ۱ → دقیقاً ۱ برنده؛ ظرفیت ۳ → دقیقاً ۳ (در CI اجرا میشود؛ این sandbox MySQL ندارد).
+- **واحدتست محلی (WASM PHP 8.2):** ۲۸۵ تست، ۱۶٬۶۶۱ اِسert، ۰ شکست (۸ خطای محیطی شناختهشده 32-bit؛ ۸ skip نیازمند sodium). **CI سبز ۵/۵** (Unit 8.1–8.4 + Integration WP6.7/MySQL8 — run 34037362222؛ شامل 100-way پذیرش و تستهای پنجرهٔ فعالسازی). اجرای محلی WP/MySQL در این sandbox ممکن نیست (BLOCKED_BY_ENVIRONMENT).
+- **گزارش F10 و توقف تا تأیید کارفرما** طبق §49–§51 در ادامه همین لاگ ثبت خواهد شد.

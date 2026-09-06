@@ -1,0 +1,52 @@
+# گزارش فاز F10 — خودمختاری تجاری (لایسنس، بکاپ، بهروزرسانی امن، Health) — گزارش تکمیل (§50)
+
+تاریخ: 2026-09-06 (بهروز 2026-09-06 پس از تصمیم کارفرما دربارهٔ NOT_CONFIGURED) | وضعیت: **IMPLEMENTATION COMPLETE — منتظر تأیید کارفرما (§51)** | شاخه: `arena/01a076ad-doctor` | HEAD: `3ca77ce`
+مراجع: F10 spec §1–§52؛ ADR-0023/0028/0029؛ docs/agent-guide.md §10؛ `/home/user/cpms-handover-audit-report.md` (خط پایه)
+
+## 1. خط پایه و بازبینی دلتا
+- ممیزی کامل قبلی (۲۴ بخش + ماتریس ۳۲ ردیف) خط پایه است؛ **تکرار نشد**.
+- Git delta: HEAD `a68241bce…` == `origin/main`؛ شاخه `arena/01a076ad-doctor`؛ tree تمیز در شروع؛ PR #1 merged / PR #2 closed — هیچ تغییری از ممیزی. **بدون FOUNDATIONAL_CONFLICT.**
+- طبقهبندی دامنههای F10: Licensing = MISSING (seam READY)؛ Backup/Restore = MISSING؛ Update = MISSING؛ Cron/Jobs = READY؛ Health/Compatibility = PARTIAL؛ همه بهصورت پشت Seamهای موجود پیاده شد.
+
+## 2. آنچه پیاده شد (Commitها 1ddf51a → 3ca77ce؛ مسیر کامل e8e058a → 3ca77ce)
+| حوزه | شواهد |
+|---|---|
+| **بنیان معماری** | ADR-0023 (پروتکل لایسنس: state محلیِ امضاشده، مهلت ۷ روز GRACE، قطع شبکه ≠ نامعتبر، REVOKED/SUSPENDED فقط از سند معتبر)؛ ADR-0028 (مرز Data/Control Plane + Allowlist ابرداده؛ بدون PHI)؛ ADR-0029 (امضای Ed25519 جدا برای انتشار؛ بدون eval/کد راه دور) |
+| **لایسنس** | Domain: `LicenseStatus/Policy/StateMachine/EntitlementRegistry/SignedLicenseGate/LicenseSignature/LicenseKeys`؛ Infra: `VendorGateway + HttpVendorGateway` (HTTPS+SSRF+Timeout)، `LicenseRepository`، Migration `2026_09_07_0008`؛ App: `LicenseService` (فعالسازی سرور/آفلاین، refresh Backoff)؛ `App::licenseGate()` واقعی؛ Job `license.refresh`؛ سیاست نصب-بدون-سند طبق تصمیم کارفرما 2026-09-06: `ACTIVATION_PENDING` (تازه؛ پنجرهٔ ۷ روزه) و `ACTIVATION_GRACE` (pre-F10؛ مهلت ۳۰ روزه) → پایان بدون سند = `RESTRICTED`؛ dev-mode فقط صریح (`CPMS_DEV_MODE`/فیلتر)؛ anti-reset؛ مرجع زمان سرور |
+| **بکاپ/بازیابی** | موتور داخل افزونه (بدون mysqldump؛ snapshot سازگار؛ فقط cpms_*) + mirror storage + مانیفست sha256؛ ProtectedBackupStore؛ Job `backup.run`؛ Retention؛ Preflight + Safety Backup + Restore با تأیید صریح؛ CLI `bin/cpms backup …`؛ تنظیمات `backup.*` |
+| **بهروزرسانی امن** | `ReleaseManifest/Signature/Keys` + `HttpUpdateMetadataGateway` + `UpdateService` (entitlement گیت `updates`؛ کش؛ بدون شبکه در صفحات عادی)؛ تنظیمات `update.*` |
+| **Health/UX** | `SystemHealthService` (چکهای بدون PHI؛ Host Capability SUPPORTED/WARNINGS/UNSUPPORTED) + صفحه «CPMS (سیستم)» (مجوز/Health/بکاپ/Restore/بهروزرسانی؛ `cpms_config`+nonce؛ بدون PHI)؛ `bin/cpms status` → وضعیت مجوز |
+| **تستها (افزوده)** | واحد خالص (StateMachine، Entitlement، SignedLicenseGate، Signature سدیم-گیت، Manifest، Splitter، HostClassification، ReleaseManifest، **LicenseActivationWindow ۱۱ تست مرز پنجره/anti-extension**، **DevMode**)؛ Integration (CI): LicenseLifecycle، **LicenseActivationWindowIntegration (۱۱ سناریوی تصمیم کارفرما)**، BackupEngine، UpdateService، SlotCapacityOneHundredWay (§27/§28؛ ۱۰۰ فرایند + اتصال مستقل MySQL روی `atomicBook` واقعی) |
+| **Error codes** | ثبت کامل `CLINIC_LICENSE_*` در docs/api/error-codes.md (ADR-0019) |
+
+## 3. وضعیت شواهد (صادقانه)
+| نوع | وضعیت |
+|---|---|
+| واحد تست (محلی WASM PHP 8.2) | **۲۸۵ تست، ۱۶٬۶۶۱ اِسert، ۰ شکست** (۸ خطای محیطی شناختهشده 32-bit بدون /dev/urandom؛ ۸ skip نیازمند sodium — در CI اجرا میشوند) |
+| Lint (php -l همه فایلهای تغییر/جدید) | ✅ تمام فایلهای src/tests/bin — بدون خطای Syntax |
+| Integration/CI (WP 6.7 + MySQL 8 + pcntl + PHPUnit 9.6) | ✅ **سبز** — run 34037362222 روی `1ddf51a` (Unit 8.1–8.4 + Integration همگی success) |
+| 100-way پذیرش (§27/§28) | ✅ **سبز در CI** (`SlotCapacityOneHundredWayTest` در run 34037362222 پاس شد؛ ۱۰۰ فرایند pcntl + اتصال مستقل MySQL) |
+| سرور مرکزی فروشنده (لایسنس/انتشار) | ⛔ خارج از repo — قرارداد + mock/fixture + Runbook (تأیید زنده BLOCKED_BY_ENVIRONMENT) |
+| اعمال نهایی Restore (DROP/ایمپورت) | ⛔ فقط CLI/Admin با تأیید؛ Preflight+Safety در CI اثبات میشود؛ اعمال مخرب = فرایند DR در محیط مجزا |
+| PHPStan | بدون ابزار موجود (همان F1–F9) — ادعای جعلی نمیشود |
+
+## 4. تصمیمهای مهندسی و سیاستی (طبق اسپک + تصمیم کارفرما 2026-09-06)
+1. نصب بدون سند معتبر = پنجرهٔ فعالسازی (تصمیم کارفرما): نصب تازه `ACTIVATION_PENDING` **۷ روز** و نصب pre-F10 در مهاجرت `ACTIVATION_GRACE` **۳۰ روز**؛ شروع پنجره با نوع `fresh|migration` در Migration 0008 persist میشود (anti-reset: deactivate/reactivate/reinstall آن را از نو شروع نمیکند). پایان پنجره بدون سند → `RESTRICTED`. `NOT_CONFIGURED` فقط دفاعی است. ایمنی بیمار/داده هرگز قفل نمیشود (اولویت §1).
+2. حالت توسعه = فقط صریح و مستند: ثابت `CPMS_DEV_MODE` (wp-config.php) یا فیلتر `cpms_license_dev_mode` → وضعیت `DEVELOPMENT`. هیچ تشخیص خودکار محیط/دامنه و هیچ unlock مخفی در package نیست.
+3. عملیات در RESTRICTED: فعالیت مستقل جدید مسدود؛ لغو نوبت/بهروزرسانی بیمار/تاریخچه/Export/گردشکار در جریان مجاز (spec §16). REVOKED/SUSPENDED فقط از سند امضاشدهٔ معتبر؛ قطع شبکه پس از فعالسازی ≠ NOT_CONFIGURED/پنجره.
+4. بکاپ V1 مقصد محلیِ محافظتشده؛ Remote (S3/SFTP) = V1.1 (interface آماده؛ Ops-runbook فعلی).
+5. بهروزرسانی V1: authorize + integrity-verify؛ نصب از صفحه استاندارد وردپرس/CLI؛ دانلود خودکار = V1.1.
+6. Entitlement کلید ناشناخته = fail-closed؛ شمارش/سقف پزشکان = V1.5 (بدون scope-creep).
+7. مرجع زمان پنجره = سرور (persisted)؛ عقبکشیدن ساعت پنجره را بلندتر نمیکند؛ بدون DRM مخرب.
+
+## 5. وضعیت (این گزارش بهروز تا تصمیم کارفرما 2026-09-06 و CI سبز 5/5)
+1. شاخه `arena/01a076ad-doctor` + PR #3؛ CI سبز (Unit 8.1–8.4 + Integration WP6.7/MySQL8 — run 34037362222).
+2. سیاست `NOT_CONFIGURED` طبق تصمیم کارفرما پیاده شد (پنجره ۷/۳۰ روزه، dev-mode صریح، anti-reset) — بخش ۴ بالا.
+3. باقیمانده تا گزارش تکمیل F10: همگامسازی نهایی مستندات + گزارش تکمیل (§50) و توقف برای تأیید کارفرما (§51).
+
+## 6. ریسکهای باز و BLOCKED_BY_ENVIRONMENT (مستند)
+- Pilot/Staging Gate روی شاخه، به دلیل زیرساخت runner (وبسرور هرگز start نمیشود: apache2 inactive/dead، بدون listener روی 80/8080) شکست میخورد — مستقل از کد F10؛ برای تأیید Pilot نیاز به محیط Pilot واقعی است.
+- کلیدهای رسمی Production (مجوز/انتشار) Placeholder هستند — fail-closed تا Release (مستند در ReleaseKeys).
+- تأیید زندهٔ سرور فروشنده (لایسنس/انتشار) خارج از repo — قرارداد + mock/fixture + Runbook؛ BLOCKED_BY_ENVIRONMENT.
+- اعمال مخرب Restore (DROP/ایمپورت) فقط CLI/Admin با تأیید در محیط DR مجزا اجرا میشود؛ Preflight+Verify در CI سبز است.
+- عمق تستِ رندر صفحهٔ Health/Admin در CI پوشش مستقیم ندارد — تأیید دستی در Pilot.
