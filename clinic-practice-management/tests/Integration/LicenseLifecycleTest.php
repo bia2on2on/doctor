@@ -24,8 +24,8 @@ use WP_UnitTestCase;
  */
 final class LicenseLifecycleTest extends WP_UnitTestCase
 {
-    /** @var array<string, mixed>|null کلید امضا برای سندهای جعلی */
-    public ?array $keypair = null;
+    /** @var string|null کلید امضا برای سندهای جعلی */
+    public ?string $keypair = null;
 
     /** رفتار Gateway جعلی برای سناریوهای مختلف */
     public string $mode = 'ok';

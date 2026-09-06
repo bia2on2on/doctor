@@ -16,7 +16,7 @@ use WP_UnitTestCase;
 final class MigrationTest extends WP_UnitTestCase
 {
     /** آخرین Migration موجود در src/Migrations (با افزودن Migration جدید به‌روز شود). */
-    private const LATEST_VERSION = '2026_09_07_0007';
+    private const LATEST_VERSION = '2026_09_07_0008';
 
     private const EXPECTED_TABLES = [
         'cpms_clinics', 'cpms_clinicians', 'cpms_patients', 'cpms_patient_user_links',
@@ -29,6 +29,7 @@ final class MigrationTest extends WP_UnitTestCase
         'cpms_invoices', 'cpms_invoice_items', 'cpms_payments', 'cpms_payment_adjustments',
         'cpms_notifications', 'cpms_jobs', 'cpms_audit_logs', 'cpms_operational_logs',
         'cpms_settings', 'cpms_rate_limits',
+        'cpms_license_install', 'cpms_license_state',
     ];
 
     protected function setUp(): void
@@ -112,7 +113,8 @@ final class MigrationTest extends WP_UnitTestCase
         global $wpdb;
         $t = App::db()->table('cpms_idempotency_keys');
 
-        // بازگشت به حالت پیش از 0006/0007 (rollback دو مرحله‌ای)
+        // بازگشت به حالت پیش از 0006/0007 (rollback 0008 لایسنس + 0007 + 0006)
+        $this->assertSame('2026_09_07_0008', App::migrations()->rollbackOne());
         $this->assertSame('2026_09_07_0007', App::migrations()->rollbackOne());
         $this->assertSame('2026_09_07_0006', App::migrations()->rollbackOne());
 
@@ -165,6 +167,7 @@ final class MigrationTest extends WP_UnitTestCase
         $t = App::db()->table('cpms_idempotency_keys');
 
         // شبیه‌سازی داده معیوب: u_idem_key حذف + دو ردیف هم‌دامنه (مثلاً حاصل Restore/Import)
+        $this->assertSame('2026_09_07_0008', App::migrations()->rollbackOne());
         $this->assertSame('2026_09_07_0007', App::migrations()->rollbackOne());
         $this->assertSame('2026_09_07_0006', App::migrations()->rollbackOne());
         $wpdb->query("ALTER TABLE {$t} DROP INDEX `u_idem_key`"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared

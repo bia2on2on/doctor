@@ -19,11 +19,11 @@ use WP_UnitTestCase;
  */
 final class UpdateServiceTest extends WP_UnitTestCase
 {
-    /** @var array<string, mixed>|null */
-    private ?array $licenseKp = null;
+    /** @var string|null */
+    private ?string $licenseKp = null;
 
-    /** @var array<string, mixed>|null */
-    private ?array $releaseKp = null;
+    /** @var string|null */
+    private ?string $releaseKp = null;
 
     protected function setUp(): void
     {

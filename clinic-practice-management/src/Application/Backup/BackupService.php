@@ -428,7 +428,8 @@ final class BackupService
             && !str_starts_with($rel, '.')
             && !str_contains($rel, '..')
             && strpos($rel, '/') !== 0
-            && !preg_match('#[\\\x00-\x1f]#', $rel);
+            && !str_contains($rel, '\\')
+            && strpos($rel, "\0") === false;
     }
 
     private function hashFile(string $path): string
