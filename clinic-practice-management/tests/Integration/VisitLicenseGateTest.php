@@ -103,7 +103,8 @@ final class VisitLicenseGateTest extends WP_UnitTestCase
 
     public function testCheckInOfPreExistingAppointmentIsAllowedInReadOnlyMode(): void
     {
-        $apptId = $this->makeAppointment(gmdate('Y-m-d'), gmdate('H:i:s', time() + 3600));
+        $t = time() + 3600;
+        $apptId = $this->makeAppointment(gmdate('Y-m-d', $t), gmdate('H:i:s', $t));
 
         $visit = $this->service(new FakeLicenseGate(false))->checkIn($this->secretaryUserId, $this->patientId, $apptId);
 
@@ -116,7 +117,8 @@ final class VisitLicenseGateTest extends WP_UnitTestCase
 
     public function testInProgressVisitTransitionsAreAllowedInReadOnlyMode(): void
     {
-        $apptId = $this->makeAppointment(gmdate('Y-m-d'), gmdate('H:i:s', time() + 3600));
+        $t = time() + 3600;
+        $apptId = $this->makeAppointment(gmdate('Y-m-d', $t), gmdate('H:i:s', $t));
         $svc = $this->service(new FakeLicenseGate(false));
 
         $visit = $svc->checkIn($this->secretaryUserId, $this->patientId, $apptId);

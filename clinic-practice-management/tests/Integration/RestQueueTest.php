@@ -79,7 +79,7 @@ final class RestQueueTest extends WP_UnitTestCase
     public function testCheckInWithoutNonceIsCsurfBlocked(): void
     {
         wp_set_current_user($this->secretaryUserId);
-        $apptId = $this->makeAppointment($this->patientId, gmdate('H:i:s', time() + 3600));
+        $apptId = $this->makeAppointment($this->patientId, time() + 3600);
 
         $response = $this->dispatch('POST', self::NS . '/visits/checkin', [
             'patient_id' => $this->patientId,
@@ -153,7 +153,7 @@ final class RestQueueTest extends WP_UnitTestCase
     public function testCheckInHappyPath(): void
     {
         wp_set_current_user($this->secretaryUserId);
-        $apptId = $this->makeAppointment($this->patientId, gmdate('H:i:s', time() + 3600));
+        $apptId = $this->makeAppointment($this->patientId, time() + 3600);
 
         $response = $this->dispatch('POST', self::NS . '/visits/checkin', [
             'patient_id' => $this->patientId,
@@ -375,11 +375,13 @@ final class RestQueueTest extends WP_UnitTestCase
         return $userId;
     }
 
-    private function makeAppointment(int $patientId, string $slotTime): int
+    private function makeAppointment(int $patientId, int $atTs): int
     {
         global $wpdb;
         $now = App::db()->nowUtcSql();
-        $date = gmdate('Y-m-d');
+        // تاریخ و ساعت از «یک» لحظه — نیمه‌شب UTC را با هم طی می‌کنند (date rollover)
+        $date = gmdate('Y-m-d', $atTs);
+        $slotTime = gmdate('H:i:s', $atTs);
 
         $wpdb->query(
             $wpdb->prepare(

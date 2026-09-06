@@ -73,7 +73,8 @@ final class VisitFlowTest extends WP_UnitTestCase
 
     public function testCheckInCreatesVisitAndAutoEnqueues(): void
     {
-        $apptId = $this->makeAppointment($this->patientId, $this->clinicianId, gmdate('Y-m-d'), gmdate('H:i:s', time() + 3600));
+        $t = time() + 3600;
+        $apptId = $this->makeAppointment($this->patientId, $this->clinicianId, gmdate('Y-m-d', $t), gmdate('H:i:s', $t));
 
         $visit = App::visitService()->checkIn($this->secretaryUserId, $this->patientId, $apptId);
 
@@ -98,7 +99,8 @@ final class VisitFlowTest extends WP_UnitTestCase
 
     public function testDuplicateActiveVisitIsRejected(): void
     {
-        $apptId = $this->makeAppointment($this->patientId, $this->clinicianId, gmdate('Y-m-d'), gmdate('H:i:s', time() + 3600));
+        $t = time() + 3600;
+        $apptId = $this->makeAppointment($this->patientId, $this->clinicianId, gmdate('Y-m-d', $t), gmdate('H:i:s', $t));
         App::visitService()->checkIn($this->secretaryUserId, $this->patientId, $apptId);
 
         // J-5: دومین Check-in همان بیمار×پزشک در همان روز
@@ -114,8 +116,8 @@ final class VisitFlowTest extends WP_UnitTestCase
     public function testLateCheckInMarksNoShowAndCreatesWalkInLikeVisit(): void
     {
         // نوبت 2 ساعت پیش — از Grace (30 دقیقه) گذشته (ER-06/TP-19)
-        $slot = gmdate('H:i:s', time() - 7200);
-        $apptId = $this->makeAppointment($this->patientId, $this->clinicianId, gmdate('Y-m-d'), $slot);
+        $t = time() - 7200;
+        $apptId = $this->makeAppointment($this->patientId, $this->clinicianId, gmdate('Y-m-d', $t), gmdate('H:i:s', $t));
 
         $visit = App::visitService()->checkIn($this->secretaryUserId, $this->patientId, $apptId);
 
@@ -132,7 +134,8 @@ final class VisitFlowTest extends WP_UnitTestCase
 
     public function testCheckInOnNoShowAppointmentCreatesWalkInLikeVisit(): void
     {
-        $apptId = $this->makeAppointment($this->patientId, $this->clinicianId, gmdate('Y-m-d'), gmdate('H:i:s', time() - 7200));
+        $t = time() - 7200;
+        $apptId = $this->makeAppointment($this->patientId, $this->clinicianId, gmdate('Y-m-d', $t), gmdate('H:i:s', $t));
         // قبلاً توسط Cron نوبت no_show شده
         App::db()->update('cpms_appointments', ['status' => 'no_show', 'no_show_at' => App::db()->nowUtcSql()], ['id' => $apptId]);
 
@@ -143,7 +146,8 @@ final class VisitFlowTest extends WP_UnitTestCase
 
     public function testCheckInOnCancelledAppointmentIsRejected(): void
     {
-        $apptId = $this->makeAppointment($this->patientId, $this->clinicianId, gmdate('Y-m-d'), gmdate('H:i:s', time() + 3600));
+        $t = time() + 3600;
+        $apptId = $this->makeAppointment($this->patientId, $this->clinicianId, gmdate('Y-m-d', $t), gmdate('H:i:s', $t));
         App::db()->update('cpms_appointments', ['status' => 'cancelled_by_staff'], ['id' => $apptId]);
 
         try {
@@ -171,7 +175,8 @@ final class VisitFlowTest extends WP_UnitTestCase
         );
         $otherPatientId = (int) $wpdb->insert_id;
 
-        $apptId = $this->makeAppointment($this->patientId, $this->clinicianId, gmdate('Y-m-d'), gmdate('H:i:s', time() + 3600));
+        $t = time() + 3600;
+        $apptId = $this->makeAppointment($this->patientId, $this->clinicianId, gmdate('Y-m-d', $t), gmdate('H:i:s', $t));
 
         try {
             App::visitService()->checkIn($this->secretaryUserId, $otherPatientId, $apptId);
@@ -196,7 +201,8 @@ final class VisitFlowTest extends WP_UnitTestCase
 
     public function testFullQueueLifecycleThroughCheckout(): void
     {
-        $apptId = $this->makeAppointment($this->patientId, $this->clinicianId, gmdate('Y-m-d'), gmdate('H:i:s', time() + 3600));
+        $t = time() + 3600;
+        $apptId = $this->makeAppointment($this->patientId, $this->clinicianId, gmdate('Y-m-d', $t), gmdate('H:i:s', $t));
         $visit = App::visitService()->checkIn($this->secretaryUserId, $this->patientId, $apptId);
         $visitId = (int) $visit['id'];
 
@@ -321,7 +327,8 @@ final class VisitFlowTest extends WP_UnitTestCase
             )
         );
         $expressPatientId = (int) $wpdb->insert_id;
-        $apptId = $this->makeAppointment($expressPatientId, $this->clinicianId, gmdate('Y-m-d'), gmdate('H:i:s', time() + 1800), isWalkinExpress: 1);
+        $t = time() + 1800;
+        $apptId = $this->makeAppointment($expressPatientId, $this->clinicianId, gmdate('Y-m-d', $t), gmdate('H:i:s', $t), isWalkinExpress: 1);
         $express = App::visitService()->checkIn($this->secretaryUserId, $expressPatientId, $apptId);
 
         $repo = new VisitRepository(App::db());
@@ -335,10 +342,13 @@ final class VisitFlowTest extends WP_UnitTestCase
 
     public function testNoShowSweepMarksOnlyUnvisitedLateAppointments(): void
     {
-        $late = $this->makeAppointment($this->patientId, $this->clinicianId, gmdate('Y-m-d'), gmdate('H:i:s', time() - 7200));
-        $upcoming = $this->makeAppointment($this->patientId, $this->clinicianId, gmdate('Y-m-d'), gmdate('H:i:s', time() + 3600));
+        $t = time() - 7200;
+        $late = $this->makeAppointment($this->patientId, $this->clinicianId, gmdate('Y-m-d', $t), gmdate('H:i:s', $t));
+        $t = time() + 3600;
+        $upcoming = $this->makeAppointment($this->patientId, $this->clinicianId, gmdate('Y-m-d', $t), gmdate('H:i:s', $t));
         // نوبت دیرهنگام با ویزیت فعال → نباید no_show شود (زمان یکتا — UNIQUE u_slot)
-        $visitedLate = $this->makeAppointment($this->patientId, $this->clinicianId, gmdate('Y-m-d'), gmdate('H:i:s', time() - 7140));
+        $t = time() - 7140;
+        $visitedLate = $this->makeAppointment($this->patientId, $this->clinicianId, gmdate('Y-m-d', $t), gmdate('H:i:s', $t));
         // بیمار دیگری برای نوبت سوم (قانون J-5 همان بیمار)
         global $wpdb;
         $now = App::db()->nowUtcSql();

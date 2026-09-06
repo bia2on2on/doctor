@@ -80,11 +80,13 @@ final class HandwritingFlowTest extends WP_UnitTestCase
     public function testCreateDocumentMakesDefaultPageAndAudits(): void
     {
         $visitId = $this->makeConsultation();
+        $visit = $this->visitRow($visitId);
 
         $doc = App::handwritingService()->createDocument($this->doctorUserId, $visitId, 'نسخه دست‌خط', []);
 
         $this->assertSame($visitId, (int) $doc['visit_id']);
-        $this->assertSame($this->patientId, (int) $doc['patient_id']);
+        $this->assertSame((int) $visit['patient_id'], (int) $doc['patient_id']);
+        $this->assertSame($this->clinicianId, (int) $doc['clinician_id']);
         $this->assertSame(1, (int) $doc['page_count']);
         $this->assertCount(1, $doc['pages']);
         $this->assertSame(1240, (int) $doc['pages'][0]['width']);
@@ -487,6 +489,22 @@ final class HandwritingFlowTest extends WP_UnitTestCase
     private function strokeData(): string
     {
         return base64_encode(gzencode(json_encode([$this->stroke()], JSON_UNESCAPED_UNICODE) ?: '[]') ?: '[]');
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function visitRow(int $visitId): array
+    {
+        $row = App::db()->fetchRow(
+            'SELECT * FROM ' . App::db()->table('cpms_visits') . ' WHERE id = %d LIMIT 1',
+            [$visitId]
+        );
+        if ($row === null) {
+            throw new \RuntimeException("visit {$visitId} not found");
+        }
+
+        return $row;
     }
 
     private function versionCount(int $pageId): int

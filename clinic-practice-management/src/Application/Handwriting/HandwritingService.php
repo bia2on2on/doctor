@@ -86,7 +86,9 @@ final class HandwritingService
 
             $created = [];
             foreach (array_values($pages) as $i => $p) {
-                $created[] = $this->handwriting->findPage($this->handwriting->insertPage($this->pageRow((array) $p, $i)));
+                $created[] = $this->handwriting->findPage(
+                    $this->handwriting->insertPage($this->pageRow((array) $p, $documentId, $i))
+                );
             }
             $this->handwriting->updateDocument($documentId, ['page_count' => count($created)]);
 
@@ -143,7 +145,7 @@ final class HandwritingService
         $index = count($existing); // append در انتها (U(document_id, page_index))
 
         $row = $this->db->transactional(function () use ($documentId, $page, $index): array {
-            $rowId = $this->handwriting->insertPage($this->pageRow($page, $index));
+            $rowId = $this->handwriting->insertPage($this->pageRow($page, $documentId, $index));
             $this->handwriting->updateDocument($documentId, ['page_count' => $index + 1]);
 
             return $this->handwriting->findPage($rowId);
@@ -391,9 +393,8 @@ final class HandwritingService
 
     /**
      * @param array<string, mixed> $page
-     * @param list<array<string, mixed>>|null $strokes
      */
-    private function pageRow(array $page, int $index): array
+    private function pageRow(array $page, int $documentId, int $index): array
     {
         $template = (string) ($page['background_template'] ?? 'lined');
         if (!in_array($template, self::TEMPLATES, true)) {
@@ -406,6 +407,7 @@ final class HandwritingService
         }
 
         return [
+            'document_id' => $documentId,
             'page_index' => $index,
             'width' => $width,
             'height' => $height,

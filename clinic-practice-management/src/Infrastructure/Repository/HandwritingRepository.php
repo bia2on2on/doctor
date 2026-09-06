@@ -30,7 +30,9 @@ final class HandwritingRepository
             'created_at' => $this->db->nowUtcSql(),
             'updated_at' => $this->db->nowUtcSql(),
         ];
-        $this->db->insert('cpms_handwriting_documents', $row);
+        if (!$this->db->insert('cpms_handwriting_documents', $row)) {
+            throw new \RuntimeException('cpms_handwriting_documents insert failed');
+        }
 
         return $this->db->wpdb_last_insert_id();
     }
@@ -85,7 +87,9 @@ final class HandwritingRepository
             'version' => 1,
             'updated_at' => $this->db->nowUtcSql(),
         ];
-        $this->db->insert('cpms_handwriting_pages', $row);
+        if (!$this->db->insert('cpms_handwriting_pages', $row)) {
+            throw new \RuntimeException('cpms_handwriting_pages insert failed');
+        }
 
         return $this->db->wpdb_last_insert_id();
     }

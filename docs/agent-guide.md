@@ -392,3 +392,10 @@ final class XxxService {
 - **F6 کامل شد** (جزئیات: `report-f6.md`): FinanceService/Controller/UI/Repos + ۱۷ تست Integration؛ CI سبز ۵/۵ روی 7121d56 (run 33996401245)؛ Integration = ۲۰۳ تست.
 - **ADR-0026** ثبت شد (تصریح کارفرما: نقش‌های پویا/Capability/Scope/Responsive) — بررسی معماری بدون Blocker؛ نقشه مهاجرت Debt نقش-محور در ADR؛ مستندات SRS/Permission/Security/Roadmap هم‌راستا.
 - **توقف طبق پروتکل:** F7 (دست‌خط) شروع نشده — منتظر تأیید کارفرما.
+
+### [2026-09-06 ~23:55 UTC] — ایجنت Arena — F7 دست‌خط کامل (CI نهایی در انتظار اتصال GitHub)
+
+- **F7 پیاده شد** (جزئیات: `report-f7.md`): Migration 0004 (background_attachment_id + ایندکس GC)، HandwritingService/Repository/Controller (F1/F1b/F1c/F2/F3 + پروتکل Revision ADR-0014 + Idempotency عمومی با context=pageId)، HandwritingGcHandler + RECURRING_JOBS، Settings hw.version_keep/max_age_days، DoctorHandwritingPage (ویرایشگر تمام‌صفحه: DPR/Pressure/Coalesced/Touch=pan-pinch/Erasor سطح-Stroke/Undo/Redo/Zoom/Full-screen/Multi-page/Template/Annotation E16/Auto-save→IndexedDB+PUT/Backoff 5..1800s/Resume online+focus/Conflict دو تب/Recovery محلی)، دکمه‌های 🖋️ در DoctorDashboardPage، HandwritingFlowTest (۱۵ تست).
+- **سه ریشه شکست CI پیدا و رفع شد:** (۱) import غلط `Infrastructure\Security\Settings` به‌جای `Settings\Settings` (TypeError ساخت سرویس — آبشاری به همه REST/Jobs)؛ (۲) `pageRow` بدون document_id (INSERT نمی‌افتاد → insert_id کهنه → findPage=null) + گارد RuntimeException روی insert شکست‌خورده در Repository؛ (۳) **Flakiness نیمه‌شب UTC** در تست‌های Visit/Queue (gmdate('Y-m-d') با time()±N جفت می‌شد — اجرای 23:00–00:00 UTC مسیر lazy no-show می‌گرفت؛ اصلاح: تاریخ+ساعت Slot از یک timestamp در VisitFlowTest/VisitLicenseGateTest/RestQueueTest).
+- **نکته برای CI های آینده:** CI ساعت ~23:3x UTC اجرا شد و Flakiness بالا آمد — اگر دوباره خطای 'walk_in' به‌جای 'scheduled' دیدید، اول ساعت UTC را چک کنید؛ ریشه اصلاح شد ولی بد نیست بدانید.
+- **توکن GitHub وسط جلسه منقضی شد** — کامیت 190d8c5 محلی آماده؛ push + CI نهایی پس از اتصال مجدد ثبت می‌شود (report §9).
