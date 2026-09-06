@@ -13,8 +13,6 @@
  * هیچ داده واقعی PHI وارد نمی‌شود.
  */
 
-declare(strict_types=1);
-
 use ClinicCore\Bootstrap\App;
 
 if (!defined('ABSPATH') || PHP_SAPI !== 'cli') {

@@ -20,8 +20,6 @@
  * خروجی: خطوط «PASS <id> — <title>» + JSON summary؛ exit 2 در صورت شکست.
  */
 
-declare(strict_types=1);
-
 use ClinicCore\Bootstrap\App;
 
 if (!defined('ABSPATH') || PHP_SAPI !== 'cli') {
