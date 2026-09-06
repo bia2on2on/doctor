@@ -22,10 +22,10 @@
 ## 3. وضعیت شواهد (صادقانه)
 | نوع | وضعیت |
 |---|---|
-| واحد تست (محلی WASM PHP 8.2) | **۲۷۰ تست، ۱۶٬۶۰۵ اِسert، ۰ شکست** (۸ خطای محیطی شناختهشده 32-bit بدون /dev/urandom؛ ۸ skip نیازمند sodium — در CI اجرا میشوند) |
+| واحد تست (محلی WASM PHP 8.2) | **۲۸۵ تست، ۱۶٬۶۶۱ اِسert، ۰ شکست** (۸ خطای محیطی شناختهشده 32-bit بدون /dev/urandom؛ ۸ skip نیازمند sodium — در CI اجرا میشوند) |
 | Lint (php -l همه فایلهای تغییر/جدید) | ✅ تمام فایلهای src/tests/bin — بدون خطای Syntax |
-| Integration/CI (WP 6.7 + MySQL 8 + pcntl + PHPUnit 9.6) | ⏳ **در انتظار اجرا** پس از push + PR (این sandbox MySQL/WP ندارد — BLOCKED_BY_ENVIRONMENT) |
-| 100-way پذیرش (§27/§28) | ⏳ CI (pcntl + MySQL) — کد نوشته و با الگوی VisitConcurrencyTest هماهنگ است |
+| Integration/CI (WP 6.7 + MySQL 8 + pcntl + PHPUnit 9.6) | ✅ **سبز** — run 34037362222 روی `1ddf51a` (Unit 8.1–8.4 + Integration همگی success) |
+| 100-way پذیرش (§27/§28) | ✅ **سبز در CI** (`SlotCapacityOneHundredWayTest` در run 34037362222 پاس شد؛ ۱۰۰ فرایند pcntl + اتصال مستقل MySQL) |
 | سرور مرکزی فروشنده (لایسنس/انتشار) | ⛔ خارج از repo — قرارداد + mock/fixture + Runbook (تأیید زنده BLOCKED_BY_ENVIRONMENT) |
 | اعمال نهایی Restore (DROP/ایمپورت) | ⛔ فقط CLI/Admin با تأیید؛ Preflight+Safety در CI اثبات میشود؛ اعمال مخرب = فرایند DR در محیط مجزا |
 | PHPStan | بدون ابزار موجود (همان F1–F9) — ادعای جعلی نمیشود |
@@ -39,11 +39,14 @@
 6. Entitlement کلید ناشناخته = fail-closed؛ شمارش/سقف پزشکان = V1.5 (بدون scope-creep).
 7. مرجع زمان پنجره = سرور (persisted)؛ عقبکشیدن ساعت پنجره را بلندتر نمیکند؛ بدون DRM مخرب.
 
-## 5. گامهای بعدی (پس از این گزارش — طبق §51 بدون تأیید کارفرما ادامه داده نمیشود)
-1. push شاخه + PR (CI واقعی)؛ رفع هر شکست CI بر اساس شواهد.
-2. تأیید کارفرما → merge و ادامه DoD باقیمانده (V1.1 items خیر).
+## 5. وضعیت (این گزارش بهروز تا تصمیم کارفرما 2026-09-06 و CI سبز 5/5)
+1. شاخه `arena/01a076ad-doctor` + PR #3؛ CI سبز (Unit 8.1–8.4 + Integration WP6.7/MySQL8 — run 34037362222).
+2. سیاست `NOT_CONFIGURED` طبق تصمیم کارفرما پیاده شد (پنجره ۷/۳۰ روزه، dev-mode صریح، anti-reset) — بخش ۴ بالا.
+3. باقیمانده تا گزارش تکمیل F10: همگامسازی نهایی مستندات + گزارش تکمیل (§50) و توقف برای تأیید کارفرما (§51).
 
-## 6. ریسکهای باز (مستند)
-- تستهای Integration تا اجرای CI تأیید نشدهاند (کد مطابق الگوهای موجود؛ ریسک پایین ولی صفر نیست).
+## 6. ریسکهای باز و BLOCKED_BY_ENVIRONMENT (مستند)
+- Pilot/Staging Gate روی شاخه، به دلیل زیرساخت runner (وبسرور هرگز start نمیشود: apache2 inactive/dead، بدون listener روی 80/8080) شکست میخورد — مستقل از کد F10؛ برای تأیید Pilot نیاز به محیط Pilot واقعی است.
 - کلیدهای رسمی Production (مجوز/انتشار) Placeholder هستند — fail-closed تا Release (مستند در ReleaseKeys).
-- عمق تستِ Health (رندر صفحه) در CI پوشش مستقیم ندارد — تأیید دستی در Pilot.
+- تأیید زندهٔ سرور فروشنده (لایسنس/انتشار) خارج از repo — قرارداد + mock/fixture + Runbook؛ BLOCKED_BY_ENVIRONMENT.
+- اعمال مخرب Restore (DROP/ایمپورت) فقط CLI/Admin با تأیید در محیط DR مجزا اجرا میشود؛ Preflight+Verify در CI سبز است.
+- عمق تستِ رندر صفحهٔ Health/Admin در CI پوشش مستقیم ندارد — تأیید دستی در Pilot.

@@ -204,8 +204,9 @@ final class BackupService
 
     public function deleteBackup(string $backupId): void
     {
-        $this->audit->log('BACKUP_DELETED', null, 'backup', null, null, null, null, ['backup_id' => $backupId]);
         $this->store->delete($backupId);
+        // Audit فقط پس از موفقیت واقعی (زنجیر شواهد صادقانه)
+        $this->audit->log('BACKUP_DELETED', null, 'backup', null, null, null, null, ['backup_id' => $backupId]);
         $this->op->info('BACKUP_DELETED', ['backup_id' => $backupId]);
     }
 

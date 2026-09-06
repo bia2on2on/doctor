@@ -56,6 +56,18 @@ Critical distinctions enforced in code and tests:
 ### 6. Error codes & logs
 New codes registered in `docs/api/error-codes.md`: `CLINIC_LICENSE_BLOCKED` (exists), `CLINIC_LICENSE_UNREACHABLE`, `CLINIC_LICENSE_INVALID`, `CLINIC_LICENSE_RESTRICTED`, `CLINIC_LICENSE_ENTITLEMENT`, `CLINIC_LICENSE_LIMIT_REACHED`, `CLINIC_LICENSE_ACTIVATION_FAILED`. Operational logs carry only license/install identifiers — never PHI, never signing secrets, never full tokens.
 
+### Distinction table (must never be conflated)
+
+| Concept | Trigger | Effect while it lasts | Ends how |
+|---|---|---|---|
+| **ACTIVATION_PENDING** | Fresh install, no signed doc yet, inside 7-day window (from migration 0008) | Setup/launch allowed; Admin/Health show countdown | Signed doc stored, or window ends → RESTRICTED |
+| **ACTIVATION_GRACE** | pre-F10 install upgraded to licensing, no doc yet, inside 30-day migration grace | Uninterrupted operation (no sudden disruption of existing customer) | Signed doc stored, or grace ends → RESTRICTED |
+| **GRACE (license)** | Valid cached doc *expired* within 7-day renewal grace | New business allowed with persistent warning (renewal path) | Renewed doc, or grace ends → RESTRICTED |
+| **UNREACHABLE** | Vendor server unreachable **after** a valid cached doc | Cached signed state governs (bounded 3-day post-expiry window), then explicit UNREACHABLE; network failure ≠ invalid | Server reachable again / doc refresh |
+| **RESTRICTED** | Entitlement expired beyond grace, or activation window/migration grace ended without a doc | New independent activity blocked; history/export/safe completion/hygiene always open | Valid signed doc stored |
+| **SUSPENDED / REVOKED** | *Verified signed* document flags it (never from network failure) | Same operational posture as RESTRICTED plus explicit reason; distinct from outage | New signed doc from vendor |
+| **DEVELOPMENT** | Explicit `CPMS_DEV_MODE`/`cpms_license_dev_mode` only | Everything open; visible 🧪 badge; no auto-detection | Constant/filter removed |
+
 ## Consequences
 + Privacy boundary preserved (control plane sees only install id, license id, normalized domain, version/compat metadata, entitlement state, activation count).
 + Outage behavior bounded and safe; revoked vs unreachable distinguishable via signatures.

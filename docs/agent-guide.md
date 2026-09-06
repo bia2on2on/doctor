@@ -465,5 +465,5 @@ final class XxxService {
 - **بهروزرسانی امن:** مانیفست انتشار Ed25519 با کلید جدا (ReleaseKeys)، بدون eval/کد از راه دور؛ entitlement گیت feature `updates`؛ UpdateService + کش transient.
 - **Health/UX:** SystemHealthService (چکهای بدون PHI + Host Capability SUPPORTED/WARNINGS/UNSUPPORTED) + صفحه «CPMS (سیستم)» (مجوز/Health/بکاپ/Restore/بهروزرسانی؛ cap `cpms_config`؛ nonce؛ بدون PHI).
 - **آزمون پذیرش ۱۰۰-راهی (§27/§28):** `SlotCapacityOneHundredWayTest` — ۱۰۰ فرایند همزمان با اتصال مستقل MySQL روی مسیر واقعی `SlotRepository::atomicBook`؛ ظرفیت ۱ → دقیقاً ۱ برنده؛ ظرفیت ۳ → دقیقاً ۳ (در CI اجرا میشود؛ این sandbox MySQL ندارد).
-- **واحدتست محلی (WASM PHP 8.2):** ۲۷۰ تست، ۱۶٬۶۰۵ اِسert، ۰ شکست (۸ خطای محیطی شناختهشده 32-bit؛ ۸ skip نیازمند sodium). Integration/CI در انتظار push + PR (BLOCKED_BY_ENVIRONMENT برای اجرای محلی WP/MySQL).
+- **واحدتست محلی (WASM PHP 8.2):** ۲۸۵ تست، ۱۶٬۶۶۱ اِسert، ۰ شکست (۸ خطای محیطی شناختهشده 32-bit؛ ۸ skip نیازمند sodium). **CI سبز ۵/۵** (Unit 8.1–8.4 + Integration WP6.7/MySQL8 — run 34037362222؛ شامل 100-way پذیرش و تستهای پنجرهٔ فعالسازی). اجرای محلی WP/MySQL در این sandbox ممکن نیست (BLOCKED_BY_ENVIRONMENT).
 - **گزارش F10 و توقف تا تأیید کارفرما** طبق §49–§51 در ادامه همین لاگ ثبت خواهد شد.
