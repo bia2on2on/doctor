@@ -130,7 +130,8 @@ jobs:
           ok('plugin-version', defined('CPMS_VERSION') && CPMS_VERSION === '1.0.0', defined('CPMS_VERSION') ? (string) CPMS_VERSION : '?');
           $schema = App::migrations()->currentVersion();
           ok('schema-0008', $schema === '2026_09_07_0008', (string) $schema);
-          $tables = (int) $wpdb->get_var("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name LIKE '" . esc_like($wpdb->prefix . 'cpms_') . "%'");
+          $cpmsPrefixLike = addcslashes($wpdb->prefix . 'cpms_', '_%\\');
+          $tables = (int) $wpdb->get_var("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name LIKE '{$cpmsPrefixLike}%'");
           ok('cpms-tables', $tables >= 30, 'tables=' . $tables);
           $roleDoctor = get_role('cpms_doctor');
           $roleSec = get_role('cpms_secretary');
@@ -454,7 +455,8 @@ jobs:
           ok('plugin-version', defined('CPMS_VERSION') && CPMS_VERSION === '1.0.0', defined('CPMS_VERSION') ? (string) CPMS_VERSION : '?');
           $schema = App::migrations()->currentVersion();
           ok('schema-0008', $schema === '2026_09_07_0008', (string) $schema);
-          $tables = (int) $wpdb->get_var("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name LIKE '" . esc_like($wpdb->prefix . 'cpms_') . "%'");
+          $cpmsPrefixLike = addcslashes($wpdb->prefix . 'cpms_', '_%\\');
+          $tables = (int) $wpdb->get_var("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name LIKE '{$cpmsPrefixLike}%'");
           ok('cpms-tables', $tables >= 30, 'tables=' . $tables);
           $roleDoctor = get_role('cpms_doctor');
           ok('roles-registered', $roleDoctor !== null && get_role('cpms_secretary') !== null && get_role('cpms_patient') !== null);
