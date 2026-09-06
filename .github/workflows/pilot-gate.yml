@@ -230,7 +230,21 @@ jobs:
           # apache2.service: PrivateTmp=true → DocumentRoot نباید زیر /tmp باشد
           sudo apache2ctl configtest && sudo service apache2 start
           sleep 2
-          curl -s -o /dev/null -w '%{http_code}\n' "$WP_URL/wp-json/" | grep -q 200 || { echo 'APACHE/WP NOT SERVING'; exit 1; }
+          echo "--- vhost ---"; sudo cat /etc/apache2/sites-available/pilot.conf
+          echo "--- htaccess ---"; ls -la "$WP_DIR/.htaccess" "$WP_DIR/index.php" 2>&1
+          echo "--- modules ---"; apache2ctl -M 2>/dev/null | grep -E 'rewrite|php' || sudo apache2ctl -M | grep -E 'rewrite|php'
+          echo "--- pretty /wp-json/ ---"
+          curl -s -o /tmp/root.json -w 'HTTP %{http_code}\n' "$WP_URL/wp-json/"
+          head -c 200 /tmp/root.json; echo
+          echo "--- plain ?rest_route=/ ---"
+          curl -s -o /tmp/rest.json -w 'HTTP %{http_code}\n' "$WP_URL/?rest_route=/"
+          head -c 200 /tmp/rest.json; echo
+          echo "--- homepage ---"
+          curl -s -o /tmp/home.html -w 'HTTP %{http_code}\n' "$WP_URL/"
+          if ! grep -q 200 <(curl -s -o /dev/null -w '%{http_code}' "$WP_URL/?rest_route=/"); then
+            echo 'WP ITSELF NOT SERVING (rest_route)'; exit 1
+          fi
+          curl -s -o /dev/null -w '%{http_code}\n' "$WP_URL/wp-json/" | grep -q 200 || { echo 'PRETTY PERMALINKS BROKEN (rewrite)'; exit 1; }
 
       # ---------- System Cron verification ----------
       - name: System Cron — daemon واقعی + bin/cpms (دستور تولید طبق user-guide)
@@ -546,6 +560,10 @@ jobs:
             sudo tail -15 /var/log/apache2/pilot-error.log 2>/dev/null || sudo tail -15 /var/log/apache2/error.log 2>/dev/null || true
             ls -la /etc/php/*/apache2/php.ini 2>/dev/null || echo '(no mod_php ini!)'
             curl -s -o /dev/null -w 'curl /wp-json/: %{http_code}\n' http://localhost:8080/wp-json/ 2>&1 || true
+            curl -s http://localhost:8080/ 2>&1 | head -c 300; echo
+            curl -s "http://localhost:8080/?rest_route=/" 2>&1 | head -c 300; echo
+            sudo cat /etc/apache2/sites-available/pilot.conf 2>/dev/null || true
+            cat "$WP_DIR/.htaccess" 2>/dev/null || echo '(no .htaccess)'
             echo '```'
           } > /tmp/debug.md
           PR=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number' 2>/dev/null || true)
@@ -705,6 +723,10 @@ jobs:
             sudo tail -15 /var/log/apache2/pilot-error.log 2>/dev/null || sudo tail -15 /var/log/apache2/error.log 2>/dev/null || true
             ls -la /etc/php/*/apache2/php.ini 2>/dev/null || echo '(no mod_php ini!)'
             curl -s -o /dev/null -w 'curl /wp-json/: %{http_code}\n' http://localhost:8080/wp-json/ 2>&1 || true
+            curl -s http://localhost:8080/ 2>&1 | head -c 300; echo
+            curl -s "http://localhost:8080/?rest_route=/" 2>&1 | head -c 300; echo
+            sudo cat /etc/apache2/sites-available/pilot.conf 2>/dev/null || true
+            cat "$WP_DIR/.htaccess" 2>/dev/null || echo '(no .htaccess)'
             echo '```'
           } > /tmp/debug.md
           PR=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number' 2>/dev/null || true)
@@ -792,6 +814,10 @@ jobs:
           sudo chmod a+rx /home/runner
           sudo chmod -R a+rX "$WP_DIR"
           sudo apache2ctl configtest && sudo service apache2 start && sleep 2
+          ls -la "$WP_DIR/.htaccess" 2>&1 || true
+          apache2ctl -M 2>/dev/null | grep rewrite || sudo apache2ctl -M 2>&1 | grep rewrite || echo 'NO REWRITE MODULE'
+          curl -s -o /dev/null -w 'pretty: %{http_code}\n' "$WP_URL/wp-json/"
+          curl -s -o /dev/null -w 'rest_route: %{http_code}\n' "$WP_URL/?rest_route=/"
           curl -s -o /dev/null -w '%{http_code}\n' "$WP_URL/wp-json/" | grep -q 200
       - name: Responsive smoke (4 viewport × 4 صفحه — بدون overflow افقی)
         env:
@@ -826,6 +852,10 @@ jobs:
             sudo tail -15 /var/log/apache2/pilot-error.log 2>/dev/null || sudo tail -15 /var/log/apache2/error.log 2>/dev/null || true
             ls -la /etc/php/*/apache2/php.ini 2>/dev/null || echo '(no mod_php ini!)'
             curl -s -o /dev/null -w 'curl /wp-json/: %{http_code}\n' http://localhost:8080/wp-json/ 2>&1 || true
+            curl -s http://localhost:8080/ 2>&1 | head -c 300; echo
+            curl -s "http://localhost:8080/?rest_route=/" 2>&1 | head -c 300; echo
+            sudo cat /etc/apache2/sites-available/pilot.conf 2>/dev/null || true
+            cat "$WP_DIR/.htaccess" 2>/dev/null || echo '(no .htaccess)'
             echo '```'
           } > /tmp/debug.md
           PR=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number' 2>/dev/null || true)
