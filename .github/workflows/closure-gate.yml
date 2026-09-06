@@ -18,6 +18,10 @@ permissions:
   actions: read
   pull-requests: write
 
+defaults:
+  run:
+    working-directory: clinic-practice-management
+
 env:
   GH_TOKEN: ${{ github.token }}
 
