@@ -15,6 +15,7 @@ on:
 permissions:
   contents: read
   actions: read
+  pull-requests: write
 
 defaults:
   run:
@@ -534,6 +535,13 @@ jobs:
                      /tmp/leak.txt /tmp/leak2.txt /tmp/cpms-tick.log /tmp/check-health.php /tmp/pw.log /tmp/resp.log; do
               if [ -f "$f" ]; then echo "--- $f (tail 50) ---"; tail -50 "$f"; fi
             done
+            echo '--- apache diagnostics ---'
+            sudo apache2ctl configtest 2>&1 | tail -5
+            sudo service apache2 status 2>&1 | tail -3
+            sudo ss -tlnp 2>/dev/null | grep -E ':(80|8080)\b' || echo '(no listener on 80/8080)'
+            sudo tail -15 /var/log/apache2/pilot-error.log 2>/dev/null || sudo tail -15 /var/log/apache2/error.log 2>/dev/null || true
+            ls -la /etc/php/*/apache2/php.ini 2>/dev/null || echo '(no mod_php ini!)'
+            curl -s -o /dev/null -w 'curl /wp-json/: %{http_code}\n' http://localhost:8080/wp-json/ 2>&1 || true
             echo '```'
           } > /tmp/debug.md
           PR=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number' 2>/dev/null || true)
@@ -660,7 +668,7 @@ jobs:
           WP_HOME="$WP_DIR" php /tmp/upgrade-check.php
           IDX=$(mysql -h127.0.0.1 -P3306 -uroot -proot -N -e "SELECT DISTINCT index_name FROM information_schema.statistics WHERE table_schema='$DB_MAIN' AND table_name='cpmswp_cpms_idempotency_keys';" | tr '\n' ' ')
           echo "idem indexes: $IDX"
-          echo "$IDX" | grep -q 'u_idem_4col' || { echo 'u_idem_4col MISSING'; exit 1; }
+          echo "$IDX" | grep -q 'u_idem_scope' || { echo 'u_idem_scope MISSING'; exit 1; }
           IDX2=$(mysql -h127.0.0.1 -P3306 -uroot -proot -N -e "SELECT DISTINCT index_name FROM information_schema.statistics WHERE table_schema='$DB_MAIN' AND table_name='cpmswp_cpms_clinicians';" | tr '\n' ' ')
           echo "clinician indexes: $IDX2"
           echo "$IDX2" | grep -q 'u_clinician_user' || { echo 'u_clinician_user MISSING'; exit 1; }
@@ -669,7 +677,7 @@ jobs:
             echo '## Upgrade Path (main/F8 → RC/F9 روی نصب واقعی)'
             echo '```'
             echo 'F8 schema: 2026_09_07_0005 → RC schema: 2026_09_07_0007'
-            echo 'legacy idem NULL→0 normalized; u_idem_4col + u_clinician_user present; داده دست‌نخورده'
+            echo 'legacy idem NULL→0 normalized; u_idem_scope + u_clinician_user present; داده دست‌نخورده'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -686,6 +694,13 @@ jobs:
                      /tmp/leak.txt /tmp/leak2.txt /tmp/cpms-tick.log /tmp/check-health.php /tmp/pw.log /tmp/resp.log; do
               if [ -f "$f" ]; then echo "--- $f (tail 50) ---"; tail -50 "$f"; fi
             done
+            echo '--- apache diagnostics ---'
+            sudo apache2ctl configtest 2>&1 | tail -5
+            sudo service apache2 status 2>&1 | tail -3
+            sudo ss -tlnp 2>/dev/null | grep -E ':(80|8080)\b' || echo '(no listener on 80/8080)'
+            sudo tail -15 /var/log/apache2/pilot-error.log 2>/dev/null || sudo tail -15 /var/log/apache2/error.log 2>/dev/null || true
+            ls -la /etc/php/*/apache2/php.ini 2>/dev/null || echo '(no mod_php ini!)'
+            curl -s -o /dev/null -w 'curl /wp-json/: %{http_code}\n' http://localhost:8080/wp-json/ 2>&1 || true
             echo '```'
           } > /tmp/debug.md
           PR=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number' 2>/dev/null || true)
@@ -797,6 +812,13 @@ jobs:
                      /tmp/leak.txt /tmp/leak2.txt /tmp/cpms-tick.log /tmp/check-health.php /tmp/pw.log /tmp/resp.log; do
               if [ -f "$f" ]; then echo "--- $f (tail 50) ---"; tail -50 "$f"; fi
             done
+            echo '--- apache diagnostics ---'
+            sudo apache2ctl configtest 2>&1 | tail -5
+            sudo service apache2 status 2>&1 | tail -3
+            sudo ss -tlnp 2>/dev/null | grep -E ':(80|8080)\b' || echo '(no listener on 80/8080)'
+            sudo tail -15 /var/log/apache2/pilot-error.log 2>/dev/null || sudo tail -15 /var/log/apache2/error.log 2>/dev/null || true
+            ls -la /etc/php/*/apache2/php.ini 2>/dev/null || echo '(no mod_php ini!)'
+            curl -s -o /dev/null -w 'curl /wp-json/: %{http_code}\n' http://localhost:8080/wp-json/ 2>&1 || true
             echo '```'
           } > /tmp/debug.md
           PR=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number' 2>/dev/null || true)
