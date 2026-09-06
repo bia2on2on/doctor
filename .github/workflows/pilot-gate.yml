@@ -146,7 +146,22 @@ jobs:
           wp config set DISABLE_WP_CRON true --raw --allow-root
           wp config set DISALLOW_FILE_EDIT true --raw --allow-root
           wp core install --url="$WP_URL" --title="CPMS Pilot Staging" --admin_user=pilot_admin --admin_password='Pilot-Gate-2026!' --admin_email=admin@pilot-staging.local --skip-email --allow-root
-          wp rewrite structure '/%postname%/' --hard --allow-root   # .htaccess واقعی + /wp-json/
+          wp rewrite structure '/%postname%/' --allow-root
+
+          # wp-cli --hard گاهی htaccess نمی‌نویسد؛ قواعد استاندارد WP مستقیم (معادل Save Permalinks)
+          cat > "$WP_DIR/.htaccess" <<'HT'
+          # BEGIN WordPress
+          <IfModule mod_rewrite.c>
+          RewriteEngine On
+          RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+          RewriteBase /
+          RewriteRule ^index\.php$ - [L]
+          RewriteCond %{REQUEST_FILENAME} !-f
+          RewriteCond %{REQUEST_FILENAME} !-d
+          RewriteRule . /index.php [L]
+          </IfModule>
+          # END WordPress
+          HT
           echo 'wp-config (production-like): WP_DEBUG off, salts unique, prefix cpmswp_, DISABLE_WP_CRON (system cron mode), DISALLOW_FILE_EDIT'
 
       - name: Deploy release ZIP (مثل آپلود واقعی افزونه در wp-admin)
@@ -777,7 +792,22 @@ jobs:
           wp config shuffle-salts --allow-root
           wp config set WP_DEBUG false --raw --allow-root
           wp core install --url="$WP_URL" --title="Responsive" --admin_user=pilot_admin --admin_password='Pilot-Gate-2026!' --admin_email=a@b.local --skip-email --allow-root
-          wp rewrite structure '/%postname%/' --hard --allow-root
+          wp rewrite structure '/%postname%/' --allow-root
+
+          # wp-cli --hard گاهی htaccess نمی‌نویسد؛ قواعد استاندارد WP مستقیم (معادل Save Permalinks)
+          cat > "$WP_DIR/.htaccess" <<'HT'
+          # BEGIN WordPress
+          <IfModule mod_rewrite.c>
+          RewriteEngine On
+          RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+          RewriteBase /
+          RewriteRule ^index\.php$ - [L]
+          RewriteCond %{REQUEST_FILENAME} !-f
+          RewriteCond %{REQUEST_FILENAME} !-d
+          RewriteRule . /index.php [L]
+          </IfModule>
+          # END WordPress
+          HT
           gh run download -n release-zip -D /tmp/release --repo "$GITHUB_REPOSITORY"
           unzip -q /tmp/release/clinic-practice-management-1.0.0.zip -d "$WP_DIR/wp-content/plugins/"
           wp plugin activate clinic-practice-management --path="$WP_DIR" --allow-root
