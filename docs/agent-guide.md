@@ -69,10 +69,14 @@ tests/
 | **F4 — مراجعه/صف (Check-in/Walk-in/Queue SM/Real-time/داشبورد منشی)** | ✅ **CI سبز** | `report-f4.md` |
 | F5 — بالینی (Notes/نسخه/توصیه/پیگیری/فایل/جستجو/داشبورد پزشک + Drift بسته) | ✅ CI سبز | `report-f5.md` |
 | **F6 — مالی (Invoice/Payment/Adjustment/Void/Refund/Receipt/Summary + تعرفه‌ها + داشبورد مالی منشی + ADR-0026)** | ✅ **CI سبز** | `report-f6.md` |
+| F7 — دست‌خط (Canvas/Offline Sync/Conflict) | ✅ CI سبز | `report-f7.md` |
+| F8 — اعلان + گزارش + Export | ✅ CI سبز | `report-f8.md` |
+| F9 — Hardening (Security T-01..T-24/TP-16/DoD V1) | ✅ CI سبز | `report-f9.md` |
+| **Pilot/Staging Readiness Gate** | 🔄 ۱۴ run — Release/Upgrade/Responsive سبز؛ Staging تا Backup ✅، Restore Drill آخر | `report-pilot-gate.md` |
 
 ### آخرین وضعیت فنی (verify شده)
 
-- **HEAD فعلی:** پایان F6 (7121d56) — وضعیت CI نهایی در report-f6.md
+- **HEAD فعلی:** Pilot/Staging Gate فعال روی `arena/01a071c4-doctor` (F9 کامل در `c5e82a7` + Gate tooling/fixes) — وضعیت لحظه‌ای در report-pilot-gate.md §15
 - **PR #1:** OPEN — هر ۵ چک (Unit PHP 8.1/8.2/8.3/8.4 + Integration WP 6.7.2 + MySQL 8)
 - **تست‌ها:** Unit سبز روی PHP 8.1–8.4؛ Integration بعد از F6 = ۲۰۳ تست (FinanceFlowTest ۱۷ + قبلی‌ها)، ۰ skip — شامل concurrency با fork واقعی
 - **Schema:** ۳۹ جدول `cpms_*` (مهاجرت‌های 0001–0003)؛ جدول فایل = `cpms_medical_attachments`
@@ -242,6 +246,14 @@ final class XxxService {
 10. **Retry سایز merge**: `array_merge(['status'=>$http], $data)` خطرناک — envelope اول است.
 11. **آیتم مرزی نیمه‌شب UTC** در تست‌های «امروز/فردا» — با آفست‌های زمانی مطمئن کار کن.
 12. **App helpers فایل plugin-level** (مثل `cpms_request_id`) — IIFE داخل `App::boot` در پروسه تست CI دیده نمی‌شوند؛ فایل plugin `clinic-practice-management.php`.
+13. **`wp eval-file` + `declare(strict_types=1)` = Fatal** — در کد eval شده، declare باید اولین statement باشد (docblock قبلش هم غیرمجاز) → در اسکریپتهای eval-file (pilot-*) declare نگذار.
+14. **`wp eval-file ... | tee` خطاهای stderr را گم می‌کند** → همیشه `2>&1 | tee` + `set -o pipefail`؛ وگرنه فایل لاگ خالی می‌ماند و root cause گم می‌شود.
+15. **Closure در اسکریپتهای eval-file**: متغیرهای خارجی ($wpdb/$db/...) باید صریحاً `use` شوند — خطای «Call to a member function on null» یعنی import جا افتاده.
+16. **اسکریپت تستGate باید با schema واقعی نوشته شود، نه حدس**: نمونه‌ها — `cpms_patient_user_links` ستون `linked_at/mobile_at_link/clinic_id` دارد (نه created_at)؛ جدول فایل `cpms_medical_attachments` و خروجی `upload()` = `presentFile` بدون `storage_path` (مسیر از DB بخوان)؛ ستونهای SMS: `recipient/event` (نه mobile/template)؛ status پیامکها **حروف بزرگ** (`SENT`/`QUEUED`).
+17. **قبل از نوشتن assert روی رفتار REST، api-contract.md/error-codes.md را بخوان**: گم‌شدن Nonce همیشه 403 `CLINIC_INVALID_NONCE` است (Guard استاندارد: Nonce→Capability)، نه 401 UNAUTHORIZED.
+18. **Runnerهای tick (WP-Cron و CLI) باید یک مسیر باشند** — هر Runner جدید از `App::runTick()` عبور کند؛ وگرنه recurringها بعد از اولین اجرا می‌ایستند (باگ Gate run 34023615811).
+19. **`wp rewrite structure --hard` روی برخی محیطها بی‌صدا .htaccess نمی‌نویسد** → heredoc مستقیم با قواعد استاندارد WP بنویس.
+20. **Apache روی runner: PrivateTmp فعال است** → فایلهای موقت بین پروسه PHP و apache به اشتراک گذاشته نمی‌شوند؛ مسیر آپلود را explicit کن.
 
 ---
 

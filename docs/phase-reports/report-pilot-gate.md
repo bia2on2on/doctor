@@ -64,12 +64,13 @@ Environment: Ubuntu 24.04 VM (4 vCPU)، MySQL 8 (Docker)، Apache 2.4.58 + mod_p
 ## 5. Cron & Background Jobs
 
 - **دستور تولید (user-guide):** `WP_HOME=... php bin/cpms jobs tick --limit=20` — اجرای واقعی → «Processed 10 job(s)»، خروج from `bin/cpms health`: `stale:no`.
-- **Recurring Jobs:** پس از tick، در صف: `cleanup.idem`، `cleanup.otp`، `cleanup.rate_limits`، `notif.dispatch`، `appt.reminder`، `fu.reminder` (هر ۶ مورد assert شد) + **صفر Job شکست‌خورده**.
+- **Recurring Jobs — اثبات با دو Tick پشت‌سرهم:** Tick دوم فقط اگر زمان‌بندی دوره‌ای زنده باشد جاب پردازش می‌کند → «Processed 10 job(s)» (هر ۱۰ نوع recurring)؛ در DB هر ۱۰ نوع recurring (`holds.expire, slots.generate, visits.no_show, handwriting.gc, notif.dispatch, appt.reminder, fu.reminder, cleanup.otp, cleanup.rate_limits, cleanup.idem`) **۶ بار اجرای موفق** + `sms.send` ۱۳ بار، **صفر Job شکست‌خورده**.
+- **یافته حین Gate (باگ واقعی + ریشه‌یابی + فیکس):** `bin/cpms jobs tick` (entrypoint مستند system-cron طبق ADR-0016/J-4) جاب‌های دوره‌ای را دوباره زمان‌بندی نمی‌کرد → در استقرار system-cron، recurringها بعد از اولین اجرا برای همیشه می‌ایستادند (نقض FR-5.5). **فیکس ریشه‌ای:** مسیر واحد `App::runTick()` (heartbeat + re-schedule idempotent + tick) برای WP-Cron و CLI + Regression test (`JobQueueTest::testRunTickReschedulesAndProcessesRecurringJobs`) + همگام‌سازی docs (background-jobs.md J-4، ADR-0016). این دقیقاً همان کلاس باگی است که Gate برای کشفش ساخته شده بود.
 - **System Cron:** crontab دقیقه‌ای نصب شد؛ daemon روی Runner افیمرال job اجرا نکرد (محدودیت شناخته‌شده GH Actions) → زمان‌بندی دقیقه‌ای با loop جدا اثبات شد (۳ tick متوالی، صف زنده ماند). **روی سرور Production:** crontab/systemd-timer طبق user-guide §Cron — Runbook §12.5.
 
 ## 6. Synthetic Pilot Data
 
-- Seed: `bin/pilot-seed.php` — **۴۰۰ بیمار + ۶۰۰ نوبت + ۳۵۰+ ویزیت + فاکتور/پرداخت/اعلان/ایندکسی Idempotency** + ۹۰۰ Slot تقویم (۳۰ روز × ۲ پزشک).
+- Seed: `bin/pilot-seed.php` — شمارش واقعی (خروجی run): **۴۰۰ بیمار، ۹۰۰ Slot تقویم (۳۰ روز × ۲ پزشک)، ۶۰۰ نوبت، ۳۶۰ ویزیت، ۲۰۷ فاکتور، ۱۸۱ پرداخت، ۱۰۸۰ اعلان، ۶۰ کلید Idempotency** — حجم DB: **2.22 MB**.
 - همه نشانگرها آشکارا ساختگی: نام «بیمار آزمایشی N»، موبایل `0912000NNNN`، MRN `SYN-NNNN`، کد نوبت `SYNAP-NNNNN`.
 - **هیچ داده واقعی بیماری در Pilot استفاده نشد** (قاعده کارفرما).
 
@@ -93,20 +94,25 @@ Environment: Ubuntu 24.04 VM (4 vCPU)، MySQL 8 (Docker)، Apache 2.4.58 + mod_p
 
 | Endpoint | c | p50 | p95 | p99 | RPS | Error |
 |---|---|---|---|---|---|---|
-| GET /health | 10/50/100 | *(از run نهایی)* | | | | 0 non-2xx |
-| GET /availability (تقویم — NFR-PERF-1) | 10/50/100 | | | | | 0 non-2xx |
-| GET /wp-json/ (مرجع core) | 50 | | | | | 0 |
+| GET /health | 10 | 189ms | 247ms | 276ms | 52.85 | 0 |
+| GET /health | 50 | 971ms | 1229ms | 1334ms | 53.14 | 0 |
+| GET /health | 100 | 1897ms | 2377ms | 2602ms | 53.51 | 0 |
+| GET /availability (تقویم — NFR-PERF-1) | 10 | 203ms | 265ms | 282ms | 49.39 | 0 |
+| GET /availability (تقویم — NFR-PERF-1) | 50 | 1001ms | 1344ms | 1435ms | 50.51 | 0 |
+| GET /availability (تقویم — NFR-PERF-1) | 100 | 2003ms | 2530ms | 2783ms | 50.28 | 0 |
+| GET /wp-json/ (مرجع WP core) | 50 | 1154ms | 1457ms | 1551ms | 44.16 | 0 |
 
-- معیار NFR-PERF-1: **P95 < 500ms @ 50 concurrent** — نتیجه Staging در run نهایی ثبت می‌شود؛ اندازه‌گیری معتبر نهایی طبق performance-baseline روی **سرور مرجع Production** انجام می‌شود (Runbook §12.3).
-- رگرسیون ساختاری F9 (گارد مالکیت = ۱ SELECT ایندکس‌دار) در Benchmark واقعی دیده نمی‌شود.
+- معیار NFR-PERF-1: **P95 < 500ms @ 50 concurrent** — در این محیط Staging (GH runner) برای هیچ endpointی (حتی مرجع WP core خودِ وردپرس: p95=1457ms) برآورده نشد؛ Throughput اشباع حدود ~50 RPS مستقل از c، با رشد خطی Latency → گلوگاه محیط (mod_php + تعداد محدود Apache workers + CPU اشتراکی runner)، نه افزونه: `/availability` افزونه **سریع‌تر از** مرجع core است (p50 1001ms در برابر 1154ms؛ p95 1344ms در برابر 1457ms). اندازه‌گیری معتبر نهایی طبق performance-baseline روی **سرور مرجع 4vCPU/8GB** انجام می‌شود (Runbook §12.3) — در چک‌لیست Go-Live.
+- Error rate در همه ۷ اندازه‌گیری: **صفر** (failed=0, non2xx=0)؛ ۱۰۰۰ request در هر اندازه‌گیری c=50.
+- مشاهده فرعی: در بار c=100، چند notice «Deadlock» گذرا روی `_transient_cpms_migrate_lock` در لاگ Apache ثبت شد (migrations idempotent — بدون اثر عملکردی؛ صف برای بهبود قفل رقابتی → Backlog).
 
 ## 9. Security Configuration Review
 
 - **wp-config:** `WP_DEBUG/WP_DEBUG_LOG/WP_DEBUG_DISPLAY` خاموش؛ ۸ Salt یکتا (تولید wp-cli)؛ prefix غیرپیش‌فرض؛ `DISALLOW_FILE_EDIT` روشن؛ `DISABLE_WP_CRON` (system-cron mode).
-- **Headers:** بدون `X-Powered-By` (expose_php=Off)؛ `ServerTokens Prod` / `ServerSignature Off`.
-- **File perms:** wp-config.php 660/640، storage خارج webroot با `.htaccess` دفاعی افزونه (`Require all denied`) — **تست واقعی: دسترسی مستقیم URL به فایل در مسیر داخل webroot → 403 از Apache**؛ مسیر فعال (`files.storage_path`) خارج DocumentRoot → از اساس غیرقابل‌دسترسی URL.
+- **Headers (اندازه‌گیری واقعی):** `X-Content-Type-Options: nosniff`، `X-Robots-Tag: noindex`، `X-CPMS-Correlation-Id` (هر پاسخ REST)؛ `Server: Apache` بدون نسخه (ServerTokens Prod)؛ بدون `X-Powered-By` (expose_php=Off).
+- **File perms (واقعی):** wp-config.php 644، wp-content 755، storage خارج webroot با `.htaccess` دفاعی افزونه (`Require all denied`) — **تست واقعی: دسترسی مستقیم URL به فایل در مسیر داخل webroot → 403 از Apache** (`AH01630: client denied by server configuration`)؛ مسیر فعال (`files.storage_path`) خارج DocumentRoot → از اساس غیرقابل‌دسترسی URL.
 - **PHI leakage scan (واقعی):** بعد از smoke+load، لاگهای `apache error log` + `cpms-tick.log` + `debug.log` + URLهای access-log با الگوهای Synthetic (MRN/موبایل/نام) اسکن شدند → **صفر match**.
-- **Audit:** `bin/cpms audit verify` → Hash-chain OK؛ رخدادهای واقعی گردش کار (فعال‌سازی، تراکنشها، دیدگاهها) ثبت.
+- **Audit:** `bin/cpms audit verify` → Hash-chain OK؛ ۲۰ نوع رخداد واقعی گردش کار در run ثبت شد (از جمله `APPOINTMENT_CREATED, HOLD_CREATED, VISIT_CALL/START/COMPLETE, NOTE_CREATED, INVOICE_CREATE, PAYMENT_CAPTURE, FILE_UPLOADED, EXPORT, REPORT_READ, OTP_REQUEST, OTP_SENT_OK, HW_DOC_CREATE/HW_PAGE_ADD/HW_PAGE_SAVE, APPOINTMENT_NO_SHOW, VISIT_WALK_IN, VISIT_SETTLED, VISIT_INVOICE_READY`).
 
 ## 10. Backup
 
@@ -186,7 +192,14 @@ Backup (DB+Storage) → MySQL دوم (@3307، instance مستقل) → Restore D
 | 34021526009 | ۲ fail | iteration 3 (mod_rewrite/htaccess، u_idem_scope) |
 | 34021666141 | ۲ fail | iteration 4 (.htaccess نوشته‌نشده توسط wp-cli) |
 | 34022014736 | ۱ fail | iteration 5 (Responsive ✅، Upgrade ✅؛ cron daemon) |
-| 34022234685 | ۱ fail | iteration 6 (fallback cron) |
-| run نهایی | — | ثبت نتیجه نهایی + اعداد Benchmark/Restore |
+| 34022234685 | ۱ fail | iteration 6 (manual tick OK؛ cron daemon runner اجرا نکرد) |
+| 34022450846 | ۱ fail | iteration 7 (cron با fallback loop ✓؛ fail = seed.json خالی — stderr گم شده) |
+| 34023342873 | ۱ fail | iteration 8 (stderr captured: `strict_types` در eval-file ممنوع) |
+| 34023615811 | ۱ fail | iteration 9 (Seed ✅ کامل؛ **باگ واقعی recurring در CLI کشف شد** → runTick fix) |
+| 34024171568 | ۱ fail | iteration 10 (Background Jobs ✅ دو-tick؛ Smokes ۵/۹ — باگهای اسکریپت نسبت به schema) |
+| 34024715888 | ۱ fail | iteration 11 (Smokes ۷/۹؛ S7 closure vars، S9 status بزرگ) |
+| 34024979176 | ۱ fail | iteration 12 (**Smokes ۹/۹ ✅**؛ fail = assert الگوی 401 vs قرارداد واقعی 403 NONCE) |
+| 34025267752 | ۱ fail | iteration 13 (REST ✅، **Benchmark ✅، Security ✅، Audit ✅، Backup ✅**؛ fail = Restore Drill — لاگ کامل ضبط شد) |
+| 34025811008 | در حال اجرا | iteration 14 (Restore Drill لاگ‌دار — PHASE 1..3d) |
 
 > ابزارهای Gate (build/seed/smoke/responsive + workflow) در repo: `bin/build-release.sh`، `bin/pilot-{seed,smoke,responsive}`، `.github/workflows/pilot-gate.yml` — قابلاجریای مجدد برای هر RC بعدی.
