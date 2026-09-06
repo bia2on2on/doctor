@@ -116,6 +116,16 @@ final class SignedLicenseGateTest extends TestCase
         $this->assertTrue($gate->isReadOnly());
     }
 
+    public function testNotConfiguredAllowsOperationButFlagsSetup(): void
+    {
+        // فعال‌سازی‌نشده: مجاز (ایمنی بیمار §1) — Health/Admin Setup را نشان می‌دهند
+        $gate = new SignedLicenseGate($this->provider(LicenseStatus::NOT_CONFIGURED));
+        $this->assertTrue($gate->assert(LicenseGate::OP_APPOINTMENT_BOOK)->allowed);
+        $this->assertTrue($gate->assert(LicenseGate::OP_PATIENT_CREATE)->allowed);
+        $this->assertFalse($gate->isReadOnly());
+        $this->assertSame(LicenseStatus::NOT_CONFIGURED, $gate->state());
+    }
+
     public function testUnknownStateFailsClosed(): void
     {
         $gate = new SignedLicenseGate($this->provider('bogus-state'));

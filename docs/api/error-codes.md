@@ -93,11 +93,21 @@
 
 > `SMS_FAILED` یک **روداد Log** (Operational) است، نه Code خطای API.
 
-## Licensing (Seam — F10 تکمیل می‌کند)
+## Licensing (F10 — ADR-0023)
 
-| Code | HTTP | Meaning |
-|---|---|---|
-| `CLINIC_LICENSE_BLOCKED` | 503 | لایسنس اجازه عملیات جدید را نمی‌دهد (Read-Only: Read/Export آزاد) — در F3 تعریف شد (Seam)، در F10 با جزئیات State تکمیل می‌شود |
+| Code | HTTP | Meaning | Retry-able |
+|---|---|---|---|
+| `CLINIC_LICENSE_BLOCKED` | 503 | لایسنس اجازه عملیات جدید را نمی‌دهد (RESTRICTED/SUSPENDED/REVOKED/INVALID/UNREACHABLE) — Read/تاریخچه/Export آزاد (spec §16) | — |
+| `CLINIC_LICENSE_UNREACHABLE` | 503 | سرویس لایسنس دسترس‌نیست (Network/Timeout/5xx) — قطع شبکه ≠ نامعتبر | ✅ |
+| `CLINIC_LICENSE_INVALID` | 503 | سند/امضا نامعتبر یا مربوط به نصب دیگر — با داده‌ی معتبرِ جدید رفع می‌شود | — |
+| `CLINIC_LICENSE_ENTITLEMENT` | 403 | Feature شامل سند جاری نیست (fail-closed برای کلید ناشناخته) | — |
+| `CLINIC_LICENSE_LIMIT_REACHED` | 409 | سقف مجاز (پزشک/کارمند/شعبه) در سند پر شده — تراکنشی و قطعی | — |
+| `CLINIC_LICENSE_ACTIVATION_FAILED` | 403 | کلید مجوز توسط سرور رد شد (401/403) | — |
+| `CLINIC_LICENSE_RATE_LIMITED` | 429 | سرور لایسنس Rate Limit — Backoff در Job | ✅ |
+| `CLINIC_LICENSE_SERVER_ERROR` | 502 | خطای گذرای سرور لایسنس | ✅ |
+| `CLINIC_LICENSE_MALFORMED` | 502 | پاسخ سرور لایسنس ساختار نامعتبر داشت | — |
+| `CLINIC_LICENSE_ENDPOINT_INSECURE` | 500 | Endpoint لایسنس باید HTTPS باشد | — |
+| `CLINIC_LICENSE_NOT_CONFIGURED` | 500 | آدرس سرور لایسنس تنظیم نشده (عملیات به‌صورت NOT_CONFIGURED ادامه دارد؛ Setup در Health/Admin) | — |
 
 ## Rule ثبت کد جدید
 

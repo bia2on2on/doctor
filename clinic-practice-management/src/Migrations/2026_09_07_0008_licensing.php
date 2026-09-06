@@ -20,7 +20,7 @@ use ClinicCore\Infrastructure\Db\CpmsDb;
  *    بازگشت این جدول‌ها = نصب دوباره باید دوباره فعال‌سازی شود (طبیعی).
  */
 return [
-    'version' => '2026_09_06_0008',
+    'version' => '2026_09_07_0008',
     'description' => 'F10 licensing local state: install identity + signed license doc',
     'up' => function (CpmsDb $db): void {
         $install = $db->table('cpms_license_install');

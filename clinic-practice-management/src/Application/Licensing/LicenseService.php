@@ -44,18 +44,20 @@ final class LicenseService implements LicenseStateProvider
 
     public function currentState(): array
     {
-        $row = $this->repo->state();
+        $row = $this->stateRowSafe();
         if ($row === null) {
+            // فعال‌سازی‌نشده → NOT_CONFIGURED (مجاز ولی برجسته در Health/Admin).
+            // هرگز UNREACHABLE نیست — «قطع شبکه با داشتن سند» جای خودش است.
             return [
-                'status' => LicenseStatus::UNREACHABLE,
-                'reason' => 'not_activated',
+                'status' => LicenseStatus::NOT_CONFIGURED,
+                'reason' => 'not_configured',
                 'expires_at' => null,
                 'needs_renewal' => false,
             ];
         }
 
         $payload = $this->decodePayload((string) ($row['payload_json'] ?? ''));
-        $verdict = $row['last_refresh_error'] === null || $row['last_refresh_error'] === ''
+        $verdict = ($row['last_refresh_error'] === null || $row['last_refresh_error'] === '')
             ? LicenseStateMachine::VERIFIED
             : LicenseStateMachine::UNREACHABLE;
 
@@ -71,7 +73,7 @@ final class LicenseService implements LicenseStateProvider
 
     public function entitlements(): EntitlementRegistry
     {
-        $row = $this->repo->state();
+        $row = $this->stateRowSafe();
         if ($row === null) {
             return new EntitlementRegistry();
         }
@@ -90,7 +92,7 @@ final class LicenseService implements LicenseStateProvider
      */
     public function statusMeta(): array
     {
-        $row = $this->repo->state();
+        $row = $this->stateRowSafe();
         $state = $this->currentState();
         $install = $this->installId();
 
@@ -155,7 +157,7 @@ final class LicenseService implements LicenseStateProvider
      */
     public function refresh(): array
     {
-        $row = $this->repo->state();
+        $row = $this->stateRowSafe();
         if ($row === null) {
             throw new LicenseGatewayException('No license to refresh — activate first', false, 'CLINIC_LICENSE_NOT_ACTIVATED');
         }
@@ -189,7 +191,7 @@ final class LicenseService implements LicenseStateProvider
     public function refreshDue(int $now = 0): bool
     {
         $now = $now > 0 ? $now : time();
-        $row = $this->repo->state();
+        $row = $this->stateRowSafe();
         if ($row === null || !$this->gateway->isConfigured()) {
             return false;
         }
@@ -232,6 +234,21 @@ final class LicenseService implements LicenseStateProvider
         }
 
         $this->repo->saveVerified($payload, $signatureB64, $licenseId);
+    }
+
+    /**
+     * خواندن امن state — قبل از اجرای Migration (اولین درخواست‌ها) یا در
+     * محیط‌های ناقص، جدول نبودن نباید مسیر کاری را بشکند (NOT_CONFIGURED).
+     *
+     * @return array<string, mixed>|null
+     */
+    private function stateRowSafe(): ?array
+    {
+        try {
+            return $this->repo->state();
+        } catch (\Throwable) {
+            return null;
+        }
     }
 
     /**

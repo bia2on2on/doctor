@@ -26,6 +26,8 @@ final class LicenseStatus
     public const UNREACHABLE = 'unreachable'; // جانشین UNKNOWN میراث F3
     public const THROTTLED = 'throttled';
 
+    public const NOT_CONFIGURED = 'not_configured';
+
     public const VALID = [
         self::ACTIVE,
         self::EXPIRING,
@@ -36,15 +38,21 @@ final class LicenseStatus
         self::INVALID,
         self::UNREACHABLE,
         self::THROTTLED,
+        self::NOT_CONFIGURED,
     ];
 
     /**
      * آیا اجازه «فعالیت تجاری مستقل جدید» (ثبت نوبت/ویزیت جدید/بیمار جدید/
      * فاکتور جدید/فعال‌سازی منابع جدید) داده می‌شود؟
+     *
+     * NOT_CONFIGURED (نصب فعال‌نشده/بدون سند) = مجاز ولی «فریادِ» Setup:
+     * ایمنی بیمار و یکپارچگی داده هرگز به‌خاطر فعال‌سازی‌نشدن قفل نمی‌شود
+     * (الویت §1) — Health/Admin آن را برجسته نشان می‌دهد. به‌محض وجود سند
+     * امضاشده، انفاذ واقعی (انقضا/GRACE/… ) شروع می‌شود.
      */
     public static function allowsNewBusiness(string $status): bool
     {
-        return in_array($status, [self::ACTIVE, self::EXPIRING, self::GRACE], true);
+        return in_array($status, [self::ACTIVE, self::EXPIRING, self::GRACE, self::NOT_CONFIGURED], true);
     }
 
     /**
@@ -73,6 +81,7 @@ final class LicenseStatus
     {
         return match ($status) {
             self::ACTIVE => 0,
+            self::NOT_CONFIGURED => 0,
             self::EXPIRING => 1,
             self::GRACE => 2,
             self::THROTTLED => 3,
