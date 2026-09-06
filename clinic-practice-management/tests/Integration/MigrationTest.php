@@ -16,7 +16,7 @@ use WP_UnitTestCase;
 final class MigrationTest extends WP_UnitTestCase
 {
     /** آخرین Migration موجود در src/Migrations (با افزودن Migration جدید به‌روز شود). */
-    private const LATEST_VERSION = '2026_09_06_0004';
+    private const LATEST_VERSION = '2026_09_07_0005';
 
     private const EXPECTED_TABLES = [
         'cpms_clinics', 'cpms_clinicians', 'cpms_patients', 'cpms_patient_user_links',

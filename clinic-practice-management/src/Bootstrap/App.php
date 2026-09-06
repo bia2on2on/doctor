@@ -18,15 +18,22 @@ use ClinicCore\Application\Clinical\MedicalFileService;
 use ClinicCore\Application\Finance\FinanceService;
 use ClinicCore\Application\Handwriting\HandwritingService;
 use ClinicCore\Application\Patients\PatientService;
+use ClinicCore\Application\Jobs\ApptReminderHandler;
+use ClinicCore\Application\Jobs\FollowUpReminderHandler;
 use ClinicCore\Application\Jobs\HandwritingGcHandler;
 use ClinicCore\Application\Jobs\HoldsExpireHandler;
 use ClinicCore\Application\Jobs\JobsDispatcher;
+use ClinicCore\Application\Jobs\NotifDispatchHandler;
 use ClinicCore\Application\Jobs\OtpCleanupHandler;
 use ClinicCore\Application\Jobs\RateLimitCleanupHandler;
+use ClinicCore\Application\Jobs\ReportExportHandler;
 use ClinicCore\Application\Jobs\SmsSendJobHandler;
 use ClinicCore\Application\Jobs\SlotsGenerateHandler;
 use ClinicCore\Application\Jobs\VisitsNoShowHandler;
+use ClinicCore\Application\Notifications\NotificationService;
 use ClinicCore\Application\Notifications\SmsService;
+use ClinicCore\Application\Reports\ExportService;
+use ClinicCore\Application\Reports\ReportService;
 use ClinicCore\Application\Visits\VisitService;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Domain\Licensing\ActiveLicenseGate;
@@ -42,6 +49,7 @@ use ClinicCore\Infrastructure\Repository\FollowUpRepository;
 use ClinicCore\Infrastructure\Repository\HandwritingRepository;
 use ClinicCore\Infrastructure\Repository\InvoiceRepository;
 use ClinicCore\Infrastructure\Repository\MedicalFileRepository;
+use ClinicCore\Infrastructure\Repository\NotificationRepository;
 use ClinicCore\Infrastructure\Repository\PaymentRepository;
 use ClinicCore\Infrastructure\Repository\PatientRepository;
 use ClinicCore\Infrastructure\Repository\PrescriptionRepository;
@@ -65,9 +73,11 @@ use ClinicCore\Rest\FilesController;
 use ClinicCore\Rest\FinanceController;
 use ClinicCore\Rest\HandwritingController;
 use ClinicCore\Rest\HealthController;
+use ClinicCore\Rest\NotificationsController;
 use ClinicCore\Rest\OtpController;
 use ClinicCore\Rest\PatientController;
 use ClinicCore\Rest\QueueController;
+use ClinicCore\Rest\ReportsController;
 use ClinicCore\Rest\ScheduleController;
 use ClinicCore\Rest\SmsController;
 use ClinicCore\Settings\Settings;
@@ -117,6 +127,8 @@ final class App
             (new FilesController(self::medicalFileService()))->register_routes();
             (new FinanceController(self::financeService()))->register_routes();
             (new HandwritingController(self::handwritingService()))->register_routes();
+            (new NotificationsController(self::notificationService()))->register_routes();
+            (new ReportsController(self::reportService(), self::exportService()))->register_routes();
             // Endpointهای فازهای بعد (F8+) — مطابق API Contract.
         });
 
@@ -246,7 +258,8 @@ final class App
                 self::audit(),
                 self::op(),
                 self::idem(),
-                self::smsService()
+                self::smsService(),
+                self::notificationService()
             );
         }
 
@@ -264,7 +277,9 @@ final class App
                 new AppointmentRepository($db),
                 self::settings(),
                 self::audit(),
-                self::licenseGate()
+                self::licenseGate(),
+                self::notificationService(),
+                self::op()
             );
         }
 
@@ -356,6 +371,61 @@ final class App
         }
 
         return $handwriting;
+    }
+
+    /**
+     * سرویس اعلان (F8) — N-1..N-6 (Internal + هم‌راهی SMS پایپ‌لاین موجود).
+     */
+    public static function notificationService(): NotificationService
+    {
+        static $notifications = null;
+        if ($notifications === null) {
+            $notifications = new NotificationService(
+                self::db(),
+                new NotificationRepository(self::db()),
+                self::settings(),
+                self::op()
+            );
+        }
+
+        return $notifications;
+    }
+
+    /**
+     * Storage محافظت‌شده (خارج webroot) — الگوی medicalFileService:
+     * عمداً بدون کش تا Setting files.storage_path تغییرپذیر بماند.
+     */
+    public static function localFileStorage(): LocalFileStorage
+    {
+        $configured = trim((string) self::settings()->get('files.storage_path', ''));
+
+        return new LocalFileStorage($configured !== '' ? $configured : LocalFileStorage::defaultBasePath());
+    }
+
+    /**
+     * سرویس گزارش (F8 — FR-19.2: ۱۲ گزارش، Scope سرور-side).
+     */
+    public static function reportService(): ReportService
+    {
+        return new ReportService(self::db(), self::settings(), self::audit());
+    }
+
+    /**
+     * سرویس Export گزارش (F8 — FR-19.3: async + CSV + Audit + دانلود محافظت‌شده).
+     */
+    public static function exportService(): ExportService
+    {
+        return new ExportService(
+            self::db(),
+            self::reportService(),
+            self::notificationService(),
+            new NotificationRepository(self::db()),
+            self::localFileStorage(),
+            self::jobs(),
+            self::settings(),
+            self::audit(),
+            self::op()
+        );
     }
 
     /**
@@ -569,7 +639,11 @@ final class App
                 ->register('slots.generate', new SlotsGenerateHandler($db, $settings, $op))
                 ->register('sms.send', new SmsSendJobHandler(self::smsService()))
                 ->register('visits.no_show', new VisitsNoShowHandler(self::visitService()))
-                ->register('handwriting.gc', new HandwritingGcHandler(self::handwritingService()));
+                ->register('handwriting.gc', new HandwritingGcHandler(self::handwritingService()))
+                ->register('notif.dispatch', new NotifDispatchHandler(self::notificationService(), self::exportService()))
+                ->register('appt.reminder', new ApptReminderHandler($db, $settings, self::smsService(), self::notificationService(), $op))
+                ->register('fu.reminder', new FollowUpReminderHandler($db, $settings, self::smsService(), self::notificationService(), $op))
+                ->register('report.export', new ReportExportHandler(self::exportService()));
 
             self::$dispatcher = $dispatcher;
         }
@@ -591,6 +665,9 @@ final class App
         'slots.generate' => 3,
         'visits.no_show' => 5, // FR-5.5 — no-show خودکار نوبت‌ها
         'handwriting.gc' => 2, // ADR-0009 — سیاست نگهداری نسخه‌ها (idempotent هر Tick)
+        'notif.dispatch' => 6, // F8 N-2/N-3 — queued→sent + Retention (idempotent هر Tick)
+        'appt.reminder' => 4, // F8 FR-20.6 — یادآوری نوبت (Dedupe دو-لایه)
+        'fu.reminder' => 4, // F8 — یادآوری Follow-Up (reminder_sent_at)
     ];
 
     public static function scheduleRecurringJobs(): void

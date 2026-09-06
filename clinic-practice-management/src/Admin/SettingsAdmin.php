@@ -80,6 +80,9 @@ final class SettingsAdmin
                 <tr><th>Retention Audit (سال)</th><td><?php echo esc_html((string) $settings->get('retention.audit_years')); ?></td></tr>
                 <tr><th>Retention پرونده (سال)</th><td><?php echo esc_html((string) $settings->get('retention.record_years')); ?></td></tr>
                 <tr><th>SMS Provider</th><td><?php echo esc_html((string) $settings->get('sms.provider')); ?></td></tr>
+                <tr><th>SMS Quiet Hours</th><td><?php echo esc_html((string) $settings->get('notif.quiet_hours_start') . ' – ' . (string) $settings->get('notif.quiet_hours_end')); ?></td></tr>
+                <tr><th>Retention اعلان‌ها (روز)</th><td><?php echo esc_html((string) $settings->get('notif.archive_days')); ?></td></tr>
+                <tr><th>سقف بازه گزارش (روز)</th><td><?php echo esc_html((string) $settings->get('reports.max_range_days')); ?></td></tr>
             </table>
             <p class="description">
                 یادآوری: این بخش صرفاً فنی است. دسترسی به PHI/Audit نیازمند Capability صریح

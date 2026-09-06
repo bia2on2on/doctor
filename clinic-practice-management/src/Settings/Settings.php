@@ -92,6 +92,14 @@ final class Settings
         // Real-time (ADR-0007)
         'rt.poll_sec_secretary' => 3,
         'rt.poll_sec_doctor' => 5,
+        // اعلان (F8 — notifications.md §5)
+        'notif.quiet_hours_start' => '08:00', // SMS غیرتعاملی فقط در این بازه (OTP مستثنا)
+        'notif.quiet_hours_end' => '21:00',
+        'notif.archive_days' => 90, // Retention اعلان‌های Internal
+        // گزارش (F8 — FR-19.3)
+        'reports.max_range_days' => 366, // سقف بازه گزارش/Export (bounded)
+        'reports.export_retention_days' => 7, // نگهداری فایل Export قبل از حذف
+        'reports.export_max_rows' => 10000, // سقف ردیف‌های Export
     ];
 
     /** @var array<string, mixed>|null */

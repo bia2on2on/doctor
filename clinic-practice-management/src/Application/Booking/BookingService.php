@@ -4,12 +4,14 @@ declare(strict_types=1);
 
 namespace ClinicCore\Application\Booking;
 
+use ClinicCore\Application\Notifications\NotificationService;
 use ClinicCore\Application\Notifications\SmsService;
 use ClinicCore\Domain\Booking\BookingException;
 use ClinicCore\Domain\Booking\BookingWindow;
 use ClinicCore\Domain\Licensing\LicenseGate;
 use ClinicCore\Domain\Machine\AppointmentMachine;
 use ClinicCore\Domain\Machine\InvalidTransitionException;
+use ClinicCore\Domain\Notifications\NotificationEvents;
 use ClinicCore\Domain\Sms\SmsEvents;
 use ClinicCore\Domain\Slots\DurationResolver;
 use ClinicCore\Domain\Time\Jalali;
@@ -55,7 +57,8 @@ final class BookingService
         private readonly AuditLogger $audit,
         private readonly OpLogger $op,
         private readonly Idempotency $idem,
-        private readonly SmsService $sms
+        private readonly SmsService $sms,
+        private readonly ?NotificationService $notifications = null
     ) {
     }
 
@@ -549,6 +552,9 @@ final class BookingService
         ]);
         $this->op->info('booking.rescheduled', ['old' => $appointmentId, 'new' => $newApptId, 'wp_user_id' => $wpUserId]);
 
+        // F8 §5 — نوبت قدیمی جایگزین شده → یادآوری‌های queued آن Cancel می‌شوند
+        $this->notifications?->cancelQueuedForAppointment($appointmentId);
+
         $patient = $this->patients->find((int) $oldAppt['patient_id']);
         if ($patient !== null) {
             $this->sendAppointmentSms(SmsEvents::APPT_RESCHEDULED, (string) $patient['mobile'], $newAppt);
@@ -725,10 +731,40 @@ final class BookingService
         );
         $this->op->info('booking.cancelled', ['appointment_id' => $appointmentId, 'by' => $wpUserId, 'actor' => $actor]);
 
-        if ((string) $appt['status'] === 'confirmed') {
-            $patient = $this->patients->find((int) $appt['patient_id']);
-            if ($patient !== null && $actor === 'patient') {
+        // F8 §5 — انصراف خودکار: لغو نوبت → Cancel اعلان‌های queued مرتبط
+        // (یادآوری‌های queued همان نوبت — apt:{id}).
+        $this->notifications?->cancelQueuedForAppointment($appointmentId);
+
+        $patient = $this->patients->find((int) $appt['patient_id']);
+        if ((string) $appt['status'] === 'confirmed' && $patient !== null) {
+            if ($actor === 'patient') {
                 $this->sendAppointmentSms(SmsEvents::APPT_CANCELLED, (string) $patient['mobile'], $appt);
+            } elseif ($this->notifications !== null) {
+                // لغو توسط مطب → اعلان Internal به بیمار (کاتالوگ: APPT.cancelled)
+                try {
+                    $doctor = $this->db->fetchRow(
+                        'SELECT full_name FROM ' . $this->db->table('cpms_clinicians') . ' WHERE id = %d LIMIT 1',
+                        [(int) $appt['clinician_id']]
+                    );
+                    $clinic = (string) $this->db->fetchValue(
+                        'SELECT name FROM ' . $this->db->table('cpms_clinics') . ' WHERE id = 1 LIMIT 1'
+                    );
+                    $patientName = trim((string) $patient['first_name'] . ' ' . (string) $patient['last_name']);
+                    $this->notifications->publishToPatient(
+                        (int) $appt['patient_id'],
+                        NotificationEvents::APPT_CANCELLED,
+                        [
+                            'patient_name' => $patientName !== '' ? $patientName : 'بیمار گرامی',
+                            'doctor_name' => (string) ($doctor['full_name'] ?? 'پزشک'),
+                            'appointment_date' => Jalali::formatYmd((string) $appt['slot_date']),
+                            'appointment_time' => substr((string) $appt['slot_time'], 0, 5),
+                            'clinic_name' => $clinic !== '' ? $clinic : 'مطب',
+                        ],
+                        'apt:' . $appointmentId . ':cancelled:p' . (int) $appt['patient_id']
+                    );
+                } catch (Throwable $e) {
+                    $this->op->warning('booking.notif_failed', ['appointment_id' => $appointmentId, 'error' => $e->getMessage()]);
+                }
             }
         }
 
@@ -930,6 +966,8 @@ final class BookingService
 
     /**
      * SMS رویداد نوبت (بعد از Commit) — متغیرهای استاندارد ADR-0025.
+     * F8 (notifications.md §3): همراهِ SMS، اعلان Internal هم به Inbox بیمار
+     * می‌رود (APPT.confirmed/changed/cancelled = SMS+Internal) — Dedupe N-5.
      *
      * @param array<string, mixed> $appt
      */
@@ -951,23 +989,51 @@ final class BookingService
                 $patientName = 'بیمار گرامی';
             }
 
+            $vars = [
+                'patient_name' => $patientName,
+                'doctor_name' => (string) ($doctor['full_name'] ?? 'پزشک'),
+                'appointment_date' => Jalali::formatYmd((string) $appt['slot_date']),
+                'appointment_time' => substr((string) $appt['slot_time'], 0, 5),
+                'clinic_name' => $clinic !== '' ? $clinic : 'مطب',
+            ];
+
             $this->sms->sendEvent(
                 $event,
                 $mobile,
-                [
-                    'patient_name' => $patientName,
-                    'doctor_name' => (string) ($doctor['full_name'] ?? 'پزشک'),
-                    'appointment_date' => Jalali::formatYmd((string) $appt['slot_date']),
-                    'appointment_time' => substr((string) $appt['slot_time'], 0, 5),
-                    'clinic_name' => $clinic !== '' ? $clinic : 'مطب',
-                ],
+                $vars,
                 'appointment',
                 (int) $appt['id']
             );
+
+            // Internal هم‌زمان (SMS+Internal — notifications.md §3)؛
+            // شکست SMS/اعلان گردش‌کار را خراب نمی‌کند (try بیرونی).
+            if ($this->notifications !== null) {
+                $this->notifications->publishToPatient(
+                    (int) $appt['patient_id'],
+                    $this->internalEventForSms($event),
+                    $vars,
+                    'apt:' . (int) $appt['id'] . ':' . $event . ':p' . (int) $appt['patient_id']
+                );
+            }
         } catch (Throwable $e) {
             // SMS هرگز نباید Booking را شکست بدهد — Job/Retry خودش مدیریت می‌کند
             $this->op->warning('booking.sms_failed', ['event' => $event, 'appointment_id' => (int) $appt['id'], 'error' => $e->getMessage()]);
         }
+    }
+
+    /**
+     * نگاشت رویداد SMS → رویداد Internal (NotificationEvents).
+     */
+    private function internalEventForSms(string $smsEvent): string
+    {
+        return match ($smsEvent) {
+            SmsEvents::APPT_CONFIRMED => NotificationEvents::APPT_CONFIRMED,
+            SmsEvents::APPT_RESCHEDULED => NotificationEvents::APPT_CHANGED,
+            SmsEvents::APPT_CANCELLED => NotificationEvents::APPT_CANCELLED,
+            SmsEvents::APPT_REMINDER => NotificationEvents::APPT_REMINDER,
+            SmsEvents::FOLLOW_UP => NotificationEvents::FOLLOWUP_REMINDER,
+            default => '',
+        };
     }
 
     /**

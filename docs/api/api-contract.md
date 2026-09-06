@@ -123,8 +123,14 @@
 | G2 | CRUD `/config/services` | نوشتن: `cpms_config` (admin فنی)؛ خواندن: `cpms_invoice_read` (منشی/پزشک — فاکتورسازی سریع FR-14.9) **یا** `cpms_config` (admin فنی — P-3) | `GET ?scope=active|all`، `POST`، `PUT /{id}`، `DELETE /{id}` (غیرفعال‌سازی منطقی)؛ `{code, name, price}` — کد یکتا per-clinic |
 | G3 | PUT `/settings` | `cpms_config` |
 | G4 | GET `/audit?filters` | `cpms_audit_read` (Explicit) — **تأیید Admin** |
-| G5 | GET `/reports/{type}?from&to` + `POST /reports/{type}/export` | `cpms_report_read` / `cpms_export` |
-| G6 | GET `/notifications` (Internal, منشی/پزشک/بیمار) | نقش خود |
+| G5 | GET `/reports` — کاتالوگ ۱۲ گزارش مجاز Actor (label/missing/scope) | `cpms_report_read` (پیش‌فرض فقط پزشک — ماتریس §3) |
+| G5 | GET `/reports/{type}?from&to` — اجرای گزارش. **type ∈** `appointments_today, appointments_week, cancellations, no_shows, walk_ins, visits, avg_waiting, visit_duration, revenue, payment_methods, open_balances, follow_ups_due`. Scope سرور-side (ADR-0026): پزشکِ متصل به Clinician = **OWN** (فیلتر `clinician_id` اجباری — cross-doctor هرگز)؛ Aggregate مطب فقط برای دارنده `cpms_report_read` **بدون** Clinician-Link (اعطای صریح — الگوی حسابدار ماتریس §6). تفکیک Aggregate⊥Detail (D-8): مالی (`revenue/payment_methods/open_balances`) نیاز `cpms_finance_read` و بدون نام بیمار؛ عملیاتیِ دارای نام بیمار نیاز `cpms_patient_read`؛ `follow_ups_due` نیاز `cpms_medical_read` (بدون reason). بازه bounded (`reports.max_range_days`، پیش‌فرض ۳۶۶)؛ Audit `REPORT_READ` | `cpms_report_read` + Cap نوع |
+| G5 | GET `/reports/{type}/print?from&to` — نسخه چاپی HTML با **Watermark** (کاربر+زمان+Scope) برای چاپ/PDF مرورگر (PDF سرور = Backlog، پیش‌زمینه F6) | همان `GET /reports/{type}` |
+| G5 | POST `/reports/{type}/export` — درخواست CSV **async** (Job `report.export` — performance-baseline §18) → `{job_id, status:"queued"}`؛ Audit `EXPORT` (filters)؛ فایل CSV با BOM + محافظت Formula-Injection در Storage محافظت‌شده (خارج webroot) + اعلان Internal «آماده شد»؛ Retention `reports.export_retention_days` | `cpms_report_read` + Cap نوع + **`cpms_export`** (هیچ‌کس پیش‌فرض) |
+| G5 | GET `/reports/exports` — فهرست Exportهای خود Actor (از اعلان‌های `report_export_ready`) | `cpms_report_read` + `cpms_export` |
+| G5 | GET `/reports/exports/{id}/download` — دانلود محافظت‌شده: فقط مالک اعلان؛ منقضی → `410 CLINIC_EXPORT_EXPIRED`؛ Audit `EXPORT` | `cpms_report_read` + `cpms_export` + مالکیت |
+| G6 | GET `/notifications?unread=&limit=` — Inbox نقش خود (منشی/پزشک → گیرنده WP؛ بیمار متصل → `recipient_patient_id`) + `unread_count`؛ فقط رکوردهای خود Actor (IDOR-safe) | نقش CPMS (staff یا بیمار متصل) |
+| G6 | POST `/notifications/read` — `{ids:[..]}` یا `{all:true}` → علامت‌گذاری خوانده‌شده (فقط رکوردهای خود Actor) | نقش CPMS |
 
 ## 8. Payload نمونه‌ها
 
@@ -154,7 +160,7 @@
 | # | Method/Path | توضیح |
 |---|---|---|
 | R1 | `GET /rt/queue?since={event_id}` | تغییرات جدید صف از آخرین event (Etag-like)؛ منشی 3s، پزشک 5s؛ `ETag`/`304` برای کاهش بار |
-| R2 | `GET /rt/notifications` | اعلان‌های Internal جدید (badge) |
+| R2 | `GET /rt/notifications?since={id}` | اعلان‌های Internal جدید (badge) — `{notifications[], last_id, unread_count}`؛ `ETag`/`304` (الگوی R1)؛ Rate 60/min؛ منشی/پزشک/بیمار — Inbox خودشان (F8) |
 
 > Transport Layer (ADR-0007): کلاینت فقط یک `Transport` interface دارد؛ تعویض با WebSocket/SSE بعداً بدون تغییر BUI.
 

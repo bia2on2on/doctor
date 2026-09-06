@@ -4,11 +4,13 @@ declare(strict_types=1);
 
 namespace ClinicCore\Application\Visits;
 
+use ClinicCore\Application\Notifications\NotificationService;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Domain\Licensing\LicenseGate;
 use ClinicCore\Domain\Machine\AppointmentMachine;
 use ClinicCore\Domain\Machine\InvalidTransitionException;
 use ClinicCore\Domain\Machine\VisitMachine;
+use ClinicCore\Domain\Notifications\NotificationEvents;
 use ClinicCore\Domain\Visits\VisitException;
 use ClinicCore\Infrastructure\Audit\AuditLogger;
 use ClinicCore\Infrastructure\Db\CpmsDb;
@@ -47,7 +49,9 @@ final class VisitService
         private readonly AppointmentRepository $appointments,
         private readonly Settings $settings,
         private readonly AuditLogger $audit,
-        private readonly LicenseGate $licenseGate
+        private readonly LicenseGate $licenseGate,
+        private readonly ?NotificationService $notifications = null,
+        private readonly ?\ClinicCore\Infrastructure\Logging\OpLogger $opLog = null
     ) {
     }
 
@@ -241,7 +245,58 @@ final class VisitService
             'to_status' => $toStatus,
         ]);
 
+        // N-1 (F8): رویداد اعلان صف — INSERT داخل همان Transaction (N-2)؛
+        // شکست اعلان هرگز گردش‌کار صف را نمی‌شکند (قاعده کارفرما).
+        $this->publishQueueNotification($event, $visit, $actorUserId, $meta);
+
         return $this->presentVisit($visit);
+    }
+
+    /**
+     * QUEUE.called / QUEUE.ready_payment → اعلان Internal به منشی‌ها
+     * (notifications.md §3) — به‌جز فراخواننده؛ R1 مکمل است (Feed صف).
+     *
+     * @param array<string, mixed> $visit
+     * @param array<string, mixed> $meta
+     */
+    private function publishQueueNotification(string $event, array $visit, int $actorUserId, array $meta): void
+    {
+        if ($this->notifications === null) {
+            return;
+        }
+
+        try {
+            $patientName = trim((string) $this->db->fetchValue(
+                'SELECT CONCAT(p.first_name, \' \', p.last_name) FROM ' . $this->db->table('cpms_patients') . ' p WHERE p.id = %d LIMIT 1',
+                [(int) $visit['patient_id']]
+            ));
+            $room = trim((string) ($meta['room'] ?? ''));
+
+            if ($event === 'call') {
+                $this->notifications->publishToStaff(
+                    NotificationEvents::QUEUE_CALLED,
+                    [
+                        'patient_name' => $patientName !== '' ? $patientName : 'بیمار',
+                        'room' => $room !== '' ? $room : '—',
+                    ],
+                    // Dedupe per نوبتِ فراخوان: هر Recall چرخه جدیدی می‌سازد (r+1)
+                    'queue:called:v' . (int) $visit['id'] . ':r' . (int) ($visit['recall_count'] ?? 0),
+                    RolesAndCapabilities::QUEUE_READ,
+                    $actorUserId
+                );
+            } elseif ($event === 'invoice_ready') {
+                $this->notifications->publishToStaff(
+                    NotificationEvents::QUEUE_READY_PAYMENT,
+                    ['patient_name' => $patientName !== '' ? $patientName : 'بیمار'],
+                    'queue:pay:v' . (int) $visit['id'],
+                    RolesAndCapabilities::QUEUE_READ,
+                    $actorUserId
+                );
+            }
+        } catch (Throwable $e) {
+            // اعلان هرگز Transition را شکست نمی‌دهد (الگوی BookingService SMS)
+            $this->opLog?->warning('visit.notif_failed', ['visit_id' => (int) $visit['id'], 'error' => $e->getMessage()]);
+        }
     }
 
     // ================= D1/E1 — داشبورد امروز =================

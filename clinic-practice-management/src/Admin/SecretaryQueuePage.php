@@ -77,9 +77,23 @@ final class SecretaryQueuePage
     <h1 class="cpms-q-title">
         صف امروز
         <span class="cpms-q-live" id="cpms-q-live" title="به‌روزرسانی خودکار هر ۳ ثانیه">● زنده</span>
+        <span class="cpms-q-bell-wrap">
+            <button type="button" class="button-link cpms-q-bell" id="cpms-nf-bell" title="اعلان‌ها">
+                🔔 <span class="cpms-q-badge" id="cpms-nf-badge" style="display:none">0</span>
+            </button>
+        </span>
     </h1>
 
+    <div class="card cpms-q-panel" id="cpms-nf-panel" style="display:none">
+        <h2>اعلان‌ها</h2>
+        <div id="cpms-nf-list" class="cpms-nf-list"><p class="description">…</p></div>
+        <p>
+            <button type="button" class="button" id="cpms-nf-readall">علامت‌گذاری همه به‌عنوان خوانده‌شده</button>
+        </p>
+    </div>
+
     <div id="cpms-q-notice" class="notice" style="display:none"></div>
+    <div id="cpms-nf-toast" class="notice notice-success" style="display:none"></div>
 
     <div class="cpms-q-stats" id="cpms-q-stats"></div>
 
@@ -153,6 +167,15 @@ final class SecretaryQueuePage
 <style>
 .cpms-q-live { font-size: 12px; color: #00a32a; margin-inline-start: 8px; }
 .cpms-q-live.paused { color: #99a; }
+.cpms-q-bell-wrap { margin-inline-start: 10px; }
+.cpms-q-bell { background: none; border: none; cursor: pointer; font-size: 16px; position: relative; }
+.cpms-q-badge { background: #d63638; color: #fff; border-radius: 9px; font-size: 11px;
+    padding: 0 6px; margin-inline-start: 2px; }
+.cpms-nf-list { max-height: 260px; overflow-y: auto; }
+.cpms-nf-item { padding: 6px 8px; border-bottom: 1px solid #f0f0f1; }
+.cpms-nf-item.unread { background: #f0f6fc; }
+.cpms-nf-item b { display: block; }
+.cpms-nf-item time { color: #8c8f94; font-size: 11px; }
 .cpms-q-stats { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
 .cpms-q-stat { background: #fff; border: 1px solid #dcdcde; border-inline-start: 4px solid #2271b1;
     border-radius: 4px; padding: 8px 14px; min-width: 110px; }
@@ -193,8 +216,11 @@ window.CPMS_Q = <?php echo wp_json_encode($config); ?>;
         since: 0,
         etag: null,
         timer: null,
+        notifTimer: null,
         selectedPatient: null,
-        pollPaused: false
+        pollPaused: false,
+        nfSince: 0,
+        nfSeen: {}
     };
 
     var STATUS_LABELS = {
@@ -596,10 +622,74 @@ window.CPMS_Q = <?php echo wp_json_encode($config); ?>;
         }
     });
 
+    // ---------- اعلان‌ها (F8 — R2 + G6) ----------
+
+    function nfToast(n) {
+        var el = document.getElementById('cpms-nf-toast');
+        el.textContent = (n.event === 'queue_called' ? '📣 ' : '💰 ') + (n.body || n.title || '');
+        el.style.display = 'block';
+        clearTimeout(nfToast._t);
+        nfToast._t = setTimeout(function () { el.style.display = 'none'; }, 6000);
+    }
+
+    function nfBadge(count) {
+        var b = document.getElementById('cpms-nf-badge');
+        b.textContent = String(count);
+        b.style.display = count > 0 ? 'inline-block' : 'none';
+    }
+
+    function pollNotif() {
+        if (state.pollPaused || document.hidden) { return; }
+        api('GET', 'rt/notifications?since=' + state.nfSince).then(function (r) {
+            if (r.__notModified || r.__status !== 200) { return; }
+            var d = r.body.data || {};
+            nfBadge(d.unread_count || 0);
+            (d.notifications || []).forEach(function (n) {
+                if (n.id > state.nfSince) { state.nfSince = n.id; }
+                if (!state.nfSeen[n.id] && n.event !== 'report_export_ready') {
+                    state.nfSeen[n.id] = true;
+                    nfToast(n);
+                }
+            });
+        }).catch(function () {});
+    }
+
+    function nfPanelLoad() {
+        api('GET', 'notifications?limit=20').then(function (r) {
+            if (r.__status !== 200) { return; }
+            var d = r.body.data || {};
+            nfBadge(d.unread_count || 0);
+            var list = document.getElementById('cpms-nf-list');
+            if (!(d.notifications || []).length) {
+                list.innerHTML = '<p class="description">اعلانی نیست.</p>';
+                return;
+            }
+            list.innerHTML = d.notifications.map(function (n) {
+                return '<div class="cpms-nf-item' + (n.read_at ? '' : ' unread') + '">' +
+                    '<b>' + (n.title || n.event) + '</b>' +
+                    '<span>' + (n.body || '') + '</span>' +
+                    '<time>' + fmtTime(n.created_at) + '</time></div>';
+            }).join('');
+        }).catch(function () {});
+    }
+
+    document.getElementById('cpms-nf-bell').addEventListener('click', function () {
+        var p = document.getElementById('cpms-nf-panel');
+        var open = p.style.display === 'none';
+        p.style.display = open ? 'block' : 'none';
+        if (open) { nfPanelLoad(); }
+    });
+
+    document.getElementById('cpms-nf-readall').addEventListener('click', function () {
+        api('POST', 'notifications/read', { all: true }).then(function () { nfPanelLoad(); });
+    });
+
     // ---------- شروع ----------
 
     loadToday().catch(function (e) { notice(String(e.message || e), 'error'); });
     state.timer = setInterval(poll, CFG.poll_ms);
+    pollNotif();
+    state.notifTimer = setInterval(pollNotif, 10000); // Badge سبک‌تر از صف (ADR-0007)
 })();
 </script>
         <?php

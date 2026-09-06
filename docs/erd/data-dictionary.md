@@ -471,7 +471,8 @@
 | last_error | VARCHAR(255) | N | | |
 | dedupe_key | VARCHAR(190) | N | | **U** (ضد تکرار رویداد) |
 | sent_at / delivered_at / created_at / scheduled_at | DATETIME(3) | N | | |
-| Index: `idx_notif_rcpt (recipient_wp_user_id, status, created_at)`, `idx_notif_retry (status, next_retry_at)` |
+| read_at | DATETIME(3) | N | | read/unread اعلان Internal (Migration 0005 — notifications.md §5) |
+| Index: `idx_notif_rcpt (recipient_wp_user_id, status, created_at)`, `idx_notif_retry (status, next_retry_at)`, `idx_notif_patient (recipient_patient_id, status, created_at)` (0005) |
 
 ## 33. `cpms_jobs`
 | فیلد | نوع | Null | DF | توضیح |
