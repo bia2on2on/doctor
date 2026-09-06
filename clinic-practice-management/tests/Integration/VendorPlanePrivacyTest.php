@@ -239,11 +239,11 @@ final class VendorPlanePrivacyTest extends WP_UnitTestCase
     // ================= SSRF (هرگز به HTTP واقعی نرسد) =================
 
     /**
-     * @return list<string>
+     * هر Endpoint داخلی/خصوصی/متادیتا باید پیش از هر درخواست HTTP مسدود شود.
      */
-    public static function blockedEndpoints(): array
+    public function testPrivateLoopbackMetadataEndpointsAreBlockedBeforeAnyHttp(): void
     {
-        return [
+        $endpoints = [
             'http://127.0.0.1:8080/activate',
             'https://127.0.0.1/activate',
             'https://169.254.169.254/latest/meta-data/',
@@ -251,28 +251,25 @@ final class VendorPlanePrivacyTest extends WP_UnitTestCase
             'https://10.0.0.8/activate',
             'https://[::1]/activate',
         ];
-    }
+        foreach ($endpoints as $endpoint) {
+            $this->captured = [];
+            $this->httpFired = false;
+            $gateway = new HttpVendorGateway(['server_url' => $endpoint]);
 
-    /**
-     * @dataProvider blockedEndpoints
-     */
-    public function testPrivateLoopbackMetadataEndpointsAreBlockedBeforeAnyHttp(string $endpoint): void
-    {
-        $this->captured = [];
-        $this->httpFired = false;
-        $gateway = new HttpVendorGateway(['server_url' => $endpoint]);
-
-        $blocked = false;
-        try {
-            $gateway->activate(['install_id' => str_repeat('a', 32)]);
-        } catch (\Throwable $e) {
-            $blocked = true;
-            $code = $e instanceof SmsSendException ? $e->apiCode() : ($e instanceof \ClinicCore\Infrastructure\Licensing\LicenseGatewayException ? $e->apiCode() : get_class($e));
-            $this->assertNotSame('', (string) $code);
+            $blocked = false;
+            try {
+                $gateway->activate(['install_id' => str_repeat('a', 32)]);
+            } catch (\Throwable $e) {
+                $blocked = true;
+                $code = $e instanceof SmsSendException || $e instanceof \ClinicCore\Infrastructure\Licensing\LicenseGatewayException
+                    ? $e->apiCode()
+                    : get_class($e);
+                $this->assertNotSame('', (string) $code);
+            }
+            $this->assertTrue($blocked, "{$endpoint} باید مسدود می‌شد");
+            $this->assertFalse($this->httpFired, "{$endpoint}: درخواست HTTP واقعی شلیک شد (SSRF)");
+            $this->assertSame([], $this->captured);
         }
-        $this->assertTrue($blocked, "{$endpoint} باید مسدود می‌شد");
-        $this->assertFalse($this->httpFired, "{$endpoint}: درخواست HTTP واقعی شلیک شد (SSRF)");
-        $this->assertSame([], $this->captured);
     }
 
     public function testUpdateEndpointPrivateIpIsBlocked(): void
