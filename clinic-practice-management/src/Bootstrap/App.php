@@ -23,6 +23,7 @@ use ClinicCore\Application\Jobs\FollowUpReminderHandler;
 use ClinicCore\Application\Jobs\HandwritingGcHandler;
 use ClinicCore\Application\Jobs\HoldsExpireHandler;
 use ClinicCore\Application\Jobs\JobsDispatcher;
+use ClinicCore\Application\Jobs\IdemCleanupHandler;
 use ClinicCore\Application\Jobs\NotifDispatchHandler;
 use ClinicCore\Application\Jobs\OtpCleanupHandler;
 use ClinicCore\Application\Jobs\RateLimitCleanupHandler;
@@ -636,6 +637,7 @@ final class App
                 ->register('holds.expire', new HoldsExpireHandler($db))
                 ->register('cleanup.otp', new OtpCleanupHandler($db))
                 ->register('cleanup.rate_limits', new RateLimitCleanupHandler(self::rate()))
+                ->register('cleanup.idem', new IdemCleanupHandler(self::idem()))
                 ->register('slots.generate', new SlotsGenerateHandler($db, $settings, $op))
                 ->register('sms.send', new SmsSendJobHandler(self::smsService()))
                 ->register('visits.no_show', new VisitsNoShowHandler(self::visitService()))
@@ -668,6 +670,10 @@ final class App
         'notif.dispatch' => 6, // F8 N-2/N-3 — queued→sent + Retention (idempotent هر Tick)
         'appt.reminder' => 4, // F8 FR-20.6 — یادآوری نوبت (Dedupe دو-لایه)
         'fu.reminder' => 4, // F8 — یادآوری Follow-Up (reminder_sent_at)
+        // F9 — پاک‌سازی Retention (قبلاً Handlerها ثبت بودند اما زمان‌بندی نمی‌شدند)
+        'cleanup.otp' => 1,
+        'cleanup.rate_limits' => 1,
+        'cleanup.idem' => 1, // Idempotency::cleanup — رشد بی‌کران را می‌بندد
     ];
 
     public static function scheduleRecurringJobs(): void

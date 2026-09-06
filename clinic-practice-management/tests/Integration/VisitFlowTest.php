@@ -67,6 +67,16 @@ final class VisitFlowTest extends WP_UnitTestCase
 
         $this->secretaryUserId = $this->makeUser('visit_secretary', 'cpms_secretary');
         $this->doctorUserId = $this->makeUser('visit_doctor', 'cpms_doctor');
+
+        // F9 (ADR-0027 Minor #3): پزشک متصل به Clinician — گارد مالکیت ویزیت
+        global $wpdb;
+        $wpdb->query(
+            $wpdb->prepare(
+                'UPDATE ' . $wpdb->prefix . 'cpms_clinicians SET wp_user_id = %d WHERE id = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $this->doctorUserId,
+                $this->clinicianId
+            )
+        );
     }
 
     // ================= V1 — Check-in =================

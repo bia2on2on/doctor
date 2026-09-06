@@ -10,9 +10,17 @@ use ClinicCore\Infrastructure\Db\CpmsDb;
  * Idempotency (NFR/ER-05, ER-19, T-18):
  *
  * کلاینت: Header `Idempotency-Key: <uuid>`.
- * سرور:   (invoice_id|context, key) → یا پاسخ ذخیره‌شده (Replay) یا Claim جدید.
+ * سرور:   (key, endpoint, wp_user_id, context_id) → یا پاسخ ذخیره‌شده (Replay)
+ * یا Claim جدید.
  *
- * چرخه: check() → [عمل] → complete() | fail() (fail = آزادسازی کلید برای تلاش مجدد).
+ * چرخه: check() → [عمل] → complete() | release() (release = آزادسازی کلید برای
+ * تلاش مجدد).
+ *
+ * F9 (ریشه‌یابی بدهی F7 §9): دامنه یکتایی/کتاب‌keeping از این پس دقیقاً همان
+ * چهار ستون است (u_idem_scope — Migration 0006). نکته حیاتی: wpdb->prepare
+ * مقدار NULL را برای %d به «0» تبدیل می‌کند، بنابراین الگوی `<=> %d` هرگز
+ * ردیف NULL را پیدا نمی‌کرد؛ به‌جای آن NULL در مرز API به 0 نرمال می‌شود
+ * (ستون‌ها NOT NULL DEFAULT 0 — بدون سوراخ NULL در UNIQUE).
  */
 final class Idempotency
 {
@@ -28,16 +36,15 @@ final class Idempotency
      */
     public function check(string $key, string $endpoint, ?int $userId, ?int $contextId = null, ?int $clinicId = 1): array
     {
-        $existing = $this->db->fetchRow(
-            'SELECT response_code, response_json, status FROM ' . $this->db->table('cpms_idempotency_keys') .
-            ' WHERE `key` = %s AND endpoint = %s AND (wp_user_id <=> %d) AND (context_id <=> %d) LIMIT 1',
-            [$key, $endpoint, $userId, $contextId]
-        );
+        $userId = $userId ?? 0;
+        $contextId = $contextId ?? 0;
+
+        $existing = $this->find($key, $endpoint, $userId, $contextId);
 
         if ($existing === null) {
-            $this->db->insert('cpms_idempotency_keys', [
+            $inserted = $this->db->insert('cpms_idempotency_keys', [
                 'key' => $key,
-                'clinic_id' => $clinicId,
+                'clinic_id' => $clinicId ?? 1,
                 'wp_user_id' => $userId,
                 'endpoint' => $endpoint,
                 'context_id' => $contextId,
@@ -47,7 +54,16 @@ final class Idempotency
                 'created_at' => $this->db->nowUtcSql(),
             ]);
 
-            return ['is_replay' => false, 'response' => null, 'response_code' => null];
+            if (!$inserted) {
+                // برخورد UNIQUE = Request موازی با همان دامنه (race) — دوباره می‌خوانیم:
+                $existing = $this->find($key, $endpoint, $userId, $contextId);
+                if ($existing === null) {
+                    // خطای غیر-یونیک (مثلاً DB down) — رفتار قبلی: مسیر تازه
+                    return ['is_replay' => false, 'response' => null, 'response_code' => null];
+                }
+            } else {
+                return ['is_replay' => false, 'response' => null, 'response_code' => null];
+            }
         }
 
         if ((int) $existing['status'] === self::STATUS_DONE && $existing['response_json'] !== null) {
@@ -72,15 +88,15 @@ final class Idempotency
         $this->db->query(
             'UPDATE ' . $this->db->table('cpms_idempotency_keys') .
             ' SET status = %d, response_code = %d, response_json = %s
-             WHERE `key` = %s AND endpoint = %s AND (wp_user_id <=> %d) AND (context_id <=> %d)',
+             WHERE `key` = %s AND endpoint = %s AND wp_user_id = %d AND context_id = %d',
             [
                 self::STATUS_DONE,
                 $responseCode,
                 json_encode($response, JSON_UNESCAPED_UNICODE) ?: 'null',
                 $key,
                 $endpoint,
-                $userId,
-                $contextId,
+                $userId ?? 0,
+                $contextId ?? 0,
             ]
         );
     }
@@ -92,8 +108,8 @@ final class Idempotency
     {
         $this->db->query(
             'DELETE FROM ' . $this->db->table('cpms_idempotency_keys') .
-            ' WHERE `key` = %s AND endpoint = %s AND (wp_user_id <=> %d) AND (context_id <=> %d) AND status = %d',
-            [$key, $endpoint, $userId, $contextId, self::STATUS_PENDING]
+            ' WHERE `key` = %s AND endpoint = %s AND wp_user_id = %d AND context_id = %d AND status = %d',
+            [$key, $endpoint, $userId ?? 0, $contextId ?? 0, self::STATUS_PENDING]
         );
     }
 
@@ -107,6 +123,18 @@ final class Idempotency
         return $this->db->query(
             'DELETE FROM ' . $this->db->table('cpms_idempotency_keys') . ' WHERE created_at < %s',
             [$cutoff]
+        );
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function find(string $key, string $endpoint, int $userId, int $contextId): ?array
+    {
+        return $this->db->fetchRow(
+            'SELECT response_code, response_json, status FROM ' . $this->db->table('cpms_idempotency_keys') .
+            ' WHERE `key` = %s AND endpoint = %s AND wp_user_id = %d AND context_id = %d LIMIT 1',
+            [$key, $endpoint, $userId, $contextId]
         );
     }
 }

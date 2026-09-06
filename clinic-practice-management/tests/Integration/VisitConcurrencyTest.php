@@ -60,6 +60,15 @@ final class VisitConcurrencyTest extends WP_UnitTestCase
 
         $this->secretaryUserId = $this->makeUser('vc_secretary', 'cpms_secretary');
         $this->doctorUserId = $this->makeUser('vc_doctor', 'cpms_doctor');
+
+        // F9 (ADR-0027 Minor #3): پزشک متصل به Clinician — گارد مالکیت ویزیت
+        $wpdb->query(
+            $wpdb->prepare(
+                'UPDATE ' . $wpdb->prefix . 'cpms_clinicians SET wp_user_id = %d WHERE id = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $this->doctorUserId,
+                $this->clinicianId
+            )
+        );
     }
 
     protected function tearDown(): void

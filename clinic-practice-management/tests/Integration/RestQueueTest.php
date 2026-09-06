@@ -72,6 +72,15 @@ final class RestQueueTest extends WP_UnitTestCase
         $this->patientUserId = $this->makeUser('rq_patient', 'cpms_patient');
         $this->secretaryUserId = $this->makeUser('rq_secretary', 'cpms_secretary');
         $this->doctorUserId = $this->makeUser('rq_doctor', 'cpms_doctor');
+
+        // F9 (ADR-0027 Minor #3): پزشک متصل به Clinician — گارد مالکیت ویزیت
+        $wpdb->query(
+            $wpdb->prepare(
+                'UPDATE ' . $wpdb->prefix . 'cpms_clinicians SET wp_user_id = %d WHERE id = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $this->doctorUserId,
+                $this->clinicianId
+            )
+        );
     }
 
     // ================= TP-04/TP-09 — Nonce/Auth =================

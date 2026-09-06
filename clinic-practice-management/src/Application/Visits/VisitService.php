@@ -188,6 +188,13 @@ final class VisitService
         string $event,
         array $meta = []
     ): array {
+        // F9 (ADR-0027 Minor #3) — گارد مالکیت «قبل از Transaction» تا Auditِ
+        // رد شدن (FORBIDDEN_ACCESS_ATTEMPT) با Rollback از بین نرود.
+        $preVisit = $this->visits->find($visitId);
+        if ($preVisit !== null) {
+            $this->guardDoctorTransitionOwnership($actorUserId, $preVisit);
+        }
+
         return $this->db->transactional(function () use ($actorUserId, $visitId, $event, $meta): array {
             $visit = $this->visits->findForUpdate($visitId);
             if ($visit === null) {
@@ -219,6 +226,15 @@ final class VisitService
         $visitId = (int) $visit['id'];
         $actorRole = $forceRole ?? ($this->roleForUser($actorUserId) ?? 'secretary');
         $fromStatus = (string) $visit['status'];
+
+        // F9 (ADR-0027 Minor #3) — Resource Authorization سرور-side:
+        // پزشک فقط روی ویزیت «خودش» (Clinician متصل به حسابش) Transition می‌زند؛
+        // منشی/سیستم در V1 دامنه مطب دارند (Scope کامل = ADR-0026/V2).
+        // (transition() همین گارد را قبل از Transaction هم اجرا می‌کند تا Auditِ
+        // رد شدن Rollback نشود؛ اینجا defense-in-depth برای فراخوانی مستقیم است.)
+        if ($forceRole === null) {
+            $this->guardDoctorTransitionOwnership($actorUserId, $visit);
+        }
 
         $toStatus = $this->machineCheck($fromStatus, $event, $actorRole);
         $row = $this->patchForEvent($visit, $event, $toStatus, $actorUserId, $meta);
@@ -891,8 +907,41 @@ final class VisitService
     }
 
     /**
-     * @param array<string, mixed> $meta
+     * F9 (ADR-0027 Minor #3) — مالکیت ویزیت پزشک: Clinician متصل به حسابِ
+     * Actor باید همان Clinician ویزیت باشد (الگوی ClinicalService::requireOwnVisit).
+     * فقط نقش doctor را می‌گیرد؛ منشی/سیستم در V1 دامنه مطب دارند (ADR-0026/V2).
+     *
+     * @param array<string, mixed> $visit
      */
+    private function guardDoctorTransitionOwnership(int $actorUserId, array $visit): void
+    {
+        if ($this->roleForUser($actorUserId) !== 'doctor') {
+            return;
+        }
+
+        $linkedClinicianId = $this->db->fetchValue(
+            'SELECT id FROM ' . $this->db->table('cpms_clinicians') .
+            ' WHERE wp_user_id = %d AND is_active = 1 LIMIT 1',
+            [$actorUserId]
+        );
+
+        if ($linkedClinicianId === null || (int) $linkedClinicianId !== (int) $visit['clinician_id']) {
+            // IDOR/Cross-doctor: 403 + Audit (الگوی T-01) — نه 404؛ وجود ویزیت
+            // برای دارنده QUEUE_READ آشکار است، رد شدنِ عملیات است که گزارش می‌شود.
+            $this->auditAndThrow(
+                $actorUserId,
+                'doctor',
+                'FORBIDDEN_ACCESS_ATTEMPT',
+                'visit',
+                (int) $visit['id'],
+                (int) $visit['patient_id'],
+                'پزشک فقط می‌تواند روی ویزیت‌های خودش عملیات صف انجام دهد (ADR-0027 — Scope صریح لازم دارد)',
+                403,
+                'CLINIC_PERMISSION_DENIED'
+            );
+        }
+    }
+
     private function auditAndThrow(
         int $wpUserId,
         string $role,

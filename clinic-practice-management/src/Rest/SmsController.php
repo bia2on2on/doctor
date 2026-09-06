@@ -27,25 +27,23 @@ final class SmsController extends RestBase
 
     public function register_routes(): void
     {
-        $cap = [RolesAndCapabilities::SMS_CONFIG];
-
         register_rest_route(self::NS, '/sms/status', [
-            ['methods' => WP_REST_Server::READABLE, 'callback' => fn (WP_REST_Request $r) => $this->status($r), 'permission_callback' => fn () => $this->can($cap)],
+            ['methods' => WP_REST_Server::READABLE, 'callback' => fn (WP_REST_Request $r) => $this->status($r), 'permission_callback' => '__return_true'],
         ]);
         register_rest_route(self::NS, '/sms/providers', [
-            ['methods' => WP_REST_Server::READABLE, 'callback' => fn (WP_REST_Request $r) => $this->providers($r), 'permission_callback' => fn () => $this->can($cap)],
+            ['methods' => WP_REST_Server::READABLE, 'callback' => fn (WP_REST_Request $r) => $this->providers($r), 'permission_callback' => '__return_true'],
         ]);
         register_rest_route(self::NS, '/sms/settings', [
-            ['methods' => WP_REST_Server::CREATABLE, 'callback' => fn (WP_REST_Request $r) => $this->saveSettings($r), 'permission_callback' => fn () => $this->can($cap)],
+            ['methods' => WP_REST_Server::CREATABLE, 'callback' => fn (WP_REST_Request $r) => $this->saveSettings($r), 'permission_callback' => '__return_true'],
         ]);
         register_rest_route(self::NS, '/sms/test-connection', [
-            ['methods' => WP_REST_Server::CREATABLE, 'callback' => fn (WP_REST_Request $r) => $this->testConnection($r), 'permission_callback' => fn () => $this->can($cap)],
+            ['methods' => WP_REST_Server::CREATABLE, 'callback' => fn (WP_REST_Request $r) => $this->testConnection($r), 'permission_callback' => '__return_true'],
         ]);
         register_rest_route(self::NS, '/sms/test-send', [
             [
                 'methods' => WP_REST_Server::CREATABLE,
                 'callback' => fn (WP_REST_Request $r) => $this->testSend($r),
-                'permission_callback' => fn () => $this->can($cap),
+                'permission_callback' => '__return_true',
                 'args' => [
                     'mobile' => ['required' => true, 'type' => 'string'],
                     'message' => ['required' => true, 'type' => 'string'],
@@ -56,14 +54,14 @@ final class SmsController extends RestBase
             [
                 'methods' => [WP_REST_Server::READABLE, WP_REST_Server::CREATABLE],
                 'callback' => fn (WP_REST_Request $r) => $r->get_method() === 'POST' ? $this->saveTemplate($r) : $this->templates(),
-                'permission_callback' => fn () => $this->can($cap),
+                'permission_callback' => '__return_true',
             ],
         ]);
         register_rest_route(self::NS, '/sms/templates/test', [
             [
                 'methods' => WP_REST_Server::CREATABLE,
                 'callback' => fn (WP_REST_Request $r) => $this->testTemplate($r),
-                'permission_callback' => fn () => $this->can($cap),
+                'permission_callback' => '__return_true',
                 'args' => [
                     'event' => ['required' => true, 'type' => 'string'],
                     'mobile' => ['required' => true, 'type' => 'string'],
@@ -75,11 +73,11 @@ final class SmsController extends RestBase
             [
                 'methods' => WP_REST_Server::READABLE,
                 'callback' => fn (WP_REST_Request $r) => $this->logs($r),
-                'permission_callback' => fn () => $this->can($cap),
+                'permission_callback' => '__return_true',
             ],
         ]);
         register_rest_route(self::NS, '/sms/balance', [
-            ['methods' => WP_REST_Server::READABLE, 'callback' => fn (WP_REST_Request $r) => $this->balance($r), 'permission_callback' => fn () => $this->can($cap)],
+            ['methods' => WP_REST_Server::READABLE, 'callback' => fn (WP_REST_Request $r) => $this->balance($r), 'permission_callback' => '__return_true'],
         ]);
     }
 
@@ -91,6 +89,10 @@ final class SmsController extends RestBase
         if ($e instanceof \WP_Error) {
             return $e;
         }
+        $p = $this->requireCap(RolesAndCapabilities::SMS_CONFIG);
+        if ($p instanceof \WP_Error) {
+            return $p;
+        }
 
         return $this->success($this->sms->status());
     }
@@ -101,6 +103,10 @@ final class SmsController extends RestBase
         if ($e instanceof \WP_Error) {
             return $e;
         }
+        $p = $this->requireCap(RolesAndCapabilities::SMS_CONFIG);
+        if ($p instanceof \WP_Error) {
+            return $p;
+        }
 
         return $this->success($this->smsProvidersList());
     }
@@ -110,6 +116,10 @@ final class SmsController extends RestBase
         $e = $this->requireNonce($request);
         if ($e instanceof \WP_Error) {
             return $e;
+        }
+        $p = $this->requireCap(RolesAndCapabilities::SMS_CONFIG);
+        if ($p instanceof \WP_Error) {
+            return $p;
         }
         try {
             return $this->success($this->sms->saveSettings($request->get_json_params() ?: [], $this->userId()));
@@ -124,6 +134,10 @@ final class SmsController extends RestBase
         if ($e instanceof \WP_Error) {
             return $e;
         }
+        $p = $this->requireCap(RolesAndCapabilities::SMS_CONFIG);
+        if ($p instanceof \WP_Error) {
+            return $p;
+        }
         $rl = $this->rateLimit($request, 'sms-test-' . $this->userId(), 10, 3600);
         if (is_wp_error($rl)) {
             return $rl;
@@ -137,6 +151,10 @@ final class SmsController extends RestBase
         $e = $this->requireNonce($request);
         if ($e instanceof \WP_Error) {
             return $e;
+        }
+        $p = $this->requireCap(RolesAndCapabilities::SMS_CONFIG);
+        if ($p instanceof \WP_Error) {
+            return $p;
         }
         $rl = $this->rateLimit($request, 'sms-send-' . $this->userId(), 10, 3600);
         if (is_wp_error($rl)) {
@@ -166,6 +184,10 @@ final class SmsController extends RestBase
         if ($e instanceof \WP_Error) {
             return $e;
         }
+        $p = $this->requireCap(RolesAndCapabilities::SMS_CONFIG);
+        if ($p instanceof \WP_Error) {
+            return $p;
+        }
         $params = $request->get_json_params() ?: [];
         $event = (string) ($params['event'] ?? '');
         $templateId = (string) ($params['template_id'] ?? '');
@@ -181,6 +203,10 @@ final class SmsController extends RestBase
         $e = $this->requireNonce($request);
         if ($e instanceof \WP_Error) {
             return $e;
+        }
+        $p = $this->requireCap(RolesAndCapabilities::SMS_CONFIG);
+        if ($p instanceof \WP_Error) {
+            return $p;
         }
         $rl = $this->rateLimit($request, 'sms-tmpl-' . $this->userId(), 20, 3600);
         if (is_wp_error($rl)) {
@@ -206,6 +232,10 @@ final class SmsController extends RestBase
         if ($e instanceof \WP_Error) {
             return $e;
         }
+        $p = $this->requireCap(RolesAndCapabilities::SMS_CONFIG);
+        if ($p instanceof \WP_Error) {
+            return $p;
+        }
 
         return $this->success(
             $this->sms->logs(
@@ -222,6 +252,10 @@ final class SmsController extends RestBase
         if ($e instanceof \WP_Error) {
             return $e;
         }
+        $p = $this->requireCap(RolesAndCapabilities::SMS_CONFIG);
+        if ($p instanceof \WP_Error) {
+            return $p;
+        }
 
         return $this->success($this->sms->balance());
     }
@@ -231,13 +265,6 @@ final class SmsController extends RestBase
     /**
      * @param list<string> $caps
      */
-    private function can(array $caps): bool
-    {
-        $user = wp_get_current_user();
-
-        return $user->exists() && $user->has_cap($caps[0]);
-    }
-
     private function userId(): int
     {
         return (int) get_current_user_id();
