@@ -18,9 +18,9 @@ use ClinicCore\Settings\Settings;
  *    سنجیده و package_sha256 برای نصب‌کننده‌ی استاندارد WP آماده می‌شود.
  *  - هرگز eval/کد از راه دور اجرا نمی‌کند؛ فقط authorize + integrity-verify.
  *
- * Entitlement (ADR-0023 §5): نصب فعال‌نشده (NOT_CONFIGURED) = به‌روزرسانی
- * آزاد (محیط توسعه/قبل از فعال‌سازی)؛ بعد از فعال‌سازی، feature `updates`
- * باید در سند باشد.
+ * Entitlement (ADR-0023 §5): پیش از فعال‌سازی (NOT_CONFIGURED/
+ * ACTIVATION_PENDING/ACTIVATION_GRACE) و حالت توسعه (DEVELOPMENT) =
+ * به‌روزرسانی آزاد؛ بعد از فعال‌سازی، feature `updates` باید در سند باشد.
  */
 final class UpdateService
 {
