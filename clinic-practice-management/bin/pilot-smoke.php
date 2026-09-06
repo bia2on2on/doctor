@@ -97,18 +97,20 @@ if ($existingPatientUser) {
     }
 }
 if ($patientUserId) {
+    // ستونهای واقعی schema: clinic_id + mobile_at_link + linked_at (نه created_at)
     $wpdb->query($wpdb->prepare(
         'INSERT INTO ' . $db->table('cpms_patient_user_links') . '
-             (patient_id, wp_user_id, is_primary, created_at)
-         VALUES (%d, %d, 1, %s)',
-        $patientId, $patientUserId, $now
+             (clinic_id, patient_id, wp_user_id, mobile_at_link, is_primary, linked_at)
+         VALUES (1, %d, %d, %s, 1, %s)',
+        $patientId, $patientUserId, '09120009999', $now
     ));
 }
 
 // Slot برای فردا (تقویم واقعی)
 $slotDate = gmdate('Y-m-d', time() + 86400);
+// INSERT IGNORE: idempotent نسبت به seed (شبکه ۹:۰۰+۲۰min را ساخته است)
 $wpdb->query($wpdb->prepare(
-    'INSERT INTO ' . $db->table('cpms_schedule_slots') . '
+    'INSERT IGNORE INTO ' . $db->table('cpms_schedule_slots') . '
          (clinic_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at)
      VALUES (1, %d, %s, %s, 20, 1, 0, 0, 1, %s, %s)',
     $clinicianId, $slotDate, '10:00', $now, $now
@@ -232,17 +234,45 @@ scenario('S5', 'Notifications: publish به بیمار + inbox منشی', functi
 });
 
 // ---------- S6: Reports + Export ----------
-scenario('S6', 'Reports/Export: اجرای گزارش + درخواست Export async', function () use ($secretaryId) {
-    $today = App::reportService()->run($secretaryId, 'appointments_today', null, null);
+scenario('S6', 'Reports/Export: اجرای گزارش + درخواست Export async', function () use ($secretaryId, $doctorUserId) {
+    // RBAC (طبق RolesAndCapabilities): منشی REPORT_READ ندارد → باید 403 بگیرد
+    $denied = false;
+    try {
+        App::reportService()->run($secretaryId, 'appointments_today', null, null);
+    } catch (\Throwable $e) {
+        $denied = true;
+    }
+    if (!$denied) {
+        throw new RuntimeException('secretary باید به گزارشها دسترسی نداشته باشد (RBAC)');
+    }
+
+    // پزشک REPORT_READ دارد → گزارش سبز
+    $today = App::reportService()->run($doctorUserId, 'appointments_today', null, null);
     if (!is_array($today)) {
         throw new RuntimeException('report failed');
     }
-    $export = App::exportService()->request($secretaryId, 'visits', gmdate('Y-m-d', time() - 7 * 86400), gmdate('Y-m-d'));
+
+    // Export نیازمند cpms_export است که هیچ نقش پیش‌فرضی ندارد (فنی P-3) →
+    // cap مستقیم به کاربر (الگوی مالک کلینیک) + قبلش negative check
+    $deniedExport = false;
+    try {
+        App::exportService()->request($doctorUserId, 'visits', gmdate('Y-m-d', time() - 7 * 86400), gmdate('Y-m-d'));
+    } catch (\Throwable $e) {
+        $deniedExport = true;
+    }
+    if (!$deniedExport) {
+        throw new RuntimeException('بدون cpms_export درخواست Export باید رد شود (RBAC)');
+    }
+    $u = get_userdata($doctorUserId);
+    if ($u !== false) {
+        $u->add_cap(\ClinicCore\Auth\RolesAndCapabilities::EXPORT);
+    }
+    $export = App::exportService()->request($doctorUserId, 'visits', gmdate('Y-m-d', time() - 7 * 86400), gmdate('Y-m-d'));
     if (!isset($export['job_id'])) {
         throw new RuntimeException('export request failed');
     }
     $n = App::dispatcher()->tick(5);
-    return 'appointments_today OK; export job #' . $export['job_id'] . ' (tick processed ' . $n . ')';
+    return 'RBAC 403s OK; appointments_today OK; export job #' . $export['job_id'] . ' (tick processed ' . $n . ')';
 });
 
 // ---------- S7: Protected medical files ----------
@@ -257,7 +287,12 @@ scenario('S7', 'Protected files: آپلود → ذخیره خارج webroot', fu
         'tmp_name' => $tmp,
         'error' => 0,
     ], $patientId, $visitIdRef ?: null, 'document', 'patient_visible');
-    $abs = App::localFileStorage()->absolutePath((string) $meta['storage_path']);
+    // upload() خروجی presentFile برمی‌گرداند (storage_path عمداً حذف می‌شود) → مسیر از DB
+    $storagePath = (string) $wpdb->get_var($wpdb->prepare(
+        'SELECT storage_path FROM ' . $db->table('cpms_medical_attachments') . ' WHERE id = %d',
+        (int) $meta['id']
+    ));
+    $abs = App::localFileStorage()->absolutePath($storagePath);
     if (!$abs || !is_file((string) $abs)) {
         throw new RuntimeException('file missing in protected storage');
     }
@@ -309,7 +344,7 @@ scenario('S9', 'SMS test path: event test → صف → LogSmsProvider → sent',
     App::dispatcher()->tick(10);
     $row = $wpdb->get_row(
         'SELECT status, provider, failure_code FROM ' . $db->table('cpms_sms_messages') . "
-         WHERE mobile = '09120009999' AND template = 'test' ORDER BY id DESC LIMIT 1",
+         WHERE recipient = '09120009999' AND event = 'test' ORDER BY id DESC LIMIT 1",
         ARRAY_A
     );
     if (!$row || $row['status'] !== 'sent' || $row['provider'] !== 'log') {
