@@ -245,7 +245,7 @@ jobs:
           $kp = sodium_crypto_sign_keypair();
           $pkB64 = base64_encode(sodium_crypto_sign_publickey($kp));
           $doc = LicenseSignature::canonicalJson(['v' => 1, 'ts' => time(), 'scope' => 'closure-probe']);
-          $sig = sodium_crypto_sign_detached($doc, $kp);
+          $sig = sodium_crypto_sign_detached($doc, sodium_crypto_sign_secretkey($kp));
           ok('signature-validates', LicenseSignature::verify($doc, base64_encode($sig), $pkB64));
           ok('signature-tamper-fails', !LicenseSignature::verify($doc . 'x', base64_encode($sig), $pkB64));
           $vault = App::vault();
@@ -530,7 +530,7 @@ jobs:
           $kp = sodium_crypto_sign_keypair();
           $pkB64 = base64_encode(sodium_crypto_sign_publickey($kp));
           $doc = LicenseSignature::canonicalJson(['v' => 1, 'ts' => time()]);
-          $sig = sodium_crypto_sign_detached($doc, $kp);
+          $sig = sodium_crypto_sign_detached($doc, sodium_crypto_sign_secretkey($kp));
           ok('signature-validates', LicenseSignature::verify($doc, base64_encode($sig), $pkB64));
           ok('signature-tamper-fails', !LicenseSignature::verify($doc . 'x', base64_encode($sig), $pkB64));
           $vault = App::vault();
