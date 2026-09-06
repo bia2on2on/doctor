@@ -115,6 +115,12 @@ jobs:
           sudo mv /tmp/wp-cli.phar /usr/local/bin/wp && sudo chmod +x /usr/local/bin/wp
           wp --allow-root --version
 
+      - name: Lint gate tools (php -l)
+        run: |
+          php -l bin/pilot-seed.php
+          php -l bin/pilot-smoke.php
+          bash -n bin/build-release.sh
+
       - name: Environment specs (گزارش واقعی محیط)
         run: |
           {
@@ -306,8 +312,10 @@ jobs:
       # ---------- Synthetic Seed ----------
       - name: Synthetic Seed (بدون داده واقعی بیمار)
         run: |
-          PILOT_PATIENTS=400 PILOT_DAYS=30 PILOT_SLOTS_PER_DAY=15 wp eval-file bin/pilot-seed.php --path="$WP_DIR" --allow-root | tee /tmp/seed.json
+          set -o pipefail
+          PILOT_PATIENTS=400 PILOT_DAYS=30 PILOT_SLOTS_PER_DAY=15 wp eval-file bin/pilot-seed.php --path="$WP_DIR" --allow-root 2>&1 | tee /tmp/seed.json
           tail -1 /tmp/seed.json | grep -q '"ok":true' || { echo 'SEED FAILED'; cat /tmp/seed.json; exit 1; }
+          set +o pipefail
           {
             echo '## Synthetic Dataset'
             echo '```'
@@ -361,7 +369,7 @@ jobs:
       # ---------- Smoke workflows (S1..S9) ----------
       - name: Workflow Smokes (Patient/Secretary/Doctor/Handwriting/Reports/SMS/Files/Idempotency)
         run: |
-          wp eval-file bin/pilot-smoke.php --path="$WP_DIR" --allow-root | tee /tmp/smoke.log
+          wp eval-file bin/pilot-smoke.php --path="$WP_DIR" --allow-root 2>&1 | tee /tmp/smoke.log
           NPASS=$(grep -c '^PASS' /tmp/smoke.log || true)
           echo "smoke PASS count: $NPASS/9"
           ! grep -q '^FAIL' /tmp/smoke.log || { echo 'SMOKE FAILURES'; exit 1; }
