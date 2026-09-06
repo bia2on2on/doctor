@@ -276,7 +276,7 @@ scenario('S6', 'Reports/Export: اجرای گزارش + درخواست Export as
 });
 
 // ---------- S7: Protected medical files ----------
-scenario('S7', 'Protected files: آپلود → ذخیره خارج webroot', function () use ($doctorUserId, $patientId, $visitIdRef) {
+scenario('S7', 'Protected files: آپلود → ذخیره خارج webroot', function () use ($db, $wpdb, $doctorUserId, $patientId, $visitIdRef) {
     $tmp = tempnam(sys_get_temp_dir(), 'cpms-smoke') . '.pdf';
     // PDF معتبر مینیمال (finfo واقعی MIME را می‌خواند)
     file_put_contents($tmp, "%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 99 99]>>endobj\nxref\n0 4\ntrailer<</Size 4/Root 1 0 R>>\n%%EOF\n");
@@ -347,7 +347,8 @@ scenario('S9', 'SMS test path: event test → صف → LogSmsProvider → sent',
          WHERE recipient = '09120009999' AND event = 'test' ORDER BY id DESC LIMIT 1",
         ARRAY_A
     );
-    if (!$row || $row['status'] !== 'sent' || $row['provider'] !== 'log') {
+    // Status با حروف بزرگ ذخیره می‌شود (SmsMessageStatus::SENT = 'SENT')
+    if (!$row || strtoupper((string) $row['status']) !== 'SENT' || $row['provider'] !== 'log') {
         throw new RuntimeException('sms not sent via log provider: ' . wp_json_encode($row));
     }
     return 'sent via provider=log; failure_code=' . var_export($row['failure_code'], true);
