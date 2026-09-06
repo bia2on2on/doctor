@@ -149,6 +149,7 @@ jobs:
           if (!function_exists('rest_get_server')) {
           require_once ABSPATH . 'wp-includes/rest-api.php';
           }
+          if (!did_action('rest_api_init')) { do_action('rest_api_init'); }
           $routes = rest_get_server()->get_routes();
           ok('rest-route-health-registered', isset($routes['/clinic/v1/health']));
           $req = new WP_REST_Request('GET', '/clinic/v1/health');
@@ -460,6 +461,7 @@ jobs:
           $meta = App::licenseService()->statusMeta();
           ok('license-fresh', ($meta['status'] ?? '') === 'activation_pending' && ($meta['activation_window_type'] ?? '') === 'fresh', json_encode($meta));
           if (!function_exists('rest_get_server')) { require_once ABSPATH . 'wp-includes/rest-api.php'; }
+          if (!did_action('rest_api_init')) { do_action('rest_api_init'); }
           $routes = rest_get_server()->get_routes();
           ok('rest-route-health', isset($routes['/clinic/v1/health']));
           $req = new WP_REST_Request('GET', '/clinic/v1/health');
