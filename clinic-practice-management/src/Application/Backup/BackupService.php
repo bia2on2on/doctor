@@ -43,6 +43,11 @@ final class BackupService
     ) {
     }
 
+    public function store(): ProtectedBackupStore
+    {
+        return $this->store;
+    }
+
     // ================= CREATE / LIST / VERIFY / DELETE / PRUNE =================
 
     /**

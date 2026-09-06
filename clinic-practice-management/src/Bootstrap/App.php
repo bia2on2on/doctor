@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ClinicCore\Bootstrap;
 
 use ClinicCore\Admin\SettingsAdmin;
+use ClinicCore\Admin\SystemPage;
 use ClinicCore\Admin\DoctorDashboardPage;
 use ClinicCore\Admin\DoctorHandwritingPage;
 use ClinicCore\Admin\SecretaryFinancePage;
@@ -39,6 +40,7 @@ use ClinicCore\Application\Notifications\NotificationService;
 use ClinicCore\Application\Notifications\SmsService;
 use ClinicCore\Application\Reports\ExportService;
 use ClinicCore\Application\Reports\ReportService;
+use ClinicCore\Application\System\SystemHealthService;
 use ClinicCore\Application\Update\UpdateService;
 use ClinicCore\Application\Visits\VisitService;
 use ClinicCore\Auth\RolesAndCapabilities;
@@ -173,6 +175,7 @@ final class App
         // درخواست‌های زودهنگام) قطعاً موجود باشند.
 
         SettingsAdmin::register();
+        SystemPage::register();
         SmsSettingsPage::register();
         SecretaryQueuePage::register();
         SecretaryFinancePage::register();
@@ -717,6 +720,26 @@ final class App
         }
 
         return $updates;
+    }
+
+    /**
+     * Health/سازگاری سیستم (F10 — spec §40). بدون PHI.
+     */
+    public static function systemHealthService(): SystemHealthService
+    {
+        static $health = null;
+        if ($health === null) {
+            $health = new SystemHealthService(
+                self::db(),
+                self::settings(),
+                self::licenseService(),
+                self::backupService(),
+                self::updateService(),
+                self::op()
+            );
+        }
+
+        return $health;
     }
 
     public static function dispatcher(): JobsDispatcher
