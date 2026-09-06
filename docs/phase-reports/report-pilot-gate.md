@@ -1,7 +1,7 @@
 # Pilot / Staging Readiness Report — CPMS V1
 
 **Phase:** Pilot/Staging Release Gate (پیش از F10 و Go-Live) | **تاریخ:** 2026-09-06 | **ایجنت:** Arena (`arena/01a071c4-doctor`)
-**Release Candidate:** `clinic-practice-management-1.0.0.zip` — RC از کامیت `217b6c9` (F9-final `c5e82a7` + Gate tooling + فیکسهای Gate؛ **ران نهایی سبز: 34027029638**)
+**Release Candidate:** `clinic-practice-management-1.0.0.zip` — RC از کامیت `80d1dd2` و بالاتر (F9-final `c5e82a7` + Gate tooling + فیکسهای Gate؛ **رانهای سبز تأیید: 34027029638 و 34027582807**؛ CI سبز 34027586070)
 **مبنای ارزیابی:** user-guide.md، performance-baseline.md، backup-recovery.md، threat-model.md (T-01..T-24)، file-storage.md، SRS §4.2/§4.5
 
 > **متدولوژی — صادقانه:** هیچ نتیجه‌ای بدون اجرای واقعی ثبت نشده است. محیط اجرای واقعی: GitHub-hosted Ubuntu VM + Docker MySQL 8 (دو instance مستقل) + Apache 2.4 + mod_php 8.3 + System Cron + Chromium (Playwright). مواردی که به زیرساخت Production وابسته‌اند (Domain/TLS/SMS واقعی/سرور مرجع 4vCPU/8GB) به‌صورت **BLOCKED_BY_ENVIRONMENT** با Runbook دقیق ثبت شده‌اند — طبق دستور کارفرما جعل PASS انجام نشده است.
@@ -21,7 +21,7 @@
 | Backup Creation | ✅ PASS — mysqldump --single-transaction + tar storage + SHA256 |
 | **Full Restore Drill (محیط جداگانه)** | ✅ PASS (run نهایی 34027029638) — DB دوم + WP tree دوم + Storage/Config بازیابی + Integrity کامل؛ Drill کامل ۶ ثانیه wall-clock |
 | CI (Unit 8.1–8.4 + Integration WP 6.7.2/MySQL 8) | ✅ PASS — شامل regression test فیکس Gate (run 34027031732) |
-| Performance Benchmark | ✅ PASS در محیط Staging (اندازه‌گیری واقعی — §8)؛ اندازه‌گیری نهایی سرور مرجع = چک‌لیست Go-Live |
+| Performance Benchmark | ⛔ BLOCKED_BY_ENVIRONMENT — بنچمارک معتبر طبق baseline مصوب = سرور مرجع (§12.3)؛ اندازه‌گیری واقعی Staging ثبت شد (§8) اما **هیچ target عملکردی پاس‌شده اعلام نشد** |
 | Responsive (۴ viewport) | ✅ PASS — Chromium واقعی، بدون overflow افقی، اسکرین‌شات‌ها ضمیمه run |
 | Doctor/Secretary/Patient/Handwriting/Reports Smoke | ✅ PASS — ۹/۹ سناریو روی سرویس‌های واقعیِ نصب‌شده |
 | Security Config Review | ✅ PASS — §9 |
@@ -46,8 +46,8 @@
 | 9 | Backup creation | ✅ PASS | §10 — mysqldump --single-transaction + tar + SHA256 |
 | 10 | Full Restore Drill در محیط جداگانه | ✅ PASS | §11 — MySQL دوم @3307 + WP tree دوم + Storage/Config |
 | 11 | Post-restore integrity checks | ✅ PASS | §11 — شمارش ۴۱ جدول + schema + audit chain + checksum byte-to-byte + نمونه کسب‌وکار |
-| 12 | Performance benchmark طبق baseline مصوب | ✅ PASS | §8 — اجرا و اندازه‌گیری واقعی ۷ سنجه؛ تأیید نهایی NFR روی سرور مرجع → §12.3 |
-| 13 | Representative concurrent-load test | ✅ PASS | §8 — c=10/50/100 × ۲ endpoint + مرجع core؛ error rate صفر |
+| 12 | Performance benchmark طبق baseline مصوب | ⛔ BLOCKED_BY_ENVIRONMENT | بنچمارک معتبر طبق performance-baseline (اهداف p95<300ms REST تعاملی / overhead<100ms / NFR-PERF-1: p95<500ms@c=50) نیازمند **سرور مرجع 4vCPU/8GB** است — Runbook §12.3. اندازه‌گیری واقعی Staging ثبت شد (§8)؛ **هیچ target پاس‌شده اعلام نشد** |
+| 13 | Representative concurrent-load test | ✅ PASS | §8 — c=10/50/100 × ۲ endpoint + مرجع core اجرا شد: پایداری و error rate صفر معتبر؛ اعداد latency/throughput محیط‌محدودند (گلوگاه محیط، نه افزونه) |
 | 14 | Security config review | ✅ PASS | §9 |
 | 15 | HTTPS / headers / secrets / debug review | ⛔ BLOCKED_BY_ENVIRONMENT (فقط مؤلفه HTTPS/Domain/TLS — Runbook §12.1)؛ headers/secrets/debug/salts = ✅ PASS (§9) | §9/§12.1 |
 | 16 | File/storage permissions | ✅ PASS | §9 — perms اندازه‌گیری‌شده + storage خارج webroot |
@@ -61,7 +61,7 @@
 | 24 | Handwriting/offline-sync smoke | ✅ PASS | §7 S4 — doc+page+revision+conflict (سمت سرور)؛ Offline-Sync (IndexedDB) با تستهای F7 در CI سبز |
 | 25 | Notification/report/export smoke | ✅ PASS | §7 S5+S6+S9 — publish/inbox، گزارش+Export async، SMS log-provider |
 
-- **PASS: ۲۳ قلم** | **FAIL: ۰** | **BLOCKED_BY_ENVIRONMENT: ۱ قلم کامل (شماره ۱۵ فقط در مؤلفه HTTPS) + ۳ قلم محیطی تکمیلی (TLS §12.1، SMS واقعی §12.2، Benchmark سرور مرجع §12.3، دستگاه فیزیکی §12.4)** | **NOT_APPLICABLE: ۰**
+- **PASS: ۲۲ قلم** | **FAIL: ۰** | **BLOCKED_BY_ENVIRONMENT: قلم ۱۲ (بنچمارک معتبر = سرور مرجع §12.3) + مؤلفه HTTPS از قلم ۱۵ (§12.1)** | **NOT_APPLICABLE: ۰** | اقلام محیطی تکمیلی که در استقرار Production باید اجرا شوند: TLS (§12.1)، SMS Provider واقعی (§12.2)، Benchmark سرور مرجع (§12.3)، تست دستگاه فیزیکی (§12.4)، cron/بکاپ خودکار Production (§12.5/§12.6)
 
 **Go-Live Recommendation: CONDITIONAL_READY** (§14) — کد و عملیات آماده؛ Go-Live نهایی منوط به اجرای ۴ قلم Runbook محیطی روی زیرساخت Production (که ذاتاً خارج از قلمرو این Repo است) + تأیید کارفرما.
 
@@ -135,7 +135,8 @@ Environment: Ubuntu 24.04 VM (4 vCPU)، MySQL 8 (Docker)، Apache 2.4.58 + mod_p
 | GET /availability (تقویم — NFR-PERF-1) | 100 | 2003ms | 2530ms | 2783ms | 50.28 | 0 |
 | GET /wp-json/ (مرجع WP core) | 50 | 1154ms | 1457ms | 1551ms | 44.16 | 0 |
 
-- معیار NFR-PERF-1: **P95 < 500ms @ 50 concurrent** — در این محیط Staging (GH runner) برای هیچ endpointی (حتی مرجع WP core خودِ وردپرس: p95=1457ms) برآورده نشد؛ Throughput اشباع حدود ~50 RPS مستقل از c، با رشد خطی Latency → گلوگاه محیط (mod_php + تعداد محدود Apache workers + CPU اشتراکی runner)، نه افزونه: `/availability` افزونه **سریع‌تر از** مرجع core است (p50 1001ms در برابر 1154ms؛ p95 1344ms در برابر 1457ms). اندازه‌گیری معتبر نهایی طبق performance-baseline روی **سرور مرجع 4vCPU/8GB** انجام می‌شود (Runbook §12.3) — در چک‌لیست Go-Live.
+- **اهداف مصوب (هیچ‌کدام پاس‌شده اعلام نمی‌شوند):** طبق performance-baseline.md (تصمیم نهایی کارفرما F2): REST تعاملی **p95 < 300ms** و Overhead افزونه روی صفحات عمومی **p95 < 100ms**؛ طبق SRS NFR-PERF-1: P95 پاسخ API عمومی **< 500ms @ 50 کاربر هم‌زمان روی سرور مرجع 4vCPU/8GB**.
+- **نتیجه در این محیط Staging (GH runner):** هیچ endpointی — حتی مرجع WP core خودِ وردپرس (`/wp-json/`: p95=1457ms) — به اهداف نمی‌رسد؛ Throughput اشباع ~50 RPS مستقل از c با رشد خطی Latency → گلوگاه محیط (mod_php + تعداد محدود Apache workers + CPU اشتراکی runner)، نه افزونه: `/availability` افزونه **سریع‌تر از** مرجع core است (p50 1001ms در برابر 1154ms؛ p95 1344ms در برابر 1457ms). این اعداد صرفاً ثبت واقعی Staging است؛ **داوری Quality Gate عملکرد (بلوک در صورت شکست p95<300ms در Core Endpoints) فقط با بنچمارک سرور مرجع** انجام می‌شود — Runbook §12.3، BLOCKED_BY_ENVIRONMENT.
 - Error rate در همه ۷ اندازه‌گیری: **صفر** (failed=0, non2xx=0)؛ ۱۰۰۰ request در هر اندازه‌گیری c=50.
 - مشاهده فرعی: در بار c=100، چند notice «Deadlock» گذرا روی `_transient_cpms_migrate_lock` در لاگ Apache ثبت شد (migrations idempotent — بدون اثر عملکردی؛ صف برای بهبود قفل رقابتی → Backlog).
 
@@ -188,10 +189,10 @@ Backup (DB+Storage) → MySQL دوم (@3307، instance مستقل) → Restore D
 - **دستور:** ثبت creds → دکمه «ارسال تست» (همان event test مسیر S9) به شماره تست مسئول → بررسی delivery در پنل Provider.
 - **Acceptance:** ردیف `cpms_sms_messages` با `status=sent` و `provider_msg_id` واقعی + دریافت پیام روی گوشی تست + بدون PHI در متن تست.
 
-### 12.3 Benchmark سرور مرجع (NFR-PERF-1 نهایی)
-- **Requirement:** سرور 4 vCPU/8GB مطابق SRS با dataset واقعی (یا کپی Synthetic قبل از Go-Live).
+### 12.3 Benchmark سرور مرجع (داوری Quality Gate عملکرد)
+- **Requirement:** سرور 4 vCPU/8GB مطابق SRS با dataset واقعی (یا کپی Synthetic قبل از Go-Live)؛ Apache/PHP/MySQL با کانفیگ Production (worker count/opcache مطابق استقرار).
 - **دستور:** `ab -n 2000 -c 50` روی `GET /wp-json/clinic/v1/availability` + `/health` (طبق performance-baseline §متد: سطوح ۱/۱۰/۵۰/۱۰۰، ≥۵ دقیقه در سطح هدف با wrk/k6 برای long-run) — همان اسکریپت Gate قابل اجرا.
-- **Acceptance:** P95 < 500ms @ c=50 + Error rate 0 → ثبت در `reports/benchmarks/<date>-prod.md` با specs سرور.
+- **Acceptance (طبق baseline مصوب):** REST تعاملی **p95 < 300ms** (تصمیم کارفرما F2) + NFR-PERF-1: **P95 < 500ms @ c=50** + Error rate 0 → ثبت در `reports/benchmarks/<date>-prod.md` با specs سرور. در صورت شکست p95<300ms در Core Endpoints → Quality Gate بلوک تا Profiling/بهینه‌سازی یا ADR با توجیه (طبق baseline §قاعده).
 
 ### 12.4 تست دستگاه فیزیکی
 - **Requirement:** تبلت واقعی پزشک (Android/iPad + قلم) + موبایل منشی/بیمار.
@@ -213,8 +214,8 @@ Backup (DB+Storage) → MySQL دوم (@3307، instance مستقل) → Restore D
 
 ## 14. جمع‌بندی و توصیه Go-Live
 
-- **ران نهایی Gate: `34027029638` — هر ۴ job سبز** (Release Artifact / Upgrade / Responsive / Staging کامل ۱۹ مرحله‌ای). CI regression (Unit PHP 8.1–8.4 + Integration WP 6.7.2/MySQL 8) روی همان کامیت سبز (run 34027031732).
-- **Critical Blockers: صفر.** همه اجزای قابل‌آزمون در محیط واقعی (Artifact، نصب، ارتقا، Cron/Jobs، فایلهای محافظت‌شده، Backup/Restore کامل با Integrity، Benchmark Staging، Security Config، Audit، Smokeهای نقش‌ها، Responsive) PASS شدند.
+- **رانهای سبز تأیید Gate:** `34027029638` و `34027582807` — هر ۴ job سبز (Release Artifact / Upgrade / Responsive / Staging کامل ۱۹ مرحله‌ای). CI regression (Unit PHP 8.1–8.4 + Integration WP 6.7.2/MySQL 8) سبز (آخرین: run 34027586070 روی 80d1dd2).
+- **Critical Blockers: صفر.** همه اجزای قابل‌آزمون در محیط واقعی (Artifact، نصب، ارتقا، Cron/Jobs، فایلهای محافظت‌شده، Backup/Restore کامل با Integrity، Security Config، Audit، Smokeهای نقش‌ها، Responsive) PASS شدند. **عملکرد:** بنچمارک واقعی Staging اجرا و ثبت شد (§8) اما داوری Quality Gate عملکرد (p95<300ms طبق baseline) فقط روی سرور مرجع معتبر است → BLOCKED §12.3، در چک‌لیست Go-Live.
 - **باگ واقعی تولید در حین Gate کشف و بسته شد (طبق فرایند مصوب: Root Cause → Fix → Test → CI → Docs):** توقف جاب‌های دوره‌ای در استقرار system-cron (واگرایی مسیر WP-Cron/CLI) → مسیر واحد `App::runTick()` + regression test + همگام‌سازی ADR-0016/background-jobs.md + ثبت در CHANGELOG. این یافته دقیقاً ارزش Gate را اثبات کرد — این باگ در تستهای Unit/Integration (که مسیر WP-Cron را می‌پوشوند) دیده نمی‌شد.
 - **اقلام کم‌اهمیت → Backlog (نه Blocker):** نویز notice های deadlock گذرا روی `_transient_cpms_migrate_lock` زیر بار c=100 (بدون اثر عملکردی)؛ بهبود قفل رقابتی.
 - **Gateهای باقی‌مانده (۴ قلم Runbook §12):** ذاتاً محیط‌اند و پیش از استفاده روی بیمار واقعی باید اجرا و ثبت شوند: TLS، SMS واقعی، Benchmark سرور مرجع، تست دستگاه فیزیکی (+ راه‌اندازی cron/بکاپ خودکار Production).
@@ -239,6 +240,8 @@ Backup (DB+Storage) → MySQL دوم (@3307، instance مستقل) → Restore D
 | 34025267752 | ۱ fail | iteration 13 (REST ✅، **Benchmark ✅، Security ✅، Audit ✅، Backup ✅**؛ fail = Restore Drill — لاگ کامل ضبط شد) |
 | 34025811008 | ۱ fail | iteration 14 (لاگ کامل: `COUNT MISMATCH options 125 vs 127` — main زنده بعد از بکاپ writes عملیاتی می‌گیرد → معیار = snapshot بکاپ) |
 | 34026560490 | ۱ fail | iteration 15 (شمارش vs snapshot: معکوس شد backup=125 restore=127 — بوتِ restore-config ترنزینت migrate-lock می‌نویسد → شمارش باید قبل از بوت باشد) |
-| **34027029638** | **✅ هر ۴ job سبز** | **FINAL — Release ✅ / Upgrade ✅ / Responsive ✅ / Staging کامل ✅ (۱۹ step: deploy→install→cron→seed→jobs→files→REST→benchmark→security→audit→backup→restore drill→summary)** |
+| **34027029638** | **✅ هر ۴ job سبز** | **اولین ران کاملاً سبز — Release ✅ / Upgrade ✅ / Responsive ✅ / Staging کامل ✅ (۱۹ step: deploy→install→cron→seed→jobs→files→REST→benchmark→security→audit→backup→restore drill→summary)** |
+| 34027586070 | ✅ CI سبز | CI (pull_request) روی آخرین کامیت کد Gate (80d1dd2 — regression شامل test فیکس runTick) |
+| 34027582807 | **✅ هر ۴ job سبز** | تأیید مجدد کل Gate روی 80d1dd2 (Restore Drill = ۶ ثانیه wall-clock؛ Backup = ۱ ثانیه) |
 
 > ابزارهای Gate (build/seed/smoke/responsive + workflow) در repo: `bin/build-release.sh`، `bin/pilot-{seed,smoke,responsive}`، `.github/workflows/pilot-gate.yml` — قابلاجریای مجدد برای هر RC بعدی.
