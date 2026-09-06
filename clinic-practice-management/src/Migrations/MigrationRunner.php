@@ -73,7 +73,10 @@ final class MigrationRunner
                 continue;
             }
 
-            $migration = require_once $file['path'];
+            // require (نه require_once): فایل فقط آرایه برمی‌گرداند و بدون
+            // side-effect است؛ require_once در re-run پس از rollback() در همان
+            // process مقدار true برمی‌گرداند و Migration را می‌شکند (F9).
+            $migration = require $file['path'];
             if (!is_array($migration) || !isset($migration['up'])) {
                 throw new RuntimeException("Invalid migration file: {$file['name']}");
             }
@@ -112,7 +115,7 @@ final class MigrationRunner
             if ($this->versionOf($file['name']) !== $last['version']) {
                 continue;
             }
-            $migration = require_once $file['path'];
+            $migration = require $file['path'];
             if (!isset($migration['down'])) {
                 throw new RuntimeException("Migration {$last['version']} has no down() — manual restore from backup required");
             }
