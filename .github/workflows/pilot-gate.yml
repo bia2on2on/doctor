@@ -21,12 +21,12 @@ defaults:
     working-directory: clinic-practice-management
 
 env:
-  WP_DIR: /tmp/www
+  WP_DIR: /home/runner/www          # نه /tmp — Apache با PrivateTmp=/tmp را نمی‌بیند
   WP_URL: http://localhost:8080
-  WP_RESTORE_DIR: /tmp/www-restore
+  WP_RESTORE_DIR: /home/runner/www-restore
   DB_MAIN: cpms_main
   DB_RESTORE: cpms_restore
-  STORAGE_OUT: /tmp/clinic-storage
+  STORAGE_OUT: /home/runner/clinic-storage
   GH_TOKEN: ${{ github.token }}
 
 jobs:
@@ -219,8 +219,10 @@ jobs:
           PHP_INI=$(ls /etc/php/*/apache2/php.ini | head -1)
           sudo sed -i 's/^expose_php = .*/expose_php = Off/' "$PHP_INI"
           sudo sed -i 's/^display_errors = .*/display_errors = Off/' "$PHP_INI"
+          sudo chmod a+rx /home/runner
           sudo chmod -R a+rX "$WP_DIR"
           sudo chown -R www-data:www-data "$WP_DIR/wp-content/uploads" 2>/dev/null || true
+          # apache2.service: PrivateTmp=true → DocumentRoot نباید زیر /tmp باشد
           sudo apache2ctl configtest && sudo service apache2 start
           sleep 2
           curl -s -o /dev/null -w '%{http_code}\n' "$WP_URL/wp-json/" | grep -q 200 || { echo 'APACHE/WP NOT SERVING'; exit 1; }
@@ -414,7 +416,7 @@ jobs:
           T0=$(date +%s)
           mysqldump -h127.0.0.1 -P3306 -uroot -proot --single-transaction --routines --triggers --no-tablespaces "$DB_MAIN" | gzip > /tmp/backup-db.sql.gz
           T1=$(date +%s)
-          tar -czf /tmp/backup-storage.tar.gz -C /tmp clinic-storage
+          tar -czf /tmp/backup-storage.tar.gz -C /home/runner clinic-storage
           cp "$WP_DIR/wp-config.php" /tmp/backup-wp-config.txt
           T2=$(date +%s)
           sha256sum /tmp/backup-db.sql.gz /tmp/backup-storage.tar.gz | tee /tmp/backup-hashes.txt
@@ -436,8 +438,8 @@ jobs:
           mysql -h 127.0.0.1 -P 3307 -uroot -proot -e "CREATE DATABASE $DB_RESTORE CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
           gunzip -c /tmp/backup-db.sql.gz | mysql -h127.0.0.1 -P3307 -uroot -proot "$DB_RESTORE"
           T1=$(date +%s)
-          mkdir -p /tmp/restore-clinic-storage
-          tar -xzf /tmp/backup-storage.tar.gz -C /tmp/restore-clinic-storage --strip-components=1
+          mkdir -p /home/runner/restore-clinic-storage
+          tar -xzf /tmp/backup-storage.tar.gz -C /home/runner/restore-clinic-storage --strip-components=1
           cp -R "$WP_DIR" "$WP_RESTORE_DIR"
           rm -f "$WP_RESTORE_DIR/wp-config.php"
           cd "$WP_RESTORE_DIR"
@@ -450,8 +452,8 @@ jobs:
           cat > /tmp/restore-config.php <<'PHPEOF'
           <?php
           require getenv('WP_HOME') . '/wp-load.php';
-          \ClinicCore\Bootstrap\App::settings()->set('files.storage_path', '/tmp/restore-clinic-storage');
-          echo 'config restore: files.storage_path=/tmp/restore-clinic-storage', "\n";
+          \ClinicCore\Bootstrap\App::settings()->set('files.storage_path', '/home/runner/restore-clinic-storage');
+          echo 'config restore: files.storage_path=/home/runner/restore-clinic-storage', "\n";
           PHPEOF
           WP_HOME="$WP_RESTORE_DIR" php /tmp/restore-config.php
           echo '== Integrity 1: شمارش همه جداول (main vs restore) =='
@@ -468,8 +470,8 @@ jobs:
           WP_HOME="$WP_RESTORE_DIR" php "$WP_RESTORE_DIR/wp-content/plugins/clinic-practice-management/bin/cpms" status
           WP_HOME="$WP_RESTORE_DIR" php "$WP_RESTORE_DIR/wp-content/plugins/clinic-practice-management/bin/cpms" audit verify 100000
           echo '== Integrity 3: فایلهای محافظت‌شده (checksum byte-to-byte) =='
-          (cd /tmp/clinic-storage && find . -type f -exec sha256sum {} \; | sort) > /tmp/orig-files.txt
-          (cd /tmp/restore-clinic-storage && find . -type f -exec sha256sum {} \; | sort) > /tmp/restored-files.txt
+          (cd "$STORAGE_OUT" && find . -type f -exec sha256sum {} \; | sort) > /tmp/orig-files.txt
+          (cd /home/runner/restore-clinic-storage && find . -type f -exec sha256sum {} \; | sort) > /tmp/restored-files.txt
           diff /tmp/orig-files.txt /tmp/restored-files.txt && echo "storage: $(wc -l < /tmp/orig-files.txt) فایل byte-to-byte یکسان ✓" || exit 1
           echo '== Integrity 4: نمونه کسب‌وکار =='
           cat > /tmp/restore-sample.php <<'PHPEOF'
@@ -519,6 +521,27 @@ jobs:
             grep -E '^(PASS|FAIL)' /tmp/smoke.log 2>/dev/null || echo '(smoke not reached)'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Debug dump به PR (لاگ Blob از Sandbox در دسترس نیست)
+        if: failure()
+        run: |
+          {
+            echo "### Pilot Gate FAILURE — job: ${GITHUB_JOB} (run ${{ github.run_id }})"
+            echo '```'
+            for f in /tmp/apt.log /tmp/seed.json /tmp/smoke.log /tmp/bench.txt /tmp/ab.txt /tmp/headers.txt \
+                     /tmp/perms.txt /tmp/audit-actions.txt /tmp/jobs-queued.txt /tmp/failed-jobs.txt \
+                     /tmp/health.json /tmp/avail.json /tmp/unauth.json /tmp/probe-body.txt \
+                     /tmp/leak.txt /tmp/leak2.txt /tmp/cpms-tick.log /tmp/check-health.php /tmp/pw.log /tmp/resp.log; do
+              if [ -f "$f" ]; then echo "--- $f (tail 50) ---"; tail -50 "$f"; fi
+            done
+            echo '```'
+          } > /tmp/debug.md
+          PR=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number' 2>/dev/null || true)
+          if [ -n "$PR" ]; then
+            gh pr comment "$PR" --body-file /tmp/debug.md || true
+          else
+            gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@/tmp/debug.md || true
+          fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -552,7 +575,7 @@ jobs:
           --health-cmd="mysqladmin ping -h 127.0.0.1"
           --health-interval=10s --health-timeout=5s --health-retries=20
     env:
-      WP_DIR: /tmp/www
+      WP_DIR: /home/runner/www
       WP_URL: http://localhost:8080
       DB_MAIN: cpms_main
       GH_TOKEN: ${{ github.token }}
@@ -575,14 +598,16 @@ jobs:
           wp config create --dbname="$DB_MAIN" --dbuser=root --dbpass=root --dbhost=127.0.0.1:3306 --dbprefix=cpmswp_ --skip-salts --allow-root
           wp config shuffle-salts --allow-root
           wp core install --url="$WP_URL" --title="Upgrade Test" --admin_user=up_admin --admin_password='Up-2026!' --admin_email=up@local.test --skip-email --allow-root
-          git archive origin/main clinic-practice-management | tar -x -C /tmp
+          # «نسخه قبلی» = F8-final (کد) — main هنوز merge نشده؛ sha پین‌شده
+          PREV_REF=$(git -C "$GITHUB_WORKSPACE" rev-parse f11f6e0 || echo origin/main)
+          git -C "$GITHUB_WORKSPACE" archive "$PREV_REF" clinic-practice-management | tar -x -C /tmp
           mv /tmp/clinic-practice-management "$WP_DIR/wp-content/plugins/"
           wp plugin activate clinic-practice-management --path="$WP_DIR" --allow-root
           cat > /tmp/check-schema.php <<'PHPEOF'
           <?php
           require getenv('WP_HOME') . '/wp-load.php';
           $v = \ClinicCore\Bootstrap\App::migrations()->currentVersion();
-          echo "schema on main: $v\n";
+          echo "schema on previous (F8): $v\n";
           exit($v === '2026_09_07_0005' ? 0 : 1);
           PHPEOF
           WP_HOME="$WP_DIR" php /tmp/check-schema.php
@@ -643,10 +668,32 @@ jobs:
           {
             echo '## Upgrade Path (main/F8 → RC/F9 روی نصب واقعی)'
             echo '```'
-            echo 'main schema: 2026_09_07_0005 → RC schema: 2026_09_07_0007'
+            echo 'F8 schema: 2026_09_07_0005 → RC schema: 2026_09_07_0007'
             echo 'legacy idem NULL→0 normalized; u_idem_4col + u_clinician_user present; داده دست‌نخورده'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+
+      - name: Debug dump به PR (لاگ Blob از Sandbox در دسترس نیست)
+        if: failure()
+        run: |
+          {
+            echo "### Pilot Gate FAILURE — job: ${GITHUB_JOB} (run ${{ github.run_id }})"
+            echo '```'
+            for f in /tmp/apt.log /tmp/seed.json /tmp/smoke.log /tmp/bench.txt /tmp/ab.txt /tmp/headers.txt \
+                     /tmp/perms.txt /tmp/audit-actions.txt /tmp/jobs-queued.txt /tmp/failed-jobs.txt \
+                     /tmp/health.json /tmp/avail.json /tmp/unauth.json /tmp/probe-body.txt \
+                     /tmp/leak.txt /tmp/leak2.txt /tmp/cpms-tick.log /tmp/check-health.php /tmp/pw.log /tmp/resp.log; do
+              if [ -f "$f" ]; then echo "--- $f (tail 50) ---"; tail -50 "$f"; fi
+            done
+            echo '```'
+          } > /tmp/debug.md
+          PR=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number' 2>/dev/null || true)
+          if [ -n "$PR" ]; then
+            gh pr comment "$PR" --body-file /tmp/debug.md || true
+          else
+            gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@/tmp/debug.md || true
+          fi
 
   # ============================================================
   # 4) Responsive smoke — Chromium واقعی × 4 viewport × 4 صفحه
@@ -665,7 +712,7 @@ jobs:
           --health-cmd="mysqladmin ping -h 127.0.0.1"
           --health-interval=10s --health-timeout=5s --health-retries=20
     env:
-      WP_DIR: /tmp/www
+      WP_DIR: /home/runner/www
       WP_URL: http://localhost:8080
       DB_MAIN: cpms_main
       GH_TOKEN: ${{ github.token }}
@@ -737,6 +784,27 @@ jobs:
             grep -E '^(PASS|FAIL)' /tmp/resp.log
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Debug dump به PR (لاگ Blob از Sandbox در دسترس نیست)
+        if: failure()
+        run: |
+          {
+            echo "### Pilot Gate FAILURE — job: ${GITHUB_JOB} (run ${{ github.run_id }})"
+            echo '```'
+            for f in /tmp/apt.log /tmp/seed.json /tmp/smoke.log /tmp/bench.txt /tmp/ab.txt /tmp/headers.txt \
+                     /tmp/perms.txt /tmp/audit-actions.txt /tmp/jobs-queued.txt /tmp/failed-jobs.txt \
+                     /tmp/health.json /tmp/avail.json /tmp/unauth.json /tmp/probe-body.txt \
+                     /tmp/leak.txt /tmp/leak2.txt /tmp/cpms-tick.log /tmp/check-health.php /tmp/pw.log /tmp/resp.log; do
+              if [ -f "$f" ]; then echo "--- $f (tail 50) ---"; tail -50 "$f"; fi
+            done
+            echo '```'
+          } > /tmp/debug.md
+          PR=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number' 2>/dev/null || true)
+          if [ -n "$PR" ]; then
+            gh pr comment "$PR" --body-file /tmp/debug.md || true
+          else
+            gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@/tmp/debug.md || true
+          fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:
