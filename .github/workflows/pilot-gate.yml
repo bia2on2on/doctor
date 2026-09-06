@@ -526,6 +526,20 @@ jobs:
           mysql -h 127.0.0.1 -P 3307 -uroot -e "CREATE DATABASE $DB_RESTORE CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
           gunzip -c /tmp/backup-db.sql.gz | mysql -h127.0.0.1 -P3307 -uroot "$DB_RESTORE"
           T1=$(date +%s)
+          echo 'PHASE 3a (بلافاصله بعد از import — قبل از هر بوت): شمارش جداول (restore vs backup-snapshot)'
+          # معیار DR: restore باید == snapshot لحظه بکاپ باشد. این چک باید قبل از
+          # بوت WordPress روی محیط restore انجام شود — هر بوت ترنزینتهای عملیاتی
+          # (مثل _transient_cpms_migrate_lock = ۲ ردیف) در DB بازیابی‌شده می‌نویسد.
+          FAIL=0
+          NT=0
+          while read -r T A; do
+            B=$(mysql -h127.0.0.1 -P3307 -uroot -N -e "SELECT COUNT(*) FROM \`$DB_RESTORE\`.\`$T\`;" 2>/dev/null)
+            NT=$((NT+1))
+            [ "$A" = "$B" ] || { echo "COUNT MISMATCH $T: backup=$A restore=$B"; FAIL=1; }
+          done < /tmp/backup-counts.txt
+          [ $FAIL -eq 0 ] && echo "همه $NT جدول: restore == backup snapshot ✓" || exit 1
+          T1V=$(date +%s)
+          echo "integrity-count: $(bc -l <<< "$T1V - $T1")s"
           echo 'PHASE 2: storage + WP tree دوم + config'
           mkdir -p /home/runner/restore-clinic-storage
           tar -xzf /tmp/backup-storage.tar.gz -C /home/runner/restore-clinic-storage --strip-components=1
@@ -538,7 +552,7 @@ jobs:
           wp config set DISABLE_WP_CRON true --raw --allow-root
           sudo chmod -R a+rX "$WP_RESTORE_DIR"
           T2=$(date +%s)
-          echo 'PHASE 3: integrity checks'
+          echo 'PHASE 3: integrity checks (پس از بالا آمدن محیط restore)'
           cat > /tmp/restore-config.php <<'PHPEOF'
           <?php
           require getenv('WP_HOME') . '/wp-load.php';
@@ -546,24 +560,13 @@ jobs:
           echo 'config restore: files.storage_path=/home/runner/restore-clinic-storage', "\n";
           PHPEOF
           WP_HOME="$WP_RESTORE_DIR" php /tmp/restore-config.php
-          echo 'PHASE 3a: شمارش همه جداول (restore vs backup-snapshot)'
-          # معیار DR: restore باید == snapshot لحظه بکاپ باشد (main زنده بعد از بکاپ
-          # writes عملیاتی می‌گیرد — transient/cron — و مقایسه با آن false-fail است)
-          FAIL=0
-          NT=0
-          while read -r T A; do
-            B=$(mysql -h127.0.0.1 -P3307 -uroot -N -e "SELECT COUNT(*) FROM \`$DB_RESTORE\`.\`$T\`;" 2>/dev/null)
-            NT=$((NT+1))
-            [ "$A" = "$B" ] || { echo "COUNT MISMATCH $T: backup=$A restore=$B"; FAIL=1; }
-          done < /tmp/backup-counts.txt
-          [ $FAIL -eq 0 ] && echo "همه $NT جدول: restore == backup snapshot ✓" || exit 1
-          # گزارش شفاف: آیا main بعد از بکاپ writes گرفته؟ (انتظار: چند ردیف عملیاتی)
+          # گزارش شفاف: drift main بعد از بکاپ (عملیاتی/منتظره — مرجع Integrity همان snapshot است)
           DIFFNOW=0
           while read -r T A; do
             C=$(mysql -h127.0.0.1 -P3306 -uroot -N -e "SELECT COUNT(*) FROM \`$DB_MAIN\`.\`$T\`;" 2>/dev/null)
-            [ "$A" = "$C" ] || { echo "post-backup drift در $T (main الان=$C، backup=$A — عملیاتی/منتظره)"; DIFFNOW=$((DIFFNOW+1)); }
+            [ "$A" = "$C" ] || { echo "post-backup drift در $T (main الان=$C، backup=$A)"; DIFFNOW=$((DIFFNOW+1)); }
           done < /tmp/backup-counts.txt
-          echo "main drift بعد از بکاپ در $DIFFNOW جدول (transient/cron — طبیعی؛ مرجع Integrity همان snapshot است)"
+          echo "main drift بعد از بکاپ در $DIFFNOW جدول (طبیعی؛ مرجع Integrity همان snapshot است)"
           echo 'PHASE 3b: schema + audit chain روی Restore'
           WP_HOME="$WP_RESTORE_DIR" php "$WP_RESTORE_DIR/wp-content/plugins/clinic-practice-management/bin/cpms" status
           WP_HOME="$WP_RESTORE_DIR" php "$WP_RESTORE_DIR/wp-content/plugins/clinic-practice-management/bin/cpms" audit verify 100000
