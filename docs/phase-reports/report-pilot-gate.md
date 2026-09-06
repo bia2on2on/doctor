@@ -1,7 +1,7 @@
 # Pilot / Staging Readiness Report — CPMS V1
 
 **Phase:** Pilot/Staging Release Gate (پیش از F10 و Go-Live) | **تاریخ:** 2026-09-06 | **ایجنت:** Arena (`arena/01a071c4-doctor`)
-**Release Candidate:** `clinic-practice-management-1.0.0.zip` — RC از کامیت `c5e82a7` (F9-final + Gate tooling)
+**Release Candidate:** `clinic-practice-management-1.0.0.zip` — RC از کامیت `217b6c9` (F9-final `c5e82a7` + Gate tooling + فیکسهای Gate؛ **ران نهایی سبز: 34027029638**)
 **مبنای ارزیابی:** user-guide.md، performance-baseline.md، backup-recovery.md، threat-model.md (T-01..T-24)، file-storage.md، SRS §4.2/§4.5
 
 > **متدولوژی — صادقانه:** هیچ نتیجه‌ای بدون اجرای واقعی ثبت نشده است. محیط اجرای واقعی: GitHub-hosted Ubuntu VM + Docker MySQL 8 (دو instance مستقل) + Apache 2.4 + mod_php 8.3 + System Cron + Chromium (Playwright). مواردی که به زیرساخت Production وابسته‌اند (Domain/TLS/SMS واقعی/سرور مرجع 4vCPU/8GB) به‌صورت **BLOCKED_BY_ENVIRONMENT** با Runbook دقیق ثبت شده‌اند — طبق دستور کارفرما جعل PASS انجام نشده است.
@@ -19,7 +19,8 @@
 | Protected Medical Files | ✅ PASS — 403 واقعی از Apache روی .htaccess افزونه؛ مسیر فعال خارج webroot |
 | SMS Configuration Path | ✅ PASS (Safe test provider = `log`) — event «test» → صف → ارسال → sent؛ Provider واقعی: BLOCKED |
 | Backup Creation | ✅ PASS — mysqldump --single-transaction + tar storage + SHA256 |
-| **Full Restore Drill (محیط جداگانه)** | ✅ PASS — DB دوم + WP tree دوم + Storage/Config بازیابی + Integrity کامل |
+| **Full Restore Drill (محیط جداگانه)** | ✅ PASS (run نهایی 34027029638) — DB دوم + WP tree دوم + Storage/Config بازیابی + Integrity کامل؛ Drill کامل ۶ ثانیه wall-clock |
+| CI (Unit 8.1–8.4 + Integration WP 6.7.2/MySQL 8) | ✅ PASS — شامل regression test فیکس Gate (run 34027031732) |
 | Performance Benchmark | ✅ PASS در محیط Staging (اندازه‌گیری واقعی — §8)؛ اندازه‌گیری نهایی سرور مرجع = چک‌لیست Go-Live |
 | Responsive (۴ viewport) | ✅ PASS — Chromium واقعی، بدون overflow افقی، اسکرین‌شات‌ها ضمیمه run |
 | Doctor/Secretary/Patient/Handwriting/Reports Smoke | ✅ PASS — ۹/۹ سناریو روی سرویس‌های واقعیِ نصب‌شده |
@@ -29,6 +30,38 @@
 | SMS Provider واقعی | ⛔ BLOCKED_BY_ENVIRONMENT — Runbook §12.2 |
 | Benchmark روی سرور مرجع 4vCPU/8GB | ⛔ BLOCKED_BY_ENVIRONMENT — Runbook §12.3 |
 | تست دستگاه فیزیکی (تبلت/قلم واقعی) | ⛔ BLOCKED_BY_ENVIRONMENT — Runbook §12.4 |
+
+### 1.1. ماتریس کامل ۲۵ قلم کارفرما (وضعیت تک‌تک اقلام)
+
+| # | قلم | وضعیت | مدرک |
+|---|---|---|---|
+| 1 | Clean deployment از Release Artifact | ✅ PASS | §2/§3 — deploy از ZIP (نه checkout)؛ policy scan سبز |
+| 2 | Fresh install test | ✅ PASS | §3 — ۳۷+ جدول، Schema 0007، Roles، Health |
+| 3 | Upgrade/migration test | ✅ PASS | §4 — F8(0005)→RC(0007)، داده Legacy سالم |
+| 4 | Production-like config validation | ✅ PASS | §3/§9 — Apache+mod_php+hardening، wp-config production-like |
+| 5 | System Cron verification | ✅ PASS | §5 — دستور تولید + tick دوره‌ای اثبات؛ daemon روی runner افیمرال = محدودیت env (Runbook §12.5) |
+| 6 | Background Jobs verification | ✅ PASS | §5 — دو tick پشت‌سرهم، ۱۰ نوع recurring ×۶ اجرا، صفر failed |
+| 7 | Protected medical file access | ✅ PASS | §9 — 403 واقعی Apache + مسیر فعال خارج webroot |
+| 8 | SMS config path با safe test provider | ✅ PASS | §7 S9 — event test → صف → LogSmsProvider → SENT |
+| 9 | Backup creation | ✅ PASS | §10 — mysqldump --single-transaction + tar + SHA256 |
+| 10 | Full Restore Drill در محیط جداگانه | ✅ PASS | §11 — MySQL دوم @3307 + WP tree دوم + Storage/Config |
+| 11 | Post-restore integrity checks | ✅ PASS | §11 — شمارش ۴۱ جدول + schema + audit chain + checksum byte-to-byte + نمونه کسب‌وکار |
+| 12 | Performance benchmark طبق baseline مصوب | ✅ PASS | §8 — اجرا و اندازه‌گیری واقعی ۷ سنجه؛ تأیید نهایی NFR روی سرور مرجع → §12.3 |
+| 13 | Representative concurrent-load test | ✅ PASS | §8 — c=10/50/100 × ۲ endpoint + مرجع core؛ error rate صفر |
+| 14 | Security config review | ✅ PASS | §9 |
+| 15 | HTTPS / headers / secrets / debug review | ⛔ BLOCKED_BY_ENVIRONMENT (فقط مؤلفه HTTPS/Domain/TLS — Runbook §12.1)؛ headers/secrets/debug/salts = ✅ PASS (§9) | §9/§12.1 |
+| 16 | File/storage permissions | ✅ PASS | §9 — perms اندازه‌گیری‌شده + storage خارج webroot |
+| 17 | Health checks | ✅ PASS | §3/§5 — health REST 200 + queue health نه stale |
+| 18 | Error/Op logging بدون PHI leakage | ✅ PASS | §9 — اسکن واقعی لاگها با الگوهای Synthetic → صفر match |
+| 19 | Audit verification | ✅ PASS | §9 — hash-chain OK + ۲۰ نوع رخداد واقعی |
+| 20 | Responsive smoke (Mobile/Tablet P/Tablet L/Desktop) | ✅ PASS | §13 — Chromium واقعی ۳۹۰/۷۶۸/۱۰۲۴/۱۴۴۰، بدون overflow |
+| 21 | Doctor workflow smoke | ✅ PASS | §7 S3 — call→note→complete→invoice→payment→idempotent replay |
+| 22 | Secretary workflow smoke | ✅ PASS | §7 S2 — walk-in → صف |
+| 23 | Patient workflow smoke | ✅ PASS | §7 S1 — OTP → hold → confirm |
+| 24 | Handwriting/offline-sync smoke | ✅ PASS | §7 S4 — doc+page+revision+conflict (سمت سرور)؛ Offline-Sync (IndexedDB) با تستهای F7 در CI سبز |
+| 25 | Notification/report/export smoke | ✅ PASS | §7 S5+S6+S9 — publish/inbox، گزارش+Export async، SMS log-provider |
+
+- **PASS: ۲۳ قلم** | **FAIL: ۰** | **BLOCKED_BY_ENVIRONMENT: ۱ قلم کامل (شماره ۱۵ فقط در مؤلفه HTTPS) + ۳ قلم محیطی تکمیلی (TLS §12.1، SMS واقعی §12.2، Benchmark سرور مرجع §12.3، دستگاه فیزیکی §12.4)** | **NOT_APPLICABLE: ۰**
 
 **Go-Live Recommendation: CONDITIONAL_READY** (§14) — کد و عملیات آماده؛ Go-Live نهایی منوط به اجرای ۴ قلم Runbook محیطی روی زیرساخت Production (که ذاتاً خارج از قلمرو این Repo است) + تأیید کارفرما.
 
@@ -90,7 +123,7 @@ Environment: Ubuntu 24.04 VM (4 vCPU)، MySQL 8 (Docker)، Apache 2.4.58 + mod_p
 
 ## 8. Performance Benchmark (اندازه‌گیری واقعی — ab)
 
-> محیط: Ubuntu VM (4 vCPU — هم‌تراز vCPU سرور مرجع 4vCPU/8GB؛ RAM runner بیشتر)، Apache+mod_php (opcache پیش‌فرض فعال)، MySQL 8، dataset §6 (جدول‌های چندصدتا/چند‌هزارتایی)، cache گرم (۲ warm-up) — اعداد کامل در Step Summary و artifact `gate-logs` run Gate.
+> محیط: Ubuntu VM (4 vCPU — هم‌تراز vCPU سرور مرجع 4vCPU/8GB؛ RAM runner بیشتر)، Apache+mod_php (opcache پیش‌فرض فعال)، MySQL 8، dataset §6 (۴۰۰ بیمار/۶۰۰ نوبت/۱۰۸۰ اعلان؛ DB 2.22MB)، cache گرم (۲ warm-up). اعداد از dump دیاگ رانهای Gate ثبت شده (steps سبز در 34025267752 و 34027029638؛ artifact blob از محیط ایجنت قابل دانلود نیست).
 
 | Endpoint | c | p50 | p95 | p99 | RPS | Error |
 |---|---|---|---|---|---|---|
@@ -121,7 +154,7 @@ Environment: Ubuntu 24.04 VM (4 vCPU)، MySQL 8 (Docker)، Apache 2.4.58 + mod_p
 - **Config:** wp-config جدا از artifact نگه داشته شد (شامل Secret — Runbook §12.6 برای بکاپ امن Config).
 - **RPO:** مکانیزم اثبات شد؛Cadence تولید (هر ۶ ساعت طبق backup-recovery §3) روی سرور واقعی = Runbook §12.5/12.6.
 
-## 11. Full Restore Drill (محیط جداگانه) — PASS
+## 11. Full Restore Drill (محیط جداگانه) — PASS ✅ (run نهایی 34027029638)
 
 اجرای کامل زنجیره DR طبق دستور کارفرما:
 
@@ -137,8 +170,9 @@ Backup (DB+Storage) → MySQL دوم (@3307، instance مستقل) → Restore D
    ✓ نمونه کسب‌وکار: بیمار SYN + پرداختها + پیوست پزشکی قابل خواندن از storage بازیابی‌شده
 ```
 
-- **RTO:** کل Drill (restore + integrity) در حد **ثانیه/دقیقه** کامل شد — هدف ≤ 4h با حاشیه بزرگ (اعداد دقیق wall-clock در Summary run).
-- **RPO:** تابع Cadence بکاپ Production (هدف ≤ 6h طبق backup-recovery) — مکانیزم و Verify اثبات شد.
+- **RTO (اندازه‌گیری واقعی):** کل Drill — import DB + شمارش ۴۱ جدول + restore فایلها + WP tree دوم + config + ۴ لایه Integrity — **~۶ ثانیه wall-clock** (step timing ران نهایی؛ DB این دریل 2.22MB + ~۱۰ فایل storage است — مقیاس واقعی Pilot). هدف ≤ 4h → **حاشیه ~۲۴۰۰×**؛ در مقیاس Production با داده بزرگتر، زمان غالب = mysqldump/import است که با همان مکانیزم خطی مقیاس می‌شود.
+- **RPO:** تابع Cadence بکاپ Production (هدف عملیاتی ≤ 6h طبق backup-recovery §3؛ سقف مصوب ≤ 24h) — مکانیزم Backup→Restore→Verify به‌طور کامل اجرا و اثبات شد.
+- **دو درس متدولوژی DR (شفاف در report):** (۱) مرجع Integrity باید **snapshot لحظه بکاپ** باشد نه mainِ زنده (main بعد از بکاپ writes عملیاتی transient/cron می‌گیرد)؛ (۲) شمارش جداول باید **قبل از بوت WordPress روی محیط restore** انجام شود (هر بوت ترنزینت migrate-lock = ۲ ردیف در DB بازیابی‌شده می‌نویسد). هر دو در workflow اعمال شد و ران نهایی با این متدولوژی سبز شد.
 
 ## 12. BLOCKED_BY_ENVIRONMENT — Runbookهای اجرای دستی روی Production
 
@@ -179,9 +213,12 @@ Backup (DB+Storage) → MySQL دوم (@3307، instance مستقل) → Restore D
 
 ## 14. جمع‌بندی و توصیه Go-Live
 
+- **ران نهایی Gate: `34027029638` — هر ۴ job سبز** (Release Artifact / Upgrade / Responsive / Staging کامل ۱۹ مرحله‌ای). CI regression (Unit PHP 8.1–8.4 + Integration WP 6.7.2/MySQL 8) روی همان کامیت سبز (run 34027031732).
 - **Critical Blockers: صفر.** همه اجزای قابل‌آزمون در محیط واقعی (Artifact، نصب، ارتقا، Cron/Jobs، فایلهای محافظت‌شده، Backup/Restore کامل با Integrity، Benchmark Staging، Security Config، Audit، Smokeهای نقش‌ها، Responsive) PASS شدند.
+- **باگ واقعی تولید در حین Gate کشف و بسته شد (طبق فرایند مصوب: Root Cause → Fix → Test → CI → Docs):** توقف جاب‌های دوره‌ای در استقرار system-cron (واگرایی مسیر WP-Cron/CLI) → مسیر واحد `App::runTick()` + regression test + همگام‌سازی ADR-0016/background-jobs.md + ثبت در CHANGELOG. این یافته دقیقاً ارزش Gate را اثبات کرد — این باگ در تستهای Unit/Integration (که مسیر WP-Cron را می‌پوشوند) دیده نمی‌شد.
+- **اقلام کم‌اهمیت → Backlog (نه Blocker):** نویز notice های deadlock گذرا روی `_transient_cpms_migrate_lock` زیر بار c=100 (بدون اثر عملکردی)؛ بهبود قفل رقابتی.
 - **Gateهای باقی‌مانده (۴ قلم Runbook §12):** ذاتاً محیط‌اند و پیش از استفاده روی بیمار واقعی باید اجرا و ثبت شوند: TLS، SMS واقعی، Benchmark سرور مرجع، تست دستگاه فیزیکی (+ راه‌اندازی cron/بکاپ خودکار Production).
-- **Verdict: CONDITIONAL_READY** — کد RC برای Go-Live آماده است؛ استقرار Production منوط به اجرای Runbookهای §12 روی زیرساخت واقعی + Review نتیجه‌ها + تأیید صریح کارفرما.
+- **Verdict: CONDITIONAL_READY** — کد RC برای Go-Live آماده است؛ استقرار Production منوط به اجرای Runbookهای §12 روی زیرساخت واقعی + Review نتیجه‌ها + تأیید صریح کارفرما. طبق دستور کارفرما: بدون تأیید صریح، وارد F10/Production نمی‌شویم و Patient Data واقعی وارد نمی‌شود.
 
 ## 15. پیوست — اجراهای Gate
 
@@ -200,6 +237,8 @@ Backup (DB+Storage) → MySQL دوم (@3307، instance مستقل) → Restore D
 | 34024715888 | ۱ fail | iteration 11 (Smokes ۷/۹؛ S7 closure vars، S9 status بزرگ) |
 | 34024979176 | ۱ fail | iteration 12 (**Smokes ۹/۹ ✅**؛ fail = assert الگوی 401 vs قرارداد واقعی 403 NONCE) |
 | 34025267752 | ۱ fail | iteration 13 (REST ✅، **Benchmark ✅، Security ✅، Audit ✅، Backup ✅**؛ fail = Restore Drill — لاگ کامل ضبط شد) |
-| 34025811008 | در حال اجرا | iteration 14 (Restore Drill لاگ‌دار — PHASE 1..3d) |
+| 34025811008 | ۱ fail | iteration 14 (لاگ کامل: `COUNT MISMATCH options 125 vs 127` — main زنده بعد از بکاپ writes عملیاتی می‌گیرد → معیار = snapshot بکاپ) |
+| 34026560490 | ۱ fail | iteration 15 (شمارش vs snapshot: معکوس شد backup=125 restore=127 — بوتِ restore-config ترنزینت migrate-lock می‌نویسد → شمارش باید قبل از بوت باشد) |
+| **34027029638** | **✅ هر ۴ job سبز** | **FINAL — Release ✅ / Upgrade ✅ / Responsive ✅ / Staging کامل ✅ (۱۹ step: deploy→install→cron→seed→jobs→files→REST→benchmark→security→audit→backup→restore drill→summary)** |
 
 > ابزارهای Gate (build/seed/smoke/responsive + workflow) در repo: `bin/build-release.sh`، `bin/pilot-{seed,smoke,responsive}`، `.github/workflows/pilot-gate.yml` — قابلاجریای مجدد برای هر RC بعدی.
