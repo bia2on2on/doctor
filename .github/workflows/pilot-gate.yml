@@ -486,9 +486,19 @@ jobs:
       # ---------- Backup creation ----------
       - name: Backup creation (DB + protected storage + checksums)
         run: |
+          export MYSQL_PWD=root
           T0=$(date +%s)
-          mysqldump -h127.0.0.1 -P3306 -uroot -proot --single-transaction --routines --triggers --no-tablespaces "$DB_MAIN" | gzip > /tmp/backup-db.sql.gz
+          mysqldump -h127.0.0.1 -P3306 -uroot --single-transaction --routines --triggers --no-tablespaces "$DB_MAIN" | gzip > /tmp/backup-db.sql.gz
           T1=$(date +%s)
+          # شمارش تک‌تک جداول «لحظه بکاپ» — مرجع Integrity در Restore Drill
+          # (main زنده است و Apache/cron می‌توانند بعد از snapshot در آن بنویسند؛
+          # معیار درست DR: restore == backup snapshot، نه restore == mainِ الان)
+          mysql -h127.0.0.1 -P3306 -uroot -N -e "SELECT table_name FROM information_schema.tables WHERE table_schema='$DB_MAIN' AND table_name LIKE 'cpmswp_%' ORDER BY table_name;" \
+            | while read -r T; do
+                C=$(mysql -h127.0.0.1 -P3306 -uroot -N -e "SELECT COUNT(*) FROM \`$DB_MAIN\`.\`$T\`;" 2>/dev/null)
+                echo "$T $C"
+              done > /tmp/backup-counts.txt
+          echo "backup-time table counts recorded: $(wc -l < /tmp/backup-counts.txt) tables" 
           tar -czf /tmp/backup-storage.tar.gz -C /home/runner clinic-storage
           cp "$WP_DIR/wp-config.php" /tmp/backup-wp-config.txt
           T2=$(date +%s)
@@ -510,10 +520,11 @@ jobs:
           # همه خروجی step به /tmp/restore.log می‌رود (دیاگ در صورت شکست)
           set -o pipefail
           exec > >(tee -i /tmp/restore.log) 2>&1
+          export MYSQL_PWD=root
           T0=$(date +%s)
           echo 'PHASE 1: DB restore (mysql دوم @3307)'
-          mysql -h 127.0.0.1 -P 3307 -uroot -proot -e "CREATE DATABASE $DB_RESTORE CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
-          gunzip -c /tmp/backup-db.sql.gz | mysql -h127.0.0.1 -P3307 -uroot -proot "$DB_RESTORE"
+          mysql -h 127.0.0.1 -P 3307 -uroot -e "CREATE DATABASE $DB_RESTORE CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+          gunzip -c /tmp/backup-db.sql.gz | mysql -h127.0.0.1 -P3307 -uroot "$DB_RESTORE"
           T1=$(date +%s)
           echo 'PHASE 2: storage + WP tree دوم + config'
           mkdir -p /home/runner/restore-clinic-storage
@@ -535,16 +546,24 @@ jobs:
           echo 'config restore: files.storage_path=/home/runner/restore-clinic-storage', "\n";
           PHPEOF
           WP_HOME="$WP_RESTORE_DIR" php /tmp/restore-config.php
-          echo 'PHASE 3a: شمارش همه جداول (main vs restore)'
-          MAIN_TABLES=$(mysql -h127.0.0.1 -P3306 -uroot -proot -N -e "SELECT table_name FROM information_schema.tables WHERE table_schema='$DB_MAIN' AND table_name LIKE 'cpmswp_%' ORDER BY table_name;")
+          echo 'PHASE 3a: شمارش همه جداول (restore vs backup-snapshot)'
+          # معیار DR: restore باید == snapshot لحظه بکاپ باشد (main زنده بعد از بکاپ
+          # writes عملیاتی می‌گیرد — transient/cron — و مقایسه با آن false-fail است)
           FAIL=0
-          while read -r T; do
-            A=$(mysql -h127.0.0.1 -P3306 -uroot -proot -N -e "SELECT COUNT(*) FROM \`$DB_MAIN\`.\`$T\`;")
-            B=$(mysql -h127.0.0.1 -P3307 -uroot -proot -N -e "SELECT COUNT(*) FROM \`$DB_RESTORE\`.\`$T\`;")
-            [ "$A" = "$B" ] || { echo "COUNT MISMATCH $T: $A vs $B"; FAIL=1; }
-          done <<< "$MAIN_TABLES"
-          NT=$(wc -l <<< "$MAIN_TABLES")
-          [ $FAIL -eq 0 ] && echo "همه $NT جدول: شمارش یکسان ✓" || exit 1
+          NT=0
+          while read -r T A; do
+            B=$(mysql -h127.0.0.1 -P3307 -uroot -N -e "SELECT COUNT(*) FROM \`$DB_RESTORE\`.\`$T\`;" 2>/dev/null)
+            NT=$((NT+1))
+            [ "$A" = "$B" ] || { echo "COUNT MISMATCH $T: backup=$A restore=$B"; FAIL=1; }
+          done < /tmp/backup-counts.txt
+          [ $FAIL -eq 0 ] && echo "همه $NT جدول: restore == backup snapshot ✓" || exit 1
+          # گزارش شفاف: آیا main بعد از بکاپ writes گرفته؟ (انتظار: چند ردیف عملیاتی)
+          DIFFNOW=0
+          while read -r T A; do
+            C=$(mysql -h127.0.0.1 -P3306 -uroot -N -e "SELECT COUNT(*) FROM \`$DB_MAIN\`.\`$T\`;" 2>/dev/null)
+            [ "$A" = "$C" ] || { echo "post-backup drift در $T (main الان=$C، backup=$A — عملیاتی/منتظره)"; DIFFNOW=$((DIFFNOW+1)); }
+          done < /tmp/backup-counts.txt
+          echo "main drift بعد از بکاپ در $DIFFNOW جدول (transient/cron — طبیعی؛ مرجع Integrity همان snapshot است)"
           echo 'PHASE 3b: schema + audit chain روی Restore'
           WP_HOME="$WP_RESTORE_DIR" php "$WP_RESTORE_DIR/wp-content/plugins/clinic-practice-management/bin/cpms" status
           WP_HOME="$WP_RESTORE_DIR" php "$WP_RESTORE_DIR/wp-content/plugins/clinic-practice-management/bin/cpms" audit verify 100000
@@ -609,7 +628,7 @@ jobs:
             echo '```'
             for f in /tmp/apt.log /tmp/seed.json /tmp/smoke.log /tmp/bench.txt /tmp/ab.txt /tmp/headers.txt \
                      /tmp/perms.txt /tmp/audit-actions.txt /tmp/jobs-queued.txt /tmp/jobs-success.txt /tmp/failed-jobs.txt \
-                     /tmp/tick-1.log /tmp/tick-2.log /tmp/restore.log /tmp/orig-files.txt /tmp/restored-files.txt /tmp/backup-hashes.txt \
+                     /tmp/tick-1.log /tmp/tick-2.log /tmp/restore.log /tmp/orig-files.txt /tmp/restored-files.txt /tmp/backup-hashes.txt /tmp/backup-counts.txt \
                      /tmp/health.json /tmp/avail.json /tmp/unauth.json /tmp/probe-body.txt \
                      /tmp/leak.txt /tmp/leak2.txt /tmp/cpms-tick.log /tmp/tick-manual.log /tmp/health-check.log /tmp/pw.log /tmp/resp.log; do
               if [ -f "$f" ]; then echo "--- $f (tail 50) ---"; tail -50 "$f"; fi
@@ -652,6 +671,7 @@ jobs:
             /tmp/restore.log
             /tmp/orig-files.txt
             /tmp/restored-files.txt
+            /tmp/backup-counts.txt
           retention-days: 14
           if-no-files-found: ignore
 
@@ -779,7 +799,7 @@ jobs:
             echo '```'
             for f in /tmp/apt.log /tmp/seed.json /tmp/smoke.log /tmp/bench.txt /tmp/ab.txt /tmp/headers.txt \
                      /tmp/perms.txt /tmp/audit-actions.txt /tmp/jobs-queued.txt /tmp/jobs-success.txt /tmp/failed-jobs.txt \
-                     /tmp/tick-1.log /tmp/tick-2.log /tmp/restore.log /tmp/orig-files.txt /tmp/restored-files.txt /tmp/backup-hashes.txt \
+                     /tmp/tick-1.log /tmp/tick-2.log /tmp/restore.log /tmp/orig-files.txt /tmp/restored-files.txt /tmp/backup-hashes.txt /tmp/backup-counts.txt \
                      /tmp/health.json /tmp/avail.json /tmp/unauth.json /tmp/probe-body.txt \
                      /tmp/leak.txt /tmp/leak2.txt /tmp/cpms-tick.log /tmp/tick-manual.log /tmp/health-check.log /tmp/pw.log /tmp/resp.log; do
               if [ -f "$f" ]; then echo "--- $f (tail 50) ---"; tail -50 "$f"; fi
@@ -924,7 +944,7 @@ jobs:
             echo '```'
             for f in /tmp/apt.log /tmp/seed.json /tmp/smoke.log /tmp/bench.txt /tmp/ab.txt /tmp/headers.txt \
                      /tmp/perms.txt /tmp/audit-actions.txt /tmp/jobs-queued.txt /tmp/jobs-success.txt /tmp/failed-jobs.txt \
-                     /tmp/tick-1.log /tmp/tick-2.log /tmp/restore.log /tmp/orig-files.txt /tmp/restored-files.txt /tmp/backup-hashes.txt \
+                     /tmp/tick-1.log /tmp/tick-2.log /tmp/restore.log /tmp/orig-files.txt /tmp/restored-files.txt /tmp/backup-hashes.txt /tmp/backup-counts.txt \
                      /tmp/health.json /tmp/avail.json /tmp/unauth.json /tmp/probe-body.txt \
                      /tmp/leak.txt /tmp/leak2.txt /tmp/cpms-tick.log /tmp/tick-manual.log /tmp/health-check.log /tmp/pw.log /tmp/resp.log; do
               if [ -f "$f" ]; then echo "--- $f (tail 50) ---"; tail -50 "$f"; fi
