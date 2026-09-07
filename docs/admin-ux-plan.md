@@ -57,8 +57,20 @@
 - `plugin_action_links` (راه‌اندازی / داشبورد CPMS / تنظیمات) مطابق قابلیت.
 - Notice اولیه نصب «راه‌اندازی اولیه» + دکمه‌ها؛ بعد از تکمیل محو می‌شود.
 
+> ✅ **Done** — top-level «مدیریت مطب» + زیرمنوهای re-home + داشبورد + action links + onboarding notice.
+> Legacy `tools.php?page=cpms-system`/`cpms-settings` به `admin.php?page=*` (تحت «مدیریت مطب») در
+> `admin_menu` priority 5 هدایت می‌شوند تا قبل از 403 `user_can_access_admin_page()` (commit `fabe13e`).
+> گیت Real WP Acceptance (هر دو prefix `clinic_`/`wp_`) سبز.
+
 ### Chunk B — Setup Wizard (Self-service, resumable)
 - گام‌های ۱..۱۲ طبق مشخصات؛ resumable؛ progress؛ Optional/Required؛ حفظ data؛ بدون PHI؛ responsive؛ استفاده از سرویس‌های موجود (no duplicate logic).
+
+> ✅ **Done** — `CpmsSetupWizard` (admin.php?page=cpms-wizard) با ۱۲ گام (welcome/clinic/booking/users/
+> doctors/schedules/sms/backup/license/health/review/finish)؛ progress؛ resumable از طریق
+> `setup.current_step`/`setup.started_at`؛ ذخیرهٔ Atomic + audited روی Settings؛ بدون PHI؛
+> گیت تکمیل = نام کلینیک + ≥۱ پزشک فعال؛ گام‌های اختیاری (SMS/backup/license) مانع نمی‌شوند؛
+> ثبت `setup.completed`؛ استفاده از سرویس‌های موجود (no duplicate logic)؛ CSRF + capability + sanitize + bounded؛
+> تست Integration (`SetupWizardTest`) سبز (commit `7327969`).
 
 ### Chunk C — Staff/User Management + Account/Password + Role Presets + Advanced Permissions
 - صفحه «کاربران و دسترسی‌ها» با list/add/edit/activate/deactivate/assign role/link doctor/search/filter.
