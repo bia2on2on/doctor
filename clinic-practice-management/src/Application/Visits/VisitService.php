@@ -320,20 +320,26 @@ final class VisitService
     /**
      * داشبورد امروز: صف زنده + آمار + پزشکان فعال.
      *
+     * ADR-0030/Part1 (اصل «پزشک داده پزشک دیگر را ضمنی نمی‌بیند» — Master Context §8):
+     * اگر Actor «پزشکِ» متصل به یک Clinician باشد، خروجی صرفاً ویزیت‌های همان
+     * Clinician است (پارامتر clinician_id نادیده گرفته می‌شود — Scope سرور-side).
+     * منشی/سایر نقش‌های دارای QUEUE_READ دامنه کل مطب را می‌بینند (V1 = clinic_id=1).
+     *
      * @return array<string, mixed>
      */
     public function today(int $actorUserId, ?int $clinicianId = null): array
     {
         $this->requireQueueReader($actorUserId);
+        $scopeClinicianId = $this->queueScopeClinicianId($actorUserId, $clinicianId);
 
-        $queue = $this->visits->queueFor(1, $clinicianId, self::QUEUE_STATUSES);
-        $stats = $this->visits->statsFor(1);
+        $queue = $this->visits->queueFor(1, $scopeClinicianId, self::QUEUE_STATUSES);
+        $stats = $this->visits->statsFor(1, null, $scopeClinicianId);
 
         return [
             'date' => gmdate('Y-m-d'),
             'stats' => $stats,
             'queue' => array_map([$this, 'presentVisit'], $queue),
-            'last_event_id' => $this->visits->lastEventId(1),
+            'last_event_id' => $this->visits->lastEventId(1, null, $scopeClinicianId),
         ];
     }
 
@@ -347,8 +353,9 @@ final class VisitService
     public function eventsSince(int $actorUserId, int $sinceEventId): array
     {
         $this->requireQueueReader($actorUserId);
+        $scopeClinicianId = $this->queueScopeClinicianId($actorUserId, null);
 
-        $events = $this->visits->eventsSince(1, max(0, $sinceEventId));
+        $events = $this->visits->eventsSince(1, max(0, $sinceEventId), 200, $scopeClinicianId);
         $lastId = $sinceEventId;
         foreach ($events as $e) {
             $lastId = max($lastId, (int) $e['id']);
@@ -374,8 +381,9 @@ final class VisitService
     public function lastEventId(int $actorUserId): int
     {
         $this->requireQueueReader($actorUserId);
+        $scopeClinicianId = $this->queueScopeClinicianId($actorUserId, null);
 
-        return $this->visits->lastEventId(1);
+        return $this->visits->lastEventId(1, null, $scopeClinicianId);
     }
 
     // ================= D16 — Checkout (T9) =================
@@ -783,6 +791,28 @@ final class VisitService
         if (!user_can($wpUserId, RolesAndCapabilities::QUEUE_READ)) {
             throw VisitException::of('CLINIC_PERMISSION_DENIED', 'دسترسی به صف ندارید', 403);
         }
+    }
+
+    /**
+     * ADR-0030/Part1 — Scope صف/Feed برای «پزشکِ متصل»:
+     * نقش doctor → فقط ویزیت‌های Clinician خودش (بدون اتصال → صفر نتیجه، نه کل کلینیک)؛
+     * سایر نقش‌ها (منشی و …) → دامنه مطب (پارامتر ورودی اعمال می‌شود).
+     *
+     * مقدار بازگشتی: null = بدون فیلتر؛ int = clinician_id الزامی (0 = هیچ).
+     */
+    private function queueScopeClinicianId(int $actorUserId, ?int $requestedClinicianId): ?int
+    {
+        if ($this->roleForUser($actorUserId) !== 'doctor') {
+            return $requestedClinicianId;
+        }
+
+        $linked = $this->db->fetchValue(
+            'SELECT id FROM ' . $this->db->table('cpms_clinicians') .
+            ' WHERE wp_user_id = %d AND is_active = 1 LIMIT 1',
+            [$actorUserId]
+        );
+
+        return $linked === null ? 0 : (int) $linked;
     }
 
     /**

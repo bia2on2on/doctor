@@ -467,3 +467,37 @@ final class XxxService {
 - **آزمون پذیرش ۱۰۰-راهی (§27/§28):** `SlotCapacityOneHundredWayTest` — ۱۰۰ فرایند همزمان با اتصال مستقل MySQL روی مسیر واقعی `SlotRepository::atomicBook`؛ ظرفیت ۱ → دقیقاً ۱ برنده؛ ظرفیت ۳ → دقیقاً ۳ (در CI اجرا میشود؛ این sandbox MySQL ندارد).
 - **واحدتست محلی (WASM PHP 8.2):** ۲۸۵ تست، ۱۶٬۶۶۱ اِسert، ۰ شکست (۸ خطای محیطی شناختهشده 32-bit؛ ۸ skip نیازمند sodium). **CI سبز ۵/۵** (Unit 8.1–8.4 + Integration WP6.7/MySQL8 — run 34037362222؛ شامل 100-way پذیرش و تستهای پنجرهٔ فعالسازی). اجرای محلی WP/MySQL در این sandbox ممکن نیست (BLOCKED_BY_ENVIRONMENT).
 - **گزارش F10 و توقف تا تأیید کارفرما** طبق §49–§51 در ادامه همین لاگ ثبت خواهد شد.
+
+### [2026-09-07 ~06:40 UTC] — ایجنت Arena — ممیزی مستقل کامل + Remediation Part 1 (P2/P5/P8/P10)
+
+- **فاز/محدوده:** پس از ممیزی مستقل فقط-خواندنی کل کد روی `6e42519` (خواسته کارفرما: «همه مشکلات را پارت‌به‌پارت رفع کن») — Part 1 = ۴ ایراد از ۱۳.
+- **اقدامات:**
+  - **P2 (دسترسی نقش‌ها):** ADR-0030 — Override مدیریتی `cpms_role_caps_override` + صفحه «CPMS (دسترسی‌ها)» (`cpms_config` + Nonce + Audit `ROLE_PERMISSION_CHANGED`/`RESET`)؛ Self-healing اکنون مبنای Override را محترم می‌شمارد؛ خارج از فهرست همچنان پاک می‌شود (TP-10 سالم). نقش بیمار غیرقابل‌ویرایش (P-5).
+  - **P8 (Scope صف پزشک):** `VisitService::today/eventsSince/lastEventId` برای نقش doctor → فقط ویزیت‌های Clinician خودش (بدون اتصال = هیچ)؛ Repository سه متد با پارامتر اختیاری `?int $clinicianId` — بدون Schema change. مطابق Master Context §8.
+  - **P5 (مقصد بیمار):** صفحه «نوبت‌های من» (Ownership-only از مسیر `listMine`) + `login_redirect` + مخفی‌کردن Admin Bar + هدایت GETهای wp-admin — فقط برای «بیمار خالص» (multi-role ستادی مستثنی).
+  - **P10:** «CPMS (فنی)» → «CPMS (فنی و لاگ)».
+  - Docs: ADR-0030، permission-matrix v1.5، user-guide، CHANGELOG 1.0.1، `report-remediation-part1.md`.
+- **کامیت‌ها:** روی `arena/01a077e9-doctor` (لیست در PR) — کد + تست + مستندات.
+- **CI:** ✅ سبز کامل ۱۴/۱۴ روی `05d50ed` — Integration run 34090300269 (۳۰۷ تست، ۱۱ تست جدید سبز؛ یک شکست اولیه در RoleCapabilitiesOverrideTest به‌دلیل مقایسه ترتیبی به‌جای مجموعه‌ای «بازگشت به پیش‌فرض» → root-cause fix در 05d50ed)؛ Unit 8.1–8.4 + Pilot/Staging Gate + Closure Gate (run 34090297534/34090297520) — همه pass. Closure Gate نشان داد WP 6.4/6.5/6.6 از قبل در Gate پوشش دارد (اصلاح P7 ممیزی).
+- **تصمیمات درون‌فازی:** ① Scope پزشک در Service نه Controller (P-1)؛ ② «Override در بکاپ cpms_* فعلی نمی‌آید — fail-safe به پیش‌فرض» در گزارش ثبت شد؛ ③ Cap جدید نسخه‌های آینده برای نقش Override-دار خودکار فعال نمی‌شود (قابل‌پیش‌بینی بودن)؛ ④ P13 (Notes بدون optimistic locking) به‌عنوان رفتار عمدی + ADR آینده ثبت شد.
+- **موارد باز:** Part 2 پیشنهادی = UI پزشک/برنامه هفتگی (P1) + چاپ نسخه (P12)؛ Part 3 = UI گزارش‌ها (P4)؛ Part 4 = MariaDB/WP6.4 در CI (P6/P7) + i18n (P9) + JS/CSS جداسازی (P11)؛ Part 5 = پورتال بیمار (P3 — نیازمند تصمیم محصول). **توقف تا تأیید کارفرما.**
+- **CI (نهایی):** ✅ سبز ۱۴/۱۴ روی `4d5dcf7` — Integration WP6.7/MySQL8 = **۳۱۵ تست / ۰ شکست** (۸ تست جدید Part 2 سبز)؛ Unit 8.1–8.4 + Pilot/Staging + Closure همه pass (run 34093548834 و 34093539362). یک راند شکست (۳۱۵/۱E+3F) با ریشه‌یابی از کامنت خودکار PR: باگ واقعی voidPrescription + join users + assert جابه‌جای تست → کامیت 4d5dcf7.
+- **وضعیت tree:** clean بعد از کامیت.
+
+### [2026-09-07 ~07:40 UTC] — ایجنت Arena — Remediation Part 2: Setup UI پزشک/برنامه (P1) + چاپ نسخه (P12)
+
+- **فاز/محدوده:** تأیید کارفرما برای Part 2 از زنجیره رفع ایرادات ممیزی — دو قلم: بحرانی P1 و عملیاتی P12.
+- **اقدامات:**
+  - **P1 (راه‌اندازی):** `ClinicianRepository` جدید (فهرست/create/update با چک ۱:۱ صریح + RuntimeException — چون wpdb روی UNIQUE خطا نمی‌اندازد؛ قید DB لایه دوم Race) + صفحه «پزشکان و برنامه» (tools, `cpms_config` + Nonce): لیست/ثبت/ویرایش/غیرفعال‌سازی (حذف فیزیکی ممنوع — FK)، پیوند ۱:۱ کاربر با Select، ویرایش ۷ روز برنامه هفتگی با فرم آرایه‌ای (بدون فرم تودرتوی نامعتبر؛ دکمه «ذخیره روز» per-row؛ حذف روز با فرم hidden مجزا) + استثناهای تعطیلی/مرخصی/بستن — همه از مسیر `ScheduleService` (Audit SCHEDULE_* + بازتولید Slot خودکار). Audit جدید: `CLINICIAN_CREATED/UPDATED/STATUS_CHANGED`.
+  - **P12 (چاپ نسخه):** `ClinicalService::prescriptionForPrint()` — `cpms_rx_read` + `requireOwnVisit` (ماتریس 4.3) + Audit `PRESCRIPTION_PRINTED`؛ انتخاب آخرین نسخه غیرواقعی یا rx صریح (rx ویزیت دیگر → 404)؛ خروجی کامل (اقلام/بیمار/MRN/سن/جلالی/شکایت اصلی/پزشک/کلینیک). صفحه مخفی `cpms-prescription-print` با CSS چاپ + واترمارک draft/voided. دکمه «🖨️ چاپ» per-rx در داشبورد پزشک (CFG.can_rx + print_url).
+  - تست‌ها: `ClinicianRepositoryTest` (۳) + `PrescriptionPrintTest` (۵) — شامل 404 مالکیت پزشک دیگر و 403 منشی.
+  - Docs: report-remediation-part2.md، user-guide (راه‌اندازی از UI + چاپ)، CHANGELOG (ادامه 1.0.1).
+- **تصمیمات درون‌فازی:** ① Deactivate-only برای clinician؛ ② برنامه هفتگی از ScheduleService نه SQL مستقیم؛ ③ چاپ فقط پزشکِ خودش؛ ④ «ذخیره روز» = update/create خودکار با u_sched_day؛ ⑤ هر دو قلم CRITICAL ممیزی اکنون بسته — باقی Partها = IMPORTANT/UX.
+- **موارد باز:** Part 3 پیشنهادی = UI گزارش‌ها (P4)؛ Part 4 = MariaDB/WP matrix + i18n + JS/CSS؛ Part 5 = پورتال بیمار (تصمیم محصول). **توقف تا تأیید کارفرما.**
+- **وضعیت tree:** clean بعد از کامیت.
+
+#### پیوست Part 2 — رفع شکست‌های راند اول CI (ریشه‌یابی از کامنت PR)
+- **باگ واقعی تولیدی (کشف تست جدید):** `ClinicalService::voidPrescription` — `$reason` در `use` closure تراکنش نبود → هر ابطال نسخه Warning/Fatal (خط ۴۳۴). هیچ تست قبلی ابطال نسخه را نپوشانده بود. Fix + تست.
+- `ClinicianRepository::listAll` — `table('users')` پیشوند cpms_ می‌گرفت (`{wp}_cpms_users` ناموجود) → `dbPrefix().'users'` (الگوی BookingService).
+- تست `testUserLinking...` — دو assert با Semantics جابه‌جا نوشته شده بود (خودِ تست اشتباه بود، نه کد) → اصلاح + مستندسازی Semantics در کامنت.
+- in-session debug workaround: لاگ job از API مسدود است (results-receiver) — جزئیات شکست از کامنت خودکار PR خوانده شد (مکانیزم موجود ci.yml «Post failures to PR»).

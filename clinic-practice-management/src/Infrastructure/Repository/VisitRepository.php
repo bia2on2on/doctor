@@ -182,13 +182,21 @@ final class VisitRepository
      *
      * @return array<string, int>
      */
-    public function statsFor(int $clinicId, ?string $visitDate = null): array
+    public function statsFor(int $clinicId, ?string $visitDate = null, ?int $clinicianId = null): array
     {
         $date = $visitDate ?? gmdate('Y-m-d');
+        // ADR-0030/Part1: Scope اختیاری پزشک — وقتی Actor «پزشکِ متصل» است،
+        // آمار داشبورد فقط ویزیت‌های خودش را می‌شمارد (بدون نشت حتی Aggregate).
+        $visitWhere = 'clinic_id = %d AND visit_date = %s';
+        $visitParams = [$clinicId, $date];
+        if ($clinicianId !== null) {
+            $visitWhere .= ' AND clinician_id = %d';
+            $visitParams[] = $clinicianId;
+        }
         $rows = $this->db->fetchAll(
             'SELECT status, COUNT(*) AS n FROM ' . $this->db->table('cpms_visits') .
-            ' WHERE clinic_id = %d AND visit_date = %s GROUP BY status',
-            [$clinicId, $date]
+            ' WHERE ' . $visitWhere . ' GROUP BY status',
+            $visitParams
         );
 
         $stats = [
@@ -202,19 +210,31 @@ final class VisitRepository
             $stats['total'] += (int) $r['n'];
         }
 
+        $apptWhere = 'clinic_id = %d AND slot_date = %s';
+        $apptParams = ['no_show', $clinicId, $date];
+        if ($clinicianId !== null) {
+            $apptWhere .= ' AND clinician_id = %d';
+            $apptParams[] = $clinicianId;
+        }
         $appts = $this->db->fetchRow(
             'SELECT COUNT(*) AS total, COALESCE(SUM(status = %s), 0) AS no_show' .
             ' FROM ' . $this->db->table('cpms_appointments') .
-            ' WHERE clinic_id = %d AND slot_date = %s',
-            ['no_show', $clinicId, $date]
+            ' WHERE ' . $apptWhere,
+            $apptParams
         );
         $stats['appointments_today'] = $appts === null ? 0 : (int) ($appts['total'] ?? 0);
         $stats['appointments_no_show'] = $appts === null ? 0 : (int) ($appts['no_show'] ?? 0);
 
+        $walkInWhere = 'clinic_id = %d AND visit_date = %s AND appointment_id IS NULL';
+        $walkInParams = [$clinicId, $date];
+        if ($clinicianId !== null) {
+            $walkInWhere .= ' AND clinician_id = %d';
+            $walkInParams[] = $clinicianId;
+        }
         $walkIn = $this->db->fetchRow(
             'SELECT COUNT(*) AS n FROM ' . $this->db->table('cpms_visits') .
-            ' WHERE clinic_id = %d AND visit_date = %s AND appointment_id IS NULL',
-            [$clinicId, $date]
+            ' WHERE ' . $walkInWhere,
+            $walkInParams
         );
         $stats['walk_in_today'] = $walkIn === null ? 0 : (int) ($walkIn['n'] ?? 0);
 
@@ -227,16 +247,23 @@ final class VisitRepository
      *
      * @return list<array<string, mixed>>
      */
-    public function eventsSince(int $clinicId, int $sinceEventId, int $limit = 200): array
+    public function eventsSince(int $clinicId, int $sinceEventId, int $limit = 200, ?int $clinicianId = null): array
     {
+        $where = 'h.id > %d AND v.clinic_id = %d AND v.visit_date = %s';
+        $params = [$sinceEventId, $clinicId, gmdate('Y-m-d')];
+        // ADR-0030/Part1: پزشکِ متصل فقط رویدادهای ویزیت‌های خودش را در Feed می‌بیند.
+        if ($clinicianId !== null) {
+            $where .= ' AND v.clinician_id = %d';
+            $params[] = $clinicianId;
+        }
         $rows = $this->db->fetchAll(
             'SELECT h.id, h.visit_id, h.from_status, h.to_status, h.changed_at,' .
             ' h.actor_wp_user_id, h.actor_role, h.note, v.clinic_id, v.clinician_id,' .
             ' v.patient_id, v.status AS visit_status' .
             ' FROM ' . $this->db->table('cpms_visit_status_history') . ' h' .
             ' JOIN ' . $this->db->table('cpms_visits') . ' v ON v.id = h.visit_id' .
-            ' WHERE h.id > %d AND v.clinic_id = %d AND v.visit_date = %s ORDER BY h.id ASC LIMIT %d',
-            [$sinceEventId, $clinicId, gmdate('Y-m-d'), $limit]
+            ' WHERE ' . $where . ' ORDER BY h.id ASC LIMIT %d',
+            array_merge($params, [$limit])
         );
 
         return is_array($rows) ? $rows : [];
@@ -245,14 +272,20 @@ final class VisitRepository
     /**
      * بیشینه id رویداد امروز کلینیک — ETag ورژن صف (R1).
      */
-    public function lastEventId(int $clinicId): int
+    public function lastEventId(int $clinicId, ?string $visitDate = null, ?int $clinicianId = null): int
     {
+        $where = 'v.clinic_id = %d AND v.visit_date = %s';
+        $params = [$clinicId, $visitDate ?? gmdate('Y-m-d')];
+        if ($clinicianId !== null) {
+            $where .= ' AND v.clinician_id = %d';
+            $params[] = $clinicianId;
+        }
         $row = $this->db->fetchRow(
             'SELECT MAX(h.id) AS max_id' .
             ' FROM ' . $this->db->table('cpms_visit_status_history') . ' h' .
             ' JOIN ' . $this->db->table('cpms_visits') . ' v ON v.id = h.visit_id' .
-            ' WHERE v.clinic_id = %d AND v.visit_date = %s',
-            [$clinicId, gmdate('Y-m-d')]
+            ' WHERE ' . $where,
+            $params
         );
 
         return $row === null ? 0 : (int) ($row['max_id'] ?? 0);
