@@ -1,0 +1,38 @@
+name: PHPStan Level Probe (temporary — F1-3 level discovery)
+
+# موقت: تعیین «سطح هم‌تراز وضعیت واقعی کد» برای F1-3. بعد از ثبت سطح در
+# phpstan.neon و ci.yml این فایل حذف می‌شود. سبز = سطح پاس‌شده.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: clinic-practice-management
+
+jobs:
+  probe:
+    name: Probe level ${{ matrix.level }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        level: [0, 1, 2, 3, 4, 5, 6, 7, 8]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mbstring, xml
+          coverage: none
+
+      - name: Install dependencies
+        run: composer install --prefer-dist --no-progress --no-interaction
+
+      - name: PHPStan analyse (level ${{ matrix.level }})
+        run: vendor/bin/phpstan analyse --level=${{ matrix.level }} --no-progress --error-format=raw

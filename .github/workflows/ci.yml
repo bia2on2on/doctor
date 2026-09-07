@@ -132,3 +132,23 @@ jobs:
           grep -oE "^[0-9]+\) [A-Za-z\\\\]+Test::[A-Za-z_]+" /tmp/phpunit-int.log | sort -u | sed -n '11,20p' | while IFS= read -r l; do
             echo "::error::${l:0:400}"
           done
+
+  # F1-3 (گروه 4) — PHPStan در CI. سطح در phpstan.neon ثبت است (بالاترین سطح
+  # سبز روی وضعیت واقعی کد — با Probe موقت تعیین شد) و از آن سقف پایین نمی‌آید.
+  static-analysis:
+    name: Static Analysis (PHPStan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mbstring, xml
+          coverage: none
+
+      - name: Install dependencies
+        run: composer install --prefer-dist --no-progress --no-interaction
+
+      - name: Run PHPStan (level from phpstan.neon)
+        run: vendor/bin/phpstan analyse --no-progress
