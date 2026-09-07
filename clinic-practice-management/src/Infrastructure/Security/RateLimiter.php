@@ -28,11 +28,15 @@ final class RateLimiter
         $windowId = intdiv(time(), $windowSec);
         $resetAt = ($windowId + 1) * $windowSec;
 
+        // window_sec هم‌ردیف ذخیره می‌شود تا cleanup مستقل از واحد پنجره
+        // عمل کند (F1-1)؛ در UPDATE هم self-heal می‌شود (ردیف‌های قدیمی).
         $this->db->query(
-            'INSERT INTO ' . $this->db->table('cpms_rate_limits') . ' (window_key, window_id, hits)
-             VALUES (%s, %d, 1)
-             ON DUPLICATE KEY UPDATE hits = hits + 1',
-            [$key, $windowId]
+            'INSERT INTO ' . $this->db->table('cpms_rate_limits') . ' (window_key, window_id, window_sec, hits)
+             VALUES (%s, %d, %d, 1)
+             ON DUPLICATE KEY UPDATE
+                 window_sec = VALUES(window_sec),
+                 hits = hits + 1',
+            [$key, $windowId, $windowSec]
         );
 
         $hits = (int) $this->db->fetchValue(
@@ -49,15 +53,18 @@ final class RateLimiter
 
     /**
      * پاک‌سازی پنجره‌های قدیمی (Job روزانه).
+     *
+     * F1-1: window_id در واحدِ windowSecِ هر limiter محاسبه می‌شود (نه ساعت
+     * ثابت)، پس cutoff باید مستقل از واحد باشد: شروع پنجره
+     * (window_id * window_sec) باید قبل از (now - olderThanSec) باشد.
      */
     public function cleanup(int $olderThanSec = 86400): int
     {
-        // window_id بر مبنای «ساعت» است (intdiv(ts, 3600)) — cutoff باید هم‌واحد باشد
-        $cutoff = intdiv(time() - $olderThanSec, 3600);
+        $cutoffTs = time() - max(1, $olderThanSec);
 
         return $this->db->execute(
-            'DELETE FROM ' . $this->db->table('cpms_rate_limits') . ' WHERE window_id < %d',
-            [$cutoff]
+            'DELETE FROM ' . $this->db->table('cpms_rate_limits') . ' WHERE window_id * window_sec < %d',
+            [$cutoffTs]
         );
     }
 }

@@ -501,3 +501,25 @@ final class XxxService {
 - `ClinicianRepository::listAll` — `table('users')` پیشوند cpms_ می‌گرفت (`{wp}_cpms_users` ناموجود) → `dbPrefix().'users'` (الگوی BookingService).
 - تست `testUserLinking...` — دو assert با Semantics جابه‌جا نوشته شده بود (خودِ تست اشتباه بود، نه کد) → اصلاح + مستندسازی Semantics در کامنت.
 - in-session debug workaround: لاگ job از API مسدود است (results-receiver) — جزئیات شکست از کامنت خودکار PR خوانده شد (مکانیزم موجود ci.yml «Post failures to PR»).
+
+### [2026-09-07 ~09:30 UTC] — ایجنت Arena — F1 Remediation گروه 1: رفع F1-1 (P0) — باگ واحد پنجره در RateLimiter::cleanup
+- **فاز/محدوده:** تأیید کارفرما برای ۷ رفع F1 با ترتیب مصوب؛ گروه 1 = F1-1. پروتکل: پیاده‌سازی ← تست ← commit ← push به شاخهٔ feature ← تأیید SHA remote ← گزارش.
+- **اقدامات:**
+  - **Migration `2026_09_07_0009`:** `cpms_rate_limits.window_sec INT UNSIGNED NOT NULL DEFAULT 3600` (additive، guard با SHOW COLUMNS). پیش‌فرض 3600 = همان واحدی که کد قدیم فرض می‌کرد → رفتار ردیف‌های legacy خنثی.
+  - **`RateLimiter::hit()`:** `window_sec` در INSERT ذخیره + `ON DUPLICATE KEY UPDATE window_sec = VALUES(window_sec)` (self-heal ردیف‌های پیش از Migration).
+  - **`RateLimiter::cleanup()`:** cutoff مستقل از واحد — `DELETE … WHERE window_id * window_sec < (now - olderThanSec)` (به‌جای `intdiv(time()-olderThanSec, 3600)`).
+  - **تست‌های رگرسیون جدید (Integration، روی MySQL واقعی CI):** `testDailyOtpLimitSurvivesCleanup` (سناریوی دقیق OtpService: 3 hit با windowSec=86400 → cleanup(2*86400) هم‌سان Job روزانه → ردیف زنده می‌ماند + `window_sec=86400` + تلاش 4ام همان روز block)؛ `testCleanupKeepsLiveWindowsOfEveryUnit` (86400/3600/60)؛ `testCleanupRemovesExpiredWindowsOfEveryUnit` (ردیف‌های 4 روز پیش با هر واحد حذف می‌شوند). تست قدیمی `testCleanupRemovesOldWindows` حفظ شد (پوشش مسیر legacy با پیش‌فرض 3600).
+- **تصمیمات درون‌فازی:** ① حذف ستون در `down()` عمداً no-op (زدن ستون = بازگشت به باگ)؛ ② `VALUES()` در ON DUPLICATE حفظ شد (سازگار MariaDB — alias-syntax در MariaDB نیست)؛ ③ `cleanup()` soft (execute) باقی ماند — شکست پاک‌سازی دوره‌ای نباید tick را شکند (رفتار قبلی).
+- **تست محلی (php-wasm PHP 8.5):** lint 3 فایل ✓ + Unit suite 285/0F (همان baseline). **تست Integration: CI (PR push).**
+- **وضعیت:** commit + push + SHA remote در ادامه این لاگ ثبت می‌شود.
+
+#### پیوست گروه 1 — رفع شکست راند اول CI (ریشه‌یابی از کامنت خودکار PR)
+- **ریشه:** شکست همهٔ Jobهای WP (Integration + Pilot + Closure روی همهٔ runtimes) در یک نقطهٔ واحد بود: `FAIL schema-0008 — 2026_09_07_0009`. Gateها و `MigrationTest` نسخهٔ فعلی schema را **پین** کرده بودند (`2026_09_07_0008`) — نقطهٔ همگام‌سازی طراحی‌شده برای هر Migration جدید.
+- **رفع (تضعیف Gate نه، به‌روزرسانی پین):** `schema-0009` در closure-gate (۲×probe + restore-drill grep)، pilot-gate (fresh-install check + upgrade-path check + echo نمایشی) و `MigrationTest` (`LATEST_VERSION` + افزودن `rollbackOne()=0009` به ابتدای زنجیرهٔ rollback در دو تست Preflight/Upgrade — down()ِ 0009 عمداً no-op است و re-migrate آن idempotent).
+- **تست‌ها:** Unit 285/0F (php-wasm) + lint ✓؛ Integration/Gates در راند بعدی CI.
+
+#### پیوست گروه 1 (ب) — باگ واقعی دوم: probe اشتباه در Migration 0009 (کشف از 9 شکست Integration راند 2)
+- **شواهد:** 9 شکست (7×RateLimiterTest + OtpFlowTest + RestBookingTest) دقیقاً مطابق رفتار «جدولِ 3 ستونه بدون window_sec»: INSERT چهارستونه soft-fail، DELETE با شرط window_sec حذف صفر؛ در حالی که MigrationTest سبز بود (FKها روی جدول واقعی) → ردیف window_sec واقعاً هرگز ساخته نشده بود.
+- **ریشه:** `CpmsDb::query()` فقط **bool** برمی‌گرداند؛ در up()ِ 0009 probe با `query("SHOW COLUMNS …")` نوشته شده بود → `empty(true) === false` → شرط «ستون موجود است» همیشگی → **ALTER هیچ‌وقت اجرا نمی‌شد** ولی version با موفقیت ثبت می‌شد (به همین دلیل همهٔ Gateها — که فقط version را پین می‌کنند — سبز ماندند!). دقیقاً همان کلاس خطایی که F1-2 (silent-fail migration) هدف دارد.
+- **رفع:** probe با `fetchRow()` + `$col === null` (الگوی استاندارد ماست: 0004/0005/0006) + تست جدید `testWindowSecColumnAddedByMigration` (وجود ستون + int unsigned + default 3600). اسکن کل src: نمونهٔ دیگری از این الگوی نادرست وجود ندارد.
+- **درس برای گروه 2 (F1-2):** strict mode روی MigrationRunner عیناً همین کلاس شکست (SQL ناموفق + version ثبت‌شده) را در آینده مسدود می‌کند.

@@ -56,6 +56,8 @@ final class RateLimiterTest extends WP_UnitTestCase
 
     public function testCleanupRemovesOldWindows(): void
     {
+        // ردیف legacy (بدون window_sec — پیش‌فرض 3600 از Migration 0009):
+        // حذف می‌شود؛ رفتار قدیمی برای ردیف‌های ساعتی حفظ است.
         global $wpdb;
         $table = $wpdb->prefix . 'cpms_rate_limits';
         $oldWindow = intdiv(time() - 200000, 3600);
@@ -65,5 +67,115 @@ final class RateLimiterTest extends WP_UnitTestCase
 
         $left = $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$table} WHERE window_key = %s", 'old-key')); // phpcs:ignore
         $this->assertSame(0, (int) $left);
+    }
+
+    public function testWindowSecColumnAddedByMigration(): void
+    {
+        // رگرسیون: Migration 0009 باید ستون را واقعاً بسازد (نه فقط version را ثبت
+        // کند) — probe اشتباه با query() (که bool برمی‌گرداند) ALTER را
+        // بی‌صدا رد می‌کرد و ستون هیچ‌گاه ساخته نمی‌شد.
+        global $wpdb;
+        $table = $wpdb->prefix . 'cpms_rate_limits';
+        $col = $wpdb->get_row("SHOW COLUMNS FROM {$table} LIKE 'window_sec'", ARRAY_A); // phpcs:ignore WordPress.DB.PreparedSQL
+        $this->assertNotNull($col, 'ستون window_sec باید توسط Migration ساخته شده باشد');
+        $this->assertStringContainsString('int', strtolower((string) $col['Type']));
+        $this->assertStringContainsString('unsigned', (string) $col['Type']);
+        $this->assertStringContainsString('3600', (string) $col['Default']);
+    }
+
+    public function testDailyOtpLimitSurvivesCleanup(): void
+    {
+        // Regression F1-1: کد قدیم cutoff را در واحد «ساعت» حساب می‌کرد در حالی
+        // که window_id پنجرهٔ روزانه در واحد 86400 است — ردیفِ زندهٔ
+        // otp-day در هر اجرا حذف می‌شد و سقف 3 تلاش در روز بی‌اثر بود.
+        $rl = App::rate();
+        $key = 'otp-day:09121112233';
+
+        for ($i = 0; $i < 3; $i++) {
+            $this->assertTrue($rl->hit($key, 3, 86400)['allowed']);
+        }
+
+        // همان فراخوانی Job روزانه (RateLimitCleanupHandler)
+        $rl->cleanup(2 * 86400);
+
+        $windowId = intdiv(time(), 86400);
+        $row = App::db()->fetchRow(
+            'SELECT hits, window_sec FROM ' . App::db()->table('cpms_rate_limits')
+            . ' WHERE window_key = %s AND window_id = %d',
+            [$key, $windowId]
+        );
+        $this->assertNotNull($row, 'پنجرهٔ روزانهٔ زنده باید بعد از cleanup باقی بماند');
+        $this->assertSame(3, (int) $row['hits']);
+        $this->assertSame(86400, (int) $row['window_sec']);
+
+        $this->assertFalse(
+            $rl->hit($key, 3, 86400)['allowed'],
+            'تلاش چهارمِ همان روز بعد از cleanup باید Block شود'
+        );
+    }
+
+    public function testCleanupKeepsLiveWindowsOfEveryUnit(): void
+    {
+        // Regression F1-1 (بخش دوم): پنجره‌های زنده با هر windowSec
+        // (روز / ساعت / دقیقه) نباید پاک شوند.
+        $rl = App::rate();
+        $rl->hit('live:daily', 100, 86400);
+        $rl->hit('live:hourly', 100, 3600);
+        $rl->hit('live:minute', 100, 60);
+
+        $rl->cleanup(2 * 86400);
+
+        $this->assertNotNull($this->rowFor('live:daily', 86400));
+        $this->assertNotNull($this->rowFor('live:hourly', 3600));
+        $this->assertNotNull($this->rowFor('live:minute', 60));
+    }
+
+    public function testCleanupRemovesExpiredWindowsOfEveryUnit(): void
+    {
+        // پنجره‌های منقضی (4 روز پیش) با هر واحد windowSec حذف می‌شوند —
+        // پیش از F1-1 ردیف‌های دقیقه‌ای هرگز حذف نمی‌شدند (رشد بی‌پایان جدول).
+        global $wpdb;
+        $table = $wpdb->prefix . 'cpms_rate_limits';
+        $now = time();
+
+        // همه در واحدِ windowSec خودشان 4 روز پیش — کد قدیم ردیفِ دقیقه‌ای را
+        // (window_id بزرگ در واحد 60s) هرگز حذف نمی‌کرد؛ کد جدید هر سه را حذف
+        // می‌کند چون شروع پنجره (window_id * window_sec) < now - 86400.
+        $expired = [
+            ['exp:daily', intdiv($now - 4 * 86400, 86400), 86400],
+            ['exp:hourly', intdiv($now - 4 * 86400, 3600), 3600],
+            ['exp:minute', intdiv($now - 4 * 86400, 60), 60],
+        ];
+        foreach ($expired as [$key, $windowId, $windowSec]) {
+            $wpdb->query($wpdb->prepare(
+                "INSERT INTO {$table} (window_key, window_id, window_sec, hits) VALUES (%s, %d, %d, 7)",
+                $key, $windowId, $windowSec
+            )); // phpcs:ignore WordPress.DB.PreparedSQL
+        }
+
+        $deleted = App::rate()->cleanup(86400);
+
+        $this->assertGreaterThanOrEqual(3, $deleted);
+        foreach ($expired as [$key, $windowId, $windowSec]) {
+            $left = $wpdb->get_var($wpdb->prepare(
+                "SELECT COUNT(*) FROM {$table} WHERE window_key = %s AND window_id = %d",
+                $key, $windowId
+            )); // phpcs:ignore
+            $this->assertSame(0, (int) $left, "پنجرهٔ منقضی {$key} باید حذف شده باشد");
+        }
+    }
+
+    /**
+     * کمک‌کنندهٔ تست: آیا پنجرهٔ زندهٔ (key, windowSec) در جدول است؟
+     *
+     * @return array<string, mixed>|null
+     */
+    private function rowFor(string $key, int $windowSec): ?array
+    {
+        return App::db()->fetchRow(
+            'SELECT hits FROM ' . App::db()->table('cpms_rate_limits')
+            . ' WHERE window_key = %s AND window_id = %d',
+            [$key, intdiv(time(), $windowSec)]
+        );
     }
 }

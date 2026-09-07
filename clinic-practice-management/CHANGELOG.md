@@ -4,6 +4,11 @@ All notable changes to the CPMS plugin are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.0.2] — unreleased
+
+### Fixed
+- **F1-1 (P0) — باگ واحد پنجره در `RateLimiter::cleanup()`:** cutoff در واحد «ساعت» حساب می‌شد در حالی که `window_id` در واحد `windowSec` هر limiter است → (۱) پنجرهٔ زندهٔ روزانهٔ OTP (86400s) در هر پاک‌سازی حذف می‌شد و سقف 3 تلاش در روز عملاً بی‌اثر بود؛ (۲) ردیف‌های پنجرهٔ کوتاه (60s) هرگز حذف نمی‌شدند و جدول `cpms_rate_limits` بی‌پایان رشد می‌کرد. **رفع:** Migration `2026_09_07_0009` (additive: `window_sec INT UNSIGNED NOT NULL DEFAULT 3600`) + ذخیرهٔ `window_sec` در `hit()` (با self-heal در UPDATE) + cutoff مستقل از واحد: `window_id * window_sec < (now - olderThanSec)`. ردیف‌های Legacy پیش‌فرض 3600 می‌گیرند (همان فرض کد قبلی → خنثی). **تست‌های رگرسیون جدید:** `testDailyOtpLimitSurvivesCleanup` (پنجرهٔ زندهٔ روزانه پس از cleanup همان Job روزانه می‌ماند و تلاش 4ام همان روز block می‌شود)، `testCleanupKeepsLiveWindowsOfEveryUnit`، `testCleanupRemovesExpiredWindowsOfEveryUnit`.
+
 ## [1.0.0] - 2026-09-05
 
 ### Added
