@@ -49,7 +49,7 @@ final class SystemAdminUxTest extends WP_UnitTestCase
         $g = SystemPage::guide('db.reachable', SystemHealthService::FAIL);
 
         $this->assertStringContainsString('اتصال به دیتابیس', $g['what']);
-        $this->assertStringContainsString('رسان', $g['impact']); // e.g. «برقرار نیست/در دسترس نیست»
+        $this->assertStringContainsString('دسترس', $g['impact']); // «در دسترس نخواهد بود»
         $this->assertStringContainsString('wp-config', $g['action']);
     }
 
