@@ -501,3 +501,6 @@ final class XxxService {
 - `ClinicianRepository::listAll` — `table('users')` پیشوند cpms_ می‌گرفت (`{wp}_cpms_users` ناموجود) → `dbPrefix().'users'` (الگوی BookingService).
 - تست `testUserLinking...` — دو assert با Semantics جابه‌جا نوشته شده بود (خودِ تست اشتباه بود، نه کد) → اصلاح + مستندسازی Semantics در کامنت.
 - in-session debug workaround: لاگ job از API مسدود است (results-receiver) — جزئیات شکست از کامنت خودکار PR خوانده شد (مکانیزم موجود ci.yml «Post failures to PR»).
+
+#### پیوست Part 2 — Merge
+- PR #4 با تأیید کارفرما merge شد (merge commit `4be7a4a`، 2026-09-07 07:21 UTC) — آخرین CI: ۱۴/۱۴ سبز روی `92b904b`.
