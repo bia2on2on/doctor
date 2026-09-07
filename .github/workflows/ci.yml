@@ -133,9 +133,10 @@ jobs:
             echo "::error::${l:0:400}"
           done
 
-  # F1-3 (گروه 4) — PHPStan در CI. سطح در phpstan.neon ثبت است (بالاترین سطح
-  # سبز روی وضعیت واقعی کد — با Probe موقت تعیین شد) و از آن سقف پایین نمی‌آید.
-  static-analysis:
+  # F1-3 (گروه 4) — PHPStan در CI. سطح و scope در phpstan.neon.dist ثبت است
+  # (level=3 — بالاترین سطح سبز روی وضعیت واقعی کد، با اجرای واقعی/probe؛
+  # scope: src + bin) و از آن سقف پایین نمی‌آید.
+  phpstan:
     name: Static Analysis (PHPStan)
     runs-on: ubuntu-latest
     steps:

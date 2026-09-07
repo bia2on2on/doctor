@@ -219,7 +219,7 @@ final class XxxService {
 
 ## 6. CI و محیط
 
-- Workflow: `.github/workflows/ci.yml` — ۳ job: **Unit** (matrix PHP 8.1–8.4، بدون WP) + **Integration** (WP 6.7.2 + MySQL 8، PHPUnit 9.6، `tests/bin/install-wp-tests.sh`، root/root، prefix `wptests_`) + **Static Analysis** (PHPStan — از F1-3/گروه 4؛ سطح در `clinic-practice-management/phpstan.neon` = 3، بالاترین سطح سبز روی وضعیت واقعی کد؛ ارتقا به 4+ نیازمند بازسازی تایپی — کار آینده).
+- Workflow: `.github/workflows/ci.yml` — ۳ job: **Unit** (matrix PHP 8.1–8.4، بدون WP) + **Integration** (WP 6.7.2 + MySQL 8، PHPUnit 9.6، `tests/bin/install-wp-tests.sh`، root/root، prefix `wptests_`) + **`phpstan`** (Static Analysis — از F1-3/گروه 4؛ `phpstan.neon.dist`: level=3 هم‌تراز وضعیت واقعی کد (با اجرای واقعی/probe)، scope `src + bin`، بدون baseline؛ ارتقا به 4+ نیازمند بازسازی تایپی — کار آینده).
 - چرخه CI ≈ ۴.۵–۵ دقیقه.
 - شواهد شکست را از کامنت‌های PR #1 بخوان (step «Post failures to PR» فقط در failure).
 - **محیط sandbox فاقد PHP CLI است** — برای lint فایل‌های PHP از WASM:
