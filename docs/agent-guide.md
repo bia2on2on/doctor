@@ -586,3 +586,11 @@ final class XxxService {
 - **تست رگرسیون (Integration):** `JobQueueTest` +۳ (`testFailWithLostLockDoesNotTouchJob` — قفل چرخیده به w2، failِ w1 هیچ تغییری نمی‌دهد؛ `testFailWithOwnerWorkerSchedulesRetry`؛ `testFailFinalWithOwnerWorkerMarksFailed`) + `OpLogRetentionTest` (۴). مسیر legacy fail بدون workerId هم توسط تست قدیمی `testFailRetriesWithBackoffThenFails` پوشش می‌ماند.
 - **تست محلی:** lint php-wasm ۷ فایل ✓. **Integration/Unit: CI.**
 - **وضعیت:** commit + push + SHA + CI در ادامه ثبت می‌شود.
+
+### [2026-09-07 ~18:00 UTC] — ایجنت Arena — F1 Remediation گروه 6: F1-7 — قفل یکپارچهٔ runTick (WP-Cron = CLI)
+- **ریشه:** GET_LOCK فقط در `bin/cpms jobs tick` بود (docblock خودش ادعای «بدون Duplicate Runner» داشت!) و WP-Cron (`cpms_jobs_tick` → `App::runTick`) بدون قفل Tick می‌کرد → دو SAPI هم‌زمان.
+- **رفع:** قفل داخل `App::runTick()` — `SELECT GET_LOCK('cpms_jobs_tick', 0)` (ثابت جدید `App::TICK_LOCK`؛ نام همان قفل قبلی برای سازگاری)؛ Skip → return **-1**؛ آزادسازی در `finally` (`RELEASE_LOCK`). helper جدید `App::isTickLocked()` با `IS_FREE_LOCK` (docblock: داخل خود Tick هم true برمی‌گرداند — برای پیام CLI بعد از Skip است). `bin/cpms` دیگر قفل محلی ندارد و همان پیام قبلی را با isTickLocked() چاپ می‌کند. نکته F1-1: GET_LOCK/RELEASE/IS_FREE با پارامتر prepare (%s) — نه string interpolation.
+- **تست رگرسیون (Integration):** `TickLockTest` (۳ تست) با **اتصال دوم** `new \wpdb(...)` + set_prefix (الگوی SlotCapacityOneHundredWayTest): ① قفل بیرونی → runTick=-1 + Job queued می‌ماند + isTickLocked=true؛ ② بدون قفل → اجرا + آزادسازی قفل از دید اتصال دوم (IS_FREE_LOCK=1)؛ ③ بازتاب قفل بیرونی در isTickLocked قبل/بعد از Release. tearDown قفل را آزاد می‌کند (ایمنی تست بعدی).
+- **سازگاری:** تست قدیمی `JobQueueTest::testRunTickReschedulesAndProcessesRecurringJobs` با قفل جدید هم پاس می‌شود (قفل روی همان اتصال گرفته/آزاد می‌شود). WP-Cron hook فقط return value را نادیده می‌گیرد.
+- **تست محلی:** lint php-wasm (App.php، bin/cpms، TickLockTest) ✓. **Integration: CI.**
+- **وضعیت:** commit + push + SHA + CI در ادامه ثبت می‌شود.
