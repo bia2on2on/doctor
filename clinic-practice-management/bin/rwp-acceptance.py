@@ -156,6 +156,74 @@ with sync_playwright() as p:
         deny_page.close()
     page.close()
 
+    # ---------- Admin UI screenshots (Chunk F) — desktop ----------
+    ui = ctx.new_page()
+    if login(ui, ADMIN_USER, ADMIN_PASS, "admin-ui"):
+        ui_pages = [
+            ("cpms-dashboard", "dashboard"),
+            ("cpms-wizard", "wizard"),
+            ("cpms-staff", "staff"),
+            ("cpms-clinicians", "clinicians"),
+            ("cpms-roles", "roles"),
+            ("cpms-system", "system"),
+        ]
+        for slug, shot in ui_pages:
+            goto_admin(ui, "admin-ui", f"admin.php?page={slug}", f"cpms-{shot}")
+        # منوی مدیریتی باید زیرمنوهای CPMS را ببیند؛ منوهای نقش-محور پنهان باشند.
+        menu = ui.content()
+        for mslug in ["cpms-staff", "cpms-roles", "cpms-clinicians", "cpms-system"]:
+            check(f"admin-ui.menu.has_{mslug}", f"page={mslug}" in menu, f"منوی «{mslug}» زیر «مدیریت مطب» باید دیده شود")
+        check("admin-ui.menu.no_doctor_topmenu", "admin.php?page=cpms-doctor" not in menu, "منوی «امروز پزشک» برای مدیر پنهان است")
+        check("admin-ui.menu.no_queue_topmenu", "admin.php?page=cpms-queue" not in menu, "منوی «صف امروز» برای مدیر پنهان است")
+
+        # Doctor Schedule: اولین لینک «مدیریت برنامه» در فهرست پزشکان را باز کن.
+        try:
+            link = ui.query_selector('a[href*="page=cpms-clinicians&clinician_id="]')
+            if link:
+                href = link.get_attribute("href") or ""
+                m = re.search(r"clinician_id=\d+", href)
+                if m:
+                    path = "admin.php?page=cpms-clinicians&" + m.group(0)
+                    goto_admin(ui, "admin-ui", path, "cpms-doctor-schedule")
+                else:
+                    check("admin-ui.doctor_schedule.link_found", False, "لینک پزشک بدون clinician_id")
+            else:
+                check("admin-ui.doctor_schedule.link_found", False, "هیچ لینک «مدیریت برنامه» پیدا نشد")
+        except Exception as e:  # pragma: no cover
+            check("admin-ui.doctor_schedule.link_found", False, str(e))
+
+        # Advanced Permissions: روی صفحهٔ کاربران/دسترسی‌ها، بخش Advanced را باز کن و عکس بگیر.
+        try:
+            ui.goto(f"{BASE}/wp-admin/admin.php?page=cpms-roles", wait_until="domcontentloaded")
+            ui.wait_for_timeout(600)
+            summary = ui.query_selector("details.cpms-details > summary")
+            if summary:
+                summary.click()
+                ui.wait_for_timeout(400)
+                ui.screenshot(path=f"{OUT}/screenshots/cpms-roles-advanced-permissions.png", full_page=True)
+                check("admin-ui.roles.advanced_expanded", True, "بخش Advanced Permissions باز شد")
+            else:
+                check("admin-ui.roles.advanced_expanded", False, "خلاصهٔ Advanced یافت نشد")
+        except Exception as e:  # pragma: no cover
+            check("admin-ui.roles.advanced_expanded", False, str(e))
+    ui.close()
+
+    # ---------- Admin UI screenshots (Chunk F) — موبایل ----------
+    mctx = browser.new_context(viewport={"width": 390, "height": 844}, locale="fa-IR")
+    mpage = mctx.new_page()
+    if login(mpage, ADMIN_USER, ADMIN_PASS, "admin-mobile"):
+        for slug, shot in [("cpms-dashboard", "dashboard"), ("cpms-roles", "roles"), ("cpms-clinicians", "clinicians"), ("cpms-staff", "staff")]:
+            goto_admin(mpage, "admin-mobile", f"admin.php?page={slug}", f"cpms-m-{shot}")
+        mpage.goto(f"{BASE}/wp-admin/admin.php?page=cpms-roles", wait_until="domcontentloaded")
+        mpage.wait_for_timeout(600)
+        s = mpage.query_selector("details.cpms-details > summary")
+        if s:
+            s.click()
+            mpage.wait_for_timeout(400)
+            mpage.screenshot(path=f"{OUT}/screenshots/cpms-m-roles-advanced.png", full_page=True)
+    mpage.close()
+    mctx.close()
+
     # ---------- Doctor (نقش cpms_doctor) ----------
     page = ctx.new_page()
     if login(page, DOCTOR_USER, DOCTOR_PASS, "doctor"):
