@@ -1,6 +1,8 @@
 # Settings Reference — CPMS (واحد و semantics هر Setting)
 
-نسخه 1.3 | 2026-09-05 | جدول `cpms_settings` (کلید/مقدار JSON) + پیش‌فرض‌های `Settings::DEFAULTS`
+نسخه 1.4 | 2026-09-07 | جدول `cpms_settings` (کلید/مقدار JSON) + پیش‌فرض‌های `Settings::DEFAULTS`
+
+> **تغییر 1.4 (F1-4 — Audit تنظیمات):** هر تغییر مؤثر Setting از مسیر `Settings::set()` اکنون با اکشن `SETTING_UPDATE` در Audit ثبت می‌شود — before/after (`{setting, value}`؛ before = مقدار مؤثر قبلی شامل Default) + actor (`updated_by` + نقش WP؛ بدون کاربر = `system`). تغییر no-op (مقدار جدید = مقدار مؤثر فعلی) Audit نمی‌گیرد. کلیدهای Runtime/telemetry (`jobs.last_tick_at`، `backup.last_run_at`، `sms.last_test`) — که به‌تکرار توسط سیستم نوشته می‌شوند — مستثنا هستند و در Operational Log ثبت می‌شوند (جلوگیری از سیل Audit ۱۰ساله). جزئیات: `docs/security/audit-strategy.md` §2. تست رگرسیون: `SettingsAuditTest`.
 
 > **تغییر 1.3:** همگام‌سازی با کد (F3): `booking.cancel_deadline_hours` و `booking.reschedule_deadline_hours` از `12` به `24` (مطابق SRS FR-4.9/FR-4.10 و `Settings::DEFAULTS`).
 

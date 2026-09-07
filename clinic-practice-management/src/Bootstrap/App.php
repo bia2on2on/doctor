@@ -683,7 +683,8 @@ final class App
     public static function settings(): Settings
     {
         if (self::$settings === null) {
-            self::$settings = new Settings(self::db());
+            // F1-4: AuditLogger تزریق می‌شود تا هر تغییر Setting (قبل/بعد + کاربر) Audit شود
+            self::$settings = new Settings(self::db(), 1, self::audit());
         }
 
         return self::$settings;
