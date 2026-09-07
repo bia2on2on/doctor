@@ -622,6 +622,3 @@ final class HandwritingService
         return ['wp_user_id' => $wpUserId, 'role' => $user->roles[0] ?? 'unknown'];
     }
 }
-n'];
-    }
-}
