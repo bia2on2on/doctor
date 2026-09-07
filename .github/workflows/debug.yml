@@ -1,0 +1,66 @@
+name: Debug Tests (temporary)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    working-directory: clinic-practice-management
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=20
+    env:
+      WP_TESTS_DIR: /tmp/wordpress-test-lib
+      WP_CORE_DIR: /tmp/wordpress
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mbstring, xml, mysqli, pcntl, curl
+          coverage: none
+
+      - name: Install dependencies (PHPUnit 9.6 for WP test lib)
+        run: |
+          rm -f composer.lock
+          composer install --prefer-dist --no-progress --no-interaction --with-all-dependencies
+          composer require --dev --prefer-dist --no-interaction "phpunit/phpunit:^9.6" "yoast/phpunit-polyfills:^2.0" --with-all-dependencies
+
+      - name: Install WP test lib
+        run: bash tests/bin/install-wp-tests.sh wordpress_test root root 127.0.0.1 6.7.2
+
+      - name: Run failing tests with JUnit log
+        run: |
+          php -d memory_limit=512M vendor/bin/phpunit \
+            --bootstrap tests/integration-bootstrap.php \
+            --configuration phpunit.xml \
+            --testsuite Integration \
+            --filter 'ClinicianRepositoryTest|PrescriptionPrintTest' \
+            --log-junit junit.xml || true
+
+      - name: Commit JUnit log to branch
+        run: |
+          git config user.name "debug-bot"
+          git config user.email "debug-bot@users.noreply.github.com"
+          git add junit.xml
+          git commit -m "debug: junit log [skip ci]"
+          git push
