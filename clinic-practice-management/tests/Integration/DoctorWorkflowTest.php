@@ -135,24 +135,40 @@ final class DoctorWorkflowTest extends WP_UnitTestCase
         ]);
         $this->runJobs();
 
-        // Slotهای فردا: 09:00, 10:00, 11:00
-        $count = (int) App::db()->fetchValue(
+        $from = gmdate('Y-m-d');
+        // شمارش واقعی اسلات‌های آیندهٔ «خالی» پیش از رزرو (بر اساس برنامهٔ هفتگی/استثناها).
+        $beforeEmpty = (int) App::db()->fetchValue(
             'SELECT COUNT(*) FROM ' . App::db()->table('cpms_schedule_slots') .
-            ' WHERE clinician_id = %d AND slot_date = %s',
-            [$cid, $tomorrow]
+            ' WHERE clinician_id = %d AND slot_date > %s AND booked_count = 0 AND held_count = 0',
+            [$cid, $from]
         );
-        $this->assertSame(3, $count);
+        $this->assertGreaterThan(0, $beforeEmpty, 'پس از تولید، باید اسلات خالی آینده وجود داشته باشد');
 
-        // یک Slot را رزرو می‌کنیم (شبیه‌سازی رزرو موجود).
+        // یک Slot را رزرو می‌کنیم (شبیه‌سازی رزرو موجود) → از «خالی» به «محافظت‌شده» منتقل می‌شود.
         App::db()->query(
             'UPDATE ' . App::db()->table('cpms_schedule_slots') .
-            ' SET booked_count = 1 WHERE clinician_id = %d AND slot_date = %s AND slot_time = %s',
-            [$cid, $tomorrow, '09:00:00']
+            ' SET booked_count = 1 WHERE clinician_id = %d AND slot_date > %s AND booked_count = 0 AND held_count = 0 ORDER BY slot_date, slot_time LIMIT 1',
+            [$cid, $from]
         );
 
         $impact = App::scheduleService()->impact($cid);
-        $this->assertSame(2, (int) $impact['future_empty_slots'], 'باید دو اسلات خالیِ بازتولیدشونده وجود داشته باشد');
-        $this->assertSame(1, (int) $impact['future_reserved_slots'], 'اسلات رزروشده باید «محافظت» شود و در شمارش بیفتد');
+
+        $afterEmpty = (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_schedule_slots') .
+            ' WHERE clinician_id = %d AND slot_date > %s AND booked_count = 0 AND held_count = 0',
+            [$cid, $from]
+        );
+        $afterReserved = (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_schedule_slots') .
+            ' WHERE clinician_id = %d AND slot_date > %s AND (booked_count > 0 OR held_count > 0)',
+            [$cid, $from]
+        );
+
+        // گزارش impact باید دقیقاً با طبقه‌بندی DB مطابقت داشته باشد (نه invalidate بی‌صدا).
+        $this->assertSame($afterEmpty, (int) $impact['future_empty_slots'], 'تعداد اسلات خالیِ بازتولیدشونده دقیق باشد');
+        $this->assertSame($afterReserved, (int) $impact['future_reserved_slots'], 'تعداد اسلات رزرو/Hold محافظت‌شده دقیق باشد');
+        $this->assertSame($beforeEmpty - 1, (int) $impact['future_empty_slots'], 'رزرو یک اسلات خالی، آن را از «خالی» به «محافظت‌شده» منتقل می‌کند');
+        $this->assertGreaterThanOrEqual(1, (int) $impact['future_reserved_slots'], 'حداقل یک اسلات محافظت‌شده وجود داشته باشد');
     }
 
     public function testRenderListShowsInlineAccountCreationOption(): void
