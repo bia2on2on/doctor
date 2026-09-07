@@ -60,6 +60,50 @@ final class AuditChainTest extends WP_UnitTestCase
         $this->assertSame('ok', $decoded['note']);
     }
 
+    public function testExactKeyMatchingKeepsNonSensitiveLookalikes(): void
+    {
+        // F1-8 — تطبیق دقیق کلید (case-insensitive): کلیدهای بی‌خطرِ شبیه
+        // (http_code/status_code/failure_code) باید حفظ شوند؛ فقط تطبیق کامل حذف می‌کند.
+        $audit = App::audit();
+        $audit->log(
+            'TEST_EVENT_SANITIZE_V2',
+            ['wp_user_id' => 1, 'role' => 'system'],
+            'http',
+            null,
+            null,
+            null,
+            [
+                'http_code' => 200,
+                'status_code' => 'OK',
+                'failure_code' => 'TIMEOUT',
+                'OTP_Code' => '123456', // case-insensitive → حذف
+                'Password' => 'hunter2', // case-insensitive → حذف
+                'API_KEY' => 'k-123', // case-insensitive → حذف
+                'mobile' => '09121234567',
+                'note' => 'ok',
+            ]
+        );
+
+        global $wpdb;
+        $row = $wpdb->get_row(
+            $wpdb->prepare(
+                'SELECT after_json FROM ' . $wpdb->prefix . 'cpms_audit_logs WHERE action = %s ORDER BY id DESC LIMIT 1', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                'TEST_EVENT_SANITIZE_V2'
+            ),
+            ARRAY_A
+        );
+        $this->assertNotNull($row);
+        $decoded = json_decode((string) $row['after_json'], true);
+
+        $this->assertSame(200, $decoded['http_code'], 'http_code نباید حذف شود');
+        $this->assertSame('OK', $decoded['status_code']);
+        $this->assertSame('TIMEOUT', $decoded['failure_code'], 'failure_code نباید حذف شود');
+        $this->assertArrayNotHasKey('OTP_Code', $decoded);
+        $this->assertArrayNotHasKey('Password', $decoded);
+        $this->assertArrayNotHasKey('API_KEY', $decoded);
+        $this->assertSame('***4567', $decoded['mobile'], 'Masking دست‌نخورده می‌ماند');
+    }
+
     public function testTamperingBreaksChain(): void
     {
         $audit = App::audit();

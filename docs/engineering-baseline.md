@@ -893,7 +893,7 @@ Releaseها باید دارای:
 قبل از Release حداقل:
 
 - Automated Tests
-- Static Analysis
+- Static Analysis (PHPStan L3 در CI — از F1-3/گروه 4؛ ارتقا به L4+ در backlog)
 - Coding Standards
 - Security Checks
 - Migration Tests if needed

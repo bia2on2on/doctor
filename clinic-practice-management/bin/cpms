@@ -76,15 +76,15 @@ switch ($cmd) {
     case 'jobs':
         switch ($sub) {
             case 'tick':
-                // Lock Runner (ADR-0016): اگر Runner دیگری فعال است، بدون Duplicate خارج می‌شود
-                global $wpdb;
-                $lock = $wpdb->get_var("SELECT GET_LOCK('cpms_jobs_tick', 0)");
-                if ((int) $lock !== 1) {
-                    echo "Another tick is running; skipped.\n";
+                // F1-7 — قفل داخل App::runTick() است (WP-Cron و CLI همان
+                // مکانیزم GET_LOCK را دارند؛ قفلِ محلیِ اینجا حذف شد).
+                $n = App::runTick($limit);
+                if ($n < 0) {
+                    echo App::isTickLocked()
+                        ? "Another tick is running; skipped.\n"
+                        : "Tick skipped (lock unavailable).\n";
                     break;
                 }
-                $n = App::runTick($limit);
-                $wpdb->query("SELECT RELEASE_LOCK('cpms_jobs_tick')");
                 echo "Processed {$n} job(s)\n";
                 break;
 

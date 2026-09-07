@@ -178,7 +178,7 @@ final class CpmsDb
      *
      * @template T
      *
-     * @param callable $fn
+     * @param callable(): T $fn
      *
      * @return T
      */

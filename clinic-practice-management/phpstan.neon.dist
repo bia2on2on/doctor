@@ -1,0 +1,28 @@
+# PHPStan — F1-3 (گروه 4 از 7) — پیکربندی نهایی
+#
+# level: 3 = بالاترین سطحی که روی وضعیت واقعی کد «با اجرای واقعی» پاس می‌شود
+# (probe موقت روی CI — راند ۴، scope کامل):
+#   src+bin @ level 0..3 → صفر خطا؛ level 4 → ۷۲ خطا (بازسازی تایپی گستردهٔ
+#   ~۲۵ فایل — خارج از scope remediation؛ ارتقا به 4+ در backlog).
+# سطح از این پس سقف پایین نمی‌آید.
+#
+# scope: src/ (PSR-4 ClinicCore) + bin/ (اسکریپت‌های CLI عملیاتی) — طبق مشخصات کارفرما.
+# phpstan-baseline.neon لازم نشد (صفر خطا در level 3 روی src+bin).
+# پکیج stubs: php-stubs/wordpress-stubs (کانونیکال) + szepeviktor/phpstan-wordpress
+# — نام «phpstan/wp-stubs» در Packagist وجود ندارد.
+parameters:
+    level: 3
+    paths:
+        - src
+        - bin
+    scanFiles:
+        - vendor/php-stubs/wordpress-stubs/wordpress-stubs.php
+    bootstrapFiles:
+        - phpstan-bootstrap.php
+    ignoreErrors:
+        # require مسیرهای runtime وردپرس — در تحلیل استاتیک ABSPATH واقعی نیست؛
+        # در کد گارد function_exists قبل از require هست (WpUpdateBridge::run).
+        -
+            message: '#^Path in require_once\(\) ".+" is not a file or it does not exist\.$#'
+            paths:
+                - src/Infrastructure/Update/WpUpdateBridge.php

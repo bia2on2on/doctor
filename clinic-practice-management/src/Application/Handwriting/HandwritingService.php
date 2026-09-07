@@ -74,7 +74,7 @@ final class HandwritingService
             $pages = [['width' => 1240, 'height' => 1754]]; // A4 @150dpi — پیش‌فرض
         }
 
-        $doc = $this->db->transactional(function () use ($actorUserId, $visitId, $visit, $title, $pages): array {
+        $doc = $this->db->transactional(function () use ($visitId, $visit, $title, $pages): array {
             $documentId = $this->handwriting->insertDocument([
                 'clinic_id' => (int) ($visit['clinic_id'] ?? 1),
                 'visit_id' => $visitId,
@@ -329,7 +329,7 @@ final class HandwritingService
         $encoded = $this->encodeStored($strokes);
         $newVersion = (int) $page['version'] + 1;
 
-        $this->db->transactional(function () use ($pageId, $page, $doc, $encoded, $strokes, $update, $source, $newVersion, $clientRevision, $actorUserId): void {
+        $this->db->transactional(function () use ($pageId, $encoded, $strokes, $update, $source, $newVersion, $clientRevision): void {
             $update['stroke_data'] = $encoded;
             $update['stroke_count'] = count($strokes);
             $update['client_revision'] = $clientRevision;

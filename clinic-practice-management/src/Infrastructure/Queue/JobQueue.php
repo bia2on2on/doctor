@@ -89,8 +89,15 @@ final class JobQueue
 
     /**
      * شکست + Retry با Backoff (اگر آزمون باقی مانده باشد).
+     *
+     * F1-6 — گارد Race: با `$workerId` فقط مالکِ فعلیِ قفل می‌تواند سرنوشت Job
+     * را تغییر دهد (`AND locked_by = %s`). اگر قفل چرخیده باشد (Worker دیگر بعد
+     * از انقضای لاک Claim کرده یا Job کامل شده)، failِ Workerِ کهنه نادیده گرفته
+     * می‌شود — وگرنه Retry دوباره زمان‌بندی یا Status بازنویسی می‌شد.
+     * `$workerId = null` → رفتار legacy بدون گارد (مسیرهای خارج از Runner، مثل
+     * عملیات دستی؛ فراخوانندهٔ داخلی اصلی = JobsDispatcher همیشه workerId می‌دهد).
      */
-    public function fail(int $jobId, string $error): void
+    public function fail(int $jobId, string $error, ?string $workerId = null): void
     {
         $job = $this->db->fetchRow(
             'SELECT attempts, max_attempts, type FROM ' . $this->db->table('cpms_jobs') . ' WHERE id = %d',
@@ -102,23 +109,38 @@ final class JobQueue
 
         $attempts = (int) $job['attempts'];
         $max = (int) $job['max_attempts'];
+        // گارد مالکیت قفل — فقط وقتی workerId داده شده (جای پارامترها: انتهای WHERE)
+        $guardSql = $workerId !== null ? ' AND locked_by = %s' : '';
+        $guardParams = $workerId !== null ? [$workerId] : [];
+
         if ($attempts < $max) {
             $delay = self::backoffSeconds($attempts);
             $nextRun = gmdate('Y-m-d H:i:s', time() + $delay) . '.000';
-            $this->db->query(
+            $updated = $this->db->execute(
                 'UPDATE ' . $this->db->table('cpms_jobs') .
                 ' SET status = %s, last_error = %s, run_after = %s, locked_by = NULL, lock_expires_at = NULL
-                 WHERE id = %d',
-                [self::QUEUED, mb_substr($error, 0, 250), $nextRun, $jobId]
+                 WHERE id = %d' . $guardSql,
+                [self::QUEUED, mb_substr($error, 0, 250), $nextRun, $jobId, ...$guardParams]
             );
+            if ($workerId !== null && $updated === 0) {
+                // قفل دست Workerِ دیگر است/Job عوض شده — هیچ تغییری اعمال نمی‌شود
+                $this->op->warning('JOB_FAIL_SKIPPED_LOCK_LOST', ['job_id' => $jobId, 'type' => $job['type']]);
+
+                return;
+            }
             $this->op->warning('JOB_RETRY', ['job_id' => $jobId, 'type' => $job['type'], 'attempt' => $attempts]);
         } else {
-            $this->db->query(
+            $updated = $this->db->execute(
                 'UPDATE ' . $this->db->table('cpms_jobs') .
                 ' SET status = %s, last_error = %s, locked_by = NULL, lock_expires_at = NULL, completed_at = %s
-                 WHERE id = %d',
-                [self::FAILED, mb_substr($error, 0, 250), $this->db->nowUtcSql(), $jobId]
+                 WHERE id = %d' . $guardSql,
+                [self::FAILED, mb_substr($error, 0, 250), $this->db->nowUtcSql(), $jobId, ...$guardParams]
             );
+            if ($workerId !== null && $updated === 0) {
+                $this->op->warning('JOB_FAIL_SKIPPED_LOCK_LOST', ['job_id' => $jobId, 'type' => $job['type']]);
+
+                return;
+            }
             $this->op->error('JOB_FAILED_FINAL', ['job_id' => $jobId, 'type' => $job['type'], 'error' => $error]);
         }
     }

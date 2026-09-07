@@ -582,7 +582,7 @@ final class BookingService
 
         try {
             [$apptId, $appt, $slot] = $this->db->transactional(function () use (
-                $patientId, $clinicianId, $slotDate, $slotTime, $reason, $actorUserId
+                $patientId, $clinicianId, $slotDate, $slotTime, $reason
             ): array {
                 $slot = $this->slots->findByClinicianSlot(1, $clinicianId, $slotDate, $slotTime);
                 if ($slot === null || (int) $slot['is_open'] !== 1) {

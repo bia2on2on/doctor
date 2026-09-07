@@ -28,6 +28,14 @@ final class OtpException extends RuntimeException
         return $this->errorCode;
     }
 
+    /**
+     * @return array<string, mixed>
+     */
+    public function getData(): array
+    {
+        return $this->data;
+    }
+
     public function httpStatus(): int
     {
         return match ($this->errorCode) {

@@ -13,6 +13,28 @@ use PHPUnit\Framework\TestCase;
  */
 final class StateMachineTest extends TestCase
 {
+    public function testActorFallbackToUnrestrictedCandidate(): void
+    {
+        // Fallback مستندشده در docblock (F1-10) — رفتار عمدی:
+        $m = new StateMachine('T');
+        $m->addTransition('a', 'go', 'b', ['x']); // محدود به نقش x
+        $m->addTransition('a', 'go', 'c'); // بدون محدودیت = همه
+
+        $this->assertSame('b', $m->assert('a', 'go', 'x'), 'actor منطقی → Candidate محدودِ خودش');
+        $this->assertSame('c', $m->assert('a', 'go', 'z'), 'actor خارج از فهرست‌ها → fallback به Candidate عمومی');
+        $this->assertSame('c', $m->assert('a', 'go'), 'بدون actor → اول Candidate بدون محدودیت');
+        $this->assertTrue($m->can('a', 'go', 'z'));
+    }
+
+    public function testNoFallbackWhenOnlyRestrictedCandidatesExist(): void
+    {
+        $m = new StateMachine('T');
+        $m->addTransition('a', 'go', 'b', ['x']);
+
+        $this->expectException(InvalidTransitionException::class);
+        $m->assert('a', 'go', 'z');
+    }
+
     public function testTransitionAllowedForListedActor(): void
     {
         $m = new StateMachine('T');

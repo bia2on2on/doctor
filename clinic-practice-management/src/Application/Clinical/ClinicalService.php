@@ -373,7 +373,7 @@ final class ClinicalService
         $this->requireRole($actorUserId, 'doctor', 'نهایی‌سازی نسخه');
         $this->requireCap($actorUserId, RolesAndCapabilities::RX_CREATE, 'rx');
 
-        $rx = $this->db->transactional(function () use ($actorUserId, $prescriptionId): array {
+        $rx = $this->db->transactional(function () use ($prescriptionId): array {
             $rx = $this->prescriptions->findForUpdate($prescriptionId);
             if ($rx === null) {
                 throw ClinicalException::of('CLINIC_NOT_FOUND', 'نسخه یافت نشد', 404);

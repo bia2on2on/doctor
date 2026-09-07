@@ -22,7 +22,7 @@
 | دست‌خط/OCR | `HW_DOC_CREATE`, `HW_PAGE_SAVE`, `OCR_JOB`, `OCR_CONFIRMED`, `OCR_REJECTED` |
 | فایل | `FILE_UPLOADED` (E16/C3), `FILE_READ` (حساس: doctor_private/lab_result — E17), `FILE_SOFT_DELETED` |
 | مالی | `INVOICE_CREATE`, `INVOICE_VOID`, `PAYMENT_CAPTURE`, `PAYMENT_VOID`, `PAYMENT_REFUND`, `PAYMENT_ADJUST` — (F6: تغییرات تعرفه‌ها `cpms_services` با اکشن `SETTING_UPDATE` + `resource_type=service` + `meta.op`) |
-| دسترسی/سیستم | `PERMISSION_GRANT`, `PERMISSION_REVOKE`, `FORBIDDEN_ACCESS_ATTEMPT`, `SEARCH_EXECUTED` (E18 — q/type/شمار نتایج), `EXPORT` (filters), `SETTING_UPDATE`, `SCHEDULE_UPDATED` |
+| دسترسی/سیستم | `PERMISSION_GRANT`, `PERMISSION_REVOKE`, `FORBIDDEN_ACCESS_ATTEMPT`, `SEARCH_EXECUTED` (E18 — q/type/شمار نتایج), `EXPORT` (filters), `SETTING_UPDATE`, `SCHEDULE_UPDATED` — (از F1-4: هر تغییر مؤثر Setting از مسیر `Settings::set()` با `resource_type=setting` + before/after `{setting, value}` + actor (updated_by) ثبت می‌شود؛ تغییر no-op و کلیدهای Runtime/telemetry — `jobs.last_tick_at`/`backup.last_run_at`/`sms.last_test` — ثبت نمی‌شوند؛ آن‌ها در Operational Log هستند. برای کلید Credential-دار `sms.auth` فقط رویداد + actor ثبت می‌شود و مقدار (حتی sealed) با `[redacted:credentials]` جایگزین می‌گردد — سیاست Vault: Secret به Audit تعلق ندارد). (از F1-8: Sanitize کلیدهای ممنوعه تطبیق «دقیق» case-insensitive است — کلیدهای بی‌خطرِ مشابه مثل `http_code`/`status_code`/`failure_code` حفظ می‌شوند) |
 
 ## 3. ساختار رکورد
 ```jsonc

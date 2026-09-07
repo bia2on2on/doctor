@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Admin;
 
+use ClinicCore\Application\System\SystemHealthService;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Licensing\LicenseStatus;
 use ClinicCore\Infrastructure\Licensing\LicenseGatewayException;
@@ -238,9 +239,11 @@ final class SystemPage
     {
         self::guard('cpms_backup_save');
         $s = App::settings();
-        $s->set('backup.enabled', isset($_POST['enabled']));
-        $s->set('backup.interval_hours', max(1, min(168, (int) ($_POST['interval_hours'] ?? 24))));
-        $s->set('backup.keep_count', max(1, min(365, (int) ($_POST['keep_count'] ?? 14))));
+        // F1-4: updated_by برای Audit تغییرات Config
+        $uid = get_current_user_id();
+        $s->set('backup.enabled', isset($_POST['enabled']), $uid);
+        $s->set('backup.interval_hours', max(1, min(168, (int) ($_POST['interval_hours'] ?? 24))), $uid);
+        $s->set('backup.keep_count', max(1, min(365, (int) ($_POST['keep_count'] ?? 14))), $uid);
         self::notify('تنظیمات بکاپ ذخیره شد', true);
     }
 

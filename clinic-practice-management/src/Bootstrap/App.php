@@ -30,6 +30,7 @@ use ClinicCore\Application\Jobs\FollowUpReminderHandler;
 use ClinicCore\Application\Jobs\HandwritingGcHandler;
 use ClinicCore\Application\Jobs\HoldsExpireHandler;
 use ClinicCore\Application\Jobs\IdemCleanupHandler;
+use ClinicCore\Application\Jobs\OpLogCleanupHandler;
 use ClinicCore\Application\Jobs\JobsDispatcher;
 use ClinicCore\Application\Jobs\LicenseRefreshHandler;
 use ClinicCore\Application\Jobs\NotifDispatchHandler;
@@ -683,7 +684,8 @@ final class App
     public static function settings(): Settings
     {
         if (self::$settings === null) {
-            self::$settings = new Settings(self::db());
+            // F1-4: AuditLogger تزریق می‌شود تا هر تغییر Setting (قبل/بعد + کاربر) Audit شود
+            self::$settings = new Settings(self::db(), 1, self::audit());
         }
 
         return self::$settings;
@@ -798,6 +800,7 @@ final class App
                 ->register('cleanup.otp', new OtpCleanupHandler($db))
                 ->register('cleanup.rate_limits', new RateLimitCleanupHandler(self::rate()))
                 ->register('cleanup.idem', new IdemCleanupHandler(self::idem()))
+                ->register('cleanup.oplog', new OpLogCleanupHandler($db, $settings))
                 ->register('slots.generate', new SlotsGenerateHandler($db, $settings, $op))
                 ->register('sms.send', new SmsSendJobHandler(self::smsService()))
                 ->register('visits.no_show', new VisitsNoShowHandler(self::visitService()))
@@ -824,6 +827,9 @@ final class App
      *
      * @var array<string, int> type => priority
      */
+    /** F1-7 — قفل یکپارچهٔ Tick: WP-Cron و `bin/cpms jobs tick` همان مکانیزم MySQL دارند. */
+    public const TICK_LOCK = 'cpms_jobs_tick';
+
     private const RECURRING_JOBS = [
         'holds.expire' => 8,
         'slots.generate' => 3,
@@ -836,6 +842,7 @@ final class App
         'cleanup.otp' => 1,
         'cleanup.rate_limits' => 1,
         'cleanup.idem' => 1, // Idempotency::cleanup — رشد بی‌کران را می‌بندد
+        'cleanup.oplog' => 1, // F1-5 — Retention لاگ عملیاتی (retention.oplog_days؛ پیش‌فرض ۹۰ روز)
         // F10 — refresh مجوز: هر Tick چک می‌شود ولی شبکه فقط در refreshDue
         // (Backoff بر اساس شکست‌های پیاپی) لمس می‌شود — ADR-0023/ADR-0016
         'license.refresh' => 9,
@@ -851,15 +858,45 @@ final class App
      * Regression (Pilot Gate): bin/cpms قبلاً scheduleRecurringJobs را صدا
      * نمی‌زد → در استقرار system-cron (J-4) جاب‌های دوره‌ای فقط یک‌بار
      * (بعد از Activate) اجرا و بعد برای همیشه متوقف می‌شدند (FR-5.5).
+     *
+     * F1-7 — قفل یکپارچه: قبل از این، GET_LOCK فقط در مسیر CLI بود و WP-Cron
+     * بدون قفل Tick می‌کرد → Runnerهای دو SAPI می‌توانستند هم‌زمان اجرا شوند.
+     * اکنون قفل در همین متد و روی هر دو مسیر است (تابع GET_LOCK سرور MySQL —
+     * مستقل از Transaction/اتصال). Skip → `-1` (پیام CLI با isTickLocked()).
      */
     public static function runTick(int $limit = 20): int
     {
-        self::recordTick();
-        // جاب‌های تکرارشونده را (Idempotent) دوباره زمان‌بندی کن — بدون
-        // این، هر جاب فقط یک‌بار (بعد از Activate) اجرا می‌شد (FR-5.5).
-        self::scheduleRecurringJobs();
+        $db = self::db();
+        $got = $db->fetchValue('SELECT GET_LOCK(%s, 0)', [self::TICK_LOCK]);
+        if ((int) $got !== 1) {
+            return -1; // Runner دیگری فعال است
+        }
 
-        return self::dispatcher()->tick($limit);
+        try {
+            self::recordTick();
+            // جاب‌های تکرارشونده را (Idempotent) دوباره زمان‌بندی کن — بدون
+            // این، هر جاب فقط یک‌بار (بعد از Activate) اجرا می‌شد (FR-5.5).
+            self::scheduleRecurringJobs();
+
+            return self::dispatcher()->tick($limit);
+        } finally {
+            $db->query('SELECT RELEASE_LOCK(%s)', [self::TICK_LOCK]);
+        }
+    }
+
+    /**
+     * F1-7 — آیا Tick دیگری (هر SAPI) الان قفل را گرفته؟ برای پیام CLI.
+     * داخلِ خودِ Tick هم true برمی‌گرداند (قفل روی اتصالِ خودِ فرآیند است).
+     */
+    public static function isTickLocked(): bool
+    {
+        try {
+            $free = self::db()->fetchValue('SELECT IS_FREE_LOCK(%s)', [self::TICK_LOCK]);
+
+            return (int) $free !== 1;
+        } catch (\Throwable) {
+            return false; // قبل از Migration/بدون DB — گزارش «قفل» بی‌معناست
+        }
     }
 
     public static function scheduleRecurringJobs(): void

@@ -99,7 +99,7 @@ clinic-practice-management/
 | AC-6 | Job Queue: claim/complete/fail/backoff/stale-lock + Dispatcher | ✅ (تست) |
 | AC-7 | State Machineهای 4 گانه Exhaustive (TP-14) | ✅ (122 تست Unit سبز) |
 | AC-8 | تضمین DB ضد Double-Booking (Claim اتمیک + K-2) | ✅ (SlotClaimTest) |
-| AC-9 | CI: Unit (بدون WP) + Integration (WP+MySQL) + PHPStan L6 | ✅ (Workflow) |
+| AC-9 | CI: Unit (بدون WP) + Integration (WP+MySQL) + Static Analysis (PHPStan) | ✅ — تصحیح کلام (F1-3/گروه 4): در زمان F1 فقط Unit+Integration در CI بود و «PHPStan L6» اینجا نادرست ثبت شده بود؛ PHPStan در CI از F1-3 اضافه شد (`phpstan.neon.dist` — level=3 بالاترین سطح سبز روی وضعیت واقعی کد، scope `src+bin`، بدون baseline — با اجرای واقعی/probe تعیین شد) |
 | AC-10 | هیچ Endpoint پزشکی ساخته نشده (فقط /health فنی) — مطابق Gate | ✅ |
 
 ## 9. گام بعدی (F2 — احراز هویت)

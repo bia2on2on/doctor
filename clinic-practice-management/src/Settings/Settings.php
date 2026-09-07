@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ClinicCore\Settings;
 
 use ClinicCore\Domain\Otp\OtpPolicy;
+use ClinicCore\Infrastructure\Audit\AuditLogger;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 
 /**
@@ -65,6 +66,7 @@ final class Settings
         // Retention (تصمیم نهایی: D7)
         'retention.audit_years' => 10,
         'retention.record_years' => 15,
+        'retention.oplog_days' => 90, // F1-5 — Retention لاگ عملیاتی (جدول hot؛ Audit جدا و ۱۰ساله است)
         // SMS — Provider-Agnostic (ADR-0025). Secret در این جدول ذخیره نمی‌شود (Vault).
         'sms.provider' => '', // '' = log (Dev/Staging)؛ 'generic_api' یا id Adapter
         'sms.auth_method' => '', // api_key | bearer | username_password
@@ -116,8 +118,33 @@ final class Settings
     /** @var array<string, mixed>|null */
     private static ?array $cache = null;
 
-    public function __construct(private readonly CpmsDb $db, private readonly int $clinicId = 1)
-    {
+    /**
+     * کلیدهای Telemetry عملیاتی (نه Config کاربر) — Audit نمی‌شوند (F1-4).
+     *
+     * این کلیدها توسط سیستم و به‌تکرار نوشته می‌شوند (Tick/بکاپ/تست SMS) و جدا
+     * در Operational Log ثبت می‌شوند؛ ورودشان به Audit جدول ۱۰ساله = سیل رکورد.
+     * کلید Config جدیدِ نوشته‌شده از مسیر سیستمی باید به این لیست اضافه نشود.
+     *
+     * @var list<string>
+     */
+    private const RUNTIME_KEYS = ['jobs.last_tick_at', 'backup.last_run_at', 'sms.last_test'];
+
+    /**
+     * کلیدهای Credential-دار — رویدادِ تغییر Audit می‌شود اما مقدار هرگز
+     * (حتی Ciphertext — سیاست Vault: Secret به Audit تعلق ندارد؛
+     * settings-reference «Secrets»). جایگزین: placeholder ثابت.
+     *
+     * @var list<string>
+     */
+    private const REDACTED_VALUE_KEYS = ['sms.auth'];
+
+    private const REDACTED_PLACEHOLDER = '[redacted:credentials]';
+
+    public function __construct(
+        private readonly CpmsDb $db,
+        private readonly int $clinicId = 1,
+        private readonly ?AuditLogger $audit = null
+    ) {
     }
 
     public function get(string $key, mixed $default = null): mixed
@@ -135,16 +162,20 @@ final class Settings
 
     public function set(string $key, mixed $value, ?int $updatedBy = null): void
     {
+        // F1-4 — before (مقدار مؤثر: ردیف یا Default) برای Audit تغییر مؤثر
+        $before = $this->get($key);
+        $beforeJson = json_encode($before, JSON_UNESCAPED_UNICODE);
+        $afterJson = json_encode($value, JSON_UNESCAPED_UNICODE);
+
         $row = $this->db->fetchRow(
             'SELECT id FROM ' . $this->db->table('cpms_settings') . ' WHERE clinic_id = %d AND `key` = %s',
             [$this->clinicId, $key]
         );
-        $json = json_encode($value, JSON_UNESCAPED_UNICODE);
         if ($row === null) {
             $this->db->insert('cpms_settings', [
                 'clinic_id' => $this->clinicId,
                 'key' => $key,
-                'value_json' => $json,
+                'value_json' => $afterJson,
                 'updated_by_wp_user_id' => $updatedBy,
                 'updated_at' => $this->db->nowUtcSql(),
             ]);
@@ -153,10 +184,66 @@ final class Settings
                 'UPDATE ' . $this->db->table('cpms_settings') .
                 ' SET value_json = %s, updated_by_wp_user_id = %s, updated_at = %s
                  WHERE clinic_id = %d AND `key` = %s',
-                [$json, $updatedBy, $this->db->nowUtcSql(), $this->clinicId, $key]
+                [$afterJson, $updatedBy, $this->db->nowUtcSql(), $this->clinicId, $key]
             );
         }
         self::$cache = null;
+
+        $this->auditChange($key, $before, $value, $beforeJson, $afterJson, $updatedBy);
+    }
+
+    /**
+     * Audit تغییر Setting (F1-4) — action مرجع `SETTING_UPDATE` (audit-strategy §2).
+     *
+     * - فقط تغییرِ مؤثر (مقدار قدیم ≠ جدید) ثبت می‌شود؛ no-op نه.
+     * - before/after به شکل `{setting, value}` — ساختار ثابت، نه کلیدِ خودِ Setting
+     *   (کلیدهایی مثل otp.ttl_sec در زمان F1-4 توسط Sanitizeِ substring حذف می‌شدند —
+     *   از F1-8 تطبیق دقیق است؛ این ساختار مستقل از آن درست می‌ماند).
+     * - کلیدهای Runtime (telemetry) ثبت نمی‌شوند — RUNTIME_KEYS.
+     * - بدون کاربر (سیستم) → actor null → AuditLogger نقش «system» می‌گذارد.
+     */
+    private function auditChange(
+        string $key,
+        mixed $before,
+        mixed $after,
+        string|false $beforeJson,
+        string|false $afterJson,
+        ?int $updatedBy
+    ): void {
+        if ($this->audit === null) {
+            return;
+        }
+        if (in_array($key, self::RUNTIME_KEYS, true)) {
+            return;
+        }
+        if ($beforeJson === $afterJson) {
+            return; // تغییر مؤثر نیست — فقط refresh ردیف/updated_by
+        }
+        if (in_array($key, self::REDACTED_VALUE_KEYS, true)) {
+            // Credentials: فقط رویداد + actor — مقدار (حتی sealed) کپی نمی‌شود
+            $before = self::REDACTED_PLACEHOLDER;
+            $after = self::REDACTED_PLACEHOLDER;
+        }
+        $this->audit->log(
+            'SETTING_UPDATE',
+            $updatedBy !== null ? ['wp_user_id' => $updatedBy, 'role' => $this->roleOf($updatedBy)] : null,
+            'setting',
+            null,
+            null,
+            ['setting' => $key, 'value' => $before],
+            ['setting' => $key, 'value' => $after],
+            ['op' => 'config_update', 'clinic_id' => $this->clinicId]
+        );
+    }
+
+    private function roleOf(int $userId): string
+    {
+        if (!function_exists('get_userdata')) {
+            return 'unknown'; // Context بدون WP (Unit/CLI)
+        }
+        $user = get_userdata($userId);
+
+        return $user !== false ? ($user->roles[0] ?? 'unknown') : 'unknown';
     }
 
     public function otpPolicy(): OtpPolicy

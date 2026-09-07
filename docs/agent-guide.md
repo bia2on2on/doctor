@@ -219,7 +219,7 @@ final class XxxService {
 
 ## 6. CI و محیط
 
-- Workflow: `.github/workflows/ci.yml` — ۲ job: **Unit** (matrix PHP 8.1–8.4، بدون WP) + **Integration** (WP 6.7.2 + MySQL 8، PHPUnit 9.6، `tests/bin/install-wp-tests.sh`، root/root، prefix `wptests_`).
+- Workflow: `.github/workflows/ci.yml` — ۳ job: **Unit** (matrix PHP 8.1–8.4، بدون WP) + **Integration** (WP 6.7.2 + MySQL 8، PHPUnit 9.6، `tests/bin/install-wp-tests.sh`، root/root، prefix `wptests_`) + **`phpstan`** (Static Analysis — از F1-3/گروه 4؛ `phpstan.neon.dist`: level=3 هم‌تراز وضعیت واقعی کد (با اجرای واقعی/probe)، scope `src + bin`، بدون baseline؛ ارتقا به 4+ نیازمند بازسازی تایپی — کار آینده).
 - چرخه CI ≈ ۴.۵–۵ دقیقه.
 - شواهد شکست را از کامنت‌های PR #1 بخوان (step «Post failures to PR» فقط در failure).
 - **محیط sandbox فاقد PHP CLI است** — برای lint فایل‌های PHP از WASM:
@@ -532,3 +532,80 @@ final class XxxService {
   - **تست رگرسیون جدید (Integration):** `testFailingMigrationAbortsAndIsNotRecorded` — MigrationRunner با دایرکتوری temp + Migration آگاهانهٔ شکست‌خورد (`SELECT * FROM جدولِ ناموجود`): assert RuntimeException با «SQL error» + version در `applied()` نیست + Migration خوبِ بعدی اجرا نشده.
 - **ارتباط با گروه 1:** دقیقاً همین کلاس خطا در Migration 0009 رخ داده بود (ALTER بی‌صدا رد شد + version ثبت شد)؛ از این پس چنین شکستی در CI/Production fail-loud است.
 - **تست محلی (php-wasm 8.5):** lint 3 فایل ✓ + Unit 285/0F. **Integration: CI (در انتظار push).**
+
+### [2026-09-07 ~13:35 UTC] — ایجنت Arena (شاخهٔ `arena/01a07c01-doctor`) — F1 Remediation گروه 3: رفع F1-4 — Audit تغییرات Settings (قبل/بعد + updated_by)
+- **رخداد ورودی (گزارش صادقانه):** پیاده‌سازی قبلی گروه 3 (کامیت `06d5498` روی `arena/01a07b2e-doctor`) در هیچ‌جا موجود نبود — نه در workspace جدید (shallow clone با ۱ کامیت)، نه در هیچ ref ریموت (`git ls-remote`)، و فایل `patches/0001-feat-F1-4-*.patch` نیز در ریپو نبود (سندباکس قبلی persist نشده بود). Remote شاخه `arena/01a07b2e-doctor` روی `8d5715d` (همان گروه 2) بود. **تصمیم:** پیاده‌سازی مجدد F1-4 طبق پروتکل و scope تأییدشده PR #5 («Settings audit (before/after + updated_by) + tests») روی شاخهٔ نشست فعلی. این جلسه به شاخهٔ `arena/01a07c01-doctor` قفل است (محیط Agent) — push/PR از همین شاخه.
+- **مبنا:** `git reset --hard origin/main` (`a16e245` = merge گروه‌های 1+2) تا delta PR فقط گروه 3 باشد.
+- **اقدامات:**
+  - **`Settings::set()`** (نقطهٔ واحد همهٔ نوشتن‌ها — ۱۰ call-site): خواندن مقدار مؤثر قبل (ردیف یا `DEFAULTS`) + مقایسه JSON بعد از نوشتن → تغییر مؤثر = Audit `SETTING_UPDATE` (اکشن مرجع audit-strategy §2؛ `resource_type=setting`) با before/after به شکل `{setting, value}` + actor (`updated_by` + نقش WP از `get_userdata`؛ بدون کاربر = actor null → «system»).
+  - **مستثناها (ضد سیل Audit ۱۰ساله):** ① تغییر no-op (مقدار جدید = مقدار مؤثر فعلی) — ردیف/updated_by بازنویسی می‌شود ولی Audit نمی‌گیرد؛ ② کلیدهای Runtime/telemetry `RUNTIME_KEYS` = `jobs.last_tick_at` (هر Tick!)، `backup.last_run_at`، `sms.last_test` — OpLog دارند.
+  - **قرار امنیتی Vault:** کلید Credential-دار `sms.auth` (`sealed` AES-256-GCM + last4) — رویداد + actor ثبت می‌شود اما مقدار با `[redacted:credentials]` جایگزین می‌شود (حتی Ciphertext به Audit ۱۰ساله کپی نمی‌شود — سیاست «Secret به Audit تعلق ندارد»).
+  - **ساختار `{setting, value}` به‌جای کلیدِ خودِ Setting در before/after:** Sanitize فعلی Audit کلیدهای مطابق ممنوعه‌ها (`otp`, `code`, …) را کامل حذف می‌کند — با ساختار ثابت، شناسهٔ Setting (به‌عنوان «مقدار») زنده می‌ماند؛ دقتِ خود Sanitize در F1-8 (گروه 7) اصلاح می‌شود و این ساختار همچنان درست می‌ماند (بدون وابستگی به رفتار فعلی).
+  - **Wiring:** `App::settings()` اکنون `self::audit()` تزریق می‌کند (پارامتر اختیاری → سازگار با همهٔ سازنده‌های قبلی؛ بدون وابستگی حلقوی — AuditLogger فقط db+op).
+  - **updated_by واقعی:** `SystemPage::backupSave/updateSettings` اکنون `get_current_user_id()` پاس می‌دهند (تا دیروز system ثبت می‌شد)؛ SmsService از قبل `$userId` داشت.
+- **تست رگرسیون جدید (Integration — MySQL CI):** `SettingsAuditTest` (۶ تست): before/after+updated_by+نقش (Default 3→5)، no-op بدون Audit، سه کلید Runtime بدون Audit، actor سیستم، Credentials redacted (ciphertext هرگز در after_json نیست)، سلامت Hash Chain بعد از رکوردهای Setting.
+- **Docs:** audit-strategy §2 (شرح قانون جدید + مستثناها)، settings-reference v1.4، CHANGELOG 1.0.2.
+- **تصمیمات درون‌فازی:** ① Audit بعد از نوشتن Setting (خارج از transaction) — `CpmsDb::transactional` تو-در-تو پشتیبانی نمی‌کند و AuditLogger خودش transaction دارد؛ الگوی موجود سرویس‌ها هم «Audit بعد از Commit» است؛ ② no-op = refresh ردیف بدون Audit (آگاهانه — eventِ تغییر مؤثر ملاک است)؛ ③ `sms.last_test` telemetry است نه Config.
+- **تست محلی (php-wasm 8.2):** lint فایل‌های تغییر (Settings/App/SystemPage/SettingsAuditTest) ✓. Unit suite به Settings/App دست ندارد (grep: صفر ارجاع). **Integration: CI (PR).**
+- **وضعیت:** commit + push + PR + CI در ادامه این لاگ ثبت می‌شود.
+
+#### پیوست گروه 3 — push + تأیید SHA remote + CI
+- **Session-branch نکته:** این نشست به شاخهٔ `arena/01a07c01-doctor` قفل است (محیط Agent)؛ درخواست push به `arena/01a07b2e-doctor` قابل اجرا نبود — و چون `06d5498`/patch هر two موجود نبودند، خروجی واقعی همان پیاده‌سازی مجدد روی این شاخه شد.
+- **کامیت:** `d42ef0d` (feat(F1-4)) از مبنای `a16e245` (merge گروه‌های 1+2).
+- **Push:** ✅ — Remote SHA: **`d42ef0d9c40e614d775dcc9c7e07b7c417898975`** = local HEAD (تأیید با `git ls-remote`).
+- **PR:** #7 (`arena/01a07c01-doctor` → `main`) — «F1 Remediation (cont. 2) — group 3/7: settings audit (F1-4)».
+- **CI (روی `d42ef0d`): ✅ سبز ۳/۳** — CI/pull_request run **34128017332** (Unit PHP 8.1–8.4 + Integration WP6.7/MySQL8 = success؛ step «Post failures to PR» skip = صفر شکست) + Pilot/Staging Readiness Gate run **34128001933** (8m34s، success) + Closure Gate run **34128001870** (success). لاگ خام jobها از results-receiver مسدود است (محدودیت شناخته‌شدهٔ محیط) — Evidence: conclusion رسمی GitHub.
+- **Tree:** clean. بعد از این docs-commit، CI نهایی روی HEAD ثبت می‌شود.
+
+### [2026-09-07 ~14:55 UTC] — ایجنت Arena (شاخهٔ `arena/01a07c01-doctor`) — F1 Remediation گروه 4: رفع F1-3 — PHPStan در CI (سطح هم‌تراز واقعیت) + docs sync
+- **فاز/محدوده:** گروه 4 از 7. «PHPStan added to CI (level matched to real code state) + docs sync» — بدون تضعیف Gate.
+- **روش تعیین سطح:** PHP CLI در sandbox نیست (apt مخازن ناقص، باینری استاتیک در GitHub release موجود نبود) → **Probe روی CI**: workflow موقت با اجرای سطح‌های 0..8 و انتشار خروجی در کامنت PR (الگوی «Post failures to PR» — لاگ job از API مسدود است). ۴ راند (رفع constraint stubs `^7.0`، حذف `scanConstants` حذف‌شده در PHPStan 2، رفع artifact ویرایش موازی در انتهای HandwritingService — درس: ویرایش‌های موازی edit_file روی یک فایل ممنوع).
+- **باگ‌های واقعی که خود تحلیل پیدا کرد (رفع شد):**
+  ① `Admin/SystemPage` — ارجاع به `SystemHealthService::HOST_SUPPORTED*` بدون import درست → کلاسِ `ClinicCore\Admin\SystemHealthService` ناموجود → **Fatal در رندر صفحه «CPMS (سیستم)»** (F10). رفع: import `ClinicCore\Application\System\SystemHealthService`.
+  ② `Rest/OtpController:80` — فراخوانی `OtpException::getData()` که وجود نداشت → **Fatal در پاسخ REST برای کد OTP غلط/منقضی** (مسیر رایج کاربر؛ تست‌ها service-level بودند و نمی‌گرفتند). رفع: `getData()` به `OtpException` اضافه شد.
+  ③ `OtpService::audit()` — ۵ آرگومان صدا می‌شد، ۴ پارامتر می‌گرفت → meta «remaining» در `OTP_VERIFY_FAIL` بی‌صدا drop. رفع: `$meta` اختیاری + ادغام در after_json (Audit غنی‌تر).
+- **لینت/تایپ:** حذف `use`های بلااستفاده (Booking/Clinical/Handwriting)، `callable(): T` برای `CpmsDb::transactional`، PHPDocهای ناسازگار (SmsController/BackupManifest).
+- **پیکربندی:** `phpstan.neon` — سطح **3** (سطح 0..3 سبز؛ سطح 4 = ۶۷ خطا — بازسازی تایپی گسترده از ~۲۵ فایل، خارج از scope remediation؛ 5..8 بیشتر). `phpstan-bootstrap.php` (ثابت‌های WP/افزونه: ABSPATH، ARRAY_A، MINUTE_IN_SECONDS، CPMS_PLUGIN_DIR، …). require-dev: `phpstan/phpstan ^2.1` + `php-stubs/wordpress-stubs ^7.0` + `szepeviktor/phpstan-wordpress ^2.0`. ci.yml: job سوم «Static Analysis (PHPStan)» مستقل از Unit/Integration. یک ignore هدفمند+مستند: path-check `require_once` مسیرهای runtime WP در WpUpdateBridge (گارد function_exists موجود). Probe workflow حذف شد.
+- **Docs sync:** agent-guide §6 (۳ job)، testing-plan §45 (L.6 → L3 فعلی + هدف ارتقا)، engineering-baseline §38 (اشاره به PHPStan L3 در CI)، CHANGELOG 1.0.2.
+- **تست محلی:** lint php-wasm 9 فایل ✓ (بعد از رفع artifact). **PHPStan/Integration/Unit: CI.**
+- **وضعیت:** commit + push + SHA remote + CI نهایی در ادامه این لاگ ثبت می‌شود.
+
+#### پیوست گروه 4 — push + تأیید SHA remote + CI
+- **کامیت‌های گروه 4:** `a90ea61` (ابزار + probe) ← `17816fb` (stubs ^7.0) ← `0cf7d46` (probe v2) ← `d018dfd` (scanConstants) ← `b3d445f` (باگ‌های واقعی + bootstrap) ← `c92e6f2` (رفع artifact ویرایش) ← **`2cebb07` (قفل سطح 3 + حذف probe + docs sync)**.
+- **Push:** ✅ — Remote SHA: **`2cebb07e0221bb5a00e8a02f55d80fad1c0a2b8a`** = local HEAD (تأیید `git ls-remote`).
+- **CI (روی `2cebb07`): ✅ سبز ۳/۳** — CI/pull_request run **34130498852** = **۶/۶ job سبز** (Unit PHP 8.1–8.4 + Integration WP6.7/MySQL8 + **Static Analysis/PHPStan L3** — اولین اجرای رسمی Gate استاتیک جدید) + Closure Gate run **34130493200** + Pilot/Staging Readiness Gate run **34130493287** (8m33s).
+- **Tree:** clean. ادامه: گروه 5 (F1-5/F1-6 — oplog retention + JobQueue::fail race guard) طبق ترتیب مصوب، در انتظار دستور کارفرما (خواستهٔ این نشست فقط تا گروه 4 بود).
+
+#### پیوست — قطع اتصال GitHub در پایان نشست (گزارش صادقانه)
+- بلافاصله بعد از push `0c8c487` و تأیید SHA ریموت، توکن GitHub (gh + git credential) باطل شد (401 Bad credentials — همان الگوی شناخته‌شدهٔ محیط Agent در گروه 2). کامیتِ این یادداشت محلی است؛ بعد از اتصال مجدد GitHub توسط کارفرما push می‌شود.
+- **شواهد CI روی `0c8c487` (HEAD نهایی):** CI = **موفق ۶/۶** (run 34131390001 — شامل Static Analysis/PHPStan L3) + Closure Gate = موفق (run 34131386018) — هر دو قبل از قطع، سبز دیده و تأیید شد. Pilot Gate (run 34131385987) در لحظهٔ قطع در حال اجرا بود؛ وضعیت نهایی‌اش از API خوانده نشد — روی `2cebb07` (کد یکسان؛ دلتا فقط ۲ فایل Markdown) Pilot سبز بود (run 34130493287، 8m33s). بعد از اتصال مجدد، کارفرما/ایجنت بعدی می‌تواند وضعیت این run را با `gh run view 34131385987` تأیید کند.
+
+### [2026-09-07 ~17:30 UTC] — ایجنت Arena — F1 Remediation گروه 5: F1-5 (oplog retention) + F1-6 (JobQueue::fail race guard)
+- **F1-5:** Setting جدید `retention.oplog_days` (پیش‌فرض **۹۰** — مصوب کارفرما) + Handler `OpLogCleanupHandler` (الگوی OtpCleanupHandler؛ days در هر اجرا از Settings خوانده می‌شود) + `'cleanup.oplog' => 1` در RECURRING_JOBS + ثبت در dispatcher. `cpms_operational_logs` جدول hot بدون Retention بود؛ Audit جداست و ۱۰ساله می‌ماند (audit-strategy §5/§6). Doc: settings-reference v1.5.
+- **F1-6:** `JobQueue::fail(..., ?string $workerId = null)` — با workerId: هر دو UPDATE (retry/final) شرط `AND locked_by = %s` می‌گیرند؛ صفر ردیف → `JOB_FAIL_SKIPPED_LOCK_LOST` + return بدون تغییر (زامبی دیگر نمی‌تواند Status/Retry بازنویسی کند). با null: رفتار legacy (bin/cpms jobs retry مستقیماً SQL می‌زند و fail() صدا نمی‌زند — verify شد؛ تنها فراخواننده = JobsDispatcher که اکنون workerId می‌دهد). شمارش ردیف با `execute():int` نه `query():bool` (درس F1-1).
+- **تست رگرسیون (Integration):** `JobQueueTest` +۳ (`testFailWithLostLockDoesNotTouchJob` — قفل چرخیده به w2، failِ w1 هیچ تغییری نمی‌دهد؛ `testFailWithOwnerWorkerSchedulesRetry`؛ `testFailFinalWithOwnerWorkerMarksFailed`) + `OpLogRetentionTest` (۴). مسیر legacy fail بدون workerId هم توسط تست قدیمی `testFailRetriesWithBackoffThenFails` پوشش می‌ماند.
+- **تست محلی:** lint php-wasm ۷ فایل ✓. **Integration/Unit: CI.**
+- **وضعیت:** commit + push + SHA + CI در ادامه ثبت می‌شود.
+
+### [2026-09-07 ~18:00 UTC] — ایجنت Arena — F1 Remediation گروه 6: F1-7 — قفل یکپارچهٔ runTick (WP-Cron = CLI)
+- **ریشه:** GET_LOCK فقط در `bin/cpms jobs tick` بود (docblock خودش ادعای «بدون Duplicate Runner» داشت!) و WP-Cron (`cpms_jobs_tick` → `App::runTick`) بدون قفل Tick می‌کرد → دو SAPI هم‌زمان.
+- **رفع:** قفل داخل `App::runTick()` — `SELECT GET_LOCK('cpms_jobs_tick', 0)` (ثابت جدید `App::TICK_LOCK`؛ نام همان قفل قبلی برای سازگاری)؛ Skip → return **-1**؛ آزادسازی در `finally` (`RELEASE_LOCK`). helper جدید `App::isTickLocked()` با `IS_FREE_LOCK` (docblock: داخل خود Tick هم true برمی‌گرداند — برای پیام CLI بعد از Skip است). `bin/cpms` دیگر قفل محلی ندارد و همان پیام قبلی را با isTickLocked() چاپ می‌کند. نکته F1-1: GET_LOCK/RELEASE/IS_FREE با پارامتر prepare (%s) — نه string interpolation.
+- **تست رگرسیون (Integration):** `TickLockTest` (۳ تست) با **اتصال دوم** `new \wpdb(...)` + set_prefix (الگوی SlotCapacityOneHundredWayTest): ① قفل بیرونی → runTick=-1 + Job queued می‌ماند + isTickLocked=true؛ ② بدون قفل → اجرا + آزادسازی قفل از دید اتصال دوم (IS_FREE_LOCK=1)؛ ③ بازتاب قفل بیرونی در isTickLocked قبل/بعد از Release. tearDown قفل را آزاد می‌کند (ایمنی تست بعدی).
+- **سازگاری:** تست قدیمی `JobQueueTest::testRunTickReschedulesAndProcessesRecurringJobs` با قفل جدید هم پاس می‌شود (قفل روی همان اتصال گرفته/آزاد می‌شود). WP-Cron hook فقط return value را نادیده می‌گیرد.
+- **تست محلی:** lint php-wasm (App.php، bin/cpms، TickLockTest) ✓. **Integration: CI.**
+- **وضعیت:** commit + push + SHA + CI در ادامه ثبت می‌شود.
+
+### [2026-09-07 ~18:25 UTC] — ایجنت Arena — F1 Remediation گروه 7: F1-8 (دقت sanitize) + F1-10 (docblock فالبک StateMachine)
+- **F1-8:** `AuditLogger::sanitize` از substring-regex (`/(otp|code|…)/i`) به **تطبیق دقیق نام کلید (case-insensitive)** تغییر کرد — کلیدهای بی‌خطرِ شبیه (`http_code`/`status_code`/`failure_code`) دیگر حذف نمی‌شوند و رکوردهای HTTP/خطا در Audit معنا پیدا می‌کنند. فهرست ممنوعه‌ها گسترده‌تر و صریح شد (`auth_code`, `verification_code`, `passwd`, `access_token`, `refresh_token`, `id_token`, `session_token`, `client_secret`, `apikey`, `authorization`, …). Masking (`MASK_KEYS` از قبل exact) و Truncation و Hash Chain دست‌نخورده. نکتهٔ سازگاری: ساختار `{setting, value}` در Audit تنظیمات (F1-4) همچنان معتبر و بهینه است — شناسهٔ Setting اکنون به‌عنوان «مقدار» هم محفوظ می‌ماند. یادداشت خارج از scope: `OpLogger::sanitize` الگوی substring دارد اما به‌جای حذف، `[masked]` می‌گذارد (آسیب کمتر) — تغییرش در این گروه نیست و به‌عنوان مشاهده ثبت شد.
+- **F1-10 (فقط docblock + تست):** قواعد Fallback در `StateMachine` صریح شد — fail-loud برای (from,event) نامعلوم؛ fallback به Candidate بدون محدودیت برای actor خارج از فهرست‌ها (فهرست خالی = همه)؛ ترتیب ارجحیت match؛ نکتهٔ امنیتی (مجوز واقعی در Service). رفتار کد هیچ تغییری نکرد. تست‌های مستندکننده Unit: `testActorFallbackToUnrestrictedCandidate` + `testNoFallbackWhenOnlyRestrictedCandidatesExist`.
+- **تست محلی:** lint php-wasm ۵ فایل ✓. **Integration/Unit: CI (راند نهایی).**
+- **وضعیت:** commit + push + SHA + CI نهایی (سه pipeline) در ادامه ثبت می‌شود. پس از سبزی: **STOP** — انتظار تأیید کارفرما (طبق پروتکل؛ F2 شروع نمی‌شود).
+
+#### پیوست — شواهد نهایی گروه‌های 4(تکمیل)–7 و STOP
+- **گروه 4 (تکمیل):** `463330e` (probe src+bin) → `8db0084` (نهایی: `phpstan.neon.dist`، level=3 بدون baseline — probe: صفر خطا @0..3 روی src+bin، ۷۲ خطا @4؛ job key `phpstan`؛ تصحیح AC-9 در report-f1.md).
+- **گروه 5:** `ce751ba` (+`35977f5` docs) — F1-5 (cleanup.oplog + retention.oplog_days=90) + F1-6 (fail race guard). CI run **34139668303** سبز ۶/۶.
+- **گروه 6:** `3a403f3` — F1-7 (قفل یکپارچهٔ runTick + isTickLocked + تست اتصال دوم). CI run **34139964706** سبز ۶/۶.
+- **گروه 7:** `88183a6` — F1-8 (sanitize exact-match؛ http_code/failure_code حفظ) + F1-10 (docblock فالبک + تست‌های Unit). CI روی HEAD نهایی: run **34140229256** سبز ۶/۶ + Closure **34140225798** سبز + Pilot **34140225799** سبز (۸ دقیقه).
+- **پاک‌سازی:** workflow موقت probe حذف شد (در 88183a6+این کامیت).
+- **جمع تست‌های جدید این نشست:** SettingsAuditTest (۶) + JobQueueTest (۳+) + OpLogRetentionTest (۴) + TickLockTest (۳) + AuditChainTest (۱+) + StateMachineTest (۲+) = ۱۹+ تست رگرسیون.
+- **STOP طبق پروتکل:** هر ۷ گروه انجام/سبز شد — منتظر تأیید کارفرما برای merge PR #7. F2 شروع نمی‌شود.

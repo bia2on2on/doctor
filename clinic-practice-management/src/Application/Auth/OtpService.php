@@ -336,7 +336,7 @@ final class OtpService
         );
     }
 
-    private function audit(string $action, ?int $userId, string $mobile, ?string $ip): void
+    private function audit(string $action, ?int $userId, string $mobile, ?string $ip, array $meta = []): void
     {
         $this->audit->log(
             $action,
@@ -345,7 +345,7 @@ final class OtpService
             null,
             null,
             null,
-            ['mobile' => MobileValidator::mask($mobile)]
+            ['mobile' => MobileValidator::mask($mobile)] + $meta
         );
     }
 
