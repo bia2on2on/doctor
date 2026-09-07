@@ -255,9 +255,11 @@ final class RolesAndCapabilities
 
         $clean = self::sanitizeCapList($caps);
         $overrides = self::overrides();
+        // مقایسه به‌صورت «مجموعه» (هر دو سمت نرمال/مرتب) — ترتیب تعریف ثابت‌ها
+        // اهمیتی ندارد؛ وگرنه «بازگشت به پیش‌فرض» هرگز تشخیص داده نمی‌شد.
         $defaults = match ($role) {
-            self::ROLE_DOCTOR => self::DOCTOR_CAPS,
-            default => self::SECRETARY_CAPS,
+            self::ROLE_DOCTOR => self::sanitizeCapList(self::DOCTOR_CAPS),
+            default => self::sanitizeCapList(self::SECRETARY_CAPS),
         };
 
         if ($clean === $defaults) {
