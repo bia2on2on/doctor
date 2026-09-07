@@ -609,3 +609,9 @@ final class XxxService {
 - **پاک‌سازی:** workflow موقت probe حذف شد (در 88183a6+این کامیت).
 - **جمع تست‌های جدید این نشست:** SettingsAuditTest (۶) + JobQueueTest (۳+) + OpLogRetentionTest (۴) + TickLockTest (۳) + AuditChainTest (۱+) + StateMachineTest (۲+) = ۱۹+ تست رگرسیون.
 - **STOP طبق پروتکل:** هر ۷ گروه انجام/سبز شد — منتظر تأیید کارفرما برای merge PR #7. F2 شروع نمی‌شود.
+
+### [2026-09-07 ~16:30 UTC] — ایجنت Arena — بستن F1 Remediation: PR #7 merge شد (تأیید کارفرما)
+- **تأیید و merge:** کارفرما دستور merge داد — PR #7 (`arena/01a07c01-doctor` → `main`، گروه‌های 3..7: F1-4، F1-3، F1-5/F1-6، F1-7، F1-8/F1-10) با merge commit **`3387524`** ادغام شد (state=MERGED @ 2026-09-07T16:23:12Z؛ بدون حذف شاخهٔ session).
+- **CI روی main بعد از merge (همه سبز):** CI run **34143016316** (۶/۶: Unit PHP 8.1–8.4 + Integration WP6.7/MySQL8 + PHPStan L3) + Closure Gate run **34143016304** + Pilot/Staging Readiness Gate run **34143016230** (9m1s).
+- **وضعیت نهایی F1 Remediation:** هر ۷ گروهِ مصوب (F1-1..F1-10) در main و پایدار روی Gateها. شاخهٔ `arena/01a07c01-doctor` حفظ شد (سابقه/traceability).
+- **STOP طبق پروتکل:** F2 منتظر دستور صریح کارفرماست.
