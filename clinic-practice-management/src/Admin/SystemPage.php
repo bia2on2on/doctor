@@ -36,7 +36,14 @@ final class SystemPage
 
     public static function menu(): void
     {
-        add_management_page('CPMS (سیستم)', 'CPMS (سیستم)', 'cpms_config', 'cpms-system', [self::class, 'render']);
+        add_submenu_page(
+            CpmsAdminMenu::parentSlug(),
+            'سلامت سیستم',
+            'سلامت سیستم',
+            'cpms_config',
+            'cpms-system',
+            [self::class, 'render']
+        );
     }
 
     public static function render(): void

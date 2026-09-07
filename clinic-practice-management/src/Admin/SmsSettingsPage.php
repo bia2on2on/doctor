@@ -23,9 +23,9 @@ final class SmsSettingsPage
     public static function menu(): void
     {
         add_submenu_page(
-            'options-general.php',
-            'تنظیمات پیامک',
-            'پیامک',
+            CpmsAdminMenu::parentSlug(),
+            'پیامک و اعلان‌ها',
+            'پیامک و اعلان‌ها',
             RolesAndCapabilities::SMS_CONFIG,
             'cpms-sms',
             [self::class, 'render']

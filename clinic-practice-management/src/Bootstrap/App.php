@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ClinicCore\Bootstrap;
 
 use ClinicCore\Admin\ClinicianAdminPage;
+use ClinicCore\Admin\CpmsAdminMenu;
 use ClinicCore\Admin\PatientPortalPage;
 use ClinicCore\Admin\PrescriptionPrintPage;
 use ClinicCore\Admin\RoleCapabilitiesPage;
@@ -187,6 +188,9 @@ final class App
         // Correlation helperها (cpms_request_id/cpms_session_id) در فایل اصلی
         // افزونه تعریف می‌شوند — خارج از boot تا در همه Contextها (CLI، Test،
         // درخواست‌های زودهنگام) قطعاً موجود باشند.
+
+        // Admin UX — منوی Top-Level «مدیریت مطب» + داشبورد + IA (Chunk A)
+        CpmsAdminMenu::register();
 
         SettingsAdmin::register();
         SystemPage::register();

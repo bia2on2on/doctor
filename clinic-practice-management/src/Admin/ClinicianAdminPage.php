@@ -44,9 +44,10 @@ final class ClinicianAdminPage
 
     public static function menu(): void
     {
-        add_management_page(
-            'پزشکان و برنامه',
-            'پزشکان و برنامه',
+        add_submenu_page(
+            CpmsAdminMenu::parentSlug(),
+            'پزشکان و برنامه کاری',
+            'پزشکان و برنامه کاری',
             RolesAndCapabilities::CONFIG,
             'cpms-clinicians',
             [self::class, 'render']

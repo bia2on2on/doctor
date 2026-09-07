@@ -128,9 +128,10 @@ final class RoleCapabilitiesPage
 
     public static function menu(): void
     {
-        add_management_page(
-            'CPMS (دسترسی‌ها)',
-            'CPMS (دسترسی‌ها)',
+        add_submenu_page(
+            CpmsAdminMenu::parentSlug(),
+            'کاربران و دسترسی‌ها',
+            'کاربران و دسترسی‌ها',
             RolesAndCapabilities::CONFIG,
             'cpms-roles',
             [self::class, 'render']
