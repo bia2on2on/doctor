@@ -136,6 +136,27 @@ final class ScheduleService
         return ['id' => $id, 'deleted' => true];
     }
 
+    // ================= Impact / Preview (Chunk D — بدون invalidate بی‌صدا) =================
+
+    /**
+     * گزارش «تأثیر تغییر برنامه» برای یک پزشک — قبل از اینکه تغییری اعمال شود به مدیر
+     * گفته می‌شود:
+     *  - چند Slot خالی آینده (booked=0, held=0) حذف و بازتولید خواهند شد؛
+     *  - چند Slot دارای رزرو/Hold «محافظت» می‌شوند و هرگز حذف نمی‌شوند (data snapshot).
+     *
+     * @return array{future_empty_slots:int, future_reserved_slots:int}
+     */
+    public function impact(int $clinicianId): array
+    {
+        $this->requireClinician($clinicianId);
+        $from = gmdate('Y-m-d');
+
+        return [
+            'future_empty_slots' => $this->schedules->countFutureEmptySlots($clinicianId, $from),
+            'future_reserved_slots' => $this->schedules->countFutureReservedSlots($clinicianId, $from),
+        ];
+    }
+
     // ================= G1b — Schedule Exceptions (SRS FR-3.2) =================
 
     /**

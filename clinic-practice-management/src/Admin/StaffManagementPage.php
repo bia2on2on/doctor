@@ -197,7 +197,7 @@ final class StaffManagementPage
      *
      * @param array<string, mixed> $in
      *
-     * @return array{error:string, generated:string}
+     * @return array{error:string, generated:string, user_id:int}
      */
     public static function upsertUser(array $in, int $updatedBy): array
     {
@@ -210,18 +210,18 @@ final class StaffManagementPage
         $password = (string) ($in['password'] ?? '');
 
         if ($role === '' || !in_array($role, self::MANAGEABLE_ROLES, true)) {
-            return ['error' => 'نقش غیرمجاز است (فقط نقش‌های CPMS قابل انتساب‌اند؛ از انتساب administrator جلوگیری شد).', 'generated' => ''];
+            return ['error' => 'نقش غیرمجاز است (فقط نقش‌های CPMS قابل انتساب‌اند؛ از انتساب administrator جلوگیری شد).', 'generated' => '', 'user_id' => 0];
         }
         if ($displayName === '') {
-            return ['error' => 'نام نمایشی الزامی است.', 'generated' => ''];
+            return ['error' => 'نام نمایشی الزامی است.', 'generated' => '', 'user_id' => 0];
         }
         if ($email === '' || !is_email($email)) {
-            return ['error' => 'ایمیل معتبر الزامی است.', 'generated' => ''];
+            return ['error' => 'ایمیل معتبر الزامی است.', 'generated' => '', 'user_id' => 0];
         }
 
         $generated = '';
         if ($mode === 'create' && ($username === '' || !validate_username($username))) {
-            return ['error' => 'نام کاربری معتبر الزامی است (حروف، اعداد، _ و -).', 'generated' => ''];
+            return ['error' => 'نام کاربری معتبر الزامی است (حروف، اعداد، _ و -).', 'generated' => '', 'user_id' => 0];
         }
 
         // رمز: WP `user_pass` را خودش hash می‌کند؛ بنابراین plaintext (تعیین‌شده یا تولیدی) را
@@ -229,7 +229,7 @@ final class StaffManagementPage
         if ($password === '') {
             $generated = self::generatePassword();
         } elseif (!self::validatePassword($password)) {
-            return ['error' => 'رمز عبور باید حداقل ۱۰ کاراکتر شامل حرف و عدد باشد.', 'generated' => ''];
+            return ['error' => 'رمز عبور باید حداقل ۱۰ کاراکتر شامل حرف و عدد باشد.', 'generated' => '', 'user_id' => 0];
         }
         $plainPassword = $password !== '' ? $password : $generated;
 
@@ -242,12 +242,13 @@ final class StaffManagementPage
                 'role' => $role,
             ]);
             if (is_wp_error($userId)) {
-                return ['error' => $userId->get_error_message(), 'generated' => ''];
+                return ['error' => $userId->get_error_message(), 'generated' => '', 'user_id' => 0];
             }
-            App::audit()->log('STAFF_USER_CREATED', ['wp_user_id' => $updatedBy], 'user', (int) $userId, null, null, ['role' => $role, 'login' => $username]);
+            $userId = (int) $userId;
+            App::audit()->log('STAFF_USER_CREATED', ['wp_user_id' => $updatedBy], 'user', $userId, null, null, ['role' => $role, 'login' => $username]);
         } else {
             if ($userId <= 0 || !self::isManageable($userId)) {
-                return ['error' => 'کاربر یافت نشد یا قابل مدیریت نیست.', 'generated' => ''];
+                return ['error' => 'کاربر یافت نشد یا قابل مدیریت نیست.', 'generated' => '', 'user_id' => 0];
             }
             $args = ['ID' => $userId, 'display_name' => $displayName, 'user_email' => $email, 'role' => $role];
             if ($password !== '') {
@@ -255,7 +256,7 @@ final class StaffManagementPage
             }
             $res = wp_update_user($args);
             if (is_wp_error($res)) {
-                return ['error' => $res->get_error_message(), 'generated' => ''];
+                return ['error' => $res->get_error_message(), 'generated' => '', 'user_id' => $userId];
             }
             // اگر کاربر قبلاً غیرفعال بود (subscriber + usermeta)، اکنون نقش واقعی گرفت → پاک کردن flag.
             if (get_user_meta($userId, self::META_PREV_ROLE, true) !== '') {
@@ -264,7 +265,7 @@ final class StaffManagementPage
             App::audit()->log('STAFF_USER_UPDATED', ['wp_user_id' => $updatedBy], 'user', $userId, null, null, ['role' => $role, 'password_reset' => $password !== '']);
         }
 
-        return ['error' => '', 'generated' => $generated];
+        return ['error' => '', 'generated' => $generated, 'user_id' => $userId];
     }
 
     /**

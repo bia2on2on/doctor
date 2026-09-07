@@ -121,17 +121,34 @@ final class ClinicianAdminPage
             <tr><th>تخصص</th><td><input type="text" name="specialty" class="regular-text"></td></tr>
             <tr><th>اتاق</th><td><input type="text" name="room" class="regular-text"></td></tr>
             <tr><th>کاربر وردپرس</th><td>
+                <label><input type="checkbox" name="create_account" value="1" id="cpms-create-account"> ایجاد حساب کاربری جدید (نقش: پزشک) — بدون نیاز به صفحهٔ جداگانهٔ «کاربران»</label>
+                <div id="cpms-account-fields" style="display:none; margin-top:8px">
+                    <p><label>نام کاربری * <input type="text" name="account_username" class="regular-text" autocomplete="off"></label></p>
+                    <p><label>ایمیل * <input type="email" name="account_email" class="regular-text" autocomplete="off"></label></p>
+                    <p><label>رمز عبور <input type="password" name="account_password" class="regular-text" autocomplete="new-password"></label>
+                        <span class="description">خالی بگذارید تا رمز قوی تصادفی ساخته و یک‌بار نمایش داده شود (هرگز plaintext ذخیره نمی‌شود).</span></p>
+                </div>
                 <select name="wp_user_id">
-                    <option value="0">— بدون اتصال (بعداً) —</option>
+                    <option value="0">— بدون اتصال —</option>
                     <?php foreach ($users as $u) : ?>
                         <option value="<?php echo (int) $u['id']; ?>"><?php echo esc_html($u['label']); ?></option>
                     <?php endforeach; ?>
                 </select>
-                <p class="description">پزشک فقط با این اتصال به «امروز پزشک» و صف خودش دسترسی پیدا می‌کند (۱:۱).</p>
+                <p class="description">یا یک پزشک موجود را انتخاب کنید. فقط اتصال ۱:۱ به «امروز پزشک» و صف خودش دسترسی می‌دهد.</p>
             </td></tr>
         </table>
         <p><button type="submit" class="button button-primary">ثبت پزشک</button></p>
     </form>
+    <script>
+        (function(){
+            var c = document.getElementById('cpms-create-account');
+            var box = document.getElementById('cpms-account-fields');
+            if (!c || !box) { return; }
+            c.addEventListener('change', function(){
+                box.style.display = c.checked ? 'block' : 'none';
+            });
+        })();
+    </script>
         <?php
     }
 
@@ -185,6 +202,16 @@ final class ClinicianAdminPage
 
     <!-- برنامه هفتگی — یک فرم برای کل جدول (نام‌گذاری آرایه‌ای sched[day]) -->
     <h2 class="title">برنامه هفتگی (ساعت‌ها به وقت مطب)</h2>
+    <?php if ((int) $clinician['is_active'] === 1) : $impact = App::scheduleService()->impact($cid); ?>
+        <div class="notice notice-info inline" style="max-width:1150px">
+            <p><strong>تأثیر تغییر برنامه (پیش‌نمایش):</strong>
+                با ذخیرهٔ هر تغییر، <strong><?php echo (int) $impact['future_empty_slots']; ?></strong> اسلات خالی آینده
+                حذف و بازتولید می‌شود (بازتولید خودکار)؛ و <strong><?php echo (int) $impact['future_reserved_slots']; ?></strong>
+                اسلات دارای رزرو/Hold <strong>هرگز حذف نمی‌شوند</strong> (امانت داده حفظ می‌شود). برای اینکه تغییری بی‌صدا
+                اعمال نشود، این عدد پیش از ثبت نمایش داده می‌شود.
+            </p>
+        </div>
+    <?php endif; ?>
     <p class="description">پس از ذخیره، Slotهای رزرو خودکار بازتولید می‌شوند (Job slots.generate). برای حذف یک روز از دکمه «حذف» همان ردیف استفاده کنید.</p>
     <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
         <?php wp_nonce_field('cpms_schedule_save'); ?>
@@ -288,6 +315,7 @@ final class ClinicianAdminPage
         $repo = App::clinicianRepository();
         $fields = self::clinicianFields();
         $id = isset($_POST['clinician_id']) ? absint($_POST['clinician_id']) : 0;
+        $generated = '';
 
         try {
             if ($id > 0) {
@@ -303,12 +331,26 @@ final class ClinicianAdminPage
             if (trim((string) ($fields['full_name'] ?? '')) === '') {
                 self::backWithError(0, 'خطا: نام پزشک الزامی است.');
             }
+
+            // Chunk D — ساخت حساب در همان جریان «افزودن پزشک» (بدون صفحهٔ جداگانهٔ کاربران).
+            $accountCreated = self::maybeCreateDoctorAccount($fields, $generated);
+            if (($accountCreated['error'] ?? '') !== '') {
+                self::backWithError(0, 'خطا: ' . $accountCreated['error']);
+            }
+            if (!empty($accountCreated['wp_user_id'])) {
+                $fields['wp_user_id'] = (int) $accountCreated['wp_user_id'];
+            }
+
             if ($fields['wp_user_id'] !== null && $repo->isUserLinked((int) $fields['wp_user_id'])) {
                 self::backWithError(0, 'خطا: این کاربر وردپرس قبلاً به پزشک دیگری متصل است (پیوند باید ۱:۱ باشد).');
             }
             $newId = $repo->create($fields);
             App::audit()->log('CLINICIAN_CREATED', ['wp_user_id' => get_current_user_id()], 'clinician', $newId, null, null, ['full_name' => (string) $fields['full_name']]);
-            self::back($newId, 'پزشک ثبت شد — حالا برنامه هفتگی او را تنظیم کنید.');
+            $message = 'پزشک ثبت شد — حالا برنامه هفتگی او را تنظیم کنید.';
+            if (($accountCreated['generated'] ?? '') !== '') {
+                $message .= ' رمز یک‌بارهٔ حساب: ' . $accountCreated['generated'] . ' (فقط همین حالا نمایش داده می‌شود — آن را به پزشک بدهید.)';
+            }
+            self::back($newId, $message);
         } catch (\RuntimeException $e) {
             // Race انتساب ۱:۱ (UNIQUE 0007) — پیام فارسی، بدون Fatal
             self::backWithError($id, 'خطا: ' . $e->getMessage());
@@ -372,6 +414,15 @@ final class ClinicianAdminPage
         }
 
         try {
+            // پیش‌نمایش تأثیر (Chunk D) پیش از بازتولید — تا مدیر بداند چند اسلات خالی
+            // قرار است حذف/بازتولید شود و چند اسلات رزرو/Hold محافظت می‌شود (نه invalidate بی‌صدا).
+            $impact = App::scheduleService()->impact($cid);
+            $impactNote = sprintf(
+                ' — بازتولید %d اسلات خالی آینده؛ %d اسلات رزرو/Hold حفظ شد.',
+                (int) $impact['future_empty_slots'],
+                (int) $impact['future_reserved_slots']
+            );
+
             // کلید «ذخیره روز» همیشه schedule_id فعلی همان روز را دارد؛ تشخیص
             // update/create از وجود رکورد همان روز انجام می‌شود (u_sched_day).
             $existing = App::db()->fetchValue(
@@ -380,10 +431,10 @@ final class ClinicianAdminPage
             );
             if ($existing !== null) {
                 $service->update($userId, (int) $existing, $fields);
-                self::back($cid, 'برنامه روز ذخیره شد — Slotها بازتولید می‌شوند.');
+                self::back($cid, 'برنامه روز ذخیره شد — Slotها بازتولید می‌شوند.' . $impactNote);
             }
             $service->create($userId, $fields);
-            self::back($cid, 'روز به برنامه اضافه شد — Slotها بازتولید می‌شوند.');
+            self::back($cid, 'روز به برنامه اضافه شد — Slotها بازتولید می‌شوند.' . $impactNote);
         } catch (BookingException $e) {
             self::backWithError($cid, 'خطا: ' . $e->getMessage());
         }
@@ -474,6 +525,39 @@ final class ClinicianAdminPage
         }
 
         return $fields;
+    }
+
+    /**
+     * Chunk D — اگر در «افزودن پزشک» گزینهٔ ایجاد حساب انتخاب شده باشد، کاربر وردپرس را
+     * با نقش `cpms_doctor` از مسیر امن StaffManagementPage::upsertUser می‌سازد (بدون
+     * plaintext رمز در DB) و شناسهٔ آن را برای پیوند ۱:۱ برمی‌گرداند. اگر حساب انتخابی
+     * نباشد (یا کاربر موجود انتخاب شده باشد) کاری نمی‌کند.
+     *
+     * @param array<string, mixed> $fields پارامترها by-ref برای تنظیم later.
+     * @param string               $generated رمز یک‌بارهٔ تولیدی (by-ref).
+     *
+     * @return array{error?: string, wp_user_id?: int, generated?: string}
+     */
+    private static function maybeCreateDoctorAccount(array &$fields, string &$generated): array
+    {
+        if (empty($_POST['create_account'])) { // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce در guard
+            return [];
+        }
+        $in = [
+            'mode' => 'create',
+            'username' => isset($_POST['account_username']) ? sanitize_user(wp_unslash($_POST['account_username']), true) : '', // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+            'display_name' => (string) ($fields['full_name'] ?? ''),
+            'email' => isset($_POST['account_email']) ? sanitize_email(wp_unslash($_POST['account_email'])) : '', // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+            'role' => RolesAndCapabilities::ROLE_DOCTOR,
+            'password' => (string) wp_unslash($_POST['account_password'] ?? ''), // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+        ];
+        $result = StaffManagementPage::upsertUser($in, (int) get_current_user_id());
+        if (($result['error'] ?? '') !== '') {
+            return ['error' => $result['error']];
+        }
+        $generated = (string) ($result['generated'] ?? '');
+
+        return ['wp_user_id' => (int) ($result['user_id'] ?? 0), 'generated' => $generated];
     }
 
     /**
