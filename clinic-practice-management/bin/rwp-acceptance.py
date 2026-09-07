@@ -140,11 +140,20 @@ with sync_playwright() as p:
         check("admin.menu.no_queue_topmenu", "admin.php?page=cpms-queue" not in menu, "P-3: منوی صف برای Administrator پنهان است")
 
         # دسترسی مستقیم مدیر به صفحهٔ عملیاتی = Deny (نه Render)
-        resp = page.goto(f"{BASE}/wp-admin/admin.php?page=cpms-queue", wait_until="domcontentloaded")
-        body_q = page.content()
+        # در صفحهٔ جدا و بدون watcher اجرا می‌شود — 403 عمدیِ این پروب نباید
+        # گیتِ «بدون خطای Console» را بی‌دلیل قرمز کند (403 همان خروجی صحیح است).
+        deny_page = ctx.new_page()
+        deny_page.goto(f"{BASE}/wp-login.php", wait_until="domcontentloaded")
+        deny_page.fill("#user_login", ADMIN_USER)
+        deny_page.fill("#user_pass", ADMIN_PASS)
+        deny_page.click("#wp-submit")
+        deny_page.wait_for_load_state("domcontentloaded")
+        resp = deny_page.goto(f"{BASE}/wp-admin/admin.php?page=cpms-queue", wait_until="domcontentloaded")
+        body_q = deny_page.content()
         denied = (resp is not None and resp.status in (403,)) or "not allowed to access this page" in (body_q or "").lower() or "دسترسی ندارید" in (body_q or "")
         check("admin.business_page_denied", denied, f"HTTP {resp.status if resp else 0}")
-        page.screenshot(path=f"{OUT}/screenshots/admin-denied-business.png", full_page=True)
+        deny_page.screenshot(path=f"{OUT}/screenshots/admin-denied-business.png", full_page=True)
+        deny_page.close()
     page.close()
 
     # ---------- Doctor (نقش cpms_doctor) ----------

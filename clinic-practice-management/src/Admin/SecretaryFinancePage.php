@@ -212,12 +212,21 @@ window.CPMS_FIN = <?php echo wp_json_encode($config); ?>;
     };
     var METHOD_LABELS = { cash: 'نقدی', card_pos: 'کارت‌خوان', online: 'آنلاین', other: 'سایر' };
 
+    function apiUrl(path) {
+        // Permalink ساده: rest_url خودش شامل ?rest_route=... است — Queryِ path
+        // باید با & ضمیمه شود (نه ?)؛ در غیر اینصورت route شکسته می‌شود (rest_no_route).
+        if (CFG.rest_url.indexOf('?') !== -1 && path.indexOf('?') !== -1) {
+            return CFG.rest_url + path.replace('?', '&');
+        }
+        return CFG.rest_url + path;
+    }
+
     function api(method, path, body, extraHeaders) {
         var opts = { method: method, headers: Object.assign({
             'X-WP-Nonce': CFG.nonce, 'Content-Type': 'application/json'
         }, extraHeaders || {}) };
         if (body) { opts.body = JSON.stringify(body); }
-        return fetch(CFG.rest_url + path, opts).then(function (r) {
+        return fetch(apiUrl(path), opts).then(function (r) {
             return r.json().then(function (j) { return { __status: r.status, body: j }; });
         });
     }

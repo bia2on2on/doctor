@@ -44,9 +44,34 @@ final class SystemPage
         if (!current_user_can('cpms_config')) {
             wp_die('دسترسی ندارید');
         }
-        $lic = App::licenseService()->statusMeta();
-        $health = App::systemHealthService()->run();
-        $backups = App::backupService()->listBackups();
+        // فیکس گزارش نصب واقعی (D1): صفحهٔ وضعیت باید آخرین نقطهٔ قابل‌رؤیت
+        // باشد — شکست هر سرویس وابسته (مثل ساخت پوشهٔ بکاپ روی میزبانِ
+        // غیرقابل‌نوشتن) نباید کل صفحه را به Critical Error بکشاند؛ هر بخش
+        // مستقلاً خطای خودش را نشان می‌دهد و بقیه صفحه رندر می‌شود.
+        /** @var array<string, mixed>|null $lic */
+        $lic = null;
+        /** @var array{checks: list<array{key:string,label:string,status:string,detail:string}>, host: array{status:string, issues:list<string>}}|null $health */
+        $health = null;
+        /** @var list<array<string, mixed>> $backups */
+        $backups = [];
+        $licError = null;
+        $healthError = null;
+        $backupsError = null;
+        try {
+            $lic = App::licenseService()->statusMeta();
+        } catch (\Throwable $e) {
+            $licError = $e->getMessage();
+        }
+        try {
+            $health = App::systemHealthService()->run();
+        } catch (\Throwable $e) {
+            $healthError = $e->getMessage();
+        }
+        try {
+            $backups = App::backupService()->listBackups();
+        } catch (\Throwable $e) {
+            $backupsError = $e->getMessage();
+        }
         $settings = App::settings();
         $notice = get_transient(self::NOTICE_KEY);
         if ($notice !== false) {
@@ -60,6 +85,10 @@ final class SystemPage
             <?php endif; ?>
 
             <h2>وضعیت Health / سازگاری میزبان</h2>
+            <?php if ($healthError !== null || $health === null) : ?>
+                <div class="notice notice-error inline"><p>⛔ بخش Health با خطا مواجه شد (به‌جای Critical Error صفحه فقط این بخش را نشان نمی‌دهد):
+                    <code><?php echo esc_html($healthError); ?></code></p></div>
+            <?php else : ?>
             <p>Host Capability:
                 <strong>
                 <?php
@@ -86,8 +115,13 @@ final class SystemPage
                 <?php endforeach; ?>
                 </tbody>
             </table>
+            <?php endif; ?>
 
             <h2>مجوز</h2>
+            <?php if ($licError !== null || $lic === null) : ?>
+                <div class="notice notice-error inline"><p>⛔ وضعیت مجوز قابل خواندن نیست:
+                    <code><?php echo esc_html((string) $licError); ?></code></p></div>
+            <?php else : ?>
             <table class="form-table" role="presentation">
                 <tr><th>وضعیت</th><td><strong><?php echo esc_html(self::licenseLabel($lic['status'])); ?></strong>
                     <?php echo esc_html($lic['reason'] !== '' ? ' (' . $lic['reason'] . ')' : ''); ?></td></tr>
@@ -121,8 +155,13 @@ final class SystemPage
             <?php else : ?>
                 <p class="description">سند مجوز معتبر است. Refresh دوره‌ای خودکار است؛ عدم دسترسی شبکه ≠ نامعتبر.</p>
             <?php endif; ?>
+            <?php endif; ?>
 
             <h2>بکاپ (فایل + دیتابیس cpms_*)</h2>
+            <?php if ($backupsError !== null) : ?>
+                <div class="notice notice-error inline"><p>⛔ فهرست بکاپ‌ها قابل خواندن نیست (مثلاً پوشهٔ قابل‌نوشتن نیست):
+                    <code><?php echo esc_html($backupsError); ?></code></p></div>
+            <?php endif; ?>
             <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin-bottom:10px">
                 <?php wp_nonce_field('cpms_backup_save'); ?>
                 <input type="hidden" name="action" value="cpms_backup_save">

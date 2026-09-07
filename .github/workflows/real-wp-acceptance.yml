@@ -246,23 +246,6 @@ jobs:
           cat /tmp/acc/acceptance.log
           if [ "$RC" -ne 0 ]; then echo "ACCEPTANCE FAILED (rc=$RC)"; exit "$RC"; fi
 
-      # ---------- 6b) TEMP DEBUG: ماهیت دقیق 404های REST (حذف می‌شود بعد از ریشه‌یابی) ----------
-      - name: TEMP DEBUG — REST 404 nature (حذف موقت بعد از ریشه‌یابی)
-        if: always()
-        run: |
-          {
-            echo '==== doctor: /clinic/v1/queue?clinician_id=1 ===='
-            curl -s -c /tmp/acc/jar-doc -d "log=$DOCTOR_USER&pwd=$DOCTOR_PASS" "$WP_URL/wp-login.php" -o /dev/null
-            curl -s -b /tmp/acc/jar-doc -w '\nHTTP %{http_code}\n' "$WP_URL/index.php?rest_route=/clinic/v1/queue&clinician_id=1"
-            echo '==== secretary: /clinic/v1/rt/notifications?since=0 ===='
-            curl -s -c /tmp/acc/jar-sec -d "log=$SECRETARY_USER&pwd=$SECRETARY_PASS" "$WP_URL/wp-login.php" -o /dev/null
-            curl -s -b /tmp/acc/jar-sec -w '\nHTTP %{http_code}\n' "$WP_URL/index.php?rest_route=/clinic/v1/rt/notifications&since=0"
-            echo '==== secretary: /clinic/v1/finance/summary ===='
-            curl -s -b /tmp/acc/jar-sec -w '\nHTTP %{http_code}\n' "$WP_URL/index.php?rest_route=/clinic/v1/finance/summary&from=2026-09-07&to=2026-09-07"
-            echo '==== route index (clinic namespace موجود؟) ===='
-            curl -s -b /tmp/acc/jar-sec "$WP_URL/index.php?rest_route=/clinic/v1" | head -c 400; echo
-          } 2>&1 | tee /tmp/acc/rest-probe.txt
-
       # ---------- 7) بررسی لاگ‌ها (همیشه — حتی در شکست) ----------
       - name: PHP/WP/Apache logs review
         if: always()
@@ -333,10 +316,6 @@ jobs:
             echo '- browser acceptance:'
             echo '```'
             cat /tmp/acc/acceptance.log 2>/dev/null || echo '(مرحلهٔ مرورگر اجرا نشد)'
-            echo '```'
-            echo '- REST probe (temp debug):'
-            echo '```'
-            cat /tmp/acc/rest-probe.txt 2>/dev/null || echo '(probe اجرا نشد)'
             echo '```'
             echo '- PHP fatal lines in debug.log:'
             echo '```'

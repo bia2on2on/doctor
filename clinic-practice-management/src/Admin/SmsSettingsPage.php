@@ -164,10 +164,19 @@ window.CPMS_SMS = <?php echo wp_json_encode($config); ?>;
     var CFG = window.CPMS_SMS;
     var state = { providers: [], status: null, templates: null };
 
+    function apiUrl(path) {
+        // Permalink ساده: rest_url خودش شامل ?rest_route=... است — Queryِ path
+        // باید با & ضمیمه شود (نه ?)؛ در غیر اینصورت route شکسته می‌شود (rest_no_route).
+        if (CFG.rest_url.indexOf('?') !== -1 && path.indexOf('?') !== -1) {
+            return CFG.rest_url + path.replace('?', '&');
+        }
+        return CFG.rest_url + path;
+    }
+
     function api(method, path, body) {
         var headers = { 'X-WP-Nonce': CFG.nonce };
         if (body) headers['Content-Type'] = 'application/json';
-        return fetch(CFG.rest_url + path, {
+        return fetch(apiUrl(path), {
             method: method,
             credentials: 'same-origin',
             headers: headers,
