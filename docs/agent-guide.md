@@ -501,3 +501,14 @@ final class XxxService {
 - `ClinicianRepository::listAll` — `table('users')` پیشوند cpms_ می‌گرفت (`{wp}_cpms_users` ناموجود) → `dbPrefix().'users'` (الگوی BookingService).
 - تست `testUserLinking...` — دو assert با Semantics جابه‌جا نوشته شده بود (خودِ تست اشتباه بود، نه کد) → اصلاح + مستندسازی Semantics در کامنت.
 - in-session debug workaround: لاگ job از API مسدود است (results-receiver) — جزئیات شکست از کامنت خودکار PR خوانده شد (مکانیزم موجود ci.yml «Post failures to PR»).
+
+### [2026-09-07 ~09:30 UTC] — ایجنت Arena — F1 Remediation گروه 1: رفع F1-1 (P0) — باگ واحد پنجره در RateLimiter::cleanup
+- **فاز/محدوده:** تأیید کارفرما برای ۷ رفع F1 با ترتیب مصوب؛ گروه 1 = F1-1. پروتکل: پیاده‌سازی ← تست ← commit ← push به شاخهٔ feature ← تأیید SHA remote ← گزارش.
+- **اقدامات:**
+  - **Migration `2026_09_07_0009`:** `cpms_rate_limits.window_sec INT UNSIGNED NOT NULL DEFAULT 3600` (additive، guard با SHOW COLUMNS). پیش‌فرض 3600 = همان واحدی که کد قدیم فرض می‌کرد → رفتار ردیف‌های legacy خنثی.
+  - **`RateLimiter::hit()`:** `window_sec` در INSERT ذخیره + `ON DUPLICATE KEY UPDATE window_sec = VALUES(window_sec)` (self-heal ردیف‌های پیش از Migration).
+  - **`RateLimiter::cleanup()`:** cutoff مستقل از واحد — `DELETE … WHERE window_id * window_sec < (now - olderThanSec)` (به‌جای `intdiv(time()-olderThanSec, 3600)`).
+  - **تست‌های رگرسیون جدید (Integration، روی MySQL واقعی CI):** `testDailyOtpLimitSurvivesCleanup` (سناریوی دقیق OtpService: 3 hit با windowSec=86400 → cleanup(2*86400) هم‌سان Job روزانه → ردیف زنده می‌ماند + `window_sec=86400` + تلاش 4ام همان روز block)؛ `testCleanupKeepsLiveWindowsOfEveryUnit` (86400/3600/60)؛ `testCleanupRemovesExpiredWindowsOfEveryUnit` (ردیف‌های 4 روز پیش با هر واحد حذف می‌شوند). تست قدیمی `testCleanupRemovesOldWindows` حفظ شد (پوشش مسیر legacy با پیش‌فرض 3600).
+- **تصمیمات درون‌فازی:** ① حذف ستون در `down()` عمداً no-op (زدن ستون = بازگشت به باگ)؛ ② `VALUES()` در ON DUPLICATE حفظ شد (سازگار MariaDB — alias-syntax در MariaDB نیست)؛ ③ `cleanup()` soft (execute) باقی ماند — شکست پاک‌سازی دوره‌ای نباید tick را شکند (رفتار قبلی).
+- **تست محلی (php-wasm PHP 8.5):** lint 3 فایل ✓ + Unit suite 285/0F (همان baseline). **تست Integration: CI (PR push).**
+- **وضعیت:** commit + push + SHA remote در ادامه این لاگ ثبت می‌شود.
