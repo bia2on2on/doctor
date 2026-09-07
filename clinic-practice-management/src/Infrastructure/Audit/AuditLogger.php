@@ -123,8 +123,8 @@ final class AuditLogger
         $out = [];
         foreach ($data as $k => $v) {
             $key = (string) $k;
-            if (preg_match('/(' . implode('|', self::FORBIDDEN_KEYS) . ')/i', $key)) {
-                continue; // حذف کامل
+            if (in_array(mb_strtolower($key), self::FORBIDDEN_KEYS, true)) {
+                continue; // حذف کامل — تطبیق دقیق نام کلید (case-insensitive) — F1-8
             }
             if (in_array($key, self::MASK_KEYS, true) && is_string($v) && strlen($v) >= 4) {
                 $out[$key] = '***' . substr($v, -4);

@@ -197,8 +197,8 @@ final class Settings
      *
      * - فقط تغییرِ مؤثر (مقدار قدیم ≠ جدید) ثبت می‌شود؛ no-op نه.
      * - before/after به شکل `{setting, value}` — ساختار ثابت، نه کلیدِ خودِ Setting
-     *   (کلیدهایی مثل otp.ttl_sec توسط Sanitize ممنوعه Audit حذف می‌شدند — دقت Sanitize
-     *   خودِ آن کلیدها در F1-8 اصلاح می‌شود؛ این ساختار مستقل از آن درست می‌ماند).
+     *   (کلیدهایی مثل otp.ttl_sec در زمان F1-4 توسط Sanitizeِ substring حذف می‌شدند —
+     *   از F1-8 تطبیق دقیق است؛ این ساختار مستقل از آن درست می‌ماند).
      * - کلیدهای Runtime (telemetry) ثبت نمی‌شوند — RUNTIME_KEYS.
      * - بدون کاربر (سیستم) → actor null → AuditLogger نقش «system» می‌گذارد.
      */

@@ -16,6 +16,19 @@ namespace ClinicCore\Domain\Machine;
  *  - Actor مشخص است: اولین Candidate که Actor در فهرستش باشد؛ اگر نبود،
  *    Candidate بدون محدودیت (فهرست خالی = همه) اگر موجود باشد.
  *  - Actor مشخص نیست (null): اولین Candidate بدون محدودیت، در غیر این صورت اولین Candidate.
+ *
+ * Fallback (رفتار عمدی — توضیح F1-10؛ بدون تغییر رفتار):
+ *  - (from, event) نامعلوم → Exception (fail-loud — هیچ فالبک خاموشی وجود
+ *    ندارد؛ transition اشتباه هرگز بی‌صدا رد نمی‌شود).
+ *  - Actor مشخص ولی در هیچ فهرست نقشیِ Candidateهای محدود نباشد → اگر یک
+ *    Candidate «بدون محدودیت» (actors=[]) برای همان (from, event) ثبت باشد،
+ *    همان انتخاب می‌شود (فهرست خالی = همه؛ برای actorهای سیستمی و نقش‌های
+ *    آینده). اگر فقط Candidateهای محدود باشند → Exception.
+ *  - ترتیب ارجحیت: Candidate محدودِ منطقی با actor < Candidate بدون محدودیت؛
+ *    برای actor=null: اول Candidate بدون محدودیت، وگرنه اولین Candidate.
+ *  - نکته امنیتی: این لایه فقط «مسیرِ مجازِ عمومی» را انتخاب می‌کند؛ مجوز
+ *    عملیاتی در لایهٔ Service (requireCap/requireRole) جداگانه enforce
+ *    می‌شود — فالبک اینجا دسترسی نقش نمی‌دهد.
  */
 final class StateMachine
 {
