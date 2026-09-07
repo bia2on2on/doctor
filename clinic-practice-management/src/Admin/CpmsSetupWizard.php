@@ -338,11 +338,15 @@ final class CpmsSetupWizard
             <p>کاربران، نقش‌ها، مجوزهای پیش‌فرض و مجوزهای پیشرفته را می‌توانید از صفحهٔ «کاربران و دسترسی‌ها» مدیریت کنید.</p>
             <p>تعداد کاربران دارای نقش‌های CPMS/ادمین: <strong><?php echo esc_html((string) $users); ?></strong></p>
             <ul>
-                <li><strong>نقش‌های پیش‌فرض:</strong> مدیر کلینیک (cpms_config)، منشی، پزشک، حسابدار، بیمار.</li>
+                <li><strong>نقش‌های پیش‌فرض:</strong> مدیر کلینیک (cpms_config)، منشی، پزشک، بیمار.</li>
                 <li>مجوزهای پیش‌فرض انسانی و قابل‌فهم هستند؛ مجوزهای پیشرفته به‌صورت جمع‌شده و با توضیح فارسی است.</li>
-                <li>هیچ تغییر مجوزی بدون ثبت در Audit انجام نمی‌شود و امکان ارتقاء غیرمجاز وجود ندارد.</li>
+                <li>ایجاد/مدیریت پرسنل از صفحهٔ «کاربران و دسترسی‌ها» انجام می‌شود؛ نقش administrator قابل انتساب نیست (جلوگیری از ارتقاء غیرمجاز).</li>
+                <li>هیچ تغییر مجوزی بدون ثبت در Audit انجام نمی‌شود.</li>
             </ul>
-            <p><a class="button" href="<?php echo esc_url(admin_url('admin.php?page=cpms-roles')); ?>">رفتن به «کاربران و دسترسی‌ها»</a></p>
+            <p>
+                <a class="button" href="<?php echo esc_url(admin_url('admin.php?page=cpms-staff')); ?>">رفتن به «کاربران و دسترسی‌ها»</a>
+                <a class="button" href="<?php echo esc_url(admin_url('admin.php?page=cpms-roles')); ?>">مجوزهای پیشرفته</a>
+            </p>
         </div>
         <?php
         self::formTag('users', 'ادامه');

@@ -11,6 +11,7 @@ use ClinicCore\Admin\PatientPortalPage;
 use ClinicCore\Admin\PrescriptionPrintPage;
 use ClinicCore\Admin\RoleCapabilitiesPage;
 use ClinicCore\Admin\SettingsAdmin;
+use ClinicCore\Admin\StaffManagementPage;
 use ClinicCore\Admin\SystemPage;
 use ClinicCore\Admin\DoctorDashboardPage;
 use ClinicCore\Admin\DoctorHandwritingPage;
@@ -193,6 +194,7 @@ final class App
         // Admin UX — منوی Top-Level «مدیریت مطب» + داشبورد + IA (Chunk A)
         CpmsAdminMenu::register();
         CpmsSetupWizard::register(); // Chunk B — راه‌اندازی گام‌به‌گام (self-service, resumable)
+        StaffManagementPage::register(); // Chunk C — کاربران و دسترسی‌ها (staff/user management)
 
         SettingsAdmin::register();
         SystemPage::register();
