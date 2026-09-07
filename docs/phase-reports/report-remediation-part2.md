@@ -37,7 +37,7 @@ Part 3 پیشنهادی: **UI گزارش‌ها (P4)** — ۱۲ گزارش backe
 
 ## چک‌لیست توقف Part (§100)
 
-- [ ] CI سبز روی pushed commit (پس از push تکمیل می‌شود)
+- [x] CI سبز روی pushed commit `4d5dcf7` — ۱۴/۱۴ (Integration ۳۱۵ تست/۰ شکست، Unit 8.1–8.4، Pilot/Staging، Closure)
 - [x] تست‌ها نوشته‌شده (اجرای نهایی با CI)
 - [x] Security — سه‌لایه مجوز (cap/nonce/مالکیت) + Audit همه تغییرات + بدون PHI در لاگ
 - [x] Documentation synchronized (user-guide، CHANGELOG، agent-guide، این گزارش)

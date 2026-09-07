@@ -481,6 +481,7 @@ final class XxxService {
 - **CI:** ✅ سبز کامل ۱۴/۱۴ روی `05d50ed` — Integration run 34090300269 (۳۰۷ تست، ۱۱ تست جدید سبز؛ یک شکست اولیه در RoleCapabilitiesOverrideTest به‌دلیل مقایسه ترتیبی به‌جای مجموعه‌ای «بازگشت به پیش‌فرض» → root-cause fix در 05d50ed)؛ Unit 8.1–8.4 + Pilot/Staging Gate + Closure Gate (run 34090297534/34090297520) — همه pass. Closure Gate نشان داد WP 6.4/6.5/6.6 از قبل در Gate پوشش دارد (اصلاح P7 ممیزی).
 - **تصمیمات درون‌فازی:** ① Scope پزشک در Service نه Controller (P-1)؛ ② «Override در بکاپ cpms_* فعلی نمی‌آید — fail-safe به پیش‌فرض» در گزارش ثبت شد؛ ③ Cap جدید نسخه‌های آینده برای نقش Override-دار خودکار فعال نمی‌شود (قابل‌پیش‌بینی بودن)؛ ④ P13 (Notes بدون optimistic locking) به‌عنوان رفتار عمدی + ADR آینده ثبت شد.
 - **موارد باز:** Part 2 پیشنهادی = UI پزشک/برنامه هفتگی (P1) + چاپ نسخه (P12)؛ Part 3 = UI گزارش‌ها (P4)؛ Part 4 = MariaDB/WP6.4 در CI (P6/P7) + i18n (P9) + JS/CSS جداسازی (P11)؛ Part 5 = پورتال بیمار (P3 — نیازمند تصمیم محصول). **توقف تا تأیید کارفرما.**
+- **CI (نهایی):** ✅ سبز ۱۴/۱۴ روی `4d5dcf7` — Integration WP6.7/MySQL8 = **۳۱۵ تست / ۰ شکست** (۸ تست جدید Part 2 سبز)؛ Unit 8.1–8.4 + Pilot/Staging + Closure همه pass (run 34093548834 و 34093539362). یک راند شکست (۳۱۵/۱E+3F) با ریشه‌یابی از کامنت خودکار PR: باگ واقعی voidPrescription + join users + assert جابه‌جای تست → کامیت 4d5dcf7.
 - **وضعیت tree:** clean بعد از کامیت.
 
 ### [2026-09-07 ~07:40 UTC] — ایجنت Arena — Remediation Part 2: Setup UI پزشک/برنامه (P1) + چاپ نسخه (P12)
