@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Infrastructure\Db;
 
+use RuntimeException;
 use wpdb;
 
 /**
@@ -11,11 +12,35 @@ use wpdb;
  *
  * - همه Queryها با prepare (تثبیت NFR-SEC-3 — بدون Interpolation مقدار).
  * - transactional() برای عملیات حیاتی (رزرو، پرداخت، complete/checkout).
+ *
+ * Strict mode (F1-2): به‌طور پیش‌فرض خاموش (رفتار soft — خطای SQL →
+ * false/0/NULL، مناسب مسیرهای عملیاتی که شکستشان نباید request را
+ * بکِشد). با setStrict(true) هر خطای SQL بلافاصله RuntimeException
+ * می‌دهد — MigrationRunner دورِ هر Migration آن را روشن می‌کند تا
+ * Migration شکست‌خورده هرگز «موفق + version ثبت‌شده» به نظر نرسد.
  */
 final class CpmsDb
 {
+    private bool $strict = false;
+
     public function __construct(private readonly wpdb $wpdb, private string $prefix = 'cpms_')
     {
+    }
+
+    public function setStrict(bool $strict): void
+    {
+        $this->strict = $strict;
+    }
+
+    /**
+     * فقط در Strict mode: هر خطای SQLِ فراخوانیِ آخر باید Exception شود
+     * (wpdb خطا را در last_error نگه می‌دارد و در موفقیت پاک می‌کند).
+     */
+    private function ensureNoSqlError(): void
+    {
+        if ($this->strict && $this->wpdb->last_error !== '') {
+            throw new RuntimeException('SQL error: ' . $this->wpdb->last_error);
+        }
     }
 
     /**
@@ -48,16 +73,21 @@ final class CpmsDb
 
     public function query(string $sql, array $params = []): bool
     {
-        return $this->wpdb->query($this->prepare($sql, $params)) !== false; // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $ok = $this->wpdb->query($this->prepare($sql, $params)) !== false; // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $this->ensureNoSqlError();
+
+        return $ok;
     }
 
     /**
      * اجرای نوشتاری با برگرداندن تعداد سطرهای اثرگرفته (برخلاف query که bool است).
-     * خطای SQL → 0 (رفتار soft؛ برای لاگ/پاک‌سازی‌های دوره‌ای کافی است).
+     * خطای SQL → 0 (رفتار soft؛ برای لاگ/پاک‌سازی‌های دوره‌ای کافی است) —
+     * مگر در Strict mode که Exception می‌دهد.
      */
     public function execute(string $sql, array $params = []): int
     {
         $result = $this->wpdb->query($this->prepare($sql, $params)); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $this->ensureNoSqlError();
 
         return is_int($result) ? $result : 0;
     }
@@ -68,6 +98,7 @@ final class CpmsDb
     public function fetchRow(string $sql, array $params = []): ?array
     {
         $row = $this->wpdb->get_row($this->prepare($sql, $params), ARRAY_A); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $this->ensureNoSqlError();
 
         return $row === null ? null : (array) $row;
     }
@@ -78,13 +109,17 @@ final class CpmsDb
     public function fetchAll(string $sql, array $params = []): array
     {
         $rows = $this->wpdb->get_results($this->prepare($sql, $params), ARRAY_A); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $this->ensureNoSqlError();
 
         return is_array($rows) ? array_map(static fn ($r) => (array) $r, $rows) : [];
     }
 
     public function fetchValue(string $sql, array $params = []): mixed
     {
-        return $this->wpdb->get_var($this->prepare($sql, $params)); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $value = $this->wpdb->get_var($this->prepare($sql, $params)); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $this->ensureNoSqlError();
+
+        return $value;
     }
 
     /**
@@ -94,7 +129,10 @@ final class CpmsDb
     {
         // wpdb::insert در موفقیت int (تعداد ردیف) و در خطا false برمی‌گرداند —
         // نه bool؛ بدون این نرمال‌سازی هر insert موفق TypeError می‌داد.
-        return $this->wpdb->insert($this->table($table), $data) !== false; // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+        $ok = $this->wpdb->insert($this->table($table), $data) !== false; // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+        $this->ensureNoSqlError();
+
+        return $ok;
     }
 
     /**
@@ -110,6 +148,7 @@ final class CpmsDb
             array_fill(0, count($data), '%s'),
             array_fill(0, count($where), '%s')
         );
+        $this->ensureNoSqlError();
 
         return (int) $result;
     }
@@ -124,6 +163,7 @@ final class CpmsDb
             $where,
             array_fill(0, count($where), '%s')
         );
+        $this->ensureNoSqlError();
 
         return (int) $result;
     }

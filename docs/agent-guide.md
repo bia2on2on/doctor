@@ -523,3 +523,12 @@ final class XxxService {
 - **ریشه:** `CpmsDb::query()` فقط **bool** برمی‌گرداند؛ در up()ِ 0009 probe با `query("SHOW COLUMNS …")` نوشته شده بود → `empty(true) === false` → شرط «ستون موجود است» همیشگی → **ALTER هیچ‌وقت اجرا نمی‌شد** ولی version با موفقیت ثبت می‌شد (به همین دلیل همهٔ Gateها — که فقط version را پین می‌کنند — سبز ماندند!). دقیقاً همان کلاس خطایی که F1-2 (silent-fail migration) هدف دارد.
 - **رفع:** probe با `fetchRow()` + `$col === null` (الگوی استاندارد ماست: 0004/0005/0006) + تست جدید `testWindowSecColumnAddedByMigration` (وجود ستون + int unsigned + default 3600). اسکن کل src: نمونهٔ دیگری از این الگوی نادرست وجود ندارد.
 - **درس برای گروه 2 (F1-2):** strict mode روی MigrationRunner عیناً همین کلاس شکست (SQL ناموفق + version ثبت‌شده) را در آینده مسدود می‌کند.
+
+### [2026-09-07 ~12:00 UTC] — ایجنت Arena — F1 Remediation گروه 2: رفع F1-2 (P0) — Migration Fail-loud
+- **فاز/محدوده:** گروه 2 از ۷. پیاده‌سازی + تست محلی انجام شد؛ push/CI در انتظار بازیابی اتصال GitHub (توکن GH_TOKEN اعتبار خود را از دست داد — 401 Bad credentials).
+- **اقدامات:**
+  - **`CpmsDb`:** `setStrict(bool)` + `ensureNoSqlError()` (در Strict mode: `$wpdb->last_error` غیرخالی → `RuntimeException` با پیام خطای SQL) — فراخوانی در انتهای query/execute/fetchRow/fetchAll/fetchValue/insert/update/delete. پیش‌فرض soft (رفتار سایر مسیرها دست‌نخورده).
+  - **`MigrationRunner`:** در `migrate()` و `rollbackOne()` — `setStrict(true)` قبل از transaction و `setStrict(false)` در `finally`. چون INSERTِ version داخل همان closure تراکنش است، در throw: نه version ثبت می‌شود (rollback) و نه Migrationهای بعدی اجرا می‌شوند.
+  - **تست رگرسیون جدید (Integration):** `testFailingMigrationAbortsAndIsNotRecorded` — MigrationRunner با دایرکتوری temp + Migration آگاهانهٔ شکست‌خورد (`SELECT * FROM جدولِ ناموجود`): assert RuntimeException با «SQL error» + version در `applied()` نیست + Migration خوبِ بعدی اجرا نشده.
+- **ارتباط با گروه 1:** دقیقاً همین کلاس خطا در Migration 0009 رخ داده بود (ALTER بی‌صدا رد شد + version ثبت شد)؛ از این پس چنین شکستی در CI/Production fail-loud است.
+- **تست محلی (php-wasm 8.5):** lint 3 فایل ✓ + Unit 285/0F. **Integration: CI (در انتظار push).**

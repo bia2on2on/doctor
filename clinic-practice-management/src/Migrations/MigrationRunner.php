@@ -14,6 +14,9 @@ use RuntimeException;
  * - فایل‌های src/Migrations/YYYY_MM_DD_NNNN_*.php — ترتیب نام‌گذاری = ترتیب اجرا.
  * - هر فایل آرایه برمی‌گرداند: ['version'=>..., 'description'=>..., 'up'=>fn(CpmsDb):void, 'down'=>fn(CpmsDb):void]
  * - اجرا در Transaction + ثبت در cpms_schema_migrations (idempotent).
+ * - Fail-loud (F1-2): دورِ up()/down()، CpmsDb در Strict mode است — هر خطای
+ *   SQL → RuntimeException + Rollback؛ version Migration شکست‌خورده هرگز
+ *   ثبت (یا حذف) نمی‌شود و Migrationهای بعدی اجرا نمی‌شوند.
  * - Rollback: down() — فقط برای Migrationهای امن؛ Migrationهای حساس (مالی/بالینی)
  *   باید قبل از اجرا Backup داشته باشند (فرایند F9/DR).
  */
@@ -82,14 +85,23 @@ final class MigrationRunner
             }
 
             $this->op->info('MIGRATION_START', ['version' => $version]);
-            $this->db->transactional(function () use ($migration, $version) {
-                ($migration['up'])($this->db);
-                $this->db->insert(self::SCHEMA_TABLE, [
-                    'version' => $version,
-                    'description' => (string) ($migration['description'] ?? ''),
-                    'applied_at' => $this->db->nowUtcSql(),
-                ]);
-            });
+
+            // F1-2: Fail-loud — هر خطای SQL در up() باید Migration واقعی را
+            // شکست دهد و version ثبت نشود (transaction rollback + throw).
+            // قبلاً خطاهای SQL soft-fail می‌شدند و Migration «موفق» ثبت می‌شد.
+            $this->db->setStrict(true);
+            try {
+                $this->db->transactional(function () use ($migration, $version) {
+                    ($migration['up'])($this->db);
+                    $this->db->insert(self::SCHEMA_TABLE, [
+                        'version' => $version,
+                        'description' => (string) ($migration['description'] ?? ''),
+                        'applied_at' => $this->db->nowUtcSql(),
+                    ]);
+                });
+            } finally {
+                $this->db->setStrict(false);
+            }
 
             $appliedNow[] = $version;
             $this->op->info('MIGRATION_DONE', ['version' => $version]);
@@ -120,13 +132,20 @@ final class MigrationRunner
                 throw new RuntimeException("Migration {$last['version']} has no down() — manual restore from backup required");
             }
 
-            $this->db->transactional(function () use ($migration, $last) {
-                ($migration['down'])($this->db);
-                $this->db->query(
-                    'DELETE FROM ' . $this->db->table(self::SCHEMA_TABLE) . ' WHERE version = %s',
-                    [$last['version']]
-                );
-            });
+            // F1-2: همان Fail-loud برای down() (خطای SQL در rollback نباید
+            // version را «حذف‌شده» نشان دهد).
+            $this->db->setStrict(true);
+            try {
+                $this->db->transactional(function () use ($migration, $last) {
+                    ($migration['down'])($this->db);
+                    $this->db->query(
+                        'DELETE FROM ' . $this->db->table(self::SCHEMA_TABLE) . ' WHERE version = %s',
+                        [$last['version']]
+                    );
+                });
+            } finally {
+                $this->db->setStrict(false);
+            }
 
             return $last['version'];
         }
