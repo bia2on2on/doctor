@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace ClinicCore\Bootstrap;
 
+use ClinicCore\Admin\PatientPortalPage;
+use ClinicCore\Admin\RoleCapabilitiesPage;
 use ClinicCore\Admin\SettingsAdmin;
 use ClinicCore\Admin\SystemPage;
 use ClinicCore\Admin\DoctorDashboardPage;
@@ -184,6 +186,8 @@ final class App
 
         SettingsAdmin::register();
         SystemPage::register();
+        RoleCapabilitiesPage::register(); // ADR-0030 / Part 1 — مدیریت دسترسی نقش‌ها
+        PatientPortalPage::register(); // ADR-0030 / Part 1 — مقصد بیمار بعد از OTP
         SmsSettingsPage::register();
         SecretaryQueuePage::register();
         SecretaryFinancePage::register();

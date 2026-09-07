@@ -90,6 +90,15 @@ final class RolesAndCapabilities
     // ===== SMS (فنی — ADR-0025) =====
     public const SMS_CONFIG = 'cpms_sms_config';
 
+    /**
+     * ADR-0030 — Override عمدیِ مدیریتی روی Capهای نقش (Option).
+     * ساختار: array<string(role), list<string(caps)>> — فقط نقش‌های CPMS و فقط
+     * زیرمجموعه ALL_CAPS. وقتی برای نقشی Override ثبت شده باشد، Self-healing
+     * به‌جای Template پیش‌فرض کلاس از آن پیروی می‌کند (ادغام تعمدی ادمین =
+     * «دستکاری مخرب» نیست و بی‌صدا پاک نمی‌شود).
+     */
+    public const OPTION_OVERRIDE = 'cpms_role_caps_override';
+
     /** فهرست کامل (مرجع خودکار برای تست TP-10). */
     public const ALL_CAPS = [
         self::PATIENT_READ, self::PATIENT_CREATE, self::PATIENT_UPDATE, self::PATIENT_ARCHIVE, self::PATIENT_MERGE,
@@ -144,8 +153,8 @@ final class RolesAndCapabilities
         }
 
         self::registerRole(self::ROLE_PATIENT, 'بیمار', ['read' => true]);
-        self::registerRole(self::ROLE_SECRETARY, 'منشی مطب', array_fill_keys(self::SECRETARY_CAPS, true));
-        self::registerRole(self::ROLE_DOCTOR, 'پزشک', array_fill_keys(self::DOCTOR_CAPS, true));
+        self::registerRole(self::ROLE_SECRETARY, 'منشی مطب', self::capsMap(self::ROLE_SECRETARY));
+        self::registerRole(self::ROLE_DOCTOR, 'پزشک', self::capsMap(self::ROLE_DOCTOR));
 
         // Administrator وردپرس: فقط فنی — بدون Medical/Audit/Export (P-3)
         $admin = get_role('administrator');
@@ -180,11 +189,108 @@ final class RolesAndCapabilities
             }
         }
         // Self-healing کامل (TP-10): هر Capability با پیشوند cpms_ خارج از فهرست
-        // مجاز این نقش (مثلاً drift دستی/قدیمی) هم پاک می‌شود — Least Privilege.
+        // مجازِ این نقش (Template پیش‌فرض یا Override عمدی ادمین — ADR-0030)
+        // هم پاک می‌شود — Least Privilege.
         foreach (array_keys($existing->capabilities) as $cap) {
             if (is_string($cap) && str_starts_with($cap, 'cpms_') && !array_key_exists($cap, $caps)) {
                 $existing->remove_cap($cap);
             }
         }
+    }
+
+    // ================= ADR-0030 — Override مدیریتی Capها =================
+
+    /**
+     * نقشه موثر Capهای یک نقش: Override ذخیره‌شده مقدم بر Template کلاس است.
+     *
+     * @return array<string, bool>
+     */
+    public static function capsMap(string $role): array
+    {
+        $defaults = match ($role) {
+            self::ROLE_DOCTOR => self::DOCTOR_CAPS,
+            self::ROLE_SECRETARY => self::SECRETARY_CAPS,
+            default => [],
+        };
+        $overrides = self::overrides();
+        if (isset($overrides[$role]) && is_array($overrides[$role])) {
+            $clean = self::sanitizeCapList($overrides[$role]);
+
+            return array_fill_keys($clean, true);
+        }
+
+        return array_fill_keys($defaults, true);
+    }
+
+    /**
+     * فهرست Overrideهای فعلی (role => caps) — بدون وابستگی به WP در Unit.
+     *
+     * @return array<string, list<string>>
+     */
+    public static function overrides(): array
+    {
+        if (!function_exists('get_option')) {
+            return [];
+        }
+        $option = get_option(self::OPTION_OVERRIDE, []);
+
+        return is_array($option) ? $option : [];
+    }
+
+    /**
+     * ثبت/به‌روزرسانی Override عمدی یک نقش توسط مدیریتی با `cpms_config`.
+     *
+     *  - فقط نقش‌های CPMS؛ فقط زیرمجموعه ALL_CAPS (باقی بدون خطا فیلتر می‌شود).
+     *  - نقش بیمار همیشه بدون Cap باقی می‌ماند (P-5 — Ownership فقط).
+     *  - اگر فهرست ارسالی == Template پیش‌فرض باشد، Override حذف می‌شود
+     *    (Semantics: «بازگشت به پیش‌فرض») تا Option رشد بی‌مورد نکند.
+     *
+     * @param list<string> $caps
+     */
+    public static function setRoleCaps(string $role, array $caps): bool
+    {
+        if (!in_array($role, [self::ROLE_SECRETARY, self::ROLE_DOCTOR], true)) {
+            return false; // Patient: بدون Cap (P-5) — قابل ویرایش نیست
+        }
+
+        $clean = self::sanitizeCapList($caps);
+        $overrides = self::overrides();
+        $defaults = match ($role) {
+            self::ROLE_DOCTOR => self::DOCTOR_CAPS,
+            default => self::SECRETARY_CAPS,
+        };
+
+        if ($clean === $defaults) {
+            unset($overrides[$role]);
+        } else {
+            $overrides[$role] = $clean;
+        }
+
+        if (function_exists('update_option')) {
+            update_option(self::OPTION_OVERRIDE, $overrides, true);
+        }
+        self::register();
+
+        return true;
+    }
+
+    /**
+     * پاک‌سازی و نرمال‌سازی فهرست Cap: فقط اعضای ALL_CAPS، یکتا، مرتب.
+     *
+     * @param array<array-key, mixed> $caps
+     * @return list<string>
+     */
+    public static function sanitizeCapList(array $caps): array
+    {
+        $clean = [];
+        foreach ($caps as $cap) {
+            if (is_string($cap) && in_array($cap, self::ALL_CAPS, true)) {
+                $clean[$cap] = true;
+            }
+        }
+        $list = array_keys($clean);
+        sort($list);
+
+        return $list;
     }
 }

@@ -467,3 +467,18 @@ final class XxxService {
 - **آزمون پذیرش ۱۰۰-راهی (§27/§28):** `SlotCapacityOneHundredWayTest` — ۱۰۰ فرایند همزمان با اتصال مستقل MySQL روی مسیر واقعی `SlotRepository::atomicBook`؛ ظرفیت ۱ → دقیقاً ۱ برنده؛ ظرفیت ۳ → دقیقاً ۳ (در CI اجرا میشود؛ این sandbox MySQL ندارد).
 - **واحدتست محلی (WASM PHP 8.2):** ۲۸۵ تست، ۱۶٬۶۶۱ اِسert، ۰ شکست (۸ خطای محیطی شناختهشده 32-bit؛ ۸ skip نیازمند sodium). **CI سبز ۵/۵** (Unit 8.1–8.4 + Integration WP6.7/MySQL8 — run 34037362222؛ شامل 100-way پذیرش و تستهای پنجرهٔ فعالسازی). اجرای محلی WP/MySQL در این sandbox ممکن نیست (BLOCKED_BY_ENVIRONMENT).
 - **گزارش F10 و توقف تا تأیید کارفرما** طبق §49–§51 در ادامه همین لاگ ثبت خواهد شد.
+
+### [2026-09-07 ~06:40 UTC] — ایجنت Arena — ممیزی مستقل کامل + Remediation Part 1 (P2/P5/P8/P10)
+
+- **فاز/محدوده:** پس از ممیزی مستقل فقط-خواندنی کل کد روی `6e42519` (خواسته کارفرما: «همه مشکلات را پارت‌به‌پارت رفع کن») — Part 1 = ۴ ایراد از ۱۳.
+- **اقدامات:**
+  - **P2 (دسترسی نقش‌ها):** ADR-0030 — Override مدیریتی `cpms_role_caps_override` + صفحه «CPMS (دسترسی‌ها)» (`cpms_config` + Nonce + Audit `ROLE_PERMISSION_CHANGED`/`RESET`)؛ Self-healing اکنون مبنای Override را محترم می‌شمارد؛ خارج از فهرست همچنان پاک می‌شود (TP-10 سالم). نقش بیمار غیرقابل‌ویرایش (P-5).
+  - **P8 (Scope صف پزشک):** `VisitService::today/eventsSince/lastEventId` برای نقش doctor → فقط ویزیت‌های Clinician خودش (بدون اتصال = هیچ)؛ Repository سه متد با پارامتر اختیاری `?int $clinicianId` — بدون Schema change. مطابق Master Context §8.
+  - **P5 (مقصد بیمار):** صفحه «نوبت‌های من» (Ownership-only از مسیر `listMine`) + `login_redirect` + مخفی‌کردن Admin Bar + هدایت GETهای wp-admin — فقط برای «بیمار خالص» (multi-role ستادی مستثنی).
+  - **P10:** «CPMS (فنی)» → «CPMS (فنی و لاگ)».
+  - Docs: ADR-0030، permission-matrix v1.5، user-guide، CHANGELOG 1.0.1، `report-remediation-part1.md`.
+- **کامیت‌ها:** روی `arena/01a077e9-doctor` (لیست در PR) — کد + تست + مستندات.
+- **CI:** پس از push ثبت می‌شود (این ورودی در کامیت دوم با run-id به‌روز می‌شود).
+- **تصمیمات درون‌فازی:** ① Scope پزشک در Service نه Controller (P-1)؛ ② «Override در بکاپ cpms_* فعلی نمی‌آید — fail-safe به پیش‌فرض» در گزارش ثبت شد؛ ③ Cap جدید نسخه‌های آینده برای نقش Override-دار خودکار فعال نمی‌شود (قابل‌پیش‌بینی بودن)؛ ④ P13 (Notes بدون optimistic locking) به‌عنوان رفتار عمدی + ADR آینده ثبت شد.
+- **موارد باز:** Part 2 پیشنهادی = UI پزشک/برنامه هفتگی (P1) + چاپ نسخه (P12)؛ Part 3 = UI گزارش‌ها (P4)؛ Part 4 = MariaDB/WP6.4 در CI (P6/P7) + i18n (P9) + JS/CSS جداسازی (P11)؛ Part 5 = پورتال بیمار (P3 — نیازمند تصمیم محصول). **توقف تا تأیید کارفرما.**
+- **وضعیت tree:** clean بعد از کامیت.

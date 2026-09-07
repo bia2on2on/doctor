@@ -7,7 +7,7 @@ namespace ClinicCore\Admin;
 use ClinicCore\Bootstrap\App;
 
 /**
- * صفحه «CPMS (فنی)» در wp-admin — فقط برای cpms_config (فنی).
+ * صفحه «CPMS (فنی و لاگ)» در wp-admin — فقط برای cpms_config (فنی).
  *
  * هیچ داده پزشکی اینجا نمایش داده نمی‌شود (ADR-0002).
  * V1: وضعیت + تنظیمات کلیدی؛ فرم کامل تنظیمات در F2+.
@@ -22,7 +22,8 @@ final class SettingsAdmin
 
     public static function menu(): void
     {
-        add_management_page('CPMS (فنی)', 'CPMS (فنی)', 'cpms_config', 'cpms-settings', [self::class, 'render']);
+        // نام شفاف‌تر (ممیزی P10): تمایز از «CPMS (سیستم)» — مجوز/بکاپ/Health
+        add_management_page('CPMS (فنی و لاگ)', 'CPMS (فنی و لاگ)', 'cpms_config', 'cpms-settings', [self::class, 'render']);
     }
 
     public static function render(): void

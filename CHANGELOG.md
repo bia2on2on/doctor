@@ -2,6 +2,22 @@
 
 تمام تغییرات مهم پروژه در این فایل ثبت می‌شود. قالب: [Keep a Changelog](https://keepachangelog.com/)؛ نسخه‌بندی: [SemVer](https://semver.org/).
 
+## [1.0.1] — 2026-09-07 (Remediation Part 1 — ممیزی مستقل 6e42519)
+
+### Added
+- **مدیریت دسترسی نقش‌ها (ADR-0030):** صفحه «CPMS (دسترسی‌ها)» در ابزارها — ماتریس Role × Capability فارسی با گروه‌بندی و نشانگر Cap حساس (P-11)؛ ذخیره از مسیر Override عمدی با Audit `ROLE_PERMISSION_CHANGED`/`ROLE_PERMISSION_RESET`؛ دکمه «بازگشت به پیش‌فرض». Self-healing به Override احترام می‌گذارد (Least Privilege برای خارج از فهرست برقرار است).
+- **Console بیمار «نوبت‌های من»:** مقصد فارسی بیمار بعد از OTP (نوبت‌های پیش‌رو + تاریخچه با جلالی)؛ فقط داده خودش (Ownership)؛ login_redirect + مخفی‌شدن Admin Bar + هدایت GETهای wp-admin — فقط برای «بیمار خالص».
+- تست‌های Integration جدید: `DoctorQueueScopeTest` (۳)، `RoleCapabilitiesOverrideTest` (۵)، `PatientPortalTest` (۳).
+
+### Security
+- **Scope صف برای پزشک (ممیزی P8):** پزشکِ متصل در `/queue`، `rt/queue` و آمار داشبورد فقط ویزیت‌های خودش را می‌بیند (صف + فید Real-time + ETag + آمار)؛ پزشک بدون اتصال = هیچ؛ منشی بدون تغییر. مطابق Master Context §8 — «بدون دید ضمنی داده پزشک دیگر».
+
+### Changed
+- منوی «CPMS (فنی)» به «CPMS (فنی و لاگ)» تغییر نام یافت (تمایز از «CPMS (سیستم)» — ممیزی P10).
+
+### Docs
+- ADR-0030، permission-matrix v1.5، user-guide (بخش دسترسی‌ها + بیمار)، گزارش `report-remediation-part1.md`، لاگ agent-guide.
+
 ## [1.0.0] — 2026-09-06 (Release Candidate — Pilot/Staging Gate)
 
 ### نسخه ۱.۰ — فازهای F1 تا F9 + Pilot/Staging Readiness Gate
