@@ -11,6 +11,9 @@
 - **چاپ نسخه (ADR-0031):** دکمه «🖨️ چاپ» کنار هر نسخه در داشبورد پزشک — نمای چاپی فارسی/RTL (سربرگ مطب، بیمار/MRN/سن، تاریخ جلالی، شکایت اصلی، جدول اقلام، جای امضا) با واترمارک «پیش‌نویس/ابطال‌شده»؛ مجوز `cpms_rx_read` + مالکیت ویزیت + Audit `PRESCRIPTION_PRINTED`.
 - تست‌های Integration جدید: `DoctorQueueScopeTest` (۳)، `RoleCapabilitiesOverrideTest` (۵)، `PatientPortalTest` (۳)، `ClinicianRepositoryTest` (۳)، `PrescriptionPrintTest` (۵).
 
+### Fixed
+- **باگ واقعی پنهان در `voidPrescription` (کشف توسط تست جدید Part 2):** متغیر `$reason` به closure تراکنش منتقل نمی‌شد — هر «ابطال نسخه» در تولید با خطا شکست می‌خورد (هیچ تست قبلی این مسیر را پوشش نمی‌داد). اکنون رفع + تست ابطال/چاپ.
+
 ### Security
 - **Scope صف برای پزشک (ممیزی P8):** پزشکِ متصل در `/queue`، `rt/queue` و آمار داشبورد فقط ویزیت‌های خودش را می‌بیند (صف + فید Real-time + ETag + آمار)؛ پزشک بدون اتصال = هیچ؛ منشی بدون تغییر. مطابق Master Context §8 — «بدون دید ضمنی داده پزشک دیگر».
 

@@ -494,3 +494,9 @@ final class XxxService {
 - **تصمیمات درون‌فازی:** ① Deactivate-only برای clinician؛ ② برنامه هفتگی از ScheduleService نه SQL مستقیم؛ ③ چاپ فقط پزشکِ خودش؛ ④ «ذخیره روز» = update/create خودکار با u_sched_day؛ ⑤ هر دو قلم CRITICAL ممیزی اکنون بسته — باقی Partها = IMPORTANT/UX.
 - **موارد باز:** Part 3 پیشنهادی = UI گزارش‌ها (P4)؛ Part 4 = MariaDB/WP matrix + i18n + JS/CSS؛ Part 5 = پورتال بیمار (تصمیم محصول). **توقف تا تأیید کارفرما.**
 - **وضعیت tree:** clean بعد از کامیت.
+
+#### پیوست Part 2 — رفع شکست‌های راند اول CI (ریشه‌یابی از کامنت PR)
+- **باگ واقعی تولیدی (کشف تست جدید):** `ClinicalService::voidPrescription` — `$reason` در `use` closure تراکنش نبود → هر ابطال نسخه Warning/Fatal (خط ۴۳۴). هیچ تست قبلی ابطال نسخه را نپوشانده بود. Fix + تست.
+- `ClinicianRepository::listAll` — `table('users')` پیشوند cpms_ می‌گرفت (`{wp}_cpms_users` ناموجود) → `dbPrefix().'users'` (الگوی BookingService).
+- تست `testUserLinking...` — دو assert با Semantics جابه‌جا نوشته شده بود (خودِ تست اشتباه بود، نه کد) → اصلاح + مستندسازی Semantics در کامنت.
+- in-session debug workaround: لاگ job از API مسدود است (results-receiver) — جزئیات شکست از کامنت خودکار PR خوانده شد (مکانیزم موجود ci.yml «Post failures to PR»).

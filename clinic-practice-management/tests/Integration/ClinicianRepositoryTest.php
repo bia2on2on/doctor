@@ -73,9 +73,10 @@ final class ClinicianRepositoryTest extends WP_UnitTestCase
         $second = $this->repo->create(['full_name' => 'پزشک دوم']);
 
         // پیش از انتساب: تعارض باید قابل تشخیص باشد (صفحه با پیام فارسی رد می‌کند)
+        // Semantics: TRUE = کاربر به پزشکی «غیر از» exceptClinicianId متصل است (تعارض)
         $this->assertTrue($this->repo->isUserLinked($userId));
-        $this->assertTrue($this->repo->isUserLinked($userId, $first), 'خودِ همان پزشک استثناست');
-        $this->assertFalse($this->repo->isUserLinked($userId, $second));
+        $this->assertFalse($this->repo->isUserLinked($userId, $first), 'خودِ همان پزشک استثناست');
+        $this->assertTrue($this->repo->isUserLinked($userId, $second));
 
         // انتساب همان کاربر به پزشک دوم در سطح DB توسط UNIQUE (Migration 0007) رد می‌شود
         $this->expectException(\RuntimeException::class);

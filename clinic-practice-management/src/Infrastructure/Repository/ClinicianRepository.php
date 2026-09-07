@@ -35,7 +35,7 @@ final class ClinicianRepository
             ' (SELECT COUNT(*) FROM ' . $this->db->table('cpms_schedule') . ' s WHERE s.clinician_id = c.id AND s.is_active = 1) AS schedule_days,' .
             ' u.user_login AS wp_user_login' .
             ' FROM ' . $this->db->table('cpms_clinicians') . ' c' .
-            ' LEFT JOIN ' . $this->db->table('users') . ' u ON u.ID = c.wp_user_id' .
+            ' LEFT JOIN ' . $this->db->dbPrefix() . 'users u ON u.ID = c.wp_user_id' .
             ' WHERE c.clinic_id = 1' . $where .
             ' ORDER BY c.is_active DESC, c.full_name ASC LIMIT 500'
         );

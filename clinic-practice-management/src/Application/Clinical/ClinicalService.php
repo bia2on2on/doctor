@@ -422,7 +422,7 @@ final class ClinicalService
             throw ClinicalException::of('CLINIC_VALIDATION_FAILED', 'دلیل ابطال الزامی است', 422);
         }
 
-        $rx = $this->db->transactional(function () use ($prescriptionId): array {
+        $rx = $this->db->transactional(function () use ($prescriptionId, $reason): array {
             $rx = $this->prescriptions->findForUpdate($prescriptionId);
             if ($rx === null) {
                 throw ClinicalException::of('CLINIC_NOT_FOUND', 'نسخه یافت نشد', 404);
