@@ -32,7 +32,7 @@ env:
 
 jobs:
   acceptance:
-    name: Real WP Acceptance (prefix: ${{ matrix.prefix }})
+    name: "Real WP Acceptance (prefix ${{ matrix.prefix }})"
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
