@@ -39,6 +39,10 @@ final class SetupWizardTest extends WP_UnitTestCase
 
     public function testWizardSubmenuRegisteredUnderCpmsMenu(): void
     {
+        // مانند AdminMenuTest: کاربر ادمین با cpms_config تا زیرمنو به‌دلیل loop دید
+        // `menu.php` (فیلتر current_user_can) حذف نشود.
+        $this->authorizeConfigUser();
+
         $GLOBALS['menu'] = [];
         $GLOBALS['submenu'] = [];
 
@@ -131,6 +135,7 @@ final class SetupWizardTest extends WP_UnitTestCase
     public function testWizardCompletesWhenPrerequisitesMet(): void
     {
         $adminId = $this->authorizeConfigUser();
+        $this->resetClinicians();
         $this->createActiveClinician();
 
         CpmsSetupWizard::saveClinic(App::settings(), ['clinic_name' => 'کلینیک آماده'], $adminId);
@@ -143,6 +148,7 @@ final class SetupWizardTest extends WP_UnitTestCase
     public function testWizardDoesNotCompleteWithoutClinician(): void
     {
         $adminId = $this->authorizeConfigUser();
+        $this->resetClinicians();
         CpmsSetupWizard::saveClinic(App::settings(), ['clinic_name' => 'کلینیک بدون پزشک'], $adminId);
 
         $err = $this->invokeSaveFinish($adminId);
@@ -155,6 +161,7 @@ final class SetupWizardTest extends WP_UnitTestCase
     {
         $adminId = $this->authorizeConfigUser();
         // بدون نام کلینیک، حتی با پزشک فعال → نباید تکمیل شود.
+        $this->resetClinicians();
         $this->createActiveClinician();
 
         $err = $this->invokeSaveFinish($adminId);
@@ -272,6 +279,22 @@ final class SetupWizardTest extends WP_UnitTestCase
     {
         // الگوی اثبات‌شدهٔ ClinicianRepositoryTest فقط با full_name؛ is_active پیش‌فرض 1 است.
         App::clinicianRepository()->create(['full_name' => 'دکتر آزمایشی']);
+    }
+
+    /**
+     * ایزوله‌سازی تست‌های وابسته به «تعداد پزشکان فعال»: ردیف‌های قبلی تست‌های دیگر
+     * (مثل ClinicianRepositoryTest / testWizardCompletesWhenPrerequisitesMet) به‌دلیل
+     * transaction isolation در این مجموعه ممکن است باقی بمانند؛ برای قطعیت، همهٔ پزشکان
+     * کلینیک ۱ را پیش از هر assert پاک می‌کنیم. حذف داخل تراکنش تست است و در tearDown
+     * برگردانده می‌شود.
+     */
+    private function resetClinicians(): void
+    {
+        global $wpdb;
+        $table = $wpdb->prefix . 'cpms_clinicians';
+        $wpdb->query('SET FOREIGN_KEY_CHECKS=0');
+        $wpdb->query('DELETE FROM ' . $table);
+        $wpdb->query('SET FOREIGN_KEY_CHECKS=1');
     }
 
     /**
