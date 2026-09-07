@@ -575,3 +575,7 @@ final class XxxService {
 - **Push:** ✅ — Remote SHA: **`2cebb07e0221bb5a00e8a02f55d80fad1c0a2b8a`** = local HEAD (تأیید `git ls-remote`).
 - **CI (روی `2cebb07`): ✅ سبز ۳/۳** — CI/pull_request run **34130498852** = **۶/۶ job سبز** (Unit PHP 8.1–8.4 + Integration WP6.7/MySQL8 + **Static Analysis/PHPStan L3** — اولین اجرای رسمی Gate استاتیک جدید) + Closure Gate run **34130493200** + Pilot/Staging Readiness Gate run **34130493287** (8m33s).
 - **Tree:** clean. ادامه: گروه 5 (F1-5/F1-6 — oplog retention + JobQueue::fail race guard) طبق ترتیب مصوب، در انتظار دستور کارفرما (خواستهٔ این نشست فقط تا گروه 4 بود).
+
+#### پیوست — قطع اتصال GitHub در پایان نشست (گزارش صادقانه)
+- بلافاصله بعد از push `0c8c487` و تأیید SHA ریموت، توکن GitHub (gh + git credential) باطل شد (401 Bad credentials — همان الگوی شناخته‌شدهٔ محیط Agent در گروه 2). کامیتِ این یادداشت محلی است؛ بعد از اتصال مجدد GitHub توسط کارفرما push می‌شود.
+- **شواهد CI روی `0c8c487` (HEAD نهایی):** CI = **موفق ۶/۶** (run 34131390001 — شامل Static Analysis/PHPStan L3) + Closure Gate = موفق (run 34131386018) — هر دو قبل از قطع، سبز دیده و تأیید شد. Pilot Gate (run 34131385987) در لحظهٔ قطع در حال اجرا بود؛ وضعیت نهایی‌اش از API خوانده نشد — روی `2cebb07` (کد یکسان؛ دلتا فقط ۲ فایل Markdown) Pilot سبز بود (run 34130493287، 8m33s). بعد از اتصال مجدد، کارفرما/ایجنت بعدی می‌تواند وضعیت این run را با `gh run view 34131385987` تأیید کند.
