@@ -37,7 +37,12 @@ final class CpmsAdminMenu
     public static function register(): void
     {
         add_action('admin_menu', [self::class, 'menu'], 1);
-        add_action('admin_init', [self::class, 'redirectLegacy']);
+        // Legacy redirect باید در admin_menu اجرا شود نه admin_init: چون wp-admin/menu.php
+        // در انتهای خود user_can_access_admin_page() را اجرا می‌کند و اگر صفحه اصلاً در
+        // menu ثبت نشده باشد wp_die(403) می‌دهد — این کار قبل از admin_init اتفاق می‌افتد.
+        // بنابراین redirectLegacy باید در admin_menu (قبل از آن بررسی) بتواند مسیر قدیمی را
+        // به «مدیریت مطب» هدایت کند وگرنه مدیر به جای محتوا خطای 403 می‌بیند.
+        add_action('admin_menu', [self::class, 'redirectLegacy'], 5);
         add_filter('plugin_action_links_' . self::basename(), [self::class, 'actionLinks']);
         add_action('admin_notices', [self::class, 'onboardingNotice']);
     }
