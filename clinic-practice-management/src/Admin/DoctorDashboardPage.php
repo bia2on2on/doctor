@@ -192,11 +192,20 @@ window.CPMS_DOC = <?php echo wp_json_encode($config); ?>;
     var REC_TYPES = { diet: 'رژیم', rest: 'استراحت', activity: 'فعالیت', care: 'مراقبت', lab: 'آزمایش', followup: 'پیگیری', other: 'سایر' };
     var FILE_CATS = { lab_result: 'نتیجه آزمایش', image: 'تصویر', scan: 'اسکن', document: 'مدرک', other: 'سایر' };
 
+    function apiUrl(path) {
+        // Permalink ساده: rest_url خودش شامل ?rest_route=... است — Queryِ path
+        // باید با & ضمیمه شود (نه ?)؛ در غیر اینصورت route شکسته می‌شود (rest_no_route).
+        if (CFG.rest_url.indexOf('?') !== -1 && path.indexOf('?') !== -1) {
+            return CFG.rest_url + path.replace('?', '&');
+        }
+        return CFG.rest_url + path;
+    }
+
     function api(method, path, body, isForm) {
         var opts = { method: method, headers: { 'X-WP-Nonce': CFG.nonce } };
         if (!isForm) { opts.headers['Content-Type'] = 'application/json'; }
         if (body) { opts.body = isForm ? body : JSON.stringify(body); }
-        return fetch(CFG.rest_url + path, opts).then(function (r) {
+        return fetch(apiUrl(path), opts).then(function (r) {
             return r.json().then(function (j) { return { status: r.status, body: j }; }, function () {
                 return { status: r.status, body: {} };
             });

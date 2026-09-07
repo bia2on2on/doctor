@@ -231,13 +231,22 @@ window.CPMS_Q = <?php echo wp_json_encode($config); ?>;
     };
     var EXPRESS = 'نوبت فوری';
 
+    function apiUrl(path) {
+        // Permalink ساده: rest_url خودش شامل ?rest_route=... است — Queryِ path
+        // باید با & ضمیمه شود (نه ?)؛ در غیر اینصورت route شکسته می‌شود (rest_no_route).
+        if (CFG.rest_url.indexOf('?') !== -1 && path.indexOf('?') !== -1) {
+            return CFG.rest_url + path.replace('?', '&');
+        }
+        return CFG.rest_url + path;
+    }
+
     function api(method, path, body) {
         var opts = { method: method, headers: { 'X-WP-Nonce': CFG.nonce, 'Content-Type': 'application/json' } };
         if (state.etag !== null && method === 'GET' && path.indexOf('/rt/queue') === 0) {
             opts.headers['If-None-Match'] = state.etag;
         }
         if (body) { opts.body = JSON.stringify(body); }
-        return fetch(CFG.rest_url + path, opts).then(function (r) {
+        return fetch(apiUrl(path), opts).then(function (r) {
             if (r.status === 304) { return { __notModified: true, __status: 304 }; }
             var et = r.headers.get('ETag');
             if (et) { state.etag = et; }

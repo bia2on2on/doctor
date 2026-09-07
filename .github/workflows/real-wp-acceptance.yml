@@ -1,0 +1,330 @@
+name: Real WordPress Acceptance (ZIP → clean WP → browser)
+
+# گیت پذیرش واقعی: پاسخ مستقیم به نقص‌های گزارش‌شدهٔ نصب روی WordPress واقعی —
+#   D1) Tools → CPMS (سیستم)/Health نباید Critical Error شود
+#   D2) شمارش جداول در UI == شمارش واقعی DB (با هر prefix)
+#   D3) Migration شکست‌خورده هرگز «موفق» ثبت نشود
+#   + Administrator فنی (P-3)، منوهای واقعی Doctor/Secretary، بررسی لاگ‌ها.
+# هر چیزی که اینجا اجرا می‌شود واقعی است: Apache/mod_php + MySQL 8 +
+# Chromium (نه شبیه‌سازی) + ZIP رسمی bin/build-release.sh (نه source mount).
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, 'arena/**']
+  pull_request:
+    branches: [main]
+
+permissions:
+  # contents: write فقط برای انتشار Evidence به‌صورت Commit Comment
+  # (لاگ خام Job در برخی محیط‌ها خوانده نمی‌شود — الگوی مستند ریپو).
+  contents: write
+  actions: read
+
+env:
+  WP_DIR: /home/runner/rwp
+  WP_URL: http://localhost:8080
+  DB_NAME: cpms_acc
+  ADMIN_USER: acc_admin
+  ADMIN_PASS: Acceptance-2026!
+  DOCTOR_USER: acc_doctor
+  DOCTOR_PASS: Acceptance-2026!
+  SECRETARY_USER: acc_secretary
+  SECRETARY_PASS: Acceptance-2026!
+
+jobs:
+  acceptance:
+    name: "Real WP Acceptance (prefix ${{ matrix.prefix }})"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        prefix: ['wp_', 'clinic_']
+
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1"
+          --health-interval=10s --health-timeout=5s --health-retries=20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mysqli, curl, mbstring, xml, zip, gd, sodium
+          coverage: none
+
+      - name: Tooling (apache + wp-cli + playwright/chromium)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq mysql-client apache2 libapache2-mod-php php-mysql php-mbstring php-xml php-curl php-zip php-gd > /tmp/apt.log 2>&1 || { tail -20 /tmp/apt.log; exit 1; }
+          curl -sS https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o /tmp/wp-cli.phar
+          sudo mv /tmp/wp-cli.phar /usr/local/bin/wp && sudo chmod +x /usr/local/bin/wp
+          wp --allow-root --version
+          (pip install --quiet playwright 2>/dev/null || pip install --quiet --break-system-packages playwright)
+          python3 -m playwright install --with-deps chromium > /tmp/pw.log 2>&1 || { tail -10 /tmp/pw.log; exit 1; }
+
+      - name: Lint ابزار Acceptance
+        run: |
+          php -l clinic-practice-management/bin/cpms
+          python3 -m py_compile clinic-practice-management/bin/rwp-acceptance.py
+          bash -n clinic-practice-management/bin/build-release.sh
+
+      # ---------- 1) ZIP رسمی ریلیز ----------
+      - name: Build official release ZIP (bin/build-release.sh)
+        run: |
+          bash clinic-practice-management/bin/build-release.sh
+          ls -la clinic-practice-management/dist/
+          ZIP=$(ls clinic-practice-management/dist/clinic-practice-management-*.zip | head -1)
+          [ -f "$ZIP" ] || { echo 'ZIP NOT BUILT'; exit 1; }
+          echo "ZIP_PATH=$ZIP" >> "$GITHUB_ENV"
+          mkdir -p /tmp/acc
+
+      # ---------- 2) WordPress تمیز ----------
+      - name: Clean WordPress 6.7.2 (prefix=${{ matrix.prefix }})
+        run: |
+          curl -sS https://wordpress.org/wordpress-6.7.2.tar.gz -o /tmp/wp.tar.gz
+          tar -xzf /tmp/wp.tar.gz -C /tmp && mv /tmp/wordpress "$WP_DIR"
+          mysql -h 127.0.0.1 -P 3306 -uroot -proot -e "CREATE DATABASE $DB_NAME CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+          cd "$WP_DIR"
+          wp config create --dbname="$DB_NAME" --dbuser=root --dbpass=root --dbhost=127.0.0.1:3306 --dbprefix='${{ matrix.prefix }}' --skip-salts --allow-root
+          wp config shuffle-salts --allow-root
+          # لاگ‌محور مثل Production-sane: خطاها در debug.log (نمایش خاموش)
+          wp config set WP_DEBUG true --raw --allow-root
+          wp config set WP_DEBUG_LOG true --raw --allow-root
+          wp config set WP_DEBUG_DISPLAY false --raw --allow-root
+          wp config set DISALLOW_FILE_EDIT true --raw --allow-root
+          wp core install --url="$WP_URL" --title="CPMS Acceptance" --admin_user="$ADMIN_USER" --admin_password="$ADMIN_PASS" --admin_email=admin@acc.local --skip-email --allow-root
+
+      # ---------- 3) نصب از ZIP + فعال‌سازی (Migration خودکار) ----------
+      - name: Install ZIP → activate (migration runs in activation hook)
+        run: |
+          wp plugin install "$GITHUB_WORKSPACE/$ZIP_PATH" --activate --path="$WP_DIR" --allow-root 2>&1 | tee /tmp/acc/plugin-install.log
+          wp plugin is-active clinic-practice-management --path="$WP_DIR" --allow-root || { echo 'PLUGIN NOT ACTIVE'; exit 1; }
+          echo 'installed from official ZIP (نه source mount)'
+
+      # ---------- 4) تأیید مستقیم DB ----------
+      - name: Direct DB verification (tables + schema version)
+        run: |
+          PREFIX='${{ matrix.prefix }}'
+          ACTUAL=$(mysql -h 127.0.0.1 -P 3306 -uroot -proot -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='$DB_NAME' AND table_name LIKE '${PREFIX}cpms_%';")
+          echo "ACTUAL_TABLE_COUNT=$ACTUAL"
+          echo "$ACTUAL" > /tmp/acc/actual_count.txt
+          [ "$ACTUAL" -ge 30 ] || { echo "TOO FEW TABLES ($ACTUAL) — migration ناقص است"; exit 1; }
+          mysql -h 127.0.0.1 -P 3306 -uroot -proot "$DB_NAME" -e "SELECT version, applied_at FROM ${PREFIX}cpms_schema_migrations ORDER BY version;" | tee /tmp/acc/schema-migrations.txt
+          cat > /tmp/acc/check-schema.php <<'PHPEOF'
+          <?php
+          $v = \ClinicCore\Bootstrap\App::migrations()->currentVersion();
+          echo "schema: $v\n";
+          exit($v === '2026_09_07_0009' ? 0 : 1);
+          PHPEOF
+          wp eval-file /tmp/acc/check-schema.php --path="$WP_DIR" --allow-root
+          wp role list --path="$WP_DIR" --allow-root | grep -E 'cpms_(doctor|secretary|patient)' || { echo 'ROLES MISSING'; exit 1; }
+
+      # ---------- 5) تست منفی Migration (D3 — fail-loud) ----------
+      - name: Migration failure must NOT be recorded as success (D3)
+        run: |
+          PREFIX='${{ matrix.prefix }}'
+          MDIR="$WP_DIR/wp-content/plugins/clinic-practice-management/src/Migrations"
+          # فایل‌های افزونه متعلق به root‌اند (wp-cli allow-root نصب کرده) → sudo
+          sudo tee "$MDIR/2999_01_01_9999_acceptance_broken.php" >/dev/null <<'PHPEOF'
+          <?php
+          // تزریق موقت در runner برای اثبات Fail-loud (در artifact رسمی وجود ندارد).
+          return [
+              'version' => '2999_01_01_9999',
+              'description' => 'acceptance probe: intentionally broken SQL',
+              'up' => function (\ClinicCore\Infrastructure\Db\CpmsDb $db): void {
+                  $db->query('CREATE TABLE syntax broken (((');
+              },
+              'down' => function (\ClinicCore\Infrastructure\Db\CpmsDb $db): void {
+              },
+          ];
+          PHPEOF
+          sudo chmod a+r "$MDIR/2999_01_01_9999_acceptance_broken.php"
+          cat > /tmp/acc/probe-broken.php <<'PHPEOF'
+          <?php
+          $mig = \ClinicCore\Bootstrap\App::migrations();
+          $thrown = null;
+          try {
+              $mig->migrate();
+          } catch (\Throwable $e) {
+              $thrown = $e::class . ': ' . $e->getMessage();
+          }
+          if ($thrown === null) {
+              fwrite(STDERR, "FAIL: migration خراب بدون استثنا «موفق» شد\n");
+              exit(1);
+          }
+          echo "fail-loud OK → " . substr($thrown, 0, 160) . "\n";
+          $db = \ClinicCore\Bootstrap\App::db();
+          $rec = (int) $db->fetchValue('SELECT COUNT(*) FROM ' . $db->table('cpms_schema_migrations') . ' WHERE version = %s', ['2999_01_01_9999']);
+          if ($rec !== 0) {
+              fwrite(STDERR, "FAIL: version migration خراب ثبت شده ({$rec})\n");
+              exit(1);
+          }
+          echo "not-recorded OK (schema_migrations بدون 2999_01_01_9999)\n";
+          PHPEOF
+          # بدون pipe-masking: وضعیت خروجی واقعی probe تعیین‌کننده است
+          wp eval-file /tmp/acc/probe-broken.php --path="$WP_DIR" --allow-root > /tmp/acc/migration-failure-probe.txt 2>&1
+          RC=$?
+          cat /tmp/acc/migration-failure-probe.txt
+          if [ "$RC" -ne 0 ]; then echo 'D3 PROBE FAILED'; exit "$RC"; fi
+          # پاک‌سازی probe و اثبات idempotency پس از آن
+          sudo rm -f "$MDIR/2999_01_01_9999_acceptance_broken.php"
+          wp eval '\ClinicCore\Bootstrap\App::migrations()->migrate();' --path="$WP_DIR" --allow-root
+          echo 're-migrate after probe removal: OK (no-op idempotent)'
+
+      # ---------- کاربران نقش‌محور + دادهٔ پایه ----------
+      - name: Role users + storage خارج webroot
+        run: |
+          wp user create "$DOCTOR_USER" 'doc@acc.local' --user_pass="$DOCTOR_PASS" --role=cpms_doctor --path="$WP_DIR" --allow-root
+          wp user create "$SECRETARY_USER" 'sec@acc.local' --user_pass="$SECRETARY_PASS" --role=cpms_secretary --path="$WP_DIR" --allow-root
+          STORAGE=/home/runner/rwp-storage
+          mkdir -p "$STORAGE" && sudo chmod -R 777 "$STORAGE"
+          cat > /tmp/acc/setup-roles.php <<'PHPEOF'
+          <?php
+          global $wpdb;
+          $db = \ClinicCore\Bootstrap\App::db();
+          $now = $db->nowUtcSql();
+          $uid = (int) get_user_by('login', getenv('DOCTOR_USER'))->ID;
+          $wpdb->query($wpdb->prepare(
+              'INSERT INTO ' . $db->table('cpms_clinicians') . ' (clinic_id, full_name, wp_user_id, is_active, created_at, updated_at) VALUES (1, %s, %d, 1, %s, %s)',
+              'دکتر پذیرش (Synthetic)', $uid, $now, $now
+          ));
+          \ClinicCore\Bootstrap\App::settings()->set('files.storage_path', '/home/runner/rwp-storage');
+          echo "doctor linked (wp_user_id=$uid); files.storage_path set\n";
+          PHPEOF
+          wp eval-file /tmp/acc/setup-roles.php --path="$WP_DIR" --allow-root
+
+      # ---------- Apache + mod_php (وب واقعی) ----------
+      - name: Apache + mod_php
+        run: |
+          sudo tee /etc/apache2/sites-available/acc.conf >/dev/null <<CONF
+          <VirtualHost *:8080>
+            DocumentRoot $WP_DIR
+            <Directory $WP_DIR>
+              AllowOverride All
+              Require all granted
+            </Directory>
+            ErrorLog \${APACHE_LOG_DIR}/acc-error.log
+            CustomLog \${APACHE_LOG_DIR}/acc-access.log combined
+          </VirtualHost>
+          CONF
+          sudo sed -i 's/^Listen 80$/Listen 8080/' /etc/apache2/ports.conf
+          sudo a2dissite 000-default >/dev/null && sudo a2ensite acc >/dev/null
+          sudo a2enmod rewrite >/dev/null
+          for INI in /etc/php/*/apache2/php.ini; do
+            sudo sed -i 's/^display_errors = .*/display_errors = Off/' "$INI"
+          done
+          # دقیقاً مثل میزبان واقعی: PHP تحت www-data و wp-content owned-by-runner (غیرقابل‌نوشتن برای PHP)
+          sudo chmod a+rx /home/runner
+          sudo chmod -R a+rX "$WP_DIR"
+          sudo apache2ctl configtest && sudo service apache2 start
+          sleep 2
+          curl -s -o /dev/null -w 'home HTTP %{http_code}\n' "$WP_URL/"
+          curl -s -o /dev/null -w 'rest HTTP %{http_code}\n' "$WP_URL/?rest_route=/"
+          # فایل wp-content برای PHP قابل‌نوشتن نیست (اثبات شرایط میزبان واقعی)
+          sudo -u www-data test -w "$WP_DIR/wp-content" && echo 'wp-content writable by php' || echo 'wp-content NOT writable by php (میزبان واقعی)'
+
+      # ---------- 6) پذیرش مرورگری ----------
+      - name: Browser acceptance — login + System + Health + Technical + Doctor/Secretary menus
+        run: |
+          # بدون pipe-masking: وضعیت خروجی واقعی اسکریپت تعیین‌کننده است
+          BASE="$WP_URL" \
+          ADMIN_USER="$ADMIN_USER" ADMIN_PASS="$ADMIN_PASS" \
+          DOCTOR_USER="$DOCTOR_USER" DOCTOR_PASS="$DOCTOR_PASS" \
+          SECRETARY_USER="$SECRETARY_USER" SECRETARY_PASS="$SECRETARY_PASS" \
+          ACTUAL_COUNT_FILE=/tmp/acc/actual_count.txt \
+          OUT=/tmp/acc \
+          python3 clinic-practice-management/bin/rwp-acceptance.py > /tmp/acc/acceptance.log 2>&1
+          RC=$?
+          cat /tmp/acc/acceptance.log
+          if [ "$RC" -ne 0 ]; then echo "ACCEPTANCE FAILED (rc=$RC)"; exit "$RC"; fi
+
+      # ---------- 7) بررسی لاگ‌ها (همیشه — حتی در شکست) ----------
+      - name: PHP/WP/Apache logs review
+        if: always()
+        run: |
+          cp "$WP_DIR/wp-content/debug.log" /tmp/acc/logs/ 2>/dev/null || echo '(no debug.log)' > /tmp/acc/logs/debug.log.missing
+          sudo cp /var/log/apache2/acc-error.log /tmp/acc/logs/apache-error.log 2>/dev/null || true
+          sudo cp /var/log/apache2/acc-access.log /tmp/acc/logs/apache-access.log 2>/dev/null || true
+          sudo chmod -R a+r /tmp/acc/logs/ || true
+          echo '===== debug.log (tail) ====='
+          tail -40 /tmp/acc/logs/debug.log 2>/dev/null || echo '(debug.log موجود نشد — یعنی هیچ خطای PHP ثبت نشده)'
+          echo '===== apache error (tail) ====='
+          tail -20 /tmp/acc/logs/apache-error.log 2>/dev/null || true
+
+      - name: Log gate — بدون Fatal/Critical در لاگ PHP/WP
+        if: always()
+        run: |
+          if [ -f /tmp/acc/logs/debug.log ]; then
+            if grep -qE 'PHP Fatal error|Uncaught|There has been a critical error' /tmp/acc/logs/debug.log; then
+              echo 'FATAL/CRITICAL IN debug.log:'; grep -nE 'PHP Fatal error|Uncaught|critical error' /tmp/acc/logs/debug.log | tail -10; exit 1
+            fi
+          fi
+          if [ -f /tmp/acc/logs/apache-error.log ]; then
+            if grep -qE 'PHP Fatal error|Uncaught' /tmp/acc/logs/apache-error.log; then
+              echo 'FATAL IN apache error log:'; grep -nE 'PHP Fatal error|Uncaught' /tmp/acc/logs/apache-error.log | tail -10; exit 1
+            fi
+          fi
+          echo 'LOG GATE: clean (بدون Fatal/Uncaught/Critical)'
+
+      # ---------- Artifacts ----------
+      - name: Upload screenshots/logs/results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rwp-acceptance-${{ matrix.prefix }}
+          path: /tmp/acc/
+          retention-days: 14
+
+      - name: Acceptance summary
+        if: always()
+        run: |
+          {
+            echo '## Real WordPress Acceptance — prefix `${{ matrix.prefix }}`'
+            echo
+            echo '- ZIP: `bin/build-release.sh` (official artifact)، نصب با `wp plugin install --activate`'
+            echo "- DB prefix: \`${{ matrix.prefix }}\` — شمارش واقعی جداول: $(cat /tmp/acc/actual_count.txt 2>/dev/null || echo '?') — شمارش UI: $(cat /tmp/acc/ui_count.txt 2>/dev/null || echo '?')"
+            echo '- Migration failure probe: `(fail-loud + not-recorded)` در لاگ Step «D3»'
+            echo
+            echo '```'
+            tail -30 /tmp/acc/acceptance.log 2>/dev/null || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Evidence به‌صورت Commit Comment (لاگ خام Job در این محیط خوانده نمی‌شود —
+      # الگوی «Post failures to PR» ریپو، این‌بار روی Commit تا در push-events هم کار کند)
+      - name: Publish evidence as commit comment
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "### Real WP Acceptance — prefix \`${{ matrix.prefix }}\` (job: ${{ job.status }})"
+            echo
+            echo "- actual_table_count: \`$(cat /tmp/acc/actual_count.txt 2>/dev/null || echo '?')\` / ui_table_count: \`$(cat /tmp/acc/ui_count.txt 2>/dev/null || echo '?')\`"
+            echo "- migration failure probe:"
+            echo '```'
+            cat /tmp/acc/migration-failure-probe.txt 2>/dev/null || echo '(probe اجرا نشد)'
+            echo '```'
+            echo '- browser acceptance:'
+            echo '```'
+            cat /tmp/acc/acceptance.log 2>/dev/null || echo '(مرحلهٔ مرورگر اجرا نشد)'
+            echo '```'
+            echo '- PHP fatal lines in debug.log:'
+            echo '```'
+            grep -E 'Fatal|Uncaught' /tmp/acc/logs/debug.log 2>/dev/null | tail -8 || echo '(none)'
+            echo '```'
+            echo '- debug.log tail:'
+            echo '```'
+            tail -15 /tmp/acc/logs/debug.log 2>/dev/null || echo '(بدون debug.log)'
+            echo '```'
+            echo "artifacts: rwp-acceptance-${{ matrix.prefix }} (screenshots/logs/results.json)"
+          } > /tmp/acc/evidence-comment.md
+          gh api "repos/{owner}/{repo}/commits/$GITHUB_SHA/comments" -X POST -F body=@/tmp/acc/evidence-comment.md --jq '.id'

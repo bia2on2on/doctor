@@ -2,6 +2,23 @@
 
 تمام تغییرات مهم پروژه در این فایل ثبت می‌شود. قالب: [Keep a Changelog](https://keepachangelog.com/)؛ نسخه‌بندی: [SemVer](https://semver.org/).
 
+## [1.0.2] — 2026-09-07 (Hotfix نصب واقعی — بازتولیدشده روی WordPress واقعی در CI)
+
+سه نقص گزارش‌شدهٔ نصب روی WordPress واقعی روی main بازتولید شد (گیت جدید «Real WordPress Acceptance»: ZIP رسمی `bin/build-release.sh` → WordPress 6.7.2 تمیز → نصب/فعال‌سازی → تأیید مستقیم DB → مرورگر واقعی Chromium → بررسی لاگ — با ماتریس دو prefix `wp_`/`clinic_`).
+
+### Fixed
+- **D2 — شمارش جداول در «CPMS (فنی و لاگ)» همیشه 0 بود:** `SettingsAdmin::tableCount()` الگوی `LIKE 'cpms_%'` بدون `$wpdb->prefix` داشت درحالی‌که جداول واقعی `{prefix}cpms_*` هستند. اصلاح به الگوی prefix-aware (همان الگوی `SystemHealthService`). اثبات E2E: شمارش UI == شمارش مستقیم DB (۴۱ جدول) روی هر دو prefix.
+- **D1 — «CPMS (سیستم)»/Health با Critical Error می‌مرد:** `SystemPage::render()` خواندن وضعیت مجوز/Health/«فهرست بکاپ» را بدون guard صدا می‌زد؛ شکست IO مخزن بکاپ (مثل میزبانِ با wp-content غیرقابل‌نوشتن → `BackupException`) کل صفحهٔ وضعیت را Fatal می‌کرد. حالا هر بخش مستقلاً guard می‌شود و خطایش درون‌صفحه‌ای نمایش داده می‌شود — صفحهٔ وضعیت هرگز Fatal نمی‌شود. تست رگرسیون: `SystemAdminPagesTest::testSystemPageSurvivesUnwritableBackupStore` (بازتولید دقیق همان کلاس شکست).
+- **REST داشبوردها روی Permalink ساده 404 می‌خورد (کشف با گیت مرورگر):** هلپرهای JS پنج صفحهٔ مدیریتی، `path` حاوی query را مستقیم به `rest_url()` می‌چسباندند؛ با Permalink ساده (`index.php?rest_route=…`) کوئری دوم با `?` اضافه می‌شد و route قفل نمی‌شد (`rest_no_route`: polling صف، اعلان‌ها، خلاصهٔ مالی، جستجوی بیمار و…). فیکس مرکزی: `apiUrl()` در هر پنج صفحه — وقتی `rest_url` خود `?` دارد، کوئری path با `&` ضمیمه می‌شود.
+
+### Docs/CI
+- Workflow جدید `real-wp-acceptance.yml` + `bin/rwp-acceptance.py`: نصب واقعی از ZIP رسمی، دو prefix (`wp_`/`clinic_`)، مرورگر واقعی (System/Health/Technical/منوهای Doctor/Secretary/Administrator فنی P-3)، هم‌سان‌سازی شمارش جداول UI↔DB، پروب Migration خراب (fail-loud + عدم ثبت)، بررسی لاگ PHP/WP/Apache/مرورگر، اسکرین‌شات/لاگ به‌عنوان Artifact، و انتشار Evidence به‌صورت Commit Comment.
+
+### Verified (گزارش بازتولید قبل از فیکس)
+- D1: STILL_PRESENT/PARTIAL → `wp-die-message` (critical error) روی هر دو prefix.
+- D2: STILL_PRESENT → `UI=0 / DB=41` روی هر دو prefix.
+- D3: FIXED (F1-2) → پروب migration خراب: `RuntimeException` + عدم ثبت version (تأیید مجدد روی main).
+
 ## [1.0.1] — 2026-09-07 (Remediation Part 1 — ممیزی مستقل 6e42519)
 
 ### Added

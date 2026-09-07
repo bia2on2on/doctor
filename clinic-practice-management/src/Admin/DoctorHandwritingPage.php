@@ -220,6 +220,15 @@ window.CPMS_HW = <?php echo wp_json_encode($config); ?>;
         });
     }
 
+    function apiUrl(path) {
+        // Permalink ساده: rest_url خودش شامل ?rest_route=... است — Queryِ path
+        // باید با & ضمیمه شود (نه ?)؛ در غیر اینصورت route شکسته می‌شود (rest_no_route).
+        if (CFG.rest_url.indexOf('?') !== -1 && path.indexOf('?') !== -1) {
+            return CFG.rest_url + path.replace('?', '&');
+        }
+        return CFG.rest_url + path;
+    }
+
     function api(method, path, body, extraHeaders, raw) {
         var opts = { method: method, headers: { 'X-WP-Nonce': CFG.nonce } };
         if (body !== undefined && body !== null && !raw) {
@@ -229,7 +238,7 @@ window.CPMS_HW = <?php echo wp_json_encode($config); ?>;
             opts.body = body;
         }
         if (extraHeaders) { Object.keys(extraHeaders).forEach(function (k) { opts.headers[k] = extraHeaders[k]; }); }
-        return fetch(CFG.rest_url + path, opts).then(function (r) {
+        return fetch(apiUrl(path), opts).then(function (r) {
             return r.json().then(function (j) { return { status: r.status, body: j }; }, function () {
                 return { status: r.status, body: {} };
             });

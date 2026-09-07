@@ -107,6 +107,12 @@ final class SettingsAdmin
     {
         global $wpdb;
 
-        return (int) $wpdb->get_var("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name LIKE 'cpms_%'"); // phpcs:ignore
+        // فیکس گزارش نصب واقعی (D2): جداول واقعی `{prefix}cpms_*` هستند
+        // (CpmsDb::table) — الگوی بدون prefix همیشه 0 برمی‌گرداند.
+        // همان الگوی SystemHealthService::run (dbPrefix + 'cpms_%').
+        return (int) $wpdb->get_var($wpdb->prepare(
+            "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name LIKE %s",
+            $wpdb->prefix . 'cpms_%'
+        ));
     }
 }
