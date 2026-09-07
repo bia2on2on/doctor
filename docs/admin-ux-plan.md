@@ -22,8 +22,25 @@
 | 10 | `PrescriptionPrintPage` | چاپ نسخه | `cpms-prescription-print` | `cpms_rx_read` | hidden (parent null) | بدون تغییر (صفحه چاپ پنهان) |
 | 11 | `PatientPortalPage` | نوبت‌های من | `cpms-patient` | `read` | Top-level (فقط بیمار) | بدون تغییر (Patient ≠ WP-Admin عادی) |
 
+## 1.5. وضعیت فعلی پیاده‌سازی (پس از Chunk A/B/C)
+
+> 🟢 **Chunk A** (IA + منوی Top-Level «مدیریت مطب» + داشبورد) — کامل، سبز (commit `fabe13e`/`8f36894`).
+> 🟢 **Chunk B** (Setup Wizard ۱۲-گام) — کامل، سبز (commit `0f6e5a1`).
+> 🟢 **Chunk C** (بخش Staff/User + Role presets/Advanced perms موجود) — کامل، سبز (commit `409dbe3`).
+>
+> **ساختار منوی فعلی:**
+> - **«مدیریت مطب» (top-level، فقط مدیر/`cpms_config`):** داشبورد، راه‌اندازی، سلامت سیستم، فنی و لاگ،
+>   پزشکان و برنامه کاری، کاربران و دسترسی‌ها، پیامک و اعلان‌ها.
+> - **نقش‌محور (top-level جدا، workbench):** «صف امروز» (منشی)، «امروز پزشک» (پزشک)، «نوبت‌های من» (بیمار).
+>
+> ⚠️ **تصمیم باز برای Product Owner:** در نقشهٔ هدف (بخش ۲) صفحات منشی/پزشک «زیر CPMS» آمده؛ اما
+> پیاده‌سازی فعلی آن‌ها را به‌عنوان top-level نقش‌محور جدا نگه داشته تا navigation نقش‌ها (که به parent
+> capability وابسته است) نشکند. اگر PO بخواهد همه در یک منوی «مدیریت مطب» ادغام شوند، باید منوی top-level
+> با cap مشترک + فیلتر visibility نقش‌محور ساخته شود (Refactor بعدی). صفحات Tools/Settings پراکنده
+> (items ۱–۵) دیگر تکراری نیستند و به `admin.php?page=*` تحت «مدیریت مطب» اشاره می‌کنند.
+
 **یادداشت‌های کلیدی:**
-- هیچ `plugin_action_links`، `add_shortcode` و هیچ `onboarding/notice/wizard` فعلی وجود ندارد.
+- چند `plugin_action_links` و onboarding/wizard اضافه شد؛ هیچ `add_shortcode` فعلی وجود ندارد.
 - هیچ صفحه اختصاصی «داشبورد مدیر»، «بیماران»، «گزارش‌ها»، «مجوز»، «بکاپ»، «به‌روزرسانی» و «کاربران/نقش‌های پیش‌فرض» جداگانه وجود ندارد؛ اینها یا داخل `SystemPage` (مجوز/بکاپ/به‌روزرسانی/Health) یا داخل `RoleCapabilitiesPage` (ماتریس فنی) مدفون‌اند.
 - همه صفحات موجود `dir="rtl"` و Persian-first هستند؛ ساختار UI فعلی فرم/جدول خام WP است.
 
