@@ -137,6 +137,16 @@
 ### Chunk F — طراحی/Responsive/Accessibility + Empty states + Dangerous-action UX
 - Card/section/badge/empty-state؛ RTL؛ responsive ۶ رزولوشن؛ keyboard/focus/contrast؛ confirmation.
 
+> ✅ **Done (commit `63ce037`)** — سیستم طراحی اسکوپ‌شدهٔ صفحات CPMS (`assets/css/cpms-admin.css`
+> + `assets/js/cpms-admin.js`) + `CpmsAssets` (فقط صفحات CPMS، بدون asset سراسری/فریم‌ورک).
+> صفحهٔ Permissions بازطراحی: Normal = Role Presets + توضیح فارسی نقش + «می‌تواند/نمی‌تواند»
+> + هشدار حساس؛ Advanced = جمع‌شونده/گروه‌بندی/جستجو با حفظ `role_caps[role][]` و مسیر امن backend.
+> Empty states حرفه‌ای (بدون پزشک/پرسنل/بکاپ/گزارش/SMS) هرکدام با next action. Dangerous actions
+> با تأیید (onclick/data-cpms-confirm). گیت `real-wp-acceptance.yml` با اسکرین‌شات دسکتاپ/موبایل
+> (Dashboard/Setup/Staff/Clinicians/Roles/System/Advanced Permissions) متصل شد. تست Integration
+> `AdminUxDesignTest` + PHPStan/Unit/Closure/Real-WP-Acceptance/Release/Upgrade/Responsive سبز؛
+> فقط Staging Gate (غیرمرتبط، از قبل) در انتظار.
+
 ### Chunk G — Test Matrix + Real WP Acceptance (افزوده)
 - تست‌های menu registration، role-aware visibility، action links، onboarding state، wizard progress، user creation، role assignment، password، clinician association، deactivation، schedule، presets، privilege-escalation، CSRF، IDOR، audit، responsive smoke، console، Real WP Acceptance.
 - گیت `real-wp-acceptance.yml` روی ZIP رسمی extend می‌شود (Admin/Secretary/Doctor/Accountant/Manager).
