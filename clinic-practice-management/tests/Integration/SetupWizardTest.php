@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Tests\Integration;
 
+use ClinicCore\Admin\CpmsAdminMenu;
 use ClinicCore\Admin\CpmsSetupWizard;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Settings\Settings;
@@ -41,6 +42,8 @@ final class SetupWizardTest extends WP_UnitTestCase
         $GLOBALS['menu'] = [];
         $GLOBALS['submenu'] = [];
 
+        // ابتدا منوی Top-Level «مدیریت مطب» (همان مسیر production) تا parent منطبق باشد.
+        CpmsAdminMenu::menu();
         CpmsSetupWizard::menu();
 
         $sub = $GLOBALS['submenu']['cpms-dashboard'] ?? [];
@@ -257,14 +260,10 @@ final class SetupWizardTest extends WP_UnitTestCase
 
     private function authorizeConfigUser(): int
     {
+        // نقش «administrator» توسط RolesAndCapabilities::register() (هنگام boot) به‌صورت
+        // پیش‌فرض `cpms_config` و `cpms_sms_config` دارد؛ نیازی به add_cap دستی نیست.
         $id = self::factory()->user->create(['role' => 'administrator']);
         wp_set_current_user($id);
-        $role = (new \WP_User($id))->get_role();
-        if ($role !== null) {
-            // تضمین مجوز در DB تست، حتی اگر نقش پیش‌فرض هنوز map نشده باشد.
-            $role->add_cap('cpms_config');
-            $role->add_cap('cpms_sms_config');
-        }
 
         return $id;
     }
