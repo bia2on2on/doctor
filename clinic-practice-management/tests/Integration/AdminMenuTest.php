@@ -6,7 +6,13 @@ namespace ClinicCore\Tests\Integration;
 
 use ClinicCore\Admin\CpmsAdminMenu;
 use ClinicCore\Admin\CpmsDashboard;
+use ClinicCore\Admin\ClinicianAdminPage;
+use ClinicCore\Admin\RoleCapabilitiesPage;
+use ClinicCore\Admin\SettingsAdmin;
+use ClinicCore\Admin\SmsSettingsPage;
+use ClinicCore\Admin\SystemPage;
 use ClinicCore\Auth\RolesAndCapabilities;
+use ClinicCore\Bootstrap\App;
 use WP_UnitTestCase;
 
 /**
@@ -33,14 +39,20 @@ final class AdminMenuTest extends WP_UnitTestCase
     }
 
     /**
-     * اجرای مستقیم ثبت‌کننده منو (بدون action side-effect و بدون وابستگی به
-     * ترتیب/وضعیت اکشن‌های admin_menu از تست‌های دیگر).
+     * اجرای مستقیم ثبت‌کننده‌های منو (همان مسیر App::boot برای این بخش) —
+     * بدون action side-effect و بدون وابستگی به وضعیت اکشن‌های admin_menu.
      */
     private function runAdminMenu(): void
     {
         $GLOBALS['menu'] = [];
         $GLOBALS['submenu'] = [];
         CpmsAdminMenu::menu();
+        // صفحاتی که زیر «مدیریت مطب» re-home شده‌اند، خودشان menu() جدا دارند.
+        SystemPage::menu();
+        SettingsAdmin::menu();
+        ClinicianAdminPage::menu();
+        RoleCapabilitiesPage::menu();
+        SmsSettingsPage::menu();
     }
 
     public function testTopLevelMenuRegistered(): void
@@ -97,15 +109,28 @@ final class AdminMenuTest extends WP_UnitTestCase
         }
     }
 
-    public function testActionLinksPresentForAdmin(): void
+    public function testActionLinksShowSetupWhenPending(): void
     {
         wp_set_current_user($this->admin);
+        // پیش‌فرض تازه‌نصب: setup.completed = false → لینک اصلی «راه‌اندازی».
+        App::settings()->set('setup.completed', false);
 
         $links = CpmsAdminMenu::actionLinks(['<a href="#">Activate</a>']);
-
         $joined = implode(' ', $links);
-        $this->assertStringContainsString('داشبورد CPMS', $joined, 'مدیر باید لینک «داشبورد CPMS» را ببیند');
+
+        $this->assertStringContainsString('راه‌اندازی', $joined, 'قبل از تکمیل راه‌اندازی، لینک اصلی باید «راه‌اندازی» باشد');
         $this->assertStringContainsString('تنظیمات', $joined, 'مدیر باید لینک «تنظیمات» را ببیند');
+    }
+
+    public function testActionLinksShowDashboardWhenSetupComplete(): void
+    {
+        wp_set_current_user($this->admin);
+        App::settings()->set('setup.completed', true);
+
+        $links = CpmsAdminMenu::actionLinks(['<a href="#">Activate</a>']);
+        $joined = implode(' ', $links);
+
+        $this->assertStringContainsString('داشبورد CPMS', $joined, 'پس از تکمیل راه‌اندازی، لینک اصلی باید «داشبورد CPMS» باشد');
     }
 
     public function testActionLinksHiddenForCapabilitylessUser(): void
