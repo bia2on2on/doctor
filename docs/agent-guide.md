@@ -512,3 +512,8 @@ final class XxxService {
 - **تصمیمات درون‌فازی:** ① حذف ستون در `down()` عمداً no-op (زدن ستون = بازگشت به باگ)؛ ② `VALUES()` در ON DUPLICATE حفظ شد (سازگار MariaDB — alias-syntax در MariaDB نیست)؛ ③ `cleanup()` soft (execute) باقی ماند — شکست پاک‌سازی دوره‌ای نباید tick را شکند (رفتار قبلی).
 - **تست محلی (php-wasm PHP 8.5):** lint 3 فایل ✓ + Unit suite 285/0F (همان baseline). **تست Integration: CI (PR push).**
 - **وضعیت:** commit + push + SHA remote در ادامه این لاگ ثبت می‌شود.
+
+#### پیوست گروه 1 — رفع شکست راند اول CI (ریشه‌یابی از کامنت خودکار PR)
+- **ریشه:** شکست همهٔ Jobهای WP (Integration + Pilot + Closure روی همهٔ runtimes) در یک نقطهٔ واحد بود: `FAIL schema-0008 — 2026_09_07_0009`. Gateها و `MigrationTest` نسخهٔ فعلی schema را **پین** کرده بودند (`2026_09_07_0008`) — نقطهٔ همگام‌سازی طراحی‌شده برای هر Migration جدید.
+- **رفع (تضعیف Gate نه، به‌روزرسانی پین):** `schema-0009` در closure-gate (۲×probe + restore-drill grep)، pilot-gate (fresh-install check + upgrade-path check + echo نمایشی) و `MigrationTest` (`LATEST_VERSION` + افزودن `rollbackOne()=0009` به ابتدای زنجیرهٔ rollback در دو تست Preflight/Upgrade — down()ِ 0009 عمداً no-op است و re-migrate آن idempotent).
+- **تست‌ها:** Unit 285/0F (php-wasm) + lint ✓؛ Integration/Gates در راند بعدی CI.
