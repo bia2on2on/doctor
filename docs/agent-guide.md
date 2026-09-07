@@ -478,7 +478,7 @@ final class XxxService {
   - **P10:** «CPMS (فنی)» → «CPMS (فنی و لاگ)».
   - Docs: ADR-0030، permission-matrix v1.5، user-guide، CHANGELOG 1.0.1، `report-remediation-part1.md`.
 - **کامیت‌ها:** روی `arena/01a077e9-doctor` (لیست در PR) — کد + تست + مستندات.
-- **CI:** پس از push ثبت می‌شود (این ورودی در کامیت دوم با run-id به‌روز می‌شود).
+- **CI:** ✅ سبز کامل ۱۴/۱۴ روی `05d50ed` — Integration run 34090300269 (۳۰۷ تست، ۱۱ تست جدید سبز؛ یک شکست اولیه در RoleCapabilitiesOverrideTest به‌دلیل مقایسه ترتیبی به‌جای مجموعه‌ای «بازگشت به پیش‌فرض» → root-cause fix در 05d50ed)؛ Unit 8.1–8.4 + Pilot/Staging Gate + Closure Gate (run 34090297534/34090297520) — همه pass. Closure Gate نشان داد WP 6.4/6.5/6.6 از قبل در Gate پوشش دارد (اصلاح P7 ممیزی).
 - **تصمیمات درون‌فازی:** ① Scope پزشک در Service نه Controller (P-1)؛ ② «Override در بکاپ cpms_* فعلی نمی‌آید — fail-safe به پیش‌فرض» در گزارش ثبت شد؛ ③ Cap جدید نسخه‌های آینده برای نقش Override-دار خودکار فعال نمی‌شود (قابل‌پیش‌بینی بودن)؛ ④ P13 (Notes بدون optimistic locking) به‌عنوان رفتار عمدی + ADR آینده ثبت شد.
 - **موارد باز:** Part 2 پیشنهادی = UI پزشک/برنامه هفتگی (P1) + چاپ نسخه (P12)؛ Part 3 = UI گزارش‌ها (P4)؛ Part 4 = MariaDB/WP6.4 در CI (P6/P7) + i18n (P9) + JS/CSS جداسازی (P11)؛ Part 5 = پورتال بیمار (P3 — نیازمند تصمیم محصول). **توقف تا تأیید کارفرما.**
 - **وضعیت tree:** clean بعد از کامیت.
