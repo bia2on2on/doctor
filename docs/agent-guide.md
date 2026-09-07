@@ -600,3 +600,12 @@ final class XxxService {
 - **F1-10 (فقط docblock + تست):** قواعد Fallback در `StateMachine` صریح شد — fail-loud برای (from,event) نامعلوم؛ fallback به Candidate بدون محدودیت برای actor خارج از فهرست‌ها (فهرست خالی = همه)؛ ترتیب ارجحیت match؛ نکتهٔ امنیتی (مجوز واقعی در Service). رفتار کد هیچ تغییری نکرد. تست‌های مستندکننده Unit: `testActorFallbackToUnrestrictedCandidate` + `testNoFallbackWhenOnlyRestrictedCandidatesExist`.
 - **تست محلی:** lint php-wasm ۵ فایل ✓. **Integration/Unit: CI (راند نهایی).**
 - **وضعیت:** commit + push + SHA + CI نهایی (سه pipeline) در ادامه ثبت می‌شود. پس از سبزی: **STOP** — انتظار تأیید کارفرما (طبق پروتکل؛ F2 شروع نمی‌شود).
+
+#### پیوست — شواهد نهایی گروه‌های 4(تکمیل)–7 و STOP
+- **گروه 4 (تکمیل):** `463330e` (probe src+bin) → `8db0084` (نهایی: `phpstan.neon.dist`، level=3 بدون baseline — probe: صفر خطا @0..3 روی src+bin، ۷۲ خطا @4؛ job key `phpstan`؛ تصحیح AC-9 در report-f1.md).
+- **گروه 5:** `ce751ba` (+`35977f5` docs) — F1-5 (cleanup.oplog + retention.oplog_days=90) + F1-6 (fail race guard). CI run **34139668303** سبز ۶/۶.
+- **گروه 6:** `3a403f3` — F1-7 (قفل یکپارچهٔ runTick + isTickLocked + تست اتصال دوم). CI run **34139964706** سبز ۶/۶.
+- **گروه 7:** `88183a6` — F1-8 (sanitize exact-match؛ http_code/failure_code حفظ) + F1-10 (docblock فالبک + تست‌های Unit). CI روی HEAD نهایی: run **34140229256** سبز ۶/۶ + Closure **34140225798** سبز + Pilot **34140225799** سبز (۸ دقیقه).
+- **پاک‌سازی:** workflow موقت probe حذف شد (در 88183a6+این کامیت).
+- **جمع تست‌های جدید این نشست:** SettingsAuditTest (۶) + JobQueueTest (۳+) + OpLogRetentionTest (۴) + TickLockTest (۳) + AuditChainTest (۱+) + StateMachineTest (۲+) = ۱۹+ تست رگرسیون.
+- **STOP طبق پروتکل:** هر ۷ گروه انجام/سبز شد — منتظر تأیید کارفرما برای merge PR #7. F2 شروع نمی‌شود.
