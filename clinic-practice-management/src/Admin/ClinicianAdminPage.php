@@ -96,7 +96,7 @@ final class ClinicianAdminPage
         <thead><tr><th>نام</th><th>تخصص</th><th>اتاق</th><th>کاربر متصل</th><th>روزهای برنامه</th><th>وضعیت</th><th></th></tr></thead>
         <tbody>
         <?php if ($rows === []) : ?>
-            <tr><td colspan="7">هنوز پزشکی ثبت نشده — با فرم پایین اولین پزشک را اضافه کنید.</td></tr>
+            <tr><td colspan="7"><?php echo CpmsUi::emptyState('🩺', 'هنوز پزشکی ثبت نشده', 'برای شروع، اولین پزشک را با فرم پایین اضافه کنید — یا می‌توانید هم‌زمان حساب ورود او را با نقش «پزشک» بسازید.', 'افزودن اولین پزشک', admin_url('admin.php?page=cpms-clinicians')); ?></td></tr>
         <?php endif; ?>
         <?php foreach ($rows as $r) : ?>
             <tr>

@@ -151,71 +151,143 @@ final class RoleCapabilitiesPage
         $overrides = RolesAndCapabilities::overrides();
         ?>
 <div class="wrap" dir="rtl">
-    <h1>CPMS — دسترسی نقش‌ها</h1>
+    <h1>کاربران و دسترسی‌ها</h1>
 
     <?php if (is_string($notice) && $notice !== '') : ?>
         <div class="notice notice-success is-dismissible"><p><?php echo esc_html($notice); ?></p></div>
     <?php endif; ?>
 
     <div class="notice notice-info inline"><p>
-        تغییرات این صفحه <strong>عمدی و ماندگار</strong> ثبت می‌شود (Override — ADR-0030) و توسط
-        Self-healing افزونه حذف نمی‌شود. تیک‌برداشتن یک Capability، آن را <strong>فوراً</strong>
-        از نقش می‌گیرد. هر تغییر در Audit با ذکر کاربر، زمان و تفاضل ثبت می‌شود.
-        ⚠️ = Capability حساس (P-11).
+        دسترسی‌ها با <strong>Role Preset</strong> قابل‌فهم تعریف می‌شوند؛ برای ویرایش دقیقِ هر
+        Capability از <strong>Advanced Permissions</strong> (جمع‌شونده) استفاده کنید. تغییرات
+        <strong>عمدی و ماندگار</strong> ثبت می‌شوند (Override — ADR-0030) و توسط Self-healing حذف
+        نمی‌شوند؛ هر تغییر در Audit با ذکر کاربر، زمان و تفاضل ثبت می‌شود.
+        <span class="cpms-sensitive">⚠️ = Capability حساس (P-11).</span>
     </p></div>
 
-    <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+    <!-- نقش بیمار: فقط اطلاعی -->
+    <div class="cpms-role-preset">
+        <h2 class="title">بیمار (cpms_patient)</h2>
+        <p class="description"><?php echo esc_html(self::roleDescription(RolesAndCapabilities::ROLE_PATIENT)); ?></p>
+    </div>
+
+    <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>"
+          data-cpms-confirm="تغییر دسترسی‌ها عمدی و ماندگار است و می‌تواند به توانایی‌های حساس (P-11) مربوط باشد. ادامه می‌دهید؟">
         <input type="hidden" name="action" value="cpms_save_role_caps">
         <?php wp_nonce_field(self::NONCE_ACTION); ?>
 
-        <!-- نقش بیمار: فقط اطلاعی -->
-        <h2 class="title">بیمار (cpms_patient)</h2>
-        <p class="description">
-            بدون هیچ Capability — دسترسی فقط با مالکیت (فقط داده‌های خودش از طریق موبایل/OTP).
-            این نقش عمداً قابل ویرایش نیست (P-5).
-        </p>
-
         <?php foreach ([RolesAndCapabilities::ROLE_SECRETARY, RolesAndCapabilities::ROLE_DOCTOR] as $role) : ?>
-            <?php
-            $label = $role === RolesAndCapabilities::ROLE_SECRETARY ? 'منشی مطب (cpms_secretary)' : 'پزشک (cpms_doctor)';
-            $effective = RolesAndCapabilities::capsMap($role); // array<string,bool>
-            $isOverridden = isset($overrides[$role]);
-            ?>
-            <h2 class="title"><?php echo esc_html($label); ?>
-                <?php if ($isOverridden) : ?>
-                    <span class="description">— تغییر یافته نسبت به پیش‌فرض
-                        (<a href="<?php echo esc_url(wp_nonce_url(admin_url('admin-post.php?action=cpms_reset_role_caps&role=' . $role), 'cpms_reset_role_caps_' . $role)); ?>"
-                            onclick="return confirm('بازگشت این نقش به Template پیش‌فرض افزونه؟');">بازگشت به پیش‌فرض</a>)
-                    </span>
-                <?php endif; ?>
-            </h2>
-            <table class="widefat striped" style="max-width:900px">
-                <?php foreach (self::GROUPS as $groupTitle => $capsInGroup) : ?>
-                    <tr>
-                        <td style="width:180px"><strong><?php echo esc_html($groupTitle); ?></strong></td>
-                        <td>
-                            <?php foreach ($capsInGroup as $cap) : ?>
-                                <?php $sensitive = in_array($cap, self::SENSITIVE, true); ?>
-                                <label style="display:inline-block;min-width:240px;margin:2px 0">
-                                    <input type="checkbox" name="role_caps[<?php echo esc_attr($role); ?>][]"
-                                            value="<?php echo esc_attr($cap); ?>"
-                                            <?php checked(!empty($effective[$cap])); ?>>
-                                    <?php echo esc_html(self::labelFor($cap)); ?>
-                                    <?php echo $sensitive ? ' ⚠️' : ''; ?>
-                                </label>
-                            <?php endforeach; ?>
-                        </td>
-                    </tr>
-                <?php endforeach; ?>
-            </table>
+            <?php self::renderRolePreset($role, $overrides); ?>
         <?php endforeach; ?>
 
-        <p style="margin-top:14px">
+        <p style="margin-top:16px">
             <button type="submit" class="button button-primary button-hero">ذخیره دسترسی‌ها</button>
         </p>
     </form>
 </div>
         <?php
+    }
+
+    /**
+     * یک Role Preset — نمای معمولی: توضیح فارسی نقش + «می‌تواند / نمی‌تواند» + هشدار حساس؛
+     * و Advanced Permissions جدا/جمع‌شونده با گروه‌بندی + جستجو + نشانگر حساس.
+     *
+     * Backend Security حفظ می‌شود: نام فیلد نقش‌ها همان `role_caps[role][]` است و `save()`
+     * از همان مسیر `RolesAndCapabilities::setRoleCaps` + whitelist + Audit استفاده می‌کند.
+     *
+     * @param array<string, mixed> $overrides
+     */
+    private static function renderRolePreset(string $role, array $overrides): void
+    {
+        $label = $role === RolesAndCapabilities::ROLE_SECRETARY ? 'منشی مطب (cpms_secretary)' : 'پزشک (cpms_doctor)';
+        $effective = RolesAndCapabilities::capsMap($role); // array<string,bool> (فقط فعال‌ها، با true)
+        $enabled = array_keys($effective);
+        $disabled = array_values(array_diff(RolesAndCapabilities::ALL_CAPS, $enabled));
+        $isOverridden = isset($overrides[$role]);
+        $sensitiveEnabled = array_values(array_intersect($enabled, self::SENSITIVE));
+        ?>
+        <div class="cpms-role-preset">
+            <h2 class="title"><?php echo esc_html($label); ?>
+                <?php if ($isOverridden) : ?>
+                    <span class="description">— تغییر یافته نسبت به پیش‌فرض
+                        (<a href="<?php echo esc_url(wp_nonce_url(admin_url('admin-post.php?action=cpms_reset_role_caps&role=' . $role), 'cpms_reset_role_caps_' . $role)); ?>"
+                            data-cpms-confirm="بازگشت این نقش به Template پیش‌فرض افزونه؟ همهٔ تغییرات سفارشی بازنشانی می‌شود."><?php echo esc_html('بازگشت به پیش‌فرض'); ?></a>)
+                    </span>
+                <?php endif; ?>
+            </h2>
+            <p class="description"><?php echo esc_html(self::roleDescription($role)); ?></p>
+
+            <div class="cpms-cards" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr))">
+                <div class="cpms-card">
+                    <h2>✅ می‌تواند</h2>
+                    <?php if ($enabled === []) : ?>
+                        <p class="description">هیچ Capability فعالی ندارد.</p>
+                    <?php else : ?>
+                        <ul style="margin:0;padding-inline-start:18px">
+                            <?php foreach ($enabled as $cap) : ?>
+                                <li><?php echo esc_html(self::labelFor($cap)); ?><?php echo in_array($cap, self::SENSITIVE, true) ? ' <span class="cpms-sensitive">⚠️</span>' : ''; ?></li>
+                            <?php endforeach; ?>
+                        </ul>
+                    <?php endif; ?>
+                </div>
+                <div class="cpms-card">
+                    <h2>⛔ نمی‌تواند</h2>
+                    <?php if ($disabled === []) : ?>
+                        <p class="description">هیچ Capability غیرفعالی ندارد.</p>
+                    <?php else : ?>
+                        <ul style="margin:0;padding-inline-start:18px">
+                            <?php foreach ($disabled as $cap) : ?>
+                                <li><?php echo esc_html(self::labelFor($cap)); ?><?php echo in_array($cap, self::SENSITIVE, true) ? ' <span class="cpms-sensitive">⚠️</span>' : ''; ?></li>
+                            <?php endforeach; ?>
+                        </ul>
+                    <?php endif; ?>
+                </div>
+            </div>
+
+            <?php if ($sensitiveEnabled !== []) : ?>
+                <div class="cpms-danger-box" style="margin-top:12px">
+                    <strong>⚠️ دسترسی حساس فعال:</strong>
+                    <?php echo esc_html(implode('، ', array_map([self::class, 'labelFor'], $sensitiveEnabled))); ?>.
+                    این توانایی‌ها (P-11) به دادهٔ حساس بالینی/مالی دسترسی می‌دهند.
+                </div>
+            <?php endif; ?>
+
+            <details class="cpms-details" style="margin-top:14px">
+                <summary>Advanced Permissions — ویرایش دقیق Capabilities</summary>
+                <p class="description">برای نقش‌های مخاطب‌حساس توصیه می‌شود دسترسی‌های غیرضروری را خاموش کنید.</p>
+                <p><input type="search" class="cpms-cap-search regular-text" data-scope="<?php echo esc_attr($role); ?>"
+                        placeholder="جستجوی Capability… (فارسی یا فنی)" aria-label="جستجوی Capability"></p>
+                <?php foreach (self::GROUPS as $groupTitle => $capsInGroup) : ?>
+                    <div class="cpms-cap-group">
+                        <h4><?php echo esc_html($groupTitle); ?></h4>
+                        <div class="cpms-cap-list">
+                            <?php foreach ($capsInGroup as $cap) : ?>
+                                <?php $sensitive = in_array($cap, self::SENSITIVE, true); ?>
+                                <label data-cap data-scope="<?php echo esc_attr($role); ?>">
+                                    <input type="checkbox" name="role_caps[<?php echo esc_attr($role); ?>][]"
+                                            value="<?php echo esc_attr($cap); ?>"
+                                            <?php checked(!empty($effective[$cap])); ?>>
+                                    <span><?php echo esc_html(self::labelFor($cap)); ?></span>
+                                    <?php echo $sensitive ? ' <span class="cpms-sensitive">⚠️</span>' : ''; ?>
+                                </label>
+                            <?php endforeach; ?>
+                        </div>
+                    </div>
+                <?php endforeach; ?>
+            </details>
+        </div>
+        <?php
+    }
+
+    /** توضیح فارسی یک نقش (Chunk F). */
+    private static function roleDescription(string $role): string
+    {
+        return match ($role) {
+            RolesAndCapabilities::ROLE_SECRETARY => 'مسئول پذیرش و صف: ثبت/جابه‌جایی نوبت، چک‌این، مالی روزانه و ارتباط با بیماران.',
+            RolesAndCapabilities::ROLE_DOCTOR => 'جریان اصلی درمان: مشاهدهٔ صف و نوبت، مشاوره، نسخه، یادداشت بالینی و توصیهٔ پزشکی.',
+            RolesAndCapabilities::ROLE_PATIENT => 'بدون Capability — دسترسی فقط با مالکیت (فقط داده‌های خودش از طریق موبایل/OTP). این نقش عمداً قابل ویرایش نیست (P-5).',
+            default => '',
+        };
     }
 
     /**

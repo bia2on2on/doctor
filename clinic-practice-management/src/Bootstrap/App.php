@@ -6,6 +6,7 @@ namespace ClinicCore\Bootstrap;
 
 use ClinicCore\Admin\ClinicianAdminPage;
 use ClinicCore\Admin\CpmsAdminMenu;
+use ClinicCore\Admin\CpmsAssets;
 use ClinicCore\Admin\CpmsSetupWizard;
 use ClinicCore\Admin\PatientPortalPage;
 use ClinicCore\Admin\PrescriptionPrintPage;
@@ -193,6 +194,7 @@ final class App
 
         // Admin UX — منوی Top-Level «مدیریت مطب» + داشبورد + IA (Chunk A)
         CpmsAdminMenu::register();
+        CpmsAssets::register(); // Chunk F — assets اسکوپ‌شدهٔ صفحات CPMS (CSS/JS محلی، فقط در صفحات CPMS)
         CpmsSetupWizard::register(); // Chunk B — راه‌اندازی گام‌به‌گام (self-service, resumable)
         StaffManagementPage::register(); // Chunk C — کاربران و دسترسی‌ها (staff/user management)
 

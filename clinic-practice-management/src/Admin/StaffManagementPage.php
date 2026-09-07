@@ -107,7 +107,7 @@ final class StaffManagementPage
                     </tbody>
                 </table>
             <?php else : ?>
-                <p>هنوز پرسنلی ثبت نشده است.</p>
+                <?php echo CpmsUi::emptyState('👥', 'هنوز پرسنلی ثبت نشده', 'کاربران کلینیک (پزشک، منشی، بیمار) را با فرم پایین اضافه کنید. فقط نقش‌های CPMS از این‌جا قابل مدیریت‌اند؛ administrator از این‌جا قابل تغییر نیست.', 'افزودن کاربر', admin_url('admin.php?page=' . self::PAGE_SLUG)); ?>
             <?php endif; ?>
 
             <?php $edit = self::editTarget(); ?>
