@@ -1,17 +1,27 @@
 # PHPStan — F1-3 (گروه 4 از 7)
 #
-# سطح: بالاترین سطحی که روی وضعیت واقعی کد بدون baseline و بدون
-# ignore-path پاس می‌شود («level matched to real code state» — مصوب کارفرما).
-# سطح با Probe موقت (.github/workflows/phpstan-probe.yml) روی CI تعیین شد؛
-# بعد از تعیین، این فایل مرجع است و Gate از آن سقف پایین نمی‌آید.
+# سطح 3 = بالاترین سطحی که روی وضعیت واقعی کد بدون baseline و بدون
+# ignore-path گسترده پاس می‌شود («level matched to real code state» — مصوب کارفرما).
+# سطح با Probe موقت (.github/workflows/phpstan-probe.yml) روی CI تعیین شد:
+#   سطح 0..3 → سبز (بعد از رفع باگ‌های واقعی که خود تحلیل پیدا کرد)؛
+#   سطح 4 → ۶۷ خطا (بازسازی تایپی گسترده — خارج از scope remediation)؛ 5..8 → بیشتر.
+# سطح از این پس سقف پایین نمی‌آید؛ ارتقا به 4+ کار آینده است.
 #
 # scope: فقط src/ (کد تولیدی PSR-4 ClinicCore). tests/ با اجرای واقعی پوشش
 # دارد؛ bin/ (اسکریپت‌های عملیاتی CLI) فعلاً خارج scope است.
 parameters:
-    level: 5
+    level: 3
     paths:
         - src
     scanFiles:
         - vendor/php-stubs/wordpress-stubs/wordpress-stubs.php
     bootstrapFiles:
         - phpstan-bootstrap.php
+    ignoreErrors:
+        # require مسیرهای runtime وردپرس — در تحلیل استاتیک ABSPATH واقعی نیست؛
+        # در کد گارد function_exists قبل از require هست (WpUpdateBridge::run).
+        -
+            message: '#^Path in require_once\(\) ".+" is not a file or it does not exist\.$#'
+            paths:
+                - src/Infrastructure/Update/WpUpdateBridge.php
+

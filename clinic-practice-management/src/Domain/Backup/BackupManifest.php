@@ -90,8 +90,8 @@ final class BackupManifest
      * فایل‌های اضافی = هشدار (نقص مانیفست/دستکاری).
      *
      * @param array<string, mixed> $raw
-     * @param callable(string $relPath): array{size:int, sha256:string}|null $stat
-     *        مسیر نسبی → {size, sha256} (null = غایب) — بدون بارگذاری کل فایل.
+     * @param callable(string $relPath): array{size:int, sha256:string} $stat
+     *        مسیر نسبی → {size, sha256} (null بازگشتی = غایب) — بدون بارگذاری کل فایل.
      *
      * @return array{ok: bool, errors: list<string>, warnings: list<string>}
      */

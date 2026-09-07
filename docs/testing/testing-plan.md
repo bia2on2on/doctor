@@ -42,7 +42,7 @@
 
 ## 3. پوشش و کیفیت
 - هسته Business Rules (State Machines, Policy, Financial): **Branch Coverage ≥ 80%** (Gate CI).
-- هر PR: Lint (PHP-CS-Fixer) + Static Analysis (PHPStan L.6) + Test — CI سبز = Merge.
+- هر PR: Lint (PHP-CS-Fixer) + Static Analysis (PHPStan — فعلاً L3 در CI از F1-3؛ هدف ارتقا L4+) + Test — CI سبز = Merge.
 - **ممنوعیت‌های Section 56 به‌عنوان Gate:** هیچ Endpoint بدون تست Permission، هیچ Feature بدون TP مربوطه.
 
 ## 4. Fixture و داده تست

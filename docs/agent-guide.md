@@ -219,7 +219,7 @@ final class XxxService {
 
 ## 6. CI و محیط
 
-- Workflow: `.github/workflows/ci.yml` — ۲ job: **Unit** (matrix PHP 8.1–8.4، بدون WP) + **Integration** (WP 6.7.2 + MySQL 8، PHPUnit 9.6، `tests/bin/install-wp-tests.sh`، root/root، prefix `wptests_`).
+- Workflow: `.github/workflows/ci.yml` — ۳ job: **Unit** (matrix PHP 8.1–8.4، بدون WP) + **Integration** (WP 6.7.2 + MySQL 8، PHPUnit 9.6، `tests/bin/install-wp-tests.sh`، root/root، prefix `wptests_`) + **Static Analysis** (PHPStan — از F1-3/گروه 4؛ سطح در `clinic-practice-management/phpstan.neon` = 3، بالاترین سطح سبز روی وضعیت واقعی کد؛ ارتقا به 4+ نیازمند بازسازی تایپی — کار آینده).
 - چرخه CI ≈ ۴.۵–۵ دقیقه.
 - شواهد شکست را از کامنت‌های PR #1 بخوان (step «Post failures to PR» فقط در failure).
 - **محیط sandbox فاقد PHP CLI است** — برای lint فایل‌های PHP از WASM:
@@ -556,3 +556,16 @@ final class XxxService {
 - **PR:** #7 (`arena/01a07c01-doctor` → `main`) — «F1 Remediation (cont. 2) — group 3/7: settings audit (F1-4)».
 - **CI (روی `d42ef0d`): ✅ سبز ۳/۳** — CI/pull_request run **34128017332** (Unit PHP 8.1–8.4 + Integration WP6.7/MySQL8 = success؛ step «Post failures to PR» skip = صفر شکست) + Pilot/Staging Readiness Gate run **34128001933** (8m34s، success) + Closure Gate run **34128001870** (success). لاگ خام jobها از results-receiver مسدود است (محدودیت شناخته‌شدهٔ محیط) — Evidence: conclusion رسمی GitHub.
 - **Tree:** clean. بعد از این docs-commit، CI نهایی روی HEAD ثبت می‌شود.
+
+### [2026-09-07 ~14:55 UTC] — ایجنت Arena (شاخهٔ `arena/01a07c01-doctor`) — F1 Remediation گروه 4: رفع F1-3 — PHPStan در CI (سطح هم‌تراز واقعیت) + docs sync
+- **فاز/محدوده:** گروه 4 از 7. «PHPStan added to CI (level matched to real code state) + docs sync» — بدون تضعیف Gate.
+- **روش تعیین سطح:** PHP CLI در sandbox نیست (apt مخازن ناقص، باینری استاتیک در GitHub release موجود نبود) → **Probe روی CI**: workflow موقت با اجرای سطح‌های 0..8 و انتشار خروجی در کامنت PR (الگوی «Post failures to PR» — لاگ job از API مسدود است). ۴ راند (رفع constraint stubs `^7.0`، حذف `scanConstants` حذف‌شده در PHPStan 2، رفع artifact ویرایش موازی در انتهای HandwritingService — درس: ویرایش‌های موازی edit_file روی یک فایل ممنوع).
+- **باگ‌های واقعی که خود تحلیل پیدا کرد (رفع شد):**
+  ① `Admin/SystemPage` — ارجاع به `SystemHealthService::HOST_SUPPORTED*` بدون import درست → کلاسِ `ClinicCore\Admin\SystemHealthService` ناموجود → **Fatal در رندر صفحه «CPMS (سیستم)»** (F10). رفع: import `ClinicCore\Application\System\SystemHealthService`.
+  ② `Rest/OtpController:80` — فراخوانی `OtpException::getData()` که وجود نداشت → **Fatal در پاسخ REST برای کد OTP غلط/منقضی** (مسیر رایج کاربر؛ تست‌ها service-level بودند و نمی‌گرفتند). رفع: `getData()` به `OtpException` اضافه شد.
+  ③ `OtpService::audit()` — ۵ آرگومان صدا می‌شد، ۴ پارامتر می‌گرفت → meta «remaining» در `OTP_VERIFY_FAIL` بی‌صدا drop. رفع: `$meta` اختیاری + ادغام در after_json (Audit غنی‌تر).
+- **لینت/تایپ:** حذف `use`های بلااستفاده (Booking/Clinical/Handwriting)، `callable(): T` برای `CpmsDb::transactional`، PHPDocهای ناسازگار (SmsController/BackupManifest).
+- **پیکربندی:** `phpstan.neon` — سطح **3** (سطح 0..3 سبز؛ سطح 4 = ۶۷ خطا — بازسازی تایپی گسترده از ~۲۵ فایل، خارج از scope remediation؛ 5..8 بیشتر). `phpstan-bootstrap.php` (ثابت‌های WP/افزونه: ABSPATH، ARRAY_A، MINUTE_IN_SECONDS، CPMS_PLUGIN_DIR، …). require-dev: `phpstan/phpstan ^2.1` + `php-stubs/wordpress-stubs ^7.0` + `szepeviktor/phpstan-wordpress ^2.0`. ci.yml: job سوم «Static Analysis (PHPStan)» مستقل از Unit/Integration. یک ignore هدفمند+مستند: path-check `require_once` مسیرهای runtime WP در WpUpdateBridge (گارد function_exists موجود). Probe workflow حذف شد.
+- **Docs sync:** agent-guide §6 (۳ job)، testing-plan §45 (L.6 → L3 فعلی + هدف ارتقا)، engineering-baseline §38 (اشاره به PHPStan L3 در CI)، CHANGELOG 1.0.2.
+- **تست محلی:** lint php-wasm 9 فایل ✓ (بعد از رفع artifact). **PHPStan/Integration/Unit: CI.**
+- **وضعیت:** commit + push + SHA remote + CI نهایی در ادامه این لاگ ثبت می‌شود.
