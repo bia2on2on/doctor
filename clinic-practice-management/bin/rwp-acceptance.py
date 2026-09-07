@@ -176,9 +176,11 @@ with sync_playwright() as p:
         check("admin-ui.menu.no_doctor_topmenu", "admin.php?page=cpms-doctor" not in menu, "منوی «امروز پزشک» برای مدیر پنهان است")
         check("admin-ui.menu.no_queue_topmenu", "admin.php?page=cpms-queue" not in menu, "منوی «صف امروز» برای مدیر پنهان است")
 
-        # Doctor Schedule: اولین لینک «مدیریت برنامه» در فهرست پزشکان را باز کن.
+        # Doctor Schedule: به فهرست پزشکان برگرد و اولین لینک «مدیریت برنامه» را باز کن.
+        # (چون اسلاگ انتهایی حلقهٔ قبلی cpms-system بود؛ و «&» در href به &amp; است.)
         try:
-            link = ui.query_selector('a[href*="page=cpms-clinicians&clinician_id="]')
+            goto_admin(ui, "admin-ui", "admin.php?page=cpms-clinicians", "cpms-clinicians-list")
+            link = ui.query_selector('a[href*="cpms-clinicians"][href*="clinician_id="]')
             if link:
                 href = link.get_attribute("href") or ""
                 m = re.search(r"clinician_id=\d+", href)
