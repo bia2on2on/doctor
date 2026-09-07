@@ -63,14 +63,25 @@ def login(page, user, password, tag):
     return ok
 
 
+def excerpt(body, limit=400):
+    # متن قابل‌خواندن از HTML برای Evidence (بدون تگ)
+    text = re.sub(r"<script.*?</script>", " ", body or "", flags=re.S)
+    text = re.sub(r"<style.*?</style>", " ", text, flags=re.S)
+    text = re.sub(r"<[^>]+>", " ", text)
+    return re.sub(r"\s+", " ", text).strip()[:limit]
+
+
 def goto_admin(page, tag, path, shot_name):
     resp = page.goto(f"{BASE}/wp-admin/{path}", wait_until="domcontentloaded")
     page.wait_for_timeout(1200)  # settle کوتاه برای رندر/JS (بدون مکث طولانی)
     status = resp.status if resp else 0
     body = page.content()
     page.screenshot(path=f"{OUT}/screenshots/{shot_name}.png", full_page=True)
+    with open(f"{OUT}/logs/{tag}-{shot_name}.html", "w") as f:
+        f.write(body or "")
     check(f"{tag}.{shot_name}.http200", status == 200, f"HTTP {status}")
-    check(f"{tag}.{shot_name}.no_critical_error", not CRITICAL_RE.search(body or ""), path)
+    crit = CRITICAL_RE.search(body or "")
+    check(f"{tag}.{shot_name}.no_critical_error", not crit, excerpt(body) if crit else path)
     return status, body
 
 
@@ -147,8 +158,8 @@ with open(f"{OUT}/logs/browser-console-errors.log", "w") as f:
 with open(f"{OUT}/logs/browser-page-errors.log", "w") as f:
     for tag, msg in page_errors:
         f.write(f"[{tag}] {msg}\n")
-check("browser.no_console_errors", len(console_errors) == 0, f"{len(console_errors)} خطا")
-check("browser.no_page_errors", len(page_errors) == 0, f"{len(page_errors)} خطا")
+check("browser.no_console_errors", len(console_errors) == 0, f"{len(console_errors)} خطا — " + " || ".join(f"[{t}] {m[:140]}" for t, m in console_errors[:4]))
+check("browser.no_page_errors", len(page_errors) == 0, f"{len(page_errors)} خطا — " + " || ".join(f"[{t}] {m[:140]}" for t, m in page_errors[:4]))
 
 # ---------- جمع‌بندی ----------
 failed = [r for r in results if not r[1]]
