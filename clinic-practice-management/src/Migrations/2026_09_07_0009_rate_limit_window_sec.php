@@ -35,15 +35,15 @@ return [
     'description' => 'cpms_rate_limits: add window_sec (unit-agnostic cleanup, F1-1)',
     'up' => function (CpmsDb $db): void {
         $table = $db->table('cpms_rate_limits');
-        $hasColumn = $db->query(
-            "SHOW COLUMNS FROM {$table} LIKE 'window_sec'"
-        );
+        // probe با fetchRow (query() فقط bool برمی‌گرداند — با آن، شرط
+        // «ستون موجود است» همیشه برقرار می‌شد و ALTER هرگز اجرا نمی‌شد).
+        $col = $db->fetchRow("SHOW COLUMNS FROM {$table} LIKE 'window_sec'"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
-        if (empty($hasColumn)) {
+        if ($col === null) {
             $db->query(
                 "ALTER TABLE {$table}
                  ADD COLUMN window_sec INT UNSIGNED NOT NULL DEFAULT 3600"
-            );
+            ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         }
     },
     'down' => function (CpmsDb $db): void {

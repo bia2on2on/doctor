@@ -69,6 +69,20 @@ final class RateLimiterTest extends WP_UnitTestCase
         $this->assertSame(0, (int) $left);
     }
 
+    public function testWindowSecColumnAddedByMigration(): void
+    {
+        // رگرسیون: Migration 0009 باید ستون را واقعاً بسازد (نه فقط version را ثبت
+        // کند) — probe اشتباه با query() (که bool برمی‌گرداند) ALTER را
+        // بی‌صدا رد می‌کرد و ستون هیچ‌گاه ساخته نمی‌شد.
+        global $wpdb;
+        $table = $wpdb->prefix . 'cpms_rate_limits';
+        $col = $wpdb->get_row("SHOW COLUMNS FROM {$table} LIKE 'window_sec'", ARRAY_A); // phpcs:ignore WordPress.DB.PreparedSQL
+        $this->assertNotNull($col, 'ستون window_sec باید توسط Migration ساخته شده باشد');
+        $this->assertStringContainsString('int', strtolower((string) $col['Type']));
+        $this->assertStringContainsString('unsigned', (string) $col['Type']);
+        $this->assertStringContainsString('3600', (string) $col['Default']);
+    }
+
     public function testDailyOtpLimitSurvivesCleanup(): void
     {
         // Regression F1-1: کد قدیم cutoff را در واحد «ساعت» حساب می‌کرد در حالی

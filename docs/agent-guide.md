@@ -517,3 +517,9 @@ final class XxxService {
 - **ریشه:** شکست همهٔ Jobهای WP (Integration + Pilot + Closure روی همهٔ runtimes) در یک نقطهٔ واحد بود: `FAIL schema-0008 — 2026_09_07_0009`. Gateها و `MigrationTest` نسخهٔ فعلی schema را **پین** کرده بودند (`2026_09_07_0008`) — نقطهٔ همگام‌سازی طراحی‌شده برای هر Migration جدید.
 - **رفع (تضعیف Gate نه، به‌روزرسانی پین):** `schema-0009` در closure-gate (۲×probe + restore-drill grep)، pilot-gate (fresh-install check + upgrade-path check + echo نمایشی) و `MigrationTest` (`LATEST_VERSION` + افزودن `rollbackOne()=0009` به ابتدای زنجیرهٔ rollback در دو تست Preflight/Upgrade — down()ِ 0009 عمداً no-op است و re-migrate آن idempotent).
 - **تست‌ها:** Unit 285/0F (php-wasm) + lint ✓؛ Integration/Gates در راند بعدی CI.
+
+#### پیوست گروه 1 (ب) — باگ واقعی دوم: probe اشتباه در Migration 0009 (کشف از 9 شکست Integration راند 2)
+- **شواهد:** 9 شکست (7×RateLimiterTest + OtpFlowTest + RestBookingTest) دقیقاً مطابق رفتار «جدولِ 3 ستونه بدون window_sec»: INSERT چهارستونه soft-fail، DELETE با شرط window_sec حذف صفر؛ در حالی که MigrationTest سبز بود (FKها روی جدول واقعی) → ردیف window_sec واقعاً هرگز ساخته نشده بود.
+- **ریشه:** `CpmsDb::query()` فقط **bool** برمی‌گرداند؛ در up()ِ 0009 probe با `query("SHOW COLUMNS …")` نوشته شده بود → `empty(true) === false` → شرط «ستون موجود است» همیشگی → **ALTER هیچ‌وقت اجرا نمی‌شد** ولی version با موفقیت ثبت می‌شد (به همین دلیل همهٔ Gateها — که فقط version را پین می‌کنند — سبز ماندند!). دقیقاً همان کلاس خطایی که F1-2 (silent-fail migration) هدف دارد.
+- **رفع:** probe با `fetchRow()` + `$col === null` (الگوی استاندارد ماست: 0004/0005/0006) + تست جدید `testWindowSecColumnAddedByMigration` (وجود ستون + int unsigned + default 3600). اسکن کل src: نمونهٔ دیگری از این الگوی نادرست وجود ندارد.
+- **درس برای گروه 2 (F1-2):** strict mode روی MigrationRunner عیناً همین کلاس شکست (SQL ناموفق + version ثبت‌شده) را در آینده مسدود می‌کند.
