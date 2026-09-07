@@ -137,6 +137,15 @@
 ### Chunk F — طراحی/Responsive/Accessibility + Empty states + Dangerous-action UX
 - Card/section/badge/empty-state؛ RTL؛ responsive ۶ رزولوشن؛ keyboard/focus/contrast؛ confirmation.
 
+> ✅ **Done (commit `63ce037` + `70a0c80` + `5fe13f0` + `7f3b6a3`)** — طراحی اسکوپ‌شدهٔ صفحات
+> CPMS (`assets/css/cpms-admin.css` + `assets/js/cpms-admin.js` + `CpmsAssets`؛ فقط صفحات CPMS،
+> بدون asset سراسری/فریم‌ورک). Permissions بازطراحی: Normal = Role Presets + توضیح فارسی +
+> «می‌تواند/نمی‌تواند» + هشدار حساس؛ Advanced = جمع‌شونده/گروه‌بندی/جستجو با حفظ
+> `role_caps[role][]` و مسیر امن backend. Empty states (پزشک/پرسنل/بکاپ) با next action؛
+> dangerous actions با تأیید. گیت `real-wp-acceptance.yml` با اسکرین‌شات دسکتاپ/موبایل
+> (Dashboard/Setup/Staff/Clinicians/Roles/System/Advanced Permissions) و بازبینی منو + console
+> متصل شد. همهٔ گیت‌ها سبز؛ فقط Staging Gate (غیرمرتبط، از قبل) در انتظار.
+
 > ✅ **Done (commit `63ce037`)** — سیستم طراحی اسکوپ‌شدهٔ صفحات CPMS (`assets/css/cpms-admin.css`
 > + `assets/js/cpms-admin.js`) + `CpmsAssets` (فقط صفحات CPMS، بدون asset سراسری/فریم‌ورک).
 > صفحهٔ Permissions بازطراحی: Normal = Role Presets + توضیح فارسی نقش + «می‌تواند/نمی‌تواند»
