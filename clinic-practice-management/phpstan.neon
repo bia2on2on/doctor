@@ -13,5 +13,3 @@ parameters:
         - src
     scanFiles:
         - vendor/php-stubs/wordpress-stubs/wordpress-stubs.php
-    scanConstants:
-        - vendor/php-stubs/wordpress-stubs/wordpress-stubs.php
