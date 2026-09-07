@@ -1,7 +1,8 @@
 name: PHPStan Level Probe (temporary — F1-3 level discovery)
 
 # موقت: تعیین «سطح هم‌تراز وضعیت واقعی کد» برای F1-3. بعد از ثبت سطح در
-# phpstan.neon و ci.yml این فایل حذف می‌شود. سبز = سطح پاس‌شده.
+# phpstan.neon و ci.yml این فایل حذف می‌شود. لاگ job از API مسدود است →
+# نتیجه (شمار خطا + نمونه) در کامنت PR منتشر می‌شود (الگوی ci.yml).
 
 on:
   pull_request:
@@ -9,6 +10,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write
 
 defaults:
   run:
@@ -16,12 +18,8 @@ defaults:
 
 jobs:
   probe:
-    name: Probe level ${{ matrix.level }}
+    name: Probe levels 0..8 (sequential)
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        level: [0, 1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - uses: actions/checkout@v4
 
@@ -34,5 +32,38 @@ jobs:
       - name: Install dependencies
         run: composer install --prefer-dist --no-progress --no-interaction
 
-      - name: PHPStan analyse (level ${{ matrix.level }})
-        run: vendor/bin/phpstan analyse --level=${{ matrix.level }} --no-progress --error-format=raw
+      - name: Run PHPStan levels 0..8
+        run: |
+          set +e
+          rm -f /tmp/summary.txt
+          for L in 0 1 2 3 4 5 6 7 8; do
+            vendor/bin/phpstan analyse --level=$L --no-progress --error-format=raw > /tmp/lvl-$L.log 2>&1
+            RC=$?
+            ERRS=$(grep -cv '^$' /tmp/lvl-$L.log || true)
+            echo "level=$L exit=$RC lines=$ERRS" >> /tmp/summary.txt
+          done
+          cat /tmp/summary.txt
+
+      - name: Post probe results to PR
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          {
+            echo "### PHPStan level probe (run ${{ github.run_id }})"
+            echo '```'
+            cat /tmp/summary.txt
+            echo '```'
+            for L in 0 1 2 3 4 5 6 7 8; do
+              echo "--- level $L (head 12 + tail 3) ---"
+              echo '```'
+              head -n 12 /tmp/lvl-$L.log
+              echo '…'
+              tail -n 3 /tmp/lvl-$L.log
+              echo '```'
+            done
+          } > /tmp/pr-body.md
+          if [ -n "$PR_NUMBER" ]; then
+            gh pr comment "$PR_NUMBER" --body-file /tmp/pr-body.md || echo "::notice::PR comment failed"
+          fi
