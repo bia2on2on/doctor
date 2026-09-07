@@ -262,9 +262,6 @@ final class SmsController extends RestBase
 
     // ===== Helpers =====
 
-    /**
-     * @param list<string> $caps
-     */
     private function userId(): int
     {
         return (int) get_current_user_id();
