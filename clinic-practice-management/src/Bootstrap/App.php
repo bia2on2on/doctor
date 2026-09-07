@@ -30,6 +30,7 @@ use ClinicCore\Application\Jobs\FollowUpReminderHandler;
 use ClinicCore\Application\Jobs\HandwritingGcHandler;
 use ClinicCore\Application\Jobs\HoldsExpireHandler;
 use ClinicCore\Application\Jobs\IdemCleanupHandler;
+use ClinicCore\Application\Jobs\OpLogCleanupHandler;
 use ClinicCore\Application\Jobs\JobsDispatcher;
 use ClinicCore\Application\Jobs\LicenseRefreshHandler;
 use ClinicCore\Application\Jobs\NotifDispatchHandler;
@@ -799,6 +800,7 @@ final class App
                 ->register('cleanup.otp', new OtpCleanupHandler($db))
                 ->register('cleanup.rate_limits', new RateLimitCleanupHandler(self::rate()))
                 ->register('cleanup.idem', new IdemCleanupHandler(self::idem()))
+                ->register('cleanup.oplog', new OpLogCleanupHandler($db, $settings))
                 ->register('slots.generate', new SlotsGenerateHandler($db, $settings, $op))
                 ->register('sms.send', new SmsSendJobHandler(self::smsService()))
                 ->register('visits.no_show', new VisitsNoShowHandler(self::visitService()))
@@ -837,6 +839,7 @@ final class App
         'cleanup.otp' => 1,
         'cleanup.rate_limits' => 1,
         'cleanup.idem' => 1, // Idempotency::cleanup — رشد بی‌کران را می‌بندد
+        'cleanup.oplog' => 1, // F1-5 — Retention لاگ عملیاتی (retention.oplog_days؛ پیش‌فرض ۹۰ روز)
         // F10 — refresh مجوز: هر Tick چک می‌شود ولی شبکه فقط در refreshDue
         // (Backoff بر اساس شکست‌های پیاپی) لمس می‌شود — ADR-0023/ADR-0016
         'license.refresh' => 9,

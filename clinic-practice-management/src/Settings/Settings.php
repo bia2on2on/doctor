@@ -66,6 +66,7 @@ final class Settings
         // Retention (تصمیم نهایی: D7)
         'retention.audit_years' => 10,
         'retention.record_years' => 15,
+        'retention.oplog_days' => 90, // F1-5 — Retention لاگ عملیاتی (جدول hot؛ Audit جدا و ۱۰ساله است)
         // SMS — Provider-Agnostic (ADR-0025). Secret در این جدول ذخیره نمی‌شود (Vault).
         'sms.provider' => '', // '' = log (Dev/Staging)؛ 'generic_api' یا id Adapter
         'sms.auth_method' => '', // api_key | bearer | username_password

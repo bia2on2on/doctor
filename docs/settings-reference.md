@@ -1,6 +1,8 @@
 # Settings Reference — CPMS (واحد و semantics هر Setting)
 
-نسخه 1.4 | 2026-09-07 | جدول `cpms_settings` (کلید/مقدار JSON) + پیش‌فرض‌های `Settings::DEFAULTS`
+نسخه 1.5 | 2026-09-07 | جدول `cpms_settings` (کلید/مقدار JSON) + پیش‌فرض‌های `Settings::DEFAULTS`
+
+> **تغییر 1.5 (F1-5 — Retention لاگ عملیاتی):** کلید جدید `retention.oplog_days` (پیش‌فرض `90` روز) — Job دوره‌ای `cleanup.oplog` ردیف‌های قدیمی‌تر از این سن را از `cpms_operational_logs` حذف می‌کند (رشد بی‌کران جدول hot). Audit مستقل است و `retention.audit_years` (۱۰ سال) دست‌نخورده می‌ماند.
 
 > **تغییر 1.4 (F1-4 — Audit تنظیمات):** هر تغییر مؤثر Setting از مسیر `Settings::set()` اکنون با اکشن `SETTING_UPDATE` در Audit ثبت می‌شود — before/after (`{setting, value}`؛ before = مقدار مؤثر قبلی شامل Default) + actor (`updated_by` + نقش WP؛ بدون کاربر = `system`). تغییر no-op (مقدار جدید = مقدار مؤثر فعلی) Audit نمی‌گیرد. کلیدهای Runtime/telemetry (`jobs.last_tick_at`، `backup.last_run_at`، `sms.last_test`) — که به‌تکرار توسط سیستم نوشته می‌شوند — مستثنا هستند و در Operational Log ثبت می‌شوند (جلوگیری از سیل Audit ۱۰ساله). جزئیات: `docs/security/audit-strategy.md` §2. تست رگرسیون: `SettingsAuditTest`.
 

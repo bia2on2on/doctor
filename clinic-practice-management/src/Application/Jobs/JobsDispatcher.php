@@ -58,7 +58,7 @@ final class JobsDispatcher
                 $this->queue->complete((int) $job['id']);
                 $processed++;
             } catch (\Throwable $e) {
-                $this->queue->fail((int) $job['id'], $e->getMessage());
+                $this->queue->fail((int) $job['id'], $e->getMessage(), $workerId);
             }
         }
 

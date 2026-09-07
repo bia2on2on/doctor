@@ -197,6 +197,81 @@ final class JobQueueTest extends WP_UnitTestCase
         $this->assertSame(1, (int) $found);
     }
 
+    public function testFailWithLostLockDoesNotTouchJob(): void
+    {
+        // F1-6 — Worker کهنه بعد از چرخش قفل حق تغییر سرنوشت Job را ندارد
+        $jobId = $this->queue->enqueue('test.lostlock', [], null, 5, 3);
+        $job = $this->queue->claim('w1');
+        $this->assertNotNull($job);
+
+        global $wpdb;
+        // شبیه‌سازی چرخش قفل: Worker دیگری (w2) بعد از انقضای لاک Claim کرده است
+        $wpdb->query($wpdb->prepare(
+            'UPDATE ' . $wpdb->prefix . 'cpms_jobs SET locked_by = %s WHERE id = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            'w2',
+            $jobId
+        ));
+
+        $this->queue->fail((int) $job['id'], 'zombie-fail', 'w1');
+
+        $this->assertSame('processing', $this->dbStatus($jobId), 'Status نباید عوض شود');
+        $row = $this->dbRow($jobId);
+        $this->assertSame('w2', (string) $row['locked_by'], 'قفل باید دست Worker جدید بماند');
+        $this->assertNull($row['last_error'], 'last_error نباید نوشته شود');
+        $this->assertSame('1', (string) $row['attempts'], 'attempts نباید دست بخورد');
+    }
+
+    public function testFailWithOwnerWorkerSchedulesRetry(): void
+    {
+        $jobId = $this->queue->enqueue('test.ownerfail', [], null, 5, 3);
+        $job = $this->queue->claim('w1');
+        $this->assertNotNull($job);
+
+        $this->queue->fail($jobId, 'boom', 'w1');
+
+        $this->assertSame('queued', $this->dbStatus($jobId));
+        $row = $this->dbRow($jobId);
+        $this->assertNull($row['locked_by']);
+        $this->assertSame('boom', (string) $row['last_error']);
+        $this->assertGreaterThan(
+            gmdate('Y-m-d H:i:s'),
+            substr((string) $row['run_after'], 0, 19),
+            'run_after باید آینده باشد (Backoff)'
+        );
+    }
+
+    public function testFailFinalWithOwnerWorkerMarksFailed(): void
+    {
+        $jobId = $this->queue->enqueue('test.finalfail', [], null, 5, 1);
+        $job = $this->queue->claim('w1');
+        $this->assertNotNull($job);
+
+        $this->queue->fail($jobId, 'fatal', 'w1');
+
+        $this->assertSame('failed', $this->dbStatus($jobId));
+        $row = $this->dbRow($jobId);
+        $this->assertNotNull($row['completed_at']);
+        $this->assertNull($row['locked_by']);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function dbRow(int $jobId): array
+    {
+        global $wpdb;
+        $row = $wpdb->get_row(
+            $wpdb->prepare(
+                'SELECT * FROM ' . $wpdb->prefix . 'cpms_jobs WHERE id = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $jobId
+            ),
+            ARRAY_A
+        );
+        $this->assertNotNull($row, 'Job باید وجود داشته باشد');
+
+        return $row;
+    }
+
     private function dbStatus(int $jobId): string
     {
         global $wpdb;
