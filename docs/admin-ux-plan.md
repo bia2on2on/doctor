@@ -124,6 +124,16 @@
 - تفکیک از `SystemPage` به بخش‌های قابل‌فهم؛ هر fault = «چه، اثر، چه کنم» + «جزئیات فنی» جمع‌شونده.
 - Restore پراصطکاک/امن (preflight/warning/safety/confirm/audit).
 
+> ✅ **Done (commit `819e0a3`)** — بخش Health به‌صورت «کارت خطا» برای هر بررسیِ غیر-PASS رندر می‌شود
+> (چه/اثر/چه کنم) + «جزئیات فنی» جمع‌شونده؛ بررسی‌های PASS در جدول فشرده می‌مانند. راهنمای
+> انسانی از تابع خالص `SystemPage::guide()` (قابل تست، بدون WP/DB) می‌آید. Restore امن/پراصطکاک:
+> preflight (جدول/ردیف/فایل/یکپارچگی/restore_safe) پیش از هر اقدام مخرب + چک‌باکس اقرار +
+> تایپ RESTORE — همگی از b‌ک‌اندِ موجود (`restorePreflight` + Safety Backup خودکار + audit)
+> استفاده می‌کنند (بدون duplicate). تست Integration (`SystemAdminUxTest`) سبز؛ همهٔ گیت‌ها
+> (PHPStan/Unit/Closure/Real-WP/Release/Upgrade/Responsive) سبز؛ فقط Staging Gate (غیرمرتبط،
+> از قبل) در انتظار. سرصفحهٔ «وضعیت Health / سازگاری میزبان» و مقاومت بخش‌به‌بخش (D1) حفظ شد —
+> `SystemAdminPagesTest` همچنان سبز.
+
 ### Chunk F — طراحی/Responsive/Accessibility + Empty states + Dangerous-action UX
 - Card/section/badge/empty-state؛ RTL؛ responsive ۶ رزولوشن؛ keyboard/focus/contrast؛ confirmation.
 
