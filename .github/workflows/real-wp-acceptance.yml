@@ -16,7 +16,9 @@ on:
     branches: [main]
 
 permissions:
-  contents: read
+  # contents: write فقط برای انتشار Evidence به‌صورت Commit Comment
+  # (لاگ خام Job در برخی محیط‌ها خوانده نمی‌شود — الگوی مستند ریپو).
+  contents: write
   actions: read
 
 env:
@@ -130,7 +132,8 @@ jobs:
         run: |
           PREFIX='${{ matrix.prefix }}'
           MDIR="$WP_DIR/wp-content/plugins/clinic-practice-management/src/Migrations"
-          cat > "$MDIR/2999_01_01_9999_acceptance_broken.php" <<'PHPEOF'
+          # فایل‌های افزونه متعلق به root‌اند (wp-cli allow-root نصب کرده) → sudo
+          sudo tee "$MDIR/2999_01_01_9999_acceptance_broken.php" >/dev/null <<'PHPEOF'
           <?php
           // تزریق موقت در runner برای اثبات Fail-loud (در artifact رسمی وجود ندارد).
           return [
@@ -143,6 +146,7 @@ jobs:
               },
           ];
           PHPEOF
+          sudo chmod a+r "$MDIR/2999_01_01_9999_acceptance_broken.php"
           cat > /tmp/acc/probe-broken.php <<'PHPEOF'
           <?php
           $mig = \ClinicCore\Bootstrap\App::migrations();
@@ -165,10 +169,14 @@ jobs:
           }
           echo "not-recorded OK (schema_migrations بدون 2999_01_01_9999)\n";
           PHPEOF
-          wp eval-file /tmp/acc/probe-broken.php --path="$WP_DIR" --allow-root | tee /tmp/acc/migration-failure-probe.txt
+          # بدون pipe-masking: وضعیت خروجی واقعی probe تعیین‌کننده است
+          wp eval-file /tmp/acc/probe-broken.php --path="$WP_DIR" --allow-root > /tmp/acc/migration-failure-probe.txt 2>&1
+          RC=$?
+          cat /tmp/acc/migration-failure-probe.txt
+          if [ "$RC" -ne 0 ]; then echo 'D3 PROBE FAILED'; exit "$RC"; fi
           # پاک‌سازی probe و اثبات idempotency پس از آن
-          rm "$MDIR/2999_01_01_9999_acceptance_broken.php"
-          wp eval '\\ClinicCore\\Bootstrap\\App::migrations()->migrate();' --path="$WP_DIR" --allow-root
+          sudo rm -f "$MDIR/2999_01_01_9999_acceptance_broken.php"
+          wp eval '\ClinicCore\Bootstrap\App::migrations()->migrate();' --path="$WP_DIR" --allow-root
           echo 're-migrate after probe removal: OK (no-op idempotent)'
 
       # ---------- کاربران نقش‌محور + دادهٔ پایه ----------
@@ -226,13 +234,17 @@ jobs:
       # ---------- 6) پذیرش مرورگری ----------
       - name: Browser acceptance — login + System + Health + Technical + Doctor/Secretary menus
         run: |
+          # بدون pipe-masking: وضعیت خروجی واقعی اسکریپت تعیین‌کننده است
           BASE="$WP_URL" \
           ADMIN_USER="$ADMIN_USER" ADMIN_PASS="$ADMIN_PASS" \
           DOCTOR_USER="$DOCTOR_USER" DOCTOR_PASS="$DOCTOR_PASS" \
           SECRETARY_USER="$SECRETARY_USER" SECRETARY_PASS="$SECRETARY_PASS" \
           ACTUAL_COUNT_FILE=/tmp/acc/actual_count.txt \
           OUT=/tmp/acc \
-          python3 clinic-practice-management/bin/rwp-acceptance.py | tee /tmp/acc/acceptance.log
+          python3 clinic-practice-management/bin/rwp-acceptance.py > /tmp/acc/acceptance.log 2>&1
+          RC=$?
+          cat /tmp/acc/acceptance.log
+          if [ "$RC" -ne 0 ]; then echo "ACCEPTANCE FAILED (rc=$RC)"; exit "$RC"; fi
 
       # ---------- 7) بررسی لاگ‌ها (همیشه — حتی در شکست) ----------
       - name: PHP/WP/Apache logs review
@@ -285,3 +297,30 @@ jobs:
             tail -30 /tmp/acc/acceptance.log 2>/dev/null || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # Evidence به‌صورت Commit Comment (لاگ خام Job در این محیط خوانده نمی‌شود —
+      # الگوی «Post failures to PR» ریپو، این‌بار روی Commit تا در push-events هم کار کند)
+      - name: Publish evidence as commit comment
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "### Real WP Acceptance — prefix \`${{ matrix.prefix }}\` (job: ${{ job.status }})"
+            echo
+            echo "- actual_table_count: \`$(cat /tmp/acc/actual_count.txt 2>/dev/null || echo '?')\` / ui_table_count: \`$(cat /tmp/acc/ui_count.txt 2>/dev/null || echo '?')\`"
+            echo "- migration failure probe:"
+            echo '```'
+            cat /tmp/acc/migration-failure-probe.txt 2>/dev/null || echo '(probe اجرا نشد)'
+            echo '```'
+            echo '- browser acceptance:'
+            echo '```'
+            cat /tmp/acc/acceptance.log 2>/dev/null || echo '(مرحلهٔ مرورگر اجرا نشد)'
+            echo '```'
+            echo '- debug.log tail:'
+            echo '```'
+            tail -15 /tmp/acc/logs/debug.log 2>/dev/null || echo '(بدون debug.log)'
+            echo '```'
+            echo "artifacts: rwp-acceptance-${{ matrix.prefix }} (screenshots/logs/results.json)"
+          } > /tmp/acc/evidence-comment.md
+          gh api "repos/{owner}/{repo}/commits/$GITHUB_SHA/comments" -X POST -F body=@/tmp/acc/evidence-comment.md --jq '.id'
