@@ -16,6 +16,7 @@ use ClinicCore\Infrastructure\Repository\PrescriptionRepository;
 use ClinicCore\Infrastructure\Repository\RecommendationRepository;
 use ClinicCore\Infrastructure\Repository\VisitRepository;
 use ClinicCore\Settings\Settings;
+use ClinicCore\Domain\Time\Jalali;
 
 /**
  * سرویس بالینی (F5) — فضای کار ویزیت پزشک + نمای بیمار.
@@ -642,6 +643,107 @@ final class ClinicalService
     /**
      * C5 — تاریخچه ویزیت‌های بیمار (فقط فیلدهای patient_visible).
      *
+     * @return array<string, mixed>
+     */
+    // ================= P12 — نمای چاپ نسخه (Part 2 / ADR-0031) =================
+
+    /**
+     * داده‌های نمای چاپ نسخه (ممیزی P12) — در V1 نسخه ثبت می‌شد ولی چاپی وجود
+     * نداشت؛ در ایران نسخه کاغذی برای داروخانه الزام واقعی است.
+     *
+     * مجوز: `cpms_rx_read` + مالکیت ویزیت (الگوی requireOwnVisit — ماتریس 4.3).
+     * هر چاپ = Audit `PRESCRIPTION_PRINTED` (Watermark زمان + کاربر در خروجی).
+     *
+     * @return array<string, mixed>
+     */
+    public function prescriptionForPrint(int $actorUserId, int $visitId, ?int $prescriptionId = null): array
+    {
+        $this->requireCap($actorUserId, RolesAndCapabilities::RX_READ, 'print');
+        $visit = $this->requireVisit($visitId);
+        $this->requireOwnVisit($actorUserId, $visit);
+
+        $rx = null;
+        if ($prescriptionId !== null) {
+            $rx = $this->prescriptions->find($prescriptionId);
+            if ($rx === null || (int) $rx['visit_id'] !== $visitId) {
+                throw ClinicalException::of('CLINIC_NOT_FOUND', 'نسخه به این ویزیت تعلق ندارد', 404);
+            }
+        } else {
+            foreach ($this->prescriptions->forVisit($visitId) as $candidate) {
+                if ((string) $candidate['status'] !== 'voided') {
+                    $rx = $candidate;
+                    break;
+                }
+            }
+        }
+        if ($rx === null) {
+            throw ClinicalException::of('CLINIC_NOT_FOUND', 'نسخه‌ای برای این ویزیت ثبت نشده است', 404);
+        }
+
+        $patient = $this->db->fetchRow(
+            'SELECT * FROM ' . $this->db->table('cpms_patients') . ' WHERE id = %d LIMIT 1',
+            [(int) $visit['patient_id']]
+        );
+        if ($patient === null) {
+            throw ClinicalException::of('CLINIC_NOT_FOUND', 'بیمار یافت نشد', 404);
+        }
+
+        $doctor = $this->db->fetchRow(
+            'SELECT full_name, specialty, room FROM ' . $this->db->table('cpms_clinicians') . ' WHERE id = %d LIMIT 1',
+            [(int) $visit['clinician_id']]
+        );
+        $clinic = $this->db->fetchRow(
+            'SELECT name, phone, address FROM ' . $this->db->table('cpms_clinics') . ' WHERE id = 1 LIMIT 1'
+        );
+
+        $complaint = null;
+        foreach ($this->notes->forVisit($visitId, null) as $note) {
+            if ((string) $note['category'] === 'chief_complaint') {
+                $complaint = (string) $note['content_text'];
+                break;
+            }
+        }
+
+        $visitDate = (string) $visit['visit_date'];
+        $view = [
+            'prescription' => $this->presentPrescription($rx, $this->prescriptions->itemsFor((int) $rx['id'])),
+            'visit_date' => $visitDate,
+            'visit_jalali' => Jalali::formatYmd($visitDate),
+            'patient' => [
+                'mrn' => (string) $patient['mrn'],
+                'full_name' => trim((string) $patient['first_name'] . ' ' . (string) $patient['last_name']),
+                'gender' => (string) $patient['gender'],
+                'age' => $patient['birth_date'] !== null ? $this->ageFromBirthDate((string) $patient['birth_date']) : null,
+            ],
+            'doctor' => [
+                'name' => (string) ($doctor['full_name'] ?? ''),
+                'specialty' => $doctor['specialty'] ?? null,
+                'room' => $doctor['room'] ?? null,
+            ],
+            'clinic' => [
+                'name' => (string) ($clinic['name'] ?? ''),
+                'phone' => $clinic['phone'] ?? null,
+                'address' => $clinic['address'] ?? null,
+            ],
+            'chief_complaint' => $complaint,
+            'printed_at_utc' => gmdate('Y-m-d H:i:s'),
+        ];
+
+        $this->audit->log(
+            'PRESCRIPTION_PRINTED',
+            $this->actor($actorUserId, 'doctor'),
+            'prescription',
+            (int) $rx['id'],
+            (int) $visit['patient_id'],
+            null,
+            null,
+            ['visit_id' => $visitId]
+        );
+
+        return $view;
+    }
+
+    /**
      * @return array<string, mixed>
      */
     public function patientVisits(int $wpUserId, ?string $from = null, ?string $to = null): array

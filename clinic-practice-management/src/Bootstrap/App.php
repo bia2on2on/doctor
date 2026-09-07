@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace ClinicCore\Bootstrap;
 
+use ClinicCore\Admin\ClinicianAdminPage;
 use ClinicCore\Admin\PatientPortalPage;
+use ClinicCore\Admin\PrescriptionPrintPage;
 use ClinicCore\Admin\RoleCapabilitiesPage;
 use ClinicCore\Admin\SettingsAdmin;
 use ClinicCore\Admin\SystemPage;
@@ -61,6 +63,7 @@ use ClinicCore\Infrastructure\Logging\OpLogger;
 use ClinicCore\Infrastructure\Queue\JobQueue;
 use ClinicCore\Infrastructure\Repository\AppointmentRepository;
 use ClinicCore\Infrastructure\Repository\ClinicalNoteRepository;
+use ClinicCore\Infrastructure\Repository\ClinicianRepository;
 use ClinicCore\Infrastructure\Repository\FollowUpRepository;
 use ClinicCore\Infrastructure\Repository\HandwritingRepository;
 use ClinicCore\Infrastructure\Repository\InvoiceRepository;
@@ -186,8 +189,10 @@ final class App
 
         SettingsAdmin::register();
         SystemPage::register();
+        ClinicianAdminPage::register(); // ADR-0031 / Part 2 — Setup UI پزشک + برنامه هفتگی
         RoleCapabilitiesPage::register(); // ADR-0030 / Part 1 — مدیریت دسترسی نقش‌ها
         PatientPortalPage::register(); // ADR-0030 / Part 1 — مقصد بیمار بعد از OTP
+        PrescriptionPrintPage::register(); // ADR-0031 / Part 2 — چاپ نسخه (P12)
         SmsSettingsPage::register();
         SecretaryQueuePage::register();
         SecretaryFinancePage::register();
@@ -330,6 +335,16 @@ final class App
     /**
      * سرویس بالینی (F5) — E7–E15 + C5–C7.
      */
+    public static function clinicianRepository(): ClinicianRepository
+    {
+        static $repo = null;
+        if ($repo === null) {
+            $repo = new ClinicianRepository(self::db());
+        }
+
+        return $repo;
+    }
+
     public static function clinicalService(): ClinicalService
     {
         static $clinical = null;

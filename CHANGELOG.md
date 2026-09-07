@@ -7,7 +7,9 @@
 ### Added
 - **مدیریت دسترسی نقش‌ها (ADR-0030):** صفحه «CPMS (دسترسی‌ها)» در ابزارها — ماتریس Role × Capability فارسی با گروه‌بندی و نشانگر Cap حساس (P-11)؛ ذخیره از مسیر Override عمدی با Audit `ROLE_PERMISSION_CHANGED`/`ROLE_PERMISSION_RESET`؛ دکمه «بازگشت به پیش‌فرض». Self-healing به Override احترام می‌گذارد (Least Privilege برای خارج از فهرست برقرار است).
 - **Console بیمار «نوبت‌های من»:** مقصد فارسی بیمار بعد از OTP (نوبت‌های پیش‌رو + تاریخچه با جلالی)؛ فقط داده خودش (Ownership)؛ login_redirect + مخفی‌شدن Admin Bar + هدایت GETهای wp-admin — فقط برای «بیمار خالص».
-- تست‌های Integration جدید: `DoctorQueueScopeTest` (۳)، `RoleCapabilitiesOverrideTest` (۵)، `PatientPortalTest` (۳).
+- **مدیریت پزشکان و برنامه هفتگی (ADR-0031):** صفحه «پزشکان و برنامه» در ابزارها — ثبت/ویرایش/غیرفعال‌سازی پزشک + پیوند ۱:۱ به کاربر وردپرس + ویرایش ۷ روز برنامه هفتگی + استثناهای تعطیلی/مرخصی/بستن (همه از مسیر ScheduleService با Audit + بازتولید Slot). راه‌اندازی مطب دیگر به دست‌کاری DB نیاز ندارد.
+- **چاپ نسخه (ADR-0031):** دکمه «🖨️ چاپ» کنار هر نسخه در داشبورد پزشک — نمای چاپی فارسی/RTL (سربرگ مطب، بیمار/MRN/سن، تاریخ جلالی، شکایت اصلی، جدول اقلام، جای امضا) با واترمارک «پیش‌نویس/ابطال‌شده»؛ مجوز `cpms_rx_read` + مالکیت ویزیت + Audit `PRESCRIPTION_PRINTED`.
+- تست‌های Integration جدید: `DoctorQueueScopeTest` (۳)، `RoleCapabilitiesOverrideTest` (۵)، `PatientPortalTest` (۳)، `ClinicianRepositoryTest` (۳)، `PrescriptionPrintTest` (۵).
 
 ### Security
 - **Scope صف برای پزشک (ممیزی P8):** پزشکِ متصل در `/queue`، `rt/queue` و آمار داشبورد فقط ویزیت‌های خودش را می‌بیند (صف + فید Real-time + ETag + آمار)؛ پزشک بدون اتصال = هیچ؛ منشی بدون تغییر. مطابق Master Context §8 — «بدون دید ضمنی داده پزشک دیگر».

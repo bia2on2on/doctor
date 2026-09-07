@@ -88,6 +88,8 @@ final class DoctorDashboardPage
             'can_complete' => current_user_can(RolesAndCapabilities::CONSULT_COMPLETE),
             'can_upload' => current_user_can(RolesAndCapabilities::FILE_UPLOAD),
             'can_handwriting' => current_user_can(RolesAndCapabilities::NOTE_CREATE),
+            'can_rx' => current_user_can(RolesAndCapabilities::RX_READ),
+            'print_url' => admin_url('admin.php?page=cpms-prescription-print'), // ADR-0031 — چاپ نسخه
         ];
         ?>
 <div class="wrap" dir="rtl" id="cpms-doc-wrap">
@@ -366,7 +368,10 @@ window.CPMS_DOC = <?php echo wp_json_encode($config); ?>;
             var fin = rx.status === 'draft'
                 ? '<button class="button button-small" data-act="finalize-rx" data-id="' + rx.id + '">✅ نهایی‌سازی نسخه</button>'
                 : '<span class="cpms-doc-badge status-checked_out">' + (rx.status === 'finalized' ? 'نهایی‌شده' : esc(rx.status)) + '</span>';
-            return '<div class="cpms-doc-note"><div><b>نسخه ' + esc(rx.prescription_number) + '</b> ' + fin +
+            var printBtn = (CFG.can_rx && CFG.visit_id > 0)
+                ? ' <a class="button button-small" href="' + CFG.print_url + '&visit_id=' + CFG.visit_id + '&rx=' + rx.id + '" target="_blank">🖨️ چاپ</a>'
+                : '';
+            return '<div class="cpms-doc-note"><div><b>نسخه ' + esc(rx.prescription_number) + '</b> ' + fin + printBtn +
                 ' <span class="meta">' + esc(rx.created_at) + '</span></div><ul class="cpms-doc-itemlist">' + items + '</ul></div>';
         }).join('') || '<p class="cpms-doc-muted">نسخه‌ای ثبت نشده است.</p>';
 
