@@ -47,7 +47,16 @@ def check(name, ok, detail=""):
 
 
 def attach_watchers(page, tag):
-    page.on("console", lambda m: console_errors.append((tag, m.text)) if m.type == "error" else None)
+    def on_console(m):
+        if m.type == "error":
+            loc = ""
+            try:
+                loc = m.location.get("url", "") or ""
+            except Exception:
+                loc = ""
+            console_errors.append((tag, f"{m.text} <{loc}>"))
+
+    page.on("console", on_console)
     page.on("pageerror", lambda e: page_errors.append((tag, str(e))))
 
 
@@ -81,7 +90,11 @@ def goto_admin(page, tag, path, shot_name):
         f.write(body or "")
     check(f"{tag}.{shot_name}.http200", status == 200, f"HTTP {status}")
     crit = CRITICAL_RE.search(body or "")
-    check(f"{tag}.{shot_name}.no_critical_error", not crit, excerpt(body) if crit else path)
+    detail = path
+    if crit:
+        s = max(0, crit.start() - 500)
+        detail = "…" + re.sub(r"\s+", " ", (body or "")[s : crit.end() + 500]).strip() + "…"
+    check(f"{tag}.{shot_name}.no_critical_error", not crit, detail)
     return status, body
 
 
