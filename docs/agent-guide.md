@@ -548,3 +548,11 @@ final class XxxService {
 - **تصمیمات درون‌فازی:** ① Audit بعد از نوشتن Setting (خارج از transaction) — `CpmsDb::transactional` تو-در-تو پشتیبانی نمی‌کند و AuditLogger خودش transaction دارد؛ الگوی موجود سرویس‌ها هم «Audit بعد از Commit» است؛ ② no-op = refresh ردیف بدون Audit (آگاهانه — eventِ تغییر مؤثر ملاک است)؛ ③ `sms.last_test` telemetry است نه Config.
 - **تست محلی (php-wasm 8.2):** lint فایل‌های تغییر (Settings/App/SystemPage/SettingsAuditTest) ✓. Unit suite به Settings/App دست ندارد (grep: صفر ارجاع). **Integration: CI (PR).**
 - **وضعیت:** commit + push + PR + CI در ادامه این لاگ ثبت می‌شود.
+
+#### پیوست گروه 3 — push + تأیید SHA remote + CI
+- **Session-branch نکته:** این نشست به شاخهٔ `arena/01a07c01-doctor` قفل است (محیط Agent)؛ درخواست push به `arena/01a07b2e-doctor` قابل اجرا نبود — و چون `06d5498`/patch هر two موجود نبودند، خروجی واقعی همان پیاده‌سازی مجدد روی این شاخه شد.
+- **کامیت:** `d42ef0d` (feat(F1-4)) از مبنای `a16e245` (merge گروه‌های 1+2).
+- **Push:** ✅ — Remote SHA: **`d42ef0d9c40e614d775dcc9c7e07b7c417898975`** = local HEAD (تأیید با `git ls-remote`).
+- **PR:** #7 (`arena/01a07c01-doctor` → `main`) — «F1 Remediation (cont. 2) — group 3/7: settings audit (F1-4)».
+- **CI (روی `d42ef0d`): ✅ سبز ۳/۳** — CI/pull_request run **34128017332** (Unit PHP 8.1–8.4 + Integration WP6.7/MySQL8 = success؛ step «Post failures to PR» skip = صفر شکست) + Pilot/Staging Readiness Gate run **34128001933** (8m34s، success) + Closure Gate run **34128001870** (success). لاگ خام jobها از results-receiver مسدود است (محدودیت شناخته‌شدهٔ محیط) — Evidence: conclusion رسمی GitHub.
+- **Tree:** clean. بعد از این docs-commit، CI نهایی روی HEAD ثبت می‌شود.
