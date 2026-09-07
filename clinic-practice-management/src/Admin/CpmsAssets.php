@@ -41,12 +41,18 @@ final class CpmsAssets
         add_filter('admin_body_class', [self::class, 'bodyClass']);
     }
 
-    /** آیا صفحهٔ فعلی wp-admin جزو صفحات CPMS است؟ */
+    /**
+     * آیا اسلاگ صفحهٔ فعلی جزو صفحات CPMS (allowlist) است؟
+     *
+     * این متد فقط «کدام اسلاگ» را تشخیص می‌دهد؛ اینکه واقعاً در ناحیهٔ مدیریت هستیم
+     * را خودِ هوک‌ها تضمین می‌کنند (admin_enqueue_scripts / admin_body_class فقط در
+     * wp-admin اجرا می‌شوند). به همین دلیل گیت is_admin() این‌جا تکراری است و حذف
+     * شده تا متد قابل تست باشد (در WP_UnitTestCase ثابت WP_ADMIN تعریف نشده و
+     * is_admin() همیشه false برمی‌گرداند). مجوزهای backend در guard() خود صفحه‌ها
+     * (current_user_can + nonce) اعمال می‌شوند و دست‌نخورده‌اند.
+     */
     public static function isCpmsPage(): bool
     {
-        if (!is_admin()) {
-            return false;
-        }
         $page = isset($_GET['page']) ? sanitize_key(wp_unslash($_GET['page'])) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- فقط تشخیص صفحهٔ نمایشی
         return $page !== '' && in_array($page, self::PAGES, true);
     }
