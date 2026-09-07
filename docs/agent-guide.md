@@ -569,3 +569,9 @@ final class XxxService {
 - **Docs sync:** agent-guide §6 (۳ job)، testing-plan §45 (L.6 → L3 فعلی + هدف ارتقا)، engineering-baseline §38 (اشاره به PHPStan L3 در CI)، CHANGELOG 1.0.2.
 - **تست محلی:** lint php-wasm 9 فایل ✓ (بعد از رفع artifact). **PHPStan/Integration/Unit: CI.**
 - **وضعیت:** commit + push + SHA remote + CI نهایی در ادامه این لاگ ثبت می‌شود.
+
+#### پیوست گروه 4 — push + تأیید SHA remote + CI
+- **کامیت‌های گروه 4:** `a90ea61` (ابزار + probe) ← `17816fb` (stubs ^7.0) ← `0cf7d46` (probe v2) ← `d018dfd` (scanConstants) ← `b3d445f` (باگ‌های واقعی + bootstrap) ← `c92e6f2` (رفع artifact ویرایش) ← **`2cebb07` (قفل سطح 3 + حذف probe + docs sync)**.
+- **Push:** ✅ — Remote SHA: **`2cebb07e0221bb5a00e8a02f55d80fad1c0a2b8a`** = local HEAD (تأیید `git ls-remote`).
+- **CI (روی `2cebb07`): ✅ سبز ۳/۳** — CI/pull_request run **34130498852** = **۶/۶ job سبز** (Unit PHP 8.1–8.4 + Integration WP6.7/MySQL8 + **Static Analysis/PHPStan L3** — اولین اجرای رسمی Gate استاتیک جدید) + Closure Gate run **34130493200** + Pilot/Staging Readiness Gate run **34130493287** (8m33s).
+- **Tree:** clean. ادامه: گروه 5 (F1-5/F1-6 — oplog retention + JobQueue::fail race guard) طبق ترتیب مصوب، در انتظار دستور کارفرما (خواستهٔ این نشست فقط تا گروه 4 بود).
