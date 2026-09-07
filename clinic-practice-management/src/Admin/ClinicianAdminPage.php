@@ -106,7 +106,7 @@ final class ClinicianAdminPage
                 <td><?php echo esc_html((string) ($r['wp_user_login'] ?? '—')); ?></td>
                 <td><?php echo (int) $r['schedule_days']; ?> روز</td>
                 <td><?php echo (int) $r['is_active'] === 1 ? '✅ فعال' : '⛔ غیرفعال'; ?></td>
-                <td><a class="button button-small" href="<?php echo esc_url(admin_url('tools.php?page=cpms-clinicians&clinician_id=' . (int) $r['id'])); ?>">مدیریت برنامه</a></td>
+                <td><a class="button button-small" href="<?php echo esc_url(admin_url('admin.php?page=cpms-clinicians&clinician_id=' . (int) $r['id'])); ?>">مدیریت برنامه</a></td>
             </tr>
         <?php endforeach; ?>
         </tbody>
@@ -150,7 +150,7 @@ final class ClinicianAdminPage
         $users = self::wpUsers();
         $exceptions = $scheduleService->listExceptions($cid, gmdate('Y-m-d'), gmdate('Y-m-d', strtotime('+120 days')));
         ?>
-    <a href="<?php echo esc_url(admin_url('tools.php?page=cpms-clinicians')); ?>">← بازگشت به فهرست</a>
+    <a href="<?php echo esc_url(admin_url('admin.php?page=cpms-clinicians')); ?>">← بازگشت به فهرست</a>
     <h1><?php echo esc_html((string) $clinician['full_name']); ?>
         <span class="description"><?php echo esc_html((string) ($clinician['specialty'] ?? '')); ?></span>
     </h1>
@@ -517,7 +517,7 @@ final class ClinicianAdminPage
     private static function redirect(int $clinicianId, string $message): never
     {
         set_transient(self::NOTICE_KEY, $message, 90);
-        $url = admin_url('tools.php?page=cpms-clinicians');
+        $url = admin_url('admin.php?page=cpms-clinicians');
         if ($clinicianId > 0) {
             $url .= '&clinician_id=' . $clinicianId;
         }

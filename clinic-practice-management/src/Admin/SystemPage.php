@@ -373,7 +373,7 @@ final class SystemPage
     private static function notify(string $message, bool $success = false): void
     {
         set_transient(self::NOTICE_KEY, ($success ? '✅ ' : '⛔ ') . $message, 60);
-        wp_safe_redirect(admin_url('tools.php?page=cpms-system'));
+        wp_safe_redirect(admin_url('admin.php?page=cpms-system'));
         exit;
     }
 

@@ -79,6 +79,16 @@
 - Advanced Permissions (پیش‌فرض جمع‌شده)، grouped/searchable/Persian، هشدار حساس، Audit، جلوگیری از privilege escalation.
 - Role Preset Reset با تأیید/پیش‌نمایش/Audit.
 
+> ✅ **Done (بخش Staff/User)** — `StaffManagementPage` (admin.php?page=cpms-staff) تحت «مدیریت مطب»؛
+> مدیریت فقط نقش‌های CPMS (پزشک/منشی/بیمار)؛ انتساب/ویرایش/غیرفعال‌سازی administrator مجاز نیست
+> (جلوگیری از privilege escalation)؛ ایجاد/ویرایش امن با WP core API؛ رمز هرگز plaintext ذخیره/نمایش
+> نمی‌شود (در صورت خالی، رمز قوی CSPRNG یک‌بار نمایش داده می‌شود)؛ اعتبارسنجی قدرت رمز؛
+> غیرفعال‌سازی بدون حذف تاریخچه (نقش قبلی در usermeta و بازگردانی هنگام فعال‌سازی)؛ Audit کامل.
+> تست Integration (`StaffManagementTest`) سبز (commit `409dbe3`).
+> **Role Presets + Advanced Permissions** توسط `RoleCapabilitiesPage` موجود (cpms-roles) پوشش داده
+> می‌شود (audit + reset + whitelist + self-healing) — همان منطق موجود، بدون duplicate.
+> روابط/ردیرکت‌های re-home شده هم به `admin.php?page=*` کانونیکال اشاره می‌کنند.
+
 ### Chunk D — Doctor Management + Schedule (workflow منسجم)
 - «افزودن پزشک → اطلاعات → اکانت/نقش → Schedule → ذخیره»؛ بدون دو جایگاه جداگانه WP Users و CPMS.
 - Schedule بصری هفتگی؛ بدون invalidate بی‌صدا؛ نمایش impact.

@@ -262,7 +262,7 @@ final class RoleCapabilitiesPage
             60
         );
 
-        wp_safe_redirect(admin_url('tools.php?page=cpms-roles'));
+        wp_safe_redirect(admin_url('admin.php?page=cpms-roles'));
         exit;
     }
 
@@ -297,7 +297,7 @@ final class RoleCapabilitiesPage
         }
 
         set_transient(self::NOTICE_KEY, 'نقش به Template پیش‌فرض بازگشت — در Audit ثبت شد.', 60);
-        wp_safe_redirect(admin_url('tools.php?page=cpms-roles'));
+        wp_safe_redirect(admin_url('admin.php?page=cpms-roles'));
         exit;
     }
 

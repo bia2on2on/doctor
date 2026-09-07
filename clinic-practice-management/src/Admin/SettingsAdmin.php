@@ -105,7 +105,7 @@ final class SettingsAdmin
             wp_die('اعتبارسنجی ناموفق');
         }
         // فرم ویدیویی در F2+ — در اینجا فقط Hook آماده است.
-        wp_safe_redirect(wp_get_referer() ?: admin_url('tools.php?page=cpms-settings'));
+        wp_safe_redirect(wp_get_referer() ?: admin_url('admin.php?page=cpms-settings'));
         exit;
     }
 
