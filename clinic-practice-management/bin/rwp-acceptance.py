@@ -42,8 +42,8 @@ CRITICAL_RE = re.compile(r"critical error|خطای بحرانی|wp-die-message",
 
 
 def check(name, ok, detail=""):
-    results.append((name, bool(ok), str(detail)[:300]))
-    print(("PASS " if ok else "FAIL ") + name + (" — " + str(detail)[:300] if detail else ""), flush=True)
+    results.append((name, bool(ok), str(detail)[:1200]))
+    print(("PASS " if ok else "FAIL ") + name + (" — " + str(detail)[:1200] if detail else ""), flush=True)
 
 
 def attach_watchers(page, tag):
@@ -171,8 +171,8 @@ with open(f"{OUT}/logs/browser-console-errors.log", "w") as f:
 with open(f"{OUT}/logs/browser-page-errors.log", "w") as f:
     for tag, msg in page_errors:
         f.write(f"[{tag}] {msg}\n")
-check("browser.no_console_errors", len(console_errors) == 0, f"{len(console_errors)} خطا — " + " || ".join(f"[{t}] {m[:140]}" for t, m in console_errors[:4]))
-check("browser.no_page_errors", len(page_errors) == 0, f"{len(page_errors)} خطا — " + " || ".join(f"[{t}] {m[:140]}" for t, m in page_errors[:4]))
+check("browser.no_console_errors", len(console_errors) == 0, f"{len(console_errors)} خطا — " + " || ".join(f"[{t}] {m[:400]}" for t, m in console_errors[:4]))
+check("browser.no_page_errors", len(page_errors) == 0, f"{len(page_errors)} خطا — " + " || ".join(f"[{t}] {m[:400]}" for t, m in page_errors[:4]))
 
 # ---------- جمع‌بندی ----------
 failed = [r for r in results if not r[1]]
