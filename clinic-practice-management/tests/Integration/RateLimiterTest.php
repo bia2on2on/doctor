@@ -138,10 +138,13 @@ final class RateLimiterTest extends WP_UnitTestCase
         $table = $wpdb->prefix . 'cpms_rate_limits';
         $now = time();
 
+        // همه در واحدِ windowSec خودشان 4 روز پیش — کد قدیم ردیفِ دقیقه‌ای را
+        // (window_id بزرگ در واحد 60s) هرگز حذف نمی‌کرد؛ کد جدید هر سه را حذف
+        // می‌کند چون شروع پنجره (window_id * window_sec) < now - 86400.
         $expired = [
             ['exp:daily', intdiv($now - 4 * 86400, 86400), 86400],
-            ['exp:hourly', intdiv($now - 4 * 3600, 3600), 3600],
-            ['exp:minute', intdiv($now - 4 * 3600, 60), 60],
+            ['exp:hourly', intdiv($now - 4 * 86400, 3600), 3600],
+            ['exp:minute', intdiv($now - 4 * 86400, 60), 60],
         ];
         foreach ($expired as [$key, $windowId, $windowSec]) {
             $wpdb->query($wpdb->prepare(
