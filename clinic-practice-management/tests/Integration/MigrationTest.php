@@ -261,6 +261,64 @@ final class MigrationTest extends WP_UnitTestCase
         $this->assertContains('2026_09_07_0007', $applied);
     }
 
+    /**
+     * F1-2 — Fail-loud: خطای SQL در up() → Migration واقعاً شکست می‌خورد؛
+     * version ثبت نمی‌شود و Migrationهای بعدی اجرا نمی‌شوند.
+     * (پیش از رفع، خطای SQL soft-fail می‌شد و Migration «موفق» ثبت می‌شد —
+     * همان کلاس خطایی که در Migration 0009 رخ داد: ALTER بی‌صدا رد شد
+     * ولی version ثبت شد.)
+     */
+    public function testFailingMigrationAbortsAndIsNotRecorded(): void
+    {
+        $dir = sys_get_temp_dir() . '/cpms_mig_fail_test_' . getmypid() . '_' . bin2hex(random_bytes(3));
+        mkdir($dir);
+
+        file_put_contents($dir . '/2099_01_01_0001_bad_migration.php', <<<'PHP'
+<?php
+declare(strict_types=1);
+use ClinicCore\Infrastructure\Db\CpmsDb;
+return [
+    'version' => '2099_01_01_0001',
+    'description' => 'F1-2 regression: deliberately failing migration',
+    'up' => function (CpmsDb $db): void {
+        $db->query('SELECT * FROM cpms_table_that_does_not_exist');
+    },
+    'down' => function (CpmsDb $db): void {},
+];
+PHP);
+        file_put_contents($dir . '/2099_01_01_0002_good_migration.php', <<<'PHP'
+<?php
+declare(strict_types=1);
+use ClinicCore\Infrastructure\Db\CpmsDb;
+return [
+    'version' => '2099_01_01_0002',
+    'description' => 'F1-2 regression: good migration after the failing one',
+    'up' => function (CpmsDb $db): void {},
+    'down' => function (CpmsDb $db): void {},
+];
+PHP);
+
+        $runner = new \ClinicCore\Migrations\MigrationRunner(App::db(), App::op(), $dir);
+
+        try {
+            try {
+                $runner->migrate();
+                $this->fail('Migration دارای خطای SQL باید RuntimeException می‌داد');
+            } catch (\RuntimeException $e) {
+                $this->assertStringContainsString('SQL error', $e->getMessage());
+            }
+
+            $applied = $runner->applied();
+            $this->assertNotContains('2099_01_01_0001', $applied, 'version Migration شکست‌خورده نباید ثبت شود');
+            $this->assertNotContains('2099_01_01_0002', $applied, 'Migrationهای پس از Migration شکست‌خورده نباید اجرا شوند');
+        } finally {
+            foreach (glob($dir . '/*.php') ?: [] as $f) {
+                unlink($f);
+            }
+            rmdir($dir);
+        }
+    }
+
     private function hasUnique(string $short, array $columns): bool
     {
         global $wpdb;
