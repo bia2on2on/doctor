@@ -111,6 +111,15 @@
 - Schedule بصری هفتگی؛ بدون invalidate بی‌صدا؛ نمایش impact.
 - Deactivate بدون حذف history.
 
+> ✅ **Done (commit `ccecf3e`/`6c7f6f1`)** — «افزودن پزشک» حالا می‌تواند حساب وردپرس را با نقش
+> `cpms_doctor` در همان جریان بسازد (reuse مسیر امن `StaffManagementPage::upsertUser`؛
+> `upsertUser` حالا `user_id` را هم برمی‌گرداند) و پیوند ۱:۱ برقرار کند. بدون invalidate بی‌صدا:
+> `ScheduleService::impact()` گزارش می‌دهد چند اسلات خالی آینده بازتولید می‌شود و چند اسلات
+> رزرو/Hold «محافظت» می‌شود؛ صفحهٔ پزشک جعبهٔ پیش‌نمایش را نشان می‌دهد و پیام ذخیره شامل
+> اعداد تأثیر است. رمز هرگز plaintext ذخیره/نمایش نمی‌شود؛ غیرفعال‌سازی تاریخچه را حفظ می‌کند.
+> تست Integration (`DoctorWorkflowTest`) سبز؛ PHPStan/Unit/Closure/Real-WP-Acceptance/Release/
+> Upgrade/Responsive همه سبز؛ فقط Staging Gate (غیرمرتبط، از قبل) در انتظار.
+
 ### Chunk E — License / Backup / Update / Health (صفحات اختصاصی)
 - تفکیک از `SystemPage` به بخش‌های قابل‌فهم؛ هر fault = «چه، اثر، چه کنم» + «جزئیات فنی» جمع‌شونده.
 - Restore پراصطکاک/امن (preflight/warning/safety/confirm/audit).
