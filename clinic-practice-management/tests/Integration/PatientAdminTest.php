@@ -158,7 +158,7 @@ final class PatientAdminTest extends WP_UnitTestCase
         global $wpdb;
         $count = (int) $wpdb->get_var(
             $wpdb->prepare(
-                'SELECT COUNT(*) FROM ' . $wpdb->prefix . 'cpms_audit_logs WHERE action = %s AND subject_id = %d',
+                'SELECT COUNT(*) FROM ' . $wpdb->prefix . 'cpms_audit_logs WHERE action = %s AND resource_id = %d',
                 'PATIENT_CREATED',
                 $r['id']
             ) // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
