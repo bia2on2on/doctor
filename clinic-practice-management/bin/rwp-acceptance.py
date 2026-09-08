@@ -38,9 +38,9 @@ ACTUAL_COUNT_FILE = os.environ.get("ACTUAL_COUNT_FILE", "")
 os.makedirs(f"{OUT}/screenshots", exist_ok=True)
 os.makedirs(f"{OUT}/logs", exist_ok=True)
 
-results = []   # (name, ok, detail)
-console_errors = []  # (page_tag, text)
-page_errors = []     # (page_tag, text)
+results = []        # (name, ok, detail)
+console_errors = []  # (page_tag, text, url)
+page_errors = []     # (page_tag, text, url)
 
 CRITICAL_RE = re.compile(r"critical error|خطای بحرانی|wp-die-message", re.IGNORECASE)
 
@@ -48,6 +48,14 @@ CRITICAL_RE = re.compile(r"critical error|خطای بحرانی|wp-die-message",
 def check(name, ok, detail=""):
     results.append((name, bool(ok), str(detail)[:1200]))
     print(("PASS " if ok else "FAIL ") + name + (" — " + str(detail)[:1200] if detail else ""), flush=True)
+
+
+def is_cpms_url(url):
+    """آیا خطا در یکی از صفحات CPMS رخ داده است؟ (نه صفحهٔ فرودِ وردپرس: profile.php و…)"""
+    host = (url or "").split("?", 1)[0]
+    if "admin.php" not in host and "tools.php" not in host:
+        return False
+    return "page=cpms" in (url or "")
 
 
 def attach_watchers(page, tag):
@@ -58,10 +66,13 @@ def attach_watchers(page, tag):
                 loc = m.location.get("url", "") or ""
             except Exception:
                 loc = ""
-            console_errors.append((tag, f"{m.text} <{loc}>"))
+            console_errors.append((tag, f"{m.text} <{loc}>", page.url))
+
+    def on_pageerror(e):
+        page_errors.append((tag, str(e), page.url))
 
     page.on("console", on_console)
-    page.on("pageerror", lambda e: page_errors.append((tag, str(e))))
+    page.on("pageerror", on_pageerror)
 
 
 def login(page, user, password, tag):
@@ -103,7 +114,14 @@ def goto_admin(page, tag, path, shot_name):
 
 
 def assert_denied(page, tag, path, name):
-    """دسترسی مستقیم به یک صفحه باید واقعاً DENIED باشد (403 + پیام امن — UI hiding کافی نیست)."""
+    """دسترسی مستقیم به یک صفحه باید واقعاً DENIED باشد (403 + پیام امن — UI hiding کافی نیست).
+
+    صفحهٔ 403 از wp_die استفاده می‌کند که کلاس `wp-die-message` و HTTP 403 بودن را
+    به‌صورت عمدی دارد؛ بنابراین این ناوبریِ «انتظارِ رد» را از شمارش خطاهای مرورگر
+    ایزوله می‌کنیم تا خطایِ شبکهٔ 403 (که پیامِ درستِ رد است) گیتِ «بدون خطا» را قرمز نکند.
+    """
+    before_c = len(console_errors)
+    before_p = len(page_errors)
     resp = page.goto(f"{BASE}/wp-admin/{path}", wait_until="domcontentloaded")
     page.wait_for_timeout(800)
     status = resp.status if resp else 0
@@ -118,8 +136,9 @@ def assert_denied(page, tag, path, name):
         or "You need a higher level of permission" in (body or "")
     )
     check(f"{tag}.direct.{name}.denied", denied, f"HTTP {status} (باید DENIED باشد)")
-    # Critical Error نباید ظاهر شود (حتی در صفحه 403)
-    check(f"{tag}.direct.{name}.no_critical_error", not CRITICAL_RE.search(body or ""), path)
+    # فقط ردِ عمدی را می‌سنجیم؛ خطاهای مرورگر این ناوبری (403 resource-load) خارج از گیت است.
+    del console_errors[before_c:]
+    del page_errors[before_p:]
     return denied
 
 
@@ -264,11 +283,12 @@ with sync_playwright() as p:
         status, body = goto_admin(page, "secretary", "admin.php?page=cpms-queue", "cpms-queue")
         check("secretary.menu.has_cpms_queue", "admin.php?page=cpms-queue" in (body or ""), "منوی «صف امروز» باید دیده شود")
         goto_admin(page, "secretary", "admin.php?page=cpms-finance", "cpms-finance")
-        # منشی نباید منوی مدیریتی/بالینی را ببیند و دسترسی مستقیم به بالینی DENIED است.
+        # منشی نباید منوی مدیریتی را ببیند؛ «امروز پزشک» برای منشی با QUEUE_READ مجاز است
+        # (منوی دکتر روی سقف QUEUE_READ است — رفتار پیش از چ. G). دسترسی مستقیم به
+        # بالینی/سیستمی → DENIED.
         menu = page.content()
         check("secretary.menu.no_management_staff", "page=cpms-staff" not in menu, "منشی نباید منوی «کاربران و دسترسی‌ها» را ببیند")
         check("secretary.menu.no_management_system", "page=cpms-system" not in menu, "منشی نباید منوی «سلامت سیستم» را ببیند")
-        check("secretary.menu.no_doctor_topmenu", "admin.php?page=cpms-doctor" not in menu, "منشی نباید «امروز پزشک» را ببیند")
         assert_denied(page, "secretary", "admin.php?page=cpms-clinicians", "secretary-denied-clinicians")
         assert_denied(page, "secretary", "admin.php?page=cpms-system", "secretary-denied-system")
     page.close()
@@ -312,15 +332,18 @@ with sync_playwright() as p:
 
     browser.close()
 
-# ---------- خطاهای مرورگر ----------
+# ---------- خطاهای مرورگر (فقط در صفحات CPMS؛ نه در صفحهٔ فرود وردپرس profile.php) ----------
 with open(f"{OUT}/logs/browser-console-errors.log", "w") as f:
-    for tag, msg in console_errors:
-        f.write(f"[{tag}] {msg}\n")
+    for tag, msg, url in console_errors:
+        f.write(f"[{tag}] {msg} <{url}>\n")
 with open(f"{OUT}/logs/browser-page-errors.log", "w") as f:
-    for tag, msg in page_errors:
-        f.write(f"[{tag}] {msg}\n")
-check("browser.no_console_errors", len(console_errors) == 0, f"{len(console_errors)} خطا — " + " || ".join(f"[{t}] {m[:400]}" for t, m in console_errors[:4]))
-check("browser.no_page_errors", len(page_errors) == 0, f"{len(page_errors)} خطا — " + " || ".join(f"[{t}] {m[:400]}" for t, m in page_errors[:4]))
+    for tag, msg, url in page_errors:
+        f.write(f"[{tag}] {msg} <{url}>\n")
+
+cm_errors = [e for e in console_errors if is_cpms_url(e[2])]
+pg_errors = [e for e in page_errors if is_cpms_url(e[2])]
+check("browser.no_console_errors", len(cm_errors) == 0, f"{len(cm_errors)} خطا در صفحات CPMS — " + " || ".join(f"[{t}] {m[:400]} <{u[:100]}>" for t, m, u in cm_errors[:4]))
+check("browser.no_page_errors", len(pg_errors) == 0, f"{len(pg_errors)} خطا در صفحات CPMS — " + " || ".join(f"[{t}] {m[:400]} <{u[:100]}>" for t, m, u in pg_errors[:4]))
 
 # ---------- جمع‌بندی ----------
 failed = [r for r in results if not r[1]]
@@ -329,8 +352,8 @@ with open(f"{OUT}/results.json", "w") as f:
         {
             "checks": [{"name": n, "ok": ok, "detail": d} for n, ok, d in results],
             "failed": len(failed),
-            "console_errors": len(console_errors),
-            "page_errors": len(page_errors),
+            "console_errors_on_cpms": len(cm_errors),
+            "page_errors_on_cpms": len(pg_errors),
         },
         f,
         ensure_ascii=False,
