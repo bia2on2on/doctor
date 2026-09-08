@@ -8,6 +8,7 @@ use ClinicCore\Admin\ClinicianAdminPage;
 use ClinicCore\Admin\CpmsAdminMenu;
 use ClinicCore\Admin\CpmsAssets;
 use ClinicCore\Admin\CpmsSetupWizard;
+use ClinicCore\Admin\PatientAdminPage;
 use ClinicCore\Admin\PatientPortalPage;
 use ClinicCore\Admin\PrescriptionPrintPage;
 use ClinicCore\Admin\RoleCapabilitiesPage;
