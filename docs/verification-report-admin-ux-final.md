@@ -12,11 +12,11 @@
 | origin/main (full 40) | `38c573bf2c74814cdb5897e1a260081f8a07e7f1` |
 | Feature branch | `arena/01a07d25-doctor` |
 | **PRODUCTION-TESTED SHA** | **`c7eb3c801f123dc44c3dc8e3cbcb5d76d2170fd1`** |
-| FINAL HEAD (پس از docs-only commit) | (مستند در بخش Git/remote state — پس از کامیتِ فقط-مستند) |
-| Local HEAD (قبل از docs commit) | `c7eb3c801f123dc44c3dc8e3cbcb5d76d2170fd1` |
-| Remote feature branch | `c7eb3c801f123dc44c3dc8e3cbcb5d76d2170fd1` — **LOCAL == REMOTE ✅** |
+| FINAL HEAD (docs-only closure) | = tip شاخه که همین سند را حمل می‌کند (production code بدون تغییر = `c7eb3c8`) |
+| Local production HEAD (قبل از docs commit) | `c7eb3c801f123dc44c3dc8e3cbcb5d76d2170fd1` |
+| Remote feature branch | **LOCAL == REMOTE ✅** (tip = کامیتِ docs این سند؛ production tip = `c7eb3c8`) |
 | Merge-base (HEAD vs origin/main) | `38c573bf2c74814cdb5897e1a260081f8a07e7f1` == origin/main |
-| Ahead / Behind vs origin/main | **۰ behind / ۳۳ ahead** |
+| Ahead / Behind vs origin/main | **۰ behind / ۳۳+ ahead** (۳۳ production + کامیت‌های docs) |
 | PR | **#9** — `OPEN` / `isDraft=true` |
 | mergeable / mergeStateStatus | `MERGEABLE` / **`CLEAN`** |
 | Reviews / required checks | `reviews=[]`؛ هیچ required check از ruleset `Protect main` (required_approving_review_count=0، contextهای required_status_checks=هیچ) |
@@ -327,7 +327,7 @@ Search در همهٔ viewportها از نظر سمانتیک (pixels) و در CI
 
 ## ۰. به‌روزرسانی نهایی — Remediation (Responsive / Permissions UX / Visual Acceptance)
 
-> **این بخش جایگزینِ verdict بخش ۲۵ می‌شود و توسط بخش «۰. الف» بالا (ADVANCED PERMISSIONS UX REMEDIATION REPORT) تکمیل می‌شود.** این repo روی commit نهایی `e8a973b` قرار دارد و دو remediation انجام گرفته است. نتیجهٔ CI سبز است و اسکرین‌شات‌های واقعی در viewportهای خواسته‌شده تولید شده‌اند؛ **اما** بازبینیِ تصویریِ ذهنیِ PO همچنان الزامی است. (برای آخرین وضعیت — remediation جستجو — بخش **«۰.ب»** بالا مرجعِ authoritative است؛ HEAD نهایی اکنون `c7eb3c8` است.)
+> **این بخش جایگزینِ verdict بخش ۲۵ می‌شود و توسط بخش «۰. الف» بالا (ADVANCED PERMISSIONS UX REMEDIATION REPORT) تکمیل می‌شود.** این repo روی commit نهایی `e8a973b` قرار دارد و دو remediation انجام گرفته است. نتیجهٔ CI سبز است و اسکرین‌شات‌های واقعی در viewportهای خواسته‌شده تولید شده‌اند؛ **اما** بازبینیِ تصویریِ ذهنیِ PO همچنان الزامی است. (برای آخرین وضعیت — remediation جستجو و closure — بخش **«۰.ج»** بالا مرجعِ authoritative است؛ production HEAD = `c7eb3c8` و HEAD نهایی = کامیتِ فقط-مستند این گزارش — رجوع به §0.ج.)
 
 | مورد | مقدار (exact) |
 |---|---|
@@ -736,7 +736,7 @@ Working tree فقط دو فایل untracked دارد (`docs/pre-merge-verificati
 
 ## ۲۴. پاسخ الزامی به §46 (ده سؤال اصلی)
 
-1. **Repo/PR integrity — YES.** شاخه `arena/01a07d25-doctor`، HEAD=remote=`c7eb3c8` (production-tested؛ پس از remediation‌های collapse/search)، PR #9 OPEN/draft، **بدون merge**، و LOCAL==REMOTE. (mergeStateStatus اکنون `CLEAN`؛ مقدار قبلی `UNSTABLE` گذرا بود.)
+1. **Repo/PR integrity — YES.** شاخه `arena/01a07d25-doctor`؛ production-tested SHA = `c7eb3c8`؛ remote tip = کامیتِ فقط-مستند این گزارش (**LOCAL == REMOTE ✅**)؛ PR #9 OPEN/draft، **بدون merge**. (mergeStateStatus اکنون `CLEAN`؛ مقدار قبلی `UNSTABLE` گذرا بود.)
 2. **merge-base == main — YES.** `38c573bf…`=origin/main؛ شاخه فقط جلو؛ بدون conflict.
 3. **سند مرجع — YES.** `docs/admin-ux-plan.md` (+ SRS + auth-authorization)؛ Chunk A–G Done؛ هیچ سند 0–48 یکپارچه‌ای وجود ندارد.
 4. **امنیت نقش/authorization + IDOR منفی — YES.** تست‌های negative + 403 + capability-driven.
