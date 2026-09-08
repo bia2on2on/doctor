@@ -216,4 +216,59 @@ final class StaffManagementTest extends WP_UnitTestCase
         $u = get_userdata($adminId);
         $this->assertContains('administrator', (array) $u->roles, 'نقش administrator دست‌نخورده بماند');
     }
+
+    // ================= Chunk G — نقش‌های جدید (حسابدار/مدیر) =================
+
+    public function testCreateAccountantUser(): void
+    {
+        $adminId = $this->makeAdmin();
+        $r = StaffManagementPage::upsertUser([
+            'mode' => 'create',
+            'username' => 'staff_acc_g',
+            'display_name' => 'حسابدار جدید',
+            'email' => 'acc_g@test.local',
+            'role' => RolesAndCapabilities::ROLE_ACCOUNTANT,
+            'password' => 'StrongPass123',
+        ], $adminId);
+
+        $this->assertSame('', $r['error'], 'ایجاد حسابدار باید موفق باشد');
+        $u = get_user_by('login', 'staff_acc_g');
+        $this->assertNotFalse($u);
+        $this->assertContains(RolesAndCapabilities::ROLE_ACCOUNTANT, (array) $u->roles);
+        // هم‌اکنون نقشِ حسابدار به‌عنوان کاربر جاری → نباید به بالینی/خصوصی دسترسی داشته باشد.
+        wp_set_current_user((int) $u->ID);
+        $this->assertFalse(current_user_can(RolesAndCapabilities::MEDICAL_READ), 'حسابدار نباید به بالینی دسترسی داشته باشد');
+        $this->assertFalse(current_user_can(RolesAndCapabilities::QUEUE_READ), 'حسابدار نباید به صف امروز دسترسی داشته باشد');
+        $this->assertTrue(current_user_can(RolesAndCapabilities::FINANCE_READ), 'حسابدار باید به مالی دسترسی داشته باشد');
+    }
+
+    public function testCreateManagerUser(): void
+    {
+        $adminId = $this->makeAdmin();
+        $r = StaffManagementPage::upsertUser([
+            'mode' => 'create',
+            'username' => 'staff_mgr_g',
+            'display_name' => 'مدیر جدید',
+            'email' => 'mgr_g@test.local',
+            'role' => RolesAndCapabilities::ROLE_MANAGER,
+            'password' => 'StrongPass123',
+        ], $adminId);
+
+        $this->assertSame('', $r['error'], 'ایجاد مدیر کلینیک باید موفق باشد');
+        $u = get_user_by('login', 'staff_mgr_g');
+        $this->assertNotFalse($u);
+        $this->assertContains(RolesAndCapabilities::ROLE_MANAGER, (array) $u->roles);
+    }
+
+    public function testCannotDeactivateOwnAccount(): void
+    {
+        // مدیر کلینیکی که خودش مدیریت می‌کند نباید بتواند حساب خودش را غیرفعال کند.
+        $mgrId = (int) wp_create_user('mgr_self_g', 'StrongPass123', 'mgr_self@test.local');
+        wp_update_user(['ID' => $mgrId, 'role' => RolesAndCapabilities::ROLE_MANAGER]);
+        wp_set_current_user($mgrId);
+
+        $r = StaffManagementPage::toggleUser($mgrId, 'deactivate', $mgrId);
+        $this->assertStringContainsString('خودتان', $r['error'], 'غیرفعال‌سازی حساب خود باید رد شود (جلوگیری از قفل‌شدن)');
+        $this->assertContains(RolesAndCapabilities::ROLE_MANAGER, (array) get_userdata($mgrId)->roles);
+    }
 }

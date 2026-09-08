@@ -249,6 +249,22 @@ final class RoleManagementGTest extends WP_UnitTestCase
         $this->assertSame(200, $this->dispatch('GET', self::NS . '/visits/' . $this->visitId . '/record')->get_status(), 'پزشکِ متصل باید بتواند clinical record را ببیند');
     }
 
+    public function testAccountantAllowedFinanceButDeniedQueueToday(): void
+    {
+        wp_set_current_user($this->accountantId);
+        // مالی مجاز (FINANCE_READ) — صفحهٔ «مالی و تسویه» حسابدار باید کار کند.
+        $this->assertSame(200, $this->dispatch('GET', self::NS . '/finance/summary')->get_status(), 'حسابدار باید finance/summary را ببیند');
+        // داشبورد صف امروز صرفاً با QUEUE_READ است → حسابدار (بدون آن) DENIED.
+        $this->assertSame(403, $this->dispatch('GET', self::NS . '/secretary/today')->get_status(), 'حسابدار باید به «صف امروز» (QUEUE_READ) رست deny شود');
+    }
+
+    public function testManagerDeniedQueueTodayAndClinical(): void
+    {
+        wp_set_current_user($this->managerId);
+        $this->assertSame(403, $this->dispatch('GET', self::NS . '/secretary/today')->get_status(), 'مدیر کلینیک باید به «صف امروز» (QUEUE_READ) deny شود');
+        $this->assertSame(403, $this->dispatch('GET', self::NS . '/finance/summary')->get_status(), 'مدیر کلینیک بدون FINANCE_READ باید به مالی deny شود');
+    }
+
     public function testForbiddenAccessAttemptsAudited(): void
     {
         wp_set_current_user($this->accountantId);
