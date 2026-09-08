@@ -283,9 +283,6 @@ final class OtpService
     }
 
     /**
-     * پیدا کردن/ساختن کاربر + لینک به بیمار(ان) موجود با همین موبایل.
-     */
-    /**
      * جست‌وجوی فقط-خواندنی کاربر متصل به یک شماره — **بدون هیچ اثر جانبی**.
      *
      * OD-8: مسیر `verify_mobile` از این تابع استفاده می‌کند. اگر کاربری وجود
@@ -294,19 +291,15 @@ final class OtpService
      */
     private function findExistingUser(string $mobile): int
     {
-        $patient = $this->db->fetchRow(
-            'SELECT id FROM ' . $this->db->table('cpms_patients') .
-            ' WHERE clinic_id = 1 AND mobile = %s AND status = %s ORDER BY id DESC LIMIT 1',
-            [$mobile, 'active']
-        );
-        if ($patient === null) {
+        $patientId = $this->findActivePatientIdByMobile($mobile);
+        if ($patientId === null) {
             return 0;
         }
 
         $link = $this->db->fetchRow(
             'SELECT wp_user_id FROM ' . $this->db->table('cpms_patient_user_links') .
             ' WHERE patient_id = %d ORDER BY is_primary DESC, id ASC LIMIT 1',
-            [(int) $patient['id']]
+            [$patientId]
         );
         if ($link === null) {
             return 0;
@@ -320,20 +313,44 @@ final class OtpService
         return $user === null ? 0 : (int) $link['wp_user_id'];
     }
 
-    private function resolveUser(string $mobile, string $purpose, bool &$isNewUser): int
+    /**
+     * بیمارِ فعالِ دارای این موبایل در Clinicِ پیکربندی‌شدهٔ این سرویس —
+     * **نقطهٔ واحد** این جست‌وجو.
+     *
+     * AD-13 (تصحیح Pre-Phase-2 Gate): تا این اصلاح، دو نسخهٔ کپی‌شده از
+     * همین کوئری با literal `clinic_id = 1` وجود داشت (یکی از پیش از
+     * Phase 1A و یکی افزودهٔ OD-8 در کامیت 4c16009 — رانش AD-13). هر دو
+     * به این متدِ پارامتری‌شده با Clinicِ فعالِ Settings تبدیل شدند؛ هیچ
+     * مفهوم Scope جدیدی ساخته نشد (Organization/ClinicContext = Phase 2).
+     *
+     * نکتهٔ Phase 2: این جست‌وجو امروز به Clinicِ فعالِ نصب گره خورده است؛
+     * طبق AD-14 هویت بیمار به سطح Organization می‌رود و این متد باید در
+     * آن فاز بازطراحی شود (رفتار فعلی عمداً حفظ شده — فقط صریح/تک‌منبعی شد).
+     */
+    private function findActivePatientIdByMobile(string $mobile): ?int
     {
         $patient = $this->db->fetchRow(
             'SELECT id FROM ' . $this->db->table('cpms_patients') .
-            ' WHERE clinic_id = 1 AND mobile = %s AND status = %s ORDER BY id DESC LIMIT 1',
-            [$mobile, 'active']
+            ' WHERE clinic_id = %d AND mobile = %s AND status = %s ORDER BY id DESC LIMIT 1',
+            [$this->settings->clinicId(), $mobile, 'active']
         );
 
+        return $patient === null ? null : (int) $patient['id'];
+    }
+
+    /**
+     * پیدا کردن/ساختن کاربر + لینک به بیمار(ان) موجود با همین موبایل.
+     */
+    private function resolveUser(string $mobile, string $purpose, bool &$isNewUser): int
+    {
+        $patientId = $this->findActivePatientIdByMobile($mobile);
+
         $link = null;
-        if ($patient !== null) {
+        if ($patientId !== null) {
             $link = $this->db->fetchRow(
                 'SELECT wp_user_id FROM ' . $this->db->table('cpms_patient_user_links') .
                 ' WHERE patient_id = %d ORDER BY is_primary DESC, id ASC LIMIT 1',
-                [(int) $patient['id']]
+                [$patientId]
             );
         }
 
@@ -351,10 +368,10 @@ final class OtpService
         if ($userId === null) {
             $userId = $this->createWpUser($mobile);
             $isNewUser = true;
-            if ($patient !== null) {
+            if ($patientId !== null) {
                 $this->db->insert('cpms_patient_user_links', [
-                    'clinic_id' => 1,
-                    'patient_id' => (int) $patient['id'],
+                    'clinic_id' => $this->settings->clinicId(),
+                    'patient_id' => $patientId,
                     'wp_user_id' => $userId,
                     'mobile_at_link' => $mobile,
                     'is_primary' => 1,

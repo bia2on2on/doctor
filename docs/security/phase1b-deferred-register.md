@@ -54,11 +54,11 @@
 | # | قلم | وضعیت 1A | وابسته به |
 |---|---|---|---|
 | **B-14** | `cpms_patient_identities` در سطح Organization با شناسهٔ داخلی تغییرناپذیر | وجود ندارد | Phase 2 |
-| **B-15** | تغییر شمارهٔ موبایل — صریح و Audit شده | `OtpService::resolveUser()` هنوز با `mobile` و `clinic_id = 1` جست‌وجو می‌کند (**کد موجود، در 1A دست نخورده**) | Phase 2 |
+| **B-15** | تغییر شمارهٔ موبایل — صریح و Audit شده | `OtpService` جست‌وجوی بیمار را از **Clinicِ پیکربندی‌شدهٔ Settings** می‌خواند (پس از fix تصحیحی Pre-Phase-2 Gate — دیگر هیچ literal `clinic_id = 1` در آن فایل نیست) | Phase 2 |
 | **B-16** | تشخیص تکراری و Merge هویت | Schema موجود است، `resolvePatient()` وجود ندارد | Phase 2 |
 | **B-17** | اگر ستون Lookup هش شود، باید HMAC کلیددار باشد نه SHA-256 خام | هیچ ستون هش‌شده‌ای وجود ندارد | Phase 2 |
 
-> **توجه:** `OtpService::resolveUser()` همچنان شامل `clinic_id = 1` است. این **کد از پیش موجود** است؛ Phase 1A هیچ نمونهٔ جدیدی اضافه نکرده و این مورد را هم اصلاح نکرده، چون اصلاح آن نیازمند مدل هویت Phase 2 است. ثبت در `docs/drift-register.md`.
+> 🔴 **تصحیح (2026-09-09 — Pre-Phase-2 Gate):** جملهٔ قبلی این بند («Phase 1A هیچ نمونهٔ جدیدی اضافه نکرده») **نادرست بود** — git blame نشان داد کامیت `4c16009` (OD-8، Phase 1A) یک نسخهٔ کپی‌شده از کوئری `clinic_id = 1` در `findExistingUser` اضافه کرده بود (نقض AD-13). در همان Gate با fix کوچک اصلاح شد: کوئریِ تکراری به یک helper واحد پارامتری‌شده با `Settings::clinicId()` تبدیل شد (بدون ساخت مفهوم Scope جدید — آن کار Phase 2 است) + تست رگرسیون `OtpFlowTest::testVerifyResolvesPatientInConfiguredClinicNotHardcodedDefault`. بازطراحی کامل این مسیر مطابق AD-14 همچنان Phase 2 می‌ماند.
 
 ---
 
@@ -86,7 +86,7 @@
 | **B-18** | اتمیک کردن مسیر `peek()` + اعمال سقف (قفل یا `SELECT … FOR UPDATE`) | Phase 17 (Performance) یا هر زمان که سقف دقیق لازم شد |
 | **B-19** | یکسان‌سازی سطل نام‌کاربری و ایمیل در محدودکنندهٔ ورود | Phase 3 (پس از تثبیت مدل هویت کاربر) |
 | **B-20** | چرخش خودکار Pepper + مستندسازی عملیاتی | همراه OD-5 |
-| **B-21** | انتقال ریشهٔ ذخیره‌سازی به خارج از DocumentRoot + مهاجرت idempotent | **OD-7 — توصیه: همین Phase 1** |
+| **B-21** | ~~انتقال ریشهٔ ذخیره‌سازی به خارج از DocumentRoot + مهاجرت idempotent~~ | ✅ **CLOSED (2026-09-08)** — OD-7 قبلاً و OD-9 (مرز کامل بکاپ + مهاجرت idempotent + Fail-Closed) در همین session بسته شد: [`report-od9-closure.md`](../phase-reports/report-od9-closure.md) |
 
 ---
 

@@ -147,6 +147,17 @@ final class Settings
     ) {
     }
 
+    /**
+     * شناسهٔ Clinic فعالِ این نمونهٔ Settings (مقدار پیکربندی‌شده؛ پیش‌فرض =
+     * Clinic پیش‌فرضِ seed شده). الگوی مجاز برای پارامتری‌کردن Queryها به‌جای
+     * literal `1` (AD-13) — همان الگوی داخلیِ خودِ این کلاس
+     * (`clinic_id = %d`).
+     */
+    public function clinicId(): int
+    {
+        return $this->clinicId;
+    }
+
     public function get(string $key, mixed $default = null): mixed
     {
         $this->load();

@@ -51,8 +51,8 @@ grep -hoE "admin_post_(cpms_[a-z_]+)" src | sort -u         → ۲۵ (بند ۱�
 |---|---|
 | ۲۵ جدول از ۰۰۰۱ | همان‌هایی که جدول «ب-۵» مدل هدف فهرست کرده است |
 | 🔍 **`cpms_sms_messages` جا افتاده است** | `clinic_id INT UNSIGNED NOT NULL DEFAULT 1` (migration ۰۰۰۳) — در جدول نگاشت «ب-۵» مدل هدف **نیست** (فقط در پانوشت ذکر شده) و در فهرست «۲۱ جدول بدون FK» هم نیامده است. Phase 2 باید برای آن هم FK→clinics بگذارد یا تصمیم صریح ثبت کند |
-| 🔍 ناسازگاری نوع ستون | ۲۳ جدول: `BIGINT UNSIGNED NOT NULL` · ۲ جدول: `BIGINT UNSIGNED NOT NULL DEFAULT 1` (`idempotency_keys`, `drug_reference`) · ۱ جدول: **`INT UNSIGNED`** (`sms_messages`) — برای ADD FK باید ابتدا به `BIGINT` هم‌نوع با `clinics.id` تبدیل شود |
-| `DEFAULT 1` روی ستون | در ۳ جدول — پس از Multi-Clinic نباید مقدار پیش‌فرضِ `1` بماند (الگوی AD-13 در سطح schema) |
+| 🔍 ناسازگاری نوع ستون | ۲۳ جدول: `BIGINT UNSIGNED NOT NULL` · ۲ جدول: `BIGINT UNSIGNED NOT NULL DEFAULT 1` (`idempotency_keys`, `drug_reference`) · ۱ جدول: **`INT UNSIGNED NOT NULL DEFAULT 1`** (`sms_messages` — هم ناهم‌نوع و هم دارای DEFAULT) — برای ADD FK باید ابتدا به `BIGINT` هم‌نوع با `clinics.id` تبدیل شود |
+| `DEFAULT 1` روی ستون | در **۳ جدول** (`idempotency_keys`, `drug_reference`, `sms_messages`) — پس از Multi-Clinic نباید مقدار پیش‌فرضِ `1` بماند (الگوی AD-13 در سطح schema) |
 
 ## ۶. UNIQUE constraintهای بحرانی Phase 2
 
@@ -62,7 +62,7 @@ grep -hoE "admin_post_(cpms_[a-z_]+)" src | sort -u         → ۲۵ (بند ۱�
 |---|---|---|---|
 | `u_sched_day` | `(clinician_id, day_of_week)` | یک برنامه در روز برای کل سیستم — نه چند شعبه، نه دو شیفت | M-07: → `(clinic_id, location_id, clinician_id, day_of_week, start_time)` — 🔴 برگشت‌ناپذیر |
 | `u_slot` | `(clinician_id, slot_date, slot_time)` | یکتایی slot از Location بی‌خبر است | M-07: → `(location_id, clinician_id, slot_date, slot_time)` — 🔴 برگشت‌ناپذیر |
-| 🔍 **`u_clinician_user`** (۰۰۰۷) | **`UNIQUE (wp_user_id)` روی کل جدول** | **نقض مستقیم AD-05 (M:N)** — یک کاربر فقط در یک Clinic می‌تواند Clinician باشد؛ همین الان Constraint قفل کرده است | Migration جدید: → `UNIQUE (clinic_id, wp_user_id)`؛ الگوی preflight امنِ ۰۰۰۷ (بررسی duplicate قبل از تغییر + پیام صریح + بدون تغییر داده) قابل استفادهٔ مجدد است |
+| `u_clinician_user` (۰۰۰۷) | `UNIQUE (wp_user_id)` روی کل جدول | در نسخهٔ اول این گزارش «نقض AD-05» خوانده شد — *(🔍 تصحیح 2026-09-09: پس از تحلیل معنایی، رأی عوض شد)* AD-05 دربارهٔ **Membership** است نه Profile؛ ERD مصوب `WP_USER \|\|--o\| CLINICIAN` یک پروفایل به‌ازای کاربر را ایجاب می‌کند | **حفظ می‌شود** (بدون migration)؛ M:N از راه `cpms_clinic_memberships` + `clinicians.clinic_id` معنای «کلینیکِ خانه» می‌گیرد — تفصیل: `phase0.5-target-model.md` د-۶-۳ + گزارش نهایی §۸ |
 
 ## ۷. سرشماری `clinic_id = 1` — بدهی فنی Phase 2 و 🔍 رانش جدید فاز 1A
 
@@ -79,7 +79,7 @@ grep -hoE "admin_post_(cpms_[a-z_]+)" src | sort -u         → ۲۵ (بند ۱�
 | الگوی سالم `clinic_id = %d` | ۲۵ نقطه | ۲۵ — بدون تغییر |
 
 **🔍 رانش فاز 1A (diff واقعی `8087b42` → `79cce4b`):**
-- **+۱ hardcode اجراییِ جدید:** `OtpService::resolveUser()` (کار OD-8) کوئری `WHERE clinic_id = 1 AND mobile = %s` را در متد جدید تکرار کرده است — **نقض AD-13** («از امروز هیچ خط کد جدیدی حق ندارد این الگو را اضافه کند»). باید در دفترچهٔ بدهی Phase 2 ثبت و همان‌جا حذف شود.
+- **+۱ hardcode اجراییِ جدید:** کامیت `4c16009` (OD-8، Phase 1A) نسخهٔ کپی‌شده‌ای از کوئری `WHERE clinic_id = 1 AND mobile = %s` در متد جدید `findExistingUser` اضافه کرد — **نقض AD-13**. *(🔍 تصحیح 2026-09-09: در نسخهٔ اول این گزارش، متد مقصر به‌اشتباه `resolveUser` ذکر شده بود؛ git blame متد صحیح را `findExistingUser` نشان داد — `resolveUser` از `8087b42` موجود بود. این رگرسیون در FINAL PRE-PHASE-2 GATE با fix کوچک اصلاح و بسته شد: کوئری تکراری + دو نمونهٔ پیشین فایل به helper پارامتریِ واحد با `Settings::clinicId()` تبدیل شدند؛ سرشماری اجرایی: ۵۲ → ۴۹.)*
 - +۱ خط کامنت (`LoginRateLimiter:135` — توضیحِ ضدِ الگو، بی‌ضرر).
 - Session فعلی (OD-9): **صفر** مورد جدید (verify با diff `79cce4b..cd29473`).
 
