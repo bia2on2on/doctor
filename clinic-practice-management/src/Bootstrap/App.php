@@ -48,6 +48,9 @@ use ClinicCore\Application\Jobs\VisitsNoShowHandler;
 use ClinicCore\Application\Licensing\LicenseService;
 use ClinicCore\Application\Notifications\NotificationService;
 use ClinicCore\Application\Notifications\SmsService;
+use ClinicCore\Application\Scope\ClinicScope;
+use ClinicCore\Application\Scope\ScopeContext;
+use ClinicCore\Application\Scope\SystemClinicResolver;
 use ClinicCore\Application\Reports\ExportService;
 use ClinicCore\Application\Reports\ReportService;
 use ClinicCore\Application\System\SystemHealthService;
@@ -797,11 +800,39 @@ final class App
     public static function settings(): Settings
     {
         if (self::$settings === null) {
-            // F1-4: AuditLogger تزریق می‌شود تا هر تغییر Setting (قبل/بعد + کاربر) Audit شود
-            self::$settings = new Settings(self::db(), 1, self::audit());
+            // F1-4: AuditLogger تزریق می‌شود تا هر تغییر Setting (قبل/بعد + کاربر) Audit شود.
+            // Phase 2: Clinic پیش‌فرضِ Settings از Scope حل می‌شود (نه literal 1) —
+            // در نصب تک‌کلینیکی همان Clinic تنها؛ در حالت مبهم CLINIC_SCOPE_REQUIRED.
+            self::$settings = new Settings(self::db(), self::scope()->clinicId(), self::audit());
         }
 
         return self::$settings;
+    }
+
+    /**
+     * Scope فعال درخواست جاری — Phase 2 (ADR-0031).
+     *
+     * ترتیب: Scope صریحِ درخواست (ScopeContext) → Resolution سیستمی
+     * (دقیقاً یک Clinic؛ در غیر این صورت Fail-Closed). هیچ مقدار ثابتی
+     * به‌عنوان «کلینیک پیش‌فرض» وجود ندارد (AD-13).
+     */
+    public static function scope(): ClinicScope
+    {
+        $explicit = ScopeContext::tryGet();
+        if ($explicit !== null) {
+            return $explicit;
+        }
+
+        return SystemClinicResolver::resolve(self::db());
+    }
+
+    /**
+     * باطل‌سازی کش‌های Scope (تست‌ها / تغییر دادهٔ Clinic در طول فرآیند).
+     */
+    public static function resetScope(): void
+    {
+        ScopeContext::clear();
+        SystemClinicResolver::flush();
     }
 
     public static function migrations(): MigrationRunner

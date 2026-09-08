@@ -125,6 +125,12 @@
 | `CLINIC_BACKUP_PREFLIGHT_FAILED` | 409 | Preflight Restore رد شد (تمامیت بکاپ یا دسترس‌پذیری DB) — چیزی تغییر نکرده است | — |
 | `CLINIC_BACKUP_STORAGE_INSIDE_WEBROOT` | 500 | **OD-9** — ریشهٔ بکاپ فعال داخل DocumentRoot است: نوشتن Fail-Closed رد می‌شود (مسیر ناامن عوض نمی‌شود؛ خواندن به‌عنوان مبدأ legacy مجاز است). Safety Backup پیش از Restore به ریشهٔ خصوصی امن هدایت می‌شود | پس از اصلاح پیکربندی |
 
+## Scope / Multi-Clinic (Phase 2 — ADR-0031)
+
+| Code | HTTP | Meaning | Retry-able |
+|---|---|---|---|
+| `CLINIC_SCOPE_REQUIRED` | 400 | Clinic فعال قابل تعیین نیست (صفر یا بیش از یک Clinic بدون انتخاب صریح). عملیات Fail-Closed بسته می‌شود — هیچ fallback implicit («کلینیک پیش‌فرض»/«اولین Clinic») وجود ندارد؛ Scope صریح (پارامتر درخواست، Membership کاربر، یا پیکربندی جریان) لازم است | پس از ارائهٔ Scope صریح |
+
 ## Update (F10 — ADR-0029)
 
 | Code | HTTP | Meaning | Retry-able |

@@ -222,6 +222,16 @@ final class OtpFlowTest extends WP_UnitTestCase
         global $wpdb;
         $now = App::db()->nowUtcSql();
 
+        // Phase 2: singletonهای وابسته را پیش از وجود کلینیک دوم گرم می‌کنیم —
+        // resolution سیستمی Scope با ≥۲ Clinic باید fail-closed بماند (ADR-0031)
+        // و این تست عمداً به Clinic مقید صریح operates می‌کند.
+        App::db();
+        App::rate();
+        App::audit();
+        App::op();
+        App::smsService();
+        App::jobs();
+
         // Clinic دوم — ردیف واقعی (FK بیمار به clinics)
         $wpdb->query(
             'INSERT IGNORE INTO ' . $wpdb->prefix . "cpms_clinics (id, name, slug, timezone, created_at, updated_at)
