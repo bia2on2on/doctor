@@ -17,7 +17,9 @@
         └── {stored_filename}.{ext}   ← مثال: a3/f9/a3f9...c2.pdf
 wp-content/uploads/clinic/          ← فقط Previewهای سبک (اختیاری) با .htaccess deny
 ```
-- اگر زیرساخت اجازه ندهد: `wp-content/clinic-files/` با `Require all denied`/`deny from all` + `.htaccess` + `index.php` خالی + نام تصادفی (لایه دوم: Stream مجوزیافته). مسیر پایه با Setting `files.storage_path` (مطلق) قابل تغییر است و در هر Request تازه خوانده می‌شود. **نکته Nginx:** `.htaccess` اثر ندارد — دسترسی `wp-content/clinic-files/` باید در خود تنظیمات Nginx بسته شود (location deny).
+- **OD-7 (به‌روزرسانی Phase 1A):** ریشهٔ پیش‌فرض دیگر `wp-content/clinic-files/` نیست. پیش‌فرض `PrivateStorageLocation::path('clinic-files')` است — یعنی `CPMS_PRIVATE_STORAGE_DIR` یا `dirname(ABSPATH)/cpms-private/clinic-files` — که **بیرون از DocumentRoot** می‌افتد و اصلاً URLی ندارد.
+- مسیر پایه با Setting `files.storage_path` (مطلق) قابل تغییر است و در هر Request تازه خوانده می‌شود، **ولی Fail-Closed است**: اگر مسیر داخل DocumentRoot باشد، `LocalFileStorage::__construct()` استثنای `StorageConfigurationException` با کد `CLINIC_STORAGE_INSIDE_WEBROOT` می‌دهد و هیچ fallback بی‌صدایی به مسیر امن انجام نمی‌شود. مقایسه روی `realpath` است، پس Symlink هم دنبال می‌شود.
+- `wp-content/clinic-files/` فقط **ریشهٔ قدیمی** است: مهاجرت idempotent آن را به‌عنوان **مبدأ فقط‌خواندنی** می‌خواند. گاردهای `.htaccess` + `web.config` + `index.php` خالی روی آن باقی می‌مانند به‌عنوان Defense in Depth تا مهاجرت کامل شود. **نکته Nginx:** `.htaccess` اثر ندارد — تا پایان مهاجرت، دسترسی `wp-content/clinic-files/` باید در خود تنظیمات Nginx بسته شود (`location ^~ /wp-content/clinic-files/ { deny all; return 404; }`).
 - **رمزنگاری:** سطح V1 = محافظت ساختاری (خارج webroot + نام تصادفی + ACL) + رمزنگاری دیسک سرور. **رمزنگاری هر-فایل (AES-256-GCM):** توصیه‌شده — تصمیم کارفرما (Setting `files.encrypt_at_rest`؛ اگر روشن: Key از Env).
 
 ## 3. جریان Upload

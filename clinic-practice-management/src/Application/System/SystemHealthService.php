@@ -11,6 +11,7 @@ use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Licensing\LicenseStatus;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Logging\OpLogger;
+use ClinicCore\Infrastructure\Storage\LocalFileStorage;
 use ClinicCore\Settings\Settings;
 
 /**
@@ -130,7 +131,7 @@ final class SystemHealthService
         $add('cron.jobs', 'Cron/Queue', $cronStatus, $cronDetail . ' | failed=' . $queue['failed']);
 
         // ---------- Storage (spec §22/§23) ----------
-        $add('storage.files', 'Storage فایل‌های پزشکی', $this->storageStatus($this->filesBase(), 'storage.files'));
+        $add('storage.files', 'Storage فایل‌های پزشکی', $this->storageStatus($this->filesBase(), 'storage.files', self::FAIL));
         $add('storage.backups', 'Storage بکاپ', $this->storageStatus($this->backups->store()->basePath(), 'storage.backups'));
 
         // ---------- License (ADR-0023) ----------
@@ -233,7 +234,10 @@ final class SystemHealthService
             return $configured;
         }
 
-        return defined('WP_CONTENT_DIR') ? (string) WP_CONTENT_DIR . '/clinic-files' : dirname(__DIR__, 3) . '/clinic-files';
+        // OD-7 — پیش‌فرض بیرون از DocumentRoot است. پیش از این اینجا مسیر
+        // قدیمی گزارش می‌شد و سلامت سیستم دربارهٔ ریشه‌ای حرف می‌زد که دیگر
+        // ذخیره‌سازی فعال نبود.
+        return LocalFileStorage::defaultBasePath();
     }
 
     /**
@@ -247,7 +251,7 @@ final class SystemHealthService
      *
      * `PASS` فقط وقتی داده می‌شود که ریشه بیرون از DocumentRoot باشد.
      */
-    private function storageStatus(string $path, string $key): string
+    private function storageStatus(string $path, string $key, string $insideWebRoot = self::WARNING): string
     {
         if (!is_dir($path)) {
             return self::NOT_CONFIGURED;
@@ -257,7 +261,11 @@ final class SystemHealthService
         }
         if ($this->isInsideWebRoot($path)) {
             // گاردها (در صورت وجود) Defence in Depth هستند، نه Authorization.
-            return self::WARNING;
+            // برای ذخیره‌سازی بالینی این حالت از OD-7 به بعد یک پیکربندی
+            // **رد‌شده** است (سازنده استثنا می‌دهد) و باید FAIL گزارش شود؛
+            // برای ریشهٔ بکاپ فعلاً WARNING می‌ماند — دامنهٔ آن در گزارش
+            // این دور توضیح داده شده است.
+            return $insideWebRoot;
         }
         if (is_file($path . '/.htaccess')) {
             return self::PASS;

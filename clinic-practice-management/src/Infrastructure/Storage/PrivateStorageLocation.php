@@ -63,6 +63,31 @@ final class PrivateStorageLocation
     }
 
     /**
+     * دروازهٔ Fail-Closed برای هر ریشهٔ ذخیره‌سازی **فعال**.
+     *
+     * اصل امنیتی (تصمیم مالک): «Private clinical storage must remain outside
+     * the effective web/document root.» پس یک مسیر داخل DocumentRoot نه
+     * پذیرفته می‌شود و نه با هشدار تحمل می‌شود و نه بی‌سروصدا با پیش‌فرض
+     * جایگزین می‌شود — چون هر سه حالت یعنی داده در جایی می‌نشیند که
+     * ممکن است با URL خوانده شود.
+     *
+     * ⚠️ این تابع فقط برای ریشه‌های **فعال** است. مهاجرت اجازه دارد مسیر
+     * قدیمیِ داخل webroot را به‌عنوان **مبدأ فقط‌خواندنی** بخواند؛ آن مسیر
+     * هرگز از این دروازه عبور نمی‌کند و هرگز به ذخیره‌سازی فعال تبدیل
+     * نمی‌شود.
+     *
+     * @throws StorageConfigurationException
+     */
+    public static function assertOutsideWebRoot(string $path, string $what): string
+    {
+        if (self::isInsideWebRoot($path)) {
+            throw StorageConfigurationException::insideWebRoot($path, $what);
+        }
+
+        return $path;
+    }
+
+    /**
      * آیا این مسیر داخل DocumentRoot وردپرس است — یعنی بالقوه از طریق HTTP
      * قابل دسترس؟
      *

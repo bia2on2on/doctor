@@ -153,6 +153,7 @@
 | **OD-6** | رمزنگاری فایل بالینی و بکاپ در حالت سکون | ⚠️ **باز — جدید در Phase 1A** — تصمیم محصولی (مدیریت کلید/Restore) |
 | **OD-7** | انتقال اجباری `clinic-files` و `cpms-backups` به خارج از DocumentRoot | ✅ **بسته — تصمیم مالک: گزینهٔ A، پیاده‌سازی‌شده در Phase 1A.** ریشهٔ پیش‌فرض به `…/cpms-private/` بیرون از DocumentRoot منتقل شد + مهاجرت idempotent با تأیید sha256 پیش از حذف مبدأ |
 | **OD-8** | `verify_mobile` از Endpoint عمومی می‌تواند حساب `cpms_patient` بسازد | ✅ **بسته — تصمیم مالک: گزینهٔ الف، پیاده‌سازی‌شده در Phase 1A.** `PROVISIONING_PURPOSES = [LOGIN]`؛ `verify_mobile` از مسیر فقط‌خواندنی `findExistingUser()` می‌رود و شمارهٔ بی‌صاحب `user_id = 0` می‌گیرد |
+| **OD-9** | Fail-Closed کردن ریشهٔ بکاپ داخل DocumentRoot | ⚠️ **باز — جدید در Phase 1A.** `ProtectedBackupStore` primitive جدا دارد؛ `restoreApply → createBackup → createDir → ensureGuards` یعنی هر Fail-Closed سمت نوشتن، restore را هم می‌بندد. گزینه‌های A/B/C در `docs/security/phase1-current-security-model.md` §۵-۴ |
 | **Q6** | Scope جدول `cpms_rate_limits` (سراسری / per-Clinic / دوسطحی) | ⚠️ باز — **مرتبط با Phase 1A** (rate limiting سراسری بدون آن کار می‌کند) |
 | **Q11** | حذف ستون legacy `clinicians.specialty` | ⚠️ باز — Phase 4 |
 | **Q12** | UX تعویض Clinic | ⚠️ باز — بدون اثر بر Backend |

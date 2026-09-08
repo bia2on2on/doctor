@@ -14,11 +14,17 @@ use RuntimeException;
  *
  *   {base}/{clinic_id}/{stored_filename[:2]}/{stored_filename}.{ext}
  *
- * - base پیش‌فرض: `wp-content/clinic-files/` (خارج از uploads) با
- *   `.htaccess` (deny) + `index.php` خالی — دو لایه: سرور + Stream مجوزیافته.
- * - اگر زیرساخت مسیر خارج از DocumentRoot بدهد: Setting `files.storage_path`
- *   (مسیر مطلق) — توصیه file-storage.md §2.
+ * - base پیش‌فرض (OD-7): `PrivateStorageLocation::path('clinic-files')` —
+ *   **بیرون از DocumentRoot**، پس اصلاً URLی برای این فایل‌ها وجود ندارد.
+ * - Setting `files.storage_path` (مسیر مطلق) می‌تواند پیش‌فرض را جایگزین کند،
+ *   ولی آن هم باید بیرون از DocumentRoot باشد.
+ * - `wp-content/clinic-files` فقط **ریشهٔ قدیمی** است و صرفاً به‌عنوان مبدأ
+ *   مهاجرت خوانده می‌شود؛ گاردهای `.htaccess`/`web.config` روی آن
+ *   Defense in Depth اند، نه مرز مجوز.
  * - نام ذخیره تصادفی (F-2): `{32 hex}.{ext}` — نام اصلی فقط در DB.
+ *
+ * **Fail-Closed (OD-7):** سازنده هر ریشهٔ داخل DocumentRoot را رد می‌کند؛
+ * هیچ fallback بی‌صدایی به مسیر امن وجود ندارد.
  *
  * V1: رمزنگاری هر-فایل تصمیم کارفرما (files.encrypt_at_rest — F10/V1.5)؛
  * لایه فعلی = محافظت ساختاری (خارج uploads + نام تصادفی + deny + Stream).
@@ -37,8 +43,16 @@ final class LocalFileStorage
      */
     private const GUARD_README = "CPMS legacy clinical storage\n\nAs of OD-7 the default storage root is OUTSIDE the document root, so newly\nstored clinical files have no URL at all and can only be delivered through\nthe authenticated application endpoint.\n\nThis directory is the LEGACY location. If files are still here, the\nidempotent migration has not completed yet; it retries on every admin or\nREST request. Nothing here should be served over HTTP.\n\nApache/IIS: the .htaccess and web.config in this directory deny access.\nnginx IGNORES .htaccess, so until migration completes add:\n\n    location ^~ /wp-content/clinic-files/ { deny all; return 404; }\n\nThese guards are defence in depth. They are NOT the authorization boundary.\n";
 
+    /**
+     * @throws StorageConfigurationException اگر ریشه داخل DocumentRoot باشد
+     */
     public function __construct(private readonly string $basePath)
     {
+        // Fail-Closed. هر ریشهٔ بالینی فعال از همین‌جا عبور می‌کند — چه از
+        // پیش‌فرض بیاید، چه از Setting `files.storage_path`، چه از ثابت
+        // `CPMS_PRIVATE_STORAGE_DIR`. مقایسه روی `realpath` است، پس Symlinkی
+        // که به داخل webroot می‌رسد هم رد می‌شود.
+        PrivateStorageLocation::assertOutsideWebRoot($basePath, 'ذخیره‌سازی فایل بالینی');
     }
 
     /**
