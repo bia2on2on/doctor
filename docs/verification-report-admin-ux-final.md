@@ -83,17 +83,31 @@
 - **Search UI does not change checkbox/capability state** — **سبز**؛ تست `checked_before == checked_after` (`25 == 25`) در همه viewportها؛ جستجو فقط `display`، هرگز `checked` را تغییر نمی‌دهد.
 - **تمایز navigation hiding و backend authorization حفظ شد.**
 
-### ۷) Final Role Matrix (خلاصه فارسی)
+### ۷) Final Role Matrix (capability-level، در سطح authorization)
 
-| Context | Navigation اصلی | Operational / دسترسی | Forbidden / محدودیت |
-|---|---|---|---|
-| **Administrator / Technical Owner** | «مدیریت مطب» + صفحات فنی/امنیتی | `cpms_config`, `cpms_sms_config`؛ ویرایش ماتریس/Advanced (نیازمند `manage_options`) | **بدون** Medical/Audit/Export خودکار (P-3)؛ منوهای «امروز پزشک»/«صف»/«بیماران» برای Admin پنهان |
-| **Clinic Manager** (`cpms_manager`) | «مدیریت مطب» + «بیماران» (فقط جستجو) | `cpms_config`, `cpms_sms_config`, `cpms_patient_read`, `cpms_report_read`, `cpms_search` | هیچ capability بالینی/خصوصی/نسخه/فایل/صف/مالی؛ نه `manage_options`؛ نه ماتریس فنی |
-| **Doctor** (`cpms_doctor`) | «امروز پزشک» + «بیماران» (جستجو) + «مالی» | بالینی/یادداشت/نسخه/فایل/مشاوره + `cpms_patient_read`/`update` + queue/invoice/reports | **نمی‌تواند** `cpms_patient_create`؛ نه `cpms_config`؛ نه ماتریس فنی |
-| **Secretary** (`cpms_secretary`) | «صف امروز» + «بیماران» (جستجو + ایجاد) + «مالی» | `cpms_patient_read/create/update` + نوبت/صف/فایل/فاکتور/پرداخت/مالی/جستجو | بالینی/یادداشت خصوصی/نسخه/ماتریس فنی/`cpms_config` ممنوع |
-| **Accountant** (`cpms_accountant`) | فقط «مالی و تسویه» | `cpms_finance_read`, `cpms_report_read`, invoice/payment, `cpms_export`, `cpms_search` | تمام capability بالینی/خصوصی/نسخه/فایل/صف/`cpms_config` ممنوع؛ نه «بیماران»/«صف»/«پزشک» |
+> همهٔ دسترسی‌ها از روی capabilityهای واقعی (`RolesAndCapabilities`) و spec (`docs/permissions/permission-matrix.md` v1.5 + ADR-0026) استخراج شده؛ **هرگز فقط از menu visibility نتیجه‌گیری نشده**. مرجع backend: capability + Nonce + Audit.
 
-> هیچ دسترسی‌ای صرفاً از روی menu visibility نتیجه‌گیری نشده؛ backend capability + Nonce + Audit مرجع است.
+| Context | Navigation | Capabilities (exact) | Finance capabilities | Forbidden / محدودیت |
+|---|---|---|---|---|
+| **Administrator / Technical Owner** | «مدیریت مطب» + صفحات فنی/امنیتی | `cpms_config`, `cpms_sms_config`, `manage_options` (ماتریس/Advanced) | **هیچ** (نه `cpms_finance_read`، نه invoice/payment) | بدون Medical/Audit/Export خودکار (P-3)؛ «امروز پزشک»/«صف»/«بیماران» پنهان |
+| **Clinic Manager** (`cpms_manager`) | «مدیریت مطب» (Dashboard/Wizard/**Staff**/**Doctors/Schedule**/System/Settings/SMS) + «بیماران» (جستجو) + reports (REST) | `cpms_config`, `cpms_sms_config`, `cpms_patient_read`, `cpms_report_read`, `cpms_search` | **هیچ** `cpms_finance_read`/`invoice_*`/`payment_*`؛ فقط `cpms_report_read` (گزارش عملیاتی/aggregate، نه صفحهٔ مالی) | هیچ capability بالینی/خصوصی/نسخه/فایل/صف؛ نه `manage_options`؛ نه ماتریس فنی (`cpms-roles`) |
+| **Doctor** (`cpms_doctor`) | «امروز پزشک» + «بیماران» (جستجو) + «مالی» | بالینی (`medical/note/rec`)، `private_note_*`، `rx_*`، `file_*`، `consult_*`، `visit/queue_call`، `appt_*`، `patient_read/update` | `cpms_invoice_read`, `cpms_invoice_create`, `cpms_payment_void`, `cpms_payment_refund`, `cpms_finance_read`, `cpms_report_read` — **عمداً** (matrix §4.3) | نه `cpms_patient_create`؛ نه `cpms_invoice_adjust/void`؛ نه `cpms_payment_create` (ثبت عادی با منشی)؛ نه `cpms_config`؛ نه ماتریس فنی |
+| **Secretary** (`cpms_secretary`) | «صف امروز» + «بیماران» (ایجاد/جستجو) + «مالی» | `patient_read/create/update`, `appt_*`, `queue_*`, `file_*`, search | `cpms_invoice_read/create/adjust/void`, `cpms_payment_create/void/refund`, `cpms_finance_read` — **«allowed finance» عمداً** (matrix §4.2) | بالینی/`private_note_*`/`rx_*`/`cpms_config`/ماتریس فنی ممنوع |
+| **Accountant** (`cpms_accountant`) | فقط «مالی و تسویه» | `cpms_finance_read`, `cpms_report_read`, `cpms_export`, `cpms_search` | `cpms_invoice_read/create/adjust/void`, `cpms_payment_create/void/refund`, `cpms_finance_read`, `cpms_report_read`, `cpms_export` — **عمداً** (نقش مالی اختصاصی) | تمام بالینی/خصوصی/نسخه/فایل/صف/`cpms_config`/بیماران/پزشک ممنوع |
+
+**Finance Capability Review (sanity):**
+- **Doctor:** `invoice_read/create` + `payment_void/refund` + `finance_read` + `report_read` — **intentional product policy**؛ مستند در `permission-matrix.md` §4.3 و rows 138–142 (Invoice: «ثبت خدمات» ✅؛ Payment Void/Refund «با مجوز» ✅؛ Payment Create ❌ با منشی). **نه** accidental over-permission.
+- **Secretary:** تمام invoice/payment + `finance_read` — **intentional** («allowed finance» per spec §4.2).
+- **Accountant:** تمام مالی + گزارش + export — **intentional** (نقش مالی اختصاصی، item 3).
+- **Clinic Manager:** **هیچ capability مالی ندارد** (`finance_read`/`invoice_*`/`payment_*` = NONE)؛ فقط `report_read` (گزارش‌های عملیاتی aggregate). **intentional**.
+- قفل هم‌ترازی: `tests/Integration/PermissionMatrixTest.php` (TP-10) تطابق سند↔کد را قفل می‌کند. **هیچ over-permission تصادفی یافت نشد.**
+
+**Manager Operational Review (staff/doctor/schedule/reports):**
+- `cpms-staff` (StaffManagementPage) گِیت `cpms_config` → Manager (CONFIG) می‌تواند Staff را از UI مدیریت کند. ✅
+- `cpms-clinicians` (ClinicianAdminPage — پزشک + برنامه) گِیت `cpms_config` → Manager می‌تواند Doctor ساخت/پیوند و Schedule را از UI تنظیم کند. ✅
+- `cpms-wizard` / `cpms-system` / `cpms-settings` / `cpms-sms` همه گِیت `cpms_config`/`cpms_sms_config` → Manager دسترسی دارد. ✅
+- Reports: Manager `cpms_report_read` → دسترسی REST گزارش (`ReportService::requireCap(REPORT_READ)`). ✅ (بدون صفحهٔ مالی چون `FINANCE_READ` ندارد.)
+- `cpms-roles` (ماتریس فنی) گِیت `manage_options` → Manager **نه** می‌بیند/نه ویرایش می‌کند. ✅
 
 ### ۸) Residual Risks / Technical Debt
 
@@ -107,18 +121,20 @@
   - بازیابی blob artifact (ZIP/سکرین‌شات) از محیط محلی بلاک است (EOF) — evidence معتبر از commit comment API؛ non-blocking.
   - Screen visual inspection (قبلاً UNVERIFIED) — **اکنون CLOSED** (PO PASS).
 
-### ۹) §46 — FINAL ANSWERS
+### ۹) §46 — FINAL ANSWERS (۱۰ سؤال authoritative پرامپت اصلی، عیناً)
 
-1. **YES** — Repo/PR integrity: branch درست، PR #9 OPEN/draft، بدون merge، LOCAL==REMOTE، بدون local-only concern.
-2. **YES** — merge-base == origin/main (`38c573b`)؛ شاخه فقط جلو (۰ behind / ۳۳ ahead)؛ بدون conflict.
-3. **YES** — سند مرجع (`docs/admin-ux-plan.md` + SRS + auth-authorization)؛ Chunk A–G Done.
-4. **YES** — امنیت نقش/authorization + IDOR منفی؛ تست‌های negative + 403 + capability-driven.
-5. **YES** — نام‌های کلاس/ثبت یکسان (`SecretaryFinancePage` صحیح/ثبت‌شده).
-6. **YES** — جریان Staff/رمز فقط WP core؛ بدون password DB؛ بدون plaintext؛ خود-غیرفعال‌سازی گاردشده.
-7. **YES** — بدون privilege escalation؛ انتساب administrator ممنوع؛ ماتریس فقط `manage_options`.
-8. **YES** — Real WP Acceptance روی ZIP رسمی: `307/0` در دو prefix؛ بدون fatal/console error؛ probe OK.
-9. **YES** — Desktop/Tablet/Mobile visual verification: **پس از تأیید تصویری PO، از UNVERIFIED به PASS تبدیل شد**.
-10. **YES** — تکمیل محدوده (Patient entry + IA + responsive) + asset-scope scoped + breakpoints + remediation بدون scope expansion.
+1. **YES — Can a new customer find CPMS immediately after activation?** Evidence: پس از active، منوی Top-Level «مدیریت مطب» (`CpmsAdminMenu::menu`, `cpms_config`) بالفعل ظاهر می‌شود و dashboard (`CpmsDashboard`) صفحهٔ فرود است؛ notice «راه‌اندازی» برای مدیر تا تکمیل wizard (`CpmsAdminMenu::onboardingNotice`). Browser probe: `admin-ui.menu.has_cpms-*`، `admin-ui.cpms-dashboard.http200` (PASS).
+2. **YES — Can a non-technical customer understand what to do next?** Evidence: Setup Wizard ۱۲گامی resumable (`CpmsSetupWizard`)، فارسی، progress، گیت تکمیل؛ onboarding notice «شروع راه‌اندازی». Probes: `admin-ui.cpms-wizard.http200`، `admin-ui.cpms-wizard.no_critical_error` (PASS).
+3. **YES — Can Admin create Doctor/Secretary/Accountant/Manager accounts without leaving the CPMS workflow?** Evidence: `StaffManagementPage` (`cpms-staff`, گِیت `cpms_config`) ساخت کاربر با نقش‌های `cpms_doctor/cpms_secretary/cpms_accountant/cpms_manager` (`wp_insert_user`)؛ بقیهٔ گزینه‌ها در همان صفحه. Probes: `admin-ui.cpms-staff.http200`، `admin-ui.menu.has_cpms-staff`، تست‌های Staff role (PASS).
+4. **YES — Can Admin assign safe role presets?** Evidence: `RoleCapabilitiesPage` (Normal) نمایش preset «می‌تواند/نمی‌تواند» + توضیح فارسی + هشدار حساس؛ Advanced جدا برای `manage_options`؛ restore preset (Reset). Probes: `admin-ui.cpms-roles.http200`، `admin-ui.perms.*` (PASS).
+5. **YES — Can Admin create/link a Doctor and configure schedule without SQL/API?** Evidence: `ClinicianAdminPage` (`cpms-clinicians`, گِیت `cpms_config`) ساخت/پیوند پزشک (`upsertUser` reuse) + Schedule در همان صفحه. Probes: `admin-ui.cpms-clinicians-list.http200`، `admin-ui.cpms-desktop-schedule.http200`، `cpms-tablet-schedule`، `cpms-mobile-schedule` (PASS).
+6. **YES — Does each role see only relevant navigation?** Evidence: منوهای capability-گیت (`CpmsAdminMenu` + `add_menu_page/submenu_page` با cap). Probes: `admin-ui.menu.*`، `manager.menu.has_cpms-*` + `manager.menu.no_roles_matrix`، `accountant.menu.no_patients/no_queue`، `doctor/secretary.menu.*` (PASS). Denialهای مستقیم: `accountant.direct.*denied-*`، `manager.direct.*denied-*` (403).
+7. **YES — Can Admin configure License/Backup/Health from coherent CPMS navigation?** Evidence: `SystemPage` (`cpms-system`, `cpms_config`) = Health/License/Backup/Restore/Update؛ `SettingsAdmin` (`cpms-settings`)؛ همه زیر «مدیریت مطب». Probes: `admin-ui.cpms-system.http200`، `cpms-system.health_rendered`، `cpms-settings.table_count_present` (PASS).
+8. **YES — Is advanced permission editing available without overwhelming normal users?** Evidence: Advanced Permissions پشت `<details class="cpms-advanced">` بسته (initial) + گروه‌های `cpms-cap-group` + جستجوی فیلترکننده (فقط ردیف match)؛ فقط `manage_options`. Probes: `admin-ui.perms.initial_all_groups_closed`، `initial_no_checkbox_visible`، `search_visible_perms_match_query`، `search_no_checkbox_wall` (PASS).
+9. **YES — Does the interface work acceptably on Desktop/Tablet/Mobile?** Evidence: Responsive smoke (Chromium ×4) PASS؛ `no_overflow` در 360/390/768/1024/1366 (`scrollWidth == viewport`)؛ و **بازبینی واقعی تصویری PO** (`PRODUCT_OWNER_VISUAL_ACCEPTANCE = PASS`) روی Run `34204647193`؛ `browser.no_console_errors`/`no_page_errors` = ۰ (PASS).
+10. **YES — Does Real WordPress Acceptance install the official ZIP and execute these workflows in a browser?** Evidence: `real-wp-acceptance.yml` → `bin/build-release.sh` (ZIP رسمی) → `wp plugin install "$ZIP"` در WP 6.7.2 تمیز → Playwright/Chromium روی ۵ نقش → `rwp-acceptance: 307 passed / 0 failed` در هر دو prefix (`wp_`, `clinic_`)؛ `41/41` جدول؛ probe fail-loud + not-recorded OK (PASS).
+
+> **نتیجه: §46 = ۱۰/۱۰ YES** (the authoritative questions, not a substituted checklist).
 
 ### ۱۰) Final Verdict
 
@@ -734,18 +750,20 @@ Working tree فقط دو فایل untracked دارد (`docs/pre-merge-verificati
 
 ---
 
-## ۲۴. پاسخ الزامی به §46 (ده سؤال اصلی)
+## ۲۴. پاسخ الزامی به §46 (ده سؤال authoritative اصلی)
 
-1. **Repo/PR integrity — YES.** شاخه `arena/01a07d25-doctor`؛ production-tested SHA = `c7eb3c8`؛ remote tip = کامیتِ فقط-مستند این گزارش (**LOCAL == REMOTE ✅**)؛ PR #9 OPEN/draft، **بدون merge**. (mergeStateStatus اکنون `CLEAN`؛ مقدار قبلی `UNSTABLE` گذرا بود.)
-2. **merge-base == main — YES.** `38c573bf…`=origin/main؛ شاخه فقط جلو؛ بدون conflict.
-3. **سند مرجع — YES.** `docs/admin-ux-plan.md` (+ SRS + auth-authorization)؛ Chunk A–G Done؛ هیچ سند 0–48 یکپارچه‌ای وجود ندارد.
-4. **امنیت نقش/authorization + IDOR منفی — YES.** تست‌های negative + 403 + capability-driven.
-5. **نامه‌های کلاس/ثبت یکسان — YES.** `SecretaryFinancePage` صحیح/ثبت‌شده؛ بدون typo.
-6. **جریان استاف/رمز فقط WP core — YES.** `wp_insert_user`/`wp_update_user`/`wp_generate_password`/`retrieve_password`؛ بدون password DB؛ بدون plaintext؛ خود-غیرفعال‌سازی.
-7. **بدون privilege escalation — YES.** انتساب administrator ممنوع؛ matrix فقط `manage_options`.
-8. **Real WP Acceptance روی ZIP رسمی — YES.** روی production-tested SHA `c7eb3c8` (run `34204650926` / `34204647193`): هر دو prefix **`307/0`**، بدون fatal/console error، probe OK، و `no_overflow` در 360/390/768/1024/1366 سبز. (برای سابقه، روی `19f48b4` همین گیت `184/0` بود — اکنون منسوخ.)
-9. **Desktop/Tablet/Mobile (با visual verification) — YES.** اسکرین‌شات‌ها تولید شده‌اند (شامل remediation) و **توسط Product Owner راست‌آزمایی شدند** (`ADVANCED_PERMISSIONS_SEARCH_VISUAL_PO_REVIEW = PASS`) → از UNVERIFIED به **PASS** تبدیل شد.
-10. **کامل بودن محدوده (Patient entry + IA) + responsive/asset — YES.** Patient entry با Reuse backend؛ asset-scope scoped؛ breakpoints؛ **remediation** (Responsive + Permissions UX + Confirmation + Search) بدون scope expansion.
+> **این بخش با §0.ج هم‌تراز است.** ۱۰ سؤال واقعی §46 و پاسخ/evidence کامل در بخش **«§0.ج → ۹) §46 — FINAL ANSWERS»** ثبت شده است. پاسخ خلاصه:
+
+1. **YES** — Can a new customer find CPMS immediately after activation? (`CpmsAdminMenu` + dashboard + onboarding notice + `admin-ui.menu.has_cpms-*`)
+2. **YES** — Can a non-technical customer understand what to do next? (12-step resumable wizard + Persian + notice)
+3. **YES** — Can Admin create Doctor/Secretary/Accountant/Manager accounts without leaving CPMS? (`StaffManagementPage`, `cpms_config`, `wp_insert_user`)
+4. **YES** — Can Admin assign safe role presets? (`RoleCapabilitiesPage` Normal presets + `manage_options` boundary)
+5. **YES** — Can Admin create/link a Doctor and configure schedule without SQL/API? (`ClinicianAdminPage`, `cpms_config`)
+6. **YES** — Does each role see only relevant navigation? (capability-gated menus + 403 denial probes)
+7. **YES** — Can Admin configure License/Backup/Health from coherent CPMS navigation? (`cpms-system`, `cpms-settings`)
+8. **YES** — Is advanced permission editing available without overwhelming normal users? (collapsible Advanced + group + search + only `manage_options`)
+9. **YES** — Does the interface work acceptably on Desktop/Tablet/Mobile? (responsive smoke + no_overflow + PO visual PASS)
+10. **YES** — Does Real WP Acceptance install the official ZIP and execute these workflows in a browser? (official ZIP build → `wp plugin install` → Playwright ×5 roles → `307/0` both prefixes)
 
 ---
 
