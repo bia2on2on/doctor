@@ -627,6 +627,24 @@ erDiagram
 | `cpms_schema_migrations` | ❌ بدون تغییر |
 | `cpms_sms_messages` | از قبل `clinic_id` دارد ✅ |
 
+### 🔴 تصحیح نهایی Pre-Phase-2 Gate (2026-09-09) — سرشماری ۲۶/۲۲، نه ۲۵/۲۱
+
+> این بلوک تصحیحِ traceable است؛ جداول تاریخی بالا **عمداً دست‌نخورده** ماندند. مبنای تصحیح: بازشماری مستقل از Migrationهای واقعی در [`final-pre-phase2-gate-report.md`](../phase-reports/final-pre-phase2-gate-report.md) §۴.
+
+| سنجه | عدد قبلی این سند | عدد صحیح (re-verify 2026-09-09) |
+|---|---|---|
+| جدول‌های دارای ستون `clinic_id` | ۲۵ | **۲۶** — شامل `cpms_sms_messages` |
+| جدول‌های دارای `clinic_id` **بدون FK** به clinics | ۲۱ | **۲۲** — شامل `cpms_sms_messages` |
+| جداول با `DEFAULT 1` روی `clinic_id` | (ذکر نشده) | **۳**: `drug_reference`، `idempotency_keys`، `sms_messages` |
+| FKهای لازم در M-09 | ۲۱ | **۲۲** |
+
+**چرا `cpms_sms_messages` در census قبلی از قلم افتاد:** جدول در دو جای این سند دیده شده بود — در جدول «الف-۲» (ردیف با `clinic_id` پررنگ) و در فهرست «۱۶ جدول بدون clinic_id» (با علامت «از قبل clinic_id دارد ✅») — اما جمع‌بندی عددی بخش الف-۲ («۲۵ جدول clinic_id دارند») فقط جدول‌های Migration **0001** را شمرد و `sms_messages` (ساختهٔ Migration **0003**) را در شمارش نیاورد؛ در نتیجه از نگاشت «ب-۵» (که مبنای فهرست ۲۱ FK-less شد) هم حذف شد. خطای شمارش، نه خطی‌کردن مفهومی.
+
+**ثبت migration concern:** `cpms_sms_messages.clinic_id` از نوع **`INT UNSIGNED NOT NULL DEFAULT 1`** است — تنها جدولی که با `clinics.id BIGINT UNSIGNED` **ناهم‌نوع** است. پیش از هر ADD FK باید `MODIFY → BIGINT UNSIGNED` شود و `DEFAULT 1` آن (مثل دو جدول دیگر) حذف شود. حکم معنایی این جدول (FK توجیه دارد یا نه) در [`final-pre-phase2-gate-report.md`](../phase-reports/final-pre-phase2-gate-report.md) §۶ آمده است.
+
+**تصحیح وابستهٔ دوم (§۸ همان گزارش):** تحلیل معنایی `u_clinician_user` نشان داد این UNIQUE با AD-05 تعارضی ندارد که بشکندش (نقش AD-05 در **Membership** است نه Profile؛ ERD مصوب خودش `WP_USER ||--o| CLINICIAN` است) — جزئیات پیشنهاد در بند «د-۶» و گزارش نهایی.
+
+
 ## ب-۶ — شکستن `u_sched_day` (بحرانی‌ترین تغییر)
 
 **امروز:**
@@ -879,6 +897,86 @@ M-15  (مشروط) CREATE cpms_patient_identities ; ALTER patients ADD identity_
 - `M-06` باید سه‌مرحله‌ای باشد: افزودن NULL → پرکردن → NOT NULL کردن.
 - `M-07` تنها قدم واقعاً برگشت‌ناپذیر است ⇒ باید `down()` صریح داشته باشد، هرچند `MigrationRunner` بدون `down()` هم اجازهٔ rollback نمی‌دهد.
 - **هیچ ستون یا جدولی در این فاز حذف نمی‌شود.** `cpms_clinicians.specialty` عمداً باقی می‌ماند (حذف = فاز جداگانه پس از تأیید).
+
+## د-۶ — 🔴 بازبینی Pre-Phase-2 Gate (2026-09-09): ماتریس معنایی، تصمیم‌های UNIQUE، ترتیب اصلاح‌شده
+
+> ضمیمهٔ تصحیح‌شدهٔ بخش د بر اساس بازشماری مستقل (تصحیح ۲۶/۲۲ در ب-۵) و تحلیل معنایی دستور FINAL PRE-PHASE-2 GATE. جداول/ترتیب د-۱…د-۴ بالا معتبر می‌مانند؛ این بخش تصحیح‌ها و تفصیل per-table را **جاگزین جزئیات** می‌کند. تحلیل کامل: [`final-pre-phase2-gate-report.md`](../phase-reports/final-pre-phase2-gate-report.md) §۷–§۹.
+
+### د-۶-۱ — قاعدهٔ حاکم: FK/Scope باید معنایی باشد، نه مکانیکی
+
+افزودن FK به صرفِ وجود ستون ممنوع است. برای هر جدول، رابطهٔ هدف از **ماهیت رکورد** می‌آید: رویداد فیزیکی در مکان (Location) · دادهٔ مشترک کلینیک (Clinic) · زیرساخت/لاگ عملیاتی tenant-scoped.
+
+### د-۶-۲ — ماتریس کامل ۲۶ جدول دارای `clinic_id`
+
+«+FK» = ADD CONSTRAINT جدید در M-09 (پس از preflight orphan-check به الگوی 0007). «تصحیح نوع» = MODIFY پیش از ADD FK.
+
+| # | جدول | نوع فعلی clinic_id | رابطهٔ هدف | FK هدف | nullability جدید | ایندکس/UNIQUE اثر | ترتیب | ملاحظهٔ معنایی |
+|---|---|---|---|---|---|---|---|---|
+| 1 | appointments | BIGINT NOT NULL | Clinic + Location | +FK clinic، +FK location | location_id **NOT NULL** (M-06 سه‌مرحله‌ای) | `u_appt_ref` بی‌اثر | M-06→M-09 | رویداد فیزیکی؛ snapshot مثل slot_date |
+| 2 | audit_logs | BIGINT NOT NULL | Clinic + Location (زمینه) | +FK clinic | ⚠️ **تصمیم جدید — B-11:** `clinic_id NULL` برای رویدادهای پیش از Scope (LOGIN_*)؛ NULL = سیستمی | — | M-09 + تصمیم | زمینهٔ رویداد، نه مالکیت داده |
+| 3 | clinical_notes | BIGINT NOT NULL | Clinic | +FK clinic | — | — | M-09 | دادهٔ بالینی — ایزوله (AD-14) |
+| 4 | clinicians | BIGINT NOT NULL (FK دارد) | Clinic (home/primary) + Membership M:N | FK موجود می‌ماند | — | **`u_clinician_user` حفظ می‌شود** (د-۶-۳) | M-13b (فقط Query-level) | clinic_id = «کلینیکِ خانه» — مرز مجوز نیست (د-۶-۳) |
+| 5 | drug_reference | BIGINT NOT NULL **DEFAULT 1** | Clinic (کاتالوگ) | +FK clinic | **حذف DEFAULT 1** | `u_drug` شامل clinic_id — بی‌اثر | M-08b→M-09 | کاتالوگ per-clinic |
+| 6 | follow_ups | BIGINT NOT NULL | Clinic | +FK clinic | — | — | M-09 | بالینی |
+| 7 | handwriting_documents | BIGINT NOT NULL | Clinic | +FK clinic | — | — | M-09 | بالینی |
+| 8 | idempotency_keys | BIGINT NOT NULL **DEFAULT 1** | Clinic (زیرساخت) | +FK clinic | **حذف DEFAULT 1** | `u_idem_scope` شامل clinic_id نمی‌شود — بازبینی: کلید scope کامل با clinic_id تکمیل شود | M-08b→M-09 | زیرساخت idempotency |
+| 9 | invoices | BIGINT NOT NULL | Clinic + Location | +FK ×2 | location_id NULL | `u_inv_number` بی‌اثر | M-08→M-09 | تفکیک درآمد per-location |
+| 10 | medical_attachments | BIGINT NOT NULL | Clinic | +FK clinic | — | `u_att_store` بی‌اثر | M-09 | بالینی |
+| 11 | notifications | BIGINT NOT NULL | Clinic | +FK clinic | — | — | M-09 | اعلان درون-کلینیکی |
+| 12 | ocr_jobs | BIGINT NOT NULL | Clinic | +FK clinic | — | — | M-09 | پردازش بالینی |
+| 13 | patient_merges | BIGINT NOT NULL | Clinic | +FK clinic | — | — | M-09 | درون‌کلینیکی؛ «ادغام Identity» نوع دوم (AD-14) |
+| 14 | patient_user_links | BIGINT NOT NULL | Clinic | +FK clinic | — | `u_link_pair` — بازبینی: uniqueness در مرز کلینیک (clinic_id داخل کلید) | M-09 | لینک بیمار⇄کاربر per-clinic |
+| 15 | patients | BIGINT NOT NULL (FK دارد) | Clinic (+ Org identity) | FK موجود | identity_id NULL (M-15 مشروط) | `u_pat_mrn/mobile/nid` در مرز کلینیک — بی‌اثر | M-15 | پرونده بالینی ایزوله (AD-14) |
+| 16 | payments | BIGINT NOT NULL | Clinic + Location | +FK ×2 | location_id NULL | `u_pay_number` بی‌اثر | M-08→M-09 | محل دریافت وجه |
+| 17 | prescriptions | BIGINT NOT NULL | Clinic + Location | +FK ×2 | location_id NULL (سربرگ چاپ) | `u_rx_number` جهانی — بازبینی در فاز اجرا | M-08→M-09 | بالینی + سربرگ |
+| 18 | recommendations | BIGINT NOT NULL | Clinic | +FK clinic | — | — | M-09 | بالینی |
+| 19 | schedule | BIGINT NOT NULL (FK دارد) | Clinic + Location | FK clinic موجود + FK location | location_id **NOT NULL** (M-06) | 🔴 `u_sched_day` → `u_sched_slot` (د-۶-۳) | M-06→**M-07** | برنامهٔ کاری در مکان |
+| 20 | schedule_exceptions | BIGINT NOT NULL | Clinic + Location | +FK ×2 | location_id NULL = همهٔ محل‌ها | — | M-08→M-09 | تعطیلی |
+| 21 | schedule_slots | BIGINT NOT NULL | Clinic + Location | +FK ×2 | location_id **NOT NULL** (M-06) | 🔴 `u_slot` بازتعریف (د-۶-۳) | M-06→**M-07** | ظرفیت در مکان |
+| 22 | services | BIGINT NOT NULL (FK دارد) | Clinic + Location | FK clinic موجود + FK location | location_id NULL = همهٔ محل‌ها | `u_service_code` بی‌اثر | M-08 | تعرفه |
+| 23 | settings | BIGINT NOT NULL | Clinic + Location | +FK clinic | location_id NULL (Override شعبه) | `u_setting_key` شامل clinic_id — بی‌اثر | M-08→M-09 | پیکربندی سلسله‌مراتبی |
+| 24 | slot_holds | BIGINT NOT NULL | Clinic (ارث از slot) | +FK clinic | — | `u_hold_token` بی‌اثر | M-09 | زیرساخت رزرو |
+| 25 | **sms_messages** | 🔴 **INT UNSIGNED NOT NULL DEFAULT 1** | Clinic | +FK clinic (تأیید معنایی — گزارش §۶) | **MODIFY → BIGINT + حذف DEFAULT 1** | — | **M-08b→M-09** | لاگ عملیاتی tenant-scoped با PII؛ بدون location_id؛ سیاست retention = تصمیم مالک |
+| 26 | visits | BIGINT NOT NULL | Clinic + Location | +FK ×2 | location_id **NOT NULL** (M-06) | — | M-06→M-09 | صف per-location |
+
+**جداول بدون clinic_id که در فاز ۲ ستون می‌گیرند:** `cpms_jobs` و `cpms_operational_logs` → `clinic_id BIGINT NULL` (NULL = سیستمی — M-14) · `cpms_rate_limits` ⏳ معلق بر Q6 · `cpms_otp_tokens` ❌ مستثنا (AD-07).
+
+### د-۶-۳ — تصمیم سه UNIQUE پرریسک (صریح)
+
+| کلید | تصمیم | دلیل | Test plan الزامی |
+|---|---|---|---|
+| `u_sched_day` (clinician_id, day_of_week) | 🔴 **شکستن** → `u_sched_slot (clinic_id, location_id, clinician_id, day_of_week, start_time)` | یک برنامه در روز برای کل سیستم؛ چند شعبه/دو شیفت ناممکن | (۱) preflight duplicate قبل از DROP (الگوی 0007، fail-loud بدون تغییر داده) (۲) پس از مهاجرت: دو شیفت هم‌روز مجاز · دو شعبه مجاز · تکرار دقیق رد (۳) idempotent (SHOW INDEX) (۴) `down()` بازسازی کلید قدیم (فقط تا وقتی داده نقض نکرده) (۵) اجرا در CI upgrade-path |
+| `u_slot` (clinician_id, slot_date, slot_time) | 🔴 **شکستن** → `(location_id, clinician_id, slot_date, slot_time)` | یکتایی slot از Location بی‌خبر | همان پنج‌بندی بالا (نسخهٔ slot) |
+| `u_clinician_user` (wp_user_id) | ✅ **حفظ می‌شود — تصحیح رأی قبلی** | AD-05 دربارهٔ **Membership** است نه Profile؛ ERD مصوب خودش `WP_USER \|\|--o\| CLINICIAN` (یک پروفایل بالینی به‌ازای کاربر) را ایجاب می‌کند. M:N از راه `cpms_clinic_memberships` ساخته می‌شود؛ رابطهٔ Doctor↔Location از راه `cpms_clinician_locations`. ماتریس قبلی این را «شکنندهٔ سوم» می‌خواند — **اشتباه بود** | گارد موجود `SecurityHardeningTest::testSecondClinicianWithSameWpUserIsRejectedByDb` حفظ می‌شود؛ تست‌های جدید Phase 2: یک wp_user با Membership در ۲ Clinic + **یک** ردیف clinician؛ schedule در Locationهای هر دو کلینیک |
+
+**پیامد تصمیم `u_clinician_user`:** `clinicians.clinic_id` معنای جدید می‌گیرد: **«کلینیکِ خانه/Home Clinic»** — مقدار اولیهٔ deterministic (کلینیکی که پروفایل را ساخت)؛ هرگز مرز مجوز/دامنهٔ داده نیست. Queryهایی که «پزشکانِ کلینیک X» را از `clinicians.clinic_id` می‌گیرند، در Phase 2 باید به Membership-driven تبدیل شوند (این کار Query-level است، نه Schema-level). **تأیید نهایی این semantics = تصمیم مالک** (گزارش §۸).
+
+### د-۶-۴ — ترتیب اصلاح‌شدهٔ Migration (versioned-forward؛ drop/recreate ممنوع)
+
+```
+M-01   CREATE cpms_organizations
+M-02   SEED Organization پیش‌فرض
+M-02b  clinics.organization_id  (NULL→UPDATE→NOT NULL→FK)
+M-03   CREATE cpms_locations (timezone NOT NULL)
+M-04   SEED Location اصلی per Clinic (timezone طبق نگاشت پیشنهادی گزارش §۷ — هنوز اجرا نشده)
+M-05   CREATE specialties + clinician_specialties
+M-06   schedule, schedule_slots, appointments, visits  +location_id (سه‌مرحله‌ای → NOT NULL)
+M-07   🔴 u_sched_day → u_sched_slot  ·  u_slot بازتعریف        (تنها نقطهٔ برگشت‌ناپذیر)
+M-08   ۷ جدول +location_id NULL (schedule_exceptions, prescriptions, services,
+       invoices, payments, audit_logs, settings)
+M-08b  🆕 تصحیح نوع/پیش‌فرض: sms_messages.clinic_id INT→BIGINT؛ حذف DEFAULT 1
+       از drug_reference, idempotency_keys, sms_messages
+M-09   🆕 ۲۲ ADD CONSTRAINT fk_*_clinic (نه ۲۱) — هر یک پس از preflight orphan-check
+       + (در صورت تأیید B-11) audit_logs.clinic_id → NULL-able
+M-10   CREATE cpms_clinic_memberships (UNIQUE(clinic_id, wp_user_id))
+M-11   CREATE membership_capabilities + membership_locations
+M-12   CREATE clinician_locations (UNIQUE(clinician_id, location_id))
+M-13   SEED Membership (کاربران دارای نقش cpms_*) + clinician_locations
+M-14   jobs, operational_logs +clinic_id NULL
+M-15   (مشروط P-B/AD-14) cpms_patient_identities + patients.identity_id
+```
+
+الزامات کیفی همهٔ Mها: idempotent (SHOW COLUMNS/INDEX)، رفتار partial-failure امن، اجرای CI **upgrade path** (نصب `1.0.0` از ZIP → migration → تأیید schema + تست‌ها). هیچ ستون/جدولی حذف نمی‌شود.
 
 ---
 
