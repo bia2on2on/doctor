@@ -3,7 +3,6 @@
 declare(strict_types=1);
 
 use ClinicCore\Infrastructure\Db\CpmsDb;
-use RuntimeException;
 
 /**
  * Migration 0014 — Phase 2 (M-07 — نقاط برگشت‌ناپذیر):
@@ -79,6 +78,16 @@ return [
         }
 
         // ---------- schedule ----------
+        // ترتیب حیاتی است (رگرسیون 40832be): u_sched_day ایندکسِ پشتیبانِ
+        // FK fk_schedule_clinician است — MySQL تا وقتی ایندکس جایگزینی با
+        // پیشوند clinician_id نباشد DROP را رد می‌کند. پس اول lookup-index،
+        // بعد DROP قدیمی، بعد ADD UNIQUE جدید.
+        $hasLookup = $db->fetchRow("SHOW INDEX FROM {$sched} WHERE Key_name = 'idx_sched_lookup'");
+        if ($hasLookup === null) {
+            $db->query(
+                "ALTER TABLE {$sched} ADD KEY `idx_sched_lookup` (`clinician_id`, `day_of_week`, `is_active`)"
+            );
+        }
         $hasOld = $db->fetchRow("SHOW INDEX FROM {$sched} WHERE Key_name = 'u_sched_day'");
         if ($hasOld !== null) {
             $db->query("ALTER TABLE {$sched} DROP INDEX `u_sched_day`");
@@ -90,14 +99,10 @@ return [
                  (`clinic_id`, `location_id`, `clinician_id`, `day_of_week`, `start_time`)"
             );
         }
-        $hasLookup = $db->fetchRow("SHOW INDEX FROM {$sched} WHERE Key_name = 'idx_sched_lookup'");
-        if ($hasLookup === null) {
-            $db->query(
-                "ALTER TABLE {$sched} ADD KEY `idx_sched_lookup` (`clinician_id`, `day_of_week`, `is_active`)"
-            );
-        }
 
         // ---------- schedule_slots ----------
+        // DROP u_slot امن است: idx_slots_avail (clinician_id, slot_date, is_open)
+        // از 0001 به‌عنوان ایندکس پشتیبان FK clinician_id باقی می‌ماند.
         $hasOld = $db->fetchRow("SHOW INDEX FROM {$slots} WHERE Key_name = 'u_slot'");
         if ($hasOld !== null) {
             $db->query("ALTER TABLE {$slots} DROP INDEX `u_slot`");

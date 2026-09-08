@@ -803,7 +803,7 @@ final class App
             // F1-4: AuditLogger تزریق می‌شود تا هر تغییر Setting (قبل/بعد + کاربر) Audit شود.
             // Phase 2: Clinic پیش‌فرضِ Settings از Scope حل می‌شود (نه literal 1) —
             // در نصب تک‌کلینیکی همان Clinic تنها؛ در حالت مبهم CLINIC_SCOPE_REQUIRED.
-            self::$settings = new Settings(self::db(), self::scope()->clinicId(), self::audit());
+            self::$settings = new Settings(self::db(), self::scope()->clinicId, self::audit());
         }
 
         return self::$settings;

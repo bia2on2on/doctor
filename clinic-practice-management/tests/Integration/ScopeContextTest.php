@@ -61,9 +61,9 @@ final class ScopeContextTest extends WP_UnitTestCase
             'SELECT id FROM ' . App::db()->table('cpms_clinics') . ' LIMIT 1'
         );
 
-        self::assertSame($seededId, $scope->clinicId(), 'Scope باید از DB حل شود، نه از ثابت.');
-        self::assertSame(ClinicScope::SOURCE_SYSTEM_SINGLE, $scope->source());
-        self::assertNotSame(0, $scope->clinicId());
+        self::assertSame($seededId, $scope->clinicId, 'Scope باید از DB حل شود، نه از ثابت.');
+        self::assertSame(ClinicScope::SOURCE_SYSTEM_SINGLE, $scope->source);
+        self::assertNotSame(0, $scope->clinicId);
     }
 
     public function testSystemResolverFailsClosedWithTwoClinics(): void
@@ -86,7 +86,10 @@ final class ScopeContextTest extends WP_UnitTestCase
     public function testSystemResolverFailsClosedWithZeroClinics(): void
     {
         global $wpdb;
+        // FKهای 0017 (RESTRICT) موقتاً خاموش — تراکنش تست همه را rollback می‌کند
+        $wpdb->query('SET FOREIGN_KEY_CHECKS = 0'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         $wpdb->query('DELETE FROM ' . $wpdb->prefix . 'cpms_clinics'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $wpdb->query('SET FOREIGN_KEY_CHECKS = 1'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
         $this->expectException(ScopeRequiredException::class);
         $this->expectExceptionMessage('تعداد Clinicهای نصب: 0');
@@ -100,8 +103,8 @@ final class ScopeContextTest extends WP_UnitTestCase
         ScopeContext::set($explicit);
 
         self::assertSame($explicit, App::scope());
-        self::assertSame(2, App::scope()->clinicId());
-        self::assertSame(ClinicScope::SOURCE_EXPLICIT, App::scope()->source());
+        self::assertSame(2, App::scope()->clinicId);
+        self::assertSame(ClinicScope::SOURCE_EXPLICIT, App::scope()->source);
     }
 
     public function testClearRestoresSystemResolution(): void
@@ -122,12 +125,15 @@ final class ScopeContextTest extends WP_UnitTestCase
         // واقعی DB می‌آید، نه از ثابتِ کد.
         global $wpdb;
         $newId = 41;
+        // FKهای ارجاع‌دار به clinics(id) موقتاً خاموش — تراکنش تست rollback می‌کند
+        $wpdb->query('SET FOREIGN_KEY_CHECKS = 0'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         $wpdb->query(
             'UPDATE ' . $wpdb->prefix . 'cpms_clinics SET id = ' . $newId // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         );
+        $wpdb->query('SET FOREIGN_KEY_CHECKS = 1'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         App::resetScope();
 
-        self::assertSame($newId, App::scope()->clinicId());
+        self::assertSame($newId, App::scope()->clinicId);
 
         $settings = new \ClinicCore\Settings\Settings(App::db(), $newId);
         self::assertSame('Asia/Tehran', $settings->clinicTimezone());

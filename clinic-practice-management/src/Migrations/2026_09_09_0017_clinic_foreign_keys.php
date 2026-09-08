@@ -3,7 +3,6 @@
 declare(strict_types=1);
 
 use ClinicCore\Infrastructure\Db\CpmsDb;
-use RuntimeException;
 
 /**
  * Migration 0017 — Phase 2 (M-09 تصحیح‌شده — ۲۲ FK، نه ۲۱):
