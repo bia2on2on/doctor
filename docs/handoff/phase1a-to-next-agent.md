@@ -12,10 +12,12 @@
 |---|---|
 | Remote | `https://github.com/bia2on2on/doctor.git` |
 | Branch کاری | `arena/01a0808c-doctor` |
-| **HEAD محلی** | `9bc6f7faa5706c3b24004808747d6194209623e0` |
-| **HEAD ریموت** (`origin/arena/01a0808c-doctor`) | `9bc6f7faa5706c3b24004808747d6194209623e0` — **یکسان** |
+| **HEAD محلی** | `28b20274ad58d1a6c1b61f3141e78b43f39a37be` |
+| **HEAD ریموت** (`origin/arena/01a0808c-doctor`) | `28b20274ad58d1a6c1b61f3141e78b43f39a37be` — **یکسان** |
+| **HEAD تأییدشدهٔ Phase 1A (کد)** | **`9bc6f7faa5706c3b24004808747d6194209623e0`** — تأیید مالک روی همین SHA |
+| فاصلهٔ `9bc6f7f` تا HEAD | یک commit، **فقط مستندات** (`28b2027` = همین سند تحویل). هیچ کد/تست/workflow/migration تغییر نکرد |
 | **`origin/main` HEAD** | `8087b42e19a1721e38eb073aa1a17aff1cbac97b` |
-| ahead / behind نسبت به `main` | **ahead 15 / behind 0** |
+| ahead / behind نسبت به `main` | **ahead 16 / behind 0** |
 | Tags | **۰** — هیچ tag ای ساخته نشد |
 | PR | **[#10](https://github.com/bia2on2on/doctor/pull/10)** — `OPEN` + **`DRAFT`** · merge نشد · close نشد |
 
@@ -40,6 +42,18 @@
 | Closure Gate (GO-LIVE evidence closure) | `34273485816` | ✅ success |
 | Real WordPress Acceptance — `push` | `34273486084` | ✅ success |
 | Real WordPress Acceptance — `pull_request` | `34273491347` | ✅ success |
+
+### اجراهای Gate روی `28b2027` (commit فقط-مستندات)
+
+هیچ‌کدام از workflowها path filter ندارند، پس یک تغییر صرفاً مستنداتی هم کل مجموعه را trigger می‌کند. نتیجه ثبت شد:
+
+| Workflow | Run ID | نتیجه |
+|---|---|---|
+| CI | `34275626527` | ✅ success (۶/۶ job) |
+| Pilot/Staging Readiness Gate | `34275623751` | ✅ success (۴/۴ job) |
+| Closure Gate | `34275623757` | ✅ success |
+| Real-WP Acceptance — `push` | `34275623949` | ✅ success |
+| Real-WP Acceptance — `pull_request` | `34275626627` | ✅ success |
 
 > `ci.yml` روی `push` به `arena/**` اجرا **نمی‌شود** (triggerها: `push: [main]`, `pull_request`, `workflow_dispatch`). تنها دلیل اجرای CI روی این branch، **باز بودن PR #10** است. اگر PR بسته شود، CI پوشش خود را از دست می‌دهد.
 > `workflow_dispatch` در دسترس نیست (`HTTP 403 — Resource not accessible by integration`).
@@ -296,4 +310,4 @@ BackupService::restoreApply()          BackupService.php:343
 
 ## خلاصهٔ یک‌خطی
 
-Phase 1A روی `9bc6f7f` بسته شد؛ همهٔ Gateها سبز؛ V-1…V-8 و V-10 برطرف، V-7 بسته؛ هیچ Critical/High بازی نمانده. **NEXT SAFE ACTION = تصمیم مالک دربارهٔ OD-9، سپس Gate صریح برای Phase 2.**
+Phase 1A روی `9bc6f7f` بسته شد (HEAD فعلی `28b2027` = فقط همین سند تحویل)؛ همهٔ Gateها روی هر دو SHA سبز؛ V-1…V-8 و V-10 برطرف، V-7 بسته؛ هیچ Critical/High بازی نمانده. **NEXT SAFE ACTION = تصمیم مالک دربارهٔ OD-9، سپس Gate صریح برای Phase 2.**
