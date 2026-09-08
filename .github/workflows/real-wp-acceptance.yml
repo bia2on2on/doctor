@@ -126,7 +126,7 @@ jobs:
           <?php
           $v = \ClinicCore\Bootstrap\App::migrations()->currentVersion();
           echo "schema: $v\n";
-          exit($v === '2026_09_07_0009' ? 0 : 1);
+          exit($v === '2026_09_09_0018' ? 0 : 1);
           PHPEOF
           wp eval-file /tmp/acc/check-schema.php --path="$WP_DIR" --allow-root
           wp role list --path="$WP_DIR" --allow-root | grep -E 'cpms_(doctor|secretary|patient|accountant|manager)' || { echo 'ROLES MISSING'; exit 1; }

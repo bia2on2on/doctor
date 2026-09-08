@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Application\Jobs;
 
+use ClinicCore\Application\Scope\PrimaryLocationResolver;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Logging\OpLogger;
 use ClinicCore\Settings\Settings;
@@ -29,7 +30,7 @@ final class SlotsGenerateHandler
         $today = gmdate('Y-m-d');
 
         $clinicians = $this->db->fetchAll(
-            'SELECT c.id AS clinician_id, c.clinic_id, s.day_of_week, s.start_time, s.end_time,
+            'SELECT c.id AS clinician_id, c.clinic_id, s.location_id, s.day_of_week, s.start_time, s.end_time,
                     s.break_start, s.break_end, s.appointment_duration_min, s.slot_capacity
              FROM ' . $this->db->table('cpms_clinicians') . ' c
              JOIN ' . $this->db->table('cpms_schedule') . ' s ON s.clinician_id = c.id AND s.is_active = 1
@@ -49,11 +50,14 @@ final class SlotsGenerateHandler
                 foreach ($slots as $time) {
                     $this->db->query(
                         'INSERT IGNORE INTO ' . $this->db->table('cpms_schedule_slots') . '
-                             (clinic_id, clinician_id, slot_date, slot_time, duration_min, capacity,
+                             (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity,
                               is_open, generated_from, created_at, updated_at)
-                         VALUES (%d, %d, %s, %s, %d, %d, 1, %s, %s, %s)',
+                         VALUES (%d, %d, %d, %s, %s, %d, %d, 1, %s, %s, %s)',
                         [
                             $clinician['clinic_id'],
+                            (int) ($clinician['location_id'] ?? 0) > 0
+                                ? (int) $clinician['location_id']
+                                : PrimaryLocationResolver::resolve($this->db, (int) $clinician['clinic_id']),
                             $clinician['clinician_id'],
                             $date,
                             $time,

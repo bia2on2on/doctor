@@ -232,10 +232,11 @@ final class OtpFlowTest extends WP_UnitTestCase
         App::smsService();
         App::jobs();
 
-        // Clinic دوم — ردیف واقعی (FK بیمار به clinics)
+        // Clinic دوم — ردیف واقعی (FK بیمار به clinics + organization_id NOT NULL
+        // از Phase 2/0010؛ همان سازمان کلینیک پیش‌فرض)
         $wpdb->query(
-            'INSERT IGNORE INTO ' . $wpdb->prefix . "cpms_clinics (id, name, slug, timezone, created_at, updated_at)
-             VALUES (2, 'کلینیک دوم', 'od13-second', 'Asia/Tehran', '{$now}', '{$now}')" // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            'INSERT IGNORE INTO ' . $wpdb->prefix . "cpms_clinics (id, organization_id, name, slug, timezone, created_at, updated_at)
+             VALUES (2, (SELECT organization_id FROM " . $wpdb->prefix . "cpms_clinics WHERE id = 1), 'کلینیک دوم', 'od13-second', 'Asia/Tehran', '{$now}', '{$now}')" // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         );
 
         // دو بیمار هم‌موبایل: یکی در Clinic 1 و یکی در Clinic 2

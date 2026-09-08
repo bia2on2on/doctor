@@ -41,8 +41,8 @@ final class ScopeContextTest extends WP_UnitTestCase
         $now = App::db()->nowUtcSql();
         $wpdb->query(
             $wpdb->prepare(
-                'INSERT INTO ' . $wpdb->prefix . 'cpms_clinics (id, name, slug, timezone, created_at, updated_at)
-                 VALUES (%d, %s, %s, %s, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_clinics (id, organization_id, name, slug, timezone, created_at, updated_at)
+                 VALUES (%d, (SELECT organization_id FROM ' . $wpdb->prefix . 'cpms_clinics WHERE id = 1), %s, %s, %s, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 $id,
                 'کلینیک ' . $slug,
                 $slug,

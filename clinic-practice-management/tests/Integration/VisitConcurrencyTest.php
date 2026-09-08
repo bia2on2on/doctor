@@ -206,9 +206,9 @@ final class VisitConcurrencyTest extends WP_UnitTestCase
         $wpdb->query(
             $wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_visits
-                     (clinic_id, clinician_id, patient_id, source, status, visit_date, check_in_at,
+                     (clinic_id, location_id, clinician_id, patient_id, source, status, visit_date, check_in_at,
                       waiting_since, called_at, consultation_started_at, active, created_at, updated_at)
-                 VALUES (1, %d, %d, "walk_in", "in_consultation", %s, %s, %s, %s, %s, 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                 VALUES (1, (SELECT id FROM ' . $wpdb->prefix . 'cpms_locations WHERE clinic_id = 1 AND is_primary = 1 LIMIT 1), %d, %d, "walk_in", "in_consultation", %s, %s, %s, %s, %s, 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 $this->clinicianId,
                 $patientId,
                 gmdate('Y-m-d'),

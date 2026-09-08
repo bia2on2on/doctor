@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Infrastructure\Repository;
 
+use ClinicCore\Application\Scope\PrimaryLocationResolver;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 
 /**
@@ -17,7 +18,7 @@ use ClinicCore\Infrastructure\Db\CpmsDb;
 final class ScheduleRepository
 {
     private const SCHEDULE_CREATE_FIELDS = [
-        'clinic_id', 'clinician_id', 'day_of_week', 'start_time', 'end_time',
+        'clinic_id', 'location_id', 'clinician_id', 'day_of_week', 'start_time', 'end_time',
         'break_start', 'break_end', 'appointment_duration_min', 'slot_capacity',
         'is_active', 'buffer_pre_min', 'buffer_post_min', 'created_at', 'updated_at',
     ];
@@ -78,6 +79,17 @@ final class ScheduleRepository
     public function create(array $fields): int
     {
         $data = $this->whitelist($fields, self::SCHEDULE_CREATE_FIELDS);
+
+        // Phase 2 (AD-15): برنامهٔ کاری به یک Location گره خورده است. اگر
+        // caller صریحاً Location نداده، Location اصلی همان Clinic (deterministic)
+        // است — هر Clinic حداقل یک Location دارد.
+        if (empty($data['location_id'])) {
+            $data['location_id'] = PrimaryLocationResolver::resolve(
+                $this->db,
+                (int) ($data['clinic_id'] ?? 0)
+            );
+        }
+
         $this->db->insert('cpms_schedule', $data);
 
         return $this->db->wpdb_last_insert_id();

@@ -193,7 +193,7 @@ jobs:
           require getenv('WP_HOME') . '/wp-load.php';
           $v = \ClinicCore\Bootstrap\App::migrations()->currentVersion();
           echo "schema: $v\n";
-          exit($v === '2026_09_07_0009' ? 0 : 1);
+          exit($v === '2026_09_09_0018' ? 0 : 1);
           PHPEOF
           WP_HOME="$WP_DIR" php /tmp/check-schema.php
           # F10 — نصب تازه: پنجرهٔ فعال‌سازی (fresh، بدون دادهٔ legacy) باید
@@ -901,7 +901,7 @@ jobs:
           $db = \ClinicCore\Bootstrap\App::db();
           $v = \ClinicCore\Bootstrap\App::migrations()->currentVersion();
           echo "schema: $v\n";
-          if ($v !== '2026_09_07_0009') { exit(1); }
+          if ($v !== '2026_09_09_0018') { exit(1); }
           foreach ($wpdb->get_results('SELECT `key`, endpoint, context_id, status FROM ' . $db->table('cpms_idempotency_keys'), ARRAY_A) as $r) {
               echo 'idem: ' . $r['key'] . ' @ ' . $r['endpoint'] . ' ctx=' . var_export($r['context_id'], true) . ' status=' . $r['status'] . "\n";
           }
@@ -931,7 +931,7 @@ jobs:
           {
             echo '## Upgrade Path (main/F8 → RC/F9 روی نصب واقعی)'
             echo '```'
-            echo 'F8 schema: 2026_09_07_0005 → RC schema: 2026_09_07_0009 (شامل مهاجرت لایسنس F10 + window_sec F1-1)'
+            echo 'F8 schema: 2026_09_07_0005 → RC schema: 2026_09_09_0018 (F10/window_sec + Phase 2: org/location/membership/identity foundation)'
             echo 'legacy idem NULL→0 normalized; u_idem_scope + u_clinician_user present; داده دست‌نخورده'
             echo 'pre-F10 install: ACTIVATION_GRACE (مهلت مهاجرت ۳۰ روزه) — بدون اختلال ناگهانی'
             echo '```'

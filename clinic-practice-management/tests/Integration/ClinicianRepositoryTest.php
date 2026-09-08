@@ -92,8 +92,8 @@ final class ClinicianRepositoryTest extends WP_UnitTestCase
         $now = App::db()->nowUtcSql();
         $wpdb->query($wpdb->prepare(
             'INSERT INTO ' . $wpdb->prefix . 'cpms_schedule
-                 (clinic_id, clinician_id, day_of_week, start_time, end_time, is_active, created_at, updated_at)
-             VALUES (1, %d, 0, %s, %s, 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                 (clinic_id, location_id, clinician_id, day_of_week, start_time, end_time, is_active, created_at, updated_at)
+             VALUES (1, (SELECT id FROM ' . $wpdb->prefix . 'cpms_locations WHERE clinic_id = 1 AND is_primary = 1 LIMIT 1), %d, 0, %s, %s, 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
             $cid,
             '09:00:00',
             '13:00:00',

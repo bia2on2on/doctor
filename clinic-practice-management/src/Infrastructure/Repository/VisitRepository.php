@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Infrastructure\Repository;
 
+use ClinicCore\Application\Scope\PrimaryLocationResolver;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 
 /**
@@ -70,6 +71,7 @@ final class VisitRepository
         $now = $this->db->nowUtc();
         $row += [
             'clinic_id' => 1,
+            'location_id' => null,
             'appointment_id' => null,
             'source' => 'walk_in',
             'status' => 'checked_in',
@@ -86,6 +88,14 @@ final class VisitRepository
             'created_at' => $now,
             'updated_at' => $now,
         ];
+
+        // Phase 2 (AD-15): ویزیت snapshot مکانی می‌گیرد — نوبت مرجع وگرنه
+        // Location اصلی Clinic. پس از merge ارزیابی می‌شود تا clinic_id
+        // پیش‌فرض هم دیده شود.
+        if (empty($row['location_id'])) {
+            $row['location_id'] = $this->locationForNewVisit($row);
+        }
+
         $this->db->insert('cpms_visits', $row);
 
         return $this->db->wpdb_last_insert_id();
@@ -99,6 +109,27 @@ final class VisitRepository
         $row['updated_at'] = $this->db->nowUtc();
 
         return $this->db->update('cpms_visits', $row, ['id' => $id]);
+    }
+
+    /**
+     * Location ویزیت جدید — از نوبت مرجع (اگر هست) وگرنه Location اصلی Clinic
+     * (Phase 2 — AD-15؛ صف per-Location).
+     *
+     * @param array<string, mixed> $row
+     */
+    private function locationForNewVisit(array $row): int
+    {
+        if (!empty($row['appointment_id'])) {
+            $apptLocation = $this->db->fetchValue(
+                'SELECT location_id FROM ' . $this->db->table('cpms_appointments') . ' WHERE id = %d LIMIT 1',
+                [(int) $row['appointment_id']]
+            );
+            if ($apptLocation !== null && $apptLocation !== '') {
+                return (int) $apptLocation;
+            }
+        }
+
+        return PrimaryLocationResolver::resolve($this->db, (int) ($row['clinic_id'] ?? 0));
     }
 
     /**
