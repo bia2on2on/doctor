@@ -28,10 +28,13 @@
 | **AD-11** | **System Administration از Clinical Data Access جداست** (+ Break-Glass صریح، محدود، audit‌شده — طراحی‌شده، پیاده‌نشده) | ✅ DECIDED | Phase 3 |
 | **AD-12** | **Migration strategy = versioned forward migrations.** drop/recreate مسیر محصول **نیست** | ✅ DECIDED | همهٔ فازها |
 | **AD-13** | **`clinic_id = 1` مستقیم در کد جدید ممنوع است** — و به همان ترتیب `organization_id = 1` و `location_id = 1` | ✅ DECIDED | همهٔ فازها |
+| **AD-14** | **Patient Identity در سطح Organization؛ Clinical Record ایزوله در سطح Clinic.** هر Identity یک **immutable internal ID** دارد. موبایل نرمال‌شده فقط lookup/verification است، **نه** کلید هویت. تغییر موبایل/duplicate/merge/resolution همه **explicit و audit‌شده**. هیچ cross-clinic medical visibility ضمنی | ✅ DECIDED (Q2 بسته شد) | Phase 2/3 |
+| **AD-15** | **هر Clinic حداقل یک Location دارد** — Single Doctor هم Location واقعی دارد. Scheduling/Appointment هرگز حالت «بدون Location» نخواهد داشت | ✅ DECIDED (Q8 بسته شد) | Phase 2/6/7 |
+| **AD-16** | **Namespace قابلیت سازمان = `cpms_org_*`.** بدون capability واحد همه‌کاره. ماتریس نهایی در **Phase 3** تثبیت می‌شود | ✅ DECIDED (Q10 بسته شد) | Phase 3 |
 
 > **AD-13 — قاعدهٔ اجرایی:** ۵۴ مورد موجود بدهی فنی فاز ۲ هستند و در همان فاز حذف می‌شوند. اما **از امروز** هیچ خط کد جدیدی حق ندارد این الگو را اضافه کند. اجرای این قاعده در Phase 2 به یک architecture test سپرده می‌شود.
 >
-> **AD-09 — قید باز:** *جهت* «هویت مشترک + رکورد بالینی ایزوله» تصویب شده، ولی **مکانیزم identity-resolution/hashing هنوز تصویب نشده** (Q2 در بخش و). تا تصویب آن، جدول `cpms_patient_identities` ساخته نمی‌شود.
+> **AD-09 → تکمیل شد با AD-14 (2026-09-08).** قید باز برداشته شد: مدل هویت تثبیت شد (immutable internal ID + موبایل به‌عنوان صفت lookup). جدول `cpms_patient_identities` در **Phase 2** ساخته می‌شود.
 
 ---
 
@@ -1045,15 +1048,15 @@ $ grep -rn "wp_ajax" src/ --include=*.php   → 0 نتیجه
 | # | سؤال | تصمیم / پیشنهاد | Status |
 |---|---|---|---|
 | Q1 | Organization اجباری یا اختیاری؟ | **اجباری.** `clinics.organization_id NOT NULL` + FK. بدون مسیر موازی برای NULL. زنجیره حتی برای مطب تک‌پزشکی: Org → Clinic → Location | ✅ **DECIDED** |
-| Q2 | مدل Patient (P-A / P-B / P-C)? | جهت **P-B** (هویت مشترک + پروندهٔ ایزوله) تأیید اولیه شد. **مکانیزم hashing/identity-resolution تأیید نشده** — ۷ مسئلهٔ ب-۴-۱ باید حل شود | ⏳ **NEEDS OWNER DECISION** (مکانیزم) |
+| Q2 | مدل Patient (P-A / P-B / P-C)? | ✅ **P-B تثبیت شد (AD-14).** Patient Identity در سطح **Organization**؛ Clinical Record ایزوله در سطح **Clinic**. هر Identity یک **immutable internal ID** دارد. موبایل نرمال‌شده فقط برای lookup/verification — **کلید هویت نیست**. تغییر موبایل/duplicate/merge/resolution همه **explicit و audit‌شده**. هیچ cross-clinic medical visibility ضمنی | ✅ **DECIDED (AD-14)** |
 | Q3 | Drop & recreate یا ALTER تدریجی؟ | **Versioned forward ALTER.** upgrade path محصول باید از ابتدا سالم و قابل تست بماند | ✅ **DECIDED** |
 | Q4 | Capabilityهای legacy WP کی حذف شوند؟ | **فعلاً حذف نشوند.** Dual-mode با ۵ مرحله (D0..D4) و شرط خروج عینی — بخش ج-۵ | ✅ **DECIDED** |
 | Q5 | `cpms_otp_tokens` per-Clinic شود؟ | **خیر.** OTP نگرانی Identity/Authentication است، نه Clinic Authorization. سطح installation/identity می‌ماند؛ `purpose`/`context` امن ثبت می‌شود | ✅ **DECIDED** |
 | Q6 | `cpms_rate_limits` سراسری یا per-Clinic؟ | پیشنهاد: **دوسطحی** — سراسری برای دفاع IP، per-Clinic برای سهمیه | ⏳ **NEEDS OWNER DECISION** |
 | Q7 | Location منطقهٔ زمانی مستقل دارد؟ | **بله.** `locations.timezone NOT NULL`. Timestamp های Canonical در UTC؛ schedule/availability/display بر اساس TZ همان Location. DST نیازمند test coverage در فاز اجرا | ✅ **DECIDED** |
-| Q8 | هر Clinic حداقل یک Location دارد؟ | پیشنهاد: **بله**، auto-create «محل اصلی». تصمیم Q1 («بدون مسیر موازی برای NULL») همین اصل را ایجاب می‌کند، ولی برای Location صریحاً اعلام نشده | ⏳ **NEEDS OWNER DECISION** (تأیید صوری) |
+| Q8 | هر Clinic حداقل یک Location دارد؟ | ✅ **بله (AD-15).** Single Doctor/Single Clinic هم Location واقعی دارد. Scheduling/Appointment هرگز حالت special-case «بدون Location» نخواهد داشت ⇒ `location_id NOT NULL` در ۴ جدول عملیاتی | ✅ **DECIDED (AD-15)** |
 | Q9 | Patient هم Membership دارد؟ | **خیر.** Patient از Staff/User Clinic Membership جدا مدل می‌شود. Identity می‌تواند مشترک باشد؛ Clinical Record و access scope per-Clinic ایزوله. هیچ دسترسی بالینی بین‌کلینیکی ضمنی مجاز نیست | ✅ **DECIDED** |
-| Q10 | نام Capability مدیریت سازمان؟ | پیشنهاد: `cpms_org_manage`. افزودن Capability جدید بدون تأیید انجام نمی‌شود | ⏳ **NEEDS OWNER DECISION** |
+| Q10 | نام Capability مدیریت سازمان؟ | ✅ **Namespace = `cpms_org_*` (AD-16).** بدون capability واحد همه‌کاره؛ الگوی `cpms_{resource}_{action}` حفظ می‌شود. System/Org Administration از Clinical Data Access جدا. **ماتریس نهایی در Phase 3** | ✅ **DECIDED (AD-16)** |
 | Q11 | ستون legacy `clinicians.specialty` حذف شود؟ | پیشنهاد: **نه در این فاز** — فاز جدا پس از تأیید | ⏳ **NEEDS OWNER DECISION** |
 | Q12 | UI تعویض Clinic چطور باشد؟ | تصمیم UX، خارج از حیطهٔ این سند | ⏳ **NEEDS OWNER DECISION** |
 | Q13 | `administrator` وردپرس bypass دارد؟ | **خیر.** System Administration از Clinical Data Access جدا. Break-glass صریح/محدود/audit‌شده طراحی شد (ج-۶) — **طراحی‌شده، پیاده‌نشده** | ✅ **DECIDED** |

@@ -16,18 +16,40 @@
 
 | Phase | عنوان | وضعیت |
 |---|---|---|
-| **Phase 0** | **Git Checkpoint** | ✅ **CLOSED** — گزارش: [`report-phase-0-reverification.md`](../phase-reports/report-phase-0-reverification.md) (۹ قید معماری C-1..C-9) |
-| **Phase 0.5** | **Target Architecture & Migration Plan** *(فاز میانی مستندسازی، خارج از شماره‌گذاری اصلی)* | ✅ **CLOSED** — سند: [`phase0.5-target-model.md`](../architecture/phase0.5-target-model.md) · ADR: [`ADR-0031`](../adr/ADR-0031-organization-clinic-location-scoped-authorization.md) |
-| **Phase 1** | **Security Hardening** | ⏸ منتظر Gate Approval — شروع نشده |
-| **Phase 2** | **Multi-Clinic Core** | ⏳ برنامه‌ریزی‌شده |
-| **Phase 3** | **Role & Access Control** | ⏳ برنامه‌ریزی‌شده |
-| **Phase 4** | **Master Data** | ⏳ برنامه‌ریزی‌شده |
-| **Phase 5** | **Pricing Engine** | ⏳ برنامه‌ریزی‌شده |
-| **Phase 6** | **Scheduling Engine** | ⏳ برنامه‌ریزی‌شده |
-| **Phase 7** | **Appointment Engine** | ⏳ برنامه‌ریزی‌شده |
-| **Phase 8 … Phase 20** | **عنوان‌گذاری‌نشده — منتظر تصریح Owner** | ⚠️ **OPEN DECISION** |
+| **Phase 0** | **Git / Project Stabilization** | ✅ **CLOSED** — [`report-phase-0-reverification.md`](../phase-reports/report-phase-0-reverification.md) (۹ قید C-1..C-9) |
+| **Phase 0.5** | **Target Architecture & Migration Plan** *(فاز میانی مستندسازی، خارج از شماره‌گذاری اصلی)* | ✅ **CLOSED / APPROVED** — [`phase0.5-target-model.md`](../architecture/phase0.5-target-model.md) · [`ADR-0031`](../adr/ADR-0031-organization-clinic-location-scoped-authorization.md) |
+| **Phase 1** | **Security Hardening** | 🚧 **IN PROGRESS** — تقسیم اجرایی 1A / 1B (§۰-۲) |
+| **Phase 2** | **Multi-Clinic Core** | ⏳ |
+| **Phase 3** | **Role & Access Control** | ⏳ |
+| **Phase 4** | **Master Data** | ⏳ |
+| **Phase 5** | **Pricing Engine** | ⏳ |
+| **Phase 6** | **Scheduling Engine** | ⏳ |
+| **Phase 7** | **Appointment Engine** | ⏳ |
+| **Phase 8** | **Patient Public Booking** | ⏳ |
+| **Phase 9** | **Patient Portal** | ⏳ |
+| **Phase 10** | **Doctor Portal** | ⏳ |
+| **Phase 11** | **Clinic Reception** | ⏳ |
+| **Phase 12** | **Finance Architecture** | ⏳ |
+| **Phase 13** | **Prescription & Documents** | ⏳ |
+| **Phase 14** | **Reporting** | ⏳ |
+| **Phase 15** | **Backup & Recovery** | ⏳ |
+| **Phase 16** | **License & Commercial Engine** | ⏳ |
+| **Phase 17** | **Performance** | ⏳ |
+| **Phase 18** | **Compatibility** | ⏳ |
+| **Phase 19** | **Automated Testing** | ⏳ |
+| **Phase 20** | **UI/UX & Commercial Release** | ⏳ |
 
-> ⚠️ **OPEN DECISION (OD-1):** Product Owner دامنهٔ Phase 0..20 را تأیید کرده اما تاکنون فقط عناوین **Phase 0 تا Phase 7** را تصریح کرده است. عناوین Phase 8..20 **حدس زده نمی‌شوند** و تا تصریح Owner خالی می‌مانند. هیچ ایجنتی مجاز به پر کردن این ردیف‌ها نیست.
+> ✅ **OD-1 بسته شد (2026-09-08).** Product Owner هر ۲۱ فاز را تصریح کرد. **این sequence توسط هیچ taxonomy‌ای از نظام‌های Legacy (`F0..F10`، `Doc-Phase`، `V1/V1.5/V2`) قابل تغییر نیست.**
+
+### §۰-۲ — تقسیم اجرایی Phase 1
+
+| زیرفاز | دامنه | وابستگی |
+|---|---|---|
+| **Phase 1A** | امنیت **مستقل** از Multi-Clinic Scope | ندارد — همین حالا قابل اجرا |
+| **Phase 1B** | **Scoped / Object Authorization** | وابسته به Phase 2 و Phase 3 |
+
+> ⚠️ این تقسیم **شماره یا هدف Roadmap را تغییر نمی‌دهد** — Phase 1 همچنان یک فاز است.
+> 🔴 **Phase 1B نباید با معماری موقت `clinic_id = 1` پیاده‌سازی شود.** هر قلمی که برای مجوزدهی واقعی به Clinic/Patient scope نیاز دارد، در **Phase 1B Deferred Register** ثبت می‌شود و تا Phase 2/3 صبر می‌کند. **ساخت bypass موقت ممنوع است.**
 
 ### معماری هدف الزام‌آور (ADR-0031)
 

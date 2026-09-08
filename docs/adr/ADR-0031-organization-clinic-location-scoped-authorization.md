@@ -9,6 +9,7 @@
 | **جانشین می‌شود** | ADR-0003 (کامل) · ADR-0027 (لایهٔ مدل دامنه) · ADR-0026 (فقط بخش‌های Scope و زمان‌بندی) |
 | **شواهد پایه** | `docs/phase-reports/report-phase-0-reverification.md` (۹ قید C-1..C-9) · `docs/architecture/phase0.5-target-model.md` (مدل هدف + برنامهٔ Migration) |
 | **فاز اجرا** | Phase 2 (Multi-Clinic Core) و Phase 3 (Role & Access Control) طبق Roadmap تأییدشدهٔ Owner |
+| **به‌روزرسانی** | 2026-09-08 — AD-14 (Q2)، AD-15 (Q8)، AD-16 (Q10) افزوده شدند |
 
 ---
 
@@ -66,6 +67,50 @@ Organization
 - **AD-07 — OTP در سطح Identity/Installation است، نه Authorization کلینیک.** `cpms_otp_tokens` عمداً `clinic_id` نمی‌گیرد. اگر OTP برای یک workflow خاص صادر شود، purpose/context آن به‌شکل امن ثبت می‌شود؛ مجوز کلینیک جداگانه و پس از احراز هویت ارزیابی می‌گردد.
 - **AD-09 — Patient Identity می‌تواند shared باشد، ولی Clinical Record و medical access باید scope-isolated باشند.** دسترسی بالینی ضمنی بین‌کلینیکی **ممنوع** است. این بند بند ۵ ADR-0027 («Patient موجودیت clinic-level است») را حفظ و به سطح Organization تعمیم می‌دهد.
 - ⚠️ **قید باز:** *جهت* «هویت مشترک + رکورد بالینی ایزوله» تصویب شده است، اما **مکانیزم identity-resolution/hashing هنوز تصویب نشده** (Q2). تا تصویب صریح، جدول `cpms_patient_identities` ساخته نمی‌شود. الزام فنی ثبت‌شده: فضای شمارهٔ موبایل ایران ~۱۰⁹ و کد ملی ~۱۰¹⁰ است ⇒ هش خام SHA-256 با rainbow table معکوس‌شدنی است؛ هر هش هویتی باید **کلیددار** باشد (HMAC-SHA256 یا Argon2id) و روی خروجی `MobileValidator::normalize()` محاسبه شود، نه روی ورودی خام.
+
+### ۳-۱. Patient Identity — تصمیم نهایی Q2 (Owner، 2026-09-08)
+
+**AD-14 — مدل هویت بیمار تثبیت شد:**
+
+| قاعده | تصمیم |
+|---|---|
+| سطح **Patient Identity** | **Organization** |
+| سطح **Clinical Patient Record** | **Clinic** — ایزوله |
+| کلید هویت | هر Identity یک **immutable internal ID** دارد |
+| نقش شمارهٔ موبایل | موبایل نرمال‌شده **می‌تواند** برای lookup/verification استفاده شود، ولی **به‌تنهایی primary/immutable identity key نیست** |
+| تغییر موبایل · تشخیص تکراری · merge · identity resolution | همه باید **explicit و audit‌شده** باشند — هیچ‌کدام ضمنی یا خودکارِ بی‌صدا نیست |
+| دید بالینی بین‌کلینیکی | **هیچ cross-clinic medical visibility ضمنی مجاز نیست** |
+
+**پیامدهای طراحی که از این تصمیم مستقیماً نتیجه می‌شوند:**
+
+1. مسئلهٔ امنیتی هش که در Phase 0.5 مطرح شد **حل می‌شود بدون نیاز به تصمیم رمزنگاری:** چون کلید هویت یک `internal_id` تغییرناپذیر است و موبایل فقط یک **صفت قابل تغییرِ lookup** است، دیگر لازم نیست موبایل به یک کلید هش‌شدهٔ برگشت‌ناپذیر تبدیل شود. اگر هر ستون lookup هش شود، همچنان باید **کلیددار** باشد (HMAC-SHA256) و روی خروجی `MobileValidator::normalize()` محاسبه گردد — نه روی ورودی خام.
+2. **`MobileValidator::normalize()` امروز فقط ایران را پشتیبانی می‌کند** (خروجی canonical `09xxxxxxxxx`؛ `+971…` → `null`). هر توسعهٔ بین‌المللی نیازمند تصمیم جداگانه است.
+3. **تغییر موبایل نیازمند re-verification است.** ستون موجود `cpms_patient_user_links.mobile_at_link` امروز فقط snapshot است و برای این کار استفاده نمی‌شود.
+4. **Merge موجود قابل اتکا نیست:** `cpms_patient_merges` فقط schema است (پیاده‌سازی صفر) و درون‌کلینیکی است. «ادغام Identity» در سطح Organization یک نوع **دوم** است که هیچ رکورد بالینی جابه‌جا نمی‌کند.
+5. Discovery بین‌کلینیکی («این بیمار در کلینیک دیگری هم پرونده دارد») خودش یک افشای اطلاعات پزشکی است و **بدون سیاست صریح مجاز نیست**.
+
+**فاز مالک:** ساخت `cpms_patient_identities` در **Phase 2**؛ سیاست‌های دسترسی در **Phase 3**؛ merge/duplicate UI در فاز مربوطه.
+
+### ۳-۲. Location اجباری — تصمیم نهایی Q8 (Owner، 2026-09-08)
+
+**AD-15:**
+
+- **هر Clinic باید حداقل یک Location داشته باشد.**
+- **Single Doctor / Single Clinic هم یک Location واقعی دارد** — نه ساختگی، نه اختیاری.
+- **Scheduling/Appointment در آینده نباید حالت special-case «بدون Location» داشته باشد.**
+
+**پیامد مستقیم بر Migration:** `location_id` در `cpms_schedule`، `cpms_schedule_slots`، `cpms_appointments` و `cpms_visits` **`NOT NULL`** می‌شود (سه‌مرحله‌ای: `ADD NULL` → `UPDATE` → `MODIFY NOT NULL` → `ADD FK`). این تصمیم گزینهٔ `NULL`-able را که شاخهٔ شرطی می‌ساخت، حذف می‌کند — دقیقاً هم‌راستا با AD-02.
+
+### ۳-۳. Namespace قابلیت سازمان — تصمیم نهایی Q10 (Owner، 2026-09-08)
+
+**AD-16:**
+
+- **Namespace قابلیت‌های سازمان = `cpms_org_*`.**
+- **System/Organization Administration از Clinical Data Access جدا نگه داشته می‌شود** (تقویت AD-10 و AD-11).
+- **فعلاً یک capability واحد همه‌کاره ساخته نمی‌شود** — الگوی `cpms_{resource}_{action}` که در permission-matrix P-4 تثبیت شده حفظ می‌شود.
+- **ماتریس نهایی قابلیت‌ها در Phase 3 تثبیت می‌شود** — نه زودتر.
+
+⛔ به‌طور مشخص: ساختن یک `cpms_org_manage` سراسری در Phase 1A یا Phase 2 **ممنوع** است.
 
 ### ۴. زمان
 

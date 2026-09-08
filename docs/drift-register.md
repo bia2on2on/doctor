@@ -142,16 +142,16 @@
 
 | # | موضوع | وضعیت |
 |---|---|---|
-| **OD-1** | عناوین **Phase 8 … Phase 20** تصریح نشده‌اند | حدس زده نمی‌شوند — منتظر Owner |
-| **OD-2** | نگاشت اقلام `V1.5` و بخش‌های بازتوزیع‌نشدهٔ `V2` (OCR، 2FA، Online Payment، Insurance/Lab، Push، Mobile API/JWT) به Phase | بدون فاز |
-| **OD-3** | **ناهماهنگی نسخه** — ریشه‌یابی‌شده در §۷ همین سند | باز — **هیچ تغییری خودسرانه اعمال نشد** |
-| **OD-4** | وضعیت واقعی تأیید ۶ سند پایه (ستون «منتظر تأیید» در `docs/README.md`) | **نمی‌دانم** — از مخزن قابل استخراج نیست |
-| **Q2** | مکانیزم identity-resolution/hashing برای Patient Identity | جهت تأیید شد، مکانیزم نه — **بلاکر Phase 2** |
-| **Q6** | Scope جدول `cpms_rate_limits` (سراسری / per-Clinic / دوسطحی) | باز — بلاکر نیست |
-| **Q8** | آیا هر Clinic حداقل یک Location دارد؟ | باز — **بلاکر Phase 2** (روی `NOT NULL` بودن `location_id` اثر مستقیم دارد) |
-| **Q10** | نام Capability مدیریت سازمان (پیشنهاد `cpms_org_manage`) | باز — با اجباری‌شدن Organization عملاً بلاکر شد |
-| **Q11** | حذف ستون legacy `clinicians.specialty` | باز — Phase 4 |
-| **Q12** | UX تعویض Clinic | باز — بدون اثر بر Backend |
+| **OD-1** | عناوین Phase 8..20 | ✅ **بسته شد 2026-09-08** — هر ۲۱ فاز در [`roadmap.md`](roadmap/roadmap.md) §۰ تصریح شد |
+| **Q2** | مدل Patient Identity | ✅ **بسته شد — AD-14** — Identity سطح Organization، Record ایزوله سطح Clinic، immutable internal ID، موبایل فقط lookup |
+| **Q8** | هر Clinic حداقل یک Location | ✅ **بسته شد — AD-15** — بله؛ بدون special-case «بدون Location» |
+| **Q10** | Namespace قابلیت سازمان | ✅ **بسته شد — AD-16** — `cpms_org_*`؛ بدون capability همه‌کاره؛ ماتریس نهایی Phase 3 |
+| **OD-2** | نگاشت اقلام `V1.5` و باقیماندهٔ `V2` (OCR، 2FA، Online Payment، Insurance/Lab، Push، Mobile API/JWT) | ⚠️ باز — بدون فاز |
+| **OD-3** | **ناهماهنگی نسخه** — ریشه‌یابی‌شده در §۷ | ⚠️ باز — پیش از پایان Phase 1 |
+| **OD-4** | وضعیت واقعی تأیید ۶ سند پایه | ⚠️ **نمی‌دانم** — از مخزن قابل استخراج نیست |
+| **Q6** | Scope جدول `cpms_rate_limits` (سراسری / per-Clinic / دوسطحی) | ⚠️ باز — **مرتبط با Phase 1A** (rate limiting سراسری بدون آن کار می‌کند) |
+| **Q11** | حذف ستون legacy `clinicians.specialty` | ⚠️ باز — Phase 4 |
+| **Q12** | UX تعویض Clinic | ⚠️ باز — بدون اثر بر Backend |
 
 *(Q1..Q13 کامل در [`phase0.5-target-model.md`](architecture/phase0.5-target-model.md) §و — Decision Register)*
 
