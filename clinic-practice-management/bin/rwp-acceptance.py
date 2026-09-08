@@ -203,6 +203,73 @@ def capture_confirm(page, tag, name):
     check(f"{tag}.{name}.dialog_cancelled", gone is None, "با Escape بسته شد")
 
 
+def _counts(page):
+    """تعداد گروهِ بازِ Advanced و تعداد چک‌باکسِ نقشِ واقعاً visible (pixels)."""
+    open_groups = page.evaluate("document.querySelectorAll('details.cpms-cap-group[open]').length")
+    vis_checks = page.evaluate(
+        "[...document.querySelectorAll('input[type=checkbox][name^=\"role_caps\"]')].filter(e => e.getClientRects().length).length"
+    )
+    return open_groups, vis_checks
+
+
+def verify_permissions(page, tag, stem):
+    """بررسی سمانتیکِ (نه نام فایل) وضعیت collapse + expand + search در Advanced Permissions.
+
+    - initial: همهٔ گروه‌ها بسته و هیچ چک‌باکسِ نقشی visible نیست (pixels).
+    - باز کردن Advanced → همچنان همهٔ گروه‌ها بسته/هیچ چک‌باکسی visible.
+    - باز کردن یک گروه → همان گروه باز و چک‌باکس‌هایش visible.
+    - جستجو → گروه منطبق باز/قابل‌کشف می‌شود؛ پاک‌کردن → گروه‌ها دوباره بسته.
+    """
+    page.goto(f"{BASE}/wp-admin/admin.php?page=cpms-roles", wait_until="domcontentloaded")
+    page.wait_for_timeout(700)
+    # A) initial collapsed
+    page.screenshot(path=f"{OUT}/screenshots/{stem}-collapsed.png", full_page=True)
+    og, vc = _counts(page)
+    check(f"{tag}.perms.initial_all_groups_closed", og == 0, f"open_groups={og}")
+    check(f"{tag}.perms.initial_no_checkbox_visible", vc == 0, f"visible_checkboxes={vc}")
+
+    # B) open Advanced (اولین نقش) — گروه‌ها هنوز بسته‌اند
+    adv = page.query_selector("details.cpms-advanced > summary")
+    if not adv:
+        check(f"{tag}.perms.advanced_expanded", False, "خلاصهٔ Advanced یافت نشد (details.cpms-advanced)")
+        return
+    adv.click()
+    page.wait_for_timeout(450)
+    page.screenshot(path=f"{OUT}/screenshots/{stem}.png", full_page=True)
+    check(f"{tag}.perms.advanced_expanded", True, "بخش Advanced Permissions باز شد")
+    og, vc = _counts(page)
+    check(f"{tag}.perms.advanced_open_groups_still_closed", og == 0, f"open_groups={og}")
+    check(f"{tag}.perms.advanced_open_no_checkbox_visible", vc == 0, f"visible_checkboxes={vc}")
+
+    # C) باز کردن یک گروه
+    g = page.query_selector("details.cpms-cap-group > summary")
+    if not g:
+        check(f"{tag}.perms.group_opened", False, "گروه Capability یافت نشد")
+        return
+    g.click()
+    page.wait_for_timeout(350)
+    og, vc = _counts(page)
+    check(f"{tag}.perms.group_opened", og == 1, f"open_groups={og}")
+    check(f"{tag}.perms.group_checkboxes_visible", vc > 0, f"visible_checkboxes={vc}")
+    page.screenshot(path=f"{OUT}/screenshots/{stem}-group.png", full_page=True)
+
+    # D) جستجو
+    search = page.query_selector("details.cpms-advanced input.cpms-cap-search")
+    if not search:
+        check(f"{tag}.perms.search_present", False, "فیلد جستجوی Advanced یافت نشد")
+        return
+    check(f"{tag}.perms.search_present", True, "Search واضح در بالای گروه‌ها")
+    search.fill("مشاهده")
+    page.wait_for_timeout(400)
+    og, _ = _counts(page)
+    check(f"{tag}.perms.search_opens_match", og >= 1, f"matched_open_groups={og}")
+    page.screenshot(path=f"{OUT}/screenshots/{stem}-search.png", full_page=True)
+    search.fill("")
+    page.wait_for_timeout(400)
+    og, _ = _counts(page)
+    check(f"{tag}.perms.search_clear_collapses", og == 0, f"open_groups_after_clear={og}")
+
+
 with sync_playwright() as p:
     browser = p.chromium.launch()
     ctx = browser.new_context(viewport={"width": 1440, "height": 900}, locale="fa-IR")
@@ -301,33 +368,15 @@ with sync_playwright() as p:
         except Exception as e:  # pragma: no cover
             check("admin-ui.doctor_schedule.link_found", False, str(e))
 
-        # Advanced Permissions — Desktop: collapsed state + یک گروه باز
-        ui.goto(f"{BASE}/wp-admin/admin.php?page=cpms-roles", wait_until="domcontentloaded")
-        ui.wait_for_timeout(600)
-        ui.screenshot(path=f"{OUT}/screenshots/cpms-desktop-roles-advanced-collapsed.png", full_page=True)
-        summary = ui.query_selector("details.cpms-details > summary")
-        if summary:
-            summary.click()
-            ui.wait_for_timeout(400)
-            ui.screenshot(path=f"{OUT}/screenshots/cpms-desktop-roles-advanced.png", full_page=True)
-            check("admin-ui.roles.advanced_expanded", True, "بخش Advanced Permissions باز شد")
-            g = ui.query_selector("details.cpms-cap-group > summary")
-            if g:
-                g.click()
-                ui.wait_for_timeout(300)
-                ui.screenshot(path=f"{OUT}/screenshots/cpms-desktop-roles-advanced-group.png", full_page=True)
-                check("admin-ui.roles.advanced_group_expanded", True, "یک گروه Capability باز شد")
-            else:
-                check("admin-ui.roles.advanced_group_expanded", False, "گروه Capability یافت نشد")
-        else:
-            check("admin-ui.roles.advanced_expanded", False, "خلاصهٔ Advanced یافت نشد")
+        # Advanced Permissions — Desktop: initial collapsed + expand + search (semantic)
+        verify_permissions(ui, "admin-ui", "cpms-desktop-roles-advanced")
     ui.close()
 
     # ---------- Admin UI — Tablet (768×1024) ----------
     tctx = browser.new_context(viewport={"width": 768, "height": 1024}, locale="fa-IR")
     tpage = tctx.new_page()
     if login(tpage, ADMIN_USER, ADMIN_PASS, "admin-tablet"):
-        for slug, shot, ovf in [("cpms-dashboard", "dashboard", False), ("cpms-roles", "roles", False),
+        for slug, shot, ovf in [("cpms-dashboard", "dashboard", False), ("cpms-roles", "roles", True),
                                 ("cpms-clinicians", "clinicians", True), ("cpms-system", "system", False),
                                 ("cpms-staff", "staff", True)]:
             snap(tpage, "admin-tablet", f"admin.php?page={slug}", f"cpms-t-{shot}", ovf)
@@ -344,17 +393,8 @@ with sync_playwright() as p:
         tpage.goto(f"{BASE}/wp-admin/admin.php?page=cpms-staff", wait_until="domcontentloaded")
         tpage.wait_for_timeout(700)
         capture_confirm(tpage, "admin-tablet", "cpms-dialog-tablet")
-        # Advanced Permissions (Tablet): collapsed + group
-        tpage.goto(f"{BASE}/wp-admin/admin.php?page=cpms-roles", wait_until="domcontentloaded")
-        tpage.wait_for_timeout(600)
-        tpage.screenshot(path=f"{OUT}/screenshots/cpms-tablet-roles-advanced-collapsed.png", full_page=True)
-        s = tpage.query_selector("details.cpms-details > summary")
-        if s:
-            s.click(); tpage.wait_for_timeout(400)
-            g = tpage.query_selector("details.cpms-cap-group > summary")
-            if g:
-                g.click(); tpage.wait_for_timeout(300)
-                tpage.screenshot(path=f"{OUT}/screenshots/cpms-tablet-roles-advanced-group.png", full_page=True)
+        # Advanced Permissions (Tablet): collapsed + expand + search (semantic)
+        verify_permissions(tpage, "admin-tablet", "cpms-tablet-roles-advanced")
     tpage.close()
     tctx.close()
 
@@ -362,7 +402,7 @@ with sync_playwright() as p:
     mctx = browser.new_context(viewport={"width": 390, "height": 844}, locale="fa-IR")
     mpage = mctx.new_page()
     if login(mpage, ADMIN_USER, ADMIN_PASS, "admin-mobile"):
-        for slug, shot, ovf in [("cpms-dashboard", "dashboard", False), ("cpms-roles", "roles", False),
+        for slug, shot, ovf in [("cpms-dashboard", "dashboard", False), ("cpms-roles", "roles", True),
                                 ("cpms-clinicians", "clinicians", True), ("cpms-staff", "staff", True),
                                 ("cpms-system", "system", False)]:
             snap(mpage, "admin-mobile", f"admin.php?page={slug}", f"cpms-m-{shot}", ovf)
@@ -379,17 +419,8 @@ with sync_playwright() as p:
         mpage.goto(f"{BASE}/wp-admin/admin.php?page=cpms-staff", wait_until="domcontentloaded")
         mpage.wait_for_timeout(700)
         capture_confirm(mpage, "admin-mobile", "cpms-dialog-mobile")
-        # Advanced Permissions (Mobile): collapsed + group
-        mpage.goto(f"{BASE}/wp-admin/admin.php?page=cpms-roles", wait_until="domcontentloaded")
-        mpage.wait_for_timeout(600)
-        mpage.screenshot(path=f"{OUT}/screenshots/cpms-mobile-roles-advanced-collapsed.png", full_page=True)
-        s = mpage.query_selector("details.cpms-details > summary")
-        if s:
-            s.click(); mpage.wait_for_timeout(400)
-            g = mpage.query_selector("details.cpms-cap-group > summary")
-            if g:
-                g.click(); mpage.wait_for_timeout(300)
-                mpage.screenshot(path=f"{OUT}/screenshots/cpms-mobile-roles-advanced-group.png", full_page=True)
+        # Advanced Permissions (Mobile): collapsed + expand + search (semantic)
+        verify_permissions(mpage, "admin-mobile", "cpms-mobile-roles-advanced")
     mpage.close()
     mctx.close()
 
@@ -399,8 +430,10 @@ with sync_playwright() as p:
         xp = xctx.new_page()
         if login(xp, ADMIN_USER, ADMIN_PASS, tag):
             for slug, shot, ovf in [("cpms-staff", "staff", True), ("cpms-clinicians", "clinicians", True),
-                                    ("cpms-roles", "roles", False)]:
+                                    ("cpms-roles", "roles", True)]:
                 snap(xp, tag, f"admin.php?page={slug}", f"cpms-{W}-{shot}", ovf)
+            # Advanced Permissions (semantic) در هر viewport ماتریس — collapsed/expand/search
+            verify_permissions(xp, tag, f"cpms-{W}-roles-advanced")
             # Schedule at 360
             if W == 360:
                 xp.goto(f"{BASE}/wp-admin/admin.php?page=cpms-clinicians", wait_until="domcontentloaded")

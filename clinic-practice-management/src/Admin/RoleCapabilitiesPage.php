@@ -251,46 +251,61 @@ final class RoleCapabilitiesPage
             </h2>
             <p class="description"><?php echo esc_html(self::roleDescription($role)); ?></p>
 
-            <div class="cpms-cards" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr))">
-                <div class="cpms-card">
-                    <h2>✅ می‌تواند</h2>
-                    <?php if ($enabled === []) : ?>
-                        <p class="description">هیچ Capability فعالی ندارد.</p>
-                    <?php else : ?>
-                        <ul style="margin:0;padding-inline-start:18px">
-                            <?php foreach ($enabled as $cap) : ?>
-                                <li><?php echo esc_html(self::labelFor($cap)); ?><?php echo in_array($cap, self::SENSITIVE, true) ? ' <span class="cpms-sensitive">⚠️</span>' : ''; ?></li>
-                            <?php endforeach; ?>
-                        </ul>
+            <details class="cpms-details cpms-preset-overview">
+                <summary>
+                    <span>نمای سریع دسترسی‌ها</span>
+                    <span class="cpms-group-count">(<?php echo count($enabled); ?> فعال / <?php echo count($disabled); ?> غیرفعال)</span>
+                    <?php if ($sensitiveEnabled !== []) : ?>
+                        <span class="cpms-sensitive">⚠️ حساس</span>
                     <?php endif; ?>
+                </summary>
+                <div class="cpms-cards" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr))">
+                    <div class="cpms-card">
+                        <h2>✅ می‌تواند</h2>
+                        <?php if ($enabled === []) : ?>
+                            <p class="description">هیچ Capability فعالی ندارد.</p>
+                        <?php else : ?>
+                            <ul style="margin:0;padding-inline-start:18px">
+                                <?php foreach ($enabled as $cap) : ?>
+                                    <li><?php echo esc_html(self::labelFor($cap)); ?><?php echo in_array($cap, self::SENSITIVE, true) ? ' <span class="cpms-sensitive">⚠️</span>' : ''; ?></li>
+                                <?php endforeach; ?>
+                            </ul>
+                        <?php endif; ?>
+                    </div>
+                    <div class="cpms-card">
+                        <h2>⛔ نمی‌تواند</h2>
+                        <?php if ($disabled === []) : ?>
+                            <p class="description">هیچ Capability غیرفعالی ندارد.</p>
+                        <?php else : ?>
+                            <ul style="margin:0;padding-inline-start:18px">
+                                <?php foreach ($disabled as $cap) : ?>
+                                    <li><?php echo esc_html(self::labelFor($cap)); ?><?php echo in_array($cap, self::SENSITIVE, true) ? ' <span class="cpms-sensitive">⚠️</span>' : ''; ?></li>
+                                <?php endforeach; ?>
+                            </ul>
+                        <?php endif; ?>
+                    </div>
                 </div>
-                <div class="cpms-card">
-                    <h2>⛔ نمی‌تواند</h2>
-                    <?php if ($disabled === []) : ?>
-                        <p class="description">هیچ Capability غیرفعالی ندارد.</p>
-                    <?php else : ?>
-                        <ul style="margin:0;padding-inline-start:18px">
-                            <?php foreach ($disabled as $cap) : ?>
-                                <li><?php echo esc_html(self::labelFor($cap)); ?><?php echo in_array($cap, self::SENSITIVE, true) ? ' <span class="cpms-sensitive">⚠️</span>' : ''; ?></li>
-                            <?php endforeach; ?>
-                        </ul>
-                    <?php endif; ?>
-                </div>
-            </div>
+                <?php if ($sensitiveEnabled !== []) : ?>
+                    <div class="cpms-danger-box">
+                        <strong>⚠️ دسترسی حساس فعال:</strong>
+                        <?php echo esc_html(implode('، ', array_map([self::class, 'labelFor'], $sensitiveEnabled))); ?>.
+                        این توانایی‌ها (P-11) به دادهٔ حساس بالینی/مالی دسترسی می‌دهند.
+                    </div>
+                <?php endif; ?>
+            </details>
 
-            <?php if ($sensitiveEnabled !== []) : ?>
-                <div class="cpms-danger-box" style="margin-top:12px">
-                    <strong>⚠️ دسترسی حساس فعال:</strong>
-                    <?php echo esc_html(implode('، ', array_map([self::class, 'labelFor'], $sensitiveEnabled))); ?>.
-                    این توانایی‌ها (P-11) به دادهٔ حساس بالینی/مالی دسترسی می‌دهند.
-                </div>
-            <?php endif; ?>
-
-            <details class="cpms-details" style="margin-top:14px">
+            <details class="cpms-details cpms-advanced" style="margin-top:14px">
                 <summary>Advanced Permissions — ویرایش دقیق Capabilities</summary>
-                <p class="description">برای نقش‌های مخاطب‌حساس توصیه می‌شود دسترسی‌های غیرضروری را خاموش کنید. این بخش به‌صورت گروه‌های جمع‌شونده و کم‌تراکم ارائه می‌شود؛ هر گروه را فقط در صورت نیاز باز کنید.</p>
-                <p><input type="search" class="cpms-cap-search regular-text" data-scope="<?php echo esc_attr($role); ?>"
-                        placeholder="جستجوی Capability… (فارسی یا فنی)" aria-label="جستجوی Capability"></p>
+                <p class="description">برای نقش‌های مخاطب‌حساس توصیه می‌شود دسترسی‌های غیرضروری را خاموش کنید. این بخش به‌صورت گروه‌های جمع‌شونده و کم‌تراکم ارائه می‌شود؛ در ابتدا همهٔ گروه‌ها بسته‌اند و هر گروه را فقط در صورت نیاز باز کنید.</p>
+                <div class="cpms-danger-box cpms-advanced-warning">
+                    <strong>⚠️ هشدار امنیتی:</strong> تغییر دسترسی‌ها عمدی و ماندگار است و می‌تواند به توانایی‌های حساس (P-11) مربوط باشد؛ هر تغییر در Audit با ذکر کاربر ثبت می‌شود.
+                </div>
+                <p class="cpms-cap-search-field">
+                    <label class="cpms-cap-search-label" for="cpms-cap-search-<?php echo esc_attr($role); ?>">جستجو در Capability ها (فارسی یا فنی)</label>
+                    <input type="search" id="cpms-cap-search-<?php echo esc_attr($role); ?>" class="cpms-cap-search regular-text"
+                            data-scope="<?php echo esc_attr($role); ?>"
+                            placeholder="مثلاً: مشاهده، نوبت، مالی…" aria-label="جستجوی Capability">
+                </p>
                 <?php foreach (self::GROUPS as $groupTitle => $capsInGroup) : ?>
                     <?php
                         $enabledInGroup = array_values(array_intersect($capsInGroup, $enabled));

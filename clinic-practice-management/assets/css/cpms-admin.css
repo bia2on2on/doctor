@@ -256,14 +256,23 @@ body.cpms-admin table.cpms-table-responsive td[data-label] { position: relative;
   body.cpms-admin table.cpms-table-responsive td.cpms-actions-cell .button:first-of-type { margin-inline-start: 0; }
 }
 
-/* ---------- Permissions: group accordions (Advanced) ---------- */
-body.cpms-admin .cpms-cap-group {
+/* ---------- Permissions: collapsed accordions (Advanced + overview) ----------
+   Defensive collapse: content of a CLOSED <details> must never render. This is the
+   hard guarantee behind the "initial = all closed" requirement; native <details>
+   already does this but we make it explicit so no theme/plugin CSS can leak it. */
+body.cpms-admin details.cpms-details:not([open]) > :not(summary),
+body.cpms-admin details.cpms-cap-group:not([open]) > :not(summary) {
+  display: none;
+}
+body.cpms-admin .cpms-cap-group,
+body.cpms-admin .cpms-preset-overview {
   border: 1px solid var(--cpms-border);
   border-radius: var(--cpms-radius-sm);
   margin: 8px 0;
   background: var(--cpms-surface);
 }
-body.cpms-admin .cpms-cap-group > summary {
+body.cpms-admin .cpms-cap-group > summary,
+body.cpms-admin .cpms-preset-overview > summary {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -273,9 +282,19 @@ body.cpms-admin .cpms-cap-group > summary {
   padding: 10px 12px;
   color: var(--cpms-text);
 }
-body.cpms-admin .cpms-cap-group > summary .cpms-group-count { color: var(--cpms-text-muted); font-weight: 500; }
-body.cpms-admin .cpms-cap-group > summary .cpms-sensitive { margin-inline-start: auto; }
+body.cpms-admin .cpms-cap-group > summary .cpms-group-count,
+body.cpms-admin .cpms-preset-overview > summary .cpms-group-count { color: var(--cpms-text-muted); font-weight: 500; }
+body.cpms-admin .cpms-cap-group > summary .cpms-sensitive,
+body.cpms-admin .cpms-preset-overview > summary .cpms-sensitive { margin-inline-start: auto; }
 body.cpms-admin .cpms-cap-group .cpms-cap-list { padding: 4px 12px 12px; margin-top: 0; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+body.cpms-admin .cpms-preset-overview .cpms-cards { padding: 6px 12px 12px; }
+body.cpms-admin .cpms-preset-overview .cpms-danger-box { margin: 4px 12px 12px; }
+/* یک هشدار سطح-بالا (کوتاه) در بالای بخش Advanced، نه یک هشدار برای هر آیتم. */
+body.cpms-admin .cpms-advanced-warning { margin: 4px 0 10px; }
+/* جستجوی واضح و label دار در بالای گروه‌ها */
+body.cpms-admin .cpms-cap-search-field { display: flex; flex-direction: column; gap: 4px; margin: 8px 0 10px; }
+body.cpms-admin .cpms-cap-search-label { font-weight: 600; color: var(--cpms-text); font-size: 13px; }
+body.cpms-admin .cpms-cap-search-field .cpms-cap-search { width: 100%; }
 body.cpms-admin .cpms-cap-list label[data-cap] {
   display: flex;
   align-items: flex-start;
