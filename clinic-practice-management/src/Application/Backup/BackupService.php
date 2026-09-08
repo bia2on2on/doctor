@@ -30,6 +30,10 @@ use ClinicCore\Settings\Settings;
  */
 final class BackupService
 {
+    private const MANIFEST_HASH_OK = 'ok';
+    private const MANIFEST_HASH_MISSING = 'missing';
+    private const MANIFEST_HASH_MISMATCH = 'mismatch';
+
     public const ENGINE_VERSION = '1.0.0';
 
     public function __construct(
@@ -137,6 +141,24 @@ final class BackupService
     /**
      * @return array<string, mixed>|null
      */
+    /**
+     * وضعیت فایل هشِ مانیفست — تنها نقطهٔ تصمیم برای هر دو مسیر بررسی.
+     *
+     * @return self::MANIFEST_HASH_*
+     */
+    private function manifestHashState(string $dir): string
+    {
+        $expected = @file_get_contents($dir . '/manifest.json.sha256');
+        if (!is_string($expected) || trim($expected) === '') {
+            return self::MANIFEST_HASH_MISSING;
+        }
+        $actual = hash_file('sha256', $dir . '/manifest.json');
+
+        return is_string($actual) && hash_equals(trim($expected), $actual)
+            ? self::MANIFEST_HASH_OK
+            : self::MANIFEST_HASH_MISMATCH;
+    }
+
     public function backupMeta(string $backupId): ?array
     {
         if (!$this->store->exists($backupId)) {
@@ -147,20 +169,32 @@ final class BackupService
         if ($raw === null) {
             return null;
         }
-        // Phase 1A — Fail-Closed: پیش از این، «نبودِ» فایل هش، برابر
-        // «سالم» تفسیر می‌شد (`=== false ||`). یعنی برای پنهان کردن
-        // دستکاری مانیفست کافی بود مهاجم فایل هش را پاک کند و بکاپ باز هم
-        // `ok_quick` گزارش می‌شد. حالا نبودِ فایل هش = corrupt.
-        $expectedSha = @file_get_contents($dir . '/manifest.json.sha256');
-        $manifestShaOk = is_string($expectedSha)
-            && trim($expectedSha) !== ''
-            && hash_equals(trim($expectedSha), (string) hash_file('sha256', $dir . '/manifest.json'));
+        // Phase 1A — سه وضعیت صریح به‌جای دو وضعیت مبهم.
+        //
+        // پیش از این، «نبودِ» فایل هش برابر «سالم» تفسیر می‌شد
+        // (`=== false ||`)، پس برای پنهان کردن دستکاری مانیفست کافی بود
+        // مهاجم فایل هش را پاک کند و بکاپ همچنان `ok_quick` بگیرد.
+        //
+        // اما «نبودِ هش» و «عدم تطابق هش» یک چیز نیستند: بکاپ‌های ساخته‌شده
+        // با نسخه‌های قدیمی‌تر ممکن است این فایل را نداشته باشند و سالم
+        // باشند. یکسان گرفتن این دو یا Fail-Open است یا اپراتور را از
+        // بازیابی یک بکاپ سالم می‌ترساند. پس:
+        //   ok_quick         → هش موجود و منطبق
+        //   legacy_unverified→ هش موجود نیست (اصالت مانیفست تأییدناپذیر)
+        //   corrupt          → هش موجود ولی نامنطبق، یا مانیفست نامعتبر
+        $shaState = $this->manifestHashState($dir);
         // شناسهٔ داخل مانیفست باید با نام پوشه یکی باشد (جابه‌جایی/دستکاری مانیفست)
         $idMatches = (string) ($raw['backup_id'] ?? '') === $backupId;
         // Quick check (ارزان برای لیست) — تأیید کامل هش فایل‌ها = verifyBackup()
         // مانیفستِ خراب/دستکاری‌شده نباید لیست را بشکند: ردیف با integrity=corrupt
         // و فیلدهای پیش‌فرض برمی‌گردد تا اپراتور بکاپِ آلوده را ببیند و حذف کند.
-        $integrity = BackupManifest::isValid($raw) && $manifestShaOk && $idMatches ? 'ok_quick' : 'corrupt';
+        if (!BackupManifest::isValid($raw) || !$idMatches || $shaState === self::MANIFEST_HASH_MISMATCH) {
+            $integrity = 'corrupt';
+        } elseif ($shaState === self::MANIFEST_HASH_MISSING) {
+            $integrity = 'legacy_unverified';
+        } else {
+            $integrity = 'ok_quick';
+        }
 
         return [
             'backup_id' => $backupId,
@@ -186,10 +220,22 @@ final class BackupService
         if ($raw === null) {
             return ['ok' => false, 'errors' => ['manifest missing/corrupt'], 'warnings' => []];
         }
-        $expectedManifestSha = @file_get_contents($dir . '/manifest.json.sha256');
-        $actualManifestSha = hash_file('sha256', $dir . '/manifest.json');
-        if ($expectedManifestSha !== false && trim((string) $expectedManifestSha) !== $actualManifestSha) {
+        // Phase 1A — این مسیر همان چیزی است که restorePreflight() و در نتیجه
+        // restoreApply() روی آن گیت می‌زنند، پس رفتارش باید صریح باشد.
+        //
+        // «عدم تطابق» = دستکاری ⇒ خطای قطعی (Fail-Closed).
+        // «نبودِ فایل هش» = بکاپ legacy ⇒ بازیابی مسدود نمی‌شود (شکستن
+        // بازیابی بکاپ‌های سالمِ قدیمی یک ریسک در دسترس‌پذیری است)، ولی
+        // دیگر بی‌صدا هم نیست: به‌صورت هشدار صریح گزارش می‌شود. توجه: خود
+        // مانیفست همچنان در برابر sha256 تک‌تک فایل‌ها اعتبارسنجی می‌شود؛
+        // این فایل فقط اصالتِ خودِ مانیفست را پوشش می‌دهد.
+        $warnings = [];
+        $shaState = $this->manifestHashState($dir);
+        if ($shaState === self::MANIFEST_HASH_MISMATCH) {
             return ['ok' => false, 'errors' => ['manifest.json tampered'], 'warnings' => []];
+        }
+        if ($shaState === self::MANIFEST_HASH_MISSING) {
+            $warnings[] = 'manifest.json.sha256 missing — legacy backup; manifest authenticity cannot be verified';
         }
         // مانیفستِ داخل این پوشه باید متعلق به همین پوشه باشد
         if ((string) ($raw['backup_id'] ?? '') !== $backupId) {
@@ -204,6 +250,7 @@ final class BackupService
 
             return ['size' => (int) filesize($abs), 'sha256' => hash_file('sha256', $abs) ?: ''];
         });
+        $result['warnings'] = array_merge($warnings, (array) ($result['warnings'] ?? []));
 
         return $result;
     }

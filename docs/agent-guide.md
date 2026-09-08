@@ -132,7 +132,7 @@ tests/
 > | Capability | **۴۶** (شمارش با `grep 'public const .* = ...cpms_'` بیش‌شمارش می‌کند: ۵ `ROLE_*` + ۱ `OPTION_*`) | — |
 > | نقش ثبت‌شده | **۵** — `cpms_patient`, `cpms_secretary`, `cpms_doctor`, `cpms_accountant`, `cpms_manager` | ~~۳~~ |
 > | route REST | **۸۰ در زمان اجرا** (۷۷ نقطهٔ ثبت در سورس — عدد را همیشه صریح بگو) | ~~۷۵~~ |
-> | `permission_callback` | **۸۹** = ۶۷ `__return_true` + ۲۲ gated؛ از ۶۷ مورد، **۶۲ guard داخل handler دارند** و **۵ عمداً public**اند (قید C-6) | — |
+> | `permission_callback` | **۸۸** = ۶۷ `__return_true` + ۲۱ gated (اصلاح‌شده در Phase 1A؛ عدد قبلی ۸۹ یک false-positive از Docblock در `BookingController.php:312` بود). از ۶۷ مورد، **۶۲ guard مؤثر داشتند** (۵۸ داخل handler + ۴ در لایهٔ Service) و **۵ عمداً public** بودند (قید C-6). **وضعیت جاری پس از Phase 1A: هر ۸۸ ورودی gated و `__return_true` = صفر** — [`security/phase1-current-security-model.md`](security/phase1-current-security-model.md) | — |
 > | `admin_post_*` / AJAX | **۲۵** / **۰** | — |
 > | فایل تست | **۸۴** (۳۳ Unit + ۴۹ Integration) — تعداد *متد* تست بدون اجرای PHPUnit اثبات‌پذیر نیست | ~~۲۰۳ تست~~ |
 > | سند tracked در `docs/` | **۸۴** | ~~۸۵~~ |

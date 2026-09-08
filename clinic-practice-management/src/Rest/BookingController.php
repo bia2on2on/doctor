@@ -126,7 +126,7 @@ final class BookingController extends RestBase
             [
                 'methods' => WP_REST_Server::READABLE,
                 'callback' => fn (WP_REST_Request $request) => $this->staffList($request),
-                'permission_callback' => fn () => $this->requireCap(RolesAndCapabilities::APPT_READ),
+                'permission_callback' => fn (WP_REST_Request $r) => $this->permCap($r, RolesAndCapabilities::APPT_READ),
                 'args' => [
                     'date' => ['required' => false, 'type' => 'string', 'default' => gmdate('Y-m-d')],
                     'clinician_id' => ['required' => true, 'type' => 'integer'],
@@ -136,7 +136,7 @@ final class BookingController extends RestBase
             [
                 'methods' => WP_REST_Server::CREATABLE,
                 'callback' => fn (WP_REST_Request $request) => $this->staffCreate($request),
-                'permission_callback' => fn () => $this->requireCap(RolesAndCapabilities::APPT_CREATE),
+                'permission_callback' => fn (WP_REST_Request $r) => $this->permCap($r, RolesAndCapabilities::APPT_CREATE),
                 'args' => [
                     'patient_id' => ['required' => true, 'type' => 'integer'],
                     'clinician_id' => ['required' => true, 'type' => 'integer'],

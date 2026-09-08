@@ -109,9 +109,10 @@ final class BackupSecurityTest extends WP_UnitTestCase
     }
 
     /**
-     * Fail-Closed: حذف فایل هش نباید بکاپ را «سالم» جلوه دهد.
+     * حذف فایل هش نباید بکاپ را «سالم» جلوه دهد — ولی «دستکاری‌شده» هم
+     * نیست: بکاپ‌های نسخه‌های قدیمی‌تر ممکن است این فایل را نداشته باشند.
      */
-    public function testMissingManifestHashIsReportedAsCorruptNotOk(): void
+    public function testMissingManifestHashIsReportedAsLegacyNotOkAndNotCorrupt(): void
     {
         $created = $this->service()->createBackup();
         $backupId = (string) $created['backup_id'];
@@ -127,30 +128,56 @@ final class BackupSecurityTest extends WP_UnitTestCase
         $after = $this->service()->backupMeta($backupId);
         self::assertNotNull($after);
         self::assertSame(
-            'corrupt',
+            'legacy_unverified',
             $after['integrity'],
-            'نبودِ فایل هش مانیفست نباید «سالم» تفسیر شود (Fail-Open).'
+            'نبودِ فایل هش نباید «سالم» تفسیر شود و نباید با «دستکاری‌شده» یکی گرفته شود.'
         );
 
         $this->service()->deleteBackup($backupId);
     }
 
     /**
-     * دستکاری خود مانیفست هم باید دیده شود.
+     * سازگاری: بکاپ legacy (بدون فایل هش) باید همچنان قابل بازیابی بماند —
+     * ولی هشدارش صریح باشد.
      */
-    public function testTamperedManifestIsReportedAsCorrupt(): void
+    public function testLegacyBackupWithoutManifestHashStaysRestorableWithExplicitWarning(): void
+    {
+        $created = $this->service()->createBackup();
+        $backupId = (string) $created['backup_id'];
+        $dir = $this->store()->dirOf($backupId);
+
+        unlink($dir . '/manifest.json.sha256');
+
+        $verify = $this->service()->verifyBackup($backupId);
+        self::assertTrue($verify['ok'], 'بکاپ سالمِ قدیمی نباید بی‌صدا غیرقابل بازیابی شود.');
+        self::assertNotEmpty($verify['warnings'], 'نبودِ فایل هش باید هشدار صریح تولید کند.');
+        self::assertStringContainsString('legacy', implode(' ', $verify['warnings']));
+
+        $pre = $this->service()->restorePreflight($backupId);
+        self::assertTrue($pre['restore_safe'], 'restore_safe نباید برای بکاپ legacy سالم false شود.');
+
+        $this->service()->deleteBackup($backupId);
+    }
+
+    /**
+     * اما دستکاری واقعی مانیفست باید مسیر بازیابی را قطعاً ببندد.
+     */
+    public function testTamperedManifestBlocksRestorePath(): void
     {
         $created = $this->service()->createBackup();
         $backupId = (string) $created['backup_id'];
         $dir = $this->store()->dirOf($backupId);
 
         $raw = json_decode((string) file_get_contents($dir . '/manifest.json'), true);
-        $raw['tampered'] = true;
+        $raw['injected'] = 'evil';
         file_put_contents($dir . '/manifest.json', json_encode($raw));
 
-        $after = $this->service()->backupMeta($backupId);
-        self::assertNotNull($after);
-        self::assertSame('corrupt', $after['integrity']);
+        $verify = $this->service()->verifyBackup($backupId);
+        self::assertFalse($verify['ok']);
+        self::assertContains('manifest.json tampered', $verify['errors']);
+
+        $pre = $this->service()->restorePreflight($backupId);
+        self::assertFalse($pre['restore_safe'], 'بکاپ دستکاری‌شده نباید restore_safe باشد.');
 
         $this->service()->deleteBackup($backupId);
     }
@@ -168,7 +195,7 @@ final class BackupSecurityTest extends WP_UnitTestCase
 
         $after = $this->service()->backupMeta($backupId);
         self::assertNotNull($after);
-        self::assertSame('corrupt', $after['integrity']);
+        self::assertSame('legacy_unverified', $after['integrity'], 'فایل هش خالی = تأییدناپذیر، نه سالم.');
 
         $this->service()->deleteBackup($backupId);
     }

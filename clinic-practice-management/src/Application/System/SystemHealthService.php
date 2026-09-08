@@ -236,6 +236,17 @@ final class SystemHealthService
         return defined('WP_CONTENT_DIR') ? (string) WP_CONTENT_DIR . '/clinic-files' : dirname(__DIR__, 3) . '/clinic-files';
     }
 
+    /**
+     * وضعیت محافظت یک ریشهٔ ذخیره‌سازی.
+     *
+     * Phase 1A — تصحیح صحت گزارش: پیش از این صرفِ وجود `.htaccess` نتیجهٔ
+     * `PASS` می‌داد. `.htaccess` روی nginx خوانده نمی‌شود و روی هیچ
+     * وب‌سروری «مجوز» نیست، فقط یک لایهٔ دفاعی مکمل است. اگر ریشه داخل
+     * DocumentRoot باشد، محافظت واقعی به پیکربندی وب‌سرور وابسته است و
+     * افزونه نمی‌تواند آن را تأیید کند ⇒ حداکثر `WARNING`.
+     *
+     * `PASS` فقط وقتی داده می‌شود که ریشه بیرون از DocumentRoot باشد.
+     */
     private function storageStatus(string $path, string $key): string
     {
         if (!is_dir($path)) {
@@ -244,10 +255,28 @@ final class SystemHealthService
         if (!is_writable($path)) {
             return self::FAIL;
         }
+        if ($this->isInsideWebRoot($path)) {
+            // گاردها (در صورت وجود) Defence in Depth هستند، نه Authorization.
+            return self::WARNING;
+        }
         if (is_file($path . '/.htaccess')) {
             return self::PASS;
         }
 
-        return self::WARNING; // پوشه موجود ولی بدون گارد سرور (در اولین استفاده ساخته می‌شود)
+        return self::PASS; // بیرون از DocumentRoot — گارد وب‌سرور موضوعیت ندارد
+    }
+
+    /**
+     * آیا مسیر داخل DocumentRoot وردپرس است (یعنی بالقوه از طریق HTTP قابل دسترس)؟
+     */
+    private function isInsideWebRoot(string $path): bool
+    {
+        $root = defined('ABSPATH') ? @realpath((string) ABSPATH) : false;
+        $base = @realpath($path);
+        if ($root === false || $base === false) {
+            return false;
+        }
+
+        return str_starts_with($base, rtrim($root, '/') . '/');
     }
 }

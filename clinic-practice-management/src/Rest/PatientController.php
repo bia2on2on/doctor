@@ -57,7 +57,7 @@ final class PatientController extends RestBase
             [
                 'methods' => WP_REST_Server::READABLE,
                 'callback' => fn (WP_REST_Request $request) => $this->search($request),
-                'permission_callback' => fn () => $this->requireCap(RolesAndCapabilities::PATIENT_READ),
+                'permission_callback' => fn (WP_REST_Request $r) => $this->permCap($r, RolesAndCapabilities::PATIENT_READ),
                 'args' => [
                     'q' => ['required' => true, 'type' => 'string'],
                     'limit' => ['required' => false, 'type' => 'integer', 'default' => 25],
@@ -69,7 +69,7 @@ final class PatientController extends RestBase
             [
                 'methods' => WP_REST_Server::READABLE,
                 'callback' => fn (WP_REST_Request $request) => $this->get($request),
-                'permission_callback' => fn () => $this->requireCap(RolesAndCapabilities::PATIENT_READ),
+                'permission_callback' => fn (WP_REST_Request $r) => $this->permCap($r, RolesAndCapabilities::PATIENT_READ),
                 'args' => [
                     'id' => ['required' => true, 'type' => 'integer'],
                 ],
@@ -77,7 +77,7 @@ final class PatientController extends RestBase
             [
                 'methods' => WP_REST_Server::EDITABLE,
                 'callback' => fn (WP_REST_Request $request) => $this->update($request),
-                'permission_callback' => fn () => $this->requireCap(RolesAndCapabilities::PATIENT_UPDATE),
+                'permission_callback' => fn (WP_REST_Request $r) => $this->permCap($r, RolesAndCapabilities::PATIENT_UPDATE),
                 'args' => [
                     'id' => ['required' => true, 'type' => 'integer'],
                 ],
@@ -88,7 +88,7 @@ final class PatientController extends RestBase
             [
                 'methods' => WP_REST_Server::CREATABLE,
                 'callback' => fn (WP_REST_Request $request) => $this->create($request),
-                'permission_callback' => fn () => $this->requireCap(RolesAndCapabilities::PATIENT_CREATE),
+                'permission_callback' => fn (WP_REST_Request $r) => $this->permCap($r, RolesAndCapabilities::PATIENT_CREATE),
                 'args' => [
                     'first_name' => ['required' => true, 'type' => 'string'],
                     'last_name' => ['required' => true, 'type' => 'string'],

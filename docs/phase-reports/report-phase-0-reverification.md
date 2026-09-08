@@ -71,7 +71,7 @@
 | Controller REST | **۱۴** (namespace `clinic/v1`) | — |
 | `register_rest_route` در سورس | **۷۷** | grep |
 | **route زمان اجرا** | **۸۰** | شمارش حلقه‌ای (یک ثبت می‌تواند چند route بسازد) |
-| `permission_callback` | **۸۹** | grep |
+| `permission_callback` | **۸۹** ⚠️ | grep — **تصحیح‌شده در Phase 1A: عدد صحیح ۸۸ است**؛ بند ۹ |
 | اکشن `admin_post_*` | **۲۵** | grep |
 | مسیر AJAX (`wp_ajax_*`) | **۰** | grep |
 | Seed در Migration | **۲** — `cpms_clinics id=1` (`0001:736`)، `cpms_license_install` (`0008:84`) | grep |
@@ -118,7 +118,7 @@
 | سنجه | مقدار |
 |---|---|
 | route در زمان اجرا (REST) | **۸۰** |
-| ثبت `permission_callback` | **۸۹** |
+| ثبت `permission_callback` | **۸۹** ⚠️ (صحیح: **۸۸** — بند ۹) |
 | از آن‌ها `__return_true` | **۶۷** |
 | از آن‌ها gated callback | **۲۲** |
 | از ۶۷ مورد `__return_true` — دارای guard داخل handler (طبق audit فعلی) | **۶۲** |
@@ -280,3 +280,18 @@ grep -rn "function .*[Mm]erge" src/Application/Patients src/Infrastructure/Repos
 ```
 
 *(مسیرها نسبی به `clinic-practice-management/`)*
+
+---
+
+## ۹. یادداشت اصلاحی — Phase 1A (2026-09-08)
+
+این گزارش یک سند **تاریخی** است و اعداد آن عمداً بازنویسی نشده‌اند. یک تصحیح ثبت می‌شود:
+
+| قلم | عدد این گزارش | عدد صحیح | ریشهٔ خطا |
+|---|---:|---:|---|
+| ثبت‌های `permission_callback` | ۸۹ | **۸۸** | یکی از تطابق‌های `grep` متنِ داخل **Docblock** در `BookingController.php:312` بود، نه یک ثبت واقعی |
+| `permission_callback` گارددار | ۲۲ | **۲۱** | پیامد مستقیم مورد بالا (۶۷ + ۲۱ = ۸۸) |
+
+اعداد **۸۰ Route زمان اجرا**، **۶۷ `__return_true`**، **۲۵ `admin_post_*`** و **۰ `wp_ajax`** در بازراستی Phase 1A **تأیید** شدند و تغییری نکرده‌اند. عدد ۸۰ به‌طور مستقل هم تأیید شد: شمارش مسیرهای یکتای `(controller, path)` پس از باز کردن حلقهٔ `DOCTOR_EVENTS` دقیقاً ۸۰ می‌شود.
+
+وضعیت **جاری** (نه تاریخی) در [`../security/phase1-current-security-model.md`](../security/phase1-current-security-model.md) نگهداری می‌شود.

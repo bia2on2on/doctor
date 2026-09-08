@@ -1036,7 +1036,9 @@ $ grep -rn "wp_ajax" src/ --include=*.php   → 0 نتیجه
 
 **نتیجهٔ عملیاتی:** ۲۵ نقطه (~۲۴٪) را می‌توان **همین حالا و بدون Scope Model** سخت کرد. ۸۰ نقطه (~۷۶٪) باید منتظر فاز ۲ بمانند.
 
-**استثنای مهم — یک کار 1a که کل ۸۰ مورد را پوشش می‌دهد:** اصلاح الگوی `permission_callback => '__return_true'` (۶۷ از ۸۹ ورودی) **مستقل از Scope** است. می‌توان همین حالا در فاز 1a یک تست معماری اضافه کرد که تضمین کند هر route یا `permission_callback` واقعی دارد یا از یک wrapper محافظ عبور می‌کند. این کار **مانع رگرسیون در فاز ۲** می‌شود.
+**استثنای مهم — یک کار 1a که کل ۸۰ مورد را پوشش می‌دهد:** اصلاح الگوی `permission_callback => '__return_true'` (۶۷ از ۸۸ ورودی — عدد ۸۹ در گزارش فاز ۰ یک false-positive از Docblock بود) **مستقل از Scope** است. می‌توان همین حالا در فاز 1a یک تست معماری اضافه کرد که تضمین کند هر route یا `permission_callback` واقعی دارد یا از یک wrapper محافظ عبور می‌کند. این کار **مانع رگرسیون در فاز ۲** می‌شود.
+
+> ✅ **انجام شد در Phase 1A** — هر ۶۷ مورد به Helperهای صریح `permPublic/permAuthenticated/permCap/permAnyRole` منتقل شدند و تست معماری `tests/Integration/RestPermissionCallbackTest.php` آن را قفل می‌کند.
 
 ---
 
