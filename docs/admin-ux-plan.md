@@ -160,6 +160,19 @@
 - تست‌های menu registration، role-aware visibility، action links، onboarding state، wizard progress، user creation، role assignment، password، clinician association، deactivation، schedule، presets، privilege-escalation، CSRF، IDOR، audit، responsive smoke، console، Real WP Acceptance.
 - گیت `real-wp-acceptance.yml` روی ZIP رسمی extend می‌شود (Admin/Secretary/Doctor/Accountant/Manager).
 
+> ✅ **Done (commit `4c00ed0` + `9da81e4` + `4cb8b58` + `c297b59`)** — نقش‌های V1
+> `cpms_accountant` (فقط مالی/گزارش، بدون بالینی/خصوصی) و `cpms_manager` (مدیریت ستادی/عملیاتی
+> با `cpms_config`، بدون بالینی/یادداشت خصوصی/صف و بدون `manage_options`) ثبت و در
+> `StaffManagementPage` (ایجاد/ویرایش/فعال/غیرفعال + نقش) و `RoleCapabilitiesPage` (پیش‌فرض‌ها +
+> Advanced) اضافه شدند؛ «مالی و تسویه» به منوی مستقل `cpms_finance_read` تبدیل شد تا حسابدار بدون
+> `cpms_queue_read` هم به آن برسد و تب «در انتظار تسویه» (دادهٔ صف با `QUEUE_READ`) برای او پنهان
+> است؛ ماتریس دسترسی فقط برای مالک فنی (`manage_options`) قابل ویرایش است. گیت
+> `real-wp-acceptance.yml` برای هر ۵ نقش (Admin/Manager/Doctor/Secretary/Accountant) منو + دسترسی
+> مستقیم (403) + console را می‌سنجد؛ `RoleManagementGTest` (REST منفی + negative/audit) و
+> `StaffManagementTest` (ساخت حسابدار/مدیر + رد خود-غیرفعال‌سازی) افزوده شدند.
+> PHPStan/Unit/Integration/Closure/Release/Upgrade/Responsive/Real-WP-Acceptance (هر دو prefix)/
+> **Staging Gate** همگی سبز.
+
 ## 4. تعهدها / Non-goals
 
 - **عدم تغییر:** Core، migration، permission model، authorization، audit، licensing policy، booking concurrency، idempotency.
