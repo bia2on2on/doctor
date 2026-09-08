@@ -111,31 +111,52 @@
     });
   }
 
-  // 2) Advanced Permissions search/filter (چند نقش): هر فیلد .cpms-cap-search
-  //    فقط ردیف‌های [data-cap] با همان data-scope را فیلتر می‌کند؛ و گروه‌های
-  //    (details[data-cap-group]) را برای یافتن نتیجه باز/بسته می‌کند.
+  // 2) Advanced Permissions search/filter (چند نقش) — presentation only، هرگز state
+  //    چک‌باکس را تغییر نمی‌دهد (display:none فقط پنهان می‌کند؛ unchecked نشده و submit
+  //    همان مقادیر checked را می‌فرستد). رفتار:
+  //    - گروهی که هیچ matching ندارد کاملاً hidden می‌شود (نه فقط بسته).
+  //    - فقط گروه‌های matching auto-open می‌شوند؛ بقیه closed/hidden.
+  //    - درون گروه matching فقط ردیف‌های matching visible می‌مانند.
+  //    - query خالی → همهٔ گروه‌ها visible و closed؛ همهٔ ردیف‌ها visible؛ پیام empty/status مخفی.
   function bindCapSearch() {
+    function norm(s) { return (s || '').toLowerCase(); }
     var searches = document.querySelectorAll('.cpms-cap-search');
     Array.prototype.forEach.call(searches, function (search) {
       var scope = search.getAttribute('data-scope') || '';
       var sel = '[data-scope="' + scope + '"]';
       var labels = document.querySelectorAll('.cpms-cap-list label[data-cap]' + sel);
-      var groups = document.querySelectorAll('details[data-cap-group]' + sel);
+      var groups = document.querySelectorAll('details.cpms-cap-group' + sel);
+      var empty = document.querySelector('.cpms-cap-search-empty' + sel);
+      var status = document.querySelector('.cpms-cap-search-status' + sel);
       search.addEventListener('input', function () {
-        var q = search.value.trim().toLowerCase();
+        var q = norm(search.value.trim());
+        var anyMatch = false;
+        // الف) فیلتر ردیف‌ها (display فقط؛ checked دست نخورده)
         Array.prototype.forEach.call(labels, function (label) {
-          var text = (label.textContent || '').toLowerCase();
-          var show = q === '' || text.indexOf(q) !== -1;
+          var show = q === '' || norm(label.textContent).indexOf(q) !== -1;
           label.style.display = show ? '' : 'none';
+          if (q !== '' && show) { anyMatch = true; }
         });
+        // ب) فیلتر گروه‌ها: hidden/auto-open فقط برای گروه‌های matching
         Array.prototype.forEach.call(groups, function (group) {
-          if (q === '') { group.open = false; return; }
+          if (q === '') { group.style.display = ''; group.open = false; return; }
           var has = false;
-          Array.prototype.forEach.call(group.querySelectorAll('[data-cap]'), function (c) {
-            if (((c.textContent || '').toLowerCase()).indexOf(q) !== -1) { has = true; }
+          Array.prototype.forEach.call(group.querySelectorAll('.cpms-cap-list label[data-cap]'), function (l) {
+            if (norm(l.textContent).indexOf(q) !== -1) { has = true; }
           });
-          group.open = has;
+          group.style.display = has ? '' : 'none';
+          group.open = has; // فقط گروه‌های matching باز می‌شوند
         });
+        // ج) پیام empty + شمارندهٔ نتیجه
+        if (status) {
+          var n = 0;
+          Array.prototype.forEach.call(labels, function (l) {
+            if (l.style.display !== 'none') { n++; }
+          });
+          status.textContent = q === '' ? '' : ('نتیجه: ' + n + ' مورد');
+          status.style.display = q === '' ? 'none' : 'block';
+        }
+        if (empty) { empty.style.display = (q !== '' && !anyMatch) ? 'block' : 'none'; }
       });
     });
   }

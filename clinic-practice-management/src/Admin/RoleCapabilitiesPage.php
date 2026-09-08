@@ -304,8 +304,9 @@ final class RoleCapabilitiesPage
                     <label class="cpms-cap-search-label" for="cpms-cap-search-<?php echo esc_attr($role); ?>">جستجو در Capability ها (فارسی یا فنی)</label>
                     <input type="search" id="cpms-cap-search-<?php echo esc_attr($role); ?>" class="cpms-cap-search regular-text"
                             data-scope="<?php echo esc_attr($role); ?>"
-                            placeholder="مثلاً: مشاهده، نوبت، مالی…" aria-label="جستجوی Capability">
+                            placeholder="مثلاً: نسخه، پرداخت، نوبت…" aria-label="جستجوی Capability">
                 </p>
+                <div class="cpms-cap-search-status" data-scope="<?php echo esc_attr($role); ?>" aria-live="polite"></div>
                 <?php foreach (self::GROUPS as $groupTitle => $capsInGroup) : ?>
                     <?php
                         $enabledInGroup = array_values(array_intersect($capsInGroup, $enabled));
@@ -333,6 +334,7 @@ final class RoleCapabilitiesPage
                         </div>
                     </details>
                 <?php endforeach; ?>
+                <div class="cpms-cap-search-empty" data-scope="<?php echo esc_attr($role); ?>">دسترسی‌ای مطابق جستجوی شما پیدا نشد.</div>
             </details>
         </div>
         <?php

@@ -204,7 +204,7 @@ def capture_confirm(page, tag, name):
 
 
 def _counts(page):
-    """تعداد گروهِ بازِ Advanced و تعداد چک‌باکسِ نقشِ واقعاً visible (pixels)."""
+    """تعداد گروهِ بازِ Advanced (کل صفحه) و تعداد چک‌باکسِ نقشِ واقعاً visible (pixels)."""
     open_groups = page.evaluate("document.querySelectorAll('details.cpms-cap-group[open]').length")
     vis_checks = page.evaluate(
         "[...document.querySelectorAll('input[type=checkbox][name^=\"role_caps\"]')].filter(e => e.getClientRects().length).length"
@@ -212,13 +212,58 @@ def _counts(page):
     return open_groups, vis_checks
 
 
-def verify_permissions(page, tag, stem):
-    """بررسی سمانتیکِ (نه نام فایل) وضعیت collapse + expand + search در Advanced Permissions.
+def _scope_of_first_advanced(page):
+    """data-scope اولین بخش Advanced (نقشِ اول)."""
+    inp = page.query_selector("details.cpms-advanced input.cpms-cap-search")
+    return inp.get_attribute("data-scope") if inp else None
 
-    - initial: همهٔ گروه‌ها بسته و هیچ چک‌باکسِ نقشی visible نیست (pixels).
+
+def _scope_checked(page, scope):
+    """تعداد چک‌باکسِ نقشِ checked در scope (مستقلِ از نمایش/جستجو) — برای اثبات حفظ state."""
+    sel = f'[data-scope="{scope}"]'
+    return page.evaluate(
+        f"document.querySelectorAll('.cpms-cap-list label[data-cap]{sel} input[type=checkbox]:checked').length"
+    )
+
+
+def _search_metrics(page, scope, q):
+    """متریک‌های سمانتیکِ جستجو در scope (نقش) — بر اساس pixels، نه نام فایل."""
+    return page.evaluate(
+        """([scope, q]) => {
+            const sel = '[data-scope="' + scope + '"]';
+            const vis = (el) => el.getClientRects().length > 0;
+            const groups = [...document.querySelectorAll('details.cpms-cap-group' + sel)];
+            const labels = [...document.querySelectorAll('.cpms-cap-list label[data-cap]' + sel)];
+            const match = (t) => (t || '').toLowerCase().includes(q);
+            const matchingGroups = groups.filter(g =>
+                [...g.querySelectorAll('.cpms-cap-list label[data-cap]')].some(l => match(l.textContent)));
+            const emptyEl = document.querySelector('.cpms-cap-search-empty' + sel);
+            const totalGroups = groups.length;
+            return {
+                openGroups: groups.filter(g => g.open).length,
+                visGroups: groups.filter(g => vis(g)).length,
+                matchingGroups: matchingGroups.length,
+                visLabels: labels.filter(vis).length,
+                visNonMatching: labels.filter(l => vis(l) && !match(l.textContent)).length,
+                emptyVisible: !!emptyEl && getComputedStyle(emptyEl).display !== 'none' && emptyEl.textContent.trim().length > 0,
+                totalGroups: totalGroups,
+                allGroupsVisible: groups.filter(g => vis(g)).length === totalGroups,
+            };
+        }""",
+        [scope, q],
+    )
+
+
+def verify_permissions(page, tag, stem):
+    """بررسی سمانتیکِ (pixels) collapse + expand + search در Advanced Permissions.
+
+    - initial: همهٔ گروه‌ها بسته و هیچ چک‌باکسِ نقشی visible نیست.
     - باز کردن Advanced → همچنان همهٔ گروه‌ها بسته/هیچ چک‌باکسی visible.
     - باز کردن یک گروه → همان گروه باز و چک‌باکس‌هایش visible.
-    - جستجو → گروه منطبق باز/قابل‌کشف می‌شود؛ پاک‌کردن → گروه‌ها دوباره بسته.
+    - جستجوی انتخابی «نسخه» → فقط گروه‌های matching visible/open، فقط ردیف‌های matching
+      visible، هیچ ردیف غیرمرتبط visible؛ و state چک‌باکس تغییری نمی‌کند.
+    - جستجوی بی‌نتیجه «زرافه» → ۰ چک‌باکس visible + پیام فارسی «یافت نشد».
+    - پاک کردن → همهٔ گروه‌ها visible (خلاصه) و بسته؛ ۰ چک‌باکس visible؛ state چک‌باکس ثابت.
     """
     page.goto(f"{BASE}/wp-admin/admin.php?page=cpms-roles", wait_until="domcontentloaded")
     page.wait_for_timeout(700)
@@ -241,8 +286,14 @@ def verify_permissions(page, tag, stem):
     check(f"{tag}.perms.advanced_open_groups_still_closed", og == 0, f"open_groups={og}")
     check(f"{tag}.perms.advanced_open_no_checkbox_visible", vc == 0, f"visible_checkboxes={vc}")
 
+    scope = _scope_of_first_advanced(page)
+    if not scope:
+        check(f"{tag}.perms.search_present", False, "scope/جستجوی Advanced یافت نشد")
+        return
+    sel = f'[data-scope="{scope}"]'
+
     # C) باز کردن یک گروه
-    g = page.query_selector("details.cpms-cap-group > summary")
+    g = page.query_selector(f"details.cpms-cap-group{sel} > summary")
     if not g:
         check(f"{tag}.perms.group_opened", False, "گروه Capability یافت نشد")
         return
@@ -253,21 +304,44 @@ def verify_permissions(page, tag, stem):
     check(f"{tag}.perms.group_checkboxes_visible", vc > 0, f"visible_checkboxes={vc}")
     page.screenshot(path=f"{OUT}/screenshots/{stem}-group.png", full_page=True)
 
-    # D) جستجو
-    search = page.query_selector("details.cpms-advanced input.cpms-cap-search")
+    # D) جستجو (انتخابی — «نسخه» فقط در گروه بالینی)
+    search = page.query_selector(f"details.cpms-advanced input.cpms-cap-search{sel}")
     if not search:
         check(f"{tag}.perms.search_present", False, "فیلد جستجوی Advanced یافت نشد")
         return
     check(f"{tag}.perms.search_present", True, "Search واضح در بالای گروه‌ها")
-    search.fill("مشاهده")
-    page.wait_for_timeout(400)
-    og, _ = _counts(page)
-    check(f"{tag}.perms.search_opens_match", og >= 1, f"matched_open_groups={og}")
+    checked_before = _scope_checked(page, scope)
+
+    search.fill("نسخه")
+    page.wait_for_timeout(450)
+    m = _search_metrics(page, scope, "نسخه")
+    check(f"{tag}.perms.search_matching_groups_visible", m["matchingGroups"] >= 1 and m["matchingGroups"] == m["visGroups"], f"matching={m['matchingGroups']} visible={m['visGroups']}")
+    check(f"{tag}.perms.search_only_matching_groups_open", m["openGroups"] == m["matchingGroups"] and m["matchingGroups"] >= 1, f"open={m['openGroups']} matching={m['matchingGroups']}")
+    check(f"{tag}.perms.search_visible_perms_match_query", m["visLabels"] > 0 and m["visNonMatching"] == 0, f"visible={m['visLabels']} nonmatching={m['visNonMatching']}")
+    check(f"{tag}.perms.search_no_checkbox_wall", m["visGroups"] <= 2, f"visible_groups={m['visGroups']}")
     page.screenshot(path=f"{OUT}/screenshots/{stem}-search.png", full_page=True)
+    assert_no_overflow(page, tag, f"{stem}-search")
+
+    # E) جستجوی بی‌نتیجه (زرافه)
+    search.fill("زرافه")
+    page.wait_for_timeout(450)
+    m0 = _search_metrics(page, scope, "زرافه")
+    check(f"{tag}.perms.search_noresult_no_checkboxes", m0["visLabels"] == 0 and m0["openGroups"] == 0, f"visible={m0['visLabels']} open={m0['openGroups']}")
+    check(f"{tag}.perms.search_noresult_empty_state", m0["emptyVisible"], "پیام «دسترسی‌ای مطابق جستجوی شما پیدا نشد»")
+    page.screenshot(path=f"{OUT}/screenshots/{stem}-search-noresult.png", full_page=True)
+    assert_no_overflow(page, tag, f"{stem}-search-noresult")
+
+    # F) پاک کردن → بازگشت به initial Advanced (همه گروه‌ها بسته، ۰ چک‌باکس)
     search.fill("")
-    page.wait_for_timeout(400)
-    og, _ = _counts(page)
-    check(f"{tag}.perms.search_clear_collapses", og == 0, f"open_groups_after_clear={og}")
+    page.wait_for_timeout(450)
+    m1 = _search_metrics(page, scope, "")
+    og1, vc1 = _counts(page)
+    check(f"{tag}.perms.search_clear_groups_visible", m1["allGroupsVisible"], f"all_groups_visible={m1['allGroupsVisible']} total={m1['totalGroups']}")
+    check(f"{tag}.perms.search_clear_all_groups_closed", og1 == 0, f"open_groups={og1}")
+    check(f"{tag}.perms.search_clear_no_checkbox_visible", vc1 == 0, f"visible_checkboxes={vc1}")
+    checked_after = _scope_checked(page, scope)
+    check(f"{tag}.perms.search_does_not_change_checked", checked_after == checked_before, f"checked_before={checked_before} after={checked_after}")
+    page.screenshot(path=f"{OUT}/screenshots/{stem}-search-cleared.png", full_page=True)
 
 
 with sync_playwright() as p:
