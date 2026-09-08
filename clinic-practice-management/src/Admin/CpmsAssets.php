@@ -33,6 +33,7 @@ final class CpmsAssets
         'cpms-handwriting',
         'cpms-prescription-print',
         'cpms-patient',
+        'cpms-patients',
     ];
 
     public static function register(): void

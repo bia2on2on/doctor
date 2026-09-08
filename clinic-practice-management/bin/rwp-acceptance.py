@@ -144,7 +144,7 @@ def assert_denied(page, tag, path, name):
 
 with sync_playwright() as p:
     browser = p.chromium.launch()
-    ctx = browser.new_context(viewport={"width": 1366, "height": 768}, locale="fa-IR")
+    ctx = browser.new_context(viewport={"width": 1440, "height": 900}, locale="fa-IR")
 
     # ---------- Admin (Administrator فنی — P-3) ----------
     page = ctx.new_page()
@@ -182,6 +182,7 @@ with sync_playwright() as p:
         check("admin.menu.has_cpms_settings", "page=cpms-settings" in menu, "Tools → CPMS (فنی و لاگ)")
         check("admin.menu.no_doctor_topmenu", "admin.php?page=cpms-doctor" not in menu, "P-3: منوی پزشک برای Administrator پنهان است")
         check("admin.menu.no_queue_topmenu", "admin.php?page=cpms-queue" not in menu, "P-3: منوی صف برای Administrator پنهان است")
+        check("admin.menu.no_patients", "page=cpms-patients" not in menu, "P-3: منوی «بیماران» برای Administrator پنهان است (بدون دسترسی medical)")
 
         # دسترسی مستقیم مدیر به صفحهٔ عملیاتی = Deny (نه Render)
         # در صفحهٔ جدا و بدون watcher اجرا می‌شود — 403 عمدیِ این پروب نباید
@@ -197,6 +198,12 @@ with sync_playwright() as p:
         denied = (resp is not None and resp.status in (403,)) or "not allowed to access this page" in (body_q or "").lower() or "دسترسی ندارید" in (body_q or "")
         check("admin.business_page_denied", denied, f"HTTP {resp.status if resp else 0}")
         deny_page.screenshot(path=f"{OUT}/screenshots/admin-denied-business.png", full_page=True)
+        # بیماران — Administrator بدون cpms_patient_read → باید DENIED شود (medical data).
+        resp = deny_page.goto(f"{BASE}/wp-admin/admin.php?page=cpms-patients", wait_until="domcontentloaded")
+        body_p = deny_page.content()
+        denied_p = (resp is not None and resp.status in (403,)) or "not allowed to access this page" in (body_p or "").lower() or "دسترسی ندارید" in (body_p or "")
+        check("admin.patient_page_denied", denied_p, f"HTTP {resp.status if resp else 0}")
+        deny_page.screenshot(path=f"{OUT}/screenshots/admin-denied-patients.png", full_page=True)
         deny_page.close()
     page.close()
 
@@ -270,11 +277,23 @@ with sync_playwright() as p:
     mpage.close()
     mctx.close()
 
+    # ---------- Admin UI screenshots (Chunk F) — tablet 768×1024 ----------
+    tctx = browser.new_context(viewport={"width": 768, "height": 1024}, locale="fa-IR")
+    tpage = tctx.new_page()
+    if login(tpage, ADMIN_USER, ADMIN_PASS, "admin-tablet"):
+        for slug, shot in [("cpms-dashboard", "dashboard"), ("cpms-roles", "roles"),
+                           ("cpms-clinicians", "clinicians"), ("cpms-system", "system"),
+                           ("cpms-staff", "staff")]:
+            goto_admin(tpage, "admin-tablet", f"admin.php?page={slug}", f"cpms-t-{shot}")
+    tpage.close()
+    tctx.close()
+
     # ---------- Doctor (نقش cpms_doctor) ----------
     page = ctx.new_page()
     if login(page, DOCTOR_USER, DOCTOR_PASS, "doctor"):
         status, body = goto_admin(page, "doctor", "admin.php?page=cpms-doctor", "cpms-doctor")
         check("doctor.menu.has_cpms_doctor", "admin.php?page=cpms-doctor" in (body or ""), "منوی «امروز پزشک» باید دیده شود")
+        check("doctor.menu.has_patients", "page=cpms-patients" in (body or ""), "منوی «بیماران» برای پزشک باید دیده شود")
     page.close()
 
     # ---------- Secretary (نقش cpms_secretary) ----------
@@ -289,8 +308,39 @@ with sync_playwright() as p:
         menu = page.content()
         check("secretary.menu.no_management_staff", "page=cpms-staff" not in menu, "منشی نباید منوی «کاربران و دسترسی‌ها» را ببیند")
         check("secretary.menu.no_management_system", "page=cpms-system" not in menu, "منشی نباید منوی «سلامت سیستم» را ببیند")
+        check("secretary.menu.has_patients", "page=cpms-patients" in menu, "منشی باید منوی «بیماران» را ببیند")
         assert_denied(page, "secretary", "admin.php?page=cpms-clinicians", "secretary-denied-clinicians")
         assert_denied(page, "secretary", "admin.php?page=cpms-system", "secretary-denied-system")
+
+        # ---------- Patient Management Entry (عملیاتی، منشی) ----------
+        status, body = goto_admin(page, "secretary", "admin.php?page=cpms-patients", "cpms-patients")
+        check("secretary.patients.create_form", "افزودن بیمار" in (body or "") or "ثبت بیمار" in (body or ""), "منشی باید فرم «ایجاد بیمار» را ببیند (cpms_patient_create)")
+        # ایجاد بیمار از طریق UI (admin-post; بدون REST/CLI)
+        page.fill("#cp_pat_first", "پذیرش")
+        page.fill("#cp_pat_last", "تست")
+        page.fill("#cp_pat_mobile", "09120009999")
+        page.click('form[action*="admin-post.php"] button[type="submit"]')
+        page.wait_for_load_state("domcontentloaded")
+        page.wait_for_timeout(900)
+        created = page.content()
+        check("secretary.patients.create_success", "ثبت شد" in (created or ""), "ایجاد بیمار باید پیام موفقیت دهد")
+        page.screenshot(path=f"{OUT}/screenshots/cpms-patients-after-create.png", full_page=True)
+        # جستجوی بیمار (نتایج)
+        page.fill("#cpms_pat_q", "پذیرش")
+        page.click('form[method="get"] button[type="submit"]')
+        page.wait_for_load_state("domcontentloaded")
+        page.wait_for_timeout(700)
+        res = page.content()
+        check("secretary.patients.search_results", "MR-" in (res or "") or "پذیرش تست" in (res or ""), "جستجوی بیمار باید نتیجه بدهد")
+        page.screenshot(path=f"{OUT}/screenshots/cpms-patients-results.png", full_page=True)
+        # جستجوی بی‌نتیجه → empty state
+        page.fill("#cpms_pat_q", "ناموجود999")
+        page.click('form[method="get"] button[type="submit"]')
+        page.wait_for_load_state("domcontentloaded")
+        page.wait_for_timeout(700)
+        empty = page.content()
+        check("secretary.patients.empty_state", "بیماری یافت نشد" in (empty or ""), "جستجوی بی‌نتیجه باید «بیماری یافت نشد» بدهد")
+        page.screenshot(path=f"{OUT}/screenshots/cpms-patients-empty.png", full_page=True)
     page.close()
 
     # ---------- Clinic Manager (نقش cpms_manager) ----------
@@ -308,6 +358,7 @@ with sync_playwright() as p:
             check("manager.menu.no_roles_matrix", "page=cpms-roles" not in menu, "مدیر کلینیک نباید ماتریس دسترسی (فنی) را ببیند")
             check("manager.menu.no_doctor_topmenu", "admin.php?page=cpms-doctor" not in menu, "مدیر کلینیک نباید «امروز پزشک» را ببیند")
             check("manager.menu.no_queue_topmenu", "admin.php?page=cpms-queue" not in menu, "مدیر کلینیک نباید «صف امروز» را ببیند")
+            check("manager.menu.has_patients", "page=cpms-patients" in menu, "مدیر کلینیک باید منوی «بیماران» را ببیند (cpms_patient_read)")
             # دسترسی مستقیم به بالینی/ماتریس فنی → DENIED (نه فقط مخفی).
             assert_denied(page, "manager", "admin.php?page=cpms-doctor", "cpms-mgr-denied-doctor")
             assert_denied(page, "manager", "admin.php?page=cpms-roles", "cpms-mgr-denied-roles")
@@ -324,11 +375,28 @@ with sync_playwright() as p:
             check("accountant.menu.no_queue_topmenu", "admin.php?page=cpms-queue" not in menu, "حسابدار نباید «صف امروز» را ببیند")
             check("accountant.menu.no_management_staff", "page=cpms-staff" not in menu, "حسابدار نباید منوی «کاربران و دسترسی‌ها» را ببیند")
             check("accountant.menu.no_management_system", "page=cpms-system" not in menu, "حسابدار نباید منوی «سلامت سیستم» را ببیند")
+            check("accountant.menu.no_patients", "page=cpms-patients" not in menu, "حسابدار نباید منوی «بیماران» را ببیند (بدون patient cap)")
             # دسترسی مستقیم به بالینی/مدیریتی → DENIED.
             assert_denied(page, "accountant", "admin.php?page=cpms-system", "cpms-acc-denied-system")
             assert_denied(page, "accountant", "admin.php?page=cpms-doctor", "cpms-acc-denied-doctor")
             assert_denied(page, "accountant", "admin.php?page=cpms-staff", "cpms-acc-denied-staff")
+            assert_denied(page, "accountant", "admin.php?page=cpms-patients", "cpms-acc-denied-patients")
         page.close()
+
+    # ---------- Patient Management Entry — دید موبایل (390×844) و تبلت (768×1024) از نقشِ مجاز ----------
+    smctx = browser.new_context(viewport={"width": 390, "height": 844}, locale="fa-IR")
+    sm = smctx.new_page()
+    if login(sm, SECRETARY_USER, SECRETARY_PASS, "secretary-mobile"):
+        goto_admin(sm, "secretary-mobile", "admin.php?page=cpms-patients", "cpms-sm-patients")
+    sm.close()
+    smctx.close()
+
+    stctx = browser.new_context(viewport={"width": 768, "height": 1024}, locale="fa-IR")
+    st = stctx.new_page()
+    if login(st, SECRETARY_USER, SECRETARY_PASS, "secretary-tablet"):
+        goto_admin(st, "secretary-tablet", "admin.php?page=cpms-patients", "cpms-st-patients")
+    st.close()
+    stctx.close()
 
     browser.close()
 

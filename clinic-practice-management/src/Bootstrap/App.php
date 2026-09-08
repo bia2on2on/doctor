@@ -209,6 +209,7 @@ final class App
         SecretaryFinancePage::register();
         DoctorDashboardPage::register();
         DoctorHandwritingPage::register();
+        PatientAdminPage::register(); // Chunk G — Patient Management Entry (operational, capability-driven)
     }
 
     public static function activate(): void
