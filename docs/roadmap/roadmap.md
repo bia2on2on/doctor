@@ -18,7 +18,7 @@
 |---|---|---|
 | **Phase 0** | **Git / Project Stabilization** | ✅ **CLOSED** — [`report-phase-0-reverification.md`](../phase-reports/report-phase-0-reverification.md) (۹ قید C-1..C-9) |
 | **Phase 0.5** | **Target Architecture & Migration Plan** *(فاز میانی مستندسازی، خارج از شماره‌گذاری اصلی)* | ✅ **CLOSED / APPROVED** — [`phase0.5-target-model.md`](../architecture/phase0.5-target-model.md) · [`ADR-0031`](../adr/ADR-0031-organization-clinic-location-scoped-authorization.md) |
-| **Phase 1** | **Security Hardening** | 🚧 **IN PROGRESS** — تقسیم اجرایی 1A / 1B (§۰-۲) |
+| **Phase 1** | **Security Hardening** | 🚧 **IN PROGRESS** — **Phase 1A ✅ CLOSED at `9bc6f7f`** (تأیید مالک؛ همهٔ Gateها سبز) · **Phase 1B 🕒 DEFERRED** تا Multi-Clinic Scope. تقسیم اجرایی در §۰-۲ · تحویل: [`phase1a-to-next-agent.md`](../handoff/phase1a-to-next-agent.md) |
 | **Phase 2** | **Multi-Clinic Core** | ⏳ |
 | **Phase 3** | **Role & Access Control** | ⏳ |
 | **Phase 4** | **Master Data** | ⏳ |
