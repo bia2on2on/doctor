@@ -8,6 +8,7 @@ use ClinicCore\Application\Auth\OtpException;
 use ClinicCore\Application\Auth\OtpService;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Otp\OtpPolicy;
+use ClinicCore\Domain\Validators\MobileValidator;
 use ClinicCore\Settings\Settings;
 use WP_UnitTestCase;
 
@@ -243,5 +244,127 @@ final class OtpSecurityTest extends WP_UnitTestCase
         self::assertNotSame('', $pepper, 'Pepper ماندگار ساخته نشد.');
         self::assertNotSame('cpms-dev-pepper-change-me', $pepper);
         self::assertSame(64, strlen($pepper), 'Pepper باید 256 بیت (64 hex) باشد.');
+    }
+
+    // ================= OD-8 =================
+
+    private function dbh(): \ClinicCore\Infrastructure\Db\CpmsDb
+    {
+        return App::db();
+    }
+
+    private function userCount(): int
+    {
+        return (int) $this->dbh()->fetchValue(
+            'SELECT COUNT(*) FROM ' . $this->dbh()->wpdb()->prefix . 'users'
+        );
+    }
+
+    /**
+     * درج مستقیم یک Token معتبر برای یک شمارهٔ دلخواه (کد در DB هش می‌شود و
+     * قابل بازخوانی نیست، پس باید خودمان آن را بکاریم).
+     */
+    private function seedFor(string $mobile, string $code, string $purpose): void
+    {
+        $db = $this->dbh();
+        $pepper = defined('CPMS_PEPPER') && (string) CPMS_PEPPER !== ''
+            ? (string) CPMS_PEPPER
+            : (string) get_option('cpms_otp_pepper', '');
+        if ($pepper === '') {
+            try {
+                $this->service()->request($mobile, $purpose);
+            } catch (OtpException) {
+                // بی‌اهمیت در این مرحله
+            }
+            $pepper = (string) get_option('cpms_otp_pepper', '');
+        }
+
+        $db->insert('cpms_otp_tokens', [
+            'mobile' => MobileValidator::normalize($mobile),
+            'purpose' => $purpose,
+            'code_hash' => OtpPolicy::hashCode($code, $pepper),
+            'expires_at' => gmdate('Y-m-d H:i:s.000', time() + 300),
+            'attempts' => 0,
+            'created_at' => $db->nowUtcSql(),
+        ]);
+    }
+
+    /**
+     * OD-8 — گزینهٔ الف: تأیید شماره نباید به‌عنوان اثر جانبی حساب بسازد.
+     */
+    public function testVerifyMobileDoesNotCreateAccount(): void
+    {
+        $mobile = '09121110001';
+        $this->seedFor($mobile, '111001', OtpService::PURPOSE_VERIFY_MOBILE);
+        $before = $this->userCount();
+
+        $result = $this->service()->verify($mobile, '111001', OtpService::PURPOSE_VERIFY_MOBILE);
+
+        self::assertSame($before, $this->userCount(), 'verify_mobile نباید هیچ کاربری بسازد.');
+        self::assertSame(0, $result['user_id'], 'شمارهٔ بی‌صاحب باید user_id = 0 بدهد.');
+        self::assertFalse($result['is_new_user']);
+        self::assertFalse($result['session_issued'], 'verify_mobile هرگز نباید Session بدهد.');
+    }
+
+    /**
+     * و نباید هیچ لینک بیمار⇄کاربری درج کند.
+     */
+    public function testVerifyMobileDoesNotCreatePatientUserLink(): void
+    {
+        $mobile = '09121110002';
+        $this->seedFor($mobile, '111002', OtpService::PURPOSE_VERIFY_MOBILE);
+        $before = (int) $this->dbh()->fetchValue(
+            'SELECT COUNT(*) FROM ' . $this->dbh()->table('cpms_patient_user_links')
+        );
+
+        $this->service()->verify($mobile, '111002', OtpService::PURPOSE_VERIFY_MOBILE);
+
+        self::assertSame(
+            $before,
+            (int) $this->dbh()->fetchValue(
+                'SELECT COUNT(*) FROM ' . $this->dbh()->table('cpms_patient_user_links')
+            ),
+            'verify_mobile نباید لینک بیمار⇄کاربر بسازد.'
+        );
+    }
+
+    /**
+     * OD-8 نباید ورود را بشکند — LOGIN همچنان کاربر و Session می‌سازد.
+     */
+    public function testLoginStillProvisionsUserAndIssuesSession(): void
+    {
+        $mobile = '09121110003';
+        $this->seedFor($mobile, '111003', OtpService::PURPOSE_LOGIN);
+        $before = $this->userCount();
+
+        $result = $this->service()->verify($mobile, '111003', OtpService::PURPOSE_LOGIN);
+
+        self::assertGreaterThan(0, (int) $result['user_id'], 'ورود باید کاربر بسازد/بیابد.');
+        self::assertTrue($result['is_new_user']);
+        self::assertTrue($result['session_issued'], 'ورود باید Session بدهد.');
+        self::assertSame($before + 1, $this->userCount());
+    }
+
+    /**
+     * تأیید شماره برای کاربر *موجود* باید همان کاربر را بیابد، بدون ساخت کاربر تازه.
+     */
+    public function testVerifyMobileResolvesAnExistingUserWithoutCreatingOne(): void
+    {
+        $mobile = '09121110004';
+
+        $this->seedFor($mobile, '111004', OtpService::PURPOSE_LOGIN);
+        $login = $this->service()->verify($mobile, '111004', OtpService::PURPOSE_LOGIN);
+        $userId = (int) $login['user_id'];
+        self::assertGreaterThan(0, $userId);
+
+        $before = $this->userCount();
+
+        $this->seedFor($mobile, '111005', OtpService::PURPOSE_VERIFY_MOBILE);
+        $verify = $this->service()->verify($mobile, '111005', OtpService::PURPOSE_VERIFY_MOBILE);
+
+        self::assertSame($before, $this->userCount(), 'نباید کاربر تازه‌ای ساخته شود.');
+        self::assertSame($userId, (int) $verify['user_id'], 'باید همان کاربر موجود پیدا شود.');
+        self::assertFalse($verify['is_new_user']);
+        self::assertFalse($verify['session_issued']);
     }
 }

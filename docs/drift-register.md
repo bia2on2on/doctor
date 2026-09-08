@@ -152,7 +152,7 @@
 | **OD-5** | Pepper زنجیرهٔ Audit (`AuditLogger::pepper()`) هنوز مقدار ثابت درونِ کد را دارد | ⚠️ **باز — جدید در Phase 1A** — تعویض، زنجیرهٔ رکوردهای Audit موجود را نامعتبر می‌کند |
 | **OD-6** | رمزنگاری فایل بالینی و بکاپ در حالت سکون | ⚠️ **باز — جدید در Phase 1A** — تصمیم محصولی (مدیریت کلید/Restore) |
 | **OD-7** | انتقال اجباری `clinic-files` و `cpms-backups` به خارج از DocumentRoot | ✅ **بسته — تصمیم مالک: گزینهٔ A، پیاده‌سازی‌شده در Phase 1A.** ریشهٔ پیش‌فرض به `…/cpms-private/` بیرون از DocumentRoot منتقل شد + مهاجرت idempotent با تأیید sha256 پیش از حذف مبدأ |
-| **OD-8** | `verify_mobile` از Endpoint عمومی می‌تواند حساب `cpms_patient` بسازد | ⚠️ **باز — جدید در بازبینی تأییدی Phase 1A** — گزینهٔ الف: ساخت حساب فقط با `PURPOSE_LOGIN` (توصیه‌شده) / گزینهٔ ب: حفظ وضع موجود |
+| **OD-8** | `verify_mobile` از Endpoint عمومی می‌تواند حساب `cpms_patient` بسازد | ✅ **بسته — تصمیم مالک: گزینهٔ الف، پیاده‌سازی‌شده در Phase 1A.** `PROVISIONING_PURPOSES = [LOGIN]`؛ `verify_mobile` از مسیر فقط‌خواندنی `findExistingUser()` می‌رود و شمارهٔ بی‌صاحب `user_id = 0` می‌گیرد |
 | **Q6** | Scope جدول `cpms_rate_limits` (سراسری / per-Clinic / دوسطحی) | ⚠️ باز — **مرتبط با Phase 1A** (rate limiting سراسری بدون آن کار می‌کند) |
 | **Q11** | حذف ستون legacy `clinicians.specialty` | ⚠️ باز — Phase 4 |
 | **Q12** | UX تعویض Clinic | ⚠️ باز — بدون اثر بر Backend |

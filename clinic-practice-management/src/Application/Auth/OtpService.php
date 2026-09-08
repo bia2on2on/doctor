@@ -53,6 +53,13 @@ final class OtpService
      */
     private const SESSION_PURPOSES = [self::PURPOSE_LOGIN];
 
+    /**
+     * تنها Purposeهایی که اجازه دارند در نبود کاربر، حساب بسازند.
+     *
+     * OD-8 — گزینهٔ الف: `verify_mobile` عمداً در این فهرست **نیست**.
+     */
+    private const PROVISIONING_PURPOSES = [self::PURPOSE_LOGIN];
+
     private const PEPPER_OPTION = 'cpms_otp_pepper';
 
     public function __construct(
@@ -158,6 +165,11 @@ final class OtpService
     /**
      * تأیید کد + Login (A3) — Session کاربر ساخته می‌شود.
      *
+     * OD-8: برای Purposeهای غیرِ ورود (اکنون فقط `verify_mobile`) هیچ حسابی
+     * ساخته نمی‌شود. اگر شماره به هیچ کاربری متصل نباشد، `user_id = 0`،
+     * `is_new_user = false` و `session_issued = false` برمی‌گردد و تأیید
+     * همچنان موفق است — نتیجهٔ آن «تأییدشدگی شماره» است، نه یک حساب.
+     *
      * @return array{user_id: int, patient_links: list<array<string,mixed>>, is_new_user: bool, session_issued: bool}
      *
      * @throws OtpException
@@ -237,17 +249,25 @@ final class OtpService
         }
 
         // ---- Resolution کاربر/بیمار ----
+        //
+        // OD-8 (تصمیم مالک — گزینهٔ الف): تأیید شماره نباید به‌عنوان اثر
+        // جانبی حساب کاربری بسازد. `verify_mobile` صرفاً «تأییدشدگی» را
+        // اثبات می‌کند؛ ساخت حساب باید Workflow صریح و جدای خودش را داشته
+        // باشد. فقط Purposeهای ورود اجازهٔ Provisioning دارند.
         $isNewUser = false;
-        $userId = $this->resolveUser($mobile, $purpose, $isNewUser);
+        $mayProvision = in_array($purpose, self::PROVISIONING_PURPOSES, true);
+        $userId = $mayProvision
+            ? $this->resolveUser($mobile, $purpose, $isNewUser)
+            : $this->findExistingUser($mobile);
 
         // Session — فقط برای Purposeهای ورود (Context Binding).
         // یک کد `verify_mobile` نباید به Login تبدیل شود.
-        $sessionIssued = in_array($purpose, self::SESSION_PURPOSES, true);
+        $sessionIssued = in_array($purpose, self::SESSION_PURPOSES, true) && $userId > 0;
         if ($sessionIssued && function_exists('wp_set_auth_cookie')) {
             wp_set_auth_cookie($userId, true);
         }
 
-        $patientLinks = $this->patientLinks($userId);
+        $patientLinks = $userId > 0 ? $this->patientLinks($userId) : [];
 
         $this->audit('OTP_VERIFY_OK', $userId, $mobile, $ip, ['purpose' => $purpose]);
         if ($sessionIssued) {
@@ -265,6 +285,41 @@ final class OtpService
     /**
      * پیدا کردن/ساختن کاربر + لینک به بیمار(ان) موجود با همین موبایل.
      */
+    /**
+     * جست‌وجوی فقط-خواندنی کاربر متصل به یک شماره — **بدون هیچ اثر جانبی**.
+     *
+     * OD-8: مسیر `verify_mobile` از این تابع استفاده می‌کند. اگر کاربری وجود
+     * نداشته باشد `0` برمی‌گردد و هیچ حسابی ساخته نمی‌شود و هیچ لینک
+     * بیمار⇄کاربری درج نمی‌شود.
+     */
+    private function findExistingUser(string $mobile): int
+    {
+        $patient = $this->db->fetchRow(
+            'SELECT id FROM ' . $this->db->table('cpms_patients') .
+            ' WHERE clinic_id = 1 AND mobile = %s AND status = %s ORDER BY id DESC LIMIT 1',
+            [$mobile, 'active']
+        );
+        if ($patient === null) {
+            return 0;
+        }
+
+        $link = $this->db->fetchRow(
+            'SELECT wp_user_id FROM ' . $this->db->table('cpms_patient_user_links') .
+            ' WHERE patient_id = %d ORDER BY is_primary DESC, id ASC LIMIT 1',
+            [(int) $patient['id']]
+        );
+        if ($link === null) {
+            return 0;
+        }
+
+        $user = $this->db->fetchRow(
+            'SELECT ID FROM ' . $this->db->wpdb()->prefix . 'users WHERE ID = %d',
+            [(int) $link['wp_user_id']]
+        );
+
+        return $user === null ? 0 : (int) $link['wp_user_id'];
+    }
+
     private function resolveUser(string $mobile, string $purpose, bool &$isNewUser): int
     {
         $patient = $this->db->fetchRow(
