@@ -912,7 +912,11 @@ final class App
     {
         static $bridge = null;
         if ($bridge === null) {
-            $bridge = new WpUpdateBridge(self::updateService());
+            // Phase 2 (رگرسیون 1f8b36d): سرویس Lazy — App::boot نباید
+            // Scope/Settings را resolve کند (نصبِ پیش از Migration / bootstrap
+            // تست‌ها). Provider فقط داخل هوک‌ها صدا زده می‌شود و آنجا هم
+            // fail-soft است (WpUpdateBridge).
+            $bridge = new WpUpdateBridge(static fn (): UpdateService => self::updateService());
         }
 
         return $bridge;

@@ -26,8 +26,24 @@ final class WpUpdateBridge
 {
     public const PLUGIN_SLUG = 'clinic-practice-management';
 
-    public function __construct(private readonly UpdateService $updates)
+    /**
+     * سرویس به‌صورت Lazy ساخته می‌شود (Phase 2 / رگرسیون 1f8b36d):
+     *
+     * Bridge در `App::boot` ثبت می‌شود — لحظه‌ای که ممکن است هنوز
+     * Migration اجرا نشده و Scope قابل resolve نباشد (نصب تازه،
+     * bootstrap تست). Provider فقط داخل خود هوک‌ها صدا زده می‌شود؛
+     * اگر آنجا Scope در دسترس نبود، هوک fail-soft مقدار ورودی را
+     * دست‌نخورده برمی‌گرداند (به‌روزرسانی best-effort است، نه مسیر بحرانی).
+     *
+     * @param \Closure():UpdateService $updatesProvider
+     */
+    public function __construct(private readonly \Closure $updatesProvider)
     {
+    }
+
+    private function updates(): UpdateService
+    {
+        return ($this->updatesProvider)();
     }
 
     // ================= transient به‌روزرسانی =================
@@ -45,7 +61,12 @@ final class WpUpdateBridge
             return $transient;
         }
         $basename = $this->pluginBasename();
-        $result = $this->cachedCheck();
+        try {
+            $result = $this->cachedCheck();
+        } catch (\Throwable) {
+            // Scope در دسترس نیست (نصبِ پیش از Migration و غیره) — passthrough
+            return $transient;
+        }
         if (($result['available'] ?? false) !== true || $basename === '') {
             return $transient;
         }
@@ -74,7 +95,11 @@ final class WpUpdateBridge
         if ($slug !== self::PLUGIN_SLUG) {
             return $result;
         }
-        $info = $this->cachedCheck();
+        try {
+            $info = $this->cachedCheck();
+        } catch (\Throwable) {
+            return $result;
+        }
         if (($info['available'] ?? false) !== true) {
             return $result;
         }
@@ -101,8 +126,13 @@ final class WpUpdateBridge
             return $reply;
         }
         // مانیفست تازه بگیر (user-initiated update → یک درخواست شبکه مجاز است)
-        $channel = $this->channel();
-        $info = $this->updates->checkForUpdates(true, $channel);
+        try {
+            $channel = $this->channel();
+            $info = $this->updates()->checkForUpdates(true, $channel);
+        } catch (\Throwable) {
+            // Scope در دسترس نیست (نصبِ پیش از Migration و غیره) — passthrough
+            return $reply;
+        }
         if (($info['available'] ?? false) !== true) {
             return new WP_Error('CLINIC_UPDATE_UNAVAILABLE', 'به‌روزرسانی CPMS دیگر در دسترس نیست — صفحه را تازه کنید.');
         }
@@ -141,12 +171,12 @@ final class WpUpdateBridge
 
     private function cachedCheck(): array
     {
-        return $this->updates->checkForUpdates(false, $this->channel());
+        return $this->updates()->checkForUpdates(false, $this->channel());
     }
 
     private function channel(): string
     {
-        return $this->updates->channel();
+        return $this->updates()->channel();
     }
 
     private function pluginBasename(): string
