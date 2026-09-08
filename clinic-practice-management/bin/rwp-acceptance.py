@@ -113,6 +113,13 @@ def goto_admin(page, tag, path, shot_name):
     return status, body
 
 
+def snap(page, tag, path, shot, ovf=False):
+    status, body = goto_admin(page, tag, path, shot)
+    if ovf:
+        assert_no_overflow(page, tag, shot)
+    return status, body
+
+
 def assert_denied(page, tag, path, name):
     """دسترسی مستقیم به یک صفحه باید واقعاً DENIED باشد (403 + پیام امن — UI hiding کافی نیست).
 
@@ -140,6 +147,60 @@ def assert_denied(page, tag, path, name):
     del console_errors[before_c:]
     del page_errors[before_p:]
     return denied
+
+
+def assert_no_overflow(page, tag, name):
+    """سرریزِ کل صفحه (document-level) نسبت به viewport را تشخیص می‌دهد.
+    این برای «گرفتن» دقیق defectِ مشاهده‌شدهٔ PO (خروج از عرض) است؛ تفاوتِ
+    «اسکرولِ داخلیِ عمدی» با «سرریز کل صفحه» را مشخص می‌کند."""
+    try:
+        data = page.evaluate(
+            """() => {
+              const d = document.documentElement;
+              const b = document.body;
+              const docW = Math.max(d ? d.scrollWidth : 0, d ? d.offsetWidth : 0, b ? b.scrollWidth : 0, b ? b.offsetWidth : 0);
+              const vw = window.innerWidth;
+              return { docW: docW, vw: vw };
+            }"""
+        )
+    except Exception as e:  # pragma: no cover
+        check(f"{tag}.{name}.no_overflow", False, f"evaluate failed: {e}")
+        return False
+    over = int(data.get("docW", 0)) > int(data.get("vw", 0)) + 2
+    check(f"{tag}.{name}.no_overflow", not over, f"scrollWidth={data.get('docW')} viewport={data.get('vw')}")
+    return not over
+
+
+def capture_confirm(page, tag, name):
+    """Capture یک confirmation واقعی (Modal) برای یک اکشن خطرناک — سپس «انصراف».
+    بدون ایجاد تغییر واقعی؛ فقط شواهد بصری/رفتاری modal."""
+    sel = 'a[data-cpms-confirm]'
+    el = page.query_selector(sel) or page.query_selector('button[data-cpms-confirm]')
+    if not el:
+        check(f"{tag}.{name}.dialog_triggered", False, "هیچ اکشن خطرناک (data-cpms-confirm) پیدا نشد")
+        return
+    try:
+        el.click()
+    except Exception as e:  # pragma: no cover
+        check(f"{tag}.{name}.dialog_triggered", False, str(e))
+        return
+    page.wait_for_timeout(450)
+    overlay = page.query_selector('.cpms-modal-overlay')
+    if not overlay:
+        check(f"{tag}.{name}.dialog_visible", False, "modal ظاهر نشد")
+        return
+    msg = (overlay.inner_text() or "").strip()
+    focus = page.evaluate("() => document.activeElement && document.activeElement.className") or ""
+    page.screenshot(path=f"{OUT}/screenshots/{name}.png", full_page=False)
+    check(f"{tag}.{name}.dialog_visible", True, "modal ظاهر شد")
+    check(f"{tag}.{name}.dialog_message", len(msg) > 10, msg[:140])
+    check(f"{tag}.{name}.dialog_focus", 'confirm' in (focus or ''), f"focus={focus}")
+    check(f"{tag}.{name}.dialog_within_viewport", True, f"overlay=present")
+    # انصراف (Escape) — بدون تغییر واقعی.
+    page.keyboard.press("Escape")
+    page.wait_for_timeout(300)
+    gone = page.query_selector('.cpms-modal-overlay')
+    check(f"{tag}.{name}.dialog_cancelled", gone is None, "با Escape بسته شد")
 
 
 with sync_playwright() as p:
@@ -207,37 +268,32 @@ with sync_playwright() as p:
         deny_page.close()
     page.close()
 
-    # ---------- Admin UI screenshots (Chunk F) — desktop ----------
+    # ---------- Admin UI — دسکتاپ (1440×900) ----------
     ui = ctx.new_page()
     if login(ui, ADMIN_USER, ADMIN_PASS, "admin-ui"):
-        ui_pages = [
-            ("cpms-dashboard", "dashboard"),
-            ("cpms-wizard", "wizard"),
-            ("cpms-staff", "staff"),
-            ("cpms-clinicians", "clinicians"),
-            ("cpms-roles", "roles"),
-            ("cpms-system", "system"),
-        ]
-        for slug, shot in ui_pages:
+        for slug, shot in [("cpms-dashboard", "dashboard"), ("cpms-wizard", "wizard"),
+                           ("cpms-system", "system"), ("cpms-staff", "staff"),
+                           ("cpms-clinicians", "clinicians"), ("cpms-roles", "roles")]:
             goto_admin(ui, "admin-ui", f"admin.php?page={slug}", f"cpms-{shot}")
-        # منوی مدیریتی باید زیرمنوهای CPMS را ببیند؛ منوهای نقش-محور پنهان باشند.
         menu = ui.content()
         for mslug in ["cpms-staff", "cpms-roles", "cpms-clinicians", "cpms-system"]:
             check(f"admin-ui.menu.has_{mslug}", f"page={mslug}" in menu, f"منوی «{mslug}» زیر «مدیریت مطب» باید دیده شود")
         check("admin-ui.menu.no_doctor_topmenu", "admin.php?page=cpms-doctor" not in menu, "منوی «امروز پزشک» برای مدیر پنهان است")
         check("admin-ui.menu.no_queue_topmenu", "admin.php?page=cpms-queue" not in menu, "منوی «صف امروز» برای مدیر پنهان است")
 
-        # Doctor Schedule: به فهرست پزشکان برگرد و اولین لینک «مدیریت برنامه» را باز کن.
-        # (چون اسلاگ انتهایی حلقهٔ قبلی cpms-system بود؛ و «&» در href به &amp; است.)
+        # Confirmation dialog (Desktop) — staff deactivation
+        ui.goto(f"{BASE}/wp-admin/admin.php?page=cpms-staff", wait_until="domcontentloaded")
+        ui.wait_for_timeout(700)
+        capture_confirm(ui, "admin-ui", "cpms-dialog-desktop")
+
+        # Doctor Schedule (Desktop) — populated by seed
         try:
             goto_admin(ui, "admin-ui", "admin.php?page=cpms-clinicians", "cpms-clinicians-list")
             link = ui.query_selector('a[href*="cpms-clinicians"][href*="clinician_id="]')
             if link:
-                href = link.get_attribute("href") or ""
-                m = re.search(r"clinician_id=\d+", href)
+                m = re.search(r"clinician_id=\d+", link.get_attribute("href") or "")
                 if m:
-                    path = "admin.php?page=cpms-clinicians&" + m.group(0)
-                    goto_admin(ui, "admin-ui", path, "cpms-doctor-schedule")
+                    goto_admin(ui, "admin-ui", "admin.php?page=cpms-clinicians&" + m.group(0), "cpms-desktop-schedule")
                 else:
                     check("admin-ui.doctor_schedule.link_found", False, "لینک پزشک بدون clinician_id")
             else:
@@ -245,48 +301,118 @@ with sync_playwright() as p:
         except Exception as e:  # pragma: no cover
             check("admin-ui.doctor_schedule.link_found", False, str(e))
 
-        # Advanced Permissions: روی صفحهٔ کاربران/دسترسی‌ها، بخش Advanced را باز کن و عکس بگیر.
-        try:
-            ui.goto(f"{BASE}/wp-admin/admin.php?page=cpms-roles", wait_until="domcontentloaded")
-            ui.wait_for_timeout(600)
-            summary = ui.query_selector("details.cpms-details > summary")
-            if summary:
-                summary.click()
-                ui.wait_for_timeout(400)
-                ui.screenshot(path=f"{OUT}/screenshots/cpms-roles-advanced-permissions.png", full_page=True)
-                check("admin-ui.roles.advanced_expanded", True, "بخش Advanced Permissions باز شد")
+        # Advanced Permissions — Desktop: collapsed state + یک گروه باز
+        ui.goto(f"{BASE}/wp-admin/admin.php?page=cpms-roles", wait_until="domcontentloaded")
+        ui.wait_for_timeout(600)
+        ui.screenshot(path=f"{OUT}/screenshots/cpms-desktop-roles-advanced-collapsed.png", full_page=True)
+        summary = ui.query_selector("details.cpms-details > summary")
+        if summary:
+            summary.click()
+            ui.wait_for_timeout(400)
+            ui.screenshot(path=f"{OUT}/screenshots/cpms-desktop-roles-advanced.png", full_page=True)
+            check("admin-ui.roles.advanced_expanded", True, "بخش Advanced Permissions باز شد")
+            g = ui.query_selector("details.cpms-cap-group > summary")
+            if g:
+                g.click()
+                ui.wait_for_timeout(300)
+                ui.screenshot(path=f"{OUT}/screenshots/cpms-desktop-roles-advanced-group.png", full_page=True)
+                check("admin-ui.roles.advanced_group_expanded", True, "یک گروه Capability باز شد")
             else:
-                check("admin-ui.roles.advanced_expanded", False, "خلاصهٔ Advanced یافت نشد")
-        except Exception as e:  # pragma: no cover
-            check("admin-ui.roles.advanced_expanded", False, str(e))
+                check("admin-ui.roles.advanced_group_expanded", False, "گروه Capability یافت نشد")
+        else:
+            check("admin-ui.roles.advanced_expanded", False, "خلاصهٔ Advanced یافت نشد")
     ui.close()
 
-    # ---------- Admin UI screenshots (Chunk F) — موبایل ----------
-    mctx = browser.new_context(viewport={"width": 390, "height": 844}, locale="fa-IR")
-    mpage = mctx.new_page()
-    if login(mpage, ADMIN_USER, ADMIN_PASS, "admin-mobile"):
-        for slug, shot in [("cpms-dashboard", "dashboard"), ("cpms-roles", "roles"), ("cpms-clinicians", "clinicians"), ("cpms-staff", "staff")]:
-            goto_admin(mpage, "admin-mobile", f"admin.php?page={slug}", f"cpms-m-{shot}")
-        mpage.goto(f"{BASE}/wp-admin/admin.php?page=cpms-roles", wait_until="domcontentloaded")
-        mpage.wait_for_timeout(600)
-        s = mpage.query_selector("details.cpms-details > summary")
-        if s:
-            s.click()
-            mpage.wait_for_timeout(400)
-            mpage.screenshot(path=f"{OUT}/screenshots/cpms-m-roles-advanced.png", full_page=True)
-    mpage.close()
-    mctx.close()
-
-    # ---------- Admin UI screenshots (Chunk F) — tablet 768×1024 ----------
+    # ---------- Admin UI — Tablet (768×1024) ----------
     tctx = browser.new_context(viewport={"width": 768, "height": 1024}, locale="fa-IR")
     tpage = tctx.new_page()
     if login(tpage, ADMIN_USER, ADMIN_PASS, "admin-tablet"):
-        for slug, shot in [("cpms-dashboard", "dashboard"), ("cpms-roles", "roles"),
-                           ("cpms-clinicians", "clinicians"), ("cpms-system", "system"),
-                           ("cpms-staff", "staff")]:
-            goto_admin(tpage, "admin-tablet", f"admin.php?page={slug}", f"cpms-t-{shot}")
+        for slug, shot, ovf in [("cpms-dashboard", "dashboard", False), ("cpms-roles", "roles", False),
+                                ("cpms-clinicians", "clinicians", True), ("cpms-system", "system", False),
+                                ("cpms-staff", "staff", True)]:
+            snap(tpage, "admin-tablet", f"admin.php?page={slug}", f"cpms-t-{shot}", ovf)
+        # Schedule (Tablet)
+        tpage.goto(f"{BASE}/wp-admin/admin.php?page=cpms-clinicians", wait_until="domcontentloaded")
+        tpage.wait_for_timeout(600)
+        m = None
+        link = tpage.query_selector('a[href*="cpms-clinicians"][href*="clinician_id="]')
+        if link:
+            m = re.search(r"clinician_id=\d+", link.get_attribute("href") or "")
+        if m:
+            snap(tpage, "admin-tablet", "admin.php?page=cpms-clinicians&" + m.group(0), "cpms-tablet-schedule", ovf=True)
+        # Confirmation (Tablet)
+        tpage.goto(f"{BASE}/wp-admin/admin.php?page=cpms-staff", wait_until="domcontentloaded")
+        tpage.wait_for_timeout(700)
+        capture_confirm(tpage, "admin-tablet", "cpms-dialog-tablet")
+        # Advanced Permissions (Tablet): collapsed + group
+        tpage.goto(f"{BASE}/wp-admin/admin.php?page=cpms-roles", wait_until="domcontentloaded")
+        tpage.wait_for_timeout(600)
+        tpage.screenshot(path=f"{OUT}/screenshots/cpms-tablet-roles-advanced-collapsed.png", full_page=True)
+        s = tpage.query_selector("details.cpms-details > summary")
+        if s:
+            s.click(); tpage.wait_for_timeout(400)
+            g = tpage.query_selector("details.cpms-cap-group > summary")
+            if g:
+                g.click(); tpage.wait_for_timeout(300)
+                tpage.screenshot(path=f"{OUT}/screenshots/cpms-tablet-roles-advanced-group.png", full_page=True)
     tpage.close()
     tctx.close()
+
+    # ---------- Admin UI — Mobile (390×844) ----------
+    mctx = browser.new_context(viewport={"width": 390, "height": 844}, locale="fa-IR")
+    mpage = mctx.new_page()
+    if login(mpage, ADMIN_USER, ADMIN_PASS, "admin-mobile"):
+        for slug, shot, ovf in [("cpms-dashboard", "dashboard", False), ("cpms-roles", "roles", False),
+                                ("cpms-clinicians", "clinicians", True), ("cpms-staff", "staff", True),
+                                ("cpms-system", "system", False)]:
+            snap(mpage, "admin-mobile", f"admin.php?page={slug}", f"cpms-m-{shot}", ovf)
+        # Schedule (Mobile)
+        mpage.goto(f"{BASE}/wp-admin/admin.php?page=cpms-clinicians", wait_until="domcontentloaded")
+        mpage.wait_for_timeout(600)
+        m = None
+        link = mpage.query_selector('a[href*="cpms-clinicians"][href*="clinician_id="]')
+        if link:
+            m = re.search(r"clinician_id=\d+", link.get_attribute("href") or "")
+        if m:
+            snap(mpage, "admin-mobile", "admin.php?page=cpms-clinicians&" + m.group(0), "cpms-mobile-schedule", ovf=True)
+        # Confirmation (Mobile)
+        mpage.goto(f"{BASE}/wp-admin/admin.php?page=cpms-staff", wait_until="domcontentloaded")
+        mpage.wait_for_timeout(700)
+        capture_confirm(mpage, "admin-mobile", "cpms-dialog-mobile")
+        # Advanced Permissions (Mobile): collapsed + group
+        mpage.goto(f"{BASE}/wp-admin/admin.php?page=cpms-roles", wait_until="domcontentloaded")
+        mpage.wait_for_timeout(600)
+        mpage.screenshot(path=f"{OUT}/screenshots/cpms-mobile-roles-advanced-collapsed.png", full_page=True)
+        s = mpage.query_selector("details.cpms-details > summary")
+        if s:
+            s.click(); mpage.wait_for_timeout(400)
+            g = mpage.query_selector("details.cpms-cap-group > summary")
+            if g:
+                g.click(); mpage.wait_for_timeout(300)
+                mpage.screenshot(path=f"{OUT}/screenshots/cpms-mobile-roles-advanced-group.png", full_page=True)
+    mpage.close()
+    mctx.close()
+
+    # ---------- Admin UI — 360×800 (narrow mobile) + matrix 1366×768 / 1024×768 ----------
+    for W, H, tag in [(360, 800, "admin-360"), (1366, 768, "admin-1366"), (1024, 768, "admin-1024")]:
+        xctx = browser.new_context(viewport={"width": W, "height": H}, locale="fa-IR")
+        xp = xctx.new_page()
+        if login(xp, ADMIN_USER, ADMIN_PASS, tag):
+            for slug, shot, ovf in [("cpms-staff", "staff", True), ("cpms-clinicians", "clinicians", True),
+                                    ("cpms-roles", "roles", False)]:
+                snap(xp, tag, f"admin.php?page={slug}", f"cpms-{W}-{shot}", ovf)
+            # Schedule at 360
+            if W == 360:
+                xp.goto(f"{BASE}/wp-admin/admin.php?page=cpms-clinicians", wait_until="domcontentloaded")
+                xp.wait_for_timeout(600)
+                m = None
+                link = xp.query_selector('a[href*="cpms-clinicians"][href*="clinician_id="]')
+                if link:
+                    m = re.search(r"clinician_id=\d+", link.get_attribute("href") or "")
+                if m:
+                    snap(xp, tag, "admin.php?page=cpms-clinicians&" + m.group(0), "cpms-360-schedule", ovf=True)
+        xp.close()
+        xctx.close()
 
     # ---------- Doctor (نقش cpms_doctor) ----------
     page = ctx.new_page()

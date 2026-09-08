@@ -86,24 +86,24 @@ final class StaffManagementPage
 
             <?php if ($rows !== []) : ?>
                 <h2>فهرست پرسنل</h2>
-                <table class="widefat striped" role="presentation">
+                <table class="widefat striped cpms-table-responsive" role="presentation">
                     <thead>
                         <tr><th>نام</th><th>ورود</th><th>ایمیل</th><th>نقش</th><th>پزشک مرتبط</th><th>وضعیت</th><th>عملیات</th></tr>
                     </thead>
                     <tbody>
                     <?php foreach ($rows as $r) : ?>
                         <tr>
-                            <td><?php echo esc_html((string) $r['display_name']); ?></td>
-                            <td><?php echo esc_html((string) $r['login']); ?></td>
-                            <td><?php echo esc_html((string) $r['email']); ?></td>
-                            <td><?php echo esc_html((string) $r['role_label']); ?></td>
-                            <td><?php echo $r['clinician'] !== '' ? esc_html($r['clinician']) : '—'; ?></td>
-                            <td><?php echo $r['active'] ? '<span style="color:#00a32a;">فعال</span>' : '<span style="color:#d63638;">غیرفعال</span>'; ?></td>
-                            <td>
+                            <td data-label="نام"><?php echo esc_html((string) $r['display_name']); ?></td>
+                            <td data-label="ورود"><span class="ltr"><?php echo esc_html((string) $r['login']); ?></span></td>
+                            <td data-label="ایمیل"><span class="ltr"><?php echo esc_html((string) $r['email']); ?></span></td>
+                            <td data-label="نقش"><?php echo esc_html((string) $r['role_label']); ?></td>
+                            <td data-label="پزشک مرتبط"><?php echo $r['clinician'] !== '' ? esc_html($r['clinician']) : '—'; ?></td>
+                            <td data-label="وضعیت"><?php echo $r['active'] ? '<span class="cpms-badge cpms-ok">فعال</span>' : '<span class="cpms-badge cpms-danger">غیرفعال</span>'; ?></td>
+                            <td class="cpms-actions-cell" data-label="عملیات">
                                 <a class="button button-small" href="<?php echo esc_url(admin_url('admin.php?page=' . self::PAGE_SLUG . '&edit=' . (int) $r['id'])); ?>">ویرایش</a>
                                 <a class="button button-small" href="<?php echo esc_url(wp_nonce_url(admin_url('admin-post.php?action=cpms_staff_password&user_id=' . (int) $r['id']), 'cpms_staff_password_' . (int) $r['id'])); ?>">لینک بازیابی رمز</a>
                                 <?php if ($r['active']) : ?>
-                                    <a class="button button-small" href="<?php echo esc_url(wp_nonce_url(admin_url('admin-post.php?action=cpms_staff_toggle&user_id=' . (int) $r['id'] . '&state=deactivate'), 'cpms_staff_toggle_' . (int) $r['id'])); ?>" onclick="return confirm('غیرفعال‌سازی: این کاربر به‌طور موقت از نقش CPMS حذف می‌شود (تاریخچه حذف نمی‌شود). ادامه می‌دهید؟');">غیرفعال</a>
+                                    <a class="button button-small" href="<?php echo esc_url(wp_nonce_url(admin_url('admin-post.php?action=cpms_staff_toggle&user_id=' . (int) $r['id'] . '&state=deactivate'), 'cpms_staff_toggle_' . (int) $r['id'])); ?>" data-cpms-confirm="غیرفعال‌سازی: این کاربر به‌طور موقت از نقش CPMS حذف می‌شود (تاریخچه حذف نمی‌شود). ادامه می‌دهید؟">غیرفعال</a>
                                 <?php else : ?>
                                     <a class="button button-small" href="<?php echo esc_url(wp_nonce_url(admin_url('admin-post.php?action=cpms_staff_toggle&user_id=' . (int) $r['id'] . '&state=activate'), 'cpms_staff_toggle_' . (int) $r['id'])); ?>">فعال‌سازی مجدد</a>
                                 <?php endif; ?>

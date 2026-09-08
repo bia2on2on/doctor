@@ -92,7 +92,7 @@ final class ClinicianAdminPage
         $users = self::wpUsers();
         ?>
     <h2 class="title">پزشکان</h2>
-    <table class="widefat striped" style="max-width:1000px">
+    <table class="widefat striped cpms-table-responsive" style="max-width:1000px">
         <thead><tr><th>نام</th><th>تخصص</th><th>اتاق</th><th>کاربر متصل</th><th>روزهای برنامه</th><th>وضعیت</th><th></th></tr></thead>
         <tbody>
         <?php if ($rows === []) : ?>
@@ -100,13 +100,13 @@ final class ClinicianAdminPage
         <?php endif; ?>
         <?php foreach ($rows as $r) : ?>
             <tr>
-                <td><strong><?php echo esc_html((string) $r['full_name']); ?></strong></td>
-                <td><?php echo esc_html((string) ($r['specialty'] ?? '')); ?></td>
-                <td><?php echo esc_html((string) ($r['room'] ?? '')); ?></td>
-                <td><?php echo esc_html((string) ($r['wp_user_login'] ?? '—')); ?></td>
-                <td><?php echo (int) $r['schedule_days']; ?> روز</td>
-                <td><?php echo (int) $r['is_active'] === 1 ? '✅ فعال' : '⛔ غیرفعال'; ?></td>
-                <td><a class="button button-small" href="<?php echo esc_url(admin_url('admin.php?page=cpms-clinicians&clinician_id=' . (int) $r['id'])); ?>">مدیریت برنامه</a></td>
+                <td data-label="نام"><strong><?php echo esc_html((string) $r['full_name']); ?></strong></td>
+                <td data-label="تخصص"><?php echo esc_html((string) ($r['specialty'] ?? '')); ?></td>
+                <td data-label="اتاق"><?php echo esc_html((string) ($r['room'] ?? '')); ?></td>
+                <td data-label="کاربر متصل"><span class="ltr"><?php echo esc_html((string) ($r['wp_user_login'] ?? '—')); ?></span></td>
+                <td data-label="روزهای برنامه"><?php echo (int) $r['schedule_days']; ?> روز</td>
+                <td data-label="وضعیت"><?php echo (int) $r['is_active'] === 1 ? '<span class="cpms-badge cpms-ok">فعال</span>' : '<span class="cpms-badge cpms-danger">غیرفعال</span>'; ?></td>
+                <td class="cpms-actions-cell" data-label="عملیات"><a class="button button-small" href="<?php echo esc_url(admin_url('admin.php?page=cpms-clinicians&clinician_id=' . (int) $r['id'])); ?>">مدیریت برنامه</a></td>
             </tr>
         <?php endforeach; ?>
         </tbody>
@@ -194,7 +194,7 @@ final class ClinicianAdminPage
         <p>
             <button type="submit" class="button button-primary">ذخیره پروفایل</button>
             <a class="button" href="<?php echo esc_url(wp_nonce_url(admin_url('admin-post.php?action=cpms_clinician_toggle&clinician_id=' . $cid), 'cpms_clinician_toggle_' . $cid)); ?>"
-                onclick="return confirm('<?php echo (int) $clinician['is_active'] === 1 ? 'غیرفعال' : 'فعال'; ?>سازی این پزشک؟');">
+                data-cpms-confirm="<?php echo (int) $clinician['is_active'] === 1 ? 'غیرفعال‌سازی' : 'فعال‌سازی'; ?> این پزشک؟ تاریخچهٔ او حذف نمی‌شود.">
                 <?php echo (int) $clinician['is_active'] === 1 ? '⛔ غیرفعال‌سازی' : '✅ فعال‌سازی'; ?>
             </a>
         </p>
@@ -217,23 +217,23 @@ final class ClinicianAdminPage
         <?php wp_nonce_field('cpms_schedule_save'); ?>
         <input type="hidden" name="action" value="cpms_schedule_save">
         <input type="hidden" name="clinician_id" value="<?php echo $cid; ?>">
-        <table class="widefat striped" style="max-width:1150px">
+        <table class="widefat striped cpms-table-responsive" style="max-width:1150px">
             <thead><tr><th>روز</th><th>شروع</th><th>پایان</th><th>وقفه از</th><th>وقفه تا</th><th>مدت نوبت (دقیقه)</th><th>ظرفیت هر Slot</th><th>فعال</th><th></th></tr></thead>
             <tbody>
             <?php foreach (self::DAYS as $day => $dayLabel) : $s = $byDay[$day] ?? null; ?>
                 <tr>
-                    <td><strong><?php echo esc_html($dayLabel); ?></strong></td>
-                    <td><input type="time" name="sched[<?php echo $day; ?>][start_time]" value="<?php echo esc_attr((string) ($s['start_time'] ?? '09:00')); ?>" required></td>
-                    <td><input type="time" name="sched[<?php echo $day; ?>][end_time]" value="<?php echo esc_attr((string) ($s['end_time'] ?? '13:00')); ?>" required></td>
-                    <td><input type="time" name="sched[<?php echo $day; ?>][break_start]" value="<?php echo esc_attr((string) ($s['break_start'] ?? '')); ?>"></td>
-                    <td><input type="time" name="sched[<?php echo $day; ?>][break_end]" value="<?php echo esc_attr((string) ($s['break_end'] ?? '')); ?>"></td>
-                    <td><input type="number" name="sched[<?php echo $day; ?>][appointment_duration_min]" min="5" max="240" value="<?php echo esc_attr((string) ($s['appointment_duration_min'] ?? '20')); ?>" style="width:80px"></td>
-                    <td><input type="number" name="sched[<?php echo $day; ?>][slot_capacity]" min="1" max="50" value="<?php echo esc_attr((string) ($s['slot_capacity'] ?? '1')); ?>" style="width:70px"></td>
-                    <td><input type="checkbox" name="sched[<?php echo $day; ?>][is_active]" value="1" <?php checked($s === null || !empty($s['is_active'])); ?>></td>
-                    <td>
+                    <td data-label="روز"><strong><?php echo esc_html($dayLabel); ?></strong></td>
+                    <td data-label="شروع"><input type="time" name="sched[<?php echo $day; ?>][start_time]" value="<?php echo esc_attr((string) ($s['start_time'] ?? '09:00')); ?>" required></td>
+                    <td data-label="پایان"><input type="time" name="sched[<?php echo $day; ?>][end_time]" value="<?php echo esc_attr((string) ($s['end_time'] ?? '13:00')); ?>" required></td>
+                    <td data-label="وقفه از"><input type="time" name="sched[<?php echo $day; ?>][break_start]" value="<?php echo esc_attr((string) ($s['break_start'] ?? '')); ?>"></td>
+                    <td data-label="وقفه تا"><input type="time" name="sched[<?php echo $day; ?>][break_end]" value="<?php echo esc_attr((string) ($s['break_end'] ?? '')); ?>"></td>
+                    <td data-label="مدت نوبت (دقیقه)"><input type="number" name="sched[<?php echo $day; ?>][appointment_duration_min]" min="5" max="240" value="<?php echo esc_attr((string) ($s['appointment_duration_min'] ?? '20')); ?>" style="width:80px"></td>
+                    <td data-label="ظرفیت هر Slot"><input type="number" name="sched[<?php echo $day; ?>][slot_capacity]" min="1" max="50" value="<?php echo esc_attr((string) ($s['slot_capacity'] ?? '1')); ?>" style="width:70px"></td>
+                    <td data-label="فعال"><input type="checkbox" name="sched[<?php echo $day; ?>][is_active]" value="1" <?php checked($s === null || !empty($s['is_active'])); ?>></td>
+                    <td class="cpms-actions-cell" data-label="عملیات">
                         <button type="submit" name="sched_submit[<?php echo $day; ?>]" value="1" class="button button-small"><?php echo $s === null ? 'افزودن روز' : 'ذخیره روز'; ?></button>
                         <?php if ($s !== null) : ?>
-                            <button type="button" class="button button-small" onclick="cpmsSchedDelete(<?php echo (int) $s['id']; ?>)" style="color:#b32d2e">حذف</button>
+                            <button type="button" class="button button-small" data-cpms-schedule-delete="<?php echo (int) $s['id']; ?>" data-cpms-confirm="حذف برنامه این روز؟" style="color:#b32d2e">حذف</button>
                         <?php endif; ?>
                     </td>
                 </tr>
@@ -247,15 +247,6 @@ final class ClinicianAdminPage
         <input type="hidden" name="clinician_id" value="<?php echo $cid; ?>">
         <input type="hidden" name="schedule_id" value="">
     </form>
-    <script>
-        function cpmsSchedDelete(id) {
-            if (!confirm('حذف برنامه این روز؟')) { return; }
-            var f = document.getElementById('cpms-sched-del');
-            f.schedule_id.value = id;
-            f.submit();
-        }
-    </script>
-
     <!-- استثناها -->
     <h2 class="title" style="margin-top:18px">استثناها (تعطیلی / مرخصی / بستن / باز کردن)</h2>
     <?php if ($exceptions !== []) : ?>
@@ -269,7 +260,7 @@ final class ClinicianAdminPage
                     <td dir="ltr"><?php echo esc_html(($e['start_time'] ?? '—') . ' تا ' . ($e['end_time'] ?? '—')); ?></td>
                     <td><?php echo esc_html((string) ($e['reason'] ?? '')); ?></td>
                     <td>
-                        <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" onsubmit="return confirm('حذف این استثنا؟');">
+                        <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" data-cpms-confirm="حذف این استثنا؟">
                             <?php wp_nonce_field('cpms_exception_delete'); ?>
                             <input type="hidden" name="action" value="cpms_exception_delete">
                             <input type="hidden" name="clinician_id" value="<?php echo $cid; ?>">

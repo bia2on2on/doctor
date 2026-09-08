@@ -211,6 +211,111 @@ body.cpms-admin .cpms-cap-list label { display: flex; align-items: flex-start; g
 body.cpms-admin .cpms-sensitive { color: var(--cpms-danger); font-weight: 600; }
 body.cpms-admin .cpms-cap-group h4 { margin: 12px 0 6px; color: var(--cpms-text); font-size: 13px; }
 
+/* ---------- Responsive tables: card/row transformation (scoped, CLI-driven) ----------
+   فقط جدول‌هایی که `cpms-table-responsive` دارند در viewport باریک به کارت تبدیل
+   می‌شوند؛ بقیهٔ `.widefat` فقط overflow ملایم می‌گیرند (بدون nowrap که clipping می‌سازد). */
+body.cpms-admin table.cpms-table-responsive { width: 100%; border-collapse: collapse; }
+body.cpms-admin table.cpms-table-responsive td[data-label] { position: relative; }
+
+@media (max-width: 782px) {
+  body.cpms-admin table.cpms-table-responsive { display: block; }
+  body.cpms-admin table.cpms-table-responsive thead { display: none; }
+  body.cpms-admin table.cpms-table-responsive tbody { display: block; }
+  body.cpms-admin table.cpms-table-responsive tr {
+    display: block;
+    border: 1px solid var(--cpms-border-strong);
+    border-radius: var(--cpms-radius);
+    background: var(--cpms-surface);
+    padding: 10px 12px;
+    margin: 0 0 12px;
+  }
+  body.cpms-admin table.cpms-table-responsive td {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 7px 0;
+    border-bottom: 1px solid var(--cpms-border);
+    white-space: normal;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+    min-width: 0;
+  }
+  body.cpms-admin table.cpms-table-responsive td:last-child { border-bottom: none; padding-bottom: 2px; }
+  body.cpms-admin table.cpms-table-responsive td::before {
+    content: attr(data-label);
+    flex: 0 0 auto;
+    min-width: 92px;
+    font-weight: 600;
+    color: var(--cpms-text-muted);
+    line-height: 1.6;
+  }
+  /* سلول عملیات: برچسب در یک خط و دکمه‌ها زیر آن (قابل لمس، بدون colliding) */
+  body.cpms-admin table.cpms-table-responsive td.cpms-actions-cell { flex-wrap: wrap; }
+  body.cpms-admin table.cpms-table-responsive td.cpms-actions-cell::before { flex-basis: 100%; margin-bottom: 6px; }
+  body.cpms-admin table.cpms-table-responsive td.cpms-actions-cell .button { margin: 3px 0 3px 6px; }
+  body.cpms-admin table.cpms-table-responsive td.cpms-actions-cell .button:first-of-type { margin-inline-start: 0; }
+}
+
+/* ---------- Permissions: group accordions (Advanced) ---------- */
+body.cpms-admin .cpms-cap-group {
+  border: 1px solid var(--cpms-border);
+  border-radius: var(--cpms-radius-sm);
+  margin: 8px 0;
+  background: var(--cpms-surface);
+}
+body.cpms-admin .cpms-cap-group > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  cursor: pointer;
+  font-weight: 600;
+  padding: 10px 12px;
+  color: var(--cpms-text);
+}
+body.cpms-admin .cpms-cap-group > summary .cpms-group-count { color: var(--cpms-text-muted); font-weight: 500; }
+body.cpms-admin .cpms-cap-group > summary .cpms-sensitive { margin-inline-start: auto; }
+body.cpms-admin .cpms-cap-group .cpms-cap-list { padding: 4px 12px 12px; margin-top: 0; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+body.cpms-admin .cpms-cap-list label[data-cap] {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  line-height: 1.6;
+  padding: 4px 0;
+  min-height: 28px;
+}
+
+/* ---------- Confirmation modal (accessible, capturable) ---------- */
+body.cpms-admin .cpms-modal-overlay,
+.cpms-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(16, 20, 26, .5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 999999;
+  padding: 16px;
+}
+body.cpms-admin .cpms-modal,
+.cpms-modal {
+  background: var(--cpms-surface, #fff);
+  border-radius: var(--cpms-radius, 10px);
+  box-shadow: 0 10px 40px rgba(0,0,0,.28);
+  max-width: 460px;
+  width: 100%;
+  padding: 20px 22px;
+  box-sizing: border-box;
+}
+body.cpms-admin .cpms-modal h3,
+.cpms-modal h3 { margin: 0 0 10px; font-size: 16px; color: var(--cpms-text, #1d2327); }
+body.cpms-admin .cpms-modal p,
+.cpms-modal p { margin: 0 0 18px; color: var(--cpms-text, #1d2327); line-height: 1.7; word-break: break-word; }
+body.cpms-admin .cpms-modal .cpms-modal-actions,
+.cpms-modal .cpms-modal-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+body.cpms-admin .cpms-modal .cpms-modal-actions .button,
+.cpms-modal .cpms-modal-actions .button { flex: 1 1 120px; min-height: 42px; margin: 0; }
+
 /* ---------- Responsive (6 breakpoints) ---------- */
 @media (max-width: 1400px) and (min-width: 1201px) {
   body.cpms-admin .cpms-cards { grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); }
@@ -230,12 +335,14 @@ body.cpms-admin .cpms-cap-group h4 { margin: 12px 0 6px; color: var(--cpms-text)
   body.cpms-admin .button-primary,
   body.cpms-admin .button-secondary,
   body.cpms-admin input[type="checkbox"] { min-height: 40px; }
-  body.cpms-admin .widefat { display: block; overflow-x: auto; white-space: nowrap; }
+  /* جدول‌های غیر کارتی: فقط overflow ملایم (بدون nowrap که clipping می‌سازد) */
+  body.cpms-admin .widefat { display: block; overflow-x: auto; }
 }
 @media (max-width: 480px) {
   body.cpms-admin .cpms-panel, body.cpms-admin .cpms-role-preset { padding: 12px; }
   body.cpms-admin .cpms-empty { padding: 24px 14px; }
   body.cpms-admin .wrap input.regular-text { width: 100%; }
+  body.cpms-admin .cpms-cap-list { grid-template-columns: 1fr; }
 }
 
 /* ---------- LTR mixed content (code, ids, emails, times) ---------- */

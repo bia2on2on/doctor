@@ -232,7 +232,7 @@ final class SystemPage
                                 <input type="hidden" name="backup_id" value="<?php echo esc_attr((string) $b['backup_id']); ?>">
                                 <button class="button button-small">تأیید کامل</button>
                             </form>
-                            <form method="post" style="display:inline" onsubmit="return confirm('حذف این بکاپ؟')">
+                            <form method="post" style="display:inline" data-cpms-confirm="حذف این بکاپ؟">
                                 <?php wp_nonce_field('cpms_backup_delete'); ?>
                                 <input type="hidden" name="action" value="cpms_backup_delete">
                                 <input type="hidden" name="backup_id" value="<?php echo esc_attr((string) $b['backup_id']); ?>">
@@ -256,7 +256,7 @@ final class SystemPage
                 <p><strong>⛔ هشدار:</strong> بازیابی، جدول‌های <code>cpms_*</code> را از بکاپ بازمی‌گرداند و دادهٔ فعلی آن‌ها را جایگزین می‌کند (فایل‌های پیوست هم در صورت وجود در بکاپ). <strong>WP Core هرگز دست نمی‌خورد.</strong> قبل از اعمال، یک <strong>Safety Backup</strong> خودکار ساخته می‌شود.</p>
             </div>
             <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>"
-                  onsubmit="return confirm('بازیابی، دادهٔ فعلی جدول‌های cpms_* را جایگزین می‌کند و ابتدا Safety Backup ساخته می‌شود. آیا مطمئن هستید؟')">
+                  data-cpms-confirm="بازیابی، دادهٔ فعلی جدول‌های cpms_* را جایگزین می‌کند و ابتدا Safety Backup ساخته می‌شود. آیا مطمئن هستید؟">
                 <?php wp_nonce_field('cpms_restore_apply'); ?>
                 <input type="hidden" name="action" value="cpms_restore_apply">
                 <p><label>Backup ID: <input type="text" name="backup_id" required dir="ltr"></label></p>

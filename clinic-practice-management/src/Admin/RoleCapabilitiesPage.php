@@ -288,12 +288,22 @@ final class RoleCapabilitiesPage
 
             <details class="cpms-details" style="margin-top:14px">
                 <summary>Advanced Permissions — ویرایش دقیق Capabilities</summary>
-                <p class="description">برای نقش‌های مخاطب‌حساس توصیه می‌شود دسترسی‌های غیرضروری را خاموش کنید.</p>
+                <p class="description">برای نقش‌های مخاطب‌حساس توصیه می‌شود دسترسی‌های غیرضروری را خاموش کنید. این بخش به‌صورت گروه‌های جمع‌شونده و کم‌تراکم ارائه می‌شود؛ هر گروه را فقط در صورت نیاز باز کنید.</p>
                 <p><input type="search" class="cpms-cap-search regular-text" data-scope="<?php echo esc_attr($role); ?>"
                         placeholder="جستجوی Capability… (فارسی یا فنی)" aria-label="جستجوی Capability"></p>
                 <?php foreach (self::GROUPS as $groupTitle => $capsInGroup) : ?>
-                    <div class="cpms-cap-group">
-                        <h4><?php echo esc_html($groupTitle); ?></h4>
+                    <?php
+                        $enabledInGroup = array_values(array_intersect($capsInGroup, $enabled));
+                        $groupSensitive = array_values(array_intersect($capsInGroup, self::SENSITIVE));
+                    ?>
+                    <details class="cpms-details cpms-cap-group" data-cap-group data-scope="<?php echo esc_attr($role); ?>">
+                        <summary>
+                            <span><?php echo esc_html($groupTitle); ?></span>
+                            <span class="cpms-group-count">(<?php echo count($enabledInGroup); ?>/<?php echo count($capsInGroup); ?>)</span>
+                            <?php if ($groupSensitive !== []) : ?>
+                                <span class="cpms-sensitive">⚠️ حساس</span>
+                            <?php endif; ?>
+                        </summary>
                         <div class="cpms-cap-list">
                             <?php foreach ($capsInGroup as $cap) : ?>
                                 <?php $sensitive = in_array($cap, self::SENSITIVE, true); ?>
@@ -306,7 +316,7 @@ final class RoleCapabilitiesPage
                                 </label>
                             <?php endforeach; ?>
                         </div>
-                    </div>
+                    </details>
                 <?php endforeach; ?>
             </details>
         </div>

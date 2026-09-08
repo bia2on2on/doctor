@@ -197,13 +197,41 @@ jobs:
           global $wpdb;
           $db = \ClinicCore\Bootstrap\App::db();
           $now = $db->nowUtcSql();
+          // نمایش واقعیِ فارسی برای رابط کاربری (نه شناسه‌های فنی) — این فقط data seeding است؛
+          // هیچ تغییر Production/sanitize ایجاد نمی‌شود.
+          $names = [
+              getenv('DOCTOR_USER') => 'دکتر آزمایشی',
+              getenv('MANAGER_USER') => 'مدیر کلینیک آزمایشی',
+              getenv('SECRETARY_USER') => 'منشی آزمایشی',
+              getenv('ACCOUNTANT_USER') => 'حسابدار آزمایشی',
+          ];
+          foreach ($names as $login => $display) {
+              $u = get_user_by('login', $login);
+              if ($u !== false) { wp_update_user(['ID' => (int) $u->ID, 'display_name' => $display]); }
+          }
           $uid = (int) get_user_by('login', getenv('DOCTOR_USER'))->ID;
           $wpdb->query($wpdb->prepare(
               'INSERT INTO ' . $db->table('cpms_clinicians') . ' (clinic_id, full_name, wp_user_id, is_active, created_at, updated_at) VALUES (1, %s, %d, 1, %s, %s)',
-              'دکتر پذیرش (Synthetic)', $uid, $now, $now
+              'پزشک آزمایشی', $uid, $now, $now
           ));
+          $cid = (int) $wpdb->insert_id;
+          // یک برنامهٔ هفتگی «پُر» برای پزشک تجربی — تا اسکرین‌شات Schedule خالی نباشد.
+          try {
+              \ClinicCore\Bootstrap\App::scheduleService()->create($uid, [
+                  'clinician_id' => $cid, 'day_of_week' => 0, // شنبه
+                  'start_time' => '09:00', 'end_time' => '13:00',
+                  'break_start' => '12:00', 'break_end' => '12:30',
+                  'appointment_duration_min' => 20, 'slot_capacity' => 1, 'is_active' => 1,
+              ]);
+              \ClinicCore\Bootstrap\App::scheduleService()->create($uid, [
+                  'clinician_id' => $cid, 'day_of_week' => 2, // دوشنبه
+                  'start_time' => '16:00', 'end_time' => '20:00',
+                  'break_start' => '', 'break_end' => '',
+                  'appointment_duration_min' => 30, 'slot_capacity' => 1, 'is_active' => 1,
+              ]);
+          } catch (\Throwable $e) { echo "(schedule seed: {$e->getMessage()})\n"; }
           \ClinicCore\Bootstrap\App::settings()->set('files.storage_path', '/home/runner/rwp-storage');
-          echo "doctor linked (wp_user_id=$uid); files.storage_path set\n";
+          echo "doctor linked (wp_user_id=$uid); clinician_id=$cid; files.storage_path set\n";
           PHPEOF
           wp eval-file /tmp/acc/setup-roles.php --path="$WP_DIR" --allow-root
 
