@@ -35,7 +35,7 @@ final class LocalFileStorage
     /**
      * یادداشت راه‌اندازی — `.htaccess` روی nginx خوانده نمی‌شود.
      */
-    private const GUARD_README = "CPMS legacy clinical storage\n\nAs of OD-7 the default storage root is OUTSIDE the document root, so newly\nstored clinical files have no URL at all and can only be delivered through\nthe authenticated application endpoint.\n\nThis directory is the LEGACY location. If files are still here, the\nidempotent migration has not completed yet; it retries on every admin or\nREST request. Nothing here should be served over HTTP.\n\nApache/IIS: the .htaccess and web.config in this directory deny access.\nnginx IGNORES .htaccess, so until migration completes add:\n\n    location ^~ /wp-content/clinic-files/ { deny all; return 404; }\n\nThese guards are defence in depth. They are NOT the authorization boundary.\n"
+    private const GUARD_README = "CPMS legacy clinical storage\n\nAs of OD-7 the default storage root is OUTSIDE the document root, so newly\nstored clinical files have no URL at all and can only be delivered through\nthe authenticated application endpoint.\n\nThis directory is the LEGACY location. If files are still here, the\nidempotent migration has not completed yet; it retries on every admin or\nREST request. Nothing here should be served over HTTP.\n\nApache/IIS: the .htaccess and web.config in this directory deny access.\nnginx IGNORES .htaccess, so until migration completes add:\n\n    location ^~ /wp-content/clinic-files/ { deny all; return 404; }\n\nThese guards are defence in depth. They are NOT the authorization boundary.\n";
 
     public function __construct(private readonly string $basePath)
     {
