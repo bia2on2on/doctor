@@ -545,7 +545,7 @@ final class BackupStorageBoundaryTest extends WP_UnitTestCase
         file_put_contents($src . '/db.sql', 'SOURCE-TRUTH');
 
         $dst = $this->tmp . '/private-dst/' . $id;
-        mkdir(dirname($dst), 0777, true);
+        mkdir($dst, 0777, true);
         file_put_contents($dst . '/db.sql', 'DESTINATION-TRUTH');
 
         $report = (new PrivateStorageMigrator())->migrate($this->legacyProbe, $this->tmp . '/private-dst');
