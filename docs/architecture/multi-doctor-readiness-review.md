@@ -1,5 +1,20 @@
 # بازبینی آمادگی چندپزشکی — One Product / One Core (ADR-0027)
 
+> ## ⚠️ DOCUMENTATION DRIFT — این سند با معماری هدف هم‌راستا نیست
+>
+> **این سند هنوز مدل قدیمی را بیان می‌کند و به‌عمد اصلاح نشده است** (قاعدهٔ Owner: هر سند در فاز مالک کدش، هم‌زمان با کد به‌روز می‌شود — نه wholesale rewrite زودهنگام).
+>
+> - **معماری مرجع:** [ADR-0031](../adr/ADR-0031-organization-clinic-location-scoped-authorization.md) — `Organization → Clinic → Location → Doctor → User/Staff`
+> - **فازبندی مرجع:** [roadmap.md](../roadmap/roadmap.md) §۰ — Owner-approved Phase 0..20
+> - **فهرست دقیق تعارض‌های این سند + فاز مالک هر مورد:** [drift-register.md](../drift-register.md)
+>
+> ⛔ **هر ذکر `clinic_id = 1` در این سند تاریخی است و معماری مطلوب آینده نیست.** طبق **AD-13**، `clinic_id = 1` مستقیم در کد جدید **ممنوع** است.
+> ⛔ ارجاع‌های `V1` / `V1.5` / `V2` منسوخ‌اند: Multi-Clinic = **Phase 2** · Role/Scope = **Phase 3** · Master Data = **Phase 4**.
+
+---
+
+
+
 **تاریخ:** 2026-09-06 | **ایجنت:** Arena | **مبنای تصمیم:** ADR-0027 (تصمیم نهایی محصول کارفرما)
 **روش:** ممیزی کامل Schema (۳۷ جدول Migration 0001 + 0002/0003/0004/0005) + کد (`src/` — Services/Controllers/Jobs/Admin pages) + اسناد (ADR-0003/0026، permission-matrix، SRS)
 **قاعده:** ماژول‌های کارکردی فقط برای «خلوص مفهومی» بازنویسی نمی‌شوند؛ اقلام Minor Alignment مستند و در فاز مناسب اجرا می‌شوند.

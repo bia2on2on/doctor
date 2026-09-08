@@ -1,6 +1,29 @@
 # ADR-0027 — یک محصول، یک Core: مطب تک‌پزشکی = زیرمجموعه درمانگاه چندپزشکی
 
-وضعیت: Accepted | تاریخ: 2026-09-06 | نوع: **تصمیم محصول نهایی کارفرما (دائمی)**
+> ## ⚠️ PARTIALLY SUPERSEDED BY [ADR-0031](ADR-0031-organization-clinic-location-scoped-authorization.md) — 2026-09-08
+>
+> **وضعیت: Accepted (اصل محصول) / Superseded (مدل دامنه).**
+>
+> **آنچه معتبر می‌ماند — و در ADR-0031 صریحاً تأیید شده:**
+> - بند ۱ — **One Product / One Core / One Database / Adaptive UX.** دو Plugin یا Fork جداگانه همچنان ممنوع است. (= AD-04)
+> - بند ۳ — **Scope و Authorization همیشه سرور-side.** فیلتر فرانت‌اند هرگز مبنای مجوز نیست.
+> - بند ۴ — Specialty = مفهوم دامنه، نه نقش Authorization؛ Doctor↔Specialty باید M:N باشد.
+> - بند ۵ — **Patient موجودیت clinic-level است؛ «پزشک بودن در همان درمانگاه» به‌طور خودکار دسترسی به Private Notes پزشک دیگر نمی‌دهد.** (ADR-0031 آن را با AD-09 به سطح Organization تعمیم می‌دهد.)
+> - بند ۶ — مالی هرگز به بالینی imply نمی‌شود.
+> - بند ۷ — این ADR «قید معماری دائمی» است نه مجوز پیاده‌سازی زودهنگام.
+>
+> **آنچه Superseded شد:**
+> - **مدل مفهومی هدف در بخش Context** — `Clinic → Branch(es) → Departments/Specialties → Clinicians`. این مدل **لایهٔ Organization ندارد** (قید C-1) و «Branch» هرگز به schema نرسید (قید C-2).
+>   **مدل مرجع از 2026-09-08:** `Organization → Clinic → Location → Doctor → User/Staff`.
+>   واژهٔ **«Branch» از این پس معادل «Location»** خوانده می‌شود؛ اسناد جدید فقط «Location» به کار می‌برند.
+> - **ارجاع به `docs/architecture/multi-doctor-readiness-review.md` با حکم «۰ FOUNDATIONAL CHANGE REQUIRED».** آن حکم با شواهد اجرایی Phase 0 (۹ قید C-1..C-9) رد می‌شود.
+> - **زمان‌بندی «قابلیت‌های چندپزشکی در فاز خودشان (V2)».** واژهٔ «V2» منسوخ است: Multi-Clinic/Multi-Location = **Phase 2**، Role/Scope = **Phase 3** (Roadmap تأییدشدهٔ Owner).
+>
+> بند خودِ همین ADR که می‌گوید «deviations نیاز به ADR جدید با تأیید کارفرما دارند» با ADR-0031 اجرا شده است.
+
+---
+
+وضعیت: **Accepted (اصل محصول)** / **Partially Superseded by ADR-0031 (مدل دامنه)** | تاریخ: 2026-09-06 | نوع: **تصمیم محصول نهایی کارفرما (دائمی)**
 
 ## Context
 

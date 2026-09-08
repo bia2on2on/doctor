@@ -2,7 +2,45 @@
 
 > **این فایل سند жив پروژه است.** هر ایجنت (AI یا انسان) که روی این repo کار می‌کند **باید** قبل از شروع این فایل را کامل بخواند و بعد از پایان کارِ خود، در بخش «لاگ کار ایجنت‌ها» (انتهای همین فایل) ورودی ثبت کند.
 
-نسخه: 1.0 | آخرین به‌روزرسانی: 2026-09-05 | نگهدارنده: ایجنت‌های Arena (به‌صورت append-only)
+نسخه: 2.0 | آخرین به‌روزرسانی: 2026-09-08 | نگهدارنده: ایجنت‌های Arena (به‌صورت append-only)
+
+---
+
+> # 🔴 مرجع فازبندی — پیش از هر چیز این را بخوان
+>
+> ## **Owner-approved Phase 0..20 Roadmap = authoritative execution roadmap.**
+>
+> مرجع رسمی: [`docs/roadmap/roadmap.md`](roadmap/roadmap.md) **§۰**.
+>
+> نظام‌های **`F0..F10`**، **`Doc-Phase 1..8`** و برچسب‌های **`V1` / `V1.5` / `V2`** از 2026-09-08 **Legacy/Historical** هستند. در متن همین فایل و در گزارش‌های `docs/phase-reports/` فراوان دیده می‌شوند — **آن‌ها را به‌عنوان Roadmap اجرایی فعلی تفسیر نکن.** جدول نگاشتشان در `roadmap.md` §۲-۱ است.
+>
+> | Phase | عنوان | وضعیت |
+> |---|---|---|
+> | Phase 0 | Git Checkpoint | ✅ CLOSED — [`report-phase-0-reverification.md`](phase-reports/report-phase-0-reverification.md) |
+> | Phase 0.5 | Target Architecture & Migration Plan | ✅ CLOSED — [`phase0.5-target-model.md`](architecture/phase0.5-target-model.md) |
+> | Phase 1 | Security Hardening | ⏸ منتظر Gate Approval |
+> | Phase 2 | Multi-Clinic Core | ⏳ |
+> | Phase 3 | Role & Access Control | ⏳ |
+> | Phase 4 | Master Data | ⏳ |
+> | Phase 5 | Pricing Engine | ⏳ |
+> | Phase 6 | Scheduling Engine | ⏳ |
+> | Phase 7 | Appointment Engine | ⏳ |
+> | Phase 8..20 | عنوان‌گذاری‌نشده | ⚠️ OPEN DECISION |
+>
+> ## معماری هدف الزام‌آور — [ADR-0031](adr/ADR-0031-organization-clinic-location-scoped-authorization.md)
+>
+> ```
+> Organization → Clinic → Location → Doctor → User/Staff
+> ```
+>
+> **سه قاعده‌ای که بیشترین احتمال نقض ناخواسته را دارند:**
+> - **AD-02** — Organization اجباری است. هیچ مسیر موازی برای `Organization = NULL`.
+> - **AD-12** — Migration = versioned forward. drop/recreate مسیر محصول نیست.
+> - **AD-13** — **`clinic_id = 1` مستقیم در کد جدید ممنوع است** (و همین‌طور `organization_id = 1` و `location_id = 1`). ۵۴ مورد موجود بدهی فنی Phase 2 هستند — اضافه‌کردن مورد پنجاه‌وپنجم ممنوع است.
+>
+> **قاعدهٔ اجرا از Phase 1 به بعد:** code + tests + documentation باید **همراه هم** به‌روز شوند. checkpoint commit کوچک مجاز است؛ **merge فقط پس از Gate نهایی فاز**.
+>
+> **تعارض اسناد:** [`docs/drift-register.md`](drift-register.md) — اسنادی که هنوز مدل قدیمی را بیان می‌کنند، با فاز مالک هر مورد.
 
 ---
 
@@ -12,10 +50,12 @@
 2. وضعیت repo را verify کن — دستورات آماده:
    ```bash
    git log --oneline -10 && git status --short
-   gh run list --branch arena/01a071c4-doctor --limit 3
-   gh pr view 1 --json state,statusCheckRollup
+   BR=$(git rev-parse --abbrev-ref HEAD)
+   gh run list --branch "$BR" --limit 3
+   gh pr list --state all --limit 5 --json number,state,title,headRefName
    ```
-3. وضعیت فازها را از `docs/roadmap/roadmap.md` و آخرین گزارش `docs/phase-reports/report-*.md` بگیر.
+   > ⚠️ نسخهٔ قبلی این چک‌لیست شاخهٔ ثابت `arena/01a071c4-doctor` و `PR #1` را hardcode کرده بود. آن شاخه منسوخ است و **PR #1 از مدت‌ها پیش MERGED شده** — روی شاخهٔ جاری کار کن.
+3. وضعیت فازها را **فقط** از `docs/roadmap/roadmap.md` **§۰ (Owner-approved Phase 0..20)** بگیر — نه از جدول تاریخی `F*` و نه از گزارش فاز قبلی.
 4. **قاعده طلا:** Git history منبع تأیید است؛ گزارش‌های قبلی فقط handoff هستند — همه ادعاها را از کد/تست/CI verify کن.
 5. هیچ فاز جدیدی بدون تأیید صریح کارفرما شروع نکن (قانون Gate — Section 56).
 
@@ -23,7 +63,9 @@
 
 ## 1. معرفی پروژه
 
-**CPMS** = سیستم مدیریت مطب (Clinic Practice Management System) به‌صورت **افزونه WordPress** (PHP 8.1+، MySQL 8، WP 6.4+ — runtime تأییدشده روی WP 6.4/6.5/6.6/6.7.2 و PHP 8.1–8.4) — تک‌کلینیک در V1، تجاری با لایسنس.
+**CPMS** = سیستم مدیریت مطب (Clinic Practice Management System) به‌صورت **افزونه WordPress** (PHP 8.1+، MySQL 8، WP 6.4+ — runtime تأییدشده روی WP 6.4/6.5/6.6/6.7.2 و PHP 8.1–8.4) — تجاری با لایسنس.
+
+> ⛔ **تصحیح (2026-09-08):** جملهٔ قبلی «تک‌کلینیک در V1» بود. **آن جمله دیگر معتبر نیست.** طبق [ADR-0031](adr/ADR-0031-organization-clinic-location-scoped-authorization.md) (AD-01)، **Multi-Clinic / Multi-Location جزو Core است** — نه افزودنی، نه V2. مطب تک‌پزشکی هم دقیقاً از همان زنجیرهٔ `Organization → Clinic → Location` استفاده می‌کند (AD-04)؛ «حالت مطب» فقط یک تطبیق UX است، **هرگز یک مسیر کدی جدا نیست**. پیاده‌سازی در **Phase 2**.
 
 - مسیر افزونه: `clinic-practice-management/`
 - Namespace: `ClinicCore\` → `clinic-practice-management/src/`
@@ -76,6 +118,31 @@ tests/
 
 ### آخرین وضعیت فنی (verify شده)
 
+> ⛔ **این «Snapshot 2026-09-05» تاریخی است.** اعداد به‌روزشده در جدول زیر آمده؛ متن تاریخی زیرش دست‌نخورده مانده.
+>
+> ### خط پایهٔ اثبات‌شده — ممیزی Phase 0 (بازبینی 2026-09-08)
+>
+> | سنجه | مقدار صحیح | ادعای منسوخ |
+> |---|---|---|
+> | جدول `cpms_*` | **۴۱** | ~~۳۹~~ |
+> | فایل Migration | **۹** (`0001`..`0009`) | ~~0001–0003~~ |
+> | Foreign Key | **۳۹** (۳۸ در CREATE + `fk_hwpage_bg` با ALTER) | — |
+> | **FK روی `clinic_id`** | **۴ فقط** ⇒ ۲۱ جدول بدون FK (قید C-8) | — |
+> | جدول دارای `clinic_id` | **۲۵** از ۴۱ | — |
+> | Capability | **۴۶** (شمارش با `grep 'public const .* = ...cpms_'` بیش‌شمارش می‌کند: ۵ `ROLE_*` + ۱ `OPTION_*`) | — |
+> | نقش ثبت‌شده | **۵** — `cpms_patient`, `cpms_secretary`, `cpms_doctor`, `cpms_accountant`, `cpms_manager` | ~~۳~~ |
+> | route REST | **۸۰ در زمان اجرا** (۷۷ نقطهٔ ثبت در سورس — عدد را همیشه صریح بگو) | ~~۷۵~~ |
+> | `permission_callback` | **۸۹** = ۶۷ `__return_true` + ۲۲ gated؛ از ۶۷ مورد، **۶۲ guard داخل handler دارند** و **۵ عمداً public**اند (قید C-6) | — |
+> | `admin_post_*` / AJAX | **۲۵** / **۰** | — |
+> | فایل تست | **۸۴** (۳۳ Unit + ۴۹ Integration) — تعداد *متد* تست بدون اجرای PHPUnit اثبات‌پذیر نیست | ~~۲۰۳ تست~~ |
+> | سند tracked در `docs/` | **۸۴** | ~~۸۵~~ |
+> | `clinic_id = 1` hardcode | **۵۴** در **۲۳ فایل** — **۲۴ داخل `Infrastructure/Repository/`**، ۳۰ بیرون؛ ۱۳ از ۲۳ فایل Repository (قید C-4) | ~~~۴۴~~ |
+> | Default-Parameter مخفی | **۳** — `AuditLogger.php:45`, `Idempotency.php:37`, `Settings.php:145` | — |
+> | PR | ۹ PR؛ **PR #1 MERGED**؛ آخرین = **#9 MERGED** | ~~PR #1 OPEN~~ |
+> | شاخهٔ کاری | از `git rev-parse --abbrev-ref HEAD` بخوان | ~~`arena/01a071c4-doctor`~~ |
+>
+> **سه مکانیزمی که در ADRها ادعا شده‌اند و در کد وجود ندارند:** `AccessPolicy` (۰ فایل) · `resolvePatient()` (۰) · Dangling-Check Job (۰ از ۱۶ handler). به‌علاوه `Repository Base` وجود ندارد و **Patient Merge فقط schema است**.
+
 - **HEAD فعلی:** Pilot/Staging Gate فعال روی `arena/01a071c4-doctor` (F9 کامل در `c5e82a7` + Gate tooling/fixes) — وضعیت لحظه‌ای در report-pilot-gate.md §15
 - **PR #1:** OPEN — هر ۵ چک (Unit PHP 8.1/8.2/8.3/8.4 + Integration WP 6.7.2 + MySQL 8)
 - **تست‌ها:** Unit سبز روی PHP 8.1–8.4؛ Integration بعد از F6 = ۲۰۳ تست (FinanceFlowTest ۱۷ + قبلی‌ها)، ۰ skip — شامل concurrency با fork واقعی
@@ -106,7 +173,12 @@ Client Final Decisions → Approved ADRs (scope) → Engineering Baseline → SR
 ```
 - تعارض مهم = **STOP** با قالب ISSUE / IMPACT / OPTIONS / RECOMMENDATION و انتظار برای پاسخ.
 - تصمیم نهایی کارفرما بر همه چیز مقدم است.
-- فازبندی: منبع حقیقت = `docs/roadmap/roadmap.md` (خطای رایج: خواندن فاز بعدی از گزارش فاز قبلی — گزارش‌ها فقط خلاصه‌اند).
+- **فازبندی: منبع حقیقت = Owner-approved Phase 0..20 Roadmap** — `docs/roadmap/roadmap.md` **§۰**.
+  - خطای رایج ۱: خواندن فاز بعدی از گزارش فاز قبلی — گزارش‌ها فقط خلاصه‌اند.
+  - خطای رایج ۲ (**جدید و پرخطرتر**): خواندن فاز از جدول تاریخی `F0..F10` یا برچسب‌های `V1.5`/`V2` در همان فایل. آن‌ها **Legacy** هستند. `V2` منحل شده و محتوایش به Phase 2/3/4 بازتوزیع شده است.
+- **تقدم اسناد به‌روزشده:** تصمیم نهایی Owner ← **ADR-0031** ← ADRهای دیگر ← Engineering Baseline ← SRS ← State Machines/ERD ← API Contract ← Settings ← Implementation.
+  ADR-0031 بر ADR-0003 (کامل) و بر بخش‌هایی از ADR-0027 و ADR-0026 مقدم است.
+- **تعارض شناخته‌شدهٔ سند-با-واقعیت** پیش از هر کار در `docs/drift-register.md` چک شود؛ آن موارد **از قبل ثبت شده‌اند** و نیازی به STOP مجدد ندارند — فقط در فاز مالکشان اصلاح می‌شوند.
 
 ### 3.2 شرایط STOP (فقط این موارد — بقیه با قضاوت مهندسی)
 
@@ -124,7 +196,8 @@ Scope change، تغییر main workflow، تغییر قاعده business کار�
 
 - **Error codes:** همه `CLINIC_*`، stable/ماشین‌خوان، registry = `docs/api/error-codes.md` (هر کد جدید آنجا ثبت شود)؛ پیام فارسی کاربر جدا از کد فنی. کلید `status` در envelope رزرو است.
 - **Patient ≠ WP User، Appointment ≠ Visit، Invoice ≠ Payment** — کلاینت هرگز trusted نیست؛ UI permission ≠ backend authorization؛ بیمار A نباید داده بیمار B را ببیند؛ منشی نمی‌تواند نوت خصوصی پزشک را ببیند.
-- **Authorization = Capability، نه نام نقش (ADR-0026):** منطق جدید هرگز `if role == X` نمی‌نویسد — فقط `user_can('cpms_…')` (+ Scope در V2). نقش‌های ستادی سفارشی (حسابدار/دستیار/…) باید بدون تغییر Business Logic کار کنند؛ نام نقش فقط برچسب Audit است. حوزه‌ها مستقل‌اند: مالی ⊥ بالینی ⊥ هویت ⊥ یادداشت خصوصی؛ Cap عمومی هرگز `cpms_private_note_*` را ضمنی نمی‌دهد. همه داشبوردهای ستادی Responsive‌اند (تبلت/قلم = بهینه‌سازی دست‌خط، نه محدودیت دستگاه).
+- **Authorization = Capability، نه نام نقش (ADR-0026 D-1 — همچنان معتبر):** منطق جدید هرگز `if role == X` نمی‌نویسد.
+  > 🔄 **به‌روزرسانی (ADR-0031، AD-06):** «(+ Scope در V2)» منسوخ است. مدل هدف: نقش **صفتِ رابطهٔ (User, Clinic)** است نه صفتِ User؛ `User↔Clinic` رابطهٔ **M:N** است (AD-05). نقطهٔ ورود واحد `AuthorizationService::can(wpUserId, capability, ScopeContext{clinicId, ?locationId, ?resource})` می‌شود و فراخوانی مستقیم `current_user_can('cpms_…')` بیرون از آن سرویس **ممنوع** خواهد شد (با architecture test). پیاده‌سازی در **Phase 3** — امروز هنوز `user_can` الگوی جاری است. کلاس `AccessPolicy` که ADR-0002/0026 به آن ارجاع می‌دهند **وجود ندارد**. نقش‌های ستادی سفارشی (حسابدار/دستیار/…) باید بدون تغییر Business Logic کار کنند؛ نام نقش فقط برچسب Audit است. حوزه‌ها مستقل‌اند: مالی ⊥ بالینی ⊥ هویت ⊥ یادداشت خصوصی؛ Cap عمومی هرگز `cpms_private_note_*` را ضمنی نمی‌دهد. همه داشبوردهای ستادی Responsive‌اند (تبلت/قلم = بهینه‌سازی دست‌خط، نه محدودیت دستگاه).
 - **2FA (V1.5):** TOTP RFC 6238 برای حساب‌های ممتاز بر اساس ACCESS نه role name.
 - **SMS:** همیشه از مسیر Notification→SmsService→ProviderInterface؛ credential هرگز hardcode/log نشود.
 - **Licensing:** انقضا هرگز داده پزشکی را قفل/حذف نمی‌کند؛ بعد از grace (پیش‌فرض ۷ روز) فقط عملیات جدید block؛ license server هرگز داده پزشکی نمی‌گیرد و در مسیر booking network call مستقیم ندارد.

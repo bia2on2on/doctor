@@ -1,6 +1,22 @@
 # ADR-0026 — نقش‌های پویا (Dynamic Roles) + مجوزدهی Capability/Scope + بررسی معماری
 
-تاریخ: 2026-09-06 | وضعیت: **Accepted** (تصریح کارفرما — Product/Architecture Clarification) | فاز ثبت: F6
+> ## ⚠️ PARTIALLY SUPERSEDED BY [ADR-0031](ADR-0031-organization-clinic-location-scoped-authorization.md) — 2026-09-08
+>
+> **آنچه معتبر می‌ماند:** D-1 (تصمیم مجوز فقط بر پایهٔ Capability، نه نام نقش)، D-2، D-3، D-5 تا D-14. ADR-0031 اصل D-1 را **نقض نمی‌کند؛ تکمیل می‌کند** — ارزیابی Capability از سطح سراسری به سطح **(User, Clinic)** منتقل می‌شود.
+>
+> **آنچه Superseded شد:**
+> - **D-4 — مدل Scope `OWN/ASSIGNED_DOCTORS/BRANCH/CLINIC/ALL_ALLOWED` روی ستون‌های موجود.** جایگزین: `cpms_clinic_memberships` + `cpms_membership_capabilities` + `cpms_membership_locations` با نقطهٔ ورود واحد `AuthorizationService::can()` و اولویت `deny > grant > preset` (AD-05، AD-06).
+> - **D-15 و همهٔ ارجاع‌های «V2».** طبق Roadmap تأییدشدهٔ Owner: Multi-Clinic = **Phase 2**، Role & Access Control = **Phase 3**.
+> - **بند «تا V2 عملیاتی = CLINIC با ثابت `clinic_id=1`» در بخش Consequences.** طبق **AD-13**، `clinic_id = 1` مستقیم در کد جدید ممنوع است.
+> - **ردیف جدول بررسی معماری: «تک‌کلینیک/تک‌پزشک Hard-code مشکل‌ساز؟ → ✅».** این ارزیابی با قید **C-4** (۵۴ مورد در ۲۳ فایل) در تعارض است.
+>
+> **تصحیح واقعیت — مکانیزم ناموجود:** این ADR (و ADR-0002) به `AccessPolicy` به‌عنوان «Single Source of Truth» ارجاع می‌دهند و §بررسی معماری آن را «از ابتدا Interface با `visibleRows`» توصیف می‌کند. **`AccessPolicy` در کد وجود ندارد** — `grep -rl "AccessPolicy" src` = ۰ فایل. نقش آن در معماری جدید توسط `AuthorizationService` ایفا می‌شود (Phase 3، هنوز پیاده نشده).
+>
+> **تصحیح واقعیت دوم:** این ADR ۳ نقش را مبنا می‌گیرد؛ کد فعلی **۵ نقش** ثبت می‌کند (`cpms_patient`, `cpms_secretary`, `cpms_doctor`, `cpms_accountant`, `cpms_manager` — `RolesAndCapabilities.php:186-190`).
+
+---
+
+تاریخ: 2026-09-06 | وضعیت: **Accepted** / **Partially Superseded by ADR-0031 (D-4، D-15، بندهای Scope)** | فاز ثبت: F6
 
 ## Context
 

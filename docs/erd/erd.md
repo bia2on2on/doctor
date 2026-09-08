@@ -1,5 +1,20 @@
 # ERD — CPMS
 
+> ## ⚠️ DOCUMENTATION DRIFT — این سند با معماری هدف هم‌راستا نیست
+>
+> **این سند هنوز مدل قدیمی را بیان می‌کند و به‌عمد اصلاح نشده است** (قاعدهٔ Owner: هر سند در فاز مالک کدش، هم‌زمان با کد به‌روز می‌شود — نه wholesale rewrite زودهنگام).
+>
+> - **معماری مرجع:** [ADR-0031](../adr/ADR-0031-organization-clinic-location-scoped-authorization.md) — `Organization → Clinic → Location → Doctor → User/Staff`
+> - **فازبندی مرجع:** [roadmap.md](../roadmap/roadmap.md) §۰ — Owner-approved Phase 0..20
+> - **فهرست دقیق تعارض‌های این سند + فاز مالک هر مورد:** [drift-register.md](../drift-register.md)
+>
+> ⛔ **هر ذکر `clinic_id = 1` در این سند تاریخی است و معماری مطلوب آینده نیست.** طبق **AD-13**، `clinic_id = 1` مستقیم در کد جدید **ممنوع** است.
+> ⛔ ارجاع‌های `V1` / `V1.5` / `V2` منسوخ‌اند: Multi-Clinic = **Phase 2** · Role/Scope = **Phase 3** · Master Data = **Phase 4**.
+
+---
+
+
+
 نسخه 1.0 | 2026-09-05 | فاز 4 | پیش‌شرط: SRS, State Machines تأییدشده
 
 ## 0. تصمیمات ساختاری کلیدی
