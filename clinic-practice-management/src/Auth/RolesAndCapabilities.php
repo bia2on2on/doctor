@@ -19,6 +19,10 @@ final class RolesAndCapabilities
     public const ROLE_PATIENT = 'cpms_patient';
     public const ROLE_SECRETARY = 'cpms_secretary';
     public const ROLE_DOCTOR = 'cpms_doctor';
+    /** نقش حسابدار (V1 — چ. G): فقط Capability مالی/گزارشی؛ بدون هیچ دسترسی بالینی/خصوصی. */
+    public const ROLE_ACCOUNTANT = 'cpms_accountant';
+    /** نقش مدیر کلینیک (V1 — چ. G): مدیریت ستادی/عملیاتی؛ بدون دسترسی بالینی/یادداشت خصوصی. */
+    public const ROLE_MANAGER = 'cpms_manager';
 
     // ===== Patient / Profile =====
     public const PATIENT_READ = 'cpms_patient_read';
@@ -144,6 +148,34 @@ final class RolesAndCapabilities
     ];
 
     /**
+     * حسابدار (V1 — چ. G): فقط مالی/گزارش/خروجی مالی. عمداً هیچ Capability
+     * بالینی/یادداشت خصوصی/نسخه/فایل/مشاوره ندارد (item 3). دسترسی بالینی/خصوصی
+     * در Backend (REST/Service) به‌صورت Capability-محور رد می‌شود.
+     */
+    public const ACCOUNTANT_CAPS = [
+        self::INVOICE_READ, self::INVOICE_CREATE, self::INVOICE_ADJUST, self::INVOICE_VOID,
+        self::PAYMENT_CREATE, self::PAYMENT_VOID, self::PAYMENT_REFUND,
+        self::FINANCE_READ, self::REPORT_READ,
+        self::EXPORT,
+        self::SEARCH,
+    ];
+
+    /**
+     * مدیر کلینیک (V1 — چ. G): مدیریت ستادی/عملیاتی (پیکربندی، کاربران، پزشکان،
+     * برنامه، سلامت سیستم، راه‌اندازی پیامک) + گزارش‌های عملیاتی مناسب. عمداً هیچ
+     * Capability بالینی/یادداشت خصوصی/نسخه/فایل ندارد (item 4)؛ برای مدیریت مطب
+     * مجبور به WordPress Administrator شدن نیست.
+     */
+    public const MANAGER_CAPS = [
+        self::CONFIG,
+        self::SMS_CONFIG,
+        self::PATIENT_READ,
+        self::QUEUE_READ,
+        self::REPORT_READ,
+        self::SEARCH,
+    ];
+
+    /**
      * ساخت نقش‌ها (idempotent) + به‌روزرسانی Capabilities (در صورت تغییر نسخه).
      */
     public static function register(): void
@@ -155,6 +187,8 @@ final class RolesAndCapabilities
         self::registerRole(self::ROLE_PATIENT, 'بیمار', ['read' => true]);
         self::registerRole(self::ROLE_SECRETARY, 'منشی مطب', self::capsMap(self::ROLE_SECRETARY));
         self::registerRole(self::ROLE_DOCTOR, 'پزشک', self::capsMap(self::ROLE_DOCTOR));
+        self::registerRole(self::ROLE_ACCOUNTANT, 'حسابدار', self::capsMap(self::ROLE_ACCOUNTANT));
+        self::registerRole(self::ROLE_MANAGER, 'مدیر کلینیک', self::capsMap(self::ROLE_MANAGER));
 
         // Administrator وردپرس: فقط فنی — بدون Medical/Audit/Export (P-3)
         $admin = get_role('administrator');
@@ -173,6 +207,10 @@ final class RolesAndCapabilities
      */
     private static function registerRole(string $role, string $label, array $caps): void
     {
+        // Baseline دسترسی wp-admin: هر نقش عملیاتی/ستادی باید `read` داشته باشد
+        // (در غیر این صورت WordPress اجازهٔ ورود به هیچ صفحهٔ مدیریتی را نمی‌دهد).
+        $caps = $caps + ['read' => true];
+
         $existing = get_role($role);
         if ($existing === null) {
             add_role($role, $label, $caps);
@@ -180,6 +218,9 @@ final class RolesAndCapabilities
             return;
         }
         // به‌روزرسانی: Capabilityهای جدید افزوده، Capabilityهای حذف‌شده برداشته می‌شوند
+        if (!$existing->has_cap('read')) {
+            $existing->add_cap('read');
+        }
         foreach (self::ALL_CAPS as $cap) {
             if (array_key_exists($cap, $caps) && !$existing->has_cap($cap)) {
                 $existing->add_cap($cap);
@@ -210,6 +251,8 @@ final class RolesAndCapabilities
         $defaults = match ($role) {
             self::ROLE_DOCTOR => self::DOCTOR_CAPS,
             self::ROLE_SECRETARY => self::SECRETARY_CAPS,
+            self::ROLE_ACCOUNTANT => self::ACCOUNTANT_CAPS,
+            self::ROLE_MANAGER => self::MANAGER_CAPS,
             default => [],
         };
         $overrides = self::overrides();
@@ -249,7 +292,7 @@ final class RolesAndCapabilities
      */
     public static function setRoleCaps(string $role, array $caps): bool
     {
-        if (!in_array($role, [self::ROLE_SECRETARY, self::ROLE_DOCTOR], true)) {
+        if (!in_array($role, [self::ROLE_SECRETARY, self::ROLE_DOCTOR, self::ROLE_ACCOUNTANT, self::ROLE_MANAGER], true)) {
             return false; // Patient: بدون Cap (P-5) — قابل ویرایش نیست
         }
 
@@ -259,6 +302,8 @@ final class RolesAndCapabilities
         // اهمیتی ندارد؛ وگرنه «بازگشت به پیش‌فرض» هرگز تشخیص داده نمی‌شد.
         $defaults = match ($role) {
             self::ROLE_DOCTOR => self::sanitizeCapList(self::DOCTOR_CAPS),
+            self::ROLE_ACCOUNTANT => self::sanitizeCapList(self::ACCOUNTANT_CAPS),
+            self::ROLE_MANAGER => self::sanitizeCapList(self::MANAGER_CAPS),
             default => self::sanitizeCapList(self::SECRETARY_CAPS),
         };
 

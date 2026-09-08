@@ -23,6 +23,22 @@ final class RoleCapabilitiesPage
     private const NOTICE_KEY = 'cpms_roles_notice';
     private const NONCE_ACTION = 'cpms_save_role_caps';
 
+    /** نقش‌های دارای Preset قابل‌ویرایش (V1 — چ. G). بیمار عمداً حذف است (P-5). */
+    private const ROLE_PRESETS = [
+        RolesAndCapabilities::ROLE_SECRETARY,
+        RolesAndCapabilities::ROLE_DOCTOR,
+        RolesAndCapabilities::ROLE_ACCOUNTANT,
+        RolesAndCapabilities::ROLE_MANAGER,
+    ];
+
+    /** برچسب نمایشی هر نقش در Preset. */
+    private const ROLE_LABELS = [
+        RolesAndCapabilities::ROLE_SECRETARY => 'منشی مطب (cpms_secretary)',
+        RolesAndCapabilities::ROLE_DOCTOR => 'پزشک (cpms_doctor)',
+        RolesAndCapabilities::ROLE_ACCOUNTANT => 'حسابدار (cpms_accountant)',
+        RolesAndCapabilities::ROLE_MANAGER => 'مدیر کلینیک (cpms_manager)',
+    ];
+
     /** نشانگر Cap حساس (P-11) — در UI با ⚠️ مشخص می‌شود. */
     private const SENSITIVE = [
         RolesAndCapabilities::PRIVATE_NOTE_READ, RolesAndCapabilities::PRIVATE_NOTE_CREATE, RolesAndCapabilities::PRIVATE_NOTE_UPDATE,
@@ -119,6 +135,24 @@ final class RoleCapabilitiesPage
         ],
     ];
 
+    /**
+     * ماتریس دسترسی (Role × Capability) فقط برای «مالک فنی/امنیتی» است.
+     * در Chunk G، مدیر کلینیک (cpms_manager) با cpms_config مدیریت ستادی می‌کند اما
+     * نمی‌تواند مرز امنیتیِ Capabilityها را با چک‌باکس دور بزند (anti privilege-escalation).
+     * بنابراین گیت صفحه «دسترسی‌ها» روی `manage_options` (مالک فنی/administrator) است،
+     * نه روی `cpms_config`؛ و صفحهٔ «کاربران» (cpms-staff) روی cpms_config می‌ماند.
+     */
+    private static function isSecurityOwner(): bool
+    {
+        return is_user_logged_in() && current_user_can('manage_options');
+    }
+
+    /** قابل دسترسی برای تست/UI — آیا کاربر جاری مالک فنی/امنیتی است؟ */
+    public static function canEditMatrix(): bool
+    {
+        return self::isSecurityOwner();
+    }
+
     public static function register(): void
     {
         add_action('admin_menu', [self::class, 'menu']);
@@ -130,9 +164,9 @@ final class RoleCapabilitiesPage
     {
         add_submenu_page(
             CpmsAdminMenu::parentSlug(),
-            'کاربران و دسترسی‌ها',
-            'کاربران و دسترسی‌ها',
-            RolesAndCapabilities::CONFIG,
+            'دسترسی‌ها (فنی)',
+            'دسترسی‌ها (فنی)',
+            'manage_options',
             'cpms-roles',
             [self::class, 'render']
         );
@@ -140,7 +174,7 @@ final class RoleCapabilitiesPage
 
     public static function render(): void
     {
-        if (!current_user_can(RolesAndCapabilities::CONFIG)) {
+        if (!self::isSecurityOwner()) {
             wp_die('دسترسی ندارید', 403);
         }
 
@@ -176,7 +210,7 @@ final class RoleCapabilitiesPage
         <input type="hidden" name="action" value="cpms_save_role_caps">
         <?php wp_nonce_field(self::NONCE_ACTION); ?>
 
-        <?php foreach ([RolesAndCapabilities::ROLE_SECRETARY, RolesAndCapabilities::ROLE_DOCTOR] as $role) : ?>
+        <?php foreach (self::ROLE_PRESETS as $role) : ?>
             <?php self::renderRolePreset($role, $overrides); ?>
         <?php endforeach; ?>
 
@@ -199,7 +233,7 @@ final class RoleCapabilitiesPage
      */
     private static function renderRolePreset(string $role, array $overrides): void
     {
-        $label = $role === RolesAndCapabilities::ROLE_SECRETARY ? 'منشی مطب (cpms_secretary)' : 'پزشک (cpms_doctor)';
+        $label = self::ROLE_LABELS[$role] ?? $role;
         $effective = RolesAndCapabilities::capsMap($role); // array<string,bool> (فقط فعال‌ها، با true)
         $enabled = array_keys($effective);
         $disabled = array_values(array_diff(RolesAndCapabilities::ALL_CAPS, $enabled));
@@ -279,13 +313,15 @@ final class RoleCapabilitiesPage
         <?php
     }
 
-    /** توضیح فارسی یک نقش (Chunk F). */
+    /** توضیح فارسی یک نقش (Chunk F/G). */
     private static function roleDescription(string $role): string
     {
         return match ($role) {
             RolesAndCapabilities::ROLE_SECRETARY => 'مسئول پذیرش و صف: ثبت/جابه‌جایی نوبت، چک‌این، مالی روزانه و ارتباط با بیماران.',
             RolesAndCapabilities::ROLE_DOCTOR => 'جریان اصلی درمان: مشاهدهٔ صف و نوبت، مشاوره، نسخه، یادداشت بالینی و توصیهٔ پزشکی.',
             RolesAndCapabilities::ROLE_PATIENT => 'بدون Capability — دسترسی فقط با مالکیت (فقط داده‌های خودش از طریق موبایل/OTP). این نقش عمداً قابل ویرایش نیست (P-5).',
+            RolesAndCapabilities::ROLE_ACCOUNTANT => 'امور مالی و گزارش‌های مالی را می‌بیند (فاکتور/پرداخت/مانده/گزارش مالی/خروجی مالی مجاز)؛ به اطلاعات بالینی و یادداشت خصوصی پزشک دسترسی ندارد.',
+            RolesAndCapabilities::ROLE_MANAGER => 'کاربران، پزشکان، برنامه کاری و عملیات مطب را مدیریت می‌کند؛ یادداشت خصوصی پزشک، محتوای بالینی و نسخه/فایل پزشکی را نمی‌بیند. برای مدیریت مطب مجبور به ادمین وردپرس شدن نیست.',
             default => '',
         };
     }
@@ -295,7 +331,7 @@ final class RoleCapabilitiesPage
      */
     public static function save(): void
     {
-        if (!current_user_can(RolesAndCapabilities::CONFIG) || !is_user_logged_in()) {
+        if (!self::isSecurityOwner()) {
             wp_die('دسترسی ندارید', 403);
         }
         check_admin_referer(self::NONCE_ACTION);
@@ -304,7 +340,7 @@ final class RoleCapabilitiesPage
         $input = isset($_POST['role_caps']) && is_array($_POST['role_caps']) ? wp_unslash($_POST['role_caps']) : []; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput -- sanitize در sanitizeCapList (whitelist سخت)
 
         $report = [];
-        foreach ([RolesAndCapabilities::ROLE_SECRETARY, RolesAndCapabilities::ROLE_DOCTOR] as $role) {
+        foreach (self::ROLE_PRESETS as $role) {
             $requested = isset($input[$role]) && is_array($input[$role]) ? $input[$role] : [];
             $before = array_keys(array_filter(RolesAndCapabilities::capsMap($role)));
             if (!RolesAndCapabilities::setRoleCaps($role, $requested)) {
@@ -343,16 +379,18 @@ final class RoleCapabilitiesPage
      */
     public static function reset(): void
     {
-        if (!current_user_can(RolesAndCapabilities::CONFIG) || !is_user_logged_in()) {
+        if (!self::isSecurityOwner()) {
             wp_die('دسترسی ندارید', 403);
         }
         check_admin_referer('cpms_reset_role_caps_' . (string) ($_GET['role'] ?? ''));
 
         $role = (string) ($_GET['role'] ?? '');
-        if (in_array($role, [RolesAndCapabilities::ROLE_SECRETARY, RolesAndCapabilities::ROLE_DOCTOR], true)) {
+        if (in_array($role, self::ROLE_PRESETS, true)) {
             $before = array_keys(array_filter(RolesAndCapabilities::capsMap($role)));
             RolesAndCapabilities::setRoleCaps($role, match ($role) {
                 RolesAndCapabilities::ROLE_DOCTOR => RolesAndCapabilities::DOCTOR_CAPS,
+                RolesAndCapabilities::ROLE_ACCOUNTANT => RolesAndCapabilities::ACCOUNTANT_CAPS,
+                RolesAndCapabilities::ROLE_MANAGER => RolesAndCapabilities::MANAGER_CAPS,
                 default => RolesAndCapabilities::SECRETARY_CAPS,
             });
             $user = wp_get_current_user();

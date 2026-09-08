@@ -31,11 +31,13 @@ final class StaffManagementPage
     private const NOTICE_KEY = 'cpms_staff_notice';
     private const META_PREV_ROLE = 'cpms_previous_role';
 
-    /** نقش‌های قابل‌مدیریت (بدون administrator — جلوگیری از escalation). */
+    /** نقش‌های قابل‌مدیریت (قابل‌انتساب/ویرایش/فعال/غیرفعال). */
     private const MANAGEABLE_ROLES = [
         RolesAndCapabilities::ROLE_DOCTOR,
         RolesAndCapabilities::ROLE_SECRETARY,
         RolesAndCapabilities::ROLE_PATIENT,
+        RolesAndCapabilities::ROLE_ACCOUNTANT,
+        RolesAndCapabilities::ROLE_MANAGER,
     ];
 
     public static function register(): void
@@ -43,6 +45,7 @@ final class StaffManagementPage
         add_action('admin_menu', [self::class, 'menu']);
         add_action('admin_post_cpms_staff_save', [self::class, 'save']);
         add_action('admin_post_cpms_staff_toggle', [self::class, 'toggle']);
+        add_action('admin_post_cpms_staff_password', [self::class, 'sendPasswordReset']);
     }
 
     public static function menu(): void
@@ -73,8 +76,9 @@ final class StaffManagementPage
         ?>
         <div class="wrap" dir="rtl">
             <h1>کاربران و دسترسی‌ها</h1>
-            <p class="description">افزودن و مدیریت پرسنل کلینیک (پزشک، منشی، بیمار). این صفحه فقط نقش‌های CPMS را
-                مدیریت می‌کند؛ مدیر وردپرس (administrator) از این‌جا قابل تغییر نیست.</p>
+            <p class="description">افزودن و مدیریت پرسنل کلینیک (پزشک، منشی، حسابدار، مدیر کلینیک، بیمار). این صفحه فقط نقش‌های CPMS را
+                مدیریت می‌کند؛ مدیر وردپرس (administrator) از این‌جا قابل تغییر نیست — برای امنیت، نقش‌های فنی/امنیتی و ویرایش
+                ماتریس دسترسی از صفحهٔ «دسترسی‌ها» (فقط مالک فنی) انجام می‌شود.</p>
 
             <?php if (is_string($notice) && $notice !== '') : ?>
                 <div class="notice <?php echo str_starts_with($notice, 'خطا') ? 'notice-error' : 'notice-success'; ?> is-dismissible"><p><?php echo esc_html($notice); ?></p></div>
@@ -84,7 +88,7 @@ final class StaffManagementPage
                 <h2>فهرست پرسنل</h2>
                 <table class="widefat striped" role="presentation">
                     <thead>
-                        <tr><th>نام</th><th>ورود</th><th>ایمیل</th><th>نقش</th><th>وضعیت</th><th>عملیات</th></tr>
+                        <tr><th>نام</th><th>ورود</th><th>ایمیل</th><th>نقش</th><th>پزشک مرتبط</th><th>وضعیت</th><th>عملیات</th></tr>
                     </thead>
                     <tbody>
                     <?php foreach ($rows as $r) : ?>
@@ -93,9 +97,11 @@ final class StaffManagementPage
                             <td><?php echo esc_html((string) $r['login']); ?></td>
                             <td><?php echo esc_html((string) $r['email']); ?></td>
                             <td><?php echo esc_html((string) $r['role_label']); ?></td>
+                            <td><?php echo $r['clinician'] !== '' ? esc_html($r['clinician']) : '—'; ?></td>
                             <td><?php echo $r['active'] ? '<span style="color:#00a32a;">فعال</span>' : '<span style="color:#d63638;">غیرفعال</span>'; ?></td>
                             <td>
                                 <a class="button button-small" href="<?php echo esc_url(admin_url('admin.php?page=' . self::PAGE_SLUG . '&edit=' . (int) $r['id'])); ?>">ویرایش</a>
+                                <a class="button button-small" href="<?php echo esc_url(wp_nonce_url(admin_url('admin-post.php?action=cpms_staff_password&user_id=' . (int) $r['id']), 'cpms_staff_password_' . (int) $r['id'])); ?>">لینک بازیابی رمز</a>
                                 <?php if ($r['active']) : ?>
                                     <a class="button button-small" href="<?php echo esc_url(wp_nonce_url(admin_url('admin-post.php?action=cpms_staff_toggle&user_id=' . (int) $r['id'] . '&state=deactivate'), 'cpms_staff_toggle_' . (int) $r['id'])); ?>" onclick="return confirm('غیرفعال‌سازی: این کاربر به‌طور موقت از نقش CPMS حذف می‌شود (تاریخچه حذف نمی‌شود). ادامه می‌دهید؟');">غیرفعال</a>
                                 <?php else : ?>
@@ -107,7 +113,7 @@ final class StaffManagementPage
                     </tbody>
                 </table>
             <?php else : ?>
-                <?php echo CpmsUi::emptyState('👥', 'هنوز پرسنلی ثبت نشده', 'کاربران کلینیک (پزشک، منشی، بیمار) را با فرم پایین اضافه کنید. فقط نقش‌های CPMS از این‌جا قابل مدیریت‌اند؛ administrator از این‌جا قابل تغییر نیست.', 'افزودن کاربر', admin_url('admin.php?page=' . self::PAGE_SLUG)); ?>
+                <?php echo CpmsUi::emptyState('👥', 'هنوز پرسنلی ثبت نشده', 'کاربران کلینیک (پزشک، منشی، حسابدار، مدیر کلینیک، بیمار) را با فرم پایین اضافه کنید. فقط نقش‌های CPMS از این‌جا قابل مدیریت‌اند؛ administrator از این‌جا قابل تغییر نیست.', 'افزودن کاربر', admin_url('admin.php?page=' . self::PAGE_SLUG)); ?>
             <?php endif; ?>
 
             <?php $edit = self::editTarget(); ?>
@@ -188,6 +194,51 @@ final class StaffManagementPage
         $state = (string) ($_GET['state'] ?? '');
         $result = self::toggleUser($userId, $state, (int) get_current_user_id());
         set_transient(self::NOTICE_KEY, $result['error'] !== '' ? 'خطا: ' . $result['error'] : 'وضعیت کاربر به‌روزرسانی شد.', 60);
+        wp_safe_redirect(admin_url('admin.php?page=' . self::PAGE_SLUG));
+        exit;
+    }
+
+    /**
+     * ارسال لینک بازنشانی/تنظیم رمز عبور از طریق WordPress Authentication API.
+     *  - فقط `cpms_config` + Nonce.
+     *  - رمز فعلی/توکن هرگز در DB/Audit/REST/HTML ثبت نمی‌شود؛ فقط ارسال ایمیل توسط WP انجام می‌شود.
+     *  - Audit: `STAFF_PASSWORD_RESET_INITIATED` بدون توکن/plaintext.
+     */
+    public static function sendPasswordReset(): void
+    {
+        $userId = isset($_GET['user_id']) ? absint($_GET['user_id']) : 0;
+        if (!current_user_can(RolesAndCapabilities::CONFIG) || !is_user_logged_in()) {
+            wp_die('دسترسی ندارید', 403);
+        }
+        check_admin_referer('cpms_staff_password_' . $userId);
+
+        $user = $userId > 0 ? get_userdata($userId) : false;
+        if ($user === false || !self::isManageable($userId)) {
+            set_transient(self::NOTICE_KEY, 'خطا: کاربر یافت نشد یا قابل مدیریت نیست.', 60);
+            wp_safe_redirect(admin_url('admin.php?page=' . self::PAGE_SLUG));
+            exit;
+        }
+
+        // retrieve_password از مسیر امن وردپرس: صحت کاربر را می‌سنجد، توکن تولید و ایمیل
+        // «بازیابی/تنظیم رمز» می‌فرستد. توکن فقط در ایمیل و DB موقتِ وردپرس است — هیچ‌جا در
+        // لاگ/Audit/REST/HTML ما قرار نمی‌گیرد و هرگز قابل مشاهده نیست.
+        $res = retrieve_password((string) $user->user_login);
+        if (is_wp_error($res)) {
+            set_transient(self::NOTICE_KEY, 'خطا: ' . $res->get_error_message(), 60);
+            wp_safe_redirect(admin_url('admin.php?page=' . self::PAGE_SLUG));
+            exit;
+        }
+
+        App::audit()->log(
+            'STAFF_PASSWORD_RESET_INITIATED',
+            ['wp_user_id' => (int) get_current_user_id()],
+            'user',
+            $userId,
+            null,
+            null,
+            ['login' => (string) $user->user_login]
+        );
+        set_transient(self::NOTICE_KEY, 'لینک بازنشانی/تنظیم رمز برای «' . $user->display_name . '» ایمیل شد.', 60);
         wp_safe_redirect(admin_url('admin.php?page=' . self::PAGE_SLUG));
         exit;
     }
@@ -282,6 +333,10 @@ final class StaffManagementPage
         if ($user === false) {
             return ['error' => 'کاربر یافت نشد.'];
         }
+        // جلوگیری از قفل‌کردن خود: عاملِ غیرفعال‌سازی نمی‌تواند حساب خودش را غیرفعال کند.
+        if ($state === 'deactivate' && $userId === $updatedBy) {
+            return ['error' => 'نمی‌توانید حساب خودتان را غیرفعال کنید (جلوگیری از قفل‌شدن).'];
+        }
 
         if ($state === 'deactivate') {
             $prevRole = (string) ($user->roles[0] ?? '');
@@ -342,6 +397,7 @@ final class StaffManagementPage
 
         $seen = [];
         $labels = self::roleLabels();
+        $clinicianByUser = self::clinicianLinkMap();
         foreach ($users as $u) {
             $id = (int) $u->ID;
             if (isset($seen[$id])) {
@@ -359,10 +415,32 @@ final class StaffManagementPage
                 'role' => (string) $role,
                 'role_label' => $labels[$role] ?? $role,
                 'active' => $active,
+                'clinician' => $clinicianByUser[$id] ?? '',
             ];
         }
 
         return $rows;
+    }
+
+    /**
+     * نقشه wp_user_id → نام پزشک (برای نمایش پیوند ۱:۱ Doctor ↔ Clinician در فهرست کاربران).
+     *
+     * @return array<int, string>
+     */
+    private static function clinicianLinkMap(): array
+    {
+        $rows = App::db()->fetchAll(
+            'SELECT wp_user_id, full_name FROM ' . App::db()->table('cpms_clinicians') . ' WHERE wp_user_id IS NOT NULL AND is_active = 1'
+        );
+        $map = [];
+        foreach (is_array($rows) ? $rows : [] as $r) {
+            $uid = (int) ($r['wp_user_id'] ?? 0);
+            if ($uid > 0) {
+                $map[$uid] = (string) ($r['full_name'] ?? '');
+            }
+        }
+
+        return $map;
     }
 
     /** @return array<string,string> */
@@ -372,6 +450,8 @@ final class StaffManagementPage
             RolesAndCapabilities::ROLE_DOCTOR => 'پزشک (cpms_doctor)',
             RolesAndCapabilities::ROLE_SECRETARY => 'منشی مطب (cpms_secretary)',
             RolesAndCapabilities::ROLE_PATIENT => 'بیمار (cpms_patient)',
+            RolesAndCapabilities::ROLE_ACCOUNTANT => 'حسابدار (cpms_accountant)',
+            RolesAndCapabilities::ROLE_MANAGER => 'مدیر کلینیک (cpms_manager)',
         ];
     }
 
