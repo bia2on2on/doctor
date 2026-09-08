@@ -35,7 +35,7 @@ final class LocalFileStorage
     /**
      * یادداشت راه‌اندازی — `.htaccess` روی nginx خوانده نمی‌شود.
      */
-    private const GUARD_README = "CPMS protected clinical storage\n\nThis directory holds patient documents. It must never be reachable over HTTP.\n\nApache/IIS: .htaccess and web.config in this directory already deny access.\nnginx IGNORES .htaccess. Add to the server block:\n\n    location ^~ /wp-content/clinic-files/ { deny all; return 404; }\n\nBetter: move this directory outside the document root and point the\n`files.storage_path` setting at the new absolute path.\n";
+    private const GUARD_README = "CPMS legacy clinical storage\n\nAs of OD-7 the default storage root is OUTSIDE the document root, so newly\nstored clinical files have no URL at all and can only be delivered through\nthe authenticated application endpoint.\n\nThis directory is the LEGACY location. If files are still here, the\nidempotent migration has not completed yet; it retries on every admin or\nREST request. Nothing here should be served over HTTP.\n\nApache/IIS: the .htaccess and web.config in this directory deny access.\nnginx IGNORES .htaccess, so until migration completes add:\n\n    location ^~ /wp-content/clinic-files/ { deny all; return 404; }\n\nThese guards are defence in depth. They are NOT the authorization boundary.\n"
 
     public function __construct(private readonly string $basePath)
     {
@@ -44,7 +44,19 @@ final class LocalFileStorage
     /**
      * مسیر پایه — سازگار با wp-content حتی وقتی ثابت WP_CONTENT_DIR موجود نیست.
      */
+    /**
+     * OD-7 — پیش‌فرض اکنون **بیرون از DocumentRoot** است، پس اصلاً URLی برای
+     * این فایل‌ها وجود ندارد و تحویل فقط از مسیر مجوزدار برنامه ممکن است.
+     */
     public static function defaultBasePath(): string
+    {
+        return PrivateStorageLocation::path('clinic-files');
+    }
+
+    /**
+     * ریشهٔ قدیمی داخل DocumentRoot — فقط برای مهاجرت idempotent.
+     */
+    public static function legacyBasePath(): string
     {
         if (defined('WP_CONTENT_DIR')) {
             return rtrim((string) WP_CONTENT_DIR, '/') . '/clinic-files';
@@ -212,12 +224,6 @@ final class LocalFileStorage
      */
     public function isInsideWebRoot(): bool
     {
-        $root = defined('ABSPATH') ? @realpath((string) ABSPATH) : false;
-        $base = @realpath($this->basePath);
-        if ($root === false || $base === false) {
-            return false;
-        }
-
-        return str_starts_with($base, rtrim($root, '/') . '/');
+        return PrivateStorageLocation::isInsideWebRoot($this->basePath);
     }
 }

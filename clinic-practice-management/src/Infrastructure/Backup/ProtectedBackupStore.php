@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace ClinicCore\Infrastructure\Backup;
 
+use ClinicCore\Infrastructure\Storage\PrivateStorageLocation;
+
 /**
  * مخزن محلی بکاپ با محافظت از دسترسی عمومی (spec §23):
  *
@@ -34,7 +36,19 @@ final class ProtectedBackupStore
     {
     }
 
+    /**
+     * OD-7 — پیش‌فرض اکنون بیرون از DocumentRoot است. بکاپ‌ها همان PHI ای را
+     * دارند که اسناد بالینی دارند و نباید هیچ URLی داشته باشند.
+     */
     public static function defaultBasePath(): string
+    {
+        return PrivateStorageLocation::path('cpms-backups');
+    }
+
+    /**
+     * ریشهٔ قدیمی داخل DocumentRoot — فقط برای مهاجرت idempotent.
+     */
+    public static function legacyBasePath(): string
     {
         if (defined('WP_CONTENT_DIR')) {
             return rtrim((string) WP_CONTENT_DIR, '/') . '/cpms-backups';
@@ -80,13 +94,7 @@ final class ProtectedBackupStore
      */
     public function isInsideWebRoot(): bool
     {
-        $root = defined('ABSPATH') ? @realpath((string) ABSPATH) : false;
-        $base = @realpath($this->basePath);
-        if ($root === false || $base === false) {
-            return false;
-        }
-
-        return str_starts_with($base, rtrim($root, '/') . '/');
+        return PrivateStorageLocation::isInsideWebRoot($this->basePath);
     }
 
     /**

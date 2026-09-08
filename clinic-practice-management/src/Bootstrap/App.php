@@ -93,6 +93,7 @@ use ClinicCore\Infrastructure\Sms\Providers\LogSmsProvider;
 use ClinicCore\Infrastructure\Sms\SmsProviderInterface;
 use ClinicCore\Infrastructure\Sms\SmsProviderRegistry;
 use ClinicCore\Infrastructure\Storage\LocalFileStorage;
+use ClinicCore\Infrastructure\Storage\PrivateStorageMigrator;
 use ClinicCore\Infrastructure\Update\HttpUpdateMetadataGateway;
 use ClinicCore\Migrations\MigrationRunner;
 use ClinicCore\Rest\BookingController;
@@ -119,6 +120,11 @@ use ClinicCore\Settings\Settings;
  */
 final class App
 {
+    /** OD-7 — نشانگر پایان مهاجرت ذخیره‌سازی خصوصی. */
+    private const PRIVATE_STORAGE_OPTION = 'cpms_private_storage_migrated';
+
+    private const PRIVATE_STORAGE_DONE = '1';
+
     private static ?CpmsDb $db = null;
     private static ?OpLogger $op = null;
     private static ?AuditLogger $audit = null;
@@ -224,6 +230,7 @@ final class App
         RolesAndCapabilities::register();
         self::db(); // lazy init برای migrate
         self::migrations()->migrate();
+        self::ensurePrivateStorage();
 
         if (!wp_next_scheduled('cpms_jobs_tick')) {
             wp_schedule_event(time() + 60, 'cpms_minute', 'cpms_jobs_tick');
@@ -247,8 +254,64 @@ final class App
         set_transient($lock, 1, 30);
         try {
             self::migrations()->migrate();
+            self::ensurePrivateStorage();
         } finally {
             delete_transient($lock);
+        }
+    }
+
+    /**
+     * OD-7 — انتقال یک‌بارهٔ فایل‌های بالینی و بکاپ‌ها از ریشهٔ قدیمیِ داخل
+     * DocumentRoot به ریشهٔ خصوصی.
+     *
+     * فراخوانی در هر درخواست ادمین/REST رخ می‌دهد، پس باید در حالت «انجام‌شده»
+     * عملاً رایگان باشد: یک خواندن Option و تمام. مهاجرت خودش idempotent است،
+     * ولی Option از پیمایش بی‌مورد پوشه هم جلوگیری می‌کند.
+     *
+     * اگر اپراتور مسیر را صراحتاً با Setting تعیین کرده باشد، دست نمی‌زنیم —
+     * تصمیم او بر پیش‌فرض مقدم است.
+     *
+     * شکست جزئی مسدودکننده نیست: Option فقط وقتی ست می‌شود که هیچ خطایی نمانده
+     * باشد، پس درخواست بعدی دوباره تلاش می‌کند و فایل‌های موفق تکرار نمی‌شوند.
+     */
+    private static function ensurePrivateStorage(): void
+    {
+        if ((string) get_option(self::PRIVATE_STORAGE_OPTION, '') === self::PRIVATE_STORAGE_DONE) {
+            return;
+        }
+
+        $migrator = new PrivateStorageMigrator();
+        $clean = true;
+
+        $pairs = [];
+        if (trim((string) self::settings()->get('files.storage_path', '')) === '') {
+            $pairs[] = [LocalFileStorage::legacyBasePath(), LocalFileStorage::defaultBasePath(), 'clinic-files'];
+        }
+        if (trim((string) self::settings()->get('backup.storage_path', '')) === '') {
+            $pairs[] = [ProtectedBackupStore::legacyBasePath(), ProtectedBackupStore::defaultBasePath(), 'cpms-backups'];
+        }
+
+        foreach ($pairs as [$legacy, $private, $label]) {
+            $report = $migrator->migrate($legacy, $private);
+            if ($report['moved'] > 0 || $report['already'] > 0 || $report['failed'] > 0 || $report['conflict'] > 0) {
+                self::op()->info('CPMS_PRIVATE_STORAGE_MIGRATION', [
+                    'area' => $label,
+                    'from' => $legacy,
+                    'to' => $private,
+                    'moved' => $report['moved'],
+                    'already' => $report['already'],
+                    'conflict' => $report['conflict'],
+                    'failed' => $report['failed'],
+                    'errors' => array_slice($report['errors'], 0, 10),
+                ]);
+            }
+            if ($report['failed'] > 0 || $report['conflict'] > 0) {
+                $clean = false;
+            }
+        }
+
+        if ($clean) {
+            update_option(self::PRIVATE_STORAGE_OPTION, self::PRIVATE_STORAGE_DONE, false);
         }
     }
 
