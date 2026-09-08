@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Tests\Integration;
 
+use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use WP_REST_Request;
 use WP_REST_Server;
@@ -199,6 +200,41 @@ final class RestPermissionCallbackTest extends WP_UnitTestCase
     }
 
     /**
+     * رگرسیون CI (Phase 1A): `permission_callback` باید Capability را از
+     * همان منبعی بخواند که لایهٔ Service می‌خواند.
+     *
+     * `wp_get_current_user()` نمونهٔ سراسریِ کش‌شده را برمی‌گرداند و پس از
+     * `add_cap()` روی یک نمونهٔ دیگرِ `WP_User` کهنه می‌ماند. اگر
+     * `requireCap()` به آن تکیه کند، یک درخواست کاملاً مجاز رد می‌شود.
+     */
+    public function testPermissionCallbackSeesCapabilityGrantedDuringTheSameRequest(): void
+    {
+        $userId = self::factory()->user->create(['role' => RolesAndCapabilities::ROLE_DOCTOR]);
+        wp_set_current_user($userId);
+
+        $routes = $this->clinicRoutes();
+        $route = '/clinic/v1/reports/exports/(?P<id>\\d+)/download';
+        self::assertArrayHasKey($route, $routes, 'Route دانلود Export باید ثبت شده باشد.');
+
+        $request = new WP_REST_Request('GET', '/clinic/v1/reports/exports/1/download');
+        $request->set_header('X-WP-Nonce', wp_create_nonce('wp_rest'));
+
+        $before = call_user_func($routes[$route][0]['permission_callback'], $request);
+        self::assertInstanceOf(\WP_Error::class, $before, 'بدون cpms_export باید رد شود.');
+
+        // اعطای مجوز روی یک نمونهٔ *دیگر* از WP_User — دقیقاً همان کاری که
+        // ReportsAuthzTest انجام می‌دهد و باعث افشای این نقص شد.
+        $other = get_userdata($userId);
+        $other->add_cap(RolesAndCapabilities::EXPORT);
+
+        $after = call_user_func($routes[$route][0]['permission_callback'], $request);
+        self::assertTrue(
+            $after,
+            'permission_callback باید مجوزِ همین درخواست را ببیند، نه نسخهٔ کش‌شده را.'
+        );
+    }
+
+    /**
      * تعداد Routeهای Public نباید بی‌سروصدا رشد کند.
      */
     public function testPublicRouteCountIsPinned(): void
@@ -214,9 +250,17 @@ final class RestPermissionCallbackTest extends WP_UnitTestCase
             }
         }
 
+        // این ادعا یک **مجموعه** را قفل می‌کند، نه یک دنباله. ترتیب کلیدهای
+        // `rest_get_server()->get_routes()` به ترتیب ثبت کنترلرها وابسته است
+        // و یک جزئیات پیاده‌سازی است، نه یک ویژگی امنیتی.
+        $actual = array_keys($public);
+        sort($actual);
+        $expected = self::INTENTIONALLY_PUBLIC;
+        sort($expected);
+
         self::assertSame(
-            self::INTENTIONALLY_PUBLIC,
-            array_keys($public),
+            $expected,
+            $actual,
             'مجموعه Routeهای Public تغییر کرده است — نیازمند تصمیم صریح امنیتی.'
         );
     }

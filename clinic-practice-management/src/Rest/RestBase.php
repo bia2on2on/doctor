@@ -44,8 +44,25 @@ abstract class RestBase
      */
     protected function requireCap(string|array $caps): bool|WP_Error
     {
-        $user = wp_get_current_user();
-        if (!$user->exists()) {
+        // Phase 1A — رگرسیون CI: منبع خواندن Capability باید همانی باشد که
+        // لایهٔ Service استفاده می‌کند.
+        //
+        // `wp_get_current_user()` شیء سراسری `$GLOBALS['current_user']` را
+        // برمی‌گرداند که `allcaps` آن در لحظهٔ `wp_set_current_user()` ساخته
+        // شده و **در همان درخواست کهنه می‌شود**؛ مثلاً پس از
+        // `add_cap()`/`remove_cap()`/تغییر نقش روی یک نمونهٔ دیگرِ `WP_User`.
+        // در مقابل، همهٔ سرویس‌ها (`ExportService`، `ReportService`،
+        // `ClinicalService`، `FinanceService`، `MedicalFileService`،
+        // `HandwritingService`) از `get_userdata($actorUserId)->has_cap()`
+        // استفاده می‌کنند که هر بار تازه از متادیتای کاربر ساخته می‌شود.
+        //
+        // تا وقتی این بررسی فقط یک لایهٔ اضافیِ داخل Handler بود، اختلاف
+        // بی‌اثر می‌ماند چون Service حرف آخر را می‌زد. با انتقال آن به
+        // `permission_callback`، منبع کهنه حاکم بر کل درخواست شد و می‌توانست
+        // درخواست مجاز را رد کند. یکسان‌سازی منبع، این واگرایی را می‌بندد.
+        $userId = get_current_user_id();
+        $user = $userId > 0 ? get_userdata($userId) : false;
+        if ($user === false || !$user->exists()) {
             return $this->error('CLINIC_UNAUTHORIZED', 401, 'وارد نشده‌اید');
         }
         $caps = (array) $caps;
