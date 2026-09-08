@@ -398,7 +398,7 @@ Fail-Open **برنگشت**: دستکاری اکنون در همان مسیری �
 | پوشه وجود ندارد | `NOT_CONFIGURED` |
 | پوشه قابل نوشتن نیست | `FAIL` |
 | **پوشه داخل DocumentRoot است — ذخیره‌سازی بالینی** | **`FAIL`** (از این کامیت) — این دیگر یک هشدار نیست، یک پیکربندی رد‌شده است |
-| **پوشه داخل DocumentRoot است — ریشهٔ بکاپ** | **`WARNING`** — دامنهٔ Fail-Closed کردن آن در بند ۵-۴ توضیح داده شده |
+| **پوشه داخل DocumentRoot است — ریشهٔ بکاپ** | **`FAIL`** — از OD-9 به بعد یک پیکربندی رد‌شده است (نوشتن Fail-Closed) |
 | پوشه بیرون از DocumentRoot | `PASS` |
 
 همچنین `filesBase()` تا پیش از این حتی وقتی هیچ Settingی وجود نداشت مسیر **قدیمی** `wp-content/clinic-files` را گزارش می‌کرد، یعنی سلامت سیستم دربارهٔ ریشه‌ای حرف می‌زد که پس از OD-7 دیگر ذخیره‌سازی فعال نبود. اکنون همان `LocalFileStorage::defaultBasePath()` را می‌خواند.
@@ -428,30 +428,33 @@ Fail-Open **برنگشت**: دستکاری اکنون در همان مسیری �
 
 **استثنای مهاجرت (فقط مبدأ):** `PrivateStorageMigrator` هرگز یک `LocalFileStorage` روی ریشهٔ قدیمی نمی‌سازد؛ مبدأ را با مسیر خام و **فقط‌خواندنی** می‌خواند. بنابراین وجود فایل‌های legacy داخل webroot هیچ‌گاه آن مسیر را به ذخیره‌سازی **فعال** تبدیل نمی‌کند.
 
-### ۵-۴ ریشهٔ بکاپ — گزارش دامنه، بدون حدس
+### ۵-۴ ریشهٔ بکاپ — **بسته شد: OD-9 (تصمیم مالک، پیاده‌سازی‌شده)**
 
-ریشهٔ بکاپ **همان primitive را به اشتراک نمی‌گذارد**: `ProtectedBackupStore` کلاسی جداست و از `LocalFileStorage` عبور نمی‌کند. Fail-Closed کردن آن با همان الگو، دامنه‌ای بزرگ‌تر از فایل بالینی دارد و به همین دلیل در این دور **اعمال نشده** و در اینجا دقیق گزارش می‌شود:
-
-زنجیرهٔ اثبات‌شده از کد:
+ریشهٔ بکاپ **همان primitive را به اشتراک نمی‌گذارد**: `ProtectedBackupStore` کلاسی جداست و از `LocalFileStorage` عبور نمی‌کند. در Phase 1A صرفاً دامنه گزارش شد:
 
 ```
-BackupService::restoreApply()      (BackupService.php:343)
+BackupService::restoreApply()
   └─ createBackup('pre-restore-safety-…')
        └─ ProtectedBackupStore::createDir()
             └─ ProtectedBackupStore::ensureGuards()      ← نقطهٔ نوشتن
 ```
 
-⇒ هر Fail-Closed سمت **نوشتن** (چه در سازنده، چه در `ensureGuards`/`createDir`) دقیقاً در لحظه‌ای که اپراتور می‌خواهد از یک نصب معیوب بازیابی کند، **restore را هم می‌بندد** — چون بکاپ ایمنیِ پیش از restore ساخته نمی‌شود. این یک ریسک دسترس‌پذیری در بدترین زمان ممکن است.
+**تصمیم مالک (OD-9):** گزینهٔ C با قید سخت‌گیرانه‌تر — «Active backup destination باید بیرون از DocumentRoot باشد (Fail-Closed، بدون fallback بی‌صدای ناامن)؛ ریشهٔ داخل webroot فقط مبدأ legacy فقط‌خواندنی است؛ و Safety Backup پیش از Restore فقط به مقصد امن خصوصی هدایت می‌شود تا بازیابی قفل نشود.»
 
-وضعیت واقعی امروز: پس از OD-7 ریشهٔ **پیش‌فرض** بکاپ هم بیرون از DocumentRoot است؛ تنها راه بازگرداندن آن به داخل، تنظیم صریح و دستی `backup.storage_path` است. این حالت اکنون `WARNING` می‌گیرد.
+**پیاده‌سازی (متد/کلاس مرجع):**
 
-گزینه‌ها برای تصمیم مالک — ثبت‌شده به‌عنوان **OD-9** در `docs/drift-register.md`:
+| قاعده | پیاده‌سازی |
+|---|---|
+| مخزن فعال Fail-Closed است | `ProtectedBackupStore::active()` — ریشهٔ داخل webroot (مقایسهٔ `realpath` ⇒ symlink هم دنبال می‌شود) ⇒ `StorageConfigurationException` با کد `CLINIC_BACKUP_STORAGE_INSIDE_WEBROOT`؛ هیچ fallback بی‌صدایی نیست |
+| مبدأ legacy فقط‌خواندنی | `ProtectedBackupStore::legacySource()` — `createDir`/`ensureGuards`/`delete` رد می‌شوند؛ `listIds` هیچ گاردی نمی‌نویسد. `App::backupService()` مسیر پیکربندی‌شدهٔ داخل webroot را **صریحاً** به این حالت تنزل می‌دهد (مسیر عوض نمی‌شود؛ خواندن برای verification/recovery ادامه دارد؛ نوشتن خطای صریح می‌دهد) |
+| Restore قفل نمی‌شود | `BackupService::resolveSourceStore()` بکاپ را از مخزن فعال → ریشهٔ خصوصی پیش‌فرض → ریشهٔ legacy پیدا می‌کند؛ `safetyDestinationStore()` بکاپ ایمنی را به مخزن فعالِ قابل‌نوشتن یا ریشهٔ خصوصی پیش‌فرض هدایت می‌کند — **مبدأ legacy هرگز مقصد نوشتن نیست** |
+| بدون مقصد امن، restore مخرب آغاز نمی‌شود | اگر حتی ریشهٔ خصوصی هم داخل webroot باشد (`CPMS_PRIVATE_STORAGE_DIR` ناامن)، `safetyDestinationStore()` Fail-Closed استثنا می‌دهد و restore پیش از هر گام مخرب متوقف می‌ماند |
+| دستکاری‌شده هرگز restore نمی‌شود | همان گیت `restorePreflight()` → `verifyBackup()` از Phase 1A (حفظ‌شده) — `manifest.json tampered` ⇒ `restore_safe = false` |
+| legacy_unverified صریح و audit‌شده | `restorePreflight()` اکنون `integrity_warnings`، `legacy_unverified`، `source` و `source_root` را برمی‌گرداند و رویداد `RESTORE_APPLIED` این مقادیر + `safety_destination` را در Audit ثبت می‌کند (بدون PHI — فقط id/مسیر) |
+| مهاجرت ریشهٔ ناامن/legacy | `App::ensurePrivateStorage()` وقتی `backup.storage_path` داخل webroot است، محتوای آن ریشه + ریشهٔ legacy قدیمی را idempotent به ریشهٔ خصوصی منتقل می‌کند (کپی → تأیید sha256 → rename → تأیید → حذف مبدأ؛ تعارض بدون overwrite). Setting عمداً تغییر نمی‌کند — اصلاح آن تصمیم اپراتور است |
+| گزارش سلامت صادق | `SystemHealthService`: ریشهٔ بکاپ داخل webroot = **FAIL** (قبلاً WARNING) — چون پیکربندی رد‌شده است |
 
-| گزینه | رفتار | هزینه |
-|---|---|---|
-| **A** | Fail-Closed کامل در سازندهٔ `ProtectedBackupStore` | فهرست/تأیید/بازیابیِ نصب‌های دارای مسیر داخل webroot کاملاً بسته می‌شود |
-| **B** | Fail-Closed فقط سمت نوشتن (`ensureGuards`/`createDir`) | بکاپ جدید ممنوع می‌شود، ولی بکاپ ایمنیِ پیش از restore هم ممنوع ⇒ restore عملاً بسته |
-| **C** | بکاپ جدید ممنوع، ولی بکاپ ایمنیِ داخلی به ریشهٔ خصوصی هدایت شود | restore باز می‌ماند؛ ولی «بکاپ ایمنی کجا نوشته شود» یک تصمیم محصولی است و اینجا حدس زده نمی‌شود |
+**تست‌های رگرسیون:** `tests/Integration/BackupStorageBoundaryTest.php` — پیش‌فرض خارج webroot، مسیر امن پذیرفته می‌شود، مسیر داخل webroot رد، symlink رد، بدون fallback بی‌صدا، مبدأ legacy فقط خواندنی، رزولوشن بکاپ legacy در سطح سرویس، هدایت Safety Backup به مقصد خصوصی (+ مسیر عادی به مخزن فعال)، رد بکاپ دستکاری‌شده، legacy_unverified صریح، مهاجرت idempotent ریشهٔ ناامن، تعارض بدون overwrite، سلامت FAIL. `restoreApply` در PHPUnit عمداً تا قبل از DDL اجرا می‌شود (ایزوله‌سازی تست)؛ مسیر مخرب کامل همچنان توسط Restore Drill سطح OS در Pilot/Staging Gate پوشش داده می‌شود.
 
 ### ۵-۵ رمزنگاری در حالت سکون
 
@@ -515,7 +518,7 @@ BackupService::restoreApply()      (BackupService.php:343)
 | `CPMS_PEPPER` | Pepper هش OTP (و زنجیرهٔ Audit) | OTP: Secret تصادفی ماندگار در Option `cpms_otp_pepper` |
 | `CPMS_TRUSTED_PROXIES` | فهرست Proxy معتمد (CIDR/IP، با کاما) | هیچ Proxy ای معتمد نیست ⇒ فقط `REMOTE_ADDR` |
 | `files.storage_path` | مسیر مطلق ذخیرهٔ فایل بالینی | `wp-content/clinic-files` (**داخل DocumentRoot**) |
-| `backup.storage_path` | مسیر مطلق ذخیرهٔ بکاپ | `wp-content/cpms-backups` (**داخل DocumentRoot**) |
+| `backup.storage_path` | مسیر مطلق ذخیرهٔ بکاپ | ریشهٔ خصوصی بیرون DocumentRoot (`…/cpms-private/cpms-backups` — OD-7/OD-9؛ مسیر داخل webroot رد می‌شود) |
 
 ---
 

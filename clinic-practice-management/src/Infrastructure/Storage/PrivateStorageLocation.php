@@ -77,11 +77,18 @@ final class PrivateStorageLocation
      * نمی‌شود.
      *
      * @throws StorageConfigurationException
+     *
+     * @param string $errorCode کد پایدار خطا (ADR-0019) — پیش‌فرض برای ذخیره‌سازی
+     *                          بالینی؛ ریشهٔ بکاپ کد اختصاصی
+     *                          `CLINIC_BACKUP_STORAGE_INSIDE_WEBROOT` می‌دهد (OD-9)
      */
-    public static function assertOutsideWebRoot(string $path, string $what): string
-    {
+    public static function assertOutsideWebRoot(
+        string $path,
+        string $what,
+        string $errorCode = 'CLINIC_STORAGE_INSIDE_WEBROOT'
+    ): string {
         if (self::isInsideWebRoot($path)) {
-            throw StorageConfigurationException::insideWebRoot($path, $what);
+            throw StorageConfigurationException::insideWebRoot($path, $what, $errorCode);
         }
 
         return $path;

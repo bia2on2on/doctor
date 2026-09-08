@@ -164,7 +164,7 @@ Invariant اثبات‌شده: *«در یک پیکربندی پشتیبانی‌
 
 | شناسه | موضوع | شدت | وضعیت |
 |---|---|---|---|
-| **OD-9** | ریشهٔ بکاپ داخل DocumentRoot فقط `WARNING` می‌گیرد | **متوسط** | ⚠️ **باز** — بند F |
+| **OD-9** | ریشهٔ بکاپ داخل DocumentRoot فقط `WARNING` می‌گیرد | **متوسط** | ✅ **بسته شد (Session بعدی، تصمیم مالک: گزینهٔ C سخت‌گیرانه + پیاده‌سازی)** — بند F به‌روز شد |
 | **OD-6** | رمزنگاری فایل بالینی و بکاپ در حالت سکون | متوسط | ⚠️ باز — تصمیم محصولی (مدیریت کلید/Restore) |
 | **OD-5** | چرخش pepper زنجیرهٔ Audit | پایین | ⚠️ باز |
 | **OD-3** | ناهماهنگی شمارهٔ نسخه (`1.0.0`) | پایین | ⚠️ باز — **نسخه را یک‌جانبه تغییر نده**؛ `closure-gate.yml:130,460` آن را hard-assert می‌کند |
@@ -178,9 +178,9 @@ Invariant اثبات‌شده: *«در یک پیکربندی پشتیبانی‌
 
 ---
 
-## F. OD-9 — باز، همراه با توصیهٔ ثبت‌شده
+## F. OD-9 — ✅ بسته شد (تصمیم مالک + پیاده‌سازی در session بعدی)
 
-**وضعیت: OPEN.** در Phase 1A عمداً پیاده‌سازی **نشد** و حدس زده **نشد**.
+**وضعیت: CLOSED.** مالک گزینهٔ C سخت‌گیرانه را تصویب کرد: ریشهٔ فعال Fail-Closed (`CLINIC_BACKUP_STORAGE_INSIDE_WEBROOT`)، ریشهٔ داخل webroot فقط مبدأ legacy فقط‌خواندنی، و Safety Backup پیش از Restore فقط به مقصد امن خصوصی. پیاده‌سازی + تست + مستندات: `docs/phase-reports/report-od9-closure.md`. متن تاریخی تصمیم (نگهداری‌شده برای traceability):
 
 **Target:** ذخیره‌سازی بکاپِ **فعال** نیز باید بیرون از DocumentRoot باشد — همان اصل ذخیره‌سازی بالینی. بکاپ حاوی همان PHI است و یک dump کامل پایگاه داده دارد.
 
@@ -229,7 +229,7 @@ BackupService::restoreApply()          BackupService.php:343
 | # | blocker | مدرک |
 |---|---|---|
 | **BL-1** | **Gate مالک برای Phase 2 صادر نشده.** هر فاز فقط با تأیید صریح مالک آغاز می‌شود | `roadmap.md` §قانون Gate |
-| **BL-2** | **OD-9 باز است** — باید پیش از Phase 2 تصمیم‌گیری شود | بند F |
+| **BL-2** | ~~OD-9 باز است~~ — ✅ بسته و پیاده‌سازی شد | [`report-od9-closure.md`](../phase-reports/report-od9-closure.md) |
 | **BL-3** | **قیود ساختاری schema:** `UNIQUE u_sched_day` · `UNIQUE u_slot` · `cpms_clinicians UNIQUE u_clinician_user(wp_user_id)` — این آخری مستقیماً **AD-05 (پزشک در چند کلینیک) را مسدود می‌کند** | `docs/drift-register.md` |
 | **BL-4** | **۵۴ مورد hardcoded `clinic_id = 1` در ۲۳ فایل** + seed `cpms_clinics id=1` (`0001:736`)؛ `clinic_id` در ۲۵ جدول ولی FK فقط روی ۴ | `docs/drift-register.md` §۲ |
 | **BL-5** | **D-01…D-21** (Domain/Schema) به Phase 2 محول شده‌اند | `docs/drift-register.md` §۲ |
@@ -310,4 +310,4 @@ BackupService::restoreApply()          BackupService.php:343
 
 ## خلاصهٔ یک‌خطی
 
-Phase 1A روی `9bc6f7f` بسته شد (HEAD فعلی `28b2027` = فقط همین سند تحویل)؛ همهٔ Gateها روی هر دو SHA سبز؛ V-1…V-8 و V-10 برطرف، V-7 بسته؛ هیچ Critical/High بازی نمانده. **NEXT SAFE ACTION = تصمیم مالک دربارهٔ OD-9، سپس Gate صریح برای Phase 2.**
+Phase 1A روی `9bc6f7f` بسته شد (HEAD فعلی `28b2027` = فقط همین سند تحویل)؛ همهٔ Gateها روی هر دو SHA سبز؛ V-1…V-8 و V-10 برطرف، V-7 بسته؛ هیچ Critical/High بازی نمانده. **OD-9 بعداً در session بعدی بسته و پیاده‌سازی شد ([report-od9-closure.md](../phase-reports/report-od9-closure.md)). NEXT SAFE ACTION = Gate صریح مالک برای Phase 2.**

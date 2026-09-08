@@ -37,7 +37,7 @@ final class BackupSecurityTest extends WP_UnitTestCase
         mkdir($filesBase . '/1/a3', 0750, true);
         file_put_contents($filesBase . '/1/a3/' . str_repeat('b', 32) . '.pdf', 'clinical-bytes');
 
-        $this->store = new ProtectedBackupStore($this->tmpBase . '/backups');
+        $this->store = ProtectedBackupStore::active($this->tmpBase . '/backups');
         $this->service = new BackupService(
             App::db(),
             $this->store,

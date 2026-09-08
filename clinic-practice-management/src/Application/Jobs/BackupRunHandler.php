@@ -7,6 +7,7 @@ namespace ClinicCore\Application\Jobs;
 use ClinicCore\Application\Backup\BackupService;
 use ClinicCore\Infrastructure\Backup\BackupException;
 use ClinicCore\Infrastructure\Logging\OpLogger;
+use ClinicCore\Infrastructure\Storage\StorageConfigurationException;
 use ClinicCore\Settings\Settings;
 
 /**
@@ -42,6 +43,11 @@ final class BackupRunHandler
         } catch (BackupException $e) {
             $this->op->error('BACKUP_JOB_FAILED', ['code' => $e->getErrorCode()]);
             throw $e; // Job fail → retry با Backoff (دیده‌شونده در Health)
+        } catch (StorageConfigurationException $e) {
+            // OD-9 — ریشهٔ فعال بکاپ داخل DocumentRoot است: Fail-Closed.
+            // ثبت صریح کد پیکربندی (نه کد دامنه) تا اپراتور علت را ببیند.
+            $this->op->error('BACKUP_JOB_FAILED', ['code' => $e->errorCode]);
+            throw $e;
         }
     }
 }

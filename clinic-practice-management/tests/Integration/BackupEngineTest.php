@@ -44,7 +44,7 @@ final class BackupEngineTest extends WP_UnitTestCase
 
         $this->backups = new BackupService(
             App::db(),
-            new ProtectedBackupStore($this->tmpBase . '/backups'),
+            ProtectedBackupStore::active($this->tmpBase . '/backups'),
             new BackupSqlDumper(App::db()),
             App::settings(),
             App::audit(),

@@ -93,6 +93,7 @@ use ClinicCore\Infrastructure\Sms\Providers\LogSmsProvider;
 use ClinicCore\Infrastructure\Sms\SmsProviderInterface;
 use ClinicCore\Infrastructure\Sms\SmsProviderRegistry;
 use ClinicCore\Infrastructure\Storage\LocalFileStorage;
+use ClinicCore\Infrastructure\Storage\PrivateStorageLocation;
 use ClinicCore\Infrastructure\Storage\PrivateStorageMigrator;
 use ClinicCore\Infrastructure\Update\HttpUpdateMetadataGateway;
 use ClinicCore\Migrations\MigrationRunner;
@@ -287,8 +288,20 @@ final class App
         if (trim((string) self::settings()->get('files.storage_path', '')) === '') {
             $pairs[] = [LocalFileStorage::legacyBasePath(), LocalFileStorage::defaultBasePath(), 'clinic-files'];
         }
-        if (trim((string) self::settings()->get('backup.storage_path', '')) === '') {
+        $backupConfigured = trim((string) self::settings()->get('backup.storage_path', ''));
+        if ($backupConfigured === '') {
             $pairs[] = [ProtectedBackupStore::legacyBasePath(), ProtectedBackupStore::defaultBasePath(), 'cpms-backups'];
+        } elseif (PrivateStorageLocation::isInsideWebRoot($backupConfigured)) {
+            // OD-9 — ریشهٔ بکاپِ پیکربندی‌شده داخل DocumentRoot است: محتوایش
+            // بکاپ legacy داخل webroot است و به ریشهٔ خصوصی منتقل می‌شود
+            // (idempotent؛ تأیید sha256 پیش از حذف مبدأ؛ تعارض بدون overwrite).
+            // خودِ Setting عمداً تغییر نمی‌کند (تصمیم اپراتور است) — نوشتنِ
+            // جدید Fail-Closed می‌ماند تا مسیر اصلاح شود؛ ریشهٔ legacy قدیمی
+            // هم (اگر جدا از مسیر پیکربندی‌شده باشد) به همین مقصد می‌رود.
+            $pairs[] = [$backupConfigured, ProtectedBackupStore::defaultBasePath(), 'cpms-backups-unsafe-config'];
+            if (!self::samePath($backupConfigured, ProtectedBackupStore::legacyBasePath())) {
+                $pairs[] = [ProtectedBackupStore::legacyBasePath(), ProtectedBackupStore::defaultBasePath(), 'cpms-backups'];
+            }
         }
 
         foreach ($pairs as [$legacy, $private, $label]) {
@@ -313,6 +326,16 @@ final class App
         if ($clean) {
             update_option(self::PRIVATE_STORAGE_OPTION, self::PRIVATE_STORAGE_DONE, false);
         }
+    }
+
+    /** مقایسهٔ نرمال‌شدهٔ دو مسیر (بدون اثر اسلش انتهایی/ویندوزی). */
+    private static function samePath(string $a, string $b): bool
+    {
+        $norm = static function (string $p): string {
+            return rtrim(str_replace('\\', '/', $p), '/');
+        };
+
+        return $norm($a) === $norm($b);
     }
 
     /**
@@ -797,27 +820,34 @@ final class App
     /**
      * سرویس بکاپ/بازیابی (F10 — spec §22–§25). مقصد = ProtectedBackupStore
      * محلی؛ Remote (S3/SFTP) = V1.1 (Runbook در docs/backup).
+     *
+     * OD-9 — ریشهٔ فعال بکاپ باید بیرون از DocumentRoot باشد. اگر Setting
+     * `backup.storage_path` (یا ثابت CPMS_PRIVATE_STORAGE_DIR) به مسیری داخل
+     * webroot اشاره کند، مسیر **عوض نمی‌شود** و مخزن به‌صورت صریح به یک
+     * «مبدأ legacy فقط‌خواندنی» تنزل می‌یابد: خواندن برای verification و
+     * recovery ادامه دارد، ولی هر نوشتن (بکاپ جدید/حذف) Fail-Closed خطا
+     * می‌دهد تا اپراتور مسیر را اصلاح کند. هیچ fallback بی‌صدایی نیست.
      */
     public static function backupService(): BackupService
     {
-        static $backups = null;
-        if ($backups === null) {
-            $backups = new BackupService(
-                self::db(),
-                new ProtectedBackupStore(
-                    trim((string) self::settings()->get('backup.storage_path', '')) !== ''
-                        ? (string) self::settings()->get('backup.storage_path', '')
-                        : ProtectedBackupStore::defaultBasePath()
-                ),
-                new BackupSqlDumper(self::db()),
-                self::settings(),
-                self::audit(),
-                self::op(),
-                self::localFileStorage()->basePath()
-            );
-        }
+        // الگوی localFileStorage(): عمداً بدون کش تا تغییر Setting
+        // `backup.storage_path` (از جمله Fail-Closed شدن آن در OD-9) بلافاصله
+        // اثر کند — ساخت Object سبک است.
+        $configured = trim((string) self::settings()->get('backup.storage_path', ''));
+        $base = $configured !== '' ? $configured : ProtectedBackupStore::defaultBasePath();
+        $store = PrivateStorageLocation::isInsideWebRoot($base)
+            ? ProtectedBackupStore::legacySource($base)
+            : ProtectedBackupStore::active($base);
 
-        return $backups;
+        return new BackupService(
+            self::db(),
+            $store,
+            new BackupSqlDumper(self::db()),
+            self::settings(),
+            self::audit(),
+            self::op(),
+            self::localFileStorage()->basePath()
+        );
     }
 
     /**

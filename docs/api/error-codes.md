@@ -123,6 +123,7 @@
 | `CLINIC_BACKUP_INVALID_PATH` | 400 | مسیر نسبیِ فایل در مانیفست ناامن است (فقط زیرپوشه‌های عادی؛ بدون `..`/مطلق/بک‌اسلش) | — |
 | `CLINIC_BACKUP_CONFIRM_REQUIRED` | 409 | Restore نیازمند تأیید صریح (CLI `--yes` / فرم Admin) است؛ از Job خودکار هرگز اجرا نمی‌شود | — |
 | `CLINIC_BACKUP_PREFLIGHT_FAILED` | 409 | Preflight Restore رد شد (تمامیت بکاپ یا دسترس‌پذیری DB) — چیزی تغییر نکرده است | — |
+| `CLINIC_BACKUP_STORAGE_INSIDE_WEBROOT` | 500 | **OD-9** — ریشهٔ بکاپ فعال داخل DocumentRoot است: نوشتن Fail-Closed رد می‌شود (مسیر ناامن عوض نمی‌شود؛ خواندن به‌عنوان مبدأ legacy مجاز است). Safety Backup پیش از Restore به ریشهٔ خصوصی امن هدایت می‌شود | پس از اصلاح پیکربندی |
 
 ## Update (F10 — ADR-0029)
 

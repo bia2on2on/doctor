@@ -108,7 +108,7 @@ final class Settings
         'backup.enabled' => false,
         'backup.interval_hours' => 24,
         'backup.keep_count' => 14, // Retention: N نسخه‌ی آخر (V1 — بدون Tiering)
-        'backup.storage_path' => '', // '' = {WP_CONTENT_DIR}/cpms-backups (محافظت‌شده)
+        'backup.storage_path' => '', // '' = ریشهٔ خصوصی بیرون DocumentRoot (OD-7/OD-9؛ داخل webroot = Fail-Closed)
         'backup.last_run_at' => 0, // ts آخرین بکاپ موفق (Job)
         // F10 — به‌روزرسانی امن (ADR-0029)
         'update.check_interval_hours' => 24,

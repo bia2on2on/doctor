@@ -132,7 +132,10 @@ final class SystemHealthService
 
         // ---------- Storage (spec §22/§23) ----------
         $add('storage.files', 'Storage فایل‌های پزشکی', $this->storageStatus($this->filesBase(), 'storage.files', self::FAIL));
-        $add('storage.backups', 'Storage بکاپ', $this->storageStatus($this->backups->store()->basePath(), 'storage.backups'));
+        // OD-9 — ریشهٔ بکاپ داخل DocumentRoot دیگر WARNING نیست: یک dump کامل
+        // پایگاه داده داخل webroot یک پیکربندی **رد‌شده** است (نوشتن Fail-Closed
+        // می‌شود) و سلامت سیستم باید صادقانه FAIL گزارش دهد.
+        $add('storage.backups', 'Storage بکاپ', $this->storageStatus($this->backups->store()->basePath(), 'storage.backups', self::FAIL));
 
         // ---------- License (ADR-0023) ----------
         $state = $this->licenses->currentState();
@@ -245,9 +248,7 @@ final class SystemHealthService
      *
      * Phase 1A — تصحیح صحت گزارش: پیش از این صرفِ وجود `.htaccess` نتیجهٔ
      * `PASS` می‌داد. `.htaccess` روی nginx خوانده نمی‌شود و روی هیچ
-     * وب‌سروری «مجوز» نیست، فقط یک لایهٔ دفاعی مکمل است. اگر ریشه داخل
-     * DocumentRoot باشد، محافظت واقعی به پیکربندی وب‌سرور وابسته است و
-     * افزونه نمی‌تواند آن را تأیید کند ⇒ حداکثر `WARNING`.
+     * وب‌سروری «مجوز» نیست، فقط یک لایهٔ دفاعی مکمل است.
      *
      * `PASS` فقط وقتی داده می‌شود که ریشه بیرون از DocumentRoot باشد.
      */
@@ -261,10 +262,10 @@ final class SystemHealthService
         }
         if ($this->isInsideWebRoot($path)) {
             // گاردها (در صورت وجود) Defence in Depth هستند، نه Authorization.
-            // برای ذخیره‌سازی بالینی این حالت از OD-7 به بعد یک پیکربندی
-            // **رد‌شده** است (سازنده استثنا می‌دهد) و باید FAIL گزارش شود؛
-            // برای ریشهٔ بکاپ فعلاً WARNING می‌ماند — دامنهٔ آن در گزارش
-            // این دور توضیح داده شده است.
+            // از OD-7 (بالینی) و OD-9 (بکاپ) به بعد ریشهٔ داخل DocumentRoot یک
+            // پیکربندی **رد‌شده** است — نوشتن Fail-Closed می‌شود — پس هر دو
+            // صدادقانه FAIL گزارش می‌شوند. هر دو فراخوانی self::FAIL پاس می‌دهند؛
+            // پارامتر برای خوانایی فراخوان‌ها نگه داشته شده است.
             return $insideWebRoot;
         }
         if (is_file($path . '/.htaccess')) {

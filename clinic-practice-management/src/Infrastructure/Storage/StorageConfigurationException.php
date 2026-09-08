@@ -22,13 +22,21 @@ final class StorageConfigurationException extends RuntimeException
         parent::__construct($message);
     }
 
-    public static function insideWebRoot(string $path, string $what): self
-    {
+    /**
+     * @param string $errorCode کد پایدار طبق ADR-0019 — پیش‌فرض برای
+     *                          ذخیره‌سازی بالینی؛ ریشهٔ بکاپ کد اختصاصی
+     *                          `CLINIC_BACKUP_STORAGE_INSIDE_WEBROOT` می‌دهد
+     */
+    public static function insideWebRoot(
+        string $path,
+        string $what,
+        string $errorCode = 'CLINIC_STORAGE_INSIDE_WEBROOT'
+    ): self {
         return new self(
-            'CLINIC_STORAGE_INSIDE_WEBROOT',
+            $errorCode,
             sprintf(
                 'پیکربندی ناامن: مسیر %s داخل DocumentRoot است (%s). '
-                . 'ذخیره‌سازی بالینی خصوصی باید بیرون از ریشهٔ وب باشد. '
+                . 'دادهٔ خصوصی (PHI) باید بیرون از ریشهٔ وب نگهداری شود. '
                 . 'مسیر را در تنظیمات به یک مسیر مطلقِ بیرون از DocumentRoot تغییر دهید '
                 . 'یا ثابت CPMS_PRIVATE_STORAGE_DIR را در wp-config.php تعریف کنید.',
                 $what,

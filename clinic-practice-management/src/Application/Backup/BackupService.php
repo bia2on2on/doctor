@@ -25,8 +25,17 @@ use ClinicCore\Settings\Settings;
  *          اعمال SQL (cpms_* فقط؛ FK off؛ به‌صورت تک‌Statement) + بازگردانی
  *          storage. فقط با تأیید صریح (restoreApply).
  *
+ * OD-9 (تصمیم مالک) — تفکیک صریح «مبدأ» و «مقصد»:
+ *  - خواندن (verify/preflight/restore) ابتدا مخزن فعال را می‌پرسد و در صورت
+ *    نبود، ریشهٔ خصوصی پیش‌فرض و ریشهٔ legacy داخل webroot را **فقط به‌عنوان
+ *    مبدأ فقط‌خواندنی** جست‌وجو می‌کند (recovery).
+ *  - نوشتن فقط در مقصد امن: مخزن فعال اگر قابل‌نوشتن باشد؛ وگرنه Safety
+ *    Backup پیش از restore به ریشهٔ خصوصی بیرون از webroot هدایت می‌شود —
+ *    مبدأ legacy هرگز مقصد نوشتن نیست ⇒ restore به‌خاطر سیاست جدید قفل
+ *    نمی‌شود (دروازهٔ Fail-Closed به‌جای نوشتنِ بی‌صدای ناامن، مسیر امن می‌گیرد).
+ *
  * هرگز WP Core یا داده‌ی افزونه‌های دیگر را لمس نمی‌کند؛ بدون PHI در Log/
- * Audit (فقط id و شمارنده‌ها).
+ * Audit (فقط id و شمارنده‌ها و مسیرهای ذخیره‌سازی).
  */
 final class BackupService
 {
@@ -55,14 +64,26 @@ final class BackupService
     // ================= CREATE / LIST / VERIFY / DELETE / PRUNE =================
 
     /**
+     * بکاپ جدید — فقط در مخزن فعال. اگر ریشهٔ فعال داخل DocumentRoot باشد
+     * (حالت مبدأ legacy فقط‌خواندنی) این فراخوانی Fail-Closed خطا می‌دهد؛
+     * هیچ fallback بی‌صدایی به مسیر دیگری وجود ندارد (OD-9).
+     *
      * @return array<string, mixed>
      */
     public function createBackup(string $note = '', int $now = 0): array
     {
+        return $this->createBackupTo($this->store, $note, $now);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function createBackupTo(ProtectedBackupStore $destination, string $note = '', int $now = 0): array
+    {
         $now = $now > 0 ? $now : time();
         $backupId = 'cpms-backup-' . gmdate('Ymd-His', $now) . '-' . substr(bin2hex(random_bytes(4)), 0, 8);
 
-        $dir = $this->store->createDir($backupId);
+        $dir = $destination->createDir($backupId);
         $sqlFile = $dir . '/db.sql';
         $storageDir = $dir . '/storage';
 
@@ -116,9 +137,9 @@ final class BackupService
             'storage_files' => $files['count'],
         ]);
 
-        $this->prune();
+        $this->pruneStore($destination);
 
-        return $this->backupMeta($backupId) ?? ['backup_id' => $backupId];
+        return $this->backupMetaIn($destination, $backupId) ?? ['backup_id' => $backupId];
     }
 
     /**
@@ -126,21 +147,9 @@ final class BackupService
      */
     public function listBackups(): array
     {
-        $out = [];
-        foreach ($this->store->listIds() as $id) {
-            $meta = $this->backupMeta($id);
-            if ($meta !== null) {
-                $out[] = $meta;
-            }
-        }
-        usort($out, static fn (array $a, array $b): int => strcmp((string) $b['created_at'], (string) $a['created_at']));
-
-        return $out;
+        return $this->listMetasIn($this->store);
     }
 
-    /**
-     * @return array<string, mixed>|null
-     */
     /**
      * وضعیت فایل هشِ مانیفست — تنها نقطهٔ تصمیم برای هر دو مسیر بررسی.
      *
@@ -159,13 +168,26 @@ final class BackupService
             : self::MANIFEST_HASH_MISMATCH;
     }
 
+    /**
+     * @return array<string, mixed>|null
+     */
     public function backupMeta(string $backupId): ?array
     {
-        if (!$this->store->exists($backupId)) {
+        return $this->backupMetaIn($this->store, $backupId);
+    }
+
+    /**
+     * @param ProtectedBackupStore $store مخزنی که متادیتا از آن خوانده می‌شود
+     *
+     * @return array<string, mixed>|null
+     */
+    private function backupMetaIn(ProtectedBackupStore $store, string $backupId): ?array
+    {
+        if (!$store->exists($backupId)) {
             return null;
         }
-        $dir = $this->store->dirOf($backupId);
-        $raw = $this->readManifest($backupId);
+        $dir = $store->dirOf($backupId);
+        $raw = $this->readManifestIn($store, $backupId);
         if ($raw === null) {
             return null;
         }
@@ -211,12 +233,24 @@ final class BackupService
     }
 
     /**
+     * تأیید تمامیت یک بکاپ — OD-9: اگر بکاپ در مخزن فعال نبود، ریشهٔ خصوصی
+     * پیش‌فرض و ریشهٔ legacy نیز فقط به‌عنوان «مبدأ فقط‌خواندنی» جست‌وجو
+     * می‌شوند (verification/recovery از بکاپ‌های قدیمی داخل webroot).
+     *
      * @return array{ok: bool, errors: list<string>, warnings: list<string>}
      */
     public function verifyBackup(string $backupId): array
     {
-        $dir = $this->store->dirOf($backupId);
-        $raw = $this->readManifest($backupId);
+        return $this->verifyIn($this->resolveSourceStore($backupId), $backupId);
+    }
+
+    /**
+     * @return array{ok: bool, errors: list<string>, warnings: list<string>}
+     */
+    private function verifyIn(ProtectedBackupStore $source, string $backupId): array
+    {
+        $dir = $source->dirOf($backupId);
+        $raw = $this->readManifestIn($source, $backupId);
         if ($raw === null) {
             return ['ok' => false, 'errors' => ['manifest missing/corrupt'], 'warnings' => []];
         }
@@ -264,19 +298,30 @@ final class BackupService
     }
 
     /**
-     * Retention: نگهداری N نسخه‌ی آخر (پیش‌فرض ۱۴ — تنظیم `backup.keep_count`).
+     * Retention روی مخزن فعال: نگهداری N نسخه‌ی آخر (پیش‌فرض ۱۴ — تنظیم `backup.keep_count`).
      *
      * @return list<string> بکاپ‌های حذف‌شده
      */
     public function prune(int $keep = 0): array
     {
+        return $this->pruneStore($this->store, $keep);
+    }
+
+    /**
+     * @return list<string> بکاپ‌های حذف‌شده
+     */
+    private function pruneStore(ProtectedBackupStore $store, int $keep = 0): array
+    {
         $keep = $keep > 0 ? $keep : max(1, (int) $this->settings->get('backup.keep_count', 14));
-        $metas = $this->listBackups(); // مرتب created_at نزولی — جدیدترین اول
+        $metas = $this->listMetasIn($store); // مرتب created_at نزولی — جدیدترین اول
         $removed = [];
         foreach (array_slice($metas, $keep) as $old) {
             $id = (string) $old['backup_id'];
             try {
-                $this->deleteBackup($id);
+                $store->delete($id);
+                // همان زنجیرهٔ Audit/Op حذفِ دستی — فقط پس از موفقیت واقعی
+                $this->audit->log('BACKUP_DELETED', null, 'backup', null, null, null, null, ['backup_id' => $id]);
+                $this->op->info('BACKUP_DELETED', ['backup_id' => $id]);
                 $removed[] = $id;
             } catch (BackupException $e) {
                 $this->op->warning('BACKUP_PRUNE_FAILED', ['backup_id' => $id, 'error' => $e->getErrorCode()]);
@@ -294,17 +339,22 @@ final class BackupService
     /**
      * Preflight — هرگز چیزی را تغییر نمی‌دهد (spec §25).
      *
+     * OD-9: مبدأ بکاپ resolve می‌شود (فعال → ریشهٔ خصوصی → ریشهٔ legacy) و
+     * نتیجه صراحتاً شامل `source`، هشدارهای تمامیت و پرچم `legacy_unverified`
+     * است تا رفتار بازیابی از مبدأ قدیمی، audit-شدنی و بی‌ابهام باشد.
+     *
      * @return array<string, mixed>
      */
     public function restorePreflight(string $backupId): array
     {
-        $dir = $this->store->dirOf($backupId);
-        $raw = $this->readManifest($backupId);
+        $source = $this->resolveSourceStore($backupId);
+        $dir = $source->dirOf($backupId);
+        $raw = $this->readManifestIn($source, $backupId);
         if ($raw === null) {
             throw BackupException::of('CLINIC_BACKUP_MANIFEST', 'backup manifest missing: ' . $backupId);
         }
 
-        $verify = $this->verifyBackup($backupId);
+        $verify = $this->verifyIn($source, $backupId);
         $rows = array_sum(array_map(static fn (array $t): int => (int) $t['rows'], (array) ($raw['db']['tables'] ?? [])));
         $dbOk = $this->dbOk();
 
@@ -313,11 +363,15 @@ final class BackupService
             'created_at' => (string) $raw['created_at'],
             'integrity_ok' => $verify['ok'],
             'integrity_errors' => $verify['errors'],
+            'integrity_warnings' => $verify['warnings'],
+            'legacy_unverified' => $this->manifestHashState($dir) === self::MANIFEST_HASH_MISSING,
+            'source' => $source->isReadonly() ? 'legacy' : 'active',
+            'source_root' => $source->basePath(),
             'tables' => count((array) ($raw['db']['tables'] ?? [])),
             'rows' => $rows,
             'storage_files' => (int) ($raw['storage']['count'] ?? 0),
             'db_reachable' => $dbOk,
-            'disk_free_bytes' => function_exists('disk_free_space') ? @disk_free_space($this->store->basePath()) : null,
+            'disk_free_bytes' => function_exists('disk_free_space') ? @disk_free_space($source->basePath()) : null,
             'engine_version' => (string) ($raw['engine_version'] ?? ''),
             'restore_safe' => $verify['ok'] && $dbOk,
         ];
@@ -326,6 +380,13 @@ final class BackupService
     /**
      * اعمال Restore — فقط با تأیید صریح؛ خودکار Safety Backup می‌سازد.
      * فقط از CLI/Admin با تأیید (هرگز از Job خودکار).
+     *
+     * OD-9: Safety Backup فقط در «مقصد امن خصوصی» نوشته می‌شود — مخزن فعال
+     * اگر قابل‌نوشتن باشد، وگرنه ریشهٔ خصوصی پیش‌فرض (بیرون از webroot).
+     * مبدأ legacy هرگز مقصد Safety Backup نیست ⇒ restore در نصبِ دارای
+     * پیکربندی ناامن قفل نمی‌شود، ولی هیچ بایت PHI جدیدی هم داخل webroot
+     * نوشته نمی‌شود. اگر هیچ مقصد امنی وجود نداشته باشد، restore قبل از
+     * هر گام مخرب Fail-Closed متوقف می‌شود.
      *
      * @return array<string, mixed>
      */
@@ -339,11 +400,14 @@ final class BackupService
             throw BackupException::of('CLINIC_BACKUP_PREFLIGHT_FAILED', 'restore preflight failed');
         }
 
-        // Safety Backup (همیشه قبل از تغییر مخرب)
-        $safety = $this->createBackup('pre-restore-safety-' . $backupId);
+        // Safety Backup (همیشه قبل از تغییر مخرب) — فقط در مقصد امن خصوصی (OD-9)
+        $safetyDestination = $this->safetyDestinationStore();
+        $safety = $this->createBackupTo($safetyDestination, 'pre-restore-safety-' . $backupId);
 
-        $dir = $this->store->dirOf($backupId);
-        $raw = $this->readManifest($backupId);
+        $source = $this->resolveSourceStore($backupId);
+        $sourceLabel = $source->isReadonly() ? 'legacy' : 'active';
+        $dir = $source->dirOf($backupId);
+        $raw = $this->readManifestIn($source, $backupId);
         $sql = (string) @file_get_contents($dir . '/db.sql');
         if ($sql === '') {
             throw BackupException::of('CLINIC_BACKUP_IO', 'db.sql empty/missing');
@@ -376,6 +440,9 @@ final class BackupService
         $this->audit->log('RESTORE_APPLIED', null, 'backup', null, null, null, null, [
             'backup_id' => $backupId,
             'safety_backup' => (string) ($safety['backup_id'] ?? ''),
+            'safety_destination' => $safetyDestination->basePath(),
+            'source' => $sourceLabel,
+            'legacy_unverified' => (bool) $pre['legacy_unverified'],
             'statements' => $applied,
             'dropped_tables' => $dropped,
             'files' => $includeFiles ? (int) ($raw['storage']['count'] ?? 0) : 0,
@@ -383,9 +450,67 @@ final class BackupService
         $this->op->info('RESTORE_APPLIED', [
             'backup_id' => $backupId,
             'safety_backup' => (string) ($safety['backup_id'] ?? ''),
+            'safety_destination' => $safetyDestination->basePath(),
+            'source' => $sourceLabel,
         ]);
 
+        $pre['safety_backup'] = (string) ($safety['backup_id'] ?? '');
+        $pre['safety_backup_destination'] = $safetyDestination->basePath();
+
         return $pre;
+    }
+
+    // ================= OD-9: source/destination resolution =================
+
+    /**
+     * مبدأ خواندنِ یک بکاپ: مخزن فعال، سپس ریشهٔ خصوصی پیش‌فرض (محل مهاجرت
+     * بکاپ‌های legacy) و سپس ریشهٔ قدیمی داخل webroot — دو مورد آخر فقط
+     * به‌عنوان مبدأ فقط‌خواندنی. اگر هیچ‌کدام نبود، خودِ مخزن فعال
+     * برگردانده می‌شود تا معنای خطای پیشین (manifest missing) حفظ شود.
+     */
+    private function resolveSourceStore(string $backupId): ProtectedBackupStore
+    {
+        if ($this->store->exists($backupId)) {
+            return $this->store;
+        }
+        foreach ([ProtectedBackupStore::defaultBasePath(), ProtectedBackupStore::legacyBasePath()] as $base) {
+            if ($this->sameBasePath($base, $this->store->basePath())) {
+                continue;
+            }
+            $candidate = ProtectedBackupStore::legacySource($base);
+            if ($candidate->exists($backupId)) {
+                return $candidate;
+            }
+        }
+
+        return $this->store;
+    }
+
+    /**
+     * مقصد امن نوشتن Safety Backup (OD-9 — تصمیم مالک، گزینهٔ C):
+     * مخزن فعال اگر قابل‌نوشتن باشد؛ وگرنه ریشهٔ خصوصی پیش‌فرض. خودِ
+     * `::active()` Fail-Closed است — اگر حتی ریشهٔ خصوصی هم داخل webroot
+     * باشد (CPMS_PRIVATE_STORAGE_DIR ناامن)، استثنا پرتاب می‌شود و restore
+     * پیش از هر گام مخرب متوقف می‌ماند: بدون مقصد امن، Safety Backup
+     * ساخته نمی‌شود و بازیابی مخرب آغاز نمی‌شود.
+     */
+    private function safetyDestinationStore(): ProtectedBackupStore
+    {
+        if (!$this->store->isReadonly()) {
+            return $this->store;
+        }
+
+        return ProtectedBackupStore::active(ProtectedBackupStore::defaultBasePath());
+    }
+
+    /** مقایسهٔ نرمال‌شدهٔ دو مسیر ریشه (بدون اثر اسلش انتهایی/ویندوزی). */
+    private function sameBasePath(string $a, string $b): bool
+    {
+        $norm = static function (string $p): string {
+            return rtrim(str_replace('\\', '/', $p), '/');
+        };
+
+        return $norm($a) === $norm($b);
     }
 
     // ================= helpers =================
@@ -402,9 +527,9 @@ final class BackupService
     /**
      * @return array<string, mixed>|null
      */
-    private function readManifest(string $backupId): ?array
+    private function readManifestIn(ProtectedBackupStore $store, string $backupId): ?array
     {
-        $dir = $this->store->dirOf($backupId);
+        $dir = $store->dirOf($backupId);
         $json = @file_get_contents($dir . '/manifest.json');
         if ($json === false) {
             return null;
@@ -412,6 +537,23 @@ final class BackupService
         $raw = json_decode($json, true);
 
         return is_array($raw) ? $raw : null;
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function listMetasIn(ProtectedBackupStore $store): array
+    {
+        $out = [];
+        foreach ($store->listIds() as $id) {
+            $meta = $this->backupMetaIn($store, $id);
+            if ($meta !== null) {
+                $out[] = $meta;
+            }
+        }
+        usort($out, static fn (array $a, array $b): int => strcmp((string) $b['created_at'], (string) $a['created_at']));
+
+        return $out;
     }
 
     /**
