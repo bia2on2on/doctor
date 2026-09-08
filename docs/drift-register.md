@@ -149,6 +149,9 @@
 | **OD-2** | نگاشت اقلام `V1.5` و باقیماندهٔ `V2` (OCR، 2FA، Online Payment، Insurance/Lab، Push، Mobile API/JWT) | ⚠️ باز — بدون فاز |
 | **OD-3** | **ناهماهنگی نسخه** — ریشه‌یابی‌شده در §۷ | ⚠️ باز — پیش از پایان Phase 1 |
 | **OD-4** | وضعیت واقعی تأیید ۶ سند پایه | ⚠️ **نمی‌دانم** — از مخزن قابل استخراج نیست |
+| **OD-5** | Pepper زنجیرهٔ Audit (`AuditLogger::pepper()`) هنوز مقدار ثابت درونِ کد را دارد | ⚠️ **باز — جدید در Phase 1A** — تعویض، زنجیرهٔ رکوردهای Audit موجود را نامعتبر می‌کند |
+| **OD-6** | رمزنگاری فایل بالینی و بکاپ در حالت سکون | ⚠️ **باز — جدید در Phase 1A** — تصمیم محصولی (مدیریت کلید/Restore) |
+| **OD-7** | انتقال اجباری `clinic-files` و `cpms-backups` به خارج از DocumentRoot | ⚠️ **باز — جدید در Phase 1A** — روی nginx، `.htaccess` بی‌اثر است |
 | **Q6** | Scope جدول `cpms_rate_limits` (سراسری / per-Clinic / دوسطحی) | ⚠️ باز — **مرتبط با Phase 1A** (rate limiting سراسری بدون آن کار می‌کند) |
 | **Q11** | حذف ستون legacy `clinicians.specialty` | ⚠️ باز — Phase 4 |
 | **Q12** | UX تعویض Clinic | ⚠️ باز — بدون اثر بر Backend |
