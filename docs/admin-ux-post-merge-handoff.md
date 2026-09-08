@@ -14,9 +14,17 @@
 | PR | **#9** — `OPEN` |
 | Base branch | `main` |
 | Feature branch | `arena/01a07d25-doctor` |
-| **FINAL HEAD** | **`607dcc15bf0c9925d8e9efe5f655853631c0bb27`** |
+| **CURRENT / PRE-MERGE PR HEAD** | **`607dcc15bf0c9925d8e9efe5f655853631c0bb27`** *(در زمان نگارش این سند قبل از کامیت‌های docs بعدی — با هر docs commit تغییر می‌کند)* |
 | **PRODUCTION-TESTED SHA** | **`c7eb3c801f123dc44c3dc8e3cbcb5d76d2170fd1`** |
 | Pre-merge main | `38c573bf2c74814cdb5897e1a260081f8a07e7f1` |
+
+> **⚠️ سه SHA متمایز و مستقل — هرگز با هم اشتباه نشوند:**
+> 1. **PRODUCTION-TESTED SHA** = `c7eb3c801f123dc44c3dc8e3cbcb5d76d2170fd1` — آخرین SHA که production changes دارد و Official ZIP/CI/RWP/PO-screenshots روی آن اجرا/تأیید شد.
+> 2. **FINAL CLOSURE REPORT SHA** = `607dcc15bf0c9925d8e9efe5f655853631c0bb27` — SHA ای که گزارش نهایی در آن ثبت شد (historical؛ دیگر لازم نیست برابر HEAD فعلی باشد).
+> 3. **CURRENT / PRE-MERGE PR HEAD AT MERGE TIME** = مقدارِ پویا؛ در هر لحظه با آخرین کامیتِ روی شاخه تغییر می‌کند (در زمان نگارش این سند = `8ba4f37…` در وضعیت فعلی و ممکن است با هر docs commit دیگری باز هم تغییر کند).
+>
+> **قاعدهٔ درست برای second parent (نه SHA ثابت):**
+> **EXPECTED SECOND PARENT = PR #9 HEAD SHA IMMEDIATELY BEFORE MERGE** — که باید در لحظهٔ merge از GitHub (`gh api repos/.../pulls/9 --jq '.head.sha'`) خوانده شود، نه از یک SHA hard-coded در این سند.
 
 ### Verified PR #9 state (query منبع)
 
@@ -26,7 +34,7 @@
 - **mergeStateStatus** = `CLEAN` ✅
 - Checks: **۱۷/۱۷ PASS** ✅ (5 Closure + 1 Integration + 2 Real WP + 1 Release Artifact + 1 Responsive smoke + 1 Staging Gate + 1 Static Analysis + 4 Unit (8.1/8.2/8.3/8.4) + 1 Upgrade path)
 - **No pending / No failed** ✅
-- **No conflict** ✅ (base_sha = main، head_sha = 607dcc1)
+- **No conflict** ✅ (base_sha = main؛ head_sha = SHA فعلی PR در زمان بررسی — پویا)
 - Reviews `0`؛ review requests `0`؛ ruleset `Protect main`: `required_approving_review_count=0` + هیچ required-status context
 - **§46 = ۱۰/۱۰ YES** ✅
 - **PRODUCT_OWNER_VISUAL_ACCEPTANCE = PASS** ✅
@@ -113,8 +121,8 @@ PR #9 «CPMS Professional Admin UX — Phase (IA + Dashboard + Setup + Staff)» 
 
 1. **Fetch latest `origin/main`** (`git fetch origin main`).
 2. **Verify PR #9 status = `MERGED`** (`gh pr view 9 --json state`).
-3. **Discover & record**: merge commit full SHA (`gh api repos/.../pulls/9 --jq '.merge_commit_sha'` + `git rev-parse`)، first parent، second parent، resulting `origin/main` SHA.
-4. **Verify second parent == `607dcc15bf0c9925d8e9efe5f655853631c0bb27`**.
+3. **Discover & record** (همه از GitHub query شده، نه از این سند): `PR_HEAD_BEFORE_MERGE = gh api repos/bia2on2on/doctor/pulls/9 --jq '.head.sha'` (قبل از merge)؛ سپس بعد از merge، `merge_commit_sha = gh api repos/.../pulls/9 --jq '.merge_commit_sha'` + `git rev-parse`، first parent، second parent، resulting `origin/main` SHA.
+4. **Verify second parent == `$PR_HEAD_BEFORE_MERGE`** — یعنی **دقیقاً HEAD واقعی PR در لحظهٔ merge**. **نه** یک SHA hard-coded تاریخی مثل `607dcc1` یا `8ba4f37`. (می‌توانید `git cat-file -p $merge_commit_sha` را بزنید و والد دوم را با `$PR_HEAD_BEFORE_MERGE` مقایسه کنید.)
 5. **Verify merge strategy was a real two-parent merge commit**, not squash/rebase (`git cat-file -p <merge>` → دو والد؛ single-parent = نه).
 6. **Monitor workflows** triggered on merged `main` (`gh run list --json ...`).
 7. **Verify `main`**: PHPStan · Unit PHP 8.1/8.2/8.3/8.4 · Integration · Closure/security gates · Release Artifact · Upgrade · Responsive smoke · Pilot/Staging · Real WordPress Acceptance.
@@ -147,6 +155,11 @@ read docs/admin-ux-post-merge-handoff.md
 read docs/verification-report-admin-ux-final.md
 git fetch origin main
 verify all SHAs instead of trusting the document blindly
+# critical: query PR #9 on GitHub first
+gh pr view 9 --json state,mergeable,mergeStateStatus,headRefName,baseRefName
+gh api repos/bia2on2on/doctor/pulls/9 --jq '{head:.head.sha, base:.base.sha, merge_commit_sha:.merge_commit_sha, state, mergeable, mergeable_state}'
+# the expected second parent must equal .head.sha captured IMMEDIATELY BEFORE merge,
+# NOT a hard-coded SHA from the document
 perform POST-MERGE verification only
 do not redo Admin UX
 do not modify Doctor finance policy
