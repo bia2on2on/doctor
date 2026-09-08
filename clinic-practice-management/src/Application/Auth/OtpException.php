@@ -8,7 +8,8 @@ use RuntimeException;
 
 /**
  * خطای جریان OTP — کدهای API: CLINIC_MOBILE_INVALID, CLINIC_OTP_COOLDOWN, CLINIC_OTP_DAILY_LIMIT,
- * CLINIC_OTP_LOCKED, CLINIC_OTP_INVALID, CLINIC_OTP_EXPIRED, CLINIC_RATE_LIMITED.
+ * CLINIC_OTP_LOCKED, CLINIC_OTP_INVALID, CLINIC_OTP_EXPIRED, CLINIC_OTP_PURPOSE_INVALID,
+ * CLINIC_RATE_LIMITED.
  */
 final class OtpException extends RuntimeException
 {
@@ -39,7 +40,7 @@ final class OtpException extends RuntimeException
     public function httpStatus(): int
     {
         return match ($this->errorCode) {
-            'CLINIC_MOBILE_INVALID', 'CLINIC_OTP_INVALID', 'CLINIC_OTP_EXPIRED' => 400,
+            'CLINIC_MOBILE_INVALID', 'CLINIC_OTP_INVALID', 'CLINIC_OTP_EXPIRED', 'CLINIC_OTP_PURPOSE_INVALID' => 400,
             'CLINIC_OTP_COOLDOWN', 'CLINIC_OTP_DAILY_LIMIT', 'CLINIC_OTP_LOCKED', 'CLINIC_RATE_LIMITED' => 429,
             default => 400,
         };

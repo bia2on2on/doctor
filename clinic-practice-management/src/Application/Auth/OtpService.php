@@ -31,6 +31,30 @@ final class OtpService
     public const PURPOSE_LOGIN = 'login';
     public const PURPOSE_VERIFY_MOBILE = 'verify_mobile';
 
+    /**
+     * فهرست بستهٔ Purposeهای مجاز (Phase 1A — Context Binding).
+     *
+     * پیش از این `purpose` یک رشتهٔ آزاد بود: هر مقدار دلخواهی Token
+     * می‌ساخت و چون State سیاست (Cooldown/Lockout) به ازای
+     * (mobile, purpose) نگهداری می‌شود، مهاجم می‌توانست با تغییر
+     * `purpose` وضعیت سیاست را تکه‌تکه کند و ردیف بی‌نهایت بسازد.
+     *
+     * @var list<string>
+     */
+    public const PURPOSES = [self::PURPOSE_LOGIN, self::PURPOSE_VERIFY_MOBILE];
+
+    /**
+     * فقط این Purposeها اجازه دارند Session بسازند.
+     *
+     * `verify_mobile` تأیید مالکیت شماره است، نه ورود؛ پیش از Phase 1
+     * verify() بدون توجه به Purpose کوکی احراز هویت صادر می‌کرد.
+     *
+     * @var list<string>
+     */
+    private const SESSION_PURPOSES = [self::PURPOSE_LOGIN];
+
+    private const PEPPER_OPTION = 'cpms_otp_pepper';
+
     public function __construct(
         private readonly CpmsDb $db,
         private readonly Settings $settings,
@@ -55,6 +79,7 @@ final class OtpService
         if ($mobile === null) {
             throw new OtpException('CLINIC_MOBILE_INVALID', 'شماره موبایل معتبر نیست');
         }
+        $purpose = $this->assertPurpose($purpose);
 
         $dailyMax = (int) $this->settings->get('otp.daily_max');
         $hourlyMax = (int) $this->settings->get('otp.hourly_max');
@@ -133,16 +158,17 @@ final class OtpService
     /**
      * تأیید کد + Login (A3) — Session کاربر ساخته می‌شود.
      *
-     * @return array{user_id: int, patient_links: list<array<string,mixed>>, is_new_user: bool}
+     * @return array{user_id: int, patient_links: list<array<string,mixed>>, is_new_user: bool, session_issued: bool}
      *
      * @throws OtpException
      */
-    public function verify(string $rawMobile, string $code, string $purpose = self::PURPOSE_LOGIN, ?int $ip = null): array
+    public function verify(string $rawMobile, string $code, string $purpose = self::PURPOSE_LOGIN, ?string $ip = null): array
     {
         $mobile = MobileValidator::normalize($rawMobile);
         if ($mobile === null || !preg_match('/^\d{6}$/', $code)) {
             throw new OtpException('CLINIC_OTP_INVALID', 'کد واردشده معتبر نیست');
         }
+        $purpose = $this->assertPurpose($purpose);
         if ($ip !== null && $ip !== '') {
             $rl = $this->rate->hit('otp-verify-ip:' . $ip, 20, 3600);
             if (!$rl['allowed']) {
@@ -214,20 +240,25 @@ final class OtpService
         $isNewUser = false;
         $userId = $this->resolveUser($mobile, $purpose, $isNewUser);
 
-        // Session
-        if (function_exists('wp_set_auth_cookie')) {
+        // Session — فقط برای Purposeهای ورود (Context Binding).
+        // یک کد `verify_mobile` نباید به Login تبدیل شود.
+        $sessionIssued = in_array($purpose, self::SESSION_PURPOSES, true);
+        if ($sessionIssued && function_exists('wp_set_auth_cookie')) {
             wp_set_auth_cookie($userId, true);
         }
 
         $patientLinks = $this->patientLinks($userId);
 
-        $this->audit('OTP_VERIFY_OK', $userId, $mobile, $ip);
-        $this->audit('LOGIN_SUCCESS', $userId, $mobile, $ip);
+        $this->audit('OTP_VERIFY_OK', $userId, $mobile, $ip, ['purpose' => $purpose]);
+        if ($sessionIssued) {
+            $this->audit('LOGIN_SUCCESS', $userId, $mobile, $ip);
+        }
 
         return [
             'user_id' => $userId,
             'patient_links' => $patientLinks,
             'is_new_user' => $isNewUser,
+            'session_issued' => $sessionIssued,
         ];
     }
 
@@ -366,10 +397,62 @@ final class OtpService
         return new \DateTimeImmutable($clean, new \DateTimeZone('UTC'));
     }
 
+    /**
+     * Purpose باید عضو فهرست بسته باشد (Phase 1A).
+     *
+     * @throws OtpException
+     */
+    private function assertPurpose(string $purpose): string
+    {
+        if (!in_array($purpose, self::PURPOSES, true)) {
+            throw new OtpException('CLINIC_OTP_PURPOSE_INVALID', 'نوع درخواست کد معتبر نیست');
+        }
+
+        return $purpose;
+    }
+
+    /**
+     * Pepper مخصوص هش OTP.
+     *
+     * ترتیب: ثابت `CPMS_PEPPER` → Secret تصادفیِ ماندگار در Option.
+     *
+     * تا پیش از Phase 1 اگر ثابت تعریف نمی‌شد، مقدار ثابتِ درونِ کد
+     * (`cpms-dev-pepper-change-me`) استفاده می‌شد؛ چون کد OTP فقط 6 رقم
+     * است، هرکس یک نسخهٔ Dump از جدول را می‌دید می‌توانست تمام کدها را
+     * آفلاین بازیابی کند. حالا در نبود ثابت، یک Secret تصادفی 256 بیتی
+     * ساخته و ذخیره می‌شود (autoload = no).
+     *
+     * ⚠️ دامنه: این تغییر فقط OTP است. `AuditLogger::pepper()` هنوز همان
+     * مقدار پیش‌فرضِ درونِ کد را دارد و عمداً در Phase 1A دست نخورده، چون
+     * تعویض Pepper زنجیرهٔ Hash رکوردهای Audit موجود را روی نصب‌های فعلی
+     * نامعتبر می‌کند — این یک تصمیم پیامدساز است، نه اصلاح ساده
+     * (OPEN DECISION در گزارش Phase 1A). برخلاف Audit، Tokenهای OTP عمر
+     * چنددقیقه‌ای دارند و تعویض Pepper بی‌خطر است.
+     */
     private function pepper(): string
     {
-        $pepper = defined('CPMS_PEPPER') ? CPMS_PEPPER : '';
+        $pepper = defined('CPMS_PEPPER') ? (string) CPMS_PEPPER : '';
+        if ($pepper !== '') {
+            return $pepper;
+        }
 
-        return $pepper !== '' ? $pepper : 'cpms-dev-pepper-change-me';
+        if (!function_exists('get_option') || !function_exists('add_option')) {
+            // خارج از WordPress (Unit) — Secret درونِ فرایند، هرگز ماندگار نمی‌شود.
+            static $ephemeral = null;
+            $ephemeral ??= bin2hex(random_bytes(32));
+
+            return $ephemeral;
+        }
+
+        $stored = (string) get_option(self::PEPPER_OPTION, '');
+        if ($stored === '') {
+            $stored = bin2hex(random_bytes(32));
+            // add_option با autoload=no — اگر همزمان ساخته شده باشد، مقدار موجود برنده است.
+            if (!add_option(self::PEPPER_OPTION, $stored, '', 'no')) {
+                $stored = (string) get_option(self::PEPPER_OPTION, $stored);
+            }
+        }
+
+        return $stored;
     }
 }

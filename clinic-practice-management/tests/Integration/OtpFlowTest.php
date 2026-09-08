@@ -31,7 +31,16 @@ final class OtpFlowTest extends WP_UnitTestCase
      */
     private function issueKnownCode(string $code, int $ttlSec = 120): void
     {
-        $pepper = defined('CPMS_PEPPER') ? CPMS_PEPPER : 'cpms-dev-pepper-change-me';
+        // Phase 1A: در نبود ثابت CPMS_PEPPER دیگر رشتهٔ ثابتِ درونِ کد
+        // استفاده نمی‌شود؛ سرویس یک Secret تصادفیِ ماندگار در Option
+        // `cpms_otp_pepper` می‌سازد. تست باید همان ترتیب را دنبال کند.
+        $pepper = defined('CPMS_PEPPER') && (string) CPMS_PEPPER !== ''
+            ? (string) CPMS_PEPPER
+            : (string) get_option('cpms_otp_pepper', '');
+        if ($pepper === '') {
+            $pepper = bin2hex(random_bytes(32));
+            update_option('cpms_otp_pepper', $pepper, 'no');
+        }
         App::db()->insert('cpms_otp_tokens', [
             'mobile' => self::MOBILE,
             'purpose' => 'login',

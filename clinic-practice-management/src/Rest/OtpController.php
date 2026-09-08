@@ -30,7 +30,7 @@ final class OtpController extends RestBase
                 'permission_callback' => fn () => $this->permPublic(),
                 'args' => [
                     'mobile' => ['required' => true, 'type' => 'string'],
-                    'purpose' => ['required' => false, 'type' => 'string', 'default' => OtpService::PURPOSE_LOGIN],
+                    'purpose' => ['required' => false, 'type' => 'string', 'enum' => OtpService::PURPOSES, 'default' => OtpService::PURPOSE_LOGIN],
                 ],
             ],
         ]);
@@ -43,7 +43,7 @@ final class OtpController extends RestBase
                 'args' => [
                     'mobile' => ['required' => true, 'type' => 'string'],
                     'code' => ['required' => true, 'type' => 'string'],
-                    'purpose' => ['required' => false, 'type' => 'string', 'default' => OtpService::PURPOSE_LOGIN],
+                    'purpose' => ['required' => false, 'type' => 'string', 'enum' => OtpService::PURPOSES, 'default' => OtpService::PURPOSE_LOGIN],
                 ],
             ],
         ]);
