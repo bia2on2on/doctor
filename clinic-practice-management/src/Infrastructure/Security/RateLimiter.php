@@ -52,6 +52,24 @@ final class RateLimiter
     }
 
     /**
+     * خواندن شمارندهٔ پنجرهٔ جاری بدون افزایش آن.
+     *
+     * Phase 1A: برای کنترل‌هایی مثل ورود که باید «پیش از» انجام کار
+     * بررسی شوند لازم است؛ اگر با hit() بررسی کنیم، خودِ بررسی شمارنده را
+     * بالا می‌برد و کاربر بی‌گناه هم قفل می‌شود.
+     */
+    public function peek(string $key, int $windowSec): int
+    {
+        $windowSec = max(1, $windowSec);
+        $windowId = intdiv(time(), $windowSec);
+
+        return (int) $this->db->fetchValue(
+            'SELECT hits FROM ' . $this->db->table('cpms_rate_limits') . ' WHERE window_key = %s AND window_id = %d',
+            [$key, $windowId]
+        );
+    }
+
+    /**
      * پاک‌سازی پنجره‌های قدیمی (Job روزانه).
      *
      * F1-1: window_id در واحدِ windowSecِ هر limiter محاسبه می‌شود (نه ساعت

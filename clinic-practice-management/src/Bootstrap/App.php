@@ -85,6 +85,7 @@ use ClinicCore\Infrastructure\Repository\ServiceRepository;
 use ClinicCore\Infrastructure\Repository\SlotRepository;
 use ClinicCore\Infrastructure\Repository\VisitRepository;
 use ClinicCore\Infrastructure\Security\Idempotency;
+use ClinicCore\Infrastructure\Security\LoginRateLimiter;
 use ClinicCore\Infrastructure\Security\RateLimiter;
 use ClinicCore\Infrastructure\Sms\CredentialVault;
 use ClinicCore\Infrastructure\Sms\Providers\GenericApiSmsProvider;
@@ -123,6 +124,7 @@ final class App
     private static ?AuditLogger $audit = null;
     private static ?JobQueue $jobs = null;
     private static ?RateLimiter $rate = null;
+    private static ?LoginRateLimiter $loginRateLimiter = null;
     private static ?Idempotency $idem = null;
     private static ?Settings $settings = null;
     private static ?MigrationRunner $migrations = null;
@@ -141,6 +143,10 @@ final class App
         self::$booted = true;
 
         RolesAndCapabilities::register();
+
+        // Phase 1A — Item 3: محدودسازی نرخ ورود. پیش از این هیچ کنترل
+        // Bruteforce ای روی wp-login و احراز هویت REST وجود نداشت.
+        self::loginRateLimiter()->register();
 
         add_action('rest_api_init', static function (): void {
             (new HealthController())->register_routes();
@@ -673,6 +679,15 @@ final class App
         }
 
         return self::$jobs;
+    }
+
+    public static function loginRateLimiter(): LoginRateLimiter
+    {
+        if (self::$loginRateLimiter === null) {
+            self::$loginRateLimiter = new LoginRateLimiter(self::rate(), self::op());
+        }
+
+        return self::$loginRateLimiter;
     }
 
     public static function rate(): RateLimiter
