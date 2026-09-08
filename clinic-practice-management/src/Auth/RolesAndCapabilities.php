@@ -170,7 +170,6 @@ final class RolesAndCapabilities
         self::CONFIG,
         self::SMS_CONFIG,
         self::PATIENT_READ,
-        self::QUEUE_READ,
         self::REPORT_READ,
         self::SEARCH,
     ];

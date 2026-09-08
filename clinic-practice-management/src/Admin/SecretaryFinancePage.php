@@ -26,13 +26,18 @@ final class SecretaryFinancePage
 
     public static function menu(): void
     {
-        add_submenu_page(
-            'cpms-queue',
+        // Top-Level انتخاب‌شده بر اساس `cpms_finance_read` (نه parent صف): تا هم منشی
+        // (با cpms_queue_read) و هم حسابدار (بدون cpms_queue_read — چ. G) بتوانند به
+        // «مالی و تسویه» دسترسی داشته باشند؛ وگرنه زیرمنویِ زیر cpms-queue برای حسابدار
+        // پنهان می‌شد. نمایش منو = Capability (نه نام نقش/نه parent).
+        add_menu_page(
             'مالی و تسویه',
             'مالی و تسویه',
             RolesAndCapabilities::FINANCE_READ,
             'cpms-finance',
-            [self::class, 'render']
+            [self::class, 'render'],
+            'dashicons-money-alt',
+            27
         );
     }
 

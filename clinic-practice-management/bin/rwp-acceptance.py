@@ -28,6 +28,10 @@ DOCTOR_USER = os.environ["DOCTOR_USER"]
 DOCTOR_PASS = os.environ["DOCTOR_PASS"]
 SECRETARY_USER = os.environ["SECRETARY_USER"]
 SECRETARY_PASS = os.environ["SECRETARY_PASS"]
+MANAGER_USER = os.environ.get("MANAGER_USER", "")
+MANAGER_PASS = os.environ.get("MANAGER_PASS", "")
+ACCOUNTANT_USER = os.environ.get("ACCOUNTANT_USER", "")
+ACCOUNTANT_PASS = os.environ.get("ACCOUNTANT_PASS", "")
 OUT = os.environ.get("OUT", "rwp-acceptance-out")
 ACTUAL_COUNT_FILE = os.environ.get("ACTUAL_COUNT_FILE", "")
 
@@ -96,6 +100,27 @@ def goto_admin(page, tag, path, shot_name):
         detail = "…" + re.sub(r"\s+", " ", (body or "")[s : crit.end() + 500]).strip() + "…"
     check(f"{tag}.{shot_name}.no_critical_error", not crit, detail)
     return status, body
+
+
+def assert_denied(page, tag, path, name):
+    """دسترسی مستقیم به یک صفحه باید واقعاً DENIED باشد (403 + پیام امن — UI hiding کافی نیست)."""
+    resp = page.goto(f"{BASE}/wp-admin/{path}", wait_until="domcontentloaded")
+    page.wait_for_timeout(800)
+    status = resp.status if resp else 0
+    body = page.content()
+    page.screenshot(path=f"{OUT}/screenshots/{name}.png", full_page=True)
+    with open(f"{OUT}/logs/{tag}-{name}.html", "w") as f:
+        f.write(body or "")
+    denied = (
+        status in (401, 403)
+        or "not allowed to access this page" in (body or "").lower()
+        or "دسترسی ندارید" in (body or "")
+        or "You need a higher level of permission" in (body or "")
+    )
+    check(f"{tag}.direct.{name}.denied", denied, f"HTTP {status} (باید DENIED باشد)")
+    # Critical Error نباید ظاهر شود (حتی در صفحه 403)
+    check(f"{tag}.direct.{name}.no_critical_error", not CRITICAL_RE.search(body or ""), path)
+    return denied
 
 
 with sync_playwright() as p:
@@ -239,7 +264,51 @@ with sync_playwright() as p:
         status, body = goto_admin(page, "secretary", "admin.php?page=cpms-queue", "cpms-queue")
         check("secretary.menu.has_cpms_queue", "admin.php?page=cpms-queue" in (body or ""), "منوی «صف امروز» باید دیده شود")
         goto_admin(page, "secretary", "admin.php?page=cpms-finance", "cpms-finance")
+        # منشی نباید منوی مدیریتی/بالینی را ببیند و دسترسی مستقیم به بالینی DENIED است.
+        menu = page.content()
+        check("secretary.menu.no_management_staff", "page=cpms-staff" not in menu, "منشی نباید منوی «کاربران و دسترسی‌ها» را ببیند")
+        check("secretary.menu.no_management_system", "page=cpms-system" not in menu, "منشی نباید منوی «سلامت سیستم» را ببیند")
+        check("secretary.menu.no_doctor_topmenu", "admin.php?page=cpms-doctor" not in menu, "منشی نباید «امروز پزشک» را ببیند")
+        assert_denied(page, "secretary", "admin.php?page=cpms-clinicians", "secretary-denied-clinicians")
+        assert_denied(page, "secretary", "admin.php?page=cpms-system", "secretary-denied-system")
     page.close()
+
+    # ---------- Clinic Manager (نقش cpms_manager) ----------
+    if MANAGER_USER and MANAGER_PASS:
+        page = ctx.new_page()
+        if login(page, MANAGER_USER, MANAGER_PASS, "manager"):
+            for slug, shot in [("cpms-dashboard", "dashboard"), ("cpms-staff", "staff"),
+                               ("cpms-clinicians", "clinicians"), ("cpms-system", "system"),
+                               ("cpms-settings", "settings"), ("cpms-sms", "sms")]:
+                goto_admin(page, "manager", f"admin.php?page={slug}", f"cpms-mgr-{shot}")
+            # منوی مدیر کلینیک: مدیریتی/عملیاتی دیده شود؛ نقش-محورِ بالینی/صف و ماتریس فنی پنهان.
+            menu = page.content()
+            for mslug in ["cpms-staff", "cpms-clinicians", "cpms-system", "cpms-settings", "cpms-sms"]:
+                check(f"manager.menu.has_{mslug}", f"page={mslug}" in menu, f"مدیر کلینیک باید منوی «{mslug}» را ببیند")
+            check("manager.menu.no_roles_matrix", "page=cpms-roles" not in menu, "مدیر کلینیک نباید ماتریس دسترسی (فنی) را ببیند")
+            check("manager.menu.no_doctor_topmenu", "admin.php?page=cpms-doctor" not in menu, "مدیر کلینیک نباید «امروز پزشک» را ببیند")
+            check("manager.menu.no_queue_topmenu", "admin.php?page=cpms-queue" not in menu, "مدیر کلینیک نباید «صف امروز» را ببیند")
+            # دسترسی مستقیم به بالینی/ماتریس فنی → DENIED (نه فقط مخفی).
+            assert_denied(page, "manager", "admin.php?page=cpms-doctor", "cpms-mgr-denied-doctor")
+            assert_denied(page, "manager", "admin.php?page=cpms-roles", "cpms-mgr-denied-roles")
+        page.close()
+
+    # ---------- Accountant (نقش cpms_accountant) ----------
+    if ACCOUNTANT_USER and ACCOUNTANT_PASS:
+        page = ctx.new_page()
+        if login(page, ACCOUNTANT_USER, ACCOUNTANT_PASS, "accountant"):
+            goto_admin(page, "accountant", "admin.php?page=cpms-finance", "cpms-acc-finance")
+            menu = page.content()
+            check("accountant.menu.has_finance", "page=cpms-finance" in menu, "حسابدار باید منوی «مالی و تسویه» را ببیند")
+            check("accountant.menu.no_doctor_topmenu", "admin.php?page=cpms-doctor" not in menu, "حسابدار نباید «امروز پزشک» را ببیند")
+            check("accountant.menu.no_queue_topmenu", "admin.php?page=cpms-queue" not in menu, "حسابدار نباید «صف امروز» را ببیند")
+            check("accountant.menu.no_management_staff", "page=cpms-staff" not in menu, "حسابدار نباید منوی «کاربران و دسترسی‌ها» را ببیند")
+            check("accountant.menu.no_management_system", "page=cpms-system" not in menu, "حسابدار نباید منوی «سلامت سیستم» را ببیند")
+            # دسترسی مستقیم به بالینی/مدیریتی → DENIED.
+            assert_denied(page, "accountant", "admin.php?page=cpms-system", "cpms-acc-denied-system")
+            assert_denied(page, "accountant", "admin.php?page=cpms-doctor", "cpms-acc-denied-doctor")
+            assert_denied(page, "accountant", "admin.php?page=cpms-staff", "cpms-acc-denied-staff")
+        page.close()
 
     browser.close()
 
