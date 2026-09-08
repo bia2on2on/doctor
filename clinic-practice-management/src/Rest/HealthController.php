@@ -19,7 +19,7 @@ final class HealthController extends RestBase
             [
                 'methods' => WP_REST_Server::READABLE,
                 'callback' => fn (WP_REST_Request $request) => $this->health($request),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn () => $this->permPublic(),
             ],
         ]);
     }

@@ -42,7 +42,8 @@ final class ReportsController extends RestBase
                 'callback' => fn (WP_REST_Request $r) => $this->staff($r, RolesAndCapabilities::REPORT_READ, fn (): array => [
                     'reports' => $this->reports->catalog($this->userId($r)),
                 ]),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permCap($r, RolesAndCapabilities::REPORT_READ),
             ],
         ]);
 
@@ -55,7 +56,8 @@ final class ReportsController extends RestBase
                     $r['from'] ?? null,
                     $r['to'] ?? null
                 )),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permCap($r, RolesAndCapabilities::REPORT_READ),
                 'args' => [
                     // اعتبارسنجی تاریخ در Service (CLINIC_VALIDATION_FAILED/422) —
                     // نه format:date وردپرس (400 rest_invalid_param)
@@ -69,7 +71,8 @@ final class ReportsController extends RestBase
             [
                 'methods' => WP_REST_Server::READABLE,
                 'callback' => fn (WP_REST_Request $r) => $this->printView($r),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permCap($r, RolesAndCapabilities::REPORT_READ),
                 'args' => [
                     // اعتبارسنجی تاریخ در Service (CLINIC_VALIDATION_FAILED/422) —
                     // نه format:date وردپرس (400 rest_invalid_param)
@@ -88,7 +91,8 @@ final class ReportsController extends RestBase
                     $r['from'] ?? null,
                     $r['to'] ?? null
                 ), 202),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permCap($r, RolesAndCapabilities::REPORT_READ),
                 'args' => [
                     // اعتبارسنجی تاریخ در Service (CLINIC_VALIDATION_FAILED/422) —
                     // نه format:date وردپرس (400 rest_invalid_param)
@@ -102,7 +106,8 @@ final class ReportsController extends RestBase
             [
                 'methods' => WP_REST_Server::READABLE,
                 'callback' => fn (WP_REST_Request $r) => $this->staff($r, RolesAndCapabilities::REPORT_READ, fn (): array => $this->exports->listFor($this->userId($r))),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permCap($r, RolesAndCapabilities::REPORT_READ),
             ],
         ]);
 
@@ -110,7 +115,7 @@ final class ReportsController extends RestBase
             [
                 'methods' => WP_REST_Server::READABLE,
                 'callback' => fn (WP_REST_Request $r) => $this->download($r),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r) => $this->permCap($r, RolesAndCapabilities::EXPORT),
             ],
         ]);
     }

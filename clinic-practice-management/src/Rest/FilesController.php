@@ -45,7 +45,8 @@ final class FilesController extends RestBase
                         (string) ($r['category'] ?? 'other'),
                         (string) ($r['visibility'] ?? 'patient_visible')
                     )),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permCap($r, RolesAndCapabilities::FILE_UPLOAD),
                 'args' => [
                     'patient_id' => ['required' => true, 'type' => 'integer'],
                     'visit_id' => ['required' => false, 'type' => 'integer'],
@@ -60,7 +61,7 @@ final class FilesController extends RestBase
             [
                 'methods' => WP_REST_Server::READABLE,
                 'callback' => fn (WP_REST_Request $r) => $this->stream($r),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r) => $this->permAuthenticated($r),
             ],
         ]);
 
@@ -78,7 +79,8 @@ final class FilesController extends RestBase
                     ),
                     true
                 ),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permAnyRole($r, [RolesAndCapabilities::ROLE_PATIENT]),
                 'args' => [
                     'category' => ['required' => false, 'type' => 'string', 'default' => 'other'],
                 ],
@@ -88,7 +90,8 @@ final class FilesController extends RestBase
                 'methods' => WP_REST_Server::READABLE,
                 'callback' => fn (WP_REST_Request $r) => $this->patient($r,
                     fn () => ['files' => $this->files->patientFiles($this->userId($r), (int) $r['patient_id'])]),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permAnyRole($r, [RolesAndCapabilities::ROLE_PATIENT]),
             ],
         ]);
     }

@@ -40,7 +40,8 @@ final class HandwritingController extends RestBase
                     isset($r['title']) ? (string) $r['title'] : null,
                     is_array($r['pages'] ?? null) ? array_values((array) $r['pages']) : []
                 ), 201),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permCap($r, RolesAndCapabilities::NOTE_CREATE),
                 'args' => [
                     'visit_id' => ['required' => true, 'type' => 'integer'],
                     'title' => ['required' => false, 'type' => 'string'],
@@ -54,7 +55,8 @@ final class HandwritingController extends RestBase
                     $this->userId(),
                     (int) $r['visit_id']
                 )),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permCap($r, RolesAndCapabilities::MEDICAL_READ),
                 'args' => [
                     'visit_id' => ['required' => true, 'type' => 'integer'],
                 ],
@@ -70,7 +72,8 @@ final class HandwritingController extends RestBase
                     (int) $r['id'],
                     $this->body($r)
                 ), 201),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permCap($r, RolesAndCapabilities::NOTE_CREATE),
                 'args' => [
                     'width' => ['required' => false, 'type' => 'integer'],
                     'height' => ['required' => false, 'type' => 'integer'],
@@ -88,14 +91,16 @@ final class HandwritingController extends RestBase
                     $this->userId(),
                     (int) $r['id']
                 )),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permCap($r, RolesAndCapabilities::MEDICAL_READ),
                 'args' => [],
             ],
             [
                 // F2 — ذخیره (Revision + Idempotency)
                 'methods' => WP_REST_Server::EDITABLE,
                 'callback' => fn (WP_REST_Request $r) => $this->save($r),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permCap($r, RolesAndCapabilities::NOTE_CREATE),
                 'args' => [
                     'client_revision' => ['required' => true, 'type' => 'integer'],
                     'stroke_data' => ['required' => true, 'type' => 'string'],

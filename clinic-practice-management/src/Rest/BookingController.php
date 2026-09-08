@@ -36,7 +36,7 @@ final class BookingController extends RestBase
             [
                 'methods' => WP_REST_Server::READABLE,
                 'callback' => fn (WP_REST_Request $request) => $this->availability($request),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn () => $this->permPublic(),
                 'args' => [
                     'clinician_id' => ['required' => true, 'type' => 'integer'],
                     'from' => ['required' => false, 'type' => 'string', 'default' => gmdate('Y-m-d')],
@@ -49,7 +49,7 @@ final class BookingController extends RestBase
             [
                 'methods' => WP_REST_Server::CREATABLE,
                 'callback' => fn (WP_REST_Request $request) => $this->quote($request),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn () => $this->permPublic(),
                 'args' => [
                     'clinician_id' => ['required' => true, 'type' => 'integer'],
                     'slot_date' => ['required' => true, 'type' => 'string'],

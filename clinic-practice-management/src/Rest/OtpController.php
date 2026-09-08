@@ -27,7 +27,7 @@ final class OtpController extends RestBase
             [
                 'methods' => WP_REST_Server::CREATABLE,
                 'callback' => fn (WP_REST_Request $request) => $this->requestCode($request),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn () => $this->permPublic(),
                 'args' => [
                     'mobile' => ['required' => true, 'type' => 'string'],
                     'purpose' => ['required' => false, 'type' => 'string', 'default' => OtpService::PURPOSE_LOGIN],
@@ -39,7 +39,7 @@ final class OtpController extends RestBase
             [
                 'methods' => WP_REST_Server::CREATABLE,
                 'callback' => fn (WP_REST_Request $request) => $this->verifyCode($request),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn () => $this->permPublic(),
                 'args' => [
                     'mobile' => ['required' => true, 'type' => 'string'],
                     'code' => ['required' => true, 'type' => 'string'],

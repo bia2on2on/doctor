@@ -46,7 +46,8 @@ final class QueueController extends RestBase
             [
                 'methods' => WP_REST_Server::READABLE,
                 'callback' => fn (WP_REST_Request $r) => $this->guard($r, RolesAndCapabilities::QUEUE_READ, fn () => $this->visits->today($this->userId($r))),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permCap($r, RolesAndCapabilities::QUEUE_READ),
                 'args' => [
                     'clinician_id' => ['required' => false, 'type' => 'integer', 'sanitize_callback' => 'absint'],
                 ],
@@ -65,7 +66,8 @@ final class QueueController extends RestBase
                         ['note' => $r['note'] ?? null]
                     );
                 }),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permCap($r, RolesAndCapabilities::QUEUE_CHECKIN),
                 'args' => [
                     'patient_id' => ['required' => true, 'type' => 'integer'],
                     'appointment_id' => ['required' => true, 'type' => 'integer'],
@@ -86,7 +88,8 @@ final class QueueController extends RestBase
                         ['note' => $r['note'] ?? null]
                     );
                 }),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permCap($r, RolesAndCapabilities::QUEUE_CHECKIN),
                 'args' => [
                     'patient_id' => ['required' => true, 'type' => 'integer'],
                     'clinician_id' => ['required' => true, 'type' => 'integer'],
@@ -118,7 +121,8 @@ final class QueueController extends RestBase
                         ['reason' => $r['note'] ?? $r['reason'] ?? null, 'note' => $r['note'] ?? null]
                     );
                 }),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permCap($r, RolesAndCapabilities::QUEUE_ADVANCE),
                 'args' => [
                     'to_status' => ['required' => true, 'type' => 'string'],
                     'note' => ['required' => false, 'type' => 'string'],
@@ -131,7 +135,8 @@ final class QueueController extends RestBase
             [
                 'methods' => WP_REST_Server::CREATABLE,
                 'callback' => fn (WP_REST_Request $r) => $this->guard($r, RolesAndCapabilities::QUEUE_CHECKOUT, fn () => $this->checkout($r)),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permCap($r, RolesAndCapabilities::QUEUE_CHECKOUT),
                 'args' => [
                     'waive_invoice' => ['required' => false, 'type' => 'object'],
                 ],
@@ -143,7 +148,8 @@ final class QueueController extends RestBase
             [
                 'methods' => WP_REST_Server::READABLE,
                 'callback' => fn (WP_REST_Request $r) => $this->guard($r, RolesAndCapabilities::QUEUE_READ, fn () => $this->visits->today($this->userId($r))),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permCap($r, RolesAndCapabilities::QUEUE_READ),
             ],
         ]);
 
@@ -156,7 +162,8 @@ final class QueueController extends RestBase
 
                     return $this->visits->today($this->userId($r), $clinicianId);
                 }),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permCap($r, RolesAndCapabilities::QUEUE_READ),
                 'args' => [
                     'clinician_id' => ['required' => false, 'type' => 'integer', 'sanitize_callback' => 'absint'],
                 ],
@@ -169,7 +176,8 @@ final class QueueController extends RestBase
                 [
                     'methods' => WP_REST_Server::CREATABLE,
                     'callback' => fn (WP_REST_Request $r) => $this->doctorAction($r, $event),
-                    'permission_callback' => '__return_true',
+                    'permission_callback' => fn (WP_REST_Request $r)
+                        => $this->permCap($r, $event === 'start' ? RolesAndCapabilities::CONSULT_START : RolesAndCapabilities::QUEUE_CALL),
                     'args' => [
                         'reason' => ['required' => false, 'type' => 'string'], // skip الزامی — Service چک می‌کند
                         'room' => ['required' => false, 'type' => 'string'],
@@ -183,7 +191,8 @@ final class QueueController extends RestBase
             [
                 'methods' => WP_REST_Server::READABLE,
                 'callback' => fn (WP_REST_Request $r) => $this->rtQueue($r),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permCap($r, RolesAndCapabilities::QUEUE_READ),
                 'args' => [
                     'since' => ['required' => false, 'type' => 'integer', 'default' => 0, 'sanitize_callback' => 'absint'],
                 ],

@@ -38,7 +38,8 @@ final class NotificationsController extends RestBase
                     (bool) ($r['unread'] ?? false),
                     (int) ($r['limit'] ?? 50)
                 )),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permAnyRole($r, [RolesAndCapabilities::ROLE_PATIENT, RolesAndCapabilities::ROLE_SECRETARY, RolesAndCapabilities::ROLE_DOCTOR], 'دسترسی به اعلان‌ها برای نقش شما مجاز نیست'),
                 'args' => [
                     'unread' => ['required' => false, 'type' => 'boolean', 'default' => false],
                     'limit' => ['required' => false, 'type' => 'integer', 'default' => 50, 'sanitize_callback' => 'absint'],
@@ -59,7 +60,8 @@ final class NotificationsController extends RestBase
 
                     return ['marked' => $marked];
                 }),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permAnyRole($r, [RolesAndCapabilities::ROLE_PATIENT, RolesAndCapabilities::ROLE_SECRETARY, RolesAndCapabilities::ROLE_DOCTOR], 'دسترسی به اعلان‌ها برای نقش شما مجاز نیست'),
                 'args' => [
                     'ids' => ['required' => false, 'type' => 'array', 'items' => ['type' => 'integer']],
                     'all' => ['required' => false, 'type' => 'boolean', 'default' => false],
@@ -72,7 +74,8 @@ final class NotificationsController extends RestBase
             [
                 'methods' => WP_REST_Server::READABLE,
                 'callback' => fn (WP_REST_Request $r) => $this->rtNotifications($r),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permAnyRole($r, [RolesAndCapabilities::ROLE_PATIENT, RolesAndCapabilities::ROLE_SECRETARY, RolesAndCapabilities::ROLE_DOCTOR], 'دسترسی به اعلان‌ها برای نقش شما مجاز نیست'),
                 'args' => [
                     'since' => ['required' => false, 'type' => 'integer', 'default' => 0, 'sanitize_callback' => 'absint'],
                 ],
