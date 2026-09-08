@@ -31,6 +31,10 @@ env:
   DOCTOR_PASS: Acceptance-2026!
   SECRETARY_USER: acc_secretary
   SECRETARY_PASS: Acceptance-2026!
+  MANAGER_USER: acc_manager
+  MANAGER_PASS: Acceptance-2026!
+  ACCOUNTANT_USER: acc_accountant
+  ACCOUNTANT_PASS: Acceptance-2026!
 
 jobs:
   acceptance:
@@ -125,7 +129,7 @@ jobs:
           exit($v === '2026_09_07_0009' ? 0 : 1);
           PHPEOF
           wp eval-file /tmp/acc/check-schema.php --path="$WP_DIR" --allow-root
-          wp role list --path="$WP_DIR" --allow-root | grep -E 'cpms_(doctor|secretary|patient)' || { echo 'ROLES MISSING'; exit 1; }
+          wp role list --path="$WP_DIR" --allow-root | grep -E 'cpms_(doctor|secretary|patient|accountant|manager)' || { echo 'ROLES MISSING'; exit 1; }
 
       # ---------- 5) تست منفی Migration (D3 — fail-loud) ----------
       - name: Migration failure must NOT be recorded as success (D3)
@@ -184,6 +188,8 @@ jobs:
         run: |
           wp user create "$DOCTOR_USER" 'doc@acc.local' --user_pass="$DOCTOR_PASS" --role=cpms_doctor --path="$WP_DIR" --allow-root
           wp user create "$SECRETARY_USER" 'sec@acc.local' --user_pass="$SECRETARY_PASS" --role=cpms_secretary --path="$WP_DIR" --allow-root
+          wp user create "$MANAGER_USER" 'mgr@acc.local' --user_pass="$MANAGER_PASS" --role=cpms_manager --path="$WP_DIR" --allow-root
+          wp user create "$ACCOUNTANT_USER" 'acc@acc.local' --user_pass="$ACCOUNTANT_PASS" --role=cpms_accountant --path="$WP_DIR" --allow-root
           STORAGE=/home/runner/rwp-storage
           mkdir -p "$STORAGE" && sudo chmod -R 777 "$STORAGE"
           cat > /tmp/acc/setup-roles.php <<'PHPEOF'
@@ -191,13 +197,41 @@ jobs:
           global $wpdb;
           $db = \ClinicCore\Bootstrap\App::db();
           $now = $db->nowUtcSql();
+          // نمایش واقعیِ فارسی برای رابط کاربری (نه شناسه‌های فنی) — این فقط data seeding است؛
+          // هیچ تغییر Production/sanitize ایجاد نمی‌شود.
+          $names = [
+              getenv('DOCTOR_USER') => 'دکتر آزمایشی',
+              getenv('MANAGER_USER') => 'مدیر کلینیک آزمایشی',
+              getenv('SECRETARY_USER') => 'منشی آزمایشی',
+              getenv('ACCOUNTANT_USER') => 'حسابدار آزمایشی',
+          ];
+          foreach ($names as $login => $display) {
+              $u = get_user_by('login', $login);
+              if ($u !== false) { wp_update_user(['ID' => (int) $u->ID, 'display_name' => $display]); }
+          }
           $uid = (int) get_user_by('login', getenv('DOCTOR_USER'))->ID;
           $wpdb->query($wpdb->prepare(
               'INSERT INTO ' . $db->table('cpms_clinicians') . ' (clinic_id, full_name, wp_user_id, is_active, created_at, updated_at) VALUES (1, %s, %d, 1, %s, %s)',
-              'دکتر پذیرش (Synthetic)', $uid, $now, $now
+              'پزشک آزمایشی', $uid, $now, $now
           ));
+          $cid = (int) $wpdb->insert_id;
+          // یک برنامهٔ هفتگی «پُر» برای پزشک تجربی — تا اسکرین‌شات Schedule خالی نباشد.
+          try {
+              \ClinicCore\Bootstrap\App::scheduleService()->create($uid, [
+                  'clinician_id' => $cid, 'day_of_week' => 0, // شنبه
+                  'start_time' => '09:00', 'end_time' => '13:00',
+                  'break_start' => '12:00', 'break_end' => '12:30',
+                  'appointment_duration_min' => 20, 'slot_capacity' => 1, 'is_active' => 1,
+              ]);
+              \ClinicCore\Bootstrap\App::scheduleService()->create($uid, [
+                  'clinician_id' => $cid, 'day_of_week' => 2, // دوشنبه
+                  'start_time' => '16:00', 'end_time' => '20:00',
+                  'break_start' => '', 'break_end' => '',
+                  'appointment_duration_min' => 30, 'slot_capacity' => 1, 'is_active' => 1,
+              ]);
+          } catch (\Throwable $e) { echo "(schedule seed: {$e->getMessage()})\n"; }
           \ClinicCore\Bootstrap\App::settings()->set('files.storage_path', '/home/runner/rwp-storage');
-          echo "doctor linked (wp_user_id=$uid); files.storage_path set\n";
+          echo "doctor linked (wp_user_id=$uid); clinician_id=$cid; files.storage_path set\n";
           PHPEOF
           wp eval-file /tmp/acc/setup-roles.php --path="$WP_DIR" --allow-root
 
@@ -232,13 +266,15 @@ jobs:
           sudo -u www-data test -w "$WP_DIR/wp-content" && echo 'wp-content writable by php' || echo 'wp-content NOT writable by php (میزبان واقعی)'
 
       # ---------- 6) پذیرش مرورگری ----------
-      - name: Browser acceptance — login + System + Health + Technical + Doctor/Secretary menus
+      - name: Browser acceptance — all 5 roles (Admin/Manager/Doctor/Secretary/Accountant) menus + denial
         run: |
           # بدون pipe-masking: وضعیت خروجی واقعی اسکریپت تعیین‌کننده است
           BASE="$WP_URL" \
           ADMIN_USER="$ADMIN_USER" ADMIN_PASS="$ADMIN_PASS" \
           DOCTOR_USER="$DOCTOR_USER" DOCTOR_PASS="$DOCTOR_PASS" \
           SECRETARY_USER="$SECRETARY_USER" SECRETARY_PASS="$SECRETARY_PASS" \
+          MANAGER_USER="$MANAGER_USER" MANAGER_PASS="$MANAGER_PASS" \
+          ACCOUNTANT_USER="$ACCOUNTANT_USER" ACCOUNTANT_PASS="$ACCOUNTANT_PASS" \
           ACTUAL_COUNT_FILE=/tmp/acc/actual_count.txt \
           OUT=/tmp/acc \
           python3 clinic-practice-management/bin/rwp-acceptance.py > /tmp/acc/acceptance.log 2>&1

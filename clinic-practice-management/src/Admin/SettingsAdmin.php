@@ -22,8 +22,14 @@ final class SettingsAdmin
 
     public static function menu(): void
     {
-        // نام شفاف‌تر (ممیزی P10): تمایز از «CPMS (سیستم)» — مجوز/بکاپ/Health
-        add_management_page('CPMS (فنی و لاگ)', 'CPMS (فنی و لاگ)', 'cpms_config', 'cpms-settings', [self::class, 'render']);
+        add_submenu_page(
+            CpmsAdminMenu::parentSlug(),
+            'فنی و لاگ',
+            'فنی و لاگ',
+            'cpms_config',
+            'cpms-settings',
+            [self::class, 'render']
+        );
     }
 
     public static function render(): void
@@ -99,7 +105,7 @@ final class SettingsAdmin
             wp_die('اعتبارسنجی ناموفق');
         }
         // فرم ویدیویی در F2+ — در اینجا فقط Hook آماده است.
-        wp_safe_redirect(wp_get_referer() ?: admin_url('tools.php?page=cpms-settings'));
+        wp_safe_redirect(wp_get_referer() ?: admin_url('admin.php?page=cpms-settings'));
         exit;
     }
 

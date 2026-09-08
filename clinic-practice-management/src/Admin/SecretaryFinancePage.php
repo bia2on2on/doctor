@@ -26,13 +26,18 @@ final class SecretaryFinancePage
 
     public static function menu(): void
     {
-        add_submenu_page(
-            'cpms-queue',
+        // Top-Level انتخاب‌شده بر اساس `cpms_finance_read` (نه parent صف): تا هم منشی
+        // (با cpms_queue_read) و هم حسابدار (بدون cpms_queue_read — چ. G) بتوانند به
+        // «مالی و تسویه» دسترسی داشته باشند؛ وگرنه زیرمنویِ زیر cpms-queue برای حسابدار
+        // پنهان می‌شد. نمایش منو = Capability (نه نام نقش/نه parent).
+        add_menu_page(
             'مالی و تسویه',
             'مالی و تسویه',
             RolesAndCapabilities::FINANCE_READ,
             'cpms-finance',
-            [self::class, 'render']
+            [self::class, 'render'],
+            'dashicons-money-alt',
+            27
         );
     }
 
@@ -52,6 +57,10 @@ final class SecretaryFinancePage
             'can_refund' => current_user_can(RolesAndCapabilities::PAYMENT_REFUND),
             'can_adjust' => current_user_can(RolesAndCapabilities::INVOICE_ADJUST),
             'can_config' => current_user_can(RolesAndCapabilities::CONFIG),
+            // تب «در انتظار تسویه» دادهٔ صف امروز (secretary/today با QUEUE_READ) را می‌خواهد؛
+            // حسابدار (Ch. G) بدون QUEUE_READ است → تب را برای او پنهان می‌کنیم تا به صف/
+            // بالینی دسترسی نکند (UI hiding ≠ authz، ولی همین صفحه برای رست هم cap-گیت است).
+            'can_queue' => current_user_can(RolesAndCapabilities::QUEUE_READ),
             // ویزیت انتخاب‌شده از صف امروز (?visit=ID) — پیش‌بارگذاری فرم صدور/تسویه
             'focus_visit' => isset($_GET['visit']) ? (int) $_GET['visit'] : 0,
         ];
@@ -63,7 +72,9 @@ final class SecretaryFinancePage
 
     <h2 class="nav-tab-wrapper" id="cpms-fin-tabs">
         <a href="#dashboard" class="nav-tab nav-tab-active" data-tab="dashboard">داشبورد</a>
-        <a href="#awaiting" class="nav-tab" data-tab="awaiting">در انتظار تسویه</a>
+        <?php if ($config['can_queue']): ?>
+            <a href="#awaiting" class="nav-tab" data-tab="awaiting">در انتظار تسویه</a>
+        <?php endif; ?>
         <a href="#balances" class="nav-tab" data-tab="balances">بدهی‌های باز</a>
         <?php if ($config['can_config']): ?>
             <a href="#services" class="nav-tab" data-tab="services">تعرفه‌ها</a>
@@ -92,6 +103,7 @@ final class SecretaryFinancePage
     </div>
 
     <!-- ================= در انتظار تسویه (صدور فاکتور D12) ================= -->
+    <?php if ($config['can_queue']): ?>
     <div id="cpms-fin-tab-awaiting" class="cpms-fin-tab" style="display:none">
         <p class="description">
             مراجععین امروز که ویزیتشان پایان یافته ولی هنوز تسویه نشده‌اند.
@@ -106,6 +118,7 @@ final class SecretaryFinancePage
             </tbody>
         </table>
     </div>
+    <?php endif; ?>
 
     <!-- ================= بدهی‌های باز (FR-14.8) ================= -->
     <div id="cpms-fin-tab-balances" class="cpms-fin-tab" style="display:none">
@@ -327,6 +340,7 @@ window.CPMS_FIN = <?php echo wp_json_encode($config); ?>;
     // ---------- در انتظار تسویه (از صف امروز) ----------
 
     function loadAwaiting() {
+        if (!CFG.can_queue) { return Promise.resolve(); }
         return api('GET', 'secretary/today').then(function (r) {
             if (r.__status !== 200) { throw new Error(errMessage(r)); }
             var rows = (r.body.data.queue || []).filter(function (v) {
@@ -351,13 +365,16 @@ window.CPMS_FIN = <?php echo wp_json_encode($config); ?>;
         });
     }
 
-    document.getElementById('cpms-fin-awaiting-tbody').addEventListener('click', function (e) {
-        var btn = e.target.closest('button[data-act]');
-        if (!btn) { return; }
-        var id = parseInt(btn.getAttribute('data-id'), 10);
-        if (btn.getAttribute('data-act') === 'issue') { openIssue(id); return; }
-        openInvoiceByVisit(id);
-    });
+    var awaitingTbody = document.getElementById('cpms-fin-awaiting-tbody');
+    if (awaitingTbody) {
+        awaitingTbody.addEventListener('click', function (e) {
+            var btn = e.target.closest('button[data-act]');
+            if (!btn) { return; }
+            var id = parseInt(btn.getAttribute('data-id'), 10);
+            if (btn.getAttribute('data-act') === 'issue') { openIssue(id); return; }
+            openInvoiceByVisit(id);
+        });
+    }
 
     // ---------- بدهی‌های باز (FR-14.8) ----------
 
@@ -785,8 +802,8 @@ window.CPMS_FIN = <?php echo wp_json_encode($config); ?>;
     loadServices().catch(function (e) { notice(String(e.message || e), 'error'); });
     refreshAll();
 
-    // ویزیت ارجاع‌شده از صف (?visit=ID)
-    if (CFG.focus_visit > 0) {
+    // ویزیت ارجاع‌شده از صف (?visit=ID) — فقط با QUEUE_READ (حسابدار این flow را ندارد).
+    if (CFG.can_queue && CFG.focus_visit > 0) {
         api('GET', 'secretary/today').then(function (r) {
             if (r.__status !== 200) { return; }
             var v = (r.body.data.queue || []).filter(function (x) { return x.id === CFG.focus_visit; })[0];

@@ -1,0 +1,372 @@
+/**
+ * CPMS Admin — Design System (Chunk F)
+ *
+ * - فقط در صفحات CPMS لود می‌شود (به‌صورت scoped با body.cpms-admin)؛ بنابراین هیچ
+ *   کندی سراسری در wp-admin ایجاد نمی‌کند و به استایل وردپرسِ Core دست نمی‌زند.
+ * - RTL-first (pages همه dir="rtl" هستند)؛ اما برای تراز LTR متن مختلط (کد/شناسه/ایمیل)
+ *   کلاس .ltr و [dir="ltr"] هست.
+ * - یکپارچه: cards, badges, tables, notices, buttons, empty-states, dangerous bars.
+ * - Accessibility: :focus-visible واضح، touch-targets ≥ 40px، سلسله‌مراتب heading سالم.
+ */
+
+:root {
+  --cpms-bg: #f6f7f9;
+  --cpms-surface: #ffffff;
+  --cpms-surface-alt: #fbfbfc;
+  --cpms-border: #dcdde3;
+  --cpms-border-strong: #c6c8cf;
+  --cpms-text: #1d2327;
+  --cpms-text-muted: #646970;
+  --cpms-primary: #2271b1;
+  --cpms-primary-hover: #135e96;
+  --cpms-ok: #00a32a;
+  --cpms-warn: #dba617;
+  --cpms-danger: #d63638;
+  --cpms-info: #72aee6;
+  --cpms-radius: 10px;
+  --cpms-radius-sm: 6px;
+  --cpms-shadow: 0 1px 2px rgba(0,0,0,.04), 0 2px 8px rgba(0,0,0,.05);
+  --cpms-gap: 18px;
+  --cpms-font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Tahoma, Arial, sans-serif;
+}
+
+body.cpms-admin #wpcontent { padding-left: 10px; }
+
+body.cpms-admin .cpms-shell,
+body.cpms-admin .wrap { font-family: var(--cpms-font); color: var(--cpms-text); }
+
+/* ---------- Header / title ---------- */
+body.cpms-admin .wrap h1,
+body.cpms-admin .cpms-shell h1 {
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.3;
+  margin: 12px 0 6px;
+}
+body.cpms-admin .wrap > h1:not(.cpms-title) { border-bottom: 1px solid var(--cpms-border); padding-bottom: 10px; }
+body.cpms-admin .cpms-desc,
+body.cpms-admin .wrap > p.cpms-desc,
+body.cpms-admin .wrap .description {
+  color: var(--cpms-text-muted);
+  font-size: 13px;
+  max-width: 880px;
+}
+body.cpms-admin .wrap h2.title,
+body.cpms-admin .cpms-section { margin-top: 26px; }
+
+/* ---------- Cards (dashboard & section cards) ---------- */
+body.cpms-admin .cpms-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: var(--cpms-gap);
+  margin: 16px 0 0;
+}
+body.cpms-admin .cpms-card {
+  background: var(--cpms-surface);
+  border: 1px solid var(--cpms-border);
+  border-radius: var(--cpms-radius);
+  padding: 18px;
+  box-shadow: var(--cpms-shadow);
+}
+body.cpms-admin .cpms-card h2 { font-size: 14px; margin: 0 0 8px; color: var(--cpms-text); }
+body.cpms-admin .cpms-card .cpms-big { font-size: 30px; font-weight: 700; margin: 6px 0; line-height: 1.1; }
+body.cpms-admin .cpms-card p { margin: 6px 0; }
+
+/* ---------- Badges / status ---------- */
+body.cpms-admin .cpms-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.6;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+body.cpms-admin .cpms-badge.cpms-ok   { background: #e4f3e5; color: var(--cpms-ok);   border: 1px solid #b6ddbb; }
+body.cpms-admin .cpms-badge.cpms-warn { background: #fdf3d9; color: #7a5b1b; border: 1px solid #ecd39a; }
+body.cpms-admin .cpms-badge.cpms-danger { background: #fbeaea; color: var(--cpms-danger); border: 1px solid #eebfbf; }
+
+/* ---------- Tables ---------- */
+body.cpms-admin .widefat {
+  border: 1px solid var(--cpms-border);
+  border-radius: var(--cpms-radius-sm);
+  margin-top: 8px;
+  background: var(--cpms-surface);
+}
+body.cpms-admin .widefat thead th {
+  background: var(--cpms-surface-alt);
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--cpms-text);
+  padding: 10px 12px;
+}
+body.cpms-admin .widefat tbody td { padding: 10px 12px; vertical-align: middle; }
+body.cpms-admin .widefat tbody tr:hover td { background: #f6f8fa; }
+
+/* ---------- Forms ---------- */
+body.cpms-admin .form-table th { width: 160px; font-weight: 600; }
+body.cpms-admin input[type="text"],
+body.cpms-admin input[type="email"],
+body.cpms-admin input[type="password"],
+body.cpms-admin input[type="time"],
+body.cpms-admin input[type="date"],
+body.cpms-admin input[type="number"],
+body.cpms-admin select,
+body.cpms-admin textarea {
+  border: 1px solid var(--cpms-border-strong);
+  border-radius: var(--cpms-radius-sm);
+  padding: 4px 8px;
+  min-height: 32px;
+  line-height: 1.6;
+}
+body.cpms-admin input:focus-visible,
+body.cpms-admin select:focus-visible,
+body.cpms-admin textarea:focus-visible,
+body.cpms-admin a:focus-visible,
+body.cpms-admin button:focus-visible,
+body.cpms-admin .button:focus-visible {
+  outline: 2px solid var(--cpms-primary);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+body.cpms-admin label { line-height: 2; }
+
+/* ---------- Buttons ---------- */
+body.cpms-admin .button-primary {
+  background: var(--cpms-primary);
+  border-color: var(--cpms-primary);
+  min-height: 34px;
+}
+body.cpms-admin .button-primary:hover { background: var(--cpms-primary-hover); border-color: var(--cpms-primary-hover); }
+body.cpms-admin .button-secondary.danger,
+body.cpms-admin .cpms-btn-danger { color: var(--cpms-danger); border-color: var(--cpms-danger); }
+body.cpms-admin .button { min-height: 32px; }
+
+/* ---------- Notices ---------- */
+body.cpms-admin .notice { border-radius: var(--cpms-radius-sm); }
+body.cpms-admin .notice-info    { border-left-color: var(--cpms-info); }
+body.cpms-admin .notice-success { border-left-color: var(--cpms-ok); }
+body.cpms-admin .notice-warning { border-left-color: var(--cpms-warn); }
+body.cpms-admin .notice-error   { border-left-color: var(--cpms-danger); }
+
+/* ---------- Sections / panels ---------- */
+body.cpms-admin .cpms-panel {
+  background: var(--cpms-surface);
+  border: 1px solid var(--cpms-border);
+  border-radius: var(--cpms-radius);
+  padding: 16px 18px;
+  margin: 14px 0;
+  box-shadow: var(--cpms-shadow);
+}
+body.cpms-admin .cpms-panel summary { font-weight: 600; cursor: pointer; }
+body.cpms-admin details.cpms-details > summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding: 8px 0;
+  color: var(--cpms-primary);
+}
+
+/* ---------- Empty states ---------- */
+body.cpms-admin .cpms-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 6px;
+  background: var(--cpms-surface);
+  border: 1px dashed var(--cpms-border-strong);
+  border-radius: var(--cpms-radius);
+  padding: 34px 20px;
+  color: var(--cpms-text-muted);
+}
+body.cpms-admin .cpms-empty .cpms-empty-icon { font-size: 38px; line-height: 1; }
+body.cpms-admin .cpms-empty .cpms-empty-title { font-size: 16px; font-weight: 600; color: var(--cpms-text); }
+body.cpms-admin .cpms-empty .cpms-empty-desc { font-size: 13px; max-width: 480px; }
+body.cpms-admin .cpms-empty .cpms-empty-action { margin-top: 10px; }
+
+/* ---------- Dangerous-action callouts ---------- */
+body.cpms-admin .cpms-danger-box {
+  border: 1px solid #eebfbf;
+  background: #fbeaea;
+  border-radius: var(--cpms-radius-sm);
+  padding: 12px 14px;
+  color: #6e1616;
+}
+
+/* ---------- Permission matrix (Chunk F redesign) ---------- */
+body.cpms-admin .cpms-role-preset {
+  border: 1px solid var(--cpms-border);
+  border-radius: var(--cpms-radius);
+  background: var(--cpms-surface);
+  padding: 16px 18px;
+  margin: 14px 0;
+  box-shadow: var(--cpms-shadow);
+}
+body.cpms-admin .cpms-cap-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px 18px; margin-top: 8px; }
+body.cpms-admin .cpms-cap-list label { display: flex; align-items: flex-start; gap: 6px; line-height: 1.5; }
+body.cpms-admin .cpms-sensitive { color: var(--cpms-danger); font-weight: 600; }
+body.cpms-admin .cpms-cap-group h4 { margin: 12px 0 6px; color: var(--cpms-text); font-size: 13px; }
+
+/* ---------- Responsive tables: card/row transformation (scoped, CLI-driven) ----------
+   فقط جدول‌هایی که `cpms-table-responsive` دارند در viewport باریک به کارت تبدیل
+   می‌شوند؛ بقیهٔ `.widefat` فقط overflow ملایم می‌گیرند (بدون nowrap که clipping می‌سازد). */
+body.cpms-admin table.cpms-table-responsive { width: 100%; border-collapse: collapse; }
+body.cpms-admin table.cpms-table-responsive td[data-label] { position: relative; }
+
+@media (max-width: 782px) {
+  body.cpms-admin table.cpms-table-responsive { display: block; }
+  body.cpms-admin table.cpms-table-responsive thead { display: none; }
+  body.cpms-admin table.cpms-table-responsive tbody { display: block; }
+  body.cpms-admin table.cpms-table-responsive tr {
+    display: block;
+    border: 1px solid var(--cpms-border-strong);
+    border-radius: var(--cpms-radius);
+    background: var(--cpms-surface);
+    padding: 10px 12px;
+    margin: 0 0 12px;
+  }
+  body.cpms-admin table.cpms-table-responsive td {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 7px 0;
+    border-bottom: 1px solid var(--cpms-border);
+    white-space: normal;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+    min-width: 0;
+  }
+  body.cpms-admin table.cpms-table-responsive td:last-child { border-bottom: none; padding-bottom: 2px; }
+  body.cpms-admin table.cpms-table-responsive td::before {
+    content: attr(data-label);
+    flex: 0 0 auto;
+    min-width: 92px;
+    font-weight: 600;
+    color: var(--cpms-text-muted);
+    line-height: 1.6;
+  }
+  /* سلول عملیات: برچسب در یک خط و دکمه‌ها زیر آن (قابل لمس، بدون colliding) */
+  body.cpms-admin table.cpms-table-responsive td.cpms-actions-cell { flex-wrap: wrap; }
+  body.cpms-admin table.cpms-table-responsive td.cpms-actions-cell::before { flex-basis: 100%; margin-bottom: 6px; }
+  body.cpms-admin table.cpms-table-responsive td.cpms-actions-cell .button { margin: 3px 0 3px 6px; }
+  body.cpms-admin table.cpms-table-responsive td.cpms-actions-cell .button:first-of-type { margin-inline-start: 0; }
+}
+
+/* ---------- Permissions: collapsed accordions (Advanced + overview) ----------
+   Defensive collapse: content of a CLOSED <details> must never render. This is the
+   hard guarantee behind the "initial = all closed" requirement; native <details>
+   already does this but we make it explicit so no theme/plugin CSS can leak it. */
+body.cpms-admin details.cpms-details:not([open]) > :not(summary),
+body.cpms-admin details.cpms-cap-group:not([open]) > :not(summary) {
+  display: none;
+}
+body.cpms-admin .cpms-cap-group,
+body.cpms-admin .cpms-preset-overview {
+  border: 1px solid var(--cpms-border);
+  border-radius: var(--cpms-radius-sm);
+  margin: 8px 0;
+  background: var(--cpms-surface);
+}
+body.cpms-admin .cpms-cap-group > summary,
+body.cpms-admin .cpms-preset-overview > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  cursor: pointer;
+  font-weight: 600;
+  padding: 10px 12px;
+  color: var(--cpms-text);
+}
+body.cpms-admin .cpms-cap-group > summary .cpms-group-count,
+body.cpms-admin .cpms-preset-overview > summary .cpms-group-count { color: var(--cpms-text-muted); font-weight: 500; }
+body.cpms-admin .cpms-cap-group > summary .cpms-sensitive,
+body.cpms-admin .cpms-preset-overview > summary .cpms-sensitive { margin-inline-start: auto; }
+body.cpms-admin .cpms-cap-group .cpms-cap-list { padding: 4px 12px 12px; margin-top: 0; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+body.cpms-admin .cpms-preset-overview .cpms-cards { padding: 6px 12px 12px; }
+body.cpms-admin .cpms-preset-overview .cpms-danger-box { margin: 4px 12px 12px; }
+/* یک هشدار سطح-بالا (کوتاه) در بالای بخش Advanced، نه یک هشدار برای هر آیتم. */
+body.cpms-admin .cpms-advanced-warning { margin: 4px 0 10px; }
+/* جستجوی واضح و label دار در بالای گروه‌ها */
+body.cpms-admin .cpms-cap-search-field { display: flex; flex-direction: column; gap: 4px; margin: 8px 0 10px; }
+body.cpms-admin .cpms-cap-search-label { font-weight: 600; color: var(--cpms-text); font-size: 13px; }
+body.cpms-admin .cpms-cap-search-field .cpms-cap-search { width: 100%; }
+body.cpms-admin .cpms-cap-search-status { display: none; margin: 2px 0 8px; font-size: 12px; color: var(--cpms-text-muted); font-weight: 600; }
+body.cpms-admin .cpms-cap-search-empty { display: none; padding: 12px; border: 1px dashed var(--cpms-border-strong); border-radius: var(--cpms-radius-sm); color: var(--cpms-text-muted); text-align: center; margin-top: 10px; }
+body.cpms-admin .cpms-cap-list label[data-cap] {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  line-height: 1.6;
+  padding: 4px 0;
+  min-height: 28px;
+}
+
+/* ---------- Confirmation modal (accessible, capturable) ---------- */
+body.cpms-admin .cpms-modal-overlay,
+.cpms-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(16, 20, 26, .5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 999999;
+  padding: 16px;
+}
+body.cpms-admin .cpms-modal,
+.cpms-modal {
+  background: var(--cpms-surface, #fff);
+  border-radius: var(--cpms-radius, 10px);
+  box-shadow: 0 10px 40px rgba(0,0,0,.28);
+  max-width: 460px;
+  width: 100%;
+  padding: 20px 22px;
+  box-sizing: border-box;
+}
+body.cpms-admin .cpms-modal h3,
+.cpms-modal h3 { margin: 0 0 10px; font-size: 16px; color: var(--cpms-text, #1d2327); }
+body.cpms-admin .cpms-modal p,
+.cpms-modal p { margin: 0 0 18px; color: var(--cpms-text, #1d2327); line-height: 1.7; word-break: break-word; }
+body.cpms-admin .cpms-modal .cpms-modal-actions,
+.cpms-modal .cpms-modal-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+body.cpms-admin .cpms-modal .cpms-modal-actions .button,
+.cpms-modal .cpms-modal-actions .button { flex: 1 1 120px; min-height: 42px; margin: 0; }
+
+/* ---------- Responsive (6 breakpoints) ---------- */
+@media (max-width: 1400px) and (min-width: 1201px) {
+  body.cpms-admin .cpms-cards { grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); }
+}
+@media (max-width: 1024px) {
+  body.cpms-admin .cpms-cards { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+  body.cpms-admin .widefat { font-size: 13px; }
+}
+@media (max-width: 782px) {
+  body.cpms-admin #wpcontent { padding-left: 4px; }
+  body.cpms-admin .cpms-cards { grid-template-columns: 1fr; }
+  body.cpms-admin .wrap h1, body.cpms-admin .cpms-shell h1 { font-size: 19px; }
+  body.cpms-admin .form-table th, body.cpms-admin .form-table td { display: block; width: auto; }
+  body.cpms-admin .form-table th { padding-bottom: 0; }
+  /* Touch targets ≥ 40px */
+  body.cpms-admin .button,
+  body.cpms-admin .button-primary,
+  body.cpms-admin .button-secondary,
+  body.cpms-admin input[type="checkbox"] { min-height: 40px; }
+  /* جدول‌های غیر کارتی: فقط overflow ملایم (بدون nowrap که clipping می‌سازد) */
+  body.cpms-admin .widefat { display: block; overflow-x: auto; }
+}
+@media (max-width: 480px) {
+  body.cpms-admin .cpms-panel, body.cpms-admin .cpms-role-preset { padding: 12px; }
+  body.cpms-admin .cpms-empty { padding: 24px 14px; }
+  body.cpms-admin .wrap input.regular-text { width: 100%; }
+  body.cpms-admin .cpms-cap-list { grid-template-columns: 1fr; }
+}
+
+/* ---------- LTR mixed content (code, ids, emails, times) ---------- */
+body.cpms-admin .ltr,
+body.cpms-admin [dir="ltr"],
+body.cpms-admin code { direction: ltr; text-align: left; unicode-bidi: isolate; }

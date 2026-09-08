@@ -5,10 +5,15 @@ declare(strict_types=1);
 namespace ClinicCore\Bootstrap;
 
 use ClinicCore\Admin\ClinicianAdminPage;
+use ClinicCore\Admin\CpmsAdminMenu;
+use ClinicCore\Admin\CpmsAssets;
+use ClinicCore\Admin\CpmsSetupWizard;
+use ClinicCore\Admin\PatientAdminPage;
 use ClinicCore\Admin\PatientPortalPage;
 use ClinicCore\Admin\PrescriptionPrintPage;
 use ClinicCore\Admin\RoleCapabilitiesPage;
 use ClinicCore\Admin\SettingsAdmin;
+use ClinicCore\Admin\StaffManagementPage;
 use ClinicCore\Admin\SystemPage;
 use ClinicCore\Admin\DoctorDashboardPage;
 use ClinicCore\Admin\DoctorHandwritingPage;
@@ -188,6 +193,12 @@ final class App
         // افزونه تعریف می‌شوند — خارج از boot تا در همه Contextها (CLI، Test،
         // درخواست‌های زودهنگام) قطعاً موجود باشند.
 
+        // Admin UX — منوی Top-Level «مدیریت مطب» + داشبورد + IA (Chunk A)
+        CpmsAdminMenu::register();
+        CpmsAssets::register(); // Chunk F — assets اسکوپ‌شدهٔ صفحات CPMS (CSS/JS محلی، فقط در صفحات CPMS)
+        CpmsSetupWizard::register(); // Chunk B — راه‌اندازی گام‌به‌گام (self-service, resumable)
+        StaffManagementPage::register(); // Chunk C — کاربران و دسترسی‌ها (staff/user management)
+
         SettingsAdmin::register();
         SystemPage::register();
         ClinicianAdminPage::register(); // ADR-0031 / Part 2 — Setup UI پزشک + برنامه هفتگی
@@ -199,6 +210,7 @@ final class App
         SecretaryFinancePage::register();
         DoctorDashboardPage::register();
         DoctorHandwritingPage::register();
+        PatientAdminPage::register(); // Chunk G — Patient Management Entry (operational, capability-driven)
     }
 
     public static function activate(): void

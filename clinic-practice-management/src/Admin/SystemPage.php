@@ -30,13 +30,21 @@ final class SystemPage
         add_action('admin_post_cpms_backup_delete', [self::class, 'backupDelete']);
         add_action('admin_post_cpms_backup_verify', [self::class, 'backupVerify']);
         add_action('admin_post_cpms_restore_apply', [self::class, 'restoreApply']);
+        add_action('admin_post_cpms_restore_preflight', [self::class, 'restorePreflight']);
         add_action('admin_post_cpms_update_check', [self::class, 'updateCheck']);
         add_action('admin_post_cpms_update_settings', [self::class, 'updateSettings']);
     }
 
     public static function menu(): void
     {
-        add_management_page('CPMS (سیستم)', 'CPMS (سیستم)', 'cpms_config', 'cpms-system', [self::class, 'render']);
+        add_submenu_page(
+            CpmsAdminMenu::parentSlug(),
+            'سلامت سیستم',
+            'سلامت سیستم',
+            'cpms_config',
+            'cpms-system',
+            [self::class, 'render']
+        );
     }
 
     public static function render(): void
@@ -103,16 +111,43 @@ final class SystemPage
                     <br><code><?php echo esc_html(implode(' | ', $health['host']['issues'])); ?></code>
                 <?php endif; ?>
             </p>
+            <?php $faults = []; $okRows = []; foreach ($health['checks'] as $c) : ?>
+                <?php ($c['status'] === SystemHealthService::PASS) ? $okRows[] = $c : $faults[] = $c; ?>
+            <?php endforeach; ?>
+
+            <?php if ($faults !== []) : ?>
+                <h3>⚠️ موارد نیازمند توجه</h3>
+                <?php foreach ($faults as $c) : $g = self::guide((string) $c['key'], (string) $c['status']); ?>
+                    <div class="notice notice-warning inline" style="max-width:1000px">
+                        <p><strong><?php echo esc_html(self::statusBadge((string) $c['status'])); ?> <?php echo esc_html((string) $c['label']); ?></strong></p>
+                        <p>🔎 <strong>چی:</strong> <?php echo esc_html($g['what']); ?></p>
+                        <p>⚡ <strong>اثر:</strong> <?php echo esc_html($g['impact']); ?></p>
+                        <p>🛠 <strong>چه کنم:</strong> <?php echo esc_html($g['action']); ?></p>
+                        <details><summary style="cursor:pointer">جزئیات فنی</summary>
+                            <pre style="direction:ltr;text-align:left"><?php echo esc_html((string) $c['detail']); ?></pre>
+                        </details>
+                    </div>
+                <?php endforeach; ?>
+            <?php endif; ?>
+
+            <?php if ($faults === []) : ?>
+                <p class="description">✅ همهٔ بررسی‌های وضعیت سالم است.</p>
+            <?php endif; ?>
+
+            <h3>بررسی‌های سالم</h3>
             <table class="widefat striped">
                 <thead><tr><th>بررسی</th><th>وضعیت</th><th>جزئیات</th></tr></thead>
                 <tbody>
-                <?php foreach ($health['checks'] as $c) : ?>
+                <?php foreach ($okRows as $c) : ?>
                     <tr>
                         <td><?php echo esc_html($c['label']); ?></td>
                         <td><?php echo esc_html(self::statusBadge($c['status'])); ?></td>
                         <td><?php echo esc_html($c['detail']); ?></td>
                     </tr>
                 <?php endforeach; ?>
+                <?php if ($okRows === []) : ?>
+                    <tr><td colspan="3">هیچ بررسی سالمی وجود ندارد.</td></tr>
+                <?php endif; ?>
                 </tbody>
             </table>
             <?php endif; ?>
@@ -181,7 +216,7 @@ final class SystemPage
                 <thead><tr><th>ID</th><th>زمان (UTC)</th><th>جدول‌ها/ردیف‌ها</th><th>فایل‌ها</th><th>یکپارچگی</th><th></th></tr></thead>
                 <tbody>
                 <?php if ($backups === []) : ?>
-                    <tr><td colspan="6">بکاپی موجود نیست.</td></tr>
+                    <tr><td colspan="6"><?php echo CpmsUi::emptyState('🗄', 'هنوز بکاپی ساخته نشده', 'برای امنیت اطلاعات، در صورت فعال بودن بکاپ دوره‌ای خودکار ساخته می‌شود؛ یا همین حالا با دکمهٔ زیر بکاپ دستی بگیرید.', 'اجرای بکاپ دستی', admin_url('admin.php?page=cpms-system')); ?></td></tr>
                 <?php endif; ?>
                 <?php foreach ($backups as $b) : ?>
                     <tr>
@@ -197,7 +232,7 @@ final class SystemPage
                                 <input type="hidden" name="backup_id" value="<?php echo esc_attr((string) $b['backup_id']); ?>">
                                 <button class="button button-small">تأیید کامل</button>
                             </form>
-                            <form method="post" style="display:inline" onsubmit="return confirm('حذف این بکاپ؟')">
+                            <form method="post" style="display:inline" data-cpms-confirm="حذف این بکاپ؟">
                                 <?php wp_nonce_field('cpms_backup_delete'); ?>
                                 <input type="hidden" name="action" value="cpms_backup_delete">
                                 <input type="hidden" name="backup_id" value="<?php echo esc_attr((string) $b['backup_id']); ?>">
@@ -209,16 +244,25 @@ final class SystemPage
                 </tbody>
             </table>
 
-            <h2>Restore (بازیابی — مخرب؛ با Safety Backup خودکار)</h2>
+            <h2>Restore (بازیابی — مخرب؛ preflight + Safety Backup)</h2>
+            <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="max-width:720px">
+                <?php wp_nonce_field('cpms_restore_preflight'); ?>
+                <input type="hidden" name="action" value="cpms_restore_preflight">
+                <p>۱) ابتدا <strong>preflight</strong> را اجرا کنید تا ببینید دقیقاً چه چیزی (جدول‌ها، ردیف‌ها، فایل‌ها، یکپارچگی) بازگردانی می‌شود و آیا امن است:</p>
+                <p><label>Backup ID: <input type="text" name="backup_id" required dir="ltr"></label>
+                <button class="button">🔍 Preflight</button></p>
+            </form>
+            <div class="notice notice-warning inline" style="max-width:720px">
+                <p><strong>⛔ هشدار:</strong> بازیابی، جدول‌های <code>cpms_*</code> را از بکاپ بازمی‌گرداند و دادهٔ فعلی آن‌ها را جایگزین می‌کند (فایل‌های پیوست هم در صورت وجود در بکاپ). <strong>WP Core هرگز دست نمی‌خورد.</strong> قبل از اعمال، یک <strong>Safety Backup</strong> خودکار ساخته می‌شود.</p>
+            </div>
             <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>"
-                  onsubmit="return confirm('Restore جدول‌های cpms_* را از بکاپ بازمی‌گرداند. ابتدا Safety Backup ساخته می‌شود. ادامه؟')">
+                  data-cpms-confirm="بازیابی، دادهٔ فعلی جدول‌های cpms_* را جایگزین می‌کند و ابتدا Safety Backup ساخته می‌شود. آیا مطمئن هستید؟">
                 <?php wp_nonce_field('cpms_restore_apply'); ?>
                 <input type="hidden" name="action" value="cpms_restore_apply">
-                <label>Backup ID: <input type="text" name="backup_id" required dir="ltr"></label>
-                &nbsp; برای تأیید «RESTORE» تایپ کنید:
-                <input type="text" name="confirm_text" required>
+                <p><label>Backup ID: <input type="text" name="backup_id" required dir="ltr"></label></p>
+                <p><label><input type="checkbox" name="ack" value="1" required> می‌پذیرم که دادهٔ فعلی جدول‌های cpms_* جایگزین می‌شود و توضیح هشدار بالا را خوانده‌ام.</label></p>
+                <p><label>برای تأیید، عبارت <code>RESTORE</code> را تایپ کنید: <input type="text" name="confirm_text" required autocomplete="off"></label></p>
                 <button class="button button-secondary">بازیابی</button>
-                <p class="description">فقط جدول‌های cpms_* بازگردانی می‌شوند (WP Core دست نمی‌خورد). Preflight قبل از هر اقدامی اجرا می‌شود.</p>
             </form>
 
             <h2>به‌روزرسانی امن (ADR-0029)</h2>
@@ -321,6 +365,9 @@ final class SystemPage
         self::guard('cpms_restore_apply');
         $id = trim((string) ($_POST['backup_id'] ?? ''));
         $confirm = trim((string) ($_POST['confirm_text'] ?? ''));
+        if (empty($_POST['ack'])) {
+            self::notify('باید تیک «تأیید هشدار» را بزنید — Restore انجام نشد');
+        }
         if ($confirm !== 'RESTORE') {
             self::notify('عبارت تأیید اشتباه است — Restore انجام نشد');
         }
@@ -329,6 +376,25 @@ final class SystemPage
             self::notify('Restore انجام شد (backup ' . $id . ') — Safety Backup ساخته شد', true);
         } catch (\Throwable $e) {
             self::notify('Restore ناموفق (هیچ تغییری اعمال نشد مگر Safety Backup): ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Chunk E — preflight بازیابی: پیش از هر اقدام مخرب، دقیقاً نشان می‌دهد چه چیزی
+     * بازگردانی می‌شود (جدول/ردیف/فایل) و آیا امن است (یکپارچگی + دیتابیس). بدون تغییر داده.
+     */
+    public static function restorePreflight(): void
+    {
+        self::guard('cpms_restore_preflight');
+        $id = trim((string) ($_POST['backup_id'] ?? ''));
+        try {
+            $p = App::backupService()->restorePreflight($id);
+            $msg = 'Preflight ' . $id . ': جدول‌ها=' . $p['tables'] . '، ردیف‌ها=' . $p['rows'] . '، فایل‌ها=' . $p['storage_files'] .
+                ' — یکپارچگی ' . ($p['integrity_ok'] ? 'سالم ✅' : 'ناسالم ⛔') . '، دیتابیس ' . ($p['db_reachable'] ? 'برقرار ✅' : 'ناموجود ⛔') .
+                '، ایمن برای بازیابی=' . ($p['restore_safe'] ? 'بله ✅' : 'خیر ⛔');
+            self::notify($msg, (bool) $p['restore_safe']);
+        } catch (\Throwable $e) {
+            self::notify('Preflight ناموفق: ' . $e->getMessage());
         }
     }
 
@@ -366,8 +432,103 @@ final class SystemPage
     private static function notify(string $message, bool $success = false): void
     {
         set_transient(self::NOTICE_KEY, ($success ? '✅ ' : '⛔ ') . $message, 60);
-        wp_safe_redirect(admin_url('tools.php?page=cpms-system'));
+        wp_safe_redirect(admin_url('admin.php?page=cpms-system'));
         exit;
+    }
+
+    /**
+     * راهنمای انسانیشدهٔ هر fault برای Health — «چه»، «اثر»، «چه کنم». خالص و قابل
+     * تست (بدون WP/DB). برای کلید/وضعیت ناشناختهٔ عمومی برمی‌گرداند تا صفحه هیچ‌وقت
+     * خالی نماند.
+     *
+     * @return array{what:string, impact:string, action:string}
+     */
+    public static function guide(string $key, string $status): array
+    {
+        $ok = in_array($status, [SystemHealthService::PASS], true);
+        $entries = [
+            'php.version' => [
+                'what' => 'نسخهٔ PHP میزبان کمتر از حداقل مجاز (8.1) است.',
+                'impact' => 'کل افزونه و رزرو/امنیت ممکن است پایدار اجرا نشود و امضای اسناد (sodium) دچار مشکل شود.',
+                'action' => 'با هاست خود هماهنگ کنید و PHP را به 8.1 یا بالاتر ارتقا دهید.',
+            ],
+            'php.sodium' => [
+                'what' => 'افزونهٔ PHP ext/sodium در دسترس نیست.',
+                'impact' => 'تأیید امضای اسناد مجوز و انتشار ممکن نیست (fail-closed) — ممکن است فعال‌سازی مجوز مسدود شود.',
+                'action' => 'در PHP میزبان، افزونهٔ sodium را فعال کنید (یا از هاست بخواهید فعالش کند).',
+            ],
+            'php.memory' => [
+                'what' => 'محدودیت حافظهٔ PHP (memory_limit) کمتر از ۱۲۸M است.',
+                'impact' => 'عملیات سنگین (بکاپ/Restore، گزارش، تولید Slot) ممکن است با OOM قطع شود.',
+                'action' => 'memory_limit را به حداقل ۱۲۸M و در صورت امکان ۲۵۶M افزایش دهید.',
+            ],
+            'db.reachable' => [
+                'what' => 'اتصال به دیتابیس برقرار نیست.',
+                'impact' => 'هیچ‌کدام از داده‌های کلینیک (نوبت، پزشک، بیمار) در دسترس نخواهد بود؛ افزونه عملاً از کار می‌افتد.',
+                'action' => 'مشخصات اتصال به دیتابیس را در wp-config.php بررسی و ارتباط پایگاه داده را برقرار کنید.',
+            ],
+            'db.migrated' => [
+                'what' => 'ساختار جداول (Migration) با نسخهٔ مورد انتظار مطابقت ندارد (به‌روز نشده/ناقص).',
+                'impact' => 'جداول/ستون‌های لازم ممکن است غایب باشند و عملیات با خطای «جدول یافت نشد» شکست بخورد.',
+                'action' => 'به‌روزرسانی افزونه را نصب و اجرا کنید تا Migration‌ها تکمیل شوند؛ در صورت ادامه مشکل با پشتیبانی تماس بگیرید.',
+            ],
+            'db.tables' => [
+                'what' => 'هیچ جدولی از جداول cpms_* یافت نشد.',
+                'impact' => 'داده‌ها هنوز ساخته/مهاجرت نشده‌اند؛ افزونه عملیاتی نیست.',
+                'action' => 'راه‌اندازی (Wizard) را کامل کنید یا Migration را از سطح افزونه اجرا کنید.',
+            ],
+            'cron.jobs' => [
+                'what' => 'صف Cron/Jobs متوقف یا در حالت ناپایدار است.',
+                'impact' => 'یادآوری‌ها، تولید برنامه‌ها و رویدادهای زمان‌بندی‌شده اجرا نمی‌شوند (عملکرد تدریجی از بین می‌رود).',
+                'action' => 'System Cron را با DISABLE_WP_CRON فعال کنید (ADR-0016) یا WP-Cron را تنظیم کنید.',
+            ],
+            'storage.files' => [
+                'what' => 'محل ذخیرهٔ فایل‌های پزشکی در دسترس/قابل‌نوشتن نیست.',
+                'impact' => 'آپلود/دریافت فایل‌های پزشکی و دست‌خط شکست می‌خورد.',
+                'action' => 'مجوزهای پوشهٔ storage را برای وب‌سرور قابل‌نوشتن کنید و فضا/مسیر را بررسی کنید.',
+            ],
+            'storage.backups' => [
+                'what' => 'محل ذخیرهٔ بکاپ در دسترس/قابل‌نوشتن نیست.',
+                'impact' => 'ساخت/بازیابی بکاپ ممکن نیست (ریسک از دست رفتن داده در خرابی).',
+                'action' => 'پوشهٔ بکاپ را قابل‌نوشتن کنید و مسیر در تنظیمات «بکاپ» را اصلاح کنید.',
+            ],
+            'license.state' => [
+                'what' => 'وضعیت مجوز فعال/معتبر نیست.',
+                'impact' => 'ممکن است دسترسی به بخش‌های محافظت‌شده (رزرو، نوبت، پرونده) محدود یا مجوز نیاز به تمدید داشته باشد.',
+                'action' => 'مجوز را از بخش «مجوز» فعال/تمدید کنید؛ در صورت قطع سرور، از فعال‌سازی آفلاین/سند استفاده کنید.',
+            ],
+            'license.gateway' => [
+                'what' => 'سرور مجوز پیکربندی نشده است.',
+                'impact' => 'فعال‌سازی/تأیید آنلاین ممکن نیست (فعال‌سازی آفلاین هنوز ممکن است).',
+                'action' => 'در صورت نیاز به فعال‌سازی آنلاین، آدرس سرور مجوز را تنظیم کنید؛ در غیر این صورت از سند آفلاین استفاده کنید.',
+            ],
+            'backup.enabled' => [
+                'what' => 'بکاپ دوره‌ای غیرفعال است یا آخرین اجرا قدیمی است.',
+                'impact' => 'در صورت خرابی/حمله، بازیابی اطلاعات با ریسک از دست رفتن داده همراه است.',
+                'action' => 'بکاپ دوره‌ای را از بخش «بکاپ» فعال کنید و «اجرای دستی» را انجام دهید تا چرخهٔ سالم برقرار شود.',
+            ],
+            'update.entitlement' => [
+                'what' => 'سند مجوز، ویژگی به‌روزرسانی امن (updates) را نمی‌دهد.',
+                'impact' => 'نسخه‌های امن جدید را نمی‌توانید نصب کنید (ریسک امنیتی).',
+                'action' => 'مجوز را با نسخهٔ دارای پوشش به‌روزرسانی تمدید/ارتقا دهید.',
+            ],
+            'https.active' => [
+                'what' => 'سایت روی HTTPS اجرا نمی‌شود.',
+                'impact' => 'ارتباط مرورگر/API در تولید رمزنگاری نمی‌شود (مخصوصاً برای داده‌های پزشکی حساس).',
+                'action' => 'SSL/TLS را روی دامنه فعال کنید و سایت را روی HTTPS بیاورید.',
+            ],
+        ];
+        $entry = $entries[$key] ?? [
+            'what' => 'بررسی با وضعیت «' . ($status === SystemHealthService::PASS ? 'PASS' : $status) . '» بازگشت.',
+            'impact' => 'این مورد در عملکرد کلینیک ممکن است مؤثر باشد.',
+            'action' => 'جزئیات فنی را بررسی و در صورت نیاز با پشتیبانی تماس بگیرید.',
+        ];
+
+        return $ok ? [
+            'what' => 'سالم است.',
+            'impact' => 'نیازی به اقدام نیست.',
+            'action' => 'بدون اقدام.',
+        ] : $entry;
     }
 
     private static function statusBadge(string $status): string

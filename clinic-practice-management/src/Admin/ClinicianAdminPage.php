@@ -44,9 +44,10 @@ final class ClinicianAdminPage
 
     public static function menu(): void
     {
-        add_management_page(
-            'پزشکان و برنامه',
-            'پزشکان و برنامه',
+        add_submenu_page(
+            CpmsAdminMenu::parentSlug(),
+            'پزشکان و برنامه کاری',
+            'پزشکان و برنامه کاری',
             RolesAndCapabilities::CONFIG,
             'cpms-clinicians',
             [self::class, 'render']
@@ -91,21 +92,21 @@ final class ClinicianAdminPage
         $users = self::wpUsers();
         ?>
     <h2 class="title">پزشکان</h2>
-    <table class="widefat striped" style="max-width:1000px">
+    <table class="widefat striped cpms-table-responsive" style="max-width:1000px">
         <thead><tr><th>نام</th><th>تخصص</th><th>اتاق</th><th>کاربر متصل</th><th>روزهای برنامه</th><th>وضعیت</th><th></th></tr></thead>
         <tbody>
         <?php if ($rows === []) : ?>
-            <tr><td colspan="7">هنوز پزشکی ثبت نشده — با فرم پایین اولین پزشک را اضافه کنید.</td></tr>
+            <tr><td colspan="7"><?php echo CpmsUi::emptyState('🩺', 'هنوز پزشکی ثبت نشده', 'برای شروع، اولین پزشک را با فرم پایین اضافه کنید — یا می‌توانید هم‌زمان حساب ورود او را با نقش «پزشک» بسازید.', 'افزودن اولین پزشک', admin_url('admin.php?page=cpms-clinicians')); ?></td></tr>
         <?php endif; ?>
         <?php foreach ($rows as $r) : ?>
             <tr>
-                <td><strong><?php echo esc_html((string) $r['full_name']); ?></strong></td>
-                <td><?php echo esc_html((string) ($r['specialty'] ?? '')); ?></td>
-                <td><?php echo esc_html((string) ($r['room'] ?? '')); ?></td>
-                <td><?php echo esc_html((string) ($r['wp_user_login'] ?? '—')); ?></td>
-                <td><?php echo (int) $r['schedule_days']; ?> روز</td>
-                <td><?php echo (int) $r['is_active'] === 1 ? '✅ فعال' : '⛔ غیرفعال'; ?></td>
-                <td><a class="button button-small" href="<?php echo esc_url(admin_url('tools.php?page=cpms-clinicians&clinician_id=' . (int) $r['id'])); ?>">مدیریت برنامه</a></td>
+                <td data-label="نام"><strong><?php echo esc_html((string) $r['full_name']); ?></strong></td>
+                <td data-label="تخصص"><?php echo esc_html((string) ($r['specialty'] ?? '')); ?></td>
+                <td data-label="اتاق"><?php echo esc_html((string) ($r['room'] ?? '')); ?></td>
+                <td data-label="کاربر متصل"><span class="ltr"><?php echo esc_html((string) ($r['wp_user_login'] ?? '—')); ?></span></td>
+                <td data-label="روزهای برنامه"><?php echo (int) $r['schedule_days']; ?> روز</td>
+                <td data-label="وضعیت"><?php echo (int) $r['is_active'] === 1 ? '<span class="cpms-badge cpms-ok">فعال</span>' : '<span class="cpms-badge cpms-danger">غیرفعال</span>'; ?></td>
+                <td class="cpms-actions-cell" data-label="عملیات"><a class="button button-small" href="<?php echo esc_url(admin_url('admin.php?page=cpms-clinicians&clinician_id=' . (int) $r['id'])); ?>">مدیریت برنامه</a></td>
             </tr>
         <?php endforeach; ?>
         </tbody>
@@ -120,17 +121,34 @@ final class ClinicianAdminPage
             <tr><th>تخصص</th><td><input type="text" name="specialty" class="regular-text"></td></tr>
             <tr><th>اتاق</th><td><input type="text" name="room" class="regular-text"></td></tr>
             <tr><th>کاربر وردپرس</th><td>
+                <label><input type="checkbox" name="create_account" value="1" id="cpms-create-account"> ایجاد حساب کاربری جدید (نقش: پزشک) — بدون نیاز به صفحهٔ جداگانهٔ «کاربران»</label>
+                <div id="cpms-account-fields" style="display:none; margin-top:8px">
+                    <p><label>نام کاربری * <input type="text" name="account_username" class="regular-text" autocomplete="off"></label></p>
+                    <p><label>ایمیل * <input type="email" name="account_email" class="regular-text" autocomplete="off"></label></p>
+                    <p><label>رمز عبور <input type="password" name="account_password" class="regular-text" autocomplete="new-password"></label>
+                        <span class="description">خالی بگذارید تا رمز قوی تصادفی ساخته و یک‌بار نمایش داده شود (هرگز plaintext ذخیره نمی‌شود).</span></p>
+                </div>
                 <select name="wp_user_id">
-                    <option value="0">— بدون اتصال (بعداً) —</option>
+                    <option value="0">— بدون اتصال —</option>
                     <?php foreach ($users as $u) : ?>
                         <option value="<?php echo (int) $u['id']; ?>"><?php echo esc_html($u['label']); ?></option>
                     <?php endforeach; ?>
                 </select>
-                <p class="description">پزشک فقط با این اتصال به «امروز پزشک» و صف خودش دسترسی پیدا می‌کند (۱:۱).</p>
+                <p class="description">یا یک پزشک موجود را انتخاب کنید. فقط اتصال ۱:۱ به «امروز پزشک» و صف خودش دسترسی می‌دهد.</p>
             </td></tr>
         </table>
         <p><button type="submit" class="button button-primary">ثبت پزشک</button></p>
     </form>
+    <script>
+        (function(){
+            var c = document.getElementById('cpms-create-account');
+            var box = document.getElementById('cpms-account-fields');
+            if (!c || !box) { return; }
+            c.addEventListener('change', function(){
+                box.style.display = c.checked ? 'block' : 'none';
+            });
+        })();
+    </script>
         <?php
     }
 
@@ -149,7 +167,7 @@ final class ClinicianAdminPage
         $users = self::wpUsers();
         $exceptions = $scheduleService->listExceptions($cid, gmdate('Y-m-d'), gmdate('Y-m-d', strtotime('+120 days')));
         ?>
-    <a href="<?php echo esc_url(admin_url('tools.php?page=cpms-clinicians')); ?>">← بازگشت به فهرست</a>
+    <a href="<?php echo esc_url(admin_url('admin.php?page=cpms-clinicians')); ?>">← بازگشت به فهرست</a>
     <h1><?php echo esc_html((string) $clinician['full_name']); ?>
         <span class="description"><?php echo esc_html((string) ($clinician['specialty'] ?? '')); ?></span>
     </h1>
@@ -176,7 +194,7 @@ final class ClinicianAdminPage
         <p>
             <button type="submit" class="button button-primary">ذخیره پروفایل</button>
             <a class="button" href="<?php echo esc_url(wp_nonce_url(admin_url('admin-post.php?action=cpms_clinician_toggle&clinician_id=' . $cid), 'cpms_clinician_toggle_' . $cid)); ?>"
-                onclick="return confirm('<?php echo (int) $clinician['is_active'] === 1 ? 'غیرفعال' : 'فعال'; ?>سازی این پزشک؟');">
+                data-cpms-confirm="<?php echo (int) $clinician['is_active'] === 1 ? 'غیرفعال‌سازی' : 'فعال‌سازی'; ?> این پزشک؟ تاریخچهٔ او حذف نمی‌شود.">
                 <?php echo (int) $clinician['is_active'] === 1 ? '⛔ غیرفعال‌سازی' : '✅ فعال‌سازی'; ?>
             </a>
         </p>
@@ -184,28 +202,38 @@ final class ClinicianAdminPage
 
     <!-- برنامه هفتگی — یک فرم برای کل جدول (نام‌گذاری آرایه‌ای sched[day]) -->
     <h2 class="title">برنامه هفتگی (ساعت‌ها به وقت مطب)</h2>
+    <?php if ((int) $clinician['is_active'] === 1) : $impact = App::scheduleService()->impact($cid); ?>
+        <div class="notice notice-info inline" style="max-width:1150px">
+            <p><strong>تأثیر تغییر برنامه (پیش‌نمایش):</strong>
+                با ذخیرهٔ هر تغییر، <strong><?php echo (int) $impact['future_empty_slots']; ?></strong> اسلات خالی آینده
+                حذف و بازتولید می‌شود (بازتولید خودکار)؛ و <strong><?php echo (int) $impact['future_reserved_slots']; ?></strong>
+                اسلات دارای رزرو/Hold <strong>هرگز حذف نمی‌شوند</strong> (امانت داده حفظ می‌شود). برای اینکه تغییری بی‌صدا
+                اعمال نشود، این عدد پیش از ثبت نمایش داده می‌شود.
+            </p>
+        </div>
+    <?php endif; ?>
     <p class="description">پس از ذخیره، Slotهای رزرو خودکار بازتولید می‌شوند (Job slots.generate). برای حذف یک روز از دکمه «حذف» همان ردیف استفاده کنید.</p>
     <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
         <?php wp_nonce_field('cpms_schedule_save'); ?>
         <input type="hidden" name="action" value="cpms_schedule_save">
         <input type="hidden" name="clinician_id" value="<?php echo $cid; ?>">
-        <table class="widefat striped" style="max-width:1150px">
+        <table class="widefat striped cpms-table-responsive" style="max-width:1150px">
             <thead><tr><th>روز</th><th>شروع</th><th>پایان</th><th>وقفه از</th><th>وقفه تا</th><th>مدت نوبت (دقیقه)</th><th>ظرفیت هر Slot</th><th>فعال</th><th></th></tr></thead>
             <tbody>
             <?php foreach (self::DAYS as $day => $dayLabel) : $s = $byDay[$day] ?? null; ?>
                 <tr>
-                    <td><strong><?php echo esc_html($dayLabel); ?></strong></td>
-                    <td><input type="time" name="sched[<?php echo $day; ?>][start_time]" value="<?php echo esc_attr((string) ($s['start_time'] ?? '09:00')); ?>" required></td>
-                    <td><input type="time" name="sched[<?php echo $day; ?>][end_time]" value="<?php echo esc_attr((string) ($s['end_time'] ?? '13:00')); ?>" required></td>
-                    <td><input type="time" name="sched[<?php echo $day; ?>][break_start]" value="<?php echo esc_attr((string) ($s['break_start'] ?? '')); ?>"></td>
-                    <td><input type="time" name="sched[<?php echo $day; ?>][break_end]" value="<?php echo esc_attr((string) ($s['break_end'] ?? '')); ?>"></td>
-                    <td><input type="number" name="sched[<?php echo $day; ?>][appointment_duration_min]" min="5" max="240" value="<?php echo esc_attr((string) ($s['appointment_duration_min'] ?? '20')); ?>" style="width:80px"></td>
-                    <td><input type="number" name="sched[<?php echo $day; ?>][slot_capacity]" min="1" max="50" value="<?php echo esc_attr((string) ($s['slot_capacity'] ?? '1')); ?>" style="width:70px"></td>
-                    <td><input type="checkbox" name="sched[<?php echo $day; ?>][is_active]" value="1" <?php checked($s === null || !empty($s['is_active'])); ?>></td>
-                    <td>
+                    <td data-label="روز"><strong><?php echo esc_html($dayLabel); ?></strong></td>
+                    <td data-label="شروع"><input type="time" name="sched[<?php echo $day; ?>][start_time]" value="<?php echo esc_attr((string) ($s['start_time'] ?? '09:00')); ?>" required></td>
+                    <td data-label="پایان"><input type="time" name="sched[<?php echo $day; ?>][end_time]" value="<?php echo esc_attr((string) ($s['end_time'] ?? '13:00')); ?>" required></td>
+                    <td data-label="وقفه از"><input type="time" name="sched[<?php echo $day; ?>][break_start]" value="<?php echo esc_attr((string) ($s['break_start'] ?? '')); ?>"></td>
+                    <td data-label="وقفه تا"><input type="time" name="sched[<?php echo $day; ?>][break_end]" value="<?php echo esc_attr((string) ($s['break_end'] ?? '')); ?>"></td>
+                    <td data-label="مدت نوبت (دقیقه)"><input type="number" name="sched[<?php echo $day; ?>][appointment_duration_min]" min="5" max="240" value="<?php echo esc_attr((string) ($s['appointment_duration_min'] ?? '20')); ?>" style="width:80px"></td>
+                    <td data-label="ظرفیت هر Slot"><input type="number" name="sched[<?php echo $day; ?>][slot_capacity]" min="1" max="50" value="<?php echo esc_attr((string) ($s['slot_capacity'] ?? '1')); ?>" style="width:70px"></td>
+                    <td data-label="فعال"><input type="checkbox" name="sched[<?php echo $day; ?>][is_active]" value="1" <?php checked($s === null || !empty($s['is_active'])); ?>></td>
+                    <td class="cpms-actions-cell" data-label="عملیات">
                         <button type="submit" name="sched_submit[<?php echo $day; ?>]" value="1" class="button button-small"><?php echo $s === null ? 'افزودن روز' : 'ذخیره روز'; ?></button>
                         <?php if ($s !== null) : ?>
-                            <button type="button" class="button button-small" onclick="cpmsSchedDelete(<?php echo (int) $s['id']; ?>)" style="color:#b32d2e">حذف</button>
+                            <button type="button" class="button button-small" data-cpms-schedule-delete="<?php echo (int) $s['id']; ?>" data-cpms-confirm="حذف برنامه این روز؟" style="color:#b32d2e">حذف</button>
                         <?php endif; ?>
                     </td>
                 </tr>
@@ -219,15 +247,6 @@ final class ClinicianAdminPage
         <input type="hidden" name="clinician_id" value="<?php echo $cid; ?>">
         <input type="hidden" name="schedule_id" value="">
     </form>
-    <script>
-        function cpmsSchedDelete(id) {
-            if (!confirm('حذف برنامه این روز؟')) { return; }
-            var f = document.getElementById('cpms-sched-del');
-            f.schedule_id.value = id;
-            f.submit();
-        }
-    </script>
-
     <!-- استثناها -->
     <h2 class="title" style="margin-top:18px">استثناها (تعطیلی / مرخصی / بستن / باز کردن)</h2>
     <?php if ($exceptions !== []) : ?>
@@ -241,7 +260,7 @@ final class ClinicianAdminPage
                     <td dir="ltr"><?php echo esc_html(($e['start_time'] ?? '—') . ' تا ' . ($e['end_time'] ?? '—')); ?></td>
                     <td><?php echo esc_html((string) ($e['reason'] ?? '')); ?></td>
                     <td>
-                        <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" onsubmit="return confirm('حذف این استثنا؟');">
+                        <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" data-cpms-confirm="حذف این استثنا؟">
                             <?php wp_nonce_field('cpms_exception_delete'); ?>
                             <input type="hidden" name="action" value="cpms_exception_delete">
                             <input type="hidden" name="clinician_id" value="<?php echo $cid; ?>">
@@ -287,6 +306,7 @@ final class ClinicianAdminPage
         $repo = App::clinicianRepository();
         $fields = self::clinicianFields();
         $id = isset($_POST['clinician_id']) ? absint($_POST['clinician_id']) : 0;
+        $generated = '';
 
         try {
             if ($id > 0) {
@@ -302,12 +322,26 @@ final class ClinicianAdminPage
             if (trim((string) ($fields['full_name'] ?? '')) === '') {
                 self::backWithError(0, 'خطا: نام پزشک الزامی است.');
             }
+
+            // Chunk D — ساخت حساب در همان جریان «افزودن پزشک» (بدون صفحهٔ جداگانهٔ کاربران).
+            $accountCreated = self::maybeCreateDoctorAccount($fields, $generated);
+            if (($accountCreated['error'] ?? '') !== '') {
+                self::backWithError(0, 'خطا: ' . $accountCreated['error']);
+            }
+            if (!empty($accountCreated['wp_user_id'])) {
+                $fields['wp_user_id'] = (int) $accountCreated['wp_user_id'];
+            }
+
             if ($fields['wp_user_id'] !== null && $repo->isUserLinked((int) $fields['wp_user_id'])) {
                 self::backWithError(0, 'خطا: این کاربر وردپرس قبلاً به پزشک دیگری متصل است (پیوند باید ۱:۱ باشد).');
             }
             $newId = $repo->create($fields);
             App::audit()->log('CLINICIAN_CREATED', ['wp_user_id' => get_current_user_id()], 'clinician', $newId, null, null, ['full_name' => (string) $fields['full_name']]);
-            self::back($newId, 'پزشک ثبت شد — حالا برنامه هفتگی او را تنظیم کنید.');
+            $message = 'پزشک ثبت شد — حالا برنامه هفتگی او را تنظیم کنید.';
+            if (($accountCreated['generated'] ?? '') !== '') {
+                $message .= ' رمز یک‌بارهٔ حساب: ' . $accountCreated['generated'] . ' (فقط همین حالا نمایش داده می‌شود — آن را به پزشک بدهید.)';
+            }
+            self::back($newId, $message);
         } catch (\RuntimeException $e) {
             // Race انتساب ۱:۱ (UNIQUE 0007) — پیام فارسی، بدون Fatal
             self::backWithError($id, 'خطا: ' . $e->getMessage());
@@ -371,6 +405,15 @@ final class ClinicianAdminPage
         }
 
         try {
+            // پیش‌نمایش تأثیر (Chunk D) پیش از بازتولید — تا مدیر بداند چند اسلات خالی
+            // قرار است حذف/بازتولید شود و چند اسلات رزرو/Hold محافظت می‌شود (نه invalidate بی‌صدا).
+            $impact = App::scheduleService()->impact($cid);
+            $impactNote = sprintf(
+                ' — بازتولید %d اسلات خالی آینده؛ %d اسلات رزرو/Hold حفظ شد.',
+                (int) $impact['future_empty_slots'],
+                (int) $impact['future_reserved_slots']
+            );
+
             // کلید «ذخیره روز» همیشه schedule_id فعلی همان روز را دارد؛ تشخیص
             // update/create از وجود رکورد همان روز انجام می‌شود (u_sched_day).
             $existing = App::db()->fetchValue(
@@ -379,10 +422,10 @@ final class ClinicianAdminPage
             );
             if ($existing !== null) {
                 $service->update($userId, (int) $existing, $fields);
-                self::back($cid, 'برنامه روز ذخیره شد — Slotها بازتولید می‌شوند.');
+                self::back($cid, 'برنامه روز ذخیره شد — Slotها بازتولید می‌شوند.' . $impactNote);
             }
             $service->create($userId, $fields);
-            self::back($cid, 'روز به برنامه اضافه شد — Slotها بازتولید می‌شوند.');
+            self::back($cid, 'روز به برنامه اضافه شد — Slotها بازتولید می‌شوند.' . $impactNote);
         } catch (BookingException $e) {
             self::backWithError($cid, 'خطا: ' . $e->getMessage());
         }
@@ -476,6 +519,39 @@ final class ClinicianAdminPage
     }
 
     /**
+     * Chunk D — اگر در «افزودن پزشک» گزینهٔ ایجاد حساب انتخاب شده باشد، کاربر وردپرس را
+     * با نقش `cpms_doctor` از مسیر امن StaffManagementPage::upsertUser می‌سازد (بدون
+     * plaintext رمز در DB) و شناسهٔ آن را برای پیوند ۱:۱ برمی‌گرداند. اگر حساب انتخابی
+     * نباشد (یا کاربر موجود انتخاب شده باشد) کاری نمی‌کند.
+     *
+     * @param array<string, mixed> $fields پارامترها by-ref برای تنظیم later.
+     * @param string               $generated رمز یک‌بارهٔ تولیدی (by-ref).
+     *
+     * @return array{error?: string, wp_user_id?: int, generated?: string}
+     */
+    private static function maybeCreateDoctorAccount(array &$fields, string &$generated): array
+    {
+        if (empty($_POST['create_account'])) { // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce در guard
+            return [];
+        }
+        $in = [
+            'mode' => 'create',
+            'username' => isset($_POST['account_username']) ? sanitize_user(wp_unslash($_POST['account_username']), true) : '', // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+            'display_name' => (string) ($fields['full_name'] ?? ''),
+            'email' => isset($_POST['account_email']) ? sanitize_email(wp_unslash($_POST['account_email'])) : '', // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+            'role' => RolesAndCapabilities::ROLE_DOCTOR,
+            'password' => (string) wp_unslash($_POST['account_password'] ?? ''), // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+        ];
+        $result = StaffManagementPage::upsertUser($in, (int) get_current_user_id());
+        if (($result['error'] ?? '') !== '') {
+            return ['error' => $result['error']];
+        }
+        $generated = (string) ($result['generated'] ?? '');
+
+        return ['wp_user_id' => (int) ($result['user_id'] ?? 0), 'generated' => $generated];
+    }
+
+    /**
      * فهرست کاربران وردپرس برای Select اتصال (سقف ۵۰۰ — بدون ایمیل/هش).
      *
      * @return list<array{id: int, label: string}>
@@ -516,7 +592,7 @@ final class ClinicianAdminPage
     private static function redirect(int $clinicianId, string $message): never
     {
         set_transient(self::NOTICE_KEY, $message, 90);
-        $url = admin_url('tools.php?page=cpms-clinicians');
+        $url = admin_url('admin.php?page=cpms-clinicians');
         if ($clinicianId > 0) {
             $url .= '&clinician_id=' . $clinicianId;
         }

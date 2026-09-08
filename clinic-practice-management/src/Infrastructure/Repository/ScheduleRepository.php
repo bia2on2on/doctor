@@ -141,6 +141,38 @@ final class ScheduleRepository
     }
 
     /**
+     * تعداد Slotهای آیندهٔ «خالی» (بدون رزرو/Hold) یک پزشک — یعنی Slotهایی که در
+     * Regeneration (ADR-0004) حذف و بازتولید خواهند شد. برای نمایش تأثیر تغییر
+     * برنامه در UI (بدون invalidate بی‌صدا) استفاده می‌شود.
+     */
+    public function countFutureEmptySlots(int $clinicianId, string $fromDate): int
+    {
+        $value = $this->db->fetchValue(
+            'SELECT COUNT(*) FROM ' . $this->db->table('cpms_schedule_slots') .
+            ' WHERE clinician_id = %d AND slot_date > %s AND booked_count = 0 AND held_count = 0',
+            [$clinicianId, $fromDate]
+        );
+
+        return (int) $value;
+    }
+
+    /**
+     * تعداد Slotهای آیندهٔ «محافظت‌شده» (دارای رزرو یا Hold) یک پزشک — اینها هرگز
+     * در Regeneration حذف نمی‌شوند و به کاربر اطمینان می‌دهند تغییر برنامه، دادهٔ
+     * موجود را از بین نمی‌برد.
+     */
+    public function countFutureReservedSlots(int $clinicianId, string $fromDate): int
+    {
+        $value = $this->db->fetchValue(
+            'SELECT COUNT(*) FROM ' . $this->db->table('cpms_schedule_slots') .
+            ' WHERE clinician_id = %d AND slot_date > %s AND (booked_count > 0 OR held_count > 0)',
+            [$clinicianId, $fromDate]
+        );
+
+        return (int) $value;
+    }
+
+    /**
      * Regeneration (ADR-0004): حذف Slotهای آینده «خالی» (بدون رزرو/Hold) یک پزشک
      * تا بازتولید از برنامه جدید ممکن شود. Slotهای دارای Booking/Hold دست‌نخورده
      * می‌مانند (Snapshot/امانت داده).
