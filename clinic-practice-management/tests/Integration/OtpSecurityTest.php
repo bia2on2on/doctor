@@ -346,16 +346,23 @@ final class OtpSecurityTest extends WP_UnitTestCase
     }
 
     /**
-     * تأیید شماره برای کاربر *موجود* باید همان کاربر را بیابد، بدون ساخت کاربر تازه.
+     * معناشناسی واقعی Resolution: `resolveUser()` کاربر را **از مسیر رکورد
+     * بیمار** پیدا می‌کند (`cpms_patients` → `cpms_patient_user_links`).
+     * `createWpUser()` هیچ رکورد بیماری نمی‌سازد، پس کاربری که با ورود ساخته
+     * شده ولی رکورد بیمار ندارد، از این مسیر قابل بازیابی نیست.
+     *
+     * این عمدی است و با AD-14/Q2 هم‌راستاست: شمارهٔ موبایل به‌تنهایی کلید
+     * هویت نیست و Resolution هویت باید صریح باشد، نه ضمنی. بنابراین
+     * `verify_mobile` در این حالت `0` می‌دهد — و مهم‌تر: **باز هم چیزی
+     * نمی‌سازد**، که دقیقاً هدف OD-8 است.
      */
-    public function testVerifyMobileResolvesAnExistingUserWithoutCreatingOne(): void
+    public function testVerifyMobileWithoutPatientRecordResolvesToZeroAndStillCreatesNothing(): void
     {
         $mobile = '09121110004';
 
         $this->seedFor($mobile, '111004', OtpService::PURPOSE_LOGIN);
         $login = $this->service()->verify($mobile, '111004', OtpService::PURPOSE_LOGIN);
-        $userId = (int) $login['user_id'];
-        self::assertGreaterThan(0, $userId);
+        self::assertGreaterThan(0, (int) $login['user_id']);
 
         $before = $this->userCount();
 
@@ -363,8 +370,58 @@ final class OtpSecurityTest extends WP_UnitTestCase
         $verify = $this->service()->verify($mobile, '111005', OtpService::PURPOSE_VERIFY_MOBILE);
 
         self::assertSame($before, $this->userCount(), 'نباید کاربر تازه‌ای ساخته شود.');
-        self::assertSame($userId, (int) $verify['user_id'], 'باید همان کاربر موجود پیدا شود.');
+        self::assertSame(0, (int) $verify['user_id'], 'بدون رکورد بیمار، Resolution به کاربر نمی‌رسد.');
         self::assertFalse($verify['is_new_user']);
         self::assertFalse($verify['session_issued']);
+    }
+
+    /**
+     * و وقتی زنجیرهٔ بیمار⇄کاربر واقعاً وجود دارد، `verify_mobile` باید همان
+     * کاربر موجود را بیابد — بدون ساخت هیچ چیز.
+     */
+    public function testVerifyMobileResolvesTheLinkedUserOfAnExistingPatient(): void
+    {
+        $mobile = '09121110006';
+        $db = $this->dbh();
+        $now = $db->nowUtcSql();
+
+        $userId = self::factory()->user->create(['role' => 'cpms_patient']);
+        $db->insert('cpms_patients', [
+            'clinic_id' => 1,
+            'mrn' => 'OD8-' . substr((string) $userId, -6),
+            'first_name' => 'تست',
+            'last_name' => 'OD8',
+            'mobile' => MobileValidator::normalize($mobile),
+            'status' => 'active',
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+        $patientId = (int) $db->wpdb_last_insert_id();
+        $db->insert('cpms_patient_user_links', [
+            'clinic_id' => 1,
+            'patient_id' => $patientId,
+            'wp_user_id' => $userId,
+            'mobile_at_link' => MobileValidator::normalize($mobile),
+            'is_primary' => 1,
+            'linked_at' => $now,
+        ]);
+
+        $before = $this->userCount();
+        $linksBefore = (int) $db->fetchValue(
+            'SELECT COUNT(*) FROM ' . $db->table('cpms_patient_user_links')
+        );
+
+        $this->seedFor($mobile, '111006', OtpService::PURPOSE_VERIFY_MOBILE);
+        $verify = $this->service()->verify($mobile, '111006', OtpService::PURPOSE_VERIFY_MOBILE);
+
+        self::assertSame($userId, (int) $verify['user_id'], 'باید همان کاربر متصل پیدا شود.');
+        self::assertFalse($verify['is_new_user']);
+        self::assertFalse($verify['session_issued'], 'verify_mobile هرگز Session نمی‌دهد.');
+        self::assertSame($before, $this->userCount(), 'نباید کاربری ساخته شود.');
+        self::assertSame(
+            $linksBefore,
+            (int) $db->fetchValue('SELECT COUNT(*) FROM ' . $db->table('cpms_patient_user_links')),
+            'نباید لینک تازه‌ای ساخته شود.'
+        );
     }
 }
