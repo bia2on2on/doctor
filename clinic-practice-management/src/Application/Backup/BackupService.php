@@ -147,8 +147,14 @@ final class BackupService
         if ($raw === null) {
             return null;
         }
-        $manifestShaOk = @file_get_contents($dir . '/manifest.json.sha256') === false
-            || trim((string) @file_get_contents($dir . '/manifest.json.sha256')) === hash_file('sha256', $dir . '/manifest.json');
+        // Phase 1A — Fail-Closed: پیش از این، «نبودِ» فایل هش، برابر
+        // «سالم» تفسیر می‌شد (`=== false ||`). یعنی برای پنهان کردن
+        // دستکاری مانیفست کافی بود مهاجم فایل هش را پاک کند و بکاپ باز هم
+        // `ok_quick` گزارش می‌شد. حالا نبودِ فایل هش = corrupt.
+        $expectedSha = @file_get_contents($dir . '/manifest.json.sha256');
+        $manifestShaOk = is_string($expectedSha)
+            && trim($expectedSha) !== ''
+            && hash_equals(trim($expectedSha), (string) hash_file('sha256', $dir . '/manifest.json'));
         // شناسهٔ داخل مانیفست باید با نام پوشه یکی باشد (جابه‌جایی/دستکاری مانیفست)
         $idMatches = (string) ($raw['backup_id'] ?? '') === $backupId;
         // Quick check (ارزان برای لیست) — تأیید کامل هش فایل‌ها = verifyBackup()

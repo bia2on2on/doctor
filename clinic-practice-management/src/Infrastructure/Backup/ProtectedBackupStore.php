@@ -20,6 +20,16 @@ final class ProtectedBackupStore
 {
     private const GUARD_HTACCESS = "# CPMS protected backups — direct access denied\nRequire all denied\n<IfModule !mod_authz_core.c>\nDeny from all\n</IfModule>\n";
 
+    /**
+     * گارد IIS — معادل .htaccess.
+     */
+    private const GUARD_WEBCONFIG = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<configuration>\n  <system.webServer>\n    <authorization>\n      <deny users=\"*\" />\n    </authorization>\n  </system.webServer>\n</configuration>\n";
+
+    /**
+     * یادداشت راه‌اندازی — nginx فایل .htaccess را نادیده می‌گیرد.
+     */
+    private const GUARD_README = "CPMS protected backups\n\nThis directory contains full database dumps and clinical files.\nIt must never be reachable over HTTP.\n\nApache/IIS: .htaccess and web.config here already deny access.\nnginx IGNORES .htaccess. Add to the server block:\n\n    location ^~ /wp-content/cpms-backups/ { deny all; return 404; }\n\nBetter: keep backups outside the document root entirely.\n";
+
     public function __construct(private readonly string $basePath)
     {
     }
@@ -53,6 +63,30 @@ final class ProtectedBackupStore
         if (!is_file($idx)) {
             @file_put_contents($idx, "<?php\n// silence\n");
         }
+        // Phase 1A: یک بکاپ کاملِ پایگاه داده در دسترس مستقیم HTTP یک
+        // نشت تمام‌عیار است و `.htaccess` روی nginx خوانده نمی‌شود.
+        $webConfig = $this->basePath . '/web.config';
+        if (!is_file($webConfig)) {
+            @file_put_contents($webConfig, self::GUARD_WEBCONFIG);
+        }
+        $readme = $this->basePath . '/README-SECURITY.txt';
+        if (!is_file($readme)) {
+            @file_put_contents($readme, self::GUARD_README);
+        }
+    }
+
+    /**
+     * آیا ریشهٔ بکاپ داخل DocumentRoot است؟ (هشدار مدیریتی)
+     */
+    public function isInsideWebRoot(): bool
+    {
+        $root = defined('ABSPATH') ? @realpath((string) ABSPATH) : false;
+        $base = @realpath($this->basePath);
+        if ($root === false || $base === false) {
+            return false;
+        }
+
+        return str_starts_with($base, rtrim($root, '/') . '/');
     }
 
     /**
