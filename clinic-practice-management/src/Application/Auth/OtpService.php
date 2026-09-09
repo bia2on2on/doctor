@@ -141,7 +141,9 @@ final class OtpService
         $sent = false;
         $retryEnqueued = false;
         try {
+            // OTP identity-level است (AD-15) — clinic صریحاً از Settings (configured-clinic)
             $res = $this->sms->sendEvent(
+                $this->settings->clinicId(),
                 SmsEvents::OTP,
                 $mobile,
                 ['otp_code' => $code],

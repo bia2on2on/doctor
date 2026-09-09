@@ -290,6 +290,7 @@ final class VisitService
 
             if ($event === 'call') {
                 $this->notifications->publishToStaff(
+                    (int) $visit['clinic_id'],
                     NotificationEvents::QUEUE_CALLED,
                     [
                         'patient_name' => $patientName !== '' ? $patientName : 'بیمار',
@@ -302,6 +303,7 @@ final class VisitService
                 );
             } elseif ($event === 'invoice_ready') {
                 $this->notifications->publishToStaff(
+                    (int) $visit['clinic_id'],
                     NotificationEvents::QUEUE_READY_PAYMENT,
                     ['patient_name' => $patientName !== '' ? $patientName : 'بیمار'],
                     'queue:pay:v' . (int) $visit['id'],

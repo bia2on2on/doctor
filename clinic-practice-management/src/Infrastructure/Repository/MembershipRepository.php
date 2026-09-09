@@ -83,6 +83,23 @@ final class MembershipRepository {
     }
 
     /**
+     * شناسهٔ کاربران دارای عضویت فعال در Clinic — indexable (idx_membership_role).
+     * منبع recipientهای broadcast اعلان staff (C6: publishToStaff clinic-scoped).
+     *
+     * @return list<int>
+     */
+    public function active_member_user_ids_for_clinic( int $clinic_id ): array {
+        $rows = $this->db->fetchAll(
+            'SELECT m.wp_user_id FROM ' . $this->db->table( 'cpms_clinic_memberships' ) . ' m'
+                . ' WHERE m.clinic_id = %d AND m.status = \'active\''
+                . ' ORDER BY m.wp_user_id ASC LIMIT 1000',
+            [ $clinic_id ]
+        );
+
+        return array_map( 'intval', array_column( is_array( $rows ) ? $rows : [], 'wp_user_id' ) );
+    }
+
+    /**
      * شناسهٔ Clinicهای دارای عضویت فعال برای کاربر — indexable (idx_membership_user).
      *
      * @return list<int>

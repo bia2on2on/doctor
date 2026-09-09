@@ -51,6 +51,8 @@ PATTERNS: dict[str, str] = {
     ),
     # store(..., 1, ...) — کلینیک فایل
     "call-store-clinic-1": r"->store\(\s*[^,]+,\s*1\s*,",
+    # lookup جدول clinics با id literal-1 (کشف C6-B): cpms_clinics ... WHERE id = 1
+    "clinics-table-id-1": r"cpms_clinics[^;]*?WHERE\s+id\s*=\s*1\b",
 }
 
 ALLOWED_CLASSES = {"non-tenant-literal", "migration-historical", "pilot-fixture", "test-fixture"}

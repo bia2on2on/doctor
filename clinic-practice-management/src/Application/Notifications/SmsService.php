@@ -63,6 +63,7 @@ final class SmsService
      * @throws DomainException | SmsTemplateException
      */
     public function sendEvent(
+        int $clinic_id,
         string $event,
         string $mobile,
         array $vars = [],
@@ -131,7 +132,7 @@ final class SmsService
         $maxAttempts = (int) ($advanced['retry_count'] ?? 3);
 
         $this->db->insert('cpms_sms_messages', [
-            'clinic_id' => 1,
+            'clinic_id' => $clinic_id,
             'event' => $event,
             'recipient' => $normalized,
             'message' => $text,
@@ -412,7 +413,7 @@ final class SmsService
             throw new SmsTemplateException('CLINIC_SMS_MESSAGE_INVALID', 'متن پیام باید ۱ تا ۳۵۰ نویسه باشد');
         }
 
-        $result = $this->sendEvent(self::EVENT_TEST, $normalized, [], null, null, inline: true, priority: 5, overrideText: $message);
+        $result = $this->sendEvent($this->settings->clinicId(), self::EVENT_TEST, $normalized, [], null, null, inline: true, priority: 5, overrideText: $message);
         $row = $this->fetchMessage((int) $result['message_id']);
 
         $this->auditSms('SMS_TEST_SENT', $userId, ['event' => self::EVENT_TEST, 'status' => (string) $result['status']]);
@@ -474,7 +475,7 @@ final class SmsService
             throw new SmsTemplateException('CLINIC_MOBILE_INVALID', 'شماره موبایل معتبر نیست');
         }
 
-        $result = $this->sendEvent($event, $normalized, $vars, null, null, inline: true, priority: 6);
+        $result = $this->sendEvent($this->settings->clinicId(), $event, $normalized, $vars, null, null, inline: true, priority: 6);
         $row = $this->fetchMessage((int) $result['message_id']);
 
         $this->auditSms('SMS_TEST_SENT', $userId, ['event' => $event, 'status' => (string) $result['status']]);

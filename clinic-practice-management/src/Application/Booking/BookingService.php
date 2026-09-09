@@ -747,10 +747,12 @@ final class BookingService
                         [(int) $appt['clinician_id']]
                     );
                     $clinic = (string) $this->db->fetchValue(
-                        'SELECT name FROM ' . $this->db->table('cpms_clinics') . ' WHERE id = 1 LIMIT 1'
+                        'SELECT name FROM ' . $this->db->table('cpms_clinics') . ' WHERE id = %d LIMIT 1',
+                        [(int) $appt['clinic_id']]
                     );
                     $patientName = trim((string) $patient['first_name'] . ' ' . (string) $patient['last_name']);
                     $this->notifications->publishToPatient(
+                        (int) $appt['clinic_id'],
                         (int) $appt['patient_id'],
                         NotificationEvents::APPT_CANCELLED,
                         [
@@ -979,7 +981,8 @@ final class BookingService
                 [(int) $appt['clinician_id']]
             );
             $clinic = (string) $this->db->fetchValue(
-                'SELECT name FROM ' . $this->db->table('cpms_clinics') . ' WHERE id = 1 LIMIT 1'
+                'SELECT name FROM ' . $this->db->table('cpms_clinics') . ' WHERE id = %d LIMIT 1',
+                [(int) $appt['clinic_id']]
             );
             $patient = $this->patients->find((int) $appt['patient_id']);
             $patientName = $patient !== null
@@ -998,6 +1001,7 @@ final class BookingService
             ];
 
             $this->sms->sendEvent(
+                (int) $appt['clinic_id'],
                 $event,
                 $mobile,
                 $vars,
@@ -1009,6 +1013,7 @@ final class BookingService
             // شکست SMS/اعلان گردش‌کار را خراب نمی‌کند (try بیرونی).
             if ($this->notifications !== null) {
                 $this->notifications->publishToPatient(
+                    (int) $appt['clinic_id'],
                     (int) $appt['patient_id'],
                     $this->internalEventForSms($event),
                     $vars,

@@ -564,6 +564,7 @@ final class App
             $notifications = new NotificationService(
                 self::db(),
                 new NotificationRepository(self::db()),
+                new MembershipRepository(self::db()),
                 self::settings(),
                 self::op()
             );

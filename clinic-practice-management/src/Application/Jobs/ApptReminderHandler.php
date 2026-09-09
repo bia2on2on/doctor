@@ -43,12 +43,14 @@ final class ApptReminderHandler
         $tomorrow = gmdate('Y-m-d', strtotime($today . ' +1 day'));
         $reminded = 0;
 
+        // C6: اسکن due-work سیستمی است — بدون predicate کلینیک؛ هر نوبت
+        // clinic خودش را حمل می‌کند و اعلان/SMS با همان clinic ساخته می‌شود.
         $rows = $this->db->fetchAll(
-            'SELECT a.id, a.patient_id, a.slot_date, a.slot_time, a.clinician_id,
+            'SELECT a.id, a.clinic_id, a.patient_id, a.slot_date, a.slot_time, a.clinician_id,
                     p.first_name, p.last_name, p.mobile
              FROM ' . $this->db->table('cpms_appointments') . ' a
              JOIN ' . $this->db->table('cpms_patients') . ' p ON p.id = a.patient_id
-             WHERE a.clinic_id = 1 AND a.status = %s AND a.slot_date IN (%s, %s)
+             WHERE a.status = %s AND a.slot_date IN (%s, %s)
              ORDER BY a.id ASC LIMIT %d',
             ['confirmed', $today, $tomorrow, self::LIMIT]
         );
@@ -64,6 +66,7 @@ final class ApptReminderHandler
             try {
                 if ($smsOpen) {
                     $this->sms->sendEvent(
+                        (int) $row['clinic_id'],
                         SmsEvents::APPT_REMINDER,
                         (string) $row['mobile'],
                         $vars,
@@ -72,6 +75,7 @@ final class ApptReminderHandler
                     );
                 }
                 $fresh = $this->notifications->publishToPatient(
+                    (int) $row['clinic_id'],
                     (int) $row['patient_id'],
                     \ClinicCore\Domain\Notifications\NotificationEvents::APPT_REMINDER,
                     $vars,
@@ -120,7 +124,8 @@ final class ApptReminderHandler
             [(int) $row['clinician_id']]
         );
         $clinic = (string) $this->db->fetchValue(
-            'SELECT name FROM ' . $this->db->table('cpms_clinics') . ' WHERE id = 1 LIMIT 1'
+            'SELECT name FROM ' . $this->db->table('cpms_clinics') . ' WHERE id = %d LIMIT 1',
+            [(int) $row['clinic_id']]
         );
         $patientName = trim((string) $row['first_name'] . ' ' . (string) $row['last_name']);
 

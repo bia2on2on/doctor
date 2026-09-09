@@ -6,6 +6,7 @@ namespace ClinicCore\Application\Reports;
 
 use ClinicCore\Application\Notifications\NotificationService;
 use ClinicCore\Auth\RolesAndCapabilities;
+use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Notifications\NotificationEvents;
 use ClinicCore\Domain\Time\Jalali;
 use ClinicCore\Infrastructure\Audit\AuditLogger;
@@ -122,6 +123,7 @@ final class ExportService
 
         // «فایل + اعلان» — payload اعلان مالکیت/مسیر/انقضا را حمل می‌کند
         $notifId = $this->notifications->publishToUser(
+            App::scope()->clinicId,
             $actorUserId,
             NotificationEvents::REPORT_EXPORT_READY,
             [
@@ -174,7 +176,7 @@ final class ExportService
     {
         $this->requireCap($actorUserId, RolesAndCapabilities::EXPORT, 'خروجی گرفتن از گزارش');
 
-        $rows = $this->notificationRows->forUser($actorUserId, false, 100, 0, NotificationEvents::REPORT_EXPORT_READY);
+        $rows = $this->notificationRows->forUser(App::scope()->clinicId, $actorUserId, false, 100, 0, NotificationEvents::REPORT_EXPORT_READY);
 
         return [
             'exports' => array_map(fn (array $row): array => $this->presentExport($row), $rows),

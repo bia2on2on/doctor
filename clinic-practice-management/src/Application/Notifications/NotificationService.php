@@ -4,10 +4,11 @@ declare(strict_types=1);
 
 namespace ClinicCore\Application\Notifications;
 
-use ClinicCore\Auth\RolesAndCapabilities;
+use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Notifications\NotificationEvents;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Logging\OpLogger;
+use ClinicCore\Infrastructure\Repository\MembershipRepository;
 use ClinicCore\Infrastructure\Repository\NotificationRepository;
 use ClinicCore\Settings\Settings;
 use Throwable;
@@ -32,6 +33,7 @@ final class NotificationService
     public function __construct(
         private readonly CpmsDb $db,
         private readonly NotificationRepository $notifications,
+        private readonly MembershipRepository $memberships,
         private readonly Settings $settings,
         private readonly OpLogger $op
     ) {
@@ -49,6 +51,7 @@ final class NotificationService
      * @return int تعداد اعلان‌های ثبت‌شده (جدید)
      */
     public function publishToStaff(
+        int $clinic_id,
         string $event,
         array $vars,
         ?string $dedupeBase,
@@ -56,8 +59,9 @@ final class NotificationService
         int $excludeUserId = 0
     ): int {
         $created = 0;
-        foreach ($this->staffUsersWithCapability($capability, $excludeUserId) as $userId) {
+        foreach ($this->staffUsersWithCapability($clinic_id, $capability, $excludeUserId) as $userId) {
             if ($this->insertNotification(
+                $clinic_id,
                 ['recipient_wp_user_id' => $userId],
                 $event,
                 $vars,
@@ -75,9 +79,10 @@ final class NotificationService
      *
      * @param array<string, string> $vars
      */
-    public function publishToPatient(int $patientId, string $event, array $vars, ?string $dedupeKey): ?int
+    public function publishToPatient(int $clinic_id, int $patientId, string $event, array $vars, ?string $dedupeKey): ?int
     {
         return $this->insertNotification(
+            $clinic_id,
             ['recipient_patient_id' => $patientId],
             $event,
             $vars,
@@ -90,9 +95,10 @@ final class NotificationService
      *
      * @param array<string, string> $vars
      */
-    public function publishToUser(int $wpUserId, string $event, array $vars, ?string $dedupeKey): ?int
+    public function publishToUser(int $clinic_id, int $wpUserId, string $event, array $vars, ?string $dedupeKey): ?int
     {
         return $this->insertNotification(
+            $clinic_id,
             ['recipient_wp_user_id' => $wpUserId],
             $event,
             $vars,
@@ -119,13 +125,15 @@ final class NotificationService
      */
     public function inbox(int $actorUserId, bool $unreadOnly, int $limit, int $sinceId = 0, ?string $template = null): array
     {
-        $patientId = $this->linkedPatientId($actorUserId);
-        if ($patientId !== null) {
-            $rows = $this->notifications->forPatient($patientId, $unreadOnly, $limit, $sinceId);
-            $unread = $this->notifications->unreadCountForPatient($patientId);
+        $link = $this->linkedPatient($actorUserId);
+        if ($link !== null) {
+            $clinicId = (int) $link['clinic_id'];
+            $rows = $this->notifications->forPatient($clinicId, (int) $link['patient_id'], $unreadOnly, $limit, $sinceId);
+            $unread = $this->notifications->unreadCountForPatient($clinicId, (int) $link['patient_id']);
         } else {
-            $rows = $this->notifications->forUser($actorUserId, $unreadOnly, $limit, $sinceId, $template);
-            $unread = $this->notifications->unreadCountForUser($actorUserId);
+            $clinicId = App::scope()->clinicId;
+            $rows = $this->notifications->forUser($clinicId, $actorUserId, $unreadOnly, $limit, $sinceId, $template);
+            $unread = $this->notifications->unreadCountForUser($clinicId, $actorUserId);
         }
 
         return [
@@ -141,15 +149,18 @@ final class NotificationService
      */
     public function since(int $actorUserId, int $sinceId): array
     {
-        $patientId = $this->linkedPatientId($actorUserId);
-        if ($patientId !== null) {
-            $rows = $this->notifications->forPatient($patientId, false, 50, $sinceId);
-            $lastId = $this->notifications->lastIdForPatient($patientId);
-            $unread = $this->notifications->unreadCountForPatient($patientId);
+        $link = $this->linkedPatient($actorUserId);
+        if ($link !== null) {
+            $clinicId = (int) $link['clinic_id'];
+            $patientId = (int) $link['patient_id'];
+            $rows = $this->notifications->forPatient($clinicId, $patientId, false, 50, $sinceId);
+            $lastId = $this->notifications->lastIdForPatient($clinicId, $patientId);
+            $unread = $this->notifications->unreadCountForPatient($clinicId, $patientId);
         } else {
-            $rows = $this->notifications->forUser($actorUserId, false, 50, $sinceId);
-            $lastId = $this->notifications->lastIdForUser($actorUserId);
-            $unread = $this->notifications->unreadCountForUser($actorUserId);
+            $clinicId = App::scope()->clinicId;
+            $rows = $this->notifications->forUser($clinicId, $actorUserId, false, 50, $sinceId);
+            $lastId = $this->notifications->lastIdForUser($clinicId, $actorUserId);
+            $unread = $this->notifications->unreadCountForUser($clinicId, $actorUserId);
         }
 
         // قدیمی→جدید تا کلاینت آخرین id را راحت نگه دارد
@@ -167,11 +178,11 @@ final class NotificationService
      */
     public function lastId(int $actorUserId): int
     {
-        $patientId = $this->linkedPatientId($actorUserId);
+        $link = $this->linkedPatient($actorUserId);
 
-        return $patientId !== null
-            ? $this->notifications->lastIdForPatient($patientId)
-            : $this->notifications->lastIdForUser($actorUserId);
+        return $link !== null
+            ? $this->notifications->lastIdForPatient((int) $link['clinic_id'], (int) $link['patient_id'])
+            : $this->notifications->lastIdForUser(App::scope()->clinicId, $actorUserId);
     }
 
     /**
@@ -250,7 +261,7 @@ final class NotificationService
      * @param array<string, string> $vars
      * @param array{recipient_wp_user_id?: int, recipient_patient_id?: int} $recipient
      */
-    private function insertNotification(array $recipient, string $event, array $vars, ?string $dedupeKey): ?int
+    private function insertNotification(int $clinic_id, array $recipient, string $event, array $vars, ?string $dedupeKey): ?int
     {
         if (!NotificationEvents::isKnown($event)) {
             return null;
@@ -276,7 +287,7 @@ final class NotificationService
             'vars' => $vars,
         ];
 
-        $id = $this->notifications->insert(array_merge($recipient, [
+        $id = $this->notifications->insert($clinic_id, array_merge($recipient, [
             'channel' => 'internal',
             'template' => $event,
             'payload_json' => (string) json_encode($payload, JSON_UNESCAPED_UNICODE),
@@ -295,15 +306,17 @@ final class NotificationService
      *
      * @return list<int>
      */
-    private function staffUsersWithCapability(string $capability, int $excludeUserId): array
+    /**
+     * گیرندگان broadcast staff — فقط اعضای فعالِ همان Clinic (C6:
+     * broadcast نقشِ سراسری WP نیست؛ منبع recipient = عضویت C4).
+     * بررسی capability با همان has_cap موجود انجام می‌شود (بدون API جدید).
+     *
+     * @return list<int>
+     */
+    private function staffUsersWithCapability(int $clinic_id, string $capability, int $excludeUserId): array
     {
-        $users = get_users([
-            'role__in' => [RolesAndCapabilities::ROLE_SECRETARY],
-            'fields' => ['ID'],
-        ]);
         $ids = [];
-        foreach ($users as $u) {
-            $userId = (int) $u->ID;
+        foreach ($this->memberships->active_member_user_ids_for_clinic($clinic_id) as $userId) {
             if ($userId === $excludeUserId || $userId === 0) {
                 continue;
             }
@@ -318,18 +331,22 @@ final class NotificationService
 
     /**
      * بیمارِ متصل به حساب WP (الگوی PatientService::me) — null برای Staff.
+     * لینک primary + کلینیکِ آن رکورد — clinic Inbox بیمار از خودِ رابطهٔ
+     * domain مشتق می‌شود (C6).
+     *
+     * @return array{patient_id: int, clinic_id: int}|null
      */
-    private function linkedPatientId(int $wpUserId): ?int
+    private function linkedPatient(int $wpUserId): ?array
     {
         $row = $this->db->fetchRow(
-            'SELECT l.patient_id FROM ' . $this->db->table('cpms_patient_user_links') . ' l
+            'SELECT l.patient_id, p.clinic_id FROM ' . $this->db->table('cpms_patient_user_links') . ' l
              JOIN ' . $this->db->table('cpms_patients') . ' p ON p.id = l.patient_id
              WHERE l.wp_user_id = %d AND p.status = %s
              ORDER BY l.is_primary DESC, l.id ASC LIMIT 1',
             [$wpUserId, 'active']
         );
 
-        return $row === null ? null : (int) $row['patient_id'];
+        return $row === null ? null : ['patient_id' => (int) $row['patient_id'], 'clinic_id' => (int) $row['clinic_id']];
     }
 
     /**

@@ -53,6 +53,10 @@ final class NotificationFlowTest extends WP_UnitTestCase
         $this->secretary2UserId = $this->makeUser('nf_sec2', 'cpms_secretary');
         $this->doctorUserId = $this->makeUser('nf_doc', 'cpms_doctor');
 
+        // C6: broadcast staff فقط به اعضای فعال Clinic می‌رود (membership C4)
+        App::membership_service()->create_membership(1, $this->secretaryUserId, 'cpms_secretary');
+        App::membership_service()->create_membership(1, $this->secretary2UserId, 'cpms_secretary');
+
         global $wpdb;
         $now = App::db()->nowUtcSql();
         $wpdb->query(
@@ -251,6 +255,7 @@ final class NotificationFlowTest extends WP_UnitTestCase
 
         // یادآوری queued (شب قبل) برای همین نوبت — مانند Job
         App::notificationService()->publishToPatient(
+            1,
             $this->patientId,
             'appt_reminder',
             $this->apptVars($slot['date']),
@@ -270,6 +275,7 @@ final class NotificationFlowTest extends WP_UnitTestCase
 
         // N-5 نسل جدید: بعد از cancel، publish با همان کلید → اعلان جدید (نه skip)
         $newId = App::notificationService()->publishToPatient(
+            1,
             $this->patientId,
             'appt_reminder',
             $this->apptVars($slot['date']),

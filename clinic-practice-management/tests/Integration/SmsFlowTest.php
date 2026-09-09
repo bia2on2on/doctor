@@ -55,8 +55,8 @@ final class SmsFlowTest extends WP_UnitTestCase
 
     public function testDedupePreventsDuplicateContextMessage(): void
     {
-        $first = $this->sms()->sendEvent('appointment_reminder', self::MOBILE, $this->apptVars(), 'appointment', 4242, inline: true);
-        $second = $this->sms()->sendEvent('appointment_reminder', self::MOBILE, $this->apptVars(), 'appointment', 4242, inline: true);
+        $first = $this->sms()->sendEvent(1, 'appointment_reminder', self::MOBILE, $this->apptVars(), 'appointment', 4242, inline: true);
+        $second = $this->sms()->sendEvent(1, 'appointment_reminder', self::MOBILE, $this->apptVars(), 'appointment', 4242, inline: true);
 
         $this->assertSame($first['message_id'], $second['message_id'], 'ارسال دوم باید Dedupe شود');
 
@@ -148,7 +148,7 @@ final class SmsFlowTest extends WP_UnitTestCase
 
     public function testLogsAreMaskedAndPaginated(): void
     {
-        $this->sms()->sendEvent('appointment_cancelled', self::MOBILE, $this->apptVars(), 'appointment', 777, inline: true);
+        $this->sms()->sendEvent(1, 'appointment_cancelled', self::MOBILE, $this->apptVars(), 'appointment', 777, inline: true);
 
         $logs = $this->sms()->logs(null, 1, 20);
 

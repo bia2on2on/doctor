@@ -126,11 +126,26 @@ OtpService:321، PatientIdentityService:23 (نقل قول قاعده)، ClinicSc
 3. **Jobهای reminder با clinic=1** — در نصب multi-clinic، نوبت‌های کلینیک‌های دیگر هرگز یادآوری نمی‌گرفتند (silent miss). فیکس: حذف predicate.
 4. **cancelQueuedForAppointment با clinic=1** — لغو اعلان‌های نوبت کلینیک دیگر بی‌اثر. فیکس: حذف predicate (appointment-id دقیق است).
 5. **audit_logs.clinic_id NOT NULL** اما eventهای system-level clinic ندارند → فیکس: Migration (nullable) + resolve صریح.
+6. **publishToStaff broadcast نقشِ سراسری** (کشف حین C6-B): `staffUsersWithCapability` با `get_users(role__in)` کار می‌کرد و بدون فیلتر کلینیک به منشی‌های همهٔ کلینیک‌ها اعلان می‌داد (leak در multi-clinic). فیکس (در C6-B): منبع recipient = عضویت فعال C4 (`MembershipRepository::active_member_user_ids_for_clinic` جدید) ∩ همان `has_cap` موجود؛ broadcast بدون عضویت = صفر اعلان (fail-safe). فیکسچر NotificationFlowTest عضویت ساخت.
+
+## وضعیت C6-B (اجراشده)
+
+**فیکس‌ها (۱۵ مورد اجرایی + ۱ الگوی جدید):**
+
+- `NotificationRepository`: `insert/forUser/forPatient/lastIdForUser/lastIdForPatient/unreadCountForUser/unreadCountForPatient` همگی clinic-first صریح؛ `dispatchQueued/cancelQueuedForAppointment/purgeArchived` بدون predicate کلینیک (batch سیستمی؛ appointment-id/created_at دقیق‌اند). باگ‌های ۳ و ۴ census فیکس شدند.
+- `NotificationService`: `publishToStaff/publishToPatient/publishToUser/insertNotification` clinic-first؛ `inbox/since/lastId` clinic را از رابطهٔ domain مشتق می‌کنند (بیمار لینک‌شده → `p.clinic_id`؛ staff → `App::scope()`).
+- `SmsService.sendEvent(int $clinic_id, …)` — clinic از caller؛ `testSend/testTemplate` از `Settings::clinicId()`.
+- `ApptReminderHandler`/`FollowUpReminderHandler`: حذف predicate کلینیک از اسکن due (باگ ۳)؛ `a.clinic_id`/`f.clinic_id` در SELECT؛ sendEvent/publishToPatient/vars با clinic ردیف.
+- Callerها: BookingService (cancel-flow publishToPatient + clinic-name ×2 + sendEvent + publish نتیجه) از `$appt['clinic_id']`؛ OtpService از `Settings::clinicId()` (identity-level، AD-15)؛ ExportService از `App::scope()` (publishToUser + listFor)؛ VisitService از `$visit['clinic_id']`.
+- تست‌ها: SmsFlowTest×3، NotificationFlowTest×2 — امضاها به‌روز شدند (clinic fixture = 1).
+- **الگوی جدید tripwire** (`clinics-table-id-1` — کشف حین C6-B): `cpms_clinics … WHERE id = 1` — ۴ مورد: سه‌تا در همین batch فیکس شدند (BookingService:984، هر دو handler)، ClinicalService:696 → C6-D.
+- شمارش tripwire بعد از C6-B: **57 violation** (56 از الگوهای اصلی [68−12 فیکس C6-B] + 1 الگوی جدید ClinicalService).
+- باگ ۶ census (broadcast سراسری) هم در همین batch فیکس شد: `NotificationService::staffUsersWithCapability` اکنون clinic-first است؛ ctor سرویس `MembershipRepository` گرفت و `App::notificationService()` wiring شد.
 
 ## Batch plan (اجرای اتمیک)
 
-- **C6-A** (این کامیت): census + tripwire (لوکال) + allowlist خالی. CI wiring در C6-F وقتی production=0.
-- **C6-B**: Notifications+SMS+Jobs (repo/service/handlers).
+- **C6-A** (کامیت `17d7d10`): census + tripwire (لوکال) + allowlist خالی. CI wiring در C6-F وقتی production=0.
+- **C6-B** ✅: Notifications+SMS+Jobs (repo/service/handlers) — جزئیات زیر.
 - **C6-C**: Booking+Schedule (slot-derived).
 - **C6-D**: Patients+Clinical+Visits+Files (scope/entity-derived).
 - **C6-E**: Reports+Export+Admin + Infra (Audit/Idempotency/Settings + Migrationها 0020/0021) + REST boundary (resolveScope×membership).
