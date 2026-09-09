@@ -231,6 +231,25 @@ migration foundation — بازنویسی/فرمت دستی کد در میانه
 4. **CI job مستقل** (`wpcs`) — سبک، بدون نیاز به MySQL؛ fail فقط روی نقض
    جدید. سطح قواعد در Phases بعدی به‌تدریج بالا می‌رود (بدون پایین آوردن).
 
+**وضعیت: پیاده‌سازی شد (کامیت `chore(quality): enforce WordPress coding
+standards on changed code`؛ بر مبنای SHA پیاده‌سازی f23e0c5 — همان
+کامیت پذیرش Migration Foundation).** جزئیات نهایی نسبت به پیشنهاد:
+- استراتژی = changed-files نسبت به `WPCS_BASELINE` (SHA کامل در env آن job
+  در `ci.yml`)؛ نه baseline-file و نه mass-format. bump آن دستی + مستند است.
+- وابستگی: ephemeral در CI با pin دقیق (`wpcs:3.1.0`،
+  `php_codesniffer:~3.11.0`) — مطابق الگوی موجود job integration
+  (نصب runtime PHPUnit)؛ چون repo بدون composer.lock است، هیچ تغییری در
+  dependency graph پروژه لازم نشد. runtime dependency جدیدی اضافه نشد.
+- `phpcs.xml.dist` = canonical: `WordPress-Extra` (شامل Core + sniffs
+  امنیتی/PreparedSQL/I18n) + text domain `cpms` + PrefixAllGlobals
+  (`cpms, CPMS`) + چهار اعمال‌نکردنِ مستندِ صرفاً سبکی (FileName — تعارض با
+  PSR-4؛ SpaceIndent — قاعدهٔ ۴-space پایگاه کد؛ Yoda؛ PrecisionAlignment).
+  هیچ sniff امنیتی غیرفعال نیست. scope = `src/`, `bin/`, فایل ورودی
+  افزونه، `uninstall.php` (تست‌ها فاز بعدی).
+- PHPCompatibilityWP فعلاً کنار گذاشته شد (مستند): حداقل PHP افزونه 8.1
+  است و ماتریس Unit 8.1–8.4 رفتار را واقعاً می‌آزماید؛ سود اضافی آن بر
+  این پروژه ناچیز و بار نصب/عدم‌قطعیت job بیشتر بود.
+
 ### ۸-۲ — قرارداد Migration Down: production فقط forward-only است
 
 **راستی‌آزمایی (grep روی src/ و bin/):** `MigrationRunner::rollbackOne()`

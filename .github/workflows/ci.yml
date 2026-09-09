@@ -157,3 +157,45 @@ jobs:
 
       - name: Run PHPStan (level from phpstan.neon)
         run: vendor/bin/phpstan analyse --no-progress
+
+  # ------------------------------------------------------------------
+  # WPCS — گیت رگرسیون استاندارد وردپرس روی کدِ تغییرکرده/جدید
+  # (drift-register §۸-۱): legacy سنجیده نمی‌شود؛ baseline از تاریخ
+  # پذیرش Migration Foundation شروع می‌کند و bump آن دستی + مستند است.
+  wpcs:
+    name: WPCS (changed code)
+    runs-on: ubuntu-latest
+    env:
+      WPCS_BASELINE: f23e0c50049f6f3e91f2425005ce8db08067af73
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # تاریخچهٔ کامل برای diff نسبت به baseline
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          coverage: none
+
+      - name: Install dependencies (WPCS — ephemeral و pin‌شده، الگوی job integration)
+        run: |
+          composer require --dev wp-coding-standards/wpcs:3.1.0 squizlabs/php_codesniffer:~3.11.0 \
+            --no-interaction --no-progress --with-all-dependencies
+          vendor/bin/phpcs -i
+
+      - name: Changed PHP files since baseline
+        run: |
+          git diff --name-only --diff-filter=ACMRT "${ env.WPCS_BASELINE }"...HEAD -- . > /tmp/all.txt || true
+          grep -E '\.php$' /tmp/all.txt | grep -Ev '(^|/)vendor/|(^|/)tests/|(^|/)node_modules/' | sed 's|^clinic-practice-management/||' > /tmp/wpcs-files.txt || true
+          if [ -s /tmp/wpcs-files.txt ]; then
+            echo "WPCS will check $(wc -l < /tmp/wpcs-files.txt) changed file(s):"
+            cat /tmp/wpcs-files.txt
+          else
+            echo 'WPCS: no in-scope PHP files changed since baseline — nothing to check.'
+          fi
+
+      - name: Run WPCS on changed files
+        run: |
+          if [ -s /tmp/wpcs-files.txt ]; then
+            vendor/bin/phpcs --standard=phpcs.xml.dist -s $(cat /tmp/wpcs-files.txt)
+          fi

@@ -1,0 +1,70 @@
+<?xml version="1.0"?>
+<ruleset name="CPMS">
+    <description>
+        WordPress Coding Standards — CPMS.
+
+        استراتژی (ADR در docs/drift-register.md §۸-۱):
+        گیتِ changed-code — CI فقط فایل‌های تغییرکرده/جدید از baseline را
+        می‌سنجد؛ legacy mass-format نمی‌شود و baseline bump دستی/مستند است.
+
+        Scope تولیدی: src/ و bin/ و فایل ورودی افزونه و uninstall.php.
+        تست‌ها (tests/) عمداً خارج از scope این گیت هستند (فاز بعدی).
+    </description>
+
+    <file>src</file>
+    <file>bin</file>
+    <file>clinic-practice-management.php</file>
+    <file>uninstall.php</file>
+
+    <!-- مسیرهای غیر تولیدی — هرگز سنجیده نشوند -->
+    <exclude-pattern>*/vendor/*</exclude-pattern>
+    <exclude-pattern>*/tests/*</exclude-pattern>
+    <exclude-pattern>*/node_modules/*</exclude-pattern>
+    <exclude-pattern>*\.min\.*</exclude-pattern>
+
+    <arg name="extensions" value="php"/>
+    <arg name="basepath" value="."/>
+    <arg name="colors"/>
+    <arg value="sp"/>
+
+    <!--
+        استاندارد پایه: WordPress-Extra (شامل WordPress-Core + sniffs
+        امنیتی: EscapeOutput / NonceVerification / PreparedSQL / I18n /
+        PrefixAllGlobals / DeprecatedFunctions و DB sniffs).
+        WordPress-Docs (الزام inline-docs) عمداً جزو گیت نیست.
+
+        اعمال‌نکردن‌های صرفاً سبکی — هرکدام دلیل معماری/یکدستی مستند:
+          - WordPress.Files.FileName: نام‌گذاری kebab-case وردپرس با
+            معماری autoload PSR-4 پروژه (ClinicCore\ → CamelCase) تعارض دارد.
+          - Generic.WhiteSpace.DisallowSpaceIndent: پایگاه کد ۴-space
+            (PHP-FIG) است؛ enforcing تب روی کدِ جدید، ناسازگار با کد مجاور می‌شود.
+          - WordPress.PHP.YodaConditions: سبک صرفاً صوری؛ پایگاه کد از آن
+            استفاده نمی‌کند و یکدستی با کد مجاور مقدم است.
+          - WordPress.WhiteSpace.PrecisionAlignment: سبک alignment جداولی
+            (=> های ردیف‌شده) در کل پایگاه کد رایج است؛ صرفاً صوری.
+        هیچ sniff امنیتی/SQL/i18n/naming غیرفعال نیست.
+    -->
+    <rule ref="WordPress-Extra">
+        <exclude name="WordPress.Files.FileName"/>
+        <exclude name="Generic.WhiteSpace.DisallowSpaceIndent"/>
+        <exclude name="WordPress.PHP.YodaConditions"/>
+        <exclude name="WordPress.WhiteSpace.PrecisionAlignment"/>
+    </rule>
+
+    <!-- i18n: text domain رسمی افزونه (هدر Plugin) -->
+    <rule ref="WordPress.WP.I18n">
+        <properties>
+            <property name="text_domain" type="array" value="cpms"/>
+        </properties>
+    </rule>
+
+    <!-- پیشوندهای مجاز سراسری‌های اعلان‌شده (ثابت‌ها/هوک‌ها/توابع global) -->
+    <rule ref="WordPress.NamingConventions.PrefixAllGlobals">
+        <properties>
+            <property name="prefixes" type="array" value="cpms, CPMS"/>
+        </properties>
+    </rule>
+
+    <!-- حداقل PHP پشتیبانی‌شدهٔ افزونه (هدر Requires PHP) -->
+    <config name="testVersion" value="8.1-"/>
+</ruleset>
