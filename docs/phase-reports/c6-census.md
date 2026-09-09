@@ -141,6 +141,8 @@ OtpService:321، PatientIdentityService:23 (نقل قول قاعده)، ClinicSc
 - **الگوی جدید tripwire** (`clinics-table-id-1` — کشف حین C6-B): `cpms_clinics … WHERE id = 1` — ۴ مورد: سه‌تا در همین batch فیکس شدند (BookingService:984، هر دو handler)، ClinicalService:696 → C6-D.
 - شمارش tripwire بعد از C6-B: **57 violation** (56 از الگوهای اصلی [68−12 فیکس C6-B] + 1 الگوی جدید ClinicalService).
 - باگ ۶ census (broadcast سراسری) هم در همین batch فیکس شد: `NotificationService::staffUsersWithCapability` اکنون clinic-first است؛ ctor سرویس `MembershipRepository` گرفت و `App::notificationService()` wiring شد.
+- **فیکس Class C بعد از CI** (کامیت `fb269ab`): rename جاافتادهٔ `linkedPatientId` در `markRead` (خطای undefined-method در Integration 34341027517) + دو caller قدیمی در `bin/pilot-smoke.php` (S5 + Pilot Gate SMS).
+- **سبز C6-B = HEAD `fb269ab`** (هر ۵ گیت): CI `34341646430` · Real-WP `34341646541` + `34341640968` · Pilot `34341640995` · Closure `34341641000`. (والد `711f870` → CI `34341027517` شکست Class C؛ بقیهٔ گیت‌های آن superseded.)
 
 ## Batch plan (اجرای اتمیک)
 
