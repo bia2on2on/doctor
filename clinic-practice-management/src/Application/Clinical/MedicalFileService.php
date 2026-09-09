@@ -4,10 +4,13 @@ declare(strict_types=1);
 
 namespace ClinicCore\Application\Clinical;
 
+use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Application\Scope\ScopeRequiredException;
+use ClinicCore\Application\Scope\TrustedClinicEstablisher;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Infrastructure\Audit\AuditLogger;
+use ClinicCore\Infrastructure\Repository\MembershipRepository;
 use ClinicCore\Infrastructure\Repository\MedicalFileRepository;
 use ClinicCore\Infrastructure\Storage\LocalFileStorage;
 use ClinicCore\Settings\Settings;
@@ -379,15 +382,41 @@ final class MedicalFileService
     }
 
     /**
-     * Clinic مورد اجازه — Phase 2 (Scope صریح درخواست یا Resolution سیستمی
-     * «تنها Clinic»). مبهم ⇒ `CLINIC_SCOPE_REQUIRED` بدون هیچ fallback پیش‌فرض.
+     * Clinic مورد اجازه برای مسیرهای کارکنان — Phase 2 (C6-F):
+     *  ۱) Scope صریحِ درخواست (مرز Trusted Clinic آن را از «هدر/پارامتر +
+     *     Membership فعال» تأیید و bind می‌کند)؛
+     *  ۲) Resolution سیستمی «تنها Clinic» (SystemClinicResolver) برای نصب
+     *     تک‌Clinic؛
+     *  ۳) مسیرهای skip-listed (`/files/{id}/stream`، `/patients/{id}/files`) که
+     *     به بیمار هم سرویس می‌دهند Scope bind نمی‌کنند ⇒ استقرار از Membership
+     *     فعالِ **یکتای** کاربر (TrustedClinicEstablisher — بدون SystemResolver).
+     * هیچ fallback «اولین Clinic» وجود ندارد؛ مبهم ⇒ `CLINIC_SCOPE_REQUIRED` (400).
+     * مسیر بیمار هرگز از اینجا نمی‌گذرد (Ownership‑محور است).
      */
-    private function trustedClinicId(): int
+    private function trustedClinicId(int $actorUserId): int
     {
+        $explicit = ScopeContext::tryGet();
+        if ($explicit !== null) {
+            return $explicit->clinicId;
+        }
+
         try {
             return App::scope()->clinicId;
-        } catch (ScopeRequiredException $e) {
-            throw ClinicalException::of($e->errorCode, $e->getMessage(), $e->httpStatus(), $e->getData());
+        } catch (ScopeRequiredException $first) {
+            // مسیر skip-listed (stream/list) هیچ Scope‌ای bind نمی‌کند؛ تنها
+            // جایگزینِ امن، استقرار از Membership فعالِ یکتاست (نه اولین Clinic).
+            try {
+                return (new TrustedClinicEstablisher(App::db(), new MembershipRepository(App::db())))
+                    ->establish($actorUserId, null)
+                    ->clinicId;
+            } catch (ScopeRequiredException) {
+                throw ClinicalException::of(
+                    $first->errorCode,
+                    $first->getMessage(),
+                    $first->httpStatus(),
+                    $first->getData()
+                );
+            }
         }
     }
 
@@ -398,7 +427,7 @@ final class MedicalFileService
      */
     private function assertStaffClinic(int $actorUserId, int $targetClinicId, string $resourceType, int $resourceId): void
     {
-        if ($targetClinicId !== $this->trustedClinicId()) {
+        if ($targetClinicId !== $this->trustedClinicId($actorUserId)) {
             $this->auditAndThrow($actorUserId, $resourceType, $resourceId, 'دسترسی به این فایل مجاز نیست');
         }
     }

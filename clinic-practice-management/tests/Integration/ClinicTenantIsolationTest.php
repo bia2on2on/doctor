@@ -274,6 +274,7 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         $fileB = $this->seedFile(self::CLINIC_B, $patientB, 'patient_visible', 'own-b7.pdf');
         $doctor = $this->seedStaff('cpms_doctor', [self::CLINIC_A, self::CLINIC_B]);
         wp_set_current_user($doctor);
+        $this->withClinicContext(self::CLINIC_B);
 
         $res = $this->call(
             'GET',
@@ -366,6 +367,7 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         $this->assertSame(200, $inA->get_status(), 'A→A: ' . $this->body($inA));
         $this->assertSame(404, $this->call('GET', self::NS . '/files/' . $fileB . '/stream', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_A])->get_status(), 'A نباید B را ببیند');
 
+        $this->withClinicContext(self::CLINIC_B);
         $this->assertSame(200, $this->call('GET', self::NS . '/files/' . $fileB . '/stream', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_B])->get_status(), 'B→B');
 
         $backToA = $this->call('GET', self::NS . '/files/' . $fileB . '/stream', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_A]);
@@ -403,9 +405,10 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         [$patientB] = $this->seedPatientWithUser(self::CLINIC_B, 'PatB12b');
         $foreign = $this->storagePath . '-outside.txt';
         file_put_contents($foreign, 'TOP-SECRET-OUTSIDE-ROOT');
-        $fileId = $this->insertAttachmentRow(self::CLINIC_B, $patientB, '../' . basename($foreign), 'leak.pdf');
+        $traversalUploader = $this->seedStaff('cpms_doctor', [self::CLINIC_B]);
+        $fileId = $this->insertAttachmentRow(self::CLINIC_B, $patientB, '../' . basename($foreign), 'leak.pdf', $traversalUploader);
 
-        wp_set_current_user($this->seedStaff('cpms_doctor', [self::CLINIC_B]));
+        wp_set_current_user($traversalUploader);
         $res = $this->call('GET', self::NS . '/files/' . $fileId . '/stream', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_B]);
 
         $this->assertSame(404, $res->get_status(), 'مسیر بیرون از ریشه نباید خوانده شود: ' . $this->body($res));
@@ -1038,21 +1041,22 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
     }
 
     /** درج ردیف attachment با storage_path دلخواه (فقط برای تست containment). */
-    private function insertAttachmentRow(int $clinicId, int $patientId, string $storagePath, string $filename): int
+    private function insertAttachmentRow(int $clinicId, int $patientId, string $storagePath, string $filename, int $uploadedBy): int
     {
         global $wpdb;
         $now = App::db()->nowUtcSql();
         $wpdb->query(
             $wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_medical_attachments
-                     (clinic_id, patient_id, original_filename, stored_filename, mime_type, file_size, storage_path, visibility, category, created_at)
-                 VALUES (%d, %d, %s, %s, "application/pdf", %d, %s, "patient_visible", "document", %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                     (clinic_id, patient_id, original_filename, stored_filename, mime_type, file_size, storage_path, visibility, category, uploaded_by_wp_user_id, created_at)
+                 VALUES (%d, %d, %s, %s, "application/pdf", %d, %s, "patient_visible", "document", %d, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 $clinicId,
                 $patientId,
                 $filename,
-                substr(hash('sha256', $filename), 0, 32) . '.pdf',
+                bin2hex(random_bytes(8)) . '.pdf',
                 1234,
                 $storagePath,
+                $uploadedBy,
                 $now
             )
         );
@@ -1071,6 +1075,21 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
      * Scope صریح انجام می‌دهد؛ اینجا فقط بعد از درخواست پاک می‌کنیم تا Scope
      * باقی‌مانده به تست/کلاس بعدی نرسد.
      */
+    /**
+     * ساخت Context موثقِ مشخص (شبیه‌سازی کاری که مرز Trusted Clinic برای مسیرهای
+     * غیرِ skip-listed می‌کند: establish از «Clinic درخواستی + Membership فعال»).
+     * برای `/files/{id}/stream` که عمداً skip-listed است (به بیمار هم سرویس
+     * می‌دهد) تنها راهِ مشروعِ دادن context به کاربر چند‑Clinic همین است.
+     */
+    private function withClinicContext(int $clinicId): void
+    {
+        $scope = (new \ClinicCore\Application\Scope\TrustedClinicEstablisher(
+            App::db(),
+            new \ClinicCore\Infrastructure\Repository\MembershipRepository(App::db())
+        ))->establish(get_current_user_id(), $clinicId);
+        App::replaceExplicitScope($scope);
+    }
+
     private function dispatch(string $method, string $route, array $body = [], array $headers = []): WP_REST_Response|\WP_Error
     {
         $request = new WP_REST_Request($method, $route);
@@ -1082,10 +1101,11 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
             $request->set_header($name, $value);
         }
 
-        // contextِ موثق باید از خودِ درخواست بیاید، نه از Scopeِ fixture
-        ScopeContext::clear();
-        \ClinicCore\Settings\Settings::flushCache();
-
+        // contextِ درخواست: برای مسیرهای غیرِ skip-listed مرز Trusted Clinic با
+        // «هدر/پارامتر + Membership تأییدشده» bind و سپس restore می‌کند؛ برای
+        // مسیرهای skip-listed همان Scope جاری (fixture یا withClinicContext)
+        // می‌ماند و Service خودش fail‑closed است. پاک کردن scope پیش از dispatch
+        // مسیرهای skip-listed را مصنوعاً بی‌context می‌کرد (خطای harness).
         try {
             return rest_do_request($request);
         } finally {
@@ -1105,9 +1125,6 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
             $request->set_header($name, $value);
         }
         $request->set_file_params(['file' => $this->uploadedFileArgs('probe.pdf', $this->pdfContent())]);
-
-        ScopeContext::clear();
-        \ClinicCore\Settings\Settings::flushCache();
 
         try {
             return rest_do_request($request);
