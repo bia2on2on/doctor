@@ -28,6 +28,7 @@ use ClinicCore\Application\Clinical\ClinicalService;
 use ClinicCore\Application\Clinical\MedicalFileService;
 use ClinicCore\Application\Finance\FinanceService;
 use ClinicCore\Application\Handwriting\HandwritingService;
+use ClinicCore\Application\Membership\MembershipService;
 use ClinicCore\Application\Patients\PatientService;
 use ClinicCore\Application\Jobs\ApptReminderHandler;
 use ClinicCore\Application\Jobs\BackupRunHandler;
@@ -73,6 +74,7 @@ use ClinicCore\Infrastructure\Queue\JobQueue;
 use ClinicCore\Infrastructure\Repository\AppointmentRepository;
 use ClinicCore\Infrastructure\Repository\ClinicalNoteRepository;
 use ClinicCore\Infrastructure\Repository\ClinicianRepository;
+use ClinicCore\Infrastructure\Repository\MembershipRepository;
 use ClinicCore\Infrastructure\Repository\FollowUpRepository;
 use ClinicCore\Infrastructure\Repository\HandwritingRepository;
 use ClinicCore\Infrastructure\Repository\InvoiceRepository;
@@ -451,6 +453,22 @@ final class App
         }
 
         return $repo;
+    }
+
+    /**
+     * سرویس عضویت (Phase 2 — C4 primitives / P2-D1).
+     */
+    public static function membershipService(): MembershipService
+    {
+        static $service = null;
+        if ($service === null) {
+            $service = new MembershipService(
+                self::db(),
+                new MembershipRepository(self::db())
+            );
+        }
+
+        return $service;
     }
 
     public static function clinicalService(): ClinicalService
