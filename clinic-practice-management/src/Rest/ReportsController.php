@@ -7,6 +7,7 @@ namespace ClinicCore\Rest;
 use ClinicCore\Application\Reports\ExportService;
 use ClinicCore\Application\Reports\ReportException;
 use ClinicCore\Application\Reports\ReportService;
+use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Auth\RolesAndCapabilities;
 use WP_Error;
 use WP_REST_Request;
@@ -153,6 +154,8 @@ final class ReportsController extends RestBase
             ]);
         } catch (ReportException $e) {
             return $this->error($e->errorCode, $e->httpStatus, $e->getMessage(), $e->data);
+        } catch (ScopeRequiredException $e) {
+            return $this->error($e->errorCode, $e->httpStatus(), $e->getMessage(), $e->data);
         } catch (\Throwable $e) {
             error_log('[CPMS][ReportsController] print unexpected: ' . get_class($e) . ': ' . $e->getMessage());
 
@@ -276,6 +279,8 @@ final class ReportsController extends RestBase
             return $this->success($fn(), $status ?? 200);
         } catch (ReportException $e) {
             return $this->error($e->errorCode, $e->httpStatus, $e->getMessage(), $e->data);
+        } catch (ScopeRequiredException $e) {
+            return $this->error($e->errorCode, $e->httpStatus(), $e->getMessage(), $e->data);
         } catch (\Throwable $e) {
             error_log('[CPMS][ReportsController] unexpected: ' . get_class($e) . ': ' . $e->getMessage());
 
