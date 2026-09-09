@@ -1043,7 +1043,7 @@ jobs:
           $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_clinicians') . ' (clinic_id, full_name, wp_user_id, is_active, created_at, updated_at) VALUES (1, %s, %d, 1, %s, %s)', 'دکتر ریسپانسیو (Synthetic)', $uid, $now, $now));
           $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_patients') . ' (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at) VALUES (1, %s, %s, %s, %s, %s, %s, %s)', 'SYN-RESP-001', 'بیمار', 'ریسپانسیو (Synthetic)', '09120008888', 'active', $now, $now));
           $pid = (int) $wpdb->insert_id;
-          $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_visits') . ' (clinic_id, clinician_id, patient_id, source, status, visit_date, check_in_at, waiting_since, active, created_at, updated_at) VALUES (1, 1, %d, %s, %s, %s, %s, %s, 1, %s, %s)', $pid, 'walk_in', 'waiting', gmdate('Y-m-d'), $now, $now, $now, $now));
+          $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_visits') . ' (clinic_id, location_id, clinician_id, patient_id, source, status, visit_date, check_in_at, waiting_since, active, created_at, updated_at) VALUES (1, (SELECT id FROM ' . $db->table('cpms_locations') . ' WHERE clinic_id = 1 AND is_primary = 1 LIMIT 1), 1, %d, %s, %s, %s, %s, %s, 1, %s, %s)', $pid, 'walk_in', 'waiting', gmdate('Y-m-d'), $now, $now, $now, $now));
           echo 'fixture: clinician+patient+waiting visit #' . (int) $wpdb->insert_id . "\n";
           PHPEOF
           WP_HOME="$WP_DIR" php /tmp/resp-fixture.php

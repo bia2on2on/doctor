@@ -111,8 +111,8 @@ $slotDate = gmdate('Y-m-d', time() + 86400);
 // INSERT IGNORE: idempotent نسبت به seed (شبکه ۹:۰۰+۲۰min را ساخته است)
 $wpdb->query($wpdb->prepare(
     'INSERT IGNORE INTO ' . $db->table('cpms_schedule_slots') . '
-         (clinic_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at)
-     VALUES (1, %d, %s, %s, 20, 1, 0, 0, 1, %s, %s)',
+         (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at)
+     VALUES (1, (SELECT id FROM ' . $db->table('cpms_locations') . ' WHERE clinic_id = 1 AND is_primary = 1 LIMIT 1), %d, %s, %s, 20, 1, 0, 0, 1, %s, %s)',
     $clinicianId, $slotDate, '10:00', $now, $now
 ));
 

@@ -196,7 +196,7 @@ jobs:
           ));
           $slotDate = gmdate('Y-m-d', time() + 86400);
           $wpdb->query($wpdb->prepare(
-          'INSERT IGNORE INTO ' . $db->table('cpms_schedule_slots') . ' (clinic_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at) VALUES (1, %d, %s, %s, 20, 1, 0, 0, 1, %s, %s)',
+          'INSERT IGNORE INTO ' . $db->table('cpms_schedule_slots') . ' (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at) VALUES (1, (SELECT id FROM ' . $db->table('cpms_locations') . ' WHERE clinic_id = 1 AND is_primary = 1 LIMIT 1), %d, %s, %s, 20, 1, 0, 0, 1, %s, %s)',
           $clinicianId, $slotDate, '10:00', $now, $now
           ));
 
@@ -498,7 +498,7 @@ jobs:
           $patientId = (int) $wpdb->insert_id;
           $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_patient_user_links') . ' (clinic_id, patient_id, wp_user_id, mobile_at_link, is_primary, linked_at) VALUES (1, %d, %d, %s, 1, %s)', $patientId, $patientUserId, '09120001234', $now));
           $slotDate = gmdate('Y-m-d', time() + 86400);
-          $wpdb->query($wpdb->prepare('INSERT IGNORE INTO ' . $db->table('cpms_schedule_slots') . ' (clinic_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at) VALUES (1, %d, %s, %s, 20, 1, 0, 0, 1, %s, %s)', $clinicianId, $slotDate, '10:00', $now, $now));
+          $wpdb->query($wpdb->prepare('INSERT IGNORE INTO ' . $db->table('cpms_schedule_slots') . ' (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at) VALUES (1, (SELECT id FROM ' . $db->table('cpms_locations') . ' WHERE clinic_id = 1 AND is_primary = 1 LIMIT 1), %d, %s, %s, 20, 1, 0, 0, 1, %s, %s)', $clinicianId, $slotDate, '10:00', $now, $now));
           $otp = App::otpService()->request('09120001234');
           ok('otp-request', isset($otp['expires_in']));
           $hold = App::bookingService()->hold($patientUserId, $clinicianId, $slotDate, '10:00');

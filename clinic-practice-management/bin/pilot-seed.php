@@ -48,8 +48,8 @@ for ($d = 0; $d < $days; $d++) {
         foreach ([$docA, $docB] as $ci => $clinicianId) {
             $wpdb->query($wpdb->prepare(
                 'INSERT INTO ' . $db->table('cpms_schedule_slots') . '
-                     (clinic_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at)
-                 VALUES (1, %d, %s, %s, 20, 4, 0, 0, 1, %s, %s)',
+                     (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at)
+                 VALUES (1, (SELECT id FROM ' . $db->table('cpms_locations') . ' WHERE clinic_id = 1 AND is_primary = 1 LIMIT 1), %d, %s, %s, 20, 4, 0, 0, 1, %s, %s)',
                 $clinicianId, $date, $time, $now, $now
             ));
             $slotIds[$ci][] = (int) $wpdb->insert_id;
@@ -84,7 +84,7 @@ for ($i = 0; $i < (int) ($patients * 1.5); $i++) {
     $clinicianId = ($i % 2 === 0) ? $docA : $docB;
     $slotRef = $slotIds[$i % 2][$i % count($slotIds[0])];
     $slot = $wpdb->get_row($wpdb->prepare(
-        'SELECT slot_date, slot_time FROM ' . $db->table('cpms_schedule_slots') . ' WHERE id = %d',
+        'SELECT slot_date, slot_time, location_id FROM ' . $db->table('cpms_schedule_slots') . ' WHERE id = %d',
         $slotRef
     ), ARRAY_A);
     if (!$slot) {
@@ -94,9 +94,10 @@ for ($i = 0; $i < (int) ($patients * 1.5); $i++) {
     $status = $apptStatuses[$i % count($apptStatuses)];
     $wpdb->query($wpdb->prepare(
         'INSERT INTO ' . $db->table('cpms_appointments') . '
-             (clinic_id, reference_code, clinician_id, patient_id, slot_id, slot_date, slot_time,
+             (clinic_id, location_id, reference_code, clinician_id, patient_id, slot_id, slot_date, slot_time,
               reason, status, booked_at, confirmed_at, created_at, updated_at)
-         VALUES (1, %s, %d, %d, %d, %s, %s, %s, %s, %s, %s, %s, %s)',
+         VALUES (1, %d, %s, %d, %d, %d, %s, %s, %s, %s, %s, %s, %s, %s)',
+        (int) $slot->location_id,
         sprintf('SYNAP-%05d', $i),
         $clinicianId,
         $patientId,
@@ -124,8 +125,8 @@ for ($i = 0; $i < (int) ($patients * 0.9); $i++) {
     $visitDate = ($i % 3 === 0) ? $today : gmdate('Y-m-d', time() - (($i % 21) + 1) * 86400);
     $wpdb->query($wpdb->prepare(
         'INSERT INTO ' . $db->table('cpms_visits') . '
-             (clinic_id, clinician_id, patient_id, source, status, visit_date, check_in_at, waiting_since, active, created_at, updated_at)
-         VALUES (1, %d, %d, %s, %s, %s, %s, %s, 1, %s, %s)',
+             (clinic_id, location_id, clinician_id, patient_id, source, status, visit_date, check_in_at, waiting_since, active, created_at, updated_at)
+         VALUES (1, (SELECT id FROM ' . $db->table('cpms_locations') . ' WHERE clinic_id = 1 AND is_primary = 1 LIMIT 1), %d, %d, %s, %s, %s, %s, %s, 1, %s, %s)',
         $clinicianId,
         $patientId,
         $i % 4 === 0 ? 'walk_in' : 'scheduled',
