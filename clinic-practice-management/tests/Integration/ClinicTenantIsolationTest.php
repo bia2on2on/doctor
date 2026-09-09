@@ -442,8 +442,8 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
     /** ۱۳) Today در context A فقط ویزیت‌های A را می‌دهد. */
     public function testSecretaryTodayReturnsOnlyTrustedClinicQueue(): void
     {
-        $visitA = $this->seedQueueRow(self::CLINIC_A, $this->locA);
-        $visitB = $this->seedQueueRow(self::CLINIC_B, $this->locB);
+        $visitA = $this->seedQueueRow(self::CLINIC_A, $this->locA, 1301)['visitId'];
+        $visitB = $this->seedQueueRow(self::CLINIC_B, $this->locB, 1302)['visitId'];
         $sec = $this->seedStaff('cpms_secretary', [self::CLINIC_A]);
         wp_set_current_user($sec);
 
@@ -457,8 +457,8 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
     /** ۱۴) Today در context B فقط ویزیت‌های B را می‌دهد (آینهٔ ۱۳). */
     public function testSecretaryTodayForClinicBReturnsOnlyB(): void
     {
-        $visitA = $this->seedQueueRow(self::CLINIC_A, $this->locA);
-        $visitB = $this->seedQueueRow(self::CLINIC_B, $this->locB);
+        $visitA = $this->seedQueueRow(self::CLINIC_A, $this->locA, 1303)['visitId'];
+        $visitB = $this->seedQueueRow(self::CLINIC_B, $this->locB, 1304)['visitId'];
         $sec = $this->seedStaff('cpms_secretary', [self::CLINIC_B]);
         wp_set_current_user($sec);
 
@@ -472,8 +472,8 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
     /** ۱۵) کاربر چند‑Clinic: هر context فقط دامنهٔ خودش (A→B→A بدون نشت). */
     public function testMultiClinicSecretaryQueueFollowsTrustedContext(): void
     {
-        $visitA = $this->seedQueueRow(self::CLINIC_A, $this->locA);
-        $visitB = $this->seedQueueRow(self::CLINIC_B, $this->locB);
+        $visitA = $this->seedQueueRow(self::CLINIC_A, $this->locA, 1305)['visitId'];
+        $visitB = $this->seedQueueRow(self::CLINIC_B, $this->locB, 1306)['visitId'];
         $sec = $this->seedStaff('cpms_secretary', [self::CLINIC_A, self::CLINIC_B]);
         wp_set_current_user($sec);
 
@@ -490,21 +490,24 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
     /** ۱۶) Today هیچ وابستگی به Clinic id=1 ندارد (کلید صریحاً غیر‌۱). */
     public function testQueueDoesNotDependOnClinicIdOne(): void
     {
-        $visitA = $this->seedQueueRow(self::CLINIC_A, $this->locA);
+        $visitA = $this->seedQueueRow(self::CLINIC_A, $this->locA, 1307)['visitId'];
+        // ردیفِ نمایه‌ساز در Clinic 1: اگر حدسِ clinic_id=1 در VisitService باقی
+        // باشد، Today دقیقاً دامنهٔ A نیست (ردیفِ Clinic 1 هم می‌آید).
+        $this->seedQueueRow(1, $this->primaryLocationOf(1), 1308);
         $sec = $this->seedStaff('cpms_secretary', [self::CLINIC_A]);
         wp_set_current_user($sec);
 
         $res = $this->call('GET', self::NS . '/secretary/today', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_A]);
         $this->assertSame(200, $res->get_status(), $this->body($res));
-        $this->assertContains($visitA, $this->queueIds($res), 'دادهٔ Clinic غیر‌۱ باید دیده شود');
+        $this->assertSame([$visitA], $this->queueIds($res), 'دادهٔ Clinic غیر‌۱ باید تنها دامنهٔ Today باشد (نه مختلط با Clinic 1)');
     }
 
     /** ۱۷) Organization دیگر در Today دیده نمی‌شود. */
     public function testQueueDoesNotCrossOrganizationBoundary(): void
     {
         $locC = $this->insertLocation(self::CLINIC_C, 'iso-loc-c');
-        $visitC = $this->seedQueueRow(self::CLINIC_C, $locC);
-        $visitA = $this->seedQueueRow(self::CLINIC_A, $this->locA);
+        $visitC = $this->seedQueueRow(self::CLINIC_C, $locC, 1315)['visitId'];
+        $visitA = $this->seedQueueRow(self::CLINIC_A, $this->locA, 1309)['visitId'];
         $sec = $this->seedStaff('cpms_secretary', [self::CLINIC_A]);
         wp_set_current_user($sec);
 
@@ -516,8 +519,8 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
     /** ۱۸) نبودِ Trusted Context روی مسیر صف ⇒ fail‑closed (نه «Clinic 1» ضمنی). */
     public function testQueueFollowsSoleMembershipNotHardcodedClinic(): void
     {
-        $visitA = $this->seedQueueRow(self::CLINIC_A, $this->locA);
-        $visitB = $this->seedQueueRow(self::CLINIC_B, $this->locB);
+        $visitA = $this->seedQueueRow(self::CLINIC_A, $this->locA, 1310)['visitId'];
+        $visitB = $this->seedQueueRow(self::CLINIC_B, $this->locB, 1311)['visitId'];
         $sec = $this->seedStaff('cpms_secretary', [self::CLINIC_B]);
         wp_set_current_user($sec);
 
@@ -531,7 +534,7 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
 
     public function testQueueWithoutTrustedContextFailsClosed(): void
     {
-        $this->seedQueueRow(self::CLINIC_A, $this->locA);
+        $this->seedQueueRow(self::CLINIC_A, $this->locA, 1312);
         $sec = $this->seedStaff('cpms_secretary', [self::CLINIC_A, self::CLINIC_B]);
         wp_set_current_user($sec);
 
@@ -545,8 +548,8 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
     /** ۱۹) Feed رئال‌تایم (/rt/queue) رویداد Clinic دیگر را نمی‌دهد. */
     public function testRtFeedDoesNotCrossClinic(): void
     {
-        $visitA = $this->seedQueueRow(self::CLINIC_A, $this->locA);
-        $visitB = $this->seedQueueRow(self::CLINIC_B, $this->locB);
+        $visitA = $this->seedQueueRow(self::CLINIC_A, $this->locA, 1313)['visitId'];
+        $visitB = $this->seedQueueRow(self::CLINIC_B, $this->locB, 1314)['visitId'];
         $this->insertVisitEvent($visitA);
         $this->insertVisitEvent($visitB);
         $sec = $this->seedStaff('cpms_secretary', [self::CLINIC_A]);
@@ -688,6 +691,23 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         );
         self::assertNotEquals(1, $id, '⚑ این فایل نباید به Clinic id=1 تکیه کند');
         App::resetScope();
+    }
+
+    /** Location primariesِ یک Clinic (برای ردیفِ نمایه‌ساز Clinic 1). */
+    private function primaryLocationOf(int $clinicId): int
+    {
+        global $wpdb;
+        $id = (int) $wpdb->get_var(
+            $wpdb->prepare(
+                'SELECT id FROM ' . $wpdb->prefix . 'cpms_locations WHERE clinic_id = %d ORDER BY is_primary DESC, id ASC LIMIT 1', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $clinicId
+            )
+        );
+        if ($id > 0) {
+            return $id;
+        }
+
+        return $this->insertLocation($clinicId, 'iso-loc-decoy-' . $clinicId);
     }
 
     private function insertLocation(int $clinicId, string $slug): int
@@ -868,13 +888,22 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         return $id;
     }
 
-    /** یک ردیف صف معتبر در همان Clinic. @return int visitId */
-    private function seedQueueRow(int $clinicId, int $locationId): int
+    /**
+     * یک ردیف صف معتبر در همان Clinic.
+     *
+     * @param int $tag شناسهٔ متمایزِ fixture — هر تست/Clinic بیمار و ویزیت خودش
+     *                 را می‌گیرد، وگرنه مقایسهٔ مجموعهٔ شناسه‌ها با دادهٔ سایر
+     *                 تست‌های همان Clinic ناپایدار می‌شود.
+     *
+     * @return array{visitId: int, clinicianId: int, patientId: int}
+     */
+    private function seedQueueRow(int $clinicId, int $locationId, int $tag): array
     {
-        $clinicianId = $this->insertClinician($clinicId, 0, 'Dr Queue ' . $clinicId);
-        $patientId = $this->seedPatient($clinicId, 'PQ' . $clinicId);
+        $clinicianId = $this->insertClinician($clinicId, 0, 'Dr Queue ' . $clinicId . '-' . $tag);
+        $patientId = $this->seedPatient($clinicId, 'PQ' . $clinicId . '-' . $tag);
+        $visitId = $this->seedVisit($clinicId, $locationId, $clinicianId, $patientId);
 
-        return $this->seedVisit($clinicId, $locationId, $clinicianId, $patientId);
+        return ['visitId' => $visitId, 'clinicianId' => $clinicianId, 'patientId' => $patientId];
     }
 
     /** رویداد صف (برای Feed/watermark) — join به visit همان Clinic را می‌دهد. */
@@ -1062,11 +1091,7 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
     private function resp(WP_REST_Response|\WP_Error $res): WP_REST_Response
     {
         if ($res instanceof \WP_Error) {
-            $this->fail(
-                'پاسخ WP_Error از REST (route ثبت‌نشده/خطای مرز): code=' . $res->get_error_code()
-                . ' msg=' . $res->get_error_message()
-                . ' server=' . (string) rest_get_server()->get_route_for_request(new WP_REST_Request('GET', self::NS . '/'))
-            );
+            $this->fail('پاسخ WP_Error از REST (route ثبت‌نشده/خطای مرز): ' . $res->get_error_code() . ' — ' . $res->get_error_message());
         }
 
         return $res;

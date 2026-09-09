@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Application\Clinical;
 
+use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Application\Visits\VisitService;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
@@ -75,11 +76,15 @@ final class ClinicalService
         $this->requireCap($actorUserId, RolesAndCapabilities::MEDICAL_READ, 'record');
 
         $visit = $this->requireVisit($visitId);
+        // C6-F: پروندهٔ کامل ویزیت هم Tenant-aware — ویزیت باید داخل Clinicِ
+        // context مجاز باشد (context = Scope صریحِ درخواست یا «تنها Clinic»؛
+        // مبهَم ⇒ 400 CLINIC_SCOPE_REQUIRED). رد ⇒ همان 404 امنِ «یافت نشد».
+        $this->assertVisitInActiveClinic($visit);
         $patient = $this->db->fetchRow(
             'SELECT * FROM ' . $this->db->table('cpms_patients') . ' WHERE id = %d LIMIT 1',
             [(int) $visit['patient_id']]
         );
-        if ($patient === null) {
+        if ($patient === null || (int) $patient['clinic_id'] !== (int) $visit['clinic_id']) {
             throw ClinicalException::of('CLINIC_NOT_FOUND', 'بیمار یافت نشد', 404);
         }
 
@@ -945,6 +950,27 @@ final class ClinicalService
         }
 
         return $visit;
+    }
+
+    /**
+     * C6-F: ویزیت باید متعلق به Clinicِ مورد اجازه باشد (Census: مسیرهای
+     * خواندنِ بدون predicate؛ همان قاعدهٔ PatientService/ClinicScope).
+     */
+    private function assertVisitInActiveClinic(array $visit): void
+    {
+        if ((int) $visit['clinic_id'] !== $this->trustedClinicId()) {
+            throw ClinicalException::of('CLINIC_NOT_FOUND', 'ویزیت یافت نشد', 404);
+        }
+    }
+
+    /** Clinic مجازِ جریان (Phase 2) — مبهَم ⇒ Fail‑Closed. */
+    private function trustedClinicId(): int
+    {
+        try {
+            return App::scope()->clinicId;
+        } catch (ScopeRequiredException $e) {
+            throw ClinicalException::of($e->errorCode, $e->getMessage(), $e->httpStatus(), $e->getData());
+        }
     }
 
     /**
