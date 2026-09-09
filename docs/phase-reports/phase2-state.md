@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **آخرین به‌روزرسانی** | بر مبنای SHA پیاده‌سازی `4289d89537c506fd2862da8b0a1bb9db7b166b02` (batch ترمیم Trusted REST؛ مبنای قبلی: `6e5d48c`) |
+| **آخرین به‌روزرسانی** | بر مبنای SHA پیاده‌سازی `4289d89537c506fd2862da8b0a1bb9db7b166b02` (batch ترمیم Trusted REST؛ مبنای قبلی: `6e5d48c`)؛ بازبینِ نقطهٔ ترمیم: `4606b15` (docs tip) |
 | **وضعیت Phase 2** | IN PROGRESS — C1..C5 done؛ C6 **ناقص** (Reports/Export/Pilot/Trusted‑REST boundary انجام؛ C6‑F و Tripwire‑CI و تصمیم باز route‌ها باقی است) |
 | **آخرین remote SHA سبزِ تأییدشده** | `4289d89` (هر ۵ گیت — ادامهٔ خطی `f88fcdc`؛ PR #12 OPEN DRAFT — ادغام ممنوع) |
 | **Schema** | `2026_09_09_0020` — فایل/تصویب 0021 وجود ندارد |
@@ -32,6 +32,23 @@
 - هم‌ترازی docs روی SHA بعدی نیز سبز است: CI `34389431689` · Real‑WP `34389425080` ·
   Pilot `34389425027` · Closure `34389425099` (۱ check‑run = success). این ارجاع برای
   «وضعیت گیت‌ها» است، نه مبنای وضعیت پیاده‌سازی؛ مبنای سندها همان `4289d89` است.
+- **بازبین batch ترمیم روی tip `4606b15` (sibling review — فقط docs):** CI `34390466560`
+  (۷ job سبز: WPCS · PHPStan · Unit×4 · Integration) · Real‑WP `34390462202` (prefix
+  `wp_` و `clinic_`) · Pilot `34390462154` · Closure `34390462224` — هر چهار run
+  `completed/success` با `head_sha` درست. PR #12 بی‌تغییر (head `f88fcdc`، draft،
+  `mergeable_state=blocked`)؛ PR #13 = دقیقاً delta ترمیم (`+456/−72`، ۷ کامیت،
+  `mergeable_state=clean`) — **هیچ merge/FF/close انجام نشد**. نکتهٔ پوشش: روی
+  `4606b15` رویداد `pull_request` فقط CI را اجرا کرد؛ سه گیت دیگر از رویداد `push`
+  روی همان SHA سبز شده‌اند.
+- **معنای چرخهٔ حیات WP (تصحیح باریکِ واژگان، بدون تغییر product):** `respond_to_request()`
+  استثنای مهار‌نشدۀ callback را به `WP_Error` تبدیل می‌کند و `rest_request_after_callbacks`
+  **پس از** آن اجرا می‌شود ⇒ restore در مسیر خطای callback هم انجام می‌شود؛ netِ
+  `shutdown` برای throw/fatal در سطح filter (مجاور بلوک try/catch) یا `exit()` لازم است.
+  شاهد قابل‌اجرا: `testErrorResponsePathStillRestoresScope` (restore در مسیر WP_Error)،
+  `testPendingPairDrainsAndNextRequestStillRestores` (safety‑net)،
+  `testPreExistingExplicitScopeSurvivesRequestAndRestoresAfterwards` (scope مشروع
+  job/system پاک نمی‌شود)، `testSequentialClinicRequestsDoNotLeakScope` (A→B/B→A)،
+  `testNestedRestDispatchRestoresOuterScope` (تودرتو) — سبز روی `0205089` (CI `34393642656`).
 
 ### سابقه (روی `6e5d48c` — C6 Reports+Export+Pilot)
 

@@ -673,6 +673,136 @@ final class RestTrustedClinicContextTest extends WP_UnitTestCase
         $this->assertNull(ScopeContext::tryGet(), 'هیچ نشتی از درخواست تودرتو به بیرون نمی‌ماند');
     }
 
+    // ================= C6-F (تفحصی) — طبقه‌بندی route‌ها: شواهد مالکیت Per‑Object =================
+    /*
+     * این دو تست «مشخصهٔ جداسازی مالکیت» را می‌سنجد، نه وضعیت فعلی؛ یعنی اگر
+     * قرمز شوند، نشتِ Cross‑Tenant کدِ Product است نه نقص تست (طبق §۹، شاهد
+     * حفظ می‌شود). مرجع کد:
+     *  - `ClinicalService::finalizePrescription` (src/Application/Clinical/ClinicalService.php:372)
+     *    با `PrescriptionRepository::findForUpdate` (src/Infrastructure/Repository/PrescriptionRepository.php:73)
+     *    — کوئری فقط `WHERE id = %d`، بدون `clinic_id`.
+     *  - `SmsService::logs` (src/Application/Notifications/SmsService.php:557)
+     *    — کوئری بدون فیلتر `clinic_id` در حالی که جدول ستون tenant دارد.
+     */
+
+    public function testStaffCannotFinalizePrescriptionOfAnotherClinic(): void
+    {
+        $this->insertClinic($this->clinicB, 'rest-ctx-rx-authz');
+        $this->seedVisitPair();
+        $doctor = $this->makeStaff('cpms_doctor');
+        cpms_test_seed_membership($doctor, $this->clinicA, 'cpms_doctor');
+        $clinicianA = $this->insertClinician($this->clinicA, $doctor, 'Dr RxAuthz');
+        wp_set_current_user($doctor);
+
+        // نسخه‌ای که متعلق به Clinic B است (بیمار و ویزیت B) — با INSERT صریح.
+        global $wpdb;
+        $now = App::db()->nowUtcSql();
+        $visitB = (int) $wpdb->get_var(
+            $wpdb->prepare(
+                'SELECT id FROM ' . $wpdb->prefix . 'cpms_visits WHERE clinic_id = %d ORDER BY id DESC LIMIT 1', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $this->clinicB
+            )
+        );
+        $this->assertGreaterThan(0, $visitB, 'پیش‌شرط: ویزیتِ Clinic B از seedVisitPair');
+        $patientB = (int) $wpdb->get_var(
+            $wpdb->prepare(
+                'SELECT patient_id FROM ' . $wpdb->prefix . 'cpms_visits WHERE id = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $visitB
+            )
+        );
+        $seq = random_int(100000, 9999999);
+        $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_prescriptions
+                     (clinic_id, prescription_number, visit_id, patient_id, clinician_id, status, is_patient_visible, created_at, updated_at)
+                 VALUES (%d, %s, %d, %d, %d, "draft", 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $this->clinicB,
+                'RX-B-' . $seq,
+                $visitB,
+                $patientB,
+                $clinicianA,
+                $now,
+                $now
+            )
+        );
+        $rxId = (int) $wpdb->insert_id;
+        $this->assertGreaterThan(0, $rxId);
+
+        $res = $this->dispatch(
+            'POST',
+            self::NS . '/prescriptions/' . $rxId . '/finalize',
+            [],
+            ['X-CPMS-Clinic-Id' => (string) $this->clinicA]
+        );
+
+        $finalized = (string) $wpdb->get_var(
+            $wpdb->prepare(
+                'SELECT status FROM ' . $wpdb->prefix . 'cpms_prescriptions WHERE id = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $rxId
+            )
+        );
+        $this->assertNotSame(
+            'finalized',
+            $finalized,
+            'C6‑F (Class A انتظار): نسخهٔ Clinic دیگر نهایی شد — status=' . $finalized
+                . ', http=' . $res->get_status()
+                . ', rx=' . $rxId . ' (clinic_id=' . $this->clinicB . '), actor clinic=' . $this->clinicA
+                . ' | شاهد: PrescriptionRepository::findForUpdate WHERE id-only'
+        );
+    }
+
+    public function testSmsLogsAreScopedToTheBoundClinic(): void
+    {
+        $this->insertClinic($this->clinicB, 'rest-ctx-sms-authz');
+        $manager = $this->makeStaff('cpms_manager');
+        cpms_test_seed_membership($manager, $this->clinicA, 'cpms_manager');
+        wp_set_current_user($manager);
+
+        global $wpdb;
+        $now = App::db()->nowUtcSql();
+        $seq = random_int(100000, 9999999);
+        foreach ([
+            ['clinic' => $this->clinicA, 'marker' => 'A' . $seq, 'mobile' => '0912' . sprintf('%07d', $seq % 10000000)],
+            ['clinic' => $this->clinicB, 'marker' => 'B' . $seq, 'mobile' => '0913' . sprintf('%07d', ($seq + 1) % 10000000)],
+        ] as $row) {
+            $wpdb->query(
+                $wpdb->prepare(
+                    'INSERT INTO ' . $wpdb->prefix . 'cpms_sms_messages
+                         (clinic_id, event, recipient, message, status, attempts, max_attempts, created_at, updated_at)
+                     VALUES (%d, %s, %s, %s, "SENT", 1, 3, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                    $row['clinic'],
+                    'reminder',
+                    $row['mobile'],
+                    'cpms-authz-' . $row['marker'],
+                    $now,
+                    $now
+                )
+            );
+            $this->assertGreaterThan(0, (int) $wpdb->insert_id, 'پیش‌شرط: درج ردیف SMS در ' . $row['marker']);
+        }
+
+        $res = $this->dispatch(
+            'GET',
+            self::NS . '/sms/logs',
+            ['per_page' => 100, 'page' => 1],
+            ['X-CPMS-Clinic-Id' => (string) $this->clinicA]
+        );
+        $this->assertSame(200, $res->get_status(), 'مسیر SMS logs باید برای manager دارای Cap باز باشد');
+        $data = (array) $res->get_data();
+        $items = (array) ($data['data']['items'] ?? []);
+        $flat = (string) json_encode($res->get_data(), JSON_UNESCAPED_UNICODE);
+
+        // Class D guard: اگر Envelope/ساختار پاسخ خوانده نشود، ادعای «نشت» بی‌معناست.
+        $this->assertIsArray($data['data'] ?? null, 'Envelope انتظار: {data:{items,total,…}} — پاسخ: ' . $flat);
+        $this->assertNotEmpty($items, 'هیچ ردیفی خوانده نشد (پیش‌شرط fixture یا Envelope) — پاسخ: ' . $flat);
+        $this->assertStringContainsString('cpms-authz-A' . $seq, $flat);
+        $this->assertStringNotContainsString(
+            'cpms-authz-B' . $seq,
+            $flat,
+            'ردیف Clinic دیگر نباید در لاگ SMS دیده شود (شماره موبایل/متن → PHI) — C6‑F'
+        );
+    }
+
     // ================= fixtures =================
 
     private function makeStaff(string $role): int

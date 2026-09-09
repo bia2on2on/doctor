@@ -216,8 +216,18 @@ OtpService:321، PatientIdentityService:23 (نقل قول قاعده)، ClinicSc
   عضویت tenant‑aware در Real‑WP — تست‌زیرساخت، نه provisioning محصول) ·
   `da72e1c` (restore تضمینی Scope پس از اثبات قابل‌اجرای نشت در مسیر استثنای handler) ·
   `4289d89` (پیش‌شرطِ تستِ شاهدِ non‑member‑staff).
+- **tip بازبینی‌شدهٔ همین batch:** `4606b15` (docs only، ادامهٔ خطی). گیت‌ها روی آن سبز:
+  CI `34390466560` · Real‑WP `34390462202` · Pilot `34390462154` · Closure `34390462224`؛
+  `4289d89` همچنان آخرین tipِ **پیاده‌سازیِ** ترمیم است (`da72e1c` آخرین تغییر product).
 - **سبز:** `4289d89` — CI `34388298772` · Real‑WP(push, wp_/clinic_) `34388294483` ·
   Pilot `34388294486` · Closure `34388294616`.
-- **هنوز در C6:** Tripwire→CI (نبود، باقی است) · C6‑F جامع (PARTIAL) · تصمیم باز
-  طبقه‌بندی route‌ها (D‑cases) · workflow صریحِ onboarding/عضویت staff (فاز بعد، نیازمند
-  تصمیم مالک). **0021 ساخته/تصویب نشد.**
+- **هنوز در C6:** Tripwire→CI (نبود، باقی است) · C6‑F جامع (PARTIAL؛ دو تست
+  «مشخصهٔ» مالکیت Per‑Object ثبت شد: نسخهٔ Clinic دیگر + لاگ SMS) · تصمیم باز
+  طبقه‌بندی route‌ها (D‑cases) · workflow صریحِ onboarding/عضویت staff.
+  بررسی بازبین: `MembershipService::create_membership()` تنها API ساخت عضویت است و
+  `App::membership_service()` در `src/` **هیچ فراخوانِ Production ندارد** (فقط تست‌ها؛
+  `CpmsSetupWizard` فقط Setting می‌نویسد و `StaffManagementPage` فقط نقش WP را
+  set/unset می‌کند — هیچ‌کدام ردیف عضویت نمی‌سازند). `setup.clinic.*` و «تنها یک
+  Clinic» به‌عنوان جبران استفاده نمی‌شود (AD‑13). مالکیت شکاف طبق
+  `docs/architecture/phase0.5-target-model.md` (foot‑note ۵: «انتساب نقش = ساخت
+  Membership ⇒ 1b»). **0021 ساخته/تصویب نشد.**
