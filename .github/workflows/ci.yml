@@ -177,9 +177,12 @@ jobs:
           php-version: '8.2'
           coverage: none
 
-      - name: Install dependencies (WPCS — ephemeral و pin‌شده، الگوی job integration)
+      - name: Install dependencies (WPCS — ephemeral؛ wpcs pin دقیق، phpcs از قید خود WPCS و فیلتر امنیتی composer)
         run: |
-          composer require --dev wp-coding-standards/wpcs:3.1.0 squizlabs/php_codesniffer:~3.11.0 \
+          # phpcs عمداً pin نمی‌شود: composer نسخه‌های دارای security advisory را
+          # از resolution حذف می‌کند (evidence: run 34315163722 — همهٔ 3.11.x
+          # رد شدند) و جدیدترین نسخهٔ سالمِ سازگار با wpcs:3.1.0 انتخاب می‌شود.
+          composer require --dev wp-coding-standards/wpcs:3.1.0 \
             --no-interaction --no-progress --with-all-dependencies
           vendor/bin/phpcs -i
 
