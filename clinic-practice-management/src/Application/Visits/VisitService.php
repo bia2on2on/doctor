@@ -150,13 +150,18 @@ final class VisitService
         $actorRole = 'secretary';
 
         return $this->db->transactional(function () use ($actorUserId, $actorRole, $patientId, $clinicianId, $meta): array {
-            $this->lockPatient($patientId);
-            $this->requireClinician($clinicianId);
+            $patient = $this->lockPatient($patientId);
+            $clinicId = $this->requireClinician($clinicianId);
+            // C6: بیمار و پزشک باید به یک کلینیک تعلق داشته باشند (verify سمت سرور)
+            if ((int) $patient['clinic_id'] !== $clinicId) {
+                throw VisitException::of('CLINIC_VALIDATION_FAILED', 'این بیمار به کلینیک دیگری تعلق دارد', 422);
+            }
 
             $this->guardDuplicateActiveVisit($patientId, $clinicianId);
 
             $visit = $this->createVisit(
                 $actorUserId,
+                $clinicId,
                 $patientId,
                 $clinicianId,
                 null,
@@ -546,6 +551,7 @@ final class VisitService
      */
     private function createVisit(
         int $actorUserId,
+        int $clinic_id,
         int $patientId,
         int $clinicianId,
         ?int $appointmentId,
@@ -555,7 +561,7 @@ final class VisitService
     ): array {
         $now = $this->db->nowUtc();
         $visitId = $this->visits->insert([
-            'clinic_id' => 1,
+            'clinic_id' => $clinic_id,
             'clinician_id' => $clinicianId,
             'patient_id' => $patientId,
             'appointment_id' => $appointmentId,
@@ -744,16 +750,21 @@ final class VisitService
         return $patient;
     }
 
-    private function requireClinician(int $clinicianId): void
+    /**
+     * وجود پزشک + کلینیکِ او (C6 — منبع domain برای Walk-in).
+     */
+    private function requireClinician(int $clinicianId): int
     {
         // همان Guard الگوی BookingService
         $row = $this->db->fetchRow(
-            'SELECT id, is_active FROM ' . $this->db->table('cpms_clinicians') . ' WHERE id = %d LIMIT 1',
+            'SELECT id, is_active, clinic_id FROM ' . $this->db->table('cpms_clinicians') . ' WHERE id = %d LIMIT 1',
             [$clinicianId]
         );
         if ($row === null || (int) $row['is_active'] !== 1) {
             throw VisitException::of('CLINIC_NOT_FOUND', 'پزشک یافت نشد یا غیرفعال است', 404);
         }
+
+        return (int) $row['clinic_id'];
     }
 
     /**

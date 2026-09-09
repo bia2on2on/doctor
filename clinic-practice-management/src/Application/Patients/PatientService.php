@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Application\Patients;
 
+use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Booking\BookingException;
 use ClinicCore\Domain\Licensing\LicenseGate;
 use ClinicCore\Domain\Validators\MobileValidator;
@@ -136,7 +137,7 @@ final class PatientService
 
         return array_map(
             fn (array $r): array => $this->searchView($r),
-            $this->patients->search(1, $q, $limit)
+            $this->patients->search(App::scope()->clinicId, $q, $limit)
         );
     }
 
@@ -148,7 +149,8 @@ final class PatientService
     public function get(int $patientId): array
     {
         $row = $this->patients->find($patientId);
-        if ($row === null) {
+        if ($row === null || (int) $row['clinic_id'] !== App::scope()->clinicId) {
+            // C6: بیمار کلینیک دیگر = مثل نبودن (anti-enum)
             throw new BookingException('CLINIC_NOT_FOUND', 'بیمار یافت نشد', 404);
         }
 
@@ -174,16 +176,17 @@ final class PatientService
         if ($mobile === null) {
             throw new BookingException('CLINIC_VALIDATION_FAILED', 'شماره موبایل نامعتبر است');
         }
-        if ($this->patients->findByMobile(1, $mobile) !== null) {
+        $clinicId = App::scope()->clinicId;
+        if ($this->patients->findByMobile($clinicId, $mobile) !== null) {
             throw new BookingException('CLINIC_VALIDATION_FAILED', 'بیماری با همین موبایل قبلاً ثبت شده است');
         }
 
         $data = $this->validateForUpdate($fields, self::CREATE_FIELDS, 0, true) + [
-            'clinic_id' => 1,
+            'clinic_id' => $clinicId,
             'first_name' => mb_substr($firstName, 0, 120),
             'last_name' => mb_substr($lastName, 0, 120),
             'mobile' => $mobile,
-            'mrn' => $this->generateMrn(),
+            'mrn' => $this->generateMrn($clinicId),
             'status' => 'active',
             'created_at' => $this->db->nowUtcSql(),
             'updated_at' => $this->db->nowUtcSql(),
@@ -218,7 +221,8 @@ final class PatientService
         $this->assertLicense(LicenseGate::OP_PATIENT_UPDATE);
 
         $current = (array) $this->patients->find($patientId);
-        if ($current === []) {
+        if ($current === [] || (int) $current['clinic_id'] !== App::scope()->clinicId) {
+            // C6: بیمار کلینیک دیگر = مثل نبودن (anti-enum)
             throw new BookingException('CLINIC_NOT_FOUND', 'بیمار یافت نشد', 404);
         }
 
@@ -293,7 +297,7 @@ final class PatientService
         // یکتایی Mobile/NationalId در Update (غیر از خود)
         if (!$isCreate) {
             if (isset($out['mobile'])) {
-                $other = $this->patients->findByMobile(1, $out['mobile']);
+                $other = $this->patients->findByMobile(App::scope()->clinicId, $out['mobile']);
                 if ($other !== null && (int) $other['id'] !== $patientId) {
                     throw new BookingException('CLINIC_VALIDATION_FAILED', 'این موبایل متعلق به بیمار دیگری است');
                 }
@@ -391,13 +395,13 @@ final class PatientService
     /**
      * N-6: `MR-{YYMMDD}-{5char}` — Retry روی Uniqueness.
      */
-    private function generateMrn(): string
+    private function generateMrn(int $clinic_id): string
     {
         for ($i = 0; $i < 5; $i++) {
             $mrn = 'MR-' . gmdate('ymd') . '-' . strtoupper(substr(bin2hex(random_bytes(4)), 0, 5));
             $exists = $this->db->fetchValue(
-                'SELECT COUNT(*) FROM ' . $this->db->table('cpms_patients') . ' WHERE clinic_id = 1 AND mrn = %s',
-                [$mrn]
+                'SELECT COUNT(*) FROM ' . $this->db->table('cpms_patients') . ' WHERE clinic_id = %d AND mrn = %s',
+                [$clinic_id, $mrn]
             );
             if ((int) $exists === 0) {
                 return $mrn;

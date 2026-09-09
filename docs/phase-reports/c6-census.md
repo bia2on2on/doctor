@@ -149,7 +149,7 @@ OtpService:321، PatientIdentityService:23 (نقل قول قاعده)، ClinicSc
 - **C6-A** (کامیت `17d7d10`): census + tripwire (لوکال) + allowlist خالی. CI wiring در C6-F وقتی production=0.
 - **C6-B** ✅: Notifications+SMS+Jobs (repo/service/handlers) — جزئیات زیر.
 - **C6-C** ✅: Booking+Schedule — جزئیات در «وضعیت C6-C».
-- **C6-D**: Patients+Clinical+Visits+Files (scope/entity-derived).
+- **C6-D** ✅: Patients+Clinical+Visits+Files — جزئیات در «وضعیت C6-D».
 
 ## وضعیت C6-C (اجراشده)
 
@@ -161,6 +161,16 @@ OtpService:321، PatientIdentityService:23 (نقل قول قاعده)، ClinicSc
 - `createMinimalPatient(clinic_id,…)` و `generateMrn(clinic_id)` — MRN یکتا در کلینیک بیمار.
 - **verify سمت سرور جدید**: createByStaff اگر بیمار به کلینیک دیگری تعلق داشته باشد → `CLINIC_VALIDATION_FAILED` 422 (جلوگیری از cross-clinic patient/slot mix).
 - شمارش tripwire بعد از C6-C: **42 violation** (۴۴→۴۲؛ ۱۳ مورد Booking + ۲ مورد Schedule فیکس شدند). SecretaryQueuePage:46 طبق plan به C6-E (Admin) منتقل شد.
+
+## وضعیت C6-D (اجراشده)
+
+- **PatientService** (staff flows): `search/create/validateForUpdate/generateMrn` از `App::scope()->clinicId` (mobile-dup و MRN یکتا در کلینیک scope)؛ `get/update` scope-verify (بیمار کلینیک دیگر = 404 anti-enum). `me/updateMe` (بیمار، identity-level از links) دست‌نخورده.
+- **ClinicalService**: clinic-info summary از `$visit['clinic_id']` (فیکس الگوی جدید clinics-table-id-1)؛ unified search (patients/notes/prescriptions) از scope.
+- **MedicalFileService**: clinic فایل از ردیف بیمار + existence-verify بیمار در upload (staff آپلود برای بیمار ناموجود → 404).
+- **VisitService**: `createVisit(clinic_id صریح)`؛ checkIn از clinic نوبت؛ walk-in از کلینیک پزشک + **verify سمت سرور** تطبیق کلینیک بیمار/پزشک (422)؛ `requireClinician` کلینیک برمی‌گرداند.
+- شمارش tripwire بعد از C6-D: **32 violation** (۴۲→۳۲؛ ۱۰ مورد فیکس).
+- نکتهٔ بازیابی: کامیت اولیهٔ C6-D به‌دلیل بازسازی sandbox از git لوکال حذف شد؛ working tree دست‌نخورده ماند و همین کامیت بازسازی همان تغییرات است (history سرور از `0d8d9d1` پیوسته).
+
 - **C6-E**: Reports+Export+Admin + Infra (Audit/Idempotency/Settings + Migrationها 0020/0021) + REST boundary (resolveScope×membership).
 - **C6-F**: tripwire→CI + MultiTenantIsolationTest (ماتریس ۱۴بندی).
 - **C6-G**: docs + state.

@@ -6,6 +6,7 @@ namespace ClinicCore\Application\Clinical;
 
 use ClinicCore\Application\Visits\VisitService;
 use ClinicCore\Auth\RolesAndCapabilities;
+use ClinicCore\Bootstrap\App;
 use ClinicCore\Infrastructure\Audit\AuditLogger;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Repository\ClinicalNoteRepository;
@@ -693,7 +694,8 @@ final class ClinicalService
             [(int) $visit['clinician_id']]
         );
         $clinic = $this->db->fetchRow(
-            'SELECT name, phone, address FROM ' . $this->db->table('cpms_clinics') . ' WHERE id = 1 LIMIT 1'
+            'SELECT name, phone, address FROM ' . $this->db->table('cpms_clinics') . ' WHERE id = %d LIMIT 1',
+            [(int) $visit['clinic_id']]
         );
 
         $complaint = null;
@@ -880,19 +882,19 @@ final class ClinicalService
                     'mobile' => (string) $row['mobile'],
                     'status' => (string) $row['status'],
                 ],
-                $this->patients->search(1, $q, 20)
+                $this->patients->search(App::scope()->clinicId, $q, 20)
             );
         }
         if ($isDoctor && ($type === 'all' || $type === 'note')) {
             $results['notes'] = array_map(
                 fn (array $row): array => $this->presentSearchHit($row),
-                $this->notes->search(1, $q, null, $from, $to, 20)
+                $this->notes->search(App::scope()->clinicId, $q, null, $from, $to, 20)
             );
         }
         if ($isDoctor && ($type === 'all' || $type === 'rx')) {
             $results['prescriptions'] = array_map(
                 fn (array $rx): array => $this->presentPrescription($rx, $this->prescriptions->itemsFor((int) $rx['id'])),
-                $this->prescriptions->searchByDrug(1, $q, $from, $to, 20)
+                $this->prescriptions->searchByDrug(App::scope()->clinicId, $q, $from, $to, 20)
             );
         }
 

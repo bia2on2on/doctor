@@ -269,7 +269,17 @@ final class MedicalFileService
             );
         }
 
-        $storagePath = $this->storage->store($content, 1, $extension);
+        // C6: کلینیک فایل = کلینیک بیمار (relation) — و existence بیمار در همین
+        // نقطه verify می‌شود (آپلود staff برای بیمار ناموجود رد می‌شود).
+        global $wpdb;
+        $patientClinicId = (int) $wpdb->get_var($wpdb->prepare(
+            'SELECT clinic_id FROM ' . $wpdb->prefix . 'cpms_patients WHERE id = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $patientId
+        ));
+        if ($patientClinicId === 0) {
+            throw ClinicalException::of('CLINIC_NOT_FOUND', 'بیمار یافت نشد', 404);
+        }
+        $storagePath = $this->storage->store($content, $patientClinicId, $extension);
 
         $fileId = $this->files->insert([
             'patient_id' => $patientId,
