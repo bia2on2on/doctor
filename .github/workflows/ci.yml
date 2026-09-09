@@ -272,7 +272,10 @@ jobs:
                   key = f"{path}:{m['line']}"
                   if key in added:
                       found.append(f"{path}:{m['line']} [{m['type']}] {m['source']} — {m['message']}")
-          print('\n'.join(found))
+          # فقط وقتی خروجی چاپ شود که نقضی هست — print() خالی هم یک newline
+          # می‌نویسد و test -s را true می‌کند (باگ run 34329655919).
+          if found:
+              print('\n'.join(found))
           PY
           pyrc=$?
           if [ "$pyrc" -ne 0 ]; then
