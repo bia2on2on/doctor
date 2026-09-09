@@ -7,6 +7,8 @@ namespace ClinicCore\Tests\Integration;
 use ClinicCore\Bootstrap\App;
 use WP_UnitTestCase;
 
+require_once __DIR__ . '/RealTableMigrations.php';
+
 /**
  * Phase 2 — Schema Foundation (Migrations 0010–0018، ADR-0031/P2-D1/P2-D2):
  *
@@ -23,18 +25,26 @@ use WP_UnitTestCase;
  */
 final class Phase2SchemaTest extends WP_UnitTestCase
 {
+    use RealTableMigrations;
+
     protected function setUp(): void
     {
         parent::setUp();
-        App::migrations()->migrate();
+        $this->withRealTables(static fn (): array => App::migrations()->migrate());
         \ClinicCore\Settings\Settings::flushCache();
         App::resetScope();
     }
 
     protected function tearDown(): void
     {
-        App::resetScope();
-        parent::tearDown();
+        // Self-heal: اگر تستی lifecycle را نصفه گذاشته باشد، دوباره کامل می‌شود
+        // (با semantics جدول واقعی — جزئیات: RealTableMigrations).
+        try {
+            $this->withRealTables(static fn (): array => App::migrations()->migrate());
+        } finally {
+            App::resetScope();
+            parent::tearDown();
+        }
     }
 
     private function db(): \ClinicCore\Infrastructure\Db\CpmsDb
@@ -123,13 +133,15 @@ final class Phase2SchemaTest extends WP_UnitTestCase
         ]);
         $patientId = (int) $this->db()->wpdb_last_insert_id();
 
-        // بازگشت به 0009
+        // بازگشت به 0009 — real-table (فیلتر temporary-table وردپرس معلق)
         $versions = [];
-        while (App::migrations()->currentVersion() !== '2026_09_07_0009') {
-            $v = App::migrations()->rollbackOne();
-            self::assertNotNull($v, 'باید بتوان تا 0009 برگشت.');
-            $versions[] = $v;
-        }
+        $this->withRealTables(function () use (&$versions): void {
+            while (App::migrations()->currentVersion() !== '2026_09_07_0009') {
+                $v = App::migrations()->rollbackOne();
+                self::assertNotNull($v, 'باید بتوان تا 0009 برگشت.');
+                $versions[] = $v;
+            }
+        });
         self::assertSame(
             ['2026_09_09_0018', '2026_09_09_0017', '2026_09_09_0016', '2026_09_09_0015', '2026_09_09_0014', '2026_09_09_0013', '2026_09_09_0012', '2026_09_09_0011', '2026_09_09_0010'],
             $versions
@@ -140,7 +152,7 @@ final class Phase2SchemaTest extends WP_UnitTestCase
         self::assertNull($col);
 
         // ارتقا
-        $applied = App::migrations()->migrate();
+        $applied = $this->withRealTables(static fn (): array => App::migrations()->migrate());
         self::assertContains('2026_09_09_0010', $applied);
         self::assertSame('2026_09_09_0018', App::migrations()->currentVersion());
 
@@ -152,7 +164,7 @@ final class Phase2SchemaTest extends WP_UnitTestCase
         self::assertSame(1, (int) $survived, 'دادهٔ موجود باید از ارتقا جان سالم به در ببرد (AD-12).');
 
         // idempotent — اجرای دوباره = no-op
-        self::assertSame([], App::migrations()->migrate());
+        self::assertSame([], $this->withRealTables(static fn (): array => App::migrations()->migrate()));
     }
 
     // ================= FK integrity =================
@@ -289,81 +301,134 @@ final class Phase2SchemaTest extends WP_UnitTestCase
 
     // ================= P2-D2 — Timezone precedence =================
 
+    /**
+     * اجرای مستقیم up() مهاجرت 0011 — با semantics جدول واقعی: بدنهٔ up با
+     * CREATE TABLE IF NOT EXISTS شروع می‌شود و اگر فیلتر temporary-table وردپرس
+     * فعال باشد، CREATE TEMPORARY با FK ساخته می‌شود که InnoDB رد می‌کند
+     * (errno 150 — evidence: run 34305395185).
+     */
     private function runLocationsMigrationUp(): void
     {
         $migration = require dirname(__DIR__) . '/../src/Migrations/2026_09_09_0011_locations.php';
-        ($migration['up'])($this->db());
+        $db = $this->db();
+        $this->withRealTables(static fn (): mixed => ($migration['up'])($db));
+    }
+
+    /**
+     * Clinic آزمایشی تازه (بدون Location) — مسیر seed مهاجرت 0011 را تمرین
+     * می‌کند، بدون حذف مخرب ردیف‌های واقعیِ Clinicهای موجود.
+     */
+    private function insertTzClinic(int $id, string $slug, string $columnTz): void
+    {
+        global $wpdb;
+        $now = $this->db()->nowUtcSql();
+        $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_clinics (id, organization_id, name, slug, timezone, created_at, updated_at)
+                 VALUES (%d, (SELECT organization_id FROM ' . $wpdb->prefix . 'cpms_clinics WHERE id = 1), %s, %s, %s, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $id,
+                'کلینیک ' . $slug,
+                $slug,
+                $columnTz,
+                $now,
+                $now
+            )
+        );
+    }
+
+    /**
+     * پاک‌سازی committed-safe Clinic آزمایشی — مستقل از اینکه MySQL روی
+     * CREATE TABLE IF NOT EXISTSِ no-op، commit ضمنی انجام داده یا نه:
+     *
+     *  1) DELETE ردیف‌های Clinic (settings اول — FK به clinics RESTRICT است؛
+     *     locations با CASCADE حذف می‌شوند) و لاگ واگرایی همین تست.
+     *  2) یک DDL واقعیِ تضمینی (probe) — presence-commit قطعی؛ اگر DELETEها
+     *     uncommitted بودند، همین‌جا commit می‌شوند و در پایان تست، ROLLBACK
+     *     دیگر آن‌ها را «برنمی‌گرداند» و Clinics leaked باقی نمی‌مانند.
+     */
+    private function gcTzClinic(int $clinicId): void
+    {
+        $db = $this->db();
+        $db->query('DELETE FROM ' . $db->table('cpms_settings') . ' WHERE clinic_id = %d', [$clinicId]);
+        $db->query('DELETE FROM ' . $db->table('cpms_clinics') . ' WHERE id = %d', [$clinicId]);
+        $db->query(
+            'DELETE FROM ' . $db->table('cpms_operational_logs') .
+            " WHERE message LIKE 'PHASE2_TZ_DIVERGENCE%'"
+        );
+
+        $probe = $db->wpdb()->prefix . 'cpms_tzgc_probe';
+        $this->withRealTables(static function () use ($db, $probe): void {
+            $db->query("CREATE TABLE IF NOT EXISTS {$probe} (id INT) ENGINE=InnoDB"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $db->query("DROP TABLE IF EXISTS {$probe}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        });
     }
 
     public function testTimezoneSeedPrefersWizardSettingAndReportsDivergence(): void
     {
-        global $wpdb;
+        try {
+            // دادهٔ واگرا برای Clinic تازه: setting معتبرِ متفاوت با ستون
+            $this->insertTzClinic(2, 'tz-prefer', 'Asia/Tehran');
+            $this->db()->query(
+                'INSERT INTO ' . $this->db()->table('cpms_settings') . ' (clinic_id, `key`, value_json, updated_at)
+                 VALUES (2, %s, %s, %s)
+                 ON DUPLICATE KEY UPDATE value_json = VALUES(value_json), updated_at = VALUES(updated_at)',
+                ['setup.clinic.timezone', '"Asia/Kabul"', $this->db()->nowUtcSql()]
+            );
+            $this->db()->query(
+                'DELETE FROM ' . $this->db()->table('cpms_operational_logs') .
+                " WHERE message LIKE 'PHASE2_TZ_DIVERGENCE%'"
+            );
 
-        // دادهٔ واگرا: setting معتبرِ متفاوت با ستون
-        // (پاک‌سازی لاگ واگرایی قبلی — مقاوم به leftover از تست‌های قبل از DDL)
-        $this->db()->query(
-            'DELETE FROM ' . $this->db()->table('cpms_operational_logs') .
-            " WHERE message LIKE 'PHASE2_TZ_DIVERGENCE%'"
-        );
-        $this->db()->query('DELETE FROM ' . $this->db()->table('cpms_locations'));
-        $wpdb->query(
-            'UPDATE ' . $wpdb->prefix . "cpms_clinics SET timezone = 'Asia/Tehran'" // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        );
-        $this->db()->query(
-            'INSERT INTO ' . $this->db()->table('cpms_settings') . ' (clinic_id, `key`, value_json, updated_at)
-             VALUES (1, %s, %s, %s)
-             ON DUPLICATE KEY UPDATE value_json = VALUES(value_json), updated_at = VALUES(updated_at)',
-            ['setup.clinic.timezone', '"Asia/Kabul"', $this->db()->nowUtcSql()]
-        );
+            $this->runLocationsMigrationUp();
 
-        $this->runLocationsMigrationUp();
+            $tz = $this->db()->fetchValue(
+                'SELECT timezone FROM ' . $this->db()->table('cpms_locations') . ' WHERE clinic_id = 2 AND is_primary = 1 LIMIT 1'
+            );
+            self::assertSame('Asia/Kabul', (string) $tz, 'قاعدهٔ P2-D2: setting معتبر مقدم است.');
 
-        $tz = $this->db()->fetchValue(
-            'SELECT timezone FROM ' . $this->db()->table('cpms_locations') . ' WHERE clinic_id = 1 AND is_primary = 1 LIMIT 1'
-        );
-        self::assertSame('Asia/Kabul', (string) $tz, 'قاعدهٔ P2-D2: setting معتبر مقدم است.');
-
-        // واگرایی گزارش شده — نه sync خاموش
-        $divergence = $this->db()->fetchValue(
-            'SELECT COUNT(*) FROM ' . $this->db()->table('cpms_operational_logs') .
-            " WHERE level = 'warning' AND message LIKE 'PHASE2_TZ_DIVERGENCE%'"
-        );
-        self::assertSame(1, (int) $divergence, 'واگرایی setting/ستون باید گزارش شود.');
-        $columnTz = $this->db()->fetchValue('SELECT timezone FROM ' . $this->db()->table('cpms_clinics') . ' WHERE id = 1');
-        self::assertSame('Asia/Tehran', (string) $columnTz, 'هیچ سمتی sync نمی‌شود.');
+            // واگرایی گزارش شده — نه sync خاموش
+            $divergence = $this->db()->fetchValue(
+                'SELECT COUNT(*) FROM ' . $this->db()->table('cpms_operational_logs') .
+                " WHERE level = 'warning' AND message LIKE 'PHASE2_TZ_DIVERGENCE%'"
+            );
+            self::assertSame(1, (int) $divergence, 'واگرایی setting/ستون باید گزارش شود.');
+            $columnTz = $this->db()->fetchValue('SELECT timezone FROM ' . $this->db()->table('cpms_clinics') . ' WHERE id = 2');
+            self::assertSame('Asia/Tehran', (string) $columnTz, 'هیچ سمتی sync نمی‌شود.');
+        } finally {
+            $this->gcTzClinic(2);
+        }
     }
 
     public function testTimezoneSeedFallsBackToColumnWhenSettingInvalid(): void
     {
-        global $wpdb;
+        try {
+            $this->insertTzClinic(2, 'tz-fallback', 'Asia/Baghdad');
+            $this->db()->query(
+                'INSERT INTO ' . $this->db()->table('cpms_settings') . ' (clinic_id, `key`, value_json, updated_at)
+                 VALUES (2, %s, %s, %s)
+                 ON DUPLICATE KEY UPDATE value_json = VALUES(value_json), updated_at = VALUES(updated_at)',
+                ['setup.clinic.timezone', '"Mars/Olympus_Mons"', $this->db()->nowUtcSql()]
+            );
+            $this->db()->query(
+                'DELETE FROM ' . $this->db()->table('cpms_operational_logs') .
+                " WHERE message LIKE 'PHASE2_TZ_DIVERGENCE%'"
+            );
 
-        $this->db()->query(
-            'DELETE FROM ' . $this->db()->table('cpms_operational_logs') .
-            " WHERE message LIKE 'PHASE2_TZ_DIVERGENCE%'"
-        );
-        $this->db()->query('DELETE FROM ' . $this->db()->table('cpms_locations'));
-        $wpdb->query(
-            'UPDATE ' . $wpdb->prefix . "cpms_clinics SET timezone = 'Asia/Baghdad'" // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        );
-        $this->db()->query(
-            'INSERT INTO ' . $this->db()->table('cpms_settings') . ' (clinic_id, `key`, value_json, updated_at)
-             VALUES (1, %s, %s, %s)
-             ON DUPLICATE KEY UPDATE value_json = VALUES(value_json), updated_at = VALUES(updated_at)',
-            ['setup.clinic.timezone', '"Mars/Olympus_Mons"', $this->db()->nowUtcSql()]
-        );
+            $this->runLocationsMigrationUp();
 
-        $this->runLocationsMigrationUp();
+            $tz = $this->db()->fetchValue(
+                'SELECT timezone FROM ' . $this->db()->table('cpms_locations') . ' WHERE clinic_id = 2 AND is_primary = 1 LIMIT 1'
+            );
+            self::assertSame('Asia/Baghdad', (string) $tz, 'setting نامعتبر ⇒ ستون معتبر.');
 
-        $tz = $this->db()->fetchValue(
-            'SELECT timezone FROM ' . $this->db()->table('cpms_locations') . ' WHERE clinic_id = 1 AND is_primary = 1 LIMIT 1'
-        );
-        self::assertSame('Asia/Baghdad', (string) $tz, 'setting نامعتبر ⇒ ستون معتبر.');
-
-        $divergence = $this->db()->fetchValue(
-            'SELECT COUNT(*) FROM ' . $this->db()->table('cpms_operational_logs') .
-            " WHERE message LIKE 'PHASE2_TZ_DIVERGENCE%'"
-        );
-        self::assertSame(0, (int) $divergence, 'بدون دو منبع معتبر، واگرایی گزارش نمی‌شود.');
+            $divergence = $this->db()->fetchValue(
+                'SELECT COUNT(*) FROM ' . $this->db()->table('cpms_operational_logs') .
+                " WHERE message LIKE 'PHASE2_TZ_DIVERGENCE%'"
+            );
+            self::assertSame(0, (int) $divergence, 'بدون دو منبع معتبر، واگرایی گزارش نمی‌شود.');
+        } finally {
+            $this->gcTzClinic(2);
+        }
     }
 
     // ================= B-11 + tenant hygiene =================

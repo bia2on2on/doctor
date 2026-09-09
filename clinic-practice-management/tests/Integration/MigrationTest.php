@@ -7,14 +7,23 @@ namespace ClinicCore\Tests\Integration;
 use ClinicCore\Bootstrap\App;
 use WP_UnitTestCase;
 
+require_once __DIR__ . '/RealTableMigrations.php';
+
 /**
  * TP-15 — Migration: اجرا، Idempotency، Rollback.
  *
  * نکته: DDL در MySQL Commit ضمني دارد؛ WP_UnitTestCase tables را Rollback نمی‌کند.
  * به همین دلیل migrate() در setUp (idempotent) و re-migrate در tearDown.
+ *
+ * Phase 2 — Real-Table isolation: هر عملیات Migration lifecycle (migrate/
+ * rollback) داخل withRealTables اجرا می‌شود چون فیلتر temporary-table خود
+ * WP، CREATE/DROP TABLE را به TEMPORARY تبدیل می‌کند و InnoDB روی جدول موقت
+ * FK نمی‌پذیرد ( جزئیات: RealTableMigrations).
  */
 final class MigrationTest extends WP_UnitTestCase
 {
+    use RealTableMigrations;
+
     /** آخرین Migration موجود در src/Migrations (با افزودن Migration جدید به‌روز شود). */
     private const LATEST_VERSION = '2026_09_09_0018';
 
@@ -38,13 +47,16 @@ final class MigrationTest extends WP_UnitTestCase
     protected function setUp(): void
     {
         parent::setUp();
-        App::migrations()->migrate();
+        $this->withRealTables(static fn (): array => App::migrations()->migrate());
     }
 
     protected function tearDown(): void
     {
-        App::migrations()->migrate(); // بازیابی برای تست‌های بعد
-        parent::tearDown();
+        try {
+            $this->withRealTables(static fn (): array => App::migrations()->migrate()); // بازیابی برای تست‌های بعد
+        } finally {
+            parent::tearDown();
+        }
     }
 
     public function testInitialMigrationCreatesAllTables(): void
@@ -77,7 +89,7 @@ final class MigrationTest extends WP_UnitTestCase
 
     public function testMigrateIsIdempotent(): void
     {
-        $secondRun = App::migrations()->migrate();
+        $secondRun = $this->withRealTables(static fn (): array => App::migrations()->migrate());
         $this->assertSame([], $secondRun, 'اجرای دوم نباید Migration جدید داشته باشد');
     }
 
@@ -123,10 +135,12 @@ final class MigrationTest extends WP_UnitTestCase
      */
     private function rollbackTo(string $target): void
     {
-        while (App::migrations()->currentVersion() !== $target) {
-            $v = App::migrations()->rollbackOne();
-            self::assertNotNull($v, 'rollbackOne نباید پیش از ' . $target . ' به null برسد.');
-        }
+        $this->withRealTables(function () use ($target): void {
+            while (App::migrations()->currentVersion() !== $target) {
+                $v = App::migrations()->rollbackOne();
+                self::assertNotNull($v, 'rollbackOne نباید پیش از ' . $target . ' به null برسد.');
+            }
+        });
     }
 
     /**
@@ -160,7 +174,7 @@ final class MigrationTest extends WP_UnitTestCase
         $legacyId = (int) $wpdb->insert_id;
 
         // Upgrade
-        $applied = App::migrations()->migrate();
+        $applied = $this->withRealTables(static fn (): array => App::migrations()->migrate());
         $this->assertContains('2026_09_07_0006', $applied);
         $this->assertContains('2026_09_07_0007', $applied);
 
@@ -210,7 +224,7 @@ final class MigrationTest extends WP_UnitTestCase
 
         try {
             try {
-                App::migrations()->migrate();
+                $this->withRealTables(static fn (): array => App::migrations()->migrate());
                 $this->fail('Preflight باید Migration را متوقف می‌کرد');
             } catch (\RuntimeException $e) {
                 $this->assertStringContainsString('duplicate idempotency rows', $e->getMessage());
@@ -227,7 +241,7 @@ final class MigrationTest extends WP_UnitTestCase
             $wpdb->query("DELETE FROM {$t} WHERE `key` = 'corrupt-key-same' AND id > (SELECT min_id FROM (SELECT MIN(id) min_id FROM {$t} WHERE `key` = 'corrupt-key-same') x)"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         }
 
-        $applied = App::migrations()->migrate();
+        $applied = $this->withRealTables(static fn (): array => App::migrations()->migrate());
         $this->assertContains('2026_09_07_0006', $applied);
     }
 
@@ -263,7 +277,7 @@ final class MigrationTest extends WP_UnitTestCase
 
         try {
             try {
-                App::migrations()->migrate();
+                $this->withRealTables(static fn (): array => App::migrations()->migrate());
                 $this->fail('Preflight باید Migration را متوقف می‌کرد');
             } catch (\RuntimeException $e) {
                 $this->assertStringContainsString('share the same wp_user_id', $e->getMessage());
@@ -278,7 +292,7 @@ final class MigrationTest extends WP_UnitTestCase
             $wpdb->query($wpdb->prepare("UPDATE {$t} SET wp_user_id = NULL WHERE wp_user_id = %d AND full_name = 'Dr Dup 2'", $uid)); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         }
 
-        $applied = App::migrations()->migrate();
+        $applied = $this->withRealTables(static fn (): array => App::migrations()->migrate());
         $this->assertContains('2026_09_07_0007', $applied);
     }
 
