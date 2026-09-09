@@ -170,6 +170,8 @@ OtpService:321، PatientIdentityService:23 (نقل قول قاعده)، ClinicSc
 - **VisitService**: `createVisit(clinic_id صریح)`؛ checkIn از clinic نوبت؛ walk-in از کلینیک پزشک + **verify سمت سرور** تطبیق کلینیک بیمار/پزشک (422)؛ `requireClinician` کلینیک برمی‌گرداند.
 - شمارش tripwire بعد از C6-D: **32 violation** (۴۲→۳۲؛ ۱۰ مورد فیکس).
 - نکتهٔ بازیابی: کامیت اولیهٔ C6-D به‌دلیل بازسازی sandbox از git لوکال حذف شد؛ working tree دست‌نخورده ماند و همین کامیت بازسازی همان تغییرات است (history سرور از `0d8d9d1` پیوسته).
+- **فیکس‌های Class C/D بعد از CI**: (۱) caller جاافتادهٔ `createVisit` در checkIn (ArgumentCountError — CI 34347272618) → کامیت `e23e626`؛ (۲) Closure Gate فلک زیرساختی (curl exit 35 هنگام دانلود wp-cli، قبل از هر step ساختی) → retrigger با کامیت خالی `6dcee7d` (tree یکسان `0a5bd4a`).
+- **سبز C6-D = `6dcee7d`** (هر ۵ گیت): CI `34348322104` · Real-WP `34348315960` + `34348322007` · Pilot `34348315942` · Closure `34348315964`. (`346849f` → CI شکست Class C؛ `e23e626` → ۴/۵ سبز + Closure فلک Class D.)
 
 - **C6-E**: Reports+Export+Admin + Infra (Audit/Idempotency/Settings + Migrationها 0020/0021) + REST boundary (resolveScope×membership).
 - **C6-F**: tripwire→CI + MultiTenantIsolationTest (ماتریس ۱۴بندی).
