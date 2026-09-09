@@ -805,6 +805,9 @@ final class RestTrustedClinicContextTest extends WP_UnitTestCase
             $flat,
             'ردیف Clinic دیگر نباید در لاگ SMS دیده شود (شماره موبایل/متن → PHI) — C6‑F'
         );
+        // COUNT هم باید tenant‑scoped باشد (وگرنه total تعداد کل tenantها را می‌دهد)
+        $this->assertSame(1, (int) ($data['data']['total'] ?? 0), 'total باید فقط شمارشِ Clinic خودی باشد');
+        $this->assertStringNotContainsString('0913', $flat, 'موبایل ردیف Clinic دیگر نباید در پاسخ باشد');
     }
 
     /**
@@ -906,7 +909,196 @@ final class RestTrustedClinicContextTest extends WP_UnitTestCase
         $this->assertSame('draft', $this->rxStatus($rxA));
     }
 
+    /** §۷ — context B فقط ردیف‌های B را می‌دهد (آینهٔ تست A). */
+    public function testSmsLogsForClinicBContextReturnsOnlyB(): void
+    {
+        $this->insertClinic($this->clinicB, 'rest-ctx-sms-b');
+        $manager = $this->makeStaff('cpms_manager');
+        cpms_test_seed_membership($manager, $this->clinicB, 'cpms_manager');
+        wp_set_current_user($manager);
+
+        $seq = random_int(100000, 9999999);
+        $this->insertSmsRow($this->clinicA, 'smsX' . $seq);
+        $idB = $this->insertSmsRow($this->clinicB, 'smsB' . $seq);
+
+        $res = $this->dispatch('GET', self::NS . '/sms/logs', ['per_page' => 100, 'page' => 1], ['X-CPMS-Clinic-Id' => (string) $this->clinicB]);
+        $this->assertSame(200, $res->get_status(), (string) json_encode($res->get_data(), JSON_UNESCAPED_UNICODE));
+        $flat = (string) json_encode($res->get_data(), JSON_UNESCAPED_UNICODE);
+        $this->assertStringContainsString('smsB' . $seq, $flat);
+        $this->assertStringNotContainsString('smsX' . $seq, $flat, 'ردیف Clinic A نباید در context B دیده شود');
+        $this->assertSame([$idB], $this->smsLogIds($res), 'دقیقاً ردیف Clinic خودی');
+    }
+
+    /** §۷ — یک کاربر با عضویت در A و B: هر context فقطClinic خودش را می‌بیند. */
+    public function testSmsLogsForMultiMembershipUserSwitchesWithTrustedContext(): void
+    {
+        $this->insertClinic($this->clinicB, 'rest-ctx-sms-multi');
+        $manager = $this->makeStaff('cpms_manager');
+        cpms_test_seed_membership($manager, $this->clinicA, 'cpms_manager');
+        cpms_test_seed_membership($manager, $this->clinicB, 'cpms_manager');
+        wp_set_current_user($manager);
+
+        $seq = random_int(100000, 9999999);
+        $idA = $this->insertSmsRow($this->clinicA, 'smsMA' . $seq);
+        $idB = $this->insertSmsRow($this->clinicB, 'smsMB' . $seq);
+
+        $inA = $this->dispatch('GET', self::NS . '/sms/logs', ['per_page' => 100, 'page' => 1], ['X-CPMS-Clinic-Id' => (string) $this->clinicA]);
+        $this->assertSame([$idA], $this->smsLogIds($inA), 'context A فقط A');
+        $inB = $this->dispatch('GET', self::NS . '/sms/logs', ['per_page' => 100, 'page' => 1], ['X-CPMS-Clinic-Id' => (string) $this->clinicB]);
+        $this->assertSame([$idB], $this->smsLogIds($inB), 'context B فقط B');
+        // سوییچ برگشتی: A همچنان فقط A (هیچ state بین‌درخواستی نشت نمی‌کند)
+        $backToA = $this->dispatch('GET', self::NS . '/sms/logs', ['per_page' => 100, 'page' => 1], ['X-CPMS-Clinic-Id' => (string) $this->clinicA]);
+        $this->assertSame([$idA], $this->smsLogIds($backToA));
+    }
+
+    /** §۷ — نشت Cross‑Organization: Organization دیگر = هیچ. */
+    public function testSmsLogsDoNotLeakAcrossOrganization(): void
+    {
+        $this->insertClinic($this->clinicB, 'rest-ctx-sms-org');
+        $otherOrg = $this->insertOrg('org-sms-other');
+        $clinicC = 60021;
+        $this->insertClinicInOrg($clinicC, $otherOrg, 'rest-ctx-sms-c');
+        $manager = $this->makeStaff('cpms_manager');
+        cpms_test_seed_membership($manager, $this->clinicB, 'cpms_manager');
+        wp_set_current_user($manager);
+
+        $seq = random_int(100000, 9999999);
+        $idB = $this->insertSmsRow($this->clinicB, 'smsOrgB' . $seq);
+        $this->insertSmsRow($clinicC, 'smsOrgC' . $seq);
+
+        $res = $this->dispatch('GET', self::NS . '/sms/logs', ['per_page' => 100, 'page' => 1], ['X-CPMS-Clinic-Id' => (string) $this->clinicB]);
+        $this->assertSame(200, $res->get_status(), (string) json_encode($res->get_data(), JSON_UNESCAPED_UNICODE));
+        $this->assertSame([$idB], $this->smsLogIds($res), 'ردیف Clinic یک Organization دیگر هرگز نباید بیاید');
+        $this->assertStringNotContainsString('smsOrgC' . $seq, (string) json_encode($res->get_data(), JSON_UNESCAPED_UNICODE));
+    }
+
+    /** §۷ — Clinic خالی: پاسخ خالی، نه دادهٔ Clinic دیگر. */
+    public function testSmsLogsEmptyClinicReturnsEmptyResult(): void
+    {
+        $this->insertClinic($this->clinicB, 'rest-ctx-sms-empty');
+        $manager = $this->makeStaff('cpms_manager');
+        cpms_test_seed_membership($manager, $this->clinicA, 'cpms_manager');
+        wp_set_current_user($manager);
+
+        $seq = random_int(100000, 9999999);
+        $this->insertSmsRow($this->clinicB, 'smsOnlyB' . $seq);
+
+        $res = $this->dispatch('GET', self::NS . '/sms/logs', ['per_page' => 100, 'page' => 1], ['X-CPMS-Clinic-Id' => (string) $this->clinicA]);
+        $this->assertSame(200, $res->get_status());
+        $data = (array) $res->get_data();
+        $this->assertSame(0, (int) ($data['data']['total'] ?? -1), 'total باید صفر باشد');
+        $this->assertSame([], (array) ($data['data']['items'] ?? []), 'items باید خالی باشد');
+        $this->assertStringNotContainsString('smsOnlyB' . $seq, (string) json_encode($res->get_data(), JSON_UNESCAPED_UNICODE));
+    }
+
+    /**
+     * §۷ — شاهدِ «Database predicate» (نه post‑filter در PHP): فراخوانی لایهٔ
+     * سرویس با هر Clinic، دقیقاً ردیف‌های همان Clinic را برمی‌گرداند و شمارش و
+     * ترتیب/صفحه‌بندی هم حول همان predicate پایدار است.
+     */
+    public function testSmsLogsApplyTenantPredicateInSql(): void
+    {
+        $this->insertClinic($this->clinicB, 'rest-ctx-sms-sql');
+        $seq = random_int(100000, 9999999);
+        $idsA = [];
+        $idsB = [];
+        for ($i = 0; $i < 3; $i++) {
+            $idsA[] = $this->insertSmsRow($this->clinicA, 'smsSqlA' . $seq . '_' . $i);
+            $idsB[] = $this->insertSmsRow($this->clinicB, 'smsSqlB' . $seq . '_' . $i);
+        }
+
+        $logsA = App::smsService()->logs($this->clinicA, null, 1, 10);
+        $this->assertSame(3, (int) $logsA['total'], 'COUNT باید tenant‑scoped باشد');
+        $this->assertSame(array_reverse($idsA), array_column($logsA['items'], 'id'), 'ORDER BY id DESC در همان Clinic');
+        $this->assertNotContains($idsB[0], array_column($logsA['items'], 'id'), 'ردیف Clinic دیگر هرگز بارگذاری/فیلترِ PHP نمی‌شود');
+
+        $logsB = App::smsService()->logs($this->clinicB, null, 1, 10);
+        $this->assertSame(3, (int) $logsB['total']);
+        $this->assertSame(array_reverse($idsB), array_column($logsB['items'], 'id'));
+
+        // صفحه‌بندی پایدار: page 2 با per_page 2 → دو ردیف آخرِ همان Clinic
+        $p2 = App::smsService()->logs($this->clinicA, null, 2, 2);
+        $this->assertSame(3, (int) $p2['total'], 'total تحت صفحه‌بندی ثابت می‌ماند');
+        $this->assertSame([$idsA[0]], array_column($p2['items'], 'id'));
+        $this->assertSame([], array_column(App::smsService()->logs(60099, null, 1, 10)['items'], 'id'), 'Clinic بدون ردیف → خالی (نه دادهٔ دیگران)');
+    }
+
     // ================= fixtures =================
+
+    /** @return list<int> شناسه‌های ردیف‌های لاگ در پاسخ REST */
+    private function smsLogIds(WP_REST_Response $res): array
+    {
+        $data = (array) $res->get_data();
+        $items = (array) ($data['data']['items'] ?? []);
+
+        return array_map(static fn (array $i): int => (int) $i['id'], $items);
+    }
+
+    private function insertSmsRow(int $clinicId, string $marker): int
+    {
+        global $wpdb;
+        $now = App::db()->nowUtcSql();
+        $seq = random_int(100000, 9999999);
+        $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_sms_messages
+                     (clinic_id, event, recipient, message, status, attempts, max_attempts, created_at, updated_at)
+                 VALUES (%d, "reminder", %s, %s, "SENT", 1, 3, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $clinicId,
+                '0912' . sprintf('%07d', $seq),
+                'cpms-' . $marker,
+                $now,
+                $now
+            )
+        );
+        $id = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $id, 'پیش‌شرط: درج ردیف SMS (marker=' . $marker . ')');
+
+        return $id;
+    }
+
+    private function insertOrg(string $slug): int
+    {
+        global $wpdb;
+        $now = App::db()->nowUtcSql();
+        $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_organizations (name, slug, status, created_at, updated_at)
+                 VALUES (%s, %s, "active", %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                'Org ' . $slug,
+                $slug . '-' . bin2hex(random_bytes(2)),
+                $now,
+                $now
+            )
+        );
+        $id = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $id, 'پیش‌شرط: درج Organization');
+
+        return $id;
+    }
+
+    private function insertClinicInOrg(int $id, int $orgId, string $slug): void
+    {
+        global $wpdb;
+        $now = App::db()->nowUtcSql();
+        $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_clinics (id, organization_id, name, slug, timezone, created_at, updated_at)
+                 VALUES (%d, %d, %s, %s, %s, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $id,
+                $orgId,
+                'Clinic ' . $slug,
+                $slug,
+                'Asia/Tehran',
+                $now,
+                $now
+            )
+        );
+        self::assertGreaterThan(0, (int) $id, 'پیش‌شرط: Clinic در Organization دیگر');
+        App::resetScope();
+    }
+
+
 
     /** آخرین visit یک Clinic (seedVisitPair دقیقاً یک visit per clinic می‌کارد). */
     private function lastVisitId(int $clinicId): int

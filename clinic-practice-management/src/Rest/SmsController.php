@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ClinicCore\Rest;
 
 use ClinicCore\Application\Notifications\SmsService;
+use ClinicCore\Bootstrap\App;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Domain\Sms\SmsTemplateException;
 use WP_REST_Request;
@@ -243,6 +244,8 @@ final class SmsController extends RestBase
 
         return $this->success(
             $this->sms->logs(
+                // Trusted Scope (مرز C6) — هیچ clinic_id قابل‌اعتمادی از کلاینت وجود ندارد.
+                App::scope()->clinicId,
                 $request->get_param('status') !== null ? (string) $request->get_param('status') : null,
                 (int) $request->get_param('page'),
                 (int) $request->get_param('per_page')
