@@ -7,6 +7,7 @@ namespace ClinicCore\Tests\Integration;
 use ClinicCore\Application\Scope\ClinicScope;
 use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Rest\RestClinicContext;
 use WP_REST_Request;
 use WP_REST_Response;
 use WP_UnitTestCase;
@@ -425,6 +426,77 @@ final class RestTrustedClinicContextTest extends WP_UnitTestCase
         $this->assertNotSame('CLINIC_SCOPE_REQUIRED', $this->errorCode($pat));
         $this->assertNotSame('CLINIC_VALIDATION_FAILED', $this->errorCode($pat));
     }
+
+    /**
+     * C6 repair (بند ۷ Owner) — شاهدِ قابل‌اجرا برای چرخهٔ حیات Scope.
+     *
+     * WordPress فیلتر `rest_request_after_callbacks` را *پس از* callback صدا
+     * می‌زند؛ اگر handler استثنای مهار‌نشدده بدهد، آن فیلتر هرگز اجرا نمی‌شود.
+     * این تست همان واقعیت را اثبات می‌کند (نشت در همان request/فرآیند) و سپس
+     * اثبات می‌کند net پایانیِ مرز (restoreAllPending) Scope قبلیِ مشروع را
+     * بازمی‌گرداند — نه هیچ مقدار پیش‌فرضی.
+     */
+    public function testUnhandledHandlerExceptionLeaksScopeUntilSafetyNetRuns(): void
+    {
+        $userId = $this->makeStaff('cpms_doctor');
+        cpms_test_seed_membership($userId, $this->clinicA, 'cpms_doctor');
+        wp_set_current_user($userId);
+
+        $previous = ClinicScope::forClinic($this->clinicA);
+        ScopeContext::set($previous);
+
+        /*
+         * شبیه‌سازی «شکست handler» روی route واقعی: فیلتری با priority بالاتر
+         * **پس از** bind مرز اجرا می‌شود و استثنای مهار‌نشدده می‌دهد — دقیقاً
+         * همان موقعیتی که در آن WordPress فیلتر after را اجرا نمی‌کند. هیچ
+         * route ساختگی ثبت نمی‌شود و routeهای افزونه دست‌نخورده‌اند.
+         */
+        $bomber = static function ($response, $handler, $req) {
+            if ($req instanceof WP_REST_Request && $req->get_route() === '/clinic/v1/reports') {
+                throw new \RuntimeException('cpms-probe-handler-failure');
+            }
+
+            return $response;
+        };
+        add_filter('rest_request_before_callbacks', $bomber, 11, 3);
+
+        $thrown = null;
+        try {
+            $this->dispatch('GET', self::NS . '/reports', [], ['X-CPMS-Clinic-Id' => (string) $this->clinicA]);
+        } catch (\Throwable $e) {
+            $thrown = $e;
+        }
+        remove_filter('rest_request_before_callbacks', $bomber, 11);
+        $this->assertInstanceOf(\RuntimeException::class, $thrown, 'پیش‌شرط: probe باید استثنای مهار‌نشدده بدهد');
+        // (۱) رفتار خام WP: after_callbacks اجرا نمی‌شود → Scope درخواستِ ناکام
+        // در فرآیند باقی می‌ماند (این همان نشتی است که net پایانی بسته می‌شود).
+        $leaked = ScopeContext::tryGet();
+        $this->assertInstanceOf(ClinicScope::class, $leaked, 'اثبات نشت: scope پس از استثنای handler پاک نشده است');
+        $this->assertNotSame($previous, $leaked, 'scopeِ باقی‌مانده متعلق به درخواستِ ناکام است نه scope قبلی');
+
+        // (۲) خطای ایمنی: جفت‌های بازمانده → restore قبلیِ واقعی.
+        RestClinicContext::restoreAllPending();
+        $this->assertSame($previous, ScopeContext::tryGet(), 'restore باید Scope قبلی را برگرداند');
+
+        // (۳) درخواست بعدی در همان فرآیند آلوده نیست: scope قبلی پاک می‌شود و
+        // bind تازه بر اساس عضویت/هدر انجام می‌شود.
+        ScopeContext::clear();
+        $ok = $this->dispatch('GET', self::NS . '/reports', [], ['X-CPMS-Clinic-Id' => (string) $this->clinicA]);
+        $this->assertSame(200, $ok->get_status());
+        $this->assertNull(ScopeContext::tryGet(), 'پایان درخواست موفق باید scope را بازگردانی کند');
+    }
+
+    public function testRestoreSafetyNetIsNoOpWhenNothingPending(): void
+    {
+        // هیچ درخواست bind‌شده‌ای در جریان نیست → net پایانی نباید Scope
+        // مشروعِ جاری (مثلاً scope یک job) را پاک کند.
+        $job = ClinicScope::forClinic($this->clinicA);
+        ScopeContext::set($job);
+        RestClinicContext::restoreAllPending();
+        $this->assertSame($job, ScopeContext::tryGet());
+        ScopeContext::clear();
+    }
+
 
     // ================= fixtures =================
 
