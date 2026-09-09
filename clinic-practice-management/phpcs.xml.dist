@@ -40,28 +40,34 @@
             (PHP-FIG) است؛ enforcing تب روی کدِ جدید، ناسازگار با کد مجاور می‌شود.
           - WordPress.PHP.YodaConditions: سبک صرفاً صوری؛ پایگاه کد از آن
             استفاده نمی‌کند و یکدستی با کد مجاور مقدم است.
-          - WordPress.WhiteSpace.PrecisionAlignment: سبک alignment جداولی
-            (=> های ردیف‌شده) در کل پایگاه کد رایج است؛ صرفاً صوری.
+          - Generic.WhiteSpace.PrecisionAlignment: سبک alignment جداولی
+            (=> های ردیف‌شده) در کل پایگاه کد رایج است؛ صرفاً صوری
+            (در WPCS 3.x این sniff در Generic است).
         هیچ sniff امنیتی/SQL/i18n/naming غیرفعال نیست.
     -->
     <rule ref="WordPress-Extra">
         <exclude name="WordPress.Files.FileName"/>
         <exclude name="Generic.WhiteSpace.DisallowSpaceIndent"/>
         <exclude name="WordPress.PHP.YodaConditions"/>
-        <exclude name="WordPress.WhiteSpace.PrecisionAlignment"/>
+        <exclude name="Generic.WhiteSpace.PrecisionAlignment"/>
     </rule>
 
     <!-- i18n: text domain رسمی افزونه (هدر Plugin) -->
     <rule ref="WordPress.WP.I18n">
         <properties>
-            <property name="text_domain" type="array" value="cpms"/>
+            <property name="text_domain" type="array">
+                <element value="cpms"/>
+            </property>
         </properties>
     </rule>
 
     <!-- پیشوندهای مجاز سراسری‌های اعلان‌شده (ثابت‌ها/هوک‌ها/توابع global) -->
     <rule ref="WordPress.NamingConventions.PrefixAllGlobals">
         <properties>
-            <property name="prefixes" type="array" value="cpms, CPMS"/>
+            <property name="prefixes" type="array">
+                <element value="cpms"/>
+                <element value="CPMS"/>
+            </property>
         </properties>
     </rule>
 
