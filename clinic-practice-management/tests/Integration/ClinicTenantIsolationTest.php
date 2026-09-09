@@ -6,6 +6,7 @@ namespace ClinicCore\Tests\Integration;
 
 use ClinicCore\Application\Scope\ClinicScope;
 use ClinicCore\Application\Scope\ScopeContext;
+use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use WP_REST_Request;
 use WP_REST_Response;
@@ -363,10 +364,9 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         $this->assertSame(404, $res->get_status(), 'شناسهٔ فایلِ Clinic دیگر: ' . $this->body($res));
 
         // (b) آپلود کارکنان A برای بیمار Clinic B ⇒ رد (relation‌محور بودن clinic فایل)
-        $crossWrite = $this->dispatch(
-            'POST',
+        $crossWrite = $this->dispatchUpload(
             self::NS . '/files',
-            ['patient_id' => $patientB, 'category' => 'document', 'visibility' => 'patient_visible'],
+            ['patient_id' => $patientB, 'category' => 'document', 'visibility' => 'patient_visible', 'name' => 'x.pdf'],
             ['X-CPMS-Clinic-Id' => (string) self::CLINIC_A]
         );
         // بیمار متعلق به Clinic دیگر ⇒ safe not‑found (بدون افشای وجود بیمار).
@@ -858,22 +858,79 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
      *
      * @return int fileId
      */
-    private function seedFile(int $clinicId, int $patientId, string $visibility, string $filename, ?int $visitId = null): int
-    {
-        $staff = $this->seedStaff('cpms_secretary', [$clinicId]);
-        $file = $this->makeUploadedFile($filename, $this->pdfContent());
-
-        // upload Setting‌محور است ⇒ Scope صریح همان Clinic (fixture، نه حدسِ سیستمی)
-        App::replaceExplicitScope(ClinicScope::forClinic($clinicId));
-        try {
-            $row = App::medicalFileService()->upload($staff, $file, $patientId, $visitId, 'document', $visibility);
-        } finally {
-            $this->bindHarnessScope();
+    /**
+     * فایل را از **همان endpoint‌ای که خوانده می‌شود** می‌سازیم (upload واقعی):
+     * instance ذخیره‌سازیِ controller در boot با Setting زمانِ boot ساخته می‌شود و
+     * در نصب چند‑Clinic می‌تواند با instance تست فرق کند؛ ساختِ فایل از مسیر
+     * service مستقیم therefore منبع «file missing» کاذب می‌ساخت.
+     */
+    private function seedFile(
+        int $clinicId,
+        int $patientId,
+        string $visibility,
+        string $filename,
+        ?int $visitId = null,
+        ?int $actorUserId = null
+    ): int {
+        $original = get_current_user_id();
+        $actor = $actorUserId;
+        if ($actor === null) {
+            $actor = $this->seedStaff('cpms_secretary', [$clinicId]);
         }
-        $id = (int) $row['id'];
-        self::assertGreaterThan(0, $id, 'پیش‌شرط: آپلود فایل از مسیر Product');
+        $actorUser = get_userdata($actor);
+        $isPatient = $actorUser !== false && in_array(RolesAndCapabilities::ROLE_PATIENT, (array) $actorUser->roles, true);
 
-        return $id;
+        $request = new WP_REST_Request($isPatient ? 'POST' : 'POST', $isPatient
+            ? self::NS . '/patients/' . $patientId . '/files'
+            : self::NS . '/files');
+        wp_set_current_user($actor);
+        $request->set_header('X-WP-Nonce', wp_create_nonce('wp_rest'));
+        if (!$isPatient) {
+            $request->set_param('patient_id', $patientId);
+            $request->set_param('category', 'document');
+            $request->set_param('visibility', $visibility);
+            if ($visitId !== null) {
+                $request->set_param('visit_id', $visitId);
+            }
+            $request->set_header('X-CPMS-Clinic-Id', (string) $clinicId);
+        } else {
+            $request->set_param('category', 'document');
+        }
+        $request->set_file_params(['file' => $this->uploadedFileArgs($filename, $this->pdfContent())]);
+
+        $res = rest_do_request($request);
+        $this->bindHarnessScope();
+        wp_set_current_user($original);
+
+        $this->assertLessThan(400, $res->get_status(), 'پیش‌شرط: آپلود از مسیر Product: ' . $this->body($res));
+        $id = $this->dataOf($res)['id'] ?? 0;
+        $this->assertGreaterThan(0, (int) $id, 'پیش‌شرط: شناسه فایل آپلودشده');
+
+        return (int) $id;
+    }
+
+    /** @return array<string, mixed> */
+    private function dataOf(WP_REST_Response $res): array
+    {
+        $data = (array) $res->get_data();
+
+        return (array) ($data['data'] ?? $data);
+    }
+
+    /** shape استاندارد $_FILES برای set_file_params (tmp_name واقعی روی دیسک). */
+    private function uploadedFileArgs(string $name, string $content): array
+    {
+        $tmp = tempnam(sys_get_temp_dir(), 'cpms-iso-');
+        self::assertIsString($tmp);
+        file_put_contents($tmp, $content);
+
+        return [
+            'name' => $name,
+            'tmp_name' => $tmp,
+            'size' => (int) filesize($tmp),
+            'error' => UPLOAD_ERR_OK,
+            'type' => 'application/pdf',
+        ];
     }
 
     /** درج ردیف attachment با storage_path دلخواه (فقط برای تست containment). */
@@ -926,7 +983,50 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         \ClinicCore\Settings\Settings::flushCache();
 
         try {
-            return rest_do_request($request);
+            $res = rest_do_request($request);
+            // اگر route ثبت نشده باشد rest_do_request شیء WP_Error برمی‌گرداند و
+            // get_status() روی آن fatal می‌شود — اینجا صریح گزارش می‌کنیم.
+            $this->assertFalse(
+                $res instanceof \WP_Error,
+                'پاسخ WP_Error (route ثبت‌نشده؟): ' . (string) json_encode([
+                    'code' => $res instanceof \WP_Error ? $res->get_error_code() : null,
+                    'route' => $route,
+                    'clinic' => ScopeContext::tryGet()->clinicId ?? null,
+                ], JSON_UNESCAPED_UNICODE)
+            );
+
+            return $res;
+        } finally {
+            $this->bindHarnessScope();
+        }
+    }
+
+    /** همان dispatch، ولی با فایل multipart (برای آزمون‌های نوشتن). */
+    private function dispatchUpload(string $route, array $body = [], array $headers = []): WP_REST_Response
+    {
+        $request = new WP_REST_Request('POST', $route);
+        foreach ($body as $key => $value) {
+            $request->set_param($key, $value);
+        }
+        $request->set_header('X-WP-Nonce', wp_create_nonce('wp_rest'));
+        foreach ($headers as $name => $value) {
+            $request->set_header($name, $value);
+        }
+        $request->set_file_params(['file' => $this->uploadedFileArgs('probe.pdf', $this->pdfContent())]);
+
+        ScopeContext::clear();
+        \ClinicCore\Settings\Settings::flushCache();
+
+        try {
+            $res = rest_do_request($request);
+            $this->assertFalse(
+                $res instanceof \WP_Error,
+                'پاسخ WP_Error در upload: ' . $route . ' → ' . (string) json_encode(
+                    $res instanceof \WP_Error ? $res->get_error_code() : 'ok'
+                )
+            );
+
+            return $res;
         } finally {
             $this->bindHarnessScope();
         }
