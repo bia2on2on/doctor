@@ -90,11 +90,12 @@ final class ReportsClinicIsolationTest extends WP_UnitTestCase
         $this->activateClinic($this->clinicA);
         wp_set_current_user($this->accountantUserId);
 
-        $visitsA = $this->payload($this->dispatch('GET', self::NS . '/reports/visits', [
+        $resA = $this->dispatch('GET', self::NS . '/reports/visits', [
             'from' => $this->today,
             'to' => $this->today,
-        ]));
-        $this->assertSame(200, $this->lastStatus);
+        ]);
+        $this->assertSame(200, $resA->get_status());
+        $visitsA = $this->payload($resA);
         $this->assertSame('clinic', $visitsA['scope']);
         $this->assertSame(1, $visitsA['summary']['count']);
         $this->assertStringContainsString('IsoA', (string) $visitsA['rows'][0]['patient_name']);
@@ -194,8 +195,6 @@ final class ReportsClinicIsolationTest extends WP_UnitTestCase
     }
 
     // ================= Fixture =================
-
-    private int $lastStatus = 0;
 
     private function activateClinic(int $clinicId): void
     {
