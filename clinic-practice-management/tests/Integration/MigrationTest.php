@@ -113,9 +113,13 @@ final class MigrationTest extends WP_UnitTestCase
 
 
     /**
-     * Phase 2 — بازگشت به نسخهٔ پایه قبل از تست‌های rollback قدیمی.
-     * Migrationهای فاز ۲ (0010..0018) دارای down() کامل‌اند؛ این helper
-     * عمداً دوتایی‌ها را نادیده می‌گیرد و تا $target برمی‌گردد.
+     * Phase 2 — rollback تا جایی که $target «آخرین نسخهٔ اعمال‌شده» باشد.
+     *
+     * معنا: پس از بازگشت، $target هنوز اعمال است و مابقی revert شده‌اند.
+     * برای حالت «پیش از X» باید target = نسخهٔ قبل از X باشد (الگوی تست
+     * قدیمی: rollback از 0009 تا 0006 ⇒ آخرین اعمال‌شده = 0005).
+     * رگرسیون 6990d1e: target=0006 یعنی 0006 هنوز اعمال است — حالت ناهمخوان
+     * که migrate بعدی را به خطای FK کشاند (evidence: run 34303558072).
      */
     private function rollbackTo(string $target): void
     {
@@ -137,7 +141,7 @@ final class MigrationTest extends WP_UnitTestCase
 
         // بازگشت به حالت پیش از 0006/0007 — ابتدا از روی Migrationهای فاز ۲
         // (0010..0018 دارای down() کامل‌اند) و سپس 0009/0008/0007/0006
-        $this->rollbackTo('2026_09_07_0006');
+        $this->rollbackTo('2026_09_07_0005');
 
         // شکل قدیمی: ستون Nullable + u_idem_key
         $col = $wpdb->get_row("SHOW COLUMNS FROM {$t} LIKE 'context_id'", ARRAY_A); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
@@ -188,7 +192,7 @@ final class MigrationTest extends WP_UnitTestCase
         $t = App::db()->table('cpms_idempotency_keys');
 
         // شبیه‌سازی داده معیوب: u_idem_key حذف + دو ردیف هم‌دامنه (مثلاً حاصل Restore/Import)
-        $this->rollbackTo('2026_09_07_0006');
+        $this->rollbackTo('2026_09_07_0005');
         $wpdb->query("ALTER TABLE {$t} DROP INDEX `u_idem_key`"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
         $now = App::db()->nowUtcSql();

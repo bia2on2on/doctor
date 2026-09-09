@@ -110,6 +110,10 @@ jobs:
               | grep -B 1 -A 8 -E '^[0-9]+\) ' | grep -vE '^--$' | head -n 300
             echo "--- TAIL (last 40 lines) ---"
             tail -n 40 /tmp/phpunit-int.log
+            echo "--- FK EVIDENCE: verbose wpdb SQL errors ---"
+            grep -B 1 -A 3 -iE "foreign key constraint" /tmp/phpunit-int.log | grep -vE '^--$' | head -n 100 || true
+            echo "--- FK EVIDENCE: InnoDB LATEST FOREIGN KEY ERROR ---"
+            php -r '$m=@mysqli_connect("127.0.0.1","root","root","wordpress_test"); if(!$m){echo "(no mysqli connection)\n"; exit(0);} $r=@mysqli_query($m,"SHOW ENGINE INNODB STATUS"); if(!$r){echo "(innodb status query failed)\n"); exit(0);} $row=mysqli_fetch_assoc($r); $t=(string)($row["Status"] ?? ""); if(preg_match("/LATEST FOREIGN KEY ERROR:.*?(?=\n-----)/s",$t,$mm)){echo $mm[0]."\n";}else{echo "(no FK section in InnoDB status)\n";}' || true
             echo '```'
           } > /tmp/pr-body.md
           if [ -n "$PR_NUMBER" ]; then
