@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Tests\Integration;
 
+use ClinicCore\Application\Scope\ClinicScope;
 use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Bootstrap\App;
 use WP_REST_Request;
@@ -49,10 +50,15 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         \ClinicCore\Settings\Settings::flushCache();
         App::resetScope();
 
+        /*
+         * این فایل تعداد Clinicهای نصب را زیاد می‌کند ⇒ Resolution سیستمی (exactly‑one)
+         * عمداً Fail‑Closed می‌شود؛ پس هر خواندن/نوشتن Setting باید **زیرِ Scope صریحِ
+         * fixture** انجام شود (نه Resolution ضمنی) — الگوی مجاز ScopeContext.
+         */
+        App::replaceExplicitScope(ClinicScope::forClinic(self::CLINIC_A));
+
         // ذخیره‌سازی تست بیرون از wp-content (الگوی MedicalFilesTest) — cleanup در tearDown.
         $this->storagePath = sys_get_temp_dir() . '/cpms-tenant-files-' . bin2hex(random_bytes(4));
-        App::settings()->set('files.storage_path', $this->storagePath);
-        App::settings()->set('files.max_upload_bytes', 10485760);
 
         $this->orgA = $this->defaultOrganization();
         $this->orgB = $this->insertOrganization('iso-org-b');
@@ -62,11 +68,40 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         $this->insertClinic(self::CLINIC_C, $this->orgB, 'iso-clinic-c');
         $this->locA = $this->insertLocation(self::CLINIC_A, 'iso-loc-a');
         $this->locB = $this->insertLocation(self::CLINIC_B, 'iso-loc-b');
+
+        $this->writeStorageSettings([self::CLINIC_A, self::CLINIC_B, self::CLINIC_C]);
+    }
+
+    /**
+     * Setting ذخیره‌سازی برای هر Clinicِ تست — زیرِ Scope صریح (بدون Resolution ضمنی).
+     *
+     * @param list<int> $clinicIds
+     */
+    private function writeStorageSettings(array $clinicIds): void
+    {
+        foreach ($clinicIds as $clinicId) {
+            App::replaceExplicitScope(ClinicScope::forClinic($clinicId));
+            App::settings()->set('files.storage_path', $this->storagePath);
+            App::settings()->set('files.max_upload_bytes', 10485760);
+        }
+        App::resetScope();
     }
 
     protected function tearDown(): void
     {
+        // fixture نباید هیچ Scope/Setting instance‌ای را به کلاس بعدی منتقل کند
+        ScopeContext::clear();
+        \ClinicCore\Settings\Settings::flushCache();
         App::resetScope();
+        \ClinicCore\Application\Scope\SystemClinicResolver::flush();
+
+        /*
+         * نشتی‌گیر داده (دفاعی، در هر دو جهت): ردیف‌های Clinic این کلاس شناسهٔ
+         * رزرو‌شدهٔ ≥ 61001 دارند. اگر روزی rollback تراکنشِ تست‌سوییٹ مختل شود،
+         * «تعداد Clinic ≠ 1» به کلاس‌های بعدی سرایت نمی‌کند. هیچ ادعای product
+         * را سست نمی‌کند — فقط fixture را پاک‌سازی می‌کند.
+         */
+        $this->purgeReserveRows();
         if ($this->storagePath !== '' && is_dir($this->storagePath)) {
             $it = new \RecursiveIteratorIterator(
                 new \RecursiveDirectoryIterator($this->storagePath, \FilesystemIterator::SKIP_DOTS),
@@ -475,6 +510,36 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
     // fixtures
     // =====================================================================
 
+    /** پاک‌سازی ردیف‌های fixture با شناسهٔ رزرو‌شده ≥ 61000 (کلیدهای خارجی رعایت شود). */
+    private function purgeReserveRows(): void
+    {
+        global $wpdb;
+        $tables = [
+            'cpms_visit_status_history' => 'visit_id',
+            'cpms_medical_attachments' => 'clinic_id',
+            'cpms_visits' => 'clinic_id',
+            'cpms_appointments' => 'clinic_id',
+            'cpms_patient_user_links' => 'clinic_id',
+            'cpms_patients' => 'clinic_id',
+            'cpms_clinicians' => 'clinic_id',
+            'cpms_locations' => 'clinic_id',
+            'cpms_membership_locations' => 'location_id',
+            'cpms_clinic_memberships' => 'clinic_id',
+            'cpms_clinics' => 'id',
+            'cpms_settings' => 'clinic_id',
+        ];
+        foreach ($tables as $table => $column) {
+            $wpdb->query(
+                'DELETE FROM ' . $wpdb->prefix . $table . ' WHERE ' . $column . ' >= 61000' // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+            );
+        }
+        $wpdb->query(
+            'DELETE o FROM ' . $wpdb->prefix . 'cpms_organizations o
+              WHERE o.slug LIKE "iso\_org\_%"
+                AND NOT EXISTS (SELECT 1 FROM ' . $wpdb->prefix . 'cpms_clinics c WHERE c.organization_id = o.id)' // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+        );
+    }
+
     private function defaultOrganization(): int
     {
         global $wpdb;
@@ -637,13 +702,14 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
     {
         global $wpdb;
         $now = App::db()->nowUtcSql();
+        // u_clinician_user (UNIQUE روی wp_user_id) ⇒ پزشکِ بدون اتصال = NULL، نه ۰
         $wpdb->query(
             $wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_clinicians (clinic_id, full_name, wp_user_id, is_active, created_at, updated_at)
-                 VALUES (%d, %s, %d, 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                 VALUES (%d, %s, %i, 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 $clinicId,
                 $name,
-                $wpUserId,
+                $wpUserId > 0 ? $wpUserId : null,
                 $now,
                 $now
             )
@@ -730,7 +796,13 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         $staff = $this->seedStaff('cpms_secretary', [$clinicId]);
         $file = $this->makeUploadedFile($filename, $this->pdfContent());
 
-        $row = App::medicalFileService()->upload($staff, $file, $patientId, $visitId, 'document', $visibility);
+        // upload Setting‌محور است ⇒ Scope صریح همان Clinic (fixture، نه حدسِ سیستمی)
+        App::replaceExplicitScope(ClinicScope::forClinic($clinicId));
+        try {
+            $row = App::medicalFileService()->upload($staff, $file, $patientId, $visitId, 'document', $visibility);
+        } finally {
+            App::resetScope();
+        }
         $id = (int) $row['id'];
         self::assertGreaterThan(0, $id, 'پیش‌شرط: آپلود فایل از مسیر Product');
 
@@ -763,8 +835,15 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
     }
 
     /** @param array<string, string> $headers */
+    /**
+     * Dispatch واقعی با حفظ مرز ایمنی: هیچ Scope fixture‑محوری وارد درخواست
+     * نمی‌شود (وگرنه آزمون‌های «context مبهم ⇒ Fail‑Closed» معنایشان را از دست
+     * می‌دهند) و بعد از آن هم Scope باقی‌مانده‌ای به کلاس بعدی منتقل نمی‌شود.
+     */
     private function dispatch(string $method, string $route, array $body = [], array $headers = []): WP_REST_Response
     {
+        ScopeContext::clear();
+        \ClinicCore\Settings\Settings::flushCache();
         $request = new WP_REST_Request($method, $route);
         foreach ($body as $key => $value) {
             $request->set_param($key, $value);
@@ -774,7 +853,12 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
             $request->set_header($name, $value);
         }
 
-        return rest_do_request($request);
+        try {
+            return rest_do_request($request);
+        } finally {
+            ScopeContext::clear();
+            \ClinicCore\Settings\Settings::flushCache();
+        }
     }
 
     private function body(WP_REST_Response $res): string
