@@ -1,0 +1,138 @@
+# C6 — Tenant Hardcode Census (canonical inventory)
+
+**مبنا:** HEAD = `415238769f40eaf447d6d249664aba72cd415572` (پذیرفتهٔ مالک، C5 closed).
+**ابزار:** `bin/tenant-tripwire.py` (+ allowlist خالی در زمان census) — خروجی کامل در PR کامنت‌ها.
+**تاریخ:** 2026-09-09 — C6-A.
+
+## خلاصهٔ baseline
+
+| دسته | تعداد |
+|---|---|
+| A) tenant hardcode اجرایی (production) | **68** |
+| E) occurrence در کامنت/داک (غیر اجرایی) | 8 |
+| D) تست‌ها (fixture — خارج از اسکن production) | جداگانه (tests/) |
+| C) literal های غیر tenant (مثلاً `is_primary=1`, `capacity=1`) | در اسکن نیستند (الگوها دقیق‌اند) |
+| B) ابزار pilot (bin/pilot-seed, pilot-smoke) | 3 (اجرا در محیط pilot تک‌کلینیکی) |
+
+## معماری context (مصوب — از foundation موجود فاز ۲)
+
+زیرساخت از قبل ساخته شده و تست دارد (`ScopeContextTest`)؛ C6 آن را «مصرف» می‌کند:
+
+```
+Boundary (REST/Admin/Job/Command)
+   ↓ ScopeContext::set(ClinicScope)  — فقط اگر scope صریح داریم
+Application Service  → App::scope()  = ScopeContext صریح → SystemClinicResolver (دقیقاً ۱ کلینیک؛
+                                                  صفر/چند = CLINIC_SCOPE_REQUIRED، fail-closed)
+   ↓ clinic صریح (پارامتر متد)
+Repository (predicate صریح، prepared، indexable)
+```
+
+انواع flow و منبع scope:
+
+| Flow | منبع scope |
+|---|---|
+| REST staff (patients/reports/queue/schedule/…) | `clinic_id` صریح درخواست × verify سمت سرور (Membership فعال C4) → ScopeContext؛ نبود → SystemClinicResolver |
+| Booking عمومی بیمار | **derive از Slot** (ردیف slot ستون clinic_id دارد) — رابطهٔ domain سمت سرور، نه ورودی client |
+| عملیات بالینی/ویزیت/فایل | derive از رکورد مرجع (appointment/visit/patient) |
+| Jobهای background (reminderها) | اسکن due-work بدون predicate کلینیک (سیستمی)؛ هر ردیف clinic خودش را حمل می‌کند |
+| dispatch/purge اعلان‌ها (سیستمی) | بدون predicate کلینیک (batch سیستمی روی همهٔ کلینیک‌ها) |
+| Public/OTP | `Settings::clinicId()` = configured-clinic semantic (B-15؛ صریح optional context طبق §۹ دستور C6) — نه clinic=1 هاردکد |
+| Migration/activation | خارج از بحث (تاریخی) |
+
+ممنوع‌ها (پابرجا از دستور): fallback «اولین کلینیک» جز از طریق SystemClinicResolverِ count=1؛ static state قابل leak بین request/job/test (→ فیکس Settings::$cache استاتیک + flush در App::resetScope).
+
+## Inventory و disposition (هر ۶۸ مورد)
+
+کلاس A = tenant hardcode واقعی. «منبع» = intended context source پس از refactor.
+
+### Admin (۱)
+| فایل:خط | الگو | منبع |
+|---|---|---|
+| Admin/SecretaryQueuePage.php:46 | SQL | App::scope() |
+
+### Application — Booking (۱۴)
+| فایل:خط | الگو | منبع |
+|---|---|---|
+| BookingService.php:87 | availability(1,…) | بدون predicate کلینیک (availability عمومیِ clinician — رابطهٔ domain) |
+| BookingService.php:139,164,482,587 | findByClinicianSlot(1,…) | lookup با کلید business (clinician,date,time) → clinic از خود slot |
+| BookingService.php:278 | findByMobile(1,…) | clinic از slot در جریان confirm |
+| BookingService.php:192,309,510,609,864,874 | 'clinic_id'=>1 (insert appointment/hold/patient) | `$slot['clinic_id']` (سمت سرور) |
+| BookingService.php:934 | generateMrn SQL | clinic پارامتری از جریان |
+| ScheduleService.php:80,221 | insert schedule/exception | App::scope() (عملیات staff) |
+
+### Application — Clinical/Patients/Visits/Files (۸)
+| فایل:خط | الگو | منبع |
+|---|---|---|
+| ClinicalService.php:883,889 | search(1,…)/notes->search(1,…) | App::scope() |
+| MedicalFileService.php:272 | store(…,1,…) | clinic از رکورد patient/visit |
+| PatientService.php:139,177,296,182,399 | search/findByMobile/insert/generateMrn | App::scope() |
+| VisitService.php:556 | insert visit | clinic از appointment/patient مرجع |
+
+### Application — Jobs (۲)
+| فایل:خط | الگو | منبع |
+|---|---|---|
+| ApptReminderHandler.php:51 | a.clinic_id=1 | حذف predicate (اسکن due سیستمی) + clinic از ردیف appointment |
+| FollowUpReminderHandler.php:49 | f.clinic_id=1 | همان |
+
+### Application — Notifications/SMS/Reports/Export (۱۴)
+| فایل:خط | الگو | منبع |
+|---|---|---|
+| SmsService.php:134 | insert sms_messages | پارامتر clinic از caller (scope یا ردیف مرجع) |
+| ExportService.php:121 | store(csv,1,…) | App::scope() |
+| ExportService.php:245 | purge SQL | App::scope() |
+| ReportService.php:197,229,271,325,368,400,432,502,538,602 | SQL×10 | App::scope() (گزارش staff/admin) |
+
+### Infrastructure — Repositories (۲۳)
+| فایل:خط | الگو | منبع |
+|---|---|---|
+| NotificationRepository.php:26 (insert),69,98,119,128,137,146 | SQL/insert | پارامتر clinic صریح متد (staff→scope؛ patient→کلینیک patient) |
+| NotificationRepository.php:208,221,236 | dispatch/cancel/purge | حذف predicate (سیستمی؛ cancel از appointment-id دقیق scoped است) |
+| ClinicianRepository.php:39,79 | SQL/insert | پارامتر clinic صریح (App::scope() از caller) |
+| ClinicalNoteRepository.php:35 | insert default | پارامتر clinic (از visit) |
+| FollowUpRepository.php:27 | insert default | پارامتر clinic (از visit) |
+| HandwritingRepository.php:27 | insert default | پارامتر clinic (scope) |
+| InvoiceRepository.php:28 | insert default | پارامتر clinic (از visit) |
+| MedicalFileRepository.php:26 | insert default | پارامتر clinic (از patient) |
+| PaymentRepository.php:28 | insert default | پارامتر clinic (از invoice) |
+| PrescriptionRepository.php:34 | insert default | پارامتر clinic (از visit) |
+| RecommendationRepository.php:26 | insert default | پارامتر clinic (از visit) |
+| ServiceRepository.php:52,69 | insert/update | پارامتر clinic (scope) |
+| VisitRepository.php:73 | insert default | پارامتر clinic (از appointment) |
+
+### Infrastructure — Audit/Idempotency/Settings (۳)
+| فایل:خط | الگو | منبع |
+|---|---|---|
+| AuditLogger.php:45 | ?int $clinicId = 1 | `= null` + Migration (nullable) برای eventهای system-level؛ callerها scope/entity می‌دهند |
+| Idempotency.php:37 | ?int $clinicId = 1 | پارامتر ضروری + Migration: افزودن clinic_id به UNIQUE (tenant-safe key) |
+| Settings.php:145 | int $clinicId = 1 | حذف default (اجباری) + cache instance-level (حذف static cache مشترک) |
+
+### bin — ابزار pilot (۳ — کلاس B)
+| فایل:خط | منبع |
+|---|---|
+| pilot-seed.php:52,129 / pilot-smoke.php:115 | resolve داینامیک کلینیکِ تنها (مثل SystemClinicResolver) — pilot تک‌کلینیکی؛ بدون literal |
+
+### کامنت‌ها (۸ — کلاس E؛ با بازنویسی داک پاک می‌شوند)
+OtpService:321، PatientIdentityService:23 (نقل قول قاعده)، ClinicScope:12 (نقل قول AD-13)، VisitService:326، ClinicianRepository:17، MembershipRepository:14، NotificationRepository:13، LoginRateLimiter:135.
+
+### خارج از اسکن (تصمیم مستند)
+- `src/Migrations/**` — تاریخچهٔ schema/seed (مثلاً 0010 seed سازمان از کلینیک موجود). بازنویسی = بازنویسی تاریخچه. کلاس migration-historical.
+- `tests/**` — fixture (کلاس D)؛ ماتریس multi-tenant جدید در C6-F اضافه می‌شود.
+- `SystemClinicResolver` (ORDER BY id LIMIT 1 داخل count==1) — sanction شده؛ خودِ مکانیزم fail-closed است.
+
+## باگ‌های مرتبط که census کشف کرد (fix در C6)
+
+1. **Settings::$cache استاتیک مشترک** بین instanceهای clinic مختلف = leak تنظیمات بین tenantها (تک-instance فعلی mask کرده). فیکس: cache instance-level + flush در `App::resetScope()`.
+2. **Idempotency UNIQUE بدون clinic** (`u_idem_scope=key,endpoint,wp_user_id,context_id`) — کلید یکسان در دو کلینیک = collision/replay → leak پاسخ. فیکس: Migration 0020 (UNIQUE پنج‌ستونه) + پارامتر clinic از scope/entity.
+3. **Jobهای reminder با clinic=1** — در نصب multi-clinic، نوبت‌های کلینیک‌های دیگر هرگز یادآوری نمی‌گرفتند (silent miss). فیکس: حذف predicate.
+4. **cancelQueuedForAppointment با clinic=1** — لغو اعلان‌های نوبت کلینیک دیگر بی‌اثر. فیکس: حذف predicate (appointment-id دقیق است).
+5. **audit_logs.clinic_id NOT NULL** اما eventهای system-level clinic ندارند → فیکس: Migration (nullable) + resolve صریح.
+
+## Batch plan (اجرای اتمیک)
+
+- **C6-A** (این کامیت): census + tripwire (لوکال) + allowlist خالی. CI wiring در C6-F وقتی production=0.
+- **C6-B**: Notifications+SMS+Jobs (repo/service/handlers).
+- **C6-C**: Booking+Schedule (slot-derived).
+- **C6-D**: Patients+Clinical+Visits+Files (scope/entity-derived).
+- **C6-E**: Reports+Export+Admin + Infra (Audit/Idempotency/Settings + Migrationها 0020/0021) + REST boundary (resolveScope×membership).
+- **C6-F**: tripwire→CI + MultiTenantIsolationTest (ماتریس ۱۴بندی).
+- **C6-G**: docs + state.
