@@ -40,6 +40,8 @@ final class ExportClinicIsolationTest extends WP_UnitTestCase
 
     private string $today;
 
+    private int $requestClinicId = 1;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -261,6 +263,7 @@ final class ExportClinicIsolationTest extends WP_UnitTestCase
     private function activateClinic(int $clinicId): void
     {
         App::resetScope();
+        $this->requestClinicId = $clinicId;
         ScopeContext::set(ClinicScope::forClinic($clinicId));
     }
 
@@ -436,6 +439,9 @@ final class ExportClinicIsolationTest extends WP_UnitTestCase
             $request->set_param($key, $value);
         }
         $request->set_header('X-WP-Nonce', wp_create_nonce('wp_rest'));
+        if ($this->requestClinicId > 0) {
+            $request->set_header('X-CPMS-Clinic-Id', (string) $this->requestClinicId);
+        }
 
         return rest_do_request($request);
     }

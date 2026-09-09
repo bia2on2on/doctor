@@ -1,0 +1,588 @@
+<?php
+
+declare(strict_types=1);
+
+namespace ClinicCore\Tests\Integration;
+
+use ClinicCore\Application\Scope\ClinicScope;
+use ClinicCore\Application\Scope\ScopeContext;
+use ClinicCore\Bootstrap\App;
+use WP_REST_Request;
+use WP_REST_Response;
+use WP_UnitTestCase;
+
+/**
+ * C6 — مرز REST مورد اعتماد Clinic (نه Phase 3).
+ *
+ * کلاینت درخواست می‌کند؛ سرور پس از عضویت فعال برقرار می‌کند.
+ */
+final class RestTrustedClinicContextTest extends WP_UnitTestCase
+{
+    private const NS = '/clinic/v1';
+
+    private int $clinicA = 1;
+
+    private int $clinicB = 2;
+
+    private int $locA;
+
+    private int $locB;
+
+    private string $today;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        App::migrations()->migrate();
+        \ClinicCore\Settings\Settings::flushCache();
+        App::resetScope();
+        $this->today = gmdate('Y-m-d');
+        $this->locA = $this->primaryLocation($this->clinicA);
+    }
+
+    protected function tearDown(): void
+    {
+        App::resetScope();
+        parent::tearDown();
+    }
+
+    public function testUniqueMembershipWithoutHeaderBindsThatClinic(): void
+    {
+        $userId = $this->makeStaff('cpms_doctor');
+        wp_set_current_user($userId);
+
+        $res = $this->dispatch('GET', self::NS . '/reports');
+        $this->assertSame(200, $res->get_status());
+        $this->assertSame(null, ScopeContext::tryGet(), 'Scope درخواست باید بعد از REST پاک شود');
+    }
+
+    public function testNoMembershipDeniedEvenWhenExactlyOneClinic(): void
+    {
+        $userId = $this->makeUser('no_mem', 'subscriber');
+        $user = get_userdata($userId);
+        $user?->add_cap('cpms_report_read');
+        wp_set_current_user($userId);
+
+        $res = $this->dispatch('GET', self::NS . '/reports', [], ['X-CPMS-Clinic-Id' => (string) $this->clinicA]);
+        $this->assertSame(403, $res->get_status());
+        $this->assertSame('CLINIC_SCOPE_UNAVAILABLE', $this->errorCode($res));
+        $flat = (string) json_encode($res->get_data(), JSON_UNESCAPED_UNICODE);
+        $this->assertStringNotContainsString('membership', strtolower($flat));
+        $this->assertStringNotContainsString('عضو', $flat);
+    }
+
+    public function testTwoMembershipsWithoutHeaderRequireExplicitClinic(): void
+    {
+        $this->insertClinic($this->clinicB, 'rest-ctx-b');
+        $userId = $this->makeStaff('cpms_doctor');
+        App::membership_service()->create_membership($this->clinicA, $userId, 'cpms_doctor');
+        App::membership_service()->create_membership($this->clinicB, $userId, 'cpms_doctor');
+        wp_set_current_user($userId);
+
+        $res = $this->dispatch('GET', self::NS . '/reports');
+        $this->assertSame(400, $res->get_status());
+        $this->assertSame('CLINIC_SCOPE_REQUIRED', $this->errorCode($res));
+    }
+
+    public function testValidHeaderBindsRequestedClinicAndOrgFromDatabase(): void
+    {
+        $this->insertClinic($this->clinicB, 'rest-ctx-b2');
+        $userId = $this->makeStaff('cpms_doctor');
+        App::membership_service()->create_membership($this->clinicB, $userId, 'cpms_doctor');
+        wp_set_current_user($userId);
+
+        $orgB = (int) App::db()->fetchValue(
+            'SELECT organization_id FROM ' . App::db()->table('cpms_clinics') . ' WHERE id = %d',
+            [$this->clinicB]
+        );
+        $this->assertGreaterThan(0, $orgB);
+
+        $captured = null;
+        add_filter('rest_request_before_callbacks', static function ($response, $handler, $request) use (&$captured) {
+            if ($request instanceof WP_REST_Request && $request->get_route() === '/clinic/v1/reports') {
+                $captured = ScopeContext::tryGet();
+            }
+
+            return $response;
+        }, 11, 3);
+
+        $res = $this->dispatch('GET', self::NS . '/reports', [], ['X-CPMS-Clinic-Id' => (string) $this->clinicB]);
+        $this->assertSame(200, $res->get_status());
+        $this->assertInstanceOf(ClinicScope::class, $captured);
+        $this->assertSame($this->clinicB, $captured->clinicId);
+        $this->assertSame($orgB, $captured->organizationId);
+        $this->assertSame(ClinicScope::SOURCE_EXPLICIT, $captured->source);
+        $this->assertSame(null, ScopeContext::tryGet());
+    }
+
+    public function testMalformedClinicIdIsValidationFailed(): void
+    {
+        $userId = $this->makeStaff('cpms_doctor');
+        wp_set_current_user($userId);
+
+        foreach (['abc', '0', '-1', '1.5', '01'] as $bad) {
+            $res = $this->dispatch('GET', self::NS . '/reports', [], ['X-CPMS-Clinic-Id' => $bad]);
+            $this->assertSame(422, $res->get_status(), $bad);
+            $this->assertSame('CLINIC_VALIDATION_FAILED', $this->errorCode($res), $bad);
+        }
+    }
+
+    public function testHeaderAndParamMismatchIsValidationFailed(): void
+    {
+        $this->insertClinic($this->clinicB, 'rest-ctx-mismatch');
+        $userId = $this->makeStaff('cpms_doctor');
+        App::membership_service()->create_membership($this->clinicA, $userId, 'cpms_doctor');
+        App::membership_service()->create_membership($this->clinicB, $userId, 'cpms_doctor');
+        wp_set_current_user($userId);
+
+        $res = $this->dispatch(
+            'GET',
+            self::NS . '/reports',
+            ['clinic_id' => $this->clinicB],
+            ['X-CPMS-Clinic-Id' => (string) $this->clinicA]
+        );
+        $this->assertSame(422, $res->get_status());
+        $this->assertSame('CLINIC_VALIDATION_FAILED', $this->errorCode($res));
+    }
+
+    public function testNonMemberExistingClinicIsUnavailableWithoutExistenceLeak(): void
+    {
+        $this->insertClinic($this->clinicB, 'rest-ctx-other');
+        $userId = $this->makeStaff('cpms_doctor');
+        App::membership_service()->create_membership($this->clinicA, $userId, 'cpms_doctor');
+        wp_set_current_user($userId);
+
+        $res = $this->dispatch('GET', self::NS . '/reports', [], ['X-CPMS-Clinic-Id' => (string) $this->clinicB]);
+        $this->assertSame(403, $res->get_status());
+        $this->assertSame('CLINIC_SCOPE_UNAVAILABLE', $this->errorCode($res));
+        $flat = (string) json_encode($res->get_data(), JSON_UNESCAPED_UNICODE);
+        $this->assertStringNotContainsString((string) $this->clinicB, $flat);
+        $this->assertStringNotContainsString('عضو', $flat);
+    }
+
+    public function testUnknownClinicIdMatchesNonMemberEnvelope(): void
+    {
+        $userId = $this->makeStaff('cpms_doctor');
+        wp_set_current_user($userId);
+
+        $missing = $this->dispatch('GET', self::NS . '/reports', [], ['X-CPMS-Clinic-Id' => '99991']);
+        $this->assertSame(403, $missing->get_status());
+        $this->assertSame('CLINIC_SCOPE_UNAVAILABLE', $this->errorCode($missing));
+    }
+
+    public function testSuspendedMembershipIsUnavailable(): void
+    {
+        $userId = $this->makeStaff('cpms_doctor');
+        $membership = App::membership_service()->membership_for($this->clinicA, $userId);
+        $this->assertNotNull($membership);
+        App::membership_service()->suspend_membership((int) $membership['id']);
+        wp_set_current_user($userId);
+
+        $res = $this->dispatch('GET', self::NS . '/reports', [], ['X-CPMS-Clinic-Id' => (string) $this->clinicA]);
+        $this->assertSame(403, $res->get_status());
+        $this->assertSame('CLINIC_SCOPE_UNAVAILABLE', $this->errorCode($res));
+    }
+
+    public function testLocationBelongingToClinicIsBound(): void
+    {
+        $userId = $this->makeStaff('cpms_doctor');
+        wp_set_current_user($userId);
+        $captured = null;
+        add_filter('rest_request_before_callbacks', static function ($response, $handler, $request) use (&$captured) {
+            if ($request instanceof WP_REST_Request && $request->get_route() === '/clinic/v1/reports') {
+                $captured = ScopeContext::tryGet();
+            }
+
+            return $response;
+        }, 11, 3);
+
+        $res = $this->dispatch('GET', self::NS . '/reports', [], [
+            'X-CPMS-Clinic-Id' => (string) $this->clinicA,
+            'X-CPMS-Location-Id' => (string) $this->locA,
+        ]);
+        $this->assertSame(200, $res->get_status());
+        $this->assertInstanceOf(ClinicScope::class, $captured);
+        $this->assertSame($this->locA, $captured->locationId);
+    }
+
+    public function testLocationOfOtherClinicIsUnavailable(): void
+    {
+        $this->insertClinic($this->clinicB, 'rest-ctx-loc-b');
+        $this->locB = $this->insertLocation($this->clinicB, 'rest-ctx-loc-b');
+        $userId = $this->makeStaff('cpms_doctor');
+        App::membership_service()->create_membership($this->clinicA, $userId, 'cpms_doctor');
+        wp_set_current_user($userId);
+
+        $res = $this->dispatch('GET', self::NS . '/reports', [], [
+            'X-CPMS-Clinic-Id' => (string) $this->clinicA,
+            'X-CPMS-Location-Id' => (string) $this->locB,
+        ]);
+        $this->assertSame(403, $res->get_status());
+        $this->assertSame('CLINIC_SCOPE_UNAVAILABLE', $this->errorCode($res));
+    }
+
+    public function testLocationWithoutClinicIdDoesNotInferClinic(): void
+    {
+        $userId = $this->makeStaff('cpms_doctor');
+        wp_set_current_user($userId);
+
+        $res = $this->dispatch('GET', self::NS . '/reports', [], [
+            'X-CPMS-Location-Id' => (string) $this->locA,
+        ]);
+        $this->assertSame(422, $res->get_status());
+        $this->assertSame('CLINIC_VALIDATION_FAILED', $this->errorCode($res));
+    }
+
+    public function testLeftoverScopeIsIgnoredWhenHeaderNamesAnotherClinic(): void
+    {
+        $this->insertClinic($this->clinicB, 'rest-ctx-left');
+        $this->seedVisitPair();
+        $userId = $this->makeStaff('cpms_doctor');
+        App::membership_service()->create_membership($this->clinicA, $userId, 'cpms_doctor');
+        App::membership_service()->create_membership($this->clinicB, $userId, 'cpms_doctor');
+        $acc = get_userdata($userId);
+        $acc?->add_cap('cpms_patient_read');
+
+        ScopeContext::set(ClinicScope::forClinic($this->clinicA));
+        wp_set_current_user($userId);
+        $res = $this->dispatch('GET', self::NS . '/reports/visits', [
+            'from' => $this->today,
+            'to' => $this->today,
+        ], ['X-CPMS-Clinic-Id' => (string) $this->clinicB]);
+        $this->assertSame(200, $res->get_status());
+        $payload = $this->payload($res);
+        $this->assertStringContainsString('IsoB', (string) json_encode($payload));
+        $this->assertStringNotContainsString('IsoA', (string) json_encode($payload));
+    }
+
+    public function testExactOneClinicIdNotOneStillRequiresMembership(): void
+    {
+        global $wpdb;
+        $newId = 41;
+        $wpdb->query('SET FOREIGN_KEY_CHECKS = 0'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $wpdb->query('UPDATE ' . $wpdb->prefix . 'cpms_clinics SET id = ' . $newId); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $wpdb->query('SET FOREIGN_KEY_CHECKS = 1'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        App::resetScope();
+
+        $userId = $this->makeStaff('cpms_doctor');
+        wp_set_current_user($userId);
+
+        $ok = $this->dispatch('GET', self::NS . '/reports', [], ['X-CPMS-Clinic-Id' => (string) $newId]);
+        $this->assertSame(200, $ok->get_status());
+
+        $denied = $this->dispatch('GET', self::NS . '/reports', [], ['X-CPMS-Clinic-Id' => '1']);
+        $this->assertSame(403, $denied->get_status());
+        $this->assertSame('CLINIC_SCOPE_UNAVAILABLE', $this->errorCode($denied));
+    }
+
+    public function testPatientNotificationsDoNotRequireClinicHeader(): void
+    {
+        $userId = $this->makeUser('ctx_pat', 'cpms_patient');
+        wp_set_current_user($userId);
+        $res = $this->dispatch('GET', self::NS . '/notifications');
+        $this->assertSame(200, $res->get_status());
+    }
+
+    public function testPublicHealthDoesNotRequireClinicHeader(): void
+    {
+        wp_set_current_user(0);
+        $request = new WP_REST_Request('GET', self::NS . '/health');
+        $res = rest_do_request($request);
+        $this->assertSame(200, $res->get_status());
+    }
+
+    public function testPermissionCallbackDoesNotBindScope(): void
+    {
+        $userId = $this->makeStaff('cpms_doctor');
+        wp_set_current_user($userId);
+        ScopeContext::clear();
+
+        $handlers = rest_get_server()->get_routes()['/clinic/v1/reports'] ?? null;
+        $this->assertNotNull($handlers);
+        $request = new WP_REST_Request('GET', '/clinic/v1/reports');
+        $request->set_header('X-WP-Nonce', wp_create_nonce('wp_rest'));
+        $allowed = call_user_func($handlers[0]['permission_callback'], $request);
+        $this->assertTrue($allowed);
+        $this->assertSame(null, ScopeContext::tryGet());
+    }
+
+    public function testExportRestPutsRequestClinicOnJobNotLeftoverScope(): void
+    {
+        $this->insertClinic($this->clinicB, 'rest-ctx-export');
+        $this->seedVisitPair();
+        $userId = $this->makeStaff('cpms_doctor');
+        App::membership_service()->create_membership($this->clinicA, $userId, 'cpms_doctor');
+        App::membership_service()->create_membership($this->clinicB, $userId, 'cpms_doctor');
+        $user = get_userdata($userId);
+        $user?->add_cap('cpms_export');
+        $user?->add_cap('cpms_patient_read');
+
+        ScopeContext::set(ClinicScope::forClinic($this->clinicA));
+        wp_set_current_user($userId);
+        $res = $this->dispatch('POST', self::NS . '/reports/visits/export', [
+            'from' => $this->today,
+            'to' => $this->today,
+        ], ['X-CPMS-Clinic-Id' => (string) $this->clinicB]);
+        $this->assertSame(202, $res->get_status());
+        $jobId = (int) $this->payload($res)['job_id'];
+        $payloadJson = (string) App::db()->fetchValue(
+            'SELECT payload_json FROM ' . App::db()->table('cpms_jobs') . ' WHERE id = %d',
+            [$jobId]
+        );
+        $payload = json_decode($payloadJson, true);
+        $this->assertIsArray($payload);
+        $this->assertSame($this->clinicB, (int) $payload['clinic_id']);
+    }
+
+    public function testSuspendedOrganizationIsUnavailable(): void
+    {
+        global $wpdb;
+        $now = App::db()->nowUtcSql();
+        $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_organizations (name, slug, status, created_at, updated_at)
+                 VALUES (%s, %s, %s, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                'Org Suspended',
+                'org-susp-' . bin2hex(random_bytes(2)),
+                'suspended',
+                $now,
+                $now
+            )
+        );
+        $orgId = (int) $wpdb->insert_id;
+        $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_clinics (id, organization_id, name, slug, timezone, created_at, updated_at)
+                 VALUES (%d, %d, %s, %s, %s, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $this->clinicB,
+                $orgId,
+                'Suspended clinic',
+                'clinic-susp',
+                'Asia/Tehran',
+                $now,
+                $now
+            )
+        );
+        $userId = $this->makeStaff('cpms_doctor');
+        App::membership_service()->create_membership($this->clinicB, $userId, 'cpms_doctor');
+        wp_set_current_user($userId);
+
+        $res = $this->dispatch('GET', self::NS . '/reports', [], ['X-CPMS-Clinic-Id' => (string) $this->clinicB]);
+        $this->assertSame(403, $res->get_status());
+        $this->assertSame('CLINIC_SCOPE_UNAVAILABLE', $this->errorCode($res));
+    }
+
+    public function testStaffCancelBindsAndPatientCancelDoesNotRequireHeader(): void
+    {
+        $secretary = $this->makeStaff('cpms_secretary');
+        $patient = $this->makeUser('ctx_cancel_pat', 'cpms_patient');
+        wp_set_current_user($secretary);
+        $staff = $this->dispatch('POST', self::NS . '/appointments/1/cancel', ['reason' => 'test'], [
+            'X-CPMS-Clinic-Id' => (string) $this->clinicA,
+        ]);
+        $this->assertNotSame('CLINIC_SCOPE_REQUIRED', $this->errorCode($staff));
+        $this->assertNotSame('CLINIC_SCOPE_UNAVAILABLE', $this->errorCode($staff));
+
+        wp_set_current_user($patient);
+        $pat = $this->dispatch('POST', self::NS . '/appointments/1/cancel', ['reason' => 'test']);
+        $this->assertNotSame('CLINIC_SCOPE_REQUIRED', $this->errorCode($pat));
+        $this->assertNotSame('CLINIC_VALIDATION_FAILED', $this->errorCode($pat));
+    }
+
+    // ================= fixtures =================
+
+    private function makeStaff(string $role): int
+    {
+        return $this->makeUser('ctx_' . $role, $role);
+    }
+
+    private function makeUser(string $login, string $role): int
+    {
+        $userId = (int) wp_create_user($login . bin2hex(random_bytes(3)), 'pass-12345', $login . bin2hex(random_bytes(2)) . '@test.local');
+        $user = get_userdata($userId);
+        if ($user !== false) {
+            $user->set_role($role);
+        }
+
+        return $userId;
+    }
+
+    private function insertClinic(int $id, string $slug): void
+    {
+        global $wpdb;
+        $now = App::db()->nowUtcSql();
+        $orgId = (int) $wpdb->get_var('SELECT organization_id FROM ' . $wpdb->prefix . 'cpms_clinics WHERE id = 1'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $ok = $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_clinics (id, organization_id, name, slug, timezone, created_at, updated_at)
+                 VALUES (%d, %d, %s, %s, %s, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $id,
+                $orgId,
+                'Clinic ' . $slug,
+                $slug,
+                'Asia/Tehran',
+                $now,
+                $now
+            )
+        );
+        self::assertNotFalse($ok);
+        App::resetScope();
+    }
+
+    private function insertLocation(int $clinicId, string $slug): int
+    {
+        global $wpdb;
+        $now = App::db()->nowUtcSql();
+        $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_locations (clinic_id, name, slug, timezone, is_primary, is_active, created_at, updated_at)
+                 VALUES (%d, %s, %s, %s, 1, 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $clinicId,
+                $slug,
+                $slug,
+                'Asia/Tehran',
+                $now,
+                $now
+            )
+        );
+
+        return (int) $wpdb->insert_id;
+    }
+
+    private function primaryLocation(int $clinicId): int
+    {
+        global $wpdb;
+        $id = (int) $wpdb->get_var(
+            $wpdb->prepare(
+                'SELECT id FROM ' . $wpdb->prefix . 'cpms_locations WHERE clinic_id = %d AND is_primary = 1 LIMIT 1', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $clinicId
+            )
+        );
+        self::assertGreaterThan(0, $id);
+
+        return $id;
+    }
+
+    private function seedVisitPair(): void
+    {
+        if ($this->locB <= 0) {
+            $this->locB = $this->insertLocation($this->clinicB, 'rest-ctx-vis-b');
+        }
+        $doctor = $this->makeStaff('cpms_doctor');
+        App::membership_service()->create_membership($this->clinicA, $doctor, 'cpms_doctor');
+        if (App::membership_service()->membership_for($this->clinicB, $doctor) === null) {
+            App::membership_service()->create_membership($this->clinicB, $doctor, 'cpms_doctor');
+        }
+        $clinicianId = $this->insertClinician($this->clinicA, $doctor, 'Dr Ctx');
+        $patientA = $this->insertPatient($this->clinicA, 'IsoA');
+        $patientB = $this->insertPatient($this->clinicB, 'IsoB');
+        $this->insertVisit($this->clinicA, $this->locA, $clinicianId, $patientA);
+        $this->insertVisit($this->clinicB, $this->locB, $clinicianId, $patientB);
+    }
+
+    private function insertClinician(int $homeClinicId, int $wpUserId, string $name): int
+    {
+        global $wpdb;
+        $now = App::db()->nowUtcSql();
+        $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_clinicians (clinic_id, full_name, wp_user_id, is_active, created_at, updated_at)
+                 VALUES (%d, %s, %d, 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $homeClinicId,
+                $name,
+                $wpUserId,
+                $now,
+                $now
+            )
+        );
+
+        return (int) $wpdb->insert_id;
+    }
+
+    private function insertPatient(int $clinicId, string $lastName): int
+    {
+        global $wpdb;
+        $now = App::db()->nowUtcSql();
+        $seq = random_int(1000, 999999);
+        $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_patients
+                     (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at)
+                 VALUES (%d, %s, %s, %s, %s, "active", %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $clinicId,
+                'MR-CTX-' . $seq . '-' . $clinicId,
+                'Patient',
+                $lastName,
+                '0913' . sprintf('%07d', $seq),
+                $now,
+                $now
+            )
+        );
+
+        return (int) $wpdb->insert_id;
+    }
+
+    private function insertVisit(int $clinicId, int $locationId, int $clinicianId, int $patientId): void
+    {
+        global $wpdb;
+        $now = App::db()->nowUtcSql();
+        $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_visits
+                     (clinic_id, location_id, clinician_id, patient_id, source, status, visit_date, check_in_at, waiting_since, called_at, active, created_at, updated_at)
+                 VALUES (%d, %d, %d, %d, "walk_in", "waiting", %s, %s, %s, %s, 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $clinicId,
+                $locationId,
+                $clinicianId,
+                $patientId,
+                $this->today,
+                $this->today . ' 10:00:00.000',
+                $this->today . ' 10:00:00.000',
+                $this->today . ' 10:05:00.000',
+                $now,
+                $now
+            )
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $body
+     * @param array<string, string> $headers
+     */
+    private function dispatch(string $method, string $route, array $body = [], array $headers = []): WP_REST_Response
+    {
+        $request = new WP_REST_Request($method, $route);
+        foreach ($body as $key => $value) {
+            $request->set_param($key, $value);
+        }
+        $request->set_header('X-WP-Nonce', wp_create_nonce('wp_rest'));
+        foreach ($headers as $name => $value) {
+            $request->set_header($name, $value);
+        }
+
+        return rest_do_request($request);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function payload(WP_REST_Response $res): array
+    {
+        $body = $res->get_data();
+        if (is_array($body) && array_key_exists('data', $body)) {
+            return is_array($body['data']) ? $body['data'] : [];
+        }
+
+        return is_array($body) ? $body : [];
+    }
+
+    private function errorCode(WP_REST_Response $res): string
+    {
+        $body = $res->get_data();
+        if ($body instanceof \WP_Error) {
+            return (string) $body->get_error_code();
+        }
+
+        return (string) (is_array($body) ? ($body['code'] ?? '') : '');
+    }
+}

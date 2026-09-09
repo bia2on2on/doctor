@@ -21,7 +21,8 @@ final class ScopeRequiredException extends RuntimeException
     public function __construct(
         public readonly string $errorCode,
         string $message,
-        public readonly array $data = []
+        public readonly array $data = [],
+        private readonly int $status = 400
     ) {
         parent::__construct($message);
     }
@@ -41,6 +42,6 @@ final class ScopeRequiredException extends RuntimeException
 
     public function httpStatus(): int
     {
-        return 400;
+        return $this->status;
     }
 }

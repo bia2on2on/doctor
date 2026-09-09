@@ -65,6 +65,24 @@ final class ReportsAuthzTest extends WP_UnitTestCase
         $ops = get_userdata($this->opsUserId);
         $ops?->add_cap('cpms_report_read');
 
+        $membership = App::membership_service();
+        $seedClinic = (int) App::db()->fetchValue(
+            'SELECT id FROM ' . App::db()->table('cpms_clinics') . ' LIMIT 1'
+        );
+        foreach (
+            [
+                [$this->secretaryUserId, 'cpms_secretary'],
+                [$this->doctorAUserId, 'cpms_doctor'],
+                [$this->doctorBUserId, 'cpms_doctor'],
+                [$this->accountantUserId, 'cpms_accountant'],
+                [$this->opsUserId, 'cpms_manager'],
+            ] as [$uid, $roleKey]
+        ) {
+            if ($membership->membership_for($seedClinic, $uid) === null) {
+                $membership->create_membership($seedClinic, $uid, $roleKey);
+            }
+        }
+
         global $wpdb;
         $now = App::db()->nowUtcSql();
 

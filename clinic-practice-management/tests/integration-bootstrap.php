@@ -85,3 +85,42 @@ tests_add_filter('query', static function ($query) {
 
     return $query;
 });
+
+/*
+ * Fixture تک‌کلینیکی: کاربر staff تازه‌ساخته عضویت فعال روی همان Clinic تنها
+ * می‌گیرد. Production این hook را ندارد — مسیر ایجاد عضویت محصول جداست.
+ * نصب چندکلینیکی (COUNT≠1) عمداً دستی می‌ماند تا تست‌های isolation صریح بمانند.
+ */
+tests_add_filter('set_user_role', static function ($userId, $role): void {
+    if (!is_string($role) || !in_array($role, [
+        'cpms_secretary',
+        'cpms_doctor',
+        'cpms_accountant',
+        'cpms_manager',
+        'administrator',
+    ], true)) {
+        return;
+    }
+    try {
+        $count = (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_clinics')
+        );
+        if ($count !== 1) {
+            return;
+        }
+        $clinicId = (int) App::db()->fetchValue(
+            'SELECT id FROM ' . App::db()->table('cpms_clinics') . ' LIMIT 1'
+        );
+        if ($clinicId <= 0) {
+            return;
+        }
+        $service = App::membership_service();
+        if ($service->membership_for($clinicId, (int) $userId) !== null) {
+            return;
+        }
+        $roleKey = $role === 'administrator' ? 'cpms_manager' : $role;
+        $service->create_membership($clinicId, (int) $userId, $roleKey);
+    } catch (\Throwable) {
+        // ساخت کاربر تست نباید به‌خاطر fixture عضویت بشکند.
+    }
+}, 10, 2);

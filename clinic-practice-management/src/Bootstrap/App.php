@@ -115,6 +115,7 @@ use ClinicCore\Rest\OtpController;
 use ClinicCore\Rest\PatientController;
 use ClinicCore\Rest\QueueController;
 use ClinicCore\Rest\ReportsController;
+use ClinicCore\Rest\RestClinicContext;
 use ClinicCore\Rest\ScheduleController;
 use ClinicCore\Rest\SmsController;
 use ClinicCore\Settings\Settings;
@@ -161,6 +162,9 @@ final class App
         // Phase 1A — Item 3: محدودسازی نرخ ورود. پیش از این هیچ کنترل
         // Bruteforce ای روی wp-login و احراز هویت REST وجود نداشت.
         self::loginRateLimiter()->register();
+
+        add_filter('rest_request_before_callbacks', [RestClinicContext::class, 'beforeCallbacks'], 10, 3);
+        add_filter('rest_request_after_callbacks', [RestClinicContext::class, 'afterCallbacks'], 10, 3);
 
         add_action('rest_api_init', static function (): void {
             (new HealthController())->register_routes();
@@ -870,6 +874,20 @@ final class App
         SystemClinicResolver::flush();
         // C6 (bug 1 census): cache تنظیمات per-clinic است و با تغییر Scope باید
         // باطل شود؛ instance هم بازسازی می‌شود تا clinicId از Scope تازه حل شود.
+        Settings::flushCache();
+        self::$settings = null;
+    }
+
+    /**
+     * تعویض Scope صریح بدون flush رزولور سیستمی — مرز REST/Job تو در تو.
+     */
+    public static function replaceExplicitScope(?ClinicScope $scope): void
+    {
+        if ($scope instanceof ClinicScope) {
+            ScopeContext::set($scope);
+        } else {
+            ScopeContext::clear();
+        }
         Settings::flushCache();
         self::$settings = null;
     }
