@@ -433,12 +433,16 @@ erDiagram
 > Repository/MembershipRepository` (+ `Domain/Membership/MembershipException`
 > با کدهای `CLINIC_MEMBERSHIP_*` translation-ready). قواعد رفتاری مستند:
 >  - duplicate (clinic,user) ⇒ خطای صریح `CLINIC_MEMBERSHIP_DUPLICATE` (نه update بی‌صدا؛ backstop = u_membership).
->  - `status='suspended'` ⇒ `activeMembershipFor()` برای آن کلینیک null برمی‌گرداند (fail-closed)؛ رکورد/Locationها/capabilityها حفظ می‌شوند.
+>  - `status='suspended'` ⇒ `active_membership_for()` برای آن کلینیک null برمی‌گرداند (fail-closed)؛ رکورد/Locationها/capabilityها حفظ می‌شوند.
 >  - تخصیص Location به عضویت فقط با `scope_mode='location'` و فقط Locationهای همان Clinic (`CLINIC_MEMBERSHIP_LOCATION_MISMATCH`).
 >  - `is_primary` = ترجیح کاربر؛ در هر لحظه حداکثر یک عضویتِ هر کاربر primary است (مفهوم امنیتی نیست — P2-D1).
 >  - `role_key` فقط primitive رشته‌ای با قالب `[a-z][a-z0-9_]{1,63}` — Policy Engine/Role Builder فاز ۳.
 >  - تخصیص `cpms_clinician_locations` از روی «عضویت فعالِ کاربرِ متصل» اعتبارسنجی می‌شود (نه `clinicians.clinic_id` که legacy است) — پزشک بدون عضویت فعال در کلینیکِ آن Location، تخصیص نمی‌گیرد.
 >  - تست‌های integration: `tests/Integration/MembershipPrimitivesTest.php` (سناریوهای الزامی C4 شامل ایزولاسیون A/B).
+>  - سبک کد: در کامیت WPCS-cleanup، این سه فایل به سبک WordPress بازنویسی شدند
+>    (متدها/متغیرها/پراپرتی‌ها snake_case، فاصلهٔ داخل پرانتز، brace همان خط)
+>    بدون تغییر منطق؛ `App::membershipService()` → `App::membership_service()`.
+>    قواعد فعال گیت: drift-register §۸-۱.
 
 ### `cpms_clinician_locations` — پزشک در چند محل (رفع C-7)
 

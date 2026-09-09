@@ -234,8 +234,17 @@ migration foundation — بازنویسی/فرمت دستی کد در میانه
 **وضعیت: پیاده‌سازی شد (کامیت `chore(quality): enforce WordPress coding
 standards on changed code`؛ بر مبنای SHA پیاده‌سازی f23e0c5 — همان
 کامیت پذیرش Migration Foundation).** جزئیات نهایی نسبت به پیشنهاد:
-- استراتژی = changed-files نسبت به `WPCS_BASELINE` (SHA کامل در env آن job
-  در `ci.yml`)؛ نه baseline-file و نه mass-format. bump آن دستی + مستند است.
+- استراتژی = **changed-lines** نسبت به `WPCS_BASELINE` (SHA کامل در env آن
+  job در `ci.yml`)؛ نه baseline-file و نه mass-format. bump آن دستی +
+  مستند است. ارتقا از changed-files به changed-lines (در کامیت WPCS-cleanup
+  مربوط به C4): اولین اجرای موفق sniff (run 34318905233 روی 91e5fe4) نشان
+  داد فایل‌های legacy با نقض تاریخی (مثلاً App.php با ~۶۵۰ مورد) به محض
+  تغییرِ چندخطی کل تاریخچه‌شان گیت را می‌شکنند؛ قاعدهٔ مصوب مالک
+  («new/touched code نباید violation جدید وارد کند») دقیقاً با خط-level
+  پیاده می‌شود: فقط نقض روی «خطوط add شده» نسبت به baseline می‌شکند و
+  فایل کاملاً جدید = تمام خطوطش. پیاده‌سازی: hunk headerهای `git diff -U0`
+  → مجموعهٔ خطوط add، خروجی JSON از phpcs → intersect در python؛ گزارشِ
+  نقض‌های خطِ add شده به‌صورت کامنت PR.
 - وابستگی: ephemeral در CI با دامنهٔ `wpcs:^3.1` (بدون exact-pin) —
   مطابق الگوی موجود job integration (نصب runtime PHPUnit)؛ چون repo بدون
   composer.lock است، هیچ تغییری در dependency graph پروژه لازم نشد و
@@ -244,13 +253,42 @@ standards on changed code`؛ بر مبنای SHA پیاده‌سازی f23e0c5 �
   `wpcs 3.1.0` در رجیستری security advisory دارند و composer آن‌ها را از
   resolution حذف می‌کند؛ بنابراین فیلتر امنیتی composer، مرجع انتخاب
   جدیدترین نسخهٔ سالمِ سازگار با major 3.x است. suppress نکردن advisoryها
-  عمداً انتخاب شد (امنیت > قطعیتِ نسخه).
+  عمداً انتخاب شد (امنیت > قطعیتِ نسخه). resolution مورد انتظار =
+  wpcs 3.4.1 + phpcs 3.13.6 + PHPCSUtils 1.2.3 + PHPCSExtra 1.5.1 (درخت
+  وابستگیِ wpcs 3.4.1: `^3.13.5` phpcs + `^1.2.3` phpcsutils + `^1.5.1`
+  phpcsextra؛ standardهای `Universal.*`/`NormalizedArrays.*` از PHPCSExtra
+  می‌آیند، نه از خود phpcs). از کامیت WPCS-cleanup به بعد step نصب،
+  `phpcs --version` + `composer show` را چاپ می‌کند (evidence پایدار).
+  سه خطای ruleset پیش از اولین sniff موفق (Class D، runs 34318212809 /
+  34318535964 / و اولین اجرای محلی): (۱) property آرایه‌ای با comma-string
+  از PHPCS 3.3+ deprecated → `<element>`؛ (۲) reference به sniff ناموجود =
+  abort کل ruleset — sniffهای alignment در آن resolution هنوز ناموجود بودند
+  و بعداً با PHPCSExtra موجود شدند؛ (۳) exclusion باید sniff/کدِ موجود باشد.
 - `phpcs.xml.dist` = canonical: `WordPress-Extra` (شامل Core + sniffs
   امنیتی/PreparedSQL/I18n) + text domain `cpms` + PrefixAllGlobals
-  (`cpms, CPMS`) + چهار اعمال‌نکردنِ مستندِ صرفاً سبکی (FileName — تعارض با
-  PSR-4؛ SpaceIndent — قاعدهٔ ۴-space پایگاه کد؛ Yoda؛ PrecisionAlignment).
-  هیچ sniff امنیتی غیرفعال نیست. scope = `src/`, `bin/`, فایل ورودی
-  افزونه، `uninstall.php` (تست‌ها فاز بعدی).
+  (`cpms, CPMS, ClinicCore` — پیشوند namespace رسمی PSR-4 افزونه) و
+  **هفت اعمال‌نکردنِ مستند**:
+  - سبکی/ایدیوم پروژه (پایگاه کد PSR-style است و «هم‌خوانی درون-فایلی»
+    با کد مجاور مقدم): FileName (تعارض با PSR-4)، SpaceIndent (۴-space)،
+    Yoda، `Universal.Arrays.DisallowShortArraySyntax` (کل پایگاه کد
+    `[]`)، `WordPress.Arrays.ArrayDeclarationSpacing` (آرایه‌های تک‌خطی)،
+    `NormalizedArrays.Arrays.ArrayBraceSpacing` (فاصلهٔ داخل براکت).
+  - با استدلال امنیتی/معماری: `WordPress.Security.EscapeOutput.ExceptionNotEscaped`
+    — پیام Exceptionها domain-payload هستند که در مرز REST به envelope
+    ساختاریافتهٔ JSON تبدیل می‌شوند (الگوی مستقر BookingException)؛ escape
+    در محل throw منجر به double-encoding در پاسخ API می‌شود؛ مسئولیت
+    خروجی با مرز controller است. بقیهٔ EscapeOutput فعال می‌ماند.
+  هیچ sniff امنیتی/SQL/i18n دیگری غیرفعال نیست. scope = `src/`, `bin/`،
+  فایل ورودی افزونه، `uninstall.php` (تست‌ها فاز بعدی).
+- **Runner لوکال (validation بدون CI-roundtrip):** phpcs/phpcbf داخل
+  php-wasm (`@php-wasm/node` PHP 8.2) با همان درخت وابستگی resolution CI
+  (tarballهای codeload از GitHub tags)؛ نکات پیاده‌سازی: `--runtime-set
+  installed_paths` (نه `--installed_paths`)، تعریف `STDOUT/STDERR` در
+  bootstrap (SAPI وب)، غیرفعال‌سازی spawnها با `disable_functions` در
+  php.ini روی VFS (`stty size` برای ابعاد ترمینال و `php -l` در
+  Generic.PHP.Syntax → exclude لوکال معادل، lint جداگانه)، و خروجی از طریق
+  `--report-file` (stdout در wasm قابل‌اتکا نیست). recipe کامل در حافظهٔ
+  جلسه ثبت شد؛ ابزار disposable در /tmp است و هرگز commit نمی‌شود.
 - PHPCompatibilityWP فعلاً کنار گذاشته شد (مستند): حداقل PHP افزونه 8.1
   است و ماتریس Unit 8.1–8.4 رفتار را واقعاً می‌آزماید؛ سود اضافی آن بر
   این پروژه ناچیز و بار نصب/عدم‌قطعیت job بیشتر بود.

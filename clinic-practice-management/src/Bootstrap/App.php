@@ -458,13 +458,12 @@ final class App
     /**
      * سرویس عضویت (Phase 2 — C4 primitives / P2-D1).
      */
-    public static function membershipService(): MembershipService
-    {
+    public static function membership_service(): MembershipService {
         static $service = null;
-        if ($service === null) {
+        if ( $service === null ) {
             $service = new MembershipService(
                 self::db(),
-                new MembershipRepository(self::db())
+                new MembershipRepository( self::db() )
             );
         }
 

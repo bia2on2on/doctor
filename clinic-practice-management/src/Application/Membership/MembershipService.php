@@ -1,6 +1,6 @@
 <?php
 
-declare(strict_types=1);
+declare( strict_types=1 );
 
 namespace ClinicCore\Application\Membership;
 
@@ -21,15 +21,15 @@ use ClinicCore\Infrastructure\Repository\MembershipRepository;
  *
  * قواعد fail-closed:
  *  - همهٔ scopeها صریح؛ هیچ fallback/فرضی وجود ندارد.
- *  - عضویتِ suspend شده = بدون دسترسی (activeMembershipFor → null).
+ *  - عضویتِ suspend شده = بدون دسترسی (active_membership_for → null).
  *  - تخصیص Location فقط به Clinicِ همان عضویت/کلینیکِ عضویتِ فعال پزشک.
  */
-final class MembershipService
-{
-    private const STATUS_ACTIVE = 'active';
+final class MembershipService {
+
+    private const STATUS_ACTIVE    = 'active';
     private const STATUS_SUSPENDED = 'suspended';
-    private const SCOPE_CLINIC = 'clinic';
-    private const SCOPE_LOCATION = 'location';
+    private const SCOPE_CLINIC     = 'clinic';
+    private const SCOPE_LOCATION   = 'location';
 
     public function __construct(
         private readonly CpmsDb $db,
@@ -42,56 +42,58 @@ final class MembershipService
     /**
      * ساخت عضویت — تکراری بودن (clinic,user) با خطای صریح رد می‌شود (نه silent update).
      *
-     * @param int|null $invitedBywpUserId
+     * @param int|null $invited_by_wp_user_id
      */
-    public function createMembership(
-        int $clinicId,
-        int $wpUserId,
-        string $roleKey,
-        string $scopeMode = self::SCOPE_CLINIC,
-        ?int $invitedBywpUserId = null
+    public function create_membership(
+        int $clinic_id,
+        int $wp_user_id,
+        string $role_key,
+        string $scope_mode = self::SCOPE_CLINIC,
+        ?int $invited_by_wp_user_id = null
     ): int {
-        if ($wpUserId <= 0 || get_userdata($wpUserId) === false) {
-            throw MembershipException::notFound(__('کاربر وردپرس', 'cpms'), $wpUserId);
+        if ( $wp_user_id <= 0 || get_userdata( $wp_user_id ) === false ) {
+            throw MembershipException::not_found( __( 'کاربر وردپرس', 'cpms' ), $wp_user_id );
         }
-        if ($this->db->fetchValue(
-            'SELECT id FROM ' . $this->db->table('cpms_clinics') . ' WHERE id = %d',
-            [$clinicId]
-        ) === null) {
-            throw MembershipException::notFound(__('کلینیک', 'cpms'), $clinicId);
+        if ( $this->db->fetchValue(
+            'SELECT id FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE id = %d',
+            [ $clinic_id ]
+        ) === null ) {
+            throw MembershipException::not_found( __( 'کلینیک', 'cpms' ), $clinic_id );
         }
-        $this->assertRoleKey($roleKey);
-        if (!in_array($scopeMode, [self::SCOPE_CLINIC, self::SCOPE_LOCATION], true)) {
-            throw MembershipException::invalidValue('scope_mode', __('باید clinic یا location باشد.', 'cpms'));
+        $this->assert_role_key( $role_key );
+        if ( ! in_array( $scope_mode, [ self::SCOPE_CLINIC, self::SCOPE_LOCATION ], true ) ) {
+            throw MembershipException::invalid_value( 'scope_mode', __( 'باید clinic یا location باشد.', 'cpms' ) );
         }
-        if ($scopeMode === self::SCOPE_LOCATION) {
+        if ( $scope_mode === self::SCOPE_LOCATION ) {
             // عضویت location-scoped باید با فهرست Location ساخته شود؛ آن مسیر
-            // setScopeMode است. ساخت مستقیم (بدون Location = دسترسی به هیچ‌جا)
+            // set_scope_mode است. ساخت مستقیم (بدون Location = دسترسی به هیچ‌جا)
             // صریحاً رد می‌شود — fail-closed.
-            throw MembershipException::invalidValue(
+            throw MembershipException::invalid_value(
                 'scope_mode',
-                __('عضویت location-scoped از طریق setScopeMode همراه با فهرست Location ساخته می‌شود.', 'cpms')
+                __( 'عضویت location-scoped از طریق set_scope_mode همراه با فهرست Location ساخته می‌شود.', 'cpms' )
             );
         }
-        if ($this->memberships->find($clinicId, $wpUserId) !== null) {
-            throw MembershipException::duplicate($clinicId, $wpUserId);
+        if ( $this->memberships->find( $clinic_id, $wp_user_id ) !== null ) {
+            throw MembershipException::duplicate( $clinic_id, $wp_user_id );
         }
 
         $now = $this->db->nowUtcSql();
-        $ok = $this->memberships->insert([
-            'clinic_id' => $clinicId,
-            'wp_user_id' => $wpUserId,
-            'role_key' => $roleKey,
-            'scope_mode' => $scopeMode,
-            'status' => self::STATUS_ACTIVE,
-            'is_primary' => 0,
-            'invited_by_wp_user_id' => $invitedBywpUserId,
-            'created_at' => $now,
-            'updated_at' => $now,
-        ]);
-        if (!$ok) {
+        $ok  = $this->memberships->insert(
+            [
+                'clinic_id'             => $clinic_id,
+                'wp_user_id'            => $wp_user_id,
+                'role_key'              => $role_key,
+                'scope_mode'            => $scope_mode,
+                'status'                => self::STATUS_ACTIVE,
+                'is_primary'            => 0,
+                'invited_by_wp_user_id' => $invited_by_wp_user_id,
+                'created_at'            => $now,
+                'updated_at'            => $now,
+            ]
+        );
+        if ( ! $ok ) {
             // UNIQUE backstop (نظری race) — رفتار همان duplicate است.
-            throw MembershipException::duplicate($clinicId, $wpUserId);
+            throw MembershipException::duplicate( $clinic_id, $wp_user_id );
         }
 
         return (int) $this->db->wpdb_last_insert_id();
@@ -102,9 +104,8 @@ final class MembershipService
      *
      * @return array<string, mixed>|null
      */
-    public function membershipFor(int $clinicId, int $wpUserId): ?array
-    {
-        return $this->memberships->find($clinicId, $wpUserId);
+    public function membership_for( int $clinic_id, int $wp_user_id ): ?array {
+        return $this->memberships->find( $clinic_id, $wp_user_id );
     }
 
     /**
@@ -112,9 +113,8 @@ final class MembershipService
      *
      * @return array<string, mixed>|null
      */
-    public function activeMembershipFor(int $clinicId, int $wpUserId): ?array
-    {
-        return $this->memberships->findActive($clinicId, $wpUserId);
+    public function active_membership_for( int $clinic_id, int $wp_user_id ): ?array {
+        return $this->memberships->find_active( $clinic_id, $wp_user_id );
     }
 
     /**
@@ -122,65 +122,61 @@ final class MembershipService
      *
      * @return list<array<string, mixed>>
      */
-    public function activeMembershipsForUser(int $wpUserId): array
-    {
-        return $this->memberships->activeForUser($wpUserId);
+    public function active_memberships_for_user( int $wp_user_id ): array {
+        return $this->memberships->active_for_user( $wp_user_id );
     }
 
     /**
      * @return list<int>
      */
-    public function activeClinicIdsForUser(int $wpUserId): array
-    {
-        return $this->memberships->activeClinicIdsForUser($wpUserId);
+    public function active_clinic_ids_for_user( int $wp_user_id ): array {
+        return $this->memberships->active_clinic_ids_for_user( $wp_user_id );
     }
 
     /**
      * تعلیق عضویت — دسترسی فوراً قطع می‌شود؛ Locationها/capabilityها حفظ می‌شوند.
      */
-    public function suspendMembership(int $membershipId): void
-    {
-        $this->transitionStatus($membershipId, self::STATUS_SUSPENDED);
+    public function suspend_membership( int $membership_id ): void {
+        $this->transition_status( $membership_id, self::STATUS_SUSPENDED );
     }
 
-    public function reactivateMembership(int $membershipId): void
-    {
-        $this->transitionStatus($membershipId, self::STATUS_ACTIVE);
+    public function reactivate_membership( int $membership_id ): void {
+        $this->transition_status( $membership_id, self::STATUS_ACTIVE );
     }
 
     /**
      * علامت‌گذاری «کلینیک اصلی» کاربر (ترجیح، نه مفهوم امنیتی — P2-D1).
      * فقط یکی از عضویت‌های همان کاربر primary می‌ماند.
      */
-    public function setPrimaryMembership(int $clinicId, int $wpUserId): void
-    {
-        $membership = $this->requireMembership($clinicId, $wpUserId);
-        $now = $this->db->nowUtcSql();
-        $this->db->transactional(function () use ($membership, $wpUserId, $now): void {
-            $this->memberships->update(
-                ['is_primary' => 0, 'updated_at' => $now],
-                ['wp_user_id' => $wpUserId]
-            );
-            $this->memberships->update(
-                ['is_primary' => 1, 'updated_at' => $now],
-                ['id' => (int) $membership['id']]
-            );
-        });
+    public function set_primary_membership( int $clinic_id, int $wp_user_id ): void {
+        $membership = $this->require_membership( $clinic_id, $wp_user_id );
+        $now        = $this->db->nowUtcSql();
+        $this->db->transactional(
+            function () use ( $membership, $wp_user_id, $now ): void {
+                $this->memberships->update(
+                    [ 'is_primary' => 0, 'updated_at' => $now ],
+                    [ 'wp_user_id' => $wp_user_id ]
+                );
+                $this->memberships->update(
+                    [ 'is_primary' => 1, 'updated_at' => $now ],
+                    [ 'id' => (int) $membership['id'] ]
+                );
+            }
+        );
     }
 
     /**
      * تغییر role_key (primitive رشته‌ای — سیاست نقش‌ها فاز ۳).
      */
-    public function setRoleKey(int $membershipId, string $roleKey): void
-    {
-        $this->assertRoleKey($roleKey);
-        $membership = $this->memberships->findById($membershipId);
-        if ($membership === null) {
-            throw MembershipException::notFound(__('عضویت', 'cpms'), $membershipId);
+    public function set_role_key( int $membership_id, string $role_key ): void {
+        $this->assert_role_key( $role_key );
+        $membership = $this->memberships->find_by_id( $membership_id );
+        if ( $membership === null ) {
+            throw MembershipException::not_found( __( 'عضویت', 'cpms' ), $membership_id );
         }
         $this->memberships->update(
-            ['role_key' => $roleKey, 'updated_at' => $this->db->nowUtcSql()],
-            ['id' => $membershipId]
+            [ 'role_key' => $role_key, 'updated_at' => $this->db->nowUtcSql() ],
+            [ 'id' => $membership_id ]
         );
     }
 
@@ -190,71 +186,74 @@ final class MembershipService
      * تخصیص Locationها به عضویت — فقط Locationهای همان Clinic (fail-closed).
      * عضویت باید location-scoped باشد (scope_mode='clinic' = همهٔ Clinic).
      *
-     * @param list<int> $locationIds
+     * @param list<int> $location_ids
      */
-    public function syncMembershipLocations(int $membershipId, array $locationIds): void
-    {
-        $membership = $this->requireMembershipById($membershipId);
-        if ((string) $membership['scope_mode'] !== self::SCOPE_LOCATION) {
-            throw MembershipException::scopeMode(self::SCOPE_LOCATION);
+    public function sync_membership_locations( int $membership_id, array $location_ids ): void {
+        $membership = $this->require_membership_by_id( $membership_id );
+        if ( (string) $membership['scope_mode'] !== self::SCOPE_LOCATION ) {
+            throw MembershipException::scope_mode( self::SCOPE_LOCATION );
         }
-        if ($locationIds === []) {
+        if ( $location_ids === [] ) {
             // خالی‌کردن یعنی عضویتی فعال بدون هیچ Location — رد (fail-closed).
-            throw MembershipException::locationMismatch($membershipId, []);
+            throw MembershipException::location_mismatch( $membership_id, [] );
         }
 
-        $this->assertLocationsBelongToClinic($membershipId, $locationIds, (int) $membership['clinic_id']);
+        $this->assert_locations_belong_to_clinic( $membership_id, $location_ids, (int) $membership['clinic_id'] );
 
-        $this->db->transactional(function () use ($membershipId, $locationIds): void {
-            $this->memberships->replaceLocations($membershipId, $locationIds);
-        });
+        $this->db->transactional(
+            function () use ( $membership_id, $location_ids ): void {
+                $this->memberships->replace_locations( $membership_id, $location_ids );
+            }
+        );
     }
 
     /**
      * تغییر حالت دسترسی: به 'clinic' فقط با خالی‌کردن Locationها؛
      * به 'location' فقط همراه با فهرست Location.
      *
-     * @param list<int> $locationIds
+     * @param list<int> $location_ids
      */
-    public function setScopeMode(int $membershipId, string $mode, array $locationIds = []): void
-    {
-        if (!in_array($mode, [self::SCOPE_CLINIC, self::SCOPE_LOCATION], true)) {
-            throw MembershipException::invalidValue('scope_mode', __('باید clinic یا location باشد.', 'cpms'));
+    public function set_scope_mode( int $membership_id, string $mode, array $location_ids = [] ): void {
+        if ( ! in_array( $mode, [ self::SCOPE_CLINIC, self::SCOPE_LOCATION ], true ) ) {
+            throw MembershipException::invalid_value( 'scope_mode', __( 'باید clinic یا location باشد.', 'cpms' ) );
         }
-        $membership = $this->requireMembershipById($membershipId);
+        $membership = $this->require_membership_by_id( $membership_id );
 
-        if ($mode === self::SCOPE_CLINIC) {
+        if ( $mode === self::SCOPE_CLINIC ) {
             // Clinic-wide یعنی جدول Location برای این عضویت خالی است (مدل 0012).
-            $this->db->transactional(function () use ($membershipId): void {
-                $this->memberships->replaceLocations($membershipId, []);
-                $this->memberships->update(
-                    ['scope_mode' => self::SCOPE_CLINIC, 'updated_at' => $this->db->nowUtcSql()],
-                    ['id' => $membershipId]
-                );
-            });
+            $this->db->transactional(
+                function () use ( $membership_id ): void {
+                    $this->memberships->replace_locations( $membership_id, [] );
+                    $this->memberships->update(
+                        [ 'scope_mode' => self::SCOPE_CLINIC, 'updated_at' => $this->db->nowUtcSql() ],
+                        [ 'id' => $membership_id ]
+                    );
+                }
+            );
 
             return;
         }
 
-        if ($locationIds === []) {
-            throw MembershipException::locationMismatch($membershipId, []);
+        if ( $location_ids === [] ) {
+            throw MembershipException::location_mismatch( $membership_id, [] );
         }
-        $this->assertLocationsBelongToClinic($membershipId, $locationIds, (int) $membership['clinic_id']);
-        $this->db->transactional(function () use ($membershipId, $locationIds): void {
-            $this->memberships->replaceLocations($membershipId, $locationIds);
-            $this->memberships->update(
-                ['scope_mode' => self::SCOPE_LOCATION, 'updated_at' => $this->db->nowUtcSql()],
-                ['id' => $membershipId]
-            );
-        });
+        $this->assert_locations_belong_to_clinic( $membership_id, $location_ids, (int) $membership['clinic_id'] );
+        $this->db->transactional(
+            function () use ( $membership_id, $location_ids ): void {
+                $this->memberships->replace_locations( $membership_id, $location_ids );
+                $this->memberships->update(
+                    [ 'scope_mode' => self::SCOPE_LOCATION, 'updated_at' => $this->db->nowUtcSql() ],
+                    [ 'id' => $membership_id ]
+                );
+            }
+        );
     }
 
     /**
      * @return list<int>
      */
-    public function membershipLocationIds(int $membershipId): array
-    {
-        return $this->memberships->locationIdsFor($membershipId);
+    public function membership_location_ids( int $membership_id ): array {
+        return $this->memberships->location_ids_for( $membership_id );
     }
 
     // ================= Capability primitives (metadata فاز ۳) =================
@@ -262,27 +261,24 @@ final class MembershipService
     /**
      * @return list<array<string, mixed>>
      */
-    public function capabilitiesFor(int $membershipId): array
-    {
-        return $this->memberships->capabilitiesFor($membershipId);
+    public function capabilities_for( int $membership_id ): array {
+        return $this->memberships->capabilities_for( $membership_id );
     }
 
-    public function setCapability(int $membershipId, string $capability, string $effect): void
-    {
-        $this->requireMembershipById($membershipId);
-        if (!preg_match('/^[a-z][a-z0-9_.]{1,63}$/', $capability)) {
-            throw MembershipException::invalidValue('capability', __('قالب مجاز: حروف کوچک/عدد/نقطه/زیرخط.', 'cpms'));
+    public function set_capability( int $membership_id, string $capability, string $effect ): void {
+        $this->require_membership_by_id( $membership_id );
+        if ( ! preg_match( '/^[a-z][a-z0-9_.]{1,63}$/', $capability ) ) {
+            throw MembershipException::invalid_value( 'capability', __( 'قالب مجاز: حروف کوچک/عدد/نقطه/زیرخط.', 'cpms' ) );
         }
-        if (!in_array($effect, ['grant', 'deny'], true)) {
-            throw MembershipException::invalidValue('effect', __('باید grant یا deny باشد.', 'cpms'));
+        if ( ! in_array( $effect, [ 'grant', 'deny' ], true ) ) {
+            throw MembershipException::invalid_value( 'effect', __( 'باید grant یا deny باشد.', 'cpms' ) );
         }
 
-        $this->memberships->setCapability($membershipId, $capability, $effect);
+        $this->memberships->set_capability( $membership_id, $capability, $effect );
     }
 
-    public function removeCapability(int $membershipId, string $capability): void
-    {
-        $this->memberships->removeCapability($membershipId, $capability);
+    public function remove_capability( int $membership_id, string $capability ): void {
+        $this->memberships->remove_capability( $membership_id, $capability );
     }
 
     // ================= Clinician ↔ Location (P2-D1) =================
@@ -291,42 +287,41 @@ final class MembershipService
      * تخصیص Locationهای کاری به پزشک — اعتبارسنجی از روی «عضویت فعال» کاربرِ
      * متصل (نه clinicians.clinic_id که legacy است).
      *
-     * @param list<int> $locationIds
+     * @param list<int> $location_ids
      */
-    public function assignClinicianLocations(int $clinicianId, array $locationIds, ?int $primaryLocationId = null): void
-    {
-        if ($locationIds === []) {
-            throw MembershipException::clinicianLocationMismatch($clinicianId, []);
+    public function assign_clinician_locations( int $clinician_id, array $location_ids, ?int $primary_location_id = null ): void {
+        if ( $location_ids === [] ) {
+            throw MembershipException::clinician_location_mismatch( $clinician_id, [] );
         }
 
-        $wpUserId = $this->memberships->clinicianWpUserId($clinicianId);
-        if ($wpUserId === null || $wpUserId <= 0) {
-            throw MembershipException::notFound(__('پزشک', 'cpms'), $clinicianId);
+        $wp_user_id = $this->memberships->clinician_wp_user_id( $clinician_id );
+        if ( $wp_user_id === null || $wp_user_id <= 0 ) {
+            throw MembershipException::not_found( __( 'پزشک', 'cpms' ), $clinician_id );
         }
 
-        $allowedClinicIds = $this->memberships->activeClinicIdsForClinician($clinicianId);
-        if ($allowedClinicIds === []) {
-            throw MembershipException::clinicianLocationMismatch($clinicianId, $locationIds);
+        $allowed_clinic_ids = $this->memberships->active_clinic_ids_for_clinician( $clinician_id );
+        if ( $allowed_clinic_ids === [] ) {
+            throw MembershipException::clinician_location_mismatch( $clinician_id, $location_ids );
         }
 
-        $map = $this->memberships->locationClinicMap($locationIds);
-        foreach (array_map('intval', $locationIds) as $locationId) {
-            $clinicId = $map[$locationId] ?? null;
-            if ($clinicId === null || !in_array($clinicId, $allowedClinicIds, true)) {
-                throw MembershipException::clinicianLocationMismatch($clinicianId, [$locationId]);
+        $map = $this->memberships->location_clinic_map( $location_ids );
+        foreach ( array_map( 'intval', $location_ids ) as $location_id ) {
+            $clinic_id = $map[ $location_id ] ?? null;
+            if ( $clinic_id === null || ! in_array( $clinic_id, $allowed_clinic_ids, true ) ) {
+                throw MembershipException::clinician_location_mismatch( $clinician_id, [ $location_id ] );
             }
         }
 
-        if ($primaryLocationId !== null && !in_array((int) $primaryLocationId, array_map('intval', $locationIds), true)) {
-            throw MembershipException::invalidValue(
+        if ( $primary_location_id !== null && ! in_array( (int) $primary_location_id, array_map( 'intval', $location_ids ), true ) ) {
+            throw MembershipException::invalid_value(
                 'primary_location_id',
-                __('باید یکی از Locationهای تخصیص‌یافته باشد.', 'cpms')
+                __( 'باید یکی از Locationهای تخصیص‌یافته باشد.', 'cpms' )
             );
         }
 
         $this->db->transactional(
-            function () use ($clinicianId, $locationIds, $primaryLocationId): void {
-                $this->memberships->replaceClinicianLocations($clinicianId, $locationIds, $primaryLocationId);
+            function () use ( $clinician_id, $location_ids, $primary_location_id ): void {
+                $this->memberships->replace_clinician_locations( $clinician_id, $location_ids, $primary_location_id );
             }
         );
     }
@@ -334,47 +329,53 @@ final class MembershipService
     /**
      * @return list<int>
      */
-    public function clinicianLocationIds(int $clinicianId): array
-    {
-        return $this->memberships->clinicianLocationIds($clinicianId);
+    public function clinician_location_ids( int $clinician_id ): array {
+        return $this->memberships->clinician_location_ids( $clinician_id );
     }
 
-    public function primaryClinicianLocationId(int $clinicianId): ?int
-    {
-        return $this->memberships->primaryClinicianLocationId($clinicianId);
+    public function primary_clinician_location_id( int $clinician_id ): ?int {
+        return $this->memberships->primary_clinician_location_id( $clinician_id );
     }
 
     // ================= helpers =================
 
-    private function transitionStatus(int $membershipId, string $to): void
-    {
-        $membership = $this->requireMembershipById($membershipId);
-        $from = (string) $membership['status'];
-        if ($from === $to) {
-            throw MembershipException::invalidTransition($from, $to);
+    private function transition_status( int $membership_id, string $to ): void {
+        $membership = $this->require_membership_by_id( $membership_id );
+        $from       = (string) $membership['status'];
+        if ( $from === $to ) {
+            throw MembershipException::invalid_transition( $from, $to );
         }
-        if (!in_array([$from, $to], [[self::STATUS_ACTIVE, self::STATUS_SUSPENDED], [self::STATUS_SUSPENDED, self::STATUS_ACTIVE]], true)) {
-            throw MembershipException::invalidTransition($from, $to);
+        if ( ! in_array(
+            [ $from, $to ],
+            [
+                [ self::STATUS_ACTIVE, self::STATUS_SUSPENDED ],
+                [ self::STATUS_SUSPENDED, self::STATUS_ACTIVE ],
+            ],
+            true
+        ) ) {
+            throw MembershipException::invalid_transition( $from, $to );
         }
 
-        $this->memberships->update(['status' => $to, 'updated_at' => $this->db->nowUtcSql()], ['id' => $membershipId]);
+        $this->memberships->update(
+            [ 'status' => $to, 'updated_at' => $this->db->nowUtcSql() ],
+            [ 'id' => $membership_id ]
+        );
     }
 
     /**
      * @return array<string, mixed>
      */
-    private function requireMembership(int $clinicId, int $wpUserId): array
-    {
-        $membership = $this->memberships->find($clinicId, $wpUserId);
-        if ($membership === null) {
-            throw MembershipException::notFound(
+    private function require_membership( int $clinic_id, int $wp_user_id ): array {
+        $membership = $this->memberships->find( $clinic_id, $wp_user_id );
+        if ( $membership === null ) {
+            throw MembershipException::not_found(
                 sprintf(
                     /* translators: 1: clinic id, 2: user id */
-                    __('عضویت (کلینیک %1$s، کاربر %2$s)', 'cpms'),
-                    $clinicId,
-                    $wpUserId
+                    __( 'عضویت (کلینیک %1$s، کاربر %2$s)', 'cpms' ),
+                    $clinic_id,
+                    $wp_user_id
                 ),
-                $clinicId
+                $clinic_id
             );
         }
 
@@ -384,39 +385,36 @@ final class MembershipService
     /**
      * @return array<string, mixed>
      */
-    private function requireMembershipById(int $membershipId): array
-    {
-        $membership = $this->memberships->findById($membershipId);
-        if ($membership === null) {
-            throw MembershipException::notFound(__('عضویت', 'cpms'), $membershipId);
+    private function require_membership_by_id( int $membership_id ): array {
+        $membership = $this->memberships->find_by_id( $membership_id );
+        if ( $membership === null ) {
+            throw MembershipException::not_found( __( 'عضویت', 'cpms' ), $membership_id );
         }
 
         return $membership;
     }
 
     /**
-     * @param list<int> $locationIds
+     * @param list<int> $location_ids
      */
-    private function assertLocationsBelongToClinic(int $membershipId, array $locationIds, int $clinicId): void
-    {
-        $map = $this->memberships->locationClinicMap($locationIds);
+    private function assert_locations_belong_to_clinic( int $membership_id, array $location_ids, int $clinic_id ): void {
+        $map = $this->memberships->location_clinic_map( $location_ids );
         $bad = [];
-        foreach (array_map('intval', $locationIds) as $locationId) {
-            if (($map[$locationId] ?? null) !== $clinicId) {
-                $bad[] = $locationId;
+        foreach ( array_map( 'intval', $location_ids ) as $location_id ) {
+            if ( ( $map[ $location_id ] ?? null ) !== $clinic_id ) {
+                $bad[] = $location_id;
             }
         }
-        if ($bad !== []) {
-            throw MembershipException::locationMismatch($membershipId, $bad);
+        if ( $bad !== [] ) {
+            throw MembershipException::location_mismatch( $membership_id, $bad );
         }
     }
 
-    private function assertRoleKey(string $roleKey): void
-    {
-        if (!preg_match('/^[a-z][a-z0-9_]{1,63}$/', $roleKey)) {
-            throw MembershipException::invalidValue(
+    private function assert_role_key( string $role_key ): void {
+        if ( ! preg_match( '/^[a-z][a-z0-9_]{1,63}$/', $role_key ) ) {
+            throw MembershipException::invalid_value(
                 'role_key',
-                __('قالب مجاز: حروف کوچک/عدد/زیرخط، حداقل ۲ نویسه.', 'cpms')
+                __( 'قالب مجاز: حروف کوچک/عدد/زیرخط، حداقل ۲ نویسه.', 'cpms' )
             );
         }
     }

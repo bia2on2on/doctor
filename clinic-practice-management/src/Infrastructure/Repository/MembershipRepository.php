@@ -1,6 +1,6 @@
 <?php
 
-declare(strict_types=1);
+declare( strict_types=1 );
 
 namespace ClinicCore\Infrastructure\Repository;
 
@@ -10,7 +10,7 @@ use ClinicCore\Infrastructure\Db\CpmsDb;
  * Repository عضویت‌ها (Phase 2 — C4 primitives / ADR-0031 / P2-D1).
  *
  * قواعد:
- *  - هر متد scope را «صریح» می‌گیرد (clinicId/membershipId) — هیچ fallback
+ *  - هر متد scope را «صریح» می‌گیرد (clinic_id/membership_id) — هیچ fallback
  *    clinic_id=1 یا فرض کاربر جاری وجود ندارد؛ ابهام = پاسخ خالی/خطای سرویس.
  *  - عضویت، رابطهٔ واقعی User↔Clinic است (SoT) — clinicians.clinic_id برای
  *    authorization استفاده نمی‌شود (legacy، فقط ثبت تاریخی).
@@ -21,10 +21,9 @@ use ClinicCore\Infrastructure\Db\CpmsDb;
  * cpms_membership_locations (u_member_loc)،
  * cpms_clinician_locations (u_clinician_loc).
  */
-final class MembershipRepository
-{
-    public function __construct(private readonly CpmsDb $db)
-    {
+final class MembershipRepository {
+
+    public function __construct( private readonly CpmsDb $db ) {
     }
 
     /**
@@ -32,24 +31,22 @@ final class MembershipRepository
      *
      * @return array<string, mixed>|null
      */
-    public function find(int $clinicId, int $wpUserId): ?array
-    {
+    public function find( int $clinic_id, int $wp_user_id ): ?array {
         return $this->db->fetchRow(
-            'SELECT * FROM ' . $this->db->table('cpms_clinic_memberships') .
+            'SELECT * FROM ' . $this->db->table( 'cpms_clinic_memberships' ) .
             ' WHERE clinic_id = %d AND wp_user_id = %d LIMIT 1',
-            [$clinicId, $wpUserId]
+            [ $clinic_id, $wp_user_id ]
         );
     }
 
     /**
      * @return array<string, mixed>|null
      */
-    public function findById(int $membershipId): ?array
-    {
+    public function find_by_id( int $membership_id ): ?array {
         return $this->db->fetchRow(
-            'SELECT * FROM ' . $this->db->table('cpms_clinic_memberships') .
+            'SELECT * FROM ' . $this->db->table( 'cpms_clinic_memberships' ) .
             ' WHERE id = %d LIMIT 1',
-            [$membershipId]
+            [ $membership_id ]
         );
     }
 
@@ -58,12 +55,11 @@ final class MembershipRepository
      *
      * @return array<string, mixed>|null
      */
-    public function findActive(int $clinicId, int $wpUserId): ?array
-    {
+    public function find_active( int $clinic_id, int $wp_user_id ): ?array {
         return $this->db->fetchRow(
-            'SELECT m.* FROM ' . $this->db->table('cpms_clinic_memberships') . ' m' .
+            'SELECT m.* FROM ' . $this->db->table( 'cpms_clinic_memberships' ) . ' m' .
             ' WHERE m.clinic_id = %d AND m.wp_user_id = %d AND m.status = \'active\' LIMIT 1',
-            [$clinicId, $wpUserId]
+            [ $clinic_id, $wp_user_id ]
         );
     }
 
@@ -72,19 +68,18 @@ final class MembershipRepository
      *
      * @return list<array<string, mixed>>
      */
-    public function activeForUser(int $wpUserId): array
-    {
+    public function active_for_user( int $wp_user_id ): array {
         $rows = $this->db->fetchAll(
             'SELECT m.id, m.clinic_id, m.wp_user_id, m.role_key, m.scope_mode, m.status, m.is_primary,' .
             ' c.name AS clinic_name, c.slug AS clinic_slug' .
-            ' FROM ' . $this->db->table('cpms_clinic_memberships') . ' m' .
-            ' INNER JOIN ' . $this->db->table('cpms_clinics') . ' c ON c.id = m.clinic_id' .
+            ' FROM ' . $this->db->table( 'cpms_clinic_memberships' ) . ' m' .
+            ' INNER JOIN ' . $this->db->table( 'cpms_clinics' ) . ' c ON c.id = m.clinic_id' .
             ' WHERE m.wp_user_id = %d AND m.status = \'active\'' .
             ' ORDER BY m.is_primary DESC, m.clinic_id ASC LIMIT 500',
-            [$wpUserId]
+            [ $wp_user_id ]
         );
 
-        return is_array($rows) ? $rows : [];
+        return is_array( $rows ) ? $rows : [];
     }
 
     /**
@@ -92,32 +87,29 @@ final class MembershipRepository
      *
      * @return list<int>
      */
-    public function activeClinicIdsForUser(int $wpUserId): array
-    {
+    public function active_clinic_ids_for_user( int $wp_user_id ): array {
         $rows = $this->db->fetchAll(
-            'SELECT clinic_id FROM ' . $this->db->table('cpms_clinic_memberships') .
+            'SELECT clinic_id FROM ' . $this->db->table( 'cpms_clinic_memberships' ) .
             ' WHERE wp_user_id = %d AND status = \'active\' ORDER BY clinic_id',
-            [$wpUserId]
+            [ $wp_user_id ]
         );
 
-        return array_map(static fn (array $r): int => (int) $r['clinic_id'], is_array($rows) ? $rows : []);
+        return array_map( static fn( array $r ): int => (int) $r['clinic_id'], is_array( $rows ) ? $rows : [] );
     }
 
     /**
      * @param array<string, mixed> $fields
      */
-    public function insert(array $fields): bool
-    {
-        return $this->db->insert('cpms_clinic_memberships', $fields);
+    public function insert( array $fields ): bool {
+        return $this->db->insert( 'cpms_clinic_memberships', $fields );
     }
 
     /**
      * @param array<string, mixed> $data
      * @param array<string, mixed> $where
      */
-    public function update(array $data, array $where): int
-    {
-        return $this->db->update('cpms_clinic_memberships', $data, $where);
+    public function update( array $data, array $where ): int {
+        return $this->db->update( 'cpms_clinic_memberships', $data, $where );
     }
 
     // ---------------- Capability primitives (metadata فاز ۳) ----------------
@@ -125,33 +117,33 @@ final class MembershipRepository
     /**
      * @return list<array<string, mixed>>
      */
-    public function capabilitiesFor(int $membershipId): array
-    {
+    public function capabilities_for( int $membership_id ): array {
         $rows = $this->db->fetchAll(
-            'SELECT capability, effect FROM ' . $this->db->table('cpms_membership_capabilities') .
+            'SELECT capability, effect FROM ' . $this->db->table( 'cpms_membership_capabilities' ) .
             ' WHERE membership_id = %d ORDER BY capability',
-            [$membershipId]
+            [ $membership_id ]
         );
 
-        return is_array($rows) ? $rows : [];
+        return is_array( $rows ) ? $rows : [];
     }
 
-    public function setCapability(int $membershipId, string $capability, string $effect): void
-    {
+    public function set_capability( int $membership_id, string $capability, string $effect ): void {
         $this->db->query(
-            'INSERT INTO ' . $this->db->table('cpms_membership_capabilities') .
+            'INSERT INTO ' . $this->db->table( 'cpms_membership_capabilities' ) .
             ' (membership_id, capability, effect, created_at) VALUES (%d, %s, %s, %s)' .
             ' ON DUPLICATE KEY UPDATE effect = VALUES(effect)',
-            [$membershipId, $capability, $effect, $this->db->nowUtcSql()]
+            [ $membership_id, $capability, $effect, $this->db->nowUtcSql() ]
         );
     }
 
-    public function removeCapability(int $membershipId, string $capability): void
-    {
-        $this->db->delete('cpms_membership_capabilities', [
-            'membership_id' => $membershipId,
-            'capability' => $capability,
-        ]);
+    public function remove_capability( int $membership_id, string $capability ): void {
+        $this->db->delete(
+            'cpms_membership_capabilities',
+            [
+                'membership_id' => $membership_id,
+                'capability'    => $capability,
+            ]
+        );
     }
 
     // ---------------- Membership↔Location ----------------
@@ -161,52 +153,52 @@ final class MembershipRepository
      *
      * @return list<int>
      */
-    public function locationIdsFor(int $membershipId): array
-    {
+    public function location_ids_for( int $membership_id ): array {
         $rows = $this->db->fetchAll(
-            'SELECT location_id FROM ' . $this->db->table('cpms_membership_locations') .
+            'SELECT location_id FROM ' . $this->db->table( 'cpms_membership_locations' ) .
             ' WHERE membership_id = %d ORDER BY location_id',
-            [$membershipId]
+            [ $membership_id ]
         );
 
-        return array_map(static fn (array $r): int => (int) $r['location_id'], is_array($rows) ? $rows : []);
+        return array_map( static fn( array $r ): int => (int) $r['location_id'], is_array( $rows ) ? $rows : [] );
     }
 
-    public function replaceLocations(int $membershipId, array $locationIds): void
-    {
-        $this->db->delete('cpms_membership_locations', ['membership_id' => $membershipId]);
-        foreach (array_unique(array_map('intval', $locationIds)) as $locationId) {
-            $this->db->insert('cpms_membership_locations', [
-                'membership_id' => $membershipId,
-                'location_id' => $locationId,
-            ]);
+    public function replace_locations( int $membership_id, array $location_ids ): void {
+        $this->db->delete( 'cpms_membership_locations', [ 'membership_id' => $membership_id ] );
+        foreach ( array_unique( array_map( 'intval', $location_ids ) ) as $location_id ) {
+            $this->db->insert(
+                'cpms_membership_locations',
+                [
+                    'membership_id' => $membership_id,
+                    'location_id'   => $location_id,
+                ]
+            );
         }
     }
 
     /**
      * (clinic_id, id) برای هر Location درخواستی — مبنای اعتبارسنجی تعلق.
      *
-     * @param list<int> $locationIds
+     * @param list<int> $location_ids
      *
      * @return array<int, int> map: location_id => clinic_id
      */
-    public function locationClinicMap(array $locationIds): array
-    {
-        if ($locationIds === []) {
+    public function location_clinic_map( array $location_ids ): array {
+        if ( $location_ids === [] ) {
             return [];
         }
 
         $map = [];
         // حداکثر ورودی‌ها محدود است (تخصیص‌های عملیاتی)؛ IN با placeholders ساخته می‌شود.
-        $ids = array_values(array_unique(array_map('intval', $locationIds)));
-        $placeholders = implode(',', array_fill(0, count($ids), '%d'));
-        $rows = $this->db->fetchAll(
-            'SELECT id, clinic_id FROM ' . $this->db->table('cpms_locations') .
+        $ids          = array_values( array_unique( array_map( 'intval', $location_ids ) ) );
+        $placeholders = implode( ',', array_fill( 0, count( $ids ), '%d' ) );
+        $rows         = $this->db->fetchAll(
+            'SELECT id, clinic_id FROM ' . $this->db->table( 'cpms_locations' ) .
             ' WHERE id IN (' . $placeholders . ')',
             $ids
         );
-        foreach ((is_array($rows) ? $rows : []) as $row) {
-            $map[(int) $row['id']] = (int) $row['clinic_id'];
+        foreach ( ( is_array( $rows ) ? $rows : [] ) as $row ) {
+            $map[ (int) $row['id'] ] = (int) $row['clinic_id'];
         }
 
         return $map;
@@ -219,65 +211,63 @@ final class MembershipRepository
      *
      * @return list<int>
      */
-    public function activeClinicIdsForClinician(int $clinicianId): array
-    {
+    public function active_clinic_ids_for_clinician( int $clinician_id ): array {
         $rows = $this->db->fetchAll(
-            'SELECT m.clinic_id FROM ' . $this->db->table('cpms_clinic_memberships') . ' m' .
-            ' INNER JOIN ' . $this->db->table('cpms_clinicians') . ' c ON c.wp_user_id = m.wp_user_id' .
+            'SELECT m.clinic_id FROM ' . $this->db->table( 'cpms_clinic_memberships' ) . ' m' .
+            ' INNER JOIN ' . $this->db->table( 'cpms_clinicians' ) . ' c ON c.wp_user_id = m.wp_user_id' .
             ' WHERE c.id = %d AND m.status = \'active\'',
-            [$clinicianId]
+            [ $clinician_id ]
         );
 
-        return array_map(static fn (array $r): int => (int) $r['clinic_id'], is_array($rows) ? $rows : []);
+        return array_map( static fn( array $r ): int => (int) $r['clinic_id'], is_array( $rows ) ? $rows : [] );
     }
 
     /**
      * @return list<int>
      */
-    public function clinicianLocationIds(int $clinicianId): array
-    {
+    public function clinician_location_ids( int $clinician_id ): array {
         $rows = $this->db->fetchAll(
-            'SELECT location_id FROM ' . $this->db->table('cpms_clinician_locations') .
+            'SELECT location_id FROM ' . $this->db->table( 'cpms_clinician_locations' ) .
             ' WHERE clinician_id = %d ORDER BY is_primary DESC, location_id',
-            [$clinicianId]
+            [ $clinician_id ]
         );
 
-        return array_map(static fn (array $r): int => (int) $r['location_id'], is_array($rows) ? $rows : []);
+        return array_map( static fn( array $r ): int => (int) $r['location_id'], is_array( $rows ) ? $rows : [] );
     }
 
-    public function primaryClinicianLocationId(int $clinicianId): ?int
-    {
+    public function primary_clinician_location_id( int $clinician_id ): ?int {
         $value = $this->db->fetchValue(
-            'SELECT location_id FROM ' . $this->db->table('cpms_clinician_locations') .
+            'SELECT location_id FROM ' . $this->db->table( 'cpms_clinician_locations' ) .
             ' WHERE clinician_id = %d AND is_primary = 1 LIMIT 1',
-            [$clinicianId]
+            [ $clinician_id ]
         );
 
         return $value === null ? null : (int) $value;
     }
 
-    public function replaceClinicianLocations(int $clinicianId, array $locationIds, ?int $primaryLocationId): void
-    {
-        $this->db->delete('cpms_clinician_locations', ['clinician_id' => $clinicianId]);
-        $primary = $primaryLocationId !== null ? (int) $primaryLocationId : (int) ($locationIds[0] ?? 0);
-        foreach (array_unique(array_map('intval', $locationIds)) as $locationId) {
-            $this->db->insert('cpms_clinician_locations', [
-                'clinician_id' => $clinicianId,
-                'location_id' => $locationId,
-                'is_primary' => ($locationId === $primary) ? 1 : 0,
-                'created_at' => $this->db->nowUtcSql(),
-            ]);
+    public function replace_clinician_locations( int $clinician_id, array $location_ids, ?int $primary_location_id ): void {
+        $this->db->delete( 'cpms_clinician_locations', [ 'clinician_id' => $clinician_id ] );
+        $primary = $primary_location_id !== null ? (int) $primary_location_id : (int) ( $location_ids[0] ?? 0 );
+        foreach ( array_unique( array_map( 'intval', $location_ids ) ) as $location_id ) {
+            $this->db->insert(
+                'cpms_clinician_locations',
+                [
+                    'clinician_id' => $clinician_id,
+                    'location_id'  => $location_id,
+                    'is_primary'   => ( $location_id === $primary ) ? 1 : 0,
+                    'created_at'   => $this->db->nowUtcSql(),
+                ]
+            );
         }
     }
 
     /**
      * wp_user_id متصل به Clinician (u_clinician_user — پروفایل یکتا).
      */
-    public function clinicianWpUserId(int $clinicianId): ?int
-    {
+    public function clinician_wp_user_id( int $clinician_id ): ?int {
         $value = $this->db->fetchValue(
-            'SELECT wp_user_id FROM ' . $this->db->table('cpms_clinicians') . ' WHERE id = %d',
-            [$clinicianId]
+            'SELECT wp_user_id FROM ' . $this->db->table( 'cpms_clinicians' ) . ' WHERE id = %d',
+            [ $clinician_id ]
         );
 
         return $value === null ? null : (int) $value;

@@ -35,10 +35,28 @@
 
 - **C4 — Membership primitives**: کد/تست/داکیومنت کامل (کامیت‌های
   98ca0ff..91e5fe4)؛ Integration ✅ 517 تست (شامل ۱۰ تست membership) و
-  PHPStan ✅ در run 34318212809. **در انتظار تأیید نتیجهٔ WPCS روی
-  91e5fe4** — گیت تا اینجا هر بار روی خطای ruleset خودش abort شده بود
-  (سه بار؛ فیکس شد) و هنوز یک بارِ موفق sniff روی کد C4 اجرا نشده
-  است. تا دیدن آن، لایهٔ بعدی (C5) شروع نمی‌شود (قاعدهٔ گیت-قبل-از-لایه).
+  PHPStan ✅ در run 34318212809.
+- **C4 — WPCS-cleanup (این کامیت)**: اولین اجرای موفقِ sniff روی کد C4
+  در run 34318905233 (روی 91e5fe4) نقض‌های واقعی نشان داد (صرفاً در کد
+  جدید؛ سه بار خطای ruleset قبل از آن Class D بود و فیکس شد). اقدامات:
+  (۱) بازنویسی کامل سه فایل جدید در سبک WordPress (snake_case متدها/
+  متغیرها/پراپرتی‌ها، فاصلهٔ داخل پرانتز، brace همان خط، ترازبندی) —
+  بدون تغییر منطق؛ renameهای عمومی: `App::membershipService()` →
+  `App::membership_service()` و همهٔ متدهای Service/Repository/Exception
+  به snake_case (تست‌ها همگام شدند). (۲) پالایش نهایی `phpcs.xml.dist`:
+  پیشوند `ClinicCore` به PrefixAllGlobals اضافه شد و هفت exclusion با
+  دلیل مستند (سه مورد سبکی قبلی + short-array + ArrayDeclarationSpacing
+  + ArrayBraceSpacing + EscapeOutput.ExceptionNotEscaped با استدلال مرز
+  REST/double-encoding). (۳) گیت WPCS از **changed-files** به
+  **changed-lines** ارتقا یافت (فقط نقض روی خطوط add شده نسبت به baseline
+  می‌شکند؛ فایل کاملاً جدید = همهٔ خطوط) — چون App.php legacy با ~۶۵۰
+  نقض تاریخی فقط ۱۵ خطِ جدید دارد. (۴) بهبود evidence: step نصب نسخه‌های
+  resolution (phpcs -i/--version + composer show) را چاپ می‌کند.
+  **اعتبارسنجی لوکال پیش از push**: رانر phpcs داخل php-wasm با همان
+  resolution مورد انتظار CI (wpcs 3.4.1 + phpcs 3.13.6 + PHPCSUtils 1.2.3
+  + PHPCSExtra 1.5.1) — ۰ نقض روی ۸۶۰ خط add شده + شبیه‌سازی کامل
+  stepهای CI (added-lines + intersect) سبز. در انتظار تأیید سبزِ WPCS روی
+  push بعدی؛ پس از آن C5 (Patient Identity) شروع می‌شود.
 
 ### رویداد توکن (ثبت برای handoff)
 
@@ -46,8 +64,8 @@
   توکن GitHub با 401 رد شد (مانند رویداد مشابه قبلی در همین فاز که
   خودش بازیابی شد). retry محدود انجام شد؛ credential دستکاری نشد.
   وضعیت ریموت = 91e5fe4 (push پیش از قطعی پذیرفته شده).
-  اقدام بعدی agent: پس از بازیابی توکن — بررسی runهای 91e5fe4
-  (به‌ویژه WPCS) و سپس ادامهٔ queue.
+  وضعیت: توکن بازیابی شد؛ runهای 91e5fe4 بررسی شدند (WPCS = 34318905233،
+  نقض‌های واقعی کد C4 → فیکس در کامیت بعدی).
 
 ## Done substeps (این فاز)
 

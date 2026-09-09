@@ -4,8 +4,9 @@
         WordPress Coding Standards — CPMS.
 
         استراتژی (ADR در docs/drift-register.md §۸-۱):
-        گیتِ changed-code — CI فقط فایل‌های تغییرکرده/جدید از baseline را
-        می‌سنجد؛ legacy mass-format نمی‌شود و baseline bump دستی/مستند است.
+        گیتِ changed-code — CI فقط «خطوط» تغییرکرده/جدید نسبت به baseline را
+        می‌سنجد (فایل‌های کاملاً جدید = تمام خطوط)؛ legacy mass-format نمی‌شود
+        و bump پایه دستی/مستند است.
 
         Scope تولیدی: src/ و bin/ و فایل ورودی افزونه و uninstall.php.
         تست‌ها (tests/) عمداً خارج از scope این گیت هستند (فاز بعدی).
@@ -33,22 +34,41 @@
         PrefixAllGlobals / DeprecatedFunctions و DB sniffs).
         WordPress-Docs (الزام inline-docs) عمداً جزو گیت نیست.
 
-        اعمال‌نکردن‌های صرفاً سبکی — هرکدام دلیل معماری/یکدستی مستند:
-          - WordPress.Files.FileName: نام‌گذاری kebab-case وردپرس با
-            معماری autoload PSR-4 پروژه (ClinicCore\ → CamelCase) تعارض دارد.
-          - Generic.WhiteSpace.DisallowSpaceIndent: پایگاه کد ۴-space
-            (PHP-FIG) است؛ enforcing تب روی کدِ جدید، ناسازگار با کد مجاور می‌شود.
-          - WordPress.PHP.YodaConditions: سبک صرفاً صوری؛ پایگاه کد از آن
-            استفاده نمی‌کند و یکدستی با کد مجاور مقدم است.
-          (یادداشت: sniffهای alignment در WPCS 3.x / phpcs موجودِ نصب‌شده
-            وجود ندارند — runs 34318212809/34318535964 — پس exclusion لازم
-            نیست؛ اگر نسخه‌های آینده اضافه کنند، گزارش خودش اعلام می‌شود.)
-        هیچ sniff امنیتی/SQL/i18n/naming غیرفعال نیست.
+        اعمال‌نکردن‌ها — هرکدام دلیل مستند:
+        (الف) صرفاً سبکی و ناسازگار با قواعد یکدستِ موجود کل پایگاه کد
+        (پایگاه کد ۱۸۷ فایلی PSR-style است؛ قاعدهٔ مالک: legacy دست‌نخورده،
+        کدِ جدیدِ این فازها وردپس-استاندارد؛ این موارد زیر خواستِ
+        «هم‌خوانی درون-فایلی» برای کدِ مجاور، مستثنی‌اند):
+          - WordPress.Files.FileName — تعارض با معماری autoload PSR-4
+            (ClinicCore\ → نام‌گذاری CamelCase اجباری است).
+          - Generic.WhiteSpace.DisallowSpaceIndent — پایگاه کد ۴-space.
+          - WordPress.PHP.YodaConditions — سبک صرفاً صوری؛ پایگاه کد استفاده
+            نمی‌کند.
+          - Universal.Arrays.DisallowShortArraySyntax — کل پایگاه کد short
+            array ([]) است؛ الزام array() روی خطوط تغییرکرده فقط ناهمگونی
+            درون-فایلی می‌سازد.
+          - WordPress.Arrays.ArrayDeclarationSpacing — قالب آرایهٔ چندخطی
+            وردپس؛ ایدیوم پروژه = آرایه‌های تک‌خطی فشرده.
+          - NormalizedArrays.Arrays.ArrayBraceSpacing — فاصلهٔ داخل براکت
+            آرایه ([ ... ]); همان استدلال ایدیوم پروژه.
+        (ب) با استدلال امنیتی/معماری خاص:
+          - WordPress.Security.EscapeOutput.ExceptionNotEscaped — پیام
+            Exceptionها در این افزونه domain-payload هستند که در مرز REST
+            به envelope ساختاریافتهٔ JSON تبدیل می‌شوند (الگوی مستقر
+            BookingException در کل کد). escape در محل throw منجر به
+            double-encoding (&quot; و ...) در پاسخ API می‌شود؛ مسئولیت
+            خروجی با مرز controller است (تست‌های REST موجود). بقیهٔ
+            EscapeOutput (echo/print) فعال می‌ماند.
+        هیچ sniff امنیتی/SQL/i18n دیگری غیرفعال نیست.
     -->
     <rule ref="WordPress-Extra">
         <exclude name="WordPress.Files.FileName"/>
         <exclude name="Generic.WhiteSpace.DisallowSpaceIndent"/>
         <exclude name="WordPress.PHP.YodaConditions"/>
+        <exclude name="Universal.Arrays.DisallowShortArraySyntax"/>
+        <exclude name="WordPress.Arrays.ArrayDeclarationSpacing"/>
+        <exclude name="NormalizedArrays.Arrays.ArrayBraceSpacing"/>
+        <exclude name="WordPress.Security.EscapeOutput.ExceptionNotEscaped"/>
     </rule>
 
     <!-- i18n: text domain رسمی افزونه (هدر Plugin) -->
@@ -60,12 +80,17 @@
         </properties>
     </rule>
 
-    <!-- پیشوندهای مجاز سراسری‌های اعلان‌شده (ثابت‌ها/هوک‌ها/توابع global) -->
+    <!--
+        پیشوندهای مجاز سراسری‌ها — cpms/CPMS برای hookها/ثابت‌ها/توابع
+        global، و ClinicCore به‌عنوان پیشوند namespace رسمی معماری PSR-4
+        افزونه (الگوی مستقر کل پایگاه کد).
+    -->
     <rule ref="WordPress.NamingConventions.PrefixAllGlobals">
         <properties>
             <property name="prefixes" type="array">
                 <element value="cpms"/>
                 <element value="CPMS"/>
+                <element value="ClinicCore"/>
             </property>
         </properties>
     </rule>

@@ -159,9 +159,11 @@ jobs:
         run: vendor/bin/phpstan analyse --no-progress
 
   # ------------------------------------------------------------------
-  # WPCS — گیت رگرسیون استاندارد وردپرس روی کدِ تغییرکرده/جدید
-  # (drift-register §۸-۱): legacy سنجیده نمی‌شود؛ baseline از تاریخ
-  # پذیرش Migration Foundation شروع می‌کند و bump آن دستی + مستند است.
+  # WPCS — گیت رگرسیون استاندارد وردپرس روی «خطوط» تغییرکرده/جدید
+  # (drift-register §۸-۱): legacy سنجیده نمی‌شود؛ فقط نقض‌هایی که روی
+  # خطوطِ add شده نسبت به baseline واقع شده‌اند گیت را می‌شکنند
+  # (فایل کاملاً جدید = تمام خطوطش). baseline از تاریخ پذیرش Migration
+  # Foundation شروع می‌کند و bump آن دستی + مستند است.
   wpcs:
     name: WPCS (changed code)
     runs-on: ubuntu-latest
@@ -189,7 +191,9 @@ jobs:
           composer config --no-plugins allow-plugins.dealerdirect/phpcodesniffer-composer-installer true
           composer require --dev wp-coding-standards/wpcs:^3.1 \
             --no-interaction --no-progress --with-all-dependencies
-          vendor/bin/phpcs -i
+          # نسخه‌های resolution فعلی — evidence پایدار برای drift-register
+          vendor/bin/phpcs --version
+          composer show 2>/dev/null | grep -E 'phpcs|wpcs|dealerdirect' || true
 
       - name: Changed PHP files since baseline
         run: |
@@ -202,26 +206,79 @@ jobs:
             echo 'WPCS: no in-scope PHP files changed since baseline — nothing to check.'
           fi
 
-      - name: Run WPCS on changed files
+      - name: Compute added lines per changed file
+        run: |
+          # خطوط «+» هر فایل از hunk headerهای diff -U0 (فایل جدید = همهٔ خطوط).
+          : > /tmp/wpcs-added.txt
+          if [ -s /tmp/wpcs-files.txt ]; then
+            while IFS= read -r f; do
+              git diff -U0 --diff-filter=ACMRT "${WPCS_BASELINE:?}"...HEAD -- "clinic-practice-management/$f" \
+                | awk -v f="$f" '
+                  /^@@ / {
+                    match($0, /\+[0-9]+(,[0-9]+)?/);
+                    s = substr($0, RSTART + 1, RLENGTH - 1);
+                    split(s, a, ",");
+                    start = a[1] + 0;
+                    len = (a[2] == "" ? 1 : a[2] + 0);
+                    for (i = 0; i < len; i++) printf "%s:%d\n", f, start + i;
+                  }
+                ' >> /tmp/wpcs-added.txt
+            done < /tmp/wpcs-files.txt
+          fi
+          sort -u /tmp/wpcs-added.txt -o /tmp/wpcs-added.txt
+          echo "Added lines in scope: $(wc -l < /tmp/wpcs-added.txt)"
+
+      - name: Run WPCS (violations on added lines)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if [ -s /tmp/wpcs-files.txt ]; then
-            set +e
-            vendor/bin/phpcs --standard=phpcs.xml.dist -s $(cat /tmp/wpcs-files.txt) > /tmp/wpcs.log 2>&1
-            rc=$?
-            set -e
-            cat /tmp/wpcs.log
-            # لاگ کامل از blob قابل دانلود نیست — گزارش به‌صورت کامنت PR (الگوی job integration)
+          if [ ! -s /tmp/wpcs-files.txt ]; then
+            echo 'WPCS: nothing to check — green no-op.'
+            exit 0
+          fi
+          # گزارش کامل JSON (خطا + هشدار) روی کل فایل‌های تغییرکرده؛
+          # فیلترِ خطوط add شده در step بعدی انجام می‌شود.
+          set +e
+          vendor/bin/phpcs --standard=phpcs.xml.dist --report=json \
+            $(cat /tmp/wpcs-files.txt) > /tmp/wpcs.json 2>/tmp/wpcs-stderr.log
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ] && [ ! -s /tmp/wpcs.json ]; then
+            echo '::error::phpcs failed to run (see stderr below)'
+            cat /tmp/wpcs-stderr.log
+            exit "$rc"
+          fi
+
+          python3 - <<'PY' > /tmp/wpcs-new.txt
+          import json, sys
+          added = set(open('/tmp/wpcs-added.txt').read().split())
+          try:
+              report = json.load(open('/tmp/wpcs.json'))
+          except Exception as e:
+              print(f'::error::cannot parse phpcs JSON: {e}')
+              sys.exit(1)
+          found = []
+          for path, data in report.get('files', {}).items():
+              for m in data.get('messages', []):
+                  key = f"{path}:{m['line']}"
+                  if key in added:
+                      found.append(f"{path}:{m['line']} [{m['type']}] {m['source']} — {m['message']}")
+          print('\n'.join(found))
+          PY
+
+          if [ -s /tmp/wpcs-new.txt ]; then
+            echo "::error::$(wc -l < /tmp/wpcs-new.txt) WPCS violation(s) on added lines:"
+            cat /tmp/wpcs-new.txt
             PR_NUM="${{ github.event.pull_request.number }}"
-            if [ "$rc" -ne 0 ] && [ -n "$PR_NUM" ]; then
+            if [ -n "$PR_NUM" ]; then
               {
-                echo "### WPCS violations (run ${{ github.run_id }})"
+                echo "### WPCS — violations on added lines (run ${{ github.run_id }})"
                 echo '```'
-                tail -c 8000 /tmp/wpcs.log
+                cat /tmp/wpcs-new.txt
                 echo '```'
               } > /tmp/wpcs-pr.md
               gh pr comment "$PR_NUM" --body-file /tmp/wpcs-pr.md || echo '::notice::PR comment failed'
             fi
-            exit "$rc"
+            exit 1
           fi
+          echo 'WPCS: no violations on added lines — green.'
