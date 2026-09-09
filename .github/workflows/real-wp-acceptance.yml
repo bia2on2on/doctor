@@ -232,6 +232,60 @@ jobs:
           } catch (\Throwable $e) { echo "(schedule seed: {$e->getMessage()})\n"; }
           \ClinicCore\Bootstrap\App::settings()->set('files.storage_path', '/home/runner/rwp-storage');
           echo "doctor linked (wp_user_id=$uid); clinician_id=$cid; files.storage_path set\n";
+          // ── Fixture عضویت (TEST INFRASTRUCTURE — نه provisioning محصول) ──
+          // C6: هر actorِ staff که در محیط acceptance قرار است داخل Clinic کار کند
+          // باید عضویت «فعال» روی همان Clinic داشته باشد؛ نقش سراسری WP رابطهٔ
+          // tenant را تعریف نمی‌کند و Production عمداً هیچ provisioning خودکاری
+          // (user_register/set_user_role/exact‑one) ندارد. شناسهٔ Clinic از خودِ
+          // محیط حل می‌شود — هیچ فرضِ id=1 یا «اولین Clinic» در کار نیست.
+          $clinicRow = $db->fetchRow(
+              'SELECT c.id FROM ' . $db->table('cpms_clinics') . ' c
+                 INNER JOIN ' . $db->table('cpms_clinicians') . ' cl ON cl.clinic_id = c.id
+                WHERE cl.wp_user_id = %d AND cl.is_active = 1
+                LIMIT 1',
+              [$uid]
+          );
+          if ($clinicRow === null) {
+              fwrite(STDERR, "FAIL: clinician به هیچ Clinic فعال متصل نیست — fixture عضویت قابل ساخت نیست\n");
+              exit(1);
+          }
+          $accClinicId = (int) $clinicRow['id'];
+          $svc = \ClinicCore\Bootstrap\App::membership_service();
+          $roleKeys = [
+              'DOCTOR_USER' => 'cpms_doctor',
+              'SECRETARY_USER' => 'cpms_secretary',
+              'MANAGER_USER' => 'cpms_manager',
+              'ACCOUNTANT_USER' => 'cpms_accountant',
+          ];
+          $seeded = [];
+          foreach ($roleKeys as $envKey => $roleKey) {
+              $login = (string) getenv($envKey);
+              if (1 !== preg_match('/^[A-Za-z0-9_.-]{1,60}$/', $login)) {
+                  fwrite(STDERR, "FAIL: login acceptance نامعتبر ({$envKey})\n");
+                  exit(1);
+              }
+              $u = get_user_by('login', $login);
+              if ($u === false) {
+                  fwrite(STDERR, "FAIL: کاربر {$login} وجود ندارد — مرحلهٔ wp user create اجرا نشده\n");
+                  exit(1);
+              }
+              $userId = (int) $u->ID;
+              $existing = $svc->membership_for($accClinicId, $userId);
+              // idempotent — اجرای دوبارهٔ fixture خطای duplicate نمی‌دهد.
+              $seeded[$login] = $existing !== null
+                  ? (int) $existing['id']
+                  : $svc->create_membership($accClinicId, $userId, $roleKey);
+          }
+          // administrator (technical owner) عمداً عضویت staff نمی‌گیرد؛ کاربر
+          // patient هم در این مرحله ساخته نمی‌شود و در صورت افزودن، نباید
+          // عضویت staff بگیرد.
+          \ClinicCore\Bootstrap\App::replaceExplicitScope(null);
+          echo 'memberships seeded on clinic ' . $accClinicId . ': '
+              . implode(', ', array_map(
+                  static fn (string $k, int $v): string => $k . '=' . $v,
+                  array_keys($seeded),
+                  $seeded
+              )) . "\n";
           PHPEOF
           wp eval-file /tmp/acc/setup-roles.php --path="$WP_DIR" --allow-root
 
