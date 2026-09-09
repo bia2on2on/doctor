@@ -79,6 +79,22 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         App::resetScope();
 
         /*
+         * Warm پیش از ساخت fixtureها و در Scope خنثی — شاهد ریشه‌ای run
+         * 34405141498: `App::boot()` یک‌بارمصرف است و `rest_api_init` هنگام
+         * ساختِ نخستین REST serverِ پروسه، سرویس‌ها را داخل کلوزر route‌ها
+         * capture می‌کند (`App::otpService()` static، `self::$smsService`،
+         * `medicalFileService()/exportService()` و… با `App::settings()` همان
+         * لحظه). چون این کلاس (ترتیب الفبایی: Clin‌icTenant < Clin‌icalFlow)
+         * نخستین کلاسِ Suite است که REST را لمس می‌کند، اگر warm زیر Scope
+         * fixture (Clinic جعلی 61001) انجام شود، آن Pin به‌طور دائمی به کل
+         * کلاس‌های بعدی منتقل می‌شود — دقیقاً همان آلودگی Export/Otp/Sms/Visit
+         * (نوشته‌ها با clinic_id=61001 روی Clinicِ پاک‌شده ⇒ FK، خواندن Setting
+         * از slot 61001 ⇒ پیش‌فرض، 404 دانلود). warm در Scope خنثی یعنی Pin =
+         * clinic 1 — عیناً همان چیزی که در baseline بدون این کلاس اتفاق می‌افتاد.
+         */
+        $this->warmRoutes();
+
+        /*
          * این فایل تعداد Clinicهای نصب را زیاد می‌کند ⇒ Resolution سیستمی (exactly‑one)
          * عمداً Fail‑Closed می‌شود؛ پس هر خواندن/نوشتن Setting باید **زیرِ Scope صریحِ
          * fixture** انجام شود (نه Resolution ضمنی) — الگوی مجاز ScopeContext.
@@ -101,7 +117,6 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         $this->locB = $this->insertLocation(self::CLINIC_B, 'iso-loc-b');
 
         $this->writeStorageSettings([self::CLINIC_A, self::CLINIC_B, self::CLINIC_C, self::CLINIC_D]);
-        $this->warmRoutes();
         $this->bindHarnessScope();
     }
 
@@ -116,17 +131,19 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         App::replaceExplicitScope(ClinicScope::forClinic(self::CLINIC_A));
     }
 
-    /** بیدارسازی lazy registry مسیرها زیرِ Scope صریح (بدون PHI؛ endpoint عمومی). */
+    /**
+     * بیدارسازی lazy registry مسیرها در Scope خنثی (بدون PHI؛ endpoint عمومی).
+     *
+     * عمداً بدون bind: در این لحظه نصبِ پیش‌فرضِ Suite (یک Clinic) برقرار است و
+     * build‌های یک‌بارمصرفِ boot باید دقیقاً همان Pinِ baseline را بگیرند؛
+     * وگرنه instanceهای capture‌شده در route‌ها به Clinic جعلی fixture قفل شده
+     * و به تمام کلاس‌های بعدی سرایت می‌کنند (شاهد: run 34405141498 — §۴).
+     */
     private function warmRoutes(): void
     {
-        ScopeContext::set(ClinicScope::forClinic(self::CLINIC_A));
         \ClinicCore\Settings\Settings::flushCache();
-        try {
-            rest_do_request(new WP_REST_Request('GET', self::NS . '/health'));
-        } finally {
-            ScopeContext::clear();
-            \ClinicCore\Settings\Settings::flushCache();
-        }
+        rest_do_request(new WP_REST_Request('GET', self::NS . '/health'));
+        \ClinicCore\Settings\Settings::flushCache();
     }
 
     /**
@@ -446,10 +463,18 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
     public function testTraversingStoragePathNeverLeaksBytes(): void
     {
         [$patientB] = $this->seedPatientWithUser(self::CLINIC_B, 'PatB12b');
-        $foreign = $this->storagePath . '-outside.txt';
+        // فایل بیرون از ریشه باید در **همان ریشه‌ای** باشد که instance پیّن‌شدهٔ
+        // route واقعاً سرو می‌کند (rیشهٔ پیش‌فرضِ boot)؛ وگرنه probe فقط ناموجود
+        // را می‌سنجد، نه عبور از مرزِ root.
+        $storageRoot = \ClinicCore\Infrastructure\Storage\LocalFileStorage::defaultBasePath();
+        if (!is_dir($storageRoot)) {
+            mkdir($storageRoot, 0777, true);
+        }
+        $foreign = dirname($storageRoot) . '/cpms-tenant-outside-' . bin2hex(random_bytes(4)) . '.txt';
         file_put_contents($foreign, 'TOP-SECRET-OUTSIDE-ROOT');
         $traversalUploader = $this->seedStaff('cpms_doctor', [self::CLINIC_B]);
         $fileId = $this->insertAttachmentRow(self::CLINIC_B, $patientB, '../' . basename($foreign), 'leak.pdf', $traversalUploader);
+        self::assertFileExists($foreign, 'پیش‌شرط: فایل بیرونِ ریشه واقعاً وجود داشته باشد (probevacuous نباشد)');
 
         wp_set_current_user($traversalUploader);
         $res = $this->call('GET', self::NS . '/files/' . $fileId . '/stream', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_B]);
@@ -735,6 +760,23 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
             'DELETE FROM ' . $wpdb->prefix . 'cpms_rate_limits WHERE clinic_id >= 61000' // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
         );
 
+        // فایل‌های دیسکی که routeها (نسخهٔ boot-pin) در ریشهٔ پیش‌فرض ذخیره
+        // کرده‌اند — تراکنش DB هیچ اثری روی دیسک ندارد؛ اگر پاک نشوند، زبالهٔ
+        // این کلاس در ریشهٔ مشترِک باقی می‌ماند.
+        $root = \ClinicCore\Infrastructure\Storage\LocalFileStorage::defaultBasePath();
+        $rootReal = realpath($root);
+        if ($rootReal !== false) {
+            $rels = (array) $wpdb->get_col(
+                'SELECT storage_path FROM ' . $wpdb->prefix . 'cpms_medical_attachments WHERE clinic_id >= 61000' // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            );
+            foreach ($rels as $rel) {
+                $candidate = realpath($rootReal . '/' . ltrim(str_replace('\\', '/', (string) $rel), '/'));
+                if ($candidate !== false && str_starts_with($candidate, $rootReal . '/') && is_file($candidate)) {
+                    @unlink($candidate);
+                }
+            }
+        }
+
         // پاک‌سازی fixture — با FOREIGN_KEY_CHECKS خاموش تا هیچ خطای DB (و هیچ
         // notice با failOnWarning) تولید نشود. فقط ردیف‌های رزروِ همین کلاس.
         $wpdb->query('SET FOREIGN_KEY_CHECKS = 0'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
@@ -838,7 +880,16 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
 
     private function makeUser(string $login, string $role): int
     {
-        $userId = (int) wp_create_user($login . bin2hex(random_bytes(3)), 'pass-12345', $login . '@test.local');
+        // باگ واقعی run 34405141498 (probe ۱۱): login رندوم بود ولی **email
+        // ثابت** — هر دو منشیِ یک تست همان `iso_secretary@test.local` را
+        // می‌گرفتند؛ wp_create_user ⇒ WP_Error و `(int) WP_Error` ⇒ «Object of
+        // class WP_Error could not be converted to int». email هم باید یکتا باشد.
+        $seed = bin2hex(random_bytes(4));
+        $created = wp_create_user($login . $seed, 'pass-12345', $login . $seed . '@test.local');
+        if ($created instanceof \WP_Error) {
+            self::fail('پیش‌شرط: ساخت کاربر ناموفق: ' . $created->get_error_code() . ' — ' . $created->get_error_message());
+        }
+        $userId = (int) $created;
         $user = get_userdata($userId);
         if ($user !== false) {
             $user->set_role($role);
