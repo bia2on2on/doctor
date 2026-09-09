@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace ClinicCore\Application\Clinical;
 
+use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Auth\RolesAndCapabilities;
+use ClinicCore\Bootstrap\App;
 use ClinicCore\Infrastructure\Audit\AuditLogger;
 use ClinicCore\Infrastructure\Repository\MedicalFileRepository;
 use ClinicCore\Infrastructure\Storage\LocalFileStorage;
@@ -21,6 +23,11 @@ use ClinicCore\Settings\Settings;
  *  - **F-4:** هر خواندن doctor_private/lab_result → Audit FILE_READ.
  *  - **F-5:** حذف = Soft Delete (سرویسی؛ Endpoint در قرارداد نیست).
  *  - **P-8:** بیمار فقط فایل‌های خودش (Ownership)؛ منشی فقط patient_visible.
+ *  - **C6-F (Tenant):** خواندن/فهرست/نوشتن/حذف توسط کارکنان فقط داخل
+ *    Clinic مورد اجازه (context موثق). مسیرهای stream/list در trusted-boundary
+ *    skip list هستند (چون به بیمار هم سرویس می‌دهند)، پس predicate پایین
+ *    **زیر مرز REST** اعمال می‌شود؛ بودن context غیرمشخص = رد (Fail‑Closed).
+ *    رد = همان 404 امن (بدون افشای وجود و بدون هیچ بایت محتوا).
  */
 final class MedicalFileService
 {
@@ -106,6 +113,8 @@ final class MedicalFileService
     public function staffFiles(int $actorUserId, int $patientId): array
     {
         $this->requireCap($actorUserId, RolesAndCapabilities::FILE_READ);
+        // C6-F: فهرست هم Tenant‑aware است (بیمار Clinic دیگر فهرست نمی‌شود)
+        $this->assertStaffClinic($actorUserId, $this->patientClinicId($patientId), 'patient', $patientId);
         $onlyVisible = !$this->canSeePrivate($actorUserId);
 
         return array_map([$this, 'presentFile'], $this->files->forPatient($patientId, $onlyVisible));
@@ -133,20 +142,24 @@ final class MedicalFileService
         $isPatient = in_array(RolesAndCapabilities::ROLE_PATIENT, $roles, true);
 
         if ($isPatient) {
-            // P-8: فقط فایل خودش + patient_visible
+            // P-8: فقط فایل خودش + patient_visible + همان Clinical Patient Record
             $owned = $this->ownedPatientId($actorUserId);
-            if ($owned !== (int) $row['patient_id'] || (string) $row['visibility'] !== 'patient_visible') {
+            if ($owned !== (int) $row['patient_id']
+                || (string) $row['visibility'] !== 'patient_visible'
+                || (int) $row['clinic_id'] !== $this->patientClinicId($owned)) {
                 $this->auditAndThrow($actorUserId, 'file', $fileId, 'دسترسی به این فایل مجاز نیست');
             }
         } elseif ($isDoctor) {
             $this->requireCap($actorUserId, RolesAndCapabilities::FILE_READ);
-            // پزشک: هر Visibility (ماتریس 4.3)
+            // پزشک: هر Visibility (ماتریس 4.3) — اما فقط داخل Clinic context
+            $this->assertStaffClinic($actorUserId, (int) $row['clinic_id'], 'file', $fileId);
         } elseif ($isSecretary) {
             $this->requireCap($actorUserId, RolesAndCapabilities::FILE_READ);
             // منشی: فقط patient_visible (ماتریس 4.2 — Doctor Private ❌)
             if ((string) $row['visibility'] !== 'patient_visible') {
                 $this->auditAndThrow($actorUserId, 'file', $fileId, 'دسترسی به این فایل مجاز نیست');
             }
+            $this->assertStaffClinic($actorUserId, (int) $row['clinic_id'], 'file', $fileId);
         } else {
             $this->auditAndThrow($actorUserId, 'file', $fileId, 'دسترسی به این فایل مجاز نیست');
         }
@@ -189,6 +202,8 @@ final class MedicalFileService
         if ($row === null) {
             throw ClinicalException::of('CLINIC_NOT_FOUND', 'فایل یافت نشد', 404);
         }
+        // C6-F: حذف (موتیشن) هم فقط داخل Clinic context موثق
+        $this->assertStaffClinic($actorUserId, (int) $row['clinic_id'], 'file', $fileId);
         $this->files->softDelete($fileId);
         $this->audit->log(
             'FILE_SOFT_DELETED',
@@ -279,6 +294,13 @@ final class MedicalFileService
         if ($patientClinicId === 0) {
             throw ClinicalException::of('CLINIC_NOT_FOUND', 'بیمار یافت نشد', 404);
         }
+        // C6-F: نوشتن هم Relation‑based — بیمار باید داخل Clinic مورد اجازه
+        // باشد؛ این بررسی پیش از هر نوشتن روی دیسک انجام می‌شود.
+        if ($via === 'staff') {
+            $this->assertStaffClinic($actorUserId, $patientClinicId, 'patient', $patientId);
+        } else {
+            $this->assertPatientRecord($actorUserId, $patientClinicId, $patientId);
+        }
         $storagePath = $this->storage->store($content, $patientClinicId, $extension);
 
         $fileId = $this->files->insert($patientClinicId, [
@@ -354,6 +376,50 @@ final class MedicalFileService
         }
 
         return (int) $patientId;
+    }
+
+    /**
+     * Clinic مورد اجازه — Phase 2 (Scope صریح درخواست یا Resolution سیستمی
+     * «تنها Clinic»). مبهم ⇒ `CLINIC_SCOPE_REQUIRED` بدون هیچ fallback پیش‌فرض.
+     */
+    private function trustedClinicId(): int
+    {
+        try {
+            return App::scope()->clinicId;
+        } catch (ScopeRequiredException $e) {
+            throw ClinicalException::of($e->errorCode, $e->getMessage(), $e->httpStatus(), $e->getData());
+        }
+    }
+
+    /**
+     * فایل/بیمار هدف باید متعلق به همان Clinic مورد اجازه باشد. خلاف ⇒ رفتار
+     * دقیقاً مانند «یافت نشد» (عدم افشای وجود) + Audit — بدون دسترسی به
+     * محتوای دیسک، چون این guard پیش از storage->read()/store() است.
+     */
+    private function assertStaffClinic(int $actorUserId, int $targetClinicId, string $resourceType, int $resourceId): void
+    {
+        if ($targetClinicId !== $this->trustedClinicId()) {
+            $this->auditAndThrow($actorUserId, $resourceType, $resourceId, 'دسترسی به این فایل مجاز نیست');
+        }
+    }
+
+    /** بیمار: فقط فایل همان Clinical Patient Record متصل به حساب. */
+    private function assertPatientRecord(int $wpUserId, int $targetClinicId, int $patientId): void
+    {
+        if ($targetClinicId !== $this->patientClinicId($this->ownedPatientId($wpUserId))) {
+            $this->auditAndThrow($wpUserId, 'patient', $patientId, 'دسترسی به این فایل مجاز نیست');
+        }
+    }
+
+    /** @return int Clinic بیمار (۰ = ناموجود) */
+    private function patientClinicId(int $patientId): int
+    {
+        global $wpdb;
+
+        return (int) $wpdb->get_var($wpdb->prepare(
+            'SELECT clinic_id FROM ' . $wpdb->prefix . 'cpms_patients WHERE id = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $patientId
+        ));
     }
 
     private function requireCap(int $wpUserId, string $cap): void

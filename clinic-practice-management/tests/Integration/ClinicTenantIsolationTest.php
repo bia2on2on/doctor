@@ -48,6 +48,26 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
     protected function setUp(): void
     {
         parent::setUp();
+
+        /*
+         * شاهد ایزوله‌سازی: این کلاس در پایان هر تست ردیف‌های خود را پاک می‌کند؛
+         * اگر تراکنش/rollback suite درست کار کند، ابتدای هر تست فقط Clinicهای
+         * پیش‌فرض) دیده می‌شود و هیچ Clinic رزرو (≥ 61000) باقی نمانده است. اگر
+         * ردیفی از تست قبلی مانده باشد، صریح گزارش می‌شود — نه به‌شکل assertion
+         * بی‌ربط در کلاس‌های دیگر.
+         * صریح گزارش می‌شود (نه اینکه به شکل assertionهای بی‌ربط در کلاس‌های
+         * دیگر ظاهر شود).
+         */
+        global $wpdb;
+        $leftover = (int) $wpdb->get_var(
+            'SELECT COUNT(*) FROM ' . $wpdb->prefix . 'cpms_clinics WHERE id >= 61000' // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        );
+        self::assertSame(
+            0,
+            $leftover,
+            'CPMS_ISOLATION_WITNESS: ' . $leftover . ' Clinic رزرو از تست قبلی باقی مانده — rollback/پاک‌سازی مختل شده'
+        );
+
         App::migrations()->migrate();
         \ClinicCore\Settings\Settings::flushCache();
         App::resetScope();
@@ -595,16 +615,29 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
             'cpms_notifications' => $pure,
             'cpms_idempotency_keys' => $pure,
             'cpms_patient_merges' => $pure,
-            'cpms_rate_limits' => 'WHERE clinic_id >= 61000',
-            'cpms_audit_logs' => $pure,
             'cpms_clinics' => 'WHERE id >= 61000',
         ];
+        // ردیف‌های Audit/RateLimit که به Clinik fixture وابسته‌اند (resource-محور)
+        $patSql = 'SELECT id FROM ' . $wpdb->prefix . 'cpms_patients WHERE clinic_id >= 61000';
+        $wpdb->query(
+            'DELETE FROM ' . $wpdb->prefix . 'cpms_audit_logs
+              WHERE clinic_id >= 61000
+                 OR patient_id IN (' . $patSql . ')' // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+        );
+        $wpdb->query(
+            'DELETE FROM ' . $wpdb->prefix . 'cpms_rate_limits WHERE clinic_id >= 61000' // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+        );
+
+        // پاک‌سازی fixture — با FOREIGN_KEY_CHECKS خاموش تا هیچ خطای DB (و هیچ
+        // notice با failOnWarning) تولید نشود. فقط ردیف‌های رزروِ همین کلاس.
+        $wpdb->query('SET FOREIGN_KEY_CHECKS = 0'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         foreach ($steps as $table => $clause) {
             $wpdb->query('DELETE FROM ' . $wpdb->prefix . $table . ' ' . $clause); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
         }
         $wpdb->query(
             'DELETE FROM ' . $wpdb->prefix . "cpms_organizations WHERE slug LIKE 'iso\\_org\\_%'" // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
         );
+        $wpdb->query('SET FOREIGN_KEY_CHECKS = 1'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
     }
 
     private function defaultOrganization(): int
@@ -1029,7 +1062,11 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
     private function resp(WP_REST_Response|\WP_Error $res): WP_REST_Response
     {
         if ($res instanceof \WP_Error) {
-            $this->fail('پاسخ WP_Error: ' . $res->get_error_code() . ' — ' . $res->get_error_message());
+            $this->fail(
+                'پاسخ WP_Error از REST (route ثبت‌نشده/خطای مرز): code=' . $res->get_error_code()
+                . ' msg=' . $res->get_error_message()
+                . ' server=' . (string) rest_get_server()->get_route_for_request(new WP_REST_Request('GET', self::NS . '/'))
+            );
         }
 
         return $res;
