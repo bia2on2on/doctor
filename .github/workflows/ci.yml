@@ -177,12 +177,14 @@ jobs:
           php-version: '8.2'
           coverage: none
 
-      - name: Install dependencies (WPCS — ephemeral؛ wpcs pin دقیق، phpcs از قید خود WPCS و فیلتر امنیتی composer)
+      - name: Install dependencies (WPCS — ephemeral؛ دامنهٔ 3.x + فیلتر امنیتی composer)
         run: |
-          # phpcs عمداً pin نمی‌شود: composer نسخه‌های دارای security advisory را
-          # از resolution حذف می‌کند (evidence: run 34315163722 — همهٔ 3.11.x
-          # رد شدند) و جدیدترین نسخهٔ سالمِ سازگار با wpcs:3.1.0 انتخاب می‌شود.
-          composer require --dev wp-coding-standards/wpcs:3.1.0 \
+          # هیچ پکیجی exact-pin نمی‌شود: composer نسخه‌های دارای security
+          # advisory را از resolution حذف می‌کند (evidence: runs 34315163722
+          # و 34315474820 — phpcs 3.11.x و خود wpcs 3.1.0 هر دو advisory
+          # داشتند)؛ نتیجه = جدیدترین نسخهٔ سالمِ سازگار. constraint اصلی
+          # پروژه = major 3.x وردپرس-استاندارد.
+          composer require --dev wp-coding-standards/wpcs:^3.1 \
             --no-interaction --no-progress --with-all-dependencies
           vendor/bin/phpcs -i
 

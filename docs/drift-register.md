@@ -236,10 +236,15 @@ standards on changed code`؛ بر مبنای SHA پیاده‌سازی f23e0c5 �
 کامیت پذیرش Migration Foundation).** جزئیات نهایی نسبت به پیشنهاد:
 - استراتژی = changed-files نسبت به `WPCS_BASELINE` (SHA کامل در env آن job
   در `ci.yml`)؛ نه baseline-file و نه mass-format. bump آن دستی + مستند است.
-- وابستگی: ephemeral در CI با pin دقیق (`wpcs:3.1.0`،
-  `php_codesniffer:~3.11.0`) — مطابق الگوی موجود job integration
-  (نصب runtime PHPUnit)؛ چون repo بدون composer.lock است، هیچ تغییری در
-  dependency graph پروژه لازم نشد. runtime dependency جدیدی اضافه نشد.
+- وابستگی: ephemeral در CI با دامنهٔ `wpcs:^3.1` (بدون exact-pin) —
+  مطابق الگوی موجود job integration (نصب runtime PHPUnit)؛ چون repo بدون
+  composer.lock است، هیچ تغییری در dependency graph پروژه لازم نشد و
+  runtime dependency جدیدی اضافه نشد. دلیل عدم pin دقیق (evidence:
+  runs 34315163722/34315474820): هم `php_codesniffer 3.11.x` و هم خودِ
+  `wpcs 3.1.0` در رجیستری security advisory دارند و composer آن‌ها را از
+  resolution حذف می‌کند؛ بنابراین فیلتر امنیتی composer، مرجع انتخاب
+  جدیدترین نسخهٔ سالمِ سازگار با major 3.x است. suppress نکردن advisoryها
+  عمداً انتخاب شد (امنیت > قطعیتِ نسخه).
 - `phpcs.xml.dist` = canonical: `WordPress-Extra` (شامل Core + sniffs
   امنیتی/PreparedSQL/I18n) + text domain `cpms` + PrefixAllGlobals
   (`cpms, CPMS`) + چهار اعمال‌نکردنِ مستندِ صرفاً سبکی (FileName — تعارض با
