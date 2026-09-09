@@ -474,6 +474,22 @@ erDiagram
 
 `cpms_patients` یک ستون `identity_id BIGINT UNSIGNED NULL` می‌گیرد.
 
+> **پیاده‌سازی Phase 2 (C5 — foundation، 2026-09-09):** جدول به‌صورت as-built با
+> Migration 0018 (C1/C2) + 0019 (C5) ساخته شد و با طرح بالا تفاوت مستند دارد:
+> ستونها = `organization_id` + **`internal_ref` VARCHAR(40) تغییرناپذیر و یکتا**
+> (جای national_id_hash/mobile_hash — تصمیم هش B-17 هنوز باز است و هیچ ستون
+> هش‌شده‌ای ساخته نشده) + **`normalized_mobile` VARCHAR(16) NULL** (صفت lookupِ
+> plaintext طبق دستور C5؛ **بدون UNIQUE** — duplicate candidates در همان سازمان
+> مجاز و non-destructive) + timestamps. ایندکس‌ها: `u_identity_ref(internal_ref)`،
+> `idx_identity_org(organization_id)`، `idx_identity_org_mobile(organization_id,
+> normalized_mobile)` (مطابق query واقعی؛ EXPLAIN در تست تأیید می‌کند). جدول
+> `cpms_patient_identity_links` (لینک صریح WP User↔Identity، Organization-bound،
+> UNIQUE(identity_id,wp_user_id)) اضافه شد — جدا از `patient_user_links`
+> (Clinic-scoped). سرویس: `PatientIdentityService` (همهٔ lookupها org-scoped؛
+> رکورد بالینی فقط با Clinic صریح؛ لینک کاربر هرگز خودکار با موبایل نیست).
+> `cpms_patients` همچنان Clinic-owned است (`u_pat_mrn/mobile/nid` دست‌نخورده)؛
+> `identity_id` فقط رابطهٔ اختیاری است و هیچ دسترسی بالینی بین‌کلینیکی نمی‌سازد.
+
 ## ب-۳ — [DECIDED] Organization لایهٔ اجباری Core است
 
 **تصمیم Product Owner:** Organization **اجباری** است. هر Clinic دقیقاً به یک Organization تعلق دارد. زنجیرهٔ `Organization → Clinic → Location` حتی برای مطب تک‌پزشکی هم استفاده می‌شود. **مدل Core نباید هیچ مسیر موازی برای `Organization = NULL` بسازد.**

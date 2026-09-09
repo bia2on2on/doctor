@@ -53,10 +53,10 @@
 
 | # | قلم | وضعیت 1A | وابسته به |
 |---|---|---|---|
-| **B-14** | `cpms_patient_identities` در سطح Organization با شناسهٔ داخلی تغییرناپذیر | وجود ندارد | Phase 2 |
+| **B-14** | `cpms_patient_identities` در سطح Organization با شناسهٔ داخلی تغییرناپذیر | ✅ **پیاده‌سازی شد (C5، 2026-09-09)** — جدول + سرویس/ریپازیتوری primitive + لینک WP User (کامیت‌های 0018/C1-C2 و 0019/C5) | انجام شد |
 | **B-15** | تغییر شمارهٔ موبایل — صریح و Audit شده | `OtpService` جست‌وجوی بیمار را از **Clinicِ پیکربندی‌شدهٔ Settings** می‌خواند (پس از fix تصحیحی Pre-Phase-2 Gate — دیگر هیچ literal `clinic_id = 1` در آن فایل نیست) | Phase 2 |
 | **B-16** | تشخیص تکراری و Merge هویت | Schema موجود است، `resolvePatient()` وجود ندارد | Phase 2 |
-| **B-17** | اگر ستون Lookup هش شود، باید HMAC کلیددار باشد نه SHA-256 خام | هیچ ستون هش‌شده‌ای وجود ندارد | Phase 2 |
+| **B-17** | اگر ستون Lookup هش شود، باید HMAC کلیددار باشد نه SHA-256 خام | همچنان هیچ ستون هش‌شده‌ای وجود ندارد — C5 طبق دستور مالک ستون plaintext `normalized_mobile` ساخت («normalized lookup field»)؛ قید HMAC فقط در صورت مهاجرت آینده به هش فعال می‌شود | باز (فقط در صورت تغییر تصمیم) |
 
 > 🔴 **تصحیح (2026-09-09 — Pre-Phase-2 Gate):** جملهٔ قبلی این بند («Phase 1A هیچ نمونهٔ جدیدی اضافه نکرده») **نادرست بود** — git blame نشان داد کامیت `4c16009` (OD-8، Phase 1A) یک نسخهٔ کپی‌شده از کوئری `clinic_id = 1` در `findExistingUser` اضافه کرده بود (نقض AD-13). در همان Gate با fix کوچک اصلاح شد: کوئریِ تکراری به یک helper واحد پارامتری‌شده با `Settings::clinicId()` تبدیل شد (بدون ساخت مفهوم Scope جدید — آن کار Phase 2 است) + تست رگرسیون `OtpFlowTest::testVerifyResolvesPatientInConfiguredClinicNotHardcodedDefault`. بازطراحی کامل این مسیر مطابق AD-14 همچنان Phase 2 می‌ماند.
 

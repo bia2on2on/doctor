@@ -116,6 +116,11 @@ erDiagram
 | 36 | `cpms_settings` | زیرساخت | بسیار کم |
 
 > Data Dictionary کامل (فیلد، نوع، Constraint، Index): [data-dictionary.md](data-dictionary.md)
+>
+> 📌 **جداول Phase 2** (organizations/locations/memberships/**patient_identities**
+> و **patient_identity_links** — C5) در دیاگرام و فهرست بالا نیستند؛ وضعیت
+> as-built آنها در انتهای [data-dictionary.md](data-dictionary.md) مستند شده است.
+> بازنویسی کامل ERD = drift D-03 (ERD نسخهٔ ۲).
 
 ## 3. نکات Integrity مهم
 

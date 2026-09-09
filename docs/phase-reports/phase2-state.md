@@ -2,20 +2,30 @@
 
 | | |
 |---|---|
-| **آخرین به‌روزرسانی** | بر مبنای SHA پیاده‌سازی `41b24dc` |
-| **وضعیت Phase 2** | IN PROGRESS — C1..C4 done؛ Migration Foundation ✅ APPROVED (Owner, 2026-09-09) |
-| **آخرین remote SHA سبزِ تأییدشده** | `41b24dc` (هر ۵ گیت؛ اولین سبزیِ کامل WPCS روی کد C4) |
+| **آخرین به‌روزرسانی** | بر مبنای SHA پیاده‌سازی `315e582` |
+| **وضعیت Phase 2** | IN PROGRESS — C1..C5 done؛ Migration Foundation ✅ APPROVED (Owner, 2026-09-09) |
+| **آخرین remote SHA سبزِ تأییدشده** | `315e582` (هر ۵ گیت؛ فوندیشن Patient Identity سبز) |
 
 > این فایل state جاری است، نه گزارش؛ گزارش‌های کامل در
 > [`final-pre-phase2-gate-report.md`](final-pre-phase2-gate-report.md) و
 > کامنت‌های PR #11. عمداً به HEAD خودارجاع ندارد — SHA مبنا را مالک/agent
 > هنگام هر به‌روزرسانی صریح می‌نویسد.
 
-## Last known good gates (روی 41b24dc — C4 کامل)
+## Last known good gates (روی 315e582 — C5 کامل)
 
 | گیت | Run | نتیجه |
 |---|---|---|
-| CI (PHPStan + Unit×4 + Integration + **WPCS line-scoped**) | 34330257136 | ✅ success |
+| CI (PHPStan + Unit×4 + Integration 527 تست + **WPCS line-scoped**) | 34336052376 | ✅ success |
+| Real-WP (PR) | 34336052355 | ✅ success |
+| Real-WP (push) | 34336047913 | ✅ success |
+| Pilot/Staging | 34336047922 | ✅ success |
+| Closure | 34336047920 | ✅ success |
+
+### سابقه (روی 41b24dc — C4 کامل)
+
+| گیت | Run | نتیجه |
+|---|---|---|
+| CI (PHPStan + Unit×4 + Integration + WPCS line-scoped) | 34330257136 | ✅ success |
 | Real-WP (PR) | 34330256991 | ✅ success |
 | Real-WP (push) | 34330252423 | ✅ success |
 | Pilot/Staging | 34330252351 | ✅ success |
@@ -43,7 +53,33 @@
 
 ## Current substep
 
-- **C4 — Membership primitives: ✅ کامل (هر ۵ گیت سبز روی `41b24dc`)** — کد/تست/داکیومنت
+- **C5 — Patient Identity Foundation: ✅ کامل (هر ۵ گیت سبز روی `315e582`)**
+  (کامیت‌های `9207afa` → `2ba16d7` → `315e582` + کامیت docs این واحد):
+  - **نرمال‌سازی موبایل ایران** (`9207afa`): ارقام فارسی/عربی → ASCII
+    (`fold_digits`)، فرم‌های 98+صفرِ میان‌شهری (۱۳/۱۵ رقمی)، و فیکس مستند شاخهٔ
+    معیوب ۱۲رقمی `9809` (خروجی خراب `00...` می‌ساخت → حالا null). تست‌های
+    table-driven واحد (۲۳ case).
+  - **فوندیشن هویت** (`2ba16d7`): Migration 0019 (`normalized_mobile` غیر یکتا +
+    ایندکس `idx_identity_org_mobile` + جدول `cpms_patient_identity_links`)،
+    `PatientIdentityException` (`CLINIC_PATIENT_IDENTITY_*`)،
+    `PatientIdentityRepository` (همهٔ lookupها org-scoped)،
+    `PatientIdentityService` (create/lookup/duplicate_candidates/set_mobile/
+    link_clinical_record/clinical_records_for_clinic/link_user/
+    identities_for_user؛ fail-closed + anti-enumeration)،
+    `App::patient_identity_service()`، تست integration جدید (ماتریس ۲۰بندی
+    مالک؛ OTP OD-8 هم دوباره اثبات شد).
+  - **فیکس Class D ×4** (`315e582`): expectationهای نسخهٔ schema در
+    Phase2SchemaTest/TempTableIsolationTest و سه workflow گیت (pilot/closure/
+    real-wp) هاردکد `0018` بودند → `0019`؛ assertion EXPLAIN به «بدون full-scan
+    + ایندکس org-scoped» تعدیل شد (انتخاب بین دو ایندکس org-scoped با optimizer
+    است — روی دادهٔ کوچک تست، ایندکس کوتاه‌تر را برمی‌گزیند).
+  - **داکیومنت** (این کامیت): target-model (یادداشت as-built C5 + نرمال‌سازی)،
+    data-dictionary (بخش as-built هویت)، erd.md (اشاره‌گر)، ADR-0031 (وضعیت
+    پیاده‌سازی identity)، phase1b-deferred-register (B-14 ✅ / B-17 روشن‌سازی)،
+    state.
+- **قدم بعدی: C6 — حذف tenant hardcodes** (census تازه از HEAD) طبق queue.
+
+### سابقهٔ C4 (خلاصه) — کد/تست/داکیومنت
   (کامیت‌های 98ca0ff..91e5fe4) + WPCS-cleanup (کامیت‌های 67e1208..41b24dc):
   بازنویسی سه فایل جدید در سبک WordPress بدون تغییر منطق (snake_case؛
   `App::membership_service()`)، پالایش `phpcs.xml.dist` (پیشوند ClinicCore +

@@ -145,6 +145,21 @@ Organization
 
 **قاعده:** هیچ سندی از این پس نباید طوری نوشته شود که وجود فعلی این مکانیزم‌ها را القا کند. نقش `AccessPolicy` در معماری جدید توسط `AuthorizationService` ایفا می‌شود (Phase 3).
 
+> **وضعیت پیاده‌سازی Patient Identity (C5 — 2026-09-09):** فوندیشن AD-14 پیاده و
+> تست شد (کامیت‌های `9207afa` و `2ba16d7`): Migration 0019 (ستون
+> `normalized_mobile` غیر یکتا + ایندکس مرکب `idx_identity_org_mobile` و جدول
+> `cpms_patient_identity_links`)، `PatientIdentityService` /
+> `PatientIdentityRepository` / `PatientIdentityException` با کدهای
+> `CLINIC_PATIENT_IDENTITY_*` (ADR-0019). قواعد برقرار: هر lookup موبایل
+> Organization-scoped (امضای متد؛ بدون predicate سازمان هیچ query نیست)؛ موبایل
+> صفت است — duplicate candidates مجاز و non-destructive؛ رکورد بالینی فقط با
+> Clinic صریحِ همان Organization خوانده می‌شود (cross-org ⇒ خالی، fail-closed)؛
+> لینک WP User صریح و Organization-bound؛ هویتِ سازمان دیگر = همان NOT_FOUND
+> (anti-enumeration). OTP `verify_mobile` همچنان هیچ user/identity/link نمی‌سازد
+> (OD-8؛ تست‌های OtpSecurityTest + تست جدید C5). **هنوز NOT IMPLEMENTED (فازهای
+> بعدی):** REST endpoints هویت، Policy/Scope UI (Phase 3/9)، merge engine
+> (ADR-0015 — schema-only می‌ماند)، resolvePatient، و مکانیزم هش (B-17).
+
 ---
 
 ## Consequences
