@@ -114,6 +114,7 @@ final class VisitService
 
             $visit = $this->createVisit(
                 $actorUserId,
+                (int) $appt['clinic_id'],
                 $patientId,
                 (int) $appt['clinician_id'],
                 $appointmentId,
