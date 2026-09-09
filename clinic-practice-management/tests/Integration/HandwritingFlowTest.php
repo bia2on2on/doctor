@@ -39,9 +39,14 @@ final class HandwritingFlowTest extends WP_UnitTestCase
         App::migrations()->migrate();
         \ClinicCore\Settings\Settings::flushCache();
 
+        // C6 repair — عضویت فعال staff صریح است (نه fixture سراسری).
+        // تست‌های patient/non-member عمداً عضویت نمی‌گیرند.
         $this->secretaryUserId = $this->makeUser('hw_secretary', 'cpms_secretary');
+        cpms_test_seed_membership($this->secretaryUserId, 1, 'cpms_secretary');
         $this->doctorUserId = $this->makeUser('hw_doctor', 'cpms_doctor');
+        cpms_test_seed_membership($this->doctorUserId, 1, 'cpms_doctor');
         $this->otherDoctorUserId = $this->makeUser('hw_other', 'cpms_doctor');
+        cpms_test_seed_membership($this->otherDoctorUserId, 1, 'cpms_doctor');
 
         global $wpdb;
         $now = App::db()->nowUtcSql();

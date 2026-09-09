@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Application\Clinical;
 
+use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Application\Visits\VisitService;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
@@ -75,11 +76,15 @@ final class ClinicalService
         $this->requireCap($actorUserId, RolesAndCapabilities::MEDICAL_READ, 'record');
 
         $visit = $this->requireVisit($visitId);
+        // C6-F: پروندهٔ کامل ویزیت هم Tenant-aware — ویزیت باید داخل Clinicِ
+        // context مجاز باشد (context = Scope صریحِ درخواست یا «تنها Clinic»؛
+        // مبهَم ⇒ 400 CLINIC_SCOPE_REQUIRED). رد ⇒ همان 404 امنِ «یافت نشد».
+        $this->assertVisitInActiveClinic($visit);
         $patient = $this->db->fetchRow(
             'SELECT * FROM ' . $this->db->table('cpms_patients') . ' WHERE id = %d LIMIT 1',
             [(int) $visit['patient_id']]
         );
-        if ($patient === null) {
+        if ($patient === null || (int) $patient['clinic_id'] !== (int) $visit['clinic_id']) {
             throw ClinicalException::of('CLINIC_NOT_FOUND', 'بیمار یافت نشد', 404);
         }
 
@@ -374,8 +379,13 @@ final class ClinicalService
         $this->requireRole($actorUserId, 'doctor', 'نهایی‌سازی نسخه');
         $this->requireCap($actorUserId, RolesAndCapabilities::RX_CREATE, 'rx');
 
-        $rx = $this->db->transactional(function () use ($prescriptionId): array {
-            $rx = $this->prescriptions->findForUpdate($prescriptionId);
+        // C6‑F (Class A repair): مالکیت Per‑Object — Trusted Scope برای *استقرار*
+        // کافی نیست؛ ردیف هدف باید **همان Clinic** باشد. Predicate در خودِ SQL
+        // (findForUpdateForClinic + updateForClinic) تا ردیف Clinic دیگر هرگز
+        // بارگذاری/جهش نیابد و «وجود» آن هم افشا نشود (safe not‑found).
+        $clinicId = App::scope()->clinicId;
+        $rx = $this->db->transactional(function () use ($prescriptionId, $clinicId): array {
+            $rx = $this->prescriptions->findForUpdateForClinic($prescriptionId, $clinicId);
             if ($rx === null) {
                 throw ClinicalException::of('CLINIC_NOT_FOUND', 'نسخه یافت نشد', 404);
             }
@@ -386,7 +396,11 @@ final class ClinicalService
                 throw ClinicalException::of('CLINIC_INVALID_TRANSITION', 'نسخه ابطال‌شده قابل نهایی‌سازی نیست', 409, ['status' => 'voided']);
             }
 
-            $this->prescriptions->update($prescriptionId, ['status' => 'finalized', 'finalized_at' => $this->db->nowUtcSql()]);
+            $affected = $this->prescriptions->updateForClinic($clinicId, $prescriptionId, ['status' => 'finalized', 'finalized_at' => $this->db->nowUtcSql()]);
+            if ($affected < 1) {
+                // لایهٔ دوم: جهش بیرونِ مرز انجام نشده — همان safe not‑found.
+                throw ClinicalException::of('CLINIC_NOT_FOUND', 'نسخه یافت نشد', 404);
+            }
 
             return $rx;
         });
@@ -423,8 +437,10 @@ final class ClinicalService
             throw ClinicalException::of('CLINIC_VALIDATION_FAILED', 'دلیل ابطال الزامی است', 422);
         }
 
-        $rx = $this->db->transactional(function () use ($prescriptionId, $reason): array {
-            $rx = $this->prescriptions->findForUpdate($prescriptionId);
+        // C6‑F — همان invariant برای ابطال (API سرویس؛ endpoint در قرارداد فعلی نیست).
+        $clinicId = App::scope()->clinicId;
+        $rx = $this->db->transactional(function () use ($prescriptionId, $reason, $clinicId): array {
+            $rx = $this->prescriptions->findForUpdateForClinic($prescriptionId, $clinicId);
             if ($rx === null) {
                 throw ClinicalException::of('CLINIC_NOT_FOUND', 'نسخه یافت نشد', 404);
             }
@@ -432,7 +448,10 @@ final class ClinicalService
                 throw ClinicalException::of('CLINIC_INVALID_TRANSITION', 'این نسخه قبلاً ابطال شده است', 409, ['status' => 'voided']);
             }
 
-            $this->prescriptions->update($prescriptionId, ['status' => 'voided', 'void_reason' => mb_substr($reason, 0, 255)]);
+            $affected = $this->prescriptions->updateForClinic($clinicId, $prescriptionId, ['status' => 'voided', 'void_reason' => mb_substr($reason, 0, 255)]);
+            if ($affected < 1) {
+                throw ClinicalException::of('CLINIC_NOT_FOUND', 'نسخه یافت نشد', 404);
+            }
 
             return $rx;
         });
@@ -931,6 +950,27 @@ final class ClinicalService
         }
 
         return $visit;
+    }
+
+    /**
+     * C6-F: ویزیت باید متعلق به Clinicِ مورد اجازه باشد (Census: مسیرهای
+     * خواندنِ بدون predicate؛ همان قاعدهٔ PatientService/ClinicScope).
+     */
+    private function assertVisitInActiveClinic(array $visit): void
+    {
+        if ((int) $visit['clinic_id'] !== $this->trustedClinicId()) {
+            throw ClinicalException::of('CLINIC_NOT_FOUND', 'ویزیت یافت نشد', 404);
+        }
+    }
+
+    /** Clinic مجازِ جریان (Phase 2) — مبهَم ⇒ Fail‑Closed. */
+    private function trustedClinicId(): int
+    {
+        try {
+            return App::scope()->clinicId;
+        } catch (ScopeRequiredException $e) {
+            throw ClinicalException::of($e->errorCode, $e->getMessage(), $e->httpStatus(), $e->getData());
+        }
     }
 
     /**

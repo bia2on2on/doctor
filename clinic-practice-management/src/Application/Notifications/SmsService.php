@@ -112,10 +112,12 @@ final class SmsService
         // Dedupe (الزام §20): رویدادهای وابسته به Context — بدون ارسال تکراری
         $dedupeKey = null;
         if ($contextType !== null && $contextId !== null) {
-            $dedupeKey = hash('sha256', $event . '|' . $contextType . '|' . $contextId . '|' . gmdate('Y-m-d'));
+            // C6‑F: هویت Clinic داخل dedupe_key — وگرنه uq_dedupe (UNIQUE سراسری روی
+            // dedupe_key) یک رویداد/Context/روزِ یکسان را **بین** دو Clinic سرکوب می‌کند.
+            $dedupeKey = hash('sha256', $clinic_id . '|' . $event . '|' . $contextType . '|' . $contextId . '|' . gmdate('Y-m-d'));
             $existing = $this->db->fetchRow(
-                'SELECT id, status FROM ' . $this->db->table('cpms_sms_messages') . ' WHERE dedupe_key = %s LIMIT 1',
-                [$dedupeKey]
+                'SELECT id, status FROM ' . $this->db->table('cpms_sms_messages') . ' WHERE dedupe_key = %s AND clinic_id = %d LIMIT 1',
+                [$dedupeKey, $clinic_id]
             );
             if ($existing !== null) {
                 $status = (string) $existing['status'];
@@ -552,18 +554,22 @@ final class SmsService
     /**
      * Log عملیاتی (الزام §22) — موبایل Mask، بدون Secret/OTP خام، با Pagination.
      *
+     * لاگ پیامک — C6‑F (Class A repair): لاگ **Clinic‑owned** است و predicate
+     * tenant داخل خودِ SQL می‌نشیند (نه post‑filter در PHP پس از بارگذاری همهٔ
+     * ردیف‌ها)؛ هم COUNT و هم SELECT با `clinic_id = %d` فیلتر می‌شوند.
+     *
      * @return array{items: list<array<string, mixed>>, total: int, page: int, per_page: int}
      */
-    public function logs(?string $status, int $page, int $perPage): array
+    public function logs(int $clinicId, ?string $status, int $page, int $perPage): array
     {
         $perPage = max(1, min(100, $perPage));
         $page = max(1, $page);
         $table = $this->db->table('cpms_sms_messages');
 
-        $where = '';
-        $params = [];
+        $where = ' WHERE clinic_id = %d';
+        $params = [$clinicId];
         if ($status !== null && $status !== '' && SmsMessageStatus::isValid($status)) {
-            $where = ' WHERE status = %s';
+            $where .= ' AND status = %s';
             $params[] = $status;
         }
 

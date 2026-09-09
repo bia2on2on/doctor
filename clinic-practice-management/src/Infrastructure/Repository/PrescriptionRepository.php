@@ -66,6 +66,32 @@ final class PrescriptionRepository
     }
 
     /**
+     * انتخاب/قفل **در داخل مرز Clinic** — C6‑F (Class A repair): predicate
+     * tenant داخل خودِ SQL است (نه فیلتر PHP پس از بارگذاری ردیف Clinic دیگر)،
+     * قابل ایندکس از طریق PRIMARY (`id`) و مانع هرگونه جهش بین‌کلینیکی.
+     *
+     * @return array<string, mixed>|null
+     */
+    public function findForUpdateForClinic(int $id, int $clinicId): ?array
+    {
+        return $this->db->fetchRowForUpdate(
+            'SELECT * FROM ' . $this->db->table('cpms_prescriptions') . ' WHERE id = %d AND clinic_id = %d LIMIT 1',
+            [$id, $clinicId]
+        );
+    }
+
+    /**
+     * به‌روزرسانی با شرط Clinic در WHERE — لایهٔ دوم دفاع (اگر Query Layer
+     * تغییر کند، جهش همچنان در مرزِ درست مهار می‌شود).
+     */
+    public function updateForClinic(int $clinicId, int $id, array $data): int
+    {
+        $data['updated_at'] = $this->db->nowUtcSql();
+
+        return $this->db->update('cpms_prescriptions', $data, ['id' => $id, 'clinic_id' => $clinicId]);
+    }
+
+    /**
      * Row Lock — نهایی‌سازی/ابطال Race-safe.
      *
      * @return array<string, mixed>|null

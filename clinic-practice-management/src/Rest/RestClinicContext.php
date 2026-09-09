@@ -26,11 +26,17 @@ use WP_REST_Request;
 final class RestClinicContext
 {
     /**
-     * Scope قبلی هر درخواستی که bind شده — keyed by spl_object_id.
+     * جفت‌های (requestId, scopePrevious) برای درخواست‌های bindشده و باز‌نشده.
      *
-     * @var array<int, ClinicScope|null>
+     * LIFO (stack) به‌جای dict باز‌شونده بر پایهٔ `spl_object_id` تنها: شناسهٔ
+     * آبجکت پس از free شدنِ WP_REST_Request قابل بازاستفاده است و در فرآیندهای
+     * بلند (یا تست‌های پردرخواست) کلیدِ یکسان می‌تواند به درخواست دیگری برگردد.
+     *
+     * @var list<array{rid: int, previous: ClinicScope|null, bound: ClinicScope}>
      */
-    private static array $previousByRequest = [];
+    private static array $stack = [];
+
+    private static bool $shutdownHookRegistered = false;
 
     /**
      * @param mixed $response
@@ -62,9 +68,7 @@ final class RestClinicContext
             return self::toError($e);
         }
 
-        $rid = spl_object_id($request);
-        self::$previousByRequest[$rid] = ScopeContext::tryGet();
-        App::replaceExplicitScope($scope);
+        self::pushRestoreState($request, $scope);
 
         return $response;
     }
@@ -79,21 +83,106 @@ final class RestClinicContext
         if (!$request instanceof WP_REST_Request) {
             return $response;
         }
-        $rid = spl_object_id($request);
-        if (!array_key_exists($rid, self::$previousByRequest)) {
-            return $response;
-        }
-        $previous = self::$previousByRequest[$rid];
-        unset(self::$previousByRequest[$rid]);
-        App::replaceExplicitScope($previous);
+        self::restoreForRequest((int) spl_object_id($request));
 
         return $response;
+    }
+
+    /**
+     * ذخیرهٔ Scope قبلی + ثبت net پایانیِ فرآیند.
+     *
+     * net پایانی لازم است چون اگر callback مسیرِ مهار‌نشدده استثنا بدهد،
+     * WordPress فیلتر `rest_request_after_callbacks` را اجرا نمی‌کند و Scope
+     * درخواست در فرآیند (worker/PHP‑FPM یا فرآیند تست) باقی می‌ماند.
+     */
+    private static function pushRestoreState(WP_REST_Request $request, ClinicScope $scope): void
+    {
+        self::$stack[] = [
+            'rid' => (int) spl_object_id($request),
+            'previous' => ScopeContext::tryGet(),
+            'bound' => $scope,
+        ];
+        if (!self::$shutdownHookRegistered) {
+            self::$shutdownHookRegistered = true;
+            add_action('shutdown', [self::class, 'restoreAllPending'], -100);
+        }
+        App::replaceExplicitScope($scope);
+    }
+
+    /**
+     * بازگردانیِ جفتِ همان درخواست (از درون‌ترین به بیرونی‌ترین).
+     *
+     * دو محافظ: (۱) فقط جفتِ متعلق به همین درخواست pop می‌شود تا درخواست‌های
+     * تودرتو/پشت‌سرهم همدیگر را خراب نکنند؛ (۲) restore فقط وقتی انجام می‌شود
+     * که Scope فعلی همان scopeی باشد که *این* مرز بسته است — بنابراین Scope
+     * مشروعی که لایهٔ بالاتر (job/system) جابه‌جا کرده، پاک نمی‌شود و هیچ
+     * مقدار پیش‌فرض یا Clinic «اولیه» جای آن نمی‌نشیند.
+     */
+    private static function restoreForRequest(int $rid): void
+    {
+        for ($i = count(self::$stack) - 1; $i >= 0; $i--) {
+            if ((int) self::$stack[$i]['rid'] !== $rid) {
+                continue;
+            }
+            $entry = self::$stack[$i];
+            array_splice(self::$stack, $i, 1);
+            self::syncShutdownHook();
+            if (ScopeContext::tryGet() === $entry['bound']) {
+                App::replaceExplicitScope($entry['previous']);
+            }
+
+            return;
+        }
+    }
+
+    /** hook فقط تا وقتی لازم است که جفتِ بازی روی stack باشد. */
+    private static function syncShutdownHook(): void
+    {
+        if (self::$stack !== [] || !self::$shutdownHookRegistered) {
+            return;
+        }
+        self::$shutdownHookRegistered = false;
+        remove_action('shutdown', [self::class, 'restoreAllPending'], -100);
+    }
+
+    /**
+     * آخرین خطای ایمنی: هر جفتِ بازمانده (استثنای مهار‌نشدده در handler) را
+     * از بیرونی‌ترینِ باقی‌مانده restore می‌کند — یعنی Scope قبلیِ همان
+     * درخواست، نه هیچ مقدار پیش‌فرض/Clinic 1.
+     */
+    public static function restoreAllPending(): void
+    {
+        while (self::$stack !== []) {
+            $outer = array_shift(self::$stack);
+            if (ScopeContext::tryGet() === $outer['bound']) {
+                App::replaceExplicitScope($outer['previous']);
+            }
+        }
+        self::syncShutdownHook();
     }
 
     public static function requiresTrustedClinic(WP_REST_Request $request): bool
     {
         $route = (string) $request->get_route();
         if (!str_starts_with($route, '/clinic/v1/')) {
+            return false;
+        }
+
+        /*
+         * C6 repair — این مرز فقط برای «استفادهٔ staff از عملیات Clinic‑scoped» است.
+         *
+         * درخواستِ بیمار/کاربرِ فاقدِ نقشِ کارکنی به درخواستِ scope‑دارِ کارکنی
+         * تبدیل نمی‌شود «فقط چون URL زیر /clinic/v1/ است»؛ همان مسیر همیشگی
+         * (permission_callback خشن + سیاست Service) جریان می‌یابد تا انکارِ
+         * پایدار (CLINIC_PERMISSION_DENIED) حفظ شود.
+         *
+         * نکتهٔ معماری: این سنجش «منبع مجوز» نیست (Phase 3 نیست) — نقش سراسری WP
+         * رابطهٔ tenant را تعریف نمی‌کند و اینجا فقط تعیین می‌کند که استقرار
+         * Clinic مورد اعتماد اصلاً روی این درخواست اعمال شود یا نه. «staff» بودنِ
+         * واقعی همچنان با Capability در لایهٔ خشن و با سیاست Service/Membership
+         * سنجیده می‌شود و fail‑closed است: staff بدون عضویت فعال → 403.
+         */
+        if (!self::currentUserIsStaff()) {
             return false;
         }
 
@@ -122,13 +211,6 @@ final class RestClinicContext
         }
         if ($method === 'GET' && preg_match('#^/clinic/v1/visits/\d+$#', $route) === 1) {
             return false;
-        }
-
-        if (preg_match('#^/clinic/v1/appointments/\d+/cancel$#', $route) === 1) {
-            return self::currentUserIsStaff();
-        }
-        if (preg_match('#^/clinic/v1/(notifications|rt/notifications)#', $route) === 1) {
-            return self::currentUserIsStaff();
         }
 
         return true;

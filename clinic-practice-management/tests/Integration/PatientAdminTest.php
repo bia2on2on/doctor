@@ -41,11 +41,18 @@ final class PatientAdminTest extends WP_UnitTestCase
         App::migrations()->migrate();
         \ClinicCore\Settings\Settings::flushCache();
 
+        // C6 repair — عضویت فعال staff صریح است (نه fixture سراسری).
+        // تست‌های patient/non-member عمداً عضویت نمی‌گیرند.
         $this->adminId = $this->makeUser('pat_admin', 'administrator');
+        cpms_test_seed_membership($this->adminId, 1, 'cpms_manager');
         $this->managerId = $this->makeUser('pat_manager', RolesAndCapabilities::ROLE_MANAGER);
+        cpms_test_seed_membership($this->managerId, 1, 'cpms_manager');
         $this->accountantId = $this->makeUser('pat_acc', RolesAndCapabilities::ROLE_ACCOUNTANT);
+        cpms_test_seed_membership($this->accountantId, 1, 'cpms_accountant');
         $this->secretaryId = $this->makeUser('pat_sec', RolesAndCapabilities::ROLE_SECRETARY);
+        cpms_test_seed_membership($this->secretaryId, 1, 'cpms_secretary');
         $this->doctorId = $this->makeUser('pat_doc', RolesAndCapabilities::ROLE_DOCTOR);
+        cpms_test_seed_membership($this->doctorId, 1, 'cpms_doctor');
     }
 
     protected function tearDown(): void

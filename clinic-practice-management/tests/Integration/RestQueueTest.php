@@ -70,8 +70,12 @@ final class RestQueueTest extends WP_UnitTestCase
         $this->otherPatientId = $patientIds['B'];
 
         $this->patientUserId = $this->makeUser('rq_patient', 'cpms_patient');
+        // C6 repair — عضویت فعال staff صریح است (نه fixture سراسری).
+        // تست‌های patient/non-member عمداً عضویت نمی‌گیرند.
         $this->secretaryUserId = $this->makeUser('rq_secretary', 'cpms_secretary');
+        cpms_test_seed_membership($this->secretaryUserId, 1, 'cpms_secretary');
         $this->doctorUserId = $this->makeUser('rq_doctor', 'cpms_doctor');
+        cpms_test_seed_membership($this->doctorUserId, 1, 'cpms_doctor');
 
         // F9 (ADR-0027 Minor #3): پزشک متصل به Clinician — گارد مالکیت ویزیت
         $wpdb->query(

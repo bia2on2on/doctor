@@ -3,7 +3,7 @@
 > Recover the project from this file + Git/remote/PR + linked canonical docs.
 > Do **not** use a previous chat session as memory.
 >
-> **State based on implementation SHA:** `6e5d48c801e86779c0daf350d68c9df49e49a6c8`
+> **State based on implementation SHA:** `c2bff76d1e21643a66bc0056a29881faaa2f299f`
 
 If Git/remote/PR, this file, and the repository tree disagree: **STOP**.
 
@@ -45,8 +45,12 @@ Legacy labels (`F0..F10`, `Doc-Phase`, `V1` / `V1.5` / `V2`) are historical. The
 | Phase 2 | **IN PROGRESS** — current subphase **C6** (**NOT complete**) |
 | Phase 3 | **NOT STARTED** — no `AuthorizationService`; do not start |
 
-**Last verified implementation SHA:** `6e5d48c801e86779c0daf350d68c9df49e49a6c8`  
-(C6-E3 Reports + Export + Pilot/bin tenant-literal cleanup. Trusted REST `ScopeContext` is **not** implemented at this SHA.)
+**Last verified implementation SHA:** `c2bff76` (see §K). Chain: `6e5d48c` → docs sync →
+`f88fcdc` boundary → repair batch (`4289d89`/`4606b15`) → **tenant‑hardening batch**
+(`ddca8d7 → ba6ed3a → d5072ff → d52d32d → f6703dc → f5ebefd → b7b8399 → dc0022f →
+815339f → bff690a → c2bff76`). All five gates GREEN on `c2bff76` — §G table. Legacy
+internal label for this batch in some reports: «Phase 9 §5» — **task‑taxonomy wording
+only**; the Owner roadmap's Phase 9 is Patient Portal and remains **NOT STARTED**.
 
 **Schema:** current version **`2026_09_09_0020`**. File `0021` does **not** exist. **Migration 0021 is NOT approved.** If new schema is required: STOP and ask Owner.
 
@@ -54,8 +58,8 @@ Legacy labels (`F0..F10`, `Doc-Phase`, `V1` / `V1.5` / `V2`) are historical. The
 
 | | |
 |---|---|
-| Branch | `arena/01a086ca-doctor` |
-| Draft PR | [#12](https://github.com/bia2on2on/doctor/pull/12) — OPEN DRAFT — DO NOT MERGE / CI execution |
+| Branch | `arena/01a086ca-doctor` (PR #12 tip `f88fcdc`) → ادامه روی `arena/01a086b4-doctor`؛ tip فعلی `c2bff76`؛ خطی، بدون cherry‑pick/merge/force‑push |
+| Draft PR | [#12](https://github.com/bia2on2on/doctor/pull/12) — OPEN DRAFT — DO NOT MERGE / CI execution · [#13](https://github.com/bia2on2on/doctor/pull/13) — OPEN DRAFT (base = `arena/01a086ca-doctor`) — head `c2bff76` — DO NOT MERGE / CLOSE |
 | Base | `main` (`8087b42`) |
 
 **Previous PRs — keep OPEN + DRAFT; do not merge or close**
@@ -76,6 +80,15 @@ Verified Git ancestry (unshallow + `merge-base --is-ancestor`): both heads are a
 | Real-WP (push) | `34375756020` |
 | Closure | `34375756075` |
 | Pilot/Staging | `34375756043` |
+
+**Last verified gates on `c2bff76` (via PR #13)** — all SUCCESS:
+
+| Gate | Run |
+|---|---|
+| CI (Unit×4 + PHPStan + WPCS changed‑lines + **Integration** 602 tests / 0E / 0F) | `34406996627` |
+| Real-WP Acceptance (wp_ + clinic_ prefixes) | `34406991487` |
+| Pilot/Staging (Release Artifact + Responsive smoke + Upgrade path + Staging Gate) | `34406991520` |
+| Closure Gate (GO‑LIVE evidence) | `34406991334` |
 
 PHP was **not** on PATH in the audit sandbox; do not claim local PHPUnit/`php -l` there. Remote GitHub Actions is the executable evidence.
 
@@ -197,6 +210,30 @@ Phase 2 queue: [`docs/phase-reports/phase2-state.md`](phase-reports/phase2-state
 - Tripwire is **NOT** wired into CI
 - Tripwire regex still misses some positional `VALUES (1, …)` INSERT clinic columns
 
+**Trusted REST Clinic context — C6 boundary**
+
+- Implementation checkpoint: `f88fcdc3fb6479782b140a2d7034a3205a52edad` (`TrustedClinicEstablisher` + `RestClinicContext` bound on `rest_request_before_callbacks` / `rest_request_after_callbacks`, `ScopeRequiredException` with explicit HTTP status).
+- That checkpoint was **CI RED** (Integration + Real‑WP PR + Real‑WP push; WPCS/PHPStan/Unit/Pilot/Closure green). Evidence, not erased:
+  - **Class D (test harness)** — `RestTrustedClinicContextTest::$locB` typed `int` read before initialization: two security tests never reached `rest_do_request`.
+  - **Class A (product error contract)** — the boundary applied to *patient* traffic on `/clinic/v1/patients`, `/patients/search`, `/queue`, `/search`, turning the stable `CLINIC_PERMISSION_DENIED` into `CLINIC_SCOPE_UNAVAILABLE` (5 Integration failures).
+  - **Class A (product/ops gap)** — Real‑WP `browser.no_console_errors`: 4 staff REST calls from wp‑admin returned 403 because `wp user create --role=…` staff actors never receive an active Membership (Migration 0012 seed runs before them).
+  - **Class D (fixture contamination)** — `NotificationFlowTest::testInvoiceReadyNotifiesOtherSecretaries` (2 rows vs 1): the then-new global `set_user_role` membership fixture seeded the doctor, who holds `cpms_queue_read`, so the broadcast gained a recipient.
+- Repair batch (this branch, on top of `f88fcdc`, linear — no rewrite, no force‑push):
+
+| SHA | Scope |
+|---|---|
+| `adecd21` | test: `$locA`/`$locB` explicit init; **global membership injection removed**; explicit idempotent `cpms_test_seed_membership(user, clinic, roleKey)`; staff tests arrange their own Membership |
+| `a23b509` | fix(rest): trusted scope applies to **authenticated staff use** only (narrow, via the existing `currentUserIsStaff()` predicate — no route added to / removed from the skip list) |
+| `b7a3a6b` | test(acceptance): Real‑WP fixture seeds **active Membership on the Clinic actually resolved in that environment** (from the acceptance clinician link) — TEST INFRASTRUCTURE only |
+| `da72e1c` | fix(rest): Scope restoration on the normal and error paths (LIFO pairs + conditional restore); `shutdown` safety net for filter‑level throws/fatals — after an executable test proved the leak. Wording refined after the lifecycle review on `4606b15`: WordPress converts an escaping handler exception to `WP_Error` **before** `rest_request_after_callbacks`, so the `shutdown` net is not what covers the handler‑exception path (executable evidence: `testErrorResponsePathStillRestoresScope`) |
+| `4289d89` | test: corrected precondition of the new non‑member‑staff evidence test (Class D, its own assertion) |
+
+- **Production automatic Membership provisioning was NOT introduced**: no `user_register`, no `set_user_role`, no global‑role→tenant mapping, no “there is only one Clinic”, no first/default Clinic. Staff onboarding remains an **OPEN architecture item** for an explicit, scope‑aware product workflow.
+- Security invariant intact and now executed: authenticated staff REST access requires an **active verified Clinic Membership**; even in an exact‑one‑Clinic install no Membership means no staff Clinic access (`testNoMembershipDeniedEvenWhenExactlyOneClinic`, `testExactOneClinicIdNotOneStillRequiresMembership`, `testStaffActorWithoutActiveMembershipIsDeniedByBoundary`).
+- Real‑WP acceptance fixture models Membership explicitly; the “staff **without** Membership is denied” invariant is proven by the focused Integration tests above (not by the fixture).
+- **OPEN DECISION — route classification (deliberately NOT resolved in this repair):** `/prescriptions` skip, `/appointments/{id}/reschedule` vs `/cancel` asymmetry, `GET /visits{,/{id}}` skip, `/files/{id}/stream` + `/patients/{id}/files` ownership-only, `/config/services*`, `/sms/*` — needs the next architecture review.
+- Gate evidence for the repair tip: recorded in [`phase2-state.md`](phase2-state.md) (exact Run IDs).
+
 **Already done (do not redo):**
 
 - C6-A census · C6-B Notifications/SMS/Jobs · C6-C Booking/Schedule
@@ -208,10 +245,52 @@ Phase 2 queue: [`docs/phase-reports/phase2-state.md`](phase-reports/phase2-state
 
 **Remaining C6**
 
-1. Trusted REST context (membership-verified `ScopeContext`) — **not** Phase 3 / not `AuthorizationService`
+1. Trusted REST context (membership-verified `ScopeContext`) — **implemented and repaired in the batch above** (still not Phase 3 / not `AuthorizationService`); its remaining follow‑ups are the open route‑classification decisions, **not** the boundary itself
 2. Tripwire hardening + CI wiring — **do not start in the trusted-REST checkpoint**
-3. C6-F real multi-tenant isolation suite — **PARTIAL** (Reports/Export/Membership/Identity/Scope tests exist; no comprehensive 14-item suite) — **do not expand fully in the trusted-REST checkpoint**
+3. C6-F real multi-tenant isolation suite — **PARTIAL** (Reports/Export/Membership/Identity/Scope tests exist; no comprehensive 14-item suite) — **do not expand fully in the trusted-REST checkpoint**. The two executable specifications that exposed the remaining per-object gap are now **fixed and green**: `7c4b2bd` (prescription) and `2d13f2d` (SMS logs). The historical RED checkpoint is preserved, not erased (`5b3768e`/`41321e2`: `Tests: 568, Assertions: 2951, Failures: 2` — `testStaffCannotFinalizePrescriptionOfAnotherClinic`, `testSmsLogsAreScopedToTheBoundClinic`), classified **Class A (product, High)**: `ClinicalService::finalizePrescription` → `PrescriptionRepository::findForUpdate` was `WHERE id`-only, and `SmsService::logs` had no `clinic_id` filter although `cpms_sms_messages` carries a tenant column. Repairs keep the tenant predicate **inside SQL** (`findForUpdateForClinic`/`updateForClinic`; `logs(int $clinicId, …)` with `WHERE clinic_id = %d` for both `COUNT` and the `SELECT`), take the Clinic only from the trusted scope (no client-supplied ID, no Clinic‑1 fallback), and return the established `CLINIC_NOT_FOUND` 404 for both "missing" and "belongs to another Clinic" (no existence disclosure; `affected < 1` proves no mutation). The **cross-Clinic SMS dedupe suppression** (global `uq_dedupe` over a Clinic-blind `dedupe_key`) was confirmed and fixed schema-free by hashing the Clinic into the key plus a `clinic_id` predicate in the lookup. Remaining C6‑F items are still open (the **comprehensive** 14‑item suite; staff membership onboarding). Two named gaps above are since **closed** by the tenant‑hardening batch (§ below): `files/{id}/stream` clinical read path and the `VisitService::today`/queue/feed `clinic_id = 1` hardcodes — with a focused 25‑probe executable suite (`tests/Integration/ClinicTenantIsolationTest.php`), all green at `c2bff76`. **No Migration 0021 — none was required for correctness.**
 4. Keep docs in sync after each verified implementation SHA (this file / census / phase2-state)
+
+### Tenant‑hardening batch (`4606b15` → `c2bff76`, linear; all gates GREEN on `c2bff76`)
+
+Internal task label in some reports: «Phase 9 §5» — legacy task‑taxonomy wording, **not**
+roadmap Phase 9 (Patient Portal — still NOT STARTED).
+
+| SHA | Scope |
+|---|---|
+| `ddca8d7`…`d52d32d` | tests: `ClinicTenantIsolationTest` — 25 probes; lazy‑registry warm; FK‑safe purge; isolation witness; per‑test tag fixtures |
+| `f6703dc` | **fix(files):** C6‑F per‑object tenant guards on `MedicalFileService` (stream/staffFiles/softDelete/store) + `ClinicalService::record()` visit/patient tenant guard; cross‑tenant ⇒ 404 before any disk read/write |
+| `f5ebefd` | **fix(visits):** five `clinic_id = 1` literals removed from `VisitService` — trusted clinic via `queueClinicId()` (explicit Scope → exactly‑one resolver → `CLINIC_SCOPE_REQUIRED` 400); `queueScopeClinicianId()` clinic‑scoped; cross‑clinic `clinician_id` → 404 |
+| `b7b8399` | **fix(files):** skip‑listed routes resolve trusted Clinic for staff through explicit Scope → system resolver → unique active membership (`TrustedClinicEstablisher`) — never “first Clinic”, never Clinic 1 |
+| `bff690a` | **fix(files):** denial envelope byte‑identical to not‑found (existence non‑disclosure; reason only in Audit); fixture hygiene: no writes into `clinic_id=1` (reserved by other suites — see pollution below), `CLINIC_D=61004` + exact‑domain witness, `CPMS_FIXTURE_RESIDUE` tearDown guard |
+| `c2bff76` | **test(harness):** cross‑class pollution root cause closed (details below). No product change |
+
+**Pollution root cause (Class D — this class's harness; repaired here, not transferred):**
+`App::boot()` is one‑shot and `rest_api_init` captures service instances into route closures
+once per process (`App::otpService()` static, `self::$smsService`, `medicalFileService()`,
+`exportService()`/`visitService()` as seen by the controllers — all built with the *ambient*
+scope/`App::settings()` at first‑REST‑touch). Alphabetically `ClinicTenantIsolationTest` precedes
+`ClinicalFlowTest`, so this class was the process's first REST toucher: warming under the fixture
+scope pinned every later class to services bound to fake clinic 61001 → later writes failed FK
+(clinic deleted; `sms_sent=false`, links `0`), later setting reads returned defaults (OTP cooldown
+/`queue.max_recalls`/`sms.provider`), later downloads 404 (row clinic ≠ fresh scope). Fix:
+neutral warm **before** fixture clinics exist ⇒ pin == baseline; plus disk‑artifact unlink in
+purge (DB rollback never touches disk) and `makeUser` unique‑email fix (real fixture bug that
+produced probe‑11's `(int) WP_Error` error).
+
+- Evidence chain: `f5ebefd` CI `34403805829` (queue probes red→green — hardcode defect proven,
+  then fixed) · `bff690a` CI `34404449199` (8/11 file probes green; remaining reds diagnosed) ·
+  `c2bff76` CI `34406996627` — **all 7 jobs success** (Integration 602 tests, 0E/0F; every victim
+  class green again) · Real‑WP `34406991487` · Pilot `34406991520` · Closure `34406991334`.
+- Historical RED checkpoints preserved, not erased: `d5072ff` run `34403028668` (20 probe
+  failures = defect evidence) and `bff690a` run `34404449199` (6 cross‑class failures = pollution
+  evidence).
+- No security test was hidden/skipped/quarantined/weakened; `RestClinicContext` skip list
+  unchanged in both directions; no schema change; **no Migration 0021** (none required —
+  `(id, clinic_id)` reads ride PRIMARY; no clinic‑leading index needed for the new predicates).
+- Touched‑path census re‑verified at `c2bff76` (manual grep, production runtime): **0** semantic
+  clinic‑1 / first‑clinic / current‑user‑as‑tenant hits in `VisitService`, `MedicalFileService`,
+  `ClinicalService::record`, `QueueController`, `FilesController`, `VisitRepository`,
+  `MedicalFileRepository`. CI tripwire wiring remains an untouched open item.
 
 **Do not start C7, C8, Phase 3, Phase 4, portals, or mobile auth/JWT.**
 

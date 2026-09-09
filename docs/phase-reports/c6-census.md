@@ -194,3 +194,64 @@ OtpService:321، PatientIdentityService:23 (نقل قول قاعده)، ClinicSc
 - Checklist نسخه: MigrationTest/Phase2SchemaTest/TempTableIsolationTest/closure-gate/pilot-gate/real-wp-acceptance → 0020.
 - **C6-F**: tripwire→CI + MultiTenantIsolationTest (ماتریس ۱۴بندی).
 - **C6-G**: docs + state.
+
+
+## وضعیت Trusted REST context (C6 — boundary) و batch ترمیم
+
+- **`f88fcdc`** — مرز Trusted REST (`TrustedClinicEstablisher` + `RestClinicContext` روی
+  `rest_request_before/after_callbacks`) + `RestTrustedClinicContextTest` (۲۲ تست).
+  **CI قرمز:** WPCS/PHPStan/Unit/Pilot/Closure سبز؛ Integration و هر دو Real‑WP قرمز.
+- **تشخیص (حفظ شاهد، نه حذف آن):**
+  1. **Class D** — `RestTrustedClinicContextTest::$locB` (typed `int` بدون مقدار) در
+     `seedVisitPair()` قبل از initialization خوانده می‌شد → دو تست leftover‑scope هرگز
+     به dispatch نمی‌رسیدند (پوششِ واقعیِ مرز معلق می‌ماند).
+  2. **Class A** — اعمال boundry برای ترافیک *بیمار* روی مسیرهای staff (token پایدار
+     `CLINIC_PERMISSION_DENIED` → `CLINIC_SCOPE_UNAVAILABLE`).
+  3. **Class A** — نبودِ عضویت فعال برای کاربران `wp user create` در acceptance → ۴۰۳ در
+     UI واقعی (۴ check `browser.no_console_errors`).
+  4. **Class D** — آلودگی fixture: تزریق سراسری عضویت روی `set_user_role` باعث شد پزشک
+     (بدون عضویت در سناریو) گیرندهٔ broadcast شود → `NotificationFlowTest` ۲ ردیف به‌جای ۱.
+- **ترمیم (اتمیک، ادامهٔ خطی):** `adecd21` (harness + fixture صریح، حذف تزریق سراسری) ·
+  `a23b509` (مرز فقط برای استفادهٔ staff؛ بدون تغییر skip list) · `b7a3a6b` (fixture
+  عضویت tenant‑aware در Real‑WP — تست‌زیرساخت، نه provisioning محصول) ·
+  `da72e1c` (restore تضمینی Scope پس از اثبات قابل‌اجرای نشت در مسیر استثنای handler) ·
+  `4289d89` (پیش‌شرطِ تستِ شاهدِ non‑member‑staff).
+- **tip بازبینی‌شدهٔ همین batch:** `4606b15` (docs only، ادامهٔ خطی). گیت‌ها روی آن سبز:
+  CI `34390466560` · Real‑WP `34390462202` · Pilot `34390462154` · Closure `34390462224`؛
+  `4289d89` همچنان آخرین tipِ **پیاده‌سازیِ** ترمیم است (`da72e1c` آخرین تغییر product).
+- **سبز:** `4289d89` — CI `34388298772` · Real‑WP(push, wp_/clinic_) `34388294483` ·
+  Pilot `34388294486` · Closure `34388294616`.
+- **هنوز در C6:** Tripwire→CI (نبود، باقی است) · C6‑F جامع (PARTIAL؛ دو تست
+  «مشخصهٔ» مالکیت Per‑Object ثبت شد: نسخهٔ Clinic دیگر + لاگ SMS — **یافتۀ Class A/High، ترمیم و سبز روی `2d13f2d` با `7c4b2bd`؛ dedupe بین‌Clinic نیز تأیید و schema‑free رفع شد**) · تصمیم باز
+  طبقه‌بندی route‌ها (D‑cases) · workflow صریحِ onboarding/عضویت staff.
+  بررسی بازبین: `MembershipService::create_membership()` تنها API ساخت عضویت است و
+  `App::membership_service()` در `src/` **هیچ فراخوانِ Production ندارد** (فقط تست‌ها؛
+  `CpmsSetupWizard` فقط Setting می‌نویسد و `StaffManagementPage` فقط نقش WP را
+  set/unset می‌کند — هیچ‌کدام ردیف عضویت نمی‌سازند). `setup.clinic.*` و «تنها یک
+  Clinic» به‌عنوان جبران استفاده نمی‌شود (AD‑13). مالکیت شکاف طبق
+  `docs/architecture/phase0.5-target-model.md` (foot‑note ۵: «انتساب نقش = ساخت
+  Membership ⇒ 1b»). **0021 ساخته/تصویب نشد.**
+
+## ۱۲. Batch استحکام tenant — بازسنجیِ touched‑paths (مبنا: پیاده‌سازی `c2bff76`)
+
+برچسب داخلی تسک: «Phase 9 §5» (taxonomy تاریخی؛ فاز ۹ نقشهٔ راه = Patient Portal، NOT STARTED).
+
+- **Census دستیِ production در مسیرهای لمس‌شده** (`VisitService`، `MedicalFileService`،
+  `ClinicalService::record`، `QueueController`، `FilesController`، `VisitRepository`،
+  `MedicalFileRepository`): الگوهای معادلِ معنایی `clinic_id = 1` / `clinicId = 1` /
+  `queueFor(1,…)` / tenant default‑arg = 1 / اولین‑Clinic fallback / current‑user‑as‑tenant /
+  `location_id = 1` / `organization_id = 1` ⇒ **صفر hit**. تنها تطابقِ ظاهری `is_active = 1`
+  (پرچم بولی) بود. comments/test fixtures از production جدا شمرده شد.
+- پنج hardcode قطعیِ `VisitService` (queueFor/statsFor/lastEventId×2/eventsSince با literal 1 —
+  شاهد red: run `34403028668` probeهای ۷–۱۴) روی `f5ebefd` ⇒ green (run `34403805829`).
+- Class B Criticalِ فایل (read بین‌Clinic با Cap سراسری — شاهد red: بدنهٔ PDF با 200 در run
+  `34403028668`/`34403805829`/`34404449199`) روی `c2bff76` ⇒ green (۲۵ probe، CI `34406996627`).
+- **بدون** allowlist جدید، **بدون** schema/migration، **بدون** 0021؛ skip listِ
+  `RestClinicContext` دست‌نخورده (هر دو جهت). بررسی index: `WHERE id = %d AND clinic_id = %d`
+  روی PRIMARY می‌نشیند؛ no migration. (مشاهدهٔ اختیاریِ previous‑session: clinic‑leading index
+  برای queryهای فهرست‑محور — همچنان فقط observation.)
+- آلودگیِ harnessِ همین کلاس (Class D — ۶ victim: Export/ReportsAuthz/SmsFlow/OtpFlow×2/
+  OtpSecurity/VisitFlow) با ریشه‌شناسیِ pin یک‌بارمصرفِ `boot()`/`rest_api_init` بسته شد
+  (`c2bff76`) — baseline victimها سبز؛ شواهد red: runs `34403028668`…`34404449199`.
+- Tripwire→CI **هنوز سیم‌کشی نشده** (عمداً در این batch شروع نشد).
+
