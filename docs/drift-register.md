@@ -202,3 +202,54 @@ Phase 1 و Phase 2 هر دو تغییر Schema/Migration دارند و طبق **
 | **ج** | ادغام دو CHANGELOG در یکی و ثبت مرجع بودنش | مستقل از الف/ب؛ ریشهٔ واگرایی را می‌بندد |
 
 **توصیهٔ مهندسی (بدون اعمال):** «الف + ج» حالا، و «ب» در Gate پایانی Phase 1 هم‌زمان با اولین Migration جدید. دلیل: bump نسخه بدون یک release واقعی معنا ندارد، و دست زدن به `closure-gate.yml` در فاز مستندسازی نقض قاعدهٔ «هیچ فایل application/runtime تغییر نکند» است.
+
+---
+
+## بخش ۸ — ثبت‌های Phase 2 (Recovery، 2026-09-09)
+
+### ۸-۱ — ⚠️ ابزار کیفیت: گیت خودکار WordPress Coding Standards وجود ندارد
+
+**وضعیت:** GAP ثبت‌شده؛ ادعای «WPCS PASS» تا پیش از پیاده‌سازی گیت **معتبر نیست**.
+کد فعلی از قراردادهای دستی (phpcs:ignore comments، prepared SQL) پیروی می‌کند ولی
+هیچ ابزاری آن را به‌صورت خودکار تجزیه نمی‌کند. تنها گیت استاتیک فعلی: PHPStan
+level 3 (src+bin).
+
+**پیشنهاد حداقلی برای Phase 2 End Gate (پیاده‌سازی فقط پس از GREEN شدن
+migration foundation — بازنویسی/فرمت دستی کد در میانهٔ recovery انجام نمی‌شود):**
+
+1. **Dependency** (فقط در CI، بدون تغییر composer.lock محلی):
+   `composer require --dev wp-coding-standards/wpcs:^3.1` داخل job (نصب
+   runtime در CI؛ پین نسخه در همان خط). WPCS 3.x با PHP_CodeSniffer ^3.9.
+2. **`phpcs.xml.dist`** (committed): ruleset اولیه = زیرمجموعهٔ کم‌سروصدا اما
+   پربار `WordPress-Core` + `WordPress.WP.PreparedSQL` + sniffs امنیتی
+   (escaping/sanitization)؛ scope: `src/`، `bin/`، فایل ورودی افزونه،
+   `uninstall.php`. تست‌ها فاز بعدی اضافه می‌شوند.
+3. **ضد mass-churn:** اجرای اول به‌صورت report-only؛ تولید
+   `phpcs-baseline.xml` (یا `--ignore` روی legacy files)؛ گیت فقط
+   **رگرسیون** (نقض جدید نسبت به baseline) را قرمز می‌کند. فرمت‌سازی
+   دستی/gutters ممنوع تا پایان Phase 2.
+4. **CI job مستقل** (`wpcs`) — سبک، بدون نیاز به MySQL؛ fail فقط روی نقض
+   جدید. سطح قواعد در Phases بعدی به‌تدریج بالا می‌رود (بدون پایین آوردن).
+
+### ۸-۲ — قرارداد Migration Down: production فقط forward-only است
+
+**راستی‌آزمایی (grep روی src/ و bin/):** `MigrationRunner::rollbackOne()`
+هیچ caller تولیدی ندارد — نه در `App`، نه در REST/Admin، نه در `bin/cpms`
+(تنها زیرفرمان migration در CLI: `migrate`). اجرای down فقط در تست‌ها
+(MigrationTest/Phase2SchemaTest) اتفاق می‌افتد.
+
+**نتیجهٔ معماری:** down() یک **قرارداد نظم/reversibility برای تست و توسعه** است،
+نه مسیر اجرای production. اولویت صحت: **forward migration** (اثبات‌شده با
+Real-WP Acceptance ×2 روی 5379860/d443e3b — نصب واقعی تا `2026_09_09_0018`).
+تست‌های rollback برای schema discipline باقی می‌مانند و زیرساخت تست آنها
+(real-table isolation — `RealTableMigrations` trait) نباید معیار طراحی
+production باشد.
+
+### ۸-۳ — فایل‌های محافظت‌شده: LOST DUE TO SANDBOX REBUILD — NOT DELETED BY AGENT
+
+`.download/` و `docs/commercial-gap-audit.md` طبق قرارداد untracked بودند
+(هرگز commit نشدند). بازسازی sandbox (بین دو نوبت کاری) workspace را از snapshot
+بازیابی کرد و این دو مسیر — که خارج از Git بودند — **از بین رفتند**. توسط
+Agent حذف/تغییر داده نشده‌اند؛ نسخهٔ حدسی بازسازی نمی‌شوند. اگر مالک محتوای
+آنها را لازم دارد، باید از منبع اصلی مجدداً تأمین شوند. Phase 2 را بلاک
+نمی‌کند.
