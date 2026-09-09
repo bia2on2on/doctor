@@ -193,7 +193,7 @@ jobs:
 
       - name: Changed PHP files since baseline
         run: |
-          git diff --name-only --diff-filter=ACMRT "${ env.WPCS_BASELINE }"...HEAD -- . > /tmp/all.txt || true
+          git diff --name-only --diff-filter=ACMRT "${WPCS_BASELINE:?baseline not set}"...HEAD -- . > /tmp/all.txt || true
           grep -E '\.php$' /tmp/all.txt | grep -Ev '(^|/)vendor/|(^|/)tests/|(^|/)node_modules/' | sed 's|^clinic-practice-management/||' > /tmp/wpcs-files.txt || true
           if [ -s /tmp/wpcs-files.txt ]; then
             echo "WPCS will check $(wc -l < /tmp/wpcs-files.txt) changed file(s):"
