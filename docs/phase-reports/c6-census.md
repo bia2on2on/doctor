@@ -231,3 +231,27 @@ OtpService:321، PatientIdentityService:23 (نقل قول قاعده)، ClinicSc
   Clinic» به‌عنوان جبران استفاده نمی‌شود (AD‑13). مالکیت شکاف طبق
   `docs/architecture/phase0.5-target-model.md` (foot‑note ۵: «انتساب نقش = ساخت
   Membership ⇒ 1b»). **0021 ساخته/تصویب نشد.**
+
+## ۱۲. Batch استحکام tenant — بازسنجیِ touched‑paths (مبنا: پیاده‌سازی `c2bff76`)
+
+برچسب داخلی تسک: «Phase 9 §5» (taxonomy تاریخی؛ فاز ۹ نقشهٔ راه = Patient Portal، NOT STARTED).
+
+- **Census دستیِ production در مسیرهای لمس‌شده** (`VisitService`، `MedicalFileService`،
+  `ClinicalService::record`، `QueueController`، `FilesController`، `VisitRepository`،
+  `MedicalFileRepository`): الگوهای معادلِ معنایی `clinic_id = 1` / `clinicId = 1` /
+  `queueFor(1,…)` / tenant default‑arg = 1 / اولین‑Clinic fallback / current‑user‑as‑tenant /
+  `location_id = 1` / `organization_id = 1` ⇒ **صفر hit**. تنها تطابقِ ظاهری `is_active = 1`
+  (پرچم بولی) بود. comments/test fixtures از production جدا شمرده شد.
+- پنج hardcode قطعیِ `VisitService` (queueFor/statsFor/lastEventId×2/eventsSince با literal 1 —
+  شاهد red: run `34403028668` probeهای ۷–۱۴) روی `f5ebefd` ⇒ green (run `34403805829`).
+- Class B Criticalِ فایل (read بین‌Clinic با Cap سراسری — شاهد red: بدنهٔ PDF با 200 در run
+  `34403028668`/`34403805829`/`34404449199`) روی `c2bff76` ⇒ green (۲۵ probe، CI `34406996627`).
+- **بدون** allowlist جدید، **بدون** schema/migration، **بدون** 0021؛ skip listِ
+  `RestClinicContext` دست‌نخورده (هر دو جهت). بررسی index: `WHERE id = %d AND clinic_id = %d`
+  روی PRIMARY می‌نشیند؛ no migration. (مشاهدهٔ اختیاریِ previous‑session: clinic‑leading index
+  برای queryهای فهرست‑محور — همچنان فقط observation.)
+- آلودگیِ harnessِ همین کلاس (Class D — ۶ victim: Export/ReportsAuthz/SmsFlow/OtpFlow×2/
+  OtpSecurity/VisitFlow) با ریشه‌شناسیِ pin یک‌بارمصرفِ `boot()`/`rest_api_init` بسته شد
+  (`c2bff76`) — baseline victimها سبز؛ شواهد red: runs `34403028668`…`34404449199`.
+- Tripwire→CI **هنوز سیم‌کشی نشده** (عمداً در این batch شروع نشد).
+

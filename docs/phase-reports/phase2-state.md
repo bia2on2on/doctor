@@ -2,9 +2,9 @@
 
 | | |
 |---|---|
-| **آخرین به‌روزرسانی** | بر مبنای SHA پیاده‌سازی `4289d89537c506fd2862da8b0a1bb9db7b166b02` (batch ترمیم Trusted REST؛ مبنای قبلی: `6e5d48c`)؛ بازبینِ نقطهٔ ترمیم: `4606b15` (docs tip) |
-| **وضعیت Phase 2** | IN PROGRESS — C1..C5 done؛ C6 **ناقص** (Reports/Export/Pilot/Trusted‑REST boundary انجام؛ C6‑F و Tripwire‑CI و تصمیم باز route‌ها باقی است) |
-| **آخرین remote SHA سبزِ تأییدشده** | `4289d89` (هر ۵ گیت — ادامهٔ خطی `f88fcdc`؛ PR #12 OPEN DRAFT — ادغام ممنوع) |
+| **آخرین به‌روزرسانی** | بر مبنای SHA پیاده‌سازی `c2bff76d1e21643a66bc0056a29881faaa2f299f` (batch استحکام tenant — Visit queue/Today/Feed + ایزولاسیون فایل بالینی؛ مبناهای قبلی: `6e5d48c`، `4289d89`) |
+| **وضعیت Phase 2** | IN PROGRESS — C1..C5 done؛ C6 **ناقص** (Reports/Export/Pilot/Trusted‑REST boundary/queue‑tenant/file‑isolation انجام؛ suite جامع C6‑F و Tripwire‑CI و تصمیم باز route‌ها و staff onboarding باقی است) |
+| **آخرین remote SHA سبزِ تأییدشده** | `c2bff76` (هر ۵ گیت — ادامهٔ خطی `4289d89 → … → c2bff76`؛ PR #13 head؛ OPEN DRAFT — ادغام/بستن ممنوع) |
 | **Schema** | `2026_09_09_0020` — فایل/تصویب 0021 وجود ندارد |
 
 > این فایل state جاری است، نه گزارش. عمداً به SHA کامیتِ خودِ این سند ارجاع
@@ -12,6 +12,33 @@
 > `arena/01a086ca-doctor`. نسب تأییدشده: headهای PR #10 (`79cce4b`) و
 > PR #11 (`9e006b0`) جد همین SHA هستند. PHP در sandbox ممیزی روی PATH نبود؛
 > شواهد اجرایی = GitHub Actions.
+
+## گیت‌های سبز — batch استحکام tenant (روی `c2bff76`)
+
+برچسب داخلی تسک در گزارش‌ها «Phase 9 §5» بود — واژگان تاریخیِ taxonomy وظایفِ داخلی؛
+فاز ۹ نقشهٔ راه مالک = Patient Portal و همچنان **NOT STARTED** است.
+
+| گیت | Run | نتیجه |
+|---|---|---|
+| CI (Unit×4 + PHPStan + WPCS changed‑lines + **Integration** — 602 test، 0E/0F) | 34406996627 | ✅ success (۷ job) |
+| Real WordPress Acceptance (ZIP → clean WP → browser؛ prefix `wp_` و `clinic_`) | 34406991487 | ✅ success |
+| Pilot/Staging Readiness (Artifact + Responsive smoke + Upgrade + Staging) | 34406991520 | ✅ success |
+| Closure Gate (GO‑LIVE evidence) | 34406991334 | ✅ success |
+
+خلاصهٔ batch (جزئیات + شواهد RED تاریخی در `c6-census.md` و `project-current-state.md` §K):
+
+- `f5ebefd` — **product fix:** پنج `clinic_id = 1` در `VisitService` (queue/Today/stats/feed
+  watermark) حذف؛ trusted context با fail‑closed؛ دامنهٔ پزشک Clinic‑aware؛ `clinician_id`
+  بین‌Clinic ⇒ 404. اثبات red→green: probeهای ۷–۱۶ صف روی `f5ebefd` سبز شدند.
+- `f6703dc`/`b7b8399`/`bff690a` — **product fix:** ایزولاسیون Per‑Object فایل بالینی
+  (`MedicalFileService` + `ClinicalService::record`)؛ Envelope رد == not‑found (عدم افشای
+  وجود)؛ مسیرهای skip‑listed برای کارکنان: Scope → resolver سیستمی → **عضویت فعال یکتا**
+  (هرگز «Clinic اول»). Class B Critical (خواندن هر فایل توسط هر staff با `cpms_file_read`)
+  برطرف و probeها سبز.
+- `c2bff76` — **test(harness):** ریشهٔ آلودگی بین‌کلاسی (نخستین REST‑touch = pin یک‌بارمصرفِ
+  سرویس‌ها زیر Scope فیکسچور ⇒ خرابی Export/Reports/Sms/Otp/VisitFlow) با warm خنثی +
+  پاک‌سازی دیسک + رفع collision email در `makeUser` بسته شد؛ هیچ کلاس/تست/product دیگری
+  تغییر نکرد.
 
 ## گیت‌های سبز — checkpoint ترمیم Trusted REST (روی `4289d89`)
 
