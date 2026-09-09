@@ -34,12 +34,18 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
 
     private const CLINIC_C = 61003;
 
+    private const CLINIC_D = 61004;
+
     private string $storagePath = '';
 
 
     private int $locA = 0;
 
     private int $locB = 0;
+
+    private int $locC = 0;
+
+    private int $locD = 0;
 
     private int $orgA = 0;
 
@@ -88,10 +94,13 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         $this->insertClinic(self::CLINIC_A, $this->orgA, 'iso-clinic-a');
         $this->insertClinic(self::CLINIC_B, $this->orgA, 'iso-clinic-b');
         $this->insertClinic(self::CLINIC_C, $this->orgB, 'iso-clinic-c');
+        $this->locC = $this->insertLocation(self::CLINIC_C, 'iso-loc-c');
+        $this->insertClinic(self::CLINIC_D, $this->orgA, 'iso-clinic-d');
+        $this->locD = $this->insertLocation(self::CLINIC_D, 'iso-loc-d');
         $this->locA = $this->insertLocation(self::CLINIC_A, 'iso-loc-a');
         $this->locB = $this->insertLocation(self::CLINIC_B, 'iso-loc-b');
 
-        $this->writeStorageSettings([self::CLINIC_A, self::CLINIC_B, self::CLINIC_C]);
+        $this->writeStorageSettings([self::CLINIC_A, self::CLINIC_B, self::CLINIC_C, self::CLINIC_D]);
         $this->warmRoutes();
         $this->bindHarnessScope();
     }
@@ -150,6 +159,38 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
          * را سست نمی‌کند — فقط fixture را پاک‌سازی می‌کند.
          */
         $this->purgeReserveRows();
+
+        /*
+         * شاهدِ باقی‌مانده: پس از پاک‌سازی نباید هیچ ردیفِ fixture در DB بماند.
+         * اگر روزی جدولِ جدیدی به دامنهٔ این کلاس اضافه شود و در purge جا
+         * بماند، همین‌جا گزارش می‌شود — نه به‌شکل assertion بی‌ربط در کلاس بعدی.
+         */
+        global $wpdb;
+        $residue = [];
+        foreach (
+            [
+                'cpms_patients' => 'clinic_id',
+                'cpms_visits' => 'clinic_id',
+                'cpms_medical_attachments' => 'clinic_id',
+                'cpms_clinicians' => 'clinic_id',
+                'cpms_locations' => 'clinic_id',
+                'cpms_clinic_memberships' => 'clinic_id',
+                'cpms_settings' => 'clinic_id',
+                'cpms_notifications' => 'clinic_id',
+            ] as $table => $column
+        ) {
+            $left = (int) $wpdb->get_var(
+                'SELECT COUNT(*) FROM ' . $wpdb->prefix . $table . ' WHERE ' . $column . ' >= 61000' // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            );
+            if ($left > 0) {
+                $residue[] = $table . '=' . $left;
+            }
+        }
+        self::assertSame(
+            [],
+            $residue,
+            'CPMS_FIXTURE_RESIDUE: ردیف fixture به کلاس‌های بعدی نشت می‌کند — ' . implode(', ', $residue)
+        );
         if ($this->storagePath !== '' && is_dir($this->storagePath)) {
             $it = new \RecursiveIteratorIterator(
                 new \RecursiveDirectoryIterator($this->storagePath, \FilesystemIterator::SKIP_DOTS),
@@ -289,8 +330,10 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
     /** ۸) Organization دیگر: هیچ فایل بالینی‌ای قابل خواندن نیست. */
     public function testFileAccessDoesNotCrossOrganizationBoundary(): void
     {
-        [$patientC] = $this->seedPatientWithUser(self::CLINIC_C, 'PatC8');
-        $fileC = $this->seedFile(self::CLINIC_C, $patientC, 'patient_visible', 'org-b-file.pdf');
+        [$patientC, $userC] = $this->seedPatientWithUser(self::CLINIC_C, 'PatC8');
+        // آپلود توسط خودِ بیمارِ C (مسیر patientUpload، بدون مرزِ staff) — تا
+        // fixture به عضویتِ ساختگی در C نیاز پیدا نکند و شاهد واقعی بماند.
+        $fileC = $this->seedFile(self::CLINIC_C, $patientC, 'patient_visible', 'org-b-file.pdf', null, $userC);
         $manager = $this->seedStaff('cpms_secretary', [self::CLINIC_A]);
         wp_set_current_user($manager);
 
@@ -494,22 +537,48 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
     public function testQueueDoesNotDependOnClinicIdOne(): void
     {
         $visitA = $this->seedQueueRow(self::CLINIC_A, $this->locA, 1307)['visitId'];
-        // ردیفِ نمایه‌ساز در Clinic 1: اگر حدسِ clinic_id=1 در VisitService باقی
-        // باشد، Today دقیقاً دامنهٔ A نیست (ردیفِ Clinic 1 هم می‌آید).
-        $this->seedQueueRow(1, $this->primaryLocationOf(1), 1308);
+        // ردیفِ نمایه‌ساز در Clinikِ دیگرِ رزرو‌شده (C، آن هم Organization دیگر).
+        // نوشتن روی clinic_id=1 در این suite ممنوع است: آن شناسه متعلق به
+        // فیکسچر کلاس‌های دیگر است و آلوده‌کردنش آن‌ها را می‌شکند؛ شاهدِ
+        // «نیفتادن به Clinic 1» همین‌جا با «دامنهٔ دقیق + id ≠ 1» و در
+        // testQueueIsExactDomainForMultiMembershipSecretary (سازگار با همهٔ
+        // revisionها: حدسِ 1 ⇒ دامنهٔ خالی ⇒ رد) انجام می‌شود.
+        $foreign = $this->seedQueueRow(self::CLINIC_C, $this->locC, 1308);
         $sec = $this->seedStaff('cpms_secretary', [self::CLINIC_A]);
         wp_set_current_user($sec);
 
         $res = $this->call('GET', self::NS . '/secretary/today', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_A]);
         $this->assertSame(200, $res->get_status(), $this->body($res));
-        $this->assertSame([$visitA], $this->queueIds($res), 'دادهٔ Clinic غیر‌۱ باید تنها دامنهٔ Today باشد (نه مختلط با Clinic 1)');
+        $ids = $this->queueIds($res);
+        $this->assertSame([$visitA], $ids, 'دادهٔ Clinic غیر‌۱ باید تنها دامنهٔ Today باشد (نه مختلط با Clinic دیگر)');
+        $this->assertNotContains($foreign['visitId'], $ids, 'ردیف Clinic/Organization دیگر نباید مخلوط شود');
+    }
+
+    /**
+     * ۱۶ب) منشیِ عضوِ A و D: هر context **دقیقاً** دامنهٔ خودش. این شاهدِ
+     * non‑vacuousِ «حدسِ clinic_id=1 نیست» است: با هر دو revision (پیش‌ و پس‌از
+     * fix) اگر سرویس Clinic ثابتی را فرض کند، حداقل یکی از دو دامنه اشتباه است.
+     */
+    public function testQueueIsExactDomainForMultiMembershipSecretary(): void
+    {
+        $visitA = $this->seedQueueRow(self::CLINIC_A, $this->locA, 1316)['visitId'];
+        $visitD = $this->seedQueueRow(self::CLINIC_D, $this->locD, 1317)['visitId'];
+        $sec = $this->seedStaff('cpms_secretary', [self::CLINIC_A, self::CLINIC_D]);
+        wp_set_current_user($sec);
+
+        $inA = $this->call('GET', self::NS . '/secretary/today', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_A]);
+        $this->assertSame(200, $inA->get_status(), $this->body($inA));
+        $this->assertSame([$visitA], $this->queueIds($inA), 'context A ⇒ فقط دامنهٔ A');
+
+        $inD = $this->call('GET', self::NS . '/secretary/today', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_D]);
+        $this->assertSame(200, $inD->get_status(), $this->body($inD));
+        $this->assertSame([$visitD], $this->queueIds($inD), 'context D (id ≠ 1) ⇒ فقط دامنهٔ D');
     }
 
     /** ۱۷) Organization دیگر در Today دیده نمی‌شود. */
     public function testQueueDoesNotCrossOrganizationBoundary(): void
     {
-        $locC = $this->insertLocation(self::CLINIC_C, 'iso-loc-c');
-        $visitC = $this->seedQueueRow(self::CLINIC_C, $locC, 1315)['visitId'];
+        $visitC = $this->seedQueueRow(self::CLINIC_C, $this->locC, 1315)['visitId'];
         $visitA = $this->seedQueueRow(self::CLINIC_A, $this->locA, 1309)['visitId'];
         $sec = $this->seedStaff('cpms_secretary', [self::CLINIC_A]);
         wp_set_current_user($sec);
@@ -729,22 +798,6 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
     }
 
     /** Location primariesِ یک Clinic (برای ردیفِ نمایه‌ساز Clinic 1). */
-    private function primaryLocationOf(int $clinicId): int
-    {
-        global $wpdb;
-        $id = (int) $wpdb->get_var(
-            $wpdb->prepare(
-                'SELECT id FROM ' . $wpdb->prefix . 'cpms_locations WHERE clinic_id = %d ORDER BY is_primary DESC, id ASC LIMIT 1', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                $clinicId
-            )
-        );
-        if ($id > 0) {
-            return $id;
-        }
-
-        return $this->insertLocation($clinicId, 'iso-loc-decoy-' . $clinicId);
-    }
-
     private function insertLocation(int $clinicId, string $slug): int
     {
         global $wpdb;

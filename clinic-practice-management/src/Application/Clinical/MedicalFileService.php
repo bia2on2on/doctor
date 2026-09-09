@@ -150,7 +150,7 @@ final class MedicalFileService
             if ($owned !== (int) $row['patient_id']
                 || (string) $row['visibility'] !== 'patient_visible'
                 || (int) $row['clinic_id'] !== $this->patientClinicId($owned)) {
-                $this->auditAndThrow($actorUserId, 'file', $fileId, 'دسترسی به این فایل مجاز نیست');
+                $this->auditAndThrow($actorUserId, 'file', $fileId, 'دسترسی به این فایل مجاز نیست', 'فایل یافت نشد');
             }
         } elseif ($isDoctor) {
             $this->requireCap($actorUserId, RolesAndCapabilities::FILE_READ);
@@ -160,11 +160,11 @@ final class MedicalFileService
             $this->requireCap($actorUserId, RolesAndCapabilities::FILE_READ);
             // منشی: فقط patient_visible (ماتریس 4.2 — Doctor Private ❌)
             if ((string) $row['visibility'] !== 'patient_visible') {
-                $this->auditAndThrow($actorUserId, 'file', $fileId, 'دسترسی به این فایل مجاز نیست');
+                $this->auditAndThrow($actorUserId, 'file', $fileId, 'دسترسی به این فایل مجاز نیست', 'فایل یافت نشد');
             }
             $this->assertStaffClinic($actorUserId, (int) $row['clinic_id'], 'file', $fileId);
         } else {
-            $this->auditAndThrow($actorUserId, 'file', $fileId, 'دسترسی به این فایل مجاز نیست');
+            $this->auditAndThrow($actorUserId, 'file', $fileId, 'دسترسی به این فایل مجاز نیست', 'فایل یافت نشد');
         }
 
         $content = $this->storage->read((string) $row['storage_path']);
@@ -428,7 +428,13 @@ final class MedicalFileService
     private function assertStaffClinic(int $actorUserId, int $targetClinicId, string $resourceType, int $resourceId): void
     {
         if ($targetClinicId !== $this->trustedClinicId($actorUserId)) {
-            $this->auditAndThrow($actorUserId, $resourceType, $resourceId, 'دسترسی به این فایل مجاز نیست');
+            $this->auditAndThrow(
+                $actorUserId,
+                $resourceType,
+                $resourceId,
+                'دسترسی به این فایل مجاز نیست',
+                $resourceType === 'file' ? 'فایل یافت نشد' : 'بیمار یافت نشد'
+            );
         }
     }
 
@@ -471,7 +477,13 @@ final class MedicalFileService
     /**
      * IDOR → Audit + 404.
      */
-    private function auditAndThrow(int $wpUserId, string $resourceType, int $resourceId, string $message): void
+    private function auditAndThrow(
+        int $wpUserId,
+        string $resourceType,
+        int $resourceId,
+        string $message,
+        ?string $publicMessage = null
+    ): void
     {
         $user = get_userdata($wpUserId);
         $this->audit->log(
@@ -484,7 +496,9 @@ final class MedicalFileService
             null,
             ['reason' => $message]
         );
-        throw ClinicalException::of('CLINIC_NOT_FOUND', $message, 404);
+        // Envelope بیرونی باید **عیناً** مثل «یافت نشد» باشد تا وجودِ ردیفِ
+        // Clinic/Organization دیگر قابل تمایز نباشد؛ دلیلِ رد فقط در Audit می‌ماند.
+        throw ClinicalException::of('CLINIC_NOT_FOUND', $publicMessage ?? $message, 404);
     }
 
     /**
