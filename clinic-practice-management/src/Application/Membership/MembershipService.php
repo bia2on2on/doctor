@@ -205,9 +205,9 @@ final class MembershipService
 
         $this->assertLocationsBelongToClinic($membershipId, $locationIds, (int) $membership['clinic_id']);
 
-        $this->db->transactional(
-            fn (): void => $this->memberships->replaceLocations($membershipId, $locationIds)
-        );
+        $this->db->transactional(function () use ($membershipId, $locationIds): void {
+            $this->memberships->replaceLocations($membershipId, $locationIds);
+        });
     }
 
     /**
@@ -325,7 +325,9 @@ final class MembershipService
         }
 
         $this->db->transactional(
-            fn (): void => $this->memberships->replaceClinicianLocations($clinicianId, $locationIds, $primaryLocationId)
+            function () use ($clinicianId, $locationIds, $primaryLocationId): void {
+                $this->memberships->replaceClinicianLocations($clinicianId, $locationIds, $primaryLocationId);
+            }
         );
     }
 

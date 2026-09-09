@@ -203,7 +203,25 @@ jobs:
           fi
 
       - name: Run WPCS on changed files
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           if [ -s /tmp/wpcs-files.txt ]; then
-            vendor/bin/phpcs --standard=phpcs.xml.dist -s $(cat /tmp/wpcs-files.txt)
+            set +e
+            vendor/bin/phpcs --standard=phpcs.xml.dist -s $(cat /tmp/wpcs-files.txt) > /tmp/wpcs.log 2>&1
+            rc=$?
+            set -e
+            cat /tmp/wpcs.log
+            # لاگ کامل از blob قابل دانلود نیست — گزارش به‌صورت کامنت PR (الگوی job integration)
+            PR_NUM="${{ github.event.pull_request.number }}"
+            if [ "$rc" -ne 0 ] && [ -n "$PR_NUM" ]; then
+              {
+                echo "### WPCS violations (run ${{ github.run_id }})"
+                echo '```'
+                tail -c 8000 /tmp/wpcs.log
+                echo '```'
+              } > /tmp/wpcs-pr.md
+              gh pr comment "$PR_NUM" --body-file /tmp/wpcs-pr.md || echo '::notice::PR comment failed'
+            fi
+            exit "$rc"
           fi
