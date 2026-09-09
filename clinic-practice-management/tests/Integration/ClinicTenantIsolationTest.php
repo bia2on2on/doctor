@@ -35,6 +35,7 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
 
     private string $storagePath = '';
 
+
     private int $locA = 0;
 
     private int $locB = 0;
@@ -70,6 +71,32 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         $this->locB = $this->insertLocation(self::CLINIC_B, 'iso-loc-b');
 
         $this->writeStorageSettings([self::CLINIC_A, self::CLINIC_B, self::CLINIC_C]);
+        $this->warmRoutes();
+        $this->bindHarnessScope();
+    }
+
+    /**
+     * fixture در نصب چند‑Clinic همیشه یک Scope صریح نگه می‌دارد: App::settings()
+     * و کارخانه‌های service در هر rebuild به Resolution سیستمی می‌افتند و آنجا
+     * عمداً Fail‑Closed است. مرز REST برای staff با context خودِ درخواست این را
+     * override می‌کند (پس testهای «context مبهم/غلط» همچنان واقعی‌اند).
+     */
+    private function bindHarnessScope(): void
+    {
+        App::replaceExplicitScope(ClinicScope::forClinic(self::CLINIC_A));
+    }
+
+    /** بیدارسازی lazy registry مسیرها زیرِ Scope صریح (بدون PHI؛ endpoint عمومی). */
+    private function warmRoutes(): void
+    {
+        ScopeContext::set(ClinicScope::forClinic(self::CLINIC_A));
+        \ClinicCore\Settings\Settings::flushCache();
+        try {
+            rest_do_request(new WP_REST_Request('GET', self::NS . '/health'));
+        } finally {
+            ScopeContext::clear();
+            \ClinicCore\Settings\Settings::flushCache();
+        }
     }
 
     /**
@@ -84,7 +111,7 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
             App::settings()->set('files.storage_path', $this->storagePath);
             App::settings()->set('files.max_upload_bytes', 10485760);
         }
-        App::resetScope();
+        $this->bindHarnessScope();
     }
 
     protected function tearDown(): void
@@ -165,6 +192,7 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         [$patientA] = $this->seedPatientWithUser(self::CLINIC_A, 'PatA4');
         $fileA = $this->seedFile(self::CLINIC_A, $patientA, 'patient_visible', 'a4.pdf');
         $doctor = $this->seedStaff('cpms_doctor', [self::CLINIC_A]);
+        wp_set_current_user($doctor);
 
         $res = $this->dispatch(
             'GET',
@@ -186,6 +214,7 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         [$patientB] = $this->seedPatientWithUser(self::CLINIC_B, 'PatB5');
         $fileB = $this->seedFile(self::CLINIC_B, $patientB, 'patient_visible', 'secret-b5.pdf');
         $doctor = $this->seedStaff('cpms_doctor', [self::CLINIC_A]);
+        wp_set_current_user($doctor);
 
         $res = $this->dispatch(
             'GET',
@@ -205,6 +234,7 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         [$patientB] = $this->seedPatientWithUser(self::CLINIC_B, 'PatB6');
         $fileB = $this->seedFile(self::CLINIC_B, $patientB, 'patient_visible', 'secret-b6.pdf');
         $doctor = $this->seedStaff('cpms_doctor', [self::CLINIC_A, self::CLINIC_B]);
+        wp_set_current_user($doctor);
 
         $res = $this->dispatch(
             'GET',
@@ -222,6 +252,7 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         [$patientB] = $this->seedPatientWithUser(self::CLINIC_B, 'PatB7');
         $fileB = $this->seedFile(self::CLINIC_B, $patientB, 'patient_visible', 'own-b7.pdf');
         $doctor = $this->seedStaff('cpms_doctor', [self::CLINIC_A, self::CLINIC_B]);
+        wp_set_current_user($doctor);
 
         $res = $this->dispatch(
             'GET',
@@ -239,6 +270,7 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         [$patientC] = $this->seedPatientWithUser(self::CLINIC_C, 'PatC8');
         $fileC = $this->seedFile(self::CLINIC_C, $patientC, 'patient_visible', 'org-b-file.pdf');
         $manager = $this->seedStaff('cpms_secretary', [self::CLINIC_A]);
+        wp_set_current_user($manager);
 
         $res = $this->dispatch(
             'GET',
@@ -256,6 +288,7 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         [$patientB] = $this->seedPatientWithUser(self::CLINIC_B, 'PatB9');
         $fileB = $this->seedFile(self::CLINIC_B, $patientB, 'patient_visible', 'exists-b9.pdf');
         $doctor = $this->seedStaff('cpms_doctor', [self::CLINIC_A]);
+        wp_set_current_user($doctor);
 
         $ghost = $this->dispatch(
             'GET',
@@ -283,6 +316,7 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         [$patientB] = $this->seedPatientWithUser(self::CLINIC_B, 'PatB10');
         $fileB = $this->seedFile(self::CLINIC_B, $patientB, 'patient_visible', 'bytes-b10.pdf');
         $doctor = $this->seedStaff('cpms_doctor', [self::CLINIC_A]);
+        wp_set_current_user($doctor);
 
         $res = $this->dispatch(
             'GET',
@@ -305,6 +339,7 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         $fileA = $this->seedFile(self::CLINIC_A, $patientA, 'patient_visible', 'a11.pdf');
         $fileB = $this->seedFile(self::CLINIC_B, $patientB, 'patient_visible', 'b11.pdf');
         $doctor = $this->seedStaff('cpms_doctor', [self::CLINIC_A, self::CLINIC_B]);
+        wp_set_current_user($doctor);
 
         $inA = $this->dispatch('GET', self::NS . '/files/' . $fileA . '/stream', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_A]);
         $this->assertSame(200, $inA->get_status(), 'A→A: ' . $this->body($inA));
@@ -323,6 +358,7 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         [$patientB] = $this->seedPatientWithUser(self::CLINIC_B, 'PatB12');
         $fileB = $this->seedFile(self::CLINIC_B, $patientB, 'patient_visible', 'b12.pdf');
         $doctor = $this->seedStaff('cpms_doctor', [self::CLINIC_A]);
+        wp_set_current_user($doctor);
         $res = $this->dispatch('GET', self::NS . '/files/' . $fileB . '/stream', ['id' => $fileB], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_A]);
         $this->assertSame(404, $res->get_status(), 'شناسهٔ فایلِ Clinic دیگر: ' . $this->body($res));
 
@@ -367,6 +403,7 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         $visitB = $this->seedVisit(self::CLINIC_B, $locB, $clinicianB, $patientB);
         $this->seedFile(self::CLINIC_B, $patientB, 'patient_visible', 'visit-b5b.pdf', $visitB);
         $doctor = $this->seedStaff('cpms_doctor', [self::CLINIC_A]);
+        wp_set_current_user($doctor);
 
         $res = $this->dispatch(
             'GET',
@@ -387,7 +424,8 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
     {
         $visitA = $this->seedQueueRow(self::CLINIC_A, $this->locA);
         $visitB = $this->seedQueueRow(self::CLINIC_B, $this->locB);
-        $this->seedStaff('cpms_secretary', [self::CLINIC_A]);
+        $sec = $this->seedStaff('cpms_secretary', [self::CLINIC_A]);
+        wp_set_current_user($sec);
 
         $res = $this->dispatch('GET', self::NS . '/secretary/today', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_A]);
         $this->assertSame(200, $res->get_status(), $this->body($res));
@@ -401,7 +439,8 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
     {
         $visitA = $this->seedQueueRow(self::CLINIC_A, $this->locA);
         $visitB = $this->seedQueueRow(self::CLINIC_B, $this->locB);
-        $this->seedStaff('cpms_secretary', [self::CLINIC_B]);
+        $sec = $this->seedStaff('cpms_secretary', [self::CLINIC_B]);
+        wp_set_current_user($sec);
 
         $res = $this->dispatch('GET', self::NS . '/secretary/today', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_B]);
         $this->assertSame(200, $res->get_status(), $this->body($res));
@@ -415,7 +454,8 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
     {
         $visitA = $this->seedQueueRow(self::CLINIC_A, $this->locA);
         $visitB = $this->seedQueueRow(self::CLINIC_B, $this->locB);
-        $this->seedStaff('cpms_secretary', [self::CLINIC_A, self::CLINIC_B]);
+        $sec = $this->seedStaff('cpms_secretary', [self::CLINIC_A, self::CLINIC_B]);
+        wp_set_current_user($sec);
 
         $inA = $this->queueIds($this->dispatch('GET', self::NS . '/secretary/today', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_A]));
         $this->assertSame([$visitA], $inA, 'context A دقیقاً دامنهٔ A');
@@ -431,12 +471,12 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
     public function testQueueDoesNotDependOnClinicIdOne(): void
     {
         $visitA = $this->seedQueueRow(self::CLINIC_A, $this->locA);
-        $this->seedStaff('cpms_secretary', [self::CLINIC_A]);
+        $sec = $this->seedStaff('cpms_secretary', [self::CLINIC_A]);
+        wp_set_current_user($sec);
 
         $res = $this->dispatch('GET', self::NS . '/secretary/today', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_A]);
         $this->assertSame(200, $res->get_status(), $this->body($res));
         $this->assertContains($visitA, $this->queueIds($res), 'دادهٔ Clinic غیر‌۱ باید دیده شود');
-        $this->assertNull(ScopeContext::tryGet(), 'Scope پس از درخواست restore می‌شود');
     }
 
     /** ۱۷) Organization دیگر در Today دیده نمی‌شود. */
@@ -445,7 +485,8 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         $locC = $this->insertLocation(self::CLINIC_C, 'iso-loc-c');
         $visitC = $this->seedQueueRow(self::CLINIC_C, $locC);
         $visitA = $this->seedQueueRow(self::CLINIC_A, $this->locA);
-        $this->seedStaff('cpms_secretary', [self::CLINIC_A]);
+        $sec = $this->seedStaff('cpms_secretary', [self::CLINIC_A]);
+        wp_set_current_user($sec);
 
         $ids = $this->queueIds($this->dispatch('GET', self::NS . '/secretary/today', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_A]));
         $this->assertContains($visitA, $ids);
@@ -453,11 +494,28 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
     }
 
     /** ۱۸) نبودِ Trusted Context روی مسیر صف ⇒ fail‑closed (نه «Clinic 1» ضمنی). */
+    public function testQueueFollowsSoleMembershipNotHardcodedClinic(): void
+    {
+        $visitA = $this->seedQueueRow(self::CLINIC_A, $this->locA);
+        $visitB = $this->seedQueueRow(self::CLINIC_B, $this->locB);
+        $sec = $this->seedStaff('cpms_secretary', [self::CLINIC_B]);
+        wp_set_current_user($sec);
+
+        // بدون هدر: تنها Membership فعال = Clinic B ⇒ context موثق B (نه clinic_id=1)
+        $res = $this->dispatch('GET', self::NS . '/secretary/today');
+
+        $this->assertSame(200, $res->get_status(), 'today برای منشیِ تک‑عضویت: ' . $this->body($res));
+        $this->assertSame([$visitB], $this->queueIds($res), 'صف باید دقیقاًClinic context باشد (نه Clinic 1)');
+        $this->assertNotContains($visitA, $this->queueIds($res), 'ردیف Clinic دیگر نباید در صف باشد');
+    }
+
     public function testQueueWithoutTrustedContextFailsClosed(): void
     {
         $this->seedQueueRow(self::CLINIC_A, $this->locA);
-        $this->seedStaff('cpms_secretary', [self::CLINIC_A, self::CLINIC_B]);
+        $sec = $this->seedStaff('cpms_secretary', [self::CLINIC_A, self::CLINIC_B]);
+        wp_set_current_user($sec);
 
+        // دو Membership فعال و بدون هدر ⇒ context مبهم: مرز باید رد کند (نه Clinic 1)
         $res = $this->dispatch('GET', self::NS . '/secretary/today');
         $this->assertSame(400, $res->get_status(), 'context مبهم باید رد شود، نه به Clinic 1 بیفتد: ' . $this->body($res));
         $this->assertSame('CLINIC_SCOPE_REQUIRED', $this->errorCode($res));
@@ -471,7 +529,8 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         $visitB = $this->seedQueueRow(self::CLINIC_B, $this->locB);
         $this->insertVisitEvent($visitA);
         $this->insertVisitEvent($visitB);
-        $this->seedStaff('cpms_secretary', [self::CLINIC_A]);
+        $sec = $this->seedStaff('cpms_secretary', [self::CLINIC_A]);
+        wp_set_current_user($sec);
 
         $res = $this->dispatch('GET', self::NS . '/rt/queue', ['since' => 0], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_A]);
         $this->assertSame(200, $res->get_status(), $this->body($res));
@@ -489,6 +548,7 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         $patA = $this->seedPatient(self::CLINIC_A, 'PatA20');
         $patB = $this->seedPatient(self::CLINIC_B, 'PatB20');
         $doctor = $this->seedStaff('cpms_doctor', [self::CLINIC_A, self::CLINIC_B]);
+        wp_set_current_user($doctor);
         // **عمداً یک Clinician** (u_clinician_user سالم) و ویزیتی در Clinic دیگر
         // که clinician_id همان پزشک است ⇒ فیلتر clinician تنها آن را رد نمی‌کند.
         $clinicianA = $this->insertClinician(self::CLINIC_A, $doctor, 'Dr Iso A');
@@ -613,13 +673,17 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
     }
 
     /** @param list<int> $clinicIds */
+    /**
+     * ساخت کاربر staff + Membership فعال روی Clinicهای داده‌شده.
+     * عمداً current user را عوض نمی‌کند (fixtureها بعد از آن هم اجرا می‌شوند)؛
+     * هر تست صریحاً wp_set_current_user() صدا می‌زند.
+     */
     private function seedStaff(string $role, array $clinicIds): int
     {
         $userId = $this->makeUser('iso_' . str_replace('cpms_', '', $role), $role);
         foreach ($clinicIds as $clinicId) {
             cpms_test_seed_membership($userId, $clinicId, $role);
         }
-        wp_set_current_user($userId);
 
         return $userId;
     }
@@ -804,7 +868,7 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         try {
             $row = App::medicalFileService()->upload($staff, $file, $patientId, $visitId, 'document', $visibility);
         } finally {
-            App::resetScope();
+            $this->bindHarnessScope();
         }
         $id = (int) $row['id'];
         self::assertGreaterThan(0, $id, 'پیش‌شرط: آپلود فایل از مسیر Product');
@@ -839,14 +903,15 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
 
     /** @param array<string, string> $headers */
     /**
-     * Dispatch واقعی با حفظ مرز ایمنی: هیچ Scope fixture‑محوری وارد درخواست
-     * نمی‌شود (وگرنه آزمون‌های «context مبهم ⇒ Fail‑Closed» معنایشان را از دست
-     * می‌دهند) و بعد از آن هم Scope باقی‌مانده‌ای به کلاس بعدی منتقل نمی‌شود.
+     * Dispatch واقعی. نکتهٔ حیاتیِ harness: registry مسیرها در WP به‌صورت lazy با
+     * `rest_api_init` ساخته می‌شود و خودِ رجیستری `App::scope()` را صدا می‌زند؛ پس
+     * در نصبِ چند‑Clinic این فایل، اگر Scope خالی باشد رجیستری وسطِ راه throw و
+     * مسیرها برای کل suite می‌سوزند. warmRoutes() در setUp همان بیدارسازی را زیرِ
+     * Scope صریح انجام می‌دهد؛ اینجا فقط بعد از درخواست پاک می‌کنیم تا Scope
+     * باقی‌مانده به تست/کلاس بعدی نرسد.
      */
     private function dispatch(string $method, string $route, array $body = [], array $headers = []): WP_REST_Response
     {
-        ScopeContext::clear();
-        \ClinicCore\Settings\Settings::flushCache();
         $request = new WP_REST_Request($method, $route);
         foreach ($body as $key => $value) {
             $request->set_param($key, $value);
@@ -856,11 +921,14 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
             $request->set_header($name, $value);
         }
 
+        // contextِ موثق باید از خودِ درخواست بیاید، نه از Scopeِ fixture
+        ScopeContext::clear();
+        \ClinicCore\Settings\Settings::flushCache();
+
         try {
             return rest_do_request($request);
         } finally {
-            ScopeContext::clear();
-            \ClinicCore\Settings\Settings::flushCache();
+            $this->bindHarnessScope();
         }
     }
 
@@ -923,6 +991,7 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         $data = $res->get_data();
         $flat = is_string($data) ? $data : (string) json_encode($data, JSON_UNESCAPED_UNICODE);
         self::assertStringNotContainsString('%PDF-1.4', $flat, 'هیچ بایت فایل بالینی در پاسخ رد نباید باشد');
-        self::assertSame('', (string) $res->get_header('Content-Disposition'), 'هدر دانلود فایل نباید در پاسخ رد باشد');
+        $headers = $res->get_headers();
+        self::assertArrayNotHasKey('Content-Disposition', $headers, 'هدر دانلود فایل نباید در پاسخ رد باشد');
     }
 }
