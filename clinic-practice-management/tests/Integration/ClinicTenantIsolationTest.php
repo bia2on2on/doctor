@@ -583,10 +583,42 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         $this->assertContains($visitA, $this->queueIds($resA));
         $this->assertNotContains($visitB, $this->queueIds($resA), 'ویزیتِ همان پزشک در Clinic دیگر نباید union شود');
 
-        // در context B (با همان یک Clinician) — داده‌های A نباید بیایند
+        // در context B (با همان یک Clinician) — پروفایل پزشک در B وجود ندارد ⇒
+        // مجموعهٔ خالی (نه union و نه دامنهٔ کل مطب)
         $resB = $this->call('GET', self::NS . '/doctor/today', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_B]);
         $this->assertSame(200, $resB->get_status(), $this->body($resB));
-        $this->assertNotContains($visitA, $this->queueIds($resB));
+        $this->assertSame([], $this->queueIds($resB), 'OWN-doctor scope نباید Clinicها را union کند');
+    }
+
+    /** ۲۱) پارامتر clinician_id نمی‌تواند دامنه را به پزشکِ Clinic دیگر ببرد. */
+    public function testQueueClinicianParamCannotCrossClinic(): void
+    {
+        $rowB = $this->seedQueueRow(self::CLINIC_B, $this->locB, 2101);
+        $sec = $this->seedStaff('cpms_secretary', [self::CLINIC_A]);
+        wp_set_current_user($sec);
+
+        // پزشکِ Clinic B از دهان منشیِ Clinic A ⇒ not-found (نه داده، نه دامنه)
+        $res = $this->call(
+            'GET',
+            self::NS . '/queue',
+            ['clinician_id' => $rowB['clinicianId']],
+            ['X-CPMS-Clinic-Id' => (string) self::CLINIC_A]
+        );
+        $this->assertSame(404, $res->get_status(), 'clinician_id بین‌Clinic باید رد شود: ' . $this->body($res));
+        $this->assertNotContains($rowB['visitId'], $this->queueIds($res), 'هیچ ردیفی از Clinic دیگر نباید برگردد');
+
+        // همان پزشک در context خودش ⇒ فقط ردیف همان Clinic
+        $ok = $this->call(
+            'GET',
+            self::NS . '/queue',
+            ['clinician_id' => $rowB['clinicianId']],
+            ['X-CPMS-Clinic-Id' => (string) self::CLINIC_B]
+        );
+        // منشیِ عضویت‌دار در A برای context B رد می‌شود (Membership فعال ندارد)
+        $this->assertTrue(
+            in_array($ok->get_status(), [400, 403, 404], true),
+            'context B بدون Membership برای این کاربر باید رد شود: ' . $this->body($ok)
+        );
     }
 
     // =====================================================================
