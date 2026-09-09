@@ -154,7 +154,7 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         $fileA = $this->seedFile(self::CLINIC_A, $patientA, 'patient_visible', 'own-a.pdf');
 
         wp_set_current_user($userA);
-        $res = $this->dispatch('GET', self::NS . '/files/' . $fileA . '/stream');
+        $res = $this->call('GET', self::NS . '/files/' . $fileA . '/stream');
 
         $this->assertSame(200, $res->get_status(), 'دسترسی بیمار به فایل خودش باید باز بماند: ' . $this->body($res));
         $this->assertSame($this->pdfContent(), $res->get_data());
@@ -168,7 +168,7 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         $fileB = $this->seedFile(self::CLINIC_B, $patientB, 'patient_visible', 'other-b.pdf');
 
         wp_set_current_user($userA);
-        $res = $this->dispatch('GET', self::NS . '/files/' . $fileB . '/stream');
+        $res = $this->call('GET', self::NS . '/files/' . $fileB . '/stream');
 
         $this->assertSame(404, $res->get_status(), 'فایل بیمار دیگر نباید خوانده شود: ' . $this->body($res));
         $this->assertIsNotPdfBytes($res);
@@ -182,7 +182,7 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         $this->seedFile(self::CLINIC_B, $patientB, 'patient_visible', 'list-b.pdf');
 
         wp_set_current_user($userA);
-        $res = $this->dispatch('GET', self::NS . '/patients/' . $patientB . '/files');
+        $res = $this->call('GET', self::NS . '/patients/' . $patientB . '/files');
         $this->assertSame(404, $res->get_status(), 'فهرست فایل بیمار دیگر: ' . $this->body($res));
         $this->assertStringNotContainsString('list-b.pdf', $this->body($res));
     }
@@ -195,7 +195,7 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         $doctor = $this->seedStaff('cpms_doctor', [self::CLINIC_A]);
         wp_set_current_user($doctor);
 
-        $res = $this->dispatch(
+        $res = $this->call(
             'GET',
             self::NS . '/files/' . $fileA . '/stream',
             [],
@@ -217,7 +217,7 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         $doctor = $this->seedStaff('cpms_doctor', [self::CLINIC_A]);
         wp_set_current_user($doctor);
 
-        $res = $this->dispatch(
+        $res = $this->call(
             'GET',
             self::NS . '/files/' . $fileB . '/stream',
             [],
@@ -237,7 +237,7 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         $doctor = $this->seedStaff('cpms_doctor', [self::CLINIC_A, self::CLINIC_B]);
         wp_set_current_user($doctor);
 
-        $res = $this->dispatch(
+        $res = $this->call(
             'GET',
             self::NS . '/files/' . $fileB . '/stream',
             [],
@@ -255,7 +255,7 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         $doctor = $this->seedStaff('cpms_doctor', [self::CLINIC_A, self::CLINIC_B]);
         wp_set_current_user($doctor);
 
-        $res = $this->dispatch(
+        $res = $this->call(
             'GET',
             self::NS . '/files/' . $fileB . '/stream',
             [],
@@ -273,7 +273,7 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         $manager = $this->seedStaff('cpms_secretary', [self::CLINIC_A]);
         wp_set_current_user($manager);
 
-        $res = $this->dispatch(
+        $res = $this->call(
             'GET',
             self::NS . '/files/' . $fileC . '/stream',
             [],
@@ -291,13 +291,13 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         $doctor = $this->seedStaff('cpms_doctor', [self::CLINIC_A]);
         wp_set_current_user($doctor);
 
-        $ghost = $this->dispatch(
+        $ghost = $this->call(
             'GET',
             self::NS . '/files/987654321/stream',
             [],
             ['X-CPMS-Clinic-Id' => (string) self::CLINIC_A]
         );
-        $cross = $this->dispatch(
+        $cross = $this->call(
             'GET',
             self::NS . '/files/' . $fileB . '/stream',
             [],
@@ -319,7 +319,7 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         $doctor = $this->seedStaff('cpms_doctor', [self::CLINIC_A]);
         wp_set_current_user($doctor);
 
-        $res = $this->dispatch(
+        $res = $this->call(
             'GET',
             self::NS . '/files/' . $fileB . '/stream',
             [],
@@ -342,13 +342,13 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         $doctor = $this->seedStaff('cpms_doctor', [self::CLINIC_A, self::CLINIC_B]);
         wp_set_current_user($doctor);
 
-        $inA = $this->dispatch('GET', self::NS . '/files/' . $fileA . '/stream', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_A]);
+        $inA = $this->call('GET', self::NS . '/files/' . $fileA . '/stream', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_A]);
         $this->assertSame(200, $inA->get_status(), 'A→A: ' . $this->body($inA));
-        $this->assertSame(404, $this->dispatch('GET', self::NS . '/files/' . $fileB . '/stream', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_A])->get_status(), 'A نباید B را ببیند');
+        $this->assertSame(404, $this->call('GET', self::NS . '/files/' . $fileB . '/stream', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_A])->get_status(), 'A نباید B را ببیند');
 
-        $this->assertSame(200, $this->dispatch('GET', self::NS . '/files/' . $fileB . '/stream', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_B])->get_status(), 'B→B');
+        $this->assertSame(200, $this->call('GET', self::NS . '/files/' . $fileB . '/stream', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_B])->get_status(), 'B→B');
 
-        $backToA = $this->dispatch('GET', self::NS . '/files/' . $fileB . '/stream', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_A]);
+        $backToA = $this->call('GET', self::NS . '/files/' . $fileB . '/stream', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_A]);
         $this->assertSame(404, $backToA->get_status(), 'پس از بازگشت به A، دسترسی B نباید باقی بماند');
     }
 
@@ -360,15 +360,15 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         $fileB = $this->seedFile(self::CLINIC_B, $patientB, 'patient_visible', 'b12.pdf');
         $doctor = $this->seedStaff('cpms_doctor', [self::CLINIC_A]);
         wp_set_current_user($doctor);
-        $res = $this->dispatch('GET', self::NS . '/files/' . $fileB . '/stream', ['id' => $fileB], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_A]);
+        $res = $this->call('GET', self::NS . '/files/' . $fileB . '/stream', ['id' => $fileB], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_A]);
         $this->assertSame(404, $res->get_status(), 'شناسهٔ فایلِ Clinic دیگر: ' . $this->body($res));
 
         // (b) آپلود کارکنان A برای بیمار Clinic B ⇒ رد (relation‌محور بودن clinic فایل)
-        $crossWrite = $this->dispatchUpload(
+        $crossWrite = $this->resp($this->dispatchUpload(
             self::NS . '/files',
             ['patient_id' => $patientB, 'category' => 'document', 'visibility' => 'patient_visible', 'name' => 'x.pdf'],
             ['X-CPMS-Clinic-Id' => (string) self::CLINIC_A]
-        );
+        ));
         // بیمار متعلق به Clinic دیگر ⇒ safe not‑found (بدون افشای وجود بیمار).
         $this->assertSame(404, $crossWrite->get_status(), 'نوشتن فایل روی بیمار Clinic دیگر: ' . $this->body($crossWrite));
         $this->assertSame('CLINIC_NOT_FOUND', $this->errorCode($crossWrite));
@@ -386,7 +386,7 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         $fileId = $this->insertAttachmentRow(self::CLINIC_B, $patientB, '../' . basename($foreign), 'leak.pdf');
 
         wp_set_current_user($this->seedStaff('cpms_doctor', [self::CLINIC_B]));
-        $res = $this->dispatch('GET', self::NS . '/files/' . $fileId . '/stream', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_B]);
+        $res = $this->call('GET', self::NS . '/files/' . $fileId . '/stream', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_B]);
 
         $this->assertSame(404, $res->get_status(), 'مسیر بیرون از ریشه نباید خوانده شود: ' . $this->body($res));
         $this->assertStringNotContainsString('TOP-SECRET-OUTSIDE-ROOT', $this->body($res));
@@ -405,7 +405,7 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         $doctor = $this->seedStaff('cpms_doctor', [self::CLINIC_A]);
         wp_set_current_user($doctor);
 
-        $res = $this->dispatch(
+        $res = $this->call(
             'GET',
             self::NS . '/visits/' . $visitB . '/record',
             [],
@@ -427,7 +427,7 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         $sec = $this->seedStaff('cpms_secretary', [self::CLINIC_A]);
         wp_set_current_user($sec);
 
-        $res = $this->dispatch('GET', self::NS . '/secretary/today', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_A]);
+        $res = $this->call('GET', self::NS . '/secretary/today', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_A]);
         $this->assertSame(200, $res->get_status(), $this->body($res));
         $ids = $this->queueIds($res);
         $this->assertContains($visitA, $ids, 'ردیف Clinic خودی باید در Today باشد');
@@ -442,7 +442,7 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         $sec = $this->seedStaff('cpms_secretary', [self::CLINIC_B]);
         wp_set_current_user($sec);
 
-        $res = $this->dispatch('GET', self::NS . '/secretary/today', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_B]);
+        $res = $this->call('GET', self::NS . '/secretary/today', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_B]);
         $this->assertSame(200, $res->get_status(), $this->body($res));
         $ids = $this->queueIds($res);
         $this->assertContains($visitB, $ids);
@@ -457,13 +457,13 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         $sec = $this->seedStaff('cpms_secretary', [self::CLINIC_A, self::CLINIC_B]);
         wp_set_current_user($sec);
 
-        $inA = $this->queueIds($this->dispatch('GET', self::NS . '/secretary/today', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_A]));
+        $inA = $this->queueIds($this->call('GET', self::NS . '/secretary/today', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_A]));
         $this->assertSame([$visitA], $inA, 'context A دقیقاً دامنهٔ A');
 
-        $inB = $this->queueIds($this->dispatch('GET', self::NS . '/secretary/today', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_B]));
+        $inB = $this->queueIds($this->call('GET', self::NS . '/secretary/today', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_B]));
         $this->assertSame([$visitB], $inB, 'context B دقیقاً دامنهٔ B');
 
-        $back = $this->queueIds($this->dispatch('GET', self::NS . '/secretary/today', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_A]));
+        $back = $this->queueIds($this->call('GET', self::NS . '/secretary/today', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_A]));
         $this->assertSame([$visitA], $back, 'پس از سوییچ برگشتی، دامنه باید دوباره فقط A باشد');
     }
 
@@ -474,7 +474,7 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         $sec = $this->seedStaff('cpms_secretary', [self::CLINIC_A]);
         wp_set_current_user($sec);
 
-        $res = $this->dispatch('GET', self::NS . '/secretary/today', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_A]);
+        $res = $this->call('GET', self::NS . '/secretary/today', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_A]);
         $this->assertSame(200, $res->get_status(), $this->body($res));
         $this->assertContains($visitA, $this->queueIds($res), 'دادهٔ Clinic غیر‌۱ باید دیده شود');
     }
@@ -488,7 +488,7 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         $sec = $this->seedStaff('cpms_secretary', [self::CLINIC_A]);
         wp_set_current_user($sec);
 
-        $ids = $this->queueIds($this->dispatch('GET', self::NS . '/secretary/today', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_A]));
+        $ids = $this->queueIds($this->call('GET', self::NS . '/secretary/today', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_A]));
         $this->assertContains($visitA, $ids);
         $this->assertNotContains($visitC, $ids, 'ردیف Organization دیگر نباید در Today باشد');
     }
@@ -502,7 +502,7 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         wp_set_current_user($sec);
 
         // بدون هدر: تنها Membership فعال = Clinic B ⇒ context موثق B (نه clinic_id=1)
-        $res = $this->dispatch('GET', self::NS . '/secretary/today');
+        $res = $this->call('GET', self::NS . '/secretary/today');
 
         $this->assertSame(200, $res->get_status(), 'today برای منشیِ تک‑عضویت: ' . $this->body($res));
         $this->assertSame([$visitB], $this->queueIds($res), 'صف باید دقیقاًClinic context باشد (نه Clinic 1)');
@@ -516,7 +516,7 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         wp_set_current_user($sec);
 
         // دو Membership فعال و بدون هدر ⇒ context مبهم: مرز باید رد کند (نه Clinic 1)
-        $res = $this->dispatch('GET', self::NS . '/secretary/today');
+        $res = $this->call('GET', self::NS . '/secretary/today');
         $this->assertSame(400, $res->get_status(), 'context مبهم باید رد شود، نه به Clinic 1 بیفتد: ' . $this->body($res));
         $this->assertSame('CLINIC_SCOPE_REQUIRED', $this->errorCode($res));
         $this->assertSame([], $this->queueIds($res));
@@ -532,7 +532,7 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         $sec = $this->seedStaff('cpms_secretary', [self::CLINIC_A]);
         wp_set_current_user($sec);
 
-        $res = $this->dispatch('GET', self::NS . '/rt/queue', ['since' => 0], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_A]);
+        $res = $this->call('GET', self::NS . '/rt/queue', ['since' => 0], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_A]);
         $this->assertSame(200, $res->get_status(), $this->body($res));
         $visitIds = $this->feedVisitIds($res);
         $this->assertContains($visitA, $visitIds, 'رویداد Clinic خودی در Feed');
@@ -555,13 +555,13 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         $visitA = $this->seedVisit(self::CLINIC_A, $this->locA, $clinicianA, $patA);
         $visitB = $this->seedVisit(self::CLINIC_B, $this->locB, $clinicianA, $patB);
 
-        $resA = $this->dispatch('GET', self::NS . '/doctor/today', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_A]);
+        $resA = $this->call('GET', self::NS . '/doctor/today', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_A]);
         $this->assertSame(200, $resA->get_status(), $this->body($resA));
         $this->assertContains($visitA, $this->queueIds($resA));
         $this->assertNotContains($visitB, $this->queueIds($resA), 'ویزیتِ همان پزشک در Clinic دیگر نباید union شود');
 
         // در context B (با همان یک Clinician) — داده‌های A نباید بیایند
-        $resB = $this->dispatch('GET', self::NS . '/doctor/today', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_B]);
+        $resB = $this->call('GET', self::NS . '/doctor/today', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_B]);
         $this->assertSame(200, $resB->get_status(), $this->body($resB));
         $this->assertNotContains($visitA, $this->queueIds($resB));
     }
@@ -570,33 +570,40 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
     // fixtures
     // =====================================================================
 
-    /** پاک‌سازی ردیف‌های fixture با شناسهٔ رزرو‌شده ≥ 61000 (کلیدهای خارجی رعایت شود). */
+    /**
+     * پاک‌سازی ردیف‌های fixture با شناسهٔ رزرو‌شده ≥ 61000 — به‌ترتیبِ کلیدهای
+     * خارجی. این فقط hygiene تست است (نه سست‌کردن ادعا): اگر روزی rollback
+     * تراکنش suite مختل شود، «تعداد Clinic ≠ 1» به کلاس‌های بعدی سرایت نمی‌کند.
+     */
     private function purgeReserveRows(): void
     {
         global $wpdb;
-        $tables = [
-            'cpms_visit_status_history' => 'visit_id',
-            'cpms_medical_attachments' => 'clinic_id',
-            'cpms_visits' => 'clinic_id',
-            'cpms_appointments' => 'clinic_id',
-            'cpms_patient_user_links' => 'clinic_id',
-            'cpms_patients' => 'clinic_id',
-            'cpms_clinicians' => 'clinic_id',
-            'cpms_locations' => 'clinic_id',
-            'cpms_membership_locations' => 'location_id',
-            'cpms_clinic_memberships' => 'clinic_id',
-            'cpms_clinics' => 'id',
-            'cpms_settings' => 'clinic_id',
+        $pure = 'WHERE clinic_id >= 61000';
+        $steps = [
+            'cpms_visit_status_history' => 'WHERE visit_id IN (SELECT id FROM ' . $wpdb->prefix . 'cpms_visits WHERE clinic_id >= 61000)',
+            'cpms_medical_attachments' => $pure,
+            'cpms_visits' => $pure,
+            'cpms_appointments' => $pure,
+            'cpms_patient_user_links' => $pure,
+            'cpms_patients' => $pure,
+            'cpms_clinicians' => $pure,
+            'cpms_locations' => $pure,
+            'cpms_membership_capabilities' => 'WHERE membership_id IN (SELECT id FROM ' . $wpdb->prefix . 'cpms_clinic_memberships WHERE clinic_id >= 61000)',
+            'cpms_membership_locations' => 'WHERE membership_id IN (SELECT id FROM ' . $wpdb->prefix . 'cpms_clinic_memberships WHERE clinic_id >= 61000)',
+            'cpms_clinic_memberships' => $pure,
+            'cpms_settings' => $pure,
+            'cpms_notifications' => $pure,
+            'cpms_idempotency_keys' => $pure,
+            'cpms_patient_merges' => $pure,
+            'cpms_rate_limits' => 'WHERE clinic_id >= 61000',
+            'cpms_audit_logs' => $pure,
+            'cpms_clinics' => 'WHERE id >= 61000',
         ];
-        foreach ($tables as $table => $column) {
-            $wpdb->query(
-                'DELETE FROM ' . $wpdb->prefix . $table . ' WHERE ' . $column . ' >= 61000' // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-            );
+        foreach ($steps as $table => $clause) {
+            $wpdb->query('DELETE FROM ' . $wpdb->prefix . $table . ' ' . $clause); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
         }
         $wpdb->query(
-            'DELETE o FROM ' . $wpdb->prefix . 'cpms_organizations o
-              WHERE o.slug LIKE "iso\_org\_%"
-                AND NOT EXISTS (SELECT 1 FROM ' . $wpdb->prefix . 'cpms_clinics c WHERE c.organization_id = o.id)' // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+            'DELETE FROM ' . $wpdb->prefix . "cpms_organizations WHERE slug LIKE 'iso\\_org\\_%'" // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
         );
     }
 
@@ -714,7 +721,7 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
                 'MR-ISO-' . $seq . '-' . $clinicId,
                 'Patient',
                 $lastName,
-                '0912' . sprintf('%07d', $seq % 10000000),
+                '0991' . sprintf('%07d', $seq % 10000000),
                 $now,
                 $now
             )
@@ -901,6 +908,9 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         $res = rest_do_request($request);
         $this->bindHarnessScope();
         wp_set_current_user($original);
+        if ($res instanceof \WP_Error) {
+            $this->fail('پیش‌شرط: آپلود fixture با WP_Error: ' . $res->get_error_code() . ' — ' . $res->get_error_message());
+        }
 
         $this->assertLessThan(400, $res->get_status(), 'پیش‌شرط: آپلود از مسیر Product: ' . $this->body($res));
         $id = $this->dataOf($res)['id'] ?? 0;
@@ -967,7 +977,7 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
      * Scope صریح انجام می‌دهد؛ اینجا فقط بعد از درخواست پاک می‌کنیم تا Scope
      * باقی‌مانده به تست/کلاس بعدی نرسد.
      */
-    private function dispatch(string $method, string $route, array $body = [], array $headers = []): WP_REST_Response
+    private function dispatch(string $method, string $route, array $body = [], array $headers = []): WP_REST_Response|\WP_Error
     {
         $request = new WP_REST_Request($method, $route);
         foreach ($body as $key => $value) {
@@ -983,26 +993,14 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         \ClinicCore\Settings\Settings::flushCache();
 
         try {
-            $res = rest_do_request($request);
-            // اگر route ثبت نشده باشد rest_do_request شیء WP_Error برمی‌گرداند و
-            // get_status() روی آن fatal می‌شود — اینجا صریح گزارش می‌کنیم.
-            $this->assertFalse(
-                $res instanceof \WP_Error,
-                'پاسخ WP_Error (route ثبت‌نشده؟): ' . (string) json_encode([
-                    'code' => $res instanceof \WP_Error ? $res->get_error_code() : null,
-                    'route' => $route,
-                    'clinic' => ScopeContext::tryGet()->clinicId ?? null,
-                ], JSON_UNESCAPED_UNICODE)
-            );
-
-            return $res;
+            return rest_do_request($request);
         } finally {
             $this->bindHarnessScope();
         }
     }
 
     /** همان dispatch، ولی با فایل multipart (برای آزمون‌های نوشتن). */
-    private function dispatchUpload(string $route, array $body = [], array $headers = []): WP_REST_Response
+    private function dispatchUpload(string $route, array $body = [], array $headers = []): WP_REST_Response|\WP_Error
     {
         $request = new WP_REST_Request('POST', $route);
         foreach ($body as $key => $value) {
@@ -1018,18 +1016,29 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         \ClinicCore\Settings\Settings::flushCache();
 
         try {
-            $res = rest_do_request($request);
-            $this->assertFalse(
-                $res instanceof \WP_Error,
-                'پاسخ WP_Error در upload: ' . $route . ' → ' . (string) json_encode(
-                    $res instanceof \WP_Error ? $res->get_error_code() : 'ok'
-                )
-            );
-
-            return $res;
+            return rest_do_request($request);
         } finally {
             $this->bindHarnessScope();
         }
+    }
+
+    /**
+     * پاسخ را می‌گیرد و اگر WP_Error باشد (route ثبت‌نشده/خطای مرز) صریح و
+     * خوانا شکست می‌خورد — نه با notice «could not be converted to int».
+     */
+    private function resp(WP_REST_Response|\WP_Error $res): WP_REST_Response
+    {
+        if ($res instanceof \WP_Error) {
+            $this->fail('پاسخ WP_Error: ' . $res->get_error_code() . ' — ' . $res->get_error_message());
+        }
+
+        return $res;
+    }
+
+    /** dispatch + تضمین نوع پاسخ. */
+    private function call(string $method, string $route, array $body = [], array $headers = []): WP_REST_Response
+    {
+        return $this->resp($this->dispatch($method, $route, $body, $headers));
     }
 
     private function body(WP_REST_Response $res): string
