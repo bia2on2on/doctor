@@ -500,6 +500,179 @@ final class RestTrustedClinicContextTest extends WP_UnitTestCase
     }
 
 
+    /**
+     * بند ۴ (batch بازبینی) — مسیر «پاسخ خطا» (WP_Error) هم restore می‌شود.
+     *
+     * در این افزونه الگوی مستقر `guard()` هر استثنای callback را به
+     * `WP_Error` تبدیل می‌کند (تست جدا: `QueueController::guard` —
+     * `CLINIC_INTERNAL_ERROR` 500)؛ یعنی در عمل «استثنای مهارنشدۀ callback»
+     * به WordPress نمی‌رسد و مسیرِ واقعیِ خطا، WP_Error است. مسیرِ WP_Error
+     * حتماً از `rest_request_after_callbacks` می‌گذرد ⇒ restore انجام می‌شود.
+     */
+    public function testErrorResponsePathStillRestoresScope(): void
+    {
+        $userId = $this->makeStaff('cpms_doctor');
+        cpms_test_seed_membership($userId, $this->clinicA, 'cpms_doctor');
+        wp_set_current_user($userId);
+
+        // شناسهٔ ناموجود ⇒ خطای دامنه در آینهٔ WP_Error (نه استثنای مهارنشدۀ callback).
+        $bad = $this->dispatch('POST', self::NS . '/visits/999999/call', []);
+        $this->assertGreaterThanOrEqual(400, $bad->get_status());
+        $this->assertNull(ScopeContext::tryGet(), 'مسیر WP_Error هم باید scope را restore کند');
+
+        // و بلافاصله یک درخواست سالمِ همان کاربر: scope نباید از «پاک‌سازی» آسیب ببیند.
+        $ok = $this->dispatch('GET', self::NS . '/reports', [], ['X-CPMS-Clinic-Id' => (string) $this->clinicA]);
+        $this->assertSame(200, $ok->get_status());
+        $this->assertNull(ScopeContext::tryGet(), 'درخواست پس از پاسخِ خطا هم ایزوله است');
+    }
+
+    /**
+     * پاک‌سازیِ تکرارشونده: پس از drain شدنِ جفت‌های بازمانده (net پایانی)،
+     * bind/restore بعدی دوباره کار می‌کند ⇒ ساختارِ pending در فرآیندِ بلند
+     * انباشته نمی‌شود.
+     */
+    public function testPendingPairDrainsAndNextRequestStillRestores(): void
+    {
+        $userId = $this->makeStaff('cpms_doctor');
+        cpms_test_seed_membership($userId, $this->clinicA, 'cpms_doctor');
+        wp_set_current_user($userId);
+
+        $bomber = static function ($response, $handler, $req) {
+            if ($req instanceof WP_REST_Request && $req->get_route() === '/clinic/v1/reports') {
+                throw new \RuntimeException('cpms-probe-handler-failure');
+            }
+
+            return $response;
+        };
+        add_filter('rest_request_before_callbacks', $bomber, 11, 3);
+        try {
+            $this->dispatch('GET', self::NS . '/reports', [], ['X-CPMS-Clinic-Id' => (string) $this->clinicA]);
+            $this->fail('پیش‌شرط: probe باید استثنا بدهد');
+        } catch (\RuntimeException $e) {
+            $this->assertSame('cpms-probe-handler-failure', $e->getMessage());
+        }
+        remove_filter('rest_request_before_callbacks', $bomber, 11);
+
+        $this->assertNotNull(ScopeContext::tryGet(), 'جفتِ بازمانده روی stack است (نشتِ خامِ مسیرِ غیر‑after)');
+        RestClinicContext::restoreAllPending();
+        $this->assertNull(ScopeContext::tryGet(), 'net پایانی باید pending را drain کند');
+
+        $again = $this->dispatch('GET', self::NS . '/reports', [], ['X-CPMS-Clinic-Id' => (string) $this->clinicA]);
+        $this->assertSame(200, $again->get_status());
+        $this->assertNull(ScopeContext::tryGet(), 'پس از drain، bind/restore بعدی سالم کار می‌کند');
+    }
+
+    /** Scope صریحِ از‌پیش‌موجود (مثلاً job) نباید توسط پاک‌سازیِ REST پاک شود. */
+    public function testPreExistingExplicitScopeSurvivesRequestAndRestoresAfterwards(): void
+    {
+        $this->insertClinic($this->clinicB, 'rest-ctx-pre');
+        $userId = $this->makeStaff('cpms_doctor');
+        cpms_test_seed_membership($userId, $this->clinicA, 'cpms_doctor');
+        cpms_test_seed_membership($userId, $this->clinicB, 'cpms_doctor');
+        wp_set_current_user($userId);
+
+        $job = ClinicScope::forClinic($this->clinicA);
+        ScopeContext::set($job);
+
+        $seenInCallback = null;
+        $spy = static function ($response, $handler, $req) use (&$seenInCallback) {
+            if ($req instanceof WP_REST_Request && $req->get_route() === '/clinic/v1/reports') {
+                $seenInCallback = ScopeContext::tryGet();
+            }
+
+            return $response;
+        };
+        add_filter('rest_request_before_callbacks', $spy, 11, 3);
+        $res = $this->dispatch('GET', self::NS . '/reports', [], ['X-CPMS-Clinic-Id' => (string) $this->clinicB]);
+        remove_filter('rest_request_before_callbacks', $spy, 11);
+
+        $this->assertSame(200, $res->get_status());
+        $this->assertInstanceOf(ClinicScope::class, $seenInCallback);
+        $this->assertSame($this->clinicB, $seenInCallback->clinicId, 'در طول درخواست، scope صریحِ request جانشین scope job می‌شود');
+        $this->assertSame($job, ScopeContext::tryGet(), 'پس از پایان درخواست، scope قبلی (job) باید دست‌نخورده برگردد');
+        ScopeContext::clear();
+    }
+
+    /** انزوای درخواست‌های پشت‌سرهم روی دو Clinic (B→A و تکرار) — بدون نشت. */
+    public function testSequentialClinicRequestsDoNotLeakScope(): void
+    {
+        $this->insertClinic($this->clinicB, 'rest-ctx-seq');
+        $userId = $this->makeStaff('cpms_doctor');
+        cpms_test_seed_membership($userId, $this->clinicA, 'cpms_doctor');
+        cpms_test_seed_membership($userId, $this->clinicB, 'cpms_doctor');
+        wp_set_current_user($userId);
+
+        $seen = [];
+        $spy = static function ($response, $handler, $req) use (&$seen) {
+            if ($req instanceof WP_REST_Request && $req->get_route() === '/clinic/v1/reports') {
+                $scope = ScopeContext::tryGet();
+                $seen[] = $scope?->clinicId;
+            }
+
+            return $response;
+        };
+        add_filter('rest_request_before_callbacks', $spy, 11, 3);
+        foreach ([$this->clinicB, $this->clinicA, $this->clinicB] as $clinicId) {
+            $res = $this->dispatch('GET', self::NS . '/reports', [], ['X-CPMS-Clinic-Id' => (string) $clinicId]);
+            $this->assertSame(200, $res->get_status(), 'clinic ' . $clinicId);
+            $this->assertNull(ScopeContext::tryGet(), 'هیچ scopeی نباید به درخواست بعدی برسد');
+        }
+        remove_filter('rest_request_before_callbacks', $spy, 11);
+
+        $this->assertSame([$this->clinicB, $this->clinicA, $this->clinicB], $seen, 'هر درخواست دقیقاً scope خودش را دیده است');
+    }
+
+    /**
+     * `rest_do_request()` تودرتو: درخواستِ درون‌ی باید scope خودش را ببندد و در
+     * پایان همان scope بیرونی را بازگرداند (LIFO) — نه scope درون‌ی را به بیرون
+     * نشت دهد و نه scope بیرونی را پاک کند.
+     */
+    public function testNestedRestDispatchRestoresOuterScope(): void
+    {
+        $this->insertClinic($this->clinicB, 'rest-ctx-nested');
+        $userId = $this->makeStaff('cpms_doctor');
+        cpms_test_seed_membership($userId, $this->clinicA, 'cpms_doctor');
+        cpms_test_seed_membership($userId, $this->clinicB, 'cpms_doctor');
+        wp_set_current_user($userId);
+
+        $observed = [];
+        $innerClinic = $this->clinicB;
+        $nested = static function ($response, $handler, $req) use (&$observed, $innerClinic) {
+            static $inside = false; // وگرنه درخواستِ درون‌ی دوباره همین فیلتر را صدا می‌زند
+            if ($inside) {
+                return $response;
+            }
+            if (!($req instanceof WP_REST_Request) || $req->get_route() !== '/clinic/v1/reports') {
+                return $response;
+            }
+            $inside = true;
+            $outer = ScopeContext::tryGet();
+            $observed['outer_before_inner'] = $outer?->clinicId;
+
+            $innerRequest = new WP_REST_Request('GET', '/clinic/v1/reports');
+            $innerRequest->set_header('X-WP-Nonce', wp_create_nonce('wp_rest'));
+            $innerRequest->set_header('X-CPMS-Clinic-Id', (string) $innerClinic);
+            $inner = rest_do_request($innerRequest);
+            $observed['inner_status'] = $inner->get_status();
+            // پس از پایان درخواست درون‌ی، scope باید به مقدار بیرونی برگردد:
+            $observed['after_inner'] = ScopeContext::tryGet()?->clinicId;
+            $inside = false;
+
+            return $response;
+        };
+        add_filter('rest_request_before_callbacks', $nested, 11, 3);
+        $outer = $this->dispatch('GET', self::NS . '/reports', [], [
+            'X-CPMS-Clinic-Id' => (string) $this->clinicA,
+        ]);
+        remove_filter('rest_request_before_callbacks', $nested, 11);
+
+        $this->assertSame(200, $outer->get_status());
+        $this->assertSame($this->clinicA, $observed['outer_before_inner'] ?? null, 'بیرونی scope خودش را دارد');
+        $this->assertSame(200, $observed['inner_status'] ?? null, 'درخواست تودرتو مجاز است');
+        $this->assertSame($this->clinicA, $observed['after_inner'] ?? null, 'restore درون‌ی scope بیرونی را خراب نکرد');
+        $this->assertNull(ScopeContext::tryGet(), 'هیچ نشتی از درخواست تودرتو به بیرون نمی‌ماند');
+    }
+
     // ================= fixtures =================
 
     private function makeStaff(string $role): int
