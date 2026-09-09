@@ -2,16 +2,26 @@
 
 | | |
 |---|---|
-| **آخرین به‌روزرسانی** | بر مبنای SHA پیاده‌سازی `f23e0c5` (+ C3 in progress) |
-| **وضعیت Phase 2** | IN PROGRESS — Migration Foundation ✅ APPROVED (Owner, 2026-09-09) |
-| **آخرین remote SHA سبزِ تأییدشده** | `f23e0c5` |
+| **آخرین به‌روزرسانی** | بر مبنای SHA پیاده‌سازی `db35873` |
+| **وضعیت Phase 2** | IN PROGRESS — C1..C3 done؛ Migration Foundation ✅ APPROVED (Owner, 2026-09-09) |
+| **آخرین remote SHA سبزِ تأییدشده** | `db35873` (هر ۵ گیت + job جدید WPCS) |
 
 > این فایل state جاری است، نه گزارش؛ گزارش‌های کامل در
 > [`final-pre-phase2-gate-report.md`](final-pre-phase2-gate-report.md) و
 > کامنت‌های PR #11. عمداً به HEAD خودارجاع ندارد — SHA مبنا را مالک/agent
 > هنگام هر به‌روزرسانی صریح می‌نویسد.
 
-## Last known good gates (روی f23e0c5)
+## Last known good gates (روی db35873)
+
+| گیت | Run | نتیجه |
+|---|---|---|
+| CI (PHPStan + Unit×4 + Integration + **WPCS**) | 34316294584 | ✅ success |
+| Real-WP (push) | 34316289951 | ✅ success |
+| Real-WP (PR) | 34316294518 | ✅ success — شکست آپلود قبلی (Class C) با event جدید حل شد |
+| Pilot/Staging | 34316289927 | ✅ success |
+| Closure | 34316290002 | ✅ success |
+
+### سابقه (روی f23e0c5)
 
 | گیت | Run | نتیجه |
 |---|---|---|
@@ -23,9 +33,17 @@
 
 ## Current substep
 
-- **C3 — WPCS regression gate**: در حال پیاده‌سازی
-  (`phpcs.xml.dist` + job `wpcs` در `ci.yml`، استراتژی changed-files از
-  baseline `f23e0c5`؛ جزئیات: drift-register §۸-۱).
+- **C4 — Membership primitives**: در حال پیاده‌سازی.
+
+## Done substeps (این فاز)
+
+- **C1..C2 + Recovery**: کامیت‌های 1f8b36d..f23e0c5 (شرح کامل: کامیت‌ها و
+  Migration Foundation Recovery Report در PR #11).
+- **C3 — WPCS regression gate**: ✅ سبز (کامیت‌های b6f6c93..db35873).
+  `phpcs.xml.dist` + job `wpcs` (استراتژی changed-files از baseline
+  f23e0c5). سه تلاش Class C/D در راه: advisoryهای رجیستری روی phpcs 3.11.x
+  و wpcs 3.1.0 (→ دامنهٔ ^3.1 + فیلتر امنیتی composer)، allow-plugins، و
+  باگ f-string در expansion. جزئیات: drift-register §۸-۱.
 
 ## Queue (ترتیب مصوب مالک)
 
@@ -36,8 +54,7 @@ C10 Performance review → End Gate (۲۶بندی) → STOP.
 
 ## Open blockers
 
-- هیچ blocker محصولی. آیتم بازِ زیرساختی: Real-WP PR-event آپلود
-  (Class C؛ راه‌حل = event بعدی طبیعی).
+- هیچ.
 
 ## نکات اجرایی پابرجا
 
