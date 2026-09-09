@@ -6,6 +6,7 @@ namespace ClinicCore\Application\Finance;
 
 use ClinicCore\Application\Visits\VisitService;
 use ClinicCore\Auth\RolesAndCapabilities;
+use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Finance\InvoiceCalc;
 use ClinicCore\Domain\Machine\InvoiceMachine;
 use ClinicCore\Domain\Time\Jalali;
@@ -89,10 +90,11 @@ final class FinanceService
     {
         $this->requireCap($actorUserId, RolesAndCapabilities::CONFIG, 'services.config');
         [$code, $name, $price] = $this->validateServiceInput($input, null);
-        if ($this->services->existsWithCode($code)) {
+        $clinicId = App::scope()->clinicId;
+        if ($this->services->existsWithCode($clinicId, $code)) {
             throw FinanceException::of('CLINIC_POLICY_VIOLATION', 'کد خدمت تکراری است', 409, ['code' => $code]);
         }
-        $id = $this->services->insert([
+        $id = $this->services->insert($clinicId, [
             'code' => $code,
             'name' => $name,
             'price' => $price,
@@ -117,10 +119,11 @@ final class FinanceService
             throw FinanceException::of('CLINIC_NOT_FOUND', 'خدمت یافت نشد', 404);
         }
         [$code, $name, $price] = $this->validateServiceInput($input, $existing);
-        if ($this->services->existsWithCode($code, $id)) {
+        $clinicId = App::scope()->clinicId;
+        if ($this->services->existsWithCode($clinicId, $code, $id)) {
             throw FinanceException::of('CLINIC_POLICY_VIOLATION', 'کد خدمت تکراری است', 409, ['code' => $code]);
         }
-        $this->services->update($id, ['code' => $code, 'name' => $name, 'price' => $price]);
+        $this->services->update($clinicId, $id, ['code' => $code, 'name' => $name, 'price' => $price]);
         $this->audit->log('SETTING_UPDATE', $this->actor($actorUserId), 'service', $id, null, [
             'service.code' => (string) $existing['code'],
             'service.name' => (string) $existing['name'],
@@ -145,7 +148,7 @@ final class FinanceService
             throw FinanceException::of('CLINIC_NOT_FOUND', 'خدمت یافت نشد', 404);
         }
         // حذف منطقی — اقلام فاکتور تاریخی باید به تعرفه ارجاع بدهند (FR-14.9)
-        $this->services->update($id, ['is_active' => 0]);
+        $this->services->update(App::scope()->clinicId, $id, ['is_active' => 0]);
         $this->audit->log('SETTING_UPDATE', $this->actor($actorUserId), 'service', $id, null, [
             'service.is_active' => 1,
         ], [
@@ -263,7 +266,7 @@ final class FinanceService
             $this->lockClinic();
             $number = $this->invoices->nextInvoiceNumber();
 
-            $invoiceId = $this->invoices->insert([
+            $invoiceId = $this->invoices->insert((int) $visit['clinic_id'], [
                 'invoice_number' => $number,
                 'patient_id' => (int) $visit['patient_id'],
                 'visit_id' => $visitId,
@@ -364,7 +367,7 @@ final class FinanceService
 
                 $this->lockClinic();
                 $number = $this->payments->nextPaymentNumber();
-                $ok = $this->payments->insert([
+                $ok = $this->payments->insert((int) $invoice['clinic_id'], [
                     'payment_number' => $number,
                     'invoice_id' => $invoiceId,
                     'patient_id' => (int) $invoice['patient_id'],

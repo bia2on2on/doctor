@@ -281,7 +281,7 @@ final class MedicalFileService
         }
         $storagePath = $this->storage->store($content, $patientClinicId, $extension);
 
-        $fileId = $this->files->insert([
+        $fileId = $this->files->insert($patientClinicId, [
             'patient_id' => $patientId,
             'visit_id' => $visitId,
             'category' => $category,

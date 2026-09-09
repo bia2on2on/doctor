@@ -36,7 +36,7 @@ final class ClinicianRepositoryTest extends WP_UnitTestCase
 
     public function testCreateFindUpdateListRoundtrip(): void
     {
-        $id = $this->repo->create([
+        $id = $this->repo->create(1, [
             'full_name' => 'دکتر پارت دو',
             'specialty' => 'داخلی',
             'room' => '۲۰۱',
@@ -57,8 +57,8 @@ final class ClinicianRepositoryTest extends WP_UnitTestCase
 
         // فهرست شامل غیرفعال‌ها؛ فیلتر فعال‌ها هم کار می‌کند
         $this->repo->update($id, ['is_active' => 0]);
-        $all = $this->repo->listAll(true);
-        $onlyActive = $this->repo->listAll(false);
+        $all = $this->repo->listAll(1, true);
+        $onlyActive = $this->repo->listAll(1, false);
         $allIds = array_map(static fn (array $r): int => (int) $r['id'], $all);
         $activeIds = array_map(static fn (array $r): int => (int) $r['id'], $onlyActive);
         $this->assertContains($id, $allIds);
@@ -69,8 +69,8 @@ final class ClinicianRepositoryTest extends WP_UnitTestCase
     {
         $userId = $this->makeUser('p2_doc_link');
 
-        $first = $this->repo->create(['full_name' => 'پزشک اول', 'wp_user_id' => $userId]);
-        $second = $this->repo->create(['full_name' => 'پزشک دوم']);
+        $first = $this->repo->create(1, ['full_name' => 'پزشک اول', 'wp_user_id' => $userId]);
+        $second = $this->repo->create(1, ['full_name' => 'پزشک دوم']);
 
         // پیش از انتساب: تعارض باید قابل تشخیص باشد (صفحه با پیام فارسی رد می‌کند)
         // Semantics: TRUE = کاربر به پزشکی «غیر از» exceptClinicianId متصل است (تعارض)
@@ -87,7 +87,7 @@ final class ClinicianRepositoryTest extends WP_UnitTestCase
     {
         global $wpdb;
         $userId = $this->makeUser('p2_doc_view');
-        $cid = $this->repo->create(['full_name' => 'پزشک نمای فهرست', 'wp_user_id' => $userId]);
+        $cid = $this->repo->create(1, ['full_name' => 'پزشک نمای فهرست', 'wp_user_id' => $userId]);
 
         $now = App::db()->nowUtcSql();
         $wpdb->query($wpdb->prepare(
@@ -102,7 +102,7 @@ final class ClinicianRepositoryTest extends WP_UnitTestCase
         ));
 
         $row = null;
-        foreach ($this->repo->listAll() as $r) {
+        foreach ($this->repo->listAll(1) as $r) {
             if ((int) $r['id'] === $cid) {
                 $row = $r;
                 break;

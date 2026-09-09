@@ -66,11 +66,11 @@ final class VisitRepository
      * @param array<string, mixed> $row
      * @return int id رکورد جدید
      */
-    public function insert(array $row): int
+    public function insert(int $clinic_id, array $row): int
     {
         $now = $this->db->nowUtc();
         $row += [
-            'clinic_id' => 1,
+            'clinic_id' => $clinic_id,
             'location_id' => null,
             'appointment_id' => null,
             'source' => 'walk_in',

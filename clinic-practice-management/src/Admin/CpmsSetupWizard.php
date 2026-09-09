@@ -354,7 +354,7 @@ final class CpmsSetupWizard
 
     private static function renderDoctors(): void
     {
-        $count = count(App::clinicianRepository()->listAll(false));
+        $count = count(App::clinicianRepository()->listAll(App::scope()->clinicId, false));
         ?>
         <div class="card">
             <h2>پزشکان</h2>
@@ -464,7 +464,7 @@ final class CpmsSetupWizard
     private static function renderReview(Settings $settings): void
     {
         $clinic = (string) ($settings->get('setup.clinic.name', '') ?? '');
-        $doctorCount = count(App::clinicianRepository()->listAll(false));
+        $doctorCount = count(App::clinicianRepository()->listAll(App::scope()->clinicId, false));
         ?>
         <div class="card">
             <h2>بازبینی پیش از شروع</h2>
@@ -669,7 +669,7 @@ final class CpmsSetupWizard
     private static function isReadyToOperate(Settings $settings): bool
     {
         $name = trim((string) ($settings->get('setup.clinic.name', '') ?? ''));
-        $doctors = count(App::clinicianRepository()->listAll(false));
+        $doctors = count(App::clinicianRepository()->listAll(App::scope()->clinicId, false));
 
         return $name !== '' && $doctors > 0;
     }

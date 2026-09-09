@@ -22,10 +22,10 @@ final class PaymentRepository
     /**
      * @param array<string, mixed> $row
      */
-    public function insert(array $row): int
+    public function insert(int $clinic_id, array $row): int
     {
         $row += [
-            'clinic_id' => 1,
+            'clinic_id' => $clinic_id,
             'transaction_ref' => null,
             'status' => 'captured',
             'refunded_amount' => 0,

@@ -46,10 +46,10 @@ final class ServiceRepository
     /**
      * @param array<string, mixed> $row
      */
-    public function insert(array $row): int
+    public function insert(int $clinic_id, array $row): int
     {
         $row += [
-            'clinic_id' => 1,
+            'clinic_id' => $clinic_id,
             'currency' => 'IRR',
             'is_active' => 1,
             'created_at' => $this->db->nowUtcSql(),
@@ -63,18 +63,18 @@ final class ServiceRepository
     /**
      * @param array<string, mixed> $data
      */
-    public function update(int $id, array $data): void
+    public function update(int $clinic_id, int $id, array $data): void
     {
         $data['updated_at'] = $this->db->nowUtcSql();
-        $this->db->update('cpms_services', $data, ['id' => $id, 'clinic_id' => 1]);
+        $this->db->update('cpms_services', $data, ['id' => $id, 'clinic_id' => $clinic_id]);
     }
 
-    public function existsWithCode(string $code, int $exceptId = 0): bool
+    public function existsWithCode(int $clinic_id, string $code, int $exceptId = 0): bool
     {
         $n = $this->db->fetchValue(
             'SELECT COUNT(*) FROM ' . $this->db->table('cpms_services') .
             ' WHERE clinic_id = %d AND code = %s AND id != %d',
-            [1, $code, $exceptId]
+            [$clinic_id, $code, $exceptId]
         );
 
         return (int) $n > 0;

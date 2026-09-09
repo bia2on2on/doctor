@@ -22,10 +22,10 @@ final class InvoiceRepository
     /**
      * @param array<string, mixed> $row
      */
-    public function insert(array $row): int
+    public function insert(int $clinic_id, array $row): int
     {
         $row += [
-            'clinic_id' => 1,
+            'clinic_id' => $clinic_id,
             'status' => 'open',
             'subtotal' => 0,
             'discount' => 0,

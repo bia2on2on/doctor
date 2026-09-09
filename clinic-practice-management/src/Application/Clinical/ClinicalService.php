@@ -185,7 +185,7 @@ final class ClinicalService
             $this->requireCap($actorUserId, RolesAndCapabilities::NOTE_CREATE, 'note');
         }
 
-        $noteId = $this->notes->insert([
+        $noteId = $this->notes->insert((int) $visit['clinic_id'], [
             'visit_id' => $visitId,
             'patient_id' => (int) $visit['patient_id'],
             'clinician_id' => (int) $visit['clinician_id'],
@@ -333,7 +333,7 @@ final class ClinicalService
         }
 
         $number = $this->prescriptions->nextPrescriptionNumber();
-        $rxId = $this->prescriptions->insert([
+        $rxId = $this->prescriptions->insert((int) $visit['clinic_id'], [
             'prescription_number' => $number,
             'visit_id' => $visitId,
             'patient_id' => (int) $visit['patient_id'],
@@ -484,7 +484,7 @@ final class ClinicalService
                 throw ClinicalException::of('CLINIC_VALIDATION_FAILED', 'متن توصیه الزامی است (حداکثر ۱۰۰۰ نویسه)', 422);
             }
 
-            $id = $this->recommendations->insert([
+            $id = $this->recommendations->insert((int) $visit['clinic_id'], [
                 'visit_id' => $visitId,
                 'patient_id' => (int) $visit['patient_id'],
                 'clinician_id' => (int) $visit['clinician_id'],
@@ -541,7 +541,7 @@ final class ClinicalService
             throw ClinicalException::of('CLINIC_VALIDATION_FAILED', 'بازه پیگیری باید بین ۱ تا ۳۶۵۰ روز باشد', 422);
         }
 
-        $id = $this->followUps->insert([
+        $id = $this->followUps->insert((int) $visit['clinic_id'], [
             'visit_id' => $visitId,
             'patient_id' => (int) $visit['patient_id'],
             'clinician_id' => (int) $visit['clinician_id'],

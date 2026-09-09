@@ -85,7 +85,7 @@ final class DoctorWorkflowTest extends WP_UnitTestCase
 
         // پیوند ۱:۱ با رکورد پزشک (همان چیزی که فلو «افزودن پزشک» انجام می‌دهد).
         $repo = App::clinicianRepository();
-        $cid = $repo->create(['full_name' => 'دکتر پیوند', 'wp_user_id' => $newUserId]);
+        $cid = $repo->create(1, ['full_name' => 'دکتر پیوند', 'wp_user_id' => $newUserId]);
         $this->assertGreaterThan(0, $cid);
 
         $row = $repo->find($cid);
@@ -107,8 +107,8 @@ final class DoctorWorkflowTest extends WP_UnitTestCase
         ], $adminId);
         $newUserId = (int) $acc['user_id'];
         $repo = App::clinicianRepository();
-        $first = $repo->create(['full_name' => 'دکتر اول', 'wp_user_id' => $newUserId]);
-        $second = $repo->create(['full_name' => 'دکتر دوم']);
+        $first = $repo->create(1, ['full_name' => 'دکتر اول', 'wp_user_id' => $newUserId]);
+        $second = $repo->create(1, ['full_name' => 'دکتر دوم']);
 
         // همان گارد ۱:۱ که صفحهٔ «افزودن پزشک» پیش از create اجرا می‌کند: کاربرِ
         // پیوندشده به «پزشک غیر از خودش» به‌عنوان تعارض گزارش می‌شود (TRUE).
@@ -121,7 +121,7 @@ final class DoctorWorkflowTest extends WP_UnitTestCase
     {
         wp_set_current_user($this->makeAdmin());
         $repo = App::clinicianRepository();
-        $cid = $repo->create(['full_name' => 'دکتر تأثیر']);
+        $cid = $repo->create(1, ['full_name' => 'دکتر تأثیر']);
 
         $tomorrow = gmdate('Y-m-d', time() + 86400);
         $dow = $this->iranianDow($tomorrow);
@@ -185,7 +185,7 @@ final class DoctorWorkflowTest extends WP_UnitTestCase
     {
         wp_set_current_user($this->makeAdmin());
         $repo = App::clinicianRepository();
-        $cid = $repo->create(['full_name' => 'دکتر نما']);
+        $cid = $repo->create(1, ['full_name' => 'دکتر نما']);
 
         $_GET['clinician_id'] = $cid;
         $html = $this->render();

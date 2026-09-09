@@ -75,8 +75,7 @@ final class HandwritingService
         }
 
         $doc = $this->db->transactional(function () use ($visitId, $visit, $title, $pages): array {
-            $documentId = $this->handwriting->insertDocument([
-                'clinic_id' => (int) ($visit['clinic_id'] ?? 1),
+            $documentId = $this->handwriting->insertDocument((int) $visit['clinic_id'], [
                 'visit_id' => $visitId,
                 'patient_id' => (int) $visit['patient_id'],
                 'clinician_id' => (int) $visit['clinician_id'],

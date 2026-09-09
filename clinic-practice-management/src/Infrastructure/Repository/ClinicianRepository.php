@@ -27,7 +27,7 @@ final class ClinicianRepository
      *
      * @return list<array<string, mixed>>
      */
-    public function listAll(bool $includeInactive = true): array
+    public function listAll(int $clinic_id, bool $includeInactive = true): array
     {
         $where = $includeInactive ? '' : ' AND c.is_active = 1';
         $rows = $this->db->fetchAll(
@@ -36,8 +36,9 @@ final class ClinicianRepository
             ' u.user_login AS wp_user_login' .
             ' FROM ' . $this->db->table('cpms_clinicians') . ' c' .
             ' LEFT JOIN ' . $this->db->dbPrefix() . 'users u ON u.ID = c.wp_user_id' .
-            ' WHERE c.clinic_id = 1' . $where .
-            ' ORDER BY c.is_active DESC, c.full_name ASC LIMIT 500'
+            ' WHERE c.clinic_id = %d' . $where .
+            ' ORDER BY c.is_active DESC, c.full_name ASC LIMIT 500',
+            [$clinic_id]
         );
 
         return is_array($rows) ? $rows : [];
@@ -72,11 +73,11 @@ final class ClinicianRepository
     /**
      * @param array<string, mixed> $fields {full_name*, specialty, room, wp_user_id, is_active}
      */
-    public function create(array $fields): int
+    public function create(int $clinic_id, array $fields): int
     {
         $now = $this->db->nowUtcSql();
         $this->db->insert('cpms_clinicians', [
-            'clinic_id' => 1,
+            'clinic_id' => $clinic_id,
             'wp_user_id' => $fields['wp_user_id'] ?? null,
             'full_name' => (string) $fields['full_name'],
             'specialty' => $fields['specialty'] ?? null,

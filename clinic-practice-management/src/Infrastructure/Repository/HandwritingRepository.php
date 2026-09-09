@@ -21,10 +21,10 @@ final class HandwritingRepository
     /**
      * @param array<string, mixed> $row
      */
-    public function insertDocument(array $row): int
+    public function insertDocument(int $clinic_id, array $row): int
     {
         $row += [
-            'clinic_id' => 1,
+            'clinic_id' => $clinic_id,
             'title' => null,
             'page_count' => 0,
             'created_at' => $this->db->nowUtcSql(),

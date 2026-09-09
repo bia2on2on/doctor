@@ -561,8 +561,7 @@ final class VisitService
         ?string $note = null
     ): array {
         $now = $this->db->nowUtc();
-        $visitId = $this->visits->insert([
-            'clinic_id' => $clinic_id,
+        $visitId = $this->visits->insert($clinic_id, [
             'clinician_id' => $clinicianId,
             'patient_id' => $patientId,
             'appointment_id' => $appointmentId,

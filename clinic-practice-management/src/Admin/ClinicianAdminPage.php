@@ -88,7 +88,7 @@ final class ClinicianAdminPage
 
     private static function renderList(ClinicianRepository $repo): void
     {
-        $rows = $repo->listAll();
+        $rows = $repo->listAll(App::scope()->clinicId);
         $users = self::wpUsers();
         ?>
     <h2 class="title">پزشکان</h2>
@@ -335,7 +335,7 @@ final class ClinicianAdminPage
             if ($fields['wp_user_id'] !== null && $repo->isUserLinked((int) $fields['wp_user_id'])) {
                 self::backWithError(0, 'خطا: این کاربر وردپرس قبلاً به پزشک دیگری متصل است (پیوند باید ۱:۱ باشد).');
             }
-            $newId = $repo->create($fields);
+            $newId = $repo->create(App::scope()->clinicId, $fields);
             App::audit()->log('CLINICIAN_CREATED', ['wp_user_id' => get_current_user_id()], 'clinician', $newId, null, null, ['full_name' => (string) $fields['full_name']]);
             $message = 'پزشک ثبت شد — حالا برنامه هفتگی او را تنظیم کنید.';
             if (($accountCreated['generated'] ?? '') !== '') {
