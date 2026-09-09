@@ -235,7 +235,7 @@ Phase 2 queue: [`docs/phase-reports/phase2-state.md`](phase-reports/phase2-state
 
 1. Trusted REST context (membership-verified `ScopeContext`) — **implemented and repaired in the batch above** (still not Phase 3 / not `AuthorizationService`); its remaining follow‑ups are the open route‑classification decisions, **not** the boundary itself
 2. Tripwire hardening + CI wiring — **do not start in the trusted-REST checkpoint**
-3. C6-F real multi-tenant isolation suite — **PARTIAL** (Reports/Export/Membership/Identity/Scope tests exist; no comprehensive 14-item suite) — **do not expand fully in the trusted-REST checkpoint**
+3. C6-F real multi-tenant isolation suite — **PARTIAL** (Reports/Export/Membership/Identity/Scope tests exist; no comprehensive 14-item suite) — **do not expand fully in the trusted-REST checkpoint**. Two executable specifications were added as evidence of the remaining per-object gap and are **intentionally left failing** (`5b3768e`, `Integration`: `Tests: 568, Assertions: 2951, Failures: 2` — `testStaffCannotFinalizePrescriptionOfAnotherClinic`, `testSmsLogsAreScopedToTheBoundClinic`); classified **Class A (product)**: `ClinicalService::finalizePrescription` → `PrescriptionRepository::findForUpdate` is `WHERE id`-only, and `SmsService::logs` has no `clinic_id` filter while `cpms_sms_messages` carries a tenant column. **No product fix was attempted in this batch** — closing these is a C6-F/Phase 3 owner decision.
 4. Keep docs in sync after each verified implementation SHA (this file / census / phase2-state)
 
 **Do not start C7, C8, Phase 3, Phase 4, portals, or mobile auth/JWT.**

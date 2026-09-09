@@ -22,6 +22,37 @@
 | Pilot/Staging Readiness | 34388294486 | ✅ success |
 | Closure Gate (GO‑LIVE evidence) | 34388294616 | ✅ success (۵ job؛ کامنت‌های evidence روی PR #13 با همین run id) |
 
+### checkpoint بازبینی batch ترمیم (C6 CONTINUATION — review/consolidation)
+
+- **تأیید تاریخچه (read‑only):** `origin/main` = `8087b42` ⊂ `f88fcdc` (head PR #12) ⊂
+  `4289d89` ⊂ `4606b15` — زنجیرهٔ خطی `f88fcdc → adecd21 → a23b509 → b7a3a6b → da72e1c →
+  4289d89 → 9e5cbcd → 4606b15`؛ PR #13 **دقیقاً** delta ترمیم (۷ کامیت، `+456/−72`،
+  `mergeable_state=clean`)؛ PR #12 بی‌تغییر (`f88fcdc`، draft، `blocked`). هیچ FF/merge/close
+  و هیچ شاخهٔ راه دوری جابه‌جا نشد (جز کامیت‌های جدید همین batch روی `arena/01a086b4-doctor`).
+- **گیت‌های سبز روی `4606b15`:** CI `34390466560` · Real‑WP `34390462202` (wp_/clinic_) ·
+  Pilot `34390462154` · Closure `34390462224` — هر چهار run `completed/success`، steps_failed=0،
+  rollup PR #13 = 18× SUCCESS. نکتهٔ پوشش: روی `4606b15` رویداد `pull_request` **فقط CI** را
+  اجرا کرد و سه گیت دیگر از `push` روی همان SHA سبزند (اجرای PR‑only برای Real‑WP وجود نداشت؛
+  چون SHA یکسان بود rerun لازم نبود).
+- **چرخهٔ حیات Scope (مرور + تست اول):** پنج invariant قابل‌اجرای تازه در
+  `RestTrustedClinicContextTest` — مسیر WP_Error، drain شدنِ جفت‌های pending، حفظ scope
+  مشروعِ job/system، A→B/B→A بدون نشت، و تودرتو (`rest_do_request`) — سبز روی `0205089`
+  (CI `34393642656`، ۷ job سبز؛ Real‑WP `34393637166` و Closure `34393637150` نیز سبز).
+- **تصحیح باریکِ واژگان سند (نظریه، نه product):** «restore تضمینی» به معنای پوششِ
+  استثنای callback توسط netِ `shutdown` **نیست**: `respond_to_request()` استثنای
+  مهار‌نشدۀ callback را به `WP_Error` تبدیل می‌کند و `rest_request_after_callbacks` پس از
+  آن اجرا می‌شود؛ net برای throw/fatal/`exit()` در سطح filter لازم است.
+- **پروب C6‑F (فقط تست، روی `5b3768e`) — Class A، عمداً سبز نشده:** `Integration` قرمز با
+  `Tests: 568, Assertions: 2951, Failures: 2` (annotation همان run):
+  `testStaffCannotFinalizePrescriptionOfAnotherClinic` و `testSmsLogsAreScopedToTheBoundClinic`.
+  طبقه‌بندی: **Class A (product)** — (۱) `ClinicalService::finalizePrescription` با
+  `PrescriptionRepository::findForUpdate` (`WHERE id` بدون `clinic_id`)؛ (۲) `SmsService::logs`
+  بدون فیلتر `clinic_id` روی `cpms_sms_messages`. هر دو test guard ساختاری (Class D) دارند و
+  از پاس شدنشان مطمئنیم (شکست روی ادعای جداسازی، نه پیش‌شرط)؛ سایر گیت‌ها روی همین SHA
+  سبزند (Real‑WP `completed/success`، Closure `completed/success`). این دو تست به‌عنوان
+  «مشخصهٔ معلق» C6‑F روی شاخه می‌مانند و **رفع Product در این batch انجام نشد** (رفع =
+  تصمیم Phase 3/C6‑F با مالک).
+
 - branch = `arena/01a086b4-doctor`؛ base تشخیصی = `arena/01a086ca-doctor` (PR #13 — draft،
   برای اجرای گیت‌ها روی continuationِ خطیِ `f88fcdc`؛ **هیچ شاخهٔ راه دوری جابه‌جا نشد**).
 - تعداد تست Integration در run سبز از API قابل استخراج نبود (لاگ خام/artifact در sandbox
