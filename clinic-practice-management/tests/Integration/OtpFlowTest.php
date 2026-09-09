@@ -233,10 +233,18 @@ final class OtpFlowTest extends WP_UnitTestCase
         App::jobs();
 
         // Clinic دوم — ردیف واقعی (FK بیمار به clinics + organization_id NOT NULL
-        // از Phase 2/0010؛ همان سازمان کلینیک پیش‌فرض)
+        // از Phase 2/0010؛ همان سازمان کلینیک پیش‌فرض). organization جدا resolve
+        // می‌شود — MySQL زیرکوئری روی جدولِ هدفِ INSERT را رد می‌کند (ERROR 1093).
+        $orgId = (int) $wpdb->get_var('SELECT organization_id FROM ' . $wpdb->prefix . 'cpms_clinics WHERE id = 1'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         $wpdb->query(
             'INSERT IGNORE INTO ' . $wpdb->prefix . "cpms_clinics (id, organization_id, name, slug, timezone, created_at, updated_at)
-             VALUES (2, (SELECT organization_id FROM " . $wpdb->prefix . "cpms_clinics WHERE id = 1), 'کلینیک دوم', 'od13-second', 'Asia/Tehran', '{$now}', '{$now}')" // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+             VALUES (2, {$orgId}, 'کلینیک دوم', 'od13-second', 'Asia/Tehran', '{$now}', '{$now}')" // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        );
+        // Fail-loud: بدون این کلینیک، بیمار Clinic 2 با FK رد می‌شود و تست بی‌صدا منحرف می‌شود
+        self::assertSame(
+            1,
+            (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $wpdb->prefix . 'cpms_clinics WHERE id = 2'), // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            'کلینیک دوم باید واقعاً ساخته شود.'
         );
 
         // دو بیمار هم‌موبایل: یکی در Clinic 1 و یکی در Clinic 2

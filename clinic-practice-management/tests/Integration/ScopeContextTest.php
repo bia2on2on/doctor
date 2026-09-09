@@ -39,11 +39,15 @@ final class ScopeContextTest extends WP_UnitTestCase
     {
         global $wpdb;
         $now = App::db()->nowUtcSql();
-        $wpdb->query(
+        // organization_id از DB resolve می‌شود (نه literal) — جدا از INSERT، چون
+        // MySQL زیرکوئری روی جدولِ هدفِ INSERT را رد می‌کند (ERROR 1093).
+        $orgId = (int) $wpdb->get_var('SELECT organization_id FROM ' . $wpdb->prefix . 'cpms_clinics WHERE id = 1'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $ok = $wpdb->query(
             $wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_clinics (id, organization_id, name, slug, timezone, created_at, updated_at)
-                 VALUES (%d, (SELECT organization_id FROM ' . $wpdb->prefix . 'cpms_clinics WHERE id = 1), %s, %s, %s, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                 VALUES (%d, %d, %s, %s, %s, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 $id,
+                $orgId,
                 'کلینیک ' . $slug,
                 $slug,
                 'Asia/Tehran',
@@ -51,6 +55,8 @@ final class ScopeContextTest extends WP_UnitTestCase
                 $now
             )
         );
+        // Fail-loud: fixture بی‌صدا نباید fail شود (رگرسیون ERROR 1093 در run 34309090175)
+        self::assertNotFalse($ok, 'insertClinic باید Clinic واقعی بسازد.');
     }
 
     public function testSystemResolverReturnsTheSingleSeededClinicFromDb(): void

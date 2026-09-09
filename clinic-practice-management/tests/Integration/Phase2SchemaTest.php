@@ -322,11 +322,15 @@ final class Phase2SchemaTest extends WP_UnitTestCase
     {
         global $wpdb;
         $now = $this->db()->nowUtcSql();
-        $wpdb->query(
+        // organization جدا resolve می‌شود — MySQL زیرکوئری روی جدولِ هدفِ INSERT
+        // را رد می‌کند (ERROR 1093 — رگرسیون run 34309090175).
+        $orgId = (int) $wpdb->get_var('SELECT organization_id FROM ' . $wpdb->prefix . 'cpms_clinics WHERE id = 1'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $ok = $wpdb->query(
             $wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_clinics (id, organization_id, name, slug, timezone, created_at, updated_at)
-                 VALUES (%d, (SELECT organization_id FROM ' . $wpdb->prefix . 'cpms_clinics WHERE id = 1), %s, %s, %s, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                 VALUES (%d, %d, %s, %s, %s, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 $id,
+                $orgId,
                 'کلینیک ' . $slug,
                 $slug,
                 $columnTz,
@@ -334,6 +338,7 @@ final class Phase2SchemaTest extends WP_UnitTestCase
                 $now
             )
         );
+        self::assertNotFalse($ok, 'insertTzClinic باید Clinic واقعی بسازد.');
     }
 
     /**
