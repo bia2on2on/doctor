@@ -9,6 +9,10 @@
 > نظام‌های قدیمی **`F0..F10`** و **`Doc-Phase 1..8`** و برچسب‌های **`V1` / `V1.5` / `V2`** از 2026-09-08 **Legacy/Historical** هستند. آن‌ها فقط برای traceability تاریخی نگه داشته شده‌اند و **هیچ ایجنتی (AI یا انسان) حق ندارد آن‌ها را به‌عنوان Roadmap اجرایی فعلی تفسیر کند.** نگاشتشان در بخش ۲ آمده است.
 >
 > **قانون Gate:** هر فاز فقط بعد از تأیید صریح Product Owner روی خروجی + Acceptance Criteria فاز قبل شروع می‌شود.
+>
+> **مرجع تفسیر فازها (Governance):** [`docs/governance/project-phase-taxonomy.md`](../governance/project-phase-taxonomy.md) —
+> سلسله‌مراتب سامانه‌های فاز (Owner Phase 0..20 = authoritative؛ زیرفازهای C* داخل Phase 2؛
+> سامانه‌های Legacy/تاریخی) + crosswalk + قواعد نام‌گذاری. عبارتِ تنها «Phase N» فقط به همین Roadmap اشاره دارد.
 
 ---
 

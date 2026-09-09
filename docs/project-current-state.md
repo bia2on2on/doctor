@@ -32,6 +32,12 @@ Authoritative domain model: `Organization → Clinic → Location` ([ADR-0031](a
 
 Legacy labels (`F0..F10`, `Doc-Phase`, `V1` / `V1.5` / `V2`) are historical. They do not override the Owner roadmap.
 
+> **Interpretation governance:** for the full phase/taxonomy hierarchy, ambiguity warnings, and crosswalk
+> see [`docs/governance/project-phase-taxonomy.md`](governance/project-phase-taxonomy.md).
+> Rule of thumb: a bare "Phase N" = Owner Roadmap; `C6` = a work package **inside** Owner Phase 2;
+> Owner Roadmap Phase 9 = **Patient Portal (NOT STARTED)**, which is **not** the same as any
+> internal/historical "Phase 9" reference.
+
 ---
 
 ## C. Current state
