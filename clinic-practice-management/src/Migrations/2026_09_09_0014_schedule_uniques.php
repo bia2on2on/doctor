@@ -119,6 +119,14 @@ return [
         $sched = $db->table('cpms_schedule');
         $slots = $db->table('cpms_schedule_slots');
 
+        // همان قاعدهٔ up برعکس: u_sched_slot با clinic_id شروع می‌شود و پس از
+        // ADD آن در up، MySQL ایندکسِ ضمنیِ fk_schedule_clinic را حذف کرده؛
+        // DROP مستقیم u_sched_slot رد می‌شود (ایندکس پشتیبان FK). اول یک
+        // KEY جایگزین با پیشوند clinic_id، سپس DROP.
+        $hasClinicIdx = $db->fetchRow("SHOW INDEX FROM {$sched} WHERE Key_name = 'idx_schedule_clinic'");
+        if ($hasClinicIdx === null) {
+            $db->query("ALTER TABLE {$sched} ADD KEY `idx_schedule_clinic` (`clinic_id`)");
+        }
         $hasNew = $db->fetchRow("SHOW INDEX FROM {$sched} WHERE Key_name = 'u_sched_slot'");
         if ($hasNew !== null) {
             $db->query("ALTER TABLE {$sched} DROP INDEX `u_sched_slot`");
