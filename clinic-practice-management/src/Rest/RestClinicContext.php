@@ -97,6 +97,24 @@ final class RestClinicContext
             return false;
         }
 
+        /*
+         * C6 repair — این مرز فقط برای «استفادهٔ staff از عملیات Clinic‑scoped» است.
+         *
+         * درخواستِ بیمار/کاربرِ فاقدِ نقشِ کارکنی به درخواستِ scope‑دارِ کارکنی
+         * تبدیل نمی‌شود «فقط چون URL زیر /clinic/v1/ است»؛ همان مسیر همیشگی
+         * (permission_callback خشن + سیاست Service) جریان می‌یابد تا انکارِ
+         * پایدار (CLINIC_PERMISSION_DENIED) حفظ شود.
+         *
+         * نکتهٔ معماری: این سنجش «منبع مجوز» نیست (Phase 3 نیست) — نقش سراسری WP
+         * رابطهٔ tenant را تعریف نمی‌کند و اینجا فقط تعیین می‌کند که استقرار
+         * Clinic مورد اعتماد اصلاً روی این درخواست اعمال شود یا نه. «staff» بودنِ
+         * واقعی همچنان با Capability در لایهٔ خشن و با سیاست Service/Membership
+         * سنجیده می‌شود و fail‑closed است: staff بدون عضویت فعال → 403.
+         */
+        if (!self::currentUserIsStaff()) {
+            return false;
+        }
+
         $method = strtoupper($request->get_method());
 
         $skip = [
@@ -122,13 +140,6 @@ final class RestClinicContext
         }
         if ($method === 'GET' && preg_match('#^/clinic/v1/visits/\d+$#', $route) === 1) {
             return false;
-        }
-
-        if (preg_match('#^/clinic/v1/appointments/\d+/cancel$#', $route) === 1) {
-            return self::currentUserIsStaff();
-        }
-        if (preg_match('#^/clinic/v1/(notifications|rt/notifications)#', $route) === 1) {
-            return self::currentUserIsStaff();
         }
 
         return true;
