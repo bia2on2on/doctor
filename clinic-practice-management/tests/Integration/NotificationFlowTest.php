@@ -53,13 +53,11 @@ final class NotificationFlowTest extends WP_UnitTestCase
         $this->secretary2UserId = $this->makeUser('nf_sec2', 'cpms_secretary');
         $this->doctorUserId = $this->makeUser('nf_doc', 'cpms_doctor');
 
-        // C6: broadcast staff فقط به اعضای فعال Clinic می‌رود (membership C4)
-        $membership = App::membership_service();
-        foreach ([$this->secretaryUserId, $this->secretary2UserId] as $staffId) {
-            if ($membership->membership_for(1, $staffId) === null) {
-                $membership->create_membership(1, $staffId, 'cpms_secretary');
-            }
-        }
+        // C6: broadcast staff فقط به اعضای فعال Clinic می‌رود (membership C4).
+        // صریح و per‑scenario: پزشک **عمداً** عضویت نمی‌گیرد تا ثابت شود
+        // broadcast فقط منشی‌های عضو را می‌گیرد (نه «هر کاربر staff وردپرس»).
+        App::membership_service()->create_membership(1, $this->secretaryUserId, 'cpms_secretary');
+        App::membership_service()->create_membership(1, $this->secretary2UserId, 'cpms_secretary');
 
         global $wpdb;
         $now = App::db()->nowUtcSql();

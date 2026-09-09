@@ -87,7 +87,10 @@ final class RestBookingTest extends WP_UnitTestCase
         // کاربران (نقش صریح — wp_create_user نقش را default می‌گذارد)
         $this->patientUserId = $this->makeUser('rest_patient_a', 'cpms_patient', '09121110001@otp.cpms.local');
         $this->otherPatientUserId = $this->makeUser('rest_patient_b', 'cpms_patient', '09121110002@otp.cpms.local');
+        // C6 repair — عضویت فعال staff صریح است (نه fixture سراسری).
+        // تست‌های patient/non-member عمداً عضویت نمی‌گیرند.
         $this->secretaryUserId = $this->makeUser('rest_secretary', 'cpms_secretary', 'sec@test.local');
+        cpms_test_seed_membership($this->secretaryUserId, 1, 'cpms_secretary');
 
         $wpdb->query(
             $wpdb->prepare(

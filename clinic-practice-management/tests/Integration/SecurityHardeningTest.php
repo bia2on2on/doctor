@@ -42,9 +42,14 @@ final class SecurityHardeningTest extends WP_UnitTestCase
         global $wpdb;
         $now = App::db()->nowUtcSql();
 
+        // C6 repair — عضویت فعال staff صریح است (نه fixture سراسری).
+        // تست‌های patient/non-member عمداً عضویت نمی‌گیرند.
         $this->doctorAUserId = $this->makeUser('sh_doc_a', 'cpms_doctor');
+        cpms_test_seed_membership($this->doctorAUserId, 1, 'cpms_doctor');
         $this->doctorBUserId = $this->makeUser('sh_doc_b', 'cpms_doctor');
+        cpms_test_seed_membership($this->doctorBUserId, 1, 'cpms_doctor');
         $this->secretaryUserId = $this->makeUser('sh_sec', 'cpms_secretary');
+        cpms_test_seed_membership($this->secretaryUserId, 1, 'cpms_secretary');
 
         // دو پزشک متصل (مدل چندپزشکی ADR-0027) + یک پزشک سوم بدون Link
         foreach ([['Dr Own A', $this->doctorAUserId, &$this->clinicianAId], ['Dr Own B', $this->doctorBUserId, &$this->clinicianBId]] as $c) {

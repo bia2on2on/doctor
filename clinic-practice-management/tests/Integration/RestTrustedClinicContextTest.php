@@ -24,9 +24,9 @@ final class RestTrustedClinicContextTest extends WP_UnitTestCase
 
     private int $clinicB = 2;
 
-    private int $locA;
+    private int $locA = 0;
 
-    private int $locB;
+    private int $locB = 0;
 
     private string $today;
 
@@ -49,6 +49,8 @@ final class RestTrustedClinicContextTest extends WP_UnitTestCase
     public function testUniqueMembershipWithoutHeaderBindsThatClinic(): void
     {
         $userId = $this->makeStaff('cpms_doctor');
+        // صریح (نه fixture سراسری): تنها عضویت فعال کاربر = همین Clinic.
+        cpms_test_seed_membership($userId, $this->clinicA, 'cpms_doctor');
         wp_set_current_user($userId);
 
         $res = $this->dispatch('GET', self::NS . '/reports');
@@ -173,9 +175,10 @@ final class RestTrustedClinicContextTest extends WP_UnitTestCase
     public function testSuspendedMembershipIsUnavailable(): void
     {
         $userId = $this->makeStaff('cpms_doctor');
+        $membershipId = cpms_test_seed_membership($userId, $this->clinicA, 'cpms_doctor');
         $membership = App::membership_service()->membership_for($this->clinicA, $userId);
         $this->assertNotNull($membership);
-        App::membership_service()->suspend_membership((int) $membership['id']);
+        App::membership_service()->suspend_membership($membershipId);
         wp_set_current_user($userId);
 
         $res = $this->dispatch('GET', self::NS . '/reports', [], ['X-CPMS-Clinic-Id' => (string) $this->clinicA]);
@@ -186,6 +189,7 @@ final class RestTrustedClinicContextTest extends WP_UnitTestCase
     public function testLocationBelongingToClinicIsBound(): void
     {
         $userId = $this->makeStaff('cpms_doctor');
+        cpms_test_seed_membership($userId, $this->clinicA, 'cpms_doctor');
         wp_set_current_user($userId);
         $captured = null;
         add_filter('rest_request_before_callbacks', static function ($response, $handler, $request) use (&$captured) {
@@ -265,6 +269,8 @@ final class RestTrustedClinicContextTest extends WP_UnitTestCase
         App::resetScope();
 
         $userId = $this->makeStaff('cpms_doctor');
+        // عضویت روی شناسهٔ واقعیِ جدیدِ Clinic (۴۱) — نه «Clinic 1».
+        cpms_test_seed_membership($userId, $newId, 'cpms_doctor');
         wp_set_current_user($userId);
 
         $ok = $this->dispatch('GET', self::NS . '/reports', [], ['X-CPMS-Clinic-Id' => (string) $newId]);
@@ -372,10 +378,41 @@ final class RestTrustedClinicContextTest extends WP_UnitTestCase
         $this->assertSame('CLINIC_SCOPE_UNAVAILABLE', $this->errorCode($res));
     }
 
+    /**
+     * C6 repair (بند ۴ Owner) — شاهدِ قابل‌اجرا:
+     * staff با coarse permissionِ کافی ولی **بدون عضویت فعال** باید توسط همین
+     * مرز رد شود (fail‑closed). در نصب «تنها یک Clinic» هم exact‑one مجوز
+     * نمی‌سازد؛ مسیرِ fallbackِ سیستمی عمداً در Establisher صدا زده نمی‌شود.
+     */
+    public function testStaffActorWithoutActiveMembershipIsDeniedByBoundary(): void
+    {
+        $userId = $this->makeUser('ctx_no_member_staff', 'cpms_secretary');
+        $this->assertTrue(
+            user_can($userId, \ClinicCore\Auth\RolesAndCapabilities::REPORT_READ),
+            'پیش‌شرط تست: coarse permissionِ لازم را داشته باشد'
+        );
+        $this->assertSame(
+            [],
+            App::membership_service()->active_memberships_for_user($userId),
+            'پیش‌شرط تست: هیچ عضویت فعالی نداشته باشد'
+        );
+        wp_set_current_user($userId);
+
+        $withHeader = $this->dispatch('GET', self::NS . '/reports', [], ['X-CPMS-Clinic-Id' => (string) $this->clinicA]);
+        $this->assertSame(403, $withHeader->get_status());
+        $this->assertSame('CLINIC_SCOPE_UNAVAILABLE', $this->errorCode($withHeader));
+
+        $withoutHeader = $this->dispatch('GET', self::NS . '/reports');
+        $this->assertSame(403, $withoutHeader->get_status());
+        $this->assertSame('CLINIC_SCOPE_UNAVAILABLE', $this->errorCode($withoutHeader));
+    }
+
     public function testStaffCancelBindsAndPatientCancelDoesNotRequireHeader(): void
     {
         $secretary = $this->makeStaff('cpms_secretary');
         $patient = $this->makeUser('ctx_cancel_pat', 'cpms_patient');
+        // صریح: منشی عضو فعال Clinic A است (قبلاً از fixture سراسری می‌آمد).
+        cpms_test_seed_membership($secretary, $this->clinicA, 'cpms_secretary');
         wp_set_current_user($secretary);
         $staff = $this->dispatch('POST', self::NS . '/appointments/1/cancel', ['reason' => 'test'], [
             'X-CPMS-Clinic-Id' => (string) $this->clinicA,

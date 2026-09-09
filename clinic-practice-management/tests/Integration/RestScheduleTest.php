@@ -47,8 +47,12 @@ final class RestScheduleTest extends WP_UnitTestCase
         );
         $this->clinicianId = (int) $wpdb->insert_id;
 
+        // C6 repair — عضویت فعال staff صریح است (نه fixture سراسری).
+        // تست‌های patient/non-member عمداً عضویت نمی‌گیرند.
         $this->adminUserId = $this->makeUser('rsched_admin', 'administrator');
+        cpms_test_seed_membership($this->adminUserId, 1, 'cpms_manager');
         $this->secretaryUserId = $this->makeUser('rsched_secretary', 'cpms_secretary');
+        cpms_test_seed_membership($this->secretaryUserId, 1, 'cpms_secretary');
 
         wp_set_current_user(0);
     }
