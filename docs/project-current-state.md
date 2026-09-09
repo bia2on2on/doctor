@@ -45,8 +45,9 @@ Legacy labels (`F0..F10`, `Doc-Phase`, `V1` / `V1.5` / `V2`) are historical. The
 | Phase 2 | **IN PROGRESS** — current subphase **C6** (**NOT complete**) |
 | Phase 3 | **NOT STARTED** — no `AuthorizationService`; do not start |
 
-**Last verified implementation SHA:** `6e5d48c801e86779c0daf350d68c9df49e49a6c8`  
-(C6-E3 Reports + Export + Pilot/bin tenant-literal cleanup. Trusted REST `ScopeContext` is **not** implemented at this SHA.)
+**Last verified implementation SHA:** see §K — the trusted‑REST boundary landed after `6e5d48c`
+(`6e5d48c` → docs sync → `f88fcdc` boundary → repair batch). C6‑E3 Reports + Export +
+Pilot/bin tenant‑literal cleanup were verified at `6e5d48c801e86779c0daf350d68c9df49e49a6c8`.
 
 **Schema:** current version **`2026_09_09_0020`**. File `0021` does **not** exist. **Migration 0021 is NOT approved.** If new schema is required: STOP and ask Owner.
 
@@ -54,8 +55,8 @@ Legacy labels (`F0..F10`, `Doc-Phase`, `V1` / `V1.5` / `V2`) are historical. The
 
 | | |
 |---|---|
-| Branch | `arena/01a086ca-doctor` |
-| Draft PR | [#12](https://github.com/bia2on2on/doctor/pull/12) — OPEN DRAFT — DO NOT MERGE / CI execution |
+| Branch | `arena/01a086ca-doctor` (PR #12 tip `f88fcdc`) → این batch ترمیم روی `arena/01a086b4-doctor` ادامهٔ **خطی** همان تاریخچه است (FF از `main`؛ بدون cherry‑pick/merge/force‑push؛ شاخهٔ راه دورِ PR جابه‌جا نشد) |
+| Draft PR | [#12](https://github.com/bia2on2on/doctor/pull/12) — OPEN DRAFT — DO NOT MERGE / CI execution · [#13](https://github.com/bia2on2on/doctor/pull/13) — OPEN DRAFT، تشخیصی (base = `arena/01a086ca-doctor`) فقط برای اجرای گیت‌ها روی ترمیم |
 | Base | `main` (`8087b42`) |
 
 **Previous PRs — keep OPEN + DRAFT; do not merge or close**
@@ -197,6 +198,30 @@ Phase 2 queue: [`docs/phase-reports/phase2-state.md`](phase-reports/phase2-state
 - Tripwire is **NOT** wired into CI
 - Tripwire regex still misses some positional `VALUES (1, …)` INSERT clinic columns
 
+**Trusted REST Clinic context — C6 boundary**
+
+- Implementation checkpoint: `f88fcdc3fb6479782b140a2d7034a3205a52edad` (`TrustedClinicEstablisher` + `RestClinicContext` bound on `rest_request_before_callbacks` / `rest_request_after_callbacks`, `ScopeRequiredException` with explicit HTTP status).
+- That checkpoint was **CI RED** (Integration + Real‑WP PR + Real‑WP push; WPCS/PHPStan/Unit/Pilot/Closure green). Evidence, not erased:
+  - **Class D (test harness)** — `RestTrustedClinicContextTest::$locB` typed `int` read before initialization: two security tests never reached `rest_do_request`.
+  - **Class A (product error contract)** — the boundary applied to *patient* traffic on `/clinic/v1/patients`, `/patients/search`, `/queue`, `/search`, turning the stable `CLINIC_PERMISSION_DENIED` into `CLINIC_SCOPE_UNAVAILABLE` (5 Integration failures).
+  - **Class A (product/ops gap)** — Real‑WP `browser.no_console_errors`: 4 staff REST calls from wp‑admin returned 403 because `wp user create --role=…` staff actors never receive an active Membership (Migration 0012 seed runs before them).
+  - **Class D (fixture contamination)** — `NotificationFlowTest::testInvoiceReadyNotifiesOtherSecretaries` (2 rows vs 1): the then-new global `set_user_role` membership fixture seeded the doctor, who holds `cpms_queue_read`, so the broadcast gained a recipient.
+- Repair batch (this branch, on top of `f88fcdc`, linear — no rewrite, no force‑push):
+
+| SHA | Scope |
+|---|---|
+| `adecd21` | test: `$locA`/`$locB` explicit init; **global membership injection removed**; explicit idempotent `cpms_test_seed_membership(user, clinic, roleKey)`; staff tests arrange their own Membership |
+| `a23b509` | fix(rest): trusted scope applies to **authenticated staff use** only (narrow, via the existing `currentUserIsStaff()` predicate — no route added to / removed from the skip list) |
+| `b7a3a6b` | test(acceptance): Real‑WP fixture seeds **active Membership on the Clinic actually resolved in that environment** (from the acceptance clinician link) — TEST INFRASTRUCTURE only |
+| `da72e1c` | fix(rest): guaranteed Scope restoration (LIFO pairs + conditional restore + `shutdown` safety net) after an executable test proved the leak |
+| `4289d89` | test: corrected precondition of the new non‑member‑staff evidence test (Class D, its own assertion) |
+
+- **Production automatic Membership provisioning was NOT introduced**: no `user_register`, no `set_user_role`, no global‑role→tenant mapping, no “there is only one Clinic”, no first/default Clinic. Staff onboarding remains an **OPEN architecture item** for an explicit, scope‑aware product workflow.
+- Security invariant intact and now executed: authenticated staff REST access requires an **active verified Clinic Membership**; even in an exact‑one‑Clinic install no Membership means no staff Clinic access (`testNoMembershipDeniedEvenWhenExactlyOneClinic`, `testExactOneClinicIdNotOneStillRequiresMembership`, `testStaffActorWithoutActiveMembershipIsDeniedByBoundary`).
+- Real‑WP acceptance fixture models Membership explicitly; the “staff **without** Membership is denied” invariant is proven by the focused Integration tests above (not by the fixture).
+- **OPEN DECISION — route classification (deliberately NOT resolved in this repair):** `/prescriptions` skip, `/appointments/{id}/reschedule` vs `/cancel` asymmetry, `GET /visits{,/{id}}` skip, `/files/{id}/stream` + `/patients/{id}/files` ownership-only, `/config/services*`, `/sms/*` — needs the next architecture review.
+- Gate evidence for the repair tip: recorded in [`phase2-state.md`](phase2-state.md) (exact Run IDs).
+
 **Already done (do not redo):**
 
 - C6-A census · C6-B Notifications/SMS/Jobs · C6-C Booking/Schedule
@@ -208,7 +233,7 @@ Phase 2 queue: [`docs/phase-reports/phase2-state.md`](phase-reports/phase2-state
 
 **Remaining C6**
 
-1. Trusted REST context (membership-verified `ScopeContext`) — **not** Phase 3 / not `AuthorizationService`
+1. Trusted REST context (membership-verified `ScopeContext`) — **implemented and repaired in the batch above** (still not Phase 3 / not `AuthorizationService`); its remaining follow‑ups are the open route‑classification decisions, **not** the boundary itself
 2. Tripwire hardening + CI wiring — **do not start in the trusted-REST checkpoint**
 3. C6-F real multi-tenant isolation suite — **PARTIAL** (Reports/Export/Membership/Identity/Scope tests exist; no comprehensive 14-item suite) — **do not expand fully in the trusted-REST checkpoint**
 4. Keep docs in sync after each verified implementation SHA (this file / census / phase2-state)

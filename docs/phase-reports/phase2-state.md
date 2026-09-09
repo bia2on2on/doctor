@@ -2,9 +2,9 @@
 
 | | |
 |---|---|
-| **آخرین به‌روزرسانی** | بر مبنای SHA پیاده‌سازی `6e5d48c801e86779c0daf350d68c9df49e49a6c8` |
-| **وضعیت Phase 2** | IN PROGRESS — C1..C5 done؛ C6 **ناقص** (Reports/Export/Pilot انجام؛ REST Scope هنوز نه) |
-| **آخرین remote SHA سبزِ تأییدشده** | `6e5d48c` (هر ۵ گیت؛ PR #12 OPEN DRAFT — ادغام ممنوع) |
+| **آخرین به‌روزرسانی** | بر مبنای SHA پیاده‌سازی `4289d89537c506fd2862da8b0a1bb9db7b166b02` (batch ترمیم Trusted REST؛ مبنای قبلی: `6e5d48c`) |
+| **وضعیت Phase 2** | IN PROGRESS — C1..C5 done؛ C6 **ناقص** (Reports/Export/Pilot/Trusted‑REST boundary انجام؛ C6‑F و Tripwire‑CI و تصمیم باز route‌ها باقی است) |
+| **آخرین remote SHA سبزِ تأییدشده** | `4289d89` (هر ۵ گیت — ادامهٔ خطی `f88fcdc`؛ PR #12 OPEN DRAFT — ادغام ممنوع) |
 | **Schema** | `2026_09_09_0020` — فایل/تصویب 0021 وجود ندارد |
 
 > این فایل state جاری است، نه گزارش. عمداً به SHA کامیتِ خودِ این سند ارجاع
@@ -13,7 +13,24 @@
 > PR #11 (`9e006b0`) جد همین SHA هستند. PHP در sandbox ممیزی روی PATH نبود؛
 > شواهد اجرایی = GitHub Actions.
 
-## Last known good gates (روی 6e5d48c — C6 Reports+Export+Pilot)
+## گیت‌های سبز — checkpoint ترمیم Trusted REST (روی `4289d89`)
+
+| گیت | Run | نتیجه |
+|---|---|---|
+| CI (PHPStan + Unit×4 + WPCS changed‑lines + **Integration**) | 34388298772 | ✅ success (۷ job) |
+| Real WordPress Acceptance (push — prefix `wp_` و `clinic_`) | 34388294483 | ✅ success (2 job، steps_failed=0) |
+| Pilot/Staging Readiness | 34388294486 | ✅ success |
+| Closure Gate (GO‑LIVE evidence) | 34388294616 | ✅ success (۵ job؛ کامنت‌های evidence روی PR #13 با همین run id) |
+
+- branch = `arena/01a086b4-doctor`؛ base تشخیصی = `arena/01a086ca-doctor` (PR #13 — draft،
+  برای اجرای گیت‌ها روی continuationِ خطیِ `f88fcdc`؛ **هیچ شاخهٔ راه دوری جابه‌جا نشد**).
+- تعداد تست Integration در run سبز از API قابل استخراج نبود (لاگ خام/artifact در sandbox
+  مسدود است؛ گام «Run integration tests» = success و no failure‑comment) → **NOT VERIFIED
+  به‌صورت عددی**، سبز بودن از check‑run تأیید شده.
+- **NOT TESTED locally:** PHP در این sandbox نصب نبود (بدون `php -l`/phpunit محلی)؛ همهٔ
+  شواهد = GitHub Actions روی SHA.
+
+### سابقه (روی `6e5d48c` — C6 Reports+Export+Pilot)
 
 | گیت | Run | نتیجه |
 |---|---|---|
@@ -81,7 +98,18 @@
   - ✅ C6 Export (`f2c0ca6`) — clinic در payload جاب؛ purge per-row
   - ✅ Pilot/bin (`6e5d48c`) — بدون literal clinic_id=1
   - tripwire production runtime = **۰** (اجرای محلی ابزار؛ **هنوز به CI وصل نشده**)
-  - ❌ Trusted REST `ScopeContext` (membership-verified) — **پیاده نشده**
+  - ✅ **Trusted REST `ScopeContext` (membership‑verified)** — پیاده‌سازی در `f88fcdc`
+    (CI قرمز: Class D harness + Class A error‑contract + Class A/A gap نبودِ عضویت در
+    acceptance) و **ترمیم** در batch `adecd21`→`a23b509`→`b7a3a6b`→`da72e1c`→`4289d89`.
+    - **هیچ provisioning خودکار عضویت در Production اضافه نشد** (نه `user_register`،
+      نه `set_user_role`، نه نگاشت نقش سراسری WP، نه «تنها یک Clinic»، نه اولین Clinic).
+      Onboarding/عضویت staff یک workflow صریحِ scope‑aware است — **OPEN، در این batch ساخته نشد**.
+    - fixture تکلیف عضویت در تست‌ها **صریح** است (`cpms_test_seed_membership`؛ هیچ تزریق
+      سراسری روی `set_user_role` نیست) و fixture Real‑WP عضویت را روی **Clinic واقعی همان
+      محیط** (از clinician link اکتبرانه) می‌کارد — TEST‑ONLY.
+    - **OPEN DECISION (در این batch عمداً حل نشد):** طبقه‌بندی route‌های
+      `/prescriptions` · `/appointments/{id}/reschedule` vs `/cancel` · `GET /visits{,/{id}}` ·
+      `/files/{id}/stream` + `/patients/{id}/files` · `/config/services*` · `/sms/*`.
   - ❌ C6-F isolation جامع — **PARTIAL**
   - C6-G docs: این هم‌ترازی وضعیت است، نه اعلام اتمام C6
 - **قدم بعدی مجاز پس از هم‌ترازی docs:** حداقل مرز Trusted REST Clinic context

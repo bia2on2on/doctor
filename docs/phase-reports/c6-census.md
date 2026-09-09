@@ -194,3 +194,30 @@ OtpService:321، PatientIdentityService:23 (نقل قول قاعده)، ClinicSc
 - Checklist نسخه: MigrationTest/Phase2SchemaTest/TempTableIsolationTest/closure-gate/pilot-gate/real-wp-acceptance → 0020.
 - **C6-F**: tripwire→CI + MultiTenantIsolationTest (ماتریس ۱۴بندی).
 - **C6-G**: docs + state.
+
+
+## وضعیت Trusted REST context (C6 — boundary) و batch ترمیم
+
+- **`f88fcdc`** — مرز Trusted REST (`TrustedClinicEstablisher` + `RestClinicContext` روی
+  `rest_request_before/after_callbacks`) + `RestTrustedClinicContextTest` (۲۲ تست).
+  **CI قرمز:** WPCS/PHPStan/Unit/Pilot/Closure سبز؛ Integration و هر دو Real‑WP قرمز.
+- **تشخیص (حفظ شاهد، نه حذف آن):**
+  1. **Class D** — `RestTrustedClinicContextTest::$locB` (typed `int` بدون مقدار) در
+     `seedVisitPair()` قبل از initialization خوانده می‌شد → دو تست leftover‑scope هرگز
+     به dispatch نمی‌رسیدند (پوششِ واقعیِ مرز معلق می‌ماند).
+  2. **Class A** — اعمال boundry برای ترافیک *بیمار* روی مسیرهای staff (token پایدار
+     `CLINIC_PERMISSION_DENIED` → `CLINIC_SCOPE_UNAVAILABLE`).
+  3. **Class A** — نبودِ عضویت فعال برای کاربران `wp user create` در acceptance → ۴۰۳ در
+     UI واقعی (۴ check `browser.no_console_errors`).
+  4. **Class D** — آلودگی fixture: تزریق سراسری عضویت روی `set_user_role` باعث شد پزشک
+     (بدون عضویت در سناریو) گیرندهٔ broadcast شود → `NotificationFlowTest` ۲ ردیف به‌جای ۱.
+- **ترمیم (اتمیک، ادامهٔ خطی):** `adecd21` (harness + fixture صریح، حذف تزریق سراسری) ·
+  `a23b509` (مرز فقط برای استفادهٔ staff؛ بدون تغییر skip list) · `b7a3a6b` (fixture
+  عضویت tenant‑aware در Real‑WP — تست‌زیرساخت، نه provisioning محصول) ·
+  `da72e1c` (restore تضمینی Scope پس از اثبات قابل‌اجرای نشت در مسیر استثنای handler) ·
+  `4289d89` (پیش‌شرطِ تستِ شاهدِ non‑member‑staff).
+- **سبز:** `4289d89` — CI `34388298772` · Real‑WP(push, wp_/clinic_) `34388294483` ·
+  Pilot `34388294486` · Closure `34388294616`.
+- **هنوز در C6:** Tripwire→CI (نبود، باقی است) · C6‑F جامع (PARTIAL) · تصمیم باز
+  طبقه‌بندی route‌ها (D‑cases) · workflow صریحِ onboarding/عضویت staff (فاز بعد، نیازمند
+  تصمیم مالک). **0021 ساخته/تصویب نشد.**
