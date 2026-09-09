@@ -387,7 +387,9 @@ final class RestTrustedClinicContextTest extends WP_UnitTestCase
      */
     public function testStaffActorWithoutActiveMembershipIsDeniedByBoundary(): void
     {
-        $userId = $this->makeUser('ctx_no_member_staff', 'cpms_secretary');
+        // پزشک: REPORT_READ را در الگوی نقش دارد (منشی ندارد) — یعنی coarse
+        // permissionِ این route را واقعاً pass می‌کند و فقط عضویت کم دارد.
+        $userId = $this->makeUser('ctx_no_member_staff', 'cpms_doctor');
         $this->assertTrue(
             user_can($userId, \ClinicCore\Auth\RolesAndCapabilities::REPORT_READ),
             'پیش‌شرط تست: coarse permissionِ لازم را داشته باشد'
