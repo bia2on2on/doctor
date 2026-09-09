@@ -2,16 +2,38 @@
 
 | | |
 |---|---|
-| **آخرین به‌روزرسانی** | بر مبنای SHA پیاده‌سازی `315e582` |
-| **وضعیت Phase 2** | IN PROGRESS — C1..C5 done؛ Migration Foundation ✅ APPROVED (Owner, 2026-09-09) |
-| **آخرین remote SHA سبزِ تأییدشده** | `315e582` (هر ۵ گیت؛ فوندیشن Patient Identity سبز) |
+| **آخرین به‌روزرسانی** | بر مبنای SHA پیاده‌سازی `6e5d48c801e86779c0daf350d68c9df49e49a6c8` |
+| **وضعیت Phase 2** | IN PROGRESS — C1..C5 done؛ C6 **ناقص** (Reports/Export/Pilot انجام؛ REST Scope هنوز نه) |
+| **آخرین remote SHA سبزِ تأییدشده** | `6e5d48c` (هر ۵ گیت؛ PR #12 OPEN DRAFT — ادغام ممنوع) |
+| **Schema** | `2026_09_09_0020` — فایل/تصویب 0021 وجود ندارد |
 
-> این فایل state جاری است، نه گزارش؛ گزارش‌های کامل در
-> [`final-pre-phase2-gate-report.md`](final-pre-phase2-gate-report.md) و
-> کامنت‌های PR #11. عمداً به HEAD خودارجاع ندارد — SHA مبنا را مالک/agent
-> هنگام هر به‌روزرسانی صریح می‌نویسد.
+> این فایل state جاری است، نه گزارش. عمداً به SHA کامیتِ خودِ این سند ارجاع
+> نمی‌دهد — مبنا = SHA پیاده‌سازی `6e5d48c`. شاخهٔ ادامه:
+> `arena/01a086ca-doctor`. نسب تأییدشده: headهای PR #10 (`79cce4b`) و
+> PR #11 (`9e006b0`) جد همین SHA هستند. PHP در sandbox ممیزی روی PATH نبود؛
+> شواهد اجرایی = GitHub Actions.
 
-## Last known good gates (روی 315e582 — C5 کامل)
+## Last known good gates (روی 6e5d48c — C6 Reports+Export+Pilot)
+
+| گیت | Run | نتیجه |
+|---|---|---|
+| CI (PHPStan + Unit×4 + Integration + **WPCS line-scoped**) | 34375762362 | ✅ success |
+| Real-WP (PR) | 34375762425 | ✅ success |
+| Real-WP (push) | 34375756020 | ✅ success |
+| Pilot/Staging | 34375756043 | ✅ success |
+| Closure | 34375756075 | ✅ success |
+
+### سابقه (روی 9e006b0 — C6-E2)
+
+| گیت | Run | نتیجه |
+|---|---|---|
+| CI (Unit×4 + PHPStan + WPCS + Integration) | 34352114628 | ✅ success |
+| Real-WP (PR) | 34352114325 | ✅ success |
+| Real-WP (push) | 34352109691 | ✅ success |
+| Pilot/Staging | 34352109661 | ✅ success |
+| Closure | 34352109682 | ✅ success |
+
+### سابقه (روی 315e582 — C5 کامل)
 
 | گیت | Run | نتیجه |
 |---|---|---|
@@ -53,7 +75,21 @@
 
 ## Current substep
 
-- **C5 — Patient Identity Foundation: ✅ کامل (هر ۵ گیت سبز روی `315e582`)**
+- **C6 — حذف tenant hardcodes: ناقص (نه PASS).** روی `6e5d48c`:
+  - ✅ C6-A..E2 (census، Notif/SMS/Jobs، Booking/Schedule، Patients/Clinical/Visits/Files، Settings/Audit/Idempotency + Migration 0020، repo writes)
+  - ✅ C6-E3 Reports (`1c82d26` + Class D `a120a68`)
+  - ✅ C6 Export (`f2c0ca6`) — clinic در payload جاب؛ purge per-row
+  - ✅ Pilot/bin (`6e5d48c`) — بدون literal clinic_id=1
+  - tripwire production runtime = **۰** (اجرای محلی ابزار؛ **هنوز به CI وصل نشده**)
+  - ❌ Trusted REST `ScopeContext` (membership-verified) — **پیاده نشده**
+  - ❌ C6-F isolation جامع — **PARTIAL**
+  - C6-G docs: این هم‌ترازی وضعیت است، نه اعلام اتمام C6
+- **قدم بعدی مجاز پس از هم‌ترازی docs:** حداقل مرز Trusted REST Clinic context
+  (نه Tripwire-CI، نه C6-F کامل، نه C7/C8/Phase 3).
+- **شروع نشود:** C7، C8، Phase 3/`AuthorizationService`، Phase 4، پورتال‌ها،
+  JWT، Migration 0021.
+
+### سابقهٔ C5 (خلاصه) — Patient Identity Foundation: ✅ کامل (هر ۵ گیت سبز روی `315e582`)
   (کامیت‌های `9207afa` → `2ba16d7` → `315e582` + کامیت docs این واحد):
   - **نرمال‌سازی موبایل ایران** (`9207afa`): ارقام فارسی/عربی → ASCII
     (`fold_digits`)، فرم‌های 98+صفرِ میان‌شهری (۱۳/۱۵ رقمی)، و فیکس مستند شاخهٔ
@@ -77,7 +113,6 @@
     data-dictionary (بخش as-built هویت)، erd.md (اشاره‌گر)، ADR-0031 (وضعیت
     پیاده‌سازی identity)، phase1b-deferred-register (B-14 ✅ / B-17 روشن‌سازی)،
     state.
-- **قدم بعدی: C6 — حذف tenant hardcodes** (census تازه از HEAD) طبق queue.
 
 ### سابقهٔ C4 (خلاصه) — کد/تست/داکیومنت
   (کامیت‌های 98ca0ff..91e5fe4) + WPCS-cleanup (کامیت‌های 67e1208..41b24dc):
@@ -94,7 +129,6 @@
   وابستگی resolution مورد انتظار CI (wpcs 3.4.1 + phpcs 3.13.6 +
   PHPCSUtils 1.2.3 + PHPCSExtra 1.5.1) — ۰ نقض روی ۸۶۰ خط add شده؛
   Universal/NormalizedArrays از PHPCSExtra می‌آیند (نه خود phpcs).
-- **قدم بعدی: C5 — Patient Identity** طبق queue.
 
 ### رویداد توکن (ثبت برای handoff)
 

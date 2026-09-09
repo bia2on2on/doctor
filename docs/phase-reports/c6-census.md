@@ -1,6 +1,16 @@
 # C6 — Tenant Hardcode Census (canonical inventory)
 
-**مبنا:** HEAD = `415238769f40eaf447d6d249664aba72cd415572` (پذیرفتهٔ مالک، C5 closed).
+> **Checkpoint verified (implementation SHA `6e5d48c801e86779c0daf350d68c9df49e49a6c8`):**
+> production tripwire = **۰** runtime finding (allowlist خالی؛ ۷ کامنت غیر اجرایی).
+> Tripwire **هنوز به CI وصل نشده**. C6 **کامل نیست**.
+>
+> انجام‌شده روی همین SHA: Reports (`1c82d26`) · Export (`f2c0ca6`) · Pilot/bin (`6e5d48c`).
+> **باقی:** Trusted REST `ScopeContext` · Tripwire CI · C6-F isolation جامع (PARTIAL).
+> Schema = `2026_09_09_0020`. Migration 0021 وجود ندارد / تصویب نشده.
+>
+> موجودی زیر = census تاریخی C6-A است؛ بازنویسی نشده.
+
+**مبنا (census اولیه):** `415238769f40eaf447d6d249664aba72cd415572` (پذیرفتهٔ مالک، C5 closed).
 **ابزار:** `bin/tenant-tripwire.py` (+ allowlist خالی در زمان census) — خروجی کامل در PR کامنت‌ها.
 **تاریخ:** 2026-09-09 — C6-A.
 
