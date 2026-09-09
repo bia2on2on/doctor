@@ -249,13 +249,22 @@ jobs:
             exit "$rc"
           fi
 
+          set +e
           python3 - <<'PY' > /tmp/wpcs-new.txt
           import json, sys
           added = set(open('/tmp/wpcs-added.txt').read().split())
+          # خروجی phpcs ممکن است پیشوند progress داشته باشد (ruleset ما
+          # <arg value="sp"/> دارد و report=json آن را خاموش نمی‌کند)؛
+          # JSON از اولین '{' استخراج می‌شود.
+          raw = open('/tmp/wpcs.json').read()
+          start = raw.find('{')
+          if start < 0:
+              print(f'no JSON object found in phpcs output (len={len(raw)}); head: {raw[:200]!r}')
+              sys.exit(1)
           try:
-              report = json.load(open('/tmp/wpcs.json'))
+              report = json.loads(raw[start:])
           except Exception as e:
-              print(f'::error::cannot parse phpcs JSON: {e}')
+              print(f'cannot parse phpcs JSON: {e}')
               sys.exit(1)
           found = []
           for path, data in report.get('files', {}).items():
@@ -265,6 +274,12 @@ jobs:
                       found.append(f"{path}:{m['line']} [{m['type']}] {m['source']} — {m['message']}")
           print('\n'.join(found))
           PY
+          pyrc=$?
+          if [ "$pyrc" -ne 0 ]; then
+            echo "::error::WPCS gate script failed (see output below)"
+            cat /tmp/wpcs-new.txt
+            exit 1
+          fi
 
           if [ -s /tmp/wpcs-new.txt ]; then
             echo "::error::$(wc -l < /tmp/wpcs-new.txt) WPCS violation(s) on added lines:"
