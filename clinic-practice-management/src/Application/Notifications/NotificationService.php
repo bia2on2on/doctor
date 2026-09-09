@@ -192,7 +192,8 @@ final class NotificationService
      */
     public function markRead(int $actorUserId, array $ids, bool $all): int
     {
-        $patientId = $this->linkedPatientId($actorUserId);
+        $link = $this->linkedPatient($actorUserId);
+        $patientId = $link !== null ? (int) $link['patient_id'] : null;
         if ($all) {
             return $this->notifications->markAllRead($actorUserId, $patientId);
         }

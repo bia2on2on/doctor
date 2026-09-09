@@ -222,7 +222,7 @@ scenario('S4', 'Handwriting: document+page + revision apply + stale-revision con
 
 // ---------- S5: Notifications ----------
 scenario('S5', 'Notifications: publish به بیمار + inbox منشی', function () use ($secretaryId, $patientId) {
-    $id = App::notificationService()->publishToPatient($patientId, 'queue_called', ['visit' => 'synthetic'], null);
+    $id = App::notificationService()->publishToPatient(1, $patientId, 'queue_called', ['visit' => 'synthetic'], null);
     if ($id === null) {
         throw new RuntimeException('publish failed');
     }
@@ -337,7 +337,7 @@ scenario('S8', 'Idempotency: UNIQUE(key,endpoint,user,context) + stored replay',
 
 // ---------- S9: SMS test provider (safe path) ----------
 scenario('S9', 'SMS test path: event test → صف → LogSmsProvider → sent', function () use ($db, $wpdb) {
-    $sent = App::smsService()->sendEvent('test', '09120009999', [], null, null, false, 5, 'Pilot Gate synthetic test');
+    $sent = App::smsService()->sendEvent(1, 'test', '09120009999', [], null, null, false, 5, 'Pilot Gate synthetic test');
     if (!is_array($sent)) {
         throw new RuntimeException('sendEvent failed');
     }
