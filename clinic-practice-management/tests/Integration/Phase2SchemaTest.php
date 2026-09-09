@@ -10,10 +10,10 @@ use WP_UnitTestCase;
 require_once __DIR__ . '/RealTableMigrations.php';
 
 /**
- * Phase 2 — Schema Foundation (Migrations 0010–0019، ADR-0031/P2-D1/P2-D2):
+ * Phase 2 — Schema Foundation (Migrations 0010–0020، ADR-0031/P2-D1/P2-D2):
  *
  *  - fresh-install state (bootstrap) + final version
- *  - upgrade path 0009 → 0019 (rollback + re-migrate؛ الگوی MigrationTest)
+ *  - upgrade path 0009 → 0020 (rollback + re-migrate؛ الگوی MigrationTest)
  *  - idempotency (re-run = no-op)
  *  - FK integrity (clinic/location)
  *  - UNIQUE های Location-scoped (u_sched_slot / u_slot)
@@ -64,7 +64,7 @@ final class Phase2SchemaTest extends WP_UnitTestCase
 
     public function testFreshInstallReachesPhaseTwoSchema(): void
     {
-        self::assertSame('2026_09_09_0019', App::migrations()->currentVersion());
+        self::assertSame('2026_09_09_0020', App::migrations()->currentVersion());
 
         foreach ([
             'cpms_organizations', 'cpms_locations', 'cpms_clinic_memberships',
@@ -143,7 +143,7 @@ final class Phase2SchemaTest extends WP_UnitTestCase
             }
         });
         self::assertSame(
-            ['2026_09_09_0019', '2026_09_09_0018', '2026_09_09_0017', '2026_09_09_0016', '2026_09_09_0015', '2026_09_09_0014', '2026_09_09_0013', '2026_09_09_0012', '2026_09_09_0011', '2026_09_09_0010'],
+            ['2026_09_09_0020', '2026_09_09_0019', '2026_09_09_0018', '2026_09_09_0017', '2026_09_09_0016', '2026_09_09_0015', '2026_09_09_0014', '2026_09_09_0013', '2026_09_09_0012', '2026_09_09_0011', '2026_09_09_0010'],
             $versions
         );
 
@@ -154,7 +154,7 @@ final class Phase2SchemaTest extends WP_UnitTestCase
         // ارتقا
         $applied = $this->withRealTables(static fn (): array => App::migrations()->migrate());
         self::assertContains('2026_09_09_0010', $applied);
-        self::assertSame('2026_09_09_0019', App::migrations()->currentVersion());
+        self::assertSame('2026_09_09_0020', App::migrations()->currentVersion());
 
         // داده دست‌نخورده
         $survived = $this->db()->fetchValue(

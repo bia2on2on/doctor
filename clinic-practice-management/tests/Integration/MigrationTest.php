@@ -25,7 +25,7 @@ final class MigrationTest extends WP_UnitTestCase
     use RealTableMigrations;
 
     /** آخرین Migration موجود در src/Migrations (با افزودن Migration جدید به‌روز شود). */
-    private const LATEST_VERSION = '2026_09_09_0019';
+    private const LATEST_VERSION = '2026_09_09_0020';
 
     private const EXPECTED_TABLES = [
         'cpms_clinics', 'cpms_clinicians', 'cpms_patients', 'cpms_patient_user_links',
@@ -154,7 +154,7 @@ final class MigrationTest extends WP_UnitTestCase
         $t = App::db()->table('cpms_idempotency_keys');
 
         // بازگشت به حالت پیش از 0006/0007 — ابتدا از روی Migrationهای فاز ۲
-        // (0010..0018 دارای down() کامل‌اند) و سپس 0009/0008/0007/0006
+        // (0010..0018 و 0020 دارای down() کامل‌اند) و سپس 0009/0008/0007/0006
         $this->rollbackTo('2026_09_07_0005');
 
         // شکل قدیمی: ستون Nullable + u_idem_key

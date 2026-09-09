@@ -71,7 +71,7 @@ final class TempTableIsolationTest extends WP_UnitTestCase
         global $wpdb;
 
         // پس از کل lifecycle تست‌های migration، نسخهٔ نهایی اعمال شده...
-        self::assertSame('2026_09_09_0019', App::migrations()->currentVersion());
+        self::assertSame('2026_09_09_0020', App::migrations()->currentVersion());
 
         // ...و جداول دارای FK، جدولِ واقعی‌اند — نه سایهٔ موقتِ حاصل از فیلتر WP
         foreach (['cpms_locations', 'cpms_schedule_slots'] as $short) {

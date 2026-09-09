@@ -868,6 +868,10 @@ final class App
     {
         ScopeContext::clear();
         SystemClinicResolver::flush();
+        // C6 (bug 1 census): cache تنظیمات per-clinic است و با تغییر Scope باید
+        // باطل شود؛ instance هم بازسازی می‌شود تا clinicId از Scope تازه حل شود.
+        Settings::flushCache();
+        self::$settings = null;
     }
 
     public static function migrations(): MigrationRunner

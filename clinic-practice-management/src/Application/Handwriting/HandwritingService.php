@@ -203,11 +203,11 @@ final class HandwritingService
         $this->requireCap($actorUserId, RolesAndCapabilities::NOTE_CREATE);
         $page = $this->requirePage($pageId);
         $doc = $this->requireDocument((int) $page['document_id']);
-        $this->requireOwnVisit($actorUserId, (int) $doc['visit_id'], 'save_page');
+        $visit = $this->requireOwnVisit($actorUserId, (int) $doc['visit_id'], 'save_page');
 
         // --- Idempotency (Contract §0): رترای همان Save = پاسخ قبلی بدون bump ---
         if ($idemKey !== null) {
-            $check = $this->idem->check($idemKey, 'handwriting/page', $actorUserId, $pageId);
+            $check = $this->idem->check($idemKey, 'handwriting/page', $actorUserId, $pageId, (int) $visit['clinic_id']);
             if ($check['is_replay']) {
                 if ($check['response'] !== null) {
                     return ['response' => $check['response'], 'status' => (int) $check['response_code']];
@@ -226,13 +226,13 @@ final class HandwritingService
             $result = $this->applySave($actorUserId, $page, $doc, $body);
         } catch (Throwable $e) {
             if ($idemKey !== null) {
-                $this->idem->release($idemKey, 'handwriting/page', $actorUserId, $pageId);
+                $this->idem->release($idemKey, 'handwriting/page', $actorUserId, $pageId, (int) $visit['clinic_id']);
             }
             throw $e;
         }
 
         if ($idemKey !== null) {
-            $this->idem->complete($idemKey, 'handwriting/page', $actorUserId, $pageId, $result['status'], $result['response']);
+            $this->idem->complete($idemKey, 'handwriting/page', $actorUserId, $pageId, $result['status'], $result['response'], (int) $visit['clinic_id']);
         }
 
         return $result;

@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace ClinicCore\Infrastructure\Audit;
 
+use ClinicCore\Application\Scope\ScopeRequiredException;
+use ClinicCore\Bootstrap\App;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Logging\OpLogger;
 
@@ -42,8 +44,18 @@ final class AuditLogger
         ?array $before,
         ?array $after,
         array $meta = [],
-        ?int $clinicId = 1
+        ?int $clinicId = null
     ): int {
+        // C6 (AD-13): کلینیک صریحِ event یا Scope فعالِ درخواست؛ اگر Scope
+        // مبهم/ناموجود بود (event واقعاً سیستمی) NULL ثبت می‌شود — ستون از
+        // 0016 nullable است؛ NULL = سیستمی، نه «1».
+        if ($clinicId === null) {
+            try {
+                $clinicId = App::scope()->clinicId;
+            } catch (ScopeRequiredException) {
+                $clinicId = null;
+            }
+        }
         return $this->db->transactional(function () use (
             $action,
             $actor,

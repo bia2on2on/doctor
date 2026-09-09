@@ -129,7 +129,7 @@ jobs:
           // ===== A. نسخه / schema / نقش‌ها / پنجره‌ی لایسنس (نصب تازه) =====
           ok('plugin-version', defined('CPMS_VERSION') && CPMS_VERSION === '1.0.0', defined('CPMS_VERSION') ? (string) CPMS_VERSION : '?');
           $schema = App::migrations()->currentVersion();
-          ok('schema-0019', $schema === '2026_09_09_0019', (string) $schema);
+          ok('schema-0020', $schema === '2026_09_09_0020', (string) $schema);
           $cpmsPrefixLike = addcslashes($wpdb->prefix . 'cpms_', '_%\\');
           $tables = (int) $wpdb->get_var("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name LIKE '{$cpmsPrefixLike}%'");
           ok('cpms-tables', $tables >= 30, 'tables=' . $tables);
@@ -459,7 +459,7 @@ jobs:
           App::settings()->set('files.storage_path', $sto);
           ok('plugin-version', defined('CPMS_VERSION') && CPMS_VERSION === '1.0.0', defined('CPMS_VERSION') ? (string) CPMS_VERSION : '?');
           $schema = App::migrations()->currentVersion();
-          ok('schema-0019', $schema === '2026_09_09_0019', (string) $schema);
+          ok('schema-0020', $schema === '2026_09_09_0020', (string) $schema);
           $cpmsPrefixLike = addcslashes($wpdb->prefix . 'cpms_', '_%\\');
           $tables = (int) $wpdb->get_var("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name LIKE '{$cpmsPrefixLike}%'");
           ok('cpms-tables', $tables >= 30, 'tables=' . $tables);
@@ -751,7 +751,7 @@ jobs:
           [ "$(cat "$STORAGE_OUT/sentinel-closure.txt")" = "ORIGINAL-SENTINEL-CONTENT" ] || { echo 'RESTORE: SENTINEL CONTENT WRONG'; exit 1; }
           WP_HOME="$WP_DIR" php "$WP_DIR/wp-content/plugins/clinic-practice-management/bin/cpms" audit verify 1000 2>&1 | tee /tmp/audit-a.log
           WP_HOME="$WP_DIR" php "$WP_DIR/wp-content/plugins/clinic-practice-management/bin/cpms" status 2>&1 | tee /tmp/status-a.log
-          grep -q 'schema:  2026_09_09_0019' /tmp/status-a.log || { echo 'SCHEMA NOT 0019 AFTER RESTORE'; exit 1; }
+          grep -q 'schema:  2026_09_09_0020' /tmp/status-a.log || { echo 'SCHEMA NOT 0020 AFTER RESTORE'; exit 1; }
           grep -q 'license: activation_pending' /tmp/status-a.log || { echo 'LICENSE NOT FRESH AFTER RESTORE'; exit 1; }
           echo 'RESTORE APPLY: state A fully restored ✓'
 

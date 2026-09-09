@@ -115,8 +115,14 @@ final class Settings
         'update.channel' => 'stable', // stable|beta
     ];
 
-    /** @var array<string, mixed>|null */
-    private static ?array $cache = null;
+    /**
+     * Cache تنظیمات — per-clinic (C6، bug 1 census): استاتیکِ ساده بین
+     * instanceهای clinic مختلف مشترک بود و تنظیمات یک کلینیک به دیگری
+     * leak می‌کرد. کلید = clinic_idِ instance.
+     *
+     * @var array<int, array<string, mixed>>
+     */
+    private static array $cache = [];
 
     /**
      * کلیدهای Telemetry عملیاتی (نه Config کاربر) — Audit نمی‌شوند (F1-4).
@@ -142,7 +148,7 @@ final class Settings
 
     public function __construct(
         private readonly CpmsDb $db,
-        private readonly int $clinicId = 1,
+        private readonly int $clinicId,
         private readonly ?AuditLogger $audit = null
     ) {
     }
@@ -161,8 +167,8 @@ final class Settings
     public function get(string $key, mixed $default = null): mixed
     {
         $this->load();
-        if (array_key_exists($key, self::$cache)) {
-            return self::$cache[$key];
+        if (array_key_exists($key, self::$cache[$this->clinicId])) {
+            return self::$cache[$this->clinicId][$key];
         }
         if (array_key_exists($key, self::DEFAULTS)) {
             return self::DEFAULTS[$key];
@@ -198,7 +204,7 @@ final class Settings
                 [$afterJson, $updatedBy, $this->db->nowUtcSql(), $this->clinicId, $key]
             );
         }
-        self::$cache = null;
+        unset(self::$cache[$this->clinicId]);
 
         $this->auditChange($key, $before, $value, $beforeJson, $afterJson, $updatedBy);
     }
@@ -285,21 +291,21 @@ final class Settings
 
     private function load(): void
     {
-        if (self::$cache !== null) {
+        if (array_key_exists($this->clinicId, self::$cache)) {
             return;
         }
-        self::$cache = [];
+        self::$cache[$this->clinicId] = [];
         $rows = $this->db->fetchAll(
             'SELECT `key`, value_json FROM ' . $this->db->table('cpms_settings') . ' WHERE clinic_id = %d',
             [$this->clinicId]
         );
         foreach ($rows as $row) {
-            self::$cache[(string) $row['key']] = json_decode((string) $row['value_json'], true);
+            self::$cache[$this->clinicId][(string) $row['key']] = json_decode((string) $row['value_json'], true);
         }
     }
 
     public static function flushCache(): void
     {
-        self::$cache = null;
+        self::$cache = [];
     }
 }

@@ -232,14 +232,8 @@ final class BookingService
             throw BookingException::of('CLINIC_VALIDATION_FAILED', 'هدر Idempotency-Key برای این عملیات الزامی است');
         }
 
-        $check = $this->idem->check($idemKey, self::EP_CONFIRM, $wpUserId, null);
-        if ($check['is_replay']) {
-            return $this->replayOrInFlight($check, $wpUserId);
-        }
-
-        $now = $this->now();
-        $nowSql = $this->db->nowUtcSql();
-
+        // C6: hold قبل از Idempotency خوانده می‌شود — clinic خودِ hold دامنهٔ
+        // کلید است (کلید یکسان در دو Clinic دیگر Replay نمی‌شود).
         $hold = $this->db->fetchRow(
             'SELECT * FROM ' . $this->db->table('cpms_slot_holds') . ' WHERE token = %s LIMIT 1',
             [$holdToken]
@@ -247,6 +241,15 @@ final class BookingService
         if ($hold === null) {
             throw BookingException::of('CLINIC_NOT_FOUND', 'جلسه رزرو یافت نشد', 404);
         }
+        $idemClinicId = (int) $hold['clinic_id'];
+
+        $check = $this->idem->check($idemKey, self::EP_CONFIRM, $wpUserId, null, $idemClinicId);
+        if ($check['is_replay']) {
+            return $this->replayOrInFlight($check, $wpUserId);
+        }
+
+        $now = $this->now();
+        $nowSql = $this->db->nowUtcSql();
         if ((int) $hold['holder_wp_user_id'] !== $wpUserId) {
             $this->audit('FORBIDDEN_ACCESS_ATTEMPT', $wpUserId, 'patient', 'slot_hold', (int) $hold['id'], null, null, null, [
                 'mobile' => MobileValidator::mask((string) ($hold['holder_mobile'] ?? '')),
@@ -345,12 +348,12 @@ final class BookingService
                 [$holdId]
             );
             $this->slots->releaseHold($slotId);
-            $this->idem->release($idemKey, self::EP_CONFIRM, $wpUserId, null);
+            $this->idem->release($idemKey, self::EP_CONFIRM, $wpUserId, null, $idemClinicId);
             throw $this->toBookingException($e);
         }
 
         $view = $this->appointmentView($appt);
-        $this->idem->complete($idemKey, self::EP_CONFIRM, $wpUserId, null, 200, $view);
+        $this->idem->complete($idemKey, self::EP_CONFIRM, $wpUserId, null, 200, $view, $idemClinicId);
 
         $this->audit('APPOINTMENT_CREATED', $wpUserId, 'patient', 'appointment', $apptId, $patientId, null, $view, [
             'mobile' => MobileValidator::mask($mobile),
@@ -443,7 +446,14 @@ final class BookingService
             throw BookingException::of('CLINIC_VALIDATION_FAILED', 'هدر Idempotency-Key برای این عملیات الزامی است');
         }
 
-        $check = $this->idem->check($idemKey, self::EP_RESCHEDULE, $wpUserId, $appointmentId);
+        // C6: دامنهٔ کلید = کلینیک نوبت (پیش از claim خوانده می‌شود)
+        $scopeAppt = $this->appointments->find($appointmentId);
+        if ($scopeAppt === null) {
+            throw BookingException::of('CLINIC_NOT_FOUND', 'نوبت یافت نشد', 404);
+        }
+        $idemClinicId = (int) $scopeAppt['clinic_id'];
+
+        $check = $this->idem->check($idemKey, self::EP_RESCHEDULE, $wpUserId, $appointmentId, $idemClinicId);
         if ($check['is_replay']) {
             return $this->replayOrInFlight($check, $wpUserId);
         }
@@ -539,14 +549,14 @@ final class BookingService
                 return [$appt, $newApptId, $newSlot];
             });
         } catch (Throwable $e) {
-            $this->idem->release($idemKey, self::EP_RESCHEDULE, $wpUserId, $appointmentId);
+            $this->idem->release($idemKey, self::EP_RESCHEDULE, $wpUserId, $appointmentId, $idemClinicId);
             throw $this->toBookingException($e);
         }
 
         $newAppt = $this->appointments->find($newApptId);
         $view = $this->appointmentView($newAppt);
         $response = array_merge($view, ['previous_appointment_id' => $appointmentId]);
-        $this->idem->complete($idemKey, self::EP_RESCHEDULE, $wpUserId, $appointmentId, 200, $response);
+        $this->idem->complete($idemKey, self::EP_RESCHEDULE, $wpUserId, $appointmentId, 200, $response, $idemClinicId);
 
         $this->audit('APPOINTMENT_RESCHEDULED', $wpUserId, 'patient', 'appointment', $newApptId, (int) $oldAppt['patient_id'], null, $view, [
             'from_appointment_id' => $appointmentId,

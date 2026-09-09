@@ -174,5 +174,13 @@ OtpService:321، PatientIdentityService:23 (نقل قول قاعده)، ClinicSc
 - **سبز C6-D = `6dcee7d`** (هر ۵ گیت): CI `34348322104` · Real-WP `34348315960` + `34348322007` · Pilot `34348315942` · Closure `34348315964`. (`346849f` → CI شکست Class C؛ `e23e626` → ۴/۵ سبز + Closure فلک Class D.)
 
 - **C6-E**: Reports+Export+Admin + Infra (Audit/Idempotency/Settings + Migrationها 0020/0021) + REST boundary (resolveScope×membership).
+
+## وضعیت C6-E1 — Infra (اجراشده)
+
+- **Settings** (باگ ۱ census): cache استاتیک مشترک → per-clinic keyed؛ ctor بدون `= 1` (تنها construction-site یعنی `App::settings()` از `App::scope()->clinicId` پاس می‌دهد)؛ `App::resetScope()` اکنون `Settings::flushCache()` + بازسازی instance را هم انجام می‌دهد.
+- **AuditLogger** (باگ ۵ — بخش migration آن از قبل در 0016 nullable شده بود): `?int $clinicId = 1` → `null` + resolution نرم: scope فعال درخواست؛ Scope مبهم/ناموجود → NULL ثبت می‌شود (event سیستمی). ۷۵+ caller بدون تغییرِ امضا scope-correct شدند.
+- **Idempotency** (باگ ۲ census): `check/complete/release/find` همگی clinic در دامنه (پارامتر اجباری)؛ **Migration 0020**: `u_idem_scope` چهارستونه → پنج‌ستونه (+clinic_id) با Preflight تکراری + backfill امنِ clinic-1 برای ردیف‌های legacy (فقط در نصب تک‌کلینیکی) + down() کامل.
+- Callers: BookingService confirm (hold قبل از claim خوانده می‌شود — clinic خود hold؛ ضمناً 404 برای token نامعتبر دیگر claim نمی‌سازد) و reschedule (pre-fetch نوبت)؛ HandwritingService (clinic از visit)؛ IdempotencyTest امضاها.
+- Checklist نسخه: MigrationTest/Phase2SchemaTest/TempTableIsolationTest/closure-gate/pilot-gate/real-wp-acceptance → 0020.
 - **C6-F**: tripwire→CI + MultiTenantIsolationTest (ماتریس ۱۴بندی).
 - **C6-G**: docs + state.
