@@ -112,8 +112,8 @@ final class MigrationTest extends WP_UnitTestCase
 
     public function testIdempotencyScopeUnique(): void
     {
-        // F9 (بدهی F7 §9): دامنه یکتایی = همان چهار ستون کتاب‌keeping
-        $this->assertTrue($this->hasUnique('cpms_idempotency_keys', ['key', 'endpoint', 'wp_user_id', 'context_id']));
+        // F9 (بدهی F7 §9) + C6/0020: دامنه یکتایی = ستون‌های کتاب‌keeping + clinic_id
+        $this->assertTrue($this->hasUnique('cpms_idempotency_keys', ['key', 'endpoint', 'wp_user_id', 'context_id', 'clinic_id']));
         $this->assertFalse($this->hasUnique('cpms_idempotency_keys', ['key']), 'u_idem_key قدیمی باید حذف شده باشد');
     }
 
@@ -191,7 +191,7 @@ final class MigrationTest extends WP_UnitTestCase
 
         // سرویسِ جدید ردیف legacy را پیدا می‌کند (کتاب‌keeping سالم پس از Upgrade)
         $svc = new \ClinicCore\Infrastructure\Security\Idempotency(App::db());
-        $check = $svc->check('legacy-key-0001', 'booking/confirm', 7, null);
+        $check = $svc->check('legacy-key-0001', 'booking/confirm', 7, null, 1);
         $this->assertTrue($check['is_replay'], 'کلید PENDING قدیمی باید به‌عنوان in-flight شناسایی شود');
         $this->assertSame(409, $check['response_code']);
     }

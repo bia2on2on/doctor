@@ -35,7 +35,7 @@ final class Idempotency
     /**
      * @return array{is_replay: bool, response: array<string,mixed>|null, response_code: int|null}
      */
-    public function check(string $key, string $endpoint, ?int $userId, ?int $contextId = null, int $clinicId): array
+    public function check(string $key, string $endpoint, ?int $userId, ?int $contextId, int $clinicId): array
     {
         $userId = $userId ?? 0;
         $contextId = $contextId ?? 0;
