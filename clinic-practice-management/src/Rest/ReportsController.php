@@ -241,6 +241,8 @@ final class ReportsController extends RestBase
             $file = $this->exports->download($this->userId($r), (int) $r['id']);
         } catch (ReportException $e) {
             return $this->error($e->errorCode, $e->httpStatus, $e->getMessage(), $e->data);
+        } catch (ScopeRequiredException $e) {
+            return $this->error($e->errorCode, $e->httpStatus(), $e->getMessage(), $e->data);
         } catch (\Throwable $e) {
             error_log('[CPMS][ReportsController] download unexpected: ' . get_class($e) . ': ' . $e->getMessage());
 
