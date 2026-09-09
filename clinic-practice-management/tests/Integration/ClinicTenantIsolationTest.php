@@ -702,14 +702,17 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
     {
         global $wpdb;
         $now = App::db()->nowUtcSql();
-        // u_clinician_user (UNIQUE روی wp_user_id) ⇒ پزشکِ بدون اتصال = NULL، نه ۰
+        // u_clinician_user: UNIQUE روی wp_user_id ⇒ هر ردیف بدونِ اتصال، کاربرِ
+        // factory متعلق به خودش را می‌گیرد (NULL نگه‌داشتن در این suite نشتی
+        // query خطای DB می‌داد؛ صریح‌سازیِ شناسه هم با الزام فاز «id ≠ 1» می‌خواند).
+        $linkedUserId = $wpUserId > 0 ? $wpUserId : (int) self::factory()->user->create(['role' => 'subscriber']);
         $wpdb->query(
             $wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_clinicians (clinic_id, full_name, wp_user_id, is_active, created_at, updated_at)
-                 VALUES (%d, %s, %i, 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                 VALUES (%d, %s, %d, 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 $clinicId,
                 $name,
-                $wpUserId > 0 ? $wpUserId : null,
+                $linkedUserId,
                 $now,
                 $now
             )
