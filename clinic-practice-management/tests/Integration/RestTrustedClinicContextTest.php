@@ -734,6 +734,10 @@ final class RestTrustedClinicContextTest extends WP_UnitTestCase
             [],
             ['X-CPMS-Clinic-Id' => (string) $this->clinicA]
         );
+        // قرارداد «safe not‑found» (کتاب‌الگوی فعلی: CLINIC_NOT_FOUND در
+        // BookingService/ClinicalService) — نه 403 که وجود رکورد را فاش کند.
+        $this->assertSame(404, $res->get_status(), 'پاسخ باید همان safe‑not‑found باشد: ' . (string) json_encode($res->get_data(), JSON_UNESCAPED_UNICODE));
+        $this->assertSame('CLINIC_NOT_FOUND', $this->errorCode($res));
 
         $finalized = (string) $wpdb->get_var(
             $wpdb->prepare(
@@ -803,7 +807,168 @@ final class RestTrustedClinicContextTest extends WP_UnitTestCase
         );
     }
 
+    /**
+     * §۴ (fix batch) — نسخهٔ Clinic A در context A نهایی می‌شود؛ نسخهٔ Clinic B
+     * در همان context **نه** (نه به‌عنوان موفق، نه با افشای وجود).
+     */
+    public function testPrescriptionFinalizeIsScopedToTrustedClinicForMultiMembershipDoctor(): void
+    {
+        $this->insertClinic($this->clinicB, 'rest-ctx-rx-scope');
+        $this->seedVisitPair();
+        $doctor = $this->makeStaff('cpms_doctor');
+        cpms_test_seed_membership($doctor, $this->clinicA, 'cpms_doctor');
+        cpms_test_seed_membership($doctor, $this->clinicB, 'cpms_doctor');
+        $clinicianA = $this->insertClinician($this->clinicA, $doctor, 'Dr RxScopeA');
+        $clinicianB = $this->insertClinician($this->clinicB, $doctor, 'Dr RxScopeB');
+        wp_set_current_user($doctor);
+
+        $visitA = $this->lastVisitId($this->clinicA);
+        $visitB = $this->lastVisitId($this->clinicB);
+        $rxA = $this->insertRx($this->clinicA, $visitA, $clinicianA);
+        $rxB = $this->insertRx($this->clinicB, $visitB, $clinicianB);
+
+        // context A → نسخهٔ A مجاز است
+        $ok = $this->dispatch('POST', self::NS . '/prescriptions/' . $rxA . '/finalize', [], ['X-CPMS-Clinic-Id' => (string) $this->clinicA]);
+        $this->assertSame(200, $ok->get_status(), 'نسخهٔ هم‌Clinic باید نهایی شود: ' . (string) json_encode($ok->get_data(), JSON_UNESCAPED_UNICODE));
+        $this->assertSame('finalized', $this->rxStatus($rxA));
+
+        // context A → نسخهٔ B رد + بدون هیچ جهش
+        $denied = $this->dispatch('POST', self::NS . '/prescriptions/' . $rxB . '/finalize', [], ['X-CPMS-Clinic-Id' => (string) $this->clinicA]);
+        $this->assertSame(404, $denied->get_status());
+        $this->assertSame('CLINIC_NOT_FOUND', $this->errorCode($denied));
+        $this->assertSame('draft', $this->rxStatus($rxB), 'هیچ جهشی روی نسخهٔ Clinic دیگر رخ نمی‌دهد');
+
+        // افشای وجود: پاسخِ «ناموجود» و «متعلق به Clinic دیگر» یکی است
+        $ghost = $this->dispatch('POST', self::NS . '/prescriptions/987654321/finalize', [], ['X-CPMS-Clinic-Id' => (string) $this->clinicA]);
+        $this->assertSame(404, $ghost->get_status());
+        $this->assertSame($this->errorCode($ghost), $this->errorCode($denied));
+        $this->assertSame(
+            (string) json_encode($ghost->get_data()),
+            (string) json_encode($denied->get_data()),
+            'بدنهٔ پاسخ نباید «نسخهٔ Clinic دیگر» را از «ناموجود» متمایز کند'
+        );
+
+        // context B → همان کاربر، همان نسخهٔ B: مجاز (ثبتهای Per‑Clinic واقعی‌اند)
+        $okB = $this->dispatch('POST', self::NS . '/prescriptions/' . $rxB . '/finalize', [], ['X-CPMS-Clinic-Id' => (string) $this->clinicB]);
+        $this->assertSame(200, $okB->get_status(), 'در context B نسخهٔ B باید نهایی شود: ' . (string) json_encode($okB->get_data(), JSON_UNESCAPED_UNICODE));
+        $this->assertSame('finalized', $this->rxStatus($rxB));
+    }
+
+    /**
+     * §۴ — سوییچ پیاپی context (A→B→A) مالکیت را درپیش‌نگذشتهٔ درخواست
+     * جاری نمی‌کند (Scope به‌ازای هر درخواست bind/restore می‌شود).
+     */
+    public function testSequentialContextSwitchDoesNotLeakPrescriptionOwnership(): void
+    {
+        $this->insertClinic($this->clinicB, 'rest-ctx-rx-seq');
+        $this->seedVisitPair();
+        $doctor = $this->makeStaff('cpms_doctor');
+        cpms_test_seed_membership($doctor, $this->clinicA, 'cpms_doctor');
+        cpms_test_seed_membership($doctor, $this->clinicB, 'cpms_doctor');
+        $clinicianA = $this->insertClinician($this->clinicA, $doctor, 'Dr RxSeqA');
+        $clinicianB = $this->insertClinician($this->clinicB, $doctor, 'Dr RxSeqB');
+        wp_set_current_user($doctor);
+
+        $rxA = $this->insertRx($this->clinicA, $this->lastVisitId($this->clinicA), $clinicianA);
+        $rxB = $this->insertRx($this->clinicB, $this->lastVisitId($this->clinicB), $clinicianB);
+
+        // A (رد B) → B (موفق B) → A (موفق A)
+        $this->assertSame(404, $this->dispatch('POST', self::NS . '/prescriptions/' . $rxB . '/finalize', [], ['X-CPMS-Clinic-Id' => (string) $this->clinicA])->get_status());
+        $this->assertSame(200, $this->dispatch('POST', self::NS . '/prescriptions/' . $rxB . '/finalize', [], ['X-CPMS-Clinic-Id' => (string) $this->clinicB])->get_status());
+        $this->assertSame(200, $this->dispatch('POST', self::NS . '/prescriptions/' . $rxA . '/finalize', [], ['X-CPMS-Clinic-Id' => (string) $this->clinicA])->get_status());
+        $this->assertSame('finalized', $this->rxStatus($rxA));
+        $this->assertSame('finalized', $this->rxStatus($rxB));
+    }
+
+    /**
+     * §۴ — staff که عضویت Clinic A را **ندارد** هم نباید بداند نسخهٔ A وجود
+     * دارد یا نه: همان safe‑not‑found، بدون جهش.
+     */
+    public function testNonMemberStaffGetsSameSafeNotFoundForOtherClinicPrescription(): void
+    {
+        $this->insertClinic($this->clinicB, 'rest-ctx-rx-nonmem');
+        $this->seedVisitPair();
+        $member = $this->makeStaff('cpms_doctor');
+        cpms_test_seed_membership($member, $this->clinicA, 'cpms_doctor');
+        $clinicianA = $this->insertClinician($this->clinicA, $member, 'Dr RxOwner');
+        $rxA = $this->insertRx($this->clinicA, $this->lastVisitId($this->clinicA), $clinicianA);
+
+        $outsider = $this->makeStaff('cpms_doctor');
+        cpms_test_seed_membership($outsider, $this->clinicB, 'cpms_doctor');
+        wp_set_current_user($outsider);
+
+        $res = $this->dispatch('POST', self::NS . '/prescriptions/' . $rxA . '/finalize', [], ['X-CPMS-Clinic-Id' => (string) $this->clinicB]);
+        $this->assertSame(404, $res->get_status());
+        $this->assertSame('CLINIC_NOT_FOUND', $this->errorCode($res));
+        $flat = (string) json_encode($res->get_data(), JSON_UNESCAPED_UNICODE);
+        $this->assertStringNotContainsString('cross', strtolower($flat));
+        $this->assertStringNotContainsString('clinic_id', strtolower($flat));
+        $this->assertSame('draft', $this->rxStatus($rxA));
+    }
+
     // ================= fixtures =================
+
+    /** آخرین visit یک Clinic (seedVisitPair دقیقاً یک visit per clinic می‌کارد). */
+    private function lastVisitId(int $clinicId): int
+    {
+        global $wpdb;
+        $id = (int) $wpdb->get_var(
+            $wpdb->prepare(
+                'SELECT id FROM ' . $wpdb->prefix . 'cpms_visits WHERE clinic_id = %d ORDER BY id DESC LIMIT 1', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $clinicId
+            )
+        );
+        self::assertGreaterThan(0, $id, 'پیش‌شرط: ویزیتِ همان Clinic از seedVisitPair');
+
+        return $id;
+    }
+
+    /** درج صریح نسخهٔ draft متعلق به یک Clinic (ستون clinic_id واقعی، نه حدس). */
+    private function insertRx(int $clinicId, int $visitId, int $clinicianId): int
+    {
+        global $wpdb;
+        $now = App::db()->nowUtcSql();
+        $patientId = (int) $wpdb->get_var(
+            $wpdb->prepare(
+                'SELECT patient_id FROM ' . $wpdb->prefix . 'cpms_visits WHERE id = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $visitId
+            )
+        );
+        $this->assertGreaterThan(0, $patientId, 'پیش‌شرط: visit متعلق به همان Clinic بیمار دارد');
+        $seq = random_int(100000, 9999999);
+        $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_prescriptions
+                     (clinic_id, prescription_number, visit_id, patient_id, clinician_id, status, is_patient_visible, created_at, updated_at)
+                 VALUES (%d, %s, %d, %d, %d, "draft", 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $clinicId,
+                'RX-SCOPE-' . $seq . '-' . $clinicId,
+                $visitId,
+                $patientId,
+                $clinicianId,
+                $now,
+                $now
+            )
+        );
+        $id = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $id, 'پیش‌شرط: درج نسخه');
+
+        return $id;
+    }
+
+    private function rxStatus(int $rxId): string
+    {
+        global $wpdb;
+
+        return (string) $wpdb->get_var(
+            $wpdb->prepare(
+                'SELECT status FROM ' . $wpdb->prefix . 'cpms_prescriptions WHERE id = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $rxId
+            )
+        );
+    }
+
+
 
     private function makeStaff(string $role): int
     {

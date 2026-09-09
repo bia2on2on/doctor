@@ -374,8 +374,13 @@ final class ClinicalService
         $this->requireRole($actorUserId, 'doctor', 'نهایی‌سازی نسخه');
         $this->requireCap($actorUserId, RolesAndCapabilities::RX_CREATE, 'rx');
 
-        $rx = $this->db->transactional(function () use ($prescriptionId): array {
-            $rx = $this->prescriptions->findForUpdate($prescriptionId);
+        // C6‑F (Class A repair): مالکیت Per‑Object — Trusted Scope برای *استقرار*
+        // کافی نیست؛ ردیف هدف باید **همان Clinic** باشد. Predicate در خودِ SQL
+        // (findForUpdateForClinic + updateForClinic) تا ردیف Clinic دیگر هرگز
+        // بارگذاری/جهش نیابد و «وجود» آن هم افشا نشود (safe not‑found).
+        $clinicId = App::scope()->clinicId;
+        $rx = $this->db->transactional(function () use ($prescriptionId, $clinicId): array {
+            $rx = $this->prescriptions->findForUpdateForClinic($prescriptionId, $clinicId);
             if ($rx === null) {
                 throw ClinicalException::of('CLINIC_NOT_FOUND', 'نسخه یافت نشد', 404);
             }
@@ -386,7 +391,11 @@ final class ClinicalService
                 throw ClinicalException::of('CLINIC_INVALID_TRANSITION', 'نسخه ابطال‌شده قابل نهایی‌سازی نیست', 409, ['status' => 'voided']);
             }
 
-            $this->prescriptions->update($prescriptionId, ['status' => 'finalized', 'finalized_at' => $this->db->nowUtcSql()]);
+            $affected = $this->prescriptions->updateForClinic($clinicId, $prescriptionId, ['status' => 'finalized', 'finalized_at' => $this->db->nowUtcSql()]);
+            if ($affected < 1) {
+                // لایهٔ دوم: جهش بیرونِ مرز انجام نشده — همان safe not‑found.
+                throw ClinicalException::of('CLINIC_NOT_FOUND', 'نسخه یافت نشد', 404);
+            }
 
             return $rx;
         });
@@ -423,8 +432,10 @@ final class ClinicalService
             throw ClinicalException::of('CLINIC_VALIDATION_FAILED', 'دلیل ابطال الزامی است', 422);
         }
 
-        $rx = $this->db->transactional(function () use ($prescriptionId, $reason): array {
-            $rx = $this->prescriptions->findForUpdate($prescriptionId);
+        // C6‑F — همان invariant برای ابطال (API سرویس؛ endpoint در قرارداد فعلی نیست).
+        $clinicId = App::scope()->clinicId;
+        $rx = $this->db->transactional(function () use ($prescriptionId, $reason, $clinicId): array {
+            $rx = $this->prescriptions->findForUpdateForClinic($prescriptionId, $clinicId);
             if ($rx === null) {
                 throw ClinicalException::of('CLINIC_NOT_FOUND', 'نسخه یافت نشد', 404);
             }
@@ -432,7 +443,10 @@ final class ClinicalService
                 throw ClinicalException::of('CLINIC_INVALID_TRANSITION', 'این نسخه قبلاً ابطال شده است', 409, ['status' => 'voided']);
             }
 
-            $this->prescriptions->update($prescriptionId, ['status' => 'voided', 'void_reason' => mb_substr($reason, 0, 255)]);
+            $affected = $this->prescriptions->updateForClinic($clinicId, $prescriptionId, ['status' => 'voided', 'void_reason' => mb_substr($reason, 0, 255)]);
+            if ($affected < 1) {
+                throw ClinicalException::of('CLINIC_NOT_FOUND', 'نسخه یافت نشد', 404);
+            }
 
             return $rx;
         });
