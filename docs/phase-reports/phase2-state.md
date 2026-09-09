@@ -29,6 +29,9 @@
   به‌صورت عددی**، سبز بودن از check‑run تأیید شده.
 - **NOT TESTED locally:** PHP در این sandbox نصب نبود (بدون `php -l`/phpunit محلی)؛ همهٔ
   شواهد = GitHub Actions روی SHA.
+- هم‌ترازی docs روی SHA بعدی نیز سبز است: CI `34389431689` · Real‑WP `34389425080` ·
+  Pilot `34389425027` · Closure `34389425099` (۱ check‑run = success). این ارجاع برای
+  «وضعیت گیت‌ها» است، نه مبنای وضعیت پیاده‌سازی؛ مبنای سندها همان `4289d89` است.
 
 ### سابقه (روی `6e5d48c` — C6 Reports+Export+Pilot)
 
