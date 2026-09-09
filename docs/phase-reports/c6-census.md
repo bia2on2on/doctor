@@ -222,7 +222,7 @@ OtpService:321، PatientIdentityService:23 (نقل قول قاعده)، ClinicSc
 - **سبز:** `4289d89` — CI `34388298772` · Real‑WP(push, wp_/clinic_) `34388294483` ·
   Pilot `34388294486` · Closure `34388294616`.
 - **هنوز در C6:** Tripwire→CI (نبود، باقی است) · C6‑F جامع (PARTIAL؛ دو تست
-  «مشخصهٔ» مالکیت Per‑Object ثبت شد: نسخهٔ Clinic دیگر + لاگ SMS) · تصمیم باز
+  «مشخصهٔ» مالکیت Per‑Object ثبت شد: نسخهٔ Clinic دیگر + لاگ SMS — **یافتۀ Class A/High، ترمیم و سبز روی `2d13f2d` با `7c4b2bd`؛ dedupe بین‌Clinic نیز تأیید و schema‑free رفع شد**) · تصمیم باز
   طبقه‌بندی route‌ها (D‑cases) · workflow صریحِ onboarding/عضویت staff.
   بررسی بازبین: `MembershipService::create_membership()` تنها API ساخت عضویت است و
   `App::membership_service()` در `src/` **هیچ فراخوانِ Production ندارد** (فقط تست‌ها؛

@@ -81,6 +81,49 @@
   job/system پاک نمی‌شود)، `testSequentialClinicRequestsDoNotLeakScope` (A→B/B→A)،
   `testNestedRestDispatchRestoresOuterScope` (تودرتو) — سبز روی `0205089` (CI `34393642656`).
 
+### C6‑F کلاس A — ترمیم دو نقص Cross‑Tenant (شاهد قابل‌اجرا، سبز روی `2d13f2d`)
+
+- **مبنا/پایان:** شروع `41321e2` → `7c4b2bd` (نسخه) → `2d13f2d` (SMS) — ادامهٔ خطی،
+  بدون force‑push/amend/rebase (دستور §۰ رعایت شد؛ تخلف batch قبل در همین سند ثبت است).
+- **Finding A — High (IDOR بین‌تننتی، جهش):** `POST /clinic/v1/prescriptions/{id}/finalize`
+  فقط نقش/Cap را می‌سنجید؛ `PrescriptionRepository::findForUpdate` = `WHERE id` ⇒ هر پزشکِ
+  دارای `cpms_rx_create` می‌توانست نسخهٔ Clinic دیگر را **نهایی** کند.
+  ریشه: نبودِ مالکیت Per‑Object در **Query Layer**. ترمیم:
+  `findForUpdateForClinic(id, clinicId)` + `updateForClinic(clinicId, id, …)` (predicate دیتابیس،
+  قابل ایندکس از PRIMARY) و در `ClinicalService::finalizePrescription/voidPrescription`
+  Clinic از `App::scope()` (Trusted Scope؛ بدون هیچ id کلاینتی/بدون fallback به Clinic 1)؛
+  خطا = `CLINIC_NOT_FOUND` 404 یکسان با «ناموجود» ⇒ **بدون افشای وجود** و **بدون جهش**
+  (`affected < 1` ⇒ همان safe not‑found). تست‌ها: A/A مجاز، A/B رد+بدون‌جهش، B/B مجاز،
+  بدنهٔ پاسخ یکسان با ناموجود، سوییچ پیاپی A→B→A، غیرعضو → همان 404.
+- **Finding B — High (نشت PHI در خواندن):** `GET /clinic/v1/sms/logs` → `SmsController::logs`
+  → `SmsService::logs` با `SELECT`/`COUNT` **بدون** `clinic_id` ⇒ هر دارندۀ `cpms_sms_config`
+  لاگِ تمام tenantها (موبایل + متن) را می‌دید. ترمیم: `logs(int $clinicId, …)` با
+  `WHERE clinic_id = %d` برای **هر دو** COUNT و SELECT (prepared SQL؛ بدون post‑filter در PHP).
+  تست‌ها: context A و B، کاربر چند‌عضویت با سوییچ context، Organization دیگر، Clinic خالی،
+  پایداری شمارش/ترتیب/صفحه‌بندی، و شهادِ SQL‑level روی لایۀ سرویس.
+- **Dedupe (§۶ — تأییدشده، رفعِ schema‑free):** `dedupe_key = sha256(event|ctxType|ctxId|day)`
+  و `uq_dedupe` یک UNIQUE **سراسری** ⇒ یک رویداد/Context/روزِ یکسان در دو Clinic، ارسال
+  دومی را سرکوب می‌کرد (انکار سرویس، نه نشت داده). هویت Clinic به hash اضافه شد + lookup
+  با `AND clinic_id = %d`؛ شهاد: `SmsFlowTest::testDedupeIsScopedPerClinic` + حفظ
+  `testDedupePreventsDuplicateContextMessage`. **محدودیتِ از پیش موجود (گزارش، نه رفع):**
+  مسیر resend با الحاق `-{id}` به کلید ۶۴تایی، در ستون `CHAR(64)` truncate می‌شود؛ رفعش
+  به schema نیاز دارد ⇒ **OPEN، بدون Migration**.
+- **ایندکس (مشاهدۀ کارایی، بدون تغییر schema):** `cpms_sms_messages` هیچ ایندکس `clinic_id`
+  ندارد (اینکس‌ها: `uq_dedupe`, `ix_status_updated`, `ix_event_created`, `ix_context`).
+  کوئری جدید **درست** است (tenant predicate + فیلتر روی PRIMARY‑order) ولی روی جدول بزرگ
+  scan می‌کند. **هیچ Migration ساخته/تصویب نشد و 0021 لازم نبود** — در صورت درخواست
+  بهین‌سازی: `KEY ix_sms_clinic (clinic_id, id)` با تأیید Owner.
+- **گیت‌ها روی `2d13f2d`:** CI `34396622019` (۷ job سبز: WPCS · PHPStan · Unit×4 · **Integration**) ·
+  Real‑WP `34396616394` (`wp_` و `clinic_`) · Pilot `34396616498` · Closure `34396616419`
+  — همه `completed/success`. روی `7c4b2bd` (فقط Fix A) قرمزِ باقی‌مانده دقیقاً یک تستِ SMS بود
+  (`Tests: 571, Assertions: 2994, Failures: 1`) و Real‑WP/Closure/Pilot سبز. **RED تاریخیِ
+  `5b3768e`/`41321e2` (`Tests: 568, Assertions: 2951, Failures: 2`) پاک نشده است.**
+- **هیچ تست امنیتی skip/skip‑soft/xfail نشد؛ هیچ gate‌ای تضعیف نشد؛ skip list تغییر نکرد؛
+  Phase 3/`AuthorizationService` شروع نشد؛ PR#10..#13 دست‌نخورده.**
+- **باقی‌ماندۀ C6 (بدون تغییر):** Tripwire→CI · C6‑F جامع (۱۴‑موردی) · طبقه‌بندی/تصمیم
+  D‑route‌ها (از جمله `files/{id}/stream` که در skip list است و read‑path بالینی‌اش هنوز
+  Per‑Object check ندارد) · workflow onboarding عضویت staff · **C6 = IN PROGRESS**.
+
 ### سابقه (روی `6e5d48c` — C6 Reports+Export+Pilot)
 
 | گیت | Run | نتیجه |
