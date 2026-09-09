@@ -64,7 +64,7 @@ final class ScheduleService
     public function create(int $actorUserId, array $fields): array
     {
         $clinicianId = $this->intField($fields, 'clinician_id');
-        $this->requireClinician($clinicianId);
+        $clinicId = $this->requireClinician($clinicianId);
 
         $day = $this->intField($fields, 'day_of_week');
         if ($day < 0 || $day > 6) {
@@ -77,7 +77,7 @@ final class ScheduleService
         $data = $this->validatedScheduleFields($fields);
         $nowSql = $this->db->nowUtcSql();
         $id = $this->schedules->create($data + [
-            'clinic_id' => 1,
+            'clinic_id' => $clinicId,
             'clinician_id' => $clinicianId,
             'day_of_week' => $day,
             'created_at' => $nowSql,
@@ -184,7 +184,7 @@ final class ScheduleService
     public function createException(int $actorUserId, array $fields): array
     {
         $clinicianId = $this->intField($fields, 'clinician_id');
-        $this->requireClinician($clinicianId);
+        $clinicId = $this->requireClinician($clinicianId);
 
         $date = $this->parseYmd((string) ($fields['date'] ?? ''), 'date');
         if ($date < gmdate('Y-m-d')) {
@@ -218,7 +218,7 @@ final class ScheduleService
             : null;
 
         $id = $this->schedules->createException([
-            'clinic_id' => 1,
+            'clinic_id' => $clinicId,
             'clinician_id' => $clinicianId,
             'date' => $date,
             'type' => $type,
@@ -352,15 +352,20 @@ final class ScheduleService
         }
     }
 
-    private function requireClinician(int $clinicianId): void
+    /**
+     * وجود پزشک + کلینیکِ او — برنامه/استثنا متعلق به کلینیک پزشک است (C6).
+     */
+    private function requireClinician(int $clinicianId): int
     {
         $row = $this->db->fetchRow(
-            'SELECT id FROM ' . $this->db->table('cpms_clinicians') . ' WHERE id = %d AND is_active = 1 LIMIT 1',
+            'SELECT id, clinic_id FROM ' . $this->db->table('cpms_clinicians') . ' WHERE id = %d AND is_active = 1 LIMIT 1',
             [$clinicianId]
         );
         if ($row === null) {
             throw BookingException::of('CLINIC_NOT_FOUND', 'پزشک یافت نشد', 404);
         }
+
+        return (int) $row['clinic_id'];
     }
 
     /**

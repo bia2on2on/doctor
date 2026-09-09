@@ -148,8 +148,19 @@ OtpService:321، PatientIdentityService:23 (نقل قول قاعده)، ClinicSc
 
 - **C6-A** (کامیت `17d7d10`): census + tripwire (لوکال) + allowlist خالی. CI wiring در C6-F وقتی production=0.
 - **C6-B** ✅: Notifications+SMS+Jobs (repo/service/handlers) — جزئیات زیر.
-- **C6-C**: Booking+Schedule (slot-derived).
+- **C6-C** ✅: Booking+Schedule — جزئیات در «وضعیت C6-C».
 - **C6-D**: Patients+Clinical+Visits+Files (scope/entity-derived).
+
+## وضعیت C6-C (اجراشده)
+
+منبع clinic در همهٔ جریان‌ها relation دامنه است (نه scope نه client):
+
+- `requireClinician` (Booking+Schedule) اکنون `clinic_id` پزشک را برمی‌گرداند — منبع واحد جریان‌های availability/quote/hold/reschedule/createByStaff/listForClinician/create-schedule/create-exception.
+- hold: clinic از ردیف slot (`slot_holds.clinic_id` = clinic اسلات)؛ confirm: patient lookup/minimal-patient با clinic خود hold، appointment با clinic اسلات.
+- reschedule: appointment جدید با clinic اسلات مقصد؛ createByStaff: appointment با clinic اسلات.
+- `createMinimalPatient(clinic_id,…)` و `generateMrn(clinic_id)` — MRN یکتا در کلینیک بیمار.
+- **verify سمت سرور جدید**: createByStaff اگر بیمار به کلینیک دیگری تعلق داشته باشد → `CLINIC_VALIDATION_FAILED` 422 (جلوگیری از cross-clinic patient/slot mix).
+- شمارش tripwire بعد از C6-C: **42 violation** (۴۴→۴۲؛ ۱۳ مورد Booking + ۲ مورد Schedule فیکس شدند). SecretaryQueuePage:46 طبق plan به C6-E (Admin) منتقل شد.
 - **C6-E**: Reports+Export+Admin + Infra (Audit/Idempotency/Settings + Migrationها 0020/0021) + REST boundary (resolveScope×membership).
 - **C6-F**: tripwire→CI + MultiTenantIsolationTest (ماتریس ۱۴بندی).
 - **C6-G**: docs + state.
