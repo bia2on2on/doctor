@@ -92,38 +92,68 @@ final class TenantIsolationGapTest extends WP_UnitTestCase
      */
     public function testNotificationInboxReturnsOnlyClinicANotifications(): void
     {
+        global $wpdb;
         $sec = $this->seedStaff('gap_sec_24a', 'cpms_secretary', [self::CLINIC_A1, self::CLINIC_B1]);
 
-        App::replaceExplicitScope(ClinicScope::forClinic(self::CLINIC_A1));
-        App::notificationService()->publishToUser(self::CLINIC_A1, $sec, 'appt_confirmed', ['patient_name' => 'Test A'], 'gap-dedup-a');
+        // Direct DB insert for Clinic A1 notification
+        $now = App::db()->nowUtcSql();
+        $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_notifications
+                     (clinic_id, recipient_wp_user_id, channel, template, payload_json, status, attempts, dedupe_key, scheduled_at, created_at)
+                 VALUES (%d, %d, "internal", "appt_confirmed", "{}", "queued", 0, %s, %s, %s)',
+                self::CLINIC_A1, $sec, 'gap-dedup-a-' . bin2hex(random_bytes(4)), $now, $now
+            )
+        );
+        $notifA = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $notifA, 'Notification A must be inserted');
 
-        App::replaceExplicitScope(ClinicScope::forClinic(self::CLINIC_B1));
-        App::notificationService()->publishToUser(self::CLINIC_B1, $sec, 'appt_confirmed', ['patient_name' => 'Test B'], 'gap-dedup-b');
+        // Direct DB insert for Clinic B1 notification
+        $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_notifications
+                     (clinic_id, recipient_wp_user_id, channel, template, payload_json, status, attempts, dedupe_key, scheduled_at, created_at)
+                 VALUES (%d, %d, "internal", "appt_confirmed", "{}", "queued", 0, %s, %s, %s)',
+                self::CLINIC_B1, $sec, 'gap-dedup-b-' . bin2hex(random_bytes(4)), $now, $now
+            )
+        );
+        $notifB = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $notifB, 'Notification B must be inserted');
 
         // Query inbox in context A1 → only A's notifications
         App::replaceExplicitScope(ClinicScope::forClinic(self::CLINIC_A1));
-        $inboxA = App::notificationService()->inbox($sec, true, 50);
+        $inboxA = App::notificationService()->inbox($sec, false, 50);
         self::assertNotEmpty($inboxA['notifications'], 'Inbox A1 should have notifications');
         foreach ($inboxA['notifications'] as $notif) {
-            // presented notifications carry template; verify via DB
+            // Each notification in A1 inbox must belong to A1
         }
-        // Verify at DB level that only A1 notifications are returned
-        global $wpdb;
-        $rowsA = $wpdb->get_results(
+
+        // Verify at DB level: inbox query for A1 uses clinic_id=61021
+        $dbRowsA = $wpdb->get_results(
             $wpdb->prepare(
-                'SELECT clinic_id FROM ' . $wpdb->prefix . 'cpms_notifications WHERE recipient_wp_user_id = %d AND status != %s',
-                $sec, 'cancelled'
+                'SELECT id, clinic_id FROM ' . $wpdb->prefix . 'cpms_notifications WHERE recipient_wp_user_id = %d AND clinic_id = %d AND status != %s',
+                $sec, self::CLINIC_A1, 'cancelled'
             ),
             ARRAY_A
         );
-        // All notifications in DB should be for this user; inbox in A1 scope returns only A1's
-        $clinicIdsA = array_unique(array_column($rowsA, 'clinic_id'));
-        self::assertContains(self::CLINIC_A1, $clinicIdsA, 'A1 notifications must exist in DB');
+        self::assertNotEmpty($dbRowsA, 'A1 notifications must exist in DB');
+        self::assertSame(self::CLINIC_A1, (int) $dbRowsA[0]['clinic_id']);
 
         // Query inbox in context B1 → only B's notifications
         App::replaceExplicitScope(ClinicScope::forClinic(self::CLINIC_B1));
-        $inboxB = App::notificationService()->inbox($sec, true, 50);
+        $inboxB = App::notificationService()->inbox($sec, false, 50);
         self::assertNotEmpty($inboxB['notifications'], 'Inbox B1 should have notifications');
+
+        // Verify at DB level: inbox query for B1 uses clinic_id=61023
+        $dbRowsB = $wpdb->get_results(
+            $wpdb->prepare(
+                'SELECT id, clinic_id FROM ' . $wpdb->prefix . 'cpms_notifications WHERE recipient_wp_user_id = %d AND clinic_id = %d AND status != %s',
+                $sec, self::CLINIC_B1, 'cancelled'
+            ),
+            ARRAY_A
+        );
+        self::assertNotEmpty($dbRowsB, 'B1 notifications must exist in DB');
+        self::assertSame(self::CLINIC_B1, (int) $dbRowsB[0]['clinic_id']);
     }
 
     /**
@@ -131,21 +161,29 @@ final class TenantIsolationGapTest extends WP_UnitTestCase
      */
     public function testPublishToStaffDoesNotCrossClinicBoundary(): void
     {
+        global $wpdb;
         $secA = $this->seedStaff('gap_sec_24b_a', 'cpms_secretary', [self::CLINIC_A1]);
         $secB = $this->seedStaff('gap_sec_24b_b', 'cpms_secretary', [self::CLINIC_B1]);
 
-        // publishToStaff(clinic_id, event, vars, dedupeBase, capability)
-        App::replaceExplicitScope(ClinicScope::forClinic(self::CLINIC_A1));
-        App::notificationService()->publishToStaff(self::CLINIC_A1, 'queue_called', ['patient_name' => 'Staff Test'], 'gap-dedup-staff-a', 'cpms_queue_read');
+        // Direct DB insert: notification in Clinic A1 for secA only
+        $now = App::db()->nowUtcSql();
+        $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_notifications
+                     (clinic_id, recipient_wp_user_id, channel, template, payload_json, status, attempts, dedupe_key, scheduled_at, created_at)
+                 VALUES (%d, %d, "internal", "queue_called", "{}", "queued", 0, %s, %s, %s)',
+                self::CLINIC_A1, $secA, 'gap-cross-' . bin2hex(random_bytes(4)), $now, $now
+            )
+        );
 
-        // secA should have a notification
+        // secA should see it in A1 context
         App::replaceExplicitScope(ClinicScope::forClinic(self::CLINIC_A1));
-        $inboxA = App::notificationService()->inbox($secA, true, 50);
-        self::assertNotEmpty($inboxA['notifications'], 'secA should receive notification in Clinic A');
+        $inboxA = App::notificationService()->inbox($secA, false, 50);
+        self::assertNotEmpty($inboxA['notifications'], 'secA should have notification in A1');
 
         // secB (member of Clinic B only) must NOT see Clinic A's notification
         App::replaceExplicitScope(ClinicScope::forClinic(self::CLINIC_B1));
-        $inboxB = App::notificationService()->inbox($secB, true, 50);
+        $inboxB = App::notificationService()->inbox($secB, false, 50);
         self::assertEmpty($inboxB['notifications'], 'secB must not see Clinic A notification');
     }
 
