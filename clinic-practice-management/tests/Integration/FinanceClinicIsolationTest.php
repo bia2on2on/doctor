@@ -33,6 +33,9 @@ final class FinanceClinicIsolationTest extends WP_UnitTestCase
 
     private ?string $sabotageTable = null;
 
+    /** @var list<string> */
+    private array $capturedQueries = [];
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -46,6 +49,8 @@ final class FinanceClinicIsolationTest extends WP_UnitTestCase
     protected function tearDown(): void
     {
         $this->disarmSabotage();
+        remove_filter('query', [$this, 'captureQuery']);
+        $this->capturedQueries = [];
         App::resetScope();
         parent::tearDown();
     }
@@ -496,6 +501,49 @@ final class FinanceClinicIsolationTest extends WP_UnitTestCase
         $this->assertSame(0, $id);
     }
 
+    public function testLockTargetsOperatingClinicNotOne(): void
+    {
+        $this->ensureClinicB();
+        $fx = $this->makeClinicFixtures(self::CLINIC_B, 'B');
+
+        $this->capturedQueries = [];
+        add_filter('query', [$this, 'captureQuery']);
+        try {
+            $visitId = $this->makeCompletedVisit($fx);
+            $this->finance()->issueInvoice($fx['secretary'], [
+                'visit_id' => $visitId,
+                'items' => [['description' => 'قفل Clinic', 'unit_price' => 123000]],
+            ]);
+        } finally {
+            remove_filter('query', [$this, 'captureQuery']);
+        }
+
+        $lockQueries = array_values(array_filter(
+            $this->capturedQueries,
+            static fn (string $q): bool => stripos($q, 'cpms_clinics') !== false && stripos($q, 'FOR UPDATE') !== false
+        ));
+
+        $this->assertNotEmpty($lockQueries, 'باید حداقل یک SELECT ... FOR UPDATE روی cpms_clinics دیده شود');
+
+        $foundOperating = false;
+        $foundOne = false;
+        foreach ($lockQueries as $q) {
+            if (preg_match('/\bid\s*=\s*' . self::CLINIC_B . '\b/', $q) === 1) {
+                $foundOperating = true;
+            }
+            // id = 1 دقیق، نه LIMIT 1 و نه بخشی از 702
+            if (preg_match('/\bid\s*=\s*1\b/', $q) === 1) {
+                // اگر همین کوئری هم‌زمان 702 دارد، آن را به‌عنوان 1 حساب نکن
+                if (preg_match('/\b' . self::CLINIC_B . '\b/', $q) !== 1) {
+                    $foundOne = true;
+                }
+            }
+        }
+
+        $this->assertTrue($foundOperating, 'قفل باید روی Clinic عامل (702) اجرا شود');
+        $this->assertFalse($foundOne, 'قفل نباید روی Clinic 1 اجرا شود');
+    }
+
     // ================= Helpers =================
 
     private function finance(): \ClinicCore\Application\Finance\FinanceService
@@ -761,6 +809,21 @@ final class FinanceClinicIsolationTest extends WP_UnitTestCase
             if (preg_match('/INSERT\s+INTO\s+`?' . $table . '`?\s*\(/i', $query) === 1) {
                 return 'INSERT INTO `' . $wpdb->prefix . 'cpms_table_that_does_not_exist` (id) VALUES (1)';
             }
+        }
+
+        return $query;
+    }
+
+    /**
+     * مشاهده SQL واقعی از مسیر تولید — بدون ابزار تولید.
+     *
+     * @param mixed $query
+     * @return mixed
+     */
+    public function captureQuery($query)
+    {
+        if (is_string($query)) {
+            $this->capturedQueries[] = $query;
         }
 
         return $query;
