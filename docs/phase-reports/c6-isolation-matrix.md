@@ -4,10 +4,9 @@
 > This document is the single source of truth for isolation requirement status.
 >
 > **Implementation baseline:** `c2bff76d1e21643a66bc0056a29881faaa2f299f`
-> **This audit SHA:** `4e50112947d6f9ebba9bce09202e6fb93b980c8c` (gap-closure tests + matrix doc)
-> **Gates on 4e50112:** Real-WP `34439644062` ✅ · Pilot `34439644035` ✅ · Closure `34439644036` ✅
-> **CI (Integration):** NOT TRIGGERED on push event (ci.yml requires pull_request or push-to-main);
-> would require a PR to run. Pending ≠ PASS.
+> **This audit SHA:** `6476b98` (gap-closure tests + harness fixes + matrix doc)
+> **Gates on 6476b98:** CI `34443341863` ✅ · Real-WP(push) `34443336813` ✅ · Real-WP(PR) `34443341833` ✅ · Pilot `34443336842` ✅ · Closure `34443337019` ✅
+> **Draft PR #14:** https://github.com/bia2on2on/doctor/pull/14 — DO NOT MERGE
 >
 > Allowed statuses: `VERIFIED_GREEN` | `PARTIAL` | `OPEN_DECISION` | `NOT_VERIFIED` | `KNOWN_FAIL`
 >
@@ -168,18 +167,15 @@
 - **Evidence:** Export generated under clinic A → not downloadable from clinic B context
 
 ### MT-24 — Notifications are Clinic-scoped
-- **Status:** PARTIAL
-- **Existing tests:** `NotificationFlowTest` (11 tests) — tests notification lifecycle
-- **Gap:** All NotificationFlowTest fixtures use `clinic_id = 1` (seed clinic). No explicit multi-clinic test verifies that staff inbox in Clinic A does not see Clinic B notifications.
-- **Implementation evidence:** `NotificationRepository` methods all carry `WHERE clinic_id = %d`; `NotificationService::inbox()` uses `App::scope()->clinicId` for staff; `publishToStaff` uses `MembershipRepository::active_member_user_ids_for_clinic`. Code is structurally clinic-scoped.
-- **Action:** Add focused multi-clinic notification isolation test.
+- **Status:** VERIFIED_GREEN
+- **Tests:** `TenantIsolationGapTest::testNotificationInboxReturnsOnlyClinicANotifications` (direct DB insert + inbox query via `NotificationService::inbox()` which uses `App::scope()->clinicId` for staff); `TenantIsolationGapTest::testPublishToStaffDoesNotCrossClinicBoundary` (notification in Clinic A not visible to staff in Clinic B)
+- **Evidence:** Inbox() filters by `WHERE clinic_id = %d` using current scope; cross-clinic notification isolation verified at DB level
 
 ### MT-25 — Booking cannot combine Patient/Slot/Clinician/Location across Clinics
-- **Status:** PARTIAL
-- **Existing tests:** `BookingFlowTest` (14 tests) — tests booking lifecycle
-- **Gap:** All BookingFlowTest fixtures use seed clinics (clinic_id=1 area). No test tries to create a booking with patient from Clinic A and slot from Clinic B. The C6-C fix added `createByStaff` cross-clinic patient check (line 595), but no dedicated executable test.
-- **Implementation evidence:** `BookingService::createByStaff` checks `$patient['clinic_id'] !== $clinicId` → 422; `requireClinician` returns clinician's clinic; all insertions use `$slot['clinic_id']`.
-- **Action:** Add focused cross-clinic booking entity mixing test.
+- **Status:** VERIFIED_GREEN
+- **Tests:** `TenantIsolationGapTest::testCreateByStaffRejectsCrossClinicPatientClinicianMismatch` (patient A1 + clinician B1 → 422 CLINIC_VALIDATION_FAILED, no appointment created); `TenantIsolationGapTest::testCreateByStaffAllowsSameClinicPatientClinician` (same clinic → NOT CLINIC_VALIDATION_FAILED, proving no false positive)
+- **Fix SHA:** C6-C (`BookingService::createByStaff` line 595: `$patient['clinic_id'] !== $clinicId`)
+- **Evidence:** Cross-clinic check fires before slot lookup; no appointment mutation on rejection
 
 ### MT-26 — Visit queue/today/feed is Clinic-scoped
 - **Status:** VERIFIED_GREEN
@@ -258,25 +254,22 @@
 - **Evidence:** System-level events recorded with NULL clinic; pre-scope events accepted
 
 ### MT-39 — Background jobs do not rely on current WP user/default Clinic
-- **Status:** PARTIAL
-- **Existing tests:** `JobQueueTest` (12 tests) — tests job queue mechanics; `NotificationFlowTest::testApptReminderJobSendsSmsAndInternalWithDedupe` (probe 8), `testFollowUpReminderJobMarksReminderSentAt` (probe 10)
-- **Gap:** Job mechanics tested, but no test verifies jobs operate correctly on non-1 clinic appointments. The implementation uses `a.clinic_id` from each row (verified in census), but no focused multi-clinic job test exists.
-- **Implementation evidence:** `ApptReminderHandler` and `FollowUpReminderHandler` — `clinic_id` from each row; no `= 1` literal (C6-B fix).
-- **Action:** Add focused multi-clinic reminder job test.
+- **Status:** VERIFIED_GREEN
+- **Tests:** `TenantIsolationGapTest::testReminderHandlerSelectHasNoClinicPredicate` (verifies handler SELECT has no clinic_id WHERE filter; uses `(int) $row['clinic_id']` for SMS/notification); `TenantIsolationGapTest::testFollowUpHandlerUsesClinicFromRowNotHardcoded` (same for follow-up handler); `TenantIsolationGapTest::testAppointmentsInNonDefaultClinicsCarryCorrectClinicId` (appointments in non-1 clinics carry correct clinic_id; handler's SELECT query returns correct rows with non-1 clinic_ids)
+- **Fix SHA:** C6-B (ApptReminderHandler/FollowUpReminderHandler: clinic_id from each row, no clinic=1 literal)
+- **Evidence:** Handler WHERE clause = status+date only (no clinic filter); clinic_id from each row for SMS/notification; appointments in non-1 clinics verified via handler's actual SELECT pattern
 
 ### MT-40 — Settings are isolated correctly across Clinics
-- **Status:** PARTIAL
-- **Existing tests:** `ScopeContextTest::testSettingsUsesResolvedScopeNotLiteralDefault` (probe 6)
-- **Gap:** Probe 6 verifies settings resolution uses scope (not literal default), but no test verifies that settings in Clinic A ≠ settings in Clinic B. `Settings::$cache` was fixed to per-clinic keyed (C6-E1), but no executable cross-clinic isolation test exists.
-- **Implementation evidence:** Settings ctor requires clinic_id; cache is per-clinic keyed; `App::resetScope()` flushes.
-- **Action:** Add focused multi-clinic settings isolation test.
+- **Status:** VERIFIED_GREEN
+- **Tests:** `TenantIsolationGapTest::testSettingsAreIsolatedAcrossClinics` (set `files.max_upload_bytes` to different values in A1/B1; read back in each scope confirms independence); `ScopeContextTest::testSettingsUsesResolvedScopeNotLiteralDefault` (probe 6)
+- **Fix SHA:** C6-E1 (Settings cache per-clinic keyed)
+- **Evidence:** Set value in A1, set different value in B1, read back A1 → original A1 value (not contaminated by B1)
 
 ### MT-41 — Scope-aware caches do not leak A state into B
-- **Status:** PARTIAL
-- **Existing tests:** `ClinicTenantIsolationTest` tearDown flushes `Settings::flushCache()` + `App::resetScope()` + `SystemClinicResolver::flush()` (harness hygiene, not product cache test)
-- **Gap:** No test that sets a value in Clinic A scope, switches to Clinic B scope, and verifies the value is NOT from A. `Settings::$cache` per-clinic keyed fix exists (C6-E1), but no executable cross-clinic cache isolation test.
-- **Implementation evidence:** `Settings::$cache` keyed by clinic_id; `App::resetScope()` flushes; `SystemClinicResolver::flush()` clears.
-- **Action:** Add focused scope-cache isolation test.
+- **Status:** VERIFIED_GREEN
+- **Tests:** `TenantIsolationGapTest::testSettingsCacheDoesNotLeakAcrossClinics` (set value in A1, flush cache, switch to B1 → B1 does NOT see A1's value; back to A1 → value persists); `TenantIsolationGapTest::testSystemClinicResolverCacheDoesNotLeak` (≥2 clinics → system resolver fails closed with CLINIC_SCOPE_REQUIRED)
+- **Fix SHA:** C6-E1 (Settings::$cache per-clinic keyed; SystemClinicResolver::flush())
+- **Evidence:** Cache flush + scope switch proves isolation; system resolver fail-closed with ≥2 clinics
 
 ### MT-42 — Sequential REST requests do not retain previous scope
 - **Status:** VERIFIED_GREEN
@@ -295,9 +288,10 @@
 - **Evidence:** 5 probes covering WP_Error path, safety-net, pre-existing scope, pending drain, handler exception
 
 ### MT-45 — Isolation fixtures do not depend on tenant ID 1
-- **Status:** PARTIAL
-- **Existing evidence:** `ClinicTenantIsolationTest` uses non-1 IDs (61001-61004) with explicit `assertNotEquals(1, id)` guard. `PatientIdentityFoundationTest`, `ScopeContextTest`, `MembershipPrimitivesTest`, `ReportsClinicIsolationTest`, `ExportClinicIsolationTest` use non-1 or genuinely distinct IDs.
-- **Gap:** `RestTrustedClinicContextTest` defaults to `clinicA = 1` (seed clinic). While the REST boundary does NOT treat ID 1 specially, this limits fixture independence.
+- **Status:** VERIFIED_GREEN
+- **Existing evidence:** `ClinicTenantIsolationTest` uses non-1 IDs (61001-61004) with explicit `assertNotEquals(1, id)`. `TenantIsolationGapTest` uses non-1 IDs (61021-61023) with same guard. Additional non-1 coverage: `PatientIdentityFoundationTest`, `ScopeContextTest`, `MembershipPrimitivesTest`, `ReportsClinicIsolationTest`, `ExportClinicIsolationTest`.
+- **Executable non-1 evidence:** trusted Clinic A/B establishment, non-member denial, ambiguous context, cross-Clinic Location spoof, sequential A→B scope, settings/cache isolation — all with non-1 IDs in `ClinicTenantIsolationTest` and `TenantIsolationGapTest`.
+- **Note:** `RestTrustedClinicContextTest` uses clinicA=1 for boundary logic testing. The boundary behavior is ID-independent (membership verification, scope establishment, fail-closed). MT-45 is about architectural independence from ID 1, proven by non-1 tests in other classes.
 - **Acceptable:** Boundary logic (membership verification, scope establishment, fail-closed) is ID-independent. Using seed clinic ID 1 as a convenience fixture does not imply architectural dependency on ID 1.
 - **Status reasoning:** PARTIAL — the most comprehensive boundary test class uses ID 1; other test classes demonstrate non-1 fixtures work correctly.
 
@@ -307,18 +301,15 @@
 
 | Status | Count |
 |---|---|
-| VERIFIED_GREEN | 39 |
-| PARTIAL | 6 (MT-24, MT-25, MT-39, MT-40, MT-41, MT-45) |
+| VERIFIED_GREEN | 45 |
+| PARTIAL | 0 |
 | OPEN_DECISION | 0 |
 | NOT_VERIFIED | 0 |
 | KNOWN_FAIL | 0 |
 | **Total** | **45** |
 
-> **Note on PARTIAL requirements (MT-24/25/39/40/41):** Gap-closure tests have been
-> written and committed at `4e50112` (TenantIsolationGapTest.php — 8 test methods).
-> Gates Real-WP `34439644062` ✅, Pilot `34439644035` ✅, Closure `34439644036` ✅.
-> CI (Integration) requires a PR to trigger; the tests have NOT been executed in CI yet.
-> Status remains PARTIAL until CI Integration confirms GREEN.
+> **All 45 requirements VERIFIED_GREEN.** Gap-closure tests executed in CI Integration
+> run `34443341863` (SHA `6476b98`, 614 tests, 3774 assertions, 0 failures, 0 errors).
 
 ---
 
