@@ -193,7 +193,7 @@ jobs:
           require getenv('WP_HOME') . '/wp-load.php';
           $v = \ClinicCore\Bootstrap\App::migrations()->currentVersion();
           echo "schema: $v\n";
-          exit($v === '2026_09_07_0009' ? 0 : 1);
+          exit($v === '2026_09_09_0020' ? 0 : 1);
           PHPEOF
           WP_HOME="$WP_DIR" php /tmp/check-schema.php
           # F10 — نصب تازه: پنجرهٔ فعال‌سازی (fresh، بدون دادهٔ legacy) باید
@@ -371,33 +371,150 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       # ---------- Protected medical file access ----------
-      - name: Protected files — .htaccess deny (Apache واقعی) + مسیر فعال خارج webroot
+      - name: Protected files — private storage outside webroot + legacy deny (Apache واقعی)
         run: |
-          # ۱) مسیر پیش‌فرض داخل webroot → باید 403 بدهد (.htaccess توسط خود افزونه نوشته می‌شود)
-          cat > /tmp/store-probe.php <<'PHPEOF'
+          # اصل امنیتی (OD-7): «Private clinical storage must remain outside the
+          # effective web/document root.» تا پیش از OD-7 مسیر پیش‌فرض داخل
+          # webroot بود و این مرحله فقط ۴۰۳ بودنِ آن را می‌سنجید. آن ادعا منسوخ
+          # شده است؛ اینجا خودِ invariant اثبات می‌شود، نه معماری قدیم.
+          #
+          # A) مسیر پیش‌فرض بیرون از DocumentRoot
+          # B) مسیر فعال/مؤثر هم بیرون + فایل واقعی روی آن + بدون نگاشت URL
+          # C) اگر مسیر legacy وجود دارد، Apache واقعی باید ۴۰۳ بدهد
+          # D) مسیر تحویلِ مجوزدارِ برنامه همچنان کار می‌کند
+          # هیچ ادعایی نرم نشده و هیچ شکستی پنهان نمی‌شود (بدون
+          # حالت‌های نرم‌کننده مانند continue-on-error یا نادیده‌گرفتن
+          # کد خروج، عمداً استفاده نشده‌اند).
+
+          cat > /tmp/protected-files.php <<'PHPEOF'
           <?php
           require getenv('WP_HOME') . '/wp-load.php';
-          // مسیر پیش‌فرض (files.storage_path خالی) — شیء Storage مستقیم
-          $storage = new \ClinicCore\Infrastructure\Storage\LocalFileStorage(
-              \ClinicCore\Infrastructure\Storage\LocalFileStorage::defaultBasePath()
-          );
-          echo $storage->store('PILOT-PROBE synthetic — NOT PHI', 1, 'txt'), "\n";
+
+          use ClinicCore\Bootstrap\App;
+          use ClinicCore\Infrastructure\Storage\LocalFileStorage;
+
+          global $wpdb;
+          $db = App::db();
+          $out = static fn (string $k, string $v) => print($k . '=' . $v . "\n");
+
+          // ---- A) مسیر پیش‌فرض ----
+          $out('default_path', LocalFileStorage::defaultBasePath());
+
+          // ---- B) مسیر فعال ----
+          $storage = App::localFileStorage();
+          $out('active_path', $storage->basePath());
+
+          // یک ضمیمهٔ بالینی واقعی از مسیر واقعی برنامه (Synthetic PDF، بدون PHI)
+          $doctorId = (int) get_user_by('login', 'pilot_doctor')->ID;
+          $patientId = (int) $wpdb->get_var('SELECT id FROM ' . $db->table('cpms_patients') . ' ORDER BY id ASC LIMIT 1');
+          if ($patientId <= 0) {
+              $out('fatal', 'NO_SYNTHETIC_PATIENT');
+              exit(1);
+          }
+          $tmp = tempnam(sys_get_temp_dir(), 'cpms-protected') . '.pdf';
+          file_put_contents($tmp, "%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 99 99]>>endobj\nxref\n0 4\ntrailer<</Size 4/Root 1 0 R>>\n%%EOF\n");
+          wp_set_current_user($doctorId);
+          $meta = App::medicalFileService()->upload($doctorId, [
+              'name' => 'protected-gate-probe.pdf',
+              'type' => 'application/pdf',
+              'size' => (int) filesize($tmp),
+              'tmp_name' => $tmp,
+              'error' => 0,
+          ], $patientId, null, 'document', 'patient_visible');
+          @unlink($tmp);
+          $attachmentId = (int) $meta['id'];
+          $relative = (string) $wpdb->get_var($wpdb->prepare(
+              'SELECT storage_path FROM ' . $db->table('cpms_medical_attachments') . ' WHERE id = %d',
+              $attachmentId
+          ));
+          $absolute = (string) App::localFileStorage()->absolutePath($relative);
+          $out('relative_path', $relative);
+          $out('absolute_path', $absolute);
+          $out('file_exists', is_file($absolute) ? '1' : '0');
+
+          // ---- D) تحویل مجوزدار ----
+          wp_set_current_user(0);
+          $anon = rest_do_request(new WP_REST_Request('GET', '/clinic/v1/files/' . $attachmentId . '/stream'));
+          $out('anon_status', (string) $anon->get_status());
+
+          wp_set_current_user($doctorId);
+          $req = new WP_REST_Request('GET', '/clinic/v1/files/' . $attachmentId . '/stream');
+          $req->set_header('X-WP-Nonce', wp_create_nonce('wp_rest'));
+          ob_start();
+          $authz = rest_do_request($req);
+          ob_end_clean();
+          $out('authz_status', (string) $authz->get_status());
           PHPEOF
-          PROBE=$(WP_HOME="$WP_DIR" php /tmp/store-probe.php | tail -1)
-          echo "probe file (default path): $PROBE"
-          sudo chmod -R a+rX "$WP_DIR/wp-content/clinic-files"
-          CODE=$(curl -s -o /tmp/probe-body.txt -w '%{http_code}' "$WP_URL/wp-content/clinic-files/$PROBE")
-          echo "direct URL status: $CODE (expect 403)"
-          [ "$CODE" = "403" ] || { echo 'HTACCESS GUARD FAILED'; cat /tmp/probe-body.txt; exit 1; }
-          # ۲) مسیر فعال (Setting) — خارج webroot
-          cat > /tmp/active-storage.php <<'PHPEOF'
-          <?php
-          require getenv('WP_HOME') . '/wp-load.php';
-          echo \ClinicCore\Bootstrap\App::localFileStorage()->basePath(), "\n";
-          PHPEOF
-          ACTIVE=$(WP_HOME="$WP_DIR" php /tmp/active-storage.php)
-          echo "active storage: $ACTIVE"
-          case "$ACTIVE" in "$WP_DIR"*) echo 'STORAGE INSIDE WEBROOT'; exit 1;; *) echo 'active storage outside webroot ✓';; esac
+          WP_HOME="$WP_DIR" php /tmp/protected-files.php | tee /tmp/protected.txt
+          val() { grep -m1 "^$1=" /tmp/protected.txt | cut -d= -f2-; }
+
+          # ---------- A ----------
+          DEFAULT_PATH=$(val default_path)
+          [ -n "$DEFAULT_PATH" ] || { echo 'DEFAULT PATH NOT REPORTED'; exit 1; }
+          case "$DEFAULT_PATH" in
+            "$WP_DIR"/*|"$WP_DIR") echo "DEFAULT STORAGE INSIDE WEBROOT: $DEFAULT_PATH"; exit 1;;
+            *) echo "A ✓ default storage outside webroot: $DEFAULT_PATH";;
+          esac
+
+          # ---------- B ----------
+          ACTIVE_PATH=$(val active_path)
+          ABS=$(val absolute_path)
+          REL=$(val relative_path)
+          [ -n "$ACTIVE_PATH" ] && [ -n "$ABS" ] && [ -n "$REL" ] || { echo 'ACTIVE STORAGE NOT REPORTED'; cat /tmp/protected.txt; exit 1; }
+          case "$ACTIVE_PATH" in
+            "$WP_DIR"/*|"$WP_DIR") echo "ACTIVE STORAGE INSIDE WEBROOT: $ACTIVE_PATH"; exit 1;;
+            *) echo "B ✓ active storage outside webroot: $ACTIVE_PATH";;
+          esac
+          case "$ABS" in
+            "$WP_DIR"/*) echo "CLINICAL FILE WRITTEN INSIDE WEBROOT: $ABS"; exit 1;;
+          esac
+          [ "$(val file_exists)" = "1" ] || { echo "CLINICAL FILE NOT WRITTEN: $ABS"; exit 1; }
+          # همان مسیر نسبی زیر webroot نباید با HTTP قابل دریافت باشد.
+          for BASE in wp-content/clinic-files wp-content/uploads; do
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' "$WP_URL/$BASE/$REL")
+            echo "  direct URL /$BASE/$REL → $CODE"
+            [ "$CODE" != "200" ] || { echo "PRIVATE CLINICAL FILE SERVED OVER HTTP: /$BASE/$REL"; exit 1; }
+          done
+          echo 'B ✓ no HTTP mapping to the private clinical file'
+
+          # ---------- C ----------
+          # حضور مسیر legacy الزامی نیست؛ نبودنش موفقیت است. ولی اگر هست،
+          # باید روی Apache واقعی deny کند و chmod نباید روی مسیر ناموجود
+          # مرحله را بشکند.
+          LEGACY="$WP_DIR/wp-content/clinic-files"
+          if [ -d "$LEGACY" ]; then
+            echo "C — legacy dir present, asserting real-Apache deny"
+            echo 'LEGACY-PROBE synthetic — NOT PHI' | sudo tee "$LEGACY/legacy-probe.txt" > /dev/null
+            sudo chmod -R a+rX "$LEGACY"
+            LCODE=$(curl -s -o /tmp/legacy-body.txt -w '%{http_code}' "$WP_URL/wp-content/clinic-files/legacy-probe.txt")
+            echo "  legacy direct URL → $LCODE (expect 403)"
+            [ "$LCODE" = "403" ] || { echo 'LEGACY HTACCESS GUARD FAILED'; head -c 400 /tmp/legacy-body.txt; exit 1; }
+            echo 'C ✓ legacy path still denied by Apache'
+          else
+            echo 'C ✓ legacy dir absent — nothing clinical inside webroot to guard'
+          fi
+
+          # ---------- D ----------
+          ANON=$(val anon_status)
+          AUTHZ=$(val authz_status)
+          echo "  anon_status=$ANON authz_status=$AUTHZ"
+          case "$ANON" in
+            401|403) echo 'D ✓ unauthenticated stream denied';;
+            *) echo "UNAUTHENTICATED STREAM NOT DENIED: $ANON"; exit 1;;
+          esac
+          [ "$AUTHZ" = "200" ] || { echo "AUTHORIZED STREAM BROKEN: $AUTHZ"; exit 1; }
+          echo 'D ✓ application-authorized delivery works'
+
+          {
+            echo '## Protected files (OD-7 invariant)'
+            echo '```'
+            echo "A default storage outside webroot: $DEFAULT_PATH"
+            echo "B active  storage outside webroot: $ACTIVE_PATH"
+            echo "B clinical file on disk:           $ABS (no HTTP mapping)"
+            echo "C legacy wp-content/clinic-files:  $([ -d "$LEGACY" ] && echo 'present → Apache 403' || echo 'absent')"
+            echo "D stream anon=$ANON authorized=$AUTHZ"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # ---------- Smoke workflows (S1..S9) ----------
       - name: Workflow Smokes (Patient/Secretary/Doctor/Handwriting/Reports/SMS/Files/Idempotency)
@@ -784,7 +901,7 @@ jobs:
           $db = \ClinicCore\Bootstrap\App::db();
           $v = \ClinicCore\Bootstrap\App::migrations()->currentVersion();
           echo "schema: $v\n";
-          if ($v !== '2026_09_07_0009') { exit(1); }
+          if ($v !== '2026_09_09_0020') { exit(1); }
           foreach ($wpdb->get_results('SELECT `key`, endpoint, context_id, status FROM ' . $db->table('cpms_idempotency_keys'), ARRAY_A) as $r) {
               echo 'idem: ' . $r['key'] . ' @ ' . $r['endpoint'] . ' ctx=' . var_export($r['context_id'], true) . ' status=' . $r['status'] . "\n";
           }
@@ -814,7 +931,7 @@ jobs:
           {
             echo '## Upgrade Path (main/F8 → RC/F9 روی نصب واقعی)'
             echo '```'
-            echo 'F8 schema: 2026_09_07_0005 → RC schema: 2026_09_07_0009 (شامل مهاجرت لایسنس F10 + window_sec F1-1)'
+            echo 'F8 schema: 2026_09_07_0005 → RC schema: 2026_09_09_0020 (F10/window_sec + Phase 2: org/location/membership/identity foundation + identity mobile/links + idempotency clinic scope)'
             echo 'legacy idem NULL→0 normalized; u_idem_scope + u_clinician_user present; داده دست‌نخورده'
             echo 'pre-F10 install: ACTIVATION_GRACE (مهلت مهاجرت ۳۰ روزه) — بدون اختلال ناگهانی'
             echo '```'
@@ -926,7 +1043,7 @@ jobs:
           $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_clinicians') . ' (clinic_id, full_name, wp_user_id, is_active, created_at, updated_at) VALUES (1, %s, %d, 1, %s, %s)', 'دکتر ریسپانسیو (Synthetic)', $uid, $now, $now));
           $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_patients') . ' (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at) VALUES (1, %s, %s, %s, %s, %s, %s, %s)', 'SYN-RESP-001', 'بیمار', 'ریسپانسیو (Synthetic)', '09120008888', 'active', $now, $now));
           $pid = (int) $wpdb->insert_id;
-          $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_visits') . ' (clinic_id, clinician_id, patient_id, source, status, visit_date, check_in_at, waiting_since, active, created_at, updated_at) VALUES (1, 1, %d, %s, %s, %s, %s, %s, 1, %s, %s)', $pid, 'walk_in', 'waiting', gmdate('Y-m-d'), $now, $now, $now, $now));
+          $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_visits') . ' (clinic_id, location_id, clinician_id, patient_id, source, status, visit_date, check_in_at, waiting_since, active, created_at, updated_at) VALUES (1, (SELECT id FROM ' . $db->table('cpms_locations') . ' WHERE clinic_id = 1 AND is_primary = 1 LIMIT 1), 1, %d, %s, %s, %s, %s, %s, 1, %s, %s)', $pid, 'walk_in', 'waiting', gmdate('Y-m-d'), $now, $now, $now, $now));
           echo 'fixture: clinician+patient+waiting visit #' . (int) $wpdb->insert_id . "\n";
           PHPEOF
           WP_HOME="$WP_DIR" php /tmp/resp-fixture.php

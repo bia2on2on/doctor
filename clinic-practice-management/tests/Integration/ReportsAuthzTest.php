@@ -65,6 +65,24 @@ final class ReportsAuthzTest extends WP_UnitTestCase
         $ops = get_userdata($this->opsUserId);
         $ops?->add_cap('cpms_report_read');
 
+        $membership = App::membership_service();
+        $seedClinic = (int) App::db()->fetchValue(
+            'SELECT id FROM ' . App::db()->table('cpms_clinics') . ' LIMIT 1'
+        );
+        foreach (
+            [
+                [$this->secretaryUserId, 'cpms_secretary'],
+                [$this->doctorAUserId, 'cpms_doctor'],
+                [$this->doctorBUserId, 'cpms_doctor'],
+                [$this->accountantUserId, 'cpms_accountant'],
+                [$this->opsUserId, 'cpms_manager'],
+            ] as [$uid, $roleKey]
+        ) {
+            if ($membership->membership_for($seedClinic, $uid) === null) {
+                $membership->create_membership($seedClinic, $uid, $roleKey);
+            }
+        }
+
         global $wpdb;
         $now = App::db()->nowUtcSql();
 
@@ -401,8 +419,8 @@ final class ReportsAuthzTest extends WP_UnitTestCase
         $wpdb->query(
             $wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_schedule_slots
-                     (clinic_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at)
-                 VALUES (1, %d, %s, "10:00:00", 20, 1, 0, 0, 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                     (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at)
+                 VALUES (1, (SELECT id FROM ' . $wpdb->prefix . 'cpms_locations WHERE clinic_id = 1 AND is_primary = 1 LIMIT 1), %d, %s, "10:00:00", 20, 1, 0, 0, 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 $this->clinicianAId,
                 $today,
                 $now,
@@ -414,38 +432,38 @@ final class ReportsAuthzTest extends WP_UnitTestCase
         // نوبت‌های A: confirmed + no_show | نوبت B: confirmed | لغو A (دیروز)
         $wpdb->query($wpdb->prepare(
             'INSERT INTO ' . $wpdb->prefix . 'cpms_appointments
-                 (clinic_id, reference_code, clinician_id, patient_id, slot_id, slot_date, slot_time, status, confirmed_at, no_show_at, cancelled_at, cancel_reason, booked_at, created_at, updated_at)
-             VALUES (1, %s, %d, %d, %d, %s, "10:00:00", "confirmed", %s, NULL, NULL, NULL, %s, %s, %s)',
+                 (clinic_id, location_id, reference_code, clinician_id, patient_id, slot_id, slot_date, slot_time, status, confirmed_at, no_show_at, cancelled_at, cancel_reason, booked_at, created_at, updated_at)
+             VALUES (1, (SELECT id FROM ' . $wpdb->prefix . 'cpms_locations WHERE clinic_id = 1 AND is_primary = 1 LIMIT 1), %s, %d, %d, %d, %s, "10:00:00", "confirmed", %s, NULL, NULL, NULL, %s, %s, %s)',
             ['AP-RP-' . $seq . '-1', $this->clinicianAId, $this->patientAId, $slotId, $today, $now, $now, $now, $now]
         )); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         $apptA1 = (int) $wpdb->insert_id;
 
         $wpdb->query($wpdb->prepare(
             'INSERT INTO ' . $wpdb->prefix . 'cpms_appointments
-                 (clinic_id, reference_code, clinician_id, patient_id, slot_id, slot_date, slot_time, status, no_show_at, booked_at, created_at, updated_at)
-             VALUES (1, %s, %d, %d, %d, %s, "11:00:00", "no_show", %s, %s, %s, %s)',
+                 (clinic_id, location_id, reference_code, clinician_id, patient_id, slot_id, slot_date, slot_time, status, no_show_at, booked_at, created_at, updated_at)
+             VALUES (1, (SELECT id FROM ' . $wpdb->prefix . 'cpms_locations WHERE clinic_id = 1 AND is_primary = 1 LIMIT 1), %s, %d, %d, %d, %s, "11:00:00", "no_show", %s, %s, %s, %s)',
             ['AP-RP-' . $seq . '-2', $this->clinicianAId, $this->patientAId, $slotId, $today, $now, $now, $now, $now]
         )); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
         $wpdb->query($wpdb->prepare(
             'INSERT INTO ' . $wpdb->prefix . 'cpms_appointments
-                 (clinic_id, reference_code, clinician_id, patient_id, slot_id, slot_date, slot_time, status, booked_at, created_at, updated_at)
-             VALUES (1, %s, %d, %d, %d, %s, "10:00:00", "confirmed", %s, %s, %s)',
+                 (clinic_id, location_id, reference_code, clinician_id, patient_id, slot_id, slot_date, slot_time, status, booked_at, created_at, updated_at)
+             VALUES (1, (SELECT id FROM ' . $wpdb->prefix . 'cpms_locations WHERE clinic_id = 1 AND is_primary = 1 LIMIT 1), %s, %d, %d, %d, %s, "10:00:00", "confirmed", %s, %s, %s)',
             ['AP-RP-' . $seq . '-3', $this->clinicianBId, $this->patientBId, $slotId, $today, $now, $now, $now]
         )); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
         $wpdb->query($wpdb->prepare(
             'INSERT INTO ' . $wpdb->prefix . 'cpms_appointments
-                 (clinic_id, reference_code, clinician_id, patient_id, slot_id, slot_date, slot_time, status, cancelled_at, cancel_reason, cancelled_by_wp_user_id, booked_at, created_at, updated_at)
-             VALUES (1, %s, %d, %d, %d, %s, "09:00:00", "cancelled_by_staff", %s, "عدم حضور", %d, %s, %s, %s)',
+                 (clinic_id, location_id, reference_code, clinician_id, patient_id, slot_id, slot_date, slot_time, status, cancelled_at, cancel_reason, cancelled_by_wp_user_id, booked_at, created_at, updated_at)
+             VALUES (1, (SELECT id FROM ' . $wpdb->prefix . 'cpms_locations WHERE clinic_id = 1 AND is_primary = 1 LIMIT 1), %s, %d, %d, %d, %s, "09:00:00", "cancelled_by_staff", %s, "عدم حضور", %d, %s, %s, %s)',
             ['AP-RP-' . $seq . '-4', $this->clinicianAId, $this->patientAId, $slotId, $today, $now, $this->secretaryUserId, $now, $now, $now]
         )); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
         // ویزیت A: walk-in منتظر (10:00 → called 10:10؛ در ویزیت 10:15→10:30)
         $wpdb->query($wpdb->prepare(
             'INSERT INTO ' . $wpdb->prefix . 'cpms_visits
-                 (clinic_id, clinician_id, patient_id, appointment_id, source, status, visit_date, check_in_at, waiting_since, called_at, consultation_started_at, consultation_completed_at, active, created_at, updated_at)
-             VALUES (1, %d, %d, NULL, "walk_in", "in_consultation", %s, %s, %s, %s, %s, %s, 1, %s, %s)',
+                 (clinic_id, location_id, clinician_id, patient_id, appointment_id, source, status, visit_date, check_in_at, waiting_since, called_at, consultation_started_at, consultation_completed_at, active, created_at, updated_at)
+             VALUES (1, (SELECT id FROM ' . $wpdb->prefix . 'cpms_locations WHERE clinic_id = 1 AND is_primary = 1 LIMIT 1), %d, %d, NULL, "walk_in", "in_consultation", %s, %s, %s, %s, %s, %s, 1, %s, %s)',
             [
                 $this->clinicianAId, $this->patientAId,
                 $today,
@@ -459,8 +477,8 @@ final class ReportsAuthzTest extends WP_UnitTestCase
         // ویزیت A دوم: scheduled checked_out (برای شمارش ۲تایی own-scope)
         $wpdb->query($wpdb->prepare(
             'INSERT INTO ' . $wpdb->prefix . 'cpms_visits
-                 (clinic_id, clinician_id, patient_id, appointment_id, source, status, visit_date, check_in_at, waiting_since, called_at, checked_out_at, active, created_at, updated_at)
-             VALUES (1, %d, %d, %d, "scheduled", "checked_out", %s, %s, %s, %s, %s, 0, %s, %s)',
+                 (clinic_id, location_id, clinician_id, patient_id, appointment_id, source, status, visit_date, check_in_at, waiting_since, called_at, checked_out_at, active, created_at, updated_at)
+             VALUES (1, (SELECT id FROM ' . $wpdb->prefix . 'cpms_locations WHERE clinic_id = 1 AND is_primary = 1 LIMIT 1), %d, %d, %d, "scheduled", "checked_out", %s, %s, %s, %s, %s, 0, %s, %s)',
             [
                 $this->clinicianAId, $this->patientAId, $apptA1,
                 $today,
@@ -472,8 +490,8 @@ final class ReportsAuthzTest extends WP_UnitTestCase
         // ویزیت B: walk_in (10:05 → 10:06 = 60s انتظار)
         $wpdb->query($wpdb->prepare(
             'INSERT INTO ' . $wpdb->prefix . 'cpms_visits
-                 (clinic_id, clinician_id, patient_id, appointment_id, source, status, visit_date, check_in_at, waiting_since, called_at, active, created_at, updated_at)
-             VALUES (1, %d, %d, NULL, "walk_in", "waiting", %s, %s, %s, %s, 1, %s, %s)',
+                 (clinic_id, location_id, clinician_id, patient_id, appointment_id, source, status, visit_date, check_in_at, waiting_since, called_at, active, created_at, updated_at)
+             VALUES (1, (SELECT id FROM ' . $wpdb->prefix . 'cpms_locations WHERE clinic_id = 1 AND is_primary = 1 LIMIT 1), %d, %d, NULL, "walk_in", "waiting", %s, %s, %s, %s, 1, %s, %s)',
             [
                 $this->clinicianBId, $this->patientBId,
                 $today,

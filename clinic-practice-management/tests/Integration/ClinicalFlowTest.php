@@ -48,9 +48,14 @@ final class ClinicalFlowTest extends WP_UnitTestCase
         global $wpdb;
         $now = App::db()->nowUtcSql();
 
+        // C6 repair — عضویت فعال staff صریح است (نه fixture سراسری).
+        // تست‌های patient/non-member عمداً عضویت نمی‌گیرند.
         $this->secretaryUserId = $this->makeUser('cf_secretary', 'cpms_secretary');
+        cpms_test_seed_membership($this->secretaryUserId, 1, 'cpms_secretary');
         $this->doctorUserId = $this->makeUser('cf_doctor', 'cpms_doctor');
+        cpms_test_seed_membership($this->doctorUserId, 1, 'cpms_doctor');
         $this->otherDoctorUserId = $this->makeUser('cf_doctor2', 'cpms_doctor');
+        cpms_test_seed_membership($this->otherDoctorUserId, 1, 'cpms_doctor');
 
         // پزشک‌ها — با اتصال wp_user_id (الزام «ویزیت خودش» ماتریس 4.3)
         foreach ([['Dr Clinical One', $this->doctorUserId], ['Dr Clinical Two', $this->otherDoctorUserId]] as [$name, $wpId]) {

@@ -31,7 +31,16 @@ final class OtpFlowTest extends WP_UnitTestCase
      */
     private function issueKnownCode(string $code, int $ttlSec = 120): void
     {
-        $pepper = defined('CPMS_PEPPER') ? CPMS_PEPPER : 'cpms-dev-pepper-change-me';
+        // Phase 1A: در نبود ثابت CPMS_PEPPER دیگر رشتهٔ ثابتِ درونِ کد
+        // استفاده نمی‌شود؛ سرویس یک Secret تصادفیِ ماندگار در Option
+        // `cpms_otp_pepper` می‌سازد. تست باید همان ترتیب را دنبال کند.
+        $pepper = defined('CPMS_PEPPER') && (string) CPMS_PEPPER !== ''
+            ? (string) CPMS_PEPPER
+            : (string) get_option('cpms_otp_pepper', '');
+        if ($pepper === '') {
+            $pepper = bin2hex(random_bytes(32));
+            update_option('cpms_otp_pepper', $pepper, 'no');
+        }
         App::db()->insert('cpms_otp_tokens', [
             'mobile' => self::MOBILE,
             'purpose' => 'login',
@@ -198,6 +207,106 @@ final class OtpFlowTest extends WP_UnitTestCase
             )
         );
         $this->assertSame(1, (int) $link);
+    }
+
+    /**
+     * AD-13 regression guard (تصحیح Pre-Phase-2 Gate): جست‌وجوی بیمار در
+     * جریان OTP باید از Clinicِ پیکربندی‌شدهٔ سرویس بخواند، نه literal «1».
+     * رانش Phase 1A (کامیت 4c16009) یک نسخهٔ کپی‌شده از کوئری با
+     * `clinic_id = 1` سخت‌کدشده اضافه کرده بود؛ این تست قفل می‌کند که
+     * resolution بیمار تابع Clinic فعال است — حتی وقتی Clinic دیگری
+     * بیمارِ هم‌موبایل دارد.
+     */
+    public function testVerifyResolvesPatientInConfiguredClinicNotHardcodedDefault(): void
+    {
+        global $wpdb;
+        $now = App::db()->nowUtcSql();
+
+        // Phase 2: singletonهای وابسته را پیش از وجود کلینیک دوم گرم می‌کنیم —
+        // resolution سیستمی Scope با ≥۲ Clinic باید fail-closed بماند (ADR-0031)
+        // و این تست عمداً به Clinic مقید صریح operates می‌کند.
+        App::db();
+        App::rate();
+        App::audit();
+        App::op();
+        App::smsService();
+        App::jobs();
+
+        // Clinic دوم — ردیف واقعی (FK بیمار به clinics + organization_id NOT NULL
+        // از Phase 2/0010؛ همان سازمان کلینیک پیش‌فرض). organization جدا resolve
+        // می‌شود — MySQL زیرکوئری روی جدولِ هدفِ INSERT را رد می‌کند (ERROR 1093).
+        $orgId = (int) $wpdb->get_var('SELECT organization_id FROM ' . $wpdb->prefix . 'cpms_clinics WHERE id = 1'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $wpdb->query(
+            'INSERT IGNORE INTO ' . $wpdb->prefix . "cpms_clinics (id, organization_id, name, slug, timezone, created_at, updated_at)
+             VALUES (2, {$orgId}, 'کلینیک دوم', 'od13-second', 'Asia/Tehran', '{$now}', '{$now}')" // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        );
+        // Fail-loud: بدون این کلینیک، بیمار Clinic 2 با FK رد می‌شود و تست بی‌صدا منحرف می‌شود
+        self::assertSame(
+            1,
+            (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $wpdb->prefix . 'cpms_clinics WHERE id = 2'), // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            'کلینیک دوم باید واقعاً ساخته شود.'
+        );
+
+        // دو بیمار هم‌موبایل: یکی در Clinic 1 و یکی در Clinic 2
+        $insert = static function (int $clinicId, string $mrn) use ($wpdb, $now): int {
+            $wpdb->query(
+                $wpdb->prepare(
+                    'INSERT INTO ' . $wpdb->prefix . 'cpms_patients
+                         (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at)
+                     VALUES (%d, %s, %s, %s, %s, %s, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                    $clinicId,
+                    $mrn,
+                    'بیمار',
+                    'تست',
+                    self::MOBILE,
+                    'active',
+                    $now,
+                    $now
+                )
+            );
+
+            return (int) $wpdb->insert_id;
+        };
+        $inDefaultClinic = $insert(1, 'P-OD13-C1');
+        $inSecondClinic = $insert(2, 'P-OD13-C2');
+
+        // سرویس مقید به Clinic 2 — همان وابستگی‌ها، فقط Settings کلینیک 2
+        $otp = new \ClinicCore\Application\Auth\OtpService(
+            App::db(),
+            new \ClinicCore\Settings\Settings(App::db(), 2),
+            App::rate(),
+            App::audit(),
+            App::op(),
+            App::smsService(),
+            App::jobs()
+        );
+
+        $this->issueKnownCode('246810');
+        $result = $otp->verify(self::MOBILE, '246810');
+
+        // بیمارِ کلینیکِ پیکربندی‌شده وصل شد — نه بیمار Clinic 1
+        $this->assertSame(1, count($result['patient_links']));
+        $this->assertSame((string) $inSecondClinic, (string) $result['patient_links'][0]['id']);
+        $this->assertSame('P-OD13-C2', $result['patient_links'][0]['mrn']);
+
+        // لینک ساخته‌شده هم به Clinic 2 مهر خورده (نه literal 1)
+        $linkClinic = (int) $wpdb->get_var(
+            $wpdb->prepare(
+                'SELECT clinic_id FROM ' . $wpdb->prefix . 'cpms_patient_user_links WHERE patient_id = %d AND wp_user_id = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $inSecondClinic,
+                $result['user_id']
+            )
+        );
+        $this->assertSame(2, $linkClinic, 'لینک بیمار⇄کاربری باید به کلینیکِ پیکربندی‌شده مهر بخورد.');
+
+        // بیمارِ Clinic 1 با همین موبایل نباید لینک بگیرد
+        $defaultLink = $wpdb->get_var(
+            $wpdb->prepare(
+                'SELECT id FROM ' . $wpdb->prefix . 'cpms_patient_user_links WHERE patient_id = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $inDefaultClinic
+            )
+        );
+        $this->assertNull($defaultLink, 'بیمار کلینیک دیگر نباید در این نصبِ مقید لینک بخورد.');
     }
 
     public function testDailyLimitBlocksNewRequests(): void

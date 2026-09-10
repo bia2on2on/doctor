@@ -76,8 +76,12 @@ final class MedicalFilesTest extends WP_UnitTestCase
             }
         }
 
+        // C6 repair — عضویت فعال staff صریح است (نه fixture سراسری).
+        // تست‌های patient/non-member عمداً عضویت نمی‌گیرند.
         $this->secretaryUserId = $this->makeUser('mf_secretary', 'cpms_secretary');
+        cpms_test_seed_membership($this->secretaryUserId, 1, 'cpms_secretary');
         $this->doctorUserId = $this->makeUser('mf_doctor', 'cpms_doctor');
+        cpms_test_seed_membership($this->doctorUserId, 1, 'cpms_doctor');
     }
 
     protected function tearDown(): void

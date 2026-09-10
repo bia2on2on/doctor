@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Infrastructure\Repository;
 
+use ClinicCore\Application\Scope\PrimaryLocationResolver;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 
 /**
@@ -17,7 +18,7 @@ use ClinicCore\Infrastructure\Db\CpmsDb;
 final class AppointmentRepository
 {
     private const CREATE_FIELDS = [
-        'clinic_id', 'reference_code', 'clinician_id', 'patient_id', 'slot_id',
+        'clinic_id', 'location_id', 'reference_code', 'clinician_id', 'patient_id', 'slot_id',
         'slot_date', 'slot_time', 'duration_min', 'slot_end_time',
         'wp_user_id', 'reason', 'status', 'is_walkin_express', 'rescheduled_from',
         'booked_at', 'confirmed_at', 'created_at', 'updated_at',
@@ -80,9 +81,36 @@ final class AppointmentRepository
                 $data[$field] = $fields[$field];
             }
         }
+
+        // Phase 2 (AD-15): نوبت snapshot مکانی می‌گیرد — مثل slot_date/time.
+        // منبع مقدار: Location همان Slot؛ وگرنه Location اصلی Clinic.
+        if (empty($data['location_id'])) {
+            $data['location_id'] = $this->locationForNewAppointment($data);
+        }
+
         $this->db->insert('cpms_appointments', $data);
 
         return $this->db->wpdb_last_insert_id();
+    }
+
+    /**
+     * Location نوبت جدید — از Slot مرجع (اگر هست) وگرنه Location اصلی Clinic.
+     *
+     * @param array<string, mixed> $data
+     */
+    private function locationForNewAppointment(array $data): int
+    {
+        if (!empty($data['slot_id'])) {
+            $slotLocation = $this->db->fetchValue(
+                'SELECT location_id FROM ' . $this->db->table('cpms_schedule_slots') . ' WHERE id = %d LIMIT 1',
+                [(int) $data['slot_id']]
+            );
+            if ($slotLocation !== null && $slotLocation !== '') {
+                return (int) $slotLocation;
+            }
+        }
+
+        return PrimaryLocationResolver::resolve($this->db, (int) ($data['clinic_id'] ?? 0));
     }
 
     /**

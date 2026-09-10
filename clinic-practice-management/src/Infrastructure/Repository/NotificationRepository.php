@@ -10,7 +10,9 @@ use RuntimeException;
 /**
  * Repository اعلان‌ها — cpms_notifications (data-dictionary §32، notifications.md N-1..N-6).
  *
- * همه متدها Clinic-Scope (clinic_id = 1 — ADR-0026 تا V2) هستند.
+ * C6 (AD-13): clinic صریحاً به متدهای Clinic-Scope پاس می‌شود — هیچ پیش‌فرضی
+ * وجود ندارد. عملیات سیستمی (dispatch/purge) بدون predicate کلینیک روی همهٔ
+ * کلینیک‌ها اجرا می‌شوند (batch زیرساختی).
  */
 final class NotificationRepository
 {
@@ -23,9 +25,9 @@ final class NotificationRepository
      *
      * @param array<string, mixed> $row
      */
-    public function insert(array $row): int
+    public function insert(int $clinic_id, array $row): int
     {
-        $row['clinic_id'] = 1;
+        $row['clinic_id'] = $clinic_id;
         $row['created_at'] = $row['created_at'] ?? $this->db->nowUtcSql();
 
         $ok = $this->db->insert('cpms_notifications', $row);
@@ -63,11 +65,11 @@ final class NotificationRepository
      *
      * @return list<array<string, mixed>>
      */
-    public function forUser(int $wpUserId, bool $unreadOnly, int $limit, int $sinceId = 0, ?string $template = null): array
+    public function forUser(int $clinic_id, int $wpUserId, bool $unreadOnly, int $limit, int $sinceId = 0, ?string $template = null): array
     {
         $sql = 'SELECT * FROM ' . $this->db->table('cpms_notifications') .
-            ' WHERE clinic_id = 1 AND recipient_wp_user_id = %d AND status != %s';
-        $params = [$wpUserId, 'cancelled'];
+            ' WHERE clinic_id = %d AND recipient_wp_user_id = %d AND status != %s';
+        $params = [$clinic_id, $wpUserId, 'cancelled'];
 
         if ($sinceId > 0) {
             $sql .= ' AND id > %d';
@@ -92,11 +94,11 @@ final class NotificationRepository
      *
      * @return list<array<string, mixed>>
      */
-    public function forPatient(int $patientId, bool $unreadOnly, int $limit, int $sinceId = 0): array
+    public function forPatient(int $clinic_id, int $patientId, bool $unreadOnly, int $limit, int $sinceId = 0): array
     {
         $sql = 'SELECT * FROM ' . $this->db->table('cpms_notifications') .
-            ' WHERE clinic_id = 1 AND recipient_patient_id = %d AND status != %s';
-        $params = [$patientId, 'cancelled'];
+            ' WHERE clinic_id = %d AND recipient_patient_id = %d AND status != %s';
+        $params = [$clinic_id, $patientId, 'cancelled'];
 
         if ($sinceId > 0) {
             $sql .= ' AND id > %d';
@@ -112,39 +114,39 @@ final class NotificationRepository
         return $this->db->fetchAll($sql, $params);
     }
 
-    public function lastIdForUser(int $wpUserId): int
+    public function lastIdForUser(int $clinic_id, int $wpUserId): int
     {
         return (int) $this->db->fetchValue(
             'SELECT COALESCE(MAX(id), 0) FROM ' . $this->db->table('cpms_notifications') .
-            ' WHERE clinic_id = 1 AND recipient_wp_user_id = %d AND status != %s',
-            [$wpUserId, 'cancelled']
+            ' WHERE clinic_id = %d AND recipient_wp_user_id = %d AND status != %s',
+            [$clinic_id, $wpUserId, 'cancelled']
         );
     }
 
-    public function lastIdForPatient(int $patientId): int
+    public function lastIdForPatient(int $clinic_id, int $patientId): int
     {
         return (int) $this->db->fetchValue(
             'SELECT COALESCE(MAX(id), 0) FROM ' . $this->db->table('cpms_notifications') .
-            ' WHERE clinic_id = 1 AND recipient_patient_id = %d AND status != %s',
-            [$patientId, 'cancelled']
+            ' WHERE clinic_id = %d AND recipient_patient_id = %d AND status != %s',
+            [$clinic_id, $patientId, 'cancelled']
         );
     }
 
-    public function unreadCountForUser(int $wpUserId): int
+    public function unreadCountForUser(int $clinic_id, int $wpUserId): int
     {
         return (int) $this->db->fetchValue(
             'SELECT COUNT(*) FROM ' . $this->db->table('cpms_notifications') .
-            ' WHERE clinic_id = 1 AND recipient_wp_user_id = %d AND status != %s AND read_at IS NULL',
-            [$wpUserId, 'cancelled']
+            ' WHERE clinic_id = %d AND recipient_wp_user_id = %d AND status != %s AND read_at IS NULL',
+            [$clinic_id, $wpUserId, 'cancelled']
         );
     }
 
-    public function unreadCountForPatient(int $patientId): int
+    public function unreadCountForPatient(int $clinic_id, int $patientId): int
     {
         return (int) $this->db->fetchValue(
             'SELECT COUNT(*) FROM ' . $this->db->table('cpms_notifications') .
-            ' WHERE clinic_id = 1 AND recipient_patient_id = %d AND status != %s AND read_at IS NULL',
-            [$patientId, 'cancelled']
+            ' WHERE clinic_id = %d AND recipient_patient_id = %d AND status != %s AND read_at IS NULL',
+            [$clinic_id, $patientId, 'cancelled']
         );
     }
 
@@ -205,7 +207,7 @@ final class NotificationRepository
 
         return $this->db->execute(
             'UPDATE ' . $this->db->table('cpms_notifications') .
-            ' SET status = %s, sent_at = %s WHERE clinic_id = 1 AND channel = %s AND status = %s' .
+            ' SET status = %s, sent_at = %s WHERE channel = %s AND status = %s' .
             ' ORDER BY id ASC LIMIT %d',
             ['sent', $now, 'internal', 'queued', max(1, min(1000, $limit))]
         );
@@ -218,7 +220,7 @@ final class NotificationRepository
     {
         return $this->db->execute(
             'UPDATE ' . $this->db->table('cpms_notifications') .
-            ' SET status = %s WHERE clinic_id = 1 AND status = %s AND channel = %s' .
+            ' SET status = %s WHERE status = %s AND channel = %s' .
             ' AND dedupe_key LIKE %s',
             ['cancelled', 'queued', 'internal', 'apt:' . (int) $appointmentId . ':%']
         );
@@ -233,7 +235,7 @@ final class NotificationRepository
 
         return $this->db->execute(
             'DELETE FROM ' . $this->db->table('cpms_notifications') .
-            ' WHERE clinic_id = 1 AND channel = %s AND status IN (%s, %s) AND created_at < %s' .
+            ' WHERE channel = %s AND status IN (%s, %s) AND created_at < %s' .
             ' ORDER BY id ASC LIMIT %d',
             ['internal', 'sent', 'delivered', $cutoff . '.000', $limit]
         );

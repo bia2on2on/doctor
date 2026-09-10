@@ -41,12 +41,13 @@ final class FollowUpReminderHandler
     {
         $tomorrow = $this->localTomorrow();
 
+        // C6: اسکن due-work سیستمی — بدون predicate کلینیک؛ هر ردیف clinic خودش را حمل می‌کند.
         $rows = $this->db->fetchAll(
-            'SELECT f.id, f.patient_id, f.suggested_date, f.clinician_id,
+            'SELECT f.id, f.clinic_id, f.patient_id, f.suggested_date, f.clinician_id,
                     p.first_name, p.last_name, p.mobile
              FROM ' . $this->db->table('cpms_follow_ups') . ' f
              JOIN ' . $this->db->table('cpms_patients') . ' p ON p.id = f.patient_id
-             WHERE f.clinic_id = 1 AND f.status = %s AND f.reminder_sent_at IS NULL
+             WHERE f.status = %s AND f.reminder_sent_at IS NULL
                AND f.suggested_date = %s
              ORDER BY f.id ASC LIMIT %d',
             ['pending', $tomorrow, self::LIMIT]
@@ -61,6 +62,7 @@ final class FollowUpReminderHandler
             try {
                 if ($smsOpen) {
                     $this->sms->sendEvent(
+                        (int) $row['clinic_id'],
                         SmsEvents::FOLLOW_UP,
                         (string) $row['mobile'],
                         $vars,
@@ -69,6 +71,7 @@ final class FollowUpReminderHandler
                     );
                 }
                 $this->notifications->publishToPatient(
+                    (int) $row['clinic_id'],
                     (int) $row['patient_id'],
                     NotificationEvents::FOLLOWUP_REMINDER,
                     $vars,
@@ -118,7 +121,8 @@ final class FollowUpReminderHandler
             [(int) $row['clinician_id']]
         );
         $clinic = (string) $this->db->fetchValue(
-            'SELECT name FROM ' . $this->db->table('cpms_clinics') . ' WHERE id = 1 LIMIT 1'
+            'SELECT name FROM ' . $this->db->table('cpms_clinics') . ' WHERE id = %d LIMIT 1',
+            [(int) $row['clinic_id']]
         );
         $patientName = trim((string) $row['first_name'] . ' ' . (string) $row['last_name']);
 

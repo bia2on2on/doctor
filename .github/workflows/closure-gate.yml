@@ -129,7 +129,7 @@ jobs:
           // ===== A. نسخه / schema / نقش‌ها / پنجره‌ی لایسنس (نصب تازه) =====
           ok('plugin-version', defined('CPMS_VERSION') && CPMS_VERSION === '1.0.0', defined('CPMS_VERSION') ? (string) CPMS_VERSION : '?');
           $schema = App::migrations()->currentVersion();
-          ok('schema-0009', $schema === '2026_09_07_0009', (string) $schema);
+          ok('schema-0020', $schema === '2026_09_09_0020', (string) $schema);
           $cpmsPrefixLike = addcslashes($wpdb->prefix . 'cpms_', '_%\\');
           $tables = (int) $wpdb->get_var("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name LIKE '{$cpmsPrefixLike}%'");
           ok('cpms-tables', $tables >= 30, 'tables=' . $tables);
@@ -196,7 +196,7 @@ jobs:
           ));
           $slotDate = gmdate('Y-m-d', time() + 86400);
           $wpdb->query($wpdb->prepare(
-          'INSERT IGNORE INTO ' . $db->table('cpms_schedule_slots') . ' (clinic_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at) VALUES (1, %d, %s, %s, 20, 1, 0, 0, 1, %s, %s)',
+          'INSERT IGNORE INTO ' . $db->table('cpms_schedule_slots') . ' (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at) VALUES (1, (SELECT id FROM ' . $db->table('cpms_locations') . ' WHERE clinic_id = 1 AND is_primary = 1 LIMIT 1), %d, %s, %s, 20, 1, 0, 0, 1, %s, %s)',
           $clinicianId, $slotDate, '10:00', $now, $now
           ));
 
@@ -459,7 +459,7 @@ jobs:
           App::settings()->set('files.storage_path', $sto);
           ok('plugin-version', defined('CPMS_VERSION') && CPMS_VERSION === '1.0.0', defined('CPMS_VERSION') ? (string) CPMS_VERSION : '?');
           $schema = App::migrations()->currentVersion();
-          ok('schema-0009', $schema === '2026_09_07_0009', (string) $schema);
+          ok('schema-0020', $schema === '2026_09_09_0020', (string) $schema);
           $cpmsPrefixLike = addcslashes($wpdb->prefix . 'cpms_', '_%\\');
           $tables = (int) $wpdb->get_var("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name LIKE '{$cpmsPrefixLike}%'");
           ok('cpms-tables', $tables >= 30, 'tables=' . $tables);
@@ -498,7 +498,7 @@ jobs:
           $patientId = (int) $wpdb->insert_id;
           $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_patient_user_links') . ' (clinic_id, patient_id, wp_user_id, mobile_at_link, is_primary, linked_at) VALUES (1, %d, %d, %s, 1, %s)', $patientId, $patientUserId, '09120001234', $now));
           $slotDate = gmdate('Y-m-d', time() + 86400);
-          $wpdb->query($wpdb->prepare('INSERT IGNORE INTO ' . $db->table('cpms_schedule_slots') . ' (clinic_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at) VALUES (1, %d, %s, %s, 20, 1, 0, 0, 1, %s, %s)', $clinicianId, $slotDate, '10:00', $now, $now));
+          $wpdb->query($wpdb->prepare('INSERT IGNORE INTO ' . $db->table('cpms_schedule_slots') . ' (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at) VALUES (1, (SELECT id FROM ' . $db->table('cpms_locations') . ' WHERE clinic_id = 1 AND is_primary = 1 LIMIT 1), %d, %s, %s, 20, 1, 0, 0, 1, %s, %s)', $clinicianId, $slotDate, '10:00', $now, $now));
           $otp = App::otpService()->request('09120001234');
           ok('otp-request', isset($otp['expires_in']));
           $hold = App::bookingService()->hold($patientUserId, $clinicianId, $slotDate, '10:00');
@@ -751,7 +751,7 @@ jobs:
           [ "$(cat "$STORAGE_OUT/sentinel-closure.txt")" = "ORIGINAL-SENTINEL-CONTENT" ] || { echo 'RESTORE: SENTINEL CONTENT WRONG'; exit 1; }
           WP_HOME="$WP_DIR" php "$WP_DIR/wp-content/plugins/clinic-practice-management/bin/cpms" audit verify 1000 2>&1 | tee /tmp/audit-a.log
           WP_HOME="$WP_DIR" php "$WP_DIR/wp-content/plugins/clinic-practice-management/bin/cpms" status 2>&1 | tee /tmp/status-a.log
-          grep -q 'schema:  2026_09_07_0009' /tmp/status-a.log || { echo 'SCHEMA NOT 0009 AFTER RESTORE'; exit 1; }
+          grep -q 'schema:  2026_09_09_0020' /tmp/status-a.log || { echo 'SCHEMA NOT 0020 AFTER RESTORE'; exit 1; }
           grep -q 'license: activation_pending' /tmp/status-a.log || { echo 'LICENSE NOT FRESH AFTER RESTORE'; exit 1; }
           echo 'RESTORE APPLY: state A fully restored ✓'
 

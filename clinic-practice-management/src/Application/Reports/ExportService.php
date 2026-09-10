@@ -5,7 +5,11 @@ declare(strict_types=1);
 namespace ClinicCore\Application\Reports;
 
 use ClinicCore\Application\Notifications\NotificationService;
+use ClinicCore\Application\Scope\ClinicScope;
+use ClinicCore\Application\Scope\ScopeContext;
+use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Auth\RolesAndCapabilities;
+use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Notifications\NotificationEvents;
 use ClinicCore\Domain\Time\Jalali;
 use ClinicCore\Infrastructure\Audit\AuditLogger;
@@ -60,12 +64,16 @@ final class ExportService
         $this->requireReportAccess($actorUserId, $type);
         $this->requireCap($actorUserId, RolesAndCapabilities::EXPORT, 'خروجی گرفتن از گزارش');
 
+        // Clinic معتبر همین درخواست — Job بعداً از payload می‌خواند، نه از کاربر جاری.
+        $clinicId = $this->trustedClinicId();
+
         // بازه را همین‌جا اعتبارسنجی می‌کنیم (خطای کاربر نباید به Job برود)
         $range = $this->reports->validateRangeParams($type, $from, $to);
         [$scopeMode] = $this->reports->resolveScope($actorUserId);
 
         $jobId = $this->jobs->enqueue('report.export', [
             'actor_id' => $actorUserId,
+            'clinic_id' => $clinicId,
             'type' => $type,
             'from' => $range['from'],
             'to' => $range['to'],
@@ -79,7 +87,7 @@ final class ExportService
             $jobId,
             null,
             null,
-            ['type' => $type, 'job_id' => $jobId],
+            ['type' => $type, 'job_id' => $jobId, 'clinic_id' => $clinicId],
             ['from' => $range['from'], 'to' => $range['to'], 'scope' => $scopeMode, 'phase' => 'request']
         );
 
@@ -107,21 +115,34 @@ final class ExportService
         $type = (string) ($payload['type'] ?? '');
         $from = isset($payload['from']) ? (string) $payload['from'] : null;
         $to = isset($payload['to']) ? (string) $payload['to'] : null;
+        $clinicId = $this->clinicIdFromJobPayload($payload);
 
+        $restore = $this->bindJobClinic($clinicId);
+        try {
+            $this->generateInClinic($actorUserId, $clinicId, $type, $from, $to);
+        } finally {
+            $restore();
+        }
+    }
+
+    private function generateInClinic(int $actorUserId, int $clinicId, string $type, ?string $from, ?string $to): void
+    {
         $this->requireReportAccess($actorUserId, $type);
         $this->requireCap($actorUserId, RolesAndCapabilities::EXPORT, 'خروجی گرفتن از گزارش');
 
-        $maxRows = (int) $this->settings->get('reports.export_max_rows', 10000);
+        $settings = App::settings();
+        $maxRows = (int) $settings->get('reports.export_max_rows', 10000);
         $result = $this->reports->run($actorUserId, $type, $from, $to, $maxRows);
 
-        $retentionDays = (int) $this->settings->get('reports.export_retention_days', 7);
+        $retentionDays = (int) $settings->get('reports.export_retention_days', 7);
         $expiresAt = gmdate('Y-m-d H:i:s', time() + ($retentionDays * 86400));
 
         $csv = self::buildCsv($result, $actorUserId);
-        $storagePath = $this->storage->store($csv, 1, 'csv');
+        $storagePath = $this->storage->store($csv, $clinicId, 'csv');
 
         // «فایل + اعلان» — payload اعلان مالکیت/مسیر/انقضا را حمل می‌کند
         $notifId = $this->notifications->publishToUser(
+            $clinicId,
             $actorUserId,
             NotificationEvents::REPORT_EXPORT_READY,
             [
@@ -159,6 +180,7 @@ final class ExportService
         $this->op->info('report.export_ready', [
             'job_type' => 'report.export',
             'type' => $type,
+            'clinic_id' => $clinicId,
             'notification_id' => $notifId,
         ]);
     }
@@ -174,7 +196,7 @@ final class ExportService
     {
         $this->requireCap($actorUserId, RolesAndCapabilities::EXPORT, 'خروجی گرفتن از گزارش');
 
-        $rows = $this->notificationRows->forUser($actorUserId, false, 100, 0, NotificationEvents::REPORT_EXPORT_READY);
+        $rows = $this->notificationRows->forUser($this->trustedClinicId(), $actorUserId, false, 100, 0, NotificationEvents::REPORT_EXPORT_READY);
 
         return [
             'exports' => array_map(fn (array $row): array => $this->presentExport($row), $rows),
@@ -193,7 +215,8 @@ final class ExportService
         $row = $this->notificationRows->find($notificationId);
         if ($row === null
             || (string) $row['template'] !== NotificationEvents::REPORT_EXPORT_READY
-            || (int) $row['recipient_wp_user_id'] !== $actorUserId) {
+            || (int) $row['recipient_wp_user_id'] !== $actorUserId
+            || (int) $row['clinic_id'] !== $this->trustedClinicId()) {
             throw ReportException::of('CLINIC_NOT_FOUND', 'خروجی یافت نشد', 404);
         }
 
@@ -234,20 +257,33 @@ final class ExportService
 
     /**
      * پاک‌سازی فایل‌ها/اعلان‌های Export منقضی — از notif.dispatch صدا زده می‌شود.
+     *
+     * Job سیستمی است: بدون predicate کلینیک ثابت و بدون کاربر جاری.
+     * هر ردیف Clinic خودش را حمل می‌کند (retention همان Clinic).
      */
     public function purgeExpired(): int
     {
-        $retentionDays = (int) $this->settings->get('reports.export_retention_days', 7);
-        $cutoff = gmdate('Y-m-d H:i:s', time() - ($retentionDays * 86400));
-
         $rows = $this->db->fetchAll(
-            'SELECT id, payload_json FROM ' . $this->db->table('cpms_notifications') .
-            ' WHERE clinic_id = 1 AND template = %s AND created_at < %s LIMIT 200',
-            [NotificationEvents::REPORT_EXPORT_READY, $cutoff . '.000']
+            'SELECT id, clinic_id, payload_json, created_at FROM ' . $this->db->table('cpms_notifications') .
+            ' WHERE template = %s LIMIT 200',
+            [NotificationEvents::REPORT_EXPORT_READY]
         );
 
         $purged = 0;
+        $cutoffByClinic = [];
         foreach ($rows as $row) {
+            $clinicId = (int) $row['clinic_id'];
+            if ($clinicId <= 0) {
+                continue;
+            }
+            if (!isset($cutoffByClinic[$clinicId])) {
+                $days = max(1, (int) (new Settings($this->db, $clinicId))->get('reports.export_retention_days', 7));
+                $cutoffByClinic[$clinicId] = gmdate('Y-m-d H:i:s', time() - ($days * 86400)) . '.000';
+            }
+            if ((string) $row['created_at'] >= $cutoffByClinic[$clinicId]) {
+                continue;
+            }
+
             $payload = json_decode((string) $row['payload_json'], true);
             $path = (string) ($payload['export']['file_path'] ?? '');
             if ($path !== '') {
@@ -337,6 +373,52 @@ final class ExportService
 
             return $cell;
         }, $cells));
+    }
+
+    // ================= Tenant (HTTP vs Job) =================
+
+    /**
+     * Clinic معتبر مسیر درخواست (REST/staff) — کلاینت به‌تنهایی منبع اعتماد نیست.
+     */
+    private function trustedClinicId(): int
+    {
+        return App::scope()->clinicId;
+    }
+
+    /**
+     * Clinic Job از payload است، نه کاربر جاری و نه Scope باقی‌ماندهٔ HTTP.
+     *
+     * @param array<string, mixed> $payload
+     */
+    private function clinicIdFromJobPayload(array $payload): int
+    {
+        $clinicId = (int) ($payload['clinic_id'] ?? 0);
+        if ($clinicId <= 0) {
+            throw new ScopeRequiredException(
+                'CLINIC_SCOPE_REQUIRED',
+                'خروجی گزارش Clinic معتبر در payload ندارد. Clinic از Job است، نه از کاربر جاری.',
+                ['clinic_id' => $clinicId]
+            );
+        }
+
+        return $clinicId;
+    }
+
+    /**
+     * @return callable(): void بازگردانی Scope قبلی
+     */
+    private function bindJobClinic(int $clinicId): callable
+    {
+        $previous = ScopeContext::tryGet();
+        App::resetScope();
+        ScopeContext::set(ClinicScope::forClinic($clinicId));
+
+        return static function () use ($previous): void {
+            App::resetScope();
+            if ($previous !== null) {
+                ScopeContext::set($previous);
+            }
+        };
     }
 
     // ================= Authz =================

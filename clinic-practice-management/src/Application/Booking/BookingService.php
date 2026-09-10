@@ -71,7 +71,7 @@ final class BookingService
      */
     public function availability(int $clinicianId, string $fromDate, string $toDate): array
     {
-        $this->requireClinician($clinicianId);
+        $clinicId = $this->requireClinician($clinicianId);
 
         $from = $this->parseYmd($fromDate, 'from');
         $to = $this->parseYmd($toDate, 'to');
@@ -84,7 +84,7 @@ final class BookingService
             throw BookingException::of('CLINIC_VALIDATION_FAILED', 'بازه تاریخ نامعتبر است (حداکثر ۶۰ روز)');
         }
 
-        $rows = $this->slots->availability(1, $clinicianId, $from, $to, $today, gmdate('H:i:s'));
+        $rows = $this->slots->availability($clinicId, $clinicianId, $from, $to, $today, gmdate('H:i:s'));
 
         $grouped = [];
         foreach ($rows as $row) {
@@ -133,10 +133,10 @@ final class BookingService
      */
     public function quote(int $clinicianId, string $slotDate, string $slotTime): array
     {
-        $this->requireClinician($clinicianId);
+        $clinicId = $this->requireClinician($clinicianId);
         $this->assertWindow($slotDate, $slotTime, (int) $this->settings->get('booking.min_lead_hours', 2));
 
-        $slot = $this->slots->findByClinicianSlot(1, $clinicianId, $slotDate, $slotTime);
+        $slot = $this->slots->findByClinicianSlot($clinicId, $clinicianId, $slotDate, $slotTime);
         if ($slot === null || (int) $slot['is_open'] !== 1) {
             return ['available' => false, 'capacity_left' => 0];
         }
@@ -161,7 +161,8 @@ final class BookingService
             throw BookingException::of('CLINIC_VALIDATION_FAILED', 'پروفایل شما ناقص است — ابتدا موبایل خود را تأیید کنید (OTP)');
         }
 
-        $slot = $this->slots->findByClinicianSlot(1, $clinicianId, $slotDate, $slotTime);
+        $clinicId = $this->requireClinician($clinicianId);
+        $slot = $this->slots->findByClinicianSlot($clinicId, $clinicianId, $slotDate, $slotTime);
         if ($slot === null || (int) $slot['is_open'] !== 1) {
             throw BookingException::of('CLINIC_NOT_FOUND', 'اسلات انتخابی یافت نشد', 404);
         }
@@ -189,7 +190,7 @@ final class BookingService
                 throw BookingException::of('CLINIC_SLOT_TAKEN', 'اسلات در لحظه انتخاب پر شد — اسلات دیگری انتخاب کنید', 409);
             }
             $this->db->insert('cpms_slot_holds', [
-                'clinic_id' => 1,
+                'clinic_id' => (int) $slot['clinic_id'],
                 'slot_id' => (int) $slot['id'],
                 'holder_wp_user_id' => $wpUserId,
                 'holder_mobile' => $mobile,
@@ -231,14 +232,8 @@ final class BookingService
             throw BookingException::of('CLINIC_VALIDATION_FAILED', 'هدر Idempotency-Key برای این عملیات الزامی است');
         }
 
-        $check = $this->idem->check($idemKey, self::EP_CONFIRM, $wpUserId, null);
-        if ($check['is_replay']) {
-            return $this->replayOrInFlight($check, $wpUserId);
-        }
-
-        $now = $this->now();
-        $nowSql = $this->db->nowUtcSql();
-
+        // C6: hold قبل از Idempotency خوانده می‌شود — clinic خودِ hold دامنهٔ
+        // کلید است (کلید یکسان در دو Clinic دیگر Replay نمی‌شود).
         $hold = $this->db->fetchRow(
             'SELECT * FROM ' . $this->db->table('cpms_slot_holds') . ' WHERE token = %s LIMIT 1',
             [$holdToken]
@@ -246,6 +241,15 @@ final class BookingService
         if ($hold === null) {
             throw BookingException::of('CLINIC_NOT_FOUND', 'جلسه رزرو یافت نشد', 404);
         }
+        $idemClinicId = (int) $hold['clinic_id'];
+
+        $check = $this->idem->check($idemKey, self::EP_CONFIRM, $wpUserId, null, $idemClinicId);
+        if ($check['is_replay']) {
+            return $this->replayOrInFlight($check, $wpUserId);
+        }
+
+        $now = $this->now();
+        $nowSql = $this->db->nowUtcSql();
         if ((int) $hold['holder_wp_user_id'] !== $wpUserId) {
             $this->audit('FORBIDDEN_ACCESS_ATTEMPT', $wpUserId, 'patient', 'slot_hold', (int) $hold['id'], null, null, null, [
                 'mobile' => MobileValidator::mask((string) ($hold['holder_mobile'] ?? '')),
@@ -275,10 +279,11 @@ final class BookingService
         $this->assertLicense(LicenseGate::OP_APPOINTMENT_BOOK);
 
         $mobile = (string) $hold['holder_mobile'];
-        $patient = $this->patients->findByMobile(1, $mobile);
+        $holdClinicId = (int) $hold['clinic_id'];
+        $patient = $this->patients->findByMobile($holdClinicId, $mobile);
         if ($patient === null) {
             // N-1: کاربر جدید (OTP verified) — Patient Record Minimal در زمان confirm ساخته می‌شود
-            $patient = $this->createMinimalPatient($mobile, $wpUserId);
+            $patient = $this->createMinimalPatient($holdClinicId, $mobile, $wpUserId);
         }
         $patientId = (int) $patient['id'];
         $slotId = (int) $hold['slot_id'];
@@ -306,7 +311,7 @@ final class BookingService
                 $nowSql = $this->db->nowUtcSql();
 
                 $apptId = $this->appointments->create([
-                    'clinic_id' => 1,
+                    'clinic_id' => (int) $slot['clinic_id'],
                     'reference_code' => $ref,
                     'clinician_id' => (int) $slot['clinician_id'],
                     'patient_id' => $patientId,
@@ -343,12 +348,12 @@ final class BookingService
                 [$holdId]
             );
             $this->slots->releaseHold($slotId);
-            $this->idem->release($idemKey, self::EP_CONFIRM, $wpUserId, null);
+            $this->idem->release($idemKey, self::EP_CONFIRM, $wpUserId, null, $idemClinicId);
             throw $this->toBookingException($e);
         }
 
         $view = $this->appointmentView($appt);
-        $this->idem->complete($idemKey, self::EP_CONFIRM, $wpUserId, null, 200, $view);
+        $this->idem->complete($idemKey, self::EP_CONFIRM, $wpUserId, null, 200, $view, $idemClinicId);
 
         $this->audit('APPOINTMENT_CREATED', $wpUserId, 'patient', 'appointment', $apptId, $patientId, null, $view, [
             'mobile' => MobileValidator::mask($mobile),
@@ -441,7 +446,14 @@ final class BookingService
             throw BookingException::of('CLINIC_VALIDATION_FAILED', 'هدر Idempotency-Key برای این عملیات الزامی است');
         }
 
-        $check = $this->idem->check($idemKey, self::EP_RESCHEDULE, $wpUserId, $appointmentId);
+        // C6: دامنهٔ کلید = کلینیک نوبت (پیش از claim خوانده می‌شود)
+        $scopeAppt = $this->appointments->find($appointmentId);
+        if ($scopeAppt === null) {
+            throw BookingException::of('CLINIC_NOT_FOUND', 'نوبت یافت نشد', 404);
+        }
+        $idemClinicId = (int) $scopeAppt['clinic_id'];
+
+        $check = $this->idem->check($idemKey, self::EP_RESCHEDULE, $wpUserId, $appointmentId, $idemClinicId);
         if ($check['is_replay']) {
             return $this->replayOrInFlight($check, $wpUserId);
         }
@@ -479,7 +491,8 @@ final class BookingService
                 $this->assertWindow($newDate, $newTime, (int) $this->settings->get('booking.min_lead_hours', 2));
 
                 $oldSlotId = (int) $appt['slot_id'];
-                $newSlot = $this->slots->findByClinicianSlot(1, $newClinicianId, $newDate, $newTime);
+                $newClinicId = $this->requireClinician($newClinicianId);
+                $newSlot = $this->slots->findByClinicianSlot($newClinicId, $newClinicianId, $newDate, $newTime);
                 if ($newSlot === null || (int) $newSlot['is_open'] !== 1) {
                     throw BookingException::of('CLINIC_NOT_FOUND', 'اسلات مقصد یافت نشد', 404);
                 }
@@ -507,7 +520,7 @@ final class BookingService
                 $endTime = DurationResolver::slotEndTime($newTime, $duration);
                 $nowSql = $this->db->nowUtcSql();
                 $newApptId = $this->appointments->create([
-                    'clinic_id' => 1,
+                    'clinic_id' => (int) $newSlot['clinic_id'],
                     'reference_code' => $this->referenceCode($newDate),
                     'clinician_id' => $newClinicianId,
                     'patient_id' => (int) $appt['patient_id'],
@@ -536,14 +549,14 @@ final class BookingService
                 return [$appt, $newApptId, $newSlot];
             });
         } catch (Throwable $e) {
-            $this->idem->release($idemKey, self::EP_RESCHEDULE, $wpUserId, $appointmentId);
+            $this->idem->release($idemKey, self::EP_RESCHEDULE, $wpUserId, $appointmentId, $idemClinicId);
             throw $this->toBookingException($e);
         }
 
         $newAppt = $this->appointments->find($newApptId);
         $view = $this->appointmentView($newAppt);
         $response = array_merge($view, ['previous_appointment_id' => $appointmentId]);
-        $this->idem->complete($idemKey, self::EP_RESCHEDULE, $wpUserId, $appointmentId, 200, $response);
+        $this->idem->complete($idemKey, self::EP_RESCHEDULE, $wpUserId, $appointmentId, 200, $response, $idemClinicId);
 
         $this->audit('APPOINTMENT_RESCHEDULED', $wpUserId, 'patient', 'appointment', $newApptId, (int) $oldAppt['patient_id'], null, $view, [
             'from_appointment_id' => $appointmentId,
@@ -576,15 +589,19 @@ final class BookingService
         if ($patient === null || (string) $patient['status'] !== 'active') {
             throw BookingException::of('CLINIC_NOT_FOUND', 'بیمار یافت نشد', 404);
         }
-        $this->requireClinician($clinicianId);
+        $clinicId = $this->requireClinician($clinicianId);
+        // C6: بیمار و اسلات باید به یک کلینیک تعلق داشته باشند (verify سمت سرور)
+        if ((int) $patient['clinic_id'] !== $clinicId) {
+            throw BookingException::of('CLINIC_VALIDATION_FAILED', 'این بیمار به کلینیک دیگری تعلق دارد', 422);
+        }
         // N-3: Staff (حضوری/فوری) بدون min-lead — فقط Window + افق آینده
         $this->assertWindow($slotDate, $slotTime, 0);
 
         try {
             [$apptId, $appt, $slot] = $this->db->transactional(function () use (
-                $patientId, $clinicianId, $slotDate, $slotTime, $reason
+                $clinicId, $patientId, $clinicianId, $slotDate, $slotTime, $reason
             ): array {
-                $slot = $this->slots->findByClinicianSlot(1, $clinicianId, $slotDate, $slotTime);
+                $slot = $this->slots->findByClinicianSlot($clinicId, $clinicianId, $slotDate, $slotTime);
                 if ($slot === null || (int) $slot['is_open'] !== 1) {
                     throw BookingException::of('CLINIC_NOT_FOUND', 'اسلات یافت نشد — ممکن است Schedule پزشک برای این روز تعریف نشده باشد', 404);
                 }
@@ -606,7 +623,7 @@ final class BookingService
                 $nowSql = $this->db->nowUtcSql();
                 $isToday = $slotDate === gmdate('Y-m-d');
                 $apptId = $this->appointments->create([
-                    'clinic_id' => 1,
+                    'clinic_id' => (int) $slot['clinic_id'],
                     'reference_code' => $this->referenceCode($slotDate),
                     'clinician_id' => $clinicianId,
                     'patient_id' => $patientId,
@@ -660,8 +677,8 @@ final class BookingService
      */
     public function listForClinician(int $clinicianId, string $date, ?string $status): array
     {
-        $this->requireClinician($clinicianId);
-        $rows = $this->appointments->listByClinicianDate(1, $clinicianId, $date);
+        $clinicId = $this->requireClinician($clinicianId);
+        $rows = $this->appointments->listByClinicianDate($clinicId, $clinicianId, $date);
         if ($status !== null && $status !== '') {
             $rows = array_values(array_filter($rows, static fn (array $r): bool => (string) $r['status'] === $status));
         }
@@ -747,10 +764,12 @@ final class BookingService
                         [(int) $appt['clinician_id']]
                     );
                     $clinic = (string) $this->db->fetchValue(
-                        'SELECT name FROM ' . $this->db->table('cpms_clinics') . ' WHERE id = 1 LIMIT 1'
+                        'SELECT name FROM ' . $this->db->table('cpms_clinics') . ' WHERE id = %d LIMIT 1',
+                        [(int) $appt['clinic_id']]
                     );
                     $patientName = trim((string) $patient['first_name'] . ' ' . (string) $patient['last_name']);
                     $this->notifications->publishToPatient(
+                        (int) $appt['clinic_id'],
                         (int) $appt['patient_id'],
                         NotificationEvents::APPT_CANCELLED,
                         [
@@ -814,15 +833,21 @@ final class BookingService
         }
     }
 
-    private function requireClinician(int $clinicianId): void
+    /**
+     * وجود پزشک + کلینیکِ او — منبع domain برای scope جریان‌های booking
+     * (C6: clinic از relation مشتق می‌شود، نه literal).
+     */
+    private function requireClinician(int $clinicianId): int
     {
         $row = $this->db->fetchRow(
-            'SELECT id FROM ' . $this->db->table('cpms_clinicians') . ' WHERE id = %d AND is_active = 1 LIMIT 1',
+            'SELECT id, clinic_id FROM ' . $this->db->table('cpms_clinicians') . ' WHERE id = %d AND is_active = 1 LIMIT 1',
             [$clinicianId]
         );
         if ($row === null) {
             throw BookingException::of('CLINIC_NOT_FOUND', 'پزشک یافت نشد', 404);
         }
+
+        return (int) $row['clinic_id'];
     }
 
     /**
@@ -857,12 +882,12 @@ final class BookingService
      *
      * @return array<string, mixed>
      */
-    private function createMinimalPatient(string $mobile, int $wpUserId): array
+    private function createMinimalPatient(int $clinic_id, string $mobile, int $wpUserId): array
     {
         $nowSql = $this->db->nowUtcSql();
         $id = $this->patients->create([
-            'clinic_id' => 1,
-            'mrn' => $this->generateMrn(),
+            'clinic_id' => $clinic_id,
+            'mrn' => $this->generateMrn($clinic_id),
             'first_name' => '',
             'last_name' => '',
             'mobile' => $mobile,
@@ -871,7 +896,7 @@ final class BookingService
             'updated_at' => $nowSql,
         ]);
         $this->db->insert('cpms_patient_user_links', [
-            'clinic_id' => 1,
+            'clinic_id' => $clinic_id,
             'patient_id' => $id,
             'wp_user_id' => $wpUserId,
             'mobile_at_link' => $mobile,
@@ -926,13 +951,13 @@ final class BookingService
     /**
      * N-6: `MR-{YYMMDD}-{5char}` — Retry روی Unique Constraint.
      */
-    private function generateMrn(): string
+    private function generateMrn(int $clinic_id): string
     {
         for ($i = 0; $i < 5; $i++) {
             $mrn = 'MR-' . gmdate('ymd') . '-' . strtoupper(substr(bin2hex(random_bytes(4)), 0, 5));
             $exists = $this->db->fetchValue(
-                'SELECT COUNT(*) FROM ' . $this->db->table('cpms_patients') . ' WHERE clinic_id = 1 AND mrn = %s',
-                [$mrn]
+                'SELECT COUNT(*) FROM ' . $this->db->table('cpms_patients') . ' WHERE clinic_id = %d AND mrn = %s',
+                [$clinic_id, $mrn]
             );
             if ((int) $exists === 0) {
                 return $mrn;
@@ -979,7 +1004,8 @@ final class BookingService
                 [(int) $appt['clinician_id']]
             );
             $clinic = (string) $this->db->fetchValue(
-                'SELECT name FROM ' . $this->db->table('cpms_clinics') . ' WHERE id = 1 LIMIT 1'
+                'SELECT name FROM ' . $this->db->table('cpms_clinics') . ' WHERE id = %d LIMIT 1',
+                [(int) $appt['clinic_id']]
             );
             $patient = $this->patients->find((int) $appt['patient_id']);
             $patientName = $patient !== null
@@ -998,6 +1024,7 @@ final class BookingService
             ];
 
             $this->sms->sendEvent(
+                (int) $appt['clinic_id'],
                 $event,
                 $mobile,
                 $vars,
@@ -1009,6 +1036,7 @@ final class BookingService
             // شکست SMS/اعلان گردش‌کار را خراب نمی‌کند (try بیرونی).
             if ($this->notifications !== null) {
                 $this->notifications->publishToPatient(
+                    (int) $appt['clinic_id'],
                     (int) $appt['patient_id'],
                     $this->internalEventForSms($event),
                     $vars,

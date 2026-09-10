@@ -2,7 +2,45 @@
 
 > **این فایل سند жив پروژه است.** هر ایجنت (AI یا انسان) که روی این repo کار می‌کند **باید** قبل از شروع این فایل را کامل بخواند و بعد از پایان کارِ خود، در بخش «لاگ کار ایجنت‌ها» (انتهای همین فایل) ورودی ثبت کند.
 
-نسخه: 1.0 | آخرین به‌روزرسانی: 2026-09-05 | نگهدارنده: ایجنت‌های Arena (به‌صورت append-only)
+نسخه: 2.0 | آخرین به‌روزرسانی: 2026-09-08 | نگهدارنده: ایجنت‌های Arena (به‌صورت append-only)
+
+---
+
+> # 🔴 مرجع فازبندی — پیش از هر چیز این را بخوان
+>
+> ## **Owner-approved Phase 0..20 Roadmap = authoritative execution roadmap.**
+>
+> مرجع رسمی: [`docs/roadmap/roadmap.md`](roadmap/roadmap.md) **§۰**.
+>
+> نظام‌های **`F0..F10`**، **`Doc-Phase 1..8`** و برچسب‌های **`V1` / `V1.5` / `V2`** از 2026-09-08 **Legacy/Historical** هستند. در متن همین فایل و در گزارش‌های `docs/phase-reports/` فراوان دیده می‌شوند — **آن‌ها را به‌عنوان Roadmap اجرایی فعلی تفسیر نکن.** جدول نگاشتشان در `roadmap.md` §۲-۱ است.
+>
+> | Phase | عنوان | وضعیت |
+> |---|---|---|
+> | Phase 0 | Git Checkpoint | ✅ CLOSED — [`report-phase-0-reverification.md`](phase-reports/report-phase-0-reverification.md) |
+> | Phase 0.5 | Target Architecture & Migration Plan | ✅ CLOSED — [`phase0.5-target-model.md`](architecture/phase0.5-target-model.md) |
+> | Phase 1 | Security Hardening | ⏸ منتظر Gate Approval |
+> | Phase 2 | Multi-Clinic Core | ⏳ |
+> | Phase 3 | Role & Access Control | ⏳ |
+> | Phase 4 | Master Data | ⏳ |
+> | Phase 5 | Pricing Engine | ⏳ |
+> | Phase 6 | Scheduling Engine | ⏳ |
+> | Phase 7 | Appointment Engine | ⏳ |
+> | Phase 8..20 | عنوان‌گذاری‌نشده | ⚠️ OPEN DECISION |
+>
+> ## معماری هدف الزام‌آور — [ADR-0031](adr/ADR-0031-organization-clinic-location-scoped-authorization.md)
+>
+> ```
+> Organization → Clinic → Location → Doctor → User/Staff
+> ```
+>
+> **سه قاعده‌ای که بیشترین احتمال نقض ناخواسته را دارند:**
+> - **AD-02** — Organization اجباری است. هیچ مسیر موازی برای `Organization = NULL`.
+> - **AD-12** — Migration = versioned forward. drop/recreate مسیر محصول نیست.
+> - **AD-13** — **`clinic_id = 1` مستقیم در کد جدید ممنوع است** (و همین‌طور `organization_id = 1` و `location_id = 1`). ۵۴ مورد موجود بدهی فنی Phase 2 هستند — اضافه‌کردن مورد پنجاه‌وپنجم ممنوع است.
+>
+> **قاعدهٔ اجرا از Phase 1 به بعد:** code + tests + documentation باید **همراه هم** به‌روز شوند. checkpoint commit کوچک مجاز است؛ **merge فقط پس از Gate نهایی فاز**.
+>
+> **تعارض اسناد:** [`docs/drift-register.md`](drift-register.md) — اسنادی که هنوز مدل قدیمی را بیان می‌کنند، با فاز مالک هر مورد.
 
 ---
 
@@ -12,10 +50,12 @@
 2. وضعیت repo را verify کن — دستورات آماده:
    ```bash
    git log --oneline -10 && git status --short
-   gh run list --branch arena/01a071c4-doctor --limit 3
-   gh pr view 1 --json state,statusCheckRollup
+   BR=$(git rev-parse --abbrev-ref HEAD)
+   gh run list --branch "$BR" --limit 3
+   gh pr list --state all --limit 5 --json number,state,title,headRefName
    ```
-3. وضعیت فازها را از `docs/roadmap/roadmap.md` و آخرین گزارش `docs/phase-reports/report-*.md` بگیر.
+   > ⚠️ نسخهٔ قبلی این چک‌لیست شاخهٔ ثابت `arena/01a071c4-doctor` و `PR #1` را hardcode کرده بود. آن شاخه منسوخ است و **PR #1 از مدت‌ها پیش MERGED شده** — روی شاخهٔ جاری کار کن.
+3. وضعیت فازها را **فقط** از `docs/roadmap/roadmap.md` **§۰ (Owner-approved Phase 0..20)** بگیر — نه از جدول تاریخی `F*` و نه از گزارش فاز قبلی.
 4. **قاعده طلا:** Git history منبع تأیید است؛ گزارش‌های قبلی فقط handoff هستند — همه ادعاها را از کد/تست/CI verify کن.
 5. هیچ فاز جدیدی بدون تأیید صریح کارفرما شروع نکن (قانون Gate — Section 56).
 
@@ -23,7 +63,9 @@
 
 ## 1. معرفی پروژه
 
-**CPMS** = سیستم مدیریت مطب (Clinic Practice Management System) به‌صورت **افزونه WordPress** (PHP 8.1+، MySQL 8، WP 6.4+ — runtime تأییدشده روی WP 6.4/6.5/6.6/6.7.2 و PHP 8.1–8.4) — تک‌کلینیک در V1، تجاری با لایسنس.
+**CPMS** = سیستم مدیریت مطب (Clinic Practice Management System) به‌صورت **افزونه WordPress** (PHP 8.1+، MySQL 8، WP 6.4+ — runtime تأییدشده روی WP 6.4/6.5/6.6/6.7.2 و PHP 8.1–8.4) — تجاری با لایسنس.
+
+> ⛔ **تصحیح (2026-09-08):** جملهٔ قبلی «تک‌کلینیک در V1» بود. **آن جمله دیگر معتبر نیست.** طبق [ADR-0031](adr/ADR-0031-organization-clinic-location-scoped-authorization.md) (AD-01)، **Multi-Clinic / Multi-Location جزو Core است** — نه افزودنی، نه V2. مطب تک‌پزشکی هم دقیقاً از همان زنجیرهٔ `Organization → Clinic → Location` استفاده می‌کند (AD-04)؛ «حالت مطب» فقط یک تطبیق UX است، **هرگز یک مسیر کدی جدا نیست**. پیاده‌سازی در **Phase 2**.
 
 - مسیر افزونه: `clinic-practice-management/`
 - Namespace: `ClinicCore\` → `clinic-practice-management/src/`
@@ -76,6 +118,31 @@ tests/
 
 ### آخرین وضعیت فنی (verify شده)
 
+> ⛔ **این «Snapshot 2026-09-05» تاریخی است.** اعداد به‌روزشده در جدول زیر آمده؛ متن تاریخی زیرش دست‌نخورده مانده.
+>
+> ### خط پایهٔ اثبات‌شده — ممیزی Phase 0 (بازبینی 2026-09-08)
+>
+> | سنجه | مقدار صحیح | ادعای منسوخ |
+> |---|---|---|
+> | جدول `cpms_*` | **۴۱** | ~~۳۹~~ |
+> | فایل Migration | **۹** (`0001`..`0009`) | ~~0001–0003~~ |
+> | Foreign Key | **۳۹** (۳۸ در CREATE + `fk_hwpage_bg` با ALTER) | — |
+> | **FK روی `clinic_id`** | **۴ فقط** ⇒ ۲۱ جدول بدون FK (قید C-8) | — |
+> | جدول دارای `clinic_id` | **۲۵** از ۴۱ | — |
+> | Capability | **۴۶** (شمارش با `grep 'public const .* = ...cpms_'` بیش‌شمارش می‌کند: ۵ `ROLE_*` + ۱ `OPTION_*`) | — |
+> | نقش ثبت‌شده | **۵** — `cpms_patient`, `cpms_secretary`, `cpms_doctor`, `cpms_accountant`, `cpms_manager` | ~~۳~~ |
+> | route REST | **۸۰ در زمان اجرا** (۷۷ نقطهٔ ثبت در سورس — عدد را همیشه صریح بگو) | ~~۷۵~~ |
+> | `permission_callback` | **۸۸** = ۶۷ `__return_true` + ۲۱ gated (اصلاح‌شده در Phase 1A؛ عدد قبلی ۸۹ یک false-positive از Docblock در `BookingController.php:312` بود). از ۶۷ مورد، **۶۲ guard مؤثر داشتند** (۵۸ داخل handler + ۴ در لایهٔ Service) و **۵ عمداً public** بودند (قید C-6). **وضعیت جاری پس از Phase 1A: هر ۸۸ ورودی gated و `__return_true` = صفر** — [`security/phase1-current-security-model.md`](security/phase1-current-security-model.md) | — |
+> | `admin_post_*` / AJAX | **۲۵** / **۰** | — |
+> | فایل تست | **۸۴** (۳۳ Unit + ۴۹ Integration) — تعداد *متد* تست بدون اجرای PHPUnit اثبات‌پذیر نیست | ~~۲۰۳ تست~~ |
+> | سند tracked در `docs/` | **۸۴** | ~~۸۵~~ |
+> | `clinic_id = 1` hardcode | **۵۴** در **۲۳ فایل** — **۲۴ داخل `Infrastructure/Repository/`**، ۳۰ بیرون؛ ۱۳ از ۲۳ فایل Repository (قید C-4) | ~~~۴۴~~ |
+> | Default-Parameter مخفی | **۳** — `AuditLogger.php:45`, `Idempotency.php:37`, `Settings.php:145` | — |
+> | PR | ۹ PR؛ **PR #1 MERGED**؛ آخرین = **#9 MERGED** | ~~PR #1 OPEN~~ |
+> | شاخهٔ کاری | از `git rev-parse --abbrev-ref HEAD` بخوان | ~~`arena/01a071c4-doctor`~~ |
+>
+> **سه مکانیزمی که در ADRها ادعا شده‌اند و در کد وجود ندارند:** `AccessPolicy` (۰ فایل) · `resolvePatient()` (۰) · Dangling-Check Job (۰ از ۱۶ handler). به‌علاوه `Repository Base` وجود ندارد و **Patient Merge فقط schema است**.
+
 - **HEAD فعلی:** Pilot/Staging Gate فعال روی `arena/01a071c4-doctor` (F9 کامل در `c5e82a7` + Gate tooling/fixes) — وضعیت لحظه‌ای در report-pilot-gate.md §15
 - **PR #1:** OPEN — هر ۵ چک (Unit PHP 8.1/8.2/8.3/8.4 + Integration WP 6.7.2 + MySQL 8)
 - **تست‌ها:** Unit سبز روی PHP 8.1–8.4؛ Integration بعد از F6 = ۲۰۳ تست (FinanceFlowTest ۱۷ + قبلی‌ها)، ۰ skip — شامل concurrency با fork واقعی
@@ -106,7 +173,12 @@ Client Final Decisions → Approved ADRs (scope) → Engineering Baseline → SR
 ```
 - تعارض مهم = **STOP** با قالب ISSUE / IMPACT / OPTIONS / RECOMMENDATION و انتظار برای پاسخ.
 - تصمیم نهایی کارفرما بر همه چیز مقدم است.
-- فازبندی: منبع حقیقت = `docs/roadmap/roadmap.md` (خطای رایج: خواندن فاز بعدی از گزارش فاز قبلی — گزارش‌ها فقط خلاصه‌اند).
+- **فازبندی: منبع حقیقت = Owner-approved Phase 0..20 Roadmap** — `docs/roadmap/roadmap.md` **§۰**.
+  - خطای رایج ۱: خواندن فاز بعدی از گزارش فاز قبلی — گزارش‌ها فقط خلاصه‌اند.
+  - خطای رایج ۲ (**جدید و پرخطرتر**): خواندن فاز از جدول تاریخی `F0..F10` یا برچسب‌های `V1.5`/`V2` در همان فایل. آن‌ها **Legacy** هستند. `V2` منحل شده و محتوایش به Phase 2/3/4 بازتوزیع شده است.
+- **تقدم اسناد به‌روزشده:** تصمیم نهایی Owner ← **ADR-0031** ← ADRهای دیگر ← Engineering Baseline ← SRS ← State Machines/ERD ← API Contract ← Settings ← Implementation.
+  ADR-0031 بر ADR-0003 (کامل) و بر بخش‌هایی از ADR-0027 و ADR-0026 مقدم است.
+- **تعارض شناخته‌شدهٔ سند-با-واقعیت** پیش از هر کار در `docs/drift-register.md` چک شود؛ آن موارد **از قبل ثبت شده‌اند** و نیازی به STOP مجدد ندارند — فقط در فاز مالکشان اصلاح می‌شوند.
 
 ### 3.2 شرایط STOP (فقط این موارد — بقیه با قضاوت مهندسی)
 
@@ -124,7 +196,8 @@ Scope change، تغییر main workflow، تغییر قاعده business کار�
 
 - **Error codes:** همه `CLINIC_*`، stable/ماشین‌خوان، registry = `docs/api/error-codes.md` (هر کد جدید آنجا ثبت شود)؛ پیام فارسی کاربر جدا از کد فنی. کلید `status` در envelope رزرو است.
 - **Patient ≠ WP User، Appointment ≠ Visit، Invoice ≠ Payment** — کلاینت هرگز trusted نیست؛ UI permission ≠ backend authorization؛ بیمار A نباید داده بیمار B را ببیند؛ منشی نمی‌تواند نوت خصوصی پزشک را ببیند.
-- **Authorization = Capability، نه نام نقش (ADR-0026):** منطق جدید هرگز `if role == X` نمی‌نویسد — فقط `user_can('cpms_…')` (+ Scope در V2). نقش‌های ستادی سفارشی (حسابدار/دستیار/…) باید بدون تغییر Business Logic کار کنند؛ نام نقش فقط برچسب Audit است. حوزه‌ها مستقل‌اند: مالی ⊥ بالینی ⊥ هویت ⊥ یادداشت خصوصی؛ Cap عمومی هرگز `cpms_private_note_*` را ضمنی نمی‌دهد. همه داشبوردهای ستادی Responsive‌اند (تبلت/قلم = بهینه‌سازی دست‌خط، نه محدودیت دستگاه).
+- **Authorization = Capability، نه نام نقش (ADR-0026 D-1 — همچنان معتبر):** منطق جدید هرگز `if role == X` نمی‌نویسد.
+  > 🔄 **به‌روزرسانی (ADR-0031، AD-06):** «(+ Scope در V2)» منسوخ است. مدل هدف: نقش **صفتِ رابطهٔ (User, Clinic)** است نه صفتِ User؛ `User↔Clinic` رابطهٔ **M:N** است (AD-05). نقطهٔ ورود واحد `AuthorizationService::can(wpUserId, capability, ScopeContext{clinicId, ?locationId, ?resource})` می‌شود و فراخوانی مستقیم `current_user_can('cpms_…')` بیرون از آن سرویس **ممنوع** خواهد شد (با architecture test). پیاده‌سازی در **Phase 3** — امروز هنوز `user_can` الگوی جاری است. کلاس `AccessPolicy` که ADR-0002/0026 به آن ارجاع می‌دهند **وجود ندارد**. نقش‌های ستادی سفارشی (حسابدار/دستیار/…) باید بدون تغییر Business Logic کار کنند؛ نام نقش فقط برچسب Audit است. حوزه‌ها مستقل‌اند: مالی ⊥ بالینی ⊥ هویت ⊥ یادداشت خصوصی؛ Cap عمومی هرگز `cpms_private_note_*` را ضمنی نمی‌دهد. همه داشبوردهای ستادی Responsive‌اند (تبلت/قلم = بهینه‌سازی دست‌خط، نه محدودیت دستگاه).
 - **2FA (V1.5):** TOTP RFC 6238 برای حساب‌های ممتاز بر اساس ACCESS نه role name.
 - **SMS:** همیشه از مسیر Notification→SmsService→ProviderInterface؛ credential هرگز hardcode/log نشود.
 - **Licensing:** انقضا هرگز داده پزشکی را قفل/حذف نمی‌کند؛ بعد از grace (پیش‌فرض ۷ روز) فقط عملیات جدید block؛ license server هرگز داده پزشکی نمی‌گیرد و در مسیر booking network call مستقیم ندارد.
@@ -621,3 +694,28 @@ final class XxxService {
 - **کامیت‌ها:** `cf97dba` (گیت Acceptance) → `85ed9bc` (YAML fix) → `a340cb2` (رفع باگ‌های خود گیت) → `9d9b97a`→`b7ca5e1`→`901c192`→`364ceeb`→`37e69f6` (تقویت evidence) → **`df6567a` (فیکس محصول: D1+D2+REST)** → این لاگ.
 - **CI نهایی روی `df6567a`: ✅ همه سبز** — Real WP Acceptance push run **34150553934** (wp_ و clinic_ هر دو **25/25 PASS**؛ actual=41=ui روی هر دو؛ System/Health رندر؛ منوهای نقش‌ها؛ پروب D3؛ منوی Administrator فنی P-3 + Deny 403؛ بدون Fatal در لاگ‌ها) + CI/PR **34150968679** (Unit 8.1–8.4 + Integration + PHPStan) + Acceptance PR **34150968686** + Closure **34150553982** (۵/۵) + Pilot **34150554156** (Release/Upgrade/Staging/Responsive سبز). Artifacts: `rwp-acceptance-wp_` / `rwp-acceptance-clinic_`.
 - **PR #8** — باز برای تأیید کارفرما؛ **ایجنت merge نکرد ≻ STOP طبق پروتکل.**
+
+### [2026-09-08 ~22:15 UTC] — ایجنت Arena (شاخهٔ `arena/01a082db-doctor`، PR #11 DRAFT) — بستن OD-9 (مرز ذخیره‌سازی بکاپ) + PHASE 2 PRE-IMPLEMENTATION CHECK — STOP
+- **ماموریت کارفرما:** (۱) verify handoff Phase 1A (`79cce4b`)؛ (۲) بستن OD-9 طبق تصمیم مالک (گزینهٔ C سخت‌گیرانه): ریشهٔ بکاپ فعال باید بیرون DocumentRoot باشد — Fail-Closed، بدون silent fallback — ولی Restore/DR نباید deadlock شود؛ (۳) گیت OD-9 با ۴ workflow سبز؛ (۴) فقط PRE-IMPLEMENTATION CHECK فاز ۲ (بدون پیاده‌سازی) + گزارش Gate و STOP.
+- **پیاده‌سازی OD-9 (کامیت `3531d5d`):** `ProtectedBackupStore` با سازندهٔ private + `::active()` (fail-closed، realpath ⇒ symlink هم رد؛ کد `CLINIC_BACKUP_STORAGE_INSIDE_WEBROOT`) + `::legacySource()` (فقط‌خواندنی: createDir/ensureGuards/delete رد، listIds بدون گارد). `App::backupService()` پیکربندی ناامن را صریحاً downgrade می‌کند (مسیر عوض نمی‌شود؛ کش برداشته شد). `BackupService`: تفکیک مبدأ/مقصد — `resolveSourceStore()` (فعال→خصوصی→legacy) + `safetyDestinationStore()` (Safety Backup فقط به مقصد امن؛ مبدأ legacy هرگز مقصد نیست؛ نبود مقصد امن = توقف قبل از گام مخرب) + preflight با `integrity_warnings`/`legacy_unverified`/`source`/`source_root` + Audit RESTORE_APPLIED گسترده. `App::ensurePrivateStorage()`: مهاجرت idempotent ریشهٔ ناامن/legacy (copy→verify sha256→rename→verify→remove؛ تعارض بدون overwrite؛ Setting دست‌نخورده). `SystemHealthService`: inside-webroot = FAIL (قبلاً WARNING). `BackupRunHandler`: ثبت errorCode صریح.
+- **تست:** `tests/Integration/BackupStorageBoundaryTest.php` — ۱۴ متد (default خارج webroot، safe path، inside-webroot رد، symlink رد، downgrade صریح، legacy readonly، رزولوشن سرویس، redirect Safety Backup، restore مسیر عادی، tampered رد، legacy_unverified، مهاجرت idempotent، تعارض، Health FAIL). مهاجرت با بکاپ واقعی seed می‌شود (نه manifest ساختگی) و restoreApply با artifact «توقف قبل از DDL» ایزوله شده — مسیر مخرب کامل = Restore Drill سطح OS در Pilot Gate.
+- **خطای میانی و طبقه‌بندی:** CI run 34282802365 (روی `3531d5d`) قرمز — یک Error در تست تعارض: `mkdir(dirname($dst))` والد را می‌ساخت نه دایرکتوری بکاپ. طبقه‌بندی **D (نقص تست)**؛ fix یک‌خطی در `cd29473`؛ سایر اجراها (Closure/Real-WP روی همان SHA و Pilot با push جدید) سبز بودند.
+- **شواهد نهایی روی `cd29473` (هر ۵ اجرا سبز):** CI **34283426837** (PHPStan lvl 3 + Unit 8.1–8.4 + Integration WP6.7/MySQL8؛ ۴۸۱ تست) · Real-WP PR **34283426829** · Real-WP push **34283425385** · Closure (شامل destructive restoreApply) **34283425388** · Pilot/Staging (شامل Restore Drill) **34283425398**. **OD-9 = CLOSED** (`docs/phase-reports/report-od9-closure.md`؛ drift-register/roadmap/handoff/security-model §۵-۴/runbook §۷/error-codes به‌روز).
+- **PHASE 2 PRE-IMPLEMENTATION CHECK (`docs/phase-reports/phase2-pre-implementation-gate-report.md`، ۱۷ بند، همهٔ اعداد re-verify):** ۴۱ جدول/۹ migration/۳۹ FK تأیید؛ 🔍 تصحیح‌ها: ۲۶ جدول clinic_id (نه ۲۵ — `sms_messages` در نگاشت ب-۵ جا افتاده + نوع ستونش INT است نه BIGINT)؛ ۲۲ FK لازم (نه ۲۱)؛ سومین UNIQUE شکننده = `u_clinician_user` (نقض AD-05/M:N)؛ سرشماری hardcode: ۵۲ اجرایی + ۳ default-param در ۲۴ فایل — 🔍 **رانش فاز 1A: +۱ hardcode اجرایی جدید در `OtpService::resolveUser` (نقض AD-13 — در بدهی Phase 2 ثبت شد)**؛ یافتهٔ دو منبع TZ (wizard فقط setting می‌نویسد، ردیف clinics هرگز UPDATE نمی‌شود) — باید پیش از M-04 تعیین تکلیف شود. Q6/Q11/Q12 باز اما غیرمسدودکننده. **رأی: فاز ۲ آمادهٔ شروع مشروط به بند ۱۷ گزارش.**
+- **محدودیت محیط:** sandbox فاقد PHP — عدد PHPUnit فقط از GitHub Actions با run-id؛ لاگ خام jobها در این محیط EOF می‌دهد (شواهد از check-run/PR comments استخراج شد).
+- **STOP طبق دستور:** PR #10 همچنان OPEN + DRAFT (لمس نشد)؛ PR #11 برای CI DRAFT باز شد (merge نشد)؛ بدون tag/release/version-bump/merge. Phase 2 implement نشد. انتظار تأیید مالک.
+
+### [2026-09-09 ~09:30 UTC] — ایجنت Arena (شاخهٔ `arena/01a082db-doctor`) — FINAL PRE-PHASE-2 GATE — STOP
+- **ماموریت کارفرما (۱۰ بند):** verify اتصال/هویت repo؛ تصحیح رکورد عددی ۲۶/۲۲؛ تحقیق رگرسیون `clinic_id=1` + fix کوچک؛ تصمیم Source of Truth زمانی؛ طراحی Clinician/User/Membership؛ حکم معنایی SMS؛ اعتبارسنجی Migration Plan؛ تست‌پلن؛ مرز 1B/3؛ گزارش ۱۷بندی. **بدون هیچ implementation فاز ۲.**
+- **§۱ هویت:** اتصال GitHub برگشت (401 دیروز گذرا؛ بدون workaround). شاخه = `arena/01a082db-doctor`؛ نام `arena/01a082d2-doctor` **در remote وجود ندارد** (ls-remote: ۱۰ شاخه؛ خطای خوانش «b»→«d2» گزارش شد). HEAD = `9d6cf41` == remote؛ هر ۵ گیت آن سبز (CI 34283426837 · Real-WP 34284357086/34284347413 · Closure 34284347483 · Pilot 34284347475).
+- **§۲ تصحیح:** بازشماری مستقل — **۲۶ جدول clinic_id (فهرست/نوع هر یک)، ۴ FK، ۲۲ بدون FK**؛ `cpms_sms_messages` تنها INT (و DEFAULT 1؛ DEFAULT-1ها = ۳ جدول). علت خطای census قبلی: جمع‌بندی فقط migration 0001 را شمرد. بلوک «🔴 تصحیح نهایی» در `phase0.5-target-model.md` (ب-۵) + ماتریس کامل در **د-۶** جدید. تاریخچه Phase 0 بازنویسی نشد.
+- **§۳ رگرسیون AD-13:** git blame — خط جدید Phase 1A در **`findExistingUser`** است (کامیت `4c16009`، OD-8)، نه `resolveUser` (آن از 8087b42 بود — تصحیح اتریبوشن گزارش قبلی خودم). Fix (`bbc1e83`): helper واحد `findActivePatientIdByMobile()` با `clinic_id = %d` + `Settings::clinicId()` (getter جدید؛ بدون مفهوم Scope ساختگی)؛ insert لینک هم به کلینیک پیکربندی‌شده؛ **OtpService = صفر hardcode؛ سرشماری ۵۲→۴۹**. تست جدید با کلینیک دوم واقعی + دو بیمار هم‌موبایل. B-15 دفترچه 1B تصحیح؛ **B-21 بسته شد (OD-7/OD-9)**.
+- **§۴ TZ:** نقشهٔ کامل read/write — ستون clinics فقط seed می‌شود و تنها reader عملیاتی‌اش `Settings::clinicTimezone()` با ۳ مصرف‌کننده (یادآوری ×۲ + اعلان) است؛ setting ویزارد **هیچ مصرف‌کنندهٔ عملیاتی ندارد** ⇒ انتخاب اپراتیر بی‌اثر (نقص ثبت‌شده). پیشنهاد: `locations.timezone` = SoT عملیاتی؛ clinics.timezone = default واگذاری seeding؛ نگاشت M-04 = setting(معتبر) → ستون → Asia/Tehran + preflight واگرایی؛ hotfix ویزارد پیشنهاد شد (اجرا نشد — خارج از mandate).
+- **§۵/§۸ Cardinality:** `u_clinician_user` **حفظ می‌شود** (تصحیح رأی قبلی): AD-05 دربارهٔ Membership است؛ ERD مصوب `WP_USER ||--o| CLINICIAN` یک پروفایل به‌ازای کاربر می‌خواهد. سه مفهوم تفکیک: WP identity / Clinician profile (یک به‌ازای user؛ `clinic_id` = «کلینیکِ خانه»، نه مرز مجوز) / Membership+clinician_locations (M:N واقعی). کار Phase 2 = Query-level (فهرست پزشکان کلینیک از Membership)، نه شکستن ایندکس.
+- **§۶ SMS:** tenant-owned عملیاتی (PII + زمینهٔ بالینی در متن/vars_json) — FK به clinics **توجیه معنایی دارد** (پس از INT→BIGINT + حذف DEFAULT 1 در M-08b)؛ location_id لازم نیست؛ نبود retention = تصمیم باز مالک.
+- **§۷ Migration:** د-۶ (ماتریس ۲۶ جدول + M-08b جدید + M-09=۲۲ FK + تصمیم سه UNIQUE با test plan پنج‌بندی + ترتیب کامل) — versioned-forward، drop/recreate ممنوع، CI upgrade-path الزامی.
+- **§۸ تست‌پلن:** ۱۵ دسته (از جمله 🆕 tripwire معماری شمارش hardcode با snapshot=۴۹؛ ممنوعیت mock isolation — fixture ردیف واقعی دوم).
+- **§۹ مرز 1B/3:** از ۱۷ قلم مجوزی (B-01..B-17): Phase 2 = ScopeContext + فیلتر Repository + schema (B-02..B-06, B-08, B-09/10-مشروط, B-11, B-14, B-16, B-17)؛ Phase 3 = enforce سیاستی/ماتریس/Break-Glass (B-01-enforce, B-07, B-12-سیاست, B-15-جریان). Phase 2 به Role Management تبدیل نمی‌شود.
+- **گیت‌های fix:** CI `34286105777` سبز (Integration با تست جدید) · Closure `34286100991` سبز · Real-WP/Pilot — نتیجه در `final-pre-phase2-gate-report.md` بند ۱۵.
+- **رأی:** ⏳ NOT READY تا (۱) سبزی هر ۵ گیت `bbc1e83` و (۲) تصویب مالک بر «کلینیکِ خانه/UNIQUE» و «Source of Truth زمانی». جزئیات: `docs/phase-reports/final-pre-phase2-gate-report.md` (۱۷ بند).
+- **STOP طبق دستور** — بدون merge/tag/تغییر main؛ PR #10 دست‌نخورده؛ untrackedهای محافظت‌شده لمس نشد.

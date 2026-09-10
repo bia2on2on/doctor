@@ -21,10 +21,10 @@ final class FollowUpRepository
     /**
      * @param array<string, mixed> $row
      */
-    public function insert(array $row): int
+    public function insert(int $clinic_id, array $row): int
     {
         $row += [
-            'clinic_id' => 1,
+            'clinic_id' => $clinic_id,
             'is_needed' => 1,
             'suggested_date' => null,
             'interval_days' => null,

@@ -13,6 +13,7 @@
  * هیچ داده واقعی PHI وارد نمی‌شود.
  */
 
+use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Bootstrap\App;
 
 if (!defined('ABSPATH') || PHP_SAPI !== 'cli') {
@@ -28,6 +29,21 @@ $slotsPerDay = max(1, (int) (getenv('PILOT_SLOTS_PER_DAY') ?: 15));
 global $wpdb;
 $db = App::db();
 $now = gmdate('Y-m-d H:i:s') . '.000';
+
+try {
+    $clinicId = App::scope()->clinicId;
+} catch (ScopeRequiredException $e) {
+    fwrite(STDERR, "pilot requires exactly one clinic\n");
+    exit(1);
+}
+$locationId = (int) $wpdb->get_var($wpdb->prepare(
+    'SELECT id FROM ' . $db->table('cpms_locations') . ' WHERE clinic_id = %d AND is_primary = 1 LIMIT 1',
+    $clinicId
+));
+if ($locationId <= 0) {
+    fwrite(STDERR, "pilot clinic has no primary location\n");
+    exit(1);
+}
 
 $clinicians = $wpdb->get_results(
     'SELECT id FROM ' . $db->table('cpms_clinicians') . ' WHERE is_active = 1 ORDER BY id LIMIT 2',
@@ -48,9 +64,9 @@ for ($d = 0; $d < $days; $d++) {
         foreach ([$docA, $docB] as $ci => $clinicianId) {
             $wpdb->query($wpdb->prepare(
                 'INSERT INTO ' . $db->table('cpms_schedule_slots') . '
-                     (clinic_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at)
-                 VALUES (1, %d, %s, %s, 20, 4, 0, 0, 1, %s, %s)',
-                $clinicianId, $date, $time, $now, $now
+                     (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at)
+                 VALUES (%d, %d, %d, %s, %s, 20, 4, 0, 0, 1, %s, %s)',
+                $clinicId, $locationId, $clinicianId, $date, $time, $now, $now
             ));
             $slotIds[$ci][] = (int) $wpdb->insert_id;
         }
@@ -63,7 +79,8 @@ for ($i = 1; $i <= $patients; $i++) {
     $wpdb->query($wpdb->prepare(
         'INSERT INTO ' . $db->table('cpms_patients') . '
              (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at)
-         VALUES (1, %s, %s, %s, %s, %s, %s, %s)',
+         VALUES (%d, %s, %s, %s, %s, %s, %s, %s)',
+        $clinicId,
         sprintf('SYN-%04d', $i),
         'بیمار آزمایشی',
         (string) $i,
@@ -84,7 +101,7 @@ for ($i = 0; $i < (int) ($patients * 1.5); $i++) {
     $clinicianId = ($i % 2 === 0) ? $docA : $docB;
     $slotRef = $slotIds[$i % 2][$i % count($slotIds[0])];
     $slot = $wpdb->get_row($wpdb->prepare(
-        'SELECT slot_date, slot_time FROM ' . $db->table('cpms_schedule_slots') . ' WHERE id = %d',
+        'SELECT slot_date, slot_time, location_id FROM ' . $db->table('cpms_schedule_slots') . ' WHERE id = %d',
         $slotRef
     ), ARRAY_A);
     if (!$slot) {
@@ -94,9 +111,11 @@ for ($i = 0; $i < (int) ($patients * 1.5); $i++) {
     $status = $apptStatuses[$i % count($apptStatuses)];
     $wpdb->query($wpdb->prepare(
         'INSERT INTO ' . $db->table('cpms_appointments') . '
-             (clinic_id, reference_code, clinician_id, patient_id, slot_id, slot_date, slot_time,
+             (clinic_id, location_id, reference_code, clinician_id, patient_id, slot_id, slot_date, slot_time,
               reason, status, booked_at, confirmed_at, created_at, updated_at)
-         VALUES (1, %s, %d, %d, %d, %s, %s, %s, %s, %s, %s, %s, %s)',
+         VALUES (%d, %d, %s, %d, %d, %d, %s, %s, %s, %s, %s, %s, %s, %s)',
+        $clinicId,
+        (int) $slot->location_id,
         sprintf('SYNAP-%05d', $i),
         $clinicianId,
         $patientId,
@@ -124,8 +143,10 @@ for ($i = 0; $i < (int) ($patients * 0.9); $i++) {
     $visitDate = ($i % 3 === 0) ? $today : gmdate('Y-m-d', time() - (($i % 21) + 1) * 86400);
     $wpdb->query($wpdb->prepare(
         'INSERT INTO ' . $db->table('cpms_visits') . '
-             (clinic_id, clinician_id, patient_id, source, status, visit_date, check_in_at, waiting_since, active, created_at, updated_at)
-         VALUES (1, %d, %d, %s, %s, %s, %s, %s, 1, %s, %s)',
+             (clinic_id, location_id, clinician_id, patient_id, source, status, visit_date, check_in_at, waiting_since, active, created_at, updated_at)
+         VALUES (%d, %d, %d, %d, %s, %s, %s, %s, %s, 1, %s, %s)',
+        $clinicId,
+        $locationId,
         $clinicianId,
         $patientId,
         $i % 4 === 0 ? 'walk_in' : 'scheduled',
@@ -146,7 +167,8 @@ for ($i = 0; $i < (int) ($patients * 0.9); $i++) {
             'INSERT INTO ' . $db->table('cpms_invoices') . '
                  (clinic_id, invoice_number, patient_id, visit_id, status, subtotal, discount, tax, total,
                   paid_amount, balance, issued_by_wp_user_id, created_at, updated_at)
-             VALUES (1, %s, %d, %d, %s, %d, 0, 0, %d, %d, %d, 1, %s, %s)',
+             VALUES (%d, %s, %d, %d, %s, %d, 0, 0, %d, %d, %d, 1, %s, %s)',
+            $clinicId,
             sprintf('SYNINV-%05d', $i),
             $patientId,
             $visitId,
@@ -174,7 +196,8 @@ for ($i = 0; $i < (int) ($patients * 0.9); $i++) {
                 'INSERT INTO ' . $db->table('cpms_payments') . '
                      (clinic_id, payment_number, invoice_id, patient_id, amount, method, idempotency_key,
                       status, paid_at, received_by_wp_user_id, created_at)
-                 VALUES (1, %s, %d, %d, %d, %s, %s, %s, %s, 1, %s)',
+                 VALUES (%d, %s, %d, %d, %d, %s, %s, %s, %s, 1, %s)',
+                $clinicId,
                 sprintf('SYNPAY-%05d', $i),
                 $invoiceId,
                 $patientId,
@@ -194,7 +217,8 @@ for ($i = 0; $i < (int) ($patients * 0.9); $i++) {
         $wpdb->query($wpdb->prepare(
             'INSERT INTO ' . $db->table('cpms_notifications') . '
                  (clinic_id, recipient_patient_id, channel, template, payload_json, status, dedupe_key, sent_at, read_at, created_at)
-             VALUES (1, %d, %s, %s, %s, %s, %s, %s, %s, %s)',
+             VALUES (%d, %d, %s, %s, %s, %s, %s, %s, %s, %s)',
+            $clinicId,
             $patientId,
             $k === 0 ? 'internal' : 'sms',
             'appointment_reminder',
@@ -214,8 +238,9 @@ for ($i = 0; $i < 60; $i++) {
     $wpdb->query($wpdb->prepare(
         'INSERT INTO ' . $db->table('cpms_idempotency_keys') . '
              (`key`, clinic_id, wp_user_id, endpoint, context_id, status, response_code, response_json, created_at)
-         VALUES (%s, 1, %d, %s, 0, %s, 200, %s, %s)',
+         VALUES (%s, %d, %d, %s, 0, %s, 200, %s, %s)',
         'syn-idem-' . $i,
+        $clinicId,
         2 + ($i % 5),
         $i % 2 ? 'booking/confirm' : 'invoices/payments',
         1, // STATUS_DONE

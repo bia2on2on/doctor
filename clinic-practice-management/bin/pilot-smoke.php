@@ -20,6 +20,7 @@
  * خروجی: خطوط «PASS <id> — <title>» + JSON summary؛ exit 2 در صورت شکست.
  */
 
+use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Bootstrap\App;
 
 if (!defined('ABSPATH') || PHP_SAPI !== 'cli') {
@@ -56,6 +57,21 @@ function uuid4(): string
 
 $now = $db->nowUtcSql();
 
+try {
+    $clinicId = App::scope()->clinicId;
+} catch (ScopeRequiredException $e) {
+    fwrite(STDERR, "pilot requires exactly one clinic\n");
+    exit(1);
+}
+$locationId = (int) $wpdb->get_var($wpdb->prepare(
+    'SELECT id FROM ' . $db->table('cpms_locations') . ' WHERE clinic_id = %d AND is_primary = 1 LIMIT 1',
+    $clinicId
+));
+if ($locationId <= 0) {
+    fwrite(STDERR, "pilot clinic has no primary location\n");
+    exit(1);
+}
+
 // ---------- Fixtures (Synthetic) ----------
 $doctorUserId = (int) username_exists('pilot_doctor');
 $secretaryId = (int) username_exists('pilot_secretary');
@@ -77,8 +93,8 @@ if (!$clinicianId) {
 $wpdb->query($wpdb->prepare(
     'INSERT INTO ' . $db->table('cpms_patients') . '
          (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at)
-     VALUES (1, %s, %s, %s, %s, %s, %s, %s)',
-    'SYN-SMOKE-001', 'بیمار', 'آزمایشی-دودی', '09120009999', 'active', $now, $now
+     VALUES (%d, %s, %s, %s, %s, %s, %s, %s)',
+    $clinicId, 'SYN-SMOKE-001', 'بیمار', 'آزمایشی-دودی', '09120009999', 'active', $now, $now
 ));
 $patientId = (int) $wpdb->insert_id;
 
@@ -101,8 +117,8 @@ if ($patientUserId) {
     $wpdb->query($wpdb->prepare(
         'INSERT INTO ' . $db->table('cpms_patient_user_links') . '
              (clinic_id, patient_id, wp_user_id, mobile_at_link, is_primary, linked_at)
-         VALUES (1, %d, %d, %s, 1, %s)',
-        $patientId, $patientUserId, '09120009999', $now
+         VALUES (%d, %d, %d, %s, 1, %s)',
+        $clinicId, $patientId, $patientUserId, '09120009999', $now
     ));
 }
 
@@ -111,9 +127,9 @@ $slotDate = gmdate('Y-m-d', time() + 86400);
 // INSERT IGNORE: idempotent نسبت به seed (شبکه ۹:۰۰+۲۰min را ساخته است)
 $wpdb->query($wpdb->prepare(
     'INSERT IGNORE INTO ' . $db->table('cpms_schedule_slots') . '
-         (clinic_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at)
-     VALUES (1, %d, %s, %s, 20, 1, 0, 0, 1, %s, %s)',
-    $clinicianId, $slotDate, '10:00', $now, $now
+         (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at)
+     VALUES (%d, %d, %d, %s, %s, 20, 1, 0, 0, 1, %s, %s)',
+    $clinicId, $locationId, $clinicianId, $slotDate, '10:00', $now, $now
 ));
 
 // ---------- S1: Patient (OTP path + booking) ----------
@@ -221,8 +237,8 @@ scenario('S4', 'Handwriting: document+page + revision apply + stale-revision con
 });
 
 // ---------- S5: Notifications ----------
-scenario('S5', 'Notifications: publish به بیمار + inbox منشی', function () use ($secretaryId, $patientId) {
-    $id = App::notificationService()->publishToPatient($patientId, 'queue_called', ['visit' => 'synthetic'], null);
+scenario('S5', 'Notifications: publish به بیمار + inbox منشی', function () use ($secretaryId, $patientId, $clinicId) {
+    $id = App::notificationService()->publishToPatient($clinicId, $patientId, 'queue_called', ['visit' => 'synthetic'], null);
     if ($id === null) {
         throw new RuntimeException('publish failed');
     }
@@ -305,13 +321,13 @@ scenario('S7', 'Protected files: آپلود → ذخیره خارج webroot', fu
 });
 
 // ---------- S8: Idempotency integrity ----------
-scenario('S8', 'Idempotency: UNIQUE(key,endpoint,user,context) + stored replay', function () use ($db, $wpdb, $patientUserId) {
+scenario('S8', 'Idempotency: UNIQUE(key,endpoint,user,context) + stored replay', function () use ($db, $wpdb, $patientUserId, $clinicId) {
     $key = 'pilot-smoke-idem-' . wp_rand(1000, 9999);
     $ok = $wpdb->query($wpdb->prepare(
         'INSERT INTO ' . $db->table('cpms_idempotency_keys') . '
              (`key`, clinic_id, wp_user_id, endpoint, context_id, status, response_code, response_json, created_at)
-         VALUES (%s, 1, %d, %s, 0, 1, 200, %s, %s)',
-        $key, $patientUserId, 'booking/confirm', '{"replayed":true}', $db->nowUtcSql()
+         VALUES (%s, %d, %d, %s, 0, 1, 200, %s, %s)',
+        $key, $clinicId, $patientUserId, 'booking/confirm', '{"replayed":true}', $db->nowUtcSql()
     ));
     if (!$ok) {
         throw new RuntimeException('insert failed');
@@ -319,8 +335,8 @@ scenario('S8', 'Idempotency: UNIQUE(key,endpoint,user,context) + stored replay',
     $dup = $wpdb->query($wpdb->prepare(
         'INSERT INTO ' . $db->table('cpms_idempotency_keys') . '
              (`key`, clinic_id, wp_user_id, endpoint, context_id, status, created_at)
-         VALUES (%s, 1, %d, %s, 0, 0, %s)',
-        $key, $patientUserId, 'booking/confirm', $db->nowUtcSql()
+         VALUES (%s, %d, %d, %s, 0, 0, %s)',
+        $key, $clinicId, $patientUserId, 'booking/confirm', $db->nowUtcSql()
     ));
     if ($dup !== false) {
         throw new RuntimeException('duplicate scope accepted — UNIQUE missing!');
@@ -336,8 +352,8 @@ scenario('S8', 'Idempotency: UNIQUE(key,endpoint,user,context) + stored replay',
 });
 
 // ---------- S9: SMS test provider (safe path) ----------
-scenario('S9', 'SMS test path: event test → صف → LogSmsProvider → sent', function () use ($db, $wpdb) {
-    $sent = App::smsService()->sendEvent('test', '09120009999', [], null, null, false, 5, 'Pilot Gate synthetic test');
+scenario('S9', 'SMS test path: event test → صف → LogSmsProvider → sent', function () use ($db, $wpdb, $clinicId) {
+    $sent = App::smsService()->sendEvent($clinicId, 'test', '09120009999', [], null, null, false, 5, 'Pilot Gate synthetic test');
     if (!is_array($sent)) {
         throw new RuntimeException('sendEvent failed');
     }

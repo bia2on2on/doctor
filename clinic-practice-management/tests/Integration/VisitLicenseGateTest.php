@@ -179,8 +179,8 @@ final class VisitLicenseGateTest extends WP_UnitTestCase
         $wpdb->query(
             $wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_schedule_slots
-                     (clinic_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at)
-                 VALUES (1, %d, %s, %s, 20, 1, 0, 0, 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                     (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at)
+                 VALUES (1, (SELECT id FROM ' . $wpdb->prefix . 'cpms_locations WHERE clinic_id = 1 AND is_primary = 1 LIMIT 1), %d, %s, %s, 20, 1, 0, 0, 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 $this->clinicianId,
                 $slotDate,
                 $slotTime,
@@ -193,9 +193,9 @@ final class VisitLicenseGateTest extends WP_UnitTestCase
         $wpdb->query(
             $wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_appointments
-                     (clinic_id, reference_code, patient_id, clinician_id, slot_id, slot_date, slot_time,
+                     (clinic_id, location_id, reference_code, patient_id, clinician_id, slot_id, slot_date, slot_time,
                       duration_min, slot_end_time, status, is_walkin_express, confirmed_at, created_at, updated_at)
-                 VALUES (1, %s, %d, %d, %d, %s, %s, 20, %s, "confirmed", 0, %s, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                 VALUES (1, (SELECT id FROM ' . $wpdb->prefix . 'cpms_locations WHERE clinic_id = 1 AND is_primary = 1 LIMIT 1), %s, %d, %d, %d, %s, %s, 20, %s, "confirmed", 0, %s, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 'LG-' . bin2hex(random_bytes(6)),
                 $this->patientId,
                 $this->clinicianId,

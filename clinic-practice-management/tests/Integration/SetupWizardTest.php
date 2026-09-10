@@ -278,7 +278,7 @@ final class SetupWizardTest extends WP_UnitTestCase
     private function createActiveClinician(): void
     {
         // الگوی اثبات‌شدهٔ ClinicianRepositoryTest فقط با full_name؛ is_active پیش‌فرض 1 است.
-        App::clinicianRepository()->create(['full_name' => 'دکتر آزمایشی']);
+        App::clinicianRepository()->create(1, ['full_name' => 'دکتر آزمایشی']);
     }
 
     /**

@@ -28,6 +28,8 @@ use ClinicCore\Application\Clinical\ClinicalService;
 use ClinicCore\Application\Clinical\MedicalFileService;
 use ClinicCore\Application\Finance\FinanceService;
 use ClinicCore\Application\Handwriting\HandwritingService;
+use ClinicCore\Application\Membership\MembershipService;
+use ClinicCore\Application\Patients\PatientIdentityService;
 use ClinicCore\Application\Patients\PatientService;
 use ClinicCore\Application\Jobs\ApptReminderHandler;
 use ClinicCore\Application\Jobs\BackupRunHandler;
@@ -48,6 +50,9 @@ use ClinicCore\Application\Jobs\VisitsNoShowHandler;
 use ClinicCore\Application\Licensing\LicenseService;
 use ClinicCore\Application\Notifications\NotificationService;
 use ClinicCore\Application\Notifications\SmsService;
+use ClinicCore\Application\Scope\ClinicScope;
+use ClinicCore\Application\Scope\ScopeContext;
+use ClinicCore\Application\Scope\SystemClinicResolver;
 use ClinicCore\Application\Reports\ExportService;
 use ClinicCore\Application\Reports\ReportService;
 use ClinicCore\Application\System\SystemHealthService;
@@ -70,6 +75,8 @@ use ClinicCore\Infrastructure\Queue\JobQueue;
 use ClinicCore\Infrastructure\Repository\AppointmentRepository;
 use ClinicCore\Infrastructure\Repository\ClinicalNoteRepository;
 use ClinicCore\Infrastructure\Repository\ClinicianRepository;
+use ClinicCore\Infrastructure\Repository\MembershipRepository;
+use ClinicCore\Infrastructure\Repository\PatientIdentityRepository;
 use ClinicCore\Infrastructure\Repository\FollowUpRepository;
 use ClinicCore\Infrastructure\Repository\HandwritingRepository;
 use ClinicCore\Infrastructure\Repository\InvoiceRepository;
@@ -85,6 +92,7 @@ use ClinicCore\Infrastructure\Repository\ServiceRepository;
 use ClinicCore\Infrastructure\Repository\SlotRepository;
 use ClinicCore\Infrastructure\Repository\VisitRepository;
 use ClinicCore\Infrastructure\Security\Idempotency;
+use ClinicCore\Infrastructure\Security\LoginRateLimiter;
 use ClinicCore\Infrastructure\Security\RateLimiter;
 use ClinicCore\Infrastructure\Sms\CredentialVault;
 use ClinicCore\Infrastructure\Sms\Providers\GenericApiSmsProvider;
@@ -92,6 +100,8 @@ use ClinicCore\Infrastructure\Sms\Providers\LogSmsProvider;
 use ClinicCore\Infrastructure\Sms\SmsProviderInterface;
 use ClinicCore\Infrastructure\Sms\SmsProviderRegistry;
 use ClinicCore\Infrastructure\Storage\LocalFileStorage;
+use ClinicCore\Infrastructure\Storage\PrivateStorageLocation;
+use ClinicCore\Infrastructure\Storage\PrivateStorageMigrator;
 use ClinicCore\Infrastructure\Update\HttpUpdateMetadataGateway;
 use ClinicCore\Migrations\MigrationRunner;
 use ClinicCore\Rest\BookingController;
@@ -105,6 +115,7 @@ use ClinicCore\Rest\OtpController;
 use ClinicCore\Rest\PatientController;
 use ClinicCore\Rest\QueueController;
 use ClinicCore\Rest\ReportsController;
+use ClinicCore\Rest\RestClinicContext;
 use ClinicCore\Rest\ScheduleController;
 use ClinicCore\Rest\SmsController;
 use ClinicCore\Settings\Settings;
@@ -118,11 +129,17 @@ use ClinicCore\Settings\Settings;
  */
 final class App
 {
+    /** OD-7 — نشانگر پایان مهاجرت ذخیره‌سازی خصوصی. */
+    private const PRIVATE_STORAGE_OPTION = 'cpms_private_storage_migrated';
+
+    private const PRIVATE_STORAGE_DONE = '1';
+
     private static ?CpmsDb $db = null;
     private static ?OpLogger $op = null;
     private static ?AuditLogger $audit = null;
     private static ?JobQueue $jobs = null;
     private static ?RateLimiter $rate = null;
+    private static ?LoginRateLimiter $loginRateLimiter = null;
     private static ?Idempotency $idem = null;
     private static ?Settings $settings = null;
     private static ?MigrationRunner $migrations = null;
@@ -141,6 +158,13 @@ final class App
         self::$booted = true;
 
         RolesAndCapabilities::register();
+
+        // Phase 1A — Item 3: محدودسازی نرخ ورود. پیش از این هیچ کنترل
+        // Bruteforce ای روی wp-login و احراز هویت REST وجود نداشت.
+        self::loginRateLimiter()->register();
+
+        add_filter('rest_request_before_callbacks', [RestClinicContext::class, 'beforeCallbacks'], 10, 3);
+        add_filter('rest_request_after_callbacks', [RestClinicContext::class, 'afterCallbacks'], 10, 3);
 
         add_action('rest_api_init', static function (): void {
             (new HealthController())->register_routes();
@@ -218,6 +242,7 @@ final class App
         RolesAndCapabilities::register();
         self::db(); // lazy init برای migrate
         self::migrations()->migrate();
+        self::ensurePrivateStorage();
 
         if (!wp_next_scheduled('cpms_jobs_tick')) {
             wp_schedule_event(time() + 60, 'cpms_minute', 'cpms_jobs_tick');
@@ -241,9 +266,87 @@ final class App
         set_transient($lock, 1, 30);
         try {
             self::migrations()->migrate();
+            self::ensurePrivateStorage();
         } finally {
             delete_transient($lock);
         }
+    }
+
+    /**
+     * OD-7 — انتقال یک‌بارهٔ فایل‌های بالینی و بکاپ‌ها از ریشهٔ قدیمیِ داخل
+     * DocumentRoot به ریشهٔ خصوصی.
+     *
+     * فراخوانی در هر درخواست ادمین/REST رخ می‌دهد، پس باید در حالت «انجام‌شده»
+     * عملاً رایگان باشد: یک خواندن Option و تمام. مهاجرت خودش idempotent است،
+     * ولی Option از پیمایش بی‌مورد پوشه هم جلوگیری می‌کند.
+     *
+     * اگر اپراتور مسیر را صراحتاً با Setting تعیین کرده باشد، دست نمی‌زنیم —
+     * تصمیم او بر پیش‌فرض مقدم است.
+     *
+     * شکست جزئی مسدودکننده نیست: Option فقط وقتی ست می‌شود که هیچ خطایی نمانده
+     * باشد، پس درخواست بعدی دوباره تلاش می‌کند و فایل‌های موفق تکرار نمی‌شوند.
+     */
+    private static function ensurePrivateStorage(): void
+    {
+        if ((string) get_option(self::PRIVATE_STORAGE_OPTION, '') === self::PRIVATE_STORAGE_DONE) {
+            return;
+        }
+
+        $migrator = new PrivateStorageMigrator();
+        $clean = true;
+
+        $pairs = [];
+        if (trim((string) self::settings()->get('files.storage_path', '')) === '') {
+            $pairs[] = [LocalFileStorage::legacyBasePath(), LocalFileStorage::defaultBasePath(), 'clinic-files'];
+        }
+        $backupConfigured = trim((string) self::settings()->get('backup.storage_path', ''));
+        if ($backupConfigured === '') {
+            $pairs[] = [ProtectedBackupStore::legacyBasePath(), ProtectedBackupStore::defaultBasePath(), 'cpms-backups'];
+        } elseif (PrivateStorageLocation::isInsideWebRoot($backupConfigured)) {
+            // OD-9 — ریشهٔ بکاپِ پیکربندی‌شده داخل DocumentRoot است: محتوایش
+            // بکاپ legacy داخل webroot است و به ریشهٔ خصوصی منتقل می‌شود
+            // (idempotent؛ تأیید sha256 پیش از حذف مبدأ؛ تعارض بدون overwrite).
+            // خودِ Setting عمداً تغییر نمی‌کند (تصمیم اپراتور است) — نوشتنِ
+            // جدید Fail-Closed می‌ماند تا مسیر اصلاح شود؛ ریشهٔ legacy قدیمی
+            // هم (اگر جدا از مسیر پیکربندی‌شده باشد) به همین مقصد می‌رود.
+            $pairs[] = [$backupConfigured, ProtectedBackupStore::defaultBasePath(), 'cpms-backups-unsafe-config'];
+            if (!self::samePath($backupConfigured, ProtectedBackupStore::legacyBasePath())) {
+                $pairs[] = [ProtectedBackupStore::legacyBasePath(), ProtectedBackupStore::defaultBasePath(), 'cpms-backups'];
+            }
+        }
+
+        foreach ($pairs as [$legacy, $private, $label]) {
+            $report = $migrator->migrate($legacy, $private);
+            if ($report['moved'] > 0 || $report['already'] > 0 || $report['failed'] > 0 || $report['conflict'] > 0) {
+                self::op()->info('CPMS_PRIVATE_STORAGE_MIGRATION', [
+                    'area' => $label,
+                    'from' => $legacy,
+                    'to' => $private,
+                    'moved' => $report['moved'],
+                    'already' => $report['already'],
+                    'conflict' => $report['conflict'],
+                    'failed' => $report['failed'],
+                    'errors' => array_slice($report['errors'], 0, 10),
+                ]);
+            }
+            if ($report['failed'] > 0 || $report['conflict'] > 0) {
+                $clean = false;
+            }
+        }
+
+        if ($clean) {
+            update_option(self::PRIVATE_STORAGE_OPTION, self::PRIVATE_STORAGE_DONE, false);
+        }
+    }
+
+    /** مقایسهٔ نرمال‌شدهٔ دو مسیر (بدون اثر اسلش انتهایی/ویندوزی). */
+    private static function samePath(string $a, string $b): bool
+    {
+        $norm = static function (string $p): string {
+            return rtrim(str_replace('\\', '/', $p), '/');
+        };
+
+        return $norm($a) === $norm($b);
     }
 
     /**
@@ -358,6 +461,36 @@ final class App
         return $repo;
     }
 
+    /**
+     * سرویس عضویت (Phase 2 — C4 primitives / P2-D1).
+     */
+    public static function membership_service(): MembershipService {
+        static $service = null;
+        if ( $service === null ) {
+            $service = new MembershipService(
+                self::db(),
+                new MembershipRepository( self::db() )
+            );
+        }
+
+        return $service;
+    }
+
+    /**
+     * سرویس هویت بیمار (Phase 2 — C5 foundation / AD-14).
+     */
+    public static function patient_identity_service(): PatientIdentityService {
+        static $service = null;
+        if ( $service === null ) {
+            $service = new PatientIdentityService(
+                self::db(),
+                new PatientIdentityRepository( self::db() )
+            );
+        }
+
+        return $service;
+    }
+
     public static function clinicalService(): ClinicalService
     {
         static $clinical = null;
@@ -435,6 +568,7 @@ final class App
             $notifications = new NotificationService(
                 self::db(),
                 new NotificationRepository(self::db()),
+                new MembershipRepository(self::db()),
                 self::settings(),
                 self::op()
             );
@@ -675,6 +809,15 @@ final class App
         return self::$jobs;
     }
 
+    public static function loginRateLimiter(): LoginRateLimiter
+    {
+        if (self::$loginRateLimiter === null) {
+            self::$loginRateLimiter = new LoginRateLimiter(self::rate(), self::op());
+        }
+
+        return self::$loginRateLimiter;
+    }
+
     public static function rate(): RateLimiter
     {
         if (self::$rate === null) {
@@ -696,11 +839,57 @@ final class App
     public static function settings(): Settings
     {
         if (self::$settings === null) {
-            // F1-4: AuditLogger تزریق می‌شود تا هر تغییر Setting (قبل/بعد + کاربر) Audit شود
-            self::$settings = new Settings(self::db(), 1, self::audit());
+            // F1-4: AuditLogger تزریق می‌شود تا هر تغییر Setting (قبل/بعد + کاربر) Audit شود.
+            // Phase 2: Clinic پیش‌فرضِ Settings از Scope حل می‌شود (نه literal 1) —
+            // در نصب تک‌کلینیکی همان Clinic تنها؛ در حالت مبهم CLINIC_SCOPE_REQUIRED.
+            self::$settings = new Settings(self::db(), self::scope()->clinicId, self::audit());
         }
 
         return self::$settings;
+    }
+
+    /**
+     * Scope فعال درخواست جاری — Phase 2 (ADR-0031).
+     *
+     * ترتیب: Scope صریحِ درخواست (ScopeContext) → Resolution سیستمی
+     * (دقیقاً یک Clinic؛ در غیر این صورت Fail-Closed). هیچ مقدار ثابتی
+     * به‌عنوان «کلینیک پیش‌فرض» وجود ندارد (AD-13).
+     */
+    public static function scope(): ClinicScope
+    {
+        $explicit = ScopeContext::tryGet();
+        if ($explicit !== null) {
+            return $explicit;
+        }
+
+        return SystemClinicResolver::resolve(self::db());
+    }
+
+    /**
+     * باطل‌سازی کش‌های Scope (تست‌ها / تغییر دادهٔ Clinic در طول فرآیند).
+     */
+    public static function resetScope(): void
+    {
+        ScopeContext::clear();
+        SystemClinicResolver::flush();
+        // C6 (bug 1 census): cache تنظیمات per-clinic است و با تغییر Scope باید
+        // باطل شود؛ instance هم بازسازی می‌شود تا clinicId از Scope تازه حل شود.
+        Settings::flushCache();
+        self::$settings = null;
+    }
+
+    /**
+     * تعویض Scope صریح بدون flush رزولور سیستمی — مرز REST/Job تو در تو.
+     */
+    public static function replaceExplicitScope(?ClinicScope $scope): void
+    {
+        if ($scope instanceof ClinicScope) {
+            ScopeContext::set($scope);
+        } else {
+            ScopeContext::clear();
+        }
+        Settings::flushCache();
+        self::$settings = null;
     }
 
     public static function migrations(): MigrationRunner
@@ -719,27 +908,34 @@ final class App
     /**
      * سرویس بکاپ/بازیابی (F10 — spec §22–§25). مقصد = ProtectedBackupStore
      * محلی؛ Remote (S3/SFTP) = V1.1 (Runbook در docs/backup).
+     *
+     * OD-9 — ریشهٔ فعال بکاپ باید بیرون از DocumentRoot باشد. اگر Setting
+     * `backup.storage_path` (یا ثابت CPMS_PRIVATE_STORAGE_DIR) به مسیری داخل
+     * webroot اشاره کند، مسیر **عوض نمی‌شود** و مخزن به‌صورت صریح به یک
+     * «مبدأ legacy فقط‌خواندنی» تنزل می‌یابد: خواندن برای verification و
+     * recovery ادامه دارد، ولی هر نوشتن (بکاپ جدید/حذف) Fail-Closed خطا
+     * می‌دهد تا اپراتور مسیر را اصلاح کند. هیچ fallback بی‌صدایی نیست.
      */
     public static function backupService(): BackupService
     {
-        static $backups = null;
-        if ($backups === null) {
-            $backups = new BackupService(
-                self::db(),
-                new ProtectedBackupStore(
-                    trim((string) self::settings()->get('backup.storage_path', '')) !== ''
-                        ? (string) self::settings()->get('backup.storage_path', '')
-                        : ProtectedBackupStore::defaultBasePath()
-                ),
-                new BackupSqlDumper(self::db()),
-                self::settings(),
-                self::audit(),
-                self::op(),
-                self::localFileStorage()->basePath()
-            );
-        }
+        // الگوی localFileStorage(): عمداً بدون کش تا تغییر Setting
+        // `backup.storage_path` (از جمله Fail-Closed شدن آن در OD-9) بلافاصله
+        // اثر کند — ساخت Object سبک است.
+        $configured = trim((string) self::settings()->get('backup.storage_path', ''));
+        $base = $configured !== '' ? $configured : ProtectedBackupStore::defaultBasePath();
+        $store = PrivateStorageLocation::isInsideWebRoot($base)
+            ? ProtectedBackupStore::legacySource($base)
+            : ProtectedBackupStore::active($base);
 
-        return $backups;
+        return new BackupService(
+            self::db(),
+            $store,
+            new BackupSqlDumper(self::db()),
+            self::settings(),
+            self::audit(),
+            self::op(),
+            self::localFileStorage()->basePath()
+        );
     }
 
     /**
@@ -773,7 +969,11 @@ final class App
     {
         static $bridge = null;
         if ($bridge === null) {
-            $bridge = new WpUpdateBridge(self::updateService());
+            // Phase 2 (رگرسیون 1f8b36d): سرویس Lazy — App::boot نباید
+            // Scope/Settings را resolve کند (نصبِ پیش از Migration / bootstrap
+            // تست‌ها). Provider فقط داخل هوک‌ها صدا زده می‌شود و آنجا هم
+            // fail-soft است (WpUpdateBridge).
+            $bridge = new WpUpdateBridge(static fn (): UpdateService => self::updateService());
         }
 
         return $bridge;

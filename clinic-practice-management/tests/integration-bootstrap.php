@@ -85,3 +85,47 @@ tests_add_filter('query', static function ($query) {
 
     return $query;
 });
+
+/*
+ * ── Fixture عضویت (C6 — Trusted REST Context) ─────────────────────────────
+ *
+ * تزریق سراسری خودکار عضویت از طریق hook روی `set_user_role` (که در
+ * f88fcdc موقتاً افزوده شده بود) حذف شد. دلایل:
+ *  ۱) وابستگی به ترتیب اجرای تست‌ها می‌ساخت (نتیجهٔ ساخت کاربر به «تعداد
+ *     Clinicها در همان لحظه» گره می‌خورد)؛
+ *  ۲) coupling پنهانِ fixture — تست‌ها بدون هیچ خطِ دیدنی عضویت می‌گرفتند؛
+ *  ۳) با `create_membership` صریحِ خودِ تست‌ها collision می‌داد؛
+ *  ۴) مهم‌تر از همه: حسِ اعتماد‌به‌نفس کاذب دربارهٔ provisioning محصول
+ *     می‌ساخت، درحالی‌که Production هیچ‌چیز از این دست ندارد و نباید داشته
+ *     باشد (نقش سراسری WP رابطهٔ tenant را تعریف نمی‌کند).
+ *
+ * در مقابل، یک helper **صریح** ارائه می‌شود: هر تستی که «کاربر staff با
+ * عضویت فعال» را مدل می‌کند، همان‌جا و با شناسهٔ واقعی Clinic صداش می‌زند.
+ * تست‌های patient / non-member / suspended عمداً صداش نمی‌زنند و صریح
+ * می‌مانند.
+ */
+if (!function_exists('cpms_test_seed_membership')) {
+    /**
+     * عضویت فعالِ صریح و idempotent روی یک Clinic مشخص.
+     *
+     * @param int         $userId  کاربر WP (کاربرِ واقعیِ ساخته‌شده در تست)
+     * @param int         $clinicId شناسهٔ واقعی Clinic (هیچ پیش‌فرضی ندارد)
+     * @param string      $roleKey نقش عضویت در همان Clinic
+     *
+     * @return int شناسهٔ عضویت
+     */
+    function cpms_test_seed_membership(int $userId, int $clinicId, string $roleKey = 'cpms_secretary'): int
+    {
+        if ($userId <= 0 || $clinicId <= 0) {
+            throw new \InvalidArgumentException('seed_membership: user و clinic باید صریح و مثبت باشند.');
+        }
+        $service = App::membership_service();
+        $existing = $service->membership_for($clinicId, $userId);
+        if ($existing !== null) {
+            // idempotency — هرگز duplicate نینداز؛ وضعیت قبلی را نگه‌دار.
+            return (int) $existing['id'];
+        }
+
+        return $service->create_membership($clinicId, $userId, $roleKey);
+    }
+}

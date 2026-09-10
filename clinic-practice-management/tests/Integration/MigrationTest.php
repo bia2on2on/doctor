@@ -7,16 +7,25 @@ namespace ClinicCore\Tests\Integration;
 use ClinicCore\Bootstrap\App;
 use WP_UnitTestCase;
 
+require_once __DIR__ . '/RealTableMigrations.php';
+
 /**
  * TP-15 — Migration: اجرا، Idempotency، Rollback.
  *
  * نکته: DDL در MySQL Commit ضمني دارد؛ WP_UnitTestCase tables را Rollback نمی‌کند.
  * به همین دلیل migrate() در setUp (idempotent) و re-migrate در tearDown.
+ *
+ * Phase 2 — Real-Table isolation: هر عملیات Migration lifecycle (migrate/
+ * rollback) داخل withRealTables اجرا می‌شود چون فیلتر temporary-table خود
+ * WP، CREATE/DROP TABLE را به TEMPORARY تبدیل می‌کند و InnoDB روی جدول موقت
+ * FK نمی‌پذیرد ( جزئیات: RealTableMigrations).
  */
 final class MigrationTest extends WP_UnitTestCase
 {
+    use RealTableMigrations;
+
     /** آخرین Migration موجود در src/Migrations (با افزودن Migration جدید به‌روز شود). */
-    private const LATEST_VERSION = '2026_09_07_0009';
+    private const LATEST_VERSION = '2026_09_09_0020';
 
     private const EXPECTED_TABLES = [
         'cpms_clinics', 'cpms_clinicians', 'cpms_patients', 'cpms_patient_user_links',
@@ -30,18 +39,24 @@ final class MigrationTest extends WP_UnitTestCase
         'cpms_notifications', 'cpms_jobs', 'cpms_audit_logs', 'cpms_operational_logs',
         'cpms_settings', 'cpms_rate_limits',
         'cpms_license_install', 'cpms_license_state',
+        'cpms_organizations', 'cpms_locations', 'cpms_clinic_memberships',
+        'cpms_membership_capabilities', 'cpms_membership_locations',
+        'cpms_clinician_locations', 'cpms_patient_identities', 'cpms_patient_identity_links',
     ];
 
     protected function setUp(): void
     {
         parent::setUp();
-        App::migrations()->migrate();
+        $this->withRealTables(static fn (): array => App::migrations()->migrate());
     }
 
     protected function tearDown(): void
     {
-        App::migrations()->migrate(); // بازیابی برای تست‌های بعد
-        parent::tearDown();
+        try {
+            $this->withRealTables(static fn (): array => App::migrations()->migrate()); // بازیابی برای تست‌های بعد
+        } finally {
+            parent::tearDown();
+        }
     }
 
     public function testInitialMigrationCreatesAllTables(): void
@@ -74,14 +89,19 @@ final class MigrationTest extends WP_UnitTestCase
 
     public function testMigrateIsIdempotent(): void
     {
-        $secondRun = App::migrations()->migrate();
+        $secondRun = $this->withRealTables(static fn (): array => App::migrations()->migrate());
         $this->assertSame([], $secondRun, 'اجرای دوم نباید Migration جدید داشته باشد');
     }
 
     public function testSlotUniqueConstraint(): void
     {
-        // K-2: UNIQUE (clinician_id, slot_date, slot_time) — تکراری‌زنی تولید Slot
-        $this->assertTrue($this->hasUnique('cpms_schedule_slots', ['clinician_id', 'slot_date', 'slot_time']));
+        // K-2 + Phase2/0014: UNIQUE (location_id, clinician_id, slot_date, slot_time)
+        // — Location-scoped؛ دو مکانِ یک Clinician می‌توانند Slot همسان داشته باشند.
+        $this->assertTrue($this->hasUnique('cpms_schedule_slots', ['location_id', 'clinician_id', 'slot_date', 'slot_time']));
+        $this->assertFalse(
+            $this->hasUnique('cpms_schedule_slots', ['clinician_id', 'slot_date', 'slot_time']),
+            'UNIQUE سه‌ستونی قدیمی باید با تعریف Location-scoped جایگزین شده باشد'
+        );
     }
 
     public function testPaymentIdempotencyUnique(): void
@@ -92,8 +112,8 @@ final class MigrationTest extends WP_UnitTestCase
 
     public function testIdempotencyScopeUnique(): void
     {
-        // F9 (بدهی F7 §9): دامنه یکتایی = همان چهار ستون کتاب‌keeping
-        $this->assertTrue($this->hasUnique('cpms_idempotency_keys', ['key', 'endpoint', 'wp_user_id', 'context_id']));
+        // F9 (بدهی F7 §9) + C6/0020: دامنه یکتایی = ستون‌های کتاب‌keeping + clinic_id
+        $this->assertTrue($this->hasUnique('cpms_idempotency_keys', ['key', 'endpoint', 'wp_user_id', 'context_id', 'clinic_id']));
         $this->assertFalse($this->hasUnique('cpms_idempotency_keys', ['key']), 'u_idem_key قدیمی باید حذف شده باشد');
     }
 
@@ -101,6 +121,26 @@ final class MigrationTest extends WP_UnitTestCase
     {
         // F9 (ADR-0027 Minor #12): یکپارچگی 1:1 Clinician ↔ WP User
         $this->assertTrue($this->hasUnique('cpms_clinicians', ['wp_user_id']));
+    }
+
+
+    /**
+     * Phase 2 — rollback تا جایی که $target «آخرین نسخهٔ اعمال‌شده» باشد.
+     *
+     * معنا: پس از بازگشت، $target هنوز اعمال است و مابقی revert شده‌اند.
+     * برای حالت «پیش از X» باید target = نسخهٔ قبل از X باشد (الگوی تست
+     * قدیمی: rollback از 0009 تا 0006 ⇒ آخرین اعمال‌شده = 0005).
+     * رگرسیون 6990d1e: target=0006 یعنی 0006 هنوز اعمال است — حالت ناهمخوان
+     * که migrate بعدی را به خطای FK کشاند (evidence: run 34303558072).
+     */
+    private function rollbackTo(string $target): void
+    {
+        $this->withRealTables(function () use ($target): void {
+            while (App::migrations()->currentVersion() !== $target) {
+                $v = App::migrations()->rollbackOne();
+                self::assertNotNull($v, 'rollbackOne نباید پیش از ' . $target . ' به null برسد.');
+            }
+        });
     }
 
     /**
@@ -113,11 +153,9 @@ final class MigrationTest extends WP_UnitTestCase
         global $wpdb;
         $t = App::db()->table('cpms_idempotency_keys');
 
-        // بازگشت به حالت پیش از 0006/0007 (rollback 0009 + 0008 لایسنس + 0007 + 0006)
-        $this->assertSame('2026_09_07_0009', App::migrations()->rollbackOne());
-        $this->assertSame('2026_09_07_0008', App::migrations()->rollbackOne());
-        $this->assertSame('2026_09_07_0007', App::migrations()->rollbackOne());
-        $this->assertSame('2026_09_07_0006', App::migrations()->rollbackOne());
+        // بازگشت به حالت پیش از 0006/0007 — ابتدا از روی Migrationهای فاز ۲
+        // (0010..0018 و 0020 دارای down() کامل‌اند) و سپس 0009/0008/0007/0006
+        $this->rollbackTo('2026_09_07_0005');
 
         // شکل قدیمی: ستون Nullable + u_idem_key
         $col = $wpdb->get_row("SHOW COLUMNS FROM {$t} LIKE 'context_id'", ARRAY_A); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
@@ -136,7 +174,7 @@ final class MigrationTest extends WP_UnitTestCase
         $legacyId = (int) $wpdb->insert_id;
 
         // Upgrade
-        $applied = App::migrations()->migrate();
+        $applied = $this->withRealTables(static fn (): array => App::migrations()->migrate());
         $this->assertContains('2026_09_07_0006', $applied);
         $this->assertContains('2026_09_07_0007', $applied);
 
@@ -153,7 +191,7 @@ final class MigrationTest extends WP_UnitTestCase
 
         // سرویسِ جدید ردیف legacy را پیدا می‌کند (کتاب‌keeping سالم پس از Upgrade)
         $svc = new \ClinicCore\Infrastructure\Security\Idempotency(App::db());
-        $check = $svc->check('legacy-key-0001', 'booking/confirm', 7, null);
+        $check = $svc->check('legacy-key-0001', 'booking/confirm', 7, null, 1);
         $this->assertTrue($check['is_replay'], 'کلید PENDING قدیمی باید به‌عنوان in-flight شناسایی شود');
         $this->assertSame(409, $check['response_code']);
     }
@@ -168,10 +206,7 @@ final class MigrationTest extends WP_UnitTestCase
         $t = App::db()->table('cpms_idempotency_keys');
 
         // شبیه‌سازی داده معیوب: u_idem_key حذف + دو ردیف هم‌دامنه (مثلاً حاصل Restore/Import)
-        $this->assertSame('2026_09_07_0009', App::migrations()->rollbackOne());
-        $this->assertSame('2026_09_07_0008', App::migrations()->rollbackOne());
-        $this->assertSame('2026_09_07_0007', App::migrations()->rollbackOne());
-        $this->assertSame('2026_09_07_0006', App::migrations()->rollbackOne());
+        $this->rollbackTo('2026_09_07_0005');
         $wpdb->query("ALTER TABLE {$t} DROP INDEX `u_idem_key`"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
         $now = App::db()->nowUtcSql();
@@ -189,7 +224,7 @@ final class MigrationTest extends WP_UnitTestCase
 
         try {
             try {
-                App::migrations()->migrate();
+                $this->withRealTables(static fn (): array => App::migrations()->migrate());
                 $this->fail('Preflight باید Migration را متوقف می‌کرد');
             } catch (\RuntimeException $e) {
                 $this->assertStringContainsString('duplicate idempotency rows', $e->getMessage());
@@ -206,7 +241,7 @@ final class MigrationTest extends WP_UnitTestCase
             $wpdb->query("DELETE FROM {$t} WHERE `key` = 'corrupt-key-same' AND id > (SELECT min_id FROM (SELECT MIN(id) min_id FROM {$t} WHERE `key` = 'corrupt-key-same') x)"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         }
 
-        $applied = App::migrations()->migrate();
+        $applied = $this->withRealTables(static fn (): array => App::migrations()->migrate());
         $this->assertContains('2026_09_07_0006', $applied);
     }
 
@@ -242,7 +277,7 @@ final class MigrationTest extends WP_UnitTestCase
 
         try {
             try {
-                App::migrations()->migrate();
+                $this->withRealTables(static fn (): array => App::migrations()->migrate());
                 $this->fail('Preflight باید Migration را متوقف می‌کرد');
             } catch (\RuntimeException $e) {
                 $this->assertStringContainsString('share the same wp_user_id', $e->getMessage());
@@ -257,7 +292,7 @@ final class MigrationTest extends WP_UnitTestCase
             $wpdb->query($wpdb->prepare("UPDATE {$t} SET wp_user_id = NULL WHERE wp_user_id = %d AND full_name = 'Dr Dup 2'", $uid)); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         }
 
-        $applied = App::migrations()->migrate();
+        $applied = $this->withRealTables(static fn (): array => App::migrations()->migrate());
         $this->assertContains('2026_09_07_0007', $applied);
     }
 

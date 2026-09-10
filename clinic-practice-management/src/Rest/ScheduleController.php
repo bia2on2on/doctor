@@ -34,7 +34,7 @@ final class ScheduleController extends RestBase
             [
                 'methods' => WP_REST_Server::READABLE,
                 'callback' => fn (WP_REST_Request $request) => $this->list($request),
-                'permission_callback' => fn () => $this->requireCap(RolesAndCapabilities::CONFIG),
+                'permission_callback' => fn (WP_REST_Request $r) => $this->permCap($r, RolesAndCapabilities::CONFIG),
                 'args' => [
                     'clinician_id' => ['required' => true, 'type' => 'integer'],
                 ],
@@ -88,7 +88,7 @@ final class ScheduleController extends RestBase
             [
                 'methods' => WP_REST_Server::READABLE,
                 'callback' => fn (WP_REST_Request $request) => $this->listExceptions($request),
-                'permission_callback' => fn () => $this->requireCap(RolesAndCapabilities::CONFIG),
+                'permission_callback' => fn (WP_REST_Request $r) => $this->permCap($r, RolesAndCapabilities::CONFIG),
                 'args' => [
                     'clinician_id' => ['required' => true, 'type' => 'integer'],
                     'from' => ['required' => false, 'type' => 'string', 'default' => gmdate('Y-m-d')],

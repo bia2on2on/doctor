@@ -1,5 +1,20 @@
 # Data Dictionary + Constraints & Indexes — CPMS
 
+> ## ⚠️ DOCUMENTATION DRIFT — این سند با معماری هدف هم‌راستا نیست
+>
+> **این سند هنوز مدل قدیمی را بیان می‌کند و به‌عمد اصلاح نشده است** (قاعدهٔ Owner: هر سند در فاز مالک کدش، هم‌زمان با کد به‌روز می‌شود — نه wholesale rewrite زودهنگام).
+>
+> - **معماری مرجع:** [ADR-0031](../adr/ADR-0031-organization-clinic-location-scoped-authorization.md) — `Organization → Clinic → Location → Doctor → User/Staff`
+> - **فازبندی مرجع:** [roadmap.md](../roadmap/roadmap.md) §۰ — Owner-approved Phase 0..20
+> - **فهرست دقیق تعارض‌های این سند + فاز مالک هر مورد:** [drift-register.md](../drift-register.md)
+>
+> ⛔ **هر ذکر `clinic_id = 1` در این سند تاریخی است و معماری مطلوب آینده نیست.** طبق **AD-13**، `clinic_id = 1` مستقیم در کد جدید **ممنوع** است.
+> ⛔ ارجاع‌های `V1` / `V1.5` / `V2` منسوخ‌اند: Multi-Clinic = **Phase 2** · Role/Scope = **Phase 3** · Master Data = **Phase 4**.
+
+---
+
+
+
 نسخه 1.0 | 2026-09-05 | فاز 4 | همه زمان‌ها UTC. PK همه جداول: `id BIGINT UNSIGNED AI PK`.
 
 راهنما: **U**=Unique, **FK**=Foreign Key, **N**=Nullable, **AI**=Auto Increment, **DF**=Default.
@@ -564,3 +579,48 @@
 > - `book_final`: BEGIN → SELECT slot FOR UPDATE → check hold+slot → INSERT appointment → UPDATE slot (convert) → UPDATE hold(converted) → COMMIT.
 > - `payment_captured`: BEGIN → SELECT invoice FOR UPDATE → check idempotency → INSERT payment → UPDATE invoice → (Update Visit اگر settled) → COMMIT.
 > - `complete`/`check_out`: BEGIN → SELECT visit FOR UPDATE → transition check → UPDATE + history → (appointment completed در check_out) → COMMIT.
+
+
+---
+
+## Phase 2 — as-built: Patient Identity (C5 / AD-14 / Migration 0018+0019)
+
+> جدول‌های فاز ۲ (organizations/locations/memberships/identities) هنوز در فهرست
+> فاز ۱ بالا نیستند — بازنویسی کامل ERD مربوط D-03 (ERD نسخهٔ ۲) است. این بخش
+> فقط وضعیت as-builtِ هویت بیمار را مستند می‌کند (Planned ≠ Implemented).
+
+### `cpms_patient_identities` (سطح Organization)
+
+| فیلد | نوع | Null | توضیح |
+|---|---|---|---|
+| id | BIGINT UNSIGNED AI | | PK |
+| organization_id | BIGINT UNSIGNED | | FK→organizations |
+| internal_ref | VARCHAR(40) | | **کلید هویت تغییرناپذیر** — `PID-{ymd}-{12hex}`؛ یکتای global |
+| normalized_mobile | VARCHAR(16) | ✓ | صفت lookup (خروجی `MobileValidator::normalize`)؛ **NOT identity key**؛ بدون UNIQUE (duplicate candidates مجاز) |
+| created_at / updated_at | DATETIME(3) | | |
+
+Index: `u_identity_ref(internal_ref)` · `idx_identity_org(organization_id)` ·
+`idx_identity_org_mobile(organization_id, normalized_mobile)` — مطابق query واقعی
+lookup؛ EXPLAIN تأییدشده (تست C5).
+
+### `cpms_patient_identity_links` (WP User ↔ Identity؛ سطح Organization)
+
+| فیلد | نوع | Null | توضیح |
+|---|---|---|---|
+| id | BIGINT UNSIGNED AI | | PK |
+| organization_id | BIGINT UNSIGNED | | FK→organizations |
+| identity_id | BIGINT UNSIGNED | | FK→patient_identities **CASCADE** |
+| wp_user_id | BIGINT UNSIGNED | | بدون FK (هم‌راستا با patient_user_links) |
+| mobile_at_link | VARCHAR(32) | | snapshot نرمال‌شده در لحظهٔ لینک |
+| is_primary | TINYINT(1) | DF 0 | حداکثر یکی per (org,user) — در سرویس |
+| linked_at | DATETIME(3) | | |
+
+U `(identity_id, wp_user_id)` · Index: `idx_pil_user_org(wp_user_id,
+organization_id)`, `idx_pil_org_identity(organization_id, identity_id)`.
+لینک فقط صریح (هرگز خودکار با موبایل).
+
+### تغییر `cpms_patients`
+
+`identity_id BIGINT UNSIGNED NULL` + FK `fk_patients_identity` →
+`cpms_patient_identities(id)` **ON DELETE SET NULL**. رکورد بالینی همچنان
+Clinic-owned؛ یکتایی‌های `u_pat_mrn/mobile/nid(clinic_id, …)` دست‌نخورده.

@@ -52,3 +52,27 @@
 | حذف/تغییر اشتباه داده | Restore نقطه‌ای از Backup قبلی + (V2: PITR) |
 | آلودگی Ransomware | Backup رمزنگاری‌شده جدا + Key خارج → Restore از مقصد دوم |
 | اشتباه Migration | Backup قبل از Migration (اجباری) + Rollback Migration (Section 47) |
+
+---
+
+## 7. مرز امنیتی مقصد بکاپ (OD-9 — الزام‌آور از Phase 1)
+
+> **قاعده:** ریشهٔ بکاپِ **فعال** (Setting `backup.storage_path` یا پیش‌فرض) باید **بیرون از DocumentRoot** باشد. بکاپ حاوی همان PHI و یک dump کامل پایگاه داده است — `.htaccess` روی nginx خوانده نمی‌شود و مرز مجوز نیست.
+
+| وضعیت | رفتار سیستم |
+|---|---|
+| مسیر فعال بیرون از webroot | عادی — بکاپ/verify/restore همه کار می‌کنند |
+| مسیر فعال داخل webroot (Setting ناامن) | **Fail-Closed**: بکاپ جدید/حذف با خطای صریح `CLINIC_BACKUP_STORAGE_INSIDE_WEBROOT` رد می‌شود؛ مسیر **عوض نمی‌شود** (هیچ fallback بی‌صدایی نیست)؛ Health = FAIL |
+| بکاپ‌های قدیمی داخل webroot | فقط **مبدأ legacy فقط‌خواندنی**: verify/preflight/restore آن‌ها کار می‌کند (پس از یافته‌نشدن در مخزن فعال، ریشهٔ خصوصی و ریشهٔ legacy جست‌وجو می‌شود) |
+| Safety Backup پیش از Restore | **فقط** در مقصد امن خصوصی نوشته می‌شود: مخزن فعالِ قابل‌نوشتن، یا در پیکربندی ناامن، ریشهٔ خصوصی پیش‌فرض (`…/cpms-private/cpms-backups`). مبدأ legacy هرگز مقصد نیست ⇒ restore قفل نمی‌شود |
+| نبود هیچ مقصد امنی | restore مخرب آغاز نمی‌شود (بدون Safety Backup، DROP/ایمپورت ممنوع) |
+
+### Runbook: نصبی که `backup.storage_path` آن داخل webroot است
+
+1. **تشخیص:** صفحهٔ «CPMS (سیستم)» → Health: `storage.backups = FAIL`؛ یا خطای `CLINIC_BACKUP_STORAGE_INSIDE_WEBROOT` هنگام بکاپ.
+2. **مهاجرت خودکار:** در هر request ادمن/REST، محتوای آن ریشه (و ریشهٔ legacy قدیمی `wp-content/cpms-backups`) idempotent به ریشهٔ خصوصی منتقل می‌شود: کپی → تأیید sha256 → rename → تأیید → فقط آن‌گاه حذف مبدأ. تعارض محتوا بازنویسی نمی‌شود و در Operational Log (`CPMS_PRIVATE_STORAGE_MIGRATION`، area=`cpms-backups-unsafe-config`) گزارش می‌شود.
+3. **اصلاح Setting (دست اپراتور):** بعد از migrate تمیز، `backup.storage_path` را خالی کنید (پیش‌فرض = ریشهٔ خصوصی) یا مسیر مطلقِ بیرون از webroot بدهید. سیستم این Setting را عمداً خودش تغییر نمی‌دهد.
+4. **بازیابی اضطراری قبل از اصلاح Setting:** مجاز است — بکاپ‌های legacy با typed Backup ID قابل preflight/restore اند (Admin: فرم Restore؛ CLI: `bin/cpms backup restore <id> --yes`). Safety Backup به ریشهٔ خصوصی می‌رود و رویداد `RESTORE_APPLIED` در Audit، `source`، `legacy_unverified` و `safety_destination` را ثبت می‌کند.
+5. ** nginx (فقط Defense in Depth):** تا پایان مهاجرت، بکاپ‌های داخل webroot را deny کنید: `location ^~ /wp-content/cpms-backups/ { deny all; return 404; }`
+
+> قابلیت‌های فاز 15 (زمان‌بندی/retention چندلایه/رمزنگاری مقصد/remote mirror ساختاریافته) خارج از دامنهٔ OD-9 هستند و ساخته نمی‌شوند.

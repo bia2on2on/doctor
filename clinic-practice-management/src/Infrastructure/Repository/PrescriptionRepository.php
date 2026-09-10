@@ -24,14 +24,14 @@ final class PrescriptionRepository
     /**
      * @param array<string, mixed> $row
      */
-    public function insert(array $row): int
+    public function insert(int $clinic_id, array $row): int
     {
         $now = $this->db->nowUtcSql();
         $row += [
-            // ADR-0003 — هر ردیف Clinic خودش را دارد (single-tenant V1: 1)؛
+            // ADR-0003 — هر ردیف Clinic خودش را دارد (پارامتر صریح — C6)؛
             // بدون این، ستون NOT NULL بدون Default مقدار ضمنی 0 می‌گرفت و
             // فیلترهای clinic_id (مثل E18) ردیف را گم می‌کردند.
-            'clinic_id' => 1,
+            'clinic_id' => $clinic_id,
             'status' => 'draft',
             'is_patient_visible' => 1,
             'void_reason' => null,
@@ -63,6 +63,32 @@ final class PrescriptionRepository
             'SELECT * FROM ' . $this->db->table('cpms_prescriptions') . ' WHERE id = %d LIMIT 1',
             [$id]
         );
+    }
+
+    /**
+     * انتخاب/قفل **در داخل مرز Clinic** — C6‑F (Class A repair): predicate
+     * tenant داخل خودِ SQL است (نه فیلتر PHP پس از بارگذاری ردیف Clinic دیگر)،
+     * قابل ایندکس از طریق PRIMARY (`id`) و مانع هرگونه جهش بین‌کلینیکی.
+     *
+     * @return array<string, mixed>|null
+     */
+    public function findForUpdateForClinic(int $id, int $clinicId): ?array
+    {
+        return $this->db->fetchRowForUpdate(
+            'SELECT * FROM ' . $this->db->table('cpms_prescriptions') . ' WHERE id = %d AND clinic_id = %d LIMIT 1',
+            [$id, $clinicId]
+        );
+    }
+
+    /**
+     * به‌روزرسانی با شرط Clinic در WHERE — لایهٔ دوم دفاع (اگر Query Layer
+     * تغییر کند، جهش همچنان در مرزِ درست مهار می‌شود).
+     */
+    public function updateForClinic(int $clinicId, int $id, array $data): int
+    {
+        $data['updated_at'] = $this->db->nowUtcSql();
+
+        return $this->db->update('cpms_prescriptions', $data, ['id' => $id, 'clinic_id' => $clinicId]);
     }
 
     /**

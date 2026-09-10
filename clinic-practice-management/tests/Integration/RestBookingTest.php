@@ -87,7 +87,10 @@ final class RestBookingTest extends WP_UnitTestCase
         // کاربران (نقش صریح — wp_create_user نقش را default می‌گذارد)
         $this->patientUserId = $this->makeUser('rest_patient_a', 'cpms_patient', '09121110001@otp.cpms.local');
         $this->otherPatientUserId = $this->makeUser('rest_patient_b', 'cpms_patient', '09121110002@otp.cpms.local');
+        // C6 repair — عضویت فعال staff صریح است (نه fixture سراسری).
+        // تست‌های patient/non-member عمداً عضویت نمی‌گیرند.
         $this->secretaryUserId = $this->makeUser('rest_secretary', 'cpms_secretary', 'sec@test.local');
+        cpms_test_seed_membership($this->secretaryUserId, 1, 'cpms_secretary');
 
         $wpdb->query(
             $wpdb->prepare(
@@ -424,8 +427,8 @@ final class RestBookingTest extends WP_UnitTestCase
         $wpdb->query(
             $wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_schedule_slots
-                     (clinic_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at)
-                 VALUES (1, %d, %s, %s, 20, %d, 0, 0, 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                     (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at)
+                 VALUES (1, (SELECT id FROM ' . $wpdb->prefix . 'cpms_locations WHERE clinic_id = 1 AND is_primary = 1 LIMIT 1), %d, %s, %s, 20, %d, 0, 0, 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 $this->clinicianId,
                 $date,
                 $time,

@@ -97,10 +97,16 @@ final class OtpPolicy
     }
 
     /**
-     * هش کد برای ذخیره — SHA-256(code + pepper). مقایسه با hash_equals در لایه Infra.
+     * هش کد برای ذخیره — HMAC-SHA256(code, pepper). مقایسه با hash_equals.
+     *
+     * Phase 1A: پیش از این `hash('sha256', $code . $pepper)` بود. الحاق
+     * ساده در برابر Length-Extension و مهم‌تر، در برابر ساخت Rainbow Table
+     * برای یک Pepper شناخته‌شده مقاومتی ندارد؛ HMAC ساخت کلیددار استاندارد
+     * است. تغییر الگوریتم Tokenهای در جریان را باطل می‌کند که با توجه به
+     * TTL چنددقیقه‌ای OTP بی‌خطر است.
      */
     public static function hashCode(string $code, string $pepper): string
     {
-        return hash('sha256', $code . $pepper);
+        return hash_hmac('sha256', $code, $pepper);
     }
 }

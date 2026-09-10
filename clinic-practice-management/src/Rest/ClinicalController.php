@@ -40,7 +40,8 @@ final class ClinicalController extends RestBase
                 'methods' => WP_REST_Server::READABLE,
                 'callback' => fn (WP_REST_Request $r) => $this->doctor($r, RolesAndCapabilities::MEDICAL_READ,
                     fn () => $this->clinical->record($this->userId($r), (int) $r['id'])),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permCap($r, RolesAndCapabilities::MEDICAL_READ),
             ],
         ]);
 
@@ -50,7 +51,8 @@ final class ClinicalController extends RestBase
                 'methods' => WP_REST_Server::CREATABLE,
                 'callback' => fn (WP_REST_Request $r) => $this->doctor($r, RolesAndCapabilities::NOTE_CREATE,
                     fn () => $this->clinical->addNote($this->userId($r), (int) $r['id'], $this->body($r))),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permCap($r, RolesAndCapabilities::NOTE_CREATE),
                 'args' => [
                     'category' => ['required' => true, 'type' => 'string'],
                     'visibility' => ['required' => false, 'type' => 'string', 'default' => 'patient_visible'],
@@ -66,7 +68,8 @@ final class ClinicalController extends RestBase
                 'methods' => WP_REST_Server::EDITABLE,
                 'callback' => fn (WP_REST_Request $r) => $this->doctor($r, RolesAndCapabilities::NOTE_UPDATE,
                     fn () => $this->clinical->updateNote($this->userId($r), (int) $r['id'], $this->body($r))),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permCap($r, RolesAndCapabilities::NOTE_UPDATE),
                 'args' => [
                     'content_text' => ['required' => true, 'type' => 'string'],
                     'change_reason' => ['required' => true, 'type' => 'string'],
@@ -80,7 +83,8 @@ final class ClinicalController extends RestBase
                 'methods' => WP_REST_Server::CREATABLE,
                 'callback' => fn (WP_REST_Request $r) => $this->doctor($r, RolesAndCapabilities::RX_CREATE,
                     fn () => $this->clinical->createPrescription($this->userId($r), (int) $r['id'], $this->body($r))),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permCap($r, RolesAndCapabilities::RX_CREATE),
                 'args' => [
                     'items' => ['required' => true, 'type' => 'array', 'items' => ['type' => 'object']],
                     'is_patient_visible' => ['required' => false, 'type' => 'boolean', 'default' => true],
@@ -95,7 +99,8 @@ final class ClinicalController extends RestBase
                 'methods' => WP_REST_Server::CREATABLE,
                 'callback' => fn (WP_REST_Request $r) => $this->doctor($r, RolesAndCapabilities::RX_CREATE,
                     fn () => $this->clinical->finalizePrescription($this->userId($r), (int) $r['id'])),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permCap($r, RolesAndCapabilities::RX_CREATE),
             ],
         ]);
 
@@ -105,7 +110,8 @@ final class ClinicalController extends RestBase
                 'methods' => WP_REST_Server::CREATABLE,
                 'callback' => fn (WP_REST_Request $r) => $this->doctor($r, RolesAndCapabilities::REC_CREATE,
                     fn () => $this->clinical->addRecommendations($this->userId($r), (int) $r['id'], $this->body($r))),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permCap($r, RolesAndCapabilities::REC_CREATE),
                 'args' => [
                     'items' => ['required' => true, 'type' => 'array', 'items' => ['type' => 'object']],
                 ],
@@ -118,7 +124,8 @@ final class ClinicalController extends RestBase
                 'methods' => WP_REST_Server::CREATABLE,
                 'callback' => fn (WP_REST_Request $r) => $this->doctor($r, RolesAndCapabilities::REC_CREATE,
                     fn () => $this->clinical->addFollowUp($this->userId($r), (int) $r['id'], $this->body($r))),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permCap($r, RolesAndCapabilities::REC_CREATE),
                 'args' => [
                     'is_needed' => ['required' => false, 'type' => 'boolean', 'default' => true],
                     'suggested_date' => ['required' => false, 'type' => 'string'],
@@ -134,7 +141,8 @@ final class ClinicalController extends RestBase
                 'methods' => WP_REST_Server::CREATABLE,
                 'callback' => fn (WP_REST_Request $r) => $this->doctor($r, RolesAndCapabilities::CONSULT_COMPLETE,
                     fn () => $this->clinical->completeConsultation($this->userId($r), (int) $r['id'])),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permCap($r, RolesAndCapabilities::CONSULT_COMPLETE),
             ],
         ]);
 
@@ -144,7 +152,8 @@ final class ClinicalController extends RestBase
                 'methods' => WP_REST_Server::CREATABLE,
                 'callback' => fn (WP_REST_Request $r) => $this->doctor($r, RolesAndCapabilities::CONSULT_REOPEN,
                     fn () => $this->clinical->reopenConsultation($this->userId($r), (int) $r['id'], (string) ($r['reason'] ?? ''))),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permCap($r, RolesAndCapabilities::CONSULT_REOPEN),
                 'args' => [
                     'reason' => ['required' => true, 'type' => 'string'],
                 ],
@@ -159,7 +168,8 @@ final class ClinicalController extends RestBase
                 'methods' => WP_REST_Server::READABLE,
                 'callback' => fn (WP_REST_Request $r) => $this->patient($r,
                     fn () => $this->clinical->patientVisits($this->userId($r), $r['from'] ?? null, $r['to'] ?? null)),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permAnyRole($r, [RolesAndCapabilities::ROLE_PATIENT]),
                 'args' => [
                     'from' => ['required' => false, 'type' => 'string'],
                     'to' => ['required' => false, 'type' => 'string'],
@@ -173,7 +183,8 @@ final class ClinicalController extends RestBase
                 'methods' => WP_REST_Server::READABLE,
                 'callback' => fn (WP_REST_Request $r) => $this->patient($r,
                     fn () => $this->clinical->patientVisitDetail($this->userId($r), (int) $r['id'])),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permAnyRole($r, [RolesAndCapabilities::ROLE_PATIENT]),
             ],
         ]);
 
@@ -183,7 +194,8 @@ final class ClinicalController extends RestBase
                 'methods' => WP_REST_Server::READABLE,
                 'callback' => fn (WP_REST_Request $r) => $this->patient($r,
                     fn () => $this->clinical->patientPrescriptions($this->userId($r))),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permAnyRole($r, [RolesAndCapabilities::ROLE_PATIENT]),
             ],
         ]);
 
@@ -201,7 +213,7 @@ final class ClinicalController extends RestBase
                         $r['from'] ?? null,
                         $r['to'] ?? null
                     )),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r) => $this->permCap($r, RolesAndCapabilities::SEARCH),
                 'args' => [
                     'q' => ['required' => true, 'type' => 'string'],
                     'type' => [

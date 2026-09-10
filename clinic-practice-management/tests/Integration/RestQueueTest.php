@@ -70,8 +70,12 @@ final class RestQueueTest extends WP_UnitTestCase
         $this->otherPatientId = $patientIds['B'];
 
         $this->patientUserId = $this->makeUser('rq_patient', 'cpms_patient');
+        // C6 repair — عضویت فعال staff صریح است (نه fixture سراسری).
+        // تست‌های patient/non-member عمداً عضویت نمی‌گیرند.
         $this->secretaryUserId = $this->makeUser('rq_secretary', 'cpms_secretary');
+        cpms_test_seed_membership($this->secretaryUserId, 1, 'cpms_secretary');
         $this->doctorUserId = $this->makeUser('rq_doctor', 'cpms_doctor');
+        cpms_test_seed_membership($this->doctorUserId, 1, 'cpms_doctor');
 
         // F9 (ADR-0027 Minor #3): پزشک متصل به Clinician — گارد مالکیت ویزیت
         $wpdb->query(
@@ -395,8 +399,8 @@ final class RestQueueTest extends WP_UnitTestCase
         $wpdb->query(
             $wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_schedule_slots
-                     (clinic_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at)
-                 VALUES (1, %d, %s, %s, 20, 1, 0, 0, 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                     (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at)
+                 VALUES (1, (SELECT id FROM ' . $wpdb->prefix . 'cpms_locations WHERE clinic_id = 1 AND is_primary = 1 LIMIT 1), %d, %s, %s, 20, 1, 0, 0, 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 $this->clinicianId,
                 $date,
                 $slotTime,
@@ -409,9 +413,9 @@ final class RestQueueTest extends WP_UnitTestCase
         $wpdb->query(
             $wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_appointments
-                     (clinic_id, reference_code, patient_id, clinician_id, slot_id, slot_date, slot_time,
+                     (clinic_id, location_id, reference_code, patient_id, clinician_id, slot_id, slot_date, slot_time,
                       duration_min, slot_end_time, status, confirmed_at, created_at, updated_at)
-                 VALUES (1, %s, %d, %d, %d, %s, %s, 20, %s, "confirmed", %s, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                 VALUES (1, (SELECT id FROM ' . $wpdb->prefix . 'cpms_locations WHERE clinic_id = 1 AND is_primary = 1 LIMIT 1), %s, %d, %d, %d, %s, %s, 20, %s, "confirmed", %s, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 'RQ-' . bin2hex(random_bytes(6)),
                 $patientId,
                 $this->clinicianId,

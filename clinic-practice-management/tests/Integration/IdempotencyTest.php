@@ -22,7 +22,7 @@ final class IdempotencyTest extends WP_UnitTestCase
 
     public function testFirstCallClaimsKey(): void
     {
-        $r = App::idem()->check(self::KEY, '/invoices/1/payments', 10, 1);
+        $r = App::idem()->check(self::KEY, '/invoices/1/payments', 10, 1, 1);
         $this->assertFalse($r['is_replay']);
         $this->assertNull($r['response']);
     }
@@ -30,10 +30,10 @@ final class IdempotencyTest extends WP_UnitTestCase
     public function testReplayReturnsStoredResponseWithoutDuplicate(): void
     {
         $idem = App::idem();
-        $idem->check(self::KEY, '/invoices/1/payments', 10, 1);
-        $idem->complete(self::KEY, '/invoices/1/payments', 10, 1, 201, ['payment_id' => 99, 'number' => 'PAY-1']);
+        $idem->check(self::KEY, '/invoices/1/payments', 10, 1, 1);
+        $idem->complete(self::KEY, '/invoices/1/payments', 10, 1, 201, ['payment_id' => 99, 'number' => 'PAY-1'], 1);
 
-        $r = $idem->check(self::KEY, '/invoices/1/payments', 10, 1);
+        $r = $idem->check(self::KEY, '/invoices/1/payments', 10, 1, 1);
         $this->assertTrue($r['is_replay']);
         $this->assertSame(201, $r['response_code']);
         $this->assertSame(99, $r['response']['payment_id']);
@@ -51,26 +51,26 @@ final class IdempotencyTest extends WP_UnitTestCase
     public function testReleaseAllowsRetry(): void
     {
         $idem = App::idem();
-        $idem->check(self::KEY, '/invoices/1/payments', 10, 1);
-        $idem->release(self::KEY, '/invoices/1/payments', 10, 1);
+        $idem->check(self::KEY, '/invoices/1/payments', 10, 1, 1);
+        $idem->release(self::KEY, '/invoices/1/payments', 10, 1, 1);
 
-        $r = $idem->check(self::KEY, '/invoices/1/payments', 10, 1);
+        $r = $idem->check(self::KEY, '/invoices/1/payments', 10, 1, 1);
         $this->assertFalse($r['is_replay'], 'بعد از release، تلاش مجدد باید Claim تازه بگیرد');
     }
 
     public function testDifferentContextsAreIndependent(): void
     {
         $idem = App::idem();
-        $idem->check(self::KEY, '/invoices/1/payments', 10, 1);
-        $r = $idem->check(self::KEY, '/invoices/2/payments', 10, 2);
+        $idem->check(self::KEY, '/invoices/1/payments', 10, 1, 1);
+        $r = $idem->check(self::KEY, '/invoices/2/payments', 10, 2, 1);
         $this->assertFalse($r['is_replay'], 'کلید در Context مختلف نباید Replay باشد');
     }
 
     public function testInFlightReturns409(): void
     {
         $idem = App::idem();
-        $idem->check(self::KEY, '/invoices/1/payments', 10, 1); // pending
-        $r = $idem->check(self::KEY, '/invoices/1/payments', 10, 1);
+        $idem->check(self::KEY, '/invoices/1/payments', 10, 1, 1); // pending
+        $r = $idem->check(self::KEY, '/invoices/1/payments', 10, 1, 1);
 
         $this->assertTrue($r['is_replay']);
         $this->assertSame(409, $r['response_code'], 'Request موازی → 409');

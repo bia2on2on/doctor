@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ClinicCore\Rest;
 
 use ClinicCore\Application\Notifications\SmsService;
+use ClinicCore\Bootstrap\App;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Domain\Sms\SmsTemplateException;
 use WP_REST_Request;
@@ -28,22 +29,23 @@ final class SmsController extends RestBase
     public function register_routes(): void
     {
         register_rest_route(self::NS, '/sms/status', [
-            ['methods' => WP_REST_Server::READABLE, 'callback' => fn (WP_REST_Request $r) => $this->status($r), 'permission_callback' => '__return_true'],
+            ['methods' => WP_REST_Server::READABLE, 'callback' => fn (WP_REST_Request $r) => $this->status($r), 'permission_callback' => fn (WP_REST_Request $r) => $this->permCap($r, RolesAndCapabilities::SMS_CONFIG)],
         ]);
         register_rest_route(self::NS, '/sms/providers', [
-            ['methods' => WP_REST_Server::READABLE, 'callback' => fn (WP_REST_Request $r) => $this->providers($r), 'permission_callback' => '__return_true'],
+            ['methods' => WP_REST_Server::READABLE, 'callback' => fn (WP_REST_Request $r) => $this->providers($r), 'permission_callback' => fn (WP_REST_Request $r) => $this->permCap($r, RolesAndCapabilities::SMS_CONFIG)],
         ]);
         register_rest_route(self::NS, '/sms/settings', [
-            ['methods' => WP_REST_Server::CREATABLE, 'callback' => fn (WP_REST_Request $r) => $this->saveSettings($r), 'permission_callback' => '__return_true'],
+            ['methods' => WP_REST_Server::CREATABLE, 'callback' => fn (WP_REST_Request $r) => $this->saveSettings($r), 'permission_callback' => fn (WP_REST_Request $r) => $this->permCap($r, RolesAndCapabilities::SMS_CONFIG)],
         ]);
         register_rest_route(self::NS, '/sms/test-connection', [
-            ['methods' => WP_REST_Server::CREATABLE, 'callback' => fn (WP_REST_Request $r) => $this->testConnection($r), 'permission_callback' => '__return_true'],
+            ['methods' => WP_REST_Server::CREATABLE, 'callback' => fn (WP_REST_Request $r) => $this->testConnection($r), 'permission_callback' => fn (WP_REST_Request $r) => $this->permCap($r, RolesAndCapabilities::SMS_CONFIG)],
         ]);
         register_rest_route(self::NS, '/sms/test-send', [
             [
                 'methods' => WP_REST_Server::CREATABLE,
                 'callback' => fn (WP_REST_Request $r) => $this->testSend($r),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permCap($r, RolesAndCapabilities::SMS_CONFIG),
                 'args' => [
                     'mobile' => ['required' => true, 'type' => 'string'],
                     'message' => ['required' => true, 'type' => 'string'],
@@ -54,14 +56,16 @@ final class SmsController extends RestBase
             [
                 'methods' => [WP_REST_Server::READABLE, WP_REST_Server::CREATABLE],
                 'callback' => fn (WP_REST_Request $r) => $r->get_method() === 'POST' ? $this->saveTemplate($r) : $this->templates(),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permCap($r, RolesAndCapabilities::SMS_CONFIG),
             ],
         ]);
         register_rest_route(self::NS, '/sms/templates/test', [
             [
                 'methods' => WP_REST_Server::CREATABLE,
                 'callback' => fn (WP_REST_Request $r) => $this->testTemplate($r),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permCap($r, RolesAndCapabilities::SMS_CONFIG),
                 'args' => [
                     'event' => ['required' => true, 'type' => 'string'],
                     'mobile' => ['required' => true, 'type' => 'string'],
@@ -73,11 +77,12 @@ final class SmsController extends RestBase
             [
                 'methods' => WP_REST_Server::READABLE,
                 'callback' => fn (WP_REST_Request $r) => $this->logs($r),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permCap($r, RolesAndCapabilities::SMS_CONFIG),
             ],
         ]);
         register_rest_route(self::NS, '/sms/balance', [
-            ['methods' => WP_REST_Server::READABLE, 'callback' => fn (WP_REST_Request $r) => $this->balance($r), 'permission_callback' => '__return_true'],
+            ['methods' => WP_REST_Server::READABLE, 'callback' => fn (WP_REST_Request $r) => $this->balance($r), 'permission_callback' => fn (WP_REST_Request $r) => $this->permCap($r, RolesAndCapabilities::SMS_CONFIG)],
         ]);
     }
 
@@ -239,6 +244,8 @@ final class SmsController extends RestBase
 
         return $this->success(
             $this->sms->logs(
+                // Trusted Scope (مرز C6) — هیچ clinic_id قابل‌اعتمادی از کلاینت وجود ندارد.
+                App::scope()->clinicId,
                 $request->get_param('status') !== null ? (string) $request->get_param('status') : null,
                 (int) $request->get_param('page'),
                 (int) $request->get_param('per_page')

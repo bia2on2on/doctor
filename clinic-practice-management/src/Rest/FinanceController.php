@@ -48,7 +48,8 @@ final class FinanceController extends RestBase
                     fn () => $this->finance->issueInvoice($this->userId($r), $this->body($r)),
                     201
                 ),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permCap($r, RolesAndCapabilities::INVOICE_CREATE),
                 'args' => [
                     'visit_id' => ['required' => true, 'type' => 'integer', 'minimum' => 1],
                     'items' => ['required' => true, 'type' => 'array', 'items' => ['type' => 'object']],
@@ -67,7 +68,8 @@ final class FinanceController extends RestBase
                     RolesAndCapabilities::INVOICE_READ,
                     fn () => $this->finance->findInvoiceForActor($this->userId($r), (int) $r['id'])
                 ),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permCap($r, RolesAndCapabilities::INVOICE_READ),
             ],
         ]);
 
@@ -80,7 +82,8 @@ final class FinanceController extends RestBase
                     RolesAndCapabilities::INVOICE_READ,
                     fn () => $this->finance->invoiceForVisit($this->userId($r), (int) $r['id'])
                 ),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permCap($r, RolesAndCapabilities::INVOICE_READ),
             ],
         ]);
 
@@ -102,7 +105,8 @@ final class FinanceController extends RestBase
                         fn (array $data): int => empty($data['idempotent_replay']) ? 201 : 200
                     );
                 },
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permCap($r, RolesAndCapabilities::PAYMENT_CREATE),
                 'args' => [
                     'amount' => ['required' => true, 'type' => 'number'],
                     'method' => ['required' => true, 'type' => 'string', 'enum' => ['cash', 'card_pos', 'online', 'other']],
@@ -120,7 +124,8 @@ final class FinanceController extends RestBase
                     RolesAndCapabilities::PAYMENT_VOID,
                     fn () => $this->finance->voidPayment($this->userId($r), (int) $r['id'], (string) $r->get_param('reason'))
                 ),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permCap($r, RolesAndCapabilities::PAYMENT_VOID),
                 'args' => [
                     'reason' => ['required' => true, 'type' => 'string'],
                 ],
@@ -136,7 +141,8 @@ final class FinanceController extends RestBase
                     RolesAndCapabilities::PAYMENT_REFUND,
                     fn () => $this->finance->refundPayment($this->userId($r), (int) $r['id'], (string) $r->get_param('reason'), $this->body($r))
                 ),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permCap($r, RolesAndCapabilities::PAYMENT_REFUND),
                 'args' => [
                     'reason' => ['required' => true, 'type' => 'string'],
                     'amount' => ['required' => false, 'type' => 'number'],
@@ -153,7 +159,8 @@ final class FinanceController extends RestBase
                     RolesAndCapabilities::INVOICE_ADJUST,
                     fn () => $this->finance->addAdjustment($this->userId($r), (int) $r['id'], (string) $r['type'], $this->body($r))
                 ),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permCap($r, RolesAndCapabilities::INVOICE_ADJUST),
                 'args' => [
                     'type' => ['required' => true, 'type' => 'string', 'enum' => ['credit', 'debit']],
                     'amount' => ['required' => true, 'type' => 'number'],
@@ -171,7 +178,8 @@ final class FinanceController extends RestBase
                     RolesAndCapabilities::INVOICE_READ,
                     fn () => $this->finance->receipt($this->userId($r), (int) $r['id'])
                 ),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permCap($r, RolesAndCapabilities::INVOICE_READ),
             ],
         ]);
 
@@ -184,7 +192,8 @@ final class FinanceController extends RestBase
                     RolesAndCapabilities::FINANCE_READ,
                     fn () => $this->finance->summary($this->userId($r), $r->get_param('from'), $r->get_param('to'))
                 ),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r)
+                    => $this->permCap($r, RolesAndCapabilities::FINANCE_READ),
                 'args' => [
                     'from' => ['required' => false, 'type' => 'string', 'format' => 'date'],
                     'to' => ['required' => false, 'type' => 'string', 'format' => 'date'],
@@ -203,7 +212,7 @@ final class FinanceController extends RestBase
                     null,
                     fn () => $this->finance->listServices($this->userId($r), $r->get_param('scope') !== 'all')
                 ),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r) => $this->permAuthenticated($r),
                 'args' => [
                     'scope' => ['required' => false, 'type' => 'string', 'enum' => ['active', 'all'], 'default' => 'active'],
                 ],
@@ -216,7 +225,7 @@ final class FinanceController extends RestBase
                     fn () => $this->finance->createService($this->userId($r), $this->body($r)),
                     201
                 ),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r) => $this->permCap($r, RolesAndCapabilities::CONFIG),
                 'args' => [
                     'code' => ['required' => true, 'type' => 'string'],
                     'name' => ['required' => true, 'type' => 'string'],
@@ -233,7 +242,7 @@ final class FinanceController extends RestBase
                     RolesAndCapabilities::CONFIG,
                     fn () => $this->finance->updateService($this->userId($r), (int) $r['id'], $this->body($r))
                 ),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r) => $this->permCap($r, RolesAndCapabilities::CONFIG),
                 'args' => [
                     'code' => ['required' => false, 'type' => 'string'],
                     'name' => ['required' => false, 'type' => 'string'],
@@ -247,7 +256,7 @@ final class FinanceController extends RestBase
                     RolesAndCapabilities::CONFIG,
                     fn () => $this->finance->deactivateService($this->userId($r), (int) $r['id'])
                 ),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn (WP_REST_Request $r) => $this->permCap($r, RolesAndCapabilities::CONFIG),
             ],
         ]);
     }

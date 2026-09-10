@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace ClinicCore\Application\Visits;
 
 use ClinicCore\Application\Notifications\NotificationService;
+use ClinicCore\Application\Scope\ScopeRequiredException;
+use ClinicCore\Bootstrap\App;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Domain\Licensing\LicenseGate;
 use ClinicCore\Domain\Machine\AppointmentMachine;
@@ -114,6 +116,7 @@ final class VisitService
 
             $visit = $this->createVisit(
                 $actorUserId,
+                (int) $appt['clinic_id'],
                 $patientId,
                 (int) $appt['clinician_id'],
                 $appointmentId,
@@ -150,13 +153,18 @@ final class VisitService
         $actorRole = 'secretary';
 
         return $this->db->transactional(function () use ($actorUserId, $actorRole, $patientId, $clinicianId, $meta): array {
-            $this->lockPatient($patientId);
-            $this->requireClinician($clinicianId);
+            $patient = $this->lockPatient($patientId);
+            $clinicId = $this->requireClinician($clinicianId);
+            // C6: بیمار و پزشک باید به یک کلینیک تعلق داشته باشند (verify سمت سرور)
+            if ((int) $patient['clinic_id'] !== $clinicId) {
+                throw VisitException::of('CLINIC_VALIDATION_FAILED', 'این بیمار به کلینیک دیگری تعلق دارد', 422);
+            }
 
             $this->guardDuplicateActiveVisit($patientId, $clinicianId);
 
             $visit = $this->createVisit(
                 $actorUserId,
+                $clinicId,
                 $patientId,
                 $clinicianId,
                 null,
@@ -290,6 +298,7 @@ final class VisitService
 
             if ($event === 'call') {
                 $this->notifications->publishToStaff(
+                    (int) $visit['clinic_id'],
                     NotificationEvents::QUEUE_CALLED,
                     [
                         'patient_name' => $patientName !== '' ? $patientName : 'بیمار',
@@ -302,6 +311,7 @@ final class VisitService
                 );
             } elseif ($event === 'invoice_ready') {
                 $this->notifications->publishToStaff(
+                    (int) $visit['clinic_id'],
                     NotificationEvents::QUEUE_READY_PAYMENT,
                     ['patient_name' => $patientName !== '' ? $patientName : 'بیمار'],
                     'queue:pay:v' . (int) $visit['id'],
@@ -323,23 +333,26 @@ final class VisitService
      * ADR-0030/Part1 (اصل «پزشک داده پزشک دیگر را ضمنی نمی‌بیند» — Master Context §8):
      * اگر Actor «پزشکِ» متصل به یک Clinician باشد، خروجی صرفاً ویزیت‌های همان
      * Clinician است (پارامتر clinician_id نادیده گرفته می‌شود — Scope سرور-side).
-     * منشی/سایر نقش‌های دارای QUEUE_READ دامنه کل مطب را می‌بینند (V1 = clinic_id=1).
+     * منشی/سایر نقش‌های دارای QUEUE_READ دامنهٔ کل **مطبِ context موثق** را می‌بینند
+ * (Clinic از Scope صریحِ درخواست یا Resolution سیستمی «تنها Clinic» حل می‌شود —
+ * هیچ clinic_id ثابتی در این Service وجود ندارد؛ مبهَم ⇒ CLINIC_SCOPE_REQUIRED).
      *
      * @return array<string, mixed>
      */
     public function today(int $actorUserId, ?int $clinicianId = null): array
     {
         $this->requireQueueReader($actorUserId);
-        $scopeClinicianId = $this->queueScopeClinicianId($actorUserId, $clinicianId);
+        $clinicId = $this->queueClinicId();
+        $scopeClinicianId = $this->queueScopeClinicianId($actorUserId, $clinicId, $clinicianId);
 
-        $queue = $this->visits->queueFor(1, $scopeClinicianId, self::QUEUE_STATUSES);
-        $stats = $this->visits->statsFor(1, null, $scopeClinicianId);
+        $queue = $this->visits->queueFor($clinicId, $scopeClinicianId, self::QUEUE_STATUSES);
+        $stats = $this->visits->statsFor($clinicId, null, $scopeClinicianId);
 
         return [
             'date' => gmdate('Y-m-d'),
             'stats' => $stats,
             'queue' => array_map([$this, 'presentVisit'], $queue),
-            'last_event_id' => $this->visits->lastEventId(1, null, $scopeClinicianId),
+            'last_event_id' => $this->visits->lastEventId($clinicId, null, $scopeClinicianId),
         ];
     }
 
@@ -353,9 +366,10 @@ final class VisitService
     public function eventsSince(int $actorUserId, int $sinceEventId): array
     {
         $this->requireQueueReader($actorUserId);
-        $scopeClinicianId = $this->queueScopeClinicianId($actorUserId, null);
+        $clinicId = $this->queueClinicId();
+        $scopeClinicianId = $this->queueScopeClinicianId($actorUserId, $clinicId, null);
 
-        $events = $this->visits->eventsSince(1, max(0, $sinceEventId), 200, $scopeClinicianId);
+        $events = $this->visits->eventsSince($clinicId, max(0, $sinceEventId), 200, $scopeClinicianId);
         $lastId = $sinceEventId;
         foreach ($events as $e) {
             $lastId = max($lastId, (int) $e['id']);
@@ -381,9 +395,10 @@ final class VisitService
     public function lastEventId(int $actorUserId): int
     {
         $this->requireQueueReader($actorUserId);
-        $scopeClinicianId = $this->queueScopeClinicianId($actorUserId, null);
+        $clinicId = $this->queueClinicId();
+        $scopeClinicianId = $this->queueScopeClinicianId($actorUserId, $clinicId, null);
 
-        return $this->visits->lastEventId(1, null, $scopeClinicianId);
+        return $this->visits->lastEventId($clinicId, null, $scopeClinicianId);
     }
 
     // ================= D16 — Checkout (T9) =================
@@ -544,6 +559,7 @@ final class VisitService
      */
     private function createVisit(
         int $actorUserId,
+        int $clinic_id,
         int $patientId,
         int $clinicianId,
         ?int $appointmentId,
@@ -552,8 +568,7 @@ final class VisitService
         ?string $note = null
     ): array {
         $now = $this->db->nowUtc();
-        $visitId = $this->visits->insert([
-            'clinic_id' => 1,
+        $visitId = $this->visits->insert($clinic_id, [
             'clinician_id' => $clinicianId,
             'patient_id' => $patientId,
             'appointment_id' => $appointmentId,
@@ -742,16 +757,21 @@ final class VisitService
         return $patient;
     }
 
-    private function requireClinician(int $clinicianId): void
+    /**
+     * وجود پزشک + کلینیکِ او (C6 — منبع domain برای Walk-in).
+     */
+    private function requireClinician(int $clinicianId): int
     {
         // همان Guard الگوی BookingService
         $row = $this->db->fetchRow(
-            'SELECT id, is_active FROM ' . $this->db->table('cpms_clinicians') . ' WHERE id = %d LIMIT 1',
+            'SELECT id, is_active, clinic_id FROM ' . $this->db->table('cpms_clinicians') . ' WHERE id = %d LIMIT 1',
             [$clinicianId]
         );
         if ($row === null || (int) $row['is_active'] !== 1) {
             throw VisitException::of('CLINIC_NOT_FOUND', 'پزشک یافت نشد یا غیرفعال است', 404);
         }
+
+        return (int) $row['clinic_id'];
     }
 
     /**
@@ -800,19 +820,50 @@ final class VisitService
      *
      * مقدار بازگشتی: null = بدون فیلتر؛ int = clinician_id الزامی (0 = هیچ).
      */
-    private function queueScopeClinicianId(int $actorUserId, ?int $requestedClinicianId): ?int
+    private function queueScopeClinicianId(int $actorUserId, int $clinicId, ?int $requestedClinicianId): ?int
     {
         if ($this->roleForUser($actorUserId) !== 'doctor') {
-            return $requestedClinicianId;
+            if ($requestedClinicianId === null) {
+                return null;
+            }
+            // کارکنان نمی‌تواند با پارامتر، دامنه را به پزشکِ Clinic دیگر ببرد
+            $owned = $this->db->fetchValue(
+                'SELECT id FROM ' . $this->db->table('cpms_clinicians') .
+                ' WHERE id = %d AND clinic_id = %d AND is_active = 1 LIMIT 1',
+                [$requestedClinicianId, $clinicId]
+            );
+            if ($owned === null) {
+                throw VisitException::of('CLINIC_NOT_FOUND', 'پزشک یافت نشد یا غیرفعال است', 404);
+            }
+
+            return (int) $owned;
         }
 
+        // ADR-0030: دامنهٔ پزشک = **Professional Profile او در همان Clinicِ
+        // context** (نه یکپارچه‌سازی سراسریِ Clinician)؛ نبودِ پروفایل فعال ⇒
+        // مجموعهٔ خالی (0) — هرگز دامنهٔ منشی/کل مطب.
         $linked = $this->db->fetchValue(
             'SELECT id FROM ' . $this->db->table('cpms_clinicians') .
-            ' WHERE wp_user_id = %d AND is_active = 1 LIMIT 1',
-            [$actorUserId]
+            ' WHERE wp_user_id = %d AND clinic_id = %d AND is_active = 1 ORDER BY id ASC LIMIT 1',
+            [$actorUserId, $clinicId]
         );
 
         return $linked === null ? 0 : (int) $linked;
+    }
+
+    /**
+     * C6 (Visit Tenant Hardcode): مطبِ جریان صف/Today/Feed از **context موثق**
+     * حل می‌شود — Scope صریحِ درخواست (مرز REST از Membership) یا Resolution
+     * سیستمی «تنها Clinic». هیچ مقدار پیش‌فرض/اولین‌Clinic جای آن نمی‌نشیند؛
+     * نبودِ context ⇒ CLINIC_SCOPE_REQUIRED (400) و بدون هیچ ردیفی.
+     */
+    private function queueClinicId(): int
+    {
+        try {
+            return App::scope()->clinicId;
+        } catch (ScopeRequiredException $e) {
+            throw VisitException::of($e->errorCode, $e->getMessage(), $e->httpStatus(), $e->getData());
+        }
     }
 
     /**

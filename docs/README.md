@@ -1,16 +1,50 @@
 # سیستم مدیریت مطب — Clinical Practice Management System (CPMS)
 
-مستندات معماری و نیازمندی‌ها — نسخه 1.1 — 2026-09-06
+مستندات معماری و نیازمندی‌ها — نسخه 2.0 — 2026-09-08
+
+> # 🔴 مرجع فازبندی اجرایی
+>
+> ## **Owner-approved Phase 0..20 Roadmap = authoritative execution roadmap.**
+>
+> مرجع رسمی: [`roadmap/roadmap.md`](roadmap/roadmap.md) **§۰**.
+> نظام‌های **`F0..F10`**، **`Doc-Phase 1..8`** (جدول همین صفحه) و برچسب‌های **`V1`/`V1.5`/`V2`** **Legacy/Historical** هستند و **Roadmap اجرایی فعلی نیستند**.
+>
+> **معماری هدف الزام‌آور — [ADR-0031](adr/ADR-0031-organization-clinic-location-scoped-authorization.md):**
+> `Organization → Clinic → Location → Doctor → User/Staff`
+>
+> **تعارض شناخته‌شدهٔ اسناد با واقعیت:** [`drift-register.md`](drift-register.md)
 
 > **🤖 راهنمای ایجنت‌ها (الزام شروع کار):** هر ایجنت (AI یا انسان) پیش از هر کاری [`agent-guide.md`](agent-guide.md) را کامل بخواند — وضعیت فازها، قواعد الزامی کارفرما، الگوهای کد، دام‌های شناخته‌شده، فازهای باقی‌مانده و **پروتکل لاگ کار ایجنت‌ها (§9–10: هر ایجنت ورودی خود را append می‌کند)**.
 
-> **وضعیت:** فازهای F1..F8 کامل و CI سبز (گزارش‌ها: [`phase-reports/`](phase-reports/)) — F9 (Hardening) منتظر تأیید کارفرما.
+> **وضعیت (2026-09-08):** همهٔ فازهای تاریخی `F1..F10` + Pilot/Staging Gate + Closure Gate + Remediation انجام و merge شده‌اند (۹ PR؛ آخرین = #9 MERGED). نسخهٔ منتشرشده `1.0.0`.
+> **وضعیت فعلی طبق Roadmap تأییدشدهٔ Owner:** **Phase 0 = CLOSED** · **Phase 0.5 = CLOSED** · **Phase 1 (Security Hardening) = منتظر Gate Approval، شروع نشده.**
 
-> **🎯 تصمیم محصول نهایی (ADR-0027، 2026-09-06):** **یک محصول واحد چندپزشکی** — مطب تک‌پزشکی = زیرمجموعه UX درمانگاه چندپزشکی؛ یک Core/یک Schema/Features تطبیقی. بازبینی آمادگی معماری: [`architecture/multi-doctor-readiness-review.md`](architecture/multi-doctor-readiness-review.md) (۰ FOUNDATIONAL — ۱۱ قلم Minor به فازها نگاشت).
+> **🎯 تصمیم محصول (ADR-0027، 2026-09-06):** **یک محصول واحد چندپزشکی** — مطب تک‌پزشکی = زیرمجموعه UX درمانگاه چندپزشکی؛ یک Core/یک Schema/Features تطبیقی. **این اصل معتبر است.**
+>
+> ⚠️ **اما مدل دامنهٔ ADR-0027 با [ADR-0031](adr/ADR-0031-organization-clinic-location-scoped-authorization.md) جایگزین شد** (لایهٔ Organization نداشت؛ «Branch» هرگز به schema نرسید). واژهٔ «Branch» از این پس = **Location**.
+>
+> ⛔ **`architecture/multi-doctor-readiness-review.md` و حکم «۰ FOUNDATIONAL» آن با شواهد اجرایی Phase 0 رد شد** — ۹ قید معماری C-1..C-9 در [`phase-reports/report-phase-0-reverification.md`](phase-reports/report-phase-0-reverification.md). آن سند تاریخی است.
 
-## شاخه‌بندی مستندات (مطابق Section 56 Master Prompt)
+## اسناد مرجع فعلی (بالاترین تقدم)
 
-| مسیر | محتوا | فاز | وضعیت |
+| سند | نقش |
+|---|---|
+| [`roadmap/roadmap.md`](roadmap/roadmap.md) §۰ | **Owner-approved Phase 0..20** — مرجع فازبندی اجرایی |
+| [`adr/ADR-0031`](adr/ADR-0031-organization-clinic-location-scoped-authorization.md) | معماری مرجع + ۱۳ تصمیم AD-01..AD-13 |
+| [`phase-reports/report-phase-0-reverification.md`](phase-reports/report-phase-0-reverification.md) | خط پایهٔ اثبات‌شده + ۹ قید معماری C-1..C-9 |
+| [`architecture/phase0.5-target-model.md`](architecture/phase0.5-target-model.md) | مدل هدف، ERD، برنامهٔ Migration، Decision Register (Q1..Q13) |
+| [`drift-register.md`](drift-register.md) | تعارض اسناد با معماری هدف + فاز مالک هر مورد |
+| [`agent-guide.md`](agent-guide.md) | راهنمای عملیاتی ایجنت‌ها + قواعد الزامی |
+
+---
+
+## شاخه‌بندی مستندات (Doc-Phase 1..8 — نظام مستندسازی، **Legacy**)
+
+> ⛔ **هشدار شماره‌گذاری:** ستون «فاز» در جدول زیر به **Doc-Phase** اشاره دارد — فازهای *مستندسازی* مطابق Section 56 Master Prompt. **هیچ ربطی به Phase 0..20 اجرایی ندارد.** «Doc-Phase 2» (Permission Matrix) ≠ «Phase 2» (Multi-Clinic Core).
+>
+> ⚠️ ستون «وضعیت» (`منتظر تأیید`) از مخزن قابل راستی‌آزمایی نیست — **OPEN DECISION (OD-4)** در Drift Register.
+
+| مسیر | محتوا | Doc-Phase | وضعیت |
 |---|---|---|---|
 | [srs/SRS.md](srs/SRS.md) | نیازمندی‌های نرم‌افزار، شماره‌گذاری‌شده | 1 | منتظر تأیید |
 | [srs/use-cases.md](srs/use-cases.md) | فهرست Use Case | 1 | منتظر تأیید |
@@ -31,7 +65,10 @@
 | [architecture/handwriting-storage.md](architecture/handwriting-storage.md) | معماری ذخیره دست‌خط | 7 | منتظر تأیید |
 | [architecture/handwriting-recognition.md](architecture/handwriting-recognition.md) | معماری تشخیص دست‌خط | 7 | منتظر تأیید |
 | [architecture/notifications.md](architecture/notifications.md) | معماری اعلان | 7 | منتظر تأیید |
-| [architecture/multi-doctor-readiness-review.md](architecture/multi-doctor-readiness-review.md) | بازبینی آمادگی چندپزشکی (ADR-0027) + Backlog هم‌ترازی | — | Accepted |
+| [architecture/multi-doctor-readiness-review.md](architecture/multi-doctor-readiness-review.md) | بازبینی آمادگی چندپزشکی (ADR-0027) + Backlog هم‌ترازی | — | ⛔ **Historical** — حکم «۰ FOUNDATIONAL» با Phase 0 رد شد |
+| [architecture/phase0.5-target-model.md](architecture/phase0.5-target-model.md) | مدل هدف + ERD + Migration Plan + Decision Register | — | ✅ Finalized |
+| [phase-reports/report-phase-0-reverification.md](phase-reports/report-phase-0-reverification.md) | گزارش Phase 0 + Re-verification + ۹ قید معماری | — | ✅ CLOSED |
+| [drift-register.md](drift-register.md) | تعارض اسناد با معماری هدف + فاز مالک | — | ✅ فعال |
 | [architecture/background-jobs.md](architecture/background-jobs.md) | معماری Background Jobs | 7 | منتظر تأیید |
 | [backup/backup-recovery.md](backup/backup-recovery.md) | برنامه Backup/DR | 7 | منتظر تأیید |
 | [testing/testing-plan.md](testing/testing-plan.md) | برنامه تست | 8 | منتظر تأیید |
@@ -42,6 +79,9 @@
 
 ## قوانین
 
-- هیچ کد اصلی (Phase 9+) بدون تأیید شش فاز بالانی (SRS، Permission، State Machines، ERD، API، Wireframes) شروع نمی‌شود.
+- هیچ کد اصلی بدون تأیید شش سند بالادستی (SRS، Permission، State Machines، ERD، API، Wireframes) شروع نمی‌شود.
+  > تصحیح شماره‌گذاری: عبارت قبلی «Phase 9+» بود که به **Doc-Phase** اشاره داشت، نه به Phase 9 در Roadmap تأییدشدهٔ Owner.
+- **قاعدهٔ اجرا از Phase 1 به بعد:** code + tests + documentation **همراه هم** به‌روز می‌شوند. checkpoint commit کوچک مجاز؛ **merge فقط پس از Gate نهایی فاز**.
+- **اسناد تاریخی rewrite نمی‌شوند** — ADR تاریخی **Superseded** می‌شود، نه پاک.
 - هر تغییر فاز قبل: Impact Analysis + Version مجدد مستند.
 - کدگذاری نیازمندی‌ها: `FR-x.y` (عملکردی)، `NFR-x` (غیرعملکردی)، `ER-x` (Edge Case)، `UC-x` (Use Case).

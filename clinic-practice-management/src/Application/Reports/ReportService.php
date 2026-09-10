@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ClinicCore\Application\Reports;
 
 use ClinicCore\Auth\RolesAndCapabilities;
+use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Time\Jalali;
 use ClinicCore\Infrastructure\Audit\AuditLogger;
 use ClinicCore\Infrastructure\Db\CpmsDb;
@@ -70,6 +71,7 @@ final class ReportService
     public function catalog(int $actorUserId): array
     {
         $this->requireCap($actorUserId, RolesAndCapabilities::REPORT_READ);
+        $this->trustedClinicId();
         [$scopeMode] = $this->resolveScope($actorUserId);
 
         $out = [];
@@ -136,6 +138,7 @@ final class ReportService
             );
         }
 
+        $this->trustedClinicId();
         [$scopeMode, $clinicianId] = $this->resolveScope($actorUserId);
         $range = $this->resolveRange($type, $from, $to);
         $limit = max(1, min(10000, $rowLimit ?? self::ROW_LIMIT));
@@ -194,9 +197,9 @@ final class ReportService
                 FROM ' . $this->db->table('cpms_appointments') . ' a
                 JOIN ' . $this->db->table('cpms_patients') . ' p ON p.id = a.patient_id
                 LEFT JOIN ' . $this->db->table('cpms_clinicians') . ' c ON c.id = a.clinician_id
-                WHERE a.clinic_id = 1 AND a.slot_date BETWEEN %s AND %s AND a.status IN (' .
+                WHERE a.clinic_id = %d AND a.slot_date BETWEEN %s AND %s AND a.status IN (' .
                 implode(',', array_fill(0, count($statuses), '%s')) . ')';
-        $params = array_merge([$range['from'], $range['to']], $statuses);
+        $params = array_merge([$this->trustedClinicId(), $range['from'], $range['to']], $statuses);
         [$sql, $params] = $this->applyScope($sql, $params, 'a.clinician_id', $scopeMode, $clinicianId);
         $sql .= ' ORDER BY a.slot_date ASC, a.slot_time ASC LIMIT %d';
         $params[] = $limit + 1;
@@ -226,9 +229,9 @@ final class ReportService
                 FROM ' . $this->db->table('cpms_appointments') . ' a
                 JOIN ' . $this->db->table('cpms_patients') . ' p ON p.id = a.patient_id
                 LEFT JOIN ' . $this->db->table('cpms_clinicians') . ' c ON c.id = a.clinician_id
-                WHERE a.clinic_id = 1 AND a.slot_date BETWEEN %s AND %s
+                WHERE a.clinic_id = %d AND a.slot_date BETWEEN %s AND %s
                   AND a.status IN (%s, %s)';
-        $params = [$range['from'], $range['to'], 'cancelled_by_patient', 'cancelled_by_staff'];
+        $params = [$this->trustedClinicId(), $range['from'], $range['to'], 'cancelled_by_patient', 'cancelled_by_staff'];
         [$sql, $params] = $this->applyScope($sql, $params, 'a.clinician_id', $scopeMode, $clinicianId);
         $sql .= ' ORDER BY a.cancelled_at DESC LIMIT %d';
         $params[] = $limit + 1;
@@ -268,8 +271,8 @@ final class ReportService
                 FROM ' . $this->db->table('cpms_appointments') . ' a
                 JOIN ' . $this->db->table('cpms_patients') . ' p ON p.id = a.patient_id
                 LEFT JOIN ' . $this->db->table('cpms_clinicians') . ' c ON c.id = a.clinician_id
-                WHERE a.clinic_id = 1 AND a.slot_date BETWEEN %s AND %s AND a.status = %s';
-        $params = [$range['from'], $range['to'], 'no_show'];
+                WHERE a.clinic_id = %d AND a.slot_date BETWEEN %s AND %s AND a.status = %s';
+        $params = [$this->trustedClinicId(), $range['from'], $range['to'], 'no_show'];
         [$sql, $params] = $this->applyScope($sql, $params, 'a.clinician_id', $scopeMode, $clinicianId);
         $sql .= ' ORDER BY a.slot_date DESC, a.slot_time DESC LIMIT %d';
         $params[] = $limit + 1;
@@ -322,8 +325,8 @@ final class ReportService
                 FROM ' . $this->db->table('cpms_visits') . ' v
                 JOIN ' . $this->db->table('cpms_patients') . ' p ON p.id = v.patient_id
                 LEFT JOIN ' . $this->db->table('cpms_clinicians') . ' c ON c.id = v.clinician_id
-                WHERE v.clinic_id = 1 AND v.visit_date BETWEEN %s AND %s AND ' . $condition;
-        $params = [$range['from'], $range['to']];
+                WHERE v.clinic_id = %d AND v.visit_date BETWEEN %s AND %s AND ' . $condition;
+        $params = [$this->trustedClinicId(), $range['from'], $range['to']];
         [$sql, $params] = $this->applyScope($sql, $params, 'v.clinician_id', $scopeMode, $clinicianId);
         $sql .= ' ORDER BY v.visit_date DESC, v.id DESC LIMIT %d';
         $params[] = $limit + 1;
@@ -365,9 +368,9 @@ final class ReportService
                        COUNT(*) AS visits,
                        ROUND(AVG(TIMESTAMPDIFF(SECOND, v.waiting_since, v.called_at))) AS avg_wait_sec
                 FROM ' . $this->db->table('cpms_visits') . ' v
-                WHERE v.clinic_id = 1 AND v.visit_date BETWEEN %s AND %s
+                WHERE v.clinic_id = %d AND v.visit_date BETWEEN %s AND %s
                   AND v.waiting_since IS NOT NULL AND v.called_at IS NOT NULL';
-        $params = [$range['from'], $range['to']];
+        $params = [$this->trustedClinicId(), $range['from'], $range['to']];
         [$sql, $params] = $this->applyScope($sql, $params, 'v.clinician_id', $scopeMode, $clinicianId);
         $sql .= ' GROUP BY v.visit_date ORDER BY v.visit_date ASC LIMIT 400';
 
@@ -397,9 +400,9 @@ final class ReportService
                        COUNT(*) AS visits,
                        ROUND(AVG(TIMESTAMPDIFF(SECOND, v.consultation_started_at, v.consultation_completed_at))) AS avg_duration_sec
                 FROM ' . $this->db->table('cpms_visits') . ' v
-                WHERE v.clinic_id = 1 AND v.visit_date BETWEEN %s AND %s
+                WHERE v.clinic_id = %d AND v.visit_date BETWEEN %s AND %s
                   AND v.consultation_started_at IS NOT NULL AND v.consultation_completed_at IS NOT NULL';
-        $params = [$range['from'], $range['to']];
+        $params = [$this->trustedClinicId(), $range['from'], $range['to']];
         [$sql, $params] = $this->applyScope($sql, $params, 'v.clinician_id', $scopeMode, $clinicianId);
         $sql .= ' GROUP BY v.visit_date ORDER BY v.visit_date ASC LIMIT 400';
 
@@ -429,9 +432,9 @@ final class ReportService
         $join = ' FROM ' . $this->db->table('cpms_payments') . ' pay
                   JOIN ' . $this->db->table('cpms_invoices') . ' inv ON inv.id = pay.invoice_id
                   LEFT JOIN ' . $this->db->table('cpms_visits') . ' v ON v.id = inv.visit_id';
-        $where = ' WHERE pay.clinic_id = 1 AND pay.paid_at IS NOT NULL
+        $where = ' WHERE pay.clinic_id = %d AND pay.paid_at IS NOT NULL
                      AND pay.paid_at >= %s AND pay.paid_at < %s';
-        $params = [$range['from'] . ' 00:00:00.000', $range['to'] . ' 23:59:59.999'];
+        $params = [$this->trustedClinicId(), $range['from'] . ' 00:00:00.000', $range['to'] . ' 23:59:59.999'];
 
         // Scope: پرداخت از طریق فاکتور→ویزیت→پزشک (فیلتر سرور-side)
         [$j, $w, $p] = [$join, $where, $params];
@@ -499,9 +502,9 @@ final class ReportService
                 FROM ' . $this->db->table('cpms_payments') . ' pay
                 JOIN ' . $this->db->table('cpms_invoices') . ' inv ON inv.id = pay.invoice_id
                 LEFT JOIN ' . $this->db->table('cpms_visits') . ' v ON v.id = inv.visit_id
-                WHERE pay.clinic_id = 1 AND pay.paid_at IS NOT NULL
+                WHERE pay.clinic_id = %d AND pay.paid_at IS NOT NULL
                   AND pay.paid_at >= %s AND pay.paid_at < %s';
-        $params = [$range['from'] . ' 00:00:00.000', $range['to'] . ' 23:59:59.999'];
+        $params = [$this->trustedClinicId(), $range['from'] . ' 00:00:00.000', $range['to'] . ' 23:59:59.999'];
         [$sql, $params] = $this->applyScope($sql, $params, 'v.clinician_id', $scopeMode, $clinicianId);
         $sql .= ' GROUP BY pay.method, pay.status ORDER BY pay.method ASC, pay.status ASC LIMIT 100';
 
@@ -535,8 +538,8 @@ final class ReportService
                 FROM ' . $this->db->table('cpms_invoices') . ' inv
                 LEFT JOIN ' . $this->db->table('cpms_visits') . ' v ON v.id = inv.visit_id
                 LEFT JOIN ' . $this->db->table('cpms_clinicians') . ' c ON c.id = v.clinician_id
-                WHERE inv.clinic_id = 1 AND inv.status IN (%s, %s) AND inv.created_at <= %s';
-        $params = ['open', 'partial', $range['to'] . ' 23:59:59.999'];
+                WHERE inv.clinic_id = %d AND inv.status IN (%s, %s) AND inv.created_at <= %s';
+        $params = [$this->trustedClinicId(), 'open', 'partial', $range['to'] . ' 23:59:59.999'];
         [$sql, $params] = $this->applyScope($sql, $params, 'v.clinician_id', $scopeMode, $clinicianId);
         $sql .= ' ORDER BY inv.created_at ASC LIMIT %d';
         $params[] = $limit + 1;
@@ -599,8 +602,8 @@ final class ReportService
                 FROM ' . $this->db->table('cpms_follow_ups') . ' f
                 JOIN ' . $this->db->table('cpms_patients') . ' p ON p.id = f.patient_id
                 LEFT JOIN ' . $this->db->table('cpms_clinicians') . ' c ON c.id = f.clinician_id
-                WHERE f.clinic_id = 1 AND f.status = %s AND f.suggested_date BETWEEN %s AND %s';
-        $params = ['pending', $range['from'], $range['to']];
+                WHERE f.clinic_id = %d AND f.status = %s AND f.suggested_date BETWEEN %s AND %s';
+        $params = [$this->trustedClinicId(), 'pending', $range['from'], $range['to']];
         [$sql, $params] = $this->applyScope($sql, $params, 'f.clinician_id', $scopeMode, $clinicianId);
         $sql .= ' ORDER BY f.suggested_date ASC LIMIT %d';
         $params[] = $limit + 1;
@@ -627,16 +630,22 @@ final class ReportService
     // ================= Scope / Authz =================
 
     /**
-     * Scope سرور-side (ADR-0026 + قواعد کارفرما):
-     *  - کاربر متصل به Clinician → ['own', clinicianId] (فیلتر اجباری)
+     * Scope سرور-side (ADR-0026 + قواعد کارفرما + C6):
+     *  - Tenant filter همیشه Clinic معتبر است (`trustedClinicId()`)، نه literal 1.
+     *  - کاربر با Clinician Professional Profile یکتا (`u_clinician_user`)
+     *    → ['own', clinicianId] — فیلتر پزشک داخل همان Clinic.
      *  - کاربر بدون Clinician-Link (اعطای صریح report_read) → ['clinic', null]
+     *    یعنی Aggregate همان Clinic فعال، نه همهٔ عضویت‌ها.
+     *
+     * پروفایل پزشک سراسری است (یک WP User → حداکثر یک Clinician). عضویت
+     * چندکلینیکی duplicate profile نمی‌سازد. LIMIT 1 روی clinic حدس نیست.
      *
      * @return array{0: string, 1: int|null}
      */
     public function resolveScope(int $actorUserId): array
     {
         $clinicianId = $this->db->fetchValue(
-            'SELECT id FROM ' . $this->db->table('cpms_clinicians') . ' WHERE wp_user_id = %d AND is_active = 1 LIMIT 1',
+            'SELECT id FROM ' . $this->db->table('cpms_clinicians') . ' WHERE wp_user_id = %d AND is_active = 1',
             [$actorUserId]
         );
 
@@ -645,6 +654,15 @@ final class ReportService
         }
 
         return ['clinic', null];
+    }
+
+    /**
+     * Clinic فعالِ درخواست — از Scope صریح یا SystemClinicResolver (دقیقاً یک Clinic).
+     * کلاینت به‌تنهایی منبع اعتماد نیست.
+     */
+    private function trustedClinicId(): int
+    {
+        return App::scope()->clinicId;
     }
 
     /**

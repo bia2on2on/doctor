@@ -43,7 +43,8 @@ final class SecretaryQueuePage
     {
         $rows = App::db()->fetchAll(
             'SELECT id, full_name FROM ' . App::db()->table('cpms_clinicians') .
-            ' WHERE clinic_id = 1 AND is_active = 1 ORDER BY full_name ASC LIMIT 100'
+            ' WHERE clinic_id = %d AND is_active = 1 ORDER BY full_name ASC LIMIT 100',
+            [App::scope()->clinicId]
         );
 
         $list = [];

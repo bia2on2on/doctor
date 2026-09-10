@@ -6,6 +6,7 @@ namespace ClinicCore\Rest;
 
 use ClinicCore\Application\Auth\OtpException;
 use ClinicCore\Application\Auth\OtpService;
+use ClinicCore\Infrastructure\Security\ClientIp;
 use WP_REST_Request;
 use WP_REST_Server;
 
@@ -27,10 +28,10 @@ final class OtpController extends RestBase
             [
                 'methods' => WP_REST_Server::CREATABLE,
                 'callback' => fn (WP_REST_Request $request) => $this->requestCode($request),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn () => $this->permPublic(),
                 'args' => [
                     'mobile' => ['required' => true, 'type' => 'string'],
-                    'purpose' => ['required' => false, 'type' => 'string', 'default' => OtpService::PURPOSE_LOGIN],
+                    'purpose' => ['required' => false, 'type' => 'string', 'enum' => OtpService::PURPOSES, 'default' => OtpService::PURPOSE_LOGIN],
                 ],
             ],
         ]);
@@ -39,11 +40,11 @@ final class OtpController extends RestBase
             [
                 'methods' => WP_REST_Server::CREATABLE,
                 'callback' => fn (WP_REST_Request $request) => $this->verifyCode($request),
-                'permission_callback' => '__return_true',
+                'permission_callback' => fn () => $this->permPublic(),
                 'args' => [
                     'mobile' => ['required' => true, 'type' => 'string'],
                     'code' => ['required' => true, 'type' => 'string'],
-                    'purpose' => ['required' => false, 'type' => 'string', 'default' => OtpService::PURPOSE_LOGIN],
+                    'purpose' => ['required' => false, 'type' => 'string', 'enum' => OtpService::PURPOSES, 'default' => OtpService::PURPOSE_LOGIN],
                 ],
             ],
         ]);
@@ -81,8 +82,17 @@ final class OtpController extends RestBase
         }
     }
 
+    /**
+     * IP کلاینت برای Rate Limit.
+     *
+     * Phase 1A: پیش از این مستقیماً `$_SERVER['REMOTE_ADDR']` خوانده
+     * می‌شد. رفتار پیش‌فرض تغییری نکرده (هدرهای Forwarded همچنان
+     * بی‌اعتبارند)، اما حالا صریح و پیکربندی‌پذیر است: پشت Proxy معتمدِ
+     * اعلام‌شده، IP واقعی کلاینت استخراج می‌شود، وگرنه هدر نادیده گرفته
+     * می‌شود. جزئیات در ClientIp.
+     */
     private function clientIp(WP_REST_Request $request): ?string
     {
-        return $_SERVER['REMOTE_ADDR'] ?? null;
+        return ClientIp::resolve();
     }
 }

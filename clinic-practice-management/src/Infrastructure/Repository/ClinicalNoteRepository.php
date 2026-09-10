@@ -28,11 +28,11 @@ final class ClinicalNoteRepository
     /**
      * @param array<string, mixed> $row
      */
-    public function insert(array $row): int
+    public function insert(int $clinic_id, array $row): int
     {
         $now = $this->db->nowUtc();
         $row += [
-            'clinic_id' => 1,
+            'clinic_id' => $clinic_id,
             'content_html' => null,
             'version' => 1,
             'correction_of_note_id' => null,

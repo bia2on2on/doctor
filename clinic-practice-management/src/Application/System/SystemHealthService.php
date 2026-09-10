@@ -11,6 +11,7 @@ use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Licensing\LicenseStatus;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Logging\OpLogger;
+use ClinicCore\Infrastructure\Storage\LocalFileStorage;
 use ClinicCore\Settings\Settings;
 
 /**
@@ -130,8 +131,11 @@ final class SystemHealthService
         $add('cron.jobs', 'Cron/Queue', $cronStatus, $cronDetail . ' | failed=' . $queue['failed']);
 
         // ---------- Storage (spec §22/§23) ----------
-        $add('storage.files', 'Storage فایل‌های پزشکی', $this->storageStatus($this->filesBase(), 'storage.files'));
-        $add('storage.backups', 'Storage بکاپ', $this->storageStatus($this->backups->store()->basePath(), 'storage.backups'));
+        $add('storage.files', 'Storage فایل‌های پزشکی', $this->storageStatus($this->filesBase(), 'storage.files', self::FAIL));
+        // OD-9 — ریشهٔ بکاپ داخل DocumentRoot دیگر WARNING نیست: یک dump کامل
+        // پایگاه داده داخل webroot یک پیکربندی **رد‌شده** است (نوشتن Fail-Closed
+        // می‌شود) و سلامت سیستم باید صادقانه FAIL گزارش دهد.
+        $add('storage.backups', 'Storage بکاپ', $this->storageStatus($this->backups->store()->basePath(), 'storage.backups', self::FAIL));
 
         // ---------- License (ADR-0023) ----------
         $state = $this->licenses->currentState();
@@ -233,10 +237,22 @@ final class SystemHealthService
             return $configured;
         }
 
-        return defined('WP_CONTENT_DIR') ? (string) WP_CONTENT_DIR . '/clinic-files' : dirname(__DIR__, 3) . '/clinic-files';
+        // OD-7 — پیش‌فرض بیرون از DocumentRoot است. پیش از این اینجا مسیر
+        // قدیمی گزارش می‌شد و سلامت سیستم دربارهٔ ریشه‌ای حرف می‌زد که دیگر
+        // ذخیره‌سازی فعال نبود.
+        return LocalFileStorage::defaultBasePath();
     }
 
-    private function storageStatus(string $path, string $key): string
+    /**
+     * وضعیت محافظت یک ریشهٔ ذخیره‌سازی.
+     *
+     * Phase 1A — تصحیح صحت گزارش: پیش از این صرفِ وجود `.htaccess` نتیجهٔ
+     * `PASS` می‌داد. `.htaccess` روی nginx خوانده نمی‌شود و روی هیچ
+     * وب‌سروری «مجوز» نیست، فقط یک لایهٔ دفاعی مکمل است.
+     *
+     * `PASS` فقط وقتی داده می‌شود که ریشه بیرون از DocumentRoot باشد.
+     */
+    private function storageStatus(string $path, string $key, string $insideWebRoot = self::WARNING): string
     {
         if (!is_dir($path)) {
             return self::NOT_CONFIGURED;
@@ -244,10 +260,32 @@ final class SystemHealthService
         if (!is_writable($path)) {
             return self::FAIL;
         }
+        if ($this->isInsideWebRoot($path)) {
+            // گاردها (در صورت وجود) Defence in Depth هستند، نه Authorization.
+            // از OD-7 (بالینی) و OD-9 (بکاپ) به بعد ریشهٔ داخل DocumentRoot یک
+            // پیکربندی **رد‌شده** است — نوشتن Fail-Closed می‌شود — پس هر دو
+            // صدادقانه FAIL گزارش می‌شوند. هر دو فراخوانی self::FAIL پاس می‌دهند؛
+            // پارامتر برای خوانایی فراخوان‌ها نگه داشته شده است.
+            return $insideWebRoot;
+        }
         if (is_file($path . '/.htaccess')) {
             return self::PASS;
         }
 
-        return self::WARNING; // پوشه موجود ولی بدون گارد سرور (در اولین استفاده ساخته می‌شود)
+        return self::PASS; // بیرون از DocumentRoot — گارد وب‌سرور موضوعیت ندارد
+    }
+
+    /**
+     * آیا مسیر داخل DocumentRoot وردپرس است (یعنی بالقوه از طریق HTTP قابل دسترس)؟
+     */
+    private function isInsideWebRoot(string $path): bool
+    {
+        $root = defined('ABSPATH') ? @realpath((string) ABSPATH) : false;
+        $base = @realpath($path);
+        if ($root === false || $base === false) {
+            return false;
+        }
+
+        return str_starts_with($base, rtrim($root, '/') . '/');
     }
 }

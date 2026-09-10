@@ -63,6 +63,7 @@ final class SmsService
      * @throws DomainException | SmsTemplateException
      */
     public function sendEvent(
+        int $clinic_id,
         string $event,
         string $mobile,
         array $vars = [],
@@ -111,10 +112,12 @@ final class SmsService
         // Dedupe (الزام §20): رویدادهای وابسته به Context — بدون ارسال تکراری
         $dedupeKey = null;
         if ($contextType !== null && $contextId !== null) {
-            $dedupeKey = hash('sha256', $event . '|' . $contextType . '|' . $contextId . '|' . gmdate('Y-m-d'));
+            // C6‑F: هویت Clinic داخل dedupe_key — وگرنه uq_dedupe (UNIQUE سراسری روی
+            // dedupe_key) یک رویداد/Context/روزِ یکسان را **بین** دو Clinic سرکوب می‌کند.
+            $dedupeKey = hash('sha256', $clinic_id . '|' . $event . '|' . $contextType . '|' . $contextId . '|' . gmdate('Y-m-d'));
             $existing = $this->db->fetchRow(
-                'SELECT id, status FROM ' . $this->db->table('cpms_sms_messages') . ' WHERE dedupe_key = %s LIMIT 1',
-                [$dedupeKey]
+                'SELECT id, status FROM ' . $this->db->table('cpms_sms_messages') . ' WHERE dedupe_key = %s AND clinic_id = %d LIMIT 1',
+                [$dedupeKey, $clinic_id]
             );
             if ($existing !== null) {
                 $status = (string) $existing['status'];
@@ -131,7 +134,7 @@ final class SmsService
         $maxAttempts = (int) ($advanced['retry_count'] ?? 3);
 
         $this->db->insert('cpms_sms_messages', [
-            'clinic_id' => 1,
+            'clinic_id' => $clinic_id,
             'event' => $event,
             'recipient' => $normalized,
             'message' => $text,
@@ -412,7 +415,7 @@ final class SmsService
             throw new SmsTemplateException('CLINIC_SMS_MESSAGE_INVALID', 'متن پیام باید ۱ تا ۳۵۰ نویسه باشد');
         }
 
-        $result = $this->sendEvent(self::EVENT_TEST, $normalized, [], null, null, inline: true, priority: 5, overrideText: $message);
+        $result = $this->sendEvent($this->settings->clinicId(), self::EVENT_TEST, $normalized, [], null, null, inline: true, priority: 5, overrideText: $message);
         $row = $this->fetchMessage((int) $result['message_id']);
 
         $this->auditSms('SMS_TEST_SENT', $userId, ['event' => self::EVENT_TEST, 'status' => (string) $result['status']]);
@@ -474,7 +477,7 @@ final class SmsService
             throw new SmsTemplateException('CLINIC_MOBILE_INVALID', 'شماره موبایل معتبر نیست');
         }
 
-        $result = $this->sendEvent($event, $normalized, $vars, null, null, inline: true, priority: 6);
+        $result = $this->sendEvent($this->settings->clinicId(), $event, $normalized, $vars, null, null, inline: true, priority: 6);
         $row = $this->fetchMessage((int) $result['message_id']);
 
         $this->auditSms('SMS_TEST_SENT', $userId, ['event' => $event, 'status' => (string) $result['status']]);
@@ -551,18 +554,22 @@ final class SmsService
     /**
      * Log عملیاتی (الزام §22) — موبایل Mask، بدون Secret/OTP خام، با Pagination.
      *
+     * لاگ پیامک — C6‑F (Class A repair): لاگ **Clinic‑owned** است و predicate
+     * tenant داخل خودِ SQL می‌نشیند (نه post‑filter در PHP پس از بارگذاری همهٔ
+     * ردیف‌ها)؛ هم COUNT و هم SELECT با `clinic_id = %d` فیلتر می‌شوند.
+     *
      * @return array{items: list<array<string, mixed>>, total: int, page: int, per_page: int}
      */
-    public function logs(?string $status, int $page, int $perPage): array
+    public function logs(int $clinicId, ?string $status, int $page, int $perPage): array
     {
         $perPage = max(1, min(100, $perPage));
         $page = max(1, $page);
         $table = $this->db->table('cpms_sms_messages');
 
-        $where = '';
-        $params = [];
+        $where = ' WHERE clinic_id = %d';
+        $params = [$clinicId];
         if ($status !== null && $status !== '' && SmsMessageStatus::isValid($status)) {
-            $where = ' WHERE status = %s';
+            $where .= ' AND status = %s';
             $params[] = $status;
         }
 

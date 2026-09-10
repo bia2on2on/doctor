@@ -42,9 +42,14 @@ final class SecurityHardeningTest extends WP_UnitTestCase
         global $wpdb;
         $now = App::db()->nowUtcSql();
 
+        // C6 repair — عضویت فعال staff صریح است (نه fixture سراسری).
+        // تست‌های patient/non-member عمداً عضویت نمی‌گیرند.
         $this->doctorAUserId = $this->makeUser('sh_doc_a', 'cpms_doctor');
+        cpms_test_seed_membership($this->doctorAUserId, 1, 'cpms_doctor');
         $this->doctorBUserId = $this->makeUser('sh_doc_b', 'cpms_doctor');
+        cpms_test_seed_membership($this->doctorBUserId, 1, 'cpms_doctor');
         $this->secretaryUserId = $this->makeUser('sh_sec', 'cpms_secretary');
+        cpms_test_seed_membership($this->secretaryUserId, 1, 'cpms_secretary');
 
         // دو پزشک متصل (مدل چندپزشکی ADR-0027) + یک پزشک سوم بدون Link
         foreach ([['Dr Own A', $this->doctorAUserId, &$this->clinicianAId], ['Dr Own B', $this->doctorBUserId, &$this->clinicianBId]] as $c) {
@@ -220,8 +225,8 @@ final class SecurityHardeningTest extends WP_UnitTestCase
         $key = 'sh-idem-' . bin2hex(random_bytes(8));
 
         $view = ['status' => 'confirmed', 'reference_code' => 'AP-F9-001'];
-        $idem->check($key, 'booking/confirm', 42, null);
-        $idem->complete($key, 'booking/confirm', 42, null, 200, $view);
+        $idem->check($key, 'booking/confirm', 42, null, 1);
+        $idem->complete($key, 'booking/confirm', 42, null, 200, $view, 1);
 
         // ردیف باید DONE + پاسخ ذخیره‌شده باشد (قبلاً UPDATE با <=> هیچ ردیفی را علامت نمی‌زد)
         global $wpdb;
@@ -238,7 +243,7 @@ final class SecurityHardeningTest extends WP_UnitTestCase
         $this->assertStringContainsString('AP-F9-001', (string) $row['response_json']);
 
         // بازپخش = همان پاسخ ذخیره‌شده
-        $replay = $idem->check($key, 'booking/confirm', 42, null);
+        $replay = $idem->check($key, 'booking/confirm', 42, null, 1);
         $this->assertTrue($replay['is_replay']);
         $this->assertSame(200, $replay['response_code']);
         $this->assertSame('AP-F9-001', $replay['response']['reference_code']);
@@ -250,17 +255,17 @@ final class SecurityHardeningTest extends WP_UnitTestCase
         $key = 'sh-idem-' . bin2hex(random_bytes(8));
 
         // شبیه‌سازی Request موازی: Claim اول PENDING است
-        $first = $idem->check($key, 'booking/confirm', 42, null);
+        $first = $idem->check($key, 'booking/confirm', 42, null, 1);
         $this->assertFalse($first['is_replay']);
 
-        $second = $idem->check($key, 'booking/confirm', 42, null);
+        $second = $idem->check($key, 'booking/confirm', 42, null, 1);
         $this->assertTrue($second['is_replay']);
         $this->assertSame(409, $second['response_code']);
         $this->assertSame('CLINIC_DUPLICATE_IN_FLIGHT', $second['response']['error']);
 
         // release → تلاش مجدد ممکن
-        $idem->release($key, 'booking/confirm', 42, null);
-        $third = $idem->check($key, 'booking/confirm', 42, null);
+        $idem->release($key, 'booking/confirm', 42, null, 1);
+        $third = $idem->check($key, 'booking/confirm', 42, null, 1);
         $this->assertFalse($third['is_replay']);
     }
 
@@ -270,13 +275,35 @@ final class SecurityHardeningTest extends WP_UnitTestCase
         $idem = new \ClinicCore\Infrastructure\Security\Idempotency(App::db());
         $key = 'sh-idem-' . bin2hex(random_bytes(8));
 
-        $a = $idem->check($key, 'booking/confirm', 42, null);
-        $b = $idem->check($key, 'handwriting/page', 42, 77);
-        $c = $idem->check($key, 'booking/confirm', 43, null);
+        $a = $idem->check($key, 'booking/confirm', 42, null, 1);
+        $b = $idem->check($key, 'handwriting/page', 42, 77, 1);
+        $c = $idem->check($key, 'booking/confirm', 43, null, 1);
 
         $this->assertFalse($a['is_replay']);
         $this->assertFalse($b['is_replay'], 'endpoint متفاوت = دامنه متفاوت (با u_idem_key قدیمی برخورد می‌کرد)');
         $this->assertFalse($c['is_replay'], 'کاربر متفاوت = دامنه متفاوت');
+
+        // C6 (bug 2 census): همان کلید/endpoint/user/context در Clinic دیگر =
+        // دامنهٔ متفاوت (پیش از 0020: برخورد UNIQUE و Replay پاسخِ Clinic دیگر)
+        global $wpdb;
+        $orgId = (int) $wpdb->get_var(
+            'SELECT organization_id FROM ' . $wpdb->prefix . 'cpms_clinics WHERE id = 1'
+        ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $now = App::db()->nowUtcSql();
+        $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_clinics (id, organization_id, name, slug, timezone, created_at, updated_at)
+                 VALUES (2, %d, %s, %s, %s, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $orgId,
+                'کلینیک دوم شاردنینگ',
+                'sharding-b',
+                'Asia/Tehran',
+                $now,
+                $now
+            )
+        );
+        $d = $idem->check($key, 'booking/confirm', 42, null, 2);
+        $this->assertFalse($d['is_replay'], 'clinic متفاوت = دامنه متفاوت (u_idem_scope پنج‌ستونه — 0020)');
     }
 
     // ================= F9 — Retention/Cleanup Jobs (پیش‌تر مرده بودند) =================
@@ -303,7 +330,7 @@ final class SecurityHardeningTest extends WP_UnitTestCase
             $old
         ));
         $fresh = new \ClinicCore\Infrastructure\Security\Idempotency(App::db());
-        $fresh->check('sh-fresh-key', 'booking/confirm', 9, null);
+        $fresh->check('sh-fresh-key', 'booking/confirm', 9, null, 1);
 
         $deleted = (new \ClinicCore\Application\Jobs\IdemCleanupHandler(App::idem()))([]);
         $this->assertGreaterThanOrEqual(1, $deleted);

@@ -30,6 +30,51 @@ final class SmsFlowTest extends WP_UnitTestCase
         return App::smsService();
     }
 
+    /**
+     * C6‑F (Class A repair) — Dedupe نباید Clinic‌ها را با هم ترکیب کند:
+     * یک رویداد/Context/روزِ یکسان در دو Clinic دو پیغام جدا می‌سازد.
+     * (شاهد قدیم: dedupe_key = sha256(event|ctxType|ctxId|day) — بدون هویت Clinic،
+     *  در حالی که uq_dedupe روی ستون سراسری است.)
+     */
+    public function testDedupeIsScopedPerClinic(): void
+    {
+        global $wpdb;
+        $now = App::db()->nowUtcSql();
+        $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_clinics (id, organization_id, name, slug, timezone, created_at, updated_at)
+                 VALUES (%d, (SELECT organization_id FROM (SELECT organization_id FROM ' . $wpdb->prefix . 'cpms_clinics WHERE id = 1) o), %s, %s, %s, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                60011,
+                'Clinic Dedupe B',
+                'clinic-dedupe-b',
+                'Asia/Tehran',
+                $now,
+                $now
+            )
+        );
+        \ClinicCore\Application\Scope\SystemClinicResolver::flush();
+
+        $ctxId = 909090;
+        $a = $this->sms()->sendEvent(1, 'appointment_reminder', self::MOBILE, $this->apptVars(), 'appointment', $ctxId, inline: true);
+        $b = $this->sms()->sendEvent(60011, 'appointment_reminder', self::MOBILE, $this->apptVars(), 'appointment', $ctxId, inline: true);
+
+        $this->assertNotSame(
+            $a['message_id'],
+            $b['message_id'],
+            'ارسال Clinic دیگر نباید به‌خاطر Dedupe بی‌نامِ Clinic سرکوب شود'
+        );
+
+        $keys = (array) $wpdb->get_col(
+            $wpdb->prepare(
+                'SELECT dedupe_key FROM ' . $wpdb->prefix . 'cpms_sms_messages WHERE context_id = %d ORDER BY id', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $ctxId
+            )
+        );
+        $this->assertCount(2, $keys, 'دو ردیف (نه یکیِ سرکوب‌شده)');
+        $this->assertNotSame($keys[0], $keys[1], 'dedupe_key باید هویت Clinic را داشته باشد');
+    }
+
+
     public function testOtpRequestCreatesSentMessageRow(): void
     {
         $result = App::otpService()->request(self::MOBILE);
@@ -55,8 +100,8 @@ final class SmsFlowTest extends WP_UnitTestCase
 
     public function testDedupePreventsDuplicateContextMessage(): void
     {
-        $first = $this->sms()->sendEvent('appointment_reminder', self::MOBILE, $this->apptVars(), 'appointment', 4242, inline: true);
-        $second = $this->sms()->sendEvent('appointment_reminder', self::MOBILE, $this->apptVars(), 'appointment', 4242, inline: true);
+        $first = $this->sms()->sendEvent(1, 'appointment_reminder', self::MOBILE, $this->apptVars(), 'appointment', 4242, inline: true);
+        $second = $this->sms()->sendEvent(1, 'appointment_reminder', self::MOBILE, $this->apptVars(), 'appointment', 4242, inline: true);
 
         $this->assertSame($first['message_id'], $second['message_id'], 'ارسال دوم باید Dedupe شود');
 
@@ -148,9 +193,9 @@ final class SmsFlowTest extends WP_UnitTestCase
 
     public function testLogsAreMaskedAndPaginated(): void
     {
-        $this->sms()->sendEvent('appointment_cancelled', self::MOBILE, $this->apptVars(), 'appointment', 777, inline: true);
+        $this->sms()->sendEvent(1, 'appointment_cancelled', self::MOBILE, $this->apptVars(), 'appointment', 777, inline: true);
 
-        $logs = $this->sms()->logs(null, 1, 20);
+        $logs = $this->sms()->logs(1, null, 1, 20);
 
         $this->assertGreaterThan(0, $logs['total']);
         $item = $logs['items'][0];

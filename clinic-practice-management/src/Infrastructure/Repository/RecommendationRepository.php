@@ -20,10 +20,10 @@ final class RecommendationRepository
     /**
      * @param array<string, mixed> $row
      */
-    public function insert(array $row): int
+    public function insert(int $clinic_id, array $row): int
     {
         $row += [
-            'clinic_id' => 1,
+            'clinic_id' => $clinic_id,
             'is_patient_visible' => 1,
             'created_at' => $this->db->nowUtcSql(),
         ];

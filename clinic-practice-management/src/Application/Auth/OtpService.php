@@ -31,6 +31,37 @@ final class OtpService
     public const PURPOSE_LOGIN = 'login';
     public const PURPOSE_VERIFY_MOBILE = 'verify_mobile';
 
+    /**
+     * فهرست بستهٔ Purposeهای مجاز (Phase 1A — Context Binding).
+     *
+     * پیش از این `purpose` یک رشتهٔ آزاد بود: هر مقدار دلخواهی Token
+     * می‌ساخت و چون State سیاست (Cooldown/Lockout) به ازای
+     * (mobile, purpose) نگهداری می‌شود، مهاجم می‌توانست با تغییر
+     * `purpose` وضعیت سیاست را تکه‌تکه کند و ردیف بی‌نهایت بسازد.
+     *
+     * @var list<string>
+     */
+    public const PURPOSES = [self::PURPOSE_LOGIN, self::PURPOSE_VERIFY_MOBILE];
+
+    /**
+     * فقط این Purposeها اجازه دارند Session بسازند.
+     *
+     * `verify_mobile` تأیید مالکیت شماره است، نه ورود؛ پیش از Phase 1
+     * verify() بدون توجه به Purpose کوکی احراز هویت صادر می‌کرد.
+     *
+     * @var list<string>
+     */
+    private const SESSION_PURPOSES = [self::PURPOSE_LOGIN];
+
+    /**
+     * تنها Purposeهایی که اجازه دارند در نبود کاربر، حساب بسازند.
+     *
+     * OD-8 — گزینهٔ الف: `verify_mobile` عمداً در این فهرست **نیست**.
+     */
+    private const PROVISIONING_PURPOSES = [self::PURPOSE_LOGIN];
+
+    private const PEPPER_OPTION = 'cpms_otp_pepper';
+
     public function __construct(
         private readonly CpmsDb $db,
         private readonly Settings $settings,
@@ -55,6 +86,7 @@ final class OtpService
         if ($mobile === null) {
             throw new OtpException('CLINIC_MOBILE_INVALID', 'شماره موبایل معتبر نیست');
         }
+        $purpose = $this->assertPurpose($purpose);
 
         $dailyMax = (int) $this->settings->get('otp.daily_max');
         $hourlyMax = (int) $this->settings->get('otp.hourly_max');
@@ -109,7 +141,9 @@ final class OtpService
         $sent = false;
         $retryEnqueued = false;
         try {
+            // OTP identity-level است (AD-15) — clinic صریحاً از Settings (configured-clinic)
             $res = $this->sms->sendEvent(
+                $this->settings->clinicId(),
                 SmsEvents::OTP,
                 $mobile,
                 ['otp_code' => $code],
@@ -133,16 +167,22 @@ final class OtpService
     /**
      * تأیید کد + Login (A3) — Session کاربر ساخته می‌شود.
      *
-     * @return array{user_id: int, patient_links: list<array<string,mixed>>, is_new_user: bool}
+     * OD-8: برای Purposeهای غیرِ ورود (اکنون فقط `verify_mobile`) هیچ حسابی
+     * ساخته نمی‌شود. اگر شماره به هیچ کاربری متصل نباشد، `user_id = 0`،
+     * `is_new_user = false` و `session_issued = false` برمی‌گردد و تأیید
+     * همچنان موفق است — نتیجهٔ آن «تأییدشدگی شماره» است، نه یک حساب.
+     *
+     * @return array{user_id: int, patient_links: list<array<string,mixed>>, is_new_user: bool, session_issued: bool}
      *
      * @throws OtpException
      */
-    public function verify(string $rawMobile, string $code, string $purpose = self::PURPOSE_LOGIN, ?int $ip = null): array
+    public function verify(string $rawMobile, string $code, string $purpose = self::PURPOSE_LOGIN, ?string $ip = null): array
     {
         $mobile = MobileValidator::normalize($rawMobile);
         if ($mobile === null || !preg_match('/^\d{6}$/', $code)) {
             throw new OtpException('CLINIC_OTP_INVALID', 'کد واردشده معتبر نیست');
         }
+        $purpose = $this->assertPurpose($purpose);
         if ($ip !== null && $ip !== '') {
             $rl = $this->rate->hit('otp-verify-ip:' . $ip, 20, 3600);
             if (!$rl['allowed']) {
@@ -211,24 +251,93 @@ final class OtpService
         }
 
         // ---- Resolution کاربر/بیمار ----
+        //
+        // OD-8 (تصمیم مالک — گزینهٔ الف): تأیید شماره نباید به‌عنوان اثر
+        // جانبی حساب کاربری بسازد. `verify_mobile` صرفاً «تأییدشدگی» را
+        // اثبات می‌کند؛ ساخت حساب باید Workflow صریح و جدای خودش را داشته
+        // باشد. فقط Purposeهای ورود اجازهٔ Provisioning دارند.
         $isNewUser = false;
-        $userId = $this->resolveUser($mobile, $purpose, $isNewUser);
+        $mayProvision = in_array($purpose, self::PROVISIONING_PURPOSES, true);
+        $userId = $mayProvision
+            ? $this->resolveUser($mobile, $purpose, $isNewUser)
+            : $this->findExistingUser($mobile);
 
-        // Session
-        if (function_exists('wp_set_auth_cookie')) {
+        // Session — فقط برای Purposeهای ورود (Context Binding).
+        // یک کد `verify_mobile` نباید به Login تبدیل شود.
+        $sessionIssued = in_array($purpose, self::SESSION_PURPOSES, true) && $userId > 0;
+        if ($sessionIssued && function_exists('wp_set_auth_cookie')) {
             wp_set_auth_cookie($userId, true);
         }
 
-        $patientLinks = $this->patientLinks($userId);
+        $patientLinks = $userId > 0 ? $this->patientLinks($userId) : [];
 
-        $this->audit('OTP_VERIFY_OK', $userId, $mobile, $ip);
-        $this->audit('LOGIN_SUCCESS', $userId, $mobile, $ip);
+        $this->audit('OTP_VERIFY_OK', $userId, $mobile, $ip, ['purpose' => $purpose]);
+        if ($sessionIssued) {
+            $this->audit('LOGIN_SUCCESS', $userId, $mobile, $ip);
+        }
 
         return [
             'user_id' => $userId,
             'patient_links' => $patientLinks,
             'is_new_user' => $isNewUser,
+            'session_issued' => $sessionIssued,
         ];
+    }
+
+    /**
+     * جست‌وجوی فقط-خواندنی کاربر متصل به یک شماره — **بدون هیچ اثر جانبی**.
+     *
+     * OD-8: مسیر `verify_mobile` از این تابع استفاده می‌کند. اگر کاربری وجود
+     * نداشته باشد `0` برمی‌گردد و هیچ حسابی ساخته نمی‌شود و هیچ لینک
+     * بیمار⇄کاربری درج نمی‌شود.
+     */
+    private function findExistingUser(string $mobile): int
+    {
+        $patientId = $this->findActivePatientIdByMobile($mobile);
+        if ($patientId === null) {
+            return 0;
+        }
+
+        $link = $this->db->fetchRow(
+            'SELECT wp_user_id FROM ' . $this->db->table('cpms_patient_user_links') .
+            ' WHERE patient_id = %d ORDER BY is_primary DESC, id ASC LIMIT 1',
+            [$patientId]
+        );
+        if ($link === null) {
+            return 0;
+        }
+
+        $user = $this->db->fetchRow(
+            'SELECT ID FROM ' . $this->db->wpdb()->prefix . 'users WHERE ID = %d',
+            [(int) $link['wp_user_id']]
+        );
+
+        return $user === null ? 0 : (int) $link['wp_user_id'];
+    }
+
+    /**
+     * بیمارِ فعالِ دارای این موبایل در Clinicِ پیکربندی‌شدهٔ این سرویس —
+     * **نقطهٔ واحد** این جست‌وجو.
+     *
+     * AD-13 (تصحیح Pre-Phase-2 Gate): تا این اصلاح، دو نسخهٔ کپی‌شده از
+     * همین کوئری با literal `clinic_id = 1` وجود داشت (یکی از پیش از
+     * Phase 1A و یکی افزودهٔ OD-8 در کامیت 4c16009 — رانش AD-13). هر دو
+     * به این متدِ پارامتری‌شده با Clinicِ فعالِ Settings تبدیل شدند؛ هیچ
+     * مفهوم Scope جدیدی ساخته نشد (Organization/ClinicContext = Phase 2).
+     *
+     * نکتهٔ Phase 2: این جست‌وجو امروز به Clinicِ فعالِ نصب گره خورده است؛
+     * طبق AD-14 هویت بیمار به سطح Organization می‌رود و این متد باید در
+     * آن فاز بازطراحی شود (رفتار فعلی عمداً حفظ شده — فقط صریح/تک‌منبعی شد).
+     */
+    private function findActivePatientIdByMobile(string $mobile): ?int
+    {
+        $patient = $this->db->fetchRow(
+            'SELECT id FROM ' . $this->db->table('cpms_patients') .
+            ' WHERE clinic_id = %d AND mobile = %s AND status = %s ORDER BY id DESC LIMIT 1',
+            [$this->settings->clinicId(), $mobile, 'active']
+        );
+
+        return $patient === null ? null : (int) $patient['id'];
     }
 
     /**
@@ -236,18 +345,14 @@ final class OtpService
      */
     private function resolveUser(string $mobile, string $purpose, bool &$isNewUser): int
     {
-        $patient = $this->db->fetchRow(
-            'SELECT id FROM ' . $this->db->table('cpms_patients') .
-            ' WHERE clinic_id = 1 AND mobile = %s AND status = %s ORDER BY id DESC LIMIT 1',
-            [$mobile, 'active']
-        );
+        $patientId = $this->findActivePatientIdByMobile($mobile);
 
         $link = null;
-        if ($patient !== null) {
+        if ($patientId !== null) {
             $link = $this->db->fetchRow(
                 'SELECT wp_user_id FROM ' . $this->db->table('cpms_patient_user_links') .
                 ' WHERE patient_id = %d ORDER BY is_primary DESC, id ASC LIMIT 1',
-                [(int) $patient['id']]
+                [$patientId]
             );
         }
 
@@ -265,10 +370,10 @@ final class OtpService
         if ($userId === null) {
             $userId = $this->createWpUser($mobile);
             $isNewUser = true;
-            if ($patient !== null) {
+            if ($patientId !== null) {
                 $this->db->insert('cpms_patient_user_links', [
-                    'clinic_id' => 1,
-                    'patient_id' => (int) $patient['id'],
+                    'clinic_id' => $this->settings->clinicId(),
+                    'patient_id' => $patientId,
                     'wp_user_id' => $userId,
                     'mobile_at_link' => $mobile,
                     'is_primary' => 1,
@@ -366,10 +471,62 @@ final class OtpService
         return new \DateTimeImmutable($clean, new \DateTimeZone('UTC'));
     }
 
+    /**
+     * Purpose باید عضو فهرست بسته باشد (Phase 1A).
+     *
+     * @throws OtpException
+     */
+    private function assertPurpose(string $purpose): string
+    {
+        if (!in_array($purpose, self::PURPOSES, true)) {
+            throw new OtpException('CLINIC_OTP_PURPOSE_INVALID', 'نوع درخواست کد معتبر نیست');
+        }
+
+        return $purpose;
+    }
+
+    /**
+     * Pepper مخصوص هش OTP.
+     *
+     * ترتیب: ثابت `CPMS_PEPPER` → Secret تصادفیِ ماندگار در Option.
+     *
+     * تا پیش از Phase 1 اگر ثابت تعریف نمی‌شد، مقدار ثابتِ درونِ کد
+     * (`cpms-dev-pepper-change-me`) استفاده می‌شد؛ چون کد OTP فقط 6 رقم
+     * است، هرکس یک نسخهٔ Dump از جدول را می‌دید می‌توانست تمام کدها را
+     * آفلاین بازیابی کند. حالا در نبود ثابت، یک Secret تصادفی 256 بیتی
+     * ساخته و ذخیره می‌شود (autoload = no).
+     *
+     * ⚠️ دامنه: این تغییر فقط OTP است. `AuditLogger::pepper()` هنوز همان
+     * مقدار پیش‌فرضِ درونِ کد را دارد و عمداً در Phase 1A دست نخورده، چون
+     * تعویض Pepper زنجیرهٔ Hash رکوردهای Audit موجود را روی نصب‌های فعلی
+     * نامعتبر می‌کند — این یک تصمیم پیامدساز است، نه اصلاح ساده
+     * (OPEN DECISION در گزارش Phase 1A). برخلاف Audit، Tokenهای OTP عمر
+     * چنددقیقه‌ای دارند و تعویض Pepper بی‌خطر است.
+     */
     private function pepper(): string
     {
-        $pepper = defined('CPMS_PEPPER') ? CPMS_PEPPER : '';
+        $pepper = defined('CPMS_PEPPER') ? (string) CPMS_PEPPER : '';
+        if ($pepper !== '') {
+            return $pepper;
+        }
 
-        return $pepper !== '' ? $pepper : 'cpms-dev-pepper-change-me';
+        if (!function_exists('get_option') || !function_exists('add_option')) {
+            // خارج از WordPress (Unit) — Secret درونِ فرایند، هرگز ماندگار نمی‌شود.
+            static $ephemeral = null;
+            $ephemeral ??= bin2hex(random_bytes(32));
+
+            return $ephemeral;
+        }
+
+        $stored = (string) get_option(self::PEPPER_OPTION, '');
+        if ($stored === '') {
+            $stored = bin2hex(random_bytes(32));
+            // add_option با autoload=no — اگر همزمان ساخته شده باشد، مقدار موجود برنده است.
+            if (!add_option(self::PEPPER_OPTION, $stored, '', 'no')) {
+                $stored = (string) get_option(self::PEPPER_OPTION, $stored);
+            }
+        }
+
+        return $stored;
     }
 }

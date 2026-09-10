@@ -53,6 +53,12 @@ final class NotificationFlowTest extends WP_UnitTestCase
         $this->secretary2UserId = $this->makeUser('nf_sec2', 'cpms_secretary');
         $this->doctorUserId = $this->makeUser('nf_doc', 'cpms_doctor');
 
+        // C6: broadcast staff فقط به اعضای فعال Clinic می‌رود (membership C4).
+        // صریح و per‑scenario: پزشک **عمداً** عضویت نمی‌گیرد تا ثابت شود
+        // broadcast فقط منشی‌های عضو را می‌گیرد (نه «هر کاربر staff وردپرس»).
+        App::membership_service()->create_membership(1, $this->secretaryUserId, 'cpms_secretary');
+        App::membership_service()->create_membership(1, $this->secretary2UserId, 'cpms_secretary');
+
         global $wpdb;
         $now = App::db()->nowUtcSql();
         $wpdb->query(
@@ -251,6 +257,7 @@ final class NotificationFlowTest extends WP_UnitTestCase
 
         // یادآوری queued (شب قبل) برای همین نوبت — مانند Job
         App::notificationService()->publishToPatient(
+            1,
             $this->patientId,
             'appt_reminder',
             $this->apptVars($slot['date']),
@@ -270,6 +277,7 @@ final class NotificationFlowTest extends WP_UnitTestCase
 
         // N-5 نسل جدید: بعد از cancel، publish با همان کلید → اعلان جدید (نه skip)
         $newId = App::notificationService()->publishToPatient(
+            1,
             $this->patientId,
             'appt_reminder',
             $this->apptVars($slot['date']),
@@ -488,8 +496,8 @@ final class NotificationFlowTest extends WP_UnitTestCase
         $wpdb->query(
             $wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_schedule_slots
-                     (clinic_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at)
-                 VALUES (1, %d, %s, %s, 20, 1, 0, 0, 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                     (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at)
+                 VALUES (1, (SELECT id FROM ' . $wpdb->prefix . 'cpms_locations WHERE clinic_id = 1 AND is_primary = 1 LIMIT 1), %d, %s, %s, 20, 1, 0, 0, 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 $this->clinicianId,
                 $date,
                 $time,
@@ -511,8 +519,8 @@ final class NotificationFlowTest extends WP_UnitTestCase
         $wpdb->query(
             $wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_schedule_slots
-                     (clinic_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at)
-                 VALUES (1, %d, %s, %s, 20, 1, 0, 0, 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                     (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at)
+                 VALUES (1, (SELECT id FROM ' . $wpdb->prefix . 'cpms_locations WHERE clinic_id = 1 AND is_primary = 1 LIMIT 1), %d, %s, %s, 20, 1, 0, 0, 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 $this->clinicianId,
                 $date,
                 $time,

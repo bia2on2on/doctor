@@ -14,11 +14,17 @@ use RuntimeException;
  *
  *   {base}/{clinic_id}/{stored_filename[:2]}/{stored_filename}.{ext}
  *
- * - base پیش‌فرض: `wp-content/clinic-files/` (خارج از uploads) با
- *   `.htaccess` (deny) + `index.php` خالی — دو لایه: سرور + Stream مجوزیافته.
- * - اگر زیرساخت مسیر خارج از DocumentRoot بدهد: Setting `files.storage_path`
- *   (مسیر مطلق) — توصیه file-storage.md §2.
+ * - base پیش‌فرض (OD-7): `PrivateStorageLocation::path('clinic-files')` —
+ *   **بیرون از DocumentRoot**، پس اصلاً URLی برای این فایل‌ها وجود ندارد.
+ * - Setting `files.storage_path` (مسیر مطلق) می‌تواند پیش‌فرض را جایگزین کند،
+ *   ولی آن هم باید بیرون از DocumentRoot باشد.
+ * - `wp-content/clinic-files` فقط **ریشهٔ قدیمی** است و صرفاً به‌عنوان مبدأ
+ *   مهاجرت خوانده می‌شود؛ گاردهای `.htaccess`/`web.config` روی آن
+ *   Defense in Depth اند، نه مرز مجوز.
  * - نام ذخیره تصادفی (F-2): `{32 hex}.{ext}` — نام اصلی فقط در DB.
+ *
+ * **Fail-Closed (OD-7):** سازنده هر ریشهٔ داخل DocumentRoot را رد می‌کند؛
+ * هیچ fallback بی‌صدایی به مسیر امن وجود ندارد.
  *
  * V1: رمزنگاری هر-فایل تصمیم کارفرما (files.encrypt_at_rest — F10/V1.5)؛
  * لایه فعلی = محافظت ساختاری (خارج uploads + نام تصادفی + deny + Stream).
@@ -27,14 +33,44 @@ final class LocalFileStorage
 {
     private const GUARD_HTACCESS = "# CPMS protected clinical storage — direct access denied\nRequire all denied\n<IfModule !mod_authz_core.c>\nDeny from all\n</IfModule>\n";
 
+    /**
+     * گارد IIS — معادل .htaccess روی وب‌سرور مایکروسافت.
+     */
+    private const GUARD_WEBCONFIG = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<configuration>\n  <system.webServer>\n    <authorization>\n      <deny users=\"*\" />\n    </authorization>\n  </system.webServer>\n</configuration>\n";
+
+    /**
+     * یادداشت راه‌اندازی — `.htaccess` روی nginx خوانده نمی‌شود.
+     */
+    private const GUARD_README = "CPMS legacy clinical storage\n\nAs of OD-7 the default storage root is OUTSIDE the document root, so newly\nstored clinical files have no URL at all and can only be delivered through\nthe authenticated application endpoint.\n\nThis directory is the LEGACY location. If files are still here, the\nidempotent migration has not completed yet; it retries on every admin or\nREST request. Nothing here should be served over HTTP.\n\nApache/IIS: the .htaccess and web.config in this directory deny access.\nnginx IGNORES .htaccess, so until migration completes add:\n\n    location ^~ /wp-content/clinic-files/ { deny all; return 404; }\n\nThese guards are defence in depth. They are NOT the authorization boundary.\n";
+
+    /**
+     * @throws StorageConfigurationException اگر ریشه داخل DocumentRoot باشد
+     */
     public function __construct(private readonly string $basePath)
     {
+        // Fail-Closed. هر ریشهٔ بالینی فعال از همین‌جا عبور می‌کند — چه از
+        // پیش‌فرض بیاید، چه از Setting `files.storage_path`، چه از ثابت
+        // `CPMS_PRIVATE_STORAGE_DIR`. مقایسه روی `realpath` است، پس Symlinkی
+        // که به داخل webroot می‌رسد هم رد می‌شود.
+        PrivateStorageLocation::assertOutsideWebRoot($basePath, 'ذخیره‌سازی فایل بالینی');
     }
 
     /**
      * مسیر پایه — سازگار با wp-content حتی وقتی ثابت WP_CONTENT_DIR موجود نیست.
      */
+    /**
+     * OD-7 — پیش‌فرض اکنون **بیرون از DocumentRoot** است، پس اصلاً URLی برای
+     * این فایل‌ها وجود ندارد و تحویل فقط از مسیر مجوزدار برنامه ممکن است.
+     */
     public static function defaultBasePath(): string
+    {
+        return PrivateStorageLocation::path('clinic-files');
+    }
+
+    /**
+     * ریشهٔ قدیمی داخل DocumentRoot — فقط برای مهاجرت idempotent.
+     */
+    public static function legacyBasePath(): string
     {
         if (defined('WP_CONTENT_DIR')) {
             return rtrim((string) WP_CONTENT_DIR, '/') . '/clinic-files';
@@ -74,12 +110,65 @@ final class LocalFileStorage
 
     /**
      * مسیر مطلق برای Stream (E17) — عدم وجود فایل = null (404 سرویس).
+     *
+     * Phase 1A: پیش از این مسیر فقط الحاق می‌شد و هیچ کنترلی نبود که
+     * نتیجه واقعاً داخل ریشهٔ ذخیره‌سازی بماند. امروز `storage_path` را
+     * خودِ store() تولید می‌کند (32 hex) و از ورودی کاربر نمی‌آید، پس
+     * پیمایش مسیر قابل بهره‌برداری نبود؛ اما تنها چیزی که بین یک ستون
+     * دیتابیس و «خواندن/حذف هر فایلی روی سرور» ایستاده بود، همان فرض بود.
+     * حالا محدودسازی صریح است (Defence in Depth): هر مسیری که از ریشه
+     * بیرون بزند رد می‌شود.
      */
     public function absolutePath(string $storagePath): ?string
     {
-        $full = $this->basePath . '/' . ltrim($storagePath, '/');
-        if ($storagePath === '' || !is_file($full)) {
+        $safe = $this->containedPath($storagePath);
+        if ($safe === null || !is_file($safe)) {
             return null;
+        }
+
+        return $safe;
+    }
+
+    /**
+     * مسیر نرمال‌شده و محدودشده به داخل basePath — یا null.
+     *
+     * از realpath استفاده نمی‌کنیم چون فایل ممکن است هنوز وجود نداشته
+     * باشد؛ نرمال‌سازی نمادین انجام می‌شود و سپس ریشه بررسی می‌شود.
+     */
+    public function containedPath(string $storagePath): ?string
+    {
+        $relative = str_replace('\\', '/', ltrim($storagePath, '/'));
+        if ($relative === '' || str_contains($relative, "\0")) {
+            return null;
+        }
+
+        $segments = [];
+        foreach (explode('/', $relative) as $segment) {
+            if ($segment === '' || $segment === '.') {
+                continue;
+            }
+            if ($segment === '..') {
+                // هر تلاش برای بالا رفتن رد می‌شود — نه «pop»، چون
+                // `a/../../etc` نباید بی‌سروصدا به چیز دیگری تبدیل شود.
+                return null;
+            }
+            $segments[] = $segment;
+        }
+        if ($segments === []) {
+            return null;
+        }
+
+        $full = $this->basePath . '/' . implode('/', $segments);
+
+        // اگر فایل موجود است، Symlink هم نباید از ریشه خارج شود.
+        $real = @realpath($full);
+        if ($real !== false) {
+            $rootReal = @realpath($this->basePath);
+            if ($rootReal === false || !str_starts_with($real, rtrim($rootReal, '/') . '/')) {
+                return null;
+            }
+
+            return $real;
         }
 
         return $full;
@@ -101,6 +190,7 @@ final class LocalFileStorage
      */
     public function delete(string $storagePath): bool
     {
+        // absolutePath خود محدودسازی ریشه را اعمال می‌کند.
         $full = $this->absolutePath($storagePath);
         if ($full === null) {
             return false;
@@ -127,5 +217,27 @@ final class LocalFileStorage
         if (!is_file($idx)) {
             @file_put_contents($idx, "<?php\n// silence is golden\n");
         }
+        // Phase 1A: تکیه بر .htaccess به تنهایی کافی نیست — nginx آن را
+        // نمی‌خواند. گارد IIS و یادداشت راه‌اندازی nginx هم نوشته می‌شود.
+        // این‌ها جایگزین پیکربندی وب‌سرور نیستند؛ ریسک باقی‌مانده در
+        // گزارش امنیتی Phase 1 ثبت شده است.
+        $webConfig = $this->basePath . '/web.config';
+        if (!is_file($webConfig)) {
+            @file_put_contents($webConfig, self::GUARD_WEBCONFIG);
+        }
+        $readme = $this->basePath . '/README-SECURITY.txt';
+        if (!is_file($readme)) {
+            @file_put_contents($readme, self::GUARD_README);
+        }
+    }
+
+    /**
+     * آیا ریشهٔ ذخیره‌سازی داخل DocumentRoot است؟
+     *
+     * برای هشدار مدیریتی: اگر بله، محافظت به پیکربندی وب‌سرور وابسته است.
+     */
+    public function isInsideWebRoot(): bool
+    {
+        return PrivateStorageLocation::isInsideWebRoot($this->basePath);
     }
 }
