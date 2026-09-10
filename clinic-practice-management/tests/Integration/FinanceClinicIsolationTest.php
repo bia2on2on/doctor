@@ -297,12 +297,19 @@ final class FinanceClinicIsolationTest extends WP_UnitTestCase
     public function testOperationsWorkWhenClinicOneRowAbsent(): void
     {
         global $wpdb;
-        // پیش‌شرط: تنها Clinic نصب، شناسه غیر ۱ دارد — ابتدا فرزندان
-        // ارجاع‌دهنده به Clinic ۱ (audit/location) پاک می‌شوند، بعد خود ردیف.
+        // پیش‌شرط: تنها Clinic نصب، شناسه غیر ۱ دارد. ردیف Clinic ۱ (و
+        // فرزندان مستقیمش) با FOREIGN_KEY_CHECKS=0 حذف می‌شود چون ممکن است
+        // ردیف‌های seed/چسبیده از مسیرهای دیگر به آن ارجاع بدهند؛ همه‌چیز
+        // داخل تراکنش همین تست است و در پایان رول‌بک می‌شود.
         $this->ensureClinicB();
-        $wpdb->query('DELETE FROM ' . $wpdb->prefix . 'cpms_audit_logs WHERE clinic_id = 1'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        $wpdb->query('DELETE FROM ' . $wpdb->prefix . 'cpms_locations WHERE clinic_id = 1'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        $deleted = $wpdb->query('DELETE FROM ' . $wpdb->prefix . 'cpms_clinics WHERE id = 1'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $wpdb->query('SET FOREIGN_KEY_CHECKS=0'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        try {
+            $wpdb->query('DELETE FROM ' . $wpdb->prefix . 'cpms_audit_logs WHERE clinic_id = 1'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $wpdb->query('DELETE FROM ' . $wpdb->prefix . 'cpms_locations WHERE clinic_id = 1'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $deleted = $wpdb->query('DELETE FROM ' . $wpdb->prefix . 'cpms_clinics WHERE id = 1'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        } finally {
+            $wpdb->query('SET FOREIGN_KEY_CHECKS=1'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        }
         $this->assertSame(1, (int) $deleted, 'پیش‌شرط: حذف ردیف Clinic ۱');
         App::resetScope();
         $count = (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $wpdb->prefix . 'cpms_clinics'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
