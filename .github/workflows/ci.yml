@@ -28,8 +28,10 @@ jobs:
 
       - name: Run tripwire self-tests
         run: python3 bin/tenant-tripwire.py --test
+        working-directory: ${{ github.workspace }}
 
       - name: Scan production for tenant hardcodes
+        working-directory: ${{ github.workspace }}
         run: |
           python3 bin/tenant-tripwire.py --allowlist bin/tenant-tripwire-allowlist.json
           echo "Tripwire: production runtime clean."
