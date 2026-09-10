@@ -4,7 +4,10 @@
 > This document is the single source of truth for isolation requirement status.
 >
 > **Implementation baseline:** `c2bff76d1e21643a66bc0056a29881faaa2f299f`
-> **This audit SHA:** (to be updated after gap-closure tests)
+> **This audit SHA:** `4e50112947d6f9ebba9bce09202e6fb93b980c8c` (gap-closure tests + matrix doc)
+> **Gates on 4e50112:** Real-WP `34439644062` ✅ · Pilot `34439644035` ✅ · Closure `34439644036` ✅
+> **CI (Integration):** NOT TRIGGERED on push event (ci.yml requires pull_request or push-to-main);
+> would require a PR to run. Pending ≠ PASS.
 >
 > Allowed statuses: `VERIFIED_GREEN` | `PARTIAL` | `OPEN_DECISION` | `NOT_VERIFIED` | `KNOWN_FAIL`
 >
@@ -310,6 +313,12 @@
 | NOT_VERIFIED | 0 |
 | KNOWN_FAIL | 0 |
 | **Total** | **45** |
+
+> **Note on PARTIAL requirements (MT-24/25/39/40/41):** Gap-closure tests have been
+> written and committed at `4e50112` (TenantIsolationGapTest.php — 8 test methods).
+> Gates Real-WP `34439644062` ✅, Pilot `34439644035` ✅, Closure `34439644036` ✅.
+> CI (Integration) requires a PR to trigger; the tests have NOT been executed in CI yet.
+> Status remains PARTIAL until CI Integration confirms GREEN.
 
 ---
 
