@@ -4,10 +4,10 @@
 > This document is the single source of truth for isolation requirement status.
 >
 > **Implementation baseline:** `c2bff76d1e21643a66bc0056a29881faaa2f299f`
-> **This audit SHA:** `57ffd9d` (runtime tests + tripwire + CI wiring + matrix doc)
-> **Gates on 57ffd9d:** CI `34447725897` (388eec0 — runtime tests GREEN) + tripwire pending verify · Real-WP `34447725892`/`34447723066` ✅ · Pilot `34447723117` ✅ · Closure `34447723173` ✅
+> **This audit SHA:** `3fc5a54` (runtime tests + hardened tripwire + CI wiring + docs)
+> **Gates on 3fc5a54:** CI `34450386921` ✅ · Tripwire ✅ · Real-WP `34450386918`/`34450382616` ✅ · Pilot `34450382549` ✅ · Closure `34450382522` ✅
 > **Draft PR #14:** https://github.com/bia2on2on/doctor/pull/14 — DO NOT MERGE
-> **Tripwire:** `bin/tenant-tripwire.py` — 26 self-tests PASS, production scan CLEAN (173 files, 0 violations, empty allowlist)
+> **Tripwire:** `bin/tenant-tripwire.py` — 34 self-tests PASS, production scan CLEAN (173 files, 0 violations, empty allowlist)
 >
 > Allowed statuses: `VERIFIED_GREEN` | `PARTIAL` | `OPEN_DECISION` | `NOT_VERIFIED` | `KNOWN_FAIL`
 >
