@@ -2,19 +2,30 @@
 
 | | |
 |---|---|
-| **آخرین به‌روزرسانی** | Closure formal — بر مبنای SHA پیاده‌سازی `3fc5a54` (all 5 gates GREEN). SHA history: `c2bff76`→`2d13f2d`→`8ade5c7`→`becc82f` (closure docs) |
-| **وضعیت Phase 2** | IN PROGRESS — C1..C5 done؛ **C6 CLOSED** (tenant isolation foundation complete; deferred boundaries recorded) |
-| **آخرین remote SHA سبزِ تأییدشده** | `3fc5a54` — all 5 gates GREEN; closure docs at `becc82f` — PR #14 OPEN |
+| **آخرین به‌روزرسانی** | Post-merge sync — checkpoint ادغام‌شده `099b644` (PR #14 MERGED 2026-09-10). شواهد پیش‌از‌ادغام: implementation `3fc5a54` (all 5 gates GREEN). SHA history: `c2bff76`→`2d13f2d`→`8ade5c7`→`becc82f` (closure docs) → `a49b182` (#14 head) → `099b644` (merge) |
+| **وضعیت Phase 2** | IN PROGRESS — C1..C6 done؛ **C6 CLOSED** (tenant isolation foundation complete; deferred boundaries recorded; integrated into main) |
+| **آخرین remote SHA سبزِ تأییدشده** | `099b644` (`origin/main`) — هر ۴ گیت پس‌از‌ادغام GREEN (پایین)؛ PR #14 **MERGED** |
 | **C6 بسته شده** | ۱۴۰۱/۰۶/۱۹ — با تصمیم مالک/معمار |
 | **Schema** | `2026_09_09_0020` — فایل/تصویب 0021 وجود ندارد |
 
 > این فایل state جاری است، نه گزارش. عمداً به SHA کامیتِ خودِ این سند ارجاع
-> نمی‌دهد — مبنا = SHA پیاده‌سازی `6e5d48c`. شاخهٔ ادامه:
-> `arena/01a086ca-doctor`. نسب تأییدشده: headهای PR #10 (`79cce4b`) و
-> PR #11 (`9e006b0`) جد همین SHA هستند. PHP در sandbox ممیزی روی PATH نبود؛
+> نمی‌دهد — مبنا = checkpoint ادغام‌شده `099b644` (`origin/main`). نسب تاریخیِ
+> تأییدشده: headهای PR #10 (`79cce4b`) و PR #11 (`9e006b0`) جد خط #14 بودند و
+> تاریخچه‌شان در `099b644` ادغام شده است. PHP در sandbox ممیزی روی PATH نبود؛
 > شواهد اجرایی = GitHub Actions.
 
-## گیت‌های سبز — batch استحکام tenant (روی `3fc5a54`)
+## گیت‌های سبز — پس‌از‌ادغام (روی `099b644` = `origin/main`)
+
+| گیت | Run | نتیجه |
+|---|---|---|
+| CI | 34460364222 | ✅ success |
+| Real WordPress Acceptance | 34460364238 | ✅ success |
+| Pilot/Staging Readiness | 34460364243 | ✅ success |
+| Closure Gate | 34460364219 | ✅ success |
+
+والدین merge: `8087b42` (mainِ پیش‌از‌ادغام = merge PR #9) + `a49b182` (head پیش‌از‌ادغامِ PR #14).
+
+## گیت‌های سبز — batch استحکام tenant (تاریخی، پیش‌از‌ادغام، روی `3fc5a54`)
 
 برچسب داخلی تسک در گزارش‌ها «Phase 9 §5» بود — واژگان تاریخیِ taxonomy وظایفِ داخلی؛
 فاز ۹ نقشهٔ راه مالک = Patient Portal و همچنان **NOT STARTED** است.
@@ -150,7 +161,7 @@
   Phase 3/`AuthorizationService` شروع نشد؛ PR#10..#13 دست‌نخورده.**
 - **باقی‌ماندۀ C6 (بدون تغییر):** Tripwire→CI · C6‑F جامع (۱۴‑موردی) · طبقه‌بندی/تصمیم
   D‑route‌ها (از جمله `files/{id}/stream` که در skip list است و read‑path بالینی‌اش هنوز
-  Per‑Object check ندارد) · workflow onboarding عضویت staff · **C6 = IN PROGRESS**.
+  Per‑Object check ندارد) · workflow onboarding عضویت staff · **C6 = IN PROGRESS** (در آن مقطع؛ اکنون CLOSED — رجوع به بالای سند).
 
 ### سابقه (روی `6e5d48c` — C6 Reports+Export+Pilot)
 
@@ -214,7 +225,7 @@
 
 ## Current substep
 
-- **C6 — CLOSED (Owner/Architect approved technical closure).** Implementation evidence: `3fc5a54`.
+- **C6 — CLOSED (Owner/Architect approved technical closure).** Implementation evidence: `3fc5a54` (pre-merge); **integrated checkpoint: `099b644`** (`origin/main`, PR #14 MERGED).
   - ✅ C6-A..E2 (census, Notif/SMS/Jobs, Booking/Schedule, Patients/Clinical/Visits/Files, Settings/Audit/Idempotency + Migration 0020, repo writes)
   - ✅ C6-E3 Reports (`1c82d26` + Class D `a120a68`)
   - ✅ C6 Export (`f2c0ca6`) — clinic in payload; purge per-row

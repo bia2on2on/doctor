@@ -22,23 +22,23 @@
 ## ۰. راستی‌آزمایی (اولین کار Agent جدید)
 
 ```bash
-git log --oneline -1 origin/arena/01a08828-doctor   # باید becc82f (یا بعدی) باشد
-git rev-list --left-right --count origin/main...origin/arena/01a08828-doctor   # انتظار: 0 <n
-gh pr view 14 --json state,headRefOid               # OPEN، head = becc82f
-gh api repos/bia2on2on/doctor/actions/runs/34450386921 -q '.conclusion'  # success
+git rev-parse origin/main   # باید 099b6449362ce16be185aa811ff1f7da7dec269e باشد
+gh pr view 14 --json state,headRefOid               # MERGED، head = a49b182
+gh api repos/bia2on2on/doctor/actions/runs/34460364222 -q '.conclusion'  # success
 ```
 
 | قلم | مقدار |
 |---|---|
 | Remote | `https://github.com/bia2on2on/doctor.git` |
-| Branch کاری | `arena/01a08828-doctor` — tip **`becc82f`** (closure docs) |
-| `origin/main` | `8087b42e19a1721e38eb073aa1a17aff1cbac97b` — **دست‌نخورده** |
-| نسب (`merge-base --is-ancestor`) | `8087b42` ⊂ `79cce4b`(#10) ⊂ `9e006b0`(#11) ⊂ `f88fcdc`(#12) ⊂ `09d505b`(#13) ⊂ … ⊂ `becc82f`(#14) — **خطی** |
-| PR #14 | `arena/01a08828-doctor` — OPEN — head `becc82f` — base `main` — |
-| PR #10–#13 | OPEN — heads ancestors of `becc82f` — redundant با #14 |
+| `origin/main` | `099b6449362ce16be185aa811ff1f7da7dec269e` — **Merge PR #14 (والدین: `8087b42` + `a49b182`)** |
+| Branch کاریِ پیش‌از‌ادغام (تاریخی) | `arena/01a08828-doctor` — implementation `3fc5a54` — closure docs `becc82f` — ادغام شد |
+| نسب تاریخی | `8087b42` ⊂ `79cce4b`(#10) ⊂ `9e006b0`(#11) ⊂ `f88fcdc`(#12) ⊂ `09d505b`(#13-head، diagnostic) ⊂ … ⊂ `a49b182`(#14) — **خطی** |
+| PR #14 | [#14](https://github.com/bia2on2on/doctor/pull/14) — **MERGED** (2026-09-10) — head `a49b182` — base `main` |
+| PR #10 / #11 / #12 | **MERGED** (تاریخی؛ زیرمجموعهٔ #14) — بازگشایی ممنوع |
+| PR #13 | **OPEN + DRAFT** — diagnostic ترمیم C6 (`arena/01a086b4-doctor`، head `09d505b`) — **دست‌نخورده** |
 | Schema | `2026_09_09_0020` — **Migration 0021 وجود ندارد و تصویب نشده** |
 
-## ۱. گیت‌های سبزِ نهایی — همه روی `3fc5a54`
+## ۱. گیت‌های سبزِ پیش‌از‌ادغام (تاریخی) — همه روی `3fc5a54`
 
 | گیت | Run | نتیجه |
 |---|---|---|
@@ -48,7 +48,16 @@ gh api repos/bia2on2on/doctor/actions/runs/34450386921 -q '.conclusion'  # succe
 | Pilot/Staging Readiness | `34450382549` | ✅ success |
 | Closure Gate | `34450382522` | ✅ success |
 
-SHA `3fc5a54` = آخرین implementation test. SHA `becc82f` = آخرین documentation tip.
+SHA `3fc5a54` = آخرین implementation test (پیش‌از‌ادغام). SHA `becc82f` = آخرین documentation tip (پیش‌از‌ادغام).
+
+## ۱ب. گیت‌های سبزِ پس‌از‌ادغام — همه روی `099b644` (`origin/main`)
+
+| گیت | Run | نتیجه |
+|---|---|---|
+| CI | `34460364222` | ✅ success |
+| Real-WP Acceptance | `34460364238` | ✅ success |
+| Pilot/Staging Readiness | `34460364243` | ✅ success |
+| Closure Gate | `34460364219` | ✅ success |
 
 ## ۲. وضعیت C6 Technical DoD
 
@@ -75,7 +84,7 @@ SHA `3fc5a54` = آخرین implementation test. SHA `becc82f` = آخرین docum
 
 - Phase 3 / C7 / C8 / Portal / mobile: **شروع ممنوع**.
 - **Migration 0021**: بدون تأیید مالک، ممنوع.
-- `main` / PR merge/close / force-push: **دست‌نخورده**.
+- PR #13: **دست‌نخورده** (merge/close ممنوع)؛ `main`: فقط با تأیید مالک؛ force-push: ممنوع.
 - هیچ security تستی skip/quarantine/weaken نشد.
 
 ## ۴ب. گیت‌های بازگشت‌ناپذیر (Permanent Regression Gates)
@@ -115,24 +124,27 @@ SHA `3fc5a54` = آخرین implementation test. SHA `becc82f` = آخرین docum
 
 | مورد | وضعیت |
 |---|---|
-| PR #14 | OPEN — `arena/01a08828-doctor` → `main` |
-| PR #10–#13 | OPEN — ancestors of #14 — redundant |
-| `origin/main` | `8087b42` — **دست‌نخورده** |
-| C6 | CLOSED — SHA `3fc5a54` = شواهد اجرایی; SHA `becc82f` = closure docs |
+| PR #14 | **MERGED** — `arena/01a08828-doctor` → `main` (merge = `099b644`) |
+| PR #10 / #11 / #12 | MERGED (تاریخی) |
+| PR #13 | OPEN + DRAFT — diagnostic — **دست‌نخورده** |
+| `origin/main` | `099b644` — **ادغام‌شده** (والدین: `8087b42` + `a49b182`) |
+| C6 | CLOSED — `099b644` = checkpoint ادغام‌شده؛ `3fc5a54` = شواهد اجرایی پیش‌از‌ادغام؛ `becc82f` = closure docs پیش‌از‌ادغام |
 | C7 | NOT STARTED — scope undefined |
 | Phase 3 | NOT STARTED — نیازمند تصمیم مالک |
 | Migration 0021 | ممنوع بدون تأیید مالک |
 
-**تأیید نسب:**
+**تأیید checkpoint ادغام:**
 ```bash
-git merge-base --is-ancestor origin/main HEAD && echo "main ⊂ HEAD ✓"
-git log --oneline origin/main..HEAD | head -20
+git rev-parse origin/main   # 099b6449362ce16be185aa811ff1f7da7dec269e
+gh pr view 14 --json state  # MERGED
 ```
 
 **SHA‌های کلیدی:**
-- `8087b42` = origin/main (دست‌نخورده)
-- `3fc5a54` = implementation evidence (all 5 gates GREEN)
-- `becc82f` = closure documentation tip
+- `099b644` = origin/main (ادغام PR #14)
+- `8087b42` = mainِ پیش‌از‌ادغام (تاریخی؛ والد اول merge)
+- `a49b182` = head پیش‌از‌ادغامِ PR #14 (تاریخی؛ والد دوم merge)
+- `3fc5a54` = implementation evidence (all 5 gates GREEN — پیش‌از‌ادغام)
+- `becc82f` = closure documentation tip (پیش‌از‌ادغام)
 
 ---
 

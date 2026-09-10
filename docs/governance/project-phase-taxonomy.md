@@ -59,8 +59,8 @@
 | **Phase 0** | — | (پیش از F؛ ممیزی F) | `report-phase-0-reverification.md` | V1 (پایه) | CLOSED |
 | **Phase 0.5** | — | — | `phase0.5-target-model.md` + ADR-0031 | — | CLOSED/APPROVED |
 | **Phase 1** | **1A** CLOSED · **1B** DEFERRED | F9 (Hardening — بخشی) | `report-od9-closure.md`، `phase1a-to-next-agent.md` | — | 1A CLOSED / 1B DEFERRED |
-| **Phase 2** | **C6** IN PROGRESS؛ C4/C5 DONE | **V2** (بخش Multi-clinic → بازتوزیع) | ADR-0031؛ drift D-01..D-20 | — | IN PROGRESS |
-| **Phase 3** | C7 (آینده) | **V2** (Role/Scope/Staff → بازتوزیع) | B-01..B-08؛ A-01..A-09 | — | NOT STARTED |
+| **Phase 2** | **C4/C5/C6 CLOSED** (ادغام در `099b644`)؛ **C7 = زیرفاز بعدی، NOT STARTED** (scope تعریف‌نشده) | **V2** (بخش Multi-clinic → بازتوزیع) | ADR-0031؛ drift D-01..D-20 | — | IN PROGRESS |
+| **Phase 3** | — (C7 متعلق به Phase 2 است، نه Phase 3 — رجوع به Queue در `phase2-state.md`) | **V2** (Role/Scope/Staff → بازتوزیع) | B-01..B-08؛ A-01..A-09 | — | NOT STARTED |
 | **Phase 4** | — | **V2** (Specialty/Dept/Room → بازتوزیع) | M-01..M-05؛ Q11 باز | — | NOT STARTED |
 | **Phase 5..8، 10..20** | — | بخشی از **V2** → OD-2 باز | drift O-* | V1.5 = PAUSED → OD-2 | NOT STARTED |
 | **Phase 9 (Patient Portal)** | — | ⚠️ فقط هم‌اسامی؛ با T9/T10 اشتباه نشود | — | — | **NOT STARTED** |
@@ -151,4 +151,4 @@
 - **C6 = بستهٔ کاری / زیرفاز داخل Owner Roadmap Phase 2** — نه فاز مستقل.
 - **Owner Roadmap Phase 9 = Patient Portal و HAS NOT STARTED.**
 - **ارجاع‌های داخلی/تاریخیِ «Phase 9» ≠ Owner Roadmap Phase 9.**
-- **C6 = IN PROGRESS (NOT PASS).** کار باز: Tripwire→CI · تکمیل suite جامع C6-F · تصمیمات route-classification · معماری صریحِ onboarding عضویت staff.
+- **C6 = CLOSED** (تصمیم مالک/معمار؛ ادغام در `origin/main` = `099b644`؛ مرزهای deferred در `c6-deferred-boundaries.md`). **C7 = زیرفاز بعدی Phase 2 و NOT STARTED** (scope تعریف‌نشده؛ شروع فقط با تأیید مالک).

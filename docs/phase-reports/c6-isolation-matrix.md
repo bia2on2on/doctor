@@ -6,7 +6,7 @@
 > **Implementation baseline:** `c2bff76d1e21643a66bc0056a29881faaa2f299f`
 > **This audit SHA:** `3fc5a54` (runtime tests + hardened tripwire + CI wiring + docs)
 > **Gates on 3fc5a54:** CI `34450386921` ✅ · Tripwire ✅ · Real-WP `34450386918`/`34450382616` ✅ · Pilot `34450382549` ✅ · Closure `34450382522` ✅
-> **Draft PR #14:** https://github.com/bia2on2on/doctor/pull/14 — DO NOT MERGE
+> **PR #14:** https://github.com/bia2on2on/doctor/pull/14 — **MERGED** 2026-09-10 (merge `099b644`; audit SHAs below are pre-merge historical evidence)
 > **Tripwire:** `bin/tenant-tripwire.py` — 34 self-tests PASS, production scan CLEAN (173 files, 0 violations, empty allowlist)
 > **C6 STATUS: CLOSED** — tenant-context / implicit-tenant-default elimination complete
 >

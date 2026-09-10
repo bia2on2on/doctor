@@ -1,7 +1,7 @@
 # PHASE 0.5 — TARGET ARCHITECTURE & MIGRATION PLAN
 
 > **نوع:** Documentation Only — هیچ کد، هیچ Migration، هیچ Schema.
-> **پایه:** `origin/main` = `8087b42e19a1721e38eb073aa1a17aff1cbac97b` (shallow clone، Working Tree تمیز)
+> **پایه:** `origin/main` = `8087b42e19a1721e38eb073aa1a17aff1cbac97b` (shallow clone، Working Tree تمیز) — مبنای تاریخیِ ممیزی؛ `origin/main` جاری = `099b644` (رجوع به `docs/project-current-state.md`)
 > **وضعیت:** **FINALIZED** — تصویب‌شده توسط Product Owner. در checkpoint commit مستندات Phase 0/0.5 ثبت شد.
 > **قاعدهٔ شواهد:** هر عدد در این سند از اجرای واقعی `grep`/parser روی کد فعلی آمده، نه از گزارش‌های قبلی.
 > **ADR مرجع:** `docs/adr/ADR-0031-organization-clinic-location-scoped-authorization.md`
