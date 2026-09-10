@@ -324,6 +324,46 @@ produced probe‑11's `(int) WP_Error` error).
   `ClinicalService::record`, `QueueController`, `FilesController`, `VisitRepository`,
   `MedicalFileRepository`. CI tripwire wiring remains an untouched open item.
 
+### Post‑closure C6 corrective — finance Clinic scope (PR #17, DRAFT — DO NOT MERGE)
+
+Historical truth preserved: **C6 was formally closed**; a finance‑scope omission
+(plus detector blind spots) was discovered afterwards and corrected here.
+Nothing below rewrites the C6 acceptance record.
+
+- **Class B production defects (pre‑existing, blame F6 `ef59e0cb`):** 7 finance
+  runtime paths pinned to Clinic ID 1 — `ServiceRepository::all`,
+  `PaymentRepository::{revenueSummary, forRange, nextPaymentNumber}`,
+  `InvoiceRepository::{openInvoices, nextInvoiceNumber}`,
+  `FinanceService::lockClinic`. Fixed with explicit trusted `int $clinicId`
+  contracts (reads via `trustedClinicId()` → `CLINIC_SCOPE_REQUIRED` 400
+  fail‑closed; numbering/lock within the visit/invoice Clinic). Impact:
+  cross‑Clinic tariff/revenue/payment/invoice reads incl. patient name+MRN,
+  wrong per‑Clinic INV/PAY sequences (duplicate‑key failures), wrong‑scope
+  row lock.
+- **Class D detector defects:** Tenant Tripwire missed bound‑parameter tenant
+  literals and had 3 suppression defects (`select_first_clinic` shadowing,
+  qualified‑ID swallowing, same‑line benign exemption). Hardened in
+  `bin/tenant-tripwire.py` (59 self‑tests, tenant‑aware, empty allowlist).
+  Scan now reports **0 hardcodes** (+1 legitimate first‑clinic *suspect* under
+  review: `SystemClinicResolver` single‑install resolution, AD‑04).
+- **Insert‑failure safety:** the stale‑nonzero‑`insert_id` corruption theory was
+  contradicted for standard wpdb (helper resets + clear‑on‑failure, verified
+  WP 6.3–6.7+trunk); deterministic sabotaged‑INSERT regression proves current
+  behavior already rolls back with no cross‑invoice attach and no payment
+  effects — **no insert‑handling product change included**. (Minor robustness
+  debt recorded: ignored `CpmsDb::insert` bools + misleading 404 mapping on
+  the invoice path — small, deferred.)
+- **Tests added:** `tests/Integration/FinanceClinicIsolationTest.php` (18 tests:
+  Clinic‑1 compat, non‑1 Clinic, two‑Clinic coexistence, 4 read isolations,
+  name/MRN non‑crossing, per‑Clinic INV+PAY numbering, absent‑row operation,
+  3 fail‑closed, 4 insert‑safety). Proven meaningful: 13 red‑on‑old
+  (run `34487855456`), then green with the fix.
+- **Evidence:** `ac1404f` — CI `34488982706` (all 8 jobs incl. Integration 634
+  tests + tripwire), Real‑WP `34488982705`+`34488978486`, Closure `34488978510`,
+  Pilot `34488978503` — **all success**. No test weakened/skipped/quarantined.
+- **No migration** (count unchanged; 0021 neither approved nor created).
+  **C7 remains NOT STARTED.** Location authorization untouched.
+
 **Do not start C7, C8, Phase 3, Phase 4, portals, or mobile auth/JWT.**
 
 ---
@@ -337,5 +377,5 @@ produced probe‑11's `(int) WP_Error` error).
 - [`docs/drift-register.md`](drift-register.md)
 - [`docs/phase-reports/c6-census.md`](phase-reports/c6-census.md)
 - [`docs/phase-reports/c6-isolation-matrix.md`](phase-reports/c6-isolation-matrix.md)
-- Tripwire: `bin/tenant-tripwire.py` (CI-wired, 34 self-tests)
+- Tripwire: `bin/tenant-tripwire.py` (CI-wired, 59 self-tests)
 - [`docs/handoff/phase2-c6-to-next-agent.md`](handoff/phase2-c6-to-next-agent.md)
