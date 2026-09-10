@@ -196,7 +196,8 @@ final class FinanceClinicIsolationTest extends WP_UnitTestCase
         $fxB = $this->makeClinicFixtures(self::CLINIC_B, 'B');
 
         $this->issueAndPayInFull($fxA, 100000);
-        $invB = $this->issueAndPayInFull($fxB, 250000);
+        $payB = $this->issueAndPayInFull($fxB, 250000);
+        $expectedInvoiceId = (int) $payB['invoice_id'];
 
         $today = gmdate('Y-m-d');
         $sumB = $this->withScope(
@@ -207,7 +208,7 @@ final class FinanceClinicIsolationTest extends WP_UnitTestCase
         $invoiceIds = array_column($sumB['payments'], 'invoice_id');
         $this->assertNotSame([], $invoiceIds);
         foreach ($invoiceIds as $id) {
-            $this->assertSame((int) $invB['id'], (int) $id, 'بازه پرداخت B فقط پرداخت‌های B را دارد');
+            $this->assertSame($expectedInvoiceId, (int) $id, 'بازه پرداخت B فقط پرداخت‌های B را دارد');
         }
     }
 
