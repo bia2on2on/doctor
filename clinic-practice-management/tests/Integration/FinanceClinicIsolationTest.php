@@ -238,8 +238,9 @@ final class FinanceClinicIsolationTest extends WP_UnitTestCase
         $fxA = $this->makeClinicFixtures(1, 'A');
         $fxB = $this->makeClinicFixtures(self::CLINIC_B, 'B');
 
-        $this->issueOpenInvoice($fxA, 110000);
-        $this->issueOpenInvoice($fxB, 220000);
+        // هر فاکتور روی بیمار شناخته‌شده همان Clinic تا نام/MRN قابل assert باشد.
+        $this->issueOpenInvoice($fxA, 110000, $fxA['patient']);
+        $this->issueOpenInvoice($fxB, 220000, $fxB['patient']);
 
         $today = gmdate('Y-m-d');
         $sumB = $this->withScope(
@@ -296,9 +297,13 @@ final class FinanceClinicIsolationTest extends WP_UnitTestCase
     public function testOperationsWorkWhenClinicOneRowAbsent(): void
     {
         global $wpdb;
-        // پیش‌شرط: تنها Clinic نصب، شناسه غیر ۱ دارد (ردیف ۱ حذف می‌شود).
+        // پیش‌شرط: تنها Clinic نصب، شناسه غیر ۱ دارد — ابتدا فرزندان
+        // ارجاع‌دهنده به Clinic ۱ (audit/location) پاک می‌شوند، بعد خود ردیف.
         $this->ensureClinicB();
-        $wpdb->query('DELETE FROM ' . $wpdb->prefix . 'cpms_clinics WHERE id = 1'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $wpdb->query('DELETE FROM ' . $wpdb->prefix . 'cpms_audit_logs WHERE clinic_id = 1'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $wpdb->query('DELETE FROM ' . $wpdb->prefix . 'cpms_locations WHERE clinic_id = 1'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $deleted = $wpdb->query('DELETE FROM ' . $wpdb->prefix . 'cpms_clinics WHERE id = 1'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $this->assertSame(1, (int) $deleted, 'پیش‌شرط: حذف ردیف Clinic ۱');
         App::resetScope();
         $count = (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $wpdb->prefix . 'cpms_clinics'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         $this->assertSame(1, $count);
@@ -556,6 +561,20 @@ final class FinanceClinicIsolationTest extends WP_UnitTestCase
             )
         );
         $this->assertSame(self::CLINIC_B, (int) $wpdb->insert_id);
+        // AD-15: هر Clinic حداقل یک Location اصلی دارد (ویزیت به آن نیاز دارد).
+        $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_locations (clinic_id, name, slug, timezone, is_primary, is_active, created_at, updated_at)
+                 VALUES (%d, %s, %s, %s, 1, 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                self::CLINIC_B,
+                'Loc B',
+                'loc-b-' . bin2hex(random_bytes(3)),
+                'Asia/Tehran',
+                $now,
+                $now
+            )
+        );
+        $this->assertGreaterThan(0, (int) $wpdb->insert_id);
         App::resetScope();
     }
 
@@ -591,6 +610,30 @@ final class FinanceClinicIsolationTest extends WP_UnitTestCase
         $clinicianId = (int) $wpdb->insert_id;
         $this->assertGreaterThan(0, $clinicianId);
 
+        $patient = $this->makePatient($clinicId, $tag);
+
+        return [
+            'clinic' => $clinicId,
+            'secretary' => $secretary,
+            'doctor' => $doctor,
+            'admin' => $admin,
+            'clinician' => $clinicianId,
+            'patient' => $patient['id'],
+            'patient_name' => $patient['name'],
+            'mrn' => $patient['mrn'],
+        ];
+    }
+
+    /**
+     * بیمار تازه — هر ویزیتِ یک تست، بیمار خودش را می‌گیرد (J-5: یک ویزیت
+     * فعال در روز برای هر بیمار).
+     *
+     * @return array{id: int, name: string, mrn: string}
+     */
+    private function makePatient(int $clinicId, string $tag): array
+    {
+        global $wpdb;
+        $now = App::db()->nowUtcSql();
         $mrn = 'MR-FCI-' . $tag . '-' . bin2hex(random_bytes(2));
         $first = $tag === 'A' ? 'AliAhmadi' : 'SaraMoradi';
         $last = 'Iso' . $tag . bin2hex(random_bytes(2));
@@ -611,24 +654,17 @@ final class FinanceClinicIsolationTest extends WP_UnitTestCase
         $patientId = (int) $wpdb->insert_id;
         $this->assertGreaterThan(0, $patientId);
 
-        return [
-            'clinic' => $clinicId,
-            'secretary' => $secretary,
-            'doctor' => $doctor,
-            'admin' => $admin,
-            'clinician' => $clinicianId,
-            'patient' => $patientId,
-            'patient_name' => trim($first . ' ' . $last),
-            'mrn' => $mrn,
-        ];
+        return ['id' => $patientId, 'name' => trim($first . ' ' . $last), 'mrn' => $mrn];
     }
 
     /**
-     * @param array{secretary: int, doctor: int, clinician: int, patient: int} $fx
+     * @param array{clinic: int, secretary: int, doctor: int, clinician: int, patient: int} $fx
      */
-    private function makeCompletedVisit(array $fx): int
+    private function makeCompletedVisit(array $fx, ?int $patientId = null): int
     {
-        $visit = App::visitService()->walkIn($fx['secretary'], $fx['patient'], $fx['clinician']);
+        $tag = ((int) $fx['clinic'] === 1) ? 'A' : 'B';
+        $patientId ??= $this->makePatient((int) $fx['clinic'], $tag)['id'];
+        $visit = App::visitService()->walkIn($fx['secretary'], $patientId, $fx['clinician']);
         $id = (int) $visit['id'];
         App::visitService()->transition($fx['doctor'], $id, 'call');
         App::visitService()->transition($fx['doctor'], $id, 'start');
@@ -643,12 +679,12 @@ final class FinanceClinicIsolationTest extends WP_UnitTestCase
     }
 
     /**
-     * @param array{secretary: int, doctor: int, clinician: int, patient: int} $fx
+     * @param array{clinic: int, secretary: int, doctor: int, clinician: int, patient: int} $fx
      * @return array<string, mixed>
      */
-    private function issueOpenInvoice(array $fx, int $total): array
+    private function issueOpenInvoice(array $fx, int $total, ?int $patientId = null): array
     {
-        $visitId = $this->makeCompletedVisit($fx);
+        $visitId = $this->makeCompletedVisit($fx, $patientId);
 
         return $this->finance()->issueInvoice($fx['secretary'], [
             'visit_id' => $visitId,
@@ -712,9 +748,10 @@ final class FinanceClinicIsolationTest extends WP_UnitTestCase
     {
         if ($this->sabotageTable !== null && is_string($query)) {
             global $wpdb;
-            $needle = 'INSERT INTO ' . $wpdb->prefix . $this->sabotageTable;
-            if (str_contains($query, $needle)) {
-                return 'INSERT INTO ' . $wpdb->prefix . 'cpms_table_that_does_not_exist (id) VALUES (1)';
+            // wpdb شناسه‌ها را با بک‌تیک نقل‌قول می‌کند — هر دو شکل پوشش داده می‌شود.
+            $table = preg_quote($wpdb->prefix . $this->sabotageTable, '/');
+            if (preg_match('/INSERT\s+INTO\s+`?' . $table . '`?\s*\(/i', $query) === 1) {
+                return 'INSERT INTO `' . $wpdb->prefix . 'cpms_table_that_does_not_exist` (id) VALUES (1)';
             }
         }
 
