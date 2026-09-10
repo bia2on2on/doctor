@@ -307,7 +307,7 @@
 
 | Status | Count |
 |---|---|
-| VERIFIED_GREEN | 38 |
+| VERIFIED_GREEN | 39 |
 | PARTIAL | 6 (MT-24, MT-25, MT-39, MT-40, MT-41, MT-45) |
 | OPEN_DECISION | 0 |
 | NOT_VERIFIED | 0 |
