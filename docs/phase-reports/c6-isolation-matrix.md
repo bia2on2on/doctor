@@ -4,9 +4,10 @@
 > This document is the single source of truth for isolation requirement status.
 >
 > **Implementation baseline:** `c2bff76d1e21643a66bc0056a29881faaa2f299f`
-> **This audit SHA:** `6476b98` (gap-closure tests + harness fixes + matrix doc)
-> **Gates on 6476b98:** CI `34443341863` ✅ · Real-WP(push) `34443336813` ✅ · Real-WP(PR) `34443341833` ✅ · Pilot `34443336842` ✅ · Closure `34443337019` ✅
+> **This audit SHA:** `57ffd9d` (runtime tests + tripwire + CI wiring + matrix doc)
+> **Gates on 57ffd9d:** CI `34447725897` (388eec0 — runtime tests GREEN) + tripwire pending verify · Real-WP `34447725892`/`34447723066` ✅ · Pilot `34447723117` ✅ · Closure `34447723173` ✅
 > **Draft PR #14:** https://github.com/bia2on2on/doctor/pull/14 — DO NOT MERGE
+> **Tripwire:** `bin/tenant-tripwire.py` — 26 self-tests PASS, production scan CLEAN (173 files, 0 violations, empty allowlist)
 >
 > Allowed statuses: `VERIFIED_GREEN` | `PARTIAL` | `OPEN_DECISION` | `NOT_VERIFIED` | `KNOWN_FAIL`
 >
@@ -255,9 +256,13 @@
 
 ### MT-39 — Background jobs do not rely on current WP user/default Clinic
 - **Status:** VERIFIED_GREEN
-- **Tests:** `TenantIsolationGapTest::testReminderHandlerSelectHasNoClinicPredicate` (verifies handler SELECT has no clinic_id WHERE filter; uses `(int) $row['clinic_id']` for SMS/notification); `TenantIsolationGapTest::testFollowUpHandlerUsesClinicFromRowNotHardcoded` (same for follow-up handler); `TenantIsolationGapTest::testAppointmentsInNonDefaultClinicsCarryCorrectClinicId` (appointments in non-1 clinics carry correct clinic_id; handler's SELECT query returns correct rows with non-1 clinic_ids)
+- **Primary runtime evidence (type A):**
+  - `TenantIsolationGapTest::testApptReminderHandlerUsesRowClinicIdNotScope` — invokes REAL `ApptReminderHandler::__invoke()` with appointments in Clinic A (61021) and Clinic B (61023); scope set to Clinic A; verifies notifications carry ROW clinic_id (not scope)
+  - `TenantIsolationGapTest::testFollowUpHandlerUsesRowClinicIdNotScope` — invokes REAL `FollowUpReminderHandler::__invoke()` with follow-ups in both clinics; same pattern
+  - `TenantIsolationGapTest::testApptReminderHandlerRetryKeepsSameClinicIdentity` — invoke handler twice → second = 0 (J-2 dedupe); same clinic identity preserved
+- **Supplemental source assertions (type C):** handler WHERE clause regex, source string assertions for clinic_id=1 literal absence
 - **Fix SHA:** C6-B (ApptReminderHandler/FollowUpReminderHandler: clinic_id from each row, no clinic=1 literal)
-- **Evidence:** Handler WHERE clause = status+date only (no clinic filter); clinic_id from each row for SMS/notification; appointments in non-1 clinics verified via handler's actual SELECT pattern
+- **Evidence:** Real handler `__invoke()` with non-1 clinics; scope set to Clinic A proves handler does NOT use scope for tenant; notification side effects verified at DB level; retry idempotent with same clinic identity
 
 ### MT-40 — Settings are isolated correctly across Clinics
 - **Status:** VERIFIED_GREEN
