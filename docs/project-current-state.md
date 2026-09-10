@@ -49,7 +49,7 @@ Legacy labels (`F0..F10`, `Doc-Phase`, `V1` / `V1.5` / `V2`) are historical. The
 | Phase 0.5 | CLOSED |
 | Phase 1A | CLOSED (`9bc6f7f`; OD-9 CLOSED) |
 | Phase 1B | DEFERRED — scoped / object authorization (depends on Phase 2 + 3) |
-| Phase 2 | **IN PROGRESS** — current subphase **C6** (**NOT complete**) |
+| Phase 2 | **IN PROGRESS** — subphase **C6 CLOSED** (tenant isolation foundation complete) |
 | Phase 3 | **NOT STARTED** — no `AuthorizationService`; do not start |
 
 **Last verified implementation SHA:** `3fc5a54` (see §G). Historical baseline: `c2bff76`

@@ -2,9 +2,10 @@
 
 | | |
 |---|---|
-| **آخرین به‌روزرسانی** | بر مبنای SHA پیاده‌سازی `c2bff76d1e21643a66bc0056a29881faaa2f299f` (batch استحکام tenant — Visit queue/Today/Feed + ایزولاسیون فایل بالینی؛ مبناهای قبلی: `6e5d48c`، `4289d89`) |
-| **وضعیت Phase 2** | IN PROGRESS — C1..C5 done؛ C6 **ناقص** (Reports/Export/Pilot/Trusted‑REST boundary/queue‑tenant/file‑isolation انجام؛ suite جامع C6‑F و Tripwire‑CI و تصمیم باز route‌ها و staff onboarding باقی است) |
-| **آخرین remote SHA سبزِ تأییدشده** | `3fc5a54 — all 5 gates GREEN; docs at 8ade5c7 — PR #14 OPEN — ادغام/بستن ممنوع) |
+| **آخرین به‌روزرسانی** | Closure formal — بر مبنای SHA پیاده‌سازی `3fc5a54` (all 5 gates GREEN). SHA history: `c2bff76`→`2d13f2d`→`8ade5c7`→`becc82f` (closure docs) |
+| **وضعیت Phase 2** | IN PROGRESS — C1..C5 done؛ **C6 CLOSED** (tenant isolation foundation complete; deferred boundaries recorded) |
+| **آخرین remote SHA سبزِ تأییدشده** | `3fc5a54` — all 5 gates GREEN; closure docs at `becc82f` — PR #14 OPEN |
+| **C6 بسته شده** | ۱۴۰۱/۰۶/۱۹ — با تصمیم مالک/معمار |
 | **Schema** | `2026_09_09_0020` — فایل/تصویب 0021 وجود ندارد |
 
 > این فایل state جاری است، نه گزارش. عمداً به SHA کامیتِ خودِ این سند ارجاع
@@ -213,30 +214,28 @@
 
 ## Current substep
 
-- **C6 — حذف tenant hardcodes: ناقص (نه PASS).** روی `6e5d48c`:
-  - ✅ C6-A..E2 (census، Notif/SMS/Jobs، Booking/Schedule، Patients/Clinical/Visits/Files، Settings/Audit/Idempotency + Migration 0020، repo writes)
+- **C6 — CLOSED (Owner/Architect approved technical closure).** Implementation evidence: `3fc5a54`.
+  - ✅ C6-A..E2 (census, Notif/SMS/Jobs, Booking/Schedule, Patients/Clinical/Visits/Files, Settings/Audit/Idempotency + Migration 0020, repo writes)
   - ✅ C6-E3 Reports (`1c82d26` + Class D `a120a68`)
-  - ✅ C6 Export (`f2c0ca6`) — clinic در payload جاب؛ purge per-row
-  - ✅ Pilot/bin (`6e5d48c`) — بدون literal clinic_id=1
-  - tripwire production runtime = **۰** (اجرای محلی ابزار؛ **هنوز به CI وصل نشده**)
-  - ✅ **Trusted REST `ScopeContext` (membership‑verified)** — پیاده‌سازی در `f88fcdc`
-    (CI قرمز: Class D harness + Class A error‑contract + Class A/A gap نبودِ عضویت در
-    acceptance) و **ترمیم** در batch `adecd21`→`a23b509`→`b7a3a6b`→`da72e1c`→`4289d89`.
-    - **هیچ provisioning خودکار عضویت در Production اضافه نشد** (نه `user_register`،
-      نه `set_user_role`، نه نگاشت نقش سراسری WP، نه «تنها یک Clinic»، نه اولین Clinic).
-      Onboarding/عضویت staff یک workflow صریحِ scope‑aware است — **OPEN، در این batch ساخته نشد**.
-    - fixture تکلیف عضویت در تست‌ها **صریح** است (`cpms_test_seed_membership`؛ هیچ تزریق
-      سراسری روی `set_user_role` نیست) و fixture Real‑WP عضویت را روی **Clinic واقعی همان
-      محیط** (از clinician link اکتبرانه) می‌کارد — TEST‑ONLY.
-    - **OPEN DECISION (در این batch عمداً حل نشد):** طبقه‌بندی route‌های
-      `/prescriptions` · `/appointments/{id}/reschedule` vs `/cancel` · `GET /visits{,/{id}}` ·
-      `/files/{id}/stream` + `/patients/{id}/files` · `/config/services*` · `/sms/*`.
-  - ❌ C6-F isolation جامع — **PARTIAL**
-  - C6-G docs: این هم‌ترازی وضعیت است، نه اعلام اتمام C6
-- **قدم بعدی مجاز پس از هم‌ترازی docs:** حداقل مرز Trusted REST Clinic context
-  (نه Tripwire-CI، نه C6-F کامل، نه C7/C8/Phase 3).
-- **شروع نشود:** C7، C8، Phase 3/`AuthorizationService`، Phase 4، پورتال‌ها،
-  JWT، Migration 0021.
+  - ✅ C6 Export (`f2c0ca6`) — clinic in payload; purge per-row
+  - ✅ Pilot/bin (`6e5d48c`) — no literal clinic_id=1
+  - ✅ Tripwire production runtime = 0 (34 self-tests) — CI enforced
+  - ✅ Trusted REST ScopeContext (membership-verified) — fail-closed
+  - ✅ C6-F isolation — 45/45 VERIFIED_GREEN (MT-39 runtime)
+  - ✅ All quality gates GREEN on 3fc5a54
+  - ✅ No known Critical/High C6 tenant-isolation defect
+
+### C6 Deferred Boundaries (NOT C6 scope — recorded for transparency)
+
+| ID | Item | Decision | Notes |
+|---|---|---|---|
+| A | Final role/capability policy | DEFERRED to Phase 3 | Scope beyond tenant isolation |
+| B | Staff onboarding UI/API | DEFERRED to LATER_STAFF_ADMIN_UX | Global WP role MUST NOT auto-create Membership |
+| C | SMS resend CHAR(64) truncation | KNOWN_MEDIUM_DEBT | Schema-dependent; not C6 blocker |
+| D | Historical closure hash mismatch | EXPECTED_NEGATIVE_TEST | Not a defect |
+
+- **C7 — NEXT CANDIDATE (NOT STARTED).** Scope not yet defined.
+- **Do not start:** C7 (until defined), C8, Phase 3, Migration 0021.
 
 ### سابقهٔ C5 (خلاصه) — Patient Identity Foundation: ✅ کامل (هر ۵ گیت سبز روی `315e582`)
   (کامیت‌های `9207afa` → `2ba16d7` → `315e582` + کامیت docs این واحد):

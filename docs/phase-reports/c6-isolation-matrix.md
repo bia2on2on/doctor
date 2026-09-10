@@ -8,6 +8,7 @@
 > **Gates on 3fc5a54:** CI `34450386921` ✅ · Tripwire ✅ · Real-WP `34450386918`/`34450382616` ✅ · Pilot `34450382549` ✅ · Closure `34450382522` ✅
 > **Draft PR #14:** https://github.com/bia2on2on/doctor/pull/14 — DO NOT MERGE
 > **Tripwire:** `bin/tenant-tripwire.py` — 34 self-tests PASS, production scan CLEAN (173 files, 0 violations, empty allowlist)
+> **C6 STATUS: CLOSED** — tenant-context / implicit-tenant-default elimination complete
 >
 > Allowed statuses: `VERIFIED_GREEN` | `PARTIAL` | `OPEN_DECISION` | `NOT_VERIFIED` | `KNOWN_FAIL`
 >

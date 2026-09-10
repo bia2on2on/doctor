@@ -10,7 +10,7 @@
 
 **نام‌گذاری:** برچسب‌های «Phase 9 §1..§5» در بعضی کامیت/گزارش‌ها **taxonomy وظایف داخلیِ قدیمی**
 است. **فاز ۹ نقشهٔ راه مالک = Patient Portal و STILL NOT STARTED است.** وضعیت معتبر:
-**Phase 2 / C6 — STILL IN PROGRESS (آماده تصمیم مالک)**.
+**Phase 2 / C6 — CLOSED** (تصمیم مالک/معمار). زیرفاز بعدی Phase 2 = **C7 — NOT STARTED**.
 
 > **Governance فازبندی:** برای سلسله‌مراتب کامل (Owner Phase 0..20 = authoritative؛
 > `C6` = بستهٔ کاری داخل **Owner Phase 2**؛ سامانه‌های تاریخی/Legacy) و crosswalk و قواعد
@@ -22,20 +22,20 @@
 ## ۰. راستی‌آزمایی (اولین کار Agent جدید)
 
 ```bash
-git log --oneline -1 origin/arena/01a08828-doctor   # باید 8ade5c7 (یا بعدی) باشد
+git log --oneline -1 origin/arena/01a08828-doctor   # باید becc82f (یا بعدی) باشد
 git rev-list --left-right --count origin/main...origin/arena/01a08828-doctor   # انتظار: 0 <n
-gh pr view 14 --json state,headRefOid               # OPEN، head = 8ade5c7
+gh pr view 14 --json state,headRefOid               # OPEN، head = becc82f
 gh api repos/bia2on2on/doctor/actions/runs/34450386921 -q '.conclusion'  # success
 ```
 
 | قلم | مقدار |
 |---|---|
 | Remote | `https://github.com/bia2on2on/doctor.git` |
-| Branch کاری | `arena/01a08828-doctor` — tip **`8ade5c7`** |
+| Branch کاری | `arena/01a08828-doctor` — tip **`becc82f`** (closure docs) |
 | `origin/main` | `8087b42e19a1721e38eb073aa1a17aff1cbac97b` — **دست‌نخورده** |
-| نسب (`merge-base --is-ancestor`) | `8087b42` ⊂ `79cce4b`(#10) ⊂ `9e006b0`(#11) ⊂ `f88fcdc`(#12) ⊂ `09d505b`(#13) ⊂ … ⊂ `8ade5c7`(#14) — **خطی** |
-| PR #14 | `arena/01a08828-doctor` — OPEN — head `8ade5c7` — base `main` — DO NOT MERGE |
-| PR #10–#13 | OPEN — heads ancestors of `8ade5c7` — redundant با #14 |
+| نسب (`merge-base --is-ancestor`) | `8087b42` ⊂ `79cce4b`(#10) ⊂ `9e006b0`(#11) ⊂ `f88fcdc`(#12) ⊂ `09d505b`(#13) ⊂ … ⊂ `becc82f`(#14) — **خطی** |
+| PR #14 | `arena/01a08828-doctor` — OPEN — head `becc82f` — base `main` — |
+| PR #10–#13 | OPEN — heads ancestors of `becc82f` — redundant با #14 |
 | Schema | `2026_09_09_0020` — **Migration 0021 وجود ندارد و تصویب نشده** |
 
 ## ۱. گیت‌های سبزِ نهایی — همه روی `3fc5a54`
@@ -48,7 +48,7 @@ gh api repos/bia2on2on/doctor/actions/runs/34450386921 -q '.conclusion'  # succe
 | Pilot/Staging Readiness | `34450382549` | ✅ success |
 | Closure Gate | `34450382522` | ✅ success |
 
-SHA `3fc5a54` = آخرین implementation test. SHA `8ade5c7` = آخرین documentation tip.
+SHA `3fc5a54` = آخرین implementation test. SHA `becc82f` = آخرین documentation tip.
 
 ## ۲. وضعیت C6 Technical DoD
 
@@ -78,6 +78,24 @@ SHA `3fc5a54` = آخرین implementation test. SHA `8ade5c7` = آخرین docum
 - `main` / PR merge/close / force-push: **دست‌نخورده**.
 - هیچ security تستی skip/quarantine/weaken نشد.
 
+## ۴ب. گیت‌های بازگشت‌ناپذیر (Permanent Regression Gates)
+
+کار آینده نباید هیچ‌یک از موارد زیر را تضعیف کند:
+
+| # | Gate | معیار |
+|---|---|---|
+| 1 | Isolation matrix 45/45 | هر ۴۵ آیتم باید VERIFIED_GREEN بماند |
+| 2 | Tripwire CI | production runtime allowlist = خالی; 34 self-tests PASS |
+| 3 | Self-tests | هیچ تست Tripwire حذف/xfail نشود |
+| 4 | Membership fail-closed | بدون active Membership ⇒ reject |
+| 5 | Non-1 tenant IDs | هیچ hardcode clinic_id=1 در production code |
+| 6 | Clinical-file isolation | فایل بالینی per-Clinic |
+| 7 | Prescription Clinic ownership | نسخه Clinic-scoped |
+| 8 | SMS log isolation | لاگ SMS per-Clinic |
+| 9 | Background-job tenant identity | jobs باید Clinic context داشته باشند |
+| 10 | Reports/Export/Settings/Cache isolation | همه per-Clinic |
+| 11 | Migration 0020 | schema `2026_09_09_0020` دست‌نخورده |
+
 ## ۵. نکات harness
 
 - warm خنثی **قبل** از ساخت fixture Clinicها (boot() pin).
@@ -88,7 +106,33 @@ SHA `3fc5a54` = آخرین implementation test. SHA `8ade5c7` = آخرین docum
 
 ## ۶. بعدیِ ایمن
 
-**تصمیم مالک:** ادغام PR #14 → closure C6 → شروع Phase 3 با تأیید مالک.
+**C7** = زیرفاز بعدی Phase 2. Scope هنوز تعریف نشده. شروع فقط با تأیید مالک.
+**قبل از شروع:** ابتدا این سند + `project-current-state.md` + `phase2-state.md` را بخوانید.
+
+## ۷. تداوم پایانی (Final Continuity)
+
+این مخزن باید survive agent/chat disappearance کند:
+
+| مورد | وضعیت |
+|---|---|
+| PR #14 | OPEN — `arena/01a08828-doctor` → `main` |
+| PR #10–#13 | OPEN — ancestors of #14 — redundant |
+| `origin/main` | `8087b42` — **دست‌نخورده** |
+| C6 | CLOSED — SHA `3fc5a54` = شواهد اجرایی; SHA `becc82f` = closure docs |
+| C7 | NOT STARTED — scope undefined |
+| Phase 3 | NOT STARTED — نیازمند تصمیم مالک |
+| Migration 0021 | ممنوع بدون تأیید مالک |
+
+**تأیید نسب:**
+```bash
+git merge-base --is-ancestor origin/main HEAD && echo "main ⊂ HEAD ✓"
+git log --oneline origin/main..HEAD | head -20
+```
+
+**SHA‌های کلیدی:**
+- `8087b42` = origin/main (دست‌نخورده)
+- `3fc5a54` = implementation evidence (all 5 gates GREEN)
+- `becc82f` = closure documentation tip
 
 ---
 
