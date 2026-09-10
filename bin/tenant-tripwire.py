@@ -9,6 +9,23 @@ Exit codes:
     0 — no violations (or self-tests pass)
     1 — violations found
     2 — configuration error
+
+Detection layers
+----------------
+1. Line patterns (historical): literal tenant id written directly in SQL /
+   PHP source on a single line.
+2. Prepared-statement analysis (C6 post-closure corrective): the tenant
+   predicate is a *placeholder* (`%d`) and the literal tenant id `1` is bound
+   separately — possibly several lines below the SQL. Layer 1 is blind to this
+   by construction, which is exactly how seven production finance paths kept a
+   runtime `clinic_id = 1` assumption after C6 closure.
+
+Benign-pattern handling
+-----------------------
+Benign patterns ("is_active = 1", "LIMIT 1", ...) suppress a positive match
+only when they cover the match's own literal-`1` anchor — never the whole
+line. The previous line-wide skip let any unrelated `= 1` on the same line
+hide a genuine tenant hardcode.
 """
 
 import argparse
@@ -19,6 +36,17 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+
+# ---------------------------------------------------------------------------
+# Tenant vocabulary — the only thing that makes this detector tenant-aware.
+# Nothing else in this file knows what a "tenant" is.
+# ---------------------------------------------------------------------------
+
+#: Tenant foreign-key columns (final segment of a possibly alias-qualified name).
+TENANT_COLUMNS = ("clinic_id", "organization_id", "location_id")
+
+#: Tables whose own primary key *is* a tenant identifier.
+TENANT_TABLES = ("cpms_clinics", "cpms_organizations", "cpms_locations")
 
 # ---------------------------------------------------------------------------
 # Detection patterns — each is (name, regex, category)
@@ -62,30 +90,46 @@ PATTERNS: list[tuple[str, str, str]] = [
     ("insert_clinic_1",        r"INSERT\s+INTO\s+.*\(\s*[^)]*(?:clinic_id)[^)]*\)\s*VALUES\s*\([^)]*\b1\b", "hardcode"),
     ("insert_org_1",           r"INSERT\s+INTO\s+.*\(\s*[^)]*(?:organization_id)[^)]*\)\s*VALUES\s*\([^)]*\b1\b", "hardcode"),
 
-    # SELECT ... LIMIT 1 used as implicit first/default Clinic
-    ("select_first_clinic",    r"SELECT\s+.*\bcpms_clinics\b.*\bLIMIT\s+1\b",                    "suspect"),
+    # SELECT ... LIMIT 1 used as implicit first/default Clinic.
+    #
+    # Deliberately narrowed to the *unparameterized* row pick: a query that
+    # reaches a cpms_clinics row with no WHERE at all is choosing "some clinic"
+    # implicitly. `WHERE id = %d LIMIT 1` is a normal keyed lookup and must not
+    # be reported (that variant produced 7 false positives and, because the old
+    # line-wide `limit_1_generic` skip always matched `LIMIT 1`, this pattern
+    # was unreachable — a dead pattern — before the corrective).
+    ("select_first_clinic",    r"SELECT\s+(?:(?!\bWHERE\b)[^;])*?(?<![A-Za-z0-9])cpms_clinics\b(?:(?!\bWHERE\b)[^;])*?\bLIMIT\s+1\b", "suspect"),
 
     # Semantic: first/default Clinic resolvers
     ("first_clinic_semantic",  r"(?:first|default)\s*(?:clinic|Clinic)",                           "suspect"),
 ]
 
-# Patterns that must NOT trigger (negative cases — these are benign)
+# Patterns that must NOT trigger (negative cases — these are benign).
+#
+# Each column pattern is anchored with `(?<![\w.$])` so that it matches only a
+# bare column name. Without it, `id_1_primary` also matched the `id = 1` inside
+# `c.id = 1` — an alias-qualified tenant primary key that
+# `sql_where_clinic_id_1` explicitly wants to catch — and silently shadowed it.
 NEGATIVE_EXCLUDES: list[tuple[str, str]] = [
     # is_active = 1, capacity = 1, boolean flags, LIMIT 1 unrelated to tenant
-    ("is_active_flag",     r"is_active\s*=\s*1\b"),
-    ("capacity_1",         r"capacity\s*=\s*1\b"),
-    ("is_open_1",          r"is_open\s*=\s*1\b"),
-    ("is_needed_1",        r"is_needed\s*=\s*1\b"),
-    ("attempts_1",         r"attempts\s*=\s*1\b"),
-    ("recall_count_1",     r"recall_count\s*=\s*1\b"),
-    ("max_attempts_1",     r"max_attempts\s*=\s*1\b"),
-    ("limit_1_generic",    r"LIMIT\s+1\s*"),
-    ("priority_1",         r"priority\s*=\s*1\b"),
-    ("wp_user_id_1",       r"wp_user_id\s*=\s*1\b"),
-    ("id_1_primary",       r"\bid\s*=\s*1\b"),
-    ("booked_count_1",     r"booked_count\s*=\s*1\b"),
-    ("held_count_1",       r"held_count\s*=\s*1\b"),
+    ("is_active_flag",     r"(?<![\w.$])is_active\s*=\s*1\b"),
+    ("capacity_1",         r"(?<![\w.$])capacity\s*=\s*1\b"),
+    ("is_open_1",          r"(?<![\w.$])is_open\s*=\s*1\b"),
+    ("is_needed_1",        r"(?<![\w.$])is_needed\s*=\s*1\b"),
+    ("attempts_1",         r"(?<![\w.$])attempts\s*=\s*1\b"),
+    ("recall_count_1",     r"(?<![\w.$])recall_count\s*=\s*1\b"),
+    ("max_attempts_1",     r"(?<![\w.$])max_attempts\s*=\s*1\b"),
+    ("limit_1_generic",    r"\bLIMIT\s+1\b"),
+    ("priority_1",         r"(?<![\w.$])priority\s*=\s*1\b"),
+    ("wp_user_id_1",       r"(?<![\w.$])wp_user_id\s*=\s*1\b"),
+    ("id_1_primary",       r"(?<![\w.$])id\s*=\s*1\b"),
+    ("booked_count_1",     r"(?<![\w.$])booked_count\s*=\s*1\b"),
+    ("held_count_1",       r"(?<![\w.$])held_count\s*=\s*1\b"),
 ]
+
+#: Patterns whose signal is semantic rather than a bare literal `1`, so the
+#: benign-anchor rule must not be applied to them.
+ANCHOR_EXEMPT: set[str] = {"select_first_clinic", "first_clinic_semantic"}
 
 
 @dataclass
@@ -111,14 +155,317 @@ def is_in_comment(line: str) -> bool:
     return stripped.startswith("//") or stripped.startswith("#") or stripped.startswith("/*") or stripped.startswith("*")
 
 
-def scan_file(filepath: str, allowlist: set[str]) -> list[Finding]:
-    """Scan a single PHP file for tenant hardcode patterns."""
+# ---------------------------------------------------------------------------
+# Benign-span helpers
+# ---------------------------------------------------------------------------
+
+_LITERAL_1 = re.compile(r"(?<![\w.])1\b|'1'|\"1\"")
+
+
+def _benign_spans(line: str) -> list[tuple[int, int]]:
+    return [m.span() for _, pat in NEGATIVE_EXCLUDES for m in re.finditer(pat, line)]
+
+
+def _is_shadowed(line: str, span: tuple[int, int], pattern_name: str) -> bool:
+    """True when a benign pattern covers *this match's* literal-1 anchors.
+
+    Anchor-scoped, not line-wide: an unrelated `is_active = 1` further along the
+    same line must not hide `clinic_id = 1`. A match with no literal-1 anchor is
+    never suppressed here (its signal is structural, not the digit).
+    """
+    if pattern_name in ANCHOR_EXEMPT:
+        return False
+
+    anchors = [m.span() for m in _LITERAL_1.finditer(line, span[0], span[1])]
+    if not anchors:
+        return False
+
+    benign = _benign_spans(line)
+    return all(any(b[0] <= a[0] and a[1] <= b[1] for b in benign) for a in anchors)
+
+
+# ---------------------------------------------------------------------------
+# Layer 2 — prepared-statement analysis
+# ---------------------------------------------------------------------------
+
+#: CpmsDb entry points that carry (sql, params).
+_PREPARED_CALL = re.compile(
+    r"->\s*(?:fetchAll|fetchRow|fetchValue|fetchRowForUpdate|prepare|query|execute)\s*\("
+)
+_STRING_LIT = re.compile(r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"")
+_PLACEHOLDER = re.compile(r"%(?:%|d|s|f|i)")
+#: Column immediately to the left of a placeholder, e.g. `pay.clinic_id = `.
+_COLUMN_BEFORE = re.compile(
+    r"([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)"
+    r"\s*(?:<=>|!=|<>|>=|<=|=|>|\bLIKE\b|\bIN\b\s*\()\s*$",
+    re.IGNORECASE,
+)
+#: `cpms_clinics` whether written as the bare source literal or already carrying
+#: the WordPress table prefix (`wp_cpms_clinics`).
+_TENANT_TABLE = re.compile(r"(?<![A-Za-z0-9])cpms_(?:clinics|organizations|locations)\b")
+
+#: `literal | "literal" | $variable` — the three things a SQL region is made of.
+_SQL_TOKEN = re.compile(r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"|\$(\w+)")
+
+#: Simple single-line assignment, used to resolve SQL assembled into a variable
+#: (e.g. `$where = 'clinic_id = %d' . ...; ... ' WHERE ' . $where . ...`).
+#: Deliberately line-bounded: an unbounded `[^;]*` body runs across newlines and
+#: swallows PHP signature defaults (`function f(bool $onlyActive = false)`),
+#: which both invents variables and hides the real ones.
+_VAR_ASSIGN_LINE = re.compile(r"^\s*\$(\w+)\s*=\s*(.+?);\s*$")
+
+
+def _match_close(src: str, open_idx: int) -> int:
+    """Index just past the paren matching the '(' at open_idx (-1 if unbalanced)."""
+    depth = 0
+    i = open_idx
+    n = len(src)
+    while i < n:
+        ch = src[i]
+        if ch in "'\"":
+            m = _STRING_LIT.match(src, i)
+            if m is None:
+                return -1
+            i = m.end()
+            continue
+        if ch == "/" and src.startswith("//", i):
+            nl = src.find("\n", i)
+            i = n if nl < 0 else nl
+            continue
+        if ch == "/" and src.startswith("/*", i):
+            end = src.find("*/", i + 2)
+            i = n if end < 0 else end + 2
+            continue
+        if ch in "([":
+            depth += 1
+        elif ch in ")]":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return -1
+
+
+def _top_level_groups(src: str, open_ch: str, close_ch: str) -> list[tuple[int, int]]:
+    """Spans of depth-0 `open_ch ... close_ch` groups outside string literals."""
+    groups: list[tuple[int, int]] = []
+    depth = 0
+    start = -1
+    i = 0
+    n = len(src)
+    while i < n:
+        ch = src[i]
+        if ch in "'\"":
+            m = _STRING_LIT.match(src, i)
+            if m is None:
+                return groups
+            i = m.end()
+            continue
+        if ch == open_ch:
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == close_ch:
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start >= 0:
+                    groups.append((start, i + 1))
+                    start = -1
+        i += 1
+    return groups
+
+
+def _split_top_level(src: str) -> list[str]:
+    """Split a bracket body on depth-0 commas, respecting strings/brackets."""
+    parts: list[str] = []
+    depth = 0
+    cur = ""
+    i = 0
+    n = len(src)
+    while i < n:
+        ch = src[i]
+        if ch in "'\"":
+            m = _STRING_LIT.match(src, i)
+            if m is None:
+                break
+            cur += src[i:m.end()]
+            i = m.end()
+            continue
+        if ch in "([":
+            depth += 1
+        elif ch in ")]":
+            depth -= 1
+        if ch == "," and depth == 0:
+            parts.append(cur)
+            cur = ""
+            i += 1
+            continue
+        cur += ch
+        i += 1
+    if cur.strip():
+        parts.append(cur)
+    return parts
+
+
+def _is_literal_one(element: str) -> bool:
+    return element.strip() in ("1", "'1'", '"1"')
+
+
+def _string_map(src: str) -> dict[str, str]:
+    """Single-assignment string variables of a file, keyed by name.
+
+    Only variables assigned exactly once are resolved: a re-assigned variable
+    could mean two different SQL fragments and guessing would manufacture
+    findings. Unresolvable variables simply contribute nothing.
+    """
+    counts: dict[str, int] = {}
+    bodies: dict[str, str] = {}
+    for raw in src.splitlines():
+        if is_in_comment(raw):
+            continue
+        m = _VAR_ASSIGN_LINE.match(raw)
+        if m is None:
+            continue
+        name = m.group(1)
+        counts[name] = counts.get(name, 0) + 1
+        bodies[name] = m.group(2)
+
+    return {n: b for n, b in bodies.items() if counts[n] == 1}
+
+
+def _sql_text(region: str, varmap: Optional[dict[str, str]] = None, depth: int = 0) -> str:
+    """Rebuild the SQL of a call region from its literals (and known variables).
+
+    Order is preserved: `$where` is substituted where it appears, so the
+    placeholder sequence stays aligned with the params array.
+    """
+    parts: list[str] = []
+    for m in _SQL_TOKEN.finditer(region):
+        token = m.group(0)
+        if token.startswith("$"):
+            name = m.group(1) or ""
+            if varmap is not None and depth < 2 and name in varmap:
+                parts.append(_sql_text(varmap[name], varmap, depth + 1))
+            continue
+        parts.append(token[1:-1])
+
+    return "".join(parts)
+
+
+def _placeholder_columns(sql: str) -> list[Optional[str]]:
+    """Column bound to each real placeholder, in order (`%%` is not one)."""
+    columns: list[Optional[str]] = []
+    for m in _PLACEHOLDER.finditer(sql):
+        if m.group(0) == "%%":
+            continue
+        col = _COLUMN_BEFORE.search(sql[:m.start()])
+        columns.append(col.group(1) if col else None)
+    return columns
+
+
+def _tenant_targets(sql: str, columns: list[Optional[str]]) -> set[int]:
+    """Indexes of placeholders that bind a tenant identifier."""
+    on_tenant_table = _TENANT_TABLE.search(sql) is not None
+    targets: set[int] = set()
+    for idx, column in enumerate(columns):
+        if column is None:
+            continue
+        leaf = column.rsplit(".", 1)[-1]
+        if leaf in TENANT_COLUMNS:
+            targets.add(idx)
+        elif leaf == "id" and on_tenant_table:
+            # `SELECT id FROM cpms_clinics WHERE id = %d FOR UPDATE` — the row
+            # lock / row pick of a tenant table is a tenant identifier.
+            targets.add(idx)
+    return targets
+
+
+def scan_prepared(src: str, path: str) -> list[Finding]:
+    """Find prepared calls where a tenant placeholder is bound to literal 1."""
     findings: list[Finding] = []
-    try:
-        with open(filepath, encoding="utf-8", errors="replace") as f:
-            lines = f.readlines()
-    except (OSError, UnicodeDecodeError):
-        return findings
+    varmap = _string_map(src)
+    for call in _PREPARED_CALL.finditer(src):
+        open_idx = call.end() - 1
+        close = _match_close(src, open_idx)
+        if close < 0:
+            continue
+        window = src[open_idx + 1:close - 1]
+
+        # The params array is the last depth-0 `[...]` of the call; everything
+        # before it is the SQL region.
+        groups = _top_level_groups(window, "[", "]")
+        if not groups:
+            continue
+        params_start, params_end = groups[-1]
+        elements = _split_top_level(window[params_start + 1:params_end - 1])
+        if not elements:
+            continue
+
+        sql = _sql_text(window[:params_start], varmap)
+        if "%d" not in sql and "%s" not in sql:
+            continue
+
+        targets = _tenant_targets(sql, _placeholder_columns(sql))
+        if not targets:
+            continue
+
+        for idx in sorted(targets):
+            if idx >= len(elements) or not _is_literal_one(elements[idx]):
+                continue
+            element_start = _element_offset(window, params_start, elements, idx)
+            line = src.count("\n", 0, open_idx + 1 + element_start) + 1
+            findings.append(Finding(
+                file=path,
+                line=line,
+                pattern="prepared_tenant_placeholder_literal_1",
+                category="hardcode",
+                text=(
+                    "tenant placeholder bound to literal 1 — "
+                    + " ".join(sql.split())[:220]
+                    + "  ||  params: ["
+                    + ", ".join(e.strip() for e in elements)[:160]
+                    + "]"
+                ),
+            ))
+            break  # one finding per prepared call
+    return findings
+
+
+def _element_offset(window: str, params_start: int, elements: list[str], idx: int) -> int:
+    """Byte offset (relative to `window`) of the idx-th top-level element."""
+    body_start = params_start + 1
+    depth = 0
+    seen = 0
+    i = 0
+    n = len(window)
+    while i < n:
+        ch = window[i]
+        if ch in "'\"":
+            m = _STRING_LIT.match(window, i)
+            if m is None:
+                break
+            i = m.end()
+            continue
+        if ch in "([":
+            depth += 1
+        elif ch in ")]":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            seen += 1
+            if seen == idx:
+                return i + 1
+        i += 1
+    return body_start
+
+
+# ---------------------------------------------------------------------------
+# Source scanning (shared by production scan and self-tests)
+# ---------------------------------------------------------------------------
+
+def scan_source(src: str, path: str, allowlist: set[str]) -> list[Finding]:
+    """Scan PHP source for tenant hardcodes (both layers)."""
+    findings: list[Finding] = []
+    lines = src.splitlines(keepends=True)
 
     for lineno, line in enumerate(lines, 1):
         # Skip comments — policy: comments are not runtime behavior
@@ -126,34 +473,39 @@ def scan_file(filepath: str, allowlist: set[str]) -> list[Finding]:
             continue
 
         # Check if this file:line is allowlisted
-        key_exact = f"{filepath}:{lineno}"
-        key_file = filepath
-        if key_exact in allowlist or key_file in allowlist:
+        if f"{path}:{lineno}" in allowlist or path in allowlist:
             continue
 
-        # First check negative excludes — if line matches a benign pattern, skip
-        is_benign = False
-        for neg_name, neg_pattern in NEGATIVE_EXCLUDES:
-            if re.search(neg_pattern, line):
-                is_benign = True
-                break
-        if is_benign:
-            continue
-
-        # Check positive patterns
+        bare = line.rstrip("\r\n")
         for pat_name, pat_regex, category in PATTERNS:
-            m = re.search(pat_regex, line)
-            if m:
-                findings.append(Finding(
-                    file=filepath,
-                    line=lineno,
-                    pattern=pat_name,
-                    category=category,
-                    text=line.rstrip(),
-                ))
-                break  # one finding per line
+            m = re.search(pat_regex, bare)
+            if m is None:
+                continue
+            if _is_shadowed(bare, m.span(), pat_name):
+                continue
+            findings.append(Finding(
+                file=path, line=lineno, pattern=pat_name,
+                category=category, text=bare.rstrip(),
+            ))
+            break  # one finding per line
+
+    prepared = scan_prepared(src, path)
+    if prepared:
+        reported = {f.line for f in findings}
+        findings.extend(f for f in prepared if f.line not in reported)
 
     return findings
+
+
+def scan_file(filepath: str, allowlist: set[str]) -> list[Finding]:
+    """Scan a single PHP file for tenant hardcode patterns."""
+    try:
+        with open(filepath, encoding="utf-8", errors="replace") as f:
+            src = f.read()
+    except (OSError, UnicodeDecodeError):
+        return []
+
+    return scan_source(src, filepath, allowlist)
 
 
 def discover_scan_dirs(root: str) -> list[str]:
@@ -206,6 +558,13 @@ POSITIVE_CASES: list[tuple[str, bool]] = [
     ("'clinic_id' => '1',",                                       True),
     ("'organization_id' => 1,",                                   True),
     ("'location_id' => '1',",                                     True),
+    # Shadowing regressions (C6 post-closure corrective): a benign flag on the
+    # same line, or an alias-qualified tenant primary key, must not hide it.
+    ("WHERE clinic_id = 1 AND is_active = 1",                     True),
+    ("WHERE a.clinic_id = 1 ORDER BY id ASC LIMIT 1",             True),
+    ("WHERE c.id = 1",                                            True),
+    ("SELECT * FROM cpms_invoices WHERE clinic_id = 1 AND priority = 1", True),
+    ("'clinic_id' => 1, 'is_active' => 1,",                       True),
 ]
 
 NEGATIVE_CASES: list[tuple[str, bool]] = [
@@ -227,59 +586,243 @@ NEGATIVE_CASES: list[tuple[str, bool]] = [
     ("/* clinic_id = 1 */",                                       False),
 ]
 
+# --- Layer 2: prepared statements (tenant placeholder + separately bound 1) ---
+#
+# Each case is a realistic CpmsDb call site. `expect` = should be reported.
+# The seven historical finance defects are reproduced verbatim in shape.
+
+PREPARED_CASES: list[tuple[str, bool]] = [
+    # ---- MUST be rejected (historical bad patterns) -------------------------
+    # ServiceRepository::all() — single-line array
+    (
+        "        return $this->db->fetchAll(\n"
+        "            'SELECT * FROM ' . $this->db->table('cpms_services') .\n"
+        "            ' WHERE clinic_id = %d ORDER BY name ASC LIMIT 500',\n"
+        "            [1]\n"
+        "        ) ?: [];\n",
+        True,
+    ),
+    # InvoiceRepository::nextInvoiceNumber() — literal 1 first in a 2-element array
+    (
+        "        $max = $this->db->fetchValue(\n"
+        "            'SELECT MAX(invoice_number) FROM ' . $this->db->table('cpms_invoices') .\n"
+        "            \" WHERE clinic_id = %d AND invoice_number LIKE %s\",\n"
+        "            [1, $prefix . '%']\n"
+        "        );\n",
+        True,
+    ),
+    # PaymentRepository::revenueSummary() — 3 placeholders, literal 1 first
+    (
+        "        $rows = $this->db->fetchAll(\n"
+        "            'SELECT method, amount FROM ' . $this->db->table('cpms_payments') .\n"
+        "            \" WHERE clinic_id = %d AND status IN ('captured', 'refunded')\" .\n"
+        "            ' AND paid_at >= %s AND paid_at < %s',\n"
+        "            [1, $fromDate . ' 00:00:00', $toDate . ' 23:59:59.999']\n"
+        "        ) ?: [];\n",
+        True,
+    ),
+    # PaymentRepository::forRange() — alias-qualified tenant column + LIMIT %d
+    (
+        "        return $this->db->fetchAll(\n"
+        "            'SELECT pay.* FROM ' . $this->db->table('cpms_payments') . ' pay' .\n"
+        "            ' WHERE pay.clinic_id = %d' .\n"
+        "            ' AND pay.paid_at >= %s AND pay.paid_at < %s' .\n"
+        "            ' ORDER BY pay.id DESC LIMIT %d',\n"
+        "            [1, $fromDate . ' 00:00:00', $toDate . ' 23:59:59.999', $limit]\n"
+        "        ) ?: [];\n",
+        True,
+    ),
+    # InvoiceRepository::openInvoices() — JOIN, tenant predicate first
+    (
+        "        return $this->db->fetchAll(\n"
+        "            'SELECT i.*, p.mrn FROM ' . $this->db->table('cpms_invoices') . ' i' .\n"
+        "            ' JOIN ' . $this->db->table('cpms_patients') . ' p ON p.id = i.patient_id' .\n"
+        "            \" WHERE i.clinic_id = %d AND i.status IN ('open', 'partial')\" .\n"
+        "            ' ORDER BY i.id DESC LIMIT %d',\n"
+        "            [1, $limit]\n"
+        "        ) ?: [];\n",
+        True,
+    ),
+    # FinanceService::lockClinic() — Clinic row lock via tenant-table PK
+    (
+        "        $this->db->fetchRowForUpdate(\n"
+        "            'SELECT id FROM ' . $this->db->table('cpms_clinics') . ' WHERE id = %d LIMIT 1',\n"
+        "            [1]\n"
+        "        );\n",
+        True,
+    ),
+    # ServiceRepository::all() — the tenant predicate lives in a local variable,
+    # so the call site itself shows no placeholder. The detector resolves the
+    # single-assignment variable rather than giving up (7th historical site).
+    (
+        "    public function all(bool $onlyActive = false): array\n"
+        "    {\n"
+        "        $where = 'clinic_id = %d' . ($onlyActive ? ' AND is_active = 1' : '');\n"
+        "\n"
+        "        return $this->db->fetchAll(\n"
+        "            'SELECT * FROM ' . $this->db->table('cpms_services') .\n"
+        "            ' WHERE ' . $where . ' ORDER BY name ASC LIMIT 500',\n"
+        "            [1]\n"
+        "        ) ?: [];\n"
+        "    }\n",
+        True,
+    ),
+    # literal 1 in a non-first position, string form
+    (
+        "        $row = $this->db->fetchRow(\n"
+        "            'SELECT * FROM ' . $this->db->table('cpms_invoices') .\n"
+        "            ' WHERE status = %s AND clinic_id = %d',\n"
+        "            ['open', '1']\n"
+        "        );\n",
+        True,
+    ),
+    # organization_id / location_id variants
+    (
+        "        $n = $this->db->fetchValue(\n"
+        "            'SELECT COUNT(*) FROM ' . $this->db->table('cpms_locations') .\n"
+        "            ' WHERE clinic_id = %d AND organization_id = %d',\n"
+        "            [$clinicId, 1]\n"
+        "        );\n",
+        True,
+    ),
+
+    # ---- MUST remain accepted (legitimate code) -----------------------------
+    # explicit tenant variable — the shape this corrective migrates the code to
+    (
+        "        $where = 'clinic_id = %d' . ($onlyActive ? ' AND is_active = 1' : '');\n"
+        "\n"
+        "        return $this->db->fetchAll(\n"
+        "            'SELECT * FROM ' . $this->db->table('cpms_services') .\n"
+        "            ' WHERE ' . $where . ' ORDER BY name ASC LIMIT 500',\n"
+        "            [$clinicId]\n"
+        "        ) ?: [];\n",
+        False,
+    ),
+    (
+        "        return $this->db->fetchAll(\n"
+        "            'SELECT * FROM ' . $this->db->table('cpms_services') .\n"
+        "            ' WHERE clinic_id = %d ORDER BY name ASC LIMIT 500',\n"
+        "            [$clinicId]\n"
+        "        ) ?: [];\n",
+        False,
+    ),
+    (
+        "        $max = $this->db->fetchValue(\n"
+        "            'SELECT MAX(invoice_number) FROM ' . $this->db->table('cpms_invoices') .\n"
+        "            \" WHERE clinic_id = %d AND invoice_number LIKE %s\",\n"
+        "            [$clinicId, $prefix . '%']\n"
+        "        );\n",
+        False,
+    ),
+    (
+        "        $this->db->fetchRowForUpdate(\n"
+        "            'SELECT id FROM ' . $this->db->table('cpms_clinics') . ' WHERE id = %d LIMIT 1',\n"
+        "            [$clinicId]\n"
+        "        );\n",
+        False,
+    ),
+    # legitimate integer 1 bound to a non-tenant column
+    (
+        "        $rows = $this->db->fetchAll(\n"
+        "            'SELECT id FROM ' . $this->db->table('cpms_services') .\n"
+        "            ' WHERE clinic_id = %d AND is_active = %d',\n"
+        "            [$clinicId, 1]\n"
+        "        ) ?: [];\n",
+        False,
+    ),
+    (
+        "        $row = $this->db->fetchRow(\n"
+        "            'SELECT id FROM ' . $this->db->table('cpms_slots') .\n"
+        "            ' WHERE slot_id = %d AND capacity = %d LIMIT 1',\n"
+        "            [$slotId, 1]\n"
+        "        );\n",
+        False,
+    ),
+    # non-tenant table primary key bound to 1 is not a tenant statement
+    (
+        "        $row = $this->db->fetchRow(\n"
+        "            'SELECT * FROM ' . $this->db->table('cpms_invoices') . ' WHERE id = %d LIMIT 1',\n"
+        "            [$invoiceId]\n"
+        "        );\n",
+        False,
+    ),
+    # unparameterized aggregate over the tenant table (exactly-one resolver)
+    (
+        "        $count = (int) $db->fetchValue(\n"
+        "            'SELECT COUNT(*) FROM ' . $db->table('cpms_clinics')\n"
+        "        );\n",
+        False,
+    ),
+    # no params array at all
+    (
+        "        $rows = $this->db->fetchAll(\n"
+        "            'SELECT id FROM ' . $this->db->table('cpms_clinics') . ' WHERE is_active = 1'\n"
+        "        );\n",
+        False,
+    ),
+    # params passed by variable — undecidable, must not guess
+    (
+        "        $rows = $this->db->fetchAll($sql, $params);\n",
+        False,
+    ),
+]
+
+# --- Layer 1 semantic suspects: implicit "first clinic" row picks ------------
+
+SELECT_FIRST_CASES: list[tuple[str, bool]] = [
+    # unparameterized clinic row pick — the historical "default clinic" shape
+    ("SELECT id FROM wp_cpms_clinics LIMIT 1",                                  True),
+    ("SELECT * FROM cpms_clinics ORDER BY id ASC LIMIT 1",                      True),
+    # keyed lookups are ordinary and must not be reported
+    ("'SELECT id FROM ' . $db->table('cpms_clinics') . ' WHERE id = %d LIMIT 1',", False),
+    ("'SELECT name FROM ' . $db->table('cpms_clinics') . ' WHERE id = %d LIMIT 1',", False),
+]
+
+
+def _line_detects(code: str) -> bool:
+    """Layer-1 verdict for a single source line (self-test helper)."""
+    if is_in_comment(code):
+        return False
+    for pat_name, pat_regex, _category in PATTERNS:
+        m = re.search(pat_regex, code)
+        if m is not None and not _is_shadowed(code, m.span(), pat_name):
+            return True
+    return False
+
 
 def run_self_tests() -> tuple[int, int]:
     """Run detector self-tests. Returns (passes, failures)."""
     passes = 0
     failures = 0
-    allowlist: set[str] = set()
+
+    def check(code: str, expected: bool, detected: bool) -> None:
+        nonlocal passes, failures
+        label = " ".join(code.split())[:78]
+        if detected == expected:
+            passes += 1
+            print(f"  PASS: {label}")
+        else:
+            failures += 1
+            print(f"  FAIL: {label}  (detected={detected}, expected={expected})")
 
     print("=== Positive cases (must detect) ===")
     for code, should_detect in POSITIVE_CASES:
-        found = False
-        # Skip comments
-        if is_in_comment(code):
-            found = False
-        else:
-            for neg_name, neg_pattern in NEGATIVE_EXCLUDES:
-                if re.search(neg_pattern, code):
-                    found = False
-                    break
-            else:
-                for pat_name, pat_regex, category in PATTERNS:
-                    if re.search(pat_regex, code):
-                        found = True
-                        break
-
-        if found == should_detect:
-            passes += 1
-            print(f"  PASS: {code[:80]}")
-        else:
-            failures += 1
-            print(f"  FAIL: {code[:80]}  (detected={found}, expected={should_detect})")
+        check(code, should_detect, _line_detects(code))
 
     print("\n=== Negative cases (must NOT detect) ===")
     for code, should_not_detect in NEGATIVE_CASES:
-        found = False
-        if is_in_comment(code):
-            found = False
-        else:
-            for neg_name, neg_pattern in NEGATIVE_EXCLUDES:
-                if re.search(neg_pattern, code):
-                    found = False
-                    break
-            else:
-                for pat_name, pat_regex, category in PATTERNS:
-                    if re.search(pat_regex, code):
-                        found = True
-                        break
+        check(code, should_not_detect, _line_detects(code))
 
-        if found == should_not_detect:
-            passes += 1
-            print(f"  PASS: {code[:80]}")
-        else:
-            failures += 1
-            print(f"  FAIL: {code[:80]}  (detected={found}, expected={should_not_detect})")
+    print("\n=== Prepared-statement cases (tenant placeholder + bound literal 1) ===")
+    for code, expected in PREPARED_CASES:
+        found = scan_source(code, "selftest.php", set())
+        check(code, expected, any(f.pattern == "prepared_tenant_placeholder_literal_1" for f in found))
+
+    print("\n=== Implicit first-Clinic row picks ===")
+    for code, expected in SELECT_FIRST_CASES:
+        found = [f for f in scan_source(code, "selftest.php", set())
+                 if f.pattern == "select_first_clinic"]
+        check(code, expected, bool(found))
 
     return passes, failures
 
