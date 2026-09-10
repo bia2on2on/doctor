@@ -8,3 +8,5 @@ vendor/
 clinic-practice-management/dist/
 clinic-practice-management/pilot-screenshots/
 clinic-practice-management/pilot-responsive-results.json
+__pycache__/
+*.pyc
