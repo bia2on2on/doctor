@@ -63,13 +63,61 @@ SHA `3fc5a54` = آخرین implementation test (پیش‌از‌ادغام). SHA
 
 | آیتم | وضعیت |
 |---|---|
-| Runtime tenant defaults = 0 | ✅ Tripwire: 173 فایل، 0 نقض |
+| Runtime tenant defaults = 0 | ⚠️ **در زمان بستن C6 نادرست بود** — به «۲ب» مراجعه کنید |
 | Isolation matrix 45/45 | ✅ همه VERIFIED_GREEN |
-| Tripwire CI | ✅ 34 self-tests PASS، CI GREEN |
+| Tripwire CI | ✅ 34 self-tests PASS، CI GREEN — ⚠️ پوشش ناقص بود (به «۲ب» مراجعه کنید) |
 | MT-39 runtime handler tests | ✅ Real `__invoke()` با non-1 clinics |
 | Trusted REST context | ✅ |
 | Booking/Notification/Reports/Export/Settings/Cache/Jobs/Audit | ✅ |
 | WPCS / PHPStan / Unit / Integration / Real-WP / Pilot / Closure | ✅ |
+
+## ۲ب. تصحیح پس‌از‌بستن — C6 post-closure corrective (2026-09-10)
+
+**تاریخچه دست‌نخورده می‌ماند:** C6 به‌صورت رسمی بسته و در `main` ادغام شد (PR #14 → `099b644`،
+PR #15 → `6c84316`). آنچه پایین می‌آید **کشفِ بعدی** است، نه بازنویسی آن پذیرش.
+
+**یافته:** پذیرش C6 صریحاً ادعای «صفر tenant default در runtime» را داشت، اما **هفت مسیر مالی
+تولید** همچنان در زمان اجرا با Clinic ID 1 کار می‌کردند:
+
+| # | فایل | متد |
+|---|---|---|
+| ۱ | `Infrastructure/Repository/ServiceRepository.php` | `all()` |
+| ۲ | `Infrastructure/Repository/PaymentRepository.php` | `revenueSummary()` |
+| ۳ | `Infrastructure/Repository/PaymentRepository.php` | `forRange()` |
+| ۴ | `Infrastructure/Repository/PaymentRepository.php` | `nextPaymentNumber()` |
+| ۵ | `Infrastructure/Repository/InvoiceRepository.php` | `openInvoices()` |
+| ۶ | `Infrastructure/Repository/InvoiceRepository.php` | `nextInvoiceNumber()` |
+| ۷ | `Application/Finance/FinanceService.php` | `lockClinic()` |
+
+**چرا Tripwire آن‌ها را ندید (نقص کلاس D):** در هر هفت مورد، ستون tenant یک **placeholder**
+(`%d`) بود و literal `1` **جداگانه bind** می‌شد — اغلب چند خط پایین‌تر از خود SQL. آشکارساز
+خط‌محور ساختاراً نمی‌تواند این را ببیند، پس `CLEAN` گزارش می‌کرد. این یک نقطهٔ کورِ
+test/gate است، نه ضعف محصول.
+
+**نقص ثانویهٔ تأییدشده (همان مسیرهای مالی):** `wpdb::insert` در خطا `false` می‌دهد ولی
+`insert_id` را پاک نمی‌کند. `InvoiceRepository::insert` و `PaymentRepository::insert` آن شناسهٔ
+**stale** را برمی‌گرداندند؛ در مسیر فاکتور هیچ گاردی وجود نداشت ⇒ اقلام فاکتور می‌توانستند به
+یک فاکتور بیگانه چسبانده شوند و تراکنش commit شود. گارد مسیر پرداخت (`!$ok || $paymentId <= 0`)
+هم ناکافی بود چون `$ok` همان `insert_id` بود، یعنی فقط «صفر» گرفته می‌شد.
+
+**طبقه‌بندی:** هفت نقص مالی = **B (pre-existing product defect)** — پیش از C6 وجود داشتند و از
+بستن C6 جان سالم به‌در بردند. نقطهٔ کور Tripwire = **D (test/gate defect)**. **هیچ‌کدام A نیستند**
+(کار جاری رگرسیونی وارد نکرد).
+
+**رفع (corrective باریک — نه بازکردن دوبارهٔ C6، نه C7، نه Phase 3، بدون Migration):**
+هر هفت قرارداد حالا Clinic را **الزامی** می‌گیرند؛ `FinanceService` Clinic را از
+`ClinicScope` مورد اعتمادِ درخواست یا از `clinic_id` ردیفِ ویزیت/فاکتورِ قفل‌شده در همان
+تراکنش می‌گیرد (هرگز از پارامتر کلاینت) و `requireClinicScope()` مسیر را **fail-closed** می‌بندد.
+شکست درج invoice/item/adjustment/payment حالا استثنا می‌دهد ⇒ شناسهٔ stale/صفر هرگز مصرف
+نمی‌شود و تراکنش ROLLBACK می‌شود (مسیر Idempotency-race با catch همان استثنا حفظ شد).
+
+**Tripwire:** لایهٔ دوم (تحلیل prepared statement) افزوده شد + سه سایه‌اندازی تصحیح شد
+(الگوی مردهٔ `select_first_clinic`، `id_1_primary` روی `c.id = 1`، و تطبیق benign خط‌محور).
+Self-tests: ۳۴ → **۶۲**. Allowlist **خالی** ماند. روی `main` پیش از رفع: **۷ hardcode**؛
+پس از رفع: **۰ hardcode / ۱ suspect** (۱۷۳ فایل).
+
+**ادعای تصحیح‌شده:** «runtime tenant defaults = 0» اکنون با آشکارسازِ سخت‌شده و تستِ اجرایی
+پشتیبانی می‌شود — و فقط به همین دلیل دوباره assert می‌شود.
 
 ## ۳. کارهای deferred و دلیل
 

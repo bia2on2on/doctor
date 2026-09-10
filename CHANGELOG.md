@@ -2,6 +2,21 @@
 
 تمام تغییرات مهم پروژه در این فایل ثبت می‌شود. قالب: [Keep a Changelog](https://keepachangelog.com/)؛ نسخه‌بندی: [SemVer](https://semver.org/).
 
+## [Unreleased] — 2026-09-10 (C6 post-closure corrective — بدون bump نسخه)
+
+C6 به‌صورت رسمی بسته و در `main` ادغام شده بود (PR #14 → `099b644`، PR #15 → `6c84316`). پس از آن یک **جاافتادگیِ باریک** کشف شد: پذیرش C6 صریحاً «صفر tenant default در runtime» را ادعا می‌کرد، ولی هفت مسیر مالی تولید همچنان در زمان اجرا با Clinic ID 1 کار می‌کردند. این بخش **تاریخچهٔ پذیرش C6 را بازنویسی نمی‌کند** — فقط کشفِ بعدی و رفعِ باریک آن را ثبت می‌کند. این یک corrective است، نه بازکردن دوبارهٔ C6، نه C7، نه Phase 3. **بدون Migration** (0021 ساخته نشد).
+
+### Fixed
+- **هفت tenant default زمان اجرا در مسیرهای مالی (کلاس B — نقص از پیش موجود):** `ServiceRepository::all()`، `PaymentRepository::revenueSummary()` / `forRange()` / `nextPaymentNumber()`، `InvoiceRepository::openInvoices()` / `nextInvoiceNumber()` و `FinanceService::lockClinic()` ستون tenant را با `%d` می‌نوشتند و literal `1` را جداگانه bind می‌کردند. در نصب چند‌کلینیکی یعنی: خلاصهٔ مالی، فاکتورهای باز، **نام و MRN بیمارِ Clinic دیگر**، فهرست تعرفه‌ها، شمارهٔ سریال فاکتور/پرداخت و حتی قفل ردیفِ سریال‌سازی — همه به Clinic 1 گره خورده بودند. اکنون هر هفت قرارداد Clinic را **الزامی** می‌گیرند (بدون مقدار پیش‌فرض)؛ `FinanceService` آن را از ClinicScope مورد اعتمادِ درخواست یا از `clinic_id` ردیفِ ویزیت/فاکتورِ قفل‌شده در همان تراکنش می‌گیرد (هرگز از پارامتر کلاینت) و `requireClinicScope()` مسیر را **fail-closed** می‌بندد. هیچ fallback به Clinic 1 باقی نمانده و Clinic 1 همچنان به‌طور کامل کار می‌کند.
+- **شکست درج می‌توانست با شناسهٔ stale/صفر ادامه یابد (کلاس B):** `wpdb::insert` در خطا `false` می‌دهد ولی `insert_id` را پاک نمی‌کند. `InvoiceRepository::insert` شناسهٔ insert موفقِ قبلی را برمی‌گرداند و `issueInvoice` بدون گارد با آن `insertItem()` می‌زد ⇒ اقلام فاکتور می‌توانستند به فاکتور بیگانه (احتمالاً از Clinic دیگر) چسبانده شوند و تراکنش commit شود. گارد مسیر پرداخت هم ناکافی بود (`$ok` همان `insert_id` بود ⇒ فقط «صفر» گرفته می‌شد). اکنون `insert`/`insertItem`/`insertAdjustment` (فاکتور) و `insert` (پرداخت) در شکست استثنا می‌دهند ⇒ عملیات متوقف و تراکنش ROLLBACK می‌شود. مسیر Idempotency-race پرداخت با catch همان استثنا **بدون تغییر رفتار بیرونی** حفظ شد.
+
+### Security
+- **Tenant Tripwire — نقطهٔ کور بسته شد (کلاس D — نقص تست/گیت):** آشکارساز خط‌محور ساختاراً نمی‌توانست «ستون tenant به‌شکل placeholder + literal 1 جداگانه bind‌شده» را ببیند و به همین دلیل `CLEAN` گزارش می‌کرد. لایهٔ دوم افزوده شد: تحلیل prepared statement با بازسازی SQL از literalها (و resolve متغیرهای تک‌انتسابی در جای خودشان تا ترتیب placeholderها با params هم‌تراز بماند)، هم‌تراز‌سازی placeholder→param، پوشش ذاتیِ فراخوان‌های multiline، و تشخیص قفل/انتخاب ردیف جدول tenant. سه سایه‌اندازی هم تصحیح شد: الگوی **مردهٔ** `select_first_clinic` (که `limit_1_generic` هرگز اجازهٔ اجرای آن را نمی‌داد)، پوشاندن `c.id = 1` توسط `id_1_primary`، و خفه‌شدن hardcode واقعی با هر `= 1` بی‌ربط روی همان خط. **تشخیص تضعیف نشد؛ Allowlist خالی ماند.** Self-tests: ۳۴ → ۶۲.
+  - روی `main` پیش از رفع: **۷ hardcode** (دقیقاً همان هفت نقطه) و صفر در ۱۶۶ فایل دیگر. پس از رفع: **۰ hardcode / ۱ suspect** در ۱۷۳ فایل.
+
+### Tests
+- `tests/Integration/FinanceClinicScopeTest.php` (جدید، ۱۲ تست، بدون mock — ردیف واقعی MySQL): Clinic عملیاتی **غیر از ۱**؛ جداسازی دو‑Clinic در تعرفه/فاکتور باز/پرداخت/خلاصهٔ درآمد/**نام و MRN بیمار**؛ **عددگیری مستقل** فاکتور و پرداخت per Clinic؛ **قفل روی ردیف Clinic درست** (اثبات اینکه قفل Clinic 1 گرفته نمی‌شود)؛ **شکست درج** با تزریق خطای واقعی MySQL (نقض `u_inv_number`/`u_pay_number`) و اثبات اینکه فاکتور بیگانه هیچ قلمی نمی‌گیرد؛ سازگاری صریح Clinic 1؛ و قرارداد Reflection برای الزامی‌بودن `clinic_id`. پوشش ایزوله‌سازی موجود C6 دست‌نخورده ماند.
+
 ## [1.0.2] — 2026-09-07 (Hotfix نصب واقعی — بازتولیدشده روی WordPress واقعی در CI)
 
 سه نقص گزارش‌شدهٔ نصب روی WordPress واقعی روی main بازتولید شد (گیت جدید «Real WordPress Acceptance»: ZIP رسمی `bin/build-release.sh` → WordPress 6.7.2 تمیز → نصب/فعال‌سازی → تأیید مستقیم DB → مرورگر واقعی Chromium → بررسی لاگ — با ماتریس دو prefix `wp_`/`clinic_`).
