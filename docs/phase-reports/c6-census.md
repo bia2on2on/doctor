@@ -1,5 +1,9 @@
 # C6 — Tenant Hardcode Census (canonical inventory)
 
+> **Post-merge note:** C6 is **CLOSED** (integrated into `origin/main` = `099b644`
+> via PR #14 MERGED 2026-09-10). All checkpoints below are **historical
+> pre-merge evidence** — preserved, not current state.
+>
 > **Checkpoint verified (implementation SHA `6e5d48c801e86779c0daf350d68c9df49e49a6c8`):**
 > production tripwire = **۰** runtime finding (allowlist خالی؛ ۷ کامنت غیر اجرایی).
 > Tripwire **هنوز به CI وصل نشده**. C6 **کامل نیست**.

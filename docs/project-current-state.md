@@ -3,13 +3,16 @@
 > Recover the project from this file + Git/remote/PR + linked canonical docs.
 > Do **not** use a previous chat session as memory.
 >
-> **State based on implementation SHA:** `3fc5a54c3a340f8d6881048ff299e6700a7fb99e`
+> **Integrated main checkpoint:** `099b6449362ce16be185aa811ff1f7da7dec269e`
+> (PR #14 MERGED 2026-09-10; parents: pre-merge main `8087b42` + PR #14 head `a49b182`).
+> **Pre-merge implementation evidence (historical):** `3fc5a54c3a340f8d6881048ff299e6700a7fb99e`
 > **Historical baseline:** `c2bff76d1e21643a66bc0056a29881faaa2f299f` (tenant-hardening batch)
 
 If Git/remote/PR, this file, and the repository tree disagree: **STOP**.
 
-This file describes verified implementation at `6e5d48c`. It does **not**
-self-refer to the SHA of any later documentation-only commit.
+This file describes the integrated main checkpoint `099b644` plus preserved
+pre-merge evidence SHAs below. It does **not** self-refer to the SHA of any
+later documentation-only commit.
 
 ---
 
@@ -52,31 +55,48 @@ Legacy labels (`F0..F10`, `Doc-Phase`, `V1` / `V1.5` / `V2`) are historical. The
 | Phase 2 | **IN PROGRESS** — subphase **C6 CLOSED** (tenant isolation foundation complete) |
 | Phase 3 | **NOT STARTED** — no `AuthorizationService`; do not start |
 
-**Last verified implementation SHA:** `3fc5a54` (see §G). Historical baseline: `c2bff76`
-(tenant-hardening batch). Gap-closure + Tripwire session: `d429f5a` → `3fc5a54`. All five
-gates GREEN on `3fc5a54` — §G table.
+**Integrated main checkpoint:** `099b644` (PR #14 MERGED 2026-09-10; parents
+`8087b42` + `a49b182`). **Pre-merge implementation evidence (historical):**
+`3fc5a54`. Historical baseline: `c2bff76` (tenant-hardening batch). Gap-closure +
+Tripwire session: `d429f5a` → `3fc5a54`. All five gates GREEN on `3fc5a54`
+(historical table below) AND all four post-merge main gates GREEN on `099b644`
+(post-merge table below).
 
 **Schema:** current version **`2026_09_09_0020`**. File `0021` does **not** exist. **Migration 0021 is NOT approved.** If new schema is required: STOP and ask Owner.
 
-**This Arena session**
+**Post-merge integration state (verified from live remote 2026-09-10)**
 
 | | |
 |---|---|
-| Branch | `arena/01a08828-doctor` — tip `8ade5c7` (latest docs) — implementation `3fc5a54` — linear |
-| Draft PR | [#14](https://github.com/bia2on2on/doctor/pull/14) — OPEN — head `8ade5c7` — base `main` — DO NOT MERGE |
-| Base | `main` (`8087b42`) |
-| PR #10–#13 | OPEN — heads are ancestors of `8ade5c7` — redundant with #14 |
+| `origin/main` | `099b644` — "Merge PR #14: Phase 2 C6 tenant isolation (118 commits)" — parents `8087b42` (pre-merge main, PR #9) + `a49b182` (PR #14 head) |
+| PR #14 | [#14](https://github.com/bia2on2on/doctor/pull/14) — **MERGED** 2026-09-10 — base `main` — head `a49b182` |
+| PR #10 / #11 / #12 | **MERGED** (historical; superseded by #14) — do not reopen |
+| PR #13 | **OPEN + DRAFT** — C6 repair diagnostic (`arena/01a086b4-doctor`, head `09d505b`) — **do not touch, do not merge, do not close** |
+| Pre-merge branch (historical) | `arena/01a08828-doctor` — implementation `3fc5a54` — closure docs `becc82f` — integrated via #14 |
 
-**Previous PRs — keep OPEN + DRAFT; do not merge or close**
+**Previous PRs — historical, integrated (do not reopen, rewrite, or close #13)**
 
-Verified Git ancestry (unshallow + `merge-base --is-ancestor`): both heads are ancestors of `6e5d48c`. Histories of #10 and #11 are fully contained in this branch. Do not rewrite those branches.
+Verified pre-merge ancestry (`merge-base --is-ancestor`): heads of #10 and #11
+were ancestors of the #14 line; their histories are fully contained in the
+merged main `099b644`. Do not rewrite those branches.
 
-| PR | Branch | Head | Role |
-|---|---|---|---|
-| [#10](https://github.com/bia2on2on/doctor/pull/10) | `arena/01a0808c-doctor` | `79cce4b` | Phase 1A |
-| [#11](https://github.com/bia2on2on/doctor/pull/11) | `arena/01a082db-doctor` | `9e006b0` | OD-9 + Phase 2 through C6-E2 |
+| PR | Branch | Head | Role | State |
+|---|---|---|---|---|
+| [#10](https://github.com/bia2on2on/doctor/pull/10) | `arena/01a0808c-doctor` | `79cce4b` | Phase 1A | MERGED |
+| [#11](https://github.com/bia2on2on/doctor/pull/11) | `arena/01a082db-doctor` | `9e006b0` | OD-9 + Phase 2 through C6-E2 | MERGED |
+| [#12](https://github.com/bia2on2on/doctor/pull/12) | `arena/01a086ca-doctor` | `f88fcdc` | C6 tenant hardcode removal (CI execution) | MERGED |
+| [#13](https://github.com/bia2on2on/doctor/pull/13) | `arena/01a086b4-doctor` | `09d505b` | C6 repair diagnostic | OPEN + DRAFT — **untouched** |
 
-**Last verified gates on `6e5d48c` (via PR #12)** — all SUCCESS:
+**Post-merge gates on `099b644` (`origin/main`, push event — all SUCCESS, verified live):**
+
+| Gate | Run |
+|---|---|
+| CI | `34460364222` |
+| Real WordPress Acceptance | `34460364238` |
+| Pilot/Staging Readiness | `34460364243` |
+| Closure Gate | `34460364219` |
+
+**Historical gates on `6e5d48c` (via PR #12)** — all SUCCESS:
 
 | Gate | Run |
 |---|---|
@@ -86,7 +106,7 @@ Verified Git ancestry (unshallow + `merge-base --is-ancestor`): both heads are a
 | Closure | `34375756075` |
 | Pilot/Staging | `34375756043` |
 
-**Last verified gates on `3fc5a54`** — all SUCCESS:
+**Historical gates on `3fc5a54` (pre-merge branch evidence)** — all SUCCESS:
 
 | Gate | Run |
 |---|---|
@@ -198,7 +218,7 @@ User-facing strings: WordPress i18n-ready. Machine `CLINIC_*` codes stay stable.
 - Atomic commits; safe frequent push of **this Arena branch only**
 - No merge without Owner; no force push; no tag/release/version bump
 - `main` untouched; `/tmp` and Arena sandbox disposable
-- Do not merge/close PR #10, #11, or this session’s Draft PR (#12)
+- Do not touch PR #13 (OPEN + DRAFT diagnostic); PR #10/#11/#12/#14 are MERGED history — do not reopen
 
 A future Agent must: (1) read this file (2) verify Git/remote/PR (3) verify linked docs (4) compare to the repo (5) **STOP** on material mismatch.
 
@@ -209,7 +229,10 @@ A future Agent must: (1) read this file (2) verify Git/remote/PR (3) verify link
 Canonical inventory: [`docs/phase-reports/c6-census.md`](phase-reports/c6-census.md)  
 Phase 2 queue: [`docs/phase-reports/phase2-state.md`](phase-reports/phase2-state.md)
 
-**C6 is NOT complete. Do not declare C6 PASS.**
+**C6 is CLOSED** (Owner/Architect decision; integrated via PR #14 into main
+`099b644`; deferred boundaries recorded in [`c6-deferred-boundaries.md`](phase-reports/c6-deferred-boundaries.md)).
+The checkpoint notes below are **historical pre-closure evidence** (pinned to
+their SHAs), not current state.
 
 **Verified at `6e5d48c` (local tripwire, empty allowlist — not a CI job):**
 
