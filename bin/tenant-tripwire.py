@@ -26,15 +26,29 @@ from typing import Optional
 # ---------------------------------------------------------------------------
 
 PATTERNS: list[tuple[str, str, str]] = [
-    # SQL WHERE predicates with literal 1 for tenant columns
+    # SQL WHERE predicates with literal 1 for tenant columns (numeric)
     ("sql_where_clinic_id_1",   r"WHERE\s+.*(?:clinic_id|a\.clinic_id|c\.id)\s*=\s*1\b",        "hardcode"),
     ("sql_where_org_id_1",     r"WHERE\s+.*organization_id\s*=\s*1\b",                           "hardcode"),
     ("sql_where_location_id_1", r"WHERE\s+.*location_id\s*=\s*1\b",                              "hardcode"),
 
-    # PHP variable assignments with literal 1 for tenant
+    # SQL WHERE predicates with string '1' for tenant columns
+    ("sql_where_clinic_str1",   r"WHERE\s+.*(?:clinic_id|a\.clinic_id)\s*=\s*'1'",               "hardcode"),
+    ("sql_where_org_str1",      r"WHERE\s+.*organization_id\s*=\s*'1'",                          "hardcode"),
+    ("sql_where_loc_str1",      r"WHERE\s+.*location_id\s*=\s*'1'",                              "hardcode"),
+
+    # PHP variable assignments with literal 1 for tenant (numeric)
     ("php_clinic_id_1",        r"\$\w*(?:clinic|Clinic)\w*\s*=\s*1\s*;",                          "hardcode"),
     ("php_org_id_1",           r"\$\w*(?:organization|Organization|org)\w*_id\s*=\s*1\s*;",        "hardcode"),
     ("php_location_id_1",      r"\$\w*(?:location|Location)\w*_id\s*=\s*1\s*;",                    "hardcode"),
+
+    # PHP variable assignments with string '1' for tenant
+    ("php_clinic_str1",        r"\$\w*(?:clinic|Clinic)\w*\s*=\s*'1'\s*;",                         "hardcode"),
+    ("php_org_str1",           r"\$\w*(?:organization|Organization|org)\w*_id\s*=\s*'1'\s*;",       "hardcode"),
+    ("php_location_str1",      r"\$\w*(?:location|Location)\w*_id\s*=\s*'1'\s*;",                   "hardcode"),
+
+    # Array key => value with literal 1 for tenant
+    ("array_clinic_1",         r"'(?:clinic_id|organization_id|location_id)'\s*=>\s*1\b",           "hardcode"),
+    ("array_clinic_str1",      r"'(?:clinic_id|organization_id|location_id)'\s*=>\s*'1'",           "hardcode"),
 
     # Function/method calls with literal 1 as tenant argument
     ("call_queueFor_1",        r"queueFor\s*\(\s*1\s*,",                                         "hardcode"),
@@ -44,7 +58,7 @@ PATTERNS: list[tuple[str, str, str]] = [
     ("default_clinic_1",       r"(?:clinic_id|clinicId)\s*[=:]\s*1\b(?!\s*[.,])",                 "hardcode"),
     ("default_org_1",          r"(?:organization_id|organizationId)\s*[=:]\s*1\b",                "hardcode"),
 
-    # INSERT values with literal 1 for tenant columns
+    # INSERT values with literal 1 for tenant columns (numeric)
     ("insert_clinic_1",        r"INSERT\s+INTO\s+.*\(\s*[^)]*(?:clinic_id)[^)]*\)\s*VALUES\s*\([^)]*\b1\b", "hardcode"),
     ("insert_org_1",           r"INSERT\s+INTO\s+.*\(\s*[^)]*(?:organization_id)[^)]*\)\s*VALUES\s*\([^)]*\b1\b", "hardcode"),
 
@@ -171,7 +185,7 @@ def discover_scan_files(root: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 POSITIVE_CASES: list[tuple[str, bool]] = [
-    # (code_line, should_be_detected)
+    # Numeric 1 forms
     ("$clinic_id = 1;",                                           True),
     ("WHERE clinic_id = 1 AND status = 'active'",                 True),
     ("WHERE a.clinic_id = 1",                                     True),
@@ -183,6 +197,15 @@ POSITIVE_CASES: list[tuple[str, bool]] = [
     ("store('key', 1, $data)",                                    True),
     ("$clinicId = 1;",                                            True),
     ("INSERT INTO cpms_clinics (clinic_id) VALUES (1, 'test')",   True),
+    # String '1' forms
+    ("$clinic_id = '1';",                                         True),
+    ("WHERE clinic_id = '1'",                                     True),
+    ("WHERE organization_id = '1'",                               True),
+    ("WHERE location_id = '1'",                                   True),
+    ("'clinic_id' => 1,",                                         True),
+    ("'clinic_id' => '1',",                                       True),
+    ("'organization_id' => 1,",                                   True),
+    ("'location_id' => '1',",                                     True),
 ]
 
 NEGATIVE_CASES: list[tuple[str, bool]] = [
