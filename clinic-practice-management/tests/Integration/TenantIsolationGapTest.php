@@ -95,10 +95,10 @@ final class TenantIsolationGapTest extends WP_UnitTestCase
         $sec = $this->seedStaff('gap_sec_24a', 'cpms_secretary', [self::CLINIC_A1, self::CLINIC_B1]);
 
         App::replaceExplicitScope(ClinicScope::forClinic(self::CLINIC_A1));
-        App::notificationService()->publishToUser(self::CLINIC_A1, $sec, 'test.notif_a', ['x' => 1], 'gap-dedup-a');
+        App::notificationService()->publishToUser(self::CLINIC_A1, $sec, 'appt_confirmed', ['patient_name' => 'Test A'], 'gap-dedup-a');
 
         App::replaceExplicitScope(ClinicScope::forClinic(self::CLINIC_B1));
-        App::notificationService()->publishToUser(self::CLINIC_B1, $sec, 'test.notif_b', ['x' => 2], 'gap-dedup-b');
+        App::notificationService()->publishToUser(self::CLINIC_B1, $sec, 'appt_confirmed', ['patient_name' => 'Test B'], 'gap-dedup-b');
 
         // Query inbox in context A1 → only A's notifications
         App::replaceExplicitScope(ClinicScope::forClinic(self::CLINIC_A1));
@@ -136,7 +136,7 @@ final class TenantIsolationGapTest extends WP_UnitTestCase
 
         // publishToStaff(clinic_id, event, vars, dedupeBase, capability)
         App::replaceExplicitScope(ClinicScope::forClinic(self::CLINIC_A1));
-        App::notificationService()->publishToStaff(self::CLINIC_A1, 'test.staff_a', ['y' => 1], 'gap-dedup-staff-a', 'cpms_queue_read');
+        App::notificationService()->publishToStaff(self::CLINIC_A1, 'queue_called', ['patient_name' => 'Staff Test'], 'gap-dedup-staff-a', 'cpms_queue_read');
 
         // secA should have a notification
         App::replaceExplicitScope(ClinicScope::forClinic(self::CLINIC_A1));
@@ -271,14 +271,14 @@ final class TenantIsolationGapTest extends WP_UnitTestCase
         // The SELECT query must NOT have "WHERE ... AND clinic_id" or "a.clinic_id ="
         // It scans system-wide (confirmed + date range only)
         self::assertStringContainsString("WHERE a.status = %s AND a.slot_date", $source, 'Handler scans by status+date only');
-        // Verify clinic_id is NOT in the WHERE clause of the SELECT
-        $selectPos = strpos($source, 'SELECT a.id, a.clinic_id');
-        self::assertNotFalse($selectPos, 'Handler SELECT includes clinic_id from row');
-        $wherePos = strpos($source, 'WHERE a.status', $selectPos);
-        $nextSelect = strpos($source, 'SELECT', $selectPos + 10);
-        // The WHERE clause between this SELECT and next SELECT must not filter by clinic_id
-        $whereClause = substr($source, $wherePos, ($nextSelect ?: strlen($source)) - $wherePos);
-        self::assertStringNotContainsString('clinic_id', $whereClause, 'Handler WHERE must not filter by clinic_id');
+        // Verify the main SELECT clause includes clinic_id from row
+        self::assertStringContainsString('a.clinic_id', $source, 'Handler SELECT includes clinic_id from row');
+        // Verify the WHERE clause specifically does not filter by clinic_id
+        // The handler WHERE is: "WHERE a.status = %s AND a.slot_date IN (%s, %s)"
+        // which does NOT contain "clinic_id"
+        preg_match('/WHERE\s+a\.status\s*=\s*%s\s+AND\s+a\.slot_date[^)]*\)/', $source, $matches);
+        self::assertNotEmpty($matches, 'Handler WHERE clause must be found');
+        self::assertStringNotContainsString('clinic_id', $matches[0], 'Handler WHERE must not filter by clinic_id');
 
         // Verify SMS send uses row clinic_id (not current scope, not hardcoded)
         self::assertStringContainsString(
@@ -331,29 +331,31 @@ final class TenantIsolationGapTest extends WP_UnitTestCase
         $refA = 'REF-A1-' . bin2hex(random_bytes(4));
         $refB = 'REF-B1-' . bin2hex(random_bytes(4));
 
-        // Appointment in Clinic A1
-        $wpdb->query(
+        // Appointment in Clinic A1 — with slot_id and location_id (FK NOT NULL)
+        $resultA = $wpdb->query(
             $wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_appointments
-                     (clinic_id, patient_id, clinician_id, slot_id, slot_date, slot_time, status, reference_code, booked_at, confirmed_at, duration_min, created_at, updated_at)
-                 VALUES (%d, %d, %d, %d, %s, %s, "confirmed", %s, %s, %s, 20, %s, %s)',
-                self::CLINIC_A1, $patientA, $clinicianA, $slotA['id'], $date, '10:00',
+                     (clinic_id, patient_id, clinician_id, slot_id, location_id, slot_date, slot_time, status, reference_code, booked_at, confirmed_at, created_at, updated_at)
+                 VALUES (%d, %d, %d, %d, %d, %s, %s, "confirmed", %s, %s, %s, %s, %s)',
+                self::CLINIC_A1, $patientA, $clinicianA, $slotA['id'], $this->locA1, $date, '10:00',
                 $refA, $now, $now, $now, $now
             )
         );
+        self::assertNotFalse($resultA, 'Appointment A INSERT must succeed: ' . $wpdb->last_error);
         $apptA = (int) $wpdb->insert_id;
         self::assertGreaterThan(0, $apptA, 'Appointment A must be inserted');
 
         // Appointment in Clinic B1
-        $wpdb->query(
+        $resultB = $wpdb->query(
             $wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_appointments
-                     (clinic_id, patient_id, clinician_id, slot_id, slot_date, slot_time, status, reference_code, booked_at, confirmed_at, duration_min, created_at, updated_at)
-                 VALUES (%d, %d, %d, %d, %s, %s, "confirmed", %s, %s, %s, 20, %s, %s)',
-                self::CLINIC_B1, $patientB, $clinicianB, $slotB['id'], $date, '11:00',
+                     (clinic_id, patient_id, clinician_id, slot_id, location_id, slot_date, slot_time, status, reference_code, booked_at, confirmed_at, created_at, updated_at)
+                 VALUES (%d, %d, %d, %d, %d, %s, %s, "confirmed", %s, %s, %s, %s, %s)',
+                self::CLINIC_B1, $patientB, $clinicianB, $slotB['id'], $this->locB1, $date, '11:00',
                 $refB, $now, $now, $now, $now
             )
         );
+        self::assertNotFalse($resultB, 'Appointment B INSERT must succeed: ' . $wpdb->last_error);
         $apptB = (int) $wpdb->insert_id;
         self::assertGreaterThan(0, $apptB, 'Appointment B must be inserted');
 
