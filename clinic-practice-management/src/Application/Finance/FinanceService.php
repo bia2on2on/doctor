@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Application\Finance;
 
+use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Application\Visits\VisitService;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
@@ -72,6 +73,9 @@ final class FinanceService
             throw FinanceException::of('CLINIC_PERMISSION_DENIED', 'دسترسی لازم را ندارید', 403, ['scope' => 'services.read']);
         }
 
+        // C6-corrective: تعرفه‌های همان Clinic معتبر — بدون Scope، بسته.
+        $clinicId = $this->trustedClinicId();
+
         return array_map(static fn (array $s): array => [
             'id' => (int) $s['id'],
             'code' => (string) $s['code'],
@@ -79,7 +83,7 @@ final class FinanceService
             'price' => (float) $s['price'],
             'currency' => (string) $s['currency'],
             'is_active' => (int) $s['is_active'] === 1,
-        ], $this->services->all($onlyActive));
+        ], $this->services->all($clinicId, $onlyActive));
     }
 
     /**
@@ -262,9 +266,11 @@ final class FinanceService
                 throw FinanceException::of('CLINIC_VALIDATION_FAILED', 'اقلام فاکتور نامعتبر است: ' . $e->getMessage(), 422);
             }
 
-            // عددگیری سریال — قفل کلینیک همه عددگیری‌های موازی را سریال می‌کند
-            $this->lockClinic();
-            $number = $this->invoices->nextInvoiceNumber();
+            // عددگیری سریال — قفل همان Clinicِ ویزیت، عددگیری‌های موازی همان
+            // Clinic را سریال می‌کند؛ دنباله شماره مستقلِ هر Clinic است.
+            $visitClinicId = (int) $visit['clinic_id'];
+            $this->lockClinic($visitClinicId);
+            $number = $this->invoices->nextInvoiceNumber($visitClinicId);
 
             $invoiceId = $this->invoices->insert((int) $visit['clinic_id'], [
                 'invoice_number' => $number,
@@ -365,8 +371,9 @@ final class FinanceService
                     );
                 }
 
-                $this->lockClinic();
-                $number = $this->payments->nextPaymentNumber();
+                $invoiceClinicId = (int) $invoice['clinic_id'];
+                $this->lockClinic($invoiceClinicId);
+                $number = $this->payments->nextPaymentNumber($invoiceClinicId);
                 $ok = $this->payments->insert((int) $invoice['clinic_id'], [
                     'payment_number' => $number,
                     'invoice_id' => $invoiceId,
@@ -771,8 +778,10 @@ final class FinanceService
             }
         }
 
-        $revenue = $this->payments->revenueSummary($from, $to);
-        $openInvoices = $this->invoices->openInvoices(500);
+        // C6-corrective: خلاصه همان Clinic معتبر — بدون Scope، بسته.
+        $clinicId = $this->trustedClinicId();
+        $revenue = $this->payments->revenueSummary($clinicId, $from, $to);
+        $openInvoices = $this->invoices->openInvoices($clinicId, 500);
         $openBalance = 0;
         foreach ($openInvoices as $inv) {
             $openBalance += (int) round((float) $inv['balance']);
@@ -801,7 +810,7 @@ final class FinanceService
             ],
             'payments' => array_map(
                 fn (array $p): array => $this->presentPayment($p),
-                $this->payments->forRange($from, $to, 100)
+                $this->payments->forRange($clinicId, $from, $to, 100)
             ),
         ];
     }
@@ -984,14 +993,29 @@ final class FinanceService
     }
 
     /**
-     * قفل ردیف کلینیک — سریال‌سازی عددگیری INV/PAY (رقابت موازی روی MAX+1).
+     * قفل ردیف همان Clinicِ عملیات مالی — سریال‌سازی عددگیری INV/PAY همان
+     * Clinic (رقابت موازی روی MAX+1)؛ هیچ Clinic دیگری قفل نمی‌شود.
      */
-    private function lockClinic(): void
+    private function lockClinic(int $clinicId): void
     {
         $this->db->fetchRowForUpdate(
             'SELECT id FROM ' . $this->db->table('cpms_clinics') . ' WHERE id = %d LIMIT 1',
-            [1]
+            [$clinicId]
         );
+    }
+
+    /**
+     * Clinic معتبر جریان مالی (الگوی ClinicalService/VisitService) —
+     * Scope صریحِ درخواست یا Resolution سیستمی «تنها Clinic»؛
+     * مبهم ⇒ CLINIC_SCOPE_REQUIRED و عملیات بسته (fail-closed).
+     */
+    private function trustedClinicId(): int
+    {
+        try {
+            return App::scope()->clinicId;
+        } catch (ScopeRequiredException $e) {
+            throw FinanceException::of($e->errorCode, $e->getMessage(), $e->httpStatus(), $e->getData());
+        }
     }
 
     /**

@@ -19,16 +19,18 @@ final class ServiceRepository
     }
 
     /**
+     * تعرفه‌های یک Clinic صریح — خواندن همیشه با شناسه معتبر انجام می‌شود.
+     *
      * @return list<array<string, mixed>>
      */
-    public function all(bool $onlyActive = false): array
+    public function all(int $clinicId, bool $onlyActive = false): array
     {
         $where = 'clinic_id = %d' . ($onlyActive ? ' AND is_active = 1' : '');
 
         return $this->db->fetchAll(
             'SELECT * FROM ' . $this->db->table('cpms_services') .
             ' WHERE ' . $where . ' ORDER BY name ASC LIMIT 500',
-            [1]
+            [$clinicId]
         ) ?: [];
     }
 
