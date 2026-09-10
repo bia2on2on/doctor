@@ -95,13 +95,16 @@ final class PaymentRepository
         ) ?: [];
     }
 
-    public function nextPaymentNumber(): string
+    /**
+     * شماره بعدی پرداخت — مستقل برای هر Clinic (کلید یکتایی per-Clinic).
+     */
+    public function nextPaymentNumber(int $clinicId): string
     {
         $prefix = 'PAY-' . gmdate('ymd') . '-';
         $max = $this->db->fetchValue(
             'SELECT MAX(payment_number) FROM ' . $this->db->table('cpms_payments') .
             " WHERE clinic_id = %d AND payment_number LIKE %s",
-            [1, $prefix . '%']
+            [$clinicId, $prefix . '%']
         );
 
         $seq = 0;
@@ -117,13 +120,13 @@ final class PaymentRepository
      *
      * @return array{total: float, by_method: array<string, float>, refunded: float, count: int}
      */
-    public function revenueSummary(string $fromDate, string $toDate): array
+    public function revenueSummary(int $clinicId, string $fromDate, string $toDate): array
     {
         $rows = $this->db->fetchAll(
             'SELECT method, amount, refunded_amount FROM ' . $this->db->table('cpms_payments') .
             " WHERE clinic_id = %d AND status IN ('captured', 'refunded')" .
             ' AND paid_at >= %s AND paid_at < %s',
-            [1, $fromDate . ' 00:00:00', $toDate . ' 23:59:59.999']
+            [$clinicId, $fromDate . ' 00:00:00', $toDate . ' 23:59:59.999']
         ) ?: [];
 
         $byMethod = ['cash' => 0.0, 'card_pos' => 0.0, 'online' => 0.0, 'other' => 0.0];
@@ -148,7 +151,7 @@ final class PaymentRepository
     /**
      * @return list<array<string, mixed>>
      */
-    public function forRange(string $fromDate, string $toDate, int $limit = 200): array
+    public function forRange(int $clinicId, string $fromDate, string $toDate, int $limit = 200): array
     {
         return $this->db->fetchAll(
             'SELECT pay.*, inv.invoice_number FROM ' . $this->db->table('cpms_payments') . ' pay' .
@@ -156,7 +159,7 @@ final class PaymentRepository
             ' WHERE pay.clinic_id = %d' .
             ' AND pay.paid_at >= %s AND pay.paid_at < %s' .
             ' ORDER BY pay.id DESC LIMIT %d',
-            [1, $fromDate . ' 00:00:00', $toDate . ' 23:59:59.999', $limit]
+            [$clinicId, $fromDate . ' 00:00:00', $toDate . ' 23:59:59.999', $limit]
         ) ?: [];
     }
 }

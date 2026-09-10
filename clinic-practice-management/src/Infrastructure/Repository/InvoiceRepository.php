@@ -175,15 +175,16 @@ final class InvoiceRepository
     }
 
     /**
-     * شماره بعدی فاکتور: INV-YYMMDD-NNN — کلینیک-قفل در Service گرفته می‌شود.
+     * شماره بعدی فاکتور: INV-YYMMDD-NNN — مستقل برای هر Clinic؛
+     * قفل ردیف همان Clinic در Service گرفته می‌شود.
      */
-    public function nextInvoiceNumber(): string
+    public function nextInvoiceNumber(int $clinicId): string
     {
         $prefix = 'INV-' . gmdate('ymd') . '-';
         $max = $this->db->fetchValue(
             'SELECT MAX(invoice_number) FROM ' . $this->db->table('cpms_invoices') .
             " WHERE clinic_id = %d AND invoice_number LIKE %s",
-            [1, $prefix . '%']
+            [$clinicId, $prefix . '%']
         );
 
         $seq = 0;
@@ -195,11 +196,11 @@ final class InvoiceRepository
     }
 
     /**
-     * فاکتورهای باز کلینیک (بدهی‌های باز — FR-14.8).
+     * فاکتورهای باز یک Clinic صریح (بدهی‌های باز — FR-14.8).
      *
      * @return list<array<string, mixed>>
      */
-    public function openInvoices(int $limit = 100): array
+    public function openInvoices(int $clinicId, int $limit = 100): array
     {
         return $this->db->fetchAll(
             'SELECT i.*, p.first_name AS patient_first_name, p.last_name AS patient_last_name, p.mrn AS patient_mrn' .
@@ -207,7 +208,7 @@ final class InvoiceRepository
             ' JOIN ' . $this->db->table('cpms_patients') . ' p ON p.id = i.patient_id' .
             " WHERE i.clinic_id = %d AND i.status IN ('open', 'partial')" .
             ' ORDER BY i.id DESC LIMIT %d',
-            [1, $limit]
+            [$clinicId, $limit]
         ) ?: [];
     }
 
