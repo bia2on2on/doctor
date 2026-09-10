@@ -3,7 +3,8 @@
 > Recover the project from this file + Git/remote/PR + linked canonical docs.
 > Do **not** use a previous chat session as memory.
 >
-> **State based on implementation SHA:** `c2bff76d1e21643a66bc0056a29881faaa2f299f`
+> **State based on implementation SHA:** `3fc5a54c3a340f8d6881048ff299e6700a7fb99e`
+> **Historical baseline:** `c2bff76d1e21643a66bc0056a29881faaa2f299f` (tenant-hardening batch)
 
 If Git/remote/PR, this file, and the repository tree disagree: **STOP**.
 
@@ -51,12 +52,9 @@ Legacy labels (`F0..F10`, `Doc-Phase`, `V1` / `V1.5` / `V2`) are historical. The
 | Phase 2 | **IN PROGRESS** — current subphase **C6** (**NOT complete**) |
 | Phase 3 | **NOT STARTED** — no `AuthorizationService`; do not start |
 
-**Last verified implementation SHA:** `c2bff76` (see §K). Chain: `6e5d48c` → docs sync →
-`f88fcdc` boundary → repair batch (`4289d89`/`4606b15`) → **tenant‑hardening batch**
-(`ddca8d7 → ba6ed3a → d5072ff → d52d32d → f6703dc → f5ebefd → b7b8399 → dc0022f →
-815339f → bff690a → c2bff76`). All five gates GREEN on `c2bff76` — §G table. Legacy
-internal label for this batch in some reports: «Phase 9 §5» — **task‑taxonomy wording
-only**; the Owner roadmap's Phase 9 is Patient Portal and remains **NOT STARTED**.
+**Last verified implementation SHA:** `3fc5a54` (see §G). Historical baseline: `c2bff76`
+(tenant-hardening batch). Gap-closure + Tripwire session: `d429f5a` → `3fc5a54`. All five
+gates GREEN on `3fc5a54` — §G table.
 
 **Schema:** current version **`2026_09_09_0020`**. File `0021` does **not** exist. **Migration 0021 is NOT approved.** If new schema is required: STOP and ask Owner.
 
@@ -64,9 +62,10 @@ only**; the Owner roadmap's Phase 9 is Patient Portal and remains **NOT STARTED*
 
 | | |
 |---|---|
-| Branch | `arena/01a086ca-doctor` (PR #12 tip `f88fcdc`) → ادامه روی `arena/01a086b4-doctor`؛ tip فعلی `c2bff76`؛ خطی، بدون cherry‑pick/merge/force‑push |
-| Draft PR | [#12](https://github.com/bia2on2on/doctor/pull/12) — OPEN DRAFT — DO NOT MERGE / CI execution · [#13](https://github.com/bia2on2on/doctor/pull/13) — OPEN DRAFT (base = `arena/01a086ca-doctor`) — head `c2bff76` — DO NOT MERGE / CLOSE |
+| Branch | `arena/01a08828-doctor` — tip `8ade5c7` (latest docs) — implementation `3fc5a54` — linear |
+| Draft PR | [#14](https://github.com/bia2on2on/doctor/pull/14) — OPEN — head `8ade5c7` — base `main` — DO NOT MERGE |
 | Base | `main` (`8087b42`) |
+| PR #10–#13 | OPEN — heads are ancestors of `8ade5c7` — redundant with #14 |
 
 **Previous PRs — keep OPEN + DRAFT; do not merge or close**
 
@@ -87,12 +86,15 @@ Verified Git ancestry (unshallow + `merge-base --is-ancestor`): both heads are a
 | Closure | `34375756075` |
 | Pilot/Staging | `34375756043` |
 
-**Last verified gates on `c2bff76` (via PR #13)** — all SUCCESS:
+**Last verified gates on `3fc5a54`** — all SUCCESS:
 
 | Gate | Run |
 |---|---|
-| CI (Unit×4 + PHPStan + WPCS changed‑lines + **Integration** 602 tests / 0E / 0F) | `34406996627` |
-| Real-WP Acceptance (wp_ + clinic_ prefixes) | `34406991487` |
+| CI (Tripwire + Unit×4 + PHPStan + WPCS + Integration 616 tests/0E/0F) | `34450386921` |
+| Real-WP Acceptance (push) | `34450382616` |
+| Real-WP Acceptance (PR) | `34450386918` |
+| Pilot/Staging Readiness | `34450382549` |
+| Closure Gate | `34450382522` |
 | Pilot/Staging (Release Artifact + Responsive smoke + Upgrade path + Staging Gate) | `34406991520` |
 | Closure Gate (GO‑LIVE evidence) | `34406991334` |
 
@@ -249,14 +251,15 @@ Phase 2 queue: [`docs/phase-reports/phase2-state.md`](phase-reports/phase2-state
 - **C6 Export** @ `f2c0ca6` — same Clinic on request → job payload → storage → notification → list/download/purge (per-row clinic)
 - **Pilot/bin** @ `6e5d48c` — resolve real Clinic/Location IDs; never encode Clinic ID == 1
 
-**Remaining C6**
+**Remaining C6** (at `3fc5a54` — all below DONE)
 
-1. Trusted REST context (membership-verified `ScopeContext`) — **implemented and repaired in the batch above** (still not Phase 3 / not `AuthorizationService`); its remaining follow‑ups are the open route‑classification decisions, **not** the boundary itself
-2. Tripwire hardening + CI wiring — **do not start in the trusted-REST checkpoint**
-3. C6-F real multi-tenant isolation suite — **PARTIAL** (Reports/Export/Membership/Identity/Scope tests exist; no comprehensive 14-item suite) — **do not expand fully in the trusted-REST checkpoint**. The two executable specifications that exposed the remaining per-object gap are now **fixed and green**: `7c4b2bd` (prescription) and `2d13f2d` (SMS logs). The historical RED checkpoint is preserved, not erased (`5b3768e`/`41321e2`: `Tests: 568, Assertions: 2951, Failures: 2` — `testStaffCannotFinalizePrescriptionOfAnotherClinic`, `testSmsLogsAreScopedToTheBoundClinic`), classified **Class A (product, High)**: `ClinicalService::finalizePrescription` → `PrescriptionRepository::findForUpdate` was `WHERE id`-only, and `SmsService::logs` had no `clinic_id` filter although `cpms_sms_messages` carries a tenant column. Repairs keep the tenant predicate **inside SQL** (`findForUpdateForClinic`/`updateForClinic`; `logs(int $clinicId, …)` with `WHERE clinic_id = %d` for both `COUNT` and the `SELECT`), take the Clinic only from the trusted scope (no client-supplied ID, no Clinic‑1 fallback), and return the established `CLINIC_NOT_FOUND` 404 for both "missing" and "belongs to another Clinic" (no existence disclosure; `affected < 1` proves no mutation). The **cross-Clinic SMS dedupe suppression** (global `uq_dedupe` over a Clinic-blind `dedupe_key`) was confirmed and fixed schema-free by hashing the Clinic into the key plus a `clinic_id` predicate in the lookup. Remaining C6‑F items are still open (the **comprehensive** 14‑item suite; staff membership onboarding). Two named gaps above are since **closed** by the tenant‑hardening batch (§ below): `files/{id}/stream` clinical read path and the `VisitService::today`/queue/feed `clinic_id = 1` hardcodes — with a focused 25‑probe executable suite (`tests/Integration/ClinicTenantIsolationTest.php`), all green at `c2bff76`. **No Migration 0021 — none was required for correctness.**
-4. Keep docs in sync after each verified implementation SHA (this file / census / phase2-state)
-
-### Tenant‑hardening batch (`4606b15` → `c2bff76`, linear; all gates GREEN on `c2bff76`)
+1. Trusted REST context — **implemented and repaired**. Route-classification follow-ups deferred to Phase 3 policy.
+2. Tripwire hardening + CI wiring — **DONE**. 34 self-tests PASS, 173 production files CLEAN, CI GREEN.
+3. C6-F multi-tenant isolation suite — **DONE**. Matrix 45/45 VERIFIED_GREEN. Real handler runtime tests (MT-39). Non-1 clinic IDs (MT-45).
+4. Keep docs in sync after each verified implementation SHA.
+5. Route classification — tenant isolation verified; deferred to Phase 3.
+6. Staff onboarding (UI/API) — domain primitives complete; deferred to LATER_STAFF_ADMIN_UX.
+7. SMS resend key — KNOWN_MEDIUM_DEBT; Migration 0021 NOT APPROVED.
 
 Internal task label in some reports: «Phase 9 §5» — legacy task‑taxonomy wording, **not**
 roadmap Phase 9 (Patient Portal — still NOT STARTED).
@@ -310,4 +313,6 @@ produced probe‑11's `(int) WP_Error` error).
 - [`docs/security/phase1b-deferred-register.md`](security/phase1b-deferred-register.md)
 - [`docs/drift-register.md`](drift-register.md)
 - [`docs/phase-reports/c6-census.md`](phase-reports/c6-census.md)
-- Tripwire: `clinic-practice-management/bin/tenant-tripwire.py`
+- [`docs/phase-reports/c6-isolation-matrix.md`](phase-reports/c6-isolation-matrix.md)
+- Tripwire: `bin/tenant-tripwire.py` (CI-wired, 34 self-tests)
+- [`docs/handoff/phase2-c6-to-next-agent.md`](handoff/phase2-c6-to-next-agent.md)

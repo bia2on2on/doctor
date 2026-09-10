@@ -4,7 +4,7 @@
 |---|---|
 | **آخرین به‌روزرسانی** | بر مبنای SHA پیاده‌سازی `c2bff76d1e21643a66bc0056a29881faaa2f299f` (batch استحکام tenant — Visit queue/Today/Feed + ایزولاسیون فایل بالینی؛ مبناهای قبلی: `6e5d48c`، `4289d89`) |
 | **وضعیت Phase 2** | IN PROGRESS — C1..C5 done؛ C6 **ناقص** (Reports/Export/Pilot/Trusted‑REST boundary/queue‑tenant/file‑isolation انجام؛ suite جامع C6‑F و Tripwire‑CI و تصمیم باز route‌ها و staff onboarding باقی است) |
-| **آخرین remote SHA سبزِ تأییدشده** | `c2bff76` (هر ۵ گیت — ادامهٔ خطی `4289d89 → … → c2bff76`؛ PR #13 head؛ OPEN DRAFT — ادغام/بستن ممنوع) |
+| **آخرین remote SHA سبزِ تأییدشده** | `3fc5a54 — all 5 gates GREEN; docs at 8ade5c7 — PR #14 OPEN — ادغام/بستن ممنوع) |
 | **Schema** | `2026_09_09_0020` — فایل/تصویب 0021 وجود ندارد |
 
 > این فایل state جاری است، نه گزارش. عمداً به SHA کامیتِ خودِ این سند ارجاع
@@ -13,7 +13,7 @@
 > PR #11 (`9e006b0`) جد همین SHA هستند. PHP در sandbox ممیزی روی PATH نبود؛
 > شواهد اجرایی = GitHub Actions.
 
-## گیت‌های سبز — batch استحکام tenant (روی `c2bff76`)
+## گیت‌های سبز — batch استحکام tenant (روی `3fc5a54`)
 
 برچسب داخلی تسک در گزارش‌ها «Phase 9 §5» بود — واژگان تاریخیِ taxonomy وظایفِ داخلی؛
 فاز ۹ نقشهٔ راه مالک = Patient Portal و همچنان **NOT STARTED** است.
