@@ -21,6 +21,8 @@ final class PaymentRepository
 
     /**
      * @param array<string, mixed> $row
+     *
+     * @throws \RuntimeException وقتی درج پرداخت ناموفق است (C6 corrective)
      */
     public function insert(int $clinic_id, array $row): int
     {
@@ -34,9 +36,21 @@ final class PaymentRepository
             'voided_by_wp_user_id' => null,
             'created_at' => $this->db->nowUtcSql(),
         ];
-        $this->db->insert('cpms_payments', $row);
+        $ok = $this->db->insert('cpms_payments', $row);
+        $id = $this->db->wpdb_last_insert_id();
 
-        return $this->db->wpdb_last_insert_id();
+        /*
+         * C6 corrective — پیش از این فراخواننده `!$ok` را بررسی می‌کرد، ولی
+         * `$ok` همان insert_id بود و wpdb در خطا insert_id قدیمی را نگه
+         * می‌دارد؛ پس فقط حالت «صفر» گرفته می‌شد و شناسهٔ stale عبور می‌کرد.
+         * حالا شکست درج همیشه استثنا می‌دهد و تشخیص Idempotency-race در
+         * FinanceService با catch همان استثنا انجام می‌شود.
+         */
+        if (!$ok || $id <= 0) {
+            throw new \RuntimeException('cpms_payments insert failed');
+        }
+
+        return $id;
     }
 
     /**
@@ -95,13 +109,18 @@ final class PaymentRepository
         ) ?: [];
     }
 
-    public function nextPaymentNumber(): string
+    /**
+     * شماره بعدی پرداخت — per Clinic (قفل ردیف همان Clinic در Service).
+     *
+     * C6 corrective: Clinic الزامی است؛ عددگیری هرگز با literal 1 انجام نمی‌شود.
+     */
+    public function nextPaymentNumber(int $clinic_id): string
     {
         $prefix = 'PAY-' . gmdate('ymd') . '-';
         $max = $this->db->fetchValue(
             'SELECT MAX(payment_number) FROM ' . $this->db->table('cpms_payments') .
             " WHERE clinic_id = %d AND payment_number LIKE %s",
-            [1, $prefix . '%']
+            [$clinic_id, $prefix . '%']
         );
 
         $seq = 0;
@@ -113,17 +132,19 @@ final class PaymentRepository
     }
 
     /**
-     * خلاصه درآمد بازه — D18: captured (منهای refunded)؛ voided کلاً حذف.
+     * خلاصه درآمد بازهٔ یک Clinic — D18: captured (منهای refunded)؛ voided کلاً حذف.
+     *
+     * C6 corrective: Clinic الزامی است؛ پیش از این با literal 1 bind می‌شد.
      *
      * @return array{total: float, by_method: array<string, float>, refunded: float, count: int}
      */
-    public function revenueSummary(string $fromDate, string $toDate): array
+    public function revenueSummary(int $clinic_id, string $fromDate, string $toDate): array
     {
         $rows = $this->db->fetchAll(
             'SELECT method, amount, refunded_amount FROM ' . $this->db->table('cpms_payments') .
             " WHERE clinic_id = %d AND status IN ('captured', 'refunded')" .
             ' AND paid_at >= %s AND paid_at < %s',
-            [1, $fromDate . ' 00:00:00', $toDate . ' 23:59:59.999']
+            [$clinic_id, $fromDate . ' 00:00:00', $toDate . ' 23:59:59.999']
         ) ?: [];
 
         $byMethod = ['cash' => 0.0, 'card_pos' => 0.0, 'online' => 0.0, 'other' => 0.0];
@@ -146,17 +167,25 @@ final class PaymentRepository
     }
 
     /**
+     * پرداخت‌های بازهٔ یک Clinic — D18.
+     *
+     * C6 corrective: Clinic الزامی است؛ پیش از این با literal 1 bind می‌شد.
+     *
      * @return list<array<string, mixed>>
      */
-    public function forRange(string $fromDate, string $toDate, int $limit = 200): array
-    {
+    public function forRange(
+        int $clinic_id,
+        string $fromDate,
+        string $toDate,
+        int $limit = 200
+    ): array {
         return $this->db->fetchAll(
             'SELECT pay.*, inv.invoice_number FROM ' . $this->db->table('cpms_payments') . ' pay' .
             ' JOIN ' . $this->db->table('cpms_invoices') . ' inv ON inv.id = pay.invoice_id' .
             ' WHERE pay.clinic_id = %d' .
             ' AND pay.paid_at >= %s AND pay.paid_at < %s' .
             ' ORDER BY pay.id DESC LIMIT %d',
-            [1, $fromDate . ' 00:00:00', $toDate . ' 23:59:59.999', $limit]
+            [$clinic_id, $fromDate . ' 00:00:00', $toDate . ' 23:59:59.999', $limit]
         ) ?: [];
     }
 }

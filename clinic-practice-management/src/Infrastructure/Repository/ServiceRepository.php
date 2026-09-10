@@ -19,16 +19,21 @@ final class ServiceRepository
     }
 
     /**
+     * فهرست تعرفه‌های یک Clinic — Clinic الزامی است (بدون مقدار پیش‌فرض).
+     *
+     * C6 corrective: پیش از این `clinic_id` با literal 1 bind می‌شد، پس هر نصب
+     * چند‌کلینیکی تعرفه‌های Clinic 1 را به همه نشان می‌داد.
+     *
      * @return list<array<string, mixed>>
      */
-    public function all(bool $onlyActive = false): array
+    public function all(int $clinic_id, bool $onlyActive = false): array
     {
         $where = 'clinic_id = %d' . ($onlyActive ? ' AND is_active = 1' : '');
 
         return $this->db->fetchAll(
             'SELECT * FROM ' . $this->db->table('cpms_services') .
             ' WHERE ' . $where . ' ORDER BY name ASC LIMIT 500',
-            [1]
+            [$clinic_id]
         ) ?: [];
     }
 
