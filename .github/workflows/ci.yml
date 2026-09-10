@@ -19,6 +19,21 @@ defaults:
     working-directory: clinic-practice-management
 
 jobs:
+  # Tenant-hardcode tripwire — scans production runtime for literal tenant ID 1
+  tripwire:
+    name: Tenant Tripwire (hardcode scan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run tripwire self-tests
+        run: python3 bin/tenant-tripwire.py --test
+
+      - name: Scan production for tenant hardcodes
+        run: |
+          python3 bin/tenant-tripwire.py --allowlist bin/tenant-tripwire-allowlist.json
+          echo "Tripwire: production runtime clean."
+
   unit:
     name: Unit Tests (PHP ${{ matrix.php }})
     runs-on: ubuntu-latest
