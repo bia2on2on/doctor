@@ -197,7 +197,8 @@ final class FinanceClinicScopeTest extends WP_UnitTestCase
         $openB = $invoices->openInvoices(self::CLINIC_B, 100);
         $this->assertCount(1, $openB);
         $this->assertSame(self::CLINIC_B, (int) $openB[0]['clinic_id']);
-        $this->assertSame('MRN-B-SCOPE', (string) $openB[0]['patient_mrn']);
+        // insertPatient یک پسوند یکتاساز به MRN می‌چسباند (MRN-B-SCOPE-<seq>).
+        $this->assertStringStartsWith('MRN-B-SCOPE-', (string) $openB[0]['patient_mrn']);
 
         /** @var PaymentRepository $payments */
         $payments = new PaymentRepository(App::db());

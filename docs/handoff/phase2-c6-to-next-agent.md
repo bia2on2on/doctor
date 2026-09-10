@@ -63,13 +63,80 @@ SHA `3fc5a54` = آخرین implementation test (پیش‌از‌ادغام). SHA
 
 | آیتم | وضعیت |
 |---|---|
-| Runtime tenant defaults = 0 | ✅ Tripwire: 173 فایل، 0 نقض |
+| Runtime tenant defaults = 0 | ⚠️ در زمان closure ✅ اعلام شد (Tripwire: 173 فایل، 0 نقض) — **اما آن ادعا بعداً ناقص درآمد؛ §۲ب را ببینید** |
 | Isolation matrix 45/45 | ✅ همه VERIFIED_GREEN |
-| Tripwire CI | ✅ 34 self-tests PASS، CI GREEN |
+| Tripwire CI | ✅ 34 self-tests PASS، CI GREEN (پس از corrective: 55) |
 | MT-39 runtime handler tests | ✅ Real `__invoke()` با non-1 clinics |
 | Trusted REST context | ✅ |
 | Booking/Notification/Reports/Export/Settings/Cache/Jobs/Audit | ✅ |
 | WPCS / PHPStan / Unit / Integration / Real-WP / Pilot / Closure | ✅ |
+
+## ۲ب. C6 post-closure corrective — omission کشف‌شده پس از closure
+
+> **حقیقت تاریخی حفظ می‌شود:** C6 به‌صورت رسمی بسته و در `main` ادغام شد و گیت‌های
+> بالا در همان زمان واقعاً سبز بودند. آنچه در این بخش می‌آید **بازنویسی تاریخ نیست**؛
+> ثبتِ نقصی است که **بعد از** closure کشف شد.
+
+یک بررسی read-only پس از closure نشان داد پذیرش C6 («صفر tenant default در runtime»)
+کامل نبود: **هفت مسیر تولیدی مالی** هنوز در زمان اجرا Clinic ID 1 را bind می‌کردند.
+
+**چرا Tripwire آن‌ها را ندید:** در هر هفت مورد SQL شکل درستِ prepared را داشت
+(`clinic_id = %d`) و **literal 1 به‌صورت جداگانه bind می‌شد**، معمولاً در خط بعد:
+
+```php
+" WHERE clinic_id = %d AND invoice_number LIKE %s",
+[1, $prefix . '%']
+```
+
+اسکنر خط‌محور هیچ‌گاه `clinic_id = 1` نمی‌دید، پس «CLEAN» گزارش می‌کرد — یک
+**نقطهٔ کور واقعی در گیت**، نه خطای گزارش‌نویسی.
+
+| فایل | متد | اثر runtime |
+|---|---|---|
+| `Infrastructure/Repository/ServiceRepository.php` | `all()` | فهرست تعرفهٔ Clinic 1 به همه |
+| `Infrastructure/Repository/PaymentRepository.php` | `revenueSummary()` | درآمد Clinic 1 در خلاصهٔ همه |
+| `Infrastructure/Repository/PaymentRepository.php` | `forRange()` | پرداخت‌های Clinic 1 در بازهٔ همه |
+| `Infrastructure/Repository/PaymentRepository.php` | `nextPaymentNumber()` | شماره‌گذاری PAY همه از ردیف‌های Clinic 1 |
+| `Infrastructure/Repository/InvoiceRepository.php` | `openInvoices()` | فاکتور باز + **نام و MRN بیمار Clinic دیگر** |
+| `Infrastructure/Repository/InvoiceRepository.php` | `nextInvoiceNumber()` | شماره‌گذاری INV همه از ردیف‌های Clinic 1 |
+| `Application/Finance/FinanceService.php` | `lockClinic()` | قفل همیشه روی ردیف Clinic 1 |
+
+**طبقه‌بندی:**
+- هفت نقص مالی = **Class B** (نقص محصول از پیش موجود) — پیش از C6 وجود داشتند و از
+  closure جان به در بردند. **Class A نیستند** (کار جاری رگرسیونی معرفی نکرد).
+- نقطهٔ کور Tenant Tripwire = **Class D** (نقص تست/گیت) — با شاهد اجرایی.
+
+**نقص ثانویهٔ insert-failure (تأیید شد، Class B):** `CpmsDb::$strict` در runtime خاموش
+است، پس `wpdb::insert()` در خطا `false` می‌دهد درحالی‌که `wpdb::$insert_id` مقدارِ
+insert موفقِ قبلی را نگه می‌دارد. `InvoiceRepository::insert()` آن bool را کامل دور
+می‌ریخت و فراخواننده با شناسهٔ stale/صفر ادامه می‌داد؛ اقلام فاکتور به فاکتور بیگانه
+چسبانده می‌شد و تراکنش commit می‌شد. گارد قدیمیِ مسیر پرداخت (`!$ok || $paymentId <= 0`)
+عملاً فقط «صفر» را می‌گرفت، چون `$ok` همان insert_id بود.
+
+**اصلاح (باریک):** هر هفت متد حالا Clinic را به‌صورت **پارامتر الزامی `int` بدون مقدار
+پیش‌فرض** می‌گیرند؛ هیچ fallback به Clinic 1 و هیچ trusted‌شدنِ مقدار client وجود ندارد
+(یا ردیفِ در حال نوشتن، یا `ScopeContext`/ADR-0031 که در ابهام fail-closed است).
+repositoryها در شکستِ درج استثنا می‌دهند و `FinanceService` پیش از چسباندن اقلام شناسهٔ
+والد را دوباره چک می‌کند.
+
+**Tripwire:** پاس جدید statement-oriented و tenant-aware برای «placeholder tenant +
+bind جداگانهٔ literal 1» (آرایه‌ها، فراخوانی چندخطی، و الگوی row-lock/select روی
+`cpms_clinics`). همچنین shadowing گزارش‌شدهٔ `LIMIT 1` تأیید و رفع شد:
+`limit_1_generic` در `NEGATIVE_EXCLUDES` اثباتاً فقط shadow بود و `select_first_clinic`
+را به الگویی **مرده** تبدیل کرده بود که هرگز شلیک نمی‌شد.
+
+**شواهد اجرایی:**
+- آشکارساز تقویت‌شده روی `6c84316` (mainِ پیش‌از‌corrective): **7 hardcode، exit 1** — هر هفت با file:line.
+- همان آشکارساز روی درخت اصلاح‌شده: **0 hardcode، exit 0**؛ allowlist همچنان **خالی**.
+- self-testها: **55 passed / 0 failed** (پیش از این 34؛ +21 حالت bound-parameter).
+- `tests/Integration/FinanceClinicScopeTest.php` — ۱۲ تست روی MySQL واقعی (Clinic غیر ۱،
+  ایزولهٔ دو‌کلینیکی، عدم نشت نام/MRN، شماره‌گذاری مستقل INV/PAY، هدف‌گرفتنِ قفل روی
+  Clinic فعال، insert-failure، سازگاری Clinic 1، قرارداد صریح Clinic).
+
+**Migration:** هیچ. آخرین migration همان `0020_idempotency_clinic_scope` است؛
+**`0021` ساخته نشد.**
+
+**C7:** همچنان **NOT STARTED**.
 
 ## ۳. کارهای deferred و دلیل
 

@@ -2,6 +2,25 @@
 
 تمام تغییرات مهم پروژه در این فایل ثبت می‌شود. قالب: [Keep a Changelog](https://keepachangelog.com/)؛ نسخه‌بندی: [SemVer](https://semver.org/).
 
+## [Unreleased] — C6 post-closure corrective (بدون bump نسخه)
+
+> **بدون تغییر شمارهٔ نسخه و بدون migration.** این یک corrective باریک روی C6 است،
+> نه C6 redo و نه شروع C7. **C7 همچنان NOT STARTED است.**
+> حقیقت تاریخی حفظ می‌شود: C6 رسمی بسته و ادغام شد؛ نقص زیر **پس از** closure کشف شد.
+
+### Fixed
+- **هفت مسیر مالی که در runtime به Clinic ID 1 قفل بودند (Class B — نقص از پیش موجود):** در هر هفت مورد SQL شکل درستِ prepared را داشت (`clinic_id = %d`) ولی literal 1 جداگانه bind می‌شد، پس در نصب چند‌کلینیکی دادهٔ Clinic 1 به همه سرویس می‌شد. حالا Clinic در همهٔ آن‌ها **پارامتر الزامی `int` بدون مقدار پیش‌فرض** است و هیچ fallback به Clinic 1 وجود ندارد: `ServiceRepository::all()`, `PaymentRepository::revenueSummary()`, `PaymentRepository::forRange()`, `PaymentRepository::nextPaymentNumber()`, `InvoiceRepository::openInvoices()`, `InvoiceRepository::nextInvoiceNumber()`, `FinanceService::lockClinic()`. منبع Clinic یا ردیفِ در حال نوشتن (visit/invoice) است یا `ScopeContext` (ADR-0031) که در ابهام fail-closed است — هرگز مقدار client. اثر قابل‌مشاهدهٔ پیشین شامل **نشت نام و MRN بیمار Clinic دیگر** در خلاصهٔ مالی و شماره‌گذاری مشترک INV/PAY بود.
+- **insert-failure با شناسهٔ والد stale/صفر (Class B):** `CpmsDb::$strict` در runtime خاموش است، پس `wpdb::insert()` در خطا `false` می‌دهد درحالی‌که `wpdb::$insert_id` مقدار insert موفقِ قبلی را نگه می‌دارد. `InvoiceRepository::insert()` آن bool را دور می‌ریخت و فراخواننده با شناسهٔ stale/صفر ادامه می‌داد؛ اقلام فاکتور به فاکتور بیگانه چسبانده می‌شد و تراکنش commit می‌شد. گارد قدیمی مسیر پرداخت (`!$ok || $paymentId <= 0`) عملاً فقط «صفر» را می‌گرفت چون `$ok` همان insert_id بود. حالا `InvoiceRepository::insert()/insertItem()/insertAdjustment()` و `PaymentRepository::insert()` در شکست استثنا می‌دهند و `FinanceService` پیش از چسباندن اقلام شناسهٔ والد را دوباره چک می‌کند (ROLLBACK؛ تشخیص Idempotency-race حفظ شده).
+
+### Tests
+- `tests/Integration/FinanceClinicScopeTest.php` — ۱۲ تست Integration روی MySQL واقعی: Clinic فعال با شناسهٔ ≠ 1، ایزولهٔ مالی دو کلینیک، عدم دریافت فاکتور باز/پرداخت/تعرفهٔ Clinic دیگر، عدم نشت نام و MRN بیمار، شماره‌گذاری مستقل INV و PAY per Clinic، هدف‌گرفتنِ قفلِ عددگیری روی همان Clinic (مشاهدهٔ SQL واقعی از فیلتر `query` وردپرس)، توقف امن روی شکست درج، سازگاری Clinic 1، و قرارداد صریح Clinic در امضای Repository/Service.
+- تزریق خطا برای تست‌های insert-failure با **نقض واقعی UNIQUE** (`u_inv_number`/`u_pay_number`) انجام می‌شود، بدون mock.
+
+### CI / Tooling
+- **Tenant Tripwire — بستن نقطهٔ کور bound-parameter (Class D):** پاس جدید statement-oriented و tenant-aware که «tenant placeholder + bind جداگانهٔ literal 1» را می‌گیرد (آرایه‌ها مثل `[1, ...]`، فراخوانی‌های prepared چندخطی، و الگوی row-lock/select روی `cpms_clinics`). فقط literal `1`/`'1'` flag می‌شود؛ متغیر/property/`App::scope()->clinicId` پذیرفته می‌شوند و placeholderهای غیر tenant هرگز بررسی نمی‌شوند.
+- **رفع shadowing الگوی `LIMIT 1`:** `limit_1_generic` در `NEGATIVE_EXCLUDES` اثباتاً فقط shadow بود (هیچ الگوی مثبتی با `LIMIT 1` خالی match نمی‌شود) و چون excludes پیش از positives و خط‌به‌خط بررسی می‌شدند، `select_first_clinic` یک الگوی **مرده** بود که هرگز شلیک نمی‌شد. حذف شد و `select_first_clinic` با `(?:(?!%d).)*` باریک شد تا فقط «اولین/پیش‌فرض Clinic» را بگیرد، نه lookup صریح `WHERE id = %d` را.
+- self-testهای Tripwire: **55 passed / 0 failed** (پیش از این 34). allowlist **خالی** ماند (هیچ ورودی تازه‌ای برای سبز شدن اضافه نشد).
+
 ## [1.0.2] — 2026-09-07 (Hotfix نصب واقعی — بازتولیدشده روی WordPress واقعی در CI)
 
 سه نقص گزارش‌شدهٔ نصب روی WordPress واقعی روی main بازتولید شد (گیت جدید «Real WordPress Acceptance»: ZIP رسمی `bin/build-release.sh` → WordPress 6.7.2 تمیز → نصب/فعال‌سازی → تأیید مستقیم DB → مرورگر واقعی Chromium → بررسی لاگ — با ماتریس دو prefix `wp_`/`clinic_`).
