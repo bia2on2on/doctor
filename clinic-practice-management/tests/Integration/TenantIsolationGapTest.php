@@ -267,11 +267,15 @@ final class TenantIsolationGapTest extends WP_UnitTestCase
     }
 
     // =================================================================
+    // =================================================================
     // MT-39: Background jobs do not rely on WP user/default Clinic
     // =================================================================
 
+    // --- Supplemental source assertions (NOT primary runtime evidence) ---
+
     /**
      * ApptReminderHandler source has no clinic_id=1 literal.
+     * Supplemental source assertion — NOT primary runtime evidence.
      */
     public function testReminderHandlerUsesClinicFromRowNotHardcoded(): void
     {
@@ -284,6 +288,7 @@ final class TenantIsolationGapTest extends WP_UnitTestCase
 
     /**
      * FollowUpReminderHandler source has no clinic_id=1 literal.
+     * Supplemental source assertion — NOT primary runtime evidence.
      */
     public function testFollowUpHandlerUsesClinicFromRowNotHardcoded(): void
     {
@@ -295,10 +300,7 @@ final class TenantIsolationGapTest extends WP_UnitTestCase
     }
 
     /**
-     * MT-39 executable: handler SELECT has no clinic predicate — scans all due appointments.
-     * Each row carries its own clinic_id; SMS is sent with (int) $row['clinic_id'].
-     * This verifies the architectural invariant: the handler is clinic-agnostic in scan,
-     * clinic-correct in side-effects.
+     * Supplemental: handler WHERE clause regex — no clinic_id predicate.
      */
     public function testReminderHandlerSelectHasNoClinicPredicate(): void
     {
@@ -306,135 +308,364 @@ final class TenantIsolationGapTest extends WP_UnitTestCase
         $source = file_get_contents($handlerPath);
         self::assertIsString($source);
 
-        // The SELECT query must NOT have "WHERE ... AND clinic_id" or "a.clinic_id ="
-        // It scans system-wide (confirmed + date range only)
         self::assertStringContainsString("WHERE a.status = %s AND a.slot_date", $source, 'Handler scans by status+date only');
-        // Verify the main SELECT clause includes clinic_id from row
         self::assertStringContainsString('a.clinic_id', $source, 'Handler SELECT includes clinic_id from row');
-        // Verify the WHERE clause specifically does not filter by clinic_id
-        // The handler WHERE is: "WHERE a.status = %s AND a.slot_date IN (%s, %s)"
-        // which does NOT contain "clinic_id"
-        preg_match('/WHERE\s+a\.status\s*=\s*%s\s+AND\s+a\.slot_date[^)]*\)/', $source, $matches);
+        preg_match('/WHERE\\s+a\\.status\\s*=\\s*%s\\s+AND\\s+a\\.slot_date[^)]*\\)/', $source, $matches);
         self::assertNotEmpty($matches, 'Handler WHERE clause must be found');
         self::assertStringNotContainsString('clinic_id', $matches[0], 'Handler WHERE must not filter by clinic_id');
-
-        // Verify SMS send uses row clinic_id (not current scope, not hardcoded)
         self::assertStringContainsString(
             "(int) \$row['clinic_id']",
             $source,
-            'SMS send uses clinic_id from each appointment row'
-        );
-
-        // Verify notification uses row clinic_id
-        self::assertStringContainsString(
-            "(int) \$row['clinic_id']",
-            $source,
-            'Notification uses clinic_id from each appointment row'
+            'SMS + Notification use clinic_id from each appointment row'
         );
     }
 
     /**
-     * MT-39 executable: verify FollowUpReminderHandler has the same clinic-from-row pattern.
+     * Supplemental: FollowUpReminderHandler WHERE clause — no clinic_id predicate.
      */
     public function testFollowUpHandlerSelectHasNoClinicPredicate(): void
     {
         $handlerPath = dirname(__DIR__, 2) . '/src/Application/Jobs/FollowUpReminderHandler.php';
         $source = file_get_contents($handlerPath);
         self::assertIsString($source);
-
-        // Same pattern: system-wide scan, clinic from row
         self::assertStringNotContainsString('clinic_id = 1', $source, 'No clinic_id = 1 literal');
         self::assertStringContainsString("row['clinic_id']", $source, 'Uses row clinic_id for side effects');
     }
 
+    // --- Primary runtime evidence: real handler __invoke() ---
+
     /**
-     * MT-39 executable: create appointments in non-1 clinics and verify data isolation.
-     * The handler processes rows from its SELECT; verify the data it would read is
-     * correctly clinic-tagged and not defaulting to clinic 1.
+     * MT-39 RUNTIME: invoke real ApptReminderHandler::__invoke() with
+     * eligible appointments in Clinic A (61021) and Clinic B (61023).
+     *
+     * Scope is set to Clinic A to prove the handler does NOT use scope for
+     * tenant identity — it scans system-wide and reads clinic_id from each row.
+     *
+     * Evidence type: real production handler entry point invoked (A).
+     * Verifies: notification side effects carry ROW clinic_id, not scope.
      */
-    public function testAppointmentsInNonDefaultClinicsCarryCorrectClinicId(): void
+    public function testApptReminderHandlerUsesRowClinicIdNotScope(): void
     {
         global $wpdb;
 
-        $clinicianA = $this->insertClinician(self::CLINIC_A1, 0, 'Dr Appt A1');
-        $patientA = $this->seedPatient(self::CLINIC_A1, 'gap-pat-39a');
-        $clinicianB = $this->insertClinician(self::CLINIC_B1, 0, 'Dr Appt B1');
-        $patientB = $this->seedPatient(self::CLINIC_B1, 'gap-pat-39b');
-
-        $slotA = $this->seedSlot(self::CLINIC_A1, $this->locA1, $clinicianA);
-        $slotB = $this->seedSlot(self::CLINIC_B1, $this->locB1, $clinicianB);
-
+        $tz = new \DateTimeZone('Asia/Tehran');
+        $today = (new \DateTimeImmutable('now', $tz))->format('Y-m-d');
         $now = App::db()->nowUtcSql();
-        $date = gmdate('Y-m-d', strtotime('+3 days'));
-        $refA = 'REF-A1-' . bin2hex(random_bytes(4));
-        $refB = 'REF-B1-' . bin2hex(random_bytes(4));
 
-        // Appointment in Clinic A1 — with slot_id and location_id (FK NOT NULL)
-        $resultA = $wpdb->query(
-            $wpdb->prepare(
-                'INSERT INTO ' . $wpdb->prefix . 'cpms_appointments
-                     (clinic_id, patient_id, clinician_id, slot_id, location_id, slot_date, slot_time, status, reference_code, booked_at, confirmed_at, created_at, updated_at)
-                 VALUES (%d, %d, %d, %d, %d, %s, %s, "confirmed", %s, %s, %s, %s, %s)',
-                self::CLINIC_A1, $patientA, $clinicianA, $slotA['id'], $this->locA1, $date, '10:00',
-                $refA, $now, $now, $now, $now
-            )
+        // --- Clinic A (61021): patient + clinician + slot (today) + confirmed appointment ---
+        $clinicianA = $this->insertClinician(self::CLINIC_A1, 0, 'Dr RT39 A');
+        $patientA = $this->seedPatient(self::CLINIC_A1, 'rt39-pat-a');
+
+        $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_schedule_slots
+                 (clinic_id, clinician_id, location_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, generated_from, created_at, updated_at)
+             VALUES (%d, %d, %d, %s, %s, 20, 1, 0, 0, 1, "lazy", %s, %s)',
+            self::CLINIC_A1, $clinicianA, $this->locA1, $today, '09:00', $now, $now
+        ));
+        $slotIdA = (int) $wpdb->insert_id;
+
+        $refA = 'RT39-A-' . bin2hex(random_bytes(4));
+        $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_appointments
+                 (clinic_id, patient_id, clinician_id, slot_id, location_id, slot_date, slot_time, status, reference_code, booked_at, confirmed_at, created_at, updated_at)
+             VALUES (%d, %d, %d, %d, %d, %s, %s, "confirmed", %s, %s, %s, %s, %s)',
+            self::CLINIC_A1, $patientA, $clinicianA, $slotIdA, $this->locA1, $today, '09:00',
+            $refA, $now, $now, $now, $now
+        ));
+        $apptIdA = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $apptIdA, 'Appointment A must be inserted');
+
+        // --- Clinic B (61023): patient + clinician + slot (today) + confirmed appointment ---
+        $clinicianB = $this->insertClinician(self::CLINIC_B1, 0, 'Dr RT39 B');
+        $patientB = $this->seedPatient(self::CLINIC_B1, 'rt39-pat-b');
+
+        $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_schedule_slots
+                 (clinic_id, clinician_id, location_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, generated_from, created_at, updated_at)
+             VALUES (%d, %d, %d, %s, %s, 20, 1, 0, 0, 1, "lazy", %s, %s)',
+            self::CLINIC_B1, $clinicianB, $this->locB1, $today, '10:00', $now, $now
+        ));
+        $slotIdB = (int) $wpdb->insert_id;
+
+        $refB = 'RT39-B-' . bin2hex(random_bytes(4));
+        $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_appointments
+                 (clinic_id, patient_id, clinician_id, slot_id, location_id, slot_date, slot_time, status, reference_code, booked_at, confirmed_at, created_at, updated_at)
+             VALUES (%d, %d, %d, %d, %d, %s, %s, "confirmed", %s, %s, %s, %s, %s)',
+            self::CLINIC_B1, $patientB, $clinicianB, $slotIdB, $this->locB1, $today, '10:00',
+            $refB, $now, $now, $now, $now
+        ));
+        $apptIdB = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $apptIdB, 'Appointment B must be inserted');
+
+        // Set scope to Clinic A — handler must NOT use scope for tenant identity
+        App::replaceExplicitScope(ClinicScope::forClinic(self::CLINIC_A1));
+        Settings::flushCache();
+
+        // Construct the REAL production handler with real dependencies
+        $handler = new \ClinicCore\Application\Jobs\ApptReminderHandler(
+            App::db(),
+            App::settings(),
+            App::smsService(),
+            App::notificationService(),
+            App::op()
         );
-        self::assertNotFalse($resultA, 'Appointment A INSERT must succeed: ' . $wpdb->last_error);
-        $apptA = (int) $wpdb->insert_id;
-        self::assertGreaterThan(0, $apptA, 'Appointment A must be inserted');
 
-        // Appointment in Clinic B1
-        $resultB = $wpdb->query(
+        // Invoke real handler — no REST context
+        $reminded = $handler([]);
+        self::assertGreaterThanOrEqual(2, $reminded, 'Handler must process appointments from both clinics');
+
+        // Verify: notification for Clinic A patient carries clinic_id = 61021
+        $notifA = $wpdb->get_results(
             $wpdb->prepare(
-                'INSERT INTO ' . $wpdb->prefix . 'cpms_appointments
-                     (clinic_id, patient_id, clinician_id, slot_id, location_id, slot_date, slot_time, status, reference_code, booked_at, confirmed_at, created_at, updated_at)
-                 VALUES (%d, %d, %d, %d, %d, %s, %s, "confirmed", %s, %s, %s, %s, %s)',
-                self::CLINIC_B1, $patientB, $clinicianB, $slotB['id'], $this->locB1, $date, '11:00',
-                $refB, $now, $now, $now, $now
-            )
-        );
-        self::assertNotFalse($resultB, 'Appointment B INSERT must succeed: ' . $wpdb->last_error);
-        $apptB = (int) $wpdb->insert_id;
-        self::assertGreaterThan(0, $apptB, 'Appointment B must be inserted');
-
-        // Verify appointments carry correct clinic_id (not 1)
-        $rowA = $wpdb->get_row($wpdb->prepare('SELECT clinic_id FROM ' . $wpdb->prefix . 'cpms_appointments WHERE id = %d', $apptA));
-        $rowB = $wpdb->get_row($wpdb->prepare('SELECT clinic_id FROM ' . $wpdb->prefix . 'cpms_appointments WHERE id = %d', $apptB));
-
-        self::assertSame(self::CLINIC_A1, (int) $rowA->clinic_id, 'Appointment A must carry Clinic A1 ID');
-        self::assertSame(self::CLINIC_B1, (int) $rowB->clinic_id, 'Appointment B must carry Clinic B1 ID');
-        self::assertNotEquals(1, (int) $rowA->clinic_id, 'Appointment A must not use Clinic ID 1');
-        self::assertNotEquals(1, (int) $rowB->clinic_id, 'Appointment B must not use Clinic ID 1');
-
-        // Simulate handler's SELECT (same query as ApptReminderHandler::__invoke)
-        // but for our test date — verify it returns rows with correct clinic_id
-        $handlerRows = $wpdb->get_results(
-            $wpdb->prepare(
-                'SELECT a.id, a.clinic_id FROM ' . $wpdb->prefix . 'cpms_appointments a
-                 WHERE a.status = "confirmed" AND a.slot_date = %s
-                 ORDER BY a.id ASC',
-                $date
+                'SELECT id, clinic_id FROM ' . $wpdb->prefix . 'cpms_notifications
+                 WHERE recipient_patient_id = %d AND template = "appt_reminder" AND status != "cancelled"',
+                $patientA
             ),
             ARRAY_A
         );
+        self::assertNotEmpty($notifA, 'Clinic A patient must have appt_reminder notification');
+        self::assertSame(self::CLINIC_A1, (int) $notifA[0]['clinic_id'], 'Notification A must carry ROW clinic_id (61021), not scope');
 
-        $foundA = false;
-        $foundB = false;
-        foreach ($handlerRows as $row) {
-            if ((int) $row['id'] === $apptA) {
-                self::assertSame(self::CLINIC_A1, (int) $row['clinic_id'], 'Handler SELECT row for A must have clinic A1');
-                $foundA = true;
-            }
-            if ((int) $row['id'] === $apptB) {
-                self::assertSame(self::CLINIC_B1, (int) $row['clinic_id'], 'Handler SELECT row for B must have clinic B1');
-                $foundB = true;
-            }
+        // Verify: notification for Clinic B patient carries clinic_id = 61023
+        $notifB = $wpdb->get_results(
+            $wpdb->prepare(
+                'SELECT id, clinic_id FROM ' . $wpdb->prefix . 'cpms_notifications
+                 WHERE recipient_patient_id = %d AND template = "appt_reminder" AND status != "cancelled"',
+                $patientB
+            ),
+            ARRAY_A
+        );
+        self::assertNotEmpty($notifB, 'Clinic B patient must have appt_reminder notification');
+        self::assertSame(self::CLINIC_B1, (int) $notifB[0]['clinic_id'], 'Notification B must carry ROW clinic_id (61023), not scope');
+
+        // No clinic-1 fallback
+        self::assertNotEquals(1, (int) $notifA[0]['clinic_id'], 'No clinic-1 fallback for A');
+        self::assertNotEquals(1, (int) $notifB[0]['clinic_id'], 'No clinic-1 fallback for B');
+
+        // Cross-clinic isolation
+        self::assertNotSame(
+            (int) $notifA[0]['clinic_id'],
+            (int) $notifB[0]['clinic_id'],
+            'A and B notifications must carry different clinic_ids'
+        );
+
+        // Verify SMS if quiet hours were open (optional — notification is primary evidence)
+        $smsA = $wpdb->get_results(
+            $wpdb->prepare(
+                'SELECT clinic_id FROM ' . $wpdb->prefix . 'cpms_sms_messages
+                 WHERE context_id = %d AND event = "appointment_reminder"',
+                $apptIdA
+            ),
+            ARRAY_A
+        );
+        if (!empty($smsA)) {
+            self::assertSame(self::CLINIC_A1, (int) $smsA[0]['clinic_id'], 'SMS A must carry ROW clinic_id');
         }
-        self::assertTrue($foundA, 'Handler SELECT must find appointment A');
-        self::assertTrue($foundB, 'Handler SELECT must find appointment B');
+
+        $smsB = $wpdb->get_results(
+            $wpdb->prepare(
+                'SELECT clinic_id FROM ' . $wpdb->prefix . 'cpms_sms_messages
+                 WHERE context_id = %d AND event = "appointment_reminder"',
+                $apptIdB
+            ),
+            ARRAY_A
+        );
+        if (!empty($smsB)) {
+            self::assertSame(self::CLINIC_B1, (int) $smsB[0]['clinic_id'], 'SMS B must carry ROW clinic_id');
+        }
     }
 
-    // =================================================================
+    /**
+     * MT-39 RUNTIME: invoke real FollowUpReminderHandler::__invoke() with
+     * eligible follow-ups in Clinic A (61021) and Clinic B (61023).
+     *
+     * Evidence type: real production handler entry point invoked (A).
+     */
+    public function testFollowUpHandlerUsesRowClinicIdNotScope(): void
+    {
+        global $wpdb;
+
+        $tz = new \DateTimeZone('Asia/Tehran');
+        $tomorrow = (new \DateTimeImmutable('now', $tz))->modify('+1 day')->format('Y-m-d');
+        $today = (new \DateTimeImmutable('now', $tz))->format('Y-m-d');
+        $now = App::db()->nowUtcSql();
+
+        // --- Clinic A: patient + clinician + visit + follow-up ---
+        $clinicianA = $this->insertClinician(self::CLINIC_A1, 0, 'Dr FU39 A');
+        $patientA = $this->seedPatient(self::CLINIC_A1, 'fu39-pat-a');
+
+        $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_visits
+                 (clinic_id, clinician_id, patient_id, visit_date, check_in_at, status, created_at)
+             VALUES (%d, %d, %d, %s, %s, "checked_out", %s)',
+            self::CLINIC_A1, $clinicianA, $patientA, $today, $now, $now
+        ));
+        $visitIdA = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $visitIdA, 'Visit A must be inserted');
+
+        $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_follow_ups
+                 (clinic_id, visit_id, patient_id, clinician_id, is_needed, suggested_date, status, created_at)
+             VALUES (%d, %d, %d, %d, 1, %s, "pending", %s)',
+            self::CLINIC_A1, $visitIdA, $patientA, $clinicianA, $tomorrow, $now
+        ));
+        $fuIdA = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $fuIdA, 'Follow-up A must be inserted');
+
+        // --- Clinic B: patient + clinician + visit + follow-up ---
+        $clinicianB = $this->insertClinician(self::CLINIC_B1, 0, 'Dr FU39 B');
+        $patientB = $this->seedPatient(self::CLINIC_B1, 'fu39-pat-b');
+
+        $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_visits
+                 (clinic_id, clinician_id, patient_id, visit_date, check_in_at, status, created_at)
+             VALUES (%d, %d, %d, %s, %s, "checked_out", %s)',
+            self::CLINIC_B1, $clinicianB, $patientB, $today, $now, $now
+        ));
+        $visitIdB = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $visitIdB, 'Visit B must be inserted');
+
+        $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_follow_ups
+                 (clinic_id, visit_id, patient_id, clinician_id, is_needed, suggested_date, status, created_at)
+             VALUES (%d, %d, %d, %d, 1, %s, "pending", %s)',
+            self::CLINIC_B1, $visitIdB, $patientB, $clinicianB, $tomorrow, $now
+        ));
+        $fuIdB = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $fuIdB, 'Follow-up B must be inserted');
+
+        // Set scope to Clinic A — handler must NOT use scope for tenant identity
+        App::replaceExplicitScope(ClinicScope::forClinic(self::CLINIC_A1));
+        Settings::flushCache();
+
+        // Construct the REAL production handler
+        $handler = new \ClinicCore\Application\Jobs\FollowUpReminderHandler(
+            App::db(),
+            App::settings(),
+            App::smsService(),
+            App::notificationService(),
+            App::op()
+        );
+
+        // Invoke real handler — no REST context
+        $reminded = $handler([]);
+        self::assertGreaterThanOrEqual(2, $reminded, 'Handler must process follow-ups from both clinics');
+
+        // Verify: notification for Clinic A carries clinic_id = 61021
+        $notifA = $wpdb->get_results(
+            $wpdb->prepare(
+                'SELECT id, clinic_id FROM ' . $wpdb->prefix . 'cpms_notifications
+                 WHERE recipient_patient_id = %d AND template = "followup_reminder" AND status != "cancelled"',
+                $patientA
+            ),
+            ARRAY_A
+        );
+        self::assertNotEmpty($notifA, 'Clinic A patient must have followup_reminder notification');
+        self::assertSame(self::CLINIC_A1, (int) $notifA[0]['clinic_id'], 'Follow-up notif A must carry ROW clinic_id (61021)');
+
+        // Verify: notification for Clinic B carries clinic_id = 61023
+        $notifB = $wpdb->get_results(
+            $wpdb->prepare(
+                'SELECT id, clinic_id FROM ' . $wpdb->prefix . 'cpms_notifications
+                 WHERE recipient_patient_id = %d AND template = "followup_reminder" AND status != "cancelled"',
+                $patientB
+            ),
+            ARRAY_A
+        );
+        self::assertNotEmpty($notifB, 'Clinic B patient must have followup_reminder notification');
+        self::assertSame(self::CLINIC_B1, (int) $notifB[0]['clinic_id'], 'Follow-up notif B must carry ROW clinic_id (61023)');
+
+        // No clinic-1 fallback
+        self::assertNotEquals(1, (int) $notifA[0]['clinic_id'], 'No clinic-1 fallback');
+        self::assertNotEquals(1, (int) $notifB[0]['clinic_id'], 'No clinic-1 fallback');
+
+        // Cross-clinic isolation
+        self::assertNotSame(
+            (int) $notifA[0]['clinic_id'],
+            (int) $notifB[0]['clinic_id'],
+            'A and B follow-up notifications must carry different clinic_ids'
+        );
+
+        // Verify reminder_sent_at was set (handler marks follow-up as reminded)
+        $fuRowA = $wpdb->get_row($wpdb->prepare(
+            'SELECT reminder_sent_at FROM ' . $wpdb->prefix . 'cpms_follow_ups WHERE id = %d',
+            $fuIdA
+        ));
+        self::assertNotNull($fuRowA->reminder_sent_at, 'Follow-up A reminder_sent_at must be set');
+    }
+
+    /**
+     * MT-39 RETRY: handler re-invocation is idempotent — same clinic identity.
+     *
+     * Invoke handler twice on same appointment → second = 0 new reminders.
+     * Same dedupe key → same clinic identity preserved.
+     * Evidence type: real handler invoked (A), retry verified.
+     */
+    public function testApptReminderHandlerRetryKeepsSameClinicIdentity(): void
+    {
+        global $wpdb;
+
+        $tz = new \DateTimeZone('Asia/Tehran');
+        $today = (new \DateTimeImmutable('now', $tz))->format('Y-m-d');
+        $now = App::db()->nowUtcSql();
+
+        // Single appointment in Clinic A
+        $clinician = $this->insertClinician(self::CLINIC_A1, 0, 'Dr RETRY');
+        $patient = $this->seedPatient(self::CLINIC_A1, 'retry-pat');
+
+        $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_schedule_slots
+                 (clinic_id, clinician_id, location_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, generated_from, created_at, updated_at)
+             VALUES (%d, %d, %d, %s, %s, 20, 1, 0, 0, 1, "lazy", %s, %s)',
+            self::CLINIC_A1, $clinician, $this->locA1, $today, '14:00', $now, $now
+        ));
+        $slotId = (int) $wpdb->insert_id;
+
+        $ref = 'RT39-RETRY-' . bin2hex(random_bytes(4));
+        $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_appointments
+                 (clinic_id, patient_id, clinician_id, slot_id, location_id, slot_date, slot_time, status, reference_code, booked_at, confirmed_at, created_at, updated_at)
+             VALUES (%d, %d, %d, %d, %d, %s, %s, "confirmed", %s, %s, %s, %s, %s)',
+            self::CLINIC_A1, $patient, $clinician, $slotId, $this->locA1, $today, '14:00',
+            $ref, $now, $now, $now, $now
+        ));
+
+        App::replaceExplicitScope(ClinicScope::forClinic(self::CLINIC_A1));
+        Settings::flushCache();
+
+        $handler = new \ClinicCore\Application\Jobs\ApptReminderHandler(
+            App::db(),
+            App::settings(),
+            App::smsService(),
+            App::notificationService(),
+            App::op()
+        );
+
+        // First invocation: 1 reminder
+        $first = $handler([]);
+        self::assertGreaterThanOrEqual(1, $first, 'First invocation must process appointment');
+
+        // Second invocation: 0 new reminders (dedupe — J-2 idempotency)
+        $second = $handler([]);
+        self::assertSame(0, $second, 'Second invocation must be idempotent (0 new)');
+
+        // Exactly ONE notification for this patient (not duplicated)
+        $notifCount = (int) $wpdb->get_var($wpdb->prepare(
+            'SELECT COUNT(*) FROM ' . $wpdb->prefix . 'cpms_notifications
+             WHERE recipient_patient_id = %d AND template = "appt_reminder"',
+            $patient
+        ));
+        self::assertSame(1, $notifCount, 'Exactly one notification after retry — dedupe prevents duplicate');
+
+        // That single notification has correct clinic_id
+        $notif = $wpdb->get_row($wpdb->prepare(
+            'SELECT clinic_id FROM ' . $wpdb->prefix . 'cpms_notifications
+             WHERE recipient_patient_id = %d AND template = "appt_reminder" LIMIT 1',
+            $patient
+        ));
+        self::assertSame(self::CLINIC_A1, (int) $notif->clinic_id, 'Retry notification still carries Clinic A1 identity');
+    }
     // MT-40: Settings are isolated across Clinics
     // =================================================================
 
@@ -656,6 +887,7 @@ final class TenantIsolationGapTest extends WP_UnitTestCase
         $pure = 'WHERE clinic_id >= 61000';
         $steps = [
             'cpms_sms_messages' => $pure,
+            'cpms_follow_ups' => $pure,
             'cpms_visit_status_history' => 'WHERE visit_id IN (SELECT id FROM ' . $wpdb->prefix . 'cpms_visits WHERE clinic_id >= 61000)',
             'cpms_medical_attachments' => $pure,
             'cpms_visits' => $pure,
