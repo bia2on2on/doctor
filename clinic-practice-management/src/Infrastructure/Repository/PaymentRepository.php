@@ -20,7 +20,18 @@ final class PaymentRepository
     }
 
     /**
+     * درج پرداخت — در صورت شکست، استثنا می‌دهد (هرگز شناسهٔ stale/صفر برنمی‌گردد).
+     *
+     * C6 corrective (insert-failure): `CpmsDb::$strict` در runtime خاموش است، پس
+     * `ensureNoSqlError()` خطای SQL را Exception نمی‌کند و `wpdb::insert` در خطا
+     * `false` می‌دهد درحالی‌که `wpdb::$insert_id` مقدارِ insert موفقِ قبلی را
+     * نگه می‌دارد. گارد قدیمیِ فراخواننده (`!$ok || $paymentId <= 0`) عملاً فقط
+     * «صفر» را می‌گرفت، چون `$ok` همان insert_id بود — بنابراین یک شناسهٔ
+     * staleِ غیرصفر به‌عنوان پرداخت تازه commit می‌شد.
+     *
      * @param array<string, mixed> $row
+     *
+     * @throws \RuntimeException وقتی درج ناموفق است یا شناسهٔ معتبر تولید نشده
      */
     public function insert(int $clinic_id, array $row): int
     {
@@ -34,9 +45,13 @@ final class PaymentRepository
             'voided_by_wp_user_id' => null,
             'created_at' => $this->db->nowUtcSql(),
         ];
-        $this->db->insert('cpms_payments', $row);
+        $ok = $this->db->insert('cpms_payments', $row);
+        $id = $this->db->wpdb_last_insert_id();
+        if (!$ok || $id <= 0) {
+            throw new \RuntimeException('cpms_payments insert failed');
+        }
 
-        return $this->db->wpdb_last_insert_id();
+        return $id;
     }
 
     /**
@@ -95,13 +110,21 @@ final class PaymentRepository
         ) ?: [];
     }
 
-    public function nextPaymentNumber(): string
+    /**
+     * شمارهٔ بعدی پرداخت: PAY-YYMMDD-NNNN — per Clinic.
+     *
+     * C6 corrective: Clinic الزامی است؛ عددگیری هرگز با literal `1` bind نمی‌شود،
+     * پس شماره‌گذاری هر Clinic مستقل از بقیه پیش می‌رود.
+     *
+     * @param int $clinic_id Clinic مالک پرداخت — الزامی، بدون fallback
+     */
+    public function nextPaymentNumber(int $clinic_id): string
     {
         $prefix = 'PAY-' . gmdate('ymd') . '-';
         $max = $this->db->fetchValue(
             'SELECT MAX(payment_number) FROM ' . $this->db->table('cpms_payments') .
             " WHERE clinic_id = %d AND payment_number LIKE %s",
-            [1, $prefix . '%']
+            [$clinic_id, $prefix . '%']
         );
 
         $seq = 0;
@@ -113,17 +136,22 @@ final class PaymentRepository
     }
 
     /**
-     * خلاصه درآمد بازه — D18: captured (منهای refunded)؛ voided کلاً حذف.
+     * خلاصه درآمد بازهٔ یک Clinic — D18: captured (منهای refunded)؛ voided کلاً حذف.
+     *
+     * C6 corrective: Clinic الزامی است؛ پیش از این با literal `1` bind می‌شد و
+     * درآمد Clinic 1 در خلاصهٔ مالی هر Clinic دیگری نمایش داده می‌شد.
+     *
+     * @param int $clinic_id Clinic مالک پرداخت‌ها — الزامی، بدون fallback
      *
      * @return array{total: float, by_method: array<string, float>, refunded: float, count: int}
      */
-    public function revenueSummary(string $fromDate, string $toDate): array
+    public function revenueSummary(int $clinic_id, string $fromDate, string $toDate): array
     {
         $rows = $this->db->fetchAll(
             'SELECT method, amount, refunded_amount FROM ' . $this->db->table('cpms_payments') .
             " WHERE clinic_id = %d AND status IN ('captured', 'refunded')" .
             ' AND paid_at >= %s AND paid_at < %s',
-            [1, $fromDate . ' 00:00:00', $toDate . ' 23:59:59.999']
+            [$clinic_id, $fromDate . ' 00:00:00', $toDate . ' 23:59:59.999']
         ) ?: [];
 
         $byMethod = ['cash' => 0.0, 'card_pos' => 0.0, 'online' => 0.0, 'other' => 0.0];
@@ -146,9 +174,15 @@ final class PaymentRepository
     }
 
     /**
+     * پرداخت‌های بازهٔ یک Clinic — D18.
+     *
+     * C6 corrective: Clinic الزامی است؛ پیش از این با literal `1` bind می‌شد.
+     *
+     * @param int $clinic_id Clinic مالک پرداخت‌ها — الزامی، بدون fallback
+     *
      * @return list<array<string, mixed>>
      */
-    public function forRange(string $fromDate, string $toDate, int $limit = 200): array
+    public function forRange(int $clinic_id, string $fromDate, string $toDate, int $limit = 200): array
     {
         return $this->db->fetchAll(
             'SELECT pay.*, inv.invoice_number FROM ' . $this->db->table('cpms_payments') . ' pay' .
@@ -156,7 +190,7 @@ final class PaymentRepository
             ' WHERE pay.clinic_id = %d' .
             ' AND pay.paid_at >= %s AND pay.paid_at < %s' .
             ' ORDER BY pay.id DESC LIMIT %d',
-            [1, $fromDate . ' 00:00:00', $toDate . ' 23:59:59.999', $limit]
+            [$clinic_id, $fromDate . ' 00:00:00', $toDate . ' 23:59:59.999', $limit]
         ) ?: [];
     }
 }

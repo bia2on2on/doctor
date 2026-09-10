@@ -79,7 +79,7 @@ final class FinanceService
             'price' => (float) $s['price'],
             'currency' => (string) $s['currency'],
             'is_active' => (int) $s['is_active'] === 1,
-        ], $this->services->all($onlyActive));
+        ], $this->services->all($this->clinicScopeId('services.read'), $onlyActive));
     }
 
     /**
@@ -262,11 +262,13 @@ final class FinanceService
                 throw FinanceException::of('CLINIC_VALIDATION_FAILED', 'اقلام فاکتور نامعتبر است: ' . $e->getMessage(), 422);
             }
 
-            // عددگیری سریال — قفل کلینیک همه عددگیری‌های موازی را سریال می‌کند
-            $this->lockClinic();
-            $number = $this->invoices->nextInvoiceNumber();
+            // عددگیری سریال — قفلِ ردیفِ همان Clinic همه عددگیری‌های موازیِ
+            // آن Clinic را سریال می‌کند (C6 corrective: per Clinic).
+            $invoiceClinicId = (int) $visit['clinic_id'];
+            $this->lockClinic($invoiceClinicId);
+            $number = $this->invoices->nextInvoiceNumber($invoiceClinicId);
 
-            $invoiceId = $this->invoices->insert((int) $visit['clinic_id'], [
+            $invoiceId = $this->invoices->insert($invoiceClinicId, [
                 'invoice_number' => $number,
                 'patient_id' => (int) $visit['patient_id'],
                 'visit_id' => $visitId,
@@ -279,6 +281,20 @@ final class FinanceService
                 'balance' => $this->minorToDb($totals['total']),
                 'issued_by_wp_user_id' => $actorUserId,
             ]);
+            /*
+             * C6 corrective (insert-failure) — دفاع دوم: اگر به هر دلیلی
+             * شناسهٔ والد معتبر نباشد، هیچ قلمی چسبانده نمی‌شود و استثنا
+             * تراکنش را ROLLBACK می‌کند (پیش از این با شناسهٔ stale/صفر ادامه
+             * می‌داد و اقلام به فاکتور بیگانه می‌چسبید).
+             */
+            if ($invoiceId <= 0) {
+                throw FinanceException::of(
+                    'CLINIC_INTERNAL_ERROR',
+                    'صدور فاکتور ناموفق بود — شناسهٔ فاکتور تولید نشد',
+                    500,
+                    ['visit_id' => $visitId]
+                );
+            }
             foreach ($rows as $row) {
                 $this->invoices->insertItem($invoiceId, [
                     'service_id' => $row['service_id'],
@@ -365,26 +381,39 @@ final class FinanceService
                     );
                 }
 
-                $this->lockClinic();
-                $number = $this->payments->nextPaymentNumber();
-                $ok = $this->payments->insert((int) $invoice['clinic_id'], [
-                    'payment_number' => $number,
-                    'invoice_id' => $invoiceId,
-                    'patient_id' => (int) $invoice['patient_id'],
-                    'amount' => $this->minorToDb($amount),
-                    'method' => $method,
-                    'transaction_ref' => $ref,
-                    'idempotency_key' => $idempotencyKey,
-                    'paid_at' => $this->db->nowUtcSql(),
-                    'received_by_wp_user_id' => $actorUserId,
-                ]);
-                $paymentId = $this->db->wpdb_last_insert_id();
-                if (!$ok || $paymentId <= 0) {
+                // C6 corrective: قفل و عددگیری روی همان Clinic فاکتور.
+                $paymentClinicId = (int) $invoice['clinic_id'];
+                $this->lockClinic($paymentClinicId);
+                $number = $this->payments->nextPaymentNumber($paymentClinicId);
+                /*
+                 * C6 corrective (insert-failure): Repository در شکستِ درج استثنا
+                 * می‌دهد (نه شناسهٔ stale). تشخیص Idempotency-race همان‌جا که
+                 * قبلاً بود انجام می‌شود — ولی حالا فقط وقتی که درج **واقعاً**
+                 * شکست خورده باشد، نه وقتی که شناسهٔ بیگانه برگشته باشد.
+                 */
+                try {
+                    $paymentId = $this->payments->insert($paymentClinicId, [
+                        'payment_number' => $number,
+                        'invoice_id' => $invoiceId,
+                        'patient_id' => (int) $invoice['patient_id'],
+                        'amount' => $this->minorToDb($amount),
+                        'method' => $method,
+                        'transaction_ref' => $ref,
+                        'idempotency_key' => $idempotencyKey,
+                        'paid_at' => $this->db->nowUtcSql(),
+                        'received_by_wp_user_id' => $actorUserId,
+                    ]);
+                } catch (\RuntimeException $e) {
                     // UNIQUE(invoice_id,key) — درخواست هم‌زمان با همان کلید
                     $raced = $this->payments->findByIdempotencyKey($invoiceId, $idempotencyKey);
                     if ($raced !== null) {
                         return ['replay' => $raced];
                     }
+                    error_log('[CPMS][Finance] payment insert failed: ' . $e->getMessage());
+                    throw FinanceException::of('CLINIC_VALIDATION_FAILED', 'ثبت پرداخت انجام نشد', 500);
+                }
+                if ($paymentId <= 0) {
+                    // دفاع دوم: شناسهٔ نامعتبر هرگز به اثر پرداخت/Audit نمی‌رسد.
                     throw FinanceException::of('CLINIC_VALIDATION_FAILED', 'ثبت پرداخت انجام نشد', 500);
                 }
 
@@ -771,8 +800,11 @@ final class FinanceService
             }
         }
 
-        $revenue = $this->payments->revenueSummary($from, $to);
-        $openInvoices = $this->invoices->openInvoices(500);
+        // C6 corrective: خلاصهٔ مالی همیشه Clinic-scoped است — از Scope مورد
+        // اعتماد (ADR-0031)، نه literal 1 و نه پارامتر client.
+        $summaryClinicId = $this->clinicScopeId('finance.summary');
+        $revenue = $this->payments->revenueSummary($summaryClinicId, $from, $to);
+        $openInvoices = $this->invoices->openInvoices($summaryClinicId, 500);
         $openBalance = 0;
         foreach ($openInvoices as $inv) {
             $openBalance += (int) round((float) $inv['balance']);
@@ -801,7 +833,7 @@ final class FinanceService
             ],
             'payments' => array_map(
                 fn (array $p): array => $this->presentPayment($p),
-                $this->payments->forRange($from, $to, 100)
+                $this->payments->forRange($summaryClinicId, $from, $to, 100)
             ),
         ];
     }
@@ -984,14 +1016,48 @@ final class FinanceService
     }
 
     /**
-     * قفل ردیف کلینیک — سریال‌سازی عددگیری INV/PAY (رقابت موازی روی MAX+1).
+     * قفل ردیفِ همان Clinic — سریال‌سازی عددگیری INV/PAY (رقابت موازی روی MAX+1).
+     *
+     * C6 corrective: پیش از این همیشه ردیف Clinic 1 قفل می‌شد، یعنی (۱) در نصب
+     * چند‌کلینیکی شماره‌گذاری Clinicهای دیگر اصلاً سریال نمی‌شد و (۲) همهٔ
+     * Clinicها روی یک ردیفِ بی‌ربط با هم صف می‌شدند. حالا دقیقاً همان Clinic
+     * قفل می‌شود که عددگیری‌اش انجام می‌شود.
+     *
+     * @param int $clinicId Clinic در حال number-taking — الزامی، بدون fallback
      */
-    private function lockClinic(): void
+    private function lockClinic(int $clinicId): void
     {
+        if ($clinicId <= 0) {
+            throw new \InvalidArgumentException('lockClinic: clinic_id باید صریح و مثبت باشد.');
+        }
         $this->db->fetchRowForUpdate(
             'SELECT id FROM ' . $this->db->table('cpms_clinics') . ' WHERE id = %d LIMIT 1',
-            [1]
+            [$clinicId]
         );
+    }
+
+    /**
+     * Clinic مؤثرِ عملیات جاری — همیشه از Scope مورد اعتماد (ADR-0031)، هرگز
+     * از ثابت پیش‌فرض و هرگز از مقدار دلخواه client.
+     *
+     * `App::scope()` در حالت مبهم Fail-Closed خطا می‌دهد (SystemClinicResolver)،
+     * پس این متد خودش fallback به Clinic 1 ندارد.
+     *
+     * @param string $context نام عملیات — فقط برای پیام خطای diagnosable
+     */
+    private function clinicScopeId(string $context): int
+    {
+        $clinicId = App::scope()->clinicId;
+        if ($clinicId <= 0) {
+            throw FinanceException::of(
+                'CLINIC_SCOPE_REQUIRED',
+                'Clinic فعال برای این عملیات مالی تعیین نشده است',
+                403,
+                ['scope' => $context]
+            );
+        }
+
+        return $clinicId;
     }
 
     /**

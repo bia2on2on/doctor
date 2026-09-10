@@ -39,9 +39,22 @@ final class InvoiceRepository
             'created_at' => $this->db->nowUtcSql(),
             'updated_at' => $this->db->nowUtcSql(),
         ];
-        $this->db->insert('cpms_invoices', $row);
+        $ok = $this->db->insert('cpms_invoices', $row);
+        $id = $this->db->wpdb_last_insert_id();
 
-        return $this->db->wpdb_last_insert_id();
+        /*
+         * C6 corrective (insert-failure): `CpmsDb::$strict` در runtime خاموش است،
+         * پس خطای SQL خاموش می‌ماند و `wpdb::insert` در خطا `false` می‌دهد درحالی‌که
+         * `wpdb::$insert_id` مقدارِ insert موفقِ قبلی سرِ جایش می‌ماند. بدون این
+         * گارد، فراخواننده با شناسهٔ بیگانه/صفر ادامه می‌داد، اقلام فاکتور به
+         * فاکتور دیگری (احتمالاً از Clinic دیگر) چسبانده می‌شد و تراکنش هم
+         * commit می‌شد.
+         */
+        if (!$ok || $id <= 0) {
+            throw new \RuntimeException('cpms_invoices insert failed');
+        }
+
+        return $id;
     }
 
     /**
@@ -116,7 +129,11 @@ final class InvoiceRepository
             'service_id' => null,
             'discount' => 0,
         ];
-        $this->db->insert('cpms_invoice_items', $row);
+        // C6 corrective — قلمِ ثبت‌نشده نباید خاموش بماند: فاکتور بدون قلم با
+        // مبالغ ناسازگار commit می‌شد.
+        if (!$this->db->insert('cpms_invoice_items', $row)) {
+            throw new \RuntimeException('cpms_invoice_items insert failed');
+        }
     }
 
     /**
@@ -140,9 +157,15 @@ final class InvoiceRepository
             'payment_id' => null,
             'created_at' => $this->db->nowUtcSql(),
         ];
-        $this->db->insert('cpms_payment_adjustments', $row);
+        $ok = $this->db->insert('cpms_payment_adjustments', $row);
+        $id = $this->db->wpdb_last_insert_id();
+        // C6 corrective — همان گارد insert فاکتور: شناسهٔ stale/صفر هرگز به
+        // Audit یا پاسخ برنمی‌گردد.
+        if (!$ok || $id <= 0) {
+            throw new \RuntimeException('cpms_payment_adjustments insert failed');
+        }
 
-        return $this->db->wpdb_last_insert_id();
+        return $id;
     }
 
     /**
@@ -175,15 +198,21 @@ final class InvoiceRepository
     }
 
     /**
-     * شماره بعدی فاکتور: INV-YYMMDD-NNN — کلینیک-قفل در Service گرفته می‌شود.
+     * شماره بعدی فاکتور: INV-YYMMDD-NNN — per Clinic (قفل ردیف همان Clinic در
+     * Service گرفته می‌شود).
+     *
+     * C6 corrective: Clinic الزامی است؛ عددگیری هرگز با literal `1` bind نمی‌شود،
+     * پس شماره‌گذاری هر Clinic مستقل از بقیه پیش می‌رود.
+     *
+     * @param int $clinic_id Clinic مالک فاکتور — الزامی، بدون fallback
      */
-    public function nextInvoiceNumber(): string
+    public function nextInvoiceNumber(int $clinic_id): string
     {
         $prefix = 'INV-' . gmdate('ymd') . '-';
         $max = $this->db->fetchValue(
             'SELECT MAX(invoice_number) FROM ' . $this->db->table('cpms_invoices') .
             " WHERE clinic_id = %d AND invoice_number LIKE %s",
-            [1, $prefix . '%']
+            [$clinic_id, $prefix . '%']
         );
 
         $seq = 0;
@@ -195,11 +224,16 @@ final class InvoiceRepository
     }
 
     /**
-     * فاکتورهای باز کلینیک (بدهی‌های باز — FR-14.8).
+     * فاکتورهای باز یک Clinic (بدهی‌های باز — FR-14.8).
+     *
+     * C6 corrective: Clinic الزامی است؛ پیش از این با literal `1` bind می‌شد و
+     * نام و MRN بیمارِ Clinic دیگر را در خلاصهٔ مالی هر Clinic نشان می‌داد.
+     *
+     * @param int $clinic_id Clinic مالک فاکتورها — الزامی، بدون fallback
      *
      * @return list<array<string, mixed>>
      */
-    public function openInvoices(int $limit = 100): array
+    public function openInvoices(int $clinic_id, int $limit = 100): array
     {
         return $this->db->fetchAll(
             'SELECT i.*, p.first_name AS patient_first_name, p.last_name AS patient_last_name, p.mrn AS patient_mrn' .
@@ -207,7 +241,7 @@ final class InvoiceRepository
             ' JOIN ' . $this->db->table('cpms_patients') . ' p ON p.id = i.patient_id' .
             " WHERE i.clinic_id = %d AND i.status IN ('open', 'partial')" .
             ' ORDER BY i.id DESC LIMIT %d',
-            [1, $limit]
+            [$clinic_id, $limit]
         ) ?: [];
     }
 

@@ -19,16 +19,24 @@ final class ServiceRepository
     }
 
     /**
+     * فهرست تعرفه‌های یک Clinic.
+     *
+     * C6 corrective: `clinic_id` پیش از این با literal `1` به prepared statement
+     * bind می‌شد، پس در هر نصب چند‌کلینیکی تعرفه‌های Clinic 1 به همه نشان داده
+     * می‌شد. حالا Clinic یک پارامتر **الزامی و بدون مقدار پیش‌فرض** است.
+     *
+     * @param int $clinic_id Clinic مالک تعرفه‌ها — الزامی، بدون fallback
+     *
      * @return list<array<string, mixed>>
      */
-    public function all(bool $onlyActive = false): array
+    public function all(int $clinic_id, bool $onlyActive = false): array
     {
         $where = 'clinic_id = %d' . ($onlyActive ? ' AND is_active = 1' : '');
 
         return $this->db->fetchAll(
             'SELECT * FROM ' . $this->db->table('cpms_services') .
             ' WHERE ' . $where . ' ORDER BY name ASC LIMIT 500',
-            [1]
+            [$clinic_id]
         ) ?: [];
     }
 
