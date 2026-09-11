@@ -676,8 +676,23 @@ Full slice-by-slice RED→GREEN history with run IDs:
   are translation-ready, or that Domain/Application historical i18n debt is fixed — and it
   does **not** close Phase 2. The exact-source-message match used for the two C7 messages
   remains a bounded **transitional** compatibility technique, **not** preferred long-term
-  architecture. C10 remains **NOT STARTED / not authorized** and performance remains
-  **NOT MEASURED**.
+  architecture. C10 remains **NOT STARTED / not authorized**.
+- **Performance evidence status (corrected 2026-09-11 — the flat "NOT MEASURED" wording used
+  elsewhere in this closure record was inaccurate):** performance has **limited real staging
+  benchmark evidence**, but **commercial / reference-environment performance remains
+  NOT MEASURED / not validated**. Verified repository evidence: an executable `ab` benchmark
+  step ("Performance benchmark — ab (p50/p95/p99 + RPS + error rate)") lives inside the
+  `staging-gate` job of `.github/workflows/pilot-gate.yml`, and executed results are recorded in
+  `docs/phase-reports/report-pilot-gate.md` §8 with actual p50/p95/p99/RPS/error-rate figures.
+  That staging environment is **not** the canonical commercial/reference performance
+  environment, and that report **explicitly did not claim** the approved thresholds were
+  satisfied there (§8: «اهداف مصوب (هیچ‌کدام پاس‌شده اعلام نمی‌شوند)»; performance quality-gate
+  adjudication is deferred to a reference-server benchmark — Runbook §12.3,
+  BLOCKED_BY_ENVIRONMENT). Still **NOT MEASURED**: reference-environment performance against the
+  intended NFR thresholds; the public-page/plugin overhead target (p95 < 100ms);
+  runtime query-count/N+1 measurement; memory; and meaningful multi-Clinic load scale.
+  **No staging number is evidence of production performance**, and this correction does not
+  start or authorize C10.
 
 
 ---
