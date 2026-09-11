@@ -173,9 +173,9 @@ gh pr view 18 --json state,mergedAt  # CLOSED / null
 | یافته | رده | برش |
 |---|---|---|
 | مسیرهای مالیِ مبتنی بر ID (`recordPayment`/`voidPayment`/`refundPayment`/`addAdjustment` + خواندن فاکتور) بدون تأیید مالکیت کلینیک | C — بالا | S4 |
-| اجرای Job: نمونهٔ `Settings` پین‌شده روی همهٔ کلینیک‌ها (timezone، افق Slot، Quiet Hours، retention، **اعتبارنامهٔ SMS**) | C — بالا | S2 (نیازمند ADR) |
+| اجرای Job: نمونهٔ `Settings` پین‌شده روی همهٔ کلینیک‌ها (timezone، افق Slot، Quiet Hours، retention، **اعتبارنامهٔ SMS**) | C — بالا | S2 — نیازمند ADR؛ **شکل راه‌حل باز است** (ستون جدید در `cpms_jobs` فقط یک کاندید است، نه الزام) |
 | `ScheduleService::update/delete/deleteException` بدون predicate کلینیک | C — بالا | S1 |
-| شماره‌گذاری نسخه: توالی سراسری، بدون قفل، UNIQUE سراسری | C — متوسط | S3 (نیازمند Migration ⇒ تأیید مالک) |
+| شماره‌گذاری نسخه: توالی سراسری، بدون قفل، UNIQUE سراسری | **D — حل‌نشده** (نه نقص تأییدشده) | S3 — ابتدا **سؤال باز دامنه‌ای**: آیا شمارهٔ نسخه اصلاً باید per-clinic باشد؟ بدون شاهد اجرایی، بدون Migration پیشنهادی |
 | Organization/هویت بیمار، دامنهٔ کلید Idempotency (0020)، فایل بالینی، بیماران، نوبت‌ها، دست‌نویس، نسخهٔ نهایی‌شده، صف | SAFE (A/B) | — |
 | `VisitService::history()`/`getVisit()` — بدون predicate ولی **بدون فراخوان REST** | D-dead | اگر روزی سیم‌کشی شد، اول دامنه‌بندی |
 

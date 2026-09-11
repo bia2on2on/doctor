@@ -422,6 +422,13 @@ findForUpdateForClinic`). Others are **confirmed defects by deterministic code
 path** and are listed with severity and a proposed implementation slice in the
 census. **No C7 fix is applied in this pass.**
 
+The census records **open questions as open**, not as decisions. In particular it
+does **not** assert that C7 requires a JobQueue tenant column, that Migration
+0021 is required, that prescription numbering must become per-Clinic, or that any
+S2/S3 architecture has been approved. Those remain unresolved design/domain
+questions pending Owner decision and further evidence. **No migration is
+approved or proposed; `0021` does not exist.**
+
 ---
 
 ## Linked canonical docs
