@@ -943,7 +943,8 @@ final class C7PreIntegrationBoundaryTest extends WP_UnitTestCase
         );
         $this->assertSame(self::CLINIC_B, (int) $row['clinic_id'], 'ردیف جدید باید به Clinic B تعلق داشته باشد');
         $this->assertSame('15:00:00', (string) $row['start_time'], 'زمان ذخیره‌شده صحیح باشد');
-        $this->assertStringContainsString('ذخیره شد', $notice, 'notice موفق انتظار می‌رود');
+        // روز جدید ⇒ شاخهٔ create واقعی handler: پیام «روز به برنامه اضافه شد».
+        $this->assertStringContainsString('اضافه شد', $notice, 'notice موفق شاخهٔ create انتظار می‌رود');
         $this->assertNotNull(
             $this->fetchScheduleRow($this->scheduleAId),
             'برنامهٔ Clinic A نباید در عملیات خودی B دست بخورد'
