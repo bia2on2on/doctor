@@ -3,11 +3,14 @@
 > Recover the project from this file + Git/remote/PR + linked canonical docs.
 > Do **not** use a previous chat session as memory.
 >
-> **Integrated main checkpoint:** `a385d8681d5c37386407360b5b3c86e9b4af4e05`
-> (PR #20 MERGED 2026-09-11T13:09:16Z — C7 remediation integration).
-> Merge parents: `4871f842d95732add73b972b7bed69d6da1eff89` (main before merge,
-> itself the PR #19 documentation merge) + `6b438238228d2609fe47e069987bc91a7be4cdfa` (PR #20 head).
-> **Previous integrated checkpoint (historical):** `248ca1049b49ea8f82b622744e39cf5b391a6838`
+> **Integrated main checkpoint:** `b19930fe95a7d64b69f5ab9b5ac8a924261c48b8`
+> (PR #21 MERGED 2026-09-11T14:27:14Z — post-C7 documentation-only continuity sync;
+> head `3589b15d`; merge parents `a385d868` + `3589b15d`).
+> **Previous integrated checkpoint (historical):** `a385d8681d5c37386407360b5b3c86e9b4af4e05`
+> (PR #20 MERGED 2026-09-11T13:09:16Z — C7 remediation integration;
+> merge parents: `4871f842d95732add73b972b7bed69d6da1eff89` (main before merge,
+> itself the PR #19 documentation merge) + `6b438238228d2609fe47e069987bc91a7be4cdfa` (PR #20 head)).
+> **Earlier integrated checkpoint (historical):** `248ca1049b49ea8f82b622744e39cf5b391a6838`
 > (PR #17 MERGED 2026-09-10T20:55:57Z — post-closure C6 finance corrective).
 > **Earlier integrated checkpoint (historical):** `099b6449362ce16be185aa811ff1f7da7dec269e`
 > (PR #14 MERGED 2026-09-10; parents: pre-merge main `8087b42` + PR #14 head `a49b182`).
@@ -16,9 +19,9 @@
 
 If Git/remote/PR, this file, and the repository tree disagree: **STOP**.
 
-This file describes the integrated main checkpoint `a385d868` plus preserved
-pre-merge and pre-corrective evidence SHAs below. It does **not** self-refer to
-the SHA of any later documentation-only commit.
+This file describes the integrated main checkpoint `b19930fe` plus preserved
+previous-checkpoint and pre-merge/pre-corrective evidence SHAs below. It does
+**not** self-refer to the SHA of any later documentation-only commit.
 
 ---
 
@@ -58,31 +61,35 @@ Legacy labels (`F0..F10`, `Doc-Phase`, `V1` / `V1.5` / `V2`) are historical. The
 | Phase 0.5 | CLOSED |
 | Phase 1A | CLOSED (`9bc6f7f`; OD-9 CLOSED) |
 | Phase 1B | DEFERRED — scoped / object authorization (depends on Phase 2 + 3) |
-| Phase 2 | **IN PROGRESS** — subphase **C6 CLOSED** + post-closure corrective integrated (PR #17); subphase **C7 remediation integrated** via PR #20 (merge `a385d868`) |
-| C7 | **MERGED into `main` via PR #20 (merge `a385d868`, 2026-09-11T13:09:16Z)** — slices C7-0→C7-S6; formal Owner closure/acceptance is **not** evidenced in the repository — see `docs/phase-reports/c7-0-census.md` §۱۱ |
-| C8 | **NOT STARTED** — next queue item of Phase 2 per `docs/phase-reports/phase2-state.md` ("C8 Iran Location foundation"); exact scope/acceptance boundaries **not defined** in canonical docs |
+| Phase 2 | **IN PROGRESS** — subphase **C6 CLOSED** + post-closure corrective integrated (PR #17); subphase **C7 CLOSED** (remediation integrated via PR #20 at merge `a385d868`; **formal Owner acceptance recorded 2026-09-11**) |
+| C7 | **CLOSED — formally accepted by explicit Owner decision on 2026-09-11.** Technical closure was already evidenced (implementation merged into `main` via PR #20, merge `a385d868`, 2026-09-11T13:09:16Z; slices C7-0→C7-S6; all gates GREEN). The Owner acceptance covers the defined/completed C7 scope only — it is **not** a claim that all conceivable tenant isolation throughout the product is perfect, **not** commercial-readiness approval, and does not approve any deferred item, migration, or later phase — see `docs/phase-reports/c7-0-census.md` §۱۱ |
+| C8 | **CLOSED as a Phase-2 Location-foundation evidence/documentation closure package (2026-09-11) — NO implementation work performed or authorized.** Reviewed evidence found no verified Phase-2 Location implementation gap. C8 closure means "the Phase-2 Location foundation is closed based on current evidence", not "all future Location/timezone behavior is complete" — see `docs/phase-reports/phase2-state.md` §C8 |
 | Phase 3 | **NOT STARTED** — no `AuthorizationService`; do not start |
 
-**Integrated main checkpoint:** `a385d868` (PR #20 MERGED 2026-09-11T13:09:16Z —
-C7 remediation). Previous integrated checkpoint: `248ca10` (PR #17 MERGED
+**Integrated main checkpoint:** `b19930fe` (PR #21 MERGED 2026-09-11T14:27:14Z —
+post-C7 documentation-only continuity sync; **Owner formal C7 acceptance + C8
+closure package recorded in this documentation update's lineage**). Previous
+integrated checkpoint: `a385d868` (PR #20 MERGED 2026-09-11T13:09:16Z — C7
+remediation integration). Earlier: `248ca10` (PR #17 MERGED
 2026-09-10T20:55:57Z — post-closure C6 finance corrective). Earlier: `099b644`
 (PR #14 MERGED 2026-09-10; parents `8087b42` + `a49b182`). **Pre-merge
 implementation evidence (historical):** `3fc5a54`. Historical baseline:
 `c2bff76` (tenant-hardening batch). All four post-merge main gates GREEN on
-`a385d868` (table below); the `248ca10`, `099b644`, and `3fc5a54` gate tables
-are retained below as historical evidence.
+`b19930fe` (table below); the `a385d868`, `248ca10`, `099b644`, and `3fc5a54`
+gate tables are retained below as historical evidence.
 
-**Schema:** current version **`2026_09_09_0020`** (re-verified on the tree at `a385d868`: latest file is `src/Migrations/2026_09_09_0020_idempotency_clinic_scope.php`; 20 migration files `0001`..`0020`). File `0021` does **not** exist. **Migration 0021 is NOT approved and was NOT created.** If new schema is required: STOP and ask Owner.
+**Schema:** current version **`2026_09_09_0020`** (re-verified on the tree at `b19930fe`: latest file is `src/Migrations/2026_09_09_0020_idempotency_clinic_scope.php`; 20 migration files `0001`..`0020`). File `0021` does **not** exist. **Migration 0021 is NOT approved and was NOT created** (including by the C8 documentation closure — C8 closure authorizes no migration). If new schema is required: STOP and ask Owner.
 
 **Post-merge integration state (verified from live remote 2026-09-11)**
 
 | | |
 |---|---|
-| `origin/main` | `a385d8681d5c37386407360b5b3c86e9b4af4e05` — "Merge pull request #20 from bia2on2on/arena/01a08f64-doctor" — C7 remediation integration |
-| PR #20 | [#20](https://github.com/bia2on2on/doctor/pull/20) — **MERGED** 2026-09-11T13:09:16Z — merge commit `a385d868`; parents `4871f84` (main) + `6b438238` (head `arena/01a08f64-doctor`) — merged by `app/arena-ai-coding-agent` (bot); Owner approval **not evidenced in the repository** |
+| `origin/main` | `b19930fe95a7d64b69f5ab9b5ac8a924261c48b8` — "Merge pull request #21 from bia2on2on/arena/01a090a0-doctor" — post-C7 documentation-only continuity sync (8 docs files) |
+| PR #21 | [#21](https://github.com/bia2on2on/doctor/pull/21) — **MERGED** 2026-09-11T14:27:14Z — merge commit `b19930fe`; parents `a385d868` (main) + `3589b15d` (head `arena/01a090a0-doctor`) — documentation-only (verified changed-file list: 8 docs files, no code/test/workflow/migration) |
+| PR #20 | [#20](https://github.com/bia2on2on/doctor/pull/20) — **MERGED** 2026-09-11T13:09:16Z — merge commit `a385d868`; parents `4871f84` (main) + `6b438238` (head `arena/01a08f64-doctor`) — merged by `app/arena-ai-coding-agent` (bot); the merge act itself carried no recorded Owner approval at merge time, and **explicit Owner formal acceptance of C7 was subsequently provided on 2026-09-11** (recorded in this file + census §۱۱) |
 | PR #19 | [#19](https://github.com/bia2on2on/doctor/pull/19) — **MERGED** 2026-09-11T07:10:36Z — docs/continuity sync to `248ca10` + C7-0 census open-question correction (merge parent of #20 via `4871f84`) |
-| `origin/main` (previous, historical) | `248ca10` — "Merge pull request #17 from bia2on2on/arena/01a08b96-doctor" — post-closure C6 finance corrective |
-| PR #17 | [#17](https://github.com/bia2on2on/doctor/pull/17) — **MERGED** 2026-09-10T20:55:57Z — base `main` — head `arena/01a08b96-doctor` |
+| `origin/main` (previous, historical) | `a385d868` — "Merge pull request #20 from bia2on2on/arena/01a08f64-doctor" — C7 remediation integration |
+| PR #17 | [#17](https://github.com/bia2on2on/doctor/pull/17) — **MERGED** 2026-09-10T20:55:57Z — merge commit `248ca10` — base `main` — head `arena/01a08b96-doctor` |
 | PR #18 | [#18](https://github.com/bia2on2on/doctor/pull/18) — **CLOSED WITHOUT MERGE** 2026-09-11T06:00:12Z (`mergedAt` = `null`) — competing C6 corrective, superseded by merged #17 — branch `arena/01a08b72-doctor` (head `68cde82`) **retained** as historical evidence, deletion not authorized |
 | PR #16 | **CLOSED** (historical; earlier competing corrective) — do not reopen |
 | PR #14 | [#14](https://github.com/bia2on2on/doctor/pull/14) — **MERGED** 2026-09-10 — base `main` — head `a49b182` |
@@ -90,7 +97,16 @@ are retained below as historical evidence.
 | PR #13 | **OPEN + DRAFT** — C6 repair diagnostic (`arena/01a086b4-doctor`, head `09d505b`, base `arena/01a086ca-doctor`) — **do not touch, do not merge, do not close** (re-verified unchanged 2026-09-11). Ancestry relevance: `09d505b` **is an ancestor of `origin/main`** (its linear repair line was integrated through PR #14); that fact is reported only — cleanup is a later Owner decision |
 | Pre-merge branch (historical) | `arena/01a08828-doctor` — implementation `3fc5a54` — closure docs `becc82f` — integrated via #14 |
 
-**Post-merge gates on `a385d868` (`origin/main`, push event — all SUCCESS, attempt 1, verified live 2026-09-11):**
+**Post-merge gates on `b19930fe` (`origin/main`, push event — all SUCCESS, verified live 2026-09-11; 19 check runs total, 0 pending, 0 failed):**
+
+| Gate | Run | Attempt |
+|---|---|---|
+| CI | `34610213715` | 1 |
+| Real WordPress Acceptance | `34610213751` | 1 |
+| Pilot/Staging Readiness | `34610213717` | 1 |
+| Closure Gate | `34610213674` | 1 |
+
+**Historical post-merge gates on `a385d868` (previous checkpoint — all SUCCESS, attempt 1, verified live 2026-09-11):**
 
 | Gate | Run | Attempt |
 |---|---|---|
@@ -237,9 +253,11 @@ No `province_id=1` / `city_id=1` / Tehran-as-location-default.
 
 - Iranian mobile normalization (`MobileValidator`); Persian/Arabic/Latin digits
 - Unicode Persian data
-- Geography foundation → primarily C8 / Phase 4 Master Data
-  (the C8 ↔ Owner Roadmap Phase 4 ownership boundary is **not resolved** in
-  canonical docs; do not start it without an Owner-approved scope)
+- Geography foundation → Phase 4 Master Data (Owner Roadmap) — the C8
+  documentation closure (2026-09-11) authorizes **no** Iran
+  province/city master-data dataset, nationwide geography seeding, or
+  master-data management UX; that implementation remains deferred to Phase 4
+  unless separately Owner-approved
 - Jalali is UX/display; internal timestamps stay UTC
 
 ---
@@ -425,19 +443,19 @@ integration-state table above. Scope of the merged corrective:
   (PR #20 MERGED 2026-09-11T13:09:16Z, merge `a385d868` — see the C7 section
   below).** Location authorization untouched.
 
-**Do not start C8, Phase 3, Phase 4, portals, or mobile auth/JWT.** C8
-(Iran Location foundation) is the next queue item of Phase 2, but its exact
-scope is undefined in canonical docs — do not start it without an
-Owner-approved scope. **Interpretation rule preserved:** the existence of the
-internal/canonical `C8` label does **not** by itself prove that C8 requires
-implementation work; current evidence verifies no Phase-2 Location
-implementation gap, so C8 currently reads as a Location-foundation
-evidence/documentation/**closure** package. Iran province/city master-data
-datasets and their management remain deferred to Owner Roadmap Phase 4; final
-scoped authorization remains Phase 3; operational Location-timezone
-consumption remains a recorded boundary, not authorization to implement
-scheduling/reminder/timezone changes here. Do not reopen merged history
-(PR #10/#11/#12/#14/#17/#19/#20); do not touch PR #13.
+**Do not start C8 *implementation*, Phase 3, Phase 4, portals, or mobile auth/JWT.**
+**C8 closure status (Owner-authorized documentation-only closure, 2026-09-11):**
+the existence of the internal/canonical `C8` label did **not** by itself prove
+that C8 required implementation work; reviewed evidence verifies **no verified
+Phase-2 Location implementation gap**, so C8 is **CLOSED as a
+Location-foundation evidence/documentation closure package** — it must **not**
+be turned into implementation work merely because its queue label exists. Iran
+province/city master-data datasets and their management remain deferred to
+Owner Roadmap Phase 4; final scoped authorization remains Phase 3; operational
+Location-timezone consumption remains a recorded boundary/deferred
+reconciliation item, not authorization to implement scheduling/reminder/
+timezone changes here. Do not reopen merged history
+(PR #10/#11/#12/#14/#17/#19/#20/#21); do not touch PR #13.
 
 ### C7-0 — evidence foundation (no product change)
 
@@ -471,10 +489,13 @@ Full slice-by-slice RED→GREEN history with run IDs:
 - **Integration status (verified live 2026-09-11):** PR #20 **MERGED**
   2026-09-11T13:09:16Z by `app/arena-ai-coding-agent` (bot). Merge commit
   `a385d868`; parents `4871f84` (main) + `6b438238` (PR head). `origin/main`
-  equals `a385d868` and no later commit exists. The PR title/body retained its
-  original "DO NOT MERGE / EXPECTED RED" C7-0 wording while the head had become
-  fully GREEN; **Owner approval for the merge is not evidenced in the
-  repository** — recorded as an open governance fact, not as a claim.
+  has since advanced **only** via documentation-only PR #21 (merge `b19930fe`,
+  head `3589b15d`). The PR title/body retained its original "DO NOT MERGE /
+  EXPECTED RED" C7-0 wording while the head had become fully GREEN; at merge
+  time **Owner approval for the merge was not evidenced in the repository**
+  (historical governance fact, preserved); **the Owner has since provided
+  explicit formal acceptance of C7 on 2026-09-11** (see the closure bullet
+  below).
 - **Scope completed (evidence-driven, all from confirmed cross-Clinic
   characterization defects):** finance object-ID isolation on the seven
   ID-based finance operations; mandatory trusted Clinic context on those
@@ -522,17 +543,31 @@ Full slice-by-slice RED→GREEN history with run IDs:
   neither a claim of mathematically bug-free software nor a claim that all
   conceivable repository/service isolation in the entire product is perfect;
   unresolved/deferred design questions stay unresolved.
-- **Formal closure status (honest):** integration into `main` is a fact;
-  a formal Owner acceptance/closure record for C7 is **not** present in the
-  repository — treat C7 as *implementation merged, formal closure pending
-  Owner*.
-- **Next queue item (Phase 2):** **C8 — Iran Location foundation**
-  (`phase2-state.md` §Queue). Its exact scope and acceptance boundaries are
-  **not defined** in canonical docs, so it must not be started before an
-  Owner-approved scope. Whether Iran geography belongs to C8 (Phase 2) or
-  Owner Roadmap Phase 4 (Master Data) remains an open boundary (§H) — not
-  decided here. The queue then continues with C9 (i18n audit), C10
-  (Performance review), and the Phase 2 End Gate → STOP.
+- **Formal closure status (updated 2026-09-11):** technical C7 closure was
+  already evidenced (RED→GREEN chain + all gates GREEN + integration into
+  `main`). **C7 is now formally accepted/closed by an explicit Owner decision
+  on 2026-09-11.** The acceptance covers the defined/completed C7 scope only:
+  it is **not** a claim that all conceivable tenant isolation throughout the
+  product is perfect, **not** commercial-readiness approval, and existing
+  deferred items (S2 JobQueue tenant-context, S3 prescription numbering,
+  Jobs/SMS/timezone, wp-admin multi-clinic selection UX) remain deferred
+  unless separately authorized. It does not approve a migration or any
+  later-phase implementation.
+- **Next queue item (Phase 2):** **C8 is CLOSED** (2026-09-11) as a Phase-2
+  Location-foundation evidence/documentation closure package — reviewed
+  evidence found **no verified Phase-2 Location implementation gap**; no
+  implementation was performed or authorized (see `phase2-state.md` §C8 for
+  the closure boundary). The internal queue label order continues with C9
+  (i18n audit) and C10 (Performance review), but **neither is authorized for
+  implementation by this closure**: C9's canonical acceptance scope is not yet
+  sufficiently defined and requires a **bounded evidence/scope determination
+  before any implementation** (known previous scan findings about
+  Persian/i18n strings are evidence to be reviewed, not authorization for
+  mass remediation); C10 has no newly approved implementation scope and
+  **performance remains NOT MEASURED** unless actual benchmark evidence
+  exists. The historical "End Gate (26 items)" queue label is **not** a
+  defined 26-item acceptance checklist — no such canonical definition exists
+  in the repository. After C9/C10 scope decisions, Phase 2 End Gate → STOP.
 
 
 ---
