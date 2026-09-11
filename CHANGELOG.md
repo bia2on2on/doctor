@@ -2,6 +2,40 @@
 
 تمام تغییرات مهم پروژه در این فایل ثبت می‌شود. قالب: [Keep a Changelog](https://keepachangelog.com/)؛ نسخه‌بندی: [SemVer](https://semver.org/).
 
+## [Unreleased] — اصلاحیهٔ پس از بستنِ C6 (ایزولاسیون مالی بر اساس کلینیک)
+
+ثبت تاریخی: **C6 رسماً بسته شده بود**؛ سپس یک نقص دامنهٔ کلینیک در مسیرهای مالی
+کشف شد. این ورودی، سابقهٔ بستنِ C6 را بازنویسی نمی‌کند — نقص واقعاً پس از بستن
+پیدا شد و همین‌طور ثبت می‌شود. یکپارچه‌شده در main از طریق **PR #17 (MERGED
+۲۰۲۶-۰۹-۱۰)** در چک‌پوینت `248ca10`.
+
+### Fixed
+- **هفت مسیر اجرایی مالی که به Clinic ID 1 سنجاق شده بودند** (نقص محصولیِ
+  از پیش‌موجود، منشأ F6 `ef59e0cb`): `ServiceRepository::all`،
+  `PaymentRepository::{revenueSummary, forRange, nextPaymentNumber}`،
+  `InvoiceRepository::{openInvoices, nextInvoiceNumber}`، `FinanceService::lockClinic`.
+  اصلاح با قرارداد صریح `int $clinicId` مورد اعتماد؛ خواندن‌ها از
+  `trustedClinicId()` با شکست بسته (`CLINIC_SCOPE_REQUIRED` 400) و بدون هیچ
+  بازگشت به کلینیک ۱. اثر پیشین: نشت تعرفه/درآمد/پرداخت/فاکتور بین کلینیک‌ها
+  (شامل نام بیمار و MRN)، شماره‌گذاری اشتباه INV/PAY، و قفل ردیف در دامنهٔ نادرست.
+- **نقاط کور آشکارساز Tenant Tripwire** (نقص ابزار تست): عدم تشخیص لیترال tenant
+  در پارامترهای bind‑شده و سه نقص سرکوب (`select_first_clinic` shadowing،
+  بلعیدن شناسهٔ qualified، معافیت هم‌خطی). `bin/tenant-tripwire.py` سخت‌گیرانه شد
+  (۵۹ self‑test، tenant‑aware، allowlist خالی). اسکن فعلی: **۰ هاردکد**
+  (+۱ مورد مشکوکِ مشروع تحت بررسی: `SystemClinicResolver`، AD‑04).
+
+### Added
+- `tests/Integration/FinanceClinicIsolationTest.php` — ایزولاسیون مالی با
+  کلینیک غیر ۱ و همزیستی دو کلینیک، عدم عبور نام/MRN، شماره‌گذاری INV/PAY
+  به‌ازای هر کلینیک، مسیرهای شکست بسته، و ایمنی INSERT (خرابکاری عمدی ⇒ rollback
+  و `insert_id == 0`). تست هدف قفل، SQL واقعی قفل ردیف شماره‌گذاری را می‌بیند.
+
+### Notes
+- بدون Migration (شمارش بدون تغییر؛ `0021` نه تأیید شده و نه ساخته شده).
+- **C7 آغاز نشده است.** مجوزدهی مبتنی بر Location دست‌نخورده است.
+- PR رقیب **#18** حاوی همین اصلاحیه، در ۲۰۲۶-۰۹-۱۱ **بدون merge بسته شد**
+  (superseded توسط #17)؛ شاخهٔ آن حذف نشده و به‌عنوان سابقه نگهداری می‌شود.
+
 ## [1.0.2] — 2026-09-07 (Hotfix نصب واقعی — بازتولیدشده روی WordPress واقعی در CI)
 
 سه نقص گزارش‌شدهٔ نصب روی WordPress واقعی روی main بازتولید شد (گیت جدید «Real WordPress Acceptance»: ZIP رسمی `bin/build-release.sh` → WordPress 6.7.2 تمیز → نصب/فعال‌سازی → تأیید مستقیم DB → مرورگر واقعی Chromium → بررسی لاگ — با ماتریس دو prefix `wp_`/`clinic_`).

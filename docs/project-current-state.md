@@ -3,16 +3,18 @@
 > Recover the project from this file + Git/remote/PR + linked canonical docs.
 > Do **not** use a previous chat session as memory.
 >
-> **Integrated main checkpoint:** `099b6449362ce16be185aa811ff1f7da7dec269e`
+> **Integrated main checkpoint:** `248ca1049b49ea8f82b622744e39cf5b391a6838`
+> (PR #17 MERGED 2026-09-10T20:55:57Z — post-closure C6 finance corrective).
+> **Previous integrated checkpoint (historical):** `099b6449362ce16be185aa811ff1f7da7dec269e`
 > (PR #14 MERGED 2026-09-10; parents: pre-merge main `8087b42` + PR #14 head `a49b182`).
 > **Pre-merge implementation evidence (historical):** `3fc5a54c3a340f8d6881048ff299e6700a7fb99e`
 > **Historical baseline:** `c2bff76d1e21643a66bc0056a29881faaa2f299f` (tenant-hardening batch)
 
 If Git/remote/PR, this file, and the repository tree disagree: **STOP**.
 
-This file describes the integrated main checkpoint `099b644` plus preserved
-pre-merge evidence SHAs below. It does **not** self-refer to the SHA of any
-later documentation-only commit.
+This file describes the integrated main checkpoint `248ca10` plus preserved
+pre-merge and pre-corrective evidence SHAs below. It does **not** self-refer to
+the SHA of any later documentation-only commit.
 
 ---
 
@@ -52,27 +54,46 @@ Legacy labels (`F0..F10`, `Doc-Phase`, `V1` / `V1.5` / `V2`) are historical. The
 | Phase 0.5 | CLOSED |
 | Phase 1A | CLOSED (`9bc6f7f`; OD-9 CLOSED) |
 | Phase 1B | DEFERRED — scoped / object authorization (depends on Phase 2 + 3) |
-| Phase 2 | **IN PROGRESS** — subphase **C6 CLOSED** (tenant isolation foundation complete) |
+| Phase 2 | **IN PROGRESS** — subphase **C6 CLOSED** + post-closure corrective integrated (PR #17) |
+| C7 | **NOT STARTED** (implementation). C7-0 evidence foundation only — see `docs/phase-reports/c7-0-census.md` |
 | Phase 3 | **NOT STARTED** — no `AuthorizationService`; do not start |
 
-**Integrated main checkpoint:** `099b644` (PR #14 MERGED 2026-09-10; parents
-`8087b42` + `a49b182`). **Pre-merge implementation evidence (historical):**
-`3fc5a54`. Historical baseline: `c2bff76` (tenant-hardening batch). Gap-closure +
-Tripwire session: `d429f5a` → `3fc5a54`. All five gates GREEN on `3fc5a54`
-(historical table below) AND all four post-merge main gates GREEN on `099b644`
-(post-merge table below).
+**Integrated main checkpoint:** `248ca10` (PR #17 MERGED 2026-09-10T20:55:57Z —
+post-closure C6 finance corrective). Previous integrated checkpoint: `099b644`
+(PR #14 MERGED 2026-09-10; parents `8087b42` + `a49b182`). **Pre-merge
+implementation evidence (historical):** `3fc5a54`. Historical baseline:
+`c2bff76` (tenant-hardening batch). Gap-closure + Tripwire session: `d429f5a` →
+`3fc5a54`. All four post-merge main gates GREEN on `248ca10` (table below); the
+`099b644` and `3fc5a54` gate tables are retained below as historical evidence.
 
-**Schema:** current version **`2026_09_09_0020`**. File `0021` does **not** exist. **Migration 0021 is NOT approved.** If new schema is required: STOP and ask Owner.
+**Schema:** current version **`2026_09_09_0020`** (re-verified on the tree at `248ca10`: latest file is `src/Migrations/2026_09_09_0020_idempotency_clinic_scope.php`). File `0021` does **not** exist. **Migration 0021 is NOT approved and was NOT created.** If new schema is required: STOP and ask Owner.
 
-**Post-merge integration state (verified from live remote 2026-09-10)**
+**Post-merge integration state (verified from live remote 2026-09-11)**
 
 | | |
 |---|---|
-| `origin/main` | `099b644` — "Merge PR #14: Phase 2 C6 tenant isolation (118 commits)" — parents `8087b42` (pre-merge main, PR #9) + `a49b182` (PR #14 head) |
+| `origin/main` | `248ca10` — "Merge pull request #17 from bia2on2on/arena/01a08b96-doctor" — post-closure C6 finance corrective |
+| PR #17 | [#17](https://github.com/bia2on2on/doctor/pull/17) — **MERGED** 2026-09-10T20:55:57Z — base `main` — head `arena/01a08b96-doctor` |
+| PR #18 | [#18](https://github.com/bia2on2on/doctor/pull/18) — **CLOSED WITHOUT MERGE** 2026-09-11T06:00:12Z (`mergedAt` = `null`) — competing C6 corrective, superseded by merged #17 — branch `arena/01a08b72-doctor` (head `68cde82`) **retained** as historical evidence, deletion not authorized |
+| PR #16 | **CLOSED** (historical; earlier competing corrective) — do not reopen |
 | PR #14 | [#14](https://github.com/bia2on2on/doctor/pull/14) — **MERGED** 2026-09-10 — base `main` — head `a49b182` |
-| PR #10 / #11 / #12 | **MERGED** (historical; superseded by #14) — do not reopen |
-| PR #13 | **OPEN + DRAFT** — C6 repair diagnostic (`arena/01a086b4-doctor`, head `09d505b`) — **do not touch, do not merge, do not close** |
+| PR #10 / #11 / #12 / #15 | **MERGED** (historical; superseded) — do not reopen |
+| PR #13 | **OPEN + DRAFT** — C6 repair diagnostic (`arena/01a086b4-doctor`, base `arena/01a086ca-doctor`) — **do not touch, do not merge, do not close** (re-verified unchanged 2026-09-11) |
 | Pre-merge branch (historical) | `arena/01a08828-doctor` — implementation `3fc5a54` — closure docs `becc82f` — integrated via #14 |
+
+**Post-merge gates on `248ca10` (`origin/main`, push event — all SUCCESS, verified live 2026-09-11):**
+
+| Gate | Run | Attempt |
+|---|---|---|
+| CI | `34529280235` | 1 |
+| Real WordPress Acceptance | `34529280196` | 1 |
+| Closure Gate | `34529280176` | 1 |
+| Pilot/Staging Readiness | `34529280164` | **2** |
+
+Pilot attempt 1 on `248ca10` failed as a **Class C** (infrastructure / tooling
+transient) event, not a product regression; attempt 2 re-ran the substantive
+staging steps and succeeded. The Class C classification is recorded rather than
+erased — the retry is the evidence, not a rewrite of the first attempt.
 
 **Previous PRs — historical, integrated (do not reopen, rewrite, or close #13)**
 
@@ -87,7 +108,7 @@ merged main `099b644`. Do not rewrite those branches.
 | [#12](https://github.com/bia2on2on/doctor/pull/12) | `arena/01a086ca-doctor` | `f88fcdc` | C6 tenant hardcode removal (CI execution) | MERGED |
 | [#13](https://github.com/bia2on2on/doctor/pull/13) | `arena/01a086b4-doctor` | `09d505b` | C6 repair diagnostic | OPEN + DRAFT — **untouched** |
 
-**Post-merge gates on `099b644` (`origin/main`, push event — all SUCCESS, verified live):**
+**Historical gates on `099b644` (previous integrated checkpoint, push event — all SUCCESS):**
 
 | Gate | Run |
 |---|---|
@@ -324,11 +345,23 @@ produced probe‑11's `(int) WP_Error` error).
   `ClinicalService::record`, `QueueController`, `FilesController`, `VisitRepository`,
   `MedicalFileRepository`. CI tripwire wiring remains an untouched open item.
 
-### Post‑closure C6 corrective — finance Clinic scope (PR #17, DRAFT — DO NOT MERGE)
+### Post‑closure C6 corrective — finance Clinic scope (PR #17 — **MERGED**, integrated at `248ca10`)
 
 Historical truth preserved: **C6 was formally closed**; a finance‑scope omission
 (plus detector blind spots) was discovered afterwards and corrected here.
-Nothing below rewrites the C6 acceptance record.
+Nothing below rewrites the C6 acceptance record — the omission happened, was
+found after closure, and is recorded as such.
+
+**Integration status:** PR #17 is **MERGED** (2026-09-10T20:55:57Z) and is
+contained in `origin/main` at `248ca10`. The competing PR #18 carrying the same
+corrective was **closed without merge** on 2026-09-11 as superseded; see the
+integration-state table above. Scope of the merged corrective:
+
+- seven finance Clinic-ID-1 defects corrected (explicit required Clinic contracts),
+- Tenant Tripwire blind spots corrected (bound-parameter tenant literal + 3 suppression defects),
+- explicit Clinic scope on all seven runtime paths, no fallback to Clinic 1,
+- non-1 / two-Clinic regression protection,
+- direct lock-target test (observes the real SQL of the numbering row lock).
 
 - **Class B production defects (pre‑existing, blame F6 `ef59e0cb`):** 7 finance
   runtime paths pinned to Clinic ID 1 — `ServiceRepository::all`,
@@ -358,13 +391,36 @@ Nothing below rewrites the C6 acceptance record.
   name/MRN non‑crossing, per‑Clinic INV+PAY numbering, absent‑row operation,
   3 fail‑closed, 4 insert‑safety). Proven meaningful: 13 red‑on‑old
   (run `34487855456`), then green with the fix.
-- **Evidence:** `ac1404f` — CI `34488982706` (all 8 jobs incl. Integration 634
-  tests + tripwire), Real‑WP `34488982705`+`34488978486`, Closure `34488978510`,
-  Pilot `34488978503` — **all success**. No test weakened/skipped/quarantined.
+- **Pre-merge branch evidence:** `ac1404f` — CI `34488982706` (all 8 jobs incl.
+  Integration 634 tests + tripwire), Real‑WP `34488982705`+`34488978486`,
+  Closure `34488978510`, Pilot `34488978503` — **all success**. No test
+  weakened/skipped/quarantined.
+- **Final post-merge evidence on `248ca10`:** CI `34529280235`, Real‑WP
+  `34529280196`, Closure `34529280176`, Pilot `34529280164` **attempt 2** — all
+  **success**. Pilot attempt 1 was a **Class C** tooling/environment transient;
+  attempt 2 executed the substantive staging steps successfully. Attempt 1 is
+  recorded, not erased.
 - **No migration** (count unchanged; 0021 neither approved nor created).
-  **C7 remains NOT STARTED.** Location authorization untouched.
+  **C7 implementation remains NOT STARTED.** Location authorization untouched.
 
 **Do not start C7, C8, Phase 3, Phase 4, portals, or mobile auth/JWT.**
+
+### C7-0 — evidence foundation (no product change)
+
+A read-only census/characterization pass was opened to decide which remaining
+repository/service isolation candidates are **real executable defects** before
+any contract change. It changes **no production behavior**, adds **no
+migration**, and does **not** start C7 implementation.
+
+Full matrix and per-path evidence: [`docs/phase-reports/c7-0-census.md`](phase-reports/c7-0-census.md).
+
+Headline: a repository method lacking a Clinic parameter is a **candidate**, not
+a defect. Several such methods are safe because the calling service enforces
+ownership fail-closed (e.g. `MedicalFileService::assertStaffClinic`,
+`ClinicalService::assertVisitInActiveClinic`, `PrescriptionRepository::
+findForUpdateForClinic`). Others are **confirmed defects by deterministic code
+path** and are listed with severity and a proposed implementation slice in the
+census. **No C7 fix is applied in this pass.**
 
 ---
 
@@ -377,5 +433,6 @@ Nothing below rewrites the C6 acceptance record.
 - [`docs/drift-register.md`](drift-register.md)
 - [`docs/phase-reports/c6-census.md`](phase-reports/c6-census.md)
 - [`docs/phase-reports/c6-isolation-matrix.md`](phase-reports/c6-isolation-matrix.md)
+- [`docs/phase-reports/c7-0-census.md`](phase-reports/c7-0-census.md) — C7-0 evidence foundation (census only, no product change)
 - Tripwire: `bin/tenant-tripwire.py` (CI-wired, 59 self-tests)
 - [`docs/handoff/phase2-c6-to-next-agent.md`](handoff/phase2-c6-to-next-agent.md)
