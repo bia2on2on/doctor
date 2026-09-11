@@ -990,6 +990,95 @@ final class C7PreIntegrationBoundaryTest extends WP_UnitTestCase
         );
     }
 
+    // ================= C7-S6 — مشخصه‌نگاری createException (فقط شواهد) =================
+
+    /**
+     * C7-S6/1 — wp-admin: ساخت استثنا برای پزشکِ Clinic A با clinician_id خارجی.
+     *
+     * خاصیت: مدیر wp-admin Clinic B (تک‌عضویت فعال B، nonce/capability معتبر —
+     * مسیر REAL اکشن admin؛ زمینهٔ معتبر پس از C7-S4 به B حل می‌شود) نباید
+     * بتواند برای پزشکِ Clinic A استثنا ثبت کند. انتظار: انکار غیرافشا؛ بدون
+     * ردیف استثنا برای پزشک A؛ Slot خالی آیندهٔ پزشک A موجود (بدون regenerate).
+     */
+    public function testWpAdminExceptionCreateWithForeignClinicianMustFailClosed(): void
+    {
+        $date = gmdate('Y-m-d', (time() + 12 * 86400));
+        $notice = $this->dispatchAdminAction(
+            'cpms_exception_create',
+            [
+                'clinician_id' => (string) $this->clinicianA,
+                'date' => $date,
+                'type' => 'holiday',
+            ],
+            fn () => ClinicianAdminPage::createException()
+        );
+
+        $row = $this->fetchExceptionRowForClinicianDate($this->clinicianA, $date);
+        $slotExists = $this->slotExists($this->futureEmptySlotAId);
+
+        $this->assertNull(
+            $row,
+            'C7-S6/1 wp-admin exception create: ثبت استثنا برای پزشک Clinic A از مرز admin باید fail-closed '
+            . 'شود — clinician_id فرم هرگز tenant context نیست. واقعی: ردیف با clinic_id='
+            . ($row === null ? 'NONE' : (string) $row['clinic_id']) . ' درج شد؛ admin_notice="' . $notice . '"; '
+            . 'victim_future_empty_slot_exists=' . ($slotExists ? 'yes' : 'NO (regenerate قربانی اجرا شد)')
+        );
+        $this->assertTrue(
+            $slotExists,
+            'Slot خالی آیندهٔ پزشک Clinic A به‌دلیل عملیات wp-admin مدیر Clinic B نباید حذف/بازتولید شود '
+            . '(admin_notice="' . $notice . '")'
+        );
+    }
+
+    /**
+     * C7-S6/2 — REST: ساخت استثنا برای پزشکِ Clinic A از Scope معتبر B.
+     *
+     * خاصیت: مدیر Clinic B (cpms_config + Scope معتبر B) با ارسال clinician_id
+     * پزشک A در POST /config/schedule-exceptions نباید استثنایی برای کلینیک
+     * پزشک (A) بسازد. انتظار: 404 + CLINIC_NOT_FOUND هم‌پاکت با «پزشک ناموجود»؛
+     * بدون ردیف؛ بدون regenerate قربانی.
+     */
+    public function testRestExceptionCreateWithForeignClinicianMustFailClosed(): void
+    {
+        $date = gmdate('Y-m-d', (time() + 12 * 86400));
+        wp_set_current_user($this->managerB);
+        $res = $this->dispatch('POST', self::NS . '/config/schedule-exceptions', [
+            'clinician_id' => $this->clinicianA,
+            'date' => $date,
+            'type' => 'holiday',
+        ], [
+            'X-CPMS-Clinic-Id' => (string) self::CLINIC_B,
+        ]);
+
+        $status = $res->get_status();
+        $code = $this->errorCode($res);
+        $row = $this->fetchExceptionRowForClinicianDate($this->clinicianA, $date);
+        $slotExists = $this->slotExists($this->futureEmptySlotAId);
+
+        $this->assertSame(
+            404,
+            $status,
+            'C7-S6/2 REST exception create: ثبت استثنا برای پزشک Clinic A از Scope B باید fail-closed شود. '
+            . 'واقعی: HTTP ' . $status . ' code=' . $code . '؛ ردیف clinic_id='
+            . ($row === null ? 'NONE' : (string) $row['clinic_id']) . '؛ victim_future_empty_slot_exists='
+            . ($slotExists ? 'yes' : 'NO (regenerate قربانی اجرا شد)')
+        );
+        $this->assertSame('CLINIC_NOT_FOUND', $code, 'کد خطای مورد انتظار مطابق قرارداد 404-parity');
+        $this->assertNull($row, 'هیچ ردیف استثنایی برای پزشک Clinic A نباید درج شود');
+        $this->assertTrue($slotExists, 'Slot خالی آیندهٔ پزشک Clinic A نباید حذف/بازتولید شود');
+
+        // پاکت 404 باید با «پزشک ناموجود» هم‌پاکت باشد (عدم شمارش).
+        $missing = $this->dispatch('POST', self::NS . '/config/schedule-exceptions', [
+            'clinician_id' => 424242424,
+            'date' => $date,
+            'type' => 'holiday',
+        ], [
+            'X-CPMS-Clinic-Id' => (string) self::CLINIC_B,
+        ]);
+        $this->assertSame($missing->get_status(), $status, 'پاسخ پزشک خارجی و پزشک ناموجود باید هم‌وضعیت باشد');
+        $this->assertSame($this->errorCode($missing), $code, 'پاسخ پزشک خارجی و پزشک ناموجود باید هم‌کد باشد');
+    }
+
     // ================= Helpers — dispatch مسیر واقعی wp-admin =================
 
     /**
@@ -1139,6 +1228,18 @@ final class C7PreIntegrationBoundaryTest extends WP_UnitTestCase
             'SELECT id, clinic_id, clinician_id, date, type FROM '
             . App::db()->table('cpms_schedule_exceptions') . ' WHERE id = %d',
             [$id]
+        );
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function fetchExceptionRowForClinicianDate(int $clinicianId, string $date): ?array
+    {
+        return App::db()->fetchRow(
+            'SELECT id, clinic_id, clinician_id, date, type FROM '
+            . App::db()->table('cpms_schedule_exceptions') . ' WHERE clinician_id = %d AND date = %s',
+            [$clinicianId, $date]
         );
     }
 
