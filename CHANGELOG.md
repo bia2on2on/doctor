@@ -19,7 +19,7 @@
 - **مرز wp-admin (`ClinicianAdminPage`):** برقراری زمینهٔ کلینیک معتبر از سازوکار تأییدشدهٔ عضویت؛ بدون عضویت یا عضویت مبهم ⇒ انکار (nonce/capability جایگزین عضویت نیست). UX انتخاب چندکلینیکی ساخته نشد.
 
 ### Added
-- تست‌های Integration مشخصه‌نگاری/رگرسیون C7 (`C7FinanceObjectIdIsolationTest`، `C7ScheduleObjectIdIsolationTest`، `C7PreIntegrationBoundaryTest`) — همه از زمان نگارش RED خود بدون تضعیف/skip حفظ شده‌اند.
+- تست‌های Integration مشخصه‌نگاری/رگرسیون C7 (`C7FinanceObjectIdIsolationTest`، `C7ScheduleObjectIdIsolationTest`، `C7PreIntegrationBoundaryTest`) — هیچ‌کدام تضعیف/skip/quarantine نشدند و هیچ assertion حذف نشد؛ تغییرات بعدیِ آزمون‌ها فقط افزودنی/تقویتی یا اصلاح harness/import بود (`5b9b79d`، `db9bd37`، `513df94`).
 - برقراری Scope معتبر صریح در probeهای synthetic ابزار Pilot (`bin/pilot-smoke.php`) و دو workflow (`closure-gate.yml`، `real-wp-acceptance.yml`) — بدون حذف/تضعیف هیچ assertion یا گیت.
 
 ### Notes

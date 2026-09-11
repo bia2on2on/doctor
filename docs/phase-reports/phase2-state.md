@@ -269,6 +269,14 @@ CI `34598981613` · Real-WP `34598981627` + `34598978084` · Pilot `34598978102`
   بدون Migration (0021 ساخته/تصویب نشد)؛ Phase 3 شروع‌نشده؛ اقلام S2/S3 و
   Jobs/SMS/timezone و UX چندکلینیکی wp-admin **به تعویق افتاده و تصویب نشده‌اند**.
 - **C8 — NEXT (NOT STARTED).** قلم بعدی Queue طبق همین سند. scope/پذیرش تعریف‌نشده.
+  **قاعدهٔ تفسیر (برای تداوم):** وجود برچسب داخلی/canonical «C8» به‌تنهایی
+  اثبات‌کنندهٔ نیاز به کار پیاده‌سازی **نیست**. بر پایهٔ شواهد جاری (پاس بازبینی
+  فقط‑خواندنی) **هیچ شکاف پیاده‌سازیِ تأییدشده‌ای در invariantهای فاز ۲ حوزهٔ
+  Location وجود ندارد** ⇒ C8 در حال حاضر یک **بستهٔ شواهد/مستندسازی/closure**
+  است، نه مجوز خودکار پیاده‌سازی. داده‌های استان/شهر ایران و UX مدیریت Master Data
+  ⇒ **Owner Phase 4**؛ مجوزدهی scoped نهایی ⇒ **Phase 3**؛ مصرف عملیاتی
+  `locations.timezone` (Scheduling/Reminder/DST) ⇒ **مرز ثبت‌شده** و در این PR
+  مجوز پیاده‌سازی نیست. **بدون Migration.**
 - **Do not start:** C8 (until scope is defined and Owner-approved), Phase 3, Migration 0021.
 
 ### سابقهٔ C5 (خلاصه) — Patient Identity Foundation: ✅ کامل (هر ۵ گیت سبز روی `315e582`)
@@ -333,7 +341,15 @@ CI `34598981613` · Real-WP `34598981627` + `34598978084` · Pilot `34598978102`
   و wpcs 3.1.0 (→ دامنهٔ ^3.1 + فیلتر امنیتی composer)، allow-plugins، و
   باگ f-string در expansion. جزئیات: drift-register §۸-۱.
 
-## Queue (ترتیب مصوب مالک)
+## Queue (صف داخلی زیربسته‌های Phase 2 — LEVEL 2)
+
+> **Provenance (ثبت‌شدهٔ صریح):** این صف، صفِ **داخلی زیربسته‌های Phase 2** است که در
+> همین سند ثبت شده و `docs/governance/project-phase-taxonomy.md` آن را به‌عنوان
+> زیرفازهای **LEVEL 2** فاز ۲ («تابعِ فاز مالک») تأیید می‌کند. **شواهد مخزن،
+> تأیید صریح مالک بر این ترتیب دقیق `C4…C10` را اثبات نمی‌کند** (تنها annotation
+> تأیید صریح در کامیتِ معرفیِ همین صف — `b6f6c93` — مربوط به C3/WPCS است، نه به
+> این ترتیب). این صف **تابعِ** Owner Roadmap Phase 0..20 است و بر آن غلبه نمی‌کند؛
+> تا هرگونه تصریح مالک، همین ترتیب به‌عنوان صف جاری معتبر می‌ماند.
 
 C4 Membership primitives → C5 Patient Identity foundation → C6 حذف
 tenant hardcodes (census تازه از HEAD) → C7 Repository/Service isolation

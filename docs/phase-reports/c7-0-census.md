@@ -479,5 +479,9 @@ python3 bin/tenant-tripwire.py          # ← تأیید شد: 173 فایل، 0 
   سؤال باز §۹)، ‏S3 (شماره‌گذاری نسخه — سؤال باز §۹)، ‏Jobs/SMS/timezone،
   UX انتخاب چندکلینیکی wp-admin، سایر کاندیداهای مشخصه‌نگاری‌نشده.
 - **PR #20:** ‏head نهایی (`6b438238`) کاملاً سبز روی هر پنج workflow کانونی و
-  سپس **MERGED**؛ هیچ تستی تضعیف/skip/quarantine نشد و همهٔ تست‌های
-  characterization از زمان نگارش RED خود بدون تغییر مانده‌اند.
+  سپس **MERGED**؛ هیچ تستی تضعیف/skip/quarantine نشد و هیچ assertion در کل
+  diff حذف نشد. تست‌های characterization پس از نگارش RED **تغییر کردند**، اما
+  همهٔ آن تغییرات افزودنی/تقویتی یا اصلاح harness/import بود — نه تضعیف:
+  `5b9b79d` (افزودن تست no-scope)، `db9bd37` (تقویت assertionها به
+  `CLINIC_SCOPE_REQUIRED` + HTTP 400)، `513df94` (اصلاح import — Class D).
+  بنابراین «بدون تغییر از زمان RED» ادعای دقیقی نیست و ثبت نمی‌شود.

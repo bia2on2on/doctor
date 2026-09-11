@@ -428,8 +428,16 @@ integration-state table above. Scope of the merged corrective:
 **Do not start C8, Phase 3, Phase 4, portals, or mobile auth/JWT.** C8
 (Iran Location foundation) is the next queue item of Phase 2, but its exact
 scope is undefined in canonical docs — do not start it without an
-Owner-approved scope. Do not reopen merged history (PR #10/#11/#12/#14/#17/#19/#20);
-do not touch PR #13.
+Owner-approved scope. **Interpretation rule preserved:** the existence of the
+internal/canonical `C8` label does **not** by itself prove that C8 requires
+implementation work; current evidence verifies no Phase-2 Location
+implementation gap, so C8 currently reads as a Location-foundation
+evidence/documentation/**closure** package. Iran province/city master-data
+datasets and their management remain deferred to Owner Roadmap Phase 4; final
+scoped authorization remains Phase 3; operational Location-timezone
+consumption remains a recorded boundary, not authorization to implement
+scheduling/reminder/timezone changes here. Do not reopen merged history
+(PR #10/#11/#12/#14/#17/#19/#20); do not touch PR #13.
 
 ### C7-0 — evidence foundation (no product change)
 
