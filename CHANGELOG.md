@@ -2,6 +2,144 @@
 
 تمام تغییرات مهم پروژه در این فایل ثبت می‌شود. قالب: [Keep a Changelog](https://keepachangelog.com/)؛ نسخه‌بندی: [SemVer](https://semver.org/).
 
+## [Unreleased] — C9 (i18n) — پیاده‌سازی محدودشده: translation-ready شدن دو پیام انسانیِ معرفی‌شده توسط C7 در مرز REST
+
+**وضعیت: پیاده‌سازیِ محدودشدهٔ C9 کامل است — READY FOR ARCHITECT MERGE REVIEW. ‏C9 بسته (CLOSED) نشده است.**
+بستن رسمی C9 یک تصمیمِ تداومیِ **پس‌از‌ادغام** است و فقط بر پایهٔ SHA واقعیِ
+ادغام‌شده در `main` + سبزیِ گیت‌های پس‌از‌ادغامِ همان SHA انجام می‌شود؛ تا آن لحظه
+هیچ ادعای بستن ثبت نمی‌گردد. تحویل: **PR #23 — DRAFT / DO NOT MERGE** (base = `0fd5c27`).
+
+### دامنهٔ محدودشده (دقیقاً دو یافته — هر دو A, Low)
+
+هر دو رشتهٔ انسانی توسط **خودِ C7** معرفی شده‌اند (نه بدهی قدیمی):
+
+| # | یافته | کامیت معرفی‌کننده | بستهٔ کاری | کد | HTTP | data |
+|---|---|---|---|---|---|---|
+| ۱ | `ScheduleService::requireClinicianForTrustedClinic()` — ‏`src/Application/Booking/ScheduleService.php:389` | `04a7a79ecff11ccc00a80b9fb68a1cc2d1167cf4` | C7‑S5 (PR #20) | `CLINIC_SCOPE_REQUIRED` | 400 | `[]` |
+| ۲ | `FinanceService::requireTrustedClinicId()` — ‏`src/Application/Finance/FinanceService.php:1111` | `c4cf90240413f4fdf72682b5071b36da89fb37a5` | C7‑S3 (PR #20) | `CLINIC_SCOPE_REQUIRED` | 400 | `[]` |
+
+اثبات provenance: ‏`git log -S'<literal>'` برای هر دو **دقیقاً یک کامیت** برمی‌گرداند
+(رشته یک‌بار اضافه و هرگز تغییر نکرده) و `git blame` همان SHA را تأیید می‌کند. برای
+مورد ۲، نسخهٔ پیش از C7 ‏(`explicitTrustedClinicId(): ?int`) فقط `null` برمی‌گرداند و
+**هیچ پیام انسانی نداشت**. سه محلِ دیگرِ `CLINIC_SCOPE_REQUIRED` در `src/`
+(‏`ExportService:398` ← `f2c0ca6`/C6، ‏`SystemClinicResolver:44` ← `1f8b36d`/P2‑B،
+‏`TrustedClinicEstablisher:63` ← `f88fcdc`/C6) **پیش از C7** هستند و عمداً دست نخوردند.
+
+### Changed
+
+- **`src/Rest/ScheduleController.php`** — در همان مرز موجودِ `wrap()`: فقط واریانتِ
+  واجدِ شرایط (`errorCode === 'CLINIC_SCOPE_REQUIRED'`) با msgid **literal** و دامنهٔ
+  `cpms` translation‑ready شد. در این مرز تنها منبعِ آن کد همان گارد C7‑S5 است، پس خودِ
+  کد برای تشخیص کافی است.
+- **`src/Rest/FinanceController.php`** — در همان مرز موجودِ `staff()` (شاخهٔ
+  `FinanceException`): فقط واریانتِ واجدِ شرایط با شرطِ
+  `errorCode === 'CLINIC_SCOPE_REQUIRED' && data === []`. این شرط **ضروری** است:
+  `FinanceService::trustedClinicId()` (مسیر `listServices`/`summary`) همان کد را از
+  `SystemClinicResolver` با پیامِ **پویا** (شاملِ تعداد Clinicها) و
+  `data['clinic_count']` باز‑نگاشت می‌کند و باید دست‌نخورده عبور کند. شاخهٔ
+  `VisitException` بدون تغییر است.
+
+هیچ فایل Domain یا Application تغییر نکرد؛ هیچ `phpcs:ignore` اضافه نشد؛ هیچ migration
+یا تغییر schema؛ هیچ ابزار/workflow جدید CI؛ هیچ تغییری در پیکربندی WPCS.
+
+### Added (tests)
+
+- **`tests/Integration/C9RestMessageI18nTest.php`** (۶ تست) — فقط رفتارِ بیرونیِ قابل
+  مشاهده (پاکت REST: ‏`code`/`message`/`data`/HTTP + اثرِ سمت DB). هیچ تستی اجرا شدنِ
+  gettext داخل `ScheduleService`/`FinanceService` را assert نمی‌کند.
+  - **A — پیش‌فرض:** ‏`code` = `CLINIC_SCOPE_REQUIRED`، ‏`400`، ‏`data` دقیقاً
+    `{status: 400}`، و `message` فارسیِ decode‌شده بایت‌به‌بایت برابر خروجی جاری
+    (۱۰۲ بایت برای Schedule؛ ۱۵۶ بایت با **ZWNJ/U+200C** برای Finance) و برابر
+    `getMessage()` همان استثنای سرویس واقعی.
+  - **B — ترجمه:** با فیلتر core ‏`gettext_cpms` در مرز REST، فقط `message` عوض می‌شود؛
+    ‏`code`/`status`/`data` یکسان می‌مانند.
+  - **C — تفکیک‌کنندهٔ منفی:** واریانتِ resolver با `data['clinic_count']` و پیام پویا
+    دست‌نخورده عبور می‌کند و literal/ترجمهٔ C7 جای آن نمی‌نشیند (نگهبانِ نگاشتِ
+    صرفاً code‑keyed).
+  - **D — امنیت:** پاکت ۴۰۴ غیرافشایِ `CLINIC_NOT_FOUND` («پزشک یافت نشد») برای پزشکِ
+    Clinic خارجی بایت‌به‌بایت حفظ می‌شود و هیچ ردیفی درج نمی‌گردد (fail‑closed).
+
+**زنجیرهٔ RED→GREEN (شواهد اجرایی = GitHub Actions؛ PHP در sandbox روی PATH نبود):**
+دقیقاً همان دستورِ Integration ‏(`php vendor/bin/phpunit --no-configuration
+--bootstrap tests/integration-bootstrap.php tests/Integration`). روی کامیتِ فقط‑تست
+`81d4e8d` (run `34630765255`) نتیجه **`Tests: 674, Assertions: 4571, Failures: 2`** بود —
+و آن دو شکست **دقیقاً** دو تستِ «translation‑readiness» (بخش B) بودند؛ چهار تست دیگر
+(A/C/D) سبز. یعنی RED واقعی و محدود به همان شکافِ مورد نظر بود، بدون تضعیف fixture و
+بدون تغییر رفتارِ امنیتیِ مورد انتظار.
+
+### معماری رو‌به‌جلو (قاعدهٔ دائمی)
+
+- **Domain** هیچ وابستگیِ مستقیمِ جدیدی به i18n/ارائهٔ WordPress **نمی‌گیرد**؛ کدِ جدیدِ
+  Domain نباید `__()` یا معادلِ آن را صدا بزند.
+- **کدِ کسب‌وکاری/سرویسیِ Application** به‌صورت الگوی پیش‌فرض **coupling مستقیمِ جدیدی**
+  با i18n/ارائهٔ WordPress اضافه نمی‌کند.
+- **بومی‌سازیِ متنِ انسانی در مرزهای ارائه/adapter** انجام می‌شود (REST controllerها،
+  wp‑admin) — همان الگوی مستقر `RestClinicContext::toError()` (از C6) و
+  `ClinicianAdminPage` (از C7‑S4).
+- **`code`/HTTP status/دادهٔ ساخت‌یافتهٔ ماشین‌خوان معتبر (authoritative) می‌مانند** و
+  برای کلاینت‌ها تغییر نکردند؛ هیچ تغییرِ قرارداد API لازم نشد
+  (`api-contract.md` §۰ و `ADR-0019` بایت‌های `message` را پین نکرده‌اند؛ `NFR-UI-4`
+  «i18n‑ready با fa پیش‌فرض» را می‌خواهد).
+
+### بدهیِ تاریخیِ تحمّل‌شده (عمداً اصلاح نشد)
+
+- ‏**۱۳** فراخوان مستقیم `__()` در Domain، محصور در **۲ فایل از ۴۲ فایل**:
+  ‏`Domain/Membership/MembershipException.php` (۷) و
+  ‏`Domain/Patients/PatientIdentityException.php` (۶) — introduced در C4/C5.
+- ‏**۱۹** فراخوان مستقیم `__()` در Application، محصور در **۲ فایل**:
+  ‏`Application/Membership/MembershipService.php` (۱۳) و
+  ‏`Application/Patients/PatientIdentityService.php` (۶).
+
+این‌ها **بدهیِ تاریخیِ تحمّل‌شده** هستند، نه سابقهٔ قابلِ توسعه. پاکسازیِ انبوه در دامنهٔ
+C9 نیست و انجام نشد.
+
+### نکتهٔ معماری — تکرارِ literal یک تکنیکِ **گذارای** محدودشده است، نه معماریِ مطلوب
+
+msgidهای literalِ افزوده‌شده در دو controller، کپیِ بایت‌به‌بایتِ همان رشتهٔ منبعِ سرویس
+هستند. این **یک تکنیکِ سازگاریِ گذرا (transitional) و عمداً محدودشده** برای همین دو
+پیامِ معرفی‌شده توسط C7 است و دلیلِ آن یک محدودیتِ ابزارِ موجود است: قاعدهٔ
+`WordPress.WP.I18n.NonSingularStringLiteralText` در WPCS (که روی خطوطِ add‌شده نسبت به
+baseline گیت می‌شود) msgidِ غیر‑literal — شامل `__($e->getMessage(), 'cpms')` و حتی
+constant — را **ERROR** می‌گیرد. برای پاس ماندنِ همان گیتِ موجود **بدون** هیچ
+`phpcs:ignore` و بدون تضعیف WPCS، msgid literal انتخاب شد.
+
+**این تکرار به‌عنوان معماریِ مطلوبِ بلندمدت مستند نمی‌شود.** معماری بلندمدت همان چهار
+بندِ «معماری رو‌به‌جلو» بالاست. همگراییِ بعدی (consolidation) می‌تواند این تکرارِ گذرا
+را جایگزین کند — اما **فقط** وقتی با شواهدِ گسترده‌تر توجیه شود، نه برای حذفِ دو literal.
+به‌همین دلیل در این بسته هیچ abstraction/شناسهٔ جدیدی ساخته نشد: مرزِ REST از قبل
+اطلاعاتِ کافی برای تشخیصِ امنِ هر دو واریانت داشت (هویتِ ایستای controller + کد +
+خالی‌بودنِ `data`)، پس ساختِ نگاشتِ عمومیِ خطا یا چارچوبِ `message_key` نامتناسب بود.
+
+واگراییِ سرویس/کنترلر با یک assertionِ **رفتارِ بیرونی** قفل شده است: تست‌های بخش A
+برابریِ `message` پاکت REST با `getMessage()` استثنایِ سرویسِ واقعی را می‌سنجند (نه
+مقایسهٔ دو literalِ منبع).
+
+### بدهیِ محدودشدهٔ به‌تعویق‌افتاده (ثبت‌شده، اصلاح‌نشده)
+
+- **مرز wp‑admin برنامهٔ هفتگی:** ‏`src/Admin/ClinicianAdminPage.php:436` و `:494`
+  همان پیامِ سرویسِ Schedule را به‌صورت خام (`'خطا: ' . $e->getMessage()`) رندر
+  می‌کنند. این **در دامنهٔ اعلام‌شدهٔ C9 (دو پیام REST) نیست** و همچنان تأیید شد که
+  موجود است ⇒ به‌عنوان بدهیِ محدودشدهٔ به‌تعویق‌افتاده ثبت می‌شود، نه اصلاح.
+- ‏**هیچ ابزارِ گارْدِ جدیدی ساخته نشد** (بدون scanner جدیدِ allowlistِ i18nِ Domain و
+  بدون workflow/step جدیدِ CI). قاعدهٔ معماری به‌جای ابزار، **مستند/بازبینی‌محور** است؛
+  WPCS هم دست نخورد (sniff ‏`WordPress.WP.I18n` فقط «چگونگیِ» فراخوانی `__()` را
+  می‌سنجد و اساساً نمی‌تواند قاعدهٔ لایه‌ای یا «literalِ پیچیده‌نشده» را بیان کند).
+
+### Notes — صریحاً ادعا **نمی‌شود**
+
+- همهٔ بدهیِ i18n برطرف نشده است (فقط دو موردِ واجدِ شرایط).
+- پشتیبانیِ کاملِ انگلیسی یا آمادگیِ جهانی‌سازی (globalization) فراهم نشده؛ هیچ کاتالوگ
+  ‏`.po`/`.mo`/`.pot` و هیچ `load_plugin_textdomain()` افزوده نشد. افزونه همچنان
+  کاتالوگِ `cpms` بارگذاری نمی‌کند ⇒ خروجی پیش‌فرض همان متنِ فارسیِ منبع است
+  (بایت‌به‌بایت).
+- ‏**C10 شروع نشده** و عملکرد همچنان **اندازه‌گیری‌نشده** است.
+- ‏**Phase 2ِ Owner Roadmap بسته نشده** است.
+- ‏**C9 بسته (CLOSED) نشده** است؛ حداکثر وضعیتِ مجازِ پیش‌از‌ادغام =
+  «پیاده‌سازیِ محدودشده کامل / READY FOR ARCHITECT MERGE REVIEW».
+- **بدون Migration** (`0001..0020` ثابت؛ `0021` نه ساخته و نه تصویب شده). **Phase 3 آغاز نشده.**
+
+
+
 ## [Unreleased] — ثبت پذیرش رسمی C7 + بسته‌شدن مستنداتی C8 (فقط مستندات — 2026-09-11)
 
 ورودی فقط‌مستندات؛ **بدون هیچ تغییر کد محصول/تست/workflow/schema/migration.**

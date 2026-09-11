@@ -24,15 +24,31 @@ PR #20، merge `a385d868`؛ **پذیرش/بستن رسمی با تصمیم صر�
 ## ۰. راستی‌آزمایی (اولین کار Agent جدید)
 
 ```bash
-git rev-parse origin/main   # باید b19930fe95a7d64b69f5ab9b5ac8a924261c48b8 باشد
-gh pr view 21 --json state,mergedAt,mergeCommit     # MERGED، 2026-09-11T14:27:14Z، merge = b19930fe (فقط مستندات)
-gh pr view 20 --json state,mergedAt,mergeCommit     # MERGED، 2026-09-11T13:09:16Z، merge = a385d868 (تاریخی)
-gh pr view 17 --json state,mergedAt                 # MERGED، 2026-09-10T20:55:57Z (تاریخی)
-gh pr view 18 --json state,mergedAt                 # CLOSED، mergedAt = null (بدون merge)
-gh pr view 13 --json state,isDraft                  # OPEN + DRAFT — دست‌نخورده
-gh api repos/bia2on2on/doctor/actions/runs/34610213715 -q '.conclusion'  # success (CI روی b19930fe)
+git rev-parse origin/main   # باید 0fd5c2790e33a3d233a0b6ecb5c997b85fa5db54 باشد
+gh pr view 23 --json state,isDraft,baseRefName     # OPEN + DRAFT (C9 محدودشده)، base = main — DO NOT MERGE
+gh pr view 22 --json state,mergedAt,mergeCommit    # MERGED، 2026-09-11T15:56:52Z، merge = 0fd5c27 (فقط مستندات)
+gh pr view 21 --json state,mergedAt,mergeCommit    # MERGED، 2026-09-11T14:27:14Z، merge = b19930fe (فقط مستندات)
+gh pr view 20 --json state,mergedAt,mergeCommit    # MERGED، 2026-09-11T13:09:16Z، merge = a385d868 (تاریخی)
+gh pr view 17 --json state,mergedAt                # MERGED، 2026-09-10T20:55:57Z (تاریخی)
+gh pr view 18 --json state,mergedAt                # CLOSED، mergedAt = null (بدون merge)
+gh pr view 13 --json state,isDraft                 # OPEN + DRAFT — دست‌نخورده
+gh api repos/bia2on2on/doctor/actions/runs/34619119838 -q '.conclusion'  # success (CI روی 0fd5c27)
+gh api repos/bia2on2on/doctor/actions/runs/34619119805 -q '.conclusion'  # success (Real-WP روی 0fd5c27)
+gh api repos/bia2on2on/doctor/actions/runs/34619119828 -q '.conclusion'  # success (Pilot روی 0fd5c27)
+gh api repos/bia2on2on/doctor/actions/runs/34619119855 -q '.conclusion'  # success (Closure روی 0fd5c27)
 ls clinic-practice-management/src/Migrations | tail -1   # …_0020_idempotency_clinic_scope.php
 ```
+
+> **به‌روزرسانی ۲۰۲۶-۰۹-۱۱ (۴) — C9:** چک‌پوینت ادغام‌شدهٔ `main` از `b19930fe` به
+> **`0fd5c27`** منتقل شد (ادغام **PR #22** = sync فقط‌مستندات؛ والدین `b19930fe` + `c5f98ab9`)
+> و هر ۴ گیت پس‌از‌ادغام روی `0fd5c27` سبز است (‏`34619119838` / `34619119805` /
+> `34619119828` / `34619119855`؛ مجموعاً ۱۹ check run — همه success).
+> سپس **پیاده‌سازیِ محدودشدهٔ C9** روی **PR #23 (DRAFT — DO NOT MERGE، base `0fd5c27`)**
+> تحویل شد: فقط دو یافتهٔ A/Low که خودِ C7 معرفی کرده بود در مرز REST translation‑ready
+> شدند. **C9 بسته نشده** — حداکثر وضعیتِ مجازِ پیش‌از‌ادغام «پیاده‌سازیِ محدودشده کامل /
+> READY FOR ARCHITECT MERGE REVIEW» است و بستن رسمی یک تصمیمِ تداومیِ **پس‌از‌ادغام**
+> (بر پایهٔ SHA واقعیِ ادغام‌شده + گیت‌های پس‌از‌ادغامِ همان SHA) است. جزئیات کامل:
+> `phase2-state.md` §C9 و `project-current-state.md` §I‑1.
 
 > **به‌روزرسانی ۲۰۲۶-۰۹-۱۱ (۳):** چک‌پوینت ادغام‌شده از `a385d868` به
 > **`b19930fe`** منتقل شد (ادغام **PR #21** = sync فقط‌مستندات پس از C7؛ والدین
@@ -188,9 +204,14 @@ Pilot تلاش اول روی `248ca10` شکست خورد — **طبقه‌بند
 بدون پیاده‌سازی)** — برچسب Queue به‌تنهایی مجوز پیاده‌سازی نیست؛ مرز کامل در
 `phase2-state.md` §C8. جغرافیا/دیتاست استان‌وشهر ایران ⇒ Owner Phase 4؛
 مجوزدهی scoped نهایی ⇒ Owner Phase 3.
-**گام بعدی = C9 (i18n audit) — اجرا هنوز مجاز نیست؛** ابتدا تعیین scope/شواهدِ
-محدودشده لازم است (یافته‌های اسکن قبلی رشته‌های فارسی/i18n = شواهد برای بازبینی،
-نه مجوز اصلاح انبوه). C10 (Performance review) نیز بدون scope مصوب جدید است و
+**C9 (i18n) — پیاده‌سازیِ محدودشده انجام شد؛ ‏CLOSED نیست:** تعیین scope/شواهدِ محدودشده
+انجام شد و دامنه به **دقیقاً دو یافتهٔ A/Low که خودِ C7 معرفی کرده بود** محدود ماند
+(یافته‌های اسکن قبلی رشته‌های فارسی/i18n مجوزِ اصلاح انبوه **نشوند** و نشدند؛ ۱۳ نقطهٔ
+`Domain` و ۱۹ نقطهٔ `Application` دست‌نخورده و بدهیِ تحمّل‌شده ماندند). وضعیت روی
+**PR #23 (DRAFT — DO NOT MERGE، base `0fd5c27`)** است؛ **حداکثر وضعیتِ مجازِ
+پیش‌از‌ادغام = «پیاده‌سازیِ محدودشده کامل / READY FOR ARCHITECT MERGE REVIEW»** و
+بستن رسمیِ C9 یک تصمیمِ تداومیِ **پس‌از‌ادغام** است.
+**گام بعدی = C10 (Performance review) — بدون scope مصوب جدید و مجاز نشده؛**
 عملکرد **اندازه‌گیری‌نشده** می‌ماند مگر شواهد benchmark واقعی موجود شود.
 سپس: End Gate فاز ۲ → STOP.
 
@@ -202,7 +223,9 @@ Pilot تلاش اول روی `248ca10` شکست خورد — **طبقه‌بند
 
 | مورد | وضعیت |
 |---|---|
-| PR #21 | **MERGED** ۲۰۲۶-۰۹-۱۱T14:27:14Z — sync فقط‌مستندات پس از C7 — merge = `b19930fe` — والدین `a385d868` + `3589b15d` — **پذیرش رسمی C7 و بسته‌شدن مستنداتی C8 در این خط مستنداتی ثبت شد** |
+| PR #23 | **OPEN + DRAFT** — C9 محدودشده (دو پیام REST با منشأ C7 translation‑ready در مرز REST) — head = `81d4e8d` (RED) + تغییر تولیدی — base = `0fd5c27` — **DO NOT MERGE**؛ ادغام فقط با تصمیم صریح مالک |
+| PR #22 | **MERGED** ۲۰۲۶-۰۹-۱۱T15:56:52Z — sync فقط‌مستندات (بستن رسمی C8) — merge = `0fd5c27` — والدین `b19930fe` + `c5f98ab9` — **چک‌پوینت جاریِ `origin/main`** |
+| PR #21 | **MERGED** ۲۰۲۶-۰۹-۱۱T14:27:14Z — sync فقط‌مستندات پس از C7 — merge = `b19930fe` — والدین `a385d868` + `3589b15d` — **پذیرش رسمی C7 در این خط مستنداتی ثبت شد** (تاریخی) |
 | PR #20 | **MERGED** ۲۰۲۶-۰۹-۱۱T13:09:16Z — ترمیم C7 (S1..S6) — merge = `a385d868` — والدین `4871f84` + `6b438238` — merge توسط bot؛ در لحظهٔ ادغام تأیید مالک در مخزن مستند نبود (واقعیت تاریخی) — **پذیرش رسمی C7 سپساً با تصمیم مالک در 2026-09-11 ثبت شد** |
 | PR #19 | **MERGED** ۲۰۲۶-۰۹-۱۱T07:10:36Z — هم‌ترازی مستندات + اصلاح پرسش‌های باز C7-0 (والد `4871f84`) |
 | PR #17 | **MERGED** ۲۰۲۶-۰۹-۱۰T20:55:57Z — اصلاحیهٔ پس از بستنِ C6 (مالی) — merge = `248ca10` |
@@ -211,18 +234,21 @@ Pilot تلاش اول روی `248ca10` شکست خورد — **طبقه‌بند
 | PR #14 | **MERGED** — `arena/01a08828-doctor` → `main` (merge = `099b644`) |
 | PR #10 / #11 / #12 / #15 | MERGED (تاریخی) |
 | PR #13 | OPEN + DRAFT — diagnostic — **دست‌نخورده** (بازبررسی ۲۰۲۶-۰۹-۱۱). `09d505b` اکنون ancestorِ `origin/main` است ⇒ پاک‌سازی = تصمیم بعدیِ مالک، نه این پاس |
-| `origin/main` | `b19930fe` — Merge PR #21 (فقط مستندات؛ والدین `a385d868` + `3589b15d`) — چک‌پوینت‌های قبلی: `a385d868` (Merge PR #20، والدین `4871f84` + `6b438238`) سپس `248ca10` سپس `099b644` |
+| `origin/main` | `0fd5c27` — Merge PR #22 (فقط مستندات؛ والدین `b19930fe` + `c5f98ab9`) — چک‌پوینت‌های قبلی: `b19930fe` (Merge PR #21) سپس `a385d868` (Merge PR #20) سپس `248ca10` سپس `099b644` |
 | C6 | CLOSED + اصلاحیهٔ پس از بستن ادغام شد — `248ca10` = چک‌پوینت اصلاحیه؛ `3fc5a54` = شواهد اجرایی پیش‌از‌ادغام؛ `becc82f` = closure docs پیش‌از‌ادغام |
 | C7 | **CLOSED** — ادغام‌شده در `main` از طریق PR #20 (`a385d868`)، S1..S6؛ C7-0 = فقط شواهد ⇒ [`docs/phase-reports/c7-0-census.md`](../phase-reports/c7-0-census.md). **پذیرش/بستن رسمی مالک: تصمیم صریح 2026-09-11** (فقط دامنهٔ تعریف‌شدهٔ C7؛ نه کامل‌بودن مطلق ایزولاسیون، نه آمادگی تجاری) |
 | C8 | **CLOSED به‌عنوان بستهٔ شواهد/مستنداتِ فوندیشن Location فاز ۲ (2026-09-11)** — بدون هیچ پیاده‌سازی؛ مجوز migration/دیتاست جغرافیایی/UX/master-data/portal/اصلاح timezone را ایجاد نمی‌کند — مرز: `phase2-state.md` §C8 |
-| C9 / C10 | NOT STARTED و **مجاز نشده** — C9 فقط با تعیین scope/شواهدِ محدودشده؛ عملکرد (C10) اندازه‌گیری‌نشده است مگر شواهد benchmark واقعی |
+| C9 | **پیاده‌سازیِ محدودشده کامل — READY FOR ARCHITECT MERGE REVIEW** (PR #23 DRAFT، base `0fd5c27`) — **CLOSED نیست**؛ بستن رسمی = تصمیمِ تداومیِ پس‌از‌ادغام بر پایهٔ SHA واقعیِ ادغام‌شده + گیت‌های پس‌از‌ادغام. دامنه فقط دو یافتهٔ A/Low با منشأ C7؛ بدون تغییر Domain/Application، بدون migration، بدون ابزار گارْد جدید |
+| C10 | NOT STARTED و **مجاز نشده** — عملکرد اندازه‌گیری‌نشده است مگر شواهد benchmark واقعی |
 | Phase 3 | NOT STARTED — نیازمند تصمیم مالک |
-| Migration 0021 | ممنوع بدون تأیید مالک — ساخته نشده؛ آخرین migration = `0020` (بازبینی‌شده روی درخت `b19930fe`) |
+| Migration 0021 | ممنوع بدون تأیید مالک — ساخته نشده؛ آخرین migration = `0020` (بازبینی‌شده روی درخت `0fd5c27`) |
 
 **تأیید checkpoint ادغام:**
 ```bash
-git rev-parse origin/main   # b19930fe95a7d64b69f5ab9b5ac8a924261c48b8
-gh pr view 21 --json state,mergedAt  # MERGED / 2026-09-11T14:27:14Z (فقط مستندات)
+git rev-parse origin/main   # 0fd5c2790e33a3d233a0b6ecb5c997b85fa5db54
+gh pr view 23 --json state,isDraft   # OPEN / true (C9 محدودشده) — DO NOT MERGE
+gh pr view 22 --json state,mergedAt  # MERGED / 2026-09-11T15:56:52Z (فقط مستندات)
+gh pr view 21 --json state,mergedAt  # MERGED / 2026-09-11T14:27:14Z (فقط مستندات؛ تاریخی)
 gh pr view 20 --json state,mergedAt  # MERGED / 2026-09-11T13:09:16Z (تاریخی)
 gh pr view 17 --json state  # MERGED (تاریخی)
 gh pr view 18 --json state,mergedAt  # CLOSED / null
