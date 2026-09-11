@@ -295,7 +295,27 @@ final class FinanceController extends RestBase
 
             return $this->success($data, $http);
         } catch (FinanceException $e) {
-            return $this->error($e->errorCode, $e->httpStatus, $e->getMessage(), $e->data);
+            $message = $e->getMessage();
+            /*
+             * C9 — بومی‌سازی فقط در مرز ارائه (نه در Application/Domain).
+             *
+             * در این مرز کدِ `CLINIC_SCOPE_REQUIRED` به‌تنهایی یکتا **نیست**:
+             * `FinanceService::trustedClinicId()` (مسیر listServices/summary) همان کد را
+             * از `SystemClinicResolver` باز‑نگاشت می‌کند، با پیامِ **پویا** (شاملِ تعداد
+             * Clinicها) و `data['clinic_count']`. در مقابل، گارد fail-closedِ C7-S3
+             * (`requireTrustedClinicId()`) هیچ دادهٔ ساخت‌یافته‌ای ندارد. پس شرطِ
+             * «کد + دادهٔ خالی» دقیقاً همان واریانتِ C7 را انتخاب می‌کند و واریانتِ
+             * resolver دست‌نخورده عبور می‌کند.
+             *
+             * msgid عمدتاً literal است (قاعدهٔ `WordPress.WP.I18n` در WPCS) و دامنهٔ آن
+             * `cpms`. چون افزونه هیچ کاتالوگ `cpms` بارگذاری نمی‌کند، خروجی پیش‌فرض همان
+             * متن فارسیِ منبع است (بدون هیچ تغییر رفتاری).
+             */
+            if ($e->errorCode === 'CLINIC_SCOPE_REQUIRED' && $e->data === []) {
+                $message = __('عملیات حساس مالی بدون زمینهٔ کلینیک معتبر مجاز نیست — Clinic از شیء هدف استخراج نمی‌شود.', 'cpms');
+            }
+
+            return $this->error($e->errorCode, $e->httpStatus, $message, $e->data);
         } catch (VisitException $e) {
             // Transitionهای واگذار‌شده به VisitService (V11/V12)
             return $this->error($e->errorCode, $e->httpStatus, $e->getMessage(), $e->data);
