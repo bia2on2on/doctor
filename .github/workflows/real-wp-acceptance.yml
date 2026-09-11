@@ -216,6 +216,9 @@ jobs:
           ));
           $cid = (int) $wpdb->insert_id;
           // یک برنامهٔ هفتگی «پُر» برای پزشک تجربی — تا اسکرین‌شات Schedule خالی نباشد.
+          // C7-S5: create برنامه حالا نیازمند Scope معتبر صریح است (معادل مرز
+          // تولیدی) — resolver تک‌کلینیکیِ نصب؛ در نصب مبهم fail-closed.
+          \ClinicCore\Bootstrap\App::replaceExplicitScope(\ClinicCore\Bootstrap\App::scope());
           try {
               \ClinicCore\Bootstrap\App::scheduleService()->create($uid, [
                   'clinician_id' => $cid, 'day_of_week' => 0, // شنبه
@@ -230,6 +233,7 @@ jobs:
                   'appointment_duration_min' => 30, 'slot_capacity' => 1, 'is_active' => 1,
               ]);
           } catch (\Throwable $e) { echo "(schedule seed: {$e->getMessage()})\n"; }
+          finally { \ClinicCore\Bootstrap\App::resetScope(); }
           \ClinicCore\Bootstrap\App::settings()->set('files.storage_path', '/home/runner/rwp-storage');
           echo "doctor linked (wp_user_id=$uid); clinician_id=$cid; files.storage_path set\n";
           // ── Fixture عضویت (TEST INFRASTRUCTURE — نه provisioning محصول) ──

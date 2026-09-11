@@ -6,6 +6,7 @@ namespace ClinicCore\Tests\Integration;
 
 use ClinicCore\Admin\ClinicianAdminPage;
 use ClinicCore\Admin\StaffManagementPage;
+use ClinicCore\Application\Scope\ClinicScope;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use WP_UnitTestCase;
@@ -125,14 +126,22 @@ final class DoctorWorkflowTest extends WP_UnitTestCase
 
         $tomorrow = gmdate('Y-m-d', time() + 86400);
         $dow = $this->iranianDow($tomorrow);
-        App::scheduleService()->create(get_current_user_id(), [
-            'clinician_id' => $cid,
-            'day_of_week' => $dow,
-            'start_time' => '09:00',
-            'end_time' => '12:00',
-            'appointment_duration_min' => 60,
-            'slot_capacity' => 1,
-        ]);
+        // C7-S5: تطبیق fixture با قرارداد امنیتی مصوب — create برنامه حالا
+        // نیازمند Scope معتبر صریح است (هر دو مرز تولیدی آن را برقرار می‌کنند).
+        $previousScope = \ClinicCore\Application\Scope\ScopeContext::tryGet();
+        App::replaceExplicitScope(ClinicScope::forClinic(1));
+        try {
+            App::scheduleService()->create(get_current_user_id(), [
+                'clinician_id' => $cid,
+                'day_of_week' => $dow,
+                'start_time' => '09:00',
+                'end_time' => '12:00',
+                'appointment_duration_min' => 60,
+                'slot_capacity' => 1,
+            ]);
+        } finally {
+            App::replaceExplicitScope($previousScope);
+        }
         $this->runJobs();
 
         $from = gmdate('Y-m-d');

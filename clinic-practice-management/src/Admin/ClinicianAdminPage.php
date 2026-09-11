@@ -4,11 +4,14 @@ declare(strict_types=1);
 
 namespace ClinicCore\Admin;
 
+use ClinicCore\Application\Scope\ScopeRequiredException;
+use ClinicCore\Application\Scope\TrustedClinicEstablisher;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Booking\BookingException;
 use ClinicCore\Domain\Time\Jalali;
 use ClinicCore\Infrastructure\Repository\ClinicianRepository;
+use ClinicCore\Infrastructure\Repository\MembershipRepository;
 
 /**
  * صفحه «پزشکان و برنامه» — Setup UI (Part 2 / ADR-0031، ممیزی P1).
@@ -404,7 +407,11 @@ final class ClinicianAdminPage
             }
         }
 
+        // C7-S4: همان قرارداد مرز admin — زمینهٔ معتبر پیش از impact/update/create.
+        $scope = self::requireTrustedClinicScopeForAdmin($cid);
         try {
+            App::replaceExplicitScope($scope);
+
             // پیش‌نمایش تأثیر (Chunk D) پیش از بازتولید — تا مدیر بداند چند اسلات خالی
             // قرار است حذف/بازتولید شود و چند اسلات رزرو/Hold محافظت می‌شود (نه invalidate بی‌صدا).
             $impact = App::scheduleService()->impact($cid);
@@ -428,6 +435,8 @@ final class ClinicianAdminPage
             self::back($cid, 'روز به برنامه اضافه شد — Slotها بازتولید می‌شوند.' . $impactNote);
         } catch (BookingException $e) {
             self::backWithError($cid, 'خطا: ' . $e->getMessage());
+        } finally {
+            App::resetScope();
         }
     }
 
@@ -436,11 +445,21 @@ final class ClinicianAdminPage
         self::guard('cpms_schedule_delete');
         $cid = isset($_POST['clinician_id']) ? absint($_POST['clinician_id']) : 0;
         $id = isset($_POST['schedule_id']) ? absint($_POST['schedule_id']) : 0;
+        /*
+         * C7-S4: مرز wp-admin استثنای مجوز نیست — nonce/capability جایگزین
+         * عضویت کلینیک نیستند. زمینهٔ کلینیک معتبر با همان سازوکار تاییدشدهٔ
+         * transport-agnostic مرز REST برقرار می‌شود؛ سپس گاردهای دامنه‌بندی‌شدهٔ
+         * C7-S2 خود سرویس (بدون دورزدن) تعیین‌کننده‌اند.
+         */
+        $scope = self::requireTrustedClinicScopeForAdmin($cid);
         try {
+            App::replaceExplicitScope($scope);
             App::scheduleService()->delete(get_current_user_id(), $id);
             self::back($cid, 'برنامه روز حذف شد.');
         } catch (BookingException $e) {
             self::backWithError($cid, 'خطا: ' . $e->getMessage());
+        } finally {
+            App::resetScope();
         }
     }
 
@@ -465,11 +484,17 @@ final class ClinicianAdminPage
             }
         }
 
+        // C7-S6: همان قرارداد مرز admin (C7-S4) — زمینهٔ معتبر پیش از ثبت/بازتولید؛
+        // سرویس از S6 به بعد مالکیت پزشک را فقط نسبت به همین زمینهٔ مستقل می‌سنجد.
+        $scope = self::requireTrustedClinicScopeForAdmin($cid);
         try {
+            App::replaceExplicitScope($scope);
             App::scheduleService()->createException(get_current_user_id(), $fields);
             self::back($cid, 'استثنا ثبت شد.');
         } catch (BookingException $e) {
             self::backWithError($cid, 'خطا: ' . $e->getMessage());
+        } finally {
+            App::resetScope();
         }
     }
 
@@ -478,11 +503,16 @@ final class ClinicianAdminPage
         self::guard('cpms_exception_delete');
         $cid = isset($_POST['clinician_id']) ? absint($_POST['clinician_id']) : 0;
         $id = isset($_POST['exception_id']) ? absint($_POST['exception_id']) : 0;
+        // C7-S4: همان قرارداد مرز admin (بالا) — پیش از حذف/بازتولید.
+        $scope = self::requireTrustedClinicScopeForAdmin($cid);
         try {
+            App::replaceExplicitScope($scope);
             App::scheduleService()->deleteException(get_current_user_id(), $id);
             self::back($cid, 'استثنا حذف شد.');
         } catch (BookingException $e) {
             self::backWithError($cid, 'خطا: ' . $e->getMessage());
+        } finally {
+            App::resetScope();
         }
     }
 
@@ -494,6 +524,37 @@ final class ClinicianAdminPage
             wp_die('دسترسی ندارید', 403);
         }
         check_admin_referer($nonceAction);
+    }
+
+    /**
+     * C7-S4 — مرز wp-admin استثنای مجوز نیست.
+     *
+     * nonce/capability سروری الزامی‌اند اما جایگزین «عضویت کلینیک» نیستند و
+     * نقش سراسری وردپرس هرگز عضویت نمی‌سازد. زمینهٔ کلینیک معتبر با همان
+     * سازوکار تاییدشدهٔ transport-agnostic مرز REST برقرار می‌شود
+     * (TrustedClinicEstablisher::establish با clinicId=null یعنی «عضویت فعالِ
+     * یکتا»):
+     *   - بدون عضویت فعال ⇒ بسته (CLINIC_SCOPE_UNAVAILABLE/no_membership)
+     *   - بیش از یک عضویت فعال، بدون انتخاب صریح ⇒ بسته (CLINIC_SCOPE_REQUIRED)
+     *     — در این فاز UX سوییچر/انتخاب چندکلینیکی ساخته نمی‌شود (نیاز آتی).
+     *   - دقیقاً یک عضویت فعال ⇒ همان Clinic، Context معتبر است.
+     *
+     * فیلدهای فرم (clinician_id و…) هرگز Context معتبر نمی‌شوند — آن‌ها فقط
+     * انتخاب «شیء» هستند و مالکیتِ شیء پس از این مرز، توسط گاردهای دامنه‌بندی‌شدهٔ
+     * C7-S2 خود سرویس (با 404 parity) راستی‌آزمایی می‌شود. انکارِ زمینه،
+     * بدون افشای وجود شیء خارجی و بدون جهش، با notice عمومی + redirect است.
+     */
+    private static function requireTrustedClinicScopeForAdmin(int $cid): \ClinicCore\Application\Scope\ClinicScope
+    {
+        try {
+            return (new TrustedClinicEstablisher(App::db(), new MembershipRepository(App::db())))
+                ->establish((int) get_current_user_id(), null);
+        } catch (ScopeRequiredException $e) {
+            self::backWithError(
+                $cid,
+                'خطا: ' . __('عملیات برنامهٔ هفتگی نیازمند عضویت فعالِ روشن در دقیقاً یک کلینیک است.', 'cpms')
+            );
+        }
     }
 
     /**

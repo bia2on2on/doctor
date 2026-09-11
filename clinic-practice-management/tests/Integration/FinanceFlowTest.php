@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace ClinicCore\Tests\Integration;
 
 use ClinicCore\Application\Finance\FinanceException;
+use ClinicCore\Application\Scope\ClinicScope;
+use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Bootstrap\App;
 use WP_REST_Request;
 use WP_REST_Response;
@@ -32,6 +34,7 @@ final class FinanceFlowTest extends WP_UnitTestCase
     private int $doctorUserId;
     private int $adminUserId;
     private int $patientUserId;
+    private ?ClinicScope $previousScope = null;
 
     protected function setUp(): void
     {
@@ -81,6 +84,24 @@ final class FinanceFlowTest extends WP_UnitTestCase
             )
         );
         $this->patientId = (int) $wpdb->insert_id;
+
+        // C7-S3: قرارداد امنیتی جدید — عملیات حساس مالیِ مبتنی بر شناسهٔ شیء
+        // (recordPayment/voidPayment/refundPayment/addAdjustment/receipt/
+        // findInvoiceForActor/invoiceForVisit) فقط زیر Clinic معتبرِ صریحِ
+        // درخواست اجرا می‌شود. فراخوان مستقیم سرویس در این تست‌ها نمایندهٔ
+        // فراخوان تولیدی REST است که همیشه Scope مرز را دارد؛ همین سازوکار
+        // تولیدیِ معتبر (ScopeContext از طریق App::replaceExplicitScope)
+        // اینجا برقرار و در tearDown به‌طور تمیز بازگردانده می‌شود.
+        $this->previousScope = ScopeContext::tryGet();
+        App::replaceExplicitScope(ClinicScope::forClinic(1));
+    }
+
+    protected function tearDown(): void
+    {
+        // C7-S3: بازیابی Scope پیشین — بدون نشت زمینه بین تست‌ها.
+        App::replaceExplicitScope($this->previousScope);
+        $this->previousScope = null;
+        parent::tearDown();
     }
 
     // ================= D12 — صدور فاکتور =================
