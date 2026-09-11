@@ -2,19 +2,35 @@
 
 | | |
 |---|---|
-| **آخرین به‌روزرسانی** | Post-merge sync — checkpoint ادغام‌شده `099b644` (PR #14 MERGED 2026-09-10). شواهد پیش‌از‌ادغام: implementation `3fc5a54` (all 5 gates GREEN). SHA history: `c2bff76`→`2d13f2d`→`8ade5c7`→`becc82f` (closure docs) → `a49b182` (#14 head) → `099b644` (merge) |
-| **وضعیت Phase 2** | IN PROGRESS — C1..C6 done؛ **C6 CLOSED** (tenant isolation foundation complete; deferred boundaries recorded; integrated into main) |
-| **آخرین remote SHA سبزِ تأییدشده** | `099b644` (`origin/main`) — هر ۴ گیت پس‌از‌ادغام GREEN (پایین)؛ PR #14 **MERGED** |
+| **آخرین به‌روزرسانی** | Post-merge sync — checkpoint ادغام‌شده `a385d868` (PR #20 MERGED 2026-09-11T13:09:16Z — ترمیم C7). شواهد پیش‌از‌ادغام: head `6b438238` (هر ۵ workflow کانونی GREEN). SHA history (تاریخی): `3fc5a54` → `becc82f` → `a49b182` (#14 head) → `099b644` (merge) → `248ca10` (PR #17 merge) → `4871f84` (PR #19 merge) → `6b438238` (#20 head) → `a385d868` (merge) |
+| **وضعیت Phase 2** | IN PROGRESS — C1..C6 done؛ **C6 CLOSED**؛ **C7 ترمیم‌شده و ادغام‌شده در main (PR #20 MERGED)**؛ بستن رسمی C7 معلق تا تصمیم مالک. قلم بعدی Queue = **C8 (NOT STARTED — scope تعریف‌نشده)** |
+| **آخرین remote SHA سبزِ تأییدشده** | `a385d868` (`origin/main`) — هر ۴ گیت پس‌از‌ادغام GREEN (پایین)؛ PR #20 **MERGED** |
 | **C6 بسته شده** | ۱۴۰۱/۰۶/۱۹ — با تصمیم مالک/معمار |
-| **Schema** | `2026_09_09_0020` — فایل/تصویب 0021 وجود ندارد |
+| **C7 (پیاده‌سازی)** | ادغام‌شده در `a385d868` از طریق PR #20 (S1..S6)؛ **بستن رسمی/پذیرش مالک مستند نیست** |
+| **Schema** | `2026_09_09_0020` — فایل/تصویب 0021 وجود ندارد (بدون تغییر schema در C7) |
 
 > این فایل state جاری است، نه گزارش. عمداً به SHA کامیتِ خودِ این سند ارجاع
-> نمی‌دهد — مبنا = checkpoint ادغام‌شده `099b644` (`origin/main`). نسب تاریخیِ
+> نمی‌دهد — مبنا = checkpoint ادغام‌شده `a385d868` (`origin/main`؛ PR #20 MERGED).
+> (جدول‌های زیر که به `099b644`/`248ca10` ارجاع می‌دهند سابقهٔ تاریخی‌اند.) نسب تاریخیِ
 > تأییدشده: headهای PR #10 (`79cce4b`) و PR #11 (`9e006b0`) جد خط #14 بودند و
 > تاریخچه‌شان در `099b644` ادغام شده است. PHP در sandbox ممیزی روی PATH نبود؛
 > شواهد اجرایی = GitHub Actions.
 
-## گیت‌های سبز — پس‌از‌ادغام (روی `099b644` = `origin/main`)
+## گیت‌های سبز — پس‌از‌ادغام (روی `a385d868` = `origin/main` جاری)
+
+| گیت | Run | نتیجه |
+|---|---|---|
+| CI | 34602712029 | ✅ success |
+| Real WordPress Acceptance | 34602711983 | ✅ success |
+| Pilot/Staging Readiness | 34602711956 | ✅ success |
+| Closure Gate | 34602711962 | ✅ success |
+
+**head نهایی پیش‌از‌ادغامِ PR #20 (`6b438238`) — هر پنج workflow کانونی سبز:**
+CI `34598981613` · Real-WP `34598981627` + `34598978084` · Pilot `34598978102` · Closure `34598978147`.
+والدین merge `a385d868`: `4871f84` (mainِ پیش‌از‌ادغام = merge PR #19) + `6b438238` (head).
+ادغام توسط `app/arena-ai-coding-agent` (bot) — **تأیید مالک در مخزن مستند نیست**.
+
+## گیت‌های سبز — پس‌از‌ادغام روی `248ca10` (چک‌پوینت قبلی — تاریخی)
 
 | گیت | Run | نتیجه |
 |---|---|---|
@@ -245,8 +261,15 @@
 | C | SMS resend CHAR(64) truncation | KNOWN_MEDIUM_DEBT | Schema-dependent; not C6 blocker |
 | D | Historical closure hash mismatch | EXPECTED_NEGATIVE_TEST | Not a defect |
 
-- **C7 — NEXT CANDIDATE (NOT STARTED).** Scope not yet defined.
-- **Do not start:** C7 (until defined), C8, Phase 3, Migration 0021.
+- **C7 — MERGED (implementation).** ترمیم C7 (S1..S6) از طریق **PR #20 MERGED**
+  در `a385d868` به main یکپارچه شد؛ زنجیرهٔ RED→GREEN و Run IDها در
+  [`c7-0-census.md`](c7-0-census.md) §۱۱ و وضعیت جاری در
+  [`project-current-state.md`](../project-current-state.md) §C.
+  **بستن رسمی/پذیرش مالک برای C7 در مخزن مستند نیست** ⇒ «پیاده‌سازی ادغام‌شده، بستن رسمی معلق».
+  بدون Migration (0021 ساخته/تصویب نشد)؛ Phase 3 شروع‌نشده؛ اقلام S2/S3 و
+  Jobs/SMS/timezone و UX چندکلینیکی wp-admin **به تعویق افتاده و تصویب نشده‌اند**.
+- **C8 — NEXT (NOT STARTED).** قلم بعدی Queue طبق همین سند. scope/پذیرش تعریف‌نشده.
+- **Do not start:** C8 (until scope is defined and Owner-approved), Phase 3, Migration 0021.
 
 ### سابقهٔ C5 (خلاصه) — Patient Identity Foundation: ✅ کامل (هر ۵ گیت سبز روی `315e582`)
   (کامیت‌های `9207afa` → `2ba16d7` → `315e582` + کامیت docs این واحد):
