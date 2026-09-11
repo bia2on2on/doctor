@@ -637,7 +637,8 @@ Full slice-by-slice RED→GREEN history with run IDs:
   closed by explicit Owner decision. The C8 closure itself still authorized none of that.)*
   The historical "End Gate (26 items)" queue label is **not** a
   defined 26-item acceptance checklist — no such canonical definition exists
-  in the repository. After C9/C10 scope decisions, Phase 2 End Gate → STOP.
+  in the repository. After the C10 closure decision (the only remaining queue item),
+  Phase 2 End Gate → STOP.
 - **C9 bounded implementation (2026-09-11 — historical record of what was delivered):** the required
   bounded evidence/scope determination was performed and the approved bounded scope was then
   implemented and delivered on **PR #23 (base `0fd5c27`)**. The scope was exactly the
@@ -676,7 +677,8 @@ Full slice-by-slice RED→GREEN history with run IDs:
   are translation-ready, or that Domain/Application historical i18n debt is fixed — and it
   does **not** close Phase 2. The exact-source-message match used for the two C7 messages
   remains a bounded **transitional** compatibility technique, **not** preferred long-term
-  architecture. C10 remains **NOT STARTED / not authorized**.
+  architecture. C10 implementation remained NOT STARTED / not authorized at that moment;
+  its subsequent documentation-only evidence package is recorded below.
 - **Performance evidence status (corrected 2026-09-11 — the flat "NOT MEASURED" wording used
   elsewhere in this closure record was inaccurate):** performance has **limited real staging
   benchmark evidence**, but **commercial / reference-environment performance remains
@@ -693,6 +695,34 @@ Full slice-by-slice RED→GREEN history with run IDs:
   runtime query-count/N+1 measurement; memory; and meaningful multi-Clinic load scale.
   **No staging number is evidence of production performance**, and this correction does not
   start or authorize C10.
+- **C10 evidence/closure package (2026-09-11 — documentation-only; C10 technically
+  eligible for closure, OWNER FORMAL CLOSURE PENDING):** the bounded C10 performance
+  evidence review is complete and recorded in
+  `docs/phase-reports/c10-performance-evidence.md` (+ `phase2-state.md` §C10). C10 is
+  an internal LEVEL-2 Phase-2 performance review/evidence package limited to the
+  Multi-Clinic foundation; it is **not** Owner Roadmap Phase 17 (Performance — NOT
+  STARTED), not broad commercial performance optimization, and grants no permission
+  for speculative optimization, for weakening tenant isolation/security, or for a
+  schema migration. Recorded findings: (1) existing executed staging benchmark evidence
+  is real (`performance-baseline.md`; `report-pilot-gate.md` §8; the executable `ab`
+  step in the `staging-gate` job of `pilot-gate.yml`; successful integrated
+  Pilot/Staging gates — latest verified on `bd2634a`, run `34651627290`) but does
+  **not** validate commercial/reference-environment NFR performance; (2) the
+  not-measured list (reference-environment NFR thresholds; public-page/plugin overhead
+  p95 < 100ms; runtime query-count/N+1; memory; meaningful multi-Clinic load scale) is
+  recorded as **future performance/release evidence aligned primarily with Owner
+  Phase 17 / release validation — not as C10 blockers**; (3) the bounded Phase-2
+  static review found **no VERIFIED performance defect requiring remediation** — code
+  inspection is not measured performance, and no global absence of N+1 or all-product
+  performance perfection is claimed; (4) the historical "End Gate (26 items)" label
+  corresponds to **no canonical 26-item checklist** (none ever existed in the
+  repository; the numeric resemblance to the historical "26 tables with clinic_id"
+  census is INFERRED only, not recorded as provenance fact). **C10 status: evidence
+  review complete / technically eligible for closure — OWNER FORMAL CLOSURE PENDING
+  (C10 is NOT formally closed).** Phase 2 remains IN PROGRESS; the Phase 2 End Gate
+  and Phase 3 are NOT started. No new reference-server/load-test campaign is required
+  merely to close the internal C10 evidence package; broad commercial performance
+  engineering remains Owner Roadmap Phase 17.
 
 
 ---
