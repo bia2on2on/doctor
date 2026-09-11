@@ -50,6 +50,21 @@ final class ScheduleRepository
     }
 
     /**
+     * C7-S2: برنامهٔ هفتگی با شناسه، دامنه‌بندی‌شده به Clinic معتبر — ردیفِ
+     * کلینیک دیگر حتی بارگذاری نمی‌شود (پاسخ یکسان با «یافت نشد»).
+     * Predicate روی PRIMARY KEY + ستون clinic_id موجود (بدون ایندکس جدید).
+     *
+     * @return array<string, mixed>|null
+     */
+    public function findForClinic(int $id, int $clinicId): ?array
+    {
+        return $this->db->fetchRow(
+            'SELECT * FROM ' . $this->db->table('cpms_schedule') . ' WHERE id = %d AND clinic_id = %d LIMIT 1',
+            [$id, $clinicId]
+        );
+    }
+
+    /**
      * @return array<string, mixed>|null
      */
     public function findByClinicianDay(int $clinicianId, int $dayOfWeek): ?array
@@ -121,6 +136,20 @@ final class ScheduleRepository
         return $this->db->fetchRow(
             'SELECT * FROM ' . $this->db->table('cpms_schedule_exceptions') . ' WHERE id = %d LIMIT 1',
             [$id]
+        );
+    }
+
+    /**
+     * C7-S2: استثنای برنامه با شناسه، دامنه‌بندی‌شده به Clinic معتبر —
+     * همان قرارداد findForClinic (404 parity، بدون بارگذاری ردیف خارجی).
+     *
+     * @return array<string, mixed>|null
+     */
+    public function findExceptionForClinic(int $id, int $clinicId): ?array
+    {
+        return $this->db->fetchRow(
+            'SELECT * FROM ' . $this->db->table('cpms_schedule_exceptions') . ' WHERE id = %d AND clinic_id = %d LIMIT 1',
+            [$id, $clinicId]
         );
     }
 

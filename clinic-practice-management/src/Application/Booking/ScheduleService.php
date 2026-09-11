@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Application\Booking;
 
+use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Domain\Booking\BookingException;
 use ClinicCore\Infrastructure\Audit\AuditLogger;
 use ClinicCore\Infrastructure\Db\CpmsDb;
@@ -98,10 +99,9 @@ final class ScheduleService
      */
     public function update(int $actorUserId, int $id, array $fields): array
     {
-        $current = $this->schedules->find($id);
-        if ($current === null) {
-            throw BookingException::of('CLINIC_NOT_FOUND', 'برنامه یافت نشد', 404);
-        }
+        // C7-S2: مالکیت پیش از هر تغییر/بازتولید — برنامهٔ کلینیک دیگر حتی
+        // بارگذاری نمی‌شود و همان پاکت «یافت نشد» را می‌گیرد (عدم شمارش).
+        $current = $this->requireScheduleForTrustedClinic($id);
 
         $data = $this->validatedScheduleFields($fields, (array) $current);
         if ($data !== []) {
@@ -123,10 +123,8 @@ final class ScheduleService
      */
     public function delete(int $actorUserId, int $id): array
     {
-        $current = $this->schedules->find($id);
-        if ($current === null) {
-            throw BookingException::of('CLINIC_NOT_FOUND', 'برنامه یافت نشد', 404);
-        }
+        // C7-S2: مالکیت پیش از حذف/بازتولید Slotهای وابسته.
+        $current = $this->requireScheduleForTrustedClinic($id);
 
         $this->schedules->delete($id);
         $this->audit('SCHEDULE_DELETED', $actorUserId, 'schedule', $id, null, $this->scheduleView($current), null);
@@ -242,10 +240,8 @@ final class ScheduleService
      */
     public function deleteException(int $actorUserId, int $id): array
     {
-        $current = $this->schedules->findException($id);
-        if ($current === null) {
-            throw BookingException::of('CLINIC_NOT_FOUND', 'استثنا یافت نشد', 404);
-        }
+        // C7-S2: مالکیت پیش از حذف/بازتولید Slotهای وابسته.
+        $current = $this->requireExceptionForTrustedClinic($id);
 
         $this->schedules->deleteException($id);
         $this->audit('SCHEDULE_EXCEPTION_DELETED', $actorUserId, 'schedule_exception', $id, null, $this->exceptionView($current), null);
@@ -366,6 +362,70 @@ final class ScheduleService
         }
 
         return (int) $row['clinic_id'];
+    }
+
+    /**
+     * Clinic صریحِ مورد اعتمادِ درخواست — اگر مرز حمل (REST) برقرارشده باشد؛
+     * بدون fallback به Resolution سیستمیِ «تنها Clinic».
+     *
+     * C7-S2: شناسهٔ شیءِ ارسالیِ کلاینت (schedule/exception id) هرگز خودش
+     * tenant context نیست؛ Clinicِ ردیف فقط «شاهد مالکیت برای مقایسه» است،
+     * نه منبع اعتماد. مرز REST برای staff همیشه Scope صریح برقرار می‌کند
+     * (RestClinicContext ← TrustedClinicEstablisher: هدر درخواست یا عضویت
+     * فعالِ یکتا)، پس مسیر تولیدیِ RESTِ این متدها همیشه تحت این دامنه است.
+     *
+     * چرا Resolution سیستمی اینجا صریحاً fallback نمی‌شود: فراخوان تولیدیِ
+     * wp-admin (ClinicianAdminPage::saveSchedules/deleteSchedule/
+     * deleteException — گارد cpms_config + nonce) بدون Scope صریح کار می‌کند
+     * و شکستن آن در این برش، رگرسیون عملکردیِ خارج از سه نقصِ اثبات‌شده است.
+     * سخت‌گیرسازی داخلیِ fail-closed (معماری) به برش سخت‌گیرسازیِ بعدی C7
+     * سپرده می‌شود — همان‌طور که برای Finance با تست no-scope مشخصه‌نگاری شد.
+     */
+    private function explicitTrustedClinicId(): ?int
+    {
+        $scope = ScopeContext::tryGet();
+
+        return $scope === null ? null : (int) $scope->clinicId;
+    }
+
+    /**
+     * C7-S2: برنامهٔ هفتگی بر پایهٔ شناسهٔ ورودی — با Scope صریحِ معتبر، واکشی
+     * دامنه‌بندی‌شده به همان Clinic انجام می‌شود؛ ردیفِ کلینیک دیگر اصلاً
+     * بارگذاری نمی‌شود و پاسخ، پاکتِ بایت‌به‌بایت یکسان با «برنامه یافت نشد»
+     * است (عدم شمارش). بدون Scope صریح (فراخوان داخلی/wp-admin)، رفتار
+     * موجود حفظ می‌شود.
+     *
+     * @return array<string, mixed>
+     */
+    private function requireScheduleForTrustedClinic(int $id): array
+    {
+        $trustedClinicId = $this->explicitTrustedClinicId();
+        $current = $trustedClinicId === null
+            ? $this->schedules->find($id)
+            : $this->schedules->findForClinic($id, $trustedClinicId);
+        if ($current === null) {
+            throw BookingException::of('CLINIC_NOT_FOUND', 'برنامه یافت نشد', 404);
+        }
+
+        return $current;
+    }
+
+    /**
+     * C7-S2: همان قرارداد مالکیت برای استثنای برنامه (404 parity).
+     *
+     * @return array<string, mixed>
+     */
+    private function requireExceptionForTrustedClinic(int $id): array
+    {
+        $trustedClinicId = $this->explicitTrustedClinicId();
+        $current = $trustedClinicId === null
+            ? $this->schedules->findException($id)
+            : $this->schedules->findExceptionForClinic($id, $trustedClinicId);
+        if ($current === null) {
+            throw BookingException::of('CLINIC_NOT_FOUND', 'استثنا یافت نشد', 404);
+        }
+
+        return $current;
     }
 
     /**
