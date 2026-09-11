@@ -420,6 +420,72 @@ final class C7FinanceObjectIdIsolationTest extends WP_UnitTestCase
         $this->assertStringNotContainsString((string) $invoice['invoice_number'], $body, 'شمارهٔ فاکتور قربانی نباید فاش شود');
     }
 
+    // ================= C7-NO-SCOPE — قاعدهٔ معماری: بدون زمینهٔ معتبر، fail-closed =================
+
+    /**
+     * C7-NO-SCOPE — قاعدهٔ موردنظر معماری (تصمیم معمار پس از پذیرش C7-S1):
+     *
+     * «عملیات حساسِ مالیِ مبتنی بر شناسهٔ شیء، در نبودِ زمینهٔ کلینیکِ معتبرِ
+     * درخواست باید fail-closed باشد — نه اینکه هویت tenant را از ردیفِ هدف
+     * وام بگیرد.»
+     *
+     * ردیابی فراخوان‌ها (پیش از نوشتن این تست): هر هفت عملیات مبتنی بر ID
+     * مالی دقیقاً یک فراخوان تولیدی دارند — FinanceController (REST) — و مرز
+     * REST برای staff همیشه Scope صریح برقرار می‌کند؛ یعنی هیچ فراخوانِ
+     * تولیدیِ بدون Scope برای این متدها وجود ندارد. فراخوانی‌های بدون Scope
+     * در تست‌های موجود (FinanceFlowTest/FinanceClinicIsolationTest) صرفاً
+     * سادگی harness تست تک‌کلینیکی‌اند، نه آینهٔ هیچ مسیر تولیدی.
+     *
+     * اگر این تست قرمز باشد، همان قرمزی شاهدِ نقصِ ازپیش‌موجودِ معناشناسی
+     * داخلی (طبقه‌بندی خطای پروژه: کلاس B) برای برش سخت‌گیرسازیِ بعدی C7
+     * است — طبق تصمیم معمار، در همین برش «اصلاح» نمی‌شود و نه skip می‌شود
+     * و نه تضعیف.
+     *
+     * نمایندهٔ انتخابی: voidPayment (جهش مالی حساس با وضعیت DB قابل assert).
+     * fixture: فاکتور/پرداخت مشروع Clinic A؛ سپس حذف کامل هر Scope صریح و
+     * فراخوانی مستقیم سرویس. انتظار: استثنای fail-closed + DB دست‌نخورده.
+     */
+    public function testVoidPaymentWithoutTrustedClinicContextFailsClosedInsteadOfAdoptingRowClinic(): void
+    {
+        $invoice = $this->issueVictimInvoice(100000);
+        $invoiceId = (int) $invoice['id'];
+        $paymentId = $this->recordVictimPayment($invoiceId, 100000);
+
+        // پیش‌شرط: پرداختِ امروزِ Clinic A در وضعیت captured و فاکتور تسویه‌شده.
+        $pre = $this->fetchPaymentRow($paymentId);
+        self::assertSame('captured', (string) $pre['status'], 'پیش‌شرط: پرداخت قربانی captured است');
+        self::assertSame(100000.0, (float) $this->fetchInvoiceRow($invoiceId)['paid_amount'], 'پیش‌شرط: فاکتور تسویه است');
+
+        // حذف کامل زمینهٔ مورد اعتماد — نه Scope صریح، نه Clinicِ برگرفته از ردیف.
+        wp_set_current_user($this->secretaryA);
+        App::resetScope();
+        self::assertNull(ScopeContext::tryGet(), 'پیش‌شرط: هیچ Scope صریحی برقرار نیست');
+
+        $failedClosed = false;
+        try {
+            $this->finance()->voidPayment($this->secretaryA, $paymentId, 'c7 no-scope characterization');
+        } catch (FinanceException $e) {
+            $failedClosed = true;
+        }
+
+        $pay = $this->fetchPaymentRow($paymentId);
+        $inv = $this->fetchInvoiceRow($invoiceId);
+
+        $this->assertTrue(
+            $failedClosed,
+            'C7-NO-SCOPE voidPayment: عملیات حساس مالی بدون هیچ زمینهٔ کلینیک معتبر باید '
+            . 'fail-closed باشد، نه اینکه Clinic را از خودِ ردیفِ هدف وام گیرد. '
+            . 'رفتار واقعی: عملیات بدون استثنا اجرا شد. '
+            . "DB: victim_payment(status={$pay['status']}, voided_by_wp_user_id={$pay['voided_by_wp_user_id']}, clinic_id={$pay['clinic_id']}); "
+            . "victim_invoice(paid_amount={$inv['paid_amount']}, status={$inv['status']})"
+        );
+
+        // حتی در حالت fail-closed هم DB باید دست‌نخورده بماند (استثنای فریبنده ننویسد).
+        $this->assertSame('captured', (string) $pay['status'], 'وضعیت پرداخت قربانی نباید تغییر کند');
+        $this->assertEmpty((int) $pay['voided_by_wp_user_id'], 'ابطال‌کننده‌ای نباید ثبت شده باشد');
+        $this->assertSame(100000.0, (float) $inv['paid_amount'], 'paid_amount فاکتور قربانی نباید برگردد');
+    }
+
     // ================= Helpers — fixture قربانی (مسیر واقعی سرویس) =================
 
     private function finance(): \ClinicCore\Application\Finance\FinanceService
