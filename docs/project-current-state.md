@@ -705,19 +705,27 @@ Full slice-by-slice RED→GREEN history with run IDs:
   for speculative optimization, for weakening tenant isolation/security, or for a
   schema migration. Recorded findings: (1) existing executed staging benchmark evidence
   is real (`performance-baseline.md`; `report-pilot-gate.md` §8; the executable `ab`
-  step in the `staging-gate` job of `pilot-gate.yml`; successful integrated
-  Pilot/Staging gates — latest verified on `bd2634a`, run `34651627290`) but does
-  **not** validate commercial/reference-environment NFR performance; (2) the
+  step in the `staging-gate` job of `pilot-gate.yml`), but the recorded §8 numeric
+  results are **historical (2026-09-06 runs) and pre-date the major Phase-2
+  Multi-Clinic C4..C7 changes** — they establish that benchmark tooling existed and
+  executed, **not** current Multi-Clinic performance; successful current integrated
+  Pilot/Staging gates (latest verified on `bd2634a`, run `34651627290`) establish
+  **successful execution/gate behavior only** — the current staging benchmark step
+  completed successfully without triggering its configured non-2xx failure condition;
+  exact current benchmark metrics (including any numeric error-rate value) were not
+  retrievable from Arena and are recorded as NOT MEASURED / NOT RETRIEVED, and
+  workflow success does **not** mean NFR latency thresholds passed (the step enforces
+  no latency threshold); no
+  current reference-environment/commercial performance validation exists; (2) the
   not-measured list (reference-environment NFR thresholds; public-page/plugin overhead
   p95 < 100ms; runtime query-count/N+1; memory; meaningful multi-Clinic load scale) is
   recorded as **future performance/release evidence aligned primarily with Owner
   Phase 17 / release validation — not as C10 blockers**; (3) the bounded Phase-2
   static review found **no VERIFIED performance defect requiring remediation** — code
   inspection is not measured performance, and no global absence of N+1 or all-product
-  performance perfection is claimed; (4) the historical "End Gate (26 items)" label
-  corresponds to **no canonical 26-item checklist** (none ever existed in the
-  repository; the numeric resemblance to the historical "26 tables with clinic_id"
-  census is INFERRED only, not recorded as provenance fact). **C10 status: evidence
+  performance perfection is claimed; (4) for the historical "End Gate (26 items)" label, **no canonical defined
+  26-item Phase-2 End Gate checklist was found in the current repository or inspected
+  tracked Git history**; the origin of the number is not recorded as provenance fact. **C10 status: evidence
   review complete / technically eligible for closure — OWNER FORMAL CLOSURE PENDING
   (C10 is NOT formally closed).** Phase 2 remains IN PROGRESS; the Phase 2 End Gate
   and Phase 3 are NOT started. No new reference-server/load-test campaign is required
