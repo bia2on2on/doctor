@@ -119,8 +119,12 @@ final class FinanceService
     public function updateService(int $actorUserId, int $id, array $input): array
     {
         $this->requireCap($actorUserId, RolesAndCapabilities::CONFIG, 'services.config');
+        // C7-S4: بدون Clinic معتبر ⇒ بسته؛ مالکیت تعرفه پیش از validation/نوشتن/audit
+        // — تعرفهٔ خارجی دقیقاً مثل تعرفهٔ ناموجود پاسخ می‌گیرد (404 parity) و
+        // دیگر به «no-op بی‌صدا با پاسخ موفق» (oracle وجود شیء) ختم نمی‌شود.
+        $this->requireTrustedClinicId();
         $existing = $this->services->find($id);
-        if ($existing === null) {
+        if ($existing === null || !$this->rowBelongsToTrustedClinic($existing)) {
             throw FinanceException::of('CLINIC_NOT_FOUND', 'خدمت یافت نشد', 404);
         }
         [$code, $name, $price] = $this->validateServiceInput($input, $existing);
@@ -148,8 +152,10 @@ final class FinanceService
     public function deactivateService(int $actorUserId, int $id): array
     {
         $this->requireCap($actorUserId, RolesAndCapabilities::CONFIG, 'services.config');
+        // C7-S4: همان قرارداد مالکیت updateService (بدون no-op بی‌صدا با موفق).
+        $this->requireTrustedClinicId();
         $existing = $this->services->find($id);
-        if ($existing === null) {
+        if ($existing === null || !$this->rowBelongsToTrustedClinic($existing)) {
             throw FinanceException::of('CLINIC_NOT_FOUND', 'خدمت یافت نشد', 404);
         }
         // حذف منطقی — اقلام فاکتور تاریخی باید به تعرفه ارجاع بدهند (FR-14.9)
@@ -172,6 +178,9 @@ final class FinanceService
     public function issueInvoice(int $actorUserId, array $input): array
     {
         $this->requireCap($actorUserId, RolesAndCapabilities::INVOICE_CREATE, 'invoice.issue');
+        // C7-S4: بدون Clinic معتبرِ درخواست ⇒ بسته (CLINIC_SCOPE_REQUIRED) —
+        // Clinic هرگز از ردیف ویزیتِ انتخاب‌شدهٔ کلاینت پذیرفته نمی‌شود.
+        $this->requireTrustedClinicId();
 
         $visitId = (int) ($input['visit_id'] ?? 0);
         $itemsIn = $input['items'] ?? null;
@@ -186,7 +195,10 @@ final class FinanceService
 
         return $this->db->transactional(function () use ($actorUserId, $visitId, $itemsIn, $discount, $tax): array {
             $visit = $this->visits->findForUpdate($visitId);
-            if ($visit === null) {
+            // C7-S4: مالکیت ویزیت پیش از هر بررسیِ وضعیت/بیمار/قفل/درج — ویزیتِ
+            // خارج از Clinic معتبر دقیقاً مثل ویزیت ناموجود پاسخ می‌گیرد (پاکت
+            // یکسان — عدم شمارش/افشا) و هیچ اثر مالی برای کلینیک قربانی نمی‌سازد.
+            if ($visit === null || !$this->rowBelongsToTrustedClinic($visit)) {
                 throw FinanceException::of('CLINIC_NOT_FOUND', 'ویزیت یافت نشد', 404);
             }
             // I1: فقط از consultation_completed/awaiting_payment

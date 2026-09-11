@@ -188,10 +188,17 @@ scenario('S3', 'Doctor: call→start→note→complete + invoice/payment + idemp
     if ($done['status'] !== 'consultation_completed') {
         throw new RuntimeException('complete status=' . $done['status']);
     }
-    $inv = App::financeService()->issueInvoice($secretaryId, [
-        'visit_id' => $visitIdRef,
-        'items' => [['description' => 'ویزیت (Synthetic)', 'quantity' => 1, 'unit_price' => 250000]],
-    ]);
+    // C7-S4: صدور فاکتور هم مانند پرداخت فقط زیر Clinic معتبر صریح اجرا می‌شود
+    // (معادل مرز REST) — resolver تک‌کلینیکیِ نصب؛ در نصب مبهم fail-closed.
+    App::replaceExplicitScope(App::scope());
+    try {
+        $inv = App::financeService()->issueInvoice($secretaryId, [
+            'visit_id' => $visitIdRef,
+            'items' => [['description' => 'ویزیت (Synthetic)', 'quantity' => 1, 'unit_price' => 250000]],
+        ]);
+    } finally {
+        App::resetScope();
+    }
     $key = uuid4();
     // C7-S3: عملیات حساس مالی (پرداخت) فقط زیر Clinic معتبرِ صریح اجرا می‌شود —
     // همان کاری که مرز REST برای staff انجام می‌دهد. اینجا با resolver نصب
