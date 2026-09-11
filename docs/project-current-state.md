@@ -270,6 +270,62 @@ CODE + TEST + DOC + MIGRATION together where relevant.
 
 User-facing strings: WordPress i18n-ready. Machine `CLINIC_*` codes stay stable.
 
+### I-1. Localization layering rule (C9 — forward architecture rule, permanent)
+
+Recorded by the bounded C9 work package (PR #23, DRAFT — base `0fd5c27`):
+
+- **Domain** must not gain any NEW direct WordPress i18n/presentation dependency. New
+  Domain code must not call `__()` or an equivalent WordPress i18n API.
+- **Application business/service code** must not add new direct WordPress
+  presentation/i18n coupling as the default pattern.
+- **Human localization belongs at presentation/adapter boundaries** (REST controllers,
+  wp-admin) — the already-established pattern of `RestClinicContext::toError()` (since C6)
+  and `ClinicianAdminPage` (since C7-S4).
+- **Stable machine-readable `code` / HTTP status / structured `data` remain authoritative**
+  for clients. The bounded C9 change preserved all three exactly, and preserved the default
+  Persian `message` byte-for-byte, so **no API-contract change was needed**
+  (`api-contract.md` §0 and `ADR-0019` do not pin `message` bytes; `SRS` NFR-UI-4 asks for
+  "i18n-ready, fa default").
+- Existing direct Domain/Application `__()` usage is **tolerated historical debt, NOT
+  precedent to expand**. Enumerated and deliberately left untouched: **13** Domain sites in
+  **2 of 42** Domain files (`Domain/Membership/MembershipException.php` — 7,
+  `Domain/Patients/PatientIdentityException.php` — 6) and **19** Application sites in 2 files
+  (`Application/Membership/MembershipService.php` — 13,
+  `Application/Patients/PatientIdentityService.php` — 6). No mass legacy cleanup was
+  performed and none is claimed.
+- The plugin still ships **no** `.po`/`.mo`/`.pot` catalog and calls **no**
+  `load_plugin_textdomain()`. Because the `cpms` domain therefore resolves to WordPress'
+  empty `NOOP_Translations`, `__($msgid, 'cpms')` returns the source string unchanged —
+  which is exactly why default Persian output is preserved byte-for-byte while the two
+  messages became translation-ready.
+- **Guard decision:** no new CI guard tooling was created for this rule (no Domain i18n
+  allowlist scanner, no new workflow/step) and WPCS configuration was not modified —
+  `WordPress.WP.I18n` validates *how* `__()` is called and cannot express a layering rule or
+  detect an unwrapped literal. The rule is therefore **documentation/review-based** for now,
+  for both Domain and Application.
+- **Bounded deferred debt (confirmed still present, out of the declared C9 REST scope):**
+  `src/Admin/ClinicianAdminPage.php:436` and `:494` render the Schedule service message raw
+  (`'خطا: ' . $e->getMessage()`).
+
+> **Transitional technique — not the preferred long-term architecture.** The two literal
+> msgids added at the REST boundary are byte-identical copies of the corresponding service
+> source strings. This duplication is a **deliberately bounded TRANSITIONAL compatibility
+> technique** for exactly these two C7-introduced messages, forced by an existing tooling
+> constraint: `WordPress.WP.I18n.NonSingularStringLiteralText` (enforced on added lines
+> against the WPCS baseline) reports a non-literal msgid — including
+> `__($e->getMessage(), 'cpms')` and even a class constant — as an ERROR, so a literal msgid
+> was the only way to keep the existing gate green with **no** `phpcs:ignore` and **no**
+> weakening of WPCS. Duplication between Service and Controller must **not** be documented or
+> treated as the preferred long-term architecture; the long-term architecture is the layering
+> rule above, and future consolidation may replace this transitional duplication when
+> justified by broader evidence. For this bounded task no new abstraction was created solely
+> to eliminate two duplicated literals — the REST boundary already had enough information to
+> distinguish the variants safely (static controller identity + stable code + empty `data`),
+> so a generic error mapper or a `message_key` framework would have been disproportionate.
+> Divergence is locked by an **external-behavior** assertion (the default-envelope tests
+> compare the REST `message` with the real service exception's `getMessage()`), not by
+> comparing two source literals.
+
 ---
 
 ## J. Git / recovery
@@ -568,6 +624,24 @@ Full slice-by-slice RED→GREEN history with run IDs:
   exists. The historical "End Gate (26 items)" queue label is **not** a
   defined 26-item acceptance checklist — no such canonical definition exists
   in the repository. After C9/C10 scope decisions, Phase 2 End Gate → STOP.
+- **C9 status update (2026-09-11 — bounded implementation, NOT closure):** the required
+  bounded evidence/scope determination was performed and the approved bounded scope was then
+  implemented on **PR #23 (DRAFT — DO NOT MERGE, base `0fd5c27`)**. The scope was exactly the
+  **two A/Low findings that C7 itself introduced** — `ScheduleService.php:389` (C7-S5,
+  `04a7a79e`) and `FinanceService.php:1111` (C7-S3, `c4cf9024`), both
+  `CLINIC_SCOPE_REQUIRED` / HTTP 400 / `data: []` — made translation-ready at the existing
+  REST presentation boundary (`ScheduleController::wrap()`, `FinanceController::staff()`),
+  with code/status/data and the default Persian message preserved byte-for-byte. No
+  Domain/Application production file changed, no migration/schema change, no generic mapper or
+  `message_key` framework, no translator port, no Domain/Application error-architecture
+  refactor, no mass legacy i18n cleanup, and no new CI guard tooling. See §I-1 for the forward
+  layering rule, the tolerated historical debt (13 Domain / 19 Application sites), and the
+  explicitly **transitional** nature of the boundary literal duplication.
+  **C9 is NOT CLOSED.** The maximum state permitted before merge is
+  *"C9 bounded implementation complete / READY FOR ARCHITECT MERGE REVIEW"*. Formal C9
+  closure is a **post-merge continuity decision** that must be based on the actual integrated
+  `main` SHA and successful post-merge gates on that SHA; it is not claimed here. C10 remains
+  not started and performance remains **NOT MEASURED**.
 
 
 ---

@@ -29,7 +29,7 @@
 | T1 | **Owner Phase 0..20** | `roadmap.md` §۰ | نقشهٔ اجرایی رسمی | **AUTHORITATIVE / CURRENT** | — | بله (گیت‌ها) |
 | T2 | **Phase 0.5** | `architecture/phase0.5-target-model.md` | فاز میانیِ مستندسازیِ معماری و Migration | **CURRENT (DOC + APPROVED)**، خارج از شمارهٔ اصلی | جزیی | خیر |
 | T3 | **Phase 1A / 1B** | `roadmap.md` §۰-۲ | تقسیم اجرایی Phase 1 (Security) | **SUBPHASE** (1A CLOSED، 1B DEFERRED) | خیر | 1B: آینده‌ای |
-| T4 | **C1..C10** | `phase2-state.md`/`project-current-state.md` | زیرفازهای Phase 2 (Multi-Clinic Core) | **CURRENT** — C1..C6 CLOSED · **C7 CLOSED (پذیرش رسمی مالک 2026-09-11)** · **C8 CLOSED (بستهٔ شواهد/مستندات فوندیشن Location — بدون پیاده‌سازی)** · C9..C10 NOT STARTED (مجاز نشده) | خیر | بله |
+| T4 | **C1..C10** | `phase2-state.md`/`project-current-state.md` | زیرفازهای Phase 2 (Multi-Clinic Core) | **CURRENT** — C1..C6 CLOSED · **C7 CLOSED (پذیرش رسمی مالک 2026-09-11)** · **C8 CLOSED (بستهٔ شواهد/مستندات فوندیشن Location — بدون پیاده‌سازی)** · **C9 = پیاده‌سازیِ محدودشده کامل / READY FOR ARCHITECT MERGE REVIEW (PR #23 DRAFT، base `0fd5c27`) — CLOSED نیست؛ بستن رسمی = تصمیم پس‌از‌ادغام** · C10 NOT STARTED (مجاز نشده) | خیر | بله |
 | T5 | **C6-A..E3 / C6-F / C6-G / C6 Export** | `c6-census.md` | ریز-زیرفازهای C6 | **CURRENT** | خیر | بله |
 | T6 | **F0..F10 (+ F2.5)** | `roadmap.md` §۲-۲، `phase-reports/report-f*.md` | فازهای ساخت محصول پیش از Phase 0 تا Go-Live V1 | **LEGACY / HISTORICAL** | **بله** (F9 = Hardening؛ با Phase 9 اشتباه نشود) | خیر |
 | T7 | **Doc-Phase 1..8** | `docs/README.md` | فازهای *مستندسازی* | **LEGACY / DOCUMENTATION-ONLY** | **بله — پرریسک** (Doc-Phase 2 ≠ Phase 2) | خیر |
@@ -59,7 +59,7 @@
 | **Phase 0** | — | (پیش از F؛ ممیزی F) | `report-phase-0-reverification.md` | V1 (پایه) | CLOSED |
 | **Phase 0.5** | — | — | `phase0.5-target-model.md` + ADR-0031 | — | CLOSED/APPROVED |
 | **Phase 1** | **1A** CLOSED · **1B** DEFERRED | F9 (Hardening — بخشی) | `report-od9-closure.md`، `phase1a-to-next-agent.md` | — | 1A CLOSED / 1B DEFERRED |
-| **Phase 2** | **C4/C5/C6 CLOSED** (ادغام در `099b644`؛ اصلاحیهٔ پس از بستن در `248ca10`)؛ **C7 = CLOSED** (ترمیم ادغام‌شده در `a385d868`، PR #20 MERGED؛ **پذیرش رسمی مالک 2026-09-11**)؛ **C8 = CLOSED** (بستهٔ شواهد/مستندات فوندیشن Location — بدون پیاده‌سازی)؛ C9/C10 NOT STARTED (فقط با تعیین scope/شواهد محدودشده) | **V2** (بخش Multi-clinic → بازتوزیع) | ADR-0031؛ drift D-01..D-20 | — | IN PROGRESS |
+| **Phase 2** | **C4/C5/C6 CLOSED** (ادغام در `099b644`؛ اصلاحیهٔ پس از بستن در `248ca10`)؛ **C7 = CLOSED** (ترمیم ادغام‌شده در `a385d868`، PR #20 MERGED؛ **پذیرش رسمی مالک 2026-09-11**)؛ **C8 = CLOSED** (بستهٔ شواهد/مستندات فوندیشن Location — بدون پیاده‌سازی)؛ **C9 = پیاده‌سازیِ محدودشده کامل / READY FOR ARCHITECT MERGE REVIEW** (PR #23 DRAFT، base `0fd5c27`؛ **CLOSED نیست** — بستن رسمی تصمیمِ پس‌از‌ادغام است)؛ C10 NOT STARTED (مجاز نشده) | **V2** (بخش Multi-clinic → بازتوزیع) | ADR-0031؛ drift D-01..D-20 | — | IN PROGRESS |
 | **Phase 3** | — (C7 متعلق به Phase 2 است، نه Phase 3 — رجوع به Queue در `phase2-state.md`) | **V2** (Role/Scope/Staff → بازتوزیع) | B-01..B-08؛ A-01..A-09 | — | NOT STARTED |
 | **Phase 4** | — | **V2** (Specialty/Dept/Room → بازتوزیع) | M-01..M-05؛ Q11 باز | — | NOT STARTED |
 | **Phase 5..8، 10..20** | — | بخشی از **V2** → OD-2 باز | drift O-* | V1.5 = PAUSED → OD-2 | NOT STARTED |

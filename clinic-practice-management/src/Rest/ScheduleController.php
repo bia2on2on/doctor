@@ -214,7 +214,25 @@ final class ScheduleController extends RestBase
         try {
             return $this->success($fn(), 200);
         } catch (BookingException $e) {
-            return $this->error($e->errorCode, $e->httpStatus, $e->getMessage(), $e->data);
+            $message = $e->getMessage();
+            /*
+             * C9 — بومی‌سازی فقط در مرز ارائه (نه در Application/Domain).
+             *
+             * در این مرز تنها منبعِ `CLINIC_SCOPE_REQUIRED` همان گارد fail-closedِ
+             * `ScheduleService::requireClinicianForTrustedClinic()` است (C7-S5)، پس
+             * خودِ کد برای تشخیصِ این واریانت کافی است. هر پیامِ دیگری بدون تغییر و
+             * بایت‌به‌بایت عبور می‌کند؛ `code`/`httpStatus`/`data` دست‌نخورده می‌مانند.
+             *
+             * msgid عمدتاً literal است (قاعدهٔ `WordPress.WP.I18n` در WPCS) و دامنهٔ
+             * آن `cpms` — همان دامنهٔ هدر افزونه و الگوی مستقر `RestClinicContext`.
+             * چون افزونه هیچ کاتالوگ `cpms` بارگذاری نمی‌کند، خروجی پیش‌فرض همان
+             * متن فارسیِ منبع است (بدون هیچ تغییر رفتاری).
+             */
+            if ($e->errorCode === 'CLINIC_SCOPE_REQUIRED') {
+                $message = __('عملیات برنامهٔ هفتگی بدون زمینهٔ کلینیک معتبر مجاز نیست', 'cpms');
+            }
+
+            return $this->error($e->errorCode, $e->httpStatus, $message, $e->data);
         }
     }
 }
