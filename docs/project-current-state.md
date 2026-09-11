@@ -55,7 +55,7 @@ Legacy labels (`F0..F10`, `Doc-Phase`, `V1` / `V1.5` / `V2`) are historical. The
 | Phase 1A | CLOSED (`9bc6f7f`; OD-9 CLOSED) |
 | Phase 1B | DEFERRED — scoped / object authorization (depends on Phase 2 + 3) |
 | Phase 2 | **IN PROGRESS** — subphase **C6 CLOSED** + post-closure corrective integrated (PR #17) |
-| C7 | **NOT STARTED** (implementation). C7-0 evidence foundation only — see `docs/phase-reports/c7-0-census.md` |
+| C7 | **REMEDIATION IMPLEMENTED on DRAFT PR #20 (slices C7-0→C7-S6, all gates GREEN at final head) — NOT MERGED, awaiting Owner review** — see `docs/phase-reports/c7-0-census.md` §۱۱ |
 | Phase 3 | **NOT STARTED** — no `AuthorizationService`; do not start |
 
 **Integrated main checkpoint:** `248ca10` (PR #17 MERGED 2026-09-10T20:55:57Z —
@@ -401,9 +401,11 @@ integration-state table above. Scope of the merged corrective:
   attempt 2 executed the substantive staging steps successfully. Attempt 1 is
   recorded, not erased.
 - **No migration** (count unchanged; 0021 neither approved nor created).
-  **C7 implementation remains NOT STARTED.** Location authorization untouched.
+  **C7 remediation is implemented on DRAFT PR #20 (see below); integrated
+  `main` itself is unchanged.** Location authorization untouched.
 
-**Do not start C7, C8, Phase 3, Phase 4, portals, or mobile auth/JWT.**
+**Do not start C8, Phase 3, Phase 4, portals, or mobile auth/JWT. Do not
+merge PR #20 without Owner approval.**
 
 ### C7-0 — evidence foundation (no product change)
 
@@ -428,6 +430,40 @@ does **not** assert that C7 requires a JobQueue tenant column, that Migration
 S2/S3 architecture has been approved. Those remain unresolved design/domain
 questions pending Owner decision and further evidence. **No migration is
 approved or proposed; `0021` does not exist.**
+
+### C7 — remediation state (DRAFT PR #20, NOT MERGED)
+
+Full slice-by-slice RED→GREEN history with run IDs:
+[`docs/phase-reports/c7-0-census.md` §۱۱](phase-reports/c7-0-census.md).
+
+- **Scope completed (evidence-driven, all from confirmed cross-Clinic
+  characterization defects):** finance object-ID isolation on the seven
+  ID-based finance operations; mandatory trusted Clinic context on those
+  seven (fail-closed `CLINIC_SCOPE_REQUIRED` 400 when missing);
+  `issueInvoice` Visit ownership + invoice-item Service/Tariff ownership;
+  Service/Tariff update/deactivate ownership (404 parity, no silent no-op
+  success); Schedule update/delete/deleteException isolation; Schedule
+  create + createException Clinician ownership; wp-admin boundary
+  (ClinicianAdminPage) establishing trusted Clinic context from the
+  approved Membership primitives (no/ambiguous membership ⇒ fail closed).
+- **Permanent trust rule (enforced everywhere in the changed paths):** a
+  client/attacker-selected object row (Invoice/Payment/Visit/Schedule/
+  Exception/Clinician/Service) is **never** a source of tenant trust; its
+  `clinic_id` is only compared against the independently established
+  trusted Clinic context. No Clinic-ID-1 fallback.
+- **Canonical error semantics:** missing trusted scope ⇒
+  `CLINIC_SCOPE_REQUIRED` 400; valid scope + foreign object ⇒
+  non-disclosing `CLINIC_NOT_FOUND` 404 byte-parity with a nonexistent id.
+- **No Migration** (`0021` does not exist; no schema change). **Phase 3
+  NOT STARTED** (no `AuthorizationService`, no Location policy). Deferred
+  items remain deferred and are NOT silently approved (S2 JobQueue
+  tenant-context, S3 prescription numbering, Jobs/SMS/timezone, wp-admin
+  multi-clinic selection UX).
+- **PR #20 status:** DRAFT, OPEN, unmerged; final head fully GREEN on all
+  five canonical workflows (CI incl. Integration/Unit/WPCS/PHPStan/
+  Tripwire, Real-WP ×2, Pilot, Closure). No test weakened/skipped; all
+  characterization tests unchanged from their RED authoring.
+
 
 ---
 
