@@ -193,8 +193,17 @@ scenario('S3', 'Doctor: call→start→note→complete + invoice/payment + idemp
         'items' => [['description' => 'ویزیت (Synthetic)', 'quantity' => 1, 'unit_price' => 250000]],
     ]);
     $key = uuid4();
-    $pay = App::financeService()->recordPayment($secretaryId, (int) $inv['id'], ['amount' => 250000, 'method' => 'cash'], $key);
-    $replay = App::financeService()->recordPayment($secretaryId, (int) $inv['id'], ['amount' => 250000, 'method' => 'cash'], $key);
+    // C7-S3: عملیات حساس مالی (پرداخت) فقط زیر Clinic معتبرِ صریح اجرا می‌شود —
+    // همان کاری که مرز REST برای staff انجام می‌دهد. اینجا با resolver نصب
+    // (تک‌کلینیکی؛ در نصب مبهم fail-closed می‌شود) به‌صورت صریح برقرار و در
+    // پایان بازگردانده می‌شود. Clinic هرگز از ردیف فاکتور/پرداخت گرفته نمی‌شود.
+    App::replaceExplicitScope(App::scope());
+    try {
+        $pay = App::financeService()->recordPayment($secretaryId, (int) $inv['id'], ['amount' => 250000, 'method' => 'cash'], $key);
+        $replay = App::financeService()->recordPayment($secretaryId, (int) $inv['id'], ['amount' => 250000, 'method' => 'cash'], $key);
+    } finally {
+        App::resetScope();
+    }
     if (($replay['payment_id'] ?? 0) !== ($pay['payment_id'] ?? -1)) {
         throw new RuntimeException('idempotent replay mismatch');
     }

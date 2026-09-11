@@ -224,8 +224,16 @@ jobs:
           $inv = App::financeService()->issueInvoice($secretaryId, ['visit_id' => $visitId, 'items' => [['description' => 'ویزیت (Synthetic)', 'quantity' => 1, 'unit_price' => 250000]]]);
           ok('invoice-issue', isset($inv['id']));
           $key = uuid4();
-          $pay = App::financeService()->recordPayment($secretaryId, (int) $inv['id'], ['amount' => 250000, 'method' => 'cash'], $key);
-          $replay = App::financeService()->recordPayment($secretaryId, (int) $inv['id'], ['amount' => 250000, 'method' => 'cash'], $key);
+          // C7-S3: پرداخت حساس فقط زیر Clinic معتبر صریح (معادل مرز REST) —
+          // resolver تک‌کلینیکیِ نصب؛ در نصب مبهم fail-closed. Clinic هرگز
+          // از ردیف فاکتور/پرداخت گرفته نمی‌شود.
+          App::replaceExplicitScope(App::scope());
+          try {
+              $pay = App::financeService()->recordPayment($secretaryId, (int) $inv['id'], ['amount' => 250000, 'method' => 'cash'], $key);
+              $replay = App::financeService()->recordPayment($secretaryId, (int) $inv['id'], ['amount' => 250000, 'method' => 'cash'], $key);
+          } finally {
+              App::resetScope();
+          }
           ok('payment-idempotent-replay', ($pay['payment_id'] ?? -1) === ($replay['payment_id'] ?? -2), 'pay=' . ($pay['payment_id'] ?? '?') . ' replay=' . ($replay['payment_id'] ?? '?'));
 
           // ===== G. Cron / Job (مسیر runTick واقعی + recurring) =====
@@ -519,8 +527,16 @@ jobs:
           $inv = App::financeService()->issueInvoice($secretaryId, ['visit_id' => $visitId, 'items' => [['description' => 'ویزیت (Synthetic)', 'quantity' => 1, 'unit_price' => 250000]]]);
           ok('invoice-issue', isset($inv['id']));
           $key = uuid4();
-          $pay = App::financeService()->recordPayment($secretaryId, (int) $inv['id'], ['amount' => 250000, 'method' => 'cash'], $key);
-          $replay = App::financeService()->recordPayment($secretaryId, (int) $inv['id'], ['amount' => 250000, 'method' => 'cash'], $key);
+          // C7-S3: پرداخت حساس فقط زیر Clinic معتبر صریح (معادل مرز REST) —
+          // resolver تک‌کلینیکیِ نصب؛ در نصب مبهم fail-closed. Clinic هرگز
+          // از ردیف فاکتور/پرداخت گرفته نمی‌شود.
+          App::replaceExplicitScope(App::scope());
+          try {
+              $pay = App::financeService()->recordPayment($secretaryId, (int) $inv['id'], ['amount' => 250000, 'method' => 'cash'], $key);
+              $replay = App::financeService()->recordPayment($secretaryId, (int) $inv['id'], ['amount' => 250000, 'method' => 'cash'], $key);
+          } finally {
+              App::resetScope();
+          }
           ok('payment-idempotent-replay', ($pay['payment_id'] ?? -1) === ($replay['payment_id'] ?? -2));
           App::scheduleRecurringJobs();
           App::runTick(60);
