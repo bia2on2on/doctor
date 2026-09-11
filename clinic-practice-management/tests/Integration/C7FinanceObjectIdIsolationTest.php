@@ -436,10 +436,9 @@ final class C7FinanceObjectIdIsolationTest extends WP_UnitTestCase
      * در تست‌های موجود (FinanceFlowTest/FinanceClinicIsolationTest) صرفاً
      * سادگی harness تست تک‌کلینیکی‌اند، نه آینهٔ هیچ مسیر تولیدی.
      *
-     * اگر این تست قرمز باشد، همان قرمزی شاهدِ نقصِ ازپیش‌موجودِ معناشناسی
-     * داخلی (طبقه‌بندی خطای پروژه: کلاس B) برای برش سخت‌گیرسازیِ بعدی C7
-     * است — طبق تصمیم معمار، در همین برش «اصلاح» نمی‌شود و نه skip می‌شود
-     * و نه تضعیف.
+     * C7-S3: این قاعده اکنون در خود سرویس پیاده شده است (relief اختیاریِ
+     * C7-S1 حذف شد) — این تست از این پس رگرسیونِ دائمیِ سبزِ همان قرارداد
+     * است: کد استاندارد CLINIC_SCOPE_REQUIRED + HTTP 400 + DB دست‌نخورده.
      *
      * نمایندهٔ انتخابی: voidPayment (جهش مالی حساس با وضعیت DB قابل assert).
      * fixture: فاکتور/پرداخت مشروع Clinic A؛ سپس حذف کامل هر Scope صریح و
@@ -462,10 +461,12 @@ final class C7FinanceObjectIdIsolationTest extends WP_UnitTestCase
         self::assertNull(ScopeContext::tryGet(), 'پیش‌شرط: هیچ Scope صریحی برقرار نیست');
 
         $failedClosed = false;
+        $thrown = null;
         try {
             $this->finance()->voidPayment($this->secretaryA, $paymentId, 'c7 no-scope characterization');
         } catch (FinanceException $e) {
             $failedClosed = true;
+            $thrown = $e;
         }
 
         $pay = $this->fetchPaymentRow($paymentId);
@@ -479,6 +480,15 @@ final class C7FinanceObjectIdIsolationTest extends WP_UnitTestCase
             . "DB: victim_payment(status={$pay['status']}, voided_by_wp_user_id={$pay['voided_by_wp_user_id']}, clinic_id={$pay['clinic_id']}); "
             . "victim_invoice(paid_amount={$inv['paid_amount']}, status={$inv['status']})"
         );
+
+        // کد ماشین‌خوان استانداردِ نبودِ Scope (قرارداد SystemClinicResolver/
+        // ScopeRequiredException — C7-S3) و وضعیت HTTP مرسوم آن.
+        $this->assertSame(
+            'CLINIC_SCOPE_REQUIRED',
+            $thrown->errorCode,
+            'کد استثنا باید قرارداد کانونی CLINIC_SCOPE_REQUIRED باشد، نه کد دیگری.'
+        );
+        $this->assertSame(400, $thrown->httpStatus, 'وضعیت HTTP استانداردِ CLINIC_SCOPE_REQUIRED');
 
         // حتی در حالت fail-closed هم DB باید دست‌نخورده بماند (استثنای فریبنده ننویسد).
         $this->assertSame('captured', (string) $pay['status'], 'وضعیت پرداخت قربانی نباید تغییر کند');

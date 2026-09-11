@@ -77,11 +77,14 @@ final class FinanceClinicIsolationTest extends WP_UnitTestCase
         ]);
         $this->assertSame('INV-' . gmdate('ymd') . '-001', $invoice['invoice_number']);
 
-        $pay = $this->finance()->recordPayment(
-            $fx['secretary'],
-            (int) $invoice['id'],
-            ['amount' => 120000, 'method' => 'cash'],
-            $this->uuid()
+        $pay = $this->withScope(
+            1,
+            fn (): array => $this->finance()->recordPayment(
+                $fx['secretary'],
+                (int) $invoice['id'],
+                ['amount' => 120000, 'method' => 'cash'],
+                $this->uuid()
+            )
         );
         $this->assertSame('paid', $pay['invoice']['status']);
 
@@ -412,7 +415,8 @@ final class FinanceClinicIsolationTest extends WP_UnitTestCase
         $this->assertSame('consultation_completed', (string) $visit['status']);
         // هیچ فاکتوری برای این ویزیت ثبت نشده است.
         try {
-            $this->finance()->invoiceForVisit($fx['secretary'], $visitId);
+            // C7-S3: فراخوان مستقیم سرویس حالا نیازمند Scope معتبر صریح است.
+            $this->withScope(1, fn () => $this->finance()->invoiceForVisit($fx['secretary'], $visitId));
             $this->fail('نباید فاکتوری برای ویزیت ناموفق وجود داشته باشد');
         } catch (FinanceException $e) {
             $this->assertSame('CLINIC_NOT_FOUND', $e->errorCode);
@@ -447,11 +451,16 @@ final class FinanceClinicIsolationTest extends WP_UnitTestCase
 
         $this->armSabotage('cpms_payments');
         try {
-            $this->finance()->recordPayment(
-                $fx['secretary'],
-                $invoiceId,
-                ['amount' => 140000, 'method' => 'cash'],
-                $this->uuid()
+            // C7-S3: فراخوان مستقیم سرویس حالا نیازمند Scope معتبر صریح است —
+            // تا شکستِ درجِ واقعیِ پرداخت (و rollback اثرات) مسیر شود.
+            $this->withScope(
+                1,
+                fn (): array => $this->finance()->recordPayment(
+                    $fx['secretary'],
+                    $invoiceId,
+                    ['amount' => 140000, 'method' => 'cash'],
+                    $this->uuid()
+                )
             );
             $this->fail('شکست درج پرداخت باید استثنا بدهد');
         } catch (FinanceException $e) {
@@ -749,17 +758,22 @@ final class FinanceClinicIsolationTest extends WP_UnitTestCase
     }
 
     /**
-     * @param array{secretary: int, doctor: int, clinician: int, patient: int} $fx
+     * @param array{clinic: int, secretary: int, doctor: int, clinician: int, patient: int} $fx
      * @return array<string, mixed>
      */
     private function issueAndPayInFull(array $fx, int $total): array
     {
         $invoice = $this->issueOpenInvoice($fx, $total);
-        $result = $this->finance()->recordPayment(
-            $fx['secretary'],
-            (int) $invoice['id'],
-            ['amount' => $total, 'method' => 'cash'],
-            $this->uuid()
+        // C7-S3: فراخوان مستقیم سرویس حالا نیازمند Scope معتبر صریح است —
+        // Clinic همان fixture سازندهٔ فاکتور (بدون اتکا به ردیف هدف).
+        $result = $this->withScope(
+            (int) $fx['clinic'],
+            fn (): array => $this->finance()->recordPayment(
+                $fx['secretary'],
+                (int) $invoice['id'],
+                ['amount' => $total, 'method' => 'cash'],
+                $this->uuid()
+            )
         );
         $this->assertSame('paid', $result['invoice']['status']);
 
