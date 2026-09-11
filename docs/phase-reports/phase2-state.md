@@ -292,8 +292,16 @@ CI `34598981613` · Real-WP `34598981627` + `34598978084` · Pilot `34598978102`
 ندارد** ⇒ C8 = **بستهٔ شواهد/مستندسازی/closure** و همین‌طور (فقط‌مستندات) بسته شد.
 
 **مرز بسته‌شدن C8 (بر پایهٔ شواهد موجود — بدون کار جدید):**
-- معماری `Organization → Clinic → Location` معتبر است؛ هر Clinic حداقل یک Location عملیاتی
-  دارد/به‌دست می‌آورد از طریق فوندیشن مستقر فاز ۲ (AD-15)؛ Location متعلق به Clinic است.
+- معماری `Organization → Clinic → Location` معتبر است و Location متعلق به Clinic است
+  (FK). **AD-15 = طراحی هدف مصوب** («هر Clinic حداقل یک Location») — اما شواهدِ روی main
+  جاری این موارد را اثبات می‌کند، **نه** یک invariant اثبات‌شدهٔ چرخهٔ ساخت برای همهٔ
+  Clinicهای آتی: Migration 0011 در زمانِ migration برای Clinicهای موجودِ آن زمان یک
+  Location اصلی seed می‌کند (per-clinic، idempotent)؛ schema `cpms_locations` با مالکیت
+  Clinic مستقر است؛ `PrimaryLocationResolver` در نبودِ Location اصلی **fail-closed**
+  است (`resolve()` ⇒ استثنای صریح؛ `tryResolve()` ⇒ null)؛ و چهار جدول عملیاتی
+  (schedule/schedule_slots/appointments/visits) `location_id NOT NULL` با بک‌فیل از
+  Location اصلی دارند (Migration 0013). ادعای «هر مسیرِ ساخت Clinic به‌صورت
+  اجباری/اتمیک Location ایجاد می‌کند» روی main جاری اثبات نشده و ثبت نمی‌شود.
 - **Membership و Location Assignment دو مفهوم متمایزند**؛ شرکت در چند Clinic منجر به تکثیر
   پروفایل حرفه‌ای Clinician نمی‌شود (یک پروفایل حرفه‌ای به‌ازای هر WP User).
 - بدون fallback به Clinic-ID-1؛ بدون پیش‌فرض/فرض Tehran یا province_id/city_id.
@@ -318,7 +326,10 @@ CI `34598981613` · Real-WP `34598981627` + `34598978084` · Pilot `34598978102`
 پیش‌فرض اولیه می‌ماند)؛ اما شواهد قبلاً ثبت‌شده نشان می‌دهد مصرف‌کنندگان runtime فعلی/legacy
 هنوز از timezone کلینیک/settings استفاده می‌کنند و هم‌پوشانی مالکیت کانونی با کار scheduling
 بعدی است. این موضوع به‌عنوان **مرز ثبت‌شده/قلم آشتی‌دهیِ به‌تعویق‌افتاده** ثبت می‌شود —
-ادعای این نیست که همهٔ مصرف‌کنندگان runtime اکنون از timezone محل استفاده می‌کنند.
+آشتی‌دهیِ مصرف runtime با قاعدهٔ AD-08/Q7 طبق شواهد کانونی به کار اجرایی/ممیزیِ بعدیِ
+scheduling/timezone موکول است؛ **خودِ قاعدهٔ معماری (`locations.timezone` = مرجع عملیاتی)
+تصمیم‌گرفته‌شده و پابرجاست و «تصمیم جدید مالک» نیست.** ادعای این نیست که همهٔ
+مصرف‌کنندگان runtime اکنون از timezone محل استفاده می‌کنند.
 
 **معنای بسته‌شدن C8:** «فوندیشن Location فاز ۲ بر پایهٔ شواهد جاری بسته شد» — **نه**
 «تمام رفتار آتی Location/timezone کامل است».
