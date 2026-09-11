@@ -3,7 +3,15 @@
 > Recover the project from this file + Git/remote/PR + linked canonical docs.
 > Do **not** use a previous chat session as memory.
 >
-> **Integrated main checkpoint:** `b19930fe95a7d64b69f5ab9b5ac8a924261c48b8`
+> **Integrated main checkpoint:** `7146d5bb4167d2ac333000188d404c2aa977b817`
+> (PR #23 MERGED 2026-09-11T19:35:54Z — bounded C9 i18n remediation integrated;
+> approved head `c92737bb0a30fbdf13d804a8dcdffa522fd556ae`;
+> merge parents `0fd5c2790e33a3d233a0b6ecb5c997b85fa5db54` (main before merge,
+> itself the PR #22 documentation merge) + `c92737bb…` (PR #23 head)).
+> **Previous integrated checkpoint (historical):** `0fd5c2790e33a3d233a0b6ecb5c997b85fa5db54`
+> (PR #22 MERGED 2026-09-11T15:56:52Z — documentation-only Owner C7 acceptance +
+> C8 closure sync; merge parents `b19930fe` + `c5f98ab9`).
+> **Earlier integrated checkpoint (historical):** `b19930fe95a7d64b69f5ab9b5ac8a924261c48b8`
 > (PR #21 MERGED 2026-09-11T14:27:14Z — post-C7 documentation-only continuity sync;
 > head `3589b15d`; merge parents `a385d868` + `3589b15d`).
 > **Previous integrated checkpoint (historical):** `a385d8681d5c37386407360b5b3c86e9b4af4e05`
@@ -19,7 +27,7 @@
 
 If Git/remote/PR, this file, and the repository tree disagree: **STOP**.
 
-This file describes the integrated main checkpoint `b19930fe` plus preserved
+This file describes the integrated main checkpoint `7146d5bb` plus preserved
 previous-checkpoint and pre-merge/pre-corrective evidence SHAs below. It does
 **not** self-refer to the SHA of any later documentation-only commit.
 
@@ -78,13 +86,15 @@ implementation evidence (historical):** `3fc5a54`. Historical baseline:
 `b19930fe` (table below); the `a385d868`, `248ca10`, `099b644`, and `3fc5a54`
 gate tables are retained below as historical evidence.
 
-**Schema:** current version **`2026_09_09_0020`** (re-verified on the tree at `b19930fe`: latest file is `src/Migrations/2026_09_09_0020_idempotency_clinic_scope.php`; 20 migration files `0001`..`0020`). File `0021` does **not** exist. **Migration 0021 is NOT approved and was NOT created** (including by the C8 documentation closure — C8 closure authorizes no migration). If new schema is required: STOP and ask Owner.
+**Schema:** current version **`2026_09_09_0020`** (re-verified on the tree at `7146d5bb`: latest file is `src/Migrations/2026_09_09_0020_idempotency_clinic_scope.php`; 20 migration files `0001`..`0020`). File `0021` does **not** exist. **Migration 0021 is NOT approved and was NOT created** (including by the C8 documentation closure and by the bounded C9 integration/closure — neither authorizes a migration). If new schema is required: STOP and ask Owner.
 
 **Post-merge integration state (verified from live remote 2026-09-11)**
 
 | | |
 |---|---|
-| `origin/main` | `b19930fe95a7d64b69f5ab9b5ac8a924261c48b8` — "Merge pull request #21 from bia2on2on/arena/01a090a0-doctor" — post-C7 documentation-only continuity sync (8 docs files) |
+| `origin/main` | `7146d5bb4167d2ac333000188d404c2aa977b817` — "Merge pull request #23 from bia2on2on/arena/01a09182-doctor" — bounded C9 i18n remediation integrated (10 files: 2 REST controllers + 1 integration test + 7 docs) |
+| PR #23 | [#23](https://github.com/bia2on2on/doctor/pull/23) — **MERGED** 2026-09-11T19:35:54Z — merge commit `7146d5bb`; parents `0fd5c27` (main) + `c92737bb` (approved head, branch `arena/01a09182-doctor`) — merged by `app/arena-ai-coding-agent` (bot). Post-merge gates on `7146d5bb` **all success**: CI `34639699703`, Real-WP `34639699751`, Pilot `34639699635`, Closure `34639699639` (19 check-runs, none pending). **Explicit Owner formal acceptance/closure of the bounded C9 scope was subsequently provided on 2026-09-11** (recorded in §K below). The historical PR title still reads "DRAFT — DO NOT MERGE"; that is pre-merge wording and Git history is deliberately **not** rewritten |
+| PR #22 | [#22](https://github.com/bia2on2on/doctor/pull/22) — **MERGED** 2026-09-11T15:56:52Z — merge commit `0fd5c27`; parents `b19930fe` (main) + `c5f98ab9` (head `arena/01a0910a-doctor`) — documentation-only (8 docs files): recorded Owner C7 acceptance + C8 documentation-only closure |
 | PR #21 | [#21](https://github.com/bia2on2on/doctor/pull/21) — **MERGED** 2026-09-11T14:27:14Z — merge commit `b19930fe`; parents `a385d868` (main) + `3589b15d` (head `arena/01a090a0-doctor`) — documentation-only (verified changed-file list: 8 docs files, no code/test/workflow/migration) |
 | PR #20 | [#20](https://github.com/bia2on2on/doctor/pull/20) — **MERGED** 2026-09-11T13:09:16Z — merge commit `a385d868`; parents `4871f84` (main) + `6b438238` (head `arena/01a08f64-doctor`) — merged by `app/arena-ai-coding-agent` (bot); the merge act itself carried no recorded Owner approval at merge time, and **explicit Owner formal acceptance of C7 was subsequently provided on 2026-09-11** (recorded in this file + census §۱۱) |
 | PR #19 | [#19](https://github.com/bia2on2on/doctor/pull/19) — **MERGED** 2026-09-11T07:10:36Z — docs/continuity sync to `248ca10` + C7-0 census open-question correction (merge parent of #20 via `4871f84`) |
@@ -272,7 +282,7 @@ User-facing strings: WordPress i18n-ready. Machine `CLINIC_*` codes stay stable.
 
 ### I-1. Localization layering rule (C9 — forward architecture rule, permanent)
 
-Recorded by the bounded C9 work package (PR #23, DRAFT — base `0fd5c27`):
+Recorded by the bounded C9 work package (PR #23 — **MERGED** into `7146d5bb`; base `0fd5c27`):
 
 - **Domain** must not gain any NEW direct WordPress i18n/presentation dependency. New
   Domain code must not call `__()` or an equivalent WordPress i18n API.
@@ -621,12 +631,16 @@ Full slice-by-slice RED→GREEN history with run IDs:
   Persian/i18n strings are evidence to be reviewed, not authorization for
   mass remediation); C10 has no newly approved implementation scope and
   **performance remains NOT MEASURED** unless actual benchmark evidence
-  exists. The historical "End Gate (26 items)" queue label is **not** a
+  exists. *(Subsequent development, recorded below and **not** a rewrite of the
+  C8 boundary: the C9 bounded evidence/scope determination **was** performed, the
+  bounded scope was implemented, integrated through PR #23, and C9 was then formally
+  closed by explicit Owner decision. The C8 closure itself still authorized none of that.)*
+  The historical "End Gate (26 items)" queue label is **not** a
   defined 26-item acceptance checklist — no such canonical definition exists
   in the repository. After C9/C10 scope decisions, Phase 2 End Gate → STOP.
-- **C9 status update (2026-09-11 — bounded implementation, NOT closure):** the required
+- **C9 bounded implementation (2026-09-11 — historical record of what was delivered):** the required
   bounded evidence/scope determination was performed and the approved bounded scope was then
-  implemented on **PR #23 (DRAFT — DO NOT MERGE, base `0fd5c27`)**. The scope was exactly the
+  implemented and delivered on **PR #23 (base `0fd5c27`)**. The scope was exactly the
   **two A/Low findings that C7 itself introduced** — `ScheduleService.php:389` (C7-S5,
   `04a7a79e`) and `FinanceService.php:1111` (C7-S3, `c4cf9024`), both
   `CLINIC_SCOPE_REQUIRED` / HTTP 400 / `data: []` — made translation-ready at the existing
@@ -637,11 +651,48 @@ Full slice-by-slice RED→GREEN history with run IDs:
   refactor, no mass legacy i18n cleanup, and no new CI guard tooling. See §I-1 for the forward
   layering rule, the tolerated historical debt (13 Domain / 19 Application sites), and the
   explicitly **transitional** nature of the boundary literal duplication.
-  **C9 is NOT CLOSED.** The maximum state permitted before merge is
-  *"C9 bounded implementation complete / READY FOR ARCHITECT MERGE REVIEW"*. Formal C9
-  closure is a **post-merge continuity decision** that must be based on the actual integrated
-  `main` SHA and successful post-merge gates on that SHA; it is not claimed here. C10 remains
-  not started and performance remains **NOT MEASURED**.
+  **Historical pre-merge state (preserved, not rewritten):** before integration, the maximum
+  permitted state was *"C9 bounded implementation complete / READY FOR ARCHITECT MERGE
+  REVIEW"* and **C9 was NOT closed** — formal closure was explicitly reserved as a
+  **post-merge continuity decision** to be based on the actual integrated `main` SHA and
+  successful post-merge gates on that SHA. No document in this repository claimed C9 closure
+  before the Owner decision recorded next.
+- **C9 formal closure (2026-09-11 — explicit Owner decision, after successful integration):
+  C9 is CLOSED.** The conditions the pre-merge record required were then satisfied and
+  independently re-verified: **PR #23 is MERGED** (2026-09-11T19:35:54Z) and the bounded C9
+  implementation is **integrated into `main`**; the **integrated checkpoint is the verified
+  merge SHA `7146d5bb4167d2ac333000188d404c2aa977b817`**, whose merge parents are exactly
+  `0fd5c2790e33a3d233a0b6ecb5c997b85fa5db54` (main before merge) + `c92737bb0a30fbdf13d804a8dcdffa522fd556ae`
+  (approved PR #23 head); and **all four post-merge gates on that exact SHA succeeded**
+  (CI `34639699703`, Real WordPress Acceptance `34639699751`, Pilot/Staging Readiness Gate
+  `34639699635`, Closure Gate `34639699639`; 19 check-runs total on `7146d5bb`, all
+  `conclusion: success`, none pending). **On that basis the Owner explicitly approved and
+  formally accepted/closed C9.** The acceptance covers **only** the bounded scope already
+  integrated through PR #23: (1) the two verified C7-introduced A/Low i18n findings;
+  (2) the REST/presentation-boundary remediation; (3) preservation of stable machine-readable
+  code/status/data and of the default Persian behavior; (4) the accepted forward
+  localization-layering rule (§I-1). It is **not** a claim that all legacy i18n debt is fixed,
+  that full English support exists, that globalization is complete, that all wp-admin strings
+  are translation-ready, or that Domain/Application historical i18n debt is fixed — and it
+  does **not** close Phase 2. The exact-source-message match used for the two C7 messages
+  remains a bounded **transitional** compatibility technique, **not** preferred long-term
+  architecture. C10 remains **NOT STARTED / not authorized**.
+- **Performance evidence status (corrected 2026-09-11 — the flat "NOT MEASURED" wording used
+  elsewhere in this closure record was inaccurate):** performance has **limited real staging
+  benchmark evidence**, but **commercial / reference-environment performance remains
+  NOT MEASURED / not validated**. Verified repository evidence: an executable `ab` benchmark
+  step ("Performance benchmark — ab (p50/p95/p99 + RPS + error rate)") lives inside the
+  `staging-gate` job of `.github/workflows/pilot-gate.yml`, and executed results are recorded in
+  `docs/phase-reports/report-pilot-gate.md` §8 with actual p50/p95/p99/RPS/error-rate figures.
+  That staging environment is **not** the canonical commercial/reference performance
+  environment, and that report **explicitly did not claim** the approved thresholds were
+  satisfied there (§8: «اهداف مصوب (هیچ‌کدام پاس‌شده اعلام نمی‌شوند)»; performance quality-gate
+  adjudication is deferred to a reference-server benchmark — Runbook §12.3,
+  BLOCKED_BY_ENVIRONMENT). Still **NOT MEASURED**: reference-environment performance against the
+  intended NFR thresholds; the public-page/plugin overhead target (p95 < 100ms);
+  runtime query-count/N+1 measurement; memory; and meaningful multi-Clinic load scale.
+  **No staging number is evidence of production performance**, and this correction does not
+  start or authorize C10.
 
 
 ---
