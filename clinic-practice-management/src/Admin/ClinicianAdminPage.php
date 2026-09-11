@@ -484,11 +484,17 @@ final class ClinicianAdminPage
             }
         }
 
+        // C7-S6: همان قرارداد مرز admin (C7-S4) — زمینهٔ معتبر پیش از ثبت/بازتولید؛
+        // سرویس از S6 به بعد مالکیت پزشک را فقط نسبت به همین زمینهٔ مستقل می‌سنجد.
+        $scope = self::requireTrustedClinicScopeForAdmin($cid);
         try {
+            App::replaceExplicitScope($scope);
             App::scheduleService()->createException(get_current_user_id(), $fields);
             self::back($cid, 'استثنا ثبت شد.');
         } catch (BookingException $e) {
             self::backWithError($cid, 'خطا: ' . $e->getMessage());
+        } finally {
+            App::resetScope();
         }
     }
 
