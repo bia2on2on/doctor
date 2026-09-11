@@ -32,12 +32,18 @@
   `cpms` translation‑ready شد. در این مرز تنها منبعِ آن کد همان گارد C7‑S5 است، پس خودِ
   کد برای تشخیص کافی است.
 - **`src/Rest/FinanceController.php`** — در همان مرز موجودِ `staff()` (شاخهٔ
-  `FinanceException`): فقط واریانتِ واجدِ شرایط با شرطِ
-  `errorCode === 'CLINIC_SCOPE_REQUIRED' && data === []`. این شرط **ضروری** است:
-  `FinanceService::trustedClinicId()` (مسیر `listServices`/`summary`) همان کد را از
-  `SystemClinicResolver` با پیامِ **پویا** (شاملِ تعداد Clinicها) و
-  `data['clinic_count']` باز‑نگاشت می‌کند و باید دست‌نخورده عبور کند. شاخهٔ
-  `VisitException` بدون تغییر است.
+  `FinanceException`): فقط واریانتِ واجدِ شرایط، با **کدِ پایدار + تطبیقِ بایت‌دقیقِ خودِ
+  پیامِ منبع** (`errorCode === 'CLINIC_SCOPE_REQUIRED' && $message === '<همان literalِ C7>'`).
+  این شرط **ضروری** است: `FinanceService::trustedClinicId()` (مسیر `listServices`/`summary`)
+  همان کد را از `SystemClinicResolver` با پیامِ **پویا** (شاملِ تعداد Clinicها) و
+  `data['clinic_count']` باز‌نگاشت می‌کند و باید دست‌نخورده عبور کند. از **شکلِ `data`
+  به‌عنوان شناسه استفاده نشد**: ‏`[]` مقدارِ پیش‌فرضِ سازندهٔ `FinanceException` است، هیچ
+  قراردادِ معناییِ مستندی ندارد (‏ADR‑0019 و `error-codes.md` هیچ معناشناسی‌ای برای `data`
+  تعریف نکرده‌اند)، و یک `ScopeRequiredException` با همین کد و `data` خالی از قبل در
+  `TrustedClinicEstablisher` موجود است. تطبیقِ پیام **fail-safe** است: اگر literalِ سرویس
+  عوض شود شرط برقرار نمی‌شود و پیامِ واقعیِ سرویس دست‌نخورده عبور می‌کند و assertionِ
+  ضدِّواگراییِ A2 واگرایی را قرمز می‌کند. این **یک تکنیکِ گذرا و محدودشده** است، نه
+  معماریِ مطلوبِ بلندمدت. شاخهٔ `VisitException` بدون تغییر است.
 
 هیچ فایل Domain یا Application تغییر نکرد؛ هیچ `phpcs:ignore` اضافه نشد؛ هیچ migration
 یا تغییر schema؛ هیچ ابزار/workflow جدید CI؛ هیچ تغییری در پیکربندی WPCS.

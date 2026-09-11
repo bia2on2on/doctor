@@ -297,21 +297,25 @@ final class FinanceController extends RestBase
         } catch (FinanceException $e) {
             $message = $e->getMessage();
             /*
-             * C9 — بومی‌سازی فقط در مرز ارائه (نه در Application/Domain).
+             * C9 — بومی‌سازی فقط در مرز ارائه؛ تکنیکِ **گذرا و محدودشده** برای همین دو
+             * پیامِ معرفی‌شده توسط C7 (نه معماریِ مطلوبِ بلندمدت).
              *
-             * در این مرز کدِ `CLINIC_SCOPE_REQUIRED` به‌تنهایی یکتا **نیست**:
-             * `FinanceService::trustedClinicId()` (مسیر listServices/summary) همان کد را
-             * از `SystemClinicResolver` باز‑نگاشت می‌کند، با پیامِ **پویا** (شاملِ تعداد
-             * Clinicها) و `data['clinic_count']`. در مقابل، گارد fail-closedِ C7-S3
-             * (`requireTrustedClinicId()`) هیچ دادهٔ ساخت‌یافته‌ای ندارد. پس شرطِ
-             * «کد + دادهٔ خالی» دقیقاً همان واریانتِ C7 را انتخاب می‌کند و واریانتِ
-             * resolver دست‌نخورده عبور می‌کند.
+             * کدِ `CLINIC_SCOPE_REQUIRED` در این مرز یکتا **نیست** — مثلاً
+             * `FinanceService::trustedClinicId()` (مسیر listServices/summary) همان کد را با
+             * پیامِ **پویای** `SystemClinicResolver` باز‑نگاشت می‌کند. پس این واریانتِ C7 با
+             * «کدِ پایدار + خودِ پیامِ منبع» تشخیص داده می‌شود، نه با شکلِ `data` (چون
+             * پیش‌فرضِ `FinanceException::$data` همان `[]` است و شناسهٔ معنایی نیست).
+             * هر واریانتِ دیگری دست‌نخورده عبور می‌کند؛ اگر literal سرویس عوض شود شرط
+             * برقرار نمی‌شود و پیامِ واقعیِ سرویس عبور می‌کند (fail-safe).
              *
              * msgid عمدتاً literal است (قاعدهٔ `WordPress.WP.I18n` در WPCS) و دامنهٔ آن
              * `cpms`. چون افزونه هیچ کاتالوگ `cpms` بارگذاری نمی‌کند، خروجی پیش‌فرض همان
              * متن فارسیِ منبع است (بدون هیچ تغییر رفتاری).
              */
-            if ($e->errorCode === 'CLINIC_SCOPE_REQUIRED' && $e->data === []) {
+            if (
+                $e->errorCode === 'CLINIC_SCOPE_REQUIRED'
+                && $message === 'عملیات حساس مالی بدون زمینهٔ کلینیک معتبر مجاز نیست — Clinic از شیء هدف استخراج نمی‌شود.'
+            ) {
                 $message = __('عملیات حساس مالی بدون زمینهٔ کلینیک معتبر مجاز نیست — Clinic از شیء هدف استخراج نمی‌شود.', 'cpms');
             }
 

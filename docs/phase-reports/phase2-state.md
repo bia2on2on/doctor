@@ -387,15 +387,23 @@ throw ‏`CLINIC_SCOPE_REQUIRED` در `src/`، **دقیقاً ۲ مورد** تو
   ‏`cpms`. در این مرز تنها منبعِ آن کد همان گارد C7‑S5 است (‏`ScheduleService` در کلِ
   ‏`src/Rest/` فقط توسط `ScheduleController` مصرف می‌شود)، پس خودِ کد کافی است.
 - ‏**`src/Rest/FinanceController.php`** — داخل همان مرزِ موجودِ `staff()`، فقط شاخهٔ
-  ‏`FinanceException`: شرطِ `errorCode === 'CLINIC_SCOPE_REQUIRED' && $e->data === []`.
+  ‏`FinanceException`: شرطِ **کدِ پایدار + تطبیقِ بایت‌دقیقِ خودِ پیامِ منبع**
+  (‏`errorCode === 'CLINIC_SCOPE_REQUIRED' && $message === '<همان literalِ C7>'`).
   این شرط **ضروری** است، چون در همین مرز کد به‌تنهایی یکتا نیست:
   ‏`FinanceService::trustedClinicId()` (مسیر `listServices()`/`summary()` ⇒ روت‌های
   ‏`GET /clinic/v1/config/services` و `GET /clinic/v1/finance/summary`) همان کد را از
   ‏`SystemClinicResolver` با پیامِ **پویا** (شاملِ تعداد Clinicها) و
-  ‏`data['clinic_count']` باز‑نگاشت می‌کند. شاخهٔ `VisitException` بدون تغییر ماند
-  (‏`VisitService` هیچ throw با این کد ندارد).
+  ‏`data['clinic_count']` باز‌نگاشت می‌کند. از **شکلِ `data` به‌عنوان شناسه استفاده نشد**:
+  ‏`[]` مقدارِ پیش‌فرضِ سازندهٔ `FinanceException` است، هیچ قراردادِ معناییِ مستندی ندارد
+  (‏ADR‑0019 و `error-codes.md:132` هیچ معناشناسی‌ای برای `data` تعریف نکرده‌اند)، و یک
+  ‏`ScopeRequiredException` با همین کد و `data` خالی و پیامِ انگلیسی از قبل در
+  ‏`TrustedClinicEstablisher:63` موجود است که `trustedClinicId()` آن را عام بازنشر می‌کند.
+  تطبیقِ پیام **fail-safe** است: اگر literalِ سرویس عوض شود، پیامِ واقعیِ سرویس دست‌نخورده
+  عبور می‌کند و assertionِ ضدِّواگراییِ A2 واگرایی را قرمز می‌کند. این **یک تکنیکِ گذرا و
+  محدودشده** برای همین دو پیامِ C7 است، نه معماریِ مطلوبِ بلندمدت. شاخهٔ `VisitException`
+  بدون تغییر ماند (‏`VisitService` هیچ throw با این کد ندارد).
 
-جمعِ تغییرِ تولیدی: **۲ فایل، ۴۰ خط افزوده / ۲ خط حذف‌شده** (عمدهٔ آن توضیحِ معماری).
+جمعِ تغییرِ تولیدی: **۲ فایل، ۴۴ خط افزوده / ۲ خط حذف‌شده** (عمدهٔ آن توضیحِ معماری).
 **هیچ فایل Domain یا Application تغییر نکرد** · هیچ `phpcs:ignore` افزوده نشد ·
 از `__($e->getMessage(), 'cpms')` استفاده **نشد** · هیچ migration/schema ·
 هیچ ابزار یا workflow/step جدید CI · هیچ تغییری در پیکربندی WPCS ·
