@@ -71,10 +71,11 @@ final class FinanceClinicIsolationTest extends WP_UnitTestCase
         $this->assertContains('C1-COMPAT', array_column($list, 'code'));
 
         $visitId = $this->makeCompletedVisit($fx);
-        $invoice = $this->finance()->issueInvoice($fx['secretary'], [
+        // C7-S4: issueInvoice حالا نیازمند Scope معتبر صریح است.
+        $invoice = $this->withScope(1, fn (): array => $this->finance()->issueInvoice($fx['secretary'], [
             'visit_id' => $visitId,
             'items' => [['description' => 'ویزیت', 'unit_price' => 120000]],
-        ]);
+        ]));
         $this->assertSame('INV-' . gmdate('ymd') . '-001', $invoice['invoice_number']);
 
         $pay = $this->withScope(
@@ -115,10 +116,11 @@ final class FinanceClinicIsolationTest extends WP_UnitTestCase
         $this->assertContains('CB-WORKS', array_column($list, 'code'));
 
         $visitId = $this->makeCompletedVisit($fx);
-        $invoice = $this->finance()->issueInvoice($fx['secretary'], [
+        // C7-S4: issueInvoice حالا نیازمند Scope معتبر صریح است.
+        $invoice = $this->withScope(self::CLINIC_B, fn (): array => $this->finance()->issueInvoice($fx['secretary'], [
             'visit_id' => $visitId,
             'items' => [['description' => 'ویزیت B', 'unit_price' => 200000]],
-        ]);
+        ]));
         $this->assertSame('INV-' . gmdate('ymd') . '-001', $invoice['invoice_number']);
     }
 
@@ -394,10 +396,11 @@ final class FinanceClinicIsolationTest extends WP_UnitTestCase
         $visitId = $this->makeCompletedVisit($fx);
         $this->armSabotage('cpms_invoices');
         try {
-            $this->finance()->issueInvoice($fx['secretary'], [
+            // C7-S4: issueInvoice با Scope معتبر — تا شکستِ درجِ واقعی فاکتور مسیر شود.
+            $this->withScope(1, fn (): array => $this->finance()->issueInvoice($fx['secretary'], [
                 'visit_id' => $visitId,
                 'items' => [['description' => 'ویزیت', 'unit_price' => 90000]],
-            ]);
+            ]));
             $this->fail('شکست درج فاکتور باید استثنا بدهد');
         } catch (FinanceException $e) {
             $this->assertNotSame('', $e->getMessage());
@@ -519,10 +522,11 @@ final class FinanceClinicIsolationTest extends WP_UnitTestCase
         add_filter('query', [$this, 'captureQuery']);
         try {
             $visitId = $this->makeCompletedVisit($fx);
-            $this->finance()->issueInvoice($fx['secretary'], [
+            // C7-S4: issueInvoice با Scope معتبرِ همان Clinic fixture.
+            $this->withScope(self::CLINIC_B, fn (): array => $this->finance()->issueInvoice($fx['secretary'], [
                 'visit_id' => $visitId,
                 'items' => [['description' => 'قفل Clinic', 'unit_price' => 123000]],
-            ]);
+            ]));
         } finally {
             remove_filter('query', [$this, 'captureQuery']);
         }
@@ -751,10 +755,12 @@ final class FinanceClinicIsolationTest extends WP_UnitTestCase
     {
         $visitId = $this->makeCompletedVisit($fx, $patientId);
 
-        return $this->finance()->issueInvoice($fx['secretary'], [
+        // C7-S4: issueInvoice حالا نیازمند Scope معتبر صریح است — Clinicِ
+        // fixture سازندهٔ ویزیت، نه ردیف هدف.
+        return $this->withScope((int) $fx['clinic'], fn (): array => $this->finance()->issueInvoice($fx['secretary'], [
             'visit_id' => $visitId,
             'items' => [['description' => 'ویزیت', 'unit_price' => $total]],
-        ]);
+        ]));
     }
 
     /**

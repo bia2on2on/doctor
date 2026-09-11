@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ClinicCore\Tests\Integration;
 
 use ClinicCore\Admin\ClinicianAdminPage;
+use ClinicCore\Application\Finance\FinanceException;
 use ClinicCore\Application\Scope\ClinicScope;
 use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Bootstrap\App;
@@ -489,6 +490,235 @@ final class C7PreIntegrationBoundaryTest extends WP_UnitTestCase
         );
     }
 
+    // ================= C7-S4 — پوشش مثبت/ابهام (حداقلی، طبق برش) =================
+
+    /**
+     * C7-S4/P1 — عملیات مشروع wp-admin با تک‌عضویت فعال.
+     *
+     * مدیر Clinic B با تنها عضویت فعالش روی B، برنامهٔ «خودیِ» Clinic B را از
+     * مسیر واقعی اکشن admin حذف می‌کند ⇒ موفق (ردیف حذف + notice موفق) و
+     * بدون نشت به اشیای Clinic A.
+     */
+    public function testWpAdminDeleteOfOwnClinicScheduleSucceeds(): void
+    {
+        $doctorB = $this->makeUser('c7pre_doc_b', 'cpms_doctor');
+        $clinicianB = $this->insertClinician(self::CLINIC_B, $doctorB, 'Dr C7 Pre Boundary B');
+        $scheduleB = $this->withScope(self::CLINIC_B, fn (): array => App::scheduleService()->create(
+            $this->managerB,
+            [
+                'clinician_id' => $clinicianB,
+                'day_of_week' => 4,
+                'start_time' => '10:00',
+                'end_time' => '14:00',
+                'appointment_duration_min' => 20,
+                'slot_capacity' => 1,
+            ]
+        ));
+        $scheduleBId = (int) $scheduleB['id'];
+        self::assertGreaterThan(0, $scheduleBId, 'پیش‌شرط: برنامهٔ خودی B ساخته شود');
+
+        $notice = $this->dispatchAdminAction(
+            'cpms_schedule_delete',
+            [
+                'clinician_id' => (string) $clinicianB,
+                'schedule_id' => (string) $scheduleBId,
+            ],
+            fn () => ClinicianAdminPage::deleteSchedule()
+        );
+
+        $this->assertNull(
+            $this->fetchScheduleRow($scheduleBId),
+            'C7-S4/P1: حذف برنامهٔ خودیِ Clinic B با تک‌عضویت فعال باید موفق باشد. notice="' . $notice . '"'
+        );
+        $this->assertStringContainsString('حذف شد', $notice, 'notice موفق انتظار می‌رود');
+        $this->assertNotNull(
+            $this->fetchScheduleRow($this->scheduleAId),
+            'اشیای Clinic A نباید در عملیات خودی B دست بخورند'
+        );
+    }
+
+    /**
+     * C7-S4/P2 — بدون عضویت فعال ⇒ fail-closed (capability/nonce کافی نیست).
+     */
+    public function testWpAdminScheduleActionWithoutActiveMembershipFailsClosed(): void
+    {
+        $noMember = $this->makeUser('c7pre_nomgr', 'cpms_manager');
+
+        $notice = $this->dispatchAdminAction(
+            'cpms_schedule_delete',
+            [
+                'clinician_id' => (string) $this->clinicianA,
+                'schedule_id' => (string) $this->scheduleAId,
+            ],
+            fn () => ClinicianAdminPage::deleteSchedule(),
+            $noMember
+        );
+
+        $row = $this->fetchScheduleRow($this->scheduleAId);
+        $slotExists = $this->slotExists($this->futureEmptySlotAId);
+        $this->assertNotNull(
+            $row,
+            'C7-S4/P2: کاربر cpms_config بدون هیچ عضویت فعال باید fail-closed شود. '
+            . 'واقعی: ردیف DELETED؛ admin_notice="' . $notice . '"'
+        );
+        $this->assertSame('09:00:00', (string) $row['start_time'], 'برنامهٔ قربانی نباید تغییر کند');
+        $this->assertTrue($slotExists, 'Slot قربانی نباید حذف شود');
+        $this->assertStringContainsString('خطا', $notice, 'notice خطا (نه موفق) انتظار می‌رود');
+    }
+
+    /**
+     * C7-S4/P3 — عضویت فعال چندگانه بدون انتخاب صریح ⇒ fail-closed (بدون
+     * انتخاب بی‌صدای اولین/پیش‌فرض؛ UX سوییچر خارج از این برش است).
+     */
+    public function testWpAdminScheduleActionWithAmbiguousMembershipsFailsClosed(): void
+    {
+        $multiMember = $this->makeUser('c7pre_multimgr', 'cpms_manager');
+        cpms_test_seed_membership($multiMember, self::CLINIC_A, 'cpms_manager');
+        cpms_test_seed_membership($multiMember, self::CLINIC_B, 'cpms_manager');
+
+        $notice = $this->dispatchAdminAction(
+            'cpms_schedule_delete',
+            [
+                'clinician_id' => (string) $this->clinicianA,
+                'schedule_id' => (string) $this->scheduleAId,
+            ],
+            fn () => ClinicianAdminPage::deleteSchedule(),
+            $multiMember
+        );
+
+        $row = $this->fetchScheduleRow($this->scheduleAId);
+        $slotExists = $this->slotExists($this->futureEmptySlotAId);
+        $this->assertNotNull(
+            $row,
+            'C7-S4/P3: عضویت فعال چندگانه بدون انتخاب صریح باید fail-closed شود (حتی برای شیء کلینیک خودِ کاربر). '
+            . 'واقعی: ردیف DELETED؛ admin_notice="' . $notice . '"'
+        );
+        $this->assertSame('09:00:00', (string) $row['start_time'], 'برنامهٔ قربانی نباید تغییر کند');
+        $this->assertTrue($slotExists, 'Slot قربانی نباید حذف شود');
+        $this->assertStringContainsString('خطا', $notice, 'notice خطا (نه موفق) انتظار می‌رود');
+    }
+
+    /**
+     * C7-S4/P4 — issueInvoice بدون هیچ Scope معتبر ⇒ CLINIC_SCOPE_REQUIRED
+     * و بدون هیچ اثر مالی (همان قرارداد C7-S3 برای عملیات حساس مالی).
+     */
+    public function testIssueInvoiceWithoutTrustedClinicContextFailsClosed(): void
+    {
+        $visitId = $this->makeCompletedVictimVisit();
+
+        wp_set_current_user($this->secretaryA);
+        App::resetScope();
+        self::assertNull(ScopeContext::tryGet(), 'پیش‌شرط: هیچ Scope صریحی برقرار نیست');
+
+        $thrown = null;
+        try {
+            App::financeService()->issueInvoice($this->secretaryA, [
+                'visit_id' => $visitId,
+                'items' => [['description' => 'c7-s4 no-scope', 'unit_price' => 1000]],
+            ]);
+        } catch (FinanceException $e) {
+            $thrown = $e;
+        }
+
+        $this->assertNotNull(
+            $thrown,
+            'C7-S4/P4: issueInvoice بدون زمینهٔ کلینیک معتبر باید fail-closed شود'
+        );
+        $this->assertSame('CLINIC_SCOPE_REQUIRED', $thrown->errorCode, 'کد کانونی قرارداد نبودِ Scope');
+        $this->assertSame(400, $thrown->httpStatus, 'وضعیت HTTP استانداردِ CLINIC_SCOPE_REQUIRED');
+        $this->assertNull($this->fetchInvoiceForVisit($visitId), 'هیچ فاکتوری نباید ثبت شود');
+        $this->assertSame(
+            'consultation_completed',
+            (string) $this->fetchVisitRow($visitId)['status'],
+            'وضعیت ویزیت قربانی نباید تغییر کند'
+        );
+    }
+
+    /**
+     * C7-S4/P5 — صدور فاکتور هم-کلینیک از مسیر واقعی REST همچنان کار می‌کند.
+     */
+    public function testIssueInvoiceForOwnClinicVisitSucceeds(): void
+    {
+        $visitId = $this->makeCompletedVictimVisit();
+
+        wp_set_current_user($this->secretaryA);
+        $res = $this->dispatch('POST', self::NS . '/invoices', [
+            'visit_id' => $visitId,
+            'items' => [['description' => 'ویزیت خودی C7-S4', 'unit_price' => 80000]],
+        ], [
+            'X-CPMS-Clinic-Id' => (string) self::CLINIC_A,
+        ]);
+
+        $invoice = $this->fetchInvoiceForVisit($visitId);
+        $this->assertSame(
+            201,
+            $res->get_status(),
+            'C7-S4/P5: صدور فاکتور هم-کلینیک باید موفق بماند. واقعی: HTTP ' . $res->get_status()
+        );
+        $this->assertNotNull($invoice, 'فاکتور هم-کلینیک باید ثبت شود');
+        $this->assertSame(self::CLINIC_A, (int) $invoice['clinic_id'], 'فاکتور باید به Clinic A تعلق داشته باشد');
+        $this->assertSame(80000.0, (float) $invoice['total'], 'مبلغ فاکتور صحیح باشد');
+        $this->assertSame(
+            'awaiting_payment',
+            (string) $this->fetchVisitRow($visitId)['status'],
+            'گذار V11 مشروع (consultation_completed → awaiting_payment) باید انجام شود'
+        );
+    }
+
+    /**
+     * C7-S4/P6 — ویرایش تعرفهٔ خودی از مسیر واقعی REST همچنان کار می‌کند.
+     */
+    public function testUpdateOfOwnClinicServiceSucceeds(): void
+    {
+        $service = $this->withScope(self::CLINIC_B, fn (): array => App::financeService()->createService(
+            $this->managerB,
+            ['code' => 'C7PRE-OWN-B', 'name' => 'تعرفهٔ خودی B', 'price' => 100000]
+        ));
+        $serviceId = (int) $service['id'];
+        self::assertGreaterThan(0, $serviceId, 'پیش‌شرط: تعرفهٔ خودی B ساخته شود');
+
+        wp_set_current_user($this->managerB);
+        $res = $this->dispatch('PUT', self::NS . '/config/services/' . $serviceId, [
+            'price' => 120000,
+        ], [
+            'X-CPMS-Clinic-Id' => (string) self::CLINIC_B,
+        ]);
+
+        $row = $this->fetchServiceRow($serviceId);
+        $this->assertSame(
+            200,
+            $res->get_status(),
+            'C7-S4/P6: ویرایش تعرفهٔ خودی باید موفق بماند. واقعی: HTTP ' . $res->get_status()
+        );
+        $this->assertSame(120000.0, (float) $row['price'], 'قیمت تعرفهٔ خودی باید به‌روز شود');
+    }
+
+    /**
+     * C7-S4/P7 — غیرفعال‌سازی تعرفهٔ خودی از مسیر واقعی REST همچنان کار می‌کند.
+     */
+    public function testDeactivateOfOwnClinicServiceSucceeds(): void
+    {
+        $service = $this->withScope(self::CLINIC_B, fn (): array => App::financeService()->createService(
+            $this->managerB,
+            ['code' => 'C7PRE-OWN-B2', 'name' => 'تعرفهٔ خودی B (۲)', 'price' => 90000]
+        ));
+        $serviceId = (int) $service['id'];
+        self::assertGreaterThan(0, $serviceId, 'پیش‌شرط: تعرفهٔ خودی B ساخته شود');
+
+        wp_set_current_user($this->managerB);
+        $res = $this->dispatch('DELETE', self::NS . '/config/services/' . $serviceId, [], [
+            'X-CPMS-Clinic-Id' => (string) self::CLINIC_B,
+        ]);
+
+        $row = $this->fetchServiceRow($serviceId);
+        $this->assertSame(
+            200,
+            $res->get_status(),
+            'C7-S4/P7: غیرفعال‌سازی تعرفهٔ خودی باید موفق بماند. واقعی: HTTP ' . $res->get_status()
+        );
+        $this->assertSame(0, (int) $row['is_active'], 'تعرفهٔ خودی باید غیرفعال شود');
+    }
+
     // ================= Helpers — dispatch مسیر واقعی wp-admin =================
 
     /**
@@ -500,9 +730,9 @@ final class C7PreIntegrationBoundaryTest extends WP_UnitTestCase
      *
      * @param array<string, mixed> $post
      */
-    private function dispatchAdminAction(string $nonceAction, array $post, callable $handler): string
+    private function dispatchAdminAction(string $nonceAction, array $post, callable $handler, ?int $userId = null): string
     {
-        wp_set_current_user($this->managerB);
+        wp_set_current_user($userId ?? $this->managerB);
         $_POST = $post;
         $_REQUEST['_wpnonce'] = wp_create_nonce($nonceAction);
         delete_transient('cpms_clinic_notice');
