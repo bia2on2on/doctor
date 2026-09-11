@@ -22,15 +22,24 @@
 ## ۰. راستی‌آزمایی (اولین کار Agent جدید)
 
 ```bash
-git rev-parse origin/main   # باید 099b6449362ce16be185aa811ff1f7da7dec269e باشد
-gh pr view 14 --json state,headRefOid               # MERGED، head = a49b182
-gh api repos/bia2on2on/doctor/actions/runs/34460364222 -q '.conclusion'  # success
+git rev-parse origin/main   # باید 248ca1049b49ea8f82b622744e39cf5b391a6838 باشد
+gh pr view 17 --json state,mergedAt                 # MERGED، 2026-09-10T20:55:57Z
+gh pr view 18 --json state,mergedAt                 # CLOSED، mergedAt = null (بدون merge)
+gh pr view 13 --json state,isDraft                  # OPEN + DRAFT — دست‌نخورده
+gh api repos/bia2on2on/doctor/actions/runs/34529280235 -q '.conclusion'  # success (CI)
+ls clinic-practice-management/src/Migrations | tail -1   # …_0020_idempotency_clinic_scope.php
 ```
+
+> **به‌روزرسانی ۲۰۲۶-۰۹-۱۱:** چک‌پوینت ادغام‌شده از `099b644` به **`248ca10`**
+> منتقل شد (ادغام PR #17 = اصلاحیهٔ پس از بستنِ C6 برای دامنهٔ کلینیک در مالی).
+> جدول‌های زیر که به `099b644` ارجاع می‌دهند **به‌عنوان سابقهٔ تاریخی** حفظ
+> شده‌اند و بازنویسی نشده‌اند.
 
 | قلم | مقدار |
 |---|---|
 | Remote | `https://github.com/bia2on2on/doctor.git` |
-| `origin/main` | `099b6449362ce16be185aa811ff1f7da7dec269e` — **Merge PR #14 (والدین: `8087b42` + `a49b182`)** |
+| `origin/main` (جاری) | `248ca1049b49ea8f82b622744e39cf5b391a6838` — **Merge PR #17** |
+| `origin/main` (چک‌پوینت قبلی، تاریخی) | `099b6449362ce16be185aa811ff1f7da7dec269e` — **Merge PR #14 (والدین: `8087b42` + `a49b182`)** |
 | Branch کاریِ پیش‌از‌ادغام (تاریخی) | `arena/01a08828-doctor` — implementation `3fc5a54` — closure docs `becc82f` — ادغام شد |
 | نسب تاریخی | `8087b42` ⊂ `79cce4b`(#10) ⊂ `9e006b0`(#11) ⊂ `f88fcdc`(#12) ⊂ `09d505b`(#13-head، diagnostic) ⊂ … ⊂ `a49b182`(#14) — **خطی** |
 | PR #14 | [#14](https://github.com/bia2on2on/doctor/pull/14) — **MERGED** (2026-09-10) — head `a49b182` — base `main` |
@@ -50,7 +59,7 @@ gh api repos/bia2on2on/doctor/actions/runs/34460364222 -q '.conclusion'  # succe
 
 SHA `3fc5a54` = آخرین implementation test (پیش‌از‌ادغام). SHA `becc82f` = آخرین documentation tip (پیش‌از‌ادغام).
 
-## ۱ب. گیت‌های سبزِ پس‌از‌ادغام — همه روی `099b644` (`origin/main`)
+## ۱ب. گیت‌های سبز روی `099b644` (چک‌پوینت قبلی — تاریخی)
 
 | گیت | Run | نتیجه |
 |---|---|---|
@@ -58,6 +67,19 @@ SHA `3fc5a54` = آخرین implementation test (پیش‌از‌ادغام). SHA
 | Real-WP Acceptance | `34460364238` | ✅ success |
 | Pilot/Staging Readiness | `34460364243` | ✅ success |
 | Closure Gate | `34460364219` | ✅ success |
+
+## ۱ج. گیت‌های سبزِ پس‌از‌ادغام — همه روی `248ca10` (`origin/main` جاری)
+
+| گیت | Run | Attempt | نتیجه |
+|---|---|---|---|
+| CI | `34529280235` | 1 | ✅ success |
+| Real-WP Acceptance | `34529280196` | 1 | ✅ success |
+| Closure Gate | `34529280176` | 1 | ✅ success |
+| Pilot/Staging Readiness | `34529280164` | **2** | ✅ success |
+
+Pilot تلاش اول روی `248ca10` شکست خورد — **طبقه‌بندی خطای پروژه: Class C**
+(زیرساخت/tooling، گذرا)، نه رگرسیون محصول. تلاش دوم مراحل ماهویِ staging را
+اجرا و موفق شد. تلاش اول **پاک نشده**؛ همین‌جا ثبت می‌شود.
 
 ## ۲. وضعیت C6 Technical DoD
 
@@ -124,20 +146,42 @@ SHA `3fc5a54` = آخرین implementation test (پیش‌از‌ادغام). SHA
 
 | مورد | وضعیت |
 |---|---|
+| PR #17 | **MERGED** ۲۰۲۶-۰۹-۱۰T20:55:57Z — اصلاحیهٔ پس از بستنِ C6 (مالی) — merge = `248ca10` |
+| PR #18 | **CLOSED بدون merge** ۲۰۲۶-۰۹-۱۱T06:00:12Z (`mergedAt = null`) — اصلاحیهٔ رقیب، superseded توسط #17؛ شاخهٔ `arena/01a08b72-doctor` (head `68cde82`) **حذف نشده** |
+| PR #16 | CLOSED (تاریخی) |
 | PR #14 | **MERGED** — `arena/01a08828-doctor` → `main` (merge = `099b644`) |
-| PR #10 / #11 / #12 | MERGED (تاریخی) |
-| PR #13 | OPEN + DRAFT — diagnostic — **دست‌نخورده** |
-| `origin/main` | `099b644` — **ادغام‌شده** (والدین: `8087b42` + `a49b182`) |
-| C6 | CLOSED — `099b644` = checkpoint ادغام‌شده؛ `3fc5a54` = شواهد اجرایی پیش‌از‌ادغام؛ `becc82f` = closure docs پیش‌از‌ادغام |
-| C7 | NOT STARTED — scope undefined |
+| PR #10 / #11 / #12 / #15 | MERGED (تاریخی) |
+| PR #13 | OPEN + DRAFT — diagnostic — **دست‌نخورده** (بازبررسی ۲۰۲۶-۰۹-۱۱) |
+| `origin/main` | `248ca10` — Merge PR #17 (چک‌پوینت قبلی `099b644`، والدین `8087b42` + `a49b182`) |
+| C6 | CLOSED + اصلاحیهٔ پس از بستن ادغام شد — `248ca10` = چک‌پوینت جاری؛ `3fc5a54` = شواهد اجرایی پیش‌از‌ادغام؛ `becc82f` = closure docs پیش‌از‌ادغام |
+| C7 | **NOT STARTED** (پیاده‌سازی). C7-0 = فقط شواهد ⇒ [`docs/phase-reports/c7-0-census.md`](../phase-reports/c7-0-census.md) |
 | Phase 3 | NOT STARTED — نیازمند تصمیم مالک |
-| Migration 0021 | ممنوع بدون تأیید مالک |
+| Migration 0021 | ممنوع بدون تأیید مالک — ساخته نشده؛ آخرین migration = `0020` |
 
 **تأیید checkpoint ادغام:**
 ```bash
-git rev-parse origin/main   # 099b6449362ce16be185aa811ff1f7da7dec269e
-gh pr view 14 --json state  # MERGED
+git rev-parse origin/main   # 248ca1049b49ea8f82b622744e39cf5b391a6838
+gh pr view 17 --json state  # MERGED
+gh pr view 18 --json state,mergedAt  # CLOSED / null
 ```
+
+### C7-0 — خلاصهٔ یافته‌ها برای Agent بعدی (فقط شواهد، بدون تغییر محصول)
+
+ماتریس کامل در [`docs/phase-reports/c7-0-census.md`](../phase-reports/c7-0-census.md).
+سرشماری A/B/C/D آن **محلی** است و با طبقه‌بندی خطای پروژه اشتباه نشود.
+
+| یافته | رده | برش |
+|---|---|---|
+| مسیرهای مالیِ مبتنی بر ID (`recordPayment`/`voidPayment`/`refundPayment`/`addAdjustment` + خواندن فاکتور) بدون تأیید مالکیت کلینیک | C — بالا | S4 |
+| اجرای Job: نمونهٔ `Settings` پین‌شده روی همهٔ کلینیک‌ها (timezone، افق Slot، Quiet Hours، retention، **اعتبارنامهٔ SMS**) | C — بالا | S2 — نیازمند ADR؛ **شکل راه‌حل باز است** (ستون جدید در `cpms_jobs` فقط یک کاندید است، نه الزام) |
+| `ScheduleService::update/delete/deleteException` بدون predicate کلینیک | C — بالا | S1 |
+| شماره‌گذاری نسخه: توالی سراسری، بدون قفل، UNIQUE سراسری | **D — حل‌نشده** (نه نقص تأییدشده) | S3 — ابتدا **سؤال باز دامنه‌ای**: آیا شمارهٔ نسخه اصلاً باید per-clinic باشد؟ بدون شاهد اجرایی، بدون Migration پیشنهادی |
+| Organization/هویت بیمار، دامنهٔ کلید Idempotency (0020)، فایل بالینی، بیماران، نوبت‌ها، دست‌نویس، نسخهٔ نهایی‌شده، صف | SAFE (A/B) | — |
+| `VisitService::history()`/`getVisit()` — بدون predicate ولی **بدون فراخوان REST** | D-dead | اگر روزی سیم‌کشی شد، اول دامنه‌بندی |
+
+**تست‌های characterization commit نشده‌اند** — چون گیت‌های `arena/**` روی هر push
+اجرا می‌شوند و تست قرمز، شاخه را عمداً قرمز می‌کند. طرح تست‌ها + دستور دقیق
+بازتولید در §۸ همان سند. **نیازمند تصمیم مالک** پیش از ثبت شواهد قرمز.
 
 **SHA‌های کلیدی:**
 - `099b644` = origin/main (ادغام PR #14)
