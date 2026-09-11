@@ -238,7 +238,12 @@ final class FinanceService
 
                 if ($serviceId !== null) {
                     $service = $this->services->find($serviceId);
-                    if ($service === null) {
+                    // C7-S5: تعرفهٔ ارجاع‌شدهٔ کلاینت «شیء» است — مالکیتش نسبت
+                    // به Clinic معتبرِ درخواست راستی‌آزمایی می‌شود؛ تعرفهٔ خارجی
+                    // دقیقاً مثل تعرفهٔ ناموجود پاسخ می‌گیرد (همان پاکت) و
+                    // نام/قیمت پیکربندیِ کلینیک دیگر به دادهٔ مالی این کلینیک
+                    // وارد نمی‌شود. اعتبارسنجی اقلام پیش از هر درجِ ماندگار است.
+                    if ($service === null || !$this->rowBelongsToTrustedClinic($service)) {
                         throw FinanceException::of('CLINIC_NOT_FOUND', 'خدمت انتخاب‌شده یافت نشد', 404, ['service_id' => $serviceId]);
                     }
                     if ($description === '') {

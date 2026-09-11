@@ -65,7 +65,10 @@ final class ScheduleService
     public function create(int $actorUserId, array $fields): array
     {
         $clinicianId = $this->intField($fields, 'clinician_id');
-        $clinicId = $this->requireClinician($clinicianId);
+        // C7-S5: پزشکِ انتخاب‌شدهٔ کلاینت «شیء» است، نه tenant context —
+        // مالکیت او نسبت به Clinic معتبرِ درخواست راستی‌آزمایی می‌شود و کلینیکِ
+        // ردیف برنامه هرگز از خودِ ردیف پزشک به‌عنوان اعتماد گرفته نمی‌شود.
+        $clinicId = $this->requireClinicianForTrustedClinic($clinicianId);
 
         $day = $this->intField($fields, 'day_of_week');
         if ($day < 0 || $day > 6) {
@@ -358,6 +361,36 @@ final class ScheduleService
             [$clinicianId]
         );
         if ($row === null) {
+            throw BookingException::of('CLINIC_NOT_FOUND', 'پزشک یافت نشد', 404);
+        }
+
+        return (int) $row['clinic_id'];
+    }
+
+    /**
+     * C7-S5 — پزشک به‌عنوان «شیء» راستی‌آزمایی می‌شود، نه منبع Clinic معتبر.
+     *
+     * ترتیب الزامی: Clinic معتبرِ درخواست ← واکشی پزشک + مقایسهٔ مالکیت ←
+     * فقط سپس اعتبارسنجی فیلدها/درج برنامه/بازتولید Slot. هر دو مرز تولیدی
+     * (REST و wp-admin — پس از C7-S4) Scope معتبر برقرار می‌کنند:
+     *   - بدون Scope صریح معتبر ⇒ بسته (CLINIC_SCOPE_REQUIRED — همان
+     *     معناشناسی کانونی fail-closed سرویس‌های حساس).
+     *   - پزشک خارج از Clinic معتبر ⇒ دقیقاً همان پاکتِ «پزشک یافت نشد»
+     *     (عدم شمارش/افشای وجود پزشک خارجی)؛ بدون درج ردیف و بدون regenerate.
+     * Clinic ردیف پزشک فقط «شاهد مالکیت برای مقایسه» است، نه منبع اعتماد.
+     */
+    private function requireClinicianForTrustedClinic(int $clinicianId): int
+    {
+        $scope = ScopeContext::tryGet();
+        if ($scope === null) {
+            throw BookingException::of('CLINIC_SCOPE_REQUIRED', 'عملیات برنامهٔ هفتگی بدون زمینهٔ کلینیک معتبر مجاز نیست', 400);
+        }
+
+        $row = $this->db->fetchRow(
+            'SELECT id, clinic_id FROM ' . $this->db->table('cpms_clinicians') . ' WHERE id = %d AND is_active = 1 LIMIT 1',
+            [$clinicianId]
+        );
+        if ($row === null || (int) $row['clinic_id'] !== (int) $scope->clinicId) {
             throw BookingException::of('CLINIC_NOT_FOUND', 'پزشک یافت نشد', 404);
         }
 
