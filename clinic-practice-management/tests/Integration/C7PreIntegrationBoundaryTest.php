@@ -9,6 +9,7 @@ use ClinicCore\Application\Finance\FinanceException;
 use ClinicCore\Application\Scope\ClinicScope;
 use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Domain\Booking\BookingException;
 use WP_REST_Request;
 use WP_REST_Response;
 use WP_UnitTestCase;
@@ -900,6 +901,92 @@ final class C7PreIntegrationBoundaryTest extends WP_UnitTestCase
         ]);
         $this->assertSame($missing->get_status(), $status, 'پاسخ تعرفهٔ خارجی و تعرفهٔ ناموجود باید هم‌وضعیت باشد');
         $this->assertSame($this->errorCode($missing), $code, 'پاسخ تعرفهٔ خارجی و تعرفهٔ ناموجود باید هم‌کد باشد');
+    }
+
+    // ================= C7-S5 — پوشش مثبت/حداقلی (فقط موارد بدون پوشش قبلی) =================
+
+    /**
+     * C7-S5/P1 — wp-admin: ساخت برنامهٔ خودی با تک‌عضویت فعال همچنان موفق.
+     *
+     * مدیر Clinic B (تک‌عضویت فعال B) از مسیر REAL اکشن admin برای پزشکِ
+     * خودیِ B برنامه می‌سازد ⇒ ردیف با clinic_id=B درج + notice موفق؛
+     * اشیای Clinic A دست‌نخورده.
+     */
+    public function testWpAdminScheduleCreateForOwnClinicSucceeds(): void
+    {
+        $doctorB = $this->makeUser('c7s5_doc_b', 'cpms_doctor');
+        cpms_test_seed_membership($doctorB, self::CLINIC_B, 'cpms_doctor');
+        $clinicianB = $this->insertClinician(self::CLINIC_B, $doctorB, 'Dr C7 S5 Create B');
+
+        $notice = $this->dispatchAdminAction(
+            'cpms_schedule_save',
+            [
+                'clinician_id' => (string) $clinicianB,
+                'sched_submit' => ['5' => '1'],
+                'sched' => [
+                    5 => [
+                        'start_time' => '15:00',
+                        'end_time' => '18:00',
+                        'appointment_duration_min' => '30',
+                        'slot_capacity' => '2',
+                        'is_active' => '1',
+                    ],
+                ],
+            ],
+            fn () => ClinicianAdminPage::saveSchedules()
+        );
+
+        $row = $this->fetchScheduleRowForClinicianDay($clinicianB, 5);
+        $this->assertNotNull(
+            $row,
+            'C7-S5/P1: ساخت برنامهٔ خودی Clinic B با تک‌عضویت فعال باید موفق بماند. notice="' . $notice . '"'
+        );
+        $this->assertSame(self::CLINIC_B, (int) $row['clinic_id'], 'ردیف جدید باید به Clinic B تعلق داشته باشد');
+        $this->assertSame('15:00:00', (string) $row['start_time'], 'زمان ذخیره‌شده صحیح باشد');
+        $this->assertStringContainsString('ذخیره شد', $notice, 'notice موفق انتظار می‌رود');
+        $this->assertNotNull(
+            $this->fetchScheduleRow($this->scheduleAId),
+            'برنامهٔ Clinic A نباید در عملیات خودی B دست بخورد'
+        );
+    }
+
+    /**
+     * C7-S5/P2 — create برنامه بدون هیچ Scope معتبر ⇒ بسته.
+     *
+     * فراخوان مستقیم سرویس بدون Scope صریح باید CLINIC_SCOPE_REQUIRED بدهد
+     * (هر دو مرز تولیدی Scope برقرار می‌کنند؛ این حالت فقط فراخوان داخلیِ
+     * بدون مرز است) — بدون درج ردیف و بدون regenerate.
+     */
+    public function testScheduleCreateWithoutTrustedClinicContextFailsClosed(): void
+    {
+        wp_set_current_user($this->managerB);
+        App::resetScope();
+        self::assertNull(ScopeContext::tryGet(), 'پیش‌شرط: هیچ Scope صریحی برقرار نیست');
+
+        $thrown = null;
+        try {
+            App::scheduleService()->create($this->managerB, [
+                'clinician_id' => $this->clinicianA,
+                'day_of_week' => 2,
+                'start_time' => '09:00',
+                'end_time' => '12:00',
+            ]);
+        } catch (BookingException $e) {
+            $thrown = $e;
+        }
+
+        $row = $this->fetchScheduleRowForClinicianDay($this->clinicianA, 2);
+        $this->assertNotNull(
+            $thrown,
+            'C7-S5/P2: create برنامه بدون زمینهٔ کلینیک معتبر باید fail-closed شود'
+        );
+        $this->assertSame('CLINIC_SCOPE_REQUIRED', $thrown->errorCode, 'کد کانونی قرارداد نبودِ Scope');
+        $this->assertSame(400, $thrown->httpStatus, 'وضعیت HTTP استانداردِ CLINIC_SCOPE_REQUIRED');
+        $this->assertNull($row, 'هیچ ردیف برنامه‌ای نباید درج شود');
+        $this->assertTrue(
+            $this->slotExists($this->futureEmptySlotAId),
+            'Slot قربانی نباید بدون Scope معتبر دست بخورد'
+        );
     }
 
     // ================= Helpers — dispatch مسیر واقعی wp-admin =================
