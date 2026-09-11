@@ -719,6 +719,189 @@ final class C7PreIntegrationBoundaryTest extends WP_UnitTestCase
         $this->assertSame(0, (int) $row['is_active'], 'تعرفهٔ خودی باید غیرفعال شود');
     }
 
+    // ================= C7-CLOSEOUT — دو کاندیدای مجاور نهایی (فقط شواهد) =================
+
+    /**
+     * C7-CLOSEOUT/1a — wp-admin: ساخت برنامه برای پزشکِ Clinic A با clinician_id خارجی.
+     *
+     * خاصیت: مدیر wp-admin Clinic B (تک‌عضویت فعال B، nonce/capability معتبر —
+     * مسیر REAL اکشن admin، زمینهٔ معتبر پس از C7-S4 به B حل می‌شود) نباید
+     * بتواند برای پزشکِ Clinic A برنامه بسازد. clinician_id ورودیِ فرم «انتخاب
+     * شیء» است نه tenant context — کلینیک هرگز از ردیف پزشک گرفته نمی‌شود.
+     * انتظار: انکار غیرافشا (معادل پزشک ناموجود)؛ بدون ردیف برنامه برای
+     * پزشک A؛ Slot خالی آیندهٔ پزشک A موجود (بدون regenerate قربانی).
+     */
+    public function testWpAdminScheduleCreateWithForeignClinicianMustFailClosed(): void
+    {
+        // روز ۵ — برای پزشک A رکوردی ندارد ⇒ مسیر create واقعی handler.
+        $notice = $this->dispatchAdminAction(
+            'cpms_schedule_save',
+            [
+                'clinician_id' => (string) $this->clinicianA,
+                'sched_submit' => ['5' => '1'],
+                'sched' => [
+                    5 => [
+                        'start_time' => '22:00',
+                        'end_time' => '23:30',
+                        'appointment_duration_min' => '20',
+                        'slot_capacity' => '1',
+                        'is_active' => '1',
+                    ],
+                ],
+            ],
+            fn () => ClinicianAdminPage::saveSchedules()
+        );
+
+        $row = $this->fetchScheduleRowForClinicianDay($this->clinicianA, 5);
+        $slotExists = $this->slotExists($this->futureEmptySlotAId);
+
+        $this->assertNull(
+            $row,
+            'C7-CLOSEOUT/1a wp-admin schedule create: ساخت برنامه برای پزشک Clinic A از مرز admin باید '
+            . 'fail-closed شود — clinician_id فرم هرگز tenant context نیست. واقعی: ردیف با clinic_id='
+            . ($row === null ? 'NONE' : (string) $row['clinic_id']) . ' درج شد؛ admin_notice="' . $notice . '"; '
+            . 'victim_future_empty_slot_exists=' . ($slotExists ? 'yes' : 'NO (regenerate قربانی اجرا شد)')
+        );
+        $this->assertTrue(
+            $slotExists,
+            'Slot خالی آیندهٔ پزشک Clinic A به‌دلیل عملیات wp-admin مدیر Clinic B نباید حذف/بازتولید شود '
+            . '(admin_notice="' . $notice . '")'
+        );
+    }
+
+    /**
+     * C7-CLOSEOUT/1b — REST: ساخت برنامه برای پزشکِ Clinic A از Scope معتبر B.
+     *
+     * خاصیت: مدیر Clinic B (cpms_config + Scope معتبر B از مرز REST) با ارسال
+     * clinician_id پزشک A در POST /config/schedules نباید برنامه‌ای برای
+     * کلینیک پزشک (A) بسازد. انتظار: 404 + CLINIC_NOT_FOUND هم‌پاکت با
+     * «پزشک ناموجود»؛ بدون ردیف؛ بدون regenerate قربانی.
+     */
+    public function testRestScheduleCreateWithForeignClinicianMustFailClosed(): void
+    {
+        wp_set_current_user($this->managerB);
+        $res = $this->dispatch('POST', self::NS . '/config/schedules', [
+            'clinician_id' => $this->clinicianA,
+            'day_of_week' => 5,
+            'start_time' => '08:00',
+            'end_time' => '12:00',
+            'appointment_duration_min' => 20,
+            'slot_capacity' => 1,
+        ], [
+            'X-CPMS-Clinic-Id' => (string) self::CLINIC_B,
+        ]);
+
+        $status = $res->get_status();
+        $code = $this->errorCode($res);
+        $row = $this->fetchScheduleRowForClinicianDay($this->clinicianA, 5);
+        $slotExists = $this->slotExists($this->futureEmptySlotAId);
+
+        $this->assertSame(
+            404,
+            $status,
+            'C7-CLOSEOUT/1b REST schedule create: ساخت برنامه برای پزشک Clinic A از Scope B باید fail-closed '
+            . 'شود. واقعی: HTTP ' . $status . ' code=' . $code . '؛ ردیف clinic_id='
+            . ($row === null ? 'NONE' : (string) $row['clinic_id']) . '؛ victim_future_empty_slot_exists='
+            . ($slotExists ? 'yes' : 'NO (regenerate قربانی اجرا شد)')
+        );
+        $this->assertSame('CLINIC_NOT_FOUND', $code, 'کد خطای مورد انتظار مطابق قرارداد 404-parity');
+        $this->assertNull($row, 'هیچ ردیف برنامه‌ای برای پزشک Clinic A نباید درج شود');
+        $this->assertTrue($slotExists, 'Slot خالی آیندهٔ پزشک Clinic A نباید حذف/بازتولید شود');
+
+        // پاکت 404 باید با «پزشک ناموجود» هم‌پاکت باشد (عدم شمارش).
+        $missing = $this->dispatch('POST', self::NS . '/config/schedules', [
+            'clinician_id' => 424242424,
+            'day_of_week' => 5,
+            'start_time' => '08:00',
+            'end_time' => '12:00',
+        ], [
+            'X-CPMS-Clinic-Id' => (string) self::CLINIC_B,
+        ]);
+        $this->assertSame($missing->get_status(), $status, 'پاسخ پزشک خارجی و پزشک ناموجود باید هم‌وضعیت باشد');
+        $this->assertSame($this->errorCode($missing), $code, 'پاسخ پزشک خارجی و پزشک ناموجود باید هم‌کد باشد');
+    }
+
+    /**
+     * C7-CLOSEOUT/2 — صدور فاکتور با service_id تعرفهٔ Clinic A در اقلام.
+     *
+     * خاصیت: منشی Clinic B (Scope معتبر B) برای ویزیت/بیمارِ «خودیِ» B فاکتور
+     * صادر می‌کند اما یکی از اقلام به service_id تعرفهٔ Clinic A ارجاع می‌دهد.
+     * B نباید بتواند هویت/نام/کد/قیمت تعرفهٔ A (پیکربندی دامنه‌بندی‌شدهٔ A) را
+     * به دادهٔ مالی خود وارد کند. انتظار: 404 + CLINIC_NOT_FOUND هم‌پاکت با
+     * «خدمت انتخاب‌شده یافت نشد»؛ هیچ ردیف فاکتور/قلمی نمی‌ماند (تراکنشی)؛
+     * ویزیت B دست‌نخورده؛ تعرفهٔ A دست‌نخورده؛ بدون نشت نام/قیمت A در پاسخ.
+     */
+    public function testIssueInvoiceWithForeignClinicServiceIdMustFailClosed(): void
+    {
+        // fixture مشروع سمت B — ویزیت/بیمار/پزشک همگی Clinic B.
+        $doctorB = $this->makeUser('c7clo_doc_b', 'cpms_doctor');
+        cpms_test_seed_membership($doctorB, self::CLINIC_B, 'cpms_doctor');
+        $clinicianB = $this->insertClinician(self::CLINIC_B, $doctorB, 'Dr C7 Closeout B');
+        $patientB = $this->insertPatient(self::CLINIC_B);
+        $visitBId = $this->withScope(self::CLINIC_B, function () use ($doctorB, $clinicianB, $patientB): int {
+            $visit = App::visitService()->walkIn($this->secretaryB, $patientB['id'], $clinicianB);
+            $id = (int) $visit['id'];
+            App::visitService()->transition($doctorB, $id, 'call');
+            App::visitService()->transition($doctorB, $id, 'start');
+            App::clinicalService()->addNote($doctorB, $id, [
+                'category' => 'chief_complaint',
+                'visibility' => 'patient_visible',
+                'content_text' => 'ویزیت خودی B (fixture closeout)',
+            ]);
+            App::clinicalService()->completeConsultation($doctorB, $id);
+
+            return $id;
+        });
+
+        wp_set_current_user($this->secretaryB);
+        $res = $this->dispatch('POST', self::NS . '/invoices', [
+            'visit_id' => $visitBId,
+            'items' => [['service_id' => $this->serviceAId, 'quantity' => 1]],
+        ], [
+            'X-CPMS-Clinic-Id' => (string) self::CLINIC_B,
+        ]);
+
+        $status = $res->get_status();
+        $code = $this->errorCode($res);
+        $invoice = $this->fetchInvoiceForVisit($visitBId);
+        $items = $invoice === null ? [] : $this->fetchInvoiceItems((int) $invoice['id']);
+        $serviceRow = $this->fetchServiceRow($this->serviceAId);
+
+        $this->assertSame(
+            404,
+            $status,
+            'C7-CLOSEOUT/2 issueInvoice با service_id خارجی: قلمِ ارجاع‌دهنده به تعرفهٔ Clinic A باید '
+            . 'fail-closed شود (تعرفهٔ خارجی = یافت‌نشد برای B). واقعی: HTTP ' . $status . ' code=' . $code
+            . '؛ invoice=' . ($invoice === null ? 'NONE' : $this->sig($invoice))
+            . '؛ items=' . ($items === [] ? 'NONE' : $this->sig($items[0]))
+            . '؛ victim_service=' . $this->sig($serviceRow)
+        );
+        $this->assertSame('CLINIC_NOT_FOUND', $code, 'کد خطای مورد انتظار مطابق قرارداد 404-parity');
+        $this->assertNull($invoice, 'هیچ ردیف فاکتوری نباید برای ویزیت B باقی بماند');
+        $this->assertSame(
+            'consultation_completed',
+            (string) $this->fetchVisitRow($visitBId)['status'],
+            'وضعیت ویزیت B (معتبر) نباید به‌دلیل قلم خارجی تغییر کند'
+        );
+        $this->assertSame('C7PRE-VICTIM', (string) $serviceRow['code'], 'کد تعرفهٔ قربانی A نباید تغییر کند');
+        $this->assertSame(250000.0, (float) $serviceRow['price'], 'قیمت تعرفهٔ قربانی A نباید تغییر کند');
+        $this->assertSame(1, (int) $serviceRow['is_active'], 'وضعیت تعرفهٔ قربانی A نباید تغییر کند');
+
+        $body = (string) json_encode($res->get_data());
+        $this->assertStringNotContainsString('تعرفه قربانی C7-PRE', $body, 'نام تعرفهٔ Clinic A نباید فاش شود');
+        $this->assertStringNotContainsString('C7PRE-VICTIM', $body, 'کد تعرفهٔ Clinic A نباید فاش شود');
+
+        // پاکت 404 باید با «service_id ناموجود» هم‌پاکت باشد (عدم شمارش).
+        $missing = $this->dispatch('POST', self::NS . '/invoices', [
+            'visit_id' => $visitBId,
+            'items' => [['service_id' => 424242424, 'quantity' => 1]],
+        ], [
+            'X-CPMS-Clinic-Id' => (string) self::CLINIC_B,
+        ]);
+        $this->assertSame($missing->get_status(), $status, 'پاسخ تعرفهٔ خارجی و تعرفهٔ ناموجود باید هم‌وضعیت باشد');
+        $this->assertSame($this->errorCode($missing), $code, 'پاسخ تعرفهٔ خارجی و تعرفهٔ ناموجود باید هم‌کد باشد');
+    }
+
     // ================= Helpers — dispatch مسیر واقعی wp-admin =================
 
     /**
@@ -882,6 +1065,18 @@ final class C7PreIntegrationBoundaryTest extends WP_UnitTestCase
     /**
      * @return array<string, mixed>|null
      */
+    private function fetchScheduleRowForClinicianDay(int $clinicianId, int $day): ?array
+    {
+        return App::db()->fetchRow(
+            'SELECT id, clinic_id, clinician_id, day_of_week, start_time, end_time FROM '
+            . App::db()->table('cpms_schedule') . ' WHERE clinician_id = %d AND day_of_week = %d',
+            [$clinicianId, $day]
+        );
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
     private function fetchServiceRow(int $id): ?array
     {
         return App::db()->fetchRow(
@@ -925,6 +1120,18 @@ final class C7PreIntegrationBoundaryTest extends WP_UnitTestCase
         self::assertNotNull($row, 'پیش‌شرط: ویزیت قربانی در DB وجود دارد');
 
         return $row;
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function fetchInvoiceItems(int $invoiceId): array
+    {
+        return App::db()->fetchAll(
+            'SELECT id, service_id, description, quantity, unit_price, amount FROM '
+            . App::db()->table('cpms_invoice_items') . ' WHERE invoice_id = %d',
+            [$invoiceId]
+        ) ?: [];
     }
 
     // ================= Helpers — fixture پایه (الگوی C7) =================
