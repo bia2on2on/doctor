@@ -185,7 +185,10 @@ final class ScheduleService
     public function createException(int $actorUserId, array $fields): array
     {
         $clinicianId = $this->intField($fields, 'clinician_id');
-        $clinicId = $this->requireClinician($clinicianId);
+        // C7-S6: همان قاعدهٔ مالکیت create (C7-S5) — پزشکِ انتخاب‌شدهٔ کلاینت
+        // «شیء» است؛ مالکیتش نسبت به Clinic معتبرِ درخواست راستی‌آزمایی می‌شود و
+        // کلینیکِ ردیف استثنا هرگز از خودِ ردیف پزشک به‌عنوان اعتماد گرفته نمی‌شود.
+        $clinicId = $this->requireClinicianForTrustedClinic($clinicianId);
 
         $date = $this->parseYmd((string) ($fields['date'] ?? ''), 'date');
         if ($date < gmdate('Y-m-d')) {

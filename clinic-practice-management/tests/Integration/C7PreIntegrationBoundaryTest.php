@@ -1079,6 +1079,83 @@ final class C7PreIntegrationBoundaryTest extends WP_UnitTestCase
         $this->assertSame($this->errorCode($missing), $code, 'پاسخ پزشک خارجی و پزشک ناموجود باید هم‌کد باشد');
     }
 
+    // ================= C7-S6 — پوشش مثبت/حداقلی =================
+
+    /**
+     * C7-S6/P1 — wp-admin: ثبت استثنای خودی با تک‌عضویت فعال همچنان موفق.
+     *
+     * مدیر Clinic B از مسیر REAL اکشن admin برای پزشکِ خودیِ B استثنا ثبت
+     * می‌کند ⇒ ردیف با clinic_id=B + notice موفق؛ اشیای Clinic A دست‌نخورده.
+     */
+    public function testWpAdminExceptionCreateForOwnClinicSucceeds(): void
+    {
+        $doctorB = $this->makeUser('c7s6_doc_b', 'cpms_doctor');
+        cpms_test_seed_membership($doctorB, self::CLINIC_B, 'cpms_doctor');
+        $clinicianB = $this->insertClinician(self::CLINIC_B, $doctorB, 'Dr C7 S6 Exc B');
+        $date = gmdate('Y-m-d', (time() + 13 * 86400));
+
+        $notice = $this->dispatchAdminAction(
+            'cpms_exception_create',
+            [
+                'clinician_id' => (string) $clinicianB,
+                'date' => $date,
+                'type' => 'holiday',
+            ],
+            fn () => ClinicianAdminPage::createException()
+        );
+
+        $row = $this->fetchExceptionRowForClinicianDate($clinicianB, $date);
+        $this->assertNotNull(
+            $row,
+            'C7-S6/P1: ثبت استثنای خودی Clinic B با تک‌عضویت فعال باید موفق بماند. notice="' . $notice . '"'
+        );
+        $this->assertSame(self::CLINIC_B, (int) $row['clinic_id'], 'ردیف جدید باید به Clinic B تعلق داشته باشد');
+        $this->assertSame('holiday', (string) $row['type'], 'نوع استثنا صحیح ذخیره شود');
+        $this->assertStringContainsString('ثبت شد', $notice, 'notice موفق انتظار می‌رود');
+        $this->assertNotNull(
+            $this->fetchExceptionRow($this->exceptionAId),
+            'استثنای Clinic A نباید در عملیات خودی B دست بخورد'
+        );
+    }
+
+    /**
+     * C7-S6/P2 — createException بدون هیچ Scope معتبر ⇒ بسته.
+     *
+     * فراخوان مستقیم سرویس بدون Scope صریح باید CLINIC_SCOPE_REQUIRED بدهد
+     * (هر دو مرز تولیدی Scope برقرار می‌کنند) — بدون درج ردیف و بدون regenerate.
+     */
+    public function testExceptionCreateWithoutTrustedClinicContextFailsClosed(): void
+    {
+        $date = gmdate('Y-m-d', (time() + 14 * 86400));
+        wp_set_current_user($this->managerB);
+        App::resetScope();
+        self::assertNull(ScopeContext::tryGet(), 'پیش‌شرط: هیچ Scope صریحی برقرار نیست');
+
+        $thrown = null;
+        try {
+            App::scheduleService()->createException($this->managerB, [
+                'clinician_id' => $this->clinicianA,
+                'date' => $date,
+                'type' => 'holiday',
+            ]);
+        } catch (\ClinicCore\Domain\Booking\BookingException $e) {
+            $thrown = $e;
+        }
+
+        $row = $this->fetchExceptionRowForClinicianDate($this->clinicianA, $date);
+        $this->assertNotNull(
+            $thrown,
+            'C7-S6/P2: createException بدون زمینهٔ کلینیک معتبر باید fail-closed شود'
+        );
+        $this->assertSame('CLINIC_SCOPE_REQUIRED', $thrown->errorCode, 'کد کانونی قرارداد نبودِ Scope');
+        $this->assertSame(400, $thrown->httpStatus, 'وضعیت HTTP استانداردِ CLINIC_SCOPE_REQUIRED');
+        $this->assertNull($row, 'هیچ ردیف استثنایی نباید درج شود');
+        $this->assertTrue(
+            $this->slotExists($this->futureEmptySlotAId),
+            'Slot قربانی نباید بدون Scope معتبر دست بخورد'
+        );
+    }
+
     // ================= Helpers — dispatch مسیر واقعی wp-admin =================
 
     /**
