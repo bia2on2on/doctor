@@ -10,7 +10,9 @@
 
 **نام‌گذاری:** برچسب‌های «Phase 9 §1..§5» در بعضی کامیت/گزارش‌ها **taxonomy وظایف داخلیِ قدیمی**
 است. **فاز ۹ نقشهٔ راه مالک = Patient Portal و STILL NOT STARTED است.** وضعیت معتبر:
-**Phase 2 / C6 — CLOSED** (تصمیم مالک/معمار). زیرفاز بعدی Phase 2 = **C7 — NOT STARTED**.
+**Phase 2 / C6 — CLOSED** (تصمیم مالک/معمار) و **C7 — پیاده‌سازی ادغام‌شده در `main` از طریق
+PR #20 (merge `a385d868`؛ بستن رسمی معلق)**. قلم بعدی Queue فاز ۲ = **C8 — NOT STARTED**
+(scope تعریف‌نشده).
 
 > **Governance فازبندی:** برای سلسله‌مراتب کامل (Owner Phase 0..20 = authoritative؛
 > `C6` = بستهٔ کاری داخل **Owner Phase 2**؛ سامانه‌های تاریخی/Legacy) و crosswalk و قواعد
@@ -22,29 +24,40 @@
 ## ۰. راستی‌آزمایی (اولین کار Agent جدید)
 
 ```bash
-git rev-parse origin/main   # باید 248ca1049b49ea8f82b622744e39cf5b391a6838 باشد
-gh pr view 17 --json state,mergedAt                 # MERGED، 2026-09-10T20:55:57Z
+git rev-parse origin/main   # باید a385d8681d5c37386407360b5b3c86e9b4af4e05 باشد
+gh pr view 20 --json state,mergedAt,mergeCommit     # MERGED، 2026-09-11T13:09:16Z، merge = a385d868
+gh pr view 17 --json state,mergedAt                 # MERGED، 2026-09-10T20:55:57Z (تاریخی)
 gh pr view 18 --json state,mergedAt                 # CLOSED، mergedAt = null (بدون merge)
 gh pr view 13 --json state,isDraft                  # OPEN + DRAFT — دست‌نخورده
-gh api repos/bia2on2on/doctor/actions/runs/34529280235 -q '.conclusion'  # success (CI)
+gh api repos/bia2on2on/doctor/actions/runs/34602712029 -q '.conclusion'  # success (CI روی a385d868)
 ls clinic-practice-management/src/Migrations | tail -1   # …_0020_idempotency_clinic_scope.php
 ```
 
-> **به‌روزرسانی ۲۰۲۶-۰۹-۱۱:** چک‌پوینت ادغام‌شده از `099b644` به **`248ca10`**
+> **به‌روزرسانی ۲۰۲۶-۰۹-۱۱ (۲):** چک‌پوینت ادغام‌شده از `248ca10` به
+> **`a385d868`** منتقل شد (ادغام **PR #20** = ترمیم C7؛ والدین `4871f84` +
+> head `6b438238`؛ merge توسط bot — تأیید مالک در مخزن مستند نیست).
+> تمام گیت‌های اصلی روی `a385d868` سبزند (جدول ۱ج). جدول‌ها/بخش‌های زیر که به
+> `248ca10` یا `099b644` ارجاع می‌دهند **به‌عنوان سابقهٔ تاریخی** حفظ شده‌اند و
+> بازنویسی نشده‌اند.
+
+> **به‌روزرسانی ۲۰۲۶-۰۹-۱۱ (۱):** چک‌پوینت ادغام‌شده از `099b644` به **`248ca10`**
 > منتقل شد (ادغام PR #17 = اصلاحیهٔ پس از بستنِ C6 برای دامنهٔ کلینیک در مالی).
-> جدول‌های زیر که به `099b644` ارجاع می‌دهند **به‌عنوان سابقهٔ تاریخی** حفظ
-> شده‌اند و بازنویسی نشده‌اند.
 
 | قلم | مقدار |
 |---|---|
 | Remote | `https://github.com/bia2on2on/doctor.git` |
-| `origin/main` (جاری) | `248ca1049b49ea8f82b622744e39cf5b391a6838` — **Merge PR #17** |
+| `origin/main` (جاری) | `a385d8681d5c37386407360b5b3c86e9b4af4e05` — **Merge PR #20 (ترمیم C7)** |
+| `origin/main` (چک‌پوینت قبلی، تاریخی) | `248ca1049b49ea8f82b622744e39cf5b391a6838` — **Merge PR #17** |
 | `origin/main` (چک‌پوینت قبلی، تاریخی) | `099b6449362ce16be185aa811ff1f7da7dec269e` — **Merge PR #14 (والدین: `8087b42` + `a49b182`)** |
 | Branch کاریِ پیش‌از‌ادغام (تاریخی) | `arena/01a08828-doctor` — implementation `3fc5a54` — closure docs `becc82f` — ادغام شد |
 | نسب تاریخی | `8087b42` ⊂ `79cce4b`(#10) ⊂ `9e006b0`(#11) ⊂ `f88fcdc`(#12) ⊂ `09d505b`(#13-head، diagnostic) ⊂ … ⊂ `a49b182`(#14) — **خطی** |
+| PR #20 | [#20](https://github.com/bia2on2on/doctor/pull/20) — **MERGED** ۲۰۲۶-۰۹-۱۱T13:09:16Z — ترمیم C7 (S1..S6) — merge = `a385d868` — والدین `4871f84` + `6b438238` — merge توسط `app/arena-ai-coding-agent` (bot)؛ **تأیید مالک در مخزن مستند نیست** |
+| PR #19 | [#19](https://github.com/bia2on2on/doctor/pull/19) — **MERGED** ۲۰۲۶-۰۹-۱۱T07:10:36Z — هم‌ترازی مستندات با `248ca10` + اصلاح پرسش‌های باز C7-0 (والد `4871f84`) |
+| PR #17 | [#17](https://github.com/bia2on2on/doctor/pull/17) — **MERGED** (۲۰۲۶-۰۹-۱۰) — اصلاحیهٔ مالی پس از C6 — merge = `248ca10` |
 | PR #14 | [#14](https://github.com/bia2on2on/doctor/pull/14) — **MERGED** (2026-09-10) — head `a49b182` — base `main` |
-| PR #10 / #11 / #12 | **MERGED** (تاریخی؛ زیرمجموعهٔ #14) — بازگشایی ممنوع |
-| PR #13 | **OPEN + DRAFT** — diagnostic ترمیم C6 (`arena/01a086b4-doctor`، head `09d505b`) — **دست‌نخورده** |
+| PR #10 / #11 / #12 / #15 | **MERGED** (تاریخی) — بازگشایی ممنوع |
+| PR #18 | **CLOSED بدون merge** (۲۰۲۶-۰۹-۱۱) — superseded توسط #17؛ شاخهٔ `arena/01a08b72-doctor` حفظ شده |
+| PR #13 | **OPEN + DRAFT** — diagnostic ترمیم C6 (`arena/01a086b4-doctor`، head `09d505b`) — **دست‌نخورده**؛ توجه: `09d505b` اکنون ancestorِ `origin/main` است (ادغام از مسیر PR #14) ⇒ پاک‌سازی فقط تصمیم بعدیِ مالک |
 | Schema | `2026_09_09_0020` — **Migration 0021 وجود ندارد و تصویب نشده** |
 
 ## ۱. گیت‌های سبزِ پیش‌از‌ادغام (تاریخی) — همه روی `3fc5a54`
@@ -68,7 +81,21 @@ SHA `3fc5a54` = آخرین implementation test (پیش‌از‌ادغام). SHA
 | Pilot/Staging Readiness | `34460364243` | ✅ success |
 | Closure Gate | `34460364219` | ✅ success |
 
-## ۱ج. گیت‌های سبزِ پس‌از‌ادغام — همه روی `248ca10` (`origin/main` جاری)
+## ۱ج. گیت‌های سبزِ پس‌از‌ادغام — همه روی `a385d868` (`origin/main` جاری)
+
+| گیت | Run | Attempt | نتیجه |
+|---|---|---|---|
+| CI | `34602712029` | 1 | ✅ success |
+| Real-WP Acceptance | `34602711983` | 1 | ✅ success |
+| Pilot/Staging Readiness | `34602711956` | 1 | ✅ success |
+| Closure Gate | `34602711962` | 1 | ✅ success |
+
+**head نهایی پیش‌از‌ادغامِ PR #20 (`6b438238`) — هر پنج workflow کانونی سبز:**
+CI `34598981613` (PR) · Real-WP `34598981627` (PR) + `34598978084` (push) ·
+Pilot `34598978102` · Closure `34598978147`.
+RED تاریخی حفظ‌شده: CI `34598629321` روی `f2786c5` (۶۶۸ تست، ۱ شکست — رفع‌شده در `6b438238`).
+
+## ۱ج-تاریخی. گیت‌های سبزِ پس‌از‌ادغام روی `248ca10` (چک‌پوینت قبلی)
 
 | گیت | Run | Attempt | نتیجه |
 |---|---|---|---|
@@ -101,10 +128,15 @@ Pilot تلاش اول روی `248ca10` شکست خورد — **طبقه‌بند
 | Staff onboarding (UI/API) | LATER_STAFF_ADMIN_UX | domain primitives کامل؛ caller تولیدی/UI ندارد |
 | SMS resend key (CHAR(64) truncation) | KNOWN_MEDIUM_DEBT | tenant isolation آسیب نمی‌بیند (clinic_id در hash)؛ schema change نیاز دارد |
 | Phase 3 / AuthorizationService | NOT STARTED | نیازمند تصمیم مالک |
+| C7-S2 — زمینهٔ tenant در اجرای Job | DEFERRED (سؤال باز — ADR لازم) | در C7 حل نشد؛ شکل راه‌حل باز است؛ Migration 0021 تصویب/ساخته نشده |
+| C7-S3 — شماره‌گذاری نسخه | DEFERRED (سؤال باز دامنه‌ای مالک) | آیا توالی per-clinic مطلوب است؟ بدون شاهد اجرایی، رده D نه نقص اثبات‌شده |
+| wp-admin multi-clinic selection UX | NOT BUILT | مرز فعلی با Membership حل می‌شود؛ UX انتخاب صریح هنوز ساخته نشده |
+| Jobs/SMS/timezone hardening | DEFERRED (بدون تصویب خاموش) | همان S2؛ تا تصمیم مالک دست‌نخورده |
 
 ## ۴. خط قرمزها
 
-- Phase 3 / C7 / C8 / Portal / mobile: **شروع ممنوع**.
+- **C7:** پیاده‌سازی از طریق PR #20 در `main` ادغام شده؛ **بستن رسمی = معلق تا تصمیم مالک**. بازگشایی/بازنویسی ادغام ممنوع.
+- Phase 3 / C8 / Portal / mobile: **شروع ممنوع بدون scope و تأیید صریح مالک** (C8 فقط یک قلم Queue با scope تعریف‌نشده است).
 - **Migration 0021**: بدون تأیید مالک، ممنوع.
 - PR #13: **دست‌نخورده** (merge/close ممنوع)؛ `main`: فقط با تأیید مالک؛ force-push: ممنوع.
 - هیچ security تستی skip/quarantine/weaken نشد.
@@ -137,7 +169,14 @@ Pilot تلاش اول روی `248ca10` شکست خورد — **طبقه‌بند
 
 ## ۶. بعدیِ ایمن
 
-**C7** = زیرفاز بعدی Phase 2. Scope هنوز تعریف نشده. شروع فقط با تأیید مالک.
+**C7 = تمام‌شده در سطح پیاده‌سازی:** ترمیم C7 (S1..S6) از طریق **PR #20 MERGED**
+در `a385d868` ادغام شد؛ بستن رسمی/پذیرش مالک در مخزن مستند **نیست**.
+**قلم بعدی Queue فاز ۲ = C8 — «Iran Location foundation»** (به نقلِ `phase2-state.md`).
+⚠️ **Scope و پذیرش C8 در اسناد canonical تعریف نشده است** — شروع فقط پس از تعریف
+scope و تأیید صریح مالک مجاز است. مرز مالکیت «ایران/جغرافیا: C8 (Phase 2) یا
+Owner Phase 4 (Master Data)؟» در اسناد حل نشده و باید توسط مالک تعیین شود.
+ادامهٔ Queue: C9 (i18n audit) → C10 (Performance review) → End Gate فاز ۲ → STOP.
+
 **قبل از شروع:** ابتدا این سند + `project-current-state.md` + `phase2-state.md` را بخوانید.
 
 ## ۷. تداوم پایانی (Final Continuity)
@@ -146,22 +185,26 @@ Pilot تلاش اول روی `248ca10` شکست خورد — **طبقه‌بند
 
 | مورد | وضعیت |
 |---|---|
+| PR #20 | **MERGED** ۲۰۲۶-۰۹-۱۱T13:09:16Z — ترمیم C7 (S1..S6) — merge = `a385d868` — والدین `4871f84` + `6b438238` — merge توسط bot؛ تأیید مالک در مخزن مستند نیست |
+| PR #19 | **MERGED** ۲۰۲۶-۰۹-۱۱T07:10:36Z — هم‌ترازی مستندات + اصلاح پرسش‌های باز C7-0 (والد `4871f84`) |
 | PR #17 | **MERGED** ۲۰۲۶-۰۹-۱۰T20:55:57Z — اصلاحیهٔ پس از بستنِ C6 (مالی) — merge = `248ca10` |
 | PR #18 | **CLOSED بدون merge** ۲۰۲۶-۰۹-۱۱T06:00:12Z (`mergedAt = null`) — اصلاحیهٔ رقیب، superseded توسط #17؛ شاخهٔ `arena/01a08b72-doctor` (head `68cde82`) **حذف نشده** |
 | PR #16 | CLOSED (تاریخی) |
 | PR #14 | **MERGED** — `arena/01a08828-doctor` → `main` (merge = `099b644`) |
 | PR #10 / #11 / #12 / #15 | MERGED (تاریخی) |
-| PR #13 | OPEN + DRAFT — diagnostic — **دست‌نخورده** (بازبررسی ۲۰۲۶-۰۹-۱۱) |
-| `origin/main` | `248ca10` — Merge PR #17 (چک‌پوینت قبلی `099b644`، والدین `8087b42` + `a49b182`) |
-| C6 | CLOSED + اصلاحیهٔ پس از بستن ادغام شد — `248ca10` = چک‌پوینت جاری؛ `3fc5a54` = شواهد اجرایی پیش‌از‌ادغام؛ `becc82f` = closure docs پیش‌از‌ادغام |
-| C7 | **NOT STARTED** (پیاده‌سازی). C7-0 = فقط شواهد ⇒ [`docs/phase-reports/c7-0-census.md`](../phase-reports/c7-0-census.md) |
+| PR #13 | OPEN + DRAFT — diagnostic — **دست‌نخورده** (بازبررسی ۲۰۲۶-۰۹-۱۱). `09d505b` اکنون ancestorِ `origin/main` است ⇒ پاک‌سازی = تصمیم بعدیِ مالک، نه این پاس |
+| `origin/main` | `a385d868` — Merge PR #20 (چک‌پوینت‌های قبلی `248ca10` سپس `099b644`، والدین `4871f84` + `6b438238`) |
+| C6 | CLOSED + اصلاحیهٔ پس از بستن ادغام شد — `248ca10` = چک‌پوینت اصلاحیه؛ `3fc5a54` = شواهد اجرایی پیش‌از‌ادغام؛ `becc82f` = closure docs پیش‌از‌ادغام |
+| C7 | **ادغام‌شده در `main` از طریق PR #20 (`a385d868`)** — S1..S6؛ C7-0 = فقط شواهد ⇒ [`docs/phase-reports/c7-0-census.md`](../phase-reports/c7-0-census.md). **بستن رسمی = معلق تا تصمیم مالک** |
+| C8 | NOT STARTED — قلم بعدی Queue فاز ۲ («Iran Location foundation»)؛ scope/پذیرش تعریف‌نشده |
 | Phase 3 | NOT STARTED — نیازمند تصمیم مالک |
 | Migration 0021 | ممنوع بدون تأیید مالک — ساخته نشده؛ آخرین migration = `0020` |
 
 **تأیید checkpoint ادغام:**
 ```bash
-git rev-parse origin/main   # 248ca1049b49ea8f82b622744e39cf5b391a6838
-gh pr view 17 --json state  # MERGED
+git rev-parse origin/main   # a385d8681d5c37386407360b5b3c86e9b4af4e05
+gh pr view 20 --json state,mergedAt  # MERGED / 2026-09-11T13:09:16Z
+gh pr view 17 --json state  # MERGED (تاریخی)
 gh pr view 18 --json state,mergedAt  # CLOSED / null
 ```
 
@@ -179,12 +222,16 @@ gh pr view 18 --json state,mergedAt  # CLOSED / null
 | Organization/هویت بیمار، دامنهٔ کلید Idempotency (0020)، فایل بالینی، بیماران، نوبت‌ها، دست‌نویس، نسخهٔ نهایی‌شده، صف | SAFE (A/B) | — |
 | `VisitService::history()`/`getVisit()` — بدون predicate ولی **بدون فراخوان REST** | D-dead | اگر روزی سیم‌کشی شد، اول دامنه‌بندی |
 
-**تست‌های characterization commit نشده‌اند** — چون گیت‌های `arena/**` روی هر push
-اجرا می‌شوند و تست قرمز، شاخه را عمداً قرمز می‌کند. طرح تست‌ها + دستور دقیق
-بازتولید در §۸ همان سند. **نیازمند تصمیم مالک** پیش از ثبت شواهد قرمز.
+**تست‌های characterization در آن پاس commit نشدند** (شاخه عمداً قرمز نمی‌شد)؛
+اما در پاس بعدی به‌صورت اجرایی روی شاخهٔ C7 نوشته و با ترمیم، سبز شدند —
+زنجیرهٔ کامل RED→GREEN در §۱۱ همان سند ثبت است.
 
 **SHA‌های کلیدی:**
-- `099b644` = origin/main (ادغام PR #14)
+- `a385d868` = origin/main (ادغام PR #20 — ترمیم C7)
+- `6b438238` = head نهایی پیش‌از‌ادغامِ PR #20 (هر پنج workflow کانونی سبز)
+- `4871f84` = mainِ پیش‌از‌ادغامِ PR #20 (ادغام PR #19)
+- `248ca10` = چک‌پوینت قبلی (ادغام PR #17)
+- `099b644` = چک‌پوینت پیشین (ادغام PR #14)
 - `8087b42` = mainِ پیش‌از‌ادغام (تاریخی؛ والد اول merge)
 - `a49b182` = head پیش‌از‌ادغامِ PR #14 (تاریخی؛ والد دوم merge)
 - `3fc5a54` = implementation evidence (all 5 gates GREEN — پیش‌از‌ادغام)

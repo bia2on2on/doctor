@@ -16,8 +16,8 @@
 
 > **🤖 راهنمای ایجنت‌ها (الزام شروع کار):** هر ایجنت (AI یا انسان) پیش از هر کاری [`agent-guide.md`](agent-guide.md) را کامل بخواند — وضعیت فازها، قواعد الزامی کارفرما، الگوهای کد، دام‌های شناخته‌شده، فازهای باقی‌مانده و **پروتکل لاگ کار ایجنت‌ها (§9–10: هر ایجنت ورودی خود را append می‌کند)**.
 
-> **وضعیت (2026-09-08):** همهٔ فازهای تاریخی `F1..F10` + Pilot/Staging Gate + Closure Gate + Remediation انجام و merge شده‌اند (۹ PR؛ آخرین = #9 MERGED). نسخهٔ منتشرشده `1.0.0`.
-> **وضعیت فعلی طبق Roadmap تأییدشدهٔ Owner:** **Phase 0 = CLOSED** · **Phase 0.5 = CLOSED** · **Phase 1 (Security Hardening) = منتظر Gate Approval، شروع نشده.**
+> **وضعیت تاریخی (2026-09-08 — snapshot):** همهٔ فازهای تاریخی `F1..F10` + Pilot/Staging Gate + Closure Gate + Remediation انجام و merge شده‌اند (۹ PR؛ آخرین = #9 MERGED). نسخهٔ منتشرشده `1.0.0`.
+> **وضعیت جاری (2026-09-11):** مرجع معتبر = [`project-current-state.md`](project-current-state.md). خلاصه: **Phase 0 / 0.5 = CLOSED** · **Phase 1A = CLOSED · Phase 1B = DEFERRED** · **Phase 2 (Multi-Clinic Core) = IN PROGRESS** (C4/C5/C6 CLOSED؛ **C7 پیاده‌سازی ادغام‌شده** — PR #20 MERGED؛ merge = `a385d868`؛ بستن رسمی معلق) · **C8 = قلم بعدی Queue، NOT STARTED (scope/پذیرش تعریف‌نشده)** · **Phase 3 = NOT STARTED** · آخرین migration = `0020` (‏`0021` ساخته/تصویب نشده).
 
 > **🎯 تصمیم محصول (ADR-0027، 2026-09-06):** **یک محصول واحد چندپزشکی** — مطب تک‌پزشکی = زیرمجموعه UX درمانگاه چندپزشکی؛ یک Core/یک Schema/Features تطبیقی. **این اصل معتبر است.**
 >
@@ -29,6 +29,7 @@
 
 | سند | نقش |
 |---|---|
+| [`project-current-state.md`](project-current-state.md) | **وضعیت جاری** + checkpoint ادغام‌شده + بازیابی بدون تاریخچهٔ چت |
 | [`roadmap/roadmap.md`](roadmap/roadmap.md) §۰ | **Owner-approved Phase 0..20** — مرجع فازبندی اجرایی |
 | [`adr/ADR-0031`](adr/ADR-0031-organization-clinic-location-scoped-authorization.md) | معماری مرجع + ۱۳ تصمیم AD-01..AD-13 |
 | [`phase-reports/report-phase-0-reverification.md`](phase-reports/report-phase-0-reverification.md) | خط پایهٔ اثبات‌شده + ۹ قید معماری C-1..C-9 |
