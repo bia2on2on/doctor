@@ -88,11 +88,13 @@ final class VisitService
 
             // ER-06: نوبت پایان‌یافته/لغوشده قابل Check-in نیست؛
             // دیرهنگام (پس از Grace) → no_show + Visit فوری Walk-in-like (ارجاع حفظ می‌شود).
+            // Two-Clock: slot wall-clock in Location timezone → UTC instant + grace.
             $source = 'scheduled';
             $status = (string) $appt['status'];
             $now = $this->db->nowUtcSql();
+            $nowDt = new \DateTimeImmutable($now, new \DateTimeZone('UTC'));
             $grace = $this->noShowGraceMinutes();
-            $slotStart = $this->appointmentStartTime($appt);
+            $locTz = $this->resolveAppointmentLocationTimezone($appt);
 
             if (in_array($status, ['cancelled_by_patient', 'cancelled_by_staff', 'rescheduled', 'completed'], true)) {
                 throw VisitException::of(
@@ -102,14 +104,37 @@ final class VisitService
                     ['appointment_status' => $status]
                 );
             }
-            if ($status === 'no_show') {
-                // بیمار دیر آمد و قبلاً no_show خورده → Visit فوری Walk-in-like (ER-06)
-                $source = 'walk_in';
-            } elseif ($slotStart !== null && strtotime($slotStart . ' +' . $grace . ' minutes') < strtotime($now)) {
-                // Lazy no-show (FR-5.5) — سپس Visit فوری Walk-in-like
-                $this->markAppointmentNoShow($appt, $now, $actorUserId);
+
+            $alreadyNoShow = ($status === 'no_show');
+            $isLate = false;
+
+            if (!$alreadyNoShow) {
+                $slotUtc = $this->appointmentUtcInstant($appt, $locTz);
+                if ($slotUtc !== null) {
+                    $deadline = $slotUtc->modify('+' . $grace . ' minutes');
+                    if ($nowDt >= $deadline) {
+                        $isLate = true;
+                    }
+                } else {
+                    // Fallback to legacy string compare if parsing fails
+                    $slotStart = $this->appointmentStartTime($appt);
+                    if ($slotStart !== null && strtotime($slotStart . ' +' . $grace . ' minutes') < strtotime($now)) {
+                        $isLate = true;
+                    }
+                }
+            }
+
+            if ($alreadyNoShow || $isLate) {
+                if ($isLate) {
+                    $this->markAppointmentNoShow($appt, $now, $actorUserId);
+                }
                 $source = 'walk_in';
             } elseif ($status === 'pending') {
+                $this->confirmAppointment($appt, $now, $actorUserId);
+            }
+
+            $visit = $this->createVisit(
+
                 // حضور بیمار = تایید نوبت (T3) — تا Checkout مسیر کامل شود
                 $this->confirmAppointment($appt, $now, $actorUserId);
             }
@@ -479,18 +504,67 @@ final class VisitService
 
     /**
      * نوبت‌های بدون مراجعه پس از Grace → no_show (اگر Visit فعالی ندارند).
+     * Two-Clock: slot_date/slot_time wall-clock در Location timezone → UTC instant، سپس +grace.
      *
      * @return int تعداد نوبت‌های no_show شده
      */
     public function processNoShows(): int
     {
         $grace = $this->noShowGraceMinutes();
-        $before = gmdate('Y-m-d H:i:s', time() - ($grace * 60));
+        $nowUtc = $this->db->nowUtc(); // DateTimeImmutable UTC string
+        $nowDt = new \DateTimeImmutable($nowUtc, new \DateTimeZone('UTC'));
         $count = 0;
 
-        foreach ($this->visits->appointmentsPastGrace($before) as $appt) {
-            $count += $this->db->transactional(function () use ($appt): int {
-                // دوباره-check داخل Lock — race با Check-in هم‌زمان
+        // Fetch confirmed appointments with location timezone — we cannot rely on SQL CONCAT < before because wall-clock != UTC
+        // Fetch up to 100 that are potentially past grace: slot_date <= today UTC (conservative) to limit scan
+        $candidates = $this->db->fetchAll(
+            'SELECT a.id, a.clinic_id, a.location_id, a.slot_date, a.slot_time, a.status, a.active_visit_id, l.timezone AS location_timezone
+             FROM ' . $this->db->table('cpms_appointments') . ' a
+             LEFT JOIN ' . $this->db->table('cpms_locations') . ' l ON l.id = a.location_id
+             WHERE a.status = %s AND a.active_visit_id IS NULL
+             ORDER BY a.slot_date ASC, a.slot_time ASC LIMIT %d',
+            ['confirmed', 100]
+        );
+
+        foreach ($candidates as $appt) {
+            // Resolve Location timezone
+            $tzName = trim((string) ($appt['location_timezone'] ?? ''));
+            if ($tzName === '') {
+                // Fallback: try clinic timezone? But fail closed -> skip? For safety use UTC
+                $tzName = 'UTC';
+            }
+            try {
+                $locTz = new \DateTimeZone($tzName);
+            } catch (\Exception) {
+                $locTz = new \DateTimeZone('UTC');
+            }
+
+            $slotDate = (string) ($appt['slot_date'] ?? '');
+            $slotTime = (string) ($appt['slot_time'] ?? '');
+            if ($slotDate === '' || $slotTime === '') {
+                continue;
+            }
+
+            // Parse slot as wall-clock in Location timezone
+            $slotTimeNorm = strlen($slotTime) === 5 ? $slotTime . ':00' : $slotTime;
+            $wall = \DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $slotDate . ' ' . $slotTimeNorm, $locTz);
+            if ($wall === false) {
+                // Try H:i
+                $wall = \DateTimeImmutable::createFromFormat('Y-m-d H:i', $slotDate . ' ' . $slotTime, $locTz);
+                if ($wall === false) {
+                    continue;
+                }
+            }
+            // Convert to UTC instant
+            $slotUtc = $wall->setTimezone(new \DateTimeZone('UTC'));
+            $deadline = $slotUtc->modify('+' . $grace . ' minutes');
+
+            if ($nowDt < $deadline) {
+                // Not yet past grace in Location-local time
+                continue;
+            }
+
+            $count += $this->db->transactional(function () use ($appt, $nowDt, $locTz, $grace): int {
                 $fresh = $this->appointments->findForUpdate((int) $appt['id']);
                 if ($fresh === null || (string) $fresh['status'] !== 'confirmed') {
                     return 0;
@@ -498,6 +572,33 @@ final class VisitService
                 if ($fresh['active_visit_id'] !== null) {
                     return 0;
                 }
+
+                // Re-evaluate with fresh row to avoid race
+                $slotDateF = (string) ($fresh['slot_date'] ?? '');
+                $slotTimeF = (string) ($fresh['slot_time'] ?? '');
+                $tzNameF = trim((string) ($appt['location_timezone'] ?? ''));
+                if ($tzNameF === '') {
+                    $tzNameF = 'UTC';
+                }
+                try {
+                    $locTzF = new \DateTimeZone($tzNameF);
+                } catch (\Exception) {
+                    $locTzF = new \DateTimeZone('UTC');
+                }
+                $slotTimeNormF = strlen($slotTimeF) === 5 ? $slotTimeF . ':00' : $slotTimeF;
+                $wallF = \DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $slotDateF . ' ' . $slotTimeNormF, $locTzF);
+                if ($wallF === false) {
+                    $wallF = \DateTimeImmutable::createFromFormat('Y-m-d H:i', $slotDateF . ' ' . $slotTimeF, $locTzF);
+                    if ($wallF === false) {
+                        return 0;
+                    }
+                }
+                $slotUtcF = $wallF->setTimezone(new \DateTimeZone('UTC'));
+                $deadlineF = $slotUtcF->modify('+' . $grace . ' minutes');
+                if ($nowDt < $deadlineF) {
+                    return 0;
+                }
+
                 $this->markAppointmentNoShow($fresh, $this->db->nowUtc(), null);
 
                 return 1;
@@ -897,6 +998,67 @@ final class VisitService
         }
 
         return $appt['slot_date'] . ' ' . $appt['slot_time'];
+    }
+
+    /**
+     * Resolve Location timezone for an appointment row (authoritative).
+     * Fetches location timezone from cpms_locations if not already present in row.
+     */
+    private function resolveAppointmentLocationTimezone(array $appt): \DateTimeZone
+    {
+        $tzName = trim((string) ($appt['location_timezone'] ?? $appt['timezone'] ?? ''));
+        if ($tzName === '' && !empty($appt['location_id'])) {
+            $row = $this->db->fetchRow(
+                'SELECT timezone FROM ' . $this->db->table('cpms_locations') . ' WHERE id = %d LIMIT 1',
+                [(int) $appt['location_id']]
+            );
+            if ($row !== null && !empty($row['timezone'])) {
+                $tzName = trim((string) $row['timezone']);
+            }
+        }
+        if ($tzName === '' && !empty($appt['clinic_id'])) {
+            // Fallback to clinic timezone (legacy) — but prefer UTC if unknown
+            try {
+                $clinicRow = $this->db->fetchRow(
+                    'SELECT timezone FROM ' . $this->db->table('cpms_clinics') . ' WHERE id = %d LIMIT 1',
+                    [(int) $appt['clinic_id']]
+                );
+                if ($clinicRow !== null && !empty($clinicRow['timezone'])) {
+                    $tzName = trim((string) $clinicRow['timezone']);
+                }
+            } catch (\Throwable) {
+                // ignore
+            }
+        }
+        if ($tzName === '') {
+            $tzName = 'UTC';
+        }
+        try {
+            return new \DateTimeZone($tzName);
+        } catch (\Exception) {
+            return new \DateTimeZone('UTC');
+        }
+    }
+
+    /**
+     * Convert appointment slot_date/slot_time wall-clock in given Location TZ to UTC instant.
+     */
+    private function appointmentUtcInstant(array $appt, \DateTimeZone $locTz): ?\DateTimeImmutable
+    {
+        $slotDate = trim((string) ($appt['slot_date'] ?? ''));
+        $slotTime = trim((string) ($appt['slot_time'] ?? ''));
+        if ($slotDate === '' || $slotTime === '') {
+            return null;
+        }
+        $slotTimeNorm = strlen($slotTime) === 5 ? $slotTime . ':00' : $slotTime;
+        $wall = \DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $slotDate . ' ' . $slotTimeNorm, $locTz);
+        if ($wall === false) {
+            $wall = \DateTimeImmutable::createFromFormat('Y-m-d H:i', $slotDate . ' ' . $slotTime, $locTz);
+            if ($wall === false) {
+                return null;
+            }
+        }
+        return $wall->setTimezone(new \DateTimeZone('UTC'));
     }
 
     /**

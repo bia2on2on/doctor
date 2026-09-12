@@ -65,7 +65,8 @@ final class BookingService
     // ================= A1 — Availability (Public) =================
 
     /**
-     * تقویم آزاد (Jalali UI) — `{days:[{date, jalali, slots:[{time, capacity_left, duration_min}]}]}`.
+     * تقویم آزاد (Jalali UI) — `{days:[{date, jalali, slots:[{time, capacity_left, duration_min, slot_id, location_id}]}]}`.
+     * اکنون slot_id و location_id را برمی‌گرداند تا کلاینت بتواند هویت دقیق اسلات را انتخاب کند (چند-Location).
      *
      * @return array{days: list<array<string, mixed>>}
      */
@@ -93,6 +94,8 @@ final class BookingService
                 'time' => substr((string) $row['slot_time'], 0, 5),
                 'capacity_left' => (int) $row['capacity_left'],
                 'duration_min' => (int) $row['duration_min'],
+                'slot_id' => (int) ($row['id'] ?? 0),
+                'location_id' => (int) ($row['location_id'] ?? 0),
             ];
         }
 
@@ -129,21 +132,30 @@ final class BookingService
     // ================= A4 — Quote (Public) =================
 
     /**
-     * @return array{available: bool, capacity_left: int}
+     * @return array{available: bool, capacity_left: int, slot_id?: int, location_id?: int}
      */
-    public function quote(int $clinicianId, string $slotDate, string $slotTime): array
+    public function quote(int $clinicianId, string $slotDate, string $slotTime, ?int $slotId = null): array
     {
         $clinicId = $this->requireClinician($clinicianId);
-        $this->assertWindow($slotDate, $slotTime, (int) $this->settings->get('booking.min_lead_hours', 2));
 
-        $slot = $this->slots->findByClinicianSlot($clinicId, $clinicianId, $slotDate, $slotTime);
+        // Resolve slot first (exact identity preferred), then temporal policy with Location timezone
+        $slot = $this->resolveSlotForBooking($clinicId, $clinicianId, $slotDate, $slotTime, $slotId);
         if ($slot === null || (int) $slot['is_open'] !== 1) {
             return ['available' => false, 'capacity_left' => 0];
         }
 
+        // Two-Clock: obtain Location timezone and evaluate lead policy
+        $locationTz = $this->resolveLocationTimezone((int) $slot['location_id'], $clinicId);
+        $this->assertWindowWithTimezone($slotDate, $slotTime, $locationTz, (int) $this->settings->get('booking.min_lead_hours', 2));
+
         $left = (int) $slot['capacity'] - (int) $slot['booked_count'] - (int) $slot['held_count'];
 
-        return ['available' => $left > 0, 'capacity_left' => max(0, $left)];
+        return [
+            'available' => $left > 0,
+            'capacity_left' => max(0, $left),
+            'slot_id' => (int) $slot['id'],
+            'location_id' => (int) $slot['location_id'],
+        ];
     }
 
     // ================= B1 — Hold =================
@@ -151,10 +163,9 @@ final class BookingService
     /**
      * @return array{hold_token: string, expires_at: string, slot: array<string, mixed>}
      */
-    public function hold(int $wpUserId, int $clinicianId, string $slotDate, string $slotTime): array
+    public function hold(int $wpUserId, int $clinicianId, string $slotDate, string $slotTime, ?int $slotId = null): array
     {
         $this->assertLicense(LicenseGate::OP_APPOINTMENT_BOOK);
-        $this->assertWindow($slotDate, $slotTime, (int) $this->settings->get('booking.min_lead_hours', 2));
 
         $mobile = $this->mobileForUser($wpUserId);
         if ($mobile === null) {
@@ -162,10 +173,17 @@ final class BookingService
         }
 
         $clinicId = $this->requireClinician($clinicianId);
-        $slot = $this->slots->findByClinicianSlot($clinicId, $clinicianId, $slotDate, $slotTime);
+
+        // Resolve slot first — exact identity if slotId given, else unique tuple with fail-closed on ambiguity
+        $slot = $this->resolveSlotForBooking($clinicId, $clinicianId, $slotDate, $slotTime, $slotId);
+
         if ($slot === null || (int) $slot['is_open'] !== 1) {
             throw BookingException::of('CLINIC_NOT_FOUND', 'اسلات انتخابی یافت نشد', 404);
         }
+
+        // Two-Clock: Location timezone -> UTC instant before lead check
+        $locationTz = $this->resolveLocationTimezone((int) $slot['location_id'], $clinicId);
+        $this->assertWindowWithTimezone($slotDate, $slotTime, $locationTz, (int) $this->settings->get('booking.min_lead_hours', 2));
 
         // N-4: Hold Active موجود همان بیمار/اسلات → Idempotent (بازگردانی همان Token)
         $existing = $this->db->fetchRow(
@@ -440,7 +458,7 @@ final class BookingService
     /**
      * @return array{appointment_id: int, reference_code: string, slot: array<string, mixed>, status: string, previous_appointment_id: int}
      */
-    public function reschedule(int $wpUserId, int $appointmentId, int $newClinicianId, string $newDate, string $newTime, ?string $idemKey): array
+    public function reschedule(int $wpUserId, int $appointmentId, int $newClinicianId, string $newDate, string $newTime, ?string $idemKey, ?int $newSlotId = null): array
     {
         if (!is_string($idemKey) || $idemKey === '') {
             throw BookingException::of('CLINIC_VALIDATION_FAILED', 'هدر Idempotency-Key برای این عملیات الزامی است');
@@ -462,7 +480,7 @@ final class BookingService
 
         try {
             [$oldAppt, $newApptId, $newSlot] = $this->db->transactional(function () use (
-                $wpUserId, $appointmentId, $newClinicianId, $newDate, $newTime
+                $wpUserId, $appointmentId, $newClinicianId, $newDate, $newTime, $newSlotId
             ): array {
                 $appt = $this->appointments->findForUpdate($appointmentId);
                 if ($appt === null) {
@@ -477,25 +495,31 @@ final class BookingService
 
                 $toState = $this->machineCheck((string) $appt['status'], 'reschedule', 'patient');
 
-                // Policy نوبت فعلی (حداقل X ساعت قبل — SRS FR-4.10)
-                $err = BookingWindow::checkCancel(
+                // Policy نوبت فعلی — از location_id خود appointment + timezone آن Location
+                $oldLocationTz = $this->resolveLocationTimezone((int) $appt['location_id'], (int) $appt['clinic_id']);
+                $err = BookingWindow::checkCancelWithTimezone(
                     (string) $appt['slot_date'],
                     (string) $appt['slot_time'],
+                    $oldLocationTz,
                     $this->now(),
                     (int) $this->settings->get('booking.reschedule_deadline_hours', 24)
                 );
                 if ($err !== null) {
                     throw BookingException::of('CLINIC_POLICY_VIOLATION', 'زمان جابه‌جایی این نوبت گذشته است (سیاست مطب)', 409);
                 }
-                // Window اسلات جدید
-                $this->assertWindow($newDate, $newTime, (int) $this->settings->get('booking.min_lead_hours', 2));
 
                 $oldSlotId = (int) $appt['slot_id'];
                 $newClinicId = $this->requireClinician($newClinicianId);
-                $newSlot = $this->slots->findByClinicianSlot($newClinicId, $newClinicianId, $newDate, $newTime);
+
+                // Resolve new destination slot unambiguously (exact id preferred)
+                $newSlot = $this->resolveSlotForBooking($newClinicId, $newClinicianId, $newDate, $newTime, $newSlotId);
                 if ($newSlot === null || (int) $newSlot['is_open'] !== 1) {
                     throw BookingException::of('CLINIC_NOT_FOUND', 'اسلات مقصد یافت نشد', 404);
                 }
+
+                // Window اسلات جدید با timezone مقصد
+                $newLocationTz = $this->resolveLocationTimezone((int) $newSlot['location_id'], $newClinicId);
+                $this->assertWindowWithTimezone($newDate, $newTime, $newLocationTz, (int) $this->settings->get('booking.min_lead_hours', 2));
                 $newSlotId = (int) $newSlot['id'];
 
                 // قفل هر دو اسلات — مرتب بر اساس id (پیشگیری از Deadlock)
@@ -581,7 +605,7 @@ final class BookingService
     /**
      * @return array<string, mixed>
      */
-    public function createByStaff(int $actorUserId, int $patientId, int $clinicianId, string $slotDate, string $slotTime, ?string $reason): array
+    public function createByStaff(int $actorUserId, int $patientId, int $clinicianId, string $slotDate, string $slotTime, ?string $reason, ?int $slotId = null): array
     {
         $this->assertLicense(LicenseGate::OP_APPOINTMENT_BOOK);
 
@@ -594,19 +618,31 @@ final class BookingService
         if ((int) $patient['clinic_id'] !== $clinicId) {
             throw BookingException::of('CLINIC_VALIDATION_FAILED', 'این بیمار به کلینیک دیگری تعلق دارد', 422);
         }
-        // N-3: Staff (حضوری/فوری) بدون min-lead — فقط Window + افق آینده
-        $this->assertWindow($slotDate, $slotTime, 0);
+
+        // Resolve slot first — exact identity preferred
+        $resolvedSlot = $this->resolveSlotForBooking($clinicId, $clinicianId, $slotDate, $slotTime, $slotId);
+        if ($resolvedSlot === null || (int) $resolvedSlot['is_open'] !== 1) {
+            throw BookingException::of('CLINIC_NOT_FOUND', 'اسلات یافت نشد — ممکن است Schedule پزشک برای این روز تعریف نشده باشد', 404);
+        }
+        // N-3: Staff (حضوری/فوری) بدون min-lead — فقط Window + افق آینده، با Location timezone
+        $locationTz = $this->resolveLocationTimezone((int) $resolvedSlot['location_id'], $clinicId);
+        $this->assertWindowWithTimezone($slotDate, $slotTime, $locationTz, 0);
 
         try {
             [$apptId, $appt, $slot] = $this->db->transactional(function () use (
-                $clinicId, $patientId, $clinicianId, $slotDate, $slotTime, $reason
+                $clinicId, $patientId, $clinicianId, $slotDate, $slotTime, $reason, $resolvedSlot
             ): array {
-                $slot = $this->slots->findByClinicianSlot($clinicId, $clinicianId, $slotDate, $slotTime);
-                if ($slot === null || (int) $slot['is_open'] !== 1) {
+                $slot = $resolvedSlot;
+                // Re-fetch for update to ensure concurrency safety
+                $slotForUpdate = $this->slots->findForUpdate((int) $slot['id']);
+                if ($slotForUpdate === null) {
+                    $slotForUpdate = $slot;
+                }
+                $slot = $slotForUpdate;
+                if ((int) $slot['is_open'] !== 1) {
                     throw BookingException::of('CLINIC_NOT_FOUND', 'اسلات یافت نشد — ممکن است Schedule پزشک برای این روز تعریف نشده باشد', 404);
                 }
                 $slotId = (int) $slot['id'];
-                $this->slots->findForUpdate($slotId);
 
                 $dup = $this->appointments->findActiveForPatientSlot($patientId, $slotId, self::ACTIVE_STATUSES);
                 if ($dup !== null) {
@@ -710,10 +746,12 @@ final class BookingService
             $toState = $this->machineCheck((string) $appt['status'], 'cancel', $actor);
 
             if ($actor === 'patient') {
-                // SRS FR-4.9: حداقل X ساعت قبل از شروع (Configurable — بدون اثر Retroactive)
-                $err = BookingWindow::checkCancel(
+                // SRS FR-4.9: حداقل X ساعت قبل از شروع — با timezone Location خود appointment (Two-Clock)
+                $locationTz = $this->resolveLocationTimezone((int) $appt['location_id'], (int) $appt['clinic_id']);
+                $err = BookingWindow::checkCancelWithTimezone(
                     (string) $appt['slot_date'],
                     (string) $appt['slot_time'],
+                    $locationTz,
                     $this->now(),
                     (int) $this->settings->get('booking.cancel_deadline_hours', 24)
                 );
@@ -807,11 +845,112 @@ final class BookingService
         throw BookingException::of('CLINIC_INVALID_TRANSITION', 'این عمل برای وضعیت فعلی نوبت مجاز نیست', 409);
     }
 
+    /**
+     * Resolve authoritative Location timezone for a concrete slot/appointment.
+     * Validates Location belongs to same Clinic and timezone is valid IANA.
+     * Fail-closed on invalid/missing.
+     */
+    private function resolveLocationTimezone(int $locationId, int $clinicId): \DateTimeZone
+    {
+        if ($locationId <= 0 || $clinicId <= 0) {
+            throw BookingException::of('CLINIC_VALIDATION_FAILED', 'شناسه Location نامعتبر است');
+        }
+
+        $row = $this->db->fetchRow(
+            'SELECT id, clinic_id, timezone FROM ' . $this->db->table('cpms_locations') . ' WHERE id = %d LIMIT 1',
+            [$locationId]
+        );
+        if ($row === null) {
+            throw BookingException::of('CLINIC_NOT_FOUND', 'Location یافت نشد', 404);
+        }
+        if ((int) $row['clinic_id'] !== $clinicId) {
+            throw BookingException::of('CLINIC_VALIDATION_FAILED', 'Location به کلینیک دیگری تعلق دارد', 422);
+        }
+        $tzName = trim((string) ($row['timezone'] ?? ''));
+        if ($tzName === '') {
+            throw BookingException::of('CLINIC_VALIDATION_FAILED', 'Timezone Location نامعتبر است');
+        }
+        try {
+            return new \DateTimeZone($tzName);
+        } catch (\Exception) {
+            throw BookingException::of('CLINIC_VALIDATION_FAILED', 'Timezone Location نامعتبر است');
+        }
+    }
+
+    /**
+     * Compatibility-safe slot resolution.
+     * - If explicit slotId given: load exact slot, validate Clinic ownership + redundant fields if supplied.
+     * - Else legacy tuple: fetch ALL matching slots; 0 => null (not found), 1 => that slot, >1 => FAIL CLOSED ambiguous.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function resolveSlotForBooking(int $clinicId, int $clinicianId, string $slotDate, string $slotTime, ?int $slotId = null): ?array
+    {
+        // Exact identity path — stable slot_id
+        if ($slotId !== null && $slotId > 0) {
+            $slot = $this->slots->findByIdAndClinic($slotId, $clinicId);
+            if ($slot === null) {
+                throw BookingException::of('CLINIC_NOT_FOUND', 'اسلات با شناسه داده‌شده یافت نشد', 404);
+            }
+            // Validate clinician if tuple also supplied (redundant check)
+            if ((int) $slot['clinician_id'] !== $clinicianId) {
+                throw BookingException::of('CLINIC_VALIDATION_FAILED', 'اسلات به پزشک دیگری تعلق دارد', 422);
+            }
+            if ((string) $slot['slot_date'] !== $slotDate || substr((string) $slot['slot_time'], 0, 8) !== substr($slotTime, 0, 8)) {
+                // Allow H:i vs H:i:s normalization but require date/time match if both supplied
+                $normRequested = substr($slotDate . ' ' . $slotTime, 0, 19);
+                $normSlot = (string) $slot['slot_date'] . ' ' . substr((string) $slot['slot_time'], 0, 8);
+                if (substr($normRequested, 0, 16) !== substr($normSlot, 0, 16)) {
+                    throw BookingException::of('CLINIC_VALIDATION_FAILED', 'تاریخ/ساعت با شناسه اسلات همخوانی ندارد', 422);
+                }
+            }
+            return $slot;
+        }
+
+        // Legacy tuple path — ambiguity-safe
+        $all = $this->slots->findAllByClinicianSlot($clinicId, $clinicianId, $slotDate, $slotTime);
+        $count = count($all);
+        if ($count === 0) {
+            return null;
+        }
+        if ($count > 1) {
+            // Fail closed — do NOT use LIMIT 1
+            throw BookingException::of('CLINIC_SLOT_AMBIGUOUS', 'اسلات مبهم است — چند Location با همین تاریخ/ساعت وجود دارد؛ لطفاً slot_id را مشخص کنید', 409, [
+                'matches' => $count,
+                'clinic_id' => $clinicId,
+                'clinician_id' => $clinicianId,
+                'slot_date' => $slotDate,
+                'slot_time' => $slotTime,
+            ]);
+        }
+
+        return $all[0];
+    }
+
     private function assertWindow(string $slotDate, string $slotTime, int $minLeadHours): void
     {
+        // LEGACY path kept for backward compat where Location not yet resolved
         $err = BookingWindow::checkRequest(
             $slotDate,
             $slotTime,
+            $this->now(),
+            $minLeadHours,
+            (int) $this->settings->get('booking.max_future_days', 60)
+        );
+        if ($err === BookingWindow::CODE_INVALID) {
+            throw BookingException::of('CLINIC_VALIDATION_FAILED', 'تاریخ/ساعت نوبت نامعتبر است');
+        }
+        if ($err !== null) {
+            throw BookingException::of('CLINIC_POLICY_VIOLATION', 'بازه انتخابی خارج از Window رزرو است (حداقل ' . $minLeadHours . ' ساعت؛ حداکثر ' . (int) $this->settings->get('booking.max_future_days', 60) . ' روز)', 409);
+        }
+    }
+
+    private function assertWindowWithTimezone(string $slotDate, string $slotTime, \DateTimeZone $locationTz, int $minLeadHours): void
+    {
+        $err = BookingWindow::checkRequestWithTimezone(
+            $slotDate,
+            $slotTime,
+            $locationTz,
             $this->now(),
             $minLeadHours,
             (int) $this->settings->get('booking.max_future_days', 60)

@@ -39,20 +39,26 @@ final class ApptReminderHandler
 
     public function __invoke(array $payload): int
     {
-        $today = $this->localToday();
-        $tomorrow = gmdate('Y-m-d', strtotime($today . ' +1 day'));
         $reminded = 0;
 
         // C6: اسکن due-work سیستمی است — بدون predicate کلینیک؛ هر نوبت
         // clinic خودش را حمل می‌کند و اعلان/SMS با همان clinic ساخته می‌شود.
+        // Phase 2 multi-location: today/tomorrow per Location timezone, not Clinic.
+        // To cover all timezones, fetch a wider window (UTC today -1 to +2) then filter per Location.
+        $utcToday = gmdate('Y-m-d');
+        $rangeStart = gmdate('Y-m-d', strtotime($utcToday . ' -1 day'));
+        $rangeEnd = gmdate('Y-m-d', strtotime($utcToday . ' +2 days'));
+
         $rows = $this->db->fetchAll(
-            'SELECT a.id, a.clinic_id, a.patient_id, a.slot_date, a.slot_time, a.clinician_id,
-                    p.first_name, p.last_name, p.mobile
+            'SELECT a.id, a.clinic_id, a.location_id, a.patient_id, a.slot_date, a.slot_time, a.clinician_id,
+                    p.first_name, p.last_name, p.mobile,
+                    l.timezone AS location_timezone
              FROM ' . $this->db->table('cpms_appointments') . ' a
              JOIN ' . $this->db->table('cpms_patients') . ' p ON p.id = a.patient_id
-             WHERE a.status = %s AND a.slot_date IN (%s, %s)
+             LEFT JOIN ' . $this->db->table('cpms_locations') . ' l ON l.id = a.location_id
+             WHERE a.status = %s AND a.slot_date BETWEEN %s AND %s
              ORDER BY a.id ASC LIMIT %d',
-            ['confirmed', $today, $tomorrow, self::LIMIT]
+            ['confirmed', $rangeStart, $rangeEnd, self::LIMIT]
         );
 
         // Quiet Hours (§5): SMS فقط در بازه مجاز؛ اعلان Internal همیشه
@@ -60,7 +66,32 @@ final class ApptReminderHandler
         $smsOpen = $this->notifications->smsQuietHoursOpen();
 
         foreach ($rows as $row) {
-            $phase = ((string) $row['slot_date']) === $today ? 'morn' : 'eve';
+            // Resolve Location timezone for this appointment
+            $locationTzName = trim((string) ($row['location_timezone'] ?? ''));
+            if ($locationTzName === '') {
+                // Fallback to clinic timezone if Location missing (legacy data)
+                try {
+                    $locationTzName = $this->settings->clinicTimezone();
+                } catch (\Throwable) {
+                    $locationTzName = 'Asia/Tehran';
+                }
+            }
+            try {
+                $locTz = new \DateTimeZone($locationTzName);
+            } catch (\Exception) {
+                $locTz = new \DateTimeZone('UTC');
+            }
+
+            $localToday = (new \DateTimeImmutable('now', $locTz))->format('Y-m-d');
+            $localTomorrow = gmdate('Y-m-d', strtotime($localToday . ' +1 day'));
+
+            $slotDate = (string) $row['slot_date'];
+            // Only remind if slot_date is today or tomorrow in its own Location timezone
+            if ($slotDate !== $localToday && $slotDate !== $localTomorrow) {
+                continue;
+            }
+
+            $phase = $slotDate === $localToday ? 'morn' : 'eve';
             $vars = $this->vars($row);
 
             try {
