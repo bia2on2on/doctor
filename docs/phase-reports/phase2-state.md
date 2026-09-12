@@ -197,6 +197,23 @@ handler** وابستگی‌های Clinic‌دار را می‌سازند و در
 - در این برش **queue بازطراحی نشده** و هیچ معماریِ retry جدیدی افزوده نشد؛
   این یک آیتمِ باقی‌ماندهٔ follow-up است.
 
+### چک‌پوینت اجرایی (GREEN) — head `182068c` (کدِ اصلاحی `b9d4e36` + همین مستندات)
+
+| گیت | Run | رویداد | نتیجه |
+|---|---|---|---|
+| CI (Unit 8.1/8.2/8.3/8.4 + PHPStan + WPCS + Tenant Tripwire + Integration) | `34709238401` | pull_request | ✅ success — هر ۸ job |
+| Real WordPress Acceptance (prefix `wp_` + `clinic_`) | `34709238433` | pull_request | ✅ success — هر دو prefix |
+| Closure Gate (GO‑LIVE evidence) | `34709236199` | push | ✅ success |
+| Real WordPress Acceptance | `34709236204` | push | ✅ success |
+| Pilot/Staging Readiness Gate | `34709236219` | push | ✅ success |
+
+> یادداشتِ صداقت: run قبلیِ Real‑WP روی `b9d4e36` (run `34706037675`) در job
+> «Browser acceptance — all 5 roles» با prefix `clinic_` **یک‌بار** شکست خورد،
+> در حالی که همین SHA در run push (`34706035279`) سبز بود و در run تازهٔ
+> `34709238433` همان job سبز شد ⇒ طبقه‌بندی C (نوسانِ محیطی/مرورگر)، نه نقصِ کد.
+> (یافتهٔ C9 قبلاً ثبت کرده که لاگِ کاملِ jobها از این sandbox قابل بازیابی نیست؛
+> مبنای طبقه‌بندی = سبزیِ همان SHA در run هم‌زمانِ push + سبزیِ run تازه.)
+
 ### جمع‌بندی برش 1B.1
 
 - ✅ بدون schema/migration — آخرین migration همچنان `2026_09_09_0020`؛ `0021`
