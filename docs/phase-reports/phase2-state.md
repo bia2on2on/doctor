@@ -17,6 +17,81 @@
 > تاریخچه‌شان در `099b644` ادغام شده است. PHP در sandbox ممیزی روی PATH نبود؛
 > شواهد اجرایی = GitHub Actions.
 
+## Phase 2 Tenant Context Remediation — Slice 1B: RED → GREEN (2026-09-12)
+
+**وضعیت: پیاده‌سازیِ Slice 1B روی Draft PR #27 — DO NOT MERGE. Phase 2 همچنان
+IN PROGRESS است و هیچ‌کدام از گیت‌های پذیرش بسته نشده‌اند.**
+
+سند کانونیِ طراحی: [`../architecture/phase2-tenant-context-remediation-design.md`](../architecture/phase2-tenant-context-remediation-design.md)
+(§A-3 · §5-D-1..D-3 · §9 RT-1..RT-14). نقشهٔ علتِ ریشه‌ایِ پیش‌از‌کدنویسی:
+[`phase2-slice1b-rootcause-map.md`](phase2-slice1b-rootcause-map.md).
+
+### چک‌پوینت‌ها (زنجیرهٔ RED → GREEN)
+
+| | SHA | CI run | نتیجه |
+|---|---|---|---|
+| **RED (شاهد اجراییِ نقص)** | `43cf2ef6ee494e206c25130033a48613e461893e` | `34697309922` (attempt 1, `pull_request`) | ❌ failure — `Tests: 682, Assertions: 4705, Failures: 5.` |
+| **GREEN candidate اول** | `28187345f1e77d95719c7e0f7ab91be32af24a6c` | `34699927150` (attempt 1) | ❌ failure — `Tests: 682, Assertions: 4736, Errors: 1, Failures: 1` + PHPStan |
+| **GREEN checkpoint (کد)** | `7a54d7743a58ca2f9cb12ed5e22504e56141bb85` | `34700456222` (attempt 1, `pull_request`) | ✅ success — هر ۸ job |
+
+روی `7a54d77` هر پنج workflow سبز: CI `34700456222` · Real‑WP Acceptance
+`34700456223` (هر دو `pull_request`) · Closure Gate `34700452404` · Real‑WP
+Acceptance `34700452407` · Pilot/Staging `34700452411` (سه مورد آخر `push`).
+
+> ⚠ **مرزِ صداقتِ شواهد:** چون step ‏«Post failures to PR» در `ci.yml` فقط در
+> حالتِ شکست کامنت می‌گذارد و لاگ job از این sandbox قابل بازیابی نیست، سطرِ
+> خلاصهٔ PHPUnit برای run سبزِ `34700456222` مستقیماً خوانده **نشده**. آنچه
+> اثبات‌شده است: job ‏«Integration (WP 6.7 + MySQL 8)» = `success` (یعنی PHPUnit
+> با exit 0 روی کلِ `tests/Integration`) و **هیچ** annotation شکستی روی آن job
+> ثبت نشده. شمارِ ۶۸۲ تست از دو run قبلیِ همان suite (بدون افزودن/حذف متدِ
+> تست بین آن‌ها) استنتاج می‌شود، نه از خواندنِ مستقیمِ سطرِ خلاصهٔ run سبز.
+
+### آنچه Slice 1B واقعاً رفع کرد
+
+۱. **RT-3 (امنیتی، بالاترین اولویت):** پیامِ متعلق به Clinic B اکنون provider،
+   `sender`، `sms.advanced` و **credentialِ sealedِ `sms.auth`** را از
+   پیکربندیِ **همان** Clinic حل می‌کند. منبعِ Clinic = `clinic_id` خودِ ردیفِ
+   پیام (منبعِ durable)، نه `Settings` میخ‌شدهٔ سطحِ process.
+۲. **RT-6:** `SmsService` scope-neutral شد؛ `App::settings()` در هر فراخوانی از
+   scope مشتق می‌شود و کشِ واقعی در `SettingsFactory` با کلیدِ `clinicId` است؛
+   `sms.generic` به‌جای freeze شدن در لحظهٔ ساختِ registry، lazy و per-Clinic
+   حل می‌شود. توالیِ کاملِ `A → B → A` در تست assert می‌شود.
+۳. **RT-4:** `App::dispatcher()` بدونِ کاربرِ WP و بدونِ هیچ Clinic scope
+   قابلِ ساخت است (ساختِ handlerها به داخلِ callableهای ثبت‌شده منتقل شد).
+۴. **RT-14:** شکستِ scopeِ **یک** job دیگر کلِ tick را نمی‌اندازد؛ همان job
+   `failed` می‌شود و jobهای بی‌ارتباطِ همان tick اجرا می‌شوند. `tick()` در
+   `JobsDispatcher` **دست‌نخورده** ماند (کنترلِ مثبت نشان داده بود هرگز نقص از
+   آنجا نبود).
+۵. **RT-12:** قراردادِ تولیدیِ `JobScopeRegistry` با طبقه‌بندیِ صریحِ T/S/W برای
+   هر ۱۵ نوعِ ثبت‌شده (۲ T / ۷ S / ۶ W، عیناً از §A-3)؛ نوعِ ناشناخته
+   fail-closed رد می‌شود؛ `NULL` هرگز به‌طور خودکار «system» نیست؛ و گارْدِ
+   drift بینِ registry و ثبتِ handlerهای زمانِ اجرا در تست سنجیده می‌شود.
+
+### آنچه **پیاده‌سازی نشده** (صریح)
+
+- ⛔ **کلِ Phase 2 remediation** — فقط RT-3/4/6/12/14. ‏RT-1/2/5/7/8/9/10/11/13
+  دست‌نخورده‌اند.
+- ⛔ **timezone (RT-9 / C-9 / C-10)** — `slots.generate`، `visits.no_show`،
+  `appt.reminder` و `fu.reminder` همچنان بر پایهٔ timezoneِ Clinicِ bootstrap
+  کار می‌کنند. **رفع نشده.**
+- ⛔ **پیکربندیِ سطحِ نصب (§۸-۱ / RT-13)** — کلیدهای `retention.oplog_days`،
+  `hw.version_*`، `notif.archive_days`، `backup.*`، `license.server_url` و
+  `queue.no_show_grace_minutes` همچنان از سطرِ `cpms_settings` یک Clinic خوانده
+  می‌شوند. در نصبِ چندکلینیکیِ بدونِ scope، jobهای S/W مربوط **per-job
+  fail-closed** می‌شوند (سازگار با RT-14) ولی منشأ پیکربندیِ نصب‌گسترده
+  **مهاجرت/پیاده‌سازی نشده است**.
+- ⛔ **`operational_logs` (E-7)** — ایندکس/retention بدون تغییر؛ `DELETE`
+  همچنان بی‌`LIMIT`.
+- ⛔ **انتسابِ tenant در لاگِ عملیاتی (RT-11)** و **provenance/backfill
+  ‏(RT-10 / §۸-۵ NOT MEASURED)**.
+- ⛔ **هیچ schema/migration‌ای** — آخرین migration همچنان
+  `2026_09_09_0020_idempotency_clinic_scope.php` است و **`0021` وجود ندارد**.
+  هیچ ستونِ `clinic_id`‌ای به `cpms_jobs` اضافه نشد، پس قاعدهٔ سازگاریِ
+  «T ⇒ غیرتهی / S,W ⇒ NULL» هنوز **گارْدِ داده‌ایِ اجرایی** ندارد و فقط در سطحِ
+  قراردادِ registry و تست ثبت است.
+- ⛔ **Phase 2 بسته نشده** و **End Gate شروع/پاس نشده است.**
+- ⛔ **PR #27 ادغام نشده و Ready for Review نشده است.**
+
 ## گیت‌های سبز — پس‌از‌ادغام (روی `bd2634a` = `origin/main` جاری)
 
 | گیت | Run | نتیجه |
