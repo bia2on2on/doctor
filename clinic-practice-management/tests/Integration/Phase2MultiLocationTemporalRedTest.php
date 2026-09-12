@@ -402,7 +402,7 @@ final class Phase2MultiLocationTemporalRedTest extends WP_UnitTestCase
         // Exercise real handler with RecordingSmsProvider to avoid real SMS
         // Setup recording provider
         $recorder = new RecordingSmsProvider();
-        App::sms_provider_registry()->register($recorder);
+        App::providers()->register($recorder);
 
         // Need SettingsFactory for SmsService? Use App::smsService() which uses SettingsFactory per clinic
         $smsService = App::smsService();
