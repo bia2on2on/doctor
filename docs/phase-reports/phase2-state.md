@@ -332,6 +332,18 @@ CI `34598981613` · Real-WP `34598981627` + `34598978084` · Pilot `34598978102`
   بدون Migration (0021 ساخته/تصویب نشد)؛ Phase 3 شروع‌نشده؛ اقلام S2/S3 و
   Jobs/SMS/timezone و UX چندکلینیکی wp-admin **به تعویق افتاده و تصویب نشده‌اند**.
 
+> **🔴 وضعیتِ اقلام به‌تعویق‌افتادهٔ Jobs/SMS/timezone (2026-09-12):** **جهتِ طراحی تأیید شد ولی
+> پیاده‌سازی نشده است** — مشخصاتِ کانونی در
+> [`../architecture/phase2-tenant-context-remediation-design.md`](../architecture/phase2-tenant-context-remediation-design.md)
+> (**APPROVED DESIGN DIRECTION — NOT YET IMPLEMENTED**). آن سند: (A) tenant contextِ صریح/ایزوله
+> برای Jobها، (B) طبقه‌بندیِ صریحِ Jobهای system-wide با **بازماندنِ عمدیِ** `backup.run` /
+> `license.refresh` / `cleanup.oplog` و **ممنوعیت** `clinic_id = 0` و Clinic مصنوعی، (C) timezone
+> عملیاتی = **Location**، (D) رزولوشن per-Clinicِ پیکربندی SMS، (E) انتساب tenant در لاگ عملیاتی
+> (ستون `clinic_id` به‌تنهایی authorization نیست)، (F) قواعد backfillِ Jobهای legacy؛ به‌علاوهٔ
+> **۶ سوالِ بازِ پیش از Migration `0021`** و **مشخصاتِ ۱۲ تستِ RED (RT-1..RT-12)**.
+> **این ثبت، مجوز پیاده‌سازی نیست**؛ **End Gate فاز ۲ شروع/تعریف/پاس نشد**؛ Migration `0021`
+> ساخته نشد (آخرین = `0020`)؛ هیچ تستی نوشته/تضعیف/حذف نشد؛ Phase 3 / Phase 17 همچنان NOT STARTED.
+
 ### C8 — CLOSED به‌عنوان بستهٔ شواهد/مستنداتِ فوندیشن Location فاز ۲ (2026-09-11 — بدون پیاده‌سازی)
 
 **قاعدهٔ تفسیر (حفظ‌شده):** وجود برچسب داخلی/canonical «C8» به‌تنهایی اثبات‌کنندهٔ نیاز به کار

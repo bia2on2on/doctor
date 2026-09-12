@@ -71,6 +71,34 @@
   با یک/چند Location؛ سازمان چندکلینیکی) ثبت شد. **بدون هیچ تغییر کد/تست/workflow/schema/migration** (migration
   ‏0021 ایجاد نشده).
 
+## [Unreleased] — 2026-09-12 — طراحی ترمیم Tenant Context فاز ۲ (APPROVED DESIGN DIRECTION — NOT YET IMPLEMENTED؛ فقط مستندات)
+
+- سند کانونی جدید **`docs/architecture/phase2-tenant-context-remediation-design.md`** — جهت طراحیِ
+  **تأییدشده ولی پیاده‌سازی‌نشده** برای: **(A)** Tenant Context صریح/اعتبارسنجی‌شده/ایزوله برای Jobهای
+  پس‌زمینه (بدون وابستگی به WP کاربرِ جاری یا REST context؛ برقراری توسط Dispatcher؛ پاک‌سازی در
+  `finally`؛ حفظ scope در retry؛ fail-closed برای scope مخدوش/ناقص و نوعِ ناشناخته؛ ممنوعیت حدسِ
+  مالکیت tenant) · **(B)** طبقه‌بندی صریح و توجیه‌شدهٔ Jobهای system-wide با **بازماندنِ عمدیِ**
+  `backup.run` / `license.refresh` / `cleanup.oplog` و **ممنوعیت مطلقِ** `clinic_id = 0` و Clinic
+  مصنوعی/سنتتیک · **(C)** منبع حقیقتِ timezone عملیاتی = **Location** (یک Clinic با چند Location و
+  timezone متفاوت؛ Clinic timezone هرگز override نمی‌کند؛ `Asia/Tehran` فقط مقدار سازگاریِ کنترل‌شده و
+  هرگز پوشانندهٔ نبودِ scope نیست) · **(D)** رزولوشن پیکربندی SMS per-Clinic مستقل از کاربر/context/
+  ترتیب اجرا، از طریق انتزاعِ تمیزِ سطح اپلیکیشن (`SettingsFactory`/`SmsConfigResolver` یا معادل) ·
+  **(E)** انتساب tenant در لاگ عملیاتی (**ستون `clinic_id` به‌تنهایی authorization نیست**؛ هر
+  خوانندهٔ آینده باید مستقل scope را enforce کند؛ **هیچ نشتیِ اثبات‌نشده‌ای ادعا نشد** — امروز هیچ
+  خواننده/UI/API‌ای برای `cpms_operational_logs` وجود ندارد) · **(F)** قواعد backfill/migration برای
+  Jobهای legacy (فقط provenance قطعی؛ «تعداد یک Clinic» کافی نیست؛ موارد مبهمِ pending/processing
+  fail-closed؛ بدون Clinic ID حدسی؛ idempotent و recoverable).
+- **۶ سوالِ بازِ پیش از Migration `0021`** صریحاً OPEN/UNSOLVED ثبت شدند (مدل تنظیمات سطح نصب برای
+  backup/license؛ semanticsِ retentionِ `cleanup.oplog`؛ فهرست نهاییِ واقعاً system-wide؛ جزئیات
+  schema/ایندکس `operational_logs`؛ اندازه‌گیری واقعیِ گذار Job/schemaِ legacy؛ پایداریِ Locationِ
+  مشتق‌شده در retry). **Migration `0021` ساخته/تصویب نشد** — آخرین migration = `0020`.
+- **مشخصاتِ ۱۲ تستِ RED ‏(RT-1..RT-12)** فقط **ثبت** شد — **هیچ تستی نوشته/اجرا نشد** و همهٔ تست‌های
+  موجود بدون تغییر حفظ می‌شوند. **Phase 2 End Gate شروع/تعریف/پاس نشد**؛ Phase 3 / Phase 17 همچنان
+  **NOT STARTED**؛ **Phase 2 = IN PROGRESS**.
+- **بدون هیچ تغییر کد محصول/تست/workflow/schema/migration/tag/release/version-bump** — فقط مستندات +
+  لینک‌های کانونی (`docs/README.md`، `docs/architecture/background-jobs.md`،
+  `docs/phase-reports/phase2-state.md`، `docs/project-current-state.md`).
+
 ## [Unreleased] — C10 (Performance review) — بستهٔ شواهد عملکرد فاز ۲ (فقط مستندات)
 
 **وضعیت: C10 = CLOSED — پذیرش/بستن رسمی با تصمیم صریح مالک در 2026-09-12** (بستهٔ شواهد یکپارچه در

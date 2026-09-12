@@ -40,3 +40,19 @@
 ## 4. Test
 - هر Handler: Unit Test (Idempotency: دو بار اجرا = یک اثر) + Integration (Queue→Worker).
 - TP-13: Job `holds.expire` → Slot آزاد + Hold status=expired (تکرار = بدون اثر).
+
+## 5. Phase 2 — Tenant Context برای Jobها (🔴 طراحی تأییدشده، **پیاده‌سازی نشده**)
+
+> **APPROVED DESIGN DIRECTION — NOT YET IMPLEMENTED.** مشخصاتِ کانونیِ ترمیمِ tenant contextِ
+> Jobهای پس‌زمینه (context صریح/اعتبارسنجی‌شده/ایزولهٔ per-job، طبقه‌بندی انواعِ
+> Tenant-scoped / System-wide / Installation-wide sweep، timezone عملیاتیِ **Location**،
+> رزولوشنِ per-Clinicِ پیکربندی SMS، انتسابِ tenant در `cpms_operational_logs`، قواعدِ
+> backfill برای Jobهای legacy، ۶ سوالِ بازِ **پیش از Migration `0021`** و مشخصاتِ ۱۲ تستِ RED)
+> در سند کانونی
+> [`phase2-tenant-context-remediation-design.md`](phase2-tenant-context-remediation-design.md) ثبت شد.
+>
+> **وضعیتِ واقعیِ امروز (راستی‌آزمایی‌شده):** `cpms_jobs` **هیچ ستون tenant‌ای ندارد**،
+> `JobQueue::enqueue()` هیچ scope‌ای persist نمی‌کند و `JobsDispatcher::tick()` هیچ context‌ای
+> برقرار نمی‌کند؛ برخی Jobها جاروی سراسریِ نصب‌اند و scope هر ردیف را از آبجکت مرجع مشتق
+> می‌کنند. **هیچ کد/تست/schema/migration‌ای بر پایهٔ آن سند نوشته نشده است** و این سندِ معماری
+> همچنان رفتارِ **موجود** را توصیف می‌کند (جدول §۲ = انواع Jobهای امروز، بدون طبقهٔ scope).

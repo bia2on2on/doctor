@@ -765,5 +765,6 @@ Full slice-by-slice RED→GREEN history with run IDs:
 - [`docs/phase-reports/c6-census.md`](phase-reports/c6-census.md)
 - [`docs/phase-reports/c6-isolation-matrix.md`](phase-reports/c6-isolation-matrix.md)
 - [`docs/phase-reports/c7-0-census.md`](phase-reports/c7-0-census.md) — C7-0 evidence foundation (census only, no product change)
+- [`docs/architecture/phase2-tenant-context-remediation-design.md`](architecture/phase2-tenant-context-remediation-design.md) — **🔴 APPROVED DESIGN DIRECTION — NOT YET IMPLEMENTED**: tenant context for background jobs, system-wide job classification, Location operational timezone, per-Clinic SMS configuration resolution, operational-log tenant attribution, legacy-job backfill rules, the **6 open questions that must be closed before Migration `0021`**, and the **12-item RED test specification** (recorded only — no test written, no code changed, End Gate not started)
 - Tripwire: `bin/tenant-tripwire.py` (CI-wired, 59 self-tests)
 - [`docs/handoff/phase2-c6-to-next-agent.md`](handoff/phase2-c6-to-next-agent.md)
