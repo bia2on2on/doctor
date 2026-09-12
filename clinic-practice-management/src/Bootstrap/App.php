@@ -422,11 +422,12 @@ final class App
                 $db,
                 new VisitRepository($db),
                 new AppointmentRepository($db),
-                self::settings(),
+                self::settingsFactory(),
                 self::audit(),
                 self::licenseGate(),
                 self::notificationService(),
-                self::op()
+                self::op(),
+                self::settings()
             );
         }
 

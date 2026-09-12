@@ -154,9 +154,12 @@ final class VisitLicenseGateTest extends WP_UnitTestCase
             $db,
             new VisitRepository($db),
             new AppointmentRepository($db),
-            App::settings(),
+            App::settingsFactory(),
             App::audit(),
-            $gate
+            $gate,
+            null,
+            null,
+            App::settings()
         );
     }
 

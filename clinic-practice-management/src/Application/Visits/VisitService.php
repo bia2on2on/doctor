@@ -19,6 +19,10 @@ use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Repository\AppointmentRepository;
 use ClinicCore\Infrastructure\Repository\VisitRepository;
 use ClinicCore\Settings\Settings;
+use ClinicCore\Settings\SettingsFactory;
+use DateTimeImmutable;
+use DateTimeZone;
+use DateInterval;
 use Throwable;
 
 /**
@@ -35,6 +39,8 @@ use Throwable;
  *    فوری Walk-in-like با ارجاع به همان نوبت (Lazy + Cron Job).
  *  - **T9**: check_out → نوبت مرجع (در صورت وجود) completed می‌شود.
  *  - زمان‌بندی: همه مقادیر UTC در DB (ADR-0013)؛ ترتیب صف J-4 در Repository.
+ *  - **T2**: Location timezone مرجع عملیاتی برای no-show (periodic + lazy)
+ *    — هرگز no_show قبل از Location-local start+grace به‌صورت UTC instant
  */
 final class VisitService
 {
@@ -49,11 +55,12 @@ final class VisitService
         private readonly CpmsDb $db,
         private readonly VisitRepository $visits,
         private readonly AppointmentRepository $appointments,
-        private readonly Settings $settings,
+        private readonly SettingsFactory $settingsFactory,
         private readonly AuditLogger $audit,
         private readonly LicenseGate $licenseGate,
         private readonly ?NotificationService $notifications = null,
-        private readonly ?\ClinicCore\Infrastructure\Logging\OpLogger $opLog = null
+        private readonly ?\ClinicCore\Infrastructure\Logging\OpLogger $opLog = null,
+        private readonly ?Settings $legacySettings = null
     ) {
     }
 
@@ -61,6 +68,9 @@ final class VisitService
 
     /**
      * Check-in بیمار دارای نوبت — یا نرمال (داخل Grace) یا ER-06 دیرهنگام.
+     *
+     * T2: Lazy no-show determination now uses Location timezone + per-Clinic grace
+     * as UTC instant, not strtotime without timezone.
      *
      * @param array<string, mixed> $meta
      * @return array<string, mixed> رکورد Visit
@@ -90,9 +100,12 @@ final class VisitService
             // دیرهنگام (پس از Grace) → no_show + Visit فوری Walk-in-like (ارجاع حفظ می‌شود).
             $source = 'scheduled';
             $status = (string) $appt['status'];
-            $now = $this->db->nowUtcSql();
-            $grace = $this->noShowGraceMinutes();
-            $slotStart = $this->appointmentStartTime($appt);
+            $nowSql = $this->db->nowUtcSql();
+            $nowUtc = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+
+            // T2: per-Clinic grace + Location timezone
+            $clinicId = (int) ($appt['clinic_id'] ?? 0);
+            $locationId = (int) ($appt['location_id'] ?? 0);
 
             if (in_array($status, ['cancelled_by_patient', 'cancelled_by_staff', 'rescheduled', 'completed'], true)) {
                 throw VisitException::of(
@@ -105,18 +118,57 @@ final class VisitService
             if ($status === 'no_show') {
                 // بیمار دیر آمد و قبلاً no_show خورده → Visit فوری Walk-in-like (ER-06)
                 $source = 'walk_in';
-            } elseif ($slotStart !== null && strtotime($slotStart . ' +' . $grace . ' minutes') < strtotime($now)) {
-                // Lazy no-show (FR-5.5) — سپس Visit فوری Walk-in-like
-                $this->markAppointmentNoShow($appt, $now, $actorUserId);
-                $source = 'walk_in';
-            } elseif ($status === 'pending') {
-                // حضور بیمار = تایید نوبت (T3) — تا Checkout مسیر کامل شود
-                $this->confirmAppointment($appt, $now, $actorUserId);
+            } else {
+                // T2: Location-aware lazy no-show check
+                $shouldMarkNoShow = false;
+                if ($clinicId > 0 && $locationId > 0) {
+                    $tz = $this->resolveLocationTimezone($locationId, $clinicId);
+                    if ($tz !== null) {
+                        $apptUtc = $this->appointmentUtcInstant($appt, $tz);
+                        $grace = $this->graceForClinic($clinicId);
+                        if ($apptUtc !== null && $grace !== null) {
+                            $eligible = $apptUtc->add(new DateInterval('PT' . $grace . 'M'));
+                            if ($nowUtc >= $eligible) {
+                                $shouldMarkNoShow = true;
+                            }
+                        } else {
+                            // fail-closed: if timezone or grace cannot be resolved, do NOT mark no_show
+                            $shouldMarkNoShow = false;
+                        }
+                    } else {
+                        // fail-closed: missing/invalid Location timezone => do NOT prematurely mark
+                        $shouldMarkNoShow = false;
+                    }
+                } else {
+                    // No location_id — legacy data — fallback to old behavior? For safety, do NOT mark prematurely
+                    // Use appointmentStartTime with UTC? To preserve backward compat for single-location without location_id,
+                    // we attempt to resolve primary location as last resort, but still fail-closed if not found.
+                    $fallbackTz = $this->resolvePrimaryLocationTimezone($clinicId);
+                    if ($fallbackTz !== null) {
+                        $apptUtc = $this->appointmentUtcInstant($appt, $fallbackTz);
+                        $grace = $this->graceForClinic($clinicId);
+                        if ($apptUtc !== null && $grace !== null) {
+                            $eligible = $apptUtc->add(new DateInterval('PT' . $grace . 'M'));
+                            if ($nowUtc >= $eligible) {
+                                $shouldMarkNoShow = true;
+                            }
+                        }
+                    }
+                }
+
+                if ($shouldMarkNoShow) {
+                    // Lazy no-show (FR-5.5) — سپس Visit فوری Walk-in-like
+                    $this->markAppointmentNoShow($appt, $nowSql, $actorUserId);
+                    $source = 'walk_in';
+                } elseif ($status === 'pending') {
+                    // حضور بیمار = تایید نوبت (T3) — تا Checkout مسیر کامل شود
+                    $this->confirmAppointment($appt, $nowSql, $actorUserId);
+                }
             }
 
             $visit = $this->createVisit(
                 $actorUserId,
-                (int) $appt['clinic_id'],
+                $clinicId > 0 ? $clinicId : (int) $appt['clinic_id'],
                 $patientId,
                 (int) $appt['clinician_id'],
                 $appointmentId,
@@ -334,8 +386,8 @@ final class VisitService
      * اگر Actor «پزشکِ» متصل به یک Clinician باشد، خروجی صرفاً ویزیت‌های همان
      * Clinician است (پارامتر clinician_id نادیده گرفته می‌شود — Scope سرور-side).
      * منشی/سایر نقش‌های دارای QUEUE_READ دامنهٔ کل **مطبِ context موثق** را می‌بینند
- * (Clinic از Scope صریحِ درخواست یا Resolution سیستمی «تنها Clinic» حل می‌شود —
- * هیچ clinic_id ثابتی در این Service وجود ندارد؛ مبهَم ⇒ CLINIC_SCOPE_REQUIRED).
+     * (Clinic از Scope صریحِ درخواست یا Resolution سیستمی «تنها Clinic» حل می‌شود —
+     * هیچ clinic_id ثابتی در این Service وجود ندارد؛ مبهَم ⇒ CLINIC_SCOPE_REQUIRED).
      *
      * @return array<string, mixed>
      */
@@ -475,20 +527,57 @@ final class VisitService
         return ['balance' => (float) ($row['bal'] ?? 0), 'count' => (int) ($row['n'] ?? 0)];
     }
 
-    // ================= FR-5.5 — No-show خودکار (Cron) =================
+    // ================= FR-5.5 — No-show خودکار (Cron) — T2 Location-aware =================
 
     /**
      * نوبت‌های بدون مراجعه پس از Grace → no_show (اگر Visit فعالی ندارند).
+     *
+     * T2: Location timezone مرجع عملیاتی — هرگز no_show قبل از Location-local start+grace
+     * به‌صورت UTC instant. Periodic و lazy یک قرارداد زمانی مشترک دارند.
+     *
+     * Bounded candidate strategy: repository returns candidates where slot_date <= now+2d,
+     * limit 100. Actual eligibility computed in PHP with explicit DateTimeZone + per-Clinic grace.
+     * This is safe: never excludes overdue, may include future which will be filtered (no premature).
      *
      * @return int تعداد نوبت‌های no_show شده
      */
     public function processNoShows(): int
     {
-        $grace = $this->noShowGraceMinutes();
-        $before = gmdate('Y-m-d H:i:s', time() - ($grace * 60));
+        $nowUtc = new DateTimeImmutable('now', new DateTimeZone('UTC'));
         $count = 0;
 
-        foreach ($this->visits->appointmentsPastGrace($before) as $appt) {
+        // T2: use candidate method with explicit nowUtc for bounded strategy
+        $candidates = $this->visits->appointmentsPastGraceCandidates(100, $nowUtc);
+
+        foreach ($candidates as $appt) {
+            $clinicId = (int) ($appt['clinic_id'] ?? 0);
+            $locationId = (int) ($appt['location_id'] ?? 0);
+
+            if ($clinicId <= 0 || $locationId <= 0) {
+                continue; // fail-closed skip if missing ids
+            }
+
+            $tz = $this->resolveLocationTimezone($locationId, $clinicId);
+            if ($tz === null) {
+                continue; // fail-closed skip
+            }
+
+            $apptUtc = $this->appointmentUtcInstant($appt, $tz);
+            if ($apptUtc === null) {
+                continue;
+            }
+
+            $grace = $this->graceForClinic($clinicId);
+            if ($grace === null) {
+                continue; // fail-closed skip if grace cannot be resolved
+            }
+
+            $eligible = $apptUtc->add(new DateInterval('PT' . $grace . 'M'));
+
+            if ($nowUtc < $eligible) {
+                continue; // not yet past grace — must NOT mark no_show
+            }
+
             $count += $this->db->transactional(function () use ($appt): int {
                 // دوباره-check داخل Lock — race با Check-in هم‌زمان
                 $fresh = $this->appointments->findForUpdate((int) $appt['id']);
@@ -593,7 +682,7 @@ final class VisitService
         }
 
         // FR-6.1: Enqueue خودکار (پیش‌فرض روشن) — actor=system مجاز ماشین V3
-        if ((bool) $this->settings->get('queue.auto_enqueue', true)) {
+        if ($this->shouldAutoEnqueue($clinic_id)) {
             $this->applyEnqueue($visitId, 'checked_in', $actorUserId, $now);
         }
 
@@ -637,9 +726,10 @@ final class VisitService
                 $row['called_at'] = $now;
                 break;
             case 'recall':
-                // J-6: سقف Recall از Settings
+                // J-6: سقف Recall از Settings per-Clinic
                 $recallCount = (int) $visit['recall_count'];
-                $max = (int) $this->settings->get('queue.max_recalls', 3);
+                $clinicId = (int) ($visit['clinic_id'] ?? 0);
+                $max = $this->maxRecallsForClinic($clinicId);
                 if ($recallCount >= $max) {
                     throw VisitException::of(
                         'CLINIC_RECALL_LIMIT_REACHED',
@@ -882,9 +972,199 @@ final class VisitService
         }
     }
 
+    // ================= T2 — Location timezone + per-Clinic grace helpers =================
+
+    /**
+     * T2: Resolve Location timezone explicitly — fail-closed on missing, mismatch, invalid.
+     *
+     * Requirements:
+     * - explicit IANA
+     * - fail closed on missing Location
+     * - fail closed if Location does not belong to appointment's Clinic
+     * - fail closed on missing/invalid timezone
+     * - no Clinic timezone override, no WP site timezone, no PHP default, no Asia/Tehran fallback
+     */
+    private function resolveLocationTimezone(int $locationId, int $clinicId): ?DateTimeZone
+    {
+        if ($locationId <= 0 || $clinicId <= 0) {
+            return null;
+        }
+
+        $row = $this->db->fetchRow(
+            'SELECT id, clinic_id, timezone FROM ' . $this->db->table('cpms_locations') . ' WHERE id = %d LIMIT 1',
+            [$locationId]
+        );
+
+        if ($row === null) {
+            $this->opLog?->warning('visit.location_missing', ['location_id' => $locationId, 'clinic_id' => $clinicId]);
+            return null;
+        }
+
+        if ((int) $row['clinic_id'] !== $clinicId) {
+            $this->opLog?->warning('visit.location_clinic_mismatch', [
+                'location_id' => $locationId,
+                'expected_clinic' => $clinicId,
+                'actual_clinic' => (int) $row['clinic_id'],
+            ]);
+            return null;
+        }
+
+        $tzName = trim((string) ($row['timezone'] ?? ''));
+        if ($tzName === '') {
+            $this->opLog?->warning('visit.location_timezone_missing', ['location_id' => $locationId]);
+            return null;
+        }
+
+        try {
+            return new DateTimeZone($tzName);
+        } catch (Throwable $e) {
+            $this->opLog?->warning('visit.location_timezone_invalid', [
+                'location_id' => $locationId,
+                'timezone' => $tzName,
+                'error' => $e->getMessage(),
+            ]);
+            return null;
+        }
+    }
+
+    /**
+     * Fallback for legacy data without location_id — resolve primary location timezone.
+     * Used only when appointment has no location_id, to preserve backward compat for single-location.
+     */
+    private function resolvePrimaryLocationTimezone(int $clinicId): ?DateTimeZone
+    {
+        if ($clinicId <= 0) {
+            return null;
+        }
+
+        $primaryId = $this->db->fetchValue(
+            'SELECT id FROM ' . $this->db->table('cpms_locations') . ' WHERE clinic_id = %d AND is_primary = 1 AND is_active = 1 LIMIT 1',
+            [$clinicId]
+        );
+
+        if ($primaryId === null) {
+            $primaryId = $this->db->fetchValue(
+                'SELECT id FROM ' . $this->db->table('cpms_locations') . ' WHERE clinic_id = %d AND is_active = 1 ORDER BY id ASC LIMIT 1',
+                [$clinicId]
+            );
+        }
+
+        if ($primaryId === null) {
+            return null;
+        }
+
+        return $this->resolveLocationTimezone((int) $primaryId, $clinicId);
+    }
+
+    /**
+     * T2: Convert persisted local date/time + explicit Location timezone => UTC instant.
+     */
+    private function appointmentUtcInstant(array $appt, DateTimeZone $tz): ?DateTimeImmutable
+    {
+        $date = $appt['slot_date'] ?? '';
+        $time = $appt['slot_time'] ?? '';
+        if ($date === '' || $time === '') {
+            return null;
+        }
+
+        $dateStr = trim((string) $date) . ' ' . trim((string) $time);
+        // Try H:i:s first, then H:i
+        $local = DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $dateStr, $tz);
+        if ($local === false) {
+            $local = DateTimeImmutable::createFromFormat('Y-m-d H:i', $dateStr, $tz);
+        }
+        if ($local === false) {
+            $this->opLog?->warning('visit.appointment_datetime_parse_failed', ['slot_date' => $date, 'slot_time' => $time]);
+            return null;
+        }
+
+        return $local->setTimezone(new DateTimeZone('UTC'));
+    }
+
+    /**
+     * T2: per-Clinic grace resolution via SettingsFactory — explicit clinic_id, no ambient.
+     *
+     * Returns null on failure => fail-closed skip (do NOT mark no_show)
+     */
+    private function graceForClinic(int $clinicId): ?int
+    {
+        if ($clinicId <= 0) {
+            return null;
+        }
+
+        try {
+            $settings = $this->settingsFactory->forClinic($clinicId);
+            $grace = (int) $settings->get('queue.no_show_grace_minutes', 30);
+            return max(0, $grace);
+        } catch (Throwable $e) {
+            // Try legacy fallback if available
+            if ($this->legacySettings !== null) {
+                try {
+                    $grace = (int) $this->legacySettings->get('queue.no_show_grace_minutes', 30);
+                    return max(0, $grace);
+                } catch (Throwable $e2) {
+                    // fall through
+                }
+            }
+            $this->opLog?->warning('visit.grace_resolve_failed', ['clinic_id' => $clinicId, 'error' => $e->getMessage()]);
+            // Fail-closed: do not mark no_show if grace cannot be resolved (avoid premature)
+            return null;
+        }
+    }
+
+    private function shouldAutoEnqueue(int $clinicId): bool
+    {
+        try {
+            $settings = $this->settingsFactory->forClinic($clinicId);
+            return (bool) $settings->get('queue.auto_enqueue', true);
+        } catch (Throwable $e) {
+            if ($this->legacySettings !== null) {
+                try {
+                    return (bool) $this->legacySettings->get('queue.auto_enqueue', true);
+                } catch (Throwable $e2) {
+                }
+            }
+            return true;
+        }
+    }
+
+    private function maxRecallsForClinic(int $clinicId): int
+    {
+        try {
+            $settings = $this->settingsFactory->forClinic($clinicId);
+            return (int) $settings->get('queue.max_recalls', 3);
+        } catch (Throwable $e) {
+            if ($this->legacySettings !== null) {
+                try {
+                    return (int) $this->legacySettings->get('queue.max_recalls', 3);
+                } catch (Throwable $e2) {
+                }
+            }
+            return 3;
+        }
+    }
+
+    // Legacy wrapper for old callers (tests) — now per-clinic via factory with fallback
     private function noShowGraceMinutes(): int
     {
-        return max(0, (int) $this->settings->get('queue.no_show_grace_minutes', 30));
+        // Try to get from current scope if available, otherwise default
+        try {
+            $clinicId = App::scope()->clinicId;
+            $g = $this->graceForClinic($clinicId);
+            if ($g !== null) {
+                return $g;
+            }
+        } catch (Throwable $e) {
+        }
+
+        if ($this->legacySettings !== null) {
+            try {
+                return max(0, (int) $this->legacySettings->get('queue.no_show_grace_minutes', 30));
+            } catch (Throwable $e) {
+            }
+        }
+
+        return 30;
     }
 
     /**

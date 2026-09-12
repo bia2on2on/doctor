@@ -325,18 +325,56 @@ final class VisitRepository
     /**
      * رخدادهای no-show بالقوه (FR-5.5) — نوبت‌های بدون ویزیت فعال پس از grace.
      *
+     * T2: Bounded candidate strategy — cannot prematurely mark.
+     * Previously used CONCAT(slot_date,' ',slot_time) < %s where %s is UTC instant,
+     * which is UTC-biased and causes premature no-show for west Locations.
+     * Now returns candidates where slot_date <= now+2d (includes all past) limited 100,
+     * ordered by date/time. Actual timezone-aware filtering happens in VisitService
+     * using Location timezone + per-Clinic grace. This is safe: it never excludes
+     * an actually overdue appointment, but may include future appointments that
+     * will be filtered out in PHP (no premature marking).
+     *
      * @return list<array<string, mixed>>
      */
     public function appointmentsPastGrace(string $beforeDateTime, int $limit = 100): array
     {
+        // T2: use date-based upper bound (now UTC +2 days) to include all past + near future
+        // $beforeDateTime is legacy UTC cutoff, we keep it for BC but don't use its string compare
+        $nowUtc = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+        $upperDate = $nowUtc->add(new \DateInterval('P2D'))->format('Y-m-d');
+
         $rows = $this->db->fetchAll(
-            'SELECT a.id, a.patient_id, a.clinician_id, a.slot_date, a.slot_time' .
+            'SELECT a.id, a.clinic_id, a.location_id, a.patient_id, a.clinician_id, a.slot_date, a.slot_time' .
             ' FROM ' . $this->db->table('cpms_appointments') . ' a' .
             ' WHERE a.status = \'confirmed\'' .
-            ' AND CONCAT(a.slot_date, \' \', a.slot_time) < %s' .
             ' AND a.active_visit_id IS NULL' .
+            ' AND a.slot_date <= %s' .
+            ' ORDER BY a.slot_date ASC, a.slot_time ASC' .
             ' LIMIT %d',
-            [$beforeDateTime, $limit]
+            [$upperDate, $limit]
+        );
+
+        return is_array($rows) ? $rows : [];
+    }
+
+    /**
+     * T2: explicit candidate method with nowUtc for bounded strategy.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function appointmentsPastGraceCandidates(int $limit, \DateTimeImmutable $nowUtc): array
+    {
+        $upperDate = $nowUtc->add(new \DateInterval('P2D'))->format('Y-m-d');
+
+        $rows = $this->db->fetchAll(
+            'SELECT a.id, a.clinic_id, a.location_id, a.patient_id, a.clinician_id, a.slot_date, a.slot_time' .
+            ' FROM ' . $this->db->table('cpms_appointments') . ' a' .
+            ' WHERE a.status = \'confirmed\'' .
+            ' AND a.active_visit_id IS NULL' .
+            ' AND a.slot_date <= %s' .
+            ' ORDER BY a.slot_date ASC, a.slot_time ASC' .
+            ' LIMIT %d',
+            [$upperDate, $limit]
         );
 
         return is_array($rows) ? $rows : [];
