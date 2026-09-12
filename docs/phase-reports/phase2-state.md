@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **آخرین به‌روزرسانی** | **C10 (Performance review) — CLOSED؛ پذیرش/بستن رسمی با تصمیم صریح مالک در 2026-09-12** (بستهٔ شواهد یکپارچه در `bdb135e9`، PR #25 MERGED؛ فقط دامنهٔ محدودشدهٔ بازبینی شواهد — بدون ادعای NFR/بار/مقیاس‌پذیری؛ Phase 2 همچنان IN PROGRESS). *سابقه (2026-09-11):* بستهٔ شواهد عملکرد کامل / واجد شرایط فنی برای بستن؛ بستن رسمی مالک در انتظار. بستهٔ شواهدِ **فقط‌مستندات** در سند اختصاصی [`c10-performance-evidence.md`](c10-performance-evidence.md) + §C10 همین سند ثبت شد — بدون هیچ پیاده‌سازی/بهینه‌سازی/migration. پیش از این: **بستن رسمی C9 با تصمیم صریح مالک در 2026-09-11 پس از ادغامِ موفق** (PR #23 MERGED در `7146d5b`؛ بستن رسمی در sync فقط‌مستنداتِ PR #24 ثبت شد). Checkpoint ادغام‌شدهٔ جاریِ main = `bd2634a` (PR #24 MERGED 2026-09-11T21:54:50Z؛ والدین `7146d5b` + `2adec4e`). SHA history (تاریخی): `3fc5a54` → `becc82f` → `a49b182` (#14 head) → `099b644` (merge) → `248ca10` (PR #17 merge) → `4871f84` (PR #19 merge) → `6b438238` (#20 head) → `a385d868` (merge #20) → `3589b15d` (#21 head) → `b19930fe` (merge #21) → `c5f98ab9` (#22 head) → `0fd5c27` (merge #22) → `c92737b` (#23 head) → `7146d5b` (merge #23) → `2adec4e` (#24 head) → `bd2634a` (merge #24) |
+| **آخرین به‌روزرسانی** | **Slice 1B.1 (E) — اصلاحات پیش‌از‌ادغامِ یافته‌های بازبینیِ امنیتی/معماری روی Draft PR #27 (2026-09-12):** حذفِ `bindPayloadClinicScope` + scope-neutral شدنِ `ExportService` + گارْدِ محدودِ عضویت (`MembershipRepository::find_active`) با کدِ `CLINIC_EXPORT_CLINIC_NOT_AUTHORIZED` + fail-closed پیش‌فرضِ `JobsDispatcher`. جزئیات در بخش «Slice 1B.1» پایین. Phase 2 همچنان IN PROGRESS. *قبلی:* **C10 (Performance review) — CLOSED؛ پذیرش/بستن رسمی با تصمیم صریح مالک در 2026-09-12** (بستهٔ شواهد یکپارچه در `bdb135e9`، PR #25 MERGED؛ فقط دامنهٔ محدودشدهٔ بازبینی شواهد — بدون ادعای NFR/بار/مقیاس‌پذیری؛ Phase 2 همچنان IN PROGRESS). *سابقه (2026-09-11):* بستهٔ شواهد عملکرد کامل / واجد شرایط فنی برای بستن؛ بستن رسمی مالک در انتظار. بستهٔ شواهدِ **فقط‌مستندات** در سند اختصاصی [`c10-performance-evidence.md`](c10-performance-evidence.md) + §C10 همین سند ثبت شد — بدون هیچ پیاده‌سازی/بهینه‌سازی/migration. پیش از این: **بستن رسمی C9 با تصمیم صریح مالک در 2026-09-11 پس از ادغامِ موفق** (PR #23 MERGED در `7146d5b`؛ بستن رسمی در sync فقط‌مستنداتِ PR #24 ثبت شد). Checkpoint ادغام‌شدهٔ جاریِ main = `bd2634a` (PR #24 MERGED 2026-09-11T21:54:50Z؛ والدین `7146d5b` + `2adec4e`). SHA history (تاریخی): `3fc5a54` → `becc82f` → `a49b182` (#14 head) → `099b644` (merge) → `248ca10` (PR #17 merge) → `4871f84` (PR #19 merge) → `6b438238` (#20 head) → `a385d868` (merge #20) → `3589b15d` (#21 head) → `b19930fe` (merge #21) → `c5f98ab9` (#22 head) → `0fd5c27` (merge #22) → `c92737b` (#23 head) → `7146d5b` (merge #23) → `2adec4e` (#24 head) → `bd2634a` (merge #24) |
 | **وضعیت Phase 2** | IN PROGRESS — C1..C6 done؛ **C6 CLOSED**؛ **C7 CLOSED — پیاده‌سازی ادغام‌شده در main (PR #20 MERGED، merge `a385d868`) و پذیرش/بستن رسمی با تصمیم صریح مالک در 2026-09-11 ثبت شد**؛ **C8 CLOSED به‌عنوان بستهٔ شواهد/مستنداتِ فوندیشن Location (بدون پیاده‌سازی — رجوع به §C8 پایین)**؛ **C9 CLOSED — پیاده‌سازیِ محدودشده در main ادغام شد (PR #23 MERGED، merge `7146d5b`) و پذیرش/بستن رسمی با تصمیم صریح مالک در 2026-09-11 ثبت شد** (فقط دامنهٔ محدودشدهٔ تعریف‌شده؛ رجوع به §C9 پایین). **C10 CLOSED — پذیرش/بستن رسمی با تصمیم صریح مالک 2026-09-12؛ فقط دامنهٔ محدودشدهٔ بازبینی شواهد، بدون ادعای NFR/بار/مقیاس‌پذیری** (بستهٔ شواهدِ فقط‌مستندات؛ بدون هیچ پیاده‌سازی — §C10 پایین) |
 | **آخرین remote SHA سبزِ تأییدشده** | `bdb135e9` (`origin/main`) — هر ۴ گیت پس‌از‌ادغام success (CI `34678813474` · Real‑WP `34678813477` · Pilot/Staging `34678813488` · Closure `34678813479`)؛ PR #25 **MERGED** 2026-09-12T06:42:07Z (فقط مستندات — بستهٔ شواهد C10؛ والدین `bd2634a` + `e2d9ce74`). قبلی: `bd2634a` (PR #24 — CI `34651627032` · Real‑WP `34651627286` · Pilot/Staging `34651627290` · Closure `34651627211`) |
 | **C6 بسته شده** | ۱۴۰۱/۰۶/۱۹ — با تصمیم مالک/معمار |
@@ -91,6 +91,120 @@ Acceptance `34700452407` · Pilot/Staging `34700452411` (سه مورد آخر `p
   قراردادِ registry و تست ثبت است.
 - ⛔ **Phase 2 بسته نشده** و **End Gate شروع/پاس نشده است.**
 - ⛔ **PR #27 ادغام نشده و Ready for Review نشده است.**
+
+## Phase 2 — Slice 1B.1 (E): اصلاحات پیش‌از‌ادغامِ یافته‌های بازبینیِ امنیتی/معماری PR #27 (2026-09-12)
+
+**وضعیت:** Draft PR #27 — **DO NOT MERGE**. این برش فقط دو یافتهٔ **الزامیِ**
+بازبینی (H-1 و M-3) و یک **گارْد محدودِ مجوزِ tenant برای Export** را اصلاح
+می‌کند؛ فاز ۳ (`AuthorizationService`/نقش‌ها) پیاده‌سازی نشده و Phase 2 همچنان
+IN PROGRESS است.
+
+### یافتهٔ الزامی ۱ (H-1) — حذفِ bindکردنِ scopeِ موردِ اعتماد از payload خام
+
+- `App::bindPayloadClinicScope()` **حذف شد**؛ handlerِ `report.export` دیگر هیچ
+  scope‌ای از `payload_json.clinic_id` برقرار نمی‌کند. payload فقط «انتخابِ
+  عملیات» است، نه مجوز و نه contextِ موردِ اعتماد.
+- `ExportService` **scope-neutral** شد: هیچ‌یک از وابستگی‌های Clinic‌دار
+  (`Settings`، `ReportService`، `NotificationService`، `LocalFileStorage`) در
+  سازنده تزریق نمی‌شود؛ همه از بستهٔ جدید `ExportClinicDeps` و فقط برای
+  Clinic‌ای که مرزِ قابلِ اعتماد تعیین کرده است، به‌صورت **lazy** حل می‌شوند.
+- ترتیبِ مسیر Job در `generate()`: اعتبارِ عددیِ `clinic_id` (فقط انتخاب عملیات)
+  → `requireClinicMembership()` (مجوزِ tenant) → حلِ `ExportClinicDeps` →
+  bindِ scope → اجرا. یعنی context **فقط پس از** مرزِ قابلِ اعتماد برقرار می‌شود
+  و ساختِ سرویس هیچ خواندنِ Settings/فایل/پیکربندیِ tenant‌دار ندارد.
+- `App::exportService()` دیگر `App::settings()` را resolve نمی‌کند (تأیید با
+  تحلیلِ سورس).
+
+### گارْدِ محدودِ مجوزِ Export (بستنِ مسیرِ confused-deputy — نه فاز ۳)
+
+- `requireReportAccess()`/`requireCap()` فقط capability‌های **سراسریِ**
+  WordPress را می‌سنجند و به‌تنهایی نمی‌توانند «حقِ export» را از «حقِ export
+  در این Clinic» جدا کنند.
+- گارْدِ جدید `requireClinicMembership()` از primitive موجودِ فاز ۲ استفاده
+  می‌کند: `MembershipRepository::find_active()` روی `cpms_clinic_memberships` با
+  `status = 'active'` — **نه** `AuthorizationService` فاز ۳ و **نه** نقش/سیاستِ
+  اختراعی. عددی‌بودنِ `clinic_id` مجوز نیست.
+- نبودِ عضویتِ فعال ⇒ **fail-closed** با کدِ پایدارِ
+  `CLINIC_EXPORT_CLINIC_NOT_AUTHORIZED` (HTTP 403). بدون fallback، بدون حدس،
+  بدون صدور خروجی.
+- عمداً روی `request()` اعمال نشد: آنجا Clinic از `TrustedClinicEstablisher`
+  (همان عضویتِ تأییدشدهٔ `find_active`) می‌آید و افزودنِ دوبارهٔ آن می‌توانست
+  نصبِ تک‌کلینیکی را که scope‌اش از `SystemClinicResolver` می‌آید بشکند.
+
+### یافتهٔ الزامی ۲ (M-3) — fail-closed بودنِ registry به‌صورتِ پیش‌فرض
+
+- `JobsDispatcher` اکنون `$allowUnclassifiedJobTypes = false` به‌صورتِ
+  **پیش‌فرض** دارد؛ production با ساختِ معمولیِ دوآرگومانی enforcement دارد و
+  نمی‌تواند «تصادفاً» dispatcherِ سهل‌گیر بسازد.
+- تنها مصرف‌کنندهٔ مجازِ حالتِ permissive، زیرساختِ عمومیِ تست است
+  (`JobQueueTest`) که با آرگومانِ سومِ `true` **صریح** opt-out می‌کند.
+- نوعِ ناشناختهٔ production همچنان `JOB_SCOPE_UNCLASSIFIED` (stable) می‌گیرد؛
+  RT-12 دست‌نخورده و قوی است.
+
+### شواهدِ اجرایی (تست‌ها) — و مرزِ صداقتِ شواهد
+
+- `tests/Integration/Phase2JobScopeRedFoundationTest.php` از ۸ به **۱۴ تست** رسید.
+  هر ۸ تستِ Slice 1A/1B — از جمله **RT-3 و RT-6** — بدون تغییر ماندند.
+- ۶ تستِ جدید: (۱) payload دست‌کاری‌شده با capability سراسریِ کامل
+  (`cpms_report_read` + `cpms_export` + `cpms_patient_read`) و عضویتِ فعالِ
+  Clinic A **نمی‌تواند** از مرز Clinic به B عبور کند؛ (۲) مسیرِ مشروعِ
+  هم‌Clinic همچنان کار می‌کند؛ (۳) گرافِ `ExportService` بدون هیچ Clinic/Scope
+  قابلِ ساخت است و scope‌ای برقرار نمی‌کند؛ (۴) ساختِ پیش‌فرضِ dispatcher نوعِ
+  بدون‌طبقه را رد می‌کند؛ (۵) حالتِ permissive فقط با opt-in صریح؛ (۶) dispatcher
+  تولیدی enforcement را حفظ می‌کند.
+- **مرزِ صداقت:** ۶ تستِ جدید **همزمان با کدِ اصلاحی** (همان commit) اضافه
+  شدند؛ برای آن‌ها **run جداگانهٔ RED وجود ندارد** (زنجیرهٔ RED → GREEN مستند
+  فقط برای ۵ تستِ اصلیِ Slice 1A/1B است). GREEN‌بودنِ تستِ گارْد یعنی رد شدن در
+  شرایطِ «همهٔ capability‌های سراسری + عضویتِ A + نبودِ عضویتِ B» — نه یک run
+  RED ساختگی.
+
+### M-2 — هشت job که همچنان توسط Settingsِ Clinic-scoped مسدودند (مستند، نه حل)
+
+پس از lazy شدنِ dispatcher (Slice 1B)، هشت نوع job هنوز در **لحظهٔ اجرای
+handler** وابستگی‌های Clinic‌دار را می‌سازند و در نصبِ چندکلینیکیِ بدونِ
+کاربر/scope با `CLINIC_SCOPE_REQUIRED` شکست می‌خورند:
+
+| نوع | کلاس | محلِ خواندن Settings/Scope در ساختِ handler |
+|---|---|---|
+| `cleanup.oplog` | S | `OpLogCleanupHandler($db, self::settings())` |
+| `backup.run` | S | `self::backupService()` + `self::settings()` |
+| `handwriting.gc` | S | `self::handwritingService()` → `self::settings()` |
+| `slots.generate` | W | `self::settings()` |
+| `appt.reminder` | W | `self::settings()` + `self::notificationService()` |
+| `fu.reminder` | W | `self::settings()` + `self::notificationService()` |
+| `notif.dispatch` | W | `self::notificationService()` → `self::settings()` |
+| `visits.no_show` | W | `self::visitService()` → `self::settings()` |
+
+- **علت شکست:** این هشت job پیکربندی/سرویسِ Clinic‌دار را در لحظهٔ اجرا
+  (داخل callable ثبت‌شده) می‌سازند؛ در نصبِ چندکلینیکیِ بدونِ scope،
+  `App::scope()` fail-closed خطا می‌دهد و handler قبل از انجامِ کارش می‌افتد.
+- **پیامدِ retry/churn:** `JobQueue::fail()` وقتی `attempts < max_attempts`
+  است job را دوباره `queued` می‌کند (backoff ۱/۵/۱۵/۶۰/۳۰۰ ثانیه) و پس از
+  `max_attempts = 3` terminal `failed` می‌شود؛ اما `scheduleRecurringJobs()` در
+  هر tick نوعِ بدونِ ردیفِ `queued` را **دوباره enqueue** می‌کند ⇒ چرخهٔ
+  تکراریِ claim → شکست → بازصف → شکست، بدون انجامِ کارِ واقعی.
+- **`cleanup.oplog` یکی از همین jobهای مسدود است.**
+- **این مورد توسط Slice 1B.1 رفع نشده** و یک بلوکرِ باقی‌ماندهٔ فاز ۲ است
+  (نیازمند معماریِ Settings سطحِ نصب / §۸-۱؛ خارج از دامنهٔ این برش — نه جابه‌جایی
+  کلید، نه migration/schema).
+- ⚠ طبقه‌بندیِ T/S/W به‌خودیِ‌خود اثباتِ صحتِ عملیاتی نیست؛ فقط قراردادِ scope است.
+
+### M-4 — retry قطعیِ scope همچنان generic (بازطراحی نشده)
+
+- شکست‌های **قطعیِ** scope/پیکربندی (مثل `CLINIC_SCOPE_REQUIRED` بالا) همچنان
+  از رفتارِ retry عمومیِ `JobQueue::fail()` استفاده می‌کنند (بازصف با backoff
+  به‌جای terminal فوری/سیاستِ خاصِ «شکست قطعی»).
+- در این برش **queue بازطراحی نشده** و هیچ معماریِ retry جدیدی افزوده نشد؛
+  این یک آیتمِ باقی‌ماندهٔ follow-up است.
+
+### جمع‌بندی برش 1B.1
+
+- ✅ بدون schema/migration — آخرین migration همچنان `2026_09_09_0020`؛ `0021`
+  وجود ندارد. بدون تغییر workflow. بدون force-push/بازنویسی تاریخچه. بدون
+  تضعیف/اسکیپِ تست.
+- ⛔ فاز ۳ (AuthorizationService/نقش‌ها) پیاده‌سازی نشده — فقط گارْدِ محدود با
+  primitive موجود.
+- ⛔ Phase 2 IN PROGRESS · End Gate NOT STARTED/PASSED · PR #27 DRAFT و ادغام‌نشده.
 
 ## گیت‌های سبز — پس‌از‌ادغام (روی `bd2634a` = `origin/main` جاری)
 
