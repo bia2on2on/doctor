@@ -62,10 +62,241 @@
 - ‏`docs/handoff/phase2-c6-to-next-agent.md`، ‏`docs/governance/project-phase-taxonomy.md`،
   ‏`docs/README.md`، ‏`docs/roadmap/roadmap.md`، ‏`CHANGELOG.md` — هم‌ترازی تداوم.
 
+## [Unreleased] — 2026-09-12 — اصلاحاتِ مستنداتیِ پس از بازبینیِ مستقلِ معماریِ طراحیِ Tenant Context (حکمِ مالک: `B`؛ فقط مستندات)
+
+**زمینه:** بازبینیِ **فقط‌خواندنیِ** Draft PR #26 و سندِ کانونیِ
+`docs/architecture/phase2-tenant-context-remediation-design.md` توسط ایجنت، سپس **تصمیمِ صریحِ مالک:**
+**`B — NEEDS SMALL DOCUMENTATION CORRECTIONS BEFORE ACCEPTANCE`** (بدونِ merge). این ورودی **فقط
+مستندات** است: **هیچ کد محصول، تست، workflow/CI، schema یا migration‌ای تغییر نکرد/ساخته نشد/اجرا نشد**
+و **هیچ شمارهٔ migration آینده‌ای رزرو نشد** (آخرین migration = `0020`).
+
+### C-1 (must-fix) — تصحیحِ گزارهٔ نادرستِ §۵-D-2 دربارهٔ credentialِ SMS
+
+- جملهٔ «Secret/API key هرگز در `cpms_settings` ذخیره نمی‌شود (فقط wp-config/env)» **با کدِ جاری و با
+  ‏`ADR-0025:44-45` در تضاد بود** و حذف/جایگزین شد. **واقعیتِ راستی‌آزمایی‌شده با بازرسیِ کد:**
+  credentialِ پنلِ SMS **per-Clinic** در کلیدِ **`sms.auth`** از `cpms_settings` ذخیره می‌شود، به‌صورتِ
+  **sealed** ‏(AES-256-GCM: `{v, nonce, tag, data}` + `last4`) — نوشتن `SmsService.php:348`، خواندن
+  ‏`:646-660`، رمزگشایی **فقط در لحظهٔ call به provider** ‏`:667+`؛ ‏`CredentialVault.php:7-15`.
+- **‏`plaintext` هرگز** در settings/HTML/log/REST/audit نیست (کپیِ audit با `[redacted:credentials]` —
+  ‏`Settings.php:145-147`, `:239-243`) ⇒ قاعدهٔ درست «**plaintext ممنوع**» است، نه «ذخیره در settings ممنوع».
+- **کلیدِ Vault سطحِ نصب است** (`CPMS_SECRET_KEY` یا Saltهای نصب) ⇒ **رمزنگاری به‌خودیِ خود ایزولاسیونِ
+  Clinic را enforce نمی‌کند**؛ اپلیکیشن **باید پیش از بازیابی/رمزگشایی، Clinicِ درست را اعتبارسنجی و
+  resolve کند**. دامنهٔ ایزولاسیونِ per-Clinic صریح شد: `sms.provider` · قالب/‏`template_id` ·
+  `sms.sender`/پارامترها · `sms.advanced` · **و `sms.auth` (sealed credential)**. **تضمینِ رمزنگاری بیش از
+  حدِ واقعی بیان نشد.**
+
+### C-2..C-9 — سایر اصلاحاتِ مستنداتی (همه با راستی‌آزماییِ مجددِ شاهد)
+
+- **C-2:** اصلاحِ ترتیبِ شمارهٔ ردیف‌های جدولِ §۱ (ردیفِ ۱۴ پیش از ۱۳ آمده بود).
+- **C-3:** تکمیلِ §۱ ردیف ۴ — `ScopeContext` در production در **سه** مسیر ست می‌شود: Job/Export، REST
+  Trusted context، و **صفحاتِ wp-admin** با `App::replaceExplicitScope`
+  ‏(`ClinicianAdminPage.php:413/456/491/509`؛ `App.php:884`).
+- **C-4:** ثبتِ **سابقهٔ کاریِ موجود** به‌عنوانِ ردیفِ ۱۵ §۱ — ‏`report.export` امروز `clinic_id` را در
+  ‏`payload_json` persist می‌کند، **fail-closed** اعتبارسنجی می‌کند (`clinic_id ≤ 0` ⇒
+  ‏`CLINIC_SCOPE_REQUIRED`)، scope را bind و در **`finally`** restore می‌کند
+  ‏(`ExportService.php:74-80`, `:112-126`, `:393-404`, `:410-422`) ⇒ انتخابِ مکانیزمِ contextِ per-job
+  ‏**greenfield نیست**.
+- **C-5:** تصحیحِ طبقهٔ `appt.reminder` در §۲-A-2 از **T** به **W** — رفتارِ جاری **جاروی سراسریِ بدونِ
+  predicate کلینیک** با انتسابِ per-row است (`ApptReminderHandler.php:46-58`)؛ **هیچ shardingِ
+  per-Clinic‌ای وجود ندارد و ادعا نشد**؛ همچنین تصریح شد **T-per-Clinic برای یادآوری‌ها کافی نیست**
+  (چند Location با timezone متفاوت ⇒ C-1/C-2).
+- **C-6:** ثبتِ **منبعِ سومِ timezone** = کلیدِ `setup.clinic.timezone` و **قطعِ اتصالِ راستی‌آزمایی‌شده**:
+  ویزارد آن را می‌نویسد (`CpmsSetupWizard.php:269`, `:585-600`) ولی `clinicTimezone()` **فقط**
+  ‏`cpms_clinics.timezone` را می‌خواند (`Settings.php:282-289`) و **هیچ مسیرِ production‌ای** پس از seedِ
+  ‏`0001:736` آن ستون را نمی‌نویسد ⇒ **انتخابِ timezone در ویزارد امروز در runtime مؤثر نیست**
+  (‏«مؤثر» خوانده نشد).
+- **C-7:** افزودنِ **C-9/C-10** به §۴ — ‏`slots.generate` تاریخ/افق را با `gmdate('Y-m-d')` یعنی **UTC**
+  محاسبه می‌کند (`SlotsGenerateHandler.php:29-30`) و `visits.no_show` cutoffِ **UTC** را با مقادیرِ
+  **محلیِ** `slot_date/slot_time` مقایسه می‌کند (`VisitService.php:485-491`؛
+  ‏`VisitRepository.php:330-342`) ⇒ هر دو **صریحاً در دامنهٔ remediationِ timezone** هستند
+  (پیامدها به‌عنوانِ **استنتاج** ثبت شد، نه مشاهدهٔ اجراشده؛ **بدونِ تعمیمِ فراتر از شاهد**).
+- **C-8:** افزودنِ **E-7** — تنها ایندکسِ `cpms_operational_logs` یعنی `idx_oplog_level (level, created_at)`
+  ‏(`0001:709`) به‌دلیلِ **قاعدهٔ leftmost-prefix** الگوی دسترسیِ retentionِ امروز
+  (`DELETE ... WHERE created_at < %s` — `OpLogCleanupHandler.php:27-33`) را **پوشش نمی‌دهد** و آن حذف
+  **بی‌کران (بدونِ `LIMIT`)** است. راه‌حل‌های ممکن (chunked delete، ایندکسِ leading بر `created_at`)
+  **فقط جهتِ طراحی** ثبت شد — **بدونِ ایندکسِ speculative و بدونِ پیاده‌سازی**.
+- **C-9:** تعیینِ **منبعِ حقیقتِ registryِ Jobها = `App::dispatcher()`/`RECURRING_JOBS`**
+  ‏(`App.php:1002+`, `:1045-1065`؛ **۱۵ نوعِ ثبت‌شده**، ۱۳ نوع زمان‌بندی‌شده + دو نوعِ رویدادمحور) و
+  ثبتِ این‌که `background-jobs.md` §۲ **drift دارد و منبعِ حقیقتِ runtime نیست** — **بدونِ بازنویسیِ
+  تاریخچه** (یادداشتِ drift در همان سند + `drift-register.md` §۹-B).
+
+### §A-3 جدید — طبقه‌بندیِ T/S/W برای ۱۵ نوعِ واقعی (مدلِ طراحیِ مصوب، نه پیاده‌سازی)
+
+- جدولِ کامل با **تفکیکِ اجباریِ** «رفتارِ جاریِ runtime (راستی‌آزمایی‌شده)» از «طبقهٔ هدف»، به‌همراهِ
+  وابستگیِ جاری به Settings، دسترسیِ tenant-sensitive، لزومِ `clinic_id` روی Job و مجاز بودنِ `NULL`.
+- طبقهٔ هدفِ `backup.run` و `license.refresh` = **S ولی ⚠️ مشروط به §۸-۱**؛ ‏`cleanup.oplog` = **S**
+  (پس از §۸-۲)؛ ‏`sms.send` و `report.export` = **T**؛ بقیه = **W** یا **S** مطابقِ جدول.
+- **‏`NULL` هرگز به‌طور خودکار «system» نیست** — معنا فقط از **طبقهٔ ثبت‌شدهٔ همان نوع** می‌آید؛
+  **‏`clinic_id = 0` و Clinic مصنوعی ممنوع** (بدون تغییر).
+
+### §۸ — وضعیتِ بازبینی‌شدهٔ شش سوالِ پیش از هر migration آینده (تصمیماتِ مالک)
+
+- **۸-۱ 🟢 APPROVED DIRECTION (در سطحِ اصل):** انتزاعِ اختصاصیِ اپلیکیشن/repository روی **WordPress
+  Options API** برای پیکربندیِ اسکالرِ **اثبات‌شده سطحِ نصب**، با ترجیحِ **`autoload=no`** برای مواردِ
+  غیرِ hot-path/حساس (سابقهٔ بومیِ راستی‌آزمایی‌شده: `cpms_otp_pepper` با `add_option(..., '', 'no')` —
+  ‏`OtpService.php:521-527`). ⛔ **انتقالِ فله‌ای بر پایهٔ اشتراکِ prefix ممنوع** — semanticِ هر کلید
+  جداگانه راستی‌آزمایی می‌شود. ⛔ وضعیتِ **ساخت‌یافتهٔ** license در جدول‌های اختصاصیِ سطحِ نصب
+  ‏(`cpms_license_install`/`cpms_license_state` — Migration `0008`) **جابه‌جا نمی‌شود**. ⏳ **فهرستِ دقیقِ
+  کلیدها نهایی نشد.**
+- **۸-۲ ✅ RESOLVED:** ‏`retention.oplog_days` = **نصب‌گسترده** — مبنای دوگانه: رفتارِ قابلِ اجرایِ امروز
+  (یک `DELETE` سن‌محورِ کلِ جدول، بدونِ بُعد tenant) + شاهدِ **تاریخیِ** محصول
+  ‏(`settings-reference.md:5` v1.5؛ `agent-guide.md:658` — پیش‌فرضِ ۹۰ روز «مصوبِ کارفرما»).
+  ⚠️ **مرزِ ضدِتعمیم:** این حکم **فقط** دربارهٔ همین کلید است؛ سایرِ کلیدهای retention/purge
+  ‏(`notif.archive_days`، `hw.version_keep`/`hw.version_max_age_days`، `retention.audit_years`/`record_years`،
+  ثابت‌های `Idempotency::cleanup(90)`/`RateLimiter::cleanup(2*86400)`) **از آن استنتاج نمی‌شوند** و
+  نیازمندِ راستی‌آزمایی/تصمیمِ **جداگانه**‌اند. retentionِ per-Clinic در آینده ⇒ **بازطراحیِ
+  tenant-awareِ صریح**.
+- **۸-۳ 🟢 APPROVED DESIGN MODEL:** ‏T/S/W + جدولِ §A-3 (‏۱۵ نوعِ واقعی). **ثبتِ اجرایی در registryِ کد
+  انجام نشده** و طبقهٔ `backup.run`/`license.refresh` **مشروط** است.
+- **۸-۴ ⛔ schema/migration NOT AUTHORIZED:** فقط جهتِ بازبینی‌شده ثبت شد (لزومِ انتساب برای رویدادهای
+  tenant-scoped؛ ‏`clinic_id BIGINT UNSIGNED NULL` به‌عنوانِ **کاندید**؛ **بدونِ `location_id`** مگر نیازِ
+  query/semanticِ اثبات‌شده؛ فقدانِ ایندکسِ مناسب برای queryِ فقط-`created_at`). **استراتژیِ دقیقِ
+  FK/ایندکس/backfill/cutoff نهایی و کانونی نشد** — از جمله راهبردِ **«NULLِ دو-دوره‌ای» فقط یک گزینهٔ
+  در حالِ بررسی است، نه تصمیمِ نهایی**.
+- **۸-۵ ⏳ OPEN — NOT MEASURED:** کدِ مخزن نمی‌تواند جمعیتِ واقعیِ صفِ production را ثابت کند و **هیچ
+  عددی ثبت نشد**. نمونهٔ پرس‌وجوی اندازه‌گیری با **abstractionِ DBِ پروژه** (`$db->table('cpms_jobs')`)
+  نوشته شد، چون **prefixِ وردپرس محیط‌محور است** و `wp_` ثابت در سندِ معماریِ عالم‌گیر ثبت نمی‌شود.
+- **۸-۶ ✅ RESOLVED برای انواعِ جاریِ Job:** ‏`location_id` روی نوبت/ویزیت **snapshotِ زمانِ ساخت** است و
+  **مسیرِ تغییرِ معمولی ندارد**؛ **reschedule ردیفِ نوبتِ جدید می‌سازد**؛ ‏`cpms_locations` **هیچ
+  نویسندهٔ production‌ای ندارد** ⇒ جهتِ مصوب: اشتقاقِ Location از **آبجکتِ مرجعِ authoritative در زمانِ
+  اجرا**. ⚠️ اگر semanticsِ آینده اجازهٔ تغییرِ Location بدهد ⇒ **بازنگریِ صریحِ قرارداد** (نه تغییرِ
+  خاموشِ retry). ⏳ **زنجیرهٔ اشتقاقِ Location برای آبجکت‌های بدونِ `location_id`**
+  ‏(`cpms_follow_ups`، `cpms_notifications`، `cpms_sms_messages`) **باز مانده است**.
+
+### تست‌ها (فقط مشخصات — هیچ تستی نوشته/اجرا نشد)
+
+- ‏**RT-1..RT-12 حفظ** و با شاهد تدقیق شدند: RT-2 (تفکیکِ «تاریخ/زمانِ محلی» از «quiet hours» + fixtureِ
+  ردیفِ واقعیِ Location دوم، چون **هیچ مسیرِ محصولی برای ساختِ آن وجود ندارد**) · RT-3 (سنجشِ **هویتِ
+  credential/پیکربندی**، نه فقط provider ID — چون کلیدِ Vault سطحِ نصب است) · RT-4 (cron/CLI بدونِ کاربرِ
+  WP؛ ثبتِ رفتارِ **جاری** = افتادنِ **کلِ tick** و هدف = fail-closedِ per-job) · RT-6 (پوششِ **همهٔ**
+  کش‌های سطحِ process: ‏`Settings::$cache`، `App::$settings/$dispatcher/$smsService` و **registry/providerهای
+  SMS**) · RT-7 (همان Clinic در retry + Locationِ authoritative + assertِ تغییرناپذیریِ snapshot) ·
+  RT-8 (**بدونِ side-effectِ جزئی** پیش از reject) · RT-9 (افزودنِ `slots.generate` و `visits.no_show`) ·
+  RT-10 (**evidence-driven**؛ بدونِ تکرارِ literal-normalizationِ Migration `0020`) · RT-11 (تفکیکِ «سمتِ
+  نوشتنِ امروز» از «enforceِ خوانندهٔ آینده» که **موکول به وجودِ خواننده** است) · RT-12 (روی **۱۵ نوعِ
+  واقعی** + قراردادِ سازگاریِ `T ⇒ غیرتهیِ معتبر / S,W ⇒ NULL`).
+- **‏RT-13 و RT-14 افزوده شدند:** ‏RT-13 = پیکربندیِ سطحِ نصب **بدونِ contextِ Clinic** حل شود و **هیچ**
+  ‏`clinic_id = 0`/Clinic مصنوعی ساخته نشود؛ RT-14 = **ایزولاسیونِ شکستِ per-job درونِ یک tick**.
+  ‏**RT-15 اضافه نشد** (الزامِ سراسریِ خانوادهٔ retention بدونِ شاهدِ semanticِ جداگانه).
+- **‏`۱۲ تستِ RED` به `۱۴ تستِ RED ‏(RT-1..RT-14)` به‌روز شد** — هیچ تستِ موجودی
+  skip/weaken/quarantine/حذف نشد.
+
+### Drift records (کوچک و شاهددار — `docs/drift-register.md` بخش ۹ جدید)
+
+- **۹-A:** تناقضِ داخلیِ `settings-reference.md` — سطرِ `:12` («Secret/API Key در این جدول ذخیره
+  نمی‌شود») در برابرِ **همان سند** `:56` و §Secrets `:106` و `ADR-0025:44-45` (ذخیرهٔ sealed در
+  ‏`cpms_settings.sms.auth`). 🕒 DEFERRED — خودِ `settings-reference.md` **دست‌نخورده** ماند.
+- **۹-B:** جدولِ §۲ `background-jobs.md` در برابرِ registry واقعیِ runtime — نام‌های ثبت‌نشده
+  ‏(`appt.expire_pending`، `ocr.recognize`، `cleanup.holds`، `audit.chain_verify`، `temp.cleanup`)،
+  نام‌های ناهمسان (`no_show.detect` ↔ `visits.no_show`؛ `cleanup.idempotency` ↔ `cleanup.idem`)، انواعِ
+  ثبت‌شدهٔ غایب (`cleanup.oplog`، `cleanup.rate_limits`، `sms.send`)، و تفاوتِ «فرکانس/افقِ» ثبت‌شده با
+  رفتارِ واقعی (`scheduleRecurringJobs()` در هر tick با payloadِ تهی؛ افق از `booking.max_future_days` =
+  ‏**۶۰** روز). 🕒 DEFERRED — **بدونِ بازنویسیِ جدولِ تاریخی** (فقط یادداشتِ drift).
+- **۹-C:** docblockِ کهنهٔ `ClinicianRepository.php:17` («همه کوئری‌ها clinic_id=1») در برابرِ کوئری‌های
+  parameterizedِ واقعی (`:30/39/41`, `:76/80`). 🕒 DEFERRED — **هیچ فایلِ PHP‌ای تغییر نکرد**.
+- **صریح‌سازی:** هیچ‌یک از این سه مورد **نقصِ امنیتیِ جاری یا نشتِ cross-clinic ثبت نمی‌کند**؛ به‌طورِ
+  خاص **`cpms_operational_logs` هیچ خواننده/UI/APIِ production‌ای ندارد** ⇒ **ادعای نشتی ثبت نشد**.
+
+### تصحیحِ شماره‌گذاریِ migration (بدونِ رزرو)
+
+- هر عبارتِ **رزروکنندهٔ شمارهٔ migration آینده** در سندِ طراحی و در اشاره‌های کانونیِ
+  ‏(`docs/README.md`، `background-jobs.md` §۵، `phase2-state.md`، `project-current-state.md`) به
+  **«پیش از هر migration آینده»** تبدیل شد. **‏`0021` وجود ندارد، تصویب نشده و رزرو نشده است**؛
+  **شماره و محتوای migration بعدی فقط هنگامِ تصویبِ اولین برشِ پیاده‌سازیِ migration‌دار تعیین می‌شود**،
+  و **هیچ الزامی وجود ندارد که اولین PRِ پیاده‌سازی migration داشته باشد**.
+
+### Changed (فقط مستندات)
+
+- ‏`docs/architecture/phase2-tenant-context-remediation-design.md` — C-1..C-9 · §A-3 جدید · §۳-B-1 به‌روز ·
+  §۴ (جدولِ سه منبعِ timezone + C-9/C-10) · §۵-D-2 بازنویسی‌شده · §۶ (E-6/E-7) · §۷ (یادداشت‌های
+  provenance/‏`0020`/payloadِ تهی) · §۸ بازنویسی‌شده · §۹ ‏(RT-1..RT-14) · §۱۰ · §۱۱ (ردیفِ Provenance جدید).
+- ‏`docs/architecture/background-jobs.md` — یادداشتِ driftِ §۲ + بازنویسیِ اشارهٔ §۵ (منبعِ حقیقتِ registry).
+- ‏`docs/drift-register.md` — بخش ۹ جدید (‏۹-A/۹-B/۹-C).
+- ‏`docs/README.md`، `docs/phase-reports/phase2-state.md`، `docs/project-current-state.md` — هم‌ترازیِ
+  اشاره‌های کانونی (بدونِ رزروِ شمارهٔ migration؛ ‏۱۴ تستِ RED؛ §A-3).
+- ‏`docs/agent-guide.md` — ورودیِ الحاقیِ §۱۰ (append-only؛ بدونِ بازنویسیِ ورودی‌های پیشین).
+- ‏`CHANGELOG.md` — همین ورودی.
+
+### صریحاً ادعا **نمی‌شود**
+
+- پیاده‌سازیِ هر بخشی از این طراحی (contextِ per-job، registryِ طبقه‌ها، فروشگاهِ تنظیماتِ سطحِ نصب،
+  انتسابِ لاگ، timezoneِ Location) — وضعیتِ اجرا = **NOT IMPLEMENTED**.
+- نوشتن/اجرای هر تست (‏RT-1..RT-14 فقط مشخصات‌اند)؛ هیچ تستِ موجودی تضعیف/حذف نشد.
+- وجودِ هر migration، تغییرِ schema، یا رزروِ شمارهٔ migration آینده.
+- **نشتِ cross-clinicِ `operational_logs`** یا نشتِ Health UI (هیچ مسیرِ خواندنِ production‌ای اثبات نشد).
+- هر ادعای NFR/بار/مقیاس‌پذیری/آمادگیِ تجاری؛ **بستنِ Phase 2**؛ شروع/پاس‌شدنِ **Phase 2 End Gate**؛
+  شروعِ **Phase 3** یا **Phase 17**.
+- تبدیلِ توصیهٔ ایجنت به تصمیمِ مالک: مواردِ 🟢/✅ §۸ **فقط** بازتابِ تصمیماتِ صریحِ مالک (2026-09-12) است
+  و مواردِ ⏳ همچنان **OPEN**‌اند.
+- **C10 = CLOSED** با همان دامنهٔ محدودشدهٔ پیشین (بازبینیِ شواهد) — بدون تغییر. **Phase 2 = IN PROGRESS.**
+- ‏**PR #26 همچنان DRAFT است** (Ready/merge نشد) و **PR #13 دست‌نخورده** (OPEN + DRAFT).
+
+
+## [Unreleased] — 2026-09-12 — بستن رسمی C10 + الزام دائمی توپولوژی‌های استقرار (فقط مستندات)
+
+- **C10 CLOSED** با تصمیم صریح مالک (دامنهٔ محدودشدهٔ بازبینی شواهد؛ بدون ادعای NFR/بار/مقیاس‌پذیری؛
+  Phase 2 همچنان IN PROGRESS؛ Phase 3 / Phase 17 NOT STARTED). هم‌ترازی در `c10-performance-evidence.md`،
+  `phase2-state.md`، `project-current-state.md`، `project-phase-taxonomy.md`، `roadmap.md`، `docs/README.md`.
+- **ADR-0031 §۸ / AD-17** — الزام دائمی محصول «یک هسته، سه توپولوژی استقرار» (مطب تک‌پزشک؛ کلینیک چندپزشک
+  با یک/چند Location؛ سازمان چندکلینیکی) ثبت شد. **بدون هیچ تغییر کد/تست/workflow/schema/migration** (migration
+  ‏0021 ایجاد نشده).
+
+## [Unreleased] — 2026-09-12 — آشتی‌دهیِ «۵۴» تاریخی با وضعیتِ جاریِ runtime (فقط مستندات)
+
+- **`۵۴` = سرشماریِ تاریخیِ Phase 0** (۵۴ hardcode در ۲۳ فایل؛ به‌همراهِ ۳ Default-Parameter = ۵۷ در
+  ۲۶ فایل) و **بدون بازنویسی** در گزارش‌های تاریخی حفظ شد. **وضعیتِ راستی‌آزمایی‌شدهٔ جاری (2026-09-12):**
+  نقضِ tenant-default در runtime فعال = **`۰`** · hardcode‌های Tenant Tripwire = **`۰`** ·
+  allowlist = **`[]`** · suspects = **۱** (موردِ sanction‌شدهٔ `SystemClinicResolver.php:52`) ·
+  هر ۳ Default-Parameter تاریخی **حذف شده‌اند** · `DEFAULT 1` سطحِ schema از هر ۳ جدول با Migration
+  ‏`0016` برداشته شد. **ادعای «۵۴ نقصِ جاری» نشده و نمی‌شود.**
+- **§D‑1 جدید در `docs/project-current-state.md`** (جدولِ کاملِ شاهدِ قابلِ اجرا + عبارتِ کانونیِ مجازِ
+  گزارش‌دهی) · یک یادداشتِ «وضعیتِ جاری» در `docs/architecture/phase0.5-target-model.md` §الف‑۶
+  (بدون دست‌کاریِ اعداد/جداول/فرمان‌های تاریخی) · تصریحِ یک‌خطی روی قاعدهٔ AD-13 در
+  `docs/agent-guide.md` · یادداشتِ «pinned به SHA تاریخی» روی جملهٔ `6e5d48c` در §D (مسیرِ trustedِ
+  REST پس از C7 وجود دارد).
+- **ثبتِ یک پاکسازیِ کوچکِ آینده — انجام نشد:** docblockِ
+  ‏`clinic-practice-management/src/Infrastructure/Repository/ClinicianRepository.php:17` هنوز می‌گوید
+  «همه کوئری‌ها clinic_id=1 (V1 تک-کلینیک — ADR-0003)». **راستی‌آزماییِ مستقل: کهنه است** — کلاس
+  ‏`int $clinic_id` صریح می‌گیرد (`listAll():30`، `create():76`) و هیچ literalِ tenant ندارد. چون این
+  تسک **فقط‌مستندات** است، **هیچ فایل PHP‌ای تغییر نکرد**؛ این قلم به‌عنوان cleanupِ **فقط‑کامنتیِ**
+  آینده (بدون تغییر رفتار/تست/اثرِ tripwire) ثبت شد.
+- **بدون هیچ تغییر کد/تست/workflow/schema/migration** — Migration `0021` ساخته نشد (آخرین = `0020`).
+
+## [Unreleased] — 2026-09-12 — طراحی ترمیم Tenant Context فاز ۲ (APPROVED DESIGN DIRECTION — NOT YET IMPLEMENTED؛ فقط مستندات)
+
+- سند کانونی جدید **`docs/architecture/phase2-tenant-context-remediation-design.md`** — جهت طراحیِ
+  **تأییدشده ولی پیاده‌سازی‌نشده** برای: **(A)** Tenant Context صریح/اعتبارسنجی‌شده/ایزوله برای Jobهای
+  پس‌زمینه (بدون وابستگی به WP کاربرِ جاری یا REST context؛ برقراری توسط Dispatcher؛ پاک‌سازی در
+  `finally`؛ حفظ scope در retry؛ fail-closed برای scope مخدوش/ناقص و نوعِ ناشناخته؛ ممنوعیت حدسِ
+  مالکیت tenant) · **(B)** طبقه‌بندی صریح و توجیه‌شدهٔ Jobهای system-wide با **بازماندنِ عمدیِ**
+  `backup.run` / `license.refresh` / `cleanup.oplog` و **ممنوعیت مطلقِ** `clinic_id = 0` و Clinic
+  مصنوعی/سنتتیک · **(C)** منبع حقیقتِ timezone عملیاتی = **Location** (یک Clinic با چند Location و
+  timezone متفاوت؛ Clinic timezone هرگز override نمی‌کند؛ `Asia/Tehran` فقط مقدار سازگاریِ کنترل‌شده و
+  هرگز پوشانندهٔ نبودِ scope نیست) · **(D)** رزولوشن پیکربندی SMS per-Clinic مستقل از کاربر/context/
+  ترتیب اجرا، از طریق انتزاعِ تمیزِ سطح اپلیکیشن (`SettingsFactory`/`SmsConfigResolver` یا معادل) ·
+  **(E)** انتساب tenant در لاگ عملیاتی (**ستون `clinic_id` به‌تنهایی authorization نیست**؛ هر
+  خوانندهٔ آینده باید مستقل scope را enforce کند؛ **هیچ نشتیِ اثبات‌نشده‌ای ادعا نشد** — امروز هیچ
+  خواننده/UI/API‌ای برای `cpms_operational_logs` وجود ندارد) · **(F)** قواعد backfill/migration برای
+  Jobهای legacy (فقط provenance قطعی؛ «تعداد یک Clinic» کافی نیست؛ موارد مبهمِ pending/processing
+  fail-closed؛ بدون Clinic ID حدسی؛ idempotent و recoverable).
+- **۶ سوالِ بازِ «پیش از Migration `0021`»** صریحاً OPEN/UNSOLVED ثبت شدند *(🔴 تاریخی — اکنون هیچ شمارهٔ migration آینده‌ای رزرو نیست و وضعیتِ این شش سوال بر پایهٔ تصمیماتِ مالک 2026-09-12 در ورودیِ «اصلاحاتِ مستنداتیِ پس از بازبینیِ مستقلِ معماری» به‌روز شد)* (مدل تنظیمات سطح نصب برای
+  backup/license؛ semanticsِ retentionِ `cleanup.oplog`؛ فهرست نهاییِ واقعاً system-wide؛ جزئیات
+  schema/ایندکس `operational_logs`؛ اندازه‌گیری واقعیِ گذار Job/schemaِ legacy؛ پایداریِ Locationِ
+  مشتق‌شده در retry). **Migration `0021` ساخته/تصویب نشد** — آخرین migration = `0020`.
+- **مشخصاتِ ۱۲ تستِ RED ‏(RT-1..RT-12)** فقط **ثبت** شد — **هیچ تستی نوشته/اجرا نشد** و همهٔ تست‌های
+  موجود بدون تغییر حفظ می‌شوند. **Phase 2 End Gate شروع/تعریف/پاس نشد**؛ Phase 3 / Phase 17 همچنان
+  **NOT STARTED**؛ **Phase 2 = IN PROGRESS**.
+- **بدون هیچ تغییر کد محصول/تست/workflow/schema/migration/tag/release/version-bump** — فقط مستندات +
+  لینک‌های کانونی (`docs/README.md`، `docs/architecture/background-jobs.md`،
+  `docs/phase-reports/phase2-state.md`، `docs/project-current-state.md`).
+
 ## [Unreleased] — C10 (Performance review) — بستهٔ شواهد عملکرد فاز ۲ (فقط مستندات)
 
-**وضعیت: بازبینی شواهد C10 کامل / واجد شرایط فنی برای بستن — بستن رسمی مالک در انتظار (PENDING).**
-C10 رسماً بسته نشده است. این ورودی فقط مستندات است؛ **بدون هیچ تغییر کد محصول/تست/workflow/schema/migration.**
+**وضعیت: C10 = CLOSED — پذیرش/بستن رسمی با تصمیم صریح مالک در 2026-09-12** (بستهٔ شواهد یکپارچه در
+`origin/main` = `bdb135e9`، PR #25 MERGED؛ ۴ گیت پس‌از‌ادغام success). دامنهٔ بستن فقط بازبینی محدودشدهٔ
+شواهد عملکرد است — **نه** انطباق NFR جاری، **نه** عملکرد بار پس از Multi-Clinic، **نه** مقیاس‌پذیری،
+**نه** آمادگی تجاری، **نه** Phase 17، **نه** بستن Phase 2؛ اعداد تاریخی تاریخی می‌مانند و اقلام
+NOT MEASURED / NOT RETRIEVED بدون تغییر. *(سابقه 2026-09-11: واجد شرایط فنی؛ بستن رسمی مالک PENDING.)* این ورودی فقط مستندات است؛ **بدون هیچ تغییر کد محصول/تست/workflow/schema/migration.**
 
 ### Added (docs)
 - سند جدید اختصاصی **`docs/phase-reports/c10-performance-evidence.md`** — بستهٔ شواهد عملکردِ داخلیِ LEVEL-2 فاز ۲، محدود به فوندیشن Multi-Clinic: مرزِ صریح با Owner Phase 17 (Performance — NOT STARTED)؛ ثبت شواهد اجراشدهٔ واقعی اما محدودِ Staging (اهداف `performance-baseline.md`؛ نتایج تاریخی `report-pilot-gate.md` §8 — **مقدم بر تغییرات Multi-Clinic ‏C4..C7؛ اثبات وجود/اجرای ابزار، نه عملکرد کد جاری**؛ گام `ab` در job `staging-gate` از `pilot-gate.yml`؛ گیت‌های Pilot/Staging سبز روی کد جاری — جدیدترین روی `bd2634a`، run ‏`34651627290` — **فقط اجرای موفق استپ؛ اعداد جاری قابل بازیابی نیستند و موفقیت workflow ≠ پاس‌شدن آستانه‌های latency**)؛ فهرست صریح NOT MEASURED (عملکرد محیط مرجع/NFR، سربار صفحات عمومی p95<100ms، شمارش کوئری/N+1، حافظه، بار معنادار چندکلینیکی) به‌عنوان شواهد آینده (عمدتاً Phase 17 / اعتبارسنجی انتشار) — **نه بلوکر C10**؛ خلاصهٔ بازبینی static محدود فاز ۲ (**هیچ نقص عملکردی VERIFIED نیازمند remediation نیافت**؛ بازرسی کد ≠ عملکرد اندازه‌گیری‌شده؛ عدم وجود سراسری N+1 ادعا نمی‌شود)؛ ریسک‌های ثبت‌شدهٔ مبتنی بر شواهد (مشاهدهٔ گذرای Deadlock روی `_transient_cpms_migrate_lock` در c=100 → Backlog؛ کلیدهای کش آینده tenant-aware)؛ و حکم برچسب تاریخی «End Gate (۲۶بندی)» — **هیچ فهرست کانونیِ تعریف‌شدهٔ ۲۶بندی در مخزن جاری یا تاریخچهٔ ردیابی‌شدهٔ بازرسی‌شدهٔ Git یافت نشد**؛ بازسازی ۲۶ بند انجام نمی‌شود؛ منشأ عدد به‌عنوان provenance ثبت نمی‌شود.

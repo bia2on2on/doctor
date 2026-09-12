@@ -277,6 +277,20 @@ wp_users  ──1:1──▶  wp_usermeta['{prefix}capabilities']  ──▶  ی
 | فیلتر `WHERE ... clinic_id` | **۴۴** | — |
 | `clinic_id = %d` (پارامتری، سالم) | **۲۵** | لایهٔ Repository تا حد خوبی آماده است |
 
+> **🔴 وضعیتِ جاری (2026-09-12) — اعدادِ این بخش historical provenance هستند، نه وضعیتِ امروز.**
+> سرشماریِ زیر در **Phase 0** اندازه‌گیری شد و **بازنویسی/حذف نمی‌شود**. وضعیتِ راستی‌آزمایی‌شدهٔ امروز:
+> **نقضِ tenant-default در runtime فعال = `0`** · **hardcode‌های Tenant Tripwire = `0`** ·
+> **allowlist = `[]` (خالی)** — شاهدِ قابلِ اجرا:
+> `python3 bin/tenant-tripwire.py --allowlist bin/tenant-tripwire-allowlist.json` ⇒
+> `{"files_scanned": 173, "hardcodes": 0, "suspects": 1, "allowlist_entries": 0}` (تنها suspect =
+> `SystemClinicResolver.php:52` — sanction‌شده و fail-closed). آن **۳ Default-Parameter نیز حذف شده‌اند**
+> و `DEFAULT 1` در سطحِ schema از هر **۳ جدول** (`sms_messages`, `drug_reference`, `idempotency_keys`)
+> با Migration `0016` برداشته شد. فرمان‌های grepِ پایین اگر **امروز** اجرا شوند فقط **ارجاع‌های
+> متنی/کامنتی به خودِ ممنوعیتِ AD-13** و یک عبارت داخل Migrationِ اجراشدهٔ `0020` را برمی‌گردانند —
+> **نه** tenant-defaultِ runtime. آشتی‌دهیِ کانونیِ «۵۴ تاریخی ↔ ۰ جاری»:
+> [`../project-current-state.md`](../project-current-state.md) §D‑1.
+> **قاعدهٔ گزارش‌دهی:** «۵۴» هرگز به‌عنوان نقصِ **جاری** گزارش نشود و هرگز از تاریخ **حذف** نشود.
+
 ### 🔴 تصحیح — ادعای قبلی این بخش باطل شد
 
 > **ادعای باطل‌شده (نسخهٔ اول این سند):** «hardcodeها عمدتاً خارج از Repository هستند؛ لایهٔ Repository تقریباً Scope-ready است؛ کار فاز ۲ فقط تزریق Context به لایهٔ Service است و حجم کار را به‌طور معناداری کم می‌کند.»

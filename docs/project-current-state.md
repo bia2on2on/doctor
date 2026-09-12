@@ -3,7 +3,14 @@
 > Recover the project from this file + Git/remote/PR + linked canonical docs.
 > Do **not** use a previous chat session as memory.
 >
-> **Integrated main checkpoint:** `7146d5bb4167d2ac333000188d404c2aa977b817`
+> **Integrated main checkpoint:** `bdb135e9b3eff9db9fbe104c33bc6c30850c5263`
+> (PR #25 MERGED 2026-09-12T06:42:07Z — documentation-only C10 performance evidence
+> package integrated; approved head `e2d9ce74`; merge parents `bd2634a` (main before merge,
+> PR #24 docs merge) + `e2d9ce74` (PR #25 head); post-merge gates success: CI `34678813474` ·
+> Real WP `34678813477` · Pilot/Staging `34678813488` · Closure `34678813479`).
+> **C10 FORMALLY CLOSED by explicit Owner decision 2026-09-12** (bounded evidence review
+> only — see §K). Phase 2 IN PROGRESS; Phase 3 / Phase 17 NOT STARTED.
+> **Previous integrated checkpoint (historical):** `7146d5bb4167d2ac333000188d404c2aa977b817`
 > (PR #23 MERGED 2026-09-11T19:35:54Z — bounded C9 i18n remediation integrated;
 > approved head `c92737bb0a30fbdf13d804a8dcdffa522fd556ae`;
 > merge parents `0fd5c2790e33a3d233a0b6ecb5c997b85fa5db54` (main before merge,
@@ -69,7 +76,7 @@ Legacy labels (`F0..F10`, `Doc-Phase`, `V1` / `V1.5` / `V2`) are historical. The
 | Phase 0.5 | CLOSED |
 | Phase 1A | CLOSED (`9bc6f7f`; OD-9 CLOSED) |
 | Phase 1B | DEFERRED — scoped / object authorization (depends on Phase 2 + 3) |
-| Phase 2 | **IN PROGRESS** — subphase **C6 CLOSED** + post-closure corrective integrated (PR #17); subphase **C7 CLOSED** (remediation integrated via PR #20 at merge `a385d868`; **formal Owner acceptance recorded 2026-09-11**) |
+| Phase 2 | **IN PROGRESS** — subphase **C6 CLOSED** + post-closure corrective integrated (PR #17); subphase **C7 CLOSED** (remediation integrated via PR #20 at merge `a385d868`; **formal Owner acceptance recorded 2026-09-11**); **C8 / C9 CLOSED**; **C10 CLOSED (explicit Owner decision 2026-09-12; bounded evidence review only — no NFR/load/scalability claim)**. Internal queue C1..C10 complete; **Phase 2 End Gate NOT defined / NOT passed** |
 | C7 | **CLOSED — formally accepted by explicit Owner decision on 2026-09-11.** Technical closure was already evidenced (implementation merged into `main` via PR #20, merge `a385d868`, 2026-09-11T13:09:16Z; slices C7-0→C7-S6; all gates GREEN). The Owner acceptance covers the defined/completed C7 scope only — it is **not** a claim that all conceivable tenant isolation throughout the product is perfect, **not** commercial-readiness approval, and does not approve any deferred item, migration, or later phase — see `docs/phase-reports/c7-0-census.md` §۱۱ |
 | C8 | **CLOSED as a Phase-2 Location-foundation evidence/documentation closure package (2026-09-11) — NO implementation work performed or authorized.** Reviewed evidence found no verified Phase-2 Location implementation gap. C8 closure means "the Phase-2 Location foundation is closed based on current evidence", not "all future Location/timezone behavior is complete" — see `docs/phase-reports/phase2-state.md` §C8 |
 | Phase 3 | **NOT STARTED** — no `AuthorizationService`; do not start |
@@ -219,7 +226,44 @@ Client-requested context
   → Repository
 ```
 
-At `6e5d48c` this pipe is **not** implemented on the REST boundary. `ScopeContext::set` in production exists only inside `ExportService` job bind. REST staff still falls through to `SystemClinicResolver` (exactly-one Clinic) or throws `CLINIC_SCOPE_REQUIRED`.
+At `6e5d48c` this pipe is **not** implemented on the REST boundary. `ScopeContext::set` in production exists only inside `ExportService` job bind. REST staff still falls through to `SystemClinicResolver` (exactly-one Clinic) or throws `CLINIC_SCOPE_REQUIRED`. *(Pinned to that historical SHA — C7 later added the trusted REST path `Rest/RestClinicContext.php` → `TrustedClinicEstablisher`; see §C7 below.)*
+
+### D-1. Historical `54` tenant-default census vs. current runtime state (re-verified 2026-09-12 — documentation only)
+
+**`54` is historical Phase‑0 provenance, not a current defect count.** The Phase‑0 census
+(`docs/architecture/phase0.5-target-model.md` §الف‑۶, `docs/phase-reports/report-phase-0-reverification.md` C‑4)
+measured **54 `clinic_id = 1` hardcodes in 23 files** (24 of them inside
+`Infrastructure/Repository/`), plus **3 hidden default-parameters** (`?int $clinicId = 1` ×2,
+`int $clinicId = 1` ×1) = extended census **57 in 26 files**. Those numbers stay **exactly as
+recorded** in the historical reports — they are not rewritten here.
+
+Current state, independently re-verified on this working tree (no code was changed to produce it):
+
+| Measure (2026‑09‑12) | Value | Evidence |
+|---|---|---|
+| Tenant Tripwire hardcodes in **active production runtime** (`clinic-practice-management/src`, excluding `tests/`, `vendor/`, `Migrations/`) | **0** | `python3 bin/tenant-tripwire.py --allowlist bin/tenant-tripwire-allowlist.json` → `{"files_scanned": 173, "hardcodes": 0, "suspects": 1, "allowlist_entries": 0}`; `--test` → 59/59 self-tests pass |
+| Tenant Tripwire **allowlist** | **`[]` (empty)** | `bin/tenant-tripwire-allowlist.json` → `{"entries": []}`; plugin copy `clinic-practice-management/bin/tenant-tripwire-allowlist.json` → `[]` |
+| Tripwire **suspects** | **1 — sanctioned, not a tenant default** | `src/Application/Scope/SystemClinicResolver.php:52` (`LIMIT 1` *inside* the fail-closed exactly-one-Clinic resolution; sanctioned in `phase-reports/c6-census.md`, AD‑04) |
+| Historical exact grep pattern over `src/` (`clinic_id\s*=\s*1\b\|'clinic_id'\s*=>\s*1\b`) | **7 textual matches, 0 runtime tenant-default resolutions** | 6 are prose/docblock references *to the prohibition itself* (`OtpService.php:323`, `PatientIdentityService.php:23`, `ClinicScope.php:12`, `ClinicianRepository.php:17`, `MembershipRepository.php:14`, `LoginRateLimiter.php:135`); 1 is inside already-applied Migration `0020` (guarded legacy backfill that **aborts** in a multi-Clinic install). Migrations are immutable history and are deliberately not edited |
+| The 3 historical **default-parameters** (`?int $clinicId = 1` in `AuditLogger`/`Idempotency`, `int $clinicId = 1` in `Settings`) | **removed — no `= 1` tenant default remains anywhere in `src/`** | grep for tenant default-parameters in `src/` returns none. Now: `Settings::__construct` requires an explicit `int $clinicId` (`Settings.php:149`); `Idempotency::{check,complete,release}` require an explicit `int $clinicId`; `AuditLogger::log` takes `?int $clinicId = null` — it uses the caller's explicit Clinic, else the active `App::scope()`, and when scope is ambiguous/absent (`ScopeRequiredException`) records **NULL = system** (never `1`), per the Migration `0016` semantics (`AuditLogger.php:47-58`) |
+| Schema-level `clinic_id … DEFAULT 1` | **removed** (3 tables) | Migration `0016` dropped `DEFAULT 1` from `cpms_sms_messages` (+ `INT`→`BIGINT`), `cpms_drug_reference`, `cpms_idempotency_keys` — the exact three tables listed in `phase-reports/final-pre-phase2-gate-report.md` §۴ and in the «🔴 تصحیح نهایی Pre-Phase-2 Gate» block of `architecture/phase0.5-target-model.md` (after ب‑۵) |
+
+**Canonical wording to use from now on:** *historical Phase‑0 census = 54 (+3 default-parameters =
+57/26 files); current active-runtime tenant-default violations = 0; tripwire hardcodes = 0;
+tripwire allowlist = `[]`.* Never state "54 current hardcodes" and never delete the historical 54.
+
+**Small verified future code-comment cleanup (recorded, NOT performed here — documentation-only task):**
+`clinic-practice-management/src/Infrastructure/Repository/ClinicianRepository.php:17` still carries the
+docblock line «همه کوئری‌ها clinic_id=1 (V1 تک-کلینیک — ADR-0003)». Independently verified **stale**:
+the class takes an explicit `int $clinic_id` (`listAll(int $clinic_id, …)` at line 30,
+`create(int $clinic_id, array $fields)` at line 76) and contains **no** tenant literal. This is a
+**comment-only** cleanup (no behavior change, no test change, no tripwire impact) and is left for a
+future code task because this task must not touch PHP.
+
+The structurally open item is **not** hardcodes but the background-job/tenant-context path
+(`cpms_jobs` has no tenant columns; the dispatcher establishes no tenant context). The approved
+**design direction — NOT YET IMPLEMENTED** is recorded in
+[`docs/architecture/phase2-tenant-context-remediation-design.md`](architecture/phase2-tenant-context-remediation-design.md).
 
 ---
 
@@ -695,8 +739,9 @@ Full slice-by-slice RED→GREEN history with run IDs:
   runtime query-count/N+1 measurement; memory; and meaningful multi-Clinic load scale.
   **No staging number is evidence of production performance**, and this correction does not
   start or authorize C10.
-- **C10 evidence/closure package (2026-09-11 — documentation-only; C10 technically
-  eligible for closure, OWNER FORMAL CLOSURE PENDING):** the bounded C10 performance
+- **C10 evidence/closure package (2026-09-11 — documentation-only; at that time C10 was
+  technically eligible for closure with Owner formal closure pending — superseded by the
+  Owner closure decision of 2026-09-12 recorded below):** the bounded C10 performance
   evidence review is complete and recorded in
   `docs/phase-reports/c10-performance-evidence.md` (+ `phase2-state.md` §C10). C10 is
   an internal LEVEL-2 Phase-2 performance review/evidence package limited to the
@@ -725,12 +770,24 @@ Full slice-by-slice RED→GREEN history with run IDs:
   inspection is not measured performance, and no global absence of N+1 or all-product
   performance perfection is claimed; (4) for the historical "End Gate (26 items)" label, **no canonical defined
   26-item Phase-2 End Gate checklist was found in the current repository or inspected
-  tracked Git history**; the origin of the number is not recorded as provenance fact. **C10 status: evidence
-  review complete / technically eligible for closure — OWNER FORMAL CLOSURE PENDING
-  (C10 is NOT formally closed).** Phase 2 remains IN PROGRESS; the Phase 2 End Gate
+  tracked Git history**; the origin of the number is not recorded as provenance fact. **C10 status (historical at that
+  point): evidence review complete / technically eligible for closure — owner formal
+  closure pending.** Phase 2 remains IN PROGRESS; the Phase 2 End Gate
   and Phase 3 are NOT started. No new reference-server/load-test campaign is required
   merely to close the internal C10 evidence package; broad commercial performance
   engineering remains Owner Roadmap Phase 17.
+- **C10 — FORMALLY CLOSED by explicit Owner decision on 2026-09-12.** The C10 evidence
+  package was integrated into `origin/main` at **`bdb135e9b3eff9db9fbe104c33bc6c30850c5263`**
+  (PR #25 MERGED 2026-09-12T06:42:07Z; parents `bd2634a` + approved head `e2d9ce74`); all
+  four post-merge gates on that SHA succeeded (CI `34678813474` · Real WordPress Acceptance
+  `34678813477` · Pilot/Staging `34678813488` · Closure Gate `34678813479`). **Scope of this
+  closure: only the bounded Phase-2 performance evidence/review.** It does **not** establish
+  current latency-NFR compliance, current post-Multi-Clinic load performance, scalability,
+  commercial performance readiness, Phase 17 completion, or Phase 2 completion. The
+  historical 2026-09-06 §8 benchmark numbers remain historical (pre-C4..C7); workflow
+  success remains non-numeric evidence; NOT RETRIEVED / NOT MEASURED items remain exactly
+  as recorded in `c10-performance-evidence.md` §3. **Phase 2 remains IN PROGRESS; Phase 3
+  and Phase 17 remain NOT STARTED; the Phase 2 End Gate is not defined/passed.**
 
 
 ---
@@ -745,5 +802,6 @@ Full slice-by-slice RED→GREEN history with run IDs:
 - [`docs/phase-reports/c6-census.md`](phase-reports/c6-census.md)
 - [`docs/phase-reports/c6-isolation-matrix.md`](phase-reports/c6-isolation-matrix.md)
 - [`docs/phase-reports/c7-0-census.md`](phase-reports/c7-0-census.md) — C7-0 evidence foundation (census only, no product change)
+- [`docs/architecture/phase2-tenant-context-remediation-design.md`](architecture/phase2-tenant-context-remediation-design.md) — **🔴 APPROVED DESIGN DIRECTION — NOT YET IMPLEMENTED**: tenant context for background jobs, system-wide job classification, Location operational timezone, per-Clinic SMS configuration resolution, operational-log tenant attribution, legacy-job backfill rules, the **6 pre-implementation design questions** (recorded against the Owner's 2026-09-12 decisions; this document **reserves no migration number**), the **T/S/W classification of the 15 job types actually registered in `App::dispatcher()`** (§A-3), and the **14-item RED test specification RT-1..RT-14** (recorded only — no test written, no code changed, End Gate not started). Independent read-only architecture review 2026-09-12 → Owner verdict **`B — NEEDS SMALL DOCUMENTATION CORRECTIONS`**; corrections **C-1..C-9** applied (notably: SMS credentials ARE stored per-Clinic in `cpms_settings.sms.auth` as sealed AES-256-GCM material per ADR-0025, and the installation-level vault key means cryptography alone does not enforce Clinic isolation)
 - Tripwire: `bin/tenant-tripwire.py` (CI-wired, 59 self-tests)
 - [`docs/handoff/phase2-c6-to-next-agent.md`](handoff/phase2-c6-to-next-agent.md)

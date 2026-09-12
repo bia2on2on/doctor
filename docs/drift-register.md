@@ -315,3 +315,52 @@ production باشد.
 Agent حذف/تغییر داده نشده‌اند؛ نسخهٔ حدسی بازسازی نمی‌شوند. اگر مالک محتوای
 آنها را لازم دارد، باید از منبع اصلی مجدداً تأمین شوند. Phase 2 را بلاک
 نمی‌کند.
+
+---
+
+## بخش ۹ — ثبت‌های Phase 2 (بازبینیِ مستقلِ معماریِ طراحیِ Tenant Context، 2026-09-12)
+
+> **دامنهٔ این ثبت‌ها:** سه driftِ **کوچک و شاهددار** که حینِ بازبینیِ فقط‌خواندنیِ
+> [`architecture/phase2-tenant-context-remediation-design.md`](architecture/phase2-tenant-context-remediation-design.md)
+> (Draft PR #26) راستی‌آزمایی شدند. **هیچ فایل PHP‌ای تغییر نکرد**، هیچ بازنویسیِ انبوهی انجام نشد و
+> هیچ سندِ تاریخی بازنویسی نشد — طبق اصلِ حاکمِ همین Register («wholesale rewrite ممنوع»).
+
+### ۹-A — 🕒 `settings-reference.md`: تناقضِ داخلی دربارهٔ محلِ نگهداریِ Secretِ SMS
+
+| | |
+|---|---|
+| **سند/محل** | `docs/settings-reference.md:12` در برابرِ **همان سند** `:56` و §Secrets `:102-106` |
+| **متنِ ناسازگار** | `:12` — «Secret/API Key در این جدول ذخیره نمی‌شود — فقط از `wp-config.php`/Environment (تصمیم F1-D3)» |
+| **واقعیتِ راستی‌آزمایی‌شده** | `:56` و `:106` (و `ADR-0025-provider-agnostic-sms.md:44-45`) صریحاً می‌گویند credentialِ پنلِ SMS در **`cpms_settings.sms.auth`** ذخیره می‌شود — **فقط Ciphertext/‏nonce/‏tag + `last4`** (AES-256-GCM). کد نیز همین است: نوشتن `SmsService.php:348`، خواندن `:646-660`، رمزگشایی فقط در لحظهٔ call `:667+`؛ `CredentialVault.php:7-15`؛ redactionِ کپیِ audit در `Settings.php:145-147`/`:239-243` |
+| **داوری** | جملهٔ `:12` روایتِ **کهنهٔ** «قاعدهٔ D3» است: قاعدهٔ درست **«plaintext ممنوع»** است، نه **«ذخیره در settings ممنوع»**. کلیدِ Vault **سطحِ نصب** است (`CPMS_SECRET_KEY` یا Saltهای نصب) ⇒ **رمزنگاری به‌خودیِ خود مرزِ tenant نیست** |
+| **اثر** | سندِ طراحیِ Tenant Context (§۵-D-2) همین جملهٔ کهنه را به ارث برده بود ⇒ در همان سند **تصحیح شد** (C-1). خودِ `settings-reference.md` **دست‌نخورده** ماند |
+| **فاز مالک / اقدام** | 🕒 **DEFERRED** — اصلاحِ جملهٔ `:12` (یک خط) هم‌زمان با اولین لمسِ مستنداتِ Settings در فازِ مالک؛ **بدونِ تغییرِ رفتار/کد** |
+
+### ۹-B — 🕒 `background-jobs.md` §۲ در برابرِ registry واقعیِ runtime
+
+| | |
+|---|---|
+| **سند/محل** | `docs/architecture/background-jobs.md` §۲ («فهرست Jobها») |
+| **منبعِ حقیقتِ runtime** | `App::dispatcher()` + `RECURRING_JOBS` در `clinic-practice-management/src/Bootstrap/App.php:1002+` و `:1045-1065` ⇒ **۱۵ نوعِ ثبت‌شده** (۱۳ نوع زمان‌بندی‌شده + دو نوعِ رویدادمحورِ `sms.send` و `report.export`) |
+| **نام‌های موجود در سند ولی ثبت‌نشده در کد** | `appt.expire_pending`، `ocr.recognize`، `cleanup.holds`، `audit.chain_verify`، `temp.cleanup` |
+| **نام‌های ناهمسان** | `no_show.detect` ↔ **`visits.no_show`** · `cleanup.idempotency` ↔ **`cleanup.idem`** |
+| **انواعِ ثبت‌شدهٔ غایب از سند** | `cleanup.oplog`، `cleanup.rate_limits`، `sms.send` |
+| **جزئیاتِ رفتاریِ ناسازگار** | سند برای `slots.generate` «روزانه (۰۲:۰۰)» و «۳۰ روز آینده» ثبت کرده؛ رفتارِ واقعی: `scheduleRecurringJobs()` در **هر tick** هر نوعِ زمان‌بندی‌نشده را با **payloadِ تهی** enqueue می‌کند (`App.php:1114-1128`) و افق از `booking.max_future_days` با پیش‌فرضِ **۶۰** روز می‌آید (`Settings.php:42`) |
+| **داوری** | این سند **مرجعِ مفهومی/تاریخی** است و **منبعِ حقیقتِ runtime نیست**؛ هر طبقه‌بندی/allowlistِ Job باید از **کدِ dispatcher** ساخته شود |
+| **اثر** | در `background-jobs.md` یک **یادداشتِ drift** (بدونِ بازنویسیِ جدول) و در سندِ طراحی §A-3 «منبعِ حقیقتِ registry» صریح شد |
+| **فاز مالک / اقدام** | 🕒 **DEFERRED** — هم‌ترازیِ کاملِ جدولِ §۲ با registry در فازِ مالکِ Jobs (بدونِ حذفِ محتوای تاریخی) |
+
+### ۹-C — 🕒 docblockِ کهنهٔ `ClinicianRepository.php:17`
+
+| | |
+|---|---|
+| **محل** | `clinic-practice-management/src/Infrastructure/Repository/ClinicianRepository.php:17` |
+| **متنِ کهنه** | «همه کوئری‌ها `clinic_id=1` (V1 تک-کلینیک — ADR-0003)» |
+| **واقعیتِ راستی‌آزمایی‌شده** | کلاس `int $clinic_id` **صریح** می‌گیرد و کوئری‌ها parameterized‌اند (`listAll():30/39/41`، `create():76/80`)؛ **هیچ literalِ tenant‌ای در این کلاس نیست** — هم‌راستا با Tenant Tripwire (`hardcodes: 0`) |
+| **اقدامِ انجام‌شده** | **هیچ** — این تسک فقط‌مستندات است و **فایلِ PHP تغییر نکرد**. این قلم پیش‌تر نیز به‌عنوانِ cleanupِ **فقط‑کامنتیِ** آینده ثبت شده بود (`CHANGELOG.md`، ورودیِ 2026-09-12 «آشتی‌دهیِ ۵۴ تاریخی») و اینجا به‌عنوانِ driftِ مستقلِ قابلِ ردیابی ثبت می‌شود |
+| **فاز مالک / اقدام** | 🕒 **DEFERRED** — اصلاحِ یک خطِ کامنت، بدونِ تغییرِ رفتار/تست/اثرِ tripwire |
+
+> **صریح‌سازی:** هیچ‌یک از این سه مورد **نقصِ امنیتیِ جاری** یا **نشتِ cross-clinic** ثبت نمی‌شود.
+> به‌طورِ خاص، دربارهٔ `cpms_operational_logs` **هیچ مسیرِ خواندنِ production‌ای وجود ندارد**
+> (فقط `OpLogger` می‌نویسد و `OpLogCleanupHandler` بر پایهٔ retention حذف می‌کند) ⇒ **ادعای نشتی
+> ثبت نمی‌شود**. این سه ردیف فقط **بدهیِ مستنداتی/کامنتی** هستند.

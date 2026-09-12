@@ -33,6 +33,12 @@
 | `license.refresh` | هر Tick (چک) / Backoff | refresh سند مجوز از سرور فروشنده (F10/ADR-0023) — هرگز در مسیر درخواست | `refreshDue()` + Backoff بر اساس شکستهای پیاپی |
 | `temp.cleanup` | روزانه | فایل‌های موقت/Preview مهلت‌گذشته | — |
 
+> ⚠️ **یادداشتِ drift (2026-09-12 — بدونِ بازنویسیِ جدولِ تاریخی):** فهرستِ بالا **منبعِ حقیقتِ
+> runtime نیست**. منبعِ حقیقت = `App::dispatcher()`/`RECURRING_JOBS`
+> (`clinic-practice-management/src/Bootstrap/App.php`) با **۱۵ نوعِ ثبت‌شده**. جزئیاتِ اختلاف
+> (نام‌های ثبت‌نشده، نام‌های ناهمسان، انواعِ غایب، و تفاوتِ «فرکانس/افقِ» ثبت‌شده با رفتارِ واقعیِ
+> زمان‌بندی) در **`docs/drift-register.md` §۹-B** ثبت شد.
+
 ## 3. Alert و پایش
 - هر `failed` (نهایی) → `cpms_operational_logs(level=error)` + Internal Notification به `cpms_config` holders.
 - Metric ساده (تعداد queued/failed در صفحه Admin فنی) — V1؛ Export Metrics (V2).
@@ -40,3 +46,28 @@
 ## 4. Test
 - هر Handler: Unit Test (Idempotency: دو بار اجرا = یک اثر) + Integration (Queue→Worker).
 - TP-13: Job `holds.expire` → Slot آزاد + Hold status=expired (تکرار = بدون اثر).
+
+## 5. Phase 2 — Tenant Context برای Jobها (🔴 طراحی تأییدشده، **پیاده‌سازی نشده**)
+
+> **APPROVED DESIGN DIRECTION — NOT YET IMPLEMENTED.** مشخصاتِ کانونیِ ترمیمِ tenant contextِ
+> Jobهای پس‌زمینه (context صریح/اعتبارسنجی‌شده/ایزولهٔ per-job، طبقه‌بندیِ **T/S/W** انواعِ
+> Tenant-scoped / System-wide / Installation-wide sweep، timezone عملیاتیِ **Location**،
+> رزولوشنِ per-Clinicِ پیکربندی SMS **شامل credentialِ sealed**، انتسابِ tenant در
+> `cpms_operational_logs`، قواعدِ backfill برای Jobهای legacy، **۶ سوالِ طراحیِ پیش از هر
+> migration آینده** و مشخصاتِ **۱۴ تستِ RED ‏(RT-1..RT-14)**) در سند کانونی
+> [`phase2-tenant-context-remediation-design.md`](phase2-tenant-context-remediation-design.md) ثبت شد.
+> آن سند **هیچ شمارهٔ migration آینده‌ای را رزرو نمی‌کند** (آخرین migration = `0020`).
+>
+> **وضعیتِ واقعیِ امروز (راستی‌آزمایی‌شده با بازرسیِ کد):** `cpms_jobs` **هیچ ستون tenant‌ای ندارد**؛
+> `JobQueue::enqueue()` در سطحِ صف/ستون هیچ scope‌ای persist نمی‌کند — **اما** یک نوعِ Job امروز
+> Clinic را **داخلِ `payload_json`** persist و fail-closed مصرف می‌کند (`report.export`:
+> `ExportService.php:74-80`, `:112-126`, `:393-404`) — و `JobsDispatcher::tick()` هیچ contextِ
+> سراسریِ Job‌محوری برقرار نمی‌کند. برخی Jobها جاروی سراسریِ نصب‌اند و scope هر ردیف را از آبجکت
+> مرجع مشتق می‌کنند. **هیچ کد/تست/schema/migration‌ای بر پایهٔ آن سند نوشته نشده است.**
+>
+> ⛔ **منبعِ حقیقتِ runtimeِ انواعِ Job، جدولِ §۲ همین سند نیست** — بلکه
+> **`App::dispatcher()` + `RECURRING_JOBS`** در `src/Bootstrap/App.php` است (**۱۵ نوعِ ثبت‌شده**،
+> که ۱۳ نوع زمان‌بندی می‌شوند و `sms.send`/`report.export` رویدادمحورند). جدولِ §۲ **driftِ
+> ثبت‌شده** دارد (نام‌های ثبت‌نشده در کد، نام‌های ناهمسان، و انواعِ ثبت‌شدهٔ غایب از آن) و بدونِ
+> بازنویسی، به‌عنوانِ **سندِ تاریخی/مفهومی** باقی می‌ماند: `docs/drift-register.md` §۹-B.
+> طبقهٔ scopeِ هر یک از ۱۵ نوعِ واقعی در سندِ کانونی §A-3 ثبت شده است (نه در این جدول).
