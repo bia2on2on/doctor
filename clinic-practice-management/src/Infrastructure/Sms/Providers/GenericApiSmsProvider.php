@@ -27,10 +27,39 @@ final class GenericApiSmsProvider implements SmsProviderInterface
     private const PLACEHOLDERS = ['{mobile}', '{message}', '{template_id}', '{vars}', '{sender}', '{key}'];
 
     /**
-     * @param array<string, mixed> $config از Settings (sms.generic)
+     * @param array<string, mixed>|\Closure(): array<string, mixed> $config
+     *        از Settings (sms.generic).
+     *
+     * Phase 2 (§A-3 / RT-6): `sms.generic` **per-Clinic** است. اگر این آرایه در
+     * لحظهٔ ساختِ registry خوانده و میخ شود، پیکربندیِ Clinicِ bootstrap برای
+     * کلِ فرآیندِ PHP freeze می‌شود و پیامِ Clinic دیگر با endpoint/mapping
+     * Clinic اول می‌رود. بنابراین caller می‌تواند به‌جای آرایه، یک Closure بدهد
+     * که در **لحظهٔ استفاده** و برای Clinicِ فعالِ همان عملیات حل می‌شود.
+     *
+     * Fail-Soft/Fail-Closed: اگر resolver در نبودِ scope خطا بدهد، پیکربندی
+     * «خالی» تلقی می‌شود ⇒ endpoint خالی ⇒ `CLINIC_SMS_NOT_CONFIGURED`
+     * (§5-D-3). هرگز به پیکربندیِ Clinic دیگر fallback نمی‌شود.
      */
-    public function __construct(private readonly array $config)
+    public function __construct(private readonly array|\Closure $config)
     {
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function config(): array
+    {
+        if (is_array($this->config)) {
+            return $this->config;
+        }
+
+        try {
+            $resolved = ($this->config)();
+        } catch (\Throwable) {
+            return []; // بدون scope معتبر ⇒ «تنظیم نشده» (Fail-Closed، بدون fallback)
+        }
+
+        return is_array($resolved) ? $resolved : [];
     }
 
     public function id(): string
@@ -45,7 +74,7 @@ final class GenericApiSmsProvider implements SmsProviderInterface
 
     public function capabilities(): array
     {
-        $cfg = $this->config;
+        $cfg = $this->config();
 
         return [
             'text' => true,
@@ -75,7 +104,7 @@ final class GenericApiSmsProvider implements SmsProviderInterface
 
     public function testConnection(array $creds): array
     {
-        $endpoint = (string) ($this->config['endpoint'] ?? '');
+        $endpoint = (string) ($this->config()['endpoint'] ?? '');
         if ($endpoint === '') {
             return ['ok' => false, 'message' => '✗ Endpoint پنل پیامک تنظیم نشده است.'];
         }
@@ -145,7 +174,7 @@ final class GenericApiSmsProvider implements SmsProviderInterface
      */
     private function send(array $creds, string $mobile, string $message, string $templateId, array $opts, array $variables = []): array
     {
-        $endpoint = (string) ($this->config['endpoint'] ?? '');
+        $endpoint = (string) ($this->config()['endpoint'] ?? '');
         if ($endpoint === '') {
             throw new SmsSendException('Endpoint پنل پیامک تنظیم نشده است', false, 'CLINIC_SMS_NOT_CONFIGURED');
         }
@@ -154,7 +183,7 @@ final class GenericApiSmsProvider implements SmsProviderInterface
         $body = $this->buildRequestBody($mobile, $message, $templateId, $variables, (string) ($opts['sender'] ?? ''));
         $timeout = (int) ($opts['timeout_sec'] ?? 5);
 
-        $status = $this->httpCall($endpoint, (string) ($this->config['http_method'] ?? 'POST'), $creds, $body, $timeout, null);
+        $status = $this->httpCall($endpoint, (string) ($this->config()['http_method'] ?? 'POST'), $creds, $body, $timeout, null);
         if ($status === 'unreachable') {
             throw new SmsSendException('پنل پیامک در دسترس نیست (Timeout/اتصال قطع)', true, 'CLINIC_SMS_PROVIDER_UNREACHABLE');
         }
@@ -188,7 +217,7 @@ final class GenericApiSmsProvider implements SmsProviderInterface
      */
     private function buildRequestBody(string $mobile, string $message, string $templateId, array $variables, string $sender): string
     {
-        $template = (string) ($this->config['request_json'] ?? '{"to": "{mobile}", "message": "{message}"}');
+        $template = (string) ($this->config()['request_json'] ?? '{"to": "{mobile}", "message": "{message}"}');
 
         // محافظت: هرگونه نشانه Code/PHP در Template ممنوع
         if (preg_match('/<\?|eval\s*\(|function\s*\(|@/i', $template)) {
@@ -218,7 +247,7 @@ final class GenericApiSmsProvider implements SmsProviderInterface
      */
     private function successFlag(array $decoded): ?bool
     {
-        $response = $this->config['response'] ?? [];
+        $response = $this->config()['response'] ?? [];
         $field = (string) ($response['success_field'] ?? '');
         if ($field === '' || !isset($decoded[$field])) {
             return null; // بدون معیار → روی HTTP Status تکیه کن
@@ -239,7 +268,7 @@ final class GenericApiSmsProvider implements SmsProviderInterface
         if ($decoded === null) {
             return '';
         }
-        $field = (string) (($this->config['response']['error_field'] ?? 'error'));
+        $field = (string) (($this->config()['response']['error_field'] ?? 'error'));
         if (isset($decoded[$field])) {
             return trim((string) $decoded[$field]);
         }
@@ -258,7 +287,7 @@ final class GenericApiSmsProvider implements SmsProviderInterface
         if ($decoded === null) {
             return null;
         }
-        $field = (string) ($this->config['response']['id_field'] ?? 'message_id');
+        $field = (string) ($this->config()['response']['id_field'] ?? 'message_id');
         if (isset($decoded[$field]) && is_scalar($decoded[$field])) {
             return (string) $decoded[$field];
         }
@@ -277,7 +306,7 @@ final class GenericApiSmsProvider implements SmsProviderInterface
             'Accept: application/json',
         ];
         $this->applyAuth($headers, $creds);
-        foreach ((array) ($this->config['extra_headers'] ?? []) as $name => $value) {
+        foreach ((array) ($this->config()['extra_headers'] ?? []) as $name => $value) {
             if (is_string($name) && is_scalar($value)) {
                 $headers[] = $name . ': ' . (string) $value;
             }
@@ -312,9 +341,9 @@ final class GenericApiSmsProvider implements SmsProviderInterface
      */
     private function applyAuth(array &$headers, array $creds): void
     {
-        $method = (string) ($this->config['auth_method'] ?? 'api_key');
-        $headerName = (string) ($this->config['auth_header'] ?? 'Authorization');
-        $format = (string) ($this->config['auth_format'] ?? 'Bearer {key}');
+        $method = (string) ($this->config()['auth_method'] ?? 'api_key');
+        $headerName = (string) ($this->config()['auth_header'] ?? 'Authorization');
+        $format = (string) ($this->config()['auth_format'] ?? 'Bearer {key}');
 
         switch ($method) {
             case 'bearer':

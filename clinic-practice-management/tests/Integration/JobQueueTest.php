@@ -95,7 +95,12 @@ final class JobQueueTest extends WP_UnitTestCase
 
     public function testDispatcherProcessesAndStopsWhenEmpty(): void
     {
-        $dispatcher = new JobsDispatcher($this->queue, App::op());
+        // زیرساختِ عمومیِ تست: `test.count` یک نوعِ **مصنوعی** است و عمداً در
+        // `JobScopeRegistry` محصول ثبت نشده. از Slice 1B.1 به بعد enforcementِ
+        // T/S/W **پیش‌فرض** است، پس opt-out باید صریح باشد (آرگومانِ سوم).
+        // این تنها مصرف‌کنندهٔ مجازِ حالتِ سهل‌گیر است؛ production هرگز از آن
+        // استفاده نمی‌کند.
+        $dispatcher = new JobsDispatcher($this->queue, App::op(), true);
         $calls = 0;
         $dispatcher->register('test.count', static function (array $payload) use (&$calls): void {
             $calls += (int) ($payload['n'] ?? 1);

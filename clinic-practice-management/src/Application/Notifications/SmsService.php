@@ -10,6 +10,8 @@ use ClinicCore\Domain\Sms\SmsMessageStatus;
 use ClinicCore\Domain\Sms\SmsTemplateException;
 use ClinicCore\Domain\Sms\SmsTemplateRenderer;
 use ClinicCore\Domain\Validators\MobileValidator;
+use ClinicCore\Application\Scope\ClinicScope;
+use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Infrastructure\Audit\AuditLogger;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Logging\OpLogger;
@@ -20,6 +22,7 @@ use ClinicCore\Infrastructure\Sms\SmsProviderRegistry;
 use ClinicCore\Infrastructure\Sms\SmsSendException;
 use ClinicCore\Infrastructure\Sms\SsrfGuard;
 use ClinicCore\Settings\Settings;
+use ClinicCore\Settings\SettingsFactory;
 use DomainException;
 
 /**
@@ -29,6 +32,27 @@ use DomainException;
  *   Template Resolution + Variable Validation + Record + Dedupe + Queue + Retry + Status.
  *
  * هیچ Provider خاصی اینجا نام‌برده نمی‌شود (Provider-Agnostic).
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * Phase 2 — تفکیک پیکربندیِ per-Clinic (§5-D).
+ *
+ * پیش از این، این سرویس **یک** نمونهٔ `Settings` را در لحظهٔ ساخت می‌گرفت و
+ * همان را برای هر پیامی به کار می‌برد. نتیجه: پیامِ Clinic B با sender /
+ * timeout / **credentialِ sealedِ Clinic A** به Provider می‌رفت، و چون کلیدِ
+ * Vault سطحِ نصب است رمزگشاییِ credentialِ Clinicِ اشتباه **بی‌صدا موفق
+ * می‌شود** (§5-D-2) — یعنی رمزنگاری مرزِ tenant نیست.
+ *
+ * اکنون دو مسیرِ کاملاً جدا وجود دارد و هیچ‌کدام به state سطحِ process تکیه
+ * نمی‌کند (§5-D-1):
+ *   ۱) `currentSettings()` — Clinicِ فعالِ عملیاتِ جاری (مسیر admin/REST/inline)؛
+ *   ۲) `settingsForClinic()` — Clinicِ **مالکِ durable** عملیات:
+ *      `dispatchMessage()` از `cpms_sms_messages.clinic_id` و `sendEvent()` از
+ *      `clinic_id` صریحِ caller.
+ *
+ * به همین دلیل این سرویس **scope-neutral** است: singletonِ سطح process بودنش
+ * دیگر Clinicِ bootstrap را میخ نمی‌کند و `A → B → A` هر بار پیکربندیِ خودش
+ * را می‌گیرد (RT-6).
+ * ────────────────────────────────────────────────────────────────────────────
  */
 final class SmsService
 {
@@ -37,16 +61,80 @@ final class SmsService
 
     private const UPDATE_COLUMNS = ['status', 'attempts', 'failure_code', 'provider_msg_id', 'provider'];
 
+    /**
+     * @param \Closure(): int $currentClinicResolver Clinicِ فعالِ عملیاتِ جاری
+     *        (از scope درخواست). به‌صورت Closure تزریق می‌شود تا این سرویس به
+     *        bootstrap گره نخورد و ساختنش به هیچ Clinic‌ای نیاز نداشته باشد —
+     *        یعنی `App::smsService()` دیگر مرزِ tick را با `CLINIC_SCOPE_REQUIRED`
+     *        نمی‌اندازد (RT-4).
+     */
     public function __construct(
         private readonly CpmsDb $db,
-        private readonly Settings $settings,
+        private readonly SettingsFactory $settingsFactory,
         private readonly SmsProviderRegistry $providers,
         private readonly CredentialVault $vault,
         private readonly AuditLogger $audit,
         private readonly OpLogger $op,
-        private readonly JobQueue $jobs
+        private readonly JobQueue $jobs,
+        private readonly \Closure $currentClinicResolver
     ) {
     }
+
+    // =========================================================
+    // Resolution پیکربندیِ per-Clinic (§5-D)
+    // =========================================================
+
+    /**
+     * پیکربندیِ Clinicِ **فعالِ عملیاتِ جاری** — مسیر admin/REST/inline.
+     *
+     * در هر فراخوانی حل می‌شود (نه در لحظهٔ ساخت)، پس تغییرِ scope در همان
+     * فرآیند فوراً اثر می‌کند و state گامِ قبلی نشت نمی‌کند (RT-6). کشِ
+     * نمونه‌ها در `SettingsFactory` و کلیدش `clinicId` است (§5-D-2).
+     */
+    private function currentSettings(): Settings
+    {
+        return $this->settingsFactory->forClinic((int) ($this->currentClinicResolver)());
+    }
+
+    /**
+     * پیکربندیِ یک Clinic **صریحاً مالکِ عملیات** — مسیرِ صف/Job.
+     *
+     * Clinic از منبعِ durable/authoritative می‌آید (مالکیت ردیف پیام یا
+     * `clinic_id` صریحِ caller)، **نه** از کاربرِ جاری، نه از REST context، نه
+     * از Job قبلی، و نه از نمونهٔ `Settings` متعلق به Clinic دیگر (§5-D-1).
+     * شناسهٔ نامعتبر ⇒ Fail-Closed (بدون Clinic پیش‌فرض/حدسی).
+     *
+     * @throws \ClinicCore\Application\Scope\ScopeRequiredException
+     */
+    private function settingsForClinic(int $clinicId): Settings
+    {
+        return $this->settingsFactory->forClinic($clinicId);
+    }
+
+    /**
+     * بستنِ scope به Clinicِ مالک، فقط برای مدتِ همان عملیات.
+     *
+     * چرا لازم است: هر وابستگیِ پایین‌دستی که خودش scope را حل می‌کند — از جمله
+     * `GenericApiSmsProvider` که `sms.generic` را به‌صورت lazy و per-Clinic
+     * می‌خواند — باید همان Clinicِ مالکِ پیام را ببیند، نه Clinicِ bootstrap.
+     * الگو، همان الگوی کاریِ موجودِ `ExportService::bindJobClinic()` است.
+     *
+     * @return \Closure(): void بازگردانیِ scope قبلی (همیشه در `finally`)
+     */
+    private function bindClinicScope(int $clinicId): \Closure
+    {
+        $previous = ScopeContext::tryGet();
+        ScopeContext::set(ClinicScope::forClinic($clinicId));
+
+        return static function () use ($previous): void {
+            if ($previous instanceof ClinicScope) {
+                ScopeContext::set($previous);
+            } else {
+                ScopeContext::clear();
+            }
+        };
+    }
+
 
     // =========================================================
     // ارسال (دریافتی برای Business Logic)
@@ -83,14 +171,22 @@ final class SmsService
             throw new DomainException('CLINIC_MOBILE_INVALID');
         }
 
+        // Phase 2 (§5-D): پیکربندی برای **همان** Clinicِ صریحِ caller حل می‌شود —
+        // نه برای Clinicِ process. مرزِ اعتماد تغییر نکرده: `clinic_id` همچنان
+        // از callerِ داخلیِ موردِ اعتماد می‌آید و قواعدِ scopeِ سمتِ سرور
+        // (RestClinicContext) دست‌نخورده است؛ تفاوت این است که اکنون این شناسه
+        // **کلیدِ حلِ پیکربندی** است، به‌جای اینکه برای پیکربندی نادیده گرفته
+        // شود و پیکربندیِ Clinicِ دیگری به کار رود.
+        $settings = $this->settingsForClinic($clinic_id);
+
         // Template/Text Resolution
-        $provider = $this->activeProvider();
+        $provider = $this->activeProvider($settings);
         $templateId = '';
         $useTemplate = false;
         if ($isTest) {
             $text = (string) $overrideText;
         } else {
-            $templateId = $this->templateConfig($event)['template_id'];
+            $templateId = $this->templateConfig($settings, $event)['template_id'];
             $useTemplate = $templateId !== '' && $provider !== null && !empty($provider->capabilities()['template']);
             $text = $useTemplate
                 ? '[Template Provider: ' . ($info['label'] ?? $event) . ']'
@@ -130,7 +226,7 @@ final class SmsService
             }
         }
 
-        $advanced = (array) $this->settings->get('sms.advanced', []);
+        $advanced = (array) $settings->get('sms.advanced', []);
         $maxAttempts = (int) ($advanced['retry_count'] ?? 3);
 
         $this->db->insert('cpms_sms_messages', [
@@ -187,11 +283,22 @@ final class SmsService
             return;
         }
 
+        // Phase 2 (RT-3 / §5-D-1..D-3) — مهم‌ترین اصلاحِ امنیتیِ این slice:
+        // Clinicِ مالکِ پیام از **خودِ ردیف** خوانده می‌شود (منبعِ durable و
+        // authoritative؛ همان `clinic_id` که در `sendEvent()` نوشته شده) و همهٔ
+        // اجزای حساسِ tenant — provider، template، sender، advanced و
+        // **credentialِ sealedِ `sms.auth`** — از پیکربندیِ **همان** Clinic حل
+        // می‌شوند. هیچ‌کدام از اینها دیگر به کاربرِ جاری، REST context، Job
+        // قبلی، یا نمونهٔ `Settings` متعلق به Clinicِ دیگر وابسته نیست.
+        // شناسهٔ نامعتبر ⇒ Fail-Closed، بدون fallback به Clinic دیگر.
+        $settings = $this->settingsForClinic((int) ($row['clinic_id'] ?? 0));
+        $restoreScope = $this->bindClinicScope($settings->clinicId());
+
         $provider = $this->providers->get((string) ($row['provider'] ?? 'log'));
-        $creds = $this->plaintextCredentials();
+        $creds = $this->plaintextCredentials($settings);
         $opts = [
-            'sender' => (string) $this->settings->get('sms.sender', ''),
-            'timeout_sec' => (int) (($this->settings->get('sms.advanced', [])['timeout_sec'] ?? 5)),
+            'sender' => (string) $settings->get('sms.sender', ''),
+            'timeout_sec' => (int) (($settings->get('sms.advanced', [])['timeout_sec'] ?? 5)),
         ];
 
         $this->updateMessage($messageId, ['status' => SmsMessageStatus::SENDING, 'attempts' => $attempts]);
@@ -241,6 +348,10 @@ final class SmsService
                 $this->updateMessage($messageId, ['status' => SmsMessageStatus::FAILED, 'failure_code' => $code]);
                 $this->op->error('SMS_FAILED', ['message_id' => $messageId, 'code' => $code, 'error' => $e->getMessage()]);
             }
+        } finally {
+            // هیچ scope‌ای نباید از این عملیات به عملیاتِ بعدیِ همان فرآیند نشت
+            // کند (§5-D-1) — چه موفق، چه شکست، چه استثنا.
+            $restoreScope();
         }
     }
 
@@ -255,9 +366,10 @@ final class SmsService
      */
     public function status(): array
     {
-        $providerId = (string) $this->settings->get('sms.provider', '') ?: 'log';
-        $auth = $this->storedAuth();
-        $lastTest = (array) $this->settings->get('sms.last_test', []);
+        $settings = $this->currentSettings();
+        $providerId = (string) $settings->get('sms.provider', '') ?: 'log';
+        $auth = $this->storedAuth($settings);
+        $lastTest = (array) $settings->get('sms.last_test', []);
         $provider = $this->providers->get($providerId);
         $complete = $this->credentialsComplete($provider, (string) ($auth['method'] ?? ''), array_keys($auth['fields']));
 
@@ -280,9 +392,9 @@ final class SmsService
             'provider' => $providerId,
             'auth_method' => (string) ($auth['method'] ?? ''),
             'credentials' => $masked,
-            'sender' => (string) $this->settings->get('sms.sender', ''),
+            'sender' => (string) $settings->get('sms.sender', ''),
             'last_test' => $lastTest,
-            'advanced' => (array) $this->settings->get('sms.advanced', []),
+            'advanced' => (array) $settings->get('sms.advanced', []),
         ];
     }
 
@@ -295,7 +407,8 @@ final class SmsService
      */
     public function saveSettings(array $in, int $userId): array
     {
-        $prevProvider = (string) $this->settings->get('sms.provider', '');
+        $settings = $this->currentSettings();
+        $prevProvider = (string) $settings->get('sms.provider', '');
 
         $providerId = trim((string) ($in['provider'] ?? ''));
         $provider = $providerId === '' ? $this->providers->get('log') : $this->providers->get($providerId);
@@ -303,7 +416,7 @@ final class SmsService
             throw new SmsTemplateException('CLINIC_SMS_PROVIDER_UNKNOWN', 'Provider انتخابی یافت نشد');
         }
 
-        $current = $this->storedAuth();
+        $current = $this->storedAuth($settings);
         $method = trim((string) ($in['auth_method'] ?? ($current['method'] ?? '')));
         if ($provider->authMethods() !== [] && $method === '') {
             $method = (string) $provider->authMethods()[0];
@@ -341,18 +454,18 @@ final class SmsService
         }
 
         if ($providerId !== $prevProvider || $method !== (string) ($current['method'] ?? '')) {
-            $this->settings->set('sms.last_test', [], $userId);
+            $settings->set('sms.last_test', [], $userId);
         }
 
-        $this->settings->set('sms.provider', $providerId, $userId);
-        $this->settings->set('sms.auth', ['method' => $method, 'fields' => $newFields, 'updated_at' => gmdate('c')], $userId);
-        $this->settings->set('sms.sender', $this->sanitizeSender((string) ($in['sender'] ?? '')), $userId);
+        $settings->set('sms.provider', $providerId, $userId);
+        $settings->set('sms.auth', ['method' => $method, 'fields' => $newFields, 'updated_at' => gmdate('c')], $userId);
+        $settings->set('sms.sender', $this->sanitizeSender((string) ($in['sender'] ?? '')), $userId);
 
         if (is_array($in['advanced'] ?? null)) {
-            $advanced = (array) $this->settings->get('sms.advanced', []);
+            $advanced = (array) $settings->get('sms.advanced', []);
             $advanced['timeout_sec'] = max(1, min(30, (int) ($in['advanced']['timeout_sec'] ?? $advanced['timeout_sec'] ?? 5)));
             $advanced['retry_count'] = max(1, min(10, (int) ($in['advanced']['retry_count'] ?? $advanced['retry_count'] ?? 3)));
-            $this->settings->set('sms.advanced', $advanced, $userId);
+            $settings->set('sms.advanced', $advanced, $userId);
         }
 
         if (is_array($in['generic'] ?? null)) {
@@ -377,16 +490,17 @@ final class SmsService
      */
     public function testConnection(array $in, int $userId): array
     {
-        $providerId = trim((string) ($in['provider'] ?? $this->settings->get('sms.provider', '')));
+        $settings = $this->currentSettings();
+        $providerId = trim((string) ($in['provider'] ?? $settings->get('sms.provider', '')));
         $provider = $providerId === '' ? $this->providers->get('log') : $this->providers->get($providerId);
         if ($provider === null) {
             return ['ok' => false, 'message' => '✗ Provider یافت نشد.'];
         }
 
-        $creds = $this->mergedCredentials($provider, (array) ($in['credentials'] ?? []));
+        $creds = $this->mergedCredentials($provider, (array) ($in['credentials'] ?? []), $settings);
         $result = $provider->testConnection($creds);
 
-        $this->settings->set('sms.last_test', [
+        $settings->set('sms.last_test', [
             'status' => $result['ok'] ? 'ok' : 'failed',
             'at' => time(),
             'provider' => $providerId,
@@ -406,6 +520,7 @@ final class SmsService
      */
     public function testSend(string $mobile, string $message, int $userId): array
     {
+        $settings = $this->currentSettings();
         $normalized = MobileValidator::normalize($mobile);
         if ($normalized === null) {
             throw new SmsTemplateException('CLINIC_MOBILE_INVALID', 'شماره موبایل معتبر نیست');
@@ -415,7 +530,7 @@ final class SmsService
             throw new SmsTemplateException('CLINIC_SMS_MESSAGE_INVALID', 'متن پیام باید ۱ تا ۳۵۰ نویسه باشد');
         }
 
-        $result = $this->sendEvent($this->settings->clinicId(), self::EVENT_TEST, $normalized, [], null, null, inline: true, priority: 5, overrideText: $message);
+        $result = $this->sendEvent($settings->clinicId(), self::EVENT_TEST, $normalized, [], null, null, inline: true, priority: 5, overrideText: $message);
         $row = $this->fetchMessage((int) $result['message_id']);
 
         $this->auditSms('SMS_TEST_SENT', $userId, ['event' => self::EVENT_TEST, 'status' => (string) $result['status']]);
@@ -441,12 +556,13 @@ final class SmsService
      */
     public function preview(string $event, array $vars): array
     {
+        $settings = $this->currentSettings();
         $info = SmsEvents::info($event);
         if ($info === null) {
             throw new SmsTemplateException('CLINIC_SMS_EVENT_UNKNOWN', 'رویداد شناخته‌شده نیست');
         }
-        $templateId = $this->templateConfig($event)['template_id'];
-        $provider = $this->activeProvider();
+        $templateId = $this->templateConfig($settings, $event)['template_id'];
+        $provider = $this->activeProvider($settings);
         $useTemplate = $templateId !== '' && $provider !== null && !empty($provider->capabilities()['template']);
 
         $preview = $useTemplate
@@ -471,13 +587,14 @@ final class SmsService
      */
     public function testTemplate(string $event, string $mobile, array $vars, int $userId): array
     {
+        $settings = $this->currentSettings();
         $preview = $this->preview($event, $vars);
         $normalized = MobileValidator::normalize($mobile);
         if ($normalized === null) {
             throw new SmsTemplateException('CLINIC_MOBILE_INVALID', 'شماره موبایل معتبر نیست');
         }
 
-        $result = $this->sendEvent($this->settings->clinicId(), $event, $normalized, $vars, null, null, inline: true, priority: 6);
+        $result = $this->sendEvent($settings->clinicId(), $event, $normalized, $vars, null, null, inline: true, priority: 6);
         $row = $this->fetchMessage((int) $result['message_id']);
 
         $this->auditSms('SMS_TEST_SENT', $userId, ['event' => $event, 'status' => (string) $result['status']]);
@@ -496,8 +613,9 @@ final class SmsService
      */
     public function templates(): array
     {
-        $stored = (array) $this->settings->get('sms.templates', []);
-        $provider = $this->activeProvider();
+        $settings = $this->currentSettings();
+        $stored = (array) $settings->get('sms.templates', []);
+        $provider = $this->activeProvider($settings);
         $supportsTemplate = $provider !== null && !empty($provider->capabilities()['template']);
 
         $events = [];
@@ -511,7 +629,7 @@ final class SmsService
                 'default_text' => $info['default_text'],
                 'template_id' => $templateId,
                 'uses_provider_template' => $supportsTemplate && $templateId !== '',
-                'validation' => $this->validateTemplate($templateId, $supportsTemplate),
+                'validation' => $this->validateTemplate($settings, $templateId, $supportsTemplate),
             ];
         }
 
@@ -527,6 +645,7 @@ final class SmsService
      */
     public function saveTemplate(string $event, string $templateId, int $userId): array
     {
+        $settings = $this->currentSettings();
         $info = SmsEvents::info($event);
         if ($info === null) {
             throw new SmsTemplateException('CLINIC_SMS_EVENT_UNKNOWN', 'رویداد شناخته‌شده نیست');
@@ -536,15 +655,15 @@ final class SmsService
             throw new SmsTemplateException('CLINIC_SMS_TEMPLATE_INVALID', 'Template ID بسیار طولانی است');
         }
 
-        $provider = $this->activeProvider();
+        $provider = $this->activeProvider($settings);
         $supportsTemplate = $provider !== null && !empty($provider->capabilities()['template']);
         if ($templateId !== '' && !$supportsTemplate) {
             throw new SmsTemplateException('CLINIC_SMS_TEMPLATE_NOT_SUPPORTED', 'Provider فعلی از Template/Pattern پشتیبانی نمی‌کند');
         }
 
-        $stored = (array) $this->settings->get('sms.templates', []);
+        $stored = (array) $settings->get('sms.templates', []);
         $stored[$event] = ['template_id' => $templateId, 'updated_at' => gmdate('c')];
-        $this->settings->set('sms.templates', $stored, $userId);
+        $settings->set('sms.templates', $stored, $userId);
 
         $this->auditSms('SMS_TEMPLATE_CHANGED', $userId, ['event' => $event, 'has_template' => $templateId !== '']);
 
@@ -606,12 +725,13 @@ final class SmsService
      */
     public function balance(): ?array
     {
-        $provider = $this->activeProvider();
+        $settings = $this->currentSettings();
+        $provider = $this->activeProvider($settings);
         if ($provider === null || empty($provider->capabilities()['balance'])) {
             return null;
         }
 
-        return $provider->fetchBalance($this->plaintextCredentials());
+        return $provider->fetchBalance($this->plaintextCredentials($settings));
     }
 
     /**
@@ -621,21 +741,25 @@ final class SmsService
      */
     public function senders(): ?array
     {
-        $provider = $this->activeProvider();
+        $settings = $this->currentSettings();
+        $provider = $this->activeProvider($settings);
         if ($provider === null || empty($provider->capabilities()['sender_list'])) {
             return null;
         }
 
-        return $provider->fetchSenders($this->plaintextCredentials());
+        return $provider->fetchSenders($this->plaintextCredentials($settings));
     }
 
     // =========================================================
     // زیرساخت‌ها
     // =========================================================
 
-    private function activeProvider(): ?SmsProviderInterface
+    /**
+     * Provider فعالِ **یک Clinic مشخص** — نه Provider فعالِ process.
+     */
+    private function activeProvider(Settings $settings): ?SmsProviderInterface
     {
-        $id = (string) $this->settings->get('sms.provider', '');
+        $id = (string) $settings->get('sms.provider', '');
 
         return $this->providers->get($id === '' ? 'log' : $id);
     }
@@ -643,9 +767,9 @@ final class SmsService
     /**
      * @return array{method: string, fields: array<string, array{sealed: array<string, string>, last4: string}>}
      */
-    private function storedAuth(): array
+    private function storedAuth(Settings $settings): array
     {
-        $raw = (array) $this->settings->get('sms.auth', []);
+        $raw = (array) $settings->get('sms.auth', []);
         $fields = [];
         foreach ((array) ($raw['fields'] ?? []) as $field => $sealed) {
             if (is_array($sealed) && isset($sealed['sealed']) && is_array($sealed['sealed'])) {
@@ -662,11 +786,16 @@ final class SmsService
     /**
      * Credentials به‌صورت plain — فقط در لحظه Call به Provider (هرگز در Log/Response/Audit).
      *
+     * Phase 2 (§5-D-2): کلیدِ Vault **سطحِ نصب** است، پس رمزگشاییِ credentialِ
+     * Clinicِ اشتباه بی‌صدا موفق می‌شود. سدِ ایزولاسیون، **همین پارامترِ
+     * `$settings`** است: caller باید Clinicِ اعتبارسنجی‌شدهٔ همان عملیات را
+     * داده باشد. هیچ مسیرِ رمزگشاییِ «پیش‌فرض» یا بدونِ Clinic وجود ندارد.
+     *
      * @return array<string, string>
      */
-    private function plaintextCredentials(): array
+    private function plaintextCredentials(Settings $settings): array
     {
-        $stored = $this->storedAuth();
+        $stored = $this->storedAuth($settings);
         $out = [];
         foreach ($stored['fields'] as $field => $data) {
             $plain = $this->vault->decrypt($data['sealed']);
@@ -684,9 +813,9 @@ final class SmsService
      * @param array<string, mixed> $inputFields
      * @return array<string, string>
      */
-    private function mergedCredentials(SmsProviderInterface $provider, array $inputFields): array
+    private function mergedCredentials(SmsProviderInterface $provider, array $inputFields, Settings $settings): array
     {
-        $stored = $this->plaintextCredentials();
+        $stored = $this->plaintextCredentials($settings);
         foreach ($provider->authFields() as $field => $spec) {
             $input = (string) ($inputFields[$field] ?? '');
             if ($input !== '') {
@@ -736,9 +865,9 @@ final class SmsService
     /**
      * @return array{template_id: string}
      */
-    private function templateConfig(string $event): array
+    private function templateConfig(Settings $settings, string $event): array
     {
-        $stored = (array) $this->settings->get('sms.templates', []);
+        $stored = (array) $settings->get('sms.templates', []);
 
         return ['template_id' => (string) ($stored[$event]['template_id'] ?? '')];
     }
@@ -748,7 +877,7 @@ final class SmsService
      *
      * @return array{ok: bool, message: string}
      */
-    private function validateTemplate(string $templateId, bool $providerSupportsTemplate): array
+    private function validateTemplate(Settings $settings, string $templateId, bool $providerSupportsTemplate): array
     {
         if ($templateId === '') {
             return ['ok' => true, 'message' => 'متن پیش‌فرض داخلی استفاده می‌شود.'];
@@ -756,7 +885,7 @@ final class SmsService
         if (!$providerSupportsTemplate) {
             return ['ok' => false, 'message' => 'Provider فعلی از Template/Pattern پشتیبانی نمی‌کند.'];
         }
-        if ($this->activeProvider() === null) {
+        if ($this->activeProvider($settings) === null) {
             return ['ok' => false, 'message' => 'Provider تنظیم نشده است.'];
         }
 
@@ -770,7 +899,8 @@ final class SmsService
      */
     private function saveGenericConfig(array $in, int $userId): void
     {
-        $current = (array) $this->settings->get('sms.generic', []);
+        $settings = $this->currentSettings();
+        $current = (array) $settings->get('sms.generic', []);
         $next = $current;
 
         if (isset($in['endpoint'])) {
@@ -818,7 +948,7 @@ final class SmsService
             $next['response'] = $response;
         }
 
-        $this->settings->set('sms.generic', $next, $userId);
+        $settings->set('sms.generic', $next, $userId);
         $this->auditSms('SMS_PROVIDER_CHANGED', $userId, ['provider' => 'generic_api', 'scope' => 'config']);
     }
 

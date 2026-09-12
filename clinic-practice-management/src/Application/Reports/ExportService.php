@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace ClinicCore\Application\Reports;
 
-use ClinicCore\Application\Notifications\NotificationService;
 use ClinicCore\Application\Scope\ClinicScope;
 use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Application\Scope\ScopeRequiredException;
@@ -16,9 +15,8 @@ use ClinicCore\Infrastructure\Audit\AuditLogger;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Logging\OpLogger;
 use ClinicCore\Infrastructure\Queue\JobQueue;
+use ClinicCore\Infrastructure\Repository\MembershipRepository;
 use ClinicCore\Infrastructure\Repository\NotificationRepository;
-use ClinicCore\Infrastructure\Storage\LocalFileStorage;
-use ClinicCore\Settings\Settings;
 use RuntimeException;
 use Throwable;
 
@@ -36,20 +34,68 @@ use Throwable;
  *
  * ردیابی از طریق خود اعلان (cpms_notifications) انجام می‌شود — بدون جدول
  * جدید؛ فایل‌ها بعد از `reports.export_retention_days` روز پاک می‌شوند.
+ *
+ * **Phase 2 (Slice 1B.1) — Scope-Neutral:** این سرویس **بدونِ Clinic قابلِ
+ * ساخت است**. هیچ‌یک از وابستگی‌های Clinic-دار (`ReportService`،
+ * `NotificationService`، `LocalFileStorage`، `Settings`) در سازنده تزریق
+ * نمی‌شوند؛ همه از `ExportClinicDeps` و فقط برای یک Clinicِ **از‌پیش‌تعیین‌شده
+ * توسط مرزِ قابلِ اعتماد** حل می‌شوند. نتیجه: ساختِ سرویس هیچ خواندنِ
+ * Settings/فایل/پیکربندیِ tenant-دار انجام نمی‌دهد و `App::dispatcher()` دیگر
+ * نیازی ندارد `clinic_id` خامِ payload را به `ScopeContext` bind کند.
+ *
+ * **مرزِ اعتماد (context ≠ authorization):** در مسیر Job، شناسهٔ payload تنها
+ * یک «انتخابِ عملیات» است، نه مجوز. پیش از هر دسترسیِ tenant-دار،
+ * `requireClinicMembership()` عضویتِ **فعال** actor در همان Clinic را با
+ * `MembershipRepository::find_active()` می‌سنجد و در غیر این صورت fail-closed
+ * است. Capability سراسریِ WordPress به‌تنهایی هرگز مجوزِ عبور از مرز Clinic
+ * نیست. (این یک گارْدِ محدودِ Phase 2 است، نه `AuthorizationService` فاز ۳.)
  */
 final class ExportService
 {
+    /**
+     * بستهٔ وابستگی‌های Clinic-دار، memo شده برای هر Clinic در طولِ عمرِ همین
+     * نمونه. `App::exportService()` نمونه را memo نمی‌کند، پس این کش به یک
+     * درخواست/یک job محدود است و بین Clinicها نشت نمی‌کند.
+     *
+     * @var array<int, ExportClinicDeps>
+     */
+    private array $depsByClinic = [];
+
+    /**
+     * @param \Closure(int): ExportClinicDeps $clinicDeps کارخانهٔ بستهٔ Clinic —
+     *        **فقط** با شناسهٔ Clinic‌ای صدا زده می‌شود که یک مرزِ قابلِ اعتماد
+     *        تعیین کرده است. سازندهٔ خودِ ExportService هیچ Clinic‌ای نمی‌خواهد.
+     */
     public function __construct(
         private readonly CpmsDb $db,
-        private readonly ReportService $reports,
-        private readonly NotificationService $notifications,
         private readonly NotificationRepository $notificationRows,
-        private readonly LocalFileStorage $storage,
+        private readonly MembershipRepository $memberships,
         private readonly JobQueue $jobs,
-        private readonly Settings $settings,
+        private readonly \Closure $clinicDeps,
         private readonly AuditLogger $audit,
         private readonly OpLogger $op
     ) {
+    }
+
+    /**
+     * حلِ بستهٔ وابستگی برای یک Clinicِ **از‌پیش‌مجوزگرفته**.
+     *
+     * Memo به‌ازای هر Clinic؛ چون `App::exportService()` نمونه را memo نمی‌کند،
+     * این کش به یک درخواست/یک job محدود است و بین Clinicها نشت نمی‌کند. در
+     * `purgeExpired()` هم به‌جای N+1، به‌ازای هر Clinicِ متمایز یک‌بار حل می‌شود.
+     */
+    private function depsFor(int $clinicId): ExportClinicDeps
+    {
+        if (!isset($this->depsByClinic[$clinicId])) {
+            $deps = ($this->clinicDeps)($clinicId);
+            if (!$deps instanceof ExportClinicDeps) {
+                // قراردادِ کارخانه نقض شده — fail-closed، بدون fallback و بدون حدس.
+                throw new RuntimeException('CLINIC_EXPORT_DEPS_FACTORY_INVALID');
+            }
+            $this->depsByClinic[$clinicId] = $deps;
+        }
+
+        return $this->depsByClinic[$clinicId];
     }
 
     // ================= 1) درخواست (فقط Enqueue) =================
@@ -61,15 +107,18 @@ final class ExportService
      */
     public function request(int $actorUserId, string $type, ?string $from, ?string $to): array
     {
-        $this->requireReportAccess($actorUserId, $type);
+        // Clinic معتبر همین درخواست — مرزِ قابلِ اعتماد (`TrustedClinicEstablisher`
+        // از عضویتِ تأییدشده). **پیش از** هر دسترسیِ Clinic-دار حل می‌شود تا
+        // بستهٔ وابستگی فقط برای همین Clinic ساخته شود.
+        $clinicId = $this->trustedClinicId();
+        $deps = $this->depsFor($clinicId);
+
+        $this->requireReportAccess($deps->reports, $actorUserId, $type);
         $this->requireCap($actorUserId, RolesAndCapabilities::EXPORT, 'خروجی گرفتن از گزارش');
 
-        // Clinic معتبر همین درخواست — Job بعداً از payload می‌خواند، نه از کاربر جاری.
-        $clinicId = $this->trustedClinicId();
-
         // بازه را همین‌جا اعتبارسنجی می‌کنیم (خطای کاربر نباید به Job برود)
-        $range = $this->reports->validateRangeParams($type, $from, $to);
-        [$scopeMode] = $this->reports->resolveScope($actorUserId);
+        $range = $deps->reports->validateRangeParams($type, $from, $to);
+        [$scopeMode] = $deps->reports->resolveScope($actorUserId);
 
         $jobId = $this->jobs->enqueue('report.export', [
             'actor_id' => $actorUserId,
@@ -115,33 +164,46 @@ final class ExportService
         $type = (string) ($payload['type'] ?? '');
         $from = isset($payload['from']) ? (string) $payload['from'] : null;
         $to = isset($payload['to']) ? (string) $payload['to'] : null;
+
+        // (۱) اعتبارِ عددیِ شناسه — این **مجوز نیست**، فقط تعیینِ عملیات.
         $clinicId = $this->clinicIdFromJobPayload($payload);
+
+        // (۲) مجوزِ tenant — **پیش از** هر دسترسیِ Clinic-دار. payload می‌تواند
+        //     دستکاری‌شده باشد؛ capability سراسریِ WordPress به‌تنهایی اجازهٔ
+        //     عبور از مرز Clinic را نمی‌دهد (Fail-Closed، بدون fallback).
+        $this->requireClinicMembership($actorUserId, $clinicId);
+
+        // (۳) حالا — و فقط حالا — وابستگی‌های همان Clinic حل می‌شوند.
+        $deps = $this->depsFor($clinicId);
 
         $restore = $this->bindJobClinic($clinicId);
         try {
-            $this->generateInClinic($actorUserId, $clinicId, $type, $from, $to);
+            $this->generateInClinic($deps, $actorUserId, $clinicId, $type, $from, $to);
         } finally {
             $restore();
         }
     }
 
-    private function generateInClinic(int $actorUserId, int $clinicId, string $type, ?string $from, ?string $to): void
+    /**
+     * @param ExportClinicDeps $deps بستهٔ همان `$clinicId` — از `generate()`
+     */
+    private function generateInClinic(ExportClinicDeps $deps, int $actorUserId, int $clinicId, string $type, ?string $from, ?string $to): void
     {
-        $this->requireReportAccess($actorUserId, $type);
+        $this->requireReportAccess($deps->reports, $actorUserId, $type);
         $this->requireCap($actorUserId, RolesAndCapabilities::EXPORT, 'خروجی گرفتن از گزارش');
 
-        $settings = App::settings();
+        $settings = $deps->settings;
         $maxRows = (int) $settings->get('reports.export_max_rows', 10000);
-        $result = $this->reports->run($actorUserId, $type, $from, $to, $maxRows);
+        $result = $deps->reports->run($actorUserId, $type, $from, $to, $maxRows);
 
         $retentionDays = (int) $settings->get('reports.export_retention_days', 7);
         $expiresAt = gmdate('Y-m-d H:i:s', time() + ($retentionDays * 86400));
 
         $csv = self::buildCsv($result, $actorUserId);
-        $storagePath = $this->storage->store($csv, $clinicId, 'csv');
+        $storagePath = $deps->storage->store($csv, $clinicId, 'csv');
 
         // «فایل + اعلان» — payload اعلان مالکیت/مسیر/انقضا را حمل می‌کند
-        $notifId = $this->notifications->publishToUser(
+        $notifId = $deps->notifications->publishToUser(
             $clinicId,
             $actorUserId,
             NotificationEvents::REPORT_EXPORT_READY,
@@ -210,13 +272,18 @@ final class ExportService
      */
     public function download(int $actorUserId, int $notificationId): array
     {
+        // Clinic از مرزِ قابلِ اعتمادِ درخواست — storageِ همان Clinic استفاده
+        // می‌شود، پس پیش از لمسِ فایل حل می‌شود.
+        $clinicId = $this->trustedClinicId();
+        $deps = $this->depsFor($clinicId);
+
         $this->requireCap($actorUserId, RolesAndCapabilities::EXPORT, 'خروجی گرفتن از گزارش');
 
         $row = $this->notificationRows->find($notificationId);
         if ($row === null
             || (string) $row['template'] !== NotificationEvents::REPORT_EXPORT_READY
             || (int) $row['recipient_wp_user_id'] !== $actorUserId
-            || (int) $row['clinic_id'] !== $this->trustedClinicId()) {
+            || (int) $row['clinic_id'] !== $clinicId) {
             throw ReportException::of('CLINIC_NOT_FOUND', 'خروجی یافت نشد', 404);
         }
 
@@ -227,11 +294,11 @@ final class ExportService
         }
 
         if (!empty($export['expires_at']) && $export['expires_at'] < $this->db->nowUtcSql()) {
-            $this->storage->delete((string) $export['file_path']);
+            $deps->storage->delete((string) $export['file_path']);
             throw ReportException::of('CLINIC_EXPORT_EXPIRED', 'مهلت دانلود این خروجی گذشته است', 410);
         }
 
-        $content = $this->storage->read((string) $export['file_path']);
+        $content = $deps->storage->read((string) $export['file_path']);
         if ($content === null) {
             throw ReportException::of('CLINIC_NOT_FOUND', 'فایل خروجی حذف شده است', 404);
         }
@@ -276,8 +343,13 @@ final class ExportService
             if ($clinicId <= 0) {
                 continue;
             }
+            // هر ردیف Clinic خودش را حمل می‌کند — retention **و** ریشهٔ storage
+            // هم از پیکربندیِ همان Clinic می‌آید، نه از Clinicِ bootstrap.
+            // `depsFor()` memo است، پس به‌ازای هر Clinic فقط یک‌بار حل می‌شود
+            // (بدونِ N+1 در حلقه).
+            $deps = $this->depsFor($clinicId);
             if (!isset($cutoffByClinic[$clinicId])) {
-                $days = max(1, (int) (new Settings($this->db, $clinicId))->get('reports.export_retention_days', 7));
+                $days = max(1, (int) $deps->settings->get('reports.export_retention_days', 7));
                 $cutoffByClinic[$clinicId] = gmdate('Y-m-d H:i:s', time() - ($days * 86400)) . '.000';
             }
             if ((string) $row['created_at'] >= $cutoffByClinic[$clinicId]) {
@@ -288,7 +360,7 @@ final class ExportService
             $path = (string) ($payload['export']['file_path'] ?? '');
             if ($path !== '') {
                 try {
-                    $this->storage->delete($path);
+                    $deps->storage->delete($path);
                 } catch (Throwable) {
                     // فایل از قبل حذف‌شده — ادامه
                 }
@@ -423,9 +495,52 @@ final class ExportService
 
     // ================= Authz =================
 
-    private function requireReportAccess(int $actorUserId, string $type): void
+    /**
+     * **گارْدِ محدودِ Phase 2 برای عبور از مرز Clinic** (Slice 1B.1).
+     *
+     * چرا لازم است: `clinic_id` یک Job payload یک «انتخابِ عملیات» است، نه یک
+     * ادعایِ مجوز. تا پیش از این، `generate()` فقط capability‌های **سراسریِ**
+     * WordPress را می‌سنجید (`cpms_report_read` + `cpms_export` + cap نوع
+     * گزارش) و سپس دادهٔ **همان** Clinicِ payload را صادر می‌کرد. یعنی یک
+     * payload دستکاری‌شده می‌توانست با همان capability سراسری، خروجیِ Clinic
+     * دیگری بگیرد (confused deputy).
+     *
+     * این گارْد عمداً **محدود** است:
+     *  - فقط از primitive موجودِ عضویت استفاده می‌کند
+     *    (`MembershipRepository::find_active()` = `cpms_clinic_memberships`
+     *    با `status = 'active'`)؛
+     *  - هیچ نقش/سیاستِ فاز ۳ را اختراع نمی‌کند؛
+     *  - در نبودِ عضویتِ فعال **fail-closed** است: بدون fallback، بدون انتخابِ
+     *    Clinic پیش‌فرض، بدونِ صدورِ خروجی.
+     *
+     * دامنهٔ کاربرد: فقط مسیرهایی که شناسهٔ Clinic از payload می‌آید. مسیر
+     * REST نیازی به این گارْد ندارد چون Clinic آنجا از `TrustedClinicEstablisher`
+     * (همان عضویتِ تأییدشده) می‌آید؛ افزودنِ دوبارهٔ آن در `request()` می‌توانست
+     * نصبِ تک‌کلینیکی را که scope‌اش از `SystemClinicResolver` می‌آید بشکند.
+     *
+     * @throws ReportException با کدِ پایدارِ `CLINIC_EXPORT_CLINIC_NOT_AUTHORIZED`
+     */
+    private function requireClinicMembership(int $actorUserId, int $clinicId): void
     {
-        if (!$this->reports->isKnownType($type)) {
+        $denied = ReportException::of(
+            'CLINIC_EXPORT_CLINIC_NOT_AUTHORIZED',
+            'عضویت فعال در این Clinic برای خروجی گرفتن لازم است.',
+            403,
+            ['clinic_id' => $clinicId]
+        );
+
+        if ($actorUserId <= 0 || get_userdata($actorUserId) === false) {
+            throw $denied;
+        }
+
+        if ($this->memberships->find_active($clinicId, $actorUserId) === null) {
+            throw $denied;
+        }
+    }
+
+    private function requireReportAccess(ReportService $reports, int $actorUserId, string $type): void
+    {
+        if (!$reports->isKnownType($type)) {
             throw ReportException::of('CLINIC_NOT_FOUND', 'نوع گزارش ناشناخته است', 404, ['type' => $type]);
         }
 
@@ -437,7 +552,7 @@ final class ExportService
         }
 
         $missing = [];
-        foreach ($this->reports->typeCaps($type) as $cap) {
+        foreach ($reports->typeCaps($type) as $cap) {
             if (!$user->has_cap($cap)) {
                 $missing[] = $cap;
             }

@@ -53,6 +53,7 @@ use ClinicCore\Application\Notifications\SmsService;
 use ClinicCore\Application\Scope\ClinicScope;
 use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Application\Scope\SystemClinicResolver;
+use ClinicCore\Application\Reports\ExportClinicDeps;
 use ClinicCore\Application\Reports\ExportService;
 use ClinicCore\Application\Reports\ReportService;
 use ClinicCore\Application\System\SystemHealthService;
@@ -119,6 +120,7 @@ use ClinicCore\Rest\RestClinicContext;
 use ClinicCore\Rest\ScheduleController;
 use ClinicCore\Rest\SmsController;
 use ClinicCore\Settings\Settings;
+use ClinicCore\Settings\SettingsFactory;
 
 /**
  * نقطه اتصال افزونه به WordPress + DI سبک (singletonهای lazy).
@@ -141,7 +143,7 @@ final class App
     private static ?RateLimiter $rate = null;
     private static ?LoginRateLimiter $loginRateLimiter = null;
     private static ?Idempotency $idem = null;
-    private static ?Settings $settings = null;
+    private static ?SettingsFactory $settingsFactory = null;
     private static ?MigrationRunner $migrations = null;
     private static ?JobsDispatcher $dispatcher = null;
     private static ?SmsProviderRegistry $providers = null;
@@ -583,9 +585,7 @@ final class App
      */
     public static function localFileStorage(): LocalFileStorage
     {
-        $configured = trim((string) self::settings()->get('files.storage_path', ''));
-
-        return new LocalFileStorage($configured !== '' ? $configured : LocalFileStorage::defaultBasePath());
+        return new LocalFileStorage(self::fileStoragePath(self::settings()));
     }
 
     /**
@@ -598,20 +598,65 @@ final class App
 
     /**
      * سرویس Export گزارش (F8 — FR-19.3: async + CSV + Audit + دانلود محافظت‌شده).
+     *
+     * **Phase 2 (Slice 1B.1) — Scope-Neutral:** ساختِ این سرویس **هیچ** Clinic‌ای
+     * نمی‌خواهد و هیچ خواندنِ Settings/فایل/پیکربندیِ tenant-دار انجام نمی‌دهد.
+     * وابستگی‌های Clinic-دار از طریقِ یک کارخانهٔ `\Closure` **به‌صورت lazy** و
+     * فقط برای Clinic‌ای حل می‌شوند که یک مرزِ قابلِ اعتماد تعیین کرده است
+     * (`ExportService::trustedClinicId()` در REST، یا
+     * `clinicIdFromJobPayload()` **به‌همراهِ** `requireClinicMembership()` در Job).
+     *
+     * این جایگزینِ الگوی حذف‌شدهٔ `bindPayloadClinicScope()` است: پیش‌تر
+     * `dispatcher()` مجبور بود `clinic_id` **خامِ** payload را به `ScopeContext`
+     * موردِ اعتماد bind کند تا فقط بتواند سرویس را بسازد — یعنی context پیش از
+     * مجوز. اکنون اصلاً نیازی به آن bind نیست.
      */
     public static function exportService(): ExportService
     {
         return new ExportService(
             self::db(),
-            self::reportService(),
-            self::notificationService(),
             new NotificationRepository(self::db()),
-            self::localFileStorage(),
+            new MembershipRepository(self::db()),
             self::jobs(),
-            self::settings(),
+            static fn (int $clinicId): ExportClinicDeps => self::exportClinicDeps($clinicId),
             self::audit(),
             self::op()
         );
+    }
+
+    /**
+     * بستهٔ وابستگی‌های Clinic-دارِ Export — **فقط** با شناسهٔ Clinicِ از‌پیش‌تعیین‌شده.
+     *
+     * `Settings` از `SettingsFactory` با کلیدِ `clinicId` می‌آید (نه از `App::scope()`)،
+     * پس این متد هیچ وابستگی‌ای به Scope جاری ندارد و در worker بدونِ کاربر هم
+     * درست کار می‌کند.
+     */
+    public static function exportClinicDeps(int $clinicId): ExportClinicDeps
+    {
+        $settings = self::settingsFactory()->forClinic($clinicId);
+
+        return new ExportClinicDeps(
+            new ReportService(self::db(), $settings, self::audit()),
+            new NotificationService(
+                self::db(),
+                new NotificationRepository(self::db()),
+                new MembershipRepository(self::db()),
+                $settings,
+                self::op()
+            ),
+            new LocalFileStorage(self::fileStoragePath($settings)),
+            $settings
+        );
+    }
+
+    /**
+     * ریشهٔ ذخیره‌سازیِ فایل برای یک `Settings` مشخص — بدونِ اتکا به Scope.
+     */
+    private static function fileStoragePath(Settings $settings): string
+    {
+        $configured = trim((string) $settings->get('files.storage_path', ''));
+
+        return $configured !== '' ? $configured : LocalFileStorage::defaultBasePath();
     }
 
     /**
@@ -681,7 +726,14 @@ final class App
         if (self::$providers === null) {
             $registry = new SmsProviderRegistry();
             $registry->register(new LogSmsProvider(self::op()));
-            $registry->register(new GenericApiSmsProvider((array) self::settings()->get('sms.generic', [])));
+            // Phase 2 (§A-3 / RT-6): `sms.generic` **per-Clinic** است. اگر همین‌جا
+            // خوانده می‌شد، پیکربندیِ Clinicِ bootstrap برای کلِ فرآیند freeze
+            // می‌شد. اکنون یک Closure پاس می‌شود که در **لحظهٔ استفاده** و برای
+            // Clinicِ فعالِ همان عملیات حل می‌شود. نتیجهٔ جانبیِ مهم: ساختِ
+            // registry دیگر به Scope نیاز ندارد (RT-4).
+            $registry->register(new GenericApiSmsProvider(
+                static fn (): array => (array) self::settings()->get('sms.generic', [])
+            ));
             if (function_exists('do_action')) {
                 do_action('cpms_sms_provider', $registry);
             }
@@ -756,14 +808,20 @@ final class App
     public static function smsService(): SmsService
     {
         if (self::$smsService === null) {
+            // Phase 2 (§5-D / RT-4 / RT-6): این سرویس دیگر یک `Settings`
+            // Clinic-مشخص را در لحظهٔ ساخت نمی‌گیرد، بلکه کارخانهٔ per-Clinic +
+            // یک resolverِ scope می‌گیرد. پس:
+            //  (۱) ساختنش به هیچ Clinic‌ای نیاز ندارد ⇒ مرزِ tick نمی‌افتد؛
+            //  (۲) singleton بودنش بی‌خطر است ⇒ Clinicِ bootstrap میخ نمی‌شود.
             self::$smsService = new SmsService(
                 self::db(),
-                self::settings(),
+                self::settingsFactory(),
                 self::providers(),
                 self::vault(),
                 self::audit(),
                 self::op(),
-                self::jobs()
+                self::jobs(),
+                static fn (): int => self::scope()->clinicId
             );
         }
 
@@ -838,14 +896,33 @@ final class App
 
     public static function settings(): Settings
     {
-        if (self::$settings === null) {
-            // F1-4: AuditLogger تزریق می‌شود تا هر تغییر Setting (قبل/بعد + کاربر) Audit شود.
-            // Phase 2: Clinic پیش‌فرضِ Settings از Scope حل می‌شود (نه literal 1) —
-            // در نصب تک‌کلینیکی همان Clinic تنها؛ در حالت مبهم CLINIC_SCOPE_REQUIRED.
-            self::$settings = new Settings(self::db(), self::scope()->clinicId, self::audit());
+        // F1-4: AuditLogger تزریق می‌شود تا هر تغییر Setting (قبل/بعد + کاربر) Audit شود.
+        // Phase 2: Clinic پیش‌فرضِ Settings از Scope حل می‌شود (نه literal 1) —
+        // در نصب تک‌کلینیکی همان Clinic تنها؛ در حالت مبهم CLINIC_SCOPE_REQUIRED.
+        //
+        // Phase 2 (RT-6): عمداً **بدون memo**. این متد در هر فراخوانی از Scopeِ
+        // جاری مشتق می‌شود و کشِ واقعی در `SettingsFactory` با کلیدِ `clinicId`
+        // است (§5-D-2). پیش از این، نمونهٔ میخ‌شده در `App::$settings` باعث
+        // می‌شد Clinicِ bootstrap برای کلِ فرآیندِ PHP پیکربندی بدهد و
+        // `A → B → A` در گامِ B همان A را برگرداند. هزینهٔ حذفِ memo یک
+        // lookup آرایه‌ای است (نه Query) — `Settings::$cache` هم per-Clinic است.
+        return self::settingsFactory()->forClinic(self::scope()->clinicId);
+    }
+
+    /**
+     * کارخانهٔ `Settings` per-Clinic (§5-D-2) — نقطهٔ یکتای ساختِ پیکربندی.
+     *
+     * ساختنش به هیچ Clinic/Scope‌ای نیاز ندارد، پس سرویس‌هایی که آن را نگه
+     * می‌دارند scope-neutral می‌مانند و مرزِ tick با `CLINIC_SCOPE_REQUIRED`
+     * نمی‌افتد (RT-4).
+     */
+    public static function settingsFactory(): SettingsFactory
+    {
+        if (self::$settingsFactory === null) {
+            self::$settingsFactory = new SettingsFactory(self::db(), self::audit());
         }
 
-        return self::$settings;
+        return self::$settingsFactory;
     }
 
     /**
@@ -873,9 +950,9 @@ final class App
         ScopeContext::clear();
         SystemClinicResolver::flush();
         // C6 (bug 1 census): cache تنظیمات per-clinic است و با تغییر Scope باید
-        // باطل شود؛ instance هم بازسازی می‌شود تا clinicId از Scope تازه حل شود.
+        // باطل شود. Phase 2: `settings()` دیگر نمونهٔ میخ‌شده ندارد و هر بار از
+        // Scope مشتق می‌شود، پس فقط کشِ **داده** لازم است خالی شود.
         Settings::flushCache();
-        self::$settings = null;
     }
 
     /**
@@ -889,7 +966,6 @@ final class App
             ScopeContext::clear();
         }
         Settings::flushCache();
-        self::$settings = null;
     }
 
     public static function migrations(): MigrationRunner
@@ -1004,25 +1080,86 @@ final class App
         if (self::$dispatcher === null) {
             $queue = self::jobs();
             $db = self::db();
-            $settings = self::settings();
             $op = self::op();
+            // Phase 2 (Slice 1B.1 — یافتهٔ بازبینی M-3): enforcementِ طبقه‌بندیِ
+            // T/S/W اکنون **پیش‌فرضِ** `JobsDispatcher` است. پس production با
+            // همان ساختِ معمولی fail-closed است و نمی‌تواند «تصادفاً» یک
+            // dispatcherِ سهل‌گیر بسازد؛ opt-out فقط با درخواستِ صریحِ
+            // زیرساختِ عمومیِ تست ممکن است.
             $dispatcher = new JobsDispatcher($queue, $op);
+
+            // Phase 2 (RT-4 / RT-14) — ساختِ Handlerها **lazy** است.
+            //
+            // پیش از این، همهٔ Handlerها (و با آن‌ها `self::settings()` →
+            // `App::scope()`) در همین‌جا و در لحظهٔ **ساختِ dispatcher** حل
+            // می‌شدند. در نصبِ چندکلینیکیِ بدونِ کاربر/scope، کلِ tick پیش از هر
+            // `claim()` با `CLINIC_SCOPE_REQUIRED` می‌افتاد — fail-closed ولی
+            // خشن/سراسری.
+            //
+            // اکنون ساختِ Handler به داخلِ callableِ ثبت‌شده منتقل شده، یعنی
+            // **داخلِ `try/catch` موجودِ هر handler در `JobsDispatcher::tick()`**.
+            // نتیجه بدونِ دست زدن به `tick()`:
+            //   - ساختِ dispatcher به هیچ Clinic‌ای نیاز ندارد (RT-4)؛
+            //   - شکستِ scopeِ **یک** job فقط همان job را `failed` می‌کند و jobهای
+            //     بی‌ارتباطِ همان tick اجرا می‌شوند (RT-14).
+            //
+            // وابستگی‌های واقعاً سطح نصب (db/op/queue/rate/idem/vault/providers)
+            // بدون scope ساخته می‌شوند؛ وابستگی‌های Clinic-دار فقط در لحظهٔ اجرای
+            // همان job حل می‌شوند.
             $dispatcher
-                ->register('holds.expire', new HoldsExpireHandler($db))
-                ->register('cleanup.otp', new OtpCleanupHandler($db))
-                ->register('cleanup.rate_limits', new RateLimitCleanupHandler(self::rate()))
-                ->register('cleanup.idem', new IdemCleanupHandler(self::idem()))
-                ->register('cleanup.oplog', new OpLogCleanupHandler($db, $settings))
-                ->register('slots.generate', new SlotsGenerateHandler($db, $settings, $op))
-                ->register('sms.send', new SmsSendJobHandler(self::smsService()))
-                ->register('visits.no_show', new VisitsNoShowHandler(self::visitService()))
-                ->register('handwriting.gc', new HandwritingGcHandler(self::handwritingService()))
-                ->register('notif.dispatch', new NotifDispatchHandler(self::notificationService(), self::exportService()))
-                ->register('appt.reminder', new ApptReminderHandler($db, $settings, self::smsService(), self::notificationService(), $op))
-                ->register('fu.reminder', new FollowUpReminderHandler($db, $settings, self::smsService(), self::notificationService(), $op))
-                ->register('report.export', new ReportExportHandler(self::exportService()))
-                ->register('license.refresh', new LicenseRefreshHandler(self::licenseService(), $op))
-                ->register('backup.run', new BackupRunHandler(self::backupService(), self::settings(), $op));
+                ->register('holds.expire', static function (array $payload) use ($db): void {
+                    (new HoldsExpireHandler($db))($payload);
+                })
+                ->register('cleanup.otp', static function (array $payload) use ($db): void {
+                    (new OtpCleanupHandler($db))($payload);
+                })
+                ->register('cleanup.rate_limits', static function (array $payload): void {
+                    (new RateLimitCleanupHandler(self::rate()))([]);
+                })
+                ->register('cleanup.idem', static function (array $payload): void {
+                    (new IdemCleanupHandler(self::idem()))([]);
+                })
+                ->register('cleanup.oplog', static function (array $payload) use ($db): void {
+                    (new OpLogCleanupHandler($db, self::settings()))($payload);
+                })
+                ->register('slots.generate', static function (array $payload) use ($db, $op): void {
+                    (new SlotsGenerateHandler($db, self::settings(), $op))($payload);
+                })
+                ->register('sms.send', static function (array $payload): void {
+                    // T: Clinic از مالکیتِ ردیفِ پیام حل می‌شود (SmsService).
+                    (new SmsSendJobHandler(self::smsService()))($payload);
+                })
+                ->register('visits.no_show', static function (array $payload): void {
+                    (new VisitsNoShowHandler(self::visitService()))($payload);
+                })
+                ->register('handwriting.gc', static function (array $payload): void {
+                    (new HandwritingGcHandler(self::handwritingService()))($payload);
+                })
+                ->register('notif.dispatch', static function (array $payload): void {
+                    (new NotifDispatchHandler(self::notificationService(), self::exportService()))($payload);
+                })
+                ->register('appt.reminder', static function (array $payload) use ($db, $op): void {
+                    (new ApptReminderHandler($db, self::settings(), self::smsService(), self::notificationService(), $op))($payload);
+                })
+                ->register('fu.reminder', static function (array $payload) use ($db, $op): void {
+                    (new FollowUpReminderHandler($db, self::settings(), self::smsService(), self::notificationService(), $op))($payload);
+                })
+                ->register('report.export', static function (array $payload): void {
+                    // T: Clinic از `payload_json.clinic_id` — ولی payload یک
+                    // «انتخابِ عملیات» است، نه مجوز و نه contextِ موردِ اعتماد.
+                    // ساختِ `ExportService` دیگر **هیچ** Clinic‌ای نمی‌خواهد
+                    // (scope-neutral)، پس اینجا هیچ scope‌ای از payload bind
+                    // نمی‌شود. اعتبارسنجیِ عددی، **مجوزِ عضویتِ فعال** و سپس
+                    // حلِ وابستگی‌های Clinic همگی داخل `ExportService::generate()`
+                    // و به همان ترتیب انجام می‌شود.
+                    (new ReportExportHandler(self::exportService()))($payload);
+                })
+                ->register('license.refresh', static function (array $payload) use ($op): void {
+                    (new LicenseRefreshHandler(self::licenseService(), $op))($payload);
+                })
+                ->register('backup.run', static function (array $payload) use ($op): void {
+                    (new BackupRunHandler(self::backupService(), self::settings(), $op))($payload);
+                });
 
             self::$dispatcher = $dispatcher;
         }
@@ -1042,7 +1179,15 @@ final class App
     /** F1-7 — قفل یکپارچهٔ Tick: WP-Cron و `bin/cpms jobs tick` همان مکانیزم MySQL دارند. */
     public const TICK_LOCK = 'cpms_jobs_tick';
 
-    private const RECURRING_JOBS = [
+    /**
+     * Phase 2 (RT-12): عمومی شد تا گارْدِ drift بتواند **بدون Reflection** این
+     * منبعِ زمان‌بندی را با registry زمانِ اجرا (`JobsDispatcher::registeredTypes()`)
+     * و با `JobScopeRegistry` مقایسه کند. فقط تغییرِ visibility — بدون تغییرِ
+     * رفتار.
+     *
+     * @var array<string, int> type => priority
+     */
+    public const RECURRING_JOBS = [
         'holds.expire' => 8,
         'slots.generate' => 3,
         'visits.no_show' => 5, // FR-5.5 — no-show خودکار نوبت‌ها
