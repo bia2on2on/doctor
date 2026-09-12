@@ -62,6 +62,19 @@
 - ‏`docs/handoff/phase2-c6-to-next-agent.md`، ‏`docs/governance/project-phase-taxonomy.md`،
   ‏`docs/README.md`، ‏`docs/roadmap/roadmap.md`، ‏`CHANGELOG.md` — هم‌ترازی تداوم.
 
+## [Unreleased] — C10 (Performance review) — بستهٔ شواهد عملکرد فاز ۲ (فقط مستندات)
+
+**وضعیت: بازبینی شواهد C10 کامل / واجد شرایط فنی برای بستن — بستن رسمی مالک در انتظار (PENDING).**
+C10 رسماً بسته نشده است. این ورودی فقط مستندات است؛ **بدون هیچ تغییر کد محصول/تست/workflow/schema/migration.**
+
+### Added (docs)
+- سند جدید اختصاصی **`docs/phase-reports/c10-performance-evidence.md`** — بستهٔ شواهد عملکردِ داخلیِ LEVEL-2 فاز ۲، محدود به فوندیشن Multi-Clinic: مرزِ صریح با Owner Phase 17 (Performance — NOT STARTED)؛ ثبت شواهد اجراشدهٔ واقعی اما محدودِ Staging (اهداف `performance-baseline.md`؛ نتایج تاریخی `report-pilot-gate.md` §8 — **مقدم بر تغییرات Multi-Clinic ‏C4..C7؛ اثبات وجود/اجرای ابزار، نه عملکرد کد جاری**؛ گام `ab` در job `staging-gate` از `pilot-gate.yml`؛ گیت‌های Pilot/Staging سبز روی کد جاری — جدیدترین روی `bd2634a`، run ‏`34651627290` — **فقط اجرای موفق استپ؛ اعداد جاری قابل بازیابی نیستند و موفقیت workflow ≠ پاس‌شدن آستانه‌های latency**)؛ فهرست صریح NOT MEASURED (عملکرد محیط مرجع/NFR، سربار صفحات عمومی p95<100ms، شمارش کوئری/N+1، حافظه، بار معنادار چندکلینیکی) به‌عنوان شواهد آینده (عمدتاً Phase 17 / اعتبارسنجی انتشار) — **نه بلوکر C10**؛ خلاصهٔ بازبینی static محدود فاز ۲ (**هیچ نقص عملکردی VERIFIED نیازمند remediation نیافت**؛ بازرسی کد ≠ عملکرد اندازه‌گیری‌شده؛ عدم وجود سراسری N+1 ادعا نمی‌شود)؛ ریسک‌های ثبت‌شدهٔ مبتنی بر شواهد (مشاهدهٔ گذرای Deadlock روی `_transient_cpms_migrate_lock` در c=100 → Backlog؛ کلیدهای کش آینده tenant-aware)؛ و حکم برچسب تاریخی «End Gate (۲۶بندی)» — **هیچ فهرست کانونیِ تعریف‌شدهٔ ۲۶بندی در مخزن جاری یا تاریخچهٔ ردیابی‌شدهٔ بازرسی‌شدهٔ Git یافت نشد**؛ بازسازی ۲۶ بند انجام نمی‌شود؛ منشأ عدد به‌عنوان provenance ثبت نمی‌شود.
+- به‌روزرسانیِ حداقلی پیوستار (بدون بازنویسی تاریخچه): `phase2-state.md` (§C10 جدید + Queue + چک‌پوینت جاری `bd2634a` و گیت‌های پس‌از‌ادغام آن)، `project-current-state.md` (بولت وضعیت C10)، `project-phase-taxonomy.md` (T4/crosswalk/بولت وضعیت)، `roadmap.md` (ردیف Phase 2).
+
+### Notes
+- **بدون Migration** (`0001..0020` ثابت؛ `0021` ساخته/تصویب نشد). **Phase 3 / Phase 17 / End Gate فاز ۲ شروع نشدند.** **Phase 2 = IN PROGRESS.** **PR #13 دست‌نخورده.**
+- هیچ بهینه‌سازی عملکردی پیاده نشد؛ هیچ ابزار benchmark افزوده نشد؛ هیچ load test جدیدی اجرا نشد؛ **هیچ آستانهٔ NFR پاس‌شده اعلام نشد** — شواهد Staging اثبات عملکرد Production نیست.
+
 ## [Unreleased] — C9 (i18n) — پیاده‌سازی محدودشده: translation-ready شدن دو پیام انسانیِ معرفی‌شده توسط C7 در مرز REST
 
 **وضعیتِ جاری: ادغام‌شده در `main` و C9 = CLOSED (ورودیِ بالای همین فایل را ببینید).**
