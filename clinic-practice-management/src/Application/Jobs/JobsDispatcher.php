@@ -18,18 +18,23 @@ final class JobsDispatcher
     private array $handlers = [];
 
     /**
-     * @param bool $enforceScopeClassification وقتی true باشد، `register()` هر
-     *        نوعِ بدونِ طبقهٔ scope ثبت‌شده را reject می‌کند (A-1.10 / RT-12).
-     *        فقط dispatcherِ **production** (`App::dispatcher()`) آن را روشن
-     *        می‌کند؛ یک dispatcher موقت/آزمایشی همچنان می‌تواند نوعِ ad-hoc
-     *        ثبت کند. این تفکیک صریح است، نه یک استثنا: قراردادِ T/S/W مالِ
-     *        registry زمانِ اجرای محصول است و گارْدِ drift آن توسط تستِ RT-12
-     *        روی `App::dispatcher()` سنجیده می‌شود.
+     * @param bool $allowUnclassifiedJobTypes **پیش‌فرض `false` = fail-closed.**
+     *        وقتی `false` باشد (حالتِ پیش‌فرض و حالتِ production)، `register()`
+     *        هر نوعِ بدونِ طبقهٔ scope ثبت‌شده را reject می‌کند (A-1.10 / RT-12).
+     *
+     *        Phase 2 (Slice 1B.1 — یافتهٔ بازبینی M-3): پیش از این این گارْد
+     *        پیش‌فرض **خاموش** بود و production باید صریحاً `true` می‌داد. آن
+     *        طراحی «unsafe by default» بود: هر dispatcher جدیدِ production که
+     *        آرگومان را فراموش می‌کرد، بی‌صدا enforcement را از دست می‌داد و
+     *        هیچ تستی هم آن را نمی‌گرفت. اکنون جهت وارونه است — production با
+     *        ساختِ معمولی امن است و **فقط** زیرساختِ عمومیِ تست (که نوعِ ad-hoc
+     *        مصنوعی مثل `test.count` ثبت می‌کند) با درخواستِ صریحِ `true`
+     *        opt-out می‌کند.
      */
     public function __construct(
         private readonly JobQueue $queue,
         private readonly OpLogger $op,
-        private readonly bool $enforceScopeClassification = false
+        private readonly bool $allowUnclassifiedJobTypes = false
     ) {
     }
 
@@ -42,12 +47,13 @@ final class JobsDispatcher
      * مصرف‌شده توسط خودِ dispatcher تبدیل می‌کند، پس طبقه‌بندی و handlerها
      * نمی‌توانند از هم drift کنند.
      *
-     * @throws JobScopeUnknownException اگر enforcement روشن باشد و نوع در
+     * @throws JobScopeUnknownException با کدِ پایدارِ `JOB_SCOPE_UNCLASSIFIED`
+     *                                  اگر opt-out داده نشده باشد و نوع در
      *                                  `JobScopeRegistry` نباشد
      */
     public function register(string $type, callable $handler): self
     {
-        if ($this->enforceScopeClassification) {
+        if (!$this->allowUnclassifiedJobTypes) {
             JobScopeRegistry::classFor($type);
         }
         $this->handlers[$type] = $handler;

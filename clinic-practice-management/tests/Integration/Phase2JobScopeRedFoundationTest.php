@@ -97,11 +97,15 @@ use ClinicCore\Application\Jobs\JobsDispatcher;
 use ClinicCore\Application\Jobs\JobScopeClass;
 use ClinicCore\Application\Jobs\JobScopeRegistry;
 use ClinicCore\Application\Jobs\JobScopeUnknownException;
+use ClinicCore\Application\Reports\ExportService;
+use ClinicCore\Application\Reports\ReportException;
 use ClinicCore\Application\Scope\ClinicScope;
 use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Application\Scope\SystemClinicResolver;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Domain\Notifications\NotificationEvents;
+use ClinicCore\Infrastructure\Repository\MembershipRepository;
 use ClinicCore\Settings\Settings;
 use ClinicCore\Tests\Integration\Fixtures\Phase2MultiClinicSmsFixture;
 use ClinicCore\Tests\Integration\Fixtures\RecordingSmsProvider;
@@ -666,6 +670,295 @@ final class Phase2JobScopeRedFoundationTest extends WP_UnitTestCase
     }
 
     // =================================================================
+    // Slice 1B.1 — export tenant authorization (PR #27 review finding H-1)
+    // =================================================================
+
+    /**
+     * SECURITY REGRESSION GUARD — the confused-deputy path must stay closed.
+     *
+     * Background: `cpms_jobs.payload_json` is a persisted job payload, and
+     * "persisted" does not make it trustworthy. `ExportService::generate()`
+     * takes the export Clinic from that payload, while the authorization it
+     * re-checked (`requireReportAccess()` / `requireCap()`) inspects only
+     * GLOBAL WordPress capabilities. On its own, that combination lets a
+     * tampered payload select another Clinic's data: the capability says "this
+     * user may export reports", it does NOT say "in this Clinic".
+     *
+     * Phase 2 invariant this test pins:
+     * **A Clinic identifier in a payload is not authorization for an actor to
+     * cross a Clinic boundary.** The operation must fail closed.
+     *
+     * The guard is deliberately narrow and uses an EXISTING Phase 2 membership
+     * primitive (`MembershipRepository::find_active()` on
+     * `cpms_clinic_memberships` with `status = 'active'`) — no Phase 3
+     * `AuthorizationService`, no invented role semantics.
+     *
+     * Strength: the actor is positively shown to hold every global capability
+     * the export path checks AND an active membership in Clinic A, so the
+     * denial cannot be explained by a missing capability. Clinic B membership
+     * is the only thing absent.
+     */
+    public function testTamperedExportPayloadCannotCrossClinicOnGlobalCapabilityAlone(): void
+    {
+        $actor = $this->makeExportCapableActor('rt_export_a_only');
+        $memberships = new MembershipRepository(App::db());
+
+        // Positive controls — the actor IS authorized for Clinic A and holds
+        // every global WordPress capability the export path inspects.
+        self::assertNotNull(
+            $memberships->find_active($this->fxClinicA, $actor),
+            'precondition: the actor holds an ACTIVE membership in Clinic A'
+        );
+        $user = get_userdata($actor);
+        self::assertNotFalse($user, 'precondition: the actor user exists');
+        self::assertTrue($user->has_cap('cpms_report_read'), 'precondition: global REPORT_READ is held');
+        self::assertTrue($user->has_cap('cpms_export'), 'precondition: global EXPORT is held');
+        self::assertTrue($user->has_cap('cpms_patient_read'), 'precondition: global PATIENT_READ is held (visits type cap)');
+
+        // The ONLY thing missing is membership in Clinic B.
+        self::assertNull(
+            $memberships->find_active($this->fxClinicB, $actor),
+            'precondition: the actor has NO active membership in Clinic B'
+        );
+
+        App::replaceExplicitScope(ClinicScope::forClinic($this->fxClinicA));
+        wp_set_current_user($actor);
+
+        // The tampered job payload selects Clinic B.
+        $thrown = null;
+        try {
+            App::exportService()->generate([
+                'actor_id' => $actor,
+                'clinic_id' => $this->fxClinicB,
+                'type' => 'visits',
+                'from' => gmdate('Y-m-d'),
+                'to' => gmdate('Y-m-d'),
+            ]);
+        } catch (\Throwable $e) {
+            $thrown = $e;
+        }
+
+        self::assertInstanceOf(
+            ReportException::class,
+            $thrown,
+            'H-1: a tampered payload must fail closed instead of exporting Clinic B data. '
+                . 'Nothing was thrown => the cross-Clinic export succeeded.'
+        );
+        self::assertSame(
+            'CLINIC_EXPORT_CLINIC_NOT_AUTHORIZED',
+            $thrown instanceof ReportException ? $thrown->errorCode : '',
+            'H-1: the denial must carry the stable machine-readable code'
+        );
+        self::assertSame(
+            403,
+            $thrown instanceof ReportException ? $thrown->httpStatus : 0,
+            'H-1: the denial is a 403, not a 404 or a silent no-op'
+        );
+
+        // No tenant-sensitive artifact of Clinic B may have been produced.
+        self::assertSame(
+            0,
+            $this->exportReadyNotificationCount($this->fxClinicB, $actor),
+            'H-1: no export-ready notification may be created for Clinic B'
+        );
+
+        // The denied operation must not leave a Clinic B context behind.
+        $scope = ScopeContext::tryGet();
+        self::assertInstanceOf(ClinicScope::class, $scope, 'H-1: the process scope must still be bound');
+        self::assertSame(
+            $this->fxClinicA,
+            $scope instanceof ClinicScope ? $scope->clinicId : 0,
+            'H-1: the denied operation must not leak Clinic B into the process scope'
+        );
+    }
+
+    /**
+     * The guard must NOT break the legitimate path: an active member exporting
+     * their own Clinic still succeeds end to end (report → file → notification).
+     *
+     * Without this test, the security guard above could be satisfied by simply
+     * denying every export.
+     */
+    public function testSameClinicExportStillSucceedsForActiveMember(): void
+    {
+        $actor = $this->makeExportCapableActor('rt_export_same_clinic');
+
+        App::replaceExplicitScope(ClinicScope::forClinic($this->fxClinicA));
+        wp_set_current_user($actor);
+
+        $thrown = null;
+        try {
+            App::exportService()->generate([
+                'actor_id' => $actor,
+                'clinic_id' => $this->fxClinicA,
+                'type' => 'visits',
+                'from' => gmdate('Y-m-d'),
+                'to' => gmdate('Y-m-d'),
+            ]);
+        } catch (\Throwable $e) {
+            $thrown = $e;
+        }
+
+        self::assertNull(
+            $thrown,
+            'H-1 control: the legitimate same-Clinic export must still work. Actual: '
+                . ($thrown === null ? 'n/a' : get_class($thrown) . ': ' . $thrown->getMessage())
+        );
+
+        $row = $this->latestExportReadyNotification($this->fxClinicA, $actor);
+        self::assertIsArray($row, 'H-1 control: the export produced an export-ready notification for Clinic A');
+        $decoded = json_decode((string) ($row['payload_json'] ?? '{}'), true);
+        $export = is_array($decoded['export'] ?? null) ? $decoded['export'] : [];
+        self::assertStringStartsWith(
+            $this->fxClinicA . '/',
+            (string) ($export['file_path'] ?? ''),
+            'H-1 control: the artifact lives under Clinic A storage, not another Clinic'
+        );
+    }
+
+    /**
+     * H-1 architectural correction: the export dependency graph is constructible
+     * WITHOUT any Clinic, so no unvalidated payload has to be bound into the
+     * trusted `ScopeContext` merely to build the service.
+     *
+     * Before Slice 1B.1, `App::exportService()` injected `App::settings()` /
+     * `reportService()` / `localFileStorage()`, all of which resolve a Clinic —
+     * which is exactly why `App::dispatcher()` had to bind the raw payload
+     * clinic first. Construction now touches no tenant-sensitive state.
+     */
+    public function testExportServiceGraphIsConstructibleWithoutAnyClinicScope(): void
+    {
+        wp_set_current_user(0);
+        $this->simulateFreshBackgroundProcess();
+
+        // Precondition: scope resolution here IS ambiguous, so any Clinic
+        // resolution during construction would fail closed with
+        // CLINIC_SCOPE_REQUIRED. That makes this a real test, not a tautology.
+        self::assertGreaterThanOrEqual(2, $this->clinicCount(), 'precondition: scope resolution is ambiguous');
+        self::assertNull(ScopeContext::tryGet(), 'precondition: no explicit Clinic scope is bound');
+
+        $service = null;
+        $thrown = null;
+        try {
+            $service = App::exportService();
+        } catch (\Throwable $e) {
+            $thrown = $e;
+        }
+
+        self::assertNull(
+            $thrown,
+            'H-1: ExportService construction must be scope-neutral. Actual: '
+                . ($thrown === null ? 'n/a' : get_class($thrown) . ': ' . $thrown->getMessage())
+        );
+        self::assertInstanceOf(ExportService::class, $service);
+
+        // Construction must not have established a Clinic context either.
+        self::assertNull(
+            ScopeContext::tryGet(),
+            'H-1: constructing ExportService must not establish any Clinic scope'
+        );
+
+        // The dispatcher is likewise constructible with no user and no scope, and
+        // its `report.export` handler no longer needs a payload-derived scope.
+        self::assertContains('report.export', App::dispatcher()->registeredTypes());
+        self::assertNull(
+            ScopeContext::tryGet(),
+            'H-1: dispatcher construction must not establish a Clinic scope'
+        );
+    }
+
+    // =================================================================
+    // Slice 1B.1 — fail-closed registry by default (review finding M-3)
+    // =================================================================
+
+    /**
+     * M-3: the DEFAULT construction must be fail-closed. Before Slice 1B.1 the
+     * enforcement flag defaulted to `false`, so any production dispatcher built
+     * with the ordinary two-argument call silently lost the T/S/W guard.
+     */
+    public function testJobsDispatcherDefaultConstructionRejectsUnclassifiedJobType(): void
+    {
+        $dispatcher = new JobsDispatcher(App::jobs(), App::op());
+
+        $thrown = null;
+        try {
+            $dispatcher->register('rt.unclassified.type', static function (array $payload): void {
+            });
+        } catch (\Throwable $e) {
+            $thrown = $e;
+        }
+
+        self::assertInstanceOf(
+            JobScopeUnknownException::class,
+            $thrown,
+            'M-3: the DEFAULT JobsDispatcher construction must reject an unclassified job type'
+        );
+        self::assertSame(
+            'JOB_SCOPE_UNCLASSIFIED',
+            $thrown instanceof JobScopeUnknownException ? $thrown->errorCode : '',
+            'M-3: stable machine-readable code'
+        );
+        self::assertNotContains(
+            'rt.unclassified.type',
+            $dispatcher->registeredTypes(),
+            'M-3: a rejected type must not have been registered'
+        );
+    }
+
+    /**
+     * M-3: the permissive mode exists only where it is deliberately requested
+     * (generic test infrastructure), and it does NOT widen the production
+     * contract — the synthetic type stays absent from the registry.
+     */
+    public function testJobsDispatcherPermissiveModeRequiresExplicitOptIn(): void
+    {
+        $permissive = new JobsDispatcher(App::jobs(), App::op(), true);
+
+        $thrown = null;
+        try {
+            $permissive->register('rt.adhoc.test.type', static function (array $payload): void {
+            });
+        } catch (\Throwable $e) {
+            $thrown = $e;
+        }
+
+        self::assertNull($thrown, 'M-3: an explicit opt-in must allow a synthetic test-only job type');
+        self::assertContains('rt.adhoc.test.type', $permissive->registeredTypes());
+        self::assertFalse(
+            JobScopeRegistry::isRegistered('rt.adhoc.test.type'),
+            'M-3: the test escape hatch must not register the synthetic type in production'
+        );
+    }
+
+    /**
+     * M-3: the production dispatcher keeps classification enforcement — and it
+     * does so through the DEFAULT constructor, i.e. it cannot be switched off
+     * by forgetting an argument.
+     */
+    public function testProductionDispatcherRetainsClassificationEnforcement(): void
+    {
+        $dispatcher = App::dispatcher();
+
+        $thrown = null;
+        try {
+            $dispatcher->register('rt.not.in.production.registry', static function (array $payload): void {
+            });
+        } catch (\Throwable $e) {
+            $thrown = $e;
+        }
+
+        self::assertInstanceOf(
+            JobScopeUnknownException::class,
+            $thrown,
+            'M-3: App::dispatcher() must never accept an unclassified job type'
+        );
+        self::assertNotContains('rt.not.in.production.registry', $dispatcher->registeredTypes());
+
+        // The 15 production types are all still classified (RT-12 unchanged).
+        self::assertSame(JobScopeRegistry::types(), $dispatcher->registeredTypes());
+    }
+
+    // =================================================================
     // Harness — process-state control (see the HARNESS NOTE in the docblock)
     // =================================================================
 
@@ -776,5 +1069,67 @@ final class Phase2JobScopeRedFoundationTest extends WP_UnitTestCase
             'SELECT COUNT(*) FROM ' . $wpdb->prefix . 'cpms_otp_tokens WHERE id = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
             $otpId
         ));
+    }
+
+    /**
+     * A WP user that holds every GLOBAL capability the export path inspects and
+     * an ACTIVE membership in **Clinic A only** — so the cross-Clinic guard is
+     * exercised with the capability dimension fully satisfied.
+     */
+    private function makeExportCapableActor(string $login): int
+    {
+        $userId = (int) wp_create_user($login . bin2hex(random_bytes(3)), 'pass-12345', $login . '@rt.local');
+        self::assertGreaterThan(0, $userId, 'fixture: export actor created');
+
+        $user = get_userdata($userId);
+        self::assertNotFalse($user, 'fixture: export actor exists');
+        $user->set_role('subscriber');
+        $user->add_cap('cpms_report_read');
+        $user->add_cap('cpms_export');
+        $user->add_cap('cpms_patient_read');
+
+        // Clinic A only. Using the production membership service keeps this on
+        // the same primitive the guard reads.
+        App::membership_service()->create_membership($this->fxClinicA, $userId, 'cpms_accountant');
+
+        return $userId;
+    }
+
+    private function exportReadyNotificationCount(int $clinicId, int $userId): int
+    {
+        global $wpdb;
+
+        return (int) $wpdb->get_var($wpdb->prepare(
+            'SELECT COUNT(*) FROM ' . $wpdb->prefix . 'cpms_notifications
+             WHERE clinic_id = %d AND recipient_wp_user_id = %d AND template = %s', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $clinicId,
+            $userId,
+            NotificationEvents::REPORT_EXPORT_READY
+        ));
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function latestExportReadyNotification(int $clinicId, int $userId): ?array
+    {
+        global $wpdb;
+        $row = $wpdb->get_row($wpdb->prepare(
+            'SELECT id, clinic_id, payload_json FROM ' . $wpdb->prefix . 'cpms_notifications
+             WHERE clinic_id = %d AND recipient_wp_user_id = %d AND template = %s
+             ORDER BY id DESC LIMIT 1', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $clinicId,
+            $userId,
+            NotificationEvents::REPORT_EXPORT_READY
+        ), ARRAY_A);
+
+        return is_array($row) ? $row : null;
+    }
+
+    private function clinicCount(): int
+    {
+        global $wpdb;
+
+        return (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $wpdb->prefix . 'cpms_clinics'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
     }
 }

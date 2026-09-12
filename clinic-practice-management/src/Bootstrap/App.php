@@ -53,6 +53,7 @@ use ClinicCore\Application\Notifications\SmsService;
 use ClinicCore\Application\Scope\ClinicScope;
 use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Application\Scope\SystemClinicResolver;
+use ClinicCore\Application\Reports\ExportClinicDeps;
 use ClinicCore\Application\Reports\ExportService;
 use ClinicCore\Application\Reports\ReportService;
 use ClinicCore\Application\System\SystemHealthService;
@@ -584,9 +585,7 @@ final class App
      */
     public static function localFileStorage(): LocalFileStorage
     {
-        $configured = trim((string) self::settings()->get('files.storage_path', ''));
-
-        return new LocalFileStorage($configured !== '' ? $configured : LocalFileStorage::defaultBasePath());
+        return new LocalFileStorage(self::fileStoragePath(self::settings()));
     }
 
     /**
@@ -599,20 +598,65 @@ final class App
 
     /**
      * سرویس Export گزارش (F8 — FR-19.3: async + CSV + Audit + دانلود محافظت‌شده).
+     *
+     * **Phase 2 (Slice 1B.1) — Scope-Neutral:** ساختِ این سرویس **هیچ** Clinic‌ای
+     * نمی‌خواهد و هیچ خواندنِ Settings/فایل/پیکربندیِ tenant-دار انجام نمی‌دهد.
+     * وابستگی‌های Clinic-دار از طریقِ یک کارخانهٔ `\Closure` **به‌صورت lazy** و
+     * فقط برای Clinic‌ای حل می‌شوند که یک مرزِ قابلِ اعتماد تعیین کرده است
+     * (`ExportService::trustedClinicId()` در REST، یا
+     * `clinicIdFromJobPayload()` **به‌همراهِ** `requireClinicMembership()` در Job).
+     *
+     * این جایگزینِ الگوی حذف‌شدهٔ `bindPayloadClinicScope()` است: پیش‌تر
+     * `dispatcher()` مجبور بود `clinic_id` **خامِ** payload را به `ScopeContext`
+     * موردِ اعتماد bind کند تا فقط بتواند سرویس را بسازد — یعنی context پیش از
+     * مجوز. اکنون اصلاً نیازی به آن bind نیست.
      */
     public static function exportService(): ExportService
     {
         return new ExportService(
             self::db(),
-            self::reportService(),
-            self::notificationService(),
             new NotificationRepository(self::db()),
-            self::localFileStorage(),
+            new MembershipRepository(self::db()),
             self::jobs(),
-            self::settings(),
+            static fn (int $clinicId): ExportClinicDeps => self::exportClinicDeps($clinicId),
             self::audit(),
             self::op()
         );
+    }
+
+    /**
+     * بستهٔ وابستگی‌های Clinic-دارِ Export — **فقط** با شناسهٔ Clinicِ از‌پیش‌تعیین‌شده.
+     *
+     * `Settings` از `SettingsFactory` با کلیدِ `clinicId` می‌آید (نه از `App::scope()`)،
+     * پس این متد هیچ وابستگی‌ای به Scope جاری ندارد و در worker بدونِ کاربر هم
+     * درست کار می‌کند.
+     */
+    public static function exportClinicDeps(int $clinicId): ExportClinicDeps
+    {
+        $settings = self::settingsFactory()->forClinic($clinicId);
+
+        return new ExportClinicDeps(
+            new ReportService(self::db(), $settings, self::audit()),
+            new NotificationService(
+                self::db(),
+                new NotificationRepository(self::db()),
+                new MembershipRepository(self::db()),
+                $settings,
+                self::op()
+            ),
+            new LocalFileStorage(self::fileStoragePath($settings)),
+            $settings
+        );
+    }
+
+    /**
+     * ریشهٔ ذخیره‌سازیِ فایل برای یک `Settings` مشخص — بدونِ اتکا به Scope.
+     */
+    private static function fileStoragePath(Settings $settings): string
+    {
+        $configured = trim((string) $settings->get('files.storage_path', ''));
+
+        return $configured !== '' ? $configured : LocalFileStorage::defaultBasePath();
     }
 
     /**
@@ -912,39 +956,6 @@ final class App
     }
 
     /**
-     * بستنِ scope به `clinic_id` موجود در payload یک Job — Phase 2 (RT-4/RT-14).
-     *
-     * فقط وقتی کاربرد دارد که ساختِ گرافِ سرویسِ یک handler به `settings()`
-     * نیاز دارد ولی خودِ handler بعداً Clinic را authoritative اعتبارسنجی و
-     * bind می‌کند (`report.export` → `ExportService`). پس این متد **هیچ**
-     * اعتبارسنجیِ مالکیتی انجام نمی‌دهد و هیچ Clinic‌ای حدس نمی‌زند:
-     *  - `clinic_id` غایب/نامعتبر ⇒ هیچ scope‌ای bind نمی‌شود و مسیرِ
-     *    fail-closedِ همان handler دست‌نخورده باقی می‌ماند؛
-     *  - `clinic_id` معتبر ⇒ همان Clinic bind می‌شود (منبعِ durable، همان
-     *    الگوی §۱ ردیف ۱۵ سند کانونی).
-     *
-     * @param array<string, mixed> $payload
-     *
-     * @return \Closure(): void بازگردانیِ scope قبلی (همیشه در `finally`)
-     */
-    private static function bindPayloadClinicScope(array $payload): \Closure
-    {
-        $previous = ScopeContext::tryGet();
-        $clinicId = (int) ($payload['clinic_id'] ?? 0);
-        if ($clinicId > 0) {
-            ScopeContext::set(ClinicScope::forClinic($clinicId));
-        }
-
-        return static function () use ($previous): void {
-            if ($previous instanceof ClinicScope) {
-                ScopeContext::set($previous);
-            } else {
-                ScopeContext::clear();
-            }
-        };
-    }
-
-    /**
      * تعویض Scope صریح بدون flush رزولور سیستمی — مرز REST/Job تو در تو.
      */
     public static function replaceExplicitScope(?ClinicScope $scope): void
@@ -1070,7 +1081,12 @@ final class App
             $queue = self::jobs();
             $db = self::db();
             $op = self::op();
-            $dispatcher = new JobsDispatcher($queue, $op, true);
+            // Phase 2 (Slice 1B.1 — یافتهٔ بازبینی M-3): enforcementِ طبقه‌بندیِ
+            // T/S/W اکنون **پیش‌فرضِ** `JobsDispatcher` است. پس production با
+            // همان ساختِ معمولی fail-closed است و نمی‌تواند «تصادفاً» یک
+            // dispatcherِ سهل‌گیر بسازد؛ opt-out فقط با درخواستِ صریحِ
+            // زیرساختِ عمومیِ تست ممکن است.
+            $dispatcher = new JobsDispatcher($queue, $op);
 
             // Phase 2 (RT-4 / RT-14) — ساختِ Handlerها **lazy** است.
             //
@@ -1129,17 +1145,14 @@ final class App
                     (new FollowUpReminderHandler($db, self::settings(), self::smsService(), self::notificationService(), $op))($payload);
                 })
                 ->register('report.export', static function (array $payload): void {
-                    // T: Clinic از `payload_json.clinic_id`. این bind فقط برای
-                    // **ساختِ گرافِ سرویس** است؛ اعتبارسنجیِ authoritative و
-                    // fail-closed همچنان در `ExportService::clinicIdFromJobPayload()`
-                    // باقی است (یک منبعِ حقیقت). اگر payload شناسهٔ معتبر نداشته
-                    // باشد، bind رخ نمی‌دهد و همان مسیرِ قبلی خطای صریح می‌دهد.
-                    $restoreScope = self::bindPayloadClinicScope($payload);
-                    try {
-                        (new ReportExportHandler(self::exportService()))($payload);
-                    } finally {
-                        $restoreScope();
-                    }
+                    // T: Clinic از `payload_json.clinic_id` — ولی payload یک
+                    // «انتخابِ عملیات» است، نه مجوز و نه contextِ موردِ اعتماد.
+                    // ساختِ `ExportService` دیگر **هیچ** Clinic‌ای نمی‌خواهد
+                    // (scope-neutral)، پس اینجا هیچ scope‌ای از payload bind
+                    // نمی‌شود. اعتبارسنجیِ عددی، **مجوزِ عضویتِ فعال** و سپس
+                    // حلِ وابستگی‌های Clinic همگی داخل `ExportService::generate()`
+                    // و به همان ترتیب انجام می‌شود.
+                    (new ReportExportHandler(self::exportService()))($payload);
                 })
                 ->register('license.refresh', static function (array $payload) use ($op): void {
                     (new LicenseRefreshHandler(self::licenseService(), $op))($payload);
