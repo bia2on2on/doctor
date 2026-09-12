@@ -10,6 +10,7 @@
 | **شواهد پایه** | `docs/phase-reports/report-phase-0-reverification.md` (۹ قید C-1..C-9) · `docs/architecture/phase0.5-target-model.md` (مدل هدف + برنامهٔ Migration) |
 | **فاز اجرا** | Phase 2 (Multi-Clinic Core) و Phase 3 (Role & Access Control) طبق Roadmap تأییدشدهٔ Owner |
 | **به‌روزرسانی** | 2026-09-08 — AD-14 (Q2)، AD-15 (Q8)، AD-16 (Q10) افزوده شدند |
+| **به‌روزرسانی ۲** | 2026-09-12 — §۸ «الزام دائمی محصول: یک هسته، سه توپولوژی استقرار» (AD-17) با تصمیم صریح Owner افزوده شد — فقط مستندات؛ بدون تغییر schema/کد |
 
 ---
 
@@ -159,6 +160,37 @@ Organization
 > (OD-8؛ تست‌های OtpSecurityTest + تست جدید C5). **هنوز NOT IMPLEMENTED (فازهای
 > بعدی):** REST endpoints هویت، Policy/Scope UI (Phase 3/9)، merge engine
 > (ADR-0015 — schema-only می‌ماند)، resolvePatient، و مکانیزم هش (B-17).
+
+### ۸. الزام دائمی محصول: یک هسته، سه توپولوژی استقرار (AD-17 — تصمیم Owner، 2026-09-12)
+
+**AD-17 — یک پلاگین، یک هستهٔ مشترک، سه توپولوژی استقرار.** همان مدل `Organization → Clinic → Location`
+‏(§۱) و همان قواعد عضویت (§۲) باید **بدون معماری جداگانه و بدون مسیر کد موازی** این سه سناریو را پوشش دهند؛
+تفاوت آن‌ها فقط در **UX** و در **Context Resolution امن** (تعیین صریح Organization/Clinic/Location فعال) است:
+
+| توپولوژی | توصیف | نکتهٔ context |
+|---|---|---|
+| **A — مطب تک‌پزشک** | یک Organization، یک Clinic، یک Location، یک پزشک | تنها گزینهٔ موجود به‌طور **صریح** resolve می‌شود — نه با فرض «اولین ردیف» |
+| **B — کلینیک چندپزشک** | یک Clinic با یک یا چند Location و چند پزشک/کارمند | Location فعال باید صریح یا از قاعدهٔ اعلام‌شده (Primary Location) به‌دست آید |
+| **C — سازمان چندکلینیکی / ساختمان پزشکی** | چند Clinic زیر یک Organization؛ کاربران/پزشکان می‌توانند هم‌زمان در چند Clinic فعال باشند | هیچ Clinic «پیش‌فرض ضمنی» وجود ندارد؛ ابهام ⇒ fail-closed (مانند `CLINIC_SCOPE_REQUIRED`) |
+
+قواعد الزام‌آور (تکرار/تحکیم AD-01..AD-16 برای هر سه توپولوژی):
+
+1. **ممنوع:** `clinic_id = 1`، `location_id = 1`، `organization_id = 1`، «اولین ردیف»، وضعیت سراسری/ایستای
+   Clinic فعال (global clinic state)، و هر فرض هویتی/جغرافیایی از جمله فرض `Asia/Tehran` به‌عنوان هویت
+   Clinic/Location (fallback فنی IANA ≠ هویت جغرافیایی). (تحکیم AD-13 و AD-08.)
+2. **WP User ≠ پزشک.** کاربر وردپرس یک هویت احراز هویت است؛ «پزشک بودن» فقط از طریق Membership + رکورد
+   Clinician در یک Clinic معنا دارد. یک WP User می‌تواند در چند Clinic عضو باشد یا در هیچ‌کدام پزشک نباشد.
+3. **هویت بالینی (Clinician) در Clinicهای مختلف تکثیر نمی‌شود**؛ یک شخص = یک هویت، چند Membership.
+4. **Membership ≠ Location assignment.** عضویت در Clinic، حضور/تخصیص به یک Location را ایجاب نمی‌کند و
+   برعکس؛ این دو رابطهٔ جداگانه‌اند.
+5. **Patient Identity در سطح Organization** و **Clinical Record در سطح Clinic** (AD-14).
+   **دید بین‌کلینیکی هرگز ضمنی نیست** — هیچ توپولوژی‌ای (حتی C) به‌طور خودکار دید متقابل رکورد بالینی ایجاد نمی‌کند.
+6. **Context Resolution** برای هر مسیر اجرا (درخواست کاربر، REST، cron/job، CLI) باید صریح و قابل ردیابی باشد؛
+   نبودِ context ⇒ خطا/توقف، نه fallback خاموش به یک Clinic/Location/منطقهٔ زمانی.
+
+**مرزها:** جزئیات دامنه‌بندی نقش/قابلیت (role/capability scoping) در **Phase 3** تعریف می‌شود و این بند آن را
+پیش‌داوری نمی‌کند؛ پورتال‌های فرانت‌اند (بیمار/پزشک) در دامنهٔ **Phase 2 نیستند**. این بند هیچ migration،
+schema یا کد جدیدی را ایجاد یا مجاز نمی‌کند؛ صرفاً معیار پذیرشِ دائمی برای هر طراحی/پیاده‌سازی آینده است.
 
 ---
 
