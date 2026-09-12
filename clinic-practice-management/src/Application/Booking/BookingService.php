@@ -138,15 +138,19 @@ final class BookingService
     {
         $clinicId = $this->requireClinician($clinicianId);
 
-        // Resolve slot first (exact identity preferred), then temporal policy with Location timezone
+        // Preliminary Window check with UTC (fail-fast for past/invalid even if slot missing) — preserves BookingFlowTest expectation
+        $minLead = (int) $this->settings->get('booking.min_lead_hours', 2);
+        $this->assertWindow($slotDate, $slotTime, $minLead);
+
+        // Resolve slot (exact identity preferred), then precise temporal policy with Location timezone
         $slot = $this->resolveSlotForBooking($clinicId, $clinicianId, $slotDate, $slotTime, $slotId);
         if ($slot === null || (int) $slot['is_open'] !== 1) {
             return ['available' => false, 'capacity_left' => 0];
         }
 
-        // Two-Clock: obtain Location timezone and evaluate lead policy
+        // Two-Clock: obtain Location timezone and evaluate lead policy precisely
         $locationTz = $this->resolveLocationTimezone((int) $slot['location_id'], $clinicId);
-        $this->assertWindowWithTimezone($slotDate, $slotTime, $locationTz, (int) $this->settings->get('booking.min_lead_hours', 2));
+        $this->assertWindowWithTimezone($slotDate, $slotTime, $locationTz, $minLead);
 
         $left = (int) $slot['capacity'] - (int) $slot['booked_count'] - (int) $slot['held_count'];
 
@@ -174,16 +178,20 @@ final class BookingService
 
         $clinicId = $this->requireClinician($clinicianId);
 
-        // Resolve slot first — exact identity if slotId given, else unique tuple with fail-closed on ambiguity
+        // Preliminary Window check (UTC) — fail-fast for past/invalid
+        $minLead = (int) $this->settings->get('booking.min_lead_hours', 2);
+        $this->assertWindow($slotDate, $slotTime, $minLead);
+
+        // Resolve slot — exact identity if slotId given, else unique tuple with fail-closed on ambiguity
         $slot = $this->resolveSlotForBooking($clinicId, $clinicianId, $slotDate, $slotTime, $slotId);
 
         if ($slot === null || (int) $slot['is_open'] !== 1) {
             throw BookingException::of('CLINIC_NOT_FOUND', 'اسلات انتخابی یافت نشد', 404);
         }
 
-        // Two-Clock: Location timezone -> UTC instant before lead check
+        // Two-Clock: Location timezone -> UTC instant before lead check (precise)
         $locationTz = $this->resolveLocationTimezone((int) $slot['location_id'], $clinicId);
-        $this->assertWindowWithTimezone($slotDate, $slotTime, $locationTz, (int) $this->settings->get('booking.min_lead_hours', 2));
+        $this->assertWindowWithTimezone($slotDate, $slotTime, $locationTz, $minLead);
 
         // N-4: Hold Active موجود همان بیمار/اسلات → Idempotent (بازگردانی همان Token)
         $existing = $this->db->fetchRow(
@@ -630,7 +638,7 @@ final class BookingService
 
         try {
             [$apptId, $appt, $slot] = $this->db->transactional(function () use (
-                $clinicId, $patientId, $clinicianId, $slotDate, $slotTime, $reason, $resolvedSlot
+                $patientId, $clinicianId, $slotDate, $slotTime, $reason, $resolvedSlot
             ): array {
                 $slot = $resolvedSlot;
                 // Re-fetch for update to ensure concurrency safety

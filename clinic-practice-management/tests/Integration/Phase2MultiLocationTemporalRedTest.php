@@ -166,9 +166,11 @@ final class Phase2MultiLocationTemporalRedTest extends WP_UnitTestCase
         // Lead = 5h >2h => product returns null (allowed) — WRONG
         // Correct: slot is 06:30 UTC, now 05:00 UTC, lead 1.5h <2h => should return CLINIC_POLICY_VIOLATION
 
-        $result = BookingWindow::checkRequest(
+        // T1 GREEN: use Location-aware check (Two-Clock) — slot wall-clock in Tehran TZ -> UTC instant
+        $result = BookingWindow::checkRequestWithTimezone(
             $slotLocal->format('Y-m-d'),
             $slotLocal->format('H:i:s'),
+            $tzTehran,
             $nowUtc,
             $minLeadHours,
             $maxFutureDays
@@ -504,9 +506,11 @@ final class Phase2MultiLocationTemporalRedTest extends WP_UnitTestCase
             $slotUtc = $slotLocal->setTimezone(new DateTimeZone('UTC'));
             $nowUtc = $slotUtc->sub(new \DateInterval('PT90M'));
 
-            $result = BookingWindow::checkRequest(
+            // T1 GREEN: Location-aware check must be independent of PHP default timezone
+            $result = BookingWindow::checkRequestWithTimezone(
                 $slotLocal->format('Y-m-d'),
                 $slotLocal->format('H:i:s'),
+                $tzTehran,
                 $nowUtc,
                 2,
                 60
