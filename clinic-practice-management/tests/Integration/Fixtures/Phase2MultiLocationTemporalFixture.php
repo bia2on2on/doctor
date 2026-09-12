@@ -171,9 +171,10 @@ trait Phase2MultiLocationTemporalFixture
         global $wpdb;
         $now = App::db()->nowUtcSql();
         $slotId = $slotId ?? $this->fxTInsertSlot($locationId, $date, $time, 1, 20, 1);
-        // Minimal appointment fields
+        $ref = 'TMP-' . bin2hex(random_bytes(6));
+        // Minimal appointment fields with unique reference_code
         $wpdb->query($wpdb->prepare(
-            'INSERT INTO ' . $wpdb->prefix . 'cpms_appointments (clinic_id, location_id, clinician_id, patient_id, slot_id, slot_date, slot_time, duration_min, status, created_at, updated_at) VALUES (%d, %d, %d, %d, %d, %s, %s, %d, %s, %s, %s)',
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_appointments (clinic_id, location_id, clinician_id, patient_id, slot_id, slot_date, slot_time, duration_min, status, reference_code, created_at, updated_at) VALUES (%d, %d, %d, %d, %d, %s, %s, %d, %s, %s, %s, %s)',
             self::FX_T_CLINIC_ID,
             $locationId,
             self::FX_T_CLINICIAN_ID,
@@ -183,6 +184,7 @@ trait Phase2MultiLocationTemporalFixture
             $time,
             20,
             $status,
+            $ref,
             $now,
             $now
         ));
@@ -211,37 +213,49 @@ trait Phase2MultiLocationTemporalFixture
         global $wpdb;
         $db = App::db();
 
-        // Comprehensive FK-safe purge order for this fixture (62201)
+        // Comprehensive FK-safe purge — handle RESTRICT via explicit subqueries
         // 1) Leaf history
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_visit_status_history') . ' WHERE visit_id IN (SELECT id FROM ' . $db->table('cpms_visits') . ' WHERE clinic_id = %d)', self::FX_T_CLINIC_ID));
-        // 2) Operational
+
+        // 2) Visits and appointments (visits FK appointment, both FK patient)
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_visits') . ' WHERE clinic_id = %d', self::FX_T_CLINIC_ID));
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_appointments') . ' WHERE clinic_id = %d', self::FX_T_CLINIC_ID));
+
+        // 3) Slot holds, slots, schedule
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_slot_holds') . ' WHERE clinic_id = %d', self::FX_T_CLINIC_ID));
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_schedule_slots') . ' WHERE clinic_id = %d', self::FX_T_CLINIC_ID));
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_schedule') . ' WHERE clinic_id = %d', self::FX_T_CLINIC_ID));
+
+        // 4) Notifications, SMS, logs, idempotency
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_notifications') . ' WHERE clinic_id = %d', self::FX_T_CLINIC_ID));
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_sms_messages') . ' WHERE clinic_id = %d', self::FX_T_CLINIC_ID));
-        $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_operational_logs') . ' WHERE context_json LIKE %s', '%"clinic_id":' . self::FX_T_CLINIC_ID . '%'));
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_idempotency_keys') . ' WHERE clinic_id = %d', self::FX_T_CLINIC_ID));
 
-        // 3) Links that reference patient / clinician / location / membership
+        // 5) Patient links — must go before patients AND clinics (FK RESTRICT both)
+        // Delete by clinic_id and also by patient_id subquery for safety
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_patient_user_links') . ' WHERE clinic_id = %d', self::FX_T_CLINIC_ID));
-        // clinician_locations
+        $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_patient_user_links') . ' WHERE patient_id IN (SELECT id FROM ' . $db->table('cpms_patients') . ' WHERE clinic_id = %d)', self::FX_T_CLINIC_ID));
+
+        // 6) Clinician locations and membership links
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_clinician_locations') . ' WHERE clinician_id = %d', self::FX_T_CLINICIAN_ID));
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_clinician_locations') . ' WHERE location_id IN (SELECT id FROM ' . $db->table('cpms_locations') . ' WHERE clinic_id = %d)', self::FX_T_CLINIC_ID));
-        // membership locations / capabilities
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_membership_locations') . ' WHERE location_id IN (SELECT id FROM ' . $db->table('cpms_locations') . ' WHERE clinic_id = %d)', self::FX_T_CLINIC_ID));
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_membership_locations') . ' WHERE membership_id IN (SELECT id FROM ' . $db->table('cpms_clinic_memberships') . ' WHERE clinic_id = %d)', self::FX_T_CLINIC_ID));
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_membership_capabilities') . ' WHERE membership_id IN (SELECT id FROM ' . $db->table('cpms_clinic_memberships') . ' WHERE clinic_id = %d)', self::FX_T_CLINIC_ID));
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_clinic_memberships') . ' WHERE clinic_id = %d', self::FX_T_CLINIC_ID));
 
-        // 4) Patients and clinicians
+        // 7) Clinical notes, handwriting, etc. that reference visits/patients (defensive)
+        $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_clinical_notes') . ' WHERE clinic_id = %d', self::FX_T_CLINIC_ID));
+        $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_handwriting_documents') . ' WHERE clinic_id = %d', self::FX_T_CLINIC_ID));
+        $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_prescriptions') . ' WHERE clinic_id = %d', self::FX_T_CLINIC_ID));
+        $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_medical_files') . ' WHERE clinic_id = %d', self::FX_T_CLINIC_ID));
+
+        // 8) Patients and clinicians
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_patients') . ' WHERE clinic_id = %d', self::FX_T_CLINIC_ID));
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_clinicians') . ' WHERE id = %d', self::FX_T_CLINICIAN_ID));
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_clinicians') . ' WHERE clinic_id = %d', self::FX_T_CLINIC_ID));
 
-        // 5) Locations, settings, clinics, orgs
+        // 9) Locations, settings, clinics, orgs
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_locations') . ' WHERE clinic_id = %d', self::FX_T_CLINIC_ID));
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_settings') . ' WHERE clinic_id = %d', self::FX_T_CLINIC_ID));
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_clinics') . ' WHERE id = %d', self::FX_T_CLINIC_ID));
