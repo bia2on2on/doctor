@@ -214,6 +214,47 @@ handler** وابستگی‌های Clinic‌دار را می‌سازند و در
 > (یافتهٔ C9 قبلاً ثبت کرده که لاگِ کاملِ jobها از این sandbox قابل بازیابی نیست؛
 > مبنای طبقه‌بندی = سبزیِ همان SHA در run هم‌زمانِ push + سبزیِ run تازه.)
 
+#### همهٔ runهای `b9d4e36` (کدِ اصلاحی، پیش از مستندات)
+
+| run | رویداد | workflow | نتیجه |
+|---|---|---|---|
+| `34706037645` | pull_request | CI | ✅ success — هر ۸ job (Tripwire · WPCS · PHPStan · Unit 8.1‑8.4 · **Integration WP 6.7 + MySQL 8**) |
+| `34706035279` | push | Real WordPress Acceptance | ✅ success — هر دو prefix |
+| `34706035247` | push | Closure Gate | ✅ success |
+| `34706035249` | push | Pilot/Staging Readiness Gate | ✅ success |
+| `34706037675` | pull_request | Real WordPress Acceptance | ❌ failure — **فقط** job با prefix `clinic_`؛ job با prefix `wp_` در همان run سبز |
+
+#### طبقه‌بندیِ `34706037675` — کلاس C به‌صورتِ **VERIFIED** (نه فقط استنتاج)
+
+یادداشتِ بالا طبقهٔ C را از «سبزیِ همان SHA در run دیگر» **استنتاج** کرده بود.
+شواهدِ مستقیمِ زیر (که با `gh api` روی خودِ همان job خوانده شد) آن را تأیید و
+قوی‌تر می‌کند:
+
+- **گامِ شکست‌خورده = شمارهٔ ۱۴** («Browser acceptance — all 5 roles» / Playwright).
+  گام‌های ۹ (نصب ZIP + activate + migration)، ۱۰ (راستی‌آزماییِ مستقیمِ جدول‌ها و
+  schema version) و ۱۶ («Log gate — بدون Fatal/Critical در لاگ PHP/WP») همه
+  **success** بودند.
+- **خلاصهٔ خودِ acceptance که workflow به‌عنوانِ commit comment منتشر کرد**
+  (`repos/.../commits/b9d4e36…/comments`) برای دقیقاً همان job:
+  **`== rwp-acceptance: 307 passed / 0 failed ==`**، و بخش «PHP fatal lines in
+  debug.log» **خالی**. تنها خطای DB در `debug.log` پروبِ **عمدیِ** fail-loudِ
+  مهاجرت (`CREATE TABLE syntax broken (((`) است — همان گام ۱۱ که success شده.
+- همان summary‌ی منتشرشده، job را `(job: success)` گزارش کرده، درحالی‌که
+  conclusion ثبت‌شده در GitHub ‏`failure` با annotation «Process completed with
+  exit code 1» است.
+
+یعنی **همهٔ ۳۰۷ assertion پذیرفته شدند و هیچ fatal محصولی ثبت نشد**؛ خروجیِ
+غیرصفر پس از اتمامِ assertion‌ها رخ داده است. ⇒ نقصِ محصول (کلاس A) نیست؛
+نوسانِ محیطیِ گامِ مرورگر است. (لاگِ خامِ job همچنان از این محیط قابل بازیابی
+نیست — میزبانِ لاگِ Actions مسدود است — ولی خلاصهٔ منتشرشدهٔ خودِ workflow کانالِ
+جایگزینِ معتبری است.)
+
+> **مرزِ شواهد (پابرجا):** سطرِ خلاصهٔ PHPUnit برای runهای **سبز** خواندنی نیست
+> — میزبانِ لاگ مسدود است و هر دو step ‏«Surface test failures» در `ci.yml`
+> ‏`if: failure()` هستند. آنچه اثبات است: jobِ Integration = `success` (PHPUnit با
+> exit 0 روی کلِ `tests/Integration`) + نبودِ annotation شکست روی آن job + کشفِ
+> ساختاریِ **۱۴** تست در همین فایل. **شمارِ assertion برای runهای سبز ادعا نشده.**
+
 ### جمع‌بندی برش 1B.1
 
 - ✅ بدون schema/migration — آخرین migration همچنان `2026_09_09_0020`؛ `0021`
