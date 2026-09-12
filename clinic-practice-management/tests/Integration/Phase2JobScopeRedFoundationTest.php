@@ -1,74 +1,91 @@
 <?php
 
 /**
- * Phase 2 — Slice 1A: EXECUTABLE RED TEST FOUNDATION for the multi-Clinic
- * background-job / SMS isolation gaps.
+ * Phase 2 — Slice 1A RED foundation, now the GREEN regression guard for the
+ * Slice 1B multi-Clinic background-job / SMS isolation contract.
  *
  * Canonical design: `docs/architecture/phase2-tenant-context-remediation-design.md`
- * (status on this checkpoint: **APPROVED DESIGN DIRECTION — NOT YET IMPLEMENTED**).
- * This file implements ONLY the RED specification items RT-3, RT-4, RT-6,
- * RT-12 and RT-14. It contains **no product fix, no migration, no schema
- * change and no workflow change**.
+ * (§A-3, §5-D-1..D-3, §9 RT-3 / RT-4 / RT-6 / RT-12 / RT-14).
  *
  * ────────────────────────────────────────────────────────────────────────────
- * WHAT EACH TEST ASSERTS, AND THE RESULT EXPECTED ON THIS CHECKPOINT
+ * LINEAGE (do not lose this)
+ * ────────────────────────────────────────────────────────────────────────────
+ * RED checkpoint  : `43cf2ef6ee494e206c25130033a48613e461893e`
+ * RED CI run      : `34697309922` (attempt 1, `pull_request`, completed/failure)
+ * RED observation : `Tests: 682, Assertions: 4705, Failures: 5.` — the 5
+ *                   failures were exactly the five tests marked "was RED"
+ *                   below; the 3 controls passed; 0 errors, 0 D/C-class
+ *                   defects. Executable proof that RT-3 / RT-6 / RT-4 / RT-14 /
+ *                   RT-12 were real product gaps, not test bugs.
+ * GREEN slice     : Slice 1B — product code that turns those five GREEN.
+ *
+ * The filename is kept so the RED → GREEN lineage stays traceable in Git.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * WHAT EACH TEST NOW ASSERTS
  * ────────────────────────────────────────────────────────────────────────────
  *
  * RT-3 `testSmsConfigAndCredentialForClinicBMessageResolveToClinicB`
- *      EXPECTED **RED**. `SmsService::dispatchMessage(int $messageId)` receives
- *      only a message id, yet resolves `sender` / `advanced` / the sealed
- *      `sms.auth` credential from the **Settings instance the service was
- *      constructed with** (`SmsService.php:186-190`, `:646-660`, `:667+`), not
- *      from the message row's `clinic_id`. Because the installation-level Vault
- *      key decrypts any Clinic's credential silently, the assertion is on
- *      **credential identity**, per RT-3's explicit correction.
+ *      (was RED) For a message OWNED BY Clinic B, the configuration that
+ *      reaches the transport must be Clinic B's — provider, sender, advanced
+ *      and the sealed `sms.auth` credential. Asserted positively
+ *      (`assertSame(B)`) with an explicit negative guard against A, because the
+ *      installation-level Vault key decrypts any Clinic's credential silently
+ *      (§5-D-2): credential IDENTITY is the only meaningful assertion.
+ *      Product path: `SmsService::dispatchMessage()` resolves the owner Clinic
+ *      from `cpms_sms_messages.clinic_id` via `SettingsFactory`, never from a
+ *      process-pinned `Settings`.
  *
  * RT-6 `testSequentialClinicABADoesNotLeakProcessLevelSmsState`
- *      EXPECTED **RED**. `App::$smsService` (`App.php:149`, `:756`) is a
- *      process-level singleton that keeps the Settings instance of whichever
- *      Clinic bootstrapped first; `App::resetScope()` / `replaceExplicitScope()`
- *      only null `App::$settings` (`App.php:871`, `:884`) — there is **no
- *      public reset for `$smsService` or `$providers`**.
+ *      (was RED — leakage observed at leg B; the B → A leg never executed)
+ *      Now asserts the COMPLETE `A → B → A` sequence. Every leg asserts sender
+ *      AND credential identity AND `sms.advanced`, so no leg can be skipped.
+ *      Product path: `SmsService` is scope-neutral (`SettingsFactory` +
+ *      injected scope resolver), `App::settings()` is derived per call and the
+ *      factory cache is keyed by `clinicId`, and `sms.generic` is resolved
+ *      lazily per Clinic instead of being frozen at registry construction.
  *
  * RT-4 `testNoCurrentUserDoesNotDeriveTenantAndAmbiguousScopeFailsClosed`
- *      EXPECTED **PASS** — records the CURRENT fail-closed behaviour honestly.
+ *      (control, was PASS — must stay PASS) No current WP user + no explicit
+ *      scope ⇒ tenant is NOT derived from the user and NO Clinic is guessed;
+ *      resolution fails closed with `CLINIC_SCOPE_REQUIRED`.
  *      RT-4 `testBackgroundTickBoundaryIsReachableWithoutAnyClinicScope`
- *      EXPECTED **RED** — `App::dispatcher()` reaches `settings()` → `scope()`
- *      (`App.php:1002+`, `:839-849`, `:858`) so the whole tick boundary is
- *      unreachable with no Clinic scope; the design target is per-job
- *      fail-closed, not whole-tick fail-closed.
+ *      (was RED) `App::dispatcher()` is constructible with no user and no
+ *      Clinic scope, because handler construction moved into the registered
+ *      callables.
  *
  * RT-14 `testPerJobScopeFailureDoesNotAbortUnrelatedJobInSameTick`
- *      EXPECTED **RED** — one scope-invalid job currently prevents an unrelated
- *      valid job in the same tick from running, because the abort happens
- *      during dispatcher construction, before any job is claimed.
+ *      (was RED) One scope-invalid job fails closed on its own and an unrelated
+ *      valid job in the SAME tick is still processed, because the scope failure
+ *      now happens inside `JobsDispatcher::tick()`'s existing per-handler
+ *      `try/catch`.
  *      RT-14 `testHandlerLevelFailureIsAlreadyIsolatedWithinAConstructedDispatcher`
- *      EXPECTED **PASS** — pins the precise boundary: `JobsDispatcher::tick()`
- *      already isolates per-handler failures (`JobsDispatcher.php:56-64`); the
- *      missing isolation is at the tenant-context / tick boundary.
+ *      (control, was PASS — must stay PASS) pins that `JobsDispatcher::tick()`
+ *      itself was never the gap; that code was deliberately NOT rewritten.
  *
  * RT-12 `testRegisteredJobTypesAreEnumerableFromProductionDispatcher`
- *      EXPECTED **PASS** — the inventory is READ from the production registry
- *      (`App::dispatcher()` + `RECURRING_JOBS`, the design's declared source of
- *      truth, §A-3) and pinned at 15 / 13, so silent registry drift is caught.
+ *      (control, was PASS) Reads the inventory from the PUBLIC production
+ *      contracts — `JobsDispatcher::registeredTypes()` and
+ *      `App::RECURRING_JOBS` — with no Reflection, and pins the canonical
+ *      counts 15 / 13 (§A-3).
  *      RT-12 `testEveryRegisteredJobTypeHasAnExplicitScopeClassification`
- *      EXPECTED **RED** — no production scope-classification contract exists,
- *      so no registered type has a T/S/W classification.
- *      ⚠ This test deliberately does NOT embed a second authoritative registry:
- *      the type list comes from production, and the classification is expected
- *      to come from production too.
+ *      (was RED) Consumes the new production contract `JobScopeRegistry`:
+ *      every registered type has exactly one of T/S/W, an unknown type is
+ *      rejected (never guessed), `NULL` never implicitly means "system", and
+ *      the registry cannot drift from the runtime handler registration.
  *
  * ────────────────────────────────────────────────────────────────────────────
- * HARNESS NOTE — reflection is used for STATE CONTROL only, never as an
- * assertion subject. `App::$settings/$dispatcher/$smsService/$providers` have no
- * public reset, and the WP test suite runs every test in ONE PHP process, so
- * without resetting them the outcome of these tests would depend on which test
- * ran first. Reflection is therefore used (a) to capture/restore those statics
- * exactly (so this class cannot pollute any other suite) and (b) to null them
- * in order to model a genuinely fresh cron process. Every assertion below is on
- * a PUBLIC, externally observable behaviour: `SmsService::status()`,
- * `SmsService::dispatchMessage()` observed at the provider boundary,
- * `App::settings()->clinicId()`, `cpms_jobs` row status, and row side effects.
+ * HARNESS NOTE — Reflection is used for STATE CONTROL only, never as an
+ * assertion subject. The process-level App singletons have no public reset and
+ * the WP test suite runs every test in ONE PHP process, so without resetting
+ * them the outcome would depend on test order. Reflection is therefore used
+ * solely to capture/restore those statics (so this class cannot pollute any
+ * other suite) and to null them in order to model a genuinely fresh cron
+ * process. Every assertion is on a PUBLIC, externally observable behaviour:
+ * `SmsService::status()`, `SmsService::dispatchMessage()` observed at the
+ * provider boundary, `App::settings()->clinicId()`, `JobScopeRegistry`,
+ * `JobsDispatcher::registeredTypes()`, `cpms_jobs` row status, and row side
+ * effects.
  * ────────────────────────────────────────────────────────────────────────────
  */
 
@@ -77,6 +94,9 @@ declare(strict_types=1);
 namespace ClinicCore\Tests\Integration;
 
 use ClinicCore\Application\Jobs\JobsDispatcher;
+use ClinicCore\Application\Jobs\JobScopeClass;
+use ClinicCore\Application\Jobs\JobScopeRegistry;
+use ClinicCore\Application\Jobs\JobScopeUnknownException;
 use ClinicCore\Application\Scope\ClinicScope;
 use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Application\Scope\ScopeRequiredException;
@@ -94,8 +114,14 @@ final class Phase2JobScopeRedFoundationTest extends WP_UnitTestCase
 {
     use Phase2MultiClinicSmsFixture;
 
-    /** Process-level statics of App that have no public reset. */
-    private const APP_STATICS = ['settings', 'dispatcher', 'smsService', 'providers'];
+    /**
+     * Process-level statics of App that have no public reset.
+     *
+     * Slice 1B replaced the pinned `App::$settings` instance with
+     * `App::$settingsFactory` (per-Clinic cache), so that is the static this
+     * harness now has to capture/restore.
+     */
+    private const APP_STATICS = ['settingsFactory', 'dispatcher', 'smsService', 'providers'];
 
     private RecordingSmsProvider $recorder;
 
@@ -149,10 +175,16 @@ final class Phase2JobScopeRedFoundationTest extends WP_UnitTestCase
      * credential that production decrypts for the call.
      *
      * The assertion is on what the fake transport actually observed
-     * (credential identity + sender + advanced), NOT on
+     * (credential identity + sender + advanced), NOT merely on
      * `cpms_sms_messages.clinic_id`.
      *
-     * EXPECTED RED on this checkpoint.
+     * GREEN since Slice 1B: `dispatchMessage()` resolves the owner Clinic from
+     * the message row and takes provider / sender / advanced / sealed
+     * `sms.auth` from THAT Clinic's Settings.
+     *
+     * Assertion strength is deliberately kept at RED level (STEP 9): a
+     * positive `assertSame(B)` PLUS an explicit negative guard that A is absent
+     * from the whole observed invocation — never merely "not A".
      */
     public function testSmsConfigAndCredentialForClinicBMessageResolveToClinicB(): void
     {
@@ -166,7 +198,7 @@ final class Phase2JobScopeRedFoundationTest extends WP_UnitTestCase
         self::assertSame(
             self::FX_SENDER_A,
             $sms->status()['sender'],
-            'precondition: the service under test resolved Clinic A configuration at construction'
+            'precondition: the process bootstrapped in a Clinic A context'
         );
 
         // A message that belongs to Clinic B.
@@ -182,30 +214,57 @@ final class Phase2JobScopeRedFoundationTest extends WP_UnitTestCase
         $invocation = $this->recorder->lastInvocation();
         self::assertNotNull($invocation, 'the recording transport must have been invoked for the QUEUED Clinic B message');
         self::assertIsArray($invocation);
+        self::assertCount(
+            1,
+            $this->recorder->invocations(),
+            'the dispatch path must reach the transport exactly once for this message'
+        );
 
         $observedCred = (string) ($invocation['creds']['api_key'] ?? '');
         $observedSender = (string) ($invocation['opts']['sender'] ?? '');
         $observedTimeout = (int) ($invocation['opts']['timeout_sec'] ?? 0);
 
-        self::assertNotSame(
-            self::FX_CRED_A,
-            $observedCred,
-            'RT-3 RED: Clinic A credential must NEVER be observed for a Clinic B message'
-        );
+        // ---- POSITIVE: the observed configuration IS Clinic B's ----
         self::assertSame(
-            self::FX_CRED_B,
-            $observedCred,
-            'RT-3 RED: the credential decrypted for a Clinic B message must be Clinic B synthetic credential'
+            ['api_key' => self::FX_CRED_B],
+            $invocation['creds'],
+            'RT-3: the credential decrypted for a Clinic B message must be exactly Clinic B synthetic credential'
         );
         self::assertSame(
             self::FX_SENDER_B,
             $observedSender,
-            'RT-3 RED: sms.sender for a Clinic B message must be Clinic B sender'
+            'RT-3: sms.sender for a Clinic B message must be Clinic B sender'
         );
         self::assertSame(
             self::FX_TIMEOUT_B,
             $observedTimeout,
-            'RT-3 RED: sms.advanced.timeout_sec for a Clinic B message must be Clinic B value'
+            'RT-3: sms.advanced.timeout_sec for a Clinic B message must be Clinic B value'
+        );
+
+        // ---- NEGATIVE GUARD: Clinic A is absent from the whole invocation ----
+        // The Vault key is installation-level, so a wrong-Clinic credential
+        // decrypts silently (§5-D-2). "Not A" alone would be too weak; the
+        // positive assertions above plus this whole-payload guard are the
+        // meaningful contract.
+        $serialized = (string) json_encode($invocation, JSON_UNESCAPED_UNICODE);
+        self::assertNotSame(self::FX_CRED_A, $observedCred, 'RT-3: Clinic A credential must never be the observed credential');
+        self::assertStringNotContainsString(
+            self::FX_CRED_A,
+            $serialized,
+            'RT-3: no part of what reached the transport may carry Clinic A credential'
+        );
+        self::assertStringNotContainsString(
+            self::FX_SENDER_A,
+            $serialized,
+            'RT-3: no part of what reached the transport may carry Clinic A sender'
+        );
+
+        // The B-configured send genuinely completed — the intended runtime path
+        // was reached and finished, not short-circuited.
+        self::assertSame(
+            \ClinicCore\Domain\Sms\SmsMessageStatus::SENT,
+            (string) $this->fxMessageRow($messageIdB)['status'],
+            'RT-3: the Clinic B message was actually sent with Clinic B configuration'
         );
     }
 
@@ -221,52 +280,90 @@ final class Phase2JobScopeRedFoundationTest extends WP_UnitTestCase
      * Observable surface (public API): `SmsService::status()` and
      * `Settings::clinicId()`. No private state is asserted.
      *
-     * EXPECTED RED on this checkpoint (step B observes Clinic A's SMS config).
+     * STEP 8: at the RED checkpoint only the leak at leg B was ever observed —
+     * PHPUnit stopped at the first failing assertion, so the `B → A` leg never
+     * executed. This version asserts the SAME three observables (sender,
+     * credential identity, `sms.advanced`) at ALL THREE legs, so a GREEN result
+     * is only possible if the entire `A → B → A` sequence ran and each leg
+     * resolved its own Clinic.
+     *
+     * GREEN since Slice 1B.
      */
     public function testSequentialClinicABADoesNotLeakProcessLevelSmsState(): void
     {
         $this->simulateFreshBackgroundProcess();
-        // The provider registry itself is built from `settings()`, so a scope is
-        // needed to construct it at all (that dependency is itself the RT-4
-        // finding). Step 1 then re-establishes Clinic A explicitly.
         App::replaceExplicitScope(ClinicScope::forClinic($this->fxClinicA));
         $this->installRecorder();
         $masked = str_repeat("\u{2022}", 8);
 
-        // ---- Step 1: Clinic A ----
-        App::replaceExplicitScope(ClinicScope::forClinic($this->fxClinicA));
-        self::assertSame($this->fxClinicA, App::settings()->clinicId(), 'RT-6 step A: Settings resolves Clinic A');
-        $stepA = App::smsService()->status();
-        self::assertSame(self::FX_SENDER_A, $stepA['sender'], 'RT-6 step A: sender is Clinic A');
-        self::assertSame($masked . '0001', (string) ($stepA['credentials']['api_key'] ?? ''), 'RT-6 step A: credential identity is Clinic A');
-        self::assertSame(self::FX_TIMEOUT_A, (int) ($stepA['advanced']['timeout_sec'] ?? 0), 'RT-6 step A: advanced is Clinic A');
+        // ---- Leg 1: Clinic A ----
+        $this->assertSmsLegResolvesClinic(
+            'A',
+            $this->fxClinicA,
+            self::FX_SENDER_A,
+            $masked . '0001',
+            self::FX_TIMEOUT_A
+        );
 
-        // ---- Step 2: Clinic B (public reset only — no private poking) ----
-        App::replaceExplicitScope(ClinicScope::forClinic($this->fxClinicB));
-        self::assertSame($this->fxClinicB, App::settings()->clinicId(), 'RT-6 step B: Settings resolves Clinic B');
-        $stepB = App::smsService()->status();
-        self::assertSame(
+        // ---- Leg 2: Clinic B (public reset only — no private poking) ----
+        $this->assertSmsLegResolvesClinic(
+            'B',
+            $this->fxClinicB,
             self::FX_SENDER_B,
-            $stepB['sender'],
-            'RT-6 RED: after switching scope to Clinic B, the SMS service must resolve Clinic B sender (no process-level pinning)'
-        );
-        self::assertSame(
             $masked . '0002',
-            (string) ($stepB['credentials']['api_key'] ?? ''),
-            'RT-6 RED: after switching scope to Clinic B, the resolved credential identity must be Clinic B'
-        );
-        self::assertSame(
-            self::FX_TIMEOUT_B,
-            (int) ($stepB['advanced']['timeout_sec'] ?? 0),
-            'RT-6 RED: after switching scope to Clinic B, sms.advanced must be Clinic B'
+            self::FX_TIMEOUT_B
         );
 
-        // ---- Step 3: back to Clinic A ----
-        App::replaceExplicitScope(ClinicScope::forClinic($this->fxClinicA));
-        self::assertSame($this->fxClinicA, App::settings()->clinicId(), 'RT-6 step A2: Settings resolves Clinic A again');
-        $stepA2 = App::smsService()->status();
-        self::assertSame(self::FX_SENDER_A, $stepA2['sender'], 'RT-6 step A2: sender is Clinic A again');
-        self::assertSame($masked . '0001', (string) ($stepA2['credentials']['api_key'] ?? ''), 'RT-6 step A2: credential identity is Clinic A again');
+        // ---- Leg 3: back to Clinic A — this leg is what the RED run never
+        // reached. A process that merely "reset to defaults" instead of
+        // resolving per Clinic would fail here or on the credential identity.
+        $this->assertSmsLegResolvesClinic(
+            'A2',
+            $this->fxClinicA,
+            self::FX_SENDER_A,
+            $masked . '0001',
+            self::FX_TIMEOUT_A
+        );
+    }
+
+    /**
+     * Switches scope to one Clinic and asserts the full observable SMS
+     * configuration identity of that leg. Extracted so all three legs of
+     * RT-6 are asserted with identical strength — no leg can be weaker or be
+     * silently skipped.
+     */
+    private function assertSmsLegResolvesClinic(
+        string $leg,
+        int $expectedClinicId,
+        string $expectedSender,
+        string $expectedMaskedCredential,
+        int $expectedTimeoutSec
+    ): void {
+        App::replaceExplicitScope(ClinicScope::forClinic($expectedClinicId));
+
+        self::assertSame(
+            $expectedClinicId,
+            App::settings()->clinicId(),
+            'RT-6 leg ' . $leg . ': Settings resolves this Clinic'
+        );
+
+        $status = App::smsService()->status();
+
+        self::assertSame(
+            $expectedSender,
+            $status['sender'],
+            'RT-6 leg ' . $leg . ': sms.sender must belong to this Clinic (no process-level pinning)'
+        );
+        self::assertSame(
+            $expectedMaskedCredential,
+            (string) ($status['credentials']['api_key'] ?? ''),
+            'RT-6 leg ' . $leg . ': the resolved sealed sms.auth identity must belong to this Clinic'
+        );
+        self::assertSame(
+            $expectedTimeoutSec,
+            (int) ($status['advanced']['timeout_sec'] ?? 0),
+            'RT-6 leg ' . $leg . ': sms.advanced must belong to this Clinic'
+        );
     }
 
     // =================================================================
@@ -448,7 +545,8 @@ final class Phase2JobScopeRedFoundationTest extends WP_UnitTestCase
      * pins the canonical COUNTS and the structural relationship between the
      * registered set and the recurring set, so silent registry drift is caught.
      *
-     * EXPECTED PASS on this checkpoint.
+     * Slice 1B: read through the PUBLIC contracts `JobsDispatcher::registeredTypes()`
+     * and `App::RECURRING_JOBS` — Reflection is no longer needed for enumeration.
      */
     public function testRegisteredJobTypesAreEnumerableFromProductionDispatcher(): void
     {
@@ -489,11 +587,10 @@ final class Phase2JobScopeRedFoundationTest extends WP_UnitTestCase
      * be rejected rather than guessed; and NULL must never implicitly mean
      * "system-wide" — meaning comes only from the registered class of that type.
      *
-     * The inventory below is READ from production. Nothing here defines a
-     * competing registry: the classification is expected to be supplied by
-     * product code, which does not exist yet.
-     *
-     * EXPECTED RED on this checkpoint.
+     * Slice 1B GREEN: the classification now comes from the stable production
+     * contract `JobScopeRegistry` (public, directly testable, no Reflection and
+     * no duplicate test-only registry). The runtime inventory is still READ from
+     * production, so this test cannot become self-fulfilling.
      */
     public function testEveryRegisteredJobTypeHasAnExplicitScopeClassification(): void
     {
@@ -503,25 +600,69 @@ final class Phase2JobScopeRedFoundationTest extends WP_UnitTestCase
         $registered = self::registeredJobTypesFromProduction();
         self::assertNotEmpty($registered, 'precondition: production registry enumerated');
 
-        $probes = self::scopeContractProbes();
-        self::assertTrue(
-            in_array(true, $probes, true),
-            'RT-12 RED: no production scope-classification contract exists for the '
-                . count($registered) . ' registered job types [' . implode(', ', $registered) . ']. '
-                . 'Required by design A-1.10 / A-1.12 / §A-3: every registered type carries exactly one of T/S/W, '
-                . 'an unclassified or unknown type is rejected (never guessed), and NULL never implicitly means system-wide. '
-                . 'Probed and absent: ' . implode('; ', array_keys($probes))
-        );
-
-        // Structured for the GREEN follow-up: once the contract exists, each
-        // registered type is checked individually.
+        // (a) every RUNTIME-registered type carries exactly one valid T/S/W class.
         foreach ($registered as $type) {
+            $class = JobScopeRegistry::classFor($type);
             self::assertContains(
-                self::scopeClassForType($type),
-                ['T', 'S', 'W'],
-                'RT-12: registered job type "' . $type . '" has no explicit T/S/W scope classification'
+                $class,
+                JobScopeClass::ALL,
+                'RT-12: registered job type "' . $type . '" must carry exactly one of T/S/W'
             );
         }
+
+        // (b) DRIFT GUARD — the classification registry and the runtime handler
+        // registration are two production sources; they must not diverge.
+        self::assertSame(
+            $registered,
+            JobScopeRegistry::types(),
+            'RT-12: JobScopeRegistry must classify exactly the job types App::dispatcher() registers (no drift)'
+        );
+
+        // (c) canonical §A-3 distribution: 2 T / 7 S / 6 W.
+        self::assertSame(
+            [JobScopeClass::TENANT => 2, JobScopeClass::SYSTEM => 7, JobScopeClass::SWEEP => 6],
+            JobScopeRegistry::countsByClass(),
+            'RT-12: the T/S/W distribution must match canonical design §A-3'
+        );
+
+        // (d) the consistency rule of §A-3 / A-1.12: only T requires a Clinic;
+        // NULL is meaningful for S/W *because that type is registered as such*.
+        self::assertTrue(JobScopeRegistry::requiresClinicContext('sms.send'), 'sms.send is tenant-scoped (T)');
+        self::assertTrue(JobScopeRegistry::requiresClinicContext('report.export'), 'report.export is tenant-scoped (T)');
+        self::assertFalse(JobScopeRegistry::permitsNullClinic('sms.send'), 'T must NOT permit a NULL clinic');
+        self::assertFalse(JobScopeRegistry::permitsNullClinic('report.export'), 'T must NOT permit a NULL clinic');
+        self::assertTrue(JobScopeRegistry::permitsNullClinic('cleanup.otp'), 'registered S permits NULL by explicit registration');
+        self::assertTrue(JobScopeRegistry::permitsNullClinic('holds.expire'), 'registered W permits NULL by explicit registration');
+
+        // (e) FAIL-CLOSED: an unknown / unclassified type is rejected, never
+        // guessed as "system" and never mapped to a Clinic.
+        $thrown = null;
+        try {
+            JobScopeRegistry::classFor('cpms.does.not.exist');
+        } catch (JobScopeUnknownException $e) {
+            $thrown = $e;
+        }
+        self::assertInstanceOf(
+            JobScopeUnknownException::class,
+            $thrown,
+            'RT-12: an unclassified job type must be rejected (A-1.10), never guessed'
+        );
+        self::assertSame('JOB_SCOPE_UNCLASSIFIED', $thrown->errorCode, 'RT-12: explicit fail-closed error code');
+        self::assertNull(JobScopeRegistry::tryClassFor('cpms.does.not.exist'), 'RT-12: no classification is invented for an unknown type');
+
+        // (f) the dispatcher enforces the same contract at REGISTRATION time, so
+        // a future handler cannot be registered without a scope class.
+        $registerThrown = null;
+        try {
+            App::dispatcher()->register('cpms.never.registered', static function (array $payload): void {});
+        } catch (JobScopeUnknownException $e) {
+            $registerThrown = $e;
+        }
+        self::assertInstanceOf(
+            JobScopeUnknownException::class,
+            $registerThrown,
+            'RT-12: JobsDispatcher::register() must reject a job type without a registered scope class'
+        );
     }
 
     // =================================================================
@@ -581,24 +722,17 @@ final class Phase2JobScopeRedFoundationTest extends WP_UnitTestCase
     }
 
     /**
-     * READ-ONLY enumeration of the production job registry. Reflection is used
-     * because `JobsDispatcher` exposes no public accessor for its registered
-     * types, and the canonical design names `App::dispatcher()` + `RECURRING_JOBS`
-     * as the source of truth (§A-3) — explicitly NOT `docs/architecture/background-jobs.md`.
+     * READ-ONLY enumeration of the production job registry through its PUBLIC
+     * contract. Slice 1B added `JobsDispatcher::registeredTypes()` precisely so
+     * this no longer needs Reflection into a private property. The canonical
+     * design names `App::dispatcher()` + `RECURRING_JOBS` as the source of truth
+     * (§A-3) — explicitly NOT `docs/architecture/background-jobs.md`.
      *
      * @return list<string>
      */
     private static function registeredJobTypesFromProduction(): array
     {
-        $dispatcher = App::dispatcher();
-        $property = new \ReflectionProperty(JobsDispatcher::class, 'handlers');
-        $handlers = $property->getValue($dispatcher);
-        self::assertIsArray($handlers, 'precondition: production handler registry readable');
-
-        $types = array_map('strval', array_keys($handlers));
-        sort($types);
-
-        return array_values($types);
+        return App::dispatcher()->registeredTypes();
     }
 
     /**
@@ -606,47 +740,10 @@ final class Phase2JobScopeRedFoundationTest extends WP_UnitTestCase
      */
     private static function recurringJobTypesFromProduction(): array
     {
-        $constant = (new \ReflectionClass(App::class))->getReflectionConstant('RECURRING_JOBS');
-        self::assertNotFalse($constant, 'precondition: RECURRING_JOBS readable');
-        $recurring = $constant->getValue();
-        self::assertIsArray($recurring, 'precondition: RECURRING_JOBS is an array');
-
-        $types = array_map('strval', array_keys($recurring));
+        $types = array_map('strval', array_keys(App::RECURRING_JOBS));
         sort($types);
 
         return array_values($types);
-    }
-
-    /**
-     * Capability probes for the (currently absent) production scope contract.
-     *
-     * @return array<string, bool>
-     */
-    private static function scopeContractProbes(): array
-    {
-        return [
-            'class ClinicCore\Application\Jobs\JobScopeRegistry' => class_exists('ClinicCore\\Application\\Jobs\\JobScopeRegistry'),
-            'class ClinicCore\Application\Jobs\JobScopeClass' => class_exists('ClinicCore\\Application\\Jobs\\JobScopeClass'),
-            'class ClinicCore\Application\Jobs\JobScope' => class_exists('ClinicCore\\Application\\Jobs\\JobScope'),
-            'method JobsDispatcher::scopeClassFor()' => method_exists(JobsDispatcher::class, 'scopeClassFor'),
-            'method JobsDispatcher::scopeClass()' => method_exists(JobsDispatcher::class, 'scopeClass'),
-            'method JobsDispatcher::registeredTypes()' => method_exists(JobsDispatcher::class, 'registeredTypes'),
-        ];
-    }
-
-    /**
-     * Scope classification for one registered type, as supplied by product
-     * code. Returns null while no production contract exists.
-     */
-    private static function scopeClassForType(string $type): ?string
-    {
-        if (method_exists(JobsDispatcher::class, 'scopeClassFor')) {
-            $value = JobsDispatcher::scopeClassFor($type);
-
-            return is_string($value) ? $value : null;
-        }
-
-        return null;
     }
 
     // =================================================================
