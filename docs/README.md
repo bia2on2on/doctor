@@ -37,7 +37,7 @@
 | [`phase-reports/report-phase-0-reverification.md`](phase-reports/report-phase-0-reverification.md) | خط پایهٔ اثبات‌شده + ۹ قید معماری C-1..C-9 |
 | [`architecture/phase0.5-target-model.md`](architecture/phase0.5-target-model.md) | مدل هدف، ERD، برنامهٔ Migration، Decision Register (Q1..Q13) |
 | [`drift-register.md`](drift-register.md) | تعارض اسناد با معماری هدف + فاز مالک هر مورد |
-| [`architecture/phase2-tenant-context-remediation-design.md`](architecture/phase2-tenant-context-remediation-design.md) | **🔴 APPROVED DESIGN DIRECTION — NOT YET IMPLEMENTED** — طراحی ترمیم Tenant Context در Jobهای پس‌زمینه / timezone عملیاتیِ Location / پیکربندی SMS per-Clinic / انتساب tenant در لاگ عملیاتی + سوالاتِ بازِ پیش از Migration `0021` + مشخصاتِ ۱۲ تستِ RED (**فقط طراحی — هیچ پیاده‌سازی/تستی انجام نشده**) |
+| [`architecture/phase2-tenant-context-remediation-design.md`](architecture/phase2-tenant-context-remediation-design.md) | **🔴 APPROVED DESIGN DIRECTION — NOT YET IMPLEMENTED** — طراحی ترمیم Tenant Context در Jobهای پس‌زمینه / timezone عملیاتیِ Location / پیکربندی SMS per-Clinic (**شامل credentialِ sealed**) / انتساب tenant در لاگ عملیاتی / طبقه‌بندیِ **T/S/W** برای **۱۵ نوعِ واقعیِ ثبت‌شده** (§A-3) + **۶ سوالِ طراحیِ پیش از هر migration آینده** (بدونِ رزروِ شماره) + مشخصاتِ **۱۴ تستِ RED ‏(RT-1..RT-14)**. **بازبینیِ مستقلِ معماری 2026-09-12 → حکمِ مالک `B`؛ اصلاحاتِ C-1..C-9 اعمال شد** (**فقط طراحی — هیچ پیاده‌سازی/تستی انجام نشده**) |
 | [`agent-guide.md`](agent-guide.md) | راهنمای عملیاتی ایجنت‌ها + قواعد الزامی |
 
 ---
