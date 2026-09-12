@@ -912,6 +912,39 @@ final class App
     }
 
     /**
+     * بستنِ scope به `clinic_id` موجود در payload یک Job — Phase 2 (RT-4/RT-14).
+     *
+     * فقط وقتی کاربرد دارد که ساختِ گرافِ سرویسِ یک handler به `settings()`
+     * نیاز دارد ولی خودِ handler بعداً Clinic را authoritative اعتبارسنجی و
+     * bind می‌کند (`report.export` → `ExportService`). پس این متد **هیچ**
+     * اعتبارسنجیِ مالکیتی انجام نمی‌دهد و هیچ Clinic‌ای حدس نمی‌زند:
+     *  - `clinic_id` غایب/نامعتبر ⇒ هیچ scope‌ای bind نمی‌شود و مسیرِ
+     *    fail-closedِ همان handler دست‌نخورده باقی می‌ماند؛
+     *  - `clinic_id` معتبر ⇒ همان Clinic bind می‌شود (منبعِ durable، همان
+     *    الگوی §۱ ردیف ۱۵ سند کانونی).
+     *
+     * @param array<string, mixed> $payload
+     *
+     * @return \Closure(): void بازگردانیِ scope قبلی (همیشه در `finally`)
+     */
+    private static function bindPayloadClinicScope(array $payload): \Closure
+    {
+        $previous = ScopeContext::tryGet();
+        $clinicId = (int) ($payload['clinic_id'] ?? 0);
+        if ($clinicId > 0) {
+            ScopeContext::set(ClinicScope::forClinic($clinicId));
+        }
+
+        return static function () use ($previous): void {
+            if ($previous instanceof ClinicScope) {
+                ScopeContext::set($previous);
+            } else {
+                ScopeContext::clear();
+            }
+        };
+    }
+
+    /**
      * تعویض Scope صریح بدون flush رزولور سیستمی — مرز REST/Job تو در تو.
      */
     public static function replaceExplicitScope(?ClinicScope $scope): void
@@ -1037,7 +1070,7 @@ final class App
             $queue = self::jobs();
             $db = self::db();
             $op = self::op();
-            $dispatcher = new JobsDispatcher($queue, $op);
+            $dispatcher = new JobsDispatcher($queue, $op, true);
 
             // Phase 2 (RT-4 / RT-14) — ساختِ Handlerها **lazy** است.
             //
@@ -1096,9 +1129,17 @@ final class App
                     (new FollowUpReminderHandler($db, self::settings(), self::smsService(), self::notificationService(), $op))($payload);
                 })
                 ->register('report.export', static function (array $payload): void {
-                    // T: Clinic از `payload_json.clinic_id` با اعتبارسنجیِ
-                    // fail-closed (الگوی کاریِ موجودِ ExportService — بدون تغییر).
-                    (new ReportExportHandler(self::exportService()))($payload);
+                    // T: Clinic از `payload_json.clinic_id`. این bind فقط برای
+                    // **ساختِ گرافِ سرویس** است؛ اعتبارسنجیِ authoritative و
+                    // fail-closed همچنان در `ExportService::clinicIdFromJobPayload()`
+                    // باقی است (یک منبعِ حقیقت). اگر payload شناسهٔ معتبر نداشته
+                    // باشد، bind رخ نمی‌دهد و همان مسیرِ قبلی خطای صریح می‌دهد.
+                    $restoreScope = self::bindPayloadClinicScope($payload);
+                    try {
+                        (new ReportExportHandler(self::exportService()))($payload);
+                    } finally {
+                        $restoreScope();
+                    }
                 })
                 ->register('license.refresh', static function (array $payload) use ($op): void {
                     (new LicenseRefreshHandler(self::licenseService(), $op))($payload);

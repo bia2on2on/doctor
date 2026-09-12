@@ -33,7 +33,7 @@ final class JobScopeRegistry
     /**
      * طبقهٔ scope هر نوعِ Jobِ ثبت‌شده — دقیقاً ۱۵ نوعِ واقعیِ `App::dispatcher()`.
      *
-     * @var array<string, JobScopeClass::*>
+     * @var array<string, JobScopeClass::TENANT|JobScopeClass::SYSTEM|JobScopeClass::SWEEP>
      */
     private const CLASSES = [
         // ---- T: tenant-scoped (context از منبع durable خودِ Job) ----
@@ -88,7 +88,7 @@ final class JobScopeRegistry
     /**
      * طبقهٔ scope یک نوع — Fail-Closed.
      *
-     * @return JobScopeClass::*
+     * @return JobScopeClass::TENANT|JobScopeClass::SYSTEM|JobScopeClass::SWEEP
      *
      * @throws JobScopeUnknownException اگر نوع ثبت نشده باشد (هرگز حدس نمی‌زند)
      */
@@ -110,7 +110,7 @@ final class JobScopeRegistry
     /**
      * نسخهٔ بدونِ استثنا — فقط برای پرس‌وجو/گزارش، هرگز برای تصمیمِ اجرا.
      *
-     * @return JobScopeClass::*|null
+     * @return JobScopeClass::TENANT|JobScopeClass::SYSTEM|JobScopeClass::SWEEP|null
      */
     public static function tryClassFor(string $type): ?string
     {

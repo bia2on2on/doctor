@@ -17,25 +17,39 @@ final class JobsDispatcher
     /** @var array<string, callable(array<string,mixed>): void> */
     private array $handlers = [];
 
+    /**
+     * @param bool $enforceScopeClassification وقتی true باشد، `register()` هر
+     *        نوعِ بدونِ طبقهٔ scope ثبت‌شده را reject می‌کند (A-1.10 / RT-12).
+     *        فقط dispatcherِ **production** (`App::dispatcher()`) آن را روشن
+     *        می‌کند؛ یک dispatcher موقت/آزمایشی همچنان می‌تواند نوعِ ad-hoc
+     *        ثبت کند. این تفکیک صریح است، نه یک استثنا: قراردادِ T/S/W مالِ
+     *        registry زمانِ اجرای محصول است و گارْدِ drift آن توسط تستِ RT-12
+     *        روی `App::dispatcher()` سنجیده می‌شود.
+     */
     public function __construct(
         private readonly JobQueue $queue,
-        private readonly OpLogger $op
+        private readonly OpLogger $op,
+        private readonly bool $enforceScopeClassification = false
     ) {
     }
 
     /**
      * ثبت Handler یک نوع.
      *
-     * Phase 2 (RT-12 / A-1.10): هر نوع **باید** طبقهٔ scope ثبت‌شده داشته باشد؛
-     * نوعِ بدونِ طبقه در همین‌جا reject می‌شود (نه حدس در زمانِ اجرا). این کار
-     * `JobScopeRegistry` را به منبعِ حقیقتِ مصرف‌شده توسط خودِ dispatcher تبدیل
-     * می‌کند، پس طبقه‌بندی و handlerها نمی‌توانند از هم drift کنند.
+     * Phase 2 (RT-12 / A-1.10): در dispatcherِ production، هر نوع **باید**
+     * طبقهٔ scope ثبت‌شده داشته باشد؛ نوعِ بدونِ طبقه در همین‌جا reject می‌شود
+     * (نه حدس در زمانِ اجرا). این کار `JobScopeRegistry` را به منبعِ حقیقتِ
+     * مصرف‌شده توسط خودِ dispatcher تبدیل می‌کند، پس طبقه‌بندی و handlerها
+     * نمی‌توانند از هم drift کنند.
      *
-     * @throws JobScopeUnknownException اگر نوع در `JobScopeRegistry` نباشد
+     * @throws JobScopeUnknownException اگر enforcement روشن باشد و نوع در
+     *                                  `JobScopeRegistry` نباشد
      */
     public function register(string $type, callable $handler): self
     {
-        JobScopeRegistry::classFor($type);
+        if ($this->enforceScopeClassification) {
+            JobScopeRegistry::classFor($type);
+        }
         $this->handlers[$type] = $handler;
 
         return $this;
