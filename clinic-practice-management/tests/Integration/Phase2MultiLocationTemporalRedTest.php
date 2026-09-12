@@ -513,6 +513,167 @@ final class Phase2MultiLocationTemporalRedTest extends WP_UnitTestCase
     }
 
     // =================================================================
+    // T2 — Per-Clinic grace isolation (W sweep must not reuse Clinic A for B)
+    // =================================================================
+
+    public function testPerClinicGraceIsolation(): void
+    {
+        global $wpdb;
+        $db = App::db();
+
+        // Create second clinic with different grace
+        $now = $db->nowUtcSql();
+        $secondClinicId = 62202;
+        $secondOrgId = 62201;
+        $secondLocId = 62213;
+        $secondClinicianId = 62221;
+
+        // Org for second clinic (reuse first org 62200, but create second org if needed)
+        // Use existing org 62200 for simplicity, second clinic under same org
+        $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_clinics (id, organization_id, name, slug, timezone, created_at, updated_at) VALUES (%d, %d, %s, %s, %s, %s, %s)',
+            $secondClinicId,
+            self::FX_T_ORG_ID,
+            'Temporal Clinic B',
+            'temporal-clinic-b',
+            'Europe/Berlin',
+            $now,
+            $now
+        ));
+
+        $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_locations (id, clinic_id, name, slug, timezone, is_primary, is_active, created_at, updated_at) VALUES (%d, %d, %s, %s, %s, 1, 1, %s, %s)',
+            $secondLocId,
+            $secondClinicId,
+            'Temporal Loc B2',
+            'temporal-loc-b2-' . bin2hex(random_bytes(2)),
+            'Europe/Berlin',
+            $now,
+            $now
+        ));
+
+        $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_clinicians (id, clinic_id, full_name, is_active, created_at, updated_at) VALUES (%d, %d, %s, 1, %s, %s)',
+            $secondClinicianId,
+            $secondClinicId,
+            'Dr Temporal B',
+            $now,
+            $now
+        ));
+
+        // Patient for second clinic
+        $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_patients (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, "active", %s, %s)',
+            $secondClinicId,
+            'MR-TEMP-B-' . bin2hex(random_bytes(3)),
+            'TemporalB',
+            'PatientB',
+            '0912000' . random_int(1000, 9999),
+            $now,
+            $now
+        ));
+        $secondPatientId = (int) $wpdb->insert_id;
+
+        // Settings: Clinic A grace 30, Clinic B grace 120
+        \ClinicCore\Settings\Settings::flushCache();
+        $settingsA = new Settings($db, self::FX_T_CLINIC_ID, App::audit());
+        $settingsA->set('queue.no_show_grace_minutes', 30);
+        $settingsB = new Settings($db, $secondClinicId, App::audit());
+        $settingsB->set('queue.no_show_grace_minutes', 120);
+        \ClinicCore\Settings\Settings::flushCache();
+
+        // Appointment in Clinic A: 40 minutes ago local Tehran, grace 30 => should be no_show (40 >30)
+        // Appointment in Clinic B: 40 minutes ago local Berlin, grace 120 => should NOT be no_show (40 <120)
+        $tzTehran = new DateTimeZone('Asia/Tehran');
+        $tzBerlin = new DateTimeZone('Europe/Berlin');
+        $nowUtc = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+        $nowTehran = $nowUtc->setTimezone($tzTehran);
+        $nowBerlin = $nowUtc->setTimezone($tzBerlin);
+
+        $past40Tehran = $nowTehran->sub(new \DateInterval('PT40M'));
+        $past40Berlin = $nowBerlin->sub(new \DateInterval('PT40M'));
+
+        // Insert slots and appointments directly for both clinics
+        $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_schedule_slots (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at) VALUES (%d, %d, %d, %s, %s, 20, 1, 1, 0, 1, %s, %s)',
+            self::FX_T_CLINIC_ID,
+            self::FX_T_LOC_A_ID,
+            self::FX_T_CLINICIAN_ID,
+            $past40Tehran->format('Y-m-d'),
+            $past40Tehran->format('H:i:s'),
+            $now,
+            $now
+        ));
+        $slotA = (int) $wpdb->insert_id;
+        $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_appointments (clinic_id, location_id, clinician_id, patient_id, slot_id, slot_date, slot_time, duration_min, status, created_at, updated_at) VALUES (%d, %d, %d, %d, %d, %s, %s, 20, %s, %s, %s)',
+            self::FX_T_CLINIC_ID,
+            self::FX_T_LOC_A_ID,
+            self::FX_T_CLINICIAN_ID,
+            $this->fxTPatient,
+            $slotA,
+            $past40Tehran->format('Y-m-d'),
+            $past40Tehran->format('H:i:s'),
+            'confirmed',
+            $now,
+            $now
+        ));
+        $apptA = (int) $wpdb->insert_id;
+
+        $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_schedule_slots (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at) VALUES (%d, %d, %d, %s, %s, 20, 1, 1, 0, 1, %s, %s)',
+            $secondClinicId,
+            $secondLocId,
+            $secondClinicianId,
+            $past40Berlin->format('Y-m-d'),
+            $past40Berlin->format('H:i:s'),
+            $now,
+            $now
+        ));
+        $slotB = (int) $wpdb->insert_id;
+        $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_appointments (clinic_id, location_id, clinician_id, patient_id, slot_id, slot_date, slot_time, duration_min, status, created_at, updated_at) VALUES (%d, %d, %d, %d, %d, %s, %s, 20, %s, %s, %s)',
+            $secondClinicId,
+            $secondLocId,
+            $secondClinicianId,
+            $secondPatientId,
+            $slotB,
+            $past40Berlin->format('Y-m-d'),
+            $past40Berlin->format('H:i:s'),
+            'confirmed',
+            $now,
+            $now
+        ));
+        $apptB = (int) $wpdb->insert_id;
+
+        // Process no-shows
+        $visitService = App::visitService();
+        $visitService->processNoShows();
+
+        $statusA = $wpdb->get_var($wpdb->prepare('SELECT status FROM ' . $db->table('cpms_appointments') . ' WHERE id = %d', $apptA));
+        $statusB = $wpdb->get_var($wpdb->prepare('SELECT status FROM ' . $db->table('cpms_appointments') . ' WHERE id = %d', $apptB));
+
+        // Clinic A grace 30, 40 min ago => no_show
+        self::assertSame('no_show', $statusA, 'Clinic A grace 30, 40 min ago => must be no_show');
+        // Clinic B grace 120, 40 min ago => must remain confirmed (not share Clinic A grace)
+        self::assertSame('confirmed', $statusB, 'Clinic B grace 120, 40 min ago => must remain confirmed, W sweep must not reuse Clinic A settings');
+
+        // Cleanup second clinic data (purge will handle main fixture, but we need to clean second clinic manually)
+        $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_appointments') . ' WHERE clinic_id = %d', $secondClinicId));
+        $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_schedule_slots') . ' WHERE clinic_id = %d', $secondClinicId));
+        $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_patients') . ' WHERE clinic_id = %d', $secondClinicId));
+        $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_clinicians') . ' WHERE clinic_id = %d', $secondClinicId));
+        $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_locations') . ' WHERE clinic_id = %d', $secondClinicId));
+        $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_clinics') . ' WHERE id = %d', $secondClinicId));
+        $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_settings') . ' WHERE clinic_id = %d', $secondClinicId));
+        \ClinicCore\Settings\Settings::flushCache();
+    }
+
+    // =================================================================
+    // Helpers
+    // =================================================================
+
+        // =================================================================
     // Helpers
     // =================================================================
 
