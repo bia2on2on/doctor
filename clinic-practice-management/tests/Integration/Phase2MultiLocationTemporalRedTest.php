@@ -193,7 +193,7 @@ final class Phase2MultiLocationTemporalRedTest extends WP_UnitTestCase
     }
 
     // =================================================================
-    // RED #3 — Premature no-show periodic processNoShows
+    // RED #3 — Premature no-show periodic processNoShows — T2 GREEN after fix
     // =================================================================
 
     public function testPrematureNoShowPeriodic(): void
@@ -212,7 +212,7 @@ final class Phase2MultiLocationTemporalRedTest extends WP_UnitTestCase
         $slotDate = $apptLocal->format('Y-m-d');
         $slotTime = $apptLocal->format('H:i:s');
 
-        // Grace from settings = 30
+        // Grace from settings = 30 (per-Clinic via SettingsFactory)
         $graceMinutes = 30;
         $before = $nowUtc->sub(new \DateInterval('PT' . $graceMinutes . 'M'))->format('Y-m-d H:i:s');
 
@@ -225,70 +225,53 @@ final class Phase2MultiLocationTemporalRedTest extends WP_UnitTestCase
         $apptId = $this->fxTInsertAppointment(self::FX_T_LOC_C_ID, $slotDate, $slotTime, 'confirmed');
         self::assertGreaterThan(0, $apptId, 'fixture: appointment created');
 
-        // Product path: VisitRepository::appointmentsPastGrace uses CONCAT(slot_date,' ',slot_time) < %s — compares local wall-clock string to UTC instant string
+        // T2: VisitRepository now Location-aware — should NOT list premature
         $visitRepo = new VisitRepository($db);
         $past = $visitRepo->appointmentsPastGrace($before, 100);
         $ids = array_map(fn($r) => (int) $r['id'], $past);
         $isPrematurelyListed = in_array($apptId, $ids, true);
 
-        if ($isPrematurelyListed) {
-            // Now exercise real periodic path: VisitService::processNoShows uses gmdate(time()-grace) as before
-            $visitService = App::visitService();
-            $processed = $visitService->processNoShows();
+        // After T2 fix, premature appointment must NOT be listed
+        self::assertFalse($isPrematurelyListed, 'T2 fix: appointment with Location-local start+grace future must NOT be listed in appointmentsPastGrace (was premature before)');
 
-            // Check if our appointment became no_show
-            $status = $wpdb->get_var($wpdb->prepare(
-                'SELECT status FROM ' . $db->table('cpms_appointments') . ' WHERE id = %d',
-                $apptId
-            ));
-            $noShowAt = $wpdb->get_var($wpdb->prepare(
-                'SELECT no_show_at FROM ' . $db->table('cpms_appointments') . ' WHERE id = %d',
-                $apptId
-            ));
+        // Exercise real periodic path
+        $visitService = App::visitService();
+        $processed = $visitService->processNoShows();
 
-            if ($status === 'no_show') {
-                self::fail(
-                    'EXPECTED RED #3 — PREMATURE NO-SHOW PERIODIC: Location America/New_York, slot_date=' . $slotDate . ' slot_time=' . $slotTime .
-                    ' (local ' . $apptLocal->format('Y-m-d H:i:s') . ' ' . $tzNY->getName() . ' = ' . $apptUtc->format('Y-m-d H:i:s') . 'Z), nowUtc=' . $nowUtc->format('Y-m-d H:i:s') . 'Z, before=' . $before .
-                    ', grace=' . $graceMinutes . 'm, Location-local start+grace=' . $apptStartPlusGraceUtc->format('Y-m-d H:i:s') . 'Z is FUTURE, but appointmentsPastGrace < before is TRUE (string compare) and processNoShows marked it no_show. ' .
-                    'Invariant: never no_show before Location-local start+grace. Assertions: before start, processNoShows, remains confirmed, no_show_at null, no Visit side effect.'
-                );
-            } else {
-                // Even if processNoShows did not mark (due to timing), the fact that appointmentsPastGrace listed it is already premature
-                self::fail(
-                    'EXPECTED RED #3 — PREMATURE NO-SHOW PERIODIC (repository level): appointment id=' . $apptId . ' listed in appointmentsPastGrace with before=' . $before .
-                    ' while Location-local start+grace=' . $apptStartPlusGraceUtc->format('Y-m-d H:i:s') . 'Z is future. String CONCAT vs UTC bug.'
-                );
-            }
-        }
+        // Check that our appointment remains confirmed, not no_show
+        $status = $wpdb->get_var($wpdb->prepare(
+            'SELECT status FROM ' . $db->table('cpms_appointments') . ' WHERE id = %d',
+            $apptId
+        ));
+        $noShowAt = $wpdb->get_var($wpdb->prepare(
+            'SELECT no_show_at FROM ' . $db->table('cpms_appointments') . ' WHERE id = %d',
+            $apptId
+        ));
 
-        // If not listed, then maybe current time does not trigger premature — try alternative: use slot that is definitely premature by construction
-        // Fallback: create appointment with slot_date = today UTC, time = 18:00 (NY 14:00) and now UTC 20:51 => string 18:00 < 20:21 true but local future 22:00 UTC
-        // To keep deterministic, we already computed +1h case which should be premature for most of day — if not, assert control and still RED via alternative path
-        if (!$isPrematurelyListed) {
-            // Force a known premature case: slot_date = gmdate('Y-m-d'), slot_time = '18:00:00', location NY, now 20:51 UTC => 18:00 <20:21 true, but NY 18:00 EDT =22:00 UTC future
-            $forcedDate = gmdate('Y-m-d');
-            $forcedTime = '18:00:00';
-            $forcedLocal = DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $forcedDate . ' ' . $forcedTime, $tzNY);
-            if ($forcedLocal === false) {
-                $forcedLocal = $nowLocalNY; // fallback
-            }
-            $forcedUtc = $forcedLocal->setTimezone(new DateTimeZone('UTC'));
-            $forcedApptId = $this->fxTInsertAppointment(self::FX_T_LOC_C_ID, $forcedDate, $forcedTime, 'confirmed');
-            $past2 = $visitRepo->appointmentsPastGrace($before, 100);
-            $ids2 = array_map(fn($r) => (int) $r['id'], $past2);
-            if (in_array($forcedApptId, $ids2, true) && $nowUtc < $forcedUtc->add(new \DateInterval('PT30M'))) {
-                self::fail(
-                    'EXPECTED RED #3 — PREMATURE NO-SHOW PERIODIC (forced): slot ' . $forcedDate . ' ' . $forcedTime . ' NY=' . $forcedUtc->format('Y-m-d H:i:s') . 'Z future, before=' . $before . ', but listed as past grace via string compare.'
-                );
-            }
-            // If still not, then test infra cannot reproduce at this UTC hour — mark as D? But we want RED, so we fail with explanation that current hour not triggering but logic still buggy
-            self::assertTrue($isPrematurelyListed || in_array($forcedApptId, $ids2, true), 'fixture: expected premature listing did not occur at this UTC hour — test infra may need adjustment, but product bug remains via code inspection');
-        }
+        self::assertSame('confirmed', $status, 'T2 fix: future Location-local appointment must remain confirmed after processNoShows');
+        self::assertTrue($noShowAt === null || $noShowAt === '', 'T2 fix: no_show_at must remain null for future appointment');
+
+        // Positive control: actually overdue appointment should still become no_show
+        $overdueLocal = $nowLocalNY->sub(new DateInterval('PT2H')); // 2h ago local
+        $overdueDate = $overdueLocal->format('Y-m-d');
+        $overdueTime = $overdueLocal->format('H:i:s');
+        $overdueApptId = $this->fxTInsertAppointment(self::FX_T_LOC_C_ID, $overdueDate, $overdueTime, 'confirmed');
+        self::assertGreaterThan(0, $overdueApptId, 'control: overdue appointment created');
+
+        $processed2 = $visitService->processNoShows();
+        $overdueStatus = $wpdb->get_var($wpdb->prepare(
+            'SELECT status FROM ' . $db->table('cpms_appointments') . ' WHERE id = %d',
+            $overdueApptId
+        ));
+        self::assertSame('no_show', $overdueStatus, 'positive control: actually overdue appointment must become no_show (fix does not disable all no-show)');
     }
 
     // =================================================================
     // RED #4 — Lazy / check-in consistency
+    // =================================================================
+
+    // =================================================================
+    // RED #4 — Lazy / check-in consistency — T2 GREEN after fix
     // =================================================================
 
     public function testLazyCheckInNoShowConsistency(): void
@@ -319,46 +302,42 @@ final class Phase2MultiLocationTemporalRedTest extends WP_UnitTestCase
 
         try {
             $visit = $visitService->checkIn($secretaryId, $this->fxTPatient, $apptId, []);
-            // If check-in succeeded, check if it was incorrectly marked as walk_in due to lazy no-show
+            // T2 fix: lazy path must use Location timezone + per-Clinic grace, same as periodic
             $source = $visit['source'] ?? '';
             $apptStatus = $wpdb->get_var($wpdb->prepare(
                 'SELECT status FROM ' . $db->table('cpms_appointments') . ' WHERE id = %d',
                 $apptId
             ));
 
-            if ($source === 'walk_in' && $apptStatus === 'no_show') {
-                self::fail(
-                    'EXPECTED RED #4 — LAZY CHECK-IN NO-SHOW PREMATURE: Location NY slot ' . $slotDate . ' ' . $slotTime .
-                    ' local=' . $apptLocal->format('Y-m-d H:i:s') . ' ' . $tzNY->getName() . ' = ' . $apptUtc->format('Y-m-d H:i:s') . 'Z, nowUtc=' . $nowUtc->format('Y-m-d H:i:s') . 'Z, grace=' . $grace . 'm, start+grace=' . $apptStartPlusGraceUtc->format('Y-m-d H:i:s') . 'Z future, ' .
-                    'but VisitService::checkIn strtotime(slotStart+grace) < now (UTC) marked no_show and source=walk_in. ' .
-                    'Periodic and lazy paths both UTC-biased, disagree with Location-local rule.'
-                );
-            }
+            // After fix, future Location-local appointment must be scheduled, not walk_in/no_show
+            self::assertSame('scheduled', $source, 'T2 fix: future Location-local appointment check-in must be scheduled, not walk_in');
+            self::assertTrue($apptStatus !== 'no_show', 'T2 fix: appointment must NOT be no_show after future check-in, got ' . $apptStatus);
 
-            // If source scheduled, then lazy path did NOT prematurely mark — but periodic path might still, so we check consistency
-            // For RED we want to show lazy path also buggy — if it passed, we still have periodic RED, but we need to record disagreement
-            // Here we assert that lazy path should be scheduled, and it is, but periodic would be no_show — disagreement
-            // So we still fail if periodic would mark
+            // Consistency: periodic path must also NOT list it as past grace
             $before = $nowUtc->sub(new \DateInterval('PT' . $grace . 'M'))->format('Y-m-d H:i:s');
             $visitRepo = new VisitRepository($db);
             $past = $visitRepo->appointmentsPastGrace($before, 100);
             $ids = array_map(fn($r) => (int) $r['id'], $past);
-            if (in_array($apptId, $ids, true)) {
-                self::fail(
-                    'EXPECTED RED #4 — LAZY vs PERIODIC DISAGREEMENT: checkIn returned source=' . $source . ' (not premature), but appointmentsPastGrace lists id=' . $apptId . ' as past grace (periodic would be premature). Both paths use UTC-biased comparison, inconsistency.'
-                );
-            }
+            self::assertFalse(in_array($apptId, $ids, true), 'T2 fix: periodic and lazy must agree — future appointment must NOT be in pastGrace');
 
         } catch (\ClinicCore\Domain\Visits\VisitException $e) {
-            self::fail('EXPECTED RED #4 — checkIn threw VisitException: ' . $e->getMessage() . ' — fixture or product path error, but expected scheduled check-in');
+            self::fail('After T2 fix, checkIn should succeed as scheduled, but threw VisitException: ' . $e->getMessage());
         }
+
+        // Positive control: overdue appointment check-in should be walk_in + no_show (ER-06)
+        $overdueLocal = $nowLocalNY->sub(new \DateInterval('PT3H'));
+        $overdueDate = $overdueLocal->format('Y-m-d');
+        $overdueTime = $overdueLocal->format('H:i:s');
+        $overdueApptId = $this->fxTInsertAppointment(self::FX_T_LOC_C_ID, $overdueDate, $overdueTime, 'confirmed');
+        $secretaryId2 = $this->makeSecretaryUser(self::FX_T_CLINIC_ID);
+        $visit2 = $visitService->checkIn($secretaryId2, $this->fxTPatient, $overdueApptId, []);
+        self::assertSame('walk_in', $visit2['source'] ?? '', 'positive control: overdue appointment check-in must be walk_in (ER-06)');
     }
 
     // =================================================================
     // RED #5 — Reminder day-boundary multi-location
-    // =================================================================
 
-    public function testReminderDayBoundaryMultiLocation(): void
+        public function testReminderDayBoundaryMultiLocation(): void
     {
         global $wpdb;
         $db = App::db();
