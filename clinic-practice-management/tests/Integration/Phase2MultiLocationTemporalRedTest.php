@@ -539,7 +539,11 @@ final class Phase2MultiLocationTemporalRedTest extends WP_UnitTestCase
         $db = App::db();
         $now = $db->nowUtcSql();
         $login = 'tmpatient_' . bin2hex(random_bytes(3));
-        $userId = (int) wp_create_user($login, 'pass-12345', $login . '@test.local', ['role' => 'cpms_patient']);
+        $userId = (int) wp_create_user($login, 'pass-12345', $login . '@test.local');
+        $user = get_userdata($userId);
+        if ($user !== false) {
+            $user->set_role('cpms_patient');
+        }
         $wpdb->query($wpdb->prepare(
             'INSERT INTO ' . $db->table('cpms_patient_user_links') . ' (clinic_id, patient_id, wp_user_id, mobile_at_link, is_primary, linked_at) VALUES (%d, %d, %d, %s, 1, %s)',
             self::FX_T_CLINIC_ID,
@@ -554,7 +558,11 @@ final class Phase2MultiLocationTemporalRedTest extends WP_UnitTestCase
     private function makeSecretaryUser(int $clinicId): int
     {
         $login = 'tsecretary_' . bin2hex(random_bytes(3));
-        $userId = (int) wp_create_user($login, 'pass-12345', $login . '@test.local', ['role' => 'cpms_secretary']);
+        $userId = (int) wp_create_user($login, 'pass-12345', $login . '@test.local');
+        $user = get_userdata($userId);
+        if ($user !== false) {
+            $user->set_role('cpms_secretary');
+        }
         cpms_test_seed_membership($userId, $clinicId, 'cpms_secretary');
         return $userId;
     }
