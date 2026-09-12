@@ -71,6 +71,27 @@
   با یک/چند Location؛ سازمان چندکلینیکی) ثبت شد. **بدون هیچ تغییر کد/تست/workflow/schema/migration** (migration
   ‏0021 ایجاد نشده).
 
+## [Unreleased] — 2026-09-12 — آشتی‌دهیِ «۵۴» تاریخی با وضعیتِ جاریِ runtime (فقط مستندات)
+
+- **`۵۴` = سرشماریِ تاریخیِ Phase 0** (۵۴ hardcode در ۲۳ فایل؛ به‌همراهِ ۳ Default-Parameter = ۵۷ در
+  ۲۶ فایل) و **بدون بازنویسی** در گزارش‌های تاریخی حفظ شد. **وضعیتِ راستی‌آزمایی‌شدهٔ جاری (2026-09-12):**
+  نقضِ tenant-default در runtime فعال = **`۰`** · hardcode‌های Tenant Tripwire = **`۰`** ·
+  allowlist = **`[]`** · suspects = **۱** (موردِ sanction‌شدهٔ `SystemClinicResolver.php:52`) ·
+  هر ۳ Default-Parameter تاریخی **حذف شده‌اند** · `DEFAULT 1` سطحِ schema از هر ۳ جدول با Migration
+  ‏`0016` برداشته شد. **ادعای «۵۴ نقصِ جاری» نشده و نمی‌شود.**
+- **§D‑1 جدید در `docs/project-current-state.md`** (جدولِ کاملِ شاهدِ قابلِ اجرا + عبارتِ کانونیِ مجازِ
+  گزارش‌دهی) · یک یادداشتِ «وضعیتِ جاری» در `docs/architecture/phase0.5-target-model.md` §الف‑۶
+  (بدون دست‌کاریِ اعداد/جداول/فرمان‌های تاریخی) · تصریحِ یک‌خطی روی قاعدهٔ AD-13 در
+  `docs/agent-guide.md` · یادداشتِ «pinned به SHA تاریخی» روی جملهٔ `6e5d48c` در §D (مسیرِ trustedِ
+  REST پس از C7 وجود دارد).
+- **ثبتِ یک پاکسازیِ کوچکِ آینده — انجام نشد:** docblockِ
+  ‏`clinic-practice-management/src/Infrastructure/Repository/ClinicianRepository.php:17` هنوز می‌گوید
+  «همه کوئری‌ها clinic_id=1 (V1 تک-کلینیک — ADR-0003)». **راستی‌آزماییِ مستقل: کهنه است** — کلاس
+  ‏`int $clinic_id` صریح می‌گیرد (`listAll():30`، `create():76`) و هیچ literalِ tenant ندارد. چون این
+  تسک **فقط‌مستندات** است، **هیچ فایل PHP‌ای تغییر نکرد**؛ این قلم به‌عنوان cleanupِ **فقط‑کامنتیِ**
+  آینده (بدون تغییر رفتار/تست/اثرِ tripwire) ثبت شد.
+- **بدون هیچ تغییر کد/تست/workflow/schema/migration** — Migration `0021` ساخته نشد (آخرین = `0020`).
+
 ## [Unreleased] — 2026-09-12 — طراحی ترمیم Tenant Context فاز ۲ (APPROVED DESIGN DIRECTION — NOT YET IMPLEMENTED؛ فقط مستندات)
 
 - سند کانونی جدید **`docs/architecture/phase2-tenant-context-remediation-design.md`** — جهت طراحیِ

@@ -226,7 +226,44 @@ Client-requested context
   → Repository
 ```
 
-At `6e5d48c` this pipe is **not** implemented on the REST boundary. `ScopeContext::set` in production exists only inside `ExportService` job bind. REST staff still falls through to `SystemClinicResolver` (exactly-one Clinic) or throws `CLINIC_SCOPE_REQUIRED`.
+At `6e5d48c` this pipe is **not** implemented on the REST boundary. `ScopeContext::set` in production exists only inside `ExportService` job bind. REST staff still falls through to `SystemClinicResolver` (exactly-one Clinic) or throws `CLINIC_SCOPE_REQUIRED`. *(Pinned to that historical SHA — C7 later added the trusted REST path `Rest/RestClinicContext.php` → `TrustedClinicEstablisher`; see §C7 below.)*
+
+### D-1. Historical `54` tenant-default census vs. current runtime state (re-verified 2026-09-12 — documentation only)
+
+**`54` is historical Phase‑0 provenance, not a current defect count.** The Phase‑0 census
+(`docs/architecture/phase0.5-target-model.md` §الف‑۶, `docs/phase-reports/report-phase-0-reverification.md` C‑4)
+measured **54 `clinic_id = 1` hardcodes in 23 files** (24 of them inside
+`Infrastructure/Repository/`), plus **3 hidden default-parameters** (`?int $clinicId = 1` ×2,
+`int $clinicId = 1` ×1) = extended census **57 in 26 files**. Those numbers stay **exactly as
+recorded** in the historical reports — they are not rewritten here.
+
+Current state, independently re-verified on this working tree (no code was changed to produce it):
+
+| Measure (2026‑09‑12) | Value | Evidence |
+|---|---|---|
+| Tenant Tripwire hardcodes in **active production runtime** (`clinic-practice-management/src`, excluding `tests/`, `vendor/`, `Migrations/`) | **0** | `python3 bin/tenant-tripwire.py --allowlist bin/tenant-tripwire-allowlist.json` → `{"files_scanned": 173, "hardcodes": 0, "suspects": 1, "allowlist_entries": 0}`; `--test` → 59/59 self-tests pass |
+| Tenant Tripwire **allowlist** | **`[]` (empty)** | `bin/tenant-tripwire-allowlist.json` → `{"entries": []}`; plugin copy `clinic-practice-management/bin/tenant-tripwire-allowlist.json` → `[]` |
+| Tripwire **suspects** | **1 — sanctioned, not a tenant default** | `src/Application/Scope/SystemClinicResolver.php:52` (`LIMIT 1` *inside* the fail-closed exactly-one-Clinic resolution; sanctioned in `phase-reports/c6-census.md`, AD‑04) |
+| Historical exact grep pattern over `src/` (`clinic_id\s*=\s*1\b|'clinic_id'\s*=>\s*1\b`) | **7 textual matches, 0 runtime tenant-default resolutions** | 6 are prose/docblock references *to the prohibition itself* (`OtpService.php:323`, `PatientIdentityService.php:23`, `ClinicScope.php:12`, `ClinicianRepository.php:17`, `MembershipRepository.php:14`, `LoginRateLimiter.php:135`); 1 is inside already-applied Migration `0020` (guarded legacy backfill that **aborts** in a multi-Clinic install). Migrations are immutable history and are deliberately not edited |
+| The 3 historical **default-parameters** (`?int $clinicId = 1` in `AuditLogger`/`Idempotency`, `int $clinicId = 1` in `Settings`) | **removed — no `= 1` tenant default remains anywhere in `src/`** | grep for tenant default-parameters in `src/` returns none. Now: `Settings::__construct` requires an explicit `int $clinicId` (`Settings.php:149`); `Idempotency::{check,complete,release}` require an explicit `int $clinicId`; `AuditLogger::log` takes `?int $clinicId = null` — it uses the caller's explicit Clinic, else the active `App::scope()`, and when scope is ambiguous/absent (`ScopeRequiredException`) records **NULL = system** (never `1`), per the Migration `0016` semantics (`AuditLogger.php:47-58`) |
+| Schema-level `clinic_id … DEFAULT 1` | **removed** (3 tables) | Migration `0016` dropped `DEFAULT 1` from `cpms_sms_messages` (+ `INT`→`BIGINT`), `cpms_drug_reference`, `cpms_idempotency_keys` — the exact three tables listed in `phase-reports/final-pre-phase2-gate-report.md` §۴ and in the «🔴 تصحیح نهایی Pre-Phase-2 Gate» block of `architecture/phase0.5-target-model.md` (after ب‑۵) |
+
+**Canonical wording to use from now on:** *historical Phase‑0 census = 54 (+3 default-parameters =
+57/26 files); current active-runtime tenant-default violations = 0; tripwire hardcodes = 0;
+tripwire allowlist = `[]`.* Never state "54 current hardcodes" and never delete the historical 54.
+
+**Small verified future code-comment cleanup (recorded, NOT performed here — documentation-only task):**
+`clinic-practice-management/src/Infrastructure/Repository/ClinicianRepository.php:17` still carries the
+docblock line «همه کوئری‌ها clinic_id=1 (V1 تک-کلینیک — ADR-0003)». Independently verified **stale**:
+the class takes an explicit `int $clinic_id` (`listAll(int $clinic_id, …)` at line 30,
+`create(int $clinic_id, array $fields)` at line 76) and contains **no** tenant literal. This is a
+**comment-only** cleanup (no behavior change, no test change, no tripwire impact) and is left for a
+future code task because this task must not touch PHP.
+
+The structurally open item is **not** hardcodes but the background-job/tenant-context path
+(`cpms_jobs` has no tenant columns; the dispatcher establishes no tenant context). The approved
+**design direction — NOT YET IMPLEMENTED** is recorded in
+[`docs/architecture/phase2-tenant-context-remediation-design.md`](architecture/phase2-tenant-context-remediation-design.md).
 
 ---
 

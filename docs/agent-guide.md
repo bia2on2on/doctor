@@ -37,6 +37,7 @@
 > - **AD-02** — Organization اجباری است. هیچ مسیر موازی برای `Organization = NULL`.
 > - **AD-12** — Migration = versioned forward. drop/recreate مسیر محصول نیست.
 > - **AD-13** — **`clinic_id = 1` مستقیم در کد جدید ممنوع است** (و همین‌طور `organization_id = 1` و `location_id = 1`). ۵۴ مورد موجود بدهی فنی Phase 2 هستند — اضافه‌کردن مورد پنجاه‌وپنجم ممنوع است.
+>   - *(راستی‌آزمایی 2026-09-12)* «۵۴» **سرشماریِ تاریخیِ Phase 0** است، **نه بدهیِ runtimeِ جاری**: Tenant Tripwire روی runtime فعال `hardcodes: 0` و allowlist `[]` گزارش می‌دهد (۵۹ self-test سبز). آشتی‌دهیِ دقیقِ «۵۴ تاریخی ↔ ۰ جاری» + شاهدِ قابلِ اجرا در [`project-current-state.md`](project-current-state.md) §D‑1. خودِ قاعدهٔ AD-13 بدون تغییر پابرجاست و **`clinic_id = 0` و Clinic مصنوعیِ «System» هم ممنوع‌اند** (جزئیات: [`architecture/phase2-tenant-context-remediation-design.md`](architecture/phase2-tenant-context-remediation-design.md) §۳-B‑2).
 >
 > **قاعدهٔ اجرا از Phase 1 به بعد:** code + tests + documentation باید **همراه هم** به‌روز شوند. checkpoint commit کوچک مجاز است؛ **merge فقط پس از Gate نهایی فاز**.
 >
