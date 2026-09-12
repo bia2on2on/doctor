@@ -407,7 +407,7 @@ final class Phase2MultiLocationTemporalRedTest extends WP_UnitTestCase
         // Need SettingsFactory for SmsService? Use App::smsService() which uses SettingsFactory per clinic
         $smsService = App::smsService();
         $notificationService = App::notificationService();
-        $opLogger = App::opLogger();
+        $opLogger = App::op();
 
         // Use Settings bound to our clinic (62201) — ApptReminderHandler uses injected Settings (clinic-level)
         $handlerSettings = new Settings($db, self::FX_T_CLINIC_ID, App::audit());
