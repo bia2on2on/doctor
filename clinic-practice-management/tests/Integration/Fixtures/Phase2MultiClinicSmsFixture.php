@@ -285,7 +285,11 @@ trait Phase2MultiClinicSmsFixture
             'cpms_clinicians' => $range,
             'cpms_locations' => $range,
             'cpms_settings' => $range,
-            'cpms_audit_logs' => $range,
+            // cpms_audit_logs deliberately NOT purged: audit rows written by the
+            // fixture carry clinic_id NULL when scope was ambiguous, so a
+            // clinic_id predicate would not match them anyway, and the table
+            // holds a hash chain that a partial delete could disturb. The WP
+            // test-suite transaction rollback already removes them.
             'cpms_clinic_memberships' => $range,
             'cpms_clinics' => ' WHERE id >= ' . self::FX_ID_FLOOR,
         ];
@@ -297,7 +301,7 @@ trait Phase2MultiClinicSmsFixture
         $wpdb->query('DELETE FROM ' . $p . 'cpms_jobs'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         // OTP rows seeded for the per-job isolation test are tenant-less too.
         $wpdb->query('DELETE FROM ' . $p . "cpms_otp_tokens WHERE mobile LIKE '091299%'"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        $wpdb->query('DELETE FROM ' . $p . "cpms_organizations WHERE slug LIKE 'rt\\\\_org\\\\_%'"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+        $wpdb->query('DELETE FROM ' . $p . "cpms_organizations WHERE slug LIKE 'rt-org-%'"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
         $wpdb->query('SET FOREIGN_KEY_CHECKS = 1'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
     }
 

@@ -114,7 +114,7 @@ final class Phase2JobScopeRedFoundationTest extends WP_UnitTestCase
         // the tick lock must be free (a leftover lock would be a C-class
         // environment artifact, not the defect under test).
         $this->fxReleaseTickLock();
-        $this->fxAssertQueueIsEmpty();
+        $this->fxClearQueue();
 
         $this->captureAppStatics();
         $this->buildMultiClinicSmsFixture();
@@ -653,11 +653,16 @@ final class Phase2JobScopeRedFoundationTest extends WP_UnitTestCase
     // Harness — queue helpers
     // =================================================================
 
-    private function fxAssertQueueIsEmpty(): void
+    private function fxClearQueue(): void
     {
         global $wpdb;
+        // Deterministic start WITHOUT depending on what any earlier test in this
+        // process left behind. `cpms_jobs` has no tenant column today, so there
+        // is no narrower predicate that is still correct. Every assertion in
+        // this class targets specific job ids, never a queue count.
+        $wpdb->query('DELETE FROM ' . $wpdb->prefix . 'cpms_jobs'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         $count = (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $wpdb->prefix . 'cpms_jobs'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        self::assertSame(0, $count, 'CPMS_RT_WITNESS: the job queue must be empty before the test starts');
+        self::assertSame(0, $count, 'fixture: the job queue was cleared to a deterministic empty state');
     }
 
     private function fxReleaseTickLock(): void
