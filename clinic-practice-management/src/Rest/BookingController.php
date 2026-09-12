@@ -55,7 +55,6 @@ final class BookingController extends RestBase
                     'slot_date' => ['required' => true, 'type' => 'string'],
                     'slot_time' => ['required' => true, 'type' => 'string'],
                     'slot_id' => ['required' => false, 'type' => 'integer'],
-                    'location_id' => ['required' => false, 'type' => 'integer'],
                 ],
             ],
         ]);
@@ -71,7 +70,6 @@ final class BookingController extends RestBase
                     'slot_date' => ['required' => true, 'type' => 'string'],
                     'slot_time' => ['required' => true, 'type' => 'string'],
                     'slot_id' => ['required' => false, 'type' => 'integer'],
-                    'location_id' => ['required' => false, 'type' => 'integer'],
                 ],
             ],
         ]);
@@ -122,7 +120,6 @@ final class BookingController extends RestBase
                     'slot_time' => ['required' => true, 'type' => 'string'],
                     'clinician_id' => ['required' => false, 'type' => 'integer'],
                     'slot_id' => ['required' => false, 'type' => 'integer'],
-                    'location_id' => ['required' => false, 'type' => 'integer'],
                 ],
             ],
         ]);
@@ -150,7 +147,6 @@ final class BookingController extends RestBase
                     'slot_time' => ['required' => true, 'type' => 'string'],
                     'reason' => ['required' => false, 'type' => 'string'],
                     'slot_id' => ['required' => false, 'type' => 'integer'],
-                    'location_id' => ['required' => false, 'type' => 'integer'],
                 ],
             ],
         ]);

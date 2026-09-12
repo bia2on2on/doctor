@@ -324,16 +324,14 @@ final class VisitRepository
 
     /**
      * رخدادهای no-show بالقوه (FR-5.5) — نوبت‌های بدون ویزیت فعال پس از grace.
-     * Legacy method kept for compat; new processNoShows does Location-aware evaluation in PHP.
      *
      * @return list<array<string, mixed>>
      */
     public function appointmentsPastGrace(string $beforeDateTime, int $limit = 100): array
     {
         $rows = $this->db->fetchAll(
-            'SELECT a.id, a.patient_id, a.clinician_id, a.slot_date, a.slot_time, a.location_id, a.clinic_id, l.timezone AS location_timezone' .
+            'SELECT a.id, a.patient_id, a.clinician_id, a.slot_date, a.slot_time' .
             ' FROM ' . $this->db->table('cpms_appointments') . ' a' .
-            ' LEFT JOIN ' . $this->db->table('cpms_locations') . ' l ON l.id = a.location_id' .
             ' WHERE a.status = \'confirmed\'' .
             ' AND CONCAT(a.slot_date, \' \', a.slot_time) < %s' .
             ' AND a.active_visit_id IS NULL' .
