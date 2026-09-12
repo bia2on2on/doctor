@@ -114,7 +114,7 @@ final class Phase2MultiLocationTemporalRedTest extends WP_UnitTestCase
             $hold = $booking->hold($patientUserId, self::FX_T_CLINICIAN_ID, $date, $time);
             // If we reach here, booking succeeded with arbitrary location — this is the RED evidence
             // It should have failed closed because location ambiguous
-            $heldSlotId = (int) ($hold['slot']['id'] ?? 0);
+            $heldSlotId = (int) ($hold['slot']['slot_id'] ?? $hold['slot']['id'] ?? 0);
             $heldLocation = (int) $wpdb->get_var($wpdb->prepare(
                 'SELECT location_id FROM ' . $db->table('cpms_schedule_slots') . ' WHERE id = %d',
                 $heldSlotId
