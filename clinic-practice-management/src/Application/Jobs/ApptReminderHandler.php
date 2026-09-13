@@ -290,7 +290,7 @@ final class ApptReminderHandler
 
         $min = null;
         $max = null;
-        foreach (DateTimeZone::listIdentifiers(DateTimeZone::ALL_WITHOUT_BC) as $identifier) {
+        foreach (DateTimeZone::listIdentifiers(DateTimeZone::ALL_WITH_BC) as $identifier) {
             if ($identifier === 'leapseconds') {
                 continue;
             }
