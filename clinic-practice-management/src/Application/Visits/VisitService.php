@@ -1146,6 +1146,10 @@ final class VisitService
     /**
      * T2: per-Clinic grace resolution via SettingsFactory — explicit clinic_id, no ambient.
      *
+     * M-2 fix: Clinic-specific grace must come ONLY from SettingsFactory::forClinic($rowClinicId)
+     * where rowClinicId came from durable appointment data. If resolution fails, fail-closed for that row,
+     * do NOT use legacy ambient Settings, do NOT use another Clinic, do NOT substitute fixed value.
+     *
      * Returns null on failure => fail-closed skip (do NOT mark no_show)
      */
     private function graceForClinic(int $clinicId): ?int
@@ -1159,17 +1163,8 @@ final class VisitService
             $grace = (int) $settings->get('queue.no_show_grace_minutes', 30);
             return max(0, $grace);
         } catch (Throwable $e) {
-            // Try legacy fallback if available
-            if ($this->legacySettings !== null) {
-                try {
-                    $grace = (int) $this->legacySettings->get('queue.no_show_grace_minutes', 30);
-                    return max(0, $grace);
-                } catch (Throwable $e2) {
-                    // fall through
-                }
-            }
             $this->opLog?->warning('visit.grace_resolve_failed', ['clinic_id' => $clinicId, 'error' => $e->getMessage()]);
-            // Fail-closed: do not mark no_show if grace cannot be resolved (avoid premature)
+            // Fail-closed: do not mark no_show if grace cannot be resolved (avoid premature / cross-Clinic bleed)
             return null;
         }
     }
@@ -1180,12 +1175,7 @@ final class VisitService
             $settings = $this->settingsFactory->forClinic($clinicId);
             return (bool) $settings->get('queue.auto_enqueue', true);
         } catch (Throwable $e) {
-            if ($this->legacySettings !== null) {
-                try {
-                    return (bool) $this->legacySettings->get('queue.auto_enqueue', true);
-                } catch (Throwable $e2) {
-                }
-            }
+            $this->opLog?->warning('visit.auto_enqueue_resolve_failed', ['clinic_id' => $clinicId, 'error' => $e->getMessage()]);
             return true;
         }
     }
@@ -1196,37 +1186,9 @@ final class VisitService
             $settings = $this->settingsFactory->forClinic($clinicId);
             return (int) $settings->get('queue.max_recalls', 3);
         } catch (Throwable $e) {
-            if ($this->legacySettings !== null) {
-                try {
-                    return (int) $this->legacySettings->get('queue.max_recalls', 3);
-                } catch (Throwable $e2) {
-                }
-            }
+            $this->opLog?->warning('visit.max_recalls_resolve_failed', ['clinic_id' => $clinicId, 'error' => $e->getMessage()]);
             return 3;
         }
-    }
-
-    // Legacy wrapper for old callers (tests) — now per-clinic via factory with fallback
-    private function noShowGraceMinutes(): int
-    {
-        // Try to get from current scope if available, otherwise default
-        try {
-            $clinicId = App::scope()->clinicId;
-            $g = $this->graceForClinic($clinicId);
-            if ($g !== null) {
-                return $g;
-            }
-        } catch (Throwable $e) {
-        }
-
-        if ($this->legacySettings !== null) {
-            try {
-                return max(0, (int) $this->legacySettings->get('queue.no_show_grace_minutes', 30));
-            } catch (Throwable $e) {
-            }
-        }
-
-        return 30;
     }
 
     /**

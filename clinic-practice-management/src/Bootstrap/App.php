@@ -418,6 +418,9 @@ final class App
         static $visits = null;
         if ($visits === null) {
             $db = self::db();
+            // M-2 visits.no_show: scope-neutral construction — must NOT call self::settings() / self::scope()
+            // which would throw CLINIC_SCOPE_REQUIRED in multi-Clinic no-Scope worker.
+            // Clinic-specific grace is resolved per-row via SettingsFactory::forClinic($rowClinicId) inside VisitService.
             $visits = new VisitService(
                 $db,
                 new VisitRepository($db),
@@ -427,7 +430,7 @@ final class App
                 self::licenseGate(),
                 self::notificationService(),
                 self::op(),
-                self::settings()
+                null
             );
         }
 

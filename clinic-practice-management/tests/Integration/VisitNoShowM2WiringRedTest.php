@@ -116,7 +116,7 @@ final class VisitNoShowM2WiringRedTest extends WP_UnitTestCase
             self::FX_CLINIC_A_ID,
             self::FX_ORG_ID,
             'Wiring Clinic A',
-            'wiring-clinic-a',
+            'wiring-clinic-a-' . bin2hex(random_bytes(3)),
             'Europe/Berlin',
             $now,
             $now
@@ -128,7 +128,7 @@ final class VisitNoShowM2WiringRedTest extends WP_UnitTestCase
             self::FX_CLINIC_B_ID,
             self::FX_ORG_ID,
             'Wiring Clinic B',
-            'wiring-clinic-b',
+            'wiring-clinic-b-' . bin2hex(random_bytes(3)),
             'Asia/Tokyo',
             $now,
             $now
@@ -220,6 +220,31 @@ final class VisitNoShowM2WiringRedTest extends WP_UnitTestCase
         self::assertNull($explicit, 'no ScopeContext must be set for this test');
         wp_set_current_user(0);
         self::assertSame(0, get_current_user_id(), 'no current WP user');
+
+        // Prove total clinic count >1 and App::scope() throws CLINIC_SCOPE_REQUIRED
+        $countAll = (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $db->table('cpms_clinics'));
+        self::assertGreaterThan(1, $countAll, 'total clinic count must be >1 to trigger CLINIC_SCOPE_REQUIRED, found ' . $countAll);
+        try {
+            $scope = App::scope();
+            self::fail('App::scope() should throw CLINIC_SCOPE_REQUIRED when multiple clinics exist and no explicit scope, but got clinicId=' . $scope->clinicId);
+        } catch (\ClinicCore\Application\Scope\ScopeRequiredException $e) {
+            self::assertSame('CLINIC_SCOPE_REQUIRED', $e->errorCode, 'scope must throw CLINIC_SCOPE_REQUIRED');
+        }
+
+        // Prove App::visitService() itself throws due to ambient Settings (pre-fix defect)
+        // This is the core wiring defect: constructing visitService requires ambient Clinic Settings
+        try {
+            $vs = App::visitService();
+            // If we reach here, wiring is already scope-neutral (post-fix) — acceptable for GREEN
+            // For RED, we expect exception, so we record that it did NOT throw
+            // We will still test runTick path below
+            $this->resetAppCaches(); // reset again after successful creation to test runTick
+        } catch (\ClinicCore\Application\Scope\ScopeRequiredException $e) {
+            // Pre-fix: expected to throw — this is the defect we want to prove via runTick
+            self::assertSame('CLINIC_SCOPE_REQUIRED', $e->errorCode, 'visitService must throw CLINIC_SCOPE_REQUIRED pre-fix');
+            // Reset caches again so runTick will attempt same path and fail with same error
+            $this->resetAppCaches();
+        }
 
         // Enqueue root visits.no_show
         $this->purgeJobs();
