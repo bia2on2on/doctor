@@ -1141,7 +1141,7 @@ final class App
                     (new OpLogCleanupHandler($db, self::settings()))($payload);
                 })
                 ->register('slots.generate', static function (array $payload) use ($db, $op): void {
-                    (new SlotsGenerateHandler($db, self::settings(), $op))($payload);
+                    (new SlotsGenerateHandler($db, self::settingsFactory(), $op))($payload);
                 })
                 ->register('sms.send', static function (array $payload): void {
                     // T: Clinic از مالکیتِ ردیفِ پیام حل می‌شود (SmsService).
