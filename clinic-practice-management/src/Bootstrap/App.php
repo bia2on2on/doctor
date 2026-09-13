@@ -422,11 +422,12 @@ final class App
                 $db,
                 new VisitRepository($db),
                 new AppointmentRepository($db),
-                self::settings(),
+                self::settingsFactory(),
                 self::audit(),
                 self::licenseGate(),
                 self::notificationService(),
-                self::op()
+                self::op(),
+                self::settings()
             );
         }
 
@@ -1130,7 +1131,7 @@ final class App
                     (new SmsSendJobHandler(self::smsService()))($payload);
                 })
                 ->register('visits.no_show', static function (array $payload): void {
-                    (new VisitsNoShowHandler(self::visitService()))($payload);
+                    (new VisitsNoShowHandler(self::visitService(), self::jobs(), self::db(), self::op()))($payload);
                 })
                 ->register('handwriting.gc', static function (array $payload): void {
                     (new HandwritingGcHandler(self::handwritingService()))($payload);
@@ -1139,7 +1140,23 @@ final class App
                     (new NotifDispatchHandler(self::notificationService(), self::exportService()))($payload);
                 })
                 ->register('appt.reminder', static function (array $payload) use ($db, $op): void {
-                    (new ApptReminderHandler($db, self::settings(), self::smsService(), self::notificationService(), $op))($payload);
+                    // W-sweep: each Appointment owns its Clinic/Location. The
+                    // handler therefore receives only scope-neutral services and
+                    // resolves the per-Clinic NotificationService from persisted
+                    // appointment data, never from ambient App::scope().
+                    (new ApptReminderHandler(
+                        $db,
+                        self::smsService(),
+                        static fn (int $clinicId): NotificationService => new NotificationService(
+                            $db,
+                            new NotificationRepository($db),
+                            new MembershipRepository($db),
+                            self::settingsFactory()->forClinic($clinicId),
+                            $op
+                        ),
+                        self::jobs(),
+                        $op
+                    ))($payload);
                 })
                 ->register('fu.reminder', static function (array $payload) use ($db, $op): void {
                     (new FollowUpReminderHandler($db, self::settings(), self::smsService(), self::notificationService(), $op))($payload);
@@ -1262,11 +1279,14 @@ final class App
         $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
 
         foreach (self::RECURRING_JOBS as $type => $priority) {
-            $alreadyQueued = self::db()->fetchValue(
-                'SELECT id FROM ' . self::db()->table('cpms_jobs') . ' WHERE type = %s AND status = %s LIMIT 1',
-                [$type, \ClinicCore\Infrastructure\Queue\JobQueue::QUEUED]
+            // Queue-hardening: treat both QUEUED and PROCESSING as active.
+            // Prevents duplicate root amplification while a chain is in flight.
+            // After chain fully finishes (no queued/processing), fresh root is allowed.
+            $alreadyActive = self::db()->fetchValue(
+                'SELECT id FROM ' . self::db()->table('cpms_jobs') . ' WHERE type = %s AND status IN (%s, %s) LIMIT 1',
+                [$type, \ClinicCore\Infrastructure\Queue\JobQueue::QUEUED, \ClinicCore\Infrastructure\Queue\JobQueue::PROCESSING]
             );
-            if ($alreadyQueued === null) {
+            if ($alreadyActive === null) {
                 $queue->enqueue($type, [], $now, priority: $priority);
             }
         }

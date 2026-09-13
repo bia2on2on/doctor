@@ -54,6 +54,7 @@ final class BookingController extends RestBase
                     'clinician_id' => ['required' => true, 'type' => 'integer'],
                     'slot_date' => ['required' => true, 'type' => 'string'],
                     'slot_time' => ['required' => true, 'type' => 'string'],
+                    'slot_id' => ['required' => false, 'type' => 'integer'],
                 ],
             ],
         ]);
@@ -68,6 +69,7 @@ final class BookingController extends RestBase
                     'clinician_id' => ['required' => true, 'type' => 'integer'],
                     'slot_date' => ['required' => true, 'type' => 'string'],
                     'slot_time' => ['required' => true, 'type' => 'string'],
+                    'slot_id' => ['required' => false, 'type' => 'integer'],
                 ],
             ],
         ]);
@@ -117,6 +119,7 @@ final class BookingController extends RestBase
                     'slot_date' => ['required' => true, 'type' => 'string'],
                     'slot_time' => ['required' => true, 'type' => 'string'],
                     'clinician_id' => ['required' => false, 'type' => 'integer'],
+                    'slot_id' => ['required' => false, 'type' => 'integer'],
                 ],
             ],
         ]);
@@ -143,6 +146,7 @@ final class BookingController extends RestBase
                     'slot_date' => ['required' => true, 'type' => 'string'],
                     'slot_time' => ['required' => true, 'type' => 'string'],
                     'reason' => ['required' => false, 'type' => 'string'],
+                    'slot_id' => ['required' => false, 'type' => 'integer'],
                 ],
             ],
         ]);
@@ -173,10 +177,12 @@ final class BookingController extends RestBase
 
     private function quote(WP_REST_Request $request): WP_REST_Response|WP_Error
     {
+        $slotId = $request->get_param('slot_id');
         return $this->wrap(fn () => $this->booking->quote(
             (int) $request->get_param('clinician_id'),
             (string) $request->get_param('slot_date'),
-            (string) $request->get_param('slot_time')
+            (string) $request->get_param('slot_time'),
+            $slotId !== null && $slotId !== '' ? (int) $slotId : null
         ));
     }
 
@@ -188,11 +194,13 @@ final class BookingController extends RestBase
             return $rate;
         }
 
+        $slotId = $request->get_param('slot_id');
         return $this->wrap(fn () => $this->booking->hold(
             (int) $user->ID,
             (int) $request->get_param('clinician_id'),
             (string) $request->get_param('slot_date'),
-            (string) $request->get_param('slot_time')
+            (string) $request->get_param('slot_time'),
+            $slotId !== null && $slotId !== '' ? (int) $slotId : null
         ));
     }
 
@@ -254,13 +262,15 @@ final class BookingController extends RestBase
                 $newClinicianId = $current;
             }
 
+            $newSlotId = $request->get_param('slot_id');
             return $this->booking->reschedule(
                 (int) $user->ID,
                 $appointmentId,
                 (int) $newClinicianId,
                 (string) $request->get_param('slot_date'),
                 (string) $request->get_param('slot_time'),
-                $key
+                $key,
+                $newSlotId !== null && $newSlotId !== '' ? (int) $newSlotId : null
             );
         });
     }
@@ -282,13 +292,15 @@ final class BookingController extends RestBase
             return $rate;
         }
 
+        $slotId = $request->get_param('slot_id');
         return $this->wrap(fn () => $this->booking->createByStaff(
             (int) $user->ID,
             (int) $request->get_param('patient_id'),
             (int) $request->get_param('clinician_id'),
             (string) $request->get_param('slot_date'),
             (string) $request->get_param('slot_time'),
-            $request->get_param('reason') !== null ? (string) $request->get_param('reason') : null
+            $request->get_param('reason') !== null ? (string) $request->get_param('reason') : null,
+            $slotId !== null && $slotId !== '' ? (int) $slotId : null
         ));
     }
 

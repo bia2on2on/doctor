@@ -392,9 +392,10 @@ final class RestQueueTest extends WP_UnitTestCase
     {
         global $wpdb;
         $now = App::db()->nowUtcSql();
-        // تاریخ و ساعت از «یک» لحظه — نیمه‌شب UTC را با هم طی می‌کنند (date rollover)
-        $date = gmdate('Y-m-d', $atTs);
-        $slotTime = gmdate('H:i:s', $atTs);
+        // T2: slot_date/time are Location-local wall-clock (Asia/Tehran), not UTC
+        $dt = (new \DateTimeImmutable('@' . $atTs))->setTimezone(new \DateTimeZone('Asia/Tehran'));
+        $date = $dt->format('Y-m-d');
+        $slotTime = $dt->format('H:i:s');
 
         $wpdb->query(
             $wpdb->prepare(
@@ -422,7 +423,7 @@ final class RestQueueTest extends WP_UnitTestCase
                 $slotId,
                 $date,
                 $slotTime,
-                gmdate('H:i:s', strtotime($slotTime) + 1200),
+                $dt->add(new \DateInterval('PT20M'))->format('H:i:s'),
                 $now,
                 $now,
                 $now

@@ -147,15 +147,41 @@ final class JobQueue
 
     /**
      * آزادسازی Jobهای لاک‌شده‌ی منقضی (Worker مرده) — Job خودش Idempotent است.
+     *
+     * Retry-budget invariant (queue-wide):
+     * - No execution path may make a job runnable for an attempt beyond its persisted max_attempts.
+     * - attempts is incremented at claim time, so attempts==max means last allowed attempt already consumed.
+     * - If attempts < max_attempts → return to QUEUED (legitimate retry).
+     * - If attempts >= max_attempts → terminalize to FAILED (cannot be claimed again).
+     * This prevents stale recovery from bypassing max_attempts and unbounded crash-loop amplification.
+     * Consistent with fail() semantics: attempts < max → QUEUED with backoff, else FAILED.
      */
     public function releaseStaleLocks(): int
     {
-        return $this->db->execute(
+        $now = $this->db->nowUtcSql();
+
+        // 1) Recoverable: attempts < max_attempts → QUEUED
+        $recovered = $this->db->execute(
             'UPDATE ' . $this->db->table('cpms_jobs') .
             ' SET status = %s, locked_by = NULL, lock_expires_at = NULL
-             WHERE status = %s AND lock_expires_at < %s',
-            [self::QUEUED, self::PROCESSING, $this->db->nowUtcSql()]
+             WHERE status = %s AND lock_expires_at < %s AND attempts < max_attempts',
+            [self::QUEUED, self::PROCESSING, $now]
         );
+
+        // 2) Terminal: attempts >= max_attempts → FAILED (cannot be claimed again)
+        // This enforces retry budget for crash/timeout path, matching fail() terminal behavior.
+        $terminalized = $this->db->execute(
+            'UPDATE ' . $this->db->table('cpms_jobs') .
+            ' SET status = %s, last_error = %s, locked_by = NULL, lock_expires_at = NULL, completed_at = %s
+             WHERE status = %s AND lock_expires_at < %s AND attempts >= max_attempts',
+            [self::FAILED, 'STALE_LOCK_EXPIRED_MAX_ATTEMPTS', $now, self::PROCESSING, $now]
+        );
+
+        if ($terminalized > 0) {
+            $this->op->warning('JOB_STALE_TERMINALIZED_MAX_ATTEMPTS', ['count' => $terminalized]);
+        }
+
+        return $recovered + $terminalized;
     }
 
     /**

@@ -83,8 +83,9 @@ final class VisitFlowTest extends WP_UnitTestCase
 
     public function testCheckInCreatesVisitAndAutoEnqueues(): void
     {
-        $t = time() + 3600;
-        $apptId = $this->makeAppointment($this->patientId, $this->clinicianId, gmdate('Y-m-d', $t), gmdate('H:i:s', $t));
+                $t = time() + 3600;
+        $dt = (new \DateTimeImmutable('@' . $t))->setTimezone(new \DateTimeZone('Asia/Tehran'));
+        $apptId = $this->makeAppointment($this->patientId, $this->clinicianId, $dt->format('Y-m-d'), $dt->format('H:i:s'));
 
         $visit = App::visitService()->checkIn($this->secretaryUserId, $this->patientId, $apptId);
 
@@ -109,8 +110,9 @@ final class VisitFlowTest extends WP_UnitTestCase
 
     public function testDuplicateActiveVisitIsRejected(): void
     {
-        $t = time() + 3600;
-        $apptId = $this->makeAppointment($this->patientId, $this->clinicianId, gmdate('Y-m-d', $t), gmdate('H:i:s', $t));
+                $t = time() + 3600;
+        $dt = (new \DateTimeImmutable('@' . $t))->setTimezone(new \DateTimeZone('Asia/Tehran'));
+        $apptId = $this->makeAppointment($this->patientId, $this->clinicianId, $dt->format('Y-m-d'), $dt->format('H:i:s'));
         App::visitService()->checkIn($this->secretaryUserId, $this->patientId, $apptId);
 
         // J-5: دومین Check-in همان بیمار×پزشک در همان روز
@@ -127,7 +129,8 @@ final class VisitFlowTest extends WP_UnitTestCase
     {
         // نوبت 2 ساعت پیش — از Grace (30 دقیقه) گذشته (ER-06/TP-19)
         $t = time() - 7200;
-        $apptId = $this->makeAppointment($this->patientId, $this->clinicianId, gmdate('Y-m-d', $t), gmdate('H:i:s', $t));
+        $dt = (new \DateTimeImmutable('@' . $t))->setTimezone(new \DateTimeZone('Asia/Tehran'));
+        $apptId = $this->makeAppointment($this->patientId, $this->clinicianId, $dt->format('Y-m-d'), $dt->format('H:i:s'));
 
         $visit = App::visitService()->checkIn($this->secretaryUserId, $this->patientId, $apptId);
 
@@ -145,7 +148,8 @@ final class VisitFlowTest extends WP_UnitTestCase
     public function testCheckInOnNoShowAppointmentCreatesWalkInLikeVisit(): void
     {
         $t = time() - 7200;
-        $apptId = $this->makeAppointment($this->patientId, $this->clinicianId, gmdate('Y-m-d', $t), gmdate('H:i:s', $t));
+        $dt = (new \DateTimeImmutable('@' . $t))->setTimezone(new \DateTimeZone('Asia/Tehran'));
+        $apptId = $this->makeAppointment($this->patientId, $this->clinicianId, $dt->format('Y-m-d'), $dt->format('H:i:s'));
         // قبلاً توسط Cron نوبت no_show شده
         App::db()->update('cpms_appointments', ['status' => 'no_show', 'no_show_at' => App::db()->nowUtcSql()], ['id' => $apptId]);
 
@@ -156,8 +160,9 @@ final class VisitFlowTest extends WP_UnitTestCase
 
     public function testCheckInOnCancelledAppointmentIsRejected(): void
     {
-        $t = time() + 3600;
-        $apptId = $this->makeAppointment($this->patientId, $this->clinicianId, gmdate('Y-m-d', $t), gmdate('H:i:s', $t));
+                $t = time() + 3600;
+        $dt = (new \DateTimeImmutable('@' . $t))->setTimezone(new \DateTimeZone('Asia/Tehran'));
+        $apptId = $this->makeAppointment($this->patientId, $this->clinicianId, $dt->format('Y-m-d'), $dt->format('H:i:s'));
         App::db()->update('cpms_appointments', ['status' => 'cancelled_by_staff'], ['id' => $apptId]);
 
         try {
@@ -185,8 +190,9 @@ final class VisitFlowTest extends WP_UnitTestCase
         );
         $otherPatientId = (int) $wpdb->insert_id;
 
-        $t = time() + 3600;
-        $apptId = $this->makeAppointment($this->patientId, $this->clinicianId, gmdate('Y-m-d', $t), gmdate('H:i:s', $t));
+                $t = time() + 3600;
+        $dt = (new \DateTimeImmutable('@' . $t))->setTimezone(new \DateTimeZone('Asia/Tehran'));
+        $apptId = $this->makeAppointment($this->patientId, $this->clinicianId, $dt->format('Y-m-d'), $dt->format('H:i:s'));
 
         try {
             App::visitService()->checkIn($this->secretaryUserId, $otherPatientId, $apptId);
@@ -211,8 +217,9 @@ final class VisitFlowTest extends WP_UnitTestCase
 
     public function testFullQueueLifecycleThroughCheckout(): void
     {
-        $t = time() + 3600;
-        $apptId = $this->makeAppointment($this->patientId, $this->clinicianId, gmdate('Y-m-d', $t), gmdate('H:i:s', $t));
+                $t = time() + 3600;
+        $dt = (new \DateTimeImmutable('@' . $t))->setTimezone(new \DateTimeZone('Asia/Tehran'));
+        $apptId = $this->makeAppointment($this->patientId, $this->clinicianId, $dt->format('Y-m-d'), $dt->format('H:i:s'));
         $visit = App::visitService()->checkIn($this->secretaryUserId, $this->patientId, $apptId);
         $visitId = (int) $visit['id'];
 
@@ -338,7 +345,8 @@ final class VisitFlowTest extends WP_UnitTestCase
         );
         $expressPatientId = (int) $wpdb->insert_id;
         $t = time() + 1800;
-        $apptId = $this->makeAppointment($expressPatientId, $this->clinicianId, gmdate('Y-m-d', $t), gmdate('H:i:s', $t), isWalkinExpress: 1);
+        $dt = (new \DateTimeImmutable('@' . $t))->setTimezone(new \DateTimeZone('Asia/Tehran'));
+        $apptId = $this->makeAppointment($expressPatientId, $this->clinicianId, $dt->format('Y-m-d'), $dt->format('H:i:s'), isWalkinExpress: 1);
         $express = App::visitService()->checkIn($this->secretaryUserId, $expressPatientId, $apptId);
 
         $repo = new VisitRepository(App::db());
@@ -352,13 +360,15 @@ final class VisitFlowTest extends WP_UnitTestCase
 
     public function testNoShowSweepMarksOnlyUnvisitedLateAppointments(): void
     {
-        $t = time() - 7200;
-        $late = $this->makeAppointment($this->patientId, $this->clinicianId, gmdate('Y-m-d', $t), gmdate('H:i:s', $t));
-        $t = time() + 3600;
-        $upcoming = $this->makeAppointment($this->patientId, $this->clinicianId, gmdate('Y-m-d', $t), gmdate('H:i:s', $t));
+                $t = time() - 7200;
+        $dt = (new \DateTimeImmutable('@' . $t))->setTimezone(new \DateTimeZone('Asia/Tehran'));
+        $late = $this->makeAppointment($this->patientId, $this->clinicianId, $dt->format('Y-m-d'), $dt->format('H:i:s'));
+                $t = time() + 3600;
+        $dt = (new \DateTimeImmutable('@' . $t))->setTimezone(new \DateTimeZone('Asia/Tehran'));
+        $upcoming = $this->makeAppointment($this->patientId, $this->clinicianId, $dt->format('Y-m-d'), $dt->format('H:i:s'));
         // نوبت دیرهنگام با ویزیت فعال → نباید no_show شود (زمان یکتا — UNIQUE u_slot)
         $t = time() - 7140;
-        $visitedLate = $this->makeAppointment($this->patientId, $this->clinicianId, gmdate('Y-m-d', $t), gmdate('H:i:s', $t));
+        $visitedLate = $this->makeAppointment($this->patientId, $this->clinicianId, (new \DateTimeImmutable('@' . $t))->setTimezone(new \DateTimeZone('Asia/Tehran'))->format('Y-m-d'), (new \DateTimeImmutable('@' . $t))->setTimezone(new \DateTimeZone('Asia/Tehran'))->format('H:i:s'));
         // بیمار دیگری برای نوبت سوم (قانون J-5 همان بیمار)
         global $wpdb;
         $now = App::db()->nowUtcSql();
@@ -383,7 +393,8 @@ final class VisitFlowTest extends WP_UnitTestCase
         );
         App::visitService()->checkIn($this->secretaryUserId, $sweepPatientId, $visitedLate);
 
-        $count = App::visitService()->processNoShows();
+        $res = App::visitService()->processNoShows();
+        $count = is_array($res) ? ($res['processed'] ?? 0) : (int) $res;
 
         $this->assertSame(1, $count); // فقط نوبت دیرهنگام بدون ویزیت
         $status = static fn (int $id): string => (string) App::db()->fetchValue(
@@ -395,7 +406,8 @@ final class VisitFlowTest extends WP_UnitTestCase
         $this->assertSame('no_show', $status($visitedLate)); // از check-in دیرهنگام (ER-06)
 
         // Idempotent: اجرای دوباره هیچ نوبت جدیدی نمی‌گیرد
-        $this->assertSame(0, App::visitService()->processNoShows());
+        $resZero = App::visitService()->processNoShows();
+        $this->assertSame(0, is_array($resZero) ? ($resZero['processed'] ?? 0) : (int) $resZero);
     }
 
     // ================= Helpers =================
@@ -448,7 +460,7 @@ final class VisitFlowTest extends WP_UnitTestCase
                 $slotId,
                 $slotDate,
                 $slotTime,
-                gmdate('H:i:s', strtotime($slotTime) + 1200),
+                (new \DateTimeImmutable($slotDate . ' ' . $slotTime, new \DateTimeZone('Asia/Tehran')))->add(new \DateInterval('PT20M'))->format('H:i:s'),
                 $isWalkinExpress,
                 $now,
                 $now,

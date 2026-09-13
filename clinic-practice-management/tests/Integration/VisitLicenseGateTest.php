@@ -113,8 +113,9 @@ final class VisitLicenseGateTest extends WP_UnitTestCase
 
     public function testCheckInOfPreExistingAppointmentIsAllowedInReadOnlyMode(): void
     {
-        $t = time() + 3600;
-        $apptId = $this->makeAppointment(gmdate('Y-m-d', $t), gmdate('H:i:s', $t));
+                $t = time() + 3600;
+        $dt = (new \DateTimeImmutable('@' . $t))->setTimezone(new \DateTimeZone('Asia/Tehran'));
+        $apptId = $this->makeAppointment($dt->format('Y-m-d'), $dt->format('H:i:s'));
 
         $visit = $this->service(new FakeLicenseGate(false))->checkIn($this->secretaryUserId, $this->patientId, $apptId);
 
@@ -127,8 +128,9 @@ final class VisitLicenseGateTest extends WP_UnitTestCase
 
     public function testInProgressVisitTransitionsAreAllowedInReadOnlyMode(): void
     {
-        $t = time() + 3600;
-        $apptId = $this->makeAppointment(gmdate('Y-m-d', $t), gmdate('H:i:s', $t));
+                $t = time() + 3600;
+        $dt = (new \DateTimeImmutable('@' . $t))->setTimezone(new \DateTimeZone('Asia/Tehran'));
+        $apptId = $this->makeAppointment($dt->format('Y-m-d'), $dt->format('H:i:s'));
         $svc = $this->service(new FakeLicenseGate(false));
 
         $visit = $svc->checkIn($this->secretaryUserId, $this->patientId, $apptId);
@@ -154,9 +156,12 @@ final class VisitLicenseGateTest extends WP_UnitTestCase
             $db,
             new VisitRepository($db),
             new AppointmentRepository($db),
-            App::settings(),
+            App::settingsFactory(),
             App::audit(),
-            $gate
+            $gate,
+            null,
+            null,
+            App::settings()
         );
     }
 
@@ -202,7 +207,7 @@ final class VisitLicenseGateTest extends WP_UnitTestCase
                 $slotId,
                 $slotDate,
                 $slotTime,
-                gmdate('H:i:s', strtotime($slotTime) + 1200),
+                (new \DateTimeImmutable($slotDate . ' ' . $slotTime, new \DateTimeZone('Asia/Tehran')))->add(new \DateInterval('PT20M'))->format('H:i:s'),
                 $now,
                 $now,
                 $now

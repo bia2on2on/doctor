@@ -71,3 +71,31 @@
 > ثبت‌شده** دارد (نام‌های ثبت‌نشده در کد، نام‌های ناهمسان، و انواعِ ثبت‌شدهٔ غایب از آن) و بدونِ
 > بازنویسی، به‌عنوانِ **سندِ تاریخی/مفهومی** باقی می‌ماند: `docs/drift-register.md` §۹-B.
 > طبقهٔ scopeِ هر یک از ۱۵ نوعِ واقعی در سندِ کانونی §A-3 ثبت شده است (نه در این جدول).
+
+### 5.1 T3 — `appt.reminder` (implementation slice; Phase 2 remains in progress)
+
+`appt.reminder` is a **W-sweep**. The queued root payload remains the compatible empty
+object. A bounded execution obtains one UTC reference instant, normalizes it as
+`Y-m-d\TH:i:s\Z`, and uses that same instant in every continuation. A continuation is an
+`appt.reminder` job whose `payload_json` contains exactly `continuation: true`, `version: 1`,
+the fixed `reference_utc`, and the keyset cursor `{slot_date, slot_time, id}`. The payload is
+progress state only: it contains no trusted Clinic scope and malformed payloads fail closed with
+`JOB_PAYLOAD_INVALID`; they never restart as a root sweep or establish `ScopeContext`.
+
+The candidate query joins each Appointment to its persisted Location using both
+`Location.id = appointment.location_id` and `Location.clinic_id = appointment.clinic_id`.
+It orders by `slot_date ASC, slot_time ASC, id ASC`; it does not use OFFSET. The broad
+persisted-date prefilter is the inclusive union from the minimum Location-local date at the fixed
+UTC instant through one calendar day after the maximum Location-local date, evaluated across PHP's
+supported IANA identifiers. This cannot omit a Location's local today or tomorrow; it is only a
+prefilter. Final eligibility parses the candidate's own Location timezone and compares the stored
+date to that Location's local today/tomorrow. Missing/mismatched Location rows and empty or invalid
+timezones fail closed without stopping unrelated rows.
+
+Each execution scans at most **100 candidates** in pages of **40** and makes at most **60
+notification attempts**. A cursor advances after every scanned candidate, including final-calendar
+rejections. When further candidates may remain, one—and only one—same-type continuation is enqueued
+with a strictly greater cursor and the unchanged fixed reference. Existing notification/SMS dedupe
+continues to provide at-least-once-safe effects; this design does not claim exactly-once execution.
+No migration, generic `JobQueue` change, scheduler redesign, or quiet-hours policy change is part of
+this slice.
