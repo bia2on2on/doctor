@@ -427,7 +427,7 @@ final class FollowUpReminderStarvationRedTest extends WP_UnitTestCase
         $remindedValid = $wpdb->get_var($wpdb->prepare('SELECT reminder_sent_at FROM ' . $db->table('cpms_follow_ups') . ' WHERE id = %d', $validId));
         $notifValid = (int) $wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM ' . $db->table('cpms_notifications') . ' WHERE clinic_id = %d AND template = %s AND recipient_patient_id = %d', $this->clinicId, 'followup_reminder', $this->patientId));
 
-        $prefixStillPending = (int) $wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM ' . $db->table('cpms_follow_ups') . ' WHERE id IN (' . implode(',', array_map('intval', $prefixIds)) . ') AND reminder_sent_at IS NULL'));
+        $prefixStillPending = (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $db->table('cpms_follow_ups') . ' WHERE id IN (' . implode(',', array_map('intval', $prefixIds)) . ') AND reminder_sent_at IS NULL');
 
         // Check continuation payloads reference_utc preservation
         $jobs = $db->fetchAll('SELECT payload_json FROM ' . $db->table('cpms_jobs') . ' WHERE type = %s ORDER BY id DESC LIMIT 10', ['fu.reminder']);
