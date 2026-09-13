@@ -291,10 +291,13 @@ final class ApptReminderHandler
         $min = null;
         $max = null;
         foreach (DateTimeZone::listIdentifiers(DateTimeZone::ALL_WITH_BC) as $identifier) {
-            if ($identifier === 'leapseconds') {
+            try {
+                $localDate = $referenceUtc->setTimezone(new DateTimeZone($identifier))->format('Y-m-d');
+            } catch (\Exception) {
+                // Some PHP/tzdata builds expose registry metadata such as
+                // `leapseconds` or `tzdata.zi`; these are not IANA zones.
                 continue;
             }
-            $localDate = $referenceUtc->setTimezone(new DateTimeZone($identifier))->format('Y-m-d');
             $min = $min === null || $localDate < $min ? $localDate : $min;
             $max = $max === null || $localDate > $max ? $localDate : $max;
         }
