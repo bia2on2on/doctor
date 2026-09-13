@@ -12,6 +12,7 @@ use ClinicCore\Domain\Time\Jalali;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Logging\OpLogger;
 use ClinicCore\Infrastructure\Queue\JobQueue;
+use ClinicCore\Settings\Settings;
 use DateTimeImmutable;
 use DateTimeZone;
 use RuntimeException;
@@ -57,14 +58,51 @@ final class ApptReminderHandler
      * @param \Closure(int): NotificationService $notificationForClinic
      * @param \Closure(): DateTimeImmutable|null $utcNow test seam؛ در production null = UTC now
      */
+    private readonly CpmsDb $db;
+    private readonly SmsService $sms;
+    /** @var \Closure(int): NotificationService */
+    private readonly \Closure $notificationForClinic;
+    private readonly JobQueue $queue;
+    private readonly OpLogger $op;
+    private readonly ?\Closure $utcNow;
+
+    /**
+     * The first form is the scope-neutral T3 constructor. The second form is
+     * retained for existing direct handler tests and third-party callers:
+     * `(db, Settings, SmsService, NotificationService, OpLogger)`.
+     */
     public function __construct(
-        private readonly CpmsDb $db,
-        private readonly SmsService $sms,
-        private readonly \Closure $notificationForClinic,
-        private readonly JobQueue $queue,
-        private readonly OpLogger $op,
-        private readonly ?\Closure $utcNow = null
+        CpmsDb $db,
+        SmsService|Settings $smsOrLegacySettings,
+        \Closure|SmsService $notificationFactoryOrSms,
+        JobQueue|NotificationService $queueOrLegacyNotifications,
+        OpLogger $op,
+        ?\Closure $utcNow = null
     ) {
+        $this->db = $db;
+        $this->op = $op;
+        $this->utcNow = $utcNow;
+
+        if ($smsOrLegacySettings instanceof Settings) {
+            if (!$notificationFactoryOrSms instanceof SmsService
+                || !$queueOrLegacyNotifications instanceof NotificationService
+            ) {
+                throw new \InvalidArgumentException('Invalid legacy appt.reminder dependencies');
+            }
+            $legacyNotifications = $queueOrLegacyNotifications;
+            $this->sms = $notificationFactoryOrSms;
+            $this->notificationForClinic = static fn (int $clinicId): NotificationService => $legacyNotifications;
+            $this->queue = new JobQueue($db, $op);
+
+            return;
+        }
+
+        if (!$notificationFactoryOrSms instanceof \Closure || !$queueOrLegacyNotifications instanceof JobQueue) {
+            throw new \InvalidArgumentException('Invalid scope-neutral appt.reminder dependencies');
+        }
+        $this->sms = $smsOrLegacySettings;
+        $this->notificationForClinic = $notificationFactoryOrSms;
+        $this->queue = $queueOrLegacyNotifications;
     }
 
     /**
@@ -252,7 +290,10 @@ final class ApptReminderHandler
 
         $min = null;
         $max = null;
-        foreach (DateTimeZone::listIdentifiers(DateTimeZone::ALL_WITH_BC) as $identifier) {
+        foreach (DateTimeZone::listIdentifiers(DateTimeZone::ALL_WITHOUT_BC) as $identifier) {
+            if ($identifier === 'leapseconds') {
+                continue;
+            }
             $localDate = $referenceUtc->setTimezone(new DateTimeZone($identifier))->format('Y-m-d');
             $min = $min === null || $localDate < $min ? $localDate : $min;
             $max = $max === null || $localDate > $max ? $localDate : $max;
@@ -366,8 +407,7 @@ final class ApptReminderHandler
                 JOIN ' . $this->db->table('cpms_patients') . ' p ON p.id = a.patient_id
                 JOIN ' . $this->db->table('cpms_locations') . ' l
                   ON l.id = a.location_id AND l.clinic_id = a.clinic_id
-                WHERE a.status = %s
-                  AND a.slot_date >= %s AND a.slot_date <= %s
+                WHERE a.status = %s AND a.slot_date >= %s AND a.slot_date <= %s
                   AND l.timezone IS NOT NULL AND TRIM(l.timezone) <> %s';
         $params = ['confirmed', $window['lower'], $window['upper'], ''];
 

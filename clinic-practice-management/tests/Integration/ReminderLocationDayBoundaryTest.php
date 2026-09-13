@@ -514,15 +514,15 @@ final class ReminderLocationDayBoundaryTest extends WP_UnitTestCase
         // Location-B date deterministically sorts before Location A (25h split).
         $this->setLocationTimezone((int) $topology['locB'], 'Invalid/T3-Timezone', $now);
         try {
+            $rejectedPatient = $this->fxTInsertPatient();
             for ($i = 0; $i < 202; ++$i) {
-                $patient = $this->fxTInsertPatient();
                 $this->fxTInsertAppointment(
                     (int) $topology['locB'],
                     (string) $topology['todayB'],
                     sprintf('%02d:%02d:%02d', intdiv($i, 3600), intdiv($i % 3600, 60), $i % 60),
                     'confirmed',
                     null,
-                    $patient
+                    $rejectedPatient
                 );
             }
             $validPatient = $this->fxTInsertPatient();
