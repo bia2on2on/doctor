@@ -185,6 +185,15 @@ final class RestScheduleTest extends WP_UnitTestCase
             ' WHERE clinician_id = %d AND slot_date = %s ORDER BY slot_time',
             [$this->clinicianId, $tomorrow]
         );
+
+        if (array_column($slots, 'slot_time') !== ['09:00:00', '10:00:00', '11:00:00']) {
+            $jobs = App::db()->fetchAll('SELECT type, status, last_error FROM ' . App::db()->table('cpms_jobs') . ' ORDER BY id DESC LIMIT 20');
+            $oplogs = App::db()->fetchAll('SELECT level, message, context_json FROM ' . App::db()->table('cpms_operational_logs') . ' ORDER BY id DESC LIMIT 20');
+            $schedules = App::db()->fetchAll('SELECT id, clinician_id, clinic_id, location_id, day_of_week, start_time, end_time FROM ' . App::db()->table('cpms_schedule') . ' WHERE clinician_id = %d', [$this->clinicianId]);
+            $locations = App::db()->fetchAll('SELECT id, clinic_id, timezone, is_primary FROM ' . App::db()->table('cpms_locations') . ' WHERE clinic_id = 1');
+            $diag = "DIAG RestScheduleTest: tomorrow=$tomorrow dow=$dow clinician={$this->clinicianId} slots=" . json_encode($slots) . " schedules=" . json_encode($schedules) . " locations=" . json_encode($locations) . " jobs=" . json_encode($jobs) . " oplogs=" . json_encode($oplogs);
+            $this->fail($diag);
+        }
         $this->assertSame(['09:00:00', '10:00:00', '11:00:00'], array_column($slots, 'slot_time'));
         $this->assertSame(2, (int) $slots[0]['capacity']);
 
