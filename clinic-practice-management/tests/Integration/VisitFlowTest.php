@@ -393,7 +393,8 @@ final class VisitFlowTest extends WP_UnitTestCase
         );
         App::visitService()->checkIn($this->secretaryUserId, $sweepPatientId, $visitedLate);
 
-        $count = App::visitService()->processNoShows();
+        $res = App::visitService()->processNoShows();
+        $count = is_array($res) ? ($res['processed'] ?? 0) : (int) $res;
 
         $this->assertSame(1, $count); // فقط نوبت دیرهنگام بدون ویزیت
         $status = static fn (int $id): string => (string) App::db()->fetchValue(
@@ -405,7 +406,8 @@ final class VisitFlowTest extends WP_UnitTestCase
         $this->assertSame('no_show', $status($visitedLate)); // از check-in دیرهنگام (ER-06)
 
         // Idempotent: اجرای دوباره هیچ نوبت جدیدی نمی‌گیرد
-        $this->assertSame(0, App::visitService()->processNoShows());
+        $resZero = App::visitService()->processNoShows();
+        $this->assertSame(0, is_array($resZero) ? ($resZero['processed'] ?? 0) : (int) $resZero);
     }
 
     // ================= Helpers =================

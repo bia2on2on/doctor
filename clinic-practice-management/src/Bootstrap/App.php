@@ -1131,7 +1131,7 @@ final class App
                     (new SmsSendJobHandler(self::smsService()))($payload);
                 })
                 ->register('visits.no_show', static function (array $payload): void {
-                    (new VisitsNoShowHandler(self::visitService()))($payload);
+                    (new VisitsNoShowHandler(self::visitService(), self::jobs(), self::db(), self::op()))($payload);
                 })
                 ->register('handwriting.gc', static function (array $payload): void {
                     (new HandwritingGcHandler(self::handwritingService()))($payload);

@@ -144,10 +144,38 @@ final class VisitNoShowStarvationRedTest extends WP_UnitTestCase
         self::assertGreaterThan(0, $validApptId, 'fixture: valid appt id >0');
 
         // Repeated independent invocations representing separate scheduled ticks
+        // With new continuation design, each invocation returns next_cursor and has_more
+        // Simulate chain: root -> continuation -> continuation
         $visitService = App::visitService();
-        $visitService->processNoShows();
-        $visitService->processNoShows();
-        $visitService->processNoShows();
+        $res1 = $visitService->processNoShows(null, 0);
+        $cursor = $res1['next_cursor'] ?? null;
+        $hasMore = $res1['has_more'] ?? false;
+        if ($hasMore && $cursor !== null) {
+            $res2 = $visitService->processNoShows($cursor, 1);
+            $cursor = $res2['next_cursor'] ?? null;
+            $hasMore = $res2['has_more'] ?? false;
+            if ($hasMore && $cursor !== null) {
+                $res3 = $visitService->processNoShows($cursor, 2);
+                $cursor = $res3['next_cursor'] ?? null;
+                $hasMore = $res3['has_more'] ?? false;
+                // Continue until valid is processed or chain ends, up to depth 10
+                $depth = 3;
+                while ($hasMore && $cursor !== null && $depth < 10) {
+                    $res = $visitService->processNoShows($cursor, $depth);
+                    $cursor = $res['next_cursor'] ?? null;
+                    $hasMore = $res['has_more'] ?? false;
+                    $depth++;
+                    // Check if valid already no_show, break early
+                    $tmpStatus = $wpdb->get_var($wpdb->prepare('SELECT status FROM ' . $db->table('cpms_appointments') . ' WHERE id = %d', $validApptId));
+                    if ($tmpStatus === 'no_show') {
+                        break;
+                    }
+                }
+            }
+        }
+        // Also test root jobs still start from beginning and discover newly inserted earlier rows
+        // (eventual coverage) — call one more root
+        $visitService->processNoShows(null, 0);
 
         $statusValid = $wpdb->get_var($wpdb->prepare('SELECT status FROM ' . $db->table('cpms_appointments') . ' WHERE id = %d', $validApptId));
         $statusMalformedSample = $wpdb->get_var($wpdb->prepare('SELECT status FROM ' . $db->table('cpms_appointments') . ' WHERE id = %d', $malformedIds[0]));

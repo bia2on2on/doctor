@@ -236,7 +236,8 @@ final class Phase2MultiLocationTemporalRedTest extends WP_UnitTestCase
 
         // Exercise real periodic path
         $visitService = App::visitService();
-        $processed = $visitService->processNoShows();
+        $resP = $visitService->processNoShows();
+        $processed = is_array($resP) ? ($resP['processed'] ?? 0) : (int) $resP;
 
         // Check that our appointment remains confirmed, not no_show
         $status = $wpdb->get_var($wpdb->prepare(
@@ -258,7 +259,8 @@ final class Phase2MultiLocationTemporalRedTest extends WP_UnitTestCase
         $overdueApptId = $this->fxTInsertAppointment(self::FX_T_LOC_C_ID, $overdueDate, $overdueTime, 'confirmed');
         self::assertGreaterThan(0, $overdueApptId, 'control: overdue appointment created');
 
-        $processed2 = $visitService->processNoShows();
+        $resP2 = $visitService->processNoShows();
+        $processed2 = is_array($resP2) ? ($resP2['processed'] ?? 0) : (int) $resP2;
         $overdueStatus = $wpdb->get_var($wpdb->prepare(
             'SELECT status FROM ' . $db->table('cpms_appointments') . ' WHERE id = %d',
             $overdueApptId
@@ -666,7 +668,6 @@ final class Phase2MultiLocationTemporalRedTest extends WP_UnitTestCase
         // Process no-shows
         $visitService = App::visitService();
         $visitService->processNoShows();
-
         $statusA = $wpdb->get_var($wpdb->prepare('SELECT status FROM ' . $db->table('cpms_appointments') . ' WHERE id = %d', $apptA));
         $statusB = $wpdb->get_var($wpdb->prepare('SELECT status FROM ' . $db->table('cpms_appointments') . ' WHERE id = %d', $apptB));
 

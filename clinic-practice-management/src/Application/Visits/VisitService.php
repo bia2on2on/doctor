@@ -529,23 +529,45 @@ final class VisitService
      * limit 100. Actual eligibility computed in PHP with explicit DateTimeZone + per-Clinic grace.
      * This is safe: never excludes overdue, may include future which will be filtered (no premature).
      *
-     * @return int تعداد نوبت‌های no_show شده
+     * T2 starvation fix: uses durable cursor via cpms_jobs payload for continuation.
+     * Root starts at null, continuation advances strictly, bounded per tick.
+     *
+     * @param array{slot_date:string, slot_time:string, id:int}|null $incomingCursor
+     * @return array{processed:int, next_cursor:?array, has_more:bool, depth:int, scanned:int}
      */
-    public function processNoShows(): int
+    public function processNoShows(?array $incomingCursor = null, int $depth = 0): array
     {
         $nowUtc = new DateTimeImmutable('now', new DateTimeZone('UTC'));
         $count = 0;
-        $cursor = null;
+        $cursor = $incomingCursor;
         $maxScan = 500; // bounded scan per tick to avoid full table
         $scanned = 0;
         $batchSize = 100;
         $maxToProcess = 100; // bounded per tick
+        $hasMore = false;
+        $nextCursor = null;
+
+        // Defensive depth bound check (should be validated in handler, but double-check)
+        $maxDepth = 100;
+        if ($depth < 0 || $depth > $maxDepth) {
+            $this->opLog?->warning('visit.no_show_depth_invalid', ['depth' => $depth]);
+            return [
+                'processed' => 0,
+                'next_cursor' => null,
+                'has_more' => false,
+                'depth' => $depth,
+                'scanned' => 0,
+            ];
+        }
 
         while ($scanned < $maxScan && $count < $maxToProcess) {
             $candidates = $this->visits->appointmentsPastGraceCandidates($batchSize, $nowUtc, $cursor);
             if (empty($candidates)) {
+                $hasMore = false;
                 break;
             }
+
+            $hasMore = count($candidates) === $batchSize;
 
             foreach ($candidates as $appt) {
                 $scanned++;
@@ -555,6 +577,7 @@ final class VisitService
                     'slot_time' => (string) ($appt['slot_time'] ?? ''),
                     'id' => (int) ($appt['id'] ?? 0),
                 ];
+                $nextCursor = $cursor;
 
                 $clinicId = (int) ($appt['clinic_id'] ?? 0);
                 $locationId = (int) ($appt['location_id'] ?? 0);
@@ -564,7 +587,7 @@ final class VisitService
                     continue; // fail-closed
                 }
 
-                // Location validation from JOIN data if available, else fallback to explicit resolve
+                // Location validation from JOIN data if available
                 $locClinicId = $appt['loc_clinic_id'] ?? null;
                 $locTimezone = $appt['loc_timezone'] ?? null;
 
@@ -634,11 +657,34 @@ final class VisitService
             }
 
             if (count($candidates) < $batchSize) {
+                $hasMore = false;
                 break;
             }
         }
 
-        return $count;
+        // If hasMore true, nextCursor is already set to last scanned row
+        // If no more candidates, nextCursor should be null to stop chain
+        if (!$hasMore) {
+            $nextCursor = null;
+        }
+
+        return [
+            'processed' => $count,
+            'next_cursor' => $nextCursor,
+            'has_more' => $hasMore,
+            'depth' => $depth,
+            'scanned' => $scanned,
+        ];
+    }
+
+    /**
+     * Legacy wrapper for callers expecting int (backward compat).
+     * @return int
+     */
+    public function processNoShowsLegacy(): int
+    {
+        $res = $this->processNoShows(null, 0);
+        return (int) ($res['processed'] ?? 0);
     }
 
     // ================= History (J-3) =================
