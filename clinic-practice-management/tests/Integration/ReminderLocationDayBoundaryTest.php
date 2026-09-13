@@ -47,8 +47,10 @@ declare(strict_types=1);
 namespace ClinicCore\Tests\Integration;
 
 use ClinicCore\Application\Jobs\ApptReminderHandler;
+use ClinicCore\Application\Jobs\JobPayloadInvalidException;
 use ClinicCore\Application\Notifications\NotificationService;
 use ClinicCore\Application\Scope\ClinicScope;
+use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
 use ClinicCore\Infrastructure\Repository\NotificationRepository;
@@ -83,6 +85,7 @@ final class ReminderLocationDayBoundaryTest extends WP_UnitTestCase
         parent::setUp();
         App::migrations()->migrate();
         $this->buildMultiLocationTemporalFixture();
+        $this->purgeReminderJobs();
         $this->recorder = new RecordingSmsProvider();
         App::providers()->register($this->recorder);
 
@@ -99,6 +102,7 @@ final class ReminderLocationDayBoundaryTest extends WP_UnitTestCase
 
     protected function tearDown(): void
     {
+        $this->purgeReminderJobs();
         $this->purgeMultiLocationTemporalFixture();
         App::replaceExplicitScope(null);
         parent::tearDown();
@@ -401,6 +405,162 @@ final class ReminderLocationDayBoundaryTest extends WP_UnitTestCase
     }
 
     // =================================================================
+    // T3-T7 — structural Location/Clinic mismatch fails closed
+    // =================================================================
+
+    public function testLocationClinicMismatchFailsClosed(): void
+    {
+        global $wpdb;
+        $topology = $this->pinDeterministicTopology();
+        $db = App::db();
+        $now = $db->nowUtcSql();
+        $otherClinicId = random_int(74000, 74999);
+
+        $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $db->table('cpms_clinics') . ' (id, organization_id, name, slug, timezone, created_at, updated_at)'
+            . ' VALUES (%d, %d, %s, %s, %s, %s, %s)',
+            $otherClinicId,
+            self::FX_T_ORG_ID,
+            'T3 mismatch Clinic',
+            't3-mismatch-' . bin2hex(random_bytes(3)),
+            self::TZ_B,
+            $now,
+            $now
+        ));
+        $wpdb->query($wpdb->prepare(
+            'UPDATE ' . $db->table('cpms_locations') . ' SET clinic_id = %d WHERE id = %d',
+            $otherClinicId,
+            (int) $topology['locB']
+        ));
+
+        try {
+            $patient = $this->fxTInsertPatient();
+            $appt = $this->fxTInsertAppointment(
+                (int) $topology['locB'],
+                (string) $topology['todayB'],
+                '10:00:00',
+                'confirmed',
+                null,
+                $patient
+            );
+
+            $this->runReminderJob();
+
+            self::assertSame(
+                0,
+                $this->reminderNotificationCount(self::FX_T_CLINIC_ID, $appt, $patient),
+                'Location whose persisted clinic differs from appointment.clinic_id must fail closed'
+            );
+        } finally {
+            $wpdb->query($wpdb->prepare(
+                'UPDATE ' . $db->table('cpms_locations') . ' SET clinic_id = %d WHERE id = %d',
+                self::FX_T_CLINIC_ID,
+                (int) $topology['locB']
+            ));
+            $wpdb->query($wpdb->prepare(
+                'DELETE FROM ' . $db->table('cpms_clinics') . ' WHERE id = %d',
+                $otherClinicId
+            ));
+        }
+    }
+
+    // =================================================================
+    // T3-T8 — continuation payload and legacy empty root contract
+    // =================================================================
+
+    public function testMalformedContinuationFailsClosedWithoutEstablishingScope(): void
+    {
+        $previousScope = ScopeContext::tryGet();
+        App::replaceExplicitScope(null);
+
+        try {
+            $this->expectException(JobPayloadInvalidException::class);
+            try {
+                $this->runReminderJob([
+                    'continuation' => true,
+                    'version' => 1,
+                    'reference_utc' => 'not-a-time',
+                    'cursor' => ['slot_date' => '2026-02-31', 'slot_time' => '10:00:00', 'id' => 1],
+                ]);
+            } catch (JobPayloadInvalidException $e) {
+                self::assertSame('JOB_PAYLOAD_INVALID', $e->errorCode);
+                self::assertNull(ScopeContext::tryGet(), 'malformed payload must not establish ScopeContext');
+                throw $e;
+            }
+        } finally {
+            App::replaceExplicitScope($previousScope);
+        }
+    }
+
+    public function testEmptyPayloadRemainsAValidRoot(): void
+    {
+        self::assertIsInt($this->runReminderJob([]), 'legacy empty scheduled payload remains a valid root');
+    }
+
+    // =================================================================
+    // T3-T9..T3-T14 — fixed-reference bounded durable continuation
+    // =================================================================
+
+    public function testContinuationAdvancesRejectedPrefixAndExhaustsSafely(): void
+    {
+        global $wpdb;
+        $topology = $this->pinDeterministicTopology();
+        $db = App::db();
+        $now = $db->nowUtcSql();
+        $reference = new DateTimeImmutable((string) $topology['utc'] . ' UTC', new DateTimeZone('UTC'));
+
+        // A non-empty but invalid IANA timezone keeps the rows in the structural
+        // candidate query and makes final temporal validation reject them. The
+        // Location-B date deterministically sorts before Location A (25h split).
+        $this->setLocationTimezone((int) $topology['locB'], 'Invalid/T3-Timezone', $now);
+        try {
+            for ($i = 0; $i < 202; ++$i) {
+                $patient = $this->fxTInsertPatient();
+                $this->fxTInsertAppointment(
+                    (int) $topology['locB'],
+                    (string) $topology['todayB'],
+                    sprintf('%02d:%02d:%02d', intdiv($i, 3600), intdiv($i % 3600, 60), $i % 60),
+                    'confirmed',
+                    null,
+                    $patient
+                );
+            }
+            $validPatient = $this->fxTInsertPatient();
+            $validAppointment = $this->fxTInsertAppointment(
+                (int) $topology['locA'],
+                (string) $topology['todayA'],
+                '23:59:59',
+                'confirmed',
+                null,
+                $validPatient
+            );
+
+            self::assertSame(0, $this->runReminderJob([], $reference), 'rejectable prefix has no notification side effect');
+            self::assertSame(1, $this->reminderJobCount(), 'root creates at most one continuation');
+
+            $first = $this->latestReminderContinuation();
+            self::assertSame($reference->format('Y-m-d\TH:i:s\Z'), $first['reference_utc']);
+
+            self::assertSame(0, $this->runReminderJob($first), 'second rejectable bounded page has no notification side effect');
+            self::assertSame(2, $this->reminderJobCount(), 'each execution creates at most one continuation');
+
+            $second = $this->latestReminderContinuation();
+            self::assertSame($first['reference_utc'], $second['reference_utc'], 'continuation reuses exactly the root UTC reference');
+            self::assertTrue($this->cursorIsStrictlyGreater($second['cursor'], $first['cursor']), 'continuation cursor advances strictly');
+
+            self::assertSame(1, $this->runReminderJob($second), 'valid appointment behind rejectable prefix eventually processes');
+            self::assertSame(
+                1,
+                $this->reminderNotificationCount(self::FX_T_CLINIC_ID, $validAppointment, $validPatient),
+                'later Location-valid appointment must not starve behind rejected temporal candidates'
+            );
+            self::assertSame(2, $this->reminderJobCount(), 'final continuation exhausts without enqueuing another job');
+        } finally {
+            $this->setLocationTimezone((int) $topology['locB'], self::TZ_B, $now);
+        }
+    }
+
+    // =================================================================
     // Helpers
     // =================================================================
 
@@ -488,29 +648,76 @@ final class ReminderLocationDayBoundaryTest extends WP_UnitTestCase
      * Settings instance — exactly the wiring App::notificationService() uses —
      * so quiet-hours resolution cannot leak in from another test's singleton.
      */
-    private function runReminderJob(): int
+    private function runReminderJob(array $payload = [], ?DateTimeImmutable $referenceUtc = null): int
     {
         $db = App::db();
 
         $handler = new ApptReminderHandler(
             $db,
-            new Settings($db, self::FX_T_CLINIC_ID, App::audit()),
             App::smsService(),
-            new NotificationService(
+            static fn (int $clinicId): NotificationService => new NotificationService(
                 $db,
                 new NotificationRepository($db),
                 new MembershipRepository($db),
-                new Settings($db, self::FX_T_CLINIC_ID, App::audit()),
+                App::settingsFactory()->forClinic($clinicId),
                 App::op()
             ),
-            App::op()
+            App::jobs(),
+            App::op(),
+            $referenceUtc === null ? null : static fn (): DateTimeImmutable => $referenceUtc
         );
 
-        return $handler([]);
+        return $handler($payload);
+    }
+
+    private function purgeReminderJobs(): void
+    {
+        global $wpdb;
+        $wpdb->query('DELETE FROM ' . App::db()->table('cpms_jobs') . ' WHERE type = "appt.reminder"');
+    }
+
+    private function reminderJobCount(): int
+    {
+        global $wpdb;
+
+        return (int) $wpdb->get_var(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_jobs') . ' WHERE type = "appt.reminder"'
+        );
     }
 
     /**
-     * Count reminder notifications for the Clinic that actually owns the
+     * @return array{continuation:true,version:int,reference_utc:string,cursor:array{slot_date:string,slot_time:string,id:int}}
+     */
+    private function latestReminderContinuation(): array
+    {
+        global $wpdb;
+        $row = $wpdb->get_row(
+            'SELECT payload_json FROM ' . App::db()->table('cpms_jobs')
+            . ' WHERE type = "appt.reminder" ORDER BY id DESC LIMIT 1',
+            ARRAY_A
+        );
+        self::assertNotNull($row, 'continuation row must be durably queued');
+        $payload = json_decode((string) $row['payload_json'], true);
+        self::assertIsArray($payload, 'continuation payload must be JSON object');
+
+        return $payload;
+    }
+
+    /**
+     * @param array{slot_date:string,slot_time:string,id:int} $next
+     * @param array{slot_date:string,slot_time:string,id:int} $previous
+     */
+    private function cursorIsStrictlyGreater(array $next, array $previous): bool
+    {
+        return $next['slot_date'] > $previous['slot_date']
+            || ($next['slot_date'] === $previous['slot_date'] && $next['slot_time'] > $previous['slot_time'])
+            || ($next['slot_date'] === $previous['slot_date']
+                && $next['slot_time'] === $previous['slot_time']
+                && $next['id'] > $previous['id']);
+    }
+
+    /**
+    * Count reminder notifications for the Clinic that actually owns the
      * appointment. The Clinic is passed explicitly by each test — never
      * inferred from a global fixture Clinic — so tests that use a detached
      * Clinic (T3-T5) cannot silently read another Clinic's rows.

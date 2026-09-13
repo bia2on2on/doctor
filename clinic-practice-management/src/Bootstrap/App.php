@@ -1140,7 +1140,23 @@ final class App
                     (new NotifDispatchHandler(self::notificationService(), self::exportService()))($payload);
                 })
                 ->register('appt.reminder', static function (array $payload) use ($db, $op): void {
-                    (new ApptReminderHandler($db, self::settings(), self::smsService(), self::notificationService(), $op))($payload);
+                    // W-sweep: each Appointment owns its Clinic/Location. The
+                    // handler therefore receives only scope-neutral services and
+                    // resolves the per-Clinic NotificationService from persisted
+                    // appointment data, never from ambient App::scope().
+                    (new ApptReminderHandler(
+                        $db,
+                        self::smsService(),
+                        static fn (int $clinicId): NotificationService => new NotificationService(
+                            $db,
+                            new NotificationRepository($db),
+                            new MembershipRepository($db),
+                            self::settingsFactory()->forClinic($clinicId),
+                            $op
+                        ),
+                        self::jobs(),
+                        $op
+                    ))($payload);
                 })
                 ->register('fu.reminder', static function (array $payload) use ($db, $op): void {
                     (new FollowUpReminderHandler($db, self::settings(), self::smsService(), self::notificationService(), $op))($payload);

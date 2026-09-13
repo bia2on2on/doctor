@@ -7,9 +7,12 @@ namespace ClinicCore\Tests\Integration;
 use ClinicCore\Application\Jobs\ApptReminderHandler;
 use ClinicCore\Application\Jobs\FollowUpReminderHandler;
 use ClinicCore\Application\Jobs\NotifDispatchHandler;
+use ClinicCore\Application\Notifications\NotificationService;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Time\Jalali;
 use ClinicCore\Infrastructure\Queue\JobQueue;
+use ClinicCore\Infrastructure\Repository\MembershipRepository;
+use ClinicCore\Infrastructure\Repository\NotificationRepository;
 use WP_REST_Request;
 use WP_REST_Response;
 use WP_UnitTestCase;
@@ -295,13 +298,7 @@ final class NotificationFlowTest extends WP_UnitTestCase
         $apptId = $this->makeConfirmedAppointment($tomorrow, '10:00');
         $this->openQuietHours();
 
-        $handler = new ApptReminderHandler(
-            App::db(),
-            App::settings(),
-            App::smsService(),
-            App::notificationService(),
-            App::op()
-        );
+        $handler = $this->reminderHandler();
 
         $this->assertSame(1, $handler([]));
 
@@ -321,13 +318,7 @@ final class NotificationFlowTest extends WP_UnitTestCase
         $apptId = $this->makeConfirmedAppointment($tomorrow, '11:00');
         $this->closeQuietHours();
 
-        $handler = new ApptReminderHandler(
-            App::db(),
-            App::settings(),
-            App::smsService(),
-            App::notificationService(),
-            App::op()
-        );
+        $handler = $this->reminderHandler();
         $this->assertSame(1, $handler([]));
 
         // SMS ارسال نشد (خارج بازه) — اعلان Internal رفت
@@ -540,6 +531,25 @@ final class NotificationFlowTest extends WP_UnitTestCase
         $tz = new \DateTimeZone(App::settings()->clinicTimezone());
 
         return (new \DateTimeImmutable('now', $tz))->modify('+1 day')->format('Y-m-d');
+    }
+
+    private function reminderHandler(): ApptReminderHandler
+    {
+        $db = App::db();
+
+        return new ApptReminderHandler(
+            $db,
+            App::smsService(),
+            static fn (int $clinicId): NotificationService => new NotificationService(
+                $db,
+                new NotificationRepository($db),
+                new MembershipRepository($db),
+                App::settingsFactory()->forClinic($clinicId),
+                App::op()
+            ),
+            App::jobs(),
+            App::op()
+        );
     }
 
     /** Quiet Hours باز برای ساعت جاری مطب (تست Deterministic در هر ساعت UTC). */
