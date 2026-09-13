@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace ClinicCore\Application\Jobs;
 
 use ClinicCore\Application\Visits\VisitService;
+use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Logging\OpLogger;
-use ClinicCore\Infrastructure\Persistence\CpmsDb;
 use ClinicCore\Infrastructure\Queue\JobQueue;
 use DateTimeImmutable;
 use DateTimeZone;
@@ -25,8 +25,8 @@ use DateTimeZone;
  */
 final class VisitsNoShowHandler
 {
-    private const int MAX_DEPTH = 100;
-    private const int MAX_PAYLOAD_SIZE = 1024; // bytes
+    private const MAX_DEPTH = 100;
+    private const MAX_PAYLOAD_SIZE = 1024; // bytes
 
     public function __construct(
         private readonly VisitService $visits,
