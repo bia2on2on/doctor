@@ -1176,7 +1176,24 @@ final class App
                     ))($payload);
                 })
                 ->register('fu.reminder', static function (array $payload) use ($db, $op): void {
-                    (new FollowUpReminderHandler($db, self::settings(), self::smsService(), self::notificationService(), $op))($payload);
+                    // M-2 fu.reminder — scope-neutral + starvation continuation
+                    // Per-Clinic NotificationService is resolved from durable row clinic_id via factory,
+                    // matching proven patterns for visits.no_show, appt.reminder, slots.generate.
+                    // Continuation uses existing job type fu.reminder and payload_json, no new type.
+                    (new FollowUpReminderHandler(
+                        $db,
+                        self::settingsFactory(),
+                        self::smsService(),
+                        static fn (int $clinicId): NotificationService => new NotificationService(
+                            $db,
+                            new NotificationRepository($db),
+                            new MembershipRepository($db),
+                            self::settingsFactory()->forClinic($clinicId),
+                            $op
+                        ),
+                        $op,
+                        self::jobs()
+                    ))($payload);
                 })
                 ->register('report.export', static function (array $payload): void {
                     // T: Clinic از `payload_json.clinic_id` — ولی payload یک
