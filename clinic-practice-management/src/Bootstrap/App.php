@@ -1279,11 +1279,14 @@ final class App
         $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
 
         foreach (self::RECURRING_JOBS as $type => $priority) {
-            $alreadyQueued = self::db()->fetchValue(
-                'SELECT id FROM ' . self::db()->table('cpms_jobs') . ' WHERE type = %s AND status = %s LIMIT 1',
-                [$type, \ClinicCore\Infrastructure\Queue\JobQueue::QUEUED]
+            // Queue-hardening: treat both QUEUED and PROCESSING as active.
+            // Prevents duplicate root amplification while a chain is in flight.
+            // After chain fully finishes (no queued/processing), fresh root is allowed.
+            $alreadyActive = self::db()->fetchValue(
+                'SELECT id FROM ' . self::db()->table('cpms_jobs') . ' WHERE type = %s AND status IN (%s, %s) LIMIT 1',
+                [$type, \ClinicCore\Infrastructure\Queue\JobQueue::QUEUED, \ClinicCore\Infrastructure\Queue\JobQueue::PROCESSING]
             );
-            if ($alreadyQueued === null) {
+            if ($alreadyActive === null) {
                 $queue->enqueue($type, [], $now, priority: $priority);
             }
         }

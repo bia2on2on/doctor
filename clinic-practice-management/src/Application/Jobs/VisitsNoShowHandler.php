@@ -183,6 +183,18 @@ final class VisitsNoShowHandler
             }
         }
 
+        // Deduplication: prevent uncontrolled duplicate continuation when parent retries
+        // after continuation already persisted. Under single-worker GET_LOCK (cpms_jobs_tick)
+        // ticks are serialized, so SELECT-then-INSERT is safe against concurrent writers.
+        // We check both QUEUED and PROCESSING to avoid duplicate while continuation is in flight.
+        if ($this->isContinuationAlreadyQueued($nextCursor)) {
+            $this->op?->info('visit.no_show_continuation_deduped', [
+                'depth' => $incomingDepth + 1,
+                'cursor' => $nextCursor,
+            ]);
+            return;
+        }
+
         // Enqueue at most ONE continuation
         $nextDepth = $incomingDepth + 1;
         $payload = [
@@ -205,6 +217,50 @@ final class VisitsNoShowHandler
                 'depth' => $nextDepth,
             ]);
         }
+    }
+
+    /**
+     * Check if a continuation with the same cursor already exists as QUEUED or PROCESSING.
+     * Prevents duplicate continuation when parent retries after crash/before complete.
+     *
+     * @param array{slot_date:string, slot_time:string, id:int} $cursor
+     */
+    private function isContinuationAlreadyQueued(array $cursor): bool
+    {
+        if ($this->db === null) {
+            return false;
+        }
+        try {
+            $rows = $this->db->fetchAll(
+                'SELECT payload_json FROM ' . $this->db->table('cpms_jobs') . ' WHERE type = %s AND status IN (%s, %s)',
+                ['visits.no_show', JobQueue::QUEUED, JobQueue::PROCESSING]
+            );
+            foreach ($rows as $row) {
+                $json = $row['payload_json'] ?? null;
+                if (!is_string($json) || $json === '' || $json === '[]') {
+                    continue;
+                }
+                $decoded = json_decode($json, true);
+                if (!is_array($decoded) || !isset($decoded['cursor']) || !is_array($decoded['cursor'])) {
+                    continue;
+                }
+                $c = $decoded['cursor'];
+                if (!isset($c['slot_date'], $c['slot_time'], $c['id'])) {
+                    continue;
+                }
+                // Exact cursor equality (same slot_date, slot_time, id)
+                if ($c['slot_date'] === $cursor['slot_date']
+                    && $c['slot_time'] === $cursor['slot_time']
+                    && (int) $c['id'] === (int) $cursor['id']) {
+                    return true;
+                }
+            }
+        } catch (\Throwable $e) {
+            // Fail-open for dedup check: if we cannot read, allow enqueue to preserve progress
+            $this->op?->warning('visit.no_show_dedup_check_failed', ['error' => $e->getMessage()]);
+            return false;
+        }
+        return false;
     }
 
     /**
