@@ -293,7 +293,8 @@ final class VisitNoShowCrossClinicFallbackRedTest extends WP_UnitTestCase
         $factory = App::settingsFactory();
 
         // Inject throwing Settings for Clinic B via reflection into factory cache
-        $throwingSettings = new class($db, self::FX_CLINIC_B_ID, App::audit()) extends Settings {
+        // Settings is final, so we cannot extend it. Use a plain double with get() that throws.
+        $throwingSettings = new class {
             public function get(string $key, mixed $default = null): mixed
             {
                 // Simulate failure to resolve Clinic B's Settings
