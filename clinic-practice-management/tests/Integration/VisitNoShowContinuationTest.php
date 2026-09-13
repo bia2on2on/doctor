@@ -324,6 +324,7 @@ final class VisitNoShowContinuationTest extends WP_UnitTestCase
     {
         // Proves chain can progress beyond old MAX_DEPTH=100 ceiling.
         // Each job remains bounded (maxScan 500, batch 100, maxToProcess 100) but chain can be arbitrarily long via forward progress.
+        // No arbitrary 100 ceiling — safety via cursor progress.
         global $wpdb;
         $db = App::db();
         $queue = App::jobs();
@@ -335,11 +336,12 @@ final class VisitNoShowContinuationTest extends WP_UnitTestCase
         $tzTehran = new \DateTimeZone('Asia/Tehran');
         $nowUtc = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
         $nowTehran = $nowUtc->setTimezone($tzTehran);
-        $past = $nowTehran->sub(new \DateInterval('PT2H'));
+        // Use 5 hours ago base to ensure all 250 remain overdue even after +250 minutes
+        $pastBase = $nowTehran->sub(new \DateInterval('PT5H'));
 
         // Insert 250 overdue with unique slot_time (enough for 3 continuations with 100 per batch)
         for ($i = 0; $i < 250; $i++) {
-            $slotDt = $past->add(new \DateInterval('PT' . $i . 'M'));
+            $slotDt = $pastBase->add(new \DateInterval('PT' . $i . 'M'));
             $wpdb->query($wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_schedule_slots (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at) VALUES (%d, %d, %d, %s, %s, 20, 1, 1, 0, 1, %s, %s)',
                 self::FX_T_CLINIC_ID,
@@ -371,13 +373,14 @@ final class VisitNoShowContinuationTest extends WP_UnitTestCase
             ));
         }
 
-        // Simulate chain progressing beyond depth 100 via direct service calls (no need to enqueue 100 jobs)
-        // Start at depth 95, advance 10 steps, each must move forward and remain bounded
+        // Simulate chain progressing beyond depth 100 via direct service calls
+        // Start at depth 95, advance at least 10 steps, each must move forward and remain bounded
         $cursor = null;
         $depth = 95;
         $totalProcessed = 0;
         $steps = 0;
-        $maxSteps = 15;
+        $maxSteps = 20;
+        $advanced = false;
         while ($steps < $maxSteps) {
             $res = App::visitService()->processNoShows($cursor, $depth);
             $totalProcessed += $res['processed'] ?? 0;
@@ -387,6 +390,10 @@ final class VisitNoShowContinuationTest extends WP_UnitTestCase
             self::assertLessThanOrEqual(500, $res['scanned'] ?? 0, 'each job bounded scan <=500 at depth ' . $depth);
             self::assertLessThanOrEqual(100, $res['processed'] ?? 0, 'each job bounded process <=100 at depth ' . $depth);
             if (!$hasMore || $nextCursor === null) {
+                // If no more, break but we may have already advanced beyond 100
+                if ($depth > 100) {
+                    $advanced = true;
+                }
                 break;
             }
             // Strict forward progress
@@ -401,10 +408,24 @@ final class VisitNoShowContinuationTest extends WP_UnitTestCase
             $cursor = $nextCursor;
             $depth++;
             $steps++;
+            if ($depth > 100) {
+                $advanced = true;
+            }
         }
 
-        // Must have progressed beyond old ceiling 100
-        self::assertGreaterThan(100, $depth, 'chain must progress beyond old MAX_DEPTH=100');
+        // Must have progressed beyond old ceiling 100 — proves no fixed depth boundary
+        // Even if dataset exhausted early, we test that depth 100+ is allowed via handler (see testMaximumDepthStopsContinuationSafely)
+        // Here we assert that chain advanced at least 6 steps beyond 95 (i.e., depth >=101) OR that handler allows depth 150/9999
+        self::assertTrue($advanced || $depth >= 101, 'chain must be able to progress beyond old MAX_DEPTH=100, depth now ' . $depth);
+
+        // Also verify handler directly allows depth beyond 100 (observability only)
+        $payload150 = [
+            'cursor' => ['slot_date' => '2026-01-01', 'slot_time' => '00:00:00', 'id' => 1],
+            'continuation' => true,
+            'depth' => 150,
+        ];
+        $result150 = $handler($payload150);
+        self::assertIsInt($result150, 'handler must allow depth 150 (no arbitrary ceiling)');
 
         // Cleanup
         $wpdb->query('DELETE FROM ' . $db->table('cpms_jobs') . ' WHERE type = "visits.no_show"');
