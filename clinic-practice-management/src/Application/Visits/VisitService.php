@@ -18,7 +18,6 @@ use ClinicCore\Infrastructure\Audit\AuditLogger;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Repository\AppointmentRepository;
 use ClinicCore\Infrastructure\Repository\VisitRepository;
-use ClinicCore\Settings\Settings;
 use ClinicCore\Settings\SettingsFactory;
 use DateTimeImmutable;
 use DateTimeZone;
