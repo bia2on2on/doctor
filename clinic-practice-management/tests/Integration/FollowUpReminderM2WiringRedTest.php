@@ -22,21 +22,17 @@ use WP_UnitTestCase;
  * Expected GREEN (post-fix): job status SUCCESS
  *
  * Uses EMPTY payload to exercise real recurring production semantics.
+ * Uses auto-generated IDs (insert_id) to avoid fixed-ID conflicts.
  */
 final class FollowUpReminderM2WiringRedTest extends WP_UnitTestCase
 {
-    private const FX_ORG_ID = 62400;
-    private const FX_CLINIC_A_ID = 62401;
-    private const FX_CLINIC_B_ID = 62402;
-    private const FX_LOC_A_ID = 62410;
-    private const FX_LOC_B_ID = 62411;
-    private const FX_CLINICIAN_A_ID = 62420;
-    private const FX_CLINICIAN_B_ID = 62421;
-    private const FX_PATIENT_A_ID = 62430;
-    private const FX_PATIENT_B_ID = 62431;
-    private const FX_VISIT_A_ID = 62440;
-    private const FX_VISIT_B_ID = 62441;
-    private const FX_FLOOR = 62400;
+    private int $orgId = 0;
+    private int $clinicA = 0;
+    private int $clinicB = 0;
+    private int $locA = 0;
+    private int $locB = 0;
+    private int $clinicianA = 0;
+    private int $clinicianB = 0;
 
     private function resetAppCaches(): void
     {
@@ -105,145 +101,105 @@ final class FollowUpReminderM2WiringRedTest extends WP_UnitTestCase
         $db = App::db();
         $now = $db->nowUtcSql();
 
-        // Ensure clean
-        $leftover = (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $db->table('cpms_clinics') . ' WHERE id >= ' . self::FX_FLOOR);
-        self::assertSame(0, $leftover, 'precondition: no leftover fixture rows');
-
-        // Org
+        // Org auto ID
+        $orgSlug = 'fu-wiring-org-' . bin2hex(random_bytes(4));
         $wpdb->query($wpdb->prepare(
-            'INSERT INTO ' . $wpdb->prefix . 'cpms_organizations (id, name, slug, status, created_at, updated_at) VALUES (%d, %s, %s, \"active\", %s, %s)',
-            self::FX_ORG_ID,
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_organizations (name, slug, status, created_at, updated_at) VALUES (%s, %s, "active", %s, %s)',
             'FU Wiring Org',
-            'fu-wiring-org-' . bin2hex(random_bytes(2)),
+            $orgSlug,
             $now,
             $now
         ));
+        $this->orgId = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $this->orgId, 'org inserted');
 
-        // Clinic A
+        // Clinic A auto ID
+        $clinicASlug = 'fu-wiring-clinic-a-' . bin2hex(random_bytes(4));
         $wpdb->query($wpdb->prepare(
-            'INSERT INTO ' . $wpdb->prefix . 'cpms_clinics (id, organization_id, name, slug, timezone, created_at, updated_at) VALUES (%d, %d, %s, %s, %s, %s, %s)',
-            self::FX_CLINIC_A_ID,
-            self::FX_ORG_ID,
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_clinics (organization_id, name, slug, timezone, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, %s)',
+            $this->orgId,
             'FU Wiring Clinic A',
-            'fu-wiring-clinic-a-' . bin2hex(random_bytes(3)),
+            $clinicASlug,
             'Asia/Tehran',
             $now,
             $now
         ));
+        $this->clinicA = (int) $wpdb->insert_id;
+        self::assertGreaterThan(1, $this->clinicA, 'clinic A id >1');
 
-        // Clinic B
+        // Clinic B auto ID
+        $clinicBSlug = 'fu-wiring-clinic-b-' . bin2hex(random_bytes(4));
         $wpdb->query($wpdb->prepare(
-            'INSERT INTO ' . $wpdb->prefix . 'cpms_clinics (id, organization_id, name, slug, timezone, created_at, updated_at) VALUES (%d, %d, %s, %s, %s, %s, %s)',
-            self::FX_CLINIC_B_ID,
-            self::FX_ORG_ID,
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_clinics (organization_id, name, slug, timezone, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, %s)',
+            $this->orgId,
             'FU Wiring Clinic B',
-            'fu-wiring-clinic-b-' . bin2hex(random_bytes(3)),
+            $clinicBSlug,
             'Asia/Tokyo',
             $now,
             $now
         ));
+        $this->clinicB = (int) $wpdb->insert_id;
+        self::assertGreaterThan(1, $this->clinicB, 'clinic B id >1');
+        self::assertNotSame($this->clinicA, $this->clinicB, 'two distinct clinics');
 
-        // Locations
+        // Locations auto IDs
+        $locASlug = 'fu-wiring-loc-a-' . bin2hex(random_bytes(2));
         $wpdb->query($wpdb->prepare(
-            'INSERT INTO ' . $wpdb->prefix . 'cpms_locations (id, clinic_id, name, slug, timezone, is_primary, is_active, created_at, updated_at) VALUES (%d, %d, %s, %s, %s, 1, 1, %s, %s)',
-            self::FX_LOC_A_ID,
-            self::FX_CLINIC_A_ID,
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_locations (clinic_id, name, slug, timezone, is_primary, is_active, created_at, updated_at) VALUES (%d, %s, %s, %s, 1, 1, %s, %s)',
+            $this->clinicA,
             'FU Loc A',
-            'fu-loc-a-' . bin2hex(random_bytes(2)),
+            $locASlug,
             'Asia/Tehran',
             $now,
             $now
         ));
+        $this->locA = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $this->locA);
+
+        $locBSlug = 'fu-wiring-loc-b-' . bin2hex(random_bytes(2));
         $wpdb->query($wpdb->prepare(
-            'INSERT INTO ' . $wpdb->prefix . 'cpms_locations (id, clinic_id, name, slug, timezone, is_primary, is_active, created_at, updated_at) VALUES (%d, %d, %s, %s, %s, 1, 1, %s, %s)',
-            self::FX_LOC_B_ID,
-            self::FX_CLINIC_B_ID,
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_locations (clinic_id, name, slug, timezone, is_primary, is_active, created_at, updated_at) VALUES (%d, %s, %s, %s, 1, 1, %s, %s)',
+            $this->clinicB,
             'FU Loc B',
-            'fu-loc-b-' . bin2hex(random_bytes(2)),
+            $locBSlug,
             'Asia/Tokyo',
             $now,
             $now
         ));
+        $this->locB = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $this->locB);
 
-        // Clinicians
+        // Clinicians auto IDs
         $wpdb->query($wpdb->prepare(
-            'INSERT INTO ' . $wpdb->prefix . 'cpms_clinicians (id, clinic_id, full_name, is_active, created_at, updated_at) VALUES (%d, %d, %s, 1, %s, %s)',
-            self::FX_CLINICIAN_A_ID,
-            self::FX_CLINIC_A_ID,
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_clinicians (clinic_id, full_name, is_active, created_at, updated_at) VALUES (%d, %s, 1, %s, %s)',
+            $this->clinicA,
             'Dr FU A',
             $now,
             $now
         ));
+        $this->clinicianA = (int) $wpdb->insert_id;
+
         $wpdb->query($wpdb->prepare(
-            'INSERT INTO ' . $wpdb->prefix . 'cpms_clinicians (id, clinic_id, full_name, is_active, created_at, updated_at) VALUES (%d, %d, %s, 1, %s, %s)',
-            self::FX_CLINICIAN_B_ID,
-            self::FX_CLINIC_B_ID,
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_clinicians (clinic_id, full_name, is_active, created_at, updated_at) VALUES (%d, %s, 1, %s, %s)',
+            $this->clinicB,
             'Dr FU B',
             $now,
             $now
         ));
+        $this->clinicianB = (int) $wpdb->insert_id;
 
-        // Patients
-        $wpdb->query($wpdb->prepare(
-            'INSERT INTO ' . $wpdb->prefix . 'cpms_patients (id, clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at) VALUES (%d, %d, %s, %s, %s, %s, \"active\", %s, %s)',
-            self::FX_PATIENT_A_ID,
-            self::FX_CLINIC_A_ID,
-            'MR-FU-A-' . bin2hex(random_bytes(2)),
-            'FU',
-            'PatientA',
-            '0912000' . random_int(1000, 9999),
-            $now,
-            $now
-        ));
-        $wpdb->query($wpdb->prepare(
-            'INSERT INTO ' . $wpdb->prefix . 'cpms_patients (id, clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at) VALUES (%d, %d, %s, %s, %s, %s, \"active\", %s, %s)',
-            self::FX_PATIENT_B_ID,
-            self::FX_CLINIC_B_ID,
-            'MR-FU-B-' . bin2hex(random_bytes(2)),
-            'FU',
-            'PatientB',
-            '0912000' . random_int(1000, 9999),
-            $now,
-            $now
-        ));
-
-        // Visits (minimal, to satisfy follow_up FK if we insert any, but wiring RED needs no follow-ups)
-        $wpdb->query($wpdb->prepare(
-            'INSERT INTO ' . $wpdb->prefix . 'cpms_visits (id, clinic_id, location_id, clinician_id, patient_id, source, status, visit_date, check_in_at, created_at, updated_at) VALUES (%d, %d, %d, %d, %d, \"walk_in\", \"checked_in\", %s, %s, %s, %s)',
-            self::FX_VISIT_A_ID,
-            self::FX_CLINIC_A_ID,
-            self::FX_LOC_A_ID,
-            self::FX_CLINICIAN_A_ID,
-            self::FX_PATIENT_A_ID,
-            gmdate('Y-m-d'),
-            $now,
-            $now,
-            $now
-        ));
-        $wpdb->query($wpdb->prepare(
-            'INSERT INTO ' . $wpdb->prefix . 'cpms_visits (id, clinic_id, location_id, clinician_id, patient_id, source, status, visit_date, check_in_at, created_at, updated_at) VALUES (%d, %d, %d, %d, %d, \"walk_in\", \"checked_in\", %s, %s, %s, %s)',
-            self::FX_VISIT_B_ID,
-            self::FX_CLINIC_B_ID,
-            self::FX_LOC_B_ID,
-            self::FX_CLINICIAN_B_ID,
-            self::FX_PATIENT_B_ID,
-            gmdate('Y-m-d'),
-            $now,
-            $now,
-            $now
-        ));
-
-        // Settings per clinic (quiet hours open deterministically)
+        // Settings per clinic — quiet hours open deterministically
         \ClinicCore\Settings\Settings::flushCache();
-        $settingsA = new \ClinicCore\Settings\Settings($db, self::FX_CLINIC_A_ID, App::audit());
+        $settingsA = new \ClinicCore\Settings\Settings($db, $this->clinicA, App::audit());
         $settingsA->set('notif.quiet_hours_start', '00:00');
         $settingsA->set('notif.quiet_hours_end', '23:59');
-        $settingsB = new \ClinicCore\Settings\Settings($db, self::FX_CLINIC_B_ID, App::audit());
+        $settingsB = new \ClinicCore\Settings\Settings($db, $this->clinicB, App::audit());
         $settingsB->set('notif.quiet_hours_start', '00:00');
         $settingsB->set('notif.quiet_hours_end', '23:59');
         \ClinicCore\Settings\Settings::flushCache();
         App::resetScope();
         SystemClinicResolver::flush();
+        App::settingsFactory()->reset();
     }
 
     private function purgeFixture(): void
@@ -251,19 +207,33 @@ final class FollowUpReminderM2WiringRedTest extends WP_UnitTestCase
         global $wpdb;
         $db = App::db();
         $wpdb->query('SET FOREIGN_KEY_CHECKS = 0');
-        $wpdb->query('DELETE FROM ' . $db->table('cpms_follow_ups') . ' WHERE clinic_id >= ' . self::FX_FLOOR);
-        $wpdb->query('DELETE FROM ' . $db->table('cpms_visit_status_history') . ' WHERE visit_id >= ' . self::FX_FLOOR);
-        $wpdb->query('DELETE FROM ' . $db->table('cpms_visits') . ' WHERE id >= ' . self::FX_FLOOR);
-        $wpdb->query('DELETE FROM ' . $db->table('cpms_notifications') . ' WHERE clinic_id >= ' . self::FX_FLOOR);
-        $wpdb->query('DELETE FROM ' . $db->table('cpms_sms_messages') . ' WHERE clinic_id >= ' . self::FX_FLOOR);
-        $wpdb->query('DELETE FROM ' . $db->table('cpms_appointments') . ' WHERE clinic_id >= ' . self::FX_FLOOR);
-        $wpdb->query('DELETE FROM ' . $db->table('cpms_schedule_slots') . ' WHERE clinic_id >= ' . self::FX_FLOOR);
-        $wpdb->query('DELETE FROM ' . $db->table('cpms_patients') . ' WHERE id >= ' . self::FX_FLOOR);
-        $wpdb->query('DELETE FROM ' . $db->table('cpms_clinicians') . ' WHERE id >= ' . self::FX_FLOOR);
-        $wpdb->query('DELETE FROM ' . $db->table('cpms_locations') . ' WHERE id >= ' . self::FX_FLOOR);
-        $wpdb->query('DELETE FROM ' . $db->table('cpms_settings') . ' WHERE clinic_id >= ' . self::FX_FLOOR);
-        $wpdb->query('DELETE FROM ' . $db->table('cpms_clinics') . ' WHERE id >= ' . self::FX_FLOOR);
-        $wpdb->query('DELETE FROM ' . $db->table('cpms_organizations') . ' WHERE id >= ' . self::FX_FLOOR);
+        if ($this->orgId > 0) {
+            if ($this->clinicA > 0) {
+                $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_follow_ups') . ' WHERE clinic_id = %d', $this->clinicA));
+                $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_follow_ups') . ' WHERE clinic_id = %d', $this->clinicB));
+                $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_visits') . ' WHERE clinic_id = %d', $this->clinicA));
+                $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_visits') . ' WHERE clinic_id = %d', $this->clinicB));
+                $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_notifications') . ' WHERE clinic_id = %d', $this->clinicA));
+                $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_notifications') . ' WHERE clinic_id = %d', $this->clinicB));
+                $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_sms_messages') . ' WHERE clinic_id = %d', $this->clinicA));
+                $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_sms_messages') . ' WHERE clinic_id = %d', $this->clinicB));
+                $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_appointments') . ' WHERE clinic_id = %d', $this->clinicA));
+                $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_appointments') . ' WHERE clinic_id = %d', $this->clinicB));
+                $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_schedule_slots') . ' WHERE clinic_id = %d', $this->clinicA));
+                $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_schedule_slots') . ' WHERE clinic_id = %d', $this->clinicB));
+                $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_patients') . ' WHERE clinic_id = %d', $this->clinicA));
+                $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_patients') . ' WHERE clinic_id = %d', $this->clinicB));
+                $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_clinicians') . ' WHERE clinic_id = %d', $this->clinicA));
+                $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_clinicians') . ' WHERE clinic_id = %d', $this->clinicB));
+                $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_locations') . ' WHERE clinic_id = %d', $this->clinicA));
+                $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_locations') . ' WHERE clinic_id = %d', $this->clinicB));
+                $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_settings') . ' WHERE clinic_id = %d', $this->clinicA));
+                $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_settings') . ' WHERE clinic_id = %d', $this->clinicB));
+                $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_clinics') . ' WHERE id = %d', $this->clinicA));
+                $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_clinics') . ' WHERE id = %d', $this->clinicB));
+                $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_organizations') . ' WHERE id = %d', $this->orgId));
+            }
+        }
         $wpdb->query('SET FOREIGN_KEY_CHECKS = 1');
         \ClinicCore\Settings\Settings::flushCache();
         App::resetScope();
@@ -277,7 +247,7 @@ final class FollowUpReminderM2WiringRedTest extends WP_UnitTestCase
     {
         global $wpdb;
         $db = App::db();
-        $wpdb->query('DELETE FROM ' . $db->table('cpms_jobs') . ' WHERE type IN (\"visits.no_show\",\"slots.generate\",\"holds.expire\",\"cleanup.otp\",\"cleanup.rate_limits\",\"cleanup.idem\",\"cleanup.oplog\",\"handwriting.gc\",\"notif.dispatch\",\"appt.reminder\",\"fu.reminder\",\"license.refresh\",\"backup.run\",\"report.export\",\"sms.send\")');
+        $wpdb->query('DELETE FROM ' . $db->table('cpms_jobs') . ' WHERE type IN ("visits.no_show","slots.generate","holds.expire","cleanup.otp","cleanup.rate_limits","cleanup.idem","cleanup.oplog","handwriting.gc","notif.dispatch","appt.reminder","fu.reminder","license.refresh","backup.run","report.export","sms.send")');
     }
 
     public function testProductionWiringMustBeScopeNeutralWithEmptyPayload(): void
@@ -286,6 +256,8 @@ final class FollowUpReminderM2WiringRedTest extends WP_UnitTestCase
         $db = App::db();
 
         // Precondition: >=2 clinics
+        self::assertGreaterThan(0, $this->clinicA);
+        self::assertGreaterThan(0, $this->clinicB);
         $countAll = (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $db->table('cpms_clinics'));
         self::assertGreaterThan(1, $countAll, 'total clinics >1 to trigger CLINIC_SCOPE_REQUIRED, found ' . $countAll);
 
