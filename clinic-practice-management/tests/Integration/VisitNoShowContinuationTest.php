@@ -336,11 +336,11 @@ final class VisitNoShowContinuationTest extends WP_UnitTestCase
         $tzTehran = new \DateTimeZone('Asia/Tehran');
         $nowUtc = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
         $nowTehran = $nowUtc->setTimezone($tzTehran);
-        // Use 5 hours ago base to ensure all 250 remain overdue even after +250 minutes
-        $pastBase = $nowTehran->sub(new \DateInterval('PT5H'));
+        // Use 20 hours ago base to ensure all 800 remain overdue even after +800 minutes (13h20m)
+        $pastBase = $nowTehran->sub(new \DateInterval('PT20H'));
 
-        // Insert 250 overdue with unique slot_time (enough for 3 continuations with 100 per batch)
-        for ($i = 0; $i < 250; $i++) {
+        // Insert 800 overdue with unique slot_time (enough for 8 continuations, to go beyond old 100 ceiling from 95)
+        for ($i = 0; $i < 800; $i++) {
             $slotDt = $pastBase->add(new \DateInterval('PT' . $i . 'M'));
             $wpdb->query($wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_schedule_slots (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at) VALUES (%d, %d, %d, %s, %s, 20, 1, 1, 0, 1, %s, %s)',
