@@ -421,7 +421,10 @@ final class SlotsGenerateM2WiringRedTest extends WP_UnitTestCase
         self::assertSame(1, (int) $jobBefore['max_attempts']);
 
         // ---- Execute via real production path: App::runTick ----
-        $tickResult = App::runTick(5);
+        // Use limit 20 to ensure slots.generate (priority 3) is claimed even though
+        // scheduleRecurringJobs enqueues higher-priority recurring jobs (license.refresh 9 etc.)
+        // within the same runTick. Limit 5 would leave priority-3 job queued and falsely appear as non-failed.
+        $tickResult = App::runTick(20);
 
         $jobAfter = $wpdb->get_row($wpdb->prepare('SELECT * FROM ' . $db->table('cpms_jobs') . ' WHERE id = %d', $jobId), ARRAY_A);
         self::assertNotEmpty($jobAfter, 'job row must still exist');
