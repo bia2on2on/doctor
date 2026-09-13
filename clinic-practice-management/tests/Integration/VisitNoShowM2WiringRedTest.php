@@ -246,7 +246,10 @@ final class VisitNoShowM2WiringRedTest extends WP_UnitTestCase
             $this->resetAppCaches();
         }
 
-        // Enqueue root visits.no_show
+        // Enqueue root visits.no_show — ensure clinics still exist right before tick
+        $countBeforeTick = (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $db->table('cpms_clinics'));
+        self::assertGreaterThan(1, $countBeforeTick, 'clinic count must still be >1 right before runTick, found ' . $countBeforeTick);
+
         $this->purgeJobs();
         $queue = App::jobs();
         $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
