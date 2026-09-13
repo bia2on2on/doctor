@@ -26,18 +26,58 @@ final class VisitNoShowM2WiringRedTest extends WP_UnitTestCase
     private const FX_LOC_B_ID = 62311;
     private const FX_ID_FLOOR = 62300;
 
-    protected function setUp(): void
+    private function resetAppCaches(): void
     {
-        parent::setUp();
-        App::migrations()->migrate();
-        $this->buildFixture();
-        $this->purgeJobs();
+        // Reset class-level private static properties
+        $refClass = new \ReflectionClass(App::class);
+        foreach (['db','op','audit','jobs','rate','loginRateLimiter','idem','settingsFactory','migrations','dispatcher','providers','vault','smsService','licenseGate'] as $propName) {
+            if ($refClass->hasProperty($propName)) {
+                $prop = $refClass->getProperty($propName);
+                $prop->setAccessible(true);
+                $prop->setValue(null, null);
+            }
+        }
+        // Reset function-level static caches inside App::*Service() methods
+        $serviceMethods = [
+            'bookingService','visitService','scheduleService','clinicalService','financeService',
+            'handwritingService','notificationService','reportService','exportService','medicalFileService',
+            'patientService','otpService','backupService','updateService','wpUpdateBridge','systemHealthService',
+            'dispatcher','licenseService','licenseGateway','providers','vault','smsService','membership_service',
+            'patient_identity_service','clinicianRepository'
+        ];
+        foreach ($serviceMethods as $methodName) {
+            if (!method_exists(App::class, $methodName)) {
+                continue;
+            }
+            try {
+                $rm = new \ReflectionMethod(App::class, $methodName);
+                $staticVars = $rm->getStaticVariables();
+                foreach ($staticVars as $varName => $varValue) {
+                    $rm->setStaticVariable($varName, null);
+                }
+            } catch (\Throwable $e) {
+                // ignore
+            }
+        }
         App::resetScope();
         SystemClinicResolver::flush();
         \ClinicCore\Settings\Settings::flushCache();
         if (method_exists(App::class, 'settingsFactory')) {
-            App::settingsFactory()->reset();
+            try {
+                App::settingsFactory()->reset();
+            } catch (\Throwable $e) {
+            }
         }
+    }
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        App::migrations()->migrate();
+        $this->resetAppCaches();
+        $this->buildFixture();
+        $this->purgeJobs();
+        $this->resetAppCaches();
         // Ensure no WP user
         wp_set_current_user(0);
     }
@@ -46,12 +86,7 @@ final class VisitNoShowM2WiringRedTest extends WP_UnitTestCase
     {
         $this->purgeJobs();
         $this->purgeFixture();
-        App::resetScope();
-        SystemClinicResolver::flush();
-        \ClinicCore\Settings\Settings::flushCache();
-        if (method_exists(App::class, 'settingsFactory')) {
-            App::settingsFactory()->reset();
-        }
+        $this->resetAppCaches();
         parent::tearDown();
     }
 
@@ -179,11 +214,8 @@ final class VisitNoShowM2WiringRedTest extends WP_UnitTestCase
         self::assertNotEmpty($clinicAExists, 'Clinic A must exist');
         self::assertNotEmpty($clinicBExists, 'Clinic B must exist');
 
-        // Prove no ScopeContext is set
-        App::resetScope();
-        SystemClinicResolver::flush();
-        \ClinicCore\Settings\Settings::flushCache();
-        App::settingsFactory()->reset();
+        // Prove no ScopeContext is set and reset caches to force re-resolution
+        $this->resetAppCaches();
         $explicit = ScopeContext::tryGet();
         self::assertNull($explicit, 'no ScopeContext must be set for this test');
         wp_set_current_user(0);
