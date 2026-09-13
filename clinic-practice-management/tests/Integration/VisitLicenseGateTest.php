@@ -160,8 +160,7 @@ final class VisitLicenseGateTest extends WP_UnitTestCase
             App::audit(),
             $gate,
             null,
-            null,
-            App::settings()
+            null
         );
     }
 

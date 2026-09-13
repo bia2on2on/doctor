@@ -58,11 +58,13 @@ final class VisitService
         private readonly SettingsFactory $settingsFactory,
         private readonly AuditLogger $audit,
         private readonly LicenseGate $licenseGate,
-        private readonly ?NotificationService $notifications = null,
         private readonly ?\ClinicCore\Infrastructure\Logging\OpLogger $opLog = null,
-        private readonly ?Settings $legacySettings = null
+        private readonly mixed $notificationServiceFactory = null
     ) {
     }
+
+    /** @var array<int, \ClinicCore\Application\Notifications\NotificationService> */
+    private array $notificationServicesByClinicId = [];
 
     // ================= V1 — Check-in (D6) =================
 
@@ -319,15 +321,50 @@ final class VisitService
     }
 
     /**
+     * Resolve NotificationService per-Clinic via factory — scope-neutral.
+     * Clinic comes from durable visit row, never from ambient App::scope().
+     */
+    private function notificationServiceForClinic(int $clinicId): ?NotificationService
+    {
+        if ($clinicId <= 0) {
+            return null;
+        }
+        if (isset($this->notificationServicesByClinicId[$clinicId])) {
+            return $this->notificationServicesByClinicId[$clinicId];
+        }
+        $factory = $this->notificationServiceFactory;
+        if (is_callable($factory)) {
+            try {
+                $svc = $factory($clinicId);
+                if ($svc instanceof NotificationService) {
+                    return $this->notificationServicesByClinicId[$clinicId] = $svc;
+                }
+            } catch (Throwable $e) {
+                $this->opLog?->warning('visit.notif_factory_failed', ['clinic_id' => $clinicId, 'error' => $e->getMessage()]);
+                return null;
+            }
+        }
+        // Backward compat: if factory is actually a NotificationService instance (old call-sites)
+        if ($factory instanceof NotificationService) {
+            return $factory;
+        }
+        return null;
+    }
+
+    /**
      * QUEUE.called / QUEUE.ready_payment → اعلان Internal به منشی‌ها
      * (notifications.md §3) — به‌جز فراخواننده؛ R1 مکمل است (Feed صف).
+     *
+     * M-2 fix: Clinic comes from durable visit data, service resolved per-Clinic via factory.
      *
      * @param array<string, mixed> $visit
      * @param array<string, mixed> $meta
      */
     private function publishQueueNotification(string $event, array $visit, int $actorUserId, array $meta): void
     {
-        if ($this->notifications === null) {
+        $clinicId = (int) ($visit['clinic_id'] ?? 0);
+        $notifications = $this->notificationServiceForClinic($clinicId);
+        if ($notifications === null) {
             return;
         }
 
@@ -339,21 +376,20 @@ final class VisitService
             $room = trim((string) ($meta['room'] ?? ''));
 
             if ($event === 'call') {
-                $this->notifications->publishToStaff(
-                    (int) $visit['clinic_id'],
+                $notifications->publishToStaff(
+                    $clinicId,
                     NotificationEvents::QUEUE_CALLED,
                     [
                         'patient_name' => $patientName !== '' ? $patientName : 'بیمار',
                         'room' => $room !== '' ? $room : '—',
                     ],
-                    // Dedupe per نوبتِ فراخوان: هر Recall چرخه جدیدی می‌سازد (r+1)
                     'queue:called:v' . (int) $visit['id'] . ':r' . (int) ($visit['recall_count'] ?? 0),
                     RolesAndCapabilities::QUEUE_READ,
                     $actorUserId
                 );
             } elseif ($event === 'invoice_ready') {
-                $this->notifications->publishToStaff(
-                    (int) $visit['clinic_id'],
+                $notifications->publishToStaff(
+                    $clinicId,
                     NotificationEvents::QUEUE_READY_PAYMENT,
                     ['patient_name' => $patientName !== '' ? $patientName : 'بیمار'],
                     'queue:pay:v' . (int) $visit['id'],
@@ -362,7 +398,6 @@ final class VisitService
                 );
             }
         } catch (Throwable $e) {
-            // اعلان هرگز Transition را شکست نمی‌دهد (الگوی BookingService SMS)
             $this->opLog?->warning('visit.notif_failed', ['visit_id' => (int) $visit['id'], 'error' => $e->getMessage()]);
         }
     }
@@ -1175,7 +1210,6 @@ final class VisitService
             $settings = $this->settingsFactory->forClinic($clinicId);
             return (bool) $settings->get('queue.auto_enqueue', true);
         } catch (Throwable $e) {
-            $this->opLog?->warning('visit.auto_enqueue_resolve_failed', ['clinic_id' => $clinicId, 'error' => $e->getMessage()]);
             return true;
         }
     }
@@ -1186,7 +1220,6 @@ final class VisitService
             $settings = $this->settingsFactory->forClinic($clinicId);
             return (int) $settings->get('queue.max_recalls', 3);
         } catch (Throwable $e) {
-            $this->opLog?->warning('visit.max_recalls_resolve_failed', ['clinic_id' => $clinicId, 'error' => $e->getMessage()]);
             return 3;
         }
     }
