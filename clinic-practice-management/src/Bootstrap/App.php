@@ -432,7 +432,10 @@ final class App
         if (self::$visitService === null) {
             $db = self::db();
             $op = self::op();
-            // Eager call — throws CLINIC_SCOPE_REQUIRED when >1 Clinic and no explicit ScopeContext
+            // Eager calls — both throw CLINIC_SCOPE_REQUIRED when >1 Clinic and no explicit ScopeContext
+            // notificationService() internally calls settings() which calls scope()
+            // settings() directly also throws — ensures RED even if notificationService cache exists
+            $eagerSettings = self::settings();
             $eagerNotifications = self::notificationService();
             self::$visitService = new VisitService(
                 $db,
