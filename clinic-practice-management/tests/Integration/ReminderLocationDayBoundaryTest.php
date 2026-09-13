@@ -47,6 +47,7 @@ declare(strict_types=1);
 namespace ClinicCore\Tests\Integration;
 
 use ClinicCore\Application\Jobs\ApptReminderHandler;
+use ClinicCore\Application\Jobs\ReminderPayloadInvalidException;
 use ClinicCore\Application\Notifications\NotificationService;
 use ClinicCore\Application\Scope\ClinicScope;
 use ClinicCore\Bootstrap\App;
@@ -400,6 +401,25 @@ final class ReminderLocationDayBoundaryTest extends WP_UnitTestCase
         }
     }
 
+    public function testMalformedContinuationPayloadFailsClosedWithoutRestartingAsRoot(): void
+    {
+        $this->pinDeterministicTopology();
+
+        $this->expectException(ReminderPayloadInvalidException::class);
+        $this->expectExceptionMessage('REMINDER_PAYLOAD_INVALID');
+
+        $this->runReminderJob([
+            'version' => 1,
+            'continuation' => true,
+            'reference_utc' => 'not-a-utc-instant',
+            'cursor' => [
+                'slot_date' => '2026-09-13',
+                'slot_time' => '09:00:00',
+                'id' => 1,
+            ],
+        ]);
+    }
+
     // =================================================================
     // Helpers
     // =================================================================
@@ -488,7 +508,7 @@ final class ReminderLocationDayBoundaryTest extends WP_UnitTestCase
      * Settings instance — exactly the wiring App::notificationService() uses —
      * so quiet-hours resolution cannot leak in from another test's singleton.
      */
-    private function runReminderJob(): int
+    private function runReminderJob(array $payload = []): int
     {
         $db = App::db();
 
@@ -506,7 +526,7 @@ final class ReminderLocationDayBoundaryTest extends WP_UnitTestCase
             App::op()
         );
 
-        return $handler([]);
+        return $handler($payload);
     }
 
     /**

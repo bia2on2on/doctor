@@ -1136,12 +1136,28 @@ final class App
                 ->register('handwriting.gc', static function (array $payload): void {
                     (new HandwritingGcHandler(self::handwritingService()))($payload);
                 })
-                ->register('notif.dispatch', static function (array $payload): void {
-                    (new NotifDispatchHandler(self::notificationService(), self::exportService()))($payload);
-                })
-                ->register('appt.reminder', static function (array $payload) use ($db, $op): void {
-                    (new ApptReminderHandler($db, self::settings(), self::smsService(), self::notificationService(), $op))($payload);
-                })
+				->register('notif.dispatch', static function (array $payload): void {
+					(new NotifDispatchHandler(self::notificationService(), self::exportService()))($payload);
+				})
+				->register('appt.reminder', static function (array $payload) use ($db, $op): void {
+					(new ApptReminderHandler(
+						$db,
+						self::settingsFactory(),
+						self::smsService(),
+						null,
+						$op,
+						self::jobs(),
+						static function (int $clinicId): NotificationService {
+							return new NotificationService(
+								self::db(),
+								new NotificationRepository(self::db()),
+								new MembershipRepository(self::db()),
+								self::settingsFactory()->forClinic($clinicId),
+								self::op()
+							);
+						}
+					))($payload);
+				})
                 ->register('fu.reminder', static function (array $payload) use ($db, $op): void {
                     (new FollowUpReminderHandler($db, self::settings(), self::smsService(), self::notificationService(), $op))($payload);
                 })
