@@ -287,7 +287,8 @@ final class VisitNoShowCrossClinicFallbackRedTest extends WP_UnitTestCase
         self::assertNotEmpty($apptRow, 'appointment row exists');
         self::assertSame(self::FX_CLINIC_B_ID, (int) $apptRow['clinic_id'], 'appointment belongs to Clinic B (not 1 or 0)');
 
-        // Build VisitService with custom factory that throws for Clinic B, and legacySettings = Clinic A (grace 5)
+        // Build VisitService with custom factory that throws for Clinic B — no legacySettings (structurally removed)
+        // Proves fail-closed: when Clinic B Settings cannot be resolved, row must NOT be marked no_show
         $visitRepo = new VisitRepository($db);
         $apptRepo = new AppointmentRepository($db);
         $factory = App::settingsFactory();
@@ -310,8 +311,8 @@ final class VisitNoShowCrossClinicFallbackRedTest extends WP_UnitTestCase
         $existingInstances[self::FX_CLINIC_B_ID] = $throwingSettings;
         $propInstances->setValue($factory, $existingInstances);
 
-        $legacySettings = new Settings($db, self::FX_CLINIC_A_ID, App::audit()); // grace 5
-
+        // Current constructor: (db, visitRepo, apptRepo, settingsFactory, audit, licenseGate, ?OpLogger, mixed factory)
+        // No legacySettings param — structural removal proves no ambient fallback possible
         $visitService = new \ClinicCore\Application\Visits\VisitService(
             $db,
             $visitRepo,
@@ -319,9 +320,8 @@ final class VisitNoShowCrossClinicFallbackRedTest extends WP_UnitTestCase
             $factory,
             App::audit(),
             App::licenseGate(),
-            null,
             App::op(),
-            $legacySettings
+            null
         );
 
         // Process no-shows — should fail closed for Clinic B row, not use legacy grace 5

@@ -28,35 +28,14 @@ final class VisitNoShowM2WiringRedTest extends WP_UnitTestCase
 
     private function resetAppCaches(): void
     {
-        // Reset class-level private static properties
+        // Reset class-level private static properties — use project's safe convention
+        // Includes visitService which is now class-level (was function-static) to allow test reset
         $refClass = new \ReflectionClass(App::class);
-        foreach (['db','op','audit','jobs','rate','loginRateLimiter','idem','settingsFactory','migrations','dispatcher','providers','vault','smsService','licenseGate'] as $propName) {
+        foreach (['db','op','audit','jobs','rate','loginRateLimiter','idem','settingsFactory','migrations','dispatcher','providers','vault','smsService','licenseGate','visitService'] as $propName) {
             if ($refClass->hasProperty($propName)) {
                 $prop = $refClass->getProperty($propName);
                 $prop->setAccessible(true);
                 $prop->setValue(null, null);
-            }
-        }
-        // Reset function-level static caches inside App::*Service() methods
-        $serviceMethods = [
-            'bookingService','visitService','scheduleService','clinicalService','financeService',
-            'handwritingService','notificationService','reportService','exportService','medicalFileService',
-            'patientService','otpService','backupService','updateService','wpUpdateBridge','systemHealthService',
-            'dispatcher','licenseService','licenseGateway','providers','vault','smsService','membership_service',
-            'patient_identity_service','clinicianRepository'
-        ];
-        foreach ($serviceMethods as $methodName) {
-            if (!method_exists(App::class, $methodName)) {
-                continue;
-            }
-            try {
-                $rm = new \ReflectionMethod(App::class, $methodName);
-                $staticVars = $rm->getStaticVariables();
-                foreach ($staticVars as $varName => $varValue) {
-                    $rm->setStaticVariable($varName, null);
-                }
-            } catch (\Throwable $e) {
-                // ignore
             }
         }
         App::resetScope();
@@ -67,6 +46,23 @@ final class VisitNoShowM2WiringRedTest extends WP_UnitTestCase
                 App::settingsFactory()->reset();
             } catch (\Throwable $e) {
             }
+        }
+    }
+
+    private function assertVisitServiceCacheIsFresh(): void
+    {
+        $refClass = new \ReflectionClass(App::class);
+        if ($refClass->hasProperty('visitService')) {
+            $prop = $refClass->getProperty('visitService');
+            $prop->setAccessible(true);
+            $value = $prop->getValue();
+            self::assertNull($value, 'App::$visitService cache must be null/fresh before tick');
+        }
+        if ($refClass->hasProperty('dispatcher')) {
+            $prop = $refClass->getProperty('dispatcher');
+            $prop->setAccessible(true);
+            $value = $prop->getValue();
+            self::assertNull($value, 'App::$dispatcher cache must be null/fresh before tick');
         }
     }
 
@@ -206,24 +202,31 @@ final class VisitNoShowM2WiringRedTest extends WP_UnitTestCase
         global $wpdb;
         $db = App::db();
 
-        // Prove at least two real Clinics exist
-        $clinicCount = (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $db->table('cpms_clinics') . ' WHERE id >= ' . self::FX_ID_FLOOR);
-        self::assertGreaterThanOrEqual(2, $clinicCount, 'fixture must have at least two real clinics');
+        // ---- Precondition: >=2 real Clinics (fixture + total) ----
+        $clinicCountFixture = (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $db->table('cpms_clinics') . ' WHERE id >= ' . self::FX_ID_FLOOR);
+        self::assertGreaterThanOrEqual(2, $clinicCountFixture, 'fixture must have at least two real clinics');
+
         $clinicAExists = $wpdb->get_var($wpdb->prepare('SELECT id FROM ' . $db->table('cpms_clinics') . ' WHERE id = %d', self::FX_CLINIC_A_ID));
         $clinicBExists = $wpdb->get_var($wpdb->prepare('SELECT id FROM ' . $db->table('cpms_clinics') . ' WHERE id = %d', self::FX_CLINIC_B_ID));
         self::assertNotEmpty($clinicAExists, 'Clinic A must exist');
         self::assertNotEmpty($clinicBExists, 'Clinic B must exist');
 
-        // Prove no ScopeContext is set and reset caches to force re-resolution
+        $countAll = (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $db->table('cpms_clinics'));
+        self::assertGreaterThan(1, $countAll, 'total clinic count must be >1 to trigger CLINIC_SCOPE_REQUIRED, found ' . $countAll);
+
+        // ---- Precondition: ScopeContext::tryGet() === null ----
         $this->resetAppCaches();
         $explicit = ScopeContext::tryGet();
         self::assertNull($explicit, 'no ScopeContext must be set for this test');
+
+        // ---- Precondition: current WP user does not establish tenant context ----
         wp_set_current_user(0);
         self::assertSame(0, get_current_user_id(), 'no current WP user');
 
-        // Prove total clinic count >1 and App::scope() throws CLINIC_SCOPE_REQUIRED
-        $countAll = (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $db->table('cpms_clinics'));
-        self::assertGreaterThan(1, $countAll, 'total clinic count must be >1 to trigger CLINIC_SCOPE_REQUIRED, found ' . $countAll);
+        // ---- Precondition: App VisitService cache is null/fresh + dispatcher fresh ----
+        $this->assertVisitServiceCacheIsFresh();
+
+        // ---- Precondition: App::scope() throws CLINIC_SCOPE_REQUIRED when multiple clinics and no explicit scope ----
         try {
             $scope = App::scope();
             self::fail('App::scope() should throw CLINIC_SCOPE_REQUIRED when multiple clinics exist and no explicit scope, but got clinicId=' . $scope->clinicId);
@@ -231,59 +234,39 @@ final class VisitNoShowM2WiringRedTest extends WP_UnitTestCase
             self::assertSame('CLINIC_SCOPE_REQUIRED', $e->errorCode, 'scope must throw CLINIC_SCOPE_REQUIRED');
         }
 
-        // Prove App::visitService() itself throws due to ambient Settings (pre-fix defect)
-        // This is the core wiring defect: constructing visitService requires ambient Clinic Settings
-        try {
-            $vs = App::visitService();
-            // If we reach here, wiring is already scope-neutral (post-fix) — acceptable for GREEN
-            // For RED, we expect exception, so we record that it did NOT throw
-            // We will still test runTick path below
-            $this->resetAppCaches(); // reset again after successful creation to test runTick
-        } catch (\ClinicCore\Application\Scope\ScopeRequiredException $e) {
-            // Pre-fix: expected to throw — this is the defect we want to prove via runTick
-            self::assertSame('CLINIC_SCOPE_REQUIRED', $e->errorCode, 'visitService must throw CLINIC_SCOPE_REQUIRED pre-fix');
-            // Reset caches again so runTick will attempt same path and fail with same error
-            $this->resetAppCaches();
-        }
-
-        // Enqueue root visits.no_show — ensure clinics still exist right before tick
+        // ---- Enqueue visits.no_show with maxAttempts=1 (fail-fast) ----
         $countBeforeTick = (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $db->table('cpms_clinics'));
         self::assertGreaterThan(1, $countBeforeTick, 'clinic count must still be >1 right before runTick, found ' . $countBeforeTick);
 
         $this->purgeJobs();
         $queue = App::jobs();
         $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
-        $jobId = $queue->enqueue('visits.no_show', [], $now, 5, 3);
+        $jobId = $queue->enqueue('visits.no_show', [], $now, 5, 1);
         self::assertGreaterThan(0, $jobId, 'job enqueued');
 
         $jobBefore = $wpdb->get_row($wpdb->prepare('SELECT * FROM ' . $db->table('cpms_jobs') . ' WHERE id = %d', $jobId), ARRAY_A);
         self::assertNotEmpty($jobBefore, 'job row exists before tick');
         self::assertSame('queued', $jobBefore['status'], 'job initially queued');
+        self::assertSame(1, (int) $jobBefore['max_attempts'], 'maxAttempts must be 1 for fail-fast RED proof');
 
-        // Execute through REAL production path: App::runTick -> production dispatcher -> VisitsNoShowHandler
+        // ---- Execute through REAL path: App::runTick -> production dispatcher -> visits.no_show ----
         $tickResult = App::runTick(5);
 
-        // Fetch job after tick
+        // ---- Fetch job after tick ----
         $jobAfter = $wpdb->get_row($wpdb->prepare('SELECT * FROM ' . $db->table('cpms_jobs') . ' WHERE id = %d', $jobId), ARRAY_A);
-        self::assertNotEmpty($jobAfter, 'job row must still exist after tick (either success or failed/queued for retry)');
+        self::assertNotEmpty($jobAfter, 'job row must still exist after tick');
 
         $status = (string) ($jobAfter['status'] ?? '');
         $lastError = (string) ($jobAfter['last_error'] ?? '');
 
-        // The intended product path was reached if we attempted to claim and handler threw or succeeded
-        // If defect exists, last_error contains CLINIC_SCOPE_REQUIRED
-        // For RED: we expect failure with CLINIC_SCOPE_REQUIRED, so we assert it must NOT contain it
-        // This assertion will FAIL when defect exists (RED), and PASS after fix (GREEN)
-        self::assertStringNotContainsString(
-            'CLINIC_SCOPE_REQUIRED',
-            $lastError,
-            'PRODUCTION WIRING DEFECT: visits.no_show handler construction via App::visitService() must be scope-neutral and must not fail with CLINIC_SCOPE_REQUIRED in multi-Clinic no-Scope worker. ' .
-            'Found last_error=' . $lastError . ' status=' . $status . ' tickResult=' . var_export($tickResult, true)
+        // ---- Correct contract on FIXED wiring: status must be SUCCESS, not FAILED due to implicit Clinic resolution ----
+        // Do NOT search last_error for ASCII CLINIC_SCOPE_REQUIRED because dispatcher stores getMessage() (Persian) not errorCode
+        self::assertSame(
+            'success',
+            $status,
+            'On FIXED wiring, visits.no_show job must be SUCCESS (scope-neutral). ' .
+            'If wiring is broken, it becomes FAILED with maxAttempts=1. ' .
+            'Found status=' . $status . ' last_error=' . $lastError . ' tickResult=' . var_export($tickResult, true)
         );
-
-        // Additionally, job should not be terminal FAILED due to scope, it should be SUCCESS or still QUEUED for retry but without scope error
-        // After fix, with no appointments, it should be SUCCESS
-        // We allow SUCCESS or QUEUED (if no appointments, it completes), but not FAILED with scope error
-        self::assertNotSame('failed', $status, 'job must not be terminal FAILED due to scope wiring defect; status=' . $status . ' last_error=' . $lastError);
     }
 }
