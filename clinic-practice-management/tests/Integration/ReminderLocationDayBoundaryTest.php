@@ -204,8 +204,8 @@ final class ReminderLocationDayBoundaryTest extends WP_UnitTestCase
         self::assertGreaterThan(0, $apptB, 'fixture: Location B appointment persisted');
 
         $reminded = $this->runReminderJob();
-        $notifA = $this->reminderNotificationCount($apptA, $patientA);
-        $notifB = $this->reminderNotificationCount($apptB, $patientB);
+        $notifA = $this->reminderNotificationCount(self::FX_T_CLINIC_ID, $apptA, $patientA);
+        $notifB = $this->reminderNotificationCount(self::FX_T_CLINIC_ID, $apptB, $patientB);
 
         if ($notifA !== 1 || $notifB !== 1) {
             self::fail($this->t3Diagnostics($topology, $apptA, $apptB, $patientA, $patientB, $notifA, $notifB, $reminded));
@@ -246,7 +246,7 @@ final class ReminderLocationDayBoundaryTest extends WP_UnitTestCase
 
         self::assertSame(
             1,
-            $this->reminderNotificationCount($appt, $patient),
+            $this->reminderNotificationCount(self::FX_T_CLINIC_ID, $appt, $patient),
             'positive control: an appointment dated Location-local today must be reminded once'
         );
     }
@@ -279,7 +279,7 @@ final class ReminderLocationDayBoundaryTest extends WP_UnitTestCase
 
         self::assertSame(
             0,
-            $this->reminderNotificationCount($appt, $patient),
+            $this->reminderNotificationCount(self::FX_T_CLINIC_ID, $appt, $patient),
             'negative control: appointment dated ' . $outOfSet . ' is not in any Location day set and must not be reminded'
         );
     }
@@ -358,7 +358,7 @@ final class ReminderLocationDayBoundaryTest extends WP_UnitTestCase
 
         self::assertSame(
             1,
-            $this->reminderNotificationCount($appt, $patientId),
+            $this->reminderNotificationCount($clinicId, $appt, $patientId),
             'compatibility control: single-Clinic/single-Location appointment dated its own Location-local today must be reminded once'
         );
 
@@ -391,7 +391,7 @@ final class ReminderLocationDayBoundaryTest extends WP_UnitTestCase
                 $this->runReminderJob();
                 self::assertSame(
                     1,
-                    $this->reminderNotificationCount($appt, $patient),
+                    $this->reminderNotificationCount(self::FX_T_CLINIC_ID, $appt, $patient),
                     'ambient PHP default timezone (' . $ambient . ') must not change Location-local day eligibility'
                 );
             }
@@ -509,7 +509,16 @@ final class ReminderLocationDayBoundaryTest extends WP_UnitTestCase
         return $handler([]);
     }
 
-    private function reminderNotificationCount(int $appointmentId, int $patientId): int
+    /**
+     * Count reminder notifications for the Clinic that actually owns the
+     * appointment. The Clinic is passed explicitly by each test — never
+     * inferred from a global fixture Clinic — so tests that use a detached
+     * Clinic (T3-T5) cannot silently read another Clinic's rows.
+     *
+     * Filtering is unchanged: clinic_id + recipient_patient_id + the
+     * per-appointment reminder dedupe key.
+     */
+    private function reminderNotificationCount(int $clinicId, int $appointmentId, int $patientId): int
     {
         global $wpdb;
         $db = App::db();
@@ -517,7 +526,7 @@ final class ReminderLocationDayBoundaryTest extends WP_UnitTestCase
         return (int) $wpdb->get_var($wpdb->prepare(
             'SELECT COUNT(*) FROM ' . $db->table('cpms_notifications')
             . ' WHERE clinic_id = %d AND recipient_patient_id = %d AND dedupe_key LIKE %s',
-            self::FX_T_CLINIC_ID,
+            $clinicId,
             $patientId,
             '%apt:' . $appointmentId . ':remind:%'
         ));
