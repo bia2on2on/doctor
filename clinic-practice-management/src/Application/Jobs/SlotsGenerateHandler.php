@@ -4,11 +4,13 @@ declare(strict_types=1);
 
 namespace ClinicCore\Application\Jobs;
 
-use ClinicCore\Application\Scope\PrimaryLocationResolver;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Logging\OpLogger;
 use ClinicCore\Settings\SettingsFactory;
 use ClinicCore\Domain\Slots\SlotGenerator;
+use DateInterval;
+use DateTimeImmutable;
+use DateTimeZone;
 use DomainException;
 
 /**
@@ -26,11 +28,31 @@ use DomainException;
  * internal payload override for that tick (no production producer currently
  * sets it — ScheduleService ['source'=>'manual'] and recurring [] both empty).
  * Trust/authorization semantics of future horizon_days producers remain OPEN / NOT VERIFIED.
+ *
+ * Phase 2 temporal slice (C-9): the generation calendar date and the weekday are
+ * computed in the **authoritative Location's** validated IANA timezone, never in
+ * UTC, the Clinic timezone, the WordPress timezone or the ambient PHP timezone.
+ *
+ *   reference UTC instant -> Location timezone -> Location-local calendar date
+ *   -> schedule weekday -> persisted slot_date
+ *
+ * The horizon loop semantics are unchanged: offsets {1 .. horizon} INCLUSIVE
+ * relative to that Location's local "today" (today itself is never generated).
+ * `slot_time` remains the Schedule's Location-local wall-clock time, exactly as
+ * before (existing schema semantics: DATE + TIME are local to the Location).
+ *
+ * Location attribution arrives with each sweep row via a JOIN (no per-row
+ * Location query, no N+1). A row whose Location is missing, inactive, owned by a
+ * different Clinic, or carries an empty/non-IANA timezone fails closed for that
+ * row only — no fallback to another Location or to a coarser timezone.
  */
 final class SlotsGenerateHandler
 {
     /** @var array<int, int> per-Clinic horizon cache, key = clinicId */
     private array $horizonCache = [];
+
+    /** @var array<string, bool> validated IANA identifiers, key = timezone string */
+    private array $timezoneValid = [];
 
     public function __construct(
         private readonly CpmsDb $db,
@@ -41,17 +63,26 @@ final class SlotsGenerateHandler
 
     public function __invoke(array $payload): int
     {
-        $today = gmdate('Y-m-d');
+        // Single reference instant for the whole sweep. Each row is then projected
+        // into its own Location's calendar frame — the instant itself is frame-free.
+        $referenceInstant = new DateTimeImmutable('now', new DateTimeZone('UTC'));
 
         // Fetch all active clinicians with their active schedule rows.
         // Include schedule clinic_id to guard against cross-tenant mismatch:
         // authoritative owner is clinician.clinic_id (validated in ScheduleService),
         // so a schedule row whose clinic_id differs is skipped fail-closed.
+        //
+        // LEFT JOIN on the Location so timezone + ownership arrive WITH each row
+        // (no per-row Location lookup / no N+1). LEFT (not INNER) so a broken
+        // Location reference is observable and can fail closed with a log, rather
+        // than silently vanishing from the sweep.
         $clinicians = $this->db->fetchAll(
             'SELECT c.id AS clinician_id, c.clinic_id, s.clinic_id AS schedule_clinic_id, s.location_id, s.day_of_week, s.start_time, s.end_time,
-                    s.break_start, s.break_end, s.appointment_duration_min, s.slot_capacity
+                    s.break_start, s.break_end, s.appointment_duration_min, s.slot_capacity,
+                    l.id AS loc_id, l.clinic_id AS location_clinic_id, l.timezone AS location_timezone, l.is_active AS location_is_active
              FROM ' . $this->db->table('cpms_clinicians') . ' c
              JOIN ' . $this->db->table('cpms_schedule') . ' s ON s.clinician_id = c.id AND s.is_active = 1
+             LEFT JOIN ' . $this->db->table('cpms_locations') . ' l ON l.id = s.location_id
              WHERE c.is_active = 1'
         );
 
@@ -74,6 +105,62 @@ final class SlotsGenerateHandler
                 continue;
             }
 
+            // ---- Authoritative Location resolution (Phase 2 temporal, C-9) ----
+            // Schedule.location_id is durable/NOT NULL (migration 0013). An explicit
+            // persisted Location is NEVER overridden or silently replaced by the
+            // primary Location: a broken reference fails closed for this row.
+            $scheduleLocationId = (int) ($clinician['location_id'] ?? 0);
+            $joinedLocationId = (int) ($clinician['loc_id'] ?? 0);
+            if ($scheduleLocationId <= 0 || $joinedLocationId !== $scheduleLocationId) {
+                $this->op->warning('SLOTS_GEN_SKIP_LOCATION_INVALID', [
+                    'clinician_id' => $clinician['clinician_id'],
+                    'clinic_id' => $clinicId,
+                    'schedule_location_id' => $scheduleLocationId,
+                ]);
+                continue;
+            }
+
+            // Location must belong to the SAME authoritative Clinic as the clinician.
+            $locationClinicId = (int) ($clinician['location_clinic_id'] ?? 0);
+            if ($locationClinicId !== $clinicId) {
+                $this->op->warning('SLOTS_GEN_SKIP_LOCATION_CLINIC_MISMATCH', [
+                    'clinician_id' => $clinician['clinician_id'],
+                    'clinician_clinic_id' => $clinicId,
+                    'location_id' => $scheduleLocationId,
+                    'location_clinic_id' => $locationClinicId,
+                ]);
+                continue;
+            }
+
+            if ((int) ($clinician['location_is_active'] ?? 0) !== 1) {
+                $this->op->warning('SLOTS_GEN_SKIP_LOCATION_INACTIVE', [
+                    'clinician_id' => $clinician['clinician_id'],
+                    'clinic_id' => $clinicId,
+                    'location_id' => $scheduleLocationId,
+                ]);
+                continue;
+            }
+
+            // Validated IANA timezone — no fallback to Clinic/WordPress/PHP timezone.
+            $locationTz = $this->locationTimezone((string) ($clinician['location_timezone'] ?? ''));
+            if ($locationTz === null) {
+                $this->op->warning('SLOTS_GEN_SKIP_LOCATION_TZ_INVALID', [
+                    'clinician_id' => $clinician['clinician_id'],
+                    'clinic_id' => $clinicId,
+                    'location_id' => $scheduleLocationId,
+                    'timezone' => (string) ($clinician['location_timezone'] ?? ''),
+                ]);
+                continue;
+            }
+
+            $locationId = $scheduleLocationId;
+
+            // Location-local calendar "today" for this reference instant. Anchored in
+            // UTC afterwards so the +N day arithmetic is pure Gregorian date math and
+            // never depends on the ambient PHP timezone (and invents no DST policy).
+            $localToday = $referenceInstant->setTimezone($locationTz)->format('Y-m-d');
+            $anchor = new DateTimeImmutable($localToday . ' 00:00:00', new DateTimeZone('UTC'));
+
             // Resolve horizon per-Clinic, or use explicit payload override if present.
             // Payload horizon_days is an explicit internal payload override; no production
             // producer currently sets horizon_days, so empty-payload path is the recurring semantics.
@@ -94,25 +181,18 @@ final class SlotsGenerateHandler
                 }
             }
 
+            // Horizon semantics preserved exactly: offsets {1 .. horizon} inclusive
+            // from the Location-local "today"; today itself is never generated.
             for ($day = 1; $day <= $horizon; $day++) {
-                $date = gmdate('Y-m-d', strtotime($today . ' +' . $day . ' days'));
+                $dateObj = $anchor->add(new DateInterval('P' . $day . 'D'));
+                $date = $dateObj->format('Y-m-d');
                 try {
-                    $slots = $this->generateDaySlots($clinician, $date, $day);
+                    $slots = $this->generateDaySlots($clinician, $date, $dateObj);
                 } catch (DomainException $e) {
                     $this->op->warning('SLOTS_GEN_SKIP', ['clinician_id' => $clinician['clinician_id'], 'date' => $date, 'error' => $e->getMessage()]);
                     continue;
                 }
                 foreach ($slots as $time) {
-                    // Resolve location deterministically: schedule location if present, else primary location of authoritative clinicId
-                    $locationId = (int) ($clinician['location_id'] ?? 0);
-                    if ($locationId <= 0) {
-                        try {
-                            $locationId = PrimaryLocationResolver::resolve($this->db, $clinicId);
-                        } catch (\Throwable $e) {
-                            $this->op->warning('SLOTS_GEN_SKIP_NO_LOCATION', ['clinician_id' => $clinician['clinician_id'], 'clinic_id' => $clinicId, 'error' => $e->getMessage()]);
-                            continue;
-                        }
-                    }
                     $this->db->query(
                         'INSERT IGNORE INTO ' . $this->db->table('cpms_schedule_slots') . '
                              (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity,
@@ -176,14 +256,42 @@ final class SlotsGenerateHandler
     }
 
     /**
+     * Validated IANA timezone for a Location, or null when the identifier is
+     * empty or not a real IANA zone (fail-closed — never substituted).
+     */
+    private function locationTimezone(string $tz): ?DateTimeZone
+    {
+        $tz = trim($tz);
+        if ($tz === '') {
+            return null;
+        }
+        if (!isset($this->timezoneValid[$tz])) {
+            $this->timezoneValid[$tz] = in_array($tz, timezone_identifiers_list(), true);
+        }
+        if ($this->timezoneValid[$tz] === false) {
+            return null;
+        }
+
+        try {
+            return new DateTimeZone($tz);
+        } catch (\Throwable $e) {
+            $this->timezoneValid[$tz] = false;
+
+            return null;
+        }
+    }
+
+    /**
      * @param array<string, mixed> $clinician
      *
      * @return list<string>
      */
-    private function generateDaySlots(array $clinician, string $date, int $dayOffset): array
+    private function generateDaySlots(array $clinician, string $date, DateTimeImmutable $dateObj): array
     {
-        // day_of_week: 0=شنبه ... 6=جمعه (هفته ایرانی) — تبدیل از gmdate('w'): 0=یک‌شنبه ... 6=یکشنبه
-        $dow = self::toIranianDow((int) gmdate('w', strtotime($date)));
+        // day_of_week: 0=شنبه ... 6=جمعه (هفته ایرانی) — تبدیل از 'w': 0=یک‌شنبه ... 6=شنبه.
+        // Weekday is read off the Location-local calendar date object, so it never
+        // depends on the ambient PHP timezone (no strtotime on a date-only string).
+        $dow = self::toIranianDow((int) $dateObj->format('w'));
         if ($dow !== (int) $clinician['day_of_week']) {
             return [];
         }
