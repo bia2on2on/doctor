@@ -20,12 +20,11 @@ use DateTimeZone;
  * - malformed => throw JobPayloadInvalidException با کد JOB_PAYLOAD_INVALID (fail-closed، نه silent root)
  * - cursor باید strictly greater باشد
  * - حداکثر یک continuation از نوع visits.no_show در هر اجرا enqueue می‌شود
- * - depth محدود 0..100
+ * - depth برای observability/diagnostics است، نه سقف گرسنگی مصنوعی — پیشرفت از طریق cursor اثبات می‌شود
  * - idempotent: sweep داخل Row Lock دوباره وضعیت را چک می‌کند
  */
 final class VisitsNoShowHandler
 {
-    private const MAX_DEPTH = 100;
     private const MAX_PAYLOAD_SIZE = 1024; // bytes
 
     public function __construct(
@@ -69,10 +68,11 @@ final class VisitsNoShowHandler
         $cursor = $payload['cursor'];
         $depth = (int) $payload['depth'];
 
-        // Depth bound
-        if ($depth < 0 || $depth > self::MAX_DEPTH) {
+        // Depth is observability only — must be int >=0, no arbitrary product ceiling.
+        // PHP integer safety: depth must be >=0 and <= PHP_INT_MAX (always true for int >=0, but check overflow via is_int)
+        if ($depth < 0) {
             $this->op?->warning('visit.no_show_depth_out_of_bounds', ['depth' => $depth]);
-            throw new JobPayloadInvalidException('JOB_PAYLOAD_INVALID', 'Depth out of bounds', ['depth' => $depth]);
+            throw new JobPayloadInvalidException('JOB_PAYLOAD_INVALID', 'Depth out of bounds (negative)', ['depth' => $depth]);
         }
 
         // Process with cursor
@@ -105,13 +105,14 @@ final class VisitsNoShowHandler
             return ['message' => 'Continuation must be true bool', 'continuation' => $payload['continuation']];
         }
 
-        // depth must be int 0..MAX_DEPTH
+        // depth must be int >=0 — no arbitrary product ceiling, only PHP integer safety
         if (!is_int($payload['depth'])) {
             return ['message' => 'Depth must be int', 'depth' => $payload['depth']];
         }
-        if ($payload['depth'] < 0 || $payload['depth'] > self::MAX_DEPTH) {
-            return ['message' => 'Depth out of range', 'depth' => $payload['depth']];
+        if ($payload['depth'] < 0) {
+            return ['message' => 'Depth out of range (negative)', 'depth' => $payload['depth']];
         }
+        // Upper bound is PHP_INT_MAX implicitly — no arbitrary 100/1000 ceiling to avoid starvation
 
         // cursor validation
         $cursor = $payload['cursor'];
@@ -168,11 +169,8 @@ final class VisitsNoShowHandler
             return;
         }
 
-        // Depth bound: do not enqueue beyond MAX_DEPTH
-        if ($incomingDepth >= self::MAX_DEPTH) {
-            $this->op?->warning('visit.no_show_max_depth_reached', ['depth' => $incomingDepth]);
-            return;
-        }
+        // Safety is via provable forward progress, not arbitrary depth ceiling.
+        // No MAX_DEPTH check here — chain can progress beyond old 100 limit as long as cursor advances.
 
         // Strictly greater check
         if ($incomingCursor !== null) {

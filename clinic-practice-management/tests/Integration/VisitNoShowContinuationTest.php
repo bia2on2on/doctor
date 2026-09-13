@@ -116,9 +116,9 @@ final class VisitNoShowContinuationTest extends WP_UnitTestCase
             ['cursor' => ['slot_date' => '2026-01-01', 'slot_time' => '10:00:00', 'id' => -5], 'continuation' => true, 'depth' => 0],
             ['cursor' => ['slot_date' => '2026-01-01', 'slot_time' => '10:00:00', 'id' => 1], 'continuation' => false, 'depth' => 0],
             ['cursor' => ['slot_date' => '2026-01-01', 'slot_time' => '10:00:00', 'id' => 1], 'continuation' => true, 'depth' => -1],
-            ['cursor' => ['slot_date' => '2026-01-01', 'slot_time' => '10:00:00', 'id' => 1], 'continuation' => true, 'depth' => 9999],
             ['unexpected' => 'structure'],
             ['cursor' => ['slot_date' => '2026-01-01', 'slot_time' => '10:00:00', 'id' => 1]], // missing continuation/depth
+            ['cursor' => ['slot_date' => '2026-01-01', 'slot_time' => '10:00:00', 'id' => 1], 'continuation' => true, 'depth' => 'not-int'],
         ];
 
         foreach ($malformedPayloads as $payload) {
@@ -292,7 +292,7 @@ final class VisitNoShowContinuationTest extends WP_UnitTestCase
     {
         $handler = new VisitsNoShowHandler(App::visitService(), App::jobs(), App::db(), App::op());
 
-        // Depth at max should not enqueue continuation and should not throw
+        // Old MAX_DEPTH=100 is no longer a starvation boundary — depth 100 must still process (observability only)
         $payload = [
             'cursor' => ['slot_date' => '2026-01-01', 'slot_time' => '00:00:00', 'id' => 1],
             'continuation' => true,
@@ -300,7 +300,116 @@ final class VisitNoShowContinuationTest extends WP_UnitTestCase
         ];
 
         $result = $handler($payload);
-        self::assertIsInt($result, 'max depth stops continuation safely');
+        self::assertIsInt($result, 'depth 100 must still process (no artificial ceiling)');
+
+        // Depth 150 and 9999 also must be valid (no arbitrary ceiling), only negative is invalid
+        $payload150 = [
+            'cursor' => ['slot_date' => '2026-01-01', 'slot_time' => '00:00:00', 'id' => 1],
+            'continuation' => true,
+            'depth' => 150,
+        ];
+        $result150 = $handler($payload150);
+        self::assertIsInt($result150, 'depth 150 must be valid (no arbitrary ceiling)');
+
+        $payload9999 = [
+            'cursor' => ['slot_date' => '2026-01-01', 'slot_time' => '00:00:00', 'id' => 1],
+            'continuation' => true,
+            'depth' => 9999,
+        ];
+        $result9999 = $handler($payload9999);
+        self::assertIsInt($result9999, 'depth 9999 must be valid (no arbitrary ceiling)');
+    }
+
+    public function testNoFixedDepthProgressBeyondOldCeiling(): void
+    {
+        // Proves chain can progress beyond old MAX_DEPTH=100 ceiling.
+        // Each job remains bounded (maxScan 500, batch 100, maxToProcess 100) but chain can be arbitrarily long via forward progress.
+        global $wpdb;
+        $db = App::db();
+        $queue = App::jobs();
+        $wpdb->query('DELETE FROM ' . $db->table('cpms_jobs') . ' WHERE type = "visits.no_show"');
+
+        $handler = new VisitsNoShowHandler(App::visitService(), $queue, $db, App::op());
+
+        $now = $db->nowUtcSql();
+        $tzTehran = new \DateTimeZone('Asia/Tehran');
+        $nowUtc = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+        $nowTehran = $nowUtc->setTimezone($tzTehran);
+        $past = $nowTehran->sub(new \DateInterval('PT2H'));
+
+        // Insert 250 overdue with unique slot_time (enough for 3 continuations with 100 per batch)
+        for ($i = 0; $i < 250; $i++) {
+            $slotDt = $past->add(new \DateInterval('PT' . $i . 'M'));
+            $wpdb->query($wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_schedule_slots (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at) VALUES (%d, %d, %d, %s, %s, 20, 1, 1, 0, 1, %s, %s)',
+                self::FX_T_CLINIC_ID,
+                self::FX_T_LOC_A_ID,
+                self::FX_T_CLINICIAN_ID,
+                $slotDt->format('Y-m-d'),
+                $slotDt->format('H:i:s'),
+                $now,
+                $now
+            ));
+            $slotId = (int) $wpdb->insert_id;
+            if ($slotId === 0) {
+                continue;
+            }
+            $wpdb->query($wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_appointments (clinic_id, location_id, reference_code, clinician_id, patient_id, slot_id, slot_date, slot_time, duration_min, slot_end_time, status, created_at, updated_at) VALUES (%d, %d, %s, %d, %d, %d, %s, %s, 20, %s, %s, %s, %s)',
+                self::FX_T_CLINIC_ID,
+                self::FX_T_LOC_A_ID,
+                'NODEPTH-' . bin2hex(random_bytes(3)) . $i,
+                self::FX_T_CLINICIAN_ID,
+                $this->fxTPatient,
+                $slotId,
+                $slotDt->format('Y-m-d'),
+                $slotDt->format('H:i:s'),
+                $slotDt->add(new \DateInterval('PT20M'))->format('H:i:s'),
+                'confirmed',
+                $now,
+                $now
+            ));
+        }
+
+        // Simulate chain progressing beyond depth 100 via direct service calls (no need to enqueue 100 jobs)
+        // Start at depth 95, advance 10 steps, each must move forward and remain bounded
+        $cursor = null;
+        $depth = 95;
+        $totalProcessed = 0;
+        $steps = 0;
+        $maxSteps = 15;
+        while ($steps < $maxSteps) {
+            $res = App::visitService()->processNoShows($cursor, $depth);
+            $totalProcessed += $res['processed'] ?? 0;
+            $hasMore = $res['has_more'] ?? false;
+            $nextCursor = $res['next_cursor'] ?? null;
+            // Each job must be bounded: scanned <=500, processed <=100
+            self::assertLessThanOrEqual(500, $res['scanned'] ?? 0, 'each job bounded scan <=500 at depth ' . $depth);
+            self::assertLessThanOrEqual(100, $res['processed'] ?? 0, 'each job bounded process <=100 at depth ' . $depth);
+            if (!$hasMore || $nextCursor === null) {
+                break;
+            }
+            // Strict forward progress
+            if ($cursor !== null) {
+                self::assertTrue(
+                    $nextCursor['slot_date'] > $cursor['slot_date'] ||
+                    ($nextCursor['slot_date'] === $cursor['slot_date'] && $nextCursor['slot_time'] > $cursor['slot_time']) ||
+                    ($nextCursor['slot_date'] === $cursor['slot_date'] && $nextCursor['slot_time'] === $cursor['slot_time'] && $nextCursor['id'] > $cursor['id']),
+                    'cursor must advance strictly at depth ' . $depth
+                );
+            }
+            $cursor = $nextCursor;
+            $depth++;
+            $steps++;
+        }
+
+        // Must have progressed beyond old ceiling 100
+        self::assertGreaterThan(100, $depth, 'chain must progress beyond old MAX_DEPTH=100');
+
+        // Cleanup
+        $wpdb->query('DELETE FROM ' . $db->table('cpms_jobs') . ' WHERE type = "visits.no_show"');
+        $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_appointments') . ' WHERE clinic_id = %d AND reference_code LIKE %s', self::FX_T_CLINIC_ID, 'NODEPTH-%'));
+        $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_schedule_slots') . ' WHERE clinic_id = %d AND location_id = %d', self::FX_T_CLINIC_ID, self::FX_T_LOC_A_ID));
     }
 
     public function testDuplicateRetryDoesNotDuplicateNoShow(): void

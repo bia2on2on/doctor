@@ -547,9 +547,9 @@ final class VisitService
         $hasMore = false;
         $nextCursor = null;
 
-        // Defensive depth bound check (should be validated in handler, but double-check)
-        $maxDepth = 100;
-        if ($depth < 0 || $depth > $maxDepth) {
+        // Depth is observability only — no arbitrary product ceiling.
+        // Only negative depth is invalid (fail-closed). Upper bound is PHP_INT_MAX implicitly.
+        if ($depth < 0) {
             $this->opLog?->warning('visit.no_show_depth_invalid', ['depth' => $depth]);
             return [
                 'processed' => 0,
