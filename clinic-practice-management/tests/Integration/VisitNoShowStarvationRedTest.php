@@ -74,7 +74,7 @@ final class VisitNoShowStarvationRedTest extends WP_UnitTestCase
         $earlyDate = '2026-01-01';
         for ($i = 0; $i < 500; $i++) {
             $slotTime = sprintf('%02d:%02d:00', intdiv($i, 60) % 24, $i % 60);
-            $wpdb->query($wpdb->prepare(
+            $resSlot = $wpdb->query($wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_schedule_slots (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at) VALUES (%d, %d, %d, %s, %s, 20, 1, 1, 0, 1, %s, %s)',
                 self::FX_T_CLINIC_ID,
                 $invalidLocId,
@@ -84,8 +84,10 @@ final class VisitNoShowStarvationRedTest extends WP_UnitTestCase
                 $now,
                 $now
             ));
+            self::assertNotFalse($resSlot, 'fixture: malformed slot insert succeeded at ' . $i);
             $slotId = (int) $wpdb->insert_id;
-            $wpdb->query($wpdb->prepare(
+            self::assertGreaterThan(0, $slotId, 'fixture: malformed slot id >0 at ' . $i);
+            $resAppt = $wpdb->query($wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_appointments (clinic_id, location_id, reference_code, clinician_id, patient_id, slot_id, slot_date, slot_time, duration_min, slot_end_time, status, created_at, updated_at) VALUES (%d, %d, %s, %d, %d, %d, %s, %s, 20, %s, %s, %s, %s)',
                 self::FX_T_CLINIC_ID,
                 $invalidLocId,
@@ -100,12 +102,16 @@ final class VisitNoShowStarvationRedTest extends WP_UnitTestCase
                 $now,
                 $now
             ));
-            $malformedIds[] = (int) $wpdb->insert_id;
+            self::assertNotFalse($resAppt, 'fixture: malformed appt insert succeeded at ' . $i);
+            $apptId = (int) $wpdb->insert_id;
+            self::assertGreaterThan(0, $apptId, 'fixture: malformed appt id >0 at ' . $i);
+            $malformedIds[] = $apptId;
         }
+        self::assertCount(500, $malformedIds, 'fixture: 500 malformed ids collected');
 
         // Valid overdue appointment: yesterday Tehran, 40 min ago (overdue with grace 30)
         $past40 = $nowTehran->sub(new \DateInterval('PT40M'));
-        $wpdb->query($wpdb->prepare(
+        $resValidSlot = $wpdb->query($wpdb->prepare(
             'INSERT INTO ' . $wpdb->prefix . 'cpms_schedule_slots (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at) VALUES (%d, %d, %d, %s, %s, 20, 1, 1, 0, 1, %s, %s)',
             self::FX_T_CLINIC_ID,
             self::FX_T_LOC_A_ID,
@@ -115,8 +121,10 @@ final class VisitNoShowStarvationRedTest extends WP_UnitTestCase
             $now,
             $now
         ));
+        self::assertNotFalse($resValidSlot, 'fixture: valid slot insert succeeded');
         $validSlotId = (int) $wpdb->insert_id;
-        $wpdb->query($wpdb->prepare(
+        self::assertGreaterThan(0, $validSlotId, 'fixture: valid slot id >0');
+        $resValidAppt = $wpdb->query($wpdb->prepare(
             'INSERT INTO ' . $wpdb->prefix . 'cpms_appointments (clinic_id, location_id, reference_code, clinician_id, patient_id, slot_id, slot_date, slot_time, duration_min, slot_end_time, status, created_at, updated_at) VALUES (%d, %d, %s, %d, %d, %d, %s, %s, 20, %s, %s, %s, %s)',
             self::FX_T_CLINIC_ID,
             self::FX_T_LOC_A_ID,
@@ -131,7 +139,9 @@ final class VisitNoShowStarvationRedTest extends WP_UnitTestCase
             $now,
             $now
         ));
+        self::assertNotFalse($resValidAppt, 'fixture: valid appt insert succeeded');
         $validApptId = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $validApptId, 'fixture: valid appt id >0');
 
         // Repeated independent invocations representing separate scheduled ticks
         $visitService = App::visitService();
