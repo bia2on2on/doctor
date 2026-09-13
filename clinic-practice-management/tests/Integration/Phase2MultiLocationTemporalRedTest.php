@@ -541,14 +541,14 @@ final class Phase2MultiLocationTemporalRedTest extends WP_UnitTestCase
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_clinics') . ' WHERE id = %d', $secondClinicId));
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_settings') . ' WHERE clinic_id = %d', $secondClinicId));
 
-        // Org for second clinic (reuse first org 62200, but create second org if needed)
-        // Use existing org 62200 for simplicity, second clinic under same org
+        // Org for second clinic (reuse first org 62200)
+        $secondClinicSlug = 'temporal-clinic-b-' . bin2hex(random_bytes(3));
         $wpdb->query($wpdb->prepare(
             'INSERT INTO ' . $wpdb->prefix . 'cpms_clinics (id, organization_id, name, slug, timezone, created_at, updated_at) VALUES (%d, %d, %s, %s, %s, %s, %s)',
             $secondClinicId,
             self::FX_T_ORG_ID,
             'Temporal Clinic B',
-            'temporal-clinic-b',
+            $secondClinicSlug,
             'Europe/Berlin',
             $now,
             $now
@@ -619,14 +619,16 @@ final class Phase2MultiLocationTemporalRedTest extends WP_UnitTestCase
         ));
         $slotA = (int) $wpdb->insert_id;
         $wpdb->query($wpdb->prepare(
-            'INSERT INTO ' . $wpdb->prefix . 'cpms_appointments (clinic_id, location_id, clinician_id, patient_id, slot_id, slot_date, slot_time, duration_min, status, created_at, updated_at) VALUES (%d, %d, %d, %d, %d, %s, %s, 20, %s, %s, %s)',
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_appointments (clinic_id, location_id, reference_code, clinician_id, patient_id, slot_id, slot_date, slot_time, duration_min, slot_end_time, status, created_at, updated_at) VALUES (%d, %d, %s, %d, %d, %d, %s, %s, 20, %s, %s, %s, %s)',
             self::FX_T_CLINIC_ID,
             self::FX_T_LOC_A_ID,
+            'GR-' . bin2hex(random_bytes(4)),
             self::FX_T_CLINICIAN_ID,
             $this->fxTPatient,
             $slotA,
             $past40Tehran->format('Y-m-d'),
             $past40Tehran->format('H:i:s'),
+            $past40Tehran->add(new \DateInterval('PT20M'))->format('H:i:s'),
             'confirmed',
             $now,
             $now
@@ -645,14 +647,16 @@ final class Phase2MultiLocationTemporalRedTest extends WP_UnitTestCase
         ));
         $slotB = (int) $wpdb->insert_id;
         $wpdb->query($wpdb->prepare(
-            'INSERT INTO ' . $wpdb->prefix . 'cpms_appointments (clinic_id, location_id, clinician_id, patient_id, slot_id, slot_date, slot_time, duration_min, status, created_at, updated_at) VALUES (%d, %d, %d, %d, %d, %s, %s, 20, %s, %s, %s)',
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_appointments (clinic_id, location_id, reference_code, clinician_id, patient_id, slot_id, slot_date, slot_time, duration_min, slot_end_time, status, created_at, updated_at) VALUES (%d, %d, %s, %d, %d, %d, %s, %s, 20, %s, %s, %s, %s)',
             $secondClinicId,
             $secondLocId,
+            'GR-' . bin2hex(random_bytes(4)),
             $secondClinicianId,
             $secondPatientId,
             $slotB,
             $past40Berlin->format('Y-m-d'),
             $past40Berlin->format('H:i:s'),
+            $past40Berlin->add(new \DateInterval('PT20M'))->format('H:i:s'),
             'confirmed',
             $now,
             $now
@@ -671,13 +675,22 @@ final class Phase2MultiLocationTemporalRedTest extends WP_UnitTestCase
         // Clinic B grace 120, 40 min ago => must remain confirmed (not share Clinic A grace)
         self::assertSame('confirmed', $statusB, 'Clinic B grace 120, 40 min ago => must remain confirmed, W sweep must not reuse Clinic A settings');
 
-        // Cleanup second clinic data (purge will handle main fixture, but we need to clean second clinic manually)
+        // Cleanup second clinic data
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_appointments') . ' WHERE clinic_id = %d', $secondClinicId));
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_schedule_slots') . ' WHERE clinic_id = %d', $secondClinicId));
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_patients') . ' WHERE clinic_id = %d', $secondClinicId));
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_clinicians') . ' WHERE clinic_id = %d', $secondClinicId));
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_locations') . ' WHERE clinic_id = %d', $secondClinicId));
+        $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_settings') . ' WHERE clinic_id = %d', $secondClinicId));
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_clinics') . ' WHERE id = %d', $secondClinicId));
+        // Also clean any stale temporal clinics from previous failed runs (slug pattern)
+        $wpdb->query('DELETE FROM ' . $db->table('cpms_settings') . ' WHERE clinic_id IN (SELECT id FROM ' . $db->table('cpms_clinics') . ' WHERE slug LIKE "temporal-clinic-b-%")');
+        $wpdb->query('DELETE FROM ' . $db->table('cpms_appointments') . ' WHERE clinic_id IN (SELECT id FROM ' . $db->table('cpms_clinics') . ' WHERE slug LIKE "temporal-clinic-b-%")');
+        $wpdb->query('DELETE FROM ' . $db->table('cpms_schedule_slots') . ' WHERE clinic_id IN (SELECT id FROM ' . $db->table('cpms_clinics') . ' WHERE slug LIKE "temporal-clinic-b-%")');
+        $wpdb->query('DELETE FROM ' . $db->table('cpms_patients') . ' WHERE clinic_id IN (SELECT id FROM ' . $db->table('cpms_clinics') . ' WHERE slug LIKE "temporal-clinic-b-%")');
+        $wpdb->query('DELETE FROM ' . $db->table('cpms_clinicians') . ' WHERE clinic_id IN (SELECT id FROM ' . $db->table('cpms_clinics') . ' WHERE slug LIKE "temporal-clinic-b-%")');
+        $wpdb->query('DELETE FROM ' . $db->table('cpms_locations') . ' WHERE clinic_id IN (SELECT id FROM ' . $db->table('cpms_clinics') . ' WHERE slug LIKE "temporal-clinic-b-%")');
+        $wpdb->query('DELETE FROM ' . $db->table('cpms_clinics') . ' WHERE slug LIKE "temporal-clinic-b-%"');
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_settings') . ' WHERE clinic_id = %d', $secondClinicId));
         \ClinicCore\Settings\Settings::flushCache();
     }
