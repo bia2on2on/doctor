@@ -341,114 +341,21 @@ final class Phase2MultiLocationTemporalRedTest extends WP_UnitTestCase
     }
 
     // =================================================================
-    // RED #5 — Reminder day-boundary multi-location
+    // RED #5 — Reminder Location day-boundary
+    //
+    // MOVED (T3 test-infrastructure repair) → tests/Integration/ReminderLocationDayBoundaryTest.php
+    // Reason (D-class defect): the former fixture here compared Asia/Tehran vs Europe/Berlin, whose
+    // local calendar dates differ only inside a ~1.5h UTC window per day. Outside that window it
+    // pinned fixture dates to a historical UTC instant while the product handler kept using the real
+    // current time, so fixture and product disagreed about "today" at almost every execution time.
+    // Its two notification-count queries also filtered on a non-existent column
+    // (`cpms_notifications.patient_id`; the real column is `recipient_patient_id`), so both counts
+    // were always 0 and the assertion could not distinguish a missed reminder from broken
+    // instrumentation. The deterministic replacement (Pacific/Kiritimati vs Pacific/Niue — 25h apart,
+    // so Location-local dates can never be equal) keeps the exact same contract and strengthens —
+    // never weakens — the assertion. T3 RED/GREEN evidence + determinism proof live in
+    // ReminderLocationDayBoundaryTest.
 
-        public function testReminderDayBoundaryMultiLocation(): void
-    {
-        global $wpdb;
-        $db = App::db();
-
-        // Two Locations same Clinic distinct IANA: Tehran and Berlin
-        // At real now (2026-09-12 20:51 UTC), Tehran is 2026-09-13 00:21 next day, Berlin is 2026-09-12 22:51 same day — different local dates
-        $tzTehran = new DateTimeZone('Asia/Tehran');
-        $tzBerlin = new DateTimeZone('Europe/Berlin');
-        $nowUtc = new DateTimeImmutable('now', new DateTimeZone('UTC'));
-        $todayTehran = $nowUtc->setTimezone($tzTehran)->format('Y-m-d');
-        $todayBerlin = $nowUtc->setTimezone($tzBerlin)->format('Y-m-d');
-        $tomorrowTehran = (new DateTimeImmutable($todayTehran, $tzTehran))->add(new \DateInterval('P1D'))->format('Y-m-d');
-        $tomorrowBerlin = (new DateTimeImmutable($todayBerlin, $tzBerlin))->add(new \DateInterval('P1D'))->format('Y-m-d');
-
-        // If dates are same at this UTC hour, force a UTC instant where they differ: 21:00 UTC => Tehran 00:30 next day, Berlin 23:00 same day
-        if ($todayTehran === $todayBerlin) {
-            $forcedUtc = new DateTimeImmutable('2026-09-12 21:00:00', new DateTimeZone('UTC'));
-            $todayTehran = $forcedUtc->setTimezone($tzTehran)->format('Y-m-d'); // 2026-09-13
-            $todayBerlin = $forcedUtc->setTimezone($tzBerlin)->format('Y-m-d'); // 2026-09-12
-            $tomorrowTehran = (new DateTimeImmutable($todayTehran, $tzTehran))->add(new \DateInterval('P1D'))->format('Y-m-d');
-            $tomorrowBerlin = (new DateTimeImmutable($todayBerlin, $tzBerlin))->add(new \DateInterval('P1D'))->format('Y-m-d');
-            $nowUtc = $forcedUtc;
-        }
-
-        self::assertNotSame($todayTehran, $todayBerlin, 'fixture: Tehran and Berlin have different local dates at chosen UTC instant ' . $nowUtc->format('c'));
-
-        // Create confirmed appointments: one in Tehran with slot_date = todayTehran, one in Berlin with slot_date = todayBerlin
-        $apptTehran = $this->fxTInsertAppointment(self::FX_T_LOC_A_ID, $todayTehran, '10:00:00', 'confirmed');
-        $apptBerlin = $this->fxTInsertAppointment(self::FX_T_LOC_B_ID, $todayBerlin, '10:00:00', 'confirmed');
-
-        self::assertGreaterThan(0, $apptTehran, 'fixture: Tehran appointment');
-        self::assertGreaterThan(0, $apptBerlin, 'fixture: Berlin appointment');
-
-        // Product path: ApptReminderHandler::localToday via settings->clinicTimezone() (Asia/Tehran) — clinic-level, not Location
-        $settings = new Settings($db, self::FX_T_CLINIC_ID, App::audit());
-        $clinicTz = $settings->clinicTimezone();
-        self::assertSame('Asia/Tehran', $clinicTz, 'fixture: clinic timezone Tehran');
-
-        $localTodayClinic = (new DateTimeImmutable('now', new DateTimeZone($clinicTz)))->format('Y-m-d');
-        // At real now, localTodayClinic = todayTehran (since clinic tz Tehran)
-        // So handler will query slot_date IN (todayTehran, tomorrowTehran) — Berlin appointment with todayBerlin (different) will NOT be included
-
-        // Exercise real handler with RecordingSmsProvider to avoid real SMS
-        // Setup recording provider
-        $recorder = new RecordingSmsProvider();
-        App::providers()->register($recorder);
-
-        // Need SettingsFactory for SmsService? Use App::smsService() which uses SettingsFactory per clinic
-        $smsService = App::smsService();
-        $notificationService = App::notificationService();
-        $opLogger = App::op();
-
-        // Use Settings bound to our clinic (62201) — ApptReminderHandler uses injected Settings (clinic-level)
-        $handlerSettings = new Settings($db, self::FX_T_CLINIC_ID, App::audit());
-
-        $handler = new \ClinicCore\Application\Jobs\ApptReminderHandler(
-            $db,
-            $handlerSettings,
-            $smsService,
-            $notificationService,
-            $opLogger
-        );
-
-        $remindedCount = $handler([]);
-
-        // Check notifications table for our appointments
-        $notifTehran = (int) $wpdb->get_var($wpdb->prepare(
-            'SELECT COUNT(*) FROM ' . $db->table('cpms_notifications') . ' WHERE clinic_id = %d AND patient_id = %d AND dedupe_key LIKE %s',
-            self::FX_T_CLINIC_ID,
-            $this->fxTPatient,
-            '%apt:' . $apptTehran . ':remind:%'
-        ));
-        $notifBerlin = (int) $wpdb->get_var($wpdb->prepare(
-            'SELECT COUNT(*) FROM ' . $db->table('cpms_notifications') . ' WHERE clinic_id = %d AND patient_id = %d AND dedupe_key LIKE %s',
-            self::FX_T_CLINIC_ID,
-            $this->fxTPatient,
-            '%apt:' . $apptBerlin . ':remind:%'
-        ));
-
-        // Invariant: today/tomorrow per Location timezone not Clinic
-        // Both appointments are today in their own Location, so both should be reminded
-        // But product uses clinic timezone only, so Berlin will be missed when Tehran and Berlin dates differ
-
-        if ($notifBerlin === 0 && $notifTehran > 0) {
-            self::fail(
-                'EXPECTED RED #5 — REMINDER DAY-BOUNDARY: one UTC instant ' . $nowUtc->format('Y-m-d H:i:s') . 'Z = Tehran ' . $todayTehran . ' vs Berlin ' . $todayBerlin .
-                ' different local dates via DateTimeZone. Appointments: Tehran id=' . $apptTehran . ' date=' . $todayTehran . ', Berlin id=' . $apptBerlin . ' date=' . $todayBerlin .
-                ' both confirmed, both should be reminded per Location timezone, but ApptReminderHandler localToday via settings->clinicTimezone()=' . $clinicTz . ' = ' . $localTodayClinic .
-                ' only queried (' . $todayTehran . ',' . $tomorrowTehran . ') — Berlin appointment not reminded (notifTehran=' . $notifTehran . ', notifBerlin=' . $notifBerlin . ', remindedCount=' . $remindedCount . '). ' .
-                'Invariant: today/tomorrow per Location timezone not Clinic.'
-            );
-        }
-
-        if ($notifTehran === 0 && $notifBerlin === 0) {
-            // Both not reminded — maybe quiet hours or other, but still defect if one should be
-            self::fail(
-                'EXPECTED RED #5 — REMINDER DAY-BOUNDARY (both missed): Tehran date=' . $todayTehran . ' Berlin date=' . $todayBerlin .
-                ' clinicToday=' . $localTodayClinic . ' — handler returned ' . $remindedCount . ', notifications 0/0, expected both per Location.'
-            );
-        }
-
-        // If both reminded, then product would have been fixed to per-Location — then this test would PASS (UNEXPECTED PASS for now)
-        self::assertSame(1, $notifTehran, 'Tehran appointment should be reminded');
-        self::assertSame(1, $notifBerlin, 'Berlin appointment should be reminded per Location timezone — currently fails');
-    }
 
     // =================================================================
     // Positive control — single practice
