@@ -55,6 +55,10 @@ final class SlotsGenerateHandler
         );
 
         $generated = 0;
+        // NEGATIVE-CONTROL: deliberate horizon bleed — first clinic's horizon is reused for all.
+        // Scope-neutral construction is preserved; only horizon selection is intentionally broken
+        // to prove the strengthened test can detect A(3) leaking into B(5).
+        $firstHorizon = null;
         foreach ($clinicians as $clinician) {
             $clinicId = (int) ($clinician['clinic_id'] ?? 0);
             if ($clinicId <= 0) {
@@ -74,8 +78,9 @@ final class SlotsGenerateHandler
             }
 
             // Resolve horizon per-Clinic, or use explicit payload override if present.
-            // Payload override is trusted machine config (cron/manual) — no production producer
+            // Payload override is explicit internal payload override — no production producer
             // currently sets horizon_days, so empty-payload path is the recurring semantics.
+            // NEGATIVE-CONTROL: when payload empty, reuse first clinic's horizon for all (bleed).
             $horizon = null;
             if (isset($payload['horizon_days']) && is_numeric($payload['horizon_days'])) {
                 $horizon = (int) $payload['horizon_days'];
@@ -85,9 +90,16 @@ final class SlotsGenerateHandler
                     continue;
                 }
             } else {
-                $horizon = $this->horizonForClinic($clinicId);
+                if ($firstHorizon === null) {
+                    $firstHorizon = $this->horizonForClinic($clinicId);
+                    $horizon = $firstHorizon;
+                } else {
+                    // BUG: reuse first horizon (e.g., Clinic A 3) for Clinic B
+                    $horizon = $firstHorizon;
+                    $this->op->warning('NEGATIVE_CONTROL_HORIZON_BLEED', ['clinic_id' => $clinicId, 'reused_horizon' => $horizon]);
+                }
                 if ($horizon === null) {
-                    // Settings failure for this Clinic — fail-closed for this Clinic only,
+                    // Settings failure for first Clinic — fail-closed for this Clinic only,
                     // do NOT use another Clinic's horizon and do NOT fail entire sweep.
                     continue;
                 }
