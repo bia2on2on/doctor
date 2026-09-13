@@ -166,19 +166,38 @@ trait Phase2MultiLocationTemporalFixture
         return (int) $wpdb->insert_id;
     }
 
-    protected function fxTInsertAppointment(int $locationId, string $date, string $time, string $status = 'confirmed', ?int $slotId = null): int
+    protected function fxTInsertPatient(?int $clinicId = null): int
+    {
+        global $wpdb;
+        $now = App::db()->nowUtcSql();
+        $clinicId = $clinicId ?? self::FX_T_CLINIC_ID;
+        $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_patients (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, "active", %s, %s)',
+            $clinicId,
+            'MR-TEMP-' . bin2hex(random_bytes(3)),
+            'Temporal',
+            'Patient' . bin2hex(random_bytes(2)),
+            '0912000' . random_int(1000, 9999),
+            $now,
+            $now
+        ));
+        return (int) $wpdb->insert_id;
+    }
+
+    protected function fxTInsertAppointment(int $locationId, string $date, string $time, string $status = 'confirmed', ?int $slotId = null, ?int $patientId = null): int
     {
         global $wpdb;
         $now = App::db()->nowUtcSql();
         $slotId = $slotId ?? $this->fxTInsertSlot($locationId, $date, $time, 1, 20, 1);
         $ref = 'TMP-' . bin2hex(random_bytes(6));
+        $patientId = $patientId ?? $this->fxTPatient;
         // Minimal appointment fields with unique reference_code
         $wpdb->query($wpdb->prepare(
             'INSERT INTO ' . $wpdb->prefix . 'cpms_appointments (clinic_id, location_id, clinician_id, patient_id, slot_id, slot_date, slot_time, duration_min, status, reference_code, created_at, updated_at) VALUES (%d, %d, %d, %d, %d, %s, %s, %d, %s, %s, %s, %s)',
             self::FX_T_CLINIC_ID,
             $locationId,
             self::FX_T_CLINICIAN_ID,
-            $this->fxTPatient,
+            $patientId,
             $slotId,
             $date,
             $time,

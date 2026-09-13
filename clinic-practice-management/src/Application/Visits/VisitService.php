@@ -140,20 +140,10 @@ final class VisitService
                         $shouldMarkNoShow = false;
                     }
                 } else {
-                    // No location_id — legacy data — fallback to old behavior? For safety, do NOT mark prematurely
-                    // Use appointmentStartTime with UTC? To preserve backward compat for single-location without location_id,
-                    // we attempt to resolve primary location as last resort, but still fail-closed if not found.
-                    $fallbackTz = $this->resolvePrimaryLocationTimezone($clinicId);
-                    if ($fallbackTz !== null) {
-                        $apptUtc = $this->appointmentUtcInstant($appt, $fallbackTz);
-                        $grace = $this->graceForClinic($clinicId);
-                        if ($apptUtc !== null && $grace !== null) {
-                            $eligible = $apptUtc->add(new DateInterval('PT' . $grace . 'M'));
-                            if ($nowUtc >= $eligible) {
-                                $shouldMarkNoShow = true;
-                            }
-                        }
-                    }
+                    // No location_id — no documented compatibility rule, fail-closed (do NOT mark no_show)
+                    // Per task: do not use fallback primary Location to silently reinterpret
+                    $shouldMarkNoShow = false;
+                    $this->opLog?->warning('visit.location_missing', ['appointment_id' => $appointmentId, 'clinic_id' => $clinicId]);
                 }
 
                 if ($shouldMarkNoShow) {
@@ -545,52 +535,107 @@ final class VisitService
     {
         $nowUtc = new DateTimeImmutable('now', new DateTimeZone('UTC'));
         $count = 0;
+        $cursor = null;
+        $maxScan = 500; // bounded scan per tick to avoid full table
+        $scanned = 0;
+        $batchSize = 100;
+        $maxToProcess = 100; // bounded per tick
 
-        // T2: use candidate method with explicit nowUtc for bounded strategy
-        $candidates = $this->visits->appointmentsPastGraceCandidates(100, $nowUtc);
-
-        foreach ($candidates as $appt) {
-            $clinicId = (int) ($appt['clinic_id'] ?? 0);
-            $locationId = (int) ($appt['location_id'] ?? 0);
-
-            if ($clinicId <= 0 || $locationId <= 0) {
-                continue; // fail-closed skip if missing ids
+        while ($scanned < $maxScan && $count < $maxToProcess) {
+            $candidates = $this->visits->appointmentsPastGraceCandidates($batchSize, $nowUtc, $cursor);
+            if (empty($candidates)) {
+                break;
             }
 
-            $tz = $this->resolveLocationTimezone($locationId, $clinicId);
-            if ($tz === null) {
-                continue; // fail-closed skip
-            }
+            foreach ($candidates as $appt) {
+                $scanned++;
+                // Advance cursor to current row for next batch (progress even if invalid)
+                $cursor = [
+                    'slot_date' => (string) ($appt['slot_date'] ?? ''),
+                    'slot_time' => (string) ($appt['slot_time'] ?? ''),
+                    'id' => (int) ($appt['id'] ?? 0),
+                ];
 
-            $apptUtc = $this->appointmentUtcInstant($appt, $tz);
-            if ($apptUtc === null) {
-                continue;
-            }
+                $clinicId = (int) ($appt['clinic_id'] ?? 0);
+                $locationId = (int) ($appt['location_id'] ?? 0);
 
-            $grace = $this->graceForClinic($clinicId);
-            if ($grace === null) {
-                continue; // fail-closed skip if grace cannot be resolved
-            }
-
-            $eligible = $apptUtc->add(new DateInterval('PT' . $grace . 'M'));
-
-            if ($nowUtc < $eligible) {
-                continue; // not yet past grace — must NOT mark no_show
-            }
-
-            $count += $this->db->transactional(function () use ($appt): int {
-                // دوباره-check داخل Lock — race با Check-in هم‌زمان
-                $fresh = $this->appointments->findForUpdate((int) $appt['id']);
-                if ($fresh === null || (string) $fresh['status'] !== 'confirmed') {
-                    return 0;
+                if ($clinicId <= 0 || $locationId <= 0) {
+                    $this->opLog?->warning('visit.location_missing', ['appointment_id' => $appt['id'] ?? 0, 'clinic_id' => $clinicId, 'location_id' => $locationId]);
+                    continue; // fail-closed
                 }
-                if ($fresh['active_visit_id'] !== null) {
-                    return 0;
-                }
-                $this->markAppointmentNoShow($fresh, $this->db->nowUtc(), null);
 
-                return 1;
-            });
+                // Location validation from JOIN data if available, else fallback to explicit resolve
+                $locClinicId = $appt['loc_clinic_id'] ?? null;
+                $locTimezone = $appt['loc_timezone'] ?? null;
+
+                if ($locClinicId === null) {
+                    // LEFT JOIN returned null => location missing
+                    $this->opLog?->warning('visit.location_missing', ['location_id' => $locationId, 'clinic_id' => $clinicId]);
+                    continue;
+                }
+
+                if ((int) $locClinicId !== $clinicId) {
+                    $this->opLog?->warning('visit.location_clinic_mismatch', [
+                        'location_id' => $locationId,
+                        'expected_clinic' => $clinicId,
+                        'actual_clinic' => (int) $locClinicId,
+                    ]);
+                    continue;
+                }
+
+                $tzName = trim((string) ($locTimezone ?? ''));
+                if ($tzName === '') {
+                    $this->opLog?->warning('visit.location_timezone_missing', ['location_id' => $locationId]);
+                    continue;
+                }
+
+                try {
+                    $tz = new DateTimeZone($tzName);
+                } catch (Throwable $e) {
+                    $this->opLog?->warning('visit.location_timezone_invalid', [
+                        'location_id' => $locationId,
+                        'timezone' => $tzName,
+                        'error' => $e->getMessage(),
+                    ]);
+                    continue;
+                }
+
+                $apptUtc = $this->appointmentUtcInstant($appt, $tz);
+                if ($apptUtc === null) {
+                    continue;
+                }
+
+                $grace = $this->graceForClinic($clinicId);
+                if ($grace === null) {
+                    continue; // fail-closed
+                }
+
+                $eligible = $apptUtc->add(new DateInterval('PT' . $grace . 'M'));
+
+                if ($nowUtc < $eligible) {
+                    continue; // not yet past grace
+                }
+
+                $count += $this->db->transactional(function () use ($appt): int {
+                    $fresh = $this->appointments->findForUpdate((int) $appt['id']);
+                    if ($fresh === null || (string) $fresh['status'] !== 'confirmed') {
+                        return 0;
+                    }
+                    if ($fresh['active_visit_id'] !== null) {
+                        return 0;
+                    }
+                    $this->markAppointmentNoShow($fresh, $this->db->nowUtc(), null);
+                    return 1;
+                });
+
+                if ($count >= $maxToProcess) {
+                    break 2;
+                }
+            }
+
+            if (count($candidates) < $batchSize) {
+                break;
+            }
         }
 
         return $count;
@@ -1025,35 +1070,6 @@ final class VisitService
             ]);
             return null;
         }
-    }
-
-    /**
-     * Fallback for legacy data without location_id — resolve primary location timezone.
-     * Used only when appointment has no location_id, to preserve backward compat for single-location.
-     */
-    private function resolvePrimaryLocationTimezone(int $clinicId): ?DateTimeZone
-    {
-        if ($clinicId <= 0) {
-            return null;
-        }
-
-        $primaryId = $this->db->fetchValue(
-            'SELECT id FROM ' . $this->db->table('cpms_locations') . ' WHERE clinic_id = %d AND is_primary = 1 AND is_active = 1 LIMIT 1',
-            [$clinicId]
-        );
-
-        if ($primaryId === null) {
-            $primaryId = $this->db->fetchValue(
-                'SELECT id FROM ' . $this->db->table('cpms_locations') . ' WHERE clinic_id = %d AND is_active = 1 ORDER BY id ASC LIMIT 1',
-                [$clinicId]
-            );
-        }
-
-        if ($primaryId === null) {
-            return null;
-        }
-
-        return $this->resolveLocationTimezone((int) $primaryId, $clinicId);
     }
 
     /**
