@@ -150,6 +150,7 @@ final class App
     private static ?CredentialVault $vault = null;
     private static ?SmsService $smsService = null;
     private static ?LicenseGate $licenseGate = null;
+    private static ?VisitService $visitService = null;
     private static bool $booted = false;
 
     public static function boot(): void
@@ -413,25 +414,41 @@ final class App
         return $booking;
     }
 
+    /**
+     * M-2 visits.no_show — scope-neutral construction.
+     *
+     * Previously this method called self::settings() (arg 9) and self::notificationService() (arg 7),
+     * both of which eagerly resolved ambient Clinic via App::scope() and threw CLINIC_SCOPE_REQUIRED
+     * in multi-Clinic no-Scope workers (PHP evaluates args left-to-right, so arg 7 threw before arg 9).
+     *
+     * Now it is truly scope-neutral:
+     * - No App::settings() / App::scope() call at construction time;
+     * - NotificationService is resolved per-Clinic via factory from durable row data (visit.clinic_id).
+     */
     public static function visitService(): VisitService
     {
-        static $visits = null;
-        if ($visits === null) {
+        if (self::$visitService === null) {
             $db = self::db();
-            $visits = new VisitService(
+            $op = self::op();
+            self::$visitService = new VisitService(
                 $db,
                 new VisitRepository($db),
                 new AppointmentRepository($db),
                 self::settingsFactory(),
                 self::audit(),
                 self::licenseGate(),
-                self::notificationService(),
-                self::op(),
-                self::settings()
+                $op,
+                static fn (int $clinicId): NotificationService => new NotificationService(
+                    $db,
+                    new NotificationRepository($db),
+                    new MembershipRepository($db),
+                    self::settingsFactory()->forClinic($clinicId),
+                    $op
+                )
             );
         }
 
-        return $visits;
+        return self::$visitService;
     }
 
     public static function scheduleService(): ScheduleService

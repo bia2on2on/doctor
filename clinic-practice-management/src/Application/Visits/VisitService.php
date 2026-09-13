@@ -18,7 +18,6 @@ use ClinicCore\Infrastructure\Audit\AuditLogger;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Repository\AppointmentRepository;
 use ClinicCore\Infrastructure\Repository\VisitRepository;
-use ClinicCore\Settings\Settings;
 use ClinicCore\Settings\SettingsFactory;
 use DateTimeImmutable;
 use DateTimeZone;
@@ -58,11 +57,13 @@ final class VisitService
         private readonly SettingsFactory $settingsFactory,
         private readonly AuditLogger $audit,
         private readonly LicenseGate $licenseGate,
-        private readonly ?NotificationService $notifications = null,
         private readonly ?\ClinicCore\Infrastructure\Logging\OpLogger $opLog = null,
-        private readonly ?Settings $legacySettings = null
+        private readonly mixed $notificationServiceFactory = null
     ) {
     }
+
+    /** @var array<int, \ClinicCore\Application\Notifications\NotificationService> */
+    private array $notificationServicesByClinicId = [];
 
     // ================= V1 — Check-in (D6) =================
 
@@ -319,15 +320,50 @@ final class VisitService
     }
 
     /**
+     * Resolve NotificationService per-Clinic via factory — scope-neutral.
+     * Clinic comes from durable visit row, never from ambient App::scope().
+     */
+    private function notificationServiceForClinic(int $clinicId): ?NotificationService
+    {
+        if ($clinicId <= 0) {
+            return null;
+        }
+        if (isset($this->notificationServicesByClinicId[$clinicId])) {
+            return $this->notificationServicesByClinicId[$clinicId];
+        }
+        $factory = $this->notificationServiceFactory;
+        if (is_callable($factory)) {
+            try {
+                $svc = $factory($clinicId);
+                if ($svc instanceof NotificationService) {
+                    return $this->notificationServicesByClinicId[$clinicId] = $svc;
+                }
+            } catch (Throwable $e) {
+                $this->opLog?->warning('visit.notif_factory_failed', ['clinic_id' => $clinicId, 'error' => $e->getMessage()]);
+                return null;
+            }
+        }
+        // Backward compat: if factory is actually a NotificationService instance (old call-sites)
+        if ($factory instanceof NotificationService) {
+            return $factory;
+        }
+        return null;
+    }
+
+    /**
      * QUEUE.called / QUEUE.ready_payment → اعلان Internal به منشی‌ها
      * (notifications.md §3) — به‌جز فراخواننده؛ R1 مکمل است (Feed صف).
+     *
+     * M-2 fix: Clinic comes from durable visit data, service resolved per-Clinic via factory.
      *
      * @param array<string, mixed> $visit
      * @param array<string, mixed> $meta
      */
     private function publishQueueNotification(string $event, array $visit, int $actorUserId, array $meta): void
     {
-        if ($this->notifications === null) {
+        $clinicId = (int) ($visit['clinic_id'] ?? 0);
+        $notifications = $this->notificationServiceForClinic($clinicId);
+        if ($notifications === null) {
             return;
         }
 
@@ -339,21 +375,20 @@ final class VisitService
             $room = trim((string) ($meta['room'] ?? ''));
 
             if ($event === 'call') {
-                $this->notifications->publishToStaff(
-                    (int) $visit['clinic_id'],
+                $notifications->publishToStaff(
+                    $clinicId,
                     NotificationEvents::QUEUE_CALLED,
                     [
                         'patient_name' => $patientName !== '' ? $patientName : 'بیمار',
                         'room' => $room !== '' ? $room : '—',
                     ],
-                    // Dedupe per نوبتِ فراخوان: هر Recall چرخه جدیدی می‌سازد (r+1)
                     'queue:called:v' . (int) $visit['id'] . ':r' . (int) ($visit['recall_count'] ?? 0),
                     RolesAndCapabilities::QUEUE_READ,
                     $actorUserId
                 );
             } elseif ($event === 'invoice_ready') {
-                $this->notifications->publishToStaff(
-                    (int) $visit['clinic_id'],
+                $notifications->publishToStaff(
+                    $clinicId,
                     NotificationEvents::QUEUE_READY_PAYMENT,
                     ['patient_name' => $patientName !== '' ? $patientName : 'بیمار'],
                     'queue:pay:v' . (int) $visit['id'],
@@ -362,7 +397,6 @@ final class VisitService
                 );
             }
         } catch (Throwable $e) {
-            // اعلان هرگز Transition را شکست نمی‌دهد (الگوی BookingService SMS)
             $this->opLog?->warning('visit.notif_failed', ['visit_id' => (int) $visit['id'], 'error' => $e->getMessage()]);
         }
     }
@@ -1146,6 +1180,10 @@ final class VisitService
     /**
      * T2: per-Clinic grace resolution via SettingsFactory — explicit clinic_id, no ambient.
      *
+     * M-2 fix: Clinic-specific grace must come ONLY from SettingsFactory::forClinic($rowClinicId)
+     * where rowClinicId came from durable appointment data. If resolution fails, fail-closed for that row,
+     * do NOT use legacy ambient Settings, do NOT use another Clinic, do NOT substitute fixed value.
+     *
      * Returns null on failure => fail-closed skip (do NOT mark no_show)
      */
     private function graceForClinic(int $clinicId): ?int
@@ -1159,17 +1197,8 @@ final class VisitService
             $grace = (int) $settings->get('queue.no_show_grace_minutes', 30);
             return max(0, $grace);
         } catch (Throwable $e) {
-            // Try legacy fallback if available
-            if ($this->legacySettings !== null) {
-                try {
-                    $grace = (int) $this->legacySettings->get('queue.no_show_grace_minutes', 30);
-                    return max(0, $grace);
-                } catch (Throwable $e2) {
-                    // fall through
-                }
-            }
             $this->opLog?->warning('visit.grace_resolve_failed', ['clinic_id' => $clinicId, 'error' => $e->getMessage()]);
-            // Fail-closed: do not mark no_show if grace cannot be resolved (avoid premature)
+            // Fail-closed: do not mark no_show if grace cannot be resolved (avoid premature / cross-Clinic bleed)
             return null;
         }
     }
@@ -1180,12 +1209,6 @@ final class VisitService
             $settings = $this->settingsFactory->forClinic($clinicId);
             return (bool) $settings->get('queue.auto_enqueue', true);
         } catch (Throwable $e) {
-            if ($this->legacySettings !== null) {
-                try {
-                    return (bool) $this->legacySettings->get('queue.auto_enqueue', true);
-                } catch (Throwable $e2) {
-                }
-            }
             return true;
         }
     }
@@ -1196,37 +1219,8 @@ final class VisitService
             $settings = $this->settingsFactory->forClinic($clinicId);
             return (int) $settings->get('queue.max_recalls', 3);
         } catch (Throwable $e) {
-            if ($this->legacySettings !== null) {
-                try {
-                    return (int) $this->legacySettings->get('queue.max_recalls', 3);
-                } catch (Throwable $e2) {
-                }
-            }
             return 3;
         }
-    }
-
-    // Legacy wrapper for old callers (tests) — now per-clinic via factory with fallback
-    private function noShowGraceMinutes(): int
-    {
-        // Try to get from current scope if available, otherwise default
-        try {
-            $clinicId = App::scope()->clinicId;
-            $g = $this->graceForClinic($clinicId);
-            if ($g !== null) {
-                return $g;
-            }
-        } catch (Throwable $e) {
-        }
-
-        if ($this->legacySettings !== null) {
-            try {
-                return max(0, (int) $this->legacySettings->get('queue.no_show_grace_minutes', 30));
-            } catch (Throwable $e) {
-            }
-        }
-
-        return 30;
     }
 
     /**
