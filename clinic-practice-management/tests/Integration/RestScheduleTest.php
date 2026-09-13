@@ -149,8 +149,19 @@ final class RestScheduleTest extends WP_UnitTestCase
     {
         wp_set_current_user($this->adminUserId);
 
-        $tomorrow = gmdate('Y-m-d', time() + 86400);
-        $dow = $this->iranianDow($tomorrow);
+        // Phase 2 temporal: slots.generate uses Location-local calendar (Asia/Tehran for clinic 1).
+        // Using UTC tomorrow is flaky when UTC time is after 20:30 (Tehran already next day).
+        // Compute tomorrow in the primary Location's timezone to be deterministic.
+        $locTz = App::db()->fetchValue('SELECT timezone FROM ' . App::db()->table('cpms_locations') . ' WHERE clinic_id = 1 AND is_primary = 1 LIMIT 1');
+        $locTz = is_string($locTz) && $locTz !== '' ? $locTz : 'Asia/Tehran';
+        try {
+            $zone = new \DateTimeZone($locTz);
+        } catch (\Throwable) {
+            $zone = new \DateTimeZone('Asia/Tehran');
+        }
+        $nowInLoc = new \DateTimeImmutable('now', $zone);
+        $tomorrow = $nowInLoc->modify('+1 day')->format('Y-m-d');
+        $dow = $this->iranianDowForZone($tomorrow, $zone);
 
         // Create
         $create = $this->dispatch('POST', self::NS . '/config/schedules', [
@@ -392,6 +403,13 @@ final class RestScheduleTest extends WP_UnitTestCase
         $map = [0 => 1, 1 => 2, 2 => 3, 3 => 4, 4 => 5, 5 => 6, 6 => 0];
 
         return $map[(int) gmdate('w', strtotime($ymd))];
+    }
+
+    private function iranianDowForZone(string $ymd, \DateTimeZone $zone): int
+    {
+        $map = [0 => 1, 1 => 2, 2 => 3, 3 => 4, 4 => 5, 5 => 6, 6 => 0];
+        $dt = new \DateTimeImmutable($ymd . ' 12:00:00', $zone);
+        return $map[(int) $dt->format('w')];
     }
 
     private function assertClinicError(WP_REST_Response $response, string $code): void
