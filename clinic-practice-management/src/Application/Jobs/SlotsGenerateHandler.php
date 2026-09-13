@@ -79,7 +79,7 @@ final class SlotsGenerateHandler
         $clinicians = $this->db->fetchAll(
             'SELECT c.id AS clinician_id, c.clinic_id, s.clinic_id AS schedule_clinic_id, s.location_id, s.day_of_week, s.start_time, s.end_time,
                     s.break_start, s.break_end, s.appointment_duration_min, s.slot_capacity,
-                    l.id AS loc_id, l.clinic_id AS location_clinic_id, l.timezone AS location_timezone, l.is_active AS location_is_active
+                    l.id AS loc_id, l.clinic_id AS location_clinic_id, l.timezone AS location_timezone
              FROM ' . $this->db->table('cpms_clinicians') . ' c
              JOIN ' . $this->db->table('cpms_schedule') . ' s ON s.clinician_id = c.id AND s.is_active = 1
              LEFT JOIN ' . $this->db->table('cpms_locations') . ' l ON l.id = s.location_id
@@ -132,14 +132,10 @@ final class SlotsGenerateHandler
                 continue;
             }
 
-            if ((int) ($clinician['location_is_active'] ?? 0) !== 1) {
-                $this->op->warning('SLOTS_GEN_SKIP_LOCATION_INACTIVE', [
-                    'clinician_id' => $clinician['clinician_id'],
-                    'clinic_id' => $clinicId,
-                    'location_id' => $scheduleLocationId,
-                ]);
-                continue;
-            }
+            // NOTE: `location.is_active` deliberately does NOT gate generation here.
+            // Whether deactivating a Location must stop generation for existing
+            // Schedules is a separate product policy with no verified canonical
+            // contract, and it is not required by this timezone correction.
 
             // Validated IANA timezone — no fallback to Clinic/WordPress/PHP timezone.
             $locationTz = $this->locationTimezone((string) ($clinician['location_timezone'] ?? ''));
