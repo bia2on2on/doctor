@@ -49,21 +49,25 @@ final class VisitNoShowContinuationTest extends WP_UnitTestCase
         $nowUtc = new DateTimeImmutable('now', new DateTimeZone('UTC'));
         $nowTehran = $nowUtc->setTimezone($tzTehran);
 
-        // Create 2 overdue appointments with known ordering
+        // Create 2 overdue appointments with known ordering and unique slot_time
         $past = $nowTehran->sub(new \DateInterval('PT40M'));
         $ids = [];
         for ($i = 0; $i < 2; $i++) {
+            $slotDt = $past->add(new \DateInterval('PT' . $i . 'M'));
             $wpdb->query($wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_schedule_slots (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at) VALUES (%d, %d, %d, %s, %s, 20, 1, 1, 0, 1, %s, %s)',
                 self::FX_T_CLINIC_ID,
                 self::FX_T_LOC_A_ID,
                 self::FX_T_CLINICIAN_ID,
-                $past->format('Y-m-d'),
-                $past->format('H:i:s'),
+                $slotDt->format('Y-m-d'),
+                $slotDt->format('H:i:s'),
                 $now,
                 $now
             ));
             $slotId = (int) $wpdb->insert_id;
+            if ($slotId === 0) {
+                continue;
+            }
             $wpdb->query($wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_appointments (clinic_id, location_id, reference_code, clinician_id, patient_id, slot_id, slot_date, slot_time, duration_min, slot_end_time, status, created_at, updated_at) VALUES (%d, %d, %s, %d, %d, %d, %s, %s, 20, %s, %s, %s, %s)',
                 self::FX_T_CLINIC_ID,
@@ -72,9 +76,9 @@ final class VisitNoShowContinuationTest extends WP_UnitTestCase
                 self::FX_T_CLINICIAN_ID,
                 $this->fxTPatient,
                 $slotId,
-                $past->format('Y-m-d'),
-                $past->format('H:i:s'),
-                $past->add(new \DateInterval('PT20M'))->format('H:i:s'),
+                $slotDt->format('Y-m-d'),
+                $slotDt->format('H:i:s'),
+                $slotDt->add(new \DateInterval('PT20M'))->format('H:i:s'),
                 'confirmed',
                 $now,
                 $now
@@ -171,19 +175,26 @@ final class VisitNoShowContinuationTest extends WP_UnitTestCase
         $nowTehran = $nowUtc->setTimezone($tzTehran);
         $past = $nowTehran->sub(new \DateInterval('PT40M'));
 
-        // Insert 150 overdue appointments
+        // Insert 150 overdue appointments with unique slot_time to avoid u_slot violation
         for ($i = 0; $i < 150; $i++) {
+            $slotDt = $past->add(new \DateInterval('PT' . $i . 'M'));
+            // Ensure slot_time still overdue (past is 40 min ago, adding minutes may make it future after 40, so subtract 1 hour base)
+            // Use past minus 1 hour plus i minutes to keep all overdue and unique
+            $slotDt = $past->sub(new \DateInterval('PT1H'))->add(new \DateInterval('PT' . $i . 'M'));
             $wpdb->query($wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_schedule_slots (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at) VALUES (%d, %d, %d, %s, %s, 20, 1, 1, 0, 1, %s, %s)',
                 self::FX_T_CLINIC_ID,
                 self::FX_T_LOC_A_ID,
                 self::FX_T_CLINICIAN_ID,
-                $past->format('Y-m-d'),
-                $past->format('H:i:s'),
+                $slotDt->format('Y-m-d'),
+                $slotDt->format('H:i:s'),
                 $now,
                 $now
             ));
             $slotId = (int) $wpdb->insert_id;
+            if ($slotId === 0) {
+                continue;
+            }
             $wpdb->query($wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_appointments (clinic_id, location_id, reference_code, clinician_id, patient_id, slot_id, slot_date, slot_time, duration_min, slot_end_time, status, created_at, updated_at) VALUES (%d, %d, %s, %d, %d, %d, %s, %s, 20, %s, %s, %s, %s)',
                 self::FX_T_CLINIC_ID,
@@ -192,9 +203,9 @@ final class VisitNoShowContinuationTest extends WP_UnitTestCase
                 self::FX_T_CLINICIAN_ID,
                 $this->fxTPatient,
                 $slotId,
-                $past->format('Y-m-d'),
-                $past->format('H:i:s'),
-                $past->add(new \DateInterval('PT20M'))->format('H:i:s'),
+                $slotDt->format('Y-m-d'),
+                $slotDt->format('H:i:s'),
+                $slotDt->add(new \DateInterval('PT20M'))->format('H:i:s'),
                 'confirmed',
                 $now,
                 $now
@@ -230,17 +241,21 @@ final class VisitNoShowContinuationTest extends WP_UnitTestCase
         $past = $nowTehran->sub(new \DateInterval('PT40M'));
 
         for ($i = 0; $i < 150; $i++) {
+            $slotDt = $past->sub(new \DateInterval('PT1H'))->add(new \DateInterval('PT' . $i . 'M'));
             $wpdb->query($wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_schedule_slots (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at) VALUES (%d, %d, %d, %s, %s, 20, 1, 1, 0, 1, %s, %s)',
                 self::FX_T_CLINIC_ID,
                 self::FX_T_LOC_A_ID,
                 self::FX_T_CLINICIAN_ID,
-                $past->format('Y-m-d'),
-                $past->format('H:i:s'),
+                $slotDt->format('Y-m-d'),
+                $slotDt->format('H:i:s'),
                 $now,
                 $now
             ));
             $slotId = (int) $wpdb->insert_id;
+            if ($slotId === 0) {
+                continue;
+            }
             $wpdb->query($wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_appointments (clinic_id, location_id, reference_code, clinician_id, patient_id, slot_id, slot_date, slot_time, duration_min, slot_end_time, status, created_at, updated_at) VALUES (%d, %d, %s, %d, %d, %d, %s, %s, 20, %s, %s, %s, %s)',
                 self::FX_T_CLINIC_ID,
@@ -249,9 +264,9 @@ final class VisitNoShowContinuationTest extends WP_UnitTestCase
                 self::FX_T_CLINICIAN_ID,
                 $this->fxTPatient,
                 $slotId,
-                $past->format('Y-m-d'),
-                $past->format('H:i:s'),
-                $past->add(new \DateInterval('PT20M'))->format('H:i:s'),
+                $slotDt->format('Y-m-d'),
+                $slotDt->format('H:i:s'),
+                $slotDt->add(new \DateInterval('PT20M'))->format('H:i:s'),
                 'confirmed',
                 $now,
                 $now
