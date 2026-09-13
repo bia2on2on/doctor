@@ -1176,9 +1176,10 @@ final class App
                     ))($payload);
                 })
                 ->register('fu.reminder', static function (array $payload) use ($db, $op): void {
-                    // M-2 fu.reminder — scope-neutral construction (no ambient Clinic at build time).
+                    // M-2 fu.reminder — scope-neutral + starvation continuation
                     // Per-Clinic NotificationService is resolved from durable row clinic_id via factory,
                     // matching proven patterns for visits.no_show, appt.reminder, slots.generate.
+                    // Continuation uses existing job type fu.reminder and payload_json, no new type.
                     (new FollowUpReminderHandler(
                         $db,
                         self::settingsFactory(),
@@ -1190,7 +1191,8 @@ final class App
                             self::settingsFactory()->forClinic($clinicId),
                             $op
                         ),
-                        $op
+                        $op,
+                        self::jobs()
                     ))($payload);
                 })
                 ->register('report.export', static function (array $payload): void {

@@ -279,7 +279,7 @@ final class FollowUpReminderStarvationRedTest extends WP_UnitTestCase
         return $local->modify('+1 day')->format('Y-m-d');
     }
 
-    private function buildHandler(?DateTimeImmutable $referenceUtc = null): object
+    private function buildHandler(?DateTimeImmutable $referenceUtc = null, bool $withQueue = false): object
     {
         $db = App::db();
         $op = App::op();
@@ -293,6 +293,8 @@ final class FollowUpReminderStarvationRedTest extends WP_UnitTestCase
                     $firstType = $params[1]->getType();
                     if ($firstType instanceof \ReflectionNamedType && $firstType->getName() === \ClinicCore\Settings\SettingsFactory::class) {
                         $utcClosure = $referenceUtc === null ? null : static fn (): DateTimeImmutable => $referenceUtc;
+                        $queue = $withQueue ? App::jobs() : null;
+                        // New signature: (db, settingsFactory, sms, notificationFactory, op, queue, utcNow)
                         return new \ClinicCore\Application\Jobs\FollowUpReminderHandler(
                             $db,
                             App::settingsFactory(),
@@ -305,6 +307,7 @@ final class FollowUpReminderStarvationRedTest extends WP_UnitTestCase
                                 $op
                             ),
                             $op,
+                            $queue,
                             $utcClosure
                         );
                     }
@@ -388,21 +391,58 @@ final class FollowUpReminderStarvationRedTest extends WP_UnitTestCase
         self::assertSame($this->otherClinicId, $sampleVisitClinic, 'mismatch visit belongs to other clinic');
         self::assertNotSame($this->clinicId, $sampleVisitClinic);
 
-        // Invoke handler 3 times as real job would (independent executions, same reference_utc)
-        $handler1 = $this->buildHandler($referenceUtc);
-        $result1 = $handler1([]);
-        $handler2 = $this->buildHandler($referenceUtc);
-        $result2 = $handler2([]);
-        $handler3 = $this->buildHandler($referenceUtc);
-        $result3 = $handler3([]);
+        // --- GREEN path: use durable continuation via JobQueue ---
+        // Enqueue root fu.reminder job (empty payload) with referenceUtc as runAt
+        // The handler will use rootReferenceUtc() which will be close to referenceUtc, but we also test continuation chain preserves reference_utc
+        // For deterministic test, we will run handler directly with queue to generate continuation chain,
+        // then process continuation payloads manually, mimicking real job execution.
+
+        $this->purgeJobs();
+        $this->resetAppCaches();
+
+        // First, test direct handler without queue still shows starvation if no continuation (for RED evidence)
+        // But for GREEN, we use queue
+
+        $queue = App::jobs();
+        $queue->enqueue('fu.reminder', [], $referenceUtc, 4, 3);
+
+        // Run tick multiple times to process root + continuation chain
+        // App::runTick handles scheduler and dispatcher with GET_LOCK
+        $ticks = 0;
+        $maxTicks = 5;
+        for ($t = 0; $t < $maxTicks; $t++) {
+            $processed = App::runTick(20);
+            $ticks++;
+            if ($processed === -1) {
+                // lock held, retry
+                continue;
+            }
+            // Check if valid already reminded
+            $reminded = $wpdb->get_var($wpdb->prepare('SELECT reminder_sent_at FROM ' . $db->table('cpms_follow_ups') . ' WHERE id = %d', $validId));
+            if ($reminded !== null) {
+                break;
+            }
+        }
 
         $remindedValid = $wpdb->get_var($wpdb->prepare('SELECT reminder_sent_at FROM ' . $db->table('cpms_follow_ups') . ' WHERE id = %d', $validId));
         $notifValid = (int) $wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM ' . $db->table('cpms_notifications') . ' WHERE clinic_id = %d AND template = %s AND recipient_patient_id = %d', $this->clinicId, 'followup_reminder', $this->patientId));
 
         $prefixStillPending = (int) $wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM ' . $db->table('cpms_follow_ups') . ' WHERE id IN (' . implode(',', array_map('intval', $prefixIds)) . ') AND reminder_sent_at IS NULL'));
 
+        // Check continuation payloads reference_utc preservation
+        $jobs = $db->fetchAll('SELECT payload_json FROM ' . $db->table('cpms_jobs') . ' WHERE type = %s ORDER BY id DESC LIMIT 10', ['fu.reminder']);
+        $refUtcs = [];
+        foreach ($jobs as $j) {
+            $p = json_decode($j['payload_json'] ?? '', true);
+            if (is_array($p) && isset($p['reference_utc'])) {
+                $refUtcs[] = $p['reference_utc'];
+            }
+        }
+        $uniqueRefUtcs = array_unique($refUtcs);
+        $refUtcPreserved = count($uniqueRefUtcs) <= 1; // all continuation share same refUtc or no continuation left
+
         $diag = sprintf(
-            'Starvation RED: clinic=%d loc=%d tz=%s tomorrow=%s refUtc=%s prefixCount=%d maxPrefix=%d validId=%d validAfterPrefix=%s result1=%s result2=%s result3=%s remindedValid=%s notifValid=%d prefixStillPending=%d',
+            'Starvation GREEN: clinic=%d loc=%d tz=%s tomorrow=%s refUtc=%s prefixCount=%d maxPrefix=%d validId=%d validAfterPrefix=%s ticks=%d remindedValid=%s notifValid=%d prefixStillPending=%d refUtcPreserved=%s refUtcs=%s jobs=%s',
             $this->clinicId,
             $this->locId,
             self::TZ,
@@ -412,23 +452,69 @@ final class FollowUpReminderStarvationRedTest extends WP_UnitTestCase
             $maxPrefix,
             $validId,
             $validId > $maxPrefix ? 'yes' : 'no',
-            var_export($result1, true),
-            var_export($result2, true),
-            var_export($result3, true),
+            $ticks,
             $remindedValid ? 'set' : 'null',
             $notifValid,
-            $prefixStillPending
+            $prefixStillPending,
+            $refUtcPreserved ? 'yes' : 'no',
+            json_encode($refUtcs),
+            json_encode($jobs)
         );
 
-        // RED expects valid to be reminded after 3 independent executions (with durable progress)
-        // Without continuation, it will remain null -> failure proves starvation
+        // GREEN expects valid to be reminded despite 100 rejected prefix rows via durable continuation
         self::assertNotNull($remindedValid, 'Valid target must be reminded despite 100 rejected prefix rows - starvation must be fixed via durable continuation. ' . $diag);
         self::assertSame(1, $notifValid, 'Valid target notification must exist after fixing starvation. ' . $diag);
         self::assertSame(100, $prefixStillPending, 'Prefix rows must remain pending (rejected) and not block progress after fix. ' . $diag);
+        self::assertTrue($refUtcPreserved, 'reference_utc must remain constant across continuation chain. ' . $diag);
 
         // Cleanup
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_follow_ups') . ' WHERE clinic_id = %d', $this->clinicId));
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_notifications') . ' WHERE clinic_id = %d', $this->clinicId));
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_sms_messages') . ' WHERE clinic_id = %d', $this->clinicId));
+        $this->purgeJobs();
+    }
+
+    public function testMalformedContinuationFailsClosed(): void
+    {
+        global $wpdb;
+        $db = App::db();
+
+        $this->purgeJobs();
+        $this->resetAppCaches();
+
+        $handler = $this->buildHandler(null, true);
+
+        $malformedPayloads = [
+            ['continuation' => true, 'version' => 1, 'reference_utc' => 'invalid', 'cursor' => ['id' => 1]],
+            ['continuation' => true, 'version' => 999, 'reference_utc' => gmdate('Y-m-d\TH:i:s\Z'), 'cursor' => ['id' => 1]],
+            ['continuation' => true, 'version' => 1, 'reference_utc' => gmdate('Y-m-d\TH:i:s\Z'), 'cursor' => ['id' => -5]],
+            ['continuation' => true, 'version' => 1, 'reference_utc' => gmdate('Y-m-d\TH:i:s\Z'), 'cursor' => ['id' => 0]],
+            ['continuation' => false, 'version' => 1, 'reference_utc' => gmdate('Y-m-d\TH:i:s\Z'), 'cursor' => ['id' => 1]],
+            ['clinic_id' => 123, 'continuation' => true, 'version' => 1, 'reference_utc' => gmdate('Y-m-d\TH:i:s\Z'), 'cursor' => ['id' => 1]],
+        ];
+
+        foreach ($malformedPayloads as $idx => $payload) {
+            $thrown = false;
+            $code = '';
+            try {
+                $handler($payload);
+            } catch (\ClinicCore\Application\Jobs\JobPayloadInvalidException $e) {
+                $thrown = true;
+                $code = $e->errorCode;
+            } catch (\Throwable $e) {
+                $thrown = true;
+                $code = $e->getMessage();
+            }
+            self::assertTrue($thrown, 'Malformed payload must throw, idx=' . $idx . ' payload=' . json_encode($payload));
+            if ($code !== '') {
+                self::assertStringContainsString('JOB_PAYLOAD_INVALID', $code, 'Error code must be JOB_PAYLOAD_INVALID for malformed payload idx=' . $idx);
+            }
+        }
+
+        // Ensure no continuation was enqueued for malformed payloads
+        $count = (int) $db->fetchValue('SELECT COUNT(*) FROM ' . $db->table('cpms_jobs') . ' WHERE type = %s', ['fu.reminder']);
+        self::assertSame(0, $count, 'Malformed payload must not enqueue continuation');
+
+        $this->purgeJobs();
     }
 }
