@@ -101,7 +101,6 @@ final class FollowUpReminderM2WiringRedTest extends WP_UnitTestCase
         $db = App::db();
         $now = $db->nowUtcSql();
 
-        // Org auto ID
         $orgSlug = 'fu-wiring-org-' . bin2hex(random_bytes(4));
         $wpdb->query($wpdb->prepare(
             'INSERT INTO ' . $wpdb->prefix . 'cpms_organizations (name, slug, status, created_at, updated_at) VALUES (%s, %s, "active", %s, %s)',
@@ -113,7 +112,6 @@ final class FollowUpReminderM2WiringRedTest extends WP_UnitTestCase
         $this->orgId = (int) $wpdb->insert_id;
         self::assertGreaterThan(0, $this->orgId, 'org inserted');
 
-        // Clinic A auto ID
         $clinicASlug = 'fu-wiring-clinic-a-' . bin2hex(random_bytes(4));
         $wpdb->query($wpdb->prepare(
             'INSERT INTO ' . $wpdb->prefix . 'cpms_clinics (organization_id, name, slug, timezone, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, %s)',
@@ -127,7 +125,6 @@ final class FollowUpReminderM2WiringRedTest extends WP_UnitTestCase
         $this->clinicA = (int) $wpdb->insert_id;
         self::assertGreaterThan(1, $this->clinicA, 'clinic A id >1');
 
-        // Clinic B auto ID
         $clinicBSlug = 'fu-wiring-clinic-b-' . bin2hex(random_bytes(4));
         $wpdb->query($wpdb->prepare(
             'INSERT INTO ' . $wpdb->prefix . 'cpms_clinics (organization_id, name, slug, timezone, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, %s)',
@@ -142,7 +139,6 @@ final class FollowUpReminderM2WiringRedTest extends WP_UnitTestCase
         self::assertGreaterThan(1, $this->clinicB, 'clinic B id >1');
         self::assertNotSame($this->clinicA, $this->clinicB, 'two distinct clinics');
 
-        // Locations auto IDs
         $locASlug = 'fu-wiring-loc-a-' . bin2hex(random_bytes(2));
         $wpdb->query($wpdb->prepare(
             'INSERT INTO ' . $wpdb->prefix . 'cpms_locations (clinic_id, name, slug, timezone, is_primary, is_active, created_at, updated_at) VALUES (%d, %s, %s, %s, 1, 1, %s, %s)',
@@ -169,7 +165,6 @@ final class FollowUpReminderM2WiringRedTest extends WP_UnitTestCase
         $this->locB = (int) $wpdb->insert_id;
         self::assertGreaterThan(0, $this->locB);
 
-        // Clinicians auto IDs
         $wpdb->query($wpdb->prepare(
             'INSERT INTO ' . $wpdb->prefix . 'cpms_clinicians (clinic_id, full_name, is_active, created_at, updated_at) VALUES (%d, %s, 1, %s, %s)',
             $this->clinicA,
@@ -188,7 +183,6 @@ final class FollowUpReminderM2WiringRedTest extends WP_UnitTestCase
         ));
         $this->clinicianB = (int) $wpdb->insert_id;
 
-        // Settings per clinic — quiet hours open deterministically
         \ClinicCore\Settings\Settings::flushCache();
         $settingsA = new \ClinicCore\Settings\Settings($db, $this->clinicA, App::audit());
         $settingsA->set('notif.quiet_hours_start', '00:00');
@@ -247,7 +241,7 @@ final class FollowUpReminderM2WiringRedTest extends WP_UnitTestCase
     {
         global $wpdb;
         $db = App::db();
-        $wpdb->query('DELETE FROM ' . $db->table('cpms_jobs') . ' WHERE type IN ("visits.no_show","slots.generate","holds.expire","cleanup.otp","cleanup.rate_limits","cleanup.idem","cleanup.oplog","handwriting.gc","notif.dispatch","appt.reminder","fu.reminder","license.refresh","backup.run","report.export","sms.send")');
+        $wpdb->query('DELETE FROM ' . $db->table('cpms_jobs') . ' WHERE type IN (\'visits.no_show\',\'slots.generate\',\'holds.expire\',\'cleanup.otp\',\'cleanup.rate_limits\',\'cleanup.idem\',\'cleanup.oplog\',\'handwriting.gc\',\'notif.dispatch\',\'appt.reminder\',\'fu.reminder\',\'license.refresh\',\'backup.run\',\'report.export\',\'sms.send\')');
     }
 
     public function testProductionWiringMustBeScopeNeutralWithEmptyPayload(): void
@@ -255,13 +249,11 @@ final class FollowUpReminderM2WiringRedTest extends WP_UnitTestCase
         global $wpdb;
         $db = App::db();
 
-        // Precondition: >=2 clinics
         self::assertGreaterThan(0, $this->clinicA);
         self::assertGreaterThan(0, $this->clinicB);
         $countAll = (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $db->table('cpms_clinics'));
         self::assertGreaterThan(1, $countAll, 'total clinics >1 to trigger CLINIC_SCOPE_REQUIRED, found ' . $countAll);
 
-        // Precondition: ScopeContext null
         $this->resetAppCaches();
         $explicit = ScopeContext::tryGet();
         self::assertNull($explicit, 'no ScopeContext must be set');
@@ -271,7 +263,6 @@ final class FollowUpReminderM2WiringRedTest extends WP_UnitTestCase
 
         $this->assertDispatcherCacheFresh();
 
-        // Precondition: App::scope() throws CLINIC_SCOPE_REQUIRED
         try {
             $scope = App::scope();
             self::fail('App::scope() should throw CLINIC_SCOPE_REQUIRED when multiple clinics and no explicit scope, but got clinicId=' . $scope->clinicId);
@@ -281,7 +272,6 @@ final class FollowUpReminderM2WiringRedTest extends WP_UnitTestCase
 
         $this->purgeJobs();
 
-        // Enqueue fu.reminder with EMPTY payload and maxAttempts=1
         $queue = App::jobs();
         $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
         $jobId = $queue->enqueue('fu.reminder', [], $now, 4, 1);
@@ -290,7 +280,6 @@ final class FollowUpReminderM2WiringRedTest extends WP_UnitTestCase
         self::assertSame('queued', $jobBefore['status']);
         self::assertSame(1, (int) $jobBefore['max_attempts']);
 
-        // Execute via real production path: App::runTick
         $tickResult = App::runTick(20);
 
         $jobAfter = $wpdb->get_row($wpdb->prepare('SELECT * FROM ' . $db->table('cpms_jobs') . ' WHERE id = %d', $jobId), ARRAY_A);

@@ -100,7 +100,6 @@ final class FollowUpReminderLocationCalendarRedTest extends WP_UnitTestCase
         $db = App::db();
         $now = $db->nowUtcSql();
 
-        // Org auto
         $orgSlug = 'fu-cal-org-' . bin2hex(random_bytes(4));
         $wpdb->query($wpdb->prepare(
             'INSERT INTO ' . $wpdb->prefix . 'cpms_organizations (name, slug, status, created_at, updated_at) VALUES (%s, %s, "active", %s, %s)',
@@ -112,7 +111,6 @@ final class FollowUpReminderLocationCalendarRedTest extends WP_UnitTestCase
         $this->orgId = (int) $wpdb->insert_id;
         self::assertGreaterThan(0, $this->orgId);
 
-        // Clinic with TZ_A
         $clinicSlug = 'fu-cal-clinic-' . bin2hex(random_bytes(4));
         $wpdb->query($wpdb->prepare(
             'INSERT INTO ' . $wpdb->prefix . 'cpms_clinics (organization_id, name, slug, timezone, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, %s)',
@@ -126,7 +124,6 @@ final class FollowUpReminderLocationCalendarRedTest extends WP_UnitTestCase
         $this->clinicId = (int) $wpdb->insert_id;
         self::assertGreaterThan(0, $this->clinicId);
 
-        // Locations
         $locASlug = 'fu-cal-loc-a-' . bin2hex(random_bytes(2));
         $wpdb->query($wpdb->prepare(
             'INSERT INTO ' . $wpdb->prefix . 'cpms_locations (clinic_id, name, slug, timezone, is_primary, is_active, created_at, updated_at) VALUES (%d, %s, %s, %s, 1, 1, %s, %s)',
@@ -153,13 +150,11 @@ final class FollowUpReminderLocationCalendarRedTest extends WP_UnitTestCase
         $this->locB = (int) $wpdb->insert_id;
         self::assertGreaterThan(0, $this->locB);
 
-        // Verify TZs
         $tzA = $wpdb->get_var($wpdb->prepare('SELECT timezone FROM ' . $db->table('cpms_locations') . ' WHERE id = %d', $this->locA));
         $tzB = $wpdb->get_var($wpdb->prepare('SELECT timezone FROM ' . $db->table('cpms_locations') . ' WHERE id = %d', $this->locB));
         self::assertSame(self::TZ_A, $tzA, 'loc A TZ');
         self::assertSame(self::TZ_B, $tzB, 'loc B TZ');
 
-        // Clinician
         $wpdb->query($wpdb->prepare(
             'INSERT INTO ' . $wpdb->prefix . 'cpms_clinicians (clinic_id, full_name, is_active, created_at, updated_at) VALUES (%d, %s, 1, %s, %s)',
             $this->clinicId,
@@ -170,7 +165,6 @@ final class FollowUpReminderLocationCalendarRedTest extends WP_UnitTestCase
         $this->clinicianId = (int) $wpdb->insert_id;
         self::assertGreaterThan(0, $this->clinicianId);
 
-        // Patients
         $wpdb->query($wpdb->prepare(
             'INSERT INTO ' . $wpdb->prefix . 'cpms_patients (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, "active", %s, %s)',
             $this->clinicId,
@@ -195,7 +189,6 @@ final class FollowUpReminderLocationCalendarRedTest extends WP_UnitTestCase
         ));
         $this->patientB = (int) $wpdb->insert_id;
 
-        // Visits with explicit Locations
         $wpdb->query($wpdb->prepare(
             'INSERT INTO ' . $wpdb->prefix . 'cpms_visits (clinic_id, location_id, clinician_id, patient_id, source, status, visit_date, check_in_at, created_at, updated_at) VALUES (%d, %d, %d, %d, "walk_in", "checked_in", %s, %s, %s, %s)',
             $this->clinicId,
@@ -222,7 +215,6 @@ final class FollowUpReminderLocationCalendarRedTest extends WP_UnitTestCase
         ));
         $this->visitB = (int) $wpdb->insert_id;
 
-        // Settings per clinic — quiet hours open deterministically
         Settings::flushCache();
         $settings = new Settings($db, $this->clinicId, App::audit());
         $settings->set('notif.quiet_hours_start', '00:00');
@@ -264,7 +256,7 @@ final class FollowUpReminderLocationCalendarRedTest extends WP_UnitTestCase
     {
         global $wpdb;
         $db = App::db();
-        $wpdb->query('DELETE FROM ' . $db->table('cpms_jobs') . ' WHERE type IN ("visits.no_show","slots.generate","holds.expire","cleanup.otp","cleanup.rate_limits","cleanup.idem","cleanup.oplog","handwriting.gc","notif.dispatch","appt.reminder","fu.reminder","license.refresh","backup.run","report.export","sms.send")');
+        $wpdb->query('DELETE FROM ' . $db->table('cpms_jobs') . ' WHERE type IN (\'visits.no_show\',\'slots.generate\',\'holds.expire\',\'cleanup.otp\',\'cleanup.rate_limits\',\'cleanup.idem\',\'cleanup.oplog\',\'handwriting.gc\',\'notif.dispatch\',\'appt.reminder\',\'fu.reminder\',\'license.refresh\',\'backup.run\',\'report.export\',\'sms.send\')');
     }
 
     private function locationLocalTomorrow(DateTimeImmutable $utc, string $tz): string
@@ -279,7 +271,6 @@ final class FollowUpReminderLocationCalendarRedTest extends WP_UnitTestCase
         $db = App::db();
         $op = App::op();
 
-        // Try new scope-neutral constructor if available (after GREEN)
         try {
             $ref = new \ReflectionClass(\ClinicCore\Application\Jobs\FollowUpReminderHandler::class);
             $ctor = $ref->getConstructor();
@@ -307,10 +298,8 @@ final class FollowUpReminderLocationCalendarRedTest extends WP_UnitTestCase
                 }
             }
         } catch (\Throwable $e) {
-            // fall through to legacy
         }
 
-        // Legacy wiring — set explicit scope to bypass CLINIC_SCOPE_REQUIRED
         App::replaceExplicitScope(ClinicScope::forClinic($this->clinicId));
         $settings = App::settings();
         $sms = App::smsService();
@@ -336,10 +325,8 @@ final class FollowUpReminderLocationCalendarRedTest extends WP_UnitTestCase
         $db = App::db();
         $nowSql = $db->nowUtcSql();
 
-        // Reference-time safety: capture UTC immediately before execution
         $beforeUtc = new DateTimeImmutable('now', new DateTimeZone('UTC'));
 
-        // Compute per-Location tomorrow using explicit DateTimeImmutable/DateTimeZone
         $tomorrowA = $this->locationLocalTomorrow($beforeUtc, self::TZ_A);
         $tomorrowB = $this->locationLocalTomorrow($beforeUtc, self::TZ_B);
 
@@ -352,7 +339,6 @@ final class FollowUpReminderLocationCalendarRedTest extends WP_UnitTestCase
         $offsetDiff = abs($tzA->getOffset($beforeUtc) - $tzB->getOffset($beforeUtc));
         self::assertGreaterThanOrEqual(86400, $offsetDiff, 'Offset diff must be >= 1 day for deterministic split');
 
-        // Insert follow-ups linked to exact Visits, suggested_date derived from each Visit Location's local calendar
         $wpdb->query($wpdb->prepare(
             'INSERT INTO ' . $wpdb->prefix . 'cpms_follow_ups (clinic_id, visit_id, patient_id, clinician_id, is_needed, suggested_date, interval_days, reason, status, created_at) VALUES (%d, %d, %d, %d, 1, %s, 30, %s, "pending", %s)',
             $this->clinicId,
@@ -449,7 +435,6 @@ final class FollowUpReminderLocationCalendarRedTest extends WP_UnitTestCase
         $beforeUtc = new DateTimeImmutable('now', new DateTimeZone('UTC'));
         $tomorrowA = $this->locationLocalTomorrow($beforeUtc, self::TZ_A);
 
-        // Create a second clinic and location to simulate mismatch
         $otherClinicId = 0;
         $otherLocId = 0;
         $mismatchVisitId = 0;
@@ -491,7 +476,6 @@ final class FollowUpReminderLocationCalendarRedTest extends WP_UnitTestCase
         ));
         $mismatchVisitId = (int) $wpdb->insert_id;
 
-        // Valid follow-up (should succeed)
         $wpdb->query($wpdb->prepare(
             'INSERT INTO ' . $wpdb->prefix . 'cpms_follow_ups (clinic_id, visit_id, patient_id, clinician_id, is_needed, suggested_date, interval_days, reason, status, created_at) VALUES (%d, %d, %d, %d, 1, %s, 30, %s, "pending", %s)',
             $this->clinicId,
@@ -504,7 +488,6 @@ final class FollowUpReminderLocationCalendarRedTest extends WP_UnitTestCase
         ));
         $validFuId = (int) $wpdb->insert_id;
 
-        // Mismatched follow-up: clinic_id = our clinic, but visit belongs to other clinic
         $wpdb->query($wpdb->prepare(
             'INSERT INTO ' . $wpdb->prefix . 'cpms_follow_ups (clinic_id, visit_id, patient_id, clinician_id, is_needed, suggested_date, interval_days, reason, status, created_at) VALUES (%d, %d, %d, %d, 1, %s, 30, %s, "pending", %s)',
             $this->clinicId,
