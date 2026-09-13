@@ -415,21 +415,25 @@ final class App
     }
 
     /**
-     * M-2 visits.no_show — scope-neutral construction.
+     * TEMPORARY BROKEN WIRING — NEGATIVE CONTROL FOR RED1
      *
-     * Previously this method called self::settings() (arg 9) and self::notificationService() (arg 7),
-     * both of which eagerly resolved ambient Clinic via App::scope() and threw CLINIC_SCOPE_REQUIRED
-     * in multi-Clinic no-Scope workers (PHP evaluates args left-to-right, so arg 7 threw before arg 9).
+     * This version intentionally restores the old eager dependency:
+     * App::visitService() -> eager self::notificationService()
+     * which internally calls self::settings() -> App::scope() and throws
+     * CLINIC_SCOPE_REQUIRED in multi-Clinic no-Scope workers.
      *
-     * Now it is truly scope-neutral:
-     * - No App::settings() / App::scope() call at construction time;
-     * - NotificationService is resolved per-Clinic via factory from durable row data (visit.clinic_id).
+     * Expected RED: visits.no_show job with maxAttempts=1 becomes FAILED,
+     * and assertSame('success', status) in VisitNoShowM2WiringRedTest fails.
+     *
+     * This commit must NOT be preserved as final — it will be restored forward.
      */
     public static function visitService(): VisitService
     {
         if (self::$visitService === null) {
             $db = self::db();
             $op = self::op();
+            // Eager call — throws CLINIC_SCOPE_REQUIRED when >1 Clinic and no explicit ScopeContext
+            $eagerNotifications = self::notificationService();
             self::$visitService = new VisitService(
                 $db,
                 new VisitRepository($db),
@@ -438,13 +442,7 @@ final class App
                 self::audit(),
                 self::licenseGate(),
                 $op,
-                static fn (int $clinicId): NotificationService => new NotificationService(
-                    $db,
-                    new NotificationRepository($db),
-                    new MembershipRepository($db),
-                    self::settingsFactory()->forClinic($clinicId),
-                    $op
-                )
+                $eagerNotifications
             );
         }
 
