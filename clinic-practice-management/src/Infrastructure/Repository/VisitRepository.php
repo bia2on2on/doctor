@@ -323,20 +323,56 @@ final class VisitRepository
     }
 
     /**
-     * رخدادهای no-show بالقوه (FR-5.5) — نوبت‌های بدون ویزیت فعال پس از grace.
+     * رخدادهای no-show بالقوه (FR-5.5) — legacy wrapper, now just bounded candidate fetch without policy.
+     * T2 corrected: Repository is bounded data access only, no eligibility policy.
+     * All temporal eligibility is in VisitService (single authoritative).
      *
      * @return list<array<string, mixed>>
      */
     public function appointmentsPastGrace(string $beforeDateTime, int $limit = 100): array
     {
+        $nowUtc = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+        return $this->appointmentsPastGraceCandidates($limit, $nowUtc, null);
+    }
+
+    /**
+     * T2 corrected: bounded candidate data access only, no policy.
+     * Returns tenant-attributed appointments with Location timezone via LEFT JOIN (avoids N+1).
+     * No direct Settings reads, no DateTime eligibility decision.
+     * Uses deterministic ordering (slot_date, slot_time, id) and optional keyset cursor for progress.
+     *
+     * Safety: LEFT JOIN preserves malformed rows (missing Location) so Service can fail-closed explicitly.
+     * INNER JOIN would silently remove them and hide starvation — LEFT JOIN is safer.
+     *
+     * @param array{slot_date:string, slot_time:string, id:int}|null $cursor
+     * @return list<array<string, mixed>>
+     */
+    public function appointmentsPastGraceCandidates(int $limit, \DateTimeImmutable $nowUtc, ?array $cursor = null): array
+    {
+        $upperDate = $nowUtc->add(new \DateInterval('P2D'))->format('Y-m-d');
+
+        $where = "a.status = 'confirmed' AND a.active_visit_id IS NULL AND a.slot_date <= %s";
+        $params = [$upperDate];
+
+        if ($cursor !== null && isset($cursor['slot_date'], $cursor['slot_time'], $cursor['id'])) {
+            $where .= " AND ((a.slot_date > %s) OR (a.slot_date = %s AND a.slot_time > %s) OR (a.slot_date = %s AND a.slot_time = %s AND a.id > %d))";
+            $params[] = $cursor['slot_date'];
+            $params[] = $cursor['slot_date'];
+            $params[] = $cursor['slot_time'];
+            $params[] = $cursor['slot_date'];
+            $params[] = $cursor['slot_time'];
+            $params[] = (int) $cursor['id'];
+        }
+
         $rows = $this->db->fetchAll(
-            'SELECT a.id, a.patient_id, a.clinician_id, a.slot_date, a.slot_time' .
-            ' FROM ' . $this->db->table('cpms_appointments') . ' a' .
-            ' WHERE a.status = \'confirmed\'' .
-            ' AND CONCAT(a.slot_date, \' \', a.slot_time) < %s' .
-            ' AND a.active_visit_id IS NULL' .
-            ' LIMIT %d',
-            [$beforeDateTime, $limit]
+            'SELECT a.id, a.clinic_id, a.location_id, a.patient_id, a.clinician_id, a.slot_date, a.slot_time, ' .
+            'l.clinic_id as loc_clinic_id, l.timezone as loc_timezone ' .
+            'FROM ' . $this->db->table('cpms_appointments') . ' a ' .
+            'LEFT JOIN ' . $this->db->table('cpms_locations') . ' l ON l.id = a.location_id ' .
+            'WHERE ' . $where . ' ' .
+            'ORDER BY a.slot_date ASC, a.slot_time ASC, a.id ASC ' .
+            'LIMIT %d',
+            array_merge($params, [$limit])
         );
 
         return is_array($rows) ? $rows : [];

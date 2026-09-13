@@ -38,6 +38,7 @@ final class SlotRepository
 
     /**
      * @return array<string, mixed>|null
+     * @deprecated Use findAllByClinicianSlot for ambiguity-safe resolution.
      */
     public function findByClinicianSlot(int $clinicId, int $clinicianId, string $date, string $time): ?array
     {
@@ -45,6 +46,36 @@ final class SlotRepository
             'SELECT * FROM ' . $this->db->table('cpms_schedule_slots') .
             ' WHERE clinic_id = %d AND clinician_id = %d AND slot_date = %s AND slot_time = %s LIMIT 1',
             [$clinicId, $clinicianId, $date, $time]
+        );
+    }
+
+    /**
+     * Ambiguity-safe: returns ALL matching slots for tuple (clinic, clinician, date, time).
+     * Used to detect multi-Location ambiguity and fail closed.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function findAllByClinicianSlot(int $clinicId, int $clinicianId, string $date, string $time): array
+    {
+        $rows = $this->db->fetchAll(
+            'SELECT * FROM ' . $this->db->table('cpms_schedule_slots') .
+            ' WHERE clinic_id = %d AND clinician_id = %d AND slot_date = %s AND slot_time = %s ORDER BY id ASC',
+            [$clinicId, $clinicianId, $date, $time]
+        );
+
+        return is_array($rows) ? $rows : [];
+    }
+
+    /**
+     * Exact identity resolution: load slot by id and validate Clinic ownership.
+     *
+     * @return array<string, mixed>|null
+     */
+    public function findByIdAndClinic(int $slotId, int $clinicId): ?array
+    {
+        return $this->db->fetchRow(
+            'SELECT * FROM ' . $this->db->table('cpms_schedule_slots') . ' WHERE id = %d AND clinic_id = %d LIMIT 1',
+            [$slotId, $clinicId]
         );
     }
 
@@ -63,6 +94,7 @@ final class SlotRepository
 
     /**
      * تقویم آزاد (A1): روزهای باز + ظرفیت باقی — فقط اسلات‌های آتی.
+     * اکنون شامل id و location_id برای تفکیک چند-Location است.
      *
      * @return list<array<string, mixed>>
      */
@@ -75,14 +107,14 @@ final class SlotRepository
         string $nowTimeUtc
     ): array {
         return $this->db->fetchAll(
-            'SELECT slot_date, slot_time, duration_min, capacity, booked_count, held_count,
+            'SELECT id, location_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count,
                     (capacity - booked_count - held_count) AS capacity_left
              FROM ' . $this->db->table('cpms_schedule_slots') . '
              WHERE clinic_id = %d AND clinician_id = %d AND is_open = 1
                AND slot_date BETWEEN %s AND %s
                AND (slot_date > %s OR (slot_date = %s AND slot_time > %s))
                AND capacity - booked_count - held_count > 0
-             ORDER BY slot_date, slot_time',
+             ORDER BY slot_date, slot_time, id ASC',
             [$clinicId, $clinicianId, $fromDate, $toDate, $todayUtc, $todayUtc, $nowTimeUtc]
         );
     }
