@@ -157,9 +157,17 @@ switch ($cmd) {
 
     case 'slots':
         if ($sub === 'generate') {
+            // Canonical queue-consumption: all production consumers must go through runTick()
+            // which owns GET_LOCK('cpms_jobs_tick'). Direct dispatcher()->tick() without lock
+            // created a second global consumer (previous bug). Using runTick preserves
+            // synchronous processing (B) but with installation-level serialization.
             App::jobs()->enqueue('slots.generate', ['horizon_days' => $days, 'source' => 'manual'], priority: 9);
-            $n = App::dispatcher()->tick(10);
-            echo "Enqueued slots.generate; processed {$n} job(s)\n";
+            $n = App::runTick(10);
+            if ($n < 0) {
+                echo "Enqueued slots.generate; tick skipped (another worker running)\n";
+            } else {
+                echo "Enqueued slots.generate; processed {$n} job(s)\n";
+            }
         } else {
             fwrite(STDERR, "Usage: bin/cpms slots generate [--days=N]\n");
             exit(1);

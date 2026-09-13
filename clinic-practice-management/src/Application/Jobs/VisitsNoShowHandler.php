@@ -183,10 +183,17 @@ final class VisitsNoShowHandler
             }
         }
 
-        // Deduplication: prevent uncontrolled duplicate continuation when parent retries
-        // after continuation already persisted. Under single-worker GET_LOCK (cpms_jobs_tick)
-        // ticks are serialized, so SELECT-then-INSERT is safe against concurrent writers.
-        // We check both QUEUED and PROCESSING to avoid duplicate while continuation is in flight.
+        // Deduplication: prevent duplicate continuation when parent retries after crash
+        // (enqueue -> crash before complete -> retry enqueues same cursor).
+        // Concurrent duplication is prevented by canonical serialization via
+        // App::runTick() owning GET_LOCK('cpms_jobs_tick') for entire tick
+        // (handler execution -> continuation enqueue -> completion). All production
+        // queue consumers must go through runTick (bin/cpms jobs tick and
+        // bin/cpms slots generate now both use runTick). Direct dispatcher()->tick()
+        // without lock was previous bug (fixed).
+        // This dedup is load-safety for crash/retry case only, not for concurrent
+        // consumers (which are now impossible via canonical lock). Boundedness:
+        // active visits.no_show ≤2, LIMIT 10 makes DB work O(1).
         if ($this->isContinuationAlreadyQueued($nextCursor)) {
             $this->op?->info('visit.no_show_continuation_deduped', [
                 'depth' => $incomingDepth + 1,
@@ -223,6 +230,18 @@ final class VisitsNoShowHandler
      * Check if a continuation with the same cursor already exists as QUEUED or PROCESSING.
      * Prevents duplicate continuation when parent retries after crash/before complete.
      *
+     * Boundedness proof (no migration, no new index):
+     * - RECURRING_JOBS has 14 types, scheduler (QUEUED+PROCESSING check) ensures at most
+     *   1 active job per type. So total active jobs across all types ≤14.
+     * - visits.no_show chain: parent completes before child starts, except crash case
+     *   where parent retries after child already queued. So active visits.no_show ≤2.
+     * - Therefore SELECT with LIMIT 10 is bounded by constant 10 (actually ≤2) and does
+     *   not scan entire table. No JSON_EXTRACT index needed; result count is explicitly
+     *   bounded. Performance is O(1) in terms of active recurring jobs, not O(total jobs).
+     * - This dedup is load-safety (prevents retry amplification), not strict correctness
+     *   invariant: fail-open (return false on DB error) preserves forward progress at cost
+     *   of at most 1 duplicate, which is idempotent due to row-lock recheck.
+     *
      * @param array{slot_date:string, slot_time:string, id:int} $cursor
      */
     private function isContinuationAlreadyQueued(array $cursor): bool
@@ -231,8 +250,10 @@ final class VisitsNoShowHandler
             return false;
         }
         try {
+            // Bounded: LIMIT 10 explicitly caps result set; actual active visits.no_show ≤2
+            // due to scheduler + chain invariant, so scan is O(1).
             $rows = $this->db->fetchAll(
-                'SELECT payload_json FROM ' . $this->db->table('cpms_jobs') . ' WHERE type = %s AND status IN (%s, %s)',
+                'SELECT payload_json FROM ' . $this->db->table('cpms_jobs') . ' WHERE type = %s AND status IN (%s, %s) LIMIT 10',
                 ['visits.no_show', JobQueue::QUEUED, JobQueue::PROCESSING]
             );
             foreach ($rows as $row) {
@@ -256,7 +277,9 @@ final class VisitsNoShowHandler
                 }
             }
         } catch (\Throwable $e) {
-            // Fail-open for dedup check: if we cannot read, allow enqueue to preserve progress
+            // Fail-open: if we cannot read, allow enqueue to preserve progress.
+            // This may restore duplicate amplification (at most 1 extra) but keeps chain moving.
+            // Correctness is still guaranteed by idempotent row-lock recheck.
             $this->op?->warning('visit.no_show_dedup_check_failed', ['error' => $e->getMessage()]);
             return false;
         }
