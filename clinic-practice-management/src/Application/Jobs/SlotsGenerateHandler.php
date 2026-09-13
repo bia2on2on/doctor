@@ -7,30 +7,47 @@ namespace ClinicCore\Application\Jobs;
 use ClinicCore\Application\Scope\PrimaryLocationResolver;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Logging\OpLogger;
-use ClinicCore\Settings\Settings;
+use ClinicCore\Settings\SettingsFactory;
 use ClinicCore\Domain\Slots\SlotGenerator;
 use DomainException;
 
 /**
  * تولید Slotهای آینده (Job: slots.generate — روزانه + lazy).
  * Idempotent: UNIQUE (clinician_id, slot_date, slot_time) + INSERT IGNORE.
+ *
+ * Phase 2 M-2 scope-neutral: construction does NOT require ambient Clinic
+ * Settings/Scope. Settings are resolved per-Clinic from durable row Clinic
+ * via SettingsFactory::forClinic(clinicId) — per-Clinic cache allowed, never
+ * using another Clinic's Settings on failure (fail-closed).
+ *
+ * SWEEP semantics: one root job sweeps all Clinicians; horizon is per-Clinic
+ * booking.max_future_days. Empty payload (recurring cron) exercises real
+ * production semantics. Payload horizon_days, if present, is treated as trusted
+ * machine configuration override for that tick (no production producer currently
+ * sets it — ScheduleService ['source'=>'manual'] and recurring [] both empty).
  */
 final class SlotsGenerateHandler
 {
+    /** @var array<int, int> per-Clinic horizon cache, key = clinicId */
+    private array $horizonCache = [];
+
     public function __construct(
         private readonly CpmsDb $db,
-        private readonly Settings $settings,
+        private readonly SettingsFactory $settingsFactory,
         private readonly OpLogger $op
     ) {
     }
 
     public function __invoke(array $payload): int
     {
-        $horizon = (int) ($payload['horizon_days'] ?? $this->settings->get('booking.max_future_days', 30));
         $today = gmdate('Y-m-d');
 
+        // Fetch all active clinicians with their active schedule rows.
+        // Include schedule clinic_id to guard against cross-tenant mismatch:
+        // authoritative owner is clinician.clinic_id (validated in ScheduleService),
+        // so a schedule row whose clinic_id differs is skipped fail-closed.
         $clinicians = $this->db->fetchAll(
-            'SELECT c.id AS clinician_id, c.clinic_id, s.location_id, s.day_of_week, s.start_time, s.end_time,
+            'SELECT c.id AS clinician_id, c.clinic_id, s.clinic_id AS schedule_clinic_id, s.location_id, s.day_of_week, s.start_time, s.end_time,
                     s.break_start, s.break_end, s.appointment_duration_min, s.slot_capacity
              FROM ' . $this->db->table('cpms_clinicians') . ' c
              JOIN ' . $this->db->table('cpms_schedule') . ' s ON s.clinician_id = c.id AND s.is_active = 1
@@ -39,6 +56,43 @@ final class SlotsGenerateHandler
 
         $generated = 0;
         foreach ($clinicians as $clinician) {
+            $clinicId = (int) ($clinician['clinic_id'] ?? 0);
+            if ($clinicId <= 0) {
+                $this->op->warning('SLOTS_GEN_SKIP_NO_CLINIC', ['clinician_id' => $clinician['clinician_id'] ?? 0]);
+                continue;
+            }
+
+            // Tenant ownership guard: schedule must belong to same Clinic as clinician.
+            $scheduleClinicId = (int) ($clinician['schedule_clinic_id'] ?? $clinicId);
+            if ($scheduleClinicId !== $clinicId) {
+                $this->op->warning('SLOTS_GEN_SKIP_CLINIC_MISMATCH', [
+                    'clinician_id' => $clinician['clinician_id'],
+                    'clinician_clinic_id' => $clinicId,
+                    'schedule_clinic_id' => $scheduleClinicId,
+                ]);
+                continue;
+            }
+
+            // Resolve horizon per-Clinic, or use explicit payload override if present.
+            // Payload override is trusted machine config (cron/manual) — no production producer
+            // currently sets horizon_days, so empty-payload path is the recurring semantics.
+            $horizon = null;
+            if (isset($payload['horizon_days']) && is_numeric($payload['horizon_days'])) {
+                $horizon = (int) $payload['horizon_days'];
+                if ($horizon <= 0) {
+                    // Invalid explicit horizon — fail-closed for this clinician
+                    $this->op->warning('SLOTS_GEN_SKIP_INVALID_HORIZON', ['clinic_id' => $clinicId, 'horizon_days' => $payload['horizon_days']]);
+                    continue;
+                }
+            } else {
+                $horizon = $this->horizonForClinic($clinicId);
+                if ($horizon === null) {
+                    // Settings failure for this Clinic — fail-closed for this Clinic only,
+                    // do NOT use another Clinic's horizon and do NOT fail entire sweep.
+                    continue;
+                }
+            }
+
             for ($day = 1; $day <= $horizon; $day++) {
                 $date = gmdate('Y-m-d', strtotime($today . ' +' . $day . ' days'));
                 try {
@@ -48,16 +102,24 @@ final class SlotsGenerateHandler
                     continue;
                 }
                 foreach ($slots as $time) {
+                    // Resolve location deterministically: schedule location if present, else primary location of authoritative clinicId
+                    $locationId = (int) ($clinician['location_id'] ?? 0);
+                    if ($locationId <= 0) {
+                        try {
+                            $locationId = PrimaryLocationResolver::resolve($this->db, $clinicId);
+                        } catch (\Throwable $e) {
+                            $this->op->warning('SLOTS_GEN_SKIP_NO_LOCATION', ['clinician_id' => $clinician['clinician_id'], 'clinic_id' => $clinicId, 'error' => $e->getMessage()]);
+                            continue;
+                        }
+                    }
                     $this->db->query(
                         'INSERT IGNORE INTO ' . $this->db->table('cpms_schedule_slots') . '
                              (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity,
                               is_open, generated_from, created_at, updated_at)
                          VALUES (%d, %d, %d, %s, %s, %d, %d, 1, %s, %s, %s)',
                         [
-                            $clinician['clinic_id'],
-                            (int) ($clinician['location_id'] ?? 0) > 0
-                                ? (int) $clinician['location_id']
-                                : PrimaryLocationResolver::resolve($this->db, (int) $clinician['clinic_id']),
+                            $clinicId,
+                            $locationId,
                             $clinician['clinician_id'],
                             $date,
                             $time,
@@ -74,6 +136,32 @@ final class SlotsGenerateHandler
         }
 
         return $generated;
+    }
+
+    /**
+     * Per-Clinic horizon with in-handler cache. Fail-closed: throws are caught and
+     * result in null (skip clinician), not fallback to another Clinic's horizon.
+     *
+     * @return int|null  null = Settings failure for this Clinic
+     */
+    private function horizonForClinic(int $clinicId): ?int
+    {
+        if (isset($this->horizonCache[$clinicId])) {
+            return $this->horizonCache[$clinicId];
+        }
+        try {
+            $settings = $this->settingsFactory->forClinic($clinicId);
+            $value = (int) $settings->get('booking.max_future_days', 30);
+            // Clamp to sane bounds (fail-closed: invalid -> skip, not fallback)
+            if ($value <= 0 || $value > 365) {
+                $this->op->warning('SLOTS_GEN_HORIZON_OUT_OF_BOUNDS', ['clinic_id' => $clinicId, 'value' => $value]);
+                return null;
+            }
+            return $this->horizonCache[$clinicId] = $value;
+        } catch (\Throwable $e) {
+            $this->op->warning('SLOTS_GEN_HORIZON_RESOLVE_FAILED', ['clinic_id' => $clinicId, 'error' => $e->getMessage()]);
+            return null;
+        }
     }
 
     /**
