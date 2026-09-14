@@ -163,6 +163,76 @@ jobs:
             echo "::error::${l:0:400}"
           done
 
+  # ------------------------------------------------------------------
+  # RED-evidence — notif.dispatch M-2 scope-neutral wiring.
+  # Runs ONLY NotifDispatchM2WiringRedTest in its OWN fresh PHP process.
+  # Rationale: App::notificationService() memoizes the service in a
+  # function-local static that cannot be reset from test code; a shared
+  # long-running process can memoize it with a valid Clinic and hide the
+  # construction-time scope dependency (false GREEN). A fresh process
+  # reproduces the real production worker (each `bin/cpms jobs tick` is a
+  # fresh process). This job is EXPECTED to FAIL (RED) until the wiring is
+  # fixed; it does not gate the other jobs.
+  # ------------------------------------------------------------------
+  notif-dispatch-red:
+    name: RED evidence — notif.dispatch scope-neutral (EXPECTED FAIL)
+    runs-on: ubuntu-latest
+
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=20
+
+    env:
+      WP_TESTS_DIR: /tmp/wordpress-test-lib
+      WP_CORE_DIR: /tmp/wordpress
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mbstring, xml, mysqli, pcntl, curl
+          coverage: none
+
+      - name: Install dependencies (PHPUnit 9.6 for WP test lib)
+        run: |
+          composer install --prefer-dist --no-progress --no-interaction
+          composer require --dev phpunit/phpunit:^9.6 --no-interaction --no-progress --with-all-dependencies
+
+      - name: Prepare WordPress test suite
+        run: bash tests/bin/install-wp-tests.sh wordpress_test root root 127.0.0.1 6.7.2
+
+      - name: Run RED test (fresh process — EXPECTED FAIL)
+        run: |
+          set -o pipefail
+          php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
+            --bootstrap tests/integration-bootstrap.php \
+            tests/Integration/NotifDispatchM2WiringRedTest.php 2>&1 | tee /tmp/notif-red.log
+
+      - name: Upload RED evidence log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: notif-dispatch-red-log-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/notif-red.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Surface RED assertion (job status / last_error / tickResult)
+        if: failure()
+        run: |
+          grep -A 6 -E "notif.dispatch job must be SUCCESS|Failed asserting" /tmp/notif-red.log | head -n 60 || true
+
   # F1-3 (گروه 4) — PHPStan در CI. سطح و scope در phpstan.neon.dist ثبت است
   # (level=3 — بالاترین سطح سبز روی وضعیت واقعی کد، با اجرای واقعی/probe؛
   # scope: src + bin) و از آن سقف پایین نمی‌آید.
