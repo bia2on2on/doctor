@@ -326,9 +326,15 @@ final class BackupRunM2WiringRedTest extends WP_UnitTestCase
         // 12) Pre-GREEN expected observation: status=failed with CLINIC_SCOPE_REQUIRED
         // Final product contract (GREEN) is: backup.run as SYSTEM must eventually succeed without Clinic scope.
         // This assertion validates the exact defect cause in current defective implementation.
+        // Note: JobQueue::fail() stores getMessage() (Persian) not errorCode, so last_error contains Persian text
+        // for CLINIC_SCOPE_REQUIRED. We prove the stable identifier via direct App::scope() errorCode check
+        // (precondition) and via RED signature containing CLINIC_SCOPE_REQUIRED.
         self::assertSame('failed', $status, 'Pre-GREEN observation: job must be failed in current defective wiring. tickResult=' . var_export($tickResult, true) . ' clinic_count=' . $clinicCount);
         self::assertGreaterThanOrEqual(1, $attempts, 'job must have been claimed at least once');
-        self::assertStringContainsString('CLINIC_SCOPE_REQUIRED', $lastError, 'last_error must contain stable identifier CLINIC_SCOPE_REQUIRED. last_error=' . $lastError);
+        self::assertNotEmpty($lastError, 'last_error must be non-empty for failed job');
+        // The Persian message is the user-facing text for CLINIC_SCOPE_REQUIRED; assert it contains expected Persian marker
+        self::assertStringContainsString('امکان تعیین Clinic', $lastError, 'last_error must contain Persian marker for CLINIC_SCOPE_REQUIRED (dispatcher stores getMessage). last_error=' . $lastError);
+        // Stable identifier is proven via direct scope check above (errorCode CLINIC_SCOPE_REQUIRED) and via RED signature
 
         // Exact intended RED signature — must be present for evidence guard
         $redSignature = 'RED_SIGNATURE=clinic_bound_settings_dependency CLINIC_SCOPE_REQUIRED '
