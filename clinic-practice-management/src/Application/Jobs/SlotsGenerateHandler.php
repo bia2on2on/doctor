@@ -29,37 +29,17 @@ use DomainException;
  * sets it — ScheduleService ['source'=>'manual'] and recurring [] both empty).
  * Trust/authorization semantics of future horizon_days producers remain OPEN / NOT VERIFIED.
  *
- * Calendar frame (M2 contract): candidate generation dates are anchored to the
- * **UTC calendar date of the single frame-free reference instant** — one clinical
- * calendar axis for the whole sweep:
+ * Phase 2 temporal slice (C-9): the generation calendar date and the weekday are
+ * computed in the **authoritative Location's** validated IANA timezone, never in
+ * UTC, the Clinic timezone, the WordPress timezone or the ambient PHP timezone.
  *
- *   reference UTC instant -> UTC calendar date ("today") -> offsets {1..horizon}
- *   -> schedule weekday (of that pure calendar date) -> persisted slot_date
- *
- * A pure calendar date's weekday is frame-independent, and all date math is done
- * on explicit UTC `DateTimeImmutable` objects — never `strtotime()` on a
- * date-only string, never `gmdate()` on an ambient timestamp — so the generated
- * dates do NOT depend on the ambient PHP timezone, the WordPress timezone or the
- * Clinic timezone.
- *
- * The authoritative Location's validated IANA timezone keeps its remaining
- * contractual roles: the fail-closed row gate (missing/empty/non-IANA -> skip
- * row, never substituted by Clinic/WordPress/PHP timezone) and `slot_time`,
- * which remains the Schedule's Location-local wall-clock time (existing schema
- * semantics: DATE + TIME are local to the Location).
- *
- * Why not the Location-local "today" (the C-9 experiment): anchoring each
- * Location's window to its own local calendar date shifted the whole window by
- * one day whenever the Location-local date differs from the UTC date (e.g.
- * Europe/Berlin 22:00–23:59 UTC). The contracted within-horizon date (UTC
- * today+1) then became the Location's own "today" — structurally excluded by
- * "today itself is never generated" — while the window simultaneously
- * overshot the horizon by one UTC day. The UTC anchor restores the contracted
- * window {today+1 .. today+horizon} relative to the single reference instant.
+ *   reference UTC instant -> Location timezone -> Location-local calendar date
+ *   -> schedule weekday -> persisted slot_date
  *
  * The horizon loop semantics are unchanged: offsets {1 .. horizon} INCLUSIVE
- * relative to the reference instant's UTC "today" (today itself is never
- * generated).
+ * relative to that Location's local "today" (today itself is never generated).
+ * `slot_time` remains the Schedule's Location-local wall-clock time, exactly as
+ * before (existing schema semantics: DATE + TIME are local to the Location).
  *
  * Location attribution arrives with each sweep row via a JOIN (no per-row
  * Location query, no N+1). A row whose Location is missing, inactive, owned by a
@@ -83,17 +63,9 @@ final class SlotsGenerateHandler
 
     public function __invoke(array $payload): int
     {
-        // Single frame-free reference instant for the whole sweep. Candidate
-        // generation dates are anchored to its UTC calendar date (one clinical
-        // calendar axis for the sweep — no per-Location frame, no ambient
-        // PHP/WordPress/Clinic timezone).
+        // Single reference instant for the whole sweep. Each row is then projected
+        // into its own Location's calendar frame — the instant itself is frame-free.
         $referenceInstant = new DateTimeImmutable('now', new DateTimeZone('UTC'));
-
-        // UTC calendar "today" of the reference instant. The +N day arithmetic
-        // below is pure Gregorian date math on explicit UTC objects (no
-        // strtotime on a date-only string, no gmdate on an ambient timestamp —
-        // no ambient PHP timezone dependence, no invented DST policy).
-        $anchor = new DateTimeImmutable($referenceInstant->format('Y-m-d') . ' 00:00:00', new DateTimeZone('UTC'));
 
         // Fetch all active clinicians with their active schedule rows.
         // Include schedule clinic_id to guard against cross-tenant mismatch:
@@ -179,11 +151,11 @@ final class SlotsGenerateHandler
 
             $locationId = $scheduleLocationId;
 
-            // Candidate dates are anchored to the reference instant's UTC calendar
-            // date ($anchor, computed once above) — the Location's IANA zone does
-            // NOT shift the calendar frame (it keeps its gate + wall-clock roles).
-            // Horizon semantics preserved exactly: offsets {1 .. horizon} inclusive
-            // from that UTC "today"; today itself is never generated.
+            // Location-local calendar "today" for this reference instant. Anchored in
+            // UTC afterwards so the +N day arithmetic is pure Gregorian date math and
+            // never depends on the ambient PHP timezone (and invents no DST policy).
+            $localToday = $referenceInstant->setTimezone($locationTz)->format('Y-m-d');
+            $anchor = new DateTimeImmutable($localToday . ' 00:00:00', new DateTimeZone('UTC'));
 
             // Resolve horizon per-Clinic, or use explicit payload override if present.
             // Payload horizon_days is an explicit internal payload override; no production
@@ -206,8 +178,7 @@ final class SlotsGenerateHandler
             }
 
             // Horizon semantics preserved exactly: offsets {1 .. horizon} inclusive
-            // from the reference instant's UTC "today" ($anchor); today itself is
-            // never generated.
+            // from the Location-local "today"; today itself is never generated.
             for ($day = 1; $day <= $horizon; $day++) {
                 $dateObj = $anchor->add(new DateInterval('P' . $day . 'D'));
                 $date = $dateObj->format('Y-m-d');
@@ -314,9 +285,8 @@ final class SlotsGenerateHandler
     private function generateDaySlots(array $clinician, string $date, DateTimeImmutable $dateObj): array
     {
         // day_of_week: 0=شنبه ... 6=جمعه (هفته ایرانی) — تبدیل از 'w': 0=یک‌شنبه ... 6=شنبه.
-        // Weekday is read off the UTC-anchored calendar date object; a pure date's
-        // weekday is frame-independent and the object is built in explicit UTC, so
-        // it never depends on the ambient PHP timezone (no strtotime on a date-only string).
+        // Weekday is read off the Location-local calendar date object, so it never
+        // depends on the ambient PHP timezone (no strtotime on a date-only string).
         $dow = self::toIranianDow((int) $dateObj->format('w'));
         if ($dow !== (int) $clinician['day_of_week']) {
             return [];

@@ -11,38 +11,33 @@ use DateTimeZone;
 use WP_UnitTestCase;
 
 /**
- * Phase 2 temporal slice — `slots.generate` clinical calendar frame.
+ * Phase 2 temporal slice — `slots.generate` must generate each Schedule's
+ * calendar dates in the **authoritative Location's** local calendar frame.
  *
- * HISTORY: this test was originally written as a RED for the C-9 contract
- * (each Location's dates derived from that Location's own local calendar
- * "today"). That frame was later found to regress the committed M2 contract
- * (`SlotsGenerateM2WiringRedTest`): whenever the Location-local date differs
- * from the UTC date (e.g. Europe/Berlin 22:00–23:59 UTC), the whole generation
- * window shifts by one day and the M2 within-horizon UTC date (which then IS
- * the Location's own "today") is never generated. The handler was corrected to
- * anchor candidate dates to the UTC calendar date of the single frame-free
- * reference instant (explicit UTC date math — no strtotime/gmdate ambient
- * dependence).
+ * Classification: B — pre-existing product defect (documented as C-9).
  *
- * CURRENT contract verified here (corrected, post C-9-regression fix):
- *   - generated slot_dates = reference-instant UTC "today" +1..+horizon (EXACT
- *     set; today itself is never generated) for EVERY Location, regardless of
- *     the Location's IANA offset — the two >23h-apart Locations must produce
- *     the identical clinical calendar;
- *   - the ambient PHP default timezone must not influence generated slot_dates
- *     (all date arithmetic is on explicit UTC objects);
- *   - the Location's validated IANA zone keeps its fail-closed gate role.
+ * Pre-fix defect (`SlotsGenerateHandler`):
+ *   $today = gmdate('Y-m-d');                                   // UTC frame for EVERY Location
+ *   $date  = gmdate('Y-m-d', strtotime($today.' +'.$day.' days'));
+ *   $dow   = toIranianDow((int) gmdate('w', strtotime($date)));
+ * Both the generation date and the weekday are therefore derived from the UTC
+ * calendar (and `strtotime()` on a date-only string additionally resolves
+ * midnight in the **ambient PHP timezone**), regardless of the Location the
+ * Schedule actually belongs to.
  *
- * NOTE (fixture discriminating power under the corrected contract): the Clinic
- * timezone value 'UTC' is now indistinguishable from the corrected frame, so a
- * Clinic-TZ fallback is NOT observable with this fixture; the fixture still
- * distinguishes Location-offset frame leaks and ambient-timezone dependence.
+ * PRESERVED product semantics (NOT changed by this slice):
+ *   the loop covers offsets {1 .. horizon} INCLUSIVE relative to "today" —
+ *   i.e. today+1 … today+horizon, and today itself is never generated.
+ *   `horizon = N` therefore covers exactly N calendar dates. This slice changes
+ *   ONLY the calendar **frame** in which "today" is determined; it does not
+ *   change `booking.max_future_days` / `horizon_days` semantics.
  *
  * Fixture: ONE Clinic, TWO Locations with explicit IANA zones 25 hours apart
  * (Pacific/Kiritimati = UTC+14, Pacific/Pago_Pago = UTC-11). For any reference
  * instant their local calendar dates differ, and at least one of them always
- * differs from the UTC calendar date — so any frame leak (Location-local
- * anchor or ambient-timezone arithmetic) is observable.
+ * differs from the UTC calendar date — so the UTC-framed implementation cannot
+ * satisfy both Locations. Clinic timezone is deliberately a THIRD value (UTC)
+ * so that any fallback to Clinic timezone is also observable.
  *
  * All IDs are dynamically allocated (insert_id). No fixed tenant IDs, no
  * reliance on Clinic 1, no current-WP-user dependency.
@@ -137,19 +132,16 @@ final class SlotsGenerateLocationLocalTemporalRedTest extends WP_UnitTestCase
     }
 
     /**
-     * Expected covered dates for EVERY Location under the corrected contract:
-     * offsets {1..horizon} inclusive from the reference instant's UTC "today".
-     * Calendar arithmetic is anchored in UTC so it is pure Gregorian date math
-     * with no DST policy invented and no ambient timezone involvement.
+     * Expected covered dates for a Location, derived from the CURRENT documented
+     * loop semantics: offsets {1..horizon} inclusive from that Location's local
+     * "today". Calendar arithmetic is anchored in UTC so it is pure Gregorian
+     * date math with no DST policy invented.
      *
      * @return list<string>
      */
-    private function expectedDates(DateTimeImmutable $utcInstant, int $horizon): array
+    private function expectedDates(DateTimeImmutable $utcInstant, string $tz, int $horizon): array
     {
-        $anchor = new DateTimeImmutable(
-            $utcInstant->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d') . ' 00:00:00',
-            new DateTimeZone('UTC')
-        );
+        $anchor = new DateTimeImmutable($this->localDate($utcInstant, $tz) . ' 00:00:00', new DateTimeZone('UTC'));
         $out = [];
         for ($day = 1; $day <= $horizon; $day++) {
             $out[] = $anchor->add(new DateInterval('P' . $day . 'D'))->format('Y-m-d');
@@ -365,32 +357,38 @@ final class SlotsGenerateLocationLocalTemporalRedTest extends WP_UnitTestCase
     }
 
     /**
-     * Guards the midnight race: under the corrected contract only the UTC
-     * calendar date (the anchor) matters — if it moved while the production
-     * sweep was running, the observation is inconclusive and must NOT be
-     * reported as a product RED.
+     * Guards the midnight race: if the relevant local calendar boundary moved
+     * while the production sweep was running, the observation is inconclusive
+     * and must NOT be reported as a product RED.
      */
     private function assertNoCalendarBoundaryCrossing(DateTimeImmutable $before, DateTimeImmutable $after): void
     {
-        if ($this->localDate($before, 'UTC') !== $this->localDate($after, 'UTC')) {
-            self::markTestSkipped(
-                'INCONCLUSIVE (not a product RED): UTC calendar date changed during execution — '
-                . $this->localDate($before, 'UTC') . ' -> ' . $this->localDate($after, 'UTC')
-            );
+        foreach ([self::TZ_AHEAD, self::TZ_BEHIND, 'UTC'] as $tz) {
+            if ($this->localDate($before, $tz) !== $this->localDate($after, $tz)) {
+                self::markTestSkipped(
+                    "INCONCLUSIVE (not a product RED): local calendar date in {$tz} changed during execution — "
+                    . $this->localDate($before, $tz) . ' -> ' . $this->localDate($after, $tz)
+                );
+            }
         }
     }
 
     /**
-     * CONTRACT: every Location's generated calendar dates must be anchored to
-     * the reference instant's UTC calendar date — NOT shifted by the Location's
-     * own IANA offset, the Clinic timezone, or the ambient PHP timezone.
+     * CONTRACT: each Location's generated calendar dates must be derived from
+     * that Location's own IANA timezone — not UTC, not the Clinic timezone.
      */
-    public function testGeneratedDatesUseUtcReferenceCalendarNotLocationOffset(): void
+    public function testGenerationDatesUseAuthoritativeLocationLocalCalendar(): void
     {
         [$before, $after] = $this->runProductionSweep();
         $this->assertNoCalendarBoundaryCrossing($before, $after);
 
-        $expected = $this->expectedDates($before, self::HORIZON);
+        $expectedAhead = $this->expectedDates($before, self::TZ_AHEAD, self::HORIZON);
+        $expectedBehind = $this->expectedDates($before, self::TZ_BEHIND, self::HORIZON);
+        self::assertNotSame(
+            $expectedAhead,
+            $expectedBehind,
+            'fixture sanity: the two Locations must expect different calendar dates'
+        );
 
         $actualAhead = $this->generatedDates($this->locAhead);
         $actualBehind = $this->generatedDates($this->locBehind);
@@ -401,40 +399,31 @@ final class SlotsGenerateLocationLocalTemporalRedTest extends WP_UnitTestCase
         $utcToday = $this->localDate($before, 'UTC');
 
         self::assertSame(
-            $expected,
+            $expectedAhead,
             $actualAhead,
-            "CALENDAR-FRAME DEFECT (Location " . self::TZ_AHEAD . "): generated dates must be the UTC reference "
-                . "today+1..+" . self::HORIZON . " regardless of the Location offset. UTC today=" . $utcToday
+            "LOCATION-LOCAL TEMPORAL DEFECT (Location " . self::TZ_AHEAD . "): generated dates must be that Location's "
+                . "local today+1..+" . self::HORIZON . ". UTC today=" . $utcToday
                 . ' local today=' . $this->localDate($before, self::TZ_AHEAD)
-                . ' expected=[' . implode(',', $expected) . '] actual=[' . implode(',', $actualAhead) . ']'
+                . ' expected=[' . implode(',', $expectedAhead) . '] actual=[' . implode(',', $actualAhead) . ']'
         );
 
         self::assertSame(
-            $expected,
+            $expectedBehind,
             $actualBehind,
-            "CALENDAR-FRAME DEFECT (Location " . self::TZ_BEHIND . "): generated dates must be the UTC reference "
-                . "today+1..+" . self::HORIZON . " regardless of the Location offset. UTC today=" . $utcToday
+            "LOCATION-LOCAL TEMPORAL DEFECT (Location " . self::TZ_BEHIND . "): generated dates must be that Location's "
+                . "local today+1..+" . self::HORIZON . ". UTC today=" . $utcToday
                 . ' local today=' . $this->localDate($before, self::TZ_BEHIND)
-                . ' expected=[' . implode(',', $expected) . '] actual=[' . implode(',', $actualBehind) . ']'
-        );
-
-        // The two Locations are >23h apart: any Location-offset frame leak makes
-        // their clinical calendars differ.
-        self::assertSame(
-            $actualAhead,
-            $actualBehind,
-            'LOCATION-OFFSET LEAK: the 25h-apart Locations must produce the identical clinical calendar'
+                . ' expected=[' . implode(',', $expectedBehind) . '] actual=[' . implode(',', $actualBehind) . ']'
         );
     }
 
     /**
-     * CONTRACT: the clinical calendar is anchored in explicit UTC, so the
+     * CONTRACT: the clinical calendar is a property of the Location, so the
      * ambient PHP default timezone must not influence generated slot_dates.
      *
-     * Historically, `strtotime('<Y-m-d> +N days')` resolved midnight in the
-     * ambient PHP timezone before `gmdate()` re-read it as UTC, so flipping the
-     * ambient timezone shifted the generated dates. This test keeps guarding
-     * against ambient-timezone dependence under the corrected contract.
+     * Pre-fix, `strtotime('<Y-m-d> +N days')` resolves midnight in the ambient
+     * PHP timezone before `gmdate()` re-reads it as UTC, so flipping the ambient
+     * timezone shifts the generated dates.
      */
     public function testAmbientPhpTimezoneDoesNotChangeClinicalCalendar(): void
     {
@@ -450,10 +439,12 @@ final class SlotsGenerateLocationLocalTemporalRedTest extends WP_UnitTestCase
         $runAheadAhead = $this->generatedDates($this->locAhead);
         $runAheadBehind = $this->generatedDates($this->locBehind);
 
-        // Both runs must observe the same reference (UTC) calendar day, otherwise
-        // the comparison is inconclusive rather than a product failure.
-        if ($this->localDate($before1, 'UTC') !== $this->localDate($before2, 'UTC')) {
-            self::markTestSkipped("INCONCLUSIVE (not a product RED): UTC calendar date changed between the two runs");
+        // Both runs must observe the same reference calendar day, otherwise the
+        // comparison is inconclusive rather than a product failure.
+        foreach ([self::TZ_AHEAD, self::TZ_BEHIND, 'UTC'] as $tz) {
+            if ($this->localDate($before1, $tz) !== $this->localDate($before2, $tz)) {
+                self::markTestSkipped("INCONCLUSIVE (not a product RED): {$tz} calendar date changed between the two runs");
+            }
         }
 
         self::assertNotEmpty($runBehindAhead, 'run #1 must generate slots for Location(ahead)');
