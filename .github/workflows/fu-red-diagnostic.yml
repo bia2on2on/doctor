@@ -2,11 +2,14 @@ name: FU Helper Diagnostic (focused RED/GREEN)
 
 # TEST-ONLY evidence workflow — هیچ کد محصولی را اجرا/تغییر نمی‌دهد.
 #
-# job «focused»     : دو تست تشخیصی helper (انتخاب دقیق)
-# job «fu-family»   : دو متد محصولی هدف + همهٔ تست‌های FollowUpReminder
+# job «focused»   : دو تست تشخیصی helper (انتخاب دقیق)
+# job «fu-family» : دو متد محصولی هدف + همهٔ تست‌های مرتبط fu.reminder
 #
-# گارد مهم در هر دو job: اگر تعداد تست «اجراشده» دقیقاً برابر مقدار انتظار
-# نباشد، job سبز نمی‌شود — پس «صفر تست» هرگز سبز دیده نمی‌شود.
+# گارد: شمارش از روی گزارش JUnit انجام می‌شود (نه از روی متن خروجی)، چون
+# PHPUnit در حالت موفقیت هیچ خط «Tests:» چاپ نمی‌کند (اشکال اندازه‌گیری‌شده در
+# run 34832987240: تست‌ها «OK (2 tests, 31 assertions)» بودند ولی گارد متن،
+# خلاصه را پیدا نکرد). اگر تعداد تست اجراشده دقیقاً برابر انتظار نباشد،
+# job سبز نمی‌شود — پس «صفر تست» هرگز سبز دیده نمی‌شود.
 
 on:
   push:
@@ -64,39 +67,53 @@ jobs:
       - name: Prepare WordPress test suite
         run: bash tests/bin/install-wp-tests.sh wordpress_test root root 127.0.0.1 6.7.2
 
-      # نکتهٔ اندازه‌گیری‌شده (run 34832108391): در PHPUnit 9.6 گزینهٔ --filter روی
-      # --list-tests اثر ندارد و کل suite را فهرست می‌کند؛ پس گارد باید روی
-      # خلاصهٔ «اجرای واقعی» سنجیده شود، نه روی فهرست.
       - name: Run focused selection
         run: |
           set +e
           php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
             --bootstrap tests/integration-bootstrap.php \
-            --filter "$FOCUS_FILTER" tests/Integration 2>&1 | tee /tmp/fu.log
+            --filter "$FOCUS_FILTER" \
+            --log-junit /tmp/fu-junit.xml \
+            tests/Integration 2>&1 | tee /tmp/fu.log
           rc=${PIPESTATUS[0]}
           echo "$rc" > /tmp/fu.rc
           echo "phpunit_exit=$rc"
           exit 0
 
-      - name: Zero-executed-tests guard
+      - name: Selection + result guard (JUnit)
         if: always()
         run: |
-          echo "--- summary lines ---"
-          grep -E "^(Tests:|No tests executed|OK|FAILURES!|ERRORS!|There (were|was) )" /tmp/fu.log || true
-          echo "--- executed/failed test names ---"
-          grep -oE "^[0-9]+\) [A-Za-z\\\\]+Test::[A-Za-z_]+" /tmp/fu.log | sort -u || true
-          N=$(grep -oE '^Tests: [0-9]+' /tmp/fu.log | grep -oE '[0-9]+' | tail -1 || true)
-          echo "executed_tests=${N:-none} (expected $EXPECTED_SELECTED)"
-          if [ -z "$N" ]; then
-            echo "::error::Selection guard: no PHPUnit 'Tests:' summary found (empty selection, parse or bootstrap failure) — refusing to report green"
+          echo "--- PHPUnit summary lines ---"
+          grep -E "^(Tests:|OK|FAILURES!|ERRORS!|No tests executed)" /tmp/fu.log || true
+          if [ ! -s /tmp/fu-junit.xml ]; then
+            echo "::error::Selection guard: JUnit report missing or empty — PHPUnit did not complete (empty selection, parse or bootstrap failure); refusing to report green"
             exit 1
           fi
-          if [ "$N" -ne "$EXPECTED_SELECTED" ]; then
-            echo "::error::Selection guard: expected exactly $EXPECTED_SELECTED executed test(s), got $N — refusing to report green on an empty/incorrect selection"
-            exit 1
-          fi
+          cat > /tmp/guard.py <<'PY'
+          import os, sys, xml.etree.ElementTree as ET
+          expected = int(os.environ['EXPECTED_SELECTED'])
+          root = ET.parse('/tmp/fu-junit.xml').getroot()
+          rows = []
+          for c in root.iter('testcase'):
+              status = 'PASS'
+              for child in c:
+                  if child.tag in ('failure', 'error'):
+                      status = child.tag.upper()
+                  elif child.tag == 'skipped':
+                      status = 'SKIPPED'
+              rows.append(((c.get('classname') or '') + '::' + (c.get('name') or ''), status))
+          rows.sort()
+          print('executed_tests=%d (expected %d)' % (len(rows), expected))
+          for name, status in rows:
+              print('  [%s] %s' % (status, name))
+          if len(rows) != expected:
+              print('::error::Selection guard: expected exactly %d executed test(s), got %d — refusing to report green on an empty/incorrect selection' % (expected, len(rows)))
+              sys.exit(1)
+          print('Selection guard OK: exactly %d test(s) executed.' % expected)
+          PY
+          python3 /tmp/guard.py
 
-      - name: Upload log
+      - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -104,6 +121,7 @@ jobs:
           path: |
             /tmp/fu.log
             /tmp/fu.rc
+            /tmp/fu-junit.xml
           if-no-files-found: error
           retention-days: 14
 
@@ -118,7 +136,17 @@ jobs:
             echo '```'
             echo "--- SUMMARY ---"
             grep -E "^(Tests:|OK|FAILURES!|ERRORS!)" /tmp/fu.log | tail -n 4 || true
-            grep -E "^There (were|was) " /tmp/fu.log || true
+            echo "--- EXECUTED TESTS (from JUnit) ---"
+            python3 - <<'PY' || echo '(junit unavailable)'
+          import xml.etree.ElementTree as ET
+          root = ET.parse('/tmp/fu-junit.xml').getroot()
+          for c in sorted(root.iter('testcase'), key=lambda x: (x.get('classname') or '') + (x.get('name') or '')):
+              st = 'PASS'
+              for ch in c:
+                  if ch.tag in ('failure', 'error'):
+                      st = ch.tag.upper()
+              print('[%s] %s::%s' % (st, c.get('classname'), c.get('name')))
+          PY
             echo "--- FAILURE/ERROR DETAILS ---"
             awk '/^There (were|was) /{flag=1} flag' /tmp/fu.log | head -n 160
             echo '```'
@@ -138,7 +166,7 @@ jobs:
           exit "$rc"
 
   fu-family:
-    name: Target product tests + FollowUpReminder family (7 tests)
+    name: Target product tests + fu.reminder family (8 tests)
     runs-on: ubuntu-latest
 
     services:
@@ -157,9 +185,10 @@ jobs:
     env:
       WP_TESTS_DIR: /tmp/wordpress-test-lib
       WP_CORE_DIR: /tmp/wordpress
-      # ۲ متد محصولی هدف + ۲ تشخیصی + M2Wiring(1) + Starvation(2) = ۷
+      # LocationCalendar(4: ۲ تشخیصی + ۲ محصولی) + M2Wiring(1) + Starvation(2)
+      # + NotificationFlowTest::testFollowUpReminderJobMarksReminderSentAt(1) = ۸
       FOCUS_FILTER: 'FollowUpReminder'
-      EXPECTED_SELECTED: '7'
+      EXPECTED_SELECTED: '8'
       LOG_TAG: 'family'
 
     steps:
@@ -179,34 +208,53 @@ jobs:
       - name: Prepare WordPress test suite
         run: bash tests/bin/install-wp-tests.sh wordpress_test root root 127.0.0.1 6.7.2
 
-      - name: Run FollowUpReminder selection
+      - name: Run fu.reminder selection
         run: |
           set +e
           php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
             --bootstrap tests/integration-bootstrap.php \
-            --filter "$FOCUS_FILTER" tests/Integration 2>&1 | tee /tmp/fu.log
+            --filter "$FOCUS_FILTER" \
+            --log-junit /tmp/fu-junit.xml \
+            tests/Integration 2>&1 | tee /tmp/fu.log
           rc=${PIPESTATUS[0]}
           echo "$rc" > /tmp/fu.rc
           echo "phpunit_exit=$rc"
           exit 0
 
-      - name: Zero-executed-tests guard
+      - name: Selection + result guard (JUnit)
         if: always()
         run: |
-          echo "--- summary lines ---"
-          grep -E "^(Tests:|No tests executed|OK|FAILURES!|ERRORS!|There (were|was) )" /tmp/fu.log || true
-          N=$(grep -oE '^Tests: [0-9]+' /tmp/fu.log | grep -oE '[0-9]+' | tail -1 || true)
-          echo "executed_tests=${N:-none} (expected $EXPECTED_SELECTED)"
-          if [ -z "$N" ]; then
-            echo "::error::Selection guard: no PHPUnit 'Tests:' summary found — refusing to report green"
+          echo "--- PHPUnit summary lines ---"
+          grep -E "^(Tests:|OK|FAILURES!|ERRORS!|No tests executed)" /tmp/fu.log || true
+          if [ ! -s /tmp/fu-junit.xml ]; then
+            echo "::error::Selection guard: JUnit report missing or empty — PHPUnit did not complete; refusing to report green"
             exit 1
           fi
-          if [ "$N" -ne "$EXPECTED_SELECTED" ]; then
-            echo "::error::Selection guard: expected exactly $EXPECTED_SELECTED executed test(s), got $N — refusing to report green on an empty/incorrect selection"
-            exit 1
-          fi
+          cat > /tmp/guard.py <<'PY'
+          import os, sys, xml.etree.ElementTree as ET
+          expected = int(os.environ['EXPECTED_SELECTED'])
+          root = ET.parse('/tmp/fu-junit.xml').getroot()
+          rows = []
+          for c in root.iter('testcase'):
+              status = 'PASS'
+              for child in c:
+                  if child.tag in ('failure', 'error'):
+                      status = child.tag.upper()
+                  elif child.tag == 'skipped':
+                      status = 'SKIPPED'
+              rows.append(((c.get('classname') or '') + '::' + (c.get('name') or ''), status))
+          rows.sort()
+          print('executed_tests=%d (expected %d)' % (len(rows), expected))
+          for name, status in rows:
+              print('  [%s] %s' % (status, name))
+          if len(rows) != expected:
+              print('::error::Selection guard: expected exactly %d executed test(s), got %d — refusing to report green on an empty/incorrect selection' % (expected, len(rows)))
+              sys.exit(1)
+          print('Selection guard OK: exactly %d test(s) executed.' % expected)
+          PY
+          python3 /tmp/guard.py
 
-      - name: Upload log
+      - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -214,6 +262,7 @@ jobs:
           path: |
             /tmp/fu.log
             /tmp/fu.rc
+            /tmp/fu-junit.xml
           if-no-files-found: error
           retention-days: 14
 
@@ -228,7 +277,17 @@ jobs:
             echo '```'
             echo "--- SUMMARY ---"
             grep -E "^(Tests:|OK|FAILURES!|ERRORS!)" /tmp/fu.log | tail -n 4 || true
-            grep -E "^There (were|was) " /tmp/fu.log || true
+            echo "--- EXECUTED TESTS (from JUnit) ---"
+            python3 - <<'PY' || echo '(junit unavailable)'
+          import xml.etree.ElementTree as ET
+          root = ET.parse('/tmp/fu-junit.xml').getroot()
+          for c in sorted(root.iter('testcase'), key=lambda x: (x.get('classname') or '') + (x.get('name') or '')):
+              st = 'PASS'
+              for ch in c:
+                  if ch.tag in ('failure', 'error'):
+                      st = ch.tag.upper()
+              print('[%s] %s::%s' % (st, c.get('classname'), c.get('name')))
+          PY
             echo "--- FAILURE/ERROR DETAILS ---"
             awk '/^There (were|was) /{flag=1} flag' /tmp/fu.log | head -n 200
             echo '```'
