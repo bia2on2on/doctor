@@ -30,23 +30,34 @@ use WP_UnitTestCase;
  *   A scope-neutral W worker must be constructible/executable without
  *   request/user Clinic scope.
  *
+ * ARCHITECTURE BLOCKED (status of the fix, not of this test):
+ *   A prior GREEN attempt made notif.dispatch scope-neutral by routing it
+ *   directly through NotificationRepository::dispatchQueued(), which silently
+ *   removed the ONLY production invocation of NotificationRepository::
+ *   purgeArchived() (notification archive retention, notif.archive_days).
+ *   That regression was reverted — production notif.dispatch behavior is back
+ *   to current main. The fix is BLOCKED until a scope-neutral source for
+ *   notif.archive_days is resolved (installation-level Settings semantics),
+ *   which is out of scope for this slice. This test remains the valid RED
+ *   evidence for the underlying defect.
+ *
  * PURGE / RETENTION GUARD:
  *   This test does NOT decide whether notif.archive_days is installation-wide
  *   or per-Clinic, does NOT decide a default, and does NOT assert that purge
- *   is skipped. The dispatch path (NotificationRepository::dispatchQueued —
- *   whole-table, no clinic predicate) is what the narrow contract exercises;
- *   the retention semantics of notif.archive_days remain an open design
- *   question. The GREEN fix separates archive retention from this job's
- *   execution path; this test asserts the queued->sent mutation itself
- *   (material row flip on a dynamic Clinic id), not retention.
+ *   is skipped. Retention execution must NOT be silently dropped; the narrow
+ *   contract here is only that a scope-neutral W worker be constructible and
+ *   executable. The queued->sent mutation assertion (below) documents the
+ *   intended GREEN behavior without touching retention.
  *
- * STATIC-CACHE NOTE (post-GREEN):
- *   The GREEN fix removed App::notificationService() (and its function-local
- *   `static $notifications` memo) from the notif.dispatch path entirely, so
- *   this test's validity no longer depends on any previously cached
- *   NotificationService. During the RED phase a dedicated fresh-process run
- *   was required to avoid a false GREEN; after the fix the test is robust in
- *   the shared Integration suite too (asserted by the normal Integration job).
+ * STATIC-CACHE NOTE (classification-relevant):
+ *   App::notificationService() memoizes the NotificationService in a
+ *   function-local `static $notifications` that cannot be reset from test
+ *   code. In the shared long-running Integration process a prior test can
+ *   memoize it with a valid Clinic and hide the construction-time scope
+ *   dependency, producing a FALSE GREEN. This RED is therefore authoritative
+ *   ONLY when run in a dedicated fresh PHP process (as each production
+ *   worker is). A green shared-suite Integration result must NOT be treated
+ *   as proof that this RED is resolved.
  *
  * Uses EMPTY payload to exercise real recurring production semantics.
  * Ids are auto-generated (insert_id); never clinic_id=1/0, never first-row.
