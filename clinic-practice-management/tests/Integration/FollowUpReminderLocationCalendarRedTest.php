@@ -319,6 +319,101 @@ final class FollowUpReminderLocationCalendarRedTest extends WP_UnitTestCase
         );
     }
 
+    // ------------------------------------------------------------------
+    // TEST-ONLY DIAGNOSTIC (evidence branch) — هیچ assertion محصولی را
+    // تغییر نمی‌دهد و هیچ کد محصولی را لمس نمی‌کند.
+    //
+    // هدف: اثبات «اجرایی» اینکه آیا buildHandler() واقعاً سازندهٔ
+    // scope-neutral را می‌سازد و زمان مرجع کنترل‌شده را تزریق می‌کند،
+    // یا اینکه بی‌صدا به سازندهٔ legacy (بدون ساعت کنترل‌شده) تنزل می‌کند.
+    //
+    // هر دو تست زیر باید پیش از اصلاح helper قرمز (RED) باشند.
+    // پیام‌های DIAG-SETUP خطای fixture/setup را از RED اصلی جدا می‌کنند تا
+    // شکست bootstrap/fixture هرگز به‌عنوان RED محصولی شمرده نشود.
+    // ------------------------------------------------------------------
+
+    private function describeReflectionType(?\ReflectionType $type): string
+    {
+        if ($type === null) {
+            return 'null';
+        }
+        if ($type instanceof \ReflectionUnionType) {
+            $names = [];
+            foreach ($type->getTypes() as $member) {
+                $names[] = $member instanceof \ReflectionNamedType ? $member->getName() : get_class($member);
+            }
+            return get_class($type) . '{' . implode('|', $names) . '}';
+        }
+        if ($type instanceof \ReflectionNamedType) {
+            return get_class($type) . '{' . $type->getName() . '}';
+        }
+        return get_class($type);
+    }
+
+    /**
+     * DIAG 1 — آنچه PHP reflection واقعاً برای پارامتر #۲ سازنده برمی‌گرداند.
+     */
+    public function testDiagnosticProbeSeesNamedTypeForSettingsFactoryParam(): void
+    {
+        $ctor = (new \ReflectionClass(\ClinicCore\Application\Jobs\FollowUpReminderHandler::class))->getConstructor();
+        self::assertNotNull($ctor, 'DIAG-SETUP: FollowUpReminderHandler constructor must exist');
+
+        $params = $ctor->getParameters();
+        self::assertGreaterThanOrEqual(4, count($params), 'DIAG-SETUP: constructor must expose at least 4 parameters');
+
+        $type = $params[1]->getType();
+        self::assertNotNull($type, 'DIAG-SETUP: constructor parameter #2 must be typed');
+
+        self::assertTrue(
+            $type instanceof \ReflectionNamedType
+                && $type->getName() === \ClinicCore\Settings\SettingsFactory::class,
+            'DIAG: buildHandler() probe requires a ReflectionNamedType named '
+                . \ClinicCore\Settings\SettingsFactory::class
+                . ' for constructor parameter #2, but PHP reflection reports '
+                . $this->describeReflectionType($type)
+                . ' — the probe can therefore never match and the helper silently degrades to the legacy constructor.'
+        );
+    }
+
+    /**
+     * DIAG 2 — آیا زمان مرجع کنترل‌شده واقعاً به handler تزریق می‌شود؟
+     */
+    public function testDiagnosticBuildHandlerInjectsControlledReferenceTime(): void
+    {
+        self::assertGreaterThan(0, $this->clinicId, 'DIAG-SETUP: fixture clinic must exist');
+        self::assertGreaterThan(0, $this->locA, 'DIAG-SETUP: fixture location A must exist');
+        self::assertGreaterThan(0, $this->locB, 'DIAG-SETUP: fixture location B must exist');
+
+        $controlled = new DateTimeImmutable('2026-01-02T03:04:05+00:00', new DateTimeZone('UTC'));
+        $handler = $this->buildHandler($controlled);
+
+        self::assertInstanceOf(
+            \ClinicCore\Application\Jobs\FollowUpReminderHandler::class,
+            $handler,
+            'DIAG-SETUP: helper must return a FollowUpReminderHandler'
+        );
+
+        $prop = (new \ReflectionClass($handler))->getProperty('utcNow');
+        $prop->setAccessible(true);
+        $clock = $prop->getValue($handler);
+
+        self::assertNotNull(
+            $clock,
+            'DIAG: controlled reference time was NOT injected — handler->utcNow is null, so '
+                . 'FollowUpReminderHandler::rootReferenceUtc() falls back to uncontrolled current wall-clock time, '
+                . 'while the fixture suggested_date values were derived from the test-controlled instant.'
+        );
+
+        self::assertInstanceOf(\Closure::class, $clock, 'DIAG: injected clock must be a Closure');
+        $value = $clock();
+        self::assertInstanceOf(DateTimeImmutable::class, $value, 'DIAG: injected clock must return DateTimeImmutable');
+        self::assertSame(
+            $controlled->format('Y-m-d\TH:i:s\Z'),
+            $value->format('Y-m-d\TH:i:s\Z'),
+            'DIAG: injected clock must return exactly the controlled reference instant'
+        );
+    }
+
     public function testLocationLocalCalendarSelectsPerRow(): void
     {
         global $wpdb;
