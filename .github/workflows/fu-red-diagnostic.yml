@@ -1,10 +1,12 @@
 name: FU Helper Diagnostic (focused RED/GREEN)
 
 # TEST-ONLY evidence workflow — هیچ کد محصولی را اجرا/تغییر نمی‌دهد.
-# فقط انتخاب دقیق دو تست تشخیصی helper را اجرا می‌کند و شواهد را
-# به‌صورت ماندگار (artifact + کامنت PR + annotation) ثبت می‌کند.
 #
-# گارد مهم: اگر انتخاب «صفر تست» باشد، job سبز نمی‌شود (exit 1).
+# job «focused»     : دو تست تشخیصی helper (انتخاب دقیق)
+# job «fu-family»   : دو متد محصولی هدف + همهٔ تست‌های FollowUpReminder
+#
+# گارد مهم در هر دو job: اگر تعداد تست «اجراشده» دقیقاً برابر مقدار انتظار
+# نباشد، job سبز نمی‌شود — پس «صفر تست» هرگز سبز دیده نمی‌شود.
 
 on:
   push:
@@ -22,7 +24,7 @@ defaults:
 
 jobs:
   focused:
-    name: Focused fu.reminder helper diagnostic
+    name: Focused helper diagnostic (2 tests)
     runs-on: ubuntu-latest
 
     services:
@@ -41,9 +43,9 @@ jobs:
     env:
       WP_TESTS_DIR: /tmp/wordpress-test-lib
       WP_CORE_DIR: /tmp/wordpress
-      # انتخاب دقیق — فقط دو متد تشخیصی helper
       FOCUS_FILTER: 'FollowUpReminderLocationCalendarRedTest::testDiagnostic'
       EXPECTED_SELECTED: '2'
+      LOG_TAG: 'helper-diagnostic'
 
     steps:
       - uses: actions/checkout@v4
@@ -63,28 +65,27 @@ jobs:
         run: bash tests/bin/install-wp-tests.sh wordpress_test root root 127.0.0.1 6.7.2
 
       # نکتهٔ اندازه‌گیری‌شده (run 34832108391): در PHPUnit 9.6 گزینهٔ --filter روی
-      # --list-tests اثر ندارد و کل suite (۷۳۷ تست) را فهرست می‌کند؛ پس گارد
-      # صفر-تست باید روی خلاصهٔ «اجرای واقعی» سنجیده شود، نه روی فهرست.
-      - name: Run focused diagnostic
+      # --list-tests اثر ندارد و کل suite را فهرست می‌کند؛ پس گارد باید روی
+      # خلاصهٔ «اجرای واقعی» سنجیده شود، نه روی فهرست.
+      - name: Run focused selection
         run: |
           set +e
           php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
             --bootstrap tests/integration-bootstrap.php \
-            --filter "$FOCUS_FILTER" tests/Integration 2>&1 | tee /tmp/fu-red.log
+            --filter "$FOCUS_FILTER" tests/Integration 2>&1 | tee /tmp/fu.log
           rc=${PIPESTATUS[0]}
-          echo "$rc" > /tmp/fu-red.rc
+          echo "$rc" > /tmp/fu.rc
           echo "phpunit_exit=$rc"
           exit 0
 
-      # گارد صفر-تست: اگر انتخاب خالی/نادرست باشد، job هرگز سبز نمی‌شود.
       - name: Zero-executed-tests guard
         if: always()
         run: |
           echo "--- summary lines ---"
-          grep -E "^(Tests:|No tests executed|OK|FAILURES!|ERRORS!|There (were|was) )" /tmp/fu-red.log || true
+          grep -E "^(Tests:|No tests executed|OK|FAILURES!|ERRORS!|There (were|was) )" /tmp/fu.log || true
           echo "--- executed/failed test names ---"
-          grep -oE "^[0-9]+\) [A-Za-z\\\\]+Test::[A-Za-z_]+" /tmp/fu-red.log | sort -u || true
-          N=$(grep -oE '^Tests: [0-9]+' /tmp/fu-red.log | grep -oE '[0-9]+' | tail -1 || true)
+          grep -oE "^[0-9]+\) [A-Za-z\\\\]+Test::[A-Za-z_]+" /tmp/fu.log | sort -u || true
+          N=$(grep -oE '^Tests: [0-9]+' /tmp/fu.log | grep -oE '[0-9]+' | tail -1 || true)
           echo "executed_tests=${N:-none} (expected $EXPECTED_SELECTED)"
           if [ -z "$N" ]; then
             echo "::error::Selection guard: no PHPUnit 'Tests:' summary found (empty selection, parse or bootstrap failure) — refusing to report green"
@@ -95,53 +96,153 @@ jobs:
             exit 1
           fi
 
-      - name: Upload focused diagnostic log
+      - name: Upload log
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: fu-helper-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          name: fu-${{ env.LOG_TAG }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            /tmp/fu-red.log
-            /tmp/fu-red.rc
+            /tmp/fu.log
+            /tmp/fu.rc
           if-no-files-found: error
           retention-days: 14
 
-      - name: Post focused diagnostic to PR
+      - name: Post evidence to PR
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           {
-            echo "### fu.reminder helper diagnostic (run ${{ github.run_id }}, sha ${{ github.sha }})"
+            echo "### fu.reminder ${LOG_TAG} (run ${{ github.run_id }}, sha ${{ github.sha }})"
             echo '```'
             echo "--- SUMMARY ---"
-            grep -E "^(Tests:|OK|OK \(|FAILURES!|ERRORS!)" /tmp/fu-red.log | tail -n 4 || true
-            grep -E "^There (were|was) " /tmp/fu-red.log || true
+            grep -E "^(Tests:|OK|FAILURES!|ERRORS!)" /tmp/fu.log | tail -n 4 || true
+            grep -E "^There (were|was) " /tmp/fu.log || true
             echo "--- FAILURE/ERROR DETAILS ---"
-            awk '/^There (were|was) /{flag=1} flag' /tmp/fu-red.log | head -n 160
-          } > /tmp/fu-red-body.md
-          cat /tmp/fu-red-body.md
+            awk '/^There (were|was) /{flag=1} flag' /tmp/fu.log | head -n 160
+            echo '```'
+          } > /tmp/fu-body.md
+          cat /tmp/fu-body.md
           if [ -n "$PR_NUMBER" ]; then
-            gh pr comment "$PR_NUMBER" --body-file /tmp/fu-red-body.md || echo "::notice::PR comment failed (permissions?)"
+            gh pr comment "$PR_NUMBER" --body-file /tmp/fu-body.md || echo "::notice::PR comment failed (permissions?)"
           else
-            echo "::notice::no pull_request number on this event — evidence kept in artifact + job summary only"
+            echo "::notice::no pull_request number on this event — evidence kept in artifact only"
           fi
 
-      - name: Surface annotations
-        if: always()
-        run: |
-          grep -oE "^[0-9]+\) [A-Za-z\\\\]+Test::[A-Za-z_]+" /tmp/fu-red.log | sort -u | while IFS= read -r l; do
-            echo "::error::${l:0:400}"
-          done
-          grep -E "^Tests: " /tmp/fu-red.log | head -1 | while IFS= read -r l; do
-            echo "::notice::${l:0:400}"
-          done
-
-      # نتیجهٔ واقعی PHPUnit آخرین گام است: RED => job failure، GREEN => success.
       - name: Propagate PHPUnit result
         if: always()
         run: |
-          rc=$(cat /tmp/fu-red.rc 2>/dev/null || echo 1)
+          rc=$(cat /tmp/fu.rc 2>/dev/null || echo 1)
+          echo "phpunit_exit=$rc"
+          exit "$rc"
+
+  fu-family:
+    name: Target product tests + FollowUpReminder family (7 tests)
+    runs-on: ubuntu-latest
+
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=20
+
+    env:
+      WP_TESTS_DIR: /tmp/wordpress-test-lib
+      WP_CORE_DIR: /tmp/wordpress
+      # ۲ متد محصولی هدف + ۲ تشخیصی + M2Wiring(1) + Starvation(2) = ۷
+      FOCUS_FILTER: 'FollowUpReminder'
+      EXPECTED_SELECTED: '7'
+      LOG_TAG: 'family'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mbstring, xml, mysqli, pcntl, curl
+          coverage: none
+
+      - name: Install dependencies (PHPUnit 9.6 for WP test lib)
+        run: |
+          composer install --prefer-dist --no-progress --no-interaction
+          composer require --dev phpunit/phpunit:^9.6 --no-interaction --no-progress --with-all-dependencies
+
+      - name: Prepare WordPress test suite
+        run: bash tests/bin/install-wp-tests.sh wordpress_test root root 127.0.0.1 6.7.2
+
+      - name: Run FollowUpReminder selection
+        run: |
+          set +e
+          php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
+            --bootstrap tests/integration-bootstrap.php \
+            --filter "$FOCUS_FILTER" tests/Integration 2>&1 | tee /tmp/fu.log
+          rc=${PIPESTATUS[0]}
+          echo "$rc" > /tmp/fu.rc
+          echo "phpunit_exit=$rc"
+          exit 0
+
+      - name: Zero-executed-tests guard
+        if: always()
+        run: |
+          echo "--- summary lines ---"
+          grep -E "^(Tests:|No tests executed|OK|FAILURES!|ERRORS!|There (were|was) )" /tmp/fu.log || true
+          N=$(grep -oE '^Tests: [0-9]+' /tmp/fu.log | grep -oE '[0-9]+' | tail -1 || true)
+          echo "executed_tests=${N:-none} (expected $EXPECTED_SELECTED)"
+          if [ -z "$N" ]; then
+            echo "::error::Selection guard: no PHPUnit 'Tests:' summary found — refusing to report green"
+            exit 1
+          fi
+          if [ "$N" -ne "$EXPECTED_SELECTED" ]; then
+            echo "::error::Selection guard: expected exactly $EXPECTED_SELECTED executed test(s), got $N — refusing to report green on an empty/incorrect selection"
+            exit 1
+          fi
+
+      - name: Upload log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fu-${{ env.LOG_TAG }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            /tmp/fu.log
+            /tmp/fu.rc
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Post evidence to PR
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          {
+            echo "### fu.reminder ${LOG_TAG} (run ${{ github.run_id }}, sha ${{ github.sha }})"
+            echo '```'
+            echo "--- SUMMARY ---"
+            grep -E "^(Tests:|OK|FAILURES!|ERRORS!)" /tmp/fu.log | tail -n 4 || true
+            grep -E "^There (were|was) " /tmp/fu.log || true
+            echo "--- FAILURE/ERROR DETAILS ---"
+            awk '/^There (were|was) /{flag=1} flag' /tmp/fu.log | head -n 200
+            echo '```'
+          } > /tmp/fu-body.md
+          cat /tmp/fu-body.md
+          if [ -n "$PR_NUMBER" ]; then
+            gh pr comment "$PR_NUMBER" --body-file /tmp/fu-body.md || echo "::notice::PR comment failed (permissions?)"
+          else
+            echo "::notice::no pull_request number on this event — evidence kept in artifact only"
+          fi
+
+      - name: Propagate PHPUnit result
+        if: always()
+        run: |
+          rc=$(cat /tmp/fu.rc 2>/dev/null || echo 1)
           echo "phpunit_exit=$rc"
           exit "$rc"
