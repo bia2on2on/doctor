@@ -11,7 +11,8 @@ use PHPUnit\Framework\TestCase;
 use ReflectionClass;
 
 /**
- * قرارداد RED — تنظیمِ سطحِ نصبِ `notif.archive_days` (Phase 2).
+ * قرارداد RED — تنظیم‌های سطحِ نصبِ `notif.archive_days` و
+ * `retention.oplog_days` (Phase 2 / M-2).
  *
  * تصمیم مصوب: purge سراسری اعلان‌ها یک sweep سطح نصب است، پس
  * `notif.archive_days` پیکربندی سطح نصب است — نه per-Clinic.
@@ -74,6 +75,16 @@ final class InstallationSettingsTest extends TestCase
 
         $getter = $reflection->getMethod('getNotifArchiveDays');
         $this->assertSame(0, $getter->getNumberOfParameters(), 'خواندن نباید هیچ ورودی بگیرد.');
+
+        $oplogGetter = $reflection->getMethod('getOplogRetentionDays');
+        $this->assertSame(0, $oplogGetter->getNumberOfParameters(), 'خواندنِ oplog هم نباید هیچ ورودی بگیرد.');
+        $oplogSetter = $reflection->getMethod('setOplogRetentionDays');
+        $this->assertSame(1, $oplogSetter->getNumberOfParameters(), 'نوشتنِ oplog فقط تعداد روز می‌گیرد.');
+        $this->assertStringNotContainsStringIgnoringCase(
+            'clinic',
+            strtolower((string) $oplogSetter->getParameters()[0]->getName()),
+            'نوشتنِ oplog نباید پارامتر Clinic بگیرد.'
+        );
     }
 
     public function testDefaultPreservesExistingEffectiveBehaviorWhenOptionAbsent(): void
@@ -193,6 +204,9 @@ final class InstallationSettingsTest extends TestCase
         $settings->getNotifArchiveDays();
         $settings->setNotifArchiveDays(60);
         $settings->getNotifArchiveDays();
+        $settings->getOplogRetentionDays();
+        $settings->setOplogRetentionDays(30);
+        $settings->getOplogRetentionDays();
 
         $touched = $this->readKeys;
         foreach ($this->writes as $write) {
@@ -202,11 +216,102 @@ final class InstallationSettingsTest extends TestCase
         $this->assertNotSame([], $touched, 'پیش‌شرط: عملیاتی روی ذخیره‌سازی انجام شده است.');
         foreach ($touched as $key) {
             $this->assertStringNotContainsStringIgnoringCase('clinic', $key, 'هیچ کلیدی نباید Clinic را لمس کند.');
-            $this->assertSame(
-                InstallationSettings::OPTION_NOTIF_ARCHIVE_DAYS,
+            $this->assertContains(
                 $key,
-                'تنها کلید مجاز، Option سطح نصب است.'
+                [
+                    InstallationSettings::OPTION_NOTIF_ARCHIVE_DAYS,
+                    InstallationSettings::OPTION_OPLOG_RETENTION_DAYS,
+                ],
+                'تنها کلیدهای مجاز، Optionهای سطح نصب هستند.'
             );
         }
+    }
+
+    // -----------------------------------------------------------------
+    // M-2 — `retention.oplog_days` (سطح نصب، کلید مستقل از notif)
+    // -----------------------------------------------------------------
+
+    public function testOplogDefaultPreservesExistingEffectiveBehaviorWhenOptionAbsent(): void
+    {
+        $this->assertSame([], $this->store, 'پیش‌شرط: Option ذخیره نشده است.');
+
+        $days = $this->settings()->getOplogRetentionDays();
+
+        $this->assertSame(90, $days, 'پیش‌فرض مؤثر فعلی (۹۰ روز) باید حفظ شود.');
+        $this->assertSame(
+            [InstallationSettings::OPTION_OPLOG_RETENTION_DAYS],
+            $this->readKeys,
+            'خواندن باید دقیقاً از کلید Option سطح نصبِ oplog انجام شود.'
+        );
+    }
+
+    public function testOplogNumericScalarsFromWpOptionsAreAccepted(): void
+    {
+        $this->store[InstallationSettings::OPTION_OPLOG_RETENTION_DAYS] = 45;
+        $this->assertSame(45, $this->settings()->getOplogRetentionDays());
+
+        $this->store[InstallationSettings::OPTION_OPLOG_RETENTION_DAYS] = '30';
+        $this->assertSame(30, $this->settings()->getOplogRetentionDays(), 'ستون Option متنی است.');
+
+        $this->store[InstallationSettings::OPTION_OPLOG_RETENTION_DAYS] = 1;
+        $this->assertSame(1, $this->settings()->getOplogRetentionDays(), 'کف ۱ روز معتبر است.');
+    }
+
+    public function testOplogIsStableWithoutAnyClinic(): void
+    {
+        $this->store[InstallationSettings::OPTION_OPLOG_RETENTION_DAYS] = 45;
+        $settings = $this->settings();
+
+        $this->assertSame(45, $settings->getOplogRetentionDays());
+        $this->assertSame(45, $settings->getOplogRetentionDays(), 'هیچ Clinic فعالی در کار نیست.');
+    }
+
+    #[DataProvider('malformedProvider')]
+    public function testOplogMalformedValuesFailSafeToDefault(mixed $raw): void
+    {
+        $this->store[InstallationSettings::OPTION_OPLOG_RETENTION_DAYS] = $raw;
+
+        $this->assertSame(
+            90,
+            $this->settings()->getOplogRetentionDays(),
+            'مقدار خرابِ ذخیره‌شده باید امن به پیش‌فرض برگردد (نه حذف تهاجمی‌تر).'
+        );
+    }
+
+    public function testOplogSetPersistsThroughWriterAndReadsBack(): void
+    {
+        $settings = $this->settings();
+
+        $settings->setOplogRetentionDays(120);
+
+        $this->assertSame(
+            [['key' => InstallationSettings::OPTION_OPLOG_RETENTION_DAYS, 'value' => 120]],
+            $this->writes,
+            'نوشتن باید دقیقاً یک‌بار با کلید سطح نصبِ oplog انجام شود.'
+        );
+        $this->assertSame(120, $settings->getOplogRetentionDays());
+    }
+
+    #[DataProvider('nonPositiveProvider')]
+    public function testOplogSetRejectsNonPositiveDays(int $days): void
+    {
+        $settings = $this->settings();
+
+        try {
+            $settings->setOplogRetentionDays($days);
+            $this->fail('نوشتن مقدار نامثبت باید رد شود.');
+        } catch (InvalidArgumentException) {
+            $this->assertSame([], $this->writes, 'نوشتنِ ردشده نباید به ذخیره‌سازی برسد.');
+        }
+    }
+
+    public function testOplogKeyIsIndependentFromNotifKey(): void
+    {
+        $this->store[InstallationSettings::OPTION_NOTIF_ARCHIVE_DAYS] = 30;
+
+        $settings = $this->settings();
+
+        $this->assertSame(30, $settings->getNotifArchiveDays(), 'قرارداد notif نباید تغییر کند.');
+        $this->assertSame(90, $settings->getOplogRetentionDays(), 'کلید oplog مستقل است.');
     }
 }

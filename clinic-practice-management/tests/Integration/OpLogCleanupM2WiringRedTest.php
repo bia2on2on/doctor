@@ -6,56 +6,48 @@ namespace ClinicCore\Tests\Integration;
 
 use ClinicCore\Application\Jobs\JobScopeClass;
 use ClinicCore\Application\Jobs\JobScopeRegistry;
+use ClinicCore\Application\Jobs\OpLogCleanupHandler;
 use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Application\Scope\SystemClinicResolver;
 use ClinicCore\Bootstrap\App;
-use ClinicCore\Settings\Settings;
+use ClinicCore\Settings\InstallationSettings;
 use WP_UnitTestCase;
 
 /**
- * M-2 cleanup.oplog — قرارداد اجرای scope-neutral برای Job سطحِ نصب.
+ * M-2 cleanup.oplog — قرارداد اجرای scope-neutral + حذفِ کران‌دار.
  *
- * ثابت می‌کند wiring تولیدیِ `cleanup.oplog` (طبقهٔ ثبت‌شده: **S** =
- * installation-scoped در `JobScopeRegistry`) باید در یک context نصب‌گسترده
- * **بدونِ کاربر و بدونِ ScopeContext** بسازد و اجرا شود و همان پاک‌سازیِ
- * retention را واقعاً انجام دهد.
+ * این تست هم‌زمان دو چیز را قفل می‌کند:
+ *   ۱) Jobِ سطحِ نصب (`cleanup.oplog` = طبقهٔ **S** در `JobScopeRegistry`)
+ *      باید در یک context نصب‌گسترده — **بدونِ کاربر و بدونِ ScopeContext** و
+ *      بدونِ Clinic ثابت/مصنوعی — از مسیر واقعیِ `App::runTick()` اجرا شود و
+ *      پاک‌سازی را انجام دهد.
+ *   ۲) هر اجرا باید حداکثر `OpLogCleanupHandler::DELETE_BATCH_SIZE` ردیفِ
+ *      واجدِ شرایط حذف کند و اجرای بعدیِ همان Job پاک‌سازی را ادامه دهد
+ *      (بدونِ cursor/OFFSET).
  *
- * عیبِ وضعیتِ جاری (main = 39e9a73):
- *   App::dispatcher() برای `cleanup.oplog` مسیر زیر را ثبت می‌کند
- *     (new OpLogCleanupHandler($db, self::settings()))($payload)
- *   و `App::settings()` تنظیمات را از Scope جاری حل می‌کند
- *     (`App::settings() → App::scope() → SystemClinicResolver::resolve()`).
- *   در نصبِ چند-Clinic بدونِ Scope صریح، `SystemClinicResolver` به‌صورت
- *   Fail-Closed `CLINIC_SCOPE_REQUIRED` می‌اندازد ⇒ Handler حتی ساخته نمی‌شود
- *   و Job با `max_attempts = 1` به status `failed` می‌رسد.
+ * تاریخچه: نسخهٔ RED این تست پیش از اصلاح در main بازتولید شد —
+ *   `status=failed` با خطای `CLINIC_SCOPE_REQUIRED` از
+ *   `App::settings() → App::scope()` در زمانِ ساختِ Handler
+ *   (شاهد در PR #41؛ اجرای متمرکز 34870085607 و CI 34870085507).
+ * پس از اصلاح (M-2 GREEN) انتظار: `status=success`، حذفِ ردیفِ کهنه،
+ * نگه‌داشتنِ ردیفِ تازه و کرانِ حذف.
  *
- * RED موردانتظار (پیش از اصلاح): status = failed، last_error = پیامِ شکستِ
- *   Scope، tick واقعی اجرا شده ولی کارِ پاک‌سازی انجام نشده است.
- * GREEN موردانتظار (پس از اصلاح): status = success و همان‌جا ردیفِ قدیمی‌تر از
- *   retention حذف و ردیفِ تازه نگه داشته شود — بدونِ هیچ Clinic/کاربر.
+ * منبعِ پیکربندی (مسیر مصوب): `InstallationSettings::getOplogRetentionDays()`
+ * روی wp_options (`cpms_retention_oplog_days`، autoload=no) — هیچ ردیفِ
+ * Clinic نوشته نمی‌شود، نه `clinic_id = 0`، نه Clinic مصنوعی، نه مقدارِ
+ * تاریخیِ هیچ Clinic. این تست Option را در setUp حذف می‌کند تا پیش‌فرضِ مؤثر
+ * (۹۰ روز) صریح و قطعی باشد.
  *
- * قراردادِ آیندهٔ پیکربندی (بدونِ پیاده‌سازی در این تسک):
- *   روزهای retention باید از پیکربندی **سطحِ نصب** بیاید (`InstallationSettings`
- *   روی wp_options — همان الگوی مصوبِ `notif.archive_days`)، نه از Settingsِ
- *   Clinic. این تست **هیچ** مقدارِ Clinic را نمی‌نویسد: نه ردیفِ Clinic، نه
- *   `clinic_id = 0`، نه Clinic مصنوعی و نه مقدارِ تاریخیِ هیچ Clinic. پیش‌فرضِ
- *   مصوب از روی `Settings::DEFAULTS` فقط **خوانده و ثبت** می‌شود (۹۰ روز) —
- *   بدونِ اختراعِ مقدار/سقفِ جدید.
+ * کشِ استاتیک / Greenِ کاذب: `SystemClinicResolver::$cached` و کش‌های App در
+ * سطحِ فرآیندِ PHP باقی می‌مانند؛ در suite مشترک، Clinicِ کش‌شدهٔ یک تستِ
+ * تک‌کلینیکی می‌تواند وابستگیِ Scope را پنهان کند. به همین دلیل تست خودش
+ * کش‌ها را می‌بندد و شاهدِ معتبر همان اجرای **متمرکز در فرآیند تازه** است
+ * (workflow فقط-شواهد).
  *
- * کشِ استاتیک / Greenِ کاذب (اهمیتِ طبقه‌بندی):
- *   `SystemClinicResolver::$cached` یک ClinicScope را در سطحِ فرآیندِ PHP
- *   کش می‌کند. در suite مشترکِ Integration، تستی که پیش‌تر روی نصبِ
- *   تک‌کلینیکی Scope حل کرده باشد، می‌تواند Clinicِ کهنه را برگرداند و
- *   وابستگیِ Scope را **پنهان** کند (Greenِ کاذب). به همین دلیل: (۱) این تست
- *   پیش از tick صریحاً `App::resetScope()`/`SystemClinicResolver::flush()`
- *   و کش‌های App را می‌بندد؛ (۲) شاهدِ معتبر فقط اجرای **متمرکز در یک فرآیندِ
- *   PHP تازه** است (مسیرِ workflow فقط-شواهد)، نه سبزیِ کلیِ suite مشترک.
- *
- * Fixture: Clinicها به‌صورت دینامیک ساخته می‌شوند (بدونِ ID ثابت، بدونِ
- * فرضِ «ردیفِ اول»). `App::runTick()` واقعی استفاده می‌شود و Job با payloadِ
- * **خالی** — دقیقاً همان کاری که `scheduleRecurringJobs()` در production
- * می‌کند.
+ * Fixture: Clinicها و ردیف‌های لاگ به‌صورت دینامیک ساخته می‌شوند (بدونِ ID
+ * ثابت، بدونِ فرضِ «ردیفِ اول») و Job با payloadِ خالی — دقیقاً کاری که
+ * `scheduleRecurringJobs()` در production می‌کند.
  */
 final class OpLogCleanupM2WiringRedTest extends WP_UnitTestCase
 {
@@ -63,8 +55,11 @@ final class OpLogCleanupM2WiringRedTest extends WP_UnitTestCase
     private int $clinicA = 0;
     private int $clinicB = 0;
 
-    /** @var list<string> پیام‌های ردیف‌های ساخته‌شدهٔ این تست (برای پاک‌سازی) */
+    /** @var list<string> پیام‌های دقیقِ ردیف‌های ساخته‌شدهٔ این تست */
     private array $oplogMessages = [];
+
+    /** @var list<string> پیشوندهای پیامِ دسته‌های ساخته‌شده (برای پاک‌سازی) */
+    private array $oplogPrefixes = [];
 
     /**
      * صفر کردنِ کش‌های سطحِ فرآیند که reset عمومی ندارند (class props).
@@ -85,7 +80,7 @@ final class OpLogCleanupM2WiringRedTest extends WP_UnitTestCase
         }
         App::resetScope();
         SystemClinicResolver::flush();
-        Settings::flushCache();
+        \ClinicCore\Settings\Settings::flushCache();
         if (method_exists(App::class, 'settingsFactory')) {
             try {
                 App::settingsFactory()->reset();
@@ -99,6 +94,7 @@ final class OpLogCleanupM2WiringRedTest extends WP_UnitTestCase
     {
         parent::setUp();
         App::migrations()->migrate();
+        delete_option(InstallationSettings::OPTION_OPLOG_RETENTION_DAYS);
         $this->resetAppCaches();
         $this->buildClinics();
         $this->purgeJobs();
@@ -111,6 +107,7 @@ final class OpLogCleanupM2WiringRedTest extends WP_UnitTestCase
         $this->purgeJobs();
         $this->purgeOperationalLogs();
         $this->purgeFixture();
+        delete_option(InstallationSettings::OPTION_OPLOG_RETENTION_DAYS);
         $this->resetAppCaches();
         parent::tearDown();
     }
@@ -194,7 +191,14 @@ final class OpLogCleanupM2WiringRedTest extends WP_UnitTestCase
         foreach ($this->oplogMessages as $message) {
             $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_operational_logs') . ' WHERE message = %s', $message));
         }
+        foreach ($this->oplogPrefixes as $prefix) {
+            $wpdb->query($wpdb->prepare(
+                'DELETE FROM ' . $db->table('cpms_operational_logs') . ' WHERE message LIKE %s',
+                $wpdb->esc_like($prefix) . '%'
+            ));
+        }
         $this->oplogMessages = [];
+        $this->oplogPrefixes = [];
     }
 
     private function insertOpLog(string $message, string $createdAt): int
@@ -213,6 +217,39 @@ final class OpLogCleanupM2WiringRedTest extends WP_UnitTestCase
         return $id;
     }
 
+    /**
+     * درجِ دسته‌ایِ ردیف‌های کهنه با یک پیشوندِ یکتا (چند تا Insert، هر کدام
+     * چند ردیف) — تعداد درج‌شده برگردانده و بیرون assert می‌شود.
+     */
+    private function insertOpLogBatch(string $prefix, int $count, string $createdAt): int
+    {
+        global $wpdb;
+        $db = App::db();
+        $table = $db->table('cpms_operational_logs');
+        $inserted = 0;
+
+        foreach (array_chunk(range(1, $count), 50) as $chunk) {
+            $values = [];
+            $params = [];
+            foreach ($chunk as $i) {
+                $values[] = '(%s, %s, NULL, %s)';
+                $params[] = 'info';
+                $params[] = $prefix . $i;
+                $params[] = $createdAt;
+            }
+            $ok = $wpdb->query($wpdb->prepare( // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                'INSERT INTO ' . $table . ' (level, message, context_json, created_at) VALUES ' . implode(', ', $values),
+                ...$params
+            ));
+            self::assertNotFalse($ok, 'bulk oplog insert chunk must succeed');
+            $inserted += count($chunk);
+        }
+
+        $this->oplogPrefixes[] = $prefix;
+
+        return $inserted;
+    }
+
     private function countOpLog(string $message): int
     {
         global $wpdb;
@@ -224,11 +261,59 @@ final class OpLogCleanupM2WiringRedTest extends WP_UnitTestCase
         ));
     }
 
+    private function countOpLogByPrefix(string $prefix): int
+    {
+        global $wpdb;
+        $db = App::db();
+
+        return (int) $wpdb->get_var($wpdb->prepare(
+            'SELECT COUNT(*) FROM ' . $db->table('cpms_operational_logs') . ' WHERE message LIKE %s',
+            $wpdb->esc_like($prefix) . '%'
+        ));
+    }
+
+    /** تعداد کلِ ردیف‌های واجدِ شرایط (قدیمی‌تر از پنجرهٔ retention فعلی). */
+    private function countEligibleOpLogs(int $days = 90): int
+    {
+        global $wpdb;
+        $db = App::db();
+        $cutoff = gmdate('Y-m-d H:i:s', time() - $days * 86400) . '.000';
+
+        return (int) $wpdb->get_var($wpdb->prepare(
+            'SELECT COUNT(*) FROM ' . $db->table('cpms_operational_logs') . ' WHERE created_at < %s',
+            $cutoff
+        ));
+    }
+
     /**
-     * RED اصلی: اجرای واقعیِ `cleanup.oplog` از مسیر production در context
-     * نصب‌گسترده (چند Clinic، بدون کاربر، بدون ScopeContext).
+     * @return array<string, mixed>
      */
-    public function testCleanupOplogMustRunScopeNeutralInInstallationContext(): void
+    private function enqueueCleanupJob(): int
+    {
+        $queue = App::jobs();
+        $nowDt = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+
+        return $queue->enqueue('cleanup.oplog', [], $nowDt, 1, 1);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function jobRow(int $jobId): array
+    {
+        global $wpdb;
+        $db = App::db();
+
+        return (array) $wpdb->get_row($wpdb->prepare(
+            'SELECT * FROM ' . $db->table('cpms_jobs') . ' WHERE id = %d',
+            $jobId
+        ), ARRAY_A);
+    }
+
+    /**
+     * قرارداد کامل: scope-neutral بودن + پاک‌سازی + کرانِ حذف + ادامهٔ تکرارشونده.
+     */
+    public function testCleanupOplogMustRunScopeNeutralWithBoundedDeletion(): void
     {
         global $wpdb;
         $db = App::db();
@@ -273,7 +358,8 @@ final class OpLogCleanupM2WiringRedTest extends WP_UnitTestCase
         self::assertContains('cleanup.oplog', $registered, 'production dispatcher must register cleanup.oplog');
 
         // ---------------------------------------------------------------
-        // ۵) امروز منبعِ پیکربندی به Clinic گره خورده است: بدونِ Scope می‌بندد
+        // ۵) پیش‌شرط: نصبِ چند-Clinic بدونِ Scope باید Fail-Closed بماند
+        //    (این قرارداد پس از اصلاح هم باید برقرار باشد؛ Job نباید به آن تکیه کند)
         // ---------------------------------------------------------------
         try {
             $scope = App::scope();
@@ -286,16 +372,20 @@ final class OpLogCleanupM2WiringRedTest extends WP_UnitTestCase
         }
 
         // ---------------------------------------------------------------
-        // ۶) ثبتِ دقیقِ پیش‌فرضِ مصوب (فقط خواندن — هیچ ردیفِ Clinic نوشته نمی‌شود)
+        // ۶) منبعِ پیکربندی: سطح نصب، بدونِ Clinic؛ پیش‌فرض مؤثر = ۹۰
         // ---------------------------------------------------------------
+        self::assertFalse(
+            get_option(InstallationSettings::OPTION_OPLOG_RETENTION_DAYS, false),
+            'precondition: installation option must be absent (defaults apply)'
+        );
         self::assertSame(
             90,
-            Settings::DEFAULTS['retention.oplog_days'],
-            'approved default of retention.oplog_days must be recorded exactly (90)'
+            App::installationSettings()->getOplogRetentionDays(),
+            'approved effective default of retention.oplog_days must stay 90'
         );
 
         // ---------------------------------------------------------------
-        // ۷) Fixture مادیِ جدولِ لاگِ عملیاتی: یک ردیفِ کهنه + یک ردیفِ تازه
+        // ۷) Fixture مادیِ لاگ: یک ردیفِ کهنه + یک ردیفِ تازه
         // ---------------------------------------------------------------
         $tag = bin2hex(random_bytes(4));
         $oldMessage = 'oplog-red-old-' . $tag;
@@ -303,103 +393,109 @@ final class OpLogCleanupM2WiringRedTest extends WP_UnitTestCase
         $oldCreatedAt = gmdate('Y-m-d H:i:s', time() - 200 * 86400) . '.000';
         $recentCreatedAt = gmdate('Y-m-d H:i:s', time() - 5 * 86400) . '.000';
 
-        $this->purgeOperationalLogs();
-        self::assertSame(0, $this->countOpLog($oldMessage), 'fixture must start clean (old)');
-        self::assertSame(0, $this->countOpLog($recentMessage), 'fixture must start clean (recent)');
-
         self::assertGreaterThan(0, $this->insertOpLog($oldMessage, $oldCreatedAt), 'old oplog row inserted');
         self::assertGreaterThan(0, $this->insertOpLog($recentMessage, $recentCreatedAt), 'recent oplog row inserted');
         self::assertSame(1, $this->countOpLog($oldMessage), 'material fixture: exactly one out-of-retention row');
         self::assertSame(1, $this->countOpLog($recentMessage), 'material fixture: exactly one in-retention row');
-        self::assertLessThan(
-            gmdate('Y-m-d H:i:s', time() - 90 * 86400) . '.000',
-            $oldCreatedAt,
-            'old row must be older than the approved 90-day retention window'
-        );
 
         // ---------------------------------------------------------------
-        // ۸) Enqueue واقعیِ همان Job (payloadِ خالی = semantics زمان‌بندِ دوره‌ای)
+        // ۸) Enqueue واقعی + اجرا از مسیر App::runTick()
         // ---------------------------------------------------------------
-        $queue = App::jobs();
-        $nowDt = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
-        $jobId = $queue->enqueue('cleanup.oplog', [], $nowDt, 1, 1);
+        $jobId = $this->enqueueCleanupJob();
         self::assertGreaterThan(0, $jobId, 'enqueue of cleanup.oplog must succeed');
+        self::assertSame('queued', (string) $this->jobRow($jobId)['status'], 'job must start queued');
 
-        $jobBefore = $wpdb->get_row($wpdb->prepare(
-            'SELECT * FROM ' . $db->table('cpms_jobs') . ' WHERE id = %d',
-            $jobId
-        ), ARRAY_A);
-        self::assertNotEmpty($jobBefore, 'enqueued job row must exist');
-        self::assertSame('queued', (string) $jobBefore['status'], 'job must start queued');
-        self::assertSame('[]', (string) $jobBefore['payload_json'], 'recurring semantics: empty payload');
-        self::assertSame(1, (int) $jobBefore['max_attempts'], 'single attempt for a deterministic verdict');
-        self::assertSame(0, (int) $jobBefore['attempts'], 'job must not have been claimed yet');
+        $tickOne = App::runTick(20);
+        $jobOne = $this->jobRow($jobId);
+        self::assertSame(1, (int) $jobOne['attempts'], 'job #1 must be claimed exactly once. tickResult=' . var_export($tickOne, true));
 
-        // ---------------------------------------------------------------
-        // ۹) اجرای واقعی از طریق App::runTick() — مسیر production
-        // ---------------------------------------------------------------
-        $tickResult = App::runTick(20);
-
-        $jobAfter = $wpdb->get_row($wpdb->prepare(
-            'SELECT * FROM ' . $db->table('cpms_jobs') . ' WHERE id = %d',
-            $jobId
-        ), ARRAY_A);
-        self::assertNotEmpty($jobAfter, 'job row must still exist after tick');
-
-        $status = (string) ($jobAfter['status'] ?? '');
-        $lastError = (string) ($jobAfter['last_error'] ?? '');
-        $attempts = (int) ($jobAfter['attempts'] ?? 0);
+        $statusOne = (string) $jobOne['status'];
         $oldRemaining = $this->countOpLog($oldMessage);
-        $recentRemaining = $this->countOpLog($recentMessage);
-
-        $evidence = 'status=' . $status
-            . ' last_error=' . $lastError
-            . ' attempts=' . $attempts
-            . ' max_attempts=' . (int) ($jobAfter['max_attempts'] ?? 0)
-            . ' tickResult=' . var_export($tickResult, true)
-            . ' old_row_remaining=' . $oldRemaining
-            . ' recent_row_remaining=' . $recentRemaining
-            . ' clinic_count=' . $clinicCount;
-
-        // (الف) انتسابِ شکست: خطا باید همان وابستگیِ Scope باشد — نه
-        // NO_HANDLER، نه خطای fixture/DB. این ادعا هیچ markerی چاپ نمی‌کند.
-        $scopeAttribution = $lastError !== ''
-            && (str_contains($lastError, 'CLINIC_SCOPE_REQUIRED')
-                || str_contains($lastError, 'امکان تعیین Clinic فعال'));
-        self::assertTrue(
-            $scopeAttribution,
-            'RED_ATTRIBUTION_FAILED: job failure is not attributable to the Clinic-scope dependency '
-                . '(no scope error in last_error). ' . $evidence
-        );
-
-        // (ب) Job واقعاً توسط همان tick ساخته و Claim شده است.
-        self::assertSame(
-            1,
-            $attempts,
-            'job must have been claimed exactly once by the real tick (not 0 = never claimed, not 2 = double run). '
-                . $evidence
-        );
-
-        // (ج) قراردادِ هدف: Job سطحِ نصب باید بدونِ Clinic scope موفق شود.
         self::assertSame(
             'success',
-            $status,
-            'RED_SIGNATURE=scope_dependency :: cleanup.oplog is registered installation-scoped (S) and must '
-                . 'execute without Clinic scope, but the production worker failed on current wiring '
-                . '(App::settings() -> App::scope() -> CLINIC_SCOPE_REQUIRED at handler construction). '
-                . $evidence
+            $statusOne,
+            'RED_SIGNATURE=scope_dependency :: cleanup.oplog (installation-scoped S) must execute without Clinic scope. '
+                . 'status=' . $statusOne
+                . ' last_error=' . (string) $jobOne['last_error']
+                . ' attempts=' . (int) $jobOne['attempts']
+                . ' tickResult=' . var_export($tickOne, true)
+                . ' clinic_count=' . $clinicCount
+                . ' old_row_remaining=' . $oldRemaining
+                . ' recent_row_remaining=' . $this->countOpLog($recentMessage)
+        );
+        self::assertSame(0, $oldRemaining, 'out-of-retention row must be deleted by the installation-scoped worker');
+        self::assertSame(1, $this->countOpLog($recentMessage), 'in-retention row must be kept');
+
+        // ---------------------------------------------------------------
+        // ۹) کرانِ حذف: بیش از سقف ردیفِ واجدِ شرایط → اجرای بعدی ادامه می‌دهد
+        // ---------------------------------------------------------------
+        $batch = OpLogCleanupHandler::DELETE_BATCH_SIZE;
+        self::assertGreaterThan(0, $batch, 'delete batch must be a positive constant');
+
+        $bulk = $batch + 2;
+        $bulkPrefix = 'oplog-red-bulk-' . $tag . '-';
+        $bulkCreatedAt = gmdate('Y-m-d H:i:s', time() - 2000 * 86400) . '.000';
+
+        self::assertSame($bulk, $this->insertOpLogBatch($bulkPrefix, $bulk, $bulkCreatedAt), 'bulk fixture must be inserted');
+        self::assertSame($bulk, $this->countOpLogByPrefix($bulkPrefix), 'material fixture: bulk eligible rows present');
+        $eligibleBefore = $this->countEligibleOpLogs();
+        self::assertGreaterThan($batch, $eligibleBefore, 'eligible rows must exceed the batch bound');
+        self::assertSame(
+            $bulk,
+            $eligibleBefore,
+            'precondition: only our bulk rows are eligible (deterministic continuation fixture, no foreign old rows)'
         );
 
-        // (د) اثرِ مادی: ردیفِ قدیمی‌تر از retention حذف و ردیفِ تازه حفظ شود.
-        self::assertSame(
-            0,
-            $oldRemaining,
-            'out-of-retention operational log row must be deleted by the installation-scoped worker. ' . $evidence
-        );
-        self::assertSame(
-            1,
-            $recentRemaining,
-            'in-retention operational log row must be kept. ' . $evidence
+        $jobIdTwo = $this->enqueueCleanupJob();
+        self::assertGreaterThan(0, $jobIdTwo, 'second enqueue must succeed');
+        $tickTwo = App::runTick(20);
+        $jobTwo = $this->jobRow($jobIdTwo);
+        self::assertSame('success', (string) $jobTwo['status'], 'second bounded invocation must succeed. status=' . (string) $jobTwo['status'] . ' last_error=' . (string) $jobTwo['last_error']);
+        self::assertSame(1, (int) $jobTwo['attempts'], 'second invocation claimed exactly once. tickResult=' . var_export($tickTwo, true));
+
+        $oursAfterFirst = $this->countOpLogByPrefix($bulkPrefix);
+        $eligibleAfter = $this->countEligibleOpLogs();
+        $deletedThisRun = $eligibleBefore - $eligibleAfter;
+
+        self::assertGreaterThanOrEqual(1, $oursAfterFirst, 'at least one eligible old row must remain after one bounded invocation');
+        self::assertLessThanOrEqual($batch, $deletedThisRun, 'deleted rows per invocation must not exceed the batch bound');
+        self::assertGreaterThan(0, $deletedThisRun, 'a bounded invocation must delete at least one eligible row');
+        self::assertSame($batch, $deletedThisRun, 'one invocation must delete exactly the batch bound when more rows are eligible');
+        self::assertSame($bulk - $batch, $oursAfterFirst, 'the remainder of the eligible fixture must stay for the next recurring run');
+        self::assertSame(1, $this->countOpLog($recentMessage), 'recent row must survive the bounded invocation');
+
+        // ---------------------------------------------------------------
+        // ۱۰) ادامه به‌صورت تکرارشونده (بدونِ cursor/OFFSET): اجرای بعدی بقیه را می‌برد
+        // ---------------------------------------------------------------
+        $jobIdThree = $this->enqueueCleanupJob();
+        self::assertGreaterThan(0, $jobIdThree, 'third enqueue must succeed');
+        $tickThree = App::runTick(20);
+        $jobThree = $this->jobRow($jobIdThree);
+        self::assertSame('success', (string) $jobThree['status'], 'continuation invocation must succeed. last_error=' . (string) $jobThree['last_error']);
+
+        $oursAfterSecond = $this->countOpLogByPrefix($bulkPrefix);
+        self::assertLessThan($oursAfterFirst, $oursAfterSecond, 'a recurring invocation must make progress on the remaining eligible rows');
+        self::assertSame(0, $oursAfterSecond, 'recurring invocations must continue the bounded cleanup (no cursor needed)');
+        self::assertSame(1, $this->countOpLog($recentMessage), 'recent row must still survive');
+
+        // شاهدِ ماشین‌خوان برای workflow فقط-شواهد (فرآیند تازه)
+        fwrite(
+            STDOUT,
+            "\nGREEN_EVIDENCE cleanup.oplog"
+            . ' status=success'
+            . ' attempts=1'
+            . ' tickResult=' . var_export($tickOne, true)
+            . ' clinic_count=' . $clinicCount
+            . ' user_id=' . get_current_user_id()
+            . ' scope_context=none'
+            . ' batch=' . $batch
+            . ' ours_before=' . $bulk
+            . ' ours_deleted_first=' . ($bulk - $oursAfterFirst)
+            . ' ours_after_first=' . $oursAfterFirst
+            . ' eligible_deleted_first=' . $deletedThisRun
+            . ' ours_after_second=' . $oursAfterSecond
+            . ' recent_remaining=1'
+            . "\n"
         );
     }
 }

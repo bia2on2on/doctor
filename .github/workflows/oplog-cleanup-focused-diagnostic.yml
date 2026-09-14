@@ -1,0 +1,210 @@
+name: cleanup.oplog focused diagnostic (TEST-ONLY, GREEN guard)
+
+# TEST-ONLY / evidence-only workflow — هیچ کد محصولی را تغییر نمی‌دهد و پیش از
+# هر merge حذف می‌شود (جانشین oplog-cleanup-red-diagnostic.yml که RED را
+# اثبات کرده بود: run 34870085607 / job 104063539218).
+#
+# هدف: اجرای متمرکزِ تنها تست M-2 `cleanup.oplog` در یک فرآیند PHP تازه
+# (خالی از کش‌های static پروژه) و تأیید ماشینیِ:
+#   ۱) دقیقاً یک تست اجرا شده است (گارد انتخاب — «صفر تست» سبز نمی‌شود)؛
+#   ۲) نتیجه PASS است (قرارداد scope-neutral + حذفِ کران‌دار برقرار است)؛
+#   ۳) شاهدِ ماشین‌خوانِ GREEN_EVIDENCE در لاگ هست؛
+#   ۴) کرانِ حذف واقعاً رعایت شده: ours_before > batch و
+#      1 <= ours_after_first <= ours_before - batch و
+#      1 <= eligible_deleted_first <= batch و در اجرای دوم صفر باقی مانده؛
+#   ۵) fixture مادی و چند-Clinic: clinic_count >= 2، user_id=0، بدون ScopeContext.
+
+on:
+  push:
+    branches: [arena/01a0a0c7-doctor]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+defaults:
+  run:
+    working-directory: clinic-practice-management
+
+jobs:
+  focused-green:
+    name: cleanup.oplog focused GREEN (fresh process, JUnit-guarded)
+    runs-on: ubuntu-latest
+
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=20
+
+    env:
+      WP_TESTS_DIR: /tmp/wordpress-test-lib
+      WP_CORE_DIR: /tmp/wordpress
+      FOCUS_FILTER: 'OpLogCleanupM2WiringRedTest'
+      EXPECTED_SELECTED: '1'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mbstring, xml, mysqli, pcntl, curl
+          coverage: none
+
+      - name: Install dependencies (PHPUnit 9.6 for WP test lib)
+        run: |
+          composer install --prefer-dist --no-progress --no-interaction
+          composer require --dev phpunit/phpunit:^9.6 --no-interaction --no-progress --with-all-dependencies
+
+      - name: Prepare WordPress test suite
+        run: bash tests/bin/install-wp-tests.sh wordpress_test root root 127.0.0.1 6.7.2
+
+      # انتخاب متمرکز: فقط همین کلاس، در یک فرآیند PHP مستقل.
+      - name: Run focused selection
+        run: |
+          set +e
+          php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
+            --bootstrap tests/integration-bootstrap.php \
+            --filter "$FOCUS_FILTER" \
+            --log-junit /tmp/oc-junit.xml \
+            tests/Integration 2>&1 | tee /tmp/oc.log
+          rc=${PIPESTATUS[0]}
+          echo "$rc" > /tmp/oc.rc
+          echo "phpunit_exit=$rc (rc=0 expected; the JUnit guard decides)"
+          exit 0
+
+      - name: GREEN guard (selection + evidence + bound enforcement)
+        if: always()
+        run: |
+          echo "--- PHPUnit summary lines ---"
+          grep -E "^(Tests:|OK|FAILURES!|ERRORS!|No tests executed)" /tmp/oc.log || true
+          grep -a 'GREEN_EVIDENCE' /tmp/oc.log || true
+          cat > /tmp/oc_guard.py <<'PY'
+          import os, re, sys, xml.etree.ElementTree as ET
+
+          expected = int(os.environ['EXPECTED_SELECTED'])
+          path = '/tmp/oc-junit.xml'
+          log = open('/tmp/oc.log', encoding='utf-8', errors='replace').read()
+
+          if (not os.path.exists(path)) or os.path.getsize(path) == 0:
+              print('::error::Selection guard: JUnit report missing or empty — refusing to report any verdict')
+              sys.exit(1)
+
+          root = ET.parse(path).getroot()
+          cases = list(root.iter('testcase'))
+          print('executed_tests=%d (expected %d)' % (len(cases), expected))
+          if len(cases) != expected:
+              for c in cases:
+                  print('  executed: %s::%s' % (c.get('classname'), c.get('name')))
+              print('::error::Selection guard: expected exactly %d executed test(s), got %d — refusing a verdict on an empty/incorrect selection' % (expected, len(cases)))
+              sys.exit(1)
+
+          case = cases[0]
+          outcome = 'PASS'
+          for child in case:
+              if child.tag in ('failure', 'error'):
+                  outcome = child.tag.upper()
+              elif child.tag == 'skipped':
+                  outcome = 'SKIPPED'
+
+          print('selected_test=%s::%s' % (case.get('classname'), case.get('name')))
+          print('outcome=%s' % outcome)
+
+          if outcome != 'PASS':
+              print('::error::GREEN guard: expected PASS for the scope-neutral + bounded-deletion contract, got %s' % outcome)
+              sys.exit(1)
+
+          if 'GREEN_EVIDENCE cleanup.oplog' not in log:
+              print('::error::GREEN guard: machine-readable GREEN_EVIDENCE line is missing from the focused run output')
+              sys.exit(1)
+
+          for token in ('status=success', 'attempts=1', 'user_id=0', 'scope_context=none',
+                        'recent_remaining=1', 'ours_after_second=0'):
+              if token not in log:
+                  print('::error::GREEN guard: evidence token missing: %s' % token)
+                  sys.exit(1)
+
+          def num(name):
+              m = re.search(r'%s=(\d+)' % name, log)
+              if m is None:
+                  print('::error::GREEN guard: evidence field missing: %s' % name)
+                  sys.exit(1)
+              return int(m.group(1))
+
+          batch = num('batch')
+          ours_before = num('ours_before')
+          ours_after_first = num('ours_after_first')
+          deleted_first = num('eligible_deleted_first')
+          clinic_count = num('clinic_count')
+
+          print('batch=%d ours_before=%d ours_after_first=%d eligible_deleted_first=%d clinic_count=%d'
+                % (batch, ours_before, ours_after_first, deleted_first, clinic_count))
+
+          if clinic_count < 2:
+              print('::error::GREEN guard: fixture must be multi-Clinic (clinic_count>=2)')
+              sys.exit(1)
+          if batch < 1:
+              print('::error::GREEN guard: batch bound must be positive')
+              sys.exit(1)
+          if ours_before <= batch:
+              print('::error::GREEN guard: fixture must exceed the batch bound (ours_before > batch)')
+              sys.exit(1)
+          if not (1 <= ours_after_first <= ours_before - batch):
+              print('::error::GREEN guard: bounded deletion not demonstrated (expected 1 <= ours_after_first <= ours_before - batch)')
+              sys.exit(1)
+          if not (1 <= deleted_first <= batch):
+              print('::error::GREEN guard: deleted rows per invocation must be within (0, batch]')
+              sys.exit(1)
+
+          print('')
+          print('GREEN VERIFIED — cleanup.oplog runs scope-neutrally in a fresh process and deletes at most %d rows per invocation.' % batch)
+          print('batch=%d ours_before=%d ours_after_first=%d ours_after_second=0 clinic_count=%d' % (batch, ours_before, ours_after_first, clinic_count))
+          PY
+          python3 /tmp/oc_guard.py
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oplog-cleanup-green-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            /tmp/oc.log
+            /tmp/oc.rc
+            /tmp/oc-junit.xml
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Post evidence to PR
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          {
+            echo "### cleanup.oplog focused GREEN diagnostic (run ${{ github.run_id }}, sha ${{ github.sha }})"
+            echo '```'
+            echo "--- SUMMARY ---"
+            grep -E "^(Tests:|OK|FAILURES!|ERRORS!|No tests executed)" /tmp/oc.log | tail -n 4 || true
+            echo "phpunit_exit=$(cat /tmp/oc.rc 2>/dev/null || echo '?')"
+            echo "--- GREEN EVIDENCE ---"
+            grep -a 'GREEN_EVIDENCE' /tmp/oc.log || true
+            echo "--- TAIL ---"
+            tail -n 20 /tmp/oc.log
+            echo '```'
+          } > /tmp/oc-body.md
+          cat /tmp/oc-body.md
+          if [ -n "$PR_NUMBER" ]; then
+            gh pr comment "$PR_NUMBER" --body-file /tmp/oc-body.md || echo "::notice::PR comment failed (permissions?)"
+          else
+            echo "::notice::no pull_request number on this event — evidence kept in artifact only"
+          fi
