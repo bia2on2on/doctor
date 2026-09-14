@@ -325,7 +325,7 @@ final class BackupRunM2WiringRedTest extends WP_UnitTestCase
             self::assertStringNotContainsString('CLINIC_SCOPE_REQUIRED', $lastError2, 'must not fail due to clinic scope');
             self::assertStringNotContainsString('امکان تعیین Clinic', $lastError2, 'must not fail due to clinic scope Persian');
         } else {
-            self::assertContains($status2, ['completed', 'queued', 'processing'], 'status should be non-failed after installation enabled');
+            self::assertContains($status2, ['success', 'queued', 'processing'], 'status should be non-failed after installation enabled. status='.$status2.' error='.$lastError2);
         }
 
         $artifactsInstall = glob($this->tmpBase . '/store-install/cpms-backup-*') ?: [];
