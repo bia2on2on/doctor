@@ -109,6 +109,15 @@ jobs:
           php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
             --bootstrap tests/integration-bootstrap.php tests/Integration 2>&1 | tee /tmp/phpunit-int.log
 
+      - name: Upload Integration PHPUnit log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-phpunit-log-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/phpunit-int.log
+          if-no-files-found: warn
+          retention-days: 7
+
       # انتقال لاگ شکست‌ها به PR — لاگ‌های job از API به blob ریدایرکت می‌شوند و
       # از محیط sandbox قابل دانلود نیستند؛ کامنت PR از طریق API خواندنی است.
       - name: Post failures to PR
