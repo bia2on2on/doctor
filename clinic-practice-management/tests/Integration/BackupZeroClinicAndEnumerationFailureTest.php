@@ -11,7 +11,9 @@ use ClinicCore\Application\Scope\SystemClinicResolver;
 use ClinicCore\Infrastructure\Backup\ProtectedBackupStore;
 use ClinicCore\Application\Backup\BackupService;
 use ClinicCore\Infrastructure\Backup\BackupSqlDumper;
+use ClinicCore\Infrastructure\Db\CpmsDb;
 use WP_UnitTestCase;
+use wpdb;
 
 /**
  * Focused tests for zero-Clinic and enumeration-failure contracts.
@@ -19,7 +21,6 @@ use WP_UnitTestCase;
  * Proves:
  * - enumeration query failure FAILS CLOSED, no successful incomplete backup
  * - zero-Clinic state does NOT manufacture owner 0, database-only backup valid (0 files)
- * - normal multi-Clinic still works (covered elsewhere but sanity)
  */
 final class BackupZeroClinicAndEnumerationFailureTest extends WP_UnitTestCase
 {
@@ -102,12 +103,10 @@ final class BackupZeroClinicAndEnumerationFailureTest extends WP_UnitTestCase
 
     public function testZeroClinicDoesNotManufactureOwnerZeroAndAllowsDatabaseOnlyBackup(): void
     {
-        // Ensure no clinics exist for this test — delete all clinics and organizations
-        // Note: other tests run in transaction, but we explicitly purge
         global $wpdb;
         $db = App::db();
         $wpdb->query('SET FOREIGN_KEY_CHECKS = 0');
-        $wpdb->query('DELETE FROM ' . $db->table('cpms_settings') . ' WHERE `key` = \"files.storage_path\"');
+        $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_settings') . ' WHERE `key` = %s', 'files.storage_path'));
         $wpdb->query('DELETE FROM ' . $db->table('cpms_clinics'));
         $wpdb->query('DELETE FROM ' . $db->table('cpms_organizations'));
         $wpdb->query('SET FOREIGN_KEY_CHECKS = 1');
@@ -115,7 +114,6 @@ final class BackupZeroClinicAndEnumerationFailureTest extends WP_UnitTestCase
         wp_set_current_user(0);
         ScopeContext::clear();
 
-        // Verify zero clinics
         $count = (int) $db->fetchValue('SELECT COUNT(*) FROM ' . $db->table('cpms_clinics'));
         self::assertSame(0, $count, 'zero clinics for this test');
 
@@ -128,21 +126,17 @@ final class BackupZeroClinicAndEnumerationFailureTest extends WP_UnitTestCase
 
         $backupService = App::backupService();
 
-        // Use reflection to inspect enumerateActiveClinicalStorageRoots directly
         $ref = new \ReflectionClass($backupService);
         $method = $ref->getMethod('enumerateActiveClinicalStorageRoots');
         $method->setAccessible(true);
         $roots = $method->invoke($backupService);
 
-        // Must be empty, NOT containing owner 0
         self::assertIsArray($roots);
         self::assertCount(0, $roots, 'zero clinics must yield empty roots map, not synthetic owner 0');
-        // Ensure no [0] anywhere in map values
         foreach ($roots as $base => $cids) {
             self::assertNotContains(0, $cids, 'no synthetic owner 0 in roots map');
         }
 
-        // Create backup — should succeed as database-only (0 storage files)
         $meta = $backupService->createBackup('zero-clinic-db-only');
         self::assertNotEmpty($meta['backup_id']);
         self::assertSame(0, $meta['storage_files'], 'zero clinics => database-only backup with 0 storage files');
@@ -153,7 +147,6 @@ final class BackupZeroClinicAndEnumerationFailureTest extends WP_UnitTestCase
         self::assertSame(0, $manifest['storage']['count'] ?? null);
         self::assertSame([], $manifest['storage']['files'] ?? null);
 
-        // Ensure no file with owner 0 exists in artifact
         $storageDir = $dir . '/storage';
         if (is_dir($storageDir)) {
             $it = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($storageDir, \FilesystemIterator::SKIP_DOTS));
@@ -183,43 +176,50 @@ final class BackupZeroClinicAndEnumerationFailureTest extends WP_UnitTestCase
         $inst->setBackupStoragePath($this->backupRoot);
         $inst->setBackupLastRunAt(0);
 
-        // Create a mock CpmsDb that throws on fetchAll for clinics
         $realDb = App::db();
-        $mockDb = new class($realDb) extends \ClinicCore\Infrastructure\Db\CpmsDb {
-            private \ClinicCore\Infrastructure\Db\CpmsDb $real;
-            public function __construct(\ClinicCore\Infrastructure\Db\CpmsDb $real) {
+        $realWpdb = $realDb->wpdb();
+
+        // Mock wpdb that throws on cpms_clinics queries
+        $mockWpdb = new class($realWpdb) extends wpdb {
+            private wpdb $real;
+            public function __construct(wpdb $real) {
                 $this->real = $real;
+                $this->prefix = $real->prefix;
+                $this->base_prefix = $real->base_prefix;
+                $this->dbh = $real->dbh ?? null;
+                $this->ready = true;
             }
-            public function __call(string $name, array $args) {
-                return $this->real->$name(...$args);
-            }
-            public function fetchAll(string $sql, array $params = []): array {
-                if (str_contains($sql, 'cpms_clinics')) {
+            public function get_results($query = null, $output = OBJECT) {
+                if (is_string($query) && str_contains($query, 'cpms_clinics')) {
                     throw new \RuntimeException('simulated DB failure for enumeration');
                 }
-                return $this->real->fetchAll($sql, $params);
+                return $this->real->get_results($query, $output);
             }
-            public function fetchRow(string $sql, array $params = []): ?array {
-                return $this->real->fetchRow($sql, $params);
+            public function get_row($query = null, $output = OBJECT, $y = 0) {
+                if (is_string($query) && str_contains($query, 'cpms_clinics')) {
+                    throw new \RuntimeException('simulated DB failure for enumeration');
+                }
+                return $this->real->get_row($query, $output, $y);
             }
-            public function fetchValue(string $sql, array $params = []): mixed {
-                return $this->real->fetchValue($sql, $params);
+            public function get_var($query = null, $x = 0, $y = 0) {
+                if (is_string($query) && str_contains($query, 'cpms_clinics')) {
+                    throw new \RuntimeException('simulated DB failure for enumeration');
+                }
+                return $this->real->get_var($query, $x, $y);
             }
-            public function table(string $name): string {
-                return $this->real->table($name);
+            public function query($query) {
+                if (is_string($query) && str_contains($query, 'cpms_clinics')) {
+                    throw new \RuntimeException('simulated DB failure for enumeration');
+                }
+                return $this->real->query($query);
             }
-            public function query(string $sql, array $params = []): mixed {
-                return $this->real->query($sql, $params);
-            }
-            public function transactional(callable $fn): void {
-                $this->real->transactional($fn);
-            }
-            public function nowUtcSql(): string {
-                return $this->real->nowUtcSql();
+            public function prepare($query, ...$args) {
+                return $this->real->prepare($query, ...$args);
             }
         };
 
-        // Build BackupService with mock DB
+        $mockDb = new CpmsDb($mockWpdb);
+
         $store = ProtectedBackupStore::active($this->backupRoot);
         $dumper = new BackupSqlDumper($realDb);
         $backupService = new BackupService(
@@ -248,7 +248,6 @@ final class BackupZeroClinicAndEnumerationFailureTest extends WP_UnitTestCase
 
         self::assertTrue($failedClosed, 'enumeration failure must FAIL CLOSED with stable code');
 
-        // Also ensure createBackup fails closed, not creating successful incomplete backup
         $failedCreate = false;
         try {
             $backupService->createBackup('should-fail');
@@ -258,7 +257,6 @@ final class BackupZeroClinicAndEnumerationFailureTest extends WP_UnitTestCase
         }
         self::assertTrue($failedCreate, 'createBackup must fail closed on enumeration failure');
 
-        // Ensure no successful backup with valid manifest exists (incomplete dir may exist but not valid)
         $ids = $store->listIds();
         $validCount = 0;
         foreach ($ids as $id) {
