@@ -4,7 +4,6 @@ declare(strict_types=1);
 namespace ClinicCore\Tests\Integration;
 
 use ClinicCore\Bootstrap\App;
-use ClinicCore\Application\Scope\ClinicScope;
 use ClinicCore\Application\Scope\SystemClinicResolver;
 use ClinicCore\Application\Notifications\NotificationService;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
@@ -266,21 +265,83 @@ final class FollowUpReminderLocationCalendarRedTest extends WP_UnitTestCase
         return $local->modify('+1 day')->format('Y-m-d');
     }
 
-    private function buildHandler(?DateTimeImmutable $referenceUtc = null): object
+    /**
+     * آیا نوعِ reflection این پارامتر، کلاس خواسته‌شده را می‌پذیرد؟
+     *
+     * سازندهٔ واقعی FollowUpReminderHandler پارامتر #۲ را به‌صورت نوع ترکیبی
+     * (SettingsFactory|Settings) اعلان می‌کند؛ reflection برای نوع ترکیبی
+     * «ReflectionUnionType» برمی‌گرداند و نه «ReflectionNamedType». شرط قبلی
+     * فقط ReflectionNamedType را می‌پذیرفت، پس هرگز برقرار نمی‌شد (اثبات اجرایی
+     * در run 34832417233: ReflectionUnionType{...SettingsFactory|...Settings}).
+     */
+    private function reflectionTypeAccepts(?\ReflectionType $type, string $className): bool
+    {
+        if ($type instanceof \ReflectionNamedType) {
+            return $type->getName() === $className;
+        }
+        if ($type instanceof \ReflectionUnionType) {
+            foreach ($type->getTypes() as $member) {
+                if ($member instanceof \ReflectionNamedType && $member->getName() === $className) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * NEGATIVE CONTROL — helper هرگز نباید بی‌صدا از کنار «تزریق‌نشدن ساعت
+     * کنترل‌شده» عبور کند. اگر utcNow تزریق نشده باشد یا دقیقاً همان لحظهٔ
+     * کنترل‌شده را برنگرداند، همین‌جا شکست صریح رخ می‌دهد (سبز کاذب ممکن نیست).
+     */
+    private function assertControlledClockInjected(object $handler, DateTimeImmutable $referenceUtc): void
+    {
+        $prop = (new \ReflectionClass($handler))->getProperty('utcNow');
+        $prop->setAccessible(true);
+        $clock = $prop->getValue($handler);
+
+        self::assertNotNull(
+            $clock,
+            'NEGATIVE CONTROL: FollowUpReminderHandler was constructed without an injected utcNow closure — '
+                . 'rootReferenceUtc() would fall back to uncontrolled wall-clock time.'
+        );
+        self::assertInstanceOf(\Closure::class, $clock, 'NEGATIVE CONTROL: injected utcNow must be a Closure');
+
+        $value = $clock();
+        self::assertInstanceOf(
+            DateTimeImmutable::class,
+            $value,
+            'NEGATIVE CONTROL: injected utcNow must return DateTimeImmutable'
+        );
+        self::assertSame(
+            $referenceUtc->format('Y-m-d\TH:i:s\Z'),
+            $value->format('Y-m-d\TH:i:s\Z'),
+            'NEGATIVE CONTROL: injected utcNow must return exactly the controlled reference instant'
+        );
+    }
+
+    private function buildHandler(DateTimeImmutable $referenceUtc): object
     {
         $db = App::db();
         $op = App::op();
 
+        $handler = null;
+        $probeError = null;
+        $probeReason = null;
+
         try {
             $ref = new \ReflectionClass(\ClinicCore\Application\Jobs\FollowUpReminderHandler::class);
             $ctor = $ref->getConstructor();
-            if ($ctor !== null) {
+            if ($ctor === null) {
+                $probeReason = 'constructor is missing';
+            } else {
                 $params = $ctor->getParameters();
-                if (count($params) >= 4) {
+                if (count($params) < 4) {
+                    $probeReason = 'constructor exposes only ' . count($params) . ' parameter(s)';
+                } else {
                     $firstType = $params[1]->getType();
-                    if ($firstType instanceof \ReflectionNamedType && $firstType->getName() === \ClinicCore\Settings\SettingsFactory::class) {
-                        $utcClosure = $referenceUtc === null ? null : static fn (): DateTimeImmutable => $referenceUtc;
-                        return new \ClinicCore\Application\Jobs\FollowUpReminderHandler(
+                    if ($this->reflectionTypeAccepts($firstType, \ClinicCore\Settings\SettingsFactory::class)) {
+                        $handler = new \ClinicCore\Application\Jobs\FollowUpReminderHandler(
                             $db,
                             App::settingsFactory(),
                             App::smsService(),
@@ -292,30 +353,134 @@ final class FollowUpReminderLocationCalendarRedTest extends WP_UnitTestCase
                                 $op
                             ),
                             $op,
-                            $utcClosure
+                            static fn (): DateTimeImmutable => $referenceUtc
                         );
+                    } else {
+                        $probeReason = 'constructor parameter #2 reflection = ' . $this->describeReflectionType($firstType);
                     }
                 }
             }
         } catch (\Throwable $e) {
+            // بلعیدن بی‌صدا ممنوع: هر خطای غیرمنتظرهٔ reflection/setup باید
+            // صریح گزارش شود، نه اینکه خاموش به مسیر بدون ساعت کنترل‌شده تنزل کند.
+            $probeError = $e;
         }
 
-        App::replaceExplicitScope(ClinicScope::forClinic($this->clinicId));
-        $settings = App::settings();
-        $sms = App::smsService();
-        $notifications = new NotificationService(
-            $db,
-            new NotificationRepository($db),
-            new MembershipRepository($db),
-            $settings,
-            $op
+        if ($probeError !== null) {
+            self::fail(
+                'buildHandler(): scope-neutral FollowUpReminderHandler construction failed unexpectedly — '
+                    . get_class($probeError) . ': ' . $probeError->getMessage()
+            );
+        }
+
+        if ($handler === null) {
+            self::fail(
+                'buildHandler(): FollowUpReminderHandler does not accept a scope-neutral SettingsFactory ('
+                    . $probeReason
+                    . ') — refusing to silently degrade to a handler whose reference time is uncontrolled.'
+            );
+        }
+
+        // NEGATIVE CONTROL — عمداً بیرون از try/catch است تا AssertionFailedError
+        // بلعیده نشود و شکست با پیام دقیق خودش گزارش شود.
+        $this->assertControlledClockInjected($handler, $referenceUtc);
+
+        return $handler;
+    }
+
+    // ------------------------------------------------------------------
+    // TEST-ONLY DIAGNOSTIC (evidence branch) — هیچ assertion محصولی را
+    // تغییر نمی‌دهد و هیچ کد محصولی را لمس نمی‌کند.
+    //
+    // هدف: اثبات «اجرایی» اینکه آیا buildHandler() واقعاً سازندهٔ
+    // scope-neutral را می‌سازد و زمان مرجع کنترل‌شده را تزریق می‌کند،
+    // یا اینکه بی‌صدا به سازندهٔ legacy (بدون ساعت کنترل‌شده) تنزل می‌کند.
+    //
+    // هر دو تست زیر باید پیش از اصلاح helper قرمز (RED) باشند.
+    // پیام‌های DIAG-SETUP خطای fixture/setup را از RED اصلی جدا می‌کنند تا
+    // شکست bootstrap/fixture هرگز به‌عنوان RED محصولی شمرده نشود.
+    // ------------------------------------------------------------------
+
+    private function describeReflectionType(?\ReflectionType $type): string
+    {
+        if ($type === null) {
+            return 'null';
+        }
+        if ($type instanceof \ReflectionUnionType) {
+            $names = [];
+            foreach ($type->getTypes() as $member) {
+                $names[] = $member instanceof \ReflectionNamedType ? $member->getName() : get_class($member);
+            }
+            return get_class($type) . '{' . implode('|', $names) . '}';
+        }
+        if ($type instanceof \ReflectionNamedType) {
+            return get_class($type) . '{' . $type->getName() . '}';
+        }
+        return get_class($type);
+    }
+
+    /**
+     * DIAG 1 — پارامتر #۲ سازنده باید SettingsFactory را بپذیرد.
+     *
+     * پیش از اصلاح helper این تست قرمز بود (run 34832417233): reflection نوع
+     * ترکیبی ReflectionUnionType{...SettingsFactory|...Settings} برمی‌گرداند و
+     * شرط «instanceof ReflectionNamedType» هرگز برقرار نمی‌شد.
+     */
+    public function testDiagnosticProbeMatchesSettingsFactoryConstructorParam(): void
+    {
+        $ctor = (new \ReflectionClass(\ClinicCore\Application\Jobs\FollowUpReminderHandler::class))->getConstructor();
+        self::assertNotNull($ctor, 'DIAG-SETUP: FollowUpReminderHandler constructor must exist');
+
+        $params = $ctor->getParameters();
+        self::assertGreaterThanOrEqual(4, count($params), 'DIAG-SETUP: constructor must expose at least 4 parameters');
+
+        $type = $params[1]->getType();
+        self::assertNotNull($type, 'DIAG-SETUP: constructor parameter #2 must be typed');
+
+        self::assertTrue(
+            $this->reflectionTypeAccepts($type, \ClinicCore\Settings\SettingsFactory::class),
+            'DIAG: constructor parameter #2 must accept ' . \ClinicCore\Settings\SettingsFactory::class
+                . ' so the scope-neutral handler can be constructed; reflection reports '
+                . $this->describeReflectionType($type)
         );
-        return new \ClinicCore\Application\Jobs\FollowUpReminderHandler(
-            $db,
-            $settings,
-            $sms,
-            $notifications,
-            $op
+    }
+
+    /**
+     * DIAG 2 — آیا زمان مرجع کنترل‌شده واقعاً به handler تزریق می‌شود؟
+     */
+    public function testDiagnosticBuildHandlerInjectsControlledReferenceTime(): void
+    {
+        self::assertGreaterThan(0, $this->clinicId, 'DIAG-SETUP: fixture clinic must exist');
+        self::assertGreaterThan(0, $this->locA, 'DIAG-SETUP: fixture location A must exist');
+        self::assertGreaterThan(0, $this->locB, 'DIAG-SETUP: fixture location B must exist');
+
+        $controlled = new DateTimeImmutable('2026-01-02T03:04:05+00:00', new DateTimeZone('UTC'));
+        $handler = $this->buildHandler($controlled);
+
+        self::assertInstanceOf(
+            \ClinicCore\Application\Jobs\FollowUpReminderHandler::class,
+            $handler,
+            'DIAG-SETUP: helper must return a FollowUpReminderHandler'
+        );
+
+        $prop = (new \ReflectionClass($handler))->getProperty('utcNow');
+        $prop->setAccessible(true);
+        $clock = $prop->getValue($handler);
+
+        self::assertNotNull(
+            $clock,
+            'DIAG: controlled reference time was NOT injected — handler->utcNow is null, so '
+                . 'FollowUpReminderHandler::rootReferenceUtc() falls back to uncontrolled current wall-clock time, '
+                . 'while the fixture suggested_date values were derived from the test-controlled instant.'
+        );
+
+        self::assertInstanceOf(\Closure::class, $clock, 'DIAG: injected clock must be a Closure');
+        $value = $clock();
+        self::assertInstanceOf(DateTimeImmutable::class, $value, 'DIAG: injected clock must return DateTimeImmutable');
+        self::assertSame(
+            $controlled->format('Y-m-d\TH:i:s\Z'),
+            $value->format('Y-m-d\TH:i:s\Z'),
+            'DIAG: injected clock must return exactly the controlled reference instant'
         );
     }
 
