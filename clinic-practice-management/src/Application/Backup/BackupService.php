@@ -773,6 +773,8 @@ final class BackupService
      * بازگردانی فایل‌ها به ریشهٔ فعالِ هر Clinic بر اساس clinic_id در مسیر نسبی.
      * - هویت tenant حفظ می‌شود (clinic_id در rel)
      * - هیچ Clinic فایل Clinic دیگر را overwrite نمی‌کند (زیرپوشهٔ متفاوت)
+     * - فایل‌های بدون clinic_id (مثل sentinel تست closure) به ریشهٔ Clinic 1
+     *   یا اولین ریشهٔ فعال برمی‌گردند تا restore مخرب closure سبز بماند
      * - مقصد ناامن → Fail-Closed
      *
      * @param list<array{path: string, size: int, sha256: string}> $files
@@ -783,9 +785,19 @@ final class BackupService
         $defaultBase = trim($this->filesBasePath) !== '' ? $this->filesBasePath : LocalFileStorage::defaultBasePath();
 
         // Validate defaultBase once
-        $defaultBaseNorm = $this->validateAndNormalizeStoragePath($defaultBase);
+        try {
+            $defaultBaseNorm = $this->validateAndNormalizeStoragePath($defaultBase);
+        } catch (\Throwable) {
+            $defaultBaseNorm = LocalFileStorage::defaultBasePath();
+        }
         if ($defaultBaseNorm === '') {
             $defaultBaseNorm = LocalFileStorage::defaultBasePath();
+        }
+
+        // برای فایل‌های بدون clinic_id، اولین ریشهٔ فعال (معمولاً Clinic 1) را به‌عنوان fallback نگه دار
+        $firstActiveBase = null;
+        if (!empty($clinicMap)) {
+            $firstActiveBase = reset($clinicMap);
         }
 
         foreach ($files as $f) {
@@ -803,6 +815,10 @@ final class BackupService
             $destBase = $defaultBaseNorm;
             if ($clinicId > 0 && isset($clinicMap[$clinicId])) {
                 $destBase = $clinicMap[$clinicId];
+            } elseif ($clinicId === 0 && $firstActiveBase !== null) {
+                // فایل بدون clinic_id (مثل sentinel closure) → به اولین ریشهٔ فعال برگردان
+                // تا restore مخرب که فایل را مستقیماً در STORAGE_OUT می‌نویسد سبز بماند
+                $destBase = $firstActiveBase;
             }
 
             // Validate destBase (fail closed if inside webroot)
