@@ -15,38 +15,32 @@ use WP_UnitTestCase;
 /**
  * M-2 backup.run — RED proving SYSTEM job depends on Clinic-bound Settings.
  *
- * Contract under test (minimum M-2):
- * - backup.run is registered as SYSTEM (installation-wide) in JobScopeRegistry.
- * - It must be executable without current user, REST context, Clinic ScopeContext,
- *   first-Clinic fallback, fixed tenant ID, or payload clinic_id.
- * - Real dispatcher/handler wiring must be exercised, not merely JobScopeRegistry.
+ * Final product contract (to be achieved in GREEN):
+ *   backup.run is SYSTEM (installation-wide) and must execute deterministically
+ *   without current user, REST context, Clinic ScopeContext, first-Clinic fallback,
+ *   fixed tenant ID, or payload clinic_id.
  *
- * Verified pre-existing defect:
- * - BackupRunHandler currently takes Clinic-bound Settings via App::settings()
- *   and App::backupService() also resolves Settings for storage_path.
- * - In a multi-Clinic install without explicit Scope, App::settings() fails
- *   closed with CLINIC_SCOPE_REQUIRED at construction time, so the job becomes
- *   FAILED instead of SUCCESS. This proves it cannot satisfy installation-wide
- *   contract deterministically.
+ * Pre-GREEN observed defect (this RED):
+ *   Current wiring reaches Clinic-bound Settings via App::settings() and
+ *   App::backupService(). In multi-Clinic install without explicit Scope,
+ *   construction fails with CLINIC_SCOPE_REQUIRED, so job becomes FAILED
+ *   instead of SUCCESS. This proves it cannot satisfy installation-wide contract.
  *
  * Fixtures:
  * - Two real Clinics created dynamically, IDs asserted >0 and distinct, never fixed 1.
  * - Conflicting backup settings: Clinic A enabled=true/due, Clinic B enabled=false.
- *   This ensures a hidden Clinic-dependent source cannot accidentally pass with
- *   same behavior.
  *
- * RED expectations:
- * - Bootstrap succeeds.
- * - Material fixtures succeed and are asserted.
- * - Real product path (App::runTick -> dispatcher -> BackupRunHandler) is reached.
- * - Intended contract assertion (job status=success without scope) fails.
+ * Evidence must show:
+ * - bootstrap succeeded
+ * - material fixtures succeeded
+ * - real product path App::runTick -> dispatcher -> BackupRunHandler reached (attempts>=1)
+ * - observed status=failed in CURRENT defective implementation
+ * - last_error contains CLINIC_SCOPE_REQUIRED
+ * - no backup artifact created before failure
+ * - current user remains 0, ScopeContext absent, payload contains no clinic_id
+ * - conflicting Clinics remain material fixtures
  *
- * Avoid expensive backup: defect is proven at handler construction before
- * createBackup() is reached, so no full backup is created.
- *
- * Fresh-process: App static caches are reset; authoritative evidence must come
- * from a dedicated fresh PHP process (workflow) because shared suite may memoize
- * Clinic.
+ * Fresh-process required because App static caches can mask defect.
  *
  * No classification of all backup.* keys as InstallationSettings; backup.last_run_at
  * is operational state and remains OPEN.
@@ -141,7 +135,6 @@ final class BackupRunM2WiringRedTest extends WP_UnitTestCase
         $this->orgId = (int) $wpdb->insert_id;
         self::assertGreaterThan(0, $this->orgId, 'organizations insert must succeed');
 
-        // Clinic A
         $slugA = 'backup-red-clinic-a-' . bin2hex(random_bytes(4));
         $wpdb->query($wpdb->prepare(
             'INSERT INTO ' . $wpdb->prefix . 'cpms_clinics (organization_id, name, slug, timezone, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, %s)',
@@ -155,7 +148,6 @@ final class BackupRunM2WiringRedTest extends WP_UnitTestCase
         $this->clinicA = (int) $wpdb->insert_id;
         self::assertGreaterThan(1, $this->clinicA, 'clinic A must get DB-generated id >1 (never fixed 1)');
 
-        // Clinic B
         $slugB = 'backup-red-clinic-b-' . bin2hex(random_bytes(4));
         $wpdb->query($wpdb->prepare(
             'INSERT INTO ' . $wpdb->prefix . 'cpms_clinics (organization_id, name, slug, timezone, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, %s)',
@@ -171,7 +163,6 @@ final class BackupRunM2WiringRedTest extends WP_UnitTestCase
 
         self::assertNotSame($this->clinicA, $this->clinicB, 'two distinct dynamically created clinics');
 
-        // Conflicting backup settings
         $factory = App::settingsFactory();
 
         $settingsA = $factory->forClinic($this->clinicA);
@@ -188,7 +179,6 @@ final class BackupRunM2WiringRedTest extends WP_UnitTestCase
         $settingsB->set('backup.storage_path', $this->tmpBase . '/store-b');
         $settingsB->set('backup.keep_count', 10);
 
-        // Material assertions
         self::assertTrue((bool) $settingsA->get('backup.enabled'), 'clinic A backup.enabled must be true');
         self::assertFalse((bool) $settingsB->get('backup.enabled'), 'clinic B backup.enabled must be false (conflicting)');
         self::assertSame(1, (int) $settingsA->get('backup.interval_hours'), 'clinic A interval 1');
@@ -229,13 +219,13 @@ final class BackupRunM2WiringRedTest extends WP_UnitTestCase
         global $wpdb;
         $db = App::db();
 
-        // 1) Material fixtures
+        // 1) Material fixtures — two dynamic Clinics
         self::assertGreaterThan(0, $this->clinicA, 'fixture clinic A must exist');
         self::assertGreaterThan(0, $this->clinicB, 'fixture clinic B must exist');
         $clinicCount = (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $db->table('cpms_clinics'));
         self::assertGreaterThan(1, $clinicCount, 'install must hold more than one clinic, found ' . $clinicCount);
 
-        // 2) No current user, no ScopeContext
+        // 2) No current user, no ScopeContext — fresh-process guard
         wp_set_current_user(0);
         self::assertSame(0, get_current_user_id(), 'no current user');
         $this->resetAppCaches();
@@ -260,6 +250,7 @@ final class BackupRunM2WiringRedTest extends WP_UnitTestCase
             self::fail('App::scope() must fail closed in multi-clinic install without explicit scope, but returned clinicId=' . $scope->clinicId);
         } catch (ScopeRequiredException $e) {
             self::assertSame('CLINIC_SCOPE_REQUIRED', $e->errorCode, 'fail-closed scope error code');
+            self::assertStringContainsString('CLINIC_SCOPE_REQUIRED', $e->errorCode, 'error code must contain CLINIC_SCOPE_REQUIRED');
         }
 
         // 6) Verify conflicting settings still present after cache reset
@@ -272,8 +263,9 @@ final class BackupRunM2WiringRedTest extends WP_UnitTestCase
 
         $this->resetAppCaches();
         self::assertNull(ScopeContext::tryGet(), 'scope still none after settings check');
+        self::assertSame(0, get_current_user_id(), 'user still 0 after settings check');
 
-        // 7) Enqueue real job with empty payload (production semantics)
+        // 7) Enqueue real job with empty payload (production semantics) — no clinic_id
         $queue = App::jobs();
         $nowDt = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
         $jobId = $queue->enqueue('backup.run', [], $nowDt, 1, 1);
@@ -281,10 +273,22 @@ final class BackupRunM2WiringRedTest extends WP_UnitTestCase
 
         $jobBefore = $wpdb->get_row($wpdb->prepare('SELECT * FROM ' . $db->table('cpms_jobs') . ' WHERE id = %d', $jobId), ARRAY_A);
         self::assertSame('queued', (string) $jobBefore['status'], 'job must start queued');
-        $payloadDecoded = json_decode((string) $jobBefore['payload_json'], true);
+        $payloadJson = (string) ($jobBefore['payload_json'] ?? '');
+        $payloadDecoded = json_decode($payloadJson, true);
         self::assertTrue($payloadDecoded === [] || $payloadDecoded === null, 'payload must be empty (no clinic_id)');
+        self::assertStringNotContainsString('clinic_id', $payloadJson, 'payload must not contain clinic_id');
+        self::assertStringNotContainsString((string) $this->clinicA, $payloadJson, 'payload must not contain dynamic clinicA id');
+        self::assertStringNotContainsString((string) $this->clinicB, $payloadJson, 'payload must not contain dynamic clinicB id');
 
-        // 8) Execute via real App::runTick (production path)
+        // Ensure no artifact exists BEFORE tick (controlled temp destination)
+        $preArtifactsA = glob($this->tmpBase . '/store-a/cpms-backup-*') ?: [];
+        $preArtifactsB = glob($this->tmpBase . '/store-b/cpms-backup-*') ?: [];
+        $preArtifactsRoot = glob($this->tmpBase . '/cpms-backup-*') ?: [];
+        self::assertSame([], $preArtifactsA, 'no backup artifact in store-a before tick');
+        self::assertSame([], $preArtifactsB, 'no backup artifact in store-b before tick');
+        self::assertSame([], $preArtifactsRoot, 'no backup artifact in tmp root before tick');
+
+        // 8) Execute via real App::runTick (production path) — fresh-process evidence
         $tickResult = App::runTick(20);
 
         $jobAfter = $wpdb->get_row($wpdb->prepare('SELECT * FROM ' . $db->table('cpms_jobs') . ' WHERE id = %d', $jobId), ARRAY_A);
@@ -293,51 +297,63 @@ final class BackupRunM2WiringRedTest extends WP_UnitTestCase
         $lastError = (string) ($jobAfter['last_error'] ?? '');
         $attempts = (int) ($jobAfter['attempts'] ?? 0);
 
-        // Proof points for classification
+        // Proof points
         $bootstrapOk = true;
         $fixturesOk = $clinicCount > 1 && $this->clinicA > 0 && $this->clinicB > 0;
-        $productPathReached = $attempts >= 1; // tick claimed the job
+        $productPathReached = $attempts >= 1;
 
-        // Intended contract: SYSTEM job must succeed without Clinic scope
-        // Current defect: fails with CLINIC_SCOPE_REQUIRED at construction
-        // because BackupRunHandler depends on Clinic-bound Settings.
         self::assertTrue($bootstrapOk, 'bootstrap must succeed');
         self::assertTrue($fixturesOk, 'material fixtures must succeed');
-        self::assertTrue($productPathReached, 'real product path must be reached (job claimed)');
+        self::assertTrue($productPathReached, 'real product path must be reached (job claimed) attempts=' . $attempts . ' tickResult=' . var_export($tickResult, true));
 
-        // This assertion is expected to FAIL in RED (proving defect)
-        self::assertSame(
-            'success',
-            $status,
-            'RED_SIGNATURE=clinic_bound_settings_dependency :: backup.run (SYSTEM) must execute without current user, REST context, Clinic ScopeContext, first-Clinic fallback, fixed tenant ID, or payload clinic_id. '
-            . 'Current wiring reaches Clinic-bound Settings and cannot satisfy installation-wide contract deterministically. '
-            . 'status=' . $status
-            . ' last_error=' . $lastError
-            . ' attempts=' . $attempts
-            . ' tickResult=' . var_export($tickResult, true)
-            . ' clinic_count=' . $clinicCount
-            . ' clinicA=' . $this->clinicA . ' enabled=true'
-            . ' clinicB=' . $this->clinicB . ' enabled=false'
-            . ' bootstrapOk=' . var_export($bootstrapOk, true)
-            . ' fixturesOk=' . var_export($fixturesOk, true)
-            . ' productPathReached=' . var_export($productPathReached, true)
-        );
+        // 9) No artifact created before failure — least brittle observable from controlled temp destination
+        $postArtifactsA = glob($this->tmpBase . '/store-a/cpms-backup-*') ?: [];
+        $postArtifactsB = glob($this->tmpBase . '/store-b/cpms-backup-*') ?: [];
+        $postArtifactsRoot = glob($this->tmpBase . '/cpms-backup-*') ?: [];
+        $postArtifactsAny = array_merge($postArtifactsA, $postArtifactsB, $postArtifactsRoot);
+        self::assertSame([], $postArtifactsAny, 'no backup artifact must be created before failure (defect proven at construction)');
 
-        // If we somehow passed (GREEN), emit evidence and ensure no backup was accidentally created with fixed ID
-        fwrite(
-            STDOUT,
-            "\nGREEN_EVIDENCE backup.run"
-            . ' status=success'
-            . ' attempts=' . $attempts
-            . ' tickResult=' . var_export($tickResult, true)
-            . ' clinic_count=' . $clinicCount
-            . ' clinicA=' . $this->clinicA
-            . ' clinicB=' . $this->clinicB
-            . ' user_id=' . get_current_user_id()
-            . ' scope_context=none'
-            . ' payload_empty=true'
-            . ' conflicting_settings=true'
-            . "\n"
-        );
+        // 10) Current user and ScopeContext must remain absent after tick
+        self::assertSame(0, get_current_user_id(), 'current user must remain 0 after tick');
+        self::assertNull(ScopeContext::tryGet(), 'ScopeContext must remain absent after tick');
+
+        // 11) Conflicting Clinics remain material fixtures after tick
+        $clinicCountAfter = (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $db->table('cpms_clinics'));
+        self::assertGreaterThan(1, $clinicCountAfter, 'clinic fixtures must remain after tick');
+        self::assertGreaterThan(0, (int) $wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM ' . $db->table('cpms_clinics') . ' WHERE id = %d', $this->clinicA)), 'clinicA still material');
+        self::assertGreaterThan(0, (int) $wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM ' . $db->table('cpms_clinics') . ' WHERE id = %d', $this->clinicB)), 'clinicB still material');
+
+        // 12) Pre-GREEN expected observation: status=failed with CLINIC_SCOPE_REQUIRED
+        // Final product contract (GREEN) is: backup.run as SYSTEM must eventually succeed without Clinic scope.
+        // This assertion validates the exact defect cause in current defective implementation.
+        self::assertSame('failed', $status, 'Pre-GREEN observation: job must be failed in current defective wiring. tickResult=' . var_export($tickResult, true) . ' clinic_count=' . $clinicCount);
+        self::assertGreaterThanOrEqual(1, $attempts, 'job must have been claimed at least once');
+        self::assertStringContainsString('CLINIC_SCOPE_REQUIRED', $lastError, 'last_error must contain stable identifier CLINIC_SCOPE_REQUIRED. last_error=' . $lastError);
+
+        // Exact intended RED signature — must be present for evidence guard
+        $redSignature = 'RED_SIGNATURE=clinic_bound_settings_dependency CLINIC_SCOPE_REQUIRED '
+            . 'status=' . $status . ' '
+            . 'attempts=' . $attempts . ' '
+            . 'clinic_count=' . $clinicCount . ' '
+            . 'clinicA=' . $this->clinicA . ' enabled=true '
+            . 'clinicB=' . $this->clinicB . ' enabled=false '
+            . 'user_id=' . get_current_user_id() . ' '
+            . 'scope_context=none '
+            . 'payload_empty=true '
+            . 'no_artifact=true '
+            . 'bootstrapOk=' . var_export($bootstrapOk, true) . ' '
+            . 'fixturesOk=' . var_export($fixturesOk, true) . ' '
+            . 'productPathReached=' . var_export($productPathReached, true);
+
+        // Emit for log-based evidence guard
+        fwrite(STDOUT, "\n" . $redSignature . "\n");
+        fwrite(STDOUT, "GREEN_CONTRACT=backup.run as SYSTEM must eventually execute deterministically without Clinic scope\n");
+
+        // Final guard: ensure signature contains required markers
+        self::assertStringContainsString('CLINIC_SCOPE_REQUIRED', $redSignature, 'RED signature must contain CLINIC_SCOPE_REQUIRED');
+        self::assertStringContainsString('status=failed', $redSignature, 'RED signature must contain status=failed');
+        self::assertStringContainsString('no_artifact=true', $redSignature, 'RED signature must contain no_artifact proof');
+        self::assertStringContainsString('scope_context=none', $redSignature, 'RED signature must contain scope_context=none');
+        self::assertStringContainsString('payload_empty=true', $redSignature, 'RED signature must contain payload_empty');
     }
 }

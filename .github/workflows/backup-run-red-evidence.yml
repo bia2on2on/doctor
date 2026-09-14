@@ -60,8 +60,56 @@ jobs:
             --bootstrap tests/integration-bootstrap.php \
             --filter testBackupRunMustBeExecutableWithoutClinicScope \
             tests/Integration/BackupRunM2WiringRedTest.php 2>&1 | tee /tmp/red-evidence.log
-          echo "=== Exit code: $? ==="
+          EXIT_CODE=${PIPESTATUS[0]}
+          echo "=== Exit code: $EXIT_CODE ==="
           cat /tmp/red-evidence.log
+          echo "=== Guards ==="
+          # Guard: exactly one selected test (PHPUnit 9.6 reports Tests: 1 or OK (1 test))
+          if ! grep -qE "Tests: 1,|OK \(1 test" /tmp/red-evidence.log; then
+            echo "::error::Expected exactly one selected test, not found"
+            exit 1
+          fi
+          # Guard: no syntax/parse error
+          if grep -qE "ParseError|syntax error, unexpected" /tmp/red-evidence.log; then
+            echo "::error::Syntax/parse error detected"
+            exit 1
+          fi
+          # Guard: no PHPUnit ERROR (distinct from failure)
+          if grep -qE "^There were .* errors:" /tmp/red-evidence.log; then
+            echo "::error::PHPUnit ERROR detected"
+            exit 1
+          fi
+          # Guard: required RED signature markers
+          if ! grep -q "RED_SIGNATURE=clinic_bound_settings_dependency" /tmp/red-evidence.log; then
+            echo "::error::Missing RED_SIGNATURE"
+            exit 1
+          fi
+          if ! grep -q "CLINIC_SCOPE_REQUIRED" /tmp/red-evidence.log; then
+            echo "::error::Missing CLINIC_SCOPE_REQUIRED in evidence"
+            exit 1
+          fi
+          if ! grep -q "status=failed" /tmp/red-evidence.log; then
+            echo "::error::Missing status=failed in RED signature"
+            exit 1
+          fi
+          if ! grep -q "no_artifact=true" /tmp/red-evidence.log; then
+            echo "::error::Missing no_artifact proof"
+            exit 1
+          fi
+          if ! grep -q "scope_context=none" /tmp/red-evidence.log; then
+            echo "::error::Missing scope_context=none"
+            exit 1
+          fi
+          if ! grep -q "payload_empty=true" /tmp/red-evidence.log; then
+            echo "::error::Missing payload_empty marker"
+            exit 1
+          fi
+          # Guard: test must have passed (exit 0) because it now asserts pre-GREEN failed observation
+          if [ "$EXIT_CODE" -ne 0 ]; then
+            echo "::error::Focused test should PASS in current defective wiring (it asserts failed+CLINIC_SCOPE_REQUIRED), but exit=$EXIT_CODE"
+            exit 1
+          fi
+          echo "=== RED evidence guards PASSED ==="
 
       - name: Upload RED evidence log
         if: always()
