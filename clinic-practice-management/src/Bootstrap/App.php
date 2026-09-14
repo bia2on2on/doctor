@@ -145,6 +145,7 @@ final class App
     private static ?LoginRateLimiter $loginRateLimiter = null;
     private static ?Idempotency $idem = null;
     private static ?SettingsFactory $settingsFactory = null;
+    private static ?InstallationSettings $installationSettings = null;
     private static ?MigrationRunner $migrations = null;
     private static ?JobsDispatcher $dispatcher = null;
     private static ?SmsProviderRegistry $providers = null;
@@ -778,7 +779,7 @@ final class App
      * (فقط Job refresh شبکه می‌رود).
      *
      * نصب بدون سند معتبر → پنجرهٔ فعال‌سازی (تصمیم کارفرما): نصب تازه
-     * ACTIVATION_PENDING (۷ روز) /ION_PENDING (۷ روز) / نصب pre-F10 ACTIVATION_GRACE (۳۰ روز)؛
+     * ACTIVATION_PENDING (۷ روز) / نصب pre-F10 ACTIVATION_GRACE (۳۰ روز)؛
      * پایان پنجره بدون سند → RESTRICTED. حالت توسعه فقط صریح (CPMS_DEV_MODE
      * یا فیلتر cpms_license_dev_mode). ایمنی بیمار هرگز قفل نمی‌شود (§1).
      */
@@ -1177,7 +1178,8 @@ final class App
                     // W-sweep: each Appointment owns its Clinic/Location. The
                     // handler therefore receives only scope-neutral services and
                     // resolves the per-Clinic NotificationService from persisted
-                    // appointment data, never from amb              (new ApptReminderHandler(
+                    // appointment data, never from ambient App::scope().
+                    (new ApptReminderHandler(
                         $db,
                         self::smsService(),
                         static fn (int $clinicId): NotificationService => new NotificationService(
@@ -1339,10 +1341,6 @@ final class App
             if ($alreadyActive === null) {
                 $queue->enqueue($type, [], $now, priority: $priority);
             }
-        }
-    }
-}
-     }
         }
     }
 }
