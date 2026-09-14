@@ -304,7 +304,7 @@ final class App
         if (trim((string) self::settings()->get('files.storage_path', '')) === '') {
             $pairs[] = [LocalFileStorage::legacyBasePath(), LocalFileStorage::defaultBasePath(), 'clinic-files'];
         }
-        $backupConfigured = trim((string) self::settings()->get('backup.storage_path', ''));
+        $backupConfigured = trim(self::installationSettings()->getBackupStoragePath());
         if ($backupConfigured === '') {
             $pairs[] = [ProtectedBackupStore::legacyBasePath(), ProtectedBackupStore::defaultBasePath(), 'cpms-backups'];
         } elseif (PrivateStorageLocation::isInsideWebRoot($backupConfigured)) {
@@ -1030,23 +1030,32 @@ final class App
      */
     public static function backupService(): BackupService
     {
-        // الگوی localFileStorage(): عمداً بدون کش تا تغییر Setting
-        // `backup.storage_path` (از جمله Fail-Closed شدن آن در OD-9) بلافاصله
-        // اثر کند — ساخت Object سبک است.
-        $configured = trim((string) self::settings()->get('backup.storage_path', ''));
+        // M-2 GREEN: backup.storage_path سطح نصب (InstallationSettings) است،
+        // نه Clinic-bound. عمداً بدون کش تا تغییر مسیر بلافاصله اثر کند.
+        $installation = self::installationSettings();
+        $configured = trim($installation->getBackupStoragePath());
         $base = $configured !== '' ? $configured : ProtectedBackupStore::defaultBasePath();
         $store = PrivateStorageLocation::isInsideWebRoot($base)
             ? ProtectedBackupStore::legacySource($base)
             : ProtectedBackupStore::active($base);
 
+        // Multi-Clinic File Roots (M-2 blocker fix):
+        // منبع معتبر ریشه‌های فعال بالینی: cpms_clinics + cpms_settings
+        // (files.storage_path per-Clinic). BackupService خودش از DB همهٔ
+        // ریشه‌های فعال را می‌آورد و duplicate را یک‌بار جمع می‌کند؛ پس
+        // اینجا فقط یک ریشهٔ پیش‌فرضِ امن به‌عنوان fallback/injected
+        // برای سازگاری با تست‌های قدیمی می‌دهیم تا Job هرگز
+        // CLINIC_SCOPE_REQUIRED نگیرد و تمام فایل‌های فعال پوشش داده شوند.
+        $filesBase = PrivateStorageLocation::path('clinic-files');
+
         return new BackupService(
             self::db(),
             $store,
             new BackupSqlDumper(self::db()),
-            self::settings(),
+            $installation,
             self::audit(),
             self::op(),
-            self::localFileStorage()->basePath()
+            $filesBase
         );
     }
 
@@ -1095,21 +1104,22 @@ final class App
      * Health/سازگاری سیستم (F10 — spec §40). بدون PHI.
      */
     public static function systemHealthService(): SystemHealthService
-    {
-        static $health = null;
-        if ($health === null) {
-            $health = new SystemHealthService(
-                self::db(),
-                self::settings(),
-                self::licenseService(),
-                self::backupService(),
-                self::updateService(),
-                self::op()
-            );
-        }
+        {
+            static $health = null;
+            if ($health === null) {
+                $health = new SystemHealthService(
+                    self::db(),
+                    self::settings(),
+                    self::installationSettings(),
+                    self::licenseService(),
+                    self::backupService(),
+                    self::updateService(),
+                    self::op()
+                );
+            }
 
-        return $health;
-    }
+            return $health;
+        }
 
     public static function dispatcher(): JobsDispatcher
     {
@@ -1239,7 +1249,7 @@ final class App
                     (new LicenseRefreshHandler(self::licenseService(), $op))($payload);
                 })
                 ->register('backup.run', static function (array $payload) use ($op): void {
-                    (new BackupRunHandler(self::backupService(), self::settings(), $op))($payload);
+                    (new BackupRunHandler(self::backupService(), self::installationSettings(), $op))($payload);
                 });
 
             self::$dispatcher = $dispatcher;

@@ -45,7 +45,7 @@ final class FollowUpReminderStarvationRedTest extends WP_UnitTestCase
     private function resetAppCaches(): void
     {
         $refClass = new \ReflectionClass(App::class);
-        foreach (['db','op','audit','jobs','rate','loginRateLimiter','idem','settingsFactory','migrations','dispatcher','providers','vault','smsService','licenseGate','visitService'] as $propName) {
+        foreach (['db','op','audit','jobs','rate','loginRateLimiter','idem','settingsFactory','installationSettings','migrations','dispatcher','providers','vault','smsService','licenseGate','visitService'] as $propName) {
             if ($refClass->hasProperty($propName)) {
                 $prop = $refClass->getProperty($propName);
                 $prop->setAccessible(true);
@@ -230,8 +230,9 @@ final class FollowUpReminderStarvationRedTest extends WP_UnitTestCase
 
         Settings::flushCache();
         $settings = new Settings($db, $this->clinicId, App::audit());
+        // Always-open: 24:00 is invalid per parseHour => fail-open true (avoids flakiness at hour 23 Tehran)
         $settings->set('notif.quiet_hours_start', '00:00');
-        $settings->set('notif.quiet_hours_end', '23:59');
+        $settings->set('notif.quiet_hours_end', '24:00');
         Settings::flushCache();
         App::resetScope();
         SystemClinicResolver::flush();

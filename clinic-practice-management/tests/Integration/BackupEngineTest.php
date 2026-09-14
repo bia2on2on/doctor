@@ -6,6 +6,7 @@ namespace ClinicCore\Tests\Integration;
 
 use ClinicCore\Application\Backup\BackupService;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Settings\InstallationSettings;
 use ClinicCore\Infrastructure\Backup\BackupSqlDumper;
 use ClinicCore\Infrastructure\Backup\ProtectedBackupStore;
 use WP_UnitTestCase;
@@ -31,6 +32,9 @@ final class BackupEngineTest extends WP_UnitTestCase
     private string $filesBase;
     private BackupService $backups;
 
+    private int $orgId = 0;
+    private int $clinicId = 0;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -39,14 +43,48 @@ final class BackupEngineTest extends WP_UnitTestCase
 
         $this->tmpBase = sys_get_temp_dir() . '/cpms-backup-test-' . bin2hex(random_bytes(5));
         $this->filesBase = $this->tmpBase . '/clinic-files';
-        mkdir($this->filesBase . '/1/a3', 0750, true);
-        file_put_contents($this->filesBase . '/1/a3/' . str_repeat('b', 32) . '.pdf', 'test-file-content-123');
+        @mkdir($this->tmpBase, 0750, true);
+        @mkdir($this->filesBase, 0750, true);
+
+        // Create a valid Clinic with storage_path = filesBase (no synthetic owner 0)
+        global $wpdb;
+        $db = App::db();
+        $now = $db->nowUtcSql();
+        $orgSlug = 'backup-engine-org-' . bin2hex(random_bytes(4));
+        $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_organizations (name, slug, status, created_at, updated_at) VALUES (%s, %s, %s, %s, %s)',
+            'Backup Engine Org',
+            $orgSlug,
+            'active',
+            $now,
+            $now
+        ));
+        $this->orgId = (int) $wpdb->insert_id;
+        $clinicSlug = 'backup-engine-clinic-' . bin2hex(random_bytes(4));
+        $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_clinics (organization_id, name, slug, timezone, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, %s)',
+            $this->orgId,
+            'Backup Engine Clinic',
+            $clinicSlug,
+            'Asia/Tehran',
+            $now,
+            $now
+        ));
+        $this->clinicId = (int) $wpdb->insert_id;
+
+        $factory = App::settingsFactory();
+        $factory->forClinic($this->clinicId)->set('files.storage_path', $this->filesBase);
+        \ClinicCore\Settings\Settings::flushCache();
+
+        $fileDir = $this->filesBase . '/' . $this->clinicId . '/a3';
+        @mkdir($fileDir, 0750, true);
+        file_put_contents($fileDir . '/' . str_repeat('b', 32) . '.pdf', 'test-file-content-123');
 
         $this->backups = new BackupService(
             App::db(),
             ProtectedBackupStore::active($this->tmpBase . '/backups'),
             new BackupSqlDumper(App::db()),
-            App::settings(),
+            App::installationSettings(),
             App::audit(),
             App::op(),
             $this->filesBase
@@ -55,7 +93,28 @@ final class BackupEngineTest extends WP_UnitTestCase
 
     protected function tearDown(): void
     {
+        global $wpdb;
+        if ($this->clinicId > 0 || $this->orgId > 0) {
+            $db = App::db();
+            $wpdb->query('SET FOREIGN_KEY_CHECKS = 0');
+            if ($this->clinicId > 0) {
+                $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_settings') . ' WHERE clinic_id = %d', $this->clinicId));
+                $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_clinics') . ' WHERE id = %d', $this->clinicId));
+            }
+            if ($this->orgId > 0) {
+                $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_organizations') . ' WHERE id = %d', $this->orgId));
+            }
+            $wpdb->query('SET FOREIGN_KEY_CHECKS = 1');
+        }
         $this->rm($this->tmpBase);
+        if (function_exists('delete_option')) {
+            delete_option(InstallationSettings::OPTION_BACKUP_ENABLED);
+            delete_option(InstallationSettings::OPTION_BACKUP_INTERVAL_HOURS);
+            delete_option(InstallationSettings::OPTION_BACKUP_KEEP_COUNT);
+            delete_option(InstallationSettings::OPTION_BACKUP_STORAGE_PATH);
+            delete_option(InstallationSettings::OPTION_BACKUP_LAST_RUN_AT);
+        }
+        \ClinicCore\Settings\Settings::flushCache();
         parent::tearDown();
     }
 
@@ -76,7 +135,9 @@ final class BackupEngineTest extends WP_UnitTestCase
         $sql = (string) file_get_contents($dir . '/db.sql');
         $this->assertStringContainsString('cpms_patients', $sql);
 
-        // فایل ذخیره‌سازی هم‌هش با مانیفست
+        // فایل ذخیره‌سازی هم‌هش با مانیفست — path must include valid clinicId, no owner 0
+        $expectedRel = $this->clinicId . '/a3/' . str_repeat('b', 32) . '.pdf';
+        $this->assertFileExists($dir . '/storage/' . $expectedRel);
         $this->assertSame('ok', $this->backups->verifyBackup($meta['backup_id'])['ok'] ? 'ok' : 'fail');
 
         // .htaccess گارد
@@ -89,7 +150,8 @@ final class BackupEngineTest extends WP_UnitTestCase
         $dir = $this->tmpBase . '/backups/' . $meta['backup_id'];
 
         // دستکاری کپیِ فایلِ ذخیره‌سازی داخل آرتیفکت بکاپ (نه منبع اصلی)
-        file_put_contents($dir . '/storage/1/a3/' . str_repeat('b', 32) . '.pdf', 'TAMPERED');
+        $rel = $this->clinicId . '/a3/' . str_repeat('b', 32) . '.pdf';
+        file_put_contents($dir . '/storage/' . $rel, 'TAMPERED');
         $verify = $this->backups->verifyBackup($meta['backup_id']);
         $this->assertFalse($verify['ok']);
         $this->assertNotEmpty($verify['errors']);

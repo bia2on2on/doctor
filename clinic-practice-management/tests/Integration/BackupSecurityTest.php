@@ -6,6 +6,7 @@ namespace ClinicCore\Tests\Integration;
 
 use ClinicCore\Application\Backup\BackupService;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Settings\InstallationSettings;
 use ClinicCore\Infrastructure\Backup\BackupSqlDumper;
 use ClinicCore\Infrastructure\Backup\ProtectedBackupStore;
 use WP_UnitTestCase;
@@ -42,7 +43,7 @@ final class BackupSecurityTest extends WP_UnitTestCase
             App::db(),
             $this->store,
             new BackupSqlDumper(App::db()),
-            App::settings(),
+            App::installationSettings(),
             App::audit(),
             App::op(),
             $filesBase
@@ -60,6 +61,13 @@ final class BackupSecurityTest extends WP_UnitTestCase
                 $entry->isDir() && !$entry->isLink() ? @rmdir($entry->getPathname()) : @unlink($entry->getPathname());
             }
             @rmdir($this->tmpBase);
+        }
+        if (function_exists('delete_option')) {
+            delete_option(InstallationSettings::OPTION_BACKUP_ENABLED);
+            delete_option(InstallationSettings::OPTION_BACKUP_INTERVAL_HOURS);
+            delete_option(InstallationSettings::OPTION_BACKUP_KEEP_COUNT);
+            delete_option(InstallationSettings::OPTION_BACKUP_STORAGE_PATH);
+            delete_option(InstallationSettings::OPTION_BACKUP_LAST_RUN_AT);
         }
         parent::tearDown();
     }

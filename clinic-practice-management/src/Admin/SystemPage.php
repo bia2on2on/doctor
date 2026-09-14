@@ -81,6 +81,7 @@ final class SystemPage
             $backupsError = $e->getMessage();
         }
         $settings = App::settings();
+        $installationSettings = App::installationSettings();
         $notice = get_transient(self::NOTICE_KEY);
         if ($notice !== false) {
             delete_transient(self::NOTICE_KEY);
@@ -200,11 +201,11 @@ final class SystemPage
             <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin-bottom:10px">
                 <?php wp_nonce_field('cpms_backup_save'); ?>
                 <input type="hidden" name="action" value="cpms_backup_save">
-                <label><input type="checkbox" name="enabled" value="1" <?php checked((bool) $settings->get('backup.enabled')); ?>> بکاپ دوره‌ای</label>
+                <label><input type="checkbox" name="enabled" value="1" <?php checked($installationSettings->getBackupEnabled()); ?>> بکاپ دوره‌ای</label>
                 &nbsp; فاصله (ساعت):
-                <input type="number" name="interval_hours" min="1" max="168" value="<?php echo esc_attr((string) $settings->get('backup.interval_hours')); ?>" size="4">
+                <input type="number" name="interval_hours" min="1" max="168" value="<?php echo esc_attr((string) $installationSettings->getBackupIntervalHours()); ?>" size="4">
                 &nbsp; نگهداری (نسخه):
-                <input type="number" name="keep_count" min="1" max="365" value="<?php echo esc_attr((string) $settings->get('backup.keep_count')); ?>" size="4">
+                <input type="number" name="keep_count" min="1" max="365" value="<?php echo esc_attr((string) $installationSettings->getBackupKeepCount()); ?>" size="4">
                 <button class="button">ذخیره تنظیمات</button>
             </form>
             <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin-bottom:10px">
@@ -321,12 +322,11 @@ final class SystemPage
     public static function backupSave(): void
     {
         self::guard('cpms_backup_save');
-        $s = App::settings();
-        // F1-4: updated_by برای Audit تغییرات Config
-        $uid = get_current_user_id();
-        $s->set('backup.enabled', isset($_POST['enabled']), $uid);
-        $s->set('backup.interval_hours', max(1, min(168, (int) ($_POST['interval_hours'] ?? 24))), $uid);
-        $s->set('backup.keep_count', max(1, min(365, (int) ($_POST['keep_count'] ?? 14))), $uid);
+        $s = App::installationSettings();
+        // M-2 GREEN: سطح نصب — بدون Clinic/Scope، با validation 1..168 / 1..365
+        $s->setBackupEnabled(isset($_POST['enabled']));
+        $s->setBackupIntervalHours(max(1, min(168, (int) ($_POST['interval_hours'] ?? 24))));
+        $s->setBackupKeepCount(max(1, min(365, (int) ($_POST['keep_count'] ?? 14))));
         self::notify('تنظیمات بکاپ ذخیره شد', true);
     }
 

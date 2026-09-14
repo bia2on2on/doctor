@@ -123,7 +123,7 @@ jobs:
           $bo = (string) getenv('BACKUP_OUT');
           if ($bo !== '') {
           if (!is_dir($bo)) { mkdir($bo, 0750, true); }
-          App::settings()->set('backup.storage_path', $bo);
+          App::installationSettings()->setBackupStoragePath($bo);
           }
 
           // ===== A. نسخه / schema / نقش‌ها / پنجره‌ی لایسنس (نصب تازه) =====
@@ -673,7 +673,7 @@ jobs:
           require getenv('WP_HOME') . '/wp-load.php';
           use ClinicCore\Bootstrap\App;
           App::settings()->set('files.storage_path', (string) getenv('STORAGE_OUT'));
-          App::settings()->set('backup.storage_path', (string) getenv('BACKUP_OUT'));
+          App::installationSettings()->setBackupStoragePath((string) getenv('BACKUP_OUT'));
           echo 'configured: files=' . App::settings()->get('files.storage_path') . " backup=" . App::settings()->get('backup.storage_path') . "\n";
           PHPEOF
           WP_HOME="$WP_DIR" STORAGE_OUT="$STORAGE_OUT" BACKUP_OUT="$BACKUP_OUT" php /tmp/configure.php
@@ -697,9 +697,11 @@ jobs:
           $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_patient_user_links') . ' (clinic_id, patient_id, wp_user_id, mobile_at_link, is_primary, linked_at) VALUES (1, %d, %d, %s, 1, %s)', $pid, $uid, '09120007777', $now));
           App::audit()->log('CLOSURE_SEED', ['wp_user_id' => $uid, 'role' => 'administrator'], 'patient', $pid, $pid, null, ['seed' => 'state-A'], ['phase' => 'closure']);
           App::audit()->log('CLOSURE_SEED', ['wp_user_id' => $uid, 'role' => 'administrator'], 'patient', $pid, $pid, null, ['seed' => 'state-A-2'], ['phase' => 'closure']);
+          // D-class: valid clinical file artifact via LocalFileStorage (clinic 1)
+          $rel = App::localFileStorage()->store('ORIGINAL-SENTINEL-CONTENT', 1, 'txt');
           $sto = (string) getenv('STORAGE_OUT');
-          file_put_contents($sto . '/sentinel-closure.txt', 'ORIGINAL-SENTINEL-CONTENT');
-          echo json_encode(['clinician' => 1, 'patient' => $pid, 'sentinel' => $sto . '/sentinel-closure.txt']) . "\n";
+          @file_put_contents('/tmp/sentinel-rel.txt', (string) $rel);
+          echo json_encode(['clinician' => 1, 'patient' => $pid, 'sentinel_rel' => $rel, 'sentinel_abs' => $sto . '/' . $rel]) . "\n";
           PHPEOF
           WP_HOME="$WP_DIR" STORAGE_OUT="$STORAGE_OUT" BACKUP_OUT="$BACKUP_OUT" php /tmp/seed-a.php
           echo '--- seed patient ---'
@@ -730,9 +732,14 @@ jobs:
           $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_patients') . ' (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at) VALUES (1, %s, %s, %s, %s, %s, %s, %s)', 'SYN-INTRUDER-9', 'Intruder', 'Patient', '09120005555', 'active', $now, $now));
           // M3: حذف یک ردیف Audit میانی (دستکاری زنجیر)
           $wpdb->query('DELETE FROM ' . $db->table('cpms_audit_logs') . ' ORDER BY id ASC LIMIT 1');
-          // M4: حذف فایل محافظت‌شده + افزودن فایل بیگانه
+          // M4: حذف فایل محافظت‌شدهٔ بالینی (valid artifact) + افزودن فایل بیگانهٔ غیربالینی
           $sto = (string) getenv('STORAGE_OUT');
-          @unlink($sto . '/sentinel-closure.txt');
+          $rel = @file_get_contents('/tmp/sentinel-rel.txt');
+          $rel = is_string($rel) ? trim($rel) : '';
+          if ($rel !== '') {
+              @unlink($sto . '/' . $rel);
+          }
+          // garbage directly in base = non-clinical, not backed up (D-class fix)
           file_put_contents($sto . '/garbage-intruder.bin', 'GARBAGE');
           echo "state B applied (rename/insert/audit-delete/sentinel-gone)\n";
           PHPEOF
@@ -742,7 +749,12 @@ jobs:
           mysql -h127.0.0.1 -P3306 -uroot -proot -N -e "SELECT last_name FROM \`$DB_MAIN\`.cpmswp_cpms_patients WHERE mrn='SYN-CLOSURE-R1';" | tee /tmp/lastname-b.txt
           [ "$(cat /tmp/intruder.txt)" = "1" ] || { echo 'MUTATION M2 NOT APPLIED'; exit 1; }
           [ "$(cat /tmp/lastname-b.txt)" = "MUTATED-LastName" ] || { echo 'MUTATION M1 NOT APPLIED'; exit 1; }
-          [ ! -f "$STORAGE_OUT/sentinel-closure.txt" ] || { echo 'MUTATION M4 NOT APPLIED (sentinel still present)'; exit 1; }
+          REL=$(cat /tmp/sentinel-rel.txt 2>/dev/null || echo "")
+          if [ -n "$REL" ]; then
+            [ ! -f "$STORAGE_OUT/$REL" ] || { echo "MUTATION M4 NOT APPLIED (sentinel still present at $REL)"; exit 1; }
+          else
+            echo "WARN sentinel-rel missing, skipping M4 present check"
+          fi
           # زنجیر Audit در state B باید شکسته باشد (حذف ردیف) — فقط گزارش، نه گیت مستقل
           set +e
           WP_HOME="$WP_DIR" php "$WP_DIR/wp-content/plugins/clinic-practice-management/bin/cpms" audit verify 1000 > /tmp/audit-b.log 2>&1
@@ -763,8 +775,10 @@ jobs:
           mysql -h127.0.0.1 -P3306 -uroot -proot -N -e "SELECT COUNT(*) FROM \`$DB_MAIN\`.cpmswp_cpms_patients WHERE mrn='SYN-INTRUDER-9';" | tee /tmp/intruder2.txt
           [ "$(cat /tmp/lastname-a.txt)" = "Original-LastName" ] || { echo 'RESTORE: NAME NOT REVERTED'; exit 1; }
           [ "$(cat /tmp/intruder2.txt)" = "0" ] || { echo 'RESTORE: INTRUDER NOT REMOVED'; exit 1; }
-          [ -f "$STORAGE_OUT/sentinel-closure.txt" ] || { echo 'RESTORE: SENTINEL FILE NOT RESTORED'; exit 1; }
-          [ "$(cat "$STORAGE_OUT/sentinel-closure.txt")" = "ORIGINAL-SENTINEL-CONTENT" ] || { echo 'RESTORE: SENTINEL CONTENT WRONG'; exit 1; }
+          REL=$(cat /tmp/sentinel-rel.txt 2>/dev/null || echo "")
+          [ -n "$REL" ] || { echo 'RESTORE: SENTINEL REL MISSING'; exit 1; }
+          [ -f "$STORAGE_OUT/$REL" ] || { echo "RESTORE: SENTINEL FILE NOT RESTORED at $REL"; exit 1; }
+          [ "$(cat "$STORAGE_OUT/$REL")" = "ORIGINAL-SENTINEL-CONTENT" ] || { echo 'RESTORE: SENTINEL CONTENT WRONG'; exit 1; }
           WP_HOME="$WP_DIR" php "$WP_DIR/wp-content/plugins/clinic-practice-management/bin/cpms" audit verify 1000 2>&1 | tee /tmp/audit-a.log
           WP_HOME="$WP_DIR" php "$WP_DIR/wp-content/plugins/clinic-practice-management/bin/cpms" status 2>&1 | tee /tmp/status-a.log
           grep -q 'schema:  2026_09_09_0020' /tmp/status-a.log || { echo 'SCHEMA NOT 0020 AFTER RESTORE'; exit 1; }
