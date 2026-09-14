@@ -119,6 +119,7 @@ use ClinicCore\Rest\ReportsController;
 use ClinicCore\Rest\RestClinicContext;
 use ClinicCore\Rest\ScheduleController;
 use ClinicCore\Rest\SmsController;
+use ClinicCore\Settings\InstallationSettings;
 use ClinicCore\Settings\Settings;
 use ClinicCore\Settings\SettingsFactory;
 
@@ -144,6 +145,7 @@ final class App
     private static ?LoginRateLimiter $loginRateLimiter = null;
     private static ?Idempotency $idem = null;
     private static ?SettingsFactory $settingsFactory = null;
+    private static ?InstallationSettings $installationSettings = null;
     private static ?MigrationRunner $migrations = null;
     private static ?JobsDispatcher $dispatcher = null;
     private static ?SmsProviderRegistry $providers = null;
@@ -941,6 +943,22 @@ final class App
         }
 
         return self::$settingsFactory;
+    }
+
+    /**
+     * تنظیمات اسکالر سطح نصب (Phase 2) — فعلاً فقط `notif.archive_days`.
+     *
+     * بدون Clinic/Scope/کاربر؛ خواندن/نوشتن از wp_options با `autoload=no`.
+     * کاملاً خنثی نسبت به Scope است، پس singleton بودنش بی‌خطر است (هیچ
+     * Clinicِ bootstrapای میخ نمی‌شود).
+     */
+    public static function installationSettings(): InstallationSettings
+    {
+        if (self::$installationSettings === null) {
+            self::$installationSettings = new InstallationSettings();
+        }
+
+        return self::$installationSettings;
     }
 
     /**
