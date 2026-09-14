@@ -8,7 +8,7 @@ use ClinicCore\Application\Backup\BackupService;
 use ClinicCore\Infrastructure\Backup\BackupException;
 use ClinicCore\Infrastructure\Logging\OpLogger;
 use ClinicCore\Infrastructure\Storage\StorageConfigurationException;
-use ClinicCore\Settings\Settings;
+use ClinicCore\Settings\InstallationSettings;
 
 /**
  * Job دوره‌ای بکاپ (spec §22–§24): هر Tick چک می‌شود ولی فقط وقتی
@@ -16,24 +16,29 @@ use ClinicCore\Settings\Settings;
  *
  * اجرا در صف = تک‌کاره (بدون دو بکاپ هم‌زمان — ADR-0016 J-3). شکست → Job
  * fail با Backoff (بدون حمله‌ی دیسک). بدون PHI در Log.
+ *
+ * M-2 GREEN: این Job طبقهٔ **S** (installation-wide) است و دیگر به
+ * Clinic-bound Settings وابسته نیست — پیکربندی و حالت عملیاتی از
+ * InstallationSettings (wp_options) می‌آید؛ هیچ App::scope()/Settingsِ
+ * Clinic/کاربر/ScopeContext‌ای لمس نمی‌شود.
  */
 final class BackupRunHandler
 {
     public function __construct(
         private readonly BackupService $backups,
-        private readonly Settings $settings,
+        private readonly InstallationSettings $installationSettings,
         private readonly OpLogger $op
     ) {
     }
 
     public function __invoke(array $payload = []): void
     {
-        if (!(bool) $this->settings->get('backup.enabled', false)) {
+        if (!$this->installationSettings->getBackupEnabled()) {
             return; // پیش‌فرض خاموش — فعال‌سازی آگاهانه (Admin/CLI)
         }
         $now = time();
-        $intervalH = max(1, (int) $this->settings->get('backup.interval_hours', 24));
-        $lastRun = (int) $this->settings->get('backup.last_run_at', 0);
+        $intervalH = max(1, $this->installationSettings->getBackupIntervalHours());
+        $lastRun = $this->installationSettings->getBackupLastRunAt();
         if ($lastRun > 0 && ($now - $lastRun) < $intervalH * 3600) {
             return; // هنوز سررسید نشده
         }

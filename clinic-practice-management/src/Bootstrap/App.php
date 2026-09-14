@@ -1030,23 +1030,30 @@ final class App
      */
     public static function backupService(): BackupService
     {
-        // الگوی localFileStorage(): عمداً بدون کش تا تغییر Setting
-        // `backup.storage_path` (از جمله Fail-Closed شدن آن در OD-9) بلافاصله
-        // اثر کند — ساخت Object سبک است.
-        $configured = trim((string) self::settings()->get('backup.storage_path', ''));
+        // M-2 GREEN: backup.storage_path سطح نصب (InstallationSettings) است،
+        // نه Clinic-bound. عمداً بدون کش تا تغییر مسیر بلافاصله اثر کند.
+        $installation = self::installationSettings();
+        $configured = trim($installation->getBackupStoragePath());
         $base = $configured !== '' ? $configured : ProtectedBackupStore::defaultBasePath();
         $store = PrivateStorageLocation::isInsideWebRoot($base)
             ? ProtectedBackupStore::legacySource($base)
             : ProtectedBackupStore::active($base);
 
+        // filesBasePath: برای scope-neutral بودن backup.run از ریشهٔ خصوصی
+        // پیش‌فرض استفاده می‌کنیم (نصب‌گسترده)، نه از Settingsِ Clinic-bound.
+        // خودِ BackupService فقط clinic-files را mirror می‌کند — مسیر هنوز
+        // قابل تنظیم از طریق files.storage_pathِ Clinic است، ولی خودِ Jobِ
+        // backup.run دیگر به Scope نیاز ندارد.
+        $filesBase = PrivateStorageLocation::path('clinic-files');
+
         return new BackupService(
             self::db(),
             $store,
             new BackupSqlDumper(self::db()),
-            self::settings(),
+            $installation,
             self::audit(),
             self::op(),
-            self::localFileStorage()->basePath()
+            $filesBase
         );
     }
 
@@ -1239,7 +1246,7 @@ final class App
                     (new LicenseRefreshHandler(self::licenseService(), $op))($payload);
                 })
                 ->register('backup.run', static function (array $payload) use ($op): void {
-                    (new BackupRunHandler(self::backupService(), self::settings(), $op))($payload);
+                    (new BackupRunHandler(self::backupService(), self::installationSettings(), $op))($payload);
                 });
 
             self::$dispatcher = $dispatcher;

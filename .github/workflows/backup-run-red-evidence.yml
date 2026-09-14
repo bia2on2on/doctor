@@ -1,9 +1,10 @@
-name: backup.run RED evidence (temporary)
+name: backup.run GREEN evidence (temporary)
 
 on:
   push:
     branches:
       - arena/01a0a126-doctor
+      - arena/*
   workflow_dispatch:
 
 permissions:
@@ -14,8 +15,8 @@ defaults:
     working-directory: clinic-practice-management
 
 jobs:
-  red-evidence:
-    name: RED evidence fresh-process
+  green-evidence:
+    name: GREEN evidence fresh-process
     runs-on: ubuntu-latest
 
     services:
@@ -52,70 +53,58 @@ jobs:
       - name: Prepare WordPress test suite
         run: bash tests/bin/install-wp-tests.sh wordpress_test root root 127.0.0.1 6.7.2
 
-      - name: Run ONLY BackupRunM2WiringRedTest in fresh process
+      - name: Run ONLY BackupRunM2WiringRedTest in fresh process (GREEN)
         run: |
           set -o pipefail
-          echo "=== Running focused RED test in fresh process ==="
-          php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
-            --bootstrap tests/integration-bootstrap.php \
-            --filter testBackupRunMustBeExecutableWithoutClinicScope \
-            tests/Integration/BackupRunM2WiringRedTest.php 2>&1 | tee /tmp/red-evidence.log
+          echo "=== Running focused GREEN test in fresh process ==="
+          php -d memory_limit=1G vendor/bin/phpunit --no-configuration             --bootstrap tests/integration-bootstrap.php             --filter testBackupRunGreenInstallationLevelControls             tests/Integration/BackupRunM2WiringRedTest.php 2>&1 | tee /tmp/green-evidence.log
           EXIT_CODE=${PIPESTATUS[0]}
           echo "=== Exit code: $EXIT_CODE ==="
-          cat /tmp/red-evidence.log
+          cat /tmp/green-evidence.log
           echo "=== Guards ==="
-          # Guard: exactly one selected test (PHPUnit 9.6 reports Tests: 1 or OK (1 test))
-          if ! grep -qE "Tests: 1,|OK \(1 test" /tmp/red-evidence.log; then
+          if ! grep -qE "Tests: 1,|OK \(1 test" /tmp/green-evidence.log; then
             echo "::error::Expected exactly one selected test, not found"
             exit 1
           fi
-          # Guard: no syntax/parse error
-          if grep -qE "ParseError|syntax error, unexpected" /tmp/red-evidence.log; then
+          if grep -qE "ParseError|syntax error, unexpected" /tmp/green-evidence.log; then
             echo "::error::Syntax/parse error detected"
             exit 1
           fi
-          # Guard: no PHPUnit ERROR (distinct from failure)
-          if grep -qE "^There were .* errors:" /tmp/red-evidence.log; then
+          if grep -qE "^There were .* errors:" /tmp/green-evidence.log; then
             echo "::error::PHPUnit ERROR detected"
             exit 1
           fi
-          # Guard: required RED signature markers
-          if ! grep -q "RED_SIGNATURE=clinic_bound_settings_dependency" /tmp/red-evidence.log; then
-            echo "::error::Missing RED_SIGNATURE"
+          if ! grep -q "GREEN_SIGNATURE=installation_level_backup_run" /tmp/green-evidence.log; then
+            echo "::error::Missing GREEN_SIGNATURE"
             exit 1
           fi
-          if ! grep -q "CLINIC_SCOPE_REQUIRED" /tmp/red-evidence.log; then
-            echo "::error::Missing CLINIC_SCOPE_REQUIRED in evidence"
+          if ! grep -q "no_first_clinic_fallback=true" /tmp/green-evidence.log; then
+            echo "::error::Missing no_first_clinic_fallback proof"
             exit 1
           fi
-          if ! grep -q "status=failed" /tmp/red-evidence.log; then
-            echo "::error::Missing status=failed in RED signature"
+          if ! grep -q "legacy_ignored=true" /tmp/green-evidence.log; then
+            echo "::error::Missing legacy_ignored proof"
             exit 1
           fi
-          if ! grep -q "no_artifact=true" /tmp/red-evidence.log; then
-            echo "::error::Missing no_artifact proof"
-            exit 1
-          fi
-          if ! grep -q "scope_context=none" /tmp/red-evidence.log; then
+          if ! grep -q "scope_context=none" /tmp/green-evidence.log; then
             echo "::error::Missing scope_context=none"
             exit 1
           fi
-          if ! grep -q "payload_empty=true" /tmp/red-evidence.log; then
+          if ! grep -q "payload_empty=true" /tmp/green-evidence.log; then
             echo "::error::Missing payload_empty marker"
             exit 1
           fi
-          # Guard: test must have passed (exit 0) because it now asserts pre-GREEN failed observation
           if [ "$EXIT_CODE" -ne 0 ]; then
-            echo "::error::Focused test should PASS in current defective wiring (it asserts failed+CLINIC_SCOPE_REQUIRED), but exit=$EXIT_CODE"
+            echo "::error::Focused GREEN test should PASS, but exit=$EXIT_CODE"
             exit 1
           fi
-          echo "=== RED evidence guards PASSED ==="
+          echo "=== GREEN evidence guards PASSED ==="
 
-      - name: Upload RED evidence log
+      - name: Upload GREEN evidence log
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: backup-run-red-evidence-${{ github.run_id }}
-          path: /tmp/red-evidence.log
+          name: backup-run-green-evidence-${{ github.run_id }}
+          path: /tmp/green-evidence.log
           if-no-files-found: warn
           retention-days: 14

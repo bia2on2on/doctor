@@ -42,7 +42,7 @@ final class BackupSecurityTest extends WP_UnitTestCase
             App::db(),
             $this->store,
             new BackupSqlDumper(App::db()),
-            App::settings(),
+            App::installationSettings(),
             App::audit(),
             App::op(),
             $filesBase

@@ -12,6 +12,7 @@ use ClinicCore\Domain\Licensing\LicenseStatus;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Logging\OpLogger;
 use ClinicCore\Infrastructure\Storage\LocalFileStorage;
+use ClinicCore\Settings\InstallationSettings;
 use ClinicCore\Settings\Settings;
 
 /**
@@ -54,6 +55,7 @@ final class SystemHealthService
     public function __construct(
         private readonly CpmsDb $db,
         private readonly Settings $settings,
+        private readonly InstallationSettings $installationSettings,
         private readonly LicenseService $licenses,
         private readonly BackupService $backups,
         private readonly UpdateService $updates,
@@ -159,14 +161,14 @@ final class SystemHealthService
             (string) $this->settings->get('license.server_url', '') !== '' ? 'پیکربندی‌شده' : 'فعال‌سازی دستی/آفلاین ممکن است'
         );
 
-        // ---------- Backup ----------
-        $bkEnabled = (bool) $this->settings->get('backup.enabled', false);
-        $lastRun = (int) $this->settings->get('backup.last_run_at', 0);
+        // ---------- Backup ---------- (M-2 GREEN: سطح نصب)
+        $bkEnabled = $this->installationSettings->getBackupEnabled();
+        $lastRun = $this->installationSettings->getBackupLastRunAt();
         if (!$bkEnabled) {
             $add('backup.enabled', 'بکاپ دوره‌ای', self::NOT_CONFIGURED, 'غیرفعال — در «CPMS (سیستم)» فعال کنید (spec §22)');
         } else {
             $ageH = $lastRun > 0 ? (int) (($this->ts() - $lastRun) / 3600) : -1;
-            $status = $lastRun > 0 && $ageH <= (int) $this->settings->get('backup.interval_hours', 24) ? self::PASS : self::WARNING;
+            $status = $lastRun > 0 && $ageH <= $this->installationSettings->getBackupIntervalHours() ? self::PASS : self::WARNING;
             $add('backup.enabled', 'بکاپ دوره‌ای', $status, $lastRun > 0 ? 'آخرین: ' . $ageH . ' ساعت پیش' : 'هنوز اجرا نشده');
         }
 

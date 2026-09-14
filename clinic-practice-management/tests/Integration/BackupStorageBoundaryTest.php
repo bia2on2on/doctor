@@ -61,7 +61,7 @@ final class BackupStorageBoundaryTest extends WP_UnitTestCase
 
     protected function tearDown(): void
     {
-        App::settings()->set('backup.storage_path', '');
+        App::installationSettings()->setBackupStoragePath('');
         App::settings()->set('files.storage_path', '');
         $this->rmrf($this->tmp);
         $this->rmrf($this->legacyProbe);
@@ -103,7 +103,7 @@ final class BackupStorageBoundaryTest extends WP_UnitTestCase
             App::db(),
             $store,
             new BackupSqlDumper(App::db()),
-            App::settings(),
+            App::installationSettings(),
             App::audit(),
             App::op(),
             $this->filesBase
@@ -209,7 +209,7 @@ final class BackupStorageBoundaryTest extends WP_UnitTestCase
     public function testSafeConfiguredBackupPathIsAcceptedAndWritable(): void
     {
         $safe = $this->tmp . '/backups-safe';
-        App::settings()->set('backup.storage_path', $safe);
+        App::installationSettings()->setBackupStoragePath($safe);
 
         $service = App::backupService();
         self::assertFalse($service->store()->isReadonly());
@@ -260,7 +260,7 @@ final class BackupStorageBoundaryTest extends WP_UnitTestCase
     public function testUnsafeConfiguredPathIsDowngradedExplicitlyAndWritesFailClosed(): void
     {
         mkdir($this->legacyProbe, 0777, true);
-        App::settings()->set('backup.storage_path', $this->legacyProbe);
+        App::installationSettings()->setBackupStoragePath($this->legacyProbe);
 
         $service = App::backupService();
 
@@ -502,7 +502,7 @@ final class BackupStorageBoundaryTest extends WP_UnitTestCase
         file_put_contents($this->legacyProbe . '/.htaccess', 'deny');
 
         App::settings()->set('files.storage_path', $this->tmp . '/files-base'); // جفت clinic-files غیرفعال
-        App::settings()->set('backup.storage_path', $this->legacyProbe);
+        App::installationSettings()->setBackupStoragePath($this->legacyProbe);
 
         $option = (string) (new ReflectionClass(App::class))->getConstant('PRIVATE_STORAGE_OPTION');
         $dest = ProtectedBackupStore::defaultBasePath() . '/' . $id;
@@ -571,6 +571,7 @@ final class BackupStorageBoundaryTest extends WP_UnitTestCase
         $health = new SystemHealthService(
             App::db(),
             App::settings(),
+            App::installationSettings(),
             App::licenseService(),
             $this->service(ProtectedBackupStore::legacySource($this->legacyProbe)),
             App::updateService(),

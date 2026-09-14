@@ -402,7 +402,7 @@ final class CpmsSetupWizard
 
     private static function renderBackup(): void
     {
-        $backupEnabled = (bool) App::settings()->get('backup.enabled', false);
+        $backupEnabled = App::installationSettings()->getBackupEnabled();
         ?>
         <div class="card">
             <h2>پشتیبان‌گیری (اختیاری)</h2>

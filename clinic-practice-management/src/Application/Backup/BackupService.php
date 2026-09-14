@@ -12,7 +12,7 @@ use ClinicCore\Infrastructure\Backup\BackupSqlDumper;
 use ClinicCore\Infrastructure\Backup\ProtectedBackupStore;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Logging\OpLogger;
-use ClinicCore\Settings\Settings;
+use ClinicCore\Settings\InstallationSettings;
 
 /**
  * سرویس بکاپ/بازیابی (F10 — spec §22–§25):
@@ -49,7 +49,7 @@ final class BackupService
         private readonly CpmsDb $db,
         private readonly ProtectedBackupStore $store,
         private readonly BackupSqlDumper $dumper,
-        private readonly Settings $settings,
+        private readonly InstallationSettings $installationSettings,
         private readonly AuditLogger $audit,
         private readonly OpLogger $op,
         private readonly string $filesBasePath
@@ -123,7 +123,7 @@ final class BackupService
         file_put_contents($dir . '/manifest.json', $manifestJson);
         file_put_contents($dir . '/manifest.json.sha256', hash('sha256', $manifestJson));
 
-        $this->settings->set('backup.last_run_at', $now);
+        $this->installationSettings->setBackupLastRunAt($now);
         $this->op->info('BACKUP_CREATED', [
             'backup_id' => $backupId,
             'tables' => count($tableStats),
@@ -312,7 +312,7 @@ final class BackupService
      */
     private function pruneStore(ProtectedBackupStore $store, int $keep = 0): array
     {
-        $keep = $keep > 0 ? $keep : max(1, (int) $this->settings->get('backup.keep_count', 14));
+        $keep = $keep > 0 ? $keep : max(1, $this->installationSettings->getBackupKeepCount());
         $metas = $this->listMetasIn($store); // مرتب created_at نزولی — جدیدترین اول
         $removed = [];
         foreach (array_slice($metas, $keep) as $old) {
