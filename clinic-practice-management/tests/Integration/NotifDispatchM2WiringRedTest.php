@@ -169,7 +169,7 @@ final class NotifDispatchM2WiringRedTest extends WP_UnitTestCase
             }
             foreach ([
                 'cpms_notifications', 'cpms_sms_messages', 'cpms_settings',
-                'cpms_clinicians', 'cpms_locations', 'cpms_memberships',
+                'cpms_clinicians', 'cpms_locations', 'cpms_clinic_memberships',
             ] as $table) {
                 $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table($table) . ' WHERE clinic_id = %d', $clinicId));
             }
