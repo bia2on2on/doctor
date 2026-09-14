@@ -440,7 +440,10 @@ final class BackupService
 
     /**
      * منبع معتبر ریشه‌های فعال بالینی: جدول cpms_clinics + cpms_settings (files.storage_path).
-     * بدون استفاده از Clinic جاری/اول/1/clinic_id=0/payload.
+     * بدون استفاده از Clinic جاری/اول/1/clinic_id=0/payload و بدون مالک مصنوعی 0.
+     *
+     * CASE A — خطای کوئری/DB: FAIL CLOSED با کد پایدار CLINIC_BACKUP_ENUMERATION_FAILED
+     * CASE B — کوئری موفق و صفر Clinic: مجموعهٔ بالینی خالی معتبر است (database-only backup)
      *
      * @return array<string, list<int>> map normalizedBasePath => list clinicIds using it
      */
@@ -450,9 +453,9 @@ final class BackupService
 
         try {
             $clinicRows = $this->db->fetchAll('SELECT id FROM ' . $this->db->table('cpms_clinics'));
-        } catch (\Throwable) {
-            // قبل از Migration یا DB ناپایدار — fallback به filesBasePath
-            $clinicRows = [];
+        } catch (\Throwable $e) {
+            // CASE A: enumeration query failure — fail closed, never fallback to default/injected
+            throw BackupException::of('CLINIC_BACKUP_ENUMERATION_FAILED', 'clinic enumeration failed: ' . $e->getMessage());
         }
 
         $clinicIds = [];
@@ -462,16 +465,9 @@ final class BackupService
         $clinicIds = array_filter($clinicIds, static fn (int $id): bool => $id > 0);
 
         if ($clinicIds === []) {
-            // هیچ کلینیکی در DB نیست (تست‌های قدیمی یا نصب تازه) — فقط injected base
-            $injected = trim($this->filesBasePath);
-            if ($injected === '') {
-                $injected = LocalFileStorage::defaultBasePath();
-            }
-            $norm = $this->validateAndNormalizeStoragePath($injected);
-            if ($norm !== '') {
-                $rootsMap[$norm] = [0];
-            }
-            return $rootsMap;
+            // CASE B: genuinely zero Clinics — valid database-only backup, empty clinical set
+            // No synthetic owner 0, no injected/default filesBasePath as fake Clinic
+            return [];
         }
 
         foreach ($clinicIds as $cid) {
@@ -508,23 +504,6 @@ final class BackupService
             $rootsMap[$normalized][] = $cid;
         }
 
-        // برای سازگاری با تست‌هایی که filesBasePath سفارشی inject می‌کنند (مثل BackupEngineTest)
-        // و Clinic 1 هنوز مقدار files.storage_path ندارد، آن مسیر را هم اضافه کن اگر امن و
-        // قبلاً در لیست نیست — این باعث نمی‌شود در production فقط default جمع شود، چون
-        // production از طریق DB همهٔ ریشه‌های فعال را می‌آورد.
-        $injected = trim($this->filesBasePath);
-        if ($injected !== '') {
-            try {
-                $normInjected = $this->validateAndNormalizeStoragePath($injected);
-                if ($normInjected !== '' && !isset($rootsMap[$normInjected])) {
-                    $rootsMap[$normInjected] = [0];
-                }
-            } catch (\Throwable $e) {
-                // اگر injected ناامن است، Fail-Closed — حتی در تست‌ها هم نباید بی‌صدا حذف شود
-                throw $e;
-            }
-        }
-
         return $rootsMap;
     }
 
@@ -538,8 +517,8 @@ final class BackupService
         $map = [];
         try {
             $clinicRows = $this->db->fetchAll('SELECT id FROM ' . $this->db->table('cpms_clinics'));
-        } catch (\Throwable) {
-            return [];
+        } catch (\Throwable $e) {
+            throw BackupException::of('CLINIC_BACKUP_ENUMERATION_FAILED', 'clinic enumeration failed (restore): ' . $e->getMessage());
         }
 
         foreach ($clinicRows as $r) {
@@ -666,8 +645,9 @@ final class BackupService
         $uniqueBases = array_keys($rootsMap);
 
         if ($uniqueBases === []) {
-            // Fallback برای محیط‌های بدون Clinic (تست‌های قدیمی)
-            return $this->mirrorStorage($this->filesBasePath, $dstDir);
+            // CASE B: zero Clinics — valid database-only backup, empty clinical set
+            // No synthetic owner 0, no fallback to injected base as fake Clinic
+            return ['list' => [], 'count' => 0, 'bytes' => 0];
         }
 
         $seen = []; // rel => [sha256, size, base]
