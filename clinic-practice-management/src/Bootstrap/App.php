@@ -1171,8 +1171,17 @@ final class App
                 ->register('handwriting.gc', static function (array $payload): void {
                     (new HandwritingGcHandler(self::handwritingService()))($payload);
                 })
-                ->register('notif.dispatch', static function (array $payload): void {
-                    (new NotifDispatchHandler(self::notificationService(), self::exportService()))($payload);
+                ->register('notif.dispatch', static function (array $payload) use ($db): void {
+                    // W-sweep scope-neutral: dispatch (queued->sent) + archive
+                    // retention both run through NotificationRepository; the
+                    // retention window comes from InstallationSettings
+                    // (installation-level wp_options) — no App::scope(), no
+                    // Clinic Settings, no user/request context.
+                    (new NotifDispatchHandler(
+                        new NotificationRepository($db),
+                        self::installationSettings(),
+                        self::exportService()
+                    ))($payload);
                 })
                 ->register('appt.reminder', static function (array $payload) use ($db, $op): void {
                     // W-sweep: each Appointment owns its Clinic/Location. The

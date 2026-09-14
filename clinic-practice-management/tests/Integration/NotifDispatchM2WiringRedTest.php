@@ -7,57 +7,47 @@ namespace ClinicCore\Tests\Integration;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Application\Scope\SystemClinicResolver;
+use ClinicCore\Settings\InstallationSettings;
 use WP_UnitTestCase;
 
 /**
- * M-2 notif.dispatch — RED: scope-neutral worker construction/execution.
+ * M-2 notif.dispatch — scope-neutral worker construction/execution + retention.
  *
  * Proves that production wiring for notif.dispatch must be constructible and
- * executable WITHOUT request/user Clinic scope (a W installation-wide sweep).
+ * executable WITHOUT request/user Clinic scope (a W installation-wide sweep),
+ * while STILL executing the existing notification archive retention (purge).
  *
- * Pre-fix defect (current main): App::dispatcher() registers notif.dispatch as
+ * Pre-fix defect: App::dispatcher() registered notif.dispatch as
  *   (new NotifDispatchHandler(self::notificationService(), self::exportService()))($payload)
- * and App::notificationService() resolves the NotificationService lazily via
+ * and App::notificationService() resolved the NotificationService lazily via
  *   self::settings() -> App::scope()
- * which, in a multi-Clinic install with no request/user scope, throws
- * CLINIC_SCOPE_REQUIRED before any dispatch work runs. With maxAttempts=1 the
- * job becomes FAILED (last_error = the scope-resolution message), not SUCCESS.
+ * which, in a multi-Clinic install with no request/user scope, threw
+ * CLINIC_SCOPE_REQUIRED before any dispatch work ran. With maxAttempts=1 the
+ * job became FAILED, not SUCCESS.
  *
  * Expected RED (pre-fix): job status FAILED (scope dependency at construction)
- * Expected GREEN (post-fix): job status SUCCESS (scope-neutral worker)
+ * Expected GREEN (post-fix): job status SUCCESS, queued->sent mutation, and
+ *   archive retention still executes using installation-level notif.archive_days.
  *
- * Narrow contract (no product-policy decision made here):
+ * Narrow contract:
  *   A scope-neutral W worker must be constructible/executable without
- *   request/user Clinic scope.
+ *   request/user Clinic scope, and must NOT silently drop retention.
  *
- * ARCHITECTURE BLOCKED (status of the fix, not of this test):
- *   A prior GREEN attempt made notif.dispatch scope-neutral by routing it
- *   directly through NotificationRepository::dispatchQueued(), which silently
- *   removed the ONLY production invocation of NotificationRepository::
- *   purgeArchived() (notification archive retention, notif.archive_days).
- *   That regression was reverted — production notif.dispatch behavior is back
- *   to current main. The fix is BLOCKED until a scope-neutral source for
- *   notif.archive_days is resolved (installation-level Settings semantics),
- *   which is out of scope for this slice. This test remains the valid RED
- *   evidence for the underlying defect.
+ * PURGE / RETENTION:
+ *   The retention window is provided by InstallationSettings (installation-
+ *   level wp_options), NOT by per-Clinic cpms_settings. This test sets the
+ *   installation option explicitly and asserts a purge/retain boundary without
+ *   fixed Clinic IDs.
  *
- * PURGE / RETENTION GUARD:
- *   This test does NOT decide whether notif.archive_days is installation-wide
- *   or per-Clinic, does NOT decide a default, and does NOT assert that purge
- *   is skipped. Retention execution must NOT be silently dropped; the narrow
- *   contract here is only that a scope-neutral W worker be constructible and
- *   executable. The queued->sent mutation assertion (below) documents the
- *   intended GREEN behavior without touching retention.
- *
- * STATIC-CACHE NOTE (classification-relevant):
+ * STATIC-CACHE / FALSE GREEN (classification-relevant):
  *   App::notificationService() memoizes the NotificationService in a
  *   function-local `static $notifications` that cannot be reset from test
  *   code. In the shared long-running Integration process a prior test can
  *   memoize it with a valid Clinic and hide the construction-time scope
- *   dependency, producing a FALSE GREEN. This RED is therefore authoritative
- *   ONLY when run in a dedicated fresh PHP process (as each production
- *   worker is). A green shared-suite Integration result must NOT be treated
- *   as proof that this RED is resolved.
+ *   dependency, producing a FALSE GREEN. The authoritative GREEN for this
+ *   defect must therefore execute in a dedicated fresh PHP process (as each
+ *   production worker is). A green shared-suite Integration result alone must
+ *   NOT be treated as proof this RED is resolved.
  *
  * Uses EMPTY payload to exercise real recurring production semantics.
  * Ids are auto-generated (insert_id); never clinic_id=1/0, never first-row.
@@ -70,16 +60,14 @@ final class NotifDispatchM2WiringRedTest extends WP_UnitTestCase
 
     /**
      * Reset process-level App statics that have no public reset (class props).
-     * Function-local statics (e.g. notificationService) are intentionally NOT
-     * resettable here; this test is run in a fresh process for that reason.
      */
     private function resetAppCaches(): void
     {
         $refClass = new \ReflectionClass(App::class);
         foreach ([
             'db', 'op', 'audit', 'jobs', 'rate', 'loginRateLimiter', 'idem',
-            'settingsFactory', 'migrations', 'dispatcher', 'providers', 'vault',
-            'smsService', 'licenseGate', 'visitService',
+            'settingsFactory', 'installationSettings', 'migrations', 'dispatcher',
+            'providers', 'vault', 'smsService', 'licenseGate', 'visitService',
         ] as $propName) {
             if ($refClass->hasProperty($propName)) {
                 $prop = $refClass->getProperty($propName);
@@ -114,6 +102,7 @@ final class NotifDispatchM2WiringRedTest extends WP_UnitTestCase
     {
         parent::setUp();
         App::migrations()->migrate();
+        delete_option(InstallationSettings::OPTION_NOTIF_ARCHIVE_DAYS);
         $this->resetAppCaches();
         $this->buildFixture();
         $this->purgeJobs();
@@ -125,6 +114,7 @@ final class NotifDispatchM2WiringRedTest extends WP_UnitTestCase
     {
         $this->purgeJobs();
         $this->purgeFixture();
+        delete_option(InstallationSettings::OPTION_NOTIF_ARCHIVE_DAYS);
         $this->resetAppCaches();
         parent::tearDown();
     }
@@ -213,6 +203,24 @@ final class NotifDispatchM2WiringRedTest extends WP_UnitTestCase
         $wpdb->query('DELETE FROM ' . $db->table('cpms_jobs') . ' WHERE type IN (\'visits.no_show\',\'slots.generate\',\'holds.expire\',\'cleanup.otp\',\'cleanup.rate_limits\',\'cleanup.idem\',\'cleanup.oplog\',\'handwriting.gc\',\'notif.dispatch\',\'appt.reminder\',\'fu.reminder\',\'license.refresh\',\'backup.run\',\'report.export\',\'sms.send\')');
     }
 
+    private function insertNotification(int $clinicId, string $status, string $createdAt, string $tag): int
+    {
+        global $wpdb;
+        $db = App::db();
+        $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $db->table('cpms_notifications')
+            . ' (clinic_id, channel, template, payload_json, status, attempts, dedupe_key, scheduled_at, created_at)'
+            . ' VALUES (%d, "internal", "appt_confirmed", "{}", %s, 0, %s, %s, %s)',
+            $clinicId,
+            $status,
+            'notif-wiring-' . $tag . '-' . bin2hex(random_bytes(4)),
+            $createdAt,
+            $createdAt
+        ));
+
+        return (int) $wpdb->insert_id;
+    }
+
     public function testNotifDispatchWiringMustBeScopeNeutralWithEmptyPayload(): void
     {
         global $wpdb;
@@ -242,27 +250,30 @@ final class NotifDispatchM2WiringRedTest extends WP_UnitTestCase
 
         $this->purgeJobs();
 
-        // Material fixture: one queued internal notification in Clinic A
-        // (dynamic id) so the test proves an actual queued->sent mutation, not
-        // merely successful handler construction.
-        $dedupeA = 'notif-wiring-' . bin2hex(random_bytes(4));
-        $wpdb->query($wpdb->prepare(
-            'INSERT INTO ' . $db->table('cpms_notifications')
-            . ' (clinic_id, channel, template, payload_json, status, attempts, dedupe_key, scheduled_at, created_at)'
-            . ' VALUES (%d, "internal", "appt_confirmed", "{}", "queued", 0, %s, %s, %s)',
-            $this->clinicA,
-            $dedupeA,
-            $db->nowUtcSql(),
-            $db->nowUtcSql()
-        ));
-        $notifId = (int) $wpdb->insert_id;
-        self::assertGreaterThan(0, $notifId, 'queued notification must be inserted');
-        $notifBefore = $wpdb->get_row($wpdb->prepare('SELECT status FROM ' . $db->table('cpms_notifications') . ' WHERE id = %d', $notifId), ARRAY_A);
+        // Installation-level retention window (explicit, not per-Clinic).
+        App::installationSettings()->setNotifArchiveDays(30);
+        self::assertSame(30, App::installationSettings()->getNotifArchiveDays());
+
+        $now = $db->nowUtcSql();
+        $oldCutoff = gmdate('Y-m-d H:i:s', time() - 40 * 86400) . '.000';
+
+        // Material fixtures:
+        //  - a queued row in Clinic A (dispatch mutation target);
+        //  - an old 'sent' row beyond the 30-day retention (must be purged);
+        //  - a recent 'sent' row within retention (must be retained).
+        $queuedId = $this->insertNotification($this->clinicA, 'queued', $now, 'queued');
+        self::assertGreaterThan(0, $queuedId, 'queued notification must be inserted');
+        $oldSentId = $this->insertNotification($this->clinicB, 'sent', $oldCutoff, 'oldsent');
+        self::assertGreaterThan(0, $oldSentId, 'old sent notification must be inserted');
+        $recentSentId = $this->insertNotification($this->clinicB, 'sent', $now, 'recentsent');
+        self::assertGreaterThan(0, $recentSentId, 'recent sent notification must be inserted');
+
+        $notifBefore = $wpdb->get_row($wpdb->prepare('SELECT status FROM ' . $db->table('cpms_notifications') . ' WHERE id = %d', $queuedId), ARRAY_A);
         self::assertSame('queued', (string) ($notifBefore['status'] ?? ''), 'fixture notification must start queued');
 
         $queue = App::jobs();
-        $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
-        $jobId = $queue->enqueue('notif.dispatch', [], $now, 6, 1);
+        $nowDt = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+        $jobId = $queue->enqueue('notif.dispatch', [], $nowDt, 6, 1);
         self::assertGreaterThan(0, $jobId, 'enqueue must succeed');
         $jobBefore = $wpdb->get_row($wpdb->prepare('SELECT * FROM ' . $db->table('cpms_jobs') . ' WHERE id = %d', $jobId), ARRAY_A);
         self::assertSame('queued', $jobBefore['status']);
@@ -285,9 +296,15 @@ final class NotifDispatchM2WiringRedTest extends WP_UnitTestCase
                 . ' tickResult=' . var_export($tickResult, true)
         );
 
-        // Material mutation evidence: the queued row must have flipped to sent.
-        $notifAfter = $wpdb->get_row($wpdb->prepare('SELECT status, sent_at FROM ' . $db->table('cpms_notifications') . ' WHERE id = %d', $notifId), ARRAY_A);
+        // Material dispatch mutation: queued row flips to sent with sent_at set.
+        $notifAfter = $wpdb->get_row($wpdb->prepare('SELECT status, sent_at FROM ' . $db->table('cpms_notifications') . ' WHERE id = %d', $queuedId), ARRAY_A);
         self::assertSame('sent', (string) ($notifAfter['status'] ?? ''), 'queued notification must flip to sent after tick');
         self::assertNotNull($notifAfter['sent_at'], 'sent_at must be set after dispatch');
+
+        // Retention still executed: old sent row removed, recent sent row retained.
+        $oldCount = (int) $wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM ' . $db->table('cpms_notifications') . ' WHERE id = %d', $oldSentId));
+        self::assertSame(0, $oldCount, 'old sent row beyond installation retention must be purged');
+        $recentCount = (int) $wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM ' . $db->table('cpms_notifications') . ' WHERE id = %d', $recentSentId));
+        self::assertSame(1, $recentCount, 'recent sent row within retention must be retained');
     }
 }
