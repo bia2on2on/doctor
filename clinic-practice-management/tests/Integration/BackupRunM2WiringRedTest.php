@@ -281,9 +281,8 @@ final class BackupRunM2WiringRedTest extends WP_UnitTestCase
 
         $jobBefore = $wpdb->get_row($wpdb->prepare('SELECT * FROM ' . $db->table('cpms_jobs') . ' WHERE id = %d', $jobId), ARRAY_A);
         self::assertSame('queued', (string) $jobBefore['status'], 'job must start queued');
-        self::assertSame('', trim((string) $jobBefore['payload_json']) === '[]' ? '' : (string) $jobBefore['payload_json']) || true, 'payload empty check'); // placeholder to ensure payload path
         $payloadDecoded = json_decode((string) $jobBefore['payload_json'], true);
-        self::assertTrue($payloadDecoded === [] || $payloadDecoded === null || $payloadDecoded === [], 'payload must be empty (no clinic_id)');
+        self::assertTrue($payloadDecoded === [] || $payloadDecoded === null, 'payload must be empty (no clinic_id)');
 
         // 8) Execute via real App::runTick (production path)
         $tickResult = App::runTick(20);
