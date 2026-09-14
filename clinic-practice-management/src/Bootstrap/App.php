@@ -304,7 +304,7 @@ final class App
         if (trim((string) self::settings()->get('files.storage_path', '')) === '') {
             $pairs[] = [LocalFileStorage::legacyBasePath(), LocalFileStorage::defaultBasePath(), 'clinic-files'];
         }
-        $backupConfigured = trim((string) self::settings()->get('backup.storage_path', ''));
+        $backupConfigured = trim(self::installationSettings()->getBackupStoragePath());
         if ($backupConfigured === '') {
             $pairs[] = [ProtectedBackupStore::legacyBasePath(), ProtectedBackupStore::defaultBasePath(), 'cpms-backups'];
         } elseif (PrivateStorageLocation::isInsideWebRoot($backupConfigured)) {
@@ -1102,21 +1102,22 @@ final class App
      * Health/سازگاری سیستم (F10 — spec §40). بدون PHI.
      */
     public static function systemHealthService(): SystemHealthService
-    {
-        static $health = null;
-        if ($health === null) {
-            $health = new SystemHealthService(
-                self::db(),
-                self::settings(),
-                self::licenseService(),
-                self::backupService(),
-                self::updateService(),
-                self::op()
-            );
-        }
+        {
+            static $health = null;
+            if ($health === null) {
+                $health = new SystemHealthService(
+                    self::db(),
+                    self::settings(),
+                    self::installationSettings(),
+                    self::licenseService(),
+                    self::backupService(),
+                    self::updateService(),
+                    self::op()
+                );
+            }
 
-        return $health;
-    }
+            return $health;
+        }
 
     public static function dispatcher(): JobsDispatcher
     {

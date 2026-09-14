@@ -61,7 +61,13 @@ final class BackupStorageBoundaryTest extends WP_UnitTestCase
 
     protected function tearDown(): void
     {
-        App::installationSettings()->setBackupStoragePath('');
+        if (function_exists('delete_option')) {
+            delete_option(\ClinicCore\Settings\InstallationSettings::OPTION_BACKUP_ENABLED);
+            delete_option(\ClinicCore\Settings\InstallationSettings::OPTION_BACKUP_INTERVAL_HOURS);
+            delete_option(\ClinicCore\Settings\InstallationSettings::OPTION_BACKUP_KEEP_COUNT);
+            delete_option(\ClinicCore\Settings\InstallationSettings::OPTION_BACKUP_STORAGE_PATH);
+            delete_option(\ClinicCore\Settings\InstallationSettings::OPTION_BACKUP_LAST_RUN_AT);
+        }
         App::settings()->set('files.storage_path', '');
         $this->rmrf($this->tmp);
         $this->rmrf($this->legacyProbe);
