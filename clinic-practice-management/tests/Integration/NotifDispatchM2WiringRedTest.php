@@ -36,18 +36,17 @@ use WP_UnitTestCase;
  *   is skipped. The dispatch path (NotificationRepository::dispatchQueued —
  *   whole-table, no clinic predicate) is what the narrow contract exercises;
  *   the retention semantics of notif.archive_days remain an open design
- *   question and are recorded here only as "current code reads it from the
- *   ambient Clinic-scoped Settings".
+ *   question. The GREEN fix separates archive retention from this job's
+ *   execution path; this test asserts the queued->sent mutation itself
+ *   (material row flip on a dynamic Clinic id), not retention.
  *
- * MEMO / FRESH-PROCESS CAVEAT (classification-relevant):
- *   App::notificationService() memoizes the NotificationService in a
- *   function-local `static $notifications` which cannot be reset from test
- *   code (PHP has no reflection setter for function-local statics). In a
- *   long-running shared PHPUnit process a prior test can memoize it with a
- *   valid Clinic, which would hide the construction-time scope dependency and
- *   produce a FALSE GREEN. This RED must therefore run in its OWN fresh PHP
- *   process (dedicated CI job) to reproduce the real production worker
- *   semantics (each bin/cpms jobs tick / WP-Cron run is a fresh process).
+ * STATIC-CACHE NOTE (post-GREEN):
+ *   The GREEN fix removed App::notificationService() (and its function-local
+ *   `static $notifications` memo) from the notif.dispatch path entirely, so
+ *   this test's validity no longer depends on any previously cached
+ *   NotificationService. During the RED phase a dedicated fresh-process run
+ *   was required to avoid a false GREEN; after the fix the test is robust in
+ *   the shared Integration suite too (asserted by the normal Integration job).
  *
  * Uses EMPTY payload to exercise real recurring production semantics.
  * Ids are auto-generated (insert_id); never clinic_id=1/0, never first-row.
@@ -232,6 +231,24 @@ final class NotifDispatchM2WiringRedTest extends WP_UnitTestCase
 
         $this->purgeJobs();
 
+        // Material fixture: one queued internal notification in Clinic A
+        // (dynamic id) so the test proves an actual queued->sent mutation, not
+        // merely successful handler construction.
+        $dedupeA = 'notif-wiring-' . bin2hex(random_bytes(4));
+        $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $db->table('cpms_notifications')
+            . ' (clinic_id, channel, template, payload_json, status, attempts, dedupe_key, scheduled_at, created_at)'
+            . ' VALUES (%d, "internal", "appt_confirmed", "{}", "queued", 0, %s, %s, %s)',
+            $this->clinicA,
+            $dedupeA,
+            $db->nowUtcSql(),
+            $db->nowUtcSql()
+        ));
+        $notifId = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $notifId, 'queued notification must be inserted');
+        $notifBefore = $wpdb->get_row($wpdb->prepare('SELECT status FROM ' . $db->table('cpms_notifications') . ' WHERE id = %d', $notifId), ARRAY_A);
+        self::assertSame('queued', (string) ($notifBefore['status'] ?? ''), 'fixture notification must start queued');
+
         $queue = App::jobs();
         $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
         $jobId = $queue->enqueue('notif.dispatch', [], $now, 6, 1);
@@ -256,5 +273,10 @@ final class NotifDispatchM2WiringRedTest extends WP_UnitTestCase
                 . ' last_error=' . $lastError
                 . ' tickResult=' . var_export($tickResult, true)
         );
+
+        // Material mutation evidence: the queued row must have flipped to sent.
+        $notifAfter = $wpdb->get_row($wpdb->prepare('SELECT status, sent_at FROM ' . $db->table('cpms_notifications') . ' WHERE id = %d', $notifId), ARRAY_A);
+        self::assertSame('sent', (string) ($notifAfter['status'] ?? ''), 'queued notification must flip to sent after tick');
+        self::assertNotNull($notifAfter['sent_at'], 'sent_at must be set after dispatch');
     }
 }

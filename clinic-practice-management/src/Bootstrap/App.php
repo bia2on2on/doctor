@@ -1153,8 +1153,12 @@ final class App
                 ->register('handwriting.gc', static function (array $payload): void {
                     (new HandwritingGcHandler(self::handwritingService()))($payload);
                 })
-                ->register('notif.dispatch', static function (array $payload): void {
-                    (new NotifDispatchHandler(self::notificationService(), self::exportService()))($payload);
+                ->register('notif.dispatch', static function (array $payload) use ($db): void {
+                    // W-sweep scope-neutral: dispatch (queued->sent) directly via
+                    // NotificationRepository — no Clinic Settings, no App::scope().
+                    // Archive retention (notif.archive_days) is intentionally NOT
+                    // executed here; its installation-vs-Clinic semantics remain OPEN.
+                    (new NotifDispatchHandler(new NotificationRepository($db), self::exportService()))($payload);
                 })
                 ->register('appt.reminder', static function (array $payload) use ($db, $op): void {
                     // W-sweep: each Appointment owns its Clinic/Location. The

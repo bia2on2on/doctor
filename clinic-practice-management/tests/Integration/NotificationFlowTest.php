@@ -168,7 +168,7 @@ final class NotificationFlowTest extends WP_UnitTestCase
         $visitId = $this->makeWaitingVisit();
         App::visitService()->transition($this->doctorUserId, $visitId, 'call');
 
-        $handler = new NotifDispatchHandler(App::notificationService(), App::exportService());
+        $handler = new NotifDispatchHandler(new NotificationRepository(App::db()), App::exportService());
         $sent = $handler([]);
         $this->assertSame(2, $sent);
 
@@ -185,7 +185,7 @@ final class NotificationFlowTest extends WP_UnitTestCase
     {
         $visitId = $this->makeWaitingVisit();
         App::visitService()->transition($this->doctorUserId, $visitId, 'call');
-        (new NotifDispatchHandler(App::notificationService(), App::exportService()))([]);
+        (new NotifDispatchHandler(new NotificationRepository(App::db()), App::exportService()))([]);
 
         wp_set_current_user($this->secretaryUserId);
 
