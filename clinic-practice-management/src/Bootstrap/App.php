@@ -119,6 +119,7 @@ use ClinicCore\Rest\ReportsController;
 use ClinicCore\Rest\RestClinicContext;
 use ClinicCore\Rest\ScheduleController;
 use ClinicCore\Rest\SmsController;
+use ClinicCore\Settings\InstallationSettings;
 use ClinicCore\Settings\Settings;
 use ClinicCore\Settings\SettingsFactory;
 
@@ -777,7 +778,7 @@ final class App
      * (فقط Job refresh شبکه می‌رود).
      *
      * نصب بدون سند معتبر → پنجرهٔ فعال‌سازی (تصمیم کارفرما): نصب تازه
-     * ACTIVATION_PENDING (۷ روز) / نصب pre-F10 ACTIVATION_GRACE (۳۰ روز)؛
+     * ACTIVATION_PENDING (۷ روز) /ION_PENDING (۷ روز) / نصب pre-F10 ACTIVATION_GRACE (۳۰ روز)؛
      * پایان پنجره بدون سند → RESTRICTED. حالت توسعه فقط صریح (CPMS_DEV_MODE
      * یا فیلتر cpms_license_dev_mode). ایمنی بیمار هرگز قفل نمی‌شود (§1).
      */
@@ -941,6 +942,22 @@ final class App
         }
 
         return self::$settingsFactory;
+    }
+
+    /**
+     * تنظیمات اسکالر سطح نصب (Phase 2) — فعلاً فقط `notif.archive_days`.
+     *
+     * بدون Clinic/Scope/کاربر؛ خواندن/نوشتن از wp_options با `autoload=no`.
+     * کاملاً خنثی نسبت به Scope است، پس singleton بودنش بی‌خطر است (هیچ
+     * Clinicِ bootstrapای میخ نمی‌شود).
+     */
+    public static function installationSettings(): InstallationSettings
+    {
+        if (self::$installationSettings === null) {
+            self::$installationSettings = new InstallationSettings();
+        }
+
+        return self::$installationSettings;
     }
 
     /**
@@ -1160,8 +1177,7 @@ final class App
                     // W-sweep: each Appointment owns its Clinic/Location. The
                     // handler therefore receives only scope-neutral services and
                     // resolves the per-Clinic NotificationService from persisted
-                    // appointment data, never from ambient App::scope().
-                    (new ApptReminderHandler(
+                    // appointment data, never from amb              (new ApptReminderHandler(
                         $db,
                         self::smsService(),
                         static fn (int $clinicId): NotificationService => new NotificationService(
@@ -1323,6 +1339,10 @@ final class App
             if ($alreadyActive === null) {
                 $queue->enqueue($type, [], $now, priority: $priority);
             }
+        }
+    }
+}
+     }
         }
     }
 }
