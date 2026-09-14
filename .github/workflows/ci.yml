@@ -112,6 +112,10 @@ jobs:
             --filter '^ClinicCore\\Tests\\Integration\\SlotsGenerateM2WiringRedTest::testProductionWiringMustBeScopeNeutralWithEmptyPayload$' \
             tests/Integration/SlotsGenerateM2WiringRedTest.php 2>&1 | tee /tmp/phpunit-focused-m2.log
           grep -E "^(Tests:|OK \()" /tmp/phpunit-focused-m2.log
+          # Guard: the step may only be green if the EXACT test was executed
+          # and passed (a zero-test match must never read as green evidence).
+          grep -qE '^OK \(1 test, [0-9]+ assertions\)$' /tmp/phpunit-focused-m2.log \
+            || { echo 'FOCUSED-EVIDENCE GUARD FAILED: expected exactly "OK (1 test, N assertions)"'; exit 1; }
 
       - name: Focused evidence — slots.generate-related tests
         run: |
@@ -121,6 +125,10 @@ jobs:
             --filter '^ClinicCore\\Tests\\Integration\\SlotsGenerate(M2Wiring|LocationLocalTemporal)RedTest::' \
             tests/Integration 2>&1 | tee /tmp/phpunit-focused-slots.log
           grep -E "^(Tests:|OK \()" /tmp/phpunit-focused-slots.log
+          # Guard: at least one test must have executed and no failure/error may
+          # have occurred (a zero-test match must never read as green evidence).
+          grep -qE '^OK \(' /tmp/phpunit-focused-slots.log \
+            || { echo 'FOCUSED-EVIDENCE GUARD FAILED: no OK result line (zero tests matched?)'; exit 1; }
 
       # REST-level + Concurrency (pcntl_fork روی اتصال‌های مستقل واقعی MySQL)؛
       # --no-configuration چون phpunit.xml با schema مخصوص PHPUnit 11 است.
