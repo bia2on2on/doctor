@@ -52,9 +52,10 @@ final class BackupEngineTest extends WP_UnitTestCase
         $now = $db->nowUtcSql();
         $orgSlug = 'backup-engine-org-' . bin2hex(random_bytes(4));
         $wpdb->query($wpdb->prepare(
-            'INSERT INTO ' . $wpdb->prefix . 'cpms_organizations (name, slug, status, created_at, updated_at) VALUES (%s, %s, \"active\", %s, %s)',
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_organizations (name, slug, status, created_at, updated_at) VALUES (%s, %s, %s, %s, %s)',
             'Backup Engine Org',
             $orgSlug,
+            'active',
             $now,
             $now
         ));
