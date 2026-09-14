@@ -72,7 +72,12 @@ final class InstallationSettingsTest extends WP_UnitTestCase
             "SELECT autoload FROM {$wpdb->options} WHERE option_name = %s",
             InstallationSettings::OPTION_NOTIF_ARCHIVE_DAYS
         ));
-        $this->assertSame('no', $autoload, 'Option سطح نصب باید با autoload=no ذخیره شود.');
+        // وردپرس 6.6 به بعد 'no' را به 'off' نرمال می‌کند — هر دو یعنی «autoload نشود».
+        $this->assertContains(
+            $autoload,
+            ['no', 'off'],
+            'Option سطح نصب نباید autoload شود.'
+        );
         $after = (int) $wpdb->get_var( // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
             "SELECT COUNT(*) FROM {$settingsTable} WHERE `key` = 'notif.archive_days'"
         );
