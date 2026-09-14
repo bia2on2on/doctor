@@ -31,8 +31,24 @@ use WP_UnitTestCase;
  * Locations). Clinic A horizon=3, Clinic B horizon=5. Clinic B has schedule
  * at today+4 days, Clinic A does not — beyond-A-horizon B slot must exist
  * under correct per-Clinic horizon, absent if A horizon leaks into B.
- * Expected date is computed with SAME gmdate/strtotime algorithm as production
- * to isolate horizon-policy contract from known temporal defect.
+ *
+ * TEMPORAL FRAME CORRECTION (classification D — test-fixture contract defect,
+ * NOT a product RED): this test originally computed its expected observation
+ * dates with gmdate/strtotime (UTC frame). Under the permanent temporal rule —
+ * the Location is the operational timezone source of truth (see
+ * SlotsGenerateLocationLocalTemporalRedTest) — production generates the
+ * Location-local future operational days {local today+1 .. local today+horizon},
+ * and local "today" itself is intentionally never generated. Whenever the
+ * Location-local date differs from the UTC date (FX_TZ Europe/Berlin:
+ * 22:00–23:59 UTC), the old UTC-based withinDate WAS the Location's own local
+ * "today" — a date the contract never generates — producing a
+ * window-dependent false RED (verified runs: 22:01 UTC and 23:30 UTC RED,
+ * 21:37 UTC GREEN on identical code). The expected observation dates are now
+ * derived in the SAME explicit Location IANA zone (FX_TZ) with the same
+ * pure-date algorithm as production (no gmdate, no strtotime, no ambient PHP
+ * timezone). Every POLICY assertion — scope-neutral empty-payload wiring,
+ * job success, per-Clinic horizon, Clinic A vs B independence, tenant
+ * boundaries — is unchanged.
  */
 final class SlotsGenerateM2WiringRedTest extends WP_UnitTestCase
 {
@@ -44,8 +60,46 @@ final class SlotsGenerateM2WiringRedTest extends WP_UnitTestCase
     private int $clinicianA = 0;
     private int $clinicianB = 0;
 
+    /** FX_TZ local calendar date at fixture build time (boundary guard). */
+    private string $localTodayAtBuild = '';
+
     /** Single IANA zone for both Locations — pure policy test, not temporal. */
     private const FX_TZ = 'Europe/Berlin';
+
+    /**
+     * Calendar date of "now" in the fixture's explicit Location IANA zone
+     * (FX_TZ) — the SAME frame production uses for these Locations. Built from
+     * an explicit UTC instant + explicit zone: never the ambient PHP timezone.
+     */
+    private function locationNowDate(): string
+    {
+        return (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))
+            ->setTimezone(new \DateTimeZone(self::FX_TZ))
+            ->format('Y-m-d');
+    }
+
+    /**
+     * Pure calendar date +N days, UTC-anchored: Gregorian date math only — no
+     * ambient timezone, no invented DST policy (same arithmetic as production).
+     */
+    private function plusDays(string $ymd, int $days): string
+    {
+        return (new \DateTimeImmutable($ymd . ' 00:00:00', new \DateTimeZone('UTC')))
+            ->add(new \DateInterval('P' . $days . 'D'))
+            ->format('Y-m-d');
+    }
+
+    /**
+     * Iranian DOW (0=شنبه..6=جمعه) of a pure calendar date — frame-independent;
+     * same mapping as production, computed on an explicit UTC-anchored date.
+     */
+    private function iranianDow(string $ymd): int
+    {
+        $map = [0 => 1, 1 => 2, 2 => 3, 3 => 4, 4 => 5, 5 => 6, 6 => 0];
+        $w = (int) (new \DateTimeImmutable($ymd . ' 00:00:00', new \DateTimeZone('UTC')))->format('w');
+
+        return $map[$w] ?? 0;
+    }
 
     private function resetAppCaches(): void
     {
@@ -233,19 +287,20 @@ final class SlotsGenerateM2WiringRedTest extends WP_UnitTestCase
         SystemClinicResolver::flush();
         App::settingsFactory()->reset();
 
-        // Schedules — horizon isolation condition
-        // Use SAME Iranian-DOW mapping as production handler to isolate policy
-        // from known gmdate defect. Compute DOW for today+1, +2, +4.
-        $today = gmdate('Y-m-d');
-        $map = [0 => 1, 1 => 2, 2 => 3, 3 => 4, 4 => 5, 5 => 6, 6 => 0];
-        $toIranian = static fn (string $ymd): int => $map[(int) gmdate('w', strtotime($ymd))] ?? 0;
+        // Schedules — horizon isolation condition.
+        // Observation dates in the fixture's Location frame (FX_TZ) — the SAME
+        // explicit IANA zone production uses for these Locations; pure-date
+        // arithmetic with the SAME Iranian-DOW mapping as production. No
+        // gmdate/strtotime: no UTC frame, no ambient PHP timezone.
+        $today = $this->locationNowDate();
+        $this->localTodayAtBuild = $today;
 
-        $day1Date = gmdate('Y-m-d', strtotime($today . ' +1 days'));
-        $day2Date = gmdate('Y-m-d', strtotime($today . ' +2 days'));
-        $day4Date = gmdate('Y-m-d', strtotime($today . ' +4 days'));
-        $dow1 = $toIranian($day1Date);
-        $dow2 = $toIranian($day2Date);
-        $dow4 = $toIranian($day4Date);
+        $day1Date = $this->plusDays($today, 1);
+        $day2Date = $this->plusDays($today, 2);
+        $day4Date = $this->plusDays($today, 4);
+        $dow1 = $this->iranianDow($day1Date);
+        $dow2 = $this->iranianDow($day2Date);
+        $dow4 = $this->iranianDow($day4Date);
         // Ensure dows are distinct enough for isolation; consecutive days are always distinct,
         // day1 vs day4 differ by 3, also distinct (7 >3).
         self::assertNotSame($dow1, $dow4, 'dow1 != dow4 for horizon bleed observability');
@@ -434,6 +489,18 @@ final class SlotsGenerateM2WiringRedTest extends WP_UnitTestCase
         $this->purgeJobs();
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_schedule_slots') . ' WHERE clinician_id IN (%d, %d)', $this->clinicianA, $this->clinicianB));
 
+        // ---- Location frame anchor for this run (FX_TZ) ----
+        // Observation dates are FUTURE LOCAL OPERATIONAL DATES in the fixture's
+        // Location frame — the permanent temporal contract: the operational
+        // calendar is the Location's, never the UTC calendar.
+        $today = $this->locationNowDate();
+        if ($this->localTodayAtBuild !== $today) {
+            self::markTestSkipped(
+                'INCONCLUSIVE (not a product RED): ' . self::FX_TZ
+                . ' local calendar date changed between fixture build and test start'
+            );
+        }
+
         // ---- Enqueue slots.generate with EMPTY payload (recurring semantics) and maxAttempts=1 ----
         $queue = App::jobs();
         $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
@@ -445,6 +512,20 @@ final class SlotsGenerateM2WiringRedTest extends WP_UnitTestCase
 
         // ---- Execute via real production path: App::runTick ----
         $tickResult = App::runTick(20);
+
+        // Boundary guard: the Location-local calendar date must not have moved
+        // while the production sweep ran, otherwise the observation is
+        // inconclusive (skip) — never a product RED.
+        if ($this->locationNowDate() !== $today) {
+            self::markTestSkipped(
+                'INCONCLUSIVE (not a product RED): ' . self::FX_TZ
+                . ' local calendar date changed during the production sweep'
+            );
+        }
+
+        // Future LOCAL operational dates relative to the Location's local "today".
+        $withinDate = $this->plusDays($today, 1);
+        $beyondDate = $this->plusDays($today, 4); // 4 > 3 (A horizon), 4 <= 5 (B horizon)
 
         $jobAfter = $wpdb->get_row($wpdb->prepare('SELECT * FROM ' . $db->table('cpms_jobs') . ' WHERE id = %d', $jobId), ARRAY_A);
         self::assertNotEmpty($jobAfter, 'job row must still exist');
@@ -459,10 +540,7 @@ final class SlotsGenerateM2WiringRedTest extends WP_UnitTestCase
         );
 
         // ---- Horizon isolation: pure policy test (same TZ) ----
-        // Clinic A horizon=3, Clinic B horizon=5. Use SAME gmdate/strtotime as handler.
-        $today = gmdate('Y-m-d');
-        $beyondDate = gmdate('Y-m-d', strtotime($today . ' +4 days')); // 4 >3, <=5
-        $withinDate = gmdate('Y-m-d', strtotime($today . ' +1 days'));
+        // Clinic A horizon=3, Clinic B horizon=5 — per-Clinic settings.
 
         // B must have generated slot for beyond-A-horizon date (day 4) because B horizon 5 includes it
         $slotsB_beyond = (int) $wpdb->get_var($wpdb->prepare(
@@ -494,7 +572,7 @@ final class SlotsGenerateM2WiringRedTest extends WP_UnitTestCase
         self::assertGreaterThan(
             0,
             $slotsB_beyond,
-            "HORIZON ISOLATION DEFECT: Clinic B (horizon 5) must generate slot for beyond-A-horizon date $beyondDate (today+4). If A horizon 3 leaked into B, B would not generate it (0). within B=$slotsB_within, beyond B=$slotsB_beyond, beyond A=$slotsA_beyond, tickResult=$tickResult"
+            "HORIZON ISOLATION DEFECT: Clinic B (horizon 5) must generate slot for beyond-A-horizon LOCAL date $beyondDate (local today+4). If A horizon 3 leaked into B, B would not generate it (0). within B=$slotsB_within, beyond B=$slotsB_beyond, beyond A=$slotsA_beyond, tickResult=$tickResult"
         );
         self::assertSame(
             0,
