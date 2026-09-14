@@ -101,6 +101,27 @@ jobs:
       - name: Prepare WordPress test suite
         run: bash tests/bin/install-wp-tests.sh wordpress_test root root 127.0.0.1 6.7.2
 
+      # Branch-local evidence (slots.generate M2 repair) — EXACT fully-qualified
+      # selection (PHPUnit 9.6 matches FQCN::method; backslashes escaped so the
+      # filter is a valid regex and selects exactly the intended test(s)).
+      - name: Focused evidence — exact M2 RED test
+        run: |
+          set -o pipefail
+          php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
+            --bootstrap tests/integration-bootstrap.php \
+            --filter '^ClinicCore\\Tests\\Integration\\SlotsGenerateM2WiringRedTest::testProductionWiringMustBeScopeNeutralWithEmptyPayload$' \
+            tests/Integration/SlotsGenerateM2WiringRedTest.php 2>&1 | tee /tmp/phpunit-focused-m2.log
+          grep -E "^(Tests:|OK \()" /tmp/phpunit-focused-m2.log
+
+      - name: Focused evidence — slots.generate-related tests
+        run: |
+          set -o pipefail
+          php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
+            --bootstrap tests/integration-bootstrap.php \
+            --filter '^ClinicCore\\Tests\\Integration\\SlotsGenerate(M2Wiring|LocationLocalTemporal)RedTest::' \
+            tests/Integration 2>&1 | tee /tmp/phpunit-focused-slots.log
+          grep -E "^(Tests:|OK \()" /tmp/phpunit-focused-slots.log
+
       # REST-level + Concurrency (pcntl_fork روی اتصال‌های مستقل واقعی MySQL)؛
       # --no-configuration چون phpunit.xml با schema مخصوص PHPUnit 11 است.
       - name: Run integration tests

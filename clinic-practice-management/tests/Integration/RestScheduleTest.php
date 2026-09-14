@@ -149,9 +149,12 @@ final class RestScheduleTest extends WP_UnitTestCase
     {
         wp_set_current_user($this->adminUserId);
 
-        // Phase 2 temporal: slots.generate uses Location-local calendar (Asia/Tehran for clinic 1).
-        // Using UTC tomorrow is flaky when UTC time is after 20:30 (Tehran already next day).
-        // Compute tomorrow in the primary Location's timezone to be deterministic.
+        // M2 calendar contract: slots.generate anchors candidate dates to the
+        // reference instant's UTC calendar date (offsets {1..horizon}; horizon is
+        // 14 here). Both the UTC tomorrow and the primary Location's local
+        // tomorrow (they differ only when UTC time is >= 20:30 Tehran time) are
+        // inside the generated window, so either is deterministic.
+        // Compute tomorrow in the primary Location's timezone (robust either way).
         $locTz = App::db()->fetchValue('SELECT timezone FROM ' . App::db()->table('cpms_locations') . ' WHERE clinic_id = 1 AND is_primary = 1 LIMIT 1');
         $locTz = is_string($locTz) && $locTz !== '' ? $locTz : 'Asia/Tehran';
         try {
