@@ -692,6 +692,15 @@ final class BackupService
                     continue;
                 }
 
+                // Only valid clinical files: first segment must be numeric Clinic ID
+                // Files directly in base (e.g. sentinel-closure.txt) are test infra / invalid
+                // and must NOT be included as clinical files — skip with warning
+                $seg = explode('/', $rel, 2)[0] ?? '';
+                if (!is_numeric($seg) || (int) $seg <= 0) {
+                    $this->op->warning('BACKUP_SKIPPED_NON_CLINIC_FILE', ['path' => $rel, 'base' => $srcBase]);
+                    continue;
+                }
+
                 // Collision detection: same rel from different physical roots with different content
                 if (isset($seen[$rel])) {
                     $existing = $seen[$rel];
@@ -752,6 +761,12 @@ final class BackupService
                 $this->op->warning('BACKUP_SKIPPED_PATH', ['path' => $rel]);
                 continue;
             }
+            // Same rule as multi-clinic: only clinic-owned files with durable encoding
+            $seg = explode('/', $rel, 2)[0] ?? '';
+            if (!is_numeric($seg) || (int) $seg <= 0) {
+                $this->op->warning('BACKUP_SKIPPED_NON_CLINIC_FILE', ['path' => $rel]);
+                continue;
+            }
             $dst = $dstDir . '/' . $rel;
             if (!is_dir(dirname($dst)) && !mkdir(dirname($dst), 0750, true) && !is_dir(dirname($dst))) {
                 throw BackupException::of('CLINIC_BACKUP_IO', 'storage mkdir failed');
@@ -773,8 +788,8 @@ final class BackupService
      * بازگردانی فایل‌ها به ریشهٔ فعالِ هر Clinic بر اساس clinic_id در مسیر نسبی.
      * - هویت tenant حفظ می‌شود (clinic_id در rel)
      * - هیچ Clinic فایل Clinic دیگر را overwrite نمی‌کند (زیرپوشهٔ متفاوت)
-     * - فایل‌های بدون clinic_id (مثل sentinel تست closure) به ریشهٔ Clinic 1
-     *   یا اولین ریشهٔ فعال برمی‌گردند تا restore مخرب closure سبز بماند
+     * - فایل بدون clinic_id یا با clinic_id نامعتبر/ناشناخته → FAIL CLOSED
+     *   (هرگز firstActiveBase / Clinic 1 / row-order fallback)
      * - مقصد ناامن → Fail-Closed
      *
      * @param list<array{path: string, size: int, sha256: string}> $files
@@ -782,23 +797,6 @@ final class BackupService
     private function restoreFiles(string $srcDir, array $files): void
     {
         $clinicMap = $this->getClinicToBaseMap();
-        $defaultBase = trim($this->filesBasePath) !== '' ? $this->filesBasePath : LocalFileStorage::defaultBasePath();
-
-        // Validate defaultBase once
-        try {
-            $defaultBaseNorm = $this->validateAndNormalizeStoragePath($defaultBase);
-        } catch (\Throwable) {
-            $defaultBaseNorm = LocalFileStorage::defaultBasePath();
-        }
-        if ($defaultBaseNorm === '') {
-            $defaultBaseNorm = LocalFileStorage::defaultBasePath();
-        }
-
-        // برای فایل‌های بدون clinic_id، اولین ریشهٔ فعال (معمولاً Clinic 1) را به‌عنوان fallback نگه دار
-        $firstActiveBase = null;
-        if (!empty($clinicMap)) {
-            $firstActiveBase = reset($clinicMap);
-        }
 
         foreach ($files as $f) {
             $rel = (string) $f['path'];
@@ -812,14 +810,18 @@ final class BackupService
 
             $parts = explode('/', $rel, 2);
             $clinicId = isset($parts[0]) && is_numeric($parts[0]) ? (int) $parts[0] : 0;
-            $destBase = $defaultBaseNorm;
-            if ($clinicId > 0 && isset($clinicMap[$clinicId])) {
-                $destBase = $clinicMap[$clinicId];
-            } elseif ($clinicId === 0 && $firstActiveBase !== null) {
-                // فایل بدون clinic_id (مثل sentinel closure) → به اولین ریشهٔ فعال برگردان
-                // تا restore مخرب که فایل را مستقیماً در STORAGE_OUT می‌نویسد سبز بماند
-                $destBase = $firstActiveBase;
+
+            // Rule: first segment must be valid Clinic ID durably encoded
+            // No fallback to firstActiveBase / Clinic 1 / row-order / current Clinic / payload
+            if ($clinicId <= 0) {
+                throw BackupException::of('CLINIC_BACKUP_AMBIGUOUS_OWNER', 'ambiguous owner, first segment not valid Clinic ID: ' . $rel);
             }
+            if (!isset($clinicMap[$clinicId])) {
+                // Clinic ID not found in durable cpms_clinics — ambiguous legacy, fail closed
+                throw BackupException::of('CLINIC_BACKUP_AMBIGUOUS_OWNER', 'unknown Clinic ID in artifact: ' . $rel . ' clinic=' . $clinicId);
+            }
+
+            $destBase = $clinicMap[$clinicId];
 
             // Validate destBase (fail closed if inside webroot)
             $destBase = $this->validateAndNormalizeStoragePath($destBase);
