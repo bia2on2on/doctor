@@ -1039,15 +1039,14 @@ final class App
             ? ProtectedBackupStore::legacySource($base)
             : ProtectedBackupStore::active($base);
 
-        // filesBasePath: برای scope-neutral بودن backup.run، تلاش می‌کنیم
-        // files.storage_path را از Settings بگیریم (تک-کلینیکی/closure)؛
-        // اگر Scope مبهم بود (multi-Clinic بدون کاربر) به ریشهٔ خصوصی
-        // پیش‌فرض fallback می‌کنیم تا Job هرگز CLINIC_SCOPE_REQUIRED نگیرد.
-        try {
-            $filesBase = self::localFileStorage()->basePath();
-        } catch (\Throwable) {
-            $filesBase = PrivateStorageLocation::path('clinic-files');
-        }
+        // Multi-Clinic File Roots (M-2 blocker fix):
+        // منبع معتبر ریشه‌های فعال بالینی: cpms_clinics + cpms_settings
+        // (files.storage_path per-Clinic). BackupService خودش از DB همهٔ
+        // ریشه‌های فعال را می‌آورد و duplicate را یک‌بار جمع می‌کند؛ پس
+        // اینجا فقط یک ریشهٔ پیش‌فرضِ امن به‌عنوان fallback/injected
+        // برای سازگاری با تست‌های قدیمی می‌دهیم تا Job هرگز
+        // CLINIC_SCOPE_REQUIRED نگیرد و تمام فایل‌های فعال پوشش داده شوند.
+        $filesBase = PrivateStorageLocation::path('clinic-files');
 
         return new BackupService(
             self::db(),

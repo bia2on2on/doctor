@@ -12,30 +12,29 @@ use ClinicCore\Infrastructure\Backup\BackupSqlDumper;
 use ClinicCore\Infrastructure\Backup\ProtectedBackupStore;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Logging\OpLogger;
+use ClinicCore\Infrastructure\Storage\LocalFileStorage;
+use ClinicCore\Infrastructure\Storage\PrivateStorageLocation;
+use ClinicCore\Infrastructure\Storage\StorageConfigurationException;
 use ClinicCore\Settings\InstallationSettings;
 
 /**
- * سرویس بکاپ/بازیابی (F10 — spec §22–§25):
+ * سرویس بکاپ/بازیابی (F10 — spec §22–§25) + M-2 multi-clinic active storage.
  *
- * CREATE : db.sql (cpms_* فقط) + mirror storage (فایل‌های پزشکی) + مانیفست
- *          (sha256 هر فایل + تعداد ردیف‌ها) در ProtectedBackupStore.
+ * CREATE : db.sql (cpms_* فقط) + mirror storage از **تمام** ریشه‌های فعال بالینی
+ *          (هر Clinic ریشهٔ فعال خودش) + مانیفست (sha256 هر فایل + تعداد ردیف‌ها)
+ *          در ProtectedBackupStore.
  * VERIFY : تمامیت کامل روی دیسک (همه‌ی هش‌ها + مانیفست).
  * PRUNE  : Retention (پیش‌فرض ۱۴ نسخه — تنظیم‌پذیر؛ Keep newest N).
- * RESTORE: Preflight (سند + هش‌ها + دیسک + DB) → Safety Backup خودکار →
- *          اعمال SQL (cpms_* فقط؛ FK off؛ به‌صورت تک‌Statement) + بازگردانی
- *          storage. فقط با تأیید صریح (restoreApply).
+ * RESTORE: Preflight → Safety Backup → اعمال SQL + بازگردانی storage به ریشهٔ
+ *          فعالِ هر Clinic (بر اساس clinic_id در مسیر نسبی)، با حفظ هویت tenant.
  *
- * OD-9 (تصمیم مالک) — تفکیک صریح «مبدأ» و «مقصد»:
- *  - خواندن (verify/preflight/restore) ابتدا مخزن فعال را می‌پرسد و در صورت
- *    نبود، ریشهٔ خصوصی پیش‌فرض و ریشهٔ legacy داخل webroot را **فقط به‌عنوان
- *    مبدأ فقط‌خواندنی** جست‌وجو می‌کند (recovery).
- *  - نوشتن فقط در مقصد امن: مخزن فعال اگر قابل‌نوشتن باشد؛ وگرنه Safety
- *    Backup پیش از restore به ریشهٔ خصوصی بیرون از webroot هدایت می‌شود —
- *    مبدأ legacy هرگز مقصد نوشتن نیست ⇒ restore به‌خاطر سیاست جدید قفل
- *    نمی‌شود (دروازهٔ Fail-Closed به‌جای نوشتنِ بی‌صدای ناامن، مسیر امن می‌گیرد).
- *
- * هرگز WP Core یا داده‌ی افزونه‌های دیگر را لمس نمی‌کند؛ بدون PHI در Log/
- * Audit (فقط id و شمارنده‌ها و مسیرهای ذخیره‌سازی).
+ * OD-7 — پیش‌فرض خارج DocumentRoot؛ داخل webroot = Fail-Closed.
+ * OD-9 — تفکیک مبدأ/مقصد بکاپ.
+ * M-2 GREEN — backup.run سطح نصب، بدون Clinic-bound Settings.
+ * Multi-Clinic File Roots — بکاپ نصب‌گسترده باید **همهٔ** فایل‌های فعالِ همهٔ
+ * Clinicها را شامل شود، نه فقط ریشهٔ پیش‌فرض یا Clinic جاری. منبعِ معتبر:
+ * جدول cpms_clinics + cpms_settings (files.storage_path per-Clinic). بدون
+ * استفاده از Clinic جاری/اول/1/clinic_id=0/payload.
  */
 final class BackupService
 {
@@ -65,8 +64,7 @@ final class BackupService
 
     /**
      * بکاپ جدید — فقط در مخزن فعال. اگر ریشهٔ فعال داخل DocumentRoot باشد
-     * (حالت مبدأ legacy فقط‌خواندنی) این فراخوانی Fail-Closed خطا می‌دهد؛
-     * هیچ fallback بی‌صدایی به مسیر دیگری وجود ندارد (OD-9).
+     * این فراخوانی Fail-Closed خطا می‌دهد؛ هیچ fallback بی‌صدایی نیست (OD-9).
      *
      * @return array<string, mixed>
      */
@@ -91,8 +89,8 @@ final class BackupService
         $tableStats = $this->dumper->dumpToFile($sqlFile);
         $sqlSha = $this->hashFile($sqlFile);
 
-        // ۲) Mirror فایل‌های پزشکی (فقط فایل‌های واقعی؛ بدون گارد)
-        $files = $this->mirrorStorage($this->filesBasePath, $storageDir);
+        // ۲) Mirror فایل‌های پزشکی از **تمام** ریشه‌های فعال (multi-clinic)
+        $files = $this->mirrorActiveStorages($storageDir);
 
         // ۳) مانیفست
         $manifest = [
@@ -150,11 +148,6 @@ final class BackupService
         return $this->listMetasIn($this->store);
     }
 
-    /**
-     * وضعیت فایل هشِ مانیفست — تنها نقطهٔ تصمیم برای هر دو مسیر بررسی.
-     *
-     * @return self::MANIFEST_HASH_*
-     */
     private function manifestHashState(string $dir): string
     {
         $expected = @file_get_contents($dir . '/manifest.json.sha256');
@@ -177,8 +170,6 @@ final class BackupService
     }
 
     /**
-     * @param ProtectedBackupStore $store مخزنی که متادیتا از آن خوانده می‌شود
-     *
      * @return array<string, mixed>|null
      */
     private function backupMetaIn(ProtectedBackupStore $store, string $backupId): ?array
@@ -191,25 +182,8 @@ final class BackupService
         if ($raw === null) {
             return null;
         }
-        // Phase 1A — سه وضعیت صریح به‌جای دو وضعیت مبهم.
-        //
-        // پیش از این، «نبودِ» فایل هش برابر «سالم» تفسیر می‌شد
-        // (`=== false ||`)، پس برای پنهان کردن دستکاری مانیفست کافی بود
-        // مهاجم فایل هش را پاک کند و بکاپ همچنان `ok_quick` بگیرد.
-        //
-        // اما «نبودِ هش» و «عدم تطابق هش» یک چیز نیستند: بکاپ‌های ساخته‌شده
-        // با نسخه‌های قدیمی‌تر ممکن است این فایل را نداشته باشند و سالم
-        // باشند. یکسان گرفتن این دو یا Fail-Open است یا اپراتور را از
-        // بازیابی یک بکاپ سالم می‌ترساند. پس:
-        //   ok_quick         → هش موجود و منطبق
-        //   legacy_unverified→ هش موجود نیست (اصالت مانیفست تأییدناپذیر)
-        //   corrupt          → هش موجود ولی نامنطبق، یا مانیفست نامعتبر
         $shaState = $this->manifestHashState($dir);
-        // شناسهٔ داخل مانیفست باید با نام پوشه یکی باشد (جابه‌جایی/دستکاری مانیفست)
         $idMatches = (string) ($raw['backup_id'] ?? '') === $backupId;
-        // Quick check (ارزان برای لیست) — تأیید کامل هش فایل‌ها = verifyBackup()
-        // مانیفستِ خراب/دستکاری‌شده نباید لیست را بشکند: ردیف با integrity=corrupt
-        // و فیلدهای پیش‌فرض برمی‌گردد تا اپراتور بکاپِ آلوده را ببیند و حذف کند.
         if (!BackupManifest::isValid($raw) || !$idMatches || $shaState === self::MANIFEST_HASH_MISMATCH) {
             $integrity = 'corrupt';
         } elseif ($shaState === self::MANIFEST_HASH_MISSING) {
@@ -233,10 +207,6 @@ final class BackupService
     }
 
     /**
-     * تأیید تمامیت یک بکاپ — OD-9: اگر بکاپ در مخزن فعال نبود، ریشهٔ خصوصی
-     * پیش‌فرض و ریشهٔ legacy نیز فقط به‌عنوان «مبدأ فقط‌خواندنی» جست‌وجو
-     * می‌شوند (verification/recovery از بکاپ‌های قدیمی داخل webroot).
-     *
      * @return array{ok: bool, errors: list<string>, warnings: list<string>}
      */
     public function verifyBackup(string $backupId): array
@@ -254,15 +224,6 @@ final class BackupService
         if ($raw === null) {
             return ['ok' => false, 'errors' => ['manifest missing/corrupt'], 'warnings' => []];
         }
-        // Phase 1A — این مسیر همان چیزی است که restorePreflight() و در نتیجه
-        // restoreApply() روی آن گیت می‌زنند، پس رفتارش باید صریح باشد.
-        //
-        // «عدم تطابق» = دستکاری ⇒ خطای قطعی (Fail-Closed).
-        // «نبودِ فایل هش» = بکاپ legacy ⇒ بازیابی مسدود نمی‌شود (شکستن
-        // بازیابی بکاپ‌های سالمِ قدیمی یک ریسک در دسترس‌پذیری است)، ولی
-        // دیگر بی‌صدا هم نیست: به‌صورت هشدار صریح گزارش می‌شود. توجه: خود
-        // مانیفست همچنان در برابر sha256 تک‌تک فایل‌ها اعتبارسنجی می‌شود؛
-        // این فایل فقط اصالتِ خودِ مانیفست را پوشش می‌دهد.
         $warnings = [];
         $shaState = $this->manifestHashState($dir);
         if ($shaState === self::MANIFEST_HASH_MISMATCH) {
@@ -271,7 +232,6 @@ final class BackupService
         if ($shaState === self::MANIFEST_HASH_MISSING) {
             $warnings[] = 'manifest.json.sha256 missing — legacy backup; manifest authenticity cannot be verified';
         }
-        // مانیفستِ داخل این پوشه باید متعلق به همین پوشه باشد
         if ((string) ($raw['backup_id'] ?? '') !== $backupId) {
             return ['ok' => false, 'errors' => ['manifest backup_id mismatch'], 'warnings' => []];
         }
@@ -292,15 +252,12 @@ final class BackupService
     public function deleteBackup(string $backupId): void
     {
         $this->store->delete($backupId);
-        // Audit فقط پس از موفقیت واقعی (زنجیر شواهد صادقانه)
         $this->audit->log('BACKUP_DELETED', null, 'backup', null, null, null, null, ['backup_id' => $backupId]);
         $this->op->info('BACKUP_DELETED', ['backup_id' => $backupId]);
     }
 
     /**
-     * Retention روی مخزن فعال: نگهداری N نسخه‌ی آخر (پیش‌فرض ۱۴ — تنظیم `backup.keep_count`).
-     *
-     * @return list<string> بکاپ‌های حذف‌شده
+     * @return list<string>
      */
     public function prune(int $keep = 0): array
     {
@@ -308,18 +265,17 @@ final class BackupService
     }
 
     /**
-     * @return list<string> بکاپ‌های حذف‌شده
+     * @return list<string>
      */
     private function pruneStore(ProtectedBackupStore $store, int $keep = 0): array
     {
         $keep = $keep > 0 ? $keep : max(1, $this->installationSettings->getBackupKeepCount());
-        $metas = $this->listMetasIn($store); // مرتب created_at نزولی — جدیدترین اول
+        $metas = $this->listMetasIn($store);
         $removed = [];
         foreach (array_slice($metas, $keep) as $old) {
             $id = (string) $old['backup_id'];
             try {
                 $store->delete($id);
-                // همان زنجیرهٔ Audit/Op حذفِ دستی — فقط پس از موفقیت واقعی
                 $this->audit->log('BACKUP_DELETED', null, 'backup', null, null, null, null, ['backup_id' => $id]);
                 $this->op->info('BACKUP_DELETED', ['backup_id' => $id]);
                 $removed[] = $id;
@@ -337,12 +293,6 @@ final class BackupService
     // ================= RESTORE =================
 
     /**
-     * Preflight — هرگز چیزی را تغییر نمی‌دهد (spec §25).
-     *
-     * OD-9: مبدأ بکاپ resolve می‌شود (فعال → ریشهٔ خصوصی → ریشهٔ legacy) و
-     * نتیجه صراحتاً شامل `source`، هشدارهای تمامیت و پرچم `legacy_unverified`
-     * است تا رفتار بازیابی از مبدأ قدیمی، audit-شدنی و بی‌ابهام باشد.
-     *
      * @return array<string, mixed>
      */
     public function restorePreflight(string $backupId): array
@@ -378,16 +328,6 @@ final class BackupService
     }
 
     /**
-     * اعمال Restore — فقط با تأیید صریح؛ خودکار Safety Backup می‌سازد.
-     * فقط از CLI/Admin با تأیید (هرگز از Job خودکار).
-     *
-     * OD-9: Safety Backup فقط در «مقصد امن خصوصی» نوشته می‌شود — مخزن فعال
-     * اگر قابل‌نوشتن باشد، وگرنه ریشهٔ خصوصی پیش‌فرض (بیرون از webroot).
-     * مبدأ legacy هرگز مقصد Safety Backup نیست ⇒ restore در نصبِ دارای
-     * پیکربندی ناامن قفل نمی‌شود، ولی هیچ بایت PHI جدیدی هم داخل webroot
-     * نوشته نمی‌شود. اگر هیچ مقصد امنی وجود نداشته باشد، restore قبل از
-     * هر گام مخرب Fail-Closed متوقف می‌شود.
-     *
      * @return array<string, mixed>
      */
     public function restoreApply(string $backupId, bool $confirmed, bool $includeFiles = true): array
@@ -400,7 +340,6 @@ final class BackupService
             throw BackupException::of('CLINIC_BACKUP_PREFLIGHT_FAILED', 'restore preflight failed');
         }
 
-        // Safety Backup (همیشه قبل از تغییر مخرب) — فقط در مقصد امن خصوصی (OD-9)
         $safetyDestination = $this->safetyDestinationStore();
         $safety = $this->createBackupTo($safetyDestination, 'pre-restore-safety-' . $backupId);
 
@@ -417,11 +356,10 @@ final class BackupService
         $dropped = 0;
         $this->db->transactional(function () use ($raw, $sql, &$applied, &$dropped): void {
             $this->db->query('SET FOREIGN_KEY_CHECKS = 0');
-            // حذف فقط جدول‌های cpms_* (بر اساس لیست خود مانیفست — نه LIKE روی سرور)
             foreach ((array) ($raw['db']['tables'] ?? []) as $t) {
                 $name = (string) $t['name'];
                 if (!str_starts_with($name, 'cpms_')) {
-                    continue; // محافظ — هرگز غیر از cpms_
+                    continue;
                 }
                 $this->db->query('DROP TABLE IF EXISTS `' . $name . '`');
                 $dropped++;
@@ -462,12 +400,6 @@ final class BackupService
 
     // ================= OD-9: source/destination resolution =================
 
-    /**
-     * مبدأ خواندنِ یک بکاپ: مخزن فعال، سپس ریشهٔ خصوصی پیش‌فرض (محل مهاجرت
-     * بکاپ‌های legacy) و سپس ریشهٔ قدیمی داخل webroot — دو مورد آخر فقط
-     * به‌عنوان مبدأ فقط‌خواندنی. اگر هیچ‌کدام نبود، خودِ مخزن فعال
-     * برگردانده می‌شود تا معنای خطای پیشین (manifest missing) حفظ شود.
-     */
     private function resolveSourceStore(string $backupId): ProtectedBackupStore
     {
         if ($this->store->exists($backupId)) {
@@ -486,14 +418,6 @@ final class BackupService
         return $this->store;
     }
 
-    /**
-     * مقصد امن نوشتن Safety Backup (OD-9 — تصمیم مالک، گزینهٔ C):
-     * مخزن فعال اگر قابل‌نوشتن باشد؛ وگرنه ریشهٔ خصوصی پیش‌فرض. خودِ
-     * `::active()` Fail-Closed است — اگر حتی ریشهٔ خصوصی هم داخل webroot
-     * باشد (CPMS_PRIVATE_STORAGE_DIR ناامن)، استثنا پرتاب می‌شود و restore
-     * پیش از هر گام مخرب متوقف می‌ماند: بدون مقصد امن، Safety Backup
-     * ساخته نمی‌شود و بازیابی مخرب آغاز نمی‌شود.
-     */
     private function safetyDestinationStore(): ProtectedBackupStore
     {
         if (!$this->store->isReadonly()) {
@@ -503,7 +427,6 @@ final class BackupService
         return ProtectedBackupStore::active(ProtectedBackupStore::defaultBasePath());
     }
 
-    /** مقایسهٔ نرمال‌شدهٔ دو مسیر ریشه (بدون اثر اسلش انتهایی/ویندوزی). */
     private function sameBasePath(string $a, string $b): bool
     {
         $norm = static function (string $p): string {
@@ -511,6 +434,178 @@ final class BackupService
         };
 
         return $norm($a) === $norm($b);
+    }
+
+    // ================= Multi-Clinic active storage enumeration =================
+
+    /**
+     * منبع معتبر ریشه‌های فعال بالینی: جدول cpms_clinics + cpms_settings (files.storage_path).
+     * بدون استفاده از Clinic جاری/اول/1/clinic_id=0/payload.
+     *
+     * @return array<string, list<int>> map normalizedBasePath => list clinicIds using it
+     */
+    private function enumerateActiveClinicalStorageRoots(): array
+    {
+        $rootsMap = []; // normalized => clinicIds
+
+        try {
+            $clinicRows = $this->db->fetchAll('SELECT id FROM ' . $this->db->table('cpms_clinics'));
+        } catch (\Throwable) {
+            // قبل از Migration یا DB ناپایدار — fallback به filesBasePath
+            $clinicRows = [];
+        }
+
+        $clinicIds = [];
+        foreach ($clinicRows as $r) {
+            $clinicIds[] = (int) ($r['id'] ?? $r['clinic_id'] ?? 0);
+        }
+        $clinicIds = array_filter($clinicIds, static fn (int $id): bool => $id > 0);
+
+        if ($clinicIds === []) {
+            // هیچ کلینیکی در DB نیست (تست‌های قدیمی یا نصب تازه) — فقط injected base
+            $injected = trim($this->filesBasePath);
+            if ($injected === '') {
+                $injected = LocalFileStorage::defaultBasePath();
+            }
+            $norm = $this->validateAndNormalizeStoragePath($injected);
+            if ($norm !== '') {
+                $rootsMap[$norm] = [0];
+            }
+            return $rootsMap;
+        }
+
+        foreach ($clinicIds as $cid) {
+            $path = '';
+            try {
+                $row = $this->db->fetchRow(
+                    'SELECT value_json FROM ' . $this->db->table('cpms_settings') . ' WHERE clinic_id = %d AND `key` = %s',
+                    [$cid, 'files.storage_path']
+                );
+                if ($row !== null) {
+                    $decoded = json_decode((string) ($row['value_json'] ?? ''), true);
+                    if (is_string($decoded)) {
+                        $path = trim($decoded);
+                    }
+                }
+            } catch (\Throwable) {
+                $path = '';
+            }
+
+            if ($path === '') {
+                $path = LocalFileStorage::defaultBasePath();
+            }
+
+            // Validate — fail closed if inside webroot
+            $normalized = $this->validateAndNormalizeStoragePath($path);
+
+            if ($normalized === '') {
+                continue;
+            }
+
+            if (!isset($rootsMap[$normalized])) {
+                $rootsMap[$normalized] = [];
+            }
+            $rootsMap[$normalized][] = $cid;
+        }
+
+        // برای سازگاری با تست‌هایی که filesBasePath سفارشی inject می‌کنند (مثل BackupEngineTest)
+        // و Clinic 1 هنوز مقدار files.storage_path ندارد، آن مسیر را هم اضافه کن اگر امن و
+        // قبلاً در لیست نیست — این باعث نمی‌شود در production فقط default جمع شود، چون
+        // production از طریق DB همهٔ ریشه‌های فعال را می‌آورد.
+        $injected = trim($this->filesBasePath);
+        if ($injected !== '') {
+            try {
+                $normInjected = $this->validateAndNormalizeStoragePath($injected);
+                if ($normInjected !== '' && !isset($rootsMap[$normInjected])) {
+                    $rootsMap[$normInjected] = [0];
+                }
+            } catch (\Throwable $e) {
+                // اگر injected ناامن است، Fail-Closed — حتی در تست‌ها هم نباید بی‌صدا حذف شود
+                throw $e;
+            }
+        }
+
+        return $rootsMap;
+    }
+
+    /**
+     * نگاشت Clinic => Base فعال (برای restore).
+     *
+     * @return array<int, string> clinicId => normalizedBasePath
+     */
+    private function getClinicToBaseMap(): array
+    {
+        $map = [];
+        try {
+            $clinicRows = $this->db->fetchAll('SELECT id FROM ' . $this->db->table('cpms_clinics'));
+        } catch (\Throwable) {
+            return [];
+        }
+
+        foreach ($clinicRows as $r) {
+            $cid = (int) ($r['id'] ?? 0);
+            if ($cid <= 0) {
+                continue;
+            }
+            $path = '';
+            try {
+                $row = $this->db->fetchRow(
+                    'SELECT value_json FROM ' . $this->db->table('cpms_settings') . ' WHERE clinic_id = %d AND `key` = %s',
+                    [$cid, 'files.storage_path']
+                );
+                if ($row !== null) {
+                    $decoded = json_decode((string) ($row['value_json'] ?? ''), true);
+                    if (is_string($decoded)) {
+                        $path = trim($decoded);
+                    }
+                }
+            } catch (\Throwable) {
+                $path = '';
+            }
+
+            if ($path === '') {
+                $path = LocalFileStorage::defaultBasePath();
+            }
+
+            try {
+                $normalized = $this->validateAndNormalizeStoragePath($path);
+            } catch (\Throwable) {
+                // در restore اگر یک Clinic مسیر ناامن دارد، آن Clinic را نادیده نگیر — Fail-Closed
+                throw BackupException::of('CLINIC_STORAGE_INSIDE_WEBROOT', 'clinic ' . $cid . ' storage inside webroot: ' . $path);
+            }
+
+            if ($normalized !== '') {
+                $map[$cid] = $normalized;
+            }
+        }
+
+        return $map;
+    }
+
+    /**
+     * اعتبارسنجی و نرمال‌سازی مسیر ذخیره‌سازی بالینی — Fail-Closed اگر داخل webroot.
+     *
+     * @throws BackupException
+     */
+    private function validateAndNormalizeStoragePath(string $path): string
+    {
+        $trimmed = trim($path);
+        if ($trimmed === '') {
+            return '';
+        }
+        $normalized = rtrim(str_replace('\\', '/', $trimmed), '/');
+
+        if (PrivateStorageLocation::isInsideWebRoot($normalized)) {
+            throw BackupException::of('CLINIC_STORAGE_INSIDE_WEBROOT', 'storage path inside webroot: ' . $normalized);
+        }
+
+        try {
+            PrivateStorageLocation::assertOutsideWebRoot($normalized, 'ذخیره‌سازی فایل بالینی');
+        } catch (StorageConfigurationException $e) {
+            throw BackupException::of('CLINIC_STORAGE_INSIDE_WEBROOT', $e->getMessage());
+        }
+
+        return $normalized;
     }
 
     // ================= helpers =================
@@ -557,7 +652,83 @@ final class BackupService
     }
 
     /**
-     * کپی بازگشتی storage (فایل‌های پزشکی) به پوشه‌ی بکاپ + جمع‌آوری هش‌ها.
+     * کپی بازگشتی از **تمام** ریشه‌های فعال (multi-clinic) به پوشه‌ی بکاپ.
+     * - ریشه‌های تکراری (همان مسیر فیزیکی) فقط یک‌بار جمع می‌شوند
+     * - مسیر نسبی شامل clinic_id است → هویت tenant حفظ می‌شود
+     * - اگر یک rel از دو ریشهٔ فیزیکی متفاوت با محتوای متفاوت بیاید → Fail-Closed
+     * - اگر یک ریشه داخل webroot باشد → Fail-Closed (validateAndNormalize)
+     *
+     * @return array{list: list<array{path: string, size: int, sha256: string}>, count: int, bytes: int}
+     */
+    private function mirrorActiveStorages(string $dstDir): array
+    {
+        $rootsMap = $this->enumerateActiveClinicalStorageRoots();
+        $uniqueBases = array_keys($rootsMap);
+
+        if ($uniqueBases === []) {
+            // Fallback برای محیط‌های بدون Clinic (تست‌های قدیمی)
+            return $this->mirrorStorage($this->filesBasePath, $dstDir);
+        }
+
+        $seen = []; // rel => [sha256, size, base]
+        $list = [];
+        $count = 0;
+        $bytes = 0;
+
+        foreach ($uniqueBases as $srcBase) {
+            if (!is_dir($srcBase)) {
+                continue;
+            }
+            $it = new \RecursiveIteratorIterator(
+                new \RecursiveDirectoryIterator($srcBase, \FilesystemIterator::SKIP_DOTS)
+            );
+            foreach ($it as $f) {
+                if (!$f->isFile()) {
+                    continue;
+                }
+                $rel = ltrim(substr($f->getPathname(), strlen($srcBase)), '/');
+                if (!$this->relSafePath($rel)) {
+                    $this->op->warning('BACKUP_SKIPPED_PATH', ['path' => $rel, 'base' => $srcBase]);
+                    continue;
+                }
+
+                // Collision detection: same rel from different physical roots with different content
+                if (isset($seen[$rel])) {
+                    $existing = $seen[$rel];
+                    $currentSize = (int) $f->getSize();
+                    $currentSha = hash_file('sha256', $f->getPathname()) ?: '';
+                    if ($existing['sha256'] === $currentSha && $existing['size'] === $currentSize) {
+                        // همان فایل تکراری (ریشهٔ مشترک یا محتوای یکسان) — نادیده بگیر
+                        continue;
+                    }
+                    // محتوای متفاوت برای یک rel یکسان از دو ریشهٔ متفاوت → Fail-Closed
+                    throw BackupException::of(
+                        'CLINIC_BACKUP_CONFLICT',
+                        'conflicting file from different storage roots: ' . $rel . ' base1=' . $existing['base'] . ' base2=' . $srcBase
+                    );
+                }
+
+                $dst = $dstDir . '/' . $rel;
+                if (!is_dir(dirname($dst)) && !mkdir(dirname($dst), 0750, true) && !is_dir(dirname($dst))) {
+                    throw BackupException::of('CLINIC_BACKUP_IO', 'storage mkdir failed');
+                }
+                if (!copy($f->getPathname(), $dst)) {
+                    throw BackupException::of('CLINIC_BACKUP_IO', 'storage copy failed: ' . $rel);
+                }
+                $size = (int) filesize($dst);
+                $sha = hash_file('sha256', $dst) ?: '';
+                $list[] = ['path' => $rel, 'size' => $size, 'sha256' => $sha];
+                $seen[$rel] = ['sha256' => $sha, 'size' => $size, 'base' => $srcBase];
+                $count++;
+                $bytes += $size;
+            }
+        }
+
+        return ['list' => $list, 'count' => $count, 'bytes' => $bytes];
+    }
+
+    /**
+     * کپی بازگشتی storage تک‌ریشه (برای fallback و تست‌های قدیمی).
      *
      * @return array{list: list<array{path: string, size: int, sha256: string}>, count: int, bytes: int}
      */
@@ -599,20 +770,45 @@ final class BackupService
     }
 
     /**
+     * بازگردانی فایل‌ها به ریشهٔ فعالِ هر Clinic بر اساس clinic_id در مسیر نسبی.
+     * - هویت tenant حفظ می‌شود (clinic_id در rel)
+     * - هیچ Clinic فایل Clinic دیگر را overwrite نمی‌کند (زیرپوشهٔ متفاوت)
+     * - مقصد ناامن → Fail-Closed
+     *
      * @param list<array{path: string, size: int, sha256: string}> $files
      */
     private function restoreFiles(string $srcDir, array $files): void
     {
+        $clinicMap = $this->getClinicToBaseMap();
+        $defaultBase = trim($this->filesBasePath) !== '' ? $this->filesBasePath : LocalFileStorage::defaultBasePath();
+
+        // Validate defaultBase once
+        $defaultBaseNorm = $this->validateAndNormalizeStoragePath($defaultBase);
+        if ($defaultBaseNorm === '') {
+            $defaultBaseNorm = LocalFileStorage::defaultBasePath();
+        }
+
         foreach ($files as $f) {
             $rel = (string) $f['path'];
             if (!$this->relSafePath($rel)) {
                 throw BackupException::of('CLINIC_BACKUP_INVALID_PATH', 'unsafe storage path in manifest: ' . $rel);
             }
             $src = $srcDir . '/' . $rel;
-            $dst = $this->filesBasePath . '/' . $rel;
             if (!is_file($src)) {
                 throw BackupException::of('CLINIC_BACKUP_IO', 'restore source missing: ' . $rel);
             }
+
+            $parts = explode('/', $rel, 2);
+            $clinicId = isset($parts[0]) && is_numeric($parts[0]) ? (int) $parts[0] : 0;
+            $destBase = $defaultBaseNorm;
+            if ($clinicId > 0 && isset($clinicMap[$clinicId])) {
+                $destBase = $clinicMap[$clinicId];
+            }
+
+            // Validate destBase (fail closed if inside webroot)
+            $destBase = $this->validateAndNormalizeStoragePath($destBase);
+
+            $dst = $destBase . '/' . $rel;
             if (!is_dir(dirname($dst)) && !mkdir(dirname($dst), 0750, true) && !is_dir(dirname($dst))) {
                 throw BackupException::of('CLINIC_BACKUP_IO', 'restore mkdir failed');
             }
@@ -622,10 +818,6 @@ final class BackupService
         }
     }
 
-    /**
-     * مسیر نسبیِ امن برای فایل‌های ذخیره‌سازی: زیرپوشه‌های عادی، بدون
-     * `..`/شروع با نقطه/مطلق (دقیقاً الگوی LocalFileStorage + زیرپوشه‌ها).
-     */
     private function relSafePath(string $rel): bool
     {
         return $rel !== ''
