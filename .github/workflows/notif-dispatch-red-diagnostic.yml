@@ -1,0 +1,182 @@
+name: notif.dispatch RED diagnostic (focused, TEST-ONLY)
+
+# TEST-ONLY / evidence-only workflow — هیچ کد محصولی را تغییر نمی‌دهد.
+#
+# هدف: اجرای متمرکزِ تنها تست RED مربوط به notif.dispatch در یک فرآیند PHP
+# مستقل (خالی از کش‌های function-static پروژه) و تأیید ماشینیِ این‌که:
+#   ۱) دقیقاً یک تست اجرا شده است (گارد انتخاب — «صفر تست» هرگز سبز نمی‌شود)؛
+#   ۲) نتیجهٔ تست FAILED است (RED واقعاً بازتولید شده)؛
+#   ۳) شکست با امضای وابستگی به Clinic scope است
+#      (`RED_SIGNATURE=scope_dependency`) — نه خطای fixture/DB/NO_HANDLER.
+#
+# ⚠ اگر تست به‌طور غیرمنتظره سبز شود (یعنی قرارداد scope-neutral برقرار شده)
+# یا شکست منتسب نباشد، این workflow قرمز می‌شود — هرگز Greenِ کاذب نمی‌دهد.
+# این فایل موقتی و فقط-شواهد است و بخشی از گیت‌های دائمی نیست.
+
+on:
+  push:
+    branches: [arena/01a09fad-doctor]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+defaults:
+  run:
+    working-directory: clinic-practice-management
+
+jobs:
+  focused-red:
+    name: notif.dispatch RED (expected RED, JUnit-guarded)
+    runs-on: ubuntu-latest
+
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=20
+
+    env:
+      WP_TESTS_DIR: /tmp/wordpress-test-lib
+      WP_CORE_DIR: /tmp/wordpress
+      FOCUS_FILTER: 'NotifDispatchM2WiringRedTest'
+      EXPECTED_SELECTED: '1'
+      RED_MARKER: 'RED_SIGNATURE=scope_dependency'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mbstring, xml, mysqli, pcntl, curl
+          coverage: none
+
+      - name: Install dependencies (PHPUnit 9.6 for WP test lib)
+        run: |
+          composer install --prefer-dist --no-progress --no-interaction
+          composer require --dev phpunit/phpunit:^9.6 --no-interaction --no-progress --with-all-dependencies
+
+      - name: Prepare WordPress test suite
+        run: bash tests/bin/install-wp-tests.sh wordpress_test root root 127.0.0.1 6.7.2
+
+      # انتخاب متمرکز: فقط همین کلاس، در یک فرآیند PHP مستقل.
+      # خروجی PHPUnit عمداًً بلوکه نمی‌کند (rc=1 در RED موردانتظار است)؛ داوری با گارد JUnit است.
+      - name: Run focused RED selection
+        run: |
+          set +e
+          php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
+            --bootstrap tests/integration-bootstrap.php \
+            --filter "$FOCUS_FILTER" \
+            --log-junit /tmp/nd-junit.xml \
+            tests/Integration 2>&1 | tee /tmp/nd.log
+          rc=${PIPESTATUS[0]}
+          echo "$rc" > /tmp/nd.rc
+          echo "phpunit_exit=$rc (rc=1 is the expected RED outcome; the JUnit guard decides)"
+          exit 0
+
+      - name: RED guard (selection + scope attribution)
+        if: always()
+        run: |
+          echo "--- PHPUnit summary lines ---"
+          grep -E "^(Tests:|OK|FAILURES!|ERRORS!|No tests executed)" /tmp/nd.log || true
+          cat > /tmp/nd_guard.py <<'PY'
+          import os, sys, xml.etree.ElementTree as ET
+
+          expected = int(os.environ['EXPECTED_SELECTED'])
+          marker = os.environ['RED_MARKER']
+          path = '/tmp/nd-junit.xml'
+
+          if (not os.path.exists(path)) or os.path.getsize(path) == 0:
+              print('::error::Selection guard: JUnit report missing or empty — refusing to report any verdict')
+              sys.exit(1)
+
+          root = ET.parse(path).getroot()
+          cases = list(root.iter('testcase'))
+          print('executed_tests=%d (expected %d)' % (len(cases), expected))
+          if len(cases) != expected:
+              for c in cases:
+                  print('  executed: %s::%s' % (c.get('classname'), c.get('name')))
+              print('::error::Selection guard: expected exactly %d executed test(s), got %d — refusing a verdict on an empty/incorrect selection' % (expected, len(cases)))
+              sys.exit(1)
+
+          case = cases[0]
+          status = 'PASS'
+          detail = ''
+          for child in case:
+              if child.tag in ('failure', 'error'):
+                  status = child.tag.upper()
+                  detail = (child.get('message') or '') + '\n' + (child.text or '')
+              elif child.tag == 'skipped':
+                  status = 'SKIPPED'
+
+          print('selected_test=%s::%s' % (case.get('classname'), case.get('name')))
+          print('outcome=%s' % status)
+
+          if status != 'FAILURE':
+              print('::error::RED guard: expected a FAILURE (the scope-neutral contract must fail on current wiring), got %s. If it passed, the defect no longer reproduces — this is NOT a valid RED.' % status)
+              sys.exit(1)
+
+          if marker not in detail:
+              print('::error::RED guard: failure is not attributed to the Clinic-scope dependency (missing %s) — treat as class D (fixture/runner/selection), not as valid product RED' % marker)
+              print(detail[:4000])
+              sys.exit(1)
+
+          for token in ('last_error=', 'attempts=', 'tickResult='):
+              if token not in detail:
+                  print('::error::RED guard: failure message is missing evidence field %s' % token)
+                  sys.exit(1)
+
+          print('')
+          print('RED VERIFIED — notif.dispatch cannot be executed by a scope-neutral W worker on current wiring.')
+          print('marker=%s outcome=%s executed=%d' % (marker, status, len(cases)))
+          print('--- failure detail ---')
+          print(detail[:4000])
+          PY
+          python3 /tmp/nd_guard.py
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: notif-dispatch-red-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            /tmp/nd.log
+            /tmp/nd.rc
+            /tmp/nd-junit.xml
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Post evidence to PR
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          {
+            echo "### notif.dispatch RED diagnostic (run ${{ github.run_id }}, sha ${{ github.sha }})"
+            echo '```'
+            echo "--- SUMMARY ---"
+            grep -E "^(Tests:|OK|FAILURES!|ERRORS!|No tests executed)" /tmp/nd.log | tail -n 4 || true
+            echo "phpunit_exit=$(cat /tmp/nd.rc 2>/dev/null || echo '?') (RED expected)"
+            echo "--- FAILURE DETAIL ---"
+            awk '/^There was 1 failure|^There were/{flag=1} flag' /tmp/nd.log | head -n 80
+            echo "--- TAIL ---"
+            tail -n 20 /tmp/nd.log
+            echo '```'
+          } > /tmp/nd-body.md
+          cat /tmp/nd-body.md
+          if [ -n "$PR_NUMBER" ]; then
+            gh pr comment "$PR_NUMBER" --body-file /tmp/nd-body.md || echo "::notice::PR comment failed (permissions?)"
+          else
+            echo "::notice::no pull_request number on this event — evidence kept in artifact only"
+          fi
