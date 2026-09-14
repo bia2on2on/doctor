@@ -1039,12 +1039,15 @@ final class App
             ? ProtectedBackupStore::legacySource($base)
             : ProtectedBackupStore::active($base);
 
-        // filesBasePath: برای scope-neutral بودن backup.run از ریشهٔ خصوصی
-        // پیش‌فرض استفاده می‌کنیم (نصب‌گسترده)، نه از Settingsِ Clinic-bound.
-        // خودِ BackupService فقط clinic-files را mirror می‌کند — مسیر هنوز
-        // قابل تنظیم از طریق files.storage_pathِ Clinic است، ولی خودِ Jobِ
-        // backup.run دیگر به Scope نیاز ندارد.
-        $filesBase = PrivateStorageLocation::path('clinic-files');
+        // filesBasePath: برای scope-neutral بودن backup.run، تلاش می‌کنیم
+        // files.storage_path را از Settings بگیریم (تک-کلینیکی/closure)؛
+        // اگر Scope مبهم بود (multi-Clinic بدون کاربر) به ریشهٔ خصوصی
+        // پیش‌فرض fallback می‌کنیم تا Job هرگز CLINIC_SCOPE_REQUIRED نگیرد.
+        try {
+            $filesBase = self::localFileStorage()->basePath();
+        } catch (\Throwable) {
+            $filesBase = PrivateStorageLocation::path('clinic-files');
+        }
 
         return new BackupService(
             self::db(),
