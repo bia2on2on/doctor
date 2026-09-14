@@ -1156,7 +1156,10 @@ final class App
                     (new IdemCleanupHandler(self::idem()))([]);
                 })
                 ->register('cleanup.oplog', static function (array $payload) use ($db): void {
-                    (new OpLogCleanupHandler($db, self::settings()))($payload);
+                    // S (installation-scoped) — scope-neutral، مثل notif.dispatch:
+                    // روزهای retention از InstallationSettings (wp_options) می‌آید؛
+                    // هیچ App::scope()/Settingsِ Clinic/کاربر/ScopeContext‌ای لمس نمی‌شود.
+                    (new OpLogCleanupHandler($db, self::installationSettings()))($payload);
                 })
                 ->register('slots.generate', static function (array $payload) use ($db, $op): void {
                     (new SlotsGenerateHandler($db, self::settingsFactory(), $op))($payload);

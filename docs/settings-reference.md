@@ -3,6 +3,8 @@
 نسخه 1.5 | 2026-09-07 | جدول `cpms_settings` (کلید/مقدار JSON) + پیش‌فرض‌های `Settings::DEFAULTS`
 
 > **تغییر 1.5 (F1-5 — Retention لاگ عملیاتی):** کلید جدید `retention.oplog_days` (پیش‌فرض `90` روز) — Job دوره‌ای `cleanup.oplog` ردیف‌های قدیمی‌تر از این سن را از `cpms_operational_logs` حذف می‌کند (رشد بی‌کران جدول hot). Audit مستقل است و `retention.audit_years` (۱۰ سال) دست‌نخورده می‌ماند.
+>
+> **به‌روزرسانی M-2 (سمتِ منبع و کران):** این کلید پیکربندی **سطح نصب** است و از `InstallationSettings::getOplogRetentionDays()` (Option وردپرس `cpms_retention_oplog_days`، بدونِ autoload، پیش‌فرض مؤثر `90`، مقدار خراب/کمتر از ۱ → همان `90`) خوانده می‌شود — نه از `cpms_settings` یک Clinic. هر اجرا حداکثر `500` ردیفِ واجدِ شرایط را حذف می‌کند و اجراهای تکرارشوندهٔ همان Job ادامهٔ پاک‌سازی را انجام می‌دهند. سایر کلیدهای `retention.*` از این تصمیم مستثناست.
 
 > **تغییر 1.4 (F1-4 — Audit تنظیمات):** هر تغییر مؤثر Setting از مسیر `Settings::set()` اکنون با اکشن `SETTING_UPDATE` در Audit ثبت می‌شود — before/after (`{setting, value}`؛ before = مقدار مؤثر قبلی شامل Default) + actor (`updated_by` + نقش WP؛ بدون کاربر = `system`). تغییر no-op (مقدار جدید = مقدار مؤثر فعلی) Audit نمی‌گیرد. کلیدهای Runtime/telemetry (`jobs.last_tick_at`، `backup.last_run_at`، `sms.last_test`) — که به‌تکرار توسط سیستم نوشته می‌شوند — مستثنا هستند و در Operational Log ثبت می‌شوند (جلوگیری از سیل Audit ۱۰ساله). جزئیات: `docs/security/audit-strategy.md` §2. تست رگرسیون: `SettingsAuditTest`.
 

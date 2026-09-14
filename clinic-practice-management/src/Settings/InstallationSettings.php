@@ -8,13 +8,23 @@ use InvalidArgumentException;
 use RuntimeException;
 
 /**
- * تنظیمات اسکالر سطح نصب (Phase 2) — فعلاً فقط `notif.archive_days`.
+ * تنظیمات اسکالر سطح نصب (Phase 2) — `notif.archive_days` و
+ * `retention.oplog_days`.
  *
  * تصمیم مصوب: purge سراسری اعلان‌ها یک sweep سطح نصب روی ردیف‌های اعلان
  * است؛ استفاده از تنظیمِ یک Clinic برای purge همهٔ Clinicها tenant-نادرست
  * است. پس `notif.archive_days` پیکربندی سطح نصب است و در wp_options
  * (با `autoload=no`) زندگی می‌کند — نه در `cpms_settings` و نه با هیچ
  * Clinic ساختگی/پیش‌فرض/جاری.
+ *
+ * M-2 (`cleanup.oplog`): همان منطق برای `retention.oplog_days` — Job در
+ * `JobScopeRegistry` طبقهٔ **S** ثبت شده، جدولِ لاگِ عملیاتی ستونِ tenant
+ * ندارد و حذف، سن‌محور و نصب‌گسترده است؛ پس پیکربندی هم سطح نصب است.
+ * ⛔ این تصمیم به هیچ کلیدِ retention دیگری تعمیم داده نمی‌شود
+ * (`notif.archive_days` قرارداد خودش را دارد و `hw.version_*`،
+ * `retention.audit_years`/`record_years` و ثابت‌های `cleanup.idem`/
+ * `cleanup.rate_limits` خارج از این دامنه‌اند). هیچ مقدارِ تاریخیِ
+ * per-Clinic مهاجرت داده نمی‌شود.
  *
  * قواعد:
  *  - بدون Clinic/ScopeContext/کاربر/مستأجرِ درخواست — خواندن و نوشتن فقط
@@ -40,6 +50,29 @@ final class InstallationSettings
      * و fallback صریح `NotificationService::dispatchQueued`.
      */
     public const DEFAULT_NOTIF_ARCHIVE_DAYS = 90;
+
+    /**
+     * کلید Option وردپرس برای `retention.oplog_days` سطح نصب.
+     *
+     * قرارداد نام‌گذاری مخزن: `cpms_` + snake_case با حذف نقطه
+     * (`notif.archive_days` → `cpms_notif_archive_days`؛
+     * `retention.oplog_days` → `cpms_retention_oplog_days`).
+     */
+    public const OPTION_OPLOG_RETENTION_DAYS = 'cpms_retention_oplog_days';
+
+    /**
+     * پیش‌فرض مؤثر فعلی — هم‌تراز `Settings::DEFAULTS['retention.oplog_days']`
+     * و fallback قبلیِ `OpLogCleanupHandler` (۹۰ روز)، بدون تغییر.
+     */
+    public const DEFAULT_OPLOG_RETENTION_DAYS = 90;
+
+    /**
+     * کف معتبر — هم‌تراز `max(1, …)` پیشینِ `OpLogCleanupHandler`.
+     *
+     * سقف عمداً تعریف نمی‌شود: قرارداد فعلی سقفی ندارد و «اختراع سقف»
+     * مجاز نیست.
+     */
+    private const MIN_OPLOG_RETENTION_DAYS = 1;
 
     /**
      * کف معتبر — هم‌تراز `max(1, $days)` در
@@ -103,5 +136,34 @@ final class InstallationSettings
             throw new InvalidArgumentException('روزهای نگهداری اعلان باید دست‌کم ۱ باشد.');
         }
         ($this->writeOption)(self::OPTION_NOTIF_ARCHIVE_DAYS, $days);
+    }
+
+    /**
+     * روزهای نگهداری لاگ عملیاتی — **سطح نصب** (M-2).
+     *
+     * غایب/غیرعددی/کمتر از ۱ → پیش‌فرض امن (۹۰ روز). مقدارِ خراب **هرگز**
+     * به حذفِ تهاجمی‌تر تبدیل نمی‌شود و هیچ Clinic/Scope/کاربری خوانده نمی‌شود.
+     */
+    public function getOplogRetentionDays(): int
+    {
+        $raw = ($this->readOption)(self::OPTION_OPLOG_RETENTION_DAYS, self::DEFAULT_OPLOG_RETENTION_DAYS);
+        if (!is_numeric($raw)) {
+            return self::DEFAULT_OPLOG_RETENTION_DAYS;
+        }
+        $days = (int) $raw;
+
+        return $days >= self::MIN_OPLOG_RETENTION_DAYS ? $days : self::DEFAULT_OPLOG_RETENTION_DAYS;
+    }
+
+    /**
+     * @throws InvalidArgumentException اگر کمتر از ۱ روز باشد (fail-closed؛
+     *     هیچ نوشته‌ای به ذخیره‌سازی نمی‌رسد).
+     */
+    public function setOplogRetentionDays(int $days): void
+    {
+        if ($days < self::MIN_OPLOG_RETENTION_DAYS) {
+            throw new InvalidArgumentException('روزهای نگهداری لاگ عملیاتی باید دست‌کم ۱ باشد.');
+        }
+        ($this->writeOption)(self::OPTION_OPLOG_RETENTION_DAYS, $days);
     }
 }
