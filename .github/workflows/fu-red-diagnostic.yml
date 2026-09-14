@@ -62,27 +62,38 @@ jobs:
       - name: Prepare WordPress test suite
         run: bash tests/bin/install-wp-tests.sh wordpress_test root root 127.0.0.1 6.7.2
 
-      # گارد صفر-تست: پیش از اجرای واقعی، انتخاب را می‌شمارد.
-      - name: Zero-selected-tests guard
-        run: |
-          set -o pipefail
-          php vendor/bin/phpunit --no-configuration \
-            --bootstrap tests/integration-bootstrap.php \
-            --list-tests --filter "$FOCUS_FILTER" tests/Integration 2>&1 | tee /tmp/fu-list.log
-          N=$(grep -cE '^[[:space:]]+- ' /tmp/fu-list.log || true)
-          echo "selected_tests=$N (expected $EXPECTED_SELECTED)"
-          if [ "$N" -ne "$EXPECTED_SELECTED" ]; then
-            echo "::error::Selection guard: expected $EXPECTED_SELECTED test(s), matched $N — refusing to report green on an empty/incorrect selection"
-            exit 1
-          fi
-          grep -E '^[[:space:]]+- ' /tmp/fu-list.log | while IFS= read -r l; do echo "::notice::selected ${l:0:300}"; done
-
+      # نکتهٔ اندازه‌گیری‌شده (run 34832108391): در PHPUnit 9.6 گزینهٔ --filter روی
+      # --list-tests اثر ندارد و کل suite (۷۳۷ تست) را فهرست می‌کند؛ پس گارد
+      # صفر-تست باید روی خلاصهٔ «اجرای واقعی» سنجیده شود، نه روی فهرست.
       - name: Run focused diagnostic
         run: |
-          set -o pipefail
+          set +e
           php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
             --bootstrap tests/integration-bootstrap.php \
             --filter "$FOCUS_FILTER" tests/Integration 2>&1 | tee /tmp/fu-red.log
+          rc=${PIPESTATUS[0]}
+          echo "$rc" > /tmp/fu-red.rc
+          echo "phpunit_exit=$rc"
+          exit 0
+
+      # گارد صفر-تست: اگر انتخاب خالی/نادرست باشد، job هرگز سبز نمی‌شود.
+      - name: Zero-executed-tests guard
+        if: always()
+        run: |
+          echo "--- summary lines ---"
+          grep -E "^(Tests:|No tests executed|OK|FAILURES!|ERRORS!|There (were|was) )" /tmp/fu-red.log || true
+          echo "--- executed/failed test names ---"
+          grep -oE "^[0-9]+\) [A-Za-z\\\\]+Test::[A-Za-z_]+" /tmp/fu-red.log | sort -u || true
+          N=$(grep -oE '^Tests: [0-9]+' /tmp/fu-red.log | grep -oE '[0-9]+' | tail -1 || true)
+          echo "executed_tests=${N:-none} (expected $EXPECTED_SELECTED)"
+          if [ -z "$N" ]; then
+            echo "::error::Selection guard: no PHPUnit 'Tests:' summary found (empty selection, parse or bootstrap failure) — refusing to report green"
+            exit 1
+          fi
+          if [ "$N" -ne "$EXPECTED_SELECTED" ]; then
+            echo "::error::Selection guard: expected exactly $EXPECTED_SELECTED executed test(s), got $N — refusing to report green on an empty/incorrect selection"
+            exit 1
+          fi
 
       - name: Upload focused diagnostic log
         if: always()
@@ -91,7 +102,7 @@ jobs:
           name: fu-helper-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             /tmp/fu-red.log
-            /tmp/fu-list.log
+            /tmp/fu-red.rc
           if-no-files-found: error
           retention-days: 14
 
@@ -126,3 +137,11 @@ jobs:
           grep -E "^Tests: " /tmp/fu-red.log | head -1 | while IFS= read -r l; do
             echo "::notice::${l:0:400}"
           done
+
+      # نتیجهٔ واقعی PHPUnit آخرین گام است: RED => job failure، GREEN => success.
+      - name: Propagate PHPUnit result
+        if: always()
+        run: |
+          rc=$(cat /tmp/fu-red.rc 2>/dev/null || echo 1)
+          echo "phpunit_exit=$rc"
+          exit "$rc"
