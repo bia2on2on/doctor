@@ -78,7 +78,11 @@ jobs:
         run: |
           php -l clinic-practice-management/bin/cpms
           python3 -m py_compile clinic-practice-management/bin/rwp-acceptance.py
+          python3 -m py_compile clinic-practice-management/bin/acceptance-isolation-check.py
           bash -n clinic-practice-management/bin/build-release.sh
+          # قرارداد ایزولاسیون: هر پرسونا کانتکست/کوکی مستقل خودش را دارد
+          # (اگر یک کانتکست به چند پرسونا سرو کند، این Step قرمز می‌شود).
+          python3 clinic-practice-management/bin/acceptance-isolation-check.py
 
       # ---------- 1) ZIP رسمی ریلیز ----------
       - name: Build official release ZIP (bin/build-release.sh)
@@ -210,9 +214,25 @@ jobs:
               if ($u !== false) { wp_update_user(['ID' => (int) $u->ID, 'display_name' => $display]); }
           }
           $uid = (int) get_user_by('login', getenv('DOCTOR_USER'))->ID;
+          // The acceptance fixture resolves its explicit Clinic by durable slug,
+          // never by first-row order or a literal clinic_id.
+          $clinicRow = $db->fetchRow(
+              'SELECT id FROM ' . $db->table('cpms_clinics') . ' WHERE slug = %s LIMIT 1',
+              ['default']
+          );
+          if ($clinicRow === null) {
+              fwrite(STDERR, "FAIL: explicit default Clinic fixture not found\n");
+              exit(1);
+          }
+          $accClinicId = (int) $clinicRow['id'];
+          if ($accClinicId <= 0) {
+              fwrite(STDERR, "FAIL: explicit Clinic fixture is invalid\n");
+              exit(1);
+          }
+          file_put_contents('/tmp/acc/manager_clinic_id.txt', (string) $accClinicId);
           $wpdb->query($wpdb->prepare(
-              'INSERT INTO ' . $db->table('cpms_clinicians') . ' (clinic_id, full_name, wp_user_id, is_active, created_at, updated_at) VALUES (1, %s, %d, 1, %s, %s)',
-              'پزشک آزمایشی', $uid, $now, $now
+              'INSERT INTO ' . $db->table('cpms_clinicians') . ' (clinic_id, full_name, wp_user_id, is_active, created_at, updated_at) VALUES (%d, %s, %d, 1, %s, %s)',
+              $accClinicId, 'پزشک آزمایشی', $uid, $now, $now
           ));
           $cid = (int) $wpdb->insert_id;
           // یک برنامهٔ هفتگی «پُر» برای پزشک تجربی — تا اسکرین‌شات Schedule خالی نباشد.
@@ -242,18 +262,6 @@ jobs:
           // tenant را تعریف نمی‌کند و Production عمداً هیچ provisioning خودکاری
           // (user_register/set_user_role/exact‑one) ندارد. شناسهٔ Clinic از خودِ
           // محیط حل می‌شود — هیچ فرضِ id=1 یا «اولین Clinic» در کار نیست.
-          $clinicRow = $db->fetchRow(
-              'SELECT c.id FROM ' . $db->table('cpms_clinics') . ' c
-                 INNER JOIN ' . $db->table('cpms_clinicians') . ' cl ON cl.clinic_id = c.id
-                WHERE cl.wp_user_id = %d AND cl.is_active = 1
-                LIMIT 1',
-              [$uid]
-          );
-          if ($clinicRow === null) {
-              fwrite(STDERR, "FAIL: clinician به هیچ Clinic فعال متصل نیست — fixture عضویت قابل ساخت نیست\n");
-              exit(1);
-          }
-          $accClinicId = (int) $clinicRow['id'];
           $svc = \ClinicCore\Bootstrap\App::membership_service();
           $roleKeys = [
               'DOCTOR_USER' => 'cpms_doctor',
@@ -292,6 +300,20 @@ jobs:
               )) . "\n";
           PHPEOF
           wp eval-file /tmp/acc/setup-roles.php --path="$WP_DIR" --allow-root
+          # شواهد Fixture (برای تفکیک A/C/D اگر ورود شکست بخورد) — بدون رمز/هش:
+          # وجود کاربران نقش‌محور، نقش‌شان و تعداد عضویت‌های Clinic.
+          PREFIX='${{ matrix.prefix }}'
+          wp user list --fields=user_login,roles --path="$WP_DIR" --allow-root > /tmp/acc/fixture-users.txt
+          mysql -h 127.0.0.1 -P 3306 -uroot -proot -N \
+            -e "SELECT COUNT(*) FROM $DB_NAME.${PREFIX}cpms_clinic_memberships;" > /tmp/acc/fixture-memberships.txt
+          echo "fixture membership rows: $(cat /tmp/acc/fixture-memberships.txt)"
+          MANAGER_CLINIC_ID=$(cat /tmp/acc/manager_clinic_id.txt)
+          case "$MANAGER_CLINIC_ID" in
+            ''|*[!0-9]*) echo 'FAIL: manager Clinic fixture id is not numeric'; exit 1 ;;
+          esac
+          [ "$MANAGER_CLINIC_ID" -gt 0 ] || { echo 'FAIL: manager Clinic fixture id is invalid'; exit 1; }
+          echo "MANAGER_CLINIC_ID=$MANAGER_CLINIC_ID" >> "$GITHUB_ENV"
+          echo "explicit manager Clinic context exported: $MANAGER_CLINIC_ID"
 
       # ---------- Apache + mod_php (وب واقعی) ----------
       - name: Apache + mod_php
@@ -332,6 +354,7 @@ jobs:
           DOCTOR_USER="$DOCTOR_USER" DOCTOR_PASS="$DOCTOR_PASS" \
           SECRETARY_USER="$SECRETARY_USER" SECRETARY_PASS="$SECRETARY_PASS" \
           MANAGER_USER="$MANAGER_USER" MANAGER_PASS="$MANAGER_PASS" \
+          MANAGER_CLINIC_ID="$MANAGER_CLINIC_ID" \
           ACCOUNTANT_USER="$ACCOUNTANT_USER" ACCOUNTANT_PASS="$ACCOUNTANT_PASS" \
           ACTUAL_COUNT_FILE=/tmp/acc/actual_count.txt \
           OUT=/tmp/acc \
@@ -410,6 +433,14 @@ jobs:
             echo '- browser acceptance:'
             echo '```'
             cat /tmp/acc/acceptance.log 2>/dev/null || echo '(مرحلهٔ مرورگر اجرا نشد)'
+            echo '```'
+            echo "- fixture users (login/roles) + membership rows: \`$(cat /tmp/acc/fixture-memberships.txt 2>/dev/null || echo '?')\`"
+            echo '```'
+            cat /tmp/acc/fixture-users.txt 2>/dev/null || echo '(fixture users ثبت نشد)'
+            echo '```'
+            echo '- login failures (structured evidence):'
+            echo '```'
+            cat /tmp/acc/logs/*-login.json 2>/dev/null || echo '(no login failure)'
             echo '```'
             echo '- PHP fatal lines in debug.log:'
             echo '```'

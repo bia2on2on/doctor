@@ -44,6 +44,8 @@ final class DoctorWorkflowTest extends WP_UnitTestCase
     protected function makeAdmin(): int
     {
         $id = self::factory()->user->create(['role' => 'administrator']);
+        // Clinic authorization is explicit; administrator status alone is not enough.
+        cpms_test_seed_membership((int) $id, 1, RolesAndCapabilities::ROLE_MANAGER);
         wp_set_current_user($id);
 
         return (int) $id;

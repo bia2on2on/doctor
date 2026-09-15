@@ -48,6 +48,9 @@ final class RoleManagementGTest extends WP_UnitTestCase
         $now = App::db()->nowUtcSql();
 
         $this->adminId = $this->makeUser('rmg_admin', 'administrator');
+        // The global administrator is also an explicitly arranged Clinic member;
+        // the global role alone is not authorization evidence.
+        cpms_test_seed_membership($this->adminId, 1, RolesAndCapabilities::ROLE_MANAGER);
         // C6 repair — عضویت فعال staff صریح است (نه fixture سراسری).
         // تست‌های patient/non-member عمداً عضویت نمی‌گیرند.
         $this->managerId = $this->makeUser('rmg_manager', RolesAndCapabilities::ROLE_MANAGER);
