@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace ClinicCore\Rest;
 
 use ClinicCore\Application\Notifications\SmsService;
-use ClinicCore\Bootstrap\App;
 use ClinicCore\Auth\RolesAndCapabilities;
+use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Sms\SmsTemplateException;
 use WP_REST_Request;
 use WP_REST_Server;
@@ -14,9 +14,10 @@ use WP_REST_Server;
 /**
  * Endpointهای ماژول پیامک (ADR-0025) — Settings → SMS/پیامک.
  *
- * امنیت:
- *  - Capability: cpms_sms_config (فنی)
+ * امنیت (Phase 3 Slice 3):
+ *  - Capability: cpms_sms_config (فنی) — coarse, defense in depth
  *  - Nonce (CSRF) در همه Endpointها
+ *  - Clinic-scoped SMS_CONFIG via AuthorizationService (App::scope()->clinicId trusted, never payload)
  *  - Rate Limit برای Testهای ارسال‌کننده
  *  - هیچ Response حاوی Secret/Credential plaintext نیست
  */
@@ -55,7 +56,7 @@ final class SmsController extends RestBase
         register_rest_route(self::NS, '/sms/templates', [
             [
                 'methods' => [WP_REST_Server::READABLE, WP_REST_Server::CREATABLE],
-                'callback' => fn (WP_REST_Request $r) => $r->get_method() === 'POST' ? $this->saveTemplate($r) : $this->templates(),
+                'callback' => fn (WP_REST_Request $r) => $r->get_method() === 'POST' ? $this->saveTemplate($r) : $this->templates($r),
                 'permission_callback' => fn (WP_REST_Request $r)
                     => $this->permCap($r, RolesAndCapabilities::SMS_CONFIG),
             ],
@@ -86,6 +87,43 @@ final class SmsController extends RestBase
         ]);
     }
 
+    // ===== Clinic-scoped Authorization (Phase 3 Slice 3) =====
+
+    /**
+     * Clinic-scoped SMS_CONFIG authorization — fail closed.
+     *
+     * Invariants:
+     *  - Trusted Clinic from App::scope() (established by RestClinicContext), never from request payload.
+     *  - Global WP capability alone insufficient — durable ACTIVE membership + scoped permission required.
+     *  - Explicit deny overrides grant/preset, suspended/non-member fails closed.
+     *  - On denial: no settings/template/last_test mutation, no SMS side effect, no credential disclosure.
+     *
+     * Error contract: generic CLINIC_PERMISSION_DENIED 403 to avoid clinic existence leak.
+     * Existing coarse WP capability + nonce checks remain as defense in depth (checked before this helper).
+     */
+    private function requireClinicSmsAuth(): bool|\WP_Error
+    {
+        $userId = (int) get_current_user_id();
+        if ($userId <= 0) {
+            return $this->error('CLINIC_UNAUTHORIZED', 401, 'وارد نشده‌اید');
+        }
+        try {
+            $clinicId = App::scope()->clinicId;
+        } catch (\Throwable $e) {
+            return $this->error('CLINIC_PERMISSION_DENIED', 403, 'دسترسی ندارید');
+        }
+        if ($clinicId <= 0) {
+            return $this->error('CLINIC_PERMISSION_DENIED', 403, 'دسترسی ندارید');
+        }
+        try {
+            App::authorization_service()->authorize($userId, $clinicId, RolesAndCapabilities::SMS_CONFIG);
+        } catch (\ClinicCore\Application\Authorization\AuthorizationException $ex) {
+            return $this->error('CLINIC_PERMISSION_DENIED', 403, 'دسترسی ندارید');
+        }
+
+        return true;
+    }
+
     // ===== Handlers =====
 
     private function status(WP_REST_Request $request): \WP_REST_Response|\WP_Error
@@ -97,6 +135,10 @@ final class SmsController extends RestBase
         $p = $this->requireCap(RolesAndCapabilities::SMS_CONFIG);
         if ($p instanceof \WP_Error) {
             return $p;
+        }
+        $a = $this->requireClinicSmsAuth();
+        if ($a instanceof \WP_Error) {
+            return $a;
         }
 
         return $this->success($this->sms->status());
@@ -112,6 +154,10 @@ final class SmsController extends RestBase
         if ($p instanceof \WP_Error) {
             return $p;
         }
+        $a = $this->requireClinicSmsAuth();
+        if ($a instanceof \WP_Error) {
+            return $a;
+        }
 
         return $this->success($this->smsProvidersList());
     }
@@ -125,6 +171,10 @@ final class SmsController extends RestBase
         $p = $this->requireCap(RolesAndCapabilities::SMS_CONFIG);
         if ($p instanceof \WP_Error) {
             return $p;
+        }
+        $a = $this->requireClinicSmsAuth();
+        if ($a instanceof \WP_Error) {
+            return $a;
         }
         try {
             return $this->success($this->sms->saveSettings($request->get_json_params() ?: [], $this->userId()));
@@ -142,6 +192,10 @@ final class SmsController extends RestBase
         $p = $this->requireCap(RolesAndCapabilities::SMS_CONFIG);
         if ($p instanceof \WP_Error) {
             return $p;
+        }
+        $a = $this->requireClinicSmsAuth();
+        if ($a instanceof \WP_Error) {
+            return $a;
         }
         $rl = $this->rateLimit($request, 'sms-test-' . $this->userId(), 10, 3600);
         if (is_wp_error($rl)) {
@@ -161,6 +215,10 @@ final class SmsController extends RestBase
         if ($p instanceof \WP_Error) {
             return $p;
         }
+        $a = $this->requireClinicSmsAuth();
+        if ($a instanceof \WP_Error) {
+            return $a;
+        }
         $rl = $this->rateLimit($request, 'sms-send-' . $this->userId(), 10, 3600);
         if (is_wp_error($rl)) {
             return $rl;
@@ -178,8 +236,21 @@ final class SmsController extends RestBase
         }
     }
 
-    private function templates(): \WP_REST_Response|\WP_Error
+    private function templates(WP_REST_Request $request): \WP_REST_Response|\WP_Error
     {
+        $e = $this->requireNonce($request);
+        if ($e instanceof \WP_Error) {
+            return $e;
+        }
+        $p = $this->requireCap(RolesAndCapabilities::SMS_CONFIG);
+        if ($p instanceof \WP_Error) {
+            return $p;
+        }
+        $a = $this->requireClinicSmsAuth();
+        if ($a instanceof \WP_Error) {
+            return $a;
+        }
+
         return $this->success($this->sms->templates());
     }
 
@@ -192,6 +263,10 @@ final class SmsController extends RestBase
         $p = $this->requireCap(RolesAndCapabilities::SMS_CONFIG);
         if ($p instanceof \WP_Error) {
             return $p;
+        }
+        $a = $this->requireClinicSmsAuth();
+        if ($a instanceof \WP_Error) {
+            return $a;
         }
         $params = $request->get_json_params() ?: [];
         $event = (string) ($params['event'] ?? '');
@@ -212,6 +287,10 @@ final class SmsController extends RestBase
         $p = $this->requireCap(RolesAndCapabilities::SMS_CONFIG);
         if ($p instanceof \WP_Error) {
             return $p;
+        }
+        $a = $this->requireClinicSmsAuth();
+        if ($a instanceof \WP_Error) {
+            return $a;
         }
         $rl = $this->rateLimit($request, 'sms-tmpl-' . $this->userId(), 20, 3600);
         if (is_wp_error($rl)) {
@@ -241,6 +320,10 @@ final class SmsController extends RestBase
         if ($p instanceof \WP_Error) {
             return $p;
         }
+        $a = $this->requireClinicSmsAuth();
+        if ($a instanceof \WP_Error) {
+            return $a;
+        }
 
         return $this->success(
             $this->sms->logs(
@@ -262,6 +345,10 @@ final class SmsController extends RestBase
         $p = $this->requireCap(RolesAndCapabilities::SMS_CONFIG);
         if ($p instanceof \WP_Error) {
             return $p;
+        }
+        $a = $this->requireClinicSmsAuth();
+        if ($a instanceof \WP_Error) {
+            return $a;
         }
 
         return $this->success($this->sms->balance());
