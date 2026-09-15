@@ -64,4 +64,37 @@ final class JobQueueM4DeterministicFailureTest extends WP_UnitTestCase
             . ' attempts=' . $row['attempts'] . ' run_after=' . $row['run_after']
         );
     }
+
+    public function testTransientFailureKeepsExistingRetryBackoff(): void
+    {
+        global $wpdb;
+        $dispatcher = new JobsDispatcher($this->queue, App::op(), true);
+        $dispatcher->register('m4.transient', static function (array $payload): void {
+            throw new \RuntimeException('transient-control');
+        });
+        $jobId = $this->queue->enqueue('m4.transient', [], null, 5, 2);
+        $before = time();
+        $dispatcher->tick(1, 'm4-transient-worker');
+        $row = $wpdb->get_row($wpdb->prepare("SELECT status, attempts, run_after, last_error FROM {$wpdb->prefix}cpms_jobs WHERE id = %d", $jobId), ARRAY_A);
+        self::assertSame(JobQueue::QUEUED, (string) $row['status']);
+        self::assertSame(1, (int) $row['attempts']);
+        self::assertSame('transient-control', (string) $row['last_error']);
+        self::assertGreaterThan($before, strtotime((string) $row['run_after']));
+    }
+
+    public function testTransientFailureReachesExistingMaxAttempts(): void
+    {
+        global $wpdb;
+        $dispatcher = new JobsDispatcher($this->queue, App::op(), true);
+        $dispatcher->register('m4.transient', static function (array $payload): void {
+            throw new \RuntimeException('transient-control-final');
+        });
+        $jobId = $this->queue->enqueue('m4.transient', [], null, 5, 2);
+        $dispatcher->tick(1, 'm4-max-worker');
+        $wpdb->query($wpdb->prepare("UPDATE {$wpdb->prefix}cpms_jobs SET run_after = %s WHERE id = %d", '2020-01-01 00:00:00.000', $jobId));
+        $dispatcher->tick(1, 'm4-max-worker');
+        $row = $wpdb->get_row($wpdb->prepare("SELECT status, attempts FROM {$wpdb->prefix}cpms_jobs WHERE id = %d", $jobId), ARRAY_A);
+        self::assertSame(JobQueue::FAILED, (string) $row['status']);
+        self::assertSame(2, (int) $row['attempts']);
+    }
 }

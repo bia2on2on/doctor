@@ -104,6 +104,8 @@ final class JobsDispatcher
                 $handler($payload);
                 $this->queue->complete((int) $job['id']);
                 $processed++;
+            } catch (NonRetryableJobFailure $e) {
+                $this->queue->failTerminal((int) $job['id'], $e->getMessage(), $workerId);
             } catch (\Throwable $e) {
                 $this->queue->fail((int) $job['id'], $e->getMessage(), $workerId);
             }

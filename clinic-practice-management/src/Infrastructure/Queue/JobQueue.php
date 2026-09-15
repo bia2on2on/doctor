@@ -97,6 +97,19 @@ final class JobQueue
      * `$workerId = null` → رفتار legacy بدون گارد (مسیرهای خارج از Runner، مثل
      * عملیات دستی؛ فراخوانندهٔ داخلی اصلی = JobsDispatcher همیشه workerId می‌دهد).
      */
+    public function failTerminal(int $jobId, string $error, ?string $workerId = null): void
+    {
+        $guardSql = $workerId !== null ? ' AND locked_by = %s' : '';
+        $guardParams = $workerId !== null ? [$workerId] : [];
+        $this->db->execute(
+            'UPDATE ' . $this->db->table('cpms_jobs') .
+            ' SET status = %s, last_error = %s, locked_by = NULL, lock_expires_at = NULL, completed_at = %s
+             WHERE id = %d AND status = %s' . $guardSql,
+            [self::FAILED, mb_substr($error, 0, 250), $this->db->nowUtcSql(), $jobId, self::PROCESSING, ...$guardParams]
+        );
+        $this->op->error('JOB_FAILED_FINAL', ['job_id' => $jobId, 'error' => $error]);
+    }
+
     public function fail(int $jobId, string $error, ?string $workerId = null): void
     {
         $job = $this->db->fetchRow(

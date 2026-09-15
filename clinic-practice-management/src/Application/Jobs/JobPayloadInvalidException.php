@@ -9,7 +9,7 @@ namespace ClinicCore\Application\Jobs;
  *
  * یک payload خراب نباید بی‌صدا به عنوان root sweep از ابتدا شروع کند.
  */
-final class JobPayloadInvalidException extends \RuntimeException
+final class JobPayloadInvalidException extends \RuntimeException implements NonRetryableJobFailure
 {
     /**
      * @param array<string, mixed> $data
