@@ -33,7 +33,12 @@ use ClinicCore\Infrastructure\Repository\MembershipRepository;
  *  - no hardcoded IDs
  *  - no first row wins
  *  - no ambient Clinic guessing
- *  - no raw payload trust (objectClinicId must equal trusted clinicId)
+ *  - no raw payload trust:
+ *    trusted authorization Clinic (from TrustedClinicEstablisher / explicit membership)
+ *    + independently retrieved durable object owner Clinic (from persistence/repository)
+ *    must agree; equality alone does not establish trust unless owner Clinic was
+ *    obtained server-side from durable storage. If durable ownership cannot be
+ *    established, authorization must fail closed.
  *  - no administrator bypass
  *  - no secretary-to-doctor coupling
  */
@@ -118,7 +123,17 @@ final class AuthorizationService
     /**
      * Clinic-scoped permission check with durable object ownership validation.
      *
-     * @param int $objectClinicId Durable trusted clinic ownership of the target object (>0)
+     * Contract for $objectClinicId (both canForObject and authorizeForObject):
+     *  - MUST be the durable owner clinic_id of the target object;
+     *  - MUST be obtained server-side from persistence/repository data (e.g. SELECT clinic_id FROM cpms_patients WHERE id = ?);
+     *  - MUST never be obtained/trusted from request/payload/context;
+     *  - If durable ownership cannot be established (no row, null, 0), authorization must fail closed.
+     *
+     * This method checks that the independently retrieved durable owner Clinic
+     * agrees with the trusted authorization Clinic. Equality alone does not
+     * establish trust — the owner value must come from durable storage.
+     *
+     * @param int $objectClinicId Durable owner clinic_id retrieved server-side from persistence (>0)
      */
     public function canForObject(int $actorWpUserId, int $clinicId, string $permission, int $objectClinicId): bool
     {
@@ -171,6 +186,17 @@ final class AuthorizationService
 
     /**
      * Authorize with object ownership check or throw.
+     *
+     * Contract for $objectClinicId:
+     *  - MUST be the durable owner clinic_id of the target object;
+     *  - MUST be obtained server-side from persistence/repository data;
+     *  - MUST never be obtained/trusted from request/payload/context;
+     *  - If durable ownership cannot be established, authorization must fail closed.
+     *
+     * The trusted authorization Clinic and the independently retrieved durable
+     * object owner Clinic must agree.
+     *
+     * @param int $objectClinicId Durable owner clinic_id retrieved server-side from persistence (>0)
      *
      * @throws AuthorizationException
      */

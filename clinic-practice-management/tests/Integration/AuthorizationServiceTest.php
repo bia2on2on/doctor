@@ -180,25 +180,43 @@ final class AuthorizationServiceTest extends WP_UnitTestCase
     public function testDenyCrossClinicObjectAccess(): void
     {
         $svc = $this->authzService();
-        // multiClinicUser is member in both A and B, but object belongs to B while authorizing in A
-        // Should deny when durable object ownership contradicts authorized clinic
-        $allowed = $svc->canForObject($this->multiClinicUserId, $this->clinicA, 'cpms_patient_read', $this->clinicB);
-        self::assertFalse($allowed, 'cross-clinic object access must deny');
+
+        // --- Real persisted Clinic-owned object (cpms_patients) in Clinic B ---
+        // Create a patient owned by Clinic B using normal fixture conventions
+        $patientId = $this->createPatientInClinic($this->clinicB, 'authz-cross-b');
+        self::assertGreaterThan(0, $patientId, 'patient fixture must be created in Clinic B');
+
+        // Retrieve durable owner clinic_id server-side from persistence (never from payload)
+        $durableOwnerClinicId = $this->getPatientClinicIdFromPersistence($patientId);
+        self::assertNotNull($durableOwnerClinicId, 'durable owner clinic_id must be retrievable from persistence');
+        self::assertSame($this->clinicB, $durableOwnerClinicId, 'retrieved durable owner must be Clinic B');
+
+        // Actor is authorized in Clinic A, but object durably belongs to Clinic B
+        // Should deny when independently retrieved durable object ownership contradicts trusted authorization Clinic
+        $allowed = $svc->canForObject($this->multiClinicUserId, $this->clinicA, 'cpms_patient_read', $durableOwnerClinicId);
+        self::assertFalse($allowed, 'cross-clinic object access must deny when durable ownership (from persistence) contradicts authorized clinic');
 
         try {
-            $svc->authorizeForObject($this->multiClinicUserId, $this->clinicA, 'cpms_patient_read', $this->clinicB);
+            $svc->authorizeForObject($this->multiClinicUserId, $this->clinicA, 'cpms_patient_read', $durableOwnerClinicId);
             self::fail('cross-clinic should throw');
         } catch (\ClinicCore\Application\Authorization\AuthorizationException $e) {
             self::assertSame('AUTH_CROSS_CLINIC', $e->getErrorCode());
         }
     }
 
-    public function testDenyUntrustedClinicContradictsDurableOwnership(): void
+    public function testDenyWhenDurableObjectOwnerDiffersFromAuthorizedClinic(): void
     {
         $svc = $this->authzService();
-        // Simulate payload clinic_id = A but durable object clinic_id = B
-        // Service receives trusted clinic = A, object clinic = B => deny
-        self::assertFalse($svc->canForObject($this->multiClinicUserId, $this->clinicA, 'cpms_patient_read', $this->clinicB));
+
+        // Use another real persisted object owned by Clinic B to prove ownership from persistence
+        $patientId = $this->createPatientInClinic($this->clinicB, 'authz-untrusted-b');
+        self::assertGreaterThan(0, $patientId, 'second patient fixture must be created in Clinic B');
+
+        $durableOwnerClinicId = $this->getPatientClinicIdFromPersistence($patientId);
+        self::assertSame($this->clinicB, $durableOwnerClinicId, 'durable owner retrieved from persistence must be Clinic B');
+
+        // Trusted authorization Clinic = A, durable owner = B (retrieved from persistence) => deny
+        self::assertFalse($svc->canForObject($this->multiClinicUserId, $this->clinicA, 'cpms_patient_read', $durableOwnerClinicId), 'must deny when trusted clinic A != durable owner B from persistence');
     }
 
     public function testMultiClinicIndependentAuthorization(): void
@@ -243,5 +261,50 @@ final class AuthorizationServiceTest extends WP_UnitTestCase
         // No clinic_id = 0 should never be treated as global
         self::assertFalse($svc->can($this->doctorUserId, 0, 'cpms_patient_read'));
         self::assertFalse($svc->can($this->multiClinicUserId, 0, 'cpms_patient_read'));
+    }
+
+    /**
+     * Helper: create a real persisted patient owned by a specific clinic.
+     * Uses normal fixture conventions (direct $wpdb insert) — smallest existing
+     * clinic-owned durable object (cpms_patients).
+     */
+    private function createPatientInClinic(int $clinicId, string $suffix): int
+    {
+        global $wpdb;
+        $now = App::db()->nowUtcSql();
+        $mrn = 'MR-AUTHZ-' . $suffix . '-' . bin2hex(random_bytes(3));
+        $mobile = '0915' . random_int(1000000, 9999999);
+        $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_patients (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, %s, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $clinicId,
+                $mrn,
+                'AuthZ',
+                $suffix,
+                $mobile,
+                'active',
+                $now,
+                $now
+            )
+        );
+        $id = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $id, "patient $suffix must be persisted in clinic $clinicId");
+        return $id;
+    }
+
+    /**
+     * Helper: retrieve durable owner clinic_id server-side from persistence.
+     * Never from payload/request.
+     */
+    private function getPatientClinicIdFromPersistence(int $patientId): ?int
+    {
+        global $wpdb;
+        $val = $wpdb->get_var(
+            $wpdb->prepare(
+                'SELECT clinic_id FROM ' . $wpdb->prefix . 'cpms_patients WHERE id = %d LIMIT 1', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $patientId
+            )
+        );
+        return $val === null ? null : (int) $val;
     }
 }
