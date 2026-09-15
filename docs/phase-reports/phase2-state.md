@@ -158,48 +158,52 @@ IN PROGRESS است.
   شرایطِ «همهٔ capability‌های سراسری + عضویتِ A + نبودِ عضویتِ B» — نه یک run
   RED ساختگی.
 
-### M-2 — هفت job که همچنان توسط Settingsِ Clinic-scoped مسدودند (مستند، نه حل)
+### M-2 — هفت job حل‌شده روی main؛ آخرین آیتم باقی‌مانده (`handwriting.gc`) در PR #43 (باز) پیاده‌سازی شده
 
-> ✅ **`handwriting.gc` — RESOLVED (آخرین برشِ M-2):** بازتدوین به طبقهٔ **W**
-> (installation-wide sweep با semantics پر-ردیف). سرویسِ دست‌خط دیگر به
-> `App::settings()`/`App::scope()` وابسته نیست (constructor از
+> **وضعیتِ canonical (در 2026-09-15 با live main `95f2503f` راستی‌آزمایی‌شده):** از ۸ job این
+> بخش، **هفت‌تا روی main حل شده‌اند** (ساختِ scope-neutral — مستقیماً با کدِ جاریِ
+> dispatcher/سرویس‌ها روی main تأیید شده) و آخرین آیتمِ canonicalِ فهرستِ M-2 یعنی
+> **`handwriting.gc`** در **PR #43 (DRAFT — باز) پیاده‌سازی شده است و هنوز روی main نیست**
+> (تا mergeِ PR #43، main هنوز `App::settings()` را به ساختِ `handwritingService()` می‌دهد).
+> تمایزِ صریح: *حل‌شده روی main* (۷ job زیر) / *پیاده‌سازی‌شده در PR باز* (`handwriting.gc`
+> در PR #43) / *merged نشده* (PR #43 هنوز open است).
+
+> 🚧 **`handwriting.gc` — آخرین آیتمِ M-2؛ پیاده‌سازی‌شده در PR #43 (باز — نه merged روی main):**
+> بازتدوین به طبقهٔ **W** (installation-wide sweep با semantics پر-ردیف). در PR #43 سرویسِ
+> دست‌خط دیگر به `App::settings()`/`App::scope()` وابسته نیست (constructor از
 > `SettingsFactory`؛ سیاستِ `hw.version_keep` + `hw.version_max_age_days` به‌ازای
-> **هر Clinic** از نمونهٔ per-Clinicِ `SettingsFactory::forClinic()` حل می‌شود و
-> ردیف‌های هر Clinic فقط با سیاستِ خودِ همان Clinic پاک‌سازی می‌شوند).
-> مالکیتِ هر ردیف از رابطهٔ دائمیِ `versions.page_id → pages.document_id →
-> documents.clinic_id` مشتق می‌شود. کرانِ هر فراخوانی =
-> `HandwritingService::GC_PAGE_BATCH_SIZE` (۵۰ صفحهٔ کاندیدا، LIMIT واقعی در
-> انتخابِ کاندیدا؛ فراخوانیِ بعدی ادامه می‌دهد — بدونِ OFFSET/cursor دائمی).
-> registry: S → W (توزیع RT-12: ۲T/۶S/۷W). شواهدِ RED/GREEN در گزارشِ برش
-> مربوطه. **بدون** migration جدید، **بدون** جابه‌جاییِ کلیدهای `hw.*` به
-> InstallationSettings (سیاست retention باقی‌مانده Clinic-owned).
+> **هر Clinic** از نمونهٔ per-Clinicِ `SettingsFactory::forClinic()` حل می‌شود و ردیف‌های
+> هر Clinic فقط با سیاستِ خودِ همان Clinic پاک‌سازی می‌شوند). مالکیتِ هر ردیف از رابطهٔ
+> دائمیِ `versions.page_id → pages.document_id → documents.clinic_id` مشتق می‌شود. کرانِ هر
+> فراخوانی = `HandwritingService::GC_PAGE_BATCH_SIZE` (۵۰ صفحهٔ کاندیدا، LIMIT واقعی در
+> انتخابِ کاندیدا؛ فراخوانیِ بعدی ادامه می‌دهد — بدونِ OFFSET/cursor دائمی). registry:
+> S → W (توزیع RT-12: ۲T/۶S/۷W). **بدون** migration جدید، **بدون** جابه‌جاییِ کلیدهای
+> `hw.*` به InstallationSettings (سیاست retention باقی‌مانده Clinic-owned). شواهدِ
+> RED/GREEN در گزارشِ برش / PR #43.
 
-پس از lazy شدنِ dispatcher (Slice 1B)، **هفت** نوع job هنوز در **لحظهٔ اجرای
-handler** وابستگی‌های Clinic‌دار را می‌سازند و در نصبِ چندکلینیکیِ بدونِ
-کاربر/scope با `CLINIC_SCOPE_REQUIRED` شکست می‌خورند:
+هفت jobِ زیر — که پس از Slice 1B به‌عنوانِ «مسدود» در همین بخش مستند شده بودند — از
+آن‌بعد **روی main حل شده‌اند** (ساختِ scope-neutral؛ با کدِ live main راستی‌آزمایی‌شده):
 
-| نوع | کلاس | محلِ خواندن Settings/Scope در ساختِ handler |
-|---|---|---|
-| `cleanup.oplog` | S | `OpLogCleanupHandler($db, self::settings())` |
-| `backup.run` | S | `self::backupService()` + `self::settings()` |
-| `slots.generate` | W | `self::settings()` |
-| `appt.reminder` | W | `self::settings()` + `self::notificationService()` |
-| `fu.reminder` | W | `self::settings()` + `self::notificationService()` |
-| `notif.dispatch` | W | `self::notificationService()` → `self::settings()` |
-| `visits.no_show` | W | `self::visitService()` → `self::settings()` |
+| نوع | کلاس | ساختِ جاری روی main (scope-neutral) | PR ادغام‌شده (حل روی main) |
+|---|---|---|---|
+| `visits.no_show` | W | `VisitsNoShowHandler(self::visitService(), …)` — `visitService()` از `SettingsFactory` ساخته می‌شود | #30 |
+| `slots.generate` | W | `SlotsGenerateHandler($db, self::settingsFactory(), $op)` | #31 (پیگیری‌ها: #32، #36) |
+| `appt.reminder` | W | `ApptReminderHandler($db, self::smsService(), factory per-Clinic، …)` — NotificationServiceٔ per-Clinic از clinic_idِ خودِ ردیف | #28 |
+| `fu.reminder` | W | `FollowUpReminderHandler($db, self::settingsFactory(), self::smsService(), factory per-Clinic، …)` | #33 (شواهد: #37) |
+| `notif.dispatch` | W | `NotifDispatchHandler(NotificationRepository, self::installationSettings(), self::exportService())` — retention از InstallationSettings | #39 (+ #40) |
+| `cleanup.oplog` | S | `OpLogCleanupHandler($db, self::installationSettings())` — روزهای retention از InstallationSettings | #41 |
+| `backup.run` | S | `BackupRunHandler(self::backupService(), self::installationSettings(), $op)` — `backupService()` در ساخت Settings/scope نمی‌خواند | #42 |
 
-- **علت شکست:** این هفت job پیکربندی/سرویسِ Clinic‌دار را در لحظهٔ اجرا
-  (داخل callable ثبت‌شده) می‌سازند؛ در نصبِ چندکلینیکیِ بدونِ scope،
-  `App::scope()` fail-closed خطا می‌دهد و handler قبل از انجامِ کارش می‌افتد.
-- **پیامدِ retry/churn:** `JobQueue::fail()` وقتی `attempts < max_attempts`
-  است job را دوباره `queued` می‌کند (backoff ۱/۵/۱۵/۶۰/۳۰۰ ثانیه) و پس از
-  `max_attempts = 3` terminal `failed` می‌شود؛ اما `scheduleRecurringJobs()` در
-  هر tick نوعِ بدونِ ردیفِ `queued` را **دوباره enqueue** می‌کند ⇒ چرخهٔ
-  تکراریِ claim → شکست → بازصف → شکست، بدون انجامِ کارِ واقعی.
-- **`cleanup.oplog` یکی از همین jobهای مسدود است.**
-- **این مورد توسط Slice 1B.1 رفع نشده** و یک بلوکرِ باقی‌ماندهٔ فاز ۲ است
-  (نیازمند معماریِ Settings سطحِ نصب / §۸-۱؛ خارج از دامنهٔ این برش — نه جابه‌جایی
-  کلید، نه migration/schema).
+- **علت شکست (تاریخی، برای هر ۸ job):** پیکربندی/سرویسِ Clinic‌دار را در لحظهٔ اجرا
+  (داخل callable ثبت‌شده) می‌ساختند؛ در نصبِ چندکلینیکیِ بدونِ scope، `App::scope()`
+  fail-closed خطا می‌داد و handler قبل از انجامِ کار می‌افتاد. هفت jobِ بالا در PRهای
+  ادغام‌شدهٔ جدولِ بالا اصلاح شدند و آخرین آیتمِ فهرست، `handwriting.gc`، در PR #43 (باز)
+  در حالِ اصلاح است.
+- **پیامدِ retry/churn (تاریخی):** `JobQueue::fail()` وقتی `attempts < max_attempts`
+  است job را دوباره `queued` می‌کرد (backoff ۱/۵/۱۵/۶۰/۳۰۰ ثانیه) و پس از
+  `max_attempts = 3` terminal `failed` می‌شد؛ اما `scheduleRecurringJobs()` در هر tick
+  نوعِ بدونِ ردیفِ `queued` را **دوباره enqueue** می‌کرد ⇒ چرخهٔ تکراریِ claim → شکست →
+  بازصف → شکست، بدون انجامِ کارِ واقعی.
 - ⚠ طبقه‌بندیِ T/S/W به‌خودیِ‌خود اثباتِ صحتِ عملیاتی نیست؛ فقط قراردادِ scope است.
 
 ### M-4 — retry قطعیِ scope همچنان generic (بازطراحی نشده)
