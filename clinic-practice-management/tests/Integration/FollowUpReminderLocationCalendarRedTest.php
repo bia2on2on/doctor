@@ -217,7 +217,10 @@ final class FollowUpReminderLocationCalendarRedTest extends WP_UnitTestCase
         Settings::flushCache();
         $settings = new Settings($db, $this->clinicId, App::audit());
         $settings->set('notif.quiet_hours_start', '00:00');
-        $settings->set('notif.quiet_hours_end', '23:59');
+        // '24:00' causes parseHour() to return null, triggering fail-open 24/7 window
+        // (same pattern as FollowUpReminderStarvationRedTest), preventing the 1-hour dead zone
+        // at hour 23 (09:00-10:00 UTC) caused by integer hour truncation with '23:59'.
+        $settings->set('notif.quiet_hours_end', '24:00');
         Settings::flushCache();
         App::resetScope();
         SystemClinicResolver::flush();

@@ -58,6 +58,7 @@ jobs:
       - name: Durable diagnostic probe (environment, timezones, calendar, quiet-hours)
         run: |
           php -d memory_limit=1G -r '
+            require_once "vendor/autoload.php";
             require_once "tests/integration-bootstrap.php";
             use ClinicCore\Bootstrap\App;
             use ClinicCore\Settings\Settings;
@@ -91,18 +92,22 @@ jobs:
                 if (preg_match("/^([01]?\d|2[0-3]):[0-5]\d$/", $hhmm) !== 1) return null;
                 return (int) substr($hhmm, 0, 2);
             };
-            $start = $parseHour("00:00");
-            $end = $parseHour("23:59");
-            echo "quiet_hours_start_parsed: " . var_export($start, true) . PHP_EOL;
-            echo "quiet_hours_end_parsed: " . var_export($end, true) . " (truncated from 23:59)" . PHP_EOL;
+            $startOld = $parseHour("00:00");
+            $endOld = $parseHour("23:59");
+            $endFixed = $parseHour("24:00");
+            echo "quiet_hours_start_parsed: " . var_export($startOld, true) . PHP_EOL;
+            echo "quiet_hours_end_old_parsed: " . var_export($endOld, true) . " (truncated from 23:59)" . PHP_EOL;
+            echo "quiet_hours_end_fixed_parsed: " . var_export($endFixed, true) . " (null from 24:00 => fail-open 24/7)" . PHP_EOL;
 
-            $checkOpen = function(int $nowHour, int $s, int $e): bool {
+            $checkOpen = function(int $nowHour, ?int $s, ?int $e): bool {
+                if ($s === null || $e === null) return true;
                 if ($s <= $e) return $nowHour >= $s && $nowHour < $e;
                 return $nowHour >= $s || $nowHour < $e;
             };
 
-            echo "quiet_hours_open_at_ci_failure_hour_23: " . var_export($checkOpen($failHourA, $start, $end), true) . " (FALSE => CLOSED => reminder_sent_at skipped)" . PHP_EOL;
-            echo "quiet_hours_open_at_current_hour_" . (int)$localA->format("G") . ": " . var_export($checkOpen((int)$localA->format("G"), $start, $end), true) . PHP_EOL;
+            echo "old_quiet_hours_open_at_ci_failure_hour_23: " . var_export($checkOpen($failHourA, $startOld, $endOld), true) . " (FALSE => CLOSED => reminder_sent_at skipped)" . PHP_EOL;
+            echo "fixed_quiet_hours_open_at_ci_failure_hour_23: " . var_export($checkOpen($failHourA, $startOld, $endFixed), true) . " (TRUE => OPEN => reminder_sent_at written)" . PHP_EOL;
+            echo "fixed_quiet_hours_open_at_current_hour_" . (int)$localA->format("G") . ": " . var_export($checkOpen((int)$localA->format("G"), $startOld, $endFixed), true) . PHP_EOL;
             echo "=== END PROBE ===" . PHP_EOL;
           ' 2>&1 | tee /tmp/fu-probe.log
 
@@ -113,6 +118,7 @@ jobs:
             --bootstrap tests/integration-bootstrap.php \
             tests/Integration/FollowUpReminderLocationCalendarRedTest.php \
             --filter 'testLocationLocalCalendarSelectsPerRow|testClinicVisitLocationMismatchFailsClosed' \
+            --testdox \
             --verbose 2>&1 | tee /tmp/fu-exec.log
           EXIT_CODE=$?
           set -e
@@ -124,9 +130,8 @@ jobs:
           echo "executed_tests=$EXECUTED"
           [ "$EXECUTED" = "2" ] || { echo "::error::selection guard failed: expected exactly 2 tests, got '$EXECUTED'"; exit 1; }
 
-          # Check that both intended test method names were reported in verbose output
-          grep -q 'testLocationLocalCalendarSelectsPerRow' /tmp/fu-exec.log || { echo "::error::testLocationLocalCalendarSelectsPerRow was not executed"; exit 1; }
-          grep -q 'testClinicVisitLocationMismatchFailsClosed' /tmp/fu-exec.log || { echo "::error::testClinicVisitLocationMismatchFailsClosed was not executed"; exit 1; }
+          grep -iE "Location local calendar selects per row|testLocationLocalCalendarSelectsPerRow" /tmp/fu-exec.log || { echo "::error::testLocationLocalCalendarSelectsPerRow was not executed"; exit 1; }
+          grep -iE "Clinic visit location mismatch fails closed|testClinicVisitLocationMismatchFailsClosed" /tmp/fu-exec.log || { echo "::error::testClinicVisitLocationMismatchFailsClosed was not executed"; exit 1; }
           echo "Selection guard PASSED: exactly 2 intended tests executed."
 
       - name: Publish diagnostic evidence comment
