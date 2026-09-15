@@ -105,6 +105,17 @@ final class JobsDispatcher
                 $this->queue->complete((int) $job['id']);
                 $processed++;
             } catch (\Throwable $e) {
+                // M-4 — تفکیکِ صریحِ «شکستِ قطعی» از «شکستِ گذرا» روی **نوعِ**
+                // Throwable (هرگز روی متنِ پیام): خطای قطعی (که با قرارداد
+                // NonRetryableJobFailure اعلام شده) در همان اولین تلاش نهایی
+                // می‌شود و Requeue/Backoffِ عمومی نمی‌گیرد؛ سایرِ خطاها مسیرِ
+                // Retry قبلی را دست‌نخورده نگه می‌دارند.
+                if ($e instanceof NonRetryableJobFailure) {
+                    $this->queue->failTerminal((int) $job['id'], $e->getMessage(), $workerId);
+
+                    continue;
+                }
+
                 $this->queue->fail((int) $job['id'], $e->getMessage(), $workerId);
             }
         }
