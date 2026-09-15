@@ -56,7 +56,7 @@ final class JobQueueM4DeterministicFailureTest extends WP_UnitTestCase
         self::assertNotEmpty($row, 'job row must remain available for evidence');
         self::assertTrue($handlerReached, 'real registered handler must be reached');
         self::assertSame(1, (int) $row['attempts'], 'exactly first attempt must be consumed');
-        self::assertSame('JOB_PAYLOAD_INVALID', (string) $row['last_error'], 'typed deterministic code must reach queue');
+        self::assertSame('unchanged invalid continuation payload', (string) $row['last_error'], 'typed failure must reach queue');
         self::assertSame(
             JobQueue::FAILED,
             (string) $row['status'],
