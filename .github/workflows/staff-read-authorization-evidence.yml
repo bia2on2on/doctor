@@ -78,4 +78,25 @@ jobs:
           composer require --dev wp-coding-standards/wpcs:^3.1 \
             --no-interaction --no-progress --with-all-dependencies
       - name: Run WPCS on corrected production file
-        run: vendor/bin/phpcs --standard=phpcs.xml.dist src/Admin/StaffManagementPage.php
+        run: |
+          set +e
+          set -o pipefail
+          vendor/bin/phpcs --standard=phpcs.xml.dist src/Admin/StaffManagementPage.php 2>&1 | tee /tmp/staff-wpcs.log
+          echo "${PIPESTATUS[0]}" > /tmp/staff-wpcs.rc
+          exit 0
+      - name: Publish WPCS output as commit evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "### StaffManagementPage WPCS evidence"
+            echo
+            echo "- exact head: \`$GITHUB_SHA\`"
+            echo '```'
+            cat /tmp/staff-wpcs.log
+            echo '```'
+          } > /tmp/staff-wpcs.md
+          gh api "repos/{owner}/{repo}/commits/$GITHUB_SHA/comments" \
+            -X POST -F body=@/tmp/staff-wpcs.md --jq '.html_url'
+      - name: Enforce WPCS result
+        run: exit "$(cat /tmp/staff-wpcs.rc)"
