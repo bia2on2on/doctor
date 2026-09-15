@@ -63,6 +63,8 @@ final class HandwritingGcM2WiringRedTest extends WP_UnitTestCase
     private int $orgId = 0;
     private int $clinicA = 0;
     private int $clinicB = 0;
+    private int $locationA = 0;
+    private int $locationB = 0;
 
     /** @var array{clinician: int, patient: int, visit: int, doc: int, page: int} */
     private array $tenantA = ['clinician' => 0, 'patient' => 0, 'visit' => 0, 'doc' => 0, 'page' => 0];
@@ -156,8 +158,12 @@ final class HandwritingGcM2WiringRedTest extends WP_UnitTestCase
         self::assertGreaterThan(1, $this->clinicB, 'clinic B must get a DB-generated id > 1 (never a fixed id)');
         self::assertNotSame($this->clinicA, $this->clinicB, 'two distinct dynamically created clinics');
 
-        $this->buildTenant('A', $clinicAId, 2);
-        $this->buildTenant('B', $clinicBId, 5);
+        // cpms_visits.location_id NOT NULL (migration 0013) → Location مادیِ هر Clinic لازم است.
+        $this->locationA = $this->buildLocationRow('A', $clinicAId);
+        $this->locationB = $this->buildLocationRow('B', $clinicBId);
+
+        $this->buildTenant('A', $clinicAId, 2, $this->locationA);
+        $this->buildTenant('B', $clinicBId, 5, $this->locationB);
     }
 
     /**
@@ -171,7 +177,7 @@ final class HandwritingGcM2WiringRedTest extends WP_UnitTestCase
      *       → سیاستِ B (keep=5, max_age=30): حذف v1..v3 → باقی‌مانده {4..8}
      *       → سیاستِ A بر روی صفحهٔ B (keep=2): حذف v1..v6 → باقی‌مانده {7,8} (متمایز)
      */
-    private function buildTenant(string $suffix, int $clinicId, int $keep): void
+    private function buildTenant(string $suffix, int $clinicId, int $keep, int $locationId): void
     {
         $tenantRef = &$this->{$suffix === 'A' ? 'tenantA' : 'tenantB'};
 
@@ -207,9 +213,10 @@ final class HandwritingGcM2WiringRedTest extends WP_UnitTestCase
 
         $wpdb->query($wpdb->prepare(
             'INSERT INTO ' . $db->table('cpms_visits')
-            . ' (clinic_id, clinician_id, patient_id, source, status, visit_date, check_in_at, created_at, updated_at)'
-            . ' VALUES (%d, %d, %d, "walk_in", "checked_in", %s, %s, %s, %s)',
+            . ' (clinic_id, location_id, clinician_id, patient_id, source, status, visit_date, check_in_at, created_at, updated_at)'
+            . ' VALUES (%d, %d, %d, %d, "walk_in", "checked_in", %s, %s, %s, %s)',
             $clinicId,
+            $locationId,
             $tenantRef['clinician'],
             $tenantRef['patient'],
             gmdate('Y-m-d'),
@@ -286,6 +293,31 @@ final class HandwritingGcM2WiringRedTest extends WP_UnitTestCase
         return (int) $wpdb->insert_id;
     }
 
+    /**
+     * Location مادیِ (اصلیِ) یک Clinic — ستونِ NOT NULLِ `cpms_visits.location_id`
+     * (migration 0013) آن را برایِ fixture لازم می‌کند.
+     */
+    private function buildLocationRow(string $suffix, int $clinicId): int
+    {
+        global $wpdb;
+        $db = App::db();
+        $now = $db->nowUtcSql();
+
+        $slug = 'hwgc-red-location-' . strtolower($suffix) . '-' . bin2hex(random_bytes(4));
+        $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $db->table('cpms_locations')
+            . ' (clinic_id, name, slug, timezone, is_primary, is_active, created_at, updated_at)'
+            . ' VALUES (%d, %s, %s, "Asia/Tehran", 1, 1, %s, %s)',
+            $clinicId,
+            'HandwritingGc Red Location ' . $suffix,
+            $slug,
+            $now,
+            $now
+        ));
+
+        return (int) $wpdb->insert_id;
+    }
+
     private function purgeFixture(): void
     {
         global $wpdb;
@@ -317,6 +349,11 @@ final class HandwritingGcM2WiringRedTest extends WP_UnitTestCase
             }
             if ($tenant['clinician'] > 0) {
                 $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_clinicians') . ' WHERE id = %d', $tenant['clinician']));
+            }
+        }
+        foreach ([$this->locationA, $this->locationB] as $locationId) {
+            if ($locationId > 0) {
+                $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_locations') . ' WHERE id = %d', $locationId));
             }
         }
         foreach ([$this->clinicA, $this->clinicB] as $clinicId) {
@@ -561,6 +598,8 @@ final class HandwritingGcM2WiringRedTest extends WP_UnitTestCase
         self::assertGreaterThan(1, $clinicCount, 'install must hold more than one clinic, found ' . $clinicCount);
         self::assertSame(8, $this->countVersions($this->tenantA['page']), 'fixture: page A has 8 versions');
         self::assertSame(8, $this->countVersions($this->tenantB['page']), 'fixture: page B has 8 versions');
+        self::assertGreaterThanOrEqual(1, $this->locationA, 'fixture location A must exist (visits.location_id NOT NULL)');
+        self::assertGreaterThanOrEqual(1, $this->locationB, 'fixture location B must exist (visits.location_id NOT NULL)');
 
         // سیاست‌های متفاوتِ per-Clinic واقعاً در ردیف‌های cpms_settings نشسته‌اند.
         $keepA = (int) json_decode((string) $wpdb->get_var($wpdb->prepare(
