@@ -150,39 +150,93 @@ final class HandwritingRepository
         );
     }
 
-    /**
-     * پاک‌سازی نسخه‌های قدیمی (handwriting.gc): قدیمی‌تر از maxAgeDays
-     * **و** فراتر از keep آخرین نسخه — نسخه‌های تازه هرگز حذف نمی‌شوند.
-     *
-     * دو مرحله‌ای: صفحات دارای نسخه قدیمی (ایندکس created_at) → DELETE به‌ازای صفحه.
-     */
-    public function purgeOldVersions(int $keepLast, int $maxAgeDays): int
-    {
-        $cutoff = gmdate('Y-m-d H:i:s', time() - $maxAgeDays * 86400) . '.000';
+    // ================= GC — جاروی W (Phase 2 M-2) =================
 
-        $pageRows = $this->db->fetchAll(
-            'SELECT DISTINCT page_id FROM ' . $this->db->table('cpms_handwriting_page_versions') .
-            ' WHERE created_at < %s',
-            [$cutoff]
+    /**
+     * Phase 2 M-2 (W): شناسهٔ **همهٔ** Clinicهای نصب — برایِ جاروی
+     * scope-neutral. ترتیبِ قطعی (ORDER BY id) تا ادامهٔ کار در فراخوانی‌های
+     * بعدی پیش‌بینی‌پذیر باشد.
+     *
+     * @return list<int>
+     */
+    public function allClinicIds(): array
+    {
+        $rows = $this->db->fetchAll(
+            'SELECT id FROM ' . $this->db->table('cpms_clinics') . ' ORDER BY id ASC'
         );
 
-        $deleted = 0;
-        foreach (array_column($pageRows, 'page_id') as $pid) {
-            $pid = (int) $pid;
-            $maxVersion = (int) $this->db->fetchValue(
-                'SELECT MAX(version) FROM ' . $this->db->table('cpms_handwriting_page_versions') . ' WHERE page_id = %d',
-                [$pid]
-            );
-            if ($maxVersion <= $keepLast) {
-                continue;
-            }
-            $deleted += $this->db->execute(
-                'DELETE FROM ' . $this->db->table('cpms_handwriting_page_versions') .
-                ' WHERE page_id = %d AND version <= %d AND created_at < %s',
-                [$pid, $maxVersion - $keepLast, $cutoff]
-            );
+        return array_map('intval', array_column($rows, 'id'));
+    }
+
+    /**
+     * Phase 2 M-2 (W): انتخابِ صفحاتِ کاندیدای GC **تحتِ سیاستِ یک Clinicِ
+     * مشخص** — مالکیتِ پر-ردیف از رابطهٔ دائمیِ
+     * `versions.page_id → pages.document_id → documents.clinic_id`
+     * (هرگز نه از Scope محیطی/کاربر/payload).
+     *
+     * یک صفحهٔ کاندیداست اگر حداقل یک نسخهٔ کهنه (created_at < cutoff) داشته
+     * باشد که خارج از `keepLast` نسخهٔ آخرِ صفحه است (در وگرنه هیچ ردیفی
+     * قابلِ حذف نیست). `LIMIT` واقعی همین‌جاست — کرانِ کران‌دارِ هر
+     * فراخوانی (بدونِ OFFSET روی مجموعهٔ درحالِ تغییر، بدونِ cursor دائمی).
+     *
+     * @param int $clinicId مالکِ دائمیِ ردیف‌هایِ این انتخاب
+     * @param string $cutoffSql حدِ سن (DATETIME(3) UTC)
+     * @param int $keepLast سیاستِ `hw.version_keep`ِ خودِ همان Clinic
+     * @param int $limit سهمِ این Clinic از کرانِ کارِ فراخوانی
+     * @return list<int>
+     */
+    public function gcCandidatePages(int $clinicId, string $cutoffSql, int $keepLast, int $limit): array
+    {
+        $versions = $this->db->table('cpms_handwriting_page_versions');
+        $rows = $this->db->fetchAll(
+            'SELECT v.page_id FROM ' . $versions . ' v'
+            . ' JOIN ' . $this->db->table('cpms_handwriting_pages') . ' p ON p.id = v.page_id'
+            . ' JOIN ' . $this->db->table('cpms_handwriting_documents') . ' d ON d.id = p.document_id'
+            . ' WHERE d.clinic_id = %d AND v.created_at < %s'
+            . ' GROUP BY v.page_id'
+            . ' HAVING MIN(v.version) <= (SELECT COALESCE(MAX(v2.version), 0) FROM ' . $versions
+            . ' v2 WHERE v2.page_id = v.page_id) - %d'
+            . ' ORDER BY v.page_id ASC'
+            . ' LIMIT %d',
+            [$clinicId, $cutoffSql, $keepLast, $limit]
+        );
+
+        return array_map('intval', array_column($rows, 'page_id'));
+    }
+
+    /**
+     * Phase 2 M-2 (W): آخرین نسخهٔ یک صفحه — خوانشِ تدافعیِ تازهٔ به‌ازای
+     * هر صفحه هنگامِ GC (حذف فقط بر مبنایِ همین مقدار انجام می‌شود).
+     */
+    public function maxVersionOfPage(int $pageId): int
+    {
+        return (int) $this->db->fetchValue(
+            'SELECT COALESCE(MAX(version), 0) FROM ' . $this->db->table('cpms_handwriting_page_versions')
+            . ' WHERE page_id = %d',
+            [$pageId]
+        );
+    }
+
+    /**
+     * Phase 2 M-2 (W): حذفِ نسخه‌هایِ کهنهٔ **یک صفحه** تحتِ سیاستِ
+     * Clinicِ مالکش — ADR-0009: فقط ردیف‌هایی حذف می‌شوند که **هر دو** شرط
+     * را داشته باشند (کهنه‌تر از cutoff **و** خارج از `keepLast` نسخهٔ
+     * آخر). نسخه‌های تازه هرگز حذف نمی‌شوند.
+     *
+     * @param string $cutoffSql حدِ سن (DATETIME(3) UTC)
+     * @return int تعدادِ ردیف‌هایِ حذف‌شده
+     */
+    public function purgePageVersions(int $pageId, int $keepLast, string $cutoffSql): int
+    {
+        $maxVersion = $this->maxVersionOfPage($pageId);
+        if ($maxVersion <= $keepLast) {
+            return 0;
         }
 
-        return $deleted;
+        return $this->db->execute(
+            'DELETE FROM ' . $this->db->table('cpms_handwriting_page_versions')
+            . ' WHERE page_id = %d AND version <= %d AND created_at < %s',
+            [$pageId, $maxVersion - $keepLast, $cutoffSql]
+        );
     }
 }

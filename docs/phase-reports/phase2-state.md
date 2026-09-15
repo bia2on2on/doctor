@@ -158,9 +158,23 @@ IN PROGRESS است.
   شرایطِ «همهٔ capability‌های سراسری + عضویتِ A + نبودِ عضویتِ B» — نه یک run
   RED ساختگی.
 
-### M-2 — هشت job که همچنان توسط Settingsِ Clinic-scoped مسدودند (مستند، نه حل)
+### M-2 — هفت job که همچنان توسط Settingsِ Clinic-scoped مسدودند (مستند، نه حل)
 
-پس از lazy شدنِ dispatcher (Slice 1B)، هشت نوع job هنوز در **لحظهٔ اجرای
+> ✅ **`handwriting.gc` — RESOLVED (آخرین برشِ M-2):** بازتدوین به طبقهٔ **W**
+> (installation-wide sweep با semantics پر-ردیف). سرویسِ دست‌خط دیگر به
+> `App::settings()`/`App::scope()` وابسته نیست (constructor از
+> `SettingsFactory`؛ سیاستِ `hw.version_keep` + `hw.version_max_age_days` به‌ازای
+> **هر Clinic** از نمونهٔ per-Clinicِ `SettingsFactory::forClinic()` حل می‌شود و
+> ردیف‌های هر Clinic فقط با سیاستِ خودِ همان Clinic پاک‌سازی می‌شوند).
+> مالکیتِ هر ردیف از رابطهٔ دائمیِ `versions.page_id → pages.document_id →
+> documents.clinic_id` مشتق می‌شود. کرانِ هر فراخوانی =
+> `HandwritingService::GC_PAGE_BATCH_SIZE` (۵۰ صفحهٔ کاندیدا، LIMIT واقعی در
+> انتخابِ کاندیدا؛ فراخوانیِ بعدی ادامه می‌دهد — بدونِ OFFSET/cursor دائمی).
+> registry: S → W (توزیع RT-12: ۲T/۶S/۷W). شواهدِ RED/GREEN در گزارشِ برش
+> مربوطه. **بدون** migration جدید، **بدون** جابه‌جاییِ کلیدهای `hw.*` به
+> InstallationSettings (سیاست retention باقی‌مانده Clinic-owned).
+
+پس از lazy شدنِ dispatcher (Slice 1B)، **هفت** نوع job هنوز در **لحظهٔ اجرای
 handler** وابستگی‌های Clinic‌دار را می‌سازند و در نصبِ چندکلینیکیِ بدونِ
 کاربر/scope با `CLINIC_SCOPE_REQUIRED` شکست می‌خورند:
 
@@ -168,14 +182,13 @@ handler** وابستگی‌های Clinic‌دار را می‌سازند و در
 |---|---|---|
 | `cleanup.oplog` | S | `OpLogCleanupHandler($db, self::settings())` |
 | `backup.run` | S | `self::backupService()` + `self::settings()` |
-| `handwriting.gc` | S | `self::handwritingService()` → `self::settings()` |
 | `slots.generate` | W | `self::settings()` |
 | `appt.reminder` | W | `self::settings()` + `self::notificationService()` |
 | `fu.reminder` | W | `self::settings()` + `self::notificationService()` |
 | `notif.dispatch` | W | `self::notificationService()` → `self::settings()` |
 | `visits.no_show` | W | `self::visitService()` → `self::settings()` |
 
-- **علت شکست:** این هشت job پیکربندی/سرویسِ Clinic‌دار را در لحظهٔ اجرا
+- **علت شکست:** این هفت job پیکربندی/سرویسِ Clinic‌دار را در لحظهٔ اجرا
   (داخل callable ثبت‌شده) می‌سازند؛ در نصبِ چندکلینیکیِ بدونِ scope،
   `App::scope()` fail-closed خطا می‌دهد و handler قبل از انجامِ کارش می‌افتد.
 - **پیامدِ retry/churn:** `JobQueue::fail()` وقتی `attempts < max_attempts`
