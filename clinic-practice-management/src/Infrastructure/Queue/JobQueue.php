@@ -12,6 +12,8 @@ use ClinicCore\Infrastructure\Logging\OpLogger;
  *
  * چرخه: queued → processing (claim با Lock) → success | failed
  * Retry: fail() → اگر attempts < max → queued با run_after = now + backoff
+ * Terminal (M-4): failTerminal() → گذارِ نهاییِ بدونِ Retry برای خطاهای قطعی
+ * (اعلام‌شده با قرارداد `NonRetryableJobFailure` در لایهٔ Dispatcher).
  * Idempotency: هر Handler باید تکرارپذیر باشد (J-2).
  */
 final class JobQueue
@@ -20,6 +22,12 @@ final class JobQueue
     public const PROCESSING = 'processing';
     public const SUCCESS = 'success';
     public const FAILED = 'failed';
+
+    /** علتِ گذارِ نهایی: بودجهٔ Retry (`max_attempts`) تمام شده است. */
+    public const TERMINAL_CAUSE_RETRY_BUDGET_EXHAUSTED = 'retry_budget_exhausted';
+
+    /** علتِ گذارِ نهایی: خطای قطعی که با قرارداد `NonRetryableJobFailure` اعلام شده است. */
+    public const TERMINAL_CAUSE_NON_RETRYABLE = 'non_retryable';
 
     public function __construct(private readonly CpmsDb $db, private readonly OpLogger $op)
     {
@@ -130,19 +138,70 @@ final class JobQueue
             }
             $this->op->warning('JOB_RETRY', ['job_id' => $jobId, 'type' => $job['type'], 'attempt' => $attempts]);
         } else {
-            $updated = $this->db->execute(
-                'UPDATE ' . $this->db->table('cpms_jobs') .
-                ' SET status = %s, last_error = %s, locked_by = NULL, lock_expires_at = NULL, completed_at = %s
-                 WHERE id = %d' . $guardSql,
-                [self::FAILED, mb_substr($error, 0, 250), $this->db->nowUtcSql(), $jobId, ...$guardParams]
+            $this->applyTerminalFailure(
+                (string) $job['type'],
+                $jobId,
+                $error,
+                $workerId,
+                self::TERMINAL_CAUSE_RETRY_BUDGET_EXHAUSTED
             );
-            if ($workerId !== null && $updated === 0) {
-                $this->op->warning('JOB_FAIL_SKIPPED_LOCK_LOST', ['job_id' => $jobId, 'type' => $job['type']]);
-
-                return;
-            }
-            $this->op->error('JOB_FAILED_FINAL', ['job_id' => $jobId, 'type' => $job['type'], 'error' => $error]);
         }
+    }
+
+    /**
+     * گذارِ نهاییِ فنیِ بدونِ Retry (M-4).
+     *
+     * برای خطاهایی که با قرارداد `NonRetryableJobFailure` **قطعی** اعلام شده‌اند:
+     * Job در همان اولین تلاش `failed` می‌شود و Requeue/Backoffِ عمومی نمی‌گیرد.
+     *
+     * تصمیمِ «قطعی است یا گذرا» در لایهٔ Dispatcher و بر پایهٔ **نوعِ** Throwable
+     * گرفته می‌شود؛ این متد هیچ سیاستِ Clinic/tenant/مجوز یا تشخیصِ متنِ پیام
+     * ندارد — فقط گذارِ فنیِ `processing → failed` را با همان گاردِ مالکیتِ قفلِ
+     * `fail()` اجرا می‌کند.
+     */
+    public function failTerminal(int $jobId, string $error, ?string $workerId = null): void
+    {
+        $job = $this->db->fetchRow(
+            'SELECT type FROM ' . $this->db->table('cpms_jobs') . ' WHERE id = %d',
+            [$jobId]
+        );
+        if ($job === null) {
+            return;
+        }
+
+        $this->applyTerminalFailure(
+            (string) $job['type'],
+            $jobId,
+            $error,
+            $workerId,
+            self::TERMINAL_CAUSE_NON_RETRYABLE
+        );
+    }
+
+    /**
+     * @param string $cause علتِ گذارِ نهایی — در Operational Log (`JOB_FAILED_FINAL`) ثبت می‌شود
+     */
+    private function applyTerminalFailure(string $type, int $jobId, string $error, ?string $workerId, string $cause): void
+    {
+        $guardSql = $workerId !== null ? ' AND locked_by = %s' : '';
+        $guardParams = $workerId !== null ? [$workerId] : [];
+
+        $updated = $this->db->execute(
+            'UPDATE ' . $this->db->table('cpms_jobs') .
+            ' SET status = %s, last_error = %s, locked_by = NULL, lock_expires_at = NULL, completed_at = %s
+             WHERE id = %d' . $guardSql,
+            [self::FAILED, mb_substr($error, 0, 250), $this->db->nowUtcSql(), $jobId, ...$guardParams]
+        );
+        if ($workerId !== null && $updated === 0) {
+            $this->op->warning('JOB_FAIL_SKIPPED_LOCK_LOST', ['job_id' => $jobId, 'type' => $type]);
+
+            return;
+        }
+
+        $this->op->error(
+            'JOB_FAILED_FINAL',
+            ['job_id' => $jobId, 'type' => $type, 'error' => $error, 'cause' => $cause]
+        );
     }
 
     /**
