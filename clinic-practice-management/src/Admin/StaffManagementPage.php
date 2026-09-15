@@ -25,7 +25,8 @@ use ClinicCore\Infrastructure\Repository\MembershipRepository;
  *    است نه قابل ویرایش/غیرفعال‌سازی از این‌جا.
  *  - رمز عبور هرگز plaintext ذخیره/نمایش داده نمی‌شود؛ WP فقط hash ذخیره می‌کند.
  *    در صورت عدم تعیین رمز، یک رمز قوی تصادفی ساخته و «یک‌بار» در اعلان نمایش داده می‌شود.
- *  - Nonce (CSRF) + Capability + Clinic authorization + Sanitize روی هر action مستقل‌اند.
+ *  - Nonce (CSRF) + authenticated actor + Clinic authorization + Sanitize روی هر action مستقل‌اند؛
+ *    Capability وردپرس فقط برای نمایش/ورود ادمین است و به‌تنهایی write را مجاز نمی‌کند.
  *  - هر تغییر (ایجاد/ویرایش/تغییر نقش/فعال/غیرفعال/بازنشانی رمز) در Audit ثبت می‌شود.
  *  - غیرفعال‌سازی علاوه بر سازگاری نقش WP، وضعیت Membership هدف در همان Clinic را
  *    suspended می‌کند؛ فعال‌سازی همان Membership را برمی‌گرداند.
@@ -78,15 +79,33 @@ final class StaffManagementPage
             delete_transient(self::NOTICE_KEY);
         }
 
-        $rows = self::listUsers();
-        $roles = self::roleLabels();
         $clinicId = self::formClinicId();
+        $rows = self::listUsers($clinicId);
+        $roles = self::roleLabels();
+        $clinicChoices = self::managedClinicChoices((int) get_current_user_id());
         ?>
         <div class="wrap" dir="rtl">
             <h1>کاربران و دسترسی‌ها</h1>
             <p class="description">افزودن و مدیریت پرسنل کلینیک (پزشک، منشی، حسابدار، مدیر کلینیک، بیمار). این صفحه فقط نقش‌های CPMS را
                 مدیریت می‌کند؛ مدیر وردپرس (administrator) از این‌جا قابل تغییر نیست — برای امنیت، نقش‌های فنی/امنیتی و ویرایش
                 ماتریس دسترسی از صفحهٔ «دسترسی‌ها» (فقط مالک فنی) انجام می‌شود.</p>
+
+            <?php if ($clinicChoices !== []) : ?>
+                <form method="get" action="<?php echo esc_url(admin_url('admin.php')); ?>" class="cpms-autofocus">
+                    <input type="hidden" name="page" value="<?php echo esc_attr(self::PAGE_SLUG); ?>">
+                    <label for="cpms_staff_clinic">Clinic هدف</label>
+                    <select id="cpms_staff_clinic" name="clinic_id" required>
+                        <option value="">انتخاب Clinic</option>
+                        <?php foreach ($clinicChoices as $choice) : ?>
+                            <option value="<?php echo (int) $choice['clinic_id']; ?>" <?php selected($clinicId, (int) $choice['clinic_id']); ?>><?php echo esc_html((string) $choice['clinic_name']); ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                    <button type="submit" class="button">اعمال Clinic</button>
+                    <p class="description">انتخاب فقط context است؛ سرور در هر write عضویت فعال و `cpms_config` را دوباره بررسی می‌کند.</p>
+                </form>
+            <?php else : ?>
+                <div class="notice notice-error"><p>برای مدیریت پرسنل، عضویت فعال و مجوز Clinic-scoped در یک Clinic لازم است.</p></div>
+            <?php endif; ?>
 
             <?php if (is_string($notice) && $notice !== '') : ?>
                 <div class="notice <?php echo str_starts_with($notice, 'خطا') ? 'notice-error' : 'notice-success'; ?> is-dismissible"><p><?php echo esc_html($notice); ?></p></div>
@@ -124,7 +143,7 @@ final class StaffManagementPage
                 <?php echo CpmsUi::emptyState('👥', 'هنوز پرسنلی ثبت نشده', 'کاربران کلینیک (پزشک، منشی، حسابدار، مدیر کلینیک، بیمار) را با فرم پایین اضافه کنید. فقط نقش‌های CPMS از این‌جا قابل مدیریت‌اند؛ administrator از این‌جا قابل تغییر نیست.', 'افزودن کاربر', admin_url('admin.php?page=' . self::PAGE_SLUG)); ?>
             <?php endif; ?>
 
-            <?php $edit = self::editTarget(); ?>
+            <?php $edit = self::editTarget($clinicId); ?>
             <h2><?php echo $edit !== null ? 'ویرایش کاربر' : 'افزودن کاربر'; ?></h2>
             <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
                 <?php wp_nonce_field(self::NONCE_ACTION); ?>
@@ -167,9 +186,10 @@ final class StaffManagementPage
 
     public static function save(): void
     {
-        if (!current_user_can(RolesAndCapabilities::CONFIG) || !is_user_logged_in()) {
+        if (!is_user_logged_in()) {
             wp_die('دسترسی ندارید', 403);
         }
+        // current_user_can() is not Clinic authorization; the scoped write guard below is authoritative.
         check_admin_referer(self::NONCE_ACTION);
 
         $mode = sanitize_key(wp_unslash($_POST['mode'] ?? 'create')); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
@@ -196,7 +216,7 @@ final class StaffManagementPage
     public static function toggle(): void
     {
         $userId = isset($_GET['user_id']) ? absint($_GET['user_id']) : 0;
-        if (!current_user_can(RolesAndCapabilities::CONFIG) || !is_user_logged_in()) {
+        if (!is_user_logged_in()) {
             wp_die('دسترسی ندارید', 403);
         }
         check_admin_referer('cpms_staff_toggle_' . $userId);
@@ -218,7 +238,7 @@ final class StaffManagementPage
     public static function sendPasswordReset(): void
     {
         $userId = isset($_GET['user_id']) ? absint($_GET['user_id']) : 0;
-        if (!current_user_can(RolesAndCapabilities::CONFIG) || !is_user_logged_in()) {
+        if (!is_user_logged_in()) {
             wp_die('دسترسی ندارید', 403);
         }
         check_admin_referer('cpms_staff_password_' . $userId);
@@ -545,6 +565,30 @@ final class StaffManagementPage
     }
 
     /**
+     * @return list<array{clinic_id:int, clinic_name:string}>
+     */
+    private static function managedClinicChoices(int $actorUserId): array
+    {
+        if ($actorUserId <= 0) {
+            return [];
+        }
+
+        $choices = [];
+        foreach (App::membership_service()->active_memberships_for_user($actorUserId) as $membership) {
+            $clinicId = (int) ($membership['clinic_id'] ?? 0);
+            if ($clinicId <= 0 || !App::authorization_service()->can($actorUserId, $clinicId, RolesAndCapabilities::CONFIG)) {
+                continue;
+            }
+            $choices[] = [
+                'clinic_id' => $clinicId,
+                'clinic_name' => (string) ($membership['clinic_name'] ?? ('Clinic #' . $clinicId)),
+            ];
+        }
+
+        return $choices;
+    }
+
+    /**
      * Clinic selector for the rendered form. It is display context only; every
      * write validates the value again through authorizeStaffWrite().
      */
@@ -573,10 +617,26 @@ final class StaffManagementPage
     }
 
     /** @return array<int, array<string,mixed>> */
-    private static function listUsers(): array
+    private static function listUsers(int $clinicId): array
     {
-        $rows = [];
+        if ($clinicId <= 0) {
+            return [];
+        }
+
+        $membershipRows = App::db()->fetchAll(
+            'SELECT wp_user_id FROM ' . App::db()->table('cpms_clinic_memberships') . ' WHERE clinic_id = %d ORDER BY wp_user_id LIMIT 500',
+            [$clinicId]
+        );
+        $userIds = array_values(array_unique(array_filter(array_map(
+            static fn (array $row): int => (int) ($row['wp_user_id'] ?? 0),
+            is_array($membershipRows) ? $membershipRows : []
+        ), static fn (int $userId): bool => $userId > 0)));
+        if ($userIds === []) {
+            return [];
+        }
+
         $users = get_users([
+            'include' => $userIds,
             'role__in' => self::MANAGEABLE_ROLES,
             'fields' => 'all',
             'number' => 500,
@@ -585,11 +645,13 @@ final class StaffManagementPage
         ]);
         // کاربران غیرفعال (دارای usermeta cpms_previous_role) نیز نمایش داده شوند.
         $users = array_merge($users, get_users([
+            'include' => $userIds,
             'meta_key' => self::META_PREV_ROLE,
             'fields' => 'all',
             'number' => 500,
         ]));
 
+        $rows = [];
         $seen = [];
         $labels = self::roleLabels();
         $clinicianByUser = self::clinicianLinkMap();
@@ -651,13 +713,13 @@ final class StaffManagementPage
     }
 
     /** @return array<string,mixed>|null */
-    private static function editTarget(): ?array
+    private static function editTarget(int $clinicId): ?array
     {
         $id = isset($_GET['edit']) ? absint($_GET['edit']) : 0; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
-        if ($id <= 0) {
+        if ($id <= 0 || $clinicId <= 0) {
             return null;
         }
-        foreach (self::listUsers() as $r) {
+        foreach (self::listUsers($clinicId) as $r) {
             if ((int) $r['id'] === $id) {
                 return $r;
             }
