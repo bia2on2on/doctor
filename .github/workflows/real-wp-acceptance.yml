@@ -78,7 +78,11 @@ jobs:
         run: |
           php -l clinic-practice-management/bin/cpms
           python3 -m py_compile clinic-practice-management/bin/rwp-acceptance.py
+          python3 -m py_compile clinic-practice-management/bin/acceptance-isolation-check.py
           bash -n clinic-practice-management/bin/build-release.sh
+          # قرارداد ایزولاسیون: هر پرسونا کانتکست/کوکی مستقل خودش را دارد
+          # (اگر یک کانتکست به چند پرسونا سرو کند، این Step قرمز می‌شود).
+          python3 clinic-practice-management/bin/acceptance-isolation-check.py
 
       # ---------- 1) ZIP رسمی ریلیز ----------
       - name: Build official release ZIP (bin/build-release.sh)

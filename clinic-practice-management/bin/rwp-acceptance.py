@@ -491,12 +491,25 @@ def verify_permissions(page, tag, stem):
     page.screenshot(path=f"{OUT}/screenshots/{stem}-search-cleared.png", full_page=True)
 
 
+def new_persona_context(browser, width=1440, height=900):
+    """کانتکست تازهٔ مرورگر برای یک پرسونا (ایزولاسیون نشست — Test Infrastructure).
+
+    هر جریان احراز هویت باید در Cookie Jar مستقل خودش اجرا شود؛ وگرنه پرسونای
+    بعدی کوکی‌های نشستِ پرسونای قبلی را به ارث می‌برد و «ورود» آن دیگر مستقل
+    نیست. یونیتِ ایزولاسیون همان کانتکست است، نه logout یا پاک‌کردن دستی کوکی.
+    """
+    return browser.new_context(viewport={"width": width, "height": height}, locale="fa-IR")
+
+
 with sync_playwright() as p:
     browser = p.chromium.launch()
-    ctx = browser.new_context(viewport={"width": 1440, "height": 900}, locale="fa-IR")
 
     # ---------- Admin (Administrator فنی — P-3) ----------
-    page = ctx.new_page()
+    # ایزولاسیون: هر پرسونا کانتکست مستقل خودش را دارد؛ هیچ کوکی/نشستی به پرسونای
+    # بعدی سرایت نمی‌کند. صفحاتی که واقعاً باید نشستِ یک پرسونا را قسمت کنند فقط
+    # داخل همان کانتکست ساخته می‌شوند (مثل deny_page پایین برای همان Administrator).
+    actx = new_persona_context(browser)
+    page = actx.new_page()
     if login(page, ADMIN_USER, ADMIN_PASS, "admin"):
         # CPMS (سیستم) — مجوز/بکاپ/Health
         status, body = goto_admin(page, "admin", "tools.php?page=cpms-system", "cpms-system")
@@ -536,7 +549,7 @@ with sync_playwright() as p:
         # دسترسی مستقیم مدیر به صفحهٔ عملیاتی = Deny (نه Render)
         # در صفحهٔ جدا و بدون watcher اجرا می‌شود — 403 عمدیِ این پروب نباید
         # گیتِ «بدون خطای Console» را بی‌دلیل قرمز کند (403 همان خروجی صحیح است).
-        deny_page = ctx.new_page()
+        deny_page = actx.new_page()
         deny_page.goto(f"{BASE}/wp-login.php", wait_until="domcontentloaded")
         deny_page.fill("#user_login", ADMIN_USER)
         deny_page.fill("#user_pass", ADMIN_PASS)
@@ -555,9 +568,11 @@ with sync_playwright() as p:
         deny_page.screenshot(path=f"{OUT}/screenshots/admin-denied-patients.png", full_page=True)
         deny_page.close()
     page.close()
+    actx.close()
 
     # ---------- Admin UI — دسکتاپ (1440×900) ----------
-    ui = ctx.new_page()
+    auictx = new_persona_context(browser)
+    ui = auictx.new_page()
     if login(ui, ADMIN_USER, ADMIN_PASS, "admin-ui"):
         for slug, shot in [("cpms-dashboard", "dashboard"), ("cpms-wizard", "wizard"),
                            ("cpms-system", "system"), ("cpms-staff", "staff"),
@@ -599,6 +614,7 @@ with sync_playwright() as p:
         # Advanced Permissions — Desktop: initial collapsed + expand + search (semantic)
         verify_permissions(ui, "admin-ui", "cpms-desktop-roles-advanced")
     ui.close()
+    auictx.close()
 
     # ---------- Admin UI — Tablet (768×1024) ----------
     tctx = browser.new_context(viewport={"width": 768, "height": 1024}, locale="fa-IR")
@@ -688,15 +704,18 @@ with sync_playwright() as p:
         xctx.close()
 
     # ---------- Doctor (نقش cpms_doctor) ----------
-    page = ctx.new_page()
+    dctx = new_persona_context(browser)
+    page = dctx.new_page()
     if login(page, DOCTOR_USER, DOCTOR_PASS, "doctor"):
         status, body = goto_admin(page, "doctor", "admin.php?page=cpms-doctor", "cpms-doctor")
         check("doctor.menu.has_cpms_doctor", "admin.php?page=cpms-doctor" in (body or ""), "منوی «امروز پزشک» باید دیده شود")
         check("doctor.menu.has_patients", "page=cpms-patients" in (body or ""), "منوی «بیماران» برای پزشک باید دیده شود")
     page.close()
+    dctx.close()
 
     # ---------- Secretary (نقش cpms_secretary) ----------
-    page = ctx.new_page()
+    sctx = new_persona_context(browser)
+    page = sctx.new_page()
     if login(page, SECRETARY_USER, SECRETARY_PASS, "secretary"):
         status, body = goto_admin(page, "secretary", "admin.php?page=cpms-queue", "cpms-queue")
         check("secretary.menu.has_cpms_queue", "admin.php?page=cpms-queue" in (body or ""), "منوی «صف امروز» باید دیده شود")
@@ -741,10 +760,12 @@ with sync_playwright() as p:
         check("secretary.patients.empty_state", "بیماری یافت نشد" in (empty or ""), "جستجوی بی‌نتیجه باید «بیماری یافت نشد» بدهد")
         page.screenshot(path=f"{OUT}/screenshots/cpms-patients-empty.png", full_page=True)
     page.close()
+    sctx.close()
 
     # ---------- Clinic Manager (نقش cpms_manager) ----------
     if MANAGER_USER and MANAGER_PASS:
-        page = ctx.new_page()
+        mgrctx = new_persona_context(browser)
+        page = mgrctx.new_page()
         if login(page, MANAGER_USER, MANAGER_PASS, "manager"):
             if not MANAGER_CLINIC_ID.isdigit() or int(MANAGER_CLINIC_ID) <= 0:
                 check("manager.staff.explicit_clinic_context", False, "MANAGER_CLINIC_ID fixture is missing or invalid")
@@ -773,10 +794,12 @@ with sync_playwright() as p:
             assert_denied(page, "manager", "admin.php?page=cpms-doctor", "cpms-mgr-denied-doctor")
             assert_denied(page, "manager", "admin.php?page=cpms-roles", "cpms-mgr-denied-roles")
         page.close()
+        mgrctx.close()
 
     # ---------- Accountant (نقش cpms_accountant) ----------
     if ACCOUNTANT_USER and ACCOUNTANT_PASS:
-        page = ctx.new_page()
+        acctx = new_persona_context(browser)
+        page = acctx.new_page()
         if login(page, ACCOUNTANT_USER, ACCOUNTANT_PASS, "accountant"):
             goto_admin(page, "accountant", "admin.php?page=cpms-finance", "cpms-acc-finance")
             menu = page.content()
@@ -792,6 +815,7 @@ with sync_playwright() as p:
             assert_denied(page, "accountant", "admin.php?page=cpms-staff", "cpms-acc-denied-staff")
             assert_denied(page, "accountant", "admin.php?page=cpms-patients", "cpms-acc-denied-patients")
         page.close()
+        acctx.close()
 
     # ---------- Patient Management Entry — دید موبایل (390×844) و تبلت (768×1024) از نقشِ مجاز ----------
     smctx = browser.new_context(viewport={"width": 390, "height": 844}, locale="fa-IR")
