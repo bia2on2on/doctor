@@ -595,9 +595,11 @@ final class StaffManagementPage
     private static function formClinicId(): int
     {
         $requested = null;
-        if (array_key_exists('clinic_id', $_GET)) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only display selector
-            $rawClinicId = wp_unslash($_GET['clinic_id']); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- validated as an integer below
-            $validated = is_scalar($rawClinicId) ? filter_var($rawClinicId, FILTER_VALIDATE_INT) : false;
+        if ( array_key_exists( 'clinic_id', $_GET ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only display selector
+            $raw_clinic_id = wp_unslash( $_GET['clinic_id'] ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended,WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- validated as an integer below
+
+            $validated = is_scalar( $raw_clinic_id ) ? filter_var( $raw_clinic_id, FILTER_VALIDATE_INT ) : false;
+
             $requested = $validated !== false ? (int) $validated : 0;
         }
         $authorization = self::authorizeStaffWrite((int) get_current_user_id(), $requested);
@@ -626,20 +628,24 @@ final class StaffManagementPage
     {
         // A non-positive id is the fail-closed result of missing/invalid/denied
         // Clinic context. It must never become an installation-wide WP user query.
-        if ($clinicId <= 0) {
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing PSR-style method parameter.
+        if ( $clinicId <= 0 ) {
             return [];
         }
 
-        $membershipRows = App::db()->fetchAll(
-            'SELECT wp_user_id FROM ' . App::db()->table('cpms_clinic_memberships') . ' WHERE clinic_id = %d ORDER BY wp_user_id LIMIT 500',
-            [$clinicId]
-        );
-        $userIds = array_values(array_unique(array_filter(array_map(
-            static fn (array $row): int => (int) ($row['wp_user_id'] ?? 0),
-            is_array($membershipRows) ? $membershipRows : []
-        ), static fn (int $userId): bool => $userId > 0)));
-        if ($userIds === []) {
-            return [];
+        $userIds = null;
+        if ($clinicId > 0) {
+            $membershipRows = App::db()->fetchAll(
+                'SELECT wp_user_id FROM ' . App::db()->table('cpms_clinic_memberships') . ' WHERE clinic_id = %d ORDER BY wp_user_id LIMIT 500',
+                [$clinicId]
+            );
+            $userIds = array_values(array_unique(array_filter(array_map(
+                static fn (array $row): int => (int) ($row['wp_user_id'] ?? 0),
+                is_array($membershipRows) ? $membershipRows : []
+            ), static fn (int $userId): bool => $userId > 0)));
+            if ($userIds === []) {
+                return [];
+            }
         }
 
         $manageableQuery = [
@@ -654,8 +660,10 @@ final class StaffManagementPage
             'fields' => 'all',
             'number' => 500,
         ];
-        $manageableQuery['include'] = $userIds;
-        $inactiveQuery['include'] = $userIds;
+        if ($userIds !== null) {
+            $manageableQuery['include'] = $userIds;
+            $inactiveQuery['include'] = $userIds;
+        }
 
         $users = get_users($manageableQuery);
         // کاربران غیرفعال (دارای usermeta cpms_previous_role) نیز نمایش داده شوند.
@@ -664,7 +672,8 @@ final class StaffManagementPage
         $rows = [];
         $seen = [];
         $labels = self::roleLabels();
-        $clinicianByUser = self::clinicianLinkMap($clinicId);
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing PSR-style local and method parameter.
+        $clinicianByUser = self::clinicianLinkMap( $clinicId );
         foreach ($users as $u) {
             $id = (int) $u->ID;
             if (isset($seen[$id])) {
@@ -694,15 +703,16 @@ final class StaffManagementPage
      *
      * @return array<int, string>
      */
-    private static function clinicianLinkMap(int $clinicId): array
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- Existing class uses PSR-style private methods.
+    private static function clinicianLinkMap( int $clinic_id ): array
     {
-        if ($clinicId <= 0) {
+        if ( $clinic_id <= 0 ) {
             return [];
         }
 
         $rows = App::db()->fetchAll(
-            'SELECT wp_user_id, full_name FROM ' . App::db()->table('cpms_clinicians') . ' WHERE clinic_id = %d AND wp_user_id IS NOT NULL AND is_active = 1',
-            [$clinicId]
+            'SELECT wp_user_id, full_name FROM ' . App::db()->table( 'cpms_clinicians' ) . ' WHERE clinic_id = %d AND wp_user_id IS NOT NULL AND is_active = 1',
+            [ $clinic_id ]
         );
         $map = [];
         foreach (is_array($rows) ? $rows : [] as $r) {
