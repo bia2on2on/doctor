@@ -1,0 +1,100 @@
+name: M2-HandwritingGc-RED-Evidence
+
+# TEMPORARY — فقط-شواهد (Phase 2 M-2 — handwriting.gc).
+#
+# هدف: اجرای **متمرکز** (یک تست) در **فرآیندِ تازه** برای بازتولید RED معتبر —
+# کش‌هایِ استاتیکِ App/Settings در فرآیندِ suite مشترک می‌توانند وابستگیِ Scope
+# را پنهان کنند، پس شاهدِ معتبر همین اجرای تکی در فرآیندِ تازه است (الگوی
+# OpLogCleanupM2WiringRedTest — PR #41).
+#
+# ⛔ این فایل **موقت** است و باید از diffِ نهایی **حذف** شود پس از ثبتِ شاهدِ RED.
+
+on:
+  push:
+    branches: [arena/01a0a25c-doctor]
+    paths:
+      - '.github/workflows/m2-hw-gc-red-evidence.yml'
+      - 'clinic-practice-management/tests/Integration/HandwritingGcM2WiringRedTest.php'
+
+jobs:
+  red-evidence:
+    name: Focused RED (fresh process)
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=20
+
+    env:
+      WP_TESTS_DIR: /tmp/wordpress-test-lib
+      WP_CORE_DIR: /tmp/wordpress
+
+    defaults:
+      run:
+        working-directory: clinic-practice-management
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mbstring, xml, mysqli, pcntl, curl
+          coverage: none
+
+      - name: Install dependencies (PHPUnit 9.6 for WP test lib)
+        run: |
+          composer install --prefer-dist --no-progress --no-interaction
+          composer require --dev phpunit/phpunit:^9.6 --no-interaction --no-progress --with-all-dependencies
+
+      - name: Prepare WordPress test suite
+        run: bash tests/bin/install-wp-tests.sh wordpress_test root root 127.0.0.1 6.7.2
+
+      # انتخابِ دقیقِ متمرکز: فقط همان یک تست، در یک فرآیندِ تازه.
+      # «Tests: 1» باید در لاگ دیده شود (Zero/multiple انتخاب ≠ RED معتبر).
+      - name: Run focused RED test (single test, fresh process)
+        run: |
+          set -o pipefail
+          php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
+            --bootstrap tests/integration-bootstrap.php \
+            --filter 'testHandwritingGcMustRunScopeNeutralWithPerClinicPolicy' \
+            tests/Integration/HandwritingGcM2WiringRedTest.php 2>&1 | tee /tmp/m2-hw-gc-red.log
+
+      - name: Upload RED evidence log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m2-hw-gc-red-evidence-${{ github.run_id }}
+          path: /tmp/m2-hw-gc-red.log
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Post RED signature to PR
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "### M-2 handwriting.gc — focused RED evidence (fresh process — run ${{ github.run_id }})"
+            echo '```'
+            echo "--- SUMMARY (must be exactly: Tests: 1) ---"
+            grep -E "^(Tests:|OK \()" /tmp/m2-hw-gc-red.log | tail -n 2 || true
+            echo "--- FAILURE DETAILS (test + message + location) ---"
+            awk '/^There (were|was)/{flag=1;next}flag' /tmp/m2-hw-gc-red.log \
+              | grep -B 1 -A 14 -E '^[0-9]+\) ' | head -n 80
+            echo '```'
+          } > /tmp/pr-body.md
+          PR_NUM=$(gh pr list --head "${GITHUB_REF_NAME}" --json number --jq 'first(.[]?.number, 0)' 2>/dev/null || true)
+          if [ -n "$PR_NUM" ] && [ "$PR_NUM" != "0" ]; then
+            gh pr comment "$PR_NUM" --body-file /tmp/pr-body.md || echo "::notice::PR comment failed (permissions?)"
+          else
+            echo "::notice::no open PR for this head — evidence is in the run artifact only"
+          fi
