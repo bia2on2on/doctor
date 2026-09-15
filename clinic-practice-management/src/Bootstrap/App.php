@@ -499,6 +499,22 @@ final class App
     }
 
     /**
+     * سرویس مجوز کلینیک‌محور (Phase 3 Slice 1 — AuthorizationService foundation).
+     * Reusable, typed, fail-closed, بدون وابستگی به Scope محیطی.
+     */
+    public static function authorization_service(): \ClinicCore\Application\Authorization\AuthorizationService
+    {
+        static $service = null;
+        if ($service === null) {
+            $service = new \ClinicCore\Application\Authorization\AuthorizationService(
+                new MembershipRepository(self::db())
+            );
+        }
+
+        return $service;
+    }
+
+    /**
      * سرویس هویت بیمار (Phase 2 — C5 foundation / AD-14).
      */
     public static function patient_identity_service(): PatientIdentityService {
