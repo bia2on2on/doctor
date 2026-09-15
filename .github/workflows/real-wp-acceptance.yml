@@ -210,11 +210,26 @@ jobs:
               if ($u !== false) { wp_update_user(['ID' => (int) $u->ID, 'display_name' => $display]); }
           }
           $uid = (int) get_user_by('login', getenv('DOCTOR_USER'))->ID;
-          $wpdb->query($wpdb->prepare(
-              'INSERT INTO ' . $db->table('cpms_clinicians') . ' (clinic_id, full_name, wp_user_id, is_active, created_at, updated_at) VALUES (1, %s, %d, 1, %s, %s)',
-              'پزشک آزمایشی', $uid, $now, $now
+          $accClinicId = \ClinicCore\Bootstrap\App::settings()->clinicId();
+          $clinicRow = $db->fetchRow(
+              'SELECT c.id FROM ' . $db->table('cpms_clinics') . ' c'
+                  . ' INNER JOIN ' . $db->table('cpms_organizations') . ' o ON o.id = c.organization_id'
+                  . ' WHERE c.id = %d AND o.status = \'active\' LIMIT 1',
+              [$accClinicId]
+          );
+          if ($accClinicId <= 0 || $clinicRow === null) {
+              fwrite(STDERR, "FAIL: Clinic پیکربندی‌شدهٔ acceptance معتبر/فعال نیست\n");
+              exit(1);
+          }
+          $inserted = $wpdb->query($wpdb->prepare(
+              'INSERT INTO ' . $db->table('cpms_clinicians') . ' (clinic_id, full_name, wp_user_id, is_active, created_at, updated_at) VALUES (%d, %s, %d, 1, %s, %s)',
+              $accClinicId, 'پزشک آزمایشی', $uid, $now, $now
           ));
           $cid = (int) $wpdb->insert_id;
+          if ($inserted !== 1 || $cid <= 0) {
+              fwrite(STDERR, "FAIL: fixture پزشک acceptance ساخته نشد\n");
+              exit(1);
+          }
           // یک برنامهٔ هفتگی «پُر» برای پزشک تجربی — تا اسکرین‌شات Schedule خالی نباشد.
           // C7-S5: create برنامه حالا نیازمند Scope معتبر صریح است (معادل مرز
           // تولیدی) — resolver تک‌کلینیکیِ نصب؛ در نصب مبهم fail-closed.
@@ -242,18 +257,6 @@ jobs:
           // tenant را تعریف نمی‌کند و Production عمداً هیچ provisioning خودکاری
           // (user_register/set_user_role/exact‑one) ندارد. شناسهٔ Clinic از خودِ
           // محیط حل می‌شود — هیچ فرضِ id=1 یا «اولین Clinic» در کار نیست.
-          $clinicRow = $db->fetchRow(
-              'SELECT c.id FROM ' . $db->table('cpms_clinics') . ' c
-                 INNER JOIN ' . $db->table('cpms_clinicians') . ' cl ON cl.clinic_id = c.id
-                WHERE cl.wp_user_id = %d AND cl.is_active = 1
-                LIMIT 1',
-              [$uid]
-          );
-          if ($clinicRow === null) {
-              fwrite(STDERR, "FAIL: clinician به هیچ Clinic فعال متصل نیست — fixture عضویت قابل ساخت نیست\n");
-              exit(1);
-          }
-          $accClinicId = (int) $clinicRow['id'];
           $svc = \ClinicCore\Bootstrap\App::membership_service();
           $roleKeys = [
               'DOCTOR_USER' => 'cpms_doctor',
@@ -279,6 +282,22 @@ jobs:
               $seeded[$login] = $existing !== null
                   ? (int) $existing['id']
                   : $svc->create_membership($accClinicId, $userId, $roleKey);
+          }
+          $manager = get_user_by('login', (string) getenv('MANAGER_USER'));
+          $managerMembership = $manager !== false
+              ? $svc->membership_for($accClinicId, (int) $manager->ID)
+              : null;
+          if (
+              $managerMembership === null
+              || (string) $managerMembership['status'] !== 'active'
+              || (string) $managerMembership['role_key'] !== 'cpms_manager'
+          ) {
+              fwrite(STDERR, "FAIL: manager fixture عضویت فعال و durable در Clinic acceptance ندارد\n");
+              exit(1);
+          }
+          if (file_put_contents('/tmp/acc/staff_clinic_id.txt', (string) $accClinicId) === false) {
+              fwrite(STDERR, "FAIL: explicit Clinic context برای browser probe ثبت نشد\n");
+              exit(1);
           }
           // administrator (technical owner) عمداً عضویت staff نمی‌گیرد؛ کاربر
           // patient هم در این مرحله ساخته نمی‌شود و در صورت افزودن، نباید
@@ -327,7 +346,10 @@ jobs:
       - name: Browser acceptance — all 5 roles (Admin/Manager/Doctor/Secretary/Accountant) menus + denial
         run: |
           # بدون pipe-masking: وضعیت خروجی واقعی اسکریپت تعیین‌کننده است
+          STAFF_CLINIC_ID="$(cat /tmp/acc/staff_clinic_id.txt 2>/dev/null || true)"
+          [[ "$STAFF_CLINIC_ID" =~ ^[1-9][0-9]*$ ]] || { echo 'INVALID STAFF_CLINIC_ID FIXTURE'; exit 1; }
           BASE="$WP_URL" \
+          STAFF_CLINIC_ID="$STAFF_CLINIC_ID" \
           ADMIN_USER="$ADMIN_USER" ADMIN_PASS="$ADMIN_PASS" \
           DOCTOR_USER="$DOCTOR_USER" DOCTOR_PASS="$DOCTOR_PASS" \
           SECRETARY_USER="$SECRETARY_USER" SECRETARY_PASS="$SECRETARY_PASS" \

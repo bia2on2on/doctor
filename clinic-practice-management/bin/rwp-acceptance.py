@@ -34,6 +34,10 @@ ACCOUNTANT_USER = os.environ.get("ACCOUNTANT_USER", "")
 ACCOUNTANT_PASS = os.environ.get("ACCOUNTANT_PASS", "")
 OUT = os.environ.get("OUT", "rwp-acceptance-out")
 ACTUAL_COUNT_FILE = os.environ.get("ACTUAL_COUNT_FILE", "")
+STAFF_CLINIC_ID = os.environ.get("STAFF_CLINIC_ID", "")
+if not re.fullmatch(r"[1-9][0-9]*", STAFF_CLINIC_ID):
+    raise RuntimeError("STAFF_CLINIC_ID must be a dynamically resolved positive Clinic id")
+STAFF_PATH = f"admin.php?page=cpms-staff&clinic_id={STAFF_CLINIC_ID}"
 
 os.makedirs(f"{OUT}/screenshots", exist_ok=True)
 os.makedirs(f"{OUT}/logs", exist_ok=True)
@@ -422,10 +426,18 @@ with sync_playwright() as p:
         check("admin-ui.menu.no_doctor_topmenu", "admin.php?page=cpms-doctor" not in menu, "منوی «امروز پزشک» برای مدیر پنهان است")
         check("admin-ui.menu.no_queue_topmenu", "admin.php?page=cpms-queue" not in menu, "منوی «صف امروز» برای مدیر پنهان است")
 
-        # Confirmation dialog (Desktop) — staff deactivation
-        ui.goto(f"{BASE}/wp-admin/admin.php?page=cpms-staff", wait_until="domcontentloaded")
-        ui.wait_for_timeout(700)
-        capture_confirm(ui, "admin-ui", "cpms-dialog-desktop")
+        # Administrator فنی بدون Membership می‌تواند shell صفحه را ببیند، اما
+        # هیچ ردیف/اکشن Clinic نباید دریافت کند.
+        _, denied_staff = goto_admin(ui, "admin-ui", "admin.php?page=cpms-staff", "cpms-staff-no-context")
+        leaked_staff_markers = [
+            marker for marker in [DOCTOR_USER, SECRETARY_USER, MANAGER_USER, ACCOUNTANT_USER]
+            if marker and marker in (denied_staff or "")
+        ]
+        check(
+            "admin-ui.staff.no_membership_no_clinic_rows",
+            not leaked_staff_markers and 'data-cpms-confirm' not in (denied_staff or ""),
+            "forbidden markers=" + ",".join(leaked_staff_markers),
+        )
 
         # Doctor Schedule (Desktop) — populated by seed
         try:
@@ -463,14 +475,19 @@ with sync_playwright() as p:
             m = re.search(r"clinician_id=\d+", link.get_attribute("href") or "")
         if m:
             snap(tpage, "admin-tablet", "admin.php?page=cpms-clinicians&" + m.group(0), "cpms-tablet-schedule", ovf=True)
-        # Confirmation (Tablet)
-        tpage.goto(f"{BASE}/wp-admin/admin.php?page=cpms-staff", wait_until="domcontentloaded")
-        tpage.wait_for_timeout(700)
-        capture_confirm(tpage, "admin-tablet", "cpms-dialog-tablet")
         # Advanced Permissions (Tablet): collapsed + expand + search (semantic)
         verify_permissions(tpage, "admin-tablet", "cpms-tablet-roles-advanced")
     tpage.close()
     tctx.close()
+
+    # Confirmation (Tablet) — dedicated authorized Clinic manager + explicit context.
+    tmctx = browser.new_context(viewport={"width": 768, "height": 1024}, locale="fa-IR")
+    tmpage = tmctx.new_page()
+    if MANAGER_USER and MANAGER_PASS and login(tmpage, MANAGER_USER, MANAGER_PASS, "manager-tablet"):
+        goto_admin(tmpage, "manager-tablet", STAFF_PATH, "cpms-mgr-tablet-staff")
+        capture_confirm(tmpage, "manager-tablet", "cpms-dialog-tablet")
+    tmpage.close()
+    tmctx.close()
 
     # ---------- Admin UI — Mobile (390×844) ----------
     mctx = browser.new_context(viewport={"width": 390, "height": 844}, locale="fa-IR")
@@ -489,14 +506,19 @@ with sync_playwright() as p:
             m = re.search(r"clinician_id=\d+", link.get_attribute("href") or "")
         if m:
             snap(mpage, "admin-mobile", "admin.php?page=cpms-clinicians&" + m.group(0), "cpms-mobile-schedule", ovf=True)
-        # Confirmation (Mobile)
-        mpage.goto(f"{BASE}/wp-admin/admin.php?page=cpms-staff", wait_until="domcontentloaded")
-        mpage.wait_for_timeout(700)
-        capture_confirm(mpage, "admin-mobile", "cpms-dialog-mobile")
         # Advanced Permissions (Mobile): collapsed + expand + search (semantic)
         verify_permissions(mpage, "admin-mobile", "cpms-mobile-roles-advanced")
     mpage.close()
     mctx.close()
+
+    # Confirmation (Mobile) — dedicated authorized Clinic manager + explicit context.
+    mmctx = browser.new_context(viewport={"width": 390, "height": 844}, locale="fa-IR")
+    mmpage = mmctx.new_page()
+    if MANAGER_USER and MANAGER_PASS and login(mmpage, MANAGER_USER, MANAGER_PASS, "manager-mobile"):
+        goto_admin(mmpage, "manager-mobile", STAFF_PATH, "cpms-mgr-mobile-staff")
+        capture_confirm(mmpage, "manager-mobile", "cpms-dialog-mobile")
+    mmpage.close()
+    mmctx.close()
 
     # ---------- Admin UI — 360×800 (narrow mobile) + matrix 1366×768 / 1024×768 ----------
     for W, H, tag in [(360, 800, "admin-360"), (1366, 768, "admin-1366"), (1024, 768, "admin-1024")]:
@@ -583,7 +605,11 @@ with sync_playwright() as p:
             for slug, shot in [("cpms-dashboard", "dashboard"), ("cpms-staff", "staff"),
                                ("cpms-clinicians", "clinicians"), ("cpms-system", "system"),
                                ("cpms-settings", "settings"), ("cpms-sms", "sms")]:
-                goto_admin(page, "manager", f"admin.php?page={slug}", f"cpms-mgr-{shot}")
+                manager_path = STAFF_PATH if slug == "cpms-staff" else f"admin.php?page={slug}"
+                goto_admin(page, "manager", manager_path, f"cpms-mgr-{shot}")
+            # Confirmation dialog (Desktop) روی actor مجاز و Clinic صریح.
+            goto_admin(page, "manager", STAFF_PATH, "cpms-mgr-staff-confirmation")
+            capture_confirm(page, "manager", "cpms-dialog-desktop")
             # منوی مدیر کلینیک: مدیریتی/عملیاتی دیده شود؛ نقش-محورِ بالینی/صف و ماتریس فنی پنهان.
             menu = page.content()
             for mslug in ["cpms-staff", "cpms-clinicians", "cpms-system", "cpms-settings", "cpms-sms"]:
