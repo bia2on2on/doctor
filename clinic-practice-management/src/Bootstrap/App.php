@@ -571,7 +571,9 @@ final class App
                 $db,
                 new HandwritingRepository($db),
                 new VisitRepository($db),
-                self::settings(),
+                // Phase 2 M-2 (W): سیاستِ per-Clinic از SettingsFactory حل
+                // می‌شود — سرویسِ دست‌خط دیگر به Scope محیطی وابسته نیست.
+                self::settingsFactory(),
                 self::audit(),
                 new Idempotency($db)
             );

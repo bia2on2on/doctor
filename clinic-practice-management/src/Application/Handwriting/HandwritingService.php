@@ -10,7 +10,7 @@ use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Repository\HandwritingRepository;
 use ClinicCore\Infrastructure\Repository\VisitRepository;
 use ClinicCore\Infrastructure\Security\Idempotency;
-use ClinicCore\Settings\Settings;
+use ClinicCore\Settings\SettingsFactory;
 use Throwable;
 
 /**
@@ -47,11 +47,19 @@ final class HandwritingService
     private const TEMPLATES = ['blank', 'lined', 'graph', 'form'];
     private const SAVE_SOURCES = ['autosave', 'manual', 'sync_recovery'];
 
+    /**
+     * Phase 2 M-2 (W): کرانِ کارِ هر اجرای GC — تعدادِ صفحاتِ کاندیدای
+     * پردازش‌شده در یک فراخوانی. کرانِ واقعی در انتخابِ کاندیدا اعمال می‌شود
+     * (LIMIT واقعی؛ بدونِ OFFSET روی مجموعهٔ درحالِ تغییر، بدونِ cursor دائمی)
+     * و فراخوانیِ بعدیِ Job کارِ باقی‌مانده را ادامه می‌دهد.
+     */
+    public const GC_PAGE_BATCH_SIZE = 50;
+
     public function __construct(
         private readonly CpmsDb $db,
         private readonly HandwritingRepository $handwriting,
         private readonly VisitRepository $visits,
-        private readonly Settings $settings,
+        private readonly SettingsFactory $settingsFactory,
         private readonly AuditLogger $audit,
         private readonly Idempotency $idem
     ) {
@@ -377,15 +385,64 @@ final class HandwritingService
     // ================= GC — پاک‌سازی نسخه‌ها (handwriting.gc) =================
 
     /**
-     * سیاست نگهداری ADR-0009: حذف نسخه‌های قدیمی‌تر از `hw.version_max_age_days`
-     * که خارج از `hw.version_keep` نسخه آخر صفحه هستند.
+     * GC نسخه‌ها (Job: handwriting.gc) — Phase 2 M-2، طبقهٔ **W**:
+     * installation-wide sweep با semantics پر-ردیفِ Clinic.
+     *
+     * مالکیتِ هر ردیف: `versions.page_id → pages.document_id →
+     * documents.clinic_id` (رابطهٔ دائمیِ DB — هرگز از Scope محیطی، کاربر
+     * جاری یا payload). سیاست: ردیف‌های هر Clinic فقط با `hw.version_keep` +
+     * `hw.version_max_age_days` **خودِ همان** Clinic پاک‌سازی می‌شوند
+     * (ردیف‌های Clinic-owned در `cpms_settings`، از طریق نمونهٔ per-Clinicِ
+     * `SettingsFactory` — کشِ سیاستِ هر فراخوانی دقیقاً بر اساسِ Clinic ID
+     * کلید می‌خورد). سیاستِ غیرقابلِ حل برای یک Clinic → آن Clinic برای این
+     * فراخوانی رد می‌شود (fail-closed) — هرگز سیاستِ Clinicِ دیگر
+     * اِمال نمی‌شود.
+     *
+     * سیاست نگهداری ADR-0009 (تغییرنخورده): حذف نسخه‌های قدیمی‌تر از
+     * `hw.version_max_age_days` که خارج از `hw.version_keep` نسخهٔ آخرِ
+     * صفحه هستند — نسخه‌های تازه هرگز حذف نمی‌شوند.
+     *
+     * کرانِ هر فراخوانی: حداکثر `GC_PAGE_BATCH_SIZE` صفحهٔ کاندیدا
+     * (LIMIT واقعی در انتخابِ کاندیدا). فراخوانی‌های بعدی ادامه می‌دهند —
+     * بدونِ OFFSET روی مجموعهٔ درحالِ تغییر، بدونِ cursor دائمی.
+     *
+     * @param int|null $pageBatch کرانِ این فراخوانی (پیش‌فرض: GC_PAGE_BATCH_SIZE)
+     * @return int تعدادِ ردیف‌هایِ نسخهٔ حذف‌شده
      */
-    public function purgeVersions(): int
+    public function purgeVersions(?int $pageBatch = null): int
     {
-        $keep = max(1, (int) $this->settings->get('hw.version_keep', 10));
-        $maxAgeDays = max(1, (int) $this->settings->get('hw.version_max_age_days', 30));
+        $limit = max(1, $pageBatch ?? self::GC_PAGE_BATCH_SIZE);
+        $deleted = 0;
+        $processed = 0;
 
-        return $this->handwriting->purgeOldVersions($keep, $maxAgeDays);
+        foreach ($this->handwriting->allClinicIds() as $clinicId) {
+            if ($processed >= $limit) {
+                break;
+            }
+
+            try {
+                $settings = $this->settingsFactory->forClinic($clinicId);
+                $keep = max(1, (int) $settings->get('hw.version_keep', 10));
+                $maxAgeDays = max(1, (int) $settings->get('hw.version_max_age_days', 30));
+            } catch (Throwable $e) {
+                // fail-closed برایِ Clinicِ متأثر: سیاستِ غیرقابلِ حل
+                // حدس زده یا از Clinicِ دیگر گرفته نمی‌شود — فقط ردیف‌های
+                // این Clinic در این فراخوانی دست‌نخورده می‌مانند.
+                continue;
+            }
+
+            $cutoff = gmdate('Y-m-d H:i:s', time() - $maxAgeDays * 86400) . '.000';
+            $pages = $this->handwriting->gcCandidatePages($clinicId, $cutoff, $keep, $limit - $processed);
+            foreach ($pages as $pageId) {
+                $deleted += $this->handwriting->purgePageVersions($pageId, $keep, $cutoff);
+                $processed++;
+                if ($processed >= $limit) {
+                    break;
+                }
+            }
+        }
+
+        return $deleted;
     }
 
     // ================= Helpers — داده =================

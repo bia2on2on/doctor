@@ -48,7 +48,6 @@ final class JobScopeRegistry
         'cleanup.idem' => JobScopeClass::SYSTEM,
         // §۸-۲ RESOLVED: retention.oplog_days = نصب‌گسترده
         'cleanup.oplog' => JobScopeClass::SYSTEM,
-        'handwriting.gc' => JobScopeClass::SYSTEM,
         // §۸-۱ مشروط: کنترل‌پلینِ نصب؛ امروز پیکربندی از سطر Clinic خوانده می‌شود
         'license.refresh' => JobScopeClass::SYSTEM,
         'backup.run' => JobScopeClass::SYSTEM,
@@ -60,6 +59,9 @@ final class JobScopeRegistry
         'notif.dispatch' => JobScopeClass::SWEEP,
         'appt.reminder' => JobScopeClass::SWEEP,
         'fu.reminder' => JobScopeClass::SWEEP,
+        // M-2 RESOLVED: مالکیتِ پر-ردیف از versions→pages→documents.clinic_id
+        // و سیاستِ retention باقی‌مانده Clinic-owned (hw.* در cpms_settings).
+        'handwriting.gc' => JobScopeClass::SWEEP,
     ];
 
     /** غیرقابل instantiate — registry ایستا و فقط‌خواندنی. */
@@ -142,7 +144,7 @@ final class JobScopeRegistry
     }
 
     /**
-     * تعدادِ هر طبقه — برای گارْدِ drift (۲/۷/۶ در §A-3).
+     * تعدادِ هر طبقه — برای گارْدِ drift (۲/۶/۷ در §A-3).
      *
      * @return array<string, int>
      */

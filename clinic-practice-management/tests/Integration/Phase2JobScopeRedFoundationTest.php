@@ -622,9 +622,11 @@ final class Phase2JobScopeRedFoundationTest extends WP_UnitTestCase
             'RT-12: JobScopeRegistry must classify exactly the job types App::dispatcher() registers (no drift)'
         );
 
-        // (c) canonical §A-3 distribution: 2 T / 7 S / 6 W.
+        // (c) canonical §A-3 distribution: 2 T / 6 S / 7 W.
+        // (M-2 RESOLVED: handwriting.gc — S → W؛ مالکیتِ پر-ردیفِ
+        //  versions→pages→documents.clinic_id + سیاستِ Clinic-owned.)
         self::assertSame(
-            [JobScopeClass::TENANT => 2, JobScopeClass::SYSTEM => 7, JobScopeClass::SWEEP => 6],
+            [JobScopeClass::TENANT => 2, JobScopeClass::SYSTEM => 6, JobScopeClass::SWEEP => 7],
             JobScopeRegistry::countsByClass(),
             'RT-12: the T/S/W distribution must match canonical design §A-3'
         );
