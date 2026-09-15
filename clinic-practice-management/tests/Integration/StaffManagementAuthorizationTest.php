@@ -149,6 +149,70 @@ final class StaffManagementAuthorizationTest extends WP_UnitTestCase
         self::assertSame('active', (string) App::membership_service()->membership_for($clinicB, $targetId)['status']);
     }
 
+    public function testPasswordResetCannotCrossClinicTargetOwnership(): void
+    {
+        $clinicA = $this->createClinic('staff-authz-password-a');
+        $clinicB = $this->createClinic('staff-authz-password-b');
+        $managerId = $this->makeUser('staff_authz_password_manager', 'cpms_manager');
+        cpms_test_seed_membership($managerId, $clinicA, 'cpms_manager');
+        $targetId = $this->makeUser('staff_authz_password_target', 'cpms_secretary');
+        cpms_test_seed_membership($targetId, $clinicB, 'cpms_secretary');
+        wp_set_current_user($managerId);
+
+        $result = StaffManagementPage::initiatePasswordReset($targetId, $managerId, $clinicA);
+
+        self::assertNotSame('', $result['error'], 'password reset must use durable target Clinic ownership');
+    }
+
+    public function testSameManagerCanManageTwoClinicsOnlyWithExplicitClinicSelection(): void
+    {
+        $clinicA = $this->createClinic('staff-authz-multi-a');
+        $clinicB = $this->createClinic('staff-authz-multi-b');
+        $managerId = $this->makeUser('staff_authz_multi_manager', 'cpms_manager');
+        cpms_test_seed_membership($managerId, $clinicA, 'cpms_manager');
+        cpms_test_seed_membership($managerId, $clinicB, 'cpms_manager');
+        wp_set_current_user($managerId);
+
+        $in = [
+            'mode' => 'create',
+            'username' => 'staff_authz_multi_target_a',
+            'display_name' => 'Multi clinic target A',
+            'email' => 'staff-authz-multi-a@test.local',
+            'role' => 'cpms_secretary',
+            'password' => 'StrongPass123',
+        ];
+        $resultA = StaffManagementPage::upsertUser(array_merge($in, ['clinic_id' => $clinicA]), $managerId);
+        $resultB = StaffManagementPage::upsertUser(array_merge($in, [
+            'clinic_id' => $clinicB,
+            'username' => 'staff_authz_multi_target_b',
+            'display_name' => 'Multi clinic target B',
+            'email' => 'staff-authz-multi-b@test.local',
+        ]), $managerId);
+
+        self::assertSame('', $resultA['error']);
+        self::assertSame('', $resultB['error']);
+        self::assertNotNull(App::membership_service()->membership_for($clinicA, (int) $resultA['user_id']));
+        self::assertNotNull(App::membership_service()->membership_for($clinicB, (int) $resultB['user_id']));
+    }
+
+    public function testActiveManagerCanSuspendAndReactivateOwnClinicMembership(): void
+    {
+        $clinicId = $this->createClinic('staff-authz-toggle-allowed');
+        $managerId = $this->makeUser('staff_authz_toggle_allowed_manager', 'cpms_manager');
+        cpms_test_seed_membership($managerId, $clinicId, 'cpms_manager');
+        $targetId = $this->makeUser('staff_authz_toggle_allowed_target', 'cpms_secretary');
+        cpms_test_seed_membership($targetId, $clinicId, 'cpms_secretary');
+        wp_set_current_user($managerId);
+
+        $deactivate = StaffManagementPage::toggleUser($targetId, 'deactivate', $managerId);
+        self::assertSame('', $deactivate['error']);
+        self::assertSame('suspended', (string) App::membership_service()->membership_for($clinicId, $targetId)['status']);
+
+        $activate = StaffManagementPage::toggleUser($targetId, 'activate', $managerId);
+        self::assertSame('', $activate['error']);
+        self::assertSame('active', (string) App::membership_service()->membership_for($clinicId, $targetId)['status']);
+    }
+
     private function makeUser(string $login, string $role): int
     {
         $userId = (int) wp_create_user($login, 'StrongPass123', $login . '@test.local');
