@@ -61,6 +61,14 @@ jobs:
           cat /tmp/quiet-hours-red.log
           exit "$rc"
 
+      - name: Surface RED output as annotations
+        if: always()
+        run: |
+          echo "RED output follows in annotations:"
+          tail -n 120 /tmp/quiet-hours-red.log | while IFS= read -r line; do
+            printf '::error title=quiet-hours-RED::%s\n' "${line:0:900}"
+          done
+
       - name: Upload RED evidence
         if: always()
         uses: actions/upload-artifact@v4
