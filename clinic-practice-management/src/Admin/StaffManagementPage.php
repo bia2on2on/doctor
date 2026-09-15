@@ -594,7 +594,12 @@ final class StaffManagementPage
      */
     private static function formClinicId(): int
     {
-        $requested = array_key_exists('clinic_id', $_GET) ? absint($_GET['clinic_id']) : null; // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- display selector only
+        $requested = null;
+        if (array_key_exists('clinic_id', $_GET)) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only display selector
+            $rawClinicId = wp_unslash($_GET['clinic_id']); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- validated as an integer below
+            $validated = is_scalar($rawClinicId) ? filter_var($rawClinicId, FILTER_VALIDATE_INT) : false;
+            $requested = $validated !== false ? (int) $validated : 0;
+        }
         $authorization = self::authorizeStaffWrite((int) get_current_user_id(), $requested);
 
         return $authorization['clinic_id'];
@@ -619,23 +624,22 @@ final class StaffManagementPage
     /** @return array<int, array<string,mixed>> */
     private static function listUsers(int $clinicId): array
     {
-        // A missing trusted Clinic leaves the legacy read list available for the
-        // admin UI, but every action link carries clinic_id=0 and is denied by
-        // authorizeStaffWrite(). This preserves the transport/UI workflow without
-        // turning a global WP capability into write authorization.
-        $userIds = null;
-        if ($clinicId > 0) {
-            $membershipRows = App::db()->fetchAll(
-                'SELECT wp_user_id FROM ' . App::db()->table('cpms_clinic_memberships') . ' WHERE clinic_id = %d ORDER BY wp_user_id LIMIT 500',
-                [$clinicId]
-            );
-            $userIds = array_values(array_unique(array_filter(array_map(
-                static fn (array $row): int => (int) ($row['wp_user_id'] ?? 0),
-                is_array($membershipRows) ? $membershipRows : []
-            ), static fn (int $userId): bool => $userId > 0)));
-            if ($userIds === []) {
-                return [];
-            }
+        // A non-positive id is the fail-closed result of missing/invalid/denied
+        // Clinic context. It must never become an installation-wide WP user query.
+        if ($clinicId <= 0) {
+            return [];
+        }
+
+        $membershipRows = App::db()->fetchAll(
+            'SELECT wp_user_id FROM ' . App::db()->table('cpms_clinic_memberships') . ' WHERE clinic_id = %d ORDER BY wp_user_id LIMIT 500',
+            [$clinicId]
+        );
+        $userIds = array_values(array_unique(array_filter(array_map(
+            static fn (array $row): int => (int) ($row['wp_user_id'] ?? 0),
+            is_array($membershipRows) ? $membershipRows : []
+        ), static fn (int $userId): bool => $userId > 0)));
+        if ($userIds === []) {
+            return [];
         }
 
         $manageableQuery = [
@@ -650,10 +654,8 @@ final class StaffManagementPage
             'fields' => 'all',
             'number' => 500,
         ];
-        if ($userIds !== null) {
-            $manageableQuery['include'] = $userIds;
-            $inactiveQuery['include'] = $userIds;
-        }
+        $manageableQuery['include'] = $userIds;
+        $inactiveQuery['include'] = $userIds;
 
         $users = get_users($manageableQuery);
         // کاربران غیرفعال (دارای usermeta cpms_previous_role) نیز نمایش داده شوند.
@@ -662,7 +664,7 @@ final class StaffManagementPage
         $rows = [];
         $seen = [];
         $labels = self::roleLabels();
-        $clinicianByUser = self::clinicianLinkMap();
+        $clinicianByUser = self::clinicianLinkMap($clinicId);
         foreach ($users as $u) {
             $id = (int) $u->ID;
             if (isset($seen[$id])) {
@@ -692,10 +694,15 @@ final class StaffManagementPage
      *
      * @return array<int, string>
      */
-    private static function clinicianLinkMap(): array
+    private static function clinicianLinkMap(int $clinicId): array
     {
+        if ($clinicId <= 0) {
+            return [];
+        }
+
         $rows = App::db()->fetchAll(
-            'SELECT wp_user_id, full_name FROM ' . App::db()->table('cpms_clinicians') . ' WHERE wp_user_id IS NOT NULL AND is_active = 1'
+            'SELECT wp_user_id, full_name FROM ' . App::db()->table('cpms_clinicians') . ' WHERE clinic_id = %d AND wp_user_id IS NOT NULL AND is_active = 1',
+            [$clinicId]
         );
         $map = [];
         foreach (is_array($rows) ? $rows : [] as $r) {

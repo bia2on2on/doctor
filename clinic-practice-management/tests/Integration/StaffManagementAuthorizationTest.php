@@ -129,6 +129,31 @@ final class StaffManagementAuthorizationTest extends WP_UnitTestCase
         );
     }
 
+    public function testClinicAReadDoesNotRenderClinicBClinicianPersonForClinicAMember(): void
+    {
+        $suffix = bin2hex(random_bytes(3));
+        $clinicA = $this->createClinic('staff-read-person-a');
+        $clinicB = $this->createClinic('staff-read-person-b');
+        $managerId = $this->makeUser('read_person_manager_' . $suffix, RolesAndCapabilities::ROLE_MANAGER);
+        $this->seedActiveMembership($managerId, $clinicA, RolesAndCapabilities::ROLE_MANAGER);
+        $doctorALogin = 'read_person_a_' . $suffix;
+        $doctorAId = $this->makeUser($doctorALogin, RolesAndCapabilities::ROLE_DOCTOR);
+        $this->seedActiveMembership($doctorAId, $clinicA, RolesAndCapabilities::ROLE_DOCTOR);
+        $clinicianBName = 'READ-CLINIC-B-PERSON-FOR-A-MEMBER-' . $suffix;
+        $this->createClinician($clinicB, $doctorAId, $clinicianBName);
+        wp_set_current_user($managerId);
+
+        $html = $this->renderStaffPage($clinicA);
+
+        $this->assertRenderReached($html);
+        self::assertStringContainsString($doctorALogin, $html, 'Clinic A member row must remain visible');
+        self::assertStringNotContainsString(
+            $clinicianBName,
+            $html,
+            'clinician/person lookup must use the same authorized Clinic A scope as the user list'
+        );
+    }
+
     public function testMultiClinicManagerWithoutExplicitSelectionRendersNoClinicRows(): void
     {
         $suffix = bin2hex(random_bytes(3));
