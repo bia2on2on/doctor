@@ -18,7 +18,9 @@ import json
 import os
 import re
 import sys
+import time
 
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
 BASE = os.environ.get("BASE", "http://localhost:8080").rstrip("/")
@@ -76,16 +78,160 @@ def attach_watchers(page, tag):
     page.on("pageerror", on_pageerror)
 
 
+LOGIN_NAV_TIMEOUT_MS = 15000
+
+
+def _login_error_text(page):
+    """متن خطای فرم ورود (اگر وردپرس فرم را با خطا رندر کرده باشد).
+
+    فقط پیامِ خودِ وردپرس خوانده می‌شود؛ رمز/کوکی/Nonce هرگز خوانده یا چاپ نمی‌شود.
+    """
+    try:
+        el = page.query_selector("#login_error")
+    except Exception:
+        return ""
+    if el is None:
+        return ""
+    try:
+        return re.sub(r"\s+", " ", (el.inner_text() or "")).strip()[:300]
+    except Exception:
+        return ""
+
+
+def _session_identity(page, user):
+    """هویت واقعیِ نشست پس از تلاش ورود: expected_user | none | other_user:<login> | …
+
+    تنها راهِ قطعی برای تفکیک «سرور ورود را رد کرد» از «ورود موفق بود ولی گزارشِ
+    پروب اشتباه شد» همین است: یک ناوبریِ احرازشده به profile.php و تطبیق نام کاربری
+    با محتوای صفحه. هیچ کوکی/مقدارِ نشست خوانده یا چاپ نمی‌شود (فقط نام کاربری که
+    خودش Secret نیست).
+    """
+    try:
+        page.goto(f"{BASE}/wp-admin/profile.php", wait_until="domcontentloaded")
+        if "wp-login.php" in page.url:
+            return "none"
+        body = page.content() or ""
+    except Exception as exc:  # تشخیص‌محور: خطای پروب نباید خودش گیت را عوض کند
+        return "probe_error:" + type(exc).__name__
+    if re.search(re.escape(user), body):
+        return "expected_user"
+    for other in (ADMIN_USER, SECRETARY_USER, MANAGER_USER, ACCOUNTANT_USER, DOCTOR_USER):
+        if other and other != user and re.search(re.escape(other), body):
+            return "other_user:" + other
+    return "unknown"
+
+
+def _login_failure_evidence(
+    page, tag, user, login_page_status, post_status, url_at_click, click_timeout, settle_error, elapsed_ms
+):
+    """شواهدِ حداقلی و بدون Secret تا اجرای بعدی A/C/D را تفکیک کند."""
+    evidence = {
+        "tag": tag,
+        "url_settled": page.url,
+        "url_at_click_return": url_at_click,
+        "login_page_http_status": login_page_status,
+        "login_post_http_status": post_status,
+        "click_navigation_timeout": click_timeout,
+        "settle_error": settle_error,
+        "elapsed_ms": elapsed_ms,
+        "login_error_message": _login_error_text(page),
+        "login_form_still_present": bool(page.query_selector("#user_login")),
+        "session_identity": _session_identity(page, user),
+    }
+    try:
+        page.screenshot(path=f"{OUT}/screenshots/{tag}-login-failed.png", full_page=True)
+        evidence["screenshot"] = f"{tag}-login-failed.png"
+    except Exception as exc:
+        evidence["screenshot"] = "error:" + type(exc).__name__
+    try:
+        with open(f"{OUT}/logs/{tag}-login.json", "w") as f:
+            json.dump(evidence, f, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        print(f"NOTE {tag}.login.evidence_write_failed — {type(exc).__name__}", flush=True)
+    return evidence
+
+
+def _login_detail(ev):
+    return (
+        f"url={ev['url_settled']} | url_at_click={ev['url_at_click_return']} | "
+        f"login_page={ev['login_page_http_status']} | login_post={ev['login_post_http_status']} | "
+        f"click_nav_timeout={ev['click_navigation_timeout']} | settle_error={ev['settle_error'] or '(none)'} | "
+        f"elapsed_ms={ev['elapsed_ms']} | "
+        f"session={ev['session_identity']} | form_present={ev['login_form_still_present']} | "
+        f"wp_error={ev['login_error_message'] or '(none)'}"
+    )
+
+
 def login(page, user, password, tag):
+    """ورود + شاهدِ تصمیم‌ساز.
+
+    معیار قبولی دقیقاً همان معیار قبلی است (URL نهایی نباید صفحهٔ ورود باشد)؛
+    چیزی تضعیف نشده و هیچ Retry ای برای سبز شدن اضافه نشده است. تفاوت‌ها:
+      1) نمونه‌برداری از URL دیگر «فوری و بدون همگام‌سازی» نیست.
+      2) در شکست، شواهدِ تفکیک‌کننده (کد وضعیت POST، پیام خطای وردپرس، هویت نشست)
+         ثبت می‌شود تا اجرای بعدی Product/Infra/Probe را از هم جدا کند.
+    """
     attach_watchers(page, tag)
     resp = page.goto(f"{BASE}/wp-login.php", wait_until="domcontentloaded")
+    login_page_status = resp.status if resp else 0
     page.fill("#user_login", user)
     page.fill("#user_pass", password)
-    page.click("#wp-submit")
-    page.wait_for_load_state("domcontentloaded")
+
+    # کد وضعیت پاسخِ POST ورود (بدون Body/کوکی). اگر POST هرگز پاسخ ندهد، None می‌ماند.
+    post_seen = {}
+
+    def on_login_response(r):
+        try:
+            if r.request.method == "POST" and "wp-login.php" in r.url:
+                post_seen["status"] = r.status
+        except Exception:
+            pass
+
+    page.on("response", on_login_response)
+    started = time.monotonic()
+    click_timeout = False
+    try:
+        page.click("#wp-submit")
+    except PlaywrightTimeoutError:
+        click_timeout = True
+    url_at_click = page.url
+
+    # تسویهٔ قطعی: Playwright پس از کلیک منتظرِ ناوبریِ آغازشده می‌ماند، اما آن انتظار
+    # Best-effort است و (اگر سیگنالِ ناوبری دیر برسد) بلافاصله برمی‌گردد؛ قبلاً همان‌جا
+    # URL خوانده می‌شد. این انتظارِ کراندار، معیار را تغییر نمی‌دهد: اگر وردپرس صفحهٔ
+    # ورود را دوباره رندر کند یا نشستی ساخته نشود، همان بررسی قبلی FAIL می‌شود.
+    settle_error = ""
+    try:
+        page.wait_for_url(
+            lambda u: "wp-login.php" not in u,
+            wait_until="domcontentloaded",
+            timeout=LOGIN_NAV_TIMEOUT_MS,
+        )
+    except PlaywrightTimeoutError:
+        pass
+    except Exception as exc:  # خطای غیرمنتظره باید در شواهد دیده شود، نه پنهان
+        settle_error = type(exc).__name__
+    page.remove_listener("response", on_login_response)
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+    post_status = post_seen.get("status")
+
     ok = "wp-login.php" not in page.url or "loggedout" in page.url
-    check(f"{tag}.login", ok, page.url)
-    return ok
+    if ok:
+        if "wp-login.php" in url_at_click:
+            # شاهدِ مستقیمِ اینکه کلیک پیش از ثبتِ ناوبری برگشته بود (Race در پروب).
+            print(
+                f"NOTE {tag}.login.nav_signal_missed — url_at_click={url_at_click} "
+                f"settled={page.url} elapsed_ms={elapsed_ms}",
+                flush=True,
+            )
+        check(f"{tag}.login", True, page.url)
+        return True
+
+    ev = _login_failure_evidence(
+        page, tag, user, login_page_status, post_status, url_at_click, click_timeout, settle_error, elapsed_ms
+    )
+    check(f"{tag}.login", False, _login_detail(ev))
+    return False
 
 
 def excerpt(body, limit=400):

@@ -296,6 +296,13 @@ jobs:
               )) . "\n";
           PHPEOF
           wp eval-file /tmp/acc/setup-roles.php --path="$WP_DIR" --allow-root
+          # شواهد Fixture (برای تفکیک A/C/D اگر ورود شکست بخورد) — بدون رمز/هش:
+          # وجود کاربران نقش‌محور، نقش‌شان و تعداد عضویت‌های Clinic.
+          PREFIX='${{ matrix.prefix }}'
+          wp user list --fields=user_login,roles --path="$WP_DIR" --allow-root > /tmp/acc/fixture-users.txt
+          mysql -h 127.0.0.1 -P 3306 -uroot -proot -N \
+            -e "SELECT COUNT(*) FROM $DB_NAME.${PREFIX}cpms_clinic_memberships;" > /tmp/acc/fixture-memberships.txt
+          echo "fixture membership rows: $(cat /tmp/acc/fixture-memberships.txt)"
           MANAGER_CLINIC_ID=$(cat /tmp/acc/manager_clinic_id.txt)
           case "$MANAGER_CLINIC_ID" in
             ''|*[!0-9]*) echo 'FAIL: manager Clinic fixture id is not numeric'; exit 1 ;;
@@ -422,6 +429,14 @@ jobs:
             echo '- browser acceptance:'
             echo '```'
             cat /tmp/acc/acceptance.log 2>/dev/null || echo '(مرحلهٔ مرورگر اجرا نشد)'
+            echo '```'
+            echo "- fixture users (login/roles) + membership rows: \`$(cat /tmp/acc/fixture-memberships.txt 2>/dev/null || echo '?')\`"
+            echo '```'
+            cat /tmp/acc/fixture-users.txt 2>/dev/null || echo '(fixture users ثبت نشد)'
+            echo '```'
+            echo '- login failures (structured evidence):'
+            echo '```'
+            cat /tmp/acc/logs/*-login.json 2>/dev/null || echo '(no login failure)'
             echo '```'
             echo '- PHP fatal lines in debug.log:'
             echo '```'
