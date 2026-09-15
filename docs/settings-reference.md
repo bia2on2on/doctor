@@ -2,6 +2,17 @@
 
 نسخه 1.5 | 2026-09-07 | جدول `cpms_settings` (کلید/مقدار JSON) + پیش‌فرض‌های `Settings::DEFAULTS`
 
+> **تغییر 1.6 (آشتی نهایی فاز ۲ — 2026-09-15):** مالکیتِ سطحِ نصب برای کلیدهای **پذیرفته‌شده**
+> به‌روز شد: `notif.archive_days` (ادغامِ مسیرِ #40)، `retention.oplog_days` (M-2) و پیکربندیِ
+> بکاپ (`backup.enabled`, `backup.interval_hours`, `backup.keep_count`, `backup.storage_path`)
+> به‌همراهِ حالتِ عملیاتیِ `backup.last_run_at` — همگی از `InstallationSettings` (Optionهای
+> وردپرس، بدونِ autoload) خوانده/نوشته می‌شوند، نه `cpms_settings` یک Clinic؛ منبعِ اجرا:
+> `src/Settings/InstallationSettings.php`. همچنین «محلیِ» ساعاتِ سکوت در مسیرهای قابل‌دسترسِ
+> `appt.reminder`/`fu.reminder` = ساعتِ محلیِ **Location** صریحِ ردیفِ عملیاتی (نه کلینیک) —
+> سطرهای مربوط را ببینید. **هیچ کلیدِ دیگری صرفاً به‌خاطرِ پیشوند مهاجرت/طبقه‌بندی نشد**
+> (مالکیتِ کلیدهایی مثل `license.server_url` یا `queue.no_show_grace_minutes` در این به‌روزرسانی
+> جابه‌جا نشده و همچنان قلمِ آشتیِ مستقلِ بعدی است).
+
 > **تغییر 1.5 (F1-5 — Retention لاگ عملیاتی):** کلید جدید `retention.oplog_days` (پیش‌فرض `90` روز) — Job دوره‌ای `cleanup.oplog` ردیف‌های قدیمی‌تر از این سن را از `cpms_operational_logs` حذف می‌کند (رشد بی‌کران جدول hot). Audit مستقل است و `retention.audit_years` (۱۰ سال) دست‌نخورده می‌ماند.
 >
 > **به‌روزرسانی M-2 (سمتِ منبع و کران):** این کلید پیکربندی **سطح نصب** است و از `InstallationSettings::getOplogRetentionDays()` (Option وردپرس `cpms_retention_oplog_days`، بدونِ autoload، پیش‌فرض مؤثر `90`، مقدار خراب/کمتر از ۱ → همان `90`) خوانده می‌شود — نه از `cpms_settings` یک Clinic. هر اجرا حداکثر `500` ردیفِ واجدِ شرایط را حذف می‌کند و اجراهای تکرارشوندهٔ همان Job ادامهٔ پاک‌سازی را انجام می‌دهند. سایر کلیدهای `retention.*` از این تصمیم مستثناست.
@@ -44,9 +55,9 @@
 | `files.storage_path` | `` | مسیر مطلق | پوشه ذخیرهفایلهای پزشکی فاز F5 — خالی = `wp-content/clinic-files/` (خارج uploads) با گارد `.htaccess` deny + `index.php`. توصیه file-storage.md: مسیر مطلق خارج DocumentRoot. تغییر در هر Request خوانده می‌شود (بدون کش). |
 | `files.max_upload_bytes` | `10485760` | بایت | سقف حجم آپلود E16/C3 — پیشفرض 10 MB؛ اعملای سرور (F-3) با خطای `CLINIC_FILE_INVALID` 400. |
 | `clinical.require_chief_complaint` | `true` | bool | الزام ثبت شکایت اصلی قبل از Complete (FR-8.7 — E14). |
-| `notif.quiet_hours_start` | `08:00` | `HH:MM` محلی | شروع بازه ارسال SMS غیرتعاملی (یادآوری‌ها — F8 notifications §5؛ OTP مستثنا). |
-| `notif.quiet_hours_end` | `21:00` | `HH:MM` محلی | پایان بازه Quiet Hours (پشتیبانی بازه overnight به وقت Timezone کلینیک). |
-| `notif.archive_days` | `90` | روز | Retention اعلان‌های Internal — purgeExpired داخل Job `notif.dispatch` (sent/read قدیمی حذف می‌شود). |
+| `notif.quiet_hours_start` | `08:00` | `HH:MM` محلی | شروع بازه ارسال SMS غیرتعاملی (یادآوری‌ها — F8 notifications §5؛ OTP مستثنا). **فاز ۲:** در مسیرهای قابل‌دسترسِ `appt.reminder`/`fu.reminder` این ساعتِ محلی از **تایم‌زونِ صریح و ماندگارِ Location** ردیفِ عملیاتی (`cpms_locations.timezone`) در همان لحظهٔ مرجعِ کنترل‌شدهٔ پردازشِ یادآوری محاسبه می‌شود — تایم‌زونِ کلینیک جایگزینِ Location نمی‌شود (فقط وقتی هیچ تایم‌زونِ صریحی داده نشود قراردادِ قدیمیِ کلینیک‌محور حفظ می‌شود). نبود/خرابیِ تایم‌زونِ Location پیش از ارزیابی، ردیف را به‌صورتِ شکستِ بسته رد می‌کند. |
+| `notif.quiet_hours_end` | `21:00` | `HH:MM` محلی | پایان بازه Quiet Hours (پشتیبانی بازهٔ شب‌گذر/overnight). **فاز ۲:** منطقه‌زمانیِ مرجع در مسیرهای یادآوری = تایم‌زونِ صریحِ Location (نه کلینیک؛ جزئیات در سطرِ `notif.quiet_hours_start`). خودِ کلیدها همچنان در `cpms_settings` همان Clinic ذخیره می‌شوند — فقط منبعِ منطقه‌زمانی/لحظهٔ مرجعِ ارزیابی تغییر کرده است. |
+| `notif.archive_days` | `90` | روز | Retention اعلان‌های Internal — حذف ارسال‌شده/خوانده‌شده‌های قدیمی در `notif.dispatch`. **به‌روزرسانی فاز ۲ (ادغام‌شده روی main):** این کلید **سطح نصب** است و از `InstallationSettings::getNotifArchiveDays()` (Option وردپرس `cpms_notif_archive_days`، بدونِ autoload، پیش‌فرض مؤثر `90`، مقدارِ خراب/زیرِ یک → `90`) خوانده می‌شود — نه از `cpms_settings` یک Clinic. |
 | `reports.max_range_days` | `366` | روز | سقف بازه گزارش/Export — بزرگ‌تر → 422 `CLINIC_VALIDATION_FAILED`. |
 | `reports.export_retention_days` | `7` | روز | نگهداری فایل Export قبل از حذف (فایل + ردیف؛ دانلود منقضی → 410 `CLINIC_EXPORT_EXPIRED`). |
 | `reports.export_max_rows` | `10000` | ردیف | سقف ردیف‌های Export (async — performance-baseline §18). |
@@ -69,7 +80,7 @@
 - **ذخیره:** همه Timestampها `DATETIME(3)` در **UTC**.
 - **Slot time:** `TIME` محلی کلینیک (Slot ذاتاً محلی است؛ `clinics.timezone = Asia/Tehran`).
 - **نمایش:** تبدیل UTC → timezone کلینیک → Jalali (فقط Presentation Layer).
-- **Jobها:** مقایسه‌ها با `now_utc` + آستانه‌های محلی محاسبه‌شده در PHP.
+- **Jobها:** مقایسه‌ها با `now_utc` + آستانه‌های محلی محاسبه‌شده در PHP. **فاز ۲ (ادغام `35acced`):** در `appt.reminder`/`fu.reminder` حقیقتِ زمانیِ عملیاتی = **تایم‌زونِ صریح و ماندگارِ Location ردیف** (`cpms_locations.timezone`) در همان لحظهٔ مرجعِ کنترل‌شدهٔ پردازش؛ تایم‌زونِ کلینیک جایگزینِ Location نمی‌شود و تایم‌زونِ فرایند/وردپرس/سرور کنترل‌کننده نیست. نبود/خرابیِ تایم‌زونِ Location در آن مسیرها پیش از ارزیابیِ ساعاتِ سکوت به‌صورتِ شکستِ بسته رد می‌شود. این تکمیلِ فاز ۲ است، نه ادعای تکمیلِ زمان‌بندیِ فازهای بعدی.
 
 ## SMS — Provider-Agnostic (ADR-0025)
 - **Business Logic ← `SmsService` ← `SmsProviderInterface`** — هیچ وابستگی به Provider خاص در Core (تفکیک §8/§25 الزامات پیامک).
@@ -91,6 +102,15 @@
 | `backup.last_run_at` | `0` | int (ts) | آخرین بکاپ موفق (نوشتهشده توسط Job/دستی) |
 | `update.check_interval_hours` | `24` | int | TTL کش بررسی بهروزرسانی (transient) |
 | `update.channel` | `stable` | enum stable\|beta | کانال انتشار |
+
+> **به‌روزرسانی مالکیت فاز ۲ (2026-09-15 — فقط کلیدهای پذیرفته‌شده):** کلیدهای پیکربندیِ بکاپ —
+> `backup.enabled`، `backup.interval_hours`، `backup.keep_count` و `backup.storage_path` —
+> **تنظیمات سطح نصب** هستند و از `InstallationSettings` (Optionهای وردپرس؛ پیش‌فرض‌ها و
+> کران‌های همین جدول) خوانده/نوشته می‌شوند، نه از `cpms_settings` یک Clinic؛
+> `backup.last_run_at` **حالتِ عملیاتیِ سطح نصب** است که توسط مسیرِ `backup.run`/دستی
+> نوشته می‌شود. منبعِ اجرا: `src/Settings/InstallationSettings.php` +
+> `BackupRunHandler`/`SystemPage`. مالکیتِ `license.server_url` و `update.*` در این
+> به‌روزرسانی جابه‌جا **نشده** و جزو اقلامِ کنترلی/آشتیِ مستقل باقی می‌ماند.
 
 > **حالت توسعه/تست مجوز (نه یک Setting):** ثابت `CPMS_DEV_MODE` در `wp-config.php`
 > یا فیلتر `cpms_license_dev_mode` → وضعیت `DEVELOPMENT` (فعالیت باز، برچسب

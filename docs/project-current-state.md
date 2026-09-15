@@ -3,13 +3,33 @@
 > Recover the project from this file + Git/remote/PR + linked canonical docs.
 > Do **not** use a previous chat session as memory.
 >
-> **Integrated main checkpoint:** `bdb135e9b3eff9db9fbe104c33bc6c30850c5263`
+> **Integrated main checkpoint (final Phase 2 technical reconciliation, re-verified live
+> 2026-09-15):** `35acced4993287bdffd1fb5c0ef2f8cb1634f99f` — "Merge pull request #47"
+> (MERGED 2026-09-15T11:32:03Z — Location timezone for reminder SMS quiet hours; approved
+> head `bb70079f`; merge parents `229b0b0c6c03310bb6ee1415689f11b822703225` (main before
+> merge) + `bb70079f3f46888c3123cc36d7054b82993f27bb` (PR #47 head)). Post-merge gates on
+> `35acced` — all SUCCESS (push event; 19 check-runs, none pending/failed): CI `34963801460` ·
+> Real WordPress Acceptance `34963801412` · Pilot/Staging Readiness Gate `34963801393` ·
+> Closure Gate `34963801453`. **Technical Phase 2 = COMPLETE** (M-2 CLOSED — all eight
+> canonical jobs resolved on main; M-4 CLOSED — typed non-retryable job failure semantics;
+> Location is the operational timezone truth for the reachable `appt.reminder`/`fu.reminder`
+> quiet-hours paths; post-M-4 fixture correction merged via PR #46; latest migration remains
+> `0020` — no `0021` exists or was invented). **This is NOT a release/V1/commercial claim.**
+> **Phase 3 = NOT STARTED.** This cycle's verified merges: PR #47 (head `bb70079f`) · PR #46
+> (head `ea7b683` — post-merge fixture triage) · PR #45 (head `84a858f` — M-4 terminal
+> policy) · PR #43 (head `da71e6d` — M-2 `handwriting.gc`) · PR #42 (head `37068ad` —
+> backup configuration keys) · PR #41 · PR #40 (installation-level `notif.archive_days`).
+> PR #44 (earlier M-4 draft) was **CLOSED WITHOUT MERGE**. No open PRs at reconciliation
+> time; PR #13 was subsequently CLOSED without merge (2026-09-14) — its lineage was already
+> integrated through PR #14, so nothing changed.
+> **Previous integrated main checkpoint (historical):** `bdb135e9b3eff9db9fbe104c33bc6c30850c5263`
 > (PR #25 MERGED 2026-09-12T06:42:07Z — documentation-only C10 performance evidence
 > package integrated; approved head `e2d9ce74`; merge parents `bd2634a` (main before merge,
 > PR #24 docs merge) + `e2d9ce74` (PR #25 head); post-merge gates success: CI `34678813474` ·
 > Real WP `34678813477` · Pilot/Staging `34678813488` · Closure `34678813479`).
 > **C10 FORMALLY CLOSED by explicit Owner decision 2026-09-12** (bounded evidence review
-> only — see §K). Phase 2 IN PROGRESS; Phase 3 / Phase 17 NOT STARTED.
+> only — see §K). Phase 2 IN PROGRESS; Phase 3 / Phase 17 NOT STARTED. *(As of that
+> checkpoint; superseded by the 2026-09-15 reconciliation — see the top block.)*
 > **Previous integrated checkpoint (historical):** `7146d5bb4167d2ac333000188d404c2aa977b817`
 > (PR #23 MERGED 2026-09-11T19:35:54Z — bounded C9 i18n remediation integrated;
 > approved head `c92737bb0a30fbdf13d804a8dcdffa522fd556ae`;
@@ -34,7 +54,8 @@
 
 If Git/remote/PR, this file, and the repository tree disagree: **STOP**.
 
-This file describes the integrated main checkpoint `7146d5bb` plus preserved
+This file describes the integrated main checkpoint `35acced` (final Phase 2
+technical reconciliation — see the header block) plus preserved
 previous-checkpoint and pre-merge/pre-corrective evidence SHAs below. It does
 **not** self-refer to the SHA of any later documentation-only commit.
 
@@ -76,15 +97,18 @@ Legacy labels (`F0..F10`, `Doc-Phase`, `V1` / `V1.5` / `V2`) are historical. The
 | Phase 0.5 | CLOSED |
 | Phase 1A | CLOSED (`9bc6f7f`; OD-9 CLOSED) |
 | Phase 1B | DEFERRED — scoped / object authorization (depends on Phase 2 + 3) |
-| Phase 2 | **IN PROGRESS** — subphase **C6 CLOSED** + post-closure corrective integrated (PR #17); subphase **C7 CLOSED** (remediation integrated via PR #20 at merge `a385d868`; **formal Owner acceptance recorded 2026-09-11**); **C8 / C9 CLOSED**; **C10 CLOSED (explicit Owner decision 2026-09-12; bounded evidence review only — no NFR/load/scalability claim)**. Internal queue C1..C10 complete; **Phase 2 End Gate NOT defined / NOT passed** |
+| Phase 2 | **COMPLETED (TECHNICAL) — all recorded Phase 2 technical blockers closed on `main` at `35acced` (2026-09-15); this is NOT a release/V1/commercial claim. Phase 3 NOT STARTED.** Subphase history preserved: **C6 CLOSED** + post-closure corrective integrated (PR #17); **C7 CLOSED** (remediation integrated via PR #20 at merge `a385d868`; formal Owner acceptance recorded 2026-09-11); **C8 / C9 CLOSED**; **C10 CLOSED (explicit Owner decision 2026-09-12; bounded evidence review only — no NFR/load/scalability claim)**. Internal queue C1..C10 complete. Final technical closures: **M-2 CLOSED** (all eight canonical jobs resolved on main), **M-4 CLOSED** (typed `NonRetryableJobFailure` semantics), Location = operational timezone truth for the reachable `appt.reminder`/`fu.reminder` quiet-hours paths (PR #47), post-M-4 fixture correction merged (PR #46); latest migration remains `0020` (no `0021`). The historical "End Gate (26 items)" label was never a defined acceptance checklist and is not revived here |
 | C7 | **CLOSED — formally accepted by explicit Owner decision on 2026-09-11.** Technical closure was already evidenced (implementation merged into `main` via PR #20, merge `a385d868`, 2026-09-11T13:09:16Z; slices C7-0→C7-S6; all gates GREEN). The Owner acceptance covers the defined/completed C7 scope only — it is **not** a claim that all conceivable tenant isolation throughout the product is perfect, **not** commercial-readiness approval, and does not approve any deferred item, migration, or later phase — see `docs/phase-reports/c7-0-census.md` §۱۱ |
 | C8 | **CLOSED as a Phase-2 Location-foundation evidence/documentation closure package (2026-09-11) — NO implementation work performed or authorized.** Reviewed evidence found no verified Phase-2 Location implementation gap. C8 closure means "the Phase-2 Location foundation is closed based on current evidence", not "all future Location/timezone behavior is complete" — see `docs/phase-reports/phase2-state.md` §C8 |
 | Phase 3 | **NOT STARTED** — no `AuthorizationService`; do not start |
 
-**Integrated main checkpoint:** `b19930fe` (PR #21 MERGED 2026-09-11T14:27:14Z —
+**Integrated main checkpoint:** `35acced` (PR #47 MERGED 2026-09-15 — final
+Phase 2 technical merge; gates recorded in the header block). Previous
+integrated checkpoint: `bdb135e9` (PR #25 MERGED — C10 documentation evidence
+package). Earlier: `b19930fe` (PR #21 MERGED 2026-09-11T14:27:14Z —
 post-C7 documentation-only continuity sync; **Owner formal C7 acceptance + C8
-closure package recorded in this documentation update's lineage**). Previous
-integrated checkpoint: `a385d868` (PR #20 MERGED 2026-09-11T13:09:16Z — C7
+closure package recorded in this documentation update's lineage**). Earlier:
+`a385d868` (PR #20 MERGED 2026-09-11T13:09:16Z — C7
 remediation integration). Earlier: `248ca10` (PR #17 MERGED
 2026-09-10T20:55:57Z — post-closure C6 finance corrective). Earlier: `099b644`
 (PR #14 MERGED 2026-09-10; parents `8087b42` + `a49b182`). **Pre-merge
@@ -111,7 +135,7 @@ gate tables are retained below as historical evidence.
 | PR #16 | **CLOSED** (historical; earlier competing corrective) — do not reopen |
 | PR #14 | [#14](https://github.com/bia2on2on/doctor/pull/14) — **MERGED** 2026-09-10 — base `main` — head `a49b182` |
 | PR #10 / #11 / #12 / #15 | **MERGED** (historical; superseded) — do not reopen |
-| PR #13 | **OPEN + DRAFT** — C6 repair diagnostic (`arena/01a086b4-doctor`, head `09d505b`, base `arena/01a086ca-doctor`) — **do not touch, do not merge, do not close** (re-verified unchanged 2026-09-11). Ancestry relevance: `09d505b` **is an ancestor of `origin/main`** (its linear repair line was integrated through PR #14); that fact is reported only — cleanup is a later Owner decision |
+| PR #13 | **OPEN + DRAFT** — C6 repair diagnostic (`arena/01a086b4-doctor`, head `09d505b`, base `arena/01a086ca-doctor`) — **do not touch, do not merge, do not close** (re-verified unchanged 2026-09-11). Ancestry relevance: `09d505b` **is an ancestor of `origin/main`** (its linear repair line was integrated through PR #14); that fact is reported only — cleanup is a later Owner decision. **Update 2026-09-15 (live re-verification): PR #13 is now CLOSED WITHOUT MERGE (2026-09-14T11:45:36Z; `mergedAt` = `null`, still draft at close).** Its lineage remains integrated through PR #14, so main is unaffected — nothing to do |
 | Pre-merge branch (historical) | `arena/01a08828-doctor` — implementation `3fc5a54` — closure docs `becc82f` — integrated via #14 |
 
 **Post-merge gates on `b19930fe` (`origin/main`, push event — all SUCCESS, verified live 2026-09-11; 19 check runs total, 0 pending, 0 failed):**
@@ -260,10 +284,22 @@ the class takes an explicit `int $clinic_id` (`listAll(int $clinic_id, …)` at 
 **comment-only** cleanup (no behavior change, no test change, no tripwire impact) and is left for a
 future code task because this task must not touch PHP.
 
-The structurally open item is **not** hardcodes but the background-job/tenant-context path
-(`cpms_jobs` has no tenant columns; the dispatcher establishes no tenant context). The approved
-**design direction — NOT YET IMPLEMENTED** is recorded in
+The structurally tracked item was the background-job/tenant-context path. **Updated
+2026-09-15 (final Phase 2 reconciliation):** the approved T/S/W scope-classification
+**design is IMPLEMENTED**. The runtime truth is
+`clinic-practice-management/src/Application/Jobs/JobScopeRegistry.php` (+
+`JobScopeClass`): every one of the 15 registered job types carries an explicit
+`T` (tenant) / `S` (installation) / `W` (installation-wide sweep) class, and
+`JobsDispatcher` enforces it fail-closed (`JOB_SCOPE_UNCLASSIFIED` for any
+unclassified type; permissive mode is test-only opt-in). The design rationale stays
+recorded in
 [`docs/architecture/phase2-tenant-context-remediation-design.md`](architecture/phase2-tenant-context-remediation-design.md).
+Two boundaries are **preserved exactly**: (a) per the documented decision, **no
+`clinic_id` column was added to `cpms_jobs`** — the "T ⇒ non-empty / S,W ⇒ NULL"
+rule is enforced at the registry/contract + test level, not as persisted data; and
+(b) the registry records **classification only** — scheduling truth remains
+`App::RECURRING_JOBS` and handler truth remains `App::dispatcher()`. Stale claims that
+"the registry does not exist" or "scope design is not implemented" are superseded.
 
 ---
 
@@ -772,7 +808,9 @@ Full slice-by-slice RED→GREEN history with run IDs:
   26-item Phase-2 End Gate checklist was found in the current repository or inspected
   tracked Git history**; the origin of the number is not recorded as provenance fact. **C10 status (historical at that
   point): evidence review complete / technically eligible for closure — owner formal
-  closure pending.** Phase 2 remains IN PROGRESS; the Phase 2 End Gate
+  closure pending.** Phase 2 remains IN PROGRESS *(as of that C10 checkpoint; superseded
+  by the 2026-09-15 reconciliation — Phase 2 is now COMPLETED technically, Phase 3 NOT
+  STARTED)*; the Phase 2 End Gate
   and Phase 3 are NOT started. No new reference-server/load-test campaign is required
   merely to close the internal C10 evidence package; broad commercial performance
   engineering remains Owner Roadmap Phase 17.
@@ -788,6 +826,9 @@ Full slice-by-slice RED→GREEN history with run IDs:
   success remains non-numeric evidence; NOT RETRIEVED / NOT MEASURED items remain exactly
   as recorded in `c10-performance-evidence.md` §3. **Phase 2 remains IN PROGRESS; Phase 3
   and Phase 17 remain NOT STARTED; the Phase 2 End Gate is not defined/passed.**
+  *(Recorded at the 2026-09-12 C10 closure; superseded for Phase-2 status only by the
+  2026-09-15 reconciliation: Phase 2 = COMPLETED technically, Phase 3 / Phase 17 still
+  NOT STARTED.)*
 
 
 ---
@@ -802,6 +843,6 @@ Full slice-by-slice RED→GREEN history with run IDs:
 - [`docs/phase-reports/c6-census.md`](phase-reports/c6-census.md)
 - [`docs/phase-reports/c6-isolation-matrix.md`](phase-reports/c6-isolation-matrix.md)
 - [`docs/phase-reports/c7-0-census.md`](phase-reports/c7-0-census.md) — C7-0 evidence foundation (census only, no product change)
-- [`docs/architecture/phase2-tenant-context-remediation-design.md`](architecture/phase2-tenant-context-remediation-design.md) — **🔴 APPROVED DESIGN DIRECTION — NOT YET IMPLEMENTED**: tenant context for background jobs, system-wide job classification, Location operational timezone, per-Clinic SMS configuration resolution, operational-log tenant attribution, legacy-job backfill rules, the **6 pre-implementation design questions** (recorded against the Owner's 2026-09-12 decisions; this document **reserves no migration number**), the **T/S/W classification of the 15 job types actually registered in `App::dispatcher()`** (§A-3), and the **14-item RED test specification RT-1..RT-14** (recorded only — no test written, no code changed, End Gate not started). Independent read-only architecture review 2026-09-12 → Owner verdict **`B — NEEDS SMALL DOCUMENTATION CORRECTIONS`**; corrections **C-1..C-9** applied (notably: SMS credentials ARE stored per-Clinic in `cpms_settings.sms.auth` as sealed AES-256-GCM material per ADR-0025, and the installation-level vault key means cryptography alone does not enforce Clinic isolation)
+- [`docs/architecture/phase2-tenant-context-remediation-design.md`](architecture/phase2-tenant-context-remediation-design.md) — **🟢 SCOPE-CLASSIFICATION DESIGN IMPLEMENTED (2026-09-15 reconciliation)**: the T/S/W job classification (§A-3) is now enforced at runtime by `JobScopeRegistry`/`JobScopeClass` + `JobsDispatcher` (fail-closed). The document body's earlier "NOT YET IMPLEMENTED" wording is a **historical snapshot** of the pre-implementation state and is preserved, not re-edited. Scope: tenant context for background jobs, system-wide job classification, Location operational timezone, per-Clinic SMS configuration resolution, operational-log tenant attribution, legacy-job backfill rules, the **6 pre-implementation design questions** (recorded against the Owner's 2026-09-12 decisions; this document **reserves no migration number**), and the **14-item RED test specification RT-1..RT-14**. Independent read-only architecture review 2026-09-12 → Owner verdict **`B — NEEDS SMALL DOCUMENTATION CORRECTIONS`**; corrections **C-1..C-9** applied (notably: SMS credentials ARE stored per-Clinic in `cpms_settings.sms.auth` as sealed AES-256-GCM material per ADR-0025, and the installation-level vault key means cryptography alone does not enforce Clinic isolation)
 - Tripwire: `bin/tenant-tripwire.py` (CI-wired, 59 self-tests)
 - [`docs/handoff/phase2-c6-to-next-agent.md`](handoff/phase2-c6-to-next-agent.md)
