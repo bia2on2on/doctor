@@ -5,7 +5,7 @@ on:
     branches: ['arena/01a0a629-doctor']
 
 permissions:
-  contents: read
+  contents: write
 
 defaults:
   run:
@@ -45,6 +45,26 @@ jobs:
         run: bash tests/bin/install-wp-tests.sh wordpress_test root root 127.0.0.1 6.7.2
       - name: Run focused render-path coverage
         run: |
+          set +e
+          set -o pipefail
           php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
             --bootstrap tests/integration-bootstrap.php \
-            tests/Integration/StaffManagementAuthorizationTest.php
+            tests/Integration/StaffManagementAuthorizationTest.php 2>&1 | tee /tmp/staff-read-evidence.log
+          echo "${PIPESTATUS[0]}" > /tmp/staff-read-evidence.rc
+          exit 0
+      - name: Publish exact output as commit evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "### StaffManagementPage focused read authorization evidence"
+            echo
+            echo "- exact head: \`$GITHUB_SHA\`"
+            echo '```'
+            cat /tmp/staff-read-evidence.log
+            echo '```'
+          } > /tmp/staff-read-evidence.md
+          gh api "repos/{owner}/{repo}/commits/$GITHUB_SHA/comments" \
+            -X POST -F body=@/tmp/staff-read-evidence.md --jq '.html_url'
+      - name: Enforce focused result
+        run: exit "$(cat /tmp/staff-read-evidence.rc)"
