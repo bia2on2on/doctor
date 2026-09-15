@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ClinicCore\Tests\Integration;
 
 use ClinicCore\Admin\StaffManagementPage;
+use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use WP_UnitTestCase;
 
@@ -28,6 +29,7 @@ final class StaffManagementAuthorizationTest extends WP_UnitTestCase
 
     protected function tearDown(): void
     {
+        unset($_GET['clinic_id'], $_GET['edit'], $_GET['page']);
         App::resetScope();
         wp_set_current_user(0);
         parent::tearDown();
@@ -211,6 +213,120 @@ final class StaffManagementAuthorizationTest extends WP_UnitTestCase
         $activate = StaffManagementPage::toggleUser($targetId, 'activate', $managerId);
         self::assertSame('', $activate['error']);
         self::assertSame('active', (string) App::membership_service()->membership_for($clinicId, $targetId)['status']);
+    }
+
+    public function testAdministratorWithoutClinicMembershipCannotRenderClinicStaffOrPersonRows(): void
+    {
+        $clinicA = $this->createClinic('staff-read-admin-a');
+        $clinicB = $this->createClinic('staff-read-admin-b');
+        $fixtureA = $this->seedStaffPersonFixture($clinicA, 'staff_read_admin_a');
+        $fixtureB = $this->seedStaffPersonFixture($clinicB, 'staff_read_admin_b');
+
+        $adminId = $this->makeUser('staff_read_global_admin', 'administrator');
+        wp_set_current_user($adminId);
+        unset($_GET['clinic_id']);
+
+        $html = $this->renderStaffPage();
+        $leakedMarkers = array_values(array_filter(
+            array_merge($fixtureA['markers'], $fixtureB['markers']),
+            static fn (string $marker): bool => str_contains($html, $marker)
+        ));
+
+        self::assertSame([], $leakedMarkers, 'administrator without an active Clinic membership must not observe Clinic staff/person fixtures');
+    }
+
+    public function testClinicAOnlyManagerCannotRenderClinicBRowsFromSubmittedClinicSelection(): void
+    {
+        $clinicA = $this->createClinic('staff-read-cross-a');
+        $clinicB = $this->createClinic('staff-read-cross-b');
+        $fixtureA = $this->seedStaffPersonFixture($clinicA, 'staff_read_cross_a');
+        $fixtureB = $this->seedStaffPersonFixture($clinicB, 'staff_read_cross_b');
+
+        $managerId = $this->makeUser('staff_read_cross_manager', RolesAndCapabilities::ROLE_MANAGER);
+        cpms_test_seed_membership($managerId, $clinicA, RolesAndCapabilities::ROLE_MANAGER);
+        wp_set_current_user($managerId);
+        $_GET['clinic_id'] = (string) $clinicB;
+
+        $html = $this->renderStaffPage();
+        $leakedMarkers = array_values(array_filter(
+            array_merge($fixtureA['markers'], $fixtureB['markers']),
+            static fn (string $marker): bool => str_contains($html, $marker)
+        ));
+
+        self::assertSame([], $leakedMarkers, 'a Clinic A-only manager must not render rows after submitting Clinic B');
+    }
+
+    public function testAuthorizedManagerRendersOnlyExplicitlySelectedClinicRows(): void
+    {
+        $clinicA = $this->createClinic('staff-read-allowed-a');
+        $clinicB = $this->createClinic('staff-read-allowed-b');
+        $fixtureA = $this->seedStaffPersonFixture($clinicA, 'staff_read_allowed_a');
+        $fixtureB = $this->seedStaffPersonFixture($clinicB, 'staff_read_allowed_b');
+
+        $managerId = $this->makeUser('staff_read_allowed_manager', RolesAndCapabilities::ROLE_MANAGER);
+        cpms_test_seed_membership($managerId, $clinicA, RolesAndCapabilities::ROLE_MANAGER);
+        wp_set_current_user($managerId);
+        $_GET['clinic_id'] = (string) $clinicA;
+
+        $html = $this->renderStaffPage();
+
+        self::assertStringContainsString($fixtureA['display_name'], $html, 'authorized Clinic A manager must see Clinic A staff');
+        self::assertStringContainsString($fixtureA['clinician_name'], $html, 'authorized Clinic A manager must see the Clinic A person fixture');
+        foreach ($fixtureB['markers'] as $marker) {
+            self::assertStringNotContainsString($marker, $html, 'Clinic A manager must not see Clinic B staff/person data');
+        }
+    }
+
+    /**
+     * @return array{display_name:string, clinician_name:string, markers:list<string>}
+     */
+    private function seedStaffPersonFixture(int $clinicId, string $prefix): array
+    {
+        global $wpdb;
+
+        $userId = $this->makeUser($prefix . '_user', RolesAndCapabilities::ROLE_DOCTOR);
+        $displayName = $prefix . ' Display';
+        $email = $prefix . '@test.local';
+        wp_update_user([
+            'ID' => $userId,
+            'display_name' => $displayName,
+            'user_email' => $email,
+        ]);
+        cpms_test_seed_membership($userId, $clinicId, RolesAndCapabilities::ROLE_DOCTOR);
+
+        $clinicianName = $prefix . ' Person';
+        $now = App::db()->nowUtcSql();
+        $inserted = $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_clinicians
+                    (clinic_id, full_name, wp_user_id, is_active, created_at, updated_at)
+                 VALUES (%d, %s, %d, 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $clinicId,
+                $clinicianName,
+                $userId,
+                $now,
+                $now
+            )
+        );
+        self::assertSame(1, $inserted, 'dynamic Clinic person fixture must be persisted');
+
+        return [
+            'display_name' => $displayName,
+            'clinician_name' => $clinicianName,
+            'markers' => [$prefix . '_user', $displayName, $email, $clinicianName],
+        ];
+    }
+
+    private function renderStaffPage(): string
+    {
+        ob_start();
+        try {
+            StaffManagementPage::render();
+        } finally {
+            $html = (string) ob_get_clean();
+        }
+
+        return $html;
     }
 
     private function makeUser(string $login, string $role): int
