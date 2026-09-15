@@ -772,11 +772,13 @@ final class HandwritingGcM2WiringRedTest extends WP_UnitTestCase
         );
 
         // --- اجرای دوم: ادامهٔ کارِ باقی‌مانده (صفحاتِ eligibleِ B) ---
-        $remainingEligibleB = (int) $wpdb->get_var($wpdb->prepare(
+        // فهرستِ IN مستقیماً درج می‌شود (int-cast؛ همان الگوی helpers دیگرِ
+        // این تست) — prepare با %s کلِ لیست را یک رشتهٔ واحد می‌سازد.
+        $inBulkB = implode(',', array_map('intval', $this->bulkPagesB));
+        $remainingEligibleB = (int) $wpdb->get_var(
             'SELECT COUNT(*) FROM (SELECT v.page_id FROM ' . $db->table('cpms_handwriting_page_versions')
-            . ' v WHERE v.page_id IN (%s) GROUP BY v.page_id HAVING COUNT(*) = 8) t',
-            implode(',', array_map('intval', $this->bulkPagesB))
-        ));
+            . " v WHERE v.page_id IN ({$inBulkB}) GROUP BY v.page_id HAVING COUNT(*) = 8) t" // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        );
         self::assertSame(
             $perClinic - $drainedB1,
             $remainingEligibleB,
