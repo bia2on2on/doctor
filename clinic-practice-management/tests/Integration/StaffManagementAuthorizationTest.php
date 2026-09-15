@@ -481,13 +481,23 @@ final class StaffManagementAuthorizationTest extends WP_UnitTestCase
     {
         global $wpdb;
 
-        $organizationId = (int) $wpdb->get_var(
-            'SELECT id FROM ' . $wpdb->prefix . 'cpms_organizations ORDER BY id ASC LIMIT 1' // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        );
-        self::assertGreaterThan(0, $organizationId, 'an active organization fixture must exist');
-
-        $slug = $slugPrefix . '-' . bin2hex(random_bytes(4));
+        $fixtureSuffix = bin2hex(random_bytes(4));
         $now = App::db()->nowUtcSql();
+        $organizationInserted = $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_organizations (name, slug, status, created_at, updated_at) VALUES (%s, %s, %s, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                'Staff authz organization ' . $fixtureSuffix,
+                'staff-authz-org-' . $fixtureSuffix,
+                'active',
+                $now,
+                $now
+            )
+        );
+        self::assertSame(1, $organizationInserted, 'dynamic Organization fixture must be persisted');
+        $organizationId = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $organizationId, 'dynamic Organization fixture must have a persisted id');
+
+        $slug = $slugPrefix . '-' . $fixtureSuffix;
         $wpdb->query(
             $wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_clinics (organization_id, name, slug, timezone, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
