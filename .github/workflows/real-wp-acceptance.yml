@@ -11,9 +11,16 @@ name: Real WordPress Acceptance (ZIP → clean WP → browser)
 on:
   workflow_dispatch:
   push:
-    branches: [main, 'arena/**']
+    branches: [main]
   pull_request:
     branches: [main]
+
+concurrency:
+  # PR runs are keyed by PR number; non-PR runs by their full ref. Event names
+  # keep pull_request and push evidence in separate cancellation domains.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('ref-{0}', github.ref) }}
+  # Preserve every main-ref run as post-merge evidence; superseded non-main work may stop.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   # contents: write فقط برای انتشار Evidence به‌صورت Commit Comment
