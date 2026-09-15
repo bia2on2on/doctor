@@ -4,24 +4,31 @@ declare(strict_types=1);
 
 namespace ClinicCore\Admin;
 
+use ClinicCore\Application\Authorization\AuthorizationException;
+use ClinicCore\Application\Scope\ScopeRequiredException;
+use ClinicCore\Application\Scope\TrustedClinicEstablisher;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Infrastructure\Repository\MembershipRepository;
 
 /**
  * «کاربران و دسترسی‌ها» (Staff/User Management) — Chunk C.
  *
  * طراحی امن:
- *  - فقط دارندگان `cpms_config` (مدیر کلینیک) دسترسی دارند (hidden menu ≠ authorization).
- *  - این صفحه فقط نقش‌های CPMS (پزشک/منشی/بیمار) را مدیریت می‌کند؛ «administrator» وردپرس
- *    نه قابل انتساب است نه قابل ویرایش/غیرفعال‌سازی از این‌جا → جلوگیری از privilege escalation
- *    و دست‌کاری مدیر کلینیک.
+ *  - `cpms_config` همچنان گیت منو/درخواست wp-admin است، اما جایگزین مجوز Clinic نیست.
+ *    هر write همچنین از TrustedClinicEstablisher + AuthorizationService عبور می‌کند.
+ *  - زمینهٔ هدف از عضویت فعالِ durable actor می‌آید: Clinic ارسالی فقط selector است و
+ *    توسط TrustedClinicEstablisher علیه persistence اعتبارسنجی می‌شود؛ هرگز مدرک اعتماد نیست.
+ *  - عملیات روی کاربر موجود، مالکیت Clinic را از رکورد durable عضویت همان کاربر می‌خواند
+ *    و با authorizeForObject تطبیق می‌دهد؛ برابری دو شناسه به‌تنهایی اعتماد نمی‌سازد.
+ *  - این صفحه فقط نقش‌های CPMS را مدیریت می‌کند؛ `administrator` وردپرس نه قابل انتساب
+ *    است نه قابل ویرایش/غیرفعال‌سازی از این‌جا.
  *  - رمز عبور هرگز plaintext ذخیره/نمایش داده نمی‌شود؛ WP فقط hash ذخیره می‌کند.
- *    در صورت عدم تعیین رمز، یک رمز قوی تصادفی ساخته و «یک‌بار» در اعلان نمایش داده می‌شود
- *    (تحویل اعتبار) و به هیچ‌وجه در DB ذخیرهٔ رمز در دسترس نیست.
- *  - Nonce (CSRF) + Capability + Sanitize + bounded روی هر action.
+ *    در صورت عدم تعیین رمز، یک رمز قوی تصادفی ساخته و «یک‌بار» در اعلان نمایش داده می‌شود.
+ *  - Nonce (CSRF) + Capability + Clinic authorization + Sanitize روی هر action مستقل‌اند.
  *  - هر تغییر (ایجاد/ویرایش/تغییر نقش/فعال/غیرفعال/بازنشانی رمز) در Audit ثبت می‌شود.
- *  - غیرفعال‌سازی: نقش CPMS به‌طور موقت به subscriber تغییر می‌کند و نقش اصلی در
- *    usermeta ذخیره می‌شود؛ تاریخچه و پیوندها حذف نمی‌شوند؛ فعال‌سازی نقش را بازمی‌گرداند.
+ *  - غیرفعال‌سازی علاوه بر سازگاری نقش WP، وضعیت Membership هدف در همان Clinic را
+ *    suspended می‌کند؛ فعال‌سازی همان Membership را برمی‌گرداند.
  */
 final class StaffManagementPage
 {
@@ -73,6 +80,7 @@ final class StaffManagementPage
 
         $rows = self::listUsers();
         $roles = self::roleLabels();
+        $clinicId = self::formClinicId();
         ?>
         <div class="wrap" dir="rtl">
             <h1>کاربران و دسترسی‌ها</h1>
@@ -100,12 +108,12 @@ final class StaffManagementPage
                             <td data-label="پزشک مرتبط"><?php echo $r['clinician'] !== '' ? esc_html($r['clinician']) : '—'; ?></td>
                             <td data-label="وضعیت"><?php echo $r['active'] ? '<span class="cpms-badge cpms-ok">فعال</span>' : '<span class="cpms-badge cpms-danger">غیرفعال</span>'; ?></td>
                             <td class="cpms-actions-cell" data-label="عملیات">
-                                <a class="button button-small" href="<?php echo esc_url(admin_url('admin.php?page=' . self::PAGE_SLUG . '&edit=' . (int) $r['id'])); ?>">ویرایش</a>
-                                <a class="button button-small" href="<?php echo esc_url(wp_nonce_url(admin_url('admin-post.php?action=cpms_staff_password&user_id=' . (int) $r['id']), 'cpms_staff_password_' . (int) $r['id'])); ?>">لینک بازیابی رمز</a>
+                                <a class="button button-small" href="<?php echo esc_url(admin_url('admin.php?page=' . self::PAGE_SLUG . '&edit=' . (int) $r['id'] . '&clinic_id=' . $clinicId)); ?>">ویرایش</a>
+                                <a class="button button-small" href="<?php echo esc_url(wp_nonce_url(admin_url('admin-post.php?action=cpms_staff_password&user_id=' . (int) $r['id'] . '&clinic_id=' . $clinicId), 'cpms_staff_password_' . (int) $r['id'])); ?>">لینک بازیابی رمز</a>
                                 <?php if ($r['active']) : ?>
-                                    <a class="button button-small" href="<?php echo esc_url(wp_nonce_url(admin_url('admin-post.php?action=cpms_staff_toggle&user_id=' . (int) $r['id'] . '&state=deactivate'), 'cpms_staff_toggle_' . (int) $r['id'])); ?>" data-cpms-confirm="غیرفعال‌سازی: این کاربر به‌طور موقت از نقش CPMS حذف می‌شود (تاریخچه حذف نمی‌شود). ادامه می‌دهید؟">غیرفعال</a>
+                                    <a class="button button-small" href="<?php echo esc_url(wp_nonce_url(admin_url('admin-post.php?action=cpms_staff_toggle&user_id=' . (int) $r['id'] . '&state=deactivate&clinic_id=' . $clinicId), 'cpms_staff_toggle_' . (int) $r['id'])); ?>" data-cpms-confirm="غیرفعال‌سازی: این کاربر به‌طور موقت از نقش CPMS حذف می‌شود (تاریخچه حذف نمی‌شود). ادامه می‌دهید؟">غیرفعال</a>
                                 <?php else : ?>
-                                    <a class="button button-small" href="<?php echo esc_url(wp_nonce_url(admin_url('admin-post.php?action=cpms_staff_toggle&user_id=' . (int) $r['id'] . '&state=activate'), 'cpms_staff_toggle_' . (int) $r['id'])); ?>">فعال‌سازی مجدد</a>
+                                    <a class="button button-small" href="<?php echo esc_url(wp_nonce_url(admin_url('admin-post.php?action=cpms_staff_toggle&user_id=' . (int) $r['id'] . '&state=activate&clinic_id=' . $clinicId), 'cpms_staff_toggle_' . (int) $r['id'])); ?>">فعال‌سازی مجدد</a>
                                 <?php endif; ?>
                             </td>
                         </tr>
@@ -123,6 +131,7 @@ final class StaffManagementPage
                 <input type="hidden" name="action" value="cpms_staff_save">
                 <input type="hidden" name="mode" value="<?php echo $edit !== null ? 'update' : 'create'; ?>">
                 <input type="hidden" name="user_id" value="<?php echo $edit !== null ? (int) $edit['id'] : 0; ?>">
+                <input type="hidden" name="clinic_id" value="<?php echo $clinicId; ?>">
 
                 <table class="form-table" role="presentation">
                     <?php if ($edit === null) : ?>
@@ -167,6 +176,7 @@ final class StaffManagementPage
         $in = [
             'mode' => $mode === 'update' ? 'update' : 'create',
             'user_id' => isset($_POST['user_id']) ? absint($_POST['user_id']) : 0,
+            'clinic_id' => array_key_exists('clinic_id', $_POST) ? absint($_POST['clinic_id']) : null,
             'username' => isset($_POST['username']) ? sanitize_user(wp_unslash($_POST['username']), true) : '', // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
             'display_name' => isset($_POST['display_name']) ? sanitize_text_field(wp_unslash($_POST['display_name'])) : '', // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
             'email' => isset($_POST['email']) ? sanitize_email(wp_unslash($_POST['email'])) : '', // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
@@ -192,7 +202,8 @@ final class StaffManagementPage
         check_admin_referer('cpms_staff_toggle_' . $userId);
 
         $state = (string) ($_GET['state'] ?? '');
-        $result = self::toggleUser($userId, $state, (int) get_current_user_id());
+        $clinicId = array_key_exists('clinic_id', $_GET) ? absint($_GET['clinic_id']) : null;
+        $result = self::toggleUser($userId, $state, (int) get_current_user_id(), $clinicId);
         set_transient(self::NOTICE_KEY, $result['error'] !== '' ? 'خطا: ' . $result['error'] : 'وضعیت کاربر به‌روزرسانی شد.', 60);
         wp_safe_redirect(admin_url('admin.php?page=' . self::PAGE_SLUG));
         exit;
@@ -200,9 +211,9 @@ final class StaffManagementPage
 
     /**
      * ارسال لینک بازنشانی/تنظیم رمز عبور از طریق WordPress Authentication API.
-     *  - فقط `cpms_config` + Nonce.
-     *  - رمز فعلی/توکن هرگز در DB/Audit/REST/HTML ثبت نمی‌شود؛ فقط ارسال ایمیل توسط WP انجام می‌شود.
-     *  - Audit: `STAFF_PASSWORD_RESET_INITIATED` بدون توکن/plaintext.
+     *  - Nonce/Capability در این transport boundary باقی می‌مانند.
+     *  - Clinic authorization و مالکیت durable هدف در initiatePasswordReset انجام می‌شود.
+     *  - رمز فعلی/توکن هرگز در DB/Audit/REST/HTML ما ثبت نمی‌شود؛ فقط ارسال ایمیل WP انجام می‌شود.
      */
     public static function sendPasswordReset(): void
     {
@@ -212,35 +223,60 @@ final class StaffManagementPage
         }
         check_admin_referer('cpms_staff_password_' . $userId);
 
-        $user = $userId > 0 ? get_userdata($userId) : false;
-        if ($user === false || !self::isManageable($userId)) {
-            set_transient(self::NOTICE_KEY, 'خطا: کاربر یافت نشد یا قابل مدیریت نیست.', 60);
+        $clinicId = array_key_exists('clinic_id', $_GET) ? absint($_GET['clinic_id']) : null;
+        $result = self::initiatePasswordReset($userId, (int) get_current_user_id(), $clinicId);
+        if ($result['error'] !== '') {
+            set_transient(self::NOTICE_KEY, 'خطا: ' . $result['error'], 60);
             wp_safe_redirect(admin_url('admin.php?page=' . self::PAGE_SLUG));
             exit;
         }
 
+        set_transient(self::NOTICE_KEY, 'لینک بازنشانی/تنظیم رمز برای «' . $result['display_name'] . '» ایمیل شد.', 60);
+        wp_safe_redirect(admin_url('admin.php?page=' . self::PAGE_SLUG));
+        exit;
+    }
+
+    /**
+     * Initiate a password reset after the same Clinic-scoped checks as other staff writes.
+     *
+     * The admin-post handler owns CSRF protection; this pure boundary owns authorization
+     * and is executable by integration tests without terminating the PHPUnit process.
+     *
+     * @return array{error:string, display_name:string}
+     */
+    public static function initiatePasswordReset(int $userId, int $updatedBy, ?int $clinicId = null): array
+    {
+        $user = $userId > 0 ? get_userdata($userId) : false;
+        if ($user === false || !self::isManageable($userId)) {
+            return ['error' => 'کاربر یافت نشد یا قابل مدیریت نیست.', 'display_name' => ''];
+        }
+
+        $authorization = self::authorizeStaffWrite($updatedBy, $clinicId, $userId);
+        if ($authorization['error'] !== '') {
+            return ['error' => $authorization['error'], 'display_name' => ''];
+        }
+
         // retrieve_password از مسیر امن وردپرس: صحت کاربر را می‌سنجد، توکن تولید و ایمیل
-        // «بازیابی/تنظیم رمز» می‌فرستد. توکن فقط در ایمیل و DB موقتِ وردپرس است — هیچ‌جا در
-        // لاگ/Audit/REST/HTML ما قرار نمی‌گیرد و هرگز قابل مشاهده نیست.
+        // «بازیابی/تنظیم رمز» می‌فرستد. توکن فقط در ایمیل و DB موقت وردپرس است.
         $res = retrieve_password((string) $user->user_login);
         if (is_wp_error($res)) {
-            set_transient(self::NOTICE_KEY, 'خطا: ' . $res->get_error_message(), 60);
-            wp_safe_redirect(admin_url('admin.php?page=' . self::PAGE_SLUG));
-            exit;
+            return ['error' => $res->get_error_message(), 'display_name' => ''];
         }
 
         App::audit()->log(
             'STAFF_PASSWORD_RESET_INITIATED',
-            ['wp_user_id' => (int) get_current_user_id()],
+            ['wp_user_id' => $updatedBy],
             'user',
             $userId,
             null,
             null,
-            ['login' => (string) $user->user_login]
+            [
+                'clinic_id' => $authorization['clinic_id'],
+                'login' => (string) $user->user_login,
+            ]
         );
-        set_transient(self::NOTICE_KEY, 'لینک بازنشانی/تنظیم رمز برای «' . $user->display_name . '» ایمیل شد.', 60);
-        wp_safe_redirect(admin_url('admin.php?page=' . self::PAGE_SLUG));
-        exit;
+
+        return ['error' => '', 'display_name' => (string) $user->display_name];
     }
 
     /**
@@ -259,6 +295,24 @@ final class StaffManagementPage
         $email = (string) ($in['email'] ?? '');
         $role = trim((string) ($in['role'] ?? ''));
         $password = (string) ($in['password'] ?? '');
+        $requestedClinicId = array_key_exists('clinic_id', $in) && $in['clinic_id'] !== null
+            ? (int) $in['clinic_id']
+            : null;
+
+        if ($mode === 'update' && ($userId <= 0 || !self::isManageable($userId))) {
+            return ['error' => 'کاربر یافت نشد یا قابل مدیریت نیست.', 'generated' => '', 'user_id' => 0];
+        }
+
+        $authorization = self::authorizeStaffWrite(
+            $updatedBy,
+            $requestedClinicId,
+            $mode === 'update' ? $userId : null
+        );
+        if ($authorization['error'] !== '') {
+            return ['error' => $authorization['error'], 'generated' => '', 'user_id' => 0];
+        }
+        $clinicId = $authorization['clinic_id'];
+        $targetMembership = $authorization['target_membership'];
 
         if ($role === '' || !in_array($role, self::MANAGEABLE_ROLES, true)) {
             return ['error' => 'نقش غیرمجاز است (فقط نقش‌های CPMS قابل انتساب‌اند؛ از انتساب administrator جلوگیری شد).', 'generated' => '', 'user_id' => 0];
@@ -296,11 +350,29 @@ final class StaffManagementPage
                 return ['error' => $userId->get_error_message(), 'generated' => '', 'user_id' => 0];
             }
             $userId = (int) $userId;
-            App::audit()->log('STAFF_USER_CREATED', ['wp_user_id' => $updatedBy], 'user', $userId, null, null, ['role' => $role, 'login' => $username]);
-        } else {
-            if ($userId <= 0 || !self::isManageable($userId)) {
-                return ['error' => 'کاربر یافت نشد یا قابل مدیریت نیست.', 'generated' => '', 'user_id' => 0];
+            try {
+                App::membership_service()->create_membership(
+                    $clinicId,
+                    $userId,
+                    $role,
+                    'clinic',
+                    $updatedBy
+                );
+            } catch (\Throwable $e) {
+                wp_delete_user($userId);
+
+                return ['error' => 'عضویت کاربر در Clinic ایجاد نشد.', 'generated' => '', 'user_id' => 0];
             }
+            App::audit()->log(
+                'STAFF_USER_CREATED',
+                ['wp_user_id' => $updatedBy],
+                'user',
+                $userId,
+                null,
+                null,
+                ['clinic_id' => $clinicId, 'role' => $role, 'login' => $username]
+            );
+        } else {
             $args = ['ID' => $userId, 'display_name' => $displayName, 'user_email' => $email, 'role' => $role];
             if ($password !== '') {
                 $args['user_pass'] = $plainPassword;
@@ -309,11 +381,22 @@ final class StaffManagementPage
             if (is_wp_error($res)) {
                 return ['error' => $res->get_error_message(), 'generated' => '', 'user_id' => $userId];
             }
+            if ($targetMembership !== null) {
+                App::membership_service()->set_role_key((int) $targetMembership['id'], $role);
+            }
             // اگر کاربر قبلاً غیرفعال بود (subscriber + usermeta)، اکنون نقش واقعی گرفت → پاک کردن flag.
             if (get_user_meta($userId, self::META_PREV_ROLE, true) !== '') {
                 delete_user_meta($userId, self::META_PREV_ROLE);
             }
-            App::audit()->log('STAFF_USER_UPDATED', ['wp_user_id' => $updatedBy], 'user', $userId, null, null, ['role' => $role, 'password_reset' => $password !== '']);
+            App::audit()->log(
+                'STAFF_USER_UPDATED',
+                ['wp_user_id' => $updatedBy],
+                'user',
+                $userId,
+                null,
+                null,
+                ['clinic_id' => $clinicId, 'role' => $role, 'password_reset' => $password !== '']
+            );
         }
 
         return ['error' => '', 'generated' => $generated, 'user_id' => $userId];
@@ -324,7 +407,7 @@ final class StaffManagementPage
      *
      * @return array{error:string}
      */
-    public static function toggleUser(int $userId, string $state, int $updatedBy): array
+    public static function toggleUser(int $userId, string $state, int $updatedBy, ?int $clinicId = null): array
     {
         if ($userId <= 0 || !self::isManageable($userId)) {
             return ['error' => 'کاربر یافت نشد یا قابل مدیریت نیست.'];
@@ -333,9 +416,23 @@ final class StaffManagementPage
         if ($user === false) {
             return ['error' => 'کاربر یافت نشد.'];
         }
+
+        $authorization = self::authorizeStaffWrite($updatedBy, $clinicId, $userId);
+        if ($authorization['error'] !== '') {
+            return ['error' => $authorization['error']];
+        }
+        $targetMembership = $authorization['target_membership'];
+        if ($targetMembership === null) {
+            return ['error' => 'عضویت هدف برای این Clinic یافت نشد.'];
+        }
+
         // جلوگیری از قفل‌کردن خود: عاملِ غیرفعال‌سازی نمی‌تواند حساب خودش را غیرفعال کند.
         if ($state === 'deactivate' && $userId === $updatedBy) {
             return ['error' => 'نمی‌توانید حساب خودتان را غیرفعال کنید (جلوگیری از قفل‌شدن).'];
+        }
+
+        if (!in_array($state, ['deactivate', 'activate'], true)) {
+            return ['error' => 'وضعیت کاربر نامعتبر است.'];
         }
 
         if ($state === 'deactivate') {
@@ -343,23 +440,121 @@ final class StaffManagementPage
             if (!in_array($prevRole, self::MANAGEABLE_ROLES, true)) {
                 return ['error' => 'این کاربر نقش قابل غیرفعال‌سازی ندارد.'];
             }
+            if ((string) ($targetMembership['status'] ?? '') !== 'active') {
+                return ['error' => 'عضویت هدف از قبل غیرفعال است.'];
+            }
+            App::membership_service()->suspend_membership((int) $targetMembership['id']);
             update_user_meta($userId, self::META_PREV_ROLE, $prevRole);
-            wp_update_user(['ID' => $userId, 'role' => 'subscriber']);
-            App::audit()->log('STAFF_USER_DEACTIVATED', ['wp_user_id' => $updatedBy], 'user', $userId, null, ['role' => $prevRole], ['role' => 'subscriber']);
+            $updated = wp_update_user(['ID' => $userId, 'role' => 'subscriber']);
+            if (is_wp_error($updated)) {
+                App::membership_service()->reactivate_membership((int) $targetMembership['id']);
+
+                return ['error' => $updated->get_error_message()];
+            }
+            App::audit()->log(
+                'STAFF_USER_DEACTIVATED',
+                ['wp_user_id' => $updatedBy],
+                'user',
+                $userId,
+                null,
+                ['clinic_id' => $authorization['clinic_id'], 'role' => $prevRole, 'membership_status' => 'active'],
+                ['clinic_id' => $authorization['clinic_id'], 'role' => 'subscriber', 'membership_status' => 'suspended']
+            );
         } else {
             $prevRole = (string) get_user_meta($userId, self::META_PREV_ROLE, true);
             if ($prevRole === '' || !in_array($prevRole, self::MANAGEABLE_ROLES, true)) {
                 return ['error' => 'نقش قبلی برای فعال‌سازی یافت نشد.'];
             }
+            if ((string) ($targetMembership['status'] ?? '') !== 'suspended') {
+                return ['error' => 'عضویت هدف فعال است.'];
+            }
+            App::membership_service()->reactivate_membership((int) $targetMembership['id']);
             delete_user_meta($userId, self::META_PREV_ROLE);
-            wp_update_user(['ID' => $userId, 'role' => $prevRole]);
-            App::audit()->log('STAFF_USER_ACTIVATED', ['wp_user_id' => $updatedBy], 'user', $userId, null, ['role' => 'subscriber'], ['role' => $prevRole]);
+            $updated = wp_update_user(['ID' => $userId, 'role' => $prevRole]);
+            if (is_wp_error($updated)) {
+                App::membership_service()->suspend_membership((int) $targetMembership['id']);
+
+                return ['error' => $updated->get_error_message()];
+            }
+            App::audit()->log(
+                'STAFF_USER_ACTIVATED',
+                ['wp_user_id' => $updatedBy],
+                'user',
+                $userId,
+                null,
+                ['clinic_id' => $authorization['clinic_id'], 'role' => 'subscriber', 'membership_status' => 'suspended'],
+                ['clinic_id' => $authorization['clinic_id'], 'role' => $prevRole, 'membership_status' => 'active']
+            );
         }
 
         return ['error' => ''];
     }
 
     // ================= helpers =================
+
+    /**
+     * Resolve and authorize the Clinic write boundary for staff management.
+     *
+     * `$requestedClinicId` is only a caller-selected context. The establisher
+     * validates it against the actor's durable active membership; AuthorizationService
+     * then evaluates the scoped permission. For an existing target, its Clinic owner
+     * is independently retrieved from the durable membership row before the object
+     * authorization check.
+     *
+     * @return array{error:string, clinic_id:int, target_membership:array<string,mixed>|null}
+     */
+    private static function authorizeStaffWrite(int $actorUserId, ?int $requestedClinicId, ?int $targetUserId = null): array
+    {
+        try {
+            $scope = (new TrustedClinicEstablisher(App::db(), new MembershipRepository(App::db())))
+                ->establish($actorUserId, $requestedClinicId);
+            $authorization = App::authorization_service();
+            $authorization->authorize($actorUserId, $scope->clinicId, RolesAndCapabilities::CONFIG);
+
+            $targetMembership = null;
+            if ($targetUserId !== null) {
+                $targetMembership = (new MembershipRepository(App::db()))->find($scope->clinicId, $targetUserId);
+                if ($targetMembership === null) {
+                    throw new AuthorizationException('AUTH_NO_MEMBERSHIP', 'AUTH_NO_MEMBERSHIP');
+                }
+
+                // This owner value came from the durable membership row above, not
+                // from the request. Equality is checked by the service, but the
+                // source-of-truth retrieval remains at this boundary.
+                $targetClinicId = (int) ($targetMembership['clinic_id'] ?? 0);
+                $authorization->authorizeForObject(
+                    $actorUserId,
+                    $scope->clinicId,
+                    RolesAndCapabilities::CONFIG,
+                    $targetClinicId
+                );
+            }
+
+            return [
+                'error' => '',
+                'clinic_id' => $scope->clinicId,
+                'target_membership' => $targetMembership,
+            ];
+        } catch (ScopeRequiredException|AuthorizationException $e) {
+            return [
+                'error' => 'دسترسی مدیریت پرسنل برای این Clinic مجاز نیست.',
+                'clinic_id' => 0,
+                'target_membership' => null,
+            ];
+        }
+    }
+
+    /**
+     * Clinic selector for the rendered form. It is display context only; every
+     * write validates the value again through authorizeStaffWrite().
+     */
+    private static function formClinicId(): int
+    {
+        $requested = array_key_exists('clinic_id', $_GET) ? absint($_GET['clinic_id']) : null; // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- display selector only
+        $authorization = self::authorizeStaffWrite((int) get_current_user_id(), $requested);
+
+        return $authorization['clinic_id'];
+    }
 
     /** آیا این کاربر قابل‌مدیریت است؟ (نقش قابل‌مدیریت یا غیرفعالِ دارای usermeta نقش قبلی) */
     private static function isManageable(int $userId): bool

@@ -25,10 +25,14 @@ use WP_UnitTestCase;
  */
 final class StaffManagementTest extends WP_UnitTestCase
 {
+    private int $clinicId = 0;
+
     protected function setUp(): void
     {
         parent::setUp();
         App::migrations()->migrate();
+        $this->clinicId = $this->createClinic();
+        App::resetScope();
     }
 
     protected function tearDown(): void
@@ -40,6 +44,7 @@ final class StaffManagementTest extends WP_UnitTestCase
     protected function makeAdmin(): int
     {
         $id = self::factory()->user->create(['role' => 'administrator']);
+        cpms_test_seed_membership((int) $id, $this->clinicId, RolesAndCapabilities::ROLE_MANAGER);
         wp_set_current_user($id);
 
         return (int) $id;
@@ -265,10 +270,40 @@ final class StaffManagementTest extends WP_UnitTestCase
         // مدیر کلینیکی که خودش مدیریت می‌کند نباید بتواند حساب خودش را غیرفعال کند.
         $mgrId = (int) wp_create_user('mgr_self_g', 'StrongPass123', 'mgr_self@test.local');
         wp_update_user(['ID' => $mgrId, 'role' => RolesAndCapabilities::ROLE_MANAGER]);
+        cpms_test_seed_membership($mgrId, $this->clinicId, RolesAndCapabilities::ROLE_MANAGER);
         wp_set_current_user($mgrId);
 
         $r = StaffManagementPage::toggleUser($mgrId, 'deactivate', $mgrId);
         $this->assertStringContainsString('خودتان', $r['error'], 'غیرفعال‌سازی حساب خود باید رد شود (جلوگیری از قفل‌شدن)');
         $this->assertContains(RolesAndCapabilities::ROLE_MANAGER, (array) get_userdata($mgrId)->roles);
+    }
+
+    private function createClinic(): int
+    {
+        global $wpdb;
+
+        $organizationId = (int) $wpdb->get_var(
+            'SELECT id FROM ' . $wpdb->prefix . 'cpms_organizations ORDER BY id ASC LIMIT 1' // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        );
+        $this->assertGreaterThan(0, $organizationId, 'organization fixture must exist');
+
+        $slug = 'staff-management-' . bin2hex(random_bytes(4));
+        $now = App::db()->nowUtcSql();
+        $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_clinics (organization_id, name, slug, timezone, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $organizationId,
+                'Staff management ' . $slug,
+                $slug,
+                'UTC',
+                $now,
+                $now
+            )
+        );
+
+        $clinicId = (int) $wpdb->insert_id;
+        $this->assertGreaterThan(0, $clinicId, 'Clinic fixture must be persisted');
+
+        return $clinicId;
     }
 }
