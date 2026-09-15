@@ -215,6 +215,7 @@ final class ReminderLocationQuietHoursRedTest extends WP_UnitTestCase
         date_default_timezone_set('America/New_York');
 
         try {
+            $controlledUtc = $this->controlledUtc;
             $notificationFactory = static function (int $clinicId): NotificationService {
                 $db = App::db();
                 return new NotificationService(
@@ -232,7 +233,7 @@ final class ReminderLocationQuietHoursRedTest extends WP_UnitTestCase
                 $notificationFactory,
                 App::jobs(),
                 App::op(),
-                static fn (): DateTimeImmutable => $this->controlledUtc
+                static fn (): DateTimeImmutable => $controlledUtc
             );
             $fuHandler = new FollowUpReminderHandler(
                 $db,
@@ -240,7 +241,7 @@ final class ReminderLocationQuietHoursRedTest extends WP_UnitTestCase
                 App::smsService(),
                 $notificationFactory,
                 App::op(),
-                static fn (): DateTimeImmutable => $this->controlledUtc
+                static fn (): DateTimeImmutable => $controlledUtc
             );
 
             $apptResult = $apptHandler([]);
