@@ -51,12 +51,15 @@ jobs:
 
       - name: Run one focused RED test in a fresh process
         run: |
-          set -o pipefail
+          set +e
           php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
             --bootstrap tests/integration-bootstrap.php \
             --filter ReminderLocationQuietHoursRedTest \
             tests/Integration/ReminderLocationQuietHoursRedTest.php \
             2>&1 | tee /tmp/quiet-hours-red.log
+          rc=${PIPESTATUS[0]}
+          cat /tmp/quiet-hours-red.log
+          exit "$rc"
 
       - name: Upload RED evidence
         if: always()
