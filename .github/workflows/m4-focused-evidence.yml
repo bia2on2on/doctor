@@ -146,18 +146,22 @@ jobs:
       # ------------------------------------------------------------------
       - name: C) Queue/dispatcher regression (JobQueue + stale-lock budget + job-scope foundation)
         run: |
-          set +e
-          php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
-            --bootstrap tests/integration-bootstrap.php \
-            tests/Integration/JobQueueTest.php \
-            tests/Integration/JobQueueStaleRetryBudgetTest.php \
-            tests/Integration/Phase2JobScopeRedFoundationTest.php 2>&1 | tee /tmp/m4-c.log
-          set -e
-
-          grep -E '^(Tests: |OK \()' /tmp/m4-c.log | tail -1
-          grep -qE '^FAILURES!|^ERRORS!' /tmp/m4-c.log && { echo "::error::queue/dispatcher regression must be green"; exit 1; }
-          grep -qE '^OK \(' /tmp/m4-c.log || { echo "::error::queue/dispatcher regression did not report a green summary"; exit 1; }
-          echo "queue/dispatcher regression: green"
+          # PHPUnit 9.6 accepts ONE positional path (extra arguments are silently
+          # ignored), so the three regression files run as three sequential runs.
+          : > /tmp/m4-c.log
+          for F in JobQueueTest JobQueueStaleRetryBudgetTest Phase2JobScopeRedFoundationTest; do
+            php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
+              --bootstrap tests/integration-bootstrap.php \
+              "tests/Integration/$F.php" 2>&1 | tee "/tmp/m4-c-$F.log"
+            grep -qE '^OK \(' "/tmp/m4-c-$F.log" || { echo "::error::$F must report a green summary"; exit 1; }
+            grep -qE '^FAILURES!|^ERRORS!' "/tmp/m4-c-$F.log" && { echo "::error::$F reported failures/errors"; exit 1; }
+            {
+              echo "=== $F ==="
+              grep -E '^(Tests: |OK \()' "/tmp/m4-c-$F.log" | tail -1
+            } >> /tmp/m4-c.log
+            echo "$F: green"
+          done
+          cat /tmp/m4-c.log
 
       - name: Post focused evidence (commit comment)
         if: always()
@@ -175,7 +179,7 @@ jobs:
               grep -E '::test|Available test' "$f" 2>/dev/null || echo "(missing)"
               echo '```'
             done
-            for f in /tmp/m4-a.log /tmp/m4-b.log /tmp/m4-c.log; do
+            for f in /tmp/m4-a.log /tmp/m4-b.log /tmp/m4-c.log /tmp/m4-c-JobQueueTest.log /tmp/m4-c-JobQueueStaleRetryBudgetTest.log /tmp/m4-c-Phase2JobScopeRedFoundationTest.log; do
               echo "#### $f"
               echo '```'
               if [ -f "$f" ]; then
