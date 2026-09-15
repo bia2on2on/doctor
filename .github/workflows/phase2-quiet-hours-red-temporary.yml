@@ -64,10 +64,10 @@ jobs:
       - name: Surface RED output as annotations
         if: always()
         run: |
-          echo "RED output follows in annotations:"
-          tail -n 120 /tmp/quiet-hours-red.log | while IFS= read -r line; do
-            printf '::error title=quiet-hours-RED::%s\n' "${line:0:900}"
-          done
+          echo "RED failure evidence follows in one annotation:"
+          evidence=$(awk '/^There (was|were) /{capture=1} capture{print} /^FAILURES!/{print; exit}' /tmp/quiet-hours-red.log | tr '\n' ' ' | cut -c1-900)
+          if [ -z "$evidence" ]; then evidence=$(grep -E '(^[0-9]+\)|^ERRORS!|^FAILURES!|Exception|Error|Failure)' /tmp/quiet-hours-red.log | tr '\n' ' ' | cut -c1-900); fi
+          printf '::error title=quiet-hours-RED-failure::%s\n' "$evidence"
 
       - name: Upload RED evidence
         if: always()
