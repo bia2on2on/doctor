@@ -144,7 +144,7 @@ final class JobScopeRegistry
     }
 
     /**
-     * تعدادِ هر طبقه — برای گارْدِ drift (۲/۷/۶ در §A-3).
+     * تعدادِ هر طبقه — برای گارْدِ drift (۲/۶/۷ در §A-3).
      *
      * @return array<string, int>
      */
