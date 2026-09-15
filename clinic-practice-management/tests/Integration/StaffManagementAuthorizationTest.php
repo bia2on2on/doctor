@@ -292,7 +292,8 @@ final class StaffManagementAuthorizationTest extends WP_UnitTestCase
             'display_name' => $displayName,
             'user_email' => $email,
         ]);
-        cpms_test_seed_membership($userId, $clinicId, RolesAndCapabilities::ROLE_DOCTOR);
+        $membershipId = cpms_test_seed_membership($userId, $clinicId, RolesAndCapabilities::ROLE_DOCTOR);
+        self::assertGreaterThan(0, $membershipId, 'dynamic Clinic staff membership fixture must be persisted');
 
         $clinicianName = $prefix . ' Person';
         $now = App::db()->nowUtcSql();

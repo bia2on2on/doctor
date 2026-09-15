@@ -6,7 +6,7 @@
   اجرا (Workflow):
     BASE=http://localhost:8080 ADMIN_USER=... ADMIN_PASS=... \
     DOCTOR_USER=... DOCTOR_PASS=... SECRETARY_USER=... SECRETARY_PASS=... \
-    ACTUAL_COUNT_FILE=/tmp/acc/actual_count.txt OUT=/tmp/acc \
+    MANAGER_CLINIC_ID=... ACTUAL_COUNT_FILE=/tmp/acc/actual_count.txt OUT=/tmp/acc \
     python3 bin/rwp-acceptance.py
 
 خروجی: اسکرین‌شات + console/pageerror logs + results.json در OUT؛ exit≠0 در هر شکست.
@@ -30,6 +30,7 @@ SECRETARY_USER = os.environ["SECRETARY_USER"]
 SECRETARY_PASS = os.environ["SECRETARY_PASS"]
 MANAGER_USER = os.environ.get("MANAGER_USER", "")
 MANAGER_PASS = os.environ.get("MANAGER_PASS", "")
+MANAGER_CLINIC_ID = os.environ.get("MANAGER_CLINIC_ID", "")
 ACCOUNTANT_USER = os.environ.get("ACCOUNTANT_USER", "")
 ACCOUNTANT_PASS = os.environ.get("ACCOUNTANT_PASS", "")
 OUT = os.environ.get("OUT", "rwp-acceptance-out")
@@ -422,10 +423,17 @@ with sync_playwright() as p:
         check("admin-ui.menu.no_doctor_topmenu", "admin.php?page=cpms-doctor" not in menu, "منوی «امروز پزشک» برای مدیر پنهان است")
         check("admin-ui.menu.no_queue_topmenu", "admin.php?page=cpms-queue" not in menu, "منوی «صف امروز» برای مدیر پنهان است")
 
-        # Confirmation dialog (Desktop) — staff deactivation
+        # Installation administrator has no Clinic membership. The page may
+        # render its management shell, but must not render Clinic staff rows or
+        # dangerous staff actions for this persona.
         ui.goto(f"{BASE}/wp-admin/admin.php?page=cpms-staff", wait_until="domcontentloaded")
         ui.wait_for_timeout(700)
-        capture_confirm(ui, "admin-ui", "cpms-dialog-desktop")
+        admin_staff = ui.content()
+        check(
+            "admin-ui.cpms-staff.no_staff_rows_without_membership",
+            "فهرست پرسنل" not in (admin_staff or "") and "data-cpms-confirm" not in (admin_staff or ""),
+            "Administrator بدون membership نباید ردیف staff/person یا action حساس ببیند",
+        )
 
         # Doctor Schedule (Desktop) — populated by seed
         try:
@@ -463,10 +471,16 @@ with sync_playwright() as p:
             m = re.search(r"clinician_id=\d+", link.get_attribute("href") or "")
         if m:
             snap(tpage, "admin-tablet", "admin.php?page=cpms-clinicians&" + m.group(0), "cpms-tablet-schedule", ovf=True)
-        # Confirmation (Tablet)
+        # The installation administrator remains read-denied on the staff rows
+        # at every tested viewport; confirmation is exercised below as manager.
         tpage.goto(f"{BASE}/wp-admin/admin.php?page=cpms-staff", wait_until="domcontentloaded")
         tpage.wait_for_timeout(700)
-        capture_confirm(tpage, "admin-tablet", "cpms-dialog-tablet")
+        admin_staff = tpage.content()
+        check(
+            "admin-tablet.cpms-staff.no_staff_rows_without_membership",
+            "فهرست پرسنل" not in (admin_staff or "") and "data-cpms-confirm" not in (admin_staff or ""),
+            "Administrator بدون membership نباید ردیف staff/person یا action حساس ببیند",
+        )
         # Advanced Permissions (Tablet): collapsed + expand + search (semantic)
         verify_permissions(tpage, "admin-tablet", "cpms-tablet-roles-advanced")
     tpage.close()
@@ -489,10 +503,16 @@ with sync_playwright() as p:
             m = re.search(r"clinician_id=\d+", link.get_attribute("href") or "")
         if m:
             snap(mpage, "admin-mobile", "admin.php?page=cpms-clinicians&" + m.group(0), "cpms-mobile-schedule", ovf=True)
-        # Confirmation (Mobile)
+        # The installation administrator remains read-denied on the staff rows
+        # at every tested viewport; confirmation is exercised below as manager.
         mpage.goto(f"{BASE}/wp-admin/admin.php?page=cpms-staff", wait_until="domcontentloaded")
         mpage.wait_for_timeout(700)
-        capture_confirm(mpage, "admin-mobile", "cpms-dialog-mobile")
+        admin_staff = mpage.content()
+        check(
+            "admin-mobile.cpms-staff.no_staff_rows_without_membership",
+            "فهرست پرسنل" not in (admin_staff or "") and "data-cpms-confirm" not in (admin_staff or ""),
+            "Administrator بدون membership نباید ردیف staff/person یا action حساس ببیند",
+        )
         # Advanced Permissions (Mobile): collapsed + expand + search (semantic)
         verify_permissions(mpage, "admin-mobile", "cpms-mobile-roles-advanced")
     mpage.close()
@@ -580,10 +600,21 @@ with sync_playwright() as p:
     if MANAGER_USER and MANAGER_PASS:
         page = ctx.new_page()
         if login(page, MANAGER_USER, MANAGER_PASS, "manager"):
+            if not MANAGER_CLINIC_ID.isdigit() or int(MANAGER_CLINIC_ID) <= 0:
+                check("manager.staff.explicit_clinic_context", False, "MANAGER_CLINIC_ID fixture is missing or invalid")
             for slug, shot in [("cpms-dashboard", "dashboard"), ("cpms-staff", "staff"),
                                ("cpms-clinicians", "clinicians"), ("cpms-system", "system"),
                                ("cpms-settings", "settings"), ("cpms-sms", "sms")]:
-                goto_admin(page, "manager", f"admin.php?page={slug}", f"cpms-mgr-{shot}")
+                path = f"admin.php?page={slug}"
+                if slug == "cpms-staff" and MANAGER_CLINIC_ID.isdigit() and int(MANAGER_CLINIC_ID) > 0:
+                    path += f"&clinic_id={int(MANAGER_CLINIC_ID)}"
+                goto_admin(page, "manager", path, f"cpms-mgr-{shot}")
+            # Confirmation is exercised by the authorized manager in the
+            # explicitly selected durable Clinic context, not by the global admin.
+            if MANAGER_CLINIC_ID.isdigit() and int(MANAGER_CLINIC_ID) > 0:
+                staff_path = f"admin.php?page=cpms-staff&clinic_id={int(MANAGER_CLINIC_ID)}"
+                goto_admin(page, "manager", staff_path, "cpms-mgr-staff-confirm")
+                capture_confirm(page, "manager", "cpms-dialog-manager")
             # منوی مدیر کلینیک: مدیریتی/عملیاتی دیده شود؛ نقش-محورِ بالینی/صف و ماتریس فنی پنهان.
             menu = page.content()
             for mslug in ["cpms-staff", "cpms-clinicians", "cpms-system", "cpms-settings", "cpms-sms"]:
