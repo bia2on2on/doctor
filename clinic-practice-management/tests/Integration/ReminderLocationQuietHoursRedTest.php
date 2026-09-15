@@ -90,7 +90,7 @@ final class ReminderLocationQuietHoursRedTest extends WP_UnitTestCase
         parent::setUp();
         App::migrations()->migrate();
         $this->resetAppCaches();
-        $this->controlledUtc = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+        $this->controlledUtc = new DateTimeImmutable('2026-09-15 10:50:36', new DateTimeZone('UTC'));
         $this->buildFixture();
         $this->purgeJobs();
         $this->resetAppCaches();

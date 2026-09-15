@@ -227,10 +227,11 @@ final class NotificationService
     // =========================================================
 
     /**
-     * آیا الان داخل بازه مجاز ارسال SMS است؟ (یادآوری‌ها فقط در این بازه).
-     * OTP مسیر inline خودش را دارد و هرگز از این گارد رد نمی‌شود.
+     * آیا الان داخل بازه مجاز ارسال SMS است؟ `$timezone` منبع زمانی عملیاتی
+     * صریح caller است؛ مقدار null قرارداد قدیمی بر مبنای Clinic را حفظ می‌کند.
+     * `$nowUtc` فقط seam محدود زمان برای job/test است و timezone فرایند را تغییر نمی‌دهد.
      */
-    public function smsQuietHoursOpen(): bool
+    public function smsQuietHoursOpen(?string $timezone = null, ?\DateTimeImmutable $nowUtc = null): bool
     {
         $start = $this->parseHour((string) $this->settings->get('notif.quiet_hours_start', '08:00'));
         $end = $this->parseHour((string) $this->settings->get('notif.quiet_hours_end', '21:00'));
@@ -238,20 +239,26 @@ final class NotificationService
             return true; // تنظیم نامعتبر → بازه باز (Fail-open عمدی: اعلان مهم‌تر از سکوت)
         }
 
-        // N-6: ساعت مفهومی مطب — UTC→Timezone کلینیک (IANA از cpms_clinics)
-        try {
-            $local = new \DateTimeImmutable('now', new \DateTimeZone($this->settings->clinicTimezone()));
-            $nowHour = (int) $local->format('G');
-        } catch (\Exception) {
-            $nowHour = (int) gmdate('G');
-        }
-
+        $nowHour = $this->quietHoursHour($timezone, $nowUtc);
         if ($start <= $end) {
             return $nowHour >= $start && $nowHour < $end;
         }
 
         // بازه شب‌گذرنده (مثلاً 20:00–06:00)
         return $nowHour >= $start || $nowHour < $end;
+    }
+
+    private function quietHoursHour(?string $timezone, ?\DateTimeImmutable $nowUtc): int
+    {
+        $now = $nowUtc ?? new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+        $zoneName = $timezone === null ? $this->settings->clinicTimezone() : trim($timezone);
+
+        try {
+            return (int) $now->setTimezone(new \DateTimeZone($zoneName))->format('G');
+        } catch (\Exception) {
+            // Preserve the old fail-safe: malformed timezone falls back to UTC hour.
+            return (int) $now->setTimezone(new \DateTimeZone('UTC'))->format('G');
+        }
     }
 
     // =========================================================

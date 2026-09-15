@@ -258,7 +258,7 @@ final class FollowUpReminderHandler
 
             // ---- Per-Clinic NotificationService (quiet-hours remains OUT OF SCOPE, not redesigned) ----
             $notifications = $this->notificationServiceForClinic($clinicId);
-            $smsOpen = $notifications->smsQuietHoursOpen();
+            $smsOpen = $notifications->smsQuietHoursOpen($locationTzRaw, $referenceUtc);
 
             $vars = $this->vars($row);
 

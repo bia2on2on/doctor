@@ -493,7 +493,10 @@ final class ApptReminderHandler
     {
         try {
             $vars = $this->vars($row);
-            if ($notifications->smsQuietHoursOpen()) {
+            if ($notifications->smsQuietHoursOpen(
+                (string) ($row['location_timezone'] ?? ''),
+                $referenceUtc
+            )) {
                 $this->sms->sendEvent(
                     (int) $row['clinic_id'],
                     SmsEvents::APPT_REMINDER,
