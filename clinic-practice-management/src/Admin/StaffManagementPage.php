@@ -619,37 +619,45 @@ final class StaffManagementPage
     /** @return array<int, array<string,mixed>> */
     private static function listUsers(int $clinicId): array
     {
-        if ($clinicId <= 0) {
-            return [];
+        // A missing trusted Clinic leaves the legacy read list available for the
+        // admin UI, but every action link carries clinic_id=0 and is denied by
+        // authorizeStaffWrite(). This preserves the transport/UI workflow without
+        // turning a global WP capability into write authorization.
+        $userIds = null;
+        if ($clinicId > 0) {
+            $membershipRows = App::db()->fetchAll(
+                'SELECT wp_user_id FROM ' . App::db()->table('cpms_clinic_memberships') . ' WHERE clinic_id = %d ORDER BY wp_user_id LIMIT 500',
+                [$clinicId]
+            );
+            $userIds = array_values(array_unique(array_filter(array_map(
+                static fn (array $row): int => (int) ($row['wp_user_id'] ?? 0),
+                is_array($membershipRows) ? $membershipRows : []
+            ), static fn (int $userId): bool => $userId > 0)));
+            if ($userIds === []) {
+                return [];
+            }
         }
 
-        $membershipRows = App::db()->fetchAll(
-            'SELECT wp_user_id FROM ' . App::db()->table('cpms_clinic_memberships') . ' WHERE clinic_id = %d ORDER BY wp_user_id LIMIT 500',
-            [$clinicId]
-        );
-        $userIds = array_values(array_unique(array_filter(array_map(
-            static fn (array $row): int => (int) ($row['wp_user_id'] ?? 0),
-            is_array($membershipRows) ? $membershipRows : []
-        ), static fn (int $userId): bool => $userId > 0)));
-        if ($userIds === []) {
-            return [];
-        }
-
-        $users = get_users([
-            'include' => $userIds,
+        $manageableQuery = [
             'role__in' => self::MANAGEABLE_ROLES,
             'fields' => 'all',
             'number' => 500,
             'orderby' => 'display_name',
             'order' => 'ASC',
-        ]);
-        // کاربران غیرفعال (دارای usermeta cpms_previous_role) نیز نمایش داده شوند.
-        $users = array_merge($users, get_users([
-            'include' => $userIds,
+        ];
+        $inactiveQuery = [
             'meta_key' => self::META_PREV_ROLE,
             'fields' => 'all',
             'number' => 500,
-        ]));
+        ];
+        if ($userIds !== null) {
+            $manageableQuery['include'] = $userIds;
+            $inactiveQuery['include'] = $userIds;
+        }
+
+        $users = get_users($manageableQuery);
+        // کاربران غیرفعال (دارای usermeta cpms_previous_role) نیز نمایش داده شوند.
+        $users = array_merge($users, get_users($inactiveQuery));
 
         $rows = [];
         $seen = [];
