@@ -318,6 +318,61 @@ final class MembershipRepository {
     }
 
     /**
+     * Phase 4 — Slice 4: «هویت یکتای فعال» پزشک برای یک کاربر وردپرس —
+     * **بدون هیچ فیلتر Clinic**.
+     *
+     * یکتایی ساختاری از `u_clinician_user` (Migration 0007 — UNIQUE روی
+     * `wp_user_id`) می‌آید؛ به همین دلیل اینجا عمداً نه `ORDER BY` هست، نه
+     * `LIMIT 1`، نه «ردیف اول»: یک پرس‌وجوی تجمعی همیشه دقیقاً یک ردیف دارد و
+     * `COUNT(*) = 1 AND MIN(id) = MAX(id)` همان یکتایی ساختاری را باز-راستی‌آزمایی
+     * می‌کند (نقض آن = دادهٔ خراب ⇒ fail-closed، نه انتخاب دلخواه).
+     *
+     * تفکیک «شکست پرس‌وجو» از «نبودِ مشروع»:
+     *  - `COUNT(*)` همیشه یک ردیف برمی‌گرداند ⇒ `fetchRow() === null` فقط و فقط
+     *    یعنی خودِ پرس‌وجو شکست خورده است ⇒ `RuntimeException` (همان کنوانسیون
+     *    این Repository). هرگز به «پزشک ندارد» تفسیر نمی‌شود (صف خالیِ بی‌صدا
+     *    جای خطای پایگاه داده نمی‌نشیند).
+     *  - `n = 0` ⇒ نبودِ مشروع (بدون ردیف، یا ردیف غیرفعال) ⇒ null.
+     *
+     * `clinicians.clinic_id` اینجا عمداً خوانده نمی‌شود: Clinic خانه فقط دادهٔ
+     * سازگاری/ثبت تاریخی است و هرگز مرز مشارکت یا دامنه نیست (SoT = عضویت فعال).
+     *
+     * @throws \RuntimeException شکست پرس‌وجو یا نقض یکتایی ساختاری
+     */
+    public function active_clinician_id_for_wp_user( int $wp_user_id ): ?int {
+        if ( $wp_user_id <= 0 ) {
+            return null;
+        }
+
+        $row = $this->db->fetchRow(
+            'SELECT COUNT(*) AS n, MIN(id) AS min_id, MAX(id) AS max_id' .
+            ' FROM ' . $this->db->table( 'cpms_clinicians' ) .
+            ' WHERE wp_user_id = %d AND is_active = 1',
+            [ $wp_user_id ]
+        );
+        if ( $row === null ) {
+            throw new \RuntimeException(
+                'active_clinician_id_for_wp_user query failed for wp_user_id=' . $wp_user_id
+            );
+        }
+
+        if ( (int) ( $row['n'] ?? 0 ) === 0 ) {
+            return null;
+        }
+
+        $min = (int) ( $row['min_id'] ?? 0 );
+        $max = (int) ( $row['max_id'] ?? 0 );
+        if ( (int) ( $row['n'] ?? 0 ) !== 1 || $min <= 0 || $min !== $max ) {
+            throw new \RuntimeException(
+                'u_clinician_user uniqueness violated for wp_user_id=' . $wp_user_id .
+                ' (active clinician rows=' . (int) ( $row['n'] ?? 0 ) . ')'
+            );
+        }
+
+        return $max;
+    }
+
+    /**
      * wp_user_id متصل به Clinician (u_clinician_user — پروفایل یکتا).
      */
     public function clinician_wp_user_id( int $clinician_id ): ?int {
