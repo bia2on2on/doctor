@@ -77,6 +77,39 @@ final class ScheduleRepository
     }
 
     /**
+     * Phase 4 — Slice 1: قاعدهٔ «یک برنامه در هر روز هفته» داخل یک Clinic است
+     * (قرارداد یکتایی 0014 = `(clinic_id, location_id, clinician_id, day_of_week,
+     * start_time)` — «چند شعبه در یک روز» مجاز است). پیش‌بررسیِ create با
+     * دامنهٔ Clinic معتبرِ درخواست انجام می‌شود تا برنامهٔ Clinic دیگر، ثبتِ
+     * Clinic دوم را به‌اشتباه «تکراری» نکند.
+     *
+     * @return array<string, mixed>|null
+     */
+    public function findByClinicianDayInClinic(int $clinicianId, int $dayOfWeek, int $clinicId): ?array
+    {
+        return $this->db->fetchRow(
+            'SELECT * FROM ' . $this->db->table('cpms_schedule') .
+            ' WHERE clinician_id = %d AND day_of_week = %d AND clinic_id = %d LIMIT 1',
+            [$clinicianId, $dayOfWeek, $clinicId]
+        );
+    }
+
+    /**
+     * Phase 4 — Slice 1: خواندنِ برنامهٔ پزشک دامنه‌بندی‌شده به Clinic معتبر —
+     * ردیف‌های Clinic دیگر (حتی برای همان پزشکِ چند‌عضویتی) افشا نمی‌شوند.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function listByClinicianInClinic(int $clinicianId, int $clinicId): array
+    {
+        return $this->db->fetchAll(
+            'SELECT * FROM ' . $this->db->table('cpms_schedule') .
+            ' WHERE clinician_id = %d AND clinic_id = %d ORDER BY day_of_week, start_time',
+            [$clinicianId, $clinicId]
+        );
+    }
+
+    /**
      * @return list<array<string, mixed>>
      */
     public function listByClinician(int $clinicianId): array
@@ -162,6 +195,21 @@ final class ScheduleRepository
             'SELECT * FROM ' . $this->db->table('cpms_schedule_exceptions') .
             ' WHERE clinician_id = %d AND date BETWEEN %s AND %s ORDER BY date, start_time',
             [$clinicianId, $fromDate, $toDate]
+        );
+    }
+
+    /**
+     * Phase 4 — Slice 1: استثناهای برنامهٔ پزشک دامنه‌بندی‌شده به Clinic معتبر —
+     * تعطیلیِ یک شعبه، شعبهٔ دیگر همان پزشک را نمی‌بندد.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function listExceptionsInClinic(int $clinicianId, int $clinicId, string $fromDate, string $toDate): array
+    {
+        return $this->db->fetchAll(
+            'SELECT * FROM ' . $this->db->table('cpms_schedule_exceptions') .
+            ' WHERE clinician_id = %d AND clinic_id = %d AND date BETWEEN %s AND %s ORDER BY date, start_time',
+            [$clinicianId, $clinicId, $fromDate, $toDate]
         );
     }
 

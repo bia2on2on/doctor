@@ -461,6 +461,7 @@ final class App
             $schedule = new ScheduleService(
                 $db,
                 new ScheduleRepository($db),
+                new MembershipRepository($db),
                 self::jobs(),
                 self::audit(),
                 self::op()

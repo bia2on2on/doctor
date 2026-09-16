@@ -240,6 +240,45 @@ final class MembershipRepository {
     }
 
     /**
+     * Phase 4 — Slice 1: آیا این پزشک (پروفایل clinician) در این Clinic
+     * «مشارکت پایدار فعال» دارد؟
+     *
+     * SoT مشارکت = عضویتِ فعالِ پایدارِ کاربرِ متصل به همان پروفایل. Clinicِ
+     * خانهٔ خودِ پروفایل (`clinicians.clinic_id` — مدل هدف «د-۶-۳»: فقط
+     * سازگاری/ثبت تاریخی، هرگز مرز مشارکت) به‌عنوان مسیر سازگاری حفظ می‌شود تا
+     * رفتار تک‌کلینیکیِ موجود حذف نشود.
+     *
+     *  - پروفایل غیرفعال/ناموجود ⇒ false.
+     *  - Clinicِ غیرِ‌خانه فقط با عضویت ACTIVE همان کاربر ⇒ در غیر این صورت
+     *    false (fail-closed؛ بدون fallback به Clinicِ خانه و بدون حدس).
+     */
+    public function clinician_participates_in( int $clinician_id, int $clinic_id ): bool {
+        if ( $clinician_id <= 0 || $clinic_id <= 0 ) {
+            return false;
+        }
+
+        $row = $this->db->fetchRow(
+            'SELECT id, clinic_id, wp_user_id FROM ' . $this->db->table( 'cpms_clinicians' ) .
+            ' WHERE id = %d AND is_active = 1 LIMIT 1',
+            [ $clinician_id ]
+        );
+        if ( $row === null ) {
+            return false;
+        }
+
+        if ( (int) $row['clinic_id'] === $clinic_id ) {
+            return true;
+        }
+
+        $wp_user_id = (int) ( $row['wp_user_id'] ?? 0 );
+        if ( $wp_user_id <= 0 ) {
+            return false;
+        }
+
+        return $this->find_active( $clinic_id, $wp_user_id ) !== null;
+    }
+
+    /**
      * @return list<int>
      */
     public function clinician_location_ids( int $clinician_id ): array {
