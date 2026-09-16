@@ -59,6 +59,9 @@ final class ClinicalFilesScopedAuthorizationTest extends WP_UnitTestCase
     /** @var list<string> relative storage paths created by this test (cleanup only) */
     private array $storedFiles = [];
 
+    /** @var array<int,int> clinic_id → primary location_id (visits require one) */
+    private array $locations = [];
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -81,6 +84,7 @@ final class ClinicalFilesScopedAuthorizationTest extends WP_UnitTestCase
             App::replaceExplicitScope(ClinicScope::forClinic($clinicId));
             App::settings()->set('files.storage_path', $this->storagePath);
             App::settings()->set('files.max_upload_bytes', 10485760);
+            $this->locations[$clinicId] = $this->createLocation($clinicId);
         }
         $this->bindHarnessScope($this->clinicA);
         $this->warmRoutes();
@@ -1074,6 +1078,34 @@ final class ClinicalFilesScopedAuthorizationTest extends WP_UnitTestCase
         return $id;
     }
 
+    /**
+     * `cpms_visits.location_id` از مهاجرت 0013 الزامی (NOT NULL + FK) است؛ هر
+     * Clinic fixture یک Location پایدار خودش را می‌گیرد.
+     */
+    private function createLocation(int $clinicId): int
+    {
+        global $wpdb;
+        $now = App::db()->nowUtcSql();
+        $unique = bin2hex(random_bytes(4));
+        $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_locations
+                     (clinic_id, name, slug, timezone, is_primary, is_active, created_at, updated_at)
+                 VALUES (%d, %s, %s, %s, 1, 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $clinicId,
+                'S5 Location ' . $unique,
+                's5-loc-' . $unique,
+                'Asia/Tehran',
+                $now,
+                $now
+            )
+        );
+        $id = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $id, 'precondition: durable Location row (' . $wpdb->last_error . ')');
+
+        return $id;
+    }
+
     private function makeUser(string $login, string $role): int
     {
         $unique = $login . '_' . bin2hex(random_bytes(3));
@@ -1115,7 +1147,7 @@ final class ClinicalFilesScopedAuthorizationTest extends WP_UnitTestCase
             )
         );
         $id = (int) $wpdb->insert_id;
-        self::assertGreaterThan(0, $id, 'precondition: patient row');
+        self::assertGreaterThan(0, $id, 'precondition: patient row (' . $wpdb->last_error . ')');
 
         return $id;
     }
@@ -1167,7 +1199,7 @@ final class ClinicalFilesScopedAuthorizationTest extends WP_UnitTestCase
             )
         );
         $id = (int) $wpdb->insert_id;
-        self::assertGreaterThan(0, $id, 'precondition: clinician row');
+        self::assertGreaterThan(0, $id, 'precondition: clinician row (' . $wpdb->last_error . ')');
 
         return $id;
     }
@@ -1182,13 +1214,16 @@ final class ClinicalFilesScopedAuthorizationTest extends WP_UnitTestCase
         global $wpdb;
         $now = App::db()->nowUtcSql();
         $date = gmdate('Y-m-d');
+        $locationId = (int) ($this->locations[$clinicId] ?? 0);
+        self::assertGreaterThan(0, $locationId, 'precondition: fixture Location for the Clinic');
         $wpdb->query(
             $wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_visits
-                     (clinic_id, clinician_id, patient_id, source, status, visit_date,
+                     (clinic_id, location_id, clinician_id, patient_id, source, status, visit_date,
                       check_in_at, waiting_since, called_at, consultation_started_at, active, created_at, updated_at)
-                 VALUES (%d, %d, %d, %s, %s, %s, %s, %s, %s, %s, 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                 VALUES (%d, %d, %d, %d, %s, %s, %s, %s, %s, %s, %s, 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 $clinicId,
+                $locationId,
                 $clinicianId,
                 $patientId,
                 'walk_in',
@@ -1203,7 +1238,7 @@ final class ClinicalFilesScopedAuthorizationTest extends WP_UnitTestCase
             )
         );
         $id = (int) $wpdb->insert_id;
-        self::assertGreaterThan(0, $id, 'precondition: durable visit row');
+        self::assertGreaterThan(0, $id, 'precondition: durable visit row (' . $wpdb->last_error . ')');
 
         return $id;
     }
@@ -1349,7 +1384,7 @@ final class ClinicalFilesScopedAuthorizationTest extends WP_UnitTestCase
             )
         );
         $id = (int) $wpdb->insert_id;
-        self::assertGreaterThan(0, $id, 'precondition: durable attachment row');
+        self::assertGreaterThan(0, $id, 'precondition: durable attachment row (' . $wpdb->last_error . ')');
         $this->storedFiles[] = $relativePath;
 
         return $id;
