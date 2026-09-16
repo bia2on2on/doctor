@@ -90,6 +90,14 @@ if (!$clinicianId) {
     exit(1);
 }
 
+// Phase 3 Slice 5 — مسیرهای بالینی/فایل (S3 یادداشت و S7 آپلود) مجوز
+// Clinic-scoped از **عضویت فعالِ همین Clinic** می‌گیرند؛ پس عضویت باید در
+// fixtureها ساخته شود (S6 صرفاً مجوز EXPORT را روی همان عضویت grant می‌کند).
+$smokeMembership = App::membership_service()->membership_for($clinicId, $doctorUserId);
+if ($smokeMembership === null) {
+    App::membership_service()->create_membership($clinicId, $doctorUserId, 'cpms_doctor');
+}
+
 $wpdb->query($wpdb->prepare(
     'INSERT INTO ' . $db->table('cpms_patients') . '
          (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at)

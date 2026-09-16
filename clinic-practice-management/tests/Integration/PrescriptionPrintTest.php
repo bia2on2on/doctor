@@ -39,6 +39,14 @@ final class PrescriptionPrintTest extends WP_UnitTestCase
         $this->doctorUserId = $this->makeUser('pp2_doctor', 'cpms_doctor');
         $this->otherDoctorUserId = $this->makeUser('pp2_doctor2', 'cpms_doctor');
 
+        // Phase 3 Slice 5 — Authority بالینی/چاپ از **عضویت فعالِ همان Clinic**
+        // می‌آید (نقش سراسریِ وردپرس فقط لایهٔ دفاعی است). هر دو پزشک عضویتِ
+        // نقشِ پزشک می‌گیرند تا ردِ «پزشک دیگر» واقعاً از قاعدهٔ مالکیت
+        // (requireOwnVisit) بیاید، نه از نبودِ عضویت. منشی عمداً عضویت ندارد:
+        // ردِ او از requireCap (۴۰۳) همان لایهٔ دفاعی را می‌سنجد.
+        cpms_test_seed_membership($this->doctorUserId, 1, 'cpms_doctor');
+        cpms_test_seed_membership($this->otherDoctorUserId, 1, 'cpms_doctor');
+
         foreach ([['Dr Print One', $this->doctorUserId], ['Dr Print Two', $this->otherDoctorUserId]] as [$name, $wpId]) {
             $wpdb->query($wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_clinicians

@@ -193,6 +193,12 @@ jobs:
           'دکتر Closure (Synthetic)', $doctorUserId, $now, $now
           ));
           $clinicianId = (int) $wpdb->insert_id;
+          // Phase 3 Slice 5 — Authority بالینی از عضویت فعالِ Clinic می‌آید؛
+          // fixtureِ پروب هم باید همان را داشته باشد (نقش سراسری کافی نیست).
+          $closureClinicId = App::scope()->clinicId;
+          if (App::membership_service()->membership_for($closureClinicId, $doctorUserId) === null) {
+              App::membership_service()->create_membership($closureClinicId, $doctorUserId, 'cpms_doctor');
+          }
           $wpdb->query($wpdb->prepare(
           'INSERT INTO ' . $db->table('cpms_patients') . ' (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at) VALUES (1, %s, %s, %s, %s, %s, %s, %s)',
           'SYN-CLOSURE-RT-001', 'بیمار', 'Closure (Synthetic)', '09120001234', 'active', $now, $now
@@ -510,6 +516,12 @@ jobs:
           $now = $db->nowUtcSql();
           $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_clinicians') . ' (clinic_id, full_name, wp_user_id, is_active, created_at, updated_at) VALUES (1, %s, %d, 1, %s, %s)', 'دکتر Closure (Synthetic)', $doctorUserId, $now, $now));
           $clinicianId = (int) $wpdb->insert_id;
+          // Phase 3 Slice 5 — همان قاعده: پزشکِ پروب به عضویت فعالِ Clinic نیاز
+          // دارد (Capability سراسری تنها لایهٔ دفاعی است، نه Authority).
+          $closureClinicId = App::scope()->clinicId;
+          if (App::membership_service()->membership_for($closureClinicId, $doctorUserId) === null) {
+              App::membership_service()->create_membership($closureClinicId, $doctorUserId, 'cpms_doctor');
+          }
           $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_patients') . ' (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at) VALUES (1, %s, %s, %s, %s, %s, %s, %s)', 'SYN-CLOSURE-RT-001', 'بیمار', 'Closure (Synthetic)', '09120001234', 'active', $now, $now));
           $patientId = (int) $wpdb->insert_id;
           $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_patient_user_links') . ' (clinic_id, patient_id, wp_user_id, mobile_at_link, is_primary, linked_at) VALUES (1, %d, %d, %s, 1, %s)', $patientId, $patientUserId, '09120001234', $now));
