@@ -10,6 +10,7 @@ use ClinicCore\Infrastructure\Audit\AuditLogger;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Logging\OpLogger;
 use ClinicCore\Infrastructure\Queue\JobQueue;
+use ClinicCore\Infrastructure\Repository\MembershipRepository;
 use ClinicCore\Infrastructure\Repository\ScheduleRepository;
 use DateTimeImmutable;
 use DateTimeZone;
@@ -37,6 +38,7 @@ final class ScheduleService
     public function __construct(
         private readonly CpmsDb $db,
         private readonly ScheduleRepository $schedules,
+        private readonly MembershipRepository $memberships,
         private readonly JobQueue $jobs,
         private readonly AuditLogger $audit,
         private readonly OpLogger $op
@@ -50,13 +52,19 @@ final class ScheduleService
      */
     public function list(int $clinicianId): array
     {
-        // Phase 3 Slice 6B: پزشکِ انتخاب‌شده «شیء» است — با Scope صریح معتبرِ
-        // درخواست، برنامهٔ پزشکِ Clinic دیگر بارگذاری نمی‌شود (C7-S2 parity).
-        $this->requireClinicianWithinTrustedClinic($clinicianId);
+        // Phase 4 Slice 1: پزشکِ انتخاب‌شده «شیء» است — مشارکتش در Clinicِ
+        // معتبرِ درخواست راستی‌آزمایی می‌شود (عضویت فعال پایدار؛ نه Clinicِ
+        // خانه) و ردیف‌های برگشتی هم به همان Clinic دامنه‌بندی می‌شوند؛ پس
+        // برنامهٔ شعبهٔ دیگرِ همان پزشک افشا نمی‌شود (C7-S2 parity).
+        $trustedClinicId = $this->requireClinicianWithinTrustedClinic($clinicianId);
+
+        $rows = $trustedClinicId === null
+            ? $this->schedules->listByClinician($clinicianId)
+            : $this->schedules->listByClinicianInClinic($clinicianId, $trustedClinicId);
 
         return array_map(
             fn (array $r): array => $this->scheduleView($r),
-            $this->schedules->listByClinician($clinicianId)
+            $rows
         );
     }
 
@@ -76,7 +84,9 @@ final class ScheduleService
         if ($day < 0 || $day > 6) {
             throw BookingException::of('CLINIC_VALIDATION_FAILED', 'روز هفته نامعتبر است (0=شنبه … 6=جمعه)', 400, ['errors' => ['day_of_week' => 'range_0_6']]);
         }
-        if ($this->schedules->findByClinicianDay($clinicianId, $day) !== null) {
+        // Phase 4 Slice 1: یکتاییِ «یک برنامه در هر روز هفته» درون Clinic است
+        // (0014: چند شعبه/دو شیفت مجاز) — پیش‌بررسی هم داخل Clinic معتبر.
+        if ($this->schedules->findByClinicianDayInClinic($clinicianId, $day, $clinicId) !== null) {
             throw BookingException::of('CLINIC_VALIDATION_FAILED', 'برای این روز هفته قبلاً برنامه ثبت شده — از ویرایش استفاده کنید', 400, ['errors' => ['day_of_week' => 'duplicate_schedule_day']]);
         }
 
@@ -167,17 +177,22 @@ final class ScheduleService
      */
     public function listExceptions(int $clinicianId, string $fromDate, string $toDate): array
     {
-        // Phase 3 Slice 6B: همان مالکیت C7-S2 برای استثناها (404 parity).
-        $this->requireClinicianWithinTrustedClinic($clinicianId);
+        // Phase 4 Slice 1: همان معیار مشارکت + دامنهٔ Clinic معتبر برای استثناها
+        // (تعطیلی یک شعبه، شعبهٔ دیگرِ همان پزشک را افشا/نمی‌بندد).
+        $trustedClinicId = $this->requireClinicianWithinTrustedClinic($clinicianId);
         $from = $this->parseYmd($fromDate, 'from');
         $to = $this->parseYmd($toDate, 'to');
         if ($to < $from) {
             throw BookingException::of('CLINIC_VALIDATION_FAILED', 'بازه تاریخ نامعتبر است');
         }
 
+        $rows = $trustedClinicId === null
+            ? $this->schedules->listExceptions($clinicianId, $from, $to)
+            : $this->schedules->listExceptionsInClinic($clinicianId, $trustedClinicId, $from, $to);
+
         return array_map(
             fn (array $r): array => $this->exceptionView($r),
-            $this->schedules->listExceptions($clinicianId, $from, $to)
+            $rows
         );
     }
 
@@ -374,16 +389,19 @@ final class ScheduleService
     }
 
     /**
-     * C7-S5 — پزشک به‌عنوان «شیء» راستی‌آزمایی می‌شود، نه منبع Clinic معتبر.
+     * C7-S5 + Phase 4 Slice 1 — پزشک به‌عنوان «شیء» راستی‌آزمایی می‌شود، نه
+     * منبع Clinic معتبر.
      *
-     * ترتیب الزامی: Clinic معتبرِ درخواست ← واکشی پزشک + مقایسهٔ مالکیت ←
-     * فقط سپس اعتبارسنجی فیلدها/درج برنامه/بازتولید Slot. هر دو مرز تولیدی
-     * (REST و wp-admin — پس از C7-S4) Scope معتبر برقرار می‌کنند:
+     * ترتیب الزامی: Clinic معتبرِ درخواست ← راستی‌آزمایی مشارکتِ پایدار پزشک در
+     * همان Clinic ← فقط سپس اعتبارسنجی فیلدها/درج برنامه/بازتولید Slot:
      *   - بدون Scope صریح معتبر ⇒ بسته (CLINIC_SCOPE_REQUIRED — همان
      *     معناشناسی کانونی fail-closed سرویس‌های حساس).
-     *   - پزشک خارج از Clinic معتبر ⇒ دقیقاً همان پاکتِ «پزشک یافت نشد»
+     *   - مشارکت پزشک در Clinic معتبر = عضویتِ فعالِ پایدارِ کاربرِ همان پروفایل
+     *     (`cpms_clinic_memberships` — SoT؛ مدل هدف د-۶-۳) + مسیر سازگاریِ
+     *     Clinicِ خانهٔ پروفایل؛ بدون Scope صریح و بدون هیچ مقدارِ payload.
+     *   - نبود/تعلیق عضویت در Clinic معتبر ⇒ دقیقاً همان پاکتِ «پزشک یافت نشد»
      *     (عدم شمارش/افشای وجود پزشک خارجی)؛ بدون درج ردیف و بدون regenerate.
-     * Clinic ردیف پزشک فقط «شاهد مالکیت برای مقایسه» است، نه منبع اعتماد.
+     * Clinicِ خانهٔ ردیف پزشک فقط مسیر سازگاری است، نه مرز مشارکت/مالکیت.
      */
     private function requireClinicianForTrustedClinic(int $clinicianId): int
     {
@@ -392,35 +410,44 @@ final class ScheduleService
             throw BookingException::of('CLINIC_SCOPE_REQUIRED', 'عملیات برنامهٔ هفتگی بدون زمینهٔ کلینیک معتبر مجاز نیست', 400);
         }
 
-        $row = $this->db->fetchRow(
-            'SELECT id, clinic_id FROM ' . $this->db->table('cpms_clinicians') . ' WHERE id = %d AND is_active = 1 LIMIT 1',
-            [$clinicianId]
-        );
-        if ($row === null || (int) $row['clinic_id'] !== (int) $scope->clinicId) {
+        $trustedClinicId = (int) $scope->clinicId;
+        if (!$this->memberships->clinician_participates_in($clinicianId, $trustedClinicId)) {
             throw BookingException::of('CLINIC_NOT_FOUND', 'پزشک یافت نشد', 404);
         }
 
-        return (int) $row['clinic_id'];
+        return $trustedClinicId;
     }
 
     /**
-     * Phase 3 Slice 6B — مالکیت پایدار پزشک در برابر Clinic معتبرِ صریح (خواندن).
+     * Phase 3 Slice 6B + Phase 4 Slice 1 — مشارکت پایدار پزشک در برابر Clinic
+     * معتبرِ صریح (خواندن).
      *
      * برای مسیرهای خواندن (list/listExceptions): با Scope صریحِ معتبر (مرز REST
-     * staff / wp-admin پس از C7-S4) پزشکِ Clinic دیگر بارگذاری نمی‌شود و همان
-     * پاکتِ «پزشک یافت نشد» را می‌گیرد (عدم شمارش). بدون Scope صریح (فراخوان
-     * داخلی/legacy) رفتار موجود حفظ می‌شود — همان قرارداد C7-S2 برای
+     * staff / wp-admin پس از C7-S4) پزشکی که در آن Clinic مشارکت پایدار فعال
+     * ندارد بارگذاری نمی‌شود و همان پاکتِ «پزشک یافت نشد» را می‌گیرد (عدم
+     * شمارش)؛ فراخوان‌های بعدی هم به همان Clinic دامنه‌بندی می‌شوند تا ردیفِ
+     * شعبهٔ دیگرِ همان پزشک افشا نشود. بدون Scope صریح (فراخوان داخلی/legacy)
+     * رفتار موجود حفظ می‌شود — همان قرارداد C7-S2 برای
      * requireScheduleForTrustedClinic.
+     *
+     * @return int|null Clinicِ معتبرِ درخواست، یا null = بدون Scope صریح
      */
-    private function requireClinicianWithinTrustedClinic(int $clinicianId): int
+    private function requireClinicianWithinTrustedClinic(int $clinicianId): ?int
     {
-        $clinicId = $this->requireClinician($clinicianId);
         $trustedClinicId = $this->explicitTrustedClinicId();
-        if ($trustedClinicId !== null && $trustedClinicId !== $clinicId) {
+        if ($trustedClinicId === null) {
+            // بدون Scope صریح (فراخوان داخلی/wp-admin legacy): فقط وجود پروفایل
+            // فعال لازم است — رفتار موجود حفظ می‌شود.
+            $this->requireClinician($clinicianId);
+
+            return null;
+        }
+
+        if (!$this->memberships->clinician_participates_in($clinicianId, $trustedClinicId)) {
             throw BookingException::of('CLINIC_NOT_FOUND', 'پزشک یافت نشد', 404);
         }
 
-        return $clinicId;
+        return $trustedClinicId;
     }
 
     /**
