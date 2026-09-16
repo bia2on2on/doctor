@@ -96,7 +96,7 @@ jobs:
       - name: Lint the comparative test file
         run: php -l tests/Integration/Phase3Slice6AuthorizationRedTest.php
 
-      - name: RED run — four Slice-6A security contracts (expected: exactly 4 failures)
+      - name: RED run — four Slice-6A security contracts (expected exactly 4 failures)
         continue-on-error: true
         run: |
           set +e
@@ -105,7 +105,7 @@ jobs:
           echo "red_rc=${PIPESTATUS[0]}" | tee -a /tmp/identity.txt
           exit 0
 
-      - name: Context run — full Integration suite on the same tree (expected: only the same 4 fail)
+      - name: Context run — full Integration suite on the same tree (expected only the same 4 fail)
         continue-on-error: true
         run: |
           set +e
