@@ -1,7 +1,23 @@
 --- ISOLATED run summary (canonical file on GREEN head 75bdaa89ad31669c90391118713158b684ce9edb):
 --- failing entries (isolated run):
 --- failure details (isolated run):
---- role-state diagnostic:
+--- FULL-suite run (mirrors ci.yml integration invocation):
+--- FULL-suite last 15 lines (where the run stopped):
+            CONSTRAINT `fk_memberloc_location` FOREIGN KEY (`location_id`)
+                REFERENCES wptests_cpms_locations (`id`) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci</code></p></div><div id="error"><p class="wpdberror"><strong>WordPress database error:</strong> [Cannot add foreign key constraint]<br /><code>CREATE TEMPORARY TABLE IF NOT EXISTS wptests_cpms_clinician_locations (
+            `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+            `clinician_id` BIGINT UNSIGNED NOT NULL,
+            `location_id` BIGINT UNSIGNED NOT NULL,
+            `is_primary` TINYINT(1) NOT NULL DEFAULT 0,
+            `created_at` DATETIME(3) NOT NULL,
+            PRIMARY KEY (`id`),
+            UNIQUE KEY `u_clinician_loc` (`clinician_id`, `location_id`),
+            CONSTRAINT `fk_clinloc_clinician` FOREIGN KEY (`clinician_id`)
+                REFERENCES wptests_cpms_clinicians (`id`) ON DELETE CASCADE,
+            CONSTRAINT `fk_clinloc_location` FOREIGN KEY (`location_id`)
+                REFERENCES wptests_cpms_locations (`id`) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci</code></p></div>.--- role-state diagnostic:
 Installing...
 Running as single site... To run multisite, use -c tests/phpunit/multisite.xml
 Not running ajax tests. To execute these, use --group ajax.
@@ -15,4 +31,7 @@ role caps override option: array (
 fresh cpms_manager user_can(cpms_payment_create): false
 fresh cpms_secretary user_can(cpms_payment_create): true
 --- interpretation:
-Isolated run did not complete normally — inspect phpunit-isolated.log.
+FALSE-GREEN SIGNATURE (isolated): phpunit exited 0 WITHOUT printing any summary —
+the process terminated mid-run (production handler exit) and the CI pipe cannot tell.
+FALSE-GREEN SIGNATURE (full suite): phpunit exited 0 WITHOUT printing any summary —
+PR #56's Integration CI job cannot distinguish this from a genuine pass.

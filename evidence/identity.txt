@@ -1,12 +1,16 @@
-run: https://github.com/bia2on2on/doctor/actions/runs/35104582132
-head: 9a71ab6a8aaa5c4efcbfa5b314050eafb2f5ca7f
+run: https://github.com/bia2on2on/doctor/actions/runs/35105290047
+head: 71cc5dc10f100e21c5d88f07c7112211ac94d589
 green_base: 75bdaa89ad31669c90391118713158b684ce9edb
 --- changes on top of the green base (MUST be only this workflow file):
 A	.github/workflows/green-isolation-check.yml
 A	evidence/classification.txt
 A	evidence/identity.txt
+A	evidence/list-tests.txt
 A	evidence/phpunit-isolated.log
 A	evidence/role-state.txt
 list_rc=0
 isolated_rc=0
 log_bytes=355
+full_rc=0
+full_log_bytes=150965
+full_summary_line_count=0
