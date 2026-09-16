@@ -39,8 +39,22 @@ use WP_UnitTestCase;
  *          by the canonical file). Key names adapted; payload identical.
  *   ADAPT-3: failure messages carry SAFE quantitative evidence (row state,
  *          counts, byte length, sha256) instead of payload plaintext.
- *   ADAPT-4: tearDown also clears $_POST/$_REQUEST (handler-input hygiene for
- *          the rest of the suite when the contract fails on this base).
+     *   ADAPT-4: tearDown also clears $_POST/$_REQUEST (handler-input hygiene for
+     *          the rest of the suite when the contract fails on this base).
+     *   ADAPT-5 (RED-3 persona): the canonical cpms_manager persona asserts
+     *          user_can(PAYMENT_CREATE)=true as a precondition, but MANAGER_CAPS
+     *          does not include PAYMENT_CREATE on a clean environment (verified
+     *          identical at d5ca06eb and 75bdaa8) — that precondition can only
+     *          hold via cross-test in-process role-state pollution. This copy
+     *          uses a cpms_secretary persona (SECRETARY_CAPS preset-grants
+     *          PAYMENT_CREATE) so the "global coarse cap true + explicit scoped
+     *          deny false" precondition is deterministic. Contract, product
+     *          path and deny mechanism unchanged.
+     *   ADAPT-6 (RED-4 structure): phase breach evidence for 4a and 4b is
+     *          accumulated and reported by ONE final assertion — PHPUnit aborts
+     *          a method at the first failing assertion, so the canonical
+     *          per-phase assertNotNull would let a 4a breach mask the 4b
+     *          evidence entirely. Both markers now surface in one run.
  *
  * Tenant safety (unchanged): dynamic Organization + dynamic Clinics A/B with
  * DB-generated ids only. No Clinic 1, no Organization 1, no fixed/reserved ids,
@@ -271,10 +285,21 @@ final class Phase3Slice6AuthorizationRedTest extends WP_UnitTestCase
     // ===================== RED 3: Finance scoped deny overrides preset =====================
 
     /**
-     * RED-3: a Clinic-A member with role cpms_manager (which preset-grants
-     * PAYMENT_CREATE globally) must be DENIED payment creation when an explicit
-     * DENY is set on PAYMENT_CREATE for their membership — despite global
+     * RED-3: a Clinic-A member whose WP role preset-grants PAYMENT_CREATE
+     * globally must be DENIED payment creation when an explicit DENY is set on
+     * PAYMENT_CREATE for their membership — despite global
      * user_can('cpms_payment_create') returning true.
+     *
+     * ADAPT-5 (persona): the canonical file uses a cpms_manager persona here.
+     * On a clean environment MANAGER_CAPS does NOT include PAYMENT_CREATE
+     * (verified identical at d5ca06eb and 75bdaa8), so the canonical
+     * `user_can($manager, PAYMENT_CREATE)` precondition cannot hold without
+     * cross-test in-process role-state pollution. This copy therefore uses a
+     * cpms_secretary persona — SECRETARY_CAPS preset-grants PAYMENT_CREATE —
+     * making the "global coarse cap = true + explicit scoped deny = false"
+     * precondition deterministic. Contract, product path
+     * (FinanceService::recordPayment), deny mechanism and fixtures are
+     * unchanged.
      *
      * On this vulnerable base FinanceService::recordPayment calls requireCap
      * (global user_can) + trustedClinicId/row checks but never
@@ -283,18 +308,19 @@ final class Phase3Slice6AuthorizationRedTest extends WP_UnitTestCase
      */
     public function testRecordPaymentIsDeniedWhenScopedPaymentCreateIsExplicitlyDenied(): void
     {
-        // Secretary+manager role for actor so they hold global PAYMENT_CREATE preset.
-        $mgr = $this->makeUser('p3s6_fin_mgr', RolesAndCapabilities::ROLE_MANAGER);
-        cpms_test_seed_membership($mgr, $this->clinics['A'], RolesAndCapabilities::ROLE_MANAGER);
+        // ADAPT-5: secretary persona — holds the global PAYMENT_CREATE preset
+        // deterministically (the bug is that global cap ≠ scoped auth).
+        $mgr = $this->makeUser('p3s6_fin_pay', RolesAndCapabilities::ROLE_SECRETARY);
+        cpms_test_seed_membership($mgr, $this->clinics['A'], RolesAndCapabilities::ROLE_SECRETARY);
 
         // Place EXPLICIT DENY on PAYMENT_CREATE for their membership.
         $svc = App::membership_service();
         $mem = $svc->membership_for($this->clinics['A'], $mgr);
-        self::assertNotNull($mem, 'precondition: manager membership');
+        self::assertNotNull($mem, 'precondition: payer membership');
         $svc->set_capability((int) $mem['id'], RolesAndCapabilities::PAYMENT_CREATE, 'deny');
 
         // Build a legitimate open invoice on Clinic A (using a separate legitimate
-        // secretary that can issue the invoice for us; manager explicit deny only
+        // secretary that can issue the invoice for us; payer's explicit deny only
         // blocks PAYMENT_CREATE, not INVOICE_CREATE in this test).
         $sec = $this->makeUser('p3s6_fin_sec', RolesAndCapabilities::ROLE_SECRETARY);
         cpms_test_seed_membership($sec, $this->clinics['A'], RolesAndCapabilities::ROLE_SECRETARY);
@@ -314,8 +340,9 @@ final class Phase3Slice6AuthorizationRedTest extends WP_UnitTestCase
         self::assertGreaterThan(0, $invoiceId, 'precondition: invoice exists in Clinic A');
 
         // Confirm the global cap is in fact granted (the bug is that global cap ≠ scoped auth).
+        // ADAPT-5: cpms_secretary preset includes PAYMENT_CREATE.
         self::assertTrue(user_can($mgr, RolesAndCapabilities::PAYMENT_CREATE),
-            'precondition: manager has global PAYMENT_CREATE (the override must come from scoped deny)');
+            'precondition: payer has global PAYMENT_CREATE via role preset (the override must come from scoped deny)');
 
         // Confirm AuthorizationService itself reports DENY for the scoped call.
         $authz = App::authorization_service();
@@ -361,13 +388,14 @@ final class Phase3Slice6AuthorizationRedTest extends WP_UnitTestCase
         // ADAPT-3: side-effect metrics ride on the first failing assertion.
         self::assertNotNull($threw,
             'RED-3 evidence: recordPayment must be denied when PAYMENT_CREATE is explicitly denied in the membership'
-            . ' (global user_can=true, AuthorizationService::can=false were preconditions)'
+            . ' (global user_can=true via cpms_secretary preset, AuthorizationService::can=false were preconditions)'
             . ' :: durable financial side-effects observed: ' . (string) wp_json_encode([
                 'invoice_id' => $invoiceId,
                 'payment_rows_before' => $before,
                 'payment_rows_after' => $after,
                 'invoice_paid_amount_before' => $paidBefore,
                 'invoice_paid_amount_after' => $paidAfter,
+                'finance_exception' => $threw instanceof FinanceException ? $threw->errorCode : null,
             ], JSON_UNESCAPED_UNICODE));
         self::assertSame('CLINIC_PERMISSION_DENIED', $threw->errorCode, 'must surface the scoped-deny machine code');
         self::assertSame(403, $threw->httpStatus);
@@ -385,6 +413,10 @@ final class Phase3Slice6AuthorizationRedTest extends WP_UnitTestCase
      * On this vulnerable base neither HandwritingService nor FinanceService
      * consults the membership status — only the global WP role caps, which
      * suspension does not revoke.
+     *
+     * ADAPT-6: 4a and 4b breach evidence is accumulated into $problems and
+     * reported by a single final assertion so both phases surface evidence
+     * even when both breach (PHPUnit aborts at the first failing assertion).
      */
     public function testSuspendedMemberIsDeniedHandwritingSaveAndPaymentCreate(): void
     {
@@ -446,16 +478,26 @@ final class Phase3Slice6AuthorizationRedTest extends WP_UnitTestCase
             'SELECT COUNT(*) FROM ' . App::db()->table('cpms_handwriting_page_versions') . ' WHERE page_id = %d',
             [$pageId]
         );
-        // ADAPT-3: side-effect metrics ride on the first failing assertion.
-        self::assertNotNull($hwThrew,
-            'RED-4a evidence: suspended doctor must be denied handwriting savePage before any version append'
-            . ' :: durable mutation observed: ' . (string) wp_json_encode([
-                'page_id' => $pageId,
-                'page_versions_before' => $versionsBefore,
-                'page_versions_after' => $versionsAfter,
-            ], JSON_UNESCAPED_UNICODE));
-        self::assertSame(403, $hwThrew->httpStatus, 'suspended writes must be denied with status 403');
-        self::assertSame($versionsBefore, $versionsAfter, 'no handwriting version may be appended by suspended user');
+        // ADAPT-6: accumulate per-phase breach evidence instead of asserting at
+        // the first phase — a failing 4a assertion would otherwise abort the
+        // method and mask the 4b evidence entirely.
+        $problems = [];
+        // "Denied cleanly" = a real scoped-deny machine code AND zero durable
+        // side-effects — any other exception (fixture/validation/environment)
+        // does NOT count as a pass, so the breach surfaces for diagnosis.
+        $hwDeniedCleanly = $hwThrew !== null
+            && $hwThrew->errorCode === 'CLINIC_PERMISSION_DENIED'
+            && (int) $hwThrew->httpStatus === 403
+            && $versionsAfter === $versionsBefore;
+        if (!$hwDeniedCleanly) {
+            $problems[] = 'RED-4a evidence: suspended doctor must be denied handwriting savePage before any version append'
+                . ' :: durable mutation observed: ' . (string) wp_json_encode([
+                    'page_id' => $pageId,
+                    'page_versions_before' => $versionsBefore,
+                    'page_versions_after' => $versionsAfter,
+                    'handwriting_exception' => $hwThrew instanceof HandwritingException ? $hwThrew->errorCode : null,
+                ], JSON_UNESCAPED_UNICODE);
+        }
 
         // 4b: suspended secretary tries to issue invoice + record payment.
         wp_set_current_user($sec);
@@ -494,18 +536,31 @@ final class Phase3Slice6AuthorizationRedTest extends WP_UnitTestCase
             . ' p JOIN ' . App::db()->table('cpms_invoices') . ' i ON i.id = p.invoice_id WHERE i.visit_id = %d',
             [$visitId]
         );
-        // ADAPT-3: side-effect metrics ride on the first failing assertion.
-        self::assertNotNull($finThrew,
-            'RED-4b evidence: suspended secretary must be denied finance issue/payment before any mutation'
-            . ' :: durable financial side-effects observed: ' . (string) wp_json_encode([
-                'visit_id' => $visitId,
-                'invoice_rows_before' => $invCountBefore,
-                'invoice_rows_after' => $invCountAfter,
-                'payment_rows_before' => $payCountBefore,
-                'payment_rows_after' => $payCountAfter,
-            ], JSON_UNESCAPED_UNICODE));
-        self::assertSame($invCountBefore, $invCountAfter, 'suspended user must not issue invoices');
-        self::assertSame($payCountBefore, $payCountAfter, 'suspended user must not record payments');
+        // ADAPT-6: 4b breach evidence accumulates alongside 4a (single final
+        // assertion). Same "denied cleanly" discipline: only the scoped-deny
+        // machine code with zero durable side-effects counts as a pass — a
+        // fixture/validation exception here is reported as a breach, not a pass.
+        $finDeniedCleanly = $finThrew !== null
+            && $finThrew->errorCode === 'CLINIC_PERMISSION_DENIED'
+            && $invCountAfter === $invCountBefore
+            && $payCountAfter === $payCountBefore;
+        if (!$finDeniedCleanly) {
+            $problems[] = 'RED-4b evidence: suspended secretary must be denied finance issue/payment before any mutation'
+                . ' :: durable financial side-effects observed: ' . (string) wp_json_encode([
+                    'visit_id' => $visitId,
+                    'invoice_rows_before' => $invCountBefore,
+                    'invoice_rows_after' => $invCountAfter,
+                    'payment_rows_before' => $payCountBefore,
+                    'payment_rows_after' => $payCountAfter,
+                    'finance_exception' => $finThrew instanceof FinanceException ? $finThrew->errorCode : null,
+                ], JSON_UNESCAPED_UNICODE);
+        }
+
+        // SECURITY CONTRACT (4a+4b): suspension must fail closed with zero durable
+        // side-effects. On a hardened base $problems stays empty and this passes.
+        self::assertSame([], $problems,
+            'suspended member must be denied fail-closed before any mutation :: breaches observed:'
+            . (count($problems) > 0 ? "\n" . implode("\n", $problems) : ''));
     }
 
     // ===================== Fixture helpers =====================
