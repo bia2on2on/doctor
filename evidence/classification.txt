@@ -1,5 +1,5 @@
 --- RED run summary:
-Tests: 4, Assertions: 64, Failures: 4.
+Tests: 4, Assertions: 67, Failures: 4.
 --- failing entries (RED run):
 1) ClinicCore\Tests\Integration\Phase3Slice6AuthorizationRedTest::testSaveClinicianManagerInClinicACannotMutateClinicianInClinicB
 2) ClinicCore\Tests\Integration\Phase3Slice6AuthorizationRedTest::testGetPageWithScopeOnClinicAReturns404ForClinicBDocument
@@ -14,11 +14,11 @@ GATE PASS: RED-4 present
 GATE PASS: no environmental noise in RED log
 GATE PASS: marker RED-1 evidence
 GATE PASS: marker RED-2 evidence
-GATE FAIL: marker RED-3 evidence
+GATE PASS: marker RED-3 evidence
 GATE PASS: marker RED-4a evidence
-GATE FAIL: marker RED-4b evidence
+GATE PASS: marker RED-4b evidence
 --- FULL run summary:
-Tests: 844, Assertions: 9725, Failures: 4.
+Tests: 844, Assertions: 9728, Failures: 4.
 --- failing entries (FULL run):
 1) ClinicCore\Tests\Integration\Phase3Slice6AuthorizationRedTest::testSaveClinicianManagerInClinicACannotMutateClinicianInClinicB
 2) ClinicCore\Tests\Integration\Phase3Slice6AuthorizationRedTest::testGetPageWithScopeOnClinicAReturns404ForClinicBDocument
@@ -26,3 +26,4 @@ Tests: 844, Assertions: 9725, Failures: 4.
 4) ClinicCore\Tests\Integration\Phase3Slice6AuthorizationRedTest::testSuspendedMemberIsDeniedHandwritingSaveAndPaymentCreate
 full failures=4 errors=0
 GATE PASS: full suite only the same 4 fail
+VALID RED CONFIRMED — four security contracts fail on the vulnerable base with durable observations.

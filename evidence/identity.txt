@@ -1,10 +1,14 @@
-run: https://github.com/bia2on2on/doctor/actions/runs/35101767288
-head: 17e60e29cd506b2a2aa72fb14e529a0d65c48f02
+run: https://github.com/bia2on2on/doctor/actions/runs/35103319092
+head: d8b5174a27246c489abc7ea0401637fc93cc592c
 vulnerable_base: d5ca06ebfcbaab07a35b5b087fa358b4ef4f9d3c
 --- changes on top of the vulnerable base:
 A	.github/workflows/red-evidence.yml
 A	clinic-practice-management/tests/Integration/Phase3Slice6AuthorizationRedTest.php
+A	evidence/classification.txt
+A	evidence/full-failures.txt
 A	evidence/identity.txt
+A	evidence/phpunit-full.log
+A	evidence/phpunit-red.log
 A	evidence/red-failures.txt
 --- production diff vs vulnerable base (MUST be empty):
 tests diff: clinic-practice-management/tests/Integration/Phase3Slice6AuthorizationRedTest.php
