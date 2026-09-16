@@ -7,14 +7,15 @@ namespace ClinicCore\Infrastructure\Repository;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 
 /**
- * Repository پزشکان (Part 2 — ADR-0031) — تا پیش از این هیچ CRUD برای
- * `cpms_clinicians` وجود نداشت و راه‌اندازی فقط با دست‌کاری مستقیم DB ممکن بود.
+ * Repository پزشکان.
  *
  * قواعد:
  *  - حذف فیزیکی ممنوع (FK از Visits/Schedule/…) — فقط فعال/غیرفعال (Deactivate).
  *  - پیوند ۱:۱ با کاربر وردپرس با UNIQUE constraint (Migration 0007) تضمین
  *    می‌شود؛ این Repository پیش از انتساب، تعارض را با پیام فارسی برمی‌گرداند.
- *  - همه کوئری‌ها clinic_id=1 (V1 تک-کلینیک — ADR-0003).
+ *  - متدهای find/update عمومی برای استفاده داخلی و تست باقی می‌مانند؛
+ *    مسیرهای ادمین باید از نسخه‌های Clinic-predicated (findForClinic /
+ *    updateForClinic) استفاده کنند تا cross-Clinic mutation ممکن نشود.
  */
 final class ClinicianRepository
 {
@@ -53,6 +54,21 @@ final class ClinicianRepository
     }
 
     /**
+     * بارگذاری پزشک فقط وقتی که به Clinic مورد اعتماد تعلق دارد (404 parity).
+     */
+    public function findForClinic(int $id, int $clinicId): ?array
+    {
+        if ($id <= 0 || $clinicId <= 0) {
+            return null;
+        }
+
+        return $this->db->fetchRow(
+            'SELECT * FROM ' . $this->db->table('cpms_clinicians') . ' WHERE id = %d AND clinic_id = %d LIMIT 1',
+            [$id, $clinicId]
+        );
+    }
+
+    /**
      * آیا این کاربر وردپرس به پزشک دیگری متصل است؟ (۱:۱ — Migration 0007)
      */
     public function isUserLinked(int $wpUserId, ?int $exceptClinicianId = null): bool
@@ -87,12 +103,12 @@ final class ClinicianRepository
             'updated_at' => $now,
         ]);
 
-        $id = $this->db->wpdb_last_insert_id();
-
-        return $id;
+        return $this->db->wpdb_last_insert_id();
     }
 
     /**
+     * به‌روزرسانی عمومی (برای استفاده داخلی/تست).
+     *
      * @param array<string, mixed> $fields
      * @throws \RuntimeException انتساب کاربر متصل به پزشک دیگر (۱:۱ — UNIQUE 0007)
      */
@@ -106,8 +122,6 @@ final class ClinicianRepository
         }
         if (isset($fields['wp_user_id'])) {
             $newUserId = (int) $fields['wp_user_id'];
-            // چک صریح ۱:۱ — wpdb روی نقض UNIQUE Exception نمی‌اندازد؛ قید DB
-            // (Migration 0007) لایه دوم در برابر Race است.
             if ($this->isUserLinked($newUserId, $id)) {
                 throw new \RuntimeException('این کاربر وردپرس قبلاً به پزشک دیگری متصل است (پیوند باید ۱:۱ باشد)');
             }
@@ -117,5 +131,40 @@ final class ClinicianRepository
             $data['is_active'] = (int) $fields['is_active'];
         }
         $this->db->update('cpms_clinicians', $data, ['id' => $id]);
+    }
+
+    /**
+     * به‌روزرسانیِ فقط-همان-کلینیک (Predicate بادوام برای مسیرهای ادمین).
+     *
+     * تعداد ردیف‌های متأثر را برمی‌گرداند (۰ یعنی رکورد به این Clinic تعلق
+     * ندارد و جهش باید با 404 parity پاسخ بگیرد).
+     *
+     * @param array<string, mixed> $fields
+     * @throws \RuntimeException
+     */
+    public function updateForClinic(int $id, int $clinicId, array $fields): int
+    {
+        if ($id <= 0 || $clinicId <= 0) {
+            return 0;
+        }
+        $data = ['updated_at' => $this->db->nowUtcSql()];
+        foreach (['full_name', 'specialty', 'room'] as $key) {
+            if (array_key_exists($key, $fields)) {
+                $data[$key] = $fields[$key];
+            }
+        }
+        if (array_key_exists('wp_user_id', $fields)) {
+            $newUserId = isset($fields['wp_user_id']) ? (int) $fields['wp_user_id'] : 0;
+            if ($newUserId > 0 && $this->isUserLinked($newUserId, $id)) {
+                throw new \RuntimeException('این کاربر وردپرس قبلاً به پزشک دیگری متصل است (پیوند باید ۱:۱ باشد)');
+            }
+            $data['wp_user_id'] = $newUserId > 0 ? $newUserId : null;
+        }
+        if (isset($fields['is_active'])) {
+            $data['is_active'] = (int) $fields['is_active'];
+        }
+        $where = ['id' => $id, 'clinic_id' => $clinicId];
+
+        return (int) $this->db->update('cpms_clinicians', $data, $where);
     }
 }

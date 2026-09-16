@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace ClinicCore\Admin;
 
+use ClinicCore\Application\Authorization\AuthorizationException;
+use ClinicCore\Application\Scope\ClinicScope;
 use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Application\Scope\TrustedClinicEstablisher;
 use ClinicCore\Auth\RolesAndCapabilities;
@@ -16,16 +18,15 @@ use ClinicCore\Infrastructure\Repository\MembershipRepository;
 /**
  * صفحه «پزشکان و برنامه» — Setup UI (Part 2 / ADR-0031، ممیزی P1).
  *
- * مشکل: تا پیش از این ثبت پزشک و برنامه هفتگی فقط با دست‌کاری مستقیم
- * دیتابیس/REST ممکن بود (بزرگ‌ترین شکاف ممیزی) — پزشک غیرفنی نمی‌توانست
- * مطبش را راه بیندازد.
- *
- *  - دسترسی: فقط `cpms_config` (Administrator فنی — P-3).
- *  - لیست پزشکان + افزودن/ویرایش/غیرفعال‌سازی (حذف فیزیکی ممنوع — FK) +
- *    پیوند ۱:۱ به کاربر وردپرس (UNIQUE — Migration 0007).
- *  - برنامه هفتگی هر پزشک (۷ روز) با ذخیره از مسیر ScheduleService (Audit +
- *    تولید مجدد Slot خودکار — همان مسیر REST/تست‌شده).
- *  - استثناهای برنامه (تعطیلی/مرخصی/بستن/باز کردن) از مسیر همان سرویس.
+ * Phase 3 Slice 6A: مرز wp-admin برای پزشکان/برنامه، Clinic-scoped شده است:
+ *   - nonce کماکان چک می‌شود؛
+ *   - Clinic هرگز از clinician_id یا clinic_id فرم/URL گرفته نمی‌شود؛
+ *   - TrustedClinicEstablisher با تکیه بر عضویت فعال/یکتا زمینه کلینیک معتبر
+ *     را برقرار می‌کند (چندعضویتی ⇒ fail-closed)؛
+ *   - مجوز اسکوپ‌شدهٔ CONFIG از طریق AuthorizationService::authorize اعمال
+ *     می‌شود (مدیر سراسری بدون عضویت بسته می‌شود، deny صریح override می‌کند)؛
+ *   * بارگذاری و جهش ردیف پزشک/برنامه فقط از طریق Clinic-predicate متناظر
+ *     صورت می‌گیرد تا cross-Clinic mutation ممکن نشود.
  */
 final class ClinicianAdminPage
 {
@@ -61,9 +62,19 @@ final class ClinicianAdminPage
 
     public static function render(): void
     {
-        if (!current_user_can(RolesAndCapabilities::CONFIG)) {
+        $actorUserId = (int) get_current_user_id();
+        if ($actorUserId <= 0 || !current_user_can(RolesAndCapabilities::CONFIG)) {
             wp_die('دسترسی ندارید', 403);
         }
+
+        // Phase 3 Slice 6A: render نیز باید در Clinic-scoped معتبر کار کند؛
+        // در غیر این صورت (مثلاً ادمین سراسری بدون عضویت یا چندعضویتی) به‌جای
+        // افشای فهرست دیگر Clinicها، پیام دسترسی نشان می‌دهیم.
+        $scope = self::tryEstablishAuthorizedScope($actorUserId, RolesAndCapabilities::CONFIG);
+        if ($scope === null) {
+            wp_die('دسترسی به این صفحه نیازمند عضویت فعالِ کلینیک و مجوز scoped تنظیمات است.', 403);
+        }
+        App::replaceExplicitScope($scope);
 
         $notice = get_transient(self::NOTICE_KEY);
         if ($notice !== false) {
@@ -71,8 +82,9 @@ final class ClinicianAdminPage
         }
 
         $repo = App::clinicianRepository();
-        $selectedId = isset($_GET['clinician_id']) ? absint($_GET['clinician_id']) : 0; // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- فقط انتخاب نما؛ هر تغییر با Nonce جدا محافظت می‌شود
-        $selected = $selectedId > 0 ? $repo->find($selectedId) : null;
+        $clinicId = (int) $scope->clinicId;
+        $selectedId = isset($_GET['clinician_id']) ? absint($_GET['clinician_id']) : 0; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+        $selected = $selectedId > 0 ? $repo->findForClinic($selectedId, $clinicId) : null;
         ?>
 <div class="wrap" dir="rtl">
     <h1>پزشکان و برنامه هفتگی</h1>
@@ -81,7 +93,7 @@ final class ClinicianAdminPage
     <?php endif; ?>
 
     <?php if ($selected === null) : ?>
-        <?php self::renderList($repo); ?>
+        <?php self::renderList($repo, $clinicId); ?>
     <?php else : ?>
         <?php self::renderClinician($repo, $selected); ?>
     <?php endif; ?>
@@ -89,9 +101,9 @@ final class ClinicianAdminPage
         <?php
     }
 
-    private static function renderList(ClinicianRepository $repo): void
+    private static function renderList(ClinicianRepository $repo, int $clinicId): void
     {
-        $rows = $repo->listAll(App::scope()->clinicId);
+        $rows = $repo->listAll($clinicId);
         $users = self::wpUsers();
         ?>
     <h2 class="title">پزشکان</h2>
@@ -147,9 +159,7 @@ final class ClinicianAdminPage
             var c = document.getElementById('cpms-create-account');
             var box = document.getElementById('cpms-account-fields');
             if (!c || !box) { return; }
-            c.addEventListener('change', function(){
-                box.style.display = c.checked ? 'block' : 'none';
-            });
+            c.addEventListener('change', function(){ box.style.display = c.checked ? 'block' : 'none'; });
         })();
     </script>
         <?php
@@ -162,7 +172,7 @@ final class ClinicianAdminPage
     {
         $cid = (int) $clinician['id'];
         $scheduleService = App::scheduleService();
-        $schedules = $scheduleService->list($cid); // requireClinician — رکورد هست
+        $schedules = $scheduleService->list($cid);
         $byDay = [];
         foreach ($schedules as $s) {
             $byDay[(int) $s['day_of_week']] = $s;
@@ -175,7 +185,6 @@ final class ClinicianAdminPage
         <span class="description"><?php echo esc_html((string) ($clinician['specialty'] ?? '')); ?></span>
     </h1>
 
-    <!-- پروفایل -->
     <h2 class="title">پروفایل</h2>
     <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="max-width:720px">
         <?php wp_nonce_field('cpms_clinician_save'); ?>
@@ -203,15 +212,13 @@ final class ClinicianAdminPage
         </p>
     </form>
 
-    <!-- برنامه هفتگی — یک فرم برای کل جدول (نام‌گذاری آرایه‌ای sched[day]) -->
     <h2 class="title">برنامه هفتگی (ساعت‌ها به وقت مطب)</h2>
     <?php if ((int) $clinician['is_active'] === 1) : $impact = App::scheduleService()->impact($cid); ?>
         <div class="notice notice-info inline" style="max-width:1150px">
             <p><strong>تأثیر تغییر برنامه (پیش‌نمایش):</strong>
                 با ذخیرهٔ هر تغییر، <strong><?php echo (int) $impact['future_empty_slots']; ?></strong> اسلات خالی آینده
                 حذف و بازتولید می‌شود (بازتولید خودکار)؛ و <strong><?php echo (int) $impact['future_reserved_slots']; ?></strong>
-                اسلات دارای رزرو/Hold <strong>هرگز حذف نمی‌شوند</strong> (امانت داده حفظ می‌شود). برای اینکه تغییری بی‌صدا
-                اعمال نشود، این عدد پیش از ثبت نمایش داده می‌شود.
+                اسلات دارای رزرو/Hold <strong>هرگز حذف نمی‌شوند</strong> (امانت داده حفظ می‌شود).
             </p>
         </div>
     <?php endif; ?>
@@ -250,7 +257,7 @@ final class ClinicianAdminPage
         <input type="hidden" name="clinician_id" value="<?php echo $cid; ?>">
         <input type="hidden" name="schedule_id" value="">
     </form>
-    <!-- استثناها -->
+
     <h2 class="title" style="margin-top:18px">استثناها (تعطیلی / مرخصی / بستن / باز کردن)</h2>
     <?php if ($exceptions !== []) : ?>
         <table class="widefat striped" style="max-width:800px">
@@ -305,7 +312,9 @@ final class ClinicianAdminPage
 
     public static function saveClinician(): void
     {
-        self::guard('cpms_clinician_save');
+        $scope = self::authorizeAdminWrite('cpms_clinician_save');
+        $clinicId = (int) $scope->clinicId;
+
         $repo = App::clinicianRepository();
         $fields = self::clinicianFields();
         $id = isset($_POST['clinician_id']) ? absint($_POST['clinician_id']) : 0;
@@ -313,12 +322,15 @@ final class ClinicianAdminPage
 
         try {
             if ($id > 0) {
-                $current = $repo->find($id);
+                $current = $repo->findForClinic($id, $clinicId);
                 if ($current === null) {
-                    self::backWithError($id, 'خطا: پزشک یافت نشد.');
+                    self::backWithError($id, 'خطا: پزشک در این Clinic یافت نشد.');
                 }
-                $repo->update($id, $fields);
-                App::audit()->log('CLINICIAN_UPDATED', ['wp_user_id' => get_current_user_id()], 'clinician', $id, null, null, ['fields' => array_keys($fields)]);
+                $affected = $repo->updateForClinic($id, $clinicId, $fields);
+                if ($affected < 1) {
+                    self::backWithError($id, 'خطا: به‌روزرسانی پزشک انجام نشد.');
+                }
+                App::audit()->log('CLINICIAN_UPDATED', ['wp_user_id' => get_current_user_id(), 'clinic_id' => $clinicId], 'clinician', $id, null, null, ['fields' => array_keys($fields)]);
                 self::back($id, 'پروفایل پزشک ذخیره شد.');
             }
 
@@ -326,8 +338,7 @@ final class ClinicianAdminPage
                 self::backWithError(0, 'خطا: نام پزشک الزامی است.');
             }
 
-            // Chunk D — ساخت حساب در همان جریان «افزودن پزشک» (بدون صفحهٔ جداگانهٔ کاربران).
-            $accountCreated = self::maybeCreateDoctorAccount($fields, $generated);
+            $accountCreated = self::maybeCreateDoctorAccount($fields, $generated, $clinicId);
             if (($accountCreated['error'] ?? '') !== '') {
                 self::backWithError(0, 'خطا: ' . $accountCreated['error']);
             }
@@ -338,40 +349,45 @@ final class ClinicianAdminPage
             if ($fields['wp_user_id'] !== null && $repo->isUserLinked((int) $fields['wp_user_id'])) {
                 self::backWithError(0, 'خطا: این کاربر وردپرس قبلاً به پزشک دیگری متصل است (پیوند باید ۱:۱ باشد).');
             }
-            $newId = $repo->create(App::scope()->clinicId, $fields);
-            App::audit()->log('CLINICIAN_CREATED', ['wp_user_id' => get_current_user_id()], 'clinician', $newId, null, null, ['full_name' => (string) $fields['full_name']]);
+            $newId = $repo->create($clinicId, $fields);
+            App::audit()->log('CLINICIAN_CREATED', ['wp_user_id' => get_current_user_id(), 'clinic_id' => $clinicId], 'clinician', $newId, null, null, ['full_name' => (string) $fields['full_name']]);
             $message = 'پزشک ثبت شد — حالا برنامه هفتگی او را تنظیم کنید.';
             if (($accountCreated['generated'] ?? '') !== '') {
                 $message .= ' رمز یک‌بارهٔ حساب: ' . $accountCreated['generated'] . ' (فقط همین حالا نمایش داده می‌شود — آن را به پزشک بدهید.)';
             }
             self::back($newId, $message);
         } catch (\RuntimeException $e) {
-            // Race انتساب ۱:۱ (UNIQUE 0007) — پیام فارسی، بدون Fatal
             self::backWithError($id, 'خطا: ' . $e->getMessage());
         }
     }
 
     public static function toggleClinician(): void
     {
-        self::guard('cpms_clinician_toggle_');
+        // Nonce الگو شامل clinician_id است (cpms_clinician_toggle_{id}).
+        $cid = isset($_GET['clinician_id']) ? absint($_GET['clinician_id']) : 0;
+        $scope = self::authorizeAdminWrite('cpms_clinician_toggle_' . $cid);
+        $clinicId = (int) $scope->clinicId;
+
         $repo = App::clinicianRepository();
-        $id = isset($_GET['clinician_id']) ? absint($_GET['clinician_id']) : 0;
-        $current = $repo->find($id);
+        $current = $repo->findForClinic($cid, $clinicId);
         if ($current === null) {
-            self::backWithError(0, 'خطا: پزشک یافت نشد.');
+            self::backWithError(0, 'خطا: پزشک در این Clinic یافت نشد.');
         }
         $newState = (int) $current['is_active'] === 1 ? 0 : 1;
-        $repo->update($id, ['is_active' => $newState]);
+        $affected = $repo->updateForClinic($cid, $clinicId, ['is_active' => $newState]);
+        if ($affected < 1) {
+            self::backWithError($cid, 'خطا: تغییر وضعیت پزشک انجام نشد.');
+        }
         App::audit()->log(
             'CLINICIAN_STATUS_CHANGED',
-            ['wp_user_id' => get_current_user_id()],
+            ['wp_user_id' => get_current_user_id(), 'clinic_id' => $clinicId],
             'clinician',
-            $id,
+            $cid,
             null,
             ['is_active' => (int) $current['is_active']],
             ['is_active' => $newState]
         );
-        self::back($id, $newState === 1 ? 'پزشک فعال شد.' : 'پزشک غیرفعال شد (داده‌ها حفظ شد — حذف فیزیکی ممنوع).');
+        self::back($cid, $newState === 1 ? 'پزشک فعال شد.' : 'پزشک غیرفعال شد (داده‌ها حفظ شد — حذف فیزیکی ممنوع).');
     }
 
     /**
@@ -379,12 +395,19 @@ final class ClinicianAdminPage
      */
     public static function saveSchedules(): void
     {
-        self::guard('cpms_schedule_save');
-        $service = App::scheduleService();
-        $userId = get_current_user_id();
+        $scope = self::authorizeAdminWrite('cpms_schedule_save');
+        $clinicId = (int) $scope->clinicId;
+        $userId = (int) get_current_user_id();
+
         $cid = isset($_POST['clinician_id']) ? absint($_POST['clinician_id']) : 0;
+        $repo = App::clinicianRepository();
+        $current = $repo->findForClinic($cid, $clinicId);
+        if ($current === null) {
+            self::backWithError($cid, 'خطا: پزشک در این Clinic یافت نشد.');
+        }
+
         $submitted = isset($_POST['sched_submit']) && is_array($_POST['sched_submit']) ? wp_unslash($_POST['sched_submit']) : [];
-        $all = isset($_POST['sched']) && is_array($_POST['sched']) ? wp_unslash($_POST['sched']) : []; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput -- پاک‌سازی فیلدبه‌فیلد در ادامه
+        $all = isset($_POST['sched']) && is_array($_POST['sched']) ? wp_unslash($_POST['sched']) : []; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
         $day = (int) (array_key_first((array) $submitted));
         if (!isset($all[$day]) || !is_array($all[$day])) {
             self::backWithError($cid, 'خطا: ردیف برنامه ناقص است.');
@@ -407,13 +430,9 @@ final class ClinicianAdminPage
             }
         }
 
-        // C7-S4: همان قرارداد مرز admin — زمینهٔ معتبر پیش از impact/update/create.
-        $scope = self::requireTrustedClinicScopeForAdmin($cid);
         try {
             App::replaceExplicitScope($scope);
 
-            // پیش‌نمایش تأثیر (Chunk D) پیش از بازتولید — تا مدیر بداند چند اسلات خالی
-            // قرار است حذف/بازتولید شود و چند اسلات رزرو/Hold محافظت می‌شود (نه invalidate بی‌صدا).
             $impact = App::scheduleService()->impact($cid);
             $impactNote = sprintf(
                 ' — بازتولید %d اسلات خالی آینده؛ %d اسلات رزرو/Hold حفظ شد.',
@@ -421,13 +440,22 @@ final class ClinicianAdminPage
                 (int) $impact['future_reserved_slots']
             );
 
-            // کلید «ذخیره روز» همیشه schedule_id فعلی همان روز را دارد؛ تشخیص
-            // update/create از وجود رکورد همان روز انجام می‌شود (u_sched_day).
             $existing = App::db()->fetchValue(
                 'SELECT id FROM ' . App::db()->table('cpms_schedule') . ' WHERE clinician_id = %d AND day_of_week = %d LIMIT 1',
                 [$cid, $day]
             );
+            // اطمینان مضاعف: schedule موجود هم باید به همان Clinic پزشک تعلق داشته باشد.
+            $service = App::scheduleService();
             if ($existing !== null) {
+                $schedRow = App::db()->fetchRow(
+                    'SELECT s.id FROM ' . App::db()->table('cpms_schedule') . ' s '
+                    . ' JOIN ' . App::db()->table('cpms_clinicians') . ' c ON c.id = s.clinician_id '
+                    . ' WHERE s.id = %d AND c.clinic_id = %d LIMIT 1',
+                    [(int) $existing, $clinicId]
+                );
+                if ($schedRow === null) {
+                    self::backWithError($cid, 'خطا: برنامه روز به این Clinic تعلق ندارد.');
+                }
                 $service->update($userId, (int) $existing, $fields);
                 self::back($cid, 'برنامه روز ذخیره شد — Slotها بازتولید می‌شوند.' . $impactNote);
             }
@@ -442,19 +470,30 @@ final class ClinicianAdminPage
 
     public static function deleteSchedule(): void
     {
-        self::guard('cpms_schedule_delete');
+        $scope = self::authorizeAdminWrite('cpms_schedule_delete');
+        $clinicId = (int) $scope->clinicId;
+
         $cid = isset($_POST['clinician_id']) ? absint($_POST['clinician_id']) : 0;
         $id = isset($_POST['schedule_id']) ? absint($_POST['schedule_id']) : 0;
-        /*
-         * C7-S4: مرز wp-admin استثنای مجوز نیست — nonce/capability جایگزین
-         * عضویت کلینیک نیستند. زمینهٔ کلینیک معتبر با همان سازوکار تاییدشدهٔ
-         * transport-agnostic مرز REST برقرار می‌شود؛ سپس گاردهای دامنه‌بندی‌شدهٔ
-         * C7-S2 خود سرویس (بدون دورزدن) تعیین‌کننده‌اند.
-         */
-        $scope = self::requireTrustedClinicScopeForAdmin($cid);
+
+        $repo = App::clinicianRepository();
+        if ($repo->findForClinic($cid, $clinicId) === null) {
+            self::backWithError($cid, 'خطا: پزشک در این Clinic یافت نشد.');
+        }
+        // اطمینان: schedule هم متعلق به همان Clinic باشد.
+        $schedRow = App::db()->fetchRow(
+            'SELECT s.id FROM ' . App::db()->table('cpms_schedule') . ' s '
+            . ' JOIN ' . App::db()->table('cpms_clinicians') . ' c ON c.id = s.clinician_id '
+            . ' WHERE s.id = %d AND c.clinic_id = %d LIMIT 1',
+            [$id, $clinicId]
+        );
+        if ($schedRow === null) {
+            self::backWithError($cid, 'خطا: برنامه روز در این Clinic یافت نشد.');
+        }
+
         try {
             App::replaceExplicitScope($scope);
-            App::scheduleService()->delete(get_current_user_id(), $id);
+            App::scheduleService()->delete((int) get_current_user_id(), $id);
             self::back($cid, 'برنامه روز حذف شد.');
         } catch (BookingException $e) {
             self::backWithError($cid, 'خطا: ' . $e->getMessage());
@@ -465,7 +504,9 @@ final class ClinicianAdminPage
 
     public static function createException(): void
     {
-        self::guard('cpms_exception_create');
+        $scope = self::authorizeAdminWrite('cpms_exception_create');
+        $clinicId = (int) $scope->clinicId;
+
         $cid = isset($_POST['clinician_id']) ? absint($_POST['clinician_id']) : 0;
         $date = (string) ($_POST['date'] ?? '');
         if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
@@ -474,6 +515,9 @@ final class ClinicianAdminPage
         $type = (string) ($_POST['type'] ?? '');
         if (!in_array($type, ['holiday', 'leave', 'blocked', 'open_override'], true)) {
             self::backWithError($cid, 'خطا: نوع استثنا نامعتبر است.');
+        }
+        if (App::clinicianRepository()->findForClinic($cid, $clinicId) === null) {
+            self::backWithError($cid, 'خطا: پزشک در این Clinic یافت نشد.');
         }
 
         $fields = ['clinician_id' => $cid, 'date' => $date, 'type' => $type];
@@ -484,12 +528,9 @@ final class ClinicianAdminPage
             }
         }
 
-        // C7-S6: همان قرارداد مرز admin (C7-S4) — زمینهٔ معتبر پیش از ثبت/بازتولید؛
-        // سرویس از S6 به بعد مالکیت پزشک را فقط نسبت به همین زمینهٔ مستقل می‌سنجد.
-        $scope = self::requireTrustedClinicScopeForAdmin($cid);
         try {
             App::replaceExplicitScope($scope);
-            App::scheduleService()->createException(get_current_user_id(), $fields);
+            App::scheduleService()->createException((int) get_current_user_id(), $fields);
             self::back($cid, 'استثنا ثبت شد.');
         } catch (BookingException $e) {
             self::backWithError($cid, 'خطا: ' . $e->getMessage());
@@ -500,14 +541,27 @@ final class ClinicianAdminPage
 
     public static function deleteException(): void
     {
-        self::guard('cpms_exception_delete');
+        $scope = self::authorizeAdminWrite('cpms_exception_delete');
+        $clinicId = (int) $scope->clinicId;
+
         $cid = isset($_POST['clinician_id']) ? absint($_POST['clinician_id']) : 0;
         $id = isset($_POST['exception_id']) ? absint($_POST['exception_id']) : 0;
-        // C7-S4: همان قرارداد مرز admin (بالا) — پیش از حذف/بازتولید.
-        $scope = self::requireTrustedClinicScopeForAdmin($cid);
+        if (App::clinicianRepository()->findForClinic($cid, $clinicId) === null) {
+            self::backWithError($cid, 'خطا: پزشک در این Clinic یافت نشد.');
+        }
+        $excRow = App::db()->fetchRow(
+            'SELECT e.id FROM ' . App::db()->table('cpms_schedule_exceptions') . ' e '
+            . ' JOIN ' . App::db()->table('cpms_clinicians') . ' c ON c.id = e.clinician_id '
+            . ' WHERE e.id = %d AND c.clinic_id = %d LIMIT 1',
+            [$id, $clinicId]
+        );
+        if ($excRow === null) {
+            self::backWithError($cid, 'خطا: استثنا در این Clinic یافت نشد.');
+        }
+
         try {
             App::replaceExplicitScope($scope);
-            App::scheduleService()->deleteException(get_current_user_id(), $id);
+            App::scheduleService()->deleteException((int) get_current_user_id(), $id);
             self::back($cid, 'استثنا حذف شد.');
         } catch (BookingException $e) {
             self::backWithError($cid, 'خطا: ' . $e->getMessage());
@@ -520,40 +574,62 @@ final class ClinicianAdminPage
 
     private static function guard(string $nonceAction): void
     {
-        if (!current_user_can(RolesAndCapabilities::CONFIG) || !is_user_logged_in()) {
+        if (!is_user_logged_in()) {
+            wp_die('دسترسی ندارید', 403);
+        }
+        // cap سراسری به‌عنوان لایهٔ اول؛ لایهٔ دوم (scoped) در authorizeAdminWrite.
+        if (!current_user_can(RolesAndCapabilities::CONFIG)) {
             wp_die('دسترسی ندارید', 403);
         }
         check_admin_referer($nonceAction);
     }
 
     /**
-     * C7-S4 — مرز wp-admin استثنای مجوز نیست.
+     * برقراری Clinic مورد اعتماد برای handlerهای نوشتن.
      *
-     * nonce/capability سروری الزامی‌اند اما جایگزین «عضویت کلینیک» نیستند و
-     * نقش سراسری وردپرس هرگز عضویت نمی‌سازد. زمینهٔ کلینیک معتبر با همان
-     * سازوکار تاییدشدهٔ transport-agnostic مرز REST برقرار می‌شود
-     * (TrustedClinicEstablisher::establish با clinicId=null یعنی «عضویت فعالِ
-     * یکتا»):
-     *   - بدون عضویت فعال ⇒ بسته (CLINIC_SCOPE_UNAVAILABLE/no_membership)
-     *   - بیش از یک عضویت فعال، بدون انتخاب صریح ⇒ بسته (CLINIC_SCOPE_REQUIRED)
-     *     — در این فاز UX سوییچر/انتخاب چندکلینیکی ساخته نمی‌شود (نیاز آتی).
-     *   - دقیقاً یک عضویت فعال ⇒ همان Clinic، Context معتبر است.
+     *  - nonce/global cap از طریق guard()
+     *  - TrustedClinicEstablisher با clinicId=null یعنی «عضویت فعال یکتا»
+     *  - AuthorizationService::authorize(actor, clinicId, CONFIG)
      *
-     * فیلدهای فرم (clinician_id و…) هرگز Context معتبر نمی‌شوند — آن‌ها فقط
-     * انتخاب «شیء» هستند و مالکیتِ شیء پس از این مرز، توسط گاردهای دامنه‌بندی‌شدهٔ
-     * C7-S2 خود سرویس (با 404 parity) راستی‌آزمایی می‌شود. انکارِ زمینه،
-     * بدون افشای وجود شیء خارجی و بدون جهش، با notice عمومی + redirect است.
+     * هیچ clinic_id از POST/GET پذیرفته نمی‌شود. چندعضویتی ⇒ fail-closed.
      */
-    private static function requireTrustedClinicScopeForAdmin(int $cid): \ClinicCore\Application\Scope\ClinicScope
+    private static function authorizeAdminWrite(string $nonceAction): ClinicScope
     {
+        self::guard($nonceAction);
+        $actorUserId = (int) get_current_user_id();
         try {
-            return (new TrustedClinicEstablisher(App::db(), new MembershipRepository(App::db())))
-                ->establish((int) get_current_user_id(), null);
+            $establisher = new TrustedClinicEstablisher(App::db(), new MembershipRepository(App::db()));
+            $scope = $establisher->establish($actorUserId, null);
         } catch (ScopeRequiredException $e) {
-            self::backWithError(
-                $cid,
-                'خطا: ' . __('عملیات برنامهٔ هفتگی نیازمند عضویت فعالِ روشن در دقیقاً یک کلینیک است.', 'cpms')
-            );
+            unset($e);
+            self::backWithError(0, 'خطا: عملیات نیازمند عضویت فعال در دقیقاً یک کلینیک است.');
+        }
+        try {
+            App::authorization_service()->authorize($actorUserId, (int) $scope->clinicId, RolesAndCapabilities::CONFIG);
+        } catch (AuthorizationException $e) {
+            unset($e);
+            self::backWithError(0, 'خطا: دسترسی لازم برای ویرایش پزشکان در این Clinic را ندارید.');
+        }
+
+        return $scope;
+    }
+
+    /**
+     * نسخهٔ بدون خروج برای render (برمی‌گرداند null به‌جای back/wp_die).
+     */
+    private static function tryEstablishAuthorizedScope(int $actorUserId, string $permission): ?ClinicScope
+    {
+        if ($actorUserId <= 0) {
+            return null;
+        }
+        try {
+            $establisher = new TrustedClinicEstablisher(App::db(), new MembershipRepository(App::db()));
+            $scope = $establisher->establish($actorUserId, null);
+            App::authorization_service()->authorize($actorUserId, (int) $scope->clinicId, $permission);
+
+            return $scope;
+        } catch (ScopeRequiredException|AuthorizationException) {
+            return null;
         }
     }
 
@@ -580,23 +656,17 @@ final class ClinicianAdminPage
     }
 
     /**
-     * Chunk D — اگر در «افزودن پزشک» گزینهٔ ایجاد حساب انتخاب شده باشد، کاربر وردپرس را
-     * با نقش `cpms_doctor` از مسیر امن StaffManagementPage::upsertUser می‌سازد (بدون
-     * plaintext رمز در DB) و شناسهٔ آن را برای پیوند ۱:۱ برمی‌گرداند. اگر حساب انتخابی
-     * نباشد (یا کاربر موجود انتخاب شده باشد) کاری نمی‌کند.
-     *
-     * @param array<string, mixed> $fields پارامترها by-ref برای تنظیم later.
-     * @param string               $generated رمز یک‌بارهٔ تولیدی (by-ref).
-     *
+     * @param array<string, mixed> $fields
      * @return array{error?: string, wp_user_id?: int, generated?: string}
      */
-    private static function maybeCreateDoctorAccount(array &$fields, string &$generated): array
+    private static function maybeCreateDoctorAccount(array &$fields, string &$generated, int $clinicId): array
     {
-        if (empty($_POST['create_account'])) { // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce در guard
+        if (empty($_POST['create_account'])) { // phpcs:ignore WordPress.Security.NonceVerification.Missing
             return [];
         }
         $in = [
             'mode' => 'create',
+            'clinic_id' => $clinicId,
             'username' => isset($_POST['account_username']) ? sanitize_user(wp_unslash($_POST['account_username']), true) : '', // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
             'display_name' => (string) ($fields['full_name'] ?? ''),
             'email' => isset($_POST['account_email']) ? sanitize_email(wp_unslash($_POST['account_email'])) : '', // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
@@ -613,8 +683,6 @@ final class ClinicianAdminPage
     }
 
     /**
-     * فهرست کاربران وردپرس برای Select اتصال (سقف ۵۰۰ — بدون ایمیل/هش).
-     *
      * @return list<array{id: int, label: string}>
      */
     private static function wpUsers(): array
