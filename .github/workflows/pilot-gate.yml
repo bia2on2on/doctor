@@ -9,8 +9,18 @@ name: Pilot/Staging Readiness Gate
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '23 3 * * 0'
   push:
     branches: [main, 'arena/**']
+
+concurrency:
+  # PR runs are keyed by PR number; non-PR runs by their full ref. Event names
+  # keep pull_request and push evidence in separate cancellation domains.
+  # Main refs add the unique run ID so even a pending main run is never replaced.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref == 'refs/heads/main' && format('main-run-{0}', github.run_id) || github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('ref-{0}', github.ref) }}
+  # Preserve every main-ref run as post-merge evidence; superseded non-main work may stop.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -544,6 +554,7 @@ jobs:
 
       # ---------- Performance benchmark ----------
       - name: Performance benchmark — ab (p50/p95/p99 + RPS + error rate)
+        if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' }}
         run: |
           FROM=$(date -u +%F); TO=$(date -u -d "+29 days" +%F)
           : > /tmp/bench.txt

@@ -10,6 +10,14 @@ on:
   pull_request:
   workflow_dispatch:
 
+concurrency:
+  # PR runs are keyed by PR number; non-PR runs by their full ref. Event names
+  # keep pull_request and push evidence in separate cancellation domains.
+  # Main refs add the unique run ID so even a pending main run is never replaced.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref == 'refs/heads/main' && format('main-run-{0}', github.run_id) || github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('ref-{0}', github.ref) }}
+  # Preserve every main-ref run as post-merge evidence; superseded non-main work may stop.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 permissions:
   contents: read
   pull-requests: write
