@@ -1095,11 +1095,27 @@ final class VisitService
     }
 
     /**
-     * ADR-0030/Part1 — Scope صف/Feed برای «پزشکِ متصل»:
-     * نقش doctor → فقط ویزیت‌های Clinician خودش (بدون اتصال → صفر نتیجه، نه کل کلینیک)؛
+     * ADR-0030/Part1 + Phase 4 Slice 4 — Scope صف/Feed برای «پزشکِ متصل»:
+     * نقش doctor → فقط ویزیت‌های «هویت یکتای فعال» خودش (بدون هویت یا بدون
+     * مشارکت فعال در Clinic مورد اعتماد → صفر نتیجه، نه کل کلینیک)؛
      * سایر نقش‌ها (منشی و …) → دامنه مطب (پارامتر ورودی اعمال می‌شود).
      *
+     * حرفه‌ای مشترک (Phase 4): یک کاربر وردپرس حداکثر یک هویت clinician دارد
+     * (`u_clinician_user`)؛ آن هویت می‌تواند هم‌زمان در چند Clinic «مشارکت
+     * پایدار فعال» داشته باشد. بنابراین:
+     *  - هویت پزشک **بدون فیلتر Clinic** حل می‌شود — `clinicians.clinic_id`
+     *    (Clinic خانه/سازگاری) هرگز معیار دامنه نیست؛
+     *  - مشارکت با `MembershipRepository::clinician_participates_in()` سنجیده
+     *    می‌شود (SoT = عضویت فعال پایدار)؛
+     *  - Clinic صف همچنان از `queueClinicId()` (context موثق) می‌آید و
+     *    `visit.clinic_id` مرز بی‌قیدوشرط tenant در همهٔ پرس‌وجوهای صف می‌ماند —
+     *    clinician_id فقط «تنگ‌تر» می‌کند، هرگز tenant را تعیین نمی‌کند.
+     *
      * مقدار بازگشتی: null = بدون فیلتر؛ int = clinician_id الزامی (0 = هیچ).
+     *
+     * @throws VisitException فیلتر کارکنی نامعتبر (404 parity موجود)
+     * @throws \RuntimeException شکست پرس‌وجوی حل هویت (fail-closed؛ هرگز
+     *                           «پزشک ندارد» تفسیر نمی‌شود)
      */
     private function queueScopeClinicianId(int $actorUserId, int $clinicId, ?int $requestedClinicianId): ?int
     {
@@ -1107,29 +1123,29 @@ final class VisitService
             if ($requestedClinicianId === null) {
                 return null;
             }
-            // کارکنان نمی‌تواند با پارامتر، دامنه را به پزشکِ Clinic دیگر ببرد
-            $owned = $this->db->fetchValue(
-                'SELECT id FROM ' . $this->db->table('cpms_clinicians') .
-                ' WHERE id = %d AND clinic_id = %d AND is_active = 1 LIMIT 1',
-                [$requestedClinicianId, $clinicId]
-            );
-            if ($owned === null) {
+            // کارکنان نمی‌تواند با پارامتر، دامنه را به پزشکِ خارج از Clinic مورد
+            // اعتماد ببرد. معیار = هویت فعال + مشارکت پایدار فعال در همان Clinic
+            // (نه Clinic خانهٔ پروفایل)؛ در غیر این صورت همان 404 parity موجود.
+            if (!$this->memberships->clinician_participates_in($requestedClinicianId, $clinicId)) {
                 throw VisitException::of('CLINIC_NOT_FOUND', 'پزشک یافت نشد یا غیرفعال است', 404);
             }
 
-            return (int) $owned;
+            return $requestedClinicianId;
         }
 
-        // ADR-0030: دامنهٔ پزشک = **Professional Profile او در همان Clinicِ
-        // context** (نه یکپارچه‌سازی سراسریِ Clinician)؛ نبودِ پروفایل فعال ⇒
-        // مجموعهٔ خالی (0) — هرگز دامنهٔ منشی/کل مطب.
-        $linked = $this->db->fetchValue(
-            'SELECT id FROM ' . $this->db->table('cpms_clinicians') .
-            ' WHERE wp_user_id = %d AND clinic_id = %d AND is_active = 1 ORDER BY id ASC LIMIT 1',
-            [$actorUserId, $clinicId]
-        );
+        // ADR-0030: دامنهٔ پزشک = **هویت یکتای فعالِ او** (بدون فیلتر Clinic —
+        // نه یکپارچه‌سازی سراسریِ Clinic و نه Clinic خانه). نبودِ هویت فعال یا
+        // نبودِ مشارکت ACTIVE در Clinic مورد اعتماد ⇒ مجموعهٔ خالی (0) —
+        // هرگز دامنهٔ منشی/کل مطب.
+        $identityId = $this->memberships->active_clinician_id_for_wp_user($actorUserId);
+        if ($identityId === null) {
+            return 0;
+        }
+        if (!$this->memberships->clinician_participates_in($identityId, $clinicId)) {
+            return 0;
+        }
 
-        return $linked === null ? 0 : (int) $linked;
+        return $identityId;
     }
 
     /**
