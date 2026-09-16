@@ -117,38 +117,54 @@ jobs:
       - name: RED validity classification (the verdict of this workflow)
         run: |
           set -e
-          echo "--- RED run summary:"
+          TRACE=/tmp/classification.txt
+          : > "${TRACE}"
+          gate() { # gate <name> <0|1>  (1 = pass)
+            if [ "$2" = "1" ]; then echo "GATE PASS: $1" >> "${TRACE}"; else echo "GATE FAIL: $1" >> "${TRACE}"; fi
+          }
+          echo "--- RED run summary:" | tee -a "${TRACE}"
           REDSUM="$(grep -E '^Tests:' /tmp/phpunit-red.log | tail -n 1)"
-          echo "${REDSUM}"
-          echo "--- failing entries (RED run):"
-          grep -E '^[0-9]+\) ' /tmp/phpunit-red.log | tee /tmp/red-failures.txt
+          echo "${REDSUM}" | tee -a "${TRACE}"
+          echo "--- failing entries (RED run):" | tee -a "${TRACE}"
+          grep -E '^[0-9]+\) ' /tmp/phpunit-red.log | tee /tmp/red-failures.txt | tee -a "${TRACE}"
+          grep -E '^[0-9]+\) ' /tmp/phpunit-full.log > /tmp/full-failures.txt || true
           FAILS="$(sed -nE 's/.*Failures: ([0-9]+).*/\1/p' <<<"${REDSUM}")"
           ERRS="$(sed -nE 's/.*Errors: ([0-9]+).*/\1/p' <<<"${REDSUM}")"; ERRS="${ERRS:-0}"
-          echo "failures=${FAILS:-0} errors=${ERRS}"
+          echo "red failures=${FAILS:-0} errors=${ERRS}" | tee -a "${TRACE}"
           # 1) exactly the four security contracts fail — no more, no less.
-          [ "${FAILS:-0}" -eq 4 ] && [ "${ERRS}" -eq 0 ] \
-            || { echo 'CLASSIFICATION FAIL: expected exactly 4 failures and 0 errors'; exit 1; }
-          grep -qF 'Phase3Slice6AuthorizationRedTest::testSaveClinicianManagerInClinicACannotMutateClinicianInClinicB' /tmp/red-failures.txt || { echo 'missing RED-1'; exit 1; }
-          grep -qF 'Phase3Slice6AuthorizationRedTest::testGetPageWithScopeOnClinicAReturns404ForClinicBDocument' /tmp/red-failures.txt || { echo 'missing RED-2'; exit 1; }
-          grep -qF 'Phase3Slice6AuthorizationRedTest::testRecordPaymentIsDeniedWhenScopedPaymentCreateIsExplicitlyDenied' /tmp/red-failures.txt || { echo 'missing RED-3'; exit 1; }
-          grep -qF 'Phase3Slice6AuthorizationRedTest::testSuspendedMemberIsDeniedHandwritingSaveAndPaymentCreate' /tmp/red-failures.txt || { echo 'missing RED-4'; exit 1; }
+          if [ "${FAILS:-0}" -eq 4 ] && [ "${ERRS}" -eq 0 ]; then gate 'red exactly 4 failures 0 errors' 1; else gate 'red exactly 4 failures 0 errors' 0; fi
+          grep -qF 'Phase3Slice6AuthorizationRedTest::testSaveClinicianManagerInClinicACannotMutateClinicianInClinicB' /tmp/red-failures.txt && gate 'RED-1 present' 1 || gate 'RED-1 present' 0
+          grep -qF 'Phase3Slice6AuthorizationRedTest::testGetPageWithScopeOnClinicAReturns404ForClinicBDocument' /tmp/red-failures.txt && gate 'RED-2 present' 1 || gate 'RED-2 present' 0
+          grep -qF 'Phase3Slice6AuthorizationRedTest::testRecordPaymentIsDeniedWhenScopedPaymentCreateIsExplicitlyDenied' /tmp/red-failures.txt && gate 'RED-3 present' 1 || gate 'RED-3 present' 0
+          grep -qF 'Phase3Slice6AuthorizationRedTest::testSuspendedMemberIsDeniedHandwritingSaveAndPaymentCreate' /tmp/red-failures.txt && gate 'RED-4 present' 1 || gate 'RED-4 present' 0
           # 2) no environmental/parse/fatal noise — failures must be contract failures.
-          ! grep -qE 'Fatal error|Parse error|Uncaught|No tests executed' /tmp/phpunit-red.log \
-            || { echo 'CLASSIFICATION FAIL: environmental noise in RED log'; exit 1; }
+          if grep -qE 'Fatal error|Parse error|Uncaught|No tests executed' /tmp/phpunit-red.log; then
+            gate 'no environmental noise in RED log' 0
+            grep -nE 'Fatal error|Parse error|Uncaught|No tests executed' /tmp/phpunit-red.log | head -5 >> "${TRACE}" || true
+          else
+            gate 'no environmental noise in RED log' 1
+          fi
           # 3) the durable vulnerable observations are present in the failure messages.
           for MARKER in 'RED-1 evidence' 'RED-2 evidence' 'RED-3 evidence' 'RED-4a evidence' 'RED-4b evidence'; do
-            grep -qF "${MARKER}" /tmp/phpunit-red.log || { echo "missing evidence marker: ${MARKER}"; exit 1; }
+            if grep -qF "${MARKER}" /tmp/phpunit-red.log; then gate "marker ${MARKER}" 1; else gate "marker ${MARKER}" 0; fi
           done
           # 4) context: everything else on the vulnerable base stays green.
-          echo "--- FULL run summary:"
+          echo "--- FULL run summary:" | tee -a "${TRACE}"
           FULLSUM="$(grep -E '^Tests:' /tmp/phpunit-full.log | tail -n 1)"
-          echo "${FULLSUM}"
+          echo "${FULLSUM}" | tee -a "${TRACE}"
+          echo "--- failing entries (FULL run):" | tee -a "${TRACE}"
+          cat /tmp/full-failures.txt | tee -a "${TRACE}"
           FFAILS="$(sed -nE 's/.*Failures: ([0-9]+).*/\1/p' <<<"${FULLSUM}")"
           FERRS="$(sed -nE 's/.*Errors: ([0-9]+).*/\1/p' <<<"${FULLSUM}")"; FERRS="${FERRS:-0}"
-          echo "full failures=${FFAILS:-0} errors=${FERRS}"
-          [ "${FFAILS:-0}" -eq 4 ] && [ "${FERRS}" -eq 0 ] \
-            || { echo 'CLASSIFICATION FAIL: full suite shows other failures (environment not valid)'; exit 1; }
-          echo 'VALID RED CONFIRMED — four security contracts fail on the vulnerable base with durable observations.'
+          echo "full failures=${FFAILS:-0} errors=${FERRS}" | tee -a "${TRACE}"
+          if [ "${FFAILS:-0}" -eq 4 ] && [ "${FERRS}" -eq 0 ]; then gate 'full suite only the same 4 fail' 1; else gate 'full suite only the same 4 fail' 0; fi
+          # verdict
+          if grep -q '^GATE FAIL' "${TRACE}"; then
+            echo 'CLASSIFICATION FAILED — see classification.txt evidence'
+            cat "${TRACE}"
+            exit 1
+          fi
+          echo 'VALID RED CONFIRMED — four security contracts fail on the vulnerable base with durable observations.' | tee -a "${TRACE}"
           # Surface the four failure headlines as annotations (API-readable).
           grep -E '^[0-9]+\) ' /tmp/phpunit-red.log | while IFS= read -r line; do
             echo "::error::${line}"
@@ -163,8 +179,11 @@ jobs:
           cp /tmp/phpunit-full.log evidence/phpunit-full.log 2>/dev/null || true
           cp /tmp/identity.txt evidence/identity.txt 2>/dev/null || true
           cp /tmp/red-failures.txt evidence/red-failures.txt 2>/dev/null || true
+          cp /tmp/full-failures.txt evidence/full-failures.txt 2>/dev/null || true
+          cp /tmp/classification.txt evidence/classification.txt 2>/dev/null || true
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add evidence
+          # -f: repo .gitignore excludes *.log — evidence logs must be committed anyway.
+          git add -f evidence
           git commit -m "evidence: comparative RED run on vulnerable base d5ca06eb [skip ci]" || echo "nothing to commit"
           git push
