@@ -1,0 +1,28 @@
+--- RED run summary:
+Tests: 4, Assertions: 64, Failures: 4.
+--- failing entries (RED run):
+1) ClinicCore\Tests\Integration\Phase3Slice6AuthorizationRedTest::testSaveClinicianManagerInClinicACannotMutateClinicianInClinicB
+2) ClinicCore\Tests\Integration\Phase3Slice6AuthorizationRedTest::testGetPageWithScopeOnClinicAReturns404ForClinicBDocument
+3) ClinicCore\Tests\Integration\Phase3Slice6AuthorizationRedTest::testRecordPaymentIsDeniedWhenScopedPaymentCreateIsExplicitlyDenied
+4) ClinicCore\Tests\Integration\Phase3Slice6AuthorizationRedTest::testSuspendedMemberIsDeniedHandwritingSaveAndPaymentCreate
+red failures=4 errors=0
+GATE PASS: red exactly 4 failures 0 errors
+GATE PASS: RED-1 present
+GATE PASS: RED-2 present
+GATE PASS: RED-3 present
+GATE PASS: RED-4 present
+GATE PASS: no environmental noise in RED log
+GATE PASS: marker RED-1 evidence
+GATE PASS: marker RED-2 evidence
+GATE FAIL: marker RED-3 evidence
+GATE PASS: marker RED-4a evidence
+GATE FAIL: marker RED-4b evidence
+--- FULL run summary:
+Tests: 844, Assertions: 9725, Failures: 4.
+--- failing entries (FULL run):
+1) ClinicCore\Tests\Integration\Phase3Slice6AuthorizationRedTest::testSaveClinicianManagerInClinicACannotMutateClinicianInClinicB
+2) ClinicCore\Tests\Integration\Phase3Slice6AuthorizationRedTest::testGetPageWithScopeOnClinicAReturns404ForClinicBDocument
+3) ClinicCore\Tests\Integration\Phase3Slice6AuthorizationRedTest::testRecordPaymentIsDeniedWhenScopedPaymentCreateIsExplicitlyDenied
+4) ClinicCore\Tests\Integration\Phase3Slice6AuthorizationRedTest::testSuspendedMemberIsDeniedHandwritingSaveAndPaymentCreate
+full failures=4 errors=0
+GATE PASS: full suite only the same 4 fail
