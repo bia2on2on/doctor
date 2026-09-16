@@ -35,6 +35,13 @@ final class AdminUxDesignTest extends WP_UnitTestCase
     {
         unset($_GET['page'], $_GET['clinician_id']);
         wp_set_current_user(0);
+        // The scoped-manager fixture below establishes an explicit App scope
+        // (in-memory singleton state that a DB rollback does NOT undo). Without
+        // this reset the stale clinic id leaks into every later test: e.g.
+        // AuditLogger::log() resolves App::scope()->clinicId to the rolled-back
+        // clinic and its INSERTs fail the fk_audit_logs_clinic FK silently
+        // (proven: run 35110199367 — five AuditChainTest failures, clinic_id=2).
+        App::resetScope();
         parent::tearDown();
     }
 
@@ -117,6 +124,10 @@ final class AdminUxDesignTest extends WP_UnitTestCase
     private function setUpScopedClinicWithManager(): int
     {
         global $wpdb;
+
+        // Hermetic start: clear any scope state leaked by earlier tests so the
+        // persona we render under is exactly the one created below.
+        App::resetScope();
 
         $unique = bin2hex(random_bytes(4));
         $now = App::db()->nowUtcSql();
