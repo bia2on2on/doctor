@@ -288,10 +288,14 @@ final class Phase4Slice1ProfessionalMultiClinicParticipationTest extends WP_Unit
         ], $clinicB, $this->managerUserId);
         self::assertSame(400, $duplicateInB->get_status(), 'duplicate weekday WITHIN the same Clinic must still be rejected');
         self::assertSame('CLINIC_VALIDATION_FAILED', $this->errorCode($duplicateInB), 'duplicate rejection keeps its stable code');
+        // Envelope shape of a WP_Error serialized by the REST server:
+        // ['code' => …, 'message' => …, 'data' => ['errors' => …, 'status' => …]]
+        // (same accessor contract as RestScheduleTest::assertClinicError's data.status).
+        $envelope = $this->errorEnvelope($duplicateInB);
         self::assertSame(
             'duplicate_schedule_day',
-            (string) ($this->errorData($duplicateInB)['errors']['day_of_week'] ?? ''),
-            'duplicate rejection keeps its machine-readable reason'
+            (string) ($envelope['data']['errors']['day_of_week'] ?? ''),
+            'duplicate rejection keeps its machine-readable reason; envelope=' . wp_json_encode($envelope)
         );
         self::assertSame(1, $this->countScheduleRows($this->clinicianId, $clinicB), 'rejected duplicate created no row');
     }
@@ -917,15 +921,22 @@ final class Phase4Slice1ProfessionalMultiClinicParticipationTest extends WP_Unit
     }
 
     /**
+     * بدنهٔ خام پاسخ خطا — همان شکل سریال‌شدهٔ WP_Error توسط REST server:
+     * ['code' => …, 'message' => …, 'data' => [...]].
+     *
      * @return array<string, mixed>
      */
-    private function errorData(WP_REST_Response $response): array
+    private function errorEnvelope(WP_REST_Response $response): array
     {
         $body = $response->get_data();
         if ($body instanceof WP_Error) {
             $data = $body->get_error_data();
 
-            return is_array($data) ? $data : [];
+            return [
+                'code' => (string) $body->get_error_code(),
+                'message' => (string) $body->get_error_message(),
+                'data' => is_array($data) ? $data : [],
+            ];
         }
 
         return is_array($body) ? $body : [];
