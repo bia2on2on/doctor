@@ -49,6 +49,9 @@ final class Phase4Slice4QueueSharedProfessionalTest extends WP_UnitTestCase
     /** @var array<string, int> */
     private array $clinics = [];
 
+    /** @var array<int, int> Clinic id => primary Location id (cpms_visits.location_id is NOT NULL, Migration 0013) */
+    private array $locations = [];
+
     private ?int $capturedRestClinicId = null;
 
     protected function setUp(): void
@@ -64,6 +67,8 @@ final class Phase4Slice4QueueSharedProfessionalTest extends WP_UnitTestCase
         $this->organizationId = $this->createOrganization();
         $this->clinics['A'] = $this->createClinic('A');
         $this->clinics['B'] = $this->createClinic('B');
+        $this->locations[$this->clinics['A']] = $this->createLocation($this->clinics['A'], 'A');
+        $this->locations[$this->clinics['B']] = $this->createLocation($this->clinics['B'], 'B');
     }
 
     protected function tearDown(): void
@@ -606,6 +611,8 @@ final class Phase4Slice4QueueSharedProfessionalTest extends WP_UnitTestCase
         self::assertGreaterThan(1, $clinicA, 'precondition: Clinic A is dynamic, never seeded Clinic 1');
         self::assertGreaterThan(1, $clinicB, 'precondition: Clinic B is dynamic, never seeded Clinic 1');
         self::assertNotSame($clinicA, $clinicB, 'precondition: A and B are distinct Clinics');
+        self::assertGreaterThan(0, $this->locations[$clinicA], 'precondition: Clinic A primary Location inserted');
+        self::assertGreaterThan(0, $this->locations[$clinicB], 'precondition: Clinic B primary Location inserted');
         self::assertGreaterThan(0, $professionalUserId, 'precondition: professional WP user created');
         self::assertGreaterThan(0, $clinicianId, 'precondition: clinician row inserted');
         self::assertSame($clinicA, $this->clinicianHomeClinic($clinicianId), 'precondition: home Clinic is A');
@@ -666,10 +673,11 @@ final class Phase4Slice4QueueSharedProfessionalTest extends WP_UnitTestCase
         $now = App::db()->nowUtcSql();
         $wpdb->query($wpdb->prepare(
             'INSERT INTO ' . $wpdb->prefix . 'cpms_visits
-                 (clinic_id, clinician_id, patient_id, appointment_id, source, status, visit_date,
+                 (clinic_id, location_id, clinician_id, patient_id, appointment_id, source, status, visit_date,
                   check_in_at, waiting_since, created_at, updated_at)
-             VALUES (%d, %d, %d, NULL, %s, %s, %s, %s, %s, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+             VALUES (%d, %d, %d, %d, NULL, %s, %s, %s, %s, %s, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
             $clinicId,
+            $this->locationFor($clinicId),
             $clinicianId,
             $patient,
             'walk_in',
@@ -832,6 +840,36 @@ final class Phase4Slice4QueueSharedProfessionalTest extends WP_UnitTestCase
         return $id;
     }
 
+    private function createLocation(int $clinicId, string $tag): int
+    {
+        global $wpdb;
+        $now = App::db()->nowUtcSql();
+        $unique = bin2hex(random_bytes(4));
+        $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_locations
+                 (clinic_id, name, slug, timezone, is_primary, is_active, created_at, updated_at)
+             VALUES (%d, %s, %s, %s, 1, 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $clinicId,
+            'P4S4 Location ' . $tag . ' ' . $unique,
+            'p4s4-location-' . strtolower($tag) . '-' . $unique,
+            'Asia/Tehran',
+            $now,
+            $now
+        ));
+        $id = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $id, 'fixture: primary Location ' . $tag . ' insertion succeeded (' . $wpdb->last_error . ')');
+        self::assertSame(
+            $clinicId,
+            (int) $wpdb->get_var($wpdb->prepare(
+                'SELECT clinic_id FROM ' . $wpdb->prefix . 'cpms_locations WHERE id = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $id
+            )),
+            'fixture: Location ' . $tag . ' belongs to Clinic ' . $tag
+        );
+
+        return $id;
+    }
+
     private function makeUser(string $prefix, string $role): int
     {
         $unique = $prefix . '_' . bin2hex(random_bytes(4));
@@ -871,6 +909,14 @@ final class Phase4Slice4QueueSharedProfessionalTest extends WP_UnitTestCase
             'SELECT clinic_id FROM ' . App::db()->table('cpms_patients') . ' WHERE id = %d',
             [$patientId]
         );
+    }
+
+    private function locationFor(int $clinicId): int
+    {
+        $locationId = $this->locations[$clinicId] ?? 0;
+        self::assertGreaterThan(0, $locationId, 'fixture: primary Location exists for the Visit Clinic');
+
+        return $locationId;
     }
 
     private function visitClinic(int $visitId): int
@@ -1020,6 +1066,8 @@ final class Phase4Slice4QueueSharedProfessionalTest extends WP_UnitTestCase
                       INNER JOIN ' . $wpdb->prefix . 'cpms_clinic_memberships m ON m.id = mc.membership_id
                       WHERE m.clinic_id IN (' . $clinicSubquery . ')'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         $wpdb->query('DELETE FROM ' . $wpdb->prefix . 'cpms_clinic_memberships
+                      WHERE clinic_id IN (' . $clinicSubquery . ')'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $wpdb->query('DELETE FROM ' . $wpdb->prefix . 'cpms_locations
                       WHERE clinic_id IN (' . $clinicSubquery . ')'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         $wpdb->query('DELETE FROM ' . $wpdb->prefix . 'cpms_clinics WHERE organization_id = ' . $organizationId); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         $wpdb->query('DELETE FROM ' . $wpdb->prefix . 'cpms_organizations WHERE id = ' . $organizationId); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
