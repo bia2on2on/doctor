@@ -658,7 +658,9 @@ final class App
             self::jobs(),
             static fn (int $clinicId): ExportClinicDeps => self::exportClinicDeps($clinicId),
             self::audit(),
-            self::op()
+            self::op(),
+            // Phase 3 Slice 4 — مرزِ مجوزِ Clinic-scoped (REST و Job).
+            self::authorization_service()
         );
     }
 
