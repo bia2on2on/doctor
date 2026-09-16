@@ -447,7 +447,8 @@ final class App
                     new MembershipRepository($db),
                     self::settingsFactory()->forClinic($clinicId),
                     $op
-                )
+                ),
+                new MembershipRepository($db)
             );
         }
 

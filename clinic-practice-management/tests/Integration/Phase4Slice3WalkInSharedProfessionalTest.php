@@ -224,6 +224,191 @@ final class Phase4Slice3WalkInSharedProfessionalTest extends WP_UnitTestCase
         );
     }
 
+    public function testProfessionalWithoutActiveParticipationInBFailsClosedWithoutVisitMutation(): void
+    {
+        $clinicA = $this->clinics['A'];
+        $clinicB = $this->clinics['B'];
+        $professionalUserId = $this->makeUser('p4s3_missing_prof', RolesAndCapabilities::ROLE_DOCTOR);
+        $clinicianId = $this->insertClinician($clinicA, $professionalUserId);
+        cpms_test_seed_membership($professionalUserId, $clinicA, RolesAndCapabilities::ROLE_DOCTOR);
+        $secretaryUserId = $this->makeAuthorizedSecretary($clinicB, 'p4s3_missing_sec');
+        $patientB = $this->insertPatient($clinicB, 'missing-membership');
+
+        self::assertNull(
+            App::membership_service()->membership_for($clinicB, $professionalUserId),
+            'precondition: professional has no durable participation row in B'
+        );
+        self::assertFalse(
+            (new MembershipRepository(App::db()))->clinician_participates_in($clinicianId, $clinicB),
+            'precondition: production participation primitive rejects missing participation in B'
+        );
+        self::assertTrue(
+            $this->authz()->can($secretaryUserId, $clinicB, RolesAndCapabilities::QUEUE_CHECKIN),
+            'precondition: actor authorization succeeds; denial is professional participation only'
+        );
+
+        $before = $this->countVisitsForPatient($patientB);
+        $response = $this->dispatchWalkIn($patientB, $clinicianId, $clinicB, $secretaryUserId);
+
+        self::assertSame($clinicB, $this->capturedRestClinicId, 'trusted REST Clinic is B');
+        self::assertSame(404, $response->get_status(), 'missing ACTIVE participation in B fails closed');
+        self::assertSame('CLINIC_NOT_FOUND', $this->errorCode($response), 'existing 404 parity is preserved');
+        self::assertSame($before, $this->countVisitsForPatient($patientB), 'denial causes zero Visit mutation');
+        self::assertSame(1, $this->countClinicianRowsForUser($professionalUserId), 'no fallback identity is created');
+    }
+
+    public function testSuspendedProfessionalParticipationInBFailsClosedWithoutVisitMutation(): void
+    {
+        $clinicA = $this->clinics['A'];
+        $clinicB = $this->clinics['B'];
+        $professionalUserId = $this->makeUser('p4s3_suspended_prof', RolesAndCapabilities::ROLE_DOCTOR);
+        $clinicianId = $this->insertClinician($clinicA, $professionalUserId);
+        cpms_test_seed_membership($professionalUserId, $clinicA, RolesAndCapabilities::ROLE_DOCTOR);
+        $membershipB = cpms_test_seed_membership(
+            $professionalUserId,
+            $clinicB,
+            RolesAndCapabilities::ROLE_DOCTOR
+        );
+        App::membership_service()->suspend_membership($membershipB);
+        $secretaryUserId = $this->makeAuthorizedSecretary($clinicB, 'p4s3_suspended_sec');
+        $patientB = $this->insertPatient($clinicB, 'suspended-membership');
+
+        self::assertNotNull(
+            App::membership_service()->membership_for($clinicB, $professionalUserId),
+            'precondition: suspended durable membership row exists in B'
+        );
+        self::assertNull(
+            App::membership_service()->active_membership_for($clinicB, $professionalUserId),
+            'precondition: suspended membership is not ACTIVE participation'
+        );
+        self::assertFalse(
+            (new MembershipRepository(App::db()))->clinician_participates_in($clinicianId, $clinicB),
+            'precondition: production participation primitive rejects suspended participation'
+        );
+        self::assertTrue(
+            $this->authz()->can($secretaryUserId, $clinicB, RolesAndCapabilities::QUEUE_CHECKIN),
+            'precondition: actor remains authorized in B'
+        );
+
+        $before = $this->countVisitsForPatient($patientB);
+        $response = $this->dispatchWalkIn($patientB, $clinicianId, $clinicB, $secretaryUserId);
+
+        self::assertSame($clinicB, $this->capturedRestClinicId, 'trusted REST Clinic is B');
+        self::assertSame(404, $response->get_status(), 'suspended participation in B fails closed');
+        self::assertSame('CLINIC_NOT_FOUND', $this->errorCode($response), 'suspension uses the same 404 parity');
+        self::assertSame($before, $this->countVisitsForPatient($patientB), 'suspension denial causes zero Visit mutation');
+        self::assertSame(1, $this->countClinicianRowsForUser($professionalUserId), 'no fallback identity is created');
+    }
+
+    public function testClinicAPatientUnderTrustedClinicBIsRejectedBeforeVisitCreation(): void
+    {
+        $clinicA = $this->clinics['A'];
+        $clinicB = $this->clinics['B'];
+        $professionalUserId = $this->makeUser('p4s3_patient_a_prof', RolesAndCapabilities::ROLE_DOCTOR);
+        $clinicianId = $this->insertClinician($clinicA, $professionalUserId);
+        cpms_test_seed_membership($professionalUserId, $clinicA, RolesAndCapabilities::ROLE_DOCTOR);
+        cpms_test_seed_membership($professionalUserId, $clinicB, RolesAndCapabilities::ROLE_DOCTOR);
+        $secretaryUserId = $this->makeAuthorizedSecretary($clinicB, 'p4s3_patient_a_sec');
+        $patientA = $this->insertPatient($clinicA, 'cross-clinic-patient');
+
+        self::assertTrue(
+            (new MembershipRepository(App::db()))->clinician_participates_in($clinicianId, $clinicB),
+            'precondition: professional legitimately participates in B'
+        );
+        self::assertSame($clinicA, $this->patientClinic($patientA), 'precondition: patient clinical record belongs to A');
+        self::assertTrue(
+            $this->authz()->can($secretaryUserId, $clinicB, RolesAndCapabilities::QUEUE_CHECKIN),
+            'precondition: actor is authorized in trusted B'
+        );
+
+        $before = $this->countVisitsForPatient($patientA);
+        $response = $this->dispatchWalkIn($patientA, $clinicianId, $clinicB, $secretaryUserId);
+
+        self::assertSame($clinicB, $this->capturedRestClinicId, 'trusted REST Clinic remains B');
+        self::assertSame(422, $response->get_status(), 'Clinic-A patient under trusted B keeps validation contract');
+        self::assertSame('CLINIC_VALIDATION_FAILED', $this->errorCode($response), 'stable validation code is preserved');
+        self::assertSame($before, $this->countVisitsForPatient($patientA), 'patient ownership failure precedes Visit creation');
+        self::assertSame(1, $this->countClinicianRowsForUser($professionalUserId), 'professional identity remains singular');
+    }
+
+    public function testPhase3DeniesUnauthorizedActorInBWithoutVisitMutation(): void
+    {
+        $clinicA = $this->clinics['A'];
+        $clinicB = $this->clinics['B'];
+        $professionalUserId = $this->makeUser('p4s3_denied_prof', RolesAndCapabilities::ROLE_DOCTOR);
+        $clinicianId = $this->insertClinician($clinicA, $professionalUserId);
+        cpms_test_seed_membership($professionalUserId, $clinicA, RolesAndCapabilities::ROLE_DOCTOR);
+        cpms_test_seed_membership($professionalUserId, $clinicB, RolesAndCapabilities::ROLE_DOCTOR);
+        $patientB = $this->insertPatient($clinicB, 'unauthorized-actor');
+
+        $deniedUserId = $this->makeUser('p4s3_denied_sec', RolesAndCapabilities::ROLE_SECRETARY);
+        $deniedMembership = cpms_test_seed_membership(
+            $deniedUserId,
+            $clinicB,
+            RolesAndCapabilities::ROLE_SECRETARY
+        );
+        App::membership_service()->set_capability(
+            $deniedMembership,
+            RolesAndCapabilities::QUEUE_CHECKIN,
+            'deny'
+        );
+
+        self::assertTrue(
+            user_can($deniedUserId, RolesAndCapabilities::QUEUE_CHECKIN),
+            'precondition: actor still has coarse global capability'
+        );
+        self::assertNotNull(
+            App::membership_service()->active_membership_for($clinicB, $deniedUserId),
+            'precondition: actor has ACTIVE B membership so trusted context can be established'
+        );
+        self::assertFalse(
+            $this->authz()->can($deniedUserId, $clinicB, RolesAndCapabilities::QUEUE_CHECKIN),
+            'precondition: existing Phase 3 scoped QUEUE_CHECKIN decision is deny'
+        );
+
+        $before = $this->countVisitsForPatient($patientB);
+        $response = $this->dispatchWalkIn($patientB, $clinicianId, $clinicB, $deniedUserId);
+
+        self::assertSame($clinicB, $this->capturedRestClinicId, 'trusted REST Clinic B is established before guard');
+        self::assertSame(403, $response->get_status(), 'Phase 3 authorization denial remains authoritative');
+        self::assertSame('CLINIC_PERMISSION_DENIED', $this->errorCode($response), 'existing Phase 3 denial code is preserved');
+        self::assertSame($before, $this->countVisitsForPatient($patientB), 'unauthorized request causes zero Visit mutation');
+        self::assertSame(1, $this->countClinicianRowsForUser($professionalUserId), 'no duplicate professional identity');
+    }
+
+    public function testHomeClinicAWalkInBehaviorRemainsValid(): void
+    {
+        $clinicA = $this->clinics['A'];
+        $professionalUserId = $this->makeUser('p4s3_home_prof', RolesAndCapabilities::ROLE_DOCTOR);
+        $clinicianId = $this->insertClinician($clinicA, $professionalUserId);
+        $secretaryUserId = $this->makeAuthorizedSecretary($clinicA, 'p4s3_home_sec');
+        $patientA = $this->insertPatient($clinicA, 'home-control');
+        (new Settings(App::db(), $clinicA))->set('queue.auto_enqueue', false);
+        Settings::flushCache();
+        App::settingsFactory()->reset();
+
+        self::assertSame($clinicA, $this->clinicianHomeClinic($clinicianId), 'precondition: home Clinic is A');
+        self::assertTrue(
+            (new MembershipRepository(App::db()))->clinician_participates_in($clinicianId, $clinicA),
+            'precondition: established home-Clinic compatibility path remains valid'
+        );
+        self::assertTrue(
+            $this->authz()->can($secretaryUserId, $clinicA, RolesAndCapabilities::QUEUE_CHECKIN),
+            'precondition: secretary is authorized in A'
+        );
+
+        $response = $this->dispatchWalkIn($patientA, $clinicianId, $clinicA, $secretaryUserId);
+
+        self::assertSame($clinicA, $this->capturedRestClinicId, 'trusted REST Clinic is A');
+        self::assertSame(200, $response->get_status(), 'existing home Clinic A WalkIn remains valid');
+        $visitId = (int) ($response->get_data()['data']['id'] ?? 0);
+        $visit = $this->visitRow($visitId);
+        self::assertNotNull($visit, 'home control Visit persisted');
+        self::assertSame($clinicA, (int) $visit['clinic_id'], 'home control Visit remains Clinic A owned');
+        self::assertSame($clinicianId, (int) $visit['clinician_id'], 'home control uses same clinician identity');
+        self::assertSame(1, $this->countClinicianRowsForUser($professionalUserId), 'home path creates no duplicate identity');
+    }
+
     /**
      * On defective main, all setup/auth/scope assertions have already succeeded;
      * the only accepted pre-patch failure is the service ownership envelope and
@@ -377,6 +562,23 @@ final class Phase4Slice3WalkInSharedProfessionalTest extends WP_UnitTestCase
         self::assertNotFalse($user, 'fixture: WP user is queryable');
         $user->set_role($role);
         self::assertContains($role, (array) get_userdata($userId)->roles, 'fixture: WP role assigned');
+
+        return $userId;
+    }
+
+    private function makeAuthorizedSecretary(int $clinicId, string $prefix): int
+    {
+        $userId = $this->makeUser($prefix, RolesAndCapabilities::ROLE_SECRETARY);
+        $membershipId = cpms_test_seed_membership(
+            $userId,
+            $clinicId,
+            RolesAndCapabilities::ROLE_SECRETARY
+        );
+        self::assertGreaterThan(0, $membershipId, 'fixture: secretary membership insertion succeeded');
+        self::assertTrue(
+            $this->authz()->can($userId, $clinicId, RolesAndCapabilities::QUEUE_CHECKIN),
+            'fixture: secretary has existing Phase 3 QUEUE_CHECKIN authorization'
+        );
 
         return $userId;
     }
