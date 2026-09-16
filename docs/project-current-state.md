@@ -3,19 +3,34 @@
 > Recover the project from this file + Git/remote/PR + linked canonical docs.
 > Do **not** use a previous chat session as memory.
 >
-> **Integrated main checkpoint (final Phase 2 technical reconciliation, re-verified live
-> 2026-09-15):** `35acced4993287bdffd1fb5c0ef2f8cb1634f99f` — "Merge pull request #47"
-> (MERGED 2026-09-15T11:32:03Z — Location timezone for reminder SMS quiet hours; approved
-> head `bb70079f`; merge parents `229b0b0c6c03310bb6ee1415689f11b822703225` (main before
-> merge) + `bb70079f3f46888c3123cc36d7054b82993f27bb` (PR #47 head)). Post-merge gates on
-> `35acced` — all SUCCESS (push event; 19 check-runs, none pending/failed): CI `34963801460` ·
-> Real WordPress Acceptance `34963801412` · Pilot/Staging Readiness Gate `34963801393` ·
-> Closure Gate `34963801453`. **Technical Phase 2 = COMPLETE** (M-2 CLOSED — all eight
-> canonical jobs resolved on main; M-4 CLOSED — typed non-retryable job failure semantics;
+> **Integrated main checkpoint (Phase 3 End Gate — technically COMPLETED & FROZEN, re-verified
+> live 2026-09-16):** `ebf8588f34be1da2ff18a152dea2c8badc472056` — "Merge pull request #57 from
+> bia2on2on/arena/01a0aae9-doctor" (MERGED 2026-09-16T16:46:59Z by `arena-ai-coding-agent[bot]`).
+> **Phase 3 — Role & Access Control: COMPLETED / FROZEN** (implementation COMPLETE / technically
+> accepted based on merged implementation — PRs #49, #50, #52, #54, #55, #56, #57 — and exact-head
+> evidence: 19/19 checks success at `ebf8588f34be1da2ff18a152dea2c8badc472056`; Phase 3 End Gate
+> result: PASS as provided; no owner Ready/merge authorization assumed). **This is NOT a release/V1/commercial claim and
+> is NOT Phase 4.** Established Phase 3 foundations include: central Clinic-scoped
+> `AuthorizationService`; scoped staff/membership management; scoped SMS configuration/secrets;
+> scoped reports/export lifecycle; scoped clinical/medical-file access; scoped Clinician Admin /
+> Handwriting / Finance; scoped Queue / Schedule / staff Booking / staff Patient; patient-self /
+> public separation; installation administrator without implicit clinical access; dynamic
+> multi-Clinic authorization coverage; Integration completion guard preventing premature
+> false-green. *(Foundations summary only — not an implementation report.)* Latest migration
+> remains `0020` — `0021` does not exist or was invented.
+> **Previous integrated main checkpoint (historical):** `35acced4993287bdffd1fb5c0ef2f8cb1634f99f`
+> — "Merge pull request #47" (MERGED 2026-09-15T11:32:03Z — Location timezone for reminder SMS
+> quiet hours; approved head `bb70079f`; merge parents `229b0b0c6c03310bb6ee1415689f11b822703225`
+> (main before merge) + `bb70079f3f46888c3123cc36d7054b82993f27bb` (PR #47 head)). Post-merge
+> gates on `35acced` — all SUCCESS (push event; 19 check-runs, none pending/failed): CI
+> `34963801460` · Real WordPress Acceptance `34963801412` · Pilot/Staging Readiness Gate
+> `34963801393` · Closure Gate `34963801453`. **Technical Phase 2 = COMPLETE** (M-2 CLOSED — all
+> eight canonical jobs resolved on main; M-4 CLOSED — typed non-retryable job failure semantics;
 > Location is the operational timezone truth for the reachable `appt.reminder`/`fu.reminder`
-> quiet-hours paths; post-M-4 fixture correction merged via PR #46; latest migration remains
-> `0020` — no `0021` exists or was invented). **This is NOT a release/V1/commercial claim.**
-> **Phase 3 = NOT STARTED.** This cycle's verified merges: PR #47 (head `bb70079f`) · PR #46
+> quiet-hours paths; post-M4 fixture correction merged via PR #46; latest migration remains
+> `0020` — no `0021` exists or was invented). **This is NOT a release/V1/commercial claim. At this
+> 2026-09-15 checkpoint Phase 3 was NOT STARTED — superseded by the Phase 3 completion recorded
+> above at `ebf8588`.** This cycle's verified merges: PR #47 (head `bb70079f`) · PR #46
 > (head `ea7b683` — post-merge fixture triage) · PR #45 (head `84a858f` — M-4 terminal
 > policy) · PR #43 (head `da71e6d` — M-2 `handwriting.gc`) · PR #42 (head `37068ad` —
 > backup configuration keys) · PR #41 · PR #40 (installation-level `notif.archive_days`).
@@ -28,8 +43,7 @@
 > PR #24 docs merge) + `e2d9ce74` (PR #25 head); post-merge gates success: CI `34678813474` ·
 > Real WP `34678813477` · Pilot/Staging `34678813488` · Closure `34678813479`).
 > **C10 FORMALLY CLOSED by explicit Owner decision 2026-09-12** (bounded evidence review
-> only — see §K). Phase 2 IN PROGRESS; Phase 3 / Phase 17 NOT STARTED. *(As of that
-> checkpoint; superseded by the 2026-09-15 reconciliation — see the top block.)*
+> only — see §K). Phase 2 IN PROGRESS; Phase 3 / Phase 17 NOT STARTED at that 2026-09-12 checkpoint. *(Historical — superseded by the 2026-09-15 reconciliation (Phase 2 COMPLETED) and further superseded by the Phase 3 completion at `ebf8588`; see the top block.)*
 > **Previous integrated checkpoint (historical):** `7146d5bb4167d2ac333000188d404c2aa977b817`
 > (PR #23 MERGED 2026-09-11T19:35:54Z — bounded C9 i18n remediation integrated;
 > approved head `c92737bb0a30fbdf13d804a8dcdffa522fd556ae`;
@@ -54,8 +68,8 @@
 
 If Git/remote/PR, this file, and the repository tree disagree: **STOP**.
 
-This file describes the integrated main checkpoint `35acced` (final Phase 2
-technical reconciliation — see the header block) plus preserved
+This file describes the integrated main checkpoint `ebf8588` (Phase 3 End Gate —
+technically COMPLETED/FROZEN; see the header block) plus preserved
 previous-checkpoint and pre-merge/pre-corrective evidence SHAs below. It does
 **not** self-refer to the SHA of any later documentation-only commit.
 
@@ -97,15 +111,16 @@ Legacy labels (`F0..F10`, `Doc-Phase`, `V1` / `V1.5` / `V2`) are historical. The
 | Phase 0.5 | CLOSED |
 | Phase 1A | CLOSED (`9bc6f7f`; OD-9 CLOSED) |
 | Phase 1B | DEFERRED — scoped / object authorization (depends on Phase 2 + 3) |
-| Phase 2 | **COMPLETED (TECHNICAL) — all recorded Phase 2 technical blockers closed on `main` at `35acced` (2026-09-15); this is NOT a release/V1/commercial claim. Phase 3 NOT STARTED.** Subphase history preserved: **C6 CLOSED** + post-closure corrective integrated (PR #17); **C7 CLOSED** (remediation integrated via PR #20 at merge `a385d868`; formal Owner acceptance recorded 2026-09-11); **C8 / C9 CLOSED**; **C10 CLOSED (explicit Owner decision 2026-09-12; bounded evidence review only — no NFR/load/scalability claim)**. Internal queue C1..C10 complete. Final technical closures: **M-2 CLOSED** (all eight canonical jobs resolved on main), **M-4 CLOSED** (typed `NonRetryableJobFailure` semantics), Location = operational timezone truth for the reachable `appt.reminder`/`fu.reminder` quiet-hours paths (PR #47), post-M-4 fixture correction merged (PR #46); latest migration remains `0020` (no `0021`). The historical "End Gate (26 items)" label was never a defined acceptance checklist and is not revived here |
+| Phase 2 | **COMPLETED (TECHNICAL) — all recorded Phase 2 technical blockers closed on `main` at `35acced` (2026-09-15); this is NOT a release/V1/commercial claim. (Phase 3 is now COMPLETED/FROZEN — see its own row below.)** Subphase history preserved: **C6 CLOSED** + post-closure corrective integrated (PR #17); **C7 CLOSED** (remediation integrated via PR #20 at merge `a385d868`; formal Owner acceptance recorded 2026-09-11); **C8 / C9 CLOSED**; **C10 CLOSED (explicit Owner decision 2026-09-12; bounded evidence review only — no NFR/load/scalability claim)**. Internal queue C1..C10 complete. Final technical closures: **M-2 CLOSED** (all eight canonical jobs resolved on main), **M-4 CLOSED** (typed `NonRetryableJobFailure` semantics), Location = operational timezone truth for the reachable `appt.reminder`/`fu.reminder` quiet-hours paths (PR #47), post-M-4 fixture correction merged (PR #46); latest migration remains `0020` (no `0021`). The historical "End Gate (26 items)" label was never a defined acceptance checklist and is not revived here |
 | C7 | **CLOSED — formally accepted by explicit Owner decision on 2026-09-11.** Technical closure was already evidenced (implementation merged into `main` via PR #20, merge `a385d868`, 2026-09-11T13:09:16Z; slices C7-0→C7-S6; all gates GREEN). The Owner acceptance covers the defined/completed C7 scope only — it is **not** a claim that all conceivable tenant isolation throughout the product is perfect, **not** commercial-readiness approval, and does not approve any deferred item, migration, or later phase — see `docs/phase-reports/c7-0-census.md` §۱۱ |
 | C8 | **CLOSED as a Phase-2 Location-foundation evidence/documentation closure package (2026-09-11) — NO implementation work performed or authorized.** Reviewed evidence found no verified Phase-2 Location implementation gap. C8 closure means "the Phase-2 Location foundation is closed based on current evidence", not "all future Location/timezone behavior is complete" — see `docs/phase-reports/phase2-state.md` §C8 |
-| Phase 3 | **NOT STARTED** — no `AuthorizationService`; do not start |
+| Phase 3 | **COMPLETED / FROZEN** — implementation COMPLETE / technically accepted based on merged implementation (PRs #49, #50, #52, #54, #55, #56, #57) and exact-head evidence (19/19 checks success at `ebf8588f34be1da2ff18a152dea2c8badc472056`). Central Clinic-scoped `AuthorizationService` established; FROZEN. **Do NOT start Phase 4 prematurely** (Phase 4 = Master Data — NOT STARTED). This is NOT a release/V1/commercial claim |
 
-**Integrated main checkpoint:** `35acced` (PR #47 MERGED 2026-09-15 — final
-Phase 2 technical merge; gates recorded in the header block). Previous
-integrated checkpoint: `bdb135e9` (PR #25 MERGED — C10 documentation evidence
-package). Earlier: `b19930fe` (PR #21 MERGED 2026-09-11T14:27:14Z —
+**Integrated main checkpoint:** `ebf8588` (PR #57 MERGED 2026-09-16 — Phase 3
+End Gate; technically COMPLETED/FROZEN; gates recorded in the header block).
+Previous integrated checkpoint: `35acced` (PR #47 MERGED 2026-09-15 — final
+Phase 2 technical merge). Earlier: `bdb135e9` (PR #25 MERGED — C10 documentation
+evidence package). Earlier: `b19930fe` (PR #21 MERGED 2026-09-11T14:27:14Z —
 post-C7 documentation-only continuity sync; **Owner formal C7 acceptance + C8
 closure package recorded in this documentation update's lineage**). Earlier:
 `a385d868` (PR #20 MERGED 2026-09-11T13:09:16Z — C7
@@ -117,7 +132,7 @@ implementation evidence (historical):** `3fc5a54`. Historical baseline:
 `b19930fe` (table below); the `a385d868`, `248ca10`, `099b644`, and `3fc5a54`
 gate tables are retained below as historical evidence.
 
-**Schema:** current version **`2026_09_09_0020`** (re-verified on the tree at `7146d5bb`: latest file is `src/Migrations/2026_09_09_0020_idempotency_clinic_scope.php`; 20 migration files `0001`..`0020`). File `0021` does **not** exist. **Migration 0021 is NOT approved and was NOT created** (including by the C8 documentation closure and by the bounded C9 integration/closure — neither authorizes a migration). If new schema is required: STOP and ask Owner.
+**Schema:** current version **`2026_09_09_0020`** (re-verified on the tree at `7146d5bb`: latest file is `src/Migrations/2026_09_09_0020_idempotency_clinic_scope.php`; 20 migration files `0001`..`0020`). File `0021` does **not** exist. **Migration 0021 is NOT approved and was NOT created** (including by the C8 documentation closure and by the bounded C9 integration/closure — neither authorizes a migration). If new schema is required: STOP and ask Owner. (Current migration state re-confirmed on `ebf8588` — latest = `0020`, `0021` absent.)
 
 **Post-merge integration state (verified from live remote 2026-09-11)**
 
@@ -589,7 +604,7 @@ integration-state table above. Scope of the merged corrective:
   (PR #20 MERGED 2026-09-11T13:09:16Z, merge `a385d868` — see the C7 section
   below).** Location authorization untouched.
 
-**Do not start C8 *implementation*, Phase 3, Phase 4, portals, or mobile auth/JWT.**
+**Do not start C8 *implementation*, Phase 4, portals, or mobile auth/JWT.** *(Phase 3 was a "do not start" item when this C6 corrective was written (2026-09-10); it is now COMPLETED/FROZEN — see the Phase 3 status row. The C8 closure status below is unchanged.)*
 **C8 closure status (Owner-authorized documentation-only closure, 2026-09-11):**
 the existence of the internal/canonical `C8` label did **not** by itself prove
 that C8 required implementation work; reviewed evidence verifies **no verified
@@ -680,9 +695,11 @@ Full slice-by-slice RED→GREEN history with run IDs:
   `CLINIC_SCOPE_REQUIRED` 400; valid scope + foreign object ⇒
   non-disclosing `CLINIC_NOT_FOUND` 404 byte-parity with a nonexistent id.
 - **No Migration** (`0021` does not exist; no schema change). **Phase 3
-  NOT STARTED** (no `AuthorizationService`, no Location policy). Deferred
-  items remain deferred and are NOT silently approved (S2 JobQueue
-  tenant-context, S3 prescription numbering, Jobs/SMS/timezone, wp-admin
+  NOT STARTED at C7 merge time** (no `AuthorizationService`, no Location policy at that
+  point) — *historical: records the C7-merge state (2026-09-11); superseded by Phase 3
+  completion (COMPLETED/FROZEN at `ebf8588`; the central Clinic-scoped `AuthorizationService`
+  is now established)*. Deferred items remain deferred and are NOT silently approved (S2
+  JobQueue tenant-context, S3 prescription numbering, Jobs/SMS/timezone, wp-admin
   multi-clinic selection UX).
 - **Defect statement (precise):** the completed C7 scope recorded here has
   **no known open Critical/High defect based on current evidence**. This is
@@ -825,10 +842,11 @@ Full slice-by-slice RED→GREEN history with run IDs:
   historical 2026-09-06 §8 benchmark numbers remain historical (pre-C4..C7); workflow
   success remains non-numeric evidence; NOT RETRIEVED / NOT MEASURED items remain exactly
   as recorded in `c10-performance-evidence.md` §3. **Phase 2 remains IN PROGRESS; Phase 3
-  and Phase 17 remain NOT STARTED; the Phase 2 End Gate is not defined/passed.**
-  *(Recorded at the 2026-09-12 C10 closure; superseded for Phase-2 status only by the
-  2026-09-15 reconciliation: Phase 2 = COMPLETED technically, Phase 3 / Phase 17 still
-  NOT STARTED.)*
+  and Phase 17 remain NOT STARTED; the Phase 2 End Gate is not defined/passed.** *(Recorded
+  at the 2026-09-12 C10 closure; superseded for Phase-2 status only by the 2026-09-15
+  reconciliation: Phase 2 = COMPLETED technically, Phase 3 / Phase 17 still NOT STARTED
+  at that point — and that note is itself superseded by the Phase 3 completion at `ebf8588`;
+  see the top block.)*
 
 
 ---
