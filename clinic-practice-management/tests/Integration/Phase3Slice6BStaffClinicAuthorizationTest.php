@@ -159,7 +159,7 @@ final class Phase3Slice6BStaffClinicAuthorizationTest extends WP_UnitTestCase
         $create = $this->dispatch('POST', self::NS . '/patients', [
             'first_name' => 'Denied',
             'last_name' => 'ByScope',
-            'mobile' => '0912' . str_pad((string) random_int(10000000, 99999999), 8, '0', STR_PAD_LEFT),
+            'mobile' => '0912' . str_pad((string) random_int(1000000, 9999999), 7, '0', STR_PAD_LEFT),
         ], $clinicA, $actor);
         self::assertSame(
             403,
@@ -767,7 +767,7 @@ final class Phase3Slice6BStaffClinicAuthorizationTest extends WP_UnitTestCase
             $clinicId,
             $patientId,
             $wpUserId,
-            '0912' . str_pad((string) random_int(10000000, 99999999), 8, '0', STR_PAD_LEFT),
+            '0912' . str_pad((string) random_int(1000000, 9999999), 7, '0', STR_PAD_LEFT),
             $now
         ));
         self::assertGreaterThan(0, (int) $wpdb->insert_id, 'precondition: patient link row');
