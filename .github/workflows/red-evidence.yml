@@ -1,0 +1,170 @@
+name: Slice 6A Comparative RED Evidence
+
+# اجرای شواهد RED پیش‌ از پچ — فقط روی شاخه موقت evidence.
+# درخت مقایسه‌ای: پایهٔ آسیب‌پذیر d5ca06eb + «فقط» تست‌های امنیتی Slice-6A.
+# هیچ کد محصول، fixture یا اصلاح CI سبز در این درخت وارد نمی‌شود (PURITY GATE).
+
+on:
+  push:
+    branches:
+      - 'red-evidence/slice6a'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: red-evidence-slice6a
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: clinic-practice-management
+
+env:
+  VULNERABLE_BASE: d5ca06ebfcbaab07a35b5b087fa358b4ef4f9d3c
+  WP_TESTS_DIR: /tmp/wordpress-test-lib
+  WP_CORE_DIR: /tmp/wordpress
+
+jobs:
+  red-on-vulnerable-base:
+    name: RED evidence (vulnerable d5ca06eb + tests only)
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=20
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mbstring, xml, mysqli, pcntl, curl
+          coverage: none
+
+      - name: Comparative tree identity + PURITY GATE
+        working-directory: ${{ github.workspace }}
+        run: |
+          {
+            echo "run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "head: $(git rev-parse HEAD)"
+            echo "vulnerable_base: ${VULNERABLE_BASE}"
+            echo "--- changes on top of the vulnerable base:"
+            git diff --name-status ${VULNERABLE_BASE} HEAD
+            echo "--- production diff vs vulnerable base (MUST be empty):"
+            git diff --stat ${VULNERABLE_BASE} HEAD -- \
+              clinic-practice-management/src \
+              clinic-practice-management/bin \
+              clinic-practice-management/migrations || true
+          } | tee /tmp/identity.txt
+          # PURITY GATE — no production/CI-fixture drift vs the vulnerable base.
+          git diff --quiet ${VULNERABLE_BASE} HEAD -- \
+            clinic-practice-management/src \
+            clinic-practice-management/bin \
+            clinic-practice-management/migrations \
+            clinic-practice-management/tests/integration-bootstrap.php \
+            .github/workflows/ci.yml \
+            .github/workflows/closure-gate.yml \
+            .github/workflows/pilot-gate.yml \
+            .github/workflows/real-wp-acceptance.yml \
+            || { echo 'PURITY GATE FAILED: production or GREEN-fixture drift vs vulnerable base'; exit 1; }
+          # Only the Slice-6A security test file may be added under tests/.
+          TESTDIFF="$(git diff --name-only ${VULNERABLE_BASE} HEAD -- clinic-practice-management/tests)"
+          echo "tests diff: ${TESTDIFF}" | tee -a /tmp/identity.txt
+          [ "${TESTDIFF}" = "clinic-practice-management/tests/Integration/Phase3Slice6AuthorizationRedTest.php" ] \
+            || { echo 'PURITY GATE FAILED: unexpected test-tree change'; exit 1; }
+
+      - name: Install dependencies (PHPUnit 9.6 for WP test lib)
+        run: |
+          composer install --prefer-dist --no-progress --no-interaction
+          composer require --dev phpunit/phpunit:^9.6 --no-interaction --no-progress --with-all-dependencies
+
+      - name: Prepare WordPress test suite
+        run: bash tests/bin/install-wp-tests.sh wordpress_test root root 127.0.0.1 6.7.2
+
+      - name: Lint the comparative test file
+        run: php -l tests/Integration/Phase3Slice6AuthorizationRedTest.php
+
+      - name: RED run — four Slice-6A security contracts (expected: exactly 4 failures)
+        continue-on-error: true
+        run: |
+          set +e
+          php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
+            --bootstrap tests/integration-bootstrap.php tests/Integration/Phase3Slice6AuthorizationRedTest.php 2>&1 | tee /tmp/phpunit-red.log
+          echo "red_rc=${PIPESTATUS[0]}" | tee -a /tmp/identity.txt
+          exit 0
+
+      - name: Context run — full Integration suite on the same tree (expected: only the same 4 fail)
+        continue-on-error: true
+        run: |
+          set +e
+          php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
+            --bootstrap tests/integration-bootstrap.php tests/Integration 2>&1 | tee /tmp/phpunit-full.log
+          echo "full_rc=${PIPESTATUS[0]}" | tee -a /tmp/identity.txt
+          exit 0
+
+      - name: RED validity classification (the verdict of this workflow)
+        run: |
+          set -e
+          echo "--- RED run summary:"
+          REDSUM="$(grep -E '^Tests:' /tmp/phpunit-red.log | tail -n 1)"
+          echo "${REDSUM}"
+          echo "--- failing entries (RED run):"
+          grep -E '^[0-9]+\) ' /tmp/phpunit-red.log | tee /tmp/red-failures.txt
+          FAILS="$(sed -nE 's/.*Failures: ([0-9]+).*/\1/p' <<<"${REDSUM}")"
+          ERRS="$(sed -nE 's/.*Errors: ([0-9]+).*/\1/p' <<<"${REDSUM}")"; ERRS="${ERRS:-0}"
+          echo "failures=${FAILS:-0} errors=${ERRS}"
+          # 1) exactly the four security contracts fail — no more, no less.
+          [ "${FAILS:-0}" -eq 4 ] && [ "${ERRS}" -eq 0 ] \
+            || { echo 'CLASSIFICATION FAIL: expected exactly 4 failures and 0 errors'; exit 1; }
+          grep -qF 'Phase3Slice6AuthorizationRedTest::testSaveClinicianManagerInClinicACannotMutateClinicianInClinicB' /tmp/red-failures.txt || { echo 'missing RED-1'; exit 1; }
+          grep -qF 'Phase3Slice6AuthorizationRedTest::testGetPageWithScopeOnClinicAReturns404ForClinicBDocument' /tmp/red-failures.txt || { echo 'missing RED-2'; exit 1; }
+          grep -qF 'Phase3Slice6AuthorizationRedTest::testRecordPaymentIsDeniedWhenScopedPaymentCreateIsExplicitlyDenied' /tmp/red-failures.txt || { echo 'missing RED-3'; exit 1; }
+          grep -qF 'Phase3Slice6AuthorizationRedTest::testSuspendedMemberIsDeniedHandwritingSaveAndPaymentCreate' /tmp/red-failures.txt || { echo 'missing RED-4'; exit 1; }
+          # 2) no environmental/parse/fatal noise — failures must be contract failures.
+          ! grep -qE 'Fatal error|Parse error|Uncaught|No tests executed' /tmp/phpunit-red.log \
+            || { echo 'CLASSIFICATION FAIL: environmental noise in RED log'; exit 1; }
+          # 3) the durable vulnerable observations are present in the failure messages.
+          for MARKER in 'RED-1 evidence' 'RED-2 evidence' 'RED-3 evidence' 'RED-4a evidence' 'RED-4b evidence'; do
+            grep -qF "${MARKER}" /tmp/phpunit-red.log || { echo "missing evidence marker: ${MARKER}"; exit 1; }
+          done
+          # 4) context: everything else on the vulnerable base stays green.
+          echo "--- FULL run summary:"
+          FULLSUM="$(grep -E '^Tests:' /tmp/phpunit-full.log | tail -n 1)"
+          echo "${FULLSUM}"
+          FFAILS="$(sed -nE 's/.*Failures: ([0-9]+).*/\1/p' <<<"${FULLSUM}")"
+          FERRS="$(sed -nE 's/.*Errors: ([0-9]+).*/\1/p' <<<"${FULLSUM}")"; FERRS="${FERRS:-0}"
+          echo "full failures=${FFAILS:-0} errors=${FERRS}"
+          [ "${FFAILS:-0}" -eq 4 ] && [ "${FERRS}" -eq 0 ] \
+            || { echo 'CLASSIFICATION FAIL: full suite shows other failures (environment not valid)'; exit 1; }
+          echo 'VALID RED CONFIRMED — four security contracts fail on the vulnerable base with durable observations.'
+          # Surface the four failure headlines as annotations (API-readable).
+          grep -E '^[0-9]+\) ' /tmp/phpunit-red.log | while IFS= read -r line; do
+            echo "::error::${line}"
+          done
+
+      - name: Commit evidence into this branch (log delivery channel)
+        if: always()
+        working-directory: ${{ github.workspace }}
+        run: |
+          mkdir -p evidence
+          cp /tmp/phpunit-red.log evidence/phpunit-red.log 2>/dev/null || true
+          cp /tmp/phpunit-full.log evidence/phpunit-full.log 2>/dev/null || true
+          cp /tmp/identity.txt evidence/identity.txt 2>/dev/null || true
+          cp /tmp/red-failures.txt evidence/red-failures.txt 2>/dev/null || true
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add evidence
+          git commit -m "evidence: comparative RED run on vulnerable base d5ca06eb [skip ci]" || echo "nothing to commit"
+          git push
