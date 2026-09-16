@@ -1014,7 +1014,7 @@ final class FinanceService
         if ($scope === null || (int) $scope->clinicId <= 0) {
             throw FinanceException::of(
                 'CLINIC_SCOPE_REQUIRED',
-                'عملیات حساس مالی بدون زمینهٔ کلینیک معتبر مجاز نیست.',
+                'عملیات حساس مالی بدون زمینهٔ کلینیک معتبر مجاز نیست — Clinic از شیء هدف استخراج نمی‌شود.',
                 400
             );
         }

@@ -116,6 +116,17 @@ jobs:
           set -o pipefail
           php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
             --bootstrap tests/integration-bootstrap.php tests/Integration 2>&1 | tee /tmp/phpunit-int.log
+          # Completion guard (false-green protection): a COMPLETED PHPUnit run always
+          # prints a terminal summary (OK / OK-but / FAILURES! / ERRORS! / WARNINGS!).
+          # Production exit()/wp_die inside a test can terminate the process with rc=0
+          # BEFORE any summary is printed — pipefail cannot distinguish that from a
+          # genuine pass (proven: runs 35103474350 / 35105290047, 63/844 tests, rc=0).
+          # Premature termination is therefore a hard failure, never a pass. Nonzero
+          # PHPUnit exits still fail normally at the pipeline above (pipefail intact).
+          if ! grep -qE '^(OK \(|OK, but|FAILURES!|ERRORS!|WARNINGS!)' /tmp/phpunit-int.log; then
+            echo '::error::Integration PHPUnit terminated WITHOUT a terminal summary (premature exit with rc=0 — suite did not complete). This is a CI failure, not a pass.'
+            exit 1
+          fi
 
       - name: Upload Integration PHPUnit log
         if: always()

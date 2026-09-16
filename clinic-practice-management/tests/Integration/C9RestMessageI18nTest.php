@@ -230,43 +230,56 @@ final class C9RestMessageI18nTest extends WP_UnitTestCase
     }
 
     // ==================================================================
-    // C — تفکیک‌کنندهٔ منفیِ Finance: واریانت resolver دست‌نخورده می‌ماند
+    // C — تفکیک‌کنندهٔ منفیِ Finance (Slice-6A): بدون Scope، بدون افشای تعداد Clinic
     // ==================================================================
 
     /**
-     * C/1 — واریانت `CLINIC_SCOPE_REQUIRED` متعلق به `SystemClinicResolver`
-     * (که `clinic_count` حمل می‌کند و پیامش **پویا** است) باید بدون تغییر عبور
-     * کند؛ حتی وقتی همان پروبِ ترجمهٔ واریانتِ C7 فعال است.
+     * C/1 — Slice-6A: مسیر finance services.read دیگر از SystemClinicResolver
+     * عبور نمی‌کند و «تعداد Clinicهای نصب» را افشا نمی‌کند.
      *
-     * این تست تفکیک‌کنندهٔ مرز را قفل می‌کند: اگر پیاده‌سازی فقط بر پایهٔ
-     * `errorCode` نگاشت کند (بدون شرط `data === []`)، پیام پویای resolver با
-     * literalِ C7 جایگزین می‌شود و این تست قرمز می‌شود.
+     * رفتار قدیمی (پیش از Slice-6A): `FinanceService::listServices()` بدون Scope
+     * به `App::scope()` و از آن‌جا به `SystemClinicResolver` می‌رفت؛ با بیش از یک
+     * Clinic، پیام پویای حاملِ «تعداد Clinicهای نصب» به‌همراه `clinic_count` در
+     * data برمی‌گشت (موضوع تست قبلی). معماری بازبینی‌شدهٔ Slice-6A برای عملیات
+     * مالی فقط Scope صریحِ معتبر می‌پذیرد (global capability هرگز مرجع نهایی
+     * Clinic نیست)؛ بنابراین این endpoint حالت همان گارد fail-closed ساده را
+     * برمی‌گرداند — بدون هیچ شمارشی از Clinicهای نصب (non-disclosure).
+     *
+     * قفلِ تفکیک‌کننده: حتی با بیش از یک Clinic نصب‌شده، پاکت خطا نباید
+     * `clinic_count` حمل کند، پیام نباید واریانت پویای resolver باشد، و data
+     * ساخت‌یافته باید فقط status باشد.
      */
-    public function testFinanceResolverVariantWithClinicCountIsNotRemapped(): void
+    public function testFinanceServicesWithoutScopeDoesNotDiscloseClinicCount(): void
     {
         $this->insertClinic($this->clinicB, 'c9-neg');
         wp_set_current_user($this->secretaryId);
-        $this->addTranslation(self::FINANCE_MSG, self::FINANCE_EN);
 
-        // `GET /config/services` ⇒ `FinanceService::listServices()` ⇒ `trustedClinicId()`
-        // ⇒ `App::scope()` ⇒ بدون Scope صریح، `SystemClinicResolver` (تعداد ≠ ۱) ⇒ fail-closed.
+        // `GET /config/services` ⇒ `FinanceService::listServices()` ⇒
+        // `requireTrustedClinicId()` ⇒ بدون Scope صریح ⇒ fail-closed ساده.
         $env = $this->envelope($this->dispatchWithoutScope('GET', self::NS . '/config/services'));
 
-        $this->assertSame(400, $env['status'], 'واریانت resolver هم ۴۰۰ است');
+        $this->assertSame(400, $env['status'], 'fail-closed همان ۴۰۰ است');
         $this->assertSame(self::CODE, $env['code'], 'کد همان CLINIC_SCOPE_REQUIRED است');
-        $this->assertArrayHasKey('clinic_count', $env['data'], 'واریانت resolver باید `clinic_count` را حمل کند');
-        $this->assertGreaterThanOrEqual(
-            2,
-            (int) ($env['data']['clinic_count'] ?? 0),
-            'پیش‌شرط: بیش از یک Clinic ⇒ resolution سیستمی ناموفق'
+        $this->assertArrayNotHasKey(
+            'clinic_count',
+            $env['data'],
+            'Slice-6A: پاکت خطای finance نباید تعداد Clinicهای نصب را افشا کند'
         );
-        $this->assertStringContainsString(
+        $this->assertStringNotContainsString(
             self::RESOLVER_MARKER,
             $env['message'],
-            'واریانت **پویای** resolver باید دست‌نخورده عبور کند'
+            'واریانت پویای resolver دیگر در مسیر finance حضور ندارد'
         );
-        $this->assertNotSame(self::FINANCE_MSG, $env['message'], 'literalِ C7 نباید جای پیام resolver بنشیند');
-        $this->assertNotSame(self::FINANCE_EN, $env['message'], 'واریانت resolver نباید ترجمهٔ C7 را بگیرد');
+        $this->assertSame(
+            self::FINANCE_MSG,
+            $env['message'],
+            'پیام همان literalِ C7 است (واریانت سادهٔ گارد، نه resolver)'
+        );
+        $this->assertSame(
+            ['status' => 400],
+            $env['data'],
+            'data ساخت‌یافته فقط status است — بدون شمارش Clinic'
+        );
     }
 
     // ==================================================================

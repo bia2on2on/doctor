@@ -13,6 +13,8 @@ use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use WP_UnitTestCase;
 
+require_once __DIR__ . '/P3S6RedirectExitSimulatedException.php';
+
 /**
  * Phase 3 Slice 6A — RED characterization tests for Clinic-scoped authorization
  * gaps in ClinicianAdminPage, HandwritingService, and FinanceService.
@@ -21,6 +23,15 @@ use WP_UnitTestCase;
  * (fail-closed with 403/404 parity, deny overrides preset, suspended fails closed,
  * cross-Clinic must not leak or mutate) and must remain RED until the production
  * code for Slice 6A is in place.
+ *
+ * Harness note (false-green correction): the terminating admin-post handler under
+ * test ends with wp_safe_redirect()+exit. RED-1 intercepts the redirect with a
+ * THROWING wp_redirect filter (P3S6RedirectExitSimulatedException — a type the
+ * production catch blocks will not swallow) and removes the filter in finally, so
+ * the test — and the rest of the suite — always continue to completion. Returning
+ * false from the filter (the pre-correction approach) suppresses only the header;
+ * the exit killed the whole PHPUnit process with rc=0 and no terminal summary,
+ * which the CI pipeline could not distinguish from a genuine pass.
  */
 final class Phase3Slice6AuthorizationRedTest extends WP_UnitTestCase
 {
@@ -81,31 +92,31 @@ final class Phase3Slice6AuthorizationRedTest extends WP_UnitTestCase
         cpms_test_seed_membership($doctorBUser, $this->clinics['B'], RolesAndCapabilities::ROLE_DOCTOR);
         $victimId = $this->insertClinician($this->clinics['B'], $doctorBUser, 'Dr B Victim P3S6');
 
-        // Capture the redirect/exit via wp_redirect filter + set_transient.
-        wp_set_current_user($managerA);
-        $_POST = [
-            'clinician_id' => (string) $victimId,
-            'full_name' => 'CROSS CLINIC HACK',
-            'specialty' => 'pwned',
-            'room' => 'X',
-            'wp_user_id' => '0',
-            '_wpnonce' => wp_create_nonce('cpms_clinician_save'),
-            '_wp_http_referer' => admin_url('admin.php?page=cpms-clinicians'),
-        ];
-        $_REQUEST = $_POST;
-
+        // Terminal-handler escape: production redirect() ends with wp_safe_redirect()+exit.
+        // Returning false from a wp_redirect filter only suppresses the redirect HEADER —
+        // the exit still terminates the whole PHPUnit process (rc=0, no terminal summary:
+        // the false-green mechanism proven in runs 35103474350/35105290047). The
+        // established repo pattern (C7PreIntegrationBoundaryTest::dispatchAdminAction)
+        // simulates the exit by THROWING from the filter. The escape type deliberately
+        // does NOT extend \RuntimeException: saveClinician() catches RuntimeException in
+        // its try body and would swallow it into backWithError() → a second redirect.
         $redirect = null;
-        add_filter('wp_redirect', function ($url) use (&$redirect) {
+        $escape = static function ($url) use (&$redirect): string {
             $redirect = (string) $url;
 
-            return false;
-        }, 1);
+            throw new P3S6RedirectExitSimulatedException('wp_redirect intercepted (exit simulated): ' . (string) $url);
+        };
+        add_filter('wp_redirect', $escape, 1);
 
         $threw = null;
         try {
             \ClinicCore\Admin\ClinicianAdminPage::saveClinician();
         } catch (\Exception $e) {
             $threw = $e;
+        } finally {
+            remove_filter('wp_redirect', $escape, 1);
+            $_POST = [];
+            $_REQUEST = [];
         }
 
         $row = $wpdb->get_row(
@@ -619,22 +630,29 @@ final class Phase3Slice6AuthorizationRedTest extends WP_UnitTestCase
     private function purgeRows(): void
     {
         global $wpdb;
+        /*
+         * Cleanup بر اساس اسکیمای واقعی و پایدار (زیرساخت تست):
+         *  - فقط جدول‌هایی که واقعاً clinic_id دارند (DELETE … JOIN clinics)؛
+         *  - فرزندانِ بدون clinic_id از طریق FOREIGN KEY … ON DELETE CASCADE
+         *    پاک می‌شوند (pages/page_versions ← documents؛ invoice_items ←
+         *    invoices؛ membership_capabilities/locations ← memberships)؛
+         *  - ترتیب children-first برای FKهای RESTRICT (payments←invoices،
+         *    documents←visits، links←patients).
+         * نسخهٔ قبلی ۷ ورودی خراب داشت که در هر tearDown خطای DB چاپ می‌کرد:
+         * جدول‌های ناموجود (clinician_schedules، clinician_schedule_exceptions،
+         * invoice_adjustments، membership_caps) و ستون clinic_id ناموجود روی
+         * handwriting_page_versions/handwriting_pages/invoice_items.
+         */
         foreach ([
-            'cpms_handwriting_page_versions',
-            'cpms_handwriting_pages',
             'cpms_handwriting_documents',
             'cpms_payments',
-            'cpms_invoice_items',
-            'cpms_invoice_adjustments',
             'cpms_invoices',
             'cpms_visits',
-            'cpms_clinician_schedule_exceptions',
-            'cpms_clinician_schedules',
+            'cpms_schedule',
             'cpms_schedule_exceptions',
             'cpms_clinicians',
-            'cpms_patients',
             'cpms_patient_user_links',
-            'cpms_membership_caps',
+            'cpms_patients',
             'cpms_clinic_memberships',
             'cpms_locations',
         ] as $table) {
