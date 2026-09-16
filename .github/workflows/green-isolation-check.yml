@@ -89,9 +89,24 @@ jobs:
         continue-on-error: true
         run: |
           set +e
+          echo "=== discovery listing (--list-tests):"
           php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
-            --bootstrap tests/integration-bootstrap.php tests/Integration/Phase3Slice6AuthorizationRedTest.php 2>&1 | tee /tmp/phpunit-isolated.log
-          echo "isolated_rc=${PIPESTATUS[0]}" | tee -a /tmp/identity.txt
+            --bootstrap tests/integration-bootstrap.php \
+            --list-tests tests/Integration/Phase3Slice6AuthorizationRedTest.php > /tmp/list-tests.txt 2>&1
+          echo "list_rc=$?" ; cat /tmp/list-tests.txt
+          echo "=== isolated run (direct redirection, no tee):"
+          php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
+            --bootstrap tests/integration-bootstrap.php tests/Integration/Phase3Slice6AuthorizationRedTest.php > /tmp/phpunit-isolated.log 2>&1
+          RC=$?
+          echo "isolated_rc=${RC}"
+          echo "log_bytes=$(wc -c < /tmp/phpunit-isolated.log) log_lines=$(wc -l < /tmp/phpunit-isolated.log)"
+          echo "=== full isolated log:"
+          cat /tmp/phpunit-isolated.log
+          {
+            echo "list_rc=${RC}"
+            echo "isolated_rc=${RC}"
+            echo "log_bytes=$(wc -c < /tmp/phpunit-isolated.log)"
+          } >> /tmp/identity.txt
           exit 0
 
       - name: Role-state diagnostic (clean-environment role caps)
@@ -100,6 +115,8 @@ jobs:
           cat > /tmp/diag.php <<'PHP'
           <?php
           declare(strict_types=1);
+          // Real PHPUnit first so the WP test-lib version check passes under plain php.
+          require getenv('GITHUB_WORKSPACE') . '/clinic-practice-management/vendor/autoload.php';
           require getenv('GITHUB_WORKSPACE') . '/clinic-practice-management/tests/integration-bootstrap.php';
           $mgr = get_role('cpms_manager');
           $sec = get_role('cpms_secretary');
@@ -147,6 +164,7 @@ jobs:
         run: |
           mkdir -p evidence
           cp /tmp/phpunit-isolated.log evidence/phpunit-isolated.log 2>/dev/null || true
+          cp /tmp/list-tests.txt evidence/list-tests.txt 2>/dev/null || true
           cp /tmp/role-state.txt evidence/role-state.txt 2>/dev/null || true
           cp /tmp/identity.txt evidence/identity.txt 2>/dev/null || true
           cp /tmp/classification.txt evidence/classification.txt 2>/dev/null || true
