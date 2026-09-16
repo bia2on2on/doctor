@@ -159,10 +159,10 @@ jobs:
               tr '<' '\n' < /tmp/phpunit-int-junit.xml > "$SPLIT"
               echo '--- junit root suite ---'
               grep -m1 '^testsuite ' "$SPLIT" || true
-              echo '--- Phase3Slice6AuthorizationRedTest suite (selection + execution proof) ---'
-              grep '^testsuite ' "$SPLIT" | grep 'Phase3Slice6AuthorizationRedTest' || echo '(class not present in junit)'
-              echo '--- Phase3Slice6AuthorizationRedTest testcases ---'
-              grep '^testcase ' "$SPLIT" | grep 'Phase3Slice6AuthorizationRedTest' || true
+              echo '--- Phase3 Slice 6 RED-class suites (selection + execution proof) ---'
+              grep '^testsuite ' "$SPLIT" | grep -E 'Phase3Slice6AuthorizationRedTest|Phase3Slice6BStaffClinicAuthorizationTest' || echo '(no Phase3 Slice 6 RED class present in junit)'
+              echo '--- Phase3 Slice 6 RED-class testcases ---'
+              grep '^testcase ' "$SPLIT" | grep -E 'Phase3Slice6AuthorizationRedTest|Phase3Slice6BStaffClinicAuthorizationTest' || true
               rm -f "$SPLIT"
             else
               echo '(junit xml missing — run may have terminated prematurely)'
