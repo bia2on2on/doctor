@@ -733,7 +733,12 @@ final class FinanceClinicIsolationTest extends WP_UnitTestCase
     {
         $tag = ((int) $fx['clinic'] === 1) ? 'A' : 'B';
         $patientId ??= $this->makePatient((int) $fx['clinic'], $tag)['id'];
-        $visit = App::visitService()->walkIn($fx['secretary'], $patientId, $fx['clinician']);
+        // WalkIn is a Clinic-scoped staff operation: this service-level fixture
+        // establishes the same explicit trusted Clinic that the REST boundary does.
+        $visit = $this->withScope(
+            (int) $fx['clinic'],
+            fn (): array => App::visitService()->walkIn($fx['secretary'], $patientId, $fx['clinician'])
+        );
         $id = (int) $visit['id'];
         App::visitService()->transition($fx['doctor'], $id, 'call');
         App::visitService()->transition($fx['doctor'], $id, 'start');

@@ -752,3 +752,22 @@ final class XxxService {
 - **اعتبارسنجی محلی:** `git diff --check` موفق؛ lint WASM PHP 8.2 برای ۴ فایل PHP تغییرکرده موفق. PHPUnit/Integration/PHPStan/WPCS/Tripwire/Real-WP/Closure/Pilot در sandbox اجرا نشده‌اند؛ شواهد دقیق پس از commit/push و CI ثبت می‌شود.
 - **کامیت‌ها:** هنوز ساخته نشده (در انتظار review نهایی diff و validation CI).
 - **وضعیت tree:** dirty؛ فقط ۵ فایل tracked مرتبط با T3 تغییر کرده‌اند، به‌علاوه helper lint خارج از repo در `/home/ubuntu/doctor/lint-php.mjs` که باید قبل از commit حذف شود.
+
+### [2026-09-16 21:48 UTC] — ایجنت Arena — Phase 4 Slice 3: WalkIn حرفه‌ای مشترک
+- فاز/محدوده: فقط  در مسیر واقعی ؛ بدون تغییر migration/authorization/queue semantics.
+- اقدامات: RED معتبر روی کامیت تست‌تنهای  و run  (یک شکست دقیق: 404  به‌علت استفاده از Clinic خانه A زیر Scope موثق B)؛ سپس Clinic عملیات از Scope موثق، مشارکت با ، مالکیت بیمار/Visit/settings/audit هم‌Clinic؛ ۶ تست پذیرش مثبت/منفی. fixture مستقیم Finance نیز Scope صریح موجود خود را برقرار می‌کند. CI evidence برای نمایش testcaseهای Slice 3 در JUnit افزوده شد.
+- کامیت‌ها:  تست RED؛  کد+کنترل‌ها؛  Scope صریح fixture؛  شاهد اجرای testcaseها (شاخه ).
+- CI:  روی  = SUCCESS؛ Integration دقیقاً ۸۷۸ تست/۱۰۵۴۴ assertion و suite جدید ۶ تست/۱۹۷ assertion، بدون failure/error/skip. run میانی  صریحاً FAILURE بود (۸ fixture مالی بدون Scope) و با  اصلاح شد؛ سبزی آن run ادعا نمی‌شود.
+- تصمیمات درون‌فازی: REST همیشه Scope صریح RestClinicContext را مصرف می‌کند؛ no-scope چندکلینیکی fail-closed؛ Clinic خانه فقط داده سازگاری و نه tenant عملیات REST؛ auto-enqueue و Audit از Clinic Visit/Scope B.
+- موارد باز/تحویل: تست Integration محلی به‌علت نبود PHP/WP/MySQL اجرا نشد؛ lint سه فایل PHP با PHP-WASM و Tripwire ۵۹/۵۹ محلی سبز بود. وضعیت نهایی Gateهای exact-head پس از commit این لاگ باید از GitHub بازیابی شود.
+- وضعیت tree: در زمان ثبت این ورودی، تغییر فقط همین لاگِ append-only است؛ پس از commit باید clean شود.
+
+### [2026-09-16 21:49 UTC] — ایجنت Arena — تصحیح ورودی بلافاصلهٔ قبل (آسیب shell-expansion)
+- **تصحیح صریح:** در ورودی بلافاصلهٔ قبل، backtickهای Markdown به‌علت heredoc بدون quote توسط shell اجرا شدند و چند شناسه/نام از متن حذف شد؛ آن متن ناقص را نباید شاهد دانست. دادهٔ صحیح و کامل این ورودی است.
+- فاز/محدوده: فقط `VisitService::walkIn()` در مسیر واقعی `POST /clinic/v1/visits/walk-in`؛ بدون تغییر migration/authorization/queue semantics.
+- اقدامات: RED معتبر روی کامیت تست‌تنهای `0bb8bad` و run `35153195839` (یک شکست دقیق: 404 `CLINIC_NOT_FOUND` به‌علت استفاده از Clinic خانه A زیر Scope موثق B)؛ سپس Clinic عملیات از Scope موثق، مشارکت با `MembershipRepository::clinician_participates_in()`، مالکیت بیمار/Visit/settings/audit هم‌Clinic؛ ۶ تست پذیرش مثبت/منفی. fixture مستقیم Finance نیز Scope صریح موجود خود را برقرار می‌کند. CI evidence برای نمایش testcaseهای Slice 3 در JUnit افزوده شد.
+- کامیت‌ها: `0bb8bad` تست RED؛ `463a456` کد+کنترل‌ها؛ `f771b6c` Scope صریح fixture؛ `8e1dad4` شاهد اجرای testcaseها (شاخه `arena/01a0ac20-doctor`).
+- CI: `35154085312` روی `8e1dad4` = SUCCESS؛ Integration دقیقاً ۸۷۸ تست/۱۰۵۴۴ assertion و suite جدید ۶ تست/۱۹۷ assertion، بدون failure/error/skip. run میانی `35153752130` صریحاً FAILURE بود (۸ fixture مالی بدون Scope) و با `f771b6c` اصلاح شد؛ سبزی آن run ادعا نمی‌شود.
+- تصمیمات درون‌فازی: REST همیشه Scope صریح RestClinicContext را مصرف می‌کند؛ no-scope چندکلینیکی fail-closed؛ Clinic خانه فقط دادهٔ سازگاری و نه tenant عملیات REST؛ auto-enqueue و Audit از Clinic Visit/Scope B.
+- موارد باز/تحویل: تست Integration محلی به‌علت نبود PHP/WP/MySQL اجرا نشد؛ lint فایل‌های PHP تغییرکرده با PHP-WASM و Tripwire ۵۹/۵۹ محلی سبز بود. وضعیت نهایی Gateهای exact-head پس از commit این لاگ باید از GitHub بازیابی شود.
+- وضعیت tree: در زمان ثبت این ورودی، تغییر فقط لاگ append-only است؛ پس از commit باید clean شود.

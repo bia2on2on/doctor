@@ -163,6 +163,10 @@ jobs:
               grep '^testsuite ' "$SPLIT" | grep -E 'Phase3Slice6AuthorizationRedTest|Phase3Slice6BStaffClinicAuthorizationTest' || echo '(no Phase3 Slice 6 RED class present in junit)'
               echo '--- Phase3 Slice 6 RED-class testcases ---'
               grep '^testcase ' "$SPLIT" | grep -E 'Phase3Slice6AuthorizationRedTest|Phase3Slice6BStaffClinicAuthorizationTest' || true
+              echo '--- Phase4 Slice 3 WalkIn suite (execution proof) ---'
+              grep '^testsuite ' "$SPLIT" | grep 'Phase4Slice3WalkInSharedProfessionalTest' || echo '(Phase4 Slice 3 suite missing from junit)'
+              echo '--- Phase4 Slice 3 WalkIn testcases ---'
+              grep '^testcase ' "$SPLIT" | grep 'Phase4Slice3WalkInSharedProfessionalTest' || true
               rm -f "$SPLIT"
             else
               echo '(junit xml missing — run may have terminated prematurely)'

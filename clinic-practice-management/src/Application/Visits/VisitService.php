@@ -18,6 +18,7 @@ use ClinicCore\Domain\Visits\VisitException;
 use ClinicCore\Infrastructure\Audit\AuditLogger;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Repository\AppointmentRepository;
+use ClinicCore\Infrastructure\Repository\MembershipRepository;
 use ClinicCore\Infrastructure\Repository\VisitRepository;
 use ClinicCore\Settings\SettingsFactory;
 use DateTimeImmutable;
@@ -51,6 +52,8 @@ final class VisitService
 
     private const QUEUE_STATUSES = ['waiting', 'called', 'in_consultation'];
 
+    private readonly MembershipRepository $memberships;
+
     public function __construct(
         private readonly CpmsDb $db,
         private readonly VisitRepository $visits,
@@ -59,8 +62,12 @@ final class VisitService
         private readonly AuditLogger $audit,
         private readonly LicenseGate $licenseGate,
         private readonly ?\ClinicCore\Infrastructure\Logging\OpLogger $opLog = null,
-        private readonly mixed $notificationServiceFactory = null
+        private readonly mixed $notificationServiceFactory = null,
+        ?MembershipRepository $memberships = null
     ) {
+        // Optional only for backwards-compatible direct service construction;
+        // production wiring injects the same shared participation repository.
+        $this->memberships = $memberships ?? new MembershipRepository($db);
     }
 
     /** @var array<int, \ClinicCore\Application\Notifications\NotificationService> */
@@ -201,13 +208,16 @@ final class VisitService
         $actorRole = 'secretary';
 
         return $this->db->transactional(function () use ($actorUserId, $actorRole, $patientId, $clinicianId, $meta): array {
+            // Phase 4 Slice 3 — Clinic عملیات WalkIn از context مورد اعتماد
+            // staff می‌آید؛ clinicians.clinic_id فقط Clinic خانه/سازگاری است.
+            // همان Clinic برای مشارکت حرفه‌ای، مالکیت بیمار، درج Visit و تمام
+            // side-effectهای Clinic-sensitive در createVisit استفاده می‌شود.
+            $clinicId = $this->walkInClinicId();
+            if (!$this->memberships->clinician_participates_in($clinicianId, $clinicId)) {
+                throw VisitException::of('CLINIC_NOT_FOUND', 'پزشک یافت نشد', 404);
+            }
+
             $patient = $this->lockPatient($patientId);
-            $clinicId = $this->requireClinician($clinicianId);
-            // Phase 3 Slice 6B — مالکیت پایدار پزشک در برابر Clinic معتبرِ صریحِ
-            // درخواست: پزشکِ Clinic دیگر همان پاکتِ «پزشک یافت نشد» را می‌گیرد؛
-            // بدون درج ویزیت.
-            $this->guardClinicianWithinExplicitScope($clinicId);
-            // C6: بیمار و پزشک باید به یک کلینیک تعلق داشته باشند (verify سمت سرور)
             if ((int) $patient['clinic_id'] !== $clinicId) {
                 throw VisitException::of('CLINIC_VALIDATION_FAILED', 'این بیمار به کلینیک دیگری تعلق دارد', 422);
             }
@@ -991,20 +1001,25 @@ final class VisitService
     }
 
     /**
-     * وجود پزشک + کلینیکِ او (C6 — منبع domain برای Walk-in).
+     * Clinic معتبر برای WalkIn کارکنی.
+     *
+     * مسیر REST همیشه Scope صریحی را که RestClinicContext از عضویت فعال staff
+     * برقرار کرده برمی‌گرداند. fallback فقط سازگاری فراخوان‌های داخلی قدیمی در
+     * نصب واقعاً تک‌کلینیکی است؛ SystemClinicResolver در حالت چندکلینیکی
+     * fail-closed است و هرگز اولین Clinic/Clinic خانه/payload را حدس نمی‌زند.
      */
-    private function requireClinician(int $clinicianId): int
+    private function walkInClinicId(): int
     {
-        // همان Guard الگوی BookingService
-        $row = $this->db->fetchRow(
-            'SELECT id, is_active, clinic_id FROM ' . $this->db->table('cpms_clinicians') . ' WHERE id = %d LIMIT 1',
-            [$clinicianId]
-        );
-        if ($row === null || (int) $row['is_active'] !== 1) {
-            throw VisitException::of('CLINIC_NOT_FOUND', 'پزشک یافت نشد یا غیرفعال است', 404);
+        $scope = ScopeContext::tryGet();
+        if ($scope !== null) {
+            return (int) $scope->clinicId;
         }
 
-        return (int) $row['clinic_id'];
+        try {
+            return App::scope()->clinicId;
+        } catch (ScopeRequiredException $e) {
+            throw VisitException::of($e->errorCode, $e->getMessage(), $e->httpStatus(), $e->getData());
+        }
     }
 
     // ================= Phase 3 Slice 6B — مالکیت پایدار شیء =================
@@ -1037,14 +1052,6 @@ final class VisitService
         $scope = ScopeContext::tryGet();
         if ($scope !== null && (int) ($appt['clinic_id'] ?? 0) !== (int) $scope->clinicId) {
             throw VisitException::of('CLINIC_NOT_FOUND', 'نوبت یافت نشد', 404);
-        }
-    }
-
-    private function guardClinicianWithinExplicitScope(int $clinicId): void
-    {
-        $scope = ScopeContext::tryGet();
-        if ($scope !== null && (int) $scope->clinicId !== $clinicId) {
-            throw VisitException::of('CLINIC_NOT_FOUND', 'پزشک یافت نشد', 404);
         }
     }
 
