@@ -409,7 +409,8 @@ final class App
                 self::op(),
                 self::idem(),
                 self::smsService(),
-                self::notificationService()
+                self::notificationService(),
+                new MembershipRepository($db)
             );
         }
 

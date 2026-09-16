@@ -7,6 +7,8 @@ namespace ClinicCore\Application\Booking;
 use ClinicCore\Application\Notifications\NotificationService;
 use ClinicCore\Application\Notifications\SmsService;
 use ClinicCore\Application\Scope\ScopeContext;
+use ClinicCore\Application\Scope\ScopeRequiredException;
+use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Booking\BookingException;
 use ClinicCore\Domain\Booking\BookingWindow;
 use ClinicCore\Domain\Licensing\LicenseGate;
@@ -21,6 +23,7 @@ use ClinicCore\Infrastructure\Audit\AuditLogger;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Logging\OpLogger;
 use ClinicCore\Infrastructure\Repository\AppointmentRepository;
+use ClinicCore\Infrastructure\Repository\MembershipRepository;
 use ClinicCore\Infrastructure\Repository\PatientRepository;
 use ClinicCore\Infrastructure\Repository\SlotRepository;
 use ClinicCore\Infrastructure\Security\Idempotency;
@@ -48,6 +51,8 @@ final class BookingService
     private const EP_CONFIRM = 'booking/confirm';
     private const EP_RESCHEDULE = 'booking/reschedule';
 
+    private readonly MembershipRepository $memberships;
+
     public function __construct(
         private readonly CpmsDb $db,
         private readonly SlotRepository $slots,
@@ -59,8 +64,10 @@ final class BookingService
         private readonly OpLogger $op,
         private readonly Idempotency $idem,
         private readonly SmsService $sms,
-        private readonly ?NotificationService $notifications = null
+        private readonly ?NotificationService $notifications = null,
+        ?MembershipRepository $memberships = null
     ) {
+        $this->memberships = $memberships ?? new MembershipRepository($this->db);
     }
 
     // ================= A1 — Availability (Public) =================
@@ -618,27 +625,34 @@ final class BookingService
     {
         $this->assertLicense(LicenseGate::OP_APPOINTMENT_BOOK);
 
+        // Phase 4 Slice 2 — Shared Professional: Clinic معتبر فقط از Scope مورد
+        // اعتماد (مرز REST کارکنی یا System-single تک‌کلینیکی)، نه از
+        // clinicians.clinic_id (خانه/سازگاری) و نه از payload. بدون fallback
+        // بی‌صدا به Clinic خانه در حالت چندکلینیکی.
+        $trustedClinicId = $this->trustedClinicIdForStaff();
+        if (!$this->memberships->clinician_participates_in($clinicianId, $trustedClinicId)) {
+            throw BookingException::of('CLINIC_NOT_FOUND', 'پزشک یافت نشد', 404);
+        }
+
         $patient = $this->patients->find($patientId);
         if ($patient === null || (string) $patient['status'] !== 'active') {
             throw BookingException::of('CLINIC_NOT_FOUND', 'بیمار یافت نشد', 404);
         }
-        $clinicId = $this->requireClinician($clinicianId);
-        // Phase 3 Slice 6B — مالکیت پایدار پزشک در برابر Clinic معتبرِ صریحِ
-        // درخواست (مرز REST کارکنی): پزشکِ Clinic دیگر همان پاکتِ «پزشک یافت
-        // نشد» را می‌گیرد؛ بدون درج نوبت و بدون قفل/رزرو اسلات.
-        $this->assertClinicianWithinExplicitScope($clinicId);
-        // C6: بیمار و اسلات باید به یک کلینیک تعلق داشته باشند (verify سمت سرور)
-        if ((int) $patient['clinic_id'] !== $clinicId) {
+        // C6: بیمار باید به همان Clinic معتبر تعلق داشته باشد (verify سمت سرور)
+        if ((int) $patient['clinic_id'] !== $trustedClinicId) {
             throw BookingException::of('CLINIC_VALIDATION_FAILED', 'این بیمار به کلینیک دیگری تعلق دارد', 422);
         }
 
-        // Resolve slot first — exact identity preferred
-        $resolvedSlot = $this->resolveSlotForBooking($clinicId, $clinicianId, $slotDate, $slotTime, $slotId);
+        // Resolve slot under trusted Clinic — exact identity preferred
+        $resolvedSlot = $this->resolveSlotForBooking($trustedClinicId, $clinicianId, $slotDate, $slotTime, $slotId);
         if ($resolvedSlot === null || (int) $resolvedSlot['is_open'] !== 1) {
             throw BookingException::of('CLINIC_NOT_FOUND', 'اسلات یافت نشد — ممکن است Schedule پزشک برای این روز تعریف نشده باشد', 404);
         }
+        if ((int) $resolvedSlot['clinic_id'] !== $trustedClinicId) {
+            throw BookingException::of('CLINIC_NOT_FOUND', 'اسلات یافت نشد — ممکن است Schedule پزشک برای این روز تعریف نشده باشد', 404);
+        }
         // N-3: Staff (حضوری/فوری) بدون min-lead — فقط Window + افق آینده، با Location timezone
-        $locationTz = $this->resolveLocationTimezone((int) $resolvedSlot['location_id'], $clinicId);
+        $locationTz = $this->resolveLocationTimezone((int) $resolvedSlot['location_id'], $trustedClinicId);
         $this->assertWindowWithTimezone($slotDate, $slotTime, $locationTz, 0);
 
         try {
@@ -726,11 +740,13 @@ final class BookingService
      */
     public function listForClinician(int $clinicianId, string $date, ?string $status): array
     {
-        $clinicId = $this->requireClinician($clinicianId);
-        // Phase 3 Slice 6B — مالکیت پایدار پزشک در برابر Clinic معتبرِ صریح
-        // (D9 مسیر کارکنی؛ 404 parity — نوبت‌های Clinic دیگر فاش نمی‌شوند).
-        $this->assertClinicianWithinExplicitScope($clinicId);
-        $rows = $this->appointments->listByClinicianDate($clinicId, $clinicianId, $date);
+        // Phase 4 Slice 2 — Shared Professional list: فقط نوبت‌های Clinic
+        // معتبر (دامنه‌بندی + مشارکت پایدار فعال؛ 404 parity بدون نشت).
+        $trustedClinicId = $this->trustedClinicIdForStaff();
+        if (!$this->memberships->clinician_participates_in($clinicianId, $trustedClinicId)) {
+            throw BookingException::of('CLINIC_NOT_FOUND', 'پزشک یافت نشد', 404);
+        }
+        $rows = $this->appointments->listByClinicianDate($trustedClinicId, $clinicianId, $date);
         if ($status !== null && $status !== '') {
             $rows = array_values(array_filter($rows, static fn (array $r): bool => (string) $r['status'] === $status));
         }
@@ -1010,6 +1026,29 @@ final class BookingService
         }
 
         return (int) $row['clinic_id'];
+    }
+
+    /**
+     * Phase 4 Slice 2 — Trusted Clinic برای مسیرهای کارکنی (createByStaff /
+     * listForClinician).
+     *
+     * ترتیب الزامی: Scope صریحِ درخواست (RestClinicContext/TrustedClinicEstablisher)
+     * ← اگر نباشد System-single تک‌کلینیکی (برای BC BookingFlowTest تک-Clinic)
+     * ← در غیر این صورت fail-closed CLINIC_SCOPE_REQUIRED. هرگز از
+     * clinicians.clinic_id به‌عنوان اعتماد استفاده نمی‌شود و هیچ fallback به
+     * Clinic خانه یا Clinic صفر/اولین وجود ندارد.
+     */
+    private function trustedClinicIdForStaff(): int
+    {
+        $scope = ScopeContext::tryGet();
+        if ($scope !== null) {
+            return (int) $scope->clinicId;
+        }
+        try {
+            return App::scope()->clinicId;
+        } catch (ScopeRequiredException $e) {
+            throw BookingException::of('CLINIC_SCOPE_REQUIRED', 'عملیات بدون زمینهٔ کلینیک معتبر مجاز نیست', 400);
+        }
     }
 
     /**
