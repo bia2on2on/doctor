@@ -4,11 +4,13 @@ declare(strict_types=1);
 
 namespace ClinicCore\Rest;
 
+use ClinicCore\Application\Authorization\AuthorizationException;
 use ClinicCore\Application\Reports\ExportService;
 use ClinicCore\Application\Reports\ReportException;
 use ClinicCore\Application\Reports\ReportService;
 use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Auth\RolesAndCapabilities;
+use ClinicCore\Bootstrap\App;
 use WP_Error;
 use WP_REST_Request;
 use WP_REST_Response;
@@ -24,6 +26,13 @@ use WP_REST_Server;
  *  - GET  /reports/exports/{id}/download — دانلود محافظت‌شده (مالک + Audit)
  *
  * مسیر {type} به ۱۲ نوع شناخته‌شده محدود است (بدون برخورد با /exports).
+ *
+ * امنیت (Phase 3 Slice 4) — همان الگوی پذیرفته‌شدهٔ SMS:
+ *  ۱) Nonce (CSRF) + Cap سراسریِ WordPress (Defense in Depth، فقط لایهٔ خشن)؛
+ *  ۲) مجوزِ **Clinic-scoped** با `AuthorizationService` روی Clinicِ مورد اعتمادِ
+ *     `App::scope()` (هرگز از payload) — عضویتِ فعالِ پایدار + مجوزِ درخواستی؛
+ *  ۳) Deny صریحِ عضویت بر Grant/Preset غلبه می‌کند و نبودِ عضویت/تعلیق fail-closed
+ *     است؛ پاکتِ خطا عمومی است تا وجودِ Clinic/شیءِ دیگر افشا نشود.
  */
 final class ReportsController extends RestBase
 {
@@ -86,12 +95,19 @@ final class ReportsController extends RestBase
         register_rest_route(self::NS, '/reports/(?P<type>' . self::TYPE_PATTERN . ')/export', [
             [
                 'methods' => WP_REST_Server::CREATABLE,
-                'callback' => fn (WP_REST_Request $r) => $this->staff($r, RolesAndCapabilities::REPORT_READ, fn (): array => $this->exports->request(
-                    $this->userId($r),
-                    (string) $r['type'],
-                    $r['from'] ?? null,
-                    $r['to'] ?? null
-                ), 202),
+                'callback' => fn (WP_REST_Request $r) => $this->staff(
+                    $r,
+                    RolesAndCapabilities::REPORT_READ,
+                    fn (): array => $this->exports->request(
+                        $this->userId($r),
+                        (string) $r['type'],
+                        $r['from'] ?? null,
+                        $r['to'] ?? null
+                    ),
+                    202,
+                    // EXPORT جداگانه لازم است (فقط REPORT_READ کافی نیست).
+                    RolesAndCapabilities::EXPORT
+                ),
                 'permission_callback' => fn (WP_REST_Request $r)
                     => $this->permCap($r, RolesAndCapabilities::REPORT_READ),
                 'args' => [
@@ -106,7 +122,14 @@ final class ReportsController extends RestBase
         register_rest_route(self::NS, '/reports/exports', [
             [
                 'methods' => WP_REST_Server::READABLE,
-                'callback' => fn (WP_REST_Request $r) => $this->staff($r, RolesAndCapabilities::REPORT_READ, fn (): array => $this->exports->listFor($this->userId($r))),
+                'callback' => fn (WP_REST_Request $r) => $this->staff(
+                    $r,
+                    RolesAndCapabilities::REPORT_READ,
+                    fn (): array => $this->exports->listFor($this->userId($r)),
+                    null,
+                    // فهرست Exportها فقط با EXPORT مجاز است.
+                    RolesAndCapabilities::EXPORT
+                ),
                 'permission_callback' => fn (WP_REST_Request $r)
                     => $this->permCap($r, RolesAndCapabilities::REPORT_READ),
             ],
@@ -137,6 +160,10 @@ final class ReportsController extends RestBase
         $perm = $this->requireCap(RolesAndCapabilities::REPORT_READ);
         if ($perm instanceof WP_Error) {
             return $perm;
+        }
+        $scoped = $this->requireScopedClinicPermission(RolesAndCapabilities::REPORT_READ);
+        if ($scoped instanceof WP_Error) {
+            return $scoped;
         }
 
         try {
@@ -265,9 +292,16 @@ final class ReportsController extends RestBase
      *
      * @template T
      * @param callable(): T $fn
+     * @param string|null   $extraScopedCap مجوزِ Clinic-scopedِ اضافی برای همین Endpoint
+     *                                     (مثلاً EXPORT در کنار REPORT_READ)
      */
-    private function staff(WP_REST_Request $r, string $cap, callable $fn, ?int $status = null): WP_REST_Response|WP_Error
-    {
+    private function staff(
+        WP_REST_Request $r,
+        string $cap,
+        callable $fn,
+        ?int $status = null,
+        ?string $extraScopedCap = null
+    ): WP_REST_Response|WP_Error {
         $nonce = $this->requireNonce($r);
         if ($nonce instanceof WP_Error) {
             return $nonce;
@@ -275,6 +309,18 @@ final class ReportsController extends RestBase
         $perm = $this->requireCap($cap);
         if ($perm instanceof WP_Error) {
             return $perm;
+        }
+
+        // Phase 3 Slice 4 — مجوزِ Clinic-scoped روی Clinicِ مورد اعتمادِ درخواست.
+        $scoped = $this->requireScopedClinicPermission($cap);
+        if ($scoped instanceof WP_Error) {
+            return $scoped;
+        }
+        if ($extraScopedCap !== null) {
+            $extra = $this->requireScopedClinicPermission($extraScopedCap);
+            if ($extra instanceof WP_Error) {
+                return $extra;
+            }
         }
 
         try {
@@ -293,5 +339,47 @@ final class ReportsController extends RestBase
     private function userId(WP_REST_Request $r): int
     {
         return (int) (wp_get_current_user()->ID ?: 0);
+    }
+
+    /**
+     * **Phase 3 Slice 4 — مجوزِ Clinic-scoped** (همان الگوی پذیرفته‌شدهٔ SMS).
+     *
+     * Invariants:
+     *  - Clinicِ مورد اعتماد فقط از `App::scope()` می‌آید (استقرارِ مرز REST از
+     *    عضویتِ تأییدشده) — نه از payload و نه از هدر خام؛
+     *  - Cap سراسریِ WordPress به‌تنهایی مجوزِ Clinic نیست — عضویتِ فعالِ پایدار و
+     *    مجوزِ درخواستی هر دو لازم‌اند؛
+     *  - Deny صریحِ عضویت بر Grant/Preset غلبه می‌کند؛ عضویتِ معلق/غیرعضو
+     *    fail-closed است؛
+     *  - روی انکار: هیچ خواندن/نوشتنِ tenant-دار، هیچ Job و هیچ Side-effect.
+     *
+     * قرارداد خطا: پاکتِ عمومیِ `CLINIC_PERMISSION_DENIED` / 403 تا وجودِ Clinic یا
+     * شیءِ دیگری افشا نشود. بررسی‌های خشنِ قبلی (Nonce + Cap سراسری) دست‌نخورده
+     * مانده‌اند (Defense in Depth) و پیش از این helper اجرا می‌شوند.
+     */
+    private function requireScopedClinicPermission(string $cap): bool|WP_Error
+    {
+        $userId = (int) get_current_user_id();
+        if ($userId <= 0) {
+            return $this->error('CLINIC_UNAUTHORIZED', 401, 'وارد نشده‌اید');
+        }
+
+        try {
+            $clinicId = App::scope()->clinicId;
+        } catch (\Throwable) {
+            // Scope قابلِ اعتماد وجود ندارد ⇒ Fail-Closed، بدون حدسِ Clinic.
+            return $this->error('CLINIC_PERMISSION_DENIED', 403, 'دسترسی ندارید');
+        }
+        if ($clinicId <= 0) {
+            return $this->error('CLINIC_PERMISSION_DENIED', 403, 'دسترسی ندارید');
+        }
+
+        try {
+            App::authorization_service()->authorize($userId, $clinicId, $cap);
+        } catch (AuthorizationException) {
+            return $this->error('CLINIC_PERMISSION_DENIED', 403, 'دسترسی ندارید');
+        }
+
+        return true;
     }
 }

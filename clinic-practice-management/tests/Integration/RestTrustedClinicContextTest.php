@@ -319,10 +319,18 @@ final class RestTrustedClinicContextTest extends WP_UnitTestCase
         $this->seedVisitPair();
         $userId = $this->makeStaff('cpms_doctor');
         App::membership_service()->create_membership($this->clinicA, $userId, 'cpms_doctor');
-        App::membership_service()->create_membership($this->clinicB, $userId, 'cpms_doctor');
+        $membershipB = App::membership_service()->create_membership($this->clinicB, $userId, 'cpms_doctor');
         $user = get_userdata($userId);
         $user?->add_cap('cpms_export');
         $user?->add_cap('cpms_patient_read');
+        // Phase 3 Slice 4 — Cap سراسری مجوزِ Clinic نیست: قصدِ این تست عبور از
+        // مسیرِ Export و اثباتِ «Clinic درخواست روی Job» است، پس مجوزِ scopedِ
+        // EXPORT از عضویتِ پایدارِ همان Clinicِ درخواست (B) اعطا می‌شود.
+        App::membership_service()->set_capability(
+            $membershipB,
+            \ClinicCore\Auth\RolesAndCapabilities::EXPORT,
+            'grant'
+        );
 
         ScopeContext::set(ClinicScope::forClinic($this->clinicA));
         wp_set_current_user($userId);

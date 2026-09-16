@@ -266,7 +266,7 @@ scenario('S5', 'Notifications: publish به بیمار + inbox منشی', functi
 });
 
 // ---------- S6: Reports + Export ----------
-scenario('S6', 'Reports/Export: اجرای گزارش + درخواست Export async', function () use ($secretaryId, $doctorUserId) {
+scenario('S6', 'Reports/Export: اجرای گزارش + درخواست Export async', function () use ($secretaryId, $doctorUserId, $clinicId) {
     // RBAC (طبق RolesAndCapabilities): منشی REPORT_READ ندارد → باید 403 بگیرد
     $denied = false;
     try {
@@ -299,6 +299,30 @@ scenario('S6', 'Reports/Export: اجرای گزارش + درخواست Export as
     if ($u !== false) {
         $u->add_cap(\ClinicCore\Auth\RolesAndCapabilities::EXPORT);
     }
+
+    // Phase 3 Slice 4 — Cap سراسریِ WordPress به‌تنهایی مجوزِ Clinic نیست:
+    // با همان Cap سراسری هم باید رد شود (Deny صریح > Grant > Preset).
+    $stillDenied = false;
+    try {
+        App::exportService()->request($doctorUserId, 'visits', gmdate('Y-m-d', time() - 7 * 86400), gmdate('Y-m-d'));
+    } catch (\Throwable $e) {
+        $stillDenied = true;
+    }
+    if (!$stillDenied) {
+        throw new RuntimeException('Cap سراسری نباید جای مجوزِ عضویتِ Clinic را بگیرد (Phase 3)');
+    }
+
+    // مجوزِ Clinic-scoped از **عضویتِ پایدارِ همین Clinic** (الگوی مالک کلینیک) —
+    // پیش‌نیازِ واقعیِ چرخهٔ Export در فاز ۳.
+    $membershipService = App::membership_service();
+    $membership = $membershipService->membership_for($clinicId, $doctorUserId);
+    if ($membership === null) {
+        $membershipId = $membershipService->create_membership($clinicId, $doctorUserId, 'cpms_doctor');
+    } else {
+        $membershipId = (int) $membership['id'];
+    }
+    $membershipService->set_capability($membershipId, \ClinicCore\Auth\RolesAndCapabilities::EXPORT, 'grant');
+
     $export = App::exportService()->request($doctorUserId, 'visits', gmdate('Y-m-d', time() - 7 * 86400), gmdate('Y-m-d'));
     if (!isset($export['job_id'])) {
         throw new RuntimeException('export request failed');

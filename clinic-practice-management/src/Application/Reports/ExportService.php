@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace ClinicCore\Application\Reports;
 
+use ClinicCore\Application\Authorization\AuthorizationException;
+use ClinicCore\Application\Authorization\AuthorizationService;
 use ClinicCore\Application\Scope\ClinicScope;
 use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Application\Scope\ScopeRequiredException;
@@ -49,6 +51,20 @@ use Throwable;
  * `MembershipRepository::find_active()` می‌سنجد و در غیر این صورت fail-closed
  * است. Capability سراسریِ WordPress به‌تنهایی هرگز مجوزِ عبور از مرز Clinic
  * نیست. (این یک گارْدِ محدودِ Phase 2 است، نه `AuthorizationService` فاز ۳.)
+ *
+ * **Phase 3 Slice 4 — مجوزِ Clinic-scoped:** علاوه بر گارْدِ بالا، همهٔ
+ * مسیرهای همین سرویس (REST و Job) اکنون `AuthorizationService` را با
+ * **actor + Clinicِ مورد اعتماد** صدا می‌زنند:
+ *  - `request()`: `REPORT_READ` + `EXPORT` روی Clinicِ `App::scope()` — **پیش از**
+ *    حلِ وابستگی‌های Clinic و **پیش از** `enqueue`؛
+ *  - `generate()` (Worker): همان دو مجوز را با `clinic_id`/`actor_id` **پایدارِ
+ *    روی Job** بازسنجی می‌کند — نه با کاربر جاری، نه با Scope باقی‌ماندهٔ HTTP،
+ *    نه با «اولین Clinic». لغو/تعلیقِ عضویت بین Enqueue و اجرا ⇒ انکارِ قطعی و
+ *    **بدون** تولید فایل/اعلان/لاگِ موفقیت؛
+ *  - `listFor()`/`download()`: `EXPORT` روی Clinicِ مورد اعتماد + مالکیتِ پایدارِ
+ *    ردیف (recipient + clinic) + انقضا.
+ * Capهای سراسریِ WordPress که از قبل بودند (Defense in Depth) دست‌نخورده
+ * می‌مانند، ولی دیگر «حرف آخر» نیستند.
  */
 final class ExportService
 {
@@ -73,7 +89,8 @@ final class ExportService
         private readonly JobQueue $jobs,
         private readonly \Closure $clinicDeps,
         private readonly AuditLogger $audit,
-        private readonly OpLogger $op
+        private readonly OpLogger $op,
+        private readonly AuthorizationService $authorization
     ) {
     }
 
@@ -111,6 +128,13 @@ final class ExportService
         // از عضویتِ تأییدشده). **پیش از** هر دسترسیِ Clinic-دار حل می‌شود تا
         // بستهٔ وابستگی فقط برای همین Clinic ساخته شود.
         $clinicId = $this->trustedClinicId();
+
+        // Phase 3 Slice 4 — مجوزِ Clinic-scoped **پیش از** حلِ وابستگی‌های Clinic و
+        // **پیش از** Enqueue: نبود/انکارِ `REPORT_READ` یا `EXPORT` در عضویتِ پایدار
+        // همین Clinic ⇒ هیچ Jobی ساخته نمی‌شود (Cap سراسری کافی نیست).
+        $this->authorizeScoped($actorUserId, $clinicId, RolesAndCapabilities::REPORT_READ);
+        $this->authorizeScoped($actorUserId, $clinicId, RolesAndCapabilities::EXPORT);
+
         $deps = $this->depsFor($clinicId);
 
         $this->requireReportAccess($deps->reports, $actorUserId, $type);
@@ -173,7 +197,15 @@ final class ExportService
         //     عبور از مرز Clinic را نمی‌دهد (Fail-Closed، بدون fallback).
         $this->requireClinicMembership($actorUserId, $clinicId);
 
-        // (۳) حالا — و فقط حالا — وابستگی‌های همان Clinic حل می‌شوند.
+        // (۳) Phase 3 Slice 4 — بازسنجیِ **مجوزهای Clinic-scoped** لازم برای تولید
+        //     همان گزارشی که در Enqueue درخواست شده بود، فقط با واقعیت‌های پایدارِ
+        //     Job (`clinic_id` + `actor_id`) — نه کاربر جاری، نه Scope باقی‌مانده.
+        //     اگر actor بین Enqueue و اجرا معلق/لغو شده باشد ⇒ انکارِ قطعی **پیش از**
+        //     اجرای گزارش، ساخت CSV، ذخیرهٔ فایل، اعلان و لاگِ موفقیت.
+        $this->authorizeScopedForJob($actorUserId, $clinicId, RolesAndCapabilities::REPORT_READ);
+        $this->authorizeScopedForJob($actorUserId, $clinicId, RolesAndCapabilities::EXPORT);
+
+        // (۴) حالا — و فقط حالا — وابستگی‌های همان Clinic حل می‌شوند.
         $deps = $this->depsFor($clinicId);
 
         $restore = $this->bindJobClinic($clinicId);
@@ -256,9 +288,15 @@ final class ExportService
      */
     public function listFor(int $actorUserId): array
     {
-        $this->requireCap($actorUserId, RolesAndCapabilities::EXPORT, 'خروجی گرفتن از گزارش');
+        // Clinic مورد اعتماد همین درخواست — نه payload و نه «اولین Clinic».
+        $clinicId = $this->trustedClinicId();
 
-        $rows = $this->notificationRows->forUser($this->trustedClinicId(), $actorUserId, false, 100, 0, NotificationEvents::REPORT_EXPORT_READY);
+        // Cap سراسری (Defense in Depth) + مجوزِ scopedِ EXPORT + مالکیتِ پایدار
+        // (فهرست فقط ردیف‌های خودِ actor در همین Clinic را برمی‌گرداند).
+        $this->requireCap($actorUserId, RolesAndCapabilities::EXPORT, 'خروجی گرفتن از گزارش');
+        $this->authorizeScoped($actorUserId, $clinicId, RolesAndCapabilities::EXPORT);
+
+        $rows = $this->notificationRows->forUser($clinicId, $actorUserId, false, 100, 0, NotificationEvents::REPORT_EXPORT_READY);
 
         return [
             'exports' => array_map(fn (array $row): array => $this->presentExport($row), $rows),
@@ -275,9 +313,14 @@ final class ExportService
         // Clinic از مرزِ قابلِ اعتمادِ درخواست — storageِ همان Clinic استفاده
         // می‌شود، پس پیش از لمسِ فایل حل می‌شود.
         $clinicId = $this->trustedClinicId();
-        $deps = $this->depsFor($clinicId);
 
+        // Phase 3 Slice 4 — مجوزِ Clinic-scoped **پیش از** هر خواندنِ ردیف/فایل:
+        // Cap سراسری هیچ‌وقت جای مجوزِ member را نمی‌گیرد. ترتیب: مجوز → مالکیتِ
+        // پایدار (recipient + clinic) → انقضا → خواندن.
         $this->requireCap($actorUserId, RolesAndCapabilities::EXPORT, 'خروجی گرفتن از گزارش');
+        $this->authorizeScoped($actorUserId, $clinicId, RolesAndCapabilities::EXPORT);
+
+        $deps = $this->depsFor($clinicId);
 
         $row = $this->notificationRows->find($notificationId);
         if ($row === null
@@ -496,6 +539,59 @@ final class ExportService
     // ================= Authz =================
 
     /**
+     * **Phase 3 Slice 4 — مجوزِ Clinic-scoped مسیرهای REST.**
+     *
+     * منبعِ Clinic فقط `trustedClinicId()` (استقرارِ مرزِ REST/عضویتِ تأییدشده)
+     * است؛ Cap سراسریِ WordPress هرگز مجوزِ عبور از مرز Clinic نیست. روی انکار،
+     * پاکتِ عمومیِ موجود (`CLINIC_PERMISSION_DENIED` / 403) برگردانده می‌شود تا
+     * وجود/عدم‌وجودِ Clinic یا شیءِ دیگر افشا نشود.
+     *
+     * @throws ReportException
+     */
+    private function authorizeScoped(int $actorUserId, int $clinicId, string $permission): void
+    {
+        try {
+            $this->authorization->authorize($actorUserId, $clinicId, $permission);
+        } catch (AuthorizationException) {
+            throw ReportException::of(
+                'CLINIC_PERMISSION_DENIED',
+                'دسترسی لازم را ندارید',
+                403,
+                ['capability' => $permission]
+            );
+        }
+    }
+
+    /**
+     * **Phase 3 Slice 4 — مجوزِ Clinic-scoped در زمانِ اجرای Job.**
+     *
+     * این متد فقط با واقعیت‌های **پایدارِ** Job کار می‌کند: `clinic_id`ای که
+     * سرور در Enqueue نوشته است و `actor_id` درخواست‌دهنده. نه کاربر جاری
+     * (`wp_get_current_user`) مرجع است، نه Scope محیطی، نه «Clinic اول».
+     *
+     * انکار = شکستِ قطعیِ مجوز (نه ضعفِ مجوز): استثنا **پیش از** `ReportService::run`،
+     * `buildCsv`، `LocalFileStorage::store`، اعلان و لاگِ موفقیت پرتاب می‌شود؛ پس
+     * actorِ معلق/لغوشده هرگز artifact تولید نمی‌کند. کد/HTTP پایدارِ قبلی
+     * (`CLINIC_EXPORT_CLINIC_NOT_AUTHORIZED` / 403) حفظ می‌شود تا قرارداد موجودِ
+     * مسیرِ Job change نکند.
+     *
+     * @throws ReportException
+     */
+    private function authorizeScopedForJob(int $actorUserId, int $clinicId, string $permission): void
+    {
+        try {
+            $this->authorization->authorize($actorUserId, $clinicId, $permission);
+        } catch (AuthorizationException) {
+            throw ReportException::of(
+                'CLINIC_EXPORT_CLINIC_NOT_AUTHORIZED',
+                'عضویت فعال و مجوز لازم برای خروجی گرفتن از این Clinic وجود ندارد.',
+                403,
+                ['clinic_id' => $clinicId, 'capability' => $permission]
+            );
+        }
+    }
+
+    /**
      * **گارْدِ محدودِ Phase 2 برای عبور از مرز Clinic** (Slice 1B.1).
      *
      * چرا لازم است: `clinic_id` یک Job payload یک «انتخابِ عملیات» است، نه یک
@@ -518,7 +614,6 @@ final class ExportService
      * (همان عضویتِ تأییدشده) می‌آید؛ افزودنِ دوبارهٔ آن در `request()` می‌توانست
      * نصبِ تک‌کلینیکی را که scope‌اش از `SystemClinicResolver` می‌آید بشکند.
      *
-     * @throws ReportException با کدِ پایدارِ `CLINIC_EXPORT_CLINIC_NOT_AUTHORIZED`
      */
     private function requireClinicMembership(int $actorUserId, int $clinicId): void
     {

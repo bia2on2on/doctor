@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Tests\Integration;
 
+use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Infrastructure\Queue\JobQueue;
 use WP_REST_Request;
@@ -42,6 +43,10 @@ final class ReportsAuthzTest extends WP_UnitTestCase
     private int $patientBId = 0;
     private int $visitAId;
     private string $today;
+    private int $seedClinicId = 0;
+
+    /** @var array<int, int> wp user id => durable membership id */
+    private array $membershipIds = [];
 
     protected function setUp(): void
     {
@@ -69,6 +74,7 @@ final class ReportsAuthzTest extends WP_UnitTestCase
         $seedClinic = (int) App::db()->fetchValue(
             'SELECT id FROM ' . App::db()->table('cpms_clinics') . ' LIMIT 1'
         );
+        $this->seedClinicId = $seedClinic;
         foreach (
             [
                 [$this->secretaryUserId, 'cpms_secretary'],
@@ -78,9 +84,10 @@ final class ReportsAuthzTest extends WP_UnitTestCase
                 [$this->opsUserId, 'cpms_manager'],
             ] as [$uid, $roleKey]
         ) {
-            if ($membership->membership_for($seedClinic, $uid) === null) {
-                $membership->create_membership($seedClinic, $uid, $roleKey);
-            }
+            $existing = $membership->membership_for($seedClinic, $uid);
+            $this->membershipIds[$uid] = $existing !== null
+                ? (int) ($existing['id'] ?? 0)
+                : $membership->create_membership($seedClinic, $uid, $roleKey);
         }
 
         global $wpdb;
@@ -322,6 +329,10 @@ final class ReportsAuthzTest extends WP_UnitTestCase
         $doc = get_userdata($this->doctorAUserId);
         $doc?->add_cap('cpms_export');
 
+        // Phase 3 Slice 4 — Cap سراسری به‌تنهایی مجوزِ Clinic نیست: تست قصدِ
+        // Export مجاز را دارد، پس مجوزِ EXPORT از **عضویتِ پایدار** اعطا می‌شود.
+        $this->grantScopedExport($this->doctorAUserId);
+
         $req = $this->dispatch('POST', self::NS . '/reports/visits/export', [
             'from' => $this->today,
             'to' => $this->today,
@@ -367,6 +378,9 @@ final class ReportsAuthzTest extends WP_UnitTestCase
         $docB = get_userdata($this->doctorBUserId);
         $docB?->add_cap('cpms_report_read');
         $docB?->add_cap('cpms_export');
+        // همین دلیل: قصدِ تست «انکارِ مالکیت» است، نه «انکارِ مجوز» — پس کاربر B
+        // واقعاً برای همین Clinic مجاز می‌شود و ادعای 404 یک ادعای مالکیت می‌ماند.
+        $this->grantScopedExport($this->doctorBUserId);
         wp_set_current_user($this->doctorBUserId);
         $notYours = $this->dispatch('GET', self::NS . '/reports/exports/' . $notifId . '/download');
         $this->assertSame(404, $notYours->get_status());
@@ -559,6 +573,21 @@ final class ReportsAuthzTest extends WP_UnitTestCase
     }
 
     // ================= Helpers =================
+
+    /**
+     * Phase 3 Slice 4 — مجوزِ Clinic-scoped از عضویتِ پایدار (اصلاح Fixture، §9):
+     * Cap سراسریِ WordPress مجوزِ Export در یک Clinic نیست.
+     */
+    private function grantScopedExport(int $userId): void
+    {
+        $membershipId = $this->membershipIds[$userId] ?? 0;
+        $this->assertGreaterThan(0, $membershipId, 'actor باید عضویتِ پایدار داشته باشد');
+        App::membership_service()->set_capability($membershipId, RolesAndCapabilities::EXPORT, 'grant');
+        $this->assertTrue(
+            App::authorization_service()->can($userId, $this->seedClinicId, RolesAndCapabilities::EXPORT),
+            'عضویتِ پایدار باید EXPORT را برای همین Clinic مجاز کند'
+        );
+    }
 
     private function assertAuditExportCount(int $min): void
     {
