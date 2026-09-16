@@ -147,6 +147,59 @@ final class ReportsExportClinicAuthorizationTest extends WP_UnitTestCase
         self::assertSame(0, $this->exportReadyCount($clinicId, $actorId), 'no artifact notification may be produced');
     }
 
+    /**
+     * CHANGE CONTRACT (۱۰) — «Administrator نصب بدون مجوزِ Clinic» هیچ دادهٔ
+     * Clinic نمی‌گیرد. نامِ نقش یا Cap سراسریِ حداکثری هرگز جایگزینِ مرزِ
+     * Clinic-scoped نمی‌شود.
+     */
+    public function testDenyInstallationAdministratorWithoutClinicAuthorization(): void
+    {
+        $orgId = $this->createOrganization('admin');
+        $clinicId = $this->createClinic($orgId, 'admin');
+        $actorId = $this->makeUser('rep_admin', 'administrator');
+
+        $user = get_userdata($actorId);
+        self::assertNotFalse($user);
+        foreach ([
+            RolesAndCapabilities::REPORT_READ,
+            RolesAndCapabilities::EXPORT,
+            RolesAndCapabilities::PATIENT_READ,
+        ] as $cap) {
+            // حداکثرِ Cap سراسریِ نصب — هنوز هیچ مجوزِ Clinic نیست.
+            $user->add_cap($cap);
+        }
+        self::assertTrue($user->has_cap(RolesAndCapabilities::REPORT_READ), 'precondition: global REPORT_READ is held');
+        self::assertTrue($user->has_cap(RolesAndCapabilities::EXPORT), 'precondition: global EXPORT is held');
+        self::assertSame(
+            [],
+            App::membership_service()->active_memberships_for_user($actorId),
+            'precondition: the administrator holds no durable Clinic membership'
+        );
+        self::assertFalse(
+            $this->authz()->can($actorId, $clinicId, RolesAndCapabilities::EXPORT),
+            'precondition: the administrator holds no Clinic-scoped EXPORT authority'
+        );
+
+        $read = $this->dispatchGet(self::NS . '/reports', $clinicId, $actorId);
+        self::assertSame(
+            403,
+            $read->get_status(),
+            'an installation administrator without Clinic authz must not read Clinic report data'
+        );
+
+        $export = $this->dispatchPost(self::NS . '/reports/revenue/export', $clinicId, $actorId, [
+            'from' => gmdate('Y-m-d'),
+            'to' => gmdate('Y-m-d'),
+        ]);
+        self::assertSame(
+            0,
+            $this->reportExportJobCount($clinicId, $actorId),
+            'no durable report.export job may be created for a non-member administrator'
+        );
+        self::assertSame(403, $export->get_status(), 'an installation administrator without Clinic authz must not export');
+        self::assertSame(0, $this->exportReadyCount($clinicId, $actorId), 'no export artifact may be published');
+    }
+
     public function testDenySuspendedMembershipOnReadAndExport(): void
     {
         $orgId = $this->createOrganization('suspended');
