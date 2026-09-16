@@ -101,14 +101,14 @@ final class ReportsExportClinicAuthorizationTest extends WP_UnitTestCase
     {
         [$clinicId, $actorId] = $this->createScopedExportDeniedActor();
 
-        $before = $this->reportExportJobCount($clinicId);
+        $before = $this->reportExportJobCount($clinicId, $actorId);
 
         $res = $this->dispatchPost(self::NS . '/reports/revenue/export', $clinicId, $actorId, [
             'from' => gmdate('Y-m-d'),
             'to' => gmdate('Y-m-d'),
         ]);
 
-        $after = $this->reportExportJobCount($clinicId);
+        $after = $this->reportExportJobCount($clinicId, $actorId);
 
         self::assertSame(
             0,
@@ -160,15 +160,17 @@ final class ReportsExportClinicAuthorizationTest extends WP_UnitTestCase
             'precondition: the membership is suspended'
         );
 
-        $read = $this->dispatchGet(self::NS . '/reports', $clinicId, $actorId);
-        self::assertSame(403, $read->get_status(), 'a suspended membership must fail closed');
-
+        $jobsBefore = $this->reportExportJobCount($clinicId, $actorId);
         $export = $this->dispatchPost(self::NS . '/reports/revenue/export', $clinicId, $actorId, [
             'from' => gmdate('Y-m-d'),
             'to' => gmdate('Y-m-d'),
         ]);
+        $jobsAfter = $this->reportExportJobCount($clinicId, $actorId);
+        self::assertSame(0, $jobsAfter - $jobsBefore, 'no durable job may be created for a suspended membership');
         self::assertSame(403, $export->get_status(), 'a suspended membership must not export');
-        self::assertSame(0, $this->reportExportJobCount($clinicId), 'no job may survive a suspended membership');
+
+        $read = $this->dispatchGet(self::NS . '/reports', $clinicId, $actorId);
+        self::assertSame(403, $read->get_status(), 'a suspended membership must fail closed');
     }
 
     public function testDenyActiveMembershipLackingReportRead(): void
@@ -183,19 +185,23 @@ final class ReportsExportClinicAuthorizationTest extends WP_UnitTestCase
             'precondition: scoped REPORT_READ is not granted by the secretary preset'
         );
 
+        $export = $this->dispatchPost(self::NS . '/reports/revenue/export', $clinicId, $actorId, [
+            'from' => gmdate('Y-m-d'),
+            'to' => gmdate('Y-m-d'),
+        ]);
+        self::assertSame(
+            0,
+            $this->reportExportJobCount($clinicId, $actorId),
+            'no export job may be enqueued when scoped REPORT_READ is missing'
+        );
+        self::assertSame(403, $export->get_status());
+
         $read = $this->dispatchGet(self::NS . '/reports', $clinicId, $actorId);
         self::assertSame(403, $read->get_status());
         self::assertSame('CLINIC_PERMISSION_DENIED', $this->errorCode($read));
 
         $print = $this->dispatchGet(self::NS . '/reports/revenue/print', $clinicId, $actorId);
         self::assertSame(403, $print->get_status(), 'print is a report read and needs the same scoped permission');
-
-        $export = $this->dispatchPost(self::NS . '/reports/revenue/export', $clinicId, $actorId, [
-            'from' => gmdate('Y-m-d'),
-            'to' => gmdate('Y-m-d'),
-        ]);
-        self::assertSame(403, $export->get_status());
-        self::assertSame(0, $this->reportExportJobCount($clinicId), 'no export job may be enqueued');
     }
 
     public function testDenyActiveMembershipLackingExportWhileReportReadIsAllowed(): void
@@ -214,20 +220,24 @@ final class ReportsExportClinicAuthorizationTest extends WP_UnitTestCase
             'precondition: the manager preset does not grant scoped EXPORT'
         );
 
-        $read = $this->dispatchGet(self::NS . '/reports', $clinicId, $actorId);
-        self::assertSame(200, $read->get_status(), 'report reading must stay allowed for REPORT_READ holders');
-
         $export = $this->dispatchPost(self::NS . '/reports/revenue/export', $clinicId, $actorId, [
             'from' => gmdate('Y-m-d'),
             'to' => gmdate('Y-m-d'),
         ]);
+        self::assertSame(
+            0,
+            $this->reportExportJobCount($clinicId, $actorId),
+            'EXPORT is required separately from REPORT_READ: no durable job may be created'
+        );
         self::assertSame(
             403,
             $export->get_status(),
             'EXPORT must be required separately from REPORT_READ (defective main returned '
                 . $export->get_status() . ')'
         );
-        self::assertSame(0, $this->reportExportJobCount($clinicId), 'no export job may be enqueued');
+
+        $read = $this->dispatchGet(self::NS . '/reports', $clinicId, $actorId);
+        self::assertSame(200, $read->get_status(), 'report reading must stay allowed for REPORT_READ holders');
     }
 
     public function testDenyExplicitMembershipDenyForReportRead(): void
@@ -247,9 +257,15 @@ final class ReportsExportClinicAuthorizationTest extends WP_UnitTestCase
             'precondition: the explicit deny overrides the role preset'
         );
 
+        $export = $this->dispatchPost(self::NS . '/reports/revenue/export', $clinicId, $actorId, [
+            'from' => gmdate('Y-m-d'),
+            'to' => gmdate('Y-m-d'),
+        ]);
+        self::assertSame(0, $this->reportExportJobCount($clinicId, $actorId), 'no durable job may be created');
+        self::assertSame(403, $export->get_status(), 'an explicit deny must also block the export request');
+
         $read = $this->dispatchGet(self::NS . '/reports', $clinicId, $actorId);
         self::assertSame(403, $read->get_status(), 'explicit membership deny must override the preset');
-        self::assertSame(0, $this->reportExportJobCount($clinicId));
     }
 
     public function testDenyClinicAAuthorizationCannotBeUsedForClinicB(): void
@@ -261,55 +277,80 @@ final class ReportsExportClinicAuthorizationTest extends WP_UnitTestCase
 
         App::membership_service()->create_membership($clinicA, $actorId, 'cpms_accountant');
 
-        $crossRead = $this->dispatchGet(self::NS . '/reports', $clinicB, $actorId);
-        self::assertSame(403, $crossRead->get_status(), 'Clinic A authorization must not read Clinic B data');
-
         $crossExport = $this->dispatchPost(self::NS . '/reports/revenue/export', $clinicB, $actorId, [
             'from' => gmdate('Y-m-d'),
             'to' => gmdate('Y-m-d'),
         ]);
+        self::assertSame(
+            0,
+            $this->reportExportJobCount($clinicB, $actorId),
+            'nothing may be durably enqueued for the foreign Clinic'
+        );
         self::assertSame(403, $crossExport->get_status(), 'Clinic A authorization must not export Clinic B data');
-        self::assertSame(0, $this->reportExportJobCount($clinicB), 'nothing may be enqueued for the foreign Clinic');
+
+        $crossRead = $this->dispatchGet(self::NS . '/reports', $clinicB, $actorId);
+        self::assertSame(403, $crossRead->get_status(), 'Clinic A authorization must not read Clinic B data');
 
         // Positive control: the same actor is authorized in Clinic A.
         $ownExport = $this->dispatchPost(self::NS . '/reports/revenue/export', $clinicA, $actorId, [
             'from' => gmdate('Y-m-d'),
             'to' => gmdate('Y-m-d'),
         ]);
+        self::assertSame(1, $this->reportExportJobCount($clinicA, $actorId), 'the authorized Clinic must enqueue');
         self::assertSame(202, $ownExport->get_status(), 'the denial above must not be a blanket denial');
-        self::assertSame(1, $this->reportExportJobCount($clinicA));
+        self::assertSame(0, $this->reportExportJobCount($clinicB, $actorId), 'Clinic B must stay untouched');
     }
 
-    public function testDenySuspensionBetweenEnqueueAndExecutionProducesNoArtifact(): void
+    public function testDenyScopedExportRevokedBetweenEnqueueAndExecutionProducesNoArtifact(): void
     {
         $orgId = $this->createOrganization('revoke');
         $clinicId = $this->createClinic($orgId, 'revoke');
         $actorId = $this->makeUser('rep_revoke', 'cpms_accountant');
         $memId = App::membership_service()->create_membership($clinicId, $actorId, 'cpms_accountant');
 
-        $res = $this->dispatchPost(self::NS . '/reports/revenue/export', $clinicId, $actorId, [
-            'from' => gmdate('Y-m-d'),
-            'to' => gmdate('Y-m-d'),
-        ]);
-        self::assertSame(202, $res->get_status(), 'precondition: the authorized request is accepted');
-        $jobId = (int) $this->payload($res)['job_id'];
-        self::assertGreaterThan(0, $jobId, 'precondition: a durable job id was returned');
-
-        // Durability of the authorization facts the worker will need.
-        $job = App::db()->fetchRow(
-            'SELECT payload_json FROM ' . App::db()->table('cpms_jobs') . ' WHERE id = %d',
-            [$jobId]
-        );
-        self::assertNotNull($job, 'the job row must exist');
-        $payload = json_decode((string) $job['payload_json'], true);
-        self::assertIsArray($payload, 'the persisted payload must be readable');
-        self::assertSame($clinicId, (int) ($payload['clinic_id'] ?? 0), 'the trusted Clinic must be persisted on the job');
-        self::assertSame($actorId, (int) ($payload['actor_id'] ?? 0), 'the actor must be persisted on the job');
-        self::assertSame('revenue', (string) ($payload['type'] ?? ''), 'the requested report type must be persisted');
-
+        $jobId = $this->enqueueAuthorizedExport($clinicId, $actorId);
         $filesBefore = $this->storedExportFileCount($clinicId);
 
-        // Revoked between enqueue and execution.
+        // Authorization REVOKED between enqueue and execution: the membership
+        // stays ACTIVE, only the scoped EXPORT permission is denied.
+        App::membership_service()->set_capability($memId, RolesAndCapabilities::EXPORT, 'deny');
+        self::assertNotNull(
+            App::membership_service()->active_membership_for($clinicId, $actorId),
+            'precondition: the membership is still ACTIVE (only the permission was revoked)'
+        );
+        self::assertFalse(
+            $this->authz()->can($actorId, $clinicId, RolesAndCapabilities::EXPORT),
+            'precondition: scoped EXPORT is denied before the worker runs'
+        );
+
+        App::dispatcher()->tick(50);
+
+        $after = App::db()->fetchRow(
+            'SELECT status, attempts FROM ' . App::db()->table('cpms_jobs') . ' WHERE id = %d',
+            [$jobId]
+        );
+        self::assertNotNull($after);
+        self::assertNotSame(
+            'success',
+            (string) $after['status'],
+            'a revoked EXPORT permission must not produce an export artifact (deterministic authorization denial)'
+        );
+        self::assertGreaterThanOrEqual(1, (int) $after['attempts'], 'the worker must have attempted the job');
+        self::assertSame(0, $this->exportReadyCount($clinicId, $actorId), 'no success notification may be published');
+        self::assertSame($filesBefore, $this->storedExportFileCount($clinicId), 'no CSV may be stored');
+        self::assertSame(0, $this->opLogCount('report.export_ready'), 'no success operational log may be written');
+    }
+
+    public function testDenySuspensionBetweenEnqueueAndExecutionProducesNoArtifact(): void
+    {
+        $orgId = $this->createOrganization('suspend-mid');
+        $clinicId = $this->createClinic($orgId, 'suspend-mid');
+        $actorId = $this->makeUser('rep_suspend_mid', 'cpms_accountant');
+        $memId = App::membership_service()->create_membership($clinicId, $actorId, 'cpms_accountant');
+
+        $jobId = $this->enqueueAuthorizedExport($clinicId, $actorId);
+        $filesBefore = $this->storedExportFileCount($clinicId);
+
         App::membership_service()->suspend_membership($memId);
         self::assertNull(
             App::membership_service()->active_membership_for($clinicId, $actorId),
@@ -323,15 +364,38 @@ final class ReportsExportClinicAuthorizationTest extends WP_UnitTestCase
             [$jobId]
         );
         self::assertNotNull($after);
-        self::assertNotSame(
-            'success',
-            (string) $after['status'],
-            'a suspended actor must not produce an export artifact (deterministic authorization denial)'
-        );
+        self::assertNotSame('success', (string) $after['status'], 'a suspended actor must fail closed');
         self::assertGreaterThanOrEqual(1, (int) $after['attempts'], 'the worker must have attempted the job');
         self::assertSame(0, $this->exportReadyCount($clinicId, $actorId), 'no success notification may be published');
         self::assertSame($filesBefore, $this->storedExportFileCount($clinicId), 'no CSV may be stored');
         self::assertSame(0, $this->opLogCount('report.export_ready'), 'no success operational log may be written');
+    }
+
+    /**
+     * The worker must use the durable job facts (trusted Clinic + actor) and must
+     * not depend on the current WordPress user at execution time.
+     */
+    public function testAllowWorkerExecutionDoesNotDependOnCurrentWordPressUser(): void
+    {
+        $orgId = $this->createOrganization('no-current-user');
+        $clinicId = $this->createClinic($orgId, 'no-current-user');
+        $actorId = $this->makeUser('rep_no_current_user', 'cpms_accountant');
+        App::membership_service()->create_membership($clinicId, $actorId, 'cpms_accountant');
+
+        $jobId = $this->enqueueAuthorizedExport($clinicId, $actorId);
+
+        wp_set_current_user(0);
+        App::resetScope();
+
+        App::dispatcher()->tick(50);
+
+        $row = App::db()->fetchRow(
+            'SELECT status, last_error FROM ' . App::db()->table('cpms_jobs') . ' WHERE id = %d',
+            [$jobId]
+        );
+        self::assertNotNull($row);
+        self::assertSame('success', (string) $row['status'], (string) ($row['last_error'] ?? ''));
+        self::assertSame(1, $this->exportReadyCount($clinicId, $actorId), 'the artifact belongs to the persisted actor');
     }
 
     public function testDenyDownloadOfAnotherActorsArtifactInTheSameClinic(): void
@@ -564,6 +628,31 @@ final class ReportsExportClinicAuthorizationTest extends WP_UnitTestCase
     }
 
     /**
+     * Authorized export request through the real route — asserts the durable job
+     * payload carries the server-created trusted Clinic, the actor and the type.
+     *
+     * @return int job id
+     */
+    private function enqueueAuthorizedExport(int $clinicId, int $actorId): int
+    {
+        $res = $this->dispatchPost(self::NS . '/reports/revenue/export', $clinicId, $actorId, [
+            'from' => gmdate('Y-m-d'),
+            'to' => gmdate('Y-m-d'),
+        ]);
+        self::assertSame(202, $res->get_status(), 'precondition: the authorized request is accepted');
+        $jobId = (int) $this->payload($res)['job_id'];
+        self::assertGreaterThan(0, $jobId, 'precondition: a durable job id was returned');
+
+        $payload = json_decode($this->jobPayloadJson($jobId), true);
+        self::assertIsArray($payload, 'the persisted payload must be readable');
+        self::assertSame($clinicId, (int) ($payload['clinic_id'] ?? 0), 'the trusted Clinic must be persisted on the job');
+        self::assertSame($actorId, (int) ($payload['actor_id'] ?? 0), 'the actor must be persisted on the job');
+        self::assertSame('revenue', (string) ($payload['type'] ?? ''), 'the requested report type must be persisted');
+
+        return $jobId;
+    }
+
+    /**
      * Creates an authorized export through the real route and runs the worker.
      *
      * @return int notification id of the produced artifact
@@ -699,13 +788,25 @@ final class ReportsExportClinicAuthorizationTest extends WP_UnitTestCase
         return rest_do_request($request);
     }
 
-    private function reportExportJobCount(int $clinicId): int
+    /**
+     * Durable `report.export` jobs for one trusted Clinic.
+     *
+     * `cpms_jobs` has NO clinic_id column — the tenant scope of a job lives in
+     * its durable payload (`payload_json.clinic_id` / `payload_json.actor_id`),
+     * which is exactly the server-created trusted Clinic persisted at enqueue.
+     */
+    private function reportExportJobCount(int $clinicId, int $actorId = 0): int
     {
-        return (int) App::db()->fetchValue(
-            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_jobs')
-                . ' WHERE type = %s AND clinic_id = %d',
-            ['report.export', $clinicId]
-        );
+        $sql = 'SELECT COUNT(*) FROM ' . App::db()->table('cpms_jobs')
+            . " WHERE type = %s AND CAST(JSON_EXTRACT(payload_json, '$.clinic_id') AS UNSIGNED) = %d";
+        $params = ['report.export', $clinicId];
+
+        if ($actorId > 0) {
+            $sql .= " AND CAST(JSON_EXTRACT(payload_json, '$.actor_id') AS UNSIGNED) = %d";
+            $params[] = $actorId;
+        }
+
+        return (int) App::db()->fetchValue($sql, $params); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
     }
 
     private function exportReadyCount(int $clinicId, int $userId): int
