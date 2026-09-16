@@ -1,0 +1,158 @@
+name: Slice 6A Green Isolation Check
+
+# تشخیصی — اجرای «فقط» فایل تست کانونی Slice-6A روی درخت سبز 75bdaa8
+# (head مربوط به PR #56) بدون هیچ تغییری. هدف: مشخص شود آیا پیش‌شرط
+# user_can(PAYMENT_CREATE) در RED-3 نسخهٔ کانونی (پرسونای cpms_manager) در
+# اجرای ایزوله برقرار است یا فقط با آلودگی وضعیت between-testها در اجرای
+# full-suite سبز می‌شود. هیچ گیت خروجی ندارد — خروجی صرفاً داده است.
+
+on:
+  push:
+    branches:
+      - 'red-evidence/green-check'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: red-evidence-green-check
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: clinic-practice-management
+
+env:
+  GREEN_BASE: 75bdaa89ad31669c90391118713158b684ce9edb
+  WP_TESTS_DIR: /tmp/wordpress-test-lib
+  WP_CORE_DIR: /tmp/wordpress
+
+jobs:
+  green-isolation-check:
+    name: Canonical Slice-6A tests isolated on GREEN head
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=20
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mbstring, xml, mysqli, pcntl, curl
+          coverage: none
+
+      - name: Green tree identity + PURITY GATE
+        working-directory: ${{ github.workspace }}
+        run: |
+          {
+            echo "run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "head: $(git rev-parse HEAD)"
+            echo "green_base: ${GREEN_BASE}"
+            echo "--- changes on top of the green base (MUST be only this workflow file):"
+            git diff --name-status ${GREEN_BASE} HEAD
+          } | tee /tmp/identity.txt
+          # PURITY GATE — the green tree itself must be byte-identical; only this
+          # diagnostic workflow file may be added.
+          TREE_DIFF="$(git diff --name-only ${GREEN_BASE} HEAD | grep -v '^\.github/workflows/green-isolation-check\.yml$' || true)"
+          if [ -n "${TREE_DIFF}" ]; then
+            echo "PURITY GATE FAILED: unexpected changes:"; echo "${TREE_DIFF}"
+            exit 1
+          fi
+          echo "PURITY GATE PASSED: only the diagnostic workflow file was added."
+
+      - name: Install dependencies (PHPUnit 9.6 for WP test lib)
+        run: |
+          composer install --prefer-dist --no-progress --no-interaction
+          composer require --dev phpunit/phpunit:^9.6 --no-interaction --no-progress --with-all-dependencies
+
+      - name: Prepare WordPress test suite
+        run: bash tests/bin/install-wp-tests.sh wordpress_test root root 127.0.0.1 6.7.2
+
+      - name: Lint the canonical test file
+        run: php -l tests/Integration/Phase3Slice6AuthorizationRedTest.php
+
+      - name: Isolated run of the canonical Slice-6A test file on GREEN (diagnostic)
+        continue-on-error: true
+        run: |
+          set +e
+          php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
+            --bootstrap tests/integration-bootstrap.php tests/Integration/Phase3Slice6AuthorizationRedTest.php 2>&1 | tee /tmp/phpunit-isolated.log
+          echo "isolated_rc=${PIPESTATUS[0]}" | tee -a /tmp/identity.txt
+          exit 0
+
+      - name: Role-state diagnostic (clean-environment role caps)
+        continue-on-error: true
+        run: |
+          cat > /tmp/diag.php <<'PHP'
+          <?php
+          declare(strict_types=1);
+          require getenv('GITHUB_WORKSPACE') . '/clinic-practice-management/tests/integration-bootstrap.php';
+          $mgr = get_role('cpms_manager');
+          $sec = get_role('cpms_secretary');
+          echo "cpms_manager caps: " . implode(', ', array_keys($mgr->capabilities)) . "\n";
+          echo "cpms_manager has cpms_payment_create: " . var_export($mgr->has_cap('cpms_payment_create'), true) . "\n";
+          echo "cpms_secretary has cpms_payment_create: " . var_export($sec->has_cap('cpms_payment_create'), true) . "\n";
+          echo "role caps override option: " . var_export(get_option('cpms_role_caps_override', []), true) . "\n";
+          $uid = (int) wp_create_user('p3s6_diag_' . bin2hex(random_bytes(3)), wp_generate_password(22), 'diag@p3s6.test');
+          $u = get_userdata($uid);
+          $u->set_role('cpms_manager');
+          echo "fresh cpms_manager user_can(cpms_payment_create): " . var_export(user_can($uid, 'cpms_payment_create'), true) . "\n";
+          $u->set_role('cpms_secretary');
+          echo "fresh cpms_secretary user_can(cpms_payment_create): " . var_export(user_can($uid, 'cpms_payment_create'), true) . "\n";
+          PHP
+          php /tmp/diag.php 2>&1 | tee /tmp/role-state.txt
+
+      - name: Record diagnostic classification (informational, never fails)
+        run: |
+          TRACE=/tmp/classification.txt
+          {
+            echo "--- ISOLATED run summary (canonical file on GREEN head ${GREEN_BASE}):"
+            grep -E '^Tests:' /tmp/phpunit-isolated.log | tail -n 1 || true
+            echo "--- failing entries (isolated run):"
+            grep -E '^[0-9]+\) ' /tmp/phpunit-isolated.log || true
+            echo "--- failure details (isolated run):"
+            sed -n '/^There w/,/^FAILURES\|^OK/p' /tmp/phpunit-isolated.log || true
+            echo "--- role-state diagnostic:"
+            cat /tmp/role-state.txt || true
+            echo "--- interpretation:"
+            if grep -q '^OK' /tmp/phpunit-isolated.log; then
+              echo "All four canonical contracts PASS in isolation on GREEN (deny enforced, no pollution needed)."
+            elif grep -qF 'precondition: manager has global PAYMENT_CREATE' /tmp/phpunit-isolated.log; then
+              echo "RED-3 canonical manager persona FAILS its user_can precondition in isolation on GREEN:"
+              echo "the full-suite GREEN CI pass for that precondition relied on cross-test in-process state."
+            elif grep -qE '^[0-9]+\) ' /tmp/phpunit-isolated.log; then
+              echo "Isolated run on GREEN has failure(s) NOT matching the known precondition — inspect details above."
+            else
+              echo "Isolated run did not complete normally — inspect phpunit-isolated.log."
+            fi
+          } | tee "${TRACE}"
+
+      - name: Commit evidence into this branch (log delivery channel)
+        if: always()
+        working-directory: ${{ github.workspace }}
+        run: |
+          mkdir -p evidence
+          cp /tmp/phpunit-isolated.log evidence/phpunit-isolated.log 2>/dev/null || true
+          cp /tmp/role-state.txt evidence/role-state.txt 2>/dev/null || true
+          cp /tmp/identity.txt evidence/identity.txt 2>/dev/null || true
+          cp /tmp/classification.txt evidence/classification.txt 2>/dev/null || true
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # -f: repo .gitignore excludes *.log — evidence logs must be committed anyway.
+          git add -f evidence
+          git commit -m "evidence: canonical file isolated on GREEN head 75bdaa8 [skip ci]" || echo "nothing to commit"
+          git push
