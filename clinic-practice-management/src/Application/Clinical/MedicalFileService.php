@@ -117,7 +117,16 @@ final class MedicalFileService
     {
         $this->requireCap($actorUserId, RolesAndCapabilities::FILE_READ);
         // C6-F: فهرست هم Tenant‑aware است (بیمار Clinic دیگر فهرست نمی‌شود)
-        $this->assertStaffClinic($actorUserId, $this->patientClinicId($patientId), 'patient', $patientId);
+        $durableClinicId = $this->patientClinicId($patientId);
+        $this->assertStaffClinic($actorUserId, $durableClinicId, 'patient', $patientId);
+        // Phase 3 Slice 5 — فهرست هم با مجوز Clinic-scoped روی Clinicِ پایدار
+        $this->authorizeScoped(
+            $actorUserId,
+            $durableClinicId,
+            RolesAndCapabilities::FILE_READ,
+            'patient',
+            $patientId
+        );
         $onlyVisible = !$this->canSeePrivate($actorUserId);
 
         return array_map([$this, 'presentFile'], $this->files->forPatient($patientId, $onlyVisible));
@@ -153,16 +162,19 @@ final class MedicalFileService
                 $this->auditAndThrow($actorUserId, 'file', $fileId, 'دسترسی به این فایل مجاز نیست', 'فایل یافت نشد');
             }
         } elseif ($isDoctor) {
+            // لایهٔ دفاعی (سراسری) — تصمیم‌گیرندهٔ نهایی assertStaffFileReadable است.
             $this->requireCap($actorUserId, RolesAndCapabilities::FILE_READ);
             // پزشک: هر Visibility (ماتریس 4.3) — اما فقط داخل Clinic context
-            $this->assertStaffClinic($actorUserId, (int) $row['clinic_id'], 'file', $fileId);
+            $this->assertStaffFileReadable($actorUserId, $row, $fileId);
         } elseif ($isSecretary) {
             $this->requireCap($actorUserId, RolesAndCapabilities::FILE_READ);
-            // منشی: فقط patient_visible (ماتریس 4.2 — Doctor Private ❌)
+            // منشی: فقط patient_visible (ماتریس 4.2 — Doctor Private ❌). این قاعدهٔ
+            // Visibility **مستقل از مجوز** است؛ grant صریحِ FILE_READ هرگز
+            // doctor_private را باز نمی‌کند (Phase 3 Slice 5 — لازم، نه کافی).
             if ((string) $row['visibility'] !== 'patient_visible') {
                 $this->auditAndThrow($actorUserId, 'file', $fileId, 'دسترسی به این فایل مجاز نیست', 'فایل یافت نشد');
             }
-            $this->assertStaffClinic($actorUserId, (int) $row['clinic_id'], 'file', $fileId);
+            $this->assertStaffFileReadable($actorUserId, $row, $fileId);
         } else {
             $this->auditAndThrow($actorUserId, 'file', $fileId, 'دسترسی به این فایل مجاز نیست', 'فایل یافت نشد');
         }
@@ -206,7 +218,16 @@ final class MedicalFileService
             throw ClinicalException::of('CLINIC_NOT_FOUND', 'فایل یافت نشد', 404);
         }
         // C6-F: حذف (موتیشن) هم فقط داخل Clinic context موثق
-        $this->assertStaffClinic($actorUserId, (int) $row['clinic_id'], 'file', $fileId);
+        $durableClinicId = (int) $row['clinic_id'];
+        $this->assertStaffClinic($actorUserId, $durableClinicId, 'file', $fileId);
+        // Phase 3 Slice 5 — مجوز Clinic-scoped پیش از هر نوشتن روی ردیف
+        $this->authorizeScoped(
+            $actorUserId,
+            $durableClinicId,
+            RolesAndCapabilities::FILE_UPLOAD,
+            'file',
+            $fileId
+        );
         $this->files->softDelete($fileId);
         $this->audit->log(
             'FILE_SOFT_DELETED',
@@ -301,6 +322,16 @@ final class MedicalFileService
         // باشد؛ این بررسی پیش از هر نوشتن روی دیسک انجام می‌شود.
         if ($via === 'staff') {
             $this->assertStaffClinic($actorUserId, $patientClinicId, 'patient', $patientId);
+            // Phase 3 Slice 5 — نوشتن هم با مجوز Clinic-scoped روی Clinicِ
+            // پایدارِ بیمار، **پیش از** storage->store() (رد ⇒ هیچ بایتی روی
+            // دیسک و هیچ ردیفی در cpms_medical_attachments نمی‌نشیند).
+            $this->authorizeScoped(
+                $actorUserId,
+                $patientClinicId,
+                RolesAndCapabilities::FILE_UPLOAD,
+                'patient',
+                $patientId
+            );
         } else {
             $this->assertPatientRecord($actorUserId, $patientClinicId, $patientId);
         }
@@ -472,6 +503,123 @@ final class MedicalFileService
         $user = get_userdata($wpUserId);
 
         return ['wp_user_id' => $wpUserId, 'role' => $user->roles[0] ?? 'unknown'];
+    }
+
+    /**
+     * **Phase 3 Slice 5 — مجوز Clinic-scoped برای مسیرهای کارکنان (فایل).**
+     *
+     * تصمیم‌گیرندهٔ نهایی سه شرطِ هم‌زمان است: بازیگر احرازهویت‌شده + عضویت
+     * **فعالِ پایدار** در **همان** Clinicِ شیء + دقیقاً همان مجوزِ معنای عملیات
+     * (`cpms_file_read` برای خواندن/فهرست، `cpms_file_upload` برای نوشتن/حذف) —
+     * deny صریحِ عضویت بر grant و preset غالب است. نقش/ Capability سراسریِ
+     * وردپرس (`requireCap`) تنها به‌عنوان لایهٔ دفاعی جلوی این می‌ماند و هرگز
+     * Authority تولید نمی‌کند؛ مدیر نصب بدون عضویت، دسترسی خودکار ندارد.
+     *
+     * Clinicِ مرجع، `clinic_id`ِ **ردیفِ پایدار** است (نه payload و نه «Clinic
+     * اول»). رد = همان «یافت نشد» امن (قرارداد C6‑F: فایلِ غیرمجاز و فایلِ
+     * ناموجود تفکیک‌ناپذیرند) + Audit — و همیشه **پیش از** `storage->read()` یا
+     * `storage->store()`.
+     *
+     * @throws ClinicalException
+     */
+    private function authorizeScoped(
+        int $actorUserId,
+        int $durableClinicId,
+        string $permission,
+        string $resourceType,
+        int $resourceId
+    ): void {
+        if ($actorUserId <= 0 || $durableClinicId <= 0) {
+            // بازیگر یا Clinicِ پایدارِ نامعتبر ⇒ Fail-Closed (بدون حدس).
+            $this->auditAndThrow(
+                $actorUserId,
+                $resourceType,
+                $resourceId,
+                'بازیگر یا Clinic پایدارِ نامعتبر است',
+                $resourceType === 'file' ? 'فایل یافت نشد' : 'بیمار یافت نشد'
+            );
+        }
+
+        if (App::authorization_service()->can($actorUserId, $durableClinicId, $permission)) {
+            return;
+        }
+
+        $this->auditAndThrow(
+            $actorUserId,
+            $resourceType,
+            $resourceId,
+            'نبودِ مجوز Clinic-scoped «' . $permission . '» در Clinic ' . $durableClinicId,
+            $resourceType === 'file' ? 'فایل یافت نشد' : 'بیمار یافت نشد'
+        );
+    }
+
+    /**
+     * Clinic موثق برای stream کارکنان — با **کاندیدِ** Clinicِ پایدارِ فایل.
+     *
+     * `/files/{id}/stream` در skip-list مرز Trusted Clinic است (به بیمار هم
+     * سرویس می‌دهد) ⇒ هیچ Scope‌ای bind نمی‌شود. سه مرحلهٔ قبلی دست‌نخورده است
+     * (Scope صریح → «تنها Clinic» نصب → Membership فعالِ یکتا) و فقط در حالتِ
+     * مبهم یک گامِ **افزوده** دارد: تأییدِ کاندیدِ پایدار توسط
+     * `TrustedClinicEstablisher` (عضویت فعال + Clinic/Organization فعال).
+     * «اولین Clinic» هرگز انتخاب نمی‌شود؛ اگر کاندید تأیید نشود، خطای اصلیِ
+     * Scope بی‌تغییر باقی می‌ماند. تأییدِ کاندید به‌خودی‌خود اجازهٔ خواندن
+     * نیست — `authorizeScoped` پس از آن تصمیم می‌گیرد.
+     */
+    private function trustedClinicIdForFile(int $actorUserId, int $candidateClinicId): int
+    {
+        $explicit = ScopeContext::tryGet();
+        if ($explicit !== null) {
+            return $explicit->clinicId;
+        }
+
+        try {
+            return App::scope()->clinicId;
+        } catch (ScopeRequiredException $first) {
+            $establisher = new TrustedClinicEstablisher(App::db(), new MembershipRepository(App::db()));
+            try {
+                return $establisher->establish($actorUserId, null)->clinicId;
+            } catch (ScopeRequiredException) {
+                // کاربر چند عضویت فعال دارد ⇒ کاندیدِ ردیفِ پایدار سنجیده می‌شود.
+            }
+
+            if ($candidateClinicId > 0) {
+                try {
+                    return $establisher->establish($actorUserId, $candidateClinicId)->clinicId;
+                } catch (ScopeRequiredException) {
+                    // کاندید رد شد ⇒ خطای اصلی Scope (بدون افشای علتِ رد).
+                }
+            }
+
+            throw ClinicalException::of(
+                $first->errorCode,
+                $first->getMessage(),
+                $first->httpStatus(),
+                $first->getData()
+            );
+        }
+    }
+
+    /**
+     * خواندن فایل توسط کارکنان: Clinicِ پایدارِ فایل باید با context موثق
+     * بخواند **و** مجوز Clinic-scopedِ `cpms_file_read` برای همان Clinic اثبات
+     * شود — همه پیش از `storage->read()`.
+     *
+     * @param array<string, mixed> $row ردیفِ پایدارِ ضمیمه
+     */
+    private function assertStaffFileReadable(int $actorUserId, array $row, int $fileId): void
+    {
+        $durableClinicId = (int) $row['clinic_id'];
+        if ($durableClinicId !== $this->trustedClinicIdForFile($actorUserId, $durableClinicId)) {
+            $this->auditAndThrow($actorUserId, 'file', $fileId, 'دسترسی به این فایل مجاز نیست', 'فایل یافت نشد');
+        }
+
+        $this->authorizeScoped(
+            $actorUserId,
+            $durableClinicId,
+            RolesAndCapabilities::FILE_READ,
+            'file',
+            $fileId
+        );
     }
 
     /**

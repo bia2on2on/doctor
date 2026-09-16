@@ -421,6 +421,12 @@ jobs:
               $out('fatal', 'NO_SYNTHETIC_PATIENT');
               exit(1);
           }
+          // Phase 3 Slice 5 — آپلود/استریم کارکنان مجوز Clinic-scoped از
+          // عضویت فعال می‌گیرد؛ probe هم همان پیش‌نیازِ واقعی را می‌سازد.
+          $gateClinicId = App::scope()->clinicId;
+          if (App::membership_service()->membership_for($gateClinicId, $doctorId) === null) {
+              App::membership_service()->create_membership($gateClinicId, $doctorId, 'cpms_doctor');
+          }
           $tmp = tempnam(sys_get_temp_dir(), 'cpms-protected') . '.pdf';
           file_put_contents($tmp, "%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 99 99]>>endobj\nxref\n0 4\ntrailer<</Size 4/Root 1 0 R>>\n%%EOF\n");
           wp_set_current_user($doctorId);

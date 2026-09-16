@@ -13,6 +13,7 @@ use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Repository\ClinicalNoteRepository;
 use ClinicCore\Infrastructure\Repository\FollowUpRepository;
 use ClinicCore\Infrastructure\Repository\MedicalFileRepository;
+use ClinicCore\Infrastructure\Repository\MembershipRepository;
 use ClinicCore\Infrastructure\Repository\PatientRepository;
 use ClinicCore\Infrastructure\Repository\PrescriptionRepository;
 use ClinicCore\Infrastructure\Repository\RecommendationRepository;
@@ -80,6 +81,16 @@ final class ClinicalService
         // context مجاز باشد (context = Scope صریحِ درخواست یا «تنها Clinic»؛
         // مبهَم ⇒ 400 CLINIC_SCOPE_REQUIRED). رد ⇒ همان 404 امنِ «یافت نشد».
         $this->assertVisitInActiveClinic($visit);
+        // Phase 3 Slice 5 — پروندهٔ بالینی فقط با عضویت فعال + مجوز
+        // `cpms_medical_read` روی **همان** Clinicِ پایدارِ ویزیت.
+        $this->authorizeScoped(
+            $actorUserId,
+            (int) $visit['clinic_id'],
+            RolesAndCapabilities::MEDICAL_READ,
+            'visit',
+            $visitId,
+            (int) $visit['patient_id']
+        );
         $patient = $this->db->fetchRow(
             'SELECT * FROM ' . $this->db->table('cpms_patients') . ' WHERE id = %d LIMIT 1',
             [(int) $visit['patient_id']]
@@ -184,10 +195,28 @@ final class ClinicalService
         if ($category === 'private_note' && $visibility !== 'doctor_private') {
             throw ClinicalException::of('CLINIC_VALIDATION_FAILED', 'یادداشت خصوصی پزشک باید doctor_private باشد', 422);
         }
+        // Phase 3 Slice 5 — همان مجوزِ معنایِ شاخه (خصوصی/عمومی)، اما
+        // Clinic-scoped و روی Clinicِ پایدارِ ویزیت — پیش از درجِ ردیف.
         if ($visibility === 'doctor_private') {
             $this->requireCap($actorUserId, RolesAndCapabilities::PRIVATE_NOTE_CREATE, 'private_note');
+            $this->authorizeScoped(
+                $actorUserId,
+                (int) $visit['clinic_id'],
+                RolesAndCapabilities::PRIVATE_NOTE_CREATE,
+                'visit',
+                $visitId,
+                (int) $visit['patient_id']
+            );
         } else {
             $this->requireCap($actorUserId, RolesAndCapabilities::NOTE_CREATE, 'note');
+            $this->authorizeScoped(
+                $actorUserId,
+                (int) $visit['clinic_id'],
+                RolesAndCapabilities::NOTE_CREATE,
+                'visit',
+                $visitId,
+                (int) $visit['patient_id']
+            );
         }
 
         $noteId = $this->notes->insert((int) $visit['clinic_id'], [
@@ -261,10 +290,28 @@ final class ClinicalService
         }
 
         // Capability متناسب با Visibility (P-6)
+        // Phase 3 Slice 5 — ویرایش هم با مجوز Clinic-scoped روی Clinicِ
+        // **ردیفِ پایدارِ یادداشت** (نه request) — پیش از تراکنش و Snapshot.
         if ((string) $existing['visibility'] === 'doctor_private') {
             $this->requireCap($actorUserId, RolesAndCapabilities::PRIVATE_NOTE_UPDATE, 'private_note');
+            $this->authorizeScoped(
+                $actorUserId,
+                (int) $existing['clinic_id'],
+                RolesAndCapabilities::PRIVATE_NOTE_UPDATE,
+                'note',
+                $noteId,
+                (int) $existing['patient_id']
+            );
         } else {
             $this->requireCap($actorUserId, RolesAndCapabilities::NOTE_UPDATE, 'note');
+            $this->authorizeScoped(
+                $actorUserId,
+                (int) $existing['clinic_id'],
+                RolesAndCapabilities::NOTE_UPDATE,
+                'note',
+                $noteId,
+                (int) $existing['patient_id']
+            );
         }
 
         $note = $this->db->transactional(function () use ($actorUserId, $noteId, $content, $reason): array {
@@ -324,6 +371,16 @@ final class ClinicalService
         $this->requireCap($actorUserId, RolesAndCapabilities::RX_CREATE, 'rx');
         $visit = $this->requireVisit($visitId);
         $this->requireOwnVisit($actorUserId, $visit);
+        // Phase 3 Slice 5 — مالکیت شیء (ویزیتِ خودش) شرطِ لازمِ دوم است؛ مجوز
+        // `cpms_rx_create` باید روی Clinicِ پایدارِ ویزیت اثبات شود.
+        $this->authorizeScoped(
+            $actorUserId,
+            (int) $visit['clinic_id'],
+            RolesAndCapabilities::RX_CREATE,
+            'visit',
+            $visitId,
+            (int) $visit['patient_id']
+        );
 
         $items = $input['items'] ?? null;
         if (!is_array($items) || $items === []) {
@@ -384,6 +441,15 @@ final class ClinicalService
         // (findForUpdateForClinic + updateForClinic) تا ردیف Clinic دیگر هرگز
         // بارگذاری/جهش نیابد و «وجود» آن هم افشا نشود (safe not‑found).
         $clinicId = App::scope()->clinicId;
+        // Phase 3 Slice 5 — مجوز Clinic-scoped روی Clinicِ تأییدشده؛ ردیفِ هدف
+        // همان‌جا با predicate در SQL پایداری می‌یابد (safe not-found حفظ است).
+        $this->authorizeScoped(
+            $actorUserId,
+            $clinicId,
+            RolesAndCapabilities::RX_CREATE,
+            'prescription',
+            $prescriptionId
+        );
         $rx = $this->db->transactional(function () use ($prescriptionId, $clinicId): array {
             $rx = $this->prescriptions->findForUpdateForClinic($prescriptionId, $clinicId);
             if ($rx === null) {
@@ -439,6 +505,15 @@ final class ClinicalService
 
         // C6‑F — همان invariant برای ابطال (API سرویس؛ endpoint در قرارداد فعلی نیست).
         $clinicId = App::scope()->clinicId;
+        // Phase 3 Slice 5 — ابطال هم مجوزِ خودش (`cpms_rx_void`) را Clinic-scoped
+        // می‌خواهد؛ ادغام با rx_create عمداً انجام نشده است.
+        $this->authorizeScoped(
+            $actorUserId,
+            $clinicId,
+            RolesAndCapabilities::RX_VOID,
+            'prescription',
+            $prescriptionId
+        );
         $rx = $this->db->transactional(function () use ($prescriptionId, $reason, $clinicId): array {
             $rx = $this->prescriptions->findForUpdateForClinic($prescriptionId, $clinicId);
             if ($rx === null) {
@@ -486,6 +561,15 @@ final class ClinicalService
         $this->requireRole($actorUserId, 'doctor', 'ثبت توصیه');
         $this->requireCap($actorUserId, RolesAndCapabilities::REC_CREATE, 'rec');
         $visit = $this->requireVisit($visitId);
+        // Phase 3 Slice 5 — مجوز Clinic-scoped روی Clinicِ پایدارِ ویزیت
+        $this->authorizeScoped(
+            $actorUserId,
+            (int) $visit['clinic_id'],
+            RolesAndCapabilities::REC_CREATE,
+            'visit',
+            $visitId,
+            (int) $visit['patient_id']
+        );
 
         $items = $input['items'] ?? null;
         if (!is_array($items) || $items === []) {
@@ -542,6 +626,15 @@ final class ClinicalService
         $this->requireRole($actorUserId, 'doctor', 'ثبت پیگیری');
         $this->requireCap($actorUserId, RolesAndCapabilities::REC_CREATE, 'rec');
         $visit = $this->requireVisit($visitId);
+        // Phase 3 Slice 5 — همان قاعده برای پیگیری (Clinicِ پایدارِ ویزیت)
+        $this->authorizeScoped(
+            $actorUserId,
+            (int) $visit['clinic_id'],
+            RolesAndCapabilities::REC_CREATE,
+            'visit',
+            $visitId,
+            (int) $visit['patient_id']
+        );
 
         $isNeeded = !empty($input['is_needed']);
         $suggestedDate = isset($input['suggested_date']) ? (string) $input['suggested_date'] : null;
@@ -600,6 +693,16 @@ final class ClinicalService
         $this->requireRole($actorUserId, 'doctor', 'پایان ویزیت');
         $this->requireCap($actorUserId, RolesAndCapabilities::CONSULT_COMPLETE, 'complete');
         $visit = $this->requireVisit($visitId);
+        // Phase 3 Slice 5 — رد **پیش از** هر validation/transition (هیچ جهشی
+        // در cpms_visits و هیچ ردیفِ history نوشته نمی‌شود)
+        $this->authorizeScoped(
+            $actorUserId,
+            (int) $visit['clinic_id'],
+            RolesAndCapabilities::CONSULT_COMPLETE,
+            'visit',
+            $visitId,
+            (int) $visit['patient_id']
+        );
 
         if ((bool) $this->settings->get('clinical.require_chief_complaint', true)
             && !$this->notes->visitHasCategory($visitId, 'chief_complaint')) {
@@ -641,6 +744,15 @@ final class ClinicalService
             throw ClinicalException::of('CLINIC_VALIDATION_FAILED', 'دلیل بازگشایی الزامی است', 422);
         }
         $visit = $this->requireVisit($visitId);
+        // Phase 3 Slice 5 — Reopen مجوزِ خودش را Clinic-scoped می‌خواهد
+        $this->authorizeScoped(
+            $actorUserId,
+            (int) $visit['clinic_id'],
+            RolesAndCapabilities::CONSULT_REOPEN,
+            'visit',
+            $visitId,
+            (int) $visit['patient_id']
+        );
 
         $result = $this->visitService->transition($actorUserId, $visitId, 'reopen', ['reason' => $reason]);
 
@@ -681,6 +793,15 @@ final class ClinicalService
         $this->requireCap($actorUserId, RolesAndCapabilities::RX_READ, 'print');
         $visit = $this->requireVisit($visitId);
         $this->requireOwnVisit($actorUserId, $visit);
+        // Phase 3 Slice 5 — چاپ هم روی Clinicِ پایدارِ ویزیت مجوز می‌خواهد
+        $this->authorizeScoped(
+            $actorUserId,
+            (int) $visit['clinic_id'],
+            RolesAndCapabilities::RX_READ,
+            'visit',
+            $visitId,
+            (int) $visit['patient_id']
+        );
 
         $rx = null;
         if ($prescriptionId !== null) {
@@ -870,6 +991,17 @@ final class ClinicalService
     {
         $this->requireCap($actorUserId, RolesAndCapabilities::SEARCH, 'search');
 
+        // Phase 3 Slice 5 — جستجو فقط روی Clinicِ مورد اجازه و با مجوز
+        // `cpms_search`ِ **همان** Clinic (بدون fallback به «Clinic اول»).
+        $trustedClinicId = $this->trustedClinicId();
+        $this->authorizeScoped(
+            $actorUserId,
+            $trustedClinicId,
+            RolesAndCapabilities::SEARCH,
+            'clinic',
+            $trustedClinicId
+        );
+
         $q = trim($q);
         if (mb_strlen($q) < 2) {
             throw ClinicalException::of('CLINIC_VALIDATION_FAILED', 'عبارت جستجو باید حداقل ۲ کاراکتر باشد', 422);
@@ -1037,6 +1169,71 @@ final class ClinicalService
     private function actor(int $wpUserId, string $role): array
     {
         return ['wp_user_id' => $wpUserId, 'role' => $role];
+    }
+
+    /**
+     * **Phase 3 Slice 5 — مجوز Clinic-scoped برای عملیات بالینی کارکنان.**
+     *
+     * سه شرطِ هم‌زمان: بازیگر احرازهویت‌شده + عضویت **فعالِ پایدار** در همان
+     * Clinicِ شیء + دقیقاً همان مجوزِ معنایِ عملیات (`cpms_note_create`،
+     * `cpms_private_note_update`، `cpms_rx_void`، `cpms_consult_reopen` … —
+     * عمداً در یک mega-cap ادغام نشده است). Deny صریحِ عضویت بر grant و preset
+     * غالب است؛ نقش سراسریِ وردپرس تنها لایهٔ دفاعی (`requireCap`/`requireRole`
+     * که جلوی این می‌مانند) و مدیر نصب بدون عضویت، دسترسی خودکار ندارد.
+     *
+     * `clinic_id` مرجع **از پایداری** می‌آید (ردیف visit/note یا Clinicِ
+     * تأییدشدهٔ مرز)، نه از payload و نه «اولین Clinic».
+     *
+     * معنای خطا (error model موجود change نمی‌کند):
+     *  - نبودِ عضویت فعال / Clinic نامعتبر ⇒ `CLINIC_NOT_FOUND` (۴۰۴) + Audit —
+     *    «منبعِ Clinic دیگر» و «منبعِ ناموجود» تفکیک‌ناپذیر می‌مانند؛
+     *  - عضوِ فعالِ همان Clinic ولی بدون همین مجوز ⇒ `CLINIC_PERMISSION_DENIED`
+     *    (۴۰۳ + نام capability) — همان کلاسِ افشای `requireCap` که امروز هست.
+     *
+     * این شرط **لازم** است، نه کافی: قواعدِ شیء (ویزیتِ خودش، Visibility
+     * یادداشت، چرخهٔ حیات ویزیت، دلیلِ Reopen) سرِ جای خود اعمال می‌شوند.
+     *
+     * @throws ClinicalException
+     */
+    private function authorizeScoped(
+        int $actorUserId,
+        int $durableClinicId,
+        string $permission,
+        string $resourceType,
+        int $resourceId,
+        int $patientId = 0
+    ): void {
+        if ($actorUserId <= 0 || $durableClinicId <= 0) {
+            $this->auditAndThrow(
+                $actorUserId,
+                $resourceType,
+                $resourceId,
+                $patientId,
+                'بازیگر یا Clinic پایدارِ نامعتبر است'
+            );
+        }
+
+        if (App::authorization_service()->can($actorUserId, $durableClinicId, $permission)) {
+            return;
+        }
+
+        $activeMembership = (new MembershipRepository($this->db))->find_active($durableClinicId, $actorUserId);
+        if ($activeMembership === null) {
+            $this->auditAndThrow(
+                $actorUserId,
+                $resourceType,
+                $resourceId,
+                $patientId,
+                'نبودِ عضویت فعال در Clinicِ این منبع'
+            );
+        }
+
+        throw ClinicalException::of(
+            'CLINIC_PERMISSION_DENIED',
+            'دسترسی لازم را ندارید',
+            403,
+            ['capability' => $permission]
+        );
     }
 
     /**
