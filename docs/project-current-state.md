@@ -6,8 +6,10 @@
 > **Integrated main checkpoint (Phase 3 End Gate — technically COMPLETED & FROZEN, re-verified
 > live 2026-09-16):** `ebf8588f34be1da2ff18a152dea2c8badc472056` — "Merge pull request #57 from
 > bia2on2on/arena/01a0aae9-doctor" (MERGED 2026-09-16T16:46:59Z by `arena-ai-coding-agent[bot]`).
-> **PHASE 3 PASS** (Phase 3 End Gate result). **Phase 3 — Role & Access Control: COMPLETED /
-> FROZEN** (technical completion at `ebf8588`). **This is NOT a release/V1/commercial claim and
+> **Phase 3 — Role & Access Control: COMPLETED / FROZEN** (implementation COMPLETE / technically
+> accepted based on merged implementation — PRs #49, #50, #52, #54, #55, #56, #57 — and exact-head
+> evidence: 19/19 checks success at `ebf8588f34be1da2ff18a152dea2c8badc472056`; Phase 3 End Gate
+> result: PASS as provided; no owner Ready/merge authorization assumed). **This is NOT a release/V1/commercial claim and
 > is NOT Phase 4.** Established Phase 3 foundations include: central Clinic-scoped
 > `AuthorizationService`; scoped staff/membership management; scoped SMS configuration/secrets;
 > scoped reports/export lifecycle; scoped clinical/medical-file access; scoped Clinician Admin /
@@ -112,7 +114,7 @@ Legacy labels (`F0..F10`, `Doc-Phase`, `V1` / `V1.5` / `V2`) are historical. The
 | Phase 2 | **COMPLETED (TECHNICAL) — all recorded Phase 2 technical blockers closed on `main` at `35acced` (2026-09-15); this is NOT a release/V1/commercial claim. (Phase 3 is now COMPLETED/FROZEN — see its own row below.)** Subphase history preserved: **C6 CLOSED** + post-closure corrective integrated (PR #17); **C7 CLOSED** (remediation integrated via PR #20 at merge `a385d868`; formal Owner acceptance recorded 2026-09-11); **C8 / C9 CLOSED**; **C10 CLOSED (explicit Owner decision 2026-09-12; bounded evidence review only — no NFR/load/scalability claim)**. Internal queue C1..C10 complete. Final technical closures: **M-2 CLOSED** (all eight canonical jobs resolved on main), **M-4 CLOSED** (typed `NonRetryableJobFailure` semantics), Location = operational timezone truth for the reachable `appt.reminder`/`fu.reminder` quiet-hours paths (PR #47), post-M-4 fixture correction merged (PR #46); latest migration remains `0020` (no `0021`). The historical "End Gate (26 items)" label was never a defined acceptance checklist and is not revived here |
 | C7 | **CLOSED — formally accepted by explicit Owner decision on 2026-09-11.** Technical closure was already evidenced (implementation merged into `main` via PR #20, merge `a385d868`, 2026-09-11T13:09:16Z; slices C7-0→C7-S6; all gates GREEN). The Owner acceptance covers the defined/completed C7 scope only — it is **not** a claim that all conceivable tenant isolation throughout the product is perfect, **not** commercial-readiness approval, and does not approve any deferred item, migration, or later phase — see `docs/phase-reports/c7-0-census.md` §۱۱ |
 | C8 | **CLOSED as a Phase-2 Location-foundation evidence/documentation closure package (2026-09-11) — NO implementation work performed or authorized.** Reviewed evidence found no verified Phase-2 Location implementation gap. C8 closure means "the Phase-2 Location foundation is closed based on current evidence", not "all future Location/timezone behavior is complete" — see `docs/phase-reports/phase2-state.md` §C8 |
-| Phase 3 | **COMPLETED / FROZEN** — central Clinic-scoped `AuthorizationService` established; technical completion at `ebf8588` (PHASE 3 PASS). **Do NOT start Phase 4 prematurely** (Phase 4 = Master Data — not yet implemented). This is NOT a release/V1/commercial claim |
+| Phase 3 | **COMPLETED / FROZEN** — implementation COMPLETE / technically accepted based on merged implementation (PRs #49, #50, #52, #54, #55, #56, #57) and exact-head evidence (19/19 checks success at `ebf8588f34be1da2ff18a152dea2c8badc472056`). Central Clinic-scoped `AuthorizationService` established; FROZEN. **Do NOT start Phase 4 prematurely** (Phase 4 = Master Data — NOT STARTED). This is NOT a release/V1/commercial claim |
 
 **Integrated main checkpoint:** `ebf8588` (PR #57 MERGED 2026-09-16 — Phase 3
 End Gate; technically COMPLETED/FROZEN; gates recorded in the header block).
