@@ -115,6 +115,7 @@ jobs:
         run: |
           set -o pipefail
           php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
+            --log-junit /tmp/phpunit-int-junit.xml \
             --bootstrap tests/integration-bootstrap.php tests/Integration 2>&1 | tee /tmp/phpunit-int.log
           # Completion guard (false-green protection): a COMPLETED PHPUnit run always
           # prints a terminal summary (OK / OK-but / FAILURES! / ERRORS! / WARNINGS!).
@@ -133,9 +134,44 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: integration-phpunit-log-${{ github.run_id }}-${{ github.run_attempt }}
-          path: /tmp/phpunit-int.log
+          path: |
+            /tmp/phpunit-int.log
+            /tmp/phpunit-int-junit.xml
           if-no-files-found: warn
           retention-days: 7
+
+      # شواهد تکمیل (همان سازوکار گارد): خلاصهٔ پایانی + اجرای کلاس‌ها از JUnit
+      # به‌صورت کامنت PR — لاگ‌های job به blob ریدایرکت می‌شوند، اما کامنت PR از
+      # طریق API خواندنی است؛ نتیجهٔ سبز بدون این شواهد قابل استنباط نیست.
+      - name: Post integration completion evidence to PR
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          {
+            echo "### Integration completion evidence (run ${{ github.run_id }}, attempt ${{ github.run_attempt }})"
+            echo '```'
+            echo '--- terminal summary (completion-guard authority) ---'
+            grep -E '^(OK \(|OK, but|FAILURES!|ERRORS!|WARNINGS!|Tests: |Time: )' /tmp/phpunit-int.log | tail -n 4 || echo '(no terminal summary found — premature exit)'
+            if [ -f /tmp/phpunit-int-junit.xml ]; then
+              SPLIT="$(mktemp)"
+              tr '<' '\n' < /tmp/phpunit-int-junit.xml > "$SPLIT"
+              echo '--- junit root suite ---'
+              grep -m1 '^testsuite ' "$SPLIT" || true
+              echo '--- Phase3Slice6AuthorizationRedTest suite (selection + execution proof) ---'
+              grep '^testsuite ' "$SPLIT" | grep 'Phase3Slice6AuthorizationRedTest' || echo '(class not present in junit)'
+              echo '--- Phase3Slice6AuthorizationRedTest testcases ---'
+              grep '^testcase ' "$SPLIT" | grep 'Phase3Slice6AuthorizationRedTest' || true
+              rm -f "$SPLIT"
+            else
+              echo '(junit xml missing — run may have terminated prematurely)'
+            fi
+            echo '```'
+          } > /tmp/pr-evidence.md
+          if [ -n "$PR_NUMBER" ]; then
+            gh pr comment "$PR_NUMBER" --body-file /tmp/pr-evidence.md || echo "::notice::PR comment failed (permissions?)"
+          fi
 
       # انتقال لاگ شکست‌ها به PR — لاگ‌های job از API به blob ریدایرکت می‌شوند و
       # از محیط sandbox قابل دانلود نیستند؛ کامنت PR از طریق API خواندنی است.
