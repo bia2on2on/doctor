@@ -24,7 +24,8 @@ use ClinicCore\Infrastructure\Repository\MembershipRepository;
  *   - TrustedClinicEstablisher با تکیه بر عضویت فعال/یکتا زمینه کلینیک معتبر
  *     را برقرار می‌کند (چندعضویتی ⇒ fail-closed)؛
  *   - مجوز اسکوپ‌شدهٔ CONFIG از طریق AuthorizationService::authorize اعمال
- *     می‌شود (مدیر سراسری بدون عضویت بسته می‌شود، deny صریح override می‌کند)؛
+ *     می‌شود (مدیر سراسری بدون عضویت پوستهٔ خالی می‌بیند — نه ردیف/فرم؛
+ *     deny صریح override می‌کند)؛
  *   * بارگذاری و جهش ردیف پزشک/برنامه فقط از طریق Clinic-predicate متناظر
  *     صورت می‌گیرد تا cross-Clinic mutation ممکن نشود.
  */
@@ -72,7 +73,11 @@ final class ClinicianAdminPage
         // افشای فهرست دیگر Clinicها، پیام دسترسی نشان می‌دهیم.
         $scope = self::tryEstablishAuthorizedScope($actorUserId, RolesAndCapabilities::CONFIG);
         if ($scope === null) {
-            wp_die('دسترسی به این صفحه نیازمند عضویت فعالِ کلینیک و مجوز scoped تنظیمات است.', 403);
+            // Fail-closed render (الگوی StaffManagementPage): پوستهٔ مدیریتی بدون
+            // هیچ ردیف پزشک/برنامه و بدون فرم mutation. مسیرهای write در
+            // admin_post همچنان wp_die(403) سخت می‌گیرند.
+            self::renderScopeRequiredShell();
+            return;
         }
         App::replaceExplicitScope($scope);
 
@@ -97,6 +102,22 @@ final class ClinicianAdminPage
     <?php else : ?>
         <?php self::renderClinician($repo, $selected); ?>
     <?php endif; ?>
+</div>
+        <?php
+    }
+
+    /**
+     * پوستهٔ fail-closed برای persona بدون زمینهٔ Clinic معتبر (ادمینِ نصب بدون
+     * عضویت، چندعضویتیِ مبهم، یا بدون مجوز scoped CONFIG) — الگوی یکسان با
+     * StaffManagementPage: HTTP 200 اما بدون هیچ داده/فرم Clinic.
+     */
+    private static function renderScopeRequiredShell(): void
+    {
+        ?>
+<div class="wrap" dir="rtl">
+    <h1>پزشکان و برنامه هفتگی</h1>
+    <div class="notice notice-error"><p>برای مدیریت پزشکان و برنامه کاری، عضویت فعال و مجوز Clinic-scoped در یک Clinic لازم است.</p></div>
+    <p class="description">مدیر سراسری وردپرس مرجع نصب است، نه مرجع Clinic؛ تا زمانی که عضویت فعالِ یک Clinic را نداشته باشید، فهرست پزشکان و عملیات برنامه کاری در دسترس نیست.</p>
 </div>
         <?php
     }

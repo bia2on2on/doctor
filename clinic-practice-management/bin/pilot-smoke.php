@@ -98,6 +98,13 @@ if ($smokeMembership === null) {
     App::membership_service()->create_membership($clinicId, $doctorUserId, 'cpms_doctor');
 }
 
+// Phase 3 Slice 6A — عملیات مالی (S3: issueInvoice/recordPayment با actor
+// منشی) مجوز Clinic-scoped را از عضویت فعالِ همین Clinic می‌گیرد؛ fixture
+// هم باید همان رابطهٔ tenant را داشته باشد (نقش سراسری WP کافی نیست).
+if (App::membership_service()->membership_for($clinicId, $secretaryId) === null) {
+    App::membership_service()->create_membership($clinicId, $secretaryId, 'cpms_secretary');
+}
+
 $wpdb->query($wpdb->prepare(
     'INSERT INTO ' . $db->table('cpms_patients') . '
          (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at)

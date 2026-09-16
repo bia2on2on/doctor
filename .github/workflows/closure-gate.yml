@@ -199,6 +199,11 @@ jobs:
           if (App::membership_service()->membership_for($closureClinicId, $doctorUserId) === null) {
               App::membership_service()->create_membership($closureClinicId, $doctorUserId, 'cpms_doctor');
           }
+          // Phase 3 Slice 6A — عملیات مالی probe با actor منشی انجام می‌شود؛
+          // مجوز Clinic-scoped از عضویت فعال می‌آید (نقش سراسری WP کافی نیست).
+          if (App::membership_service()->membership_for($closureClinicId, $secretaryId) === null) {
+              App::membership_service()->create_membership($closureClinicId, $secretaryId, 'cpms_secretary');
+          }
           $wpdb->query($wpdb->prepare(
           'INSERT INTO ' . $db->table('cpms_patients') . ' (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at) VALUES (1, %s, %s, %s, %s, %s, %s, %s)',
           'SYN-CLOSURE-RT-001', 'بیمار', 'Closure (Synthetic)', '09120001234', 'active', $now, $now
@@ -521,6 +526,11 @@ jobs:
           $closureClinicId = App::scope()->clinicId;
           if (App::membership_service()->membership_for($closureClinicId, $doctorUserId) === null) {
               App::membership_service()->create_membership($closureClinicId, $doctorUserId, 'cpms_doctor');
+          }
+          // Phase 3 Slice 6A — عملیات مالی probe با actor منشی انجام می‌شود؛
+          // مجوز Clinic-scoped از عضویت فعال می‌آید (نقش سراسری WP کافی نیست).
+          if (App::membership_service()->membership_for($closureClinicId, $secretaryId) === null) {
+              App::membership_service()->create_membership($closureClinicId, $secretaryId, 'cpms_secretary');
           }
           $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_patients') . ' (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at) VALUES (1, %s, %s, %s, %s, %s, %s, %s)', 'SYN-CLOSURE-RT-001', 'بیمار', 'Closure (Synthetic)', '09120001234', 'active', $now, $now));
           $patientId = (int) $wpdb->insert_id;

@@ -188,7 +188,7 @@ final class FinanceService
             throw FinanceException::of('CLINIC_VALIDATION_FAILED', 'تخفیف/مالیات باید عدد صحیح غیرمنفی باشد', 422);
         }
 
-        return $this->db->transactional(function () use ($actorUserId, $clinicId, $visitId, $itemsIn, $discount, $tax): array {
+        return $this->db->transactional(function () use ($actorUserId, $visitId, $itemsIn, $discount, $tax): array {
             $visit = $this->visits->findForUpdate($visitId);
             if ($visit === null || !$this->rowBelongsToTrustedClinic($visit)) {
                 throw FinanceException::of('CLINIC_NOT_FOUND', 'ویزیت یافت نشد', 404);
@@ -359,7 +359,7 @@ final class FinanceService
         }
 
         $result = $this->db->transactional(
-            function () use ($actorUserId, $clinicId, $invoiceId, $amount, $method, $ref, $idempotencyKey): array {
+            function () use ($actorUserId, $invoiceId, $amount, $method, $ref, $idempotencyKey): array {
                 $invoice = $this->requireOpenInvoiceForUpdate($invoiceId);
 
                 $effectiveTotal = $this->effectiveTotalCents($invoice);
