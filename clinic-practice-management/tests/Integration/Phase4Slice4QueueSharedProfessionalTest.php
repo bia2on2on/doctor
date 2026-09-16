@@ -629,14 +629,19 @@ final class Phase4Slice4QueueSharedProfessionalTest extends WP_UnitTestCase
         self::assertGreaterThan(0, $secretaryUserId, 'precondition: Clinic-B staff actor created');
         self::assertSame($clinicA, $this->patientClinic($patientA), 'precondition: Clinic-A patient owns its record');
         self::assertSame($clinicB, $this->patientClinic($patientB), 'precondition: Clinic-B patient owns its record');
-        self::assertGreaterThan($visitA['id'], 0, 'precondition: Clinic-A Visit inserted for the shared identity');
+        self::assertGreaterThan(0, $visitA['id'], 'precondition: Clinic-A Visit inserted for the shared identity');
         self::assertSame($clinicA, $this->visitClinic($visitA['id']), 'precondition: Clinic-A Visit is Clinic-A owned');
         self::assertSame($clinicianId, $this->visitClinician($visitA['id']), 'precondition: Clinic-A Visit uses the shared identity');
-        self::assertGreaterThan($visitB['id'], 0, 'precondition: Clinic-B Visit inserted for the shared identity');
+        self::assertGreaterThan(0, $visitB['id'], 'precondition: Clinic-B Visit inserted for the shared identity');
         self::assertSame($clinicB, $this->visitClinic($visitB['id']), 'precondition: Clinic-B Visit is Clinic-B owned');
         self::assertSame($clinicianId, $this->visitClinician($visitB['id']), 'precondition: Clinic-B Visit uses the shared identity');
         self::assertSame($clinicB, $this->visitClinic($visitB2['id']), 'precondition: colleague Visit is Clinic-B owned');
-        self::assertLessThan($visitB['max_history_id'], $visitB2['max_history_id'], 'precondition: history ordering witness holds');
+        // PHPUnit reads assertLessThan(expected, actual) => actual < expected.
+        self::assertLessThan(
+            $visitB2['max_history_id'],
+            $visitB['max_history_id'],
+            'precondition: own-scope watermark is strictly below the whole-Clinic one'
+        );
 
         return [
             'professionalUserId' => $professionalUserId,
