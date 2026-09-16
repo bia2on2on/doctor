@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace ClinicCore\Tests\Integration;
 
 use ClinicCore\Application\Handwriting\HandwritingException;
+use ClinicCore\Application\Scope\ClinicScope;
+use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Bootstrap\App;
 use WP_REST_Request;
 use WP_REST_Response;
@@ -32,12 +34,15 @@ final class HandwritingFlowTest extends WP_UnitTestCase
     private int $doctorUserId;
     private int $otherDoctorUserId;
     private int $secretaryUserId;
+    private ?ClinicScope $previousScope = null;
 
     protected function setUp(): void
     {
         parent::setUp();
         App::migrations()->migrate();
         \ClinicCore\Settings\Settings::flushCache();
+        $this->previousScope = ScopeContext::tryGet();
+        App::replaceExplicitScope(ClinicScope::forClinic(1));
 
         // C6 repair — عضویت فعال staff صریح است (نه fixture سراسری).
         // تست‌های patient/non-member عمداً عضویت نمی‌گیرند.
@@ -78,6 +83,13 @@ final class HandwritingFlowTest extends WP_UnitTestCase
             )
         );
         $this->patientId = (int) $wpdb->insert_id;
+    }
+
+    protected function tearDown(): void
+    {
+        App::replaceExplicitScope($this->previousScope);
+        $this->previousScope = null;
+        parent::tearDown();
     }
 
     // ================= F1 — ایجاد سند =================

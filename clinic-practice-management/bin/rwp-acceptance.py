@@ -596,20 +596,25 @@ with sync_playwright() as p:
             "Administrator بدون membership نباید ردیف staff/person یا action حساس ببیند",
         )
 
-        # Doctor Schedule (Desktop) — populated by seed
+        # Slice 6A — fail-closed render for the membership-less installation
+        # administrator: management shell may render, but no clinician rows and
+        # no schedule-management link (same expectation pattern as cpms-staff).
         try:
             goto_admin(ui, "admin-ui", "admin.php?page=cpms-clinicians", "cpms-clinicians-list")
+            admin_clinicians = ui.content()
+            check(
+                "admin-ui.cpms-clinicians.no_clinician_rows_without_membership",
+                "مدیریت برنامه" not in (admin_clinicians or "") and "data-cpms-confirm" not in (admin_clinicians or ""),
+                "Administrator بدون membership نباید ردیف پزشک یا لینک «مدیریت برنامه» ببیند",
+            )
             link = ui.query_selector('a[href*="cpms-clinicians"][href*="clinician_id="]')
-            if link:
-                m = re.search(r"clinician_id=\d+", link.get_attribute("href") or "")
-                if m:
-                    goto_admin(ui, "admin-ui", "admin.php?page=cpms-clinicians&" + m.group(0), "cpms-desktop-schedule")
-                else:
-                    check("admin-ui.doctor_schedule.link_found", False, "لینک پزشک بدون clinician_id")
-            else:
-                check("admin-ui.doctor_schedule.link_found", False, "هیچ لینک «مدیریت برنامه» پیدا نشد")
+            check(
+                "admin-ui.doctor_schedule.no_link_without_membership",
+                link is None,
+                "بدون عضویت فعال Clinic نباید لینک «مدیریت برنامه» وجود داشته باشد (Slice 6A)",
+            )
         except Exception as e:  # pragma: no cover
-            check("admin-ui.doctor_schedule.link_found", False, str(e))
+            check("admin-ui.cpms-clinicians.no_clinician_rows_without_membership", False, str(e))
 
         # Advanced Permissions — Desktop: initial collapsed + expand + search (semantic)
         verify_permissions(ui, "admin-ui", "cpms-desktop-roles-advanced")
@@ -793,6 +798,20 @@ with sync_playwright() as p:
             # دسترسی مستقیم به بالینی/ماتریس فنی → DENIED (نه فقط مخفی).
             assert_denied(page, "manager", "admin.php?page=cpms-doctor", "cpms-mgr-denied-doctor")
             assert_denied(page, "manager", "admin.php?page=cpms-roles", "cpms-mgr-denied-roles")
+            # Schedule evidence under the authorized persona (Slice 6A): the
+            # «مدیریت برنامه» link and the schedule page only render with an
+            # active trusted Clinic membership + scoped CONFIG.
+            try:
+                page.goto(f"{BASE}/wp-admin/admin.php?page=cpms-clinicians", wait_until="domcontentloaded")
+                page.wait_for_timeout(600)
+                mlink = page.query_selector('a[href*="cpms-clinicians"][href*="clinician_id="]')
+                check("manager.doctor_schedule.link_found", mlink is not None, "مدیر کلینیک باید لینک «مدیریت برنامه» را ببیند")
+                if mlink:
+                    mm = re.search(r"clinician_id=\d+", mlink.get_attribute("href") or "")
+                    if mm:
+                        goto_admin(page, "manager", "admin.php?page=cpms-clinicians&" + mm.group(0), "cpms-mgr-schedule")
+            except Exception as e:  # pragma: no cover
+                check("manager.doctor_schedule.link_found", False, str(e))
         page.close()
         mgrctx.close()
 

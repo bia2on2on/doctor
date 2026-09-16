@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Application\Finance;
 
+use ClinicCore\Application\Authorization\AuthorizationException;
 use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Application\Visits\VisitService;
@@ -25,24 +26,10 @@ use DomainException;
 /**
  * سرویس مالی (F6) — Invoice/Payment/Adjustment/Void/Refund + تعرفه‌ها.
  *
- * Scope (SRS §3.14/§3.15 + docs/state-machines/payment.md + API D12–D18/G2):
- *  - **Invoice ≠ Payment** (قانون سفت): فاکتور = بدهی؛ پرداخت = تراکنش Immutable.
- *  - P1/M-1: Idempotency روی خود جدول payments (UNIQUE(invoice_id,key))؛
- *    تکرار کلید = همان پاسخ 200 (TP-02) — نه خطا.
- *  - M-3 بیش‌پرداخت ممنوع → CLINIC_OVERPAYMENT 422؛ محاسبات همه integer
- *    (TP-18) در «واحد صغیر» = ریال (توافق با InvoiceCalc).
- *  - M-6 عمل روی فاکتور paid/voided → CLINIC_INVOICE_NOT_MODIFIABLE.
- *  - M-7 هر عمل مالی + Transition ویزیت (V11/V12 نقش system) در یک
- *    Transaction واحد با Row Lock روی فاکتور/ویزیت.
- *  - P2 ابطال پرداخت: فقط همان روز (UTC) + دلیل؛ رکورد حذف نمی‌شود.
- *  - P3 بازپرداخت: جزئی/کامل؛ refunded_amount روی همان رکورد.
- *  - Audit با اکشن‌های مرجع audit-strategy §2 (INVOICE_CREATE,
- *    PAYMENT_CAPTURE, PAYMENT_VOID, PAYMENT_REFUND, PAYMENT_ADJUST) و
- *    before/after مبلغی (M-4) — بدون PHI اضافی.
- *  - عددگیری سریال INV/PAY: قفل ردیف کلینیک → سریال per-clinic.
- *
- * Deviation (مستند در report-f6): بازگشت از paid (void/refund) وضعیت ویزیت
- * را برنمی‌گرداند — V12 یک‌طرفه است (لاگ + Open Item برای F7).
+ * Phase 3 Slice 6A: چک سراسری user_can به‌عنوان defense-in-depth نگه داشته
+ * شده اما مرجع نهایی مجوز، AuthorizationService::authorize با trusted
+ * Clinic است (deny صریح override می‌کند؛ suspended/non-member fail-closed؛
+ * multi-Clinic مستقل). اعمال مجوز پیش از هر تراکنش/جهش است.
  */
 final class FinanceService
 {
@@ -60,22 +47,35 @@ final class FinanceService
     ) {
     }
 
-    // ================= G2 — تعرفه خدمات (cpms_config) =================
+    // ================= G2 — تعرفه خدمات =================
 
     /**
      * @return list<array<string, mixed>>
      */
     public function listServices(int $actorUserId, bool $onlyActive = true): array
     {
-        // خواندن تعرفه: منشی/پزشک (برای فاکتورسازی FR-14.9) یا admin فنی
-        // (مدیریت تعرفه‌ها) — admin فنی cpms_invoice_read ندارد (P-3).
-        if (!user_can($actorUserId, RolesAndCapabilities::INVOICE_READ)
-            && !user_can($actorUserId, RolesAndCapabilities::CONFIG)) {
+        $clinicId = $this->requireTrustedClinicId();
+        // OR معنایی: INVOICE_READ یا CONFIG، هرکدام در این Clinic مجاز باشند.
+        $allowed = false;
+        $last = null;
+        foreach ([RolesAndCapabilities::INVOICE_READ, RolesAndCapabilities::CONFIG] as $cap) {
+            if (!user_can($actorUserId, $cap)) {
+                continue;
+            }
+            try {
+                $this->authorizeScoped($actorUserId, $clinicId, $cap, 'services.read');
+                $allowed = true;
+                break;
+            } catch (FinanceException $e) {
+                $last = $e;
+            }
+        }
+        if (!$allowed) {
+            if ($last !== null) {
+                throw $last;
+            }
             throw FinanceException::of('CLINIC_PERMISSION_DENIED', 'دسترسی لازم را ندارید', 403, ['scope' => 'services.read']);
         }
-
-        // C6-corrective: تعرفه‌های همان Clinic معتبر — بدون Scope، بسته.
-        $clinicId = $this->trustedClinicId();
 
         return array_map(static fn (array $s): array => [
             'id' => (int) $s['id'],
@@ -94,8 +94,9 @@ final class FinanceService
     public function createService(int $actorUserId, array $input): array
     {
         $this->requireCap($actorUserId, RolesAndCapabilities::CONFIG, 'services.config');
+        $clinicId = $this->requireTrustedClinicId();
+        $this->authorizeScoped($actorUserId, $clinicId, RolesAndCapabilities::CONFIG, 'services.config');
         [$code, $name, $price] = $this->validateServiceInput($input, null);
-        $clinicId = App::scope()->clinicId;
         if ($this->services->existsWithCode($clinicId, $code)) {
             throw FinanceException::of('CLINIC_POLICY_VIOLATION', 'کد خدمت تکراری است', 409, ['code' => $code]);
         }
@@ -104,7 +105,6 @@ final class FinanceService
             'name' => $name,
             'price' => $price,
         ]);
-        // SETTING_UPDATE — اکشن مرجع audit-strategy برای تغییرات Config
         $this->audit->log('SETTING_UPDATE', $this->actor($actorUserId), 'service', $id, null, null, [
             'code' => $code, 'name' => $name, 'price' => $price, 'is_active' => 1,
         ], ['op' => 'service_create']);
@@ -119,16 +119,13 @@ final class FinanceService
     public function updateService(int $actorUserId, int $id, array $input): array
     {
         $this->requireCap($actorUserId, RolesAndCapabilities::CONFIG, 'services.config');
-        // C7-S4: بدون Clinic معتبر ⇒ بسته؛ مالکیت تعرفه پیش از validation/نوشتن/audit
-        // — تعرفهٔ خارجی دقیقاً مثل تعرفهٔ ناموجود پاسخ می‌گیرد (404 parity) و
-        // دیگر به «no-op بی‌صدا با پاسخ موفق» (oracle وجود شیء) ختم نمی‌شود.
-        $this->requireTrustedClinicId();
+        $clinicId = $this->requireTrustedClinicId();
+        $this->authorizeScoped($actorUserId, $clinicId, RolesAndCapabilities::CONFIG, 'services.config');
         $existing = $this->services->find($id);
         if ($existing === null || !$this->rowBelongsToTrustedClinic($existing)) {
             throw FinanceException::of('CLINIC_NOT_FOUND', 'خدمت یافت نشد', 404);
         }
         [$code, $name, $price] = $this->validateServiceInput($input, $existing);
-        $clinicId = App::scope()->clinicId;
         if ($this->services->existsWithCode($clinicId, $code, $id)) {
             throw FinanceException::of('CLINIC_POLICY_VIOLATION', 'کد خدمت تکراری است', 409, ['code' => $code]);
         }
@@ -152,14 +149,13 @@ final class FinanceService
     public function deactivateService(int $actorUserId, int $id): array
     {
         $this->requireCap($actorUserId, RolesAndCapabilities::CONFIG, 'services.config');
-        // C7-S4: همان قرارداد مالکیت updateService (بدون no-op بی‌صدا با موفق).
-        $this->requireTrustedClinicId();
+        $clinicId = $this->requireTrustedClinicId();
+        $this->authorizeScoped($actorUserId, $clinicId, RolesAndCapabilities::CONFIG, 'services.config');
         $existing = $this->services->find($id);
         if ($existing === null || !$this->rowBelongsToTrustedClinic($existing)) {
             throw FinanceException::of('CLINIC_NOT_FOUND', 'خدمت یافت نشد', 404);
         }
-        // حذف منطقی — اقلام فاکتور تاریخی باید به تعرفه ارجاع بدهند (FR-14.9)
-        $this->services->update(App::scope()->clinicId, $id, ['is_active' => 0]);
+        $this->services->update($clinicId, $id, ['is_active' => 0]);
         $this->audit->log('SETTING_UPDATE', $this->actor($actorUserId), 'service', $id, null, [
             'service.is_active' => 1,
         ], [
@@ -169,18 +165,17 @@ final class FinanceService
         return ['id' => $id, 'is_active' => false];
     }
 
-    // ================= D12 — صدور فاکتور (I1) =================
+    // ================= D12 — صدور فاکتور =================
 
     /**
-     * @param array<string, mixed> $input {visit_id, items:[{service_id?, description, quantity|qty, unit_price|price, discount?}], discount?, tax?}
+     * @param array<string, mixed> $input
      * @return array<string, mixed>
      */
     public function issueInvoice(int $actorUserId, array $input): array
     {
         $this->requireCap($actorUserId, RolesAndCapabilities::INVOICE_CREATE, 'invoice.issue');
-        // C7-S4: بدون Clinic معتبرِ درخواست ⇒ بسته (CLINIC_SCOPE_REQUIRED) —
-        // Clinic هرگز از ردیف ویزیتِ انتخاب‌شدهٔ کلاینت پذیرفته نمی‌شود.
-        $this->requireTrustedClinicId();
+        $clinicId = $this->requireTrustedClinicId();
+        $this->authorizeScoped($actorUserId, $clinicId, RolesAndCapabilities::INVOICE_CREATE, 'invoice.issue');
 
         $visitId = (int) ($input['visit_id'] ?? 0);
         $itemsIn = $input['items'] ?? null;
@@ -195,13 +190,9 @@ final class FinanceService
 
         return $this->db->transactional(function () use ($actorUserId, $visitId, $itemsIn, $discount, $tax): array {
             $visit = $this->visits->findForUpdate($visitId);
-            // C7-S4: مالکیت ویزیت پیش از هر بررسیِ وضعیت/بیمار/قفل/درج — ویزیتِ
-            // خارج از Clinic معتبر دقیقاً مثل ویزیت ناموجود پاسخ می‌گیرد (پاکت
-            // یکسان — عدم شمارش/افشا) و هیچ اثر مالی برای کلینیک قربانی نمی‌سازد.
             if ($visit === null || !$this->rowBelongsToTrustedClinic($visit)) {
                 throw FinanceException::of('CLINIC_NOT_FOUND', 'ویزیت یافت نشد', 404);
             }
-            // I1: فقط از consultation_completed/awaiting_payment
             if (!in_array((string) $visit['status'], ['consultation_completed', 'awaiting_payment'], true)) {
                 throw FinanceException::of(
                     'CLINIC_INVALID_TRANSITION',
@@ -210,7 +201,6 @@ final class FinanceService
                     ['visit_status' => (string) $visit['status']]
                 );
             }
-            // I1/I4: هر ویزیت حداکثر یک فاکتور غیرابطال‌شده
             if ($this->invoices->activeForVisit($visitId) !== null) {
                 throw FinanceException::of(
                     'CLINIC_POLICY_VIOLATION',
@@ -220,7 +210,6 @@ final class FinanceService
                 );
             }
 
-            // اقلام — سرویس کاتالوگ (FR-14.9) یا قلم دستی؛ مبلغ‌ها ریال صحیح
             $calcItems = [];
             $rows = [];
             foreach ($itemsIn as $item) {
@@ -238,11 +227,6 @@ final class FinanceService
 
                 if ($serviceId !== null) {
                     $service = $this->services->find($serviceId);
-                    // C7-S5: تعرفهٔ ارجاع‌شدهٔ کلاینت «شیء» است — مالکیتش نسبت
-                    // به Clinic معتبرِ درخواست راستی‌آزمایی می‌شود؛ تعرفهٔ خارجی
-                    // دقیقاً مثل تعرفهٔ ناموجود پاسخ می‌گیرد (همان پاکت) و
-                    // نام/قیمت پیکربندیِ کلینیک دیگر به دادهٔ مالی این کلینیک
-                    // وارد نمی‌شود. اعتبارسنجی اقلام پیش از هر درجِ ماندگار است.
                     if ($service === null || !$this->rowBelongsToTrustedClinic($service)) {
                         throw FinanceException::of('CLINIC_NOT_FOUND', 'خدمت انتخاب‌شده یافت نشد', 404, ['service_id' => $serviceId]);
                     }
@@ -270,27 +254,24 @@ final class FinanceService
                 ];
                 $rows[] = [
                     'service_id' => $serviceId,
-                    'description' => mb_substr($description, 0, 255),
+                    'description' => $description,
                     'quantity' => $quantity,
                     'unit_price' => $unitPrice,
                     'discount' => $itemDiscount,
                 ];
             }
 
-            // محاسبه خالص دامنه (TP-18 — integer) + نگاشت خطاها
             try {
                 $totals = InvoiceCalc::issueTotals($calcItems, $discount, $tax);
             } catch (DomainException $e) {
                 throw FinanceException::of('CLINIC_VALIDATION_FAILED', 'اقلام فاکتور نامعتبر است: ' . $e->getMessage(), 422);
             }
 
-            // عددگیری سریال — قفل همان Clinicِ ویزیت، عددگیری‌های موازی همان
-            // Clinic را سریال می‌کند؛ دنباله شماره مستقلِ هر Clinic است.
             $visitClinicId = (int) $visit['clinic_id'];
             $this->lockClinic($visitClinicId);
             $number = $this->invoices->nextInvoiceNumber($visitClinicId);
 
-            $invoiceId = $this->invoices->insert((int) $visit['clinic_id'], [
+            $invoiceId = $this->invoices->insert($visitClinicId, [
                 'invoice_number' => $number,
                 'patient_id' => (int) $visit['patient_id'],
                 'visit_id' => $visitId,
@@ -314,7 +295,6 @@ final class FinanceService
                 ]);
             }
 
-            // V11: consultation_completed → awaiting_payment (نقش system — M-7)
             if ((string) $visit['status'] === 'consultation_completed') {
                 $this->visitService->applyTransition($actorUserId, $visit, 'invoice_ready', [], 'system');
             }
@@ -343,17 +323,17 @@ final class FinanceService
         });
     }
 
-    // ================= D13 — ثبت پرداخت (P1/I2/I3) =================
+    // ================= D13 — ثبت پرداخت =================
 
     /**
-     * @param array<string, mixed> $input {amount, method, transaction_ref?}
-     * @return array<string, mixed> {payment_id, payment_number, invoice, idempotent_replay?}
+     * @param array<string, mixed> $input
+     * @return array<string, mixed>
      */
     public function recordPayment(int $actorUserId, int $invoiceId, array $input, string $idempotencyKey): array
     {
         $this->requireCap($actorUserId, RolesAndCapabilities::PAYMENT_CREATE, 'payment.capture');
-        // C7-S3: بدون Clinic معتبرِ درخواست ⇒ بسته (CLINIC_SCOPE_REQUIRED).
-        $this->requireTrustedClinicId();
+        $clinicId = $this->requireTrustedClinicId();
+        $this->authorizeScoped($actorUserId, $clinicId, RolesAndCapabilities::PAYMENT_CREATE, 'payment.capture');
         if ($idempotencyKey === '') {
             throw FinanceException::of('CLINIC_VALIDATION_FAILED', 'هدر Idempotency-Key (UUID) الزامی است', 400);
         }
@@ -369,12 +349,8 @@ final class FinanceService
             throw FinanceException::of('CLINIC_VALIDATION_FAILED', 'روش پرداخت نامعتبر است (cash/card_pos/online/other)', 422);
         }
 
-        // M-1: Idempotency روی خود جدول — تکرار کلید = همان پاسخ (TP-02)
         $existing = $this->payments->findByIdempotencyKey($invoiceId, $idempotencyKey);
         if ($existing !== null) {
-            // C7-S1: مسیر Replay هم دادهٔ حساس برمی‌گرداند — پرداختِ یافت‌شده
-            // باید به Clinic مورد اعتمادِ درخواست تعلق داشته باشد؛ ناهمخوانی ⇒
-            // همان پاکت «فاکتور یافت نشد» (عدم افشای وجود پرداخت/فاکتور کلینیک دیگر).
             if (!$this->rowBelongsToTrustedClinic($existing)) {
                 throw FinanceException::of('CLINIC_NOT_FOUND', 'فاکتور یافت نشد', 404);
             }
@@ -386,7 +362,6 @@ final class FinanceService
             function () use ($actorUserId, $invoiceId, $amount, $method, $ref, $idempotencyKey): array {
                 $invoice = $this->requireOpenInvoiceForUpdate($invoiceId);
 
-                // M-3 — بیش‌پرداخت ممنوع (چک صریح برای خطای غنی؛ InvoiceCalc دفاع دوم)
                 $effectiveTotal = $this->effectiveTotalCents($invoice);
                 $balance = $effectiveTotal - ($this->toMinor((string) $invoice['paid_amount']) ?? 0);
                 if ($amount > $balance) {
@@ -401,7 +376,7 @@ final class FinanceService
                 $invoiceClinicId = (int) $invoice['clinic_id'];
                 $this->lockClinic($invoiceClinicId);
                 $number = $this->payments->nextPaymentNumber($invoiceClinicId);
-                $ok = $this->payments->insert((int) $invoice['clinic_id'], [
+                $ok = $this->payments->insert($invoiceClinicId, [
                     'payment_number' => $number,
                     'invoice_id' => $invoiceId,
                     'patient_id' => (int) $invoice['patient_id'],
@@ -414,7 +389,6 @@ final class FinanceService
                 ]);
                 $paymentId = $this->db->wpdb_last_insert_id();
                 if (!$ok || $paymentId <= 0) {
-                    // UNIQUE(invoice_id,key) — درخواست هم‌زمان با همان کلید
                     $raced = $this->payments->findByIdempotencyKey($invoiceId, $idempotencyKey);
                     if ($raced !== null) {
                         return ['replay' => $raced];
@@ -422,7 +396,6 @@ final class FinanceService
                     throw FinanceException::of('CLINIC_VALIDATION_FAILED', 'ثبت پرداخت انجام نشد', 500);
                 }
 
-                // I2/I3 + V12 — همه در همین Transaction (M-7)
                 $this->applyInvoicePaymentEffect($invoice, $amount, $actorUserId);
 
                 $this->audit->log(
@@ -459,7 +432,7 @@ final class FinanceService
         );
     }
 
-    // ================= D14 — ابطال پرداخت (P2) =================
+    // ================= D14 — ابطال پرداخت =================
 
     /**
      * @return array<string, mixed>
@@ -467,8 +440,8 @@ final class FinanceService
     public function voidPayment(int $actorUserId, int $paymentId, string $reason): array
     {
         $this->requireCap($actorUserId, RolesAndCapabilities::PAYMENT_VOID, 'payment.void');
-        // C7-S3: بدون Clinic معتبرِ درخواست ⇒ بسته (CLINIC_SCOPE_REQUIRED).
-        $this->requireTrustedClinicId();
+        $clinicId = $this->requireTrustedClinicId();
+        $this->authorizeScoped($actorUserId, $clinicId, RolesAndCapabilities::PAYMENT_VOID, 'payment.void');
         $reason = trim($reason);
         if ($reason === '') {
             throw FinanceException::of('CLINIC_VALIDATION_FAILED', 'دلیل ابطال الزامی است', 422);
@@ -476,8 +449,6 @@ final class FinanceService
 
         return $this->db->transactional(function () use ($actorUserId, $paymentId, $reason): array {
             $payment = $this->payments->findForUpdate($paymentId);
-            // C7-S1: مالکیت پیش از هر بررسیِ وضعیت/بازه — وگرنه پاسخ‌های 409
-            // وضعیت/تاریخ پرداختِ کلینیک دیگر را افشا می‌کردند. پاکت یکسان با «یافت نشد».
             if ($payment === null || !$this->rowBelongsToTrustedClinic($payment)) {
                 throw FinanceException::of('CLINIC_NOT_FOUND', 'پرداخت یافت نشد', 404);
             }
@@ -489,7 +460,6 @@ final class FinanceService
                     ['status' => (string) $payment['status']]
                 );
             }
-            // P2: بازه ابطال — همان روز ثبت (UTC)
             $paidDay = substr((string) $payment['paid_at'], 0, 10);
             if ($paidDay !== gmdate('Y-m-d')) {
                 throw FinanceException::of(
@@ -501,7 +471,6 @@ final class FinanceService
             }
 
             $invoice = $this->invoices->findForUpdate((int) $payment['invoice_id']);
-            // C7-S1: همان قرارداد مالکیت روی زنجیرهٔ پرداخت ← فاکتور (404 parity).
             if ($invoice === null || !$this->rowBelongsToTrustedClinic($invoice)) {
                 throw FinanceException::of('CLINIC_NOT_FOUND', 'فاکتور یافت نشد', 404);
             }
@@ -546,25 +515,23 @@ final class FinanceService
         });
     }
 
-    // ================= P3 — بازپرداخت (Refund) =================
+    // ================= P3 — بازپرداخت =================
 
     /**
-     * @param array<string, mixed>|null $input {amount?} — پیش‌فرض: کل مبلغ باقیمانده قابل بازگردانی
+     * @param array<string, mixed>|null $input
      * @return array<string, mixed>
      */
     public function refundPayment(int $actorUserId, int $paymentId, string $reason, ?array $input = null): array
     {
         $this->requireCap($actorUserId, RolesAndCapabilities::PAYMENT_REFUND, 'payment.refund');
-        // C7-S3: بدون Clinic معتبرِ درخواست ⇒ بسته (CLINIC_SCOPE_REQUIRED).
-        $this->requireTrustedClinicId();
+        $clinicId = $this->requireTrustedClinicId();
+        $this->authorizeScoped($actorUserId, $clinicId, RolesAndCapabilities::PAYMENT_REFUND, 'payment.refund');
         $reason = trim($reason);
         if ($reason === '') {
             throw FinanceException::of('CLINIC_VALIDATION_FAILED', 'دلیل بازپرداخت الزامی است', 422);
         }
         $input = $input ?? [];
         $payment = $this->payments->find($paymentId);
-        // C7-S1: مالکیت پیش از محاسبهٔ مبالغ — وگرنه خطای «max_refundable»
-        // مبلغ پرداختِ کلینیک دیگر را افشا می‌کرد. پاکت یکسان با «یافت نشد».
         if ($payment === null || !$this->rowBelongsToTrustedClinic($payment)) {
             throw FinanceException::of('CLINIC_NOT_FOUND', 'پرداخت یافت نشد', 404);
         }
@@ -586,7 +553,6 @@ final class FinanceService
 
         return $this->db->transactional(function () use ($actorUserId, $paymentId, $reason, $refund, $alreadyRefunded): array {
             $payment = $this->payments->findForUpdate($paymentId);
-            // C7-S1: بازتأیید روی ردیفِ قفل‌شده — پیش از هر بررسی وضعیت/جهش.
             if (!$this->rowBelongsToTrustedClinic($payment)) {
                 throw FinanceException::of('CLINIC_NOT_FOUND', 'پرداخت یافت نشد', 404);
             }
@@ -599,8 +565,6 @@ final class FinanceService
                 );
             }
             $invoice = $this->invoices->findForUpdate((int) $payment['invoice_id']);
-            // C7-S1: فاکتورِ خارج از Clinic مورد اعتماد، همان پاکتِ «قابل تغییر
-            // نیست» را می‌گیرد (پاکتِ همسایهٔ null — عدم افشای وضعیت کلینیک دیگر).
             if ($invoice === null
                 || !$this->rowBelongsToTrustedClinic($invoice)
                 || (string) $invoice['status'] === 'voided'
@@ -641,17 +605,17 @@ final class FinanceService
         });
     }
 
-    // ================= D15 — اصلاح (Credit/Debit) =================
+    // ================= D15 — اصلاح =================
 
     /**
-     * @param array<string, mixed> $input {amount, reason}
+     * @param array<string, mixed> $input
      * @return array<string, mixed>
      */
     public function addAdjustment(int $actorUserId, int $invoiceId, string $type, array $input): array
     {
         $this->requireCap($actorUserId, RolesAndCapabilities::INVOICE_ADJUST, 'invoice.adjust');
-        // C7-S3: بدون Clinic معتبرِ درخواست ⇒ بسته (CLINIC_SCOPE_REQUIRED).
-        $this->requireTrustedClinicId();
+        $clinicId = $this->requireTrustedClinicId();
+        $this->authorizeScoped($actorUserId, $clinicId, RolesAndCapabilities::INVOICE_ADJUST, 'invoice.adjust');
         if (!in_array($type, ['credit', 'debit'], true)) {
             throw FinanceException::of('CLINIC_VALIDATION_FAILED', 'type باید credit یا debit باشد', 422);
         }
@@ -668,7 +632,6 @@ final class FinanceService
             $invoice = $this->requireOpenInvoiceForUpdate($invoiceId);
             $balance = $this->toMinor((string) $invoice['balance']) ?? 0;
 
-            // Credit هرگز بیشتر از بدهی باقیمانده نیست (به سود بیمار)
             if ($type === 'credit' && $amount > $balance) {
                 throw FinanceException::of(
                     'CLINIC_VALIDATION_FAILED',
@@ -678,7 +641,6 @@ final class FinanceService
                 );
             }
 
-            // محاسبه خالص دامنه — defense in depth (چک بالا قبلاً خطا داده)
             try {
                 $r = InvoiceCalc::applyAdjustment(
                     $this->toMinor((string) $invoice['total']) ?? 0,
@@ -701,9 +663,6 @@ final class FinanceService
                 'approved_by_wp_user_id' => $actorUserId,
             ]);
 
-            // FR-14.6: credit = کسر از بدهی؛ debit = افزایش بدهی.
-            // رویداد وضعیت (open/partial/paid) شرط کسب‌وکاری است که همین‌جا
-            // محاسبه می‌شود (یادداشت InvoiceMachine).
             $paid = $this->toMinor((string) $invoice['paid_amount']) ?? 0;
             $status = $newBalance <= 0 ? 'paid' : ($paid > 0 ? 'partial' : 'open');
             $this->invoices->update($invoiceId, [
@@ -746,7 +705,7 @@ final class FinanceService
         });
     }
 
-    // ================= D17 — رسید (M-5 Deterministic) =================
+    // ================= D17 — رسید =================
 
     /**
      * @return array<string, mixed>
@@ -754,11 +713,9 @@ final class FinanceService
     public function receipt(int $actorUserId, int $invoiceId): array
     {
         $this->requireCap($actorUserId, RolesAndCapabilities::INVOICE_READ, 'invoice.receipt');
-        // C7-S3: بدون Clinic معتبرِ درخواست ⇒ بسته (CLINIC_SCOPE_REQUIRED).
-        $this->requireTrustedClinicId();
+        $clinicId = $this->requireTrustedClinicId();
+        $this->authorizeScoped($actorUserId, $clinicId, RolesAndCapabilities::INVOICE_READ, 'invoice.receipt');
         $invoice = $this->invoices->find($invoiceId);
-        // C7-S1: مالکیت پیش از هر خواندنِ حساس — نام/MRN بیمار، اقلام و
-        // پرداخت‌های فاکتورِ کلینیک دیگر هرگز نباید به پاسخ برسند (404 parity).
         if ($invoice === null || !$this->rowBelongsToTrustedClinic($invoice)) {
             throw FinanceException::of('CLINIC_NOT_FOUND', 'فاکتور یافت نشد', 404);
         }
@@ -772,7 +729,6 @@ final class FinanceService
             static fn (array $p): bool => (string) $p['status'] === 'captured'
         ));
 
-        // M-5: تولید مجدد = همان محتوا — بدون Timestamp تولید
         return [
             'receipt' => [
                 'invoice_number' => (string) $invoice['invoice_number'],
@@ -820,6 +776,8 @@ final class FinanceService
     public function summary(int $actorUserId, ?string $from = null, ?string $to = null): array
     {
         $this->requireCap($actorUserId, RolesAndCapabilities::FINANCE_READ, 'finance.summary');
+        $clinicId = $this->requireTrustedClinicId();
+        $this->authorizeScoped($actorUserId, $clinicId, RolesAndCapabilities::FINANCE_READ, 'finance.summary');
         $from = $from ?? gmdate('Y-m-d');
         $to = $to ?? gmdate('Y-m-d');
         foreach (['from' => $from, 'to' => $to] as $label => $date) {
@@ -829,8 +787,6 @@ final class FinanceService
             }
         }
 
-        // C6-corrective: خلاصه همان Clinic معتبر — بدون Scope، بسته.
-        $clinicId = $this->trustedClinicId();
         $revenue = $this->payments->revenueSummary($clinicId, $from, $to);
         $openInvoices = $this->invoices->openInvoices($clinicId, 500);
         $openBalance = 0;
@@ -913,11 +869,9 @@ final class FinanceService
     public function findInvoiceForActor(int $actorUserId, int $invoiceId): array
     {
         $this->requireCap($actorUserId, RolesAndCapabilities::INVOICE_READ, 'invoice.read');
-        // C7-S3: بدون Clinic معتبرِ درخواست ⇒ بسته (CLINIC_SCOPE_REQUIRED).
-        $this->requireTrustedClinicId();
+        $clinicId = $this->requireTrustedClinicId();
+        $this->authorizeScoped($actorUserId, $clinicId, RolesAndCapabilities::INVOICE_READ, 'invoice.read');
 
-        // C7-S1: خواندنِ مبتنی بر شناسهٔ ورودی — مالکیت پیش از ساخت پاسخ حساس
-        // (شماره/مبالغ/بیمار/اقلام). پاکت یکسان با «فاکتور یافت نشد» (404 parity).
         $invoice = $this->invoices->find($invoiceId);
         if ($invoice === null || !$this->rowBelongsToTrustedClinic($invoice)) {
             throw FinanceException::of('CLINIC_NOT_FOUND', 'فاکتور یافت نشد', 404);
@@ -927,18 +881,14 @@ final class FinanceService
     }
 
     /**
-     * فاکتور فعال ویزیت (open/partial/paid) — برای UI تسویه (رفع ویزیت→فاکتور).
-     *
      * @return array<string, mixed>
      */
     public function invoiceForVisit(int $actorUserId, int $visitId): array
     {
         $this->requireCap($actorUserId, RolesAndCapabilities::INVOICE_READ, 'invoice.read');
-        // C7-S3: بدون Clinic معتبرِ درخواست ⇒ بسته (CLINIC_SCOPE_REQUIRED).
-        $this->requireTrustedClinicId();
+        $clinicId = $this->requireTrustedClinicId();
+        $this->authorizeScoped($actorUserId, $clinicId, RolesAndCapabilities::INVOICE_READ, 'invoice.read');
         $invoice = $this->invoices->activeForVisit($visitId);
-        // C7-S1: فاکتورِ ویزیت خارج از Clinic مورد اعتماد ⇒ پاکتِ یکسان با
-        // «این ویزیت فاکتور فعال ندارد» — عدم افشای وجود فاکتورِ کلینیک دیگر.
         if ($invoice === null || !$this->rowBelongsToTrustedClinic($invoice)) {
             throw FinanceException::of('CLINIC_NOT_FOUND', 'این ویزیت فاکتور فعال ندارد', 404, ['visit_id' => $visitId]);
         }
@@ -946,7 +896,7 @@ final class FinanceService
         return $this->invoiceView((int) $invoice['id']);
     }
 
-    // ================= Helpers — تراکنش/محاسبات =================
+    // ================= Helpers =================
 
     /**
      * @return array<string, mixed>
@@ -954,14 +904,10 @@ final class FinanceService
     private function requireOpenInvoiceForUpdate(int $invoiceId): array
     {
         $invoice = $this->invoices->findForUpdate($invoiceId);
-        // C7-S1: مالکیت فاکتور نسبت به Clinic مورد اعتمادِ درخواست — پیش از
-        // بررسی وضعیت/قفل/درج (وگرنه 409 وضعیت فاکتورِ کلینیک دیگر را افشا
-        // می‌کرد). ناهمخوانی ⇒ پاکت بایت‌به‌بایت یکسان با «فاکتور یافت نشد».
         if ($invoice === null || !$this->rowBelongsToTrustedClinic($invoice)) {
             throw FinanceException::of('CLINIC_NOT_FOUND', 'فاکتور یافت نشد', 404);
         }
         if (!in_array((string) $invoice['status'], ['open', 'partial'], true)) {
-            // M-6 — عمل روی فاکتور paid/voided
             throw FinanceException::of(
                 'CLINIC_INVOICE_NOT_MODIFIABLE',
                 'این فاکتور (' . (string) $invoice['status'] . ') نهایی شده و قابل تغییر نیست',
@@ -974,8 +920,6 @@ final class FinanceService
     }
 
     /**
-     * کلید تسویه مؤثر: total − credit + debit (ریال صحیح — TP-18).
-     *
      * @param array<string, mixed> $invoice
      */
     private function effectiveTotalCents(array $invoice): int
@@ -988,9 +932,6 @@ final class FinanceService
     }
 
     /**
-     * اثر پرداخت روی فاکتور (I2/I3 — InvoiceCalc + InvoiceMachine) و در
-     * تسویه کامل روی ویزیت (V12). داخل Transaction فراخواننده (M-7).
-     *
      * @param array<string, mixed> $invoice
      */
     private function applyInvoicePaymentEffect(array $invoice, int $amount, int $actorUserId): void
@@ -1004,7 +945,6 @@ final class FinanceService
             throw FinanceException::of('CLINIC_OVERPAYMENT', $e->getMessage(), 422);
         }
 
-        // رویداد pay_partial/pay_full — نقش system (I2/I3)
         $toStatus = InvoiceMachine::create()->machine()->assert((string) $invoice['status'], $r['event'], 'system');
 
         $this->invoices->update((int) $invoice['id'], [
@@ -1019,9 +959,6 @@ final class FinanceService
     }
 
     /**
-     * برگرداندن اثر مبلغ (ابطال/بازپرداخت) روی فاکتور — P2/P3.
-     * وضعیت ویزیت برنمی‌گردد (V12 یک‌طرفه — Deviation مستند).
-     *
      * @param array<string, mixed> $invoice
      * @return array{paid_amount: int, balance: int, status: string}
      */
@@ -1041,9 +978,6 @@ final class FinanceService
         return ['paid_amount' => $paid, 'balance' => $balance, 'status' => $status];
     }
 
-    /**
-     * V12: awaiting_payment → paid (نقش system) — فقط اگر هنوز در انتظار است.
-     */
     private function settleVisitIfAwaitingPayment(int $visitId, int $actorUserId): void
     {
         $visit = $this->visits->findForUpdate($visitId);
@@ -1053,16 +987,10 @@ final class FinanceService
         try {
             $this->visitService->applyTransition($actorUserId, $visit, 'settled', [], 'system');
         } catch (VisitException $e) {
-            // وضعیت هم‌زمان عوض شده (مثلاً waive) — فاکتور ملاک مالی است؛
-            // خطای Transition ویزیت عمل مالیِ انجام‌شده را بی‌اعتبار نمی‌کند.
             error_log('[CPMS][Finance] settle skipped: ' . $e->getMessage());
         }
     }
 
-    /**
-     * قفل ردیف همان Clinicِ عملیات مالی — سریال‌سازی عددگیری INV/PAY همان
-     * Clinic (رقابت موازی روی MAX+1)؛ هیچ Clinic دیگری قفل نمی‌شود.
-     */
     private function lockClinic(int $clinicId): void
     {
         $this->db->fetchRowForUpdate(
@@ -1071,11 +999,6 @@ final class FinanceService
         );
     }
 
-    /**
-     * Clinic معتبر جریان مالی (الگوی ClinicalService/VisitService) —
-     * Scope صریحِ درخواست یا Resolution سیستمی «تنها Clinic»؛
-     * مبهم ⇒ CLINIC_SCOPE_REQUIRED و عملیات بسته (fail-closed).
-     */
     private function trustedClinicId(): int
     {
         try {
@@ -1085,27 +1008,10 @@ final class FinanceService
         }
     }
 
-    /**
-     * Clinic معتبرِ الزامیِ عملیات حساس مالی (C7-S3 — قاعدهٔ دائمی معماری).
-     *
-     * عملیات حساسِ مبتنی بر شناسهٔ شیء (فاکتور/پرداخت/ویزیت) فقط زیر
-     * «زمینهٔ کلینیکِ معتبرِ درخواست» اجرا می‌شوند: Scope صریحی که مرز حمل
-     * (REST/Job) با سازوکار مورد اعتماد برقرار کرده است (RestClinicContext ←
-     * TrustedClinicEstablisher: هدر درخواست یا عضویت فعالِ یکتا). در نبودِ
-     * آن، عملیات **بسته** می‌شود (fail-closed) با کد ماشین‌خوان استاندارد
-     * `CLINIC_SCOPE_REQUIRED` (HTTP 400) — همان قرارداد SystemClinicResolver/
-     * ScopeRequiredException و نگاشتِ الگوی trustedClinicId().
-     *
-     * ردیفِ هدف (فاکتور/پرداخت/ویزیتِ انتخاب‌شده توسط کلاینت) هرگز منبع
-     * اعتماد نیست — فقط «شاهد مالکیت برای مقایسه» است. Relief اختیاریِ
-     * C7-S1 (اجازهٔ فراخوان بدون Scope) به‌عنوان قاعدهٔ دائمی پذیرفته نشد و
-     * در C7-S3 حذف شد؛ فراخوان‌های تولیدیِ این متدها همگی REST و تحت Scope
-     * مرز هستند (سرشماری C7-S3: FinanceController — تنها فراخوان تولیدی).
-     */
     private function requireTrustedClinicId(): int
     {
         $scope = ScopeContext::tryGet();
-        if ($scope === null) {
+        if ($scope === null || (int) $scope->clinicId <= 0) {
             throw FinanceException::of(
                 'CLINIC_SCOPE_REQUIRED',
                 'عملیات حساس مالی بدون زمینهٔ کلینیک معتبر مجاز نیست — Clinic از شیء هدف استخراج نمی‌شود.',
@@ -1117,12 +1023,6 @@ final class FinanceService
     }
 
     /**
-     * C7-S1/C7-S3: آیا ردیف (فاکتور/پرداخت) به Clinic معتبرِ درخواست تعلق
-     * دارد؟ مقایسهٔ صریح مالکیت؛ ناهمخوانی ⇒ fail-closed در محل فراخوان با
-     * پاکت 404 «یافت نشد» (عدم شمارش/افشای وجود شیء). نبودِ Scope معتبر هرگز
-     * به این متد نمی‌رسد (ورودیِ هر عملیات ابتدا requireTrustedClinicId()
-     * را پاس می‌کند) — مقایسه به‌عنوان لایهٔ دوم دفاعی باقی است.
-     *
      * @param array<string, mixed> $row
      */
     private function rowBelongsToTrustedClinic(array $row): bool
@@ -1130,10 +1030,6 @@ final class FinanceService
         return (int) $row['clinic_id'] === $this->requireTrustedClinicId();
     }
 
-    /**
-     * پول ورودی → ریال صحیح (واحد صغیر توافق‌شده با InvoiceCalc)؛
-     * مقدار غیرعددی/کسری → null (خطای Validation در فراخواننده). TP-18.
-     */
     private function toMinor(mixed $value): ?int
     {
         if (is_int($value)) {
@@ -1151,7 +1047,6 @@ final class FinanceService
         return null;
     }
 
-    /** مثل toMinor ولی null/'' ورودی خالی را هم null می‌دهد (قلم اختیاری). */
     private function toMinorOrNull(mixed $value): ?int
     {
         if ($value === null || $value === '') {
@@ -1161,7 +1056,6 @@ final class FinanceService
         return $this->toMinor($value);
     }
 
-    /** ریال صحیح → مقدار ستون DECIMAL(12,2). */
     private function minorToDb(int $minor): float
     {
         return (float) $minor;
@@ -1187,8 +1081,37 @@ final class FinanceService
 
     private function requireCap(int $wpUserId, string $cap, string $scope): void
     {
+        // Defense-in-depth: cap سراسری هرگز مرجع نهایی نیست.
         if (!user_can($wpUserId, $cap)) {
             throw FinanceException::of('CLINIC_PERMISSION_DENIED', 'دسترسی لازم را ندارید', 403, ['scope' => $scope]);
+        }
+    }
+
+    /**
+     * Phase 3 Slice 6A: مجوز Clinic-scoped.
+     *
+     *  - پیش از هر تراکنش/جهش فراخوانی می‌شود.
+     *  - عضویت فعال، deny صریح و suspended را enforce می‌کند.
+     *  - در خطا، پیام ماشین‌خوان CLINIC_PERMISSION_DENIED با http مناسب.
+     */
+    private function authorizeScoped(int $actorUserId, int $clinicId, string $cap, string $scope): void
+    {
+        if ($actorUserId <= 0 || $clinicId <= 0) {
+            throw FinanceException::of('CLINIC_SCOPE_REQUIRED', 'زمینهٔ کلینیک معتبر برای عملیات مالی لازم است', 400, ['scope' => $scope]);
+        }
+        try {
+            App::authorization_service()->authorize($actorUserId, $clinicId, $cap);
+        } catch (AuthorizationException $e) {
+            $code = $e->getErrorCode();
+            $http = $e->getCode() > 0 ? (int) $e->getCode() : 403;
+            $message = match ($code) {
+                'AUTH_SUSPENDED' => 'عضویت شما در این Clinic معلق است.',
+                'AUTH_NO_MEMBERSHIP' => 'عضویت فعال در این Clinic ندارید.',
+                'AUTH_DENIED' => 'دسترسی لازم برای این عملیات مالی را در این Clinic ندارید.',
+                default => 'دسترسی لازم را ندارید',
+            };
+
+            throw FinanceException::of('CLINIC_PERMISSION_DENIED', $message, $http, ['scope' => $scope, 'reason' => $code, 'permission' => $cap]);
         }
     }
 
@@ -1203,8 +1126,6 @@ final class FinanceService
     }
 
     /**
-     * پاسخ استاندارد D13 — شکل قرارداد + شناسه Replay.
-     *
      * @param array<string, mixed> $payment
      * @param array<string, mixed> $invoiceView
      * @return array<string, mixed>
@@ -1223,7 +1144,6 @@ final class FinanceService
             ],
         ];
         if ($replay) {
-            // TP-02: همان payment با کد CLINIC_IDEMPOTENCY_REPLAY و HTTP 200
             $result['idempotent_replay'] = true;
             $result['code'] = 'CLINIC_IDEMPOTENCY_REPLAY';
         }

@@ -98,6 +98,13 @@ if ($smokeMembership === null) {
     App::membership_service()->create_membership($clinicId, $doctorUserId, 'cpms_doctor');
 }
 
+// Phase 3 Slice 6A — عملیات مالی (S3: issueInvoice/recordPayment با actor
+// منشی) مجوز Clinic-scoped را از عضویت فعالِ همین Clinic می‌گیرد؛ fixture
+// هم باید همان رابطهٔ tenant را داشته باشد (نقش سراسری WP کافی نیست).
+if (App::membership_service()->membership_for($clinicId, $secretaryId) === null) {
+    App::membership_service()->create_membership($clinicId, $secretaryId, 'cpms_secretary');
+}
+
 $wpdb->query($wpdb->prepare(
     'INSERT INTO ' . $db->table('cpms_patients') . '
          (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at)
@@ -230,32 +237,40 @@ scenario('S4', 'Handwriting: document+page + revision apply + stale-revision con
     if (!$visitIdRef) {
         throw new RuntimeException('no visit');
     }
-    $doc = App::handwritingService()->createDocument($doctorUserId, $visitIdRef, 'نسخه دودی', []);
-    $page = App::handwritingService()->addPage($doctorUserId, (int) $doc['id'], []);
-    $stroke = [[
-        'id' => 's1', 'tool' => 'pen', 'color' => '#1a1a2e', 'size' => 4,
-        'points' => [[10, 20, 0.5, 1690000000], [40, 60, 0.8, 1690000050]],
-    ]];
-    $save = App::handwritingService()->savePage($doctorUserId, (int) $page['id'], [
-        'client_revision' => 1,
-        'stroke_data' => base64_encode((string) gzencode((string) wp_json_encode($stroke))),
-        'width' => 1240, 'height' => 1754, 'saved_by' => 'manual',
-    ], uuid4());
-    if ((int) ($save['response']['version'] ?? 0) < 2) {
-        throw new RuntimeException('save failed: ' . wp_json_encode($save));
-    }
-    $conflicted = false;
+    // Phase 3 Slice 6A: عملیات دست‌خط نیز مانند مالی فقط زیر Clinic معتبرِ
+    // صریح اجرا می‌شود (معادل مرز REST) — resolver تک‌کلینیکیِ نصب؛ در نصب
+    // مبهم fail-closed. مجوز Clinic-scoped از عضویت فعال پزشک می‌آید.
+    App::replaceExplicitScope(App::scope());
     try {
-        App::handwritingService()->savePage($doctorUserId, (int) $page['id'], [
-            'client_revision' => 1, // stale — سرور جلوتر رفته
-            'stroke_data' => base64_encode((string) gzencode('[]')),
-            'width' => 1240, 'height' => 1754,
+        $doc = App::handwritingService()->createDocument($doctorUserId, $visitIdRef, 'نسخه دودی', []);
+        $page = App::handwritingService()->addPage($doctorUserId, (int) $doc['id'], []);
+        $stroke = [[
+            'id' => 's1', 'tool' => 'pen', 'color' => '#1a1a2e', 'size' => 4,
+            'points' => [[10, 20, 0.5, 1690000000], [40, 60, 0.8, 1690000050]],
+        ]];
+        $save = App::handwritingService()->savePage($doctorUserId, (int) $page['id'], [
+            'client_revision' => 1,
+            'stroke_data' => base64_encode((string) gzencode((string) wp_json_encode($stroke))),
+            'width' => 1240, 'height' => 1754, 'saved_by' => 'manual',
         ], uuid4());
-    } catch (\Throwable $e) {
-        $conflicted = true;
-    }
-    if (!$conflicted) {
-        throw new RuntimeException('stale revision must conflict');
+        if ((int) ($save['response']['version'] ?? 0) < 2) {
+            throw new RuntimeException('save failed: ' . wp_json_encode($save));
+        }
+        $conflicted = false;
+        try {
+            App::handwritingService()->savePage($doctorUserId, (int) $page['id'], [
+                'client_revision' => 1, // stale — سرور جلوتر رفته
+                'stroke_data' => base64_encode((string) gzencode('[]')),
+                'width' => 1240, 'height' => 1754,
+            ], uuid4());
+        } catch (\Throwable $e) {
+            $conflicted = true;
+        }
+        if (!$conflicted) {
+            throw new RuntimeException('stale revision must conflict');
+        }
+    } finally {
+        App::resetScope();
     }
     return 'doc #' . $doc['id'] . ' page v' . $save['response']['version'] . '; stale-revision conflict OK';
 });

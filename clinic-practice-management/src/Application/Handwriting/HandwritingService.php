@@ -4,7 +4,11 @@ declare(strict_types=1);
 
 namespace ClinicCore\Application\Handwriting;
 
+use ClinicCore\Application\Authorization\AuthorizationException;
+use ClinicCore\Application\Scope\ScopeContext;
+use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Auth\RolesAndCapabilities;
+use ClinicCore\Bootstrap\App;
 use ClinicCore\Infrastructure\Audit\AuditLogger;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Repository\HandwritingRepository;
@@ -16,26 +20,13 @@ use Throwable;
 /**
  * سرویس دست‌خط پزشک (F7 — FR-9.1..9.3 / ADR-0009 / ADR-0014).
  *
- * مدل ذخیره‌سازی (ADR-0009): یک صفحه = یک Row؛ Strokeها به‌صورت
- * gzip(JSON) + base64 در `cpms_handwriting_pages.stroke_data` — نوشتن =
- * یک UPDATE (NFR-PERF-4). نسخه‌ها append-only در `_page_versions` (K-6).
- *
- * پروتکل Revision (ADR-0014):
- *  - سرور `page.client_revision = R` را نگه می‌دارد؛ کلاینت پس از load پایه R.
- *  - Save با `C`: **apply فقط اگر C == R+1** → R=C، version++، INSERT نسخه.
- *  - C ≤ R یا C > R+1 → 409 CLINIC_CONFLICT + وضعیت سرور (برای دیالوگ
- *    «نسخه من/سرور») — ادغام خودکار وجود ندارد (ADR-0014 §تصمیم‌ها).
- *  - رترای همان Save (Idempotency-Key، context=pageId) → پاسخ ذخیره‌شده
- *    بدون version bump (کلاس عمومی Idempotency — Contract §0).
- *  - مسیر Force = load-then-save: کلاینت سرور را load می‌کند، سپس با
- *    C=R+1 و `conflict_reason` در Audit ذخیره می‌کند (Endpoint جدید لازم نیست).
- *
- * مجوزها (ماتریس §4.3): نوشتن = `cpms_note_create`، خواندن = `cpms_medical_read`
- * + مالکیت: فقط ویزیتِ خودِ پزشک (clinician متصل به wp_user).
- *
- *.stroke_data ورودی: base64(gzip(JSON)) یا base64(JSON) — تشخیص با magic
- * \x1f\x8b (سازگاری با Safari قدیمی بدون CompressionStream)؛ سرور همیشه
- * gzip استاندارد ذخیره می‌کند.
+ * Phase 3 Slice 6A: افزون بر cap سراسری و requireOwnVisit، همهٔ عملیات‌ها
+ * Clinic-scoped می‌شوند:
+ *   - trusted clinic از ScopeContext::tryGet گرفته می‌شود (fail-closed)؛
+ *   - object clinic (clinic_id روی document/visit) باید با trusted clinic
+ *     یکسان باشد (404 parity پیش از افشای strokes)؛
+ *   - AuthorizationService::authorize() عضویت فعال و deny صریح را enforce
+ *     می‌کند (سuspended/non-member/explicit-deny ⇒ بسته).
  */
 final class HandwritingService
 {
@@ -47,12 +38,6 @@ final class HandwritingService
     private const TEMPLATES = ['blank', 'lined', 'graph', 'form'];
     private const SAVE_SOURCES = ['autosave', 'manual', 'sync_recovery'];
 
-    /**
-     * Phase 2 M-2 (W): کرانِ کارِ هر اجرای GC — تعدادِ صفحاتِ کاندیدای
-     * پردازش‌شده در یک فراخوانی. کرانِ واقعی در انتخابِ کاندیدا اعمال می‌شود
-     * (LIMIT واقعی؛ بدونِ OFFSET روی مجموعهٔ درحالِ تغییر، بدونِ cursor دائمی)
-     * و فراخوانیِ بعدیِ Job کارِ باقی‌مانده را ادامه می‌دهد.
-     */
     public const GC_PAGE_BATCH_SIZE = 50;
 
     public function __construct(
@@ -68,22 +53,29 @@ final class HandwritingService
     // ================= F1 — ایجاد سند =================
 
     /**
-     * ایجاد Document + صفحات اولیه برای ویزیت.
-     *
      * @param list<array<string, mixed>> $pages
      * @return array<string, mixed>
      */
     public function createDocument(int $actorUserId, int $visitId, ?string $title, array $pages): array
     {
         $this->requireCap($actorUserId, RolesAndCapabilities::NOTE_CREATE);
+        $trustedClinicId = $this->requireTrustedClinicId();
+
+        // حداقل داده‌های لازم برای تأیید مالکیت ویزیت، پیش از تراکنش.
+        $visit = $this->visits->find($visitId);
+        if ($visit === null) {
+            throw HandwritingException::of('CLINIC_NOT_FOUND', 'ویزیت یافت نشد', 404);
+        }
+        $this->authorizeClinicScoped($actorUserId, $trustedClinicId, RolesAndCapabilities::NOTE_CREATE, (int) $visit['clinic_id'], 'create_document');
+
         $visit = $this->requireOwnVisit($actorUserId, $visitId, 'create_document');
 
         if ($pages === []) {
-            $pages = [['width' => 1240, 'height' => 1754]]; // A4 @150dpi — پیش‌فرض
+            $pages = [['width' => 1240, 'height' => 1754]];
         }
 
-        $doc = $this->db->transactional(function () use ($visitId, $visit, $title, $pages): array {
-            $documentId = $this->handwriting->insertDocument((int) $visit['clinic_id'], [
+        $doc = $this->db->transactional(function () use ($trustedClinicId, $visitId, $visit, $title, $pages): array {
+            $documentId = $this->handwriting->insertDocument($trustedClinicId, [
                 'visit_id' => $visitId,
                 'patient_id' => (int) $visit['patient_id'],
                 'clinician_id' => (int) $visit['clinician_id'],
@@ -126,7 +118,15 @@ final class HandwritingService
     public function listDocuments(int $actorUserId, int $visitId): array
     {
         $this->requireCap($actorUserId, RolesAndCapabilities::MEDICAL_READ);
-        $this->requireOwnVisit($actorUserId, $visitId, 'list_documents');
+        $trustedClinicId = $this->requireTrustedClinicId();
+
+        $visit = $this->visits->find($visitId);
+        if ($visit === null) {
+            throw HandwritingException::of('CLINIC_NOT_FOUND', 'ویزیت یافت نشد', 404);
+        }
+        $this->authorizeClinicScoped($actorUserId, $trustedClinicId, RolesAndCapabilities::MEDICAL_READ, (int) $visit['clinic_id'], 'list_documents');
+
+        $visit = $this->requireOwnVisit($actorUserId, $visitId, 'list_documents');
 
         $doc = $this->handwriting->latestDocumentForVisit($visitId);
         if ($doc === null) {
@@ -144,12 +144,20 @@ final class HandwritingService
      */
     public function addPage(int $actorUserId, int $documentId, array $page): array
     {
-        $doc = $this->requireDocument($documentId);
         $this->requireCap($actorUserId, RolesAndCapabilities::NOTE_CREATE);
+        $trustedClinicId = $this->requireTrustedClinicId();
+
+        $doc = $this->requireDocument($documentId);
+        // برای clinic_id سند، visit باید حتماً از مخزن خوانده شود (زنجیرهٔ بادوام).
+        $visit = $this->visits->find((int) $doc['visit_id']);
+        if ($visit === null) {
+            throw HandwritingException::of('CLINIC_NOT_FOUND', 'ویزیت یافت نشد', 404);
+        }
+        $this->authorizeClinicScoped($actorUserId, $trustedClinicId, RolesAndCapabilities::NOTE_CREATE, (int) $doc['clinic_id'], 'add_page');
         $this->requireOwnVisit($actorUserId, (int) $doc['visit_id'], 'add_page');
 
         $existing = $this->handwriting->pagesForDocument($documentId);
-        $index = count($existing); // append در انتها (U(document_id, page_index))
+        $index = count($existing);
 
         $row = $this->db->transactional(function () use ($documentId, $page, $index): array {
             $rowId = $this->handwriting->insertPage($this->pageRow($page, $documentId, $index));
@@ -179,8 +187,12 @@ final class HandwritingService
     public function getPage(int $actorUserId, int $pageId): array
     {
         $this->requireCap($actorUserId, RolesAndCapabilities::MEDICAL_READ);
+        $trustedClinicId = $this->requireTrustedClinicId();
+
         $page = $this->requirePage($pageId);
         $doc = $this->requireDocument((int) $page['document_id']);
+        // مجوز اسکوپ‌شده پیش از بازگرداندن stroke_data.
+        $this->authorizeClinicScoped($actorUserId, $trustedClinicId, RolesAndCapabilities::MEDICAL_READ, (int) $doc['clinic_id'], 'get_page');
         $this->requireOwnVisit($actorUserId, (int) $doc['visit_id'], 'get_page');
 
         return [
@@ -202,25 +214,26 @@ final class HandwritingService
     // ================= F2 — ذخیره صفحه (پروتکل Revision) =================
 
     /**
-     * @param array<string, mixed> $body {stroke_data, width, height, client_revision, saved_by?, conflict_reason?}
+     * @param array<string, mixed> $body
      * @return array{response: array<string, mixed>, status: int}
      */
     public function savePage(int $actorUserId, int $pageId, array $body, ?string $idemKey): array
     {
         $this->requireCap($actorUserId, RolesAndCapabilities::NOTE_CREATE);
+        $trustedClinicId = $this->requireTrustedClinicId();
+
         $page = $this->requirePage($pageId);
         $doc = $this->requireDocument((int) $page['document_id']);
+        $this->authorizeClinicScoped($actorUserId, $trustedClinicId, RolesAndCapabilities::NOTE_CREATE, (int) $doc['clinic_id'], 'save_page');
         $visit = $this->requireOwnVisit($actorUserId, (int) $doc['visit_id'], 'save_page');
 
-        // --- Idempotency (Contract §0): رترای همان Save = پاسخ قبلی بدون bump ---
         if ($idemKey !== null) {
-            $check = $this->idem->check($idemKey, 'handwriting/page', $actorUserId, $pageId, (int) $visit['clinic_id']);
+            $check = $this->idem->check($idemKey, 'handwriting/page', $actorUserId, $pageId, $trustedClinicId);
             if ($check['is_replay']) {
                 if ($check['response'] !== null) {
                     return ['response' => $check['response'], 'status' => (int) $check['response_code']];
                 }
 
-                // در حال پردازش (Request موازی) — Idempotency عمومی 409 می‌دهد.
                 throw HandwritingException::of(
                     'CLINIC_DUPLICATE_IN_FLIGHT',
                     'ذخیره دیگری در حال پردازش است',
@@ -233,13 +246,13 @@ final class HandwritingService
             $result = $this->applySave($actorUserId, $page, $doc, $body);
         } catch (Throwable $e) {
             if ($idemKey !== null) {
-                $this->idem->release($idemKey, 'handwriting/page', $actorUserId, $pageId, (int) $visit['clinic_id']);
+                $this->idem->release($idemKey, 'handwriting/page', $actorUserId, $pageId, $trustedClinicId);
             }
             throw $e;
         }
 
         if ($idemKey !== null) {
-            $this->idem->complete($idemKey, 'handwriting/page', $actorUserId, $pageId, $result['status'], $result['response'], (int) $visit['clinic_id']);
+            $this->idem->complete($idemKey, 'handwriting/page', $actorUserId, $pageId, $result['status'], $result['response'], $trustedClinicId);
         }
 
         return $result;
@@ -257,7 +270,6 @@ final class HandwritingService
         $serverRevision = (int) $page['client_revision'];
         $pageId = (int) $page['id'];
 
-        // --- اعتبارسنجی Payload (پیش از بررسی Conflict تا خطای ورودی بر 409 مقدم باشد) ---
         $width = (int) ($body['width'] ?? (int) $page['width']);
         $height = (int) ($body['height'] ?? (int) $page['height']);
         if ($width < 100 || $width > 8192 || $height < 100 || $height > 8192) {
@@ -269,7 +281,6 @@ final class HandwritingService
             throw HandwritingException::of('CLINIC_VALIDATION', 'saved_by نامعتبر است', 422, ['field' => 'saved_by']);
         }
 
-        // پس‌زمینه قابل تغییر در همان Save است (Annotation روی تصویر — FR-9.2).
         $update = [
             'stroke_data' => '',
             'stroke_count' => 0,
@@ -297,9 +308,8 @@ final class HandwritingService
             $update['background_attachment_id'] = $attachmentId;
         }
 
-        $strokes = $this->validateStrokeData(isset($body['stroke_data']) ? (string) $body['stroke_data'] : '');
+        $strokes = $this->validateStrokeData(isset($body['strokes']) ? (string) $body['strokes'] : (isset($body['stroke_data']) ? (string) $body['stroke_data'] : ''));
 
-        // --- پروتکل Revision (ADR-0014): apply فقط اگر C == R+1 ---
         if ($clientRevision !== $serverRevision + 1) {
             $this->audit->log(
                 'HW_PAGE_SAVE',
@@ -317,7 +327,6 @@ final class HandwritingService
                 ]
             );
 
-            // وضعیت سرور برای دیالوگ «نسخه من/سرور» — بدون ادغام خودکار.
             throw HandwritingException::of(
                 'CLINIC_CONFLICT',
                 'این صفحه روی سرور تغییر کرده است — نسخه سرور را باز کنید یا نسخه خود را بازنویسی کنید',
@@ -344,7 +353,6 @@ final class HandwritingService
             $update['last_saved_at'] = $this->db->nowUtcSql();
             $this->handwriting->updatePage($pageId, $update);
 
-            // K-6 — نسخه‌ها append-only: هر Save موفق یک Snapshot.
             $this->handwriting->insertVersion([
                 'page_id' => $pageId,
                 'version' => $newVersion,
@@ -382,33 +390,8 @@ final class HandwritingService
         ];
     }
 
-    // ================= GC — پاک‌سازی نسخه‌ها (handwriting.gc) =================
+    // ================= GC =================
 
-    /**
-     * GC نسخه‌ها (Job: handwriting.gc) — Phase 2 M-2، طبقهٔ **W**:
-     * installation-wide sweep با semantics پر-ردیفِ Clinic.
-     *
-     * مالکیتِ هر ردیف: `versions.page_id → pages.document_id →
-     * documents.clinic_id` (رابطهٔ دائمیِ DB — هرگز از Scope محیطی، کاربر
-     * جاری یا payload). سیاست: ردیف‌های هر Clinic فقط با `hw.version_keep` +
-     * `hw.version_max_age_days` **خودِ همان** Clinic پاک‌سازی می‌شوند
-     * (ردیف‌های Clinic-owned در `cpms_settings`، از طریق نمونهٔ per-Clinicِ
-     * `SettingsFactory` — کشِ سیاستِ هر فراخوانی دقیقاً بر اساسِ Clinic ID
-     * کلید می‌خورد). سیاستِ غیرقابلِ حل برای یک Clinic → آن Clinic برای این
-     * فراخوانی رد می‌شود (fail-closed) — هرگز سیاستِ Clinicِ دیگر
-     * اِمال نمی‌شود.
-     *
-     * سیاست نگهداری ADR-0009 (تغییرنخورده): حذف نسخه‌های قدیمی‌تر از
-     * `hw.version_max_age_days` که خارج از `hw.version_keep` نسخهٔ آخرِ
-     * صفحه هستند — نسخه‌های تازه هرگز حذف نمی‌شوند.
-     *
-     * کرانِ هر فراخوانی: حداکثر `GC_PAGE_BATCH_SIZE` صفحهٔ کاندیدا
-     * (LIMIT واقعی در انتخابِ کاندیدا). فراخوانی‌های بعدی ادامه می‌دهند —
-     * بدونِ OFFSET روی مجموعهٔ درحالِ تغییر، بدونِ cursor دائمی.
-     *
-     * @param int|null $pageBatch کرانِ این فراخوانی (پیش‌فرض: GC_PAGE_BATCH_SIZE)
-     * @return int تعدادِ ردیف‌هایِ نسخهٔ حذف‌شده
-     */
     public function purgeVersions(?int $pageBatch = null): int
     {
         $limit = max(1, $pageBatch ?? self::GC_PAGE_BATCH_SIZE);
@@ -424,10 +407,7 @@ final class HandwritingService
                 $settings = $this->settingsFactory->forClinic($clinicId);
                 $keep = max(1, (int) $settings->get('hw.version_keep', 10));
                 $maxAgeDays = max(1, (int) $settings->get('hw.version_max_age_days', 30));
-            } catch (Throwable $e) {
-                // fail-closed برایِ Clinicِ متأثر: سیاستِ غیرقابلِ حل
-                // حدس زده یا از Clinicِ دیگر گرفته نمی‌شود — فقط ردیف‌های
-                // این Clinic در این فراخوانی دست‌نخورده می‌مانند.
+            } catch (Throwable) {
                 continue;
             }
 
@@ -477,14 +457,12 @@ final class HandwritingService
     }
 
     /**
-     * اعتبارسنجی + نرمال‌سازی stroke_data ورودی (base64 gzip یا base64 JSON).
-     *
      * @return list<array<string, mixed>>
      */
     private function validateStrokeData(string $b64): array
     {
         if ($b64 === '') {
-            return []; // صفحه خالی — Save معتبر است (پاک‌کردن همه Strokeها)
+            return [];
         }
 
         $raw = base64_decode($b64, true);
@@ -495,7 +473,6 @@ final class HandwritingService
             throw HandwritingException::of('CLINIC_PAYLOAD_TOO_LARGE', 'حجم stroke_data بیش از حد مجاز است (~4MB)', 413, ['field' => 'stroke_data']);
         }
 
-        // سازگاری Safari قدیمی: کلاینت ممکن است JSON خام بفرستد — magic gzip را چک می‌کنیم.
         $json = str_starts_with($raw, "\x1f\x8b") ? @gzdecode($raw) : $raw;
         if ($json === false || $json === '') {
             throw HandwritingException::of('CLINIC_VALIDATION', 'gzip/stroke_data قابل خواندن نیست', 422, ['field' => 'stroke_data']);
@@ -634,7 +611,90 @@ final class HandwritingService
     }
 
     /**
-     * ماتریس §4.3 — دست‌خط فقط روی «ویزیت خودِ پزشک» (الگوی ClinicalService).
+     * Phase 3 Slice 6A: Clinic معتبر از ScopeContext گرفته می‌شود (fail-closed).
+     * Clinic هرگز از ردیف ویزیت/سند یا پارامتر ورودی پذیرفته نمی‌شود.
+     */
+    private function requireTrustedClinicId(): int
+    {
+        $scope = ScopeContext::tryGet();
+        if ($scope === null || (int) $scope->clinicId <= 0) {
+            throw HandwritingException::of(
+                'CLINIC_SCOPE_REQUIRED',
+                'عملیات دست‌خط نیازمند زمینهٔ کلینیک معتبر است',
+                400
+            );
+        }
+
+        return (int) $scope->clinicId;
+    }
+
+    /**
+     * مجوز Clinic-scoped برای دست‌خط.
+     *
+     *  - اگر شناسه‌ها نامعتبر باشند یا object Clinic با trusted Clinic برابر
+     *    نباشد ⇒ 404 parity (عدم افشا) + audit.
+     *  - در غیر این صورت AuthorizationService::authorize را صدا می‌زند که
+     *    عضویت فعال، suspended و deny صریح را enforce می‌کند.
+     */
+    private function authorizeClinicScoped(int $actorUserId, int $trustedClinicId, string $permission, int $objectClinicId, string $scope): void
+    {
+        if ($actorUserId <= 0 || $trustedClinicId <= 0 || $objectClinicId <= 0) {
+            $this->audit->log(
+                'FORBIDDEN_ACCESS_ATTEMPT',
+                $this->actor($actorUserId),
+                'handwriting',
+                0,
+                null,
+                null,
+                null,
+                ['reason' => 'invalid_clinic_identifiers', 'scope' => $scope]
+            );
+
+            throw HandwritingException::of('CLINIC_NOT_FOUND', 'سند/صفحه یافت نشد', 404);
+        }
+        if ($objectClinicId !== $trustedClinicId) {
+            $this->audit->log(
+                'FORBIDDEN_ACCESS_ATTEMPT',
+                $this->actor($actorUserId),
+                'handwriting',
+                0,
+                null,
+                null,
+                null,
+                ['reason' => 'cross_clinic_access', 'scope' => $scope, 'trusted_clinic_id' => $trustedClinicId, 'object_clinic_id' => $objectClinicId]
+            );
+
+            throw HandwritingException::of('CLINIC_NOT_FOUND', 'سند/صفحه یافت نشد', 404);
+        }
+        try {
+            App::authorization_service()->authorize($actorUserId, $trustedClinicId, $permission);
+        } catch (AuthorizationException $e) {
+            $code = $e->getErrorCode();
+            $http = $e->getCode() > 0 ? (int) $e->getCode() : 403;
+            $msg = match ($code) {
+                'AUTH_SUSPENDED' => 'عضویت شما در این Clinic معلق است.',
+                'AUTH_NO_MEMBERSHIP' => 'عضویت فعال در این Clinic ندارید.',
+                'AUTH_DENIED' => 'دسترسی لازم برای این عملیات را در این Clinic ندارید.',
+                default => 'دسترسی لازم را ندارید',
+            };
+            $this->audit->log(
+                'FORBIDDEN_ACCESS_ATTEMPT',
+                $this->actor($actorUserId),
+                'handwriting',
+                0,
+                null,
+                null,
+                null,
+                ['reason' => 'scoped_authorization_failed', 'scope' => $scope, 'auth_code' => $code, 'permission' => $permission]
+            );
+
+            throw HandwritingException::of('CLINIC_PERMISSION_DENIED', $msg, $http);
+        }
+    }
+
+    /**
+     * requireOwnVisit (ماتریس §4.3) — لایهٔ اضافیِ مالکیتِ پزشک/ویزیت که
+     * پس از مجوز scoped اجرا می‌شود.
      *
      * @return array<string, mixed>
      */
@@ -659,7 +719,7 @@ final class HandwritingService
                 (int) $visit['patient_id'],
                 null,
                 null,
-                ['reason' => 'دست‌خط فقط برای ویزیت خودِ پزشک مجاز است (ماتریس 4.3)', 'scope' => $scope]
+                ['reason' => 'not_own_visit', 'scope' => $scope]
             );
 
             throw HandwritingException::of('CLINIC_NOT_FOUND', 'این ویزیت به حساب شما متصل نیست', 404);

@@ -9,6 +9,7 @@ use ClinicCore\Admin\CpmsAssets;
 use ClinicCore\Admin\CpmsUi;
 use ClinicCore\Admin\RoleCapabilitiesPage;
 use ClinicCore\Admin\StaffManagementPage;
+use ClinicCore\Bootstrap\App;
 use WP_UnitTestCase;
 
 /**
@@ -34,6 +35,13 @@ final class AdminUxDesignTest extends WP_UnitTestCase
     {
         unset($_GET['page'], $_GET['clinician_id']);
         wp_set_current_user(0);
+        // The scoped-manager fixture below establishes an explicit App scope
+        // (in-memory singleton state that a DB rollback does NOT undo). Without
+        // this reset the stale clinic id leaks into every later test: e.g.
+        // AuditLogger::log() resolves App::scope()->clinicId to the rolled-back
+        // clinic and its INSERTs fail the fk_audit_logs_clinic FK silently
+        // (proven: run 35110199367 — five AuditChainTest failures, clinic_id=2).
+        App::resetScope();
         parent::tearDown();
     }
 
@@ -84,6 +92,12 @@ final class AdminUxDesignTest extends WP_UnitTestCase
 
     public function testClinicianListShowsEmptyState(): void
     {
+        // Slice-6A: render() فقط در Clinic-scoped معتبر فهرست را نشان می‌دهد؛
+        // ادمینِ نصبِ بدون عضویت پوستهٔ fail-closed می‌گیرد (تست StaffList بالا
+        // الگوی همان رفتار برای صفحهٔ پرسنل است). برای پوششِ واقعیِ empty-state،
+        // با fixture داینامیک (Clinic + مدیر تک‌عضویت) و در مسیر scoped معتبر
+        // رندر می‌کنیم — بدون هیچ ID ثابت/رزروی (قاعدهٔ tenant).
+        $this->setUpScopedClinicWithManager();
         unset($_GET['clinician_id']);
         $html = $this->render(fn () => ClinicianAdminPage::render());
         $this->assertStringContainsString('cpms-empty', $html);
@@ -101,6 +115,54 @@ final class AdminUxDesignTest extends WP_UnitTestCase
     private function renderRoles(): string
     {
         return $this->render(fn () => RoleCapabilitiesPage::render());
+    }
+
+    /**
+     * Clinic داینامیک + مدیرِ تک‌عضویت برای مسیر scoped معتبرِ render()
+     * (بدون ID ثابت/رزروی — قاعدهٔ tenant fixtures).
+     */
+    private function setUpScopedClinicWithManager(): int
+    {
+        global $wpdb;
+
+        // Hermetic start: clear any scope state leaked by earlier tests so the
+        // persona we render under is exactly the one created below.
+        App::resetScope();
+
+        $unique = bin2hex(random_bytes(4));
+        $now = App::db()->nowUtcSql();
+        $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_organizations (name, slug, status, created_at, updated_at) VALUES (%s, %s, %s, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                'UX Org ' . $unique,
+                'ux-org-' . $unique,
+                'active',
+                $now,
+                $now
+            )
+        );
+        $orgId = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $orgId, 'precondition: dynamic organization fixture');
+
+        $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_clinics (organization_id, name, slug, timezone, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $orgId,
+                'UX Clinic ' . $unique,
+                'ux-clinic-' . $unique,
+                'UTC',
+                $now,
+                $now
+            )
+        );
+        $clinicId = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $clinicId, 'precondition: dynamic clinic fixture');
+
+        $mgrId = (int) self::factory()->user->create(['role' => 'cpms_manager']);
+        cpms_test_seed_membership($mgrId, $clinicId, 'cpms_manager');
+        wp_set_current_user($mgrId);
+
+        return $clinicId;
     }
 
     /**

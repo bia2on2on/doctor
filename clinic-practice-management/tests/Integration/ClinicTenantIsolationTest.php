@@ -749,15 +749,16 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
             'cpms_patient_merges' => $pure,
             'cpms_clinics' => 'WHERE id >= 61000',
         ];
-        // ردیف‌های Audit/RateLimit که به Clinik fixture وابسته‌اند (resource-محور)
+        // ردیف‌های Audit که به Clinic fixture وابسته‌اند (resource-محور).
+        // توجه: cpms_rate_limits عمداً پاک‌سازی نمی‌شود — ستون‌های واقعی‌اش
+        // (window_key, window_id, hits) هیچ clinic_id ندارند؛ DELETE قبلی روی
+        // ستون ناموجود در هر tearDown خطای «Unknown column» چاپ می‌کرد (نویز
+        // ۵۰+ بلوک HTML در لاگ suite) و ردیفی هم پاک نمی‌کرد.
         $patSql = 'SELECT id FROM ' . $wpdb->prefix . 'cpms_patients WHERE clinic_id >= 61000';
         $wpdb->query(
             'DELETE FROM ' . $wpdb->prefix . 'cpms_audit_logs
               WHERE clinic_id >= 61000
                  OR patient_id IN (' . $patSql . ')' // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-        );
-        $wpdb->query(
-            'DELETE FROM ' . $wpdb->prefix . 'cpms_rate_limits WHERE clinic_id >= 61000' // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
         );
 
         // فایل‌های دیسکی که routeها (نسخهٔ boot-pin) در ریشهٔ پیش‌فرض ذخیره
