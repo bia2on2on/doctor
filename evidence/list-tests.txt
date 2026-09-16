@@ -1,0 +1,12 @@
+Installing...
+Running as single site... To run multisite, use -c tests/phpunit/multisite.xml
+Not running ajax tests. To execute these, use --group ajax.
+Not running ms-files tests. To execute these, use --group ms-files.
+Not running external-http tests. To execute these, use --group external-http.
+PHPUnit 9.6.36 by Sebastian Bergmann and contributors.
+
+Available test(s):
+ - ClinicCore\Tests\Integration\Phase3Slice6AuthorizationRedTest::testSaveClinicianManagerInClinicACannotMutateClinicianInClinicB
+ - ClinicCore\Tests\Integration\Phase3Slice6AuthorizationRedTest::testGetPageWithScopeOnClinicAReturns404ForClinicBDocument
+ - ClinicCore\Tests\Integration\Phase3Slice6AuthorizationRedTest::testRecordPaymentIsDeniedWhenScopedPaymentCreateIsExplicitlyDenied
+ - ClinicCore\Tests\Integration\Phase3Slice6AuthorizationRedTest::testSuspendedMemberIsDeniedHandwritingSaveAndPaymentCreate

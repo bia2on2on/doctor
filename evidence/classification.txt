@@ -2,7 +2,17 @@
 --- failing entries (isolated run):
 --- failure details (isolated run):
 --- role-state diagnostic:
-Error: Looks like you're using PHPUnit 0. WordPress requires at least PHPUnit 5.7.21.
-Please use the latest PHPUnit version supported for the PHP version you are running the tests on.
+Installing...
+Running as single site... To run multisite, use -c tests/phpunit/multisite.xml
+Not running ajax tests. To execute these, use --group ajax.
+Not running ms-files tests. To execute these, use --group ms-files.
+Not running external-http tests. To execute these, use --group external-http.
+cpms_manager caps: cpms_config, cpms_sms_config, cpms_patient_read, cpms_report_read, cpms_search, read
+cpms_manager has cpms_payment_create: false
+cpms_secretary has cpms_payment_create: true
+role caps override option: array (
+)
+fresh cpms_manager user_can(cpms_payment_create): false
+fresh cpms_secretary user_can(cpms_payment_create): true
 --- interpretation:
 Isolated run did not complete normally — inspect phpunit-isolated.log.
