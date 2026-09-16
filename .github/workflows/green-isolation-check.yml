@@ -66,8 +66,10 @@ jobs:
             git diff --name-status ${GREEN_BASE} HEAD
           } | tee /tmp/identity.txt
           # PURITY GATE — the green tree itself must be byte-identical; only this
-          # diagnostic workflow file may be added.
-          TREE_DIFF="$(git diff --name-only ${GREEN_BASE} HEAD | grep -v '^\.github/workflows/green-isolation-check\.yml$' || true)"
+          # diagnostic workflow file and the evidence/ artifacts committed by the
+          # evidence-bot step (log delivery channel) may differ.
+          TREE_DIFF="$(git diff --name-only ${GREEN_BASE} HEAD \
+            | grep -v -E '^(\.github/workflows/green-isolation-check\.yml|evidence/.*)$' || true)"
           if [ -n "${TREE_DIFF}" ]; then
             echo "PURITY GATE FAILED: unexpected changes:"; echo "${TREE_DIFF}"
             exit 1
