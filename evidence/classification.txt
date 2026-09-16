@@ -1,0 +1,8 @@
+--- ISOLATED run summary (canonical file on GREEN head 75bdaa89ad31669c90391118713158b684ce9edb):
+--- failing entries (isolated run):
+--- failure details (isolated run):
+--- role-state diagnostic:
+Error: Looks like you're using PHPUnit 0. WordPress requires at least PHPUnit 5.7.21.
+Please use the latest PHPUnit version supported for the PHP version you are running the tests on.
+--- interpretation:
+Isolated run did not complete normally — inspect phpunit-isolated.log.

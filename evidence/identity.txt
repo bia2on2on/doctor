@@ -1,0 +1,6 @@
+run: https://github.com/bia2on2on/doctor/actions/runs/35103474350
+head: 659375a497ed7ed50f951172cdce3c6c5d499c03
+green_base: 75bdaa89ad31669c90391118713158b684ce9edb
+--- changes on top of the green base (MUST be only this workflow file):
+A	.github/workflows/green-isolation-check.yml
+isolated_rc=0
