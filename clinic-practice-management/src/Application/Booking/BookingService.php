@@ -6,6 +6,7 @@ namespace ClinicCore\Application\Booking;
 
 use ClinicCore\Application\Notifications\NotificationService;
 use ClinicCore\Application\Notifications\SmsService;
+use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Domain\Booking\BookingException;
 use ClinicCore\Domain\Booking\BookingWindow;
 use ClinicCore\Domain\Licensing\LicenseGate;
@@ -622,6 +623,10 @@ final class BookingService
             throw BookingException::of('CLINIC_NOT_FOUND', 'بیمار یافت نشد', 404);
         }
         $clinicId = $this->requireClinician($clinicianId);
+        // Phase 3 Slice 6B — مالکیت پایدار پزشک در برابر Clinic معتبرِ صریحِ
+        // درخواست (مرز REST کارکنی): پزشکِ Clinic دیگر همان پاکتِ «پزشک یافت
+        // نشد» را می‌گیرد؛ بدون درج نوبت و بدون قفل/رزرو اسلات.
+        $this->assertClinicianWithinExplicitScope($clinicId);
         // C6: بیمار و اسلات باید به یک کلینیک تعلق داشته باشند (verify سمت سرور)
         if ((int) $patient['clinic_id'] !== $clinicId) {
             throw BookingException::of('CLINIC_VALIDATION_FAILED', 'این بیمار به کلینیک دیگری تعلق دارد', 422);
@@ -722,6 +727,9 @@ final class BookingService
     public function listForClinician(int $clinicianId, string $date, ?string $status): array
     {
         $clinicId = $this->requireClinician($clinicianId);
+        // Phase 3 Slice 6B — مالکیت پایدار پزشک در برابر Clinic معتبرِ صریح
+        // (D9 مسیر کارکنی؛ 404 parity — نوبت‌های Clinic دیگر فاش نمی‌شوند).
+        $this->assertClinicianWithinExplicitScope($clinicId);
         $rows = $this->appointments->listByClinicianDate($clinicId, $clinicianId, $date);
         if ($status !== null && $status !== '') {
             $rows = array_values(array_filter($rows, static fn (array $r): bool => (string) $r['status'] === $status));
@@ -743,6 +751,13 @@ final class BookingService
             $appt = $this->appointments->findForUpdate($appointmentId);
             if ($appt === null) {
                 throw BookingException::of('CLINIC_NOT_FOUND', 'نوبت یافت نشد', 404);
+            }
+            if ($actor === 'staff') {
+                // Phase 3 Slice 6B — D11 مسیر کارکنی: مالکیت پایدار نوبت در
+                // برابر Clinic معتبرِ صریحِ درخواست؛ نوبتِ Clinic دیگر همان
+                // پاکتِ «نوبت یافت نشد» را می‌گیرد — پیش از هر UPDATE/Release.
+                // شاخه بیمار (B4) مالکیت خودش را در ادامه اعمال می‌کند.
+                $this->assertAppointmentWithinExplicitScope($appt);
             }
             if ($actor === 'patient' && !$this->userHasPatient($wpUserId, (int) $appt['patient_id'])) {
                 $this->audit('FORBIDDEN_ACCESS_ATTEMPT', $wpUserId, 'patient', 'appointment', $appointmentId, (int) $appt['patient_id'], null, null, [
@@ -995,6 +1010,38 @@ final class BookingService
         }
 
         return (int) $row['clinic_id'];
+    }
+
+    /**
+     * Phase 3 Slice 6B — مالکیت پایدار پزشک در برابر Clinic معتبرِ صریحِ جاری.
+     *
+     * Clinic معتبر فقط از Scope صریحِ درخواست (مرز REST کارکنی —
+     * RestClinicEstablisher) می‌آید، نه از payload؛ Clinicِ ردیفِ پزشک فقط
+     * «شاهد مالکیت برای مقایسه» است. بدون Scope صریح (فراخوان داخلی/wp-admin
+     * legacy) رفتار موجود حفظ می‌شود — همان قرارداد C7-S2 در ScheduleService.
+     * عدم تطابق ⇒ همان پاکتِ «پزشک یافت نشد» (عدم شمارش/افشای وجود).
+     */
+    private function assertClinicianWithinExplicitScope(int $clinicId): void
+    {
+        $scope = ScopeContext::tryGet();
+        if ($scope !== null && (int) $scope->clinicId !== $clinicId) {
+            throw BookingException::of('CLINIC_NOT_FOUND', 'پزشک یافت نشد', 404);
+        }
+    }
+
+    /**
+     * Phase 3 Slice 6B — مالکیت پایدار نوبت در برابر Clinic معتبرِ صریحِ جاری
+     * (شاخه کارکنی D11). عدم تطابق ⇒ «نوبت یافت نشد» با 404 parity —
+     * پیش از هر تغییر وضعیت/آزادسازی اسلات.
+     *
+     * @param array<string, mixed> $appt
+     */
+    private function assertAppointmentWithinExplicitScope(array $appt): void
+    {
+        $scope = ScopeContext::tryGet();
+        if ($scope !== null && (int) ($appt['clinic_id'] ?? 0) !== (int) $scope->clinicId) {
+            throw BookingException::of('CLINIC_NOT_FOUND', 'نوبت یافت نشد', 404);
+        }
     }
 
     /**

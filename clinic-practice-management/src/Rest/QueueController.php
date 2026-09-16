@@ -281,7 +281,21 @@ final class QueueController extends RestBase
     }
 
     /**
-     * Guard استاندارد: Nonce → Capability → اجرا؛ VisitException → WP_Error.
+     * Guard استاندارد: Nonce → Capability → مجوز Clinic-scoped → اجرا؛
+     * VisitException → WP_Error.
+     *
+     * Phase 3 Slice 6B — نگاشت مجوز scoped هر مسیر صف دقیقاً همان معنای
+     * عملیات آن مسیر است (capability متناظرِ خودِ مسیر):
+     *   /secretary/today، /doctor/today، /queue، /rt/queue ⇒ cpms_queue_read
+     *   /visits/checkin، /visits/walk-in                          ⇒ cpms_queue_checkin
+     *   /visits/{id}/status                                        ⇒ cpms_queue_advance
+     *   /visits/{id}/checkout                                      ⇒ cpms_queue_checkout
+     *   /visits/{id}/call|recall|skip                              ⇒ cpms_queue_call
+     *   /visits/{id}/start                                         ⇒ cpms_consult_start
+     * Clinic معتبر از App::scope() (مرز RestClinicContext) — هرگز از payload؛
+     * عضویت فعال پایدار + مجوز scoped الزامی است؛ cap سراسری فقط
+     * defense-in-depth باقی می‌ماند. مالکیت پایدار شیء (ویزیت کلینیک دیگر)
+     * در VisitService اعمال می‌شود (404 parity).
      *
      * @template T
      * @param callable(): T $fn
@@ -296,6 +310,10 @@ final class QueueController extends RestBase
         $perm = $this->requireCap($cap);
         if ($perm instanceof WP_Error) {
             return $perm;
+        }
+        $scoped = $this->requireClinicPermission($cap);
+        if ($scoped instanceof WP_Error) {
+            return $scoped;
         }
         if ($fn === null) {
             return $this->success(null);
