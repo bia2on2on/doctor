@@ -18,6 +18,14 @@ use WP_REST_Server;
  *
  * C*: بیمار (Nonce + نقش) — فقط Data خود.
  * D*: منشی (Nonce + Capability) — Data-Access در Service.
+ *
+ * Phase 3 Slice 6B: مسیرهای D2–D5 (search/get/update/create کارکنی) علاوه بر
+ * لایه‌های قبلی، مجوز Clinic-scoped متناظر را از RestBase::requireClinicPermission
+ * می‌گیرند (عضویت فعال پایدار + دقیقاً همان مجوز؛ cap سراسری فقط
+ * defense-in-depth). مسیرهای C1/C2 بیمار (me/updateMe) عمداً از مجوزسازی
+ * کارکنی Clinic عبور نمی‌کنند — patient-self جدا از عضویت کارکنی است.
+ * Clinical Patient Record سطح Clinic می‌ماند (PatientService با App::scope());
+ * مالکیت پایدار شیء با 404 parity همان‌جا اعمال می‌شود.
  */
 final class PatientController extends RestBase
 {
@@ -117,6 +125,12 @@ final class PatientController extends RestBase
 
     private function search(WP_REST_Request $request): WP_REST_Response|WP_Error
     {
+        // Phase 3 Slice 6B — D2 مسیر کارکنی: مجوز Clinic-scoped cpms_patient_read.
+        $denied = $this->requireClinicPermission(RolesAndCapabilities::PATIENT_READ);
+        if ($denied instanceof WP_Error) {
+            return $denied;
+        }
+
         return $this->wrap(fn () => $this->patients->search(
             (string) $request->get_param('q'),
             (int) $request->get_param('limit')
@@ -125,11 +139,22 @@ final class PatientController extends RestBase
 
     private function get(WP_REST_Request $request): WP_REST_Response|WP_Error
     {
+        // Phase 3 Slice 6B — D3 مسیر کارکنی: مجوز Clinic-scoped cpms_patient_read.
+        $denied = $this->requireClinicPermission(RolesAndCapabilities::PATIENT_READ);
+        if ($denied instanceof WP_Error) {
+            return $denied;
+        }
+
         return $this->wrap(fn () => $this->patients->get((int) $request->get_param('id')));
     }
 
     private function update(WP_REST_Request $request): WP_REST_Response|WP_Error
     {
+        // Phase 3 Slice 6B — D5 مسیر کارکنی: مجوز Clinic-scoped cpms_patient_update.
+        $denied = $this->requireClinicPermission(RolesAndCapabilities::PATIENT_UPDATE);
+        if ($denied instanceof WP_Error) {
+            return $denied;
+        }
         $user = wp_get_current_user();
         $fields = $this->body($request);
 
@@ -142,6 +167,11 @@ final class PatientController extends RestBase
 
     private function create(WP_REST_Request $request): WP_REST_Response|WP_Error
     {
+        // Phase 3 Slice 6B — D4 مسیر کارکنی: مجوز Clinic-scoped cpms_patient_create.
+        $denied = $this->requireClinicPermission(RolesAndCapabilities::PATIENT_CREATE);
+        if ($denied instanceof WP_Error) {
+            return $denied;
+        }
         $user = wp_get_current_user();
         $fields = $this->body($request);
 

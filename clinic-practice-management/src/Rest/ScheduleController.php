@@ -19,6 +19,13 @@ use WP_REST_Server;
  * مجوز: Capability `cpms_config` (Admin فنی — Matrix §4.4) + Nonce روی موتانت‌ها.
  * داده‌ها فنی‌اند — بدون PHI.
  *
+ * Phase 3 Slice 6B: هر هفت مسیر (خواندن/نوشتن برنامه و استثناها) علاوه بر
+ * لایه‌های قبلی، مجوز Clinic-scoped `cpms_config` را از طریق
+ * RestBase::requireClinicPermission می‌گیرند — عضویت فعال پایدار در Clinicِ
+ * معتبرِ درخواست + دقیقاً همان مجوز؛ cap سراسری فقط defense-in-depth.
+ * مالکیت پایدارِ پزشک/برنامه در برابر Clinic معتبر در ScheduleService اعمال
+ * می‌شود (C7-S2/S5 — 404 parity).
+ *
  * خطاها: Envelope استاندارد `CLINIC_*` (ADR-0019).
  */
 final class ScheduleController extends RestBase
@@ -126,11 +133,20 @@ final class ScheduleController extends RestBase
 
     private function list(WP_REST_Request $request): WP_REST_Response|WP_Error
     {
+        $denied = $this->requireClinicPermission(RolesAndCapabilities::CONFIG);
+        if ($denied instanceof WP_Error) {
+            return $denied;
+        }
+
         return $this->wrap(fn () => $this->schedules->list((int) $request->get_param('clinician_id')));
     }
 
     private function create(WP_REST_Request $request): WP_REST_Response|WP_Error
     {
+        $denied = $this->requireClinicPermission(RolesAndCapabilities::CONFIG);
+        if ($denied instanceof WP_Error) {
+            return $denied;
+        }
         $user = wp_get_current_user();
 
         return $this->wrap(fn () => $this->schedules->create((int) $user->ID, $this->body($request)));
@@ -138,6 +154,10 @@ final class ScheduleController extends RestBase
 
     private function update(WP_REST_Request $request): WP_REST_Response|WP_Error
     {
+        $denied = $this->requireClinicPermission(RolesAndCapabilities::CONFIG);
+        if ($denied instanceof WP_Error) {
+            return $denied;
+        }
         $user = wp_get_current_user();
 
         return $this->wrap(fn () => $this->schedules->update(
@@ -149,6 +169,10 @@ final class ScheduleController extends RestBase
 
     private function delete(WP_REST_Request $request): WP_REST_Response|WP_Error
     {
+        $denied = $this->requireClinicPermission(RolesAndCapabilities::CONFIG);
+        if ($denied instanceof WP_Error) {
+            return $denied;
+        }
         $user = wp_get_current_user();
 
         return $this->wrap(fn () => $this->schedules->delete((int) $user->ID, (int) $request->get_param('id')));
@@ -156,6 +180,11 @@ final class ScheduleController extends RestBase
 
     private function listExceptions(WP_REST_Request $request): WP_REST_Response|WP_Error
     {
+        $denied = $this->requireClinicPermission(RolesAndCapabilities::CONFIG);
+        if ($denied instanceof WP_Error) {
+            return $denied;
+        }
+
         return $this->wrap(fn () => $this->schedules->listExceptions(
             (int) $request->get_param('clinician_id'),
             (string) $request->get_param('from'),
@@ -165,6 +194,10 @@ final class ScheduleController extends RestBase
 
     private function createException(WP_REST_Request $request): WP_REST_Response|WP_Error
     {
+        $denied = $this->requireClinicPermission(RolesAndCapabilities::CONFIG);
+        if ($denied instanceof WP_Error) {
+            return $denied;
+        }
         $user = wp_get_current_user();
 
         return $this->wrap(fn () => $this->schedules->createException((int) $user->ID, $this->body($request)));
@@ -172,6 +205,10 @@ final class ScheduleController extends RestBase
 
     private function deleteException(WP_REST_Request $request): WP_REST_Response|WP_Error
     {
+        $denied = $this->requireClinicPermission(RolesAndCapabilities::CONFIG);
+        if ($denied instanceof WP_Error) {
+            return $denied;
+        }
         $user = wp_get_current_user();
 
         return $this->wrap(fn () => $this->schedules->deleteException((int) $user->ID, (int) $request->get_param('id')));

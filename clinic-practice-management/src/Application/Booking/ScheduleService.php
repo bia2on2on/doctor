@@ -50,7 +50,9 @@ final class ScheduleService
      */
     public function list(int $clinicianId): array
     {
-        $this->requireClinician($clinicianId);
+        // Phase 3 Slice 6B: پزشکِ انتخاب‌شده «شیء» است — با Scope صریح معتبرِ
+        // درخواست، برنامهٔ پزشکِ Clinic دیگر بارگذاری نمی‌شود (C7-S2 parity).
+        $this->requireClinicianWithinTrustedClinic($clinicianId);
 
         return array_map(
             fn (array $r): array => $this->scheduleView($r),
@@ -165,7 +167,8 @@ final class ScheduleService
      */
     public function listExceptions(int $clinicianId, string $fromDate, string $toDate): array
     {
-        $this->requireClinician($clinicianId);
+        // Phase 3 Slice 6B: همان مالکیت C7-S2 برای استثناها (404 parity).
+        $this->requireClinicianWithinTrustedClinic($clinicianId);
         $from = $this->parseYmd($fromDate, 'from');
         $to = $this->parseYmd($toDate, 'to');
         if ($to < $from) {
@@ -398,6 +401,26 @@ final class ScheduleService
         }
 
         return (int) $row['clinic_id'];
+    }
+
+    /**
+     * Phase 3 Slice 6B — مالکیت پایدار پزشک در برابر Clinic معتبرِ صریح (خواندن).
+     *
+     * برای مسیرهای خواندن (list/listExceptions): با Scope صریحِ معتبر (مرز REST
+     * staff / wp-admin پس از C7-S4) پزشکِ Clinic دیگر بارگذاری نمی‌شود و همان
+     * پاکتِ «پزشک یافت نشد» را می‌گیرد (عدم شمارش). بدون Scope صریح (فراخوان
+     * داخلی/legacy) رفتار موجود حفظ می‌شود — همان قرارداد C7-S2 برای
+     * requireScheduleForTrustedClinic.
+     */
+    private function requireClinicianWithinTrustedClinic(int $clinicianId): int
+    {
+        $clinicId = $this->requireClinician($clinicianId);
+        $trustedClinicId = $this->explicitTrustedClinicId();
+        if ($trustedClinicId !== null && $trustedClinicId !== $clinicId) {
+            throw BookingException::of('CLINIC_NOT_FOUND', 'پزشک یافت نشد', 404);
+        }
+
+        return $clinicId;
     }
 
     /**

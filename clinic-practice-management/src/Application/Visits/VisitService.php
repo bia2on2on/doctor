@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ClinicCore\Application\Visits;
 
 use ClinicCore\Application\Notifications\NotificationService;
+use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Auth\RolesAndCapabilities;
@@ -88,6 +89,10 @@ final class VisitService
             if ($appt === null) {
                 throw VisitException::of('CLINIC_NOT_FOUND', 'نوبت یافت نشد', 404);
             }
+            // Phase 3 Slice 6B — مالکیت پایدار نوبت در برابر Clinic معتبرِ صریحِ
+            // درخواست (مرز REST کارکنی): نوبتِ Clinic دیگر همان پاکتِ «نوبت
+            // یافت نشد» را می‌گیرد — پیش از ساخت ویزیت و هرجهش پایدار.
+            $this->guardAppointmentWithinExplicitScope($appt);
             if ((int) $appt['patient_id'] !== $patientId) {
                 $this->auditAndThrow(
                     $actorUserId, $actorRole, 'FORBIDDEN_ACCESS_ATTEMPT', 'visit', $appointmentId, $patientId,
@@ -198,6 +203,10 @@ final class VisitService
         return $this->db->transactional(function () use ($actorUserId, $actorRole, $patientId, $clinicianId, $meta): array {
             $patient = $this->lockPatient($patientId);
             $clinicId = $this->requireClinician($clinicianId);
+            // Phase 3 Slice 6B — مالکیت پایدار پزشک در برابر Clinic معتبرِ صریحِ
+            // درخواست: پزشکِ Clinic دیگر همان پاکتِ «پزشک یافت نشد» را می‌گیرد؛
+            // بدون درج ویزیت.
+            $this->guardClinicianWithinExplicitScope($clinicId);
             // C6: بیمار و پزشک باید به یک کلینیک تعلق داشته باشند (verify سمت سرور)
             if ((int) $patient['clinic_id'] !== $clinicId) {
                 throw VisitException::of('CLINIC_VALIDATION_FAILED', 'این بیمار به کلینیک دیگری تعلق دارد', 422);
@@ -244,6 +253,10 @@ final class VisitService
         $preVisit = $this->visits->find($visitId);
         if ($preVisit !== null) {
             $this->guardDoctorTransitionOwnership($actorUserId, $preVisit);
+            // Phase 3 Slice 6B — مالکیت پایدار ویزیت در برابر Clinic معتبرِ
+            // صریحِ درخواست: ویزیتِ Clinic دیگر «مثل نبودن» است (404 parity)؛
+            // انکار پیش از Transaction = صفر اثر جانبی پایدار.
+            $this->guardVisitWithinExplicitScope($preVisit);
         }
 
         return $this->db->transactional(function () use ($actorUserId, $visitId, $event, $meta): array {
@@ -251,6 +264,8 @@ final class VisitService
             if ($visit === null) {
                 throw VisitException::of('CLINIC_NOT_FOUND', 'مراجعه یافت نشد', 404);
             }
+            // Defense-in-depth — همان مالکیت داخل Transaction (post-lock).
+            $this->guardVisitWithinExplicitScope($visit);
 
             return $this->applyTransition($actorUserId, $visit, $event, $meta);
         });
@@ -494,6 +509,9 @@ final class VisitService
             if ($visit === null) {
                 throw VisitException::of('CLINIC_NOT_FOUND', 'مراجعه یافت نشد', 404);
             }
+            // Phase 3 Slice 6B — مالکیت پایدار ویزیت در برابر Clinic معتبرِ صریحِ
+            // درخواست (D16 مسیر کارکنی؛ 404 parity؛ پیش از هر Transition).
+            $this->guardVisitWithinExplicitScope($visit);
 
             $status = (string) $visit['status'];
             if ($status === 'awaiting_payment') {
@@ -987,6 +1005,47 @@ final class VisitService
         }
 
         return (int) $row['clinic_id'];
+    }
+
+    // ================= Phase 3 Slice 6B — مالکیت پایدار شیء =================
+
+    /**
+     * مالکیت پایدار شیء در برابر Clinic معتبرِ صریحِ جاری.
+     *
+     * Clinic معتبر فقط از Scope صریحِ درخواست (مرز REST کارکنی —
+     * RestClinicEstablisher) می‌آید، نه از payload و نه از «اولین Clinic»؛
+     * Clinicِ خودِ ردیفِ پایدار فقط «شاهد مالکیت برای مقایسه» است. عدم تطابق
+     * ⇒ همان پاکتِ خطای شیءِ ناموجود (404 parity — عدم شمارش/افشای وجود
+     * منبعِ Clinic دیگر) و صفر اثر جانبی پایدار.
+     *
+     * بدون Scope صریح (فراخوان داخلی/wp-admin legacy) رفتار موجود حفظ
+     * می‌شود — همان قرارداد C7-S2 در ScheduleService. مسیرهای تولیدیِ REST
+     * کارکنی همیشه Scope صریح دارند (RestClinicContext) پس در عمل fail-closed
+     * است. `applyTransition` عمداً دست‌نخورده ماند تا رفتار Finance/Jobهای
+     * سیستمی (forceRole=system، M-7) تغییری نکند.
+     */
+    private function guardVisitWithinExplicitScope(array $visit): void
+    {
+        $scope = ScopeContext::tryGet();
+        if ($scope !== null && (int) ($visit['clinic_id'] ?? 0) !== (int) $scope->clinicId) {
+            throw VisitException::of('CLINIC_NOT_FOUND', 'مراجعه یافت نشد', 404);
+        }
+    }
+
+    private function guardAppointmentWithinExplicitScope(array $appt): void
+    {
+        $scope = ScopeContext::tryGet();
+        if ($scope !== null && (int) ($appt['clinic_id'] ?? 0) !== (int) $scope->clinicId) {
+            throw VisitException::of('CLINIC_NOT_FOUND', 'نوبت یافت نشد', 404);
+        }
+    }
+
+    private function guardClinicianWithinExplicitScope(int $clinicId): void
+    {
+        $scope = ScopeContext::tryGet();
+        if ($scope !== null && (int) $scope->clinicId !== $clinicId) {
+            throw VisitException::of('CLINIC_NOT_FOUND', 'پزشک یافت نشد', 404);
+        }
     }
 
     /**

@@ -173,6 +173,56 @@ abstract class RestBase
         return true;
     }
 
+    // ==================================================================
+    // لایه Authorization Clinic-scoped کارکنان — Phase 3 Slice 6B
+    //
+    // برای «عملیات STAFF Clinic» جاری (صف، برنامه، نوبت‌دهیِ کارکنی، بیمارِ
+    // کارکنی). الگوی واحدی که Slice 3 (SmsController) جا انداخت، اینجا به
+    // مرز مشترک REST منتقل شده است؛ Controllerهای patient-self/public هرگز
+    // از این helper عبور نمی‌کنند.
+    // ==================================================================
+
+    /**
+     * مجوز Clinic-scoped کارکنان — fail closed.
+     *
+     * قرارداد (Phase 3 Slice 6B):
+     *  - Clinic معتبر فقط از App::scope() می‌آید (استقرار RestClinicContext
+     *    از عضویت فعال پایدار) — هرگز از payload/param؛ نبودِ Scope ⇒ انکار؛
+     *  - تصمیمِ مجوز با AuthorizationService: عضویت فعال پایدار + دقیقاً همان
+     *    مجوزِ scoped درخواستی (deny صریح > grant صریح > preset نقش عضویت > deny)؛
+     *  - Capability سراسریِ وردپرس به‌تنهایی هرگز مجوز عملیات Clinic نیست —
+     *    گاردهای nonce/cap موجود به‌عنوان defense-in-depth سر جای خود می‌مانند؛
+     *  - نگاشت خطای عمومی CLINIC_PERMISSION_DENIED (403) — بدون افشای وجود/
+     *    عدمِ Clinic یا عضویت (همان کلاس افشای requireCap)؛
+     *  - هیچ منطقِ مالکیتِ شیء در این helper نیست — سیاست مالکیت پایدارِ
+     *    شیء در Service مربوطه می‌ماند (canForObject/authorizeForObject)؛
+     *  - برای مسیر patient-self/public صدا زده نمی‌شود.
+     *
+     * @param string $permission مجوز Scoped درخواستی (مثلاً cpms_queue_read)
+     */
+    protected function requireClinicPermission(string $permission): bool|WP_Error
+    {
+        $userId = (int) get_current_user_id();
+        if ($userId <= 0) {
+            return $this->error('CLINIC_UNAUTHORIZED', 401, 'وارد نشده‌اید');
+        }
+        try {
+            $clinicId = App::scope()->clinicId;
+        } catch (\Throwable $e) {
+            return $this->error('CLINIC_PERMISSION_DENIED', 403, 'دسترسی ندارید');
+        }
+        if ($clinicId <= 0) {
+            return $this->error('CLINIC_PERMISSION_DENIED', 403, 'دسترسی ندارید');
+        }
+        try {
+            App::authorization_service()->authorize($userId, $clinicId, $permission);
+        } catch (\ClinicCore\Application\Authorization\AuthorizationException $e) {
+            return $this->error('CLINIC_PERMISSION_DENIED', 403, 'دسترسی ندارید');
+        }
+
+        return true;
+    }
+
     /**
      * Rate limit هدرها + کنترل.
      *

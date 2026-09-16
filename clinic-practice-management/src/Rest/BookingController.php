@@ -277,6 +277,12 @@ final class BookingController extends RestBase
 
     private function staffList(WP_REST_Request $request): WP_REST_Response|WP_Error
     {
+        // Phase 3 Slice 6B — D9 مسیر کارکنی: مجوز Clinic-scoped cpms_appt_read.
+        $denied = $this->requireClinicPermission(RolesAndCapabilities::APPT_READ);
+        if ($denied instanceof WP_Error) {
+            return $denied;
+        }
+
         return $this->wrap(fn () => $this->booking->listForClinician(
             (int) $request->get_param('clinician_id'),
             (string) $request->get_param('date'),
@@ -286,6 +292,11 @@ final class BookingController extends RestBase
 
     private function staffCreate(WP_REST_Request $request): WP_REST_Response|WP_Error
     {
+        // Phase 3 Slice 6B — D10 مسیر کارکنی: مجوز Clinic-scoped cpms_appt_create.
+        $denied = $this->requireClinicPermission(RolesAndCapabilities::APPT_CREATE);
+        if ($denied instanceof WP_Error) {
+            return $denied;
+        }
         $user = wp_get_current_user();
         $rate = $this->rateLimit($request, 'booking-' . (int) $user->ID, 10, 3600);
         if ($rate instanceof WP_Error) {
@@ -310,6 +321,15 @@ final class BookingController extends RestBase
         $appointmentId = (int) $request->get_param('id');
         $reason = $request->get_param('reason') !== null ? (string) $request->get_param('reason') : null;
         $isStaff = $user->has_cap(RolesAndCapabilities::APPT_CANCEL);
+
+        if ($isStaff) {
+            // Phase 3 Slice 6B — D11 مسیر کارکنی: مجوز Clinic-scoped cpms_appt_cancel.
+            // شاخه بیمار (B4) عمداً از مجوزسازی کارکنی عبور نمی‌کند (patient-self).
+            $denied = $this->requireClinicPermission(RolesAndCapabilities::APPT_CANCEL);
+            if ($denied instanceof WP_Error) {
+                return $denied;
+            }
+        }
 
         return $this->wrap(fn () => $isStaff
             ? $this->booking->cancelByStaff((int) $user->ID, $appointmentId, $reason)
