@@ -680,11 +680,28 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         $this->assertContains($visitA, $this->queueIds($resA));
         $this->assertNotContains($visitB, $this->queueIds($resA), 'ویزیتِ همان پزشک در Clinic دیگر نباید union شود');
 
-        // در context B (با همان یک Clinician) — پروفایل پزشک در B وجود ندارد ⇒
-        // مجموعهٔ خالی (نه union و نه دامنهٔ کل مطب)
+        // در context B (با همان یک Clinician):
+        //
+        // Phase 4 Slice 4 — تصحیحِ صریحِ انتظارِ کهنه (نه سست‌کردن تست):
+        // انتظارِ قبلی «مجموعهٔ خالی» بر پایهٔ این استدلال بود که «پروفایل پزشک
+        // در B وجود ندارد»؛ آن استدلال از `clinicians.clinic_id` (Clinic خانه)
+        // به‌عنوان مرز دامنه استفاده می‌کرد. در مدل Phase 4، `clinicians.clinic_id`
+        // فقط دادهٔ سازگاری است و SoT مشارکت = عضویت فعال پایدار — و این پزشک
+        // **عضویت ACTIVE در B دارد** (seedStaff هر دو Clinic). پس دامنهٔ او در
+        // context موثق B = «ویزیت‌های همان هویتِ یکتا در همان Clinic».
+        //
+        // خاصیت امنیتیِ اصلیِ این تست (OWN-doctor scope نباید Clinicها را union
+        // کند) دست‌نخورده و اکنون در **هر دو** جهت صریح asserts می‌شود؛ به‌علاوه
+        // «فقط همان یک ردیف» تضمین می‌کند نه union رخ داده و نه دامنهٔ کل مطب.
         $resB = $this->call('GET', self::NS . '/doctor/today', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_B]);
         $this->assertSame(200, $resB->get_status(), $this->body($resB));
-        $this->assertSame([], $this->queueIds($resB), 'OWN-doctor scope نباید Clinicها را union کند');
+        $this->assertContains(
+            $visitB,
+            $this->queueIds($resB),
+            'Phase 4: مشارکت فعال پایدار در B ⇒ ویزیتِ همان هویت در B دیده می‌شود'
+        );
+        $this->assertNotContains($visitA, $this->queueIds($resB), 'OWN-doctor scope نباید Clinicها را union کند');
+        $this->assertCount(1, $this->queueIds($resB), 'فقط همان یک ردیفِ Clinic B — نه union و نه کل مطب');
     }
 
     /** ۲۱) پارامتر clinician_id نمی‌تواند دامنه را به پزشکِ Clinic دیگر ببرد. */
