@@ -1,7 +1,7 @@
 # Phase 4 — Slice 1: Root-Cause Map (Professional Identity Multi-Clinic Participation)
 
-Status: working note for the GREEN slice that follows the executable RED checkpoint
-on Draft PR #59.
+Status: closed working note — the executable RED checkpoint on Draft PR #59 is
+followed by the GREEN change (§2) whose exact-head evidence is recorded in §4.
 
 - RED head: `84b0ae713d6e4d9968652021f949919cbc3137a1` (test-only commit)
 - RED CI run: `35137717727` (`pull_request`, `CI`, completed/failure)
@@ -123,3 +123,53 @@ membership rows (never created/modified by these paths).
 | F′ | payload `clinic_id` is never trusted: disagreement ⇒ 422 + no row anywhere; consistent ⇒ trusted Clinic only | `testRawPayloadClinicIdIsNeverTrustedAsTheRequestScope` |
 
 No existing test was weakened to obtain GREEN.
+
+---
+
+## 4. Evidence (exact-head)
+
+### 4.1 RED (test-only commit)
+
+- head `84b0ae713d6e4d9968652021f949919cbc3137a1`, CI run `35137717727`
+- `Tests: 864, Assertions: 10150, Failures: 5.` — the five expected contract failures:
+  1. `testProfessionalWithActiveMembershipInClinicBIsUsableThroughScheduleCreatePath`
+     — `Failed asserting that 404 is identical to 200` (`:196`)
+  2. `testSameProfessionalMayHoldTheSameWeekdayInAnotherClinic` — `404 != 200` (`:271`)
+  3. `testScopedScheduleReadReturnsOnlyTheTrustedClinicRowsForTheSharedProfessional`
+     — Clinic-A read leaked the Clinic-B row (`assertNotContains` at `:333`)
+  4. `testSlotsGenerateHonorsParticipatingProfessionalInClinicBAndScopesExceptions`
+     — `Failed asserting that 0 is greater than 0` (`:409`)
+  5. `testRawPayloadClinicIdIsNeverTrustedAsTheRequestScope` — `404 != 200` on the
+     consistent-identifiers path (`:586`)
+- Same run: WPCS, Unit (8.1–8.4), PHPStan, Tripwire green; the fail-closed and
+  Phase-3 control tests of the same file passed (bootstrap/fixture/product path
+  proven before the final assertion ⇒ VALID RED, not a fixture failure).
+- Other workflows at that head: Closure Gate `success`, Real WP Acceptance `success`,
+  Pilot/Staging Readiness Gate `success`.
+
+### 4.2 GREEN (production commit)
+
+- code head `fa82de32e2c2295833f36d834e18458e4bda807a` (CI run `35138546908`):
+  4 of the 5 RED tests green; the 5th failed only on a **test-side accessor**
+  (`errors.day_of_week` read at the wrong envelope level) — 863 passed / 1 failed.
+- code head **`dd2ea4e89147a18c6abaef31a23694ae57220a96`** (CI run `35138907013`,
+  attempt 1): **all 8 CI jobs success** —
+  Integration: terminal summary `Time: 00:52.894, Memory: 88.50 MB`,
+  `OK (864 tests, 10163 assertions)`; junit root suite
+  `tests="864" assertions="10163" errors="0" warnings="0" failures="0" skipped="0"`
+  (the same 864-test file set that produced the 5 RED failures).
+- At that same SHA: **19/19 check runs success** (Integration, WPCS, PHPStan,
+  Tripwire, Unit 8.1–8.4, Closure ×5, Release Artifact, Upgrade path,
+  Staging Gate, Responsive smoke, Real WP Acceptance ×2).
+- NOT RETRIEVED: per-testcase junit lines for the eight Phase-4 tests (the CI
+  comment selects the Phase-3 RED-class suites; the artifact download is blocked
+  from this environment). The aggregate junit root suite over the same file set
+  (864 tests / 0 failures / 0 errors) is the evidence used, plus the RED list above.
+
+### 4.3 Known residual (NOT changed in this slice)
+
+`BookingService`/`VisitService` participation gates (occurrences #6/#7 in §1) still
+derive the request's Clinic from `clinicians.clinic_id`; a participating professional
+is therefore **not yet** bookable in their second Clinic (unchanged, fail-closed 404 —
+no new hole). This is the concrete remaining blocker for full multi-Clinic
+participation and requires its own RED slice.
