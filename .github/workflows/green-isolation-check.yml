@@ -111,6 +111,25 @@ jobs:
           } >> /tmp/identity.txt
           exit 0
 
+      - name: Full-suite run on GREEN mirroring ci.yml integration invocation (diagnostic)
+        continue-on-error: true
+        run: |
+          set +e
+          php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
+            --bootstrap tests/integration-bootstrap.php tests/Integration > /tmp/phpunit-full.log 2>&1
+          RC=$?
+          echo "full_rc=${RC}"
+          echo "full_log_bytes=$(wc -c < /tmp/phpunit-full.log) full_log_lines=$(wc -l < /tmp/phpunit-full.log)"
+          echo "summary_line_count=$(grep -cE '^(OK|FAILURES|ERRORS|Tests:)' /tmp/phpunit-full.log || true)"
+          echo "=== tail -40 of full log:"
+          tail -40 /tmp/phpunit-full.log
+          {
+            echo "full_rc=${RC}"
+            echo "full_log_bytes=$(wc -c < /tmp/phpunit-full.log)"
+            echo "full_summary_line_count=$(grep -cE '^(OK|FAILURES|ERRORS|Tests:)' /tmp/phpunit-full.log || true)"
+          } >> /tmp/identity.txt
+          exit 0
+
       - name: Role-state diagnostic (clean-environment role caps)
         continue-on-error: true
         run: |
@@ -145,18 +164,27 @@ jobs:
             grep -E '^[0-9]+\) ' /tmp/phpunit-isolated.log || true
             echo "--- failure details (isolated run):"
             sed -n '/^There w/,/^FAILURES\|^OK/p' /tmp/phpunit-isolated.log || true
+            echo "--- FULL-suite run (mirrors ci.yml integration invocation):"
+            grep -E '^(OK|FAILURES|ERRORS|Tests:)' /tmp/phpunit-full.log | tail -n 2 || echo "(no summary line printed)"
+            echo "--- FULL-suite last 15 lines (where the run stopped):"
+            tail -15 /tmp/phpunit-full.log || true
             echo "--- role-state diagnostic:"
             cat /tmp/role-state.txt || true
             echo "--- interpretation:"
-            if grep -q '^OK' /tmp/phpunit-isolated.log; then
+            if ! grep -qE '^(OK|FAILURES|ERRORS|Tests:)' /tmp/phpunit-isolated.log && grep -q 'isolated_rc=0' /tmp/identity.txt; then
+              echo "FALSE-GREEN SIGNATURE (isolated): phpunit exited 0 WITHOUT printing any summary —"
+              echo "the process terminated mid-run (production handler exit) and the CI pipe cannot tell."
+            elif grep -q '^OK' /tmp/phpunit-isolated.log; then
               echo "All four canonical contracts PASS in isolation on GREEN (deny enforced, no pollution needed)."
             elif grep -qF 'precondition: manager has global PAYMENT_CREATE' /tmp/phpunit-isolated.log; then
               echo "RED-3 canonical manager persona FAILS its user_can precondition in isolation on GREEN:"
               echo "the full-suite GREEN CI pass for that precondition relied on cross-test in-process state."
-            elif grep -qE '^[0-9]+\) ' /tmp/phpunit-isolated.log; then
-              echo "Isolated run on GREEN has failure(s) NOT matching the known precondition — inspect details above."
             else
-              echo "Isolated run did not complete normally — inspect phpunit-isolated.log."
+              echo "Isolated run outcome not covered by known signatures — inspect phpunit-isolated.log."
+            fi
+            if ! grep -qE '^(OK|FAILURES|ERRORS|Tests:)' /tmp/phpunit-full.log && grep -q 'full_rc=0' /tmp/identity.txt; then
+              echo "FALSE-GREEN SIGNATURE (full suite): phpunit exited 0 WITHOUT printing any summary —"
+              echo "PR #56's Integration CI job cannot distinguish this from a genuine pass."
             fi
           } | tee "${TRACE}"
 
@@ -166,6 +194,7 @@ jobs:
         run: |
           mkdir -p evidence
           cp /tmp/phpunit-isolated.log evidence/phpunit-isolated.log 2>/dev/null || true
+          cp /tmp/phpunit-full.log evidence/phpunit-full.log 2>/dev/null || true
           cp /tmp/list-tests.txt evidence/list-tests.txt 2>/dev/null || true
           cp /tmp/role-state.txt evidence/role-state.txt 2>/dev/null || true
           cp /tmp/identity.txt evidence/identity.txt 2>/dev/null || true
