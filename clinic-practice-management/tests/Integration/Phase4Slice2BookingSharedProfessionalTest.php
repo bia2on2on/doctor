@@ -345,24 +345,17 @@ final class Phase4Slice2BookingSharedProfessionalTest extends WP_UnitTestCase
         self::assertGreaterThan(0, $apptA);
         self::assertGreaterThan(0, $apptB);
 
-        // list in B should only return B appointment
+        // list in B should only return B appointment — strict Slice-2 contract
         $responseB = $this->dispatch('GET', self::NS . '/appointments', [
             'clinician_id' => $this->clinicianId,
             'date' => $date,
         ], $clinicB, $this->staffUserId);
 
-        // On defective main, list in B fails with 404 because professional home is A
-        $this->assertOwnershipRejectionIsExpectedPreFix($responseB, 'list B');
-
-        // If not 404, verify isolation
-        if ($responseB->get_status() === 200) {
-            $idsB = $this->idsFromList($responseB);
-            self::assertContains($apptB, $idsB, 'B list must contain B appointment');
-            self::assertNotContains($apptA, $idsB, 'B list must NOT leak A appointment');
-        } else {
-            self::assertSame(404, $responseB->get_status(), 'pre-fix list B is 404 due to home assumption');
-            self::assertSame('CLINIC_NOT_FOUND', $this->errorCode($responseB));
-        }
+        self::assertSame(200, $responseB->get_status(), 'CONTRACT: ACTIVE participation in Clinic B must be listable via trusted Clinic B - '.$this->errorCode($responseB));
+        $idsB = $this->idsFromList($responseB);
+        self::assertContains($apptB, $idsB, 'B list must contain B appointment');
+        self::assertNotContains($apptA, $idsB, 'B list must NOT leak A appointment');
+        self::assertSame(1, $this->countClinicianRowsForUser($this->professionalUserId), 'no second clinician identity');
 
         // list in A should only return A
         $responseA = $this->dispatch('GET', self::NS . '/appointments', [
