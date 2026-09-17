@@ -169,11 +169,11 @@ final class Phase6ScheduleExplicitLocationTest extends WP_UnitTestCase
         self::assertSame($this->clinicA, (int) $a1['clinic_id'], 'precondition: A1 belongs to Clinic A');
         self::assertSame(1, (int) $a1['is_primary'], 'precondition: A1 is A\'s primary Location');
         self::assertSame(1, (int) $a1['is_active'], 'precondition: A1 active');
-        self::assertSame($this->TZ_PRIMARY, (string) $a1['timezone'], 'precondition: A1 timezone');
+        self::assertSame(self::TZ_PRIMARY, (string) $a1['timezone'], 'precondition: A1 timezone');
         self::assertSame($this->clinicA, (int) $a2['clinic_id'], 'precondition: A2 belongs to Clinic A');
         self::assertSame(0, (int) $a2['is_primary'], 'precondition: A2 is NOT the primary Location (non-primary is the point)');
         self::assertSame(1, (int) $a2['is_active'], 'precondition: A2 active');
-        self::assertSame($this->TZ_SECONDARY, (string) $a2['timezone'], 'precondition: A2 carries the distinct IANA timezone');
+        self::assertSame(self::TZ_SECONDARY, (string) $a2['timezone'], 'precondition: A2 carries the distinct IANA timezone');
         self::assertSame($this->clinicB, (int) $b1['clinic_id'], 'precondition: B1 belongs to the FOREIGN Clinic B');
         self::assertSame(1, (int) $b1['is_active'], 'precondition: B1 active');
 

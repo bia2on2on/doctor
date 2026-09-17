@@ -125,13 +125,15 @@ final class RestScheduleTest extends WP_UnitTestCase
         wp_set_current_user($this->adminUserId);
 
         // پایان قبل از شروع
+        // Phase 6 Slice 3: Location صریح همراه Clinic صریح (مرز REST: selectorِ
+        // Location بدون selectorِ Clinic معتبر نمی‌شود).
         $bad = $this->dispatch('POST', self::NS . '/config/schedules', [
             'clinician_id' => $this->clinicianId,
             'day_of_week' => 1,
             'start_time' => '12:00',
             'end_time' => '09:00',
             'location_id' => $this->locationId,
-        ]);
+        ], ['X-CPMS-Clinic-Id' => '1']);
         $this->assertSame(400, $bad->get_status());
         $this->assertClinicError($bad, 'CLINIC_VALIDATION_FAILED');
 
@@ -184,7 +186,7 @@ final class RestScheduleTest extends WP_UnitTestCase
             'appointment_duration_min' => 60,
             'slot_capacity' => 2,
             'location_id' => $this->locationId,
-        ]);
+        ], ['X-CPMS-Clinic-Id' => '1']);
         $this->assertSame(200, $create->get_status());
         $view = $create->get_data()['data'];
         $scheduleId = (int) $view['id'];
@@ -198,7 +200,7 @@ final class RestScheduleTest extends WP_UnitTestCase
             'start_time' => '14:00',
             'end_time' => '18:00',
             'location_id' => $this->locationId,
-        ]);
+        ], ['X-CPMS-Clinic-Id' => '1']);
         $this->assertSame(400, $dup->get_status());
 
         // Regeneration Job (enqueue در Service) → اجرا
@@ -252,7 +254,7 @@ final class RestScheduleTest extends WP_UnitTestCase
             'start_time' => '09:00',
             'end_time' => '12:00',
             'location_id' => $this->locationId,
-        ]);
+        ], ['X-CPMS-Clinic-Id' => '1']);
         $this->runJobs();
 
         // شبیه‌سازی رزرو روی یک Slot آینده
@@ -302,7 +304,7 @@ final class RestScheduleTest extends WP_UnitTestCase
             'start_time' => '09:00',
             'end_time' => '12:00',
             'location_id' => $this->locationId,
-        ]);
+        ], ['X-CPMS-Clinic-Id' => '1']);
         $this->runJobs();
         $before = (int) App::db()->fetchValue(
             'SELECT COUNT(*) FROM ' . App::db()->table('cpms_schedule_slots') .
@@ -386,13 +388,20 @@ final class RestScheduleTest extends WP_UnitTestCase
     /**
      * @param array<string, mixed> $body
      */
-    private function dispatch(string $method, string $route, array $body = []): WP_REST_Response
+    /**
+     * @param array<string, mixed>  $body
+     * @param array<string, string> $headers
+     */
+    private function dispatch(string $method, string $route, array $body = [], array $headers = []): WP_REST_Response
     {
         $request = new WP_REST_Request($method, $route);
         foreach ($body as $key => $value) {
             $request->set_param($key, $value);
         }
         $request->set_header('X-WP-Nonce', wp_create_nonce('wp_rest'));
+        foreach ($headers as $name => $value) {
+            $request->set_header($name, $value);
+        }
 
         return rest_do_request($request);
     }
