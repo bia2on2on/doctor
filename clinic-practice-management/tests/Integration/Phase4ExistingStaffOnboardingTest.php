@@ -232,6 +232,12 @@ final class Phase4ExistingStaffOnboardingTest extends WP_UnitTestCase
         );
 
         self::assertNotSame('', $nonexistent['error']);
+        self::assertSame(
+            'حساب انتخاب‌شده برای افزودن به این کلینیک قابل استفاده نیست.',
+            (string) $nonexistent['error'],
+            'target-user rejection must be neutral and must not reveal account existence or role'
+        );
+        self::assertStringNotContainsString('administrator', (string) $nonexistent['error']);
         self::assertSame((string) $nonexistent['error'], (string) $administrator['error'], 'both target-user failures must be enumeration-neutral');
         self::assertSame(['error', 'generated', 'user_id'], array_keys($nonexistent));
         self::assertSame(['error', 'generated', 'user_id'], array_keys($administrator));

@@ -490,11 +490,8 @@ final class StaffManagementPage
 
         $existingUserId = (int) ($in['existing_user_id'] ?? 0);
         $existingUser = $existingUserId > 0 ? get_userdata($existingUserId) : false;
-        if ($existingUser === false) {
-            return ['error' => 'کاربر WordPress موجود یافت نشد.', 'generated' => '', 'user_id' => 0];
-        }
-        if (in_array('administrator', (array) $existingUser->roles, true)) {
-            return ['error' => 'حساب administrator از مسیر مدیریت پرسنل قابل افزودن نیست.', 'generated' => '', 'user_id' => 0];
+        if ($existingUser === false || in_array('administrator', (array) $existingUser->roles, true)) {
+            return ['error' => 'حساب انتخاب‌شده برای افزودن به این کلینیک قابل استفاده نیست.', 'generated' => '', 'user_id' => 0];
         }
 
         try {
