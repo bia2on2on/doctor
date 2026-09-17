@@ -3,8 +3,19 @@
 > Recover the project from this file + Git/remote/PR + linked canonical docs.
 > Do **not** use a previous chat session as memory.
 >
-> **Integrated main checkpoint (Phase 3 End Gate — technically COMPLETED & FROZEN, re-verified
-> live 2026-09-16):** `ebf8588f34be1da2ff18a152dea2c8badc472056` — "Merge pull request #57 from
+> **Integrated main checkpoint (Phase 4 technical closure — re-verified live 2026-09-17):** `70ace204d1524a8f5e83d33c67c1a09b7543e7a3` — "Merge pull request #65 from bia2on2on/arena/01a0ae2c-doctor" (MERGED 2026-09-17T09:27:34Z).
+> **Owner Roadmap Phase 4 — Master Data: CLOSED / TECHNICALLY COMPLETE (BOUNDED)** based on the
+> merged Phase-4 slices **PRs #59–#65**: professional multi-Clinic participation through membership;
+> shared-professional staff Booking, WalkIn, and queue clinician resolution; Clinic Profile
+> canonicalization; attaching an existing WP user to another Clinic; and Location master-data
+> create/update for name/timezone. This is **not** a release/V1/commercial claim. The closure does
+> **not** claim ServiceOffering, Specialty/Department/Room, Iran geography master data, or any other
+> deferred/open feature implemented; the stale `clinic.phone` Patient Portal consumer is not claimed
+> fixed. Location timezone remains the operational source-of-truth decision, and a professional's
+> participation across Clinics remains membership-based. **Phase 5 implementation has not started and
+> is not part of this closure.** Latest migration remains `0020`; no `0021` exists.
+> **Previous integrated main checkpoint (historical; Phase 3 End Gate — technically COMPLETED & FROZEN, re-verified
+> live 2026-09-16; superseded by the current Phase 4 checkpoint above):** `ebf8588f34be1da2ff18a152dea2c8badc472056` — "Merge pull request #57 from
 > bia2on2on/arena/01a0aae9-doctor" (MERGED 2026-09-16T16:46:59Z by `arena-ai-coding-agent[bot]`).
 > **Phase 3 — Role & Access Control: COMPLETED / FROZEN** (implementation COMPLETE / technically
 > accepted based on merged implementation — PRs #49, #50, #52, #54, #55, #56, #57 — and exact-head
@@ -68,8 +79,8 @@
 
 If Git/remote/PR, this file, and the repository tree disagree: **STOP**.
 
-This file describes the integrated main checkpoint `ebf8588` (Phase 3 End Gate —
-technically COMPLETED/FROZEN; see the header block) plus preserved
+This file describes the current integrated main checkpoint `70ace204` (Phase 4 technical
+closure, bounded to merged PRs #59–#65; see the header block) plus preserved
 previous-checkpoint and pre-merge/pre-corrective evidence SHAs below. It does
 **not** self-refer to the SHA of any later documentation-only commit.
 
@@ -114,12 +125,15 @@ Legacy labels (`F0..F10`, `Doc-Phase`, `V1` / `V1.5` / `V2`) are historical. The
 | Phase 2 | **COMPLETED (TECHNICAL) — all recorded Phase 2 technical blockers closed on `main` at `35acced` (2026-09-15); this is NOT a release/V1/commercial claim. (Phase 3 is now COMPLETED/FROZEN — see its own row below.)** Subphase history preserved: **C6 CLOSED** + post-closure corrective integrated (PR #17); **C7 CLOSED** (remediation integrated via PR #20 at merge `a385d868`; formal Owner acceptance recorded 2026-09-11); **C8 / C9 CLOSED**; **C10 CLOSED (explicit Owner decision 2026-09-12; bounded evidence review only — no NFR/load/scalability claim)**. Internal queue C1..C10 complete. Final technical closures: **M-2 CLOSED** (all eight canonical jobs resolved on main), **M-4 CLOSED** (typed `NonRetryableJobFailure` semantics), Location = operational timezone truth for the reachable `appt.reminder`/`fu.reminder` quiet-hours paths (PR #47), post-M-4 fixture correction merged (PR #46); latest migration remains `0020` (no `0021`). The historical "End Gate (26 items)" label was never a defined acceptance checklist and is not revived here |
 | C7 | **CLOSED — formally accepted by explicit Owner decision on 2026-09-11.** Technical closure was already evidenced (implementation merged into `main` via PR #20, merge `a385d868`, 2026-09-11T13:09:16Z; slices C7-0→C7-S6; all gates GREEN). The Owner acceptance covers the defined/completed C7 scope only — it is **not** a claim that all conceivable tenant isolation throughout the product is perfect, **not** commercial-readiness approval, and does not approve any deferred item, migration, or later phase — see `docs/phase-reports/c7-0-census.md` §۱۱ |
 | C8 | **CLOSED as a Phase-2 Location-foundation evidence/documentation closure package (2026-09-11) — NO implementation work performed or authorized.** Reviewed evidence found no verified Phase-2 Location implementation gap. C8 closure means "the Phase-2 Location foundation is closed based on current evidence", not "all future Location/timezone behavior is complete" — see `docs/phase-reports/phase2-state.md` §C8 |
-| Phase 3 | **COMPLETED / FROZEN** — implementation COMPLETE / technically accepted based on merged implementation (PRs #49, #50, #52, #54, #55, #56, #57) and exact-head evidence (19/19 checks success at `ebf8588f34be1da2ff18a152dea2c8badc472056`). Central Clinic-scoped `AuthorizationService` established; FROZEN. **Do NOT start Phase 4 prematurely** (Phase 4 = Master Data — NOT STARTED). This is NOT a release/V1/commercial claim |
+| Phase 3 | **COMPLETED / FROZEN** — implementation COMPLETE / technically accepted based on merged implementation (PRs #49, #50, #52, #54, #55, #56, #57) and exact-head evidence (19/19 checks success at `ebf8588f34be1da2ff18a152dea2c8badc472056`). Central Clinic-scoped `AuthorizationService` established; FROZEN. This is NOT a release/V1/commercial claim |
+| Phase 4 | **CLOSED / TECHNICALLY COMPLETE (BOUNDED)** — the current live-main checkpoint above records merged PRs #59–#65 and their bounded scope. Deferred/open Master Data items remain deferred/open; no ServiceOffering, Specialty/Department/Room, Iran geography master data, or stale `clinic.phone` Patient Portal consumer fix is claimed |
+| Phase 5 | **NOT STARTED** — implementation is not part of this reconciliation |
 
-**Integrated main checkpoint:** `ebf8588` (PR #57 MERGED 2026-09-16 — Phase 3
-End Gate; technically COMPLETED/FROZEN; gates recorded in the header block).
-Previous integrated checkpoint: `35acced` (PR #47 MERGED 2026-09-15 — final
-Phase 2 technical merge). Earlier: `bdb135e9` (PR #25 MERGED — C10 documentation
+**Integrated main checkpoint:** `70ace204d1524a8f5e83d33c67c1a09b7543e7a3` (PR #65 MERGED 2026-09-17 —
+bounded Phase 4 technical closure through PRs #59–#65; no release/V1/commercial claim).
+Previous integrated checkpoint: `ebf8588` (PR #57 MERGED 2026-09-16 — Phase 3
+End Gate; technically COMPLETED/FROZEN; gates recorded in the header block). Earlier:
+`35acced` (PR #47 MERGED 2026-09-15 — final Phase 2 technical merge). Earlier: `bdb135e9` (PR #25 MERGED — C10 documentation
 evidence package). Earlier: `b19930fe` (PR #21 MERGED 2026-09-11T14:27:14Z —
 post-C7 documentation-only continuity sync; **Owner formal C7 acceptance + C8
 closure package recorded in this documentation update's lineage**). Earlier:
@@ -132,7 +146,7 @@ implementation evidence (historical):** `3fc5a54`. Historical baseline:
 `b19930fe` (table below); the `a385d868`, `248ca10`, `099b644`, and `3fc5a54`
 gate tables are retained below as historical evidence.
 
-**Schema:** current version **`2026_09_09_0020`** (re-verified on the tree at `7146d5bb`: latest file is `src/Migrations/2026_09_09_0020_idempotency_clinic_scope.php`; 20 migration files `0001`..`0020`). File `0021` does **not** exist. **Migration 0021 is NOT approved and was NOT created** (including by the C8 documentation closure and by the bounded C9 integration/closure — neither authorizes a migration). If new schema is required: STOP and ask Owner. (Current migration state re-confirmed on `ebf8588` — latest = `0020`, `0021` absent.)
+**Schema:** current version **`2026_09_09_0020`** (re-verified on current live main `70ace204d1524a8f5e83d33c67c1a09b7543e7a3`: latest file is `src/Migrations/2026_09_09_0020_idempotency_clinic_scope.php`; 20 migration files `0001`..`0020`). File `0021` does **not** exist. **Migration 0021 is NOT approved and was NOT created** (including by the C8 documentation closure and by the bounded C9 integration/closure — neither authorizes a migration). If new schema is required: STOP and ask Owner. (Current migration state re-confirmed on live main `70ace204d1524a8f5e83d33c67c1a09b7543e7a3` — latest = `0020`, `0021` absent.)
 
 **Post-merge integration state (verified from live remote 2026-09-11)**
 
@@ -358,11 +372,11 @@ No `province_id=1` / `city_id=1` / Tehran-as-location-default.
 
 - Iranian mobile normalization (`MobileValidator`); Persian/Arabic/Latin digits
 - Unicode Persian data
-- Geography foundation → Phase 4 Master Data (Owner Roadmap) — the C8
-  documentation closure (2026-09-11) authorizes **no** Iran
-  province/city master-data dataset, nationwide geography seeding, or
-  master-data management UX; that implementation remains deferred to Phase 4
-  unless separately Owner-approved
+- Geography foundation remains **deferred/open outside the bounded Phase 4 technical closure** —
+  the C8 documentation closure (2026-09-11) and the current Phase 4 closure authorize **no** Iran
+  province/city master-data dataset, nationwide geography seeding, or unclaimed master-data management
+  UX. No specialty/geography decision is reversed here; the related deferred/open items remain governed
+  by the roadmap and drift register.
 - Jalali is UX/display; internal timestamps stay UTC
 
 ---
@@ -604,15 +618,14 @@ integration-state table above. Scope of the merged corrective:
   (PR #20 MERGED 2026-09-11T13:09:16Z, merge `a385d868` — see the C7 section
   below).** Location authorization untouched.
 
-**Do not start C8 *implementation*, Phase 4, portals, or mobile auth/JWT.** *(Phase 3 was a "do not start" item when this C6 corrective was written (2026-09-10); it is now COMPLETED/FROZEN — see the Phase 3 status row. The C8 closure status below is unchanged.)*
+**At the time of this C6 corrective (2026-09-10), the instruction was not to start C8 *implementation*, Phase 4, portals, or mobile auth/JWT.** This is historical; the current Phase 4 status is the bounded technical closure recorded in the current-state row above. *(Phase 3 was a "do not start" item when this C6 corrective was written; it is now COMPLETED/FROZEN — see the Phase 3 status row. The C8 closure status below is unchanged.)*
 **C8 closure status (Owner-authorized documentation-only closure, 2026-09-11):**
 the existence of the internal/canonical `C8` label did **not** by itself prove
 that C8 required implementation work; reviewed evidence verifies **no verified
 Phase-2 Location implementation gap**, so C8 is **CLOSED as a
 Location-foundation evidence/documentation closure package** — it must **not**
 be turned into implementation work merely because its queue label exists. Iran
-province/city master-data datasets and their management remain deferred to
-Owner Roadmap Phase 4; final scoped authorization remains Phase 3; operational
+province/city master-data datasets and their management remain deferred/open outside the bounded Phase 4 closure; final scoped authorization remains Phase 3; operational
 Location-timezone consumption remains a recorded boundary/deferred
 reconciliation item, not authorization to implement scheduling/reminder/
 timezone changes here. Do not reopen merged history

@@ -409,7 +409,7 @@ scope resolutionِ درست نمی‌شود. به همین دلیل §D-1 (بی�
 - ⛔ **تغییر schema / ساختِ هر migration جدید** — آخرین migration `0020` باقی است و **هیچ شمارهٔ migration آینده‌ای در این سند رزرو نشده است**.
 - ⛔ **الزامِ وجودِ migration در اولین PRِ پیاده‌سازی** — چنین الزامی وجود ندارد؛ بخشی از این طراحی (contextِ per-job از `payload_json`) بدونِ تغییرِ schema قابلِ پیاده‌سازی است (§۸-۱/§۱ ردیف ۱۵).
 - ⛔ **شروع یا پاس‌کردن Phase 2 End Gate** — End Gate **تعریف/شروع نشده** است (برچسب تاریخی «۲۶بندی» فهرست پذیرش نیست).
-- ⛔ **شروع Phase 3 (Role & Access Control) / Phase 4 (Master Data) / Phase 17 (Performance)** — همه **NOT STARTED**.
+- ⛔ **در زمان ثبت این سند (2026-09-12)، این سند شروع Phase 3 (Role & Access Control) / Phase 4 (Master Data) / Phase 17 (Performance) را مجاز نمی‌کرد.** این یک snapshot تاریخی است؛ وضعیت فعلی فازها از `roadmap.md` و `project-current-state.md` خوانده می‌شود. این سند هیچ پیاده‌سازی Phase 4، ServiceOffering، Specialty/Department/Room یا جغرافیای ایران را ادعا نمی‌کند.
 - ⛔ **هرگونه ادعای عملکرد/NFR/مقیاس‌پذیری/آمادگی تجاری** — C10 **فقط** در دامنهٔ محدودشدهٔ بازبینی شواهد بسته شد (`c10-performance-evidence.md`).
 - ⛔ **`clinic_id = 0` / `clinic_id = 1` / `location_id = 1` / «اولین ردیف» / وضعیت سراسری Clinic / Clinic مصنوعی / فرض هویتی `Asia/Tehran`** — همه ممنوع (AD-13 + AD-17 §۸ + §۳-B-2 همین سند).
 - ⛔ **تضعیف ایزولاسیون tenant به بهانهٔ سادگی/عملکرد** — اولویت: صحت/امنیت tenant.
