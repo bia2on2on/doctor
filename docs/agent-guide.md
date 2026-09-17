@@ -909,3 +909,7 @@ final class XxxService {
 - **Docs:** `docs/api/api-contract.md` — سطر G1 به‌روزرسانی (location_id الزامی در POST + view + قاعدهٔ تکراری Location-aware)؛ `docs/api/error-codes.md` بدون تغییر (کدهای `CLINIC_VALIDATION_FAILED`/`CLINIC_NOT_FOUND` مستند بودند).
 - **Git/PR:** کامیت‌ها forward-only: `496a97c` (تست RED) → `4c45800` (تصحیح D) → `6a823ed` (GREEN محصول) → `8c153c1` (تصحیح D) → همین entry (docs). Draft PR **#71** باز است (draft)؛ بدون Ready/merge/close/delete branch/tag/release/force-push/reset/clean/rebase؛ main دست‌نخورده.
 - **تحویل به ایجنت بعد:** برش بعدی Phase 6 = **multi-shift** (هنوز فعال نیست — single-row-per-(Location,weekday) فعلاً قرارداد است)؛ entry قبلی‌ها append-only و دست‌نخورده ماندند.
+
+### [2026-09-18 02:05 Asia/Tehran] — تکمیل entry Phase 6 Slice 3 (تأیید exact-head نهایی)
+- **exact head نهایی:** `ca7b484e7092f74429bba11a3f532ba4a6709aee` (کامیت docs = آخرِ entry قبلی) — CI run **`35279505286`** @ همان head: `completed/success`؛ completion-guard **`OK (954 tests, 12771 assertions)`**؛ اجرای نام‌دار (کامنت شواهد 5721802943): `Phase6ScheduleExplicitLocationTest` 9/9 (261 assertion) · `Phase4Slice1ProfessionalMultiClinicParticipationTest` 8/8 · `RestScheduleTest` 8/8 · `ScheduleRegenerationClinicScopeRedTest` 2/2 · `SchedulingLocationLocalBoundaryRedTest` 9/9 · `SlotsGenerateLocationLocalTemporalRedTest` 2/2 — همه 0 error/0 failure.
+- **وضعیت پایانی:** Draft PR **#71** (OPEN/draft، head = `ca7b484e`، ۵ کامیت از main جلو) کامل و ready-to-review است؛ بدون merge/Ready/tag/release/force-push. برش بعدی = multi-shift Phase 6.
