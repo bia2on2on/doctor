@@ -199,6 +199,94 @@ final class Phase4ExistingStaffOnboardingTest extends WP_UnitTestCase
         self::assertNull(App::membership_service()->membership_for($fixture['clinic_b'], $fixture['user_id']));
     }
 
+    public function testAuthorizedTargetUserRejectionsAreEnumerationNeutralAndUnauthorizedLookupStaysScoped(): void
+    {
+        $fixture = $this->createExistingUserFixture();
+        $adminId = $this->makeUser('phase4_enumeration_admin_' . bin2hex(random_bytes(3)), 'administrator');
+        $adminBefore = get_userdata($adminId);
+        self::assertNotFalse($adminBefore);
+        $adminRolesBefore = (array) $adminBefore->roles;
+        $clinicBMembershipsBefore = (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_clinic_memberships') . ' WHERE clinic_id = %d',
+            [$fixture['clinic_b']]
+        );
+        wp_set_current_user($fixture['manager_id']);
+
+        $nonexistent = StaffManagementPage::upsertUser(
+            [
+                'mode' => 'attach_existing',
+                'clinic_id' => $fixture['clinic_b'],
+                'existing_user_id' => 999999999,
+                'role' => RolesAndCapabilities::ROLE_DOCTOR,
+            ],
+            $fixture['manager_id']
+        );
+        $administrator = StaffManagementPage::upsertUser(
+            [
+                'mode' => 'attach_existing',
+                'clinic_id' => $fixture['clinic_b'],
+                'existing_user_id' => $adminId,
+                'role' => RolesAndCapabilities::ROLE_DOCTOR,
+            ],
+            $fixture['manager_id']
+        );
+
+        self::assertNotSame('', $nonexistent['error']);
+        self::assertSame((string) $nonexistent['error'], (string) $administrator['error'], 'both target-user failures must be enumeration-neutral');
+        self::assertSame(['error', 'generated', 'user_id'], array_keys($nonexistent));
+        self::assertSame(['error', 'generated', 'user_id'], array_keys($administrator));
+        self::assertSame('', (string) $nonexistent['generated']);
+        self::assertSame('', (string) $administrator['generated']);
+        self::assertSame(0, (int) $nonexistent['user_id']);
+        self::assertSame(0, (int) $administrator['user_id']);
+        self::assertSame(
+            $clinicBMembershipsBefore,
+            (int) App::db()->fetchValue(
+                'SELECT COUNT(*) FROM ' . App::db()->table('cpms_clinic_memberships') . ' WHERE clinic_id = %d',
+                [$fixture['clinic_b']]
+            ),
+            'neither target-user rejection may create a membership'
+        );
+        self::assertNull(App::membership_service()->membership_for($fixture['clinic_b'], $adminId));
+        self::assertSame(
+            $adminRolesBefore,
+            (array) get_userdata($adminId)->roles,
+            'administrator global role must remain unchanged'
+        );
+
+        $unauthorizedId = $this->makeUser('phase4_enumeration_unauthorized_' . bin2hex(random_bytes(3)), RolesAndCapabilities::ROLE_MANAGER);
+        wp_set_current_user($unauthorizedId);
+        $unauthorizedNonexistent = StaffManagementPage::upsertUser(
+            [
+                'mode' => 'attach_existing',
+                'clinic_id' => $fixture['clinic_b'],
+                'existing_user_id' => 999999999,
+                'role' => RolesAndCapabilities::ROLE_DOCTOR,
+            ],
+            $unauthorizedId
+        );
+        $unauthorizedAdministrator = StaffManagementPage::upsertUser(
+            [
+                'mode' => 'attach_existing',
+                'clinic_id' => $fixture['clinic_b'],
+                'existing_user_id' => $adminId,
+                'role' => RolesAndCapabilities::ROLE_DOCTOR,
+            ],
+            $unauthorizedId
+        );
+        self::assertSame(
+            'دسترسی مدیریت پرسنل برای این Clinic مجاز نیست.',
+            (string) $unauthorizedNonexistent['error'],
+            'authorization must fail before the nonexistent target is looked up'
+        );
+        self::assertSame(
+            (string) $unauthorizedNonexistent['error'],
+            (string) $unauthorizedAdministrator['error'],
+            'authorization must fail before either target-user lookup'
+        );
+        self::assertNull(App::membership_service()->membership_for($fixture['clinic_b'], $adminId));
+    }
+
     public function testNonexistentWpUserIsRejectedWithoutPartialMembership(): void
     {
         $fixture = $this->createExistingUserFixture();
