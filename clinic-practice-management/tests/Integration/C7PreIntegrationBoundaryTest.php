@@ -1357,7 +1357,7 @@ final class C7PreIntegrationBoundaryTest extends WP_UnitTestCase
     private function fetchScheduleRowForClinicianDay(int $clinicianId, int $day): ?array
     {
         return App::db()->fetchRow(
-            'SELECT id, clinic_id, clinician_id, day_of_week, start_time, end_time FROM '
+            'SELECT id, clinic_id, location_id, clinician_id, day_of_week, start_time, end_time FROM '
             . App::db()->table('cpms_schedule') . ' WHERE clinician_id = %d AND day_of_week = %d',
             [$clinicianId, $day]
         );
