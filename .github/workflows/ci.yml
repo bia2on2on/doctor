@@ -171,6 +171,10 @@ jobs:
               grep '^testsuite ' "$SPLIT" | grep 'Phase4Slice4QueueSharedProfessionalTest' || echo '(Phase4 Slice 4 suite missing from junit)'
               echo '--- Phase4 Slice 4 Queue testcases ---'
               grep '^testcase ' "$SPLIT" | grep 'Phase4Slice4QueueSharedProfessionalTest' || true
+              echo '--- Phase4 Location Master Data suite (execution proof) ---'
+              grep '^testsuite ' "$SPLIT" | grep 'Phase4LocationMasterDataTest' || echo '(Phase4 Location suite missing from junit)'
+              echo '--- Phase4 Location Master Data testcases ---'
+              grep '^testcase ' "$SPLIT" | grep 'Phase4LocationMasterDataTest' || true
               rm -f "$SPLIT"
             else
               echo '(junit xml missing — run may have terminated prematurely)'
