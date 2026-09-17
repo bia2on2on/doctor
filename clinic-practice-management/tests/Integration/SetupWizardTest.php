@@ -6,6 +6,8 @@ namespace ClinicCore\Tests\Integration;
 
 use ClinicCore\Admin\CpmsAdminMenu;
 use ClinicCore\Admin\CpmsSetupWizard;
+use ClinicCore\Application\Scope\ScopeContext;
+use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Settings\Settings;
 use WP_UnitTestCase;
@@ -13,13 +15,10 @@ use WP_UnitTestCase;
 /**
  * Chunk B — راه‌اندازی گام‌به‌گام (Setup Wizard).
  *
- * پوشش:
- *  - ثبت زیرمنوی «راه‌اندازی» تحت منوی «مدیریت مطب».
- *  - ذخیرهٔ گام «کلینیک» (Atomic + persist + resumable).
- *  - ذخیرهٔ گام «رزرو» (bounded/sanitized).
- *  - اعتبارسنجی: رد Nonce نامعتبر (CSRF) و رد کاربر بدون Capability (wp_die → WPDieException).
- *  - کامل‌نشدن «شروع عملیات» تا وقتی پیش‌نیازهای الزامی برآورده نشده‌اند.
- *  - تکمیل و تنظیم `setup.completed = true` فقط وقتی آمادهٔ بهره‌برداری است.
+ * Updated for Phase4 Clinic Profile Canonicalization:
+ * - cpms_clinics canonical, not setup.clinic.*
+ * - wizard save uses ClinicProfileService with trusted clinic + CONFIG auth
+ * - timezone no longer handled here (Location timezone operational truth)
  */
 final class SetupWizardTest extends WP_UnitTestCase
 {
@@ -28,25 +27,26 @@ final class SetupWizardTest extends WP_UnitTestCase
         parent::setUp();
         App::migrations()->migrate();
         Settings::flushCache();
+        App::resetScope();
+        ScopeContext::clear();
     }
 
     protected function tearDown(): void
     {
         Settings::flushCache();
+        ScopeContext::clear();
+        App::resetScope();
         wp_set_current_user(0);
         parent::tearDown();
     }
 
     public function testWizardSubmenuRegisteredUnderCpmsMenu(): void
     {
-        // مانند AdminMenuTest: کاربر ادمین با cpms_config تا زیرمنو به‌دلیل loop دید
-        // `menu.php` (فیلتر current_user_can) حذف نشود.
         $this->authorizeConfigUser();
 
         $GLOBALS['menu'] = [];
         $GLOBALS['submenu'] = [];
 
-        // ابتدا منوی Top-Level «مدیریت مطب» (همان مسیر production) تا parent منطبق باشد.
         CpmsAdminMenu::menu();
         CpmsSetupWizard::menu();
 
@@ -67,22 +67,29 @@ final class SetupWizardTest extends WP_UnitTestCase
         ], $adminId);
 
         $this->assertSame('', $err, 'گام معتبر کلینیک نباید خطا بدهد');
-        $s = App::settings();
-        $this->assertSame('کلینیک آزمایشی', $s->get('setup.clinic.name'));
-        $this->assertSame('خیابان آزادی', $s->get('setup.clinic.address'));
-        $this->assertSame('02112345678', $s->get('setup.clinic.phone'));
-        $this->assertSame('Asia/Tehran', $s->get('setup.clinic.timezone'));
+        // Canonical source: cpms_clinics
+        $clinic = App::clinicRepository()->find(App::scope()->clinicId);
+        $this->assertNotNull($clinic);
+        $this->assertSame('کلینیک آزمایشی', $clinic['name']);
+        $this->assertSame('خیابان آزادی', $clinic['address']);
+        $this->assertSame('02112345678', $clinic['phone']);
+        // Timezone preserved (no sync, not edited via wizard)
+        $this->assertNotEmpty($clinic['timezone']);
     }
 
     public function testSaveClinicRejectsEmptyName(): void
     {
         $adminId = $this->authorizeConfigUser();
+        $before = App::clinicRepository()->find(App::scope()->clinicId);
+        $beforeName = $before['name'] ?? '';
+
         $err = CpmsSetupWizard::saveClinic(App::settings(), [
             'clinic_name' => '   ',
         ], $adminId);
 
         $this->assertStringContainsString('نام کلینیک الزامی است.', $err);
-        $this->assertSame('', (string) App::settings()->get('setup.clinic.name', ''), 'نباید مقدار تهی ذخیره شود');
+        $after = App::clinicRepository()->find(App::scope()->clinicId);
+        $this->assertSame($beforeName, $after['name'] ?? '', 'نباید مقدار تهی ذخیره شود');
     }
 
     public function testSaveClinicRejectsOverlongName(): void
@@ -97,21 +104,28 @@ final class SetupWizardTest extends WP_UnitTestCase
 
     public function testSaveClinicFallsBackTimezone(): void
     {
+        // Phase4: timezone is NOT handled by wizard anymore — it should be preserved, not fallback to setup.clinic.timezone
         $adminId = $this->authorizeConfigUser();
+        $before = App::clinicRepository()->find(App::scope()->clinicId);
+        $beforeTz = $before['timezone'] ?? 'Asia/Tehran';
+
         CpmsSetupWizard::saveClinic(App::settings(), [
             'clinic_name' => 'کلینیک',
             'clinic_timezone' => 'invalid/tz',
         ], $adminId);
 
-        $this->assertSame('Asia/Tehran', App::settings()->get('setup.clinic.timezone'));
+        $after = App::clinicRepository()->find(App::scope()->clinicId);
+        $this->assertSame($beforeTz, $after['timezone'] ?? '', 'timezone should be preserved, not changed via wizard');
+        // Historical setup.clinic.timezone should NOT be written as canonical anymore
+        // We allow it to be absent or old, but not as second canonical
     }
 
     public function testSaveBookingBoundsValues(): void
     {
         $adminId = $this->authorizeConfigUser();
         $err = CpmsSetupWizard::saveBooking(App::settings(), [
-            'duration' => 9999, // خارج از بازه → کلمپ به سقف
-            'future' => -5,     // خارج از بازه → کلمپ به کف
+            'duration' => 9999,
+            'future' => -5,
         ], $adminId);
 
         $this->assertSame('', $err);
@@ -160,14 +174,21 @@ final class SetupWizardTest extends WP_UnitTestCase
     public function testWizardDoesNotCompleteWithoutClinicName(): void
     {
         $adminId = $this->authorizeConfigUser();
-        // بدون نام کلینیک، حتی با پزشک فعال → نباید تکمیل شود.
         $this->resetClinicians();
         $this->createActiveClinician();
+
+        // Make canonical clinic name empty to simulate missing clinic name
+        global $wpdb;
+        $clinicId = App::scope()->clinicId;
+        $wpdb->query($wpdb->prepare('UPDATE ' . $wpdb->prefix . 'cpms_clinics SET name = "" WHERE id = %d', $clinicId));
 
         $err = $this->invokeSaveFinish($adminId);
 
         $this->assertStringContainsString('پیش‌نیازهای الزامی', $err);
         $this->assertFalse((bool) App::settings()->get(CpmsSetupWizard::COMPLETE_KEY, false));
+
+        // Restore name for other tests
+        $wpdb->query($wpdb->prepare('UPDATE ' . $wpdb->prefix . 'cpms_clinics SET name = %s WHERE id = %d', 'کلینیک تست', $clinicId));
     }
 
     // ================= handlers (capability / CSRF) =================
@@ -267,27 +288,39 @@ final class SetupWizardTest extends WP_UnitTestCase
 
     private function authorizeConfigUser(): int
     {
-        // نقش «administrator» توسط RolesAndCapabilities::register() (هنگام boot) به‌صورت
-        // پیش‌فرض `cpms_config` و `cpms_sms_config` دارد؛ نیازی به add_cap دستی نیست.
         $id = self::factory()->user->create(['role' => 'administrator']);
         wp_set_current_user($id);
-
+        // Phase4: need durable active membership with CONFIG for clinic 1
+        $clinicId = 1;
+        try {
+            $clinicId = App::scope()->clinicId;
+        } catch (\Throwable) {
+            $clinicId = 1;
+        }
+        if ($clinicId > 0) {
+            cpms_test_seed_membership($id, $clinicId, 'cpms_manager');
+        }
+        // Ensure scope is set for settings
+        try {
+            $scope = App::scope();
+            App::replaceExplicitScope($scope);
+        } catch (\Throwable) {
+            // ignore
+        }
         return $id;
     }
 
     private function createActiveClinician(): void
     {
-        // الگوی اثبات‌شدهٔ ClinicianRepositoryTest فقط با full_name؛ is_active پیش‌فرض 1 است.
-        App::clinicianRepository()->create(1, ['full_name' => 'دکتر آزمایشی']);
+        $clinicId = 1;
+        try {
+            $clinicId = App::scope()->clinicId;
+        } catch (\Throwable) {
+            $clinicId = 1;
+        }
+        App::clinicianRepository()->create($clinicId, ['full_name' => 'دکتر آزمایشی']);
     }
 
-    /**
-     * ایزوله‌سازی تست‌های وابسته به «تعداد پزشکان فعال»: ردیف‌های قبلی تست‌های دیگر
-     * (مثل ClinicianRepositoryTest / testWizardCompletesWhenPrerequisitesMet) به‌دلیل
-     * transaction isolation در این مجموعه ممکن است باقی بمانند؛ برای قطعیت، همهٔ پزشکان
-     * کلینیک ۱ را پیش از هر assert پاک می‌کنیم. حذف داخل تراکنش تست است و در tearDown
-     * برگردانده می‌شود.
-     */
     private function resetClinicians(): void
     {
         global $wpdb;
@@ -297,10 +330,6 @@ final class SetupWizardTest extends WP_UnitTestCase
         $wpdb->query('SET FOREIGN_KEY_CHECKS=1');
     }
 
-    /**
-     * چون saveFinish خصوصی است، از طریق Reflector اجرا می‌شود تا «آمادهٔ بهره‌برداری»
-     * به‌صورت قطعی و بدون وابستگی به exit بررسی شود.
-     */
     private function invokeSaveFinish(int $updatedBy): string
     {
         $method = new \ReflectionMethod(CpmsSetupWizard::class, 'saveFinish');
@@ -309,17 +338,8 @@ final class SetupWizardTest extends WP_UnitTestCase
         return (string) $method->invoke(null, App::settings(), $updatedBy);
     }
 
-    /**
-     * اجرای handler در مسیر `wp_die` (رد CSRF/Capability) با تبدیل die به استثنا،
-     * تا تست بدون متوقف‌شدن process و مستقل از رفتار پیش‌فرض test-suite وردپرس بگذرد.
-     *
-     * @param callable():void $fn
-     *
-     * @throws \RuntimeException
-     */
     private function captureWpDie(callable $fn): void
     {
-        // اولویت بالا تا روی هر handler دیگری (framework) غلبه کند.
         add_filter('wp_die_handler', static function (): callable {
             return static function (string $message): void {
                 throw new \RuntimeException($message);
@@ -328,13 +348,6 @@ final class SetupWizardTest extends WP_UnitTestCase
         $fn();
     }
 
-    /**
-     * اجرای handler با تبدیل wp_safe_redirect به استثنا و گرفتن مقصد، تا از `exit`
-     * در مسیر موفق جلوگیری شود. در صورت عدم رسیدن به redirect (مسیر ناموفق)،
-     * استثنا اصلی مجدداً پرتاب می‌شود.
-     *
-     * @param callable():void $fn
-     */
     private function captureRedirect(callable $fn): string
     {
         $location = '';

@@ -62,7 +62,10 @@ final class Phase4ClinicProfileCanonicalizationRedTest extends WP_UnitTestCase
         $this->locB = $this->insertLocation($this->clinicB, 'red-loc-b-' . bin2hex(random_bytes(2)), 'Asia/Kabul');
 
         $this->actorA = $this->makeUser('red_actor_a_' . bin2hex(random_bytes(2)), 'administrator');
-        cpms_test_seed_membership($this->actorA, $this->clinicA, 'cpms_manager');
+        $memA = cpms_test_seed_membership($this->actorA, $this->clinicA, 'cpms_manager');
+        // For downstream receipt proof, need INVOICE_READ as well (manager role lacks it)
+        global $wpdb;
+        $wpdb->query($wpdb->prepare('INSERT INTO ' . $wpdb->prefix . 'cpms_membership_capabilities (membership_id, capability, effect) VALUES (%d, %s, "grant") ON DUPLICATE KEY UPDATE effect="grant"', $memA, 'cpms_invoice_read'));
 
         $this->assertGreaterThan(0, $this->orgId);
         $this->assertGreaterThan(0, $this->clinicA);

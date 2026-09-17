@@ -165,7 +165,7 @@ final class ClinicProfileService
         $now = $this->db->nowUtcSql();
 
         try {
-            $result = $this->db->transactional(function () use ($clinicId, $name, $address, $phone, $now, $current, $actorUserId, $orgId, $slug, $tz, $createdAt) {
+            $result = $this->db->transactional(function () use ($clinicId, $name, $address, $phone, $now, $orgId, $slug, $tz) {
                 // Inside transaction, re-fetch for update to ensure row still exists (optional)
                 $locked = $this->db->fetchRow(
                     'SELECT id, organization_id, slug, timezone, created_at, name, address, phone FROM ' . $this->db->table('cpms_clinics') . ' WHERE id = %d LIMIT 1 FOR UPDATE',
