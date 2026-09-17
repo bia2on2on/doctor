@@ -15,7 +15,7 @@ use DomainException;
 
 /**
  * تولید Slotهای آینده (Job: slots.generate — روزانه + lazy).
- * Idempotent: UNIQUE (clinician_id, slot_date, slot_time) + INSERT IGNORE.
+ * Idempotent: u_slot UNIQUE (location_id, clinician_id, slot_date, slot_time) + INSERT IGNORE.
  *
  * Phase 2 M-2 scope-neutral: construction does NOT require ambient Clinic
  * Settings/Scope. Settings are resolved per-Clinic from durable row Clinic

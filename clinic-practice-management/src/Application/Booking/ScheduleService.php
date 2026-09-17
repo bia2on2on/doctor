@@ -102,14 +102,23 @@ final class ScheduleService
             throw BookingException::of('CLINIC_NOT_FOUND', 'محل یافت نشد', 404);
         }
 
-        // Phase 6 Slice 3: یکتاییِ «یک برنامه در هر روز هفته» در محدودهٔ
-        // (Clinic معتبر + Location) است (0014) — همان روز هفته در شعبهٔ دیگرِ
-        // همان Clinic مجاز است؛ Multi-shift هنوز فعال نیست.
-        if ($this->schedules->findByClinicianDayInClinicAndLocation($clinicianId, $day, $clinicId, $locationId) !== null) {
-            throw BookingException::of('CLINIC_VALIDATION_FAILED', 'برای این روز هفته قبلاً برنامه ثبت شده — از ویرایش استفاده کنید', 400, ['errors' => ['day_of_week' => 'duplicate_schedule_day']]);
-        }
-
         $data = $this->validatedScheduleFields($fields);
+
+        // Phase 6 Slice 4 (multi-shift): قاعدهٔ «یک ردیف در هر (Location، روز
+        // هفته)» برداشته شد — چند شیفتِ نامتقاطع می‌توانند یک روز هفته را در
+        // یک Location شریک شوند. تکرارِ دقیقِ start_time همچنان پاکتِ پایدارِ
+        // `duplicate_schedule_day` را می‌گیرد؛ همپوشانیِ ACTIVEها با دلیلِ
+        // متمایزِ `overlapping_shift` رد می‌شود (ردیفِ غیرفعال هرگز مانع نیست).
+        $this->assertNoShiftConflict(
+            $clinicianId,
+            $day,
+            $clinicId,
+            $locationId,
+            (string) $data['start_time'],
+            (string) $data['end_time'],
+            (int) $data['is_active'],
+            null
+        );
         $nowSql = $this->db->nowUtcSql();
         $id = $this->schedules->create($data + [
             'clinic_id' => $clinicId,
@@ -146,6 +155,21 @@ final class ScheduleService
         $clinicId = (int) $current['clinic_id'];
 
         $data = $this->validatedScheduleFields($fields, (array) $current);
+        // Phase 6 Slice 4: ویرایش هم (مثل create) می‌تواند همپوشانی بسازد —
+        // start_time و end_time و is_active هر سه قابل‌ویرایش‌اند؛ پس همان گارد
+        // با چشم‌پوشی از خودِ ردیفِ در حال ویرایش اعمال می‌شود. Clinic و
+        // Location و روز از ردیفِ پایدار می‌آیند (تغییرناپذیر — خارج از
+        // Whitelist به‌روزرسانی).
+        $this->assertNoShiftConflict(
+            (int) $current['clinician_id'],
+            (int) $current['day_of_week'],
+            $clinicId,
+            (int) $current['location_id'],
+            (string) $data['start_time'],
+            (string) $data['end_time'],
+            (int) $data['is_active'],
+            $id
+        );
         if ($data !== []) {
             $data['updated_at'] = $this->db->nowUtcSql();
             $this->schedules->update($id, $data);
@@ -334,6 +358,56 @@ final class ScheduleService
     }
 
     // ================= Internal =================
+
+    /**
+     * Phase 6 Slice 4 — گارد multi-shift برای یک محدودهٔ
+     * (Clinic، Location، پزشک، روز هفته): تکرارِ دقیقِ start_time (در هر وضعیت
+     * فعالی — کلید یکتای `u_sched_slot` مؤلفهٔ is_active ندارد و هر چیز دیگری
+     * خطای خامِ DB را نشت می‌داد) همچنان پاکتِ پایدارِ `duplicate_schedule_day`
+     * را می‌گیرد؛ وقتی ردیفِ حاصل ACTIVE است، هر تقاطعِ پنجرهٔ زمانی با یک
+     * ردیفِ ACTIVE دیگر با دلیلِ متمایزِ `overlapping_shift` رد می‌شود. مرزهای
+     * مماس (end == start) همپوشانی نیستند ([s1,e1) در برابر [s2,e2):
+     * s1 < e2 و s2 < e1). وقفه داخلِ شیفت است و هرگز در تشخیص شرکت نمی‌کند.
+     * ناوردا: هیچ دو ردیفِ ACTIVEای همپوشانی ندارند.
+     */
+    private function assertNoShiftConflict(
+        int $clinicianId,
+        int $dayOfWeek,
+        int $clinicId,
+        int $locationId,
+        string $startTime,
+        string $endTime,
+        int $isActive,
+        ?int $excludeId
+    ): void {
+        $rows = $this->schedules->listByClinicianDayInClinicAndLocation($clinicianId, $dayOfWeek, $clinicId, $locationId);
+        $newStart = self::shiftToSeconds(substr($startTime, 0, 8));
+        $newEnd = self::shiftToSeconds(substr($endTime, 0, 8));
+        foreach ($rows as $row) {
+            if ($excludeId !== null && (int) $row['id'] === $excludeId) {
+                continue;
+            }
+            $rowStart = substr((string) $row['start_time'], 0, 8);
+            if ($rowStart === substr($startTime, 0, 8)) {
+                throw BookingException::of('CLINIC_VALIDATION_FAILED', 'برای این روز هفته قبلاً برنامه ثبت شده — از ویرایش استفاده کنید', 400, ['errors' => ['day_of_week' => 'duplicate_schedule_day']]);
+            }
+            if ($isActive === 1 && (int) $row['is_active'] === 1
+                && $newStart < self::shiftToSeconds(substr((string) $row['end_time'], 0, 8))
+                && self::shiftToSeconds($rowStart) < $newEnd) {
+                throw BookingException::of('CLINIC_VALIDATION_FAILED', 'این شیفت با شیفت فعال دیگری در همین روز و محل همپوشانی دارد', 400, ['errors' => ['start_time,end_time' => 'overlapping_shift']]);
+            }
+        }
+    }
+
+    /**
+     * تبدیل "HH:MM[:SS]" به ثانیه از نیمه‌شب (ورودیِ بالادست اعتبارسنجی‌شده است).
+     */
+    private static function shiftToSeconds(string $hms): int
+    {
+        $parts = array_pad(explode(':', $hms), 3, '0');
+
+        return ((int) $parts[0]) * 3600 + ((int) $parts[1]) * 60 + ((int) $parts[2]);
+    }
 
     /**
      * اعتبارسنجی فیلدهای برنامه (Create/Update مشترک) — Merge روی مقادیر فعلی.
