@@ -178,11 +178,28 @@ final class ScheduleService
     {
         // Clinic معتبرِ درخواست — fail-closed اگر Scope صریح برقرار نباشد.
         $clinicId = $this->requireClinicianForTrustedClinic($clinicianId);
-        $from = gmdate('Y-m-d');
+
+        // Phase 6 Slice 2: مرز «آینده» برای هر cohort مکانی، «امروزِ محلیِ
+        // همان Location» است (slot_date مقدار wall-clock محلیِ Location است) —
+        // نه gmdate سرور. cohortهای با Location نامعتبر (fail-closed) در
+        // شمارش «آینده» نمی‌آیند: regeneration نیز به آن‌ها دست نمی‌زند و
+        // impact باید دقیقاً همان چیزی را پیش‌نمایش کند که regenerate انجام می‌دهد.
+        $nowUtc = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+        $empty = 0;
+        $reserved = 0;
+        foreach ($this->schedules->distinctClinicianSlotLocationIds($clinicianId, $clinicId) as $locationId) {
+            $tz = $this->resolveLocationTimezoneSoft($locationId, $clinicId);
+            if ($tz === null) {
+                continue; // fail-closed — هرگز با سرور/کلینیک حدس نمی‌زنیم
+            }
+            $localToday = $nowUtc->setTimezone($tz)->format('Y-m-d');
+            $empty += $this->schedules->countFutureEmptySlots($clinicianId, $clinicId, $locationId, $localToday);
+            $reserved += $this->schedules->countFutureReservedSlots($clinicianId, $clinicId, $locationId, $localToday);
+        }
 
         return [
-            'future_empty_slots' => $this->schedules->countFutureEmptySlots($clinicianId, $clinicId, $from),
-            'future_reserved_slots' => $this->schedules->countFutureReservedSlots($clinicianId, $clinicId, $from),
+            'future_empty_slots' => $empty,
+            'future_reserved_slots' => $reserved,
         ];
     }
 
@@ -384,7 +401,20 @@ final class ScheduleService
     private function regenerate(int $clinicianId, int $clinicId): void
     {
         try {
-            $removed = $this->schedules->deleteFutureEmptySlots($clinicianId, $clinicId, gmdate('Y-m-d'));
+            // Phase 6 Slice 2: مرز حذف برای هر cohort مکانی «امروزِ محلیِ خودِ
+            // آن Location» است. cohortهای با Location نامعتبر/بیگانه هرگز
+            // دست‌نخورده می‌مانند (fail-closed؛ تولید مجدد نیز مبتنی بر تقویم
+            // محلی در SlotsGenerateHandler انجام می‌شود و این دو سازگارند).
+            $nowUtc = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+            $removed = 0;
+            foreach ($this->schedules->distinctClinicianSlotLocationIds($clinicianId, $clinicId) as $locationId) {
+                $tz = $this->resolveLocationTimezoneSoft($locationId, $clinicId);
+                if ($tz === null) {
+                    continue; // fail-closed — بدون Location قابل‌اعتماد، حذف نمی‌کنیم
+                }
+                $localToday = $nowUtc->setTimezone($tz)->format('Y-m-d');
+                $removed += $this->schedules->deleteFutureEmptySlots($clinicianId, $clinicId, $locationId, $localToday);
+            }
             $this->jobs->enqueue(
                 'slots.generate',
                 ['source' => 'manual'], // ENUM generated_from: lazy|cron|manual
@@ -397,6 +427,33 @@ final class ScheduleService
         } catch (\Throwable $e) {
             // Regeneration هرگز نباید تغییر Config را شکست بدهد — Job روزانه/Cron خودش جبران می‌کند
             $this->op->warning('config.schedule_regen_failed', ['clinician_id' => $clinicianId, 'clinic_id' => $clinicId, 'error' => $e->getMessage()]);
+        }
+    }
+
+    /**
+     * Phase 6 Slice 2: تفکیک Location به timezone معتبر برای cohortبندی —
+     * fail-closed با null (Location نامفقود، متعلق به Clinic دیگر، یا
+     * timezone نامعتبر). الگوی مشابه BookingService::resolveLocationTimezone؛
+     * اینجا به‌جای throw مقدار null برمی‌گردانیم چون مسیرهای caller
+     * (impact/regenerate) باید cohort نامعتبر را «دست‌نخورده» رها کنند تا
+     * هیچ تصمیم زمانی بر مبنای حدس گرفته نشود.
+     */
+    private function resolveLocationTimezoneSoft(int $locationId, int $clinicId): ?DateTimeZone
+    {
+        if ($locationId <= 0) {
+            return null;
+        }
+        $row = $this->db->fetchRow(
+            'SELECT id, clinic_id, timezone FROM ' . $this->db->table('cpms_locations') . ' WHERE id = %d LIMIT 1',
+            [$locationId]
+        );
+        if ($row === null || (int) $row['clinic_id'] !== $clinicId) {
+            return null;
+        }
+        try {
+            return new DateTimeZone(trim((string) ($row['timezone'] ?? '')));
+        } catch (\Throwable) {
+            return null;
         }
     }
 

@@ -78,22 +78,42 @@ final class BookingService
      *
      * @return array{days: list<array<string, mixed>>}
      */
-    public function availability(int $clinicianId, string $fromDate, string $toDate): array
+    public function availability(int $clinicianId, ?string $fromDate = null, ?string $toDate = null): array
     {
         $clinicId = $this->requireClinician($clinicianId);
 
-        $from = $this->parseYmd($fromDate, 'from');
-        $to = $this->parseYmd($toDate, 'to');
-        $today = gmdate('Y-m-d');
-        if ($from < $today) {
-            $from = $today;
+        // لحظهٔ مرجعِ یکتا برای کل این درخواست (Clock B — UTC پایدار).
+        $nowUtc = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+
+        if ($fromDate === null || $toDate === null) {
+            // پنجرهٔ پیش‌فرض از تقویم محلیِ Locationهای دارای برنامهٔ فعالِ پزشک
+            // ساخته می‌شود (دادهٔ پایدار) — نه از روز gmdate سرور (قاب UTC).
+            $window = $this->defaultAvailabilityWindow($clinicId, $clinicianId, $nowUtc);
+            if ($window === null) {
+                // بدون Location فعالِ قابل‌اعتماد: پاسخ ۲۰۰ با روزهای خالی
+                // (fail-closed بدون خطا — Phase3Slice6B: endpoint عمومی ۲۰۰ می‌ماند).
+                return ['days' => []];
+            }
+            $from = $fromDate ?? $window[0];
+            $to = $toDate ?? $window[1];
+        } else {
+            $from = $this->parseYmd($fromDate, 'from');
+            $to = $this->parseYmd($toDate, 'to');
         }
+
         $spanDays = (int) (($this->ts($to) - $this->ts($from)) / 86400) + 1;
         if ($spanDays < 1 || $spanDays > (int) $this->settings->get('booking.max_future_days', 60) + 2) {
             throw BookingException::of('CLINIC_VALIDATION_FAILED', 'بازه تاریخ نامعتبر است (حداکثر ۶۰ روز)');
         }
 
-        $rows = $this->slots->availability($clinicId, $clinicianId, $from, $to, $today, gmdate('H:i:s'));
+        // کران [from, to] صرفاً مرز کارایی است؛ «گذشته» به‌صورت per-row نسبت به
+        // تقویم محلیِ Locationِ همان ردیف تعیین می‌شود (دو ساعت: Clock B = UTC
+        // پایدار، Clock A = wall-clock محلیِ Location).
+        $rows = $this->filterNotLocallyPast(
+            $this->slots->availabilityCandidates($clinicId, $clinicianId, $from, $to),
+            $clinicId,
+            $nowUtc
+        );
 
         $grouped = [];
         foreach ($rows as $row) {
@@ -137,6 +157,134 @@ final class BookingService
         return (new \DateTimeImmutable($ymd, new \DateTimeZone('UTC')))->getTimestamp();
     }
 
+    /**
+     * پنجرهٔ پیش‌فرض availability (Phase 6 Slice 2): از تقویم محلیِ Locationهای
+     * دارای برنامهٔ فعالِ پزشک در کلینیک معتبر. نقطهٔ شروع = کمینهٔ «امروزِ
+     * محلی» میان Locationها تا هیچ Locationی به‌دلیل اختلاف قاب پنهان نشود.
+     * بدون Location فعالِ قابل‌اعتماد → null (لایهٔ بالا روزهای خالی برمی‌گرداند).
+     *
+     * @return array{0: string, 1: string}|null
+     */
+    private function defaultAvailabilityWindow(int $clinicId, int $clinicianId, \DateTimeImmutable $nowUtc): ?array
+    {
+        $rows = $this->db->fetchAll(
+            'SELECT DISTINCT location_id FROM ' . $this->db->table('cpms_schedule') . '
+             WHERE clinic_id = %d AND clinician_id = %d AND is_active = 1 AND location_id IS NOT NULL',
+            [$clinicId, $clinicianId]
+        );
+        $tzByLocation = $this->locationTimezoneMap(
+            array_map('intval', array_column($rows, 'location_id')),
+            $clinicId
+        );
+
+        $minToday = null;
+        foreach ($tzByLocation as $tz) {
+            if (!$tz instanceof \DateTimeZone) {
+                continue; // fail-closed: Location نامعتبر در پنجرهٔ پیش‌فرض اثر ندارد
+            }
+            $today = $nowUtc->setTimezone($tz)->format('Y-m-d');
+            if ($minToday === null || $today < $minToday) {
+                $minToday = $today;
+            }
+        }
+
+        if ($minToday === null) {
+            return null;
+        }
+
+        return [
+            $minToday,
+            (new \DateTimeImmutable($minToday, new \DateTimeZone('UTC')))->modify('+29 days')->format('Y-m-d'),
+        ];
+    }
+
+    /**
+     * نگاشت یک‌بارهٔ Location → DateTimeZone برای کلینیک معتبر (Phase 6 Slice 2).
+     * مقدار null به‌معنای fail-closed است (Location نامفقود، متعلق به Clinic
+     * دیگر، یا timezone نامعتبر) — مصرف‌کننده موظف است چنین ردیف‌هایی را نادیده
+     * بگیرد و هرگز به سرور/کلینیک/وردپرس fallback نکند.
+     *
+     * @param list<int> $locationIds
+     * @return array<int, \DateTimeZone|null>
+     */
+    private function locationTimezoneMap(array $locationIds, int $clinicId): array
+    {
+        $map = [];
+        if ($locationIds === []) {
+            return $map;
+        }
+        $ids = array_values(array_unique($locationIds));
+        $placeholders = implode(',', array_fill(0, count($ids), '%d'));
+        $rows = $this->db->fetchAll(
+            'SELECT id, clinic_id, timezone FROM ' . $this->db->table('cpms_locations') . " WHERE id IN ({$placeholders})",
+            $ids
+        );
+        $byId = [];
+        foreach ($rows as $row) {
+            $byId[(int) $row['id']] = $row;
+        }
+        foreach ($ids as $id) {
+            $row = $byId[$id] ?? null;
+            if ($row === null || (int) $row['clinic_id'] !== $clinicId) {
+                $map[$id] = null;
+                continue;
+            }
+            try {
+                $map[$id] = new \DateTimeZone(trim((string) ($row['timezone'] ?? '')));
+            } catch (\Throwable) {
+                $map[$id] = null;
+            }
+        }
+
+        return $map;
+    }
+
+    /**
+     * فیلتر per-row اسلات‌های «هنوز نگذشته در تقویم محلیِ Location خودشان»
+     * (Phase 6 Slice 2). ردیف‌های متعلق به Location نامعتبر fail-closed حذف
+     * می‌شوند. لحظهٔ مرجع UTC یک‌بار برای کل پاسخ با tz محلیِ هر Location
+     * تطبیق داده می‌شود؛ مقدار محلیِ تاریخ/زمان به‌ازای هر tz کش می‌شود تا
+     * شکل N+1 وجود نداشته باشد.
+     *
+     * @param list<array<string, mixed>> $rows
+     * @return list<array<string, mixed>>
+     */
+    private function filterNotLocallyPast(array $rows, int $clinicId, \DateTimeImmutable $nowUtc): array
+    {
+        if ($rows === []) {
+            return [];
+        }
+        $locationIds = [];
+        foreach ($rows as $row) {
+            $id = (int) ($row['location_id'] ?? 0);
+            if ($id > 0) {
+                $locationIds[] = $id;
+            }
+        }
+        $tzByLocation = $this->locationTimezoneMap($locationIds, $clinicId);
+        $localNowCache = [];
+        $kept = [];
+        foreach ($rows as $row) {
+            $tz = $tzByLocation[(int) ($row['location_id'] ?? 0)] ?? null;
+            if (!$tz instanceof \DateTimeZone) {
+                continue; // fail-closed — بدون حدس زدن
+            }
+            $tzName = $tz->getName();
+            if (!isset($localNowCache[$tzName])) {
+                $local = $nowUtc->setTimezone($tz);
+                $localNowCache[$tzName] = [$local->format('Y-m-d'), $local->format('H:i:s')];
+            }
+            [$today, $nowTime] = $localNowCache[$tzName];
+            $date = (string) $row['slot_date'];
+            $time = substr((string) $row['slot_time'], 0, 8);
+            if ($date > $today || ($date === $today && $time > $nowTime)) {
+                $kept[] = $row;
+            }
+        }
+
+        return $kept;
+    }
+
     // ================= A4 — Quote (Public) =================
 
     /**
@@ -146,13 +294,16 @@ final class BookingService
     {
         $clinicId = $this->requireClinician($clinicianId);
 
-        // Preliminary Window check with UTC (fail-fast for past/invalid even if slot missing) — preserves BookingFlowTest expectation
         $minLead = (int) $this->settings->get('booking.min_lead_hours', 2);
-        $this->assertWindow($slotDate, $slotTime, $minLead);
 
-        // Resolve slot (exact identity preferred), then precise temporal policy with Location timezone
+        // Resolve slot (exact identity preferred) — پیش از هر ارزیابی زمانی، تا
+        // سیاست روی اسلاتِ واقعی با تقویم محلیِ Location خودش اعمال شود.
         $slot = $this->resolveSlotForBooking($clinicId, $clinicianId, $slotDate, $slotTime, $slotId);
         if ($slot === null || (int) $slot['is_open'] !== 1) {
+            // پیش‌چک legacy-UTC فقط وقتی اسلاتی وجود ندارد (fail-fast برای ورودی
+            // نامعتبر + حفظ رفتار تاریخی read-only quote روی تاریخ گذشتهٔ بدون
+            // اسلات — BookingFlowTest). برای اسلاتِ موجود هرگز به UTC fallback نمی‌شویم.
+            $this->assertWindow($slotDate, $slotTime, $minLead);
             return ['available' => false, 'capacity_left' => 0];
         }
 
@@ -186,14 +337,16 @@ final class BookingService
 
         $clinicId = $this->requireClinician($clinicianId);
 
-        // Preliminary Window check (UTC) — fail-fast for past/invalid
         $minLead = (int) $this->settings->get('booking.min_lead_hours', 2);
-        $this->assertWindow($slotDate, $slotTime, $minLead);
 
         // Resolve slot — exact identity if slotId given, else unique tuple with fail-closed on ambiguity
         $slot = $this->resolveSlotForBooking($clinicId, $clinicianId, $slotDate, $slotTime, $slotId);
 
         if ($slot === null || (int) $slot['is_open'] !== 1) {
+            // پیش‌چک legacy-UTC فقط در نبودِ اسلات قابل‌استفاده (fail-fast برای
+            // ورودی نامعتبر + تقدم خطای سیاست بر 404 طبق رفتار تاریخی). برای
+            // اسلاتِ موجود، صلاحیت زمانی فقط با تقویم محلیِ Location سنجیده می‌شود.
+            $this->assertWindow($slotDate, $slotTime, $minLead);
             throw BookingException::of('CLINIC_NOT_FOUND', 'اسلات انتخابی یافت نشد', 404);
         }
 
