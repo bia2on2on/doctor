@@ -66,6 +66,8 @@ final class Phase4ClinicProfileCanonicalizationRedTest extends WP_UnitTestCase
         // For downstream receipt proof, need INVOICE_READ as well (manager role lacks it)
         global $wpdb;
         $wpdb->query($wpdb->prepare('INSERT INTO ' . $wpdb->prefix . 'cpms_membership_capabilities (membership_id, capability, effect) VALUES (%d, %s, "grant") ON DUPLICATE KEY UPDATE effect="grant"', $memA, 'cpms_invoice_read'));
+        $this->grantWpCap($this->actorA, 'cpms_invoice_read');
+        $this->grantWpCap($this->actorA, 'cpms_config');
 
         $this->assertGreaterThan(0, $this->orgId);
         $this->assertGreaterThan(0, $this->clinicA);
@@ -314,6 +316,14 @@ final class Phase4ClinicProfileCanonicalizationRedTest extends WP_UnitTestCase
             'ویزیت'
         ));
         return ['id' => $id, 'invoice_number' => $number];
+    }
+
+    private function grantWpCap(int $userId, string $cap): void
+    {
+        $user = get_userdata($userId);
+        if ($user instanceof \WP_User) {
+            $user->add_cap($cap);
+        }
     }
 
     private function purge(): void

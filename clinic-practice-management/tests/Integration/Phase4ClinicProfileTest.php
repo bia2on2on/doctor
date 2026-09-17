@@ -54,6 +54,8 @@ final class Phase4ClinicProfileTest extends WP_UnitTestCase
         $this->actorConfigA = $this->makeUser('green_cfg_a_' . bin2hex(random_bytes(2)), 'administrator');
         $memA = cpms_test_seed_membership($this->actorConfigA, $this->clinicA, 'cpms_manager'); // has CONFIG
         $this->grantCapability($memA, RolesAndCapabilities::INVOICE_READ); // for receipt downstream
+        $this->grantWpCap($this->actorConfigA, RolesAndCapabilities::INVOICE_READ);
+        $this->grantWpCap($this->actorConfigA, RolesAndCapabilities::CONFIG);
 
         $this->actorNoConfigA = $this->makeUser('green_nocfg_a_' . bin2hex(random_bytes(2)), 'administrator');
         cpms_test_seed_membership($this->actorNoConfigA, $this->clinicA, 'cpms_secretary'); // no CONFIG
@@ -130,9 +132,10 @@ final class Phase4ClinicProfileTest extends WP_UnitTestCase
         $this->assertSame('Asia/Tehran', $loc['timezone'], 'location timezone unchanged');
 
         global $wpdb;
-        $audit = $wpdb->get_row($wpdb->prepare('SELECT * FROM ' . $wpdb->prefix . 'cpms_audit_log WHERE action = %s AND target_id = %d ORDER BY id DESC LIMIT 1', 'CLINIC_PROFILE_UPDATED', $this->clinicA), ARRAY_A);
+        $audit = $wpdb->get_row($wpdb->prepare('SELECT * FROM ' . $wpdb->prefix . 'cpms_audit_logs WHERE action = %s AND resource_id = %d ORDER BY id DESC LIMIT 1', 'CLINIC_PROFILE_UPDATED', $this->clinicA), ARRAY_A);
         $this->assertIsArray($audit, 'audit logged on real change');
-        $this->assertStringContainsString($newName, (string) ($audit['new_value'] ?? ''));
+        $afterJson = (string) ($audit['after_json'] ?? '');
+        $this->assertStringContainsString($newName, $afterJson);
 
         $patientId = $this->makePatient($this->clinicA, 'GreenPatient');
         $clinicianId = $this->makeClinician($this->clinicA, $this->actorConfigA, 'Dr Green');
@@ -324,7 +327,7 @@ final class Phase4ClinicProfileTest extends WP_UnitTestCase
         wp_set_current_user($this->actorConfigA);
 
         global $wpdb;
-        $wpdb->query('DELETE FROM ' . $wpdb->prefix . 'cpms_audit_log WHERE action = "CLINIC_PROFILE_UPDATED" AND target_id = ' . $this->clinicA);
+        $wpdb->query('DELETE FROM ' . $wpdb->prefix . 'cpms_audit_logs WHERE action = "CLINIC_PROFILE_UPDATED" AND resource_id = ' . $this->clinicA);
 
         $resultNoop = App::clinicProfileService()->updateProfile($this->actorConfigA, $this->clinicA, [
             'name' => self::OLD_NAME_A,
@@ -332,7 +335,7 @@ final class Phase4ClinicProfileTest extends WP_UnitTestCase
             'phone' => self::OLD_PHONE_A,
         ]);
         $this->assertTrue($resultNoop['noop'], 'noop detected');
-        $countNoop = $wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM ' . $wpdb->prefix . 'cpms_audit_log WHERE action = %s AND target_id = %d', 'CLINIC_PROFILE_UPDATED', $this->clinicA));
+        $countNoop = $wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM ' . $wpdb->prefix . 'cpms_audit_logs WHERE action = %s AND resource_id = %d', 'CLINIC_PROFILE_UPDATED', $this->clinicA));
         $this->assertSame('0', (string) ($countNoop ?? '0'), 'audit not logged on noop');
 
         $resultReal = App::clinicProfileService()->updateProfile($this->actorConfigA, $this->clinicA, [
@@ -341,7 +344,7 @@ final class Phase4ClinicProfileTest extends WP_UnitTestCase
             'phone' => null,
         ]);
         $this->assertFalse($resultReal['noop']);
-        $countReal = $wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM ' . $wpdb->prefix . 'cpms_audit_log WHERE action = %s AND target_id = %d', 'CLINIC_PROFILE_UPDATED', $this->clinicA));
+        $countReal = $wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM ' . $wpdb->prefix . 'cpms_audit_logs WHERE action = %s AND resource_id = %d', 'CLINIC_PROFILE_UPDATED', $this->clinicA));
         $this->assertSame('1', (string) ($countReal ?? '0'), 'audit logged only on real change');
 
         $after = $this->clinicRow($this->clinicA);
@@ -387,6 +390,14 @@ final class Phase4ClinicProfileTest extends WP_UnitTestCase
             $membershipId,
             $cap
         ));
+    }
+
+    private function grantWpCap(int $userId, string $cap): void
+    {
+        $user = get_userdata($userId);
+        if ($user instanceof \WP_User) {
+            $user->add_cap($cap);
+        }
     }
 
     private function insertOrganization(string $slug): int
@@ -565,7 +576,7 @@ final class Phase4ClinicProfileTest extends WP_UnitTestCase
             'cpms_clinic_memberships',
             'cpms_membership_capabilities',
             'cpms_membership_locations',
-            'cpms_audit_log',
+            'cpms_audit_logs',
         ];
         foreach ($tables as $t) {
             $wpdb->query('DELETE FROM ' . $p . $t . ' WHERE clinic_id >= 64000');
