@@ -128,6 +128,12 @@ final class DoctorWorkflowTest extends WP_UnitTestCase
 
         $tomorrow = gmdate('Y-m-d', time() + 86400);
         $dow = $this->iranianDow($tomorrow);
+        // Phase 6 Slice 3: Location صریح (Location اصلیِ Clinic 1) — قرارداد create.
+        $locationId = (int) App::db()->fetchValue(
+            'SELECT id FROM ' . App::db()->table('cpms_locations') .
+            ' WHERE clinic_id = 1 AND is_primary = 1 ORDER BY id LIMIT 1'
+        );
+        $this->assertGreaterThan(0, $locationId, 'precondition: Clinic 1 primary Location exists');
         // C7-S5: تطبیق fixture با قرارداد امنیتی مصوب — create برنامه حالا
         // نیازمند Scope معتبر صریح است (هر دو مرز تولیدی آن را برقرار می‌کنند).
         $previousScope = \ClinicCore\Application\Scope\ScopeContext::tryGet();
@@ -140,6 +146,7 @@ final class DoctorWorkflowTest extends WP_UnitTestCase
                 'end_time' => '12:00',
                 'appointment_duration_min' => 60,
                 'slot_capacity' => 1,
+                'location_id' => $locationId,
             ]);
         } finally {
             App::replaceExplicitScope($previousScope);

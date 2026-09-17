@@ -10,6 +10,7 @@ use ClinicCore\Infrastructure\Audit\AuditLogger;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Logging\OpLogger;
 use ClinicCore\Infrastructure\Queue\JobQueue;
+use ClinicCore\Infrastructure\Repository\LocationRepository;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
 use ClinicCore\Infrastructure\Repository\ScheduleRepository;
 use DateTimeImmutable;
@@ -39,6 +40,7 @@ final class ScheduleService
         private readonly CpmsDb $db,
         private readonly ScheduleRepository $schedules,
         private readonly MembershipRepository $memberships,
+        private readonly LocationRepository $locations,
         private readonly JobQueue $jobs,
         private readonly AuditLogger $audit,
         private readonly OpLogger $op
@@ -84,9 +86,26 @@ final class ScheduleService
         if ($day < 0 || $day > 6) {
             throw BookingException::of('CLINIC_VALIDATION_FAILED', 'روز هفته نامعتبر است (0=شنبه … 6=جمعه)', 400, ['errors' => ['day_of_week' => 'range_0_6']]);
         }
-        // Phase 4 Slice 1: یکتاییِ «یک برنامه در هر روز هفته» درون Clinic است
-        // (0014: چند شعبه/دو شیفت مجاز) — پیش‌بررسی هم داخل Clinic معتبر.
-        if ($this->schedules->findByClinicianDayInClinic($clinicianId, $day, $clinicId) !== null) {
+
+        /*
+         * Phase 6 Slice 3: Locationِ برنامه حالا ورودیِ صریحِ قرارداد است —
+         *   1) الزامی: نبود `location_id` ⇒ fail-closed (400 required) — هیچ
+         *      جایگزینی بی‌صدا با Location اصلی/اولی/خانهٔ پزشک نمی‌شود.
+         *   2) معتبر در برابر Clinic معتبرِ Scope: real + active + clinic match
+         *      در یک پیش‌شرط؛ بیگانه/ناموجود/غیرفعال همه دقیقاً همان پاکتِ
+         *      «محل یافت نشد» را می‌گیرند (پاریتِ 404 — عدم شمارش/افشای وجود).
+         *      Clinic هرگز از payload یا Locationِ ارسالی گرفته نمی‌شود —
+         *      فقط از Scope مورد اعتمادِ درخواست.
+         */
+        $locationId = $this->intField($fields, 'location_id');
+        if ($this->locations->findActiveForClinic($clinicId, $locationId) === null) {
+            throw BookingException::of('CLINIC_NOT_FOUND', 'محل یافت نشد', 404);
+        }
+
+        // Phase 6 Slice 3: یکتاییِ «یک برنامه در هر روز هفته» در محدودهٔ
+        // (Clinic معتبر + Location) است (0014) — همان روز هفته در شعبهٔ دیگرِ
+        // همان Clinic مجاز است؛ Multi-shift هنوز فعال نیست.
+        if ($this->schedules->findByClinicianDayInClinicAndLocation($clinicianId, $day, $clinicId, $locationId) !== null) {
             throw BookingException::of('CLINIC_VALIDATION_FAILED', 'برای این روز هفته قبلاً برنامه ثبت شده — از ویرایش استفاده کنید', 400, ['errors' => ['day_of_week' => 'duplicate_schedule_day']]);
         }
 
@@ -96,13 +115,14 @@ final class ScheduleService
             'clinic_id' => $clinicId,
             'clinician_id' => $clinicianId,
             'day_of_week' => $day,
+            'location_id' => $locationId,
             'created_at' => $nowSql,
             'updated_at' => $nowSql,
         ]);
 
         $view = $this->scheduleView((array) $this->schedules->find($id));
         $this->audit('SCHEDULE_CREATED', $actorUserId, 'schedule', $id, null, null, $view);
-        $this->op->info('config.schedule_created', ['schedule_id' => $id, 'clinician_id' => $clinicianId, 'clinic_id' => $clinicId, 'actor' => $actorUserId]);
+        $this->op->info('config.schedule_created', ['schedule_id' => $id, 'clinician_id' => $clinicianId, 'clinic_id' => $clinicId, 'location_id' => $locationId, 'actor' => $actorUserId]);
         // Phase 6 Slice 1: regenerate فقط روی Clinic معتبرِ عملیات (هرگز
         // clinician-only؛ چندعضویتی مشروع ایزوله می‌ماند).
         $this->regenerate($clinicianId, $clinicId);
@@ -608,6 +628,7 @@ final class ScheduleService
         return [
             'id' => (int) $row['id'],
             'clinician_id' => (int) $row['clinician_id'],
+            'location_id' => (int) ($row['location_id'] ?? 0),
             'day_of_week' => (int) $row['day_of_week'],
             'start_time' => substr((string) $row['start_time'], 0, 5),
             'end_time' => substr((string) $row['end_time'], 0, 5),

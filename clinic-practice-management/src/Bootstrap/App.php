@@ -470,6 +470,7 @@ final class App
                 $db,
                 new ScheduleRepository($db),
                 new MembershipRepository($db),
+                self::locationRepository(),
                 self::jobs(),
                 self::audit(),
                 self::op()

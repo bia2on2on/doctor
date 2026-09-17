@@ -112,7 +112,8 @@ final class C7ScheduleObjectIdIsolationTest extends WP_UnitTestCase
         $this->managerB = $this->makeUser('c7sch_mgr_b', 'cpms_manager');
         cpms_test_seed_membership($this->managerB, self::CLINIC_B, 'cpms_manager');
 
-        // اشیای قربانی از مسیر تولیدی سرویس (create/createException) توسط مدیر A.
+        // اشیای قربانی از مسیر تولیدی سرویس (create/createException) توسط مدیر A
+        // (Phase 6 Slice 3: Location صریحِ fixture).
         $schedule = $this->withScope(self::CLINIC_A, fn (): array => App::scheduleService()->create(
             $this->managerA,
             [
@@ -122,6 +123,7 @@ final class C7ScheduleObjectIdIsolationTest extends WP_UnitTestCase
                 'end_time' => '13:00',
                 'appointment_duration_min' => 30,
                 'slot_capacity' => 2,
+                'location_id' => $locA,
             ]
         ));
         $this->scheduleAId = (int) $schedule['id'];

@@ -26,6 +26,9 @@ final class RestScheduleTest extends WP_UnitTestCase
     private int $adminUserId;
     private int $secretaryUserId;
 
+    /** Primary Location of the seeded Clinic 1 — explicit create contract (Phase 6 Slice 3). */
+    private int $locationId;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -46,6 +49,14 @@ final class RestScheduleTest extends WP_UnitTestCase
             )
         );
         $this->clinicianId = (int) $wpdb->insert_id;
+
+        // Phase 6 Slice 3: create برنامه حالا Location صریح می‌خواهد — fixture همان
+        // Location اصلیِ Clinic 1 را صریح می‌فرستد (نه تکیه بر فالبک).
+        $this->locationId = (int) App::db()->fetchValue(
+            'SELECT id FROM ' . App::db()->table('cpms_locations') .
+            ' WHERE clinic_id = 1 AND is_primary = 1 ORDER BY id LIMIT 1'
+        );
+        $this->assertGreaterThan(0, $this->locationId, 'precondition: Clinic 1 primary Location exists');
 
         // C6 repair — عضویت فعال staff صریح است (نه fixture سراسری).
         // تست‌های patient/non-member عمداً عضویت نمی‌گیرند.
@@ -114,12 +125,15 @@ final class RestScheduleTest extends WP_UnitTestCase
         wp_set_current_user($this->adminUserId);
 
         // پایان قبل از شروع
+        // Phase 6 Slice 3: Location صریح همراه Clinic صریح (مرز REST: selectorِ
+        // Location بدون selectorِ Clinic معتبر نمی‌شود).
         $bad = $this->dispatch('POST', self::NS . '/config/schedules', [
             'clinician_id' => $this->clinicianId,
             'day_of_week' => 1,
             'start_time' => '12:00',
             'end_time' => '09:00',
-        ]);
+            'location_id' => $this->locationId,
+        ], ['X-CPMS-Clinic-Id' => '1']);
         $this->assertSame(400, $bad->get_status());
         $this->assertClinicError($bad, 'CLINIC_VALIDATION_FAILED');
 
@@ -171,20 +185,22 @@ final class RestScheduleTest extends WP_UnitTestCase
             'end_time' => '12:00',
             'appointment_duration_min' => 60,
             'slot_capacity' => 2,
-        ]);
+            'location_id' => $this->locationId,
+        ], ['X-CPMS-Clinic-Id' => '1']);
         $this->assertSame(200, $create->get_status());
         $view = $create->get_data()['data'];
         $scheduleId = (int) $view['id'];
         $this->assertSame('09:00', $view['start_time']);
         $this->assertSame(60, $view['appointment_duration_min']);
 
-        // Duplicate day rejected
+        // Duplicate day rejected (same Location + weekday — the single-row rule)
         $dup = $this->dispatch('POST', self::NS . '/config/schedules', [
             'clinician_id' => $this->clinicianId,
             'day_of_week' => $dow,
             'start_time' => '14:00',
             'end_time' => '18:00',
-        ]);
+            'location_id' => $this->locationId,
+        ], ['X-CPMS-Clinic-Id' => '1']);
         $this->assertSame(400, $dup->get_status());
 
         // Regeneration Job (enqueue در Service) → اجرا
@@ -237,7 +253,8 @@ final class RestScheduleTest extends WP_UnitTestCase
             'day_of_week' => $dow,
             'start_time' => '09:00',
             'end_time' => '12:00',
-        ]);
+            'location_id' => $this->locationId,
+        ], ['X-CPMS-Clinic-Id' => '1']);
         $this->runJobs();
 
         // شبیه‌سازی رزرو روی یک Slot آینده
@@ -286,7 +303,8 @@ final class RestScheduleTest extends WP_UnitTestCase
             'day_of_week' => $dow,
             'start_time' => '09:00',
             'end_time' => '12:00',
-        ]);
+            'location_id' => $this->locationId,
+        ], ['X-CPMS-Clinic-Id' => '1']);
         $this->runJobs();
         $before = (int) App::db()->fetchValue(
             'SELECT COUNT(*) FROM ' . App::db()->table('cpms_schedule_slots') .
@@ -370,13 +388,20 @@ final class RestScheduleTest extends WP_UnitTestCase
     /**
      * @param array<string, mixed> $body
      */
-    private function dispatch(string $method, string $route, array $body = []): WP_REST_Response
+    /**
+     * @param array<string, mixed>  $body
+     * @param array<string, string> $headers
+     */
+    private function dispatch(string $method, string $route, array $body = [], array $headers = []): WP_REST_Response
     {
         $request = new WP_REST_Request($method, $route);
         foreach ($body as $key => $value) {
             $request->set_param($key, $value);
         }
         $request->set_header('X-WP-Nonce', wp_create_nonce('wp_rest'));
+        foreach ($headers as $name => $value) {
+            $request->set_header($name, $value);
+        }
 
         return rest_do_request($request);
     }

@@ -175,6 +175,14 @@ jobs:
               grep '^testsuite ' "$SPLIT" | grep 'Phase4LocationMasterDataTest' || echo '(Phase4 Location suite missing from junit)'
               echo '--- Phase4 Location Master Data testcases ---'
               grep '^testcase ' "$SPLIT" | grep 'Phase4LocationMasterDataTest' || true
+              echo '--- Phase6 Slice 3 Explicit-Location suite (selection + execution proof) ---'
+              grep '^testsuite ' "$SPLIT" | grep 'Phase6ScheduleExplicitLocationTest' || echo '(Phase6 Slice 3 suite missing from junit)'
+              echo '--- Phase6 Slice 3 Explicit-Location testcases ---'
+              grep '^testcase ' "$SPLIT" | grep 'Phase6ScheduleExplicitLocationTest' || true
+              echo '--- Phase6 Slice 3 regression suites (selection + execution proof) ---'
+              grep '^testsuite ' "$SPLIT" | grep -E 'RestScheduleTest|Phase4Slice1ProfessionalMultiClinicParticipationTest|ScheduleRegenerationClinicScopeRedTest|SchedulingLocationLocalBoundaryRedTest|SlotsGenerateLocationLocalTemporalRedTest' || echo '(a Phase6 Slice 3 regression suite is missing from junit)'
+              echo '--- Phase6 Slice 3 regression testcases ---'
+              grep '^testcase ' "$SPLIT" | grep -E 'RestScheduleTest|Phase4Slice1ProfessionalMultiClinicParticipationTest|ScheduleRegenerationClinicScopeRedTest|SchedulingLocationLocalBoundaryRedTest|SlotsGenerateLocationLocalTemporalRedTest' || true
               rm -f "$SPLIT"
             else
               echo '(junit xml missing — run may have terminated prematurely)'
