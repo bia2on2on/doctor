@@ -102,8 +102,10 @@ final class ScheduleService
 
         $view = $this->scheduleView((array) $this->schedules->find($id));
         $this->audit('SCHEDULE_CREATED', $actorUserId, 'schedule', $id, null, null, $view);
-        $this->op->info('config.schedule_created', ['schedule_id' => $id, 'clinician_id' => $clinicianId, 'actor' => $actorUserId]);
-        $this->regenerate($clinicianId);
+        $this->op->info('config.schedule_created', ['schedule_id' => $id, 'clinician_id' => $clinicianId, 'clinic_id' => $clinicId, 'actor' => $actorUserId]);
+        // Phase 6 Slice 1: regenerate فقط روی Clinic معتبرِ عملیات (هرگز
+        // clinician-only؛ چندعضویتی مشروع ایزوله می‌ماند).
+        $this->regenerate($clinicianId, $clinicId);
 
         return $view;
     }
@@ -118,6 +120,11 @@ final class ScheduleService
         // بارگذاری نمی‌شود و همان پاکت «یافت نشد» را می‌گیرد (عدم شمارش).
         $current = $this->requireScheduleForTrustedClinic($id);
 
+        // Phase 6 Slice 1: Clinic معتبرِ این جهش، ردیف پایدارِ برنامه است
+        // (قبلاً توسط requireScheduleForTrustedClinic در برابر Scope اعتبارسنجی
+        // شده) — هرگز از payload یا clinic_id پروفایل پزشک گرفته نمی‌شود.
+        $clinicId = (int) $current['clinic_id'];
+
         $data = $this->validatedScheduleFields($fields, (array) $current);
         if ($data !== []) {
             $data['updated_at'] = $this->db->nowUtcSql();
@@ -127,8 +134,8 @@ final class ScheduleService
         $updated = (array) $this->schedules->find($id);
         $view = $this->scheduleView($updated);
         $this->audit('SCHEDULE_UPDATED', $actorUserId, 'schedule', $id, null, $this->scheduleView($current), $view);
-        $this->op->info('config.schedule_updated', ['schedule_id' => $id, 'actor' => $actorUserId]);
-        $this->regenerate((int) $current['clinician_id']);
+        $this->op->info('config.schedule_updated', ['schedule_id' => $id, 'clinic_id' => $clinicId, 'actor' => $actorUserId]);
+        $this->regenerate((int) $current['clinician_id'], $clinicId);
 
         return $view;
     }
@@ -141,10 +148,13 @@ final class ScheduleService
         // C7-S2: مالکیت پیش از حذف/بازتولید Slotهای وابسته.
         $current = $this->requireScheduleForTrustedClinic($id);
 
+        // Phase 6 Slice 1: Clinic معتبرِ این جهش، ردیف پایدارِ برنامه است.
+        $clinicId = (int) $current['clinic_id'];
+
         $this->schedules->delete($id);
         $this->audit('SCHEDULE_DELETED', $actorUserId, 'schedule', $id, null, $this->scheduleView($current), null);
-        $this->op->info('config.schedule_deleted', ['schedule_id' => $id, 'actor' => $actorUserId]);
-        $this->regenerate((int) $current['clinician_id']);
+        $this->op->info('config.schedule_deleted', ['schedule_id' => $id, 'clinic_id' => $clinicId, 'actor' => $actorUserId]);
+        $this->regenerate((int) $current['clinician_id'], $clinicId);
 
         return ['id' => $id, 'deleted' => true];
     }
@@ -157,16 +167,22 @@ final class ScheduleService
      *  - چند Slot خالی آینده (booked=0, held=0) حذف و بازتولید خواهند شد؛
      *  - چند Slot دارای رزرو/Hold «محافظت» می‌شوند و هرگز حذف نمی‌شوند (data snapshot).
      *
+     * Phase 6 Slice 1: شمارش‌ها Clinic-scoped هستند — Slotهای Clinic دیگرِ
+     * همان پزشک (مشارکت مشروع چندعضویتی) در اعداد Clinic جاری ظاهر نمی‌شوند.
+     * Clinic معتبر از Scope صریحِ درخواست به‌دست می‌آید؛ بدون Scope صریح،
+     * fail-closed (هیچ fallback به clinic_id پروفایل یا حدس از ردیف اول).
+     *
      * @return array{future_empty_slots:int, future_reserved_slots:int}
      */
     public function impact(int $clinicianId): array
     {
-        $this->requireClinician($clinicianId);
+        // Clinic معتبرِ درخواست — fail-closed اگر Scope صریح برقرار نباشد.
+        $clinicId = $this->requireClinicianForTrustedClinic($clinicianId);
         $from = gmdate('Y-m-d');
 
         return [
-            'future_empty_slots' => $this->schedules->countFutureEmptySlots($clinicianId, $from),
-            'future_reserved_slots' => $this->schedules->countFutureReservedSlots($clinicianId, $from),
+            'future_empty_slots' => $this->schedules->countFutureEmptySlots($clinicianId, $clinicId, $from),
+            'future_reserved_slots' => $this->schedules->countFutureReservedSlots($clinicianId, $clinicId, $from),
         ];
     }
 
@@ -253,8 +269,9 @@ final class ScheduleService
 
         $view = $this->exceptionView((array) $this->schedules->findException($id));
         $this->audit('SCHEDULE_EXCEPTION_CREATED', $actorUserId, 'schedule_exception', $id, null, null, $view);
-        $this->op->info('config.schedule_exception_created', ['exception_id' => $id, 'clinician_id' => $clinicianId, 'actor' => $actorUserId]);
-        $this->regenerate($clinicianId);
+        $this->op->info('config.schedule_exception_created', ['exception_id' => $id, 'clinician_id' => $clinicianId, 'clinic_id' => $clinicId, 'actor' => $actorUserId]);
+        // Phase 6 Slice 1: regenerate فقط روی Clinic معتبرِ عملیات.
+        $this->regenerate($clinicianId, $clinicId);
 
         return $view;
     }
@@ -267,10 +284,14 @@ final class ScheduleService
         // C7-S2: مالکیت پیش از حذف/بازتولید Slotهای وابسته.
         $current = $this->requireExceptionForTrustedClinic($id);
 
+        // Phase 6 Slice 1: Clinic معتبرِ این جهش، ردیف پایدارِ استثنا است
+        // (قبلاً در برابر Scope اعتبارسنجی شده).
+        $clinicId = (int) $current['clinic_id'];
+
         $this->schedules->deleteException($id);
         $this->audit('SCHEDULE_EXCEPTION_DELETED', $actorUserId, 'schedule_exception', $id, null, $this->exceptionView($current), null);
-        $this->op->info('config.schedule_exception_deleted', ['exception_id' => $id, 'actor' => $actorUserId]);
-        $this->regenerate((int) $current['clinician_id']);
+        $this->op->info('config.schedule_exception_deleted', ['exception_id' => $id, 'clinic_id' => $clinicId, 'actor' => $actorUserId]);
+        $this->regenerate((int) $current['clinician_id'], $clinicId);
 
         return ['id' => $id, 'deleted' => true];
     }
@@ -351,12 +372,19 @@ final class ScheduleService
     }
 
     /**
-     * Regeneration: حذف Slotهای آینده خالی + Job فوری تولید.
+     * Phase 6 Slice 1: Regeneration — حذف Slotهای آینده خالی فقط در Clinic
+     * معتبرِ عملیات + Job فوری تولید.
+     *
+     * قاعدهٔ کلیدی (امنیتی/tenant):
+     *  - $clinicId الزاماً از یک Clinic معتبرِ ازپیش‌اعتبارسنجی‌شده می‌آید
+     *    (Scope درخواست یا ردیف پایدار شیء)؛ هرگز از payload، از
+     *    clinician.clinic_id یا از «اولین ردیف» استنتاج نمی‌شود.
+     *  - Slotهای خالی/محافظت‌شدهٔ Clinic دیگرِ همان پزشک دست‌نخورده می‌مانند.
      */
-    private function regenerate(int $clinicianId): void
+    private function regenerate(int $clinicianId, int $clinicId): void
     {
         try {
-            $removed = $this->schedules->deleteFutureEmptySlots($clinicianId, gmdate('Y-m-d'));
+            $removed = $this->schedules->deleteFutureEmptySlots($clinicianId, $clinicId, gmdate('Y-m-d'));
             $this->jobs->enqueue(
                 'slots.generate',
                 ['source' => 'manual'], // ENUM generated_from: lazy|cron|manual
@@ -364,11 +392,11 @@ final class ScheduleService
                 priority: 3
             );
             if ($removed > 0) {
-                $this->op->info('config.schedule_regenerated', ['clinician_id' => $clinicianId, 'removed_empty_slots' => $removed]);
+                $this->op->info('config.schedule_regenerated', ['clinician_id' => $clinicianId, 'clinic_id' => $clinicId, 'removed_empty_slots' => $removed]);
             }
         } catch (\Throwable $e) {
             // Regeneration هرگز نباید تغییر Config را شکست بدهد — Job روزانه/Cron خودش جبران می‌کند
-            $this->op->warning('config.schedule_regen_failed', ['clinician_id' => $clinicianId, 'error' => $e->getMessage()]);
+            $this->op->warning('config.schedule_regen_failed', ['clinician_id' => $clinicianId, 'clinic_id' => $clinicId, 'error' => $e->getMessage()]);
         }
     }
 

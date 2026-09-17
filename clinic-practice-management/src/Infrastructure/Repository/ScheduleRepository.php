@@ -230,50 +230,57 @@ final class ScheduleRepository
     }
 
     /**
-     * تعداد Slotهای آیندهٔ «خالی» (بدون رزرو/Hold) یک پزشک — یعنی Slotهایی که در
-     * Regeneration (ADR-0004) حذف و بازتولید خواهند شد. برای نمایش تأثیر تغییر
-     * برنامه در UI (بدون invalidate بی‌صدا) استفاده می‌شود.
+     * Phase 6 Slice 1: تعداد Slotهای آیندهٔ «خالی» (بدون رزرو/Hold) یک پزشک
+     * در یک Clinic معتبر — Slotهای خالیِ دیگر Clinicهای همان پزشک شمرده
+     * نمی‌شوند (ایزولیشن tenant / چندعضویتی مشروع).
+     *
+     * @param int $clinicId Clinic معتبر و دامنه‌بندی‌کننده (الزامی، از Scope مورد اعتماد)
      */
-    public function countFutureEmptySlots(int $clinicianId, string $fromDate): int
+    public function countFutureEmptySlots(int $clinicianId, int $clinicId, string $fromDate): int
     {
         $value = $this->db->fetchValue(
             'SELECT COUNT(*) FROM ' . $this->db->table('cpms_schedule_slots') .
-            ' WHERE clinician_id = %d AND slot_date > %s AND booked_count = 0 AND held_count = 0',
-            [$clinicianId, $fromDate]
+            ' WHERE clinician_id = %d AND clinic_id = %d AND slot_date > %s AND booked_count = 0 AND held_count = 0',
+            [$clinicianId, $clinicId, $fromDate]
         );
 
         return (int) $value;
     }
 
     /**
-     * تعداد Slotهای آیندهٔ «محافظت‌شده» (دارای رزرو یا Hold) یک پزشک — اینها هرگز
-     * در Regeneration حذف نمی‌شوند و به کاربر اطمینان می‌دهند تغییر برنامه، دادهٔ
-     * موجود را از بین نمی‌برد.
+     * Phase 6 Slice 1: تعداد Slotهای آیندهٔ «محافظت‌شده» (دارای رزرو یا Hold)
+     * یک پزشک در یک Clinic معتبر.
+     *
+     * @param int $clinicId Clinic معتبر و دامنه‌بندی‌کننده (الزامی)
      */
-    public function countFutureReservedSlots(int $clinicianId, string $fromDate): int
+    public function countFutureReservedSlots(int $clinicianId, int $clinicId, string $fromDate): int
     {
         $value = $this->db->fetchValue(
             'SELECT COUNT(*) FROM ' . $this->db->table('cpms_schedule_slots') .
-            ' WHERE clinician_id = %d AND slot_date > %s AND (booked_count > 0 OR held_count > 0)',
-            [$clinicianId, $fromDate]
+            ' WHERE clinician_id = %d AND clinic_id = %d AND slot_date > %s AND (booked_count > 0 OR held_count > 0)',
+            [$clinicianId, $clinicId, $fromDate]
         );
 
         return (int) $value;
     }
 
     /**
-     * Regeneration (ADR-0004): حذف Slotهای آینده «خالی» (بدون رزرو/Hold) یک پزشک
-     * تا بازتولید از برنامه جدید ممکن شود. Slotهای دارای Booking/Hold دست‌نخورده
-     * می‌مانند (Snapshot/امانت داده).
+     * Phase 6 Slice 1: Regeneration (ADR-0004) — حذف Slotهای آینده «خالی»
+     * (بدون رزرو/Hold) یک پزشک فقط در Clinic معتبرِ عملیات. Slotهای خالی
+     * یا محافظت‌شدهٔ Clinic دیگر همان پزشک (مشارکت مشروع چندعضویتی)
+     * دست‌نخورده می‌مانند. Slotهای دارای Booking/Hold در همان Clinic هم
+     * هرگز حذف نمی‌شوند (Snapshot/امانت داده).
+     *
+     * @param int $clinicId Clinic معتبر و دامنه‌بندی‌کننده (الزامی)
      *
      * @return int تعداد ردیف‌های حذف‌شده
      */
-    public function deleteFutureEmptySlots(int $clinicianId, string $fromDate): int
+    public function deleteFutureEmptySlots(int $clinicianId, int $clinicId, string $fromDate): int
     {
         $sql = $this->db->prepare(
             'DELETE FROM ' . $this->db->table('cpms_schedule_slots') .
-            ' WHERE clinician_id = %d AND slot_date > %s AND booked_count = 0 AND held_count = 0',
-            [$clinicianId, $fromDate]
+            ' WHERE clinician_id = %d AND clinic_id = %d AND slot_date > %s AND booked_count = 0 AND held_count = 0',
+            [$clinicianId, $clinicId, $fromDate]
         );
         $result = $this->db->wpdb()->query($sql); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery
 

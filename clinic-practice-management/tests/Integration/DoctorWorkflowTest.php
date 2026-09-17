@@ -162,7 +162,16 @@ final class DoctorWorkflowTest extends WP_UnitTestCase
             [$cid, $from]
         );
 
-        $impact = App::scheduleService()->impact($cid);
+        // Phase 6 Slice 1: impact نیز — مانند create (C7-S5) — Clinic-scoped و
+        // fail-closed است؛ هر دو مرز تولیدی (REST و wp-admin) پیش از فراخوانی
+        // Scope معتبر برقرار می‌کنند، پس fixture هم همان کار را می‌کند.
+        $previousScope = \ClinicCore\Application\Scope\ScopeContext::tryGet();
+        App::replaceExplicitScope(ClinicScope::forClinic(1));
+        try {
+            $impact = App::scheduleService()->impact($cid);
+        } finally {
+            App::replaceExplicitScope($previousScope);
+        }
 
         $afterEmpty = (int) App::db()->fetchValue(
             'SELECT COUNT(*) FROM ' . App::db()->table('cpms_schedule_slots') .
