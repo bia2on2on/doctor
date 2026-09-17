@@ -192,6 +192,13 @@ final class LocationService
         $beforeName = (string) ($current['name'] ?? '');
         $beforeTimezone = (string) ($current['timezone'] ?? '');
 
+        // ---- no-op صریح: مقادیر یکسان = بدون update، بدون تغییر updated_at و
+        // بدون success-audit گمراه‌کننده. «0 affected rows» هرگز نشانهٔ گم‌شدن
+        // object نیست — object از قبل با find() احراز شده است. ----
+        if ($name === $beforeName && $timezone === $beforeTimezone) {
+            return $this->resultRow($current, true);
+        }
+
         $now = $this->db->nowUtcSql();
 
         try {
