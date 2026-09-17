@@ -913,3 +913,10 @@ final class XxxService {
 ### [2026-09-18 01:51 Asia/Tehran] — تکمیل entry Phase 6 Slice 3 (تأیید exact-head نهایی)
 - **exact head نهایی:** `ca7b484e7092f74429bba11a3f532ba4a6709aee` (کامیت docs = آخرِ entry قبلی) — CI run **`35279505286`** @ همان head: `completed/success`؛ completion-guard **`OK (954 tests, 12771 assertions)`**؛ اجرای نام‌دار (کامنت شواهد 5721802943): `Phase6ScheduleExplicitLocationTest` 9/9 (261 assertion) · `Phase4Slice1ProfessionalMultiClinicParticipationTest` 8/8 · `RestScheduleTest` 8/8 · `ScheduleRegenerationClinicScopeRedTest` 2/2 · `SchedulingLocationLocalBoundaryRedTest` 9/9 · `SlotsGenerateLocationLocalTemporalRedTest` 2/2 — همه 0 error/0 failure.
 - **وضعیت پایانی:** Draft PR **#71** (OPEN/draft، head = `ca7b484e`، ۵ کامیت از main جلو) کامل و ready-to-review است؛ بدون merge/Ready/tag/release/force-push. برش بعدی = multi-shift Phase 6.
+
+### [2026-09-18 01:58 Asia/Tehran] — اصلاح entry تکمیلی Phase 6 Slice 3 (head دقیق + سلسلهٔ کامیت‌های docs)
+- entryِ «01:51» یک اسنپ‌شات در لحظهٔ نگارش بود و خطِ «exact head نهایی: ca7b484e» را می‌تواند گمراه‌کننده خواند؛ **اصلاح دقیق:**
+  - آخرین کامیتِ **حاوی کد = `8c153c1`** (GREEN — run 35279185117).
+  - کامیت‌های پس از آن **فقط docs** هستند: `ca7b484` (entry + api-contract) → `b342116` (entry تکمیلی) → `511ac96` (اصلاح timestamp) → همین entry.
+  - بازتأیید CI روی headهای docs (همه بدون هیچ تغییر کد): run **35279505286** @ `ca7b484e` — `completed/success`، completion-guard `OK (954 tests, 12771 assertions)`، کامنت شواهد 5721802943؛ run **35281643731** @ `511ac96` — `completed/success`.
+- **وضعیت پایانی واقعی:** Draft PR **#71** (OPEN/draft) — head = آخرین کامیتِ docs-only؛ CI روی head هر لحظه سبز است؛ آمادهٔ review؛ بدون merge/Ready/tag/release/force-push. برش بعدی = multi-shift Phase 6.
