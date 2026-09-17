@@ -271,10 +271,17 @@ final class FinanceService
             $this->lockClinic($visitClinicId);
             $number = $this->invoices->nextInvoiceNumber($visitClinicId);
 
+            // Phase 5 Slice 1: location_id فقط از Visit معتبر گرفته می‌شود —
+            // هرگز از payload و هرگز از first-row/default/fake Location.
+            $visitLocationId = isset($visit['location_id']) && $visit['location_id'] !== null && (int) $visit['location_id'] > 0
+                ? (int) $visit['location_id']
+                : null;
+
             $invoiceId = $this->invoices->insert($visitClinicId, [
                 'invoice_number' => $number,
                 'patient_id' => (int) $visit['patient_id'],
                 'visit_id' => $visitId,
+                'location_id' => $visitLocationId,
                 'status' => 'open',
                 'subtotal' => $this->minorToDb($totals['subtotal']),
                 'discount' => $this->minorToDb($totals['discount']),
@@ -840,6 +847,7 @@ final class FinanceService
             'invoice_number' => (string) $invoice['invoice_number'],
             'visit_id' => (int) $invoice['visit_id'],
             'patient_id' => (int) $invoice['patient_id'],
+            'location_id' => $invoice['location_id'] !== null ? (int) $invoice['location_id'] : null,
             'status' => (string) $invoice['status'],
             'subtotal' => (float) $invoice['subtotal'],
             'discount' => (float) $invoice['discount'],
