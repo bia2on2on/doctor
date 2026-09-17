@@ -83,6 +83,7 @@ final class StaffManagementPage
         $rows = self::listUsers($clinicId);
         $roles = self::roleLabels();
         $clinicChoices = self::managedClinicChoices((int) get_current_user_id());
+        $existingUsers = self::existingUserChoices($clinicId);
         ?>
         <div class="wrap" dir="rtl">
             <h1>کاربران و دسترسی‌ها</h1>
@@ -178,6 +179,40 @@ final class StaffManagementPage
                 <?php if ($edit !== null) : ?><a class="button" href="<?php echo esc_url(admin_url('admin.php?page=' . self::PAGE_SLUG)); ?>">انصراف</a><?php endif; ?>
                 </p>
             </form>
+
+            <?php if ($clinicId > 0 && $existingUsers !== []) : ?>
+                <h2>افزودن کاربر موجود به این Clinic</h2>
+                <p class="description">یک حساب WordPress موجود را با شناسهٔ پایدار انتخاب کنید. این عملیات حساب WordPress یا پروفایل حرفه‌ای جدید نمی‌سازد؛ فقط عضویت همین کاربر را در Clinic انتخاب‌شده ایجاد می‌کند.</p>
+                <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+                    <?php wp_nonce_field(self::NONCE_ACTION); ?>
+                    <input type="hidden" name="action" value="cpms_staff_save">
+                    <input type="hidden" name="mode" value="attach_existing">
+                    <input type="hidden" name="clinic_id" value="<?php echo $clinicId; ?>">
+                    <table class="form-table" role="presentation">
+                        <tr><th><label for="cpms_existing_user">حساب WordPress موجود</label></th>
+                            <td>
+                                <select id="cpms_existing_user" name="existing_user_id" required>
+                                    <option value="">انتخاب کاربر موجود</option>
+                                    <?php foreach ($existingUsers as $existing) : ?>
+                                        <option value="<?php echo (int) $existing['id']; ?>"><?php echo esc_html((string) $existing['label']); ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </td>
+                        </tr>
+                        <tr><th><label for="cpms_existing_role">نقش عضویت در این Clinic</label></th>
+                            <td>
+                                <select id="cpms_existing_role" name="role" required>
+                                    <?php foreach ($roles as $slug => $label) : ?>
+                                        <option value="<?php echo esc_attr($slug); ?>"><?php echo esc_html($label); ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                                <p class="description">نقش این عضویت به‌صورت Clinic-scoped اعمال می‌شود؛ Membership با مجوز یکی نیست.</p>
+                            </td>
+                        </tr>
+                    </table>
+                    <p class="submit"><button type="submit" class="button button-primary">افزودن کاربر موجود</button></p>
+                </form>
+            <?php endif; ?>
         </div>
         <?php
     }
@@ -194,8 +229,9 @@ final class StaffManagementPage
 
         $mode = sanitize_key(wp_unslash($_POST['mode'] ?? 'create')); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
         $in = [
-            'mode' => $mode === 'update' ? 'update' : 'create',
+            'mode' => in_array($mode, ['update', 'attach_existing'], true) ? $mode : 'create',
             'user_id' => isset($_POST['user_id']) ? absint($_POST['user_id']) : 0,
+            'existing_user_id' => isset($_POST['existing_user_id']) ? absint($_POST['existing_user_id']) : 0,
             'clinic_id' => array_key_exists('clinic_id', $_POST) ? absint($_POST['clinic_id']) : null,
             'username' => isset($_POST['username']) ? sanitize_user(wp_unslash($_POST['username']), true) : '', // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
             'display_name' => isset($_POST['display_name']) ? sanitize_text_field(wp_unslash($_POST['display_name'])) : '', // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
@@ -308,6 +344,10 @@ final class StaffManagementPage
      */
     public static function upsertUser(array $in, int $updatedBy): array
     {
+        if (($in['mode'] ?? 'create') === 'attach_existing') {
+            return self::attachExistingUser($in, $updatedBy);
+        }
+
         $mode = ($in['mode'] ?? 'create') === 'update' ? 'update' : 'create';
         $userId = (int) ($in['user_id'] ?? 0);
         $username = trim((string) ($in['username'] ?? ''));
@@ -420,6 +460,79 @@ final class StaffManagementPage
         }
 
         return ['error' => '', 'generated' => $generated, 'user_id' => $userId];
+    }
+
+    /**
+     * افزودن حساب WordPress موجود به Clinic انتخاب‌شده، بدون ساخت حساب یا Clinician جدید.
+     *
+     * این عملیات فقط از شناسهٔ پایدار WordPress استفاده می‌کند؛ شمارهٔ موبایل
+     * هیچ‌گاه کلید merge خودکار نیست. Clinic و مجوز operator در همین مرز دوباره
+     * از persistence احراز می‌شوند و ساخت عضویت از MembershipService عبور می‌کند.
+     *
+     * @param array<string, mixed> $in
+     *
+     * @return array{error:string, generated:string, user_id:int}
+     */
+    public static function attachExistingUser(array $in, int $updatedBy): array
+    {
+        if ($updatedBy <= 0 || !is_user_logged_in() || (int) get_current_user_id() !== $updatedBy) {
+            return ['error' => 'کاربر احراز هویت‌شده برای این عملیات معتبر نیست.', 'generated' => '', 'user_id' => 0];
+        }
+
+        $requestedClinicId = array_key_exists('clinic_id', $in) && $in['clinic_id'] !== null
+            ? (int) $in['clinic_id']
+            : null;
+        $authorization = self::authorizeStaffWrite($updatedBy, $requestedClinicId);
+        if ($authorization['error'] !== '') {
+            return ['error' => $authorization['error'], 'generated' => '', 'user_id' => 0];
+        }
+
+        $role = trim((string) ($in['role'] ?? ''));
+        if ($role === '' || !in_array($role, self::MANAGEABLE_ROLES, true)) {
+            return ['error' => 'نقش غیرمجاز است (فقط نقش‌های CPMS قابل انتساب‌اند؛ از انتساب administrator جلوگیری شد).', 'generated' => '', 'user_id' => 0];
+        }
+
+        $existingUserId = (int) ($in['existing_user_id'] ?? 0);
+        $existingUser = $existingUserId > 0 ? get_userdata($existingUserId) : false;
+        if ($existingUser === false) {
+            return ['error' => 'کاربر WordPress موجود یافت نشد.', 'generated' => '', 'user_id' => 0];
+        }
+        if (in_array('administrator', (array) $existingUser->roles, true)) {
+            return ['error' => 'حساب administrator از مسیر مدیریت پرسنل قابل افزودن نیست.', 'generated' => '', 'user_id' => 0];
+        }
+
+        try {
+            App::membership_service()->create_membership(
+                $authorization['clinic_id'],
+                $existingUserId,
+                $role,
+                'clinic',
+                $updatedBy
+            );
+        } catch (MembershipException $e) {
+            // create_membership() is the single membership write path. In
+            // particular, an existing active or suspended row is a deterministic
+            // conflict; this action never silently reactivates or duplicates it.
+            return ['error' => $e->getMessage(), 'generated' => '', 'user_id' => 0];
+        } catch (\Throwable $e) {
+            return ['error' => 'عضویت کاربر در Clinic ایجاد نشد.', 'generated' => '', 'user_id' => 0];
+        }
+
+        App::audit()->log(
+            'STAFF_USER_ATTACHED',
+            ['wp_user_id' => $updatedBy],
+            'user',
+            $existingUserId,
+            null,
+            null,
+            [
+                'clinic_id' => $authorization['clinic_id'],
+                'role' => $role,
+                'existing_user' => true,
+            ]
+        );
+
+        return ['error' => '', 'generated' => '', 'user_id' => $existingUserId];
     }
 
     /**
@@ -710,6 +823,56 @@ final class StaffManagementPage
         }
 
         return $map;
+    }
+
+    /**
+     * حساب‌های WordPress قابل انتخاب برای attach، به‌جز حساب‌هایی که همین حالا
+     * در Clinic هدف عضویت دارند. شناسهٔ عددی WP تنها کلید انتخاب است.
+     *
+     * @return list<array{id:int, label:string}>
+     */
+    private static function existingUserChoices(int $clinicId): array
+    {
+        if ($clinicId <= 0) {
+            return [];
+        }
+
+        $membershipRows = App::db()->fetchAll(
+            'SELECT wp_user_id FROM ' . App::db()->table('cpms_clinic_memberships') . ' WHERE clinic_id = %d',
+            [$clinicId]
+        );
+        $alreadyMember = [];
+        foreach (is_array($membershipRows) ? $membershipRows : [] as $row) {
+            $userId = (int) ($row['wp_user_id'] ?? 0);
+            if ($userId > 0) {
+                $alreadyMember[$userId] = true;
+            }
+        }
+
+        $users = get_users([
+            'role__in' => self::MANAGEABLE_ROLES,
+            'fields' => 'all',
+            'number' => 500,
+            'orderby' => 'display_name',
+            'order' => 'ASC',
+        ]);
+        $choices = [];
+        foreach ($users as $user) {
+            $userId = (int) $user->ID;
+            if ($userId <= 0 || isset($alreadyMember[$userId])) {
+                continue;
+            }
+            $label = (string) $user->display_name;
+            if ($label === '') {
+                $label = (string) $user->user_login;
+            }
+            $choices[] = [
+                'id' => $userId,
+                'label' => $label . ' (' . (string) $user->user_login . ') — ' . (string) $user->user_email,
+            ];
+        }
+
+        return $choices;
     }
 
     /** @return array<string,string> */

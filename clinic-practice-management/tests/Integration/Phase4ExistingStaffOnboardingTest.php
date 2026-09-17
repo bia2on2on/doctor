@@ -13,12 +13,11 @@ use WP_UnitTestCase;
  * Phase 4 — existing WP user onboarding through the current Staff Management
  * write path.
  *
- * RED contract: the input uses the existing StaffManagementPage::upsertUser()
- * boundary. It deliberately does not call a future helper or service. The
- * current form/handler has only create/update semantics, so the requested
- * existing-user attach must be rejected or attempt a new WP user. The green
- * implementation will add an explicit existing-user action at this same
- * product boundary.
+ * The primary test uses the existing StaffManagementPage::upsertUser()
+ * boundary and the explicit action later added to that product path. The
+ * test-only predecessor used the same boundary with the current create
+ * contract; main rejected it with "Sorry, that username already exists!",
+ * which was captured as the valid RED before the production change.
  */
 final class Phase4ExistingStaffOnboardingTest extends WP_UnitTestCase
 {
@@ -84,6 +83,7 @@ final class Phase4ExistingStaffOnboardingTest extends WP_UnitTestCase
         );
         $homeClinicBefore = (int) App::clinicianRepository()->find($clinicianId)['clinic_id'];
         self::assertSame($clinicA, $homeClinicBefore, 'U clinician home Clinic must be A before the attach action');
+        $wpRolesBefore = (array) $existingUser->roles;
 
         $usersBefore = get_users(['fields' => 'ids', 'number' => -1]);
         wp_set_current_user($managerId);
@@ -93,14 +93,10 @@ final class Phase4ExistingStaffOnboardingTest extends WP_UnitTestCase
         // at the nearest real handler contract available on main.
         $result = StaffManagementPage::upsertUser(
             [
-                'mode' => 'create',
+                'mode' => 'attach_existing',
                 'clinic_id' => $clinicB,
                 'existing_user_id' => $userId,
-                'username' => (string) $existingUser->user_login,
-                'display_name' => (string) $existingUser->display_name,
-                'email' => (string) $existingUser->user_email,
                 'role' => RolesAndCapabilities::ROLE_DOCTOR,
-                'password' => '',
             ],
             $managerId
         );
@@ -112,7 +108,10 @@ final class Phase4ExistingStaffOnboardingTest extends WP_UnitTestCase
         );
         self::assertSame($userId, (int) $result['user_id'], 'the product action must return the existing WP user id');
         self::assertSame($usersBefore, get_users(['fields' => 'ids', 'number' => -1]), 'no second WP user may be created');
-        self::assertSame($userId, (int) get_userdata($userId)->ID, 'the original WP user must remain the same account');
+        $userAfter = get_userdata($userId);
+        self::assertNotFalse($userAfter);
+        self::assertSame($wpRolesBefore, (array) $userAfter->roles, 'attach must not rewrite the existing WP role');
+        self::assertSame($userId, (int) $userAfter->ID, 'the original WP user must remain the same account');
         self::assertSame(
             1,
             (int) App::db()->fetchValue(
@@ -135,6 +134,230 @@ final class Phase4ExistingStaffOnboardingTest extends WP_UnitTestCase
             count(App::membership_service()->active_memberships_for_user($userId)),
             'U must have exactly the two intended Clinic memberships and no unrelated membership'
         );
+        self::assertTrue(
+            App::authorization_service()->can($userId, $clinicB, RolesAndCapabilities::MEDICAL_READ),
+            'Clinic-B membership role must retain the doctor capability semantics'
+        );
+        self::assertFalse(
+            App::authorization_service()->can($userId, $clinicB, RolesAndCapabilities::CONFIG),
+            'Clinic-B doctor membership must not gain manager CONFIG authorization'
+        );
+    }
+
+    public function testOperatorWithoutAnyClinicAuthorizationCannotAttachIntoClinicB(): void
+    {
+        $fixture = $this->createExistingUserFixture();
+        $operatorId = $this->makeUser('phase4_no_membership_operator', RolesAndCapabilities::ROLE_MANAGER);
+        wp_set_current_user($operatorId);
+
+        $result = StaffManagementPage::upsertUser(
+            [
+                'mode' => 'attach_existing',
+                'clinic_id' => $fixture['clinic_b'],
+                'existing_user_id' => $fixture['user_id'],
+                'role' => RolesAndCapabilities::ROLE_DOCTOR,
+            ],
+            $operatorId
+        );
+
+        self::assertNotSame('', $result['error'], 'an operator without Clinic-B authorization must be denied');
+        self::assertNull(App::membership_service()->membership_for($fixture['clinic_b'], $fixture['user_id']));
+        self::assertSame(
+            1,
+            (int) App::db()->fetchValue(
+                'SELECT COUNT(*) FROM ' . App::db()->table('cpms_clinicians') . ' WHERE wp_user_id = %d',
+                [$fixture['user_id']]
+            ),
+            'denied attach must not create a clinician identity'
+        );
+    }
+
+    public function testClinicAOnlyOperatorCannotMutateClinicB(): void
+    {
+        $fixture = $this->createExistingUserFixture();
+        $operatorId = $this->makeUser('phase4_a_only_operator', RolesAndCapabilities::ROLE_MANAGER);
+        cpms_test_seed_membership($operatorId, $fixture['clinic_a'], RolesAndCapabilities::ROLE_MANAGER);
+        self::assertTrue(
+            App::authorization_service()->can($operatorId, $fixture['clinic_a'], RolesAndCapabilities::CONFIG)
+        );
+        self::assertFalse(
+            App::authorization_service()->can($operatorId, $fixture['clinic_b'], RolesAndCapabilities::CONFIG)
+        );
+        wp_set_current_user($operatorId);
+
+        $result = StaffManagementPage::upsertUser(
+            [
+                'mode' => 'attach_existing',
+                'clinic_id' => $fixture['clinic_b'],
+                'existing_user_id' => $fixture['user_id'],
+                'role' => RolesAndCapabilities::ROLE_DOCTOR,
+            ],
+            $operatorId
+        );
+
+        self::assertNotSame('', $result['error'], 'Clinic-A-only operator must not mutate Clinic B');
+        self::assertNull(App::membership_service()->membership_for($fixture['clinic_b'], $fixture['user_id']));
+    }
+
+    public function testNonexistentWpUserIsRejectedWithoutPartialMembership(): void
+    {
+        $fixture = $this->createExistingUserFixture();
+        wp_set_current_user($fixture['manager_id']);
+        $beforeMemberships = (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_clinic_memberships') . ' WHERE clinic_id = %d',
+            [$fixture['clinic_b']]
+        );
+
+        $result = StaffManagementPage::upsertUser(
+            [
+                'mode' => 'attach_existing',
+                'clinic_id' => $fixture['clinic_b'],
+                'existing_user_id' => 999999999,
+                'role' => RolesAndCapabilities::ROLE_DOCTOR,
+            ],
+            $fixture['manager_id']
+        );
+
+        self::assertNotSame('', $result['error'], 'an unknown WP user must be rejected deterministically');
+        self::assertSame(
+            $beforeMemberships,
+            (int) App::db()->fetchValue(
+                'SELECT COUNT(*) FROM ' . App::db()->table('cpms_clinic_memberships') . ' WHERE clinic_id = %d',
+                [$fixture['clinic_b']]
+            ),
+            'unknown user rejection must not partially create a Clinic membership'
+        );
+    }
+
+    public function testExistingActiveMembershipIsAConflictAndNeverDuplicates(): void
+    {
+        $fixture = $this->createExistingUserFixture(true);
+        $existing = App::membership_service()->membership_for($fixture['clinic_b'], $fixture['user_id']);
+        self::assertNotNull($existing);
+        $beforeClinicianCount = (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_clinicians') . ' WHERE wp_user_id = %d',
+            [$fixture['user_id']]
+        );
+        wp_set_current_user($fixture['manager_id']);
+
+        $result = StaffManagementPage::upsertUser(
+            [
+                'mode' => 'attach_existing',
+                'clinic_id' => $fixture['clinic_b'],
+                'existing_user_id' => $fixture['user_id'],
+                'role' => RolesAndCapabilities::ROLE_DOCTOR,
+            ],
+            $fixture['manager_id']
+        );
+
+        self::assertNotSame('', $result['error'], 'existing Clinic-B membership must be a deterministic conflict');
+        $after = App::membership_service()->membership_for($fixture['clinic_b'], $fixture['user_id']);
+        self::assertNotNull($after);
+        self::assertSame((int) $existing['id'], (int) $after['id'], 'duplicate attach must preserve the original membership row');
+        self::assertSame('active', (string) $after['status']);
+        self::assertSame(
+            $beforeClinicianCount,
+            (int) App::db()->fetchValue(
+                'SELECT COUNT(*) FROM ' . App::db()->table('cpms_clinicians') . ' WHERE wp_user_id = %d',
+                [$fixture['user_id']]
+            )
+        );
+    }
+
+    public function testSuspendedExistingMembershipIsNotDuplicatedOrSilentlyReactivated(): void
+    {
+        $fixture = $this->createExistingUserFixture(true, true);
+        $existing = App::membership_service()->membership_for($fixture['clinic_b'], $fixture['user_id']);
+        self::assertNotNull($existing);
+        self::assertSame('suspended', (string) $existing['status']);
+        wp_set_current_user($fixture['manager_id']);
+
+        $result = StaffManagementPage::upsertUser(
+            [
+                'mode' => 'attach_existing',
+                'clinic_id' => $fixture['clinic_b'],
+                'existing_user_id' => $fixture['user_id'],
+                'role' => RolesAndCapabilities::ROLE_DOCTOR,
+            ],
+            $fixture['manager_id']
+        );
+
+        self::assertNotSame('', $result['error'], 'suspended membership must require the existing explicit workflow');
+        $after = App::membership_service()->membership_for($fixture['clinic_b'], $fixture['user_id']);
+        self::assertNotNull($after);
+        self::assertSame((int) $existing['id'], (int) $after['id']);
+        self::assertSame('suspended', (string) $after['status'], 'attach must not silently reactivate a suspended row');
+    }
+
+    public function testDisallowedMembershipRoleIsRejectedBeforeMutation(): void
+    {
+        $fixture = $this->createExistingUserFixture();
+        wp_set_current_user($fixture['manager_id']);
+        $beforeMemberships = (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_clinic_memberships') . ' WHERE clinic_id = %d',
+            [$fixture['clinic_b']]
+        );
+
+        $result = StaffManagementPage::upsertUser(
+            [
+                'mode' => 'attach_existing',
+                'clinic_id' => $fixture['clinic_b'],
+                'existing_user_id' => $fixture['user_id'],
+                'role' => 'administrator',
+            ],
+            $fixture['manager_id']
+        );
+
+        self::assertNotSame('', $result['error'], 'administrator is not an allowed membership role');
+        self::assertSame(
+            $beforeMemberships,
+            (int) App::db()->fetchValue(
+                'SELECT COUNT(*) FROM ' . App::db()->table('cpms_clinic_memberships') . ' WHERE clinic_id = %d',
+                [$fixture['clinic_b']]
+            )
+        );
+        self::assertNull(App::membership_service()->membership_for($fixture['clinic_b'], $fixture['user_id']));
+    }
+
+    /**
+     * @return array{clinic_a:int, clinic_b:int, manager_id:int, user_id:int, clinician_id:int}
+     */
+    private function createExistingUserFixture(bool $withClinicBMembership = false, bool $suspended = false): array
+    {
+        $clinicA = $this->createClinic('phase4-fixture-a');
+        $clinicB = $this->createClinic('phase4-fixture-b');
+        $managerId = $this->makeUser('phase4_fixture_manager_' . bin2hex(random_bytes(3)), RolesAndCapabilities::ROLE_MANAGER);
+        $managerMembershipId = cpms_test_seed_membership($managerId, $clinicB, RolesAndCapabilities::ROLE_MANAGER);
+        self::assertGreaterThan(0, $managerMembershipId);
+
+        $userId = $this->makeUser('phase4_fixture_user_' . bin2hex(random_bytes(3)), RolesAndCapabilities::ROLE_DOCTOR);
+        $clinicAMembershipId = cpms_test_seed_membership($userId, $clinicA, RolesAndCapabilities::ROLE_DOCTOR);
+        self::assertGreaterThan(0, $clinicAMembershipId);
+        $clinicianId = App::clinicianRepository()->create(
+            $clinicA,
+            [
+                'full_name' => 'Phase 4 Fixture Professional',
+                'wp_user_id' => $userId,
+                'is_active' => 1,
+            ]
+        );
+        self::assertGreaterThan(0, $clinicianId);
+
+        if ($withClinicBMembership) {
+            $clinicBMembershipId = cpms_test_seed_membership($userId, $clinicB, RolesAndCapabilities::ROLE_DOCTOR);
+            self::assertGreaterThan(0, $clinicBMembershipId);
+            if ($suspended) {
+                App::membership_service()->suspend_membership($clinicBMembershipId);
+            }
+        }
+
+        return [
+            'clinic_a' => $clinicA,
+            'clinic_b' => $clinicB,
+            'manager_id' => $managerId,
+            'user_id' => $userId,
+            'clinician_id' => $clinicianId,
+        ];
     }
 
     private function makeUser(string $login, string $role): int
