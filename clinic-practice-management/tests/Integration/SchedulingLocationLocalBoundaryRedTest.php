@@ -11,6 +11,7 @@ use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Booking\BookingException;
 use ClinicCore\Infrastructure\Repository\AppointmentRepository;
+use ClinicCore\Infrastructure\Repository\LocationRepository;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
 use ClinicCore\Infrastructure\Repository\PatientRepository;
 use ClinicCore\Infrastructure\Repository\ScheduleRepository;
@@ -571,6 +572,7 @@ final class SchedulingLocationLocalBoundaryRedTest extends WP_UnitTestCase
             App::db(),
             new ScheduleRepository(App::db()),
             new MembershipRepository(App::db()),
+            new LocationRepository(App::db()),
             App::jobs(),
             App::audit(),
             App::op()

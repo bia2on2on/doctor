@@ -292,11 +292,13 @@ final class C7PreIntegrationBoundaryTest extends WP_UnitTestCase
     /**
      * C7-PRE/A3 — ClinicianAdminPage::saveSchedules با clinician_id پزشکِ Clinic A.
      *
-     * خاصیت: مدیر wp-admin Clinic B با ارسال شناسهٔ پزشک Clinic A (و روزِ برنامهٔ
-     * او) از مسیر REAL اکشن admin نباید بتواند برنامهٔ آن پزشک را ویرایش کند.
-     * فرم admin برنامه را با کلید (clinician_id, day) انتخاب می‌کند — شناسهٔ
-     * ورودیِ کلاینت همین clinician_id است و ردیفِ یافت‌شده متعلق به Clinic A است.
-     * انتظار: ردیف بدون تغییر؛ Slot آیندهٔ خالی قربانی موجود.
+     * خاصیت: مدیر wp-admin Clinic B با ارسال شناسهٔ پزشک Clinic A (و روز/محلِ برنامهٔ
+     * او) از مسیر REAL اکشن admin نباید بتواند برنامهٔ آن پزشک را ویرایش/ایجاد کند.
+     * فرم admin برنامه را با کلید (clinician_id, day, location) انتخاب می‌کند —
+     * شناسه‌های ورودیِ کلاینت clinician_id و location هستند و هرگز tenant context؛
+     * Clinic فقط از Scope معتبرِ درخواست (B) می‌آید.
+     * Phase 6 Slice 3: فرم ماتریس (روز × محل) است — مقدار دکمه «روز:محل» و Location
+     * صریحِ خودیِ A از فرم. انتظار: ردیف قربانی بدون تغییر؛ Slot خالی آینده موجود.
      */
     public function testWpAdminUpdateOfForeignClinicScheduleMustFailClosed(): void
     {
@@ -304,14 +306,16 @@ final class C7PreIntegrationBoundaryTest extends WP_UnitTestCase
             'cpms_schedule_save',
             [
                 'clinician_id' => (string) $this->clinicianA,
-                'sched_submit' => ['3' => '1'],
+                'sched_submit' => '3:' . $this->locA,
                 'sched' => [
                     3 => [
-                        'start_time' => '22:00',
-                        'end_time' => '23:30',
-                        'appointment_duration_min' => '20',
-                        'slot_capacity' => '1',
-                        'is_active' => '1',
+                        $this->locA => [
+                            'start_time' => '22:00',
+                            'end_time' => '23:30',
+                            'appointment_duration_min' => '20',
+                            'slot_capacity' => '1',
+                            'is_active' => '1',
+                        ],
                     ],
                 ],
             ],
@@ -736,8 +740,9 @@ final class C7PreIntegrationBoundaryTest extends WP_UnitTestCase
      *
      * خاصیت: مدیر wp-admin Clinic B (تک‌عضویت فعال B، nonce/capability معتبر —
      * مسیر REAL اکشن admin، زمینهٔ معتبر پس از C7-S4 به B حل می‌شود) نباید
-     * بتواند برای پزشکِ Clinic A برنامه بسازد. clinician_id ورودیِ فرم «انتخاب
-     * شیء» است نه tenant context — کلینیک هرگز از ردیف پزشک گرفته نمی‌شود.
+     * بتواند برای پزشکِ Clinic A برنامه بسازد. clinician_id و location ورودیِ
+     * فرم «انتخاب شیء» هستند نه tenant context — کلینیک هرگز از ردیف پزشک/
+     * Location گرفته نمی‌شود (Phase 6 Slice 3: فرم ماتریس روز × محل).
      * انتظار: انکار غیرافشا (معادل پزشک ناموجود)؛ بدون ردیف برنامه برای
      * پزشک A؛ Slot خالی آیندهٔ پزشک A موجود (بدون regenerate قربانی).
      */
@@ -748,14 +753,16 @@ final class C7PreIntegrationBoundaryTest extends WP_UnitTestCase
             'cpms_schedule_save',
             [
                 'clinician_id' => (string) $this->clinicianA,
-                'sched_submit' => ['5' => '1'],
+                'sched_submit' => '5:' . $this->locA,
                 'sched' => [
                     5 => [
-                        'start_time' => '22:00',
-                        'end_time' => '23:30',
-                        'appointment_duration_min' => '20',
-                        'slot_capacity' => '1',
-                        'is_active' => '1',
+                        $this->locA => [
+                            'start_time' => '22:00',
+                            'end_time' => '23:30',
+                            'appointment_duration_min' => '20',
+                            'slot_capacity' => '1',
+                            'is_active' => '1',
+                        ],
                     ],
                 ],
             ],
@@ -920,6 +927,10 @@ final class C7PreIntegrationBoundaryTest extends WP_UnitTestCase
      * مدیر Clinic B (تک‌عضویت فعال B) از مسیر REAL اکشن admin برای پزشکِ
      * خودیِ B برنامه می‌سازد ⇒ ردیف با clinic_id=B درج + notice موفق؛
      * اشیای Clinic A دست‌نخورده.
+     *
+     * Phase 6 Slice 3: فرم حالا ماتریس (روز × محل) است — مقدار دکمهٔ ارسال
+     * «روز:محل» است و Location صریحِ Location خودیِ B از همان فرم می‌آید
+     * (Backend کماکان در برابر Clinic معتبر اعتبارسنجی می‌کند).
      */
     public function testWpAdminScheduleCreateForOwnClinicSucceeds(): void
     {
@@ -931,14 +942,16 @@ final class C7PreIntegrationBoundaryTest extends WP_UnitTestCase
             'cpms_schedule_save',
             [
                 'clinician_id' => (string) $clinicianB,
-                'sched_submit' => ['5' => '1'],
+                'sched_submit' => '5:' . $this->locB,
                 'sched' => [
                     5 => [
-                        'start_time' => '15:00',
-                        'end_time' => '18:00',
-                        'appointment_duration_min' => '30',
-                        'slot_capacity' => '2',
-                        'is_active' => '1',
+                        $this->locB => [
+                            'start_time' => '15:00',
+                            'end_time' => '18:00',
+                            'appointment_duration_min' => '30',
+                            'slot_capacity' => '2',
+                            'is_active' => '1',
+                        ],
                     ],
                 ],
             ],
@@ -951,6 +964,7 @@ final class C7PreIntegrationBoundaryTest extends WP_UnitTestCase
             'C7-S5/P1: ساخت برنامهٔ خودی Clinic B با تک‌عضویت فعال باید موفق بماند. notice="' . $notice . '"'
         );
         $this->assertSame(self::CLINIC_B, (int) $row['clinic_id'], 'ردیف جدید باید به Clinic B تعلق داشته باشد');
+        $this->assertSame($this->locB, (int) $row['location_id'], 'Phase 6 Slice 3: ردیف به Location صریحِ فرم گره بخورد');
         $this->assertSame('15:00:00', (string) $row['start_time'], 'زمان ذخیره‌شده صحیح باشد');
         // روز جدید ⇒ شاخهٔ create واقعی handler: پیام «روز به برنامه اضافه شد».
         $this->assertStringContainsString('اضافه شد', $notice, 'notice موفق شاخهٔ create انتظار می‌رود');

@@ -67,6 +67,33 @@ final class LocationRepository
     }
 
     /**
+     * Phase 6 Slice 3 — تک‌پیش‌شرط قرارداد create برنامه: Location باید وجود
+     * داشته باشد، متعلق به Clinic معتبر باشد و فعال باشد.
+     *
+     * بیگانه/ناموجود/غیرفعال همگی null برمی‌گردانند (پاریتِ «یافت نشد» — هیچ
+     * تفکیکی در پاسخ افشا نمی‌شود)؛ سندهای کلینیکیِ Location هرگز از payload
+     * یا Clinicِ خانهٔ پزشک نمی‌آید — $clinicId فقط از Scope مورد اعتماد سرویس.
+     *
+     * @return array<string,mixed>|null
+     */
+    public function findActiveForClinic(int $clinicId, int $locationId): ?array
+    {
+        if ($clinicId <= 0 || $locationId <= 0) {
+            return null;
+        }
+
+        $row = $this->db->fetchRow(
+            'SELECT * FROM ' . $this->db->table('cpms_locations') .
+            ' WHERE id = %d AND clinic_id = %d AND is_active = 1 LIMIT 1',
+            [$locationId, $clinicId]
+        );
+
+        $this->assertNoSqlError();
+
+        return $row;
+    }
+
+    /**
      * @return list<array<string,mixed>>
      */
     public function listForClinic(int $clinicId): array

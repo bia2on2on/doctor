@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace ClinicCore\Infrastructure\Repository;
 
-use ClinicCore\Application\Scope\PrimaryLocationResolver;
 use ClinicCore\Infrastructure\Db\CpmsDb;
+use RuntimeException;
 
 /**
  * Repository برنامه هفتگی + استثنائات — ADR-0021 (Domain-Focused، از F3).
@@ -77,20 +77,24 @@ final class ScheduleRepository
     }
 
     /**
-     * Phase 4 — Slice 1: قاعدهٔ «یک برنامه در هر روز هفته» داخل یک Clinic است
-     * (قرارداد یکتایی 0014 = `(clinic_id, location_id, clinician_id, day_of_week,
-     * start_time)` — «چند شعبه در یک روز» مجاز است). پیش‌بررسیِ create با
-     * دامنهٔ Clinic معتبرِ درخواست انجام می‌شود تا برنامهٔ Clinic دیگر، ثبتِ
-     * Clinic دوم را به‌اشتباه «تکراری» نکند.
+     * Phase 6 — Slice 3: قاعدهٔ «یک برنامه در هر روز هفته» در محدودهٔ
+     * (Clinic معتبر + Location) است — قرارداد یکتایی 0014
+     * `(clinic_id, location_id, clinician_id, day_of_week, start_time)` اجازهٔ
+     * «همان روز هفته در دو شعبهٔ مختلف» را می‌دهد. پیش‌بررسیِ create هم دقیقاً
+     * در همین محدوده انجام می‌شود (نه Clinic-wide — که ثبت شعبهٔ دوم را
+     * به‌اشتباه «تکراری» می‌کرد، و نه Clinic-دیگر که ایزولیشن را می‌شکست).
+     *
+     * Multi-shift هنوز فعال نیست: یک ردیف برای هر
+     * (Clinic, Location, clinician, day_of_week).
      *
      * @return array<string, mixed>|null
      */
-    public function findByClinicianDayInClinic(int $clinicianId, int $dayOfWeek, int $clinicId): ?array
+    public function findByClinicianDayInClinicAndLocation(int $clinicianId, int $dayOfWeek, int $clinicId, int $locationId): ?array
     {
         return $this->db->fetchRow(
             'SELECT * FROM ' . $this->db->table('cpms_schedule') .
-            ' WHERE clinician_id = %d AND day_of_week = %d AND clinic_id = %d LIMIT 1',
-            [$clinicianId, $dayOfWeek, $clinicId]
+            ' WHERE clinician_id = %d AND day_of_week = %d AND clinic_id = %d AND location_id = %d LIMIT 1',
+            [$clinicianId, $dayOfWeek, $clinicId, $locationId]
         );
     }
 
@@ -128,14 +132,16 @@ final class ScheduleRepository
     {
         $data = $this->whitelist($fields, self::SCHEDULE_CREATE_FIELDS);
 
-        // Phase 2 (AD-15): برنامهٔ کاری به یک Location گره خورده است. اگر
-        // caller صریحاً Location نداده، Location اصلی همان Clinic (deterministic)
-        // است — هر Clinic حداقل یک Location دارد.
-        if (empty($data['location_id'])) {
-            $data['location_id'] = PrimaryLocationResolver::resolve(
-                $this->db,
-                (int) ($data['clinic_id'] ?? 0)
-            );
+        /*
+         * Phase 6 Slice 3: هیچ fallback به Location اصلی (یا هر Location دیگر)
+         * در مسیر create باقی نمانده است. `location_id` حالا ورودیِ الزامیِ
+         * قرارداد است که سرویس در برابر Clinic معتبرِ Scope اعتبارسنجی
+         * کرده است (real + active + clinic match). ستون NOT NULL است
+         * (Migration 0013)؛ مقادیر بدون/نامعتبر اینجا به‌صورت آشکار می‌شکنند —
+         * یعنی برنامه‌نویسیِ caller را — نه با جایگزینیِ بی‌صدا پنهان می‌شوند.
+         */
+        if ((int) ($data['location_id'] ?? 0) <= 0) {
+            throw new RuntimeException('schedule create requires an explicit validated location_id (no fallback)');
         }
 
         $this->db->insert('cpms_schedule', $data);
