@@ -90,11 +90,12 @@ final class SchedulingLocationLocalBoundaryRedTest extends WP_UnitTestCase
         App::resetScope();
         ScopeContext::clear();
         $this->assertTimezonesAvailable();
-        // Prewarm مرتب‌شدهٔ singleton مسیر REST: App::bookingService() در نخستین
-        // ساخت، Settings را از Scope سیستمی می‌گیرد که فقط در حالت تک‌Clinic
-        // (پیش از ساخت fixture دوم) resolve می‌شود. بدون این prewarm، T4 به
-        // ترتیب اجرای الفبایی سوییت وابسته می‌شد (ریسک کلاس C، نه قرارداد محصول).
-        App::bookingService();
+        // warmRoutes/prewarm پیش از buildFixture: rest_api_init در حالت تک‌Clinic
+        // (تنها Clinic سیستم) همهٔ controllerها شامل BookingService را یک‌بار
+        // می‌سازد و singletonهایش کش می‌مانند؛ پس از ساخت fixture (دو Clinic)
+        // صدا زدن /health بدون Scope صریح CLINIC_SCOPE_REQUIRED می‌دهد
+        // (SystemClinicResolver fail-closed — رفتار صحیح محصول، نه قرارداد تست).
+        $this->warmRoutes();
         $this->buildFixture();
         $this->purgeJobs();
         wp_set_current_user(0);
@@ -338,7 +339,7 @@ final class SchedulingLocationLocalBoundaryRedTest extends WP_UnitTestCase
 
     public function testRestDefaultWindowUsesLocationCalendarWestOfUtc(): void
     {
-        $this->warmRoutes();
+        // Routeها در setUp (حالت تک‌Clinic) register و singletonها prewarm شده‌اند.
         $before = new DateTimeImmutable('now', new DateTimeZone('UTC'));
         $niueNow = $before->setTimezone(new DateTimeZone(self::TZ_WEST));
 
