@@ -47,6 +47,10 @@ final class Phase4ClinicProfileTest extends WP_UnitTestCase
         $this->clinicA = $this->insertClinic($base, $this->orgId, 'green-clinic-a-' . bin2hex(random_bytes(2)), self::OLD_NAME_A, self::OLD_ADDR_A, self::OLD_PHONE_A, 'Asia/Tehran');
         $this->clinicB = $this->insertClinic($base + 1, $this->orgId, 'green-clinic-b-' . bin2hex(random_bytes(2)), 'کلینیک B', 'آدرس B', '02111111111', 'Asia/Kabul');
 
+        // Strengthen updated_at test deterministically: set initial updated_at to clearly earlier timestamp
+        global $wpdb;
+        $wpdb->query($wpdb->prepare('UPDATE ' . $wpdb->prefix . 'cpms_clinics SET updated_at = %s WHERE id IN (%d, %d)', '2020-01-01 00:00:00.000', $this->clinicA, $this->clinicB));
+
         $this->locA = $this->insertLocation($this->clinicA, 'green-loc-a-' . bin2hex(random_bytes(2)), 'Asia/Tehran');
         $this->locB = $this->insertLocation($this->clinicB, 'green-loc-b-' . bin2hex(random_bytes(2)), 'Asia/Kabul');
 
@@ -67,7 +71,6 @@ final class Phase4ClinicProfileTest extends WP_UnitTestCase
 
         $this->actorSuspendedA = $this->makeUser('green_susp_a_' . bin2hex(random_bytes(2)), 'administrator');
         $memId = cpms_test_seed_membership($this->actorSuspendedA, $this->clinicA, 'cpms_manager');
-        global $wpdb;
         $wpdb->query($wpdb->prepare('UPDATE ' . $wpdb->prefix . 'cpms_clinic_memberships SET status = "suspended" WHERE id = %d', $memId));
 
         $this->assertGreaterThan(0, $this->orgId);
@@ -99,6 +102,8 @@ final class Phase4ClinicProfileTest extends WP_UnitTestCase
         $oldSlug = (string) $before['slug'];
         $oldOrg = (int) $before['organization_id'];
         $oldTz = (string) $before['timezone'];
+        $oldUpdated = (string) $before['updated_at'];
+        $this->assertSame('2020-01-01 00:00:00.000', $oldUpdated, 'fixture: initial updated_at must be clearly earlier');
 
         $newName = 'کلینیک جدید A - GREEN';
         $newAddr = 'خیابان نو، پلاک ۹۹';
@@ -125,8 +130,8 @@ final class Phase4ClinicProfileTest extends WP_UnitTestCase
         $this->assertSame($oldOrg, (int) $after['organization_id'], 'preserve org');
         $this->assertSame($oldTz, (string) $after['timezone'], 'preserve timezone');
         $this->assertSame($oldCreated, (string) $after['created_at'], 'preserve created_at');
-        // updated_at may be same second due to .000 precision, so we only check it's not empty and name changed
-        $this->assertNotEmpty((string) $after['updated_at'], 'updated_at present');
+        $this->assertNotEmpty((string) $after['updated_at'], 'updated_at present and valid');
+        $this->assertNotSame($oldUpdated, (string) $after['updated_at'], 'updated_at must change on real update');
 
         $loc = $this->locationRow($this->locA);
         $this->assertSame('Asia/Tehran', $loc['timezone'], 'location timezone unchanged');

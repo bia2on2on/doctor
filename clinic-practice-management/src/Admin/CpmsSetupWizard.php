@@ -463,7 +463,7 @@ final class CpmsSetupWizard
                             <?php
                             $st = (string) ($c['status'] ?? '');
                             $cls = $st === 'pass' ? '#00a32a' : ($st === 'warning' ? '#b26b00' : '#d63638');
-                            echo '<span style="color:' . esc_attr($cls) . ';font-weight:600;\">' . esc_html($st) . '</span>';
+                            echo '<span style="color:' . esc_attr($cls) . ';font-weight:600;">' . esc_html($st) . '</span>';
                             ?>
                         </td>
                         <td><?php echo esc_html((string) ($c['detail'] ?? '')); ?></td>
