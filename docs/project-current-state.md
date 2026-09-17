@@ -3,7 +3,30 @@
 > Recover the project from this file + Git/remote/PR + linked canonical docs.
 > Do **not** use a previous chat session as memory.
 >
-> **Integrated main checkpoint (Phase 4 technical closure — re-verified live 2026-09-17):** `70ace204d1524a8f5e83d33c67c1a09b7543e7a3` — "Merge pull request #65 from bia2on2on/arena/01a0ae2c-doctor" (MERGED 2026-09-17T09:27:34Z).
+> **Integrated main checkpoint (Phase 5 Slice 1 — bounded technical closure; re-verified live 2026-09-17):** `e063b42260cb5ab740acf48dcf73c6c67b11fef6` — "Merge pull request #67 from bia2on2on/arena/01a0afef-doctor" (MERGED 2026-09-17T15:36:54Z; approved PR head `fa86e41e415d1b7fcca3dec4c88fadb25da71d1a`; merged PR #67 changed 3 files).
+> **Owner Roadmap Phase 5 — Pricing Engine: CLOSED / TECHNICALLY COMPLETE (BOUNDED)**, in the bounded scope
+> of the merged **Phase 5 Slice 1 (PR #67)**. Bounded scope: **base pricing is Clinic-scoped and sufficient
+> for the current approved V1 flow**, and Slice 1 closed the concrete **Location attribution** gap by
+> deriving `invoice.location_id` from the **validated Visit** (never from the request payload);
+> `invoiceView()` returns the stored value, and historical `location_id = NULL` invoices are **not**
+> backfilled. Existing V1 finance behavior is preserved: manual `unit_price` override remains supported, the
+> `service.price` fallback remains supported, and invoice-item snapshots preserve historical charged values.
+> **Not claimed:** ServiceOffering; any change to `u_service_code`; distinct tariffs for the *same* Service
+> across different Locations of the same Clinic; server-side `is_active` invoice rejection as a proven
+> product contract; tax/VAT policy (**REQUIRES LEGAL VERIFICATION**). **V1 is neither single-Clinic nor
+> single-Location** — the authoritative model is `Organization → Clinic → Location` (ADR-0031), and
+> multi-Location product support is **not** deferred. Deferring per-Location tariff sophistication rests on
+> the **absence of a proven hard V1 requirement**, **not** on a single-Location assumption; a future verified
+> same-Service-per-Location pricing requirement is a separate scoped decision with schema/uniqueness review.
+> **No additional Phase 5 migration is justified; latest migration remains `0020` — no `0021` exists.**
+> Evidence limitations that remain truthful and permanent: historical **VALID RED = NOT AVAILABLE** (no
+> workflow run exists on the Slice-1 implementation commit `ac9fe35`); direct named execution proof for
+> `Phase5InvoiceLocationFromVisitTest` = **NOT RETRIEVED** (the PR's Integration completion-evidence comment
+> names only the Phase-3 Slice-6 / Phase-4 Slice-3 / Phase-4 Slice-4 / Phase-4 Location suites — aggregate
+> counts are not per-test proof). Exact-head evidence: 19/19 checks success at `fa86e41e…`; post-merge gates
+> on the merge SHA all success (CI `35241393668` · Real WP `35241393522` · Pilot/Staging `35241393533` ·
+> Closure `35241393493`).
+> **Previous integrated main checkpoint (historical; Phase 4 technical closure — re-verified live 2026-09-17; superseded by the Phase 5 slice-1 checkpoint above):** `70ace204d1524a8f5e83d33c67c1a09b7543e7a3` — "Merge pull request #65 from bia2on2on/arena/01a0ae2c-doctor" (MERGED 2026-09-17T09:27:34Z).
 > **Owner Roadmap Phase 4 — Master Data: CLOSED / TECHNICALLY COMPLETE (BOUNDED)** based on the
 > merged Phase-4 slices **PRs #59–#65**: professional multi-Clinic participation through membership;
 > shared-professional staff Booking, WalkIn, and queue clinician resolution; Clinic Profile
@@ -12,8 +35,9 @@
 > **not** claim ServiceOffering, Specialty/Department/Room, Iran geography master data, or any other
 > deferred/open feature implemented; the stale `clinic.phone` Patient Portal consumer is not claimed
 > fixed. Location timezone remains the operational source-of-truth decision, and a professional's
-> participation across Clinics remains membership-based. **Phase 5 implementation has not started and
-> is not part of this closure.** Latest migration remains `0020`; no `0021` exists.
+> participation across Clinics remains membership-based. **Phase 5 implementation had not started at this
+> Phase-4 checkpoint and was not part of that closure.** *(🔴 historical — superseded by the bounded
+> Phase 5 Slice 1 closure in the top block.)* Latest migration remains `0020`; no `0021` exists.
 > **Previous integrated main checkpoint (historical; Phase 3 End Gate — technically COMPLETED & FROZEN, re-verified
 > live 2026-09-16; superseded by the current Phase 4 checkpoint above):** `ebf8588f34be1da2ff18a152dea2c8badc472056` — "Merge pull request #57 from
 > bia2on2on/arena/01a0aae9-doctor" (MERGED 2026-09-16T16:46:59Z by `arena-ai-coding-agent[bot]`).
@@ -79,9 +103,9 @@
 
 If Git/remote/PR, this file, and the repository tree disagree: **STOP**.
 
-This file describes the current integrated main checkpoint `70ace204` (Phase 4 technical
-closure, bounded to merged PRs #59–#65; see the header block) plus preserved
-previous-checkpoint and pre-merge/pre-corrective evidence SHAs below. It does
+This file describes the current integrated main checkpoint `e063b42` (Phase 5 Slice 1 —
+bounded Phase 5 technical closure; see the header block) plus preserved Phase-4/Phase-3
+checkpoint and pre-merge/pre-corrective evidence SHAs below. It does
 **not** self-refer to the SHA of any later documentation-only commit.
 
 ---
@@ -127,11 +151,13 @@ Legacy labels (`F0..F10`, `Doc-Phase`, `V1` / `V1.5` / `V2`) are historical. The
 | C8 | **CLOSED as a Phase-2 Location-foundation evidence/documentation closure package (2026-09-11) — NO implementation work performed or authorized.** Reviewed evidence found no verified Phase-2 Location implementation gap. C8 closure means "the Phase-2 Location foundation is closed based on current evidence", not "all future Location/timezone behavior is complete" — see `docs/phase-reports/phase2-state.md` §C8 |
 | Phase 3 | **COMPLETED / FROZEN** — implementation COMPLETE / technically accepted based on merged implementation (PRs #49, #50, #52, #54, #55, #56, #57) and exact-head evidence (19/19 checks success at `ebf8588f34be1da2ff18a152dea2c8badc472056`). Central Clinic-scoped `AuthorizationService` established; FROZEN. This is NOT a release/V1/commercial claim |
 | Phase 4 | **CLOSED / TECHNICALLY COMPLETE (BOUNDED)** — the current live-main checkpoint above records merged PRs #59–#65 and their bounded scope. Deferred/open Master Data items remain deferred/open; no ServiceOffering, Specialty/Department/Room, Iran geography master data, or stale `clinic.phone` Patient Portal consumer fix is claimed |
-| Phase 5 | **NOT STARTED** — implementation is not part of this reconciliation |
+| Phase 5 | **CLOSED / TECHNICALLY COMPLETE (BOUNDED)** — merged **Phase 5 Slice 1** (**PR #67**; merge `e063b42260cb5ab740acf48dcf73c6c67b11fef6`, 2026-09-17T15:36:54Z). Bounded scope: **Clinic-scoped base pricing sufficient for the current approved V1 flow** + the concrete Location-attribution fix (`invoice.location_id` derived from the validated Visit, never from payload). Not claimed: ServiceOffering, any `u_service_code` change, distinct per-Location tariffs for the *same* Service, `is_active` server-side invoice rejection as a product contract, tax/VAT policy (REQUIRES LEGAL VERIFICATION). Latest migration remains `0020` — no `0021`. This is NOT a release/V1/commercial claim |
 
-**Integrated main checkpoint:** `70ace204d1524a8f5e83d33c67c1a09b7543e7a3` (PR #65 MERGED 2026-09-17 —
-bounded Phase 4 technical closure through PRs #59–#65; no release/V1/commercial claim).
-Previous integrated checkpoint: `ebf8588` (PR #57 MERGED 2026-09-16 — Phase 3
+**Integrated main checkpoint:** `e063b42260cb5ab740acf48dcf73c6c67b11fef6` (PR #67 MERGED 2026-09-17T15:36:54Z —
+bounded Phase 5 Slice 1 technical closure; Clinic-scoped base pricing + `invoice.location_id` derived from the
+validated Visit; no release/V1/commercial claim).
+Previous integrated checkpoint: `70ace204` (PR #65 MERGED 2026-09-17 — bounded Phase 4 technical
+closure through PRs #59–#65). Earlier: `ebf8588` (PR #57 MERGED 2026-09-16 — Phase 3
 End Gate; technically COMPLETED/FROZEN; gates recorded in the header block). Earlier:
 `35acced` (PR #47 MERGED 2026-09-15 — final Phase 2 technical merge). Earlier: `bdb135e9` (PR #25 MERGED — C10 documentation
 evidence package). Earlier: `b19930fe` (PR #21 MERGED 2026-09-11T14:27:14Z —
