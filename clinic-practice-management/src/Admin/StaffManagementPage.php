@@ -9,6 +9,7 @@ use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Application\Scope\TrustedClinicEstablisher;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Domain\Membership\MembershipException;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
 
 /**
@@ -83,7 +84,6 @@ final class StaffManagementPage
         $rows = self::listUsers($clinicId);
         $roles = self::roleLabels();
         $clinicChoices = self::managedClinicChoices((int) get_current_user_id());
-        $existingUsers = self::existingUserChoices($clinicId);
         ?>
         <div class="wrap" dir="rtl">
             <h1>کاربران و دسترسی‌ها</h1>
@@ -180,23 +180,19 @@ final class StaffManagementPage
                 </p>
             </form>
 
-            <?php if ($clinicId > 0 && $existingUsers !== []) : ?>
+            <?php if ($clinicId > 0) : ?>
                 <h2>افزودن کاربر موجود به این Clinic</h2>
-                <p class="description">یک حساب WordPress موجود را با شناسهٔ پایدار انتخاب کنید. این عملیات حساب WordPress یا پروفایل حرفه‌ای جدید نمی‌سازد؛ فقط عضویت همین کاربر را در Clinic انتخاب‌شده ایجاد می‌کند.</p>
+                <p class="description">شناسهٔ عددی WordPress حساب موجود را وارد کنید. این عملیات حساب WordPress یا پروفایل حرفه‌ای جدید نمی‌سازد؛ فقط عضویت همین کاربر را در Clinic انتخاب‌شده ایجاد می‌کند.</p>
                 <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
                     <?php wp_nonce_field(self::NONCE_ACTION); ?>
                     <input type="hidden" name="action" value="cpms_staff_save">
                     <input type="hidden" name="mode" value="attach_existing">
                     <input type="hidden" name="clinic_id" value="<?php echo $clinicId; ?>">
                     <table class="form-table" role="presentation">
-                        <tr><th><label for="cpms_existing_user">حساب WordPress موجود</label></th>
+                        <tr><th><label for="cpms_existing_user">شناسهٔ حساب WordPress موجود</label></th>
                             <td>
-                                <select id="cpms_existing_user" name="existing_user_id" required>
-                                    <option value="">انتخاب کاربر موجود</option>
-                                    <?php foreach ($existingUsers as $existing) : ?>
-                                        <option value="<?php echo (int) $existing['id']; ?>"><?php echo esc_html((string) $existing['label']); ?></option>
-                                    <?php endforeach; ?>
-                                </select>
+                                <input type="number" id="cpms_existing_user" name="existing_user_id" min="1" step="1" required>
+                                <p class="description">شناسهٔ پایدار کاربر را از حساب موجود بردارید؛ جست‌وجوی موبایل یا merge خودکار انجام نمی‌شود.</p>
                             </td>
                         </tr>
                         <tr><th><label for="cpms_existing_role">نقش عضویت در این Clinic</label></th>
@@ -823,56 +819,6 @@ final class StaffManagementPage
         }
 
         return $map;
-    }
-
-    /**
-     * حساب‌های WordPress قابل انتخاب برای attach، به‌جز حساب‌هایی که همین حالا
-     * در Clinic هدف عضویت دارند. شناسهٔ عددی WP تنها کلید انتخاب است.
-     *
-     * @return list<array{id:int, label:string}>
-     */
-    private static function existingUserChoices(int $clinicId): array
-    {
-        if ($clinicId <= 0) {
-            return [];
-        }
-
-        $membershipRows = App::db()->fetchAll(
-            'SELECT wp_user_id FROM ' . App::db()->table('cpms_clinic_memberships') . ' WHERE clinic_id = %d',
-            [$clinicId]
-        );
-        $alreadyMember = [];
-        foreach (is_array($membershipRows) ? $membershipRows : [] as $row) {
-            $userId = (int) ($row['wp_user_id'] ?? 0);
-            if ($userId > 0) {
-                $alreadyMember[$userId] = true;
-            }
-        }
-
-        $users = get_users([
-            'role__in' => self::MANAGEABLE_ROLES,
-            'fields' => 'all',
-            'number' => 500,
-            'orderby' => 'display_name',
-            'order' => 'ASC',
-        ]);
-        $choices = [];
-        foreach ($users as $user) {
-            $userId = (int) $user->ID;
-            if ($userId <= 0 || isset($alreadyMember[$userId])) {
-                continue;
-            }
-            $label = (string) $user->display_name;
-            if ($label === '') {
-                $label = (string) $user->user_login;
-            }
-            $choices[] = [
-                'id' => $userId,
-                'label' => $label . ' (' . (string) $user->user_login . ') — ' . (string) $user->user_email,
-            ];
-        }
-
-        return $choices;
     }
 
     /** @return array<string,string> */
