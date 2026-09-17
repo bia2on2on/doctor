@@ -24,7 +24,7 @@
 | Domain / Schema / ERD / Migration | **Phase 2** — Multi-Clinic Core |
 | Authorization / Roles / Capability / Scope | **Phase 3** — Role & Access Control |
 | Specialty / Department / Room / داده‌های پایه | **Phase 4** — Master Data |
-| Pricing / تعرفه | **Phase 5** |
+| Pricing / تعرفه | **Phase 5** — ✅ **CLOSED / TECHNICALLY COMPLETE (BOUNDED)** (PR #67)؛ قلمِ «تعرفهٔ متفاوت per-Location برای همان Service» **الزامِ اثبات‌شدهٔ V1 نیست** و بدون فاز/migration باز می‌ماند (رجوع به O-06) |
 | Schedule / Availability / Timezone | **Phase 6** |
 | Appointment / Booking | **Phase 7** |
 | Security / Authorization دیرهنگام / Rate-limit | **Phase 1** |
@@ -34,6 +34,7 @@
 | نماد | معنی |
 |---|---|
 | ✅ RESOLVED | در Phase 0.5 اصلاح شد |
+| ✅ **CLOSED (PHASE)** | فاز مالک بسته/تکمیل شده است (ردیف‌های `O-*` — نمونه: `O-06` = Phase 5 = CLOSED / TECHNICALLY COMPLETE (BOUNDED)) — متن فاز بازنویسی نمی‌شود؛ فقط وضعیت ثبت می‌گردد |
 | 🕒 DEFERRED | تا فاز مالک دست‌نخورده می‌ماند |
 | ⚠️ OPEN DECISION | نیازمند تصمیم Product Owner |
 
@@ -46,6 +47,20 @@
 > item. The documented Location-timezone source-of-truth decision and membership-based
 > cross-Clinic professional model remain unchanged; the stale `clinic.phone` Patient
 > Portal consumer is not claimed fixed.
+>
+> **Current Phase 5 closure note (re-verified 2026-09-17):** Owner Roadmap Phase 5 — Pricing Engine is
+> **CLOSED / TECHNICALLY COMPLETE in a bounded scope** on live main
+> `e063b42260cb5ab740acf48dcf73c6c67b11fef6`, by the merged **Phase 5 Slice 1 — PR #67**
+> (approved head `fa86e41e415d1b7fcca3dec4c88fadb25da71d1a`; exact-head checks 19/19 success;
+> post-merge gates on the merge SHA all success). Bounded scope: Clinic-scoped base pricing sufficient
+> for the current approved V1 flow, plus the concrete Location-attribution fix (`invoice.location_id`
+> derived from the validated Visit, never from payload). This closure does **not** promote the remaining
+> O-06 residual item: distinct tariffs for the *same* Service across different Locations of the same
+> Clinic are **not currently proven as a hard V1 requirement** — deferred on the absence of a proven
+> requirement, **not** on a single-Clinic/single-Location V1 assumption (**multi-Location product
+> support is not deferred**). No ServiceOffering, no `u_service_code` change, no `0021`; latest
+> migration remains `0020`.
+
 ---
 
 ## بخش ۱ — اسناد فعال و پرریسک: ✅ RESOLVED در Phase 0.5
@@ -140,7 +155,7 @@
 | O-03 | `ADR-0013` / `state-machines/` | DST و تبدیل منطقهٔ زمانی پوشش تست ندارند | 🕒 **Phase 6** — Scheduling Engine |
 | O-04 | `ADR-0004` / `ADR-0017` | Slot و Duration بدون بُعد Location | 🕒 **Phase 6** |
 | O-05 | `state-machines/appointment.md` | بدون بُعد Location | 🕒 **Phase 7** |
-| O-06 | `scope/mvp-scope.md` | تعرفه/Pricing بدون سطح Organization یا per-Location | 🕒 **Phase 5** |
+| O-06 | `scope/mvp-scope.md` | تعرفه/Pricing بدون سطح Organization یا per-Location | ✅ **Phase 5 = CLOSED / TECHNICALLY COMPLETE (BOUNDED)** — **PR #67 MERGED** 2026-09-17T15:36:54Z (merge = `e063b42260cb5ab740acf48dcf73c6c67b11fef6`؛ head = `fa86e41e415d1b7fcca3dec4c88fadb25da71d1a`). **Pricing پایه Clinic-scoped است و برای جریان تأییدشدهٔ فعلی V1 کافی است**؛ Slice 1 شکافِ مشخصِ انتساب Location را با استخراج `invoice.location_id` از Visit معتبر بست (هرگز از payload) و `invoiceView()` مقدار ذخیره‌شده را برمی‌گرداند. **قلمِ باقی‌ماندهٔ باز (بخشی از این بستن نیست):** «تعرفهٔ متفاوت برای *همان* Service در Locationهای متفاوتِ یک Clinic» **به‌عنوان الزام سختِ V1 اثبات نشده** است ⇒ بدون ServiceOffering، بدون تغییر `u_service_code`، و بدون migration جدید برای فرضِ per-Location pricing (آخرین migration = `0020`؛ `0021` ساخته/رزرو نشده). ⚠️ **تصریح:** این تعلیق بر پایهٔ **نبودِ الزامِ اثبات‌شده** است، **نه** فرضِ تک‌Clinic/تک‌Location — **پشتیبانی چند Location در V1 به‌تعویق نیفتاده است** (معماری مرجع `Organization → Clinic → Location`)؛ آنچه اثبات نشده فقط «تعرفهٔ متفاوت per-Location برای همان Service» است. اگر الزامِ تأییدشدهٔ آینده‌ای چنین چیزی بخواهد، تصمیمِ scoped جداگانه با بازبینی schema/uniqueness لازم است (قابل‌ردیابی به ردیف ۲۲ — `services` — در `phase0.5-target-model.md` §د‑۶‑۲: «location_id NULL = همهٔ محل‌ها» + گامِ برنامهٔ `M-08`؛ این یک ردیفِ **برنامه** است، نه migration تأییدشده/ساخته‌شده). سلول «فاز مالک» تاریخی این سطر (**Phase 5**) محفوظ است؛ این سطر بستنِ فاز مالک را ثبت می‌کند، نه حذف Drift را |
 | O-07 | `testing/testing-plan.md` TP-15 | تست Dangling/Migration به مکانیزم ناموجود ارجاع می‌دهد | 🕒 **Phase 2** |
 | O-08 | `phase-reports/report-pilot-gate.md` §1 | «Fresh Install — **۳۷+ جدول**» | 🕒 بایگانی — سند تاریخی، در زمان خود درست بود |
 | O-09 | `docs/commercial-gap-audit.md` | untracked؛ P0-1..P0-6 با Phase 1 هم‌پوشانی دارد | 🕒 **Phase 1** — طبق دستور Owner دست‌نخورده می‌ماند |
