@@ -37,6 +37,15 @@
 | 🕒 DEFERRED | تا فاز مالک دست‌نخورده می‌ماند |
 | ⚠️ OPEN DECISION | نیازمند تصمیم Product Owner |
 
+
+> **Current Phase 4 closure note (re-verified 2026-09-17):** Owner Roadmap Phase 4 is
+> **CLOSED / TECHNICALLY COMPLETE in a bounded scope** on live main
+> `70ace204d1524a8f5e83d33c67c1a09b7543e7a3`, through merged PRs **#59–#65**.
+> The closure does not promote the remaining M-01..M-05 drift, Q11, ServiceOffering,
+> Specialty/Department/Room, Iran geography master data, or any other deferred/open
+> item. The documented Location-timezone source-of-truth decision and membership-based
+> cross-Clinic professional model remain unchanged; the stale `clinic.phone` Patient
+> Portal consumer is not claimed fixed.
 ---
 
 ## بخش ۱ — اسناد فعال و پرریسک: ✅ RESOLVED در Phase 0.5
@@ -110,7 +119,7 @@
 
 ---
 
-## بخش ۴ — Master Data → 🕒 **Phase 4**
+## بخش ۴ — Remaining Master Data drift after the bounded **Phase 4** closure
 
 | # | سند | Drift | اقدام |
 |---|---|---|---|

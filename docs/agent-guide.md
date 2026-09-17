@@ -19,10 +19,10 @@
 > | Phase 0 | Git Checkpoint | ✅ CLOSED — [`report-phase-0-reverification.md`](phase-reports/report-phase-0-reverification.md) |
 > | Phase 0.5 | Target Architecture & Migration Plan | ✅ CLOSED — [`phase0.5-target-model.md`](architecture/phase0.5-target-model.md) |
 > | Phase 1 | Security Hardening | ⏸ منتظر Gate Approval |
-> | Phase 2 | Multi-Clinic Core | ⏳ |
-> | Phase 3 | Role & Access Control | ⏳ |
-> | Phase 4 | Master Data | ⏳ |
-> | Phase 5 | Pricing Engine | ⏳ |
+> | Phase 2 | Multi-Clinic Core | ✅ CLOSED (TECHNICAL) — see the current-state checkpoint |
+> | Phase 3 | Role & Access Control | ✅ COMPLETED / FROZEN — merged PRs #49/#50/#52/#54/#55/#56/#57 |
+> | Phase 4 | Master Data | ✅ CLOSED / TECHNICALLY COMPLETE (BOUNDED) — merged PRs #59–#65 at live main `70ace204d1524a8f5e83d33c67c1a09b7543e7a3`; remaining deferred/open Master Data items stay deferred/open |
+> | Phase 5 | Pricing Engine | ⏳ NOT STARTED — not part of the Phase 4 closure |
 > | Phase 6 | Scheduling Engine | ⏳ |
 > | Phase 7 | Appointment Engine | ⏳ |
 > | Phase 8..20 | عنوان‌گذاری‌نشده | ⚠️ OPEN DECISION |
@@ -863,3 +863,14 @@ final class XxxService {
 - **گیت‌های exact-head (`a993cee`):** CI `35198192935` = success (Integration 1m53s + PHPStan + WPCS + Unit 8.1/8.2/8.3/8.4 + Tripwire)؛ Closure Gate `35198187315` = success (runtime 8.1/8.3/8.4 + WP 6.4-6.6 + restoreApply)؛ Pilot/Staging `35198187110` = success (Upgrade path + Staging + Release Artifact + Responsive)؛ Real WP Acceptance `35198192940` = success (prefixهای `clinic_` و `wp_`). تمام ۱۹ check-run روی همین SHA = success.
 - **صداقت شواهد:** اجرای محلی PHPUnit/PHPStan/WPCS = **NOT RUN** (PHP/Composer/MySQL در sandbox نیستند). Tenant Tripwire محلی = **PASS** (python3 موجود بود: `production tenant hardcode = 0`). `git diff --check` محلی = سبز. تست مستقیم nonce/CSRF در لایهٔ `save()` (که redirect/exit می‌کند) با زیرساخت موجود Integration ممکن نیست — همان الگوی مستقر StaffManagementPage؛ مرز خالص post-nonce (`upsertLocation`) تست شده است. fault-injection برای «query failure → fail-closed» تست مستقیم ندارد؛ به‌صورت code-level (`assertNoSqlError` + نگاشت RuntimeException→QUERY_FAILED) برقرار است. تغییر ci.yml صرفاً selection شواهد بود (نه رفتار گیت) و در PR مستند شده است.
 - **Git/PR:** دو کامیت forward-only (`0fda84b`، `a993cee`) + همین لاگ؛ فقط به `arena/01a0ae2c-doctor` push شد. PR #65 = **OPEN + DRAFT** (بدون Ready/merge/close/delete branch/tag/release/force-push/reset/clean/rebase)؛ main دست‌نخورده. این slice «final technical slice candidate» فاز ۴ است؛ تصمیم نهایی پذیرش/ادامه با مالک است.
+
+
+### [2026-09-17 13:15:50 Asia/Tehran] — ایجنت Arena (شاخهٔ `arena/01a0aec1-doctor`) — Phase 4 documentation closure reconciliation
+- فاز/محدوده: فقط آشتی‌دهیِ مستندات کانونی وضعیت Phase 4؛ بدون بازگشاییِ تحلیل فنی و بدون شروع Phase 5.
+- **LIVE PIN:** `origin/main = 70ace204d1524a8f5e83d33c67c1a09b7543e7a3`، open PRs = `0`، آخرین migration = `0020`، شاخهٔ نشست = `arena/01a0aec1-doctor`.
+- اقدامات: roadmap، current-state، taxonomy، drift register، README و جدول جاری همین راهنما به‌روز شدند؛ closure فقط به PRهای merge‌شدهٔ **#59–#65** و دامنهٔ bounded آن‌ها ارجاع می‌دهد. `clinic.phone` stale Patient Portal consumer، ServiceOffering، تصمیم‌های specialty/geography، و M-01..M-05 به‌عنوان fixed/implemented ادعا نشدند؛ Location timezone و membership cross-Clinic بدون تغییر تصمیمی حفظ شدند.
+- کامیت‌ها: **PENDING — SHA در گزارش نهایی ثبت می‌شود**.
+- CI: اجرای محلی PHPUnit/PHPStan/WPCS **NOT RUN**؛ exact-head checks تا پس از ساخت Draft PR **NOT RETRIEVED**.
+- تصمیمات درون‌فازی: Phase 4 = **CLOSED / TECHNICALLY COMPLETE (BOUNDED)**؛ Phase 3 = **COMPLETED / FROZEN**؛ Phase 5 = **NOT STARTED**؛ هیچ migration (از جمله `0021`) ساخته/تغییر/رزرو نشد.
+- موارد باز/تحویل به ایجنت بعد: deferred/open Master Data drift و هر شواهد اجراییِ not retrieved همان‌طور که هست باقی می‌ماند؛ این entry خودش append-only است.
+- وضعیت tree: **در زمان ثبت این entry، منتظر commit**.
