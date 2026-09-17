@@ -96,6 +96,12 @@ final class SlotRepository
      * تقویم آزاد (A1): روزهای باز + ظرفیت باقی — فقط اسلات‌های آتی.
      * اکنون شامل id و location_id برای تفکیک چند-Location است.
      *
+     * تذکر (Phase 6 Slice 2): فیلتر «گذشته» در این متد نسبت به قاب UTC است و
+     * برای slot_date/slot_time محلیِ Location فقط در دسترس‌پذیر بودنِ پارامترهای
+     * صریح caller معتبر است. مسیر محصولی availability از
+     * {@see availabilityCandidates()} + فیلتر محلیِ سرویس استفاده می‌کند؛ این
+     * متد را برای مسیرهای مبتنی بر تقویم محلیِ Location دوباره فراخوانی نکنید.
+     *
      * @return list<array<string, mixed>>
      */
     public function availability(
@@ -116,6 +122,33 @@ final class SlotRepository
                AND capacity - booked_count - held_count > 0
              ORDER BY slot_date, slot_time, id ASC',
             [$clinicId, $clinicianId, $fromDate, $toDate, $todayUtc, $todayUtc, $nowTimeUtc]
+        );
+    }
+
+    /**
+     * Phase 6 Slice 2: نامزدهای availability بدون هیچ فیلتر زمانی — کران
+     * `[fromDate, toDate]` صرفاً مرزِ کارایی دیده‌بانی است؛ تعیین «گذشته»
+     * به‌عهدهٔ لایهٔ سرویس با تقویم محلیِ Locationِ هر ردیف است (slot_date و
+     * slot_time مقادیر wall-clock محلیِ Location هستند و نباید در SQL با
+     * gmdate() — قاب UTC — مقایسه شوند).
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function availabilityCandidates(
+        int $clinicId,
+        int $clinicianId,
+        string $fromDate,
+        string $toDate
+    ): array {
+        return $this->db->fetchAll(
+            'SELECT id, location_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count,
+                    (capacity - booked_count - held_count) AS capacity_left
+             FROM ' . $this->db->table('cpms_schedule_slots') . '
+             WHERE clinic_id = %d AND clinician_id = %d AND is_open = 1
+               AND slot_date BETWEEN %s AND %s
+               AND capacity - booked_count - held_count > 0
+             ORDER BY slot_date, slot_time, id ASC',
+            [$clinicId, $clinicianId, $fromDate, $toDate]
         );
     }
 

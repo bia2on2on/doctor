@@ -230,43 +230,65 @@ final class ScheduleRepository
     }
 
     /**
-     * Phase 6 Slice 1: تعداد Slotهای آیندهٔ «خالی» (بدون رزرو/Hold) یک پزشک
-     * در یک Clinic معتبر — Slotهای خالیِ دیگر Clinicهای همان پزشک شمرده
-     * نمی‌شوند (ایزولیشن tenant / چندعضویتی مشروع).
+     * Phase 6 Slice 2: Locationهای متمایزی که Slot برای این پزشک در این
+     * Clinic دارند — مبنای cohortبندیِ مرز «امروز محلی» (slot_date مقدار
+     * wall-clock محلیِ Location است؛ هر cohort مرز خودش را لازم دارد).
+     *
+     * @return list<int>
+     */
+    public function distinctClinicianSlotLocationIds(int $clinicianId, int $clinicId): array
+    {
+        $rows = $this->db->fetchAll(
+            'SELECT DISTINCT location_id FROM ' . $this->db->table('cpms_schedule_slots') .
+            ' WHERE clinician_id = %d AND clinic_id = %d AND location_id IS NOT NULL',
+            [$clinicianId, $clinicId]
+        );
+
+        return array_map('intval', array_column($rows, 'location_id'));
+    }
+
+    /**
+     * Phase 6 Slice 1/2: تعداد Slotهای آیندهٔ «خالی» (بدون رزرو/Hold) یک پزشک
+     * در یک Clinic معتبر و یک cohort مکانی — $fromDate باید «امروزِ محلیِ
+     * همان Location» باشد (نه gmdate سرور). Slotهای دیگر Clinicها/Locationها
+     * شمرده نمی‌شوند (ایزولیشن tenant / چندعضویتی مشروع).
      *
      * @param int $clinicId Clinic معتبر و دامنه‌بندی‌کننده (الزامی، از Scope مورد اعتماد)
      */
-    public function countFutureEmptySlots(int $clinicianId, int $clinicId, string $fromDate): int
+    public function countFutureEmptySlots(int $clinicianId, int $clinicId, int $locationId, string $fromDate): int
     {
         $value = $this->db->fetchValue(
             'SELECT COUNT(*) FROM ' . $this->db->table('cpms_schedule_slots') .
-            ' WHERE clinician_id = %d AND clinic_id = %d AND slot_date > %s AND booked_count = 0 AND held_count = 0',
-            [$clinicianId, $clinicId, $fromDate]
+            ' WHERE clinician_id = %d AND clinic_id = %d AND location_id = %d AND slot_date > %s AND booked_count = 0 AND held_count = 0',
+            [$clinicianId, $clinicId, $locationId, $fromDate]
         );
 
         return (int) $value;
     }
 
     /**
-     * Phase 6 Slice 1: تعداد Slotهای آیندهٔ «محافظت‌شده» (دارای رزرو یا Hold)
-     * یک پزشک در یک Clinic معتبر.
+     * Phase 6 Slice 1/2: تعداد Slotهای آیندهٔ «محافظت‌شده» (دارای رزرو یا Hold)
+     * یک پزشک در یک Clinic معتبر و یک cohort مکانی — مرز، «امروزِ محلیِ همان
+     * Location» است.
      *
      * @param int $clinicId Clinic معتبر و دامنه‌بندی‌کننده (الزامی)
      */
-    public function countFutureReservedSlots(int $clinicianId, int $clinicId, string $fromDate): int
+    public function countFutureReservedSlots(int $clinicianId, int $clinicId, int $locationId, string $fromDate): int
     {
         $value = $this->db->fetchValue(
             'SELECT COUNT(*) FROM ' . $this->db->table('cpms_schedule_slots') .
-            ' WHERE clinician_id = %d AND clinic_id = %d AND slot_date > %s AND (booked_count > 0 OR held_count > 0)',
-            [$clinicianId, $clinicId, $fromDate]
+            ' WHERE clinician_id = %d AND clinic_id = %d AND location_id = %d AND slot_date > %s AND (booked_count > 0 OR held_count > 0)',
+            [$clinicianId, $clinicId, $locationId, $fromDate]
         );
 
         return (int) $value;
     }
 
     /**
-     * Phase 6 Slice 1: Regeneration (ADR-0004) — حذف Slotهای آینده «خالی»
-     * (بدون رزرو/Hold) یک پزشک فقط در Clinic معتبرِ عملیات. Slotهای خالی
+     * Phase 6 Slice 1/2: Regeneration (ADR-0004) — حذف Slotهای آینده «خالی»
+     * (بدون رزرو/Hold) یک پزشک فقط در Clinic معتبرِ عملیات و فقط در cohort
+     * یک Location — $fromDate باید «امروزِ محلیِ همان Location» باشد تا
+     * امروزِ محلیِ Locationهای دیگر هرگز ناخواسته حذف نشوند. Slotهای خالی
      * یا محافظت‌شدهٔ Clinic دیگر همان پزشک (مشارکت مشروع چندعضویتی)
      * دست‌نخورده می‌مانند. Slotهای دارای Booking/Hold در همان Clinic هم
      * هرگز حذف نمی‌شوند (Snapshot/امانت داده).
@@ -275,12 +297,12 @@ final class ScheduleRepository
      *
      * @return int تعداد ردیف‌های حذف‌شده
      */
-    public function deleteFutureEmptySlots(int $clinicianId, int $clinicId, string $fromDate): int
+    public function deleteFutureEmptySlots(int $clinicianId, int $clinicId, int $locationId, string $fromDate): int
     {
         $sql = $this->db->prepare(
             'DELETE FROM ' . $this->db->table('cpms_schedule_slots') .
-            ' WHERE clinician_id = %d AND clinic_id = %d AND slot_date > %s AND booked_count = 0 AND held_count = 0',
-            [$clinicianId, $clinicId, $fromDate]
+            ' WHERE clinician_id = %d AND clinic_id = %d AND location_id = %d AND slot_date > %s AND booked_count = 0 AND held_count = 0',
+            [$clinicianId, $clinicId, $locationId, $fromDate]
         );
         $result = $this->db->wpdb()->query($sql); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery
 

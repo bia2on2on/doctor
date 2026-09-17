@@ -39,8 +39,11 @@ final class BookingController extends RestBase
                 'permission_callback' => fn () => $this->permPublic(),
                 'args' => [
                     'clinician_id' => ['required' => true, 'type' => 'integer'],
-                    'from' => ['required' => false, 'type' => 'string', 'default' => gmdate('Y-m-d')],
-                    'to' => ['required' => false, 'type' => 'string', 'default' => gmdate('Y-m-d', time() + 29 * 86400)],
+                    // Phase 6 Slice 2: بدون پیش‌فرض gmdate — پنجرهٔ پیش‌فرض از
+                    // تقویم محلیِ Locationهای دارای برنامهٔ فعالِ پزشک مشتق می‌شود
+                    // (BookingService::availability با from/to = null).
+                    'from' => ['required' => false, 'type' => 'string'],
+                    'to' => ['required' => false, 'type' => 'string'],
                 ],
             ],
         ]);
@@ -168,10 +171,13 @@ final class BookingController extends RestBase
 
     private function availability(WP_REST_Request $request): WP_REST_Response|WP_Error
     {
+        $from = $request->get_param('from');
+        $to = $request->get_param('to');
+
         return $this->wrap(fn () => $this->booking->availability(
             (int) $request->get_param('clinician_id'),
-            (string) $request->get_param('from'),
-            (string) $request->get_param('to')
+            is_string($from) && $from !== '' ? $from : null,
+            is_string($to) && $to !== '' ? $to : null
         ));
     }
 
