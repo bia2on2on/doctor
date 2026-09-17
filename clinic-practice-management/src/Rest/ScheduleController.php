@@ -55,6 +55,15 @@ final class ScheduleController extends RestBase
                     'day_of_week' => ['required' => true, 'type' => 'integer'],
                     'start_time' => ['required' => true, 'type' => 'string'],
                     'end_time' => ['required' => true, 'type' => 'string'],
+                    /*
+                     * Phase 6 Slice 3: در قراردادِ مدرن، create برنامه Location
+                     * صریح می‌خواهد. الزامی‌شدن در لایهٔ Service اعمال می‌شود
+                     * (نه `required => true` در REST) تا ترتیبِ خطاها حفظ بماند:
+                     * پزشک بیگانه/ناموجود همچنان 404-parity می‌گیرد (پیش از هر
+                     * بررسی فیلدی) و Location نامعتبر/ناموجود/بیگانه 404
+                     * «محل یافت نشد» — نه 400ِ زودهنگامِ route.
+                     */
+                    'location_id' => ['required' => false, 'type' => 'integer'],
                     'break_start' => ['required' => false, 'type' => 'string'],
                     'break_end' => ['required' => false, 'type' => 'string'],
                     'appointment_duration_min' => ['required' => false, 'type' => 'integer'],

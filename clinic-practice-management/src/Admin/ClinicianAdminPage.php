@@ -100,7 +100,7 @@ final class ClinicianAdminPage
     <?php if ($selected === null) : ?>
         <?php self::renderList($repo, $clinicId); ?>
     <?php else : ?>
-        <?php self::renderClinician($repo, $selected); ?>
+        <?php self::renderClinician($repo, $selected, $clinicId); ?>
     <?php endif; ?>
 </div>
         <?php
@@ -187,16 +187,29 @@ final class ClinicianAdminPage
     }
 
     /**
+     * Phase 6 Slice 3: $clinicId فقط از Scope معتبرِ برقرارشدهٔ render می‌آید
+     * (هرگز از فرم/URL) — محل‌های انتخاب‌شوندهٔ جدول فقط Locationهای همین
+     * Clinic معتبرند و اعتبارسنجی نهایی همچنان سمت سرور (ScheduleService) است.
+     *
      * @param array<string, mixed> $clinician
      */
-    private static function renderClinician(ClinicianRepository $repo, array $clinician): void
+    private static function renderClinician(ClinicianRepository $repo, array $clinician, int $clinicId): void
     {
         $cid = (int) $clinician['id'];
         $scheduleService = App::scheduleService();
         $schedules = $scheduleService->list($cid);
-        $byDay = [];
+        /*
+         * Phase 6 Slice 3: جدول برنامه حالا ماتریس (روز × محل) است — هر ردیف
+         * به یک Location مشخصِ همین Clinic گره خورده. Location ردیفِ موجود
+         * ناپایدار است (update ردیف را جابه‌جا نمی‌کند) و Location ردیفِ جدید
+         * همان ردیفی است که اپراتور پر می‌کند. هر Clinic حداقل یک Location
+         * اصلی دارد (Migration 0011)؛ فهرست خالی ⇒ هیچ ردیف قابل ثبت نیست
+         * (fail-closed — با قراردادِ جدیدی که Location صریح می‌خواهد سازگار است).
+         */
+        $locations = App::locationRepository()->listForClinic($clinicId);
+        $byDayLocation = [];
         foreach ($schedules as $s) {
-            $byDay[(int) $s['day_of_week']] = $s;
+            $byDayLocation[(int) $s['day_of_week']][(int) $s['location_id']] = $s;
         }
         $users = self::wpUsers();
         $exceptions = $scheduleService->listExceptions($cid, gmdate('Y-m-d'), gmdate('Y-m-d', strtotime('+120 days')));
@@ -244,34 +257,45 @@ final class ClinicianAdminPage
         </div>
     <?php endif; ?>
     <p class="description">پس از ذخیره، Slotهای رزرو خودکار بازتولید می‌شوند (Job slots.generate). برای حذف یک روز از دکمه «حذف» همان ردیف استفاده کنید.</p>
+    <?php if ($locations === []) : ?>
+        <div class="notice notice-error"><p>این Clinic هنوز Location ندارد — تا وقتی Location ثبت شود، برنامه‌ای قابل ثبت نیست (برنامه باید به یک Location صریح گره بخورد).</p></div>
+    <?php else : ?>
     <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
         <?php wp_nonce_field('cpms_schedule_save'); ?>
         <input type="hidden" name="action" value="cpms_schedule_save">
         <input type="hidden" name="clinician_id" value="<?php echo $cid; ?>">
-        <table class="widefat striped cpms-table-responsive" style="max-width:1150px">
-            <thead><tr><th>روز</th><th>شروع</th><th>پایان</th><th>وقفه از</th><th>وقفه تا</th><th>مدت نوبت (دقیقه)</th><th>ظرفیت هر Slot</th><th>فعال</th><th></th></tr></thead>
+        <table class="widefat striped cpms-table-responsive" style="max-width:1300px">
+            <thead><tr><th>روز</th><th>محل</th><th>شروع</th><th>پایان</th><th>وقفه از</th><th>وقفه تا</th><th>مدت نوبت (دقیقه)</th><th>ظرفیت هر Slot</th><th>فعال</th><th></th></tr></thead>
             <tbody>
-            <?php foreach (self::DAYS as $day => $dayLabel) : $s = $byDay[$day] ?? null; ?>
+            <?php foreach (self::DAYS as $day => $dayLabel) : ?>
+                <?php foreach ($locations as $loc) : $locId = (int) $loc['id']; $s = $byDayLocation[$day][$locId] ?? null; ?>
                 <tr>
                     <td data-label="روز"><strong><?php echo esc_html($dayLabel); ?></strong></td>
-                    <td data-label="شروع"><input type="time" name="sched[<?php echo $day; ?>][start_time]" value="<?php echo esc_attr((string) ($s['start_time'] ?? '09:00')); ?>" required></td>
-                    <td data-label="پایان"><input type="time" name="sched[<?php echo $day; ?>][end_time]" value="<?php echo esc_attr((string) ($s['end_time'] ?? '13:00')); ?>" required></td>
-                    <td data-label="وقفه از"><input type="time" name="sched[<?php echo $day; ?>][break_start]" value="<?php echo esc_attr((string) ($s['break_start'] ?? '')); ?>"></td>
-                    <td data-label="وقفه تا"><input type="time" name="sched[<?php echo $day; ?>][break_end]" value="<?php echo esc_attr((string) ($s['break_end'] ?? '')); ?>"></td>
-                    <td data-label="مدت نوبت (دقیقه)"><input type="number" name="sched[<?php echo $day; ?>][appointment_duration_min]" min="5" max="240" value="<?php echo esc_attr((string) ($s['appointment_duration_min'] ?? '20')); ?>" style="width:80px"></td>
-                    <td data-label="ظرفیت هر Slot"><input type="number" name="sched[<?php echo $day; ?>][slot_capacity]" min="1" max="50" value="<?php echo esc_attr((string) ($s['slot_capacity'] ?? '1')); ?>" style="width:70px"></td>
-                    <td data-label="فعال"><input type="checkbox" name="sched[<?php echo $day; ?>][is_active]" value="1" <?php checked($s === null || !empty($s['is_active'])); ?>></td>
+                    <td data-label="محل">
+                        <?php echo esc_html((string) $loc['name']); ?>
+                        <?php if ((int) $loc['is_active'] !== 1) : ?><span class="cpms-badge cpms-danger">غیرفعال</span><?php endif; ?>
+                        <?php if ($s !== null) : ?><span class="description">(ثابت — برای جابه‌جایی، ردیف را حذف و در Location دیگر بسازید)</span><?php endif; ?>
+                    </td>
+                    <td data-label="شروع"><input type="time" name="sched[<?php echo $day; ?>][<?php echo $locId; ?>][start_time]" value="<?php echo esc_attr((string) ($s['start_time'] ?? '09:00')); ?>" required></td>
+                    <td data-label="پایان"><input type="time" name="sched[<?php echo $day; ?>][<?php echo $locId; ?>][end_time]" value="<?php echo esc_attr((string) ($s['end_time'] ?? '13:00')); ?>" required></td>
+                    <td data-label="وقفه از"><input type="time" name="sched[<?php echo $day; ?>][<?php echo $locId; ?>][break_start]" value="<?php echo esc_attr((string) ($s['break_start'] ?? '')); ?>"></td>
+                    <td data-label="وقفه تا"><input type="time" name="sched[<?php echo $day; ?>][<?php echo $locId; ?>][break_end]" value="<?php echo esc_attr((string) ($s['break_end'] ?? '')); ?>"></td>
+                    <td data-label="مدت نوبت (دقیقه)"><input type="number" name="sched[<?php echo $day; ?>][<?php echo $locId; ?>][appointment_duration_min]" min="5" max="240" value="<?php echo esc_attr((string) ($s['appointment_duration_min'] ?? '20')); ?>" style="width:80px"></td>
+                    <td data-label="ظرفیت هر Slot"><input type="number" name="sched[<?php echo $day; ?>][<?php echo $locId; ?>][slot_capacity]" min="1" max="50" value="<?php echo esc_attr((string) ($s['slot_capacity'] ?? '1')); ?>" style="width:70px"></td>
+                    <td data-label="فعال"><input type="checkbox" name="sched[<?php echo $day; ?>][<?php echo $locId; ?>][is_active]" value="1" <?php checked($s === null || !empty($s['is_active'])); ?>></td>
                     <td class="cpms-actions-cell" data-label="عملیات">
-                        <button type="submit" name="sched_submit[<?php echo $day; ?>]" value="1" class="button button-small"><?php echo $s === null ? 'افزودن روز' : 'ذخیره روز'; ?></button>
+                        <button type="submit" name="sched_submit" value="<?php echo (int) $day; ?>:<?php echo $locId; ?>" class="button button-small"><?php echo $s === null ? 'افزودن روز' : 'ذخیره روز'; ?></button>
                         <?php if ($s !== null) : ?>
                             <button type="button" class="button button-small" data-cpms-schedule-delete="<?php echo (int) $s['id']; ?>" data-cpms-confirm="حذف برنامه این روز؟" style="color:#b32d2e">حذف</button>
                         <?php endif; ?>
                     </td>
                 </tr>
+                <?php endforeach; ?>
             <?php endforeach; ?>
             </tbody>
         </table>
     </form>
+    <?php endif; ?>
     <form id="cpms-sched-del" method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
         <?php wp_nonce_field('cpms_schedule_delete'); ?>
         <input type="hidden" name="action" value="cpms_schedule_delete">
@@ -427,17 +451,30 @@ final class ClinicianAdminPage
             self::backWithError($cid, 'خطا: پزشک در این Clinic یافت نشد.');
         }
 
-        $submitted = isset($_POST['sched_submit']) && is_array($_POST['sched_submit']) ? wp_unslash($_POST['sched_submit']) : [];
+        /*
+         * Phase 6 Slice 3: مقدار دکمهٔ ارسالِ ردیف «روز:محل» است (مثلاً 3:17) —
+         * Location ردیفِ جدید همان ردیفی است که اپراتور پر می‌کند و Location
+         * ردیفِ موجود پایدار است (ردیف را جابه‌جا نمی‌کند). هر دو در برابر
+         * Clinic معتبرِ Scope در ScheduleService اعتبارسنجی می‌شوند — UI فقط
+         * انتخاب می‌دهد و مرز امنیتی نیست.
+         */
+        $rawSubmit = $_POST['sched_submit'] ?? ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+        $submitValue = is_scalar($rawSubmit) ? (string) wp_unslash($rawSubmit) : ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
         $all = isset($_POST['sched']) && is_array($_POST['sched']) ? wp_unslash($_POST['sched']) : []; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
-        $day = (int) (array_key_first((array) $submitted));
-        if (!isset($all[$day]) || !is_array($all[$day])) {
+        if (preg_match('/^([0-6]):([1-9][0-9]{0,18})$/', $submitValue, $m) !== 1) {
             self::backWithError($cid, 'خطا: ردیف برنامه ناقص است.');
         }
-        $row = $all[$day];
+        $day = (int) $m[1];
+        $locationId = (int) $m[2];
+        if (!isset($all[$day][$locationId]) || !is_array($all[$day][$locationId])) {
+            self::backWithError($cid, 'خطا: ردیف برنامه ناقص است.');
+        }
+        $row = $all[$day][$locationId];
 
         $fields = [
             'clinician_id' => $cid,
             'day_of_week' => $day,
+            'location_id' => $locationId,
             'start_time' => (string) ($row['start_time'] ?? ''),
             'end_time' => (string) ($row['end_time'] ?? ''),
             'appointment_duration_min' => max(5, min(240, (int) ($row['appointment_duration_min'] ?? 20))),
@@ -461,22 +498,20 @@ final class ClinicianAdminPage
                 (int) $impact['future_reserved_slots']
             );
 
+            /*
+             * Phase 6 Slice 3: جست‌وجوی ردیف موجود دقیقاً در محدودهٔ
+             * (Clinic معتبر + Location + پزشک + روز) است — همان دامنهٔ قرارداد
+             * یکتایی (0014). Location از همان ردیف فرم می‌آید (پایدار) و Clinic
+             * از Scope معتبرِ handler؛ هیچ‌کدام از payload آزاد نیست.
+             * update() عمداً Location را تغییر نمی‌دهد (ردیف جابه‌جا نمی‌شود).
+             */
             $existing = App::db()->fetchValue(
-                'SELECT id FROM ' . App::db()->table('cpms_schedule') . ' WHERE clinician_id = %d AND day_of_week = %d LIMIT 1',
-                [$cid, $day]
+                'SELECT id FROM ' . App::db()->table('cpms_schedule') .
+                ' WHERE clinician_id = %d AND day_of_week = %d AND clinic_id = %d AND location_id = %d LIMIT 1',
+                [$cid, $day, $clinicId, $locationId]
             );
-            // اطمینان مضاعف: schedule موجود هم باید به همان Clinic پزشک تعلق داشته باشد.
             $service = App::scheduleService();
             if ($existing !== null) {
-                $schedRow = App::db()->fetchRow(
-                    'SELECT s.id FROM ' . App::db()->table('cpms_schedule') . ' s '
-                    . ' JOIN ' . App::db()->table('cpms_clinicians') . ' c ON c.id = s.clinician_id '
-                    . ' WHERE s.id = %d AND c.clinic_id = %d LIMIT 1',
-                    [(int) $existing, $clinicId]
-                );
-                if ($schedRow === null) {
-                    self::backWithError($cid, 'خطا: برنامه روز به این Clinic تعلق ندارد.');
-                }
                 $service->update($userId, (int) $existing, $fields);
                 self::back($cid, 'برنامه روز ذخیره شد — Slotها بازتولید می‌شوند.' . $impactNote);
             }

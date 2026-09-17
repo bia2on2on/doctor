@@ -163,11 +163,13 @@ final class Phase4Slice1ProfessionalMultiClinicParticipationTest extends WP_Unit
         );
 
         // ---- Control (D): the pre-existing home-Clinic behavior keeps working ----
+        // (Phase 6 Slice 3: explicit Location — the fixture's Clinic A Location)
         $controlA = $this->dispatch('POST', self::NS . '/config/schedules', [
             'clinician_id' => $this->clinicianId,
             'day_of_week' => 2,
             'start_time' => '09:00',
             'end_time' => '12:00',
+            'location_id' => (int) $this->locations[$clinicA],
         ], $clinicA, $this->managerUserId);
         self::assertSame(
             200,
@@ -190,6 +192,7 @@ final class Phase4Slice1ProfessionalMultiClinicParticipationTest extends WP_Unit
             'day_of_week' => 5,
             'start_time' => '14:00',
             'end_time' => '18:00',
+            'location_id' => (int) $this->locations[$clinicB],
         ], $clinicB, $this->managerUserId);
         $this->assertOwnershipRejectionIsTheOnlyPreFixFailure($createB, 'Clinic B schedule create');
 
@@ -258,6 +261,7 @@ final class Phase4Slice1ProfessionalMultiClinicParticipationTest extends WP_Unit
             'day_of_week' => 3,
             'start_time' => '09:00',
             'end_time' => '12:00',
+            'location_id' => (int) $this->locations[$clinicA],
         ], $clinicA, $this->managerUserId);
         self::assertSame(200, $inA->get_status(), 'CONTROL: Clinic A weekday row created');
 
@@ -266,6 +270,7 @@ final class Phase4Slice1ProfessionalMultiClinicParticipationTest extends WP_Unit
             'day_of_week' => 3,
             'start_time' => '09:00',
             'end_time' => '12:00',
+            'location_id' => (int) $this->locations[$clinicB],
         ], $clinicB, $this->managerUserId);
         $this->assertOwnershipRejectionIsTheOnlyPreFixFailure($inB, 'Clinic B same-weekday create');
         self::assertSame(
@@ -279,12 +284,14 @@ final class Phase4Slice1ProfessionalMultiClinicParticipationTest extends WP_Unit
         self::assertSame(1, $this->countScheduleRows($this->clinicianId, $clinicB), 'Clinic B holds its own row for the same weekday');
         self::assertSame(1, $this->countClinicianRowsForUser($this->professionalUserId), 'still ONE professional identity');
 
-        // The pre-existing per-Clinic rule is preserved (not removed, not weakened).
+        // The pre-existing single-row-per-(Clinic, Location, weekday) rule is
+        // preserved (not removed, not weakened).
         $duplicateInB = $this->dispatch('POST', self::NS . '/config/schedules', [
             'clinician_id' => $this->clinicianId,
             'day_of_week' => 3,
             'start_time' => '16:00',
             'end_time' => '20:00',
+            'location_id' => (int) $this->locations[$clinicB],
         ], $clinicB, $this->managerUserId);
         self::assertSame(400, $duplicateInB->get_status(), 'duplicate weekday WITHIN the same Clinic must still be rejected');
         self::assertSame('CLINIC_VALIDATION_FAILED', $this->errorCode($duplicateInB), 'duplicate rejection keeps its stable code');
@@ -500,6 +507,7 @@ final class Phase4Slice1ProfessionalMultiClinicParticipationTest extends WP_Unit
             'day_of_week' => 6,
             'start_time' => '09:00',
             'end_time' => '12:00',
+            'location_id' => (int) $this->locations[$clinicA],
         ], $clinicA, $this->managerUserId);
         self::assertSame(200, $home->get_status(), 'PRESERVED: the home Clinic A path is unaffected by Clinic B suspension');
     }
@@ -585,6 +593,7 @@ final class Phase4Slice1ProfessionalMultiClinicParticipationTest extends WP_Unit
             'day_of_week' => 2,
             'start_time' => '09:00',
             'end_time' => '12:00',
+            'location_id' => (int) $this->locations[$clinicB],
         ], $clinicB, $this->managerUserId);
         $this->assertOwnershipRejectionIsTheOnlyPreFixFailure($consistent, 'consistent payload/header create');
         self::assertSame(200, $consistent->get_status(), 'consistent identifiers must succeed through the same path');
