@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace ClinicCore\Tests\Integration;
 
 use ClinicCore\Admin\CpmsSetupWizard;
-use ClinicCore\Application\Scope\ClinicScope;
 use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Application\Scope\TrustedClinicEstablisher;
 use ClinicCore\Bootstrap\App;
@@ -14,29 +13,20 @@ use ClinicCore\Settings\Settings;
 use WP_UnitTestCase;
 
 /**
- * Phase 4 — Clinic Profile Canonicalization — VALID RED.
+ * Phase 4 — Clinic Profile Canonicalization — RED→GREEN.
  *
- * هدف: اثبات نقص فعلی:
- * - wizard save path (setup.clinic.*) موفق است، اما cpms_clinics قدیمی می‌ماند
- * - downstream consumer (FinanceService::receipt) همچنان stale است
+ * این تست ابتدا RED بود (wizard به setup.clinic.* می‌نوشت و cpms_clinics قدیمی می‌ماند).
+ * پس از GREEN، باید نشان دهد:
+ * - wizard save از مسیر canonical یکسان استفاده می‌کند (cpms_clinics به‌روز می‌شود)
+ * - downstream consumer (FinanceService::receipt) مقدار جدید را می‌بیند
+ * - setup.clinic.* دیگر second writable canonical نیست (تاریخی حذف نمی‌شود اما جدید نوشته نمی‌شود)
  *
- * مسیر محصول استفاده‌شده:
- * - CpmsSetupWizard::saveClinic() — narrowest existing callable wizard method/path
- *   که هنوز validation/save واقعی production را اجرا می‌کند.
- * - دلیل عدم استفاده از admin-post wrapper: save() شامل wp_safe_redirect + exit است
- *   که در محیط PHPUnit بدون شبیه‌سازی redirect منجر به خاتمه فرآیند می‌شود؛
- *   بنابراین مستقیماً saveClinic() صدا زده می‌شود که هستهٔ اعتبارسنجی/ذخیرهٔ گام
- *   «اطلاعات کلینیک» است و دقیقاً همان منطق production را دارد.
+ * مسیر محصول:
+ * - CpmsSetupWizard::saveClinic() — narrowest existing callable wizard method
+ *   دلیل عدم استفاده از admin-post wrapper: save() شامل wp_safe_redirect + exit است.
  *
- * Fixture:
- * - Organization (dynamic)
- * - Clinic A (dynamic, not fixed, not 1, not 0)
- * - Clinic B (dynamic, different timezone)
- * - Location A with explicit timezone Asia/Tehran
- * - Location B with different explicit timezone Asia/Kabul
- * - active authorized CONFIG actor for Clinic A
- * - durable active membership in Clinic A
- * - existing canonical cpms_clinics row for A with old name/address/phone
+ * Fixture: Org dynamic + Clinic A/B dynamic (not 1, not 0) + Location A/B explicit timezones
+ * + active CONFIG actor + durable membership + old cpms_clinics values.
  */
 final class Phase4ClinicProfileCanonicalizationRedTest extends WP_UnitTestCase
 {
@@ -63,9 +53,7 @@ final class Phase4ClinicProfileCanonicalizationRedTest extends WP_UnitTestCase
         App::resetScope();
         ScopeContext::clear();
 
-        // Build Organization + Clinics + Locations dynamically
         $this->orgId = $this->insertOrganization('red-org-' . bin2hex(random_bytes(3)));
-        // Dynamic IDs: use random high range to avoid fixed IDs, not 1, not 0
         $base = random_int(63000, 64000);
         $this->clinicA = $this->insertClinic($base, $this->orgId, 'red-clinic-a-' . bin2hex(random_bytes(2)), self::OLD_NAME, self::OLD_ADDR, self::OLD_PHONE, 'Asia/Tehran');
         $this->clinicB = $this->insertClinic($base + 1, $this->orgId, 'red-clinic-b-' . bin2hex(random_bytes(2)), 'کلینیک B', 'آدرس B', '02111111111', 'Asia/Kabul');
@@ -73,36 +61,27 @@ final class Phase4ClinicProfileCanonicalizationRedTest extends WP_UnitTestCase
         $this->locA = $this->insertLocation($this->clinicA, 'red-loc-a-' . bin2hex(random_bytes(2)), 'Asia/Tehran');
         $this->locB = $this->insertLocation($this->clinicB, 'red-loc-b-' . bin2hex(random_bytes(2)), 'Asia/Kabul');
 
-        // Actor with CONFIG capability, membership only in Clinic A
         $this->actorA = $this->makeUser('red_actor_a_' . bin2hex(random_bytes(2)), 'administrator');
-        // Seed membership with role that has CONFIG (cpms_manager)
         cpms_test_seed_membership($this->actorA, $this->clinicA, 'cpms_manager');
-        // Ensure actor does NOT have membership in B
-        // (no seed for B)
 
-        // Assert material fixture insertions
-        $this->assertGreaterThan(0, $this->orgId, 'fixture: org created');
-        $this->assertGreaterThan(0, $this->clinicA, 'fixture: clinic A created');
-        $this->assertGreaterThan(0, $this->clinicB, 'fixture: clinic B created');
-        $this->assertNotEquals(1, $this->clinicA, 'fixture must not use clinic_id=1');
-        $this->assertNotEquals(0, $this->clinicA, 'fixture must not use clinic_id=0');
-        $this->assertNotEquals($this->clinicA, $this->clinicB, 'fixture: A != B');
-        $this->assertGreaterThan(0, $this->locA, 'fixture: loc A created');
-        $this->assertGreaterThan(0, $this->locB, 'fixture: loc B created');
-        $this->assertGreaterThan(0, $this->actorA, 'fixture: actor A created');
+        $this->assertGreaterThan(0, $this->orgId);
+        $this->assertGreaterThan(0, $this->clinicA);
+        $this->assertGreaterThan(0, $this->clinicB);
+        $this->assertNotEquals(1, $this->clinicA);
+        $this->assertNotEquals(0, $this->clinicA);
+        $this->assertNotEquals($this->clinicA, $this->clinicB);
 
         $rowA = $this->clinicRow($this->clinicA);
-        $this->assertSame(self::OLD_NAME, $rowA['name'], 'precondition: old name in canonical');
-        $this->assertSame(self::OLD_ADDR, $rowA['address'], 'precondition: old address in canonical');
-        $this->assertSame(self::OLD_PHONE, $rowA['phone'], 'precondition: old phone in canonical');
-        $this->assertSame('Asia/Tehran', $rowA['timezone'], 'precondition: timezone A');
+        $this->assertSame(self::OLD_NAME, $rowA['name']);
+        $this->assertSame(self::OLD_ADDR, $rowA['address']);
+        $this->assertSame(self::OLD_PHONE, $rowA['phone']);
+        $this->assertSame('Asia/Tehran', $rowA['timezone']);
         $rowB = $this->clinicRow($this->clinicB);
-        $this->assertSame('Asia/Kabul', $rowB['timezone'], 'precondition: timezone B different');
+        $this->assertSame('Asia/Kabul', $rowB['timezone']);
 
-        // Durable active membership in A
         $membership = App::membership_service()->active_membership_for($this->clinicA, $this->actorA);
-        $this->assertNotNull($membership, 'precondition: active membership A');
-        $this->assertSame('active', $membership['status'], 'precondition: membership active');
+        $this->assertNotNull($membership);
+        $this->assertSame('active', $membership['status']);
     }
 
     protected function tearDown(): void
@@ -114,23 +93,20 @@ final class Phase4ClinicProfileCanonicalizationRedTest extends WP_UnitTestCase
         parent::tearDown();
     }
 
-    /**
-     * Primary RED: wizard save succeeds into setup.clinic.*, but cpms_clinics remains old
-     * and downstream receipt remains stale.
-     */
-    public function testWizardSaveShouldUpdateCanonicalAndDownstreamButCurrentlyDoesNot(): void
+    public function testWizardSaveShouldUpdateCanonicalAndDownstream(): void
     {
-        // Establish trusted Clinic A context via production mechanism
         $establisher = new TrustedClinicEstablisher(App::db(), new MembershipRepository(App::db()));
         $scope = $establisher->establish($this->actorA, $this->clinicA);
-        $this->assertSame($this->clinicA, $scope->clinicId, 'trusted Clinic A established');
-        $this->assertGreaterThan(0, $scope->organizationId, 'trusted org present');
-
+        $this->assertSame($this->clinicA, $scope->clinicId);
         App::replaceExplicitScope($scope);
         wp_set_current_user($this->actorA);
 
-        // Use existing wizard save mechanism as far as possible: saveClinic is the core logic
+        // Pre-seed historical setup.clinic.* to prove we don't delete but also don't overwrite as canonical
         $settings = new Settings(App::db(), $this->clinicA, App::audit());
+        $settings->set('setup.clinic.name', self::OLD_NAME, $this->actorA);
+        $settings->set('setup.clinic.address', self::OLD_ADDR, $this->actorA);
+        $settings->set('setup.clinic.phone', self::OLD_PHONE, $this->actorA);
+
         $err = CpmsSetupWizard::saveClinic($settings, [
             'clinic_name' => self::NEW_NAME,
             'clinic_address' => self::NEW_ADDR,
@@ -138,26 +114,31 @@ final class Phase4ClinicProfileCanonicalizationRedTest extends WP_UnitTestCase
             'clinic_timezone' => 'Asia/Tehran',
         ], $this->actorA);
 
-        $this->assertSame('', $err, 'wizard saveClinic should succeed (production validation path reached)');
+        $this->assertSame('', $err, 'wizard saveClinic should succeed via canonical path');
 
-        // Verify wizard reported save into setup.clinic.* (defective behavior: it writes there)
-        $this->assertSame(self::NEW_NAME, $settings->get('setup.clinic.name'), 'wizard wrote new name to setup.clinic.*');
-        $this->assertSame(self::NEW_ADDR, $settings->get('setup.clinic.address'), 'wizard wrote new address to setup.clinic.*');
-        $this->assertSame(self::NEW_PHONE, $settings->get('setup.clinic.phone'), 'wizard wrote new phone to setup.clinic.*');
-
-        // Canonical should equal new values — this is the intended contract, but currently fails (RED)
+        // Canonical must be updated (GREEN)
         $canonical = $this->clinicRow($this->clinicA);
-        $this->assertNotNull($canonical, 'canonical row still exists');
+        $this->assertNotNull($canonical);
+        $this->assertSame(self::NEW_NAME, $canonical['name'], 'canonical name updated');
+        $this->assertSame(self::NEW_ADDR, $canonical['address'], 'canonical address updated');
+        $this->assertSame(self::NEW_PHONE, $canonical['phone'], 'canonical phone updated');
 
-        // Capture exact RED evidence before asserting failure
-        // Expected: canonical equals NEW, Actual: still OLD
-        // We intentionally assert NEW to produce RED
-        $this->assertSame(self::NEW_NAME, $canonical['name'], 'RED EVIDENCE: cpms_clinics(A).name should equal operator-entered value after wizard save, but remains old');
-        $this->assertSame(self::NEW_ADDR, $canonical['address'], 'RED EVIDENCE: cpms_clinics(A).address should equal new value');
-        $this->assertSame(self::NEW_PHONE, $canonical['phone'], 'RED EVIDENCE: cpms_clinics(A).phone should equal new value');
+        // Invariants: preserve id/org/slug/timezone/created_at, locations unchanged
+        $this->assertSame($this->clinicA, (int) $canonical['id']);
+        $this->assertSame($this->orgId, (int) $canonical['organization_id']);
+        $this->assertSame('Asia/Tehran', $canonical['timezone'], 'timezone preserved, no sync');
+        $locA = $this->locationRow($this->locA);
+        $this->assertSame('Asia/Tehran', $locA['timezone'], 'Location A timezone operational truth preserved');
+
+        // setup.clinic.* must NOT remain second writable canonical — historical rows not deleted, but new canonical write should NOT update them
+        // After GREEN, wizard should NOT write to setup.clinic.* (we stopped dual-writing)
+        // So the old value should remain (or at least not equal new if we pre-seeded old)
+        $afterSettingsName = $settings->get('setup.clinic.name', '');
+        // We allow either old value (proving no overwrite) or empty, but NOT new as second canonical would have been.
+        // Since we pre-seeded old, it should still be old if we stopped writing.
+        $this->assertSame(self::OLD_NAME, $afterSettingsName, 'setup.clinic.* must not be second writable canonical after GREEN (historical preserved, not overwritten with new)');
 
         // Downstream consumer proof: FinanceService::receipt() should see new values without custom wiring
-        // Create minimal invoice to call receipt
         $patientId = $this->makePatient($this->clinicA, 'RedPatient');
         $clinicianId = $this->makeClinician($this->clinicA, $this->actorA, 'Dr Red');
         $visitId = $this->makeCompletedVisit($this->clinicA, $this->locA, $clinicianId, $patientId, $this->actorA);
@@ -165,7 +146,9 @@ final class Phase4ClinicProfileCanonicalizationRedTest extends WP_UnitTestCase
 
         $receipt = App::financeService()->receipt($this->actorA, (int) $invoice['id']);
         $clinicInReceipt = $receipt['receipt']['clinic'] ?? [];
-        $this->assertSame(self::NEW_NAME, $clinicInReceipt['name'] ?? '', 'RED EVIDENCE: receipt clinic.name should be new canonical value');
+        $this->assertSame(self::NEW_NAME, $clinicInReceipt['name'] ?? '', 'receipt clinic.name should be new canonical value');
+        $this->assertSame(self::NEW_ADDR, $clinicInReceipt['address'] ?? '', 'receipt clinic.address should be new');
+        $this->assertSame(self::NEW_PHONE, $clinicInReceipt['phone'] ?? '', 'receipt clinic.phone should be new');
     }
 
     // ================= Helpers =================
@@ -239,6 +222,13 @@ final class Phase4ClinicProfileCanonicalizationRedTest extends WP_UnitTestCase
     {
         global $wpdb;
         $row = $wpdb->get_row($wpdb->prepare('SELECT * FROM ' . $wpdb->prefix . 'cpms_clinics WHERE id = %d', $clinicId), ARRAY_A);
+        return is_array($row) ? $row : null;
+    }
+
+    private function locationRow(int $locId): ?array
+    {
+        global $wpdb;
+        $row = $wpdb->get_row($wpdb->prepare('SELECT * FROM ' . $wpdb->prefix . 'cpms_locations WHERE id = %d', $locId), ARRAY_A);
         return is_array($row) ? $row : null;
     }
 
@@ -328,7 +318,6 @@ final class Phase4ClinicProfileCanonicalizationRedTest extends WP_UnitTestCase
         global $wpdb;
         $p = $wpdb->prefix;
         $wpdb->query('SET FOREIGN_KEY_CHECKS=0');
-        // Delete in reverse FK order
         $tables = [
             'cpms_invoice_items',
             'cpms_invoices',

@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace ClinicCore\Admin;
 
+use ClinicCore\Application\Clinic\ClinicProfileException;
+use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Settings\Settings;
@@ -25,6 +27,12 @@ use ClinicCore\Settings\Settings;
  *  - هیچ دادهٔ PHI اینجا نمایش داده نمی‌شود (ADR-0002).
  *  - گام پایانی فقط وقتی «READY FOR CLINIC OPERATION» می‌شود که پیش‌نیازهای
  *    الزامی برآورده شده باشند؛ در غیر این صورت راهنما می‌دهد (نه خطای خام).
+ *
+ * Phase4 — Clinic Profile Canonicalization:
+ *  - منبع canonical برای name/address/phone: cpms_clinics
+ *  - setup.clinic.* دیگر second writable canonical نیست (تاریخی حذف نمی‌شود)
+ *  - saveClinic از مسیر canonical یکسان با سرویس ClinicProfileService استفاده می‌کند
+ *  - timezone از این گام حذف شد — حقیقت عملیاتی از Location است، بدون sync
  */
 final class CpmsSetupWizard
 {
@@ -263,10 +271,28 @@ final class CpmsSetupWizard
 
     private static function renderClinic(Settings $settings): void
     {
-        $name = (string) ($settings->get('setup.clinic.name', '') ?? '');
-        $address = (string) ($settings->get('setup.clinic.address', '') ?? '');
-        $phone = (string) ($settings->get('setup.clinic.phone', '') ?? '');
-        $timezone = (string) ($settings->get('setup.clinic.timezone', 'Asia/Tehran') ?? 'Asia/Tehran');
+        // Canonical source: cpms_clinics — no longer setup.clinic.* as second writable canonical.
+        // Historical setup.clinic.* rows are not deleted, but we do not read them for display as primary;
+        // we show canonical values. Fallback to old settings only if canonical unavailable (e.g. pre-migration).
+        $canonical = null;
+        try {
+            $scope = ScopeContext::tryGet() ?? App::scope();
+            $canonical = App::clinicRepository()->find((int) $scope->clinicId);
+        } catch (\Throwable) {
+            $canonical = null;
+        }
+
+        if (is_array($canonical)) {
+            $name = (string) ($canonical['name'] ?? '');
+            $address = (string) ($canonical['address'] ?? '');
+            $phone = (string) ($canonical['phone'] ?? '');
+        } else {
+            // Fallback for edge cases (e.g. tests without DB) — keep old keys read-only, not writable.
+            $name = (string) ($settings->get('setup.clinic.name', '') ?? '');
+            $address = (string) ($settings->get('setup.clinic.address', '') ?? '');
+            $phone = (string) ($settings->get('setup.clinic.phone', '') ?? '');
+        }
+
         ?>
         <div class="card">
             <h2>مشخصات کلینیک</h2>
@@ -283,18 +309,8 @@ final class CpmsSetupWizard
                     <th><label for="cphone">تلفن</label></th>
                     <td><input type="text" id="cphone" name="clinic_phone" class="regular-text" value="<?php echo esc_attr($phone); ?>"></td>
                 </tr>
-                <tr>
-                    <th><label for="ctz">منطقهٔ زمانی</label></th>
-                    <td>
-                        <select id="ctz" name="clinic_timezone">
-                            <?php foreach (['Asia/Tehran', 'Asia/Kabul', 'Asia/Baghdad', 'UTC'] as $tz) : ?>
-                                <option value="<?php echo esc_attr($tz); ?>" <?php selected($timezone, $tz); ?>><?php echo esc_html($tz); ?></option>
-                            <?php endforeach; ?>
-                        </select>
-                    </td>
-                </tr>
             </table>
-            <p class="description">این اطلاعات فقط برای شناسایی کلینیک است و هیچ دادهٔ پزشکی در آن نیست.</p>
+            <p class="description">این اطلاعات فقط برای شناسایی کلینیک است و هیچ دادهٔ پزشکی در آن نیست. منبع canonical: cpms_clinics — timezone عملیاتی از Location است و اینجا ویرایش نمی‌شود.</p>
         </div>
         <?php
         self::formTag('clinic', 'ذخیره و ادامه');
@@ -447,7 +463,7 @@ final class CpmsSetupWizard
                             <?php
                             $st = (string) ($c['status'] ?? '');
                             $cls = $st === 'pass' ? '#00a32a' : ($st === 'warning' ? '#b26b00' : '#d63638');
-                            echo '<span style="color:' . esc_attr($cls) . ';font-weight:600;">' . esc_html($st) . '</span>';
+                            echo '<span style="color:' . esc_attr($cls) . ';font-weight:600;\">' . esc_html($st) . '</span>';
                             ?>
                         </td>
                         <td><?php echo esc_html((string) ($c['detail'] ?? '')); ?></td>
@@ -463,13 +479,26 @@ final class CpmsSetupWizard
 
     private static function renderReview(Settings $settings): void
     {
-        $clinic = (string) ($settings->get('setup.clinic.name', '') ?? '');
+        // Review should show canonical name if available
+        $clinicName = '';
+        try {
+            $scope = ScopeContext::tryGet() ?? App::scope();
+            $row = App::clinicRepository()->find((int) $scope->clinicId);
+            if (is_array($row)) {
+                $clinicName = (string) ($row['name'] ?? '');
+            }
+        } catch (\Throwable) {
+            $clinicName = (string) ($settings->get('setup.clinic.name', '') ?? '');
+        }
+        if ($clinicName === '') {
+            $clinicName = (string) ($settings->get('setup.clinic.name', '') ?? '');
+        }
         $doctorCount = count(App::clinicianRepository()->listAll(App::scope()->clinicId, false));
         ?>
         <div class="card">
             <h2>بازبینی پیش از شروع</h2>
             <table class="form-table" role="presentation">
-                <tr><th>نام کلینیک</th><td><?php echo esc_html($clinic !== '' ? $clinic : '—'); ?></td></tr>
+                <tr><th>نام کلینیک</th><td><?php echo esc_html($clinicName !== '' ? $clinicName : '—'); ?></td></tr>
                 <tr><th>پزشکان فعال</th><td><?php echo esc_html((string) $doctorCount); ?></td></tr>
                 <tr><th>دسترسی مدیریت</th><td>cpms_config (مدیر)</td></tr>
             </table>
@@ -571,7 +600,12 @@ final class CpmsSetupWizard
     // ================= Per-step persistence =================
 
     /**
-     * اعتبارسنجی و ذخیرهٔ گام «اطلاعات کلینیک» — خالص و قابل تست.
+     * اعتبارسنجی و ذخیرهٔ گام «اطلاعات کلینیک» — اکنون canonical path.
+     *
+     * این متد دیگر به setup.clinic.* نمی‌نویسد (second writable canonical حذف شد).
+     * منبع canonical: cpms_clinics via ClinicProfileService.
+     * Trusted durable Clinic context + CONFIG auth via service.
+     * Timezone اینجا مدیریت نمی‌شود (Location timezone حقیقت عملیاتی است).
      *
      * @param array<string, mixed> $post
      *
@@ -579,25 +613,72 @@ final class CpmsSetupWizard
      */
     public static function saveClinic(Settings $settings, array $post, int $updatedBy): string
     {
+        // Input normalization (same as service validation but early check for UX)
         $name = trim((string) ($post['clinic_name'] ?? ''));
         $address = trim((string) ($post['clinic_address'] ?? ''));
         $phone = trim((string) ($post['clinic_phone'] ?? ''));
-        $timezone = (string) ($post['clinic_timezone'] ?? 'Asia/Tehran');
 
+        // Basic pre-validation to keep error messages consistent with old wizard
         if ($name === '') {
             return 'نام کلینیک الزامی است.';
         }
         if (mb_strlen($name) > 190) {
             return 'نام کلینیک حداکثر ۱۹۰ کاراکتر است.';
         }
-        if (!in_array($timezone, ['Asia/Tehran', 'Asia/Kabul', 'Asia/Baghdad', 'UTC'], true)) {
-            $timezone = 'Asia/Tehran';
+        if (mb_strlen($address) > 255) {
+            return 'آدرس حداکثر ۲۵۵ کاراکتر است.';
+        }
+        if (mb_strlen($phone) > 32) {
+            return 'تلفن حداکثر ۳۲ کاراکتر است.';
         }
 
-        $settings->set('setup.clinic.name', $name, $updatedBy);
-        $settings->set('setup.clinic.address', $address, $updatedBy);
-        $settings->set('setup.clinic.phone', $phone, $updatedBy);
-        $settings->set('setup.clinic.timezone', $timezone, $updatedBy);
+        // Resolve trusted clinicId — no raw payload clinic_id, no fixed IDs, no first-clinic fallback
+        try {
+            $scope = ScopeContext::tryGet() ?? App::scope();
+            $trustedClinicId = (int) $scope->clinicId;
+        } catch (\Throwable $e) {
+            // Fail-closed: scope required
+            return 'زمینه کلینیک معتبر یافت نشد: ' . $e->getMessage();
+        }
+
+        if ($trustedClinicId <= 0) {
+            return 'زمینه کلینیک نامعتبر است.';
+        }
+
+        // Delegate to canonical service (same path as other product paths)
+        try {
+            App::clinicProfileService()->updateProfile($updatedBy, $trustedClinicId, [
+                'name' => $name,
+                'address' => $address !== '' ? $address : null,
+                'phone' => $phone !== '' ? $phone : null,
+            ]);
+        } catch (ClinicProfileException $e) {
+            $code = $e->getErrorCode();
+            $data = $e->getData();
+            if ($code === ClinicProfileException::VALIDATION) {
+                $fields = $data['fields'] ?? [];
+                if (is_array($fields) && $fields !== []) {
+                    $first = reset($fields);
+                    return is_string($first) ? $first : 'اعتبارسنجی ناموفق';
+                }
+                return $e->getMessage();
+            }
+            if ($code === ClinicProfileException::PERMISSION_DENIED) {
+                return 'دسترسی لازم را ندارید';
+            }
+            if ($code === ClinicProfileException::NOT_FOUND) {
+                return 'کلینیک یافت نشد';
+            }
+            if ($code === ClinicProfileException::QUERY_FAILED) {
+                return 'خطای پایگاه داده هنگام ذخیره';
+            }
+            return 'خطا: ' . $e->getMessage();
+        } catch (\Throwable $e) {
+            return 'خطای غیرمنتظره: ' . $e->getMessage();
+        }
+
+        // Intentionally NOT writing to setup.clinic.name/address/phone/timezone
+        // to avoid second writable canonical. Historical rows remain but are not updated.
 
         return '';
     }
@@ -665,10 +746,25 @@ final class CpmsSetupWizard
     /**
      * شرط «آمادهٔ شروع عملیات»: اطلاعات کلینیک + حداقل یک پزشک فعال؛
      * بدون نیاز به مجوز فعال یا بکاپ/پیامک (گام‌های اختیاری هستند).
+     * اکنون نام کلینیک از canonical cpms_clinics خوانده می‌شود.
      */
     private static function isReadyToOperate(Settings $settings): bool
     {
-        $name = trim((string) ($settings->get('setup.clinic.name', '') ?? ''));
+        $name = '';
+        try {
+            $scope = ScopeContext::tryGet() ?? App::scope();
+            $row = App::clinicRepository()->find((int) $scope->clinicId);
+            if (is_array($row)) {
+                $name = trim((string) ($row['name'] ?? ''));
+            }
+        } catch (\Throwable) {
+            // Fallback to old settings for edge cases
+            $name = trim((string) ($settings->get('setup.clinic.name', '') ?? ''));
+        }
+        if ($name === '') {
+            $name = trim((string) ($settings->get('setup.clinic.name', '') ?? ''));
+        }
+
         $doctors = count(App::clinicianRepository()->listAll(App::scope()->clinicId, false));
 
         return $name !== '' && $doctors > 0;

@@ -24,6 +24,7 @@ use ClinicCore\Application\Auth\OtpService;
 use ClinicCore\Application\Backup\BackupService;
 use ClinicCore\Application\Booking\BookingService;
 use ClinicCore\Application\Booking\ScheduleService;
+use ClinicCore\Application\Clinic\ClinicProfileService;
 use ClinicCore\Application\Clinical\ClinicalService;
 use ClinicCore\Application\Clinical\MedicalFileService;
 use ClinicCore\Application\Finance\FinanceService;
@@ -76,6 +77,7 @@ use ClinicCore\Infrastructure\Queue\JobQueue;
 use ClinicCore\Infrastructure\Repository\AppointmentRepository;
 use ClinicCore\Infrastructure\Repository\ClinicalNoteRepository;
 use ClinicCore\Infrastructure\Repository\ClinicianRepository;
+use ClinicCore\Infrastructure\Repository\ClinicRepository;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
 use ClinicCore\Infrastructure\Repository\PatientIdentityRepository;
 use ClinicCore\Infrastructure\Repository\FollowUpRepository;
@@ -484,6 +486,31 @@ final class App
         }
 
         return $repo;
+    }
+
+    public static function clinicRepository(): ClinicRepository
+    {
+        static $repo = null;
+        if ($repo === null) {
+            $repo = new ClinicRepository(self::db());
+        }
+
+        return $repo;
+    }
+
+    public static function clinicProfileService(): ClinicProfileService
+    {
+        static $service = null;
+        if ($service === null) {
+            $service = new ClinicProfileService(
+                self::db(),
+                self::clinicRepository(),
+                self::authorization_service(),
+                self::audit()
+            );
+        }
+
+        return $service;
     }
 
     /**
