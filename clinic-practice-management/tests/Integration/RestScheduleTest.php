@@ -193,15 +193,26 @@ final class RestScheduleTest extends WP_UnitTestCase
         $this->assertSame('09:00', $view['start_time']);
         $this->assertSame(60, $view['appointment_duration_min']);
 
-        // Duplicate day rejected (same Location + weekday — the single-row rule)
-        $dup = $this->dispatch('POST', self::NS . '/config/schedules', [
+        // Phase 6 Slice 4 (multi-shift): a NON-overlapping second shift is now
+        // allowed; an OVERLAPPING shift at the same Location + weekday is
+        // rejected with the distinct overlap reason — and writes no row, so the
+        // slot assertions below still observe only the first shift.
+        $overlap = $this->dispatch('POST', self::NS . '/config/schedules', [
             'clinician_id' => $this->clinicianId,
             'day_of_week' => $dow,
-            'start_time' => '14:00',
-            'end_time' => '18:00',
+            'start_time' => '10:00',
+            'end_time' => '14:00',
             'location_id' => $this->locationId,
         ], ['X-CPMS-Clinic-Id' => '1']);
-        $this->assertSame(400, $dup->get_status());
+        $this->assertSame(400, $overlap->get_status());
+        $this->assertClinicError($overlap, 'CLINIC_VALIDATION_FAILED');
+        $overlapBody = $overlap->get_data();
+        $this->assertIsArray($overlapBody, 'Overlap rejection envelope must be an array');
+        $this->assertSame(
+            'overlapping_shift',
+            (is_array($overlapBody['data']['errors'] ?? null) ? ($overlapBody['data']['errors']['start_time,end_time'] ?? null) : null),
+            'Overlap rejection must carry the distinct overlapping_shift reason'
+        );
 
         // Regeneration Job (enqueue در Service) → اجرا
         $this->runJobs();

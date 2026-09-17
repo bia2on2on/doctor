@@ -246,8 +246,10 @@ final class Phase4Slice1ProfessionalMultiClinicParticipationTest extends WP_Unit
      * redefined uniqueness to `(clinic_id, location_id, clinician_id, day_of_week,
      * start_time)` exactly for that ("چند شعبه در یک روز"), so the application-level
      * pre-check must be evaluated inside the trusted Clinic, not across the
-     * professional's whole identity. The one-row-per-weekday rule WITHIN a Clinic
-     * stays in force.
+     * professional's whole identity. Phase 6 Slice 4 replaced the
+     * one-row-per-weekday rule WITHIN a Clinic with multi-shift + overlap
+     * rejection (`overlapping_shift`); exact start_time duplicates still keep
+     * `duplicate_schedule_day`.
      */
     public function testSameProfessionalMayHoldTheSameWeekdayInAnotherClinic(): void
     {
@@ -284,27 +286,47 @@ final class Phase4Slice1ProfessionalMultiClinicParticipationTest extends WP_Unit
         self::assertSame(1, $this->countScheduleRows($this->clinicianId, $clinicB), 'Clinic B holds its own row for the same weekday');
         self::assertSame(1, $this->countClinicianRowsForUser($this->professionalUserId), 'still ONE professional identity');
 
-        // The pre-existing single-row-per-(Clinic, Location, weekday) rule is
-        // preserved (not removed, not weakened).
-        $duplicateInB = $this->dispatch('POST', self::NS . '/config/schedules', [
+        // Phase 6 Slice 4 (multi-shift): a NON-overlapping second shift on the same
+        // weekday WITHIN the same Clinic is now allowed (the obsolete
+        // single-row-per-(Clinic, Location, weekday) product contract is
+        // replaced); the Clinic-scoped tenant skeleton of this test is unchanged.
+        $secondInB = $this->dispatch('POST', self::NS . '/config/schedules', [
             'clinician_id' => $this->clinicianId,
             'day_of_week' => 3,
             'start_time' => '16:00',
             'end_time' => '20:00',
             'location_id' => (int) $this->locations[$clinicB],
         ], $clinicB, $this->managerUserId);
-        self::assertSame(400, $duplicateInB->get_status(), 'duplicate weekday WITHIN the same Clinic must still be rejected');
-        self::assertSame('CLINIC_VALIDATION_FAILED', $this->errorCode($duplicateInB), 'duplicate rejection keeps its stable code');
+        self::assertSame(
+            200,
+            $secondInB->get_status(),
+            'non-overlapping second shift WITHIN the same Clinic must now be allowed (error=' . $this->errorCode($secondInB) . ')'
+        );
+        self::assertSame(2, $this->countScheduleRows($this->clinicianId, $clinicB), 'Clinic B holds both shifts for the same weekday');
+        self::assertSame(1, $this->countClinicianRowsForUser($this->professionalUserId), 'still ONE professional identity');
+        self::assertSame(1, $this->countScheduleRows($this->clinicianId, $clinicA), 'Clinic A row untouched by the Clinic B multi-shift');
+
+        // An OVERLAPPING shift within the same Clinic is still rejected, with
+        // the distinct overlap reason (no row written).
+        $overlapInB = $this->dispatch('POST', self::NS . '/config/schedules', [
+            'clinician_id' => $this->clinicianId,
+            'day_of_week' => 3,
+            'start_time' => '10:00',
+            'end_time' => '11:00',
+            'location_id' => (int) $this->locations[$clinicB],
+        ], $clinicB, $this->managerUserId);
+        self::assertSame(400, $overlapInB->get_status(), 'overlapping weekday WITHIN the same Clinic must still be rejected');
+        self::assertSame('CLINIC_VALIDATION_FAILED', $this->errorCode($overlapInB), 'overlap rejection keeps the stable code');
         // Envelope shape of a WP_Error serialized by the REST server:
         // ['code' => …, 'message' => …, 'data' => ['errors' => …, 'status' => …]]
         // (same accessor contract as RestScheduleTest::assertClinicError's data.status).
-        $envelope = $this->errorEnvelope($duplicateInB);
+        $envelope = $this->errorEnvelope($overlapInB);
         self::assertSame(
-            'duplicate_schedule_day',
-            (string) ($envelope['data']['errors']['day_of_week'] ?? ''),
-            'duplicate rejection keeps its machine-readable reason; envelope=' . wp_json_encode($envelope)
+            'overlapping_shift',
+            (string) ($envelope['data']['errors']['start_time,end_time'] ?? ''),
+            'overlap rejection carries the distinct machine-readable reason; envelope=' . wp_json_encode($envelope)
         );
-        self::assertSame(1, $this->countScheduleRows($this->clinicianId, $clinicB), 'rejected duplicate created no row');
+        self::assertSame(2, $this->countScheduleRows($this->clinicianId, $clinicB), 'rejected overlap created no row');
     }
 
     // ==================================================================
