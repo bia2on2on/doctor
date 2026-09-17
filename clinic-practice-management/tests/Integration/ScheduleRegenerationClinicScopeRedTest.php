@@ -112,7 +112,8 @@ final class ScheduleRegenerationClinicScopeRedTest extends WP_UnitTestCase
         $this->sharedClinicianId = $this->insertClinician(self::CLINIC_A, $this->doctorUserId, 'Dr Phase6 Slice1 Shared');
         self::assertGreaterThan(0, $this->sharedClinicianId, 'پیش‌شرط: پروفایل پزشک مشترک ساخته شود');
 
-        // برنامه هفتگی در Clinic A — از مسیر واقعی سرویس.
+        // برنامه هفتگی در Clinic A — از مسیر واقعی سرویس (Phase 6 Slice 3:
+        // Location صریح — همین fixture Locationِ Clinic A).
         $schedA = $this->withScope(self::CLINIC_A, fn (): array => App::scheduleService()->create(
             $this->managerA,
             [
@@ -122,6 +123,7 @@ final class ScheduleRegenerationClinicScopeRedTest extends WP_UnitTestCase
                 'end_time' => '13:00',
                 'appointment_duration_min' => 30,
                 'slot_capacity' => 2,
+                'location_id' => $this->locA,
             ]
         ));
         $this->scheduleAId = (int) $schedA['id'];
@@ -137,6 +139,7 @@ final class ScheduleRegenerationClinicScopeRedTest extends WP_UnitTestCase
                 'end_time' => '12:00',
                 'appointment_duration_min' => 30,
                 'slot_capacity' => 1,
+                'location_id' => $this->locB,
             ]
         ));
         self::assertGreaterThan(0, (int) $schedB['id'], 'پیش‌شرط: برنامه Clinic B ساخته شود');

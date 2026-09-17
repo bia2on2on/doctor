@@ -86,6 +86,11 @@ final class C7PreIntegrationBoundaryTest extends WP_UnitTestCase
 
     private int $futureEmptySlotAId = 0;
 
+    /** Phase 6 Slice 3: Locationهای صریحِ fixture برای قرارداد create. */
+    private int $locA = 0;
+
+    private int $locB = 0;
+
     private int $serviceAId = 0;
 
     private int $patientA = 0;
@@ -127,8 +132,9 @@ final class C7PreIntegrationBoundaryTest extends WP_UnitTestCase
         $orgId = $this->defaultOrganization();
         $this->insertClinic(self::CLINIC_A, $orgId, 'c7-pre-clinic-a');
         $this->insertClinic(self::CLINIC_B, $orgId, 'c7-pre-clinic-b');
-        $locA = $this->insertLocation(self::CLINIC_A, 'c7-pre-loc-a');
-        $this->insertLocation(self::CLINIC_B, 'c7-pre-loc-b');
+        $this->locA = $this->insertLocation(self::CLINIC_A, 'c7-pre-loc-a');
+        $this->locB = $this->insertLocation(self::CLINIC_B, 'c7-pre-loc-b');
+        $locA = $this->locA;
 
         // Clinic A — کاربران مشروعِ مالکِ اشیای قربانی.
         $this->managerA = $this->makeUser('c7pre_mgr_a', 'cpms_manager');
@@ -145,7 +151,8 @@ final class C7PreIntegrationBoundaryTest extends WP_UnitTestCase
         $this->secretaryB = $this->makeUser('c7pre_sec_b', 'cpms_secretary');
         cpms_test_seed_membership($this->secretaryB, self::CLINIC_B, 'cpms_secretary');
 
-        // اشیای قربانی Schedule/Exception — از مسیر واقعی سرویس توسط مدیر A.
+        // اشیای قربانی Schedule/Exception — از مسیر واقعی سرویس توسط مدیر A
+        // (Phase 6 Slice 3: Location صریحِ fixture).
         $schedule = $this->withScope(self::CLINIC_A, fn (): array => App::scheduleService()->create(
             $this->managerA,
             [
@@ -155,6 +162,7 @@ final class C7PreIntegrationBoundaryTest extends WP_UnitTestCase
                 'end_time' => '13:00',
                 'appointment_duration_min' => 30,
                 'slot_capacity' => 2,
+                'location_id' => $this->locA,
             ]
         ));
         $this->scheduleAId = (int) $schedule['id'];
@@ -513,6 +521,7 @@ final class C7PreIntegrationBoundaryTest extends WP_UnitTestCase
                 'end_time' => '14:00',
                 'appointment_duration_min' => 20,
                 'slot_capacity' => 1,
+                'location_id' => $this->locB,
             ]
         ));
         $scheduleBId = (int) $scheduleB['id'];
