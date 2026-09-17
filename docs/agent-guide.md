@@ -815,3 +815,11 @@ final class XxxService {
 - **اعتبارسنجی محلی:** PHP/Composer/MySQL در sandbox نصب نیستند ⇒ **Integration/Unit محلی NOT RUN**؛ آنچه محلی اجرا شد: `git diff --stat` — فقط سه فایل مجاز تغییر (حذف گزارش + `CpmsSetupWizard.php` یک خط + `Phase4ClinicProfileTest.php` تقویت updated_at) + همین لاگ append-only؛ `php -l` با WASM برای فایل‌های تغییرکرده **NOT RETRIEVED** (محیط فاقد PHP)؛ Tripwire محلی **NOT RUN**.
 - **Git/PR:** فقط کامیت forward-only روی `arena/01a0acc1-doctor`؛ PR #63 همچنان **DRAFT** (بدون Ready/merge/close/delete branch/tag/release)؛ بدون `reset --hard`/`git clean`/`rebase`/`force-push`؛ push به همین شاخه.
 - **وضعیت tree:** در زمان ثبت این ورودی، تغییر فقط همین لاگ append-only + سه اصلاح مجاز است؛ پس از commit باید clean شود. وضعیت Gateهای exact-head برای کامیتِ این لاگ پس از push از GitHub بازیابی می‌شود.
+
+### [2026-09-17 07:26 Asia/Tehran] — ایجنت Arena (شاخهٔ `arena/01a0acc1-doctor`، PR #63 DRAFT) — CORRECTION: VALID RED evidence for Clinic Profile — STOP
+- **تصحیح صریح:** ورودی قبلی `[2026-09-17 07:08 Asia/Tehran]` در بخش VALID RED به‌صورت مبهم هر دو `35166751584` و `35167649955` را زیر VALID RED قرار داده بود — آن سطر نادقیق/مبهم بود و اصلاح می‌شود.
+- **VALID RED فقط:** run `35166751584`، commit `1c94e65` (test-only commit) — canonical Clinic profile پس از مسیر موفق موجود Wizard قدیمی stale ماند — شاهد واقعی RED.
+- **NOT VALID RED:** run `35167649955`، commit `dfef387` — این یک اجرای failing پس از GREEN اولیه بود (2 errors + 6 failures) با نقص‌های fixture/test شامل private `ClinicScope` constructor، timestamp same-second assertion، و انتظارات قدیمی `SetupWizardTest` — RED معتبر نیست.
+- **دامنهٔ این تصحیح:** فقط همین گزارهٔ شواهدی را supersede می‌کند؛ سایر حقایق ثبت‌شدهٔ قبلی بدون تغییر باقی می‌مانند مگر اینکه مستقلاً نقض شوند.
+- **عدم افزودن شواهد گمانه‌ای:** هیچ run ID دقیق برای head جدید فعلی قبل از وجود واقعی اضافه نمی‌شود.
+- **Git/PR:** بدون تغییر کد محصول/تست/workflow/migration — فقط همین لاگ append-only.
