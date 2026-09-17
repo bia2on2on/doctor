@@ -8,6 +8,7 @@ use ClinicCore\Admin\ClinicianAdminPage;
 use ClinicCore\Admin\CpmsAdminMenu;
 use ClinicCore\Admin\CpmsAssets;
 use ClinicCore\Admin\CpmsSetupWizard;
+use ClinicCore\Admin\LocationAdminPage;
 use ClinicCore\Admin\PatientAdminPage;
 use ClinicCore\Admin\PatientPortalPage;
 use ClinicCore\Admin\PrescriptionPrintPage;
@@ -29,6 +30,7 @@ use ClinicCore\Application\Clinical\ClinicalService;
 use ClinicCore\Application\Clinical\MedicalFileService;
 use ClinicCore\Application\Finance\FinanceService;
 use ClinicCore\Application\Handwriting\HandwritingService;
+use ClinicCore\Application\Location\LocationService;
 use ClinicCore\Application\Membership\MembershipService;
 use ClinicCore\Application\Patients\PatientIdentityService;
 use ClinicCore\Application\Patients\PatientService;
@@ -78,6 +80,7 @@ use ClinicCore\Infrastructure\Repository\AppointmentRepository;
 use ClinicCore\Infrastructure\Repository\ClinicalNoteRepository;
 use ClinicCore\Infrastructure\Repository\ClinicianRepository;
 use ClinicCore\Infrastructure\Repository\ClinicRepository;
+use ClinicCore\Infrastructure\Repository\LocationRepository;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
 use ClinicCore\Infrastructure\Repository\PatientIdentityRepository;
 use ClinicCore\Infrastructure\Repository\FollowUpRepository;
@@ -229,6 +232,7 @@ final class App
         CpmsAssets::register(); // Chunk F — assets اسکوپ‌شدهٔ صفحات CPMS (CSS/JS محلی، فقط در صفحات CPMS)
         CpmsSetupWizard::register(); // Chunk B — راه‌اندازی گام‌به‌گام (self-service, resumable)
         StaffManagementPage::register(); // Chunk C — کاربران و دسترسی‌ها (staff/user management)
+        LocationAdminPage::register(); // Phase 4 — شعبه‌ها (Location master data: create + name/timezone update)
 
         SettingsAdmin::register();
         SystemPage::register();
@@ -505,6 +509,38 @@ final class App
             $service = new ClinicProfileService(
                 self::db(),
                 self::clinicRepository(),
+                self::authorization_service(),
+                self::audit()
+            );
+        }
+
+        return $service;
+    }
+
+    /**
+     * ریپوی canonical شعبه‌ها (cpms_locations) — Phase 4 Location master data.
+     */
+    public static function locationRepository(): LocationRepository
+    {
+        static $repo = null;
+        if ($repo === null) {
+            $repo = new LocationRepository(self::db());
+        }
+
+        return $repo;
+    }
+
+    /**
+     * سرویس Location master data — CREATE + UPDATE name/timezone
+     * (trusted Clinic + CONFIG scoped + IANA timezone + parity-safe denial).
+     */
+    public static function locationService(): LocationService
+    {
+        static $service = null;
+        if ($service === null) {
+            $service = new LocationService(
+                self::db(),
+                self::locationRepository(),
                 self::authorization_service(),
                 self::audit()
             );
