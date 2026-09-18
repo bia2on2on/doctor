@@ -440,6 +440,7 @@ final class Phase6ScheduleShiftConcurrencyRedTest extends WP_UnitTestCase
         try {
             global $wpdb;
             $wdb = new \wpdb(DB_USER, DB_PASSWORD, DB_NAME, DB_HOST);
+            $wdb->query('SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
             if (!method_exists($wdb, 'set_prefix')) {
                 exit(9);
             }
