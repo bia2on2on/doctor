@@ -25,7 +25,7 @@
 | Authorization / Roles / Capability / Scope | **Phase 3** — Role & Access Control |
 | Specialty / Department / Room / داده‌های پایه | **Phase 4** — Master Data |
 | Pricing / تعرفه | **Phase 5** — ✅ **CLOSED / TECHNICALLY COMPLETE (BOUNDED)** (PR #67)؛ قلمِ «تعرفهٔ متفاوت per-Location برای همان Service» **الزامِ اثبات‌شدهٔ V1 نیست** و بدون فاز/migration باز می‌ماند (رجوع به O-06) |
-| Schedule / Availability / Timezone | **Phase 6** |
+| Schedule / Availability / Timezone | **Phase 6** — ✅ **CLOSED / TECHNICALLY COMPLETE (BOUNDED)** (PRs #69–#71 + #73–#76؛ merge `bd5e6a1819a838648dbdcbc6914c0d8b24bba38b`)؛ ردیف‌های `O-03`/`O-04` با این بستن **بسته نمی‌شوند** و باز می‌مانند؛ دو قلم hardening به‌تعویق‌افتاده (ج/د) برای اسلایس hardening برنامه‌ریزی‌شدهٔ C7 حفظ شده‌اند — پیاده‌سازی نشده‌اند |
 | Appointment / Booking | **Phase 7** |
 | Security / Authorization دیرهنگام / Rate-limit | **Phase 1** |
 
@@ -60,6 +60,22 @@
 > requirement, **not** on a single-Clinic/single-Location V1 assumption (**multi-Location product
 > support is not deferred**). No ServiceOffering, no `u_service_code` change, no `0021`; latest
 > migration remains `0020`.
+>
+> **Current Phase 6 closure note (re-verified 2026-09-18):** Owner Roadmap Phase 6 — Scheduling Engine is
+> **CLOSED / TECHNICALLY COMPLETE in a bounded scope** on live main
+> `bd5e6a1819a838648dbdcbc6914c0d8b24bba38b`, through merged **PRs #69–#71 + #73–#76** (Slice 7 =
+> concurrency-safe multi-shift conflict enforcement, **PR #76** MERGED 2026-09-18T09:59:44Z). The PR range
+> also contains the documentation-only **PR #72** (owner-requirement preservation — not a slice). Post-merge
+> evidence on that merge SHA: all four required workflows terminal-success (CI `35332404611` · Real WP
+> `35332404609` · Pilot/Staging `35332404592` · Closure `35332404644`) and 19/19 check runs success.
+> Requirement coverage preserved as established for `FR-3.1`–`FR-3.4` and `FR-3.6`–`FR-3.10`;
+> **`FR-3.5` belongs to Phase 8 and is not claimed here.** This closure does **not** resolve the `O-03`
+> (DST/timezone-conversion test coverage) or `O-04` drift rows, does **not** implement the two deferred
+> hardening items (ج: the no-scope legacy branch in `requireClinicianWithinTrustedClinic()`; د: the
+> `horizon_days` job-payload upper bound) — both are preserved for the planned C7 hardening slice — and
+> does **not** correct the inaccurate `ScheduleController.php` exception-route comment (product behavior is
+> correct; comment-only debt, to be fixed in the next legitimate product slice touching that file).
+> Latest migration remains `0020`; no `0021` exists or was reserved.
 
 ---
 
@@ -152,8 +168,8 @@
 |---|---|---|---|
 | O-01 | `ADR-0012` | Dangling-Check Job وجود ندارد | 🕒 **Phase 2** — بخشی از نیازش با ۲۱ FK جدید برطرف می‌شود |
 | O-02 | `ADR-0015` | `resolvePatient()` و پیاده‌سازی Merge وجود ندارند | 🕒 **Phase 2/4** — وابسته به تصمیم Q2 |
-| O-03 | `ADR-0013` / `state-machines/` | DST و تبدیل منطقهٔ زمانی پوشش تست ندارند | 🕒 **Phase 6** — Scheduling Engine |
-| O-04 | `ADR-0004` / `ADR-0017` | Slot و Duration بدون بُعد Location | 🕒 **Phase 6** |
+| O-03 | `ADR-0013` / `state-machines/` | DST و تبدیل منطقهٔ زمانی پوشش تست ندارند | 🕒 **Phase 6** — Scheduling Engine — ⚠️ **باز می‌ماند**: Phase 6 در `bd5e6a18` بسته شد (BOUNDED) اما این قلمِ پوشش تستِ DST/تبدیل منطقهٔ زمانی **با آن بستن، بسته نشده است**؛ فاز مالکِ سلول تاریخی حفظ می‌شود و قلم برای کار hardening بعدی باز است |
+| O-04 | `ADR-0004` / `ADR-0017` | Slot و Duration بدون بُعد Location | 🕒 **Phase 6** — ⚠️ **باز می‌ماند**: بُعد Location در مرزهای Scheduling (برنامه/استثنا/تولید Slot) در PRs #69–#71 + #73–#76 ادغام شد، اما خودِ ردیفِ drift (بُعد Location در Slot **و Duration** طبق `ADR-0004`/`ADR-0017`) با بستن BOUNDED فاز ۶ **بسته اعلام نمی‌شود**؛ بدون ادعای تکمیل، باز می‌ماند |
 | O-05 | `state-machines/appointment.md` | بدون بُعد Location | 🕒 **Phase 7** |
 | O-06 | `scope/mvp-scope.md` | تعرفه/Pricing بدون سطح Organization یا per-Location | ✅ **Phase 5 = CLOSED / TECHNICALLY COMPLETE (BOUNDED)** — **PR #67 MERGED** 2026-09-17T15:36:54Z (merge = `e063b42260cb5ab740acf48dcf73c6c67b11fef6`؛ head = `fa86e41e415d1b7fcca3dec4c88fadb25da71d1a`). **Pricing پایه Clinic-scoped است و برای جریان تأییدشدهٔ فعلی V1 کافی است**؛ Slice 1 شکافِ مشخصِ انتساب Location را با استخراج `invoice.location_id` از Visit معتبر بست (هرگز از payload) و `invoiceView()` مقدار ذخیره‌شده را برمی‌گرداند. **قلمِ باقی‌ماندهٔ باز (بخشی از این بستن نیست):** «تعرفهٔ متفاوت برای *همان* Service در Locationهای متفاوتِ یک Clinic» **به‌عنوان الزام سختِ V1 اثبات نشده** است ⇒ بدون ServiceOffering، بدون تغییر `u_service_code`، و بدون migration جدید برای فرضِ per-Location pricing (آخرین migration = `0020`؛ `0021` ساخته/رزرو نشده). ⚠️ **تصریح:** این تعلیق بر پایهٔ **نبودِ الزامِ اثبات‌شده** است، **نه** فرضِ تک‌Clinic/تک‌Location — **پشتیبانی چند Location در V1 به‌تعویق نیفتاده است** (معماری مرجع `Organization → Clinic → Location`)؛ آنچه اثبات نشده فقط «تعرفهٔ متفاوت per-Location برای همان Service» است. اگر الزامِ تأییدشدهٔ آینده‌ای چنین چیزی بخواهد، تصمیمِ scoped جداگانه با بازبینی schema/uniqueness لازم است (قابل‌ردیابی به ردیف ۲۲ — `services` — در `phase0.5-target-model.md` §د‑۶‑۲: «location_id NULL = همهٔ محل‌ها» + گامِ برنامهٔ `M-08`؛ این یک ردیفِ **برنامه** است، نه migration تأییدشده/ساخته‌شده). سلول «فاز مالک» تاریخی این سطر (**Phase 5**) محفوظ است؛ این سطر بستنِ فاز مالک را ثبت می‌کند، نه حذف Drift را |
 | O-07 | `testing/testing-plan.md` TP-15 | تست Dangling/Migration به مکانیزم ناموجود ارجاع می‌دهد | 🕒 **Phase 2** |
