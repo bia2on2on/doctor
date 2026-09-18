@@ -446,6 +446,9 @@ final class Phase6ScheduleShiftConcurrencyRedTest extends WP_UnitTestCase
             }
             $wdb->set_prefix($wpdb->prefix);
             $wpdb = $wdb;
+            $wdb->has_connected = false;
+            $wdb->init_charset();
+            $wdb->check_connection();
 
             // The trusted Clinic is the server-side EXPLICIT scope (the same
             // primitive the REST boundary sets) — never a payload value.
