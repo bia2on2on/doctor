@@ -29,8 +29,15 @@ final class ScheduleRepository
         'buffer_pre_min', 'buffer_post_min', 'updated_at',
     ];
 
+    /*
+     * Phase 6 Slice 6: `location_id` بخشی از Whitelist درج است (قرارداد
+     * Migration 0015) — `null` یعنی همهٔ Locationهای Clinic معتبر و عدد یعنی
+     * فقط همان Location. اعتبارسنجی (واقعی/فعال/مالکیت Clinic) در Service است؛
+     * اینجا فقط اجازهٔ عبور مقدارِ از قبل‌اعتبارسنجی‌شده به جدول داده می‌شود و
+     * هیچ جایگزینی/پیش‌فرضی ساخته نمی‌شود.
+     */
     private const EXCEPTION_CREATE_FIELDS = [
-        'clinic_id', 'clinician_id', 'date', 'type',
+        'clinic_id', 'location_id', 'clinician_id', 'date', 'type',
         'start_time', 'end_time', 'reason', 'created_by_wp_user_id', 'created_at',
     ];
 

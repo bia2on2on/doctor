@@ -122,6 +122,15 @@ final class ScheduleController extends RestBase
                     'start_time' => ['required' => false, 'type' => 'string'],
                     'end_time' => ['required' => false, 'type' => 'string'],
                     'reason' => ['required' => false, 'type' => 'string'],
+                    /*
+                     * Phase 6 Slice 6: Location اختیاریِ استثنا (قرارداد Migration
+                     * 0015) — غایب/تهی یعنی «همهٔ محل‌ها» (NULL) و مقدار یعنی
+                     * فقط همان Location. الزامی‌نبودن در route عمدی است (الگوی
+                     * Slice 3): قرارداد در Service اعمال می‌شود تا ترتیبِ خطاها و
+                     * پاریتِ not-found حفظ بماند — بیگانه/ناموجود/غیرفعال همه
+                     * 404 «محل یافت نشد» می‌گیرند، نه 400ِ زودهنگامِ route.
+                     */
+                    'location_id' => ['required' => false, 'type' => 'integer'],
                 ],
             ],
         ]);
