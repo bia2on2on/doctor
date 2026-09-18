@@ -446,38 +446,7 @@ final class Phase6ScheduleShiftConcurrencyRedTest extends WP_UnitTestCase
             }
             $wdb->set_prefix($wpdb->prefix);
             $wpdb = $wdb;
-            $spStack = [];
-            add_filter('query', function ($query) use ($wdb, &$spStack) {
-                $q = trim((string) $query);
-                if (!str_starts_with($q, '/*cpms*/')) {
-                    return $query;
-                }
-                $verb = trim(substr($q, strlen('/*cpms*/')));
-                if ($verb === 'START TRANSACTION') {
-                    if (empty($spStack)) {
-                        $spStack[] = 'root';
-                        return 'START TRANSACTION';
-                    }
-                    $name = 'sp_' . count($spStack);
-                    $spStack[] = $name;
-                    return 'SAVEPOINT ' . $name;
-                }
-                if ($verb === 'COMMIT') {
-                    $top = array_pop($spStack);
-                    if ($top === 'root' || $top === null) {
-                        return 'COMMIT';
-                    }
-                    return 'RELEASE SAVEPOINT ' . $top;
-                }
-                if ($verb === 'ROLLBACK') {
-                    $top = array_pop($spStack);
-                    if ($top === 'root' || $top === null) {
-                        return 'ROLLBACK';
-                    }
-                    return 'ROLLBACK TO SAVEPOINT ' . $top;
-                }
-                return $query;
-            }, 999);
+            remove_all_filters('query');
             $wdb->has_connected = false;
             $wdb->init_charset();
             $wdb->check_connection();
