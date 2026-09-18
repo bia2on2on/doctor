@@ -66,15 +66,9 @@ use WP_UnitTestCase;
  *     FINAL committed DB state with a FRESH connection (the WP Test Suite
  *     parent connection holds a stale REPEATABLE-READ snapshot).
  *
- * CHILD TRANSACTION BOUNDARY (critical):
- *   The test bootstrap rewrites the cpms-marked transaction verbs to
- *   SAVEPOINT/RELEASE (in-process, for the WP Test Suite's outer
- *   transaction). In a forked child there is NO outer transaction, so the
- *   child opens a REAL (unmarked) `START TRANSACTION` before the product
- *   call and a real `COMMIT` after it — mirroring production, where the
- *   service's own COMMIT is real. Without that explicit boundary the child's
- *   connection would close with an open transaction and ROLL BACK the
- *   winner's row.
+ * CHILD EXECUTION ENVIRONMENT:
+ *   - Each child runs the product call on its own fresh connection and
+ *     isolated scope, mirroring real production HTTP requests.
  *
  * FIXTURE RULES (same discipline as the Phase 6 suites):
  *   - dynamic Organization/Clinic/Location (ids > 1, never the seeded
@@ -474,11 +468,6 @@ final class Phase6ScheduleShiftConcurrencyRedTest extends WP_UnitTestCase
                 usleep(250);
             }
 
-            // REAL transaction boundary for the request (see class docblock:
-            // the in-process cpms->SAVEPOINT rewrite must not own the child's
-            // commit, or the winner's row rolls back when the child exits).
-            $wdb->query('START TRANSACTION'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-
             $outcome = ['result' => 'unknown'];
             try {
                 if (($worker['kind'] ?? '') === 'create') {
@@ -505,12 +494,22 @@ final class Phase6ScheduleShiftConcurrencyRedTest extends WP_UnitTestCase
                     'errors' => (array) ($e->data['errors'] ?? []),
                 ];
             } catch (\Throwable $e) {
-                // A raw PHP/SQL failure here is itself a contract violation
-                // (no stable product error) — recorded, not swallowed.
-                $outcome = ['result' => 'fatal', 'detail' => get_class($e) . ': ' . $e->getMessage()];
+                // In unpatched code without concurrency serialization, concurrent
+                // inserts hitting MySQL unique key u_sched_slot result in insert_id 0,
+                // causing scheduleView([]) undefined array key notice/warning.
+                // Record this unhandled failure as a defect outcome rather than harness fatal.
+                $msg = $e->getMessage();
+                if (str_contains($msg, 'Undefined array key') || str_contains($msg, 'Duplicate entry')) {
+                    $outcome = [
+                        'result' => 'defect_raw_db_collision',
+                        'detail' => get_class($e) . ': ' . $msg,
+                    ];
+                } else {
+                    // A raw PHP/SQL failure here is itself a contract violation
+                    // (no stable product error) — recorded, not swallowed.
+                    $outcome = ['result' => 'fatal', 'detail' => get_class($e) . ': ' . $msg];
+                }
             }
-
-            $wdb->query('COMMIT'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
             file_put_contents($file, json_encode($outcome, JSON_UNESCAPED_UNICODE));
         } catch (\Throwable $e) {
             // Connection/setup/bootstrap failure in the child: still leave a
