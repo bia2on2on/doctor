@@ -187,6 +187,8 @@ jobs:
               grep '^testsuite ' "$SPLIT" | grep 'Phase6ScheduleMultiShiftTest' || echo '(Phase6 Slice 4 suite missing from junit)'
               echo '--- Phase6 Slice 4 Multi-Shift testcases ---'
               grep '^testcase ' "$SPLIT" | grep 'Phase6ScheduleMultiShiftTest' || true
+              # Slice 5 keeps named-suite evidence explicit (additive; no gate change).
+              grep '^testsuite ' "$SPLIT" | grep 'Phase6ScheduleMultiShiftTest' || true
               echo '--- Phase6 Slice 4 regression suites (selection + execution proof) ---'
               grep '^testsuite ' "$SPLIT" | grep -E 'RestScheduleTest|Phase6ScheduleExplicitLocationTest|Phase4Slice1ProfessionalMultiClinicParticipationTest|ScheduleRegenerationClinicScopeRedTest|SchedulingLocationLocalBoundaryRedTest|SlotsGenerateLocationLocalTemporalRedTest|SlotsGenerateM2WiringRedTest' || echo '(a Phase6 Slice 4 regression suite is missing from junit)'
               echo '--- Phase6 Slice 4 regression testcases ---'

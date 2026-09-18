@@ -531,65 +531,54 @@ final class Phase6ScheduleMultiShiftTest extends WP_UnitTestCase
     //      writes NOTHING (no silent mis-edit of the wrong shift).
     // ==================================================================
 
-    public function testWpAdminMultiRowSaveRefusesToGuessAndWritesNothing(): void
+    public function testWpAdminMultiRowSaveTargetsExplicitSecondRow(): void
     {
-        $first = $this->dispatch('POST', self::NS . '/config/schedules', [
-            'clinician_id' => $this->clinicianId,
-            'day_of_week' => 0,
-            'start_time' => '08:00',
-            'end_time' => '12:00',
-            'location_id' => $this->locA1,
-        ], $this->clinicA, $this->managerAId);
-        self::assertSame(200, $first->get_status(), 'M8 precondition: first shift created (error=' . $this->errorCode($first) . ')');
-        $firstId = (int) ($first->get_data()['data']['id'] ?? 0);
-        self::assertGreaterThan(0, $firstId, 'M8 precondition: first shift id returned');
+        $first = $this->insertScheduleRowRaw($this->clinicA, $this->locA1, 0, '08:00:00', '12:00:00', 1);
+        $second = $this->insertScheduleRowRaw($this->clinicA, $this->locA1, 0, '16:00:00', '20:00:00', 1);
+        self::assertGreaterThan(0, $first, 'precondition: first schedule row inserted');
+        self::assertGreaterThan(0, $second, 'precondition: second schedule row inserted');
+        $notice = $this->dispatchAdminAction('cpms_schedule_save', [
+            'clinician_id' => (string) $this->clinicianId,
+            'sched_submit' => '0:' . $this->locA1 . ':second',
+            'sched' => [0 => [$this->locA1 => ['second' => [
+                'schedule_id' => (string) $second, 'start_time' => '17:00', 'end_time' => '19:00',
+                'appointment_duration_min' => '20', 'slot_capacity' => '1', 'is_active' => '1',
+            ]]]],
+        ], fn () => ClinicianAdminPage::saveSchedules(), $this->managerAId);
+        self::assertStringNotContainsString('خطا', $notice, 'explicit row update succeeds: ' . $notice);
+        $row1 = $this->scheduleRow($first); $row2 = $this->scheduleRow($second);
+        self::assertSame('08:00:00', (string) $row1['start_time']);
+        self::assertSame('17:00:00', (string) $row2['start_time']);
+    }
 
-        // Second shift seeded durably — the service cannot create it pre-fix.
-        $secondId = $this->insertScheduleRowRaw($this->clinicA, $this->locA1, 0, '16:00:00', '20:00:00', 1);
-        self::assertGreaterThan(0, $secondId, 'M8 precondition: durable second shift row');
+    public function testWpAdminMatrixRendersEveryShiftAndAddRow(): void
+    {
+        $first = $this->insertScheduleRowRaw($this->clinicA, $this->locA1, 0, '08:00:00', '12:00:00', 1);
+        $second = $this->insertScheduleRowRaw($this->clinicA, $this->locA1, 0, '16:00:00', '20:00:00', 1);
+        self::assertGreaterThan(0, $first); self::assertGreaterThan(0, $second);
+        wp_set_current_user($this->managerAId);
+        $_GET['clinician_id'] = $this->clinicianId;
+        ob_start(); ClinicianAdminPage::render(); $html = (string) ob_get_clean();
+        unset($_GET['clinician_id']);
+        self::assertStringContainsString('value="' . $first . '"', $html);
+        self::assertStringContainsString('value="' . $second . '"', $html);
+        self::assertStringContainsString('sched_submit" value="0:' . $this->locA1 . ':new-', $html);
+    }
 
-        $notice = $this->dispatchAdminAction(
-            'cpms_schedule_save',
-            [
-                'clinician_id' => (string) $this->clinicianId,
-                'sched_submit' => '0:' . $this->locA1,
-                'sched' => [
-                    0 => [
-                        $this->locA1 => [
-                            'start_time' => '10:00',
-                            'end_time' => '11:00',
-                            'appointment_duration_min' => '20',
-                            'slot_capacity' => '1',
-                            'is_active' => '1',
-                        ],
-                    ],
-                ],
-            ],
-            fn () => ClinicianAdminPage::saveSchedules(),
-            $this->managerAId
-        );
-
-        self::assertStringStartsWith(
-            'خطا',
-            $notice,
-            'M8 DEFECT: with TWO rows matching (day, Location) the handler must refuse to guess instead of editing one. '
-            . 'Pre-fix it silently updates the LIMIT-1 row; notice="' . $notice . '"'
-        );
-        self::assertStringContainsString('چند برنامه', $notice, 'M8: the refusal names the multi-row cause; notice="' . $notice . '"');
-
-        $row1 = $this->scheduleRow($firstId);
-        $row2 = $this->scheduleRow($secondId);
-        self::assertNotNull($row1, 'M8: first shift still exists');
-        self::assertNotNull($row2, 'M8: second shift still exists');
-        self::assertSame('08:00:00', (string) $row1['start_time'], 'M8: refused save wrote nothing (first shift start untouched)');
-        self::assertSame('12:00:00', (string) $row1['end_time'], 'M8: refused save wrote nothing (first shift end untouched)');
-        self::assertSame('16:00:00', (string) $row2['start_time'], 'M8: refused save wrote nothing (second shift start untouched)');
-        self::assertSame('20:00:00', (string) $row2['end_time'], 'M8: refused save wrote nothing (second shift end untouched)');
-        self::assertCount(
-            2,
-            $this->scheduleRowsForClinicianDay($this->clinicianId, $this->clinicA, $this->locA1, 0),
-            'M8: still exactly two rows (no silent create either)'
-        );
+    public function testWpAdminForeignOrMismatchedRowFailsClosed(): void
+    {
+        $foreign = $this->insertScheduleRowRaw($this->clinicB, $this->locB1, 0, '08:00:00', '12:00:00', 1);
+        $local = $this->insertScheduleRowRaw($this->clinicA, $this->locA1, 1, '16:00:00', '20:00:00', 1);
+        self::assertGreaterThan(0, $foreign); self::assertGreaterThan(0, $local);
+        foreach ([[$foreign, 0, $this->locA1], [$local, 0, $this->locA1]] as [$id, $day, $loc]) {
+            $before = $this->scheduleRow((int) $id);
+            $notice = $this->dispatchAdminAction('cpms_schedule_save', [
+                'clinician_id' => (string) $this->clinicianId, 'sched_submit' => $day . ':' . $loc . ':x',
+                'sched' => [$day => [$loc => ['x' => ['schedule_id' => (string) $id, 'start_time' => '09:00', 'end_time' => '10:00', 'is_active' => '1']]]],
+            ], fn () => ClinicianAdminPage::saveSchedules(), $this->managerAId);
+            self::assertStringContainsString('یافت نشد', $notice);
+            self::assertSame($before, $this->scheduleRow((int) $id));
+        }
     }
 
     // ==================================================================
