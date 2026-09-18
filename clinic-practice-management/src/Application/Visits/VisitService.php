@@ -45,10 +45,10 @@ use Throwable;
  */
 final class VisitService
 {
-    private const ACTIVE_VISIT_STATUSES = [
-        'checked_in', 'waiting', 'called', 'in_consultation',
-        'consultation_completed', 'awaiting_payment', 'paid',
-    ];
+    /**
+     * وضعیت‌های زندهٔ ویزیت — منبع یگانه: VisitMachine::ACTIVE_STATUSES (I-3).
+     */
+    private const ACTIVE_VISIT_STATUSES = VisitMachine::ACTIVE_STATUSES;
 
     private const QUEUE_STATUSES = ['waiting', 'called', 'in_consultation'];
 
@@ -92,7 +92,12 @@ final class VisitService
         return $this->db->transactional(function () use ($actorUserId, $actorRole, $patientId, $appointmentId, $meta): array {
             $this->lockPatient($patientId);
 
-            $appt = $this->appointments->find($appointmentId);
+            // Phase 7 Slice 2 — I-3/سریال‌سازی: Check-in روی همان ردیف نوبت قفل
+            // می‌گیرد که T5/T6/T7 (BookingService::cancel/reschedule) قفل می‌کنند؛
+            // ترتیب فعلی حفظ می‌شود (ابتدا بیمار، سپس نوبت) و مسیر قفل هم همان
+            // findForUpdate موجود است. بدون این قفل، لغو/جابه‌جایی هم‌زمان می‌تواند
+            // وضعیت پاره (نوبت Terminal با ویزیت زنده) را کامیت کند.
+            $appt = $this->appointments->findForUpdate($appointmentId);
             if ($appt === null) {
                 throw VisitException::of('CLINIC_NOT_FOUND', 'نوبت یافت نشد', 404);
             }

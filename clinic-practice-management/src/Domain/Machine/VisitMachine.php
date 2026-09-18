@@ -25,6 +25,17 @@ final class VisitMachine
 
     public const NEW = 'new';
 
+    /**
+     * وضعیت‌های «زندهٔ» ویزیت — مبنای یگانهٔ I-3 (docs/state-machines/appointment.md §4):
+     * تا وقتی ویزیتِ متصل به نوبت در یکی از این وضعیت‌ها و `active = 1` است،
+     * T5/T6/T7 روی آن نوبت ممنوع است (`HAS_ACTIVE_VISIT`). اشاره‌گر کهنهٔ
+     * `appointments.active_visit_id` به‌تنهایی شاهدِ فعال بودن نیست.
+     */
+    public const ACTIVE_STATUSES = [
+        self::CHECKED_IN, self::WAITING, self::CALLED, self::IN_CONSULTATION,
+        self::CONSULTATION_COMPLETED, self::AWAITING_PAYMENT, self::PAID,
+    ];
+
     public function __construct(private readonly StateMachine $machine)
     {
     }
