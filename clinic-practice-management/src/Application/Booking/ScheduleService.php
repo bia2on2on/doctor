@@ -58,11 +58,13 @@ final class ScheduleService
         // معتبرِ درخواست راستی‌آزمایی می‌شود (عضویت فعال پایدار؛ نه Clinicِ
         // خانه) و ردیف‌های برگشتی هم به همان Clinic دامنه‌بندی می‌شوند؛ پس
         // برنامهٔ شعبهٔ دیگرِ همان پزشک افشا نمی‌شود (C7-S2 parity).
+        //
+        // C7 hardening: بدون Scope صریحِ معتبر این خواندن fail-closed است
+        // (CLINIC_NOT_FOUND / 404) — کوئریِ بدون دامنهٔ Clinic هرگز اجرا
+        // نمی‌شود (تفصیل در requireClinicianWithinTrustedClinic).
         $trustedClinicId = $this->requireClinicianWithinTrustedClinic($clinicianId);
 
-        $rows = $trustedClinicId === null
-            ? $this->schedules->listByClinician($clinicianId)
-            : $this->schedules->listByClinicianInClinic($clinicianId, $trustedClinicId);
+        $rows = $this->schedules->listByClinicianInClinic($clinicianId, $trustedClinicId);
 
         return array_map(
             fn (array $r): array => $this->scheduleView($r),
@@ -285,6 +287,10 @@ final class ScheduleService
     {
         // Phase 4 Slice 1: همان معیار مشارکت + دامنهٔ Clinic معتبر برای استثناها
         // (تعطیلی یک شعبه، شعبهٔ دیگرِ همان پزشک را افشا/نمی‌بندد).
+        //
+        // C7 hardening: بدون Scope صریحِ معتبر این خواندن fail-closed است
+        // (CLINIC_NOT_FOUND / 404) — کوئریِ بدون دامنهٔ Clinic هرگز اجرا
+        // نمی‌شود (تفصیل در requireClinicianWithinTrustedClinic).
         $trustedClinicId = $this->requireClinicianWithinTrustedClinic($clinicianId);
         $from = $this->parseYmd($fromDate, 'from');
         $to = $this->parseYmd($toDate, 'to');
@@ -292,9 +298,7 @@ final class ScheduleService
             throw BookingException::of('CLINIC_VALIDATION_FAILED', 'بازه تاریخ نامعتبر است');
         }
 
-        $rows = $trustedClinicId === null
-            ? $this->schedules->listExceptions($clinicianId, $from, $to)
-            : $this->schedules->listExceptionsInClinic($clinicianId, $trustedClinicId, $from, $to);
+        $rows = $this->schedules->listExceptionsInClinic($clinicianId, $trustedClinicId, $from, $to);
 
         return array_map(
             fn (array $r): array => $this->exceptionView($r),
@@ -599,22 +603,6 @@ final class ScheduleService
     }
 
     /**
-     * وجود پزشک + کلینیکِ او — برنامه/استثنا متعلق به کلینیک پزشک است (C6).
-     */
-    private function requireClinician(int $clinicianId): int
-    {
-        $row = $this->db->fetchRow(
-            'SELECT id, clinic_id FROM ' . $this->db->table('cpms_clinicians') . ' WHERE id = %d AND is_active = 1 LIMIT 1',
-            [$clinicianId]
-        );
-        if ($row === null) {
-            throw BookingException::of('CLINIC_NOT_FOUND', 'پزشک یافت نشد', 404);
-        }
-
-        return (int) $row['clinic_id'];
-    }
-
-    /**
      * C7-S5 + Phase 4 Slice 1 — پزشک به‌عنوان «شیء» راستی‌آزمایی می‌شود، نه
      * منبع Clinic معتبر.
      *
@@ -645,28 +633,35 @@ final class ScheduleService
     }
 
     /**
-     * Phase 3 Slice 6B + Phase 4 Slice 1 — مشارکت پایدار پزشک در برابر Clinic
-     * معتبرِ صریح (خواندن).
+     * Phase 3 Slice 6B + Phase 4 Slice 1 + C7 hardening — مشارکت پایدار پزشک در
+     * برابر Clinic معتبرِ صریح (خواندن).
      *
      * برای مسیرهای خواندن (list/listExceptions): با Scope صریحِ معتبر (مرز REST
      * staff / wp-admin پس از C7-S4) پزشکی که در آن Clinic مشارکت پایدار فعال
      * ندارد بارگذاری نمی‌شود و همان پاکتِ «پزشک یافت نشد» را می‌گیرد (عدم
      * شمارش)؛ فراخوان‌های بعدی هم به همان Clinic دامنه‌بندی می‌شوند تا ردیفِ
-     * شعبهٔ دیگرِ همان پزشک افشا نشود. بدون Scope صریح (فراخوان داخلی/legacy)
-     * رفتار موجود حفظ می‌شود — همان قرارداد C7-S2 برای
-     * requireScheduleForTrustedClinic.
+     * شعبهٔ دیگرِ همان پزشک افشا نشود.
      *
-     * @return int|null Clinicِ معتبرِ درخواست، یا null = بدون Scope صریح
+     * C7 hardening: بدون Scope صریحِ معتبر این خواندن‌ها fail-closed هستند —
+     * دقیقاً همان پاکتِ پایدارِ «پزشک یافت نشد» (CLINIC_NOT_FOUND / 404)
+     * برگردانده می‌شود و هرگز کوئریِ بدون دامنهٔ Clinic اجرا نمی‌شود. برخلافِ
+     * مسیر سازگاریِ پیشین، `clinicians.clinic_id` اینجا هرگز به‌عنوان مرجع
+     * tenant به‌کار نمی‌رود. حسابرسیِ فراخوان: تولیدِ REST همیشه Scope صریح
+     * برقرار می‌کند (RestClinicContext ← TrustedClinicEstablisher، در غیر این
+     * صورت 403 پیش از سرویس) و ClinicianAdminPage::render نیز پیش از هر
+     * خواندن Scope برقرار می‌کند (در غیر این صورت پوستهٔ Scope-الزامی)، پس
+     * فراخوانِ مشروعِ scoped تغییری نمی‌بیند و شکستِ Scope/کوئری همچنان
+     * fail-closed می‌ماند. مسیرهای نوشتن موجودیت (requireSchedule/
+     * requireExceptionForTrustedClinic) در این برش دست‌نخورده‌اند.
+     *
+     * @return int Clinicِ معتبرِ درخواست؛ بدون Scope صریح ⇒ استثنا (fail-closed)
      */
-    private function requireClinicianWithinTrustedClinic(int $clinicianId): ?int
+    private function requireClinicianWithinTrustedClinic(int $clinicianId): int
     {
         $trustedClinicId = $this->explicitTrustedClinicId();
         if ($trustedClinicId === null) {
-            // بدون Scope صریح (فراخوان داخلی/wp-admin legacy): فقط وجود پروفایل
-            // فعال لازم است — رفتار موجود حفظ می‌شود.
-            $this->requireClinician($clinicianId);
-
-            return null;
+            // بدون Scope صریح معتبر: خواندنِ برنامه/استثنا fail-closed است (C7).
+            throw BookingException::of('CLINIC_NOT_FOUND', 'پزشک یافت نشد', 404);
         }
 
         if (!$this->memberships->clinician_participates_in($clinicianId, $trustedClinicId)) {
@@ -686,12 +681,17 @@ final class ScheduleService
      * (RestClinicContext ← TrustedClinicEstablisher: هدر درخواست یا عضویت
      * فعالِ یکتا)، پس مسیر تولیدیِ RESTِ این متدها همیشه تحت این دامنه است.
      *
-     * چرا Resolution سیستمی اینجا صریحاً fallback نمی‌شود: فراخوان تولیدیِ
-     * wp-admin (ClinicianAdminPage::saveSchedules/deleteSchedule/
-     * deleteException — گارد cpms_config + nonce) بدون Scope صریح کار می‌کند
-     * و شکستن آن در این برش، رگرسیون عملکردیِ خارج از سه نقصِ اثبات‌شده است.
-     * سخت‌گیرسازی داخلیِ fail-closed (معماری) به برش سخت‌گیرسازیِ بعدی C7
-     * سپرده می‌شود — همان‌طور که برای Finance با تست no-scope مشخصه‌نگاری شد.
+     * چرا Resolution سیستمی اینجا صریحاً fallback نمی‌شود: خواندن‌های
+     * list/listExceptions در برش سخت‌گیرسازیِ C7 حاضر fail-closed شدند
+     * (requireClinicianWithinTrustedClinic؛ Scope صحیح پیش‌شرط است و
+     * فراخوان‌های تولیدی — مرز REST و render ادمین — پیش از سرویس Scope
+     * برقرار می‌کنند). مسیر سازگاریِ null-scope اکنون فقط برای نوشتن‌های
+     * موجودیت (requireSchedule/requireExceptionForTrustedClinic) باقی است که
+     * فراخوانِ تولیدیِ wp-admin آن‌ها (ClinicianAdminPage::saveSchedules/
+     * deleteSchedule/deleteException — گارد cpms_config + nonce) بدون Scope
+     * صریح کار می‌کند و شکستن آن در این برش، رگرسیون عملکردیِ خارج از سه نقصِ
+     * اثبات‌شده است. سخت‌گیرسازیِ آن مسیرهای نوشتن به برش بعدی C7 سپرده
+     * می‌شود — همان‌طور که برای Finance با تست no-scope مشخصه‌نگاری شد.
      */
     private function explicitTrustedClinicId(): ?int
     {

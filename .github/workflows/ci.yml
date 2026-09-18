@@ -207,6 +207,11 @@ jobs:
               grep '^testsuite ' "$SPLIT" | grep 'Phase6ScheduleShiftConcurrencyRedTest' || echo '(Phase6 Slice 7 concurrency suite missing from junit)'
               echo '--- Phase6 Slice 7 Multi-Shift Concurrency testcases ---'
               grep '^testcase ' "$SPLIT" | grep 'Phase6ScheduleShiftConcurrencyRedTest' || true
+              # C7 hardening keeps named-suite evidence explicit (additive; no gate change).
+              echo '--- C7 hardening: Schedule no-scope read suite (selection + execution proof) ---'
+              grep '^testsuite ' "$SPLIT" | grep 'C7ScheduleNoScopeReadRedTest' || echo '(C7 hardening no-scope read suite missing from junit)'
+              echo '--- C7 hardening: Schedule no-scope read testcases ---'
+              grep '^testcase ' "$SPLIT" | grep 'C7ScheduleNoScopeReadRedTest' || true
               rm -f "$SPLIT"
             else
               echo '(junit xml missing — run may have terminated prematurely)'

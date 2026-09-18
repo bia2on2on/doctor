@@ -25,9 +25,11 @@ use DomainException;
  * SWEEP semantics: one root job sweeps all Clinicians; horizon is per-Clinic
  * booking.max_future_days. Empty payload (recurring cron) exercises real
  * production semantics. Payload horizon_days, if present, is an explicit
- * internal payload override for that tick (no production producer currently
- * sets it — ScheduleService ['source'=>'manual'] and recurring [] both empty).
- * Trust/authorization semantics of future horizon_days producers remain OPEN / NOT VERIFIED.
+ * internal payload override for that tick; the real producer is
+ * `bin/cpms slots generate --days=N` (ScheduleService ['source'=>'manual'] and
+ * recurring [] stay empty). Valid override range = 1..365 — the same bound the
+ * settings path enforces; <= 0 and > 365 are skipped fail-closed per sweep item
+ * with SLOTS_GEN_SKIP_INVALID_HORIZON (job continues, succeeds).
  *
  * Phase 2 temporal slice (C-9): the generation calendar date and the weekday are
  * computed in the **authoritative Location's** validated IANA timezone, never in
@@ -183,13 +185,18 @@ final class SlotsGenerateHandler
             $anchor = new DateTimeImmutable($localToday . ' 00:00:00', new DateTimeZone('UTC'));
 
             // Resolve horizon per-Clinic, or use explicit payload override if present.
-            // Payload horizon_days is an explicit internal payload override; no production
-            // producer currently sets horizon_days, so empty-payload path is the recurring semantics.
+            // Payload horizon_days is an explicit internal payload override; absent/malformed
+            // (non-numeric) values keep the recurring empty-payload semantics (settings path).
             $horizon = null;
             if (isset($payload['horizon_days']) && is_numeric($payload['horizon_days'])) {
                 $horizon = (int) $payload['horizon_days'];
-                if ($horizon <= 0) {
-                    // Invalid explicit horizon — fail-closed for this clinician
+                if ($horizon <= 0 || $horizon > 365) {
+                    // Invalid explicit horizon — fail-closed for this clinician (skip this
+                    // sweep item; the sweep continues and the job stays successful). C7
+                    // hardening: the override now shares the settings path's 1..365 bound
+                    // (> 365 previously produced unbounded horizons). Numeric non-integer
+                    // input (e.g. "90.7") keeps its existing (int) cast semantics — no new
+                    // policy. Warning context intentionally stays clinic_id + horizon_days only.
                     $this->op->warning('SLOTS_GEN_SKIP_INVALID_HORIZON', ['clinic_id' => $clinicId, 'horizon_days' => $payload['horizon_days']]);
                     continue;
                 }
