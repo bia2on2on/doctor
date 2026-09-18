@@ -134,25 +134,13 @@ final class BookingRaceLossAlternativesTest extends WP_UnitTestCase
         $nextDateWitness = $this->insertSlot(self::FX_LOC_MAIN_ID, $nextDate, '09:00:00', 1);
 
         // ---- fixture materialization must be asserted (RED validity precondition)
-        self::assertSame(
-            6,
-            $this->countFreeSlotsAt(self::FX_LOC_MAIN_ID, $losingDate),
-            'precondition: exactly six free eligible same-date/same-Location alternatives'
-        );
+        // Note: at this instant the losing slot itself still counts as free
+        // (winner has not held yet); total persisted rows are asserted here,
+        // trusted-scope eligibility is asserted below at loss time.
         self::assertSame(
             9,
             $this->countSlotsForClinic(),
             'precondition: 6 alternatives + losing slot + 2 isolation witnesses persisted'
-        );
-        self::assertSame(
-            1,
-            $this->countFreeSlotsAt(self::FX_LOC_OTHER_ID, $losingDate),
-            'precondition: different-Location witness is free on the losing date'
-        );
-        self::assertSame(
-            1,
-            $this->countFreeSlotsAt(self::FX_LOC_MAIN_ID, $nextDate),
-            'precondition: next-local-date witness is free at the same Location'
         );
 
         // ---- real winner hold consumes the only capacity unit
@@ -166,6 +154,24 @@ final class BookingRaceLossAlternativesTest extends WP_UnitTestCase
         self::assertNotEmpty($winnerHold['hold_token'], 'positive precondition: winner hold succeeded');
         $losingRow = $this->slotRow($losingSlotId);
         self::assertSame(1, (int) $losingRow['held_count'], 'precondition: losing slot is at capacity (held)');
+
+        // ---- trusted-scope eligibility AT LOSS TIME (winner holds the unit):
+        // exactly six free eligible same-date/same-Location alternatives remain.
+        self::assertSame(
+            6,
+            $this->countFreeSlotsAt(self::FX_LOC_MAIN_ID, $losingDate),
+            'precondition: exactly six free eligible same-date/same-Location alternatives at loss time'
+        );
+        self::assertSame(
+            1,
+            $this->countFreeSlotsAt(self::FX_LOC_OTHER_ID, $losingDate),
+            'precondition: different-Location witness is free on the losing date'
+        );
+        self::assertSame(
+            1,
+            $this->countFreeSlotsAt(self::FX_LOC_MAIN_ID, $nextDate),
+            'precondition: next-local-date witness is free at the same Location'
+        );
 
         // ---- real BookingService::hold() failure path for the loser
         try {
@@ -361,13 +367,6 @@ final class BookingRaceLossAlternativesTest extends WP_UnitTestCase
         $otherLocationWitness = $this->insertSlot(self::FX_LOC_OTHER_ID, $losingDate, '15:00:00', 1);
         $nextDateWitness = $this->insertSlot(self::FX_LOC_MAIN_ID, $nextDate, '09:00:00', 1);
 
-        // ---- fixture materialization: zero eligible free rows in trusted scope
-        self::assertSame(
-            0,
-            $this->countFreeSlotsAt(self::FX_LOC_MAIN_ID, $losingDate),
-            'precondition: no eligible free same-date/same-Location alternative exists'
-        );
-
         // ---- real winner hold consumes the only capacity unit
         $winnerHold = App::bookingService()->hold(
             $this->winnerUserId,
@@ -377,6 +376,14 @@ final class BookingRaceLossAlternativesTest extends WP_UnitTestCase
             $losingSlotId
         );
         self::assertNotEmpty($winnerHold['hold_token'], 'positive precondition: winner hold succeeded');
+
+        // ---- fixture materialization AT LOSS TIME: zero eligible free rows in
+        // trusted scope (the losing slot is now held; the 09:00 slot is full).
+        self::assertSame(
+            0,
+            $this->countFreeSlotsAt(self::FX_LOC_MAIN_ID, $losingDate),
+            'precondition: no eligible free same-date/same-Location alternative exists at loss time'
+        );
 
         // ---- real BookingService::hold() failure path for the loser
         try {
@@ -693,10 +700,9 @@ final class BookingRaceLossAlternativesTest extends WP_UnitTestCase
         ));
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_clinic_memberships') . ' WHERE clinic_id = %d', [self::FX_CLINIC_ID]));
 
-        // 6) Clinical leaf tables (defensive)
+        // 6) Clinical leaf tables (defensive; my flows create none of these)
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_clinical_notes') . ' WHERE clinic_id = %d', [self::FX_CLINIC_ID]));
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_prescriptions') . ' WHERE clinic_id = %d', [self::FX_CLINIC_ID]));
-        $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_medical_files') . ' WHERE clinic_id = %d', [self::FX_CLINIC_ID]));
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_handwriting_documents') . ' WHERE clinic_id = %d', [self::FX_CLINIC_ID]));
 
         // 7) Patients and clinicians
