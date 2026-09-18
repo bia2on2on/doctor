@@ -285,6 +285,23 @@ final class ScheduleService
         // کلینیکِ ردیف استثنا هرگز از خودِ ردیف پزشک به‌عنوان اعتماد گرفته نمی‌شود.
         $clinicId = $this->requireClinicianForTrustedClinic($clinicianId);
 
+        /*
+         * Phase 6 Slice 6: Location اختیاریِ استثنا — قرارداد از قبل‌موجودِ
+         * Migration 0015 (ستون nullable + FK `fk_schedexc_location`):
+         *   NULL ⇒ استثنا برای همهٔ Locationهای همین Clinic معتبر است
+         *          (تعطیلی رسمی سراسری؛ رفتار امروزِ اپراتورها و همهٔ ردیف‌های
+         *          تاریخی حفظ می‌شود — بدون Backfill).
+         *   مقدار ⇒ استثنا فقط به همان Location گره می‌خورد؛ باید واقعی، فعال
+         *          و متعلق به Clinic معتبرِ Scope باشد. بیگانه/ناموجود/غیرفعال
+         *          همه دقیقاً همان پاکتِ 404 «محل یافت نشد» را می‌گیرند (پاریتِ
+         *          not-found — عدم افشای وجود/شمارش) و هیچ ردیفی نوشته نمی‌شود؛
+         *          هیچ جایگزینی بی‌صدا با Location اصلی/اولی/خانه انجام نمی‌شود.
+         * این بررسی پیش از اعتبارسنجیِ فیلدهاست چون selector مکانی نیز بخشی از
+         * مرز tenant است (مانند پزشک): پاسخ برای هر payload یکسان و غیرافشاگر
+         * می‌ماند.
+         */
+        $locationId = $this->optionalLocationIdForTrustedClinic($fields, $clinicId);
+
         $date = $this->parseYmd((string) ($fields['date'] ?? ''), 'date');
         if ($date < gmdate('Y-m-d')) {
             throw BookingException::of('CLINIC_VALIDATION_FAILED', 'تاریخ استثنا باید امروز یا آینده باشد', 400, ['errors' => ['date' => 'past_date']]);
@@ -318,6 +335,7 @@ final class ScheduleService
 
         $id = $this->schedules->createException([
             'clinic_id' => $clinicId,
+            'location_id' => $locationId,
             'clinician_id' => $clinicianId,
             'date' => $date,
             'type' => $type,
@@ -330,7 +348,7 @@ final class ScheduleService
 
         $view = $this->exceptionView((array) $this->schedules->findException($id));
         $this->audit('SCHEDULE_EXCEPTION_CREATED', $actorUserId, 'schedule_exception', $id, null, null, $view);
-        $this->op->info('config.schedule_exception_created', ['exception_id' => $id, 'clinician_id' => $clinicianId, 'clinic_id' => $clinicId, 'actor' => $actorUserId]);
+        $this->op->info('config.schedule_exception_created', ['exception_id' => $id, 'clinician_id' => $clinicianId, 'clinic_id' => $clinicId, 'location_id' => $locationId, 'actor' => $actorUserId]);
         // Phase 6 Slice 1: regenerate فقط روی Clinic معتبرِ عملیات.
         $this->regenerate($clinicianId, $clinicId);
 
@@ -676,6 +694,38 @@ final class ScheduleService
     }
 
     /**
+     * Phase 6 Slice 6: Location اختیاریِ استثنای برنامه، دامنه‌بندی‌شده به Clinic
+     * معتبر — تنها منبع معنا: قرارداد Migration 0015.
+     *
+     *  - نبودِ فیلد/مقدار تهی ⇒ `null` (همهٔ Locationهای همین Clinic معتبر).
+     *  - مقدارِ ارائه‌شده (حتی ناسالم/غیرعددی) ⇒ باید با
+     *    `LocationRepository::findActiveForClinic` (واقعی + فعال + مالکیت همان
+     *    Clinic) تأیید شود؛ در غیر این صورت پاکتِ پایدار `CLINIC_NOT_FOUND`
+     *    با 404 — بدون افشای وجود، بدون شمارش، بدون جایگزینی بی‌صدا.
+     * Clinic هرگز از payload گرفته نمی‌شود؛ فقط از Scope مورد اعتماد.
+     *
+     * @param array<string, mixed> $fields
+     */
+    private function optionalLocationIdForTrustedClinic(array $fields, int $clinicId): ?int
+    {
+        if (!array_key_exists('location_id', $fields)) {
+            return null;
+        }
+
+        $raw = $fields['location_id'];
+        if ($raw === null || $raw === '') {
+            return null;
+        }
+
+        $locationId = is_numeric($raw) ? (int) $raw : 0;
+        if ($this->locations->findActiveForClinic($clinicId, $locationId) === null) {
+            throw BookingException::of('CLINIC_NOT_FOUND', 'محل یافت نشد', 404);
+        }
+
+        return $locationId;
+    }
+
+    /**
      * C7-S2: همان قرارداد مالکیت برای استثنای برنامه (404 parity).
      *
      * @return array<string, mixed>
@@ -723,6 +773,12 @@ final class ScheduleService
         return [
             'id' => (int) $row['id'],
             'clinician_id' => (int) $row['clinician_id'],
+            // Phase 6 Slice 6: مقدار ذخیره‌شدهٔ Location — null یعنی استثنا برای
+            // همهٔ Locationهای Clinic معتبر است (قرارداد 0015) و عدد یعنی فقط
+            // همان Location. بدون این فیلد، فراخوان نمی‌تواند این دو را تفکیک کند.
+            'location_id' => isset($row['location_id']) && $row['location_id'] !== null
+                ? (int) $row['location_id']
+                : null,
             'date' => (string) $row['date'],
             'type' => (string) $row['type'],
             'start_time' => $row['start_time'] !== null ? substr((string) $row['start_time'], 0, 5) : null,

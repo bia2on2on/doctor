@@ -208,7 +208,7 @@ final class SlotsGenerateHandler
                 $dateObj = $anchor->add(new DateInterval('P' . $day . 'D'));
                 $date = $dateObj->format('Y-m-d');
                 try {
-                    $slots = $this->generateDaySlots($clinician, $clinicId, $date, $dateObj);
+                    $slots = $this->generateDaySlots($clinician, $clinicId, $date, $dateObj, $locationId);
                 } catch (DomainException $e) {
                     $this->op->warning('SLOTS_GEN_SKIP', ['clinician_id' => $clinician['clinician_id'], 'date' => $date, 'error' => $e->getMessage()]);
                     continue;
@@ -304,11 +304,12 @@ final class SlotsGenerateHandler
 
     /**
      * @param array<string, mixed> $clinician
-     * @param int                  $clinicId Clinicِ ردیف برنامه (tenant معتبر همان ردیف)
+     * @param int                  $clinicId   Clinicِ ردیف برنامه (tenant معتبر همان ردیف)
+     * @param int                  $locationId Locationِ همان ردیف (مبنای دامنهٔ استثناها)
      *
      * @return list<string>
      */
-    private function generateDaySlots(array $clinician, int $clinicId, string $date, DateTimeImmutable $dateObj): array
+    private function generateDaySlots(array $clinician, int $clinicId, string $date, DateTimeImmutable $dateObj, int $locationId): array
     {
         // day_of_week: 0=شنبه ... 6=جمعه (هفته ایرانی) — تبدیل از 'w': 0=یک‌شنبه ... 6=شنبه.
         // Weekday is read off the Location-local calendar date object, so it never
@@ -318,13 +319,29 @@ final class SlotsGenerateHandler
             return [];
         }
 
-        // Phase 4 Slice 1 — exceptions are scoped to the ROW's Clinic: a holiday
-        // in one Clinic must not close the same professional's day in another
-        // Clinic where participation is legitimate.
+        /*
+         * Phase 4 Slice 1 — exceptions are scoped to the ROW's Clinic: a holiday
+         * in one Clinic must not close the same professional's day in another
+         * Clinic where participation is legitimate.
+         *
+         * Phase 6 Slice 6 — exceptions are additionally scoped to the ROW's
+         * Location, using the contract Migration 0015 already documents:
+         * `location_id IS NULL` (all Locations of THIS Clinic — the shape of
+         * every historical row) OR exactly this row's `location_id`. An
+         * exception pinned to Location X is therefore never handed to the
+         * generator for Location Y; the day-level semantics of SlotGenerator
+         * are untouched — only the SET of exceptions becomes Location-correct.
+         *
+         * Index note: `idx_sched_exc (clinician_id, date, type)` still serves the
+         * `(clinician_id, date)` prefix (both equality predicates); `clinic_id`
+         * was already a residual filter, and the new `(location_id IS NULL OR
+         * location_id = %d)` predicate is evaluated on that same already-narrowed
+         * row set — so the access path is unchanged and no new index is needed.
+         */
         $exceptions = $this->db->fetchAll(
-            'SELECT type, start_time, end_time FROM ' . $this->db->table('cpms_schedule_exceptions') .
-            ' WHERE clinician_id = %d AND clinic_id = %d AND date = %s',
-            [$clinician['clinician_id'], $clinicId, $date]
+            'SELECT type, start_time, end_time, location_id FROM ' . $this->db->table('cpms_schedule_exceptions') .
+            ' WHERE clinician_id = %d AND clinic_id = %d AND date = %s AND (location_id IS NULL OR location_id = %d)',
+            [$clinician['clinician_id'], $clinicId, $date, $locationId]
         );
 
         return SlotGenerator::generateDay(

@@ -207,6 +207,23 @@ final class ClinicianAdminPage
          * (fail-closed — با قراردادِ جدیدی که Location صریح می‌خواهد سازگار است).
          */
         $locations = App::locationRepository()->listForClinic($clinicId);
+        /*
+         * Phase 6 Slice 6: نام Locationها برای نمایش در فهرست استثناها (همهٔ
+         * Locationهای همین Clinic معتبر — FK ردیف را تضمین می‌کند) و مجموعهٔ
+         * انتخاب‌های معتبرِ فرم استثنا: صریحاً «همهٔ محل‌ها» با مقدار تهی (NULL؛
+         * قرارداد Migration 0015) و فقط Locationهای فعالِ همین Clinic. Location
+         * غیرفعال یا بیگانه هرگز گزینه نمی‌شود (نوشتنِ آن در Service fail-closed
+         * است). این‌ها فقط از Scope مورد اعتماد خوانده می‌شوند، نه از درخواست.
+         */
+        $locationNames = [];
+        $selectableLocations = [];
+        foreach ($locations as $loc) {
+            $locId = (int) $loc['id'];
+            $locationNames[$locId] = (string) $loc['name'];
+            if ((int) ($loc['is_active'] ?? 0) === 1) {
+                $selectableLocations[$locId] = (string) $loc['name'];
+            }
+        }
         $byDayLocation = [];
         foreach ($schedules as $s) {
             $byDayLocation[(int) $s['day_of_week']][(int) $s['location_id']][] = $s;
@@ -300,11 +317,18 @@ final class ClinicianAdminPage
     <h2 class="title" style="margin-top:18px">استثناها (تعطیلی / مرخصی / بستن / باز کردن)</h2>
     <?php if ($exceptions !== []) : ?>
         <table class="widefat striped" style="max-width:800px">
-            <thead><tr><th>تاریخ</th><th>نوع</th><th>ساعت</th><th>علت</th><th></th></tr></thead>
+            <thead><tr><th>تاریخ</th><th>محل</th><th>نوع</th><th>ساعت</th><th>علت</th><th></th></tr></thead>
             <tbody>
             <?php foreach ($exceptions as $e) : ?>
+                <?php
+                // Phase 6 Slice 6: نمایش Locationِ هر استثنا — «همهٔ محل‌ها» برای
+                // NULL (قرارداد 0015) و نام Location برای استثنای گره‌خورده.
+                $excLocationId = $e['location_id'] === null ? 0 : (int) $e['location_id'];
+                $excLocationName = $excLocationId > 0 ? ($locationNames[$excLocationId] ?? '#' . $excLocationId) : '';
+                ?>
                 <tr>
                     <td><?php echo esc_html(Jalali::formatYmd((string) $e['date'])); ?> <span class="description">(<?php echo esc_html((string) $e['date']); ?>)</span></td>
+                    <td><?php echo $excLocationId > 0 ? esc_html($excLocationName) : esc_html__('همهٔ محل‌ها', 'cpms'); ?></td>
                     <td><?php echo esc_html(self::exceptionTypeLabel((string) $e['type'])); ?></td>
                     <td dir="ltr"><?php echo esc_html(($e['start_time'] ?? '—') . ' تا ' . ($e['end_time'] ?? '—')); ?></td>
                     <td><?php echo esc_html((string) ($e['reason'] ?? '')); ?></td>
@@ -341,6 +365,14 @@ final class ClinicianAdminPage
         <label>از ساعت: <input type="time" name="start_time"></label>
         <label>تا ساعت: <input type="time" name="end_time"></label>
         <label>علت: <input type="text" name="reason" class="regular-text"></label>
+        <label>محل:
+            <select name="location_id">
+                <option value=""><?php echo esc_html__('همهٔ محل‌ها', 'cpms'); ?></option>
+                <?php foreach ($selectableLocations as $selLocId => $selLocName) : ?>
+                    <option value="<?php echo esc_attr((string) $selLocId); ?>"><?php echo esc_html($selLocName); ?></option>
+                <?php endforeach; ?>
+            </select>
+        </label>
         <button type="submit" class="button">افزودن استثنا</button>
     </form>
     <p class="description">برای «تعطیل/مرخصی» ساعت‌ها لازم نیست؛ برای «بستن/باز کردن» بازه ساعت الزامی است.</p>
@@ -600,6 +632,18 @@ final class ClinicianAdminPage
             if ($v !== '') {
                 $fields[$k] = $v;
             }
+        }
+        /*
+         * Phase 6 Slice 6: دامنهٔ مکانیِ اختیاری — مقدار تهی/غایب یعنی «همهٔ
+         * محل‌ها» (NULL؛ قرارداد 0015). اعتبارسنجیِ واقعی/فعال/مالکیت Clinic و
+         * پاریتِ not-found در Service انجام می‌شود؛ اینجا فقط مقدار خامِ selector
+         * منتقل می‌شود تا هیچ تغییر شکلیِ بی‌جای شناسه رخ ندهد.
+         */
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing -- nonce در authorizeAdminWrite تأیید شده است
+        $rawLocationId = $_POST['location_id'] ?? '';
+        $rawLocationId = is_scalar($rawLocationId) ? (string) wp_unslash($rawLocationId) : ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+        if ($rawLocationId !== '') {
+            $fields['location_id'] = absint($rawLocationId);
         }
 
         try {
