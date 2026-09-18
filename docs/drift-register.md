@@ -25,7 +25,7 @@
 | Authorization / Roles / Capability / Scope | **Phase 3** — Role & Access Control |
 | Specialty / Department / Room / داده‌های پایه | **Phase 4** — Master Data |
 | Pricing / تعرفه | **Phase 5** — ✅ **CLOSED / TECHNICALLY COMPLETE (BOUNDED)** (PR #67)؛ قلمِ «تعرفهٔ متفاوت per-Location برای همان Service» **الزامِ اثبات‌شدهٔ V1 نیست** و بدون فاز/migration باز می‌ماند (رجوع به O-06) |
-| Schedule / Availability / Timezone | **Phase 6** — ✅ **CLOSED / TECHNICALLY COMPLETE (BOUNDED)** (PRs #69–#71 + #73–#76؛ merge `bd5e6a1819a838648dbdcbc6914c0d8b24bba38b`)؛ ردیف‌های `O-03`/`O-04` با این بستن **بسته نمی‌شوند** و باز می‌مانند؛ دو قلم hardening به‌تعویق‌افتاده (ج/د) برای اسلایس hardening برنامه‌ریزی‌شدهٔ C7 حفظ شده‌اند — پیاده‌سازی نشده‌اند |
+| Schedule / Availability / Timezone | **Phase 6** — ✅ **CLOSED / TECHNICALLY COMPLETE (BOUNDED)** (PRs #69–#71 + #73–#76؛ merge `bd5e6a1819a838648dbdcbc6914c0d8b24bba38b`)؛ ردیف‌های `O-03`/`O-04` با این بستن **بسته نمی‌شوند** و باز می‌مانند؛ دو قلم hardening (ج/د) با **اسلایس hardeningِ C7 = CLOSED** (PR #78، merge `4b322d9dc8839e1efd66d712aedc06d9f22cd175`) پیاده‌سازی شدند (READ بدون Scope fail-closed + سقف `1..365` برای payload)؛ شاخه‌های سازگاریِ null-scopeٔ باقی‌ماندهٔ نوشتن‌های موجودیت طبقه‌بندی **NO CHANGE JUSTIFIED** شدند (نه patchِ C7ِ دیگری الزامی) |
 | Appointment / Booking | **Phase 7** |
 | Security / Authorization دیرهنگام / Rate-limit | **Phase 1** |
 
@@ -72,10 +72,33 @@
 > **`FR-3.5` belongs to Phase 8 and is not claimed here.** This closure does **not** resolve the `O-03`
 > (DST/timezone-conversion test coverage) or `O-04` drift rows, does **not** implement the two deferred
 > hardening items (ج: the no-scope legacy branch in `requireClinicianWithinTrustedClinic()`; د: the
-> `horizon_days` job-payload upper bound) — both are preserved for the planned C7 hardening slice — and
+> `horizon_days` job-payload upper bound) — both are preserved for the planned C7 hardening slice
+> *(historical — the planned C7 hardening slice has since been merged as **PR #78** at
+> `4b322d9dc8839e1efd66d712aedc06d9f22cd175`; see the note below)* — and
 > does **not** correct the inaccurate `ScheduleController.php` exception-route comment (product behavior is
 > correct; comment-only debt, to be fixed in the next legitimate product slice touching that file).
 > Latest migration remains `0020`; no `0021` exists or was reserved.
+>
+> **Current C7 hardening + Phase 7 Slice 1 / FR-4.6 closure note (re-verified 2026-09-18):** the planned C7
+> hardening slice is **CLOSED** — **PR #78** MERGED 2026-09-18T15:07:23Z (merge `4b322d9dc8839e1efd66d712aedc06d9f22cd175`;
+> post-merge on the merge SHA: all four required workflows terminal-success + 19/19 check runs success):
+> (ج) the no-scope READ paths in `ScheduleService::list()`/`listExceptions()` now fail closed without an
+> explicit trusted Clinic scope; (د) a numeric payload `horizon_days` now shares the settings path's `1..365`
+> bound (`> 365` or `<= 0` fails closed as a per-clinician skip under the established invalid-horizon
+> behavior). The remaining write-helper no-scope compatibility branches were reconstructed after PR #78 as
+> **NO CHANGE JUSTIFIED** (production REST/wp-admin write callers establish explicit trusted scope; no
+> current src/bin/job caller without scope was found; no verified compatibility consumer depends on the
+> branch) — not another required C7 patch. Producer reality: `ScheduleService::regenerate()` and the
+> recurring scheduler do not set `horizon_days`; `bin/cpms slots generate --days=N` does (a real
+> operator/server CLI producer); no external REST job-enqueue route was verified (a limited statement, not a
+> universal claim about all possible external systems). The inaccurate `ScheduleController.php` comment
+> (الف) is unchanged — PR #78 did not touch that file. **Phase 7 = STARTED; Slice 1 / FR-4.6 = CLOSED (BOUNDED)**
+> via **PR #79** (MERGED 2026-09-18T18:12:54Z; merge `757d7424332d87cdd3d1894ee39f9f5f01bf0a33`;
+> post-merge on the merge SHA: all four required workflows terminal-success + 19/19 check runs success) —
+> owner-issued product policy for the additive `nearby_slots` alternatives on `CLINIC_SLOT_TAKEN`
+> (distinct from the original SRS wording of FR-4.6). **Phase 7 as a whole is NOT complete; no other
+> FR-4.x requirement is claimed closed; no Slice 2.** This closure does **not** resolve the `O-03`/`O-04`
+> drift rows and creates no new drift row. Latest migration remains `0020`; no `0021` exists or was reserved.
 
 ---
 
