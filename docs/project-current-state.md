@@ -3,7 +3,67 @@
 > Recover the project from this file + Git/remote/PR + linked canonical docs.
 > Do **not** use a previous chat session as memory.
 >
-> **Integrated main checkpoint (Phase 5 Slice 1 — bounded technical closure; re-verified live 2026-09-17):** `e063b42260cb5ab740acf48dcf73c6c67b11fef6` — "Merge pull request #67 from bia2on2on/arena/01a0afef-doctor" (MERGED 2026-09-17T15:36:54Z; approved PR head `fa86e41e415d1b7fcca3dec4c88fadb25da71d1a`; merged PR #67 changed 3 files).
+> **Integrated main checkpoint (Phase 6 — bounded technical closure; re-verified live 2026-09-18):** `bd5e6a1819a838648dbdcbc6914c0d8b24bba38b` — "Merge pull request #76 from bia2on2on/arena/01a0b31d-doctor" (MERGED 2026-09-18T09:59:44Z; approved PR head `bd840163b33688d17af51f006aa9dccaea9e8c53`; merge parents `fc0a598e739d6e4951de3167bbc4509e0d9c5378` + `bd840163…`; open PRs at re-verification = 0).
+> **Owner Roadmap Phase 6 — Scheduling Engine: CLOSED / TECHNICALLY COMPLETE (BOUNDED)**, in the bounded
+> scope of the merged Phase-6 slices **PRs #69–#71 + #73–#76** (Slice 1 Clinic-scoped schedule regeneration/impact;
+> Slice 2 Location-local scheduling boundaries; Slice 3 explicit authorized Location on schedule create;
+> Slice 4 multi-shift with deterministic overlap rejection; Slice 5 explicit wp-admin schedule-row identity;
+> Slice 6 Location-scoped schedule exceptions; **Slice 7 concurrency-safe multi-shift conflict enforcement**). The PR range also contains the
+> documentation-only **PR #72** (owner-requirement preservation — not a slice).
+> **Phase 6 Slice 7 = CLOSED.** The multi-shift TOCTOU concurrency blocker was fixed by **PR #76**.
+> Accepted **VALID RED = `fca63d3a21a7918c950d2cf07bf43343fe0c20ef`** (CI run `35327220676`: `Tests: 983,
+> Assertions: 13622, Failures: 3` — cases A/C/D failed against the shipped check-then-act path while the
+> positive control E passed). The two earlier RED attempts **remain INVALID RED and are not rewritten as
+> valid**: `091fae1c5c59142d7bc4d60aeb2ae8954e52ed28` (run `35318716174` — `ParseError`, zero tests executed)
+> and `c8b9592056307fea8213d131e135131198508674` (run `35320273122` — the intended suite **did execute**:
+> `Tests: 983, Assertions: 13649, Failures: 3`; the forked children's fatal outcomes contained
+> `PHPUnit\Framework\Error\Warning: Undefined array key "id"` and the non-overlapping positive control
+> failed, but **the source/attribution of that warning was NOT RETRIEVED**, so the failures could not
+> validly be attributed to the intended product concurrency contract — **neither a product defect nor a
+> harness defect is asserted**).
+> **Final post-merge evidence on the merge SHA `bd5e6a18…`: all four required workflows terminal-success** —
+> CI `35332404611` · Real WordPress Acceptance `35332404609` · Pilot/Staging Readiness Gate `35332404592` ·
+> Closure Gate `35332404644` — **and 19/19 check runs `completed`/`success`** (no pending, no cancelled,
+> no failure). Exact-head evidence: 19/19 checks success at `bd840163…`; Integration `OK (983 tests,
+> 13851 assertions)` with `Phase6ScheduleShiftConcurrencyRedTest` 5 tests / 290 assertions / 0 failures
+> (run `35329496603`).
+> **Permanent evidence-honesty exceptions (recorded, not hidden):**
+> (1) **Process exception — Slice 7 (historical, non-blocking):** the write agent was instructed to stop
+> after obtaining VALID RED but proceeded into GREEN (`0202a51710f0f5c209b01e9f6e58436e117e987b`) before
+> director authorization. This is recorded as a historical process / evidence-discipline exception; it does
+> **not** invalidate the independently accepted final evidence recorded above.
+> (2) **Historical Slice-5 RED-evidence exception:** the test-only commit
+> `bd9351e75407ec0449204733d3b5894fd7d33aa8` has **no CI / check-run evidence at that exact test-only SHA**
+> (GitHub check-runs API returns `total_count = 0` for it). No retrospective RED is manufactured for it;
+> final behavior remains covered by later accepted evidence (PR #74 merged; the merge-SHA evidence above).
+> (3) **Historical post-merge exception on the previous main `fc0a598e739d6e4951de3167bbc4509e0d9c5378`:**
+> that post-merge state was **18 success + 1 cancelled**, with `Responsive smoke (Chromium ×4 viewport)`
+> cancelled (Pilot/Staging run `35310058979` = `cancelled`). It was **NEVER a PASS** and is recorded only as
+> a historical evidence exception; it does not contradict the later successful post-merge evidence on
+> `bd5e6a18…`.
+> **Requirement coverage (preserved as established):** `FR-3.1`, `FR-3.2`, `FR-3.3`, `FR-3.4`, `FR-3.6`,
+> `FR-3.7`, `FR-3.8`, `FR-3.9`, `FR-3.10`. **`FR-3.5` (pre-login public calendar / free slots) belongs to
+> Phase 8 — Patient Public Booking and is NOT claimed as Phase 6 coverage.**
+> **Deferred hardening — NOT implemented in this closure; preserved for the planned C7 hardening slice:**
+> **ج** the no-scope legacy branch in `ScheduleService::requireClinicianWithinTrustedClinic()` —
+> *deferrable hardening, not a current production security blocker*: production admin paths establish an
+> explicit trusted scope (`ClinicianAdminPage::saveSchedules()` → `authorizeAdminWrite()` →
+> `App::replaceExplicitScope($scope)`) and the REST boundary is separately scoped (`RestClinicContext` +
+> `TrustedClinicEstablisher::verifiedScope`), so the legacy branch is not currently reachable from those
+> production paths and does not use `clinicians.clinic_id` as tenant authority.
+> **د** the `horizon_days` job-payload override in `SlotsGenerateHandler` — *deferrable hardening*: no
+> production producer sets this override and no external job-payload route was verified; the settings path
+> clamps `1..365` while the payload path only rejects `<= 0` (no upper bound). Preserved for the planned C7
+> hardening slice **with an upper-bound clamp**; not implemented here.
+> **الف** comment/documentation debt only: `src/Rest/ScheduleController.php` contains an inaccurate
+> exception-route comment describing **404** while the executing REST scope boundary produces the established
+> uniform **403 `CLINIC_SCOPE_UNAVAILABLE` / `reason=location`** before the service path. Product behavior is
+> correct; the source file is deliberately **not** edited in this documentation-only closure, and the comment
+> must be corrected in the next legitimate product slice that touches that file.
+> **Latest migration remains `0020` — no `0021` exists or was reserved.** This is **not** a
+> release/V1/commercial claim and does not promote drift rows O-03/O-04.
+>
+> **Previous integrated main checkpoint (historical; Phase 5 Slice 1 — bounded technical closure; re-verified live 2026-09-17; superseded as live main by the Phase 6 block above):** `e063b42260cb5ab740acf48dcf73c6c67b11fef6` — "Merge pull request #67 from bia2on2on/arena/01a0afef-doctor" (MERGED 2026-09-17T15:36:54Z; approved PR head `fa86e41e415d1b7fcca3dec4c88fadb25da71d1a`; merged PR #67 changed 3 files).
 > **Owner Roadmap Phase 5 — Pricing Engine: CLOSED / TECHNICALLY COMPLETE (BOUNDED)**, in the bounded scope
 > of the merged **Phase 5 Slice 1 (PR #67)**. Bounded scope: **base pricing is Clinic-scoped and sufficient
 > for the current approved V1 flow**, and Slice 1 closed the concrete **Location attribution** gap by
@@ -103,8 +163,8 @@
 
 If Git/remote/PR, this file, and the repository tree disagree: **STOP**.
 
-This file describes the current integrated main checkpoint `e063b42` (Phase 5 Slice 1 —
-bounded Phase 5 technical closure; see the header block) plus preserved Phase-4/Phase-3
+This file describes the current integrated main checkpoint `bd5e6a18` (Phase 6 —
+bounded Phase 6 technical closure; see the header block) plus preserved Phase-5/Phase-4/Phase-3
 checkpoint and pre-merge/pre-corrective evidence SHAs below. It does
 **not** self-refer to the SHA of any later documentation-only commit.
 
@@ -152,11 +212,15 @@ Legacy labels (`F0..F10`, `Doc-Phase`, `V1` / `V1.5` / `V2`) are historical. The
 | Phase 3 | **COMPLETED / FROZEN** — implementation COMPLETE / technically accepted based on merged implementation (PRs #49, #50, #52, #54, #55, #56, #57) and exact-head evidence (19/19 checks success at `ebf8588f34be1da2ff18a152dea2c8badc472056`). Central Clinic-scoped `AuthorizationService` established; FROZEN. This is NOT a release/V1/commercial claim |
 | Phase 4 | **CLOSED / TECHNICALLY COMPLETE (BOUNDED)** — the current live-main checkpoint above records merged PRs #59–#65 and their bounded scope. Deferred/open Master Data items remain deferred/open; no ServiceOffering, Specialty/Department/Room, Iran geography master data, or stale `clinic.phone` Patient Portal consumer fix is claimed |
 | Phase 5 | **CLOSED / TECHNICALLY COMPLETE (BOUNDED)** — merged **Phase 5 Slice 1** (**PR #67**; merge `e063b42260cb5ab740acf48dcf73c6c67b11fef6`, 2026-09-17T15:36:54Z). Bounded scope: **Clinic-scoped base pricing sufficient for the current approved V1 flow** + the concrete Location-attribution fix (`invoice.location_id` derived from the validated Visit, never from payload). Not claimed: ServiceOffering, any `u_service_code` change, distinct per-Location tariffs for the *same* Service, `is_active` server-side invoice rejection as a product contract, tax/VAT policy (REQUIRES LEGAL VERIFICATION). Latest migration remains `0020` — no `0021`. This is NOT a release/V1/commercial claim |
+| Phase 6 | **CLOSED / TECHNICALLY COMPLETE (BOUNDED)** — closed at the live-main checkpoint `bd5e6a1819a838648dbdcbc6914c0d8b24bba38b` through merged **PRs #69–#71 + #73–#76** (the range also contains the documentation-only **PR #72** — owner-requirement preservation, not a slice); **Slice 7 = CLOSED** (concurrency-safe multi-shift conflict enforcement, **PR #76** MERGED 2026-09-18T09:59:44Z; accepted VALID RED `fca63d3a…`; the earlier attempts `091fae1c…` and `c8b95920…` **remain INVALID RED**; post-merge on the merge SHA: four required workflows terminal-success + 19/19 checks success). Coverage preserved for `FR-3.1`–`FR-3.4` and `FR-3.6`–`FR-3.10` — **`FR-3.5` belongs to Phase 8 and is not claimed**. Deferred hardening (ج: no-scope legacy branch in `requireClinicianWithinTrustedClinic()`; د: `horizon_days` payload upper bound) is **not implemented** and is preserved for the planned C7 hardening slice; the inaccurate `ScheduleController.php` exception-route comment (404 vs the boundary's 403 `CLINIC_SCOPE_UNAVAILABLE`) remains comment-only debt for the next product slice touching that file. Recorded evidence exceptions: the Slice-7 process exception (GREEN before director authorization — non-blocking), the Slice-5 test-only SHA `bd9351e754` having no check runs at that exact SHA, and the previous main `fc0a598e` post-merge state of 18 success + 1 cancelled (**never a PASS**). Latest migration remains `0020` — no `0021`. This is NOT a release/V1/commercial claim |
 
-**Integrated main checkpoint:** `e063b42260cb5ab740acf48dcf73c6c67b11fef6` (PR #67 MERGED 2026-09-17T15:36:54Z —
-bounded Phase 5 Slice 1 technical closure; Clinic-scoped base pricing + `invoice.location_id` derived from the
-validated Visit; no release/V1/commercial claim).
-Previous integrated checkpoint: `70ace204` (PR #65 MERGED 2026-09-17 — bounded Phase 4 technical
+**Integrated main checkpoint:** `bd5e6a1819a838648dbdcbc6914c0d8b24bba38b` (PR #76 MERGED 2026-09-18T09:59:44Z —
+bounded Phase 6 technical closure through PRs #69–#71 + #73–#76; Slice 7 concurrency-safe multi-shift conflict
+enforcement; post-merge on the merge SHA: four required workflows terminal-success + 19/19 checks success;
+no release/V1/commercial claim).
+Previous integrated checkpoint: `e063b42` (PR #67 MERGED 2026-09-17 — bounded Phase 5 Slice 1 technical
+closure; Clinic-scoped base pricing + `invoice.location_id` derived from the validated Visit). Earlier:
+`70ace204` (PR #65 MERGED 2026-09-17 — bounded Phase 4 technical
 closure through PRs #59–#65). Earlier: `ebf8588` (PR #57 MERGED 2026-09-16 — Phase 3
 End Gate; technically COMPLETED/FROZEN; gates recorded in the header block). Earlier:
 `35acced` (PR #47 MERGED 2026-09-15 — final Phase 2 technical merge). Earlier: `bdb135e9` (PR #25 MERGED — C10 documentation
@@ -172,7 +236,7 @@ implementation evidence (historical):** `3fc5a54`. Historical baseline:
 `b19930fe` (table below); the `a385d868`, `248ca10`, `099b644`, and `3fc5a54`
 gate tables are retained below as historical evidence.
 
-**Schema:** current version **`2026_09_09_0020`** (re-verified on current live main `70ace204d1524a8f5e83d33c67c1a09b7543e7a3`: latest file is `src/Migrations/2026_09_09_0020_idempotency_clinic_scope.php`; 20 migration files `0001`..`0020`). File `0021` does **not** exist. **Migration 0021 is NOT approved and was NOT created** (including by the C8 documentation closure and by the bounded C9 integration/closure — neither authorizes a migration). If new schema is required: STOP and ask Owner. (Current migration state re-confirmed on live main `70ace204d1524a8f5e83d33c67c1a09b7543e7a3` — latest = `0020`, `0021` absent.)
+**Schema:** current version **`2026_09_09_0020`** (re-verified on current live main `70ace204d1524a8f5e83d33c67c1a09b7543e7a3`: latest file is `src/Migrations/2026_09_09_0020_idempotency_clinic_scope.php`; 20 migration files `0001`..`0020`). File `0021` does **not** exist. **Migration 0021 is NOT approved and was NOT created** (including by the C8 documentation closure and by the bounded C9 integration/closure — neither authorizes a migration). If new schema is required: STOP and ask Owner. (Current migration state re-confirmed on live main `70ace204d1524a8f5e83d33c67c1a09b7543e7a3` — latest = `0020`, `0021` absent; **re-verified again on live main `bd5e6a1819a838648dbdcbc6914c0d8b24bba38b` (2026-09-18): 20 migration files `0001`..`0020`, latest = `2026_09_09_0020_idempotency_clinic_scope.php`, no `0021` file and no `0021` reserved by the Phase 6 closure.**)
 
 **Post-merge integration state (verified from live remote 2026-09-11)**
 
