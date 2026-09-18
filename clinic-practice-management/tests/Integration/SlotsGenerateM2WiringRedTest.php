@@ -671,11 +671,12 @@ final class SlotsGenerateM2WiringRedTest extends WP_UnitTestCase
         $maxDate = (string) ($wpdb->get_var($wpdb->prepare('SELECT MAX(slot_date) FROM ' . $db->table('cpms_schedule_slots') . ' WHERE clinician_id IN (%d, %d)', $this->clinicianA, $this->clinicianB)) ?? '');
         $warnings366 = (int) $wpdb->get_var($wpdb->prepare(
             'SELECT COUNT(*) FROM ' . $db->table('cpms_operational_logs') .
-            ' WHERE id > %d AND level = %s AND message = %s AND context_json LIKE %s',
+            ' WHERE id > %d AND level = %s AND message = %s' .
+            ' AND CAST(JSON_EXTRACT(context_json, \'$.horizon_days\') AS UNSIGNED) = %d',
             $opLogWatermark,
             'warning',
             'SLOTS_GEN_SKIP_INVALID_HORIZON',
-            '%"horizon_days":366%'
+            366
         ));
         $jobAfter = $wpdb->get_row($wpdb->prepare('SELECT * FROM ' . $db->table('cpms_jobs') . ' WHERE id = %d', $jobId), ARRAY_A);
         self::assertNotEmpty($jobAfter, 'job row must still exist');
