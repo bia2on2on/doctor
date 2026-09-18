@@ -202,6 +202,11 @@ jobs:
               grep '^testsuite ' "$SPLIT" | grep -E 'RestScheduleTest|Phase6ScheduleMultiShiftTest|Phase6ScheduleExplicitLocationTest|Phase4Slice1ProfessionalMultiClinicParticipationTest|ScheduleRegenerationClinicScopeRedTest|SchedulingLocationLocalBoundaryRedTest|SlotsGenerateLocationLocalTemporalRedTest|SlotsGenerateM2WiringRedTest|C7PreIntegrationBoundaryTest|C7ScheduleObjectIdIsolationTest' || echo '(a Phase6 Slice 6 regression suite is missing from junit)'
               echo '--- Phase6 Slice 6 regression testcases ---'
               grep '^testcase ' "$SPLIT" | grep -E 'C7PreIntegrationBoundaryTest|C7ScheduleObjectIdIsolationTest' || true
+              # Slice 7 keeps named-suite evidence explicit (additive; no gate change).
+              echo '--- Phase6 Slice 7 Multi-Shift Concurrency suite (selection + execution proof) ---'
+              grep '^testsuite ' "$SPLIT" | grep 'Phase6ScheduleShiftConcurrencyRedTest' || echo '(Phase6 Slice 7 concurrency suite missing from junit)'
+              echo '--- Phase6 Slice 7 Multi-Shift Concurrency testcases ---'
+              grep '^testcase ' "$SPLIT" | grep 'Phase6ScheduleShiftConcurrencyRedTest' || true
               rm -f "$SPLIT"
             else
               echo '(junit xml missing — run may have terminated prematurely)'
