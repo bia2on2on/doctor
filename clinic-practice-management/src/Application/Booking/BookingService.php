@@ -374,7 +374,9 @@ final class BookingService
 
         $this->db->transactional(function () use ($slot, $wpUserId, $mobile, $token, $expiresAt): void {
             if (!$this->slots->atomicHold((int) $slot['id'])) {
-                throw BookingException::of('CLINIC_SLOT_TAKEN', 'اسلات در لحظه انتخاب پر شد — اسلات دیگری انتخاب کنید', 409);
+                // FR-4.6: پاکت/کد/پیام دست‌نخورده — فقط دادهٔ الحاقیِ nearby_slots
+                // از زمینهٔ trusted اسلاتِ باخته (همان ردیف persisted) ساخته می‌شود.
+                throw BookingException::of('CLINIC_SLOT_TAKEN', 'اسلات در لحظه انتخاب پر شد — اسلات دیگری انتخاب کنید', 409, ['nearby_slots' => $this->nearbySlotsForLosingSlot($slot)]);
             }
             $this->db->insert('cpms_slot_holds', [
                 'clinic_id' => (int) $slot['clinic_id'],
@@ -406,6 +408,87 @@ final class BookingService
             'expires_at' => $expiresAt,
             'slot' => $this->slotView((int) $slot['id'], $slot),
         ];
+    }
+
+    /**
+     * FR-4.6 — جایگزین‌های آزادِ پیشنهادی پس از باخت CLINIC_SLOT_TAKEN.
+     *
+     * فقط زمینهٔ trusted اسلاتِ باخته مرجع است — ردیفِ persisted خودِ اسلات:
+     * Clinic، Clinician، Location و تاریخِ محلیِ همان ردیف. شناسه‌های خامِ
+     * درخواست هرگز مرجع نیستند؛ در نبودِ زمینهٔ معتبر [] برمی‌گردد (حدس ممنوع،
+     * بدون fallback به Clinic/Location دیگر).
+     *
+     * معناشناسی تثبیت‌شدهٔ availability عیناً بازاستفاده می‌شود:
+     *  - `SlotRepository::availabilityCandidates()` با پنجرهٔ تک‌تاریخِ
+     *    [date, date] — Clinic + Clinician + is_open=1 + ظرفیت آزادِ واقعی
+     *    (capacity - booked_count - held_count > 0) + ترتیب قطعیِ
+     *    slot_date ASC, slot_time ASC, id ASC؛
+     *  - فیلترِ محلیِ Location (`filterNotLocallyPast` — fail-closed)؛
+     *  - شکلِ entry همان entry تقویم آزاد:
+     *    {time, capacity_left, duration_min, slot_id, location_id, date}.
+     *
+     * محدودیتِ همان Location، حذفِ خودِ اسلاتِ باخته و سقفِ ۵ در سرویس و
+     * «پیش از» ساختِ دادهٔ خطا اعمال می‌شود — هیچ ردیفِ Location دیگر
+     * فرار نمی‌کند و پرس‌وجو هرگز فراتر از Clinic/Clinician/تاریخِ باخته
+     * گسترده نمی‌شود.
+     *
+     * محاسبهٔ پیشنهاد ثانویه است: هر خطای غیرمنتظره → [] تا باخت
+     * CLINIC_SLOT_TAKEN هرگز به خطای دیگری تبدیل نشود. (قرارداد wpdb:
+     * خطای query = نتیجهٔ خالی؛ لایهٔ Repository تمایزی برقرار نمی‌کند.)
+     *
+     * @param array<string, mixed> $losingSlot ردیف persisted اسلاتِ باخته
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function nearbySlotsForLosingSlot(array $losingSlot): array
+    {
+        try {
+            $clinicId = (int) ($losingSlot['clinic_id'] ?? 0);
+            $clinicianId = (int) ($losingSlot['clinician_id'] ?? 0);
+            $locationId = (int) ($losingSlot['location_id'] ?? 0);
+            $losingDate = (string) ($losingSlot['slot_date'] ?? '');
+            $losingSlotId = (int) ($losingSlot['id'] ?? 0);
+
+            if ($clinicId <= 0 || $clinicianId <= 0 || $locationId <= 0 || $losingDate === '') {
+                // زمینهٔ trusted ناموجود — بدون حدس
+                return [];
+            }
+
+            // پنجرهٔ پرس‌وجو فقط همان یک تاریخِ محلیِ اسلاتِ باخته است.
+            $candidates = $this->slots->availabilityCandidates($clinicId, $clinicianId, $losingDate, $losingDate);
+
+            // همان Location + حذفِ خودِ اسلاتِ باخته — پیش از ساخت خروجی
+            $eligible = array_values(array_filter(
+                $candidates,
+                static fn (array $row): bool => (int) ($row['location_id'] ?? 0) === $locationId
+                    && (int) ($row['id'] ?? 0) !== $losingSlotId
+            ));
+
+            // فیلتر محلیِ زمانیِ تثبیت‌شده (Two-Clock — fail-closed)
+            $eligible = $this->filterNotLocallyPast(
+                $eligible,
+                $clinicId,
+                new \DateTimeImmutable('now', new \DateTimeZone('UTC'))
+            );
+
+            $mapped = [];
+            foreach ($eligible as $row) {
+                $mapped[] = [
+                    'time' => substr((string) $row['slot_time'], 0, 5),
+                    'capacity_left' => (int) $row['capacity_left'],
+                    'duration_min' => (int) $row['duration_min'],
+                    'slot_id' => (int) ($row['id'] ?? 0),
+                    'location_id' => (int) ($row['location_id'] ?? 0),
+                    'date' => (string) $row['slot_date'],
+                ];
+            }
+
+            // سقف ۵ — همان ترتیب قطعی حفظ می‌شود
+            return array_slice($mapped, 0, 5);
+        } catch (\Throwable) {
+            // پیشنهاد ثانویه است — پاکتِ CLINIC_SLOT_TAKEN حفظ می‌شود
+            return [];
+        }
     }
 
     // ================= B2 — Confirm (Idempotent) =================
@@ -489,7 +572,10 @@ final class BookingService
                     throw BookingException::of('CLINIC_DUPLICATE_APPOINTMENT', 'شما قبلاً در این ساعت نوبت دارید', 409);
                 }
                 if (!$this->slots->atomicClaim($slotId)) {
-                    throw BookingException::of('CLINIC_SLOT_TAKEN', 'اسلات در لحظه نهایی پر شد', 409);
+                    // FR-4.6: پیام اختصاصی همین سایتِ atomicClaim دست‌نخورده —
+                    // فقط nearby_slots الحاقی، از ردیفِ persisted که همین مسیر
+                    // واقعی confirm با FOR UPDATE به آن رسیده است.
+                    throw BookingException::of('CLINIC_SLOT_TAKEN', 'اسلات در لحظه نهایی پر شد', 409, ['nearby_slots' => $this->nearbySlotsForLosingSlot($slot)]);
                 }
 
                 $duration = (int) $slot['duration_min'];
