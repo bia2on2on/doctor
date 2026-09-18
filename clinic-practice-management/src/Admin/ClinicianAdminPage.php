@@ -269,7 +269,7 @@ final class ClinicianAdminPage
             <tbody>
             <?php foreach (self::DAYS as $day => $dayLabel) : ?>
                 <?php foreach ($locations as $loc) : $locId = (int) $loc['id']; $cellRows = $byDayLocation[$day][$locId] ?? []; ?>
-                    <?php if ($cellRows === []) : $cellRows = [null]; endif; ?>
+                    <?php $cellRows[] = null; ?>
                     <?php foreach ($cellRows as $rowIndex => $s) : $token = $s === null ? 'new-' . $day . '-' . $locId : 'row-' . (int) $s['id']; ?>
                 <tr>
                     <td data-label="روز"><strong><?php echo esc_html($dayLabel); ?></strong></td>
@@ -530,7 +530,7 @@ final class ClinicianAdminPage
                 }
             }
             if ($existing !== null) {
-                $service->update($userId, (int) $existing, $fields);
+                $service->update($userId, (int) $existing['id'], $fields);
                 self::back($cid, 'برنامه روز ذخیره شد — Slotها بازتولید می‌شوند.' . $impactNote);
             }
             $service->create($userId, $fields);
