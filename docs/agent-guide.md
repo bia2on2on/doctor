@@ -976,3 +976,11 @@ final class XxxService {
 - **Git/PR:** forward-only؛ بدون `reset --hard` / `clean` / `rebase` / force-push / history rewrite؛ فقط یک Draft PR به `main` (بدون merge/Ready/tag/release). entryهای قبلی **append-only و دست‌نخورده**.
 - **موارد باز/تحویل به ایجنت بعد:** (۱) اسلایس hardening برنامه‌ریزی‌شدهٔ C7 = قلم‌های ج + د (clamp سقف بالایی `horizon_days`)؛ (۲) اصلاح کامنت `ScheduleController.php` در نخستین برش محصولی که آن فایل را لمس می‌کند؛ (۳) ردیف‌های drift ‏O-03/O-04 باز می‌مانند؛ (۴) `CHANGELOG.md` از 2026-09-12 به‌روز نشده (بدهیِ پیش‌موجود — بستن‌های Phase 3/4/5 هم در آن ثبت نشده‌اند) و در این closure دست‌نخورده ماند.
 - **وضعیت tree:** پس از کامیت = clean.
+
+### [2026-09-18 11:35 UTC] — تکمیل entry ‏Phase 6 documentation closure (شواهد exact-head همین PR مستندات)
+- **هدف:** تکمیلِ (نه ویرایشِ) entry قبلی — ثبت نتیجهٔ واقعی گیت‌ها روی head خودِ این PR مستندات، طبق قاعدهٔ append-only.
+- **head دقیق:** `8d886cefe5a3512333be8ed0c45f6af2715737f3` (شاخهٔ `arena/01a0b3fe-doctor`، Draft PR **#77**، base = `main`). والد = `bd5e6a1819a838648dbdcbc6914c0d8b24bba38b` (= `origin/main` در زمان شروع).
+- **CI (VERIFIED FACT، بازخوانی GitHub API):** روی همان head **۱۹/۱۹ check run = `completed`/`success`** (بدون pending/cancelled/failure)؛ چهار workflow: CI `35335151338` (`pull_request`) · Real WordPress Acceptance `35335151457` (`pull_request`) · Closure Gate `35335078179` (`push`) · Pilot/Staging Readiness Gate `35335078346` (`push`) — همه `completed`/`success`. `WPCS (changed code)` = success (هیچ فایل PHP تغییر نکرد).
+- **محدوده (بازبینی کامل diff):** `git diff --name-only origin/main..HEAD` = فقط ۷ فایل زیر `docs/`؛ **۰** فایل خارج از `docs/`. بدون تغییر `src/`/tests/workflows/migrations/schema/runtime configuration؛ `ScheduleController.php` دست‌نخورده؛ `0021` ساخته/رزرو نشد.
+- **اجرای محلی:** PHPUnit/PHPStan/WPCS محلی = **NOT RUN** (PHP/Composer/MySQL در sandbox نیستند)؛ هیچ شواهد runtime جدیدی ادعا نشد. یک لینک نسبیِ شکسته در `docs/project-current-state.md` (`](phase2-state.md)` ← مسیر درست `phase-reports/phase2-state.md`) **از قبل روی `main` وجود داشت** و عمداً دست‌نخورده ماند (خارج از دامنهٔ این closure).
+- **وضعیت tree:** پس از کامیت = clean. Draft PR **#77** بدون Ready/merge باقی می‌ماند (پذیرش مستقل).
