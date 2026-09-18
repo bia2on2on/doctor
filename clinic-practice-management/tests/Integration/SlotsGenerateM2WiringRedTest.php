@@ -49,6 +49,28 @@ use WP_UnitTestCase;
  * timezone). Every POLICY assertion — scope-neutral empty-payload wiring,
  * job success, per-Clinic horizon, Clinic A vs B independence, tenant
  * boundaries — is unchanged.
+ *
+ * ═══ C7 hardening (bounded slice) — payload horizon upper bound ═══
+ * Established current contract: absent/malformed non-numeric horizon_days
+ * stays on the settings path (horizonForClinic, clamped 1..365); numeric
+ * <= 0 already fails closed per sweep item (SLOTS_GEN_SKIP_INVALID_HORIZON
+ * + continue). Numeric > 365 is the DEFECT: the payload path has no upper
+ * bound while the settings path clamps 1..365. `bin/cpms slots generate
+ * --days=N` is a REAL producer of the override (enqueues horizon_days=N).
+ *
+ * Target contract (test-only RED; no product change in this commit):
+ *   - numeric horizon_days > 365 must fail closed PER SWEEP ITEM (same
+ *     warning/operational evidence pattern + continue — never a job-wide
+ *     abort) and must never generate an unbounded horizon.
+ *   - 365 (upper boundary) and small valid overrides must remain accepted.
+ *   - absent/malformed values keep their CURRENT settings-path fallback,
+ *     unchanged. Numeric non-integer values (e.g. "90.7") are explicitly
+ *     OUT of this slice's contract — no RED is asserted for them.
+ *
+ * Intended RED on current main: horizon_days=366 is accepted and unbounded
+ * generation happens, so the fail-closed assertions (zero slots + warning
+ * evidence) fail. The 365 / small-override / fallback contracts must stay
+ * GREEN on current main (positive controls).
  */
 final class SlotsGenerateM2WiringRedTest extends WP_UnitTestCase
 {
@@ -579,5 +601,348 @@ final class SlotsGenerateM2WiringRedTest extends WP_UnitTestCase
             $slotsA_beyond,
             "Clinic A (horizon 3) must NOT have slot for $beyondDate (beyond its horizon and no schedule for that dow)"
         );
+    }
+
+    // ═══════════════ C7-B — payload horizon_days > 365 must fail closed ═══════════════
+
+    /**
+     * C7-B/1 (intended RED on current main): a numeric payload horizon_days
+     * above the settings-path upper bound (365) must be rejected/skipped
+     * per sweep item BEFORE any unbounded slot generation happens — with the
+     * established warning evidence (SLOTS_GEN_SKIP_INVALID_HORIZON) — and the
+     * job must still complete (per-item skip, never a job-wide abort).
+     *
+     * Real producer exercised: `bin/cpms slots generate --days=366` enqueues
+     * exactly ['horizon_days' => 366, 'source' => 'manual'].
+     *
+     * On current main the payload path has no upper bound, so 366 is accepted
+     * and unbounded generation occurs: the zero-slots assertions below fail
+     * (RED) with the observed slot counts/dates as evidence.
+     */
+    public function testPayloadHorizonAboveSettingsUpperBoundMustFailClosedPerSweepItem(): void
+    {
+        global $wpdb;
+        $db = App::db();
+
+        // ---- Precondition: fixture clinics + fresh app caches, no scope ----
+        self::assertGreaterThan(0, $this->clinicA);
+        self::assertGreaterThan(0, $this->clinicB);
+        $this->resetAppCaches();
+        self::assertNull(ScopeContext::tryGet(), 'no ScopeContext must be set');
+        wp_set_current_user(0);
+        $this->assertDispatcherCacheFresh();
+
+        $this->purgeJobs();
+        $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_schedule_slots') . ' WHERE clinician_id IN (%d, %d)', $this->clinicianA, $this->clinicianB));
+
+        $today = $this->locationNowDate();
+        if ($this->localTodayAtBuild !== $today) {
+            self::markTestSkipped(
+                'INCONCLUSIVE (not a product RED): ' . self::FX_TZ
+                . ' local calendar date changed between fixture build and test start'
+            );
+        }
+
+        // ---- Op-log watermark for this run's warning evidence ----
+        $opLogWatermark = (int) $wpdb->get_var('SELECT COALESCE(MAX(id), 0) FROM ' . $db->table('cpms_operational_logs'));
+
+        // ---- Enqueue slots.generate with horizon_days=366 (real producer shape) ----
+        $queue = App::jobs();
+        $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+        $jobId = $queue->enqueue('slots.generate', ['horizon_days' => 366, 'source' => 'manual'], $now, 9, 1);
+        self::assertGreaterThan(0, $jobId);
+        $jobBefore = $wpdb->get_row($wpdb->prepare('SELECT * FROM ' . $db->table('cpms_jobs') . ' WHERE id = %d', $jobId), ARRAY_A);
+        self::assertSame('queued', $jobBefore['status']);
+        self::assertSame(1, (int) $jobBefore['max_attempts']);
+
+        // ---- Execute via real production path: App::runTick ----
+        $tickResult = App::runTick(20);
+
+        if ($this->locationNowDate() !== $today) {
+            self::markTestSkipped(
+                'INCONCLUSIVE (not a product RED): ' . self::FX_TZ
+                . ' local calendar date changed during the production sweep'
+            );
+        }
+
+        // ---- Observed evidence ----
+        $slotsA = (int) $wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM ' . $db->table('cpms_schedule_slots') . ' WHERE clinician_id = %d', $this->clinicianA));
+        $slotsB = (int) $wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM ' . $db->table('cpms_schedule_slots') . ' WHERE clinician_id = %d', $this->clinicianB));
+        $maxDate = (string) ($wpdb->get_var($wpdb->prepare('SELECT MAX(slot_date) FROM ' . $db->table('cpms_schedule_slots') . ' WHERE clinician_id IN (%d, %d)', $this->clinicianA, $this->clinicianB)) ?? '');
+        $warnings366 = (int) $wpdb->get_var($wpdb->prepare(
+            'SELECT COUNT(*) FROM ' . $db->table('cpms_operational_logs') .
+            ' WHERE id > %d AND level = %s AND message = %s AND context_json LIKE %s',
+            $opLogWatermark,
+            'warning',
+            'SLOTS_GEN_SKIP_INVALID_HORIZON',
+            '%"horizon_days":366%'
+        ));
+        $jobAfter = $wpdb->get_row($wpdb->prepare('SELECT * FROM ' . $db->table('cpms_jobs') . ' WHERE id = %d', $jobId), ARRAY_A);
+        self::assertNotEmpty($jobAfter, 'job row must still exist');
+        $status = (string) ($jobAfter['status'] ?? '');
+        $lastError = (string) ($jobAfter['last_error'] ?? '');
+
+        // ---- fail-closed contract: NO slot may be generated for any sweep item ----
+        self::assertSame(
+            0,
+            $slotsA,
+            'C7-B/1 horizon>365 fail-closed: Clinic A sweep item must be skipped BEFORE any generation; '
+            . 'no unbounded horizon may be produced. Observed: slotsA=' . $slotsA . ' slotsB=' . $slotsB
+            . ' maxDate=' . $maxDate . ' today=' . $today . ' status=' . $status
+            . ' warnings366=' . $warnings366 . ' tickResult=' . var_export($tickResult, true)
+        );
+        self::assertSame(
+            0,
+            $slotsB,
+            'C7-B/1 horizon>365 fail-closed: Clinic B sweep item must be skipped BEFORE any generation. '
+            . 'Observed: slotsB=' . $slotsB . ' maxDate=' . $maxDate . ' status=' . $status
+        );
+
+        // ---- established warning evidence pattern for the invalid horizon ----
+        self::assertGreaterThanOrEqual(
+            1,
+            $warnings366,
+            'C7-B/1 warning evidence: at least one SLOTS_GEN_SKIP_INVALID_HORIZON warning with '
+            . 'horizon_days=366 must be recorded (established operational evidence pattern). '
+            . 'Observed warnings366=' . $warnings366 . ' watermark=' . $opLogWatermark
+        );
+
+        // ---- per-item skip: sweep continues and the job completes ----
+        self::assertSame(
+            'success',
+            $status,
+            'C7-B/1 per-item progress: an invalid horizon must skip the sweep ITEM, never abort the job '
+            . '(other Clinic work in the sweep must remain possible). Found status=' . $status
+            . ' last_error=' . $lastError . ' tickResult=' . var_export($tickResult, true)
+        );
+    }
+
+    /**
+     * C7-B/2 (positive boundary control — must stay GREEN on current main):
+     * numeric horizon_days=365 (upper boundary) must remain ACCEPTED and
+     * generate within that horizon, with no invalid-horizon warning.
+     */
+    public function testPayloadHorizonUpperBoundary365MustRemainAccepted(): void
+    {
+        global $wpdb;
+        $db = App::db();
+
+        $this->resetAppCaches();
+        self::assertNull(ScopeContext::tryGet(), 'no ScopeContext must be set');
+        wp_set_current_user(0);
+        $this->assertDispatcherCacheFresh();
+
+        $this->purgeJobs();
+        $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_schedule_slots') . ' WHERE clinician_id IN (%d, %d)', $this->clinicianA, $this->clinicianB));
+
+        $today = $this->locationNowDate();
+        if ($this->localTodayAtBuild !== $today) {
+            self::markTestSkipped(
+                'INCONCLUSIVE (not a product RED): ' . self::FX_TZ
+                . ' local calendar date changed between fixture build and test start'
+            );
+        }
+
+        $opLogWatermark = (int) $wpdb->get_var('SELECT COALESCE(MAX(id), 0) FROM ' . $db->table('cpms_operational_logs'));
+
+        $queue = App::jobs();
+        $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+        $jobId = $queue->enqueue('slots.generate', ['horizon_days' => 365, 'source' => 'manual'], $now, 9, 1);
+        self::assertGreaterThan(0, $jobId);
+
+        $tickResult = App::runTick(20);
+
+        if ($this->locationNowDate() !== $today) {
+            self::markTestSkipped(
+                'INCONCLUSIVE (not a product RED): ' . self::FX_TZ
+                . ' local calendar date changed during the production sweep'
+            );
+        }
+
+        $withinDate = $this->plusDays($today, 1);
+        $day4Date = $this->plusDays($today, 4); // 4 <= 365 for both clinics
+
+        $slotsA_within = (int) $wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM ' . $db->table('cpms_schedule_slots') . ' WHERE clinician_id = %d AND slot_date = %s', $this->clinicianA, $withinDate));
+        $slotsB_within = (int) $wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM ' . $db->table('cpms_schedule_slots') . ' WHERE clinician_id = %d AND slot_date = %s', $this->clinicianB, $withinDate));
+        $slotsB_day4 = (int) $wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM ' . $db->table('cpms_schedule_slots') . ' WHERE clinician_id = %d AND slot_date = %s', $this->clinicianB, $day4Date));
+        $warnings365 = (int) $wpdb->get_var($wpdb->prepare(
+            'SELECT COUNT(*) FROM ' . $db->table('cpms_operational_logs') .
+            ' WHERE id > %d AND level = %s AND message = %s',
+            $opLogWatermark,
+            'warning',
+            'SLOTS_GEN_SKIP_INVALID_HORIZON'
+        ));
+
+        $jobAfter = $wpdb->get_row($wpdb->prepare('SELECT * FROM ' . $db->table('cpms_jobs') . ' WHERE id = %d', $jobId), ARRAY_A);
+        $status = (string) ($jobAfter['status'] ?? '');
+
+        self::assertSame('success', $status, 'C7-B/2 boundary 365: job must be SUCCESS. Found status=' . $status . ' tickResult=' . var_export($tickResult, true));
+        self::assertGreaterThan(0, $slotsA_within, "C7-B/2 boundary 365 accepted: Clinic A within-horizon ($withinDate) must have slots");
+        self::assertGreaterThan(0, $slotsB_within, "C7-B/2 boundary 365 accepted: Clinic B within-horizon ($withinDate) must have slots");
+        self::assertGreaterThan(0, $slotsB_day4, "C7-B/2 boundary 365 accepted: Clinic B day4 ($day4Date) must have slots (4 <= 365)");
+        self::assertSame(0, $warnings365, 'C7-B/2 boundary 365 must NOT be treated as invalid horizon (no skip warning)');
+    }
+
+    /**
+     * C7-B/3 (positive control — must stay GREEN on current main): a small
+     * valid numeric override (2) must be accepted EXACTLY — days within 2
+     * generated, day 4 never generated for either clinic.
+     */
+    public function testPayloadHorizonSmallOverrideMustRemainAcceptedExactly(): void
+    {
+        global $wpdb;
+        $db = App::db();
+
+        $this->resetAppCaches();
+        self::assertNull(ScopeContext::tryGet(), 'no ScopeContext must be set');
+        wp_set_current_user(0);
+        $this->assertDispatcherCacheFresh();
+
+        $this->purgeJobs();
+        $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_schedule_slots') . ' WHERE clinician_id IN (%d, %d)', $this->clinicianA, $this->clinicianB));
+
+        $today = $this->locationNowDate();
+        if ($this->localTodayAtBuild !== $today) {
+            self::markTestSkipped(
+                'INCONCLUSIVE (not a product RED): ' . self::FX_TZ
+                . ' local calendar date changed between fixture build and test start'
+            );
+        }
+
+        $queue = App::jobs();
+        $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+        $jobId = $queue->enqueue('slots.generate', ['horizon_days' => 2, 'source' => 'manual'], $now, 9, 1);
+        self::assertGreaterThan(0, $jobId);
+
+        $tickResult = App::runTick(20);
+
+        if ($this->locationNowDate() !== $today) {
+            self::markTestSkipped(
+                'INCONCLUSIVE (not a product RED): ' . self::FX_TZ
+                . ' local calendar date changed during the production sweep'
+            );
+        }
+
+        $day1 = $this->plusDays($today, 1);
+        $day2 = $this->plusDays($today, 2);
+        $day4 = $this->plusDays($today, 4);
+
+        $slotsA1 = (int) $wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM ' . $db->table('cpms_schedule_slots') . ' WHERE clinician_id = %d AND slot_date = %s', $this->clinicianA, $day1));
+        $slotsA2 = (int) $wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM ' . $db->table('cpms_schedule_slots') . ' WHERE clinician_id = %d AND slot_date = %s', $this->clinicianA, $day2));
+        $slotsA4 = (int) $wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM ' . $db->table('cpms_schedule_slots') . ' WHERE clinician_id = %d AND slot_date = %s', $this->clinicianA, $day4));
+        $slotsB1 = (int) $wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM ' . $db->table('cpms_schedule_slots') . ' WHERE clinician_id = %d AND slot_date = %s', $this->clinicianB, $day1));
+        $slotsB2 = (int) $wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM ' . $db->table('cpms_schedule_slots') . ' WHERE clinician_id = %d AND slot_date = %s', $this->clinicianB, $day2));
+        $slotsB4 = (int) $wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM ' . $db->table('cpms_schedule_slots') . ' WHERE clinician_id = %d AND slot_date = %s', $this->clinicianB, $day4));
+
+        $jobAfter = $wpdb->get_row($wpdb->prepare('SELECT * FROM ' . $db->table('cpms_jobs') . ' WHERE id = %d', $jobId), ARRAY_A);
+        $status = (string) ($jobAfter['status'] ?? '');
+
+        self::assertSame('success', $status, 'C7-B/3 small override: job must be SUCCESS. Found status=' . $status . ' tickResult=' . var_export($tickResult, true));
+        self::assertGreaterThan(0, $slotsA1, "C7-B/3 override 2: Clinic A day1 ($day1) must have slots");
+        self::assertGreaterThan(0, $slotsA2, "C7-B/3 override 2: Clinic A day2 ($day2) must have slots");
+        self::assertGreaterThan(0, $slotsB1, "C7-B/3 override 2: Clinic B day1 ($day1) must have slots");
+        self::assertGreaterThan(0, $slotsB2, "C7-B/3 override 2: Clinic B day2 ($day2) must have slots");
+        self::assertSame(0, $slotsA4, "C7-B/3 override 2: Clinic A day4 ($day4) must NOT have slots (beyond override horizon)");
+        self::assertSame(0, $slotsB4, "C7-B/3 override 2: Clinic B day4 ($day4) must NOT have slots (beyond override horizon)");
+    }
+
+    /**
+     * C7-B/4 (fallback-semantics control — must stay GREEN on current main):
+     * absent horizon_days and malformed non-numeric horizon_days must keep
+     * their CURRENT behavior: the settings path (clamped 1..365). This pins
+     * the fallback so the >365 hardening cannot silently change it.
+     */
+    public function testAbsentAndMalformedHorizonKeepSettingsFallback(): void
+    {
+        global $wpdb;
+        $db = App::db();
+
+        $this->resetAppCaches();
+        self::assertNull(ScopeContext::tryGet(), 'no ScopeContext must be set');
+        wp_set_current_user(0);
+        $this->assertDispatcherCacheFresh();
+
+        $today = $this->locationNowDate();
+        if ($this->localTodayAtBuild !== $today) {
+            self::markTestSkipped(
+                'INCONCLUSIVE (not a product RED): ' . self::FX_TZ
+                . ' local calendar date changed between fixture build and test start'
+            );
+        }
+
+        $day1 = $this->plusDays($today, 1);
+        $day4 = $this->plusDays($today, 4); // 4 > A settings (3); 4 <= B settings (5)
+
+        // ---- Case 1: ABSENT horizon_days (manual payload without the key) ----
+        $this->purgeJobs();
+        $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_schedule_slots') . ' WHERE clinician_id IN (%d, %d)', $this->clinicianA, $this->clinicianB));
+
+        $queue = App::jobs();
+        $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+        $jobId1 = $queue->enqueue('slots.generate', ['source' => 'manual'], $now, 9, 1);
+        self::assertGreaterThan(0, $jobId1);
+
+        $tickResult1 = App::runTick(20);
+
+        if ($this->locationNowDate() !== $today) {
+            self::markTestSkipped(
+                'INCONCLUSIVE (not a product RED): ' . self::FX_TZ
+                . ' local calendar date changed during the production sweep (absent case)'
+            );
+        }
+
+        $absA1 = (int) $wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM ' . $db->table('cpms_schedule_slots') . ' WHERE clinician_id = %d AND slot_date = %s', $this->clinicianA, $day1));
+        $absA4 = (int) $wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM ' . $db->table('cpms_schedule_slots') . ' WHERE clinician_id = %d AND slot_date = %s', $this->clinicianA, $day4));
+        $absB1 = (int) $wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM ' . $db->table('cpms_schedule_slots') . ' WHERE clinician_id = %d AND slot_date = %s', $this->clinicianB, $day1));
+        $absB4 = (int) $wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM ' . $db->table('cpms_schedule_slots') . ' WHERE clinician_id = %d AND slot_date = %s', $this->clinicianB, $day4));
+
+        $jobAfter1 = $wpdb->get_row($wpdb->prepare('SELECT * FROM ' . $db->table('cpms_jobs') . ' WHERE id = %d', $jobId1), ARRAY_A);
+        $status1 = (string) ($jobAfter1['status'] ?? '');
+
+        self::assertSame('success', $status1, 'C7-B/4 absent: job must be SUCCESS. Found status=' . $status1 . ' tickResult=' . var_export($tickResult1, true));
+        self::assertGreaterThan(0, $absA1, "C7-B/4 absent (settings path): Clinic A day1 ($day1) must have slots");
+        self::assertSame(0, $absA4, "C7-B/4 absent (settings path, A horizon 3): Clinic A day4 ($day4) must NOT have slots");
+        self::assertGreaterThan(0, $absB1, "C7-B/4 absent (settings path): Clinic B day1 ($day1) must have slots");
+        self::assertGreaterThan(0, $absB4, "C7-B/4 absent (settings path, B horizon 5): Clinic B day4 ($day4) must have slots");
+
+        // ---- Case 2: MALFORMED non-numeric horizon_days (current behavior = settings path) ----
+        $this->purgeJobs();
+        $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_schedule_slots') . ' WHERE clinician_id IN (%d, %d)', $this->clinicianA, $this->clinicianB));
+
+        $opLogWatermark2 = (int) $wpdb->get_var('SELECT COALESCE(MAX(id), 0) FROM ' . $db->table('cpms_operational_logs'));
+
+        $jobId2 = $queue->enqueue('slots.generate', ['horizon_days' => 'abc', 'source' => 'manual'], $now, 9, 1);
+        self::assertGreaterThan(0, $jobId2);
+
+        $tickResult2 = App::runTick(20);
+
+        if ($this->locationNowDate() !== $today) {
+            self::markTestSkipped(
+                'INCONCLUSIVE (not a product RED): ' . self::FX_TZ
+                . ' local calendar date changed during the production sweep (malformed case)'
+            );
+        }
+
+        $malA1 = (int) $wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM ' . $db->table('cpms_schedule_slots') . ' WHERE clinician_id = %d AND slot_date = %s', $this->clinicianA, $day1));
+        $malA4 = (int) $wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM ' . $db->table('cpms_schedule_slots') . ' WHERE clinician_id = %d AND slot_date = %s', $this->clinicianA, $day4));
+        $malB1 = (int) $wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM ' . $db->table('cpms_schedule_slots') . ' WHERE clinician_id = %d AND slot_date = %s', $this->clinicianB, $day1));
+        $malB4 = (int) $wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM ' . $db->table('cpms_schedule_slots') . ' WHERE clinician_id = %d AND slot_date = %s', $this->clinicianB, $day4));
+        $warningsMalformed = (int) $wpdb->get_var($wpdb->prepare(
+            'SELECT COUNT(*) FROM ' . $db->table('cpms_operational_logs') .
+            ' WHERE id > %d AND level = %s AND message = %s',
+            $opLogWatermark2,
+            'warning',
+            'SLOTS_GEN_SKIP_INVALID_HORIZON'
+        ));
+
+        $jobAfter2 = $wpdb->get_row($wpdb->prepare('SELECT * FROM ' . $db->table('cpms_jobs') . ' WHERE id = %d', $jobId2), ARRAY_A);
+        $status2 = (string) ($jobAfter2['status'] ?? '');
+
+        self::assertSame('success', $status2, 'C7-B/4 malformed: job must be SUCCESS. Found status=' . $status2 . ' tickResult=' . var_export($tickResult2, true));
+        self::assertGreaterThan(0, $malA1, "C7-B/4 malformed (CURRENT fallback = settings path): Clinic A day1 ($day1) must have slots");
+        self::assertSame(0, $malA4, "C7-B/4 malformed (CURRENT fallback = settings path, A horizon 3): Clinic A day4 ($day4) must NOT have slots");
+        self::assertGreaterThan(0, $malB1, "C7-B/4 malformed (CURRENT fallback = settings path): Clinic B day1 ($day1) must have slots");
+        self::assertGreaterThan(0, $malB4, "C7-B/4 malformed (CURRENT fallback = settings path, B horizon 5): Clinic B day4 ($day4) must have slots");
+        self::assertSame(0, $warningsMalformed, 'C7-B/4 malformed: CURRENT behavior must NOT record an invalid-horizon skip (settings fallback, unchanged)');
     }
 }
