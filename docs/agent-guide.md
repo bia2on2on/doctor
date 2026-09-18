@@ -942,3 +942,8 @@ final class XxxService {
 - **RED معتبر در CI:** run **35286496400** @ `bfe7d6e` (فقط تست) — completion-guard: `Tests: 963, Assertions: 12991, Failures: 10` (0 error) — دقیقاً ۱۰ شکست کلاس-B موردانتظار: M1/M2(دلیل اشتباه)/M4/M5/M6/M7/M8 + T4 + بلوک Phase4Slice1 + بلوک RestScheduleTest؛ M3 و preconditions و ۹۵۳ تست دیگر سبز. اجرای محلی = NOT RUN (PHP/MySQL در sandbox نیست)؛ لاگ job = NOT RETRIEVED (محدودیت blob) — شواهد از کامنت‌های PR (5722565341/5722565574) خوانده شد.
 - **GREEN:** کامیت محصول (همین برش)؛ نتیجهٔ exact-head پس از CI در گزارش PR ثبت می‌شود. Invariantهای ۱-۸ در بدنهٔ PR #73 صورت و با تست اثبات می‌شوند.
 - **Git/PR:** forward-only روی `arena/01a0b1a3-doctor`؛ Draft PR **#73** باز؛ بدون Ready/merge/force-push/reset/rebase. Entryهای قبلی append-only و دست‌نخورده.
+
+### [2026-09-18] — Phase 6 Slice 5 explicit wp-admin schedule-row identity (in progress)
+- **LIVE INSPECTION (VERIFIED FACT):** repository root is `/home/user/doctor`; authoritative `main` and local HEAD are `8be47522c8c60a51394659ac987497b9d49c0433`; no open PR was returned; latest migration remains `0020`.
+- **CORRECTION (VERIFIED FACT):** the repository’s plugin and test roots are nested under `clinic-practice-management/`, not the repository root. The director’s overwrite claim and Slice-4 multi-row refusal guard were confirmed in `src/Admin/ClinicianAdminPage.php`.
+- **TEST-FIRST EVIDENCE:** test-only commit `bd9351e` defines explicit-row edit, render-all-rows/add-row, and foreign/mismatched-row fail-closed contracts. Local execution is **NOT RUN**: PHP and Composer dependencies are unavailable in the sandbox (`php: command not found`, `vendor/bin/phpunit: No such file or directory`), so no valid local RED is claimed.
