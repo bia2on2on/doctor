@@ -66,6 +66,23 @@ use WP_UnitTestCase;
  * are the evidence that I-3 / serialization is missing. Bootstrap, fixture
  * inserts, FK/SQL and child processes must stay clean (no fixture/harness
  * failure may masquerade as RED evidence).
+ *
+ * CONCURRENCY EVIDENCE CLASSIFICATION (the two race tests):
+ *
+ *   1. HARNESS integrity — fork/connection/bootstrap failure or a child that
+ *      produced no outcome: such an attempt proves nothing and fails loudly as
+ *      a harness failure (an invalid RED, never product evidence);
+ *   2. INVARIANT violated — a terminal appointment (cancelled/rescheduled)
+ *      still carrying a LIVE Visit, a replacement written while the original
+ *      stays confirmed, or drifted slot counters: RED evidence;
+ *   3. PRODUCT ENVELOPE violated — a contender surfaced a raw PHP/DB failure
+ *      instead of `ok` or a documented error code (e.g. `HAS_ACTIVE_VISIT`):
+ *      RED evidence, because without serialization on the appointment row a
+ *      contender keeps executing on state the other contender has already
+ *      invalidated (observed on HEAD: a statement rolled back by a lock
+ *      deadlock being ignored, and the loser reporting an unrelated 404).
+ *
+ *   Either legal serialization winner is accepted; no winner is assumed.
  */
 final class Phase7Slice2ActiveVisitInvariantRedTest extends WP_UnitTestCase
 {
@@ -103,6 +120,17 @@ final class Phase7Slice2ActiveVisitInvariantRedTest extends WP_UnitTestCase
 
     private string $fileTag = '';
 
+    /**
+     * High-water marks for the two GLOBAL tables this suite writes through
+     * product code (`cpms_jobs` via the job queue, `cpms_operational_logs`
+     * via OpLogger). Neither table has a `clinic_id` column, so the
+     * Clinic-scoped purge below cannot find them — leaving rows behind would
+     * poison later queue-dependent suites (dispatcher tick budget / queue
+     * assertions). Only rows created by THIS test are removed.
+     */
+    private int $jobsHighWater = 0;
+    private int $opLogsHighWater = 0;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -113,6 +141,12 @@ final class Phase7Slice2ActiveVisitInvariantRedTest extends WP_UnitTestCase
         wp_set_current_user(0);
 
         $this->fileTag = 'p7s2-' . bin2hex(random_bytes(5));
+        $this->jobsHighWater = (int) App::db()->fetchValue(
+            'SELECT COALESCE(MAX(id), 0) FROM ' . App::db()->table('cpms_jobs')
+        );
+        $this->opLogsHighWater = (int) App::db()->fetchValue(
+            'SELECT COALESCE(MAX(id), 0) FROM ' . App::db()->table('cpms_operational_logs')
+        );
 
         // ----- Committed dynamic fixture (never the seeded legacy Clinic 1) -----
         global $wpdb;
@@ -539,13 +573,17 @@ final class Phase7Slice2ActiveVisitInvariantRedTest extends WP_UnitTestCase
             $state = $observation['state'];
             $dump = ' state=' . json_encode($state) . ' outcomes=' . json_encode($outcomes);
 
-            $this->assertNoFatalOutcomes($outcomes, $case);
+            // 1) Harness integrity: a child that never executed invalidates the
+            //    observation (fork/connection/bootstrap failure).
+            $this->assertHarnessIntact($outcomes, $case, $dump);
 
             $status = (string) $state['status'];
             $live = count($state['live_visits']);
             $replacements = count($state['replacements']);
             $checkInWon = (string) ($outcomes[0]['result'] ?? '') === 'ok';
 
+            // 2) THE invariant (INDEPENDENT of which contender won): a terminal
+            //    appointment never carries a LIVE Visit.
             if (in_array($status, ['cancelled_by_patient', 'cancelled_by_staff', 'rescheduled'], true)) {
                 self::assertSame(
                     0,
@@ -553,6 +591,13 @@ final class Phase7Slice2ActiveVisitInvariantRedTest extends WP_UnitTestCase
                     $case . ': a terminal appointment must not carry a LIVE Visit.' . $dump
                 );
             }
+
+            // 3) Both contenders must resolve through the STABLE PRODUCT
+            //    envelope. A raw PHP/DB failure escaping the product call is a
+            //    direct consequence of the missing serialization (HEAD leaves
+            //    the losers' statements unprotected and does not surface the
+            //    failed statement as a product error) — never a clean rejection.
+            $this->assertProductEnvelopeOnly($outcomes, $case, $dump);
 
             if ($status === 'cancelled_by_patient') {
                 self::assertSame('ok', (string) ($outcomes[1]['result'] ?? ''), $case . ': the cancel winner reports ok.' . $dump);
@@ -895,6 +940,9 @@ final class Phase7Slice2ActiveVisitInvariantRedTest extends WP_UnitTestCase
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $wpdb->prefix . 'cpms_visits WHERE clinic_id = %d', $c));
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $wpdb->prefix . 'cpms_notifications WHERE clinic_id = %d', $c));
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $wpdb->prefix . 'cpms_sms_messages WHERE clinic_id = %d', $c));
+        // GLOBAL tables (no clinic_id): remove only what this test produced.
+        $wpdb->query($wpdb->prepare('DELETE FROM ' . $wpdb->prefix . 'cpms_jobs WHERE id > %d', $this->jobsHighWater));
+        $wpdb->query($wpdb->prepare('DELETE FROM ' . $wpdb->prefix . 'cpms_operational_logs WHERE id > %d', $this->opLogsHighWater));
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $wpdb->prefix . 'cpms_idempotency_keys WHERE clinic_id = %d', $c));
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $wpdb->prefix . 'cpms_audit_logs WHERE clinic_id = %d', $c));
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $wpdb->prefix . 'cpms_appointments WHERE clinic_id = %d', $c));
@@ -1047,14 +1095,28 @@ final class Phase7Slice2ActiveVisitInvariantRedTest extends WP_UnitTestCase
                     'trace' => $this->bookingErrorTrace($e),
                 ];
             } catch (Throwable $e) {
-                $outcome = ['result' => 'fatal', 'detail' => get_class($e) . ': ' . $e->getMessage()];
+                // A raw (non-product) failure inside the child is harness
+                // evidence: report WHERE it happened, never just the message.
+                $outcome = [
+                    'result' => 'fatal',
+                    'role' => (string) ($worker['role'] ?? ''),
+                    'detail' => get_class($e) . ': ' . $e->getMessage(),
+                    'at' => basename($e->getFile()) . ':' . $e->getLine(),
+                    'trace' => $this->throwableTrace($e),
+                ];
             }
             file_put_contents($file, (string) json_encode($outcome, JSON_UNESCAPED_UNICODE));
         } catch (Throwable $e) {
             @file_put_contents(
                 $file,
                 (string) json_encode(
-                    ['result' => 'fatal', 'detail' => 'child bootstrap: ' . get_class($e) . ': ' . $e->getMessage()],
+                    [
+                        'result' => 'fatal',
+                        'role' => (string) ($worker['role'] ?? ''),
+                        'detail' => 'child bootstrap: ' . get_class($e) . ': ' . $e->getMessage(),
+                        'at' => basename($e->getFile()) . ':' . $e->getLine(),
+                        'trace' => $this->throwableTrace($e),
+                    ],
                     JSON_UNESCAPED_UNICODE
                 )
             );
@@ -1161,8 +1223,18 @@ final class Phase7Slice2ActiveVisitInvariantRedTest extends WP_UnitTestCase
      */
     private function bookingErrorTrace(BookingException $e): array
     {
+        return $this->throwableTrace($e);
+    }
+
+    /**
+     * Compact call chain for any Throwable (child diagnostics).
+     *
+     * @return list<string>
+     */
+    private function throwableTrace(Throwable $e): array
+    {
         $out = [];
-        foreach (array_slice($e->getTrace(), 0, 6) as $frame) {
+        foreach (array_slice($e->getTrace(), 0, 8) as $frame) {
             $out[] = ($frame['class'] ?? '') . ($frame['type'] ?? '') . ($frame['function'] ?? '')
                 . ' @ ' . basename((string) ($frame['file'] ?? '?')) . ':' . (string) ($frame['line'] ?? '?');
         }
@@ -1269,19 +1341,61 @@ final class Phase7Slice2ActiveVisitInvariantRedTest extends WP_UnitTestCase
     }
 
     /**
-     * No child may crash or leak a raw (non-product) failure: a fatal outcome
-     * is infrastructure or an error-envelope defect — never valid RED/GREEN
-     * evidence for I-3.
+     * HARNESS INTEGRITY — a child that never ran (fork/connection failure, no
+     * outcome file, non-zero exit) invalidates the observation: such a RED is
+     * NOT evidence about the product and must be treated as an invalid RED.
      *
      * @param list<array<string, mixed>> $outcomes
      */
-    private function assertNoFatalOutcomes(array $outcomes, string $case): void
+    private function assertHarnessIntact(array $outcomes, string $case, string $dump): void
     {
-        $fatals = array_values(array_filter($outcomes, static fn (array $o): bool => ($o['result'] ?? '') === 'fatal'));
+        $broken = [];
+        foreach ($outcomes as $outcome) {
+            if (($outcome['result'] ?? '') !== 'fatal') {
+                continue;
+            }
+            $detail = (string) ($outcome['detail'] ?? '');
+            $harnessLevel = str_contains($detail, 'child crashed')
+                || str_contains($detail, 'no readable outcome file')
+                || str_contains($detail, 'child bootstrap:')
+                || str_contains($detail, 'unknown worker role');
+            if ($harnessLevel) {
+                $broken[] = $outcome;
+            }
+        }
+
         self::assertSame(
             [],
-            $fatals,
-            $case . ': no child may crash or surface a raw (non-product) failure: ' . json_encode($fatals)
+            $broken,
+            $case . ': harness failure — a forked contender never reached the product call: '
+            . json_encode($broken) . $dump
+        );
+    }
+
+    /**
+     * PRODUCT ENVELOPE — every contender must resolve through the stable
+     * product outcome (`ok` or the documented error envelope). A raw PHP/DB
+     * failure escaping the product call is a CONTRACT violation on HEAD: the
+     * missing serialization leaves one contender operating on state another
+     * contender already invalidated (e.g. a statement failing after a lock
+     * deadlock and the code continuing on the rolled-back transaction), so the
+     * operation is neither rejected with the documented code nor completed.
+     *
+     * @param list<array<string, mixed>> $outcomes
+     */
+    private function assertProductEnvelopeOnly(array $outcomes, string $case, string $dump): void
+    {
+        $raw = array_values(array_filter(
+            $outcomes,
+            static fn (array $o): bool => ($o['result'] ?? '') === 'fatal'
+        ));
+
+        self::assertSame(
+            [],
+            $raw,
+            $case . ': the concurrent operation must resolve through the stable product envelope'
+            . ' (ok or a documented error code such as HAS_ACTIVE_VISIT), but surfaced a raw failure.'
+            . $dump
         );
     }
 }
