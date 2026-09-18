@@ -57,6 +57,19 @@ final class ScheduleRepository
     }
 
     /**
+     * واکشی ردیف برنامه همراه با قفل FOR UPDATE.
+     *
+     * @return array<string, mixed>|null
+     */
+    public function findForUpdate(int $id): ?array
+    {
+        return $this->db->fetchRowForUpdate(
+            'SELECT * FROM ' . $this->db->table('cpms_schedule') . ' WHERE id = %d LIMIT 1',
+            [$id]
+        );
+    }
+
+    /**
      * C7-S2: برنامهٔ هفتگی با شناسه، دامنه‌بندی‌شده به Clinic معتبر — ردیفِ
      * کلینیک دیگر حتی بارگذاری نمی‌شود (پاسخ یکسان با «یافت نشد»).
      * Predicate روی PRIMARY KEY + ستون clinic_id موجود (بدون ایندکس جدید).
@@ -96,6 +109,20 @@ final class ScheduleRepository
     public function listByClinicianDayInClinicAndLocation(int $clinicianId, int $dayOfWeek, int $clinicId, int $locationId): array
     {
         return $this->db->fetchAll(
+            'SELECT id, start_time, end_time, is_active FROM ' . $this->db->table('cpms_schedule') .
+            ' WHERE clinician_id = %d AND day_of_week = %d AND clinic_id = %d AND location_id = %d ORDER BY start_time, id',
+            [$clinicianId, $dayOfWeek, $clinicId, $locationId]
+        );
+    }
+
+    /**
+     * واکشی تمام شیفت‌های یک پزشک در یک روز/محل/کلینیک با قفل FOR UPDATE.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function listByClinicianDayInClinicAndLocationForUpdate(int $clinicianId, int $dayOfWeek, int $clinicId, int $locationId): array
+    {
+        return $this->db->fetchAllForUpdate(
             'SELECT id, start_time, end_time, is_active FROM ' . $this->db->table('cpms_schedule') .
             ' WHERE clinician_id = %d AND day_of_week = %d AND clinic_id = %d AND location_id = %d ORDER BY start_time, id',
             [$clinicianId, $dayOfWeek, $clinicId, $locationId]
@@ -148,9 +175,13 @@ final class ScheduleRepository
             throw new RuntimeException('schedule create requires an explicit validated location_id (no fallback)');
         }
 
-        $this->db->insert('cpms_schedule', $data);
+        $ok = $this->db->insert('cpms_schedule', $data);
+        $id = $this->db->wpdb_last_insert_id();
+        if (!$ok || $id <= 0) {
+            throw new RuntimeException('failed to insert schedule row: ' . $this->db->wpdb()->last_error);
+        }
 
-        return $this->db->wpdb_last_insert_id();
+        return $id;
     }
 
     /**
