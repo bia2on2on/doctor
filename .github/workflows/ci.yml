@@ -193,6 +193,15 @@ jobs:
               grep '^testsuite ' "$SPLIT" | grep -E 'RestScheduleTest|Phase6ScheduleExplicitLocationTest|Phase4Slice1ProfessionalMultiClinicParticipationTest|ScheduleRegenerationClinicScopeRedTest|SchedulingLocationLocalBoundaryRedTest|SlotsGenerateLocationLocalTemporalRedTest|SlotsGenerateM2WiringRedTest' || echo '(a Phase6 Slice 4 regression suite is missing from junit)'
               echo '--- Phase6 Slice 4 regression testcases ---'
               grep '^testcase ' "$SPLIT" | grep -E 'RestScheduleTest|Phase6ScheduleExplicitLocationTest|Phase4Slice1ProfessionalMultiClinicParticipationTest|ScheduleRegenerationClinicScopeRedTest|SchedulingLocationLocalBoundaryRedTest|SlotsGenerateLocationLocalTemporalRedTest|SlotsGenerateM2WiringRedTest' || true
+              # Slice 6 keeps named-suite evidence explicit (additive; no gate change).
+              echo '--- Phase6 Slice 6 Exception-Location suite (selection + execution proof) ---'
+              grep '^testsuite ' "$SPLIT" | grep 'Phase6ScheduleExceptionLocationTest' || echo '(Phase6 Slice 6 suite missing from junit)'
+              echo '--- Phase6 Slice 6 Exception-Location testcases ---'
+              grep '^testcase ' "$SPLIT" | grep 'Phase6ScheduleExceptionLocationTest' || true
+              echo '--- Phase6 Slice 6 regression suites (selection + execution proof) ---'
+              grep '^testsuite ' "$SPLIT" | grep -E 'RestScheduleTest|Phase6ScheduleMultiShiftTest|Phase6ScheduleExplicitLocationTest|Phase4Slice1ProfessionalMultiClinicParticipationTest|ScheduleRegenerationClinicScopeRedTest|SchedulingLocationLocalBoundaryRedTest|SlotsGenerateLocationLocalTemporalRedTest|SlotsGenerateM2WiringRedTest|C7PreIntegrationBoundaryTest|C7ScheduleObjectIdIsolationTest' || echo '(a Phase6 Slice 6 regression suite is missing from junit)'
+              echo '--- Phase6 Slice 6 regression testcases ---'
+              grep '^testcase ' "$SPLIT" | grep -E 'C7PreIntegrationBoundaryTest|C7ScheduleObjectIdIsolationTest' || true
               rm -f "$SPLIT"
             else
               echo '(junit xml missing — run may have terminated prematurely)'

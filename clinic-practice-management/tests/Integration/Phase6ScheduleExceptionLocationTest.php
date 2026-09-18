@@ -458,19 +458,31 @@ final class Phase6ScheduleExceptionLocationTest extends WP_UnitTestCase
             'R5: the denied foreign-Location create wrote NO exception row (and no regeneration side effect)'
         );
 
-        $rest = $this->dispatch('POST', self::NS . '/config/schedule-exceptions', [
+        /*
+         * REST boundary (established Slice 3 scope-binding semantics):
+         * `location_id` in the request acts as the request's Location selector
+         * (RestClinicContext + TrustedClinicEstablisher) BEFORE the service runs,
+         * so every bad selector — foreign, nonexistent or inactive — is rejected
+         * there with ONE identical fail-closed envelope. What this boundary must
+         * guarantee is therefore: never accepted, uniform (no existence
+         * disclosure) and never writing. The exact not-found parity envelope of
+         * the core contract is asserted on the service level above.
+         */
+        $rest = $this->restExceptionEnvelope($this->clinicA, [
             'clinician_id' => $this->clinicianId,
             'date' => $date,
             'type' => 'holiday',
             'location_id' => $this->locB1,
-        ], $this->clinicA, $this->managerAId);
-        self::assertSame(404, $rest->get_status(), 'R5 REST: a foreign Location selector must never be accepted');
-        self::assertSame('CLINIC_NOT_FOUND', $this->errorCode($rest), 'R5 REST: not-found parity code');
-        self::assertSame(
-            'محل یافت نشد',
-            (string) ($this->errorEnvelope($rest)['message'] ?? ''),
-            'R5 REST: the same operator-facing message (no existence disclosure); envelope='
-            . wp_json_encode($this->errorEnvelope($rest))
+        ]);
+        self::assertNotSame(
+            200,
+            $rest['status'],
+            'R5 REST: a foreign Location selector must never be accepted; envelope=' . wp_json_encode($rest)
+        );
+        self::assertStringStartsWith(
+            'CLINIC_',
+            (string) $rest['code'],
+            'R5 REST: the boundary fails closed with a CLINIC_* code (no silent success); envelope=' . wp_json_encode($rest)
         );
         self::assertSame(
             $before,
@@ -493,14 +505,35 @@ final class Phase6ScheduleExceptionLocationTest extends WP_UnitTestCase
             'type' => 'holiday',
         ];
 
+        // ---- Core contract (service level) ----
+        $missingThrown = $this->exceptionServiceError($this->clinicA, $base + ['location_id' => 999999]);
+        self::assertNotNull(
+            $missingThrown,
+            'R6 DEFECT: a nonexistent Location must fail closed with the established not-found envelope. '
+            . 'Pre-fix the selector is silently ignored and the request succeeds.'
+        );
+        self::assertSame('CLINIC_NOT_FOUND', $missingThrown->errorCode, 'R6: not-found parity code');
+        self::assertSame(404, $missingThrown->httpStatus, 'R6: not-found parity status');
+        self::assertSame('محل یافت نشد', $missingThrown->getMessage(), 'R6: the established not-found message');
+
+        $foreignThrown = $this->exceptionServiceError($this->clinicA, $base + ['location_id' => $this->locB1]);
+        self::assertNotNull($foreignThrown, 'R6 parity precondition: the foreign selector fails closed too');
+        self::assertSame($foreignThrown->errorCode, $missingThrown->errorCode, 'R6 PARITY (service): foreign and nonexistent share the code');
+        self::assertSame($foreignThrown->httpStatus, $missingThrown->httpStatus, 'R6 PARITY (service): ... and the status');
+        self::assertSame(
+            $foreignThrown->getMessage(),
+            $missingThrown->getMessage(),
+            'R6 PARITY (service): ... and the message (no enumeration)'
+        );
+
+        // ---- REST boundary (selector = scope selector, uniform rejection) ----
         $foreign = $this->restExceptionEnvelope($this->clinicA, $base + ['location_id' => $this->locB1]);
         $missing = $this->restExceptionEnvelope($this->clinicA, $base + ['location_id' => 999999]);
 
-        self::assertSame(
-            ['status' => 404, 'code' => 'CLINIC_NOT_FOUND', 'message' => 'محل یافت نشد'],
-            $missing,
-            'R6 DEFECT: a nonexistent Location must fail closed with the established not-found envelope. '
-            . 'Pre-fix the selector is silently ignored and the request succeeds.'
+        self::assertNotSame(
+            200,
+            $missing['status'],
+            'R6 REST DEFECT: a nonexistent Location selector must never be accepted; envelope=' . wp_json_encode($missing)
         );
         self::assertSame(
             $foreign,
@@ -534,12 +567,28 @@ final class Phase6ScheduleExceptionLocationTest extends WP_UnitTestCase
             'type' => 'holiday',
         ];
 
-        $envelope = $this->restExceptionEnvelope($this->clinicA, $base + ['location_id' => $this->locAInactive]);
-        self::assertSame(
-            ['status' => 404, 'code' => 'CLINIC_NOT_FOUND', 'message' => 'محل یافت نشد'],
-            $envelope,
+        // ---- Core contract (service level): inactive = not-found parity ----
+        $inactiveThrown = $this->exceptionServiceError($this->clinicA, $base + ['location_id' => $this->locAInactive]);
+        self::assertNotNull(
+            $inactiveThrown,
             'R7 DEFECT: an INACTIVE Location of the trusted Clinic must fail closed like a not-found Location, '
             . 'never be silently substituted by another Location.'
+        );
+        self::assertSame('CLINIC_NOT_FOUND', $inactiveThrown->errorCode, 'R7: not-found parity code (own-Clinic existence not disclosed)');
+        self::assertSame(404, $inactiveThrown->httpStatus, 'R7: not-found parity status');
+        self::assertSame('محل یافت نشد', $inactiveThrown->getMessage(), 'R7: the established not-found message');
+        $inactiveMissingThrown = $this->exceptionServiceError($this->clinicA, $base + ['location_id' => 999999]);
+        self::assertNotNull($inactiveMissingThrown, 'R7 parity precondition: the nonexistent selector fails closed too');
+        self::assertSame($inactiveMissingThrown->errorCode, $inactiveThrown->errorCode, 'R7 PARITY (service): inactive and nonexistent share the code');
+        self::assertSame($inactiveMissingThrown->httpStatus, $inactiveThrown->httpStatus, 'R7 PARITY (service): ... and the status');
+        self::assertSame($inactiveMissingThrown->getMessage(), $inactiveThrown->getMessage(), 'R7 PARITY (service): ... and the message');
+
+        // ---- REST boundary (uniform rejection; no existence disclosure) ----
+        $envelope = $this->restExceptionEnvelope($this->clinicA, $base + ['location_id' => $this->locAInactive]);
+        self::assertNotSame(
+            200,
+            $envelope['status'],
+            'R7 REST DEFECT: an INACTIVE Location selector must never be accepted; envelope=' . wp_json_encode($envelope)
         );
         self::assertSame(
             $this->restExceptionEnvelope($this->clinicA, $base + ['location_id' => 999999]),
