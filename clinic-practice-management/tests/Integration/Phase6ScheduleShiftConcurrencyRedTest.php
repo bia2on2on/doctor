@@ -67,7 +67,7 @@ use WP_UnitTestCase;
  *     parent connection holds a stale REPEATABLE-READ snapshot).
  *
  * CHILD TRANSACTION BOUNDARY (critical):
- *   The test bootstrap rewrites `/*cpms*/`-marked transaction verbs to
+ *   The test bootstrap rewrites the cpms-marked transaction verbs to
  *   SAVEPOINT/RELEASE (in-process, for the WP Test Suite's outer
  *   transaction). In a forked child there is NO outer transaction, so the
  *   child opens a REAL (unmarked) `START TRANSACTION` before the product
