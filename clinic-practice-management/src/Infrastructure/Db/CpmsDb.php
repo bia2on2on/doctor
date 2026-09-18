@@ -208,6 +208,19 @@ final class CpmsDb
         return $this->fetchRow($sql, $params);
     }
 
+    /**
+     * اجرای یک SELECT به همراه FOR UPDATE برای قفل‌گذاری روی چندین ردیف.
+     *
+     * @param list<int|string> $params
+     * @return list<array<string, mixed>>
+     */
+    public function fetchAllForUpdate(string $sql, array $params = []): array
+    {
+        $sql = rtrim($sql, ';') . ' FOR UPDATE';
+
+        return $this->fetchAll($sql, $params);
+    }
+
     public function wpdb_last_insert_id(): int
     {
         return (int) $this->wpdb->insert_id;

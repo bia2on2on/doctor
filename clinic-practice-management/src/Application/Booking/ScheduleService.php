@@ -104,34 +104,38 @@ final class ScheduleService
 
         $data = $this->validatedScheduleFields($fields);
 
-        // Phase 6 Slice 4 (multi-shift): قاعدهٔ «یک ردیف در هر (Location، روز
-        // هفته)» برداشته شد — چند شیفتِ نامتقاطع می‌توانند یک روز هفته را در
-        // یک Location شریک شوند. تکرارِ دقیقِ start_time همچنان پاکتِ پایدارِ
-        // `duplicate_schedule_day` را می‌گیرد؛ همپوشانیِ ACTIVEها با دلیلِ
-        // متمایزِ `overlapping_shift` رد می‌شود (ردیفِ غیرفعال هرگز مانع نیست).
-        $this->assertNoShiftConflict(
-            $clinicianId,
-            $day,
-            $clinicId,
-            $locationId,
-            (string) $data['start_time'],
-            (string) $data['end_time'],
-            (int) $data['is_active'],
-            null
-        );
-        $nowSql = $this->db->nowUtcSql();
-        $id = $this->schedules->create($data + [
-            'clinic_id' => $clinicId,
-            'clinician_id' => $clinicianId,
-            'day_of_week' => $day,
-            'location_id' => $locationId,
-            'created_at' => $nowSql,
-            'updated_at' => $nowSql,
-        ]);
+        // Phase 6 Slice 7 (concurrency-safe multi-shift conflict enforcement):
+        // اتمیسیتی بررسی همپوشانی و درج از طریق تراکنش DB و قفل پایدار ردیف پزشک
+        // تضمین می‌شود تا دو درخواست موازی نتوانند وضعیت سلول را همزمان خوانده و هر دو بنویسند.
+        $createdId = $this->db->transactional(function () use ($clinicianId, $day, $clinicId, $locationId, $data): int {
+            $this->lockClinicianForScheduleWrite($clinicianId);
 
-        $view = $this->scheduleView((array) $this->schedules->find($id));
-        $this->audit('SCHEDULE_CREATED', $actorUserId, 'schedule', $id, null, null, $view);
-        $this->op->info('config.schedule_created', ['schedule_id' => $id, 'clinician_id' => $clinicianId, 'clinic_id' => $clinicId, 'location_id' => $locationId, 'actor' => $actorUserId]);
+            $this->assertNoShiftConflict(
+                $clinicianId,
+                $day,
+                $clinicId,
+                $locationId,
+                (string) $data['start_time'],
+                (string) $data['end_time'],
+                (int) $data['is_active'],
+                null
+            );
+
+            $nowSql = $this->db->nowUtcSql();
+
+            return $this->schedules->create($data + [
+                'clinic_id' => $clinicId,
+                'clinician_id' => $clinicianId,
+                'day_of_week' => $day,
+                'location_id' => $locationId,
+                'created_at' => $nowSql,
+                'updated_at' => $nowSql,
+            ]);
+        });
+
+        $view = $this->scheduleView((array) $this->schedules->find($createdId));
+        $this->audit('SCHEDULE_CREATED', $actorUserId, 'schedule', $createdId, null, null, $view);
+        $this->op->info('config.schedule_created', ['schedule_id' => $createdId, 'clinician_id' => $clinicianId, 'clinic_id' => $clinicId, 'location_id' => $locationId, 'actor' => $actorUserId]);
         // Phase 6 Slice 1: regenerate فقط روی Clinic معتبرِ عملیات (هرگز
         // clinician-only؛ چندعضویتی مشروع ایزوله می‌ماند).
         $this->regenerate($clinicianId, $clinicId);
@@ -145,48 +149,73 @@ final class ScheduleService
      */
     public function update(int $actorUserId, int $id, array $fields): array
     {
-        // C7-S2: مالکیت پیش از هر تغییر/بازتولید — برنامهٔ کلینیک دیگر حتی
-        // بارگذاری نمی‌شود و همان پاکت «یافت نشد» را می‌گیرد (عدم شمارش).
-        $current = $this->requireScheduleForTrustedClinic($id);
+        // Phase 6 Slice 7: ترتیبی‌سازی همزمان Create و Update تحت یک قرارداد قفل یکسان.
+        $result = $this->db->transactional(function () use ($id, $fields): array {
+            // C7-S2: بررسی اولیه مالکیت و وجود ردیف در دامنه معتبر
+            $current = $this->requireScheduleForTrustedClinic($id);
+            $clinicianId = (int) $current['clinician_id'];
+            $clinicId = (int) $current['clinic_id'];
 
-        // Phase 6 Slice 1: Clinic معتبرِ این جهش، ردیف پایدارِ برنامه است
-        // (قبلاً توسط requireScheduleForTrustedClinic در برابر Scope اعتبارسنجی
-        // شده) — هرگز از payload یا clinic_id پروفایل پزشک گرفته نمی‌شود.
-        $clinicId = (int) $current['clinic_id'];
+            $this->lockClinicianForScheduleWrite($clinicianId);
 
-        $data = $this->validatedScheduleFields($fields, (array) $current);
-        // Phase 6 Slice 4: ویرایش هم (مثل create) می‌تواند همپوشانی بسازد —
-        // start_time و end_time و is_active هر سه قابل‌ویرایش‌اند؛ پس همان گارد
-        // با چشم‌پوشی از خودِ ردیفِ در حال ویرایش اعمال می‌شود. Clinic و
-        // Location و روز از ردیفِ پایدار می‌آیند (تغییرناپذیر — خارج از
-        // Whitelist به‌روزرسانی).
-        $this->assertNoShiftConflict(
-            (int) $current['clinician_id'],
-            (int) $current['day_of_week'],
-            $clinicId,
-            (int) $current['location_id'],
-            (string) $data['start_time'],
-            (string) $data['end_time'],
-            (int) $data['is_active'],
-            $id
-        );
-        if ($data !== []) {
-            $data['updated_at'] = $this->db->nowUtcSql();
-            $this->schedules->update($id, $data);
-        }
+            // واکشی ردیف تازه و قفل‌شده برای جلوگیری از تداخل بازنویسی همزمان
+            $fresh = $this->schedules->findForUpdate($id);
+            if ($fresh === null) {
+                throw BookingException::of('CLINIC_NOT_FOUND', 'برنامه یافت نشد', 404);
+            }
+
+            $data = $this->validatedScheduleFields($fields, (array) $fresh);
+
+            $this->assertNoShiftConflict(
+                $clinicianId,
+                (int) $fresh['day_of_week'],
+                $clinicId,
+                (int) $fresh['location_id'],
+                (string) $data['start_time'],
+                (string) $data['end_time'],
+                (int) $data['is_active'],
+                $id
+            );
+
+            if ($data !== []) {
+                $data['updated_at'] = $this->db->nowUtcSql();
+                $this->schedules->update($id, $data);
+            }
+
+            return [
+                'current'      => $current,
+                'clinic_id'    => $clinicId,
+                'clinician_id' => $clinicianId,
+            ];
+        });
+
+        $current = $result['current'];
+        $clinicId = $result['clinic_id'];
+        $clinicianId = $result['clinician_id'];
 
         $updated = (array) $this->schedules->find($id);
         $view = $this->scheduleView($updated);
         $this->audit('SCHEDULE_UPDATED', $actorUserId, 'schedule', $id, null, $this->scheduleView($current), $view);
         $this->op->info('config.schedule_updated', ['schedule_id' => $id, 'clinic_id' => $clinicId, 'actor' => $actorUserId]);
-        $this->regenerate((int) $current['clinician_id'], $clinicId);
+        $this->regenerate($clinicianId, $clinicId);
 
         return $view;
     }
 
     /**
-     * @return array{id: int, deleted: true}
+     * قفل پایدار ردیف پزشک در تراکنش برای ترتیبی‌سازی جهش‌های برنامه.
      */
+    private function lockClinicianForScheduleWrite(int $clinicianId): void
+    {
+        $locked = $this->db->fetchRowForUpdate(
+            "SELECT id FROM " . $this->db->table("cpms_clinicians") . " WHERE id = %d LIMIT 1",
+            [$clinicianId]
+        );
+        if ($locked === null) {
+            throw BookingException::of("CLINIC_NOT_FOUND", "پزشک یافت نشد", 404);
+        }
+    }
+
     public function delete(int $actorUserId, int $id): array
     {
         // C7-S2: مالکیت پیش از حذف/بازتولید Slotهای وابسته.
@@ -398,7 +427,7 @@ final class ScheduleService
         int $isActive,
         ?int $excludeId
     ): void {
-        $rows = $this->schedules->listByClinicianDayInClinicAndLocation($clinicianId, $dayOfWeek, $clinicId, $locationId);
+        $rows = $this->schedules->listByClinicianDayInClinicAndLocationForUpdate($clinicianId, $dayOfWeek, $clinicId, $locationId);
         $newStart = self::shiftToSeconds(substr($startTime, 0, 8));
         $newEnd = self::shiftToSeconds(substr($endTime, 0, 8));
         foreach ($rows as $row) {
