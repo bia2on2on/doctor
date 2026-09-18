@@ -15,9 +15,12 @@
 > Assertions: 13622, Failures: 3` — cases A/C/D failed against the shipped check-then-act path while the
 > positive control E passed). The two earlier RED attempts **remain INVALID RED and are not rewritten as
 > valid**: `091fae1c5c59142d7bc4d60aeb2ae8954e52ed28` (run `35318716174` — `ParseError`, zero tests executed)
-> and `c8b9592056307fea8213d131e135131198508674` (run `35320273122` — its three failures were non-product
-> harness faults: forked children surfacing raw `Undefined array key "id"` warnings, plus a failing positive
-> control), i.e. not a clean product-defect signal.
+> and `c8b9592056307fea8213d131e135131198508674` (run `35320273122` — the intended suite **did execute**:
+> `Tests: 983, Assertions: 13649, Failures: 3`; the forked children's fatal outcomes contained
+> `PHPUnit\Framework\Error\Warning: Undefined array key "id"` and the non-overlapping positive control
+> failed, but **the source/attribution of that warning was NOT RETRIEVED**, so the failures could not
+> validly be attributed to the intended product concurrency contract — **neither a product defect nor a
+> harness defect is asserted**).
 > **Final post-merge evidence on the merge SHA `bd5e6a18…`: all four required workflows terminal-success** —
 > CI `35332404611` · Real WordPress Acceptance `35332404609` · Pilot/Staging Readiness Gate `35332404592` ·
 > Closure Gate `35332404644` — **and 19/19 check runs `completed`/`success`** (no pending, no cancelled,
