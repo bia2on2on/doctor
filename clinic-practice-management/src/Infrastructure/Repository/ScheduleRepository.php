@@ -77,23 +77,20 @@ final class ScheduleRepository
     }
 
     /**
-     * Phase 6 — Slice 3: قاعدهٔ «یک برنامه در هر روز هفته» در محدودهٔ
-     * (Clinic معتبر + Location) است — قرارداد یکتایی 0014
-     * `(clinic_id, location_id, clinician_id, day_of_week, start_time)` اجازهٔ
-     * «همان روز هفته در دو شعبهٔ مختلف» را می‌دهد. پیش‌بررسیِ create هم دقیقاً
-     * در همین محدوده انجام می‌شود (نه Clinic-wide — که ثبت شعبهٔ دوم را
-     * به‌اشتباه «تکراری» می‌کرد، و نه Clinic-دیگر که ایزولیشن را می‌شکست).
+     * Phase 6 — Slice 4 (multi-shift): همهٔ ردیف‌های یک محدودهٔ
+     * (Clinic معتبر، Location، پزشک، روز هفته) — سرویس روی همین مجموعه
+     * «تکرارِ دقیقِ start_time» و «همپوشانیِ پنجرهٔ ACTIVEها» را مقایسه می‌کند
+     * (پوشش داده‌شده با کلید یکتای 0014 — بدون ایندکس جدید). جایگزینِ یابندهٔ
+     * تک‌ردیفهٔ Slice 3 (حذف شد — یک LIMIT 1 در اینجا فرضِ منسوخِ
+     * «یک ردیف در هر روز هفته» را بازمی‌گرداند).
      *
-     * Multi-shift هنوز فعال نیست: یک ردیف برای هر
-     * (Clinic, Location, clinician, day_of_week).
-     *
-     * @return array<string, mixed>|null
+     * @return list<array<string, mixed>>
      */
-    public function findByClinicianDayInClinicAndLocation(int $clinicianId, int $dayOfWeek, int $clinicId, int $locationId): ?array
+    public function listByClinicianDayInClinicAndLocation(int $clinicianId, int $dayOfWeek, int $clinicId, int $locationId): array
     {
-        return $this->db->fetchRow(
-            'SELECT * FROM ' . $this->db->table('cpms_schedule') .
-            ' WHERE clinician_id = %d AND day_of_week = %d AND clinic_id = %d AND location_id = %d LIMIT 1',
+        return $this->db->fetchAll(
+            'SELECT id, start_time, end_time, is_active FROM ' . $this->db->table('cpms_schedule') .
+            ' WHERE clinician_id = %d AND day_of_week = %d AND clinic_id = %d AND location_id = %d ORDER BY start_time, id',
             [$clinicianId, $dayOfWeek, $clinicId, $locationId]
         );
     }

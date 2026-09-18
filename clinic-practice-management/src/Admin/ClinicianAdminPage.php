@@ -505,11 +505,22 @@ final class ClinicianAdminPage
              * از Scope معتبرِ handler؛ هیچ‌کدام از payload آزاد نیست.
              * update() عمداً Location را تغییر نمی‌دهد (ردیف جابه‌جا نمی‌شود).
              */
-            $existing = App::db()->fetchValue(
+            /*
+             * Phase 6 Slice 4 — NARROW fail-closed guard (بدون بازطراحی ماتریس):
+             * حالا ممکن است چند شیفت یک (روز، Location) را شریک شوند. انتخابِ
+             * یک ردیف با LIMIT 1 شیفتِ اشتباه را بی‌صدا ویرایش می‌کرد؛ پس وقتی
+             * بیش از یک ردیف منطبق است، handler حدس نمی‌زند و هیچ‌چیز
+             * نمی‌نویسد. رفتارِ تک‌ردیفه بدون تغییر است.
+             */
+            $matching = App::db()->fetchAll(
                 'SELECT id FROM ' . App::db()->table('cpms_schedule') .
-                ' WHERE clinician_id = %d AND day_of_week = %d AND clinic_id = %d AND location_id = %d LIMIT 1',
+                ' WHERE clinician_id = %d AND day_of_week = %d AND clinic_id = %d AND location_id = %d ORDER BY id',
                 [$cid, $day, $clinicId, $locationId]
             );
+            if (count($matching) > 1) {
+                self::backWithError($cid, 'خطا: برای این روز و محل چند برنامه وجود دارد — برای جلوگیری از ویرایش اشتباه، هیچ تغییری ذخیره نشد.');
+            }
+            $existing = $matching[0]['id'] ?? null;
             $service = App::scheduleService();
             if ($existing !== null) {
                 $service->update($userId, (int) $existing, $fields);

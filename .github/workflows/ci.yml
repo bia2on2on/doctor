@@ -183,6 +183,14 @@ jobs:
               grep '^testsuite ' "$SPLIT" | grep -E 'RestScheduleTest|Phase4Slice1ProfessionalMultiClinicParticipationTest|ScheduleRegenerationClinicScopeRedTest|SchedulingLocationLocalBoundaryRedTest|SlotsGenerateLocationLocalTemporalRedTest' || echo '(a Phase6 Slice 3 regression suite is missing from junit)'
               echo '--- Phase6 Slice 3 regression testcases ---'
               grep '^testcase ' "$SPLIT" | grep -E 'RestScheduleTest|Phase4Slice1ProfessionalMultiClinicParticipationTest|ScheduleRegenerationClinicScopeRedTest|SchedulingLocationLocalBoundaryRedTest|SlotsGenerateLocationLocalTemporalRedTest' || true
+              echo '--- Phase6 Slice 4 Multi-Shift suite (selection + execution proof) ---'
+              grep '^testsuite ' "$SPLIT" | grep 'Phase6ScheduleMultiShiftTest' || echo '(Phase6 Slice 4 suite missing from junit)'
+              echo '--- Phase6 Slice 4 Multi-Shift testcases ---'
+              grep '^testcase ' "$SPLIT" | grep 'Phase6ScheduleMultiShiftTest' || true
+              echo '--- Phase6 Slice 4 regression suites (selection + execution proof) ---'
+              grep '^testsuite ' "$SPLIT" | grep -E 'RestScheduleTest|Phase6ScheduleExplicitLocationTest|Phase4Slice1ProfessionalMultiClinicParticipationTest|ScheduleRegenerationClinicScopeRedTest|SchedulingLocationLocalBoundaryRedTest|SlotsGenerateLocationLocalTemporalRedTest|SlotsGenerateM2WiringRedTest' || echo '(a Phase6 Slice 4 regression suite is missing from junit)'
+              echo '--- Phase6 Slice 4 regression testcases ---'
+              grep '^testcase ' "$SPLIT" | grep -E 'RestScheduleTest|Phase6ScheduleExplicitLocationTest|Phase4Slice1ProfessionalMultiClinicParticipationTest|ScheduleRegenerationClinicScopeRedTest|SchedulingLocationLocalBoundaryRedTest|SlotsGenerateLocationLocalTemporalRedTest|SlotsGenerateM2WiringRedTest' || true
               rm -f "$SPLIT"
             else
               echo '(junit xml missing — run may have terminated prematurely)'

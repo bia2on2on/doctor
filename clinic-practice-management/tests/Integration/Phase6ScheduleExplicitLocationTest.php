@@ -36,9 +36,9 @@ use WP_UnitTestCase;
  *     creation path (T1/T5/T6).
  *  7. Duplicate-weekday detection is LOCATION-aware: the same professional may
  *     hold the same weekday at two different Locations of the same Clinic
- *     (T3), while the same (Clinic, Location, clinician, weekday) remains
- *     rejected with the stable `duplicate_schedule_day` envelope (T4).
- *     Multi-shift is NOT enabled in this slice.
+ *     (T3). Phase 6 Slice 4 superseded T4's single-row product contract with
+ *     multi-shift + overlap rejection (`overlapping_shift`); exact start_time
+ *     duplicates keep the stable `duplicate_schedule_day` envelope (T4).
  *  8. Slot generation inherits the persisted Schedule Location and its
  *     Location-local IANA timezone (T7 — one focused inheritance assertion;
  *     the full temporal semantics are covered by the Slice 2 suites).
@@ -306,9 +306,12 @@ final class Phase6ScheduleExplicitLocationTest extends WP_UnitTestCase
     }
 
     // ==================================================================
-    // T4 — duplicate same clinician + same weekday at the SAME Location
-    //      (A2) remains rejected with the stable envelope. Multi-shift
-    //      is NOT enabled in this slice.
+    // T4 — Phase 6 Slice 4 (multi-shift): the same clinician + weekday at the
+    //      SAME Location (A2) may now hold a second NON-overlapping shift;
+    //      an OVERLAPPING shift is rejected with the distinct
+    //      `overlapping_shift` reason, and an EXACT start_time duplicate keeps
+    //      the stable `duplicate_schedule_day` reason. Rejections still write
+    //      no row and keep the trusted-Clinic + explicit-Location skeleton.
     // ==================================================================
 
     public function testDuplicateSameWeekdaySameLocationRemainsRejected(): void
@@ -322,29 +325,59 @@ final class Phase6ScheduleExplicitLocationTest extends WP_UnitTestCase
         ], $this->clinicA, $this->managerAId);
         self::assertSame(200, $first->get_status(), 'T4 precondition: first A2 row created (error=' . $this->errorCode($first) . ')');
 
-        $duplicate = $this->dispatch('POST', self::NS . '/config/schedules', [
+        // Multi-shift flip (Slice 4 product contract): a NON-overlapping second
+        // shift at the same Location+weekday is now ALLOWED and persists.
+        $second = $this->dispatch('POST', self::NS . '/config/schedules', [
             'clinician_id' => $this->clinicianId,
             'day_of_week' => 5,
             'start_time' => '14:00',
             'end_time' => '18:00',
             'location_id' => $this->locA2,
         ], $this->clinicA, $this->managerAId);
+        self::assertSame(
+            200,
+            $second->get_status(),
+            'T4 (Slice 4): a non-overlapping second shift at the same Location+weekday must be allowed '
+            . '(error=' . $this->errorCode($second) . ')'
+        );
 
-        self::assertSame(400, $duplicate->get_status(), 'T4: duplicate at the same Location+weekday must be rejected');
-        self::assertSame('CLINIC_VALIDATION_FAILED', $this->errorCode($duplicate), 'T4: stable machine-readable code preserved');
+        // Overlap at the same Location+weekday is rejected with the DISTINCT reason.
+        $overlap = $this->dispatch('POST', self::NS . '/config/schedules', [
+            'clinician_id' => $this->clinicianId,
+            'day_of_week' => 5,
+            'start_time' => '10:00',
+            'end_time' => '11:00',
+            'location_id' => $this->locA2,
+        ], $this->clinicA, $this->managerAId);
+        self::assertSame(400, $overlap->get_status(), 'T4: an overlapping shift at the same Location+weekday must be rejected');
+        self::assertSame('CLINIC_VALIDATION_FAILED', $this->errorCode($overlap), 'T4: stable machine-readable code preserved');
+        self::assertSame(
+            'overlapping_shift',
+            (string) ($this->errorEnvelope($overlap)['data']['errors']['start_time,end_time'] ?? ''),
+            'T4: distinct machine-readable overlap reason; envelope=' . wp_json_encode($this->errorEnvelope($overlap))
+        );
+
+        // Exact start_time duplicate keeps the STABLE historical reason.
+        $duplicate = $this->dispatch('POST', self::NS . '/config/schedules', [
+            'clinician_id' => $this->clinicianId,
+            'day_of_week' => 5,
+            'start_time' => '09:00',
+            'end_time' => '10:00',
+            'location_id' => $this->locA2,
+        ], $this->clinicA, $this->managerAId);
+        self::assertSame(400, $duplicate->get_status(), 'T4: an exact duplicate start_time must remain rejected');
         self::assertSame(
             'duplicate_schedule_day',
             (string) ($this->errorEnvelope($duplicate)['data']['errors']['day_of_week'] ?? ''),
-            'T4: stable machine-readable reason preserved; envelope=' . wp_json_encode($this->errorEnvelope($duplicate))
+            'T4: stable machine-readable reason preserved for exact duplicates; envelope=' . wp_json_encode($this->errorEnvelope($duplicate))
         );
 
-        // The rejected duplicate creates no row; the single row is at A2 (the explicit Location).
+        // Both rejections wrote no row; exactly the two allowed shifts persist at A2.
         $locations = $this->scheduleLocationsForClinicianDay($this->clinicianId, $this->clinicA, 5);
         self::assertSame(
-            [$this->locA2],
+            [$this->locA2, $this->locA2],
             $locations,
-            'T4 DEFECT: exactly one row must exist and it must be at the explicit A2. '
-            . 'Pre-fix the first row lands at the primary Location instead.'
+            'T4: exactly two rows must exist and both must be at the explicit A2.'
         );
     }
 
