@@ -167,11 +167,11 @@ final class VisitService
                 }
 
                 if ($shouldMarkNoShow) {
-                    // ER-06 same-writer: T8 then walk-in-like with appointment
-                    // reference preserved (VisitFlow). Concurrent T8 that already
-                    // committed is handled above (unbound).
-                    $this->markAppointmentNoShow($appt, $nowSql, $actorUserId);
-                    $source = 'walk_in';
+                    // Patient is present: keep confirmed and bind a scheduled
+                    // Visit. Lazy T8 here would produce no_show + live Visit
+                    // (forbidden I-3). Automatic sweep is the T8 writer when
+                    // the patient does not check in.
+                    $source = 'scheduled';
                 } elseif ($status === 'pending') {
                     // حضور بیمار = تایید نوبت (T3) — تا Checkout مسیر کامل شود
                     $this->confirmAppointment($appt, $nowSql, $actorUserId);
