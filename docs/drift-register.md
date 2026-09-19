@@ -120,6 +120,40 @@
 > "no Slice 2" wording in the preceding note is the state of that checkpoint and is superseded by this note
 > (historical text preserved, not rewritten). This closure does **not** resolve the `O-03`/`O-04` drift rows
 > and creates no new drift row. Latest migration remains `0020`; no `0021` exists or was reserved.
+>
+> **Current Phase 7 bounded closure note (re-verified 2026-09-19):** Owner Roadmap Phase 7 — Appointment Engine
+> is **CLOSED / TECHNICALLY COMPLETE (BOUNDED)** on live main
+> `d7484ceddf698898483122cf52bb5abb55718744` (PR #85 MERGED 2026-09-19T12:04:04Z; open PRs at
+> re-verification = 0), in the bounded scope of the merged work: the existing `FR-4.x` booking primitives
+> (slot holds with TTL + automatic expiry, idempotency, atomic claim — found already present by the read-only
+> Phase 7 scoping); **Slice 1 / FR-4.6 (PR #79)**; **Slice 2 — I-3 active-Visit protection (T5/T6/T7) +
+> check-in serialization (PR #81)**; **FR-5.3 staff/secretary reschedule (PR #83, MERGED 2026-09-19T07:19:56Z;
+> merge `cf1ace137922d84b7042841e68629aedfb8334a8`)** — shared reschedule core + REST
+> `POST /appointments/{id}/reschedule` (established `clinic/v1` namespace) with `cpms_appt_reschedule` and
+> trusted Clinic scope; **owner-issued product policy (NOT original SRS wording):** staff bypasses the patient
+> 24h reschedule deadline and the patient destination min-lead restriction, and a successful staff reschedule
+> produces both the internal patient notification and the existing reschedule SMS/change notification (patient
+> B5 deadline/min-lead/ownership unchanged); **FR-5.5 manual + automatic no-show completion (PR #85, MERGED
+> 2026-09-19T12:04:04Z; merge `d7484ceddf698898483122cf52bb5abb55718744`)** — manual staff REST surface +
+> existing sweep after the grace period (default 30 min, configurable) + stale-pointer correction (a stale
+> `active_visit_id` pointing at an inactive/terminal Visit no longer blocks the sweep and is cleared on
+> success; a genuinely active Visit still blocks — I-3) + concurrency/ER-06 compatibility (check-in can never
+> bind a genuinely active Visit to a terminal `no_show` appointment). **FR-5.4 bounded non-claim:** SRS FR-5.4
+> uses `pending` with TTL and gives doctor-approval as an illustrative example; the current architecture does
+> not persist appointment `pending` (unconfirmed booking capacity = slot holds with TTL + automatic expiry;
+> staff create collapses create→pending→confirm in one operation, persisting `confirmed`); Phase 7 does
+> **not** claim a doctor-approval workflow, none is implemented, and none may be invented as a closure
+> requirement without future owner-directed product scope; **no persisted pending-appointment expiry job
+> exists**. Post-merge evidence on both merge SHAs: four required workflows terminal-success + 19/19 check
+> runs success (PR #83: CI `35429028253` · Real WordPress Acceptance `35429028209` · Closure Gate
+> `35429028230` · Pilot/Staging Readiness Gate `35429028233`; PR #85: CI `35441813653` · Real WordPress
+> Acceptance `35441813668` · Closure Gate `35441813683` · Pilot/Staging Readiness Gate `35441813696`).
+> Exact-head evidence: 19/19 check runs success at PR #83 head `54612ab8…` and PR #85 head `2bbb6085…`.
+> The "Phase 7 as a whole is NOT complete" wording in the preceding notes is the state of those checkpoints
+> and is superseded by this note (historical text preserved, not rewritten). This closure does **not** resolve
+> the `O-03`/`O-04` drift rows (and no drift row is promoted by it) and creates no new drift row. Latest
+> migration remains `0020`; no `0021` exists or was reserved (re-verified on live main `d7484ce…`: 20
+> migration files `0001`..`0020`).
 
 ---
 
