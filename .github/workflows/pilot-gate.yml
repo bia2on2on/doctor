@@ -1065,8 +1065,48 @@ jobs:
           $pid = (int) $wpdb->insert_id;
           $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_visits') . ' (clinic_id, location_id, clinician_id, patient_id, source, status, visit_date, check_in_at, waiting_since, active, created_at, updated_at) VALUES (1, (SELECT id FROM ' . $db->table('cpms_locations') . ' WHERE clinic_id = 1 AND is_primary = 1 LIMIT 1), 1, %d, %s, %s, %s, %s, %s, 1, %s, %s)', $pid, 'walk_in', 'waiting', gmdate('Y-m-d'), $now, $now, $now, $now));
           echo 'fixture: clinician+patient+waiting visit #' . (int) $wpdb->insert_id . "\n";
+          // --- Phase 8 Slice 1: صفحهٔ عمومیِ shortcode برای Responsive smoke ---
+          // Clinic/Location/پزشک از ردیف‌های **پایدارِ** خودِ نصب خوانده می‌شوند
+          // (derived، نه literal): سطح عمومی به یک Clinicِ صریح پیوند می‌خورد و
+          // fixture همان idِ واقعی را به shortcode می‌دهد تا هارنس بتواند
+          // «پیوندِ صریح و درست» را روی مرورگرِ واقعی بررسی کند.
+          $respClinician = $wpdb->get_row($wpdb->prepare('SELECT id, clinic_id FROM ' . $db->table('cpms_clinicians') . ' WHERE wp_user_id = %d ORDER BY id DESC LIMIT 1', $uid), ARRAY_A);
+          if (!is_array($respClinician)) { echo "RESP_FIXTURE_ERROR: synthetic clinician row not found\n"; exit(1); }
+          $respClinicianId = (int) $respClinician['id'];
+          $respClinicId = (int) $respClinician['clinic_id'];
+          $respLocation = $wpdb->get_row($wpdb->prepare('SELECT id, timezone FROM ' . $db->table('cpms_locations') . ' WHERE clinic_id = %d AND is_active = 1 ORDER BY is_primary DESC, id ASC LIMIT 1', $respClinicId), ARRAY_A);
+          if (!is_array($respLocation)) { echo "RESP_FIXTURE_ERROR: no active Location for clinic {$respClinicId}\n"; exit(1); }
+          $respLocationId = (int) $respLocation['id'];
+          $respTzName = (is_string($respLocation['timezone']) && $respLocation['timezone'] !== '') ? $respLocation['timezone'] : 'UTC';
+          $respTz = new DateTimeZone($respTzName);
+          // برنامهٔ فعالِ پزشک — A1 پنجرهٔ پیش‌فرضِ مرور را فقط از Locationِ
+          // دارای برنامهٔ فعالِ همان پزشک می‌سازد؛ بدون این ردیف پاسخ {days:[]}
+          // می‌شود و گذارِ وضعیتِ مرور قابل مشاهده نیست.
+          $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_schedule') . ' (clinic_id, clinician_id, day_of_week, start_time, end_time, appointment_duration_min, slot_capacity, is_active, location_id, created_at, updated_at) VALUES (%d, %d, %d, %s, %s, %d, %d, 1, %d, %s, %s)', $respClinicId, $respClinicianId, 6, '09:00:00', '13:00:00', 20, 2, $respLocationId, $now, $now));
+          // نوبت‌های آزاد — wall-clock محلیِ همان Location (قرارداد ذخیرهٔ
+          // slot_date/slot_time)، ۲ و ۳ روز بعد: خارج از min-lead و داخلِ
+          // پنجرهٔ پیش‌فرضِ A1. دو روز ⇒ گریدِ روزها هم exercised می‌شود.
+          $respSlotCount = 0;
+          foreach ([[2, '10:00:00'], [2, '10:20:00'], [3, '09:30:00']] as $respSpec) {
+            $respDate = (new DateTimeImmutable('now', $respTz))->modify('+' . $respSpec[0] . ' days')->format('Y-m-d');
+            $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_schedule_slots') . ' (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, generated_from, created_at, updated_at) VALUES (%d, %d, %d, %s, %s, %d, %d, 0, 0, 1, %s, %s, %s)', $respClinicId, $respLocationId, $respClinicianId, $respDate, $respSpec[1], 20, 2, 'manual', $now, $now));
+            $respSlotCount++;
+          }
+          // صفحهٔ عمومیِ published با خودِ shortcode — همان مسیری که اپراتور
+          // استفاده می‌کند (محتوای Page)، پس انکیوِ شرطیِ head هم exercised
+          // می‌شود، نه فقط مسیرِ رندر.
+          $respPageId = wp_insert_post(['post_title' => 'Public Booking Responsive Fixture', 'post_name' => 'cpms-public-booking-responsive', 'post_content' => '[cpms_public_booking clinic_id="' . $respClinicId . '"]', 'post_status' => 'publish', 'post_type' => 'page'], true);
+          if (is_wp_error($respPageId)) { echo 'RESP_FIXTURE_ERROR: ' . $respPageId->get_error_message() . "\n"; exit(1); }
+          $respPermalink = (string) get_permalink($respPageId);
+          echo 'fixture: public booking page #' . (int) $respPageId . ' clinic=' . $respClinicId . ' clinician=' . $respClinicianId . ' location=' . $respLocationId . ' tz=' . $respTzName . ' slots=' . $respSlotCount . ' url=' . $respPermalink . "\n";
+          // فایلِ env (نه pipeline) — تا خروجِ غیرصفرِ php توسط `tee` پنهان
+          // نشود و `bash -e` همان‌جا گیت را متوقف کند.
+          file_put_contents('/tmp/resp-public-page.env', 'RESP_PUBLIC_PAGE=' . $respPermalink . '|' . $respClinicId . '|' . $respClinicianId . "\n");
           PHPEOF
           WP_HOME="$WP_DIR" php /tmp/resp-fixture.php
+          test -s /tmp/resp-public-page.env
+          cat /tmp/resp-public-page.env >> "$GITHUB_ENV"
+          cat /tmp/resp-public-page.env
       - name: Apache up
         run: |
           sudo tee /etc/apache2/sites-available/pilot.conf >/dev/null <<CONF
@@ -1102,6 +1142,34 @@ jobs:
             grep -E '^(PASS|FAIL)' /tmp/resp.log
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # خلاصهٔ Responsive باید از sandbox هم قابل بازیابی باشد: لاگِ job به blob
+      # ریدایرکت می‌شود و دانلودشدنی نیست و `$GITHUB_STEP_SUMMARY` هم از API
+      # خوانده نمی‌شود. پس همان خلاصهٔ PASS/FAIL (که برای صفحهٔ عمومیِ shortcode
+      # شامل A1/تعداد روز/تعداد نوبت/گذارِ وضعیت/A4 است) به PR post می‌شود.
+      # کاملاً الحاقی و `always()` — هیچ معیار یا آستانهٔ گیتی تغییر نکرد.
+      - name: Post responsive evidence to PR (لاگ Blob از Sandbox در دسترس نیست)
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "### Responsive smoke evidence (run ${{ github.run_id }}, job ${GITHUB_JOB}, sha ${{ github.sha }})"
+            echo '```'
+            echo '--- fixture: anonymous public booking page ---'
+            cat /tmp/resp-public-page.env 2>/dev/null || echo '(RESP_PUBLIC_PAGE not produced — anonymous surface NOT exercised)'
+            echo '--- PASS/FAIL summary (per viewport) ---'
+            grep -E '^(PASS|FAIL)' /tmp/resp.log 2>/dev/null || echo '(resp.log missing)'
+            echo '--- INFO (cross-origin / advisory) ---'
+            grep -E '^INFO' /tmp/resp.log 2>/dev/null || echo '(none)'
+            echo '```'
+          } > /tmp/resp-evidence.md
+          PR=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number' 2>/dev/null || true)
+          if [ -n "$PR" ]; then
+            gh pr comment "$PR" --body-file /tmp/resp-evidence.md || echo "::notice::PR comment failed (permissions?)"
+          else
+            gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@/tmp/resp-evidence.md || true
+          fi
 
       - name: Debug dump به PR (لاگ Blob از Sandbox در دسترس نیست)
         if: failure()

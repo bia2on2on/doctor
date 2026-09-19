@@ -67,6 +67,7 @@ use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Domain\Licensing\LicenseGate;
 use ClinicCore\Domain\Licensing\LicensePolicy;
 use ClinicCore\Domain\Licensing\SignedLicenseGate;
+use ClinicCore\Frontend\PublicBookingShortcode;
 use ClinicCore\Infrastructure\Audit\AuditLogger;
 use ClinicCore\Infrastructure\Backup\BackupSqlDumper;
 use ClinicCore\Infrastructure\Backup\ProtectedBackupStore;
@@ -163,6 +164,30 @@ final class App
 
     public static function boot(): void
     {
+        // ==================================================================
+        // Frontend عمومی (خارج از wp-admin) — Phase 8 Slice 1 / FR-3.5 / UC-01
+        // ==================================================================
+        // سطح read-only و آنونیمِ «دیدن پزشکان و نوبت‌های آزادِ» یک Clinicِ
+        // صریحاً پیکربندی‌شده روی فرانت‌اند وردپرس، با shortcode
+        // `[cpms_public_booking clinic_id="N"]`.
+        //
+        // این ثبت عمداً **پیش از** گاردِ idempotence قرار گرفته است. دلیلش
+        // فنی است، نه سلیقه‌ای: `add_shortcode()` در `$GLOBALS['shortcode_tags']`
+        // ثبت می‌کند که جزو `$wp_filter` نیست، پس اگر هر بخشی از چرخهٔ زندگیِ
+        // وردپرس (یا سوئیت تست) آن را بازنشانی کند، گاردِ `$booted` مانعِ
+        // ثبتِ مجدد می‌شد و سطح برای بازدیدکننده از دسترس می‌افتاد. خودِ
+        // ثبت idempotent است: `add_shortcode()` همان کلید را بازنویسی می‌کند و
+        // `add_action()` با callback/priority یکسان در وردپرس dedupe می‌شود، پس
+        // فراخوانیِ چندباره هیچ هوکِ تکراری نمی‌سازد.
+        //
+        // مرزِ مسئولیت: این تنها نقطهٔ تماسِ Bootstrap با این سطح است. رندرِ
+        // markup، انتشارِ قراردادِ runtime و انکیوِ شرطیِ assetها همه داخل
+        // `ClinicCore\Frontend\*` است (نه این‌جا)، تا Bootstrap باری از
+        // HTML/JS/CSS نگیرد. assetهای این سطح کاملاً از `CpmsAssets` (wp-admin)
+        // جداست و هیچ REST endpoint جدیدی ثبت نمی‌کند — فقط از A1/A4 موجودِ
+        // عمومی استفاده می‌شود.
+        PublicBookingShortcode::register();
+
         if (self::$booted) {
             return;
         }

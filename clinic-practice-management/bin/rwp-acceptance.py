@@ -7,6 +7,7 @@
     BASE=http://localhost:8080 ADMIN_USER=... ADMIN_PASS=... \
     DOCTOR_USER=... DOCTOR_PASS=... SECRETARY_USER=... SECRETARY_PASS=... \
     MANAGER_CLINIC_ID=... ACTUAL_COUNT_FILE=/tmp/acc/actual_count.txt OUT=/tmp/acc \
+    ACC_PUBLIC_PAGE=url|clinicId|clinicianId \
     python3 bin/rwp-acceptance.py
 
 خروجی: اسکرین‌شات + console/pageerror logs + results.json در OUT؛ exit≠0 در هر شکست.
@@ -19,6 +20,8 @@ import os
 import re
 import sys
 import time
+
+from urllib.parse import parse_qs, urlparse
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
@@ -37,6 +40,8 @@ ACCOUNTANT_USER = os.environ.get("ACCOUNTANT_USER", "")
 ACCOUNTANT_PASS = os.environ.get("ACCOUNTANT_PASS", "")
 OUT = os.environ.get("OUT", "rwp-acceptance-out")
 ACTUAL_COUNT_FILE = os.environ.get("ACTUAL_COUNT_FILE", "")
+# صفحهٔ عمومیِ shortcode (fixture) — شاهدِ Plain-permalink برای A1.
+ACC_PUBLIC_PAGE = os.environ.get("ACC_PUBLIC_PAGE", "")
 
 os.makedirs(f"{OUT}/screenshots", exist_ok=True)
 os.makedirs(f"{OUT}/logs", exist_ok=True)
@@ -501,6 +506,162 @@ def new_persona_context(browser, width=1440, height=900):
     return browser.new_context(viewport={"width": width, "height": height}, locale="fa-IR")
 
 
+def wp_route_and_params(url):
+    """route/param یک URL را دقیقاً همان‌طور که وردپرس حل می‌کند برمی‌گرداند.
+
+    `rest_api_loaded()` route را از query var عمومی `rest_route` می‌گیرد و
+    `WP_REST_Server::serve_request()` بقیهٔ `$_GET` را با `set_query_params()`
+    به Request می‌دهد. در Permalink زیبا route از مسیرِ `/wp-json/...` می‌آید.
+    """
+    parsed = urlparse(url)
+    flat = {k: v[0] for k, v in parse_qs(parsed.query, keep_blank_values=True).items()}
+    route = flat.get("rest_route")
+    if route is None:
+        m = re.search(r"/wp-json(/.*)?$", parsed.path)
+        route = m.group(1) if (m and m.group(1)) else parsed.path
+    return (route.rstrip("/") or "/"), flat
+
+
+def public_booking_permalink(browser):
+    """سطح عمومیِ shortcode زیر **Plain permalinks** — شاهدِ رفعِ blocker.
+
+    این Acceptance روی وردپرسِ تمیز با `wp core install` بالا می‌آید و هیچ
+    `wp rewrite structure` اجرا نمی‌کند، پس `permalink_structure` خالی است و
+    طبق `get_rest_url()` وردپرس، `rest_url('clinic/v1')` شکلِ
+    `index.php?rest_route=/clinic/v1` می‌گیرد. اگر JS کوئریِ A1 را با `?` دوم
+    ضمیمه کند، `clinician_id` بخشی از **مقدارِ** `rest_route` می‌شود، وردپرس
+    route را `/clinic/v1/availability?clinician_id=N` می‌بیند و `rest_no_route`
+    (۴۰۴) برمی‌گرداند — یعنی A1 در یک وردپرسِ کاملاً پشتیبانی‌شده از دسترس
+    بیمار خارج می‌شود.
+
+    این بررسی URLِ **واقعیِ** صادرشده توسط مرورگر را می‌گیرد و با همان قاعدهٔ
+    خودِ وردپرس حل می‌کند؛ پس contractِ route/param را اثبات می‌کند، نه فقط
+    شکلِ رشته را. حالتِ permalink هم از خودِ `rest_root` منتشرشده استنباط و
+    assert می‌شود تا شاهد self-authenticating بماند.
+    """
+    tag = "public-booking"
+    parts = (ACC_PUBLIC_PAGE.split("|") + ["", "", ""])[:3]
+    page_url, clinic_id, clinician_id = parts
+    check(f"{tag}.fixture_present", bool(page_url and clinic_id and clinician_id),
+          f"ACC_PUBLIC_PAGE={ACC_PUBLIC_PAGE or '(unset)'}")
+    if not page_url:
+        return
+
+    pub_ctx = new_persona_context(browser, width=390, height=844)
+    pub_page = pub_ctx.new_page()
+    js_errors = []
+
+    def on_console(m):
+        if m.type == "error":
+            js_errors.append(f"console.error: {m.text}")
+
+    pub_page.on("console", on_console)
+    pub_page.on("pageerror", lambda e: js_errors.append(f"pageerror: {e}"))
+
+    rest_requests = []
+    rest_responses = []
+    pub_page.on("request", lambda r: rest_requests.append((r.method, r.url)))
+    pub_page.on("response", lambda r: rest_responses.append((r.url, r.status)))
+
+    resp = pub_page.goto(page_url, wait_until="domcontentloaded")
+    pub_page.wait_for_timeout(1500)
+    status = resp.status if resp else 0
+    body = pub_page.content()
+    pub_page.screenshot(path=f"{OUT}/screenshots/{tag}-plain.png", full_page=True)
+    with open(f"{OUT}/logs/{tag}-plain.html", "w") as f:
+        f.write(body or "")
+
+    check(f"{tag}.http200", status == 200, f"HTTP {status} @ {pub_page.url}")
+    check(f"{tag}.anonymous_no_login_redirect", "wp-login.php" not in (pub_page.url or ""), f"final={pub_page.url}")
+    check(f"{tag}.shortcode_not_echoed", "[cpms_public_booking" not in (body or ""),
+          "shortcode باید توسط وردپرس اجرا شود، نه اینکه عیناً برگردد")
+
+    root = pub_page.query_selector(".cpms-public-booking")
+    check(f"{tag}.root_present", root is not None, "root marker `.cpms-public-booking`")
+    if root is not None:
+        check(f"{tag}.explicit_clinic_binding",
+              (root.get_attribute("data-clinic-id") or "") == clinic_id,
+              f"data-clinic-id={root.get_attribute('data-clinic-id')} expected={clinic_id}")
+        check(f"{tag}.rtl", (root.get_attribute("dir") or "") == "rtl", f"dir={root.get_attribute('dir')}")
+
+    # قراردادِ runtime منتشرشده — و استنباطِ حالتِ permalink از خودِ rest_root.
+    cfg_el = pub_page.query_selector(".cpms-public-booking__config")
+    cfg_raw = pub_page.evaluate("(el) => el.textContent", cfg_el) if cfg_el else ""
+    try:
+        cfg = json.loads(cfg_raw or "{}")
+    except ValueError:
+        cfg = {}
+    rest_root = str(cfg.get("rest_root", ""))
+    check(f"{tag}.contract_published",
+          bool(rest_root) and cfg.get("availability_path") == "/availability"
+          and cfg.get("quote_path") == "/booking/quote",
+          f"rest_root={rest_root} availability_path={cfg.get('availability_path')} quote_path={cfg.get('quote_path')}")
+    check(f"{tag}.plain_permalink_root_shape", "rest_route=/clinic/v1" in rest_root,
+          f"rest_root={rest_root} — این شاهد باید زیر Plain permalinks باشد تا معنادار باشد")
+
+    clinicians = pub_page.query_selector_all(".cpms-public-booking__clinician")
+    check(f"{tag}.clinicians_server_rendered", len(clinicians) >= 1, f"count={len(clinicians)}")
+    if not clinicians:
+        check(f"{tag}.no_js_errors", not js_errors, "; ".join(js_errors[:3]))
+        pub_ctx.close()
+        return
+
+    target = next((c for c in clinicians
+                   if (c.get_attribute("data-clinician-id") or "") == clinician_id), clinicians[0])
+    rest_requests.clear()
+    rest_responses.clear()
+    target.click()
+    pub_page.wait_for_timeout(2500)
+
+    a1 = [(m, u) for m, u in rest_requests if m == "GET" and "availability" in u]
+    check(f"{tag}.a1_requested_once", len(a1) == 1, f"{len(a1)} A1 request(s); all={[u for _, u in rest_requests][:4]}")
+    if a1:
+        a1_url = a1[0][1]
+        route, params = wp_route_and_params(a1_url)
+        print(f"    A1 URL          = {a1_url}", flush=True)
+        print(f"    WordPress route = {route}  clinician_id={params.get('clinician_id')}", flush=True)
+        check(f"{tag}.a1_single_question_mark", a1_url.count("?") == 1, f"url={a1_url}")
+        check(f"{tag}.a1_route_is_existing_a1", route == "/clinic/v1/availability",
+              f"route={route} — باید همان A1 موجود باشد (بدون route جدید)")
+        check(f"{tag}.a1_clinician_id_is_real_query_param",
+              params.get("clinician_id") == clinician_id,
+              f"clinician_id={params.get('clinician_id')} expected={clinician_id}")
+        check(f"{tag}.a1_rest_route_not_polluted", "clinician_id" not in route, f"route={route}")
+        a1_status = next((st for u, st in rest_responses if "availability" in u), None)
+        check(f"{tag}.a1_http200", a1_status == 200,
+              f"A1 HTTP {a1_status} — ۴۰۴ این‌جا یعنی rest_no_route (همان blocker)")
+
+    panel = pub_page.query_selector('[data-role="panel"]')
+    state1 = panel.get_attribute("data-state") if panel else None
+    check(f"{tag}.a1_reached_product_route", state1 == "selectable",
+          f"panel data-state={state1} — rest_route آلوده هرگز selectable نمی‌دهد")
+    slots = pub_page.query_selector_all(".cpms-public-booking__slot")
+    check(f"{tag}.slots_rendered", len(slots) >= 1, f"slot buttons={len(slots)}")
+
+    if slots:
+        rest_requests.clear()
+        rest_responses.clear()
+        slots[0].click()
+        pub_page.wait_for_timeout(2500)
+        a4 = [(m, u) for m, u in rest_requests if m == "POST" and "booking/quote" in u]
+        check(f"{tag}.a4_requested_once", len(a4) == 1, f"{len(a4)} A4 request(s)")
+        if a4:
+            route4, _ = wp_route_and_params(a4[0][1])
+            print(f"    A4 URL          = {a4[0][1]}", flush=True)
+            print(f"    WordPress route = {route4}", flush=True)
+            check(f"{tag}.a4_route_is_existing_a4", route4 == "/clinic/v1/booking/quote", f"route={route4}")
+            a4_status = next((st for u, st in rest_responses if "booking/quote" in u), None)
+            check(f"{tag}.a4_http200", a4_status == 200, f"A4 HTTP {a4_status}")
+            state2 = panel.get_attribute("data-state") if panel else None
+            check(f"{tag}.state_transition_visible",
+                  state2 in ("bookable", "policy_rejected", "unavailable"),
+                  f"{state1} -> {state2}")
+
+    pub_page.screenshot(path=f"{OUT}/screenshots/{tag}-plain-after.png", full_page=False)
+    check(f"{tag}.no_js_errors", not js_errors, "; ".join(js_errors[:3]))
+    pub_ctx.close()
+
+
 with sync_playwright() as p:
     browser = p.chromium.launch()
 
@@ -850,6 +1011,9 @@ with sync_playwright() as p:
         goto_admin(st, "secretary-tablet", "admin.php?page=cpms-patients", "cpms-st-patients")
     st.close()
     stctx.close()
+
+    # ---------- Public Booking (shortcode) — شاهدِ Plain-permalink برای A1 ----------
+    public_booking_permalink(browser)
 
     browser.close()
 

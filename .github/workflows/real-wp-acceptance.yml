@@ -353,6 +353,82 @@ jobs:
           # فایل wp-content برای PHP قابل‌نوشتن نیست (اثبات شرایط میزبان واقعی)
           sudo -u www-data test -w "$WP_DIR/wp-content" && echo 'wp-content writable by php' || echo 'wp-content NOT writable by php (میزبان واقعی)'
 
+      # ---------- 5b) Fixture سطح عمومی shortcode — شاهدِ Plain-permalink برای A1 ----------
+      # این job عمداً هیچ `wp rewrite structure` اجرا نمی‌کند، پس
+      # `permalink_structure` خالی می‌ماند و طبق `get_rest_url()` وردپرس،
+      # `rest_url('clinic/v1')` شکلِ `index.php?rest_route=/clinic/v1` می‌گیرد.
+      # بدون این fixture، سطح عمومیِ آنونیم در Real-WP Acceptance اصلاً exercised
+      # نمی‌شد و defectِ ساختِ URLِ A1 در Plain permalinks دیده نمی‌شد.
+      - name: Public booking page fixture (Plain permalinks)
+        run: |
+          PL="$(wp option get permalink_structure --path="$WP_DIR" --allow-root 2>/dev/null || true)"
+          echo "permalink_structure='${PL}'  $( [ -z "$PL" ] && echo '=> PLAIN permalinks (rest_url => index.php?rest_route=...)' || echo '=> NOT plain' )"
+          cat > /tmp/acc/public-page.php <<'PHPEOF'
+          <?php
+          global $wpdb;
+          $db = \ClinicCore\Bootstrap\App::db();
+          $now = $db->nowUtcSql();
+          // Clinicِ صریح از همان fixtureِ موجود (که آن هم از slug پایدارِ
+          // 'default' حل شده) — هیچ literal id و هیچ «اولین Clinic» در کار نیست.
+          $accClinicId = (int) trim((string) file_get_contents('/tmp/acc/manager_clinic_id.txt'));
+          if ($accClinicId <= 0) { fwrite(STDERR, "FAIL: explicit Clinic fixture id is invalid\n"); exit(1); }
+          $doc = get_user_by('login', getenv('DOCTOR_USER'));
+          if ($doc === false) { fwrite(STDERR, "FAIL: doctor fixture user not found\n"); exit(1); }
+          $row = $wpdb->get_row($wpdb->prepare(
+              'SELECT id, clinic_id, is_active FROM ' . $db->table('cpms_clinicians') . ' WHERE wp_user_id = %d ORDER BY id DESC LIMIT 1',
+              (int) $doc->ID
+          ), ARRAY_A);
+          if (!is_array($row) || (int) $row['clinic_id'] !== $accClinicId || (int) $row['is_active'] !== 1) {
+              fwrite(STDERR, "FAIL: no ACTIVE clinician row on the explicit Clinic\n"); exit(1);
+          }
+          $clinicianId = (int) $row['id'];
+          $loc = $wpdb->get_row($wpdb->prepare(
+              'SELECT id, timezone FROM ' . $db->table('cpms_locations') . ' WHERE clinic_id = %d AND is_active = 1 ORDER BY is_primary DESC, id ASC LIMIT 1',
+              $accClinicId
+          ), ARRAY_A);
+          if (!is_array($loc)) { fwrite(STDERR, "FAIL: no active Location for clinic {$accClinicId}\n"); exit(1); }
+          $locationId = (int) $loc['id'];
+          $tzName = (is_string($loc['timezone']) && $loc['timezone'] !== '') ? $loc['timezone'] : 'UTC';
+          $tz = new DateTimeZone($tzName);
+          // برنامهٔ فعال — A1 پنجرهٔ پیش‌فرضِ مرور را فقط از Locationِ دارای
+          // برنامهٔ فعالِ همان پزشک می‌سازد.
+          $wpdb->query($wpdb->prepare(
+              'INSERT INTO ' . $db->table('cpms_schedule') . ' (clinic_id, clinician_id, day_of_week, start_time, end_time, appointment_duration_min, slot_capacity, is_active, location_id, created_at, updated_at) VALUES (%d, %d, %d, %s, %s, %d, %d, 1, %d, %s, %s)',
+              $accClinicId, $clinicianId, 6, '09:00:00', '13:00:00', 20, 2, $locationId, $now, $now
+          ));
+          // نوبت‌های آزاد — wall-clock محلیِ همان Location (قراردادِ ذخیرهٔ
+          // slot_date/slot_time)، ۲ و ۳ روز بعد: خارج از min-lead و داخلِ پنجرهٔ A1.
+          $slotCount = 0;
+          foreach ([[2, '10:00:00'], [2, '10:20:00'], [3, '09:30:00']] as $spec) {
+              $date = (new DateTimeImmutable('now', $tz))->modify('+' . $spec[0] . ' days')->format('Y-m-d');
+              $wpdb->query($wpdb->prepare(
+                  'INSERT INTO ' . $db->table('cpms_schedule_slots') . ' (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, generated_from, created_at, updated_at) VALUES (%d, %d, %d, %s, %s, %d, %d, 0, 0, 1, %s, %s, %s)',
+                  $accClinicId, $locationId, $clinicianId, $date, $spec[1], 20, 2, 'manual', $now, $now
+              ));
+              $slotCount++;
+          }
+          // صفحهٔ عمومیِ published با خودِ shortcode — همان مسیری که اپراتور
+          // استفاده می‌کند، پس انکیوِ شرطیِ asset هم exercised می‌شود.
+          $pageId = wp_insert_post([
+              'post_title' => 'Public Booking Acceptance Fixture',
+              'post_name' => 'cpms-public-booking-acceptance',
+              'post_content' => '[cpms_public_booking clinic_id="' . $accClinicId . '"]',
+              'post_status' => 'publish',
+              'post_type' => 'page',
+          ], true);
+          if (is_wp_error($pageId)) { fwrite(STDERR, 'FAIL: ' . $pageId->get_error_message() . "\n"); exit(1); }
+          $permalink = (string) get_permalink($pageId);
+          echo 'public booking page #' . (int) $pageId . ' clinic=' . $accClinicId
+              . ' clinician=' . $clinicianId . ' location=' . $locationId
+              . ' tz=' . $tzName . ' slots=' . $slotCount . ' url=' . $permalink . "\n";
+          // فایلِ env (نه pipeline) — تا خروجِ غیرصفرِ php پنهان نشود و همان‌جا گیت بایستد.
+          file_put_contents('/tmp/acc/public-page.env', 'ACC_PUBLIC_PAGE=' . $permalink . '|' . $accClinicId . '|' . $clinicianId . "\n");
+          PHPEOF
+          wp eval-file /tmp/acc/public-page.php --path="$WP_DIR" --allow-root
+          test -s /tmp/acc/public-page.env
+          cat /tmp/acc/public-page.env >> "$GITHUB_ENV"
+          cat /tmp/acc/public-page.env
+
       # ---------- 6) پذیرش مرورگری ----------
       - name: Browser acceptance — all 5 roles (Admin/Manager/Doctor/Secretary/Accountant) menus + denial
         run: |
