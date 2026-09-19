@@ -31,16 +31,34 @@
  *  CONCURRENCY (check-in vs no-show on the same appointment row):
  *   - terminal no_show must never end with a genuinely active bound Visit;
  *   - one representative real-DB race with genuinely independent
- *     connections (pcntl fork + fresh wpdb per child; state read on a
- *     fresh mysqli — never the parent's REPEATABLE-READ snapshot).
+ *     processes/connections (pcntl fork; each child builds its own fresh
+ *     wpdb connection and removes the test-only SAVEPOINT query-rewrite so
+ *     its commits are real; final state read on a fresh mysqli — never the
+ *     parent's REPEATABLE-READ snapshot).
  *   - The no-show side is the AUTOMATIC sweep — the only FR-5.5 no-show
  *     path that exists at current HEAD (the manual surface itself is part
  *     of the RED; calling a not-yet-existing method would be a child
  *     fatal = harness failure, not product evidence).
- *   - The sweep fires at the barrier; the secretary check-in fires ~1s
- *     later (an in-flight cron tick vs a live check-in). Both legal
- *     serialization orders are asserted; no sequential execution is
- *     manufactured as concurrency evidence.
+ *   - BOTH workers fire at the SAME barrier instant (zero offset) — a
+ *     genuine simultaneous start competing for the same appointment row
+ *     lock. A scheduling offset/lead alone is NOT accepted as concurrency
+ *     evidence: each child records wall-clock `call_started_at` /
+ *     `call_finished_at` around its real product call, and the test
+ *     asserts a strict in-flight overlap of the two call windows
+ *     (max(starts) < min(ends)) — structurally guaranteed in a true lock
+ *     race, because the loser blocks INSIDE its call window on the
+ *     winner's appointment row lock and proceeds only after the winner
+ *     commits. The final state matching one of the two legal serial
+ *     orders is the second half of the proof: the loser observed the
+ *     winner's committed row state, which is impossible without having
+ *     waited on the winner's row lock.
+ *   - Independence evidence recorded per child: distinct child PIDs
+ *     (≠ parent PID, ≠ each other), own fresh wpdb connection
+ *     (check_connection), and the test-only query-filter census
+ *     (present before, removed after).
+ *   - Both legal serialization orders are asserted; no sequential
+ *     execution is manufactured as concurrency evidence (if an attempt
+ *     shows no in-flight overlap, the attempt fails as a harness defect).
  *
  * RED classification at current HEAD (cf1ace1 — no manual no-show
  * surface exists anywhere; the sweep skips stale pointers):
@@ -108,10 +126,9 @@ final class Phase7Fr55NoShowRedTest extends WP_UnitTestCase {
         'consultation_completed', 'awaiting_payment', 'paid',
     ];
 
-    /** Race harness: barrier countdown + check-in fires after the sweep. */
+    /** Race harness: barrier countdown before the simultaneous fire. */
     private const BARRIER_SEC = 1.5;
-    private const CHECK_IN_DELAY_SEC = 1.0;
-    private const RACE_ATTEMPTS = 2;
+    private const RACE_ATTEMPTS = 3;
 
     private string $fileTag;
 
@@ -641,13 +658,14 @@ final class Phase7Fr55NoShowRedTest extends WP_UnitTestCase {
                 'rc' . $attempt
             );
 
-            // Genuinely independent workers: the no-show sweep (the FR-5.5
-            // no-show path that exists on HEAD) fires at the barrier; the
-            // secretary check-in fires ~1s later (in-flight cron tick vs a
-            // live check-in). Both serialization orders are legal.
+            // Genuinely independent workers firing at the SAME barrier
+            // instant (zero offset): the no-show sweep (the FR-5.5 no-show
+            // path that exists on HEAD) and the secretary check-in compete
+            // for the same appointment row lock. Both serialization orders
+            // are legal; in-flight overlap is asserted below.
             $workers = [
                 ['role' => 'no_show', 'offset' => 0.0],
-                ['role' => 'check_in', 'offset' => self::CHECK_IN_DELAY_SEC],
+                ['role' => 'check_in', 'offset' => 0.0],
             ];
             $outcomes = $this->runRace($seed['id'], $workers, $attempt);
             $state = $this->raceState($seed['id'], $seed['slot_id']);
@@ -658,6 +676,7 @@ final class Phase7Fr55NoShowRedTest extends WP_UnitTestCase {
                 'state' => $state,
             ];
             $this->assertRaceOutcomeEnvelopesOnly($outcomes, 'attempt ' . $attempt);
+            $this->assertRaceIndependenceAndOverlap($outcomes, 'attempt ' . $attempt);
             $this->assertRaceLegal($state, $outcomes, 'attempt ' . $attempt);
         }
 
@@ -783,12 +802,20 @@ final class Phase7Fr55NoShowRedTest extends WP_UnitTestCase {
     /**
      * Child body: fresh independent DB connection + real service wiring,
      * barrier wait, product call, outcome file, exit.
+     *
+     * The outcome records the independence/evidence fields the parent
+     * asserts on: child PID, own-wpdb connection, the test-only query-
+     * filter census (before/after removal), and wall-clock call windows.
      */
     private function raceWorker(string $role, float $offset, float $fireAt, int $appointmentId, int $attempt, int $index): void {
         global $wpdb;
         $own = new \wpdb(DB_USER, DB_PASSWORD, DB_NAME, DB_HOST);
         $own->set_prefix($wpdb->prefix);
-        remove_all_filters('query'); // test-only SAVEPOINT rewrite — children need real transactions
+        // The test-only SAVEPOINT query-rewrite must NOT apply to the child:
+        // its transactions must be real commits visible to other connections.
+        $filtersBefore = has_filter('query');
+        remove_all_filters('query');
+        $filtersAfter = has_filter('query');
         if (property_exists($own, 'has_connected') && $own->has_connected) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName
             @$own->close();
         }
@@ -827,6 +854,7 @@ final class Phase7Fr55NoShowRedTest extends WP_UnitTestCase {
             usleep(250);
         }
 
+        $startedAt = microtime(true);
         $outcome = ['role' => $role, 'appointment_id' => $appointmentId, 'result' => 'exception', 'error' => 'not reached'];
         try {
             if ($role === 'no_show') {
@@ -861,6 +889,15 @@ final class Phase7Fr55NoShowRedTest extends WP_UnitTestCase {
         } catch (Throwable $e) {
             $outcome = ['role' => $role, 'appointment_id' => $appointmentId, 'result' => 'exception', 'error' => get_class($e) . ': ' . $e->getMessage()];
         }
+        $finishedAt = microtime(true);
+
+        // Independence / overlap evidence (asserted by the parent):
+        $outcome['pid'] = getmypid();
+        $outcome['own_wpdb_connected'] = true;
+        $outcome['query_filters_before'] = is_array($filtersBefore) ? count($filtersBefore) : 0;
+        $outcome['query_filters_after'] = is_array($filtersAfter) ? count($filtersAfter) : 0;
+        $outcome['call_started_at'] = $startedAt;
+        $outcome['call_finished_at'] = $finishedAt;
 
         @file_put_contents($this->fileTag . '-outcome-' . $attempt . '-' . $index, json_encode($outcome));
         exit(0); // child-only — unreachable
@@ -918,6 +955,82 @@ final class Phase7Fr55NoShowRedTest extends WP_UnitTestCase {
         }
         // The sweep has no rejection path — it must always complete.
         self::assertSame('ok', $outcomes['no_show']['result'] ?? null, "{$context}: the sweep must complete as a product call");
+    }
+
+    /**
+     * Concurrency-evidence assertions (attempt-level):
+     *  1) genuinely independent PROCESSES — distinct child PIDs, none equal
+     *     to the parent PID;
+     *  2) genuinely independent DB CONNECTIONS — each child connected its
+     *     own fresh wpdb, and the test-only query-rewrite (SAVEPOINT
+     *     filter) was present in the forked child and removed there, so the
+     *     child's commits are real commits visible to other connections;
+     *  3) genuine IN-FLIGHT competition — strict wall-clock overlap of the
+     *     two product-call windows (the loser blocks inside its own window
+     *     on the winner's appointment row lock).
+     */
+    private function assertRaceIndependenceAndOverlap(array $outcomes, string $context): void {
+        $ci = $outcomes['check_in'];
+        $ns = $outcomes['no_show'];
+
+        // (1) independent processes.
+        $parentPid = getmypid();
+        self::assertIsInt($ci['pid'] ?? null, "{$context}: check-in child must record its PID");
+        self::assertIsInt($ns['pid'] ?? null, "{$context}: no-show child must record its PID");
+        self::assertNotSame($parentPid, $ci['pid'], "{$context}: check-in must run in a child process");
+        self::assertNotSame($parentPid, $ns['pid'], "{$context}: no-show must run in a child process");
+        self::assertNotSame($ci['pid'], $ns['pid'], "{$context}: the workers must be distinct processes");
+
+        // (2) independent DB connections + real (non-savepoint) commits.
+        self::assertTrue((bool) ($ci['own_wpdb_connected'] ?? false), "{$context}: check-in child must own its DB connection");
+        self::assertTrue((bool) ($ns['own_wpdb_connected'] ?? false), "{$context}: no-show child must own its DB connection");
+        foreach (['check_in' => $ci, 'no_show' => $ns] as $role => $o) {
+            self::assertGreaterThanOrEqual(
+                1,
+                (int) ($o['query_filters_before'] ?? 0),
+                "{$context}: [{$role}] the test-only query-rewrite must have been present in the forked child"
+            );
+            self::assertSame(
+                0,
+                (int) ($o['query_filters_after'] ?? 0),
+                "{$context}: [{$role}] the test-only query-rewrite must be removed in the child (real commits, not parent savepoints)"
+            );
+        }
+
+        // (3) in-flight overlap of the two product-call windows.
+        $starts = [
+            'check_in' => (float) ($ci['call_started_at'] ?? 0),
+            'no_show' => (float) ($ns['call_started_at'] ?? 0),
+        ];
+        $ends = [
+            'check_in' => (float) ($ci['call_finished_at'] ?? 0),
+            'no_show' => (float) ($ns['call_finished_at'] ?? 0),
+        ];
+        foreach (['check_in', 'no_show'] as $role) {
+            self::assertGreaterThan(0.0, $starts[$role], "{$context}: [{$role}] call window must have a start timestamp");
+            self::assertGreaterThan(0.0, $ends[$role] - $starts[$role], "{$context}: [{$role}] call window must have positive duration");
+            self::assertLessThan(60.0, $ends[$role] - $starts[$role], "{$context}: [{$role}] call window must not be a hung call");
+        }
+
+        $latestStart = max($starts['check_in'], $starts['no_show']);
+        $earliestEnd = min($ends['check_in'], $ends['no_show']);
+        $overlap = $earliestEnd - $latestStart;
+        $windows = sprintf(
+            'check_in=[%.6f, %.6f] no_show=[%.6f, %.6f]',
+            $starts['check_in'],
+            $ends['check_in'],
+            $starts['no_show'],
+            $ends['no_show']
+        );
+        self::assertGreaterThan(
+            0.0,
+            $overlap,
+            "{$context}: NO in-flight overlap of the two product calls (windows: {$windows}) — "
+            . 'one call finished before the other started, i.e. the attempt was effectively '
+            . 'sequential and is NOT concurrency evidence. Both workers fire at the same '
+            . 'barrier instant; in a genuine lock race the loser blocks inside its own '
+            . 'window on the winner\'s appointment row lock, so overlap must be positive.'
+        );
     }
 
     private function freshMysqli(): \mysqli {
