@@ -270,6 +270,19 @@ $run = static function (string $id, string $title, callable $fn) use (&$results,
         $ok     = false;
         $detail = get_class($e) . ': ' . $e->getMessage()
             . ' @ ' . basename($e->getFile()) . ':' . $e->getLine();
+
+        // Which CONSTRUCTOR in the rest_api_init chain reached the eager ambient
+        // scope dependency? The exception is always raised deep inside
+        // SystemClinicResolver, so the stack is the only way to attribute it.
+        $frames = [];
+        foreach (array_slice($e->getTrace(), 0, 14) as $frame) {
+            $call = (isset($frame['class']) ? basename(str_replace('\\', '/', (string) $frame['class'])) . '::' : '')
+                . (string) ($frame['function'] ?? '?');
+            $frames[] = $call . '@' . basename((string) ($frame['file'] ?? '?')) . ':' . (int) ($frame['line'] ?? 0);
+        }
+        if ($frames !== []) {
+            $detail .= ' | stack: ' . implode(' <- ', $frames);
+        }
     }
 
     $results[] = ['id' => $id, 'ok' => $ok, 'detail' => $detail];

@@ -7,6 +7,8 @@ namespace ClinicCore\Tests\Integration;
 use ClinicCore\Application\Auth\OtpException;
 use ClinicCore\Application\Auth\OtpService;
 use ClinicCore\Application\Patients\PatientIdentityService;
+use ClinicCore\Application\Scope\ClinicScope;
+use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Otp\OtpPolicy;
 use ClinicCore\Domain\Patients\PatientIdentityException;
@@ -280,7 +282,19 @@ final class PatientIdentityFoundationTest extends WP_UnitTestCase
         $linksBefore = $this->countRows('cpms_patient_identity_links');
 
         $this->seedOtpToken($mobile, '246810', OtpService::PURPOSE_VERIFY_MOBILE);
-        $result = App::otpService()->verify($mobile, '246810', OtpService::PURPOSE_VERIFY_MOBILE);
+
+        // این نصب در همین تست سه Clinic واقعی دارد (A1، A2، B1) و تماسِ OTP
+        // ناشناس است ⇒ هیچ Clinicِ معتبری برای پیکربندی وجود ندارد و سرویس
+        // عمداً در زمانِ صدا زدن Fail-Closed می‌شود (سیاستِ انتخابِ Clinic برای
+        // OTP ساخته نشده — خارج از scope این اصلاح). این تست به Clinicِ معتبرِ
+        // صریحِ Org A نیاز دارد؛ همان زمینه‌ای که مرز REST برای یک درخواستِ
+        // واقعی می‌بندد، اینجا صریحاً بسته می‌شود.
+        ScopeContext::set(ClinicScope::forClinic($this->clinicA1));
+        try {
+            $result = App::otpService()->verify($mobile, '246810', OtpService::PURPOSE_VERIFY_MOBILE);
+        } finally {
+            ScopeContext::clear();
+        }
 
         // OD-8: verify_mobile نه user می‌سازد، نه session می‌دهد، نه چیزی provision می‌کند
         self::assertFalse($result['session_issued']);
