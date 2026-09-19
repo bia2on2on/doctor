@@ -13,7 +13,6 @@ use ClinicCore\Infrastructure\Audit\AuditLogger;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Logging\OpLogger;
 use ClinicCore\Infrastructure\Repository\PatientRepository;
-use ClinicCore\Settings\Settings;
 
 /**
  * سرویس بیمار (F3) — C1/C2 (بیمار) + D2–D5 (منشی).
@@ -61,7 +60,6 @@ final class PatientService
     public function __construct(
         private readonly CpmsDb $db,
         private readonly PatientRepository $patients,
-        private readonly Settings $settings,
         private readonly LicenseGate $licenseGate,
         private readonly AuditLogger $audit,
         private readonly OpLogger $op

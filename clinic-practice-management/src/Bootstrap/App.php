@@ -55,6 +55,7 @@ use ClinicCore\Application\Notifications\NotificationService;
 use ClinicCore\Application\Notifications\SmsService;
 use ClinicCore\Application\Scope\ClinicScope;
 use ClinicCore\Application\Scope\ScopeContext;
+use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Application\Scope\SystemClinicResolver;
 use ClinicCore\Application\Reports\ExportClinicDeps;
 use ClinicCore\Application\Reports\ExportService;
@@ -307,7 +308,19 @@ final class App
         $clean = true;
 
         $pairs = [];
-        if (trim((string) self::settings()->get('files.storage_path', '')) === '') {
+        // `files.storage_path` یک Settingِ per-Clinic است و این متد در
+        // `rest_api_init` هم صدا زده می‌شود — جایی که هنوز هیچ Clinicِ معتبری
+        // برقرار نیست. Clinic‌ای ساخته/حدس زده نمی‌شود: وقتی Clinicِ معتبری در
+        // دسترس نباشد، کلِ این انتقالِ یک‌باره به درخواستی که دارد (`admin_init`
+        // یا درخواستِ RESTِ دارای Scope) موکول می‌شود. انتقال idempotent است و تا
+        // وقتی کاملاً تمیز تمام نشود Optionِ «انجام‌شده» ثبت نمی‌شود، پس موکول
+        // کردن آن هیچ وضعیتی را بدتر نمی‌کند — فقط دیرتر انجام می‌شود.
+        try {
+            $filesStoragePath = trim((string) self::settings()->get('files.storage_path', ''));
+        } catch (ScopeRequiredException) {
+            return;
+        }
+        if ($filesStoragePath === '') {
             $pairs[] = [LocalFileStorage::legacyBasePath(), LocalFileStorage::defaultBasePath(), 'clinic-files'];
         }
         $backupConfigured = trim(self::installationSettings()->getBackupStoragePath());
@@ -379,7 +392,19 @@ final class App
      */
     public static function queueHealth(int $staleAfterSec = 300): array
     {
-        $lastTick = (int) self::settings()->get('jobs.last_tick_at', 0);
+        // شمارنده‌های صف سطحِ نصب‌اند و به Scope نیاز ندارند؛ فقط
+        // `jobs.last_tick_at` یک Settingِ per-Clinic است. وقتی هیچ Clinicِ
+        // معتبری در دسترس نیست (مثلاً پویشِ ناشناسِ `/health` روی نصبِ
+        // چند-Clinicه)، Clinic‌ای **ساخته/حدس زده نمی‌شود**: مقدار «نامعلوم»
+        // (0 ⇒ stale) گزارش می‌شود. این جهتِ محافظه‌کارانه برای یک خواندنِ
+        // observability است و endpoint را — که باید همیشه reachable باشد —
+        // در دسترس نگه می‌دارد. رفتارِ تک‌Clinic و دارای‌Scope کاملاً همان است.
+        $lastTick = 0;
+        try {
+            $lastTick = (int) self::settings()->get('jobs.last_tick_at', 0);
+        } catch (ScopeRequiredException) {
+            $lastTick = 0;
+        }
         $stale = $lastTick > 0 && (time() - $lastTick) > $staleAfterSec;
 
         $counts = self::db()->fetchAll(
@@ -409,7 +434,11 @@ final class App
                 new SlotRepository($db),
                 new AppointmentRepository($db),
                 new PatientRepository($db),
-                self::settings(),
+                // Scope-neutral construction: BookingService پیکربندی را در
+                // زمانِ هر عملیات و از Clinicِ **معتبرِ همان عملیات** می‌خواند
+                // (پزشک/نوبتِ پایدار، یا Scopeِ معتبرِ کارکنان) — نه از یک
+                // Clinicِ محیطی که در زمانِ ثبتِ مسیرهای REST حل شده باشد.
+                self::settingsFactory(),
                 self::licenseGate(),
                 self::audit(),
                 self::op(),
@@ -451,7 +480,9 @@ final class App
                     $db,
                     new NotificationRepository($db),
                     new MembershipRepository($db),
-                    self::settingsFactory()->forClinic($clinicId),
+                    self::settingsFactory(),
+                    // Clinicِ صریحِ مالکِ عملیات — resolver ثابت.
+                    static fn (): int => $clinicId,
                     $op
                 ),
                 new MembershipRepository($db)
@@ -609,7 +640,8 @@ final class App
                 new PrescriptionRepository($db),
                 new RecommendationRepository($db),
                 new FollowUpRepository($db),
-                self::settings(),
+                // Scope-neutral construction: policy از ردیفِ پایدارِ ویزیت خوانده می‌شود.
+                self::settingsFactory(),
                 self::audit(),
                 new PatientRepository($db),
                 new MedicalFileRepository($db)
@@ -676,7 +708,9 @@ final class App
                 self::db(),
                 new NotificationRepository(self::db()),
                 new MembershipRepository(self::db()),
-                self::settings(),
+                // Scope-neutral construction (الگوی SmsService).
+                self::settingsFactory(),
+                static fn (): int => self::scope()->clinicId,
                 self::op()
             );
         }
@@ -698,7 +732,13 @@ final class App
      */
     public static function reportService(): ReportService
     {
-        return new ReportService(self::db(), self::settings(), self::audit());
+        // Scope-neutral construction (الگوی SmsService).
+        return new ReportService(
+            self::db(),
+            self::settingsFactory(),
+            static fn (): int => self::scope()->clinicId,
+            self::audit()
+        );
     }
 
     /**
@@ -743,12 +783,18 @@ final class App
         $settings = self::settingsFactory()->forClinic($clinicId);
 
         return new ExportClinicDeps(
-            new ReportService(self::db(), $settings, self::audit()),
+            new ReportService(
+                self::db(),
+                self::settingsFactory(),
+                static fn (): int => $clinicId,
+                self::audit()
+            ),
             new NotificationService(
                 self::db(),
                 new NotificationRepository(self::db()),
                 new MembershipRepository(self::db()),
-                $settings,
+                self::settingsFactory(),
+                static fn (): int => $clinicId,
                 self::op()
             ),
             new LocalFileStorage(self::fileStoragePath($settings)),
@@ -775,16 +821,20 @@ final class App
      */
     public static function medicalFileService(): MedicalFileService
     {
-        // عمداً بدون کش: مسیر ذخیره از Setting خوانده می‌شود و باید در هر
-        // ساخت (Request/تست) تازه باشد — singleton مسیر اولین boot را قفل
-        // می‌کرد و تغییر files.storage_path بی‌اثر می‌شد. ساخت Object سبک است.
-        $configured = trim((string) self::settings()->get('files.storage_path', ''));
-        $storage = new LocalFileStorage($configured !== '' ? $configured : LocalFileStorage::defaultBasePath());
+        // عمداً بدون کشِ سرویس: مسیر ذخیره باید در هر عملیات تازه باشد —
+        // میخ‌کردنش به Clinic/lحظهٔ bootstrap تغییرِ files.storage_path را
+        // بی‌اثر می‌کرد. resolver زیر همان خواندن را در زمانِ عملیات انجام
+        // می‌دهد و هم‌زمان ساخت را scope-neutral نگه می‌دارد (الگوی SmsService).
+        $storageResolver = static function (int $clinicId): LocalFileStorage {
+            $configured = trim((string) self::settingsFactory()->forClinic($clinicId)->get('files.storage_path', ''));
+
+            return new LocalFileStorage($configured !== '' ? $configured : LocalFileStorage::defaultBasePath());
+        };
 
         return new MedicalFileService(
             new MedicalFileRepository(self::db()),
-            $storage,
-            self::settings(),
+            $storageResolver,
+            self::settingsFactory(),
             self::audit()
         );
     }
@@ -797,7 +847,8 @@ final class App
             $patients = new PatientService(
                 $db,
                 new PatientRepository($db),
-                self::settings(),
+                // وابستگیِ Settings حذف شد: این سرویس هرگز از آن نمی‌خواند و
+                // نگه‌داشتنش تنها دلیلِ حل‌کردنِ Clinicِ محیطی در زمانِ ساخت بود.
                 self::licenseGate(),
                 self::audit(),
                 self::op()
@@ -813,7 +864,10 @@ final class App
         if ($otp === null) {
             $otp = new OtpService(
                 self::db(),
-                self::settings(),
+                // Scope-neutral construction (الگوی SmsService): پیکربندی در
+                // زمانِ عملیات حل می‌شود، نه در زمانِ ثبتِ مسیرهای REST.
+                self::settingsFactory(),
+                static fn (): int => self::scope()->clinicId,
                 self::rate(),
                 self::audit(),
                 self::op(),
@@ -1295,7 +1349,8 @@ final class App
                             $db,
                             new NotificationRepository($db),
                             new MembershipRepository($db),
-                            self::settingsFactory()->forClinic($clinicId),
+                            self::settingsFactory(),
+                            static fn (): int => $clinicId,
                             $op
                         ),
                         self::jobs(),
@@ -1315,7 +1370,8 @@ final class App
                             $db,
                             new NotificationRepository($db),
                             new MembershipRepository($db),
-                            self::settingsFactory()->forClinic($clinicId),
+                            self::settingsFactory(),
+                            static fn (): int => $clinicId,
                             $op
                         ),
                         $op,

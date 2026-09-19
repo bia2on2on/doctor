@@ -270,10 +270,14 @@ final class OtpFlowTest extends WP_UnitTestCase
         $inDefaultClinic = $insert(1, 'P-OD13-C1');
         $inSecondClinic = $insert(2, 'P-OD13-C2');
 
-        // سرویس مقید به Clinic 2 — همان وابستگی‌ها، فقط Settings کلینیک 2
+        // سرویس مقید به Clinic 2 — همان وابستگی‌ها، فقط Settings کلینیک 2.
+        // وابستگیِ پیکربندی اکنون `SettingsFactory` + resolverِ Clinic است
+        // (ساختِ scope-neutral)، پس «مقید به Clinic 2» با resolver ثابتِ 2
+        // بیان می‌شود — همان قراردادِ قبلیِ این تست، بدون تغییرِ معنا.
         $otp = new \ClinicCore\Application\Auth\OtpService(
             App::db(),
-            new \ClinicCore\Settings\Settings(App::db(), 2),
+            App::settingsFactory(),
+            static fn (): int => 2,
             App::rate(),
             App::audit(),
             App::op(),

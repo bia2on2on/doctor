@@ -10,6 +10,8 @@ use ClinicCore\Domain\Time\Jalali;
 use ClinicCore\Infrastructure\Audit\AuditLogger;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Settings\Settings;
+use ClinicCore\Settings\SettingsFactory;
+use Closure;
 
 /**
  * سرویس گزارش (F8 — FR-19.2: ۱۲ گزارش + G5).
@@ -54,11 +56,28 @@ final class ReportService
         'follow_ups_due' => ['label' => 'پیگیری‌های سررسید', 'caps' => [RolesAndCapabilities::MEDICAL_READ], 'kind' => 'follow_ups', 'default_days' => 30],
     ];
 
+    /**
+     * @param Closure(): int $currentClinicResolver Clinicِ فعالِ عملیاتِ جاری.
+     *        به‌صورت Closure تزریق می‌شود تا ساختِ این سرویس به هیچ Clinic/Scope
+     *        محیطی گره نخورد (الگوی SmsService): ثبتِ مسیرهای REST پیش از هر
+     *        Scope‌ای انجام می‌شود و فراخوانیِ زودهنگامِ `App::settings()` در
+     *        زمانِ ساخت، bootstrap را در نصبِ چند-Clinicه می‌انداخت. مسیرهایی که
+     *        Clinicِ صریح دارند (Export) resolverِ ثابتِ همان Clinic را می‌گیرند.
+     */
     public function __construct(
         private readonly CpmsDb $db,
-        private readonly Settings $settings,
+        private readonly SettingsFactory $settingsFactory,
+        private readonly Closure $currentClinicResolver,
         private readonly AuditLogger $audit
     ) {
+    }
+
+    /**
+     * پیکربندیِ Clinicِ فعال — در زمانِ عملیات حل می‌شود (نه در ساخت).
+     */
+    private function currentSettings(): Settings
+    {
+        return $this->settingsFactory->forClinic((int) ($this->currentClinicResolver)());
     }
 
     // ================= Catalog =================
@@ -734,7 +753,7 @@ final class ReportService
             throw ReportException::of('CLINIC_VALIDATION_FAILED', 'from نباید بعد از to باشد', 422);
         }
 
-        $maxDays = (int) $this->settings->get('reports.max_range_days', 366);
+        $maxDays = (int) $this->currentSettings()->get('reports.max_range_days', 366);
         $days = (int) ((strtotime($to . ' 12:00') - strtotime($from . ' 12:00')) / 86400) + 1;
         if ($days > $maxDays) {
             throw ReportException::of(
