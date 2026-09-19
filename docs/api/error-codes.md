@@ -48,6 +48,7 @@
 | `CLINIC_DUPLICATE_IN_FLIGHT` | 409 | Idempotency: عملیات هم‌نام در حال انجام است |
 | `CLINIC_DUPLICATE_APPOINTMENT` | 409 | نوبت تکراری (Retry/Double Submit با Idempotency-Key شناخته‌شده → پاسخ Origin، 200) |
 | `CLINIC_DUPLICATE_ACTIVE_VISIT` | 409 | بیمار ویزیت Active دارد (قانون واحد Active Visit) |
+| `HAS_ACTIVE_VISIT` | 409 | لغو/جابه‌جایی نوبت رد می‌شود — آن نوبت ویزیتِ واقعاً فعال دارد (I-3) |
 | `CLINIC_DURATION_INVALID` | 400 | مدت نوبت نامعتبر (نه در جدول مجازها) |
 | `CLINIC_INVALID_APPOINTMENT_STATE` | 409 | نوبت در وضعیت غیرقابل Check-in است (لغو/جابه‌جایی/تکمیل) |
 | `CLINIC_RECALL_LIMIT_REACHED` | 409 | سقف فراخوان مجدد (queue.max_recalls) پر شده است |
