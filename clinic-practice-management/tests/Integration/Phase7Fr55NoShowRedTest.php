@@ -1041,15 +1041,18 @@ final class Phase7Fr55NoShowRedTest extends WP_UnitTestCase {
         self::assertTrue((bool) ($ci['own_wpdb_connected'] ?? false), "{$context}: check-in child must own its DB connection");
         self::assertTrue((bool) ($ns['own_wpdb_connected'] ?? false), "{$context}: no-show child must own its DB connection");
         foreach (['check_in' => $ci, 'no_show' => $ns] as $role => $o) {
+            $probes = ' child_before: ' . wp_json_encode($o['probe_before'] ?? null)
+                . ' child_after: ' . wp_json_encode($o['probe_after'] ?? null)
+                . ' parent_at_fork: ' . wp_json_encode($o['parent_probe'] ?? null);
             self::assertGreaterThanOrEqual(
                 1,
                 (int) ($o['query_filters_before'] ?? 0),
-                "{$context}: [{$role}] the test-only query-rewrite must have been present in the forked child"
+                "{$context}: [{$role}] the test-only query-rewrite must have been present in the forked child" . $probes
             );
             self::assertSame(
                 0,
                 (int) ($o['query_filters_after'] ?? 0),
-                "{$context}: [{$role}] the test-only query-rewrite must be removed in the child (real commits, not parent savepoints)"
+                "{$context}: [{$role}] the test-only query-rewrite must be removed in the child (real commits, not parent savepoints)" . $probes
             );
         }
 
