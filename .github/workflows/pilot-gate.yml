@@ -1143,6 +1143,34 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # خلاصهٔ Responsive باید از sandbox هم قابل بازیابی باشد: لاگِ job به blob
+      # ریدایرکت می‌شود و دانلودشدنی نیست و `$GITHUB_STEP_SUMMARY` هم از API
+      # خوانده نمی‌شود. پس همان خلاصهٔ PASS/FAIL (که برای صفحهٔ عمومیِ shortcode
+      # شامل A1/تعداد روز/تعداد نوبت/گذارِ وضعیت/A4 است) به PR post می‌شود.
+      # کاملاً الحاقی و `always()` — هیچ معیار یا آستانهٔ گیتی تغییر نکرد.
+      - name: Post responsive evidence to PR (لاگ Blob از Sandbox در دسترس نیست)
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "### Responsive smoke evidence (run ${{ github.run_id }}, job ${GITHUB_JOB}, sha ${{ github.sha }})"
+            echo '```'
+            echo '--- fixture: anonymous public booking page ---'
+            cat /tmp/resp-public-page.env 2>/dev/null || echo '(RESP_PUBLIC_PAGE not produced — anonymous surface NOT exercised)'
+            echo '--- PASS/FAIL summary (per viewport) ---'
+            grep -E '^(PASS|FAIL)' /tmp/resp.log 2>/dev/null || echo '(resp.log missing)'
+            echo '--- INFO (cross-origin / advisory) ---'
+            grep -E '^INFO' /tmp/resp.log 2>/dev/null || echo '(none)'
+            echo '```'
+          } > /tmp/resp-evidence.md
+          PR=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number' 2>/dev/null || true)
+          if [ -n "$PR" ]; then
+            gh pr comment "$PR" --body-file /tmp/resp-evidence.md || echo "::notice::PR comment failed (permissions?)"
+          else
+            gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@/tmp/resp-evidence.md || true
+          fi
+
       - name: Debug dump به PR (لاگ Blob از Sandbox در دسترس نیست)
         if: failure()
         run: |

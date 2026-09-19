@@ -259,6 +259,12 @@ jobs:
               grep '^testsuite ' "$SPLIT" | grep 'C7ScheduleNoScopeReadRedTest' || echo '(C7 hardening no-scope read suite missing from junit)'
               echo '--- C7 hardening: Schedule no-scope read testcases ---'
               grep '^testcase ' "$SPLIT" | grep 'C7ScheduleNoScopeReadRedTest' || true
+              # Phase 8 Slice 1 هم مثل بقیهٔ سوئیت‌های RED-class شاهدِ صریحِ
+              # «انتخاب + اجرا» دارد (الحاقی؛ هیچ معیارِ گیتی تغییر نکرد).
+              echo '--- Phase8 Slice 1 Public Booking Browse suite (selection + execution proof) ---'
+              grep '^testsuite ' "$SPLIT" | grep 'Phase8Slice1PublicBookingBrowseRedTest' || echo '(Phase8 Slice 1 public booking suite missing from junit)'
+              echo '--- Phase8 Slice 1 Public Booking Browse testcases ---'
+              grep '^testcase ' "$SPLIT" | grep 'Phase8Slice1PublicBookingBrowseRedTest' || true
               rm -f "$SPLIT"
             else
               echo '(junit xml missing — run may have terminated prematurely)'
