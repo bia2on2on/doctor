@@ -755,7 +755,7 @@ final class Phase7Fr55NoShowRedTest extends WP_UnitTestCase {
             }
             if ($pid === 0) {
                 $this->raceWorker($worker['role'], (float) $worker['offset'], $fireAt, $appointmentId, $attempt, $i);
-                exit(0); // child-only — unreachable
+                exit(1); // backstop — a returning child is a harness fault, not a pass
             }
             $pids[] = $pid;
         }
@@ -771,7 +771,12 @@ final class Phase7Fr55NoShowRedTest extends WP_UnitTestCase {
                 $r = pcntl_waitpid($pid, $status);
                 if ($r === $pid) {
                     if (!pcntl_wifexited($status) || pcntl_wexitstatus($status) !== 0) {
-                        $this->fail('harness fatal: child [' . $workers[$idx]['role'] . '] exited abnormally (status=' . $status . ')');
+                        $detail = '';
+                        $rawFile = $this->fileTag . '-outcome-' . $attempt . '-' . $idx;
+                        if (is_file($rawFile)) {
+                            $detail = ' outcome: ' . (string) @file_get_contents($rawFile);
+                        }
+                        $this->fail('harness fatal: child [' . $workers[$idx]['role'] . '] exited abnormally (status=' . $status . ')' . $detail . ')');
                     }
                     unset($alive[$idx]);
                 }
@@ -808,16 +813,47 @@ final class Phase7Fr55NoShowRedTest extends WP_UnitTestCase {
      * filter census (before/after removal), and wall-clock call windows.
      */
     private function raceWorker(string $role, float $offset, float $fireAt, int $appointmentId, int $attempt, int $index): void {
+        // The child must NEVER return to the inherited PHPUnit machinery:
+        // an uncaught Throwable would be caught by PHPUnit's own (inherited)
+        // handler and the child would re-run the remaining suite in parallel
+        // with the parent (proven: run 35434123610, exit code 2). Every
+        // unexpected Throwable therefore becomes a fatal outcome + exit(1).
+        try {
+            $this->raceWorkerBody($role, $offset, $fireAt, $appointmentId, $attempt, $index);
+            exit(0); // child-only — unreachable
+        } catch (Throwable $e) {
+            @file_put_contents(
+                $this->fileTag . '-outcome-' . $attempt . '-' . $index,
+                json_encode([
+                    'role' => $role,
+                    'result' => 'fatal',
+                    'detail' => get_class($e) . ': ' . $e->getMessage()
+                        . ' @ ' . basename((string) $e->getFile()) . ':' . $e->getLine(),
+                ])
+            );
+            exit(1); // child-only — non-zero = harness fatal (not a product error)
+        }
+    }
+
+    private function raceWorkerBody(string $role, float $offset, float $fireAt, int $appointmentId, int $attempt, int $index): void {
         global $wpdb;
         $own = new \wpdb(DB_USER, DB_PASSWORD, DB_NAME, DB_HOST);
         $own->set_prefix($wpdb->prefix);
         // The test-only SAVEPOINT query-rewrite must NOT apply to the child:
         // its transactions must be real commits visible to other connections.
-        // (has_filters — plural — returns the registration list; the singular
-        // has_filter returns only the highest priority int|false.)
-        $filtersBefore = has_filters('query');
+        // Count registrations straight from the WP_Hook registry (WP has no
+        // has_filters(); has_filter() returns only the top priority int|false).
+        $census = static function (): int {
+            global $wp_filter;
+            $hook = $wp_filter['query'] ?? null;
+            if (!is_object($hook) || !isset($hook->callbacks)) {
+                return 0;
+            }
+            return (int) array_sum(array_map('count', (array) $hook->callbacks));
+        };
+        $filtersBefore = $census();
         remove_all_filters('query');
-        $filtersAfter = has_filters('query');
+        $filtersAfter = $census();
         if (property_exists($own, 'has_connected') && $own->has_connected) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName
             @$own->close();
         }
@@ -902,7 +938,7 @@ final class Phase7Fr55NoShowRedTest extends WP_UnitTestCase {
         $outcome['call_finished_at'] = $finishedAt;
 
         @file_put_contents($this->fileTag . '-outcome-' . $attempt . '-' . $index, json_encode($outcome));
-        exit(0); // child-only — unreachable
+        // Wrapper owns the process exit (exit(0) on success / exit(1) on fatal).
     }
 
     /**
