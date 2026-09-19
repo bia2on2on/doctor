@@ -94,6 +94,7 @@ use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Licensing\LicenseDecision;
 use ClinicCore\Domain\Licensing\LicenseGate;
+use ClinicCore\Domain\Visits\VisitException;
 use ClinicCore\Infrastructure\Audit\AuditLogger;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Logging\OpLogger;
@@ -372,7 +373,14 @@ final class Phase7Fr55NoShowRedTest extends WP_UnitTestCase {
         );
         $this->assertClinicError($r2, 'CLINIC_SCOPE_UNAVAILABLE', 'missing trusted scope');
         $data2 = $r2->get_data();
-        self::assertSame('membership', $data2['data']['reason'] ?? null, 'unavailable scope reason must be membership-scoped');
+        $body2 = wp_json_encode($data2);
+        self::assertIsString($body2);
+        self::assertStringNotContainsString(
+            'membership',
+            $body2,
+            'internal scope reason must not leak into the REST envelope'
+        );
+        self::assertArrayNotHasKey('reason', is_array($data2['data'] ?? null) ? $data2['data'] : []);
 
         $appt = $this->appointmentRow($seedB['id']);
         self::assertSame('confirmed', $appt['status'], 'zero mutation');
@@ -649,12 +657,20 @@ final class Phase7Fr55NoShowRedTest extends WP_UnitTestCase {
 
         $observations = [];
         for ($attempt = 1; $attempt <= self::RACE_ATTEMPTS; $attempt++) {
+            $patientId = $this->insertPatient(
+                $this->clinicA,
+                'MR-FR55-R' . $attempt . '-' . $this->fileTag,
+                $this->nowUtcSql()
+            );
+            global $wpdb;
+            $wpdb->query('COMMIT'); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+
             // Past-grace confirmed appointment: a genuine sweep candidate.
             $seed = $this->seedConfirmedAppointment(
                 $this->clinicA,
                 $this->locationA,
                 $this->clinicianA,
-                $this->patientA,
+                $patientId,
                 $this->pastSlotSpec(180 + 60 * ($attempt - 1)),
                 'rc' . $attempt
             );
@@ -668,7 +684,7 @@ final class Phase7Fr55NoShowRedTest extends WP_UnitTestCase {
                 ['role' => 'no_show', 'offset' => 0.0],
                 ['role' => 'check_in', 'offset' => 0.0],
             ];
-            $outcomes = $this->runRace($seed['id'], $workers, $attempt);
+            $outcomes = $this->runRace($seed['id'], $patientId, $workers, $attempt);
             $state = $this->raceState($seed['id'], $seed['slot_id']);
 
             $observations[] = [
@@ -690,30 +706,42 @@ final class Phase7Fr55NoShowRedTest extends WP_UnitTestCase {
         $pointer = $state['active_visit_id'];
 
         if ($status === 'no_show') {
-            // (B) no-show won: the terminal state must remain internally
-            // consistent — never a genuinely active Visit bound to the
-            // terminal appointment, and the stale pointer cleared.
+            self::assertNotNull($state['no_show_at'], "{$context}: no_show_at must be written by the winning T8");
+            $scheduledLive = array_values(array_filter(
+                $live,
+                static fn (array $v): bool => (string) ($v['source'] ?? '') === 'scheduled'
+            ));
             self::assertSame(
                 0,
-                count($live),
-                "{$context}: FORBIDDEN terminal state — a no_show appointment carries "
-                . count($live) . ' genuinely active bound Visit(s): ' . wp_json_encode($live)
+                count($scheduledLive),
+                "{$context}: FORBIDDEN — T8 over a pre-existing genuinely active scheduled Visit: "
+                . wp_json_encode($scheduledLive)
             );
-            self::assertNull(
-                $pointer,
-                "{$context}: a legitimately successful T8 must clear active_visit_id; pointer=" . var_export($pointer, true)
-            );
-            self::assertNotNull($state['no_show_at'], "{$context}: no_show_at must be written by the winning T8");
-            // The check-in may have won the alternate (ER-06 unbound walk-in)
-            // or been rejected — both are legal against a terminal state; the
-            // terminal-state assertions above are what matter.
-            self::assertContains(
-                $outcomes['check_in']['result'] ?? null,
-                ['ok', 'rejected'],
-                "{$context}: check-in outcome must be a legal product envelope"
-            );
+            $walkInLive = array_values(array_filter(
+                $live,
+                static fn (array $v): bool => (string) ($v['source'] ?? '') === 'walk_in'
+            ));
+            if ($walkInLive !== []) {
+                // Legal lazy ER-06: late check-in atomically T8s then binds
+                // exactly one walk-in-like Visit to the same appointment.
+                self::assertCount(1, $walkInLive, "{$context}: lazy ER-06 must leave exactly one bound walk-in Visit");
+                self::assertSame((int) $walkInLive[0]['id'], (int) $pointer, "{$context}: pointer must reference the walk-in Visit");
+                self::assertSame('ok', $outcomes['check_in']['result'] ?? null, "{$context}: late check-in must complete");
+                self::assertSame(
+                    (int) ($outcomes['check_in']['visit_id'] ?? 0),
+                    (int) $walkInLive[0]['id'],
+                    "{$context}: check-in result must be the bound walk-in Visit"
+                );
+            } else {
+                self::assertSame(0, count($live), "{$context}: sweep-win must not leave a bound live Visit");
+                self::assertNull($pointer, "{$context}: sweep-win T8 must clear active_visit_id");
+                self::assertContains(
+                    $outcomes['check_in']['result'] ?? null,
+                    ['ok', 'rejected'],
+                    "{$context}: check-in outcome must be a legal product envelope"
+                );
+            }
         } elseif ($status === 'confirmed') {
-            // (A) check-in won: the appointment is unharmed with its live Visit.
             self::assertSame('ok', $outcomes['check_in']['result'] ?? null, "{$context}: the check-in must complete as a product call");
             self::assertCount(1, $live, "{$context}: order A must leave exactly one live bound Visit");
             self::assertSame((int) $live[0]['id'], (int) $pointer, "{$context}: the pointer must reference the live Visit");
@@ -744,7 +772,7 @@ final class Phase7Fr55NoShowRedTest extends WP_UnitTestCase {
      *
      * @return array<string, array<string, mixed>> role => outcome
      */
-    private function runRace(int $appointmentId, array $workers, int $attempt): array {
+    private function runRace(int $appointmentId, int $patientId, array $workers, int $attempt): array {
         $this->parentForkProbe = self::queryHookCensus();
 
         $pids = [];
@@ -757,7 +785,7 @@ final class Phase7Fr55NoShowRedTest extends WP_UnitTestCase {
                 $this->fail('harness fatal (fork failed: ' . ($last['message'] ?? 'unknown') . ')');
             }
             if ($pid === 0) {
-                $this->raceWorker($worker['role'], (float) $worker['offset'], $fireAt, $appointmentId, $attempt, $i);
+                $this->raceWorker($worker['role'], (float) $worker['offset'], $fireAt, $appointmentId, $patientId, $attempt, $i);
                 exit(1); // backstop — a returning child is a harness fault, not a pass
             }
             $pids[] = $pid;
@@ -837,14 +865,14 @@ final class Phase7Fr55NoShowRedTest extends WP_UnitTestCase {
         return $probe;
     }
 
-    private function raceWorker(string $role, float $offset, float $fireAt, int $appointmentId, int $attempt, int $index): void {
+    private function raceWorker(string $role, float $offset, float $fireAt, int $appointmentId, int $patientId, int $attempt, int $index): void {
         // The child must NEVER return to the inherited PHPUnit machinery:
         // an uncaught Throwable would be caught by PHPUnit's own (inherited)
         // handler and the child would re-run the remaining suite in parallel
         // with the parent (proven: run 35434123610, exit code 2). Every
         // unexpected Throwable therefore becomes a fatal outcome + exit(1).
         try {
-            $this->raceWorkerBody($role, $offset, $fireAt, $appointmentId, $attempt, $index);
+            $this->raceWorkerBody($role, $offset, $fireAt, $appointmentId, $patientId, $attempt, $index);
             exit(0); // child-only — unreachable
         } catch (Throwable $e) {
             @file_put_contents(
@@ -860,7 +888,7 @@ final class Phase7Fr55NoShowRedTest extends WP_UnitTestCase {
         }
     }
 
-    private function raceWorkerBody(string $role, float $offset, float $fireAt, int $appointmentId, int $attempt, int $index): void {
+    private function raceWorkerBody(string $role, float $offset, float $fireAt, int $appointmentId, int $patientId, int $attempt, int $index): void {
         global $wpdb;
         $own = new \wpdb(DB_USER, DB_PASSWORD, DB_NAME, DB_HOST);
         $own->set_prefix($wpdb->prefix);
@@ -975,7 +1003,7 @@ final class Phase7Fr55NoShowRedTest extends WP_UnitTestCase {
         );
         $live = $this->mysqliAll(
             $conn,
-            'SELECT id, status, active FROM ' . $db->table('cpms_visits')
+            'SELECT id, status, active, source FROM ' . $db->table('cpms_visits')
             . ' WHERE appointment_id = ' . (int) $appointmentId
             . ' AND active = 1 AND status IN (' . implode(',', array_map(static fn (string $s): string => "'" . $s . "'", self::LIVE_VISIT_STATUSES)) . ')'
         );

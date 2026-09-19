@@ -1058,7 +1058,7 @@ final class BookingService
             throw BookingException::of('CLINIC_VALIDATION_FAILED', 'دلیل عدم حضور الزامی است', 422);
         }
 
-        [$appt, $toState] = $this->db->transactional(function () use ($actorUserId, $appointmentId, $trimmed): array {
+        [$appt, $toState] = $this->db->transactional(function () use ($appointmentId): array {
             $appt = $this->appointments->findForUpdate($appointmentId);
             if ($appt === null) {
                 throw BookingException::of('CLINIC_NOT_FOUND', 'نوبت یافت نشد', 404);
