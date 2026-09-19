@@ -40,8 +40,10 @@ Clinic، RTL/fa، موفقیتِ A1 موجود، انتخابِ نوبت ⇒ A4 
 
 import json
 import os
+import re
 import sys
 import time
+from urllib.parse import parse_qs, urlparse
 
 from playwright.sync_api import sync_playwright
 
@@ -123,6 +125,29 @@ def _wait_not_loading(page):
     )
 
 
+def a1_url_qmarks(url):
+    """تعدادِ `?` در URL — بیش از یکی یعنی query داخلِ مقدارِ param نشت کرده."""
+    return url.count("?")
+
+
+def wp_route_and_params(url):
+    """route/param یک URL را دقیقاً همان‌طور که وردپرس حل می‌کند برمی‌گرداند.
+
+    `rest_api_loaded()` route را از query var عمومی `rest_route` می‌گیرد (حالتِ
+    Plain permalinks) و `WP_REST_Server::serve_request()` بقیهٔ `$_GET` را با
+    `set_query_params()` به Request می‌دهد؛ در Permalink زیبا route از مسیرِ
+    `/wp-json/...` می‌آید. این تابع همان قاعده است تا contractِ URL به‌جای
+    شکلِ رشته سنجیده شود.
+    """
+    parsed = urlparse(url)
+    flat = {k: v[0] for k, v in parse_qs(parsed.query, keep_blank_values=True).items()}
+    route = flat.get("rest_route")
+    if route is None:
+        m = re.search(r"/wp-json(/.*)?$", parsed.path)
+        route = m.group(1) if (m and m.group(1)) else parsed.path
+    return (route.rstrip("/") or "/"), flat
+
+
 def check_public_surface(page, cfg):
     """قراردادِ Phase 8 Slice 1 روی مرورگرِ واقعی — آنونیم، بدون Login."""
     if "wp-login.php" in page.url:
@@ -164,6 +189,19 @@ def check_public_surface(page, cfg):
     a1 = a1_info.value
     if a1.status != 200:
         raise RuntimeError(f"A1 GET /clinic/v1/availability returned HTTP {a1.status}")
+    # contractِ URLِ A1 — هم در Pretty و هم در Plain permalinks باید دقیقاً به
+    # route موجودِ `/clinic/v1/availability` برسد و `clinician_id` یک پارامترِ
+    # query واقعی باشد (نه بخشی از مقدارِ `rest_route`).
+    a1_route, a1_params = wp_route_and_params(a1.url)
+    if a1_url_qmarks(a1.url) != 1:
+        raise RuntimeError(f"A1 URL must carry exactly one '?': {a1.url}")
+    if a1_route != "/clinic/v1/availability":
+        raise RuntimeError(f"A1 URL does not route to the existing A1 route: route={a1_route!r} url={a1.url}")
+    if cfg["clinician_id"] and a1_params.get("clinician_id") != str(cfg["clinician_id"]):
+        raise RuntimeError(
+            f"A1 clinician_id is not a real query parameter: got {a1_params.get('clinician_id')!r}, "
+            f"expected {cfg['clinician_id']!r} (url={a1.url})"
+        )
     _wait_not_loading(page)
 
     state = _state(page)
@@ -182,6 +220,8 @@ def check_public_surface(page, cfg):
     detail = {
         "a1_status": a1.status,
         "a1_url": a1.url,
+        "a1_route": a1_route,
+        "a1_clinician_id": a1_params.get("clinician_id"),
         "state_after_a1": state,
         "days": len(day_labels),
         "jalali_labels": day_labels[:4],
@@ -204,7 +244,11 @@ def check_public_surface(page, cfg):
         final = _state(page)
         if final not in ("bookable", "policy_rejected", "unavailable", "error"):
             raise RuntimeError(f"unexpected panel state after A4: {final!r}")
-        detail.update({"a4_status": a4.status, "a4_url": a4.url, "state_after_a4": final})
+        a4_route, _a4_params = wp_route_and_params(a4.url)
+        if a4_route != "/clinic/v1/booking/quote":
+            raise RuntimeError(f"A4 URL does not route to the existing A4 route: route={a4_route!r} url={a4.url}")
+        detail.update({"a4_status": a4.status, "a4_url": a4.url, "a4_route": a4_route,
+                       "state_after_a4": final})
     else:
         detail.update({"a4_status": None, "state_after_a4": None})
 
@@ -364,6 +408,13 @@ with sync_playwright() as p:
                              f"state={public_detail['state_after_a1']}->{public_detail['state_after_a4']} "
                              f"A4={public_detail['a4_status']}")
                 print(line)
+                if public_detail:
+                    print(f"PASS {key}-a1-url — permalink-safe A1/A4 URL contract: "
+                          f"a1_route={public_detail.get('a1_route')} "
+                          f"clinician_id={public_detail.get('a1_clinician_id')} "
+                          f"a4_route={public_detail.get('a4_route')} "
+                          f"a1_url={public_detail.get('a1_url')} "
+                          f"a4_url={public_detail.get('a4_url')}")
                 if cross_origin_info:
                     print(f"INFO {key} — cross-origin (خارج از دامنهٔ این گیت): {cross_origin_info[:3]}")
             except Exception as e:  # noqa: BLE001

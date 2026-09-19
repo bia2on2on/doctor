@@ -180,6 +180,35 @@
 	}
 
 	/**
+	 * ساختِ URLِ REST سازگار با **هر دو** حالتِ permalink — همان الگوی
+	 * `apiUrl()` صفحاتِ مدیریتی (DoctorDashboardPage / SecretaryQueuePage / …).
+	 *
+	 * در Permalink ساده (Plain)، `rest_url('clinic/v1')` خودش شامل
+	 * `index.php?rest_route=/clinic/v1` است؛ پس queryِ مسیر باید با `&` ضمیمه
+	 * شود، نه `?`. با `?` دوم، `clinician_id` بخشی از **مقدارِ** `rest_route`
+	 * می‌شود و وردپرس route را `/clinic/v1/availability?clinician_id=N`
+	 * می‌بیند ⇒ هیچ route مطابقت نمی‌کند (`rest_no_route`) و A1 در یک وردپرسِ
+	 * کاملاً پشتیبانی‌شده غیرقابل‌دسترس می‌شود.
+	 *
+	 * در Permalink زیبا ریشه `?` ندارد، پس همان `?` درست است. وردپرس
+	 * `rest_route` را به‌عنوان query var عمومی ثبت می‌کند و بقیهٔ `$_GET` را با
+	 * `set_query_params()` به Request می‌دهد؛ بنابراین در هر دو حالت دقیقاً
+	 * route `/clinic/v1/availability` با پارامتر `clinician_id` دریافت می‌شود.
+	 *
+	 * `path` می‌تواند خودش query داشته باشد؛ فقط **نخستین** `?` آن به `&`
+	 * تبدیل می‌شود (دقیقاً مثل الگوی موجود) تا `&`های بعدی دست‌نخورده بمانند.
+	 * هیچ URL استقرارِ مشخصی hardcode نمی‌شود: ریشه همان چیزی است که سرور
+	 * منتشر کرده است.
+	 */
+	function apiUrl(restRoot, path) {
+		if (restRoot.indexOf('?') !== -1 && path.indexOf('?') !== -1) {
+			return restRoot + path.replace('?', '&');
+		}
+
+		return restRoot + path;
+	}
+
+	/**
 	 * فراخوانیِ JSON — همهٔ شکست‌ها (شبکه، JSON نامعتبر، HTTP غیرموفق) به یک
 	 * شکلِ واحد `{ok, status, body}` تبدیل می‌شوند تا هیچ‌کدام به کنسول نشت
 	 * نکند و نگاشتِ وضعیت قطعی بماند.
@@ -385,8 +414,12 @@
 			setBusy(true);
 			setDisabled(clinicianButtons, true);
 
-			var url = config.rest_root + config.availability_path +
-				'?clinician_id=' + encodeURIComponent(String(clinicianId));
+			// A1 — joinِ سازگار با permalink (Plain: `&`، Pretty: `?`). مسیر و
+			// ریشه هر دو از قراردادِ منتشرشدهٔ سرور می‌آیند؛ هیچ hardcode ای نیست.
+			var url = apiUrl(
+				config.rest_root,
+				config.availability_path + '?clinician_id=' + encodeURIComponent(String(clinicianId))
+			);
 
 			requestJson(url, {
 				method: 'GET',
@@ -478,6 +511,10 @@
 				payload.slot_id = slotId;
 			}
 
+			// A4 — POST بدون query در URL (همهٔ ورودی در بدنهٔ JSON است)، پس
+			// الحاقِ ساده در هر دو حالتِ permalink درست است و route سالم می‌ماند.
+			// اگر روزی پارامترِ query به این URL اضافه شد، باید از `apiUrl()`
+			// بگذرد — دقیقاً مثل A1.
 			requestJson(config.rest_root + config.quote_path, {
 				method: 'POST',
 				credentials: 'omit',
