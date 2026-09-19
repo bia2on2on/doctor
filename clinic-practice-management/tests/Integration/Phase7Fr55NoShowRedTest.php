@@ -813,9 +813,11 @@ final class Phase7Fr55NoShowRedTest extends WP_UnitTestCase {
         $own->set_prefix($wpdb->prefix);
         // The test-only SAVEPOINT query-rewrite must NOT apply to the child:
         // its transactions must be real commits visible to other connections.
-        $filtersBefore = has_filter('query');
+        // (has_filters — plural — returns the registration list; the singular
+        // has_filter returns only the highest priority int|false.)
+        $filtersBefore = has_filters('query');
         remove_all_filters('query');
-        $filtersAfter = has_filter('query');
+        $filtersAfter = has_filters('query');
         if (property_exists($own, 'has_connected') && $own->has_connected) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName
             @$own->close();
         }
