@@ -123,6 +123,8 @@ final class VisitService
             $clinicId = (int) ($appt['clinic_id'] ?? 0);
             $locationId = (int) ($appt['location_id'] ?? 0);
 
+            $this->guardDuplicateActiveVisit($patientId, (int) $appt['clinician_id']);
+
             if (in_array($status, ['cancelled_by_patient', 'cancelled_by_staff', 'rescheduled', 'completed'], true)) {
                 throw VisitException::of(
                     'CLINIC_INVALID_APPOINTMENT_STATE',
@@ -137,8 +139,6 @@ final class VisitService
                 $source = 'walk_in';
                 $appointmentId = null;
             } else {
-                $this->guardDuplicateActiveVisit($patientId, (int) $appt['clinician_id']);
-
                 // T2: Location-aware lazy no-show check
                 $shouldMarkNoShow = false;
                 if ($clinicId > 0 && $locationId > 0) {
