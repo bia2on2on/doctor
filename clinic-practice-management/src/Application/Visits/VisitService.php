@@ -112,8 +112,6 @@ final class VisitService
                 );
             }
 
-            $this->guardDuplicateActiveVisit($patientId, (int) $appt['clinician_id']);
-
             // ER-06: نوبت پایان‌یافته/لغوشده قابل Check-in نیست؛
             // دیرهنگام (پس از Grace) → no_show + Visit فوری Walk-in-like (ارجاع حفظ می‌شود).
             $source = 'scheduled';
@@ -139,6 +137,8 @@ final class VisitService
                 $source = 'walk_in';
                 $appointmentId = null;
             } else {
+                $this->guardDuplicateActiveVisit($patientId, (int) $appt['clinician_id']);
+
                 // T2: Location-aware lazy no-show check
                 $shouldMarkNoShow = false;
                 if ($clinicId > 0 && $locationId > 0) {
@@ -1510,16 +1510,6 @@ final class VisitService
                 $resourceType,
                 $resourceId,
                 $patientId,
-                $before,
-                $after,
-                $meta
-            );
-        } catch (Throwable $e) {
-            // Audit نباید جریان عملیات بالینی را قطع کند (تطبیق الگوی BookingService)
-        }
-    }
-}
-    $patientId,
                 $before,
                 $after,
                 $meta
