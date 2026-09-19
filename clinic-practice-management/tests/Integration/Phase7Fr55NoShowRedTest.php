@@ -147,6 +147,7 @@ final class Phase7Fr55NoShowRedTest extends WP_UnitTestCase {
 
     /** @var int[] */
     private array $userIds = [];
+    private array $parentForkProbe = [];
 
     private int $jobsHighWater = 0;
     private int $oplogsHighWater = 0;
@@ -744,6 +745,8 @@ final class Phase7Fr55NoShowRedTest extends WP_UnitTestCase {
      * @return array<string, array<string, mixed>> role => outcome
      */
     private function runRace(int $appointmentId, array $workers, int $attempt): array {
+        $this->parentForkProbe = self::queryHookCensus();
+
         $pids = [];
         $fireAt = microtime(true) + self::BARRIER_SEC;
 
@@ -812,6 +815,28 @@ final class Phase7Fr55NoShowRedTest extends WP_UnitTestCase {
      * asserts on: child PID, own-wpdb connection, the test-only query-
      * filter census (before/after removal), and wall-clock call windows.
      */
+    private static function queryHookCensus(): array {
+        // Probe the 'query' hook exactly as WP core sees it — no functions
+        // beyond core (WP 6.7 has no has_filters()).
+        $probe = [
+            'wp_loaded' => defined('ABSPATH'),
+            'wp_hook_class' => class_exists('WP_Hook'),
+            'wp_filter_global_type' => gettype($GLOBALS['wp_filter'] ?? null),
+            'wp_filter_key_count' => is_array($GLOBALS['wp_filter'] ?? null) ? count($GLOBALS['wp_filter']) : -1,
+            'query_hook_present' => is_array($GLOBALS['wp_filter'] ?? null) && isset($GLOBALS['wp_filter']['query']),
+            'query_callbacks' => 0,
+            'has_filter_query' => has_filter('query'),
+        ];
+        if ($probe['query_hook_present']) {
+            $hook = $GLOBALS['wp_filter']['query'];
+            if (is_object($hook) && isset($hook->callbacks)) {
+                $probe['query_callbacks'] = (int) array_sum(array_map('count', (array) $hook->callbacks));
+            }
+        }
+
+        return $probe;
+    }
+
     private function raceWorker(string $role, float $offset, float $fireAt, int $appointmentId, int $attempt, int $index): void {
         // The child must NEVER return to the inherited PHPUnit machinery:
         // an uncaught Throwable would be caught by PHPUnit's own (inherited)
@@ -841,19 +866,9 @@ final class Phase7Fr55NoShowRedTest extends WP_UnitTestCase {
         $own->set_prefix($wpdb->prefix);
         // The test-only SAVEPOINT query-rewrite must NOT apply to the child:
         // its transactions must be real commits visible to other connections.
-        // Count registrations straight from the WP_Hook registry (WP has no
-        // has_filters(); has_filter() returns only the top priority int|false).
-        $census = static function (): int {
-            global $wp_filter;
-            $hook = $wp_filter['query'] ?? null;
-            if (!is_object($hook) || !isset($hook->callbacks)) {
-                return 0;
-            }
-            return (int) array_sum(array_map('count', (array) $hook->callbacks));
-        };
-        $filtersBefore = $census();
+        $probeBefore = self::queryHookCensus();
         remove_all_filters('query');
-        $filtersAfter = $census();
+        $probeAfter = self::queryHookCensus();
         if (property_exists($own, 'has_connected') && $own->has_connected) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName
             @$own->close();
         }
@@ -932,8 +947,11 @@ final class Phase7Fr55NoShowRedTest extends WP_UnitTestCase {
         // Independence / overlap evidence (asserted by the parent):
         $outcome['pid'] = getmypid();
         $outcome['own_wpdb_connected'] = true;
-        $outcome['query_filters_before'] = is_array($filtersBefore) ? count($filtersBefore) : 0;
-        $outcome['query_filters_after'] = is_array($filtersAfter) ? count($filtersAfter) : 0;
+        $outcome['query_filters_before'] = (int) $probeBefore['query_callbacks'];
+        $outcome['query_filters_after'] = (int) $probeAfter['query_callbacks'];
+        $outcome['probe_before'] = $probeBefore;
+        $outcome['probe_after'] = $probeAfter;
+        $outcome['parent_probe'] = $this->parentForkProbe;
         $outcome['call_started_at'] = $startedAt;
         $outcome['call_finished_at'] = $finishedAt;
 
