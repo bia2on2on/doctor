@@ -99,6 +99,27 @@
 > (distinct from the original SRS wording of FR-4.6). **Phase 7 as a whole is NOT complete; no other
 > FR-4.x requirement is claimed closed; no Slice 2.** This closure does **not** resolve the `O-03`/`O-04`
 > drift rows and creates no new drift row. Latest migration remains `0020`; no `0021` exists or was reserved.
+>
+> **Current Phase 7 Slice 2 closure note (re-verified 2026-09-19):** Owner Roadmap Phase 7 — Appointment Engine
+> remains **STARTED / IN PROGRESS**; **Slice 2 = CLOSED (bounded technical closure)** on live main
+> `e60c62428e6109e7182d04d3266f0d15b12b0d2f`, through merged **PR #81** (MERGED 2026-09-19T03:08:27Z). Scope:
+> enforcement of appointment invariant **I-3** while a **genuinely active Visit** exists (the connected Visit in
+> one of the established live `ACTIVE_STATUSES` with `active = 1`) for **T5 patient cancel**, **T6 staff
+> cancel**, **T7 reschedule** — rejected with error code `HAS_ACTIVE_VISIT` / **HTTP 409**; **check-in now
+> serializes against these appointment mutations using the existing appointment-row locking architecture**; a
+> **stale `active_visit_id` pointer by itself is NOT treated as a genuinely active Visit**. No migration/schema
+> change was required; latest migration remains `0020`. Accepted **final RED =
+> `29bd8c36a263fc25b62a0f29554a7ce3224415a3`** (exact-head RED CI run `35398347887` = `completed/failure` at
+> that head); **GREEN product commit = `6c16e296d73eb6caf7271d49634de58ca0e6b1c6`**; post-merge on the merge
+> SHA: all four required workflows terminal-success (CI `35417703302` · Real WordPress Acceptance `35417703278`
+> · Closure Gate `35417703283` · Pilot/Staging Readiness Gate `35417703280`) and 19/19 check runs success.
+> Process history preserved, not rewritten: the earlier RED attempt `14319d0fd38dae9fd55ff36e13b301a658934c9d`
+> carried **collateral failures caused by test queue pollution** — test/harness hygiene defects, corrected
+> before the accepted final RED; that earlier attempt is **not** recorded as clean evidence. **Phase 7 as a
+> whole is NOT complete; no other FR-4.x requirement is claimed closed; no Slice 3 exists or is claimed.** The
+> "no Slice 2" wording in the preceding note is the state of that checkpoint and is superseded by this note
+> (historical text preserved, not rewritten). This closure does **not** resolve the `O-03`/`O-04` drift rows
+> and creates no new drift row. Latest migration remains `0020`; no `0021` exists or was reserved.
 
 ---
 
