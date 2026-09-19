@@ -18,7 +18,7 @@ use ClinicCore\Infrastructure\Repository\PatientRepository;
 use ClinicCore\Infrastructure\Repository\PrescriptionRepository;
 use ClinicCore\Infrastructure\Repository\RecommendationRepository;
 use ClinicCore\Infrastructure\Repository\VisitRepository;
-use ClinicCore\Settings\Settings;
+use ClinicCore\Settings\SettingsFactory;
 use ClinicCore\Domain\Time\Jalali;
 
 /**
@@ -60,7 +60,7 @@ final class ClinicalService
         private readonly PrescriptionRepository $prescriptions,
         private readonly RecommendationRepository $recommendations,
         private readonly FollowUpRepository $followUps,
-        private readonly Settings $settings,
+        private readonly SettingsFactory $settingsFactory,
         private readonly AuditLogger $audit,
         private readonly PatientRepository $patients,
         private readonly MedicalFileRepository $files
@@ -704,7 +704,9 @@ final class ClinicalService
             (int) $visit['patient_id']
         );
 
-        if ((bool) $this->settings->get('clinical.require_chief_complaint', true)
+        // Clinicِ معتبر از ردیفِ **پایدارِ** ویزیت (همان Clinic‌ای که در بالا
+        // برای مجوزِ Clinic-scoped سنجیده شد) — نه از Scope محیطیِ زمانِ ساخت.
+        if ((bool) $this->settingsFactory->forClinic((int) $visit['clinic_id'])->get('clinical.require_chief_complaint', true)
             && !$this->notes->visitHasCategory($visitId, 'chief_complaint')) {
             throw ClinicalException::of(
                 'CLINIC_VALIDATION_FAILED',

@@ -352,7 +352,8 @@ final class FollowUpReminderLocationCalendarRedTest extends WP_UnitTestCase
                                 $db,
                                 new NotificationRepository($db),
                                 new MembershipRepository($db),
-                                App::settingsFactory()->forClinic($clinicId),
+                                App::settingsFactory(),
+                                static fn (): int => $clinicId,
                                 $op
                             ),
                             $op,

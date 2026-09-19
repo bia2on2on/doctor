@@ -468,7 +468,9 @@ final class App
                     $db,
                     new NotificationRepository($db),
                     new MembershipRepository($db),
-                    self::settingsFactory()->forClinic($clinicId),
+                    self::settingsFactory(),
+                    // Clinicِ صریحِ مالکِ عملیات — resolver ثابت.
+                    static fn (): int => $clinicId,
                     $op
                 ),
                 new MembershipRepository($db)
@@ -626,7 +628,8 @@ final class App
                 new PrescriptionRepository($db),
                 new RecommendationRepository($db),
                 new FollowUpRepository($db),
-                self::settings(),
+                // Scope-neutral construction: policy از ردیفِ پایدارِ ویزیت خوانده می‌شود.
+                self::settingsFactory(),
                 self::audit(),
                 new PatientRepository($db),
                 new MedicalFileRepository($db)
@@ -693,7 +696,9 @@ final class App
                 self::db(),
                 new NotificationRepository(self::db()),
                 new MembershipRepository(self::db()),
-                self::settings(),
+                // Scope-neutral construction (الگوی SmsService).
+                self::settingsFactory(),
+                static fn (): int => self::scope()->clinicId,
                 self::op()
             );
         }
@@ -715,7 +720,13 @@ final class App
      */
     public static function reportService(): ReportService
     {
-        return new ReportService(self::db(), self::settings(), self::audit());
+        // Scope-neutral construction (الگوی SmsService).
+        return new ReportService(
+            self::db(),
+            self::settingsFactory(),
+            static fn (): int => self::scope()->clinicId,
+            self::audit()
+        );
     }
 
     /**
@@ -760,12 +771,18 @@ final class App
         $settings = self::settingsFactory()->forClinic($clinicId);
 
         return new ExportClinicDeps(
-            new ReportService(self::db(), $settings, self::audit()),
+            new ReportService(
+                self::db(),
+                self::settingsFactory(),
+                static fn (): int => $clinicId,
+                self::audit()
+            ),
             new NotificationService(
                 self::db(),
                 new NotificationRepository(self::db()),
                 new MembershipRepository(self::db()),
-                $settings,
+                self::settingsFactory(),
+                static fn (): int => $clinicId,
                 self::op()
             ),
             new LocalFileStorage(self::fileStoragePath($settings)),
@@ -792,16 +809,21 @@ final class App
      */
     public static function medicalFileService(): MedicalFileService
     {
-        // عمداً بدون کش: مسیر ذخیره از Setting خوانده می‌شود و باید در هر
-        // ساخت (Request/تست) تازه باشد — singleton مسیر اولین boot را قفل
-        // می‌کرد و تغییر files.storage_path بی‌اثر می‌شد. ساخت Object سبک است.
-        $configured = trim((string) self::settings()->get('files.storage_path', ''));
-        $storage = new LocalFileStorage($configured !== '' ? $configured : LocalFileStorage::defaultBasePath());
+        // عمداً بدون کشِ سرویس: مسیر ذخیره باید در هر عملیات تازه باشد —
+        // میخ‌کردنش به Clinic/lحظهٔ bootstrap تغییرِ files.storage_path را
+        // بی‌اثر می‌کرد. resolver زیر همان خواندن را در زمانِ عملیات انجام
+        // می‌دهد و هم‌زمان ساخت را scope-neutral نگه می‌دارد (الگوی SmsService).
+        $storageResolver = static function (): LocalFileStorage {
+            $configured = trim((string) self::settings()->get('files.storage_path', ''));
+
+            return new LocalFileStorage($configured !== '' ? $configured : LocalFileStorage::defaultBasePath());
+        };
 
         return new MedicalFileService(
             new MedicalFileRepository(self::db()),
-            $storage,
-            self::settings(),
+            $storageResolver,
+            self::settingsFactory(),
+            static fn (): int => self::scope()->clinicId,
             self::audit()
         );
     }
@@ -814,7 +836,8 @@ final class App
             $patients = new PatientService(
                 $db,
                 new PatientRepository($db),
-                self::settings(),
+                // وابستگیِ Settings حذف شد: این سرویس هرگز از آن نمی‌خواند و
+                // نگه‌داشتنش تنها دلیلِ حل‌کردنِ Clinicِ محیطی در زمانِ ساخت بود.
                 self::licenseGate(),
                 self::audit(),
                 self::op()
@@ -1315,7 +1338,8 @@ final class App
                             $db,
                             new NotificationRepository($db),
                             new MembershipRepository($db),
-                            self::settingsFactory()->forClinic($clinicId),
+                            self::settingsFactory(),
+                            static fn (): int => $clinicId,
                             $op
                         ),
                         self::jobs(),
@@ -1335,7 +1359,8 @@ final class App
                             $db,
                             new NotificationRepository($db),
                             new MembershipRepository($db),
-                            self::settingsFactory()->forClinic($clinicId),
+                            self::settingsFactory(),
+                            static fn (): int => $clinicId,
                             $op
                         ),
                         $op,

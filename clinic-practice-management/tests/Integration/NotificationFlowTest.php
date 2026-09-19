@@ -544,7 +544,8 @@ final class NotificationFlowTest extends WP_UnitTestCase
                 $db,
                 new NotificationRepository($db),
                 new MembershipRepository($db),
-                App::settingsFactory()->forClinic($clinicId),
+                App::settingsFactory(),
+                static fn (): int => $clinicId,
                 App::op()
             ),
             App::jobs(),

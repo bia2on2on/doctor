@@ -14,6 +14,8 @@ use ClinicCore\Infrastructure\Repository\MembershipRepository;
 use ClinicCore\Infrastructure\Repository\MedicalFileRepository;
 use ClinicCore\Infrastructure\Storage\LocalFileStorage;
 use ClinicCore\Settings\Settings;
+use ClinicCore\Settings\SettingsFactory;
+use Closure;
 
 /**
  * سرویس فایل‌های پزشکی (F5) — E16/E17 (کارکنان) + C3/C4 (بیمار).
@@ -44,12 +46,36 @@ final class MedicalFileService
 
     private const CATEGORIES = ['lab_result', 'image', 'scan', 'document', 'other'];
 
+    /**
+     * @param Closure(): int $currentClinicResolver     Clinicِ مالکِ عملیاتِ جاری.
+     * @param Closure(): LocalFileStorage $storageResolver مسیرِ ذخیره از Settingِ
+     *        per-Clinic `files.storage_path` می‌آید؛ به‌صورت Closure تزریق می‌شود
+     *        تا در زمانِ ساخت خوانده نشود (الگوی SmsService). ساختِ این سرویس در
+     *        `rest_api_init` انجام می‌شود — پیش از برقراری هر Scope‌ای.
+     */
     public function __construct(
         private readonly MedicalFileRepository $files,
-        private readonly LocalFileStorage $storage,
-        private readonly Settings $settings,
+        private readonly Closure $storageResolver,
+        private readonly SettingsFactory $settingsFactory,
+        private readonly Closure $currentClinicResolver,
         private readonly AuditLogger $audit
     ) {
+    }
+
+    /**
+     * ذخیره‌سازِ Clinicِ مالکِ عملیات — در زمانِ عملیات حل می‌شود (نه در ساخت).
+     */
+    private function storage(): LocalFileStorage
+    {
+        return ($this->storageResolver)();
+    }
+
+    /**
+     * پیکربندیِ Clinicِ مالکِ عملیات — در زمانِ عملیات حل می‌شود (نه در ساخت).
+     */
+    private function currentSettings(): Settings
+    {
+        return $this->settingsFactory->forClinic((int) ($this->currentClinicResolver)());
     }
 
     // ================= E16 — آپلود کارکنان =================
@@ -179,7 +205,7 @@ final class MedicalFileService
             $this->auditAndThrow($actorUserId, 'file', $fileId, 'دسترسی به این فایل مجاز نیست', 'فایل یافت نشد');
         }
 
-        $content = $this->storage->read((string) $row['storage_path']);
+        $content = $this->storage()->read((string) $row['storage_path']);
         if ($content === null) {
             // Metadata هست ولی فایل فیزیکی گم شده — نباید URL خطا را فاش کند
             error_log('[CPMS][MedicalFileService] physical file missing for attachment ' . $fileId);
@@ -281,7 +307,7 @@ final class MedicalFileService
         }
 
         // F-3: حجم (سقف از Setting)
-        $maxBytes = max(1, (int) $this->settings->get('files.max_upload_bytes', 10485760));
+        $maxBytes = max(1, (int) $this->currentSettings()->get('files.max_upload_bytes', 10485760));
         $size = (int) ($file['size'] ?? 0);
         if ($size <= 0 || $size > $maxBytes) {
             throw ClinicalException::of('CLINIC_FILE_INVALID', 'حجم فایل خارج از محدوده مجاز است', 400, ['max_mb' => (int) ($maxBytes / 1048576)]);
@@ -335,7 +361,7 @@ final class MedicalFileService
         } else {
             $this->assertPatientRecord($actorUserId, $patientClinicId, $patientId);
         }
-        $storagePath = $this->storage->store($content, $patientClinicId, $extension);
+        $storagePath = $this->storage()->store($content, $patientClinicId, $extension);
 
         $fileId = $this->files->insert($patientClinicId, [
             'patient_id' => $patientId,

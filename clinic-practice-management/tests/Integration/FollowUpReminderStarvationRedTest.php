@@ -304,7 +304,8 @@ final class FollowUpReminderStarvationRedTest extends WP_UnitTestCase
                                 $db,
                                 new NotificationRepository($db),
                                 new MembershipRepository($db),
-                                App::settingsFactory()->forClinic($clinicId),
+                                App::settingsFactory(),
+                                static fn (): int => $clinicId,
                                 $op
                             ),
                             $op,
@@ -324,7 +325,9 @@ final class FollowUpReminderStarvationRedTest extends WP_UnitTestCase
             $db,
             new NotificationRepository($db),
             new MembershipRepository($db),
-            $settings,
+            App::settingsFactory(),
+            // همان Clinicِ معتبرِ صریحی که دو خط بالاتر بسته شد.
+            static fn (): int => $this->clinicId,
             $op
         );
         return new \ClinicCore\Application\Jobs\FollowUpReminderHandler(
