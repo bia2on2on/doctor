@@ -182,7 +182,8 @@ jobs:
 
       - name: Deploy release ZIP (مثل آپلود واقعی افزونه در wp-admin)
         run: |
-          gh run download -n release-zip -D /tmp/release --repo "$GITHUB_REPOSITORY"
+          echo "run_id=${{ github.run_id }} run_head_sha=${{ github.sha }}"
+          gh run download "${{ github.run_id }}" -n release-zip -D /tmp/release --repo "$GITHUB_REPOSITORY"
           unzip -q /tmp/release/clinic-practice-management-1.0.0.zip -d "$WP_DIR/wp-content/plugins/"
           wp plugin activate clinic-practice-management --path="$WP_DIR" --allow-root
           echo 'deployed from release artifact (نه از checkout)'
@@ -904,7 +905,8 @@ jobs:
           WP_HOME="$WP_DIR" php /tmp/legacy-seed.php
       - name: آپدیت به RC (جایگزینی فایلها + migrate = همان فرایند تولید)
         run: |
-          gh run download -n release-zip -D /tmp/release --repo "$GITHUB_REPOSITORY"
+          echo "run_id=${{ github.run_id }} run_head_sha=${{ github.sha }}"
+          gh run download "${{ github.run_id }}" -n release-zip -D /tmp/release --repo "$GITHUB_REPOSITORY"
           rm -rf "$WP_DIR/wp-content/plugins/clinic-practice-management"
           unzip -q /tmp/release/clinic-practice-management-1.0.0.zip -d "$WP_DIR/wp-content/plugins/"
           cd "$WP_DIR/wp-content/plugins/clinic-practice-management"
@@ -1045,7 +1047,8 @@ jobs:
           </IfModule>
           # END WordPress
           HT
-          gh run download -n release-zip -D /tmp/release --repo "$GITHUB_REPOSITORY"
+          echo "run_id=${{ github.run_id }} run_head_sha=${{ github.sha }}"
+          gh run download "${{ github.run_id }}" -n release-zip -D /tmp/release --repo "$GITHUB_REPOSITORY"
           unzip -q /tmp/release/clinic-practice-management-1.0.0.zip -d "$WP_DIR/wp-content/plugins/"
           wp plugin activate clinic-practice-management --path="$WP_DIR" --allow-root
           wp user create pilot_secretary 'sec@r.local' --user_pass='Pilot-Gate-2026!' --role=cpms_secretary --path="$WP_DIR" --allow-root
