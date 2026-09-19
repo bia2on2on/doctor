@@ -11,6 +11,8 @@ use ClinicCore\Infrastructure\Logging\OpLogger;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
 use ClinicCore\Infrastructure\Repository\NotificationRepository;
 use ClinicCore\Settings\Settings;
+use ClinicCore\Settings\SettingsFactory;
+use Closure;
 use Throwable;
 
 /**
@@ -30,13 +32,31 @@ use Throwable;
  */
 final class NotificationService
 {
+    /**
+     * @param Closure(): int $currentClinicResolver Clinicِ مالکِ عملیاتِ جاری.
+     *        به‌صورت Closure تزریق می‌شود تا ساختِ این سرویس به هیچ Clinic/Scope
+     *        محیطی گره نخورد (الگوی SmsService): ثبتِ مسیرهای REST پیش از هر
+     *        Scope‌ای انجام می‌شود و فراخوانیِ زودهنگامِ `App::settings()` در
+     *        زمانِ ساخت، bootstrap را در نصبِ چند-Clinicه می‌انداخت.
+     *        فراخوان‌هایی که Clinicِ صریح دارند (Job/Export) resolverِ ثابتِ
+     *        همان Clinic را می‌گیرند — رفتار دقیقاً همان است.
+     */
     public function __construct(
         private readonly CpmsDb $db,
         private readonly NotificationRepository $notifications,
         private readonly MembershipRepository $memberships,
-        private readonly Settings $settings,
+        private readonly SettingsFactory $settingsFactory,
+        private readonly Closure $currentClinicResolver,
         private readonly OpLogger $op
     ) {
+    }
+
+    /**
+     * پیکربندیِ Clinicِ مالکِ عملیات — در زمانِ عملیات حل می‌شود (نه در ساخت).
+     */
+    private function currentSettings(): Settings
+    {
+        return $this->settingsFactory->forClinic((int) ($this->currentClinicResolver)());
     }
 
     // =========================================================
@@ -217,7 +237,7 @@ final class NotificationService
     public function dispatchQueued(): array
     {
         $sent = $this->notifications->dispatchQueued(500);
-        $purged = $this->notifications->purgeArchived((int) $this->settings->get('notif.archive_days', 90));
+        $purged = $this->notifications->purgeArchived((int) $this->currentSettings()->get('notif.archive_days', 90));
 
         return ['sent' => $sent, 'purged' => $purged];
     }
@@ -233,8 +253,8 @@ final class NotificationService
      */
     public function smsQuietHoursOpen(?string $timezone = null, ?\DateTimeImmutable $nowUtc = null): bool
     {
-        $start = $this->parseHour((string) $this->settings->get('notif.quiet_hours_start', '08:00'));
-        $end = $this->parseHour((string) $this->settings->get('notif.quiet_hours_end', '21:00'));
+        $start = $this->parseHour((string) $this->currentSettings()->get('notif.quiet_hours_start', '08:00'));
+        $end = $this->parseHour((string) $this->currentSettings()->get('notif.quiet_hours_end', '21:00'));
         if ($start === null || $end === null) {
             return true; // تنظیم نامعتبر → بازه باز (Fail-open عمدی: اعلان مهم‌تر از سکوت)
         }
@@ -251,7 +271,7 @@ final class NotificationService
     private function quietHoursHour(?string $timezone, ?\DateTimeImmutable $nowUtc): int
     {
         $now = $nowUtc ?? new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
-        $zoneName = $timezone === null ? $this->settings->clinicTimezone() : trim($timezone);
+        $zoneName = $timezone === null ? $this->currentSettings()->clinicTimezone() : trim($timezone);
 
         try {
             return (int) $now->setTimezone(new \DateTimeZone($zoneName))->format('G');

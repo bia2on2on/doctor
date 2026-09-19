@@ -140,6 +140,53 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+      # ------------------------------------------------------------------
+      # RED 1 (test-only): PROCESS-FRESH multi-Clinic REST bootstrap probe.
+      #
+      # The only step added by the infrastructure RED. It runs ONE extra PHP
+      # process (`php tests/bin/multi-clinic-rest-bootstrap-probe.php`) with
+      # its own isolated database; it does not touch the PHPUnit suite, its
+      # database, its order, or any existing gate.
+      #
+      # Why a separate process is objectively necessary: the contract under
+      # test is "REST bootstrap must be scope-neutral". The PHPUnit process
+      # builds the REST server and the memoized `App::` service singletons
+      # once, at a moment when the installation still holds exactly one
+      # Clinic — so a long-lived test process structurally CANNOT reproduce
+      # a fresh multi-Clinic bootstrap. No amount of in-process test design
+      # can substitute for a fresh interpreter.
+      #
+      # `if: always()` so the probe still runs (and still reports) when the
+      # integration suite above has failed — which is the expected RED state.
+      # ------------------------------------------------------------------
+      - name: Process-fresh multi-Clinic REST bootstrap probe (RED 1)
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -o pipefail
+          set +e
+          php -d memory_limit=1G tests/bin/multi-clinic-rest-bootstrap-probe.php > /tmp/red1-probe.log 2>&1
+          PROBE_RC=$?
+          set -e
+          cat /tmp/red1-probe.log
+          # The probe's own stdout/stderr IS the RED evidence, and the raw job
+          # log is not readable through the API — same reason the repository
+          # already mirrors the integration summary onto the PR. Mirroring here
+          # never changes the step's verdict: we re-exit with the probe's rc.
+          if [ -n "$PR_NUMBER" ]; then
+            {
+              echo "### RED 1 — process-fresh multi-Clinic REST bootstrap probe (run ${{ github.run_id }}, attempt ${{ github.run_attempt }}, rc=${PROBE_RC})"
+              echo '```'
+              cat /tmp/red1-probe.log
+              echo '```'
+            } > /tmp/red1-probe-comment.md
+            gh pr comment "$PR_NUMBER" --body-file /tmp/red1-probe-comment.md \
+              || echo '::notice::RED 1 probe evidence comment failed (non-fatal)'
+          fi
+          exit "${PROBE_RC:-1}"
+
       # شواهد تکمیل (همان سازوکار گارد): خلاصهٔ پایانی + اجرای کلاس‌ها از JUnit
       # به‌صورت کامنت PR — لاگ‌های job به blob ریدایرکت می‌شوند، اما کامنت PR از
       # طریق API خواندنی است؛ نتیجهٔ سبز بدون این شواهد قابل استنباط نیست.

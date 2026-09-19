@@ -16,6 +16,8 @@ use ClinicCore\Infrastructure\Logging\OpLogger;
 use ClinicCore\Infrastructure\Queue\JobQueue;
 use ClinicCore\Infrastructure\Security\RateLimiter;
 use ClinicCore\Settings\Settings;
+use ClinicCore\Settings\SettingsFactory;
+use Closure;
 
 /**
  * جریان Mobile+OTP (F2) — docs/security/auth-authorization.md.
@@ -62,15 +64,37 @@ final class OtpService
 
     private const PEPPER_OPTION = 'cpms_otp_pepper';
 
+    /**
+     * @param Closure(): int $currentClinicResolver Clinicِ فعالِ عملیاتِ جاری.
+     *        به‌صورت Closure تزریق می‌شود تا ساختِ این سرویس به هیچ Clinic/Scope
+     *        محیطی گره نخورد: ثبتِ مسیرهای REST (`rest_api_init`) پیش از برقراری
+     *        هر Scope‌ای انجام می‌شود و فراخوانیِ زودهنگامِ `App::settings()`
+     *        در زمانِ ساخت، bootstrap را در نصبِ چند-Clinicه می‌انداخت.
+     *        سیاستِ انتخابِ Clinic **تغییر نکرده** — همان منبع، فقط در زمانِ
+     *        فراخوانی حل می‌شود؛ نبودِ زمینهٔ معتبر ⇒ همان Fail-Closed در زمانِ صدا
+     *        زدن (OTP product policy دست‌نخورده).
+     */
     public function __construct(
         private readonly CpmsDb $db,
-        private readonly Settings $settings,
+        private readonly SettingsFactory $settingsFactory,
+        private readonly Closure $currentClinicResolver,
         private readonly RateLimiter $rate,
         private readonly AuditLogger $audit,
         private readonly OpLogger $op,
         private readonly SmsService $sms,
         private readonly JobQueue $jobs
     ) {
+    }
+
+    /**
+     * پیکربندیِ Clinicِ فعال — در زمانِ عملیات حل می‌شود (نه در زمانِ ساخت).
+     *
+     * کلیدِ کش در `SettingsFactory` برابر `clinicId` است، پس حل‌کردنِ مکرر در
+     * یک عملیات هزینه‌ای ندارد.
+     */
+    private function currentSettings(): Settings
+    {
+        return $this->settingsFactory->forClinic((int) ($this->currentClinicResolver)());
     }
 
     /**
@@ -88,8 +112,8 @@ final class OtpService
         }
         $purpose = $this->assertPurpose($purpose);
 
-        $dailyMax = (int) $this->settings->get('otp.daily_max');
-        $hourlyMax = (int) $this->settings->get('otp.hourly_max');
+        $dailyMax = (int) $this->currentSettings()->get('otp.daily_max');
+        $hourlyMax = (int) $this->currentSettings()->get('otp.hourly_max');
 
         $byDay = $this->rate->hit('otp-day:' . $mobile, $dailyMax, 86400);
         if (!$byDay['allowed']) {
@@ -107,7 +131,7 @@ final class OtpService
             }
         }
 
-        $policy = $this->settings->otpPolicy();
+        $policy = $this->currentSettings()->otpPolicy();
         $state = $this->loadState($mobile, $purpose);
         $send = $policy->canSend($state, $this->now());
         if (!$send['ok']) {
@@ -122,7 +146,7 @@ final class OtpService
 
         // ساخت Token (فقط Hash)
         $code = OtpPolicy::generateCode(6);
-        $ttl = (int) $this->settings->get('otp.ttl_sec');
+        $ttl = (int) $this->currentSettings()->get('otp.ttl_sec');
         $expiresAt = $this->addSeconds($this->now(), $ttl);
         $this->db->insert('cpms_otp_tokens', [
             'mobile' => $mobile,
@@ -143,7 +167,7 @@ final class OtpService
         try {
             // OTP identity-level است (AD-15) — clinic صریحاً از Settings (configured-clinic)
             $res = $this->sms->sendEvent(
-                $this->settings->clinicId(),
+                $this->currentSettings()->clinicId(),
                 SmsEvents::OTP,
                 $mobile,
                 ['otp_code' => $code],
@@ -190,7 +214,7 @@ final class OtpService
             }
         }
 
-        $policy = $this->settings->otpPolicy();
+        $policy = $this->currentSettings()->otpPolicy();
         $now = $this->now();
 
         $row = $this->db->fetchRow(
@@ -334,7 +358,7 @@ final class OtpService
         $patient = $this->db->fetchRow(
             'SELECT id FROM ' . $this->db->table('cpms_patients') .
             ' WHERE clinic_id = %d AND mobile = %s AND status = %s ORDER BY id DESC LIMIT 1',
-            [$this->settings->clinicId(), $mobile, 'active']
+            [$this->currentSettings()->clinicId(), $mobile, 'active']
         );
 
         return $patient === null ? null : (int) $patient['id'];
@@ -372,7 +396,7 @@ final class OtpService
             $isNewUser = true;
             if ($patientId !== null) {
                 $this->db->insert('cpms_patient_user_links', [
-                    'clinic_id' => $this->settings->clinicId(),
+                    'clinic_id' => $this->currentSettings()->clinicId(),
                     'patient_id' => $patientId,
                     'wp_user_id' => $userId,
                     'mobile_at_link' => $mobile,
