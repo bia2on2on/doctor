@@ -123,6 +123,8 @@ final class Phase7SliceStaffRescheduleRedTest extends WP_UnitTestCase
         self::assertGreaterThan(0, cpms_test_seed_membership($this->secretaryA, $this->clinicA, RolesAndCapabilities::ROLE_SECRETARY));
         self::assertGreaterThan(0, cpms_test_seed_membership($this->doctorA, $this->clinicA, RolesAndCapabilities::ROLE_DOCTOR));
 
+        ScopeContext::set(ClinicScope::forClinic($this->clinicA));
+
         $settings = App::settingsFactory()->forClinic($this->clinicA);
         $settings->set('booking.cancel_deadline_hours', 24);
         $settings->set('booking.reschedule_deadline_hours', 24);
@@ -133,8 +135,6 @@ final class Phase7SliceStaffRescheduleRedTest extends WP_UnitTestCase
         App::settings()->set('booking.reschedule_deadline_hours', 24);
         App::settings()->set('booking.min_lead_hours', 2);
         App::settings()->set('booking.max_future_days', 60);
-
-        ScopeContext::set(ClinicScope::forClinic($this->clinicA));
     }
 
     protected function tearDown(): void
