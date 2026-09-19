@@ -813,7 +813,10 @@ final class App
         if ($otp === null) {
             $otp = new OtpService(
                 self::db(),
-                self::settings(),
+                // Scope-neutral construction (الگوی SmsService): پیکربندی در
+                // زمانِ عملیات حل می‌شود، نه در زمانِ ثبتِ مسیرهای REST.
+                self::settingsFactory(),
+                static fn (): int => self::scope()->clinicId,
                 self::rate(),
                 self::audit(),
                 self::op(),
