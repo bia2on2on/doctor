@@ -55,6 +55,7 @@ use ClinicCore\Application\Notifications\NotificationService;
 use ClinicCore\Application\Notifications\SmsService;
 use ClinicCore\Application\Scope\ClinicScope;
 use ClinicCore\Application\Scope\ScopeContext;
+use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Application\Scope\SystemClinicResolver;
 use ClinicCore\Application\Reports\ExportClinicDeps;
 use ClinicCore\Application\Reports\ExportService;
@@ -379,7 +380,19 @@ final class App
      */
     public static function queueHealth(int $staleAfterSec = 300): array
     {
-        $lastTick = (int) self::settings()->get('jobs.last_tick_at', 0);
+        // شمارنده‌های صف سطحِ نصب‌اند و به Scope نیاز ندارند؛ فقط
+        // `jobs.last_tick_at` یک Settingِ per-Clinic است. وقتی هیچ Clinicِ
+        // معتبری در دسترس نیست (مثلاً پویشِ ناشناسِ `/health` روی نصبِ
+        // چند-Clinicه)، Clinic‌ای **ساخته/حدس زده نمی‌شود**: مقدار «نامعلوم»
+        // (0 ⇒ stale) گزارش می‌شود. این جهتِ محافظه‌کارانه برای یک خواندنِ
+        // observability است و endpoint را — که باید همیشه reachable باشد —
+        // در دسترس نگه می‌دارد. رفتارِ تک‌Clinic و دارای‌Scope کاملاً همان است.
+        $lastTick = 0;
+        try {
+            $lastTick = (int) self::settings()->get('jobs.last_tick_at', 0);
+        } catch (ScopeRequiredException) {
+            $lastTick = 0;
+        }
         $stale = $lastTick > 0 && (time() - $lastTick) > $staleAfterSec;
 
         $counts = self::db()->fetchAll(
@@ -409,7 +422,11 @@ final class App
                 new SlotRepository($db),
                 new AppointmentRepository($db),
                 new PatientRepository($db),
-                self::settings(),
+                // Scope-neutral construction: BookingService پیکربندی را در
+                // زمانِ هر عملیات و از Clinicِ **معتبرِ همان عملیات** می‌خواند
+                // (پزشک/نوبتِ پایدار، یا Scopeِ معتبرِ کارکنان) — نه از یک
+                // Clinicِ محیطی که در زمانِ ثبتِ مسیرهای REST حل شده باشد.
+                self::settingsFactory(),
                 self::licenseGate(),
                 self::audit(),
                 self::op(),

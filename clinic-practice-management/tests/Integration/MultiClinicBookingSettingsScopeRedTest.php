@@ -66,10 +66,6 @@ use ClinicCore\Application\Booking\BookingService;
 use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Booking\BookingException;
-use ClinicCore\Infrastructure\Repository\AppointmentRepository;
-use ClinicCore\Infrastructure\Repository\MembershipRepository;
-use ClinicCore\Infrastructure\Repository\PatientRepository;
-use ClinicCore\Infrastructure\Repository\SlotRepository;
 use ClinicCore\Settings\Settings;
 use DateInterval;
 use DateTimeImmutable;
@@ -196,8 +192,8 @@ final class MultiClinicBookingSettingsScopeRedTest extends WP_UnitTestCase
         // CONTROL — the SAME slot geometry, evaluated by the real BookingService
         // with each Clinic's OWN persisted Settings. These are the two verdicts
         // the product route must be able to produce.
-        $verdictUnderA = $this->quoteVerdictForClinic($this->clinicA, $this->clinicianA, $this->nearSlotA);
-        $verdictUnderB = $this->quoteVerdictForClinic($this->clinicB, $this->clinicianB, $this->nearSlotB);
+        $verdictUnderA = $this->quoteVerdictFor($this->clinicianA, $this->nearSlotA);
+        $verdictUnderB = $this->quoteVerdictFor($this->clinicianB, $this->nearSlotB);
 
         self::assertNotSame(
             $verdictUnderA,
@@ -236,8 +232,8 @@ final class MultiClinicBookingSettingsScopeRedTest extends WP_UnitTestCase
 
         // CONTROL — the SAME explicit span, evaluated by the real BookingService
         // with each Clinic's OWN persisted Settings.
-        $verdictUnderA = $this->availabilityVerdictForClinic($this->clinicA, $this->clinicianA, $span);
-        $verdictUnderB = $this->availabilityVerdictForClinic($this->clinicB, $this->clinicianB, $span);
+        $verdictUnderA = $this->availabilityVerdictFor($this->clinicianA, $span);
+        $verdictUnderB = $this->availabilityVerdictFor($this->clinicianB, $span);
 
         self::assertNotSame(
             $verdictUnderA,
@@ -300,41 +296,28 @@ final class MultiClinicBookingSettingsScopeRedTest extends WP_UnitTestCase
     // ================= CONTROL — the same contract, per-Clinic Settings =================
 
     /**
-     * A BookingService bound EXPLICITLY to one Clinic's persisted Settings.
+     * The very BookingService the anonymous REST route uses.
      *
-     * This is the control arm: it is a fresh object, never the memoized
-     * `App::bookingService()` singleton, and it is the contract the anonymous
-     * REST route must honour. It proves the fixture geometry and the two policy
-     * verdicts are real, so a failure of the route can be attributed to
+     * CONTROL ARM. The contract under test is that booking policy is read from
+     * the TRUSTED Clinic of the operation (the persisted clinician's Clinic),
+     * so the same service instance MUST produce different verdicts for
+     * clinicians of different Clinics. Running the two arms through this one
+     * service is what makes that discriminating, and it also proves the
+     * geometry/verdicts are real — so a route failure can be attributed to
      * wrong-Clinic Settings resolution rather than to fixture arithmetic.
      */
-    private function bookingServiceForClinic(int $clinicId): BookingService
+    private function bookingService(): BookingService
     {
-        $db = App::db();
-
-        return new BookingService(
-            $db,
-            new SlotRepository($db),
-            new AppointmentRepository($db),
-            new PatientRepository($db),
-            App::settingsFactory()->forClinic($clinicId),
-            App::licenseGate(),
-            App::audit(),
-            App::op(),
-            App::idem(),
-            App::smsService(),
-            null,
-            new MembershipRepository($db)
-        );
+        return App::bookingService();
     }
 
     /**
      * @param array{slot_id: int, date: string, time: string} $slot
      */
-    private function quoteVerdictForClinic(int $clinicId, int $clinicianId, array $slot): string
+    private function quoteVerdictFor(int $clinicianId, array $slot): string
     {
         try {
-            $this->bookingServiceForClinic($clinicId)->quote(
+            $this->bookingService()->quote(
                 $clinicianId,
                 $slot['date'],
                 $slot['time'],
@@ -350,10 +333,10 @@ final class MultiClinicBookingSettingsScopeRedTest extends WP_UnitTestCase
     /**
      * @param array{from: string, to: string} $span
      */
-    private function availabilityVerdictForClinic(int $clinicId, int $clinicianId, array $span): string
+    private function availabilityVerdictFor(int $clinicianId, array $span): string
     {
         try {
-            $this->bookingServiceForClinic($clinicId)->availability($clinicianId, $span['from'], $span['to']);
+            $this->bookingService()->availability($clinicianId, $span['from'], $span['to']);
 
             return 'HTTP 200 / OK';
         } catch (BookingException $e) {

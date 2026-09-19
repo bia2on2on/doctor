@@ -555,7 +555,7 @@ final class SchedulingLocationLocalBoundaryRedTest extends WP_UnitTestCase
             new SlotRepository($db),
             new AppointmentRepository($db),
             new PatientRepository($db),
-            App::settingsFactory()->forClinic($this->clinicId),
+            App::settingsFactory(),
             App::licenseGate(),
             App::audit(),
             App::op(),
