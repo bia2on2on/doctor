@@ -47,35 +47,37 @@ final class MedicalFileService
     private const CATEGORIES = ['lab_result', 'image', 'scan', 'document', 'other'];
 
     /**
-     * @param Closure(): int $currentClinicResolver     Clinicِ مالکِ عملیاتِ جاری.
-     * @param Closure(): LocalFileStorage $storageResolver مسیرِ ذخیره از Settingِ
-     *        per-Clinic `files.storage_path` می‌آید؛ به‌صورت Closure تزریق می‌شود
-     *        تا در زمانِ ساخت خوانده نشود (الگوی SmsService). ساختِ این سرویس در
-     *        `rest_api_init` انجام می‌شود — پیش از برقراری هر Scope‌ای.
+     * @param Closure(int): LocalFileStorage $storageResolver مسیرِ ذخیره از Settingِ
+     *        per-Clinic `files.storage_path` می‌آید؛ برای Clinicِ **صریحِ** هر
+     *        عملیات صدا زده می‌شود، نه در زمانِ ساخت (الگوی SmsService). ساختِ این
+     *        سرویس در `rest_api_init` انجام می‌شود — پیش از برقراری هر Scope‌ای.
      */
     public function __construct(
         private readonly MedicalFileRepository $files,
         private readonly Closure $storageResolver,
         private readonly SettingsFactory $settingsFactory,
-        private readonly Closure $currentClinicResolver,
         private readonly AuditLogger $audit
     ) {
     }
 
     /**
-     * ذخیره‌سازِ Clinicِ مالکِ عملیات — در زمانِ عملیات حل می‌شود (نه در ساخت).
+     * ذخیره‌سازِ یک Clinicِ **صریح و معتبر** — در زمانِ عملیات حل می‌شود.
+     *
+     * مسیرِ ذخیره از Settingِ per-Clinic `files.storage_path` می‌آید، پس باید از
+     * Clinicِ **مالکِ همان عملیات** خوانده شود (ردیفِ پایدارِ فایل / بیمار که
+     * چند خط بالاتر در برابر Clinicِ معتبر سنجیده شده) — نه از یک Clinicِ محیطی.
      */
-    private function storage(): LocalFileStorage
+    private function storageFor(int $clinicId): LocalFileStorage
     {
-        return ($this->storageResolver)();
+        return ($this->storageResolver)($clinicId);
     }
 
     /**
-     * پیکربندیِ Clinicِ مالکِ عملیات — در زمانِ عملیات حل می‌شود (نه در ساخت).
+     * پیکربندیِ یک Clinicِ **صریح و معتبر** (همان منبعِ storageFor).
      */
-    private function currentSettings(): Settings
+    private function settingsFor(int $clinicId): Settings
     {
-        return $this->settingsFactory->forClinic((int) ($this->currentClinicResolver)());
+        return $this->settingsFactory->forClinic($clinicId);
     }
 
     // ================= E16 — آپلود کارکنان =================
@@ -205,7 +207,8 @@ final class MedicalFileService
             $this->auditAndThrow($actorUserId, 'file', $fileId, 'دسترسی به این فایل مجاز نیست', 'فایل یافت نشد');
         }
 
-        $content = $this->storage()->read((string) $row['storage_path']);
+        // Clinicِ فایل (ردیفِ پایدار) — که در بالا در برابر Clinicِ معتبر سنجیده شد.
+        $content = $this->storageFor((int) $row['clinic_id'])->read((string) $row['storage_path']);
         if ($content === null) {
             // Metadata هست ولی فایل فیزیکی گم شده — نباید URL خطا را فاش کند
             error_log('[CPMS][MedicalFileService] physical file missing for attachment ' . $fileId);
@@ -306,8 +309,17 @@ final class MedicalFileService
             throw ClinicalException::of('CLINIC_FILE_INVALID', 'آپلود فایل با خطا مواجه شد', 400);
         }
 
-        // F-3: حجم (سقف از Setting)
-        $maxBytes = max(1, (int) $this->currentSettings()->get('files.max_upload_bytes', 10485760));
+        // Clinicِ فایل = Clinicِ بیمار (relation). این lookup اینجا لازم است چون
+        // سقفِ حجم یک Settingِ per-Clinic است و باید از Clinicِ مالکِ همین عملیات
+        // خوانده شود؛ در نبودِ بیمار، درخواست چند خط پایین‌تر با 404 رد می‌شود
+        // (پیش از هر نوشتن روی دیسک).
+        $patientClinicId = $this->patientClinicId($patientId);
+        if ($patientClinicId === 0) {
+            throw ClinicalException::of('CLINIC_NOT_FOUND', 'بیمار یافت نشد', 404);
+        }
+
+        // F-3: حجم (سقف از Settingِ Clinicِ مالک)
+        $maxBytes = max(1, (int) $this->settingsFor($patientClinicId)->get('files.max_upload_bytes', 10485760));
         $size = (int) ($file['size'] ?? 0);
         if ($size <= 0 || $size > $maxBytes) {
             throw ClinicalException::of('CLINIC_FILE_INVALID', 'حجم فایل خارج از محدوده مجاز است', 400, ['max_mb' => (int) ($maxBytes / 1048576)]);
@@ -334,16 +346,7 @@ final class MedicalFileService
             );
         }
 
-        // C6: کلینیک فایل = کلینیک بیمار (relation) — و existence بیمار در همین
-        // نقطه verify می‌شود (آپلود staff برای بیمار ناموجود رد می‌شود).
-        global $wpdb;
-        $patientClinicId = (int) $wpdb->get_var($wpdb->prepare(
-            'SELECT clinic_id FROM ' . $wpdb->prefix . 'cpms_patients WHERE id = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-            $patientId
-        ));
-        if ($patientClinicId === 0) {
-            throw ClinicalException::of('CLINIC_NOT_FOUND', 'بیمار یافت نشد', 404);
-        }
+        // C6: کلینیک فایل = کلینیک بیمار (relation) — بیمار در بالا verify شد.
         // C6-F: نوشتن هم Relation‑based — بیمار باید داخل Clinic مورد اجازه
         // باشد؛ این بررسی پیش از هر نوشتن روی دیسک انجام می‌شود.
         if ($via === 'staff') {
@@ -361,7 +364,7 @@ final class MedicalFileService
         } else {
             $this->assertPatientRecord($actorUserId, $patientClinicId, $patientId);
         }
-        $storagePath = $this->storage()->store($content, $patientClinicId, $extension);
+        $storagePath = $this->storageFor($patientClinicId)->store($content, $patientClinicId, $extension);
 
         $fileId = $this->files->insert($patientClinicId, [
             'patient_id' => $patientId,

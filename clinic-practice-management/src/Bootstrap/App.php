@@ -308,7 +308,19 @@ final class App
         $clean = true;
 
         $pairs = [];
-        if (trim((string) self::settings()->get('files.storage_path', '')) === '') {
+        // `files.storage_path` یک Settingِ per-Clinic است و این متد در
+        // `rest_api_init` هم صدا زده می‌شود — جایی که هنوز هیچ Clinicِ معتبری
+        // برقرار نیست. Clinic‌ای ساخته/حدس زده نمی‌شود: وقتی Clinicِ معتبری در
+        // دسترس نباشد، کلِ این انتقالِ یک‌باره به درخواستی که دارد (`admin_init`
+        // یا درخواستِ RESTِ دارای Scope) موکول می‌شود. انتقال idempotent است و تا
+        // وقتی کاملاً تمیز تمام نشود Optionِ «انجام‌شده» ثبت نمی‌شود، پس موکول
+        // کردن آن هیچ وضعیتی را بدتر نمی‌کند — فقط دیرتر انجام می‌شود.
+        try {
+            $filesStoragePath = trim((string) self::settings()->get('files.storage_path', ''));
+        } catch (ScopeRequiredException) {
+            return;
+        }
+        if ($filesStoragePath === '') {
             $pairs[] = [LocalFileStorage::legacyBasePath(), LocalFileStorage::defaultBasePath(), 'clinic-files'];
         }
         $backupConfigured = trim(self::installationSettings()->getBackupStoragePath());
@@ -813,8 +825,8 @@ final class App
         // میخ‌کردنش به Clinic/lحظهٔ bootstrap تغییرِ files.storage_path را
         // بی‌اثر می‌کرد. resolver زیر همان خواندن را در زمانِ عملیات انجام
         // می‌دهد و هم‌زمان ساخت را scope-neutral نگه می‌دارد (الگوی SmsService).
-        $storageResolver = static function (): LocalFileStorage {
-            $configured = trim((string) self::settings()->get('files.storage_path', ''));
+        $storageResolver = static function (int $clinicId): LocalFileStorage {
+            $configured = trim((string) self::settingsFactory()->forClinic($clinicId)->get('files.storage_path', ''));
 
             return new LocalFileStorage($configured !== '' ? $configured : LocalFileStorage::defaultBasePath());
         };
@@ -823,7 +835,6 @@ final class App
             new MedicalFileRepository(self::db()),
             $storageResolver,
             self::settingsFactory(),
-            static fn (): int => self::scope()->clinicId,
             self::audit()
         );
     }
