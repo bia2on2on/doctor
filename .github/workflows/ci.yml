@@ -161,9 +161,31 @@ jobs:
       # ------------------------------------------------------------------
       - name: Process-fresh multi-Clinic REST bootstrap probe (RED 1)
         if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -o pipefail
-          php -d memory_limit=1G tests/bin/multi-clinic-rest-bootstrap-probe.php 2>&1 | tee /tmp/red1-probe.log
+          set +e
+          php -d memory_limit=1G tests/bin/multi-clinic-rest-bootstrap-probe.php > /tmp/red1-probe.log 2>&1
+          PROBE_RC=$?
+          set -e
+          cat /tmp/red1-probe.log
+          # The probe's own stdout/stderr IS the RED evidence, and the raw job
+          # log is not readable through the API — same reason the repository
+          # already mirrors the integration summary onto the PR. Mirroring here
+          # never changes the step's verdict: we re-exit with the probe's rc.
+          if [ -n "$PR_NUMBER" ]; then
+            {
+              echo "### RED 1 — process-fresh multi-Clinic REST bootstrap probe (run ${{ github.run_id }}, attempt ${{ github.run_attempt }}, rc=${PROBE_RC})"
+              echo '```'
+              cat /tmp/red1-probe.log
+              echo '```'
+            } > /tmp/red1-probe-comment.md
+            gh pr comment "$PR_NUMBER" --body-file /tmp/red1-probe-comment.md \
+              || echo '::notice::RED 1 probe evidence comment failed (non-fatal)'
+          fi
+          exit "${PROBE_RC:-1}"
 
       # شواهد تکمیل (همان سازوکار گارد): خلاصهٔ پایانی + اجرای کلاس‌ها از JUnit
       # به‌صورت کامنت PR — لاگ‌های job به blob ریدایرکت می‌شوند، اما کامنت PR از
