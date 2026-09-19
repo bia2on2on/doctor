@@ -29,6 +29,7 @@ use ClinicCore\Infrastructure\Repository\PatientRepository;
 use ClinicCore\Infrastructure\Repository\SlotRepository;
 use ClinicCore\Infrastructure\Security\Idempotency;
 use ClinicCore\Settings\Settings;
+use ClinicCore\Settings\SettingsFactory;
 use Throwable;
 
 /**
@@ -59,7 +60,7 @@ final class BookingService
         private readonly SlotRepository $slots,
         private readonly AppointmentRepository $appointments,
         private readonly PatientRepository $patients,
-        private readonly Settings $settings,
+        private readonly SettingsFactory $settingsFactory,
         private readonly LicenseGate $licenseGate,
         private readonly AuditLogger $audit,
         private readonly OpLogger $op,
@@ -69,6 +70,27 @@ final class BookingService
         ?MembershipRepository $memberships = null
     ) {
         $this->memberships = $memberships ?? new MembershipRepository($this->db);
+    }
+
+    /**
+     * پیکربندیِ یک Clinicِ **صریح و معتبر** — نقطهٔ یکتای دسترسیِ این سرویس به Settings.
+     *
+     * چرا این متد وجود دارد: این سرویس یک `Settings`ِ متعلق به «Clinicِ محیطیِ
+     * زمانِ ساخت» نگه می‌داشت، در حالی که ثبتِ مسیرهای REST در `rest_api_init`
+     * پیش از برقراری هر Scope‌ای انجام می‌شود — یعنی (الف) ساختش در نصبِ
+     * چند-Clinicه bootstrap را می‌انداخت و (ب) policyِ رزروِ هر عملیات با
+     * پیکربندیِ Clinicِ دیگری سنجیده می‌شد (A1/A4 برای پزشکِ Clinic دیگر).
+     *
+     * قاعدهٔ الزامی: هر خواندنِ Settings باید Clinic‌اش را از منبعِ **معتبرِ
+     * همان عملیات** بگیرد — ردیفِ پایدارِ پزشک/نوبت، یا Scopeِ معتبرِ کارکنان.
+     * هرگز: `clinic_id` خامِ درخواست/شورت‌کد، کاربرِ جاری، Clinic اول، clinic 1.
+     *
+     * کشِ `SettingsFactory` با کلیدِ `clinicId` است، پس فراخوانیِ مکرر در یک
+     * عملیات هزینه‌ای ندارد.
+     */
+    private function settingsFor(int $clinicId): Settings
+    {
+        return $this->settingsFactory->forClinic($clinicId);
     }
 
     // ================= A1 — Availability (Public) =================
@@ -103,7 +125,8 @@ final class BookingService
         }
 
         $spanDays = (int) (($this->ts($to) - $this->ts($from)) / 86400) + 1;
-        if ($spanDays < 1 || $spanDays > (int) $this->settings->get('booking.max_future_days', 60) + 2) {
+        // A1 — policy از Clinicِ **پایدارِ همان پزشک** (requireClinician بالا).
+        if ($spanDays < 1 || $spanDays > (int) $this->settingsFor($clinicId)->get('booking.max_future_days', 60) + 2) {
             throw BookingException::of('CLINIC_VALIDATION_FAILED', 'بازه تاریخ نامعتبر است (حداکثر ۶۰ روز)');
         }
 
@@ -295,7 +318,9 @@ final class BookingService
     {
         $clinicId = $this->requireClinician($clinicianId);
 
-        $minLead = (int) $this->settings->get('booking.min_lead_hours', 2);
+        // A4 — policy از Clinicِ **پایدارِ همان پزشک** (requireClinician بالا).
+        $settings = $this->settingsFor($clinicId);
+        $minLead = (int) $settings->get('booking.min_lead_hours', 2);
 
         // Resolve slot (exact identity preferred) — پیش از هر ارزیابی زمانی، تا
         // سیاست روی اسلاتِ واقعی با تقویم محلیِ Location خودش اعمال شود.
@@ -304,13 +329,13 @@ final class BookingService
             // پیش‌چک legacy-UTC فقط وقتی اسلاتی وجود ندارد (fail-fast برای ورودی
             // نامعتبر + حفظ رفتار تاریخی read-only quote روی تاریخ گذشتهٔ بدون
             // اسلات — BookingFlowTest). برای اسلاتِ موجود هرگز به UTC fallback نمی‌شویم.
-            $this->assertWindow($slotDate, $slotTime, $minLead);
+            $this->assertWindow($slotDate, $slotTime, $minLead, $settings);
             return ['available' => false, 'capacity_left' => 0];
         }
 
         // Two-Clock: obtain Location timezone and evaluate lead policy precisely
         $locationTz = $this->resolveLocationTimezone((int) $slot['location_id'], $clinicId);
-        $this->assertWindowWithTimezone($slotDate, $slotTime, $locationTz, $minLead);
+        $this->assertWindowWithTimezone($slotDate, $slotTime, $locationTz, $minLead, $settings);
 
         $left = (int) $slot['capacity'] - (int) $slot['booked_count'] - (int) $slot['held_count'];
 
@@ -338,7 +363,9 @@ final class BookingService
 
         $clinicId = $this->requireClinician($clinicianId);
 
-        $minLead = (int) $this->settings->get('booking.min_lead_hours', 2);
+        // B1 — policy از Clinicِ **پایدارِ همان پزشک** (requireClinician بالا).
+        $settings = $this->settingsFor($clinicId);
+        $minLead = (int) $settings->get('booking.min_lead_hours', 2);
 
         // Resolve slot — exact identity if slotId given, else unique tuple with fail-closed on ambiguity
         $slot = $this->resolveSlotForBooking($clinicId, $clinicianId, $slotDate, $slotTime, $slotId);
@@ -347,13 +374,13 @@ final class BookingService
             // پیش‌چک legacy-UTC فقط در نبودِ اسلات قابل‌استفاده (fail-fast برای
             // ورودی نامعتبر + تقدم خطای سیاست بر 404 طبق رفتار تاریخی). برای
             // اسلاتِ موجود، صلاحیت زمانی فقط با تقویم محلیِ Location سنجیده می‌شود.
-            $this->assertWindow($slotDate, $slotTime, $minLead);
+            $this->assertWindow($slotDate, $slotTime, $minLead, $settings);
             throw BookingException::of('CLINIC_NOT_FOUND', 'اسلات انتخابی یافت نشد', 404);
         }
 
         // Two-Clock: Location timezone -> UTC instant before lead check (precise)
         $locationTz = $this->resolveLocationTimezone((int) $slot['location_id'], $clinicId);
-        $this->assertWindowWithTimezone($slotDate, $slotTime, $locationTz, $minLead);
+        $this->assertWindowWithTimezone($slotDate, $slotTime, $locationTz, $minLead, $settings);
 
         // N-4: Hold Active موجود همان بیمار/اسلات → Idempotent (بازگردانی همان Token)
         $existing = $this->db->fetchRow(
@@ -369,7 +396,7 @@ final class BookingService
             ];
         }
 
-        $ttl = (int) $this->settings->get('booking.hold_ttl_sec', 600);
+        $ttl = (int) $settings->get('booking.hold_ttl_sec', 600);
         $token = self::uuid4();
         $expiresAt = (new \DateTimeImmutable('+ ' . $ttl . ' seconds', new \DateTimeZone('UTC')))->format('Y-m-d H:i:s.000');
 
@@ -802,7 +829,7 @@ final class BookingService
                         (string) $appt['slot_time'],
                         $oldLocationTz,
                         $this->now(),
-                        (int) $this->settings->get('booking.reschedule_deadline_hours', 24)
+                        (int) $this->settingsFor((int) $appt['clinic_id'])->get('booking.reschedule_deadline_hours', 24)
                     );
                     if ($err !== null) {
                         throw BookingException::of('CLINIC_POLICY_VIOLATION', 'زمان جابه‌جایی این نوبت گذشته است (سیاست مطب)', 409);
@@ -832,8 +859,9 @@ final class BookingService
                 // Staff: min-lead = 0 (owner-issued policy; N-3 staff create parity).
                 // Patient: existing destination min-lead setting.
                 $newLocationTz = $this->resolveLocationTimezone((int) $newSlot['location_id'], $newClinicId);
-                $minLead = $actor === 'staff' ? 0 : (int) $this->settings->get('booking.min_lead_hours', 2);
-                $this->assertWindowWithTimezone($newDate, $newTime, $newLocationTz, $minLead);
+                $newSettings = $this->settingsFor($newClinicId);
+                $minLead = $actor === 'staff' ? 0 : (int) $newSettings->get('booking.min_lead_hours', 2);
+                $this->assertWindowWithTimezone($newDate, $newTime, $newLocationTz, $minLead, $newSettings);
                 $newSlotId = (int) $newSlot['id'];
 
                 // قفل هر دو اسلات — مرتب بر اساس id (پیشگیری از Deadlock)
@@ -964,7 +992,7 @@ final class BookingService
         }
         // N-3: Staff (حضوری/فوری) بدون min-lead — فقط Window + افق آینده، با Location timezone
         $locationTz = $this->resolveLocationTimezone((int) $resolvedSlot['location_id'], $trustedClinicId);
-        $this->assertWindowWithTimezone($slotDate, $slotTime, $locationTz, 0);
+        $this->assertWindowWithTimezone($slotDate, $slotTime, $locationTz, 0, $this->settingsFor($trustedClinicId));
 
         try {
             [$apptId, $appt, $slot] = $this->db->transactional(function () use (
@@ -1159,7 +1187,7 @@ final class BookingService
                     (string) $appt['slot_time'],
                     $locationTz,
                     $this->now(),
-                    (int) $this->settings->get('booking.cancel_deadline_hours', 24)
+                    (int) $this->settingsFor((int) $appt['clinic_id'])->get('booking.cancel_deadline_hours', 24)
                 );
                 if ($err !== null) {
                     throw BookingException::of('CLINIC_POLICY_VIOLATION', 'زمان لغو این نوبت گذشته است (سیاست مطب)', 409);
@@ -1333,39 +1361,42 @@ final class BookingService
         return $all[0];
     }
 
-    private function assertWindow(string $slotDate, string $slotTime, int $minLeadHours): void
+    private function assertWindow(string $slotDate, string $slotTime, int $minLeadHours, Settings $settings): void
     {
         // LEGACY path kept for backward compat where Location not yet resolved
+        // `booking.max_future_days` از Clinicِ معتبرِ همین عملیات می‌آید.
+        $maxFutureDays = (int) $settings->get('booking.max_future_days', 60);
         $err = BookingWindow::checkRequest(
             $slotDate,
             $slotTime,
             $this->now(),
             $minLeadHours,
-            (int) $this->settings->get('booking.max_future_days', 60)
+            $maxFutureDays
         );
         if ($err === BookingWindow::CODE_INVALID) {
             throw BookingException::of('CLINIC_VALIDATION_FAILED', 'تاریخ/ساعت نوبت نامعتبر است');
         }
         if ($err !== null) {
-            throw BookingException::of('CLINIC_POLICY_VIOLATION', 'بازه انتخابی خارج از Window رزرو است (حداقل ' . $minLeadHours . ' ساعت؛ حداکثر ' . (int) $this->settings->get('booking.max_future_days', 60) . ' روز)', 409);
+            throw BookingException::of('CLINIC_POLICY_VIOLATION', 'بازه انتخابی خارج از Window رزرو است (حداقل ' . $minLeadHours . ' ساعت؛ حداکثر ' . $maxFutureDays . ' روز)', 409);
         }
     }
 
-    private function assertWindowWithTimezone(string $slotDate, string $slotTime, \DateTimeZone $locationTz, int $minLeadHours): void
+    private function assertWindowWithTimezone(string $slotDate, string $slotTime, \DateTimeZone $locationTz, int $minLeadHours, Settings $settings): void
     {
+        $maxFutureDays = (int) $settings->get('booking.max_future_days', 60);
         $err = BookingWindow::checkRequestWithTimezone(
             $slotDate,
             $slotTime,
             $locationTz,
             $this->now(),
             $minLeadHours,
-            (int) $this->settings->get('booking.max_future_days', 60)
+            $maxFutureDays
         );
         if ($err === BookingWindow::CODE_INVALID) {
             throw BookingException::of('CLINIC_VALIDATION_FAILED', 'تاریخ/ساعت نوبت نامعتبر است');
         }
         if ($err !== null) {
-            throw BookingException::of('CLINIC_POLICY_VIOLATION', 'بازه انتخابی خارج از Window رزرو است (حداقل ' . $minLeadHours . ' ساعت؛ حداکثر ' . (int) $this->settings->get('booking.max_future_days', 60) . ' روز)', 409);
+            throw BookingException::of('CLINIC_POLICY_VIOLATION', 'بازه انتخابی خارج از Window رزرو است (حداقل ' . $minLeadHours . ' ساعت؛ حداکثر ' . $maxFutureDays . ' روز)', 409);
         }
     }
 
