@@ -255,8 +255,16 @@ final class BookingController extends RestBase
             return $this->error('CLINIC_VALIDATION_FAILED', 400, 'هدر Idempotency-Key (UUID) برای reschedule الزامی است');
         }
         $appointmentId = (int) $request->get_param('id');
+        $isStaff = $user->has_cap(RolesAndCapabilities::APPT_RESCHEDULE);
 
-        return $this->wrap(function () use ($request, $user, $key, $appointmentId) {
+        if ($isStaff) {
+            $denied = $this->requireClinicPermission(RolesAndCapabilities::APPT_RESCHEDULE);
+            if ($denied instanceof WP_Error) {
+                return $denied;
+            }
+        }
+
+        return $this->wrap(function () use ($request, $user, $key, $appointmentId, $isStaff) {
             // GAP-1/G-3: clinician_id اختیاری — Default = پزشک فعلی نوبت.
             // (Data-Access/مالکیت در Service enforce می‌شود؛ این خط فقط مقدار فیلد را resolve می‌کند.)
             $newClinicianId = $request->get_param('clinician_id');
@@ -269,15 +277,27 @@ final class BookingController extends RestBase
             }
 
             $newSlotId = $request->get_param('slot_id');
-            return $this->booking->reschedule(
-                (int) $user->ID,
-                $appointmentId,
-                (int) $newClinicianId,
-                (string) $request->get_param('slot_date'),
-                (string) $request->get_param('slot_time'),
-                $key,
-                $newSlotId !== null && $newSlotId !== '' ? (int) $newSlotId : null
-            );
+            $slotId = $newSlotId !== null && $newSlotId !== '' ? (int) $newSlotId : null;
+
+            return $isStaff
+                ? $this->booking->rescheduleByStaff(
+                    (int) $user->ID,
+                    $appointmentId,
+                    (int) $newClinicianId,
+                    (string) $request->get_param('slot_date'),
+                    (string) $request->get_param('slot_time'),
+                    $key,
+                    $slotId
+                )
+                : $this->booking->reschedule(
+                    (int) $user->ID,
+                    $appointmentId,
+                    (int) $newClinicianId,
+                    (string) $request->get_param('slot_date'),
+                    (string) $request->get_param('slot_time'),
+                    $key,
+                    $slotId
+                );
         });
     }
 
@@ -450,32 +470,6 @@ final class BookingController extends RestBase
      * @return int|null
      */
     private function clinicianIdOfAppointment(int $appointmentId): ?int
-    {
-        $v = App::db()->fetchValue(
-            'SELECT clinician_id FROM ' . App::db()->table('cpms_appointments') . ' WHERE id = %d LIMIT 1',
-            [$appointmentId]
-        );
-
-        return $v === null ? null : (int) $v;
-    }
-
-    /**
-     * Wrap استاندارد: BookingException → WP_Error با کد CLINIC_* + HTTP.
-     *
-     * @template T
-     * @param callable(): T $fn
-     * @return WP_REST_Response|WP_Error
-     */
-    private function wrap(callable $fn): WP_REST_Response|WP_Error
-    {
-        try {
-            return $this->success($fn(), 200);
-        } catch (BookingException $e) {
-            return $this->error($e->errorCode, $e->httpStatus, $e->getMessage(), $e->data);
-        }
-    }
-}
-nt $appointmentId): ?int
     {
         $v = App::db()->fetchValue(
             'SELECT clinician_id FROM ' . App::db()->table('cpms_appointments') . ' WHERE id = %d LIMIT 1',
