@@ -36,7 +36,7 @@
 | B2 | `POST /booking/confirm` | `{hold_token, reason?}` + `Idempotency-Key` (الزامی) | بازبینی نهایی Slot → Appointment `confirmed`. Response: `{reference_code, appointment_id, slot:{...jalali}, status}`. خطا: `CLINIC_SLOT_TAKEN`, `CLINIC_HOLD_EXPIRED`, `CLINIC_DUPLICATE_APPOINTMENT`. Replay = پاسخ Origin. |
 | B3 | `GET /appointments/mine?from&to` | — | لیست نوبت‌های من (تاریخ/وضعیت) |
 | B4 | `POST /appointments/{id}/cancel` | `{reason?}` | در Policy (FR-4.9 — حداقل X ساعت قبل؛ Configurable). خطا: `CLINIC_POLICY_VIOLATION`, `CLINIC_INVALID_TRANSITION` |
-| B5 | `POST /appointments/{id}/reschedule` | `{slot_date, slot_time, clinician_id? (اختیاری — Default = پزشک فعلی نوبت)}` + `Idempotency-Key` (الزامی) | در Policy (FR-4.10) + انتقال Hold. Response: `{appointment_id (جدید), reference_code, slot:{...}, previous_appointment_id}`. خطا: `CLINIC_SLOT_TAKEN`, `CLINIC_DUPLICATE_APPOINTMENT`, `CLINIC_POLICY_VIOLATION`. (GAP-1/G-3) |
+| B5 | `POST /appointments/{id}/reschedule` | `{slot_date, slot_time, clinician_id? (اختیاری — Default = پزشک فعلی نوبت)}` + `Idempotency-Key` (الزامی) | مسیر بیمار: در Policy (FR-4.10 — deadline + destination min-lead) + انتقال Hold. Response: `{appointment_id (جدید), reference_code, slot:{...}, previous_appointment_id}`. خطا: `CLINIC_SLOT_TAKEN`, `CLINIC_DUPLICATE_APPOINTMENT`, `CLINIC_POLICY_VIOLATION`. (GAP-1/G-3). Staff uses the same path — see D11b. |
 | B6 | `GET /booking/resume?hold_token` | — | ادامه رزرو بعد از قطعی (ER-03). Response: `{hold_token, status: active|converted, expires_at?, slot?}`. خطا: `CLINIC_HOLD_EXPIRED` |
 
 ## 3. Patient (Authenticated: patient)
@@ -67,6 +67,7 @@
 | D9 | `GET /appointments?date&status` | `cpms_appt_read` | لیست نوبت‌های روز |
 | D10 | `POST /appointments` | `cpms_appt_create` | نوبت حضوری/فوری `{patient_id, clinician_id (الزامی), slot_date, slot_time, reason?}` — بدون min-lead (فوری/حضوری)؛ `is_walkin_express` اگر روز جاری. (GAP-1/G-3) |
 | D11 | `POST /appointments/{id}/cancel` | `cpms_appt_cancel` | با دلیل |
+| D11b | `POST /appointments/{id}/reschedule` | `cpms_appt_reschedule` + trusted Clinic scope + `Idempotency-Key` (UUID الزامی) | مسیر کارکنی روی همان سطح موتیشن B5. Body: `{slot_date, slot_time, clinician_id?, slot_id?}`. `confirmed` → `rescheduled` + یک نوبت `confirmed` جایگزین با پیوند دوطرفه. خطا: `HAS_ACTIVE_VISIT` (409)، `CLINIC_NOT_FOUND` (404 parity برای شناسهٔ Clinic دیگر)، `CLINIC_PERMISSION_DENIED` (بدون مجوز scoped). **Owner-issued product policy (NOT original SRS wording):** staff is **not** subject to the patient 24-hour reschedule deadline (FR-4.10) and **not** subject to the patient destination min-lead restriction; a successful staff reschedule sends **both** the internal patient change notification and the existing reschedule SMS/change notification. Patient B5 deadline/min-lead/ownership remain unchanged. |
 | D12 | `POST /invoices` | `cpms_invoice_create` | `{visit_id, items:[{service_id?, description, quantity|qty, unit_price|price, discount?}], discount?, tax?}` — مبالغ ریالِ صحیح (TP-18)؛ وضعیت ویزیت `consultation_completed`/`awaiting_payment`؛ V11 سیستمی؛ **201** |
 | D12b | `GET /invoices/{id}` | `cpms_invoice_read` | نمای کامل فاکتور (اقلام/پرداخت‌ها/اصلاحات) — UI تسویه |
 | D12c | `GET /visits/{id}/invoice` | `cpms_invoice_read` | فاکتور فعال ویزیت (رفع ویزیت→فاکتور در UI)؛ بدون فاکتور → 404 |

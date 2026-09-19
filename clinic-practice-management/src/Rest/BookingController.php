@@ -14,7 +14,7 @@ use WP_REST_Response;
 use WP_REST_Server;
 
 /**
- * Endpointهای نوبت‌دهی (F3) — API Contract A1/A4 + B1–B6 + D9–D11.
+ * Endpointهای نوبت‌دهی (F3) — API Contract A1/A4 + B1–B6 + D9–D11b.
  *
  * مجوز (5 لایه — auth-authorization.md §2.1):
  *  1) Authentication/Nonce  2) Capability/Role  3) Data-Access (در Service)
@@ -116,7 +116,7 @@ final class BookingController extends RestBase
             [
                 'methods' => WP_REST_Server::CREATABLE,
                 'callback' => fn (WP_REST_Request $request) => $this->reschedule($request),
-                'permission_callback' => fn (WP_REST_Request $request) => $this->requirePatient($request),
+                'permission_callback' => fn (WP_REST_Request $request) => $this->reschedulePermission($request),
                 'args' => [
                     'id' => ['required' => true, 'type' => 'integer'],
                     'slot_date' => ['required' => true, 'type' => 'string'],
@@ -380,6 +380,40 @@ final class BookingController extends RestBase
     }
 
     /**
+     * B5/staff reschedule: بیمار (نقش) یا Staff با `cpms_appt_reschedule`.
+     * شاخه کارکنی مجوز Clinic-scoped را در handler اعمال می‌کند (همان الگوی D11).
+     */
+    private function reschedulePermission(WP_REST_Request $request): bool|WP_Error
+    {
+        $nonceError = $this->requireNonce($request);
+        if ($nonceError instanceof WP_Error) {
+            return $nonceError;
+        }
+        $user = wp_get_current_user();
+        if (!$user->exists()) {
+            return $this->error('CLINIC_UNAUTHORIZED', 401, 'وارد نشده‌اید');
+        }
+
+        $allowed = in_array(RolesAndCapabilities::ROLE_PATIENT, (array) $user->roles, true)
+            || $user->has_cap(RolesAndCapabilities::APPT_RESCHEDULE);
+        if (!$allowed) {
+            App::audit()->log(
+                'FORBIDDEN_ACCESS_ATTEMPT',
+                ['wp_user_id' => (int) $user->ID, 'role' => $user->roles[0] ?? 'unknown'],
+                'capability',
+                null,
+                null,
+                null,
+                ['cap' => RolesAndCapabilities::APPT_RESCHEDULE]
+            );
+
+            return $this->error('CLINIC_PERMISSION_DENIED', 403, 'دسترسی ندارید');
+        }
+
+        return true;
+    }
+
+    /**
      * B4/D11: بیمار (نقش) یا Staff با `cpms_appt_cancel`.
      */
     private function cancelPermission(WP_REST_Request $request): bool|WP_Error
@@ -416,6 +450,32 @@ final class BookingController extends RestBase
      * @return int|null
      */
     private function clinicianIdOfAppointment(int $appointmentId): ?int
+    {
+        $v = App::db()->fetchValue(
+            'SELECT clinician_id FROM ' . App::db()->table('cpms_appointments') . ' WHERE id = %d LIMIT 1',
+            [$appointmentId]
+        );
+
+        return $v === null ? null : (int) $v;
+    }
+
+    /**
+     * Wrap استاندارد: BookingException → WP_Error با کد CLINIC_* + HTTP.
+     *
+     * @template T
+     * @param callable(): T $fn
+     * @return WP_REST_Response|WP_Error
+     */
+    private function wrap(callable $fn): WP_REST_Response|WP_Error
+    {
+        try {
+            return $this->success($fn(), 200);
+        } catch (BookingException $e) {
+            return $this->error($e->errorCode, $e->httpStatus, $e->getMessage(), $e->data);
+        }
+    }
+}
+nt $appointmentId): ?int
     {
         $v = App::db()->fetchValue(
             'SELECT clinician_id FROM ' . App::db()->table('cpms_appointments') . ' WHERE id = %d LIMIT 1',
