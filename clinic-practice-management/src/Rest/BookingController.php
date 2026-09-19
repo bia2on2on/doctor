@@ -165,6 +165,18 @@ final class BookingController extends RestBase
                 ],
             ],
         ]);
+
+        register_rest_route(self::NS, '/appointments/(?P<id>\\d+)/no-show', [
+            [
+                'methods' => WP_REST_Server::CREATABLE,
+                'callback' => fn (WP_REST_Request $request) => $this->noShow($request),
+                'permission_callback' => fn (WP_REST_Request $r) => $this->permCap($r, RolesAndCapabilities::APPT_NO_SHOW),
+                'args' => [
+                    'id' => ['required' => true, 'type' => 'integer'],
+                    'reason' => ['required' => false, 'type' => 'string'],
+                ],
+            ],
+        ]);
     }
 
     // ---------- Handlers ----------
@@ -339,6 +351,19 @@ final class BookingController extends RestBase
             $request->get_param('reason') !== null ? (string) $request->get_param('reason') : null,
             $slotId !== null && $slotId !== '' ? (int) $slotId : null
         ));
+    }
+
+    private function noShow(WP_REST_Request $request): WP_REST_Response|WP_Error
+    {
+        $denied = $this->requireClinicPermission(RolesAndCapabilities::APPT_NO_SHOW);
+        if ($denied instanceof WP_Error) {
+            return $denied;
+        }
+        $user = wp_get_current_user();
+        $appointmentId = (int) $request->get_param('id');
+        $reason = $request->get_param('reason') !== null ? (string) $request->get_param('reason') : null;
+
+        return $this->wrap(fn () => $this->booking->markNoShowByStaff((int) $user->ID, $appointmentId, $reason));
     }
 
     private function cancel(WP_REST_Request $request): WP_REST_Response|WP_Error

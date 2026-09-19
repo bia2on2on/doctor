@@ -1044,6 +1044,57 @@ final class BookingService
         return $this->cancel($actorUserId, $appointmentId, $reason, 'staff');
     }
 
+    /**
+     * FR-5.5 — manual T8 (staff/secretary). Reason is required and is stored
+     * only in APPOINTMENT_NO_SHOW audit evidence — appointments.reason (booking
+     * reason) is never overwritten. Slot counters are not mutated.
+     *
+     * @return array{appointment_id: int, status: string}
+     */
+    public function markNoShowByStaff(int $actorUserId, int $appointmentId, ?string $reason): array
+    {
+        $trimmed = is_string($reason) ? trim($reason) : '';
+        if ($trimmed === '') {
+            throw BookingException::of('CLINIC_VALIDATION_FAILED', 'دلیل عدم حضور الزامی است', 422);
+        }
+
+        [$appt, $toState] = $this->db->transactional(function () use ($appointmentId): array {
+            $appt = $this->appointments->findForUpdate($appointmentId);
+            if ($appt === null) {
+                throw BookingException::of('CLINIC_NOT_FOUND', 'نوبت یافت نشد', 404);
+            }
+            $this->assertAppointmentWithinExplicitScope($appt);
+
+            $toState = $this->machineCheck((string) $appt['status'], 'no_show', 'staff');
+            $this->assertNoActiveVisit($appointmentId);
+
+            $nowSql = $this->db->nowUtcSql();
+            $this->appointments->updateStatus($appointmentId, [
+                'status' => $toState,
+                'no_show_at' => $nowSql,
+                'active_visit_id' => null,
+                'updated_at' => $nowSql,
+            ]);
+
+            return [$appt, $toState];
+        });
+
+        $this->audit(
+            'APPOINTMENT_NO_SHOW',
+            $actorUserId,
+            'staff',
+            'appointment',
+            $appointmentId,
+            (int) $appt['patient_id'],
+            ['status' => (string) $appt['status']],
+            ['status' => $toState],
+            ['reason' => $trimmed]
+        );
+        $this->op->info('booking.no_show', ['appointment_id' => $appointmentId, 'actor' => $actorUserId]);
+
+        return ['appointment_id' => $appointmentId, 'status' => $toState];
+    }
+
     // ================= D9 — Staff List =================
 
     /**

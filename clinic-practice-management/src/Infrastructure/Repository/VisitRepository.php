@@ -351,7 +351,10 @@ final class VisitRepository
     {
         $upperDate = $nowUtc->add(new \DateInterval('P2D'))->format('Y-m-d');
 
-        $where = "a.status = 'confirmed' AND a.active_visit_id IS NULL AND a.slot_date <= %s";
+        // I-3 / FR-5.5: a stale active_visit_id is not proof of an active Visit.
+        // Candidate selection is bounded by status + date window only; genuine
+        // activity is rechecked in VisitService under the appointment row lock.
+        $where = "a.status = 'confirmed' AND a.slot_date <= %s";
         $params = [$upperDate];
 
         if ($cursor !== null && isset($cursor['slot_date'], $cursor['slot_time'], $cursor['id'])) {
