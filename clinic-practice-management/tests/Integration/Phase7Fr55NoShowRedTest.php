@@ -947,10 +947,8 @@ final class Phase7Fr55NoShowRedTest extends WP_UnitTestCase {
                     'processed' => (int) ($res['processed'] ?? 0),
                 ];
             } else { // check_in
-                $v = $visits->checkIn($this->secretaryA, $this->patientA, $appointmentId);
+                $v = $visits->checkIn($this->secretaryA, $patientId, $appointmentId);
                 if (is_array($v) && !isset($v['id'])) {
-                    // Legal product rejection envelope (the service catches its
-                    // own exceptions) — distinct from a raw exception.
                     $outcome = [
                         'role' => $role,
                         'appointment_id' => $appointmentId,
@@ -964,9 +962,19 @@ final class Phase7Fr55NoShowRedTest extends WP_UnitTestCase {
                         'result' => 'ok',
                         'visit_id' => (int) ($v['id'] ?? 0),
                         'visit_status' => (string) ($v['status'] ?? ''),
+                        'visit_source' => (string) ($v['source'] ?? ''),
                     ];
                 }
             }
+        } catch (VisitException $e) {
+            $outcome = [
+                'role' => $role,
+                'appointment_id' => $appointmentId,
+                'result' => 'rejected',
+                'error_code' => $e->errorCode,
+                'http_status' => $e->httpStatus,
+                'error' => $e->getMessage(),
+            ];
         } catch (Throwable $e) {
             $outcome = ['role' => $role, 'appointment_id' => $appointmentId, 'result' => 'exception', 'error' => get_class($e) . ': ' . $e->getMessage()];
         }
