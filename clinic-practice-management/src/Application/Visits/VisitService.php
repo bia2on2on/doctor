@@ -167,11 +167,11 @@ final class VisitService
                 }
 
                 if ($shouldMarkNoShow) {
-                    // Lazy no-show (FR-5.5) then unbound walk-in — T8 first so
-                    // the Visit is never bound to the terminal appointment.
+                    // ER-06 same-writer: T8 then walk-in-like with appointment
+                    // reference preserved (VisitFlow). Concurrent T8 that already
+                    // committed is handled above (unbound).
                     $this->markAppointmentNoShow($appt, $nowSql, $actorUserId);
                     $source = 'walk_in';
-                    $appointmentId = null;
                 } elseif ($status === 'pending') {
                     // حضور بیمار = تایید نوبت (T3) — تا Checkout مسیر کامل شود
                     $this->confirmAppointment($appt, $nowSql, $actorUserId);
@@ -1510,6 +1510,16 @@ final class VisitService
                 $resourceType,
                 $resourceId,
                 $patientId,
+                $before,
+                $after,
+                $meta
+            );
+        } catch (Throwable $e) {
+            // Audit نباید جریان عملیات بالینی را قطع کند (تطبیق الگوی BookingService)
+        }
+    }
+}
+    $patientId,
                 $before,
                 $after,
                 $meta

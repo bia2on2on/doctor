@@ -325,6 +325,9 @@ final class RestClinicContext
         if ($e->errorCode === 'CLINIC_VALIDATION_FAILED' && isset($e->data['field'])) {
             $data['field'] = $e->data['field'];
         }
+        if ($e->errorCode === 'CLINIC_SCOPE_UNAVAILABLE' && isset($e->data['reason'])) {
+            $data['reason'] = $e->data['reason'];
+        }
 
         return new WP_Error($e->errorCode, $message, $data);
     }
