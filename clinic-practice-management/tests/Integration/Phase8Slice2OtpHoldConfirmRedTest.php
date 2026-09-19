@@ -104,8 +104,19 @@
  * established repo constraint); execution evidence is the CI Integration job
  * at the exact RED head (NOT RUN != PASS; CI run id is recorded in the PR).
  *
+ * EXECUTED EVIDENCE (Integration run 35474056024, PR #89): Tests: 1075,
+ * Assertions: 17331, Failures: 15, Errors: 0 — all 15 failures are the
+ * methods below (zero collateral; all 10 guards pass; failures are PHPUnit
+ * assertion failures, never harness errors: T03/T08 report the escaping
+ * ScopeRequiredException, T04/T05/T06 report 200+sms_sent:true on tampered
+ * selections, T09/T10 report ambient-Clinic patient linkage instead of the
+ * challenge-Clinic linkage, T11 reports CLINIC_OTP_INVALID/400 from the
+ * duplicate-email insert, T14/T16 report 200 with a created appointment,
+ * T20/T21/T22 report absent continuation markers, T24 the absent column,
+ * T25 the un-advanced baseline).
+ *
  * INTENDED RED — fails on live main, attributable ONLY to missing Slice 2
- * contracts (14 test methods):
+ * contracts (15 test methods):
  *
  *   T03 A2 with a consistent persisted selection must succeed without any
  *       ambient Clinic scope and durably bind the OTP challenge to the
@@ -154,7 +165,7 @@
  *       '2026_09_09_0020'   (fails: still the baseline)
  *
  * GUARDS / POSITIVE CONTROLS — pass on live main and keep GREEN honest (they
- * pin behaviour GREEN must PRESERVE, in the Slice-2 context; 11 methods):
+ * pin behaviour GREEN must PRESERVE, in the Slice-2 context; 10 methods):
  *
  *   T01 anonymous A4 quote + A2 create no cpms_slot_holds row and no
  *       held_count drift; nothing authenticates capacity before a session
@@ -188,7 +199,7 @@
  *
  * Classification legend (repo convention): EXPECTED RED = valid repro |
  * A = regression by current work | B = pre-existing outside target |
- * C = infra/env | D = test-infra defect. Anything outside the 14 intended
+ * C = infra/env | D = test-infra defect. Anything outside the 15 intended
  * RED methods above is NOT Slice-2 RED evidence and must be investigated
  * as class D before proceeding.
  *
