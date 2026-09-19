@@ -14,6 +14,7 @@ use ClinicCore\Domain\Booking\BookingWindow;
 use ClinicCore\Domain\Licensing\LicenseGate;
 use ClinicCore\Domain\Machine\AppointmentMachine;
 use ClinicCore\Domain\Machine\InvalidTransitionException;
+use ClinicCore\Domain\Machine\VisitMachine;
 use ClinicCore\Domain\Notifications\NotificationEvents;
 use ClinicCore\Domain\Sms\SmsEvents;
 use ClinicCore\Domain\Slots\DurationResolver;
@@ -750,6 +751,10 @@ final class BookingService
 
                 $toState = $this->machineCheck((string) $appt['status'], 'reschedule', 'patient');
 
+                // I-3 (Phase 7 Slice 2) — T7: جابه‌جایی نوبتِ دارای ویزیت فعال
+                // ممنوع است؛ پیش از Policy بازه، رزرو Slot جدید و هر Mutation.
+                $this->assertNoActiveVisit($appointmentId);
+
                 // Policy نوبت فعلی — از location_id خود appointment + timezone آن Location
                 $oldLocationTz = $this->resolveLocationTimezone((int) $appt['location_id'], (int) $appt['clinic_id']);
                 $err = BookingWindow::checkCancelWithTimezone(
@@ -1022,6 +1027,11 @@ final class BookingService
             }
 
             $toState = $this->machineCheck((string) $appt['status'], 'cancel', $actor);
+
+            // I-3 (Phase 7 Slice 2) — T5/T6: تا وقتی ویزیتِ واقعاً فعال به این
+            // نوبت متصل است، لغو ممنوع است. بررسی روی همان ردیفِ قفل‌شده و پیش
+            // از هر تغییر وضعیت/Slot انجام می‌شود.
+            $this->assertNoActiveVisit($appointmentId);
 
             if ($actor === 'patient') {
                 // SRS FR-4.9: حداقل X ساعت قبل از شروع — با timezone Location خود appointment (Two-Clock)
@@ -1320,6 +1330,49 @@ final class BookingService
         if ($scope !== null && (int) ($appt['clinic_id'] ?? 0) !== (int) $scope->clinicId) {
             throw BookingException::of('CLINIC_NOT_FOUND', 'نوبت یافت نشد', 404);
         }
+    }
+
+    /**
+     * I-3 (Phase 7 Slice 2) — ویزیتِ واقعاً فعالِ متصل به نوبت.
+     *
+     * ملاک، رابطهٔ پایدارِ persist‌شده است (`visits.appointment_id` — نه
+     * شناسهٔ درخواست) و رکورد باید هم `active = 1` باشد و هم در وضعیت زندهٔ
+     * ماشین ویزیت (VisitMachine::ACTIVE_STATUSES). اشاره‌گر `active_visit_id`
+     * کهنه (ویزیتِ پایان‌یافته از مسیر V9) شاهدِ فعال بودن نیست، پس عملیات
+     * نوبت را مسدود نمی‌کند.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function activeVisitForAppointment(int $appointmentId): ?array
+    {
+        $statuses = VisitMachine::ACTIVE_STATUSES;
+        $placeholders = implode(',', array_fill(0, count($statuses), '%s'));
+
+        return $this->db->fetchRow(
+            'SELECT * FROM ' . $this->db->table('cpms_visits') .
+            ' WHERE appointment_id = %d AND active = 1 AND status IN (' . $placeholders . ') ' .
+            'ORDER BY id DESC LIMIT 1',
+            array_merge([$appointmentId], $statuses)
+        );
+    }
+
+    /**
+     * I-3 — T5/T6/T7 روی نوبتِ دارای ویزیت فعال ممنوع است (۴۰۹).
+     *
+     * باید روی نوبتِ قفل‌شده و پیش از هر Mutation (وضعیت نوبت، Slot، ساخت
+     * نوبت جانشین) صدا زده شود.
+     */
+    private function assertNoActiveVisit(int $appointmentId): void
+    {
+        if ($this->activeVisitForAppointment($appointmentId) === null) {
+            return;
+        }
+
+        throw BookingException::of(
+            'HAS_ACTIVE_VISIT',
+            'این نوبت ویزیت فعال دارد — تا پایان ویزیت امکان لغو یا جابه‌جایی نیست',
+            409
+        );
     }
 
     /**
