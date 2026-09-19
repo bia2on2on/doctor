@@ -1311,6 +1311,10 @@ final class Phase7Fr55NoShowRedTest extends WP_UnitTestCase {
         $apptId = (int) $wpdb->insert_id;
         self::assertGreaterThan(0, $apptId, 'appointment id must be positive');
 
+        // Independent connections (race children, fresh state readers) must
+        // SEE the seed — commit it (Slice 2 pattern).
+        $wpdb->query('COMMIT'); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+
         return ['id' => $apptId, 'slot_id' => $slot['id'], 'reason' => $reason];
     }
 
@@ -1482,7 +1486,13 @@ final class Phase7Fr55NoShowRedTest extends WP_UnitTestCase {
         $this->purgeByClinic($p, 'cpms_clinicians');
         $this->purgeByClinic($p, 'cpms_locations');
         $this->purgeByClinic($p, 'cpms_settings');
-        $this->purgeByClinic($p, 'cpms_clinics');
+        // cpms_clinics has NO clinic_id column — delete by own id (Slice 2
+        // pattern). A clinic_id delete would silently no-op and let the
+        // fixture Clinics leak into every later suite (ScopeRequiredException
+        // on >1 Clinic).
+        $wpdb->query(
+            $wpdb->prepare('DELETE FROM ' . $p('cpms_clinics') . ' WHERE id IN (%d, %d)', [$this->clinicA, $this->clinicB]) // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        );
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $p('cpms_organizations') . ' WHERE id = %d', $this->orgA)); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
         // The fixture is committed (race-children visibility) — finalize.
