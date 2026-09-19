@@ -112,8 +112,10 @@
  *   restoreApply) and Release Artifact all SUCCESS.
  *   Latest migration re-confirmed `2026_09_09_0020` (schema-0020 PASS) — this
  *   suite added no migration.
- * Zero collateral failures: all 13 failures belong to THIS suite, so the
- * singleton-priming discipline below prevented test-queue pollution.
+ * Zero collateral failures: all 13 failures belong to THIS suite — no
+ * test-queue pollution. (The singleton priming used at that head became inert
+ * once PR #88 landed and has since been removed as class-D test-infrastructure
+ * cleanup; see the note at the end of this header. No assertion changed.)
  *
  * FAILS — 13 cases (product contract absent; the intended RED):
  *   T1  shortcode `cpms_public_booking` is not registered
@@ -168,34 +170,47 @@
  * (the discipline recorded for the Phase 7 FR-5.5 RED).
  *
  * ============================================================================
- * ARCHITECTURAL RISK RECORDED FOR GREEN (not asserted, not pre-claimed)
+ * ARCHITECTURAL RISK — RESOLVED UPSTREAM BY PR #88 (recorded, not asserted)
  * ============================================================================
  *
- * `App::bookingService()` is a process-memoized singleton whose `Settings`
- * dependency is resolved eagerly at construction through `App::scope()`, and
- * `SystemClinicResolver::resolve()` fails closed with `CLINIC_SCOPE_REQUIRED`
- * unless the installation has EXACTLY one Clinic. `RestClinicContext`
+ * This suite originally recorded a real multi-Clinic risk: `App::bookingService()`
+ * was a process-memoized singleton whose `Settings` dependency was resolved
+ * eagerly through `App::scope()` at construction, while `RestClinicContext`
  * deliberately binds no scope for anonymous requests (`userId <= 0` returns
- * early). So on a genuine MULTI-Clinic installation, whether the anonymous
- * A1/A4 routes can construct `BookingService` at all depends on whether the
- * singleton was already built earlier in the same PHP process by a scoped
- * request — i.e. it is order-dependent, not a property of the request.
+ * early). So on a genuine MULTI-Clinic installation the anonymous A1/A4 routes
+ * could construct `BookingService` only if a scoped request had already built
+ * the singleton earlier in the same PHP process — i.e. order-dependent, not a
+ * property of the request. It was deliberately NOT turned into a RED case: an
+ * order-dependent test cannot be attributed cleanly and would be INVALID RED
+ * evidence.
  *
- * This is recorded here as a real risk the GREEN slice must resolve (the
- * surface is explicitly bound to ONE Clinic among possibly many, so the
- * anonymous browse path must not depend on ambient scope). It is deliberately
- * NOT turned into a RED case: an order-dependent test cannot be attributed
- * cleanly and would be INVALID RED evidence. This suite instead pins the
- * singleton deterministically at setUp (see `primeRestServerSingleton()`) so
- * that the positive controls above are reproducible and so that this suite
- * cannot pollute the Settings clinic of any later suite.
+ * That risk is now fixed on `main` by PR #88 ("make REST bootstrap and booking
+ * settings multi-Clinic safe", merged as e00cec8), which this branch has
+ * forward-synced: REST bootstrap is scope-neutral and anonymous A1/A4 resolve
+ * booking policy from the CLINICIAN'S PERSISTED Clinic (`BookingService` now
+ * takes a `SettingsFactory` and calls `settingsFor($clinicId)` per operation).
+ * The property is independently guarded in CI by
+ * `tests/bin/multi-clinic-rest-bootstrap-probe.php`, which runs a
+ * PROCESS-FRESH multi-Clinic REST bootstrap.
  *
- * GREEN (out of scope for this change — test-only RED) must add:
- *   - the `cpms_public_booking` frontend shortcode surface per D-1..D-5;
- *   - the frontend-only vanilla assets per D-6;
- *   - a resolution of the multi-Clinic anonymous A1/A4 settings-scope risk
- *     above that does NOT add a REST endpoint and does NOT change A1 min-lead
- *     visibility semantics or the booking policy defaults.
+ * ----------------------------------------------------------------------------
+ * CLASS-D TEST-INFRASTRUCTURE CLEANUP MADE AT GREEN (reported, no assertion
+ * touched)
+ * ----------------------------------------------------------------------------
+ *
+ * Consequence of PR #88 for this file: the singleton priming this suite used at
+ * setUp became INERT — `App::bookingService()` no longer reads ambient scope at
+ * construction, so there is no memoized Settings clinic left to pin and no way
+ * for this suite to pollute a later suite through it. The priming call, its
+ * private method, and the stale comments describing the pre-#88 behaviour have
+ * been removed.
+ *
+ * What did NOT change: the 23 test methods and every assertion inside them are
+ * byte-identical (no assertion weakened, added, reworded, reordered, skipped or
+ * deleted). The A1/A4 positive controls T11..T17 still execute against the real
+ * merged PR #88 architecture — and are strictly stronger evidence now, because
+ * they no longer depend on an artificial pre-priming of the singleton to be
+ * reproducible.
  */
 
 declare(strict_types=1);
@@ -317,17 +332,14 @@ final class Phase8Slice1PublicBookingBrowseRedTest extends WP_UnitTestCase
         wp_dequeue_style(self::ADMIN_HANDLE);
         wp_dequeue_script(self::ADMIN_HANDLE);
 
-        // Pin the memoized BookingService singleton against the AMBIENT
-        // single-Clinic install — at this point only the migration-seeded
-        // Clinic exists, so `SystemClinicResolver` resolves deterministically,
-        // exactly as every other suite expects. This must happen BEFORE this
-        // suite creates its three extra Clinics: otherwise the first
-        // construction would either fail closed with CLINIC_SCOPE_REQUIRED
-        // (count != 1, no explicit scope) or pin one of this suite's fixture
-        // Clinics for the rest of the PHP process — polluting every later
-        // suite (the documented "test queue pollution" defect class). See the
-        // "architectural risk" note in the file header.
-        $this->primeRestServerSingleton();
+        // NOTE (class-D cleanup at GREEN): this setUp used to pin the memoized
+        // `BookingService` singleton against the ambient single-Clinic install
+        // *before* creating this suite's three extra Clinics, so that the first
+        // construction could neither fail closed with CLINIC_SCOPE_REQUIRED nor
+        // pin a fixture Clinic for the rest of the PHP process. PR #88 made REST
+        // bootstrap scope-neutral and A1/A4 resolve Settings from the
+        // clinician's persisted Clinic, so that priming became inert and was
+        // removed. See the file header — no assertion changed.
 
         $this->buildFixture();
     }
@@ -1442,21 +1454,6 @@ final class Phase8Slice1PublicBookingBrowseRedTest extends WP_UnitTestCase
         self::assertNotSame($this->clinicA, $this->clinicB, 'precondition: two distinct real Clinics.');
         self::assertNotSame($this->locationA1, $this->locationA2, 'precondition: two distinct Locations.');
         self::assertSame(0, get_current_user_id(), 'precondition: the browse surface is anonymous.');
-    }
-
-    /**
-     * Construct the REST server (and therefore every controller, and therefore
-     * the memoized `App::bookingService()`) while the install still has exactly
-     * one Clinic. Deterministic, and prevents this suite from pinning Clinic A's
-     * Settings for the rest of the PHP process.
-     */
-    private function primeRestServerSingleton(): void
-    {
-        App::boot();
-        App::resetScope();
-        ScopeContext::clear();
-
-        rest_get_server();
     }
 
     private function insertClinic(string $name, string $slug, string $now): int

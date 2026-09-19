@@ -1,0 +1,484 @@
+/**
+ * cpms-public-booking.css — Phase 8 Slice 1 (FR-3.5 / UC-01)
+ *
+ * استایلِ اختصاصیِ «سطح عمومی رزرو» که با shortcode
+ * [cpms_public_booking clinic_id="N"] رندر می‌شود.
+ *
+ * مرزها (عمدی):
+ *  - کاملاً SCOPED: همهٔ سلکتورها زیر `.cpms-public-booking` هستند، پس هیچ
+ *    اثری روی theme، سایر صفحات یا wp-admin ندارند (و asset مدیریتی
+ *    `cpms-admin` دست‌نخورده می‌ماند).
+ *  - RTL-first: ریشه `dir="rtl"` دارد و این فایل فقط از ویژگی‌های منطقی
+ *    (inline/block) استفاده می‌کند — هیچ `left`/`right` سخت‌کدشده‌ای نیست.
+ *  - بدون وابستگی خارجی: هیچ فونت/تصویر/منبع remote ای بار نمی‌شود
+ *    (بدون CDN، بدون build step، بدون framework).
+ *  - Responsive: از ۳۶۰px تا دسکتاپ بدون سرریز افقی؛ هدفِ لمسی ≥ ۴۴px.
+ *  - دسترس‌پذیر: کنتراست AA، فوکوسِ نمایان، و وضعیت‌ها با `data-state`
+ *    (نه فقط رنگ) قابل تشخیص‌اند.
+ */
+
+/* ============================ پایه / Scope ============================ */
+
+.cpms-public-booking,
+.cpms-public-booking *,
+.cpms-public-booking *::before,
+.cpms-public-booking *::after {
+	box-sizing: border-box;
+}
+
+.cpms-public-booking {
+	/* پالتِ خود-بسنده: رنگِ زمینه و متن همیشه با هم عوض می‌شوند، پس روی هر
+	   theme ای کنتراست حفظ می‌شود. */
+	--cpms-pb-bg: #fff;
+	--cpms-pb-surface: #f6f8fa;
+	--cpms-pb-surface-strong: #eaeef2;
+	--cpms-pb-border: #d4dbe2;
+	--cpms-pb-text: #1c2530;
+	--cpms-pb-text-soft: #4a5866;
+	--cpms-pb-accent: #0f6d6a;
+	--cpms-pb-accent-soft: #e2f2f1;
+	--cpms-pb-accent-text: #fff;
+	--cpms-pb-ok: #12603a;
+	--cpms-pb-ok-bg: #e6f5ec;
+	--cpms-pb-warn: #7a4b00;
+	--cpms-pb-warn-bg: #fdf1dc;
+	--cpms-pb-danger: #8a1c1c;
+	--cpms-pb-danger-bg: #fbeaea;
+	--cpms-pb-radius: 12px;
+	--cpms-pb-radius-sm: 8px;
+	--cpms-pb-gap: 16px;
+	--cpms-pb-touch: 44px;
+
+	direction: rtl;
+	text-align: start;
+	inline-size: 100%;
+	max-inline-size: 100%;
+	margin-block: 24px;
+	margin-inline: 0;
+	padding: clamp(14px, 3.5vw, 24px);
+	background: var(--cpms-pb-bg);
+	border: 1px solid var(--cpms-pb-border);
+	border-radius: var(--cpms-pb-radius);
+	color: var(--cpms-pb-text);
+	font-family: Vazirmatn, Vazir, IRANSans, "Segoe UI", Tahoma, "Noto Naskh Arabic", "DejaVu Sans", system-ui, -apple-system, sans-serif;
+	font-size: 1rem;
+	line-height: 1.75;
+	overflow-wrap: break-word;
+	word-break: normal;
+	-webkit-text-size-adjust: 100%;
+}
+
+/*
+ * خنثی‌سازیِ سبکِ theme برای عنصرهای داخلی — بدون این، themeها margin/padding/
+ * list-style خود را تحمیل می‌کنند و چیدمان در ۳۶۰px می‌شکند.
+ *
+ * `:where()` عمدی است: specificity این reset را صفر نگه می‌دارد تا قاعده‌های
+ * خودِ سطح (مثل `.__head` یا `.__message`) که **بعد** می‌آیند بتوانند
+ * padding/margin موردنظرشان را بگذارند. با سلکتورِ معمولیِ
+ * `.cpms-public-booking div` (specificity بالاتر) این reset بر همهٔ
+ * قاعده‌های کلاسی غلبه می‌کرد و فاصله‌ها از بین می‌رفتند.
+ */
+.cpms-public-booking :where(p, ul, li, div, template) {
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.cpms-public-booking button {
+	font: inherit;
+	letter-spacing: 0;
+}
+
+/* ============================ سرتیتر ============================ */
+
+.cpms-public-booking__head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 4px 12px;
+	padding-block-end: 12px;
+	margin-block-end: var(--cpms-pb-gap);
+	border-block-end: 1px solid var(--cpms-pb-border);
+}
+
+.cpms-public-booking__title {
+	font-size: clamp(1.05rem, 1rem + 0.6vw, 1.35rem);
+	font-weight: 700;
+	line-height: 1.5;
+}
+
+.cpms-public-booking__clinic {
+	font-size: 0.9rem;
+	color: var(--cpms-pb-text-soft);
+}
+
+/* ============================ چیدمان بدنه ============================ */
+
+.cpms-public-booking__body {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr);
+	gap: var(--cpms-pb-gap);
+	align-items: start;
+}
+
+.cpms-public-booking__legend {
+	margin-block-end: 10px;
+	font-size: 0.9rem;
+	font-weight: 700;
+	color: var(--cpms-pb-text-soft);
+}
+
+.cpms-public-booking__clinicians,
+.cpms-public-booking__calendar {
+	min-inline-size: 0;
+}
+
+.cpms-public-booking__calendar {
+	padding: clamp(10px, 2.5vw, 16px);
+	background: var(--cpms-pb-surface);
+	border: 1px solid var(--cpms-pb-border);
+	border-radius: var(--cpms-pb-radius);
+}
+
+/* ============================ فهرست پزشکان ============================ */
+
+.cpms-public-booking__clinician-list {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr);
+	gap: 10px;
+}
+
+.cpms-public-booking__clinician-item {
+	min-inline-size: 0;
+}
+
+.cpms-public-booking__clinician {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 2px;
+	inline-size: 100%;
+	min-block-size: var(--cpms-pb-touch);
+	padding: 10px 14px;
+	background: var(--cpms-pb-bg);
+	border: 1px solid var(--cpms-pb-border);
+	border-radius: var(--cpms-pb-radius-sm);
+	cursor: pointer;
+	text-align: start;
+	transition: background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.cpms-public-booking__clinician-name {
+	font-weight: 600;
+	overflow-wrap: anywhere;
+}
+
+.cpms-public-booking__clinician-hint {
+	font-size: 0.8rem;
+	color: var(--cpms-pb-text-soft);
+}
+
+.cpms-public-booking__clinician:hover {
+	border-color: var(--cpms-pb-accent);
+	background: var(--cpms-pb-accent-soft);
+}
+
+/* انتخاب‌شده: هم رنگ و هم وضعیتِ قابل‌دسترس (`aria-pressed`). */
+.cpms-public-booking__clinician[aria-pressed="true"] {
+	background: var(--cpms-pb-accent);
+	border-color: var(--cpms-pb-accent);
+	color: var(--cpms-pb-accent-text);
+	box-shadow: inset 0 0 0 1px var(--cpms-pb-accent);
+}
+
+.cpms-public-booking__clinician[aria-pressed="true"] .cpms-public-booking__clinician-hint {
+	color: var(--cpms-pb-accent-text);
+	opacity: 0.85;
+}
+
+.cpms-public-booking__clinician:disabled {
+	cursor: progress;
+	opacity: 0.65;
+}
+
+/* ============================ panel مرور نوبت ============================ */
+
+.cpms-public-booking__panel {
+	min-inline-size: 0;
+}
+
+.cpms-public-booking__message {
+	display: none;
+	padding: 10px 12px;
+	border-radius: var(--cpms-pb-radius-sm);
+	background: var(--cpms-pb-surface-strong);
+	color: var(--cpms-pb-text);
+	font-size: 0.95rem;
+}
+
+/*
+ * وضعیت‌ها فقط با `data-state` انتخاب می‌شوند — یعنی هر وضعیت هم متنِ فارسیِ
+ * خودش را دارد و هم رنگِ خودش را؛ تشخیص هرگز به رنگ تنها وابسته نیست.
+ */
+.cpms-public-booking__panel[data-state="idle"] .cpms-public-booking__message[data-message="idle"],
+.cpms-public-booking__panel[data-state="loading"] .cpms-public-booking__message[data-message="loading"],
+.cpms-public-booking__panel[data-state="selectable"] .cpms-public-booking__message[data-message="selectable"],
+.cpms-public-booking__panel[data-state="bookable"] .cpms-public-booking__message[data-message="bookable"],
+.cpms-public-booking__panel[data-state="policy_rejected"] .cpms-public-booking__message[data-message="policy_rejected"],
+.cpms-public-booking__panel[data-state="unavailable"] .cpms-public-booking__message[data-message="unavailable"],
+.cpms-public-booking__panel[data-state="empty"] .cpms-public-booking__message[data-message="empty"],
+.cpms-public-booking__panel[data-state="error"] .cpms-public-booking__message[data-message="error"] {
+	display: block;
+}
+
+.cpms-public-booking__panel[data-state="loading"] .cpms-public-booking__message[data-message="loading"],
+.cpms-public-booking__panel[data-state="selectable"] .cpms-public-booking__message[data-message="selectable"] {
+	background: var(--cpms-pb-accent-soft);
+	color: var(--cpms-pb-text);
+}
+
+.cpms-public-booking__panel[data-state="bookable"] .cpms-public-booking__message[data-message="bookable"] {
+	background: var(--cpms-pb-ok-bg);
+	color: var(--cpms-pb-ok);
+	font-weight: 600;
+}
+
+.cpms-public-booking__panel[data-state="policy_rejected"] .cpms-public-booking__message[data-message="policy_rejected"],
+.cpms-public-booking__panel[data-state="unavailable"] .cpms-public-booking__message[data-message="unavailable"] {
+	background: var(--cpms-pb-warn-bg);
+	color: var(--cpms-pb-warn);
+}
+
+.cpms-public-booking__panel[data-state="error"] .cpms-public-booking__message[data-message="error"] {
+	background: var(--cpms-pb-danger-bg);
+	color: var(--cpms-pb-danger);
+}
+
+/* جزئیاتِ انتخاب (ظرفیتِ باقی‌مانده یا پیامِ خودِ سرور). */
+.cpms-public-booking__detail {
+	margin-block-start: 8px;
+	font-size: 0.9rem;
+	color: var(--cpms-pb-text-soft);
+}
+
+.cpms-public-booking__detail[hidden] {
+	display: none;
+}
+
+.cpms-public-booking__detail b {
+	color: var(--cpms-pb-text);
+}
+
+/* ============================ روزها و نوبت‌ها ============================ */
+
+.cpms-public-booking__days {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr);
+	gap: 14px;
+	margin-block-start: 14px;
+	min-inline-size: 0;
+}
+
+.cpms-public-booking__day {
+	min-inline-size: 0;
+	padding: 10px 12px;
+	background: var(--cpms-pb-bg);
+	border: 1px solid var(--cpms-pb-border);
+	border-radius: var(--cpms-pb-radius-sm);
+}
+
+.cpms-public-booking__day-label {
+	margin-block-end: 8px;
+	font-size: 0.92rem;
+	font-weight: 700;
+	color: var(--cpms-pb-text);
+	font-variant-numeric: tabular-nums;
+}
+
+.cpms-public-booking__slots {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	min-inline-size: 0;
+}
+
+.cpms-public-booking__slot {
+	display: inline-flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 1px;
+	flex: 0 1 auto;
+	min-inline-size: 0;
+	min-block-size: var(--cpms-pb-touch);
+	padding: 8px 12px;
+	background: var(--cpms-pb-bg);
+	border: 1px solid var(--cpms-pb-border);
+	border-radius: var(--cpms-pb-radius-sm);
+	cursor: pointer;
+	transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.cpms-public-booking__slot-time {
+	font-weight: 700;
+	font-size: 0.98rem;
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+}
+
+.cpms-public-booking__slot-meta {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px 10px;
+	font-size: 0.75rem;
+	color: var(--cpms-pb-text-soft);
+}
+
+.cpms-public-booking__slot:hover {
+	border-color: var(--cpms-pb-accent);
+	background: var(--cpms-pb-accent-soft);
+}
+
+.cpms-public-booking__slot[aria-pressed="true"] {
+	background: var(--cpms-pb-accent);
+	border-color: var(--cpms-pb-accent);
+	color: var(--cpms-pb-accent-text);
+}
+
+.cpms-public-booking__slot[aria-pressed="true"] .cpms-public-booking__slot-meta {
+	color: var(--cpms-pb-accent-text);
+	opacity: 0.85;
+}
+
+.cpms-public-booking__slot:disabled {
+	cursor: progress;
+	opacity: 0.65;
+}
+
+/* ============================ وضعیت بسته / خالی ============================ */
+
+.cpms-public-booking__notice {
+	padding: 12px 14px;
+	border-radius: var(--cpms-pb-radius-sm);
+	background: var(--cpms-pb-surface);
+	color: var(--cpms-pb-text-soft);
+	font-size: 0.95rem;
+}
+
+.cpms-public-booking--closed .cpms-public-booking__notice {
+	background: var(--cpms-pb-danger-bg);
+	color: var(--cpms-pb-danger);
+}
+
+/* ============================ فوکوس (دسترس‌پذیری) ============================ */
+
+.cpms-public-booking :focus-visible {
+	outline: 3px solid var(--cpms-pb-accent);
+	outline-offset: 2px;
+	border-radius: var(--cpms-pb-radius-sm);
+}
+
+/* fallback برای مرورگرهایی که `:focus-visible` ندارند. */
+.cpms-public-booking__clinician:focus,
+.cpms-public-booking__slot:focus {
+	outline: 3px solid var(--cpms-pb-accent);
+	outline-offset: 2px;
+}
+
+.cpms-public-booking__clinician:focus:not(:focus-visible),
+.cpms-public-booking__slot:focus:not(:focus-visible) {
+	outline: none;
+}
+
+/* ============================ حالت تاریک (خود-بسنده) ============================ */
+
+@media (prefers-color-scheme: dark) {
+	.cpms-public-booking {
+		--cpms-pb-bg: #14181d;
+		--cpms-pb-surface: #1b2128;
+		--cpms-pb-surface-strong: #232b34;
+		--cpms-pb-border: #333d48;
+		--cpms-pb-text: #eef2f6;
+		--cpms-pb-text-soft: #b3bfcb;
+		--cpms-pb-accent: #4fc3bd;
+		--cpms-pb-accent-soft: #143432;
+		--cpms-pb-accent-text: #08201f;
+		--cpms-pb-ok: #8ee0ab;
+		--cpms-pb-ok-bg: #12291c;
+		--cpms-pb-warn: #f0c579;
+		--cpms-pb-warn-bg: #2c2213;
+		--cpms-pb-danger: #f0a3a3;
+		--cpms-pb-danger-bg: #2e1717;
+	}
+}
+
+/* ============================ Responsive ============================ */
+
+/* موبایل کوچک (۳۶۰px): فشرده‌تر، بدون سرریز. */
+@media (max-width: 479px) {
+	.cpms-public-booking {
+		--cpms-pb-gap: 12px;
+		font-size: 0.95rem;
+		line-height: 1.7;
+	}
+
+	.cpms-public-booking__slot {
+		/* دو ستونِ انعطاف‌پذیر: در ۳۶۰px هم خوانا می‌ماند و سرریز نمی‌کند. */
+		flex: 1 1 calc(50% - 4px);
+	}
+
+	.cpms-public-booking__slot-meta {
+		font-size: 0.72rem;
+	}
+}
+
+/* تبلت عمودی و بزرگ‌تر: فهرست پزشکان دو ستونه. */
+@media (min-width: 480px) and (max-width: 899px) {
+	.cpms-public-booking__clinician-list {
+		grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+	}
+}
+
+/* دسکتاپ (≥ ۹۰۰px): پزشکان در ستونِ کنار، تقویم در ستون اصلی. */
+@media (min-width: 900px) {
+	.cpms-public-booking__body {
+		grid-template-columns: minmax(0, 19rem) minmax(0, 1fr);
+		gap: 20px;
+	}
+
+	.cpms-public-booking__clinicians {
+		position: sticky;
+		inset-block-start: 16px;
+	}
+
+	.cpms-public-booking__days {
+		grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+	}
+}
+
+/* ============================ حرکت کاهش‌یافته ============================ */
+
+@media (prefers-reduced-motion: reduce) {
+	.cpms-public-booking,
+	.cpms-public-booking * {
+		transition: none !important;
+		animation: none !important;
+	}
+
+	.cpms-public-booking__clinicians {
+		position: static;
+	}
+}
+
+/* ============================ چاپ ============================ */
+
+@media print {
+	.cpms-public-booking {
+		border: 0;
+		margin: 0;
+		padding: 0;
+	}
+
+	.cpms-public-booking__clinicians {
+		position: static;
+	}
+}
