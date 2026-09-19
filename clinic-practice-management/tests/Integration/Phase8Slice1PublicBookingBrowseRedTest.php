@@ -98,16 +98,29 @@
  * max_future_days 60 → 30 or min_lead_hours).
  *
  * ============================================================================
- * RED CLASSIFICATION AT CURRENT HEAD (97efdb4 — no frontend surface exists)
+ * RED CLASSIFICATION — VERIFIED, not pre-claimed
  * ============================================================================
  *
- * FAILS (product contract absent — the intended RED):
+ * Base HEAD `97efdb4` (no frontend surface exists). Accepted VALID RED head =
+ * `21df8eb79b08cadb7c13f1d63e47d574e07dd22b`, CI run `35448849768`:
+ *   Integration junit root — tests="1048" assertions="16436"
+ *   errors="0" warnings="0" failures="13" skipped="0"   (time 110.43s)
+ *   check runs at that exact SHA: 19/19 completed — 18 success + the intended
+ *   Integration failure; Tenant Tripwire, Unit (PHP 8.1/8.2/8.3/8.4), PHPStan,
+ *   WPCS, Real WP Acceptance (clinic_ + wp_), Staging Gate, Upgrade path,
+ *   Responsive smoke, Closure (PHP 8.1/8.3/8.4 + WP 6.4/6.5/6.6 + destructive
+ *   restoreApply) and Release Artifact all SUCCESS.
+ *   Latest migration re-confirmed `2026_09_09_0020` (schema-0020 PASS) — this
+ *   suite added no migration.
+ * Zero collateral failures: all 13 failures belong to THIS suite, so the
+ * singleton-priming discipline below prevented test-queue pollution.
+ *
+ * FAILS — 13 cases (product contract absent; the intended RED):
  *   T1  shortcode `cpms_public_booking` is not registered
  *   T2  render echoes the literal shortcode text instead of an RTL/fa surface
  *   T3  missing `clinic_id` — no closed state exists to render
  *   T4  non-numeric `clinic_id` — same
  *   T5  non-existent `clinic_id` — same
- *   T6  no implicit-fallback protection exists (nothing renders at all)
  *   T7  cross-Clinic exposure guard has no surface to guard
  *   T8  no-PHI guard has no surface to inspect
  *   T9  active/inactive clinician listing does not exist
@@ -117,7 +130,17 @@
  *   T22 frontend asset files + conditional enqueue do not exist
  *   T23 frontend-only asset isolation has nothing to isolate
  *
- * PASSES ON HEAD (positive controls — behaviour GREEN must PRESERVE, not
+ * PASSES ON HEAD — GUARD ONLY, and NOT RED evidence (correction recorded):
+ *   T6  no implicit Clinic fallback / no clinician enumeration.
+ *       This case asserts only ABSENCES, and an unregistered shortcode renders
+ *       nothing at all, so it passes trivially at HEAD. It was originally
+ *       classified above as RED; that classification was WRONG and is corrected
+ *       here rather than silently rewritten. T6 carries no RED weight — its
+ *       value is as a GREEN guard that catches an implicit fallback to
+ *       "clinic 1" / "the only clinic" / "the first clinic" (AD-13) or a
+ *       Clinician enumeration leak once a surface does exist.
+ *
+ * PASSES ON HEAD — 9 POSITIVE CONTROLS (behaviour GREEN must PRESERVE, not
  * rewrite; they are the proof that the surface rides contracts that already
  * work anonymously):
  *   T11 anonymous A1 returns Jalali day labels + `slot_id`/`location_id`
@@ -405,6 +428,12 @@ final class Phase8Slice1PublicBookingBrowseRedTest extends WP_UnitTestCase
         // AD-13: no `clinic_id = 1`, no "the only clinic", no "the first
         // clinic". With several real Clinics present, an unbound surface must
         // not resolve to any of them and must not enumerate them.
+        //
+        // CLASSIFICATION (corrected, see the file header): this asserts only
+        // ABSENCES, so it PASSES trivially at HEAD where nothing renders at all.
+        // It carries NO RED weight — it is a GREEN guard against an implicit
+        // Clinic fallback or a Clinician enumeration leak. The RED force for the
+        // unbound case is T3, which requires the explicit closed root state.
         $html = $this->renderSurface([]);
 
         foreach ([$this->clinicA, $this->clinicB, $this->clinicEmpty] as $clinicId) {
