@@ -153,8 +153,8 @@ final class Phase7Fr55NoShowRedTest extends WP_UnitTestCase {
 
     // ================= Lifecycle =================
 
-    protected function set_up(): void {
-        parent::set_up();
+    protected function setUp(): void {
+        parent::setUp();
         set_time_limit(300);
 
         App::migrations()->migrate();
@@ -196,13 +196,13 @@ final class Phase7Fr55NoShowRedTest extends WP_UnitTestCase {
         $wpdb->query('COMMIT'); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
     }
 
-    protected function tear_down(): void {
+    protected function tearDown(): void {
         $this->purgeFixture();
         Settings::flushCache();
         ScopeContext::clear();
         App::resetScope();
         wp_set_current_user(0);
-        parent::tear_down();
+        parent::tearDown();
     }
 
     // ================= T1 — manual happy path (also REST reachability) =================
