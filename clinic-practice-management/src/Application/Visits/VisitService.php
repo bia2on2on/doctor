@@ -134,8 +134,10 @@ final class VisitService
                 );
             }
             if ($status === 'no_show') {
-                // بیمار دیر آمد و قبلاً no_show خورده → Visit فوری Walk-in-like (ER-06)
+                // ER-06: late arrival after T8 — unbound walk-in (must NOT bind
+                // a genuinely active Visit to a terminal no_show appointment).
                 $source = 'walk_in';
+                $appointmentId = null;
             } else {
                 // T2: Location-aware lazy no-show check
                 $shouldMarkNoShow = false;
@@ -165,9 +167,11 @@ final class VisitService
                 }
 
                 if ($shouldMarkNoShow) {
-                    // Lazy no-show (FR-5.5) — سپس Visit فوری Walk-in-like
+                    // Lazy no-show (FR-5.5) then unbound walk-in — T8 first so
+                    // the Visit is never bound to the terminal appointment.
                     $this->markAppointmentNoShow($appt, $nowSql, $actorUserId);
                     $source = 'walk_in';
+                    $appointmentId = null;
                 } elseif ($status === 'pending') {
                     // حضور بیمار = تایید نوبت (T3) — تا Checkout مسیر کامل شود
                     $this->confirmAppointment($appt, $nowSql, $actorUserId);
@@ -711,7 +715,7 @@ final class VisitService
                     if ($fresh === null || (string) $fresh['status'] !== 'confirmed') {
                         return 0;
                     }
-                    if ($fresh['active_visit_id'] !== null) {
+                    if ($this->activeVisitForAppointment((int) $fresh['id']) !== null) {
                         return 0;
                     }
                     $this->markAppointmentNoShow($fresh, $this->db->nowUtc(), null);
@@ -1337,12 +1341,34 @@ final class VisitService
     /**
      * @param array<string, mixed> $appt
      */
+    /**
+     * I-3 — genuinely active Visit bound to this appointment (not a stale pointer).
+     *
+     * @return array<string, mixed>|null
+     */
+    private function activeVisitForAppointment(int $appointmentId): ?array
+    {
+        $statuses = VisitMachine::ACTIVE_STATUSES;
+        $placeholders = implode(',', array_fill(0, count($statuses), '%s'));
+
+        return $this->db->fetchRow(
+            'SELECT * FROM ' . $this->db->table('cpms_visits') .
+            ' WHERE appointment_id = %d AND active = 1 AND status IN (' . $placeholders . ') ' .
+            'ORDER BY id DESC LIMIT 1',
+            array_merge([$appointmentId], $statuses)
+        );
+    }
+
     private function markAppointmentNoShow(array $appt, string $now, ?int $actorUserId): void
     {
         // ماشین Appointment فقط CONFIRMED → no_show را مجاز می‌کند (T8)؛
         // نوبت‌های PENDING مسیر انقضای خودشان (Hold/Cron) را دارند.
         $toStatus = AppointmentMachine::create()->machine()->assert((string) $appt['status'], 'no_show', 'system');
-        $this->appointments->updateStatus((int) $appt['id'], ['status' => $toStatus, 'no_show_at' => $now]);
+        $this->appointments->updateStatus((int) $appt['id'], [
+            'status' => $toStatus,
+            'no_show_at' => $now,
+            'active_visit_id' => null,
+        ]);
         $this->audit('APPOINTMENT_NO_SHOW', $actorUserId, $actorUserId === null ? 'system' : 'secretary', 'appointment', (int) $appt['id'], (int) $appt['patient_id'], ['status' => $appt['status']], ['status' => $toStatus], [
             'slot' => ($appt['slot_date'] ?? '') . ' ' . ($appt['slot_time'] ?? ''),
         ]);
