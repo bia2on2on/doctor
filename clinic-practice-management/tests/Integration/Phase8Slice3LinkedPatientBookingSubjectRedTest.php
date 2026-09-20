@@ -265,19 +265,8 @@ final class Phase8Slice3LinkedPatientBookingSubjectRedTest extends WP_UnitTestCa
             'slot_id' => $slot['slot_id'],
         ], asUserId: $userId, withNonce: true);
 
-        // RED: currently succeeds (200) — we require fail-closed.
-        // Accept either generic validation or dedicated selection-required if GREEN chooses narrow code.
-        $status = $hold->get_status();
-        $data = $hold->get_data();
-        $code = is_array($data) ? (string) ($data['code'] ?? '') : '';
-
-        // We assert it MUST be an error envelope, not success.
-        self::assertNotSame(200, $status, 'N>1 linked: B1 without patient_id must reject before Hold/capacity mutation. Body: ' . wp_json_encode($data));
-        // Must be a patient-selection/validation error, not random.
-        self::assertTrue(
-            in_array($code, ['CLINIC_VALIDATION_FAILED', 'CLINIC_PATIENT_SELECTION_REQUIRED'], true),
-            'N>1 linked: B1 without patient_id must be CLINIC_VALIDATION_FAILED (or narrow CLINIC_PATIENT_SELECTION_REQUIRED). Got: ' . $code . ' Body: ' . wp_json_encode($data)
-        );
+        // RED: currently succeeds (200) — we require fail-closed with 422 business-rule.
+        $this->assertClinicValidationFailed($hold, 'N>1 linked: B1 without patient_id must reject before Hold/capacity mutation.');
         self::assertSame(0, $this->countRows('cpms_slot_holds'), 'A rejected B1 must create no Hold.');
         self::assertSame(0, $this->heldCountOf($slot['slot_id']), 'A rejected B1 must not consume capacity.');
         self::assertSame(0, $this->countAppointmentsForClinic($this->clinicA), 'No Appointment must be created.');
@@ -313,16 +302,15 @@ final class Phase8Slice3LinkedPatientBookingSubjectRedTest extends WP_UnitTestCa
         $holdToken = (string) ($hold->get_data()['data']['hold_token'] ?? '');
         self::assertNotSame('', $holdToken, 'Hold token must be returned.');
 
-        // Future contract: Hold must durably carry patient_id = B.
-        // We do NOT insert patient_id column; we inspect schema/behaviour.
-        // Since column is absent, this assertion will fail — valid RED.
-        $hasColumn = $this->slotHoldsHasPatientIdColumn();
-        self::assertTrue($hasColumn, 'Future contract: cpms_slot_holds.patient_id column must exist (BIGINT UNSIGNED NULL, FK -> patients(id)).');
-        if ($hasColumn) {
-            $holdRow = $this->holdRowByToken($holdToken);
-            self::assertNotNull($holdRow, 'Hold row must be persisted.');
+        // At RED, Hold cannot yet durably carry patient_id — prove current response/state lacks binding.
+        $holdRow = $this->holdRowByToken($holdToken);
+        self::assertNotNull($holdRow, 'Hold row must be persisted.');
+        if ($this->slotHoldsHasPatientIdColumn()) {
             self::assertArrayHasKey('patient_id', $holdRow, 'Hold row must have patient_id column.');
             self::assertSame($patientB, (int) $holdRow['patient_id'], 'Future contract requires Hold.patient_id = selected Patient B.');
+        } else {
+            // RED: current schema has no patient_id column — B1 cannot preserve the selected subject durably.
+            self::assertArrayNotHasKey('patient_id', $holdRow, 'At RED, Hold has no patient_id column — cannot durably preserve selected Patient B.');
         }
 
         // B2 should confirm Appointment with same subject, no names required (linked).
@@ -338,11 +326,22 @@ final class Phase8Slice3LinkedPatientBookingSubjectRedTest extends WP_UnitTestCa
             'SELECT patient_id FROM ' . App::db()->table('cpms_appointments') . ' WHERE id = %d',
             [$apptId]
         );
-        self::assertSame($patientB, $apptPatient, 'Appointment must bind the explicitly selected Patient B, not primary A.');
-        self::assertSame(0, $this->countAppointmentsForPatient($patientA), 'Patient A must receive no Appointment.');
-        self::assertSame(1, $this->countAppointmentsForPatient($patientB), 'Patient B must have exactly one Appointment.');
+        if ($this->slotHoldsHasPatientIdColumn()) {
+            self::assertSame($patientB, $apptPatient, 'Appointment must bind the explicitly selected Patient B, not primary A.');
+            self::assertSame(0, $this->countAppointmentsForPatient($patientA), 'Patient A must receive no Appointment.');
+            self::assertSame(1, $this->countAppointmentsForPatient($patientB), 'Patient B must have exactly one Appointment.');
+        } else {
+            // RED: without Hold.patient_id durability, B2 falls back to findByMobile and binds primary A, not selected B.
+            // Prove current behavior cannot preserve the selected subject.
+            self::assertSame($patientA, $apptPatient, 'At RED, without Hold.patient_id, B2 binds primary A via mobile, not selected B — subject not preserved.');
+            self::assertSame(1, $this->countAppointmentsForPatient($patientA), 'At RED, Patient A incorrectly receives the Appointment.');
+            self::assertSame(0, $this->countAppointmentsForPatient($patientB), 'At RED, selected Patient B has no Appointment — binding not preserved.');
+        }
         // No extra link created for this selection.
         self::assertSame(2, $this->countPatientLinksForUser($userId), 'No extra patient link must be created by valid selection.');
+
+        // Future contract: Hold must durably carry patient_id = B (fails at RED, at end as required).
+        self::assertTrue($this->slotHoldsHasPatientIdColumn(), 'Future contract: cpms_slot_holds.patient_id column must exist (BIGINT UNSIGNED NULL, FK -> patients(id)).');
     }
 
     // =================================================================
@@ -388,7 +387,9 @@ final class Phase8Slice3LinkedPatientBookingSubjectRedTest extends WP_UnitTestCa
         self::assertNotSame(200, $response->get_status(), 'Same-mobile unlinked must NOT be silently reused — must fail closed with safe validation when uniqueness prevents creation. Body: ' . wp_json_encode($response->get_data()));
         $code = is_array($response->get_data()) ? (string) ($response->get_data()['code'] ?? '') : '';
         self::assertSame('CLINIC_VALIDATION_FAILED', $code, 'Must be generic non-enumerating CLINIC_VALIDATION_FAILED.');
-        self::assertTrue(in_array($response->get_status(), [400, 422], true), 'Validation failure should be 400/422 generic semantics. Got: ' . $response->get_status());
+        // B2 same-mobile duplicate is pure input validation (400 per error-codes.md registry; BookingService default 400).
+        self::assertSame(400, $response->get_status(), 'B2 same-mobile validation must be 400 (generic validation) per registry. Got: ' . $response->get_status() . ' Body: ' . wp_json_encode($response->get_data()));
+        self::assertSame(400, (int) ($response->get_data()['data']['status'] ?? 0), 'Envelope data.status must be 400.');
         // No side effects.
         self::assertStringNotContainsString('SQL', wp_json_encode($response->get_data()), 'Must never expose SQL.');
         self::assertStringNotContainsString('Duplicate', wp_json_encode($response->get_data()), 'Must never expose raw DB error.');
@@ -483,13 +484,13 @@ final class Phase8Slice3LinkedPatientBookingSubjectRedTest extends WP_UnitTestCa
         $holdToken = (string) ($hold->get_data()['data']['hold_token'] ?? '');
         self::assertNotSame('', $holdToken);
 
-        // Future contract: Hold.patient_id must be that single Patient.
-        $hasColumn = $this->slotHoldsHasPatientIdColumn();
-        self::assertTrue($hasColumn, 'Future contract: cpms_slot_holds.patient_id must exist for auto-bind.');
-        if ($hasColumn) {
-            $holdRow = $this->holdRowByToken($holdToken);
-            self::assertNotNull($holdRow);
-            self::assertSame($patient, (int) $holdRow['patient_id'], 'Hold must be durably bound to the single linked Patient.');
+        // At RED, Hold cannot yet durably auto-bind — prove current state lacks binding, then assert at end.
+        $holdRow = $this->holdRowByToken($holdToken);
+        self::assertNotNull($holdRow, 'Hold row must be persisted.');
+        if ($this->slotHoldsHasPatientIdColumn()) {
+            self::assertSame($patient, (int) ($holdRow['patient_id'] ?? 0), 'Hold must be durably bound to the single linked Patient.');
+        } else {
+            self::assertArrayNotHasKey('patient_id', $holdRow, 'At RED, Hold has no patient_id column — cannot durably auto-bind the single linked Patient.');
         }
 
         // Capture name before B2 to ensure not modified.
@@ -508,11 +509,20 @@ final class Phase8Slice3LinkedPatientBookingSubjectRedTest extends WP_UnitTestCa
             'SELECT patient_id FROM ' . App::db()->table('cpms_appointments') . ' WHERE id = %d',
             [$apptId]
         );
-        self::assertSame($patient, $apptPatient, 'Appointment must bind the auto-bound single Patient.');
+        // At RED, B2 still succeeds via findByMobile, but Hold durability is missing — appointment binding happens to be correct (single patient), but not durably via Hold.
+        if ($this->slotHoldsHasPatientIdColumn()) {
+            self::assertSame($patient, $apptPatient, 'Appointment must bind the auto-bound single Patient durably via Hold.');
+        } else {
+            // At RED, appointment is still correct via mobile fallback, but Hold durability is absent — prove via final column assert.
+            self::assertSame($patient, $apptPatient, 'At RED, Appointment binds via mobile fallback, but Hold durability is absent — not yet authoritative.');
+        }
 
         $after = $this->patientRowById($patient);
         self::assertSame((string) $before['first_name'], (string) $after['first_name'], 'B2 must not modify Patient name.');
         self::assertSame((string) $before['last_name'], (string) $after['last_name'], 'B2 must not modify Patient name.');
+
+        // Future contract: Hold.patient_id must exist for auto-bind (fails at RED, at end).
+        self::assertTrue($this->slotHoldsHasPatientIdColumn(), 'Future contract: cpms_slot_holds.patient_id must exist for auto-bind.');
     }
 
     // =================================================================
@@ -604,12 +614,13 @@ final class Phase8Slice3LinkedPatientBookingSubjectRedTest extends WP_UnitTestCa
         self::assertSame(200, $hold->get_status(), 'B1 with Patient A must succeed.');
         $holdToken = (string) ($hold->get_data()['data']['hold_token'] ?? '');
 
-        // Durability: Hold must be bound to A — valid RED is column absent.
-        $hasColumn = $this->slotHoldsHasPatientIdColumn();
-        self::assertTrue($hasColumn, 'Future contract: cpms_slot_holds.patient_id must exist for durability — immutability requires it.');
-        if ($hasColumn) {
-            $row = $this->holdRowByToken($holdToken);
-            self::assertSame($patientA, (int) $row['patient_id'], 'Hold must be durably bound to Patient A.');
+        // Durability: Hold must be bound to A — at RED column absent, prove current state lacks durability.
+        $row = $this->holdRowByToken($holdToken);
+        self::assertNotNull($row, 'Hold row must be persisted.');
+        if ($this->slotHoldsHasPatientIdColumn()) {
+            self::assertSame($patientA, (int) ($row['patient_id'] ?? 0), 'Hold must be durably bound to Patient A.');
+        } else {
+            self::assertArrayNotHasKey('patient_id', $row, 'At RED, Hold has no patient_id column — cannot durably bind subject for immutability.');
         }
 
         // B2 with attempt to switch to patient B via any client field (patient_id).
@@ -631,6 +642,9 @@ final class Phase8Slice3LinkedPatientBookingSubjectRedTest extends WP_UnitTestCa
         // Patient B row unchanged.
         $bRow = $this->patientRowById($patientB);
         self::assertSame('ImmutableB', (string) $bRow['first_name'], 'Patient B must not be mutated.');
+
+        // Future contract: Hold must durably carry patient_id for immutability (fails at RED, at end).
+        self::assertTrue($this->slotHoldsHasPatientIdColumn(), 'Future contract: cpms_slot_holds.patient_id must exist for durability — immutability requires it.');
     }
 
     // =================================================================
@@ -720,12 +734,13 @@ final class Phase8Slice3LinkedPatientBookingSubjectRedTest extends WP_UnitTestCa
         ], asUserId: $userId, withNonce: true, idempotencyKey: $this->uuid());
         $this->assertClinicError($expired, 'CLINIC_HOLD_EXPIRED', 422, 'Expired Hold must be CLINIC_HOLD_EXPIRED.');
 
-        // Historical row should still have original subject if column exists.
-        $hasHist = $this->slotHoldsHasPatientIdColumn();
-        self::assertTrue($hasHist, 'Expired Hold durability requires Hold.patient_id column.');
-        if ($hasHist) {
-            $historical = $this->holdRowByToken($token1);
-            self::assertSame($patientA, (int) $historical['patient_id'], 'Expired Hold must keep historical subject safely.');
+        // Historical row: at RED no column, cannot keep subject durably — prove current lack, then final assert at end.
+        $historical = $this->holdRowByToken($token1);
+        self::assertNotNull($historical, 'Expired Hold row must still exist.');
+        if ($this->slotHoldsHasPatientIdColumn()) {
+            self::assertSame($patientA, (int) ($historical['patient_id'] ?? 0), 'Expired Hold must keep historical subject safely.');
+        } else {
+            self::assertArrayNotHasKey('patient_id', $historical, 'At RED, expired Hold has no patient_id column — cannot keep historical subject durably.');
         }
 
         // New B1 re-authorizes current selection (Patient B).
@@ -740,11 +755,14 @@ final class Phase8Slice3LinkedPatientBookingSubjectRedTest extends WP_UnitTestCa
         $token2 = (string) ($hold2->get_data()['data']['hold_token'] ?? '');
         self::assertNotSame($token1, $token2, 'New Hold must be distinct from expired.');
 
+        $row2 = $this->holdRowByToken($token2);
+        self::assertNotNull($row2, 'New Hold row must be persisted.');
         if ($this->slotHoldsHasPatientIdColumn()) {
-            $row2 = $this->holdRowByToken($token2);
-            self::assertSame($patientB, (int) $row2['patient_id'], 'New Hold subject must be Patient B, not stale A.');
+            self::assertSame($patientB, (int) ($row2['patient_id'] ?? 0), 'New Hold subject must be Patient B, not stale A.');
             $hist2 = $this->holdRowByToken($token1);
-            self::assertSame($patientA, (int) $hist2['patient_id'], 'Stale Hold must not mutate new Hold subject.');
+            self::assertSame($patientA, (int) ($hist2['patient_id'] ?? 0), 'Stale Hold must not mutate new Hold subject.');
+        } else {
+            self::assertArrayNotHasKey('patient_id', $row2, 'At RED, new Hold has no patient_id column — cannot preserve new subject durably.');
         }
 
         // Confirm new Hold with B.
@@ -756,7 +774,15 @@ final class Phase8Slice3LinkedPatientBookingSubjectRedTest extends WP_UnitTestCa
             'SELECT patient_id FROM ' . App::db()->table('cpms_appointments') . ' WHERE id = %d',
             [(int) $confirm2->get_data()['data']['appointment_id']]
         );
-        self::assertSame($patientB, $apptPatient, 'New Appointment must bind new Hold subject B.');
+        if ($this->slotHoldsHasPatientIdColumn()) {
+            self::assertSame($patientB, $apptPatient, 'New Appointment must bind new Hold subject B durably.');
+        } else {
+            // At RED, without Hold durability, appointment binding via mobile still happens to be B (since new hold's patient is B and mobile matches), but Hold durability is absent.
+            self::assertSame($patientB, $apptPatient, 'At RED, new Appointment binds via mobile fallback, but Hold durability is absent.');
+        }
+
+        // Final contract: Hold.patient_id must exist for expiry durability (fails at RED, at end).
+        self::assertTrue($this->slotHoldsHasPatientIdColumn(), 'Future contract: cpms_slot_holds.patient_id must exist for expiry durability.');
     }
 
     // =================================================================
@@ -1240,19 +1266,25 @@ final class Phase8Slice3LinkedPatientBookingSubjectRedTest extends WP_UnitTestCa
     }
 
     /**
-     * Fail-closed validation envelope — accepts either 400 or 422 with CLINIC_VALIDATION_FAILED
-     * (or narrow CLINIC_PATIENT_SELECTION_REQUIRED) to avoid coupling RED/GREEN to a single HTTP choice.
+     * Fail-closed B1 patient_id validation — canonical per live evidence:
+     * - docs/api/error-codes.md: CLINIC_VALIDATION_FAILED = 400 (generic input validation)
+     * - BookingService cross-Clinic / patient-mismatch uses 422 (business-rule):
+     *   BookingService.php:1001 `CLINIC_VALIDATION_FAILED ... 422` for "این بیمار به کلینیک دیگری تعلق دارد",
+     *   plus 1350/1357 slot/clinician mismatch → 422, and api-contract.md §0: 400 validation vs 422 business-rule.
+     * B1 patient_id authority (linked-only, cross-Clinic, inactive, N>1 missing selection) is a
+     * business-rule / tuple-mismatch, not a simple format error → canonical is 422.
+     * Code MUST be CLINIC_VALIDATION_FAILED (or narrow CLINIC_PATIENT_SELECTION_REQUIRED).
      */
     private function assertClinicValidationFailed(WP_REST_Response $response, string $what): void
     {
         $status = $response->get_status();
         $data = $response->get_data();
-        self::assertTrue(in_array($status, [400, 422], true), $what . ' must be 400 or 422. Got: ' . $status . ' Body: ' . wp_json_encode($data));
+        self::assertSame(422, $status, $what . ' must be 422 (business-rule) per BookingService 422 precedent. Got: ' . $status . ' Body: ' . wp_json_encode($data));
         self::assertIsArray($data, 'Error envelope must be array.');
         $code = (string) ($data['code'] ?? '');
         self::assertTrue(in_array($code, ['CLINIC_VALIDATION_FAILED', 'CLINIC_PATIENT_SELECTION_REQUIRED'], true), $what . ' code must be CLINIC_VALIDATION_FAILED (or narrow CLINIC_PATIENT_SELECTION_REQUIRED). Got: ' . $code);
         self::assertArrayHasKey('message', $data);
-        self::assertSame($status, (int) ($data['data']['status'] ?? 0), 'Envelope data.status must match HTTP.');
+        self::assertSame(422, (int) ($data['data']['status'] ?? 0), 'Envelope data.status must match HTTP 422.');
     }
 
     // =================================================================
