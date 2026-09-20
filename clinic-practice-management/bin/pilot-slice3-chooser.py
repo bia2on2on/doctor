@@ -392,16 +392,16 @@ def run_journey(browser, run):
         appt_id, appt_pid, appt_clinic = app_rows[0]
         if int(appt_pid) != CFG["patientB_id"]:
             raise RuntimeError(f"Appointment.patient_id must be B ({CFG['patientB_id']}), got {appt_pid}")
-        # Check A has 0, decoy 0
+        # Check A has 0, decoy 0 (delta, not absolute, because previous viewport may have created B's appointment)
         a_after = db1(f"SELECT COUNT(*) FROM {T('cpms_appointments')} WHERE patient_id={CFG['patientA_id']}")
         b_after = db1(f"SELECT COUNT(*) FROM {T('cpms_appointments')} WHERE patient_id={CFG['patientB_id']}")
         decoy_after = db1(f"SELECT COUNT(*) FROM {T('cpms_appointments')} WHERE patient_id={CFG['decoy_id']}") if CFG["decoy_id"]>0 else 0
-        if a_after != 0:
-            raise RuntimeError(f"Patient A must have zero Appointment from this journey, got {a_after} (before {a_appointments_before})")
-        if decoy_after != 0:
-            raise RuntimeError(f"Decoy must have zero Appointment, got {decoy_after}")
-        if b_after != 1:
-            raise RuntimeError(f"Patient B must have exactly 1 Appointment, got {b_after}")
+        if a_after != a_appointments_before:
+            raise RuntimeError(f"Patient A must have zero new Appointment from this journey, got {a_after} (before {a_appointments_before})")
+        if decoy_after != decoy_appointments_before:
+            raise RuntimeError(f"Decoy must have zero new Appointment, got {decoy_after} (before {decoy_appointments_before})")
+        if b_after != b_appointments_before + 1:
+            raise RuntimeError(f"Patient B must have exactly 1 new Appointment (before {b_appointments_before} after {b_after})")
         # No new Patient auto-created
         patients_after = db1(f"SELECT COUNT(*) FROM {T('cpms_patients')} WHERE clinic_id={CFG['clinic_id']}")
         if patients_after != patients_before:
