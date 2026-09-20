@@ -341,9 +341,10 @@
 		var selectedPatientId = 0;
 		var patientChooser = root.querySelector('[data-role="patient-chooser"]');
 		var patientOptions = patientChooser ? patientChooser.querySelectorAll('[data-role="patient-option"]') : [];
+		var PATIENT_STORAGE_KEY = 'cpms-patient-selection:' + String(config.clinic_id);
 		function getStoredPatientId() {
 			try {
-				var v = window.sessionStorage.getItem('cpms-patient-selection:' + String(config.clinic_id));
+				var v = window.sessionStorage.getItem(PATIENT_STORAGE_KEY);
 				return toInt(v);
 			} catch (e) {
 				return 0;
@@ -352,12 +353,94 @@
 		function storePatientId(id) {
 			try {
 				if (toInt(id) > 0) {
-					window.sessionStorage.setItem('cpms-patient-selection:' + String(config.clinic_id), String(toInt(id)));
+					window.sessionStorage.setItem(PATIENT_STORAGE_KEY, String(toInt(id)));
 				}
 			} catch (e) {}
 		}
+		function clearStoredPatientId() {
+			try {
+				window.sessionStorage.removeItem(PATIENT_STORAGE_KEY);
+			} catch (e) {}
+		}
+		function isPatientOptionValid(id) {
+			var nid = toInt(id);
+			if (nid <= 0 || !patientChooser || patientOptions.length === 0) {
+				return false;
+			}
+			for (var _v = 0; _v < patientOptions.length; _v++) {
+				if (toInt(patientOptions[_v].getAttribute('data-patient-id')) === nid) {
+					return true;
+				}
+			}
+			return false;
+		}
+		function getValidatedStoredPatientId() {
+			var pid = getStoredPatientId();
+			if (pid <= 0) {
+				return 0;
+			}
+			if (!isPatientOptionValid(pid)) {
+				clearStoredPatientId();
+				return 0;
+			}
+			return pid;
+		}
+		function getPatientIdForB1() {
+			// Gate: patient_id may be sent ONLY IF N>1 chooser exists, has options, and id is among current rendered options.
+			if (!patientChooser || patientOptions.length === 0) {
+				// 0 or 1 linked: no chooser — clear stale and do not send.
+				if (getStoredPatientId() > 0) {
+					clearStoredPatientId();
+				}
+				selectedPatientId = 0;
+				return 0;
+			}
+			// N>1: validate selected and stored against current options.
+			var cand = selectedPatientId;
+			if (cand > 0 && isPatientOptionValid(cand)) {
+				return cand;
+			}
+			if (cand > 0 && !isPatientOptionValid(cand)) {
+				// Stale selected (not in current render) — clear.
+				selectedPatientId = 0;
+				clearStoredPatientId();
+			}
+			var stored = getValidatedStoredPatientId();
+			if (stored > 0) {
+				// Sync selected to validated stored for UI consistency.
+				selectedPatientId = stored;
+				for (var _si = 0; _si < patientOptions.length; _si++) {
+					var optSi = patientOptions[_si];
+					var pidSi = toInt(optSi.getAttribute('data-patient-id'));
+					optSi.setAttribute('aria-pressed', pidSi === stored ? 'true' : 'false');
+				}
+				return stored;
+			}
+			// No valid selected/stored — check DOM aria-pressed but only if valid.
+			for (var _ap = 0; _ap < patientOptions.length; _ap++) {
+				if (patientOptions[_ap].getAttribute('aria-pressed') === 'true') {
+					var domPid = toInt(patientOptions[_ap].getAttribute('data-patient-id'));
+					if (isPatientOptionValid(domPid)) {
+						selectedPatientId = domPid;
+						storePatientId(domPid);
+						return domPid;
+					}
+				}
+			}
+			return 0;
+		}
 		function setPatientSelection(id) {
-			selectedPatientId = toInt(id);
+			var nid = toInt(id);
+			if (!isPatientOptionValid(nid)) {
+				// Never store or select an id not in current options — clear stale.
+				selectedPatientId = 0;
+				clearStoredPatientId();
+				for (var _clr = 0; _clr < patientOptions.length; _clr++) {
+					patientOptions[_clr].setAttribute('aria-pressed', 'false');
+				}
+				return;
+			}
+			selectedPatientId = nid;
 			storePatientId(selectedPatientId);
 			for (var _i = 0; _i < patientOptions.length; _i++) {
 				var opt = patientOptions[_i];
@@ -365,27 +448,39 @@
 				opt.setAttribute('aria-pressed', pid === selectedPatientId && selectedPatientId > 0 ? 'true' : 'false');
 			}
 		}
-		// Restore from sessionStorage if chooser exists; do not auto-pick first row.
-		if (patientOptions.length > 0) {
-			var storedPid = getStoredPatientId();
-			if (storedPid > 0) {
-				// Validate stored id is among options; if not, keep 0.
-				var found = false;
-				for (var _j = 0; _j < patientOptions.length; _j++) {
-					if (toInt(patientOptions[_j].getAttribute('data-patient-id')) === storedPid) {
-						found = true;
-						break;
-					}
-				}
-				if (found) {
-					setPatientSelection(storedPid);
-				}
+		// Initialization: handle storage lifetime and chooser presence.
+		if (!patientChooser || patientOptions.length === 0) {
+			// 0 or 1 linked: no chooser — clear any stale patient selection from same tab.
+			if (getStoredPatientId() > 0) {
+				clearStoredPatientId();
 			}
-			// Also respect DOM pre-selected (aria-pressed) if any.
+			selectedPatientId = 0;
+		} else if (patientOptions.length > 0) {
+			// N>1: restore only if validated against current options; otherwise clear.
+			var storedPid = getValidatedStoredPatientId();
+			if (storedPid > 0) {
+				setPatientSelection(storedPid);
+			} else if (getStoredPatientId() > 0) {
+				// getValidated already cleared if invalid, but handle edge.
+				clearStoredPatientId();
+			}
+			// Also respect DOM pre-selected (aria-pressed) if any and valid, but do not auto-pick first row.
+			var hasPressed = false;
 			for (var _k = 0; _k < patientOptions.length; _k++) {
 				if (patientOptions[_k].getAttribute('aria-pressed') === 'true') {
-					setPatientSelection(toInt(patientOptions[_k].getAttribute('data-patient-id')));
+					hasPressed = true;
 					break;
+				}
+			}
+			if (hasPressed) {
+				for (var _k2 = 0; _k2 < patientOptions.length; _k2++) {
+					if (patientOptions[_k2].getAttribute('aria-pressed') === 'true') {
+						var domPid2 = toInt(patientOptions[_k2].getAttribute('data-patient-id'));
+						if (isPatientOptionValid(domPid2)) {
+							setPatientSelection(domPid2);
+						}
+						break;
+					}
 				}
 			}
 		}
@@ -911,20 +1006,9 @@
 			if (toInt(selection.slot_id) > 0) {
 				body.slot_id = toInt(selection.slot_id);
 			}
-			// Phase 8 Slice 3 — B1 only: include linked patient selection when chooser is active.
-			// Reads from DOM >0 / sessionStorage when available; if missing, send nothing (server 0/1/N handles).
-			var pidToSend = selectedPatientId;
-			if (pidToSend <= 0) {
-				pidToSend = getStoredPatientId();
-			}
-			if (pidToSend <= 0 && patientOptions.length > 0) {
-				for (var _ps = 0; _ps < patientOptions.length; _ps++) {
-					if (patientOptions[_ps].getAttribute('aria-pressed') === 'true') {
-						pidToSend = toInt(patientOptions[_ps].getAttribute('data-patient-id'));
-						break;
-					}
-				}
-			}
+			// Phase 8 Slice 3 — B1 only: strict send gate. patient_id may be sent ONLY IF N>1 chooser exists,
+			// has options, and id is exactly among current rendered data-patient-id values. Otherwise clear stale and send nothing.
+			var pidToSend = getPatientIdForB1();
 			if (pidToSend > 0) {
 				body.patient_id = pidToSend;
 			}
@@ -1027,6 +1111,7 @@
 						receipt.hidden = false;
 					}
 					clearStoredSelection();
+					clearStoredPatientId();
 					return;
 				}
 				if (!result.ok) {
