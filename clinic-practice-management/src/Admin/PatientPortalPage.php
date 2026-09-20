@@ -61,7 +61,7 @@ final class PatientPortalPage
         add_filter('show_admin_bar', [self::class, 'hideAdminBar'], 20);
         add_action('admin_menu', [self::class, 'menu']);
         add_action('admin_init', [self::class, 'guardWpAdmin']);
-        add_action('admin_enqueue_scripts', [self::class, 'enqueueAssets']);
+        add_action( 'admin_enqueue_scripts', [self::class, 'enqueue_assets'] );
     }
 
     // ================= Helpers =================
@@ -168,16 +168,15 @@ final class PatientPortalPage
      * روی این صفحه نباشد، اسکریپتِ لغو همچنان چاپ می‌شود (fail-open برای
      * خودِ کنترل، fail-closed برای هر صفحهٔ دیگر).
      */
-    public static function enqueueAssets(string $hookSuffix): void
-    {
-        if ($hookSuffix !== self::HOOK_SUFFIX) {
+    public static function enqueue_assets( string $hook_suffix ): void {
+        if ( $hook_suffix !== self::HOOK_SUFFIX ) {
             return;
         }
-        if (!is_user_logged_in() || !self::isPatientOnly(wp_get_current_user())) {
+        if ( ! is_user_logged_in() || ! self::isPatientOnly( wp_get_current_user() ) ) {
             return;
         }
-        $base = \defined('CPMS_PLUGIN_URL') && CPMS_PLUGIN_URL !== '' ? rtrim((string) CPMS_PLUGIN_URL, '/') : '';
-        if ($base === '') {
+        $base = \defined( 'CPMS_PLUGIN_URL' ) && CPMS_PLUGIN_URL !== '' ? rtrim( (string) CPMS_PLUGIN_URL, '/' ) : '';
+        if ( $base === '' ) {
             return;
         }
 
@@ -185,7 +184,7 @@ final class PatientPortalPage
             self::JS_HANDLE,
             $base . '/assets/js/cpms-patient-portal.js',
             [],
-            \defined('CPMS_VERSION') ? CPMS_VERSION : 'dev',
+            \defined( 'CPMS_VERSION' ) ? CPMS_VERSION : 'dev',
             true
         );
     }
@@ -216,8 +215,8 @@ final class PatientPortalPage
         // نصب چندکلینیکی Scope مبهم است (CLINIC_SCOPE_REQUIRED)؛ در آن حالت به‌جای
         // حدس‌زدن یک Clinic، خطِ تماس حذف می‌شود (همان الگوی degrade در App).
         try {
-            $phone = (string) App::settings()->get('clinic.phone', '');
-        } catch (ScopeRequiredException) {
+            $phone = (string) App::settings()->get( 'clinic.phone', '' );
+        } catch ( ScopeRequiredException ) {
             $phone = '';
         }
         ?>
@@ -227,19 +226,19 @@ final class PatientPortalPage
 
     <h2>نوبت‌های پیش‌رو</h2>
     <p class="description">نوبت‌های تأییدشده را می‌توانید تا پیش از مهلتِ تعیین‌شدهٔ مطب همین‌جا لغو کنید.</p>
-    <?php echo self::table($upcoming, 'نوبت پیش‌رویی ندارید.', true); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- markup از پیش escape شده (esc_html/esc_attr در table()/cancelButton()) ?>
+        <?php echo self::table( $upcoming, 'نوبت پیش‌رویی ندارید.', true ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- markup از پیش escape شده (esc_html/esc_attr در table()/cancel_button()) ?>
     <div class="notice notice-error inline cpms-patient-portal__error" role="alert" data-role="cancel-error" hidden><p></p></div>
 
     <h2>تاریخچه</h2>
-    <?php echo self::table($past, 'تاریخچه‌ای ثبت نشده است.', false); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- markup از پیش escape شده (esc_html در table()) ?>
+        <?php echo self::table( $past, 'تاریخچه‌ای ثبت نشده است.', false ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- markup از پیش escape شده (esc_html در table()) ?>
 
     <div class="card" style="max-width:840px;padding:8px 16px;margin-top:16px">
         <p>
-            برای رزرو یا تغییر نوبت، و لغو نوبت‌هایی که دکمهٔ لغو ندارند، با مطب در تماس باشید<?php echo $phone !== '' ? ' (تلفن: <b dir="ltr">' . esc_html($phone) . '</b>)' : ''; ?>.
+            برای رزرو یا تغییر نوبت، و لغو نوبت‌هایی که دکمهٔ لغو ندارند، با مطب در تماس باشید<?php echo $phone !== '' ? ' (تلفن: <b dir="ltr">' . esc_html( $phone ) . '</b>)' : ''; ?>.
             رزرو آنلاین اینترنتی به‌زودی فعال می‌شود.
         </p>
     </div>
-    <?php echo self::configScript(); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- JSON script-safe (wp_json_encode + JSON_HEX_TAG|JSON_HEX_AMP) و class با esc_attr ?>
+        <?php echo self::config_script(); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- JSON script-safe (wp_json_encode + JSON_HEX_TAG|JSON_HEX_AMP) و class با esc_attr ?>
 </div>
         <?php
     }
@@ -254,28 +253,29 @@ final class PatientPortalPage
      * عمداً هیچ clinic_id/patient_id/PHI منتشر نمی‌شود؛ مرجعِ مالکیت و Clinic سرور است.
      * `JSON_HEX_TAG|JSON_HEX_AMP` خروجی را script-safe می‌کند (`</` و `&` escape).
      */
-    private static function configScript(): string
-    {
-        $json = wp_json_encode([
-            'rest_root' => untrailingslashit(rest_url(self::REST_NAMESPACE)),
-            'cancel_path' => self::CANCEL_PATH,
-            'nonce' => wp_create_nonce('wp_rest'),
-        ], JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_UNICODE);
-        if (!is_string($json) || $json === '') {
+    private static function config_script(): string {
+        $json = wp_json_encode(
+            [
+                'rest_root'   => untrailingslashit( rest_url( self::REST_NAMESPACE ) ),
+                'cancel_path' => self::CANCEL_PATH,
+                'nonce'       => wp_create_nonce( 'wp_rest' ),
+            ],
+            JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_UNICODE
+        );
+        if ( ! is_string( $json ) || $json === '' ) {
             return '';
         }
 
-        return '<script type="application/json" class="' . esc_attr(self::CONFIG_CLASS) . '">' . $json . '</script>';
+        return '<script type="application/json" class="' . esc_attr( self::CONFIG_CLASS ) . '">' . $json . '</script>';
     }
 
     /**
      * @param list<array<string, mixed>> $rows
-     * @param bool $withActions ستون «عملیات» فقط برای جدول پیش‌رو؛ دکمهٔ لغو فقط روی `confirmed`.
+     * @param bool $with_actions ستون «عملیات» فقط برای جدول پیش‌رو؛ دکمهٔ لغو فقط روی `confirmed`.
      */
-    private static function table(array $rows, string $emptyText, bool $withActions): string
-    {
+    private static function table( array $rows, string $empty_text, bool $with_actions ): string {
         if ($rows === []) {
-            return '<p class="description">' . esc_html($emptyText) . '</p>';
+            return '<p class="description">' . esc_html( $empty_text ) . '</p>';
         }
         $statuses = [
             'pending' => 'در انتظار تأیید',
@@ -290,20 +290,20 @@ final class PatientPortalPage
         // viewport باریک (≤782px) هر ردیف کارت می‌شود؛ بدون overflow افقی.
         $html = '<table class="widefat striped cpms-table-responsive" style="max-width:840px"><thead><tr>'
             . '<th>تاریخ</th><th>ساعت</th><th>وضعیت</th><th>کد رهگیری</th>'
-            . ($withActions ? '<th>عملیات</th>' : '')
+            . ( $with_actions ? '<th>عملیات</th>' : '' )
             . '</tr></thead><tbody>';
         foreach ($rows as $r) {
             $status = (string) $r['status'];
-            $jalali = (string) ($r['jalali'] ?? Jalali::formatYmd((string) $r['date']));
-            $time = (string) $r['time'];
+            $jalali = (string) ( $r['jalali'] ?? Jalali::formatYmd( (string) $r['date'] ) );
+            $time   = (string) $r['time'];
             $html .= '<tr>'
-                . '<td data-label="تاریخ">' . esc_html($jalali) . '</td>'
-                . '<td data-label="ساعت"><span dir="ltr">' . esc_html($time) . '</span></td>'
-                . '<td data-label="وضعیت">' . esc_html($statuses[$status] ?? $status) . '</td>'
-                . '<td data-label="کد رهگیری"><span dir="ltr">' . esc_html((string) $r['reference_code']) . '</span></td>';
-            if ($withActions) {
+                . '<td data-label="تاریخ">' . esc_html( $jalali ) . '</td>'
+                . '<td data-label="ساعت"><span dir="ltr">' . esc_html( $time ) . '</span></td>'
+                . '<td data-label="وضعیت">' . esc_html( $statuses[ $status ] ?? $status ) . '</td>'
+                . '<td data-label="کد رهگیری"><span dir="ltr">' . esc_html( (string) $r['reference_code'] ) . '</span></td>';
+            if ( $with_actions ) {
                 $html .= '<td class="cpms-actions-cell" data-label="عملیات">'
-                    . ($status === 'confirmed' ? self::cancelButton((int) $r['id'], $jalali, $time) : '<span aria-hidden="true">—</span>')
+                    . ( $status === 'confirmed' ? self::cancel_button( (int) $r['id'], $jalali, $time ) : '<span aria-hidden="true">—</span>' )
                     . '</td>';
             }
             $html .= '</tr>';
@@ -317,15 +317,14 @@ final class PatientPortalPage
      * را حمل می‌کند. `data-cpms-confirm`: تأییدِ قابل‌دسترسِ موجود در cpms-admin.js
      * برای اقدام‌های برگشت‌ناپذیر (UX، نه authorization — مرجع همچنان B4 است).
      */
-    private static function cancelButton(int $appointmentId, string $jalali, string $time): string
-    {
+    private static function cancel_button( int $appointment_id, string $jalali, string $time ): string {
         $label = 'لغو نوبت ' . $jalali . ' ساعت ' . $time;
 
         return '<button type="button" class="button button-small cpms-patient-portal__cancel"'
-            . ' data-role="' . esc_attr(self::CANCEL_ACTION_ROLE) . '"'
-            . ' data-appointment-id="' . $appointmentId . '"'
-            . ' aria-label="' . esc_attr($label) . '"'
-            . ' data-cpms-confirm="' . esc_attr('نوبت ' . $jalali . ' ساعت ' . $time . ' لغو شود؟ این کار قابل بازگشت نیست.') . '"'
+            . ' data-role="' . esc_attr( self::CANCEL_ACTION_ROLE ) . '"'
+            . ' data-appointment-id="' . $appointment_id . '"'
+            . ' aria-label="' . esc_attr( $label ) . '"'
+            . ' data-cpms-confirm="' . esc_attr( 'نوبت ' . $jalali . ' ساعت ' . $time . ' لغو شود؟ این کار قابل بازگشت نیست.' ) . '"'
             . '>لغو نوبت</button>';
     }
 }

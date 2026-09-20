@@ -2,7 +2,7 @@
  * cpms-patient-portal.js — Phase 9 Slice 1: لغو نوبت توسط خود بیمار (پورتال «نوبت‌های من»).
  *
  * مرز مسئولیت (عمداً باریک):
- *  - فقط روی صفحهٔ `cpms-patient` انکیو می‌شود (PatientPortalPage::enqueueAssets).
+ *  - فقط روی صفحهٔ `cpms-patient` انکیو می‌شود (PatientPortalPage::enqueue_assets).
  *  - هیچ تصمیمِ مالکیت/Clinic/مهلت سمت کلاینت نیست: دکمه فقط `data-appointment-id`
  *    را حمل می‌کند و همان مسیرِ موجود B4 (`POST clinic/v1/appointments/{id}/cancel`)
  *    با nonce `wp_rest` و cookie هم‌مبدأ فراخوانی می‌شود؛ پاسخِ سرور مرجع نهایی است.

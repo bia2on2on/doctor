@@ -476,13 +476,13 @@ final class Phase9Slice1PatientPortalSelfCancelRedTest extends WP_UnitTestCase
 
         // Hook wiring is asserted on the real registration; the callback is then exercised directly with
         // the hook suffix WP passes, so no unrelated core/plugin `admin_enqueue_scripts` callback runs here.
-        self::assertNotFalse(has_action('admin_enqueue_scripts', [PatientPortalPage::class, 'enqueueAssets']), 'GREEN G3: PatientPortalPage::register() hooks admin_enqueue_scripts.');
+        self::assertNotFalse(has_action('admin_enqueue_scripts', [PatientPortalPage::class, 'enqueue_assets']), 'GREEN G3: PatientPortalPage::register() hooks admin_enqueue_scripts.');
         self::assertFileExists(dirname(__DIR__, 2) . '/assets/js/cpms-patient-portal.js', 'GREEN G3: the local vanilla asset exists (no CDN/build).');
 
         // (a) pure patient + portal hook → enqueued, local src, footer.
         $this->resetScriptHandle($handle);
         wp_set_current_user($fx['user_id']);
-        PatientPortalPage::enqueueAssets($hook);
+        PatientPortalPage::enqueue_assets($hook);
         self::assertTrue(wp_script_is($handle, 'enqueued'), 'GREEN G3: portal hook + pure patient enqueues the cancel script.');
         $registered = wp_scripts()->registered[$handle] ?? null;
         self::assertNotNull($registered, 'GREEN G3: handle registered.');
@@ -493,9 +493,9 @@ final class Phase9Slice1PatientPortalSelfCancelRedTest extends WP_UnitTestCase
 
         // (b) pure patient + any other wp-admin hook → nothing.
         $this->resetScriptHandle($handle);
-        PatientPortalPage::enqueueAssets('toplevel_page_cpms-clinicians');
+        PatientPortalPage::enqueue_assets('toplevel_page_cpms-clinicians');
         self::assertFalse(wp_script_is($handle, 'enqueued'), 'GREEN G3: other admin pages never load the portal script.');
-        PatientPortalPage::enqueueAssets('index.php');
+        PatientPortalPage::enqueue_assets('index.php');
         self::assertFalse(wp_script_is($handle, 'enqueued'), 'GREEN G3: dashboard never loads the portal script.');
 
         // (c) staff user on the portal hook → nothing.
@@ -506,7 +506,7 @@ final class Phase9Slice1PatientPortalSelfCancelRedTest extends WP_UnitTestCase
         self::assertNotFalse($doctor);
         $doctor->set_role(RolesAndCapabilities::ROLE_DOCTOR);
         wp_set_current_user($doctorId);
-        PatientPortalPage::enqueueAssets($hook);
+        PatientPortalPage::enqueue_assets($hook);
         self::assertFalse(wp_script_is($handle, 'enqueued'), 'GREEN G3: staff users do not get the patient cancel script.');
         $this->resetScriptHandle($handle);
     }
