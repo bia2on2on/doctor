@@ -29,7 +29,7 @@
 | `CLINIC_UNAUTHORIZED` | 401 | Session/Authentication معتبر نیست |
 | `CLINIC_PERMISSION_DENIED` | 403 | Capability کافی وجود ندارد |
 | `CLINIC_RATE_LIMITED` | 429 | Rate Limit (تلاش‌های تکراری موقتاً محدود) |
-| `CLINIC_VALIDATION_FAILED` | 400 | اعتبارسنجی ورودی ناموفق (جزئیات در `data.errors`) |
+| `CLINIC_VALIDATION_FAILED` | 400/422 | اعتبارسنجی ورودی ناموفق (جزئیات در `data.errors`) — برای رزرو: `400` پروفایل/موبایل ناقص یا بیمار غیرفعال یا تداخل موبایلِ تکراری، `422` انتخاب بیمار نامعتبر/بین-Clinic/غیرمرتبط |
 | `CLINIC_NOT_FOUND` | 404/403 | مورد موجود نیست (برای Entityهای Patient به‌عنوان 403) |
 | `CLINIC_INVALID_TRANSITION` | 409 | Transition نامعتبر در State Machine (شامل تکرار/Double Complete) |
 | `CLINIC_POLICY_VIOLATION` | 409 | نقض Policy کسب‌وکار (لغو/جابه‌جا خارج از بازه مجاز) |
@@ -43,6 +43,7 @@
 
 | Code | HTTP | Meaning |
 |---|---|---|
+| `CLINIC_PATIENT_SELECTION_REQUIRED` | 422 | انتخاب بیمار برای رزرو الزامی است (N>1 بدون `patient_id`) — pre-Hold/calacity |
 | `CLINIC_SLOT_TAKEN` | 409 | اسلات در لحظه Claim گرفته شده است (Concurrency conflict) |
 | `CLINIC_HOLD_EXPIRED` | 422 | Hold منقضی شده است |
 | `CLINIC_DUPLICATE_IN_FLIGHT` | 409 | Idempotency: عملیات هم‌نام در حال انجام است |

@@ -550,7 +550,7 @@ final class PublicBookingShortcode
             $lines[] = self::renderAuthContinuation($surfaceId);
         } elseif ($continuation === self::CONTINUATION_PATIENT) {
             // بیمارِ واردشده: ادامهٔ Hold→Confirm با nonce مسیرهای موجود.
-            $lines[] = self::renderPatientContinuation($surfaceId);
+            $lines[] = self::renderPatientContinuation($surfaceId, $clinicId);
         }
 
         $lines[] = '</div>'; // body
@@ -666,13 +666,61 @@ final class PublicBookingShortcode
      * (کد رهگیری + تاریخ جلالی). انتخابِ قبلیِ غیر-PHI توسط JS باز-نشانی و
      * با B1 موجود ادامه می‌یابد (B6 resume عمداً استفاده نمی‌شود).
      */
-    private static function renderPatientContinuation(string $surfaceId): string
+    private static function renderPatientContinuation(string $surfaceId, int $clinicId): string
     {
         $b = self::ROOT_CLASS;
         $firstNameId = $surfaceId . '-first-name';
         $lastNameId = $surfaceId . '-last-name';
 
+        // Phase 8 Slice 3 — chooser برای N>1 linked active Patients (LINKED-ONLY authority).
+        // فقط برای N>1 رندر می‌شود؛ 0 یا 1 هیچ chooserی ندارد. هرگز decoy/same-mobile/cross-clinic/archived را نشان نمی‌دهد.
+        // Render chooser OUTSIDE the hidden booking-continue box so it is visible immediately after login.
+        $chooserHtml = '';
+        try {
+            $uid = get_current_user_id();
+            if ($uid > 0 && $clinicId > 0) {
+                $dbChooser = \ClinicCore\Bootstrap\App::db();
+                $linkedPatients = $dbChooser->fetchAll(
+                    'SELECT p.id, p.first_name, p.last_name FROM ' . $dbChooser->table('cpms_patient_user_links') . ' l JOIN ' . $dbChooser->table('cpms_patients') . ' p ON p.id = l.patient_id WHERE l.wp_user_id = %d AND l.clinic_id = %d AND p.status = %s AND p.clinic_id = %d ORDER BY l.is_primary DESC, l.id ASC',
+                    [$uid, $clinicId, 'active', $clinicId]
+                );
+                if (is_array($linkedPatients) && count($linkedPatients) > 1) {
+                    $chooserParts = [];
+                    $chooserParts[] = sprintf('<div class="%s" data-role="patient-chooser">', esc_attr($b . '__chooser'));
+                    $chooserParts[] = sprintf('<p class="%s">%s</p>', esc_attr($b . '__chooser-hint'), esc_html('لطفاً بیمار مورد نظر برای رزرو را انتخاب کنید:'));
+                    foreach ($linkedPatients as $lp) {
+                        if (!is_array($lp)) {
+                            continue;
+                        }
+                        $pid = (int) ($lp['id'] ?? 0);
+                        if ($pid <= 0) {
+                            continue;
+                        }
+                        $fn = trim((string) ($lp['first_name'] ?? ''));
+                        $ln = trim((string) ($lp['last_name'] ?? ''));
+                        $label = trim($fn . ' ' . $ln);
+                        if ($label === '') {
+                            $label = 'بیمار #' . $pid;
+                        }
+                        $chooserParts[] = sprintf(
+                            '<button type="button" class="%s" data-role="patient-option" data-patient-id="%d" aria-pressed="false">%s</button>',
+                            esc_attr($b . '__patient-option'),
+                            $pid,
+                            esc_html($label)
+                        );
+                    }
+                    $chooserParts[] = '</div>';
+                    $chooserHtml = implode('', $chooserParts);
+                }
+            }
+        } catch (\Throwable $e) {
+            $chooserHtml = '';
+        }
+
         $lines = [];
+        if ($chooserHtml !== '') {
+            $lines[] = $chooserHtml;
+        }
         $lines[] = sprintf(
             '<div class="%1$s" data-role="booking-continue" hidden>',
             esc_attr($b . '__continue-box')
