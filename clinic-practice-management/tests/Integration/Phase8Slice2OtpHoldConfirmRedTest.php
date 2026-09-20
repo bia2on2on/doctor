@@ -192,6 +192,16 @@
  *   T23 a logged-in NON-patient (staff) receives no patient continuation
  *       (no nonce / hold / confirm / OTP verify markers)
  *
+ * POST-GREEN SECURITY REGRESSION GUARD — added after GREEN, passes on the
+ * GREEN head and must keep passing (1 method; total suite = 26 tests):
+ *
+ *   T26 A3 fails closed with the established CLINIC_OTP_INVALID envelope
+ *       when the deterministic bridge email {mobile}@otp.cpms.local is
+ *       held by a NON-patient WP account: reuse is gated on the verified
+ *       cpms_patient role; no session, no patient_links, no user_id in
+ *       the payload, no wp_users/Patient/link side effects, no silent
+ *       role conversion, and no disclosure of the bridge-email owner.
+ *
  * "No new REST route" is pinned by the existing T20 census guard of
  * Phase8Slice1PublicBookingBrowseRedTest (anonymous census =
  * {availability, booking/quote, health, otp/request, otp/verify}); Slice 2
@@ -293,6 +303,7 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
     private const MOBILE_T19A = '09129981011';
     private const MOBILE_T19B = '09129981012';
     private const MOBILE_DECOY = '09129981013';
+    private const MOBILE_T26 = '09129981014';
 
     private const TZ_TEHRAN = 'Asia/Tehran';
 
@@ -904,6 +915,109 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
             'No Patient exists in the challenge Clinic, so no Patient link may appear.'
         );
         self::assertSame(0, $this->countPatientLinks($patientB), 'The other-Clinic Patient must never be linked.');
+    }
+
+    // =================================================================
+    // AREA 6b — BRIDGE-EMAIL COLLISION FAIL-CLOSED (security regression)
+    // =================================================================
+
+    /**
+     * T26 — SECURITY regression: the deterministic OTP bridge email
+     * {mobile}@otp.cpms.local is derived from the mobile alone, so it is
+     * guessable. If a NON-patient WP account (e.g. staff with the
+     * cpms_secretary role) holds that email, A3 must FAIL CLOSED with the
+     * established safe CLINIC_OTP_INVALID product envelope instead of
+     * attaching the authenticated session to that account:
+     *   - 400 + CLINIC_OTP_INVALID (never 200, never an uncaught exception);
+     *   - no session/current user, no patient_links exposure, no user_id
+     *     in the error payload, no disclosure of which account owns the
+     *     bridge email;
+     *   - zero provisioning side effects: no new wp_users row, no Patient
+     *     row, no Patient link for the colliding account;
+     *   - no silent role conversion: the colliding account keeps its
+     *     exact roles.
+     * Case-A parity (legitimate cpms_patient owner of the bridge email is
+     * still reused: same user_id, is_new_user=false) is pinned by T11.
+     */
+    public function testA3FailsClosedWhenBridgeEmailIsHeldByANonPatientAccount(): void
+    {
+        $this->buildTwoClinicFixture();
+
+        // Colliding non-patient account: holds the deterministic bridge
+        // email for this mobile but is NOT a CPMS patient identity.
+        $collidingUserId = (int) wp_create_user(
+            'p8s2_bridge_collision_t26',
+            'pass-not-used-123',
+            self::MOBILE_T26 . '@otp.cpms.local'
+        );
+        self::assertGreaterThan(0, $collidingUserId, 'precondition: the colliding staff account exists.');
+        $this->setRole($collidingUserId, 'cpms_secretary');
+
+        global $wpdb;
+        $usersBefore = (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $wpdb->prefix . 'users'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.DirectDatabaseQuery
+        self::assertSame(
+            0,
+            $this->countPatientsForMobile($this->clinicA, self::MOBILE_T26),
+            'precondition: no Patient exists for this mobile yet.'
+        );
+
+        $this->ambientScope($this->clinicA);
+        $this->issueKnownOtpToken(self::MOBILE_T26, '262626');
+        $verify = $this->restPost(self::NS . self::OTP_VERIFY_PATH, [
+            'mobile' => self::MOBILE_T26,
+            'code' => '262626',
+        ]);
+        $this->ambientScope(null);
+
+        $this->assertClinicError(
+            $verify,
+            'CLINIC_OTP_INVALID',
+            400,
+            'A3 must fail closed when the bridge-email account is not a CPMS patient identity.'
+        );
+
+        // Non-disclosure: the error payload carries no account identity,
+        // no patient_links, no session artefact and never names the
+        // bridge email or the colliding user id.
+        $body = $verify->get_data();
+        self::assertIsArray($body, 'Error envelope must be an array.');
+        $payload = (array) ($body['data'] ?? []);
+        self::assertArrayNotHasKey('user_id', $payload, 'Fail-closed error must not expose a WP user id.');
+        self::assertArrayNotHasKey('patient_links', $payload, 'Fail-closed error must not expose patient links.');
+        self::assertArrayNotHasKey('session_issued', $payload, 'Fail-closed error must not carry a session marker.');
+        $encoded = (string) wp_json_encode($body);
+        self::assertStringNotContainsString('@otp.cpms.local', $encoded, 'The bridge email must never leak in the response.');
+        self::assertStringNotContainsString(
+            (string) $collidingUserId,
+            (string) ($body['message'] ?? ''),
+            'The message must not disclose which account owns the bridge email.'
+        );
+
+        // No session: the failing verify must not authenticate anyone.
+        self::assertSame(0, get_current_user_id(), 'Fail-closed verify must leave the request anonymous.');
+
+        // Zero provisioning side effects.
+        $usersAfter = (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $wpdb->prefix . 'users'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.DirectDatabaseQuery
+        self::assertSame($usersBefore, $usersAfter, 'No wp_users row may be created on the fail-closed path.');
+        self::assertSame(
+            0,
+            $this->countPatientsForMobile($this->clinicA, self::MOBILE_T26),
+            'No Patient row may be created for the mobile on the fail-closed path.'
+        );
+        self::assertSame(
+            0,
+            $this->countPatientLinksForUser($collidingUserId),
+            'The colliding non-patient account must never gain a Patient link.'
+        );
+
+        // No silent role conversion of the colliding account.
+        $collider = get_userdata($collidingUserId);
+        self::assertNotFalse($collider, 'precondition: the colliding account still exists.');
+        self::assertSame(
+            ['cpms_secretary'],
+            array_values((array) $collider->roles),
+            'The colliding non-patient account must keep its exact roles.'
+        );
     }
 
     // =================================================================

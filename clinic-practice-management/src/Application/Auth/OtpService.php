@@ -6,6 +6,7 @@ namespace ClinicCore\Application\Auth;
 
 use ClinicCore\Application\Notifications\SmsService;
 use ClinicCore\Application\Scope\ScopeRequiredException;
+use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Domain\Otp\OtpPolicy;
 use ClinicCore\Domain\Otp\OtpState;
 use ClinicCore\Domain\Sms\SmsEvents;
@@ -483,9 +484,14 @@ final class OtpService
      * جست‌وجوی هویت قطعیِ OTP برای یک موبایل نرمال‌شده.
      *
      * `{mobile}@otp.cpms.local` تنها قالبِ ایمیلِ مسیر OTP است؛ بازگشتِ
-     * شناسهٔ کاربرِ موجود یعنی بازاستفادهٔ همان هویت (بدون ساختِ تکراری و
-     * بدون خطای duplicate-email). کاربرانِ عادیِ بدون این ایمیل هرگز
-     * بازگردانده نمی‌شوند.
+     * شناسهٔ کاربرِ موجود یعنی بازاستفادهٔ همان هویت — **فقط** اگر حساب
+     * واقعاً هویتِ بیمارِ CPMS باشد (نقشِ مستقر `cpms_patient` — همان
+     * قراردادِ PatientPortalPage::isPatientOnly). ایمیلِ پل قابل‌حدس است؛
+     * اگر حسابِ غیربیمار (کارمند/غیره) آن را پیش‌گرفته باشد، بازاستفادهٔ کور
+     * احراز را به هویتِ اشتباه متصل می‌کرد. چنین تصادمی fail-closed است:
+     * بدون session، بدون افشای patient_links، بدون ساختن کاربر، بدون تغییر
+     * نقشِ حسابِ مزاحم و بدون افشای اینکه چه حسابی مالک آن ایمیل است (پاکتِ
+     * محصولیِ عمومیِ تثبیت‌شده).
      */
     private function findExistingOtpUserId(string $mobile): ?int
     {
@@ -493,8 +499,18 @@ final class OtpService
             'SELECT ID FROM ' . $this->db->wpdb()->prefix . 'users WHERE user_email = %s ORDER BY ID ASC LIMIT 1',
             [$mobile . self::OTP_EMAIL_SUFFIX]
         );
+        if ($user === null) {
+            return null;
+        }
 
-        return $user === null ? null : (int) $user['ID'];
+        $userId = (int) $user['ID'];
+        $wpUser = function_exists('get_userdata') ? get_userdata($userId) : false;
+        $roles = $wpUser instanceof \WP_User ? (array) $wpUser->roles : [];
+        if (!in_array(RolesAndCapabilities::ROLE_PATIENT, $roles, true)) {
+            throw new OtpException('CLINIC_OTP_INVALID', 'کد واردشده معتبر نیست');
+        }
+
+        return $userId;
     }
 
     /**
