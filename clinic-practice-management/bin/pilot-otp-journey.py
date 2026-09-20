@@ -229,14 +229,6 @@ def run_journey(browser, run):
             "})();"
         )
         page.goto(CFG["url"], wait_until="networkidle")
-        # diagnosis (Transient): اگر surface رندر نشده باشد، حکمِ واقعیت در لاگ.
-        try:
-            _href = page.evaluate("document.location.href")
-            _n = page.locator(".cpms-public-booking").count()
-            print(f"DIAG {key0} url={_href} surface={_n}")
-        except Exception as _e:
-            print(f"DIAG {key0} eval-failed: {_e}")
-
         cfg0 = page.evaluate(
             "JSON.parse((document.querySelector('script.cpms-public-booking__config') || {textContent: '{}'}).textContent)"
         )

@@ -1155,16 +1155,6 @@ jobs:
           test -s /tmp/otp-journey.env
           cat /tmp/otp-journey.env >> "$GITHUB_ENV"
           cat /tmp/otp-journey.env
-
-      # پیش-ابزارِ failure-run: صفحهٔ سفر را یک‌بار با curl می‌خواند و برای
-      # diagnosis می‌گذارد (setup/DB باید یک‌بار اتفاق افتاده باشد، سپس حذف‌کن).
-      - name: OTP journey pre-diagnosis (snapshot — delete after failure run)
-        continue-on-error: true
-        run: |
-          set -x
-          curl -s -o /tmp/an-wordpress-journey.html -w 'curl journey page: %{http_code} url=%{url_effective}\n' "$(cut -d'|' -f1 /tmp/otp-journey.env 2>/dev/null || echo http://localhost:8080/)" || true
-          ls -la /tmp/otp-journey.env /tmp/an-wordpress-journey.html 2>&1 || true
-          head -c 600 /tmp/an-wordpress-journey.html 2>/dev/null | head -8 || true
       - name: Apache up
         run: |
           sudo tee /etc/apache2/sites-available/pilot.conf >/dev/null <<CONF
@@ -1278,7 +1268,7 @@ jobs:
                      /tmp/perms.txt /tmp/audit-actions.txt /tmp/jobs-queued.txt /tmp/jobs-success.txt /tmp/failed-jobs.txt \
                      /tmp/tick-1.log /tmp/tick-2.log /tmp/restore.log /tmp/orig-files.txt /tmp/restored-files.txt /tmp/backup-hashes.txt /tmp/backup-counts.txt \
                      /tmp/health.json /tmp/avail.json /tmp/unauth.json /tmp/probe-body.txt \
-                     /tmp/leak.txt /tmp/leak2.txt /tmp/cpms-tick.log /tmp/tick-manual.log /tmp/health-check.log /tmp/pw.log /tmp/resp.log /tmp/journey.log /tmp/otp-journey-fixture.log /tmp/an-wordpress-journey.html; do
+                     /tmp/leak.txt /tmp/leak2.txt /tmp/cpms-tick.log /tmp/tick-manual.log /tmp/health-check.log /tmp/pw.log /tmp/resp.log /tmp/journey.log /tmp/otp-journey-fixture.log; do
               if [ -f "$f" ]; then echo "--- $f (tail 50) ---"; tail -50 "$f"; fi
             done
             echo '--- apache diagnostics ---'
