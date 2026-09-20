@@ -777,8 +777,12 @@ final class Phase8Slice3LinkedPatientBookingSubjectRedTest extends WP_UnitTestCa
         if ($this->slotHoldsHasPatientIdColumn()) {
             self::assertSame($patientB, $apptPatient, 'New Appointment must bind new Hold subject B durably.');
         } else {
-            // At RED, without Hold durability, appointment binding via mobile still happens to be B (since new hold's patient is B and mobile matches), but Hold durability is absent.
-            self::assertSame($patientB, $apptPatient, 'At RED, new Appointment binds via mobile fallback, but Hold durability is absent.');
+            // At RED, without Hold.patient_id durability, new B's appointment would still be created via mobile, but
+            // it falls back to primary A (since Hold cannot preserve B). Prove current cannot preserve new subject.
+            // Actually check: primary is A, so mobile fallback binds A, not B — subject not preserved.
+            self::assertSame($patientA, $apptPatient, 'At RED, without Hold.patient_id, new Appointment binds primary A via mobile, not selected B — subject not preserved durably.');
+            self::assertSame(1, $this->countAppointmentsForPatient($patientA), 'At RED, Patient A incorrectly receives the new Appointment (historical).');
+            self::assertSame(0, $this->countAppointmentsForPatient($patientB), 'At RED, selected Patient B has no Appointment — new subject not preserved.');
         }
 
         // Final contract: Hold.patient_id must exist for expiry durability (fails at RED, at end).
