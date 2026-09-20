@@ -1202,6 +1202,8 @@ jobs:
         run: |
           python3 -m py_compile bin/pilot-otp-journey.py
           python3 bin/pilot-otp-journey.py | tee /tmp/journey.log
+          # gate fail-closed: tee هرگز کد خطای سفر را نمی‌بلعد
+          test "${PIPESTATUS[0]}" -eq 0
 
       # خلاصهٔ Responsive باید از sandbox هم قابل بازیابی باشد: لاگِ job به blob
       # ریدایرکت می‌شود و دانلودشدنی نیست و `$GITHUB_STEP_SUMMARY` هم از API

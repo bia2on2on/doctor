@@ -99,7 +99,7 @@ def db(sql):
         capture_output=True, text=True, timeout=30,
     )
     if out.returncode != 0:
-        raise RuntimeError(f"db query failed: {out.stderr.strip()[:200]}")
+        raise RuntimeError(f"db query failed: {out.stderr.strip()[:400]}")
     return out.stdout.strip()
 
 
@@ -268,10 +268,11 @@ def run_journey(browser, run):
         assert a2.status == 200, f"A2 otp/request returned HTTP {a2.status} (scope/selection defect)"
         page.locator('[data-role="otp-code"]').wait_for(state="visible")
         trow = dbrows(
-            f"SELECT id, clinic_id, status FROM {T('cpms_otp_tokens')} WHERE mobile='{mobile}' ORDER BY id DESC"
+            f"SELECT id, clinic_id, consumed_at FROM {T('cpms_otp_tokens')} WHERE mobile='{mobile}' ORDER BY id DESC"
         )
         assert len(trow) == 1, f"expected exactly 1 otp token, got {len(trow)}"
         token_id, token_clinic = int(trow[0][0]), int(trow[0][1])
+        assert trow[0][2] in ("NULL", ""), "fresh A2 challenge must be unconsumed"
         assert token_clinic == CFG["clinic_id"], (
             f"challenge clinic={token_clinic} != persisted-selection clinic={CFG['clinic_id']}")
         assert token_clinic > 1, "challenge clinic must be nontrivial (never clinic_id=1 as authority)"
