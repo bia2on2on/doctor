@@ -343,7 +343,7 @@
 		var patientOptions = patientChooser ? patientChooser.querySelectorAll('[data-role="patient-option"]') : [];
 		function getStoredPatientId() {
 			try {
-				var v = window.localStorage.getItem('cpms-patient-selection:' + String(config.clinic_id));
+				var v = window.sessionStorage.getItem('cpms-patient-selection:' + String(config.clinic_id));
 				return toInt(v);
 			} catch (e) {
 				return 0;
@@ -352,7 +352,7 @@
 		function storePatientId(id) {
 			try {
 				if (toInt(id) > 0) {
-					window.localStorage.setItem('cpms-patient-selection:' + String(config.clinic_id), String(toInt(id)));
+					window.sessionStorage.setItem('cpms-patient-selection:' + String(config.clinic_id), String(toInt(id)));
 				}
 			} catch (e) {}
 		}
@@ -365,7 +365,7 @@
 				opt.setAttribute('aria-pressed', pid === selectedPatientId && selectedPatientId > 0 ? 'true' : 'false');
 			}
 		}
-		// Restore from localStorage if chooser exists; do not auto-pick first row.
+		// Restore from sessionStorage if chooser exists; do not auto-pick first row.
 		if (patientOptions.length > 0) {
 			var storedPid = getStoredPatientId();
 			if (storedPid > 0) {
@@ -912,7 +912,7 @@
 				body.slot_id = toInt(selection.slot_id);
 			}
 			// Phase 8 Slice 3 — B1 only: include linked patient selection when chooser is active.
-			// Reads from DOM >0 / localStorage when available; if missing, send nothing (server 0/1/N handles).
+			// Reads from DOM >0 / sessionStorage when available; if missing, send nothing (server 0/1/N handles).
 			var pidToSend = selectedPatientId;
 			if (pidToSend <= 0) {
 				pidToSend = getStoredPatientId();

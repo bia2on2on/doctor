@@ -571,7 +571,38 @@ final class BookingService
         $hasPatientCol = $this->holdsHasPatientIdColumn();
         $holdPatientId = $hasPatientCol && array_key_exists('patient_id', $hold) && $hold['patient_id'] !== null && (string) $hold['patient_id'] !== '' ? (int) $hold['patient_id'] : null;
 
+        $now = $this->now();
+        $nowSql = $this->db->nowUtcSql();
+        if ((int) $hold['holder_wp_user_id'] !== $wpUserId) {
+            $this->audit('FORBIDDEN_ACCESS_ATTEMPT', $wpUserId, 'patient', 'slot_hold', (int) $hold['id'], null, null, null, [
+                'mobile' => MobileValidator::mask((string) ($hold['holder_mobile'] ?? '')),
+            ]);
+            throw BookingException::of('CLINIC_PERMISSION_DENIED', 'به این جلسه رزرو دسترسی ندارید', 403);
+        }
+
+        if ((string) $hold['status'] !== 'active') {
+            if ((string) $hold['status'] === 'converted') {
+                // با کلید متفاوت تکرار → پاسخ همان Appointment
+                $appt = $this->findActiveByUserSlot($wpUserId, (int) $hold['slot_id']);
+                if ($appt !== null) {
+                    return $this->appointmentView($appt);
+                }
+            }
+            throw BookingException::of('CLINIC_HOLD_EXPIRED', 'جلسه رزرو منقضی/بسته شده — دوباره Slot انتخاب کنید', 422);
+        }
+        if ($this->toDateTime((string) $hold['expires_at']) <= $now) {
+            $this->db->query(
+                'UPDATE ' . $this->db->table('cpms_slot_holds') . " SET status = 'expired' WHERE id = %d AND status = 'active' AND expires_at <= %s",
+                [(int) $hold['id'], $nowSql]
+            );
+            $this->slots->releaseHold((int) $hold['slot_id']);
+            throw BookingException::of('CLINIC_HOLD_EXPIRED', 'مهلت رزرو تمام شده — دوباره Slot انتخاب کنید', 422);
+        }
+
+        $this->assertLicense(LicenseGate::OP_APPOINTMENT_BOOK);
+
         // Phase 8 Slice 3 — B2 subject resolution: frozen vs historical NULL compat.
+        // Ownership and status proven before any Patient/link resolution — preserves 403 parity.
         $patient = null;
         $newPatientNames = null;
         if ($holdPatientId !== null) {
@@ -614,36 +645,6 @@ final class BookingService
         if ($check['is_replay']) {
             return $this->replayOrInFlight($check, $wpUserId);
         }
-
-        $now = $this->now();
-        $nowSql = $this->db->nowUtcSql();
-        if ((int) $hold['holder_wp_user_id'] !== $wpUserId) {
-            $this->audit('FORBIDDEN_ACCESS_ATTEMPT', $wpUserId, 'patient', 'slot_hold', (int) $hold['id'], null, null, null, [
-                'mobile' => MobileValidator::mask((string) ($hold['holder_mobile'] ?? '')),
-            ]);
-            throw BookingException::of('CLINIC_PERMISSION_DENIED', 'به این جلسه رزرو دسترسی ندارید', 403);
-        }
-
-        if ((string) $hold['status'] !== 'active') {
-            if ((string) $hold['status'] === 'converted') {
-                // با کلید متفاوت تکرار → پاسخ همان Appointment
-                $appt = $this->findActiveByUserSlot($wpUserId, (int) $hold['slot_id']);
-                if ($appt !== null) {
-                    return $this->appointmentView($appt);
-                }
-            }
-            throw BookingException::of('CLINIC_HOLD_EXPIRED', 'جلسه رزرو منقضی/بسته شده — دوباره Slot انتخاب کنید', 422);
-        }
-        if ($this->toDateTime((string) $hold['expires_at']) <= $now) {
-            $this->db->query(
-                'UPDATE ' . $this->db->table('cpms_slot_holds') . " SET status = 'expired' WHERE id = %d AND status = 'active' AND expires_at <= %s",
-                [(int) $hold['id'], $nowSql]
-            );
-            $this->slots->releaseHold((int) $hold['slot_id']);
-            throw BookingException::of('CLINIC_HOLD_EXPIRED', 'مهلت رزرو تمام شده — دوباره Slot انتخاب کنید', 422);
-        }
-
-        $this->assertLicense(LicenseGate::OP_APPOINTMENT_BOOK);
 
         if ($patient === null) {
             // N-1: کاربر جدید (OTP verified) — Patient در زمان confirm ساخته
@@ -1638,7 +1639,12 @@ final class BookingService
         if ($this->holdsPatientIdColCache !== null) {
             return $this->holdsPatientIdColCache;
         }
-        $row = $this->db->fetchRow('SHOW COLUMNS FROM ' . $this->db->table('cpms_slot_holds') . " LIKE 'patient_id'");
+        // Use information_schema to check the real table, bypassing WP temp-table shadowing (SHOW COLUMNS hits temp if present).
+        $table = $this->db->table('cpms_slot_holds');
+        $row = $this->db->fetchRow(
+            'SELECT 1 AS ok FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = %s AND column_name = %s LIMIT 1',
+            [$table, 'patient_id']
+        );
         $this->holdsPatientIdColCache = $row !== null;
 
         return $this->holdsPatientIdColCache;

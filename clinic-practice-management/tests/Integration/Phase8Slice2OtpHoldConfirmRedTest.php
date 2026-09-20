@@ -1715,19 +1715,55 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
         self::assertGreaterThanOrEqual(1, $fk, 'clinic_id must carry an FK to cpms_clinics(id).');
 
         // ----- down/up contract (GREEN-reachable only — see header) -----
+        // This contract must remain valid even after later migrations (e.g., 0022 slot_holds.patient_id).
+        // When the latest is 0022, rollbackOne() would rollback 0022, not the clinic_id binding (0021),
+        // so we handle both baselines and ensure we always restore the original version.
         $versionBeforeRollback = App::migrations()->currentVersion();
         self::assertIsString($versionBeforeRollback, 'The applied migration version must be readable.');
+        $originalVersion = $versionBeforeRollback;
+        try {
+            if ($versionBeforeRollback === '2026_09_20_0022') {
+                // Latest is 0022 (slot_holds.patient_id) — first rollback is 0022, which must not affect clinic_id.
+                $rolled1 = $this->withRealTables(static fn (): ?string => App::migrations()->rollbackOne());
+                self::assertIsString($rolled1, 'The binding migration must be rollbackable.');
+                self::assertSame('2026_09_20_0021', App::migrations()->currentVersion(), 'After rolling back 0022, version must be 0021.');
+                $still = $wpdb->get_row("SHOW COLUMNS FROM {$otpTable} LIKE 'clinic_id'", ARRAY_A); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.DirectDatabaseQuery
+                self::assertNotNull($still, 'clinic_id must still exist after rolling back 0022 (unrelated migration).');
+                $rolled2 = $this->withRealTables(static fn (): ?string => App::migrations()->rollbackOne());
+                self::assertIsString($rolled2, 'The binding migration must be rollbackable.');
+                $afterDown = $wpdb->get_row("SHOW COLUMNS FROM {$otpTable} LIKE 'clinic_id'", ARRAY_A); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.DirectDatabaseQuery
+                self::assertNull($afterDown, 'The down migration must drop the FK then the column.');
+                $this->withRealTables(static fn (): array => App::migrations()->migrate());
+                // migrate() applies all pending (0021 + 0022) in one call when starting from 0020.
+                $afterUp = $wpdb->get_row("SHOW COLUMNS FROM {$otpTable} LIKE 'clinic_id'", ARRAY_A); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.DirectDatabaseQuery
+                self::assertNotNull($afterUp, 'Re-migrating must restore the column (up/down are inverses).');
+            } else {
+                $rolled = $this->withRealTables(static fn (): ?string => App::migrations()->rollbackOne());
+                self::assertIsString($rolled, 'The binding migration must be rollbackable.');
+                $afterDown = $wpdb->get_row("SHOW COLUMNS FROM {$otpTable} LIKE 'clinic_id'", ARRAY_A); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.DirectDatabaseQuery
+                self::assertNull($afterDown, 'The down migration must drop the FK then the column.');
 
-        $rolled = $this->withRealTables(static fn (): ?string => App::migrations()->rollbackOne());
-        self::assertIsString($rolled, 'The binding migration must be rollbackable.');
-        $afterDown = $wpdb->get_row("SHOW COLUMNS FROM {$otpTable} LIKE 'clinic_id'", ARRAY_A); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.DirectDatabaseQuery
-        self::assertNull($afterDown, 'The down migration must drop the FK then the column.');
-
-        $this->withRealTables(static fn (): array => App::migrations()->migrate());
-        $afterUp = $wpdb->get_row("SHOW COLUMNS FROM {$otpTable} LIKE 'clinic_id'", ARRAY_A); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.DirectDatabaseQuery
-        self::assertNotNull($afterUp, 'Re-migrating must restore the column (up/down are inverses).');
+                $this->withRealTables(static fn (): array => App::migrations()->migrate());
+                $afterUp = $wpdb->get_row("SHOW COLUMNS FROM {$otpTable} LIKE 'clinic_id'", ARRAY_A); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.DirectDatabaseQuery
+                self::assertNotNull($afterUp, 'Re-migrating must restore the column (up/down are inverses).');
+            }
+        } finally {
+            // Ensure we always return to the original version, even on failure, to not pollute later tests (e.g., T14 for slot_holds).
+            $current = App::migrations()->currentVersion();
+            if ($current !== $originalVersion) {
+                $this->withRealTables(static fn (): array => App::migrations()->migrate());
+                // If we were on 0022 and rolled back twice, one migrate() will bring us to 0022 again.
+                // If we were on 0021 and rolled back once, one migrate() brings us to 0021 (or 0022 if 0022 is pending, but that would be the original 0022 case handled above).
+                // In any case, loop until we reach original.
+                $tries = 0;
+                while (App::migrations()->currentVersion() !== $originalVersion && $tries < 3) {
+                    $this->withRealTables(static fn (): array => App::migrations()->migrate());
+                    $tries++;
+                }
+            }
+        }
         self::assertSame(
-            $versionBeforeRollback,
+            $originalVersion,
             App::migrations()->currentVersion(),
             'The applied version after the round-trip must equal the version before it.'
         );
