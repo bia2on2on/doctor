@@ -36,14 +36,20 @@ final class PublicBookingJsSendGateTest extends TestCase
     public function testUsesSessionStorageNotLocalStorageForPatientSelection(): void
     {
         // Storage lifetime: keep sessionStorage, not localStorage for patient chooser.
-        self::assertStringContainsString("sessionStorage.getItem('cpms-patient-selection:", $this->js, 'patient selection must read from sessionStorage');
-        self::assertStringContainsString("sessionStorage.setItem('cpms-patient-selection:", $this->js, 'patient selection must write to sessionStorage');
-        self::assertStringContainsString("sessionStorage.removeItem('cpms-patient-selection:", $this->js, 'patient selection must clear via sessionStorage');
+        // JS uses PATIENT_STORAGE_KEY = 'cpms-patient-selection:' + clinic_id and sessionStorage with that key.
+        self::assertStringContainsString("PATIENT_STORAGE_KEY = 'cpms-patient-selection:'", $this->js, 'patient selection key must be sessionStorage with clinic suffix');
+        self::assertStringContainsString("sessionStorage.getItem(PATIENT_STORAGE_KEY", $this->js, 'patient selection must read from sessionStorage via PATIENT_STORAGE_KEY');
+        self::assertStringContainsString("sessionStorage.setItem(PATIENT_STORAGE_KEY", $this->js, 'patient selection must write to sessionStorage via PATIENT_STORAGE_KEY');
+        self::assertStringContainsString("sessionStorage.removeItem(PATIENT_STORAGE_KEY", $this->js, 'patient selection must clear via sessionStorage via PATIENT_STORAGE_KEY');
         // No localStorage for patient selection (booking-selection is unrelated and lives in sessionStorage).
         $localPatient = substr_count($this->js, "localStorage.getItem('cpms-patient-selection:");
         self::assertSame(0, $localPatient, 'must not use localStorage for patient selection (sessionStorage only)');
         $localSet = substr_count($this->js, "localStorage.setItem('cpms-patient-selection:");
         self::assertSame(0, $localSet, 'must not use localStorage for patient selection');
+        $localRemove = substr_count($this->js, "localStorage.removeItem('cpms-patient-selection:");
+        self::assertSame(0, $localRemove, 'must not use localStorage for patient selection');
+        $localKey = substr_count($this->js, "localStorage.getItem(PATIENT_STORAGE_KEY");
+        self::assertSame(0, $localKey, 'must not use localStorage for patient selection key');
     }
 
     public function testGateExistsAndUsesCurrentDomOptionsAsAuthority(): void
