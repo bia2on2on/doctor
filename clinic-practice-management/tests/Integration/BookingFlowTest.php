@@ -279,7 +279,9 @@ final class BookingFlowTest extends WP_UnitTestCase
         global $wpdb;
         $slot = $this->makeSlot(3, '10:00', 1);
         $hold = $this->booking()->hold($this->otherUserId, $this->clinicianId, $slot['date'], $slot['time']);
-        $result = $this->booking()->confirm($hold['hold_token'], $this->otherUserId, null, $this->uuid());
+        // Phase 8 Slice 2 (تصمیم مالک ۲): بیمارِ جدید در زمان confirm به نام/
+        // نام‌خانوادگی نیاز دارد — همان قرارداد، اکنون در سطح Service.
+        $result = $this->booking()->confirm($hold['hold_token'], $this->otherUserId, null, $this->uuid(), 'سارا', 'کریمی');
 
         $patient = $wpdb->get_row(
             $wpdb->prepare(
@@ -292,6 +294,8 @@ final class BookingFlowTest extends WP_UnitTestCase
         );
         $this->assertNotNull($patient, 'Patient Record باید برای کاربر جدید ساخته شود');
         $this->assertSame('09120000002', $patient['mobile']);
+        $this->assertSame('سارا', (string) $patient['first_name'], 'نام‌های تأییدشده روی بیمارِ تازه‌ساخته می‌نشیند');
+        $this->assertSame('کریمی', (string) $patient['last_name']);
         $this->assertMatchesRegularExpression('/^MR-\d{6}-[A-Z0-9]{5}$/', (string) $patient['mrn']);
         $this->assertSame((int) $result['appointment_id'], (int) $wpdb->get_var(
             $wpdb->prepare('SELECT id FROM ' . $wpdb->prefix . 'cpms_appointments WHERE patient_id = %d', (int) $patient['id']) // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
