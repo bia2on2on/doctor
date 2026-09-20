@@ -22,18 +22,25 @@
 | # | Method/Path | توضیح | Response 200 |
 |---|---|---|---|
 | A1 | `GET /availability?clinician_id&from&to` | تقویم آزاد (Jalali UI) | `{days:[{date, slots:[{time, capacity_left}]}]}` |
-| A2 | `POST /otp/request` | `{mobile}` | `{expires_in:300}`؛ RateLimit: 3/روز، cooldown 60s |
-| A3 | `POST /otp/verify` | `{mobile, code}` | `{user_id, patient_links:[{patient_id, mrn, first_name,last_name}], is_new_user}` |
+| A2 | `POST /otp/request` | `{mobile, purpose?}` + انتخابِ اختیاری `{clinician_id, slot_id, slot_date, slot_time}` (فقط Selector — Phase 8 Slice 2) | `{expires_in:300}`؛ RateLimit: 3/روز، cooldown 60s |
+| A3 | `POST /otp/verify` | `{mobile, code, purpose?}` — هرگز Clinic/انتخاب در بدنه | `{user_id, patient_links:[{patient_id, mrn, first_name,last_name}], is_new_user, session_issued}` |
 | A4 | `POST /booking/quote` | `{clinician_id, slot_date, slot_time}` — پیش‌بررسی آزاد بودن (بدون Hold) | `{available:bool, capacity_left}` |
 
 > A2/A3 (به‌روزرسانی F2/F3 — رفع GAP-2): `otp/verify` برای کاربر جدید، **اکانت `cpms_patient` می‌سازد** و به رکورد Patient موجود (بر اساس موبایل) لینک می‌کند (تصمیم نهایی F2: Auto-Creation + Linking؛ تست‌شده). شماره‌گذاری قدیمی «A5/A6» از نسخه پیشین مستندات باقی‌مانده بود و در پیاده‌سازی وجود خارجی ندارد؛ تکمیل/ویرایش پروفایل از طریق C1/C2 و ساخت بیمار توسط منشی (D3) پوشش داده می‌شود.
+
+> **Phase 8 Slice 2 — A2/A3 با اتصال به Clinic (تصمیم مالک: زمان‌بندی Hold):**
+>
+> - **A2 با انتخاب (همهٔ چهار Selector):** سرور فقط از داده‌های ذخیره‌شده (`persisted`) Clinic را استنتاج می‌کند: (۱) پزشکِ فعالِ ذخیره‌شده (`persisted clinician`) ← در غیر این صورت `CLINIC_NOT_FOUND`/۴۰۴؛ (۲) Clinic از همان پزشک؛ (۳) نوبتِ (`slot`) داخل همان Clinic ← در غیر این صورت `CLINIC_NOT_FOUND`/۴۰۴؛ (۴) اثباتِ رابطه‌ی پزشک/نوبت/تاریخ/ساعت ← در غیر این صورت `CLINIC_VALIDATION_FAILED`/۴۲۲. سپس Challenge روی همان Clinic مهر می‌شود (`cpms_otp_tokens.clinic_id` — Migration 0021) و سیاست OTP/SMS از همان Clinic اجرا می‌شود. دستکاری/ناهماهنگی انتخاب (`selection tampered`) ← قبل از هر Challenge و هر پیامک (`SMS`)، خطای بسته (`fail-closed`) می‌شود (صفر Challenge، صفر `SMS`). شناسه‌های خام (`raw`) `clinic_id` کلاینت هرگز مرجع نیست.
+> - **A2 بدون انتخاب:** تک‌کلینیک (`Single-Clinic`) = همان رفتار تثبیت‌شده‌ی حل‌کننده (`resolver`)؛ چند‌کلینیک (`Multi-Clinic`) = خطای بسته (`fail-closed`) با پاکت محصول `CLINIC_SCOPE_REQUIRED`/۴۰۰ (هرگز استثنای رهاشده (`uncaught`)، هرگز ۵۰۰).
+> - **A3:** مرجع Clinic، همان Clinicِ مهرشده روی ردیف Challenge است (نه بدنه‌ی درخواست، نه `Scope` محیطی): سیاست `OTP`، جست‌وجوی بیمار (`patient`) در همان Clinic و Clinicِ لینکِ بیمار از آن می‌آید. Challenge تاریخیِ `clinic_id=NULL`: تک‌کلینیک = حل‌کننده‌ی تثبیت‌شده؛ چند‌کلینیک = خطای بسته (`fail-closed`) صریح `CLINIC_SCOPE_REQUIRED`. معناشناسی ردیف آخر (`latest-row`) و کلیدهای `Cooldown/Lockout` هویت‌سطح می‌مانند (`AD-15` — بدون بازطراحی).
+> - **بازاستفاده هویت OTP:** پیش از ساخت کاربر، هویت قطعیِ `{mobile}@otp.cpms.local` جست‌وجو و در صورت وجود بازاستفاده می‌شود (همان `user_id`، `is_new_user=false`، بدون ردیف تکراری `wp_users`)؛ لینکِ بیمار فقط اگر بیمار در Clinicِ همان verify وجود داشته باشد (بیمارِ کلینیک دیگر هرگز لینک نمی‌شود).
 
 ## 2. Booking (Authenticated: patient)
 
 | # | Method/Path | Body | توضیح |
 |---|---|---|---|
 | B1 | `POST /booking/hold` | `{clinician_id (الزامی), slot_date, slot_time}` | Hold (TTL 10 دقیقه). Response: `{hold_token, expires_at, slot:{...}}`. RateLimit: 10/hr. خطا: `CLINIC_SLOT_TAKEN`, `CLINIC_POLICY_VIOLATION`. (GAP-1/G-3: 2026-09-05) |
-| B2 | `POST /booking/confirm` | `{hold_token, reason?}` + `Idempotency-Key` (الزامی) | بازبینی نهایی Slot → Appointment `confirmed`. Response: `{reference_code, appointment_id, slot:{...jalali}, status}`. خطا: `CLINIC_SLOT_TAKEN`, `CLINIC_HOLD_EXPIRED`, `CLINIC_DUPLICATE_APPOINTMENT`. Replay = پاسخ Origin. |
+| B2 | `POST /booking/confirm` | `{hold_token, reason?, first_name?, last_name?}` + `Idempotency-Key` (الزامی) | بازبینی نهایی Slot → Appointment `confirmed`. Response: `{reference_code, appointment_id, slot:{...jalali}, status}`. خطا: `CLINIC_SLOT_TAKEN`, `CLINIC_HOLD_EXPIRED`, `CLINIC_DUPLICATE_APPOINTMENT`. Replay = پاسخ Origin. (Phase 8 Slice 2: نام‌ها فقط برای بیمارِ «جدید» در hold.clinic_id الزامی می‌شوند — تصمیم سرور؛ بیمارِ موجود نام‌های ارسالی را نادیده می‌گیرد.) |
 | B3 | `GET /appointments/mine?from&to` | — | لیست نوبت‌های من (تاریخ/وضعیت) |
 | B4 | `POST /appointments/{id}/cancel` | `{reason?}` | در Policy (FR-4.9 — حداقل X ساعت قبل؛ Configurable). خطا: `CLINIC_POLICY_VIOLATION`, `CLINIC_INVALID_TRANSITION` |
 | B5 | `POST /appointments/{id}/reschedule` | `{slot_date, slot_time, clinician_id? (اختیاری — Default = پزشک فعلی نوبت)}` + `Idempotency-Key` (الزامی) | مسیر بیمار: در Policy (FR-4.10 — deadline + destination min-lead) + انتقال Hold. Response: `{appointment_id (جدید), reference_code, slot:{...}, previous_appointment_id}`. خطا: `CLINIC_SLOT_TAKEN`, `CLINIC_DUPLICATE_APPOINTMENT`, `CLINIC_POLICY_VIOLATION`. (GAP-1/G-3). Staff uses the same path — see D11b. |

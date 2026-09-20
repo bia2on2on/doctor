@@ -619,5 +619,6 @@ constant — را **ERROR** می‌گیرد. برای پاس ماندنِ هما
 - هیچ تغییر امنیتی جدید نسبت به F9؛ Gate حملات/پروبهای فایل محافظت‌شده را روی Apache واقعی verify کرد (403 از `.htaccess` افزونه).
 
 ## [Unreleased]
+- **Phase 8 Slice 2 (OTP → Hold → Confirm) — تصمیم‌های مالک:** احراز موبایل با OTP روی مسیرهای موجود A2/A3 و ادامهٔ Hold→Confirm فقط پس از ورود (جریان ناشناس هرگز ظرفیت مصرف نمی‌کند؛ فقط Selection حفظ می‌شود). Clinicِ Challenge فقط از دادهٔ persisted مشتق و روی `cpms_otp_tokens.clinic_id` مُهر می‌شود (Migration `2026_09_20_0021` — ستون NULL مجاز/FK/بدون Backfill؛ A3 از Challenge Clinic می‌خواند، نه از بدنهٔ کلاینت). بازاستفادهٔ هویت قطعی `{mobile}@otp.cpms.local`. B2 برای بیمارِ «جدید» در hold.clinic_id نام/نام‌خانوادگی الزامی می‌کند؛ بیمارِ موجود نام‌های ارسالی را نادیده می‌گیرد. جزئیات: `docs/decisions/2026-09-20-phase8-slice2-owner-decisions.md`.
 - Backlog V1.5: OCR، 2FA، Merge UI، ClamAV/Encryption (R-06).
 - مشاهده فرعی Gate: قفل رقابتی `_transient_cpms_migrate_lock` زیر بار c=100 چند notice deadlock گذرا تولید می‌کند (بدون اثر عملکردی) → بهبود در Backlog.
