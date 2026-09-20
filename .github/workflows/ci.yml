@@ -345,13 +345,18 @@ jobs:
   # WPCS — گیت رگرسیون استاندارد وردپرس روی «خطوط» تغییرکرده/جدید
   # (drift-register §۸-۱): legacy سنجیده نمی‌شود؛ فقط نقض‌هایی که روی
   # خطوطِ add شده نسبت به baseline واقع شده‌اند گیت را می‌شکنند
-  # (فایل کاملاً جدید = تمام خطوطش). baseline از تاریخ پذیرش Migration
-  # Foundation شروع می‌کند و bump آن دستی + مستند است.
+  # (فایل کاملاً جدید = تمام خطوطش). bump آن دستی + مستند است.
+  #
+  # baseline کنونی = 2263ed6… (main، 2026-09-20). دلیلِ این bump و
+  # سیاستِ «no-new-violations بدونِ mass-formatِ legacy»: drift-register
+  # §۸-۱-۱ — یک‌بار بازگرداندنِ معنایِ documented ratchet پس از آنکه
+  # collectorِ خرابِ changed-lines از بدوِ تولد صفر خط جمع می‌کرد.
   wpcs:
     name: WPCS (changed code)
     runs-on: ubuntu-latest
     env:
-      WPCS_BASELINE: f23e0c50049f6f3e91f2425005ce8db08067af73
+      # Ratchet anchor (manual + documented bump — drift-register §۸-۱-۱).
+      WPCS_BASELINE: 2263ed673a8fdf4ab91e6a7fffae6d82252e4324
     steps:
       - uses: actions/checkout@v4
         with:
