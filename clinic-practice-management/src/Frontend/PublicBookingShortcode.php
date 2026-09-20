@@ -672,26 +672,9 @@ final class PublicBookingShortcode
         $firstNameId = $surfaceId . '-first-name';
         $lastNameId = $surfaceId . '-last-name';
 
-        $lines = [];
-        $lines[] = sprintf(
-            '<div class="%1$s" data-role="booking-continue" hidden>',
-            esc_attr($b . '__continue-box')
-        );
-
-        $lines[] = sprintf(
-            '<p class="%1$s" data-role="continue-status" role="status" aria-live="polite" hidden></p>',
-            esc_attr($b . '__status')
-        );
-
-        // شمارشِ معکوس TTL Hold — فقط مقدار عددی توسط JS پر می‌شود.
-        $lines[] = sprintf(
-            '<p class="%1$s" data-role="hold-countdown" hidden>%2$s <b data-role="countdown-value" dir="ltr"></b></p>',
-            esc_attr($b . '__countdown'),
-            esc_html('زمان باقی‌ماندهٔ نگه‌داشتن نوبت:')
-        );
-
         // Phase 8 Slice 3 — chooser برای N>1 linked active Patients (LINKED-ONLY authority).
         // فقط برای N>1 رندر می‌شود؛ 0 یا 1 هیچ chooserی ندارد. هرگز decoy/same-mobile/cross-clinic/archived را نشان نمی‌دهد.
+        // Render chooser OUTSIDE the hidden booking-continue box so it is visible immediately after login.
         $chooserHtml = '';
         try {
             $uid = get_current_user_id();
@@ -720,7 +703,7 @@ final class PublicBookingShortcode
                             $label = 'بیمار #' . $pid;
                         }
                         $chooserParts[] = sprintf(
-                            '<button type="button" class="%s" data-role="patient-option" data-patient-id="%d">%s</button>',
+                            '<button type="button" class="%s" data-role="patient-option" data-patient-id="%d" aria-pressed="false">%s</button>',
                             esc_attr($b . '__patient-option'),
                             $pid,
                             esc_html($label)
@@ -733,9 +716,27 @@ final class PublicBookingShortcode
         } catch (\Throwable $e) {
             $chooserHtml = '';
         }
+
+        $lines = [];
         if ($chooserHtml !== '') {
             $lines[] = $chooserHtml;
         }
+        $lines[] = sprintf(
+            '<div class="%1$s" data-role="booking-continue" hidden>',
+            esc_attr($b . '__continue-box')
+        );
+
+        $lines[] = sprintf(
+            '<p class="%1$s" data-role="continue-status" role="status" aria-live="polite" hidden></p>',
+            esc_attr($b . '__status')
+        );
+
+        // شمارشِ معکوس TTL Hold — فقط مقدار عددی توسط JS پر می‌شود.
+        $lines[] = sprintf(
+            '<p class="%1$s" data-role="hold-countdown" hidden>%2$s <b data-role="countdown-value" dir="ltr"></b></p>',
+            esc_attr($b . '__countdown'),
+            esc_html('زمان باقی‌ماندهٔ نگه‌داشتن نوبت:')
+        );
 
         // فرمِ نام — فقط برای بیمارِ «جدید» در Clinicِ نوبت؛ سرور الزام را
         // با CLINIC_VALIDATION_FAILED اعلام می‌کند و فرم همین‌جا باز می‌شود.
