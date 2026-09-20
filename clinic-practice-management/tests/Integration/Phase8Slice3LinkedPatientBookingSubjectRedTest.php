@@ -445,6 +445,8 @@ final class Phase8Slice3LinkedPatientBookingSubjectRedTest extends WP_UnitTestCa
             ['id' => $patientArchived, 'mobile' => $this->mobileFor('t05'), 'primary' => 1],
         ]);
         $slot = $this->seedSlot($this->clinicA, $this->locationA, $this->clinicianA, $this->ymdDaysAhead(5), '14:00:00', 1);
+        $preLinks = $this->countPatientLinksForUser($userId);
+        $preAppts = $this->countAppointmentsForClinic($this->clinicA);
 
         $hold = $this->restPost(self::NS . self::HOLD_PATH, [
             'clinician_id' => $this->clinicianA,
@@ -454,9 +456,18 @@ final class Phase8Slice3LinkedPatientBookingSubjectRedTest extends WP_UnitTestCa
             'patient_id' => $patientArchived,
         ], asUserId: $userId, withNonce: true);
 
-        $this->assertClinicValidationFailed($hold, 'Inactive/archived Patient must be rejected with same generic envelope.');
+        // Positive control — live main already fails closed for inactive with 400 CLINIC_VALIDATION_FAILED.
+        // Keep contract: inactive must never be selectable, but do not artificially expect 422.
+        $this->assertClinicError($hold, 'CLINIC_VALIDATION_FAILED', 400, 'Inactive/archived Patient must be rejected with generic validation.');
         self::assertSame(0, $this->countRows('cpms_slot_holds'), 'No Hold for inactive selector.');
         self::assertSame(0, $this->heldCountOf($slot['slot_id']), 'No capacity drift.');
+        self::assertSame(0, $this->countAppointmentsForPatient($patientArchived), 'Inactive Patient must receive no Appointment.');
+        self::assertSame($preAppts, $this->countAppointmentsForClinic($this->clinicA), 'No Appointment in clinic.');
+        self::assertSame($preLinks, $this->countPatientLinksForUser($userId), 'No new Patient link must be created for inactive selector.');
+        $body = wp_json_encode($hold->get_data());
+        self::assertStringNotContainsString('SQL', $body, 'Must not leak SQL.');
+        self::assertStringNotContainsString('archived', strtolower($body), 'Must not leak internal status detail.');
+        self::assertStringNotContainsString((string) $patientArchived, $body, 'Must not leak patient_id detail.');
     }
 
     // =================================================================
