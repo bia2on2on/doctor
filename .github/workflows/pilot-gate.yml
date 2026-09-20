@@ -1122,9 +1122,16 @@ jobs:
           $db = \ClinicCore\Bootstrap\App::db();
           $now = $db->nowUtcSql();
           $uniq = substr(bin2hex(random_bytes(4)), 0, 8);
-          $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_clinics') . ' (name, slug, timezone, address, phone, created_at, updated_at) VALUES (%s, %s, %s, NULL, NULL, %s, %s)', 'کلینیک سفر OTP (Synthetic)', 'otp-journey-' . $uniq, 'Asia/Tehran', $now, $now));
+          // ADR-0031: هر Clinic حتماً داخل یک Organization واقعی است
+          // (clinics.organization_id NOT NULL + FK) — سازمانِ دومِ Synthetic.
+          $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_organizations') . ' (name, slug, status, created_at, updated_at) VALUES (%s, %s, %s, %s, %s)', 'سازمان سفر OTP (Synthetic)', 'otp-journey-org-' . $uniq, 'active', $now, $now));
+          $orgId = (int) $wpdb->insert_id;
+          if ($orgId <= 1) { echo "JOURNEY_FIXTURE_ERROR: org must be nontrivial (id > 1); got {$orgId}\n"; exit(1); }
+          $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_clinics') . ' (name, slug, timezone, organization_id, address, phone, created_at, updated_at) VALUES (%s, %s, %s, %d, NULL, NULL, %s, %s)', 'کلینیک سفر OTP (Synthetic)', 'otp-journey-' . $uniq, 'Asia/Tehran', $orgId, $now, $now));
           $clinicId = (int) $wpdb->insert_id;
           if ($clinicId <= 1) { echo "JOURNEY_FIXTURE_ERROR: tenant must be nontrivial (clinic id > 1); got {$clinicId}\n"; exit(1); }
+          $boundOrg = (int) $wpdb->get_var($wpdb->prepare('SELECT organization_id FROM ' . $db->table('cpms_clinics') . ' WHERE id = %d LIMIT 1', $clinicId));
+          if ($boundOrg !== $orgId) { echo "JOURNEY_FIXTURE_ERROR: clinic {$clinicId} organization mismatch ({$boundOrg} != {$orgId})\n"; exit(1); }
           $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_locations') . ' (clinic_id, name, slug, address, phone, timezone, is_primary, is_active, created_at, updated_at) VALUES (%d, %s, %s, NULL, NULL, %s, 1, 1, %s, %s)', $clinicId, 'شعبهٔ سفر OTP (Synthetic)', 'main-' . $uniq, 'Asia/Tehran', $now, $now));
           $locationId = (int) $wpdb->insert_id;
           $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_clinicians') . ' (clinic_id, wp_user_id, full_name, specialty, room, is_active, created_at, updated_at) VALUES (%d, NULL, %s, %s, NULL, 1, %s, %s)', $clinicId, 'دکتر سفر OTP (Synthetic)', 'عمومی', $now, $now));
