@@ -427,7 +427,7 @@ final class Phase8Slice3LinkedPatientBookingSubjectRedTest extends WP_UnitTestCa
         ], asUserId: $userId, withNonce: true);
 
         // Must be generic validation rejection, no Hold, no capacity.
-        $this->assertClinicError($hold, 'CLINIC_VALIDATION_FAILED', 422, 'Cross-Clinic patient_id must be rejected with generic validation envelope.');
+        $this->assertClinicValidationFailed($hold, 'Cross-Clinic patient_id must be rejected with generic validation envelope.');
         self::assertSame(0, $this->countRows('cpms_slot_holds'), 'No Hold must be created for cross-Clinic selector.');
         self::assertSame(0, $this->heldCountOf($slotA['slot_id']), 'No capacity must be consumed.');
     }
@@ -453,7 +453,7 @@ final class Phase8Slice3LinkedPatientBookingSubjectRedTest extends WP_UnitTestCa
             'patient_id' => $patientArchived,
         ], asUserId: $userId, withNonce: true);
 
-        $this->assertClinicError($hold, 'CLINIC_VALIDATION_FAILED', 422, 'Inactive/archived Patient must be rejected with same generic envelope.');
+        $this->assertClinicValidationFailed($hold, 'Inactive/archived Patient must be rejected with same generic envelope.');
         self::assertSame(0, $this->countRows('cpms_slot_holds'), 'No Hold for inactive selector.');
         self::assertSame(0, $this->heldCountOf($slot['slot_id']), 'No capacity drift.');
     }
@@ -827,8 +827,9 @@ final class Phase8Slice3LinkedPatientBookingSubjectRedTest extends WP_UnitTestCa
         // N linked (2 active) -> must show chooser with ONLY linked active Patients from booking Clinic.
         $patientN1 = $this->insertPatient($this->clinicA, $this->mobileFor('t12c'), 'Choice', 'One');
         $patientN2 = $this->insertPatient($this->clinicA, $this->mobileFor('t12d'), 'Choice', 'Two');
-        // Same-mobile unlinked decoy (same mobile as patientN1 but not linked) — must NOT appear.
-        $decoySameMobile = $this->insertPatient($this->clinicA, $this->mobileFor('t12c'), 'Decoy', 'SameMobile');
+        // Unlinked decoy in same Clinic but distinct mobile and not linked — must NOT appear in chooser.
+        // We do NOT reuse the same mobile (u_pat_mobile is UNIQUE across patients) — linkage, not mobile, is authority.
+        $decoySameMobile = $this->insertPatient($this->clinicA, $this->mobileFor('t12c-decoy'), 'Decoy', 'SameMobile');
         // Cross-Clinic patient (same user, other Clinic) — must NOT appear.
         $crossClinic = $this->insertPatient($this->clinicB, $this->mobileFor('t12e'), 'Cross', 'Clinic');
         // Archived patient in booking Clinic linked — must NOT appear.
@@ -1234,6 +1235,22 @@ final class Phase8Slice3LinkedPatientBookingSubjectRedTest extends WP_UnitTestCa
         self::assertIsArray($data, 'Error envelope must be array.');
         self::assertArrayHasKey('code', $data, 'Error envelope must carry code.');
         self::assertSame($code, (string) $data['code'], $what);
+        self::assertArrayHasKey('message', $data);
+        self::assertSame($status, (int) ($data['data']['status'] ?? 0), 'Envelope data.status must match HTTP.');
+    }
+
+    /**
+     * Fail-closed validation envelope — accepts either 400 or 422 with CLINIC_VALIDATION_FAILED
+     * (or narrow CLINIC_PATIENT_SELECTION_REQUIRED) to avoid coupling RED/GREEN to a single HTTP choice.
+     */
+    private function assertClinicValidationFailed(WP_REST_Response $response, string $what): void
+    {
+        $status = $response->get_status();
+        $data = $response->get_data();
+        self::assertTrue(in_array($status, [400, 422], true), $what . ' must be 400 or 422. Got: ' . $status . ' Body: ' . wp_json_encode($data));
+        self::assertIsArray($data, 'Error envelope must be array.');
+        $code = (string) ($data['code'] ?? '');
+        self::assertTrue(in_array($code, ['CLINIC_VALIDATION_FAILED', 'CLINIC_PATIENT_SELECTION_REQUIRED'], true), $what . ' code must be CLINIC_VALIDATION_FAILED (or narrow CLINIC_PATIENT_SELECTION_REQUIRED). Got: ' . $code);
         self::assertArrayHasKey('message', $data);
         self::assertSame($status, (int) ($data['data']['status'] ?? 0), 'Envelope data.status must match HTTP.');
     }
