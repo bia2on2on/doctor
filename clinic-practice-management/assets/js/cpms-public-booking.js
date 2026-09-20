@@ -337,6 +337,59 @@
 		var holdToken = '';
 		var countdownTimer = 0;
 
+		/* ---------- Phase 8 Slice 3 — patient chooser (N>1) ---------- */
+		var selectedPatientId = 0;
+		var patientChooser = root.querySelector('[data-role="patient-chooser"]');
+		var patientOptions = patientChooser ? patientChooser.querySelectorAll('[data-role="patient-option"]') : [];
+		function getStoredPatientId() {
+			try {
+				var v = window.localStorage.getItem('cpms-patient-selection:' + String(config.clinic_id));
+				return toInt(v);
+			} catch (e) {
+				return 0;
+			}
+		}
+		function storePatientId(id) {
+			try {
+				if (toInt(id) > 0) {
+					window.localStorage.setItem('cpms-patient-selection:' + String(config.clinic_id), String(toInt(id)));
+				}
+			} catch (e) {}
+		}
+		function setPatientSelection(id) {
+			selectedPatientId = toInt(id);
+			storePatientId(selectedPatientId);
+			for (var _i = 0; _i < patientOptions.length; _i++) {
+				var opt = patientOptions[_i];
+				var pid = toInt(opt.getAttribute('data-patient-id'));
+				opt.setAttribute('aria-pressed', pid === selectedPatientId && selectedPatientId > 0 ? 'true' : 'false');
+			}
+		}
+		// Restore from localStorage if chooser exists; do not auto-pick first row.
+		if (patientOptions.length > 0) {
+			var storedPid = getStoredPatientId();
+			if (storedPid > 0) {
+				// Validate stored id is among options; if not, keep 0.
+				var found = false;
+				for (var _j = 0; _j < patientOptions.length; _j++) {
+					if (toInt(patientOptions[_j].getAttribute('data-patient-id')) === storedPid) {
+						found = true;
+						break;
+					}
+				}
+				if (found) {
+					setPatientSelection(storedPid);
+				}
+			}
+			// Also respect DOM pre-selected (aria-pressed) if any.
+			for (var _k = 0; _k < patientOptions.length; _k++) {
+				if (patientOptions[_k].getAttribute('aria-pressed') === 'true') {
+					setPatientSelection(toInt(patientOptions[_k].getAttribute('data-patient-id')));
+					break;
+				}
+			}
+		}
+
 		function panelState(state) {
 			panel.setAttribute('data-state', state);
 		}
@@ -858,6 +911,23 @@
 			if (toInt(selection.slot_id) > 0) {
 				body.slot_id = toInt(selection.slot_id);
 			}
+			// Phase 8 Slice 3 — B1 only: include linked patient selection when chooser is active.
+			// Reads from DOM >0 / localStorage when available; if missing, send nothing (server 0/1/N handles).
+			var pidToSend = selectedPatientId;
+			if (pidToSend <= 0) {
+				pidToSend = getStoredPatientId();
+			}
+			if (pidToSend <= 0 && patientOptions.length > 0) {
+				for (var _ps = 0; _ps < patientOptions.length; _ps++) {
+					if (patientOptions[_ps].getAttribute('aria-pressed') === 'true') {
+						pidToSend = toInt(patientOptions[_ps].getAttribute('data-patient-id'));
+						break;
+					}
+				}
+			}
+			if (pidToSend > 0) {
+				body.patient_id = pidToSend;
+			}
 
 			requestJson(config.rest_root + config.hold_path, {
 				method: 'POST',
@@ -1101,6 +1171,18 @@
 					otpRequest();
 				} else if (action === 'otp-verify') {
 					otpVerify();
+				}
+				return;
+			}
+
+			/* -------- Phase 8 Slice 3 — patient chooser (N>1) -------- */
+			var patientOption = target.closest('[data-role="patient-option"]');
+			if (patientOption && patientChooser && patientChooser.contains(patientOption) && !patientOption.disabled) {
+				var pid = toInt(patientOption.getAttribute('data-patient-id'));
+				setPatientSelection(pid);
+				// If a slot was already selected, retry Hold with the newly selected patient (B1 only).
+				if (lastSelection && validSelection(lastSelection)) {
+					beginHold(lastSelection);
 				}
 				return;
 			}

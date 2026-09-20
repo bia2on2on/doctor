@@ -352,7 +352,7 @@ final class BookingService
     /**
      * @return array{hold_token: string, expires_at: string, slot: array<string, mixed>}
      */
-    public function hold(int $wpUserId, int $clinicianId, string $slotDate, string $slotTime, ?int $slotId = null): array
+    public function hold(int $wpUserId, int $clinicianId, string $slotDate, string $slotTime, ?int $slotId = null, ?int $patientId = null): array
     {
         $this->assertLicense(LicenseGate::OP_APPOINTMENT_BOOK);
 
@@ -382,6 +382,12 @@ final class BookingService
         $locationTz = $this->resolveLocationTimezone((int) $slot['location_id'], $clinicId);
         $this->assertWindowWithTimezone($slotDate, $slotTime, $locationTz, $minLead, $settings);
 
+        // Phase 8 Slice 3 — linked-Patient booking-subject selection (LINKED-ONLY authority).
+        // Trusted Clinic = slot's persisted clinic_id (never client payload).
+        // Must be evaluated before any capacity claim.
+        $trustedClinicId = (int) $slot['clinic_id'];
+        $patientIdToPersist = $this->resolveBookingPatientForHold($wpUserId, $trustedClinicId, $patientId);
+
         // N-4: Hold Active موجود همان بیمار/اسلات → Idempotent (بازگردانی همان Token)
         $existing = $this->db->fetchRow(
             'SELECT * FROM ' . $this->db->table('cpms_slot_holds') .
@@ -400,13 +406,14 @@ final class BookingService
         $token = self::uuid4();
         $expiresAt = (new \DateTimeImmutable('+ ' . $ttl . ' seconds', new \DateTimeZone('UTC')))->format('Y-m-d H:i:s.000');
 
-        $this->db->transactional(function () use ($slot, $wpUserId, $mobile, $token, $expiresAt): void {
+        $hasPatientCol = $this->holdsHasPatientIdColumn();
+        $this->db->transactional(function () use ($slot, $wpUserId, $mobile, $token, $expiresAt, $patientIdToPersist, $hasPatientCol): void {
             if (!$this->slots->atomicHold((int) $slot['id'])) {
                 // FR-4.6: پاکت/کد/پیام دست‌نخورده — فقط دادهٔ الحاقیِ nearby_slots
                 // از زمینهٔ trusted اسلاتِ باخته (همان ردیف persisted) ساخته می‌شود.
                 throw BookingException::of('CLINIC_SLOT_TAKEN', 'اسلات در لحظه انتخاب پر شد — اسلات دیگری انتخاب کنید', 409, ['nearby_slots' => $this->nearbySlotsForLosingSlot($slot)]);
             }
-            $this->db->insert('cpms_slot_holds', [
+            $row = [
                 'clinic_id' => (int) $slot['clinic_id'],
                 'slot_id' => (int) $slot['id'],
                 'holder_wp_user_id' => $wpUserId,
@@ -415,7 +422,11 @@ final class BookingService
                 'expires_at' => $expiresAt,
                 'status' => 'active',
                 'created_at' => $this->db->nowUtcSql(),
-            ]);
+            ];
+            if ($hasPatientCol) {
+                $row['patient_id'] = $patientIdToPersist;
+            }
+            $this->db->insert('cpms_slot_holds', $row);
         });
 
         $holdId = $this->db->wpdb_last_insert_id();
@@ -557,10 +568,47 @@ final class BookingService
         // ==================================================================
         $mobile = (string) $hold['holder_mobile'];
         $holdClinicId = (int) $hold['clinic_id'];
-        $patient = $this->patients->findByMobile($holdClinicId, $mobile);
-        $newPatientNames = $patient === null
-            ? $this->requireNewPatientNames($firstName, $lastName)
-            : null;
+        $hasPatientCol = $this->holdsHasPatientIdColumn();
+        $holdPatientId = $hasPatientCol && array_key_exists('patient_id', $hold) && $hold['patient_id'] !== null && (string) $hold['patient_id'] !== '' ? (int) $hold['patient_id'] : null;
+
+        // Phase 8 Slice 3 — B2 subject resolution: frozen vs historical NULL compat.
+        $patient = null;
+        $newPatientNames = null;
+        if ($holdPatientId !== null) {
+            // Frozen subject: revalidate active/clinic/link; ignore supplied names.
+            $patient = $this->patients->find($holdPatientId);
+            if ($patient === null || (int) ($patient['clinic_id'] ?? 0) !== $holdClinicId || (string) ($patient['status'] ?? '') !== 'active') {
+                throw BookingException::of('CLINIC_VALIDATION_FAILED', 'بیمارِ جلسهٔ رزرو نامعتبر است', 422);
+            }
+            $link = $this->db->fetchRow(
+                'SELECT 1 AS ok FROM ' . $this->db->table('cpms_patient_user_links') . ' WHERE wp_user_id = %d AND clinic_id = %d AND patient_id = %d LIMIT 1',
+                [$wpUserId, $holdClinicId, $holdPatientId]
+            );
+            if ($link === null) {
+                throw BookingException::of('CLINIC_VALIDATION_FAILED', 'پیوند بیمار با کاربر نامعتبر است', 422);
+            }
+        } else {
+            // Historical NULL: compat resolver based on current linked active set in hold Clinic.
+            $linkedForConfirm = $this->linkedActivePatientsForClinic($wpUserId, $holdClinicId);
+            $cntC = count($linkedForConfirm);
+            if ($cntC === 0) {
+                // NEW patient path — never reuse same-mobile unlinked; detect uniqueness collision first.
+                $existingSameMobile = $this->db->fetchRow(
+                    'SELECT id FROM ' . $this->db->table('cpms_patients') . ' WHERE clinic_id = %d AND mobile = %s LIMIT 1',
+                    [$holdClinicId, $mobile]
+                );
+                if ($existingSameMobile !== null) {
+                    throw BookingException::of('CLINIC_VALIDATION_FAILED', 'موبایل تکراری — بیمار با این موبایل از قبل موجود است', 400);
+                }
+                $patient = null;
+                $newPatientNames = $this->requireNewPatientNames($firstName, $lastName);
+            } elseif ($cntC === 1) {
+                $patient = $linkedForConfirm[0];
+            } else {
+                // >1 without selection: fail closed, do not accept arbitrary B2 patient_id to repair.
+                throw BookingException::of('CLINIC_PATIENT_SELECTION_REQUIRED', 'انتخاب بیمار برای تکمیل رزرو الزامی است', 422);
+            }
+        }
 
         $check = $this->idem->check($idemKey, self::EP_CONFIRM, $wpUserId, null, $idemClinicId);
         if ($check['is_replay']) {
@@ -1568,6 +1616,75 @@ final class BookingService
         }
 
         return null;
+    }
+
+    /**
+     * Phase 8 Slice 3 — linked-active Patients for booking Clinic (LINKED-ONLY authority).
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function linkedActivePatientsForClinic(int $wpUserId, int $clinicId): array
+    {
+        return $this->db->fetchAll(
+            'SELECT p.* FROM ' . $this->db->table('cpms_patient_user_links') . ' l JOIN ' . $this->db->table('cpms_patients') . ' p ON p.id = l.patient_id WHERE l.wp_user_id = %d AND l.clinic_id = %d AND p.status = %s AND p.clinic_id = %d ORDER BY l.is_primary DESC, l.id ASC',
+            [$wpUserId, $clinicId, 'active', $clinicId]
+        );
+    }
+
+    private ?bool $holdsPatientIdColCache = null;
+
+    private function holdsHasPatientIdColumn(): bool
+    {
+        if ($this->holdsPatientIdColCache !== null) {
+            return $this->holdsPatientIdColCache;
+        }
+        $row = $this->db->fetchRow('SHOW COLUMNS FROM ' . $this->db->table('cpms_slot_holds') . " LIKE 'patient_id'");
+        $this->holdsPatientIdColCache = $row !== null;
+
+        return $this->holdsPatientIdColCache;
+    }
+
+    /**
+     * Phase 8 Slice 3 — B1 patient resolution: 0/1/N with LINKED-ONLY authority.
+     *
+     * @return int|null patient_id to persist (null = NEW path) or throws
+     */
+    private function resolveBookingPatientForHold(int $wpUserId, int $trustedClinicId, ?int $requestedPatientId): ?int
+    {
+        if (!$this->holdsHasPatientIdColumn()) {
+            return null;
+        }
+        $linked = $this->linkedActivePatientsForClinic($wpUserId, $trustedClinicId);
+        $linkedIds = array_map(static fn (array $r): int => (int) $r['id'], $linked);
+        $cnt = count($linked);
+        if ($requestedPatientId !== null) {
+            $requestedPatientId = (int) $requestedPatientId;
+            if ($requestedPatientId <= 0) {
+                throw BookingException::of('CLINIC_VALIDATION_FAILED', 'شناسهٔ بیمار نامعتبر است', 422);
+            }
+            $p = $this->patients->find($requestedPatientId);
+            if ($p === null) {
+                throw BookingException::of('CLINIC_VALIDATION_FAILED', 'بیمار یافت نشد', 422);
+            }
+            if ((int) ($p['clinic_id'] ?? 0) !== $trustedClinicId) {
+                throw BookingException::of('CLINIC_VALIDATION_FAILED', 'بیمار به کلینیک دیگری تعلق دارد', 422);
+            }
+            if ((string) ($p['status'] ?? '') !== 'active') {
+                throw BookingException::of('CLINIC_VALIDATION_FAILED', 'پروفایل بیمار غیرفعال است', 400);
+            }
+            if (!in_array($requestedPatientId, $linkedIds, true)) {
+                throw BookingException::of('CLINIC_VALIDATION_FAILED', 'بیمارِ انتخابی به شما مرتبط نیست', 422);
+            }
+
+            return $requestedPatientId;
+        }
+        if ($cnt === 0) {
+            return null;
+        }
+        if ($cnt === 1) {
+            return (int) $linked[0]['id'];
+        }
+        throw BookingException::of('CLINIC_PATIENT_SELECTION_REQUIRED', 'انتخاب بیمار برای رزرو الزامی است', 422);
     }
 
     /**
