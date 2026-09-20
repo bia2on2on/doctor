@@ -1190,31 +1190,47 @@ jobs:
           }
           $slotId = $slotIds[0];
           $login = 'slice3_patient_' . $uniq;
-          $pass = 'Sl1ce3-' . $uniq . '-Gate!';
+          $pass = 'Slice3Pass-' . substr($uniq, 0, 4) . '-2026!';
           $userId = wp_create_user($login, $pass, $login . '@slice3.local');
           if (is_wp_error($userId)) { echo 'SLICE3_FIXTURE_ERROR: ' . $userId->get_error_message() . "\n"; exit(1); }
           $user = new WP_User((int) $userId);
           $user->set_role('cpms_patient');
+          // Use numeric mobiles (11 digits, Iranian format) — hex uniq would create invalid mobile with letters.
+          $mobileBase = '0913' . sprintf('%07d', mt_rand(1000000, 9999999));
+          $mobileA = substr($mobileBase, 0, 10) . '1';
+          $mobileB = substr($mobileBase, 0, 10) . '2';
+          $mobileD1 = substr($mobileBase, 0, 10) . '3';
+          $mobileD2 = substr($mobileBase, 0, 10) . '4';
+          $mobileD3 = substr($mobileBase, 0, 10) . '5';
           // Patient A and B — same clinic, same wp_user, active, distinct mobile/mrn.
-          $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_patients') . ' (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, %s, %s, %s)', $clinicId, 'SYN-S3-A-' . $uniq, 'بیمار', 'الف (Synthetic)', '0913000' . substr($uniq, 0, 4) . '1', 'active', $now, $now));
+          $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_patients') . ' (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, %s, %s, %s)', $clinicId, 'SYN-S3-A-' . $uniq, 'بیمار', 'الف (Synthetic)', $mobileA, 'active', $now, $now));
           $patientA = (int) $wpdb->insert_id;
-          $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_patients') . ' (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, %s, %s, %s)', $clinicId, 'SYN-S3-B-' . $uniq, 'بیمار', 'ب (Synthetic)', '0913000' . substr($uniq, 0, 4) . '2', 'active', $now, $now));
+          $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_patients') . ' (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, %s, %s, %s)', $clinicId, 'SYN-S3-B-' . $uniq, 'بیمار', 'ب (Synthetic)', $mobileB, 'active', $now, $now));
           $patientB = (int) $wpdb->insert_id;
           // Decoy 1: unlinked same-clinic active (must not appear).
-          $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_patients') . ' (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, %s, %s, %s)', $clinicId, 'SYN-S3-D1-' . $uniq, 'بیمار', 'Decoy Unlinked (Synthetic)', '0913000' . substr($uniq, 0, 4) . '3', 'active', $now, $now));
+          $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_patients') . ' (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, %s, %s, %s)', $clinicId, 'SYN-S3-D1-' . $uniq, 'بیمار', 'Decoy Unlinked (Synthetic)', $mobileD1, 'active', $now, $now));
           $decoyUnlinked = (int) $wpdb->insert_id;
           // Decoy 2: inactive linked (must not appear) — link then archived status.
-          $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_patients') . ' (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, %s, %s, %s)', $clinicId, 'SYN-S3-D2-' . $uniq, 'بیمار', 'Decoy Inactive (Synthetic)', '0913000' . substr($uniq, 0, 4) . '4', 'archived', $now, $now));
+          $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_patients') . ' (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, %s, %s, %s)', $clinicId, 'SYN-S3-D2-' . $uniq, 'بیمار', 'Decoy Inactive (Synthetic)', $mobileD2, 'archived', $now, $now));
           $decoyInactive = (int) $wpdb->insert_id;
           // Decoy 3: cross-clinic active linked to same user (must not appear in this clinic chooser).
           $crossClinicId = 1;
-          $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_patients') . ' (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, %s, %s, %s)', $crossClinicId, 'SYN-S3-D3-' . $uniq, 'بیمار', 'Decoy Cross (Synthetic)', '0913000' . substr($uniq, 0, 4) . '5', 'active', $now, $now));
+          $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_patients') . ' (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, %s, %s, %s)', $crossClinicId, 'SYN-S3-D3-' . $uniq, 'بیمار', 'Decoy Cross (Synthetic)', $mobileD3, 'active', $now, $now));
           $decoyCross = (int) $wpdb->insert_id;
           // Links: only A and B active; inactive + cross also linked but chooser filters by clinic+active.
           $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_patient_user_links') . ' (patient_id, wp_user_id, clinic_id, status, created_at, updated_at) VALUES (%d, %d, %d, %s, %s, %s)', $patientA, $userId, $clinicId, 'active', $now, $now));
           $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_patient_user_links') . ' (patient_id, wp_user_id, clinic_id, status, created_at, updated_at) VALUES (%d, %d, %d, %s, %s, %s)', $patientB, $userId, $clinicId, 'active', $now, $now));
           $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_patient_user_links') . ' (patient_id, wp_user_id, clinic_id, status, created_at, updated_at) VALUES (%d, %d, %d, %s, %s, %s)', $decoyInactive, $userId, $clinicId, 'active', $now, $now));
           $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_patient_user_links') . ' (patient_id, wp_user_id, clinic_id, status, created_at, updated_at) VALUES (%d, %d, %d, %s, %s, %s)', $decoyCross, $userId, $crossClinicId, 'active', $now, $now));
+          // Verify chooser query would return exactly A and B (2) before publishing page.
+          $chooserRows = $db->fetchAll('SELECT p.id FROM ' . $db->table('cpms_patient_user_links') . ' l JOIN ' . $db->table('cpms_patients') . ' p ON p.id = l.patient_id WHERE l.wp_user_id = %d AND l.clinic_id = %d AND p.status = %s AND p.clinic_id = %d ORDER BY l.is_primary DESC, l.id ASC', [$userId, $clinicId, 'active', $clinicId]);
+          $chooserCount = is_array($chooserRows) ? count($chooserRows) : 0;
+          $chooserIds = $chooserCount > 0 ? implode(',', array_map(fn($r) => (string) ($r['id'] ?? ''), $chooserRows)) : 'none';
+          echo 'chooser verify: count=' . $chooserCount . ' ids=' . $chooserIds . ' user=' . $login . ' clinic=' . $clinicId . "\n";
+          if ($chooserCount !== 2) { echo "SLICE3_FIXTURE_ERROR: chooser must be exactly 2 (A and B), got {$chooserCount}\n"; exit(1); }
+          $hasA = $hasB = false;
+          foreach ($chooserRows as $cr) { if ((int)($cr['id']??0) === $patientA) $hasA=true; if ((int)($cr['id']??0) === $patientB) $hasB=true; }
+          if (!$hasA || !$hasB) { echo "SLICE3_FIXTURE_ERROR: chooser missing A or B\n"; exit(1); }
           $pageId = wp_insert_post(['post_title' => 'Public Booking Slice3 N>1 Fixture', 'post_name' => 'cpms-slice3-' . $uniq, 'post_content' => '[cpms_public_booking clinic_id="' . $clinicId . '"]', 'post_status' => 'publish', 'post_type' => 'page'], true);
           if (is_wp_error($pageId)) { echo 'SLICE3_FIXTURE_ERROR: ' . $pageId->get_error_message() . "\n"; exit(1); }
           $permalink = (string) get_permalink($pageId);

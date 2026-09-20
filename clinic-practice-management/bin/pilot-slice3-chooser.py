@@ -194,17 +194,41 @@ def run_journey(browser, run):
 
         # --- 2) Login as patient user, then authenticated render ---
         stage = "login"
+        # Verify fixture user exists before attempting login (DB check for diagnostics)
+        user_check = db1(f"SELECT ID FROM {T('users')} WHERE user_login='{CFG['login']}'")
+        if user_check == 0:
+            raise RuntimeError(f"fixture user {CFG['login']} not found in DB")
+        role_check = db1(f"SELECT COUNT(*) FROM {T('usermeta')} WHERE user_id={user_check} AND meta_key='{DB_PREFIX}capabilities' AND meta_value LIKE '%cpms_patient%'")
+        if role_check == 0:
+            raise RuntimeError(f"fixture user {CFG['login']} missing cpms_patient role")
         page.goto(f"{BASE}/wp-login.php", wait_until="networkidle")
         page.fill("#user_login", CFG["login"])
         page.fill("#user_pass", CFG["password"])
-        page.click("#wp-submit")
+        # Use expect_navigation to avoid race where wait_for_load_state misses the redirect
+        try:
+            with page.expect_navigation(timeout=15000):
+                page.click("#wp-submit")
+        except:
+            page.wait_for_load_state("networkidle", timeout=15000)
         page.wait_for_load_state("networkidle")
         if "wp-login.php" in page.url:
-            raise RuntimeError(f"login failed for {CFG['login']}: {page.url}")
+            # Dump page content for diagnostics (no secrets)
+            body_txt = page.content()[:2000]
+            raise RuntimeError(f"login failed for {CFG['login']}: {page.url} body={body_txt[:500]}")
         # Now go to booking page again
         page.goto(CFG["url"], wait_until="networkidle")
         # Wait for chooser to appear (it is server-rendered, so should be immediate, but wait)
-        page.wait_for_selector('[data-role="patient-chooser"]', timeout=10000)
+        # Increase timeout and add diagnostics if not found
+        try:
+            page.wait_for_selector('[data-role="patient-chooser"]', timeout=15000)
+        except Exception as e:
+            # Diagnostics: check if page is still showing anonymous or error, and dump relevant HTML
+            html = page.content()[:4000]
+            cfg_html = page.locator("script.cpms-public-booking__config").first.text_content() if page.locator("script.cpms-public-booking__config").count()>0 else "no-config"
+            chooser_count = page.locator('[data-role="patient-chooser"]').count()
+            option_count = page.locator('[data-role="patient-option"]').count()
+            surface_html = page.locator(".cpms-public-booking").first.evaluate("el => el.outerHTML.slice(0,3000)") if page.locator(".cpms-public-booking").count()>0 else "no-surface"
+            raise RuntimeError(f"chooser not found after login (clinic={CFG['clinic_id']} user={CFG['login']} chooser={chooser_count} options={option_count} cfg={cfg_html[:300]} surface={surface_html[:600]} html={html[:600]}) from {e}")
         chooser = page.locator('[data-role="patient-chooser"]')
         if chooser.count() != 1:
             raise RuntimeError(f"authenticated N chooser must be visible, got {chooser.count()}")
