@@ -204,7 +204,7 @@ jobs:
           require getenv('WP_HOME') . '/wp-load.php';
           $v = \ClinicCore\Bootstrap\App::migrations()->currentVersion();
           echo "schema: $v\n";
-          exit($v === '2026_09_09_0020' ? 0 : 1);
+          exit($v === '2026_09_20_0021' ? 0 : 1);
           PHPEOF
           WP_HOME="$WP_DIR" php /tmp/check-schema.php
           # F10 — نصب تازه: پنجرهٔ فعال‌سازی (fresh، بدون دادهٔ legacy) باید
@@ -920,7 +920,7 @@ jobs:
           $db = \ClinicCore\Bootstrap\App::db();
           $v = \ClinicCore\Bootstrap\App::migrations()->currentVersion();
           echo "schema: $v\n";
-          if ($v !== '2026_09_09_0020') { exit(1); }
+          if ($v !== '2026_09_20_0021') { exit(1); }
           foreach ($wpdb->get_results('SELECT `key`, endpoint, context_id, status FROM ' . $db->table('cpms_idempotency_keys'), ARRAY_A) as $r) {
               echo 'idem: ' . $r['key'] . ' @ ' . $r['endpoint'] . ' ctx=' . var_export($r['context_id'], true) . ' status=' . $r['status'] . "\n";
           }
@@ -950,7 +950,7 @@ jobs:
           {
             echo '## Upgrade Path (main/F8 → RC/F9 روی نصب واقعی)'
             echo '```'
-            echo 'F8 schema: 2026_09_07_0005 → RC schema: 2026_09_09_0020 (F10/window_sec + Phase 2: org/location/membership/identity foundation + identity mobile/links + idempotency clinic scope)'
+            echo 'F8 schema: 2026_09_07_0005 → RC schema: 2026_09_20_0021 (F10/window_sec + Phase 2: org/location/membership/identity foundation + identity mobile/links + idempotency clinic scope + Phase 8 Slice 2: OTP challenge clinic binding)'
             echo 'legacy idem NULL→0 normalized; u_idem_scope + u_clinician_user present; داده دست‌نخورده'
             echo 'pre-F10 install: ACTIVATION_GRACE (مهلت مهاجرت ۳۰ روزه) — بدون اختلال ناگهانی'
             echo '```'
@@ -1107,6 +1107,54 @@ jobs:
           test -s /tmp/resp-public-page.env
           cat /tmp/resp-public-page.env >> "$GITHUB_ENV"
           cat /tmp/resp-public-page.env
+
+      # Phase 8 Slice 2 — Fixtureِ سفرِ OTP: یک Clinicِ دومِ کاملاً Synthetic
+      # (id>1، هرگز clinic_id=1 به‌عنوان authority). مسیرِ مرورگرِ واقعی باید
+      # Clinicِ چالش/Hold/Patient/Appointment را از انتخابِ واقعیِ کاربر بگیرد؛
+      # تک-Clinic بودنِ نصب، defctهایِ tenant را mask می‌کند. دو نوبتِ ظرفیت ۱
+      # (یکی برای Viewportِ موبایل، یکی برای لپ‌تاپ) + یک نوبتِ ظرفیت ۲.
+      - name: OTP journey fixture — Clinic دوم + صفحهٔ عمومیِ مسیر رزرو
+        run: |
+          cat > /tmp/otp-journey-fixture.php <<'PHPEOF'
+          <?php
+          require getenv('WP_HOME') . '/wp-load.php';
+          global $wpdb;
+          $db = \ClinicCore\Bootstrap\App::db();
+          $now = $db->nowUtcSql();
+          $uniq = substr(bin2hex(random_bytes(4)), 0, 8);
+          // ADR-0031: هر Clinic حتماً داخل یک Organization واقعی است
+          // (clinics.organization_id NOT NULL + FK) — سازمانِ دومِ Synthetic.
+          $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_organizations') . ' (name, slug, status, created_at, updated_at) VALUES (%s, %s, %s, %s, %s)', 'سازمان سفر OTP (Synthetic)', 'otp-journey-org-' . $uniq, 'active', $now, $now));
+          $orgId = (int) $wpdb->insert_id;
+          if ($orgId <= 1) { echo "JOURNEY_FIXTURE_ERROR: org must be nontrivial (id > 1); got {$orgId}\n"; exit(1); }
+          $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_clinics') . ' (name, slug, timezone, organization_id, address, phone, created_at, updated_at) VALUES (%s, %s, %s, %d, NULL, NULL, %s, %s)', 'کلینیک سفر OTP (Synthetic)', 'otp-journey-' . $uniq, 'Asia/Tehran', $orgId, $now, $now));
+          $clinicId = (int) $wpdb->insert_id;
+          if ($clinicId <= 1) { echo "JOURNEY_FIXTURE_ERROR: tenant must be nontrivial (clinic id > 1); got {$clinicId}\n"; exit(1); }
+          $boundOrg = (int) $wpdb->get_var($wpdb->prepare('SELECT organization_id FROM ' . $db->table('cpms_clinics') . ' WHERE id = %d LIMIT 1', $clinicId));
+          if ($boundOrg !== $orgId) { echo "JOURNEY_FIXTURE_ERROR: clinic {$clinicId} organization mismatch ({$boundOrg} != {$orgId})\n"; exit(1); }
+          $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_locations') . ' (clinic_id, name, slug, address, phone, timezone, is_primary, is_active, created_at, updated_at) VALUES (%d, %s, %s, NULL, NULL, %s, 1, 1, %s, %s)', $clinicId, 'شعبهٔ سفر OTP (Synthetic)', 'main-' . $uniq, 'Asia/Tehran', $now, $now));
+          $locationId = (int) $wpdb->insert_id;
+          $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_clinicians') . ' (clinic_id, wp_user_id, full_name, specialty, room, is_active, created_at, updated_at) VALUES (%d, NULL, %s, %s, NULL, 1, %s, %s)', $clinicId, 'دکتر سفر OTP (Synthetic)', 'عمومی', $now, $now));
+          $clinicianId = (int) $wpdb->insert_id;
+          $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_schedule') . ' (clinic_id, clinician_id, day_of_week, start_time, end_time, appointment_duration_min, slot_capacity, is_active, location_id, created_at, updated_at) VALUES (%d, %d, %d, %s, %s, %d, %d, 1, %d, %s, %s)', $clinicId, $clinicianId, 6, '09:00:00', '13:00:00', 20, 2, $locationId, $now, $now));
+          $tz = new DateTimeZone('Asia/Tehran');
+          $slotIds = [];
+          foreach ([[2, '11:40:00', 1], [3, '11:50:00', 1], [2, '10:00:00', 2]] as $spec) {
+            $date = (new DateTimeImmutable('now', $tz))->modify('+' . $spec[0] . ' days')->format('Y-m-d');
+            $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_schedule_slots') . ' (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, generated_from, created_at, updated_at) VALUES (%d, %d, %d, %s, %s, %d, %d, 0, 0, 1, %s, %s, %s)', $clinicId, $locationId, $clinicianId, $date, $spec[1], 20, $spec[2], 'manual', $now, $now));
+            $slotIds[] = (int) $wpdb->insert_id;
+          }
+          $pageId = wp_insert_post(['post_title' => 'Public Booking OTP Journey Fixture', 'post_name' => 'cpms-otp-journey', 'post_content' => '[cpms_public_booking clinic_id="' . $clinicId . '"]', 'post_status' => 'publish', 'post_type' => 'page'], true);
+          if (is_wp_error($pageId)) { echo 'JOURNEY_FIXTURE_ERROR: ' . $pageId->get_error_message() . "\n"; exit(1); }
+          $permalink = (string) get_permalink($pageId);
+          echo 'fixture: journey page #' . (int) $pageId . ' clinic=' . $clinicId . ' clinician=' . $clinicianId . ' location=' . $locationId . ' slots=' . implode(',', $slotIds) . ' url=' . $permalink . "\n";
+          file_put_contents('/tmp/otp-journey.env', 'JOURNEY_PAGE=' . $permalink . '|' . $clinicId . '|' . $clinicianId . '|' . $locationId . '|11:40:00|11:50:00' . "\n");
+          PHPEOF
+          WP_HOME="$WP_DIR" php /tmp/otp-journey-fixture.php 2>&1 | tee /tmp/otp-journey-fixture.log
+          test "${PIPESTATUS[0]}" -eq 0
+          test -s /tmp/otp-journey.env
+          cat /tmp/otp-journey.env >> "$GITHUB_ENV"
+          cat /tmp/otp-journey.env
       - name: Apache up
         run: |
           sudo tee /etc/apache2/sites-available/pilot.conf >/dev/null <<CONF
@@ -1143,6 +1191,20 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # Phase 8 Slice 2 — سفرِ کاملِ بیمار روی مرورگرِ واقعی (scoping از انتخاب).
+      # OTP از مسیرِ فقط-تست (پتچِ code_hash در DB با همان الگوی Integration)
+      # خوانده می‌شود؛ service واقعیِ OtpService بدون bypass. شواهد فقط
+      # boolean/شناسه/تعداد-transition هستند — OTP/موبایل/نام/cookie/nonce
+      # هرگز در لاگ print نمی‌شوند.
+      - name: Slice-2 OTP journey — سفرِ کامل بیمار در مرورگر واقعی
+        env:
+          BASE: http://localhost:8080
+        run: |
+          python3 -m py_compile bin/pilot-otp-journey.py
+          python3 bin/pilot-otp-journey.py | tee /tmp/journey.log
+          # gate fail-closed: tee هرگز کد خطای سفر را نمی‌بلعد
+          test "${PIPESTATUS[0]}" -eq 0
+
       # خلاصهٔ Responsive باید از sandbox هم قابل بازیابی باشد: لاگِ job به blob
       # ریدایرکت می‌شود و دانلودشدنی نیست و `$GITHUB_STEP_SUMMARY` هم از API
       # خوانده نمی‌شود. پس همان خلاصهٔ PASS/FAIL (که برای صفحهٔ عمومیِ shortcode
@@ -1171,6 +1233,31 @@ jobs:
             gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@/tmp/resp-evidence.md || true
           fi
 
+      # همان الگوی evidence channel — sandbox نمی‌تواند blob artifact را دانلود
+      # کند، پس خلاصهٔ PASS/FAIL سفر OTP هم (فقط boolean/شناسه/تعداد) به PR
+      # post می‌شود. `always()` و صرفاً الحاقی — هیچ معیارِ گیتی تغییر نکرد.
+      - name: Post OTP journey evidence to PR (لاگ Blob از Sandbox در دسترس نیست)
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "### Slice-2 OTP journey evidence (run ${{ github.run_id }}, job ${GITHUB_JOB}, sha ${{ github.sha }})"
+            echo '```'
+            echo '--- fixture: second synthetic clinic + own public booking page ---'
+            cat /tmp/otp-journey.env 2>/dev/null || echo '(JOURNEY_PAGE not produced — journey NOT exercised)'
+            echo '--- PASS/FAIL summary (per viewport × stage) ---'
+            grep -E '^(PASS|FAIL)' /tmp/journey.log 2>/dev/null || echo '(journey.log missing)'
+            echo '```'
+            echo 'قرارداد شواهد: فقط boolean/شناسه/تعداد — کد OTP، موبایل، نام بیمار(ها)، cookie، nonce و secret در شواهد نشت نکرده‌اند.'
+          } > /tmp/journey-evidence.md
+          PR=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number' 2>/dev/null || true)
+          if [ -n "$PR" ]; then
+            gh pr comment "$PR" --body-file /tmp/journey-evidence.md || echo "::notice::PR comment failed (permissions?)"
+          else
+            gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@/tmp/journey-evidence.md || true
+          fi
+
       - name: Debug dump به PR (لاگ Blob از Sandbox در دسترس نیست)
         if: failure()
         run: |
@@ -1181,7 +1268,7 @@ jobs:
                      /tmp/perms.txt /tmp/audit-actions.txt /tmp/jobs-queued.txt /tmp/jobs-success.txt /tmp/failed-jobs.txt \
                      /tmp/tick-1.log /tmp/tick-2.log /tmp/restore.log /tmp/orig-files.txt /tmp/restored-files.txt /tmp/backup-hashes.txt /tmp/backup-counts.txt \
                      /tmp/health.json /tmp/avail.json /tmp/unauth.json /tmp/probe-body.txt \
-                     /tmp/leak.txt /tmp/leak2.txt /tmp/cpms-tick.log /tmp/tick-manual.log /tmp/health-check.log /tmp/pw.log /tmp/resp.log; do
+                     /tmp/leak.txt /tmp/leak2.txt /tmp/cpms-tick.log /tmp/tick-manual.log /tmp/health-check.log /tmp/pw.log /tmp/resp.log /tmp/journey.log /tmp/otp-journey-fixture.log; do
               if [ -f "$f" ]; then echo "--- $f (tail 50) ---"; tail -50 "$f"; fi
             done
             echo '--- apache diagnostics ---'

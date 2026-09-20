@@ -482,3 +482,188 @@
 		position: static;
 	}
 }
+
+/* ==================== Phase 8 Slice 2 — continuation احراز/رزرو ====================
+ *
+ * همان قراردادهای Slice 1 عیناً برقرارند: کاملاً SCOPED، RTL-first با ویژگی‌های
+ * منطقی، بدون منبع خارجی، responsive از ۳۶۰px (بدون سرریز افقی)، هدفِ لمسی
+ * ≥ ۴۴px، کنتراست AA و فوکوسِ نمایان.
+ */
+
+/* ---------- anonymous: چرخهٔ ورود OTP ---------- */
+
+.cpms-public-booking__auth {
+	display: flex;
+	flex-direction: column;
+	gap: 0.75rem;
+	margin-block-start: 1rem;
+}
+
+.cpms-public-booking__continue-btn {
+	min-height: 44px;
+	padding: 0.6rem 1rem;
+	border: 1px solid currentColor;
+	border-radius: 8px;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	font-weight: 700;
+	cursor: pointer;
+}
+
+.cpms-public-booking__continue-btn:focus-visible,
+.cpms-public-booking__btn:focus-visible,
+.cpms-public-booking__input:focus-visible {
+	outline: 2px solid currentColor;
+	outline-offset: 2px;
+}
+
+.cpms-public-booking__auth-step {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5rem;
+}
+
+.cpms-public-booking__auth-step[hidden] {
+	display: none;
+}
+
+/* ---------- مشترک: label/input/button/status ---------- */
+
+.cpms-public-booking__label {
+	font-weight: 700;
+}
+
+.cpms-public-booking__input {
+	min-height: 44px;
+	padding: 0.5rem 0.75rem;
+	border: 1px solid #767676;
+	border-radius: 8px;
+	background: #fff;
+	color: #1a1a1a;
+	font: inherit;
+	max-inline-size: 100%;
+}
+
+.cpms-public-booking__btn {
+	min-height: 44px;
+	padding: 0.6rem 1rem;
+	border: 0;
+	border-radius: 8px;
+	background: #0a5c44;
+	color: #fff;
+	font: inherit;
+	font-weight: 700;
+	cursor: pointer;
+	align-self: flex-start;
+}
+
+.cpms-public-booking__btn:disabled {
+	opacity: 0.6;
+	cursor: default;
+}
+
+.cpms-public-booking__status {
+	margin: 0;
+	font-weight: 700;
+}
+
+.cpms-public-booking__status[hidden] {
+	display: none;
+}
+
+/* ---------- patient: جعبهٔ ادامه (Hold → Confirm) ---------- */
+
+.cpms-public-booking__continue-box {
+	display: flex;
+	flex-direction: column;
+	gap: 0.75rem;
+	margin-block-start: 1rem;
+	padding: 0.75rem;
+	border: 1px solid currentColor;
+	border-radius: 8px;
+}
+
+.cpms-public-booking__continue-box[hidden] {
+	display: none;
+}
+
+.cpms-public-booking__countdown {
+	margin: 0;
+	font-variant-numeric: tabular-nums;
+}
+
+.cpms-public-booking__countdown[hidden] {
+	display: none;
+}
+
+.cpms-public-booking__names {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5rem;
+}
+
+.cpms-public-booking__names[hidden] {
+	display: none;
+}
+
+.cpms-public-booking__names-hint {
+	margin: 0;
+	font-weight: 700;
+}
+
+.cpms-public-booking__receipt {
+	display: flex;
+	flex-direction: column;
+	gap: 0.25rem;
+	padding: 0.75rem;
+	border-radius: 8px;
+	background: rgba(10, 92, 68, 0.08);
+}
+
+.cpms-public-booking__receipt[hidden] {
+	display: none;
+}
+
+.cpms-public-booking__receipt-title {
+	margin: 0;
+	font-weight: 800;
+}
+
+.cpms-public-booking__receipt-line {
+	margin: 0;
+}
+
+.cpms-public-booking__nearby {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5rem;
+}
+
+.cpms-public-booking__nearby[hidden] {
+	display: none;
+}
+
+.cpms-public-booking__nearby-hint {
+	margin: 0;
+	font-weight: 700;
+}
+
+.cpms-public-booking__nearby-list {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.5rem;
+}
+
+/* ---------- نقاط شکست باریک: چیدمان ستونی + بدون سرریز ---------- */
+
+@media (max-width: 480px) {
+	.cpms-public-booking__btn,
+	.cpms-public-booking__continue-btn {
+		align-self: stretch;
+	}
+
+	.cpms-public-booking__input {
+		inline-size: 100%;
+	}
+}

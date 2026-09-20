@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace ClinicCore\Application\Auth;
 
 use ClinicCore\Application\Notifications\SmsService;
+use ClinicCore\Application\Scope\ScopeRequiredException;
+use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Domain\Otp\OtpPolicy;
 use ClinicCore\Domain\Otp\OtpState;
 use ClinicCore\Domain\Sms\SmsEvents;
@@ -65,6 +67,15 @@ final class OtpService
     private const PEPPER_OPTION = 'cpms_otp_pepper';
 
     /**
+     * Phase 8 Slice 2 — پسوندِ ایمیلِ قطعیِ هویت OTP.
+     *
+     * تنها قالبِ ایمیلِ مسیرِ OTP: `{mobile}@otp.cpms.local` (قابل‌حدسِ
+     * قطعی از موبایلِ نرمال‌شده). بازاستفادهٔ کاربرِ موجود با همین ایمیل
+     * یعنی همان user_id بدون ساخت wp_users تکراری.
+     */
+    private const OTP_EMAIL_SUFFIX = '@otp.cpms.local';
+
+    /**
      * @param Closure(): int $currentClinicResolver Clinicِ فعالِ عملیاتِ جاری.
      *        به‌صورت Closure تزریق می‌شود تا ساختِ این سرویس به هیچ Clinic/Scope
      *        محیطی گره نخورد: ثبتِ مسیرهای REST (`rest_api_init`) پیش از برقراری
@@ -100,11 +111,19 @@ final class OtpService
     /**
      * درخواست کد جدید (A2).
      *
+     * Phase 8 Slice 2 — تصمیم مالک (Hold-Timing): پارامتر اختیاری `$clinicId`
+     * «تنها» از دادهٔ persisted مشتق می‌شود (OtpController انتخابِ bookable را
+     * روی clinician/slot/Clinic حل می‌کند؛ کلاینت هرگز منبع Clinic نیست).
+     * وقتی ارائه شود، تمام سیاست OTP (Rate/Cooldown/TTL) و ارسال SMS و مُهرِ
+     * Clinic روی Challenge از همین Clinic استفاده می‌کند؛ وقتی `null` باشد
+     * (بدون انتخاب)، رفتار تثبیت‌شدهٔ resolver (Scope محیطی/تک-Clinic) عیناً
+     * حفظ می‌شود و روی Challenge Clinic مُهر نمی‌شود (NULL تاریخی).
+     *
      * @return array{expires_in: int, sms_sent: bool, retry_enqueued: bool}
      *
      * @throws OtpException
      */
-    public function request(string $rawMobile, string $purpose = self::PURPOSE_LOGIN, ?int $userId = null, ?string $ip = null): array
+    public function request(string $rawMobile, string $purpose = self::PURPOSE_LOGIN, ?int $userId = null, ?string $ip = null, ?int $clinicId = null): array
     {
         $mobile = MobileValidator::normalize($rawMobile);
         if ($mobile === null) {
@@ -112,8 +131,14 @@ final class OtpService
         }
         $purpose = $this->assertPurpose($purpose);
 
-        $dailyMax = (int) $this->currentSettings()->get('otp.daily_max');
-        $hourlyMax = (int) $this->currentSettings()->get('otp.hourly_max');
+        // Phase 8 Slice 2 — Clinicِ عملیات: فقط از منبعِ صریح (دادهٔ persisted
+        // ناشی از انتخاب) یا resolver تثبیت‌شده؛ هرگز از ورودی خام کلاینت.
+        $settings = $clinicId !== null && $clinicId > 0
+            ? $this->settingsFactory->forClinic($clinicId)
+            : $this->currentSettings();
+
+        $dailyMax = (int) $settings->get('otp.daily_max');
+        $hourlyMax = (int) $settings->get('otp.hourly_max');
 
         $byDay = $this->rate->hit('otp-day:' . $mobile, $dailyMax, 86400);
         if (!$byDay['allowed']) {
@@ -131,7 +156,7 @@ final class OtpService
             }
         }
 
-        $policy = $this->currentSettings()->otpPolicy();
+        $policy = $settings->otpPolicy();
         $state = $this->loadState($mobile, $purpose);
         $send = $policy->canSend($state, $this->now());
         if (!$send['ok']) {
@@ -144,18 +169,25 @@ final class OtpService
             throw new OtpException($code, 'هنوز زود است — بعداً تلاش کنید');
         }
 
-        // ساخت Token (فقط Hash)
+        // ساخت Token (فقط Hash). Phase 8 Slice 2: وقتی Clinic از دادهٔ persisted
+        // مشتق شده، روی Challenge مُهر می‌شود (Migration 0021 — ستون NULL مجاز).
+        // کلیدِ ستون فقط در حضور Clinic اضافه می‌شود تا ردیفِ تاریخی/بدون Clinic
+        // دقیقاً NULL بماند (بدون Backfill — Migration 0021).
         $code = OtpPolicy::generateCode(6);
-        $ttl = (int) $this->currentSettings()->get('otp.ttl_sec');
+        $ttl = (int) $settings->get('otp.ttl_sec');
         $expiresAt = $this->addSeconds($this->now(), $ttl);
-        $this->db->insert('cpms_otp_tokens', [
+        $tokenRow = [
             'mobile' => $mobile,
             'purpose' => $purpose,
             'code_hash' => OtpPolicy::hashCode($code, $this->pepper()),
             'expires_at' => $expiresAt,
             'attempts' => 0,
             'created_at' => $this->db->nowUtcSql(),
-        ]);
+        ];
+        if ($clinicId !== null && $clinicId > 0) {
+            $tokenRow['clinic_id'] = $clinicId;
+        }
+        $this->db->insert('cpms_otp_tokens', $tokenRow);
         $tokenId = $this->db->wpdb_last_insert_id();
 
         $this->audit('OTP_REQUEST', $userId, $mobile, $ip);
@@ -165,9 +197,10 @@ final class OtpService
         $sent = false;
         $retryEnqueued = false;
         try {
-            // OTP identity-level است (AD-15) — clinic صریحاً از Settings (configured-clinic)
+            // Phase 8 Slice 2: Clinicِ ارسال = Clinicِ Challenge (از انتخابِ
+            // persisted مشتق‌شده) یا resolver تثبیت‌شده در مسیر بدون انتخاب.
             $res = $this->sms->sendEvent(
-                $this->currentSettings()->clinicId(),
+                $settings->clinicId(),
                 SmsEvents::OTP,
                 $mobile,
                 ['otp_code' => $code],
@@ -214,7 +247,6 @@ final class OtpService
             }
         }
 
-        $policy = $this->currentSettings()->otpPolicy();
         $now = $this->now();
 
         $row = $this->db->fetchRow(
@@ -231,6 +263,28 @@ final class OtpService
         if ($this->toDateTime($row['expires_at']) <= $now) {
             throw new OtpException('CLINIC_OTP_EXPIRED', 'کد منقضی شده است — درخواست کد جدید بدهید');
         }
+
+        // Phase 8 Slice 2 — Clinicِ چالش تنها مرجع این verify است (نه بدنهٔ
+        // کلاینت، نه Scope محیطی): سیاست OTP، جست‌وجوی Patient و Clinicِ لینک
+        // از Clinicِ مُهرشده روی همین ردیف می‌آید (Migration 0021). ردیفِ
+        // تاریخیِ NULL: resolver تثبیت‌شده (تک-Clinic / Scope صریح)؛ در نصبِ
+        // چند-Clinicِ بدون Scope ⇒ fail-closed با پاکت CLINIC_SCOPE_REQUIRED —
+        // هرگز استثنای فراری، هرگز 500. کلیدهای Cooldown/Lockout هویت‌سطح
+        // می‌مانند (AD-15 — بدون بازطراحی).
+        $rowClinicId = (isset($row['clinic_id']) && $row['clinic_id'] !== null) ? (int) $row['clinic_id'] : null;
+        try {
+            $settings = $rowClinicId !== null
+                ? $this->settingsFactory->forClinic($rowClinicId)
+                : $this->currentSettings();
+        } catch (ScopeRequiredException) {
+            throw new OtpException(
+                'CLINIC_SCOPE_REQUIRED',
+                'امکان تعیین مرکزِ این کد به‌صورت ضمنی وجود نیست — درخواست کد با انتخاب نوبت را تکرار کنید',
+                ['reason' => 'historical_null_challenge_without_scope']
+            );
+        }
+        $policy = $settings->otpPolicy();
+        $clinicId = $rowClinicId ?? (int) $settings->clinicId();
 
         $state = new OtpState(
             (int) $row['attempts'],
@@ -283,8 +337,8 @@ final class OtpService
         $isNewUser = false;
         $mayProvision = in_array($purpose, self::PROVISIONING_PURPOSES, true);
         $userId = $mayProvision
-            ? $this->resolveUser($mobile, $purpose, $isNewUser)
-            : $this->findExistingUser($mobile);
+            ? $this->resolveUser($mobile, $purpose, $isNewUser, $clinicId)
+            : $this->findExistingUser($mobile, $clinicId);
 
         // Session — فقط برای Purposeهای ورود (Context Binding).
         // یک کد `verify_mobile` نباید به Login تبدیل شود.
@@ -315,9 +369,9 @@ final class OtpService
      * نداشته باشد `0` برمی‌گردد و هیچ حسابی ساخته نمی‌شود و هیچ لینک
      * بیمار⇄کاربری درج نمی‌شود.
      */
-    private function findExistingUser(string $mobile): int
+    private function findExistingUser(string $mobile, int $clinicId): int
     {
-        $patientId = $this->findActivePatientIdByMobile($mobile);
+        $patientId = $this->findActivePatientIdByMobile($mobile, $clinicId);
         if ($patientId === null) {
             return 0;
         }
@@ -340,25 +394,26 @@ final class OtpService
     }
 
     /**
-     * بیمارِ فعالِ دارای این موبایل در Clinicِ پیکربندی‌شدهٔ این سرویس —
+     * بیمارِ فعالِ دارای این موبایل در Clinicِ داده‌شده —
      * **نقطهٔ واحد** این جست‌وجو.
      *
      * AD-13 (تصحیح Pre-Phase-2 Gate): تا این اصلاح، دو نسخهٔ کپی‌شده از
      * همین کوئری با literal `clinic_id = 1` وجود داشت (یکی از پیش از
      * Phase 1A و یکی افزودهٔ OD-8 در کامیت 4c16009 — رانش AD-13). هر دو
-     * به این متدِ پارامتری‌شده با Clinicِ فعالِ Settings تبدیل شدند؛ هیچ
+     * به این متدِ پارامتری‌شده تبدیل شدند؛ هیچ
      * مفهوم Scope جدیدی ساخته نشد (Organization/ClinicContext = Phase 2).
      *
-     * نکتهٔ Phase 2: این جست‌وجو امروز به Clinicِ فعالِ نصب گره خورده است؛
-     * طبق AD-14 هویت بیمار به سطح Organization می‌رود و این متد باید در
-     * آن فاز بازطراحی شود (رفتار فعلی عمداً حفظ شده — فقط صریح/تک‌منبعی شد).
+     * Phase 8 Slice 2: Clinic همیشه از فراخواننده می‌آید — Clinicِ مُهرشده
+     * روی Challenge (Migration 0021) یا resolver تثبیت‌شده برای ردیفِ
+     * تاریخیِ NULL؛ هرگز از بدنهٔ کلاینت. «بیمارِ همان موبایل در Clinicِ
+     * دیگر» = «نبودِ بیمار» (هیچ پیوندی بین-Clinic ساخته نمی‌شود).
      */
-    private function findActivePatientIdByMobile(string $mobile): ?int
+    private function findActivePatientIdByMobile(string $mobile, int $clinicId): ?int
     {
         $patient = $this->db->fetchRow(
             'SELECT id FROM ' . $this->db->table('cpms_patients') .
             ' WHERE clinic_id = %d AND mobile = %s AND status = %s ORDER BY id DESC LIMIT 1',
-            [$this->currentSettings()->clinicId(), $mobile, 'active']
+            [$clinicId, $mobile, 'active']
         );
 
         return $patient === null ? null : (int) $patient['id'];
@@ -366,10 +421,19 @@ final class OtpService
 
     /**
      * پیدا کردن/ساختن کاربر + لینک به بیمار(ان) موجود با همین موبایل.
+     *
+     * Phase 8 Slice 2:
+     *  - Clinicِ جست‌وجوی Patient و Clinicِ لینک، همانی است که verify از
+     *    Challenge/Resolver گرفته (هرگز بدنهٔ کلاینت).
+     *  - پیش از هر ساختِ کاربر، هویتِ قطعیِ OTP یعنی
+     *    `{mobile}@otp.cpms.local` جست‌وجو و در صورت وجود **بازاستفاده**
+     *    می‌شود: همان user_id، `is_new_user=false`، بدون ردیف تکراری
+     *    wp_users؛ لینکِ Patient فقط اگر Patient در Clinicِ همین verify
+     *    وجود داشته باشد (Patientِ Clinicِ دیگر هرگز لینک نمی‌شود).
      */
-    private function resolveUser(string $mobile, string $purpose, bool &$isNewUser): int
+    private function resolveUser(string $mobile, string $purpose, bool &$isNewUser, int $clinicId): int
     {
-        $patientId = $this->findActivePatientIdByMobile($mobile);
+        $patientId = $this->findActivePatientIdByMobile($mobile, $clinicId);
 
         $link = null;
         if ($patientId !== null) {
@@ -392,21 +456,85 @@ final class OtpService
         }
 
         if ($userId === null) {
-            $userId = $this->createWpUser($mobile);
-            $isNewUser = true;
+            // بازاستفادهٔ هویت قطعی OTP — هرگز wp_insert_user روی ایمیل تکراری.
+            $userId = $this->findExistingOtpUserId($mobile);
+        }
+
+        if ($userId !== null) {
+            // هویت موجود: هیچ ردیف کاربر جدیدی ساخته نمی‌شود؛ لینکِ Clinic-scoped
+            // فقط وقتی Patient در Clinicِ همین verify موجود است.
+            $isNewUser = false;
             if ($patientId !== null) {
-                $this->db->insert('cpms_patient_user_links', [
-                    'clinic_id' => $this->currentSettings()->clinicId(),
-                    'patient_id' => $patientId,
-                    'wp_user_id' => $userId,
-                    'mobile_at_link' => $mobile,
-                    'is_primary' => 1,
-                    'linked_at' => $this->db->nowUtcSql(),
-                ]);
+                $this->linkPatientToUser($patientId, $userId, $mobile, $clinicId);
             }
+
+            return $userId;
+        }
+
+        $userId = $this->createWpUser($mobile);
+        $isNewUser = true;
+        if ($patientId !== null) {
+            $this->linkPatientToUser($patientId, $userId, $mobile, $clinicId);
         }
 
         return $userId;
+    }
+
+    /**
+     * جست‌وجوی هویت قطعیِ OTP برای یک موبایل نرمال‌شده.
+     *
+     * `{mobile}@otp.cpms.local` تنها قالبِ ایمیلِ مسیر OTP است؛ بازگشتِ
+     * شناسهٔ کاربرِ موجود یعنی بازاستفادهٔ همان هویت — **فقط** اگر حساب
+     * واقعاً هویتِ بیمارِ CPMS باشد (نقشِ مستقر `cpms_patient` — همان
+     * قراردادِ PatientPortalPage::isPatientOnly). ایمیلِ پل قابل‌حدس است؛
+     * اگر حسابِ غیربیمار (کارمند/غیره) آن را پیش‌گرفته باشد، بازاستفادهٔ کور
+     * احراز را به هویتِ اشتباه متصل می‌کرد. چنین تصادمی fail-closed است:
+     * بدون session، بدون افشای patient_links، بدون ساختن کاربر، بدون تغییر
+     * نقشِ حسابِ مزاحم و بدون افشای اینکه چه حسابی مالک آن ایمیل است (پاکتِ
+     * محصولیِ عمومیِ تثبیت‌شده).
+     */
+    private function findExistingOtpUserId(string $mobile): ?int
+    {
+        $user = $this->db->fetchRow(
+            'SELECT ID FROM ' . $this->db->wpdb()->prefix . 'users WHERE user_email = %s ORDER BY ID ASC LIMIT 1',
+            [$mobile . self::OTP_EMAIL_SUFFIX]
+        );
+        if ($user === null) {
+            return null;
+        }
+
+        $userId = (int) $user['ID'];
+        $wpUser = function_exists('get_userdata') ? get_userdata($userId) : false;
+        $roles = $wpUser instanceof \WP_User ? (array) $wpUser->roles : [];
+        if (!in_array(RolesAndCapabilities::ROLE_PATIENT, $roles, true)) {
+            throw new OtpException('CLINIC_OTP_INVALID', 'کد واردشده معتبر نیست');
+        }
+
+        return $userId;
+    }
+
+    /**
+     * لینکِ Clinic-scoped Patient⇄User (نقطهٔ واحد درج — جلوگیری از تکرار).
+     */
+    private function linkPatientToUser(int $patientId, int $userId, string $mobile, int $clinicId): void
+    {
+        $exists = $this->db->fetchValue(
+            'SELECT COUNT(*) FROM ' . $this->db->table('cpms_patient_user_links') .
+            ' WHERE patient_id = %d AND wp_user_id = %d',
+            [$patientId, $userId]
+        );
+        if ($exists !== null && (int) $exists > 0) {
+            return;
+        }
+
+        $this->db->insert('cpms_patient_user_links', [
+            'clinic_id' => $clinicId,
+            'patient_id' => $patientId,
+            'wp_user_id' => $userId,
+            'mobile_at_link' => $mobile,
+            'is_primary' => 1,
+            'linked_at' => $this->db->nowUtcSql(),
+        ]);
     }
 
     private function createWpUser(string $mobile): int
@@ -416,7 +544,7 @@ final class OtpService
         for ($i = 0; $i < 5 && function_exists('username_exists') && username_exists($username); $i++) {
             $username = $base . '_' . $i;
         }
-        $email = $mobile . '@otp.cpms.local';
+        $email = $mobile . self::OTP_EMAIL_SUFFIX;
 
         $userId = wp_insert_user([
             'user_login' => $username,

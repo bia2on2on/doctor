@@ -93,9 +93,19 @@ if _raw_public:
         raise SystemExit("RESP_PUBLIC_PAGE must carry a page URL")
     PAGES = PAGES + [("anonymous", PUBLIC_PAGE["url"], "سطح عمومی رزرو (shortcode)")]
 
-# قراردادِ FR-3.5 / Slice 1: این رشته‌ها هرگز نباید در زیردرختِ سطح عمومی باشند.
+# قراردادِ FR-3.5 / Slice 1 + Slice 2: این رشته‌ها هرگز نباید در زیردرختِ
+# سطح عمومی باشند.
+#
+# Phase 8 Slice 2 (تصمیم مالک): سطح عمومی اکنون «ادامهٔ احراز OTP» را دارد —
+# markerهای `data-role="otp-mobile"`/`otp-code` و مسیرهای A2/A3 به‌صورت
+# slash-escape در قرارداد runtime منتشر می‌شوند، پس:
+#  - توکنِ عمومیِ «mobile» به «پیشوندِ خانوادهٔ شماره‌های تستِ seed» تغییر
+#    کرد: هیچ شمارهٔ بیمارِ seedشده (PHI واقعی) نباید در سطح ظاهر شود؛
+#    واژهٔ عامِ mobile دیگر معیار PHI نیست چون نامِ نقشِ UI است.
+#  - مسیرهای /otp/* و hold/confirm به‌صورت literal در outerHTML ظاهر
+#    نمی‌شوند (JSON با \/ escape منتشر می‌شود) — گارد همچنان معنادار است.
 PUBLIC_FORBIDDEN = [
-    "patient_id", "mrn", "mobile", "national_id", "first_name", "last_name",
+    "patient_id", "mrn", "0912000", "national_id", "first_name", "last_name",
     "/booking/hold", "/booking/confirm", "/booking/resume", "/appointments/mine",
     "/otp/request", "/otp/verify", "wp-login.php",
 ]

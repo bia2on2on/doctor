@@ -301,8 +301,11 @@ final class BookingRaceLossAlternativesTest extends WP_UnitTestCase
         self::assertSame(0, (int) $this->slotRow($losingSlotId)['held_count'], 'precondition: atomicClaim guard state (held_count=0)');
 
         // ---- real BookingService::confirm() loss at the final atomicClaim site
-        try {
-            App::bookingService()->confirm((string) $hold['hold_token'], $this->loserUserId, null, $this->uuid());
+        // (Phase 8 Slice 2: names are required for NEW patients at confirm —
+        // the fixture loser is a brand-new OTP user, so names travel along;
+        // the race must still be lost at the atomicClaim site, not earlier).
+            try {
+            App::bookingService()->confirm((string) $hold['hold_token'], $this->loserUserId, null, $this->uuid(), 'بازنده', 'رقیب');
             self::fail('Expected CLINIC_SLOT_TAKEN from the real confirm() atomicClaim loss path');
         } catch (BookingException $e) {
             // ---- existing envelope semantics must stay unchanged
@@ -436,7 +439,10 @@ final class BookingRaceLossAlternativesTest extends WP_UnitTestCase
         self::assertNotEmpty($hold['hold_token']);
         self::assertSame($slotId, (int) $hold['slot']['slot_id'], 'hold view unchanged');
 
-        $view = App::bookingService()->confirm((string) $hold['hold_token'], $this->winnerUserId, null, $this->uuid());
+        // Phase 8 Slice 2: the winner is a brand-new OTP user — the confirm
+        // contract now requires names for new patients (positive control keeps
+        // pinning the historical hold/confirm outcome unchanged).
+        $view = App::bookingService()->confirm((string) $hold['hold_token'], $this->winnerUserId, null, $this->uuid(), 'برنده', 'رقیب');
         self::assertSame('confirmed', $view['status']);
         self::assertNotEmpty($view['reference_code']);
         self::assertGreaterThan(0, (int) $view['appointment_id']);
@@ -466,7 +472,9 @@ final class BookingRaceLossAlternativesTest extends WP_UnitTestCase
         $hold = App::bookingService()->hold($this->winnerUserId, self::FX_CLINICIAN_ID, $date, '10:00:00', $slotId);
         $key = $this->uuid();
 
-        $first = App::bookingService()->confirm((string) $hold['hold_token'], $this->winnerUserId, null, $key);
+        // Phase 8 Slice 2: new-patient names travel on the FIRST confirm only;
+        // the replay below proves the origin response is returned unchanged.
+        $first = App::bookingService()->confirm((string) $hold['hold_token'], $this->winnerUserId, null, $key, 'برنده', 'رقیب');
         $second = App::bookingService()->confirm((string) $hold['hold_token'], $this->winnerUserId, null, $key);
 
         self::assertSame($first['reference_code'], $second['reference_code'], 'replay returns the origin response');

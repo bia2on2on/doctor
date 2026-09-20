@@ -64,7 +64,7 @@ final class Phase2SchemaTest extends WP_UnitTestCase
 
     public function testFreshInstallReachesPhaseTwoSchema(): void
     {
-        self::assertSame('2026_09_09_0020', App::migrations()->currentVersion());
+        self::assertSame('2026_09_20_0021', App::migrations()->currentVersion());
 
         foreach ([
             'cpms_organizations', 'cpms_locations', 'cpms_clinic_memberships',
@@ -143,7 +143,7 @@ final class Phase2SchemaTest extends WP_UnitTestCase
             }
         });
         self::assertSame(
-            ['2026_09_09_0020', '2026_09_09_0019', '2026_09_09_0018', '2026_09_09_0017', '2026_09_09_0016', '2026_09_09_0015', '2026_09_09_0014', '2026_09_09_0013', '2026_09_09_0012', '2026_09_09_0011', '2026_09_09_0010'],
+            ['2026_09_20_0021', '2026_09_09_0020', '2026_09_09_0019', '2026_09_09_0018', '2026_09_09_0017', '2026_09_09_0016', '2026_09_09_0015', '2026_09_09_0014', '2026_09_09_0013', '2026_09_09_0012', '2026_09_09_0011', '2026_09_09_0010'],
             $versions
         );
 
@@ -154,7 +154,7 @@ final class Phase2SchemaTest extends WP_UnitTestCase
         // ارتقا
         $applied = $this->withRealTables(static fn (): array => App::migrations()->migrate());
         self::assertContains('2026_09_09_0010', $applied);
-        self::assertSame('2026_09_09_0020', App::migrations()->currentVersion());
+        self::assertSame('2026_09_20_0021', App::migrations()->currentVersion());
 
         // داده دست‌نخورده
         $survived = $this->db()->fetchValue(

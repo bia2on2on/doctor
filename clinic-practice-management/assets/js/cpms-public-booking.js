@@ -226,6 +226,63 @@
 		});
 	}
 
+	/* ============ Phase 8 Slice 2 — ابزارهای ادامهٔ احراز/رزرو ============ */
+
+	/**
+	 * انتخابِ غیر-PHI برای عبور از مرزِ login (فقط شناسهٔ پزشک/نوبت و
+	 * تاریخ/ساعتِ همان چیزی که خودِ سرور برگردانده) — در sessionStorage
+	 * هم‌مبدأ؛ هیچ PHI و هیچ token در آن نیست.
+	 */
+	var SELECT_KEY = 'cpms-public-booking:selection:v1';
+
+	function validSelection(value) {
+		if (!value || typeof value !== 'object') {
+			return null;
+		}
+		if (toInt(value.clinician_id) <= 0 || !isNonEmptyString(value.slot_date) || !isNonEmptyString(value.slot_time)) {
+			return null;
+		}
+		return value;
+	}
+
+	function readStoredSelection() {
+		try {
+			return validSelection(JSON.parse(window.sessionStorage.getItem(SELECT_KEY) || 'null'));
+		} catch (e) {
+			return null;
+		}
+	}
+
+	function storeSelection(selection) {
+		try {
+			if (validSelection(selection)) {
+				window.sessionStorage.setItem(SELECT_KEY, JSON.stringify(selection));
+			}
+		} catch (e) {
+			// بدون storage هم جریان ادامه می‌یابد — کاربر دوباره انتخاب می‌کند.
+		}
+	}
+
+	function clearStoredSelection() {
+		try {
+			window.sessionStorage.removeItem(SELECT_KEY);
+		} catch (e) {
+			// بی‌اثر.
+		}
+	}
+
+	/** UUID برای هدر Idempotency-Keyِ confirm (قرارداد موجود B2). */
+	function idempotencyKey() {
+		if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+			return window.crypto.randomUUID();
+		}
+		return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+			var r = (Math.random() * 16) | 0;
+			var v = c === 'x' ? r : ((r & 0x3) | 0x8);
+			return v.toString(16);
+		});
+	}
+
 	/* ====================== یک نمونهٔ سطح ====================== */
 
 	/**
@@ -260,6 +317,25 @@
 
 		var busy = false;
 		var selectedClinicianId = 0;
+
+		/* -------------- Phase 8 Slice 2 — وضعیت continuation -------------- */
+		/* فقط از قراردادِ منتشرشدهٔ سرور خوانده می‌شود؛ هیچ حدسی در کار نیست:
+		 *  - anonymous: config حامل otp_request_path/otp_verify_path است؛
+		 *  - patient: config حامل nonce + hold_path/confirm_path است؛
+		 *  - none: هیچ continuation بیماری منتشر نشده. */
+		var authMode = 'none';
+		if (isNonEmptyString(config.otp_request_path) && isNonEmptyString(config.otp_verify_path)) {
+			authMode = 'anonymous';
+		} else if (isNonEmptyString(config.nonce) && isNonEmptyString(config.hold_path) && isNonEmptyString(config.confirm_path)) {
+			authMode = 'patient';
+		}
+
+		var continueBox = root.querySelector('[data-role="booking-continue"]');
+		var nearbyWrap = root.querySelector('[data-role="nearby"]');
+		var nearbyList = root.querySelector('[data-role="nearby-list"]');
+		var lastSelection = null;
+		var holdToken = '';
+		var countdownTimer = 0;
 
 		function panelState(state) {
 			panel.setAttribute('data-state', state);
@@ -464,6 +540,14 @@
 			if (result.ok && payload && payload.available === true) {
 				panelState(STATE_BOOKABLE);
 				showDetail('detail-capacity', { capacity: toInt(payload.capacity_left) });
+				// Phase 8 Slice 2 — انتخابِ غیر-PHI برای عبور از مرز login.
+				if (lastSelection) {
+					storeSelection(lastSelection);
+					if (authMode === 'patient') {
+						// بیمارِ واردشده: ادامه با B1 موجود — Hold فقط اینجاست.
+						beginHold(lastSelection);
+					}
+				}
 				return;
 			}
 
@@ -511,6 +595,14 @@
 				payload.slot_id = slotId;
 			}
 
+			// Phase 8 Slice 2 — انتخابِ جاری (غیر-PHI) برای ادامهٔ احراز/رزرو.
+			lastSelection = {
+				clinician_id: selectedClinicianId,
+				slot_id: slotId > 0 ? slotId : 0,
+				slot_date: slotDate,
+				slot_time: slotTime
+			};
+
 			// A4 — POST بدون query در URL (همهٔ ورودی در بدنهٔ JSON است)، پس
 			// الحاقِ ساده در هر دو حالتِ permalink درست است و route سالم می‌ماند.
 			// اگر روزی پارامترِ query به این URL اضافه شد، باید از `apiUrl()`
@@ -530,6 +622,433 @@
 				panelState(STATE_ERROR);
 				clearDetail();
 			});
+		}
+
+		/* ============ Phase 8 Slice 2 — جریان‌های continuation ============ */
+
+		function setNodeMessage(node, message) {
+			if (!node) {
+				return;
+			}
+			if (!isNonEmptyString(message)) {
+				setText(node, '');
+				node.hidden = true;
+				return;
+			}
+			// فقط متنِ خودِ سرور (envelope) — بدون هیچ تفسیرِ سمت مرورگر.
+			setText(node, message);
+			node.hidden = false;
+		}
+
+		function showAuthStep(name) {
+			var steps = root.querySelectorAll('[data-auth-step]');
+			for (var i = 0; i < steps.length; i++) {
+				steps[i].hidden = steps[i].getAttribute('data-auth-step') !== name;
+			}
+		}
+
+		/** راحتیِ ورود: ارقام فارسی/عربی به ASCII — سیاست و اعتبارسنجی همچنان سرور. */
+		function digitsOnly(value) {
+			var normalized = String(value || '')
+				.replace(/[\u06F0-\u06F9]/g, function (d) {
+					return String(d.charCodeAt(0) - 0x06F0);
+				})
+				.replace(/[\u0660-\u0669]/g, function (d) {
+					return String(d.charCodeAt(0) - 0x0660);
+				});
+			return normalized.replace(/[^0-9]/g, '');
+		}
+
+		/* ---------- anonymous: ورود با OTP روی مسیرهای موجود A2/A3 ---------- */
+
+		function otpRequest() {
+			var input = root.querySelector('[data-role="otp-mobile"]');
+			var status = root.querySelector('[data-role="auth-status"]');
+			if (!input || busy) {
+				return;
+			}
+			var mobile = digitsOnly(input.value);
+			if (mobile === '') {
+				setNodeMessage(status, '');
+				input.focus();
+				return;
+			}
+
+			var payload = { mobile: mobile };
+			// Phase 8 Slice 2 — Clinicِ چالش از انتخابِ واقعیِ صفحه مشتق می‌شود؛
+			// سرور tuple را فقط وقتی کامل می‌پذیرد (پزشک+اسلات+تاریخ+ساعت).
+			// در نصب با بیش از یک Clinic بدون همین انتخاب، A2 با
+			// CLINIC_SCOPE_REQUIRED مسدود می‌شود (class A — یافتهٔ مرورگر واقعی).
+			var a2Selection = validSelection(lastSelection) || readStoredSelection();
+			if (a2Selection && toInt(a2Selection.slot_id) > 0) {
+				payload.clinician_id = toInt(a2Selection.clinician_id);
+				payload.slot_id = toInt(a2Selection.slot_id);
+				payload.slot_date = a2Selection.slot_date;
+				payload.slot_time = a2Selection.slot_time;
+			}
+
+			setBusy(true);
+			requestJson(config.rest_root + config.otp_request_path, {
+				method: 'POST',
+				credentials: 'same-origin',
+				headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+				body: JSON.stringify(payload)
+			}).then(function (result) {
+				setBusy(false);
+				if (result.ok) {
+					setNodeMessage(status, '');
+					showAuthStep('otp-code');
+					var codeInput = root.querySelector('[data-role="otp-code"]');
+					if (codeInput) {
+						codeInput.focus();
+					}
+					return;
+				}
+				setNodeMessage(status, serverMessage(result));
+			}, function () {
+				setBusy(false);
+			});
+		}
+
+		function otpVerify() {
+			var input = root.querySelector('[data-role="otp-mobile"]');
+			var codeInput = root.querySelector('[data-role="otp-code"]');
+			var status = root.querySelector('[data-role="auth-status"]');
+			if (!input || !codeInput || busy) {
+				return;
+			}
+			var mobile = digitsOnly(input.value);
+			var code = digitsOnly(codeInput.value);
+			if (mobile === '' || code === '') {
+				setNodeMessage(status, '');
+				return;
+			}
+
+			setBusy(true);
+			requestJson(config.rest_root + config.otp_verify_path, {
+				method: 'POST',
+				credentials: 'same-origin',
+				headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+				body: JSON.stringify({ mobile: mobile, code: code })
+			}).then(function (result) {
+				setBusy(false);
+				var payload = result.body && result.body.data ? result.body.data : null;
+				if (result.ok && payload && payload.session_issued === true) {
+					// session کوکی هم‌مبدأ است؛ رندرِ تازه نقش/nonce/B1/B2 را
+					// منتشر می‌کند و انتخابِ حفظ‌شده باز-می‌نشیند.
+					if (lastSelection) {
+						storeSelection(lastSelection);
+					}
+					window.location.reload();
+					return;
+				}
+				setNodeMessage(status, result.ok ? '' : serverMessage(result));
+			}, function () {
+				setBusy(false);
+			});
+		}
+
+		/* ---------- patient: Hold → Confirm روی مسیرهای موجود B1/B2 ---------- */
+
+		function continueMessageNode() {
+			return root.querySelector('[data-role="continue-status"]');
+		}
+
+		function setContinueMessage(message) {
+			setNodeMessage(continueMessageNode(), message);
+		}
+
+		function stopCountdown() {
+			if (countdownTimer) {
+				window.clearInterval(countdownTimer);
+				countdownTimer = 0;
+			}
+			var box = root.querySelector('[data-role="hold-countdown"]');
+			if (box) {
+				box.hidden = true;
+			}
+		}
+
+		/**
+		 * شمارشِ معکوس TTL — فقط «مدت» تا expires_atِ سرور محاسبه می‌شود؛
+		 * هیچ بازمحاسبهٔ wall-clock نوبت در کار نیست (قرارداد Slice 1).
+		 */
+		function startCountdown(expiresAt) {
+			var box = root.querySelector('[data-role="hold-countdown"]');
+			var value = root.querySelector('[data-role="countdown-value"]');
+			if (!box || !value || !isNonEmptyString(expiresAt)) {
+				return;
+			}
+			stopCountdown();
+			var deadline = Date.parse(expiresAt.replace(' ', 'T').replace(/\.\d+$/, '') + 'Z');
+			if (isNaN(deadline)) {
+				return;
+			}
+
+			function tick() {
+				var left = Math.floor((deadline - Date.now()) / 1000);
+				if (left <= 0) {
+					stopCountdown();
+					return;
+				}
+				var mm = Math.floor(left / 60);
+				var ss = left % 60;
+				value.textContent = (mm < 10 ? '0' : '') + mm + ':' + (ss < 10 ? '0' : '') + ss;
+				box.hidden = false;
+			}
+			tick();
+			countdownTimer = window.setInterval(tick, 1000);
+		}
+
+		function hideNearby() {
+			if (nearbyWrap) {
+				nearbyWrap.hidden = true;
+			}
+			if (nearbyList) {
+				setText(nearbyList, '');
+			}
+		}
+
+		/** پیشنهادهای نزدیک — فقط از دادهٔ خودِ سرور (nearby_slots B1). */
+		function renderNearby(entries) {
+			if (!nearbyWrap || !nearbyList) {
+				return;
+			}
+			setText(nearbyList, '');
+			if (!Array.isArray(entries) || entries.length === 0) {
+				nearbyWrap.hidden = true;
+				return;
+			}
+			var added = 0;
+			for (var i = 0; i < entries.length && added < 5; i++) {
+				var entry = entries[i];
+				if (!entry || typeof entry !== 'object') {
+					continue;
+				}
+				var node = templateNode(root, 'slot');
+				if (!node) {
+					continue;
+				}
+				node.setAttribute('data-slot-id', String(toInt(entry.slot_id)));
+				node.setAttribute('data-slot-date', isNonEmptyString(entry.date) ? entry.date : '');
+				node.setAttribute('data-slot-time', isNonEmptyString(entry.time) ? entry.time : '');
+				fill(node, 'time', isNonEmptyString(entry.time) ? entry.time : '');
+				fill(node, 'duration', toInt(entry.duration_min));
+				fill(node, 'capacity', toInt(entry.capacity_left));
+				nearbyList.appendChild(node);
+				added++;
+			}
+			nearbyWrap.hidden = added === 0;
+		}
+
+		function beginHold(selection) {
+			if (!continueBox || busy || !validSelection(selection)) {
+				return;
+			}
+			continueBox.hidden = false;
+			hideNearby();
+			setBusy(true);
+			freeze();
+
+			var body = {
+				clinician_id: toInt(selection.clinician_id),
+				slot_date: selection.slot_date,
+				slot_time: selection.slot_time
+			};
+			if (toInt(selection.slot_id) > 0) {
+				body.slot_id = toInt(selection.slot_id);
+			}
+
+			requestJson(config.rest_root + config.hold_path, {
+				method: 'POST',
+				credentials: 'same-origin',
+				headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'X-WP-Nonce': config.nonce },
+				body: JSON.stringify(body)
+			}).then(function (result) {
+				setBusy(false);
+				unfreeze();
+				var payload = result.body && result.body.data ? result.body.data : null;
+				if (result.ok && payload && isNonEmptyString(payload.hold_token)) {
+					holdToken = payload.hold_token;
+					startCountdown(isNonEmptyString(payload.expires_at) ? payload.expires_at : '');
+					var confirmBtn = root.querySelector('[data-role="confirm-btn"]');
+					if (confirmBtn) {
+						confirmBtn.hidden = false;
+					}
+					return;
+				}
+				handleBookingFailure(result);
+			}, function () {
+				setBusy(false);
+				unfreeze();
+			});
+		}
+
+		function handleBookingFailure(result) {
+			var code = result.body && isNonEmptyString(result.body.code) ? result.body.code : '';
+			if (code === 'CLINIC_SLOT_TAKEN') {
+				var payload = result.body && result.body.data ? result.body.data : null;
+				renderNearby(payload && Array.isArray(payload.nearby_slots) ? payload.nearby_slots : null);
+				clearStoredSelection();
+			}
+			setContinueMessage(serverMessage(result));
+		}
+
+		function confirmHold() {
+			if (!continueBox || busy || holdToken === '') {
+				return;
+			}
+			var firstInput = root.querySelector('[data-role="patient-first-name"]');
+			var lastInput = root.querySelector('[data-role="patient-last-name"]');
+			var body = { hold_token: holdToken };
+			if (firstInput && isNonEmptyString(firstInput.value.trim())) {
+				body.first_name = firstInput.value.trim();
+			}
+			if (lastInput && isNonEmptyString(lastInput.value.trim())) {
+				body.last_name = lastInput.value.trim();
+			}
+
+			setBusy(true);
+			freeze();
+			requestJson(config.rest_root + config.confirm_path, {
+				method: 'POST',
+				credentials: 'same-origin',
+				headers: {
+					Accept: 'application/json',
+					'Content-Type': 'application/json',
+					'X-WP-Nonce': config.nonce,
+					'Idempotency-Key': idempotencyKey()
+				},
+				body: JSON.stringify(body)
+			}).then(function (result) {
+				setBusy(false);
+				unfreeze();
+				var payload = result.body && result.body.data ? result.body.data : null;
+				if (result.ok && payload && isNonEmptyString(payload.reference_code)) {
+					stopCountdown();
+					hideNearby();
+					var namesForm = root.querySelector('[data-role="names-form"]');
+					if (namesForm) {
+						namesForm.hidden = true;
+					}
+					var confirmBtn = root.querySelector('[data-role="confirm-btn"]');
+					if (confirmBtn) {
+						confirmBtn.hidden = true;
+					}
+					setContinueMessage('');
+					var receipt = root.querySelector('[data-role="receipt"]');
+					var referenceNode = receipt ? receipt.querySelector('[data-role="reference-code"]') : null;
+					if (referenceNode) {
+						referenceNode.textContent = String(payload.reference_code);
+					}
+					var jalaliNode = receipt ? receipt.querySelector('[data-role="slot-jalali"]') : null;
+					if (jalaliNode) {
+						jalaliNode.textContent = isNonEmptyString(payload.jalali)
+							? String(payload.jalali)
+							: (payload.slot && isNonEmptyString(payload.slot.jalali) ? String(payload.slot.jalali) : '');
+					}
+					var timeNode = receipt ? receipt.querySelector('[data-role="slot-time"]') : null;
+					if (timeNode) {
+						timeNode.textContent = payload.slot && isNonEmptyString(payload.slot.time)
+							? String(payload.slot.time)
+							: (isNonEmptyString(payload.time) ? String(payload.time) : '');
+					}
+					if (receipt) {
+						receipt.hidden = false;
+					}
+					clearStoredSelection();
+					return;
+				}
+				if (!result.ok) {
+					var code = result.body && isNonEmptyString(result.body.code) ? result.body.code : '';
+					if (code === 'CLINIC_VALIDATION_FAILED') {
+						var form = root.querySelector('[data-role="names-form"]');
+						if (form) {
+							form.hidden = false;
+						}
+						if (firstInput) {
+							firstInput.focus();
+						}
+					}
+					handleBookingFailure(result);
+					return;
+				}
+				setContinueMessage('');
+			}, function () {
+				setBusy(false);
+				unfreeze();
+			});
+		}
+
+		/**
+		 * باز-نشانیِ انتخابِ حفظ‌شده پس از reload — همان A4 موجود، سپس B1.
+		 * اگر انتخاب از دست رفته باشد، کاربر در همان سطح دوباره انتخاب می‌کند؛
+		 * resume (B6) عمداً استفاده نمی‌شود.
+		 */
+		function quoteSelection(selection, autoHold) {
+			if (busy || !validSelection(selection)) {
+				return;
+			}
+			for (var i = 0; i < clinicianButtons.length; i++) {
+				if (toInt(clinicianButtons[i].getAttribute('data-clinician-id')) === toInt(selection.clinician_id)) {
+					setPressed(clinicianButtons, clinicianButtons[i]);
+					selectedClinicianId = toInt(selection.clinician_id);
+					break;
+				}
+			}
+
+			lastSelection = {
+				clinician_id: toInt(selection.clinician_id),
+				slot_id: toInt(selection.slot_id),
+				slot_date: selection.slot_date,
+				slot_time: selection.slot_time
+			};
+
+			var payload = {
+				clinician_id: toInt(selection.clinician_id),
+				slot_date: selection.slot_date,
+				slot_time: selection.slot_time
+			};
+			if (toInt(selection.slot_id) > 0) {
+				payload.slot_id = toInt(selection.slot_id);
+			}
+
+			panelState(STATE_LOADING);
+			setBusy(true);
+			freeze();
+			requestJson(config.rest_root + config.quote_path, {
+				method: 'POST',
+				credentials: 'omit',
+				headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+				body: JSON.stringify(payload)
+			}).then(function (result) {
+				setBusy(false);
+				unfreeze();
+				var p = result.body && result.body.data ? result.body.data : null;
+				if (result.ok && p && p.available === true) {
+					panelState(STATE_BOOKABLE);
+					showDetail('detail-capacity', { capacity: toInt(p.capacity_left) });
+					if (autoHold) {
+						beginHold(lastSelection);
+					}
+					return;
+				}
+				applyVerdict(result);
+				clearStoredSelection();
+			}, function () {
+				setBusy(false);
+				unfreeze();
+				clearStoredSelection();
+			});
+		}
+
+		/* ---------- راه‌اندازیِ continuation در بارگذاری ---------- */
+
+		if (authMode === 'patient') {
+			var restored = readStoredSelection();
+			if (restored && toInt(restored.clinician_id) > 0) {
+				quoteSelection(restored, true);
+			}
 		}
 
 		/* ---------------- رویدادها (delegation) ---------------- */
@@ -559,6 +1078,47 @@
 			var slotButton = target.closest(SLOT_SELECTOR);
 			if (slotButton && daysHost.contains(slotButton) && !slotButton.disabled) {
 				quoteSlot(slotButton);
+				return;
+			}
+
+			/* -------- Phase 8 Slice 2 — رویدادهای continuation -------- */
+
+			var continueButton = target.closest('[data-role="continue-auth"]');
+			if (continueButton && root.contains(continueButton)) {
+				continueButton.hidden = true;
+				showAuthStep('otp-mobile');
+				var mobileInput = root.querySelector('[data-role="otp-mobile"]');
+				if (mobileInput) {
+					mobileInput.focus();
+				}
+				return;
+			}
+
+			var authAction = target.closest('[data-auth-action]');
+			if (authAction && root.contains(authAction)) {
+				var action = authAction.getAttribute('data-auth-action');
+				if (action === 'otp-request') {
+					otpRequest();
+				} else if (action === 'otp-verify') {
+					otpVerify();
+				}
+				return;
+			}
+
+			var confirmButton = target.closest('[data-role="confirm-btn"]');
+			if (confirmButton && root.contains(confirmButton) && !confirmButton.disabled) {
+				confirmHold();
+				return;
+			}
+
+			if (slotButton && nearbyList && nearbyList.contains(slotButton) && !slotButton.disabled) {
+				// پیشنهادِ نزدیک پس از CLINIC_SLOT_TAKEN — همان جریانِ A4→B1.
+				quoteSelection({
+					clinician_id: selectedClinicianId,
+					slot_id: toInt(slotButton.getAttribute('data-slot-id')),
+					slot_date: slotButton.getAttribute('data-slot-date') || '',
+					slot_time: slotButton.getAttribute('data-slot-time') || ''
+				}, true);
 			}
 		});
 	}

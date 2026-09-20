@@ -85,6 +85,12 @@ final class BookingController extends RestBase
                 'args' => [
                     'hold_token' => ['required' => true, 'type' => 'string'],
                     'reason' => ['required' => false, 'type' => 'string'],
+                    // Phase 8 Slice 2 — تصمیم مالک (هویت حداقلی بیمار جدید):
+                    // برای بیمارِ تازه در hold.clinic_id الزامی می‌شوند (تصمیم
+                    // سمت سرور)؛ برای بیمارِ موجود نادیده گرفته می‌شوند (B2
+                    // هرگز route ویرایش پروفایل نیست).
+                    'first_name' => ['required' => false, 'type' => 'string'],
+                    'last_name' => ['required' => false, 'type' => 'string'],
                 ],
             ],
         ]);
@@ -234,7 +240,9 @@ final class BookingController extends RestBase
             (string) $request->get_param('hold_token'),
             (int) $user->ID,
             $request->get_param('reason') !== null ? (string) $request->get_param('reason') : null,
-            $key
+            $key,
+            $request->get_param('first_name') !== null ? (string) $request->get_param('first_name') : null,
+            $request->get_param('last_name') !== null ? (string) $request->get_param('last_name') : null
         ));
     }
 

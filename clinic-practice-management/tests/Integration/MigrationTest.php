@@ -25,7 +25,7 @@ final class MigrationTest extends WP_UnitTestCase
     use RealTableMigrations;
 
     /** آخرین Migration موجود در src/Migrations (با افزودن Migration جدید به‌روز شود). */
-    private const LATEST_VERSION = '2026_09_09_0020';
+    private const LATEST_VERSION = '2026_09_20_0021';
 
     private const EXPECTED_TABLES = [
         'cpms_clinics', 'cpms_clinicians', 'cpms_patients', 'cpms_patient_user_links',

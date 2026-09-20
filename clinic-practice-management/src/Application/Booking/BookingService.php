@@ -524,7 +524,7 @@ final class BookingService
     /**
      * @return array{reference_code: string, appointment_id: int, slot: array<string, mixed>, status: string}
      */
-    public function confirm(string $holdToken, int $wpUserId, ?string $reason, ?string $idemKey): array
+    public function confirm(string $holdToken, int $wpUserId, ?string $reason, ?string $idemKey, ?string $firstName = null, ?string $lastName = null): array
     {
         if (!is_string($idemKey) || $idemKey === '') {
             throw BookingException::of('CLINIC_VALIDATION_FAILED', 'هدر Idempotency-Key برای این عملیات الزامی است');
@@ -540,6 +540,27 @@ final class BookingService
             throw BookingException::of('CLINIC_NOT_FOUND', 'جلسه رزرو یافت نشد', 404);
         }
         $idemClinicId = (int) $hold['clinic_id'];
+
+        // ==================================================================
+        // Phase 8 Slice 2 — تصمیم مالک ۲: هویتِ حداقلیِ بیمارِ جدید.
+        //
+        // SERVER تعیین می‌کند آیا Patient در hold.clinic_id وجود دارد؛
+        // بیمارِ Clinicِ دیگر «نبودِ بیمار» است. حلِ هویت (فقط-خواندنی)
+        // عمداً «پیش از» رزرو Idempotency انجام می‌شود تا شکستِ اعتبارسنجیِ
+        // نام‌ها هیچ رزروی به جا نگذارد: نه Patient، نه Appointment، نه
+        // تغییر Hold — Hold فعال و قابل retry می‌ماند.
+        //
+        // مرجعِ موبایل فقط هویتِ سرورِ مالکِ Hold است؛ patient_id /
+        // is_new_user / mobile / clinic_id ادعاییِ کلاینت هرگز انتخاب‌گر یا
+        // بازنویسِ هویت نیست. برای بیمارِ موجود، نام‌های ارسالی نادیده گرفته
+        // می‌شوند (B2 هرگز route ویرایش پروفایل نیست).
+        // ==================================================================
+        $mobile = (string) $hold['holder_mobile'];
+        $holdClinicId = (int) $hold['clinic_id'];
+        $patient = $this->patients->findByMobile($holdClinicId, $mobile);
+        $newPatientNames = $patient === null
+            ? $this->requireNewPatientNames($firstName, $lastName)
+            : null;
 
         $check = $this->idem->check($idemKey, self::EP_CONFIRM, $wpUserId, null, $idemClinicId);
         if ($check['is_replay']) {
@@ -576,12 +597,10 @@ final class BookingService
 
         $this->assertLicense(LicenseGate::OP_APPOINTMENT_BOOK);
 
-        $mobile = (string) $hold['holder_mobile'];
-        $holdClinicId = (int) $hold['clinic_id'];
-        $patient = $this->patients->findByMobile($holdClinicId, $mobile);
         if ($patient === null) {
-            // N-1: کاربر جدید (OTP verified) — Patient Record Minimal در زمان confirm ساخته می‌شود
-            $patient = $this->createMinimalPatient($holdClinicId, $mobile, $wpUserId);
+            // N-1: کاربر جدید (OTP verified) — Patient در زمان confirm ساخته
+            // می‌شود، اکنون با نام‌های اعتبارسنجی‌شده (تصمیم مالک ۲).
+            $patient = $this->createMinimalPatient($holdClinicId, $mobile, $wpUserId, $newPatientNames);
         }
         $patientId = (int) $patient['id'];
         $slotId = (int) $hold['slot_id'];
@@ -1554,16 +1573,23 @@ final class BookingService
     /**
      * N-1: ساخت Patient Record Minimal برای کاربر جدید (OTP verified).
      *
+     * Phase 8 Slice 2 — تصمیم مالک ۲: نام‌ها پیش از این فراخوانی توسط
+     * requireNewPatientNames() اعتبارسنجی شده‌اند (برای بیمارِ جدید الزامی؛
+     * بیمارِ موجود هرگز از این مسیر نمی‌گذرد). موبایل فقط از هویتِ سرورِ
+     * مالکِ Hold می‌آید.
+     *
+     * @param array{first_name: string, last_name: string}|null $names
+     *
      * @return array<string, mixed>
      */
-    private function createMinimalPatient(int $clinic_id, string $mobile, int $wpUserId): array
+    private function createMinimalPatient(int $clinic_id, string $mobile, int $wpUserId, ?array $names = null): array
     {
         $nowSql = $this->db->nowUtcSql();
         $id = $this->patients->create([
             'clinic_id' => $clinic_id,
             'mrn' => $this->generateMrn($clinic_id),
-            'first_name' => '',
-            'last_name' => '',
+            'first_name' => (string) ($names['first_name'] ?? ''),
+            'last_name' => (string) ($names['last_name'] ?? ''),
             'mobile' => $mobile,
             'status' => 'active',
             'created_at' => $nowSql,
@@ -1580,6 +1606,50 @@ final class BookingService
         $this->audit('PATIENT_CREATED', $wpUserId, 'patient', 'patient', $id, $id, null, ['auto' => 'booking_confirm', 'mobile' => MobileValidator::mask($mobile)]);
 
         return (array) $this->patients->find($id);
+    }
+
+    /**
+     * Phase 8 Slice 2 — تصمیم مالک ۲: دروازهٔ نام برای بیمارِ «جدید» در
+     * hold.clinic_id.
+     *
+     * وقتی سرور Patient فعالِ همان موبایل در hold.clinic_id نبیند،
+     * first_name و last_name الزامی‌اند: خالی/فقط-فاصله/بیش از حد بلند →
+     * CLINIC_VALIDATION_FAILED (400) — بدون ساخت Patient/Appointment و بدون
+     * به‌جاگذاشتن رزرو Idempotency (فراخوانی پیش از idem->check انجام
+     * می‌شود) و Hold فعال و قابل retry می‌ماند.
+     *
+     * قواعد پاک‌سازی، همان قواعد تثبیت‌شدهٔ PatientService::cleanName است:
+     * حذف کاراکترهای کنترلی، trim، سقف ۱۲۰ نویسه.
+     *
+     * @return array{first_name: string, last_name: string}
+     *
+     * @throws BookingException
+     */
+    private function requireNewPatientNames(?string $firstName, ?string $lastName): array
+    {
+        return [
+            'first_name' => $this->cleanBookingName($firstName),
+            'last_name' => $this->cleanBookingName($lastName),
+        ];
+    }
+
+    /**
+     * پاک‌سازی/اعتبارسنجی یک نام برای بیمارِ جدید (الگوی PatientService::cleanName).
+     *
+     * @throws BookingException
+     */
+    private function cleanBookingName(?string $value): string
+    {
+        $clean = trim((string) preg_replace('/[\x00-\x1F]/u', '', (string) $value));
+        if ($clean === '' || mb_strlen($clean) > 120) {
+            throw BookingException::of(
+                'CLINIC_VALIDATION_FAILED',
+                'برای ثبت بیمار جدید، نام و نام خانوادگی الزامی است',
+                400
+            );
+        }
+
+        return mb_substr($clean, 0, 120);
     }
 
     /**

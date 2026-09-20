@@ -98,6 +98,7 @@
 |---|---|---|---|---|
 | mobile | VARCHAR(32) | | | عادی‌شده |
 | purpose | ENUM('login','verify_mobile') | | 'login' | |
+| clinic_id | BIGINT UNSIGNED | Y | — | **Phase 8 Slice 2 (Migration 0021):** Clinicِ مُهرشده روی Challenge — فقط از دادهٔ persisted (A2 با انتخابِ پزشک/نوبت) مشتق می‌شود؛ NULL = Challenge تاریخی/بدون انتخاب (تک‌Clinic: resolver؛ چند-Clinic: fail-closed `CLINIC_SCOPE_REQUIRED`). FK → cpms_clinics(id)، بدون Backfill، بدون ایندکس صریح جدید (InnoDB برای FK ایندکس می‌سازد) |
 | code_hash | CHAR(64) | | | SHA-256(code+pepper) — **هرگز کد خام** |
 | expires_at | DATETIME(3) | | | +5 دقیقه |
 | attempts | SMALLINT UNSIGNED | | 0 | |

@@ -66,6 +66,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Frontend;
 
+use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use Throwable;
 use WP_Post;
@@ -128,6 +129,27 @@ final class PublicBookingShortcode
     private const REST_NAMESPACE = 'clinic/v1';
     private const AVAILABILITY_PATH = '/availability';
     private const QUOTE_PATH = '/booking/quote';
+
+    /**
+     * Phase 8 Slice 2 — قراردادِ ادامهٔ احراز/رزرو، «همیشه روی مسیرهای موجود».
+     *
+     * A2/A3 (otp/request, otp/verify) و B1/B2 (booking/hold, booking/confirm)
+     * همگی endpointهای موجودند؛ هیچ مسیر جدیدی ثبت نمی‌شود. انتشارِ این
+     * مسیرها در قرارداد runtime، وابسته به وضعیتِ احراز بازدیدکننده است
+     * (continuationState()):
+     *  - anonymous  → فقط A2/A3 (+ نشانه‌های continue-auth/otp-mobile/otp-code)
+     *    و عمداً بدون nonce و بدون B1/B2 و بدون هیچ PHI؛
+     *  - patient    → فقط nonce (wp_rest) + B1/B2 برای ادامهٔ Hold→Confirm؛
+     *  - سایر کاربرانِ واردشده (غیر بیمار) → هیچ continuation بیماری.
+     */
+    private const OTP_REQUEST_PATH = '/otp/request';
+    private const OTP_VERIFY_PATH = '/otp/verify';
+    private const HOLD_PATH = '/booking/hold';
+    private const CONFIRM_PATH = '/booking/confirm';
+
+    private const CONTINUATION_ANONYMOUS = 'anonymous';
+    private const CONTINUATION_PATIENT = 'patient';
+    private const CONTINUATION_NONE = 'none';
 
     /** متن‌های فارسیِ وضعیت‌های panel (CSS بر پایهٔ `data-state` یکی را نشان می‌دهد). */
     private const PANEL_MESSAGES = [
@@ -521,10 +543,227 @@ final class PublicBookingShortcode
         $lines[] = self::renderTemplates();
         $lines[] = '</div>'; // calendar
 
+        // ---- Phase 8 Slice 2: ادامهٔ احراز/رزرو — وابسته به وضعیت احراز ----
+        $continuation = self::continuationState();
+        if ($continuation === self::CONTINUATION_ANONYMOUS) {
+            // فقط چرخهٔ ورود با OTP؛ بدون nonce، بدون B1/B2، بدون PHI.
+            $lines[] = self::renderAuthContinuation($surfaceId);
+        } elseif ($continuation === self::CONTINUATION_PATIENT) {
+            // بیمارِ واردشده: ادامهٔ Hold→Confirm با nonce مسیرهای موجود.
+            $lines[] = self::renderPatientContinuation($surfaceId);
+        }
+
         $lines[] = '</div>'; // body
 
         $lines[] = self::renderConfig($clinicId, $surfaceId);
         $lines[] = '</div>'; // root
+
+        return implode('', $lines);
+    }
+
+    /**
+     * وضعیتِ continuation این رندر — فقط از وضعیتِ احرازِ سمت سرور.
+     *
+     *  - anonymous: بازدیدکنندهٔ بدون session — گیرندهٔ چرخهٔ ورود OTP؛
+     *  - patient: کاربرِ واردشده با نقش بیمار — گیرندهٔ nonce + B1/B2؛
+     *  - none: سایر کاربرانِ واردشده (کارکنان/مدیر) — بدون continuation بیمار.
+     */
+    private static function continuationState(): string
+    {
+        $userId = get_current_user_id();
+        if ($userId <= 0) {
+            return self::CONTINUATION_ANONYMOUS;
+        }
+
+        $user = wp_get_current_user();
+        if (in_array(RolesAndCapabilities::ROLE_PATIENT, (array) $user->roles, true)) {
+            return self::CONTINUATION_PATIENT;
+        }
+
+        return self::CONTINUATION_NONE;
+    }
+
+    /**
+     * Phase 8 Slice 2 — چرخهٔ ورود OTP برای بازدیدکنندهٔ آنونیم.
+     *
+     * همهٔ متن‌ها server-side و escape می‌شوند؛ JS فقط نشانه‌ها را toggle و
+     * مقادیر را با textContent می‌گذارد. عمداً بدون nonce، بدون مسیرِ
+     * hold/confirm و بدون هیچ PHI — ورود فقط با شمارهٔ موبایل و کدِ پیامکی
+     * روی مسیرهای موجودِ A2/A3 انجام می‌شود.
+     */
+    private static function renderAuthContinuation(string $surfaceId): string
+    {
+        $b = self::ROOT_CLASS;
+        $mobileInputId = $surfaceId . '-otp-mobile';
+        $codeInputId = $surfaceId . '-otp-code';
+
+        $lines = [];
+        $lines[] = sprintf('<div class="%s">', esc_attr($b . '__auth'));
+
+        // نقطهٔ شروعِ «ادامه» — انتخابِ غیر-PHI پیش از آن در سطح حفظ می‌شود.
+        $lines[] = sprintf(
+            '<button type="button" class="%1$s" data-role="continue-auth">%2$s</button>',
+            esc_attr($b . '__continue-btn'),
+            esc_html('ادامهٔ رزرو با کد تأیید پیامکی')
+        );
+
+        $lines[] = sprintf('<div class="%1$s" data-auth-step="otp-mobile" hidden>', esc_attr($b . '__auth-step'));
+        $lines[] = sprintf(
+            '<label class="%1$s" for="%2$s">%3$s</label>',
+            esc_attr($b . '__label'),
+            esc_attr($mobileInputId),
+            esc_html('شماره موبایل')
+        );
+        $lines[] = sprintf(
+            '<input type="tel" class="%1$s" id="%2$s" data-role="otp-mobile" inputmode="tel" autocomplete="tel" dir="ltr">',
+            esc_attr($b . '__input'),
+            esc_attr($mobileInputId)
+        );
+        $lines[] = sprintf(
+            '<button type="button" class="%1$s" data-auth-action="otp-request">%2$s</button>',
+            esc_attr($b . '__btn'),
+            esc_html('دریافت کد تأیید')
+        );
+        $lines[] = '</div>';
+
+        $lines[] = sprintf('<div class="%1$s" data-auth-step="otp-code" hidden>', esc_attr($b . '__auth-step'));
+        $lines[] = sprintf(
+            '<label class="%1$s" for="%2$s">%3$s</label>',
+            esc_attr($b . '__label'),
+            esc_attr($codeInputId),
+            esc_html('کد ۶ رقمی پیامک‌شده')
+        );
+        $lines[] = sprintf(
+            '<input type="text" class="%1$s" id="%2$s" data-role="otp-code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" dir="ltr">',
+            esc_attr($b . '__input'),
+            esc_attr($codeInputId)
+        );
+        $lines[] = sprintf(
+            '<button type="button" class="%1$s" data-auth-action="otp-verify">%2$s</button>',
+            esc_attr($b . '__btn'),
+            esc_html('تأیید و ادامه')
+        );
+        $lines[] = '</div>';
+
+        // پیامِ وضعیتِ احراز — فقط متنِ خودِ سرور (envelope A2/A3) اینجا نشسته
+        // می‌شود؛ هیچ تفسیر یا رشتهٔ جدیدی در مرورگر ساخته نمی‌شود.
+        $lines[] = sprintf(
+            '<p class="%1$s" data-role="auth-status" role="status" aria-live="polite" hidden></p>',
+            esc_attr($b . '__status')
+        );
+
+        $lines[] = '</div>';
+
+        return implode('', $lines);
+    }
+
+    /**
+     * Phase 8 Slice 2 — ادامهٔ Hold→Confirm برای بیمارِ واردشده.
+     *
+     * nonce و مسیرهای B1/B2 از قرارداد runtime می‌آیند (renderConfig)؛ این
+     * بخش فقط اسکلتِ وضعیت‌ها را server-render می‌کند: شمارشِ معکوسِ Hold،
+     * فرمِ نامِ بیمارِ جدید، پیشنهادهای نزدیک پس از باختِ race، رسیدِ نهایی
+     * (کد رهگیری + تاریخ جلالی). انتخابِ قبلیِ غیر-PHI توسط JS باز-نشانی و
+     * با B1 موجود ادامه می‌یابد (B6 resume عمداً استفاده نمی‌شود).
+     */
+    private static function renderPatientContinuation(string $surfaceId): string
+    {
+        $b = self::ROOT_CLASS;
+        $firstNameId = $surfaceId . '-first-name';
+        $lastNameId = $surfaceId . '-last-name';
+
+        $lines = [];
+        $lines[] = sprintf(
+            '<div class="%1$s" data-role="booking-continue" hidden>',
+            esc_attr($b . '__continue-box')
+        );
+
+        $lines[] = sprintf(
+            '<p class="%1$s" data-role="continue-status" role="status" aria-live="polite" hidden></p>',
+            esc_attr($b . '__status')
+        );
+
+        // شمارشِ معکوس TTL Hold — فقط مقدار عددی توسط JS پر می‌شود.
+        $lines[] = sprintf(
+            '<p class="%1$s" data-role="hold-countdown" hidden>%2$s <b data-role="countdown-value" dir="ltr"></b></p>',
+            esc_attr($b . '__countdown'),
+            esc_html('زمان باقی‌ماندهٔ نگه‌داشتن نوبت:')
+        );
+
+        // فرمِ نام — فقط برای بیمارِ «جدید» در Clinicِ نوبت؛ سرور الزام را
+        // با CLINIC_VALIDATION_FAILED اعلام می‌کند و فرم همین‌جا باز می‌شود.
+        $lines[] = sprintf('<div class="%1$s" data-role="names-form" hidden>', esc_attr($b . '__names'));
+        $lines[] = sprintf(
+            '<p class="%1$s">%2$s</p>',
+            esc_attr($b . '__names-hint'),
+            esc_html('برای ثبت این نوبت، نام و نام خانوادگی خود را وارد کنید:')
+        );
+        $lines[] = sprintf(
+            '<label class="%1$s" for="%2$s">%3$s</label>',
+            esc_attr($b . '__label'),
+            esc_attr($firstNameId),
+            esc_html('نام')
+        );
+        $lines[] = sprintf(
+            '<input type="text" class="%1$s" id="%2$s" data-role="patient-first-name" autocomplete="given-name">',
+            esc_attr($b . '__input'),
+            esc_attr($firstNameId)
+        );
+        $lines[] = sprintf(
+            '<label class="%1$s" for="%2$s">%3$s</label>',
+            esc_attr($b . '__label'),
+            esc_attr($lastNameId),
+            esc_html('نام خانوادگی')
+        );
+        $lines[] = sprintf(
+            '<input type="text" class="%1$s" id="%2$s" data-role="patient-last-name" autocomplete="family-name">',
+            esc_attr($b . '__input'),
+            esc_attr($lastNameId)
+        );
+        $lines[] = '</div>';
+
+        $lines[] = sprintf(
+            '<button type="button" class="%1$s" data-role="confirm-btn" hidden>%2$s</button>',
+            esc_attr($b . '__btn'),
+            esc_html('تأیید نهایی نوبت')
+        );
+
+        // رسیدِ نهایی — مقادیر (کد رهگیری/تاریخ جلالی/ساعت) توسط JS از پاسخ
+        // خودِ B2 با textContent جای‌گذاری می‌شوند.
+        $lines[] = sprintf('<div class="%1$s" data-role="receipt" hidden>', esc_attr($b . '__receipt'));
+        $lines[] = sprintf(
+            '<p class="%1$s">%2$s</p>',
+            esc_attr($b . '__receipt-title'),
+            esc_html('نوبت شما با موفقیت ثبت شد.')
+        );
+        $lines[] = sprintf(
+            '<p class="%1$s">%2$s <b data-role="reference-code" dir="ltr"></b></p>',
+            esc_attr($b . '__receipt-line'),
+            esc_html('کد رهگیری:')
+        );
+        $lines[] = sprintf(
+            '<p class="%1$s">%2$s <b data-role="slot-jalali"></b> — %3$s <b data-role="slot-time" dir="ltr"></b></p>',
+            esc_attr($b . '__receipt-line'),
+            esc_html('تاریخ نوبت:'),
+            esc_html('ساعت:')
+        );
+        $lines[] = '</div>';
+
+        // پیشنهادهای نزدیک پس از CLINIC_SLOT_TAKEN — از دادهٔ خودِ سرور
+        // (nearby_slots) با همان قالبِ slot رندر می‌شوند.
+        $lines[] = sprintf('<div class="%1$s" data-role="nearby" hidden>', esc_attr($b . '__nearby'));
+        $lines[] = sprintf(
+            '<p class="%1$s">%2$s</p>',
+            esc_attr($b . '__nearby-hint'),
+            esc_html('این نوبت در لحظهٔ آخر پر شد — نوبت‌های نزدیکِ آزاد:')
+        );
+        $lines[] = sprintf(
+            '<div class="%1$s" data-role="nearby-list"></div>',
+            esc_attr($b . '__nearby-list')
+        );
+        $lines[] = '</div>';
+
+        $lines[] = '</div>';
 
         return implode('', $lines);
     }
@@ -619,10 +858,18 @@ final class PublicBookingShortcode
     /**
      * D-5 — قرارداد runtime منتشرشده برای asset فرانت‌اند.
      *
-     * فقط «کدام مسیرِ **موجودِ** عمومی» + «کدام Clinicِ پیوندشده» + «واژگانِ
-     * وضعیت». هیچ PHI، هیچ nonce/توکن، و هیچ مسیرِ hold/confirm/otp منتشر
-     * نمی‌شود؛ سطح read-only است و A1/A4 هر دو `permPublic()` هستند، پس
-     * credential ای برای انتشار وجود ندارد.
+     * پایه: مسیرهای عمومیِ موجودِ A1/A4 + Clinicِ پیوندشده + واژگانِ وضعیت —
+     * بدون PHI. Phase 8 Slice 2 بر اساس وضعیتِ احراز گسترش می‌یابد:
+     *  - anonymous → فقط مسیرهای موجودِ A2/A3 (ادامهٔ ورود OTP)؛ بدون nonce،
+     *    بدون B1/B2، بدون هیچ credential یا PHI؛
+     *  - patient (نقش بیمار) → فقط wp_rest nonce + مسیرهای موجودِ B1/B2؛
+     *  - سایر کاربرانِ واردشده → فقط پایه (بدون continuation بیمار).
+     *
+     * مسیرها با `wp_json_encode` بدون `JSON_UNESCAPED_SLASHES` منتشر می‌شوند:
+     * خروجی `\/otp\/request`‌گونه همان JSON معتبرِ script-safe است (برای
+     * JSON.parse/readConfig بی‌تفاوت) و رشتهٔ خامِ مسیر به‌صورت literal در
+     * markup ظاهر نمی‌شود — گاردهای «نبودِ affordance» (pilot/Slice 1) و
+     * منتشرشدهٔ decoded (Slice 2) همزمان معنادار می‌مانند.
      */
     private static function renderConfig(int $clinicId, string $surfaceId): string
     {
@@ -636,7 +883,18 @@ final class PublicBookingShortcode
             'initial_state' => 'idle',
         ];
 
-        $json = wp_json_encode($config, JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        $continuation = self::continuationState();
+        if ($continuation === self::CONTINUATION_ANONYMOUS) {
+            $config['otp_request_path'] = self::OTP_REQUEST_PATH;
+            $config['otp_verify_path'] = self::OTP_VERIFY_PATH;
+        } elseif ($continuation === self::CONTINUATION_PATIENT) {
+            // فقط برای بیمارِ واردشده — CSRF با wp_rest nonce (همان مرزِ B1/B2).
+            $config['nonce'] = wp_create_nonce('wp_rest');
+            $config['hold_path'] = self::HOLD_PATH;
+            $config['confirm_path'] = self::CONFIRM_PATH;
+        }
+
+        $json = wp_json_encode($config, JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_UNICODE);
         if (!is_string($json) || $json === '') {
             // fail-closed: بدون قراردادِ قابل‌انتشار، سطحِ تعاملی ساخته نمی‌شود.
             return '';
