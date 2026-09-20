@@ -154,6 +154,26 @@
 > the `O-03`/`O-04` drift rows (and no drift row is promoted by it) and creates no new drift row. Latest
 > migration remains `0020`; no `0021` exists or was reserved (re-verified on live main `d7484ce…`: 20
 > migration files `0001`..`0020`).
+>
+> **Current Phase 8 bounded closure note (re-verified live 2026-09-20):** Owner Roadmap Phase 8 — Patient Public
+> Booking is **IN PROGRESS — NOT complete** on live main `440ba7e7d07579036128f288f502d390d27c98d3`. **Slice 1**
+> (anonymous read-only public browse surface) = **CLOSED (BOUNDED)** — merged **PR #87** (MERGED 2026-09-19T20:43:04Z;
+> merge `4122539885cadb28d69f62e765ee3368b50b0509`; head `0643e2b5…` exact-head 19/19; post-merge on the merge SHA:
+> four required workflows terminal-success — CI `35468244421` · Real WP `35468244416` · Closure `35468244423` ·
+> Pilot/Staging `35468244448`). **Slice 2** (public booking OTP → authenticated Hold → final confirm) = **CLOSED /
+> MERGED via PR #89** (MERGED 2026-09-20T09:24:19Z; merge `440ba7e…`; head `70d033cc…` exact-head 19/19; post-merge on
+> the merge SHA: CI `35502216463` · Real WP `35502216468` · Closure `35502216456` · Pilot/Staging `35502216452` +
+> 19/19 checks success). The Slice-2 Hold-Timing and new-Patient minimum-identity policies are **owner-issued product
+> policy (NOT original SRS wording)**, canonical record `docs/decisions/2026-09-20-phase8-slice2-owner-decisions.md`.
+> **Slice 3 is active in draft PR #90 only** (head `c17c965d32ec056f3e53be280173dc5182ef1c2e`) — not accepted, not
+> merged, no claim here. PR #88 (merge `e00cec8dedd3245eb0c7dbfe772775c04e9af1f8`) is a merged multi-Clinic-safe
+> REST-bootstrap/booking-settings hardening fix — not a phase slice. **Migration `2026_09_20_0021`
+> (`cpms_otp_tokens.clinic_id`) NOW EXISTS on main** — created and merged by PR #89 under the explicit Owner Slice-2
+> decision; the `0020`-latest wording in the notes above is the state of those checkpoints, preserved as history and
+> not rewritten. **`0022` does NOT exist on main** — it is reserved only on draft PR #90's branch and is not approved
+> for main. This closure resolves no drift row, promotes no drift row, and creates no new drift row (no `FR-3.5`
+> closure is claimed — the Slice-1 surface remains a partial pre-login browse surface, not full `FR-3.5` coverage).
+> This is not a release/V1/commercial claim (documentation-only closure).
 
 ---
 
