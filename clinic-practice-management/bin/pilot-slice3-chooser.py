@@ -299,6 +299,9 @@ def run_journey(browser, run):
 
         # --- 4) B1: request body contains B's patient_id, real B1 succeeds, holds.patient_id = B ---
         stage = "b1"
+        # Use distinct slot per viewport to avoid CLINIC_DUPLICATE_APPOINTMENT across viewports (same patient B).
+        # Fixture creates two slots (slotIds[0] and slotIds[1] = slot_id+1); mobile uses first, laptop uses second.
+        slot_for_run = CFG["slot_id"] + (1 if "laptop" in run["vp"] else 0)
         # Need to select a clinician and slot, then B1 will be triggered.
         # The chooser is already with B selected. Now we need to go through A1/A4 then B1.
         # First, click clinician
@@ -316,10 +319,11 @@ def run_journey(browser, run):
         # Click slot -> triggers A4 then B1 automatically for patient mode
         # We need to wait for B1 hold
         # The slot's data-slot-id should match our fixture's slot_id
-        slot_btn = page.locator(f'.cpms-public-booking__slot[data-slot-id="{CFG["slot_id"]}"]')
+        slot_btn = page.locator(f'.cpms-public-booking__slot[data-slot-id="{slot_for_run}"]')
         if slot_btn.count() == 0:
             # Fallback to first slot
             slot_btn = page.locator(".cpms-public-booking__slot").first
+            slot_for_run = int(slot_btn.get_attribute("data-slot-id") or slot_for_run)
         # Listen for hold
         with page.expect_response(lambda r: "/clinic/v1/booking/hold" in r.url, timeout=25000) as hold_info:
             slot_btn.click()
@@ -346,7 +350,7 @@ def run_journey(browser, run):
         if not found_b1:
             raise RuntimeError(f"B1 request body must contain B's patient_id={CFG['patientB_id']}, got bodies={b1_bodies}")
         # Check persisted holds.patient_id = B
-        holds = dbrows(f"SELECT patient_id, clinic_id, slot_id, holder_wp_user_id FROM {T('cpms_slot_holds')} WHERE slot_id={CFG['slot_id']} AND holder_wp_user_id=(SELECT ID FROM {T('users')} WHERE user_login='{CFG['login']}') ORDER BY id DESC LIMIT 1")
+        holds = dbrows(f"SELECT patient_id, clinic_id, slot_id, holder_wp_user_id FROM {T('cpms_slot_holds')} WHERE slot_id={slot_for_run} AND holder_wp_user_id=(SELECT ID FROM {T('users')} WHERE user_login='{CFG['login']}') ORDER BY id DESC LIMIT 1")
         if not holds:
             raise RuntimeError("no hold row found after B1")
         hold_pid, hold_clinic, hold_slot, hold_uid = holds[0]
@@ -382,7 +386,7 @@ def run_journey(browser, run):
         if not re.fullmatch(r"AP-\d{8}-\d{2}", ref_code.strip()):
             raise RuntimeError(f"receipt reference_code format wrong: {ref_code!r}")
         # Check persisted Appointment.patient_id = B
-        app_rows = dbrows(f"SELECT id, patient_id, clinic_id FROM {T('cpms_appointments')} WHERE slot_id={CFG['slot_id']} AND clinic_id={CFG['clinic_id']} ORDER BY id DESC LIMIT 1")
+        app_rows = dbrows(f"SELECT id, patient_id, clinic_id FROM {T('cpms_appointments')} WHERE slot_id={slot_for_run} AND clinic_id={CFG['clinic_id']} ORDER BY id DESC LIMIT 1")
         if not app_rows:
             raise RuntimeError("no appointment found after B2")
         appt_id, appt_pid, appt_clinic = app_rows[0]
