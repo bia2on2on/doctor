@@ -174,6 +174,20 @@
 > for main. This closure resolves no drift row, promotes no drift row, and creates no new drift row (no `FR-3.5`
 > closure is claimed — the Slice-1 surface remains a partial pre-login browse surface, not full `FR-3.5` coverage).
 > This is not a release/V1/commercial claim (documentation-only closure).
+>
+> **Current Phase 8 Slice 3 closure note (re-verified live 2026-09-20, after the PR #90 merge):** Owner Roadmap Phase 8 — Patient Public
+> Booking is **CLOSED / TECHNICALLY COMPLETE (BOUNDED)** on live main `9abd3379a02a320705cadac5229726bbd1b202cb` (merge of PR #90 —
+> linked-Patient booking-subject selection; MERGED 2026-09-20T17:04:39Z; parents `7873d46e…` + `0f044eb518d1e9a3c91f48a49a05df4f5c62ba83`
+> (the exact accepted PR #90 head); open PRs at re-verification = 0). Post-merge on the exact merge SHA: four required workflows
+> terminal-success — CI `35524710717` · Real WordPress Acceptance `35524710714` · Closure Gate `35524710737` · Pilot/Staging Readiness Gate
+> `35524710697` (+ 19/19 check runs success). **Slice 1 = CLOSED (PR #87)**, **Slice 2 = CLOSED (PR #89)**, **Slice 3 = CLOSED (PR #90)**.
+> **Migration `2026_09_20_0022_slot_holds_patient_binding.php` NOW EXISTS on main** — merged by PR #90 within the accepted Slice-3 scope;
+> the "`0022` does NOT exist on main" wording in the note above is the state of its own (pre-merge) checkpoint and is preserved as history,
+> not rewritten. This is NOT a release, go-live, V1-complete, or commercial-completeness declaration. This closure resolves no drift row,
+> promotes no drift row, and creates no new drift row; no coverage beyond the three merged slices is claimed for `FR-3.5`, and no
+> unresolved/deferred item (Patient Portal / Phase 9, full patient profile, `booking.max_future_days` 30-vs-60, A1 min-lead visibility,
+> anonymous A1/A4 rate-limit policy, cross-Clinic OTP cooldown/attempt coupling, unrelated technical debt) is pulled into Phase 8 by this
+> closure (documentation-only closure).
 
 ---
 
