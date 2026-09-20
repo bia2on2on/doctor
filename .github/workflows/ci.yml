@@ -345,13 +345,18 @@ jobs:
   # WPCS — گیت رگرسیون استاندارد وردپرس روی «خطوط» تغییرکرده/جدید
   # (drift-register §۸-۱): legacy سنجیده نمی‌شود؛ فقط نقض‌هایی که روی
   # خطوطِ add شده نسبت به baseline واقع شده‌اند گیت را می‌شکنند
-  # (فایل کاملاً جدید = تمام خطوطش). baseline از تاریخ پذیرش Migration
-  # Foundation شروع می‌کند و bump آن دستی + مستند است.
+  # (فایل کاملاً جدید = تمام خطوطش). bump آن دستی + مستند است.
+  #
+  # baseline کنونی = 2263ed6… (main، 2026-09-20). دلیلِ این bump و
+  # سیاستِ «no-new-violations بدونِ mass-formatِ legacy»: drift-register
+  # §۸-۱-۱ — یک‌بار بازگرداندنِ معنایِ documented ratchet پس از آنکه
+  # collectorِ خرابِ changed-lines از بدوِ تولد صفر خط جمع می‌کرد.
   wpcs:
     name: WPCS (changed code)
     runs-on: ubuntu-latest
     env:
-      WPCS_BASELINE: f23e0c50049f6f3e91f2425005ce8db08067af73
+      # Ratchet anchor (manual + documented bump — drift-register §۸-۱-۱).
+      WPCS_BASELINE: 2263ed673a8fdf4ab91e6a7fffae6d82252e4324
     steps:
       - uses: actions/checkout@v4
         with:
@@ -378,38 +383,41 @@ jobs:
           vendor/bin/phpcs --version
           composer show 2>/dev/null | grep -E 'phpcs|wpcs|dealerdirect' || true
 
-      - name: Changed PHP files since baseline
+      # ------------------------------------------------------------------
+      # Self-test اول: اثباتِ رگرسیونِ قطعی برای منطقِ جمع‌آوریِ خطوطِ add شده
+      # (مخزن‌های git مصنوعی در temp؛ بدون PHP، بدون شبکه). خرابی هر self-test
+      # ⇒ این step با rc≠0 متوقف می‌شود (fail-loud، نه green).
+      # ------------------------------------------------------------------
+      - name: Self-test — WPCS added-lines collector (regression proof)
+        working-directory: ${{ github.workspace }}
         run: |
-          git diff --name-only --diff-filter=ACMRT "${WPCS_BASELINE:?baseline not set}"...HEAD -- . > /tmp/all.txt || true
-          grep -E '\.php$' /tmp/all.txt | grep -Ev '(^|/)vendor/|(^|/)tests/|(^|/)node_modules/' | sed 's|^clinic-practice-management/||' > /tmp/wpcs-files.txt || true
-          if [ -s /tmp/wpcs-files.txt ]; then
-            echo "WPCS will check $(wc -l < /tmp/wpcs-files.txt) changed file(s):"
-            cat /tmp/wpcs-files.txt
-          else
-            echo 'WPCS: no in-scope PHP files changed since baseline — nothing to check.'
-          fi
+          set -o pipefail
+          python3 bin/wpcs-changed-lines.py --test 2>&1 | tee /tmp/wpcs-selftest.log
 
-      - name: Compute added lines per changed file
+      # ------------------------------------------------------------------
+      # جمع‌آوریِ scope + متادیتای خطوطِ add شده (سیاستِ WPCS بدون تغییر:
+      # همان baseline، همان فایل‌های in-scope، همان فیلترِ added-lines).
+      #
+      # دو دامنهٔ مسیر که پیش‌تر قاطی می‌شدند، اینجا یک‌بار صریح map می‌شوند:
+      #   • git  → مسیرهای نسبی به top-levelِ مخزن
+      #   • phpcs → مسیرهای نسبی به working-directoryِ همین job
+      # نقصِ قبلی (class D / test-infra): دامنهٔ discovery مسیرها را
+      # root-relative گزارش می‌کرد و stepِ added-lines همان مسیر را با پیشوندِ
+      # `clinic-practice-management/` از داخلِ همان پوشه به git می‌داد ⇒
+      # git چیزی match نمی‌کرد (نامطابق‌بودنِ pathspec خطا نیست: rc=0 و بدونِ
+      # خروجی) و در نتیجه added-lines خالی می‌ماند ⇒ نتیجهٔ سبزِ کاذب.
+      #
+      # Fail-closed: baselineِ غیرقابل‌resolve، pathspecِ بی‌نتیجه، فایلی که
+      # اثبات نشود واقعاً inspect شده، یا ناسازگاریِ count با --numstat همه
+      # با rc≠0 متوقف می‌شوند و هرگز به «nothing to check» تبدیل نمی‌شوند.
+      # تغییراتِ صرفاً حذفی (بدونِ خطِ add شده) مجازند: هر فایل واقعاً inspect
+      # می‌شود و --numstat برایش ۰ خطِ add شده اعلام می‌کند.
+      # ------------------------------------------------------------------
+      - name: Collect changed PHP files and added lines (WPCS scope)
         run: |
-          # خطوط «+» هر فایل از hunk headerهای diff -U0 (فایل جدید = همهٔ خطوط).
-          : > /tmp/wpcs-added.txt
-          if [ -s /tmp/wpcs-files.txt ]; then
-            while IFS= read -r f; do
-              git diff -U0 --diff-filter=ACMRT "${WPCS_BASELINE:?}"...HEAD -- "clinic-practice-management/$f" \
-                | awk -v f="$f" '
-                  /^@@ / {
-                    match($0, /\+[0-9]+(,[0-9]+)?/);
-                    s = substr($0, RSTART + 1, RLENGTH - 1);
-                    split(s, a, ",");
-                    start = a[1] + 0;
-                    len = (a[2] == "" ? 1 : a[2] + 0);
-                    for (i = 0; i < len; i++) printf "%s:%d\n", f, start + i;
-                  }
-                ' >> /tmp/wpcs-added.txt
-            done < /tmp/wpcs-files.txt
-          fi
-          sort -u /tmp/wpcs-added.txt -o /tmp/wpcs-added.txt
-          echo "Added lines in scope: $(wc -l < /tmp/wpcs-added.txt)"
+          set -o pipefail
+          python3 "$GITHUB_WORKSPACE/bin/wpcs-changed-lines.py" \
+            --baseline "${WPCS_BASELINE:?baseline not set}" 2>&1 | tee /tmp/wpcs-collect.log
 
       - name: Run WPCS (violations on added lines)
         env:
@@ -483,3 +491,30 @@ jobs:
             exit 1
           fi
           echo 'WPCS: no violations on added lines — green.'
+
+      # شواهدِ قابلِ‌بازیابی: خروجیِ step‌ها در blob ذخیره می‌شود و از API
+      # خوانده نمی‌شود؛ نتیجهٔ self-test (اثباتِ رگرسیون) و خروجیِ collector
+      # (scope + متادیتای خطوطِ add شده) روی PR آینه می‌شود تا «سبز بودن»
+      # قابلِ استنباط باشد و نه ادعا. روی غیرِ PR (push به main) چیزی
+      # کامنت نمی‌شود.
+      - name: Mirror WPCS collector evidence onto the PR
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          if [ -z "$PR_NUMBER" ]; then
+            echo 'WPCS: not a pull_request run — evidence mirror skipped.'
+            exit 0
+          fi
+          {
+            echo "### WPCS collector evidence (run ${{ github.run_id }}, attempt ${{ github.run_attempt }})"
+            echo '```'
+            echo '--- collector self-test (deterministic regression proof) ---'
+            cat /tmp/wpcs-selftest.log 2>/dev/null || echo '(self-test log missing)'
+            echo '--- collection (scope + added-line metadata) ---'
+            cat /tmp/wpcs-collect.log 2>/dev/null || echo '(collector log missing)'
+            echo '```'
+          } > /tmp/wpcs-evidence.md
+          gh pr comment "$PR_NUMBER" --body-file /tmp/wpcs-evidence.md \
+            || echo '::notice::WPCS evidence mirror failed (non-fatal)'
