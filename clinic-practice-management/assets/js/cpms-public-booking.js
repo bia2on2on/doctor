@@ -674,12 +674,25 @@
 				return;
 			}
 
+			var payload = { mobile: mobile };
+			// Phase 8 Slice 2 — Clinicِ چالش از انتخابِ واقعیِ صفحه مشتق می‌شود؛
+			// سرور tuple را فقط وقتی کامل می‌پذیرد (پزشک+اسلات+تاریخ+ساعت).
+			// در نصب با بیش از یک Clinic بدون همین انتخاب، A2 با
+			// CLINIC_SCOPE_REQUIRED مسدود می‌شود (class A — یافتهٔ مرورگر واقعی).
+			var a2Selection = validSelection(lastSelection) || readStoredSelection();
+			if (a2Selection && toInt(a2Selection.slot_id) > 0) {
+				payload.clinician_id = toInt(a2Selection.clinician_id);
+				payload.slot_id = toInt(a2Selection.slot_id);
+				payload.slot_date = a2Selection.slot_date;
+				payload.slot_time = a2Selection.slot_time;
+			}
+
 			setBusy(true);
 			requestJson(config.rest_root + config.otp_request_path, {
 				method: 'POST',
 				credentials: 'same-origin',
 				headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
-				body: JSON.stringify({ mobile: mobile })
+				body: JSON.stringify(payload)
 			}).then(function (result) {
 				setBusy(false);
 				if (result.ok) {
