@@ -1,7 +1,15 @@
 <?php
 
 /**
- * Phase 9 Slice 1 — Patient Portal self-cancel UI (TEST-ONLY RED).
+ * Phase 9 Slice 1 — Patient Portal self-cancel UI (Slice-1 suite: RED → GREEN).
+ *
+ * STAGE 2 (GREEN, same Draft PR): R1/R2 below are unchanged and now pass
+ * against the product change in PatientPortalPage (+ assets/js/
+ * cpms-patient-portal.js). Three GREEN guards were appended (G2–G4, see the
+ * "GREEN GUARDS" section) for server-observable behaviour of the new UI only;
+ * browser runtime (fetch/nonce/reload/error re-enable at 390px) is proven by
+ * the real-browser pilot-gate step (bin/pilot-slice-portal-cancel.py), not by
+ * PHP source assertions.
  *
  * ===========================================================================
  * SCOPE (owner-directed Slice 1 start — narrowest useful vertical slice)
@@ -94,6 +102,23 @@
  *     (Pretty-permalink pass and the config-driven B4 sufficiency call are
  *     behind that first assertion and are reached only in GREEN.)
  *
+ * GREEN GUARDS (Stage 2 — server-observable behaviour of the new UI only):
+ *
+ *  G2 testPortalRendersNoSelfCancelActionForNonCancellableUpcomingStatuses
+ *     pending / rescheduled / completed / no_show rows in the UPCOMING table
+ *     (and the cancelled history row) carry NO data-role="cancel-appointment";
+ *     the single confirmed row still carries exactly one.
+ *  G3 testCancelScriptIsEnqueuedOnlyOnPatientPortalHookForPurePatient
+ *     `admin_enqueue_scripts` with hook suffix toplevel_page_cpms-patient as a
+ *     pure patient enqueues handle cpms-patient-portal (local file, footer);
+ *     any other hook suffix, or a staff user on the same hook, enqueues nothing
+ *     (no unrelated wp-admin page is affected).
+ *  G4 testPortalRendersForPatientWhenClinicScopeIsAmbiguous
+ *     With a second Clinic present (App::scope() → CLINIC_SCOPE_REQUIRED for a
+ *     membership-less patient) the portal still renders the C1 action and the
+ *     C2 config and merely omits the Clinic phone line (no fatal, no guessed
+ *     Clinic) — the shape of every multi-Clinic install incl. the pilot gate.
+ *
  * GUARD / POSITIVE CONTROL — must pass today and keep GREEN honest:
  *
  *  G1 testPositiveControlExistingB4RouteCancelsOwnConfirmedUpcomingAppointment
@@ -133,6 +158,7 @@ namespace ClinicCore\Tests\Integration;
 use ClinicCore\Admin\PatientPortalPage;
 use ClinicCore\Application\Scope\ClinicScope;
 use ClinicCore\Application\Scope\ScopeContext;
+use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Application\Scope\SystemClinicResolver;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
@@ -391,6 +417,159 @@ final class Phase9Slice1PatientPortalSelfCancelRedTest extends WP_UnitTestCase
         self::assertNotFalse($posHistory, 'GUARD: portal must render the history heading.');
         self::assertNotFalse($posRef, 'GUARD: portal must still list the cancelled appointment (history).');
         self::assertGreaterThan($posHistory, $posRef, 'GUARD: after cancellation the appointment must be listed under «' . self::HEADING_HISTORY . '».');
+    }
+
+    // =================================================================
+    // GREEN GUARDS (Stage 2) — server-observable behaviour of the new UI only
+    // =================================================================
+
+    /**
+     * G2 — only the server-known `confirmed` status is cancellable from the portal.
+     * Any other upcoming status renders no cancel action (no client-side deadline
+     * or state guessing); the one confirmed row still renders exactly one action.
+     */
+    public function testPortalRendersNoSelfCancelActionForNonCancellableUpcomingStatuses(): void
+    {
+        $fx = $this->buildOwnedConfirmedUpcomingAppointmentFixture('g2');
+        $this->assertFixtureMaterialized($fx);
+
+        $now = App::db()->nowUtcSql();
+        $nonCancellable = [];
+        // Distinct (clinician, date, time) per row — cpms_schedule_slots has UNIQUE u_slot.
+        // completed / no_show sit earlier TODAY (date >= today ⇒ still listed as upcoming).
+        foreach ([['pending', 6, '11:00:00'], ['rescheduled', 7, '11:20:00'], ['completed', 0, '00:05:00'], ['no_show', 0, '00:25:00']] as [$status, $daysAhead, $time]) {
+            $date = $this->ymdDaysOffset($daysAhead);
+            $slotId = $this->insertSlot($fx['clinic_id'], $fx['location_id'], $fx['clinician_id'], $date, $time, 1);
+            $reference = $this->referenceCode('g2' . substr($status, 0, 2));
+            $this->insertAppointment($fx['clinic_id'], $fx['location_id'], $fx['clinician_id'], $fx['patient_id'], $fx['user_id'], $slotId, $date, $time, $status, $reference, $now);
+            $nonCancellable[$status] = $reference;
+        }
+
+        $html = $this->renderPortalAs($fx['user_id']);
+        $this->assertPortalListsFixtureRows($html, $fx);
+
+        $posHistory = strpos($html, self::HEADING_HISTORY);
+        self::assertNotFalse($posHistory);
+        foreach ($nonCancellable as $status => $reference) {
+            $posRef = strpos($html, $reference);
+            self::assertNotFalse($posRef, 'positive control: ' . $status . ' appointment is listed.');
+            self::assertLessThan($posHistory, $posRef, 'positive control: ' . $status . ' appointment (date >= today, not cancelled) is listed in the UPCOMING table.');
+            $row = $this->tableRowContaining($html, $reference, $status . ' row');
+            self::assertCount(0, $this->cancelActionTags($row), 'GREEN G2: an upcoming «' . $status . '» appointment must NOT expose a self-cancel action (only confirmed is cancellable).');
+        }
+        self::assertCount(0, $this->cancelActionTags($this->tableRowContaining($html, $fx['history_reference_code'], 'history row')), 'GREEN G2: history row exposes no action.');
+
+        $actions = $this->cancelActionTags($html);
+        self::assertCount(1, $actions, 'GREEN G2: page-wide exactly one action — the confirmed upcoming appointment.');
+        self::assertSame((string) $fx['appointment_id'], $this->attributeValue($actions[0], 'data-appointment-id'), 'GREEN G2: the only action is bound to the confirmed appointment.');
+    }
+
+    /**
+     * G3 — WP lifecycle: the portal script is enqueued through `admin_enqueue_scripts`
+     * only for the portal hook suffix and only for a pure patient; nothing else changes.
+     */
+    public function testCancelScriptIsEnqueuedOnlyOnPatientPortalHookForPurePatient(): void
+    {
+        $fx = $this->buildOwnedConfirmedUpcomingAppointmentFixture('g3');
+        $handle = 'cpms-patient-portal';
+        $hook = 'toplevel_page_cpms-patient';
+
+        // Hook wiring is asserted on the real registration; the callback is then exercised directly with
+        // the hook suffix WP passes, so no unrelated core/plugin `admin_enqueue_scripts` callback runs here.
+        self::assertNotFalse(has_action('admin_enqueue_scripts', [PatientPortalPage::class, 'enqueueAssets']), 'GREEN G3: PatientPortalPage::register() hooks admin_enqueue_scripts.');
+        self::assertFileExists(dirname(__DIR__, 2) . '/assets/js/cpms-patient-portal.js', 'GREEN G3: the local vanilla asset exists (no CDN/build).');
+
+        // (a) pure patient + portal hook → enqueued, local src, footer.
+        $this->resetScriptHandle($handle);
+        wp_set_current_user($fx['user_id']);
+        PatientPortalPage::enqueueAssets($hook);
+        self::assertTrue(wp_script_is($handle, 'enqueued'), 'GREEN G3: portal hook + pure patient enqueues the cancel script.');
+        $registered = wp_scripts()->registered[$handle] ?? null;
+        self::assertNotNull($registered, 'GREEN G3: handle registered.');
+        self::assertStringEndsWith('/assets/js/cpms-patient-portal.js', (string) $registered->src, 'GREEN G3: src is the plugin-local file.');
+        self::assertStringStartsWith(rtrim((string) CPMS_PLUGIN_URL, '/'), (string) $registered->src, 'GREEN G3: src is served from the plugin URL (no external host).');
+        self::assertSame(1, (int) wp_scripts()->get_data($handle, 'group'), 'GREEN G3: printed in the footer.');
+        self::assertSame([], (array) $registered->deps, 'GREEN G3: no dependency on other handles (fails open for the control, closed elsewhere).');
+
+        // (b) pure patient + any other wp-admin hook → nothing.
+        $this->resetScriptHandle($handle);
+        PatientPortalPage::enqueueAssets('toplevel_page_cpms-clinicians');
+        self::assertFalse(wp_script_is($handle, 'enqueued'), 'GREEN G3: other admin pages never load the portal script.');
+        PatientPortalPage::enqueueAssets('index.php');
+        self::assertFalse(wp_script_is($handle, 'enqueued'), 'GREEN G3: dashboard never loads the portal script.');
+
+        // (c) staff user on the portal hook → nothing.
+        $this->resetScriptHandle($handle);
+        $doctorId = (int) wp_create_user('p9s1_g3_doc_' . uniqid('', false), 'pass-not-used-123', uniqid('p9s1_g3_doc_', true) . '@test.local');
+        self::assertGreaterThan(0, $doctorId);
+        $doctor = get_userdata($doctorId);
+        self::assertNotFalse($doctor);
+        $doctor->set_role(RolesAndCapabilities::ROLE_DOCTOR);
+        wp_set_current_user($doctorId);
+        PatientPortalPage::enqueueAssets($hook);
+        self::assertFalse(wp_script_is($handle, 'enqueued'), 'GREEN G3: staff users do not get the patient cancel script.');
+        $this->resetScriptHandle($handle);
+    }
+
+    /**
+     * G4 — multi-Clinic install: a pure patient has no membership, so App::scope()
+     * is ambiguous (CLINIC_SCOPE_REQUIRED). The portal must still render (C1 + C2)
+     * and only drop the Clinic phone line — never fatal, never guess a Clinic.
+     */
+    public function testPortalRendersForPatientWhenClinicScopeIsAmbiguous(): void
+    {
+        $fx = $this->buildOwnedConfirmedUpcomingAppointmentFixture('g4');
+        $this->assertFixtureMaterialized($fx);
+
+        // Baseline (single Clinic): the contact line is rendered when a phone is configured.
+        App::settings()->set('clinic.phone', '021-12345678');
+        $single = $this->renderPortalAs($fx['user_id']);
+        self::assertStringContainsString('021-12345678', $single, 'precondition: single-Clinic render shows the Clinic phone.');
+
+        // Second Clinic (same Organization) → ambiguous system scope for a membership-less patient.
+        global $wpdb;
+        $orgId = (int) $wpdb->get_var($wpdb->prepare('SELECT organization_id FROM ' . $wpdb->prefix . 'cpms_clinics WHERE id = %d', $fx['clinic_id']));
+        self::assertGreaterThan(0, $orgId, 'precondition: seeded Clinic has an Organization.');
+        $now = App::db()->nowUtcSql();
+        $slug = 'p9s1-g4-' . bin2hex(random_bytes(3));
+        $inserted = $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_clinics (organization_id, name, slug, timezone, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, %s)',
+            $orgId,
+            'Clinic ' . $slug,
+            $slug,
+            'Asia/Tehran',
+            $now,
+            $now
+        ));
+        self::assertNotFalse($inserted, 'precondition: second Clinic inserted: ' . $wpdb->last_error);
+        ScopeContext::clear();
+        App::resetScope();
+        SystemClinicResolver::flush();
+        Settings::flushCache();
+
+        $ambiguous = false;
+        try {
+            App::scope();
+        } catch (ScopeRequiredException) {
+            $ambiguous = true;
+        }
+        self::assertTrue($ambiguous, 'precondition: with two Clinics and no explicit scope, App::scope() is CLINIC_SCOPE_REQUIRED.');
+
+        $html = $this->renderPortalAs($fx['user_id']);
+        $this->assertPortalListsFixtureRows($html, $fx);
+        $actions = $this->cancelActionTags($html);
+        self::assertCount(1, $actions, 'GREEN G4: C1 action still rendered in a multi-Clinic install.');
+        self::assertSame((string) $fx['appointment_id'], $this->attributeValue($actions[0], 'data-appointment-id'));
+        self::assertCount(1, $this->configScriptPayloads($html), 'GREEN G4: C2 config still published in a multi-Clinic install.');
+        self::assertStringNotContainsString('021-12345678', $html, 'GREEN G4: no Clinic phone is guessed when the scope is ambiguous.');
+        self::assertStringNotContainsString('تلفن:', $html, 'GREEN G4: the contact-phone fragment is omitted, not faked.');
+    }
+
+    private function resetScriptHandle(string $handle): void
+    {
+        wp_dequeue_script($handle);
+        wp_deregister_script($handle);
+        self::assertFalse(wp_script_is($handle, 'enqueued'), 'precondition: handle not enqueued before the case.');
     }
 
     // =================================================================
