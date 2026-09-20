@@ -462,7 +462,20 @@ def run_journey(browser, run):
         sw = page.evaluate("document.documentElement.scrollWidth")
         iw = page.evaluate("window.innerWidth")
         assert sw <= iw + 1, f"horizontal overflow: scrollWidth={sw} > innerWidth={iw}"
-        assert not console_errors, f"console errors: {console_errors[:3]}"
+        # gateِ نام (B2 بدون نام → 400) عمداً شلیک می‌شود و Chromium آن را به
+        # شکل «Failed to load resource... status of 400» در کنسول می‌نویسد.
+        # هر خطای کنسولِ 400 باید دقیقاً با یک پاسخِ RESTِ مجازِ 400 جفت شود؛
+        # باقی خطاهای کنسول همچنان شکست‌محور است.
+        gate_400s = sum(1 for (m, r, s) in rest_calls
+                        if r == "/clinic/v1/booking/confirm" and s == 400)
+        console_hard, console_400_seen = [], 0
+        for err in console_errors:
+            if "status of 400" in err and console_400_seen < gate_400s:
+                console_400_seen += 1
+                continue
+            console_hard.append(err)
+        assert not console_hard, f"console errors: {console_hard[:3]}"
+        assert console_400_seen <= gate_400s
         assert not page_errors, f"page errors: {page_errors[:3]}"
         assert not net_failed, f"failed same-origin requests: {list(net_failed.values())[:3]}"
         unexpected = [(m, r, s) for (m, r, s) in rest_calls
@@ -478,7 +491,7 @@ def run_journey(browser, run):
             assert len(got) == want, f"{route} count={len(got)} (want {want})"
         page.screenshot(path=screenshot("receipt"), full_page=False)
         ok(f"{key0}-09-hygiene", "بهداشت: بدون نشت/Console clean/بدون overflow/REST موردانتظار",
-           f"sw={sw} iw={iw} console_err=0 net_bad=0 flow={len(expected_flow)} متد-های رزرو")
+           f"sw={sw} iw={iw} console_err=0 expected400_console={console_400_seen} net_bad=0 flow={len(expected_flow)}")
 
     except Exception as e:  # noqa: BLE001
         try:
