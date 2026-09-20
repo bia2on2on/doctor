@@ -285,9 +285,15 @@ def run_journey(browser, run):
         btn_ids = sorted(int(x) for x in page.evaluate(
             "() => Array.from(document.querySelectorAll('button[data-role=\"cancel-appointment\"]')).map(b => b.getAttribute('data-appointment-id'))"
         ))
-        expected_ids = sorted([ok_appt, fail_appt])
+        # Every owned appointment whose server-known status is still `confirmed` (and upcoming) gets a
+        # control — including the other viewport's not-yet-cancelled appointment. Derive the expectation
+        # from the DB at check time, never from the viewport plan.
+        confirmed_upcoming = sorted(set(list(CFG["ok_appts"].values()) + [fail_appt]))
+        expected_ids = sorted(a for a in confirmed_upcoming if appt_status(a) == "confirmed")
+        if ok_appt not in expected_ids or fail_appt not in expected_ids:
+            raise RuntimeError(f"precondition: this run's ok/fail appointments must still be confirmed (expected={expected_ids})")
         if btn_ids != expected_ids:
-            raise RuntimeError(f"cancel controls must exist exactly for confirmed upcoming rows {expected_ids}, got {btn_ids}")
+            raise RuntimeError(f"cancel controls must exist exactly for the confirmed upcoming rows {expected_ids}, got {btn_ids}")
         for appt_id in (CFG["pending_appt"], CFG["history_appt"]):
             if page.locator(f'{BTN}[data-appointment-id="{appt_id}"]').count() != 0:
                 raise RuntimeError(f"non-cancellable appointment #{appt_id} must render no control")
@@ -318,7 +324,7 @@ def run_journey(browser, run):
             raise RuntimeError("one hidden role=alert error region expected before any action")
         page.screenshot(path=screenshot("portal"), full_page=True)
         ok(f"{key0}-01-render", "Authenticated portal: config safe, controls only on confirmed rows",
-           f"landed={landed_on_portal} config_keys=3 controls={len(btn_ids)} pending_no_control=True history_no_control=True")
+           f"landed={landed_on_portal} config_keys=3 controls={btn_ids} (=all confirmed upcoming) pending_no_control=True history_no_control=True")
 
         # ---------- 2) keyboard: Enter opens confirm dialog; Escape closes without request ----------
         stage = "keyboard"
@@ -418,9 +424,9 @@ def run_journey(browser, run):
                 const cells = Array.from(document.querySelectorAll('td'));
                 const cell = cells.find(td => td.textContent.trim() === ref);
                 const tr = cell && cell.closest('tr');
-                const table = tr && tr.closest('table');
-                const h2 = table && table.previousElementSibling;
-                return { found: !!tr, history: !!(h2 && h2.tagName === 'H2' && h2.textContent.indexOf('تاریخچه') !== -1),
+                let el = tr && tr.closest('table');
+                while (el && el.tagName !== 'H2') { el = el.previousElementSibling; }
+                return { found: !!tr, history: !!(el && el.textContent.indexOf('تاریخچه') !== -1),
                          cancelled: !!(tr && tr.textContent.indexOf('لغو توسط بیمار') !== -1) };
             }""",
             ok_ref,
