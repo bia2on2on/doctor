@@ -208,6 +208,26 @@ def run_journey(browser, run):
         os.makedirs(OUT, exist_ok=True)
 
         # --- ۰) آنونیم: هیچ authority/cookie/hold ---
+        # tapِ fetch (فقطِ تست): بدنهٔ A3 را پیش از reload در sessionStorage
+        # می‌نشاند تا پس از navigation هم برای assertion قابل خواندن بماند.
+        page.add_init_script(
+            "(() => {"
+            "  const tapKey = 'cpms-journey:tap:otp-verify';"
+            "  const origFetch = window.fetch;"
+            "  window.fetch = function () {"
+            "    const p = origFetch.apply(this, arguments);"
+            "    try {"
+            "      const a0 = arguments[0];"
+            "      const url = String(a0 && a0.url ? a0.url : a0);"
+            "      if (url.indexOf('/otp/verify') !== -1) {"
+            "        p.then(function (r) { return r.clone().text(); })"
+            "         .then(function (t) { window.sessionStorage.setItem(tapKey, t); });"
+            "      }"
+            "    } catch (e) { /* harness-only tap */ }"
+            "    return p;"
+            "  };"
+            "})();"
+        )
         page.goto(CFG["url"], wait_until="networkidle")
         cfg0 = page.evaluate(
             "JSON.parse((document.querySelector('script.cpms-public-booking__config') || {textContent: '{}'}).textContent)"
@@ -300,7 +320,13 @@ def run_journey(browser, run):
                 page.locator('[data-auth-action="otp-verify"]').click()
         a3 = a3_info.value
         assert a3.status == 200, f"A3 otp/verify returned HTTP {a3.status}"
-        a3_payload = a3.json()
+        # بدنه باید از tap خوانده شود — بدنهٔ خامِ response پس از navigation
+        # در دسترس نیست (Protocol error در run ف8637d1 — class D).
+        raw_tap = page.evaluate(
+            "(() => { const v = window.sessionStorage.getItem('cpms-journey:tap:otp-verify');"
+            " window.sessionStorage.removeItem('cpms-journey:tap:otp-verify'); return v; })()"
+        )
+        a3_payload = json.loads(raw_tap) if raw_tap else {}
         a3_data = a3_payload.get("data", {})
         assert a3_data.get("session_issued") is True, f"A3 did not issue session: {list(a3_data.keys())}"
         assert isinstance(a3_data.get("user_id"), int) and a3_data["user_id"] > 0, "A3 user_id missing"
