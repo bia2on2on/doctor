@@ -265,6 +265,11 @@ jobs:
               grep '^testsuite ' "$SPLIT" | grep 'Phase8Slice1PublicBookingBrowseRedTest' || echo '(Phase8 Slice 1 public booking suite missing from junit)'
               echo '--- Phase8 Slice 1 Public Booking Browse testcases ---'
               grep '^testcase ' "$SPLIT" | grep 'Phase8Slice1PublicBookingBrowseRedTest' || true
+              # Phase 9 standalone-shell proof (technical proof — شاهدِ صریحِ انتخاب + اجرا؛ الحاقی، بدون تغییرِ معیار گیت).
+              echo '--- Standalone Shell proof suite (selection + execution proof) ---'
+              grep '^testsuite ' "$SPLIT" | grep 'StandaloneShellProofTest' || echo '(StandaloneShellProofTest suite missing from junit)'
+              echo '--- Standalone Shell proof testcases ---'
+              grep '^testcase ' "$SPLIT" | grep 'StandaloneShellProofTest' || true
               rm -f "$SPLIT"
             else
               echo '(junit xml missing — run may have terminated prematurely)'

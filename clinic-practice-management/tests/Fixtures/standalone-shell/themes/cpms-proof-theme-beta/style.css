@@ -1,0 +1,13 @@
+/*
+Theme Name: CPMS Proof Theme Beta
+Theme URI: https://example.local/cpms-proof-theme-beta
+Author: CPMS Test Fixtures
+Description: TEST FIXTURE — control theme Beta (materially distinct: RTL, near-black banner-top centered column, sans-serif). Proof infrastructure only; never a production theme.
+Version: 1.0.0
+Text Domain: cpms-proof-theme-beta
+*/
+
+body { margin: 0; font-family: Tahoma, sans-serif; background: #111827; color: #f9fafb; }
+.proof-beta-banner { width: 100%; background: #f59e0b; color: #111827; padding: 0.5rem 1rem; text-align: center; font-weight: bold; }
+.proof-beta-column { max-width: 640px; margin: 0 auto; padding: 1.5rem; background: #1f2937; }
+.proof-beta-footer { border-top: 4px solid #f59e0b; color: #f59e0b; padding: 0.75rem; text-align: center; }
