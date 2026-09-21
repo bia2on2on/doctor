@@ -36,6 +36,7 @@ import re
 import subprocess
 import sys
 
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
 BASE = os.environ.get("BASE", "http://localhost:8080").rstrip("/")
@@ -89,12 +90,24 @@ def new_persona_context(browser, width=1280, height=900):
 
 
 def login(page, user, password, tag):
-    """ورودِ واقعی از wp-login.php (نشستِ وردپرس — نه state محلی)."""
+    """ورودِ واقعی از wp-login.php (نشستِ وردپرس — نه state محلی).
+
+    شناسه‌های فیلد دقیقاً همان الگویِ `rwp-acceptance.py` است: `#user_login` +
+    `#user_pass` + `#wp-submit` (درسِ گیتِ دوم: `#user_password` وجود خارجی ندارد —
+    خطای کلاس D در خودِ probe، نه محصول).
+    """
     page.goto(f"{BASE}/wp-login.php", wait_until="domcontentloaded")
     page.fill("#user_login", user)
-    page.fill("#user_password", password)
+    page.fill("#user_pass", password)
     page.click("#wp-submit")
-    page.wait_for_load_state("domcontentloaded")
+    try:
+        page.wait_for_url(
+            lambda u: "wp-login.php" not in u,
+            wait_until="domcontentloaded",
+            timeout=20000,
+        )
+    except PlaywrightTimeoutError:
+        pass
     ok = "wp-login.php" not in (page.url or "")
     check(f"login.{tag}", ok, f"final={page.url}")
     return ok
