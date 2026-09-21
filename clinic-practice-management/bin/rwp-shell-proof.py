@@ -48,6 +48,23 @@ SHELLPROOF_PASS = os.environ.get("SHELLPROOF_PASS", "")
 PAGE_SLUG = "cpms-shell-proof"
 PAGE_TITLE_HINT = "cpms-shell-proof"
 
+# قواعدِ استانداردِ WordPress (معادلِ Save Permalinks) — همان الگویِ اثبات‌شدهٔ
+# pilot-gate: `wp rewrite flush --hard` گاهی .htaccess نمی‌نویسد (درسِ گیتِ سوم)،
+# پس در حالتِ Pretty این بلاک مستقیم نوشته می‌شود (AllowOverride All + mod_rewrite
+# در vhostِ همین job از قبل فعال‌اند).
+HTACCESS_BLOCK = """# BEGIN WordPress
+<IfModule mod_rewrite.c>
+RewriteEngine On
+RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+RewriteBase /
+RewriteRule ^index\\.php$ - [L]
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule . /index.php [L]
+</IfModule>
+# END WordPress
+"""
+
 # دو تمِ کنترلیِ «مادتاً متفاوت» + نشانگرهایشان (assertion از جنس grep نیست —
 # positive-control در همان خانه، رندرِ واقعیِ نشانگرها را اثبات می‌کند).
 FIXTURE_THEMES = ("cpms-proof-theme-alpha", "cpms-proof-theme-beta")
@@ -82,6 +99,35 @@ def wp(*args, tolerate_failure=False):
             return ""
         raise RuntimeError("wp " + " ".join(args) + f" failed rc={proc.returncode}: {proc.stderr[:400]}")
     return (proc.stdout or "").strip()
+
+
+def htaccess_path():
+    return WP_DIR.rstrip("/") + "/.htaccess"
+
+
+def read_htaccess_backup():
+    try:
+        with open(htaccess_path(), "r") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def set_htaccess_rules(backup):
+    """Pretty: بلاکِ استانداردِ WP را مستقیم بنویس (Save Permalinks معادل).
+    بازگشت: وضعیتِ اولیهٔ فایل (محتوا یا نبودِ فایل) عیناً بازسازی می‌شود."""
+    if backup is None:
+        subprocess.run(["sudo", "rm", "-f", htaccess_path()], capture_output=True, text=True)
+        return
+    proc = subprocess.run(["sudo", "tee", htaccess_path()], input=backup, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError("htaccess restore failed: " + proc.stderr[:300])
+
+
+def set_htaccess_pretty():
+    proc = subprocess.run(["sudo", "tee", htaccess_path()], input=HTACCESS_BLOCK, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError("htaccess write failed: " + proc.stderr[:300])
 
 
 def new_persona_context(browser, width=1280, height=900):
@@ -209,11 +255,14 @@ def run_shell_scenario(browser, mode, theme, page_id, expected_uid):
     plain_shape = ("rest_route=" in users_me_url) or ("rest_route=" in rest_root)
     if mode == "plain":
         check(f"shellproof.{tag}.plain_permalink_self_authenticated",
-              plain_shape and "page_id=" in (anon.url or ""),
+              bool(users_me_url) and plain_shape and "page_id=" in (anon.url or ""),
               f"users_me_url={users_me_url} rest_root={rest_root} url={anon.url}")
     else:
+        # سخت‌گیرانه: پیکربندی باید واقعاً منتشر شده باشد (خالی ≠ PASS) و شکلِ
+        # `/wp-json/` را تأیید کند — کنترلِ منفی در برابرِ PASS کاذب روی صفحهٔ ۴۰۴.
         check(f"shellproof.{tag}.pretty_permalink_self_authenticated",
-              (not plain_shape) and PAGE_SLUG in (anon.url or ""),
+              bool(users_me_url) and (not plain_shape) and "/wp-json" in users_me_url
+              and PAGE_SLUG in (anon.url or ""),
               f"users_me_url={users_me_url} rest_root={rest_root} url={anon.url}")
     check(f"shellproof.{tag}.cpms_runtime_loaded", "CPMS-SHELL-PROOF-RUNTIME-LOADED" in body,
           "runtime افزونهٔ CPMS باید روی همین درخواستِ standalone حاضر باشد")
@@ -287,11 +336,13 @@ def main():
 
     original_theme = ""
     original_structure = ""
+    htaccess_backup = "UNSET"
     try:
         active = wp("theme", "list", "--status=active", "--field=name").splitlines()
         original_theme = active[0].strip() if active else ""
         # گزینهٔ `permalink_structure` ممکن است مقدارِ خالی داشته باشد (Plain) — tolerate.
         original_structure = wp("option", "get", "permalink_structure", tolerate_failure=True)
+        htaccess_backup = read_htaccess_backup()
         page_ids = wp("post", "list", "--post_type=page", f"--name={PAGE_SLUG}", "--field=ID").split()
         if page_ids:
             page_id = page_ids[0]
@@ -308,6 +359,14 @@ def main():
             for mode, structure in (("plain", ""), ("pretty", "/%postname%/")):
                 wp("rewrite", "structure", structure)
                 wp("rewrite", "flush", "--hard")
+                if mode == "pretty":
+                    # `--hard` قابل‌اتکا نیست — قواعدِ استانداردِ WP مستقیم (الگوی pilot-gate).
+                    set_htaccess_pretty()
+                else:
+                    set_htaccess_rules(htaccess_backup)
+                structure_now = wp("option", "get", "permalink_structure", tolerate_failure=True)
+                check(f"shellproof.{mode}.permalink_structure_expected", structure_now == structure,
+                      f"structure={structure_now!r} expected={structure!r}")
                 for theme in FIXTURE_THEMES:
                     wp("theme", "activate", theme)
                     fingerprints[(mode, theme)] = run_shell_scenario(browser, mode, theme, page_id, expected_uid)
@@ -325,6 +384,8 @@ def main():
                 wp("theme", "activate", original_theme)
             wp("rewrite", "structure", original_structure)
             wp("rewrite", "flush", "--hard")
+            if htaccess_backup != "UNSET":
+                set_htaccess_rules(htaccess_backup)
         except Exception as e:  # noqa: BLE001 — بازگشت به حالت اولیه نباید شواهد را پنهان کند
             check("shellproof.restore_initial_state", False, str(e))
     return finish()
