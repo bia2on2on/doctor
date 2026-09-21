@@ -4,7 +4,7 @@
 #
 # خروجی: dist/clinic-practice-management-<version>.zip + .sha256 + manifest
 # سیاست محتوا (Whitelist — نه Blacklist): فقط فایلهای Production داخل ZIP می‌آیند.
-#   شامل:  clinic-practice-management.php, README.md, uninstall.php, src/**, assets/**, bin/cpms
+#   شامل:  clinic-practice-management.php, README.md, uninstall.php, src/**, assets/**, templates/**, bin/cpms
 #   هرگز:  .git، .env، tests/، phpunit*، composer.*، vendor/، logs، فایلهای Pilot/Gate
 #
 # استفاده: bin/build-release.sh [version]   (پیش‌فرض از CPMS_VERSION فایل اصلی)
@@ -20,7 +20,7 @@ STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 
 # --- Whitelist copy ---
-mkdir -p "$STAGE/$NAME/src" "$STAGE/$NAME/bin" "$STAGE/$NAME/assets"
+mkdir -p "$STAGE/$NAME/src" "$STAGE/$NAME/bin" "$STAGE/$NAME/assets" "$STAGE/$NAME/templates"
 cp "$MAIN" "$STAGE/$NAME/"
 cp README.md "$STAGE/$NAME/"
 cp uninstall.php "$STAGE/$NAME/"
@@ -28,6 +28,10 @@ cp bin/cpms "$STAGE/$NAME/bin/cpms"
 chmod +x "$STAGE/$NAME/bin/cpms"
 cp -R src/. "$STAGE/$NAME/src/"
 cp -R assets/. "$STAGE/$NAME/assets/"
+# Phase 9 Slice 3 — standalone Patient Portal shell template (plugin-owned, not theme).
+if [ -d templates ]; then
+  cp -R templates/. "$STAGE/$NAME/templates/"
+fi
 # فایلهای غیرضروری احتمالی داخل src (نباید وجود داشته باشند — دفاعی)
 find "$STAGE" -name '.DS_Store' -delete 2>/dev/null || true
 find "$STAGE" -name '*.log' -delete 2>/dev/null || true

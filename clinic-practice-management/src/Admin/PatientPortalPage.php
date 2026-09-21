@@ -8,33 +8,31 @@ use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Time\Jalali;
+use ClinicCore\Frontend\PatientPortalShell;
 
 /**
- * «نوبت‌های من» — مقصد بیمار بعد از ورود OTP (ADR-0030 / Part 1).
+ * «نوبت‌های من» — محتوای پورتال بیمار (ADR-0030 / Part 1 + Phase 9 Slices 1–3).
  *
- * مشکل (ممیزی P5): بیمارِ `cpms_patient` بعد از ورود به پیشخوان انگلیسی وردپرس
- * می‌رسید بدون هیچ مقصد فارسی. این صفحه Console ساده بیمار است:
- *  - فقط داده خودش (Ownership — از طریق listMine و cpms_patient_user_links؛ P-5).
- *  - فقط نقشِ بیمارِ خالص آن را می‌بیند/به آن هدایت می‌شود (multi-role پزشک/منشی مستثنی).
- *  - Admin Bar وردپرس برای بیمارِ خالص مخفی می‌شود؛ هر URL دیگری از wp-admin
- *    با GET به همین صفحه هدایت می‌شود (بدون loop، بدون دخالت POST/AJAX/REST).
- *  - رزرو آنلاین (UI) هنوز عرضه نشده — پیام صادقانه + شماره تماس مطب از Settings.
+ * Phase 9 Slice 3: مقصد روزانهٔ بیمارِ خالص دیگر wp-admin نیست.
+ * ارائهٔ مستقلِ frontend:
+ *   `ClinicCore\Frontend\PatientPortalShell`
+ *   (WordPress Page + template_include + standalone full-document template).
  *
- * Phase 9 Slice 1 — لغو نوبت توسط خود بیمار (UI روی مسیرِ موجود B4):
- *  - فقط ردیف‌های «پیش‌رو» با وضعیتِ سرورشناختهٔ `confirmed` دکمهٔ لغو دارند؛ هیچ
- *    وضعیت دیگری (pending/rescheduled/completed/no_show/تاریخچه) affordance ندارد.
- *  - دکمه فقط `data-appointment-id` را حمل می‌کند — همان شناسه‌ای که
- *    `POST clinic/v1/appointments/{id}/cancel` لازم دارد. هیچ clinic_id/patient_id
- *    و هیچ محاسبهٔ مهلتِ لغو سمت کلاینت نیست: مالکیت، نقش، Clinic، گذار وضعیت،
- *    ویزیت فعال، سیاستِ مهلت، آزادسازی ظرفیت، Audit و پیامک همگی همان مرجعِ
- *    نهاییِ BookingController/BookingService (B4) می‌مانند.
- *  - پیکربندیِ runtime (ریشهٔ REST سازگار با Plain/Pretty permalink، الگوی مسیر
- *    B4 و nonce `wp_rest`) به‌صورت JSON script-safe منتشر می‌شود؛ بدون PHI.
- *  - JS جداگانه و کوچک (`assets/js/cpms-patient-portal.js`) فقط روی همین صفحه
- *    انکیو می‌شود تا هیچ صفحهٔ مدیریتی دیگری تحت تأثیر قرار نگیرد.
+ * این کلاس مالکِ **محتوای** پورتال می‌ماند (نوبت‌ها، لغو، اعلان‌ها، config/nonce)
+ * و از قالبِ standalone یا (legacy) callback منوی wp-admin قابل فراخوانی است.
+ *
+ *  - فقط داده خودش (Ownership — listMine + cpms_patient_user_links؛ P-5).
+ *  - فقط نقشِ بیمارِ خالص (multi-role پزشک/منشی مستثنی).
+ *  - Admin Bar برای بیمارِ خالص مخفی؛ هر GET از wp-admin → frontend portal
+ *    (از جمله legacy page=cpms-patient — بدون early-return داخل wp-admin).
+ *  - POST/AJAX/REST/CLI دست‌نخورده.
+ *
+ * Phase 9 Slice 1 — لغو نوبت (B4) + Slice 2 — اعلان‌های داخلی (G6/R2b):
+ *  بدون تغییر قرارداد محتوا؛ فقط محل ارائه به frontend shell منتقل شد.
  */
 final class PatientPortalPage
 {
+    /** Legacy wp-admin menu slug (no longer the pure-patient home as of Slice 3). */
     private const PAGE_SLUG = 'cpms-patient';
 
     /** hook suffix صفحهٔ سطح-بالای `cpms-patient` (خروجی add_menu_page). */
@@ -70,6 +68,9 @@ final class PatientPortalPage
 
     public static function register(): void
     {
+        // Frontend independent shell (Slice 3) — Page + template_include + standalone template.
+        PatientPortalShell::register();
+
         add_filter('login_redirect', [self::class, 'redirectAfterLogin'], 20, 3);
         add_filter('show_admin_bar', [self::class, 'hideAdminBar'], 20);
         add_action('admin_menu', [self::class, 'menu']);
@@ -99,15 +100,27 @@ final class PatientPortalPage
             && !in_array(RolesAndCapabilities::ROLE_SECRETARY, $roles, true);
     }
 
-    public static function pageUrl(): string
-    {
-        return admin_url('admin.php?page=' . self::PAGE_SLUG);
+    /**
+     * Production pure-patient destination — frontend Patient Portal URL
+     * (never under /wp-admin/ as of Phase 9 Slice 3).
+     *
+     * Established public API name `pageUrl` (camelCase) is retained for
+     * discovery / login_redirect callers; snake_case alias below.
+     */
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- established public API `pageUrl` (Slice 0–3 contract).
+    public static function pageUrl(): string {
+        return self::page_url();
+    }
+
+    /** Snake_case alias of pageUrl() for WPCS-conformant call sites. */
+    public static function page_url(): string {
+        return PatientPortalShell::portal_url();
     }
 
     // ================= Hooks =================
 
     /**
-     * بعد از Login موفق، بیمارِ خالص به «نوبت‌های من» می‌رود (نه پیشخوان WP).
+     * بعد از Login موفق، بیمارِ خالص به پورتال frontend می‌رود (نه پیشخوان WP).
      */
     public static function redirectAfterLogin(string $redirectTo, string $requested, $user): string
     {
@@ -131,7 +144,8 @@ final class PatientPortalPage
     }
 
     /**
-     * منوی بیمار فقط برای بیمارِ خالص (کاربران ستادی صفحه خودشان را دارند).
+     * منوی legacy wp-admin — دیگر مقصد روزانه نیست؛ guard همهٔ GETها را به
+     * frontend می‌فرستد. ثبت منو برای سازگاری/ردیابی باقی می‌ماند.
      */
     public static function menu(): void
     {
@@ -150,8 +164,9 @@ final class PatientPortalPage
     }
 
     /**
-     * هر GET دیگر از wp-admin برای بیمارِ خالص → «نوبت‌های من».
-     * (POST/AJAX/REST/CLI دست نمی‌خورند؛ logout و صفحات خود صفحه مستثنی‌اند.)
+     * هر GET از wp-admin برای بیمارِ خالص → پورتال frontend
+     * (شامل legacy page=cpms-patient — بدون early-return داخل wp-admin).
+     * POST/AJAX/REST/CLI دست نمی‌خورند.
      */
     public static function guardWpAdmin(): void
     {
@@ -162,10 +177,6 @@ final class PatientPortalPage
             return;
         }
         if (!is_user_logged_in() || !self::isPatientOnly(wp_get_current_user())) {
-            return;
-        }
-        $page = isset($_GET['page']) ? sanitize_key((string) $_GET['page']) : '';
-        if ($page === self::PAGE_SLUG) {
             return;
         }
         wp_safe_redirect(self::pageUrl());
@@ -433,7 +444,8 @@ final class PatientPortalPage
 
     /**
      * دکمهٔ واقعی (`<button type="button">` ⇒ فعال‌سازی با کیبورد) — فقط شناسهٔ نوبت
-     * را حمل می‌کند. `data-cpms-confirm`: تأییدِ قابل‌دسترسِ موجود در cpms-admin.js
+     * را حمل می‌کند. `data-cpms-confirm`: تأییدِ قابل‌دسترس در
+     * `assets/js/cpms-patient-portal.js` (و legacy cpms-admin.js در wp-admin)
      * برای اقدام‌های برگشت‌ناپذیر (UX، نه authorization — مرجع همچنان B4 است).
      */
     private static function cancel_button( int $appointment_id, string $jalali, string $time ): string {
