@@ -60,7 +60,12 @@ final class PatientPortalTest extends WP_UnitTestCase
         $this->assertNotFalse($patientUser);
 
         $redirected = apply_filters('login_redirect', 'https://example.org/wp-admin/', '', $patientUser);
-        $this->assertStringContainsString('page=cpms-patient', $redirected);
+        // Phase 9 Slice 3: pure-patient home is the frontend Patient Portal (not wp-admin).
+        $this->assertStringNotContainsString('/wp-admin/', $redirected);
+        $this->assertStringNotContainsString('page=cpms-patient', $redirected);
+        $frontend = PatientPortalPage::pageUrl();
+        $this->assertSame($frontend, $redirected);
+        $this->assertStringNotContainsString('/wp-admin/', $frontend);
 
         // پزشک/منشی: بدون تغییر
         $doctorUser = get_userdata($this->doctorUserId);
