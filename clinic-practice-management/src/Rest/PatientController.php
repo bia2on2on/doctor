@@ -141,7 +141,7 @@ final class PatientController extends RestBase
     {
         $user = wp_get_current_user();
         $link_id = $this->link_id( $request );
-        $fields = $this->body( $request );
+        $fields  = $this->body( $request );
         unset( $fields['link_id'] );
 
         return $this->wrap( fn () => $this->patients->updateMe( (int) $user->ID, $fields, $link_id ) );

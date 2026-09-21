@@ -102,7 +102,7 @@ final class PatientService
     // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- Established public service API; renaming would break callers.
     public function updateMe( int $wp_user_id, array $fields, ?int $link_id = null ): array {
         $current = $this->require_selected_patient( $wp_user_id, $link_id );
-        $data = $this->validateForUpdate( $fields, self::ME_EDITABLE, (int) $current['id'] );
+        $data    = $this->validateForUpdate( $fields, self::ME_EDITABLE, (int) $current['id'] );
 
         if ( $data === [] ) {
             throw new BookingException( 'CLINIC_VALIDATION_FAILED', 'فیلدی برای ویرایش ارسال نشده است' );
