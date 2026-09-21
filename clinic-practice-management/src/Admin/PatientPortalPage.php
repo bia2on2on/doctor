@@ -103,8 +103,17 @@ final class PatientPortalPage
     /**
      * Production pure-patient destination — frontend Patient Portal URL
      * (never under /wp-admin/ as of Phase 9 Slice 3).
+     *
+     * Established public API name `pageUrl` (camelCase) is retained for
+     * discovery / login_redirect callers; snake_case alias below.
      */
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- established public API `pageUrl` (Slice 0–3 contract).
     public static function pageUrl(): string {
+        return self::page_url();
+    }
+
+    /** Snake_case alias of pageUrl() for WPCS-conformant call sites. */
+    public static function page_url(): string {
         return PatientPortalShell::portal_url();
     }
 
