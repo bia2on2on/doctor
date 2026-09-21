@@ -444,7 +444,8 @@ final class PatientPortalPage
 
     /**
      * دکمهٔ واقعی (`<button type="button">` ⇒ فعال‌سازی با کیبورد) — فقط شناسهٔ نوبت
-     * را حمل می‌کند. `data-cpms-confirm`: تأییدِ قابل‌دسترسِ موجود در cpms-admin.js
+     * را حمل می‌کند. `data-cpms-confirm`: تأییدِ قابل‌دسترس در
+     * `assets/js/cpms-patient-portal.js` (و legacy cpms-admin.js در wp-admin)
      * برای اقدام‌های برگشت‌ناپذیر (UX، نه authorization — مرجع همچنان B4 است).
      */
     private static function cancel_button( int $appointment_id, string $jalali, string $time ): string {

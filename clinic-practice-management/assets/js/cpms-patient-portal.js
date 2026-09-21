@@ -223,19 +223,95 @@
 		});
 	}
 
+	/**
+	 * Accessible confirm dialog owned by the Patient Portal surface.
+	 * (Same contract as cpms-admin.js modal — UX only; B4 remains authorization.)
+	 * Lives here so the independent frontend shell does not depend on cpms-admin assets.
+	 */
+	function showConfirm(message) {
+		return new Promise(function (resolve) {
+			var old = document.querySelector('.cpms-modal-overlay');
+			if (old && old.parentNode) {
+				old.parentNode.removeChild(old);
+			}
+			var lastFocus = document.activeElement;
+			var overlay = document.createElement('div');
+			overlay.className = 'cpms-modal-overlay';
+			overlay.setAttribute('role', 'presentation');
+			var dialog = document.createElement('div');
+			dialog.className = 'cpms-modal';
+			dialog.setAttribute('role', 'dialog');
+			dialog.setAttribute('aria-modal', 'true');
+			dialog.setAttribute('dir', 'rtl');
+			dialog.innerHTML =
+				'<h3>تأیید عملیات</h3>' +
+				'<p class="cpms-modal-message"></p>' +
+				'<div class="cpms-modal-actions">' +
+					'<button type="button" class="button button-primary cpms-modal-confirm">تأیید و ادامه</button>' +
+					'<button type="button" class="button cpms-modal-cancel">انصراف</button>' +
+				'</div>';
+			dialog.querySelector('.cpms-modal-message').textContent = message;
+			overlay.appendChild(dialog);
+			document.body.appendChild(overlay);
+			var confirmBtn = dialog.querySelector('.cpms-modal-confirm');
+			var cancelBtn = dialog.querySelector('.cpms-modal-cancel');
+			function done(ok) {
+				document.removeEventListener('keydown', onKey, true);
+				if (overlay.parentNode) {
+					overlay.parentNode.removeChild(overlay);
+				}
+				resolve(ok);
+				if (lastFocus && lastFocus.focus) {
+					try {
+						lastFocus.focus();
+					} catch (e) {}
+				}
+			}
+			function onKey(e) {
+				if (e.key === 'Escape') {
+					e.preventDefault();
+					done(false);
+				}
+				if (e.key === 'Tab') {
+					var focusables = [cancelBtn, confirmBtn];
+					var i = focusables.indexOf(document.activeElement);
+					if (e.shiftKey) {
+						if (i <= 0) {
+							e.preventDefault();
+							confirmBtn.focus();
+						}
+					} else if (i === focusables.length - 1 || i === -1) {
+						e.preventDefault();
+						cancelBtn.focus();
+					}
+				}
+			}
+			confirmBtn.addEventListener('click', function () {
+				done(true);
+			});
+			cancelBtn.addEventListener('click', function () {
+				done(false);
+			});
+			document.addEventListener('keydown', onKey, true);
+			confirmBtn.focus();
+		});
+	}
+
 	function bind(config) {
 		var buttons = document.querySelectorAll(BUTTON_SELECTOR);
-		var adminAssets = !!(document.body && document.body.classList && document.body.classList.contains('cpms-admin'));
 		Array.prototype.forEach.call(buttons, function (button) {
-			// Modal تأیید متعلق به cpms-admin.js است و با همان گیتِ صفحه (body.cpms-admin)
-			// بار می‌شود؛ بدون آن، صفت تأیید حذف می‌شود تا دکمه هرگز بی‌اثر نماند.
-			if (!adminAssets) {
-				button.removeAttribute(CONFIRM_ATTR);
-			}
 			button.addEventListener('click', function () {
 				if (button.hasAttribute(CONFIRM_ATTR)) {
-					// نوبتِ Modal تأیید است؛ پس از تأیید، cpms-admin.js صفت را برمی‌دارد
-					// و همین دکمه را دوباره click می‌کند.
+					var message = button.getAttribute(CONFIRM_ATTR) || '';
+					// First click: open portal-owned confirm. On accept, drop the attr
+					// and re-click so cancelAppointment runs (same contract as cpms-admin).
+					showConfirm(message).then(function (ok) {
+						if (!ok) {
+							return;
+						}
+						button.removeAttribute(CONFIRM_ATTR);
+						button.click();
+					});
 					return;
 				}
 				cancelAppointment(config, button);
