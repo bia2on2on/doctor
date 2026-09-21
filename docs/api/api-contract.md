@@ -50,8 +50,9 @@
 
 | # | Method/Path | توضیح |
 |---|---|---|
-| C1 | `GET /patient/me` | پروفایل خود (فیلدهای مجاز) |
-| C2 | `PUT /patient/me` | ویرایش فیلدهای مجاز Policy (فرآیند تغییر → Audit) |
+| C0 | `GET /patient/my-records` | انتخاب‌گر پرونده‌های خود: در `data` فقط آرایه‌ای از `{link_id, clinic_id, clinic_name, patient_id, patient_display_name, mrn, is_primary}` برای پیوند پایدارِ کاربرِ احرازشده با Patient فعال و Clinicِ هم‌خوان برمی‌گردد؛ هیچ فیلد پروفایل/PHI دیگری ندارد. |
+| C1 | `GET /patient/me?link_id?` | پروفایل خود (فیلدهای مجاز). `link_id` فقط selector است؛ `0` پیوند فعال → `404 CLINIC_NOT_FOUND`، `1` → رفتار خودکار سازگار، `N>1` بدون selector → `422 CLINIC_SELECTION_REQUIRED` (بدون fallback primary/اولین). selector خارجی/غیرفعال/ناموجود همگی `404 CLINIC_NOT_FOUND` غیرقابل‌شمارش‌اند. |
+| C2 | `PUT /patient/me` | ویرایش فیلدهای مجاز Policy (فرآیند تغییر → Audit) روی همان انتخاب C1؛ `link_id?` selector است و شناسهٔ Clinic/Patient کلاینت authority نیست. تعارض valid national ID فقط در Clinicِ ذخیره‌شدهٔ همان Patient → `400 CLINIC_VALIDATION_FAILED` پیش از mutation/audit. |
 | C3 | `POST /patients/{patient_id}/files` | آپلود (multipart) — Validation: MIME/Extension/Size |
 | C4 | `GET /patients/{patient_id}/files` | فایل‌های مجاز |
 | C5 | `GET /visits?from&to` | تاریخچه ویزیت — **فقط فیلدهای patient_visible** |

@@ -14,7 +14,7 @@ use WP_REST_Response;
 use WP_REST_Server;
 
 /**
- * Endpointهای پروفایل بیمار (F3) — API Contract C1/C2 + D2–D5.
+ * Endpointهای پروفایل بیمار (F3) — API Contract C0–C2 + D2–D5.
  *
  * C*: بیمار (Nonce + نقش) — فقط Data خود.
  * D*: منشی (Nonce + Capability) — Data-Access در Service.
@@ -24,8 +24,8 @@ use WP_REST_Server;
  * می‌گیرند (عضویت فعال پایدار + دقیقاً همان مجوز؛ cap سراسری فقط
  * defense-in-depth). مسیرهای C1/C2 بیمار (me/updateMe) عمداً از مجوزسازی
  * کارکنی Clinic عبور نمی‌کنند — patient-self جدا از عضویت کارکنی است.
- * Clinical Patient Record سطح Clinic می‌ماند (PatientService با App::scope());
- * مالکیت پایدار شیء با 404 parity همان‌جا اعمال می‌شود.
+ * C0–C2 فقط از user احرازشده + پیوند پایدار + Patient فعال + Clinic ذخیره‌شده
+ * resolve می‌شوند؛ مسیرهای D همچنان با App::scope() Clinic-scoped هستند.
  */
 final class PatientController extends RestBase
 {
@@ -35,18 +35,30 @@ final class PatientController extends RestBase
 
     public function register_routes(): void
     {
-        // ---------- Patient (C1/C2) ----------
+        // ---------- Patient (C0–C2) ----------
+        register_rest_route(self::NS, '/patient/my-records', [
+            [
+                'methods' => WP_REST_Server::READABLE,
+                'callback' => fn (WP_REST_Request $request) => $this->myRecords($request),
+                'permission_callback' => fn (WP_REST_Request $request) => $this->requirePatient($request),
+            ],
+        ]);
+
         register_rest_route(self::NS, '/patient/me', [
             [
                 'methods' => WP_REST_Server::READABLE,
                 'callback' => fn (WP_REST_Request $request) => $this->me($request),
                 'permission_callback' => fn (WP_REST_Request $request) => $this->requirePatient($request),
+                'args' => [
+                    'link_id' => ['required' => false, 'type' => 'integer'],
+                ],
             ],
             [
                 'methods' => WP_REST_Server::EDITABLE,
                 'callback' => fn (WP_REST_Request $request) => $this->updateMe($request),
                 'permission_callback' => fn (WP_REST_Request $request) => $this->requirePatient($request),
                 'args' => [
+                    'link_id' => ['required' => false, 'type' => 'integer'],
                     'first_name' => ['required' => false, 'type' => 'string'],
                     'last_name' => ['required' => false, 'type' => 'string'],
                     'birth_date' => ['required' => false, 'type' => 'string'],
@@ -108,19 +120,28 @@ final class PatientController extends RestBase
 
     // ---------- Handlers ----------
 
+    private function myRecords(WP_REST_Request $request): WP_REST_Response|WP_Error
+    {
+        $user = wp_get_current_user();
+
+        return $this->wrap(fn () => $this->patients->linkedRecords((int) $user->ID));
+    }
+
     private function me(WP_REST_Request $request): WP_REST_Response|WP_Error
     {
         $user = wp_get_current_user();
 
-        return $this->wrap(fn () => $this->patients->me((int) $user->ID));
+        return $this->wrap(fn () => $this->patients->me((int) $user->ID, $this->linkId($request)));
     }
 
     private function updateMe(WP_REST_Request $request): WP_REST_Response|WP_Error
     {
         $user = wp_get_current_user();
+        $linkId = $this->linkId($request);
         $fields = $this->body($request);
+        unset($fields['link_id']);
 
-        return $this->wrap(fn () => $this->patients->updateMe((int) $user->ID, $fields));
+        return $this->wrap(fn () => $this->patients->updateMe((int) $user->ID, $fields, $linkId));
     }
 
     private function search(WP_REST_Request $request): WP_REST_Response|WP_Error
@@ -206,6 +227,13 @@ final class PatientController extends RestBase
         }
 
         return true;
+    }
+
+    private function linkId(WP_REST_Request $request): ?int
+    {
+        $linkId = $request->get_param('link_id');
+
+        return $linkId === null || $linkId === '' ? null : (int) $linkId;
     }
 
     /**

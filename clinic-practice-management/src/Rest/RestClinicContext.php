@@ -196,6 +196,7 @@ final class RestClinicContext
             '#^/clinic/v1/appointments/mine$#',
             '#^/clinic/v1/appointments/\d+/reschedule$#',
             '#^/clinic/v1/patient/me$#',
+            '#^/clinic/v1/patient/my-records$#',
             '#^/clinic/v1/files/\d+/stream$#',
             '#^/clinic/v1/patients/\d+/files$#',
             '#^/clinic/v1/prescriptions$#',
