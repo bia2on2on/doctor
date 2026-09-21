@@ -86,3 +86,252 @@ Patient Portal با این closure شروع نشده است.
   Slice 1 = CLOSED؛ Slice 2 = CLOSED / TECHNICALLY COMPLETE (BOUNDED) via PR #96
   (merge `c18c18f4a33e3690d5002f6b21d56ad60334cdde`؛ accepted head
   `0f17aa2e562dd45b2bc0f1bfdd19b1895a093940`؛ آخرین migration همچنان `0022`).
+
+---
+---
+
+# بخش دوم — قرارداد نهایی معماری پورتال + اثبات فنیِ پوستهٔ مستقل
+(OWNER-ISSUED PRODUCT/ARCHITECTURE POLICY — 2026-09-21)
+
+تاریخ: 2026-09-21 · صادرشده توسط مالک (OWNER-ISSUED) · دامنه: Phase 9 (Patient Portal)
+و معماریِ آیندهٔ پورتال‌ها · ثبت: همین سند (یک محلِ تصمیم — بدون تکرار در اسناد دیگر).
+
+این بخش **قرارداد نهایی معماریِ صادرشدهٔ مالک** را ثبت می‌کند. این‌ها
+**OWNER-ISSUED PRODUCT/ARCHITECTURE POLICY** هستند — **نه الزاماتِ اصلیِ SRS**.
+متون تاریخیِ SRS عمداً بازنویسی/تغییر داده نمی‌شوند (همان انضباطِ بخش اول).
+طبق `2026-09-05-document-precedence-policy.md`، «تصمیمات نهاییِ کارفرما» بالاترین
+اولویتِ سندی را دارند.
+
+**نام قرارداد (نقل‌قولِ صریحِ مالک):**
+
+> **"Three Environments + One CPMS Core + Shared WordPress Authentication
+> Foundation + Independent CPMS Portals + Hybrid Rendering + Server-side
+> Authorization."**
+
+این ثبت **شروعِ پیاده‌سازی نیست**: پورتال بیمار، Staff Portal، migration/0023،
+REST جدید، authentication/token جدید، و هیچ framework کلاینتی با این سند
+آغاز/مجاز نمی‌شوند.
+
+## F — THREE ENVIRONMENTS (سه محیط)
+
+1. **Patient Portal**
+   - independent CPMS presentation (ارائهٔ مستقلِ CPMS)؛
+   - فقط navigation/قابلیت‌های Patient؛
+   - بدون chromeِ wp-admin؛
+   - بدون navigationِ Staff/Admin.
+2. **Staff Portal**
+   - پورتالِ عملیاتیِ مستقلِ CPMS در آینده؛
+   - role/capability/scope-aware؛
+   - **در Phase 9 پیاده‌سازی نمی‌شود**؛
+   - navigation/authorization بیمار و کارمند باید **جدا** بمانند.
+3. **WordPress Admin**
+   - Administration سیستم؛
+   - پیکربندیِ افزونه؛
+   - maintenance؛
+   - Administration فنیِ WordPress؛
+   - **مقصد روزانهٔ بلندمدتِ پورتالِ Patient/Staff نیست**.
+
+## G — PATIENT PORTAL SHELL (تصمیم مالک)
+
+**OWNER DECISION:** Patient Portal **باید** از یک **standalone CPMS presentation
+shell** استفاده کند.
+
+این پوسته مالکِ این‌هاست:
+
+- Layout؛
+- Header؛
+- Navigation؛
+- Footer؛
+- design shell / هویت بصری.
+
+تمِ فعالِ WordPress **نباید** موارد زیر را برای Patient Portal تعیین کند:
+
+- header؛
+- footer؛
+- layout؛
+- navigation؛
+- visual shell.
+
+**تغییرِ تمِ فعال نباید layout/ارائهٔ Patient Portal را مادّاً تغییر دهد.**
+Theme فقط **host/runtime environment** وردپرس است.
+
+**بدونِ (No):** WP Admin sidebar؛ WP Admin toolbar/chrome؛ WP update notices؛
+WP admin footer/version؛ theme header/footer.
+
+## H — PRESENTATION INDEPENDENCE ONLY (فقط استقلالِ ارائه)
+
+**backend موازی ساخته نشود.** استفاده مجدد از:
+
+- CPMS Core؛
+- Services؛
+- Repositories؛
+- AuthorizationService؛
+- ScopeContext؛
+- REST؛
+- WordPress user/session foundation.
+
+## I — HYBRID RENDERING (رندرِ ترکیبی)
+
+معماری همچنان:
+
+**SERVER-RENDERED BY DEFAULT** + **REST/AJAX فقط برای تعاملاتی که محصول را
+بهتر می‌کنند.**
+
+این تصمیم **مجوز نمی‌دهد**: SPA؛ client router؛ frontend framework جدید؛
+AJAX-everything.
+
+## J — AUTHENTICATION (احراز هویت)
+
+**Browser portal:**
+
+- پایهٔ نشستِ موجودِ WordPress؛
+- nonce موجودِ `wp_rest` در مواردِ مربوطه.
+
+**تمایز ماندگار (Important durable distinction):**
+
+- nonceِ `wp_rest` **فقط یک قراردادِ پیاده‌سازیِ BROWSER** است؛
+- **قراردادِ احراز هویتِ آیندهٔ Android/iOS نیست**.
+
+**Native-client authentication: UNRESOLVED FUTURE ARCHITECTURE.** اکنون طراحی
+یا پیاده‌سازی نشود.
+
+## K — STAFF FUTURE SAFETY (آینده‌نگریِ ایمنِ Staff)
+
+بنیادِ بصری ممکن است بعداً برای Staff Portal قابل استفادهٔ مجدد باشد:
+
+- tokens؛
+- shell primitives؛
+- UI primitives کوچک.
+
+اما Patient و Staff **نباید** مشترکاً داشته باشند:
+
+- navigation authority؛
+- role assumptions؛
+- authorization decisions؛
+- tenant authority؛
+- sensitive views.
+
+**پیاده‌سازیِ Staff Portal اکنون ممنوع.**
+
+## L — ROUTING / PRESENTATION DECISION (تصمیم نهاییِ روتینگ و ارائه)
+
+پرسشِ باز (از تحلیلِ قبلی): آیا Page + shortcode کافی است؟ — با توجه به اینکه
+تم نباید ارائه را کنترل کند، **مستقلاً** تعیین تکلیف شد:
+
+**FINDING — Page + shortcode alone: INSUFFICIENT.**
+
+- خروجیِ shortcode داخل `the_content` و **درون قالبِ تمِ فعال** (`page.php` /
+  `index.php` → `get_header()`/`get_footer()`) رندر می‌شود؛
+- header/footer/layout/پوسته ساختاراً در کنترلِ تم می‌مانند و جابه‌جاییِ تم،
+  پوسته را مادّاً عوض می‌کند — نقضِ صریحِ بخش G؛
+- shortcode حتی نمی‌تواند «سند کامل» بسازد: پیش از اجرای `the_content`، تم
+  header را چاپ کرده است.
+
+**DECISION (final):**
+
+**Pageِ متعلق به CPMS + رهگیریِ مالکانهٔ افزونه روی `template_include` + قالبِ
+standaloneِ متعلق به افزونه که کل سند HTML را می‌سازد.**
+
+1. **Routing = یک Pageِ معمولیِ وردپرس** (مقصد/هویتِ پورتال با یک Pageِ
+   CPMS-owned؛ شناساییِ درخواست از خودِ queried object — نه از شکلِ URL).
+   - در **Plain** (`?page_id=N` / `?pagename=slug`) و **Pretty**
+     (`/slug/`) توسط main queryِ خودِ core resolve می‌شود؛
+   - **بدون هیچ rewrite rule/rewrite framework/query-var/router سفارشی** —
+     صفر زیرساختِ روتینگِ حدسی (speculative).
+2. **Presentation = فیلتر رسمیِ `template_include`** (مکانیسمِ پایدارِ WordPress
+   از نسخه‌های بسیار قدیمی core؛ بدون `exit`، بدون دست زدن به lifecycle):
+   کوکی/نشست/کاربر/is_admin/REST nonce همه مثل هر درخواستِ نرمالِ وردپرس در
+   دسترس‌اند؛ قالبِ مالکِ CPMS با `<!DOCTYPE html>` شروع و با `</html>` تمام
+   می‌شود و عمداً `get_header()`/`get_footer()`/`wp_head()`/`wp_footer()` را
+   صدا نمی‌زند.
+3. **چرا نه گزینه‌های دیگر (ثبت شده، برای جلوگیری از بازگشاییِ بی‌دلیل):**
+   - Page + shortcode alone → ناکافی (بالا)؛
+   - `template_redirect` + `echo` + `exit` → کارکرد مشابه ولی `exit` زودهنگام
+     تست‌پذیری/انضباطِ shutdown را بدتر می‌کند و چیزی نمی‌افزاید؛
+   - custom rewrite endpoint → نقضِ «بدون rewrite framework»؛ زیر Plain هم
+     شکننده/نیازمند fallback است؛
+   - REST endpoint که HTML برگرداند → REST قراردادِ JSON است؛ نقضِ «no REST
+     endpoints» برای این اثبات و مدلِ URL اشتباه؛
+   - page template داخلِ خودِ تم → استقلال از تم را ساختاراً نقض می‌کند (با
+     جابه‌جاییِ تم نابود می‌شود).
+
+این تصمیمِ روتینگ/ارائه، تصمیمِ نهایی برای Phase 9 Slice 3 است (پیاده‌سازیِ
+خودِ Slice 3 با scope/PR جداگانه).
+
+## M — TECHNICAL PROOF (اثبات فنیِ Theme Independence) — دامنه و شواهد
+
+**ماهیت: NON-PRODUCTION / test-fixture scoped.** هیچ seam تولیدیِ جدیدی معرفی
+نشد (ضرورتِ عینی نداشت): الگوی اثبات‌شده (بخش L) عیناً الگویی است که Slice 3
+در scope خودش پیاده خواهد کرد. **هیچ محتوای Patient Portal پیاده‌سازی نشده**
+(حداکثر shell marker/fixture). `PatientPortalPage` موجود دست نخورده است.
+
+**فایل‌های proof (همگی زیر `tests/` و `bin/` ابزار تست — هرگز داخل release ZIP
+با whitelist سیاستِ `build-release.sh`):**
+
+| فایل | نقش |
+|---|---|
+| `tests/Fixtures/standalone-shell/cpms-standalone-shell-proof.php` | رهگیرِ `template_include` + `show_admin_bar` (fixture؛ بارگذاری: Integration require یا mu-plugin در محیطِ یک‌بارمصرفِ Acceptance) |
+| `tests/Fixtures/standalone-shell/cpms-standalone-shell-proof-template.php` | قالبِ standalone — کل سند HTML + نشانگرهای قرارداد + JSON config (`rest_root`، `users_me_url`، nonce `wp_rest`، `logout_url`، `user` — بدون PHI) |
+| `tests/Fixtures/standalone-shell/themes/cpms-proof-theme-alpha/**` | تمِ کنترلیِ A (LTR/سرامیکیِ تیره/سایدبار) با نشانگرهای `CPMS-PROOF-THEME-ALPHA-*` |
+| `tests/Fixtures/standalone-shell/themes/cpms-proof-theme-beta/**` | تمِ کنترلیِ B (RTL/نوار بالای کهربایی/ستون میانی) — مادّاً متفاوت از A |
+| `tests/Integration/StandaloneShellProofTest.php` | proof تستِ in-process (گیتِ Integration) |
+| `bin/rwp-shell-proof.py` | proof مرورگریِ واقعی (Playwright/Chromium — گیتِ Real WordPress Acceptance) |
+| `.github/workflows/real-wp-acceptance.yml` | نصبِ فیکسچر + اجرای proof (شامل انتشارِ لاگ در commit comment) |
+| `.github/workflows/ci.yml` | شاهدِ صریحِ «انتخاب + اجرا» برای `StandaloneShellProofTest` در junit (الحاقی؛ بدون تغییرِ معیارِ گیت) |
+
+**ادعاهای A–H و محلِ اثبات (متناظر با «Preferred outcome»):**
+
+| # | ادعا | اثبات |
+|---|---|---|
+| A | درخواستِ نرمال به WordPress می‌رسد | هر دو: Resolutionِ صفحه با main query (`StandaloneShellProofTest`) + HTTP 200 واقعی روی Apache (`rwp-shell-proof.py`) |
+| B | نشست/کاربرِ وردپرس در دسترس است | هر دو: `CPMS-SHELL-PROOF-USER:{login}` + nonce `wp_rest` + REST موجودِ `wp/v2/users/me` با همان کوکی/نشست (۲۰۰ + همان هویت؛ کنترلِ منفیِ بدون nonce → ۴۰۱) + logout واقعی (`wp_logout_url`) → `anonymous` |
+| C | CPMS کل سند/پوسته را کنترل می‌کند | هر دو: `<!DOCTYPE html>` تا `</html>` + `data-cpms-standalone-shell="proof-fixture"` + حضورِ runtime افزونه (`CPMS-SHELL-PROOF-RUNTIME-LOADED`) |
+| D | header/footer تمِ فعال غایب‌اند | هر دو: نبودِ نشانگرهای هر دو تم + **positive control**: همان نشانگرها وقتی تم رندر می‌شود دیده می‌شوند (ادعا vacuous نیست) |
+| E | chromeِ wp-admin غایب است | هر دو: نبودِ `wpadminbar` / `wp-admin-bar-` / `adminmenu` / `wpfooter` (درخواست front-end است و `show_admin_bar` هم فقط روی همین صفحه false می‌شود) |
+| F | نشانگرِ پوستهٔ CPMS حاضر است | هر دو: `CPMS-STANDALONE-SHELL-PROOF` + `data-shell-contract="v1"` |
+| G | جابه‌جاییِ دو تمِ متفاوت، قراردادِ پوسته را عوض نمی‌کند | هر دو: برابریِ contract fingerprint زیر alpha/beta (شامل برابری زیر login/logout) |
+| H | Plain و Pretty هر دو کار می‌کنند | **مرجع: مرورگریِ واقعی** — ماتریس `{Plain, Pretty} × {alpha, beta}` با `wp rewrite structure` واقعی + استنباطِ خود-اعتباربخشِ حالت از `rest_root` و شکلِ URL (`rwp-shell-proof.py`)؛ شواهدِ in-processِ سطح query در `StandaloneShellProofTest` (هر دو شکلِ query-var + مسیرِ Pretty) به‌عنوان پشتیبان |
+
+**Performance / global footprint (حفظِ قرارداد):**
+
+- اثرِ هوکیِ سراسریِ fixture دقیقاً **دو فیلترِ شرطی** است
+  (`template_include` + `show_admin_bar`) — تستِ مستقیمِ footprint در
+  `StandaloneShellProofTest::test_hook_footprint_is_two_conditional_filters_only`؛
+- **بدون asset سراسری / بدون frontend bundle / بدون polling / بدون `wp_head`/
+  `wp_footer` / بدون کوئریِ اضافه** — صفحاتِ غیرمرتبط هیچ نشانگر/asset از
+  پوسته نمی‌گیرند (assert شده روی home در `rwp-shell-proof.py`)؛
+- صفحاتِ authenticated/private پورتال **هرگز public-cacheable تلقی نمی‌شوند**
+  (در مستند Slice 3 هم رعایت شود)؛
+- شرطِ asset برای Slice 3: asset فقط صفحهٔ پورتال، فقط در صفحهٔ پورتال.
+
+**Compatibility (صداقتِ شواهد):**
+
+- انتخابِ مکانیسم با سازگاریِ WP 6.4+ و PHP 8.1–8.4 سازگار است (فقط APIهای
+  قدیمیِ core: `template_include`, `is_page`, `wp_get_current_user`,
+  `wp_create_nonce`, `rest_url` — بدون وابستگی به نسخهٔ خاص)؛
+- **RUNTIME-PROVEN فقط روی محیطِ exact-head گیت‌ها: WordPress 6.7.2 + PHP 8.2 +
+  Apache/mod_php + MySQL 8 + Chromium** (Real WordPress Acceptance؛ Integration
+  روی WP 6.7.2 + PHP 8.2)؛
+- **NOT VERIFIED (ثبت صادقانه — استنتاج ≠ اثباتِ اجرا):** اجرای runtimeِ همین
+  fixture روی WP 6.4/6.5/6.6 و PHP 8.1/8.3/8.4 — **NOT RUN** (Closure Gate
+  عمداً فقط release ZIP را می‌آزماید و fixture در ZIP نیست)؛ سازگاری روی آن
+  ترکیب‌ها فعلاً **argument از ثباتِ API core** است، نه بازتولیدِ runtime؛
+- **NOT VERIFIED:** مرورگرهای غیر از Chromium (ابزارِ ریپو فقط Chromium)؛
+  روتینگِ Pretty روی سرورهای غیر Apache (محیطِ اثبات = `mod_rewrite` + `.htauth`).
+
+**قراردادِ احراز هویت (یادآوریِ ماندگار):** nonce `wp_rest` فوق فقط قراردادِ
+Browser است؛ **قراردادِ Android/iOS نیست** (بخش J — UNRESOLVED FUTURE).
+
+**Readiness:** با پذیرشِ شواهدِ exact-head اثبات (در PR همین ثبت)، مبنای
+معماری/اثبات برای شروعِ **Phase 9 Slice 3 (RED/TDD)** کامل است؛ خودِ Slice 3
+**همچنان شروع نشده** و scope/PR جداگانه می‌خواهد. roadmap عمداً در این ثبت
+تغییر نکرد.
+
+## مرزِ بخش دوم (Scope of Part 2)
+
+- **سندِ تصمیم + proof فیکسچر/تست/هارنسِ bounded** — نه پیاده‌سازی محصول؛
+  بدون تغییرِ `src/`، بدون migration/`0023`، بدون REST جدید، بدون auth/token
+  جدید، بدون framework/build tooling کلاینتی، بدون تغییرِ ترتیب/وضعیت roadmap.
+- **ادعای سبز در این سند نیست** (انضباطِ شواهد: NOT RUN ≠ PASS؛ Inference ≠
+  fact). شواهدِ گیتِ exact-head در بدنهٔ PR (run-idها) منتشر می‌شود؛ این سند
+  فقط تصمیم + دامنه + برچسب‌های صادقانه را نگه می‌دارد.

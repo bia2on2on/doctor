@@ -1,0 +1,14 @@
+/*
+Theme Name: CPMS Proof Theme Alpha
+Theme URI: https://example.local/cpms-proof-theme-alpha
+Author: CPMS Test Fixtures
+Description: TEST FIXTURE — control theme Alpha (materially distinct: LTR, dark-navy sidebar-first flex layout, serif). Proof infrastructure only; never a production theme.
+Version: 1.0.0
+Text Domain: cpms-proof-theme-alpha
+*/
+
+body { margin: 0; font-family: Georgia, serif; background: #f0f4f8; color: #102a43; }
+.proof-alpha-header { background: #334e68; color: #f0f4f8; padding: 0.75rem 2rem; }
+.proof-alpha-nav { width: 100%; background: #102a43; color: #f0f4f8; padding: 0.5rem 2rem; }
+.proof-alpha-main { display: block; padding: 1rem 2rem; }
+.proof-alpha-footer { background: #243b53; color: #f0f4f8; padding: 0.75rem 2rem; }

@@ -43,6 +43,8 @@ env:
   MANAGER_PASS: Acceptance-2026!
   ACCOUNTANT_USER: acc_accountant
   ACCOUNTANT_PASS: Acceptance-2026!
+  SHELLPROOF_USER: acc_shellproof
+  SHELLPROOF_PASS: Acceptance-2026!
 
 jobs:
   acceptance:
@@ -86,11 +88,13 @@ jobs:
         run: |
           php -l clinic-practice-management/bin/cpms
           python3 -m py_compile clinic-practice-management/bin/rwp-acceptance.py
+          python3 -m py_compile clinic-practice-management/bin/rwp-shell-proof.py
           python3 -m py_compile clinic-practice-management/bin/acceptance-isolation-check.py
           bash -n clinic-practice-management/bin/build-release.sh
           # قرارداد ایزولاسیون: هر پرسونا کانتکست/کوکی مستقل خودش را دارد
           # (اگر یک کانتکست به چند پرسونا سرو کند، این Step قرمز می‌شود).
           python3 clinic-practice-management/bin/acceptance-isolation-check.py
+          python3 clinic-practice-management/bin/acceptance-isolation-check.py clinic-practice-management/bin/rwp-shell-proof.py
 
       # ---------- 1) ZIP رسمی ریلیز ----------
       - name: Build official release ZIP (bin/build-release.sh)
@@ -447,6 +451,34 @@ jobs:
           cat /tmp/acc/acceptance.log
           if [ "$RC" -ne 0 ]; then echo "ACCEPTANCE FAILED (rc=$RC)"; exit "$RC"; fi
 
+      # ---------- 6.5) اثبات فنی: پوستهٔ مستقلِ CPMS (Phase 9 Slice 3 — فقط proof) ----------
+      # NON-PRODUCTION: فیکسچرها (mu-plugin رهگیرِ template_include + دو تمِ کنترلیِ
+      # متفاوت) از tests/Fixtures کپی می‌شوند و هرگز داخل release ZIP نیستند
+      # (whitelist سیاست bin/build-release.sh). ماتریس: {Plain, Pretty} × {alpha, beta}
+      # با positive-control و REST/نشستِ وردپرس + logout واقعی — خروجی در
+      # /tmp/acc/shell-proof.log و shell-proof-results.json (artifact + commit comment).
+      - name: "Technical proof — standalone CPMS shell (theme independence + Plain/Pretty)"
+        run: |
+          set -o pipefail
+          sudo mkdir -p "$WP_DIR/wp-content/mu-plugins"
+          sudo cp clinic-practice-management/tests/Fixtures/standalone-shell/cpms-standalone-shell-proof.php \
+                  clinic-practice-management/tests/Fixtures/standalone-shell/cpms-standalone-shell-proof-template.php \
+                  "$WP_DIR/wp-content/mu-plugins/"
+          sudo cp -R clinic-practice-management/tests/Fixtures/standalone-shell/themes/cpms-proof-theme-alpha \
+                     clinic-practice-management/tests/Fixtures/standalone-shell/themes/cpms-proof-theme-beta \
+                     "$WP_DIR/wp-content/themes/"
+          wp user create "$SHELLPROOF_USER" 'shellproof@acc.local' --user_pass="$SHELLPROOF_PASS" --role=cpms_patient --path="$WP_DIR" --allow-root
+          wp theme list --status=active --path="$WP_DIR" --allow-root | tee /tmp/acc/shell-proof-themes.txt
+          # بدون pipe-masking: وضعیت خروجی واقعی اسکریپت تعیین‌کننده است؛ خودِ
+          # اسکریپت بین سناریوها `wp rewrite structure` / `wp theme activate` می‌زند
+          # و در پایان وضعیت اولیه (تم + permalink structure) را restore می‌کند.
+          BASE="$WP_URL" WP_DIR="$WP_DIR" OUT=/tmp/acc \
+          SHELLPROOF_USER="$SHELLPROOF_USER" SHELLPROOF_PASS="$SHELLPROOF_PASS" \
+            python3 clinic-practice-management/bin/rwp-shell-proof.py > /tmp/acc/shell-proof.log 2>&1
+          RC=$?
+          cat /tmp/acc/shell-proof.log
+          if [ "$RC" -ne 0 ]; then echo "SHELL PROOF FAILED (rc=$RC)"; exit "$RC"; fi
+
       # ---------- 7) بررسی لاگ‌ها (همیشه — حتی در شکست) ----------
       - name: PHP/WP/Apache logs review
         if: always()
@@ -517,6 +549,10 @@ jobs:
             echo '- browser acceptance:'
             echo '```'
             cat /tmp/acc/acceptance.log 2>/dev/null || echo '(مرحلهٔ مرورگر اجرا نشد)'
+            echo '```'
+            echo '- standalone shell technical proof (Phase 9 Slice 3 — NON-PRODUCTION fixture):'
+            echo '```'
+            cat /tmp/acc/shell-proof.log 2>/dev/null || echo '(shell proof اجرا نشد)'
             echo '```'
             echo "- fixture users (login/roles) + membership rows: \`$(cat /tmp/acc/fixture-memberships.txt 2>/dev/null || echo '?')\`"
             echo '```'
