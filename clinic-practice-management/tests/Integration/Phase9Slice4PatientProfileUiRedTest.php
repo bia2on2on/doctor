@@ -493,8 +493,9 @@ final class Phase9Slice4PatientProfileUiRedTest extends WP_UnitTestCase
             'RED-UI-3: login mobile display must show the actual linked mobile number.'
         );
         // Must NOT be an <input>/<select>/<textarea> carrying name=mobile or data-field=mobile.
+        $mobileInputRe = "/<(input|select|textarea)\\b[^>]*\\b(name|" . preg_quote(self::FIELD_ATTR, '/') . ")=[\"']mobile[\"']/i";
         self::assertDoesNotMatchRegularExpression(
-            '/<(input|select|textarea)\b[^>]*\b(name|' . self::FIELD_ATTR . ')=["\']mobile["\']/i',
+            $mobileInputRe,
             $mobileDisplay[0]['html'],
             'RED-UI-3: login mobile must NOT be rendered as an editable input (read-only presentation only).'
         );
@@ -897,7 +898,8 @@ final class Phase9Slice4PatientProfileUiRedTest extends WP_UnitTestCase
             'shell guard: shell root marker present.'
         );
         // RTL.
-        self::assertTrue((bool) preg_match('/\bdir=["\']rtl["\']/i', $html),
+        self::assertTrue(
+            (bool) preg_match("/\\bdir=[\"']rtl[\"']/i", $html),
             'shell guard: document is RTL.'
         );
         // Existing landmarks still present.
@@ -1432,7 +1434,9 @@ final class Phase9Slice4PatientProfileUiRedTest extends WP_UnitTestCase
     {
         $matches = [];
         // Match opening tags with data-role="<role>".
-        if (preg_match_all('/<([a-zA-Z][a-zA-Z0-9]*)\b([^>]*)data-role=["\']' . preg_quote($role, '/') . '["\']([^>]*)>/su', $html, $matches, PREG_OFFSET_CAPTURE) === false) {
+        $roleQ = preg_quote($role, '/');
+        $re = "/<([a-zA-Z][a-zA-Z0-9]*)\\b([^>]*)data-role=[\"']{$roleQ}[\"']([^>]*)>/su";
+        if (preg_match_all($re, $html, $matches, PREG_OFFSET_CAPTURE) === false) {
             return [];
         }
         $out = [];
@@ -1505,7 +1509,11 @@ final class Phase9Slice4PatientProfileUiRedTest extends WP_UnitTestCase
     private function fieldInputs(string $html, string $field): array
     {
         $matches = [];
-        $re = '/<(input|select|textarea)\b([^>]*)\s' . preg_quote(self::FIELD_ATTR, '/') . '=["\']' . preg_quote($field, '/') . '["\']([^>]*)>/su';
+        $attrQ = preg_quote(self::FIELD_ATTR, '/');
+        $fldQ = preg_quote($field, '/');
+        // Use a double-quoted PHP string so that the single quote in the character class
+        // does not prematurely terminate the PHP string literal.
+        $re = "/<(input|select|textarea)\\b([^>]*)\\s{$attrQ}=[\"']{$fldQ}[\"']([^>]*)>/su";
         if (preg_match_all($re, $html, $matches) === false) {
             return [];
         }
