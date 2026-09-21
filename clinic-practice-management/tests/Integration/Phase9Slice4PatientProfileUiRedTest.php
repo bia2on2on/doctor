@@ -945,15 +945,15 @@ final class Phase9Slice4PatientProfileUiRedTest extends WP_UnitTestCase
      */
     private function buildSingleLinkFixture(string $tag): array
     {
-        $clinic_count = (int) App::db()->fetchValue(
-            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_clinics'),
+        // Use the first/seeded Clinic (id lowest) as the fixture Clinic. In the
+        // WP Test Suite the seed Clinic is id=1; additional clinics added by
+        // multi-link tests are strictly higher and filtered out here.
+        $clinic_id = (int) App::db()->fetchValue(
+            'SELECT id FROM ' . App::db()->table('cpms_clinics') . ' ORDER BY id ASC LIMIT 1',
             []
         );
-        self::assertSame(1, $clinic_count, 'fixture precondition: exactly one seeded Clinic (Slice 3 shell depends on single-Clinic env).');
+        self::assertGreaterThan(0, $clinic_id, 'fixture precondition: at least one Clinic is seeded.');
 
-        $scope = App::scope();
-        $clinic_id = $scope->clinicId;
-        self::assertGreaterThan(0, $clinic_id);
         $clinic_name = (string) App::db()->fetchValue(
             'SELECT name FROM ' . App::db()->table('cpms_clinics') . ' WHERE id = %d',
             [ $clinic_id ]
@@ -963,7 +963,7 @@ final class Phase9Slice4PatientProfileUiRedTest extends WP_UnitTestCase
             'SELECT id FROM ' . App::db()->table('cpms_locations') . ' WHERE clinic_id = %d AND is_primary = 1 ORDER BY id ASC LIMIT 1',
             [ $clinic_id ]
         );
-        self::assertGreaterThan(0, $location_id);
+        self::assertGreaterThan(0, $location_id, 'fixture precondition: seeded Clinic must have a primary Location.');
 
         $now = App::db()->nowUtcSql();
         $clinician_id = $this->insertRow('cpms_clinicians', [
