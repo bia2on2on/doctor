@@ -327,6 +327,8 @@ Browser است؛ **قراردادِ Android/iOS نیست** (بخش J — UNRESOL
 **همچنان شروع نشده** و scope/PR جداگانه می‌خواهد. roadmap عمداً در این ثبت
 تغییر نکرد.
 
+*(annotationِ وضعیت — 2026-09-21، closure مستنداتِ Slice 3: بندِ Readiness بالا درستِ چک‌پوینتِ خودش بود و بازنویسی نشد؛ پس از آن **Phase 9 Slice 3 via PR #99 CLOSED / TECHNICALLY COMPLETE (BOUNDED)** شد — merge `8a324e59341851f5ced01ed37ecd5e69c725f30a`، accepted head `8d6231c19d3caccb94194836040f575a1566d345`؛ قرارداد/اثباتِ معماریِ همین سند (بخش دوم) **همچنان تصمیمِ حاکم** است؛ Phase 9 همچنان IN PROGRESS؛ هیچ Slice بعدی شروع نشده.)*
+
 ## مرزِ بخش دوم (Scope of Part 2)
 
 - **سندِ تصمیم + proof فیکسچر/تست/هارنسِ bounded** — نه پیاده‌سازی محصول؛
