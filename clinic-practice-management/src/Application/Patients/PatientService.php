@@ -66,33 +66,31 @@ final class PatientService
     ) {
     }
 
-    // ================= C1 — Me =================
+    // ================= C0/C1 — Me =================
 
     /**
      * @return list<array<string, mixed>>
      */
-    public function linkedRecords(int $wpUserId): array
-    {
+    public function linked_records( int $wp_user_id ): array {
         return array_map(
-            static fn (array $row): array => [
-                'link_id' => (int) $row['link_id'],
-                'clinic_id' => (int) $row['clinic_id'],
-                'clinic_name' => (string) $row['clinic_name'],
-                'patient_id' => (int) $row['patient_id'],
-                'patient_display_name' => trim((string) $row['first_name'] . ' ' . (string) $row['last_name']),
-                'mrn' => (string) $row['mrn'],
-                'is_primary' => (bool) $row['is_primary'],
+            static fn ( array $row ): array => [
+                'link_id'              => (int) $row['link_id'],
+                'clinic_id'            => (int) $row['clinic_id'],
+                'clinic_name'          => (string) $row['clinic_name'],
+                'patient_id'           => (int) $row['patient_id'],
+                'patient_display_name' => trim( (string) $row['first_name'] . ' ' . (string) $row['last_name'] ),
+                'mrn'                  => (string) $row['mrn'],
+                'is_primary'           => (bool) $row['is_primary'],
             ],
-            $this->patients->activeLinkedRecordsForUser($wpUserId)
+            $this->patients->active_linked_records_for_user( $wp_user_id )
         );
     }
 
     /**
      * @return array<string, mixed>
      */
-    public function me(int $wpUserId, ?int $linkId = null): array
-    {
-        return $this->publicView($this->requireSelectedPatient($wpUserId, $linkId));
+    public function me( int $wp_user_id, ?int $link_id = null ): array {
+        return $this->publicView( $this->require_selected_patient( $wp_user_id, $link_id ) );
     }
 
     // ================= C2 — Update Me =================
@@ -101,38 +99,38 @@ final class PatientService
      * @param array<string, mixed> $fields
      * @return array<string, mixed>
      */
-    public function updateMe(int $wpUserId, array $fields, ?int $linkId = null): array
-    {
-        $current = $this->requireSelectedPatient($wpUserId, $linkId);
-        $data = $this->validateForUpdate($fields, self::ME_EDITABLE, (int) $current['id']);
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- Established public service API; renaming would break callers.
+    public function updateMe( int $wp_user_id, array $fields, ?int $link_id = null ): array {
+        $current = $this->require_selected_patient( $wp_user_id, $link_id );
+        $data = $this->validateForUpdate( $fields, self::ME_EDITABLE, (int) $current['id'] );
 
-        if ($data === []) {
-            throw new BookingException('CLINIC_VALIDATION_FAILED', 'فیلدی برای ویرایش ارسال نشده است');
+        if ( $data === [] ) {
+            throw new BookingException( 'CLINIC_VALIDATION_FAILED', 'فیلدی برای ویرایش ارسال نشده است' );
         }
 
-        if (isset($data['national_id'])) {
-            $other = $this->patients->findByNationalId((int) $current['clinic_id'], (string) $data['national_id']);
-            if ($other !== null && (int) $other['id'] !== (int) $current['id']) {
-                throw new BookingException('CLINIC_VALIDATION_FAILED', 'این کد ملی متعلق به بیمار دیگری است');
+        if ( isset( $data['national_id'] ) ) {
+            $other = $this->patients->find_by_national_id( (int) $current['clinic_id'], (string) $data['national_id'] );
+            if ( $other !== null && (int) $other['id'] !== (int) $current['id'] ) {
+                throw new BookingException( 'CLINIC_VALIDATION_FAILED', 'این کد ملی متعلق به بیمار دیگری است' );
             }
         }
 
-        $this->patients->update((int) $current['id'], $data + ['updated_at' => $this->db->nowUtcSql()]);
-        $updated = (array) $this->patients->find((int) $current['id']);
+        $this->patients->update( (int) $current['id'], $data + [ 'updated_at' => $this->db->nowUtcSql() ] );
+        $updated = (array) $this->patients->find( (int) $current['id'] );
 
         $this->audit->log(
             'PATIENT_PROFILE_UPDATED',
-            ['wp_user_id' => $wpUserId, 'role' => 'patient'],
+            [ 'wp_user_id' => $wp_user_id, 'role' => 'patient' ],
             'patient',
             (int) $current['id'],
             (int) $current['id'],
-            $this->diffView($current, $data),
-            $this->diffView($updated, $data),
-            ['via' => 'self_service']
+            $this->diffView( $current, $data ),
+            $this->diffView( $updated, $data ),
+            [ 'via' => 'self_service' ]
         );
-        $this->op->info('patient.profile_updated', ['patient_id' => (int) $current['id'], 'fields' => array_keys($data)]);
+        $this->op->info( 'patient.profile_updated', [ 'patient_id' => (int) $current['id'], 'fields' => array_keys( $data ) ] );
 
-        return $this->publicView($updated);
+        return $this->publicView( $updated );
     }
 
     /**
@@ -141,23 +139,22 @@ final class PatientService
      *
      * @return array<string, mixed>
      */
-    public function requireSelectedPatient(int $wpUserId, ?int $linkId = null): array
-    {
-        if ($linkId !== null) {
-            $selected = $this->patients->findActiveLinkedPatientByLink($wpUserId, $linkId);
-            if ($selected === null) {
-                throw $this->linkedPatientNotFound();
+    public function require_selected_patient( int $wp_user_id, ?int $link_id = null ): array {
+        if ( $link_id !== null ) {
+            $selected = $this->patients->find_active_linked_patient_by_link( $wp_user_id, $link_id );
+            if ( $selected === null ) {
+                throw $this->linked_patient_not_found();
             }
 
             return $selected;
         }
 
-        $candidates = $this->patients->activeLinkedPatientsForUser($wpUserId);
-        if ($candidates === []) {
-            throw $this->linkedPatientNotFound();
+        $candidates = $this->patients->active_linked_patients_for_user( $wp_user_id );
+        if ( $candidates === [] ) {
+            throw $this->linked_patient_not_found();
         }
-        if (count($candidates) > 1) {
-            throw new BookingException('CLINIC_SELECTION_REQUIRED', 'انتخاب پرونده بیمار الزامی است', 422);
+        if ( count( $candidates ) > 1 ) {
+            throw new BookingException( 'CLINIC_SELECTION_REQUIRED', 'انتخاب پرونده بیمار الزامی است', 422 );
         }
 
         return $candidates[0];
@@ -292,9 +289,8 @@ final class PatientService
 
     // ================= Internal =================
 
-    private function linkedPatientNotFound(): BookingException
-    {
-        return new BookingException('CLINIC_NOT_FOUND', 'بیماری به این حساب متصل نیست', 404);
+    private function linked_patient_not_found(): BookingException {
+        return new BookingException( 'CLINIC_NOT_FOUND', 'بیماری به این حساب متصل نیست', 404 );
     }
 
     private function assertLicense(string $operation): void

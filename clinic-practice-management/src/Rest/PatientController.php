@@ -36,21 +36,25 @@ final class PatientController extends RestBase
     public function register_routes(): void
     {
         // ---------- Patient (C0–C2) ----------
-        register_rest_route(self::NS, '/patient/my-records', [
+        register_rest_route(
+            self::NS,
+            '/patient/my-records',
             [
-                'methods' => WP_REST_Server::READABLE,
-                'callback' => fn (WP_REST_Request $request) => $this->myRecords($request),
-                'permission_callback' => fn (WP_REST_Request $request) => $this->requirePatient($request),
-            ],
-        ]);
+                [
+                    'methods'             => WP_REST_Server::READABLE,
+                    'callback'            => fn ( WP_REST_Request $request ) => $this->my_records( $request ),
+                    'permission_callback' => fn ( WP_REST_Request $request ) => $this->requirePatient( $request ),
+                ],
+            ]
+        );
 
         register_rest_route(self::NS, '/patient/me', [
             [
                 'methods' => WP_REST_Server::READABLE,
                 'callback' => fn (WP_REST_Request $request) => $this->me($request),
                 'permission_callback' => fn (WP_REST_Request $request) => $this->requirePatient($request),
-                'args' => [
-                    'link_id' => ['required' => false, 'type' => 'integer'],
+                'args'                => [
+                    'link_id' => [ 'required' => false, 'type' => 'integer' ],
                 ],
             ],
             [
@@ -58,7 +62,7 @@ final class PatientController extends RestBase
                 'callback' => fn (WP_REST_Request $request) => $this->updateMe($request),
                 'permission_callback' => fn (WP_REST_Request $request) => $this->requirePatient($request),
                 'args' => [
-                    'link_id' => ['required' => false, 'type' => 'integer'],
+                    'link_id'                 => [ 'required' => false, 'type' => 'integer' ],
                     'first_name' => ['required' => false, 'type' => 'string'],
                     'last_name' => ['required' => false, 'type' => 'string'],
                     'birth_date' => ['required' => false, 'type' => 'string'],
@@ -120,28 +124,27 @@ final class PatientController extends RestBase
 
     // ---------- Handlers ----------
 
-    private function myRecords(WP_REST_Request $request): WP_REST_Response|WP_Error
-    {
+    private function my_records( WP_REST_Request $request ): WP_REST_Response|WP_Error {
         $user = wp_get_current_user();
 
-        return $this->wrap(fn () => $this->patients->linkedRecords((int) $user->ID));
+        return $this->wrap( fn () => $this->patients->linked_records( (int) $user->ID ) );
     }
 
     private function me(WP_REST_Request $request): WP_REST_Response|WP_Error
     {
         $user = wp_get_current_user();
 
-        return $this->wrap(fn () => $this->patients->me((int) $user->ID, $this->linkId($request)));
+        return $this->wrap( fn () => $this->patients->me( (int) $user->ID, $this->link_id( $request ) ) );
     }
 
     private function updateMe(WP_REST_Request $request): WP_REST_Response|WP_Error
     {
         $user = wp_get_current_user();
-        $linkId = $this->linkId($request);
-        $fields = $this->body($request);
-        unset($fields['link_id']);
+        $link_id = $this->link_id( $request );
+        $fields = $this->body( $request );
+        unset( $fields['link_id'] );
 
-        return $this->wrap(fn () => $this->patients->updateMe((int) $user->ID, $fields, $linkId));
+        return $this->wrap( fn () => $this->patients->updateMe( (int) $user->ID, $fields, $link_id ) );
     }
 
     private function search(WP_REST_Request $request): WP_REST_Response|WP_Error
@@ -229,11 +232,10 @@ final class PatientController extends RestBase
         return true;
     }
 
-    private function linkId(WP_REST_Request $request): ?int
-    {
-        $linkId = $request->get_param('link_id');
+    private function link_id( WP_REST_Request $request ): ?int {
+        $link_id = $request->get_param( 'link_id' );
 
-        return $linkId === null || $linkId === '' ? null : (int) $linkId;
+        return $link_id === null || $link_id === '' ? null : (int) $link_id;
     }
 
     /**

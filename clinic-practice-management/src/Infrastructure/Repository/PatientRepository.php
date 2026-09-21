@@ -69,12 +69,11 @@ final class PatientRepository
     /**
      * @return array<string, mixed>|null
      */
-    public function findByNationalId(int $clinicId, string $nationalId): ?array
-    {
+    public function find_by_national_id( int $clinic_id, string $national_id ): ?array {
         return $this->db->fetchRow(
-            'SELECT id FROM ' . $this->db->table('cpms_patients') .
+            'SELECT id FROM ' . $this->db->table( 'cpms_patients' ) .
             ' WHERE clinic_id = %d AND national_id = %s LIMIT 1',
-            [$clinicId, $nationalId]
+            [ $clinic_id, $national_id ]
         );
     }
 
@@ -83,19 +82,18 @@ final class PatientRepository
      *
      * @return list<array<string, mixed>>
      */
-    public function activeLinkedRecordsForUser(int $wpUserId): array
-    {
+    public function active_linked_records_for_user( int $wp_user_id ): array {
         return $this->db->fetchAll(
-            'SELECT l.id AS link_id, l.clinic_id, c.name AS clinic_name,
-                    p.id AS patient_id, p.first_name, p.last_name, p.mrn, l.is_primary
-             FROM ' . $this->db->table('cpms_patient_user_links') . ' l
-             JOIN ' . $this->db->table('cpms_patients') . ' p
-               ON p.id = l.patient_id AND p.clinic_id = l.clinic_id
-             JOIN ' . $this->db->table('cpms_clinics') . ' c
-               ON c.id = l.clinic_id
-             WHERE l.wp_user_id = %d AND p.status = %s
-             ORDER BY l.is_primary DESC, l.id ASC',
-            [$wpUserId, 'active']
+            'SELECT l.id AS link_id, l.clinic_id, c.name AS clinic_name,' .
+            ' p.id AS patient_id, p.first_name, p.last_name, p.mrn, l.is_primary' .
+            ' FROM ' . $this->db->table( 'cpms_patient_user_links' ) . ' l' .
+            ' INNER JOIN ' . $this->db->table( 'cpms_patients' ) . ' p' .
+            ' ON p.id = l.patient_id AND p.clinic_id = l.clinic_id' .
+            ' INNER JOIN ' . $this->db->table( 'cpms_clinics' ) . ' c' .
+            ' ON c.id = l.clinic_id' .
+            ' WHERE l.wp_user_id = %d AND p.status = %s' .
+            ' ORDER BY l.is_primary DESC, l.id ASC',
+            [ $wp_user_id, 'active' ]
         );
     }
 
@@ -104,35 +102,33 @@ final class PatientRepository
      *
      * @return list<array<string, mixed>>
      */
-    public function activeLinkedPatientsForUser(int $wpUserId): array
-    {
+    public function active_linked_patients_for_user( int $wp_user_id ): array {
         return $this->db->fetchAll(
-            'SELECT p.* FROM ' . $this->db->table('cpms_patient_user_links') . ' l
-             JOIN ' . $this->db->table('cpms_patients') . ' p
-               ON p.id = l.patient_id AND p.clinic_id = l.clinic_id
-             JOIN ' . $this->db->table('cpms_clinics') . ' c
-               ON c.id = l.clinic_id
-             WHERE l.wp_user_id = %d AND p.status = %s
-             ORDER BY l.is_primary DESC, l.id ASC
-             LIMIT 2',
-            [$wpUserId, 'active']
+            'SELECT p.*' .
+            ' FROM ' . $this->db->table( 'cpms_patient_user_links' ) . ' l' .
+            ' INNER JOIN ' . $this->db->table( 'cpms_patients' ) . ' p' .
+            ' ON p.id = l.patient_id AND p.clinic_id = l.clinic_id' .
+            ' INNER JOIN ' . $this->db->table( 'cpms_clinics' ) . ' c' .
+            ' ON c.id = l.clinic_id' .
+            ' WHERE l.wp_user_id = %d AND p.status = %s' .
+            ' ORDER BY l.is_primary DESC, l.id ASC LIMIT 2',
+            [ $wp_user_id, 'active' ]
         );
     }
 
     /**
      * @return array<string, mixed>|null
      */
-    public function findActiveLinkedPatientByLink(int $wpUserId, int $linkId): ?array
-    {
+    public function find_active_linked_patient_by_link( int $wp_user_id, int $link_id ): ?array {
         return $this->db->fetchRow(
-            'SELECT p.* FROM ' . $this->db->table('cpms_patient_user_links') . ' l
-             JOIN ' . $this->db->table('cpms_patients') . ' p
-               ON p.id = l.patient_id AND p.clinic_id = l.clinic_id
-             JOIN ' . $this->db->table('cpms_clinics') . ' c
-               ON c.id = l.clinic_id
-             WHERE l.id = %d AND l.wp_user_id = %d AND p.status = %s
-             LIMIT 1',
-            [$linkId, $wpUserId, 'active']
+            'SELECT p.*' .
+            ' FROM ' . $this->db->table( 'cpms_patient_user_links' ) . ' l' .
+            ' INNER JOIN ' . $this->db->table( 'cpms_patients' ) . ' p' .
+            ' ON p.id = l.patient_id AND p.clinic_id = l.clinic_id' .
+            ' INNER JOIN ' . $this->db->table( 'cpms_clinics' ) . ' c' .
+            ' ON c.id = l.clinic_id' .
+            ' WHERE l.id = %d AND l.wp_user_id = %d AND p.status = %s LIMIT 1',
+            [ $link_id, $wp_user_id, 'active' ]
         );
     }
 
