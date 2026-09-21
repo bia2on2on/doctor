@@ -270,6 +270,9 @@ final class Phase9Slice2PatientPortalNotificationsRedTest extends WP_UnitTestCas
 	private const HEADING_UPCOMING = "نوبت\u{200C}های پیش\u{200C}رو";
 	private const HEADING_HISTORY = 'تاریخچه';
 
+	/** Visible empty-state title the portal renders when the actor has no notification at all (G2). */
+	private const EMPTY_STATE_TEXT = 'هنوز اعلانی ندارید';
+
 	protected function setUp(): void
 	{
 		parent::setUp();
@@ -682,6 +685,55 @@ final class Phase9Slice2PatientPortalNotificationsRedTest extends WP_UnitTestCas
 		// Recipient isolation: the foreign Patient's notification is untouched.
 		self::assertNull( $this->readAtOf( (int) $fx['foreign_id'] ), 'GUARD: mark-all must not mutate another Patient\'s notification.' );
 		self::assertSame( self::OWN_TOTAL, count( (array) $after_data['notifications'] ), 'GUARD: mark-all changes read state only — no row disappears from the inbox.' );
+	}
+
+	// =================================================================
+	// G2 — GREEN GUARD (Slice 2): zero unread ⇒ no badge, no control;
+	// read rows stay visible; empty inbox ⇒ explicit empty state
+	// =================================================================
+
+	public function testPortalOmitsBadgeAndMarkAllControlAtZeroUnreadAndRendersEmptyState(): void
+	{
+		$fx = $this->buildLinkedPatientNotificationFixture( 'g2' );
+		$this->assertFixtureMaterialized( $fx );
+
+		// Reach zero unread through the EXISTING route with the exact payload the portal JS sends.
+		$mark_all = $this->restAs( (int) $fx['user_id'], 'POST', '/' . self::NS . self::READ_PATH, [ 'all' => true ], 'auto' );
+		self::assertSame( 200, $mark_all->get_status(), 'precondition: POST read {all:true} accepted. Body: ' . wp_json_encode( $mark_all->get_data() ) );
+		self::assertSame( self::OWN_UNREAD, (int) ( $this->payload( $mark_all )['marked'] ?? -1 ), 'precondition: every unread notification is now read.' );
+		self::assertSame( 0, (int) App::notificationService()->inbox( (int) $fx['user_id'], false, 50 )['unread_count'], 'precondition: server-known unread_count is 0.' );
+
+		// (a) After mark-all: the section and every (now read) row stay visible; badge + control are absent, not hidden/disabled.
+		$html    = $this->renderPortalAs( (int) $fx['user_id'] );
+		$section = $this->markedElementFragment( $html, self::SECTION_ROLE );
+		self::assertNotNull( $section, 'Slice 2 G2: the notifications section is rendered even when nothing is unread.' );
+		$rows = $this->markedOpeningTags( (string) $section, self::ROW_ROLE );
+		self::assertCount( self::OWN_TOTAL, $rows, 'Slice 2 G2: marking read changes state only — every notification stays visible.' );
+		foreach ( $rows as $row_tag ) {
+			self::assertSame(
+				'1',
+				(string) $this->attributeValue( $row_tag, self::ROW_READ_ATTRIBUTE ),
+				'Slice 2 G2: after mark-all every row exposes ' . self::ROW_READ_ATTRIBUTE . '="1". Got: ' . $row_tag
+			);
+		}
+		self::assertCount( 0, $this->markedOpeningTags( $html, self::BADGE_ROLE ), 'Slice 2 G2: the unread badge must not exist at unread_count=0 (hidden at zero, never "0").' );
+		self::assertCount( 0, $this->markedOpeningTags( $html, self::MARK_ALL_ROLE ), 'Slice 2 G2: no mark-all-read control is rendered when nothing is unread.' );
+		self::assertStringNotContainsString( self::EMPTY_STATE_TEXT, $this->textContent( (string) $section ), 'Slice 2 G2: read notifications are not an empty inbox.' );
+
+		// (b) Empty inbox: explicit empty state, still no badge/control, no row; the foreign Patient's row never surfaces.
+		global $wpdb;
+		$deleted = $wpdb->delete( $wpdb->prefix . 'cpms_notifications', [ 'recipient_patient_id' => (int) $fx['patient_id'] ], [ '%d' ] );
+		self::assertSame( self::OWN_TOTAL, (int) $deleted, 'fixture: the actor\'s notifications were removed (' . $wpdb->last_error . ').' );
+
+		$html    = $this->renderPortalAs( (int) $fx['user_id'] );
+		$section = $this->markedElementFragment( $html, self::SECTION_ROLE );
+		self::assertNotNull( $section, 'Slice 2 G2: the notifications section is rendered for an empty inbox.' );
+		self::assertCount( 0, $this->markedOpeningTags( $html, self::ROW_ROLE ), 'Slice 2 G2: an empty inbox renders no notification row.' );
+		self::assertCount( 0, $this->markedOpeningTags( $html, self::BADGE_ROLE ), 'Slice 2 G2: an empty inbox renders no unread badge.' );
+		self::assertCount( 0, $this->markedOpeningTags( $html, self::MARK_ALL_ROLE ), 'Slice 2 G2: an empty inbox renders no mark-all-read control.' );
+		self::assertStringContainsString( self::EMPTY_STATE_TEXT, $this->textContent( (string) $section ), 'Slice 2 G2: an empty inbox shows the explicit Persian empty state.' );
+		self::assertStringNotContainsString( self::ROW_ID_ATTRIBUTE . '="' . (int) $fx['foreign_id'] . '"', $html, 'Slice 2 G2: the foreign notification never surfaces, even for an empty own inbox.' );
+		self::assertNull( $this->readAtOf( (int) $fx['foreign_id'] ), 'Slice 2 G2: mark-all never mutated the foreign Patient\'s notification.' );
 	}
 
 	// =================================================================

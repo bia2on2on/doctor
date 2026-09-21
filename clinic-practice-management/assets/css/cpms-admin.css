@@ -370,3 +370,36 @@ body.cpms-admin .cpms-modal .cpms-modal-actions .button,
 body.cpms-admin .ltr,
 body.cpms-admin [dir="ltr"],
 body.cpms-admin code { direction: ltr; text-align: left; unicode-bidi: isolate; }
+
+/* ---------- Patient portal: internal notifications (Phase 9 Slice 2) ----------
+   فهرستِ اعلان‌های خودِ بیمار؛ کارت‌های تمام‌عرض (بدون overflow افقی در 390px)،
+   ردیفِ خوانده‌نشده با پس‌زمینهٔ متمایز و نشانِ «جدید». همان توکن‌های طراحی. */
+body.cpms-admin .cpms-patient-portal__notifications { max-width: 840px; margin-top: 8px; }
+body.cpms-admin .cpms-patient-portal__notification-list { list-style: none; margin: 0; padding: 0; }
+body.cpms-admin .cpms-patient-portal__notification {
+  background: var(--cpms-surface);
+  border: 1px solid var(--cpms-border);
+  border-radius: var(--cpms-radius);
+  padding: 10px 14px;
+  margin: 0 0 10px;
+  min-width: 0;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+body.cpms-admin .cpms-patient-portal__notification.is-unread {
+  background: #f0f6fc;
+  border-color: #9ec2e6;
+  border-inline-start: 4px solid var(--cpms-primary);
+}
+body.cpms-admin .cpms-patient-portal__notification.is-read { color: var(--cpms-text-muted); }
+body.cpms-admin .cpms-patient-portal__notification-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+body.cpms-admin .cpms-patient-portal__notification-head strong { font-size: 14px; color: var(--cpms-text); }
+body.cpms-admin .cpms-patient-portal__notification.is-read .cpms-badge { background: var(--cpms-surface-alt); border: 1px solid var(--cpms-border); }
+body.cpms-admin .cpms-patient-portal__notification p { margin: 6px 0 4px; line-height: 1.7; }
+body.cpms-admin .cpms-patient-portal__notification time { display: block; font-size: 12px; }

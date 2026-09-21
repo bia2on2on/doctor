@@ -20,6 +20,12 @@
  * ساخت URL: همان الگوی `apiUrl()` سطح عمومی رزرو — در Plain permalink ریشه شامل
  * `?rest_route=` است و مسیر بدون `?` به آن الحاق می‌شود؛ در Pretty هم همین الحاق
  * درست است. هیچ URL استقراری hardcode نمی‌شود.
+ *
+ * Slice 2 — اعلان‌های داخلی: کلیک روی `<button data-role="notifications-mark-all-read">`
+ * ⇒ همان دکمه disabled + aria-busy ⇒ `POST clinic/v1/notifications/read` با بدنهٔ
+ * دقیقاً `{"all":true}` (هیچ شناسه‌ای؛ گیرنده را سرور از کاربرِ جاری حل می‌کند) ⇒
+ * موفقیت: بارگذاری مجدد (فهرست/نشان از سرور)؛ شکست: پیام فارسی در ناحیهٔ
+ * `role="alert"` مخصوصِ اعلان‌ها + دکمه دوباره فعال و focus. بدون polling.
  */
 (function () {
 	'use strict';
@@ -28,9 +34,13 @@
 	var BUTTON_SELECTOR = 'button[data-role="cancel-appointment"]';
 	var ERROR_SELECTOR = '[data-role="cancel-error"]';
 	var CONFIRM_ATTR = 'data-cpms-confirm';
+	var MARK_ALL_SELECTOR = 'button[data-role="notifications-mark-all-read"]';
+	var NOTIFICATIONS_ERROR_SELECTOR = '[data-role="notifications-error"]';
 
 	var TEXT_BUSY = 'در حال لغو…';
 	var TEXT_FAILED = 'لغو نوبت انجام نشد. لطفاً دوباره تلاش کنید یا با مطب تماس بگیرید.';
+	var TEXT_MARKING = 'در حال ثبت…';
+	var TEXT_MARK_ALL_FAILED = 'علامت‌گذاری اعلان‌ها انجام نشد. لطفاً دوباره تلاش کنید.';
 
 	function isNonEmptyString(value) {
 		return typeof value === 'string' && value !== '';
@@ -108,8 +118,7 @@
 		return document.querySelector(ERROR_SELECTOR);
 	}
 
-	function showError(message, code) {
-		var box = errorBox();
+	function showError(box, message, code) {
 		if (!box) {
 			return;
 		}
@@ -119,8 +128,7 @@
 		box.hidden = false;
 	}
 
-	function clearError() {
-		var box = errorBox();
+	function clearError(box) {
 		if (!box) {
 			return;
 		}
@@ -130,10 +138,10 @@
 		box.hidden = true;
 	}
 
-	function setBusy(button, busy, idleLabel) {
+	function setBusy(button, busy, idleLabel, busyLabel) {
 		button.disabled = busy;
 		button.setAttribute('aria-busy', busy ? 'true' : 'false');
-		button.textContent = busy ? TEXT_BUSY : idleLabel;
+		button.textContent = busy ? (busyLabel || TEXT_BUSY) : idleLabel;
 	}
 
 	function cancelAppointment(config, button) {
@@ -142,7 +150,7 @@
 			return;
 		}
 		var idleLabel = button.textContent;
-		clearError();
+		clearError(errorBox());
 		setBusy(button, true, idleLabel);
 
 		// هم‌مبدأ + cookie جلسه + nonce `wp_rest`؛ بدنه عمداً خالی است (هیچ
@@ -160,12 +168,58 @@
 				return;
 			}
 			setBusy(button, false, idleLabel);
-			showError(serverMessage(result) || TEXT_FAILED, serverCode(result));
+			showError(errorBox(), serverMessage(result) || TEXT_FAILED, serverCode(result));
 			button.focus();
 		}, function () {
 			setBusy(button, false, idleLabel);
-			showError(TEXT_FAILED, 'NETWORK');
+			showError(errorBox(), TEXT_FAILED, 'NETWORK');
 			button.focus();
+		});
+	}
+
+	/**
+	 * Slice 2 — «خواندنِ همه»: همان مسیرِ موجود R2b با بدنهٔ دقیقاً `{"all":true}`.
+	 * هیچ clinic_id/patient_id/user_id ارسال نمی‌شود؛ سرور از کاربرِ جاری تصمیم می‌گیرد.
+	 * موفقیت ⇒ reload (نشان/فهرست از سرور)؛ شکست ⇒ پیام + دکمه فعال و focus.
+	 */
+	function markAllRead(config, button) {
+		if (button.disabled) {
+			return;
+		}
+		var box = document.querySelector(NOTIFICATIONS_ERROR_SELECTOR);
+		var idleLabel = button.textContent;
+		clearError(box);
+		setBusy(button, true, idleLabel, TEXT_MARKING);
+
+		requestJson(apiUrl(config.rest_root, config.notifications_read_path), {
+			method: 'POST',
+			credentials: 'same-origin',
+			headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'X-WP-Nonce': config.nonce },
+			body: JSON.stringify({ all: true })
+		}).then(function (result) {
+			var payload = result.body && result.body.data ? result.body.data : null;
+			if (result.ok && payload && typeof payload.marked === 'number') {
+				window.location.reload();
+				return;
+			}
+			setBusy(button, false, idleLabel);
+			showError(box, serverMessage(result) || TEXT_MARK_ALL_FAILED, serverCode(result));
+			button.focus();
+		}, function () {
+			setBusy(button, false, idleLabel);
+			showError(box, TEXT_MARK_ALL_FAILED, 'NETWORK');
+			button.focus();
+		});
+	}
+
+	/** دکمه فقط وقتی سرور آن را رندر کرده (خوانده‌نشده > ۰) و مسیر منتشر شده وجود دارد. */
+	function bindMarkAllRead(config) {
+		var button = document.querySelector(MARK_ALL_SELECTOR);
+		if (!button || !isNonEmptyString(config.notifications_read_path)) {
+			return;
+		}
+		button.addEventListener('click', function () {
+			markAllRead(config, button);
 		});
 	}
 
@@ -195,6 +249,7 @@
 			return;
 		}
 		bind(config);
+		bindMarkAllRead(config);
 	}
 
 	if (document.readyState === 'loading') {
