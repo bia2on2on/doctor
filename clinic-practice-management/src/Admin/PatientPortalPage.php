@@ -104,17 +104,8 @@ final class PatientPortalPage
      * Production pure-patient destination — frontend Patient Portal URL
      * (never under /wp-admin/ as of Phase 9 Slice 3).
      */
-    public static function pageUrl(): string
-    {
-        return PatientPortalShell::portalUrl();
-    }
-
-    /**
-     * Alias for discovery / login_redirect / RED contract helpers.
-     */
-    public static function frontendPortalUrl(): string
-    {
-        return self::pageUrl();
+    public static function pageUrl(): string {
+        return PatientPortalShell::portal_url();
     }
 
     // ================= Hooks =================

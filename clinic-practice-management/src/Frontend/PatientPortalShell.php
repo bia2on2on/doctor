@@ -23,8 +23,8 @@ use WP_Post;
 /**
  * Frontend entry + standalone shell for the pure-patient portal.
  */
-final class PatientPortalShell
-{
+final class PatientPortalShell {
+
 	/** CPMS-owned Page slug (Plain + Pretty via core main query — no custom rewrite). */
 	public const PAGE_SLUG = 'cpms-patient-portal';
 
@@ -40,23 +40,21 @@ final class PatientPortalShell
 	/** Existing portal JS handle (cancel + mark-all) — reused, portal-scoped. */
 	public const JS_HANDLE = 'cpms-patient-portal';
 
-	public static function register(): void
-	{
-		add_action( 'init', [ self::class, 'ensurePortalPage' ], 20 );
-		add_filter( 'template_include', [ self::class, 'filterTemplateInclude' ], 99 );
-		add_filter( 'show_admin_bar', [ self::class, 'hideAdminBarOnPortal' ], 20 );
-		add_action( 'wp_enqueue_scripts', [ self::class, 'registerHandles' ], 5 );
-		add_action( 'wp_enqueue_scripts', [ self::class, 'enqueueForPortal' ], 20 );
+	public static function register(): void {
+		add_action( 'init', [ self::class, 'ensure_portal_page' ], 20 );
+		add_filter( 'template_include', [ self::class, 'filter_template_include' ], 99 );
+		add_filter( 'show_admin_bar', [ self::class, 'hide_admin_bar_on_portal' ], 20 );
+		add_action( 'wp_enqueue_scripts', [ self::class, 'register_handles' ], 5 );
+		add_action( 'wp_enqueue_scripts', [ self::class, 'enqueue_for_portal' ], 20 );
 		// Cache-Control for authenticated portal documents (private, never public CDN).
-		add_action( 'template_redirect', [ self::class, 'sendPrivateCacheHeaders' ], 0 );
+		add_action( 'template_redirect', [ self::class, 'send_private_cache_headers' ], 0 );
 	}
 
 	/**
 	 * Ensure a published CPMS-owned Page exists and is recorded.
 	 * Idempotent; safe under Plain/Pretty; no rewrite rules.
 	 */
-	public static function ensurePortalPage(): int
-	{
+	public static function ensure_portal_page(): int {
 		$existing = (int) get_option( self::PAGE_OPTION, 0 );
 		if ( $existing > 0 ) {
 			$post = get_post( $existing );
@@ -105,9 +103,8 @@ final class PatientPortalShell
 	}
 
 	/** Absolute frontend portal URL (never under /wp-admin/). */
-	public static function portalUrl(): string
-	{
-		$page_id = self::ensurePortalPage();
+	public static function portal_url(): string {
+		$page_id = self::ensure_portal_page();
 		if ( $page_id <= 0 ) {
 			return home_url( '/' );
 		}
@@ -120,8 +117,7 @@ final class PatientPortalShell
 	}
 
 	/** Whether the main query is the CPMS Patient Portal page. */
-	public static function isPortalRequest(): bool
-	{
+	public static function is_portal_request(): bool {
 		if ( is_admin() ) {
 			return false;
 		}
@@ -139,12 +135,11 @@ final class PatientPortalShell
 	 *
 	 * @param string $template Theme-selected template path.
 	 */
-	public static function filterTemplateInclude( string $template ): string
-	{
-		if ( ! self::isPortalRequest() ) {
+	public static function filter_template_include( string $template ): string {
+		if ( ! self::is_portal_request() ) {
 			return $template;
 		}
-		$owned = self::templatePath();
+		$owned = self::template_path();
 		if ( ! is_readable( $owned ) ) {
 			return $template;
 		}
@@ -152,17 +147,15 @@ final class PatientPortalShell
 		return $owned;
 	}
 
-	public static function templatePath(): string
-	{
+	public static function template_path(): string {
 		$base = \defined( 'CPMS_PLUGIN_DIR' ) ? (string) CPMS_PLUGIN_DIR : dirname( __DIR__, 2 ) . '/';
 
 		return rtrim( $base, '/\\' ) . '/' . self::TEMPLATE_REL;
 	}
 
 	/** Hide WP admin bar on the frontend portal surface only. */
-	public static function hideAdminBarOnPortal( bool $show ): bool
-	{
-		if ( self::isPortalRequest() ) {
+	public static function hide_admin_bar_on_portal( bool $show ): bool {
+		if ( self::is_portal_request() ) {
 			return false;
 		}
 
@@ -170,9 +163,8 @@ final class PatientPortalShell
 	}
 
 	/** Authenticated portal documents are private — never public-cacheable. */
-	public static function sendPrivateCacheHeaders(): void
-	{
-		if ( ! self::isPortalRequest() ) {
+	public static function send_private_cache_headers(): void {
+		if ( ! self::is_portal_request() ) {
 			return;
 		}
 		if ( headers_sent() ) {
@@ -182,9 +174,8 @@ final class PatientPortalShell
 		header( 'Cache-Control: private, no-store, no-cache, must-revalidate, max-age=0', true );
 	}
 
-	public static function registerHandles(): void
-	{
-		$base = self::pluginUrlBase();
+	public static function register_handles(): void {
+		$base = self::plugin_url_base();
 		if ( $base === '' ) {
 			return;
 		}
@@ -194,12 +185,11 @@ final class PatientPortalShell
 	}
 
 	/** Enqueue portal CSS/JS only on the Patient Portal frontend surface. */
-	public static function enqueueForPortal(): void
-	{
-		if ( ! self::isPortalRequest() ) {
+	public static function enqueue_for_portal(): void {
+		if ( ! self::is_portal_request() ) {
 			return;
 		}
-		self::registerHandles();
+		self::register_handles();
 		wp_enqueue_style( self::CSS_HANDLE );
 		// JS only for pure patients (cancel + mark-all). Guest/staff shells need no portal script.
 		if ( is_user_logged_in() && PatientPortalPage::isPatientOnly( wp_get_current_user() ) ) {
@@ -207,8 +197,7 @@ final class PatientPortalShell
 		}
 	}
 
-	private static function pluginUrlBase(): string
-	{
+	private static function plugin_url_base(): string {
 		if ( \defined( 'CPMS_PLUGIN_URL' ) && CPMS_PLUGIN_URL !== '' ) {
 			return rtrim( (string) CPMS_PLUGIN_URL, '/' );
 		}
