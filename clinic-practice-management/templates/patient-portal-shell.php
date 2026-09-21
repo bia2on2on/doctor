@@ -104,7 +104,11 @@ echo $styles_html;
 			<span class="cpms-patient-portal-shell__mark" aria-hidden="true">CPMS</span>
 			<div class="cpms-patient-portal-shell__titles">
 				<p class="cpms-patient-portal-shell__product">پورتال بیمار</p>
-				<h1 class="cpms-patient-portal-shell__title">نوبت‌ها و اعلان‌ها</h1>
+				<?php if ( $is_patient ) : ?>
+					<p class="cpms-patient-portal-shell__title" data-role="portal-header-title">نوبت‌های من</p>
+				<?php else : ?>
+					<h1 class="cpms-patient-portal-shell__title">پورتال بیمار</h1>
+				<?php endif; ?>
 			</div>
 		</div>
 		<?php if ( $is_patient ) : ?>
@@ -122,7 +126,7 @@ echo $styles_html;
 	<?php if ( $is_patient ) : ?>
 	<nav class="cpms-patient-portal-shell__nav" role="navigation" aria-label="ناوبری پورتال بیمار" data-role="patient-nav">
 		<ul class="cpms-patient-portal-shell__nav-list">
-			<li><a class="is-active" href="<?php echo esc_url( $portal_url ); ?>" aria-current="page">نوبت‌ها و اعلان‌ها</a></li>
+			<li><a class="is-active" href="<?php echo esc_url( $portal_url ); ?>" aria-current="page">نوبت‌های من</a></li>
 		</ul>
 	</nav>
 	<?php endif; ?>

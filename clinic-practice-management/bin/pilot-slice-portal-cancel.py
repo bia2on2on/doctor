@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""pilot-slice-portal-cancel.py — Phase 9 Slice 1 + Slice 2: patient self-cancel and internal
-notifications on the Patient Portal («نوبت‌های من», wp-admin page cpms-patient) on a real Chromium,
+"""pilot-slice-portal-cancel.py — Phase 9 Slice 1 + Slice 2 + Slice 3: patient self-cancel and internal
+notifications on the independent frontend Patient Portal («نوبت‌های من», CPMS shell —
+WordPress Page + template_include + standalone template; NOT wp-admin) on a real Chromium,
 through the EXISTING routes POST clinic/v1/appointments/{id}/cancel (B4) and
 POST clinic/v1/notifications/read (R2b, body exactly {"all":true}).
 
@@ -75,9 +76,46 @@ RUNS = [
     {"vp": "laptop-1366", "w": 1366, "h": 768},
 ]
 
-PORTAL_PATH = "/wp-admin/admin.php?page=cpms-patient"
+# Phase 9 Slice 3: pure-patient home is the frontend CPMS shell (never /wp-admin/).
+# Pretty: /cpms-patient-portal/ ; Plain: /?page_id=N or /?pagename=cpms-patient-portal
+PORTAL_SLUG = "cpms-patient-portal"
+PORTAL_PATH = f"/{PORTAL_SLUG}/"
+LEGACY_ADMIN_PORTAL = "page=cpms-patient"
+SHELL_ROOT = "#cpms-patient-portal-shell, .cpms-patient-portal-shell, [data-cpms-patient-portal]"
 CANCEL_ROUTE_RE = re.compile(r"^/clinic/v1/appointments/(\d+)/cancel$")
 BTN = 'button[data-role="cancel-appointment"]'
+
+
+def is_frontend_portal_url(url: str) -> bool:
+    """True when the browser is on the production frontend Patient Portal (not wp-admin)."""
+    if not url:
+        return False
+    if "/wp-admin/" in url or LEGACY_ADMIN_PORTAL in url:
+        return False
+    if PORTAL_SLUG in url:
+        return True
+    # Plain permalink may use page_id only — shell root marker is the authority then.
+    return False
+
+
+def assert_on_frontend_portal(page, *, allow_navigate: bool = False) -> None:
+    """Ensure the page is the independent CPMS Patient Portal shell."""
+    url = page.url or ""
+    if not is_frontend_portal_url(url):
+        if allow_navigate:
+            page.goto(f"{BASE}{PORTAL_PATH}", wait_until="networkidle")
+            url = page.url or ""
+        if not is_frontend_portal_url(url) and page.locator(SHELL_ROOT).count() == 0:
+            raise RuntimeError(f"expected frontend Patient Portal, got {url}")
+    if "/wp-admin/" in url or LEGACY_ADMIN_PORTAL in url:
+        raise RuntimeError(f"Patient Portal must not remain under wp-admin (url={url})")
+    # Shell root is the hard authority (works under Plain page_id URLs too).
+    page.wait_for_selector(SHELL_ROOT, timeout=15000)
+    html = page.content()
+    if 'id="wpadminbar"' in html or 'id="adminmenu"' in html or 'id="wpfooter"' in html:
+        raise RuntimeError("wp-admin chrome must be absent from the Patient Portal shell")
+    if "مدیریت مطب" in html:
+        raise RuntimeError("Staff/Admin navigation must not appear in the Patient Portal shell")
 ERROR_BOX = '[data-role="cancel-error"]'
 DIALOG = '.cpms-modal[role="dialog"]'
 # Slice 2 — notifications section contract (same data-role markers the Integration suite asserts)
@@ -337,9 +375,11 @@ def run_journey(browser, run):
         page.wait_for_load_state("networkidle")
         if "wp-login.php" in page.url:
             raise RuntimeError(f"login failed: still on {page.url}")
-        if "page=cpms-patient" not in page.url:
+        # Slice 3: login_redirect targets the frontend portal; fall back to navigate if needed.
+        if not is_frontend_portal_url(page.url) and page.locator(SHELL_ROOT).count() == 0:
             page.goto(f"{BASE}{PORTAL_PATH}", wait_until="networkidle")
-        landed_on_portal = "page=cpms-patient" in page.url
+        assert_on_frontend_portal(page)
+        landed_on_portal = is_frontend_portal_url(page.url) or page.locator(SHELL_ROOT).count() > 0
 
         stage = "render"
         page.wait_for_selector("h1", timeout=15000)
@@ -517,8 +557,8 @@ def run_journey(browser, run):
             raise RuntimeError("a rejected mark-all must not mutate any notification")
         if page.locator(NOTIF_BADGE).get_attribute("data-unread-count") != str(db_unread):
             raise RuntimeError("badge must be unchanged after a rejected mark-all")
-        if "page=cpms-patient" not in page.url:
-            raise RuntimeError("failure must not navigate away")
+        if not is_frontend_portal_url(page.url) and page.locator(SHELL_ROOT).count() == 0:
+            raise RuntimeError(f"failure must not navigate away from frontend portal (url={page.url})")
         fail_posts = read_posts[posts_before:]
         if len(fail_posts) != 1 or fail_posts[0]["body"].strip() != '{"all":true}' or not fail_posts[0]["same_origin"]:
             raise RuntimeError(f"exactly one same-origin POST with body {{\"all\":true}} expected, got {[(p['body'][:40], p['same_origin']) for p in fail_posts]}")
@@ -625,8 +665,8 @@ def run_journey(browser, run):
             raise RuntimeError(f"cancel POST body must carry no authority fields, got {p0['body'][:80]!r}")
         if appt_status(fail_appt) != "confirmed":
             raise RuntimeError("rejected cancel must not mutate the appointment")
-        if "page=cpms-patient" not in page.url:
-            raise RuntimeError("failure must not navigate away")
+        if not is_frontend_portal_url(page.url) and page.locator(SHELL_ROOT).count() == 0:
+            raise RuntimeError(f"failure must not navigate away from frontend portal (url={page.url})")
         page.screenshot(path=screenshot("fail-alert"), full_page=True)
         ok(f"{key0}-03-fail", "Failure path: 409 → Persian role=alert, control busy in flight then re-enabled, DB unchanged",
            f"status=409 code=CLINIC_POLICY_VIOLATION nonce={p0['has_nonce']} same_origin={p0['same_origin']} body_empty=True busy_seen={was_busy} focus_restored={focused == str(fail_appt)}")
@@ -728,6 +768,51 @@ def run_journey(browser, run):
         ctx.close()
 
 
+def capture_shell_visual(browser, width: int, height: int, tag: str) -> None:
+    """Owner visual package — one additional viewport (e.g. ~768 tablet) without cancel traffic."""
+    key = f"visual-{tag}"
+    ctx = browser.new_context(
+        viewport={"width": width, "height": height},
+        locale="fa-IR",
+        ignore_https_errors=True,
+    )
+    page = ctx.new_page()
+    try:
+        page.goto(f"{BASE}/wp-login.php", wait_until="networkidle")
+        page.fill("#user_login", CFG["login"])
+        page.fill("#user_pass", CFG["password"])
+        try:
+            with page.expect_navigation(timeout=15000):
+                page.click("#wp-submit")
+        except Exception:
+            page.wait_for_load_state("networkidle", timeout=15000)
+        page.wait_for_load_state("networkidle")
+        if "wp-login.php" in page.url:
+            raise RuntimeError(f"visual login failed: {page.url}")
+        if not is_frontend_portal_url(page.url) and page.locator(SHELL_ROOT).count() == 0:
+            page.goto(f"{BASE}{PORTAL_PATH}", wait_until="networkidle")
+        assert_on_frontend_portal(page)
+        page.wait_for_selector("h1", timeout=15000)
+        page.screenshot(path=f"{OUT}/portal-shell-{tag}-main.png", full_page=True)
+        # Empty/error affordance regions exist (hidden until used).
+        err = page.locator('[data-role="cancel-error"]')
+        has_err_region = err.count() >= 1
+        ok(
+            f"{key}-shell",
+            f"Owner visual: frontend shell at {width}×{height} (no theme/wp-admin chrome)",
+            f"url_ok=True shell=True err_region={has_err_region} shot=portal-shell-{tag}-main.png",
+        )
+    except Exception as e:
+        try:
+            page.screenshot(path=f"{OUT}/portal-shell-{tag}-FAIL.png", full_page=True)
+        except Exception:
+            pass
+        fail(f"{key}", f"shell visual {tag}", e)
+        raise
+    finally:
+        ctx.close()
+
+
 def main():
     with sync_playwright() as p:
         browser = p.chromium.launch()
@@ -736,6 +821,12 @@ def main():
                 run_journey(browser, run)
             except Exception:
                 continue
+        # Owner visual package: tablet ~768 (in addition to 390 and 1366 journey shots).
+        if not failures:
+            try:
+                capture_shell_visual(browser, 768, 1024, "tablet-768")
+            except Exception:
+                pass
         browser.close()
     summary = {"ok": not failures, "runs": len(RUNS), "failed": failures}
     with open("pilot-portal-cancel-results.json", "w", encoding="utf-8") as f:
