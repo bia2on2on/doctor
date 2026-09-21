@@ -35,6 +35,8 @@
  *   R3 testProfileFormExposesAllowedFieldsAndKeepsLoginMobileReadOnly
  *   R4 testProfileSaveUsesSelectedLinkAndCanonicalBackendErrors
  *
+ * Expected RED: exactly the four tests above fail on main; all positive guards green.
+ *
  * Positive guards (MUST stay GREEN on current main and after GREEN):
  *   - real shell renders (Slice 3 contract preserved);
  *   - authenticated patient session works;
