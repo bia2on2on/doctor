@@ -1074,6 +1074,20 @@ final class Phase9Slice4PatientProfileUiRedTest extends WP_UnitTestCase
         self::assertGreaterThan(1, $clinicB);
         self::assertNotSame($clinicA, $clinicB);
 
+        // A primary location is required for Clinic B (schedule_slots.location_id FK).
+        $locB = $this->insertRow('cpms_locations', [
+            'clinic_id' => $clinicB,
+            'name' => 'مطب B',
+            'slug' => 'p9s4ui-locb-' . $this->fixtureTag . '-' . $tag,
+            'address' => 'آدرس B',
+            'phone' => '',
+            'timezone' => 'Asia/Tehran',
+            'is_primary' => 1,
+            'is_active' => 1,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ], ['%d', '%s', '%s', '%s', '%s', '%s', '%d', '%d', '%s', '%s'], 'location B');
+
         $mobile = $this->mobileFor($tag);
         $user_id = (int) wp_create_user(
             'p9s4ui2_' . $tag . '_' . uniqid('', false),
