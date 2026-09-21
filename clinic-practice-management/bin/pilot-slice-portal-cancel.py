@@ -1,25 +1,36 @@
 #!/usr/bin/env python3
-"""pilot-slice-portal-cancel.py — Phase 9 Slice 1: patient self-cancel from the Patient Portal
-(«نوبت‌های من», wp-admin page cpms-patient) on a real Chromium, through the EXISTING B4 route
-POST clinic/v1/appointments/{id}/cancel.
+"""pilot-slice-portal-cancel.py — Phase 9 Slice 1 + Slice 2: patient self-cancel and internal
+notifications on the Patient Portal («نوبت‌های من», wp-admin page cpms-patient) on a real Chromium,
+through the EXISTING routes POST clinic/v1/appointments/{id}/cancel (B4) and
+POST clinic/v1/notifications/read (R2b, body exactly {"all":true}).
 
 Fixture (created by the workflow step before this script):
-  PORTAL_CANCEL="login|pass|clinic_id|patient_id|ok_appt_390|ok_appt_1366|fail_appt|pending_appt|history_appt"
+  PORTAL_CANCEL="login|pass|clinic_id|patient_id|ok_appt_390|ok_appt_1366|fail_appt|pending_appt|history_appt|notif_unread_ids|notif_read_id"
 
   - ok_appt_*   : own CONFIRMED appointments far in the future (one per viewport) → cancel succeeds
   - fail_appt   : own CONFIRMED appointment starting in ~2h → B4 rejects (409 CLINIC_POLICY_VIOLATION)
   - pending_appt: own PENDING upcoming appointment → no cancel control may render
   - history_appt: own already-cancelled appointment → history table, no control
+  - notif_unread_ids: comma-separated ids of the patient's own UNREAD internal notifications (Slice 2)
+  - notif_read_id   : id of the patient's own already-READ internal notification (Slice 2)
 
 Journey (per viewport 390x844 and 1366x768):
-  1. Login as the pure patient → landed on the portal; runtime config has exactly rest_root/cancel_path/nonce
-     (no clinic_id/patient_id anywhere), controls exist ONLY for confirmed upcoming rows.
+  1. Login as the pure patient → landed on the portal; runtime config has exactly
+     rest_root/cancel_path/notifications_read_path/nonce (no clinic_id/patient_id anywhere), controls exist
+     ONLY for confirmed upcoming rows.
+  1b. Slice 2 — notifications: exactly one accessible section; unread badge whose data-unread-count equals the
+     server-known unread count (≠ row count); one row per inbox notification with data-read mirroring the DB and a
+     server-rendered title; one real, enabled mark-all-read <button>; hidden role=alert region.
+  1c. Slice 2 failure path: the same click without the X-WP-Nonce header (request-level fault injection) → 403
+     CLINIC_INVALID_NONCE → Persian role=alert, control busy in flight then re-enabled and focused; DB unchanged.
+  1d. Slice 2 success path: click → same-origin POST with X-WP-Nonce and body exactly {"all":true} → 200 → page
+     reloads → badge and control gone, every row still visible and data-read="1"; DB unread = 0.
   2. Keyboard: Enter on the control opens the accessible confirm dialog; Escape closes it, no request sent.
   3. Failure path: confirm on fail_appt → same-origin POST with X-WP-Nonce and body {} → 409 →
      Persian role=alert error visible, control was disabled/aria-busy in flight and is re-enabled; DB unchanged.
   4. Success path: confirm on ok_appt → 200 → page reloads → row gone from upcoming, listed in history as
      cancelled; DB status cancelled_by_patient, slot capacity released, audit row written.
-  5. UX: no horizontal overflow, no page errors, no failed same-origin requests, only the two expected REST calls.
+  5. UX: no horizontal overflow, no page errors, no failed same-origin requests, only the four expected REST calls.
 
 Evidence: booleans, counts, non-sensitive IDs only. No names/mobile/nonce/cookies/secrets are printed.
 """
@@ -39,10 +50,13 @@ OUT = "pilot-screenshots"
 
 _raw = os.environ.get("PORTAL_CANCEL", "").strip()
 if not _raw:
-    raise SystemExit("PORTAL_CANCEL is required: login|pass|clinic|patient|ok390|ok1366|fail|pending|history")
+    raise SystemExit("PORTAL_CANCEL is required: login|pass|clinic|patient|ok390|ok1366|fail|pending|history|notif_unread_ids|notif_read_id")
 _parts = [p.strip() for p in _raw.split("|")]
-if len(_parts) < 9 or not _parts[0]:
-    raise SystemExit("PORTAL_CANCEL must carry 9 pipe-separated parts")
+if len(_parts) < 11 or not _parts[0]:
+    raise SystemExit("PORTAL_CANCEL must carry 11 pipe-separated parts (Slice 2 adds notif_unread_ids|notif_read_id)")
+_notif_unread_ids = [int(x) for x in _parts[9].split(",") if x.strip()]
+if not _notif_unread_ids or int(_parts[10]) <= 0:
+    raise SystemExit("PORTAL_CANCEL parts 10/11 must carry at least one unread notification id and one read notification id")
 CFG = {
     "login": _parts[0],
     "password": _parts[1],
@@ -52,6 +66,8 @@ CFG = {
     "fail_appt": int(_parts[6]),
     "pending_appt": int(_parts[7]),
     "history_appt": int(_parts[8]),
+    "notif_unread_ids": _notif_unread_ids,
+    "notif_read_id": int(_parts[10]),
 }
 
 RUNS = [
@@ -64,6 +80,14 @@ CANCEL_ROUTE_RE = re.compile(r"^/clinic/v1/appointments/(\d+)/cancel$")
 BTN = 'button[data-role="cancel-appointment"]'
 ERROR_BOX = '[data-role="cancel-error"]'
 DIALOG = '.cpms-modal[role="dialog"]'
+# Slice 2 — notifications section contract (same data-role markers the Integration suite asserts)
+READ_ROUTE = "/clinic/v1/notifications/read"
+NOTIF_SECTION = '[data-role="notifications-section"]'
+NOTIF_ROW = '[data-role="notification-row"]'
+NOTIF_BADGE = '[data-role="notifications-unread-badge"]'
+MARK_ALL = 'button[data-role="notifications-mark-all-read"]'
+NOTIF_ERROR = '[data-role="notifications-error"]'
+PERSIAN_RE = re.compile(r"[\u0600-\u06FF]")
 
 results = []
 failures = []
@@ -137,18 +161,58 @@ def slot_booked(appt_id):
     )
 
 
-def install_trace(page, appt_id):
+def notif_where():
+    """Recipient-scoped predicate of the fixture patient's inbox (mirrors G6: same Clinic, not cancelled)."""
+    return f"clinic_id={CFG['clinic_id']} AND recipient_patient_id={CFG['patient_id']} AND status <> 'cancelled'"
+
+
+def notif_unread_count():
+    return db1(f"SELECT COUNT(*) FROM {T('cpms_notifications')} WHERE {notif_where()} AND read_at IS NULL")
+
+
+def notif_rows():
+    """Inbox-shaped rows for the fixture patient — (id, is_read) in the inbox order (id DESC, bounded like G6)."""
+    raw = db(f"SELECT id, IF(read_at IS NULL, 0, 1) FROM {T('cpms_notifications')} WHERE {notif_where()} ORDER BY id DESC LIMIT 50")
+    rows = []
+    for line in raw.split("\n"):
+        if line.strip():
+            nid, is_read = line.split("\t")
+            rows.append((int(nid), int(is_read)))
+    return rows
+
+
+def reset_notifications():
+    """Per-viewport reset of the seeded rows (the previous viewport's mark-all must not empty this one).
+    Recipient-scoped UPDATEs only: unread ids → read_at NULL, the read id → read_at set."""
+    unread_csv = ",".join(str(i) for i in CFG["notif_unread_ids"])
+    db(f"UPDATE {T('cpms_notifications')} SET read_at=NULL WHERE id IN ({unread_csv}) AND recipient_patient_id={CFG['patient_id']}")
+    db(f"UPDATE {T('cpms_notifications')} SET read_at=UTC_TIMESTAMP() WHERE id={CFG['notif_read_id']} AND recipient_patient_id={CFG['patient_id']}")
+
+
+def dom_notification_rows(page):
+    """[{id, read, title, text}] in document order — what the patient actually sees."""
+    return page.evaluate(
+        """() => Array.from(document.querySelectorAll('[data-role="notification-row"]')).map(li => ({
+            id: parseInt(li.getAttribute('data-notification-id') || '', 10),
+            read: li.getAttribute('data-read'),
+            title: ((li.querySelector('strong') || {}).textContent || '').trim(),
+            text: (li.textContent || '').trim()
+        }))"""
+    )
+
+
+def install_trace(page, selector):
     """MutationObserver on the control: records disabled/aria-busy/text transitions (proof of in-flight state)."""
     page.evaluate(
-        """(id) => {
-            const btn = document.querySelector('button[data-role="cancel-appointment"][data-appointment-id="' + id + '"]');
+        """(sel) => {
+            const btn = document.querySelector(sel);
             window.__cpmsTrace = [];
             if (!btn) { return; }
             const snap = () => ({ disabled: btn.disabled, busy: btn.getAttribute('aria-busy'), text: btn.textContent });
             const obs = new MutationObserver(() => window.__cpmsTrace.push(snap()));
             obs.observe(btn, { attributes: true, childList: true, characterData: true, subtree: true });
         }""",
-        str(appt_id),
+        selector,
     )
 
 
@@ -173,6 +237,7 @@ def run_journey(browser, run):
     page.set_default_timeout(25000)
     rest_calls = []      # (method, route, status)
     cancel_posts = []    # dicts: route, has_nonce, body, same_origin
+    read_posts = []      # Slice 2: POST notifications/read — dicts: has_nonce, body, same_origin
     console_errors, page_errors, net_failed, aborted_by_nav = [], [], {}, []
 
     def on_request(req):
@@ -183,6 +248,13 @@ def run_journey(browser, run):
             headers = {k.lower(): v for k, v in req.headers.items()}
             cancel_posts.append({
                 "route": route,
+                "has_nonce": bool(headers.get("x-wp-nonce")),
+                "body": req.post_data or "",
+                "same_origin": urlparse(req.url).netloc == urlparse(BASE).netloc,
+            })
+        elif req.method == "POST" and route == READ_ROUTE:
+            headers = {k.lower(): v for k, v in req.headers.items()}
+            read_posts.append({
                 "has_nonce": bool(headers.get("x-wp-nonce")),
                 "body": req.post_data or "",
                 "same_origin": urlparse(req.url).netloc == urlparse(BASE).netloc,
@@ -236,6 +308,17 @@ def run_journey(browser, run):
             status = appt_status(appt_id)
             if status != expected:
                 raise RuntimeError(f"fixture {label} appointment #{appt_id} must be {expected}, got {status!r}")
+        for label, nid in [("unread", i) for i in CFG["notif_unread_ids"]] + [("read", CFG["notif_read_id"])]:
+            owner = db1(f"SELECT recipient_patient_id FROM {T('cpms_notifications')} WHERE id={int(nid)}")
+            if owner != CFG["patient_id"]:
+                raise RuntimeError(f"fixture {label} notification #{nid} must belong to the fixture patient")
+        reset_notifications()
+        notif_unread_expected = notif_unread_count()
+        notif_rows_expected = notif_rows()
+        if notif_unread_expected < len(CFG["notif_unread_ids"]) or len(notif_rows_expected) <= notif_unread_expected:
+            raise RuntimeError(
+                f"fixture notifications must yield unread ≥ {len(CFG['notif_unread_ids'])} and rows > unread, got unread={notif_unread_expected} rows={len(notif_rows_expected)}"
+            )
         booked_before = slot_booked(ok_appt)
         audit_before = db1(
             f"SELECT COUNT(*) FROM {T('cpms_audit_logs')} WHERE action='APPOINTMENT_CANCELLED' AND resource_type='appointment' AND resource_id={ok_appt}"
@@ -268,16 +351,18 @@ def run_journey(browser, run):
             raise RuntimeError(f"exactly one runtime config script expected, got {cfg_nodes.count()}")
         cfg_raw = cfg_nodes.first.text_content() or ""
         cfg = json.loads(cfg_raw)
-        if sorted(cfg.keys()) != ["cancel_path", "nonce", "rest_root"]:
-            raise RuntimeError(f"config keys must be exactly cancel_path/nonce/rest_root, got {sorted(cfg.keys())}")
+        if sorted(cfg.keys()) != ["cancel_path", "nonce", "notifications_read_path", "rest_root"]:
+            raise RuntimeError(f"config keys must be exactly cancel_path/nonce/notifications_read_path/rest_root, got {sorted(cfg.keys())}")
         if cfg["cancel_path"] != "/appointments/{id}/cancel":
             raise RuntimeError(f"cancel_path must target existing B4, got {cfg['cancel_path']!r}")
+        if cfg["notifications_read_path"] != "/notifications/read":
+            raise RuntimeError(f"notifications_read_path must target the EXISTING R2b route, got {cfg['notifications_read_path']!r}")
         if not str(cfg["rest_root"]).startswith(BASE):
             raise RuntimeError("rest_root must be same-origin (rest_url-derived)")
         if not isinstance(cfg["nonce"], str) or cfg["nonce"] == "":
             raise RuntimeError("nonce must be a non-empty string")
-        if "clinic_id" in cfg_raw or "patient_id" in cfg_raw:
-            raise RuntimeError("config must not carry clinic_id/patient_id")
+        if "clinic_id" in cfg_raw or "patient_id" in cfg_raw or "user_id" in cfg_raw or "recipient" in cfg_raw:
+            raise RuntimeError("config must not carry clinic_id/patient_id/user_id/recipient")
         html = page.content()
         if "data-clinic-id" in html or "data-patient-id" in html:
             raise RuntimeError("portal markup must not publish clinic/patient ids")
@@ -324,7 +409,163 @@ def run_journey(browser, run):
             raise RuntimeError("one hidden role=alert error region expected before any action")
         page.screenshot(path=screenshot("portal"), full_page=True)
         ok(f"{key0}-01-render", "Authenticated portal: config safe, controls only on confirmed rows",
-           f"landed={landed_on_portal} config_keys=3 controls={btn_ids} (=all confirmed upcoming) pending_no_control=True history_no_control=True")
+           f"landed={landed_on_portal} config_keys=4 controls={btn_ids} (=all confirmed upcoming) pending_no_control=True history_no_control=True")
+
+        # ---------- 1b) Slice 2: notifications section + exact unread badge + rows mirror the DB ----------
+        stage = "notifications"
+        db_unread = notif_unread_count()
+        db_rows = notif_rows()
+        if db_unread != notif_unread_expected or db_rows != notif_rows_expected:
+            raise RuntimeError("notification rows changed between precondition and render")
+        section = page.locator(NOTIF_SECTION)
+        if section.count() != 1:
+            raise RuntimeError(f"exactly one notifications section expected, got {section.count()}")
+        if page.evaluate("(sel) => document.querySelector(sel).tagName", NOTIF_SECTION) != "SECTION":
+            raise RuntimeError("notifications section must be a <section> landmark")
+        heading = section.locator("h2").first.inner_text().strip()
+        if "اعلان" not in heading:
+            raise RuntimeError(f"notifications section must carry its own Persian heading, got {heading[:30]!r}")
+        badge = section.locator(NOTIF_BADGE)
+        if badge.count() != 1 or page.locator(NOTIF_BADGE).count() != 1:
+            raise RuntimeError(f"exactly one unread badge inside the section expected (section={badge.count()}, page={page.locator(NOTIF_BADGE).count()})")
+        if badge.get_attribute("data-unread-count") != str(db_unread):
+            raise RuntimeError(f"data-unread-count must equal the server-known unread count {db_unread}, got {badge.get_attribute('data-unread-count')!r}")
+        badge_text = (badge.inner_text() or "").translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789"))
+        if not re.search(rf"(?<!\d){db_unread}(?!\d)", badge_text):
+            raise RuntimeError(f"badge must visibly show the exact unread count {db_unread}, got {badge_text!r}")
+        if db_unread == len(db_rows):
+            raise RuntimeError("fixture must keep unread ≠ rows so the badge cannot be a row count")
+        dom_rows = dom_notification_rows(page)
+        if [(r["id"], int(r["read"] or -1)) for r in dom_rows] != db_rows:
+            raise RuntimeError(f"rendered rows must mirror the inbox exactly (id, read): dom={[(r['id'], r['read']) for r in dom_rows]} db={db_rows}")
+        if section.locator(NOTIF_ROW).count() != len(db_rows):
+            raise RuntimeError("every notification row must live inside the notifications section")
+        for r in dom_rows:
+            if not r["title"]:
+                raise RuntimeError(f"row #{r['id']} must render its server-published title")
+            if (r["read"] == "0") != ("جدید" in r["text"]):
+                raise RuntimeError(f"row #{r['id']} must show the unread marker iff data-read=0")
+        if page.locator(MARK_ALL).count() != 1:
+            raise RuntimeError(f"exactly one mark-all-read control expected with unread={db_unread}, got {page.locator(MARK_ALL).count()}")
+        mark_all = page.locator(MARK_ALL)
+        if not mark_all.is_visible() or not mark_all.is_enabled():
+            raise RuntimeError("mark-all-read control must be visible and enabled while something is unread")
+        if page.evaluate("(sel) => document.querySelector(sel).tagName", MARK_ALL) != "BUTTON" or mark_all.get_attribute("type") != "button":
+            raise RuntimeError("mark-all-read control must be a real <button type=button>")
+        mark_all_label = (mark_all.get_attribute("aria-label") or mark_all.inner_text() or "").strip()
+        if mark_all_label == "" or not PERSIAN_RE.search(mark_all_label):
+            raise RuntimeError("mark-all-read control needs a non-empty Persian accessible name")
+        mark_all.focus()
+        if page.evaluate("() => document.activeElement && document.activeElement.getAttribute('data-role')") != "notifications-mark-all-read":
+            raise RuntimeError("mark-all-read control must be focusable")
+        notif_error = page.locator(NOTIF_ERROR)
+        if notif_error.count() != 1 or notif_error.get_attribute("role") != "alert" or notif_error.is_visible():
+            raise RuntimeError("one hidden role=alert notifications error region expected before any action")
+        sw0 = page.evaluate("document.documentElement.scrollWidth")
+        iw0 = page.evaluate("window.innerWidth")
+        if sw0 > iw0 + 1:
+            raise RuntimeError(f"horizontal overflow with notifications rendered: scrollWidth={sw0} > innerWidth={iw0}")
+        page.screenshot(path=screenshot("notifications"), full_page=True)
+        ok(f"{key0}-01b-notifications", "Slice 2: one accessible section, exact unread badge (≠ rows), rows mirror DB read state, real enabled mark-all button",
+           f"section=1 unread_badge={db_unread} rows={len(db_rows)} read_rows={sum(1 for _, r in db_rows if r)} button=enabled focusable=True sw={sw0} iw={iw0}")
+
+        # ---------- 1c) Slice 2 failure path: same click without X-WP-Nonce → canonical 403 → alert, re-enable, focus ----------
+        stage = "notifications-fail"
+        install_trace(page, MARK_ALL)
+        posts_before = len(read_posts)
+
+        def strip_nonce(route, request):
+            headers = {k: v for k, v in request.headers.items() if k.lower() != "x-wp-nonce"}
+            route.continue_(headers=headers)
+
+        def is_rest(url):
+            return "/clinic/v1" in url
+
+        page.route(is_rest, strip_nonce)
+        try:
+            with page.expect_response(lambda r: r.request.method == "POST" and wp_route(r.url) == READ_ROUTE, timeout=20000) as fail_info:
+                mark_all.click()
+            fail_resp = fail_info.value
+        finally:
+            page.unroute(is_rest, strip_nonce)
+        if fail_resp.status != 403:
+            raise RuntimeError(f"the nonce-less mark-all must be rejected with 403, got {fail_resp.status}")
+        fail_body = fail_resp.json()
+        if fail_body.get("code") != "CLINIC_INVALID_NONCE":
+            raise RuntimeError(f"expected the canonical CLINIC_INVALID_NONCE envelope, got {fail_body.get('code')!r}")
+        page.wait_for_selector(f"{NOTIF_ERROR}:not([hidden])", state="visible", timeout=10000)
+        nerr_text = (notif_error.inner_text() or "").strip()
+        if nerr_text == "" or notif_error.get_attribute("data-error-code") != "CLINIC_INVALID_NONCE":
+            raise RuntimeError("failure must surface a non-empty inline alert carrying the server code")
+        if not PERSIAN_RE.search(nerr_text):
+            raise RuntimeError("notifications inline error must be Persian")
+        if error_box.is_visible():
+            raise RuntimeError("the cancel error region must stay untouched by a notifications failure")
+        page.wait_for_function(
+            "(sel) => { const b = document.querySelector(sel); return b && !b.disabled && b.getAttribute('aria-busy') === 'false'; }",
+            arg=MARK_ALL, timeout=10000,
+        )
+        ntrace = page.evaluate("() => window.__cpmsTrace || []")
+        n_was_busy = any(t.get("disabled") is True and t.get("busy") == "true" for t in ntrace)
+        if not n_was_busy:
+            raise RuntimeError(f"mark-all control must be disabled + aria-busy while in flight (trace={ntrace[:3]})")
+        if mark_all.inner_text().strip() != mark_all_label:
+            raise RuntimeError("mark-all label must be restored after failure")
+        if page.evaluate("() => document.activeElement && document.activeElement.getAttribute('data-role')") != "notifications-mark-all-read":
+            raise RuntimeError("focus must return to the mark-all control after failure")
+        if notif_unread_count() != db_unread or notif_rows() != db_rows:
+            raise RuntimeError("a rejected mark-all must not mutate any notification")
+        if page.locator(NOTIF_BADGE).get_attribute("data-unread-count") != str(db_unread):
+            raise RuntimeError("badge must be unchanged after a rejected mark-all")
+        if "page=cpms-patient" not in page.url:
+            raise RuntimeError("failure must not navigate away")
+        fail_posts = read_posts[posts_before:]
+        if len(fail_posts) != 1 or fail_posts[0]["body"].strip() != '{"all":true}' or not fail_posts[0]["same_origin"]:
+            raise RuntimeError(f"exactly one same-origin POST with body {{\"all\":true}} expected, got {[(p['body'][:40], p['same_origin']) for p in fail_posts]}")
+        page.screenshot(path=screenshot("notifications-fail"), full_page=True)
+        ok(f"{key0}-01c-notifications-fail", "Slice 2 failure path: 403 CLINIC_INVALID_NONCE → Persian role=alert, control busy in flight then re-enabled + focused, DB unchanged",
+           f"status=403 code=CLINIC_INVALID_NONCE body_all_true=True same_origin=True busy_seen={n_was_busy} focus_restored=True unread_still={db_unread}")
+
+        # ---------- 1d) Slice 2 success path: real nonce → 200 → reload → badge/control gone, rows read & visible ----------
+        stage = "notifications-success"
+        posts_before = len(read_posts)
+        with page.expect_navigation(wait_until="load", timeout=25000):
+            with page.expect_response(lambda r: r.request.method == "POST" and wp_route(r.url) == READ_ROUTE, timeout=20000) as read_info:
+                mark_all.click()
+        read_resp = read_info.value
+        if read_resp.status != 200:
+            raise RuntimeError(f"the existing read route must accept {{all:true}} from the authenticated patient, got {read_resp.status}")
+        try:
+            marked = int(((read_resp.json() or {}).get("data") or {}).get("marked"))
+        except Exception:
+            marked = None  # body may be unavailable once the page has reloaded — DB state below is the proof
+        if marked is not None and marked != db_unread:
+            raise RuntimeError(f"mark-all must mark exactly the server-known unread notifications ({db_unread}), got marked={marked}")
+        page.wait_for_load_state("networkidle")
+        n_nav_type = page.evaluate("() => (performance.getEntriesByType('navigation')[0] || {}).type || ''")
+        if n_nav_type != "reload":
+            raise RuntimeError(f"success must reload the page (navigation type={n_nav_type!r})")
+        if page.locator(NOTIF_SECTION).count() != 1:
+            raise RuntimeError("notifications section must still render after mark-all")
+        if page.locator(NOTIF_BADGE).count() != 0 or page.locator(MARK_ALL).count() != 0:
+            raise RuntimeError("badge and mark-all control must be absent (not hidden/disabled) at unread=0")
+        after_rows = dom_notification_rows(page)
+        if [r["id"] for r in after_rows] != [i for i, _ in db_rows] or any(r["read"] != "1" for r in after_rows):
+            raise RuntimeError(f"after mark-all every notification must remain visible with data-read=1, got {[(r['id'], r['read']) for r in after_rows]}")
+        if any("جدید" in r["text"] for r in after_rows):
+            raise RuntimeError("no row may still carry the unread marker after mark-all")
+        if notif_unread_count() != 0 or any(not r for _, r in notif_rows()) or len(notif_rows()) != len(db_rows):
+            raise RuntimeError("DB must show unread=0 with every row read and none removed")
+        ok_posts = read_posts[posts_before:]
+        if len(ok_posts) != 1 or ok_posts[0]["body"].strip() != '{"all":true}' or not ok_posts[0]["has_nonce"] or not ok_posts[0]["same_origin"]:
+            raise RuntimeError(f"exactly one same-origin POST with X-WP-Nonce and body {{\"all\":true}} expected, got {[(p['body'][:40], p['has_nonce'], p['same_origin']) for p in ok_posts]}")
+        sw1 = page.evaluate("document.documentElement.scrollWidth")
+        iw1 = page.evaluate("window.innerWidth")
+        if sw1 > iw1 + 1:
+            raise RuntimeError(f"horizontal overflow after mark-all: scrollWidth={sw1} > innerWidth={iw1}")
+        page.screenshot(path=screenshot("notifications-after"), full_page=True)
+        ok(f"{key0}-01d-notifications-success", "Slice 2 success path: 200 {all:true} → reload → badge/control gone, rows read & visible, DB unread=0",
+           f"status=200 marked={marked if marked is not None else '(unavailable after reload)'} reload=True nonce=True same_origin=True rows_visible={len(after_rows)} db_unread=0")
 
         # ---------- 2) keyboard: Enter opens confirm dialog; Escape closes without request ----------
         stage = "keyboard"
@@ -346,7 +587,7 @@ def run_journey(browser, run):
         # ---------- 3) failure path (deadline policy) ----------
         stage = "fail-path"
         fail_btn = page.locator(f'{BTN}[data-appointment-id="{fail_appt}"]')
-        install_trace(page, fail_appt)
+        install_trace(page, f'{BTN}[data-appointment-id="{fail_appt}"]')
         fail_btn.click()
         dialog = confirm_dialog(page)
         with page.expect_response(lambda r: r.request.method == "POST" and wp_route(r.url) == f"/clinic/v1/appointments/{fail_appt}/cancel", timeout=20000) as resp_info:
@@ -463,14 +704,16 @@ def run_journey(browser, run):
         if net_failed:
             raise RuntimeError(f"failed same-origin requests: {net_failed}")
         expected_calls = sorted([
+            ("POST", READ_ROUTE, 403),
+            ("POST", READ_ROUTE, 200),
             ("POST", f"/clinic/v1/appointments/{fail_appt}/cancel", 409),
             ("POST", f"/clinic/v1/appointments/{ok_appt}/cancel", 200),
         ])
         if sorted(rest_calls) != expected_calls:
             raise RuntimeError(f"unexpected REST traffic: {rest_calls}")
-        for p in cancel_posts:
-            if "clinic_id" in p["body"] or "patient_id" in p["body"]:
-                raise RuntimeError("no cancel POST may carry clinic_id/patient_id")
+        for p in cancel_posts + read_posts:
+            if any(k in p["body"] for k in ("clinic_id", "patient_id", "user_id", "recipient")):
+                raise RuntimeError("no portal POST may carry clinic_id/patient_id/user_id/recipient")
         ok(f"{key0}-05-ux", "UX: no overflow, no console/page errors, no failed request, only expected REST calls",
            f"sw={sw} iw={iw} rest_calls={len(rest_calls)} console=0 net=0 aborted_by_reload={len(aborted_by_nav)}")
 

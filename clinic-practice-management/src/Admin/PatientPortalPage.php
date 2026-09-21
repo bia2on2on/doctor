@@ -55,6 +55,19 @@ final class PatientPortalPage
     /** کلاسِ `<script type="application/json">` حاملِ پیکربندیِ امن. */
     private const CONFIG_CLASS = 'cpms-patient-portal__config';
 
+    /** مسیرِ موجودِ R2b نسبت به ریشهٔ namespace؛ بدنهٔ `{"all":true}` همهٔ اعلان‌های خودِ کاربر را خوانده می‌کند. */
+    private const NOTIFICATIONS_READ_PATH = '/notifications/read';
+
+    /** سقفِ ثابتِ ردیف‌های اعلان در یک رندر (همان پیش‌فرضِ `limit` در G6) — کوئری همیشه bounded است. */
+    private const NOTIFICATIONS_LIMIT = 50;
+
+    /** نشانگرهای بخش اعلان‌ها (قرارداد UI/Test — Slice 2). */
+    private const NOTIFICATIONS_SECTION_ROLE  = 'notifications-section';
+    private const NOTIFICATIONS_BADGE_ROLE    = 'notifications-unread-badge';
+    private const NOTIFICATIONS_MARK_ALL_ROLE = 'notifications-mark-all-read';
+    private const NOTIFICATIONS_ERROR_ROLE    = 'notifications-error';
+    private const NOTIFICATION_ROW_ROLE       = 'notification-row';
+
     public static function register(): void
     {
         add_filter('login_redirect', [self::class, 'redirectAfterLogin'], 20, 3);
@@ -219,6 +232,19 @@ final class PatientPortalPage
         } catch ( ScopeRequiredException ) {
             $phone = '';
         }
+        // اعلان‌های داخلیِ خودِ بیمار — همان G6 (NotificationService::inbox): گیرنده
+        // سرور-side از پیوندِ Patientِ کاربرِ جاری حل می‌شود؛ سه کوئریِ bounded (پیوند،
+        // فهرست با LIMIT، شمارِ خوانده‌نشده) و هیچ کوئریِ per-notification. بیمارِ
+        // بدونِ پیوند در نصب چندکلینیکی ⇒ Scope مبهم ⇒ همان degrade (بخشِ خالی).
+        try {
+            $inbox = App::notificationService()->inbox( get_current_user_id(), false, self::NOTIFICATIONS_LIMIT );
+        } catch ( ScopeRequiredException ) {
+            $inbox = [
+                'notifications' => [],
+                'unread_count'  => 0,
+            ];
+        }
+        $clinic_tz = self::clinic_timezone();
         ?>
 <div class="wrap cpms-patient-portal" dir="rtl" style="max-width:860px">
     <h1>نوبت‌های من</h1>
@@ -228,6 +254,8 @@ final class PatientPortalPage
     <p class="description">نوبت‌های تأییدشده را می‌توانید تا پیش از مهلتِ تعیین‌شدهٔ مطب همین‌جا لغو کنید.</p>
         <?php echo self::table( $upcoming, 'نوبت پیش‌رویی ندارید.', true ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- markup از پیش escape شده (esc_html/esc_attr در table()/cancel_button()) ?>
     <div class="notice notice-error inline cpms-patient-portal__error" role="alert" data-role="cancel-error" hidden><p></p></div>
+
+        <?php echo self::notifications_section( $inbox, $clinic_tz ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- markup از پیش escape شده (esc_html/esc_attr در notifications_section()) ?>
 
     <h2>تاریخچه</h2>
         <?php echo self::table( $past, 'تاریخچه‌ای ثبت نشده است.', false ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- markup از پیش escape شده (esc_html در table()) ?>
@@ -244,21 +272,23 @@ final class PatientPortalPage
     }
 
     /**
-     * پیکربندیِ امنِ runtime برای اسکریپت لغو — فقط سه کلید:
+     * پیکربندیِ امنِ runtime برای اسکریپت پورتال — فقط چهار کلید:
      *  - `rest_root`: `rest_url('clinic/v1')` بدون اسلش انتهایی (در Plain permalink
      *    شامل `index.php?rest_route=/clinic/v1` است؛ ترکیب مسیر سمت کلاینت با
      *    همان الگوی `apiUrl()` انجام می‌شود، نه الحاقِ ساده).
      *  - `cancel_path`: الگوی مسیر B4 با `{id}`.
-     *  - `nonce`: `wp_rest` — همان مرزِ CSRF که `cancelPermission` می‌سنجد.
+     *  - `notifications_read_path`: مسیرِ موجودِ R2b (POST `{"all":true}`) — Slice 2.
+     *  - `nonce`: `wp_rest` — همان مرزِ CSRF که `cancelPermission`/`permission` می‌سنجند.
      * عمداً هیچ clinic_id/patient_id/PHI منتشر نمی‌شود؛ مرجعِ مالکیت و Clinic سرور است.
      * `JSON_HEX_TAG|JSON_HEX_AMP` خروجی را script-safe می‌کند (`</` و `&` escape).
      */
     private static function config_script(): string {
         $json = wp_json_encode(
             [
-                'rest_root'   => untrailingslashit( rest_url( self::REST_NAMESPACE ) ),
-                'cancel_path' => self::CANCEL_PATH,
-                'nonce'       => wp_create_nonce( 'wp_rest' ),
+                'rest_root'               => untrailingslashit( rest_url( self::REST_NAMESPACE ) ),
+                'cancel_path'             => self::CANCEL_PATH,
+                'notifications_read_path' => self::NOTIFICATIONS_READ_PATH,
+                'nonce'                   => wp_create_nonce( 'wp_rest' ),
             ],
             JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_UNICODE
         );
@@ -267,6 +297,95 @@ final class PatientPortalPage
         }
 
         return '<script type="application/json" class="' . esc_attr( self::CONFIG_CLASS ) . '">' . $json . '</script>';
+    }
+
+    /**
+     * بخشِ اعلان‌های داخلی (Slice 2) — سرور-رندر از پاسخِ واقعیِ G6؛ بدون polling.
+     * نشانِ خوانده‌نشده و کنترلِ «خواندنِ همه» فقط وقتی شمارِ خوانده‌نشده > ۰ است
+     * رندر می‌شوند (در صفر اصلاً وجود ندارند، نه اینکه پنهان یا غیرفعال باشند).
+     *
+     * @param array<string, mixed> $inbox خروجیِ NotificationService::inbox (notifications + unread_count).
+     */
+    private static function notifications_section( array $inbox, \DateTimeZone $tz ): string {
+        $rows   = is_array( $inbox['notifications'] ?? null ) ? $inbox['notifications'] : [];
+        $unread = (int) ( $inbox['unread_count'] ?? 0 );
+
+        $html = '<section class="cpms-patient-portal__notifications" data-role="' . esc_attr( self::NOTIFICATIONS_SECTION_ROLE ) . '" aria-labelledby="cpms-patient-portal-notifications-title">'
+            . '<h2 id="cpms-patient-portal-notifications-title">اعلان‌ها';
+        if ( $unread > 0 ) {
+            $html .= ' <span class="cpms-badge cpms-warn" data-role="' . esc_attr( self::NOTIFICATIONS_BADGE_ROLE ) . '" data-unread-count="' . $unread . '">' . $unread . ' خوانده‌نشده</span>';
+        }
+        $html .= '</h2>';
+
+        if ( $rows === [] ) {
+            return $html
+                . '<div class="cpms-empty"><span class="cpms-empty-icon" aria-hidden="true">🔔</span>'
+                . '<span class="cpms-empty-title">هنوز اعلانی ندارید</span>'
+                . '<span class="cpms-empty-desc">تغییرات نوبت‌ها و یادآوری‌های مطب همین‌جا نمایش داده می‌شود.</span></div>'
+                . '</section>';
+        }
+
+        $html .= '<p class="description">آخرین تغییرات نوبت‌ها و یادآوری‌های مطب؛ موارد خوانده‌نشده با نشانِ «جدید» مشخص می‌شوند.</p>';
+        if ( $unread > 0 ) {
+            $html .= '<p><button type="button" class="button" data-role="' . esc_attr( self::NOTIFICATIONS_MARK_ALL_ROLE ) . '">علامت‌گذاری همه به‌عنوان خوانده‌شده</button></p>';
+        }
+        $html .= '<div class="notice notice-error inline cpms-patient-portal__error" role="alert" data-role="' . esc_attr( self::NOTIFICATIONS_ERROR_ROLE ) . '" hidden><p></p></div>'
+            . '<ul class="cpms-patient-portal__notification-list">';
+        foreach ( $rows as $row ) {
+            if ( is_array( $row ) ) {
+                $html .= self::notification_row( $row, $tz );
+            }
+        }
+
+        return $html . '</ul></section>';
+    }
+
+    /**
+     * یک ردیفِ اعلان — عنوان/متن از سرور (esc_html)، وضعیتِ خوانده/نخوانده در
+     * `data-read` («0»/«1») و برچسبِ متنی؛ فقط شناسهٔ خودِ اعلان منتشر می‌شود.
+     *
+     * @param array<string, mixed> $row یک ردیفِ پاسخِ G6 (id/title/body/read_at/created_at).
+     */
+    private static function notification_row( array $row, \DateTimeZone $tz ): string {
+        $is_read = ! empty( $row['read_at'] );
+
+        return '<li class="cpms-patient-portal__notification' . ( $is_read ? ' is-read' : ' is-unread' ) . '"'
+            . ' data-role="' . esc_attr( self::NOTIFICATION_ROW_ROLE ) . '"'
+            . ' data-notification-id="' . (int) ( $row['id'] ?? 0 ) . '" data-read="' . ( $is_read ? '1' : '0' ) . '">'
+            . '<div class="cpms-patient-portal__notification-head">'
+            . '<strong>' . esc_html( (string) ( $row['title'] ?? '' ) ) . '</strong>'
+            . ( $is_read ? '<span class="cpms-badge">خوانده‌شده</span>' : '<span class="cpms-badge cpms-warn">جدید</span>' )
+            . '</div>'
+            . '<p>' . esc_html( (string) ( $row['body'] ?? '' ) ) . '</p>'
+            . self::notification_time( (string) ( $row['created_at'] ?? '' ), $tz )
+            . '</li>';
+    }
+
+    /**
+     * زمانِ ثبتِ اعلان (UTC در DB) → `<time datetime="ISO-8601">` با برچسبِ جلالی و
+     * ساعتِ محلیِ Clinic — همان قالبِ جدول‌های همین صفحه (`1405/07/14` و `HH:MM`, dir=ltr).
+     */
+    private static function notification_time( string $created_at_utc, \DateTimeZone $tz ): string {
+        $utc = \DateTimeImmutable::createFromFormat( 'Y-m-d H:i:s', $created_at_utc, new \DateTimeZone( 'UTC' ) );
+        if ( $utc === false ) {
+            return '';
+        }
+        $local = $utc->setTimezone( $tz );
+
+        return '<time class="description" datetime="' . esc_attr( $utc->format( DATE_ATOM ) ) . '">'
+            . '<span dir="ltr">' . esc_html( Jalali::formatYmd( $local->format( 'Y-m-d' ) ) . ' ' . $local->format( 'H:i' ) ) . '</span></time>';
+    }
+
+    /**
+     * منطقهٔ زمانیِ نمایش: تنظیمِ Clinicِ محیطی؛ اگر Scope مبهم باشد (بیمار عضو
+     * هیچ Clinicی نیست) یا مقدار نامعتبر باشد، منطقهٔ زمانیِ سایت — یک بار در هر رندر.
+     */
+    private static function clinic_timezone(): \DateTimeZone {
+        try {
+            return new \DateTimeZone( App::settings()->clinicTimezone() );
+        } catch ( \Exception ) {
+            return wp_timezone();
+        }
     }
 
     /**

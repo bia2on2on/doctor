@@ -1249,7 +1249,11 @@ jobs:
       # دو نوبتِ confirmed دور (یکی برای هر viewport ⇒ موفق)، یک نوبتِ confirmed در ~۲
       # ساعت آینده (⇒ B4 با 409 CLINIC_POLICY_VIOLATION رد می‌کند: مسیرِ خطا)، یک
       # pending (بدون کنترل) و یک تاریخچهٔ لغوشده (بدون کنترل).
-      - name: Slice-1 portal self-cancel fixture — Clinic چهارم + بیمار خالص + نوبت‌ها
+      # Phase 9 Slice 2 — همان fixture چهار اعلانِ داخلی (کانال internal، از مسیرِ واقعیِ
+      # دامنه publishToPatient) برای همین بیمار می‌کارد: سه خوانده‌نشده + یک از پیش
+      # خوانده‌شده ⇒ unread_count (3) ≠ تعداد ردیف‌ها (4)؛ بخش اعلان‌های پورتال و
+      # «خواندنِ همه» از طریق همان POST clinic/v1/notifications/read موجود آزموده می‌شود.
+      - name: Slice-1/Slice-2 portal fixture — Clinic چهارم + بیمار خالص + نوبت‌ها + اعلان‌ها
         run: |
           cat > /tmp/portal-cancel-fixture.php <<'PHPEOF'
           <?php
@@ -1310,8 +1314,30 @@ jobs:
           $expected = array_values($ids);
           sort($expected);
           if ($seen !== $expected) { echo 'PORTAL_FIXTURE_ERROR: listMine mismatch seen=' . implode(',', $seen) . ' expected=' . implode(',', $expected) . "\n"; exit(1); }
-          echo 'fixture: portal-cancel clinic=' . $clinicId . ' clinician=' . $clinicianId . ' location=' . $locationId . ' patient=' . $patientId . ' user=' . $login . ' ok390=' . $ids['ok390'] . ' ok1366=' . $ids['ok1366'] . ' fail=' . $ids['fail'] . ' pending=' . $ids['pending'] . ' history=' . $ids['history'] . "\n";
-          file_put_contents('/tmp/portal-cancel.env', 'PORTAL_CANCEL=' . $login . '|' . $pass . '|' . $clinicId . '|' . $patientId . '|' . $ids['ok390'] . '|' . $ids['ok1366'] . '|' . $ids['fail'] . '|' . $ids['pending'] . '|' . $ids['history'] . "\n");
+          // Slice 2 — internal notifications for the SAME patient through the real domain publish path
+          // (channel=internal, status=queued, payload rendered by the NotificationEvents catalog).
+          $notifications = \ClinicCore\Bootstrap\App::notificationService();
+          $notifVars = ['doctor_name' => 'دکتر پورتال (Synthetic)', 'appointment_date' => \ClinicCore\Domain\Time\Jalali::formatYmd($specs['ok390'][0]->format('Y-m-d')), 'appointment_time' => '10:00', 'patient_name' => 'بیمار گرامی', 'clinic_name' => 'کلینیک پورتال (Synthetic)'];
+          $notifEvents = [\ClinicCore\Domain\Notifications\NotificationEvents::APPT_CONFIRMED, \ClinicCore\Domain\Notifications\NotificationEvents::APPT_CHANGED, \ClinicCore\Domain\Notifications\NotificationEvents::APPT_REMINDER, \ClinicCore\Domain\Notifications\NotificationEvents::FOLLOWUP_REMINDER];
+          $notifIds = [];
+          foreach ($notifEvents as $i => $event) {
+            $nid = $notifications->publishToPatient($clinicId, $patientId, $event, $notifVars, 'p9s2:' . $uniq . ':' . $i);
+            if ($nid === null || (int) $nid <= 0) { echo "PORTAL_FIXTURE_ERROR: notification {$event} publish failed: {$wpdb->last_error}\n"; exit(1); }
+            $notifIds[] = (int) $nid;
+          }
+          // The LAST seeded notification is already read → unread (3) ≠ rows (4): the badge cannot be a row count.
+          $readNotifId = array_pop($notifIds);
+          if ($wpdb->query($wpdb->prepare('UPDATE ' . $db->table('cpms_notifications') . ' SET read_at = %s WHERE id = %d AND recipient_patient_id = %d', $now, $readNotifId, $patientId)) !== 1) { echo "PORTAL_FIXTURE_ERROR: could not mark notification {$readNotifId} read: {$wpdb->last_error}\n"; exit(1); }
+          // Verify the portal data path (G6 inbox — recipient resolved server-side from the link) sees exactly these rows.
+          $inbox = $notifications->inbox((int) $userId, false, 50);
+          $inboxIds = array_map(fn($n) => (int) $n['id'], (array) $inbox['notifications']);
+          sort($inboxIds);
+          $expectedNotif = array_merge($notifIds, [$readNotifId]);
+          sort($expectedNotif);
+          if ($inboxIds !== $expectedNotif || (int) $inbox['unread_count'] !== count($notifIds)) { echo 'PORTAL_FIXTURE_ERROR: inbox mismatch seen=' . implode(',', $inboxIds) . ' expected=' . implode(',', $expectedNotif) . ' unread=' . (int) $inbox['unread_count'] . "\n"; exit(1); }
+          echo 'fixture: portal-cancel clinic=' . $clinicId . ' clinician=' . $clinicianId . ' location=' . $locationId . ' patient=' . $patientId . ' user=' . $login . ' ok390=' . $ids['ok390'] . ' ok1366=' . $ids['ok1366'] . ' fail=' . $ids['fail'] . ' pending=' . $ids['pending'] . ' history=' . $ids['history'] . ' notif_unread=' . implode(',', $notifIds) . ' notif_read=' . $readNotifId . "\n";
+          // parts 10/11 (Slice 2): comma-separated unread notification ids | the already-read notification id
+          file_put_contents('/tmp/portal-cancel.env', 'PORTAL_CANCEL=' . $login . '|' . $pass . '|' . $clinicId . '|' . $patientId . '|' . $ids['ok390'] . '|' . $ids['ok1366'] . '|' . $ids['fail'] . '|' . $ids['pending'] . '|' . $ids['history'] . '|' . implode(',', $notifIds) . '|' . $readNotifId . "\n");
           PHPEOF
           WP_HOME="$WP_DIR" php /tmp/portal-cancel-fixture.php 2>&1 | tee /tmp/portal-cancel-fixture.log
           test "${PIPESTATUS[0]}" -eq 0
@@ -1390,7 +1416,13 @@ jobs:
       # alert فارسی + کنترل در حین درخواست disabled/aria-busy و بعد دوباره فعال؛
       # ۴) مسیرِ موفق: 200 ⇒ reload ⇒ ردیف در تاریخچه، DB=cancelled_by_patient،
       # ظرفیت آزاد، Audit؛ ۵) بدون overflow/console/failed. شواهد فقط boolean/شناسه.
-      - name: Slice-1 portal self-cancel — اثبات مرورگر واقعی (390×844 + 1366×768)
+      # Phase 9 Slice 2 — همان سفر، مرحلهٔ «اعلان‌ها» (بین ۱ و ۲): بخشِ اعلان‌های داخلی +
+      # نشانِ خوانده‌نشدهٔ دقیقاً برابر با DB + ردیف‌ها/وضعیتِ خوانده‌شده برابر با DB؛
+      # «خواندنِ همه» با همان POST clinic/v1/notifications/read موجود و بدنهٔ دقیقاً
+      # {"all":true} (بدون clinic_id/patient_id): مسیرِ خطا (403 nonce ⇒ alert فارسی،
+      # دکمه دوباره فعال و focus، DB بدون تغییر) و مسیرِ موفق (200 ⇒ reload ⇒ نشان و
+      # دکمه حذف، همهٔ ردیف‌ها خوانده‌شده و هنوز قابل‌مشاهده، DB unread=0).
+      - name: Slice-1/Slice-2 portal — اثبات مرورگر واقعی (390×844 + 1366×768)
         env:
           BASE: http://localhost:8080
         run: |
@@ -1476,17 +1508,17 @@ jobs:
             gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@/tmp/slice3-evidence.md || true
           fi
 
-      # Phase 9 Slice 1 — همان کانال شواهد برای پورتال بیمار (لغو نوبت). فقط
-      # boolean/تعداد/شناسه — بدون نام/موبایل/رمز/nonce/cookie.
-      - name: Post Slice-1 portal self-cancel evidence to PR (لاگ Blob از Sandbox در دسترس نیست)
+      # Phase 9 Slice 1 + Slice 2 — همان کانال شواهد برای پورتال بیمار (لغو نوبت +
+      # اعلان‌های داخلی). فقط boolean/تعداد/شناسه — بدون نام/موبایل/رمز/nonce/cookie.
+      - name: Post Slice-1/Slice-2 portal evidence to PR (لاگ Blob از Sandbox در دسترس نیست)
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           {
-            echo "### Phase 9 Slice 1 — portal self-cancel evidence (run ${{ github.run_id }}, job ${GITHUB_JOB}, sha ${{ github.sha }})"
+            echo "### Phase 9 Slice 1 + Slice 2 — portal self-cancel + notifications evidence (run ${{ github.run_id }}, job ${GITHUB_JOB}, sha ${{ github.sha }})"
             echo '```'
-            echo '--- fixture: fourth synthetic clinic + pure patient + confirmed/pending/history appointments (ids only) ---'
+            echo '--- fixture: fourth synthetic clinic + pure patient + confirmed/pending/history appointments + 3 unread/1 read internal notifications (ids only) ---'
             cut -d'|' -f1,3- /tmp/portal-cancel.env 2>/dev/null || echo '(PORTAL_CANCEL not produced — portal self-cancel NOT exercised)'
             echo '--- PASS/FAIL summary (per viewport × stage) ---'
             grep -E '^(PASS|FAIL)' /tmp/portal-cancel.log 2>/dev/null || echo '(portal-cancel.log missing)'
