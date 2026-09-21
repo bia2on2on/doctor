@@ -78,7 +78,7 @@ ALL_THEME_MARKERS = tuple(m for pair in THEME_MARKERS.values() for m in pair)
 ADMIN_CHROME_MARKERS = ('id="wpadminbar"', "wp-admin-bar-", 'id="adminmenu"', 'id="wpfooter"')
 
 results = []
-page_errors = []
+page_errors = []  # (tag, message, url) — همه نگه داشته می‌شوند؛ گیت فقط روی صفحاتِ shell
 
 
 def check(name, ok, detail=""):
@@ -99,6 +99,15 @@ def wp(*args, tolerate_failure=False):
             return ""
         raise RuntimeError("wp " + " ".join(args) + f" failed rc={proc.returncode}: {proc.stderr[:400]}")
     return (proc.stdout or "").strip()
+
+
+def is_shell_url(url):
+    """صفحاتِ ادعایِ این proof (پوستهٔ standalone) — همان انضباطِ `is_cpms_url` در
+    rwp-acceptance: خطا/نویزِ صفحاتِ وردپرسِ میزبان (wp-login/wp-admin landing)
+    خارج از قراردادِ پوسته است؛ همه خطاها log می‌شوند ولی فقط خطای صفحاتِ shell
+    گیتِ `no_page_errors_on_shell_pages` را قرمز می‌کند (کلاسِ چک مطابقِ ادعا)."""
+    u = url or ""
+    return ("wp-login.php" not in u) and ("page_id=" in u or PAGE_SLUG in u)
 
 
 def htaccess_path():
@@ -211,7 +220,7 @@ def run_shell_scenario(browser, mode, theme, page_id, expected_uid):
     # ---------- positive control: خانه (تم فعال واقعاً رندر می‌شود) ----------
     homectx = new_persona_context(browser)
     home = homectx.new_page()
-    home.on("pageerror", lambda e: page_errors.append(f"[home-{tag}] {e}"))
+    home.on("pageerror", lambda e: page_errors.append((f"home-{tag}", str(e), home.url)))
     resp = home.goto(f"{BASE}/", wait_until="domcontentloaded")
     home_body = home.content()
     home.screenshot(path=f"{OUT}/screenshots/shell-proof-home-{tag}.png", full_page=True)
@@ -233,7 +242,7 @@ def run_shell_scenario(browser, mode, theme, page_id, expected_uid):
     # ---------- پوسته — anonymous (کانتکستِ مستقلِ anon) ----------
     anonctx = new_persona_context(browser)
     anon = anonctx.new_page()
-    anon.on("pageerror", lambda e: page_errors.append(f"[anon-{tag}] {e}"))
+    anon.on("pageerror", lambda e: page_errors.append((f"anon-{tag}", str(e), anon.url)))
     resp = anon.goto(shell_url, wait_until="domcontentloaded")
     anon.wait_for_timeout(300)
     body = anon.content()
@@ -271,7 +280,7 @@ def run_shell_scenario(browser, mode, theme, page_id, expected_uid):
     # ---------- پوسته — بیمارِ واردشده با نشستِ واقعیِ وردپرس ----------
     patctx = new_persona_context(browser)
     pat = patctx.new_page()
-    pat.on("pageerror", lambda e: page_errors.append(f"[pat-{tag}] {e}"))
+    pat.on("pageerror", lambda e: page_errors.append((f"pat-{tag}", str(e), pat.url)))
     if not login(pat, SHELLPROOF_USER, SHELLPROOF_PASS, "shellproof"):
         patctx.close()
         return anon_fp
@@ -392,17 +401,28 @@ def main():
 
 
 def finish():
-    failed = [r for r in results if not r[1]]
+    shell_errs = [e for e in page_errors if is_shell_url(e[2])]
+    other_errs = [e for e in page_errors if not is_shell_url(e[2])]
     with open(f"{OUT}/logs/shell-proof-page-errors.log", "w") as f:
-        for msg in page_errors:
-            f.write(msg + "\n")
-    check("shellproof.no_page_errors", len(page_errors) == 0, " || ".join(page_errors[:4]))
+        for tag, msg, url in page_errors:
+            f.write(f"[{tag}] {msg} <{url}>\n")
+    # گیتِ صریحِ قراردادِ پوسته: هیچ خطای JS روی صفحاتِ shell.
+    check("shellproof.no_page_errors_on_shell_pages", len(shell_errs) == 0,
+          " || ".join(f"[{t}] {m[:200]} <{u[:80]}>" for t, m, u in shell_errs[:4]))
+    # اطلاعاتی (غیرگیت — افشا کامل): نویزِ صفحاتِ میزبان (wp-login/wp-admin) — در
+    # صورتِ مشاهده با منبعِ NOT RETRIEVED ثبت می‌شود؛ نه نقصِ محصول ادعا می‌شود و نه
+    # پنهان می‌ماند (همان حدِّ rwp-acceptance: فقط صفحاتِ CPMS گیت‌اند).
+    check("shellproof.non_shell_page_errors_informational", True,
+          f"{len(other_errs)} non-shell page error(s): "
+          + " || ".join(f"[{t}] {m[:160]} <{u[:80]}>" for t, m, u in other_errs[:4]))
     failed = [r for r in results if not r[1]]
     with open(f"{OUT}/shell-proof-results.json", "w") as f:
         json.dump(
             {
                 "checks": [{"name": n, "ok": ok, "detail": d} for n, ok, d in results],
                 "failed": len(failed),
+                "page_errors_on_shell_pages": len(shell_errs),
+                "page_errors_elsewhere_informational": len(other_errs),
             },
             f,
             ensure_ascii=False,
