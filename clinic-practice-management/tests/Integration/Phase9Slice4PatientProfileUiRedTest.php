@@ -554,6 +554,7 @@ final class Phase9Slice4PatientProfileUiRedTest extends WP_UnitTestCase
         self::assertTrue(NationalIdValidator::isValid('0000000140'), 'positive control: valid national ID.');
         self::assertTrue(NationalIdValidator::isValid('0000000061'), 'positive control: valid national ID (duplicate).');
         $dupClinicId = (int) $fx['clinic_id'];
+        // Insert another Patient in the same Clinic with national_id 0000000061.
         $dupPatient = $this->insertPatient(
             $dupClinicId,
             'MR-P9S4-R4-DUP-' . $this->fixtureTag,
@@ -563,19 +564,7 @@ final class Phase9Slice4PatientProfileUiRedTest extends WP_UnitTestCase
             'active',
             '0000000061'
         );
-        $validEdit = $this->dispatchRest('PUT', self::ME_PATH, [
-            'link_id' => $fx['link_id'],
-            'national_id' => '0000000140',
-        ], (int) $fx['user_id']);
-        self::assertSame(200, $validEdit->get_status(),
-            'positive control: valid unique National ID update succeeds via PUT /patient/me.'
-        );
-        // Restore to empty so the duplicate case is meaningful.
-        $this->dispatchRest('PUT', self::ME_PATH, [
-            'link_id' => $fx['link_id'],
-            'national_id' => '',
-        ], (int) $fx['user_id']);
-
+        // Duplicate National ID must be canonically rejected (selected patient starts with NULL).
         $dupEdit = $this->dispatchRest('PUT', self::ME_PATH, [
             'link_id' => $fx['link_id'],
             'national_id' => '0000000061',
@@ -585,6 +574,15 @@ final class Phase9Slice4PatientProfileUiRedTest extends WP_UnitTestCase
         );
         $dupMsg = (string) ($dupEdit->get_data()['message'] ?? '');
         self::assertNotSame('', $dupMsg, 'positive control: canonical error carries a Persian message.');
+
+        // A valid, unique National ID update succeeds.
+        $validEdit = $this->dispatchRest('PUT', self::ME_PATH, [
+            'link_id' => $fx['link_id'],
+            'national_id' => '0000000140',
+        ], (int) $fx['user_id']);
+        self::assertSame(200, $validEdit->get_status(),
+            'positive control: valid unique National ID update succeeds via PUT /patient/me.'
+        );
 
         // ---- INTENDED RED (UI-4): save wiring is absent on live main. ----
         $html = $this->renderProductionFrontendPortalAs((int) $fx['user_id']);
@@ -794,13 +792,8 @@ final class Phase9Slice4PatientProfileUiRedTest extends WP_UnitTestCase
         );
 
         self::assertTrue(NationalIdValidator::isValid('0000000140'));
-        $ok = $this->dispatchRest('PUT', self::ME_PATH, [
-            'link_id' => $fx['link_id'],
-            'national_id' => '0000000140',
-        ], (int) $fx['user_id']);
-        self::assertSame(200, $ok->get_status());
-        self::assertSame('0000000140', (string) $this->patientRow((int) $fx['patient_id'])['national_id']);
 
+        // Insert another patient holding national_id 0000000061 first, then duplicate must fail.
         $dupPatient = $this->insertPatient(
             (int) $fx['clinic_id'],
             'MR-P9S4-G4DUP-' . $this->fixtureTag,
@@ -818,6 +811,14 @@ final class Phase9Slice4PatientProfileUiRedTest extends WP_UnitTestCase
         $this->assertClinicError($dup, 'CLINIC_VALIDATION_FAILED', 400,
             'Duplicate National ID must be canonical CLINIC_VALIDATION_FAILED.'
         );
+
+        // A unique valid national ID (0000000140) must succeed.
+        $ok = $this->dispatchRest('PUT', self::ME_PATH, [
+            'link_id' => $fx['link_id'],
+            'national_id' => '0000000140',
+        ], (int) $fx['user_id']);
+        self::assertSame(200, $ok->get_status());
+        self::assertSame('0000000140', (string) $this->patientRow((int) $fx['patient_id'])['national_id']);
     }
 
     /**
