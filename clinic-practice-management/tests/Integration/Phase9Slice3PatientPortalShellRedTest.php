@@ -500,18 +500,27 @@ final class Phase9Slice3PatientPortalShellRedTest extends WP_UnitTestCase
 		$this->assertFixtureAndExistingPortalContent( $fx );
 
 		// Legacy content path: anonymous must not receive portal markup/PHI.
+		// Capture only THIS test's buffer level so a wp_die() cannot leave PHPUnit's
+		// outer buffers unbalanced (RISKY: "did not (only) close its own output buffers").
 		wp_set_current_user( 0 );
-		$denied = false;
-		$html   = '';
+		$denied      = false;
+		$html        = '';
+		$ob_level    = ob_get_level();
+		ob_start();
 		try {
-			ob_start();
 			PatientPortalPage::render();
 			$html = (string) ob_get_clean();
 		} catch ( \WPDieException $e ) {
 			$denied = true;
-			while ( ob_get_level() > 0 ) {
+			while ( ob_get_level() > $ob_level ) {
 				ob_end_clean();
 			}
+			$html = '';
+		} catch ( \Throwable $e ) {
+			while ( ob_get_level() > $ob_level ) {
+				ob_end_clean();
+			}
+			throw $e;
 		}
 		self::assertTrue(
 			$denied || ! str_contains( $html, (string) $fx['reference_code'] ),
