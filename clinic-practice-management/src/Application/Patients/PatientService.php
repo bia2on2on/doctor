@@ -15,7 +15,7 @@ use ClinicCore\Infrastructure\Logging\OpLogger;
 use ClinicCore\Infrastructure\Repository\PatientRepository;
 
 /**
- * سرویس بیمار (F3) — C1/C2 (بیمار) + D2–D5 (منشی).
+ * سرویس بیمار (F3) — C0–C2 (بیمار) + D2–D5 (منشی).
  *
  * Authorization: Capability Check در لایه REST (RestBase)؛ این Service فرض
  * می‌کند Call-site مجاز است و فقط **Data-Access و Validation** را اعمال می‌کند
@@ -66,25 +66,31 @@ final class PatientService
     ) {
     }
 
-    // ================= C1 — Me =================
+    // ================= C0/C1 — Me =================
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    public function linked_records( int $wp_user_id ): array {
+        return array_map(
+            static fn ( array $row ): array => [
+                'link_id'              => (int) $row['link_id'],
+                'clinic_id'            => (int) $row['clinic_id'],
+                'clinic_name'          => (string) $row['clinic_name'],
+                'patient_id'           => (int) $row['patient_id'],
+                'patient_display_name' => trim( (string) $row['first_name'] . ' ' . (string) $row['last_name'] ),
+                'mrn'                  => (string) $row['mrn'],
+                'is_primary'           => (bool) $row['is_primary'],
+            ],
+            $this->patients->active_linked_records_for_user( $wp_user_id )
+        );
+    }
 
     /**
      * @return array<string, mixed>
      */
-    public function me(int $wpUserId): array
-    {
-        $row = $this->db->fetchRow(
-            'SELECT p.* FROM ' . $this->db->table('cpms_patient_user_links') . ' l
-             JOIN ' . $this->db->table('cpms_patients') . ' p ON p.id = l.patient_id
-             WHERE l.wp_user_id = %d AND p.status = %s
-             ORDER BY l.is_primary DESC, l.id ASC LIMIT 1',
-            [$wpUserId, 'active']
-        );
-        if ($row === null) {
-            throw new BookingException('CLINIC_NOT_FOUND', 'بیماری به این حساب متصل نیست', 404);
-        }
-
-        return $this->publicView((array) $row);
+    public function me( int $wp_user_id, ?int $link_id = null ): array {
+        return $this->publicView( $this->require_selected_patient( $wp_user_id, $link_id ) );
     }
 
     // ================= C2 — Update Me =================
@@ -93,31 +99,99 @@ final class PatientService
      * @param array<string, mixed> $fields
      * @return array<string, mixed>
      */
-    public function updateMe(int $wpUserId, array $fields): array
-    {
-        $current = $this->me($wpUserId);
-        $data = $this->validateForUpdate($fields, self::ME_EDITABLE, (int) $current['id']);
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- Established public service API; renaming would break callers.
+    public function updateMe( int $wp_user_id, array $fields, ?int $link_id = null ): array {
+        $current = $this->require_selected_patient( $wp_user_id, $link_id );
+        $data    = $this->validateForUpdate( $fields, self::ME_EDITABLE, (int) $current['id'] );
 
-        if ($data === []) {
-            throw new BookingException('CLINIC_VALIDATION_FAILED', 'فیلدی برای ویرایش ارسال نشده است');
+        if ( $data === [] ) {
+            throw new BookingException( 'CLINIC_VALIDATION_FAILED', 'فیلدی برای ویرایش ارسال نشده است' );
         }
 
-        $this->patients->update((int) $current['id'], $data + ['updated_at' => $this->db->nowUtcSql()]);
-        $updated = (array) $this->patients->find((int) $current['id']);
+        if ( isset( $data['national_id'] ) ) {
+            $other = $this->patients->find_by_national_id( (int) $current['clinic_id'], (string) $data['national_id'] );
+            if ( $other !== null && (int) $other['id'] !== (int) $current['id'] ) {
+                throw new BookingException( 'CLINIC_VALIDATION_FAILED', 'این کد ملی متعلق به بیمار دیگری است' );
+            }
+        }
+
+        $this->patients->update( (int) $current['id'], $data + [ 'updated_at' => $this->db->nowUtcSql() ] );
+        $this->assert_profile_write_succeeded( $current, $data );
+        $updated = (array) $this->patients->find( (int) $current['id'] );
 
         $this->audit->log(
             'PATIENT_PROFILE_UPDATED',
-            ['wp_user_id' => $wpUserId, 'role' => 'patient'],
+            [ 'wp_user_id' => $wp_user_id, 'role' => 'patient' ],
             'patient',
             (int) $current['id'],
             (int) $current['id'],
-            $this->diffView($current, $data),
-            $this->diffView($updated, $data),
-            ['via' => 'self_service']
+            $this->diffView( $current, $data ),
+            $this->diffView( $updated, $data ),
+            [ 'via' => 'self_service' ]
         );
-        $this->op->info('patient.profile_updated', ['patient_id' => (int) $current['id'], 'fields' => array_keys($data)]);
+        $this->op->info( 'patient.profile_updated', [ 'patient_id' => (int) $current['id'], 'fields' => array_keys( $data ) ] );
 
-        return $this->publicView($updated);
+        return $this->publicView( $updated );
+    }
+
+    /**
+     * CpmsDb::update() normalizes wpdb's false failure and 0-row no-op to 0.
+     * The immediate wpdb error state is therefore the bounded failure signal:
+     * zero affected rows with no SQL error remains a valid idempotent save.
+     *
+     * @param array<string, mixed> $current
+     * @param array<string, mixed> $data
+     */
+    private function assert_profile_write_succeeded( array $current, array $data ): void {
+        if ( $this->db->wpdb()->last_error === '' ) {
+            return;
+        }
+
+        if ( isset( $data['national_id'] ) ) {
+            $other = $this->patients->find_by_national_id(
+                (int) $current['clinic_id'],
+                (string) $data['national_id']
+            );
+            if ( $other !== null && (int) $other['id'] !== (int) $current['id'] ) {
+                throw new BookingException(
+                    'CLINIC_VALIDATION_FAILED',
+                    'این کد ملی متعلق به بیمار دیگری است'
+                );
+            }
+        }
+
+        throw new BookingException(
+            'CLINIC_INTERNAL_ERROR',
+            'ذخیره تغییرات پروفایل انجام نشد',
+            500
+        );
+    }
+
+    /**
+     * Resolves exactly one active Patient from the authenticated user's durable
+     * matching link and persisted Clinic relationship.
+     *
+     * @return array<string, mixed>
+     */
+    public function require_selected_patient( int $wp_user_id, ?int $link_id = null ): array {
+        if ( $link_id !== null ) {
+            $selected = $this->patients->find_active_linked_patient_by_link( $wp_user_id, $link_id );
+            if ( $selected === null ) {
+                throw $this->linked_patient_not_found();
+            }
+
+            return $selected;
+        }
+
+        $candidates = $this->patients->active_linked_patients_for_user( $wp_user_id );
+        if ( $candidates === [] ) {
+            throw $this->linked_patient_not_found();
+        }
+        if ( count( $candidates ) > 1 ) {
+            throw new BookingException( 'CLINIC_SELECTION_REQUIRED', 'انتخاب پرونده بیمار الزامی است', 422 );
+        }
+
+        return $candidates[0];
     }
 
     // ================= D2 — Search (Secretary) =================
@@ -248,6 +322,10 @@ final class PatientService
     }
 
     // ================= Internal =================
+
+    private function linked_patient_not_found(): BookingException {
+        return new BookingException( 'CLINIC_NOT_FOUND', 'بیماری به این حساب متصل نیست', 404 );
+    }
 
     private function assertLicense(string $operation): void
     {

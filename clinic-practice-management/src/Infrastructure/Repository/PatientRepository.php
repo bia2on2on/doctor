@@ -9,7 +9,7 @@ use ClinicCore\Infrastructure\Db\CpmsDb;
 /**
  * Repository بیمار — ADR-0021 (Domain-Focused، از F3).
  *
- * - فقط Queryهای `cpms_patients` (نه God Repository).
+ * - Queryهای Patient و پیوند پایدار Patient⇄User (نه God Repository).
  * - Mass Assignment Protection: فیلدها با Whitelist داخلی — هرگز مستقیم از Request.
  * - Transaction Ownership: Service (این Repository Transaction نمی‌بندد).
  */
@@ -63,6 +63,72 @@ final class PatientRepository
             'SELECT * FROM ' . $this->db->table('cpms_patients') .
             ' WHERE clinic_id = %d AND mobile = %s AND status = %s LIMIT 1',
             [$clinicId, $normalizedMobile, 'active']
+        );
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    public function find_by_national_id( int $clinic_id, string $national_id ): ?array {
+        return $this->db->fetchRow(
+            'SELECT id FROM ' . $this->db->table( 'cpms_patients' ) .
+            ' WHERE clinic_id = %d AND national_id = %s LIMIT 1',
+            [ $clinic_id, $national_id ]
+        );
+    }
+
+    /**
+     * Bounded active durable-link selector records for one authenticated user.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function active_linked_records_for_user( int $wp_user_id ): array {
+        return $this->db->fetchAll(
+            'SELECT l.id AS link_id, l.clinic_id, c.name AS clinic_name,' .
+            ' p.id AS patient_id, p.first_name, p.last_name, p.mrn, l.is_primary' .
+            ' FROM ' . $this->db->table( 'cpms_patient_user_links' ) . ' l' .
+            ' INNER JOIN ' . $this->db->table( 'cpms_patients' ) . ' p' .
+            ' ON p.id = l.patient_id AND p.clinic_id = l.clinic_id' .
+            ' INNER JOIN ' . $this->db->table( 'cpms_clinics' ) . ' c' .
+            ' ON c.id = l.clinic_id' .
+            ' WHERE l.wp_user_id = %d AND p.status = %s' .
+            ' ORDER BY l.is_primary DESC, l.id ASC',
+            [ $wp_user_id, 'active' ]
+        );
+    }
+
+    /**
+     * Active Patient candidates backed by a matching durable link and Clinic.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function active_linked_patients_for_user( int $wp_user_id ): array {
+        return $this->db->fetchAll(
+            'SELECT p.*' .
+            ' FROM ' . $this->db->table( 'cpms_patient_user_links' ) . ' l' .
+            ' INNER JOIN ' . $this->db->table( 'cpms_patients' ) . ' p' .
+            ' ON p.id = l.patient_id AND p.clinic_id = l.clinic_id' .
+            ' INNER JOIN ' . $this->db->table( 'cpms_clinics' ) . ' c' .
+            ' ON c.id = l.clinic_id' .
+            ' WHERE l.wp_user_id = %d AND p.status = %s' .
+            ' ORDER BY l.is_primary DESC, l.id ASC LIMIT 2',
+            [ $wp_user_id, 'active' ]
+        );
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    public function find_active_linked_patient_by_link( int $wp_user_id, int $link_id ): ?array {
+        return $this->db->fetchRow(
+            'SELECT p.*' .
+            ' FROM ' . $this->db->table( 'cpms_patient_user_links' ) . ' l' .
+            ' INNER JOIN ' . $this->db->table( 'cpms_patients' ) . ' p' .
+            ' ON p.id = l.patient_id AND p.clinic_id = l.clinic_id' .
+            ' INNER JOIN ' . $this->db->table( 'cpms_clinics' ) . ' c' .
+            ' ON c.id = l.clinic_id' .
+            ' WHERE l.id = %d AND l.wp_user_id = %d AND p.status = %s LIMIT 1',
+            [ $link_id, $wp_user_id, 'active' ]
         );
     }
 

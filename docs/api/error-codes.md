@@ -30,6 +30,7 @@
 | `CLINIC_PERMISSION_DENIED` | 403 | Capability کافی وجود ندارد |
 | `CLINIC_RATE_LIMITED` | 429 | Rate Limit (تلاش‌های تکراری موقتاً محدود) |
 | `CLINIC_VALIDATION_FAILED` | 400/422 | اعتبارسنجی ورودی ناموفق (جزئیات در `data.errors`) — برای رزرو: `400` پروفایل/موبایل ناقص یا بیمار غیرفعال یا تداخل موبایلِ تکراری، `422` انتخاب بیمار نامعتبر/بین-Clinic/غیرمرتبط |
+| `CLINIC_SELECTION_REQUIRED` | 422 | برای پروفایل بیمار: بیش از یک پیوند فعال و معتبر وجود دارد و `link_id` صریح ارسال نشده است؛ fallback به primary/اولین رکورد ممنوع است |
 | `CLINIC_NOT_FOUND` | 404/403 | مورد موجود نیست (برای Entityهای Patient به‌عنوان 403) |
 | `CLINIC_INVALID_TRANSITION` | 409 | Transition نامعتبر در State Machine (شامل تکرار/Double Complete) |
 | `CLINIC_POLICY_VIOLATION` | 409 | نقض Policy کسب‌وکار (لغو/جابه‌جا خارج از بازه مجاز) |
