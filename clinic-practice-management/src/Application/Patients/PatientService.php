@@ -116,6 +116,7 @@ final class PatientService
         }
 
         $this->patients->update( (int) $current['id'], $data + [ 'updated_at' => $this->db->nowUtcSql() ] );
+        $this->assert_profile_write_succeeded( $current, $data );
         $updated = (array) $this->patients->find( (int) $current['id'] );
 
         $this->audit->log(
@@ -131,6 +132,39 @@ final class PatientService
         $this->op->info( 'patient.profile_updated', [ 'patient_id' => (int) $current['id'], 'fields' => array_keys( $data ) ] );
 
         return $this->publicView( $updated );
+    }
+
+    /**
+     * CpmsDb::update() normalizes wpdb's false failure and 0-row no-op to 0.
+     * The immediate wpdb error state is therefore the bounded failure signal:
+     * zero affected rows with no SQL error remains a valid idempotent save.
+     *
+     * @param array<string, mixed> $current
+     * @param array<string, mixed> $data
+     */
+    private function assert_profile_write_succeeded( array $current, array $data ): void {
+        if ( $this->db->wpdb()->last_error === '' ) {
+            return;
+        }
+
+        if ( isset( $data['national_id'] ) ) {
+            $other = $this->patients->find_by_national_id(
+                (int) $current['clinic_id'],
+                (string) $data['national_id']
+            );
+            if ( $other !== null && (int) $other['id'] !== (int) $current['id'] ) {
+                throw new BookingException(
+                    'CLINIC_VALIDATION_FAILED',
+                    'این کد ملی متعلق به بیمار دیگری است'
+                );
+            }
+        }
+
+        throw new BookingException(
+            'CLINIC_INTERNAL_ERROR',
+            'ذخیره تغییرات پروفایل انجام نشد',
+            500
+        );
     }
 
     /**

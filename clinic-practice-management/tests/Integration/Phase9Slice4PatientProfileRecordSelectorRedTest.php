@@ -421,6 +421,144 @@ final class Phase9Slice4PatientProfileRecordSelectorRedTest extends WP_UnitTestC
     }
 
     /**
+     * Regression guard for a rejected write after the national-ID pre-check.
+     *
+     * The query-filter injection runs after updateMe() has checked the target
+     * value and before wpdb issues the real UPDATE. It gives another Patient in
+     * the same Clinic that value, so the real UNIQUE constraint rejects the
+     * selected Patient write. This is deterministic branch evidence, not a
+     * runtime reproduction of a concurrent race.
+     */
+    public function testDbRejectedNationalIdWriteFailsClosedAndSameValueSaveRemainsValid(): void
+    {
+        $clinics = $this->createTwoClinicFixture();
+        $callerUserId = $this->createUser('write-failure-caller', 'cpms_patient');
+
+        self::assertTrue(
+            NationalIdValidator::isValid('0000000061'),
+            'Fixture control: initial national ID is valid.'
+        );
+        self::assertTrue(
+            NationalIdValidator::isValid('0000000140'),
+            'Fixture control: requested national ID is valid.'
+        );
+
+        $selectedPatient = $this->insertPatient(
+            $clinics['b_id'],
+            'MR-P9S4-WRITE-S-' . $this->fixtureTag,
+            'Write',
+            'Selected',
+            $this->mobileFor('write-selected'),
+            'active',
+            '0000000061'
+        );
+        $competingPatient = $this->insertPatient(
+            $clinics['b_id'],
+            'MR-P9S4-WRITE-C-' . $this->fixtureTag,
+            'Write',
+            'Competing',
+            $this->mobileFor('write-competing')
+        );
+        $selectedLink = $this->insertLink(
+            $clinics['b_id'],
+            $selectedPatient,
+            $callerUserId,
+            $this->mobileFor('write-selected'),
+            1
+        );
+        $this->assertMaterializedLink($selectedLink, $selectedPatient, $callerUserId, $clinics['b_id'], 'active', 1);
+
+        // Same-value self-service saves are valid even when wpdb reports no
+        // changed data. This remains a normal successful profile response.
+        $sameValue = $this->dispatch('PUT', self::ME_PATH, [
+            'link_id' => $selectedLink,
+            'first_name' => 'Write',
+        ], $callerUserId);
+        self::assertSame(200, $sameValue->get_status());
+        self::assertSame($selectedPatient, (int) ($sameValue->get_data()['data']['id'] ?? 0));
+        self::assertSame('Write', (string) ($sameValue->get_data()['data']['first_name'] ?? ''));
+
+        $selectedBeforeReject = $this->patientRow($selectedPatient);
+        $auditBeforeReject = $this->auditCountForPatient($selectedPatient);
+        $targetNationalId = '0000000140';
+        self::assertSame(
+            0,
+            $this->countPatientsByClinicAndNationalId($clinics['b_id'], $targetNationalId),
+            'Precondition: the service pre-check sees no duplicate before the write boundary.'
+        );
+        $injected = false;
+
+        global $wpdb;
+        $patientTable = App::db()->table('cpms_patients');
+        $injector = null;
+        $injector = static function (string $sql) use (
+            &$injector,
+            &$injected,
+            $wpdb,
+            $patientTable,
+            $competingPatient,
+            $targetNationalId
+        ): string {
+            if (
+                !$injected
+                && str_contains($sql, 'UPDATE `' . $patientTable . '`')
+                && str_contains($sql, '`national_id`')
+            ) {
+                $injected = true;
+                remove_filter('query', $injector);
+                try {
+                    $result = $wpdb->update(
+                        $patientTable,
+                        ['national_id' => $targetNationalId],
+                        ['id' => $competingPatient]
+                    );
+                    if ($result !== 1) {
+                        throw new \RuntimeException('Fixture competing national-ID write failed: ' . $wpdb->last_error);
+                    }
+                } finally {
+                    add_filter('query', $injector);
+                }
+            }
+
+            return $sql;
+        };
+
+        add_filter('query', $injector);
+        try {
+            $rejected = $this->dispatch('PUT', self::ME_PATH, [
+                'link_id' => $selectedLink,
+                'national_id' => $targetNationalId,
+            ], $callerUserId);
+        } finally {
+            remove_filter('query', $injector);
+        }
+
+        self::assertTrue($injected, 'Fixture must inject the competing row only at the actual UPDATE boundary.');
+        $this->assertClinicError(
+            $rejected,
+            'CLINIC_VALIDATION_FAILED',
+            400,
+            'A real UNIQUE rejection after the pre-check must be canonical validation, never false success.'
+        );
+        self::assertStringNotContainsString('Duplicate entry', (string) wp_json_encode($rejected->get_data()));
+        self::assertSame(
+            $selectedBeforeReject,
+            $this->patientRow($selectedPatient),
+            'Rejected write must leave the selected Patient unchanged.'
+        );
+        self::assertSame(
+            $auditBeforeReject,
+            $this->auditCountForPatient($selectedPatient),
+            'Rejected write must not create a successful profile-update audit.'
+        );
+        self::assertSame(
+            $targetNationalId,
+            (string) $this->patientRow($competingPatient)['national_id'],
+            'Fixture must prove the real same-Clinic UNIQUE collision occurred after the pre-check.'
+        );
+    }
+
+    /**
      * @return array{a_id: int, a_name: string, b_id: int, b_name: string}
      */
     private function createTwoClinicFixture(): array
