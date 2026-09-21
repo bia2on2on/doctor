@@ -39,10 +39,23 @@ if (!function_exists('cpms_shell_proof_register')) {
         return 'cpms-shell-proof';
     }
 
-    /** مسیر قالبِ مستقل — کنار همین فایل (repo fixture dir یا mu-plugins). */
+    /** مسیر قالبِ مستقل — کنار همین فایل (repo fixture dir) یا زیرپوشهٔ کنارش (استقرار mu-plugins). */
     function cpms_shell_proof_template_path(): string
     {
-        return __DIR__ . '/cpms-standalone-shell-proof-template.php';
+        // بارگذارِ mu-plugins فقط فایلهایِ `.php` «ریشهٔ» wp-content/mu-plugins را خودکار
+        // اجرا می‌کند؛ پس در استقرارِ Acceptance، قالب باید داخلِ زیرپوشه بنشیند تا
+        // هرگز به‌عنوان «افزونهٔ must-use» اجرا نشود (درسِ گیتِ اول — خطای کلاس D).
+        $candidates = [
+            __DIR__ . '/cpms-standalone-shell-proof-template.php',
+            __DIR__ . '/cpms-shell-proof-fixture/cpms-standalone-shell-proof-template.php',
+        ];
+        foreach ($candidates as $candidate) {
+            if (is_readable($candidate)) {
+                return $candidate;
+            }
+        }
+
+        return $candidates[0];
     }
 
     /**

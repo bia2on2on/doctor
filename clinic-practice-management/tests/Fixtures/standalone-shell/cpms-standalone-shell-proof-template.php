@@ -22,6 +22,13 @@
 
 defined('ABSPATH') || exit;
 
+// Fail-safe: این فایل فقط به‌عنوان «قالب» (خروجیِ فیلترِ template_include) اجرا
+// می‌شود. اگر به‌اشتباه زودتر include شود (مثلاً به‌عنوان mu-plugin در ریشه)، هنوز
+// pluggable.php بار نشده است — بی‌صدا خارج شو تا bootstrap وردپرس هرگز fatal نگیرد.
+if (!function_exists('wp_get_current_user')) {
+    return;
+}
+
 $user        = wp_get_current_user();
 $user_login  = ($user instanceof WP_User && $user->ID > 0) ? (string) $user->user_login : 'anonymous';
 $is_logged_in = $user_login !== 'anonymous';

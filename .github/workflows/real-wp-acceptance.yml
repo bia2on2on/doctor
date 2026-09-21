@@ -460,10 +460,14 @@ jobs:
       - name: "Technical proof — standalone CPMS shell (theme independence + Plain/Pretty)"
         run: |
           set -o pipefail
-          sudo mkdir -p "$WP_DIR/wp-content/mu-plugins"
+          sudo mkdir -p "$WP_DIR/wp-content/mu-plugins" "$WP_DIR/wp-content/mu-plugins/cpms-shell-proof-fixture"
+          # فقط رهگیر در ریشهٔ mu-plugins (خودکاربارگذاری می‌شود)؛ قالبِ proof عمداً
+          # داخلِ زیرپوشه است — بارگذارِ mu-plugins زیرپوشه‌ها را اجرا نمی‌کند و قالب
+          # هرگز «افزونهٔ must-use» تلقی نمی‌شود (درسِ گیتِ اول — خطای کلاس D).
           sudo cp clinic-practice-management/tests/Fixtures/standalone-shell/cpms-standalone-shell-proof.php \
-                  clinic-practice-management/tests/Fixtures/standalone-shell/cpms-standalone-shell-proof-template.php \
                   "$WP_DIR/wp-content/mu-plugins/"
+          sudo cp clinic-practice-management/tests/Fixtures/standalone-shell/cpms-standalone-shell-proof-template.php \
+                  "$WP_DIR/wp-content/mu-plugins/cpms-shell-proof-fixture/"
           sudo cp -R clinic-practice-management/tests/Fixtures/standalone-shell/themes/cpms-proof-theme-alpha \
                      clinic-practice-management/tests/Fixtures/standalone-shell/themes/cpms-proof-theme-beta \
                      "$WP_DIR/wp-content/themes/"
