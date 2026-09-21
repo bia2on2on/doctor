@@ -468,8 +468,8 @@ final class Phase9Slice4PatientProfileRecordSelectorRedTest extends WP_UnitTestC
         );
         $this->assertMaterializedLink($selectedLink, $selectedPatient, $callerUserId, $clinics['b_id'], 'active', 1);
 
-        // Same-value self-service saves are valid even when wpdb reports no
-        // changed data. This remains a normal successful profile response.
+        // Same-value self-service saves remain a normal successful profile
+        // response. A zero affected-row result must not be treated as failure.
         $sameValue = $this->dispatch('PUT', self::ME_PATH, [
             'link_id' => $selectedLink,
             'first_name' => 'Write',
