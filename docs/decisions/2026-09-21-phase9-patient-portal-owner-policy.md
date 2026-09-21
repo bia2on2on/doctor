@@ -329,6 +329,8 @@ Browser است؛ **قراردادِ Android/iOS نیست** (بخش J — UNRESOL
 
 *(annotationِ وضعیت — 2026-09-21، closure مستنداتِ Slice 3: بندِ Readiness بالا درستِ چک‌پوینتِ خودش بود و بازنویسی نشد؛ پس از آن **Phase 9 Slice 3 via PR #99 CLOSED / TECHNICALLY COMPLETE (BOUNDED)** شد — merge `8a324e59341851f5ced01ed37ecd5e69c725f30a`، accepted head `8d6231c19d3caccb94194836040f575a1566d345`؛ قرارداد/اثباتِ معماریِ همین سند (بخش دوم) **همچنان تصمیمِ حاکم** است؛ Phase 9 همچنان IN PROGRESS؛ هیچ Slice بعدی شروع نشده.)*
 
+*(annotationِ وضعیت — 2026-09-21، closure مستنداتِ Slice 4 BACKEND FOUNDATION: پس از آن **Phase 9 Slice 4 BACKEND FOUNDATION via PR #101 CLOSED / TECHNICALLY COMPLETE (BOUNDED)** شد — merge `28e7fbf61ec4e783f81dc3ecfd7ba92e6a2b8380`، accepted head `d0580bebccdeee66d492a4b1607c7c223c4b8ff2`؛ انتخاب پرونده‌های فعالِ بیمار با پیوند پایدار `GET /patient/my-records` C0 + ویرایش مقیدِ پروفایل `GET/PUT /patient/me?link_id?` C1/C2؛ `link_id` فقط selector است نه authority؛ N>1 بدون selector صریح با `422 CLINIC_SELECTION_REQUIRED` fail-closed می‌شود؛ بدون fallback primary/اولین؛ هویت موبایل/ورود read-only؛ کد ملی Clinic-scoped در ذخیره‌سازی، اعتبارسنجی‌شده، در پروفایل قابل ویرایش و الزام رزرو نیست؛ برخورد کد ملی در همان کلینیک پیش از تغییر/audit با `400 CLINIC_VALIDATION_FAILED` رد می‌شود؛ بدون تغییر schema/migration — آخرین migration همچنان `2026_09_20_0022_slot_holds_patient_binding.php`؛ **Slice 4 Patient Profile UI پیاده‌سازی‌نشده / pending باقی است**؛ معماری و سیاست‌های پورتالِ همین سند **همچنان تصمیمِ حاکم** است؛ Phase 9 همچنان IN PROGRESS؛ Profile UI پیاده‌سازی نشده است.)*
+
 ## مرزِ بخش دوم (Scope of Part 2)
 
 - **سندِ تصمیم + proof فیکسچر/تست/هارنسِ bounded** — نه پیاده‌سازی محصول؛
