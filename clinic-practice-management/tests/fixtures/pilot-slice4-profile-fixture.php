@@ -230,7 +230,7 @@ foreach ($multiRecords as $row) {
 // Slice 5 TEST-ONLY RED: reuse these authenticated linked records for a real
 // read-only Visits browser journey. No new harness, migration or product path.
 $visits = [];
-foreach ([[$clinicA, $patientA, 'A'], [$clinicB, $patientB, 'B']] as [$clinic, $patient, $label]) {
+foreach ([[$clinicA, $patientA, 'A'], [$clinicB, $patientB, 'B'], [$clinicOne, $patientOne, 'ONE']] as [$clinic, $patient, $label]) {
     $insertVisitFixture = static function (string $table, array $row) use ($wpdb, $db): int {
         if ($wpdb->insert($db->table($table), $row) !== 1) {
             profile_fail('visits fixture insert failed: ' . $table . ' ' . $wpdb->last_error);
@@ -264,9 +264,10 @@ foreach ([[$clinicA, $patientA, 'A'], [$clinicB, $patientB, 'B']] as [$clinic, $
     }
     $visits[] = $visit;
 }
-echo 'PROFILE_PUBLIC=visits_fixture_ok visits=2 notes=4' . "\n";
+echo 'PROFILE_PUBLIC=visits_fixture_ok visits=3 notes=6' . "\n";
 
-$env = 'VISITS_PAIR=' . implode('|', $visits) . "\n"
+$env = 'VISITS_PAIR=' . implode('|', array_slice($visits, 0, 2)) . "\n"
+    . 'VISITS_ONE=' . $visits[2] . "\n"
     . 'PROFILE_ONE=' . $loginOne . '|' . $passOne . '|' . $userOne . '|' . $patientOne . '|' . $linkOne . '|' . $clinicOne . "\n"
     . 'PROFILE_MULTI=' . $loginMulti . '|' . $passMulti . '|' . $userMulti . '|' . $linkA . '|' . $linkB . '|' . $patientA . '|' . $patientB . '|' . $clinicA . '|' . $clinicB . '|' . $linkForeign . '|' . $linkInactive . "\n"
     . 'PROFILE_PUBLIC=one_user=' . $userOne . ' one_patient=' . $patientOne . ' one_link=' . $linkOne . ' one_clinic=' . $clinicOne

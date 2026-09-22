@@ -501,14 +501,105 @@
 	 * between appointments/profile links. Purely presentational; server-side render owns
 	 * what is on the page.
 	 */
+	/** C5/C6: the server owns authorization. Selection and request generation are UI state only. */
+	function bindVisits(config) {
+		var section = document.querySelector('[data-role="visits-section"]');
+		if (!section) { return; }
+		var records = config.profile_records || [];
+		var selector = section.querySelector('[data-role="visits-record-select"]');
+		var context = section.querySelector('[data-role="visits-context"]');
+		var list = section.querySelector('[data-role="visits-list"]');
+		var detail = section.querySelector('[data-role="visits-detail"]');
+		var loading = section.querySelector('[data-role="visits-loading"]');
+		var error = section.querySelector('[data-role="visits-error"]');
+		var selected = records.length === 1 ? records[0] : null;
+		var generation = 0;
+
+		function text(parent, tag, value) {
+			var node = document.createElement(tag);
+			node.textContent = value || '';
+			parent.appendChild(node);
+			return node;
+		}
+		function request(path, render) {
+			if (!selected) { return; }
+			var current = ++generation;
+			loading.hidden = false;
+			clearError(error);
+			requestJson(apiUrl(config.rest_root, path + '?link_id=' + encodeURIComponent(selected.link_id)), {
+				method: 'GET', credentials: 'same-origin', headers: { 'X-WP-Nonce': config.nonce }
+			}).then(function (result) {
+				if (current !== generation) { return; }
+				if (!result.ok || !result.body || !result.body.data) {
+					list.textContent = '';
+					detail.textContent = '';
+					showError(error, serverMessage(result) || 'دریافت ویزیت انجام نشد. دوباره تلاش کنید.', serverCode(result));
+					return;
+				}
+				render(result.body.data);
+			}).catch(function () {
+				if (current !== generation) { return; }
+				list.textContent = '';
+				detail.textContent = '';
+				showError(error, 'ارتباط برقرار نشد. دوباره تلاش کنید.', 'NETWORK');
+			}).then(function () {
+				if (current === generation) { loading.hidden = true; }
+			});
+		}
+		function choose() {
+			generation++;
+			selected = null;
+			list.textContent = '';
+			detail.textContent = '';
+			context.textContent = '';
+			loading.hidden = true;
+			clearError(error);
+			records.forEach(function (record) {
+				if (String(record.link_id) === selector.value) { selected = record; }
+			});
+			if (!selected) { return; }
+			context.textContent = selected.clinic_name + ' — ' + selected.patient_display_name + ' — ' + selected.mrn;
+			request(config.visits_path, function (data) {
+				(data.visits || []).forEach(function (visit) {
+					var button = text(text(list, 'li', ''), 'button', visit.visit_date + ' — ' + (visit.clinician_name || ''));
+					button.type = 'button';
+					button.className = 'cpms-pp-btn cpms-pp-btn--ghost';
+					button.setAttribute('data-role', 'visit-open');
+					button.setAttribute('data-visit-id', visit.id);
+				});
+				if (!list.children.length) { text(list, 'li', 'ویزیتی ثبت نشده است.'); }
+			});
+		}
+		if (selector) { selector.addEventListener('change', choose); }
+		list.addEventListener('click', function (event) {
+			var button = event.target.closest('[data-role="visit-open"]');
+			if (!button || !list.contains(button) || !selected) { return; }
+			var id = button.getAttribute('data-visit-id');
+			if (!/^[1-9][0-9]*$/.test(id)) { return; }
+			detail.textContent = '';
+			request(config.visit_detail_path.replace('{id}', id), function (data) {
+				// Explicit display allowlist. Never render raw DTOs, actor IDs,
+				// correction reasons, workflow enums, or other internal metadata.
+				text(detail, 'h2', 'جزئیات ویزیت — ' + data.visit.visit_date);
+				text(detail, 'h3', 'یادداشت‌ها');
+				(data.notes || []).forEach(function (note) { text(detail, 'p', note.content_text); });
+				text(detail, 'h3', 'توصیه‌ها');
+				(data.recommendations || []).forEach(function (item) { text(detail, 'p', item.text); });
+				if (!(data.notes || []).length && !(data.recommendations || []).length) {
+					text(detail, 'p', 'محتوای قابل نمایش ثبت نشده است.');
+				}
+			});
+		});
+	}
+
 	function bindSectionNav() {
 		var navLinks = document.querySelectorAll('[data-role="patient-nav"] a');
 		function apply() {
 			var hash = (window.location.hash || '').replace(/^#/, '');
-			var target = hash === 'profile' ? 'profile' : 'appointments';
+			var target = (hash === 'profile' || hash === 'visits') ? hash : 'appointments';
 			Array.prototype.forEach.call(navLinks, function (a) {
 				var role = a.getAttribute('data-role');
-				var isActive = (target === 'profile' && role === 'nav-profile') || (target === 'appointments' && role === 'nav-appointments');
+				var isActive = role === 'nav-' + target;
 				if (isActive) {
 					a.classList.add('is-active');
 					a.setAttribute('aria-current', 'page');
@@ -626,6 +717,7 @@
 		bind(config);
 		bindMarkAllRead(config);
 		bindProfile(config);
+		bindVisits(config);
 		bindSectionNav();
 	}
 

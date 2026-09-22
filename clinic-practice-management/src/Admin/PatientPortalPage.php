@@ -328,12 +328,50 @@ final class PatientPortalPage
         $html .= '. رزرو آنلاین اینترنتی به‌زودی فعال می‌شود.</p></div>';
         $html .= '</section>';
         $html .= self::profile_section( $profile_records, $profile_initial, $login_mobile );
+        $html .= self::visits_section( $profile_records, $user_id );
         $html .= self::config_script( $profile_records, $profile_initial );
         $html .= '</div>';
 
         echo $html; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- markup از پیش escape شده
     }
 
+
+    /** Read-only Visits. Only a sole eligible record is resolved during rendering. */
+    private static function visits_section( array $records, int $user_id ): string {
+        $html = '<section class="cpms-pp-section" id="visits" data-role="visits-section" aria-labelledby="cpms-visits-heading">';
+        $html .= '<h1 id="cpms-visits-heading">' . esc_html__( 'ویزیت‌های من', 'cpms' ) . '</h1>';
+        $html .= '<p data-role="visits-empty-state"' . ( count( $records ) > 0 ? ' hidden' : '' ) . '>' . esc_html__( 'پرونده فعالی به حساب شما متصل نیست.', 'cpms' ) . '</p>';
+        if ( count( $records ) > 1 ) {
+            $html .= '<label for="cpms-visits-record">' . esc_html__( 'پرونده مطب را انتخاب کنید', 'cpms' ) . '</label>';
+            $html .= '<select id="cpms-visits-record" data-role="visits-record-select"><option value="">' . esc_html__( 'انتخاب پرونده…', 'cpms' ) . '</option>';
+            foreach ( $records as $record ) {
+                $html .= '<option value="' . esc_attr( (string) $record['link_id'] ) . '">' . esc_html( $record['clinic_name'] . ' — ' . $record['patient_display_name'] . ' — ' . $record['mrn'] ) . '</option>';
+            }
+            $html .= '</select>';
+        }
+        $sole = count( $records ) === 1 ? $records[0] : null;
+        $html .= '<p data-role="visits-context">' . ( $sole ? esc_html( $sole['clinic_name'] . ' — ' . $sole['patient_display_name'] . ' — ' . $sole['mrn'] ) : '' ) . '</p>';
+        $html .= '<p role="status" data-role="visits-loading" hidden>' . esc_html__( 'در حال دریافت…', 'cpms' ) . '</p>';
+        $error = '';
+        $items = '';
+        if ( $sole ) {
+            try {
+                $list = App::clinicalService()->patientVisits( $user_id, null, null, (int) $sole['link_id'] );
+                foreach ( $list['visits'] as $visit ) {
+                    $items .= '<li><button type="button" class="cpms-pp-btn cpms-pp-btn--ghost" data-role="visit-open" data-visit-id="' . esc_attr( (string) $visit['id'] ) . '">' . esc_html( $visit['visit_date'] . ' — ' . $visit['clinician_name'] ) . '</button></li>';
+                }
+                if ( $items === '' ) {
+                    $items = '<li>' . esc_html__( 'ویزیتی ثبت نشده است.', 'cpms' ) . '</li>';
+                }
+            } catch ( \ClinicCore\Application\Clinical\ClinicalException $exception ) {
+                $error = $exception->getMessage();
+            }
+        }
+        $html .= '<p role="alert" data-role="visits-error"' . ( $error === '' ? ' hidden' : '' ) . '>' . esc_html( $error ) . '</p>';
+        $html .= '<ul data-role="visits-list">' . $items . '</ul>';
+        $html .= '<div data-role="visits-detail" aria-live="polite"></div></section>';
+        return $html;
+    }
 
     /**
      * پیکربندیِ امنِ runtime برای اسکریپت پورتال — فقط چهار کلید:
@@ -399,6 +437,8 @@ final class PatientPortalPage
                 'notifications_read_path' => self::NOTIFICATIONS_READ_PATH,
                 'profile_my_records_path' => '/patient/my-records',
                 'profile_me_path'         => '/patient/me',
+                'visits_path'             => '/visits',
+                'visit_detail_path'       => '/visits/{id}',
                 'my_records_path'         => '/patient/my-records',
                 'me_path'                 => '/patient/me',
                 'profile_records'         => $profile_records_payload,

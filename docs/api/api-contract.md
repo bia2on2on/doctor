@@ -55,8 +55,8 @@
 | C2 | `PUT /patient/me` | ویرایش فیلدهای مجاز Policy (فرآیند تغییر → Audit) روی همان انتخاب C1؛ `link_id?` selector است و شناسهٔ Clinic/Patient کلاینت authority نیست. تعارض valid national ID فقط در Clinicِ ذخیره‌شدهٔ همان Patient → `400 CLINIC_VALIDATION_FAILED` پیش از mutation/audit. |
 | C3 | `POST /patients/{patient_id}/files` | آپلود (multipart) — Validation: MIME/Extension/Size |
 | C4 | `GET /patients/{patient_id}/files` | فایل‌های مجاز |
-| C5 | `GET /visits?from&to` | تاریخچه ویزیت — **فقط فیلدهای patient_visible** |
-| C6 | `GET /visits/{id}` | جزئیات ویزیت (نماهای مجاز: notes patient_visible, prescription, recommendations, follow-ups) |
+| C5 | `GET /visits?from&to&link_id?` | تاریخچه ویزیت — **فقط فیلدهای patient_visible** |
+| C6 | `GET /visits/{id}?link_id?` | جزئیات ویزیت (نماهای مجاز: notes patient_visible, prescription, recommendations, follow-ups) |
 | C7 | `GET /prescriptions` | نسخه‌های من (مجاز) |
 | C8 | `GET /invoices` | فقط اگر `patient.profile_invoices_visible=true` |
 
@@ -192,3 +192,17 @@
 | SM-10 | `GET /sms/balance` | — | `{balance, currency}` یا `null` (اگر Provider پشتیبانی نکند). |
 
 > **Security:** Nonce (CSRF) روی همه؛ Capability `cpms_sms_config`؛ Generic API: SSRF Guard + بدون Code/eval + Timeout اجباری (ADR-0025).
+
+### Phase 9 My Visits — C5/C6 record selection
+
+C5/C6 reuse the Profile resolver: optional `link_id` is a selector, never tenant
+or patient authority. The authenticated WP user must own a durable link whose
+Patient is active and whose persisted Clinic matches the link. Zero eligible
+records or a foreign/inactive/nonexistent selector returns `404 CLINIC_NOT_FOUND`;
+one eligible record may auto-resolve; multiple records without a selector return
+`422 CLINIC_SELECTION_REQUIRED`. No primary/first fallback. Client Clinic/Patient/
+Organization/role fields do not authorize access. Existing nonce/session guards,
+C5 date defaults and 100-row bound, C6 ownership audit and query-level visibility
+remain. Portal display is deliberately restricted to visit date/clinician and
+patient-visible note text/recommendation text; internal workflow/actor/correction
+metadata is not a display contract. No separate Prescriptions or Files UI.

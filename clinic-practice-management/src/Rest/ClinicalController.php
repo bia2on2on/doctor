@@ -167,10 +167,11 @@ final class ClinicalController extends RestBase
             [
                 'methods' => WP_REST_Server::READABLE,
                 'callback' => fn (WP_REST_Request $r) => $this->patient($r,
-                    fn () => $this->clinical->patientVisits($this->userId($r), $r['from'] ?? null, $r['to'] ?? null)),
+                    fn () => $this->clinical->patientVisits($this->userId($r), $r['from'] ?? null, $r['to'] ?? null, isset($r['link_id']) ? (int) $r['link_id'] : null)),
                 'permission_callback' => fn (WP_REST_Request $r)
                     => $this->permAnyRole($r, [RolesAndCapabilities::ROLE_PATIENT]),
                 'args' => [
+                    'link_id' => ['required' => false, 'type' => 'integer'],
                     'from' => ['required' => false, 'type' => 'string'],
                     'to' => ['required' => false, 'type' => 'string'],
                 ],
@@ -182,9 +183,10 @@ final class ClinicalController extends RestBase
             [
                 'methods' => WP_REST_Server::READABLE,
                 'callback' => fn (WP_REST_Request $r) => $this->patient($r,
-                    fn () => $this->clinical->patientVisitDetail($this->userId($r), (int) $r['id'])),
+                    fn () => $this->clinical->patientVisitDetail($this->userId($r), (int) $r['id'], isset($r['link_id']) ? (int) $r['link_id'] : null)),
                 'permission_callback' => fn (WP_REST_Request $r)
                     => $this->permAnyRole($r, [RolesAndCapabilities::ROLE_PATIENT]),
+                'args' => ['link_id' => ['required' => false, 'type' => 'integer']],
             ],
         ]);
 

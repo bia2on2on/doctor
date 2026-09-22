@@ -1207,3 +1207,10 @@ final class XxxService {
   - `docs/agent-guide.md`
   - `docs/decisions/2026-09-21-phase9-patient-portal-owner-policy.md`
 - **Git/PR:** forward-only روی `arena/01a0c516-doctor` (شاخه‌بندی از `28e7fbf61ec4e783f81dc3ecfd7ba92e6a2b8380` = live main)؛ ایجاد یک PR فقط-مستندات؛ تجمیع پس از سبز شدن بررسی‌های سرشاخه؛ تأیید ران‌های پس‌از‌ادغام؛ و بازنشستگی دائمی از کار WRITE.
+
+
+### [2026-09-23] — PR #105 same writer — authorized Phase 9 My Visits GREEN
+- Live pre-write main `ed7db7acfa56129035d762e8388c86fded8b7c24`; draft #105 at accepted VALID RED `960b1f50d6f76342bb3bd0be50e7afefdde236cc`; clean tree; only open PR #105; migration 0022 unchanged.
+- Owner authorized GREEN on the same branch `arena/01a0cb00-doctor`, no merge. Reuse C5/C6 and Profile's existing public resolver (no extraction/new policy); add only Visits section/nav and vanilla read-only list/detail state. Preserve bounds/visibility/audit; no migration, new endpoint, framework, prescriptions-list or Files UI.
+- Accepted PHPUnit assertions unchanged. Existing browser journey extended to 390/768/1366, sole-record detail, canonical nonce rejection, screenshots/health. D: asynchronous browser context assertions now wait for rendered text instead of racing response headers; same content assertions, no weakening.
+- Native PHP setup unavailable (C: Debian network); PHP WASM lint passes, JS syntax and Python AST parse pass. Exact-head CI/browser results and one bounded post-GREEN self-review will be recorded on #105; pending is not PASS. No merge/phase closure claimed.
