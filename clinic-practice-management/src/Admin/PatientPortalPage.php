@@ -418,11 +418,7 @@ final class PatientPortalPage
         <?php // Clinic context bar (server-side) — JS refreshes it on record switch. ?>
         <div class="cpms-pp-profile__context" data-role="profile-context"<?php echo ( $count === 1 && is_array( $initial ) ) ? '' : ' hidden'; ?>>
             <span class="cpms-pp-profile__context-label">مطب فعال:</span>
-            <span class="cpms-pp-profile__context-clinic" data-role="profile-clinic-label"><?php
-                if ( $count === 1 && is_array( $initial ) ) {
-                    echo esc_html( (string) ( $initial['record']['clinic_name'] ?? '' ) );
-                }
-            ?></span>
+            <span class="cpms-pp-profile__context-clinic" data-role="profile-clinic-label"><?php if ( $count === 1 && is_array( $initial ) ) { echo esc_html( (string) ( $initial['record']['clinic_name'] ?? '' ) ); } ?></span>
             <span class="cpms-pp-profile__context-sep" aria-hidden="true">·</span>
             <span class="cpms-pp-profile__context-mrn" data-role="profile-mrn"><?php
                 if ( $count === 1 && is_array( $initial ) ) {
@@ -438,18 +434,13 @@ final class PatientPortalPage
                 <select id="cpms-pp-record-select" data-role="profile-record-select" aria-describedby="cpms-pp-record-select-hint">
                     <option value="" selected><?php echo esc_html( 'یکی از مطب‌های مرتبط را انتخاب کنید…' ); ?></option>
                     <?php foreach ( $records as $r ) : ?>
-                        <option data-role="profile-record-option" data-link-id="<?php echo esc_attr( (string) $r['link_id'] ); ?>" value="<?php echo esc_attr( (string) $r['link_id'] ); ?>">
-                            <?php echo esc_html( (string) $r['clinic_name'] . ' — ' . ( (string) $r['patient_display_name'] !== '' ? (string) $r['patient_display_name'] : 'بیمار' ) . ' (MRN: ' . (string) $r['mrn'] . ')' ); ?>
-                        </option>
+                        <option data-role="profile-record-option" data-link-id="<?php echo esc_attr( (string) $r['link_id'] ); ?>" value="<?php echo esc_attr( (string) $r['link_id'] ); ?>"><?php echo esc_html( (string) $r['clinic_name'] . ' — ' . ( (string) $r['patient_display_name'] !== '' ? (string) $r['patient_display_name'] : 'بیمار' ) . ' (MRN: ' . (string) $r['mrn'] . ')' ); ?></option>
                     <?php endforeach; ?>
                 </select>
                 <p id="cpms-pp-record-select-hint" class="description">ویرایش فقط برای پروندهٔ انتخاب‌شده اعمال می‌شود.</p>
             </div>
         <?php endif; ?>
 
-        <?php // Form is server-rendered ONLY in the N=1 (auto-selected) case. For N>1 the form
-              // is absent from initial HTML (per RED-UI-2 "editable Profile form must NOT render before explicit record selection");
-              // JS reuses the same markup pattern on explicit selection. ?>
         <?php if ( $count === 1 && is_array( $initial ) ) : ?>
         <div class="cpms-pp-profile__form-wrap" data-role="profile-form-wrap">
             <?php echo self::profile_form_markup( $initial, $login_mobile ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- markup از پیش escape شده ?>
@@ -512,38 +503,8 @@ final class PatientPortalPage
         <div data-role="profile-login-mobile" class="cpms-pp-profile__mobile-value" dir="ltr"><?php echo esc_html( $login_mobile ); ?></div>
         <p class="description">این شماره موبایل هویت ورود شماست و از این بخش قابل تغییر نیست. برای تغییر با مطب تماس بگیرید.</p>
     </div>
-    <div class="cpms-pp-profile__grid">
-    <?php foreach ( $fields as $name => $spec ) :
-        $full = ! empty( $spec['full'] ) ? ' cpms-pp-field--full' : '';
-        $initial_val = array_key_exists( $name, $me ) && $me[ $name ] !== null ? (string) $me[ $name ] : '';
-    ?>
-        <div class="cpms-pp-field<?php echo esc_attr( $full ); ?>">
-            <label for="cpms-pp-<?php echo esc_attr( $name ); ?>"><?php echo esc_html( $spec['label'] ); ?></label>
-            <?php if ( $spec['type'] === 'select' ) : ?>
-                <select id="cpms-pp-<?php echo esc_attr( $name ); ?>" name="<?php echo esc_attr( $name ); ?>" data-field="<?php echo esc_attr( $name ); ?>">
-                <?php foreach ( (array) $spec['options'] as $v => $lbl ) : ?>
-                    <option value="<?php echo esc_attr( (string) $v ); ?>"<?php echo (string) $v === $initial_val ? ' selected' : ''; ?>><?php echo esc_html( (string) $lbl ); ?></option>
-                <?php endforeach; ?>
-                </select>
-            <?php elseif ( $spec['type'] === 'textarea' ) : ?>
-                <textarea id="cpms-pp-<?php echo esc_attr( $name ); ?>" name="<?php echo esc_attr( $name ); ?>" data-field="<?php echo esc_attr( $name ); ?>" rows="2"<?php
-                    foreach ([ 'placeholder', 'autocomplete', 'inputmode', 'dir' ] as $attr) {
-                        if ( isset( $spec[ $attr ] ) ) { echo ' ' . $attr . '="' . esc_attr( (string) $spec[ $attr ] ) . '"'; }
-                    }
-                ?>><?php echo esc_textarea( $initial_val ); ?></textarea>
-            <?php else : ?>
-                <input id="cpms-pp-<?php echo esc_attr( $name ); ?>" name="<?php echo esc_attr( $name ); ?>" type="<?php echo esc_attr( $spec['type'] ); ?>" data-field="<?php echo esc_attr( $name ); ?>" value="<?php echo esc_attr( $initial_val ); ?>"<?php
-                    foreach ([ 'placeholder', 'autocomplete', 'inputmode', 'dir' ] as $attr) {
-                        if ( isset( $spec[ $attr ] ) ) { echo ' ' . $attr . '="' . esc_attr( (string) $spec[ $attr ] ) . '"'; }
-                    }
-                ?>>
-            <?php endif; ?>
-        </div>
-    <?php endforeach; ?>
-    </div>
-    <div class="cpms-pp-profile__actions">
-        <button type="submit" class="cpms-pp-btn cpms-pp-btn--primary" data-role="profile-save">ذخیرهٔ اطلاعات</button>
-    </div>
+    <div class="cpms-pp-profile__grid"><?php foreach ( $fields as $name => $spec ) : $full = ! empty( $spec['full'] ) ? ' cpms-pp-field--full' : ''; $initial_val = array_key_exists( $name, $me ) && $me[ $name ] !== null ? (string) $me[ $name ] : ''; ?><div class="cpms-pp-field<?php echo esc_attr( $full ); ?>"><label for="cpms-pp-<?php echo esc_attr( $name ); ?>"><?php echo esc_html( $spec['label'] ); ?></label><?php if ( $spec['type'] === 'select' ) : ?><select id="cpms-pp-<?php echo esc_attr( $name ); ?>" name="<?php echo esc_attr( $name ); ?>" data-field="<?php echo esc_attr( $name ); ?>"><?php foreach ( (array) $spec['options'] as $v => $lbl ) : ?><option value="<?php echo esc_attr( (string) $v ); ?>"<?php echo (string) $v === $initial_val ? ' selected' : ''; ?>><?php echo esc_html( (string) $lbl ); ?></option><?php endforeach; ?></select><?php elseif ( $spec['type'] === 'textarea' ) : ?><textarea id="cpms-pp-<?php echo esc_attr( $name ); ?>" name="<?php echo esc_attr( $name ); ?>" data-field="<?php echo esc_attr( $name ); ?>" rows="2"<?php foreach ([ 'placeholder', 'autocomplete', 'inputmode', 'dir' ] as $attr) { if ( isset( $spec[ $attr ] ) ) { echo ' ' . $attr . '="' . esc_attr( (string) $spec[ $attr ] ) . '"'; } } ?>><?php echo esc_textarea( $initial_val ); ?></textarea><?php else : ?><input id="cpms-pp-<?php echo esc_attr( $name ); ?>" name="<?php echo esc_attr( $name ); ?>" type="<?php echo esc_attr( $spec['type'] ); ?>" data-field="<?php echo esc_attr( $name ); ?>" value="<?php echo esc_attr( $initial_val ); ?>"<?php foreach ([ 'placeholder', 'autocomplete', 'inputmode', 'dir' ] as $attr) { if ( isset( $spec[ $attr ] ) ) { echo ' ' . $attr . '="' . esc_attr( (string) $spec[ $attr ] ) . '"'; } } ?>><?php endif; ?></div><?php endforeach; ?></div>
+    <div class="cpms-pp-profile__actions"><button type="submit" class="cpms-pp-btn cpms-pp-btn--primary" data-role="profile-save">ذخیرهٔ اطلاعات</button></div>
 </form>
         <?php
         return (string) ob_get_clean();
