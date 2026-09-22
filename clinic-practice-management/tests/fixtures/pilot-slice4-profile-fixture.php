@@ -241,7 +241,14 @@ foreach ([[$clinicA, $patientA, 'A'], [$clinicB, $patientB, 'B']] as [$clinic, $
         'clinic_id' => $clinic, 'full_name' => 'SYN-VISITS-DOCTOR-' . $label,
         'is_active' => 1, 'created_at' => $now, 'updated_at' => $now,
     ]);
+    $location = (int) $wpdb->get_var($wpdb->prepare(
+        'SELECT id FROM ' . $db->table('cpms_locations') . ' WHERE clinic_id = %d', $clinic
+    ));
+    if ($location <= 0) {
+        profile_fail('visits fixture needs the existing persisted Clinic Location');
+    }
     $visit = $insertVisitFixture('cpms_visits', [
+        'location_id' => $location,
         'clinic_id' => $clinic, 'patient_id' => $patient, 'clinician_id' => $doctor,
         'visit_date' => gmdate('Y-m-d'), 'source' => 'walk_in', 'status' => 'checked_out',
         'active' => 0, 'check_in_at' => $now, 'created_at' => $now, 'updated_at' => $now,

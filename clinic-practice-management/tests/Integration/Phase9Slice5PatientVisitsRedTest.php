@@ -282,7 +282,12 @@ final class Phase9Slice5PatientVisitsRedTest extends WP_UnitTestCase
             'clinic_id' => $clinic, 'full_name' => 'Doctor ' . $name,
             'is_active' => 1, 'created_at' => $now, 'updated_at' => $now,
         ]);
-        $record = compact('clinic', 'patient', 'link', 'clinician');
+        $location = $this->insert('cpms_locations', [
+            'clinic_id' => $clinic, 'name' => 'Location ' . $name, 'slug' => strtolower($name),
+            'timezone' => 'Asia/Tehran', 'is_primary' => 1, 'is_active' => 1,
+            'created_at' => $now, 'updated_at' => $now,
+        ]);
+        $record = compact('clinic', 'patient', 'link', 'clinician', 'location');
         $record['visit'] = $this->visit($record, $this->today);
         foreach ([['patient_visible', 'Visible '], ['doctor_private', 'PRIVATE ']] as [$visibility, $prefix]) {
             $this->insert('cpms_clinical_notes', [
@@ -307,7 +312,7 @@ final class Phase9Slice5PatientVisitsRedTest extends WP_UnitTestCase
         $now = App::db()->nowUtcSql();
         return $this->insert('cpms_visits', [
             'clinic_id' => $record['clinic'], 'patient_id' => $record['patient'],
-            'clinician_id' => $record['clinician'], 'visit_date' => $date,
+            'clinician_id' => $record['clinician'], 'location_id' => $record['location'], 'visit_date' => $date,
             'source' => 'walk_in', 'status' => 'checked_out', 'active' => 0,
             'check_in_at' => $now, 'created_at' => $now, 'updated_at' => $now,
         ]);
