@@ -222,9 +222,9 @@ final class PatientPortalPage
             wp_die('دسترسی ندارید', 403);
         }
 
-        $userId = get_current_user_id();
+        $user_id = get_current_user_id();
         $today = gmdate('Y-m-d');
-        $rows = App::bookingService()->listMine($userId, gmdate('Y-m-d', strtotime('-365 days')), gmdate('Y-m-d', strtotime('+180 days')));
+        $rows = App::bookingService()->listMine($user_id, gmdate('Y-m-d', strtotime('-365 days')), gmdate('Y-m-d', strtotime('+180 days')));
 
         $upcoming = [];
         $past = [];
@@ -266,13 +266,13 @@ final class PatientPortalPage
         $profile_initial = null;
         $login_mobile    = '';
         try {
-            $profile_records = App::patientService()->linked_records( $userId );
+            $profile_records = App::patientService()->linked_records( $user_id );
             if ( ! is_array( $profile_records ) ) {
                 $profile_records = [];
             }
             if ( count( $profile_records ) === 1 ) {
                 $sole = $profile_records[0];
-                $me_full = App::patientService()->me( $userId, (int) $sole['link_id'] );
+                $me_full = App::patientService()->me( $user_id, (int) $sole['link_id'] );
                 if ( is_array( $me_full ) ) {
                     $me_whitelisted = self::whitelist_me_for_client( $me_full );
                     $profile_initial = [ 'record' => $sole, 'me' => $me_whitelisted ];
@@ -282,7 +282,7 @@ final class PatientPortalPage
                 // N>1: do NOT pre-select. Login mobile is read-only; any resolution failure
                 // (e.g. backend selection requirement) silently leaves login_mobile empty.
                 try {
-                    $me_any = App::patientService()->me( $userId, (int) $profile_records[0]['link_id'] );
+                    $me_any = App::patientService()->me( $user_id, (int) $profile_records[0]['link_id'] );
                     if ( is_array( $me_any ) ) {
                         $login_mobile = (string) ( $me_any['mobile'] ?? '' );
                     }
@@ -373,8 +373,8 @@ final class PatientPortalPage
                 'rest_root'               => untrailingslashit( rest_url( self::REST_NAMESPACE ) ),
                 'cancel_path'             => self::CANCEL_PATH,
                 'notifications_read_path' => self::NOTIFICATIONS_READ_PATH,
-                'profile_my_records_path' => '/clinic/v1/patient/my-records',
-                'profile_me_path'         => '/clinic/v1/patient/me',
+                'profile_my_records_path' => '/patient/my-records',
+                'profile_me_path'         => '/patient/me',
                 'my_records_path'         => '/patient/my-records',
                 'me_path'                 => '/patient/me',
                 'profile_records'         => $profile_records_payload,
@@ -482,29 +482,110 @@ final class PatientPortalPage
         $record = is_array( $initial ) && isset( $initial['record'] ) && is_array( $initial['record'] ) ? $initial['record'] : [];
         $link_id = (int) ( $record['link_id'] ?? 0 );
         $fields = [
-            'first_name'              => [ 'label' => 'نام',                'type' => 'text',     'autocomplete' => 'given-name' ],
-            'last_name'               => [ 'label' => 'نام خانوادگی',       'type' => 'text',     'autocomplete' => 'family-name' ],
-            'national_id'             => [ 'label' => 'کد ملی',             'type' => 'text',     'inputmode' => 'numeric', 'autocomplete' => 'off', 'dir' => 'ltr' ],
-            'birth_date'              => [ 'label' => 'تاریخ تولد',         'type' => 'text',     'placeholder' => 'YYYY-MM-DD', 'dir' => 'ltr' ],
-            'gender'                  => [ 'label' => 'جنسیت',              'type' => 'select',   'options' => [ '' => 'انتخاب کنید', 'male' => 'مرد', 'female' => 'زن', 'other' => 'سایر' ] ],
-            'address'                 => [ 'label' => 'آدرس',               'type' => 'textarea', 'full' => true ],
-            'phone'                   => [ 'label' => 'تلفن ثابت',          'type' => 'tel',      'autocomplete' => 'tel', 'dir' => 'ltr' ],
-            'emergency_contact_name'  => [ 'label' => 'نام تماس اضطراری',   'type' => 'text' ],
-            'emergency_contact_phone' => [ 'label' => 'تلفن تماس اضطراری',  'type' => 'tel',      'dir' => 'ltr' ],
+            'first_name'              => [
+                'label'        => 'نام',
+                'type'         => 'text',
+                'autocomplete' => 'given-name',
+            ],
+            'last_name'               => [
+                'label'        => 'نام خانوادگی',
+                'type'         => 'text',
+                'autocomplete' => 'family-name',
+            ],
+            'national_id'             => [
+                'label'        => 'کد ملی',
+                'type'         => 'text',
+                'inputmode'    => 'numeric',
+                'autocomplete' => 'off',
+                'dir'          => 'ltr',
+            ],
+            'birth_date'              => [
+                'label'       => 'تاریخ تولد',
+                'type'        => 'text',
+                'placeholder' => 'YYYY-MM-DD',
+                'dir'         => 'ltr',
+            ],
+            'gender'                  => [
+                'label'   => 'جنسیت',
+                'type'    => 'select',
+                'options' => [
+                    ''        => 'انتخاب کنید',
+                    'male'    => 'مرد',
+                    'female'  => 'زن',
+                    'other'   => 'سایر',
+                ],
+            ],
+            'address'                 => [
+                'label' => 'آدرس',
+                'type'  => 'textarea',
+                'full'  => true,
+            ],
+            'phone'                   => [
+                'label'        => 'تلفن ثابت',
+                'type'         => 'tel',
+                'autocomplete' => 'tel',
+                'dir'          => 'ltr',
+            ],
+            'emergency_contact_name'  => [
+                'label' => 'نام تماس اضطراری',
+                'type'  => 'text',
+            ],
+            'emergency_contact_phone' => [
+                'label' => 'تلفن تماس اضطراری',
+                'type'  => 'tel',
+                'dir'   => 'ltr',
+            ],
         ];
         ob_start();
-        ?>
-<form class="cpms-pp-profile__form" data-role="profile-form" novalidate>
+        ?><form class="cpms-pp-profile__form" data-role="profile-form" novalidate>
     <input type="hidden" name="link_id" data-role="profile-link-id" value="<?php echo esc_attr( (string) $link_id ); ?>">
     <div class="notice inline cpms-pp-profile__notice cpms-pp-profile__notice--success" data-role="profile-success" hidden role="alert"></div>
     <div class="notice inline cpms-pp-profile__notice cpms-pp-profile__notice--error" data-role="profile-error" hidden role="alert"></div>
-    <div class="cpms-pp-profile__mobile" data-role="profile-mobile-row"<?php echo $login_mobile !== '' ? '' : ' hidden'; ?>>
+    <?php if ( $login_mobile !== '' ) : ?>
+        <div class="cpms-pp-profile__mobile" data-role="profile-mobile-row">
+    <?php else : ?>
+        <div class="cpms-pp-profile__mobile" data-role="profile-mobile-row" hidden>
+    <?php endif; ?>
         <span class="cpms-pp-profile__mobile-label">شماره موبایل ورود</span>
         <div data-role="profile-login-mobile" class="cpms-pp-profile__mobile-value" dir="ltr"><?php echo esc_html( $login_mobile ); ?></div>
         <p class="description">این شماره موبایل هویت ورود شماست و از این بخش قابل تغییر نیست. برای تغییر با مطب تماس بگیرید.</p>
     </div>
-    <div class="cpms-pp-profile__grid"><?php foreach ( $fields as $name => $spec ) : $full = ! empty( $spec['full'] ) ? ' cpms-pp-field--full' : ''; $initial_val = array_key_exists( $name, $me ) && $me[ $name ] !== null ? (string) $me[ $name ] : ''; ?><div class="cpms-pp-field<?php echo esc_attr( $full ); ?>"><label for="cpms-pp-<?php echo esc_attr( $name ); ?>"><?php echo esc_html( $spec['label'] ); ?></label><?php if ( $spec['type'] === 'select' ) : ?><select id="cpms-pp-<?php echo esc_attr( $name ); ?>" name="<?php echo esc_attr( $name ); ?>" data-field="<?php echo esc_attr( $name ); ?>"><?php foreach ( (array) $spec['options'] as $v => $lbl ) : ?><option value="<?php echo esc_attr( (string) $v ); ?>"<?php echo (string) $v === $initial_val ? ' selected' : ''; ?>><?php echo esc_html( (string) $lbl ); ?></option><?php endforeach; ?></select><?php elseif ( $spec['type'] === 'textarea' ) : ?><textarea id="cpms-pp-<?php echo esc_attr( $name ); ?>" name="<?php echo esc_attr( $name ); ?>" data-field="<?php echo esc_attr( $name ); ?>" rows="2"<?php foreach ([ 'placeholder', 'autocomplete', 'inputmode', 'dir' ] as $attr) { if ( isset( $spec[ $attr ] ) ) { echo ' ' . $attr . '="' . esc_attr( (string) $spec[ $attr ] ) . '"'; } } ?>><?php echo esc_textarea( $initial_val ); ?></textarea><?php else : ?><input id="cpms-pp-<?php echo esc_attr( $name ); ?>" name="<?php echo esc_attr( $name ); ?>" type="<?php echo esc_attr( $spec['type'] ); ?>" data-field="<?php echo esc_attr( $name ); ?>" value="<?php echo esc_attr( $initial_val ); ?>"<?php foreach ([ 'placeholder', 'autocomplete', 'inputmode', 'dir' ] as $attr) { if ( isset( $spec[ $attr ] ) ) { echo ' ' . $attr . '="' . esc_attr( (string) $spec[ $attr ] ) . '"'; } } ?>><?php endif; ?></div><?php endforeach; ?></div>
-    <div class="cpms-pp-profile__actions"><button type="submit" class="cpms-pp-btn cpms-pp-btn--primary" data-role="profile-save">ذخیرهٔ اطلاعات</button></div>
+    <div class="cpms-pp-profile__grid">
+    <?php foreach ( $fields as $name => $spec ) :
+        $full        = ! empty( $spec['full'] ) ? ' cpms-pp-field--full' : '';
+        $initial_val = array_key_exists( $name, $me ) && $me[ $name ] !== null ? (string) $me[ $name ] : '';
+    ?>
+        <div class="cpms-pp-field<?php echo esc_attr( $full ); ?>">
+            <label for="cpms-pp-<?php echo esc_attr( $name ); ?>"><?php echo esc_html( $spec['label'] ); ?></label>
+            <?php if ( $spec['type'] === 'select' ) : ?>
+                <select id="cpms-pp-<?php echo esc_attr( $name ); ?>" name="<?php echo esc_attr( $name ); ?>" data-field="<?php echo esc_attr( $name ); ?>">
+                    <?php foreach ( (array) $spec['options'] as $v => $lbl ) : ?>
+                        <option value="<?php echo esc_attr( (string) $v ); ?>"<?php echo (string) $v === $initial_val ? ' selected' : ''; ?>><?php echo esc_html( (string) $lbl ); ?></option>
+                    <?php endforeach; ?>
+                </select>
+            <?php elseif ( $spec['type'] === 'textarea' ) : ?>
+                <textarea id="cpms-pp-<?php echo esc_attr( $name ); ?>" name="<?php echo esc_attr( $name ); ?>" data-field="<?php echo esc_attr( $name ); ?>" rows="2"<?php
+                    foreach ( array( 'placeholder', 'autocomplete', 'inputmode', 'dir' ) as $attr ) {
+                        if ( isset( $spec[ $attr ] ) ) {
+                            echo ' ' . esc_attr( $attr ) . '="' . esc_attr( (string) $spec[ $attr ] ) . '"';
+                        }
+                    }
+                ?>><?php echo esc_textarea( $initial_val ); ?></textarea>
+            <?php else : ?>
+                <input id="cpms-pp-<?php echo esc_attr( $name ); ?>" name="<?php echo esc_attr( $name ); ?>" type="<?php echo esc_attr( $spec['type'] ); ?>" data-field="<?php echo esc_attr( $name ); ?>" value="<?php echo esc_attr( $initial_val ); ?>"<?php
+                    foreach ( array( 'placeholder', 'autocomplete', 'inputmode', 'dir' ) as $attr ) {
+                        if ( isset( $spec[ $attr ] ) ) {
+                            echo ' ' . esc_attr( $attr ) . '="' . esc_attr( (string) $spec[ $attr ] ) . '"';
+                        }
+                    }
+                ?>>
+            <?php endif; ?>
+        </div>
+    <?php endforeach; ?>
+    </div>
+    <div class="cpms-pp-profile__actions">
+        <button type="submit" class="cpms-pp-btn cpms-pp-btn--primary" data-role="profile-save">ذخیرهٔ اطلاعات</button>
+    </div>
 </form>
         <?php
         return (string) ob_get_clean();
