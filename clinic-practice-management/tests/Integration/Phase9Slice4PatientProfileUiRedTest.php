@@ -439,18 +439,25 @@ final class Phase9Slice4PatientProfileUiRedTest extends WP_UnitTestCase
         $this->assertShellGuard($fx);
         $this->assertBackendGuardsForSelectedLink($fx, $fx['link_id']);
 
-        // Backend: login mobile is non-editable (rejected by ME_EDITABLE whitelist)
-        // and a valid National ID self-edit succeeds; duplicate National ID fails canonically.
+        // Backend: login mobile is non-editable (rejected by ME_EDITABLE whitelist) even
+        // when sent alongside an otherwise-valid self-edit. Send a real ME_EDITABLE field
+        // (first_name) so the request is not an empty update, plus a bogus mobile. Expect
+        // 200 for the legitimate field and NO mobile mutation.
+        $r3EditName = 'GuardMobileReject_' . $this->fixtureTag;
         $mobileReject = $this->dispatchRest('PUT', self::ME_PATH, [
             'link_id' => $fx['link_id'],
+            'first_name' => $r3EditName,
             'mobile' => '09999999999',
         ], (int) $fx['user_id']);
         self::assertSame(200, $mobileReject->get_status(),
-            'positive control: sending mobile to updateMe is silently ignored per ME_EDITABLE whitelist (no field mutation).'
+            'positive control: a valid self-edit that also sends mobile must still return 200 (mobile is not in ME_EDITABLE and is silently ignored).'
         );
         $afterMobileReject = $this->patientRow((int) $fx['patient_id']);
+        self::assertSame($r3EditName, (string) $afterMobileReject['first_name'],
+            'positive control: legitimate ME_EDITABLE field is applied while mobile is ignored.'
+        );
         self::assertSame($fx['mobile'], (string) $afterMobileReject['mobile'],
-            'positive control: login/authentication mobile is immutable via self-service.'
+            'positive control: login/authentication mobile remains EXACTLY unchanged when sent in the same payload as a valid edit.'
         );
 
         self::assertSame(
@@ -780,15 +787,24 @@ final class Phase9Slice4PatientProfileUiRedTest extends WP_UnitTestCase
             'Foreign link_id must fail closed (404).'
         );
 
-        $fx = $this->buildSingleLinkFixture('g4b');
+        $fx = $this->buildSingleLinkFixture('g4s');
         $mobileBefore = (string) $this->patientRow((int) $fx['patient_id'])['mobile'];
+        self::assertNotSame('', $mobileBefore, 'fixture guard: patient mobile row is present before guard dispatch.');
+        $g4EditName = 'GuardG4Mob_' . $this->fixtureTag;
         $mob = $this->dispatchRest('PUT', self::ME_PATH, [
             'link_id' => $fx['link_id'],
+            'first_name' => $g4EditName,
             'mobile' => '09999999999',
         ], (int) $fx['user_id']);
-        self::assertSame(200, $mob->get_status());
-        self::assertSame($mobileBefore, (string) $this->patientRow((int) $fx['patient_id'])['mobile'],
-            'Login mobile must remain immutable via self-service.'
+        self::assertSame(200, $mob->get_status(),
+            'positive control: valid self-edit with extraneous mobile returns 200.'
+        );
+        $after = $this->patientRow((int) $fx['patient_id']);
+        self::assertSame($g4EditName, (string) $after['first_name'],
+            'positive control: legitimate ME_EDITABLE field applied.'
+        );
+        self::assertSame($mobileBefore, (string) $after['mobile'],
+            'Login mobile must remain immutable via self-service even when sent alongside a valid edit.'
         );
 
         self::assertTrue(NationalIdValidator::isValid('0000000140'));
