@@ -373,8 +373,8 @@ final class PatientPortalPage
                 'rest_root'               => untrailingslashit( rest_url( self::REST_NAMESPACE ) ),
                 'cancel_path'             => self::CANCEL_PATH,
                 'notifications_read_path' => self::NOTIFICATIONS_READ_PATH,
-                'profile_my_records_path' => '/patient/my-records',
-                'profile_me_path'         => '/patient/me',
+                'profile_my_records_path' => '/clinic/v1/patient/my-records',
+                'profile_me_path'         => '/clinic/v1/patient/me',
                 'my_records_path'         => '/patient/my-records',
                 'me_path'                 => '/patient/me',
                 'profile_records'         => $profile_records_payload,
@@ -539,8 +539,8 @@ final class PatientPortalPage
         ob_start();
         ?><form class="cpms-pp-profile__form" data-role="profile-form" novalidate>
     <input type="hidden" name="link_id" data-role="profile-link-id" value="<?php echo esc_attr( (string) $link_id ); ?>">
-    <div class="notice inline cpms-pp-profile__notice cpms-pp-profile__notice--success" data-role="profile-success" hidden role="alert"></div>
-    <div class="notice inline cpms-pp-profile__notice cpms-pp-profile__notice--error" data-role="profile-error" hidden role="alert"></div>
+    <div class="notice inline cpms-pp-profile__notice cpms-pp-profile__notice--success" data-role="profile-success" hidden aria-live="polite"></div>
+    <div class="notice inline cpms-pp-profile__notice cpms-pp-profile__notice--error" data-role="profile-error" hidden aria-live="assertive"></div>
     <?php if ( $login_mobile !== '' ) : ?>
         <div class="cpms-pp-profile__mobile" data-role="profile-mobile-row">
     <?php else : ?>
