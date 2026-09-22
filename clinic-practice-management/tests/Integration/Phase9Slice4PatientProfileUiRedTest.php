@@ -74,6 +74,13 @@ final class Phase9Slice4PatientProfileUiRedTest extends WP_UnitTestCase
     private const ME_PATH = self::NS . '/patient/me';
     private const MY_RECORDS_PATH = self::NS . '/patient/my-records';
 
+    /**
+     * Paths published in portal config. rest_root already ends in /clinic/v1;
+     * these stay relative so apiUrl() does not produce /clinic/v1/clinic/v1/….
+     */
+    private const PUBLISHED_ME_PATH = '/patient/me';
+    private const PUBLISHED_MY_RECORDS_PATH = '/patient/my-records';
+
     /** Existing portal runtime config class (Slice 1–3). */
     private const CONFIG_CLASS = 'cpms-patient-portal__config';
 
@@ -648,15 +655,82 @@ final class Phase9Slice4PatientProfileUiRedTest extends WP_UnitTestCase
             'RED-UI-4: portal config must publish profile_my_records_path for GET /patient/my-records selector.'
         );
         self::assertSame(
-            self::ME_PATH,
+            self::PUBLISHED_ME_PATH,
             (string) $config['profile_me_path'],
-            'RED-UI-4: profile_me_path must be exactly the existing /clinic/v1/patient/me canonical endpoint.'
+            'RED-UI-4: profile_me_path must be the relative /patient/me path; rest_root already ends in /clinic/v1.'
         );
         self::assertSame(
-            self::MY_RECORDS_PATH,
+            self::PUBLISHED_MY_RECORDS_PATH,
             (string) $config['profile_my_records_path'],
-            'RED-UI-4: profile_my_records_path must be exactly /clinic/v1/patient/my-records.'
+            'RED-UI-4: profile_my_records_path must be the relative /patient/my-records path.'
         );
+        self::assertStringStartsNotWith(
+            self::NS,
+            (string) $config['profile_me_path'],
+            'RED-UI-4: profile_me_path must not repeat the /clinic/v1 namespace prefix.'
+        );
+        self::assertStringStartsNotWith(
+            self::NS,
+            (string) $config['profile_my_records_path'],
+            'RED-UI-4: profile_my_records_path must not repeat the /clinic/v1 namespace prefix.'
+        );
+        $restRoot = (string) ($config['rest_root'] ?? '');
+        self::assertNotSame('', $restRoot, 'RED-UI-4: rest_root must be published.');
+        self::assertStringEndsWith(
+            '/clinic/v1',
+            $restRoot,
+            'RED-UI-4: rest_root must end in /clinic/v1.'
+        );
+        self::assertSame(
+            1,
+            substr_count($restRoot, '/clinic/v1'),
+            'RED-UI-4: rest_root must contain /clinic/v1 exactly once.'
+        );
+        $joinedMe = $this->portalApiUrl($restRoot, (string) $config['profile_me_path']);
+        $joinedRecords = $this->portalApiUrl($restRoot, (string) $config['profile_my_records_path']);
+        self::assertStringEndsWith(
+            '/clinic/v1/patient/me',
+            $joinedMe,
+            'RED-UI-4: rest_root + profile_me_path must be the canonical /clinic/v1/patient/me endpoint exactly once.'
+        );
+        self::assertStringEndsWith(
+            '/clinic/v1/patient/my-records',
+            $joinedRecords,
+            'RED-UI-4: rest_root + profile_my_records_path must be the canonical /clinic/v1/patient/my-records endpoint exactly once.'
+        );
+        self::assertSame(1, substr_count($joinedMe, '/clinic/v1'),
+            'RED-UI-4: joined profile_me_path must not duplicate /clinic/v1.');
+        self::assertSame(1, substr_count($joinedRecords, '/clinic/v1'),
+            'RED-UI-4: joined profile_my_records_path must not duplicate /clinic/v1.');
+        self::assertStringNotContainsString('/clinic/v1/clinic/v1', $joinedMe);
+        self::assertStringNotContainsString('/clinic/v1/clinic/v1', $joinedRecords);
+        // Same combiner as assets/js apiUrl(): Plain (?rest_route=) rewrites the
+        // path query to &, Pretty (no ?) concatenates. Absolute input is stripped
+        // so a stale /clinic/v1 prefix cannot double the namespace.
+        $plainRoot = 'http://example.org/index.php?rest_route=/clinic/v1';
+        $prettyRoot = 'https://example.org/rest/clinic/v1';
+        self::assertSame(
+            'http://example.org/index.php?rest_route=/clinic/v1/patient/me',
+            $this->portalApiUrl($plainRoot, self::PUBLISHED_ME_PATH)
+        );
+        self::assertSame(
+            'http://example.org/index.php?rest_route=/clinic/v1/patient/me&link_id=1',
+            $this->portalApiUrl($plainRoot, self::PUBLISHED_ME_PATH . '?link_id=1')
+        );
+        self::assertSame(
+            'https://example.org/rest/clinic/v1/patient/my-records',
+            $this->portalApiUrl($prettyRoot, self::PUBLISHED_MY_RECORDS_PATH)
+        );
+        self::assertSame(
+            'https://example.org/rest/clinic/v1/patient/me?link_id=1',
+            $this->portalApiUrl($prettyRoot, self::PUBLISHED_ME_PATH . '?link_id=1')
+        );
+        self::assertSame(
+            'https://example.org/rest/clinic/v1/patient/me',
+            $this->portalApiUrl($prettyRoot, self::ME_PATH),
+            'RED-UI-4: the established combiner must strip a duplicated /clinic/v1 prefix.'
+        );
+        self::assertSame(1, substr_count($this->portalApiUrl($plainRoot, self::ME_PATH), '/clinic/v1'));
         $this->assertNoAuthorityInHtml(wp_json_encode($config), 'RED-UI-4 runtime config');
 
         // The save payload contract MUST be described in the JS/markup such that the save:
@@ -1587,21 +1661,59 @@ final class Phase9Slice4PatientProfileUiRedTest extends WP_UnitTestCase
         return $payloads;
     }
 
+    /**
+     * Test-side mirror of assets/js/cpms-patient-portal.js apiUrl().
+     * Relative paths concatenate onto rest_root. A duplicated /clinic/v1 prefix
+     * is stripped. Plain permalink roots (already containing ?) rewrite the
+     * first path "?" to "&".
+     */
+    private function portalApiUrl(string $restRoot, string $path): string
+    {
+        $nsPrefix = self::NS;
+        if (str_starts_with($path, $nsPrefix . '/')) {
+            $path = substr($path, strlen($nsPrefix));
+        }
+        if (str_contains($restRoot, '?') && str_contains($path, '?')) {
+            $queryAt = strpos($path, '?');
+            $path = substr($path, 0, $queryAt) . '&' . substr($path, $queryAt + 1);
+        }
+
+        return $restRoot . $path;
+    }
+
     private function assertNoAuthorityInHtml(string $html, string $label): void
     {
-        // Reject HTML data-* attributes that expose raw authority identifiers.
-        // (Literal words like "clinic" or "patient" in Persian/English copy are fine;
-        // authority leaks require an explicit data-binding attribute carrying the raw id.)
+        // Reject structured authority bindings (attribute name or config key).
+        // Literal words like "clinic" or "patient" in Persian/English copy are fine.
+        // `data-role` is the established semantic UI/test hook (profile-form,
+        // profile-empty-state, notifications-section, …) and is NOT a role-authority
+        // value. The authority field `role` is still rejected as a config key and
+        // as a real field binding (name/data-field/data-user-role/…).
         foreach (self::FORBIDDEN_AUTHORITY_KEYS as $key) {
-            $attr = 'data-' . str_replace('_', '-', $key);
-            self::assertStringNotContainsString($attr . '=', strtolower($html),
-                $label . ': must not expose ' . $attr . ' authority attribute.'
-            );
-            // Also reject the raw snake_case key as a JS/JSON config key binding
-            // (e.g. {"clinic_id":123}). We accept the key appearing in Persian/English
-            // prose (no colon/quote immediately after) but not as a data key.
+            if ($key === 'role') {
+                self::assertDoesNotMatchRegularExpression(
+                    '/(?:^|[\s<"\'])data-(?:user-role|wp-role|authority-role|role-id)\s*=/i',
+                    $html,
+                    $label . ': must not expose a role authority attribute.'
+                );
+                self::assertDoesNotMatchRegularExpression(
+                    '/(?:^|[\s<"\'])(?:name|data-field|data-authority)\s*=\s*["\']role["\']/i',
+                    $html,
+                    $label . ': must not bind role as a client authority field.'
+                );
+            } else {
+                $attr = 'data-' . str_replace('_', '-', $key);
+                self::assertStringNotContainsString($attr . '=', strtolower($html),
+                    $label . ': must not expose ' . $attr . ' authority attribute.'
+                );
+            }
+            // Reject the raw snake_case key as a JS/JSON config key binding
+            // (e.g. {"clinic_id":123} or {"role":"patient"}). Prose without a
+            // following colon is not a data key. This still rejects "role".
+            // Quoted JSON keys ("role":) and the older unquoted binding form.
+            // Does not match the semantic attribute data-role= or role="alert".
             self::assertDoesNotMatchRegularExpression(
-                '/["{,]' . preg_quote($key, '/') . '\s*:/i',
+                '/(?:["{,]' . preg_quote($key, '/') . '\s*:|"' . preg_quote($key, '/') . '"\s*:)/i',
                 $html,
                 $label . ': must not publish "' . $key . '" as a client-side config key.'
             );
