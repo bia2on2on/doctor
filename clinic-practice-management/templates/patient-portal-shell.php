@@ -127,7 +127,7 @@ echo $cpms_styles_html;
 	<nav class="cpms-patient-portal-shell__nav" role="navigation" aria-label="ناوبری پورتال بیمار" data-role="patient-nav">
 		<ul class="cpms-patient-portal-shell__nav-list">
 			<li><a class="is-active" href="<?php echo esc_url( $cpms_portal_url ); ?>#appointments" data-role="nav-appointments" aria-current="page">نوبت‌های من</a></li>
-			<li><a href="<?php echo esc_url( $cpms_portal_url ); ?>#profile" data-role="nav-profile">پروندهٔ من</a></li>
+			<li><a href="<?php echo esc_url( $cpms_portal_url ); ?>#profile" data-role="nav-profile">پروفایل</a></li>
 		</ul>
 	</nav>
 	<?php endif; ?>

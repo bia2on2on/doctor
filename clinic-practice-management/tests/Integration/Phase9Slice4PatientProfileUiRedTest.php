@@ -219,6 +219,12 @@ final class Phase9Slice4PatientProfileUiRedTest extends WP_UnitTestCase
         $this->assertNavItem($html, self::NAV_PROFILE_ROLE,
             'RED-UI-1: patient navigation must expose a Profile nav item (' . self::NAV_PROFILE_ROLE . ').'
         );
+        $profileNav = $this->markedElements($html, self::NAV_PROFILE_ROLE);
+        self::assertSame(
+            'پروفایل',
+            trim(wp_strip_all_tags($profileNav[0]['html'])),
+            'Profile navigation visible text must be «پروفایل», not a clinical-record label.'
+        );
 
         $sections = $this->markedElements($html, self::PROFILE_SECTION_ROLE);
         self::assertCount(

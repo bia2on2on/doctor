@@ -424,7 +424,7 @@ final class PatientPortalPage
      * @param array<string, mixed> $inbox خروجیِ NotificationService::inbox (notifications + unread_count).
      */
     /**
-     * Slice 4: بخش «پروندهٔ من».
+     * Slice 4: بخش «پروفایل».
      *   - 0 پیوند: empty state امن (بدون فرم، بدون دکمهٔ ایجاد/ارتباط).
      *   - 1 پیوند: auto-select، فرم مستقیم (سلکتور در DOM نمی‌آید).
      *   - N>1 پیوند: سلکتور بدون پیش‌انتخاب؛ فرم تا انتخاب explicit کاربر غیرفعال است.
@@ -437,7 +437,7 @@ final class PatientPortalPage
 
         $html = '<section class="cpms-pp-section cpms-pp-profile" data-role="profile-section" id="profile" aria-labelledby="cpms-pp-profile-heading">';
 
-        $html .= '<h1 id="cpms-pp-profile-heading">پروندهٔ من</h1>';
+        $html .= '<h1 id="cpms-pp-profile-heading">پروفایل</h1>';
         $html .= '<p class="description">اطلاعات پروندهٔ پزشکی شما در این بخش قابل مشاهده و ویرایش است.</p>';
 
         if ( $count === 0 ) {
