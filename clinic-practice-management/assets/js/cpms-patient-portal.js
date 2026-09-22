@@ -49,26 +49,13 @@
 	/** خواندنِ ایمنِ پیکربندیِ منتشرشده توسط سرور؛ در هر شکست `null` (fail-closed). */
 	function readConfig() {
 		var element = document.querySelector(CONFIG_SELECTOR);
-		if (!element) {
-			return null;
-		}
+		if (!element) { return null; }
 		var parsed;
-		try {
-			parsed = JSON.parse(element.textContent || '');
-		} catch (e) {
-			return null;
-		}
-		if (!parsed || typeof parsed !== 'object') {
-			return null;
-		}
-		if (!isNonEmptyString(parsed.rest_root) || !isNonEmptyString(parsed.nonce)) {
-			return null;
-		}
-		if (!isNonEmptyString(parsed.cancel_path) || parsed.cancel_path.indexOf('{id}') === -1) {
-			return null;
-		}
-		// Profile (Slice 4): paths are required only when the Profile surface is rendered;
-		// here we just tolerate absence so older configs remain valid at startup.
+		try { parsed = JSON.parse(element.textContent || ''); }
+		catch (e) { return null; }
+		if (!parsed || typeof parsed !== 'object') { return null; }
+		if (!isNonEmptyString(parsed.rest_root) || !isNonEmptyString(parsed.nonce)) { return null; }
+		if (!isNonEmptyString(parsed.cancel_path) || parsed.cancel_path.indexOf('{id}') === -1) { return null; }
 		return parsed;
 	}
 
