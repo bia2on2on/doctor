@@ -674,6 +674,7 @@ final class PatientPortalPage
 
     /**
      * بخشِ اعلان‌های داخلی (Slice 2) — سرور-رندر از پاسخِ واقعیِ G6؛ بدون polling.
+     */
     private static function notifications_section( array $inbox, \DateTimeZone $tz ): string {
         $rows   = is_array( $inbox['notifications'] ?? null ) ? $inbox['notifications'] : [];
         $unread = (int) ( $inbox['unread_count'] ?? 0 );
