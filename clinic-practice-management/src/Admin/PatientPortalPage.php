@@ -259,32 +259,41 @@ final class PatientPortalPage
         $clinic_tz = self::clinic_timezone();
 
         // Phase 9 Slice 4: Profile data — single my-records fetch (P-5) per page render.
-        // No extra authority: browser gets link_id + display names only (clinic_id/patient_id
-        // stay server-side for enforcement). profile_initial.me is whitelisted to
-        // ME_EDITABLE (+ mobile for read-only display) to avoid leaking patient_id/mrn/clinic_id.
+        // Any failure in Profile data loading (ScopeRequiredException, missing link, etc.)
+        // degrades to empty profile_records so the existing appointments/notifications shell
+        // keeps rendering and a hard wp_die/500 never replaces the Slice 1/2 experience.
         $profile_records = [];
         $profile_initial = null;
         $login_mobile    = '';
         try {
             $profile_records = App::patientService()->linked_records( $userId );
-            if ( is_array( $profile_records ) && count( $profile_records ) === 1 ) {
+            if ( ! is_array( $profile_records ) ) {
+                $profile_records = [];
+            }
+            if ( count( $profile_records ) === 1 ) {
                 $sole = $profile_records[0];
                 $me_full = App::patientService()->me( $userId, (int) $sole['link_id'] );
-                $me_whitelisted = self::whitelist_me_for_client( $me_full );
-                $profile_initial = [ 'record' => $sole, 'me' => $me_whitelisted ];
-                $login_mobile = (string) ( $me_full['mobile'] ?? '' );
-            } elseif ( is_array( $profile_records ) && count( $profile_records ) > 1 ) {
-                // N>1: do NOT pre-select. Display login mobile from first available record
-                // (all linked records for an OTP-provisioned account share the same mobile).
+                if ( is_array( $me_full ) ) {
+                    $me_whitelisted = self::whitelist_me_for_client( $me_full );
+                    $profile_initial = [ 'record' => $sole, 'me' => $me_whitelisted ];
+                    $login_mobile = (string) ( $me_full['mobile'] ?? '' );
+                }
+            } elseif ( count( $profile_records ) > 1 ) {
+                // N>1: do NOT pre-select. Login mobile is read-only; any resolution failure
+                // (e.g. backend selection requirement) silently leaves login_mobile empty.
                 try {
                     $me_any = App::patientService()->me( $userId, (int) $profile_records[0]['link_id'] );
-                    $login_mobile = (string) ( $me_any['mobile'] ?? '' );
+                    if ( is_array( $me_any ) ) {
+                        $login_mobile = (string) ( $me_any['mobile'] ?? '' );
+                    }
                 } catch ( \Throwable $e ) {
                     $login_mobile = '';
                 }
             }
-        } catch ( ScopeRequiredException ) {
+        } catch ( \Throwable $e ) {
             $profile_records = [];
+            $profile_initial = null;
+            $login_mobile    = '';
         }
         ?>
 <div class="wrap cpms-patient-portal" dir="rtl" style="max-width:860px">
