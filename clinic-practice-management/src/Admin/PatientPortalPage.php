@@ -260,24 +260,26 @@ final class PatientPortalPage
 
         // Phase 9 Slice 4: Profile data — single my-records fetch (P-5) per page render.
         // No extra authority: browser gets link_id + display names only (clinic_id/patient_id
-        // stay server-side for enforcement).
+        // stay server-side for enforcement). profile_initial.me is whitelisted to
+        // ME_EDITABLE (+ mobile for read-only display) to avoid leaking patient_id/mrn/clinic_id.
         $profile_records = [];
-        $profile_initial = null; // ['record' => …, 'me' => …] when N=1 (auto-select sole record).
+        $profile_initial = null;
         $login_mobile    = '';
         try {
             $profile_records = App::patientService()->linked_records( $userId );
             if ( is_array( $profile_records ) && count( $profile_records ) === 1 ) {
                 $sole = $profile_records[0];
-                $me   = App::patientService()->me( $userId, (int) $sole['link_id'] );
-                $profile_initial = [ 'record' => $sole, 'me' => $me ];
-                $login_mobile = (string) ( $me['mobile'] ?? '' );
+                $me_full = App::patientService()->me( $userId, (int) $sole['link_id'] );
+                $me_whitelisted = self::whitelist_me_for_client( $me_full );
+                $profile_initial = [ 'record' => $sole, 'me' => $me_whitelisted ];
+                $login_mobile = (string) ( $me_full['mobile'] ?? '' );
             } elseif ( is_array( $profile_records ) && count( $profile_records ) > 1 ) {
                 // N>1: do NOT pre-select. Display login mobile from first available record
                 // (all linked records for an OTP-provisioned account share the same mobile).
                 try {
                     $me_any = App::patientService()->me( $userId, (int) $profile_records[0]['link_id'] );
                     $login_mobile = (string) ( $me_any['mobile'] ?? '' );
-                } catch ( \Throwable ) {
+                } catch ( \Throwable $e ) {
                     $login_mobile = '';
                 }
             }
@@ -332,6 +334,31 @@ final class PatientPortalPage
      * @param array<string, mixed>|null        $initial
      */
     private static function config_script( array $records = [], ?array $initial = null ): string {
+        $profile_records_payload = [];
+        if ( is_array( $records ) ) {
+            foreach ( $records as $r ) {
+                $profile_records_payload[] = [
+                    'link_id'              => (int) $r['link_id'],
+                    'clinic_name'          => (string) ( $r['clinic_name'] ?? '' ),
+                    'patient_display_name' => (string) ( $r['patient_display_name'] ?? '' ),
+                    'mrn'                  => (string) ( $r['mrn'] ?? '' ),
+                    'is_primary'           => (bool) ( $r['is_primary'] ?? false ),
+                ];
+            }
+        }
+        $profile_initial_payload = null;
+        if ( is_array( $initial ) && isset( $initial['record'], $initial['me'] ) ) {
+            $profile_initial_payload = [
+                'record' => [
+                    'link_id'              => (int) ( $initial['record']['link_id'] ?? 0 ),
+                    'clinic_name'          => (string) ( $initial['record']['clinic_name'] ?? '' ),
+                    'patient_display_name' => (string) ( $initial['record']['patient_display_name'] ?? '' ),
+                    'mrn'                  => (string) ( $initial['record']['mrn'] ?? '' ),
+                    'is_primary'           => (bool) ( $initial['record']['is_primary'] ?? false ),
+                ],
+                'me' => $initial['me'],
+            ];
+        }
         $json = wp_json_encode(
             [
                 'rest_root'               => untrailingslashit( rest_url( self::REST_NAMESPACE ) ),
@@ -341,26 +368,8 @@ final class PatientPortalPage
                 'profile_me_path'         => '/clinic/v1/patient/me',
                 'my_records_path'         => '/patient/my-records',
                 'me_path'                 => '/patient/me',
-                'profile_records'         => is_array( $records ) ? array_values( array_map(
-					static fn ( array $r ): array => [
-						'link_id'              => (int) $r['link_id'],
-						'clinic_name'          => (string) ( $r['clinic_name'] ?? '' ),
-						'patient_display_name' => (string) ( $r['patient_display_name'] ?? '' ),
-						'mrn'                  => (string) ( $r['mrn'] ?? '' ),
-						'is_primary'           => (bool) ( $r['is_primary'] ?? false ),
-					],
-					$records
-				) ) : [],
-                'profile_initial'         => is_array( $initial ) && isset( $initial['record'], $initial['me'] ) ? [
-					'record' => [
-						'link_id'              => (int) ( $initial['record']['link_id'] ?? 0 ),
-						'clinic_name'          => (string) ( $initial['record']['clinic_name'] ?? '' ),
-						'patient_display_name' => (string) ( $initial['record']['patient_display_name'] ?? '' ),
-						'mrn'                  => (string) ( $initial['record']['mrn'] ?? '' ),
-						'is_primary'           => (bool) ( $initial['record']['is_primary'] ?? false ),
-					],
-					'me' => $initial['me'],
-				] : null,
+                'profile_records'         => $profile_records_payload,
+                'profile_initial'         => $profile_initial_payload,
                 'nonce'                   => wp_create_nonce( 'wp_rest' ),
             ],
             JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_UNICODE
@@ -408,8 +417,8 @@ final class PatientPortalPage
             <span class="cpms-pp-profile__context-sep" aria-hidden="true">·</span>
             <span class="cpms-pp-profile__context-mrn" data-role="profile-mrn"><?php
                 if ( $count === 1 && is_array( $initial ) ) {
-					$mrn = (string) ( $initial['record']['mrn'] ?? '' );
-					echo esc_html( $mrn !== '' ? 'MRN: ' . $mrn : '' );
+                    $mrn = (string) ( $initial['record']['mrn'] ?? '' );
+                    echo esc_html( $mrn !== '' ? 'MRN: ' . $mrn : '' );
                 }
             ?></span>
         </div>
@@ -443,6 +452,22 @@ final class PatientPortalPage
 </section>
         <?php
         return (string) ob_get_clean();
+    }
+
+    /**
+     * Whitelist me-payload to ME_EDITABLE (+ mobile for read-only display) so no
+     * internal identifiers (id/mrn/clinic_id/...) leak into client config.
+     *
+     * @param array<string, mixed> $me
+     * @return array<string, mixed>
+     */
+    private static function whitelist_me_for_client( array $me ): array {
+        $out = [];
+        foreach ( PatientService::ME_EDITABLE as $field ) {
+            $out[ $field ] = $me[ $field ] ?? null;
+        }
+        $out['mobile'] = (string) ( $me['mobile'] ?? '' );
+        return $out;
     }
 
     /**
