@@ -663,6 +663,66 @@ def run_multi(browser, run, capture_before, capture_after):
         ctx.close()
 
 
+def run_visits_readonly(browser):
+    """Slice 5 TEST-ONLY RED: actual shell/JS/REST, no mocked clinical response."""
+    key = "visits-list-detail-selector"
+    ctx, page, state = new_page(browser, VIEWPORTS[-1])
+    requests = []
+    page.on("request", lambda req: requests.append(req) if wp_route(req.url).startswith("/clinic/v1/visits") else None)
+    try:
+        visit_a, visit_b = [int(v) for v in os.environ["VISITS_PAIR"].split("|")]
+        assert db1(f"SELECT COUNT(*) FROM {T('cpms_visits')} WHERE id IN ({visit_a},{visit_b})") == 2
+        login(page, MULTI["login"], MULTI["password"])
+        assert_shell(page)
+        ok("visits-bootstrap", "authenticated production shell and two durable visit fixtures reached")
+        nav = page.locator('[data-role="nav-visits"]')
+        assert nav.count() == 1, "My Visits navigation missing on production shell"
+        nav.click()
+        section = page.locator('[data-role="visits-section"]')
+        selector = section.locator('[data-role="visits-record-select"]')
+        assert selector.input_value() == "", "primary/first record selected implicitly"
+        assert section.locator('[data-role="visit-open"]').count() == 0
+        assert not requests, "Clinic-specific visits requested before selection"
+        options = selector.locator('option').evaluate_all("els => els.map(e => e.value).filter(Boolean)")
+        assert set(options) == {str(MULTI["link_a"]), str(MULTI["link_b"])}
+        with page.expect_response(lambda r: wp_route(r.url) == "/clinic/v1/visits") as listing:
+            selector.select_option(str(MULTI["link_b"]))
+        assert listing.value.status == 200
+        assert [v["id"] for v in listing.value.json()["data"]["visits"]] == [visit_b]
+        context = section.locator('[data-role="visits-context"]')
+        assert clinic_name(MULTI["clinic_b"]) in context.inner_text()
+        assert "SynB" in context.inner_text()
+        opener = section.locator(f'[data-role="visit-open"][data-visit-id="{visit_b}"]')
+        with page.expect_response(lambda r: wp_route(r.url) == f"/clinic/v1/visits/{visit_b}") as detail:
+            opener.click()
+        assert detail.value.status == 200
+        pane = section.locator('[data-role="visits-detail"]')
+        pane.get_by_text("SYN-VISIBLE-B", exact=False).wait_for(state="visible")
+        text = pane.inner_text()
+        for forbidden in ("SYN-PRIVATE-", "SYN-INTERNAL-CORRECTION", "SYN-VISIBLE-A", "checked_out", "walk_in"):
+            assert forbidden not in text, f"unresolved/private field displayed: {forbidden}"
+        assert section.locator('form, [contenteditable="true"], [data-role="visits-edit"], [data-role="visits-delete"]').count() == 0
+        for req in requests:
+            assert req.method == "GET", "Visits must be read-only"
+            assert req.headers.get("x-wp-nonce"), "existing wp_rest nonce required"
+            params = parse_qs(urlparse(req.url).query)
+            assert params.get("link_id") == [str(MULTI["link_b"])], "selection must travel with list AND detail"
+            assert not (set(params) & {"clinic_id", "patient_id", "organization_id", "role"})
+            assert not req.post_data, "GET must not send authority in a request body"
+        assert len(requests) >= 2, "both existing C5/C6 paths must execute"
+        # A context switch must clear B detail, not leave stale Clinic history.
+        with page.expect_response(lambda r: wp_route(r.url) == "/clinic/v1/visits"):
+            selector.select_option(str(MULTI["link_a"]))
+        section.locator(f'[data-role="visit-open"][data-visit-id="{visit_a}"]').wait_for(state="visible")
+        assert "SYN-VISIBLE-B" not in section.inner_text(), "stale B detail remained after switching to A"
+        assert clinic_name(MULTI["clinic_a"]) in context.inner_text()
+        ok(key, "explicit B selection, isolated list/detail, safe projection, nonce and selector-only GETs, switch clears stale detail")
+    except Exception as exc:
+        fail(key, "My Visits read-only vertical contract", exc)
+    finally:
+        ctx.close()
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
     print("INFO plain_permalink_browser=NOT_RUN pretty_pilot=expected")
@@ -678,6 +738,7 @@ def main():
                 capture_before=(run["vp"] == "laptop-1366"),
                 capture_after=(run["vp"] == "laptop-1366"),
             )
+        run_visits_readonly(browser)
         browser.close()
     summary = {"ok": not failures, "failed": failures}
     print(json.dumps(summary, ensure_ascii=False))
