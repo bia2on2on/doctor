@@ -222,11 +222,14 @@ final class PatientPortalPage
             wp_die('دسترسی ندارید', 403);
         }
 
-        $userId = get_current_user_id();
+        $user_id = get_current_user_id();
+
         $today = gmdate('Y-m-d');
-        $rows = App::bookingService()->listMine($userId, gmdate('Y-m-d', strtotime('-365 days')), gmdate('Y-m-d', strtotime('+180 days')));
+
+        $rows = App::bookingService()->listMine($user_id, gmdate('Y-m-d', strtotime('-365 days')), gmdate('Y-m-d', strtotime('+180 days')));
 
         $upcoming = [];
+
         $past = [];
         foreach ((is_array($rows) ? $rows : []) as $row) {
             if ((string) $row['date'] >= $today
@@ -260,31 +263,34 @@ final class PatientPortalPage
 
         // Phase 9 Slice 4: Profile data — single my-records fetch (P-5) per page render.
         $profile_records = [];
+
         $profile_initial = null;
-        $login_mobile    = '';
+
+        $login_mobile = '';
 
         try {
-            $profile_records = App::patientService()->linked_records( $userId );
+            $profile_records = App::patientService()->linked_records( $user_id );
 
             if ( ! is_array( $profile_records ) ) {
                 $profile_records = [];
             }
 
             if ( count( $profile_records ) === 1 ) {
-                $sole    = $profile_records[0];
-                $me_full = App::patientService()->me( $userId, (int) $sole['link_id'] );
+                $sole = $profile_records[0];
+
+                $me_full = App::patientService()->me( $user_id, (int) $sole['link_id'] );
 
                 if ( is_array( $me_full ) ) {
-                    $me_whitelisted  = self::whitelist_me_for_client( $me_full );
-                    $profile_initial = [
+                    $me_whitelisted   = self::whitelist_me_for_client( $me_full );
+                    $profile_initial  = [
                         'record' => $sole,
                         'me'     => $me_whitelisted,
                     ];
-                    $login_mobile = (string) ( $me_full['mobile'] ?? '' );
+                    $login_mobile     = (string) ( $me_full['mobile'] ?? '' );
                 }
             } elseif ( count( $profile_records ) > 1 ) {
                 try {
-                    $me_any = App::patientService()->me( $userId, (int) $profile_records[0]['link_id'] );
+                    $me_any = App::patientService()->me( $user_id, (int) $profile_records[0]['link_id'] );
 
                     if ( is_array( $me_any ) ) {
                         $login_mobile = (string) ( $me_any['mobile'] ?? '' );
@@ -295,11 +301,13 @@ final class PatientPortalPage
             }
         } catch ( \Throwable $e ) {
             $profile_records = [];
+
             $profile_initial = null;
-            $login_mobile    = '';
+
+            $login_mobile = '';
         }
 
-        $html  = '<div class="wrap cpms-patient-portal" dir="rtl" style="max-width:860px">';
+        $html = '<div class="wrap cpms-patient-portal" dir="rtl" style="max-width:860px">';
         $html .= '<section class="cpms-pp-section" data-role="appointments-section" id="appointments" aria-labelledby="cpms-pp-appointments-heading">';
         $html .= '<h1 id="cpms-pp-appointments-heading">نوبت‌های من</h1>';
         $html .= '<p class="description">سلام! نوبت‌های ثبت‌شده شما در این صفحه است. تغییرات نوبت با پیامک هم اطلاع داده می‌شود.</p>';
@@ -426,7 +434,7 @@ final class PatientPortalPage
     private static function profile_section( array $records, ?array $initial, string $login_mobile ): string {
         $count = is_array( $records ) ? count( $records ) : 0;
 
-        $html  = '<section class="cpms-pp-section cpms-pp-profile" data-role="profile-section" id="profile" aria-labelledby="cpms-pp-profile-heading">';
+        $html = '<section class="cpms-pp-section cpms-pp-profile" data-role="profile-section" id="profile" aria-labelledby="cpms-pp-profile-heading">';
         $html .= '<h1 id="cpms-pp-profile-heading">پروندهٔ من</h1>';
         $html .= '<p class="description">اطلاعات پروندهٔ پزشکی شما در این بخش قابل مشاهده و ویرایش است.</p>';
 
@@ -441,14 +449,19 @@ final class PatientPortalPage
         }
 
         $is_single_with_initial = ( $count === 1 && is_array( $initial ) );
-        $hidden_attr            = $is_single_with_initial ? '' : ' hidden';
-        $clinic_name            = '';
-        $mrn_text               = '';
+
+        $hidden_attr = $is_single_with_initial ? '' : ' hidden';
+
+        $clinic_name = '';
+
+        $mrn_text = '';
 
         if ( $is_single_with_initial ) {
             $clinic_name = (string) ( $initial['record']['clinic_name'] ?? '' );
-            $mrn_raw     = (string) ( $initial['record']['mrn'] ?? '' );
-            $mrn_text    = $mrn_raw !== '' ? 'MRN: ' . $mrn_raw : '';
+
+            $mrn_raw = (string) ( $initial['record']['mrn'] ?? '' );
+
+            $mrn_text = $mrn_raw !== '' ? 'MRN: ' . $mrn_raw : '';
         }
 
         $html .= '<div class="cpms-pp-profile__context" data-role="profile-context"' . $hidden_attr . '>';
@@ -466,11 +479,15 @@ final class PatientPortalPage
 
             foreach ( $records as $r ) {
                 $link_id_attr = esc_attr( (string) $r['link_id'] );
-                $clinic       = (string) ( $r['clinic_name'] ?? '' );
-                $display      = (string) ( $r['patient_display_name'] ?? '' );
-                $display      = $display !== '' ? $display : 'بیمار';
-                $mrn          = (string) ( $r['mrn'] ?? '' );
-                $label        = $clinic . ' — ' . $display . ' (MRN: ' . $mrn . ')';
+
+                $clinic = (string) ( $r['clinic_name'] ?? '' );
+
+                $display = (string) ( $r['patient_display_name'] ?? '' );
+                $display = $display !== '' ? $display : 'بیمار';
+
+                $mrn = (string) ( $r['mrn'] ?? '' );
+
+                $label = $clinic . ' — ' . $display . ' (MRN: ' . $mrn . ')';
 
                 $html .= '<option data-role="profile-record-option" data-link-id="' . $link_id_attr . '" value="' . $link_id_attr . '">' . esc_html( $label ) . '</option>';
             }
@@ -522,8 +539,10 @@ final class PatientPortalPage
      * @param array<string,mixed>|null $initial ['record' => …, 'me' => …]
      */
     private static function profile_form_markup( ?array $initial, string $login_mobile ): string {
-        $me      = is_array( $initial ) && isset( $initial['me'] ) && is_array( $initial['me'] ) ? $initial['me'] : [];
-        $record  = is_array( $initial ) && isset( $initial['record'] ) && is_array( $initial['record'] ) ? $initial['record'] : [];
+        $me = is_array( $initial ) && isset( $initial['me'] ) && is_array( $initial['me'] ) ? $initial['me'] : [];
+
+        $record = is_array( $initial ) && isset( $initial['record'] ) && is_array( $initial['record'] ) ? $initial['record'] : [];
+
         $link_id = (int) ( $record['link_id'] ?? 0 );
 
         $fields = [
@@ -582,9 +601,12 @@ final class PatientPortalPage
             ],
         ];
 
-        $html  = '<form class="cpms-pp-profile__form" data-role="profile-form" novalidate>';
+        $html = '<form class="cpms-pp-profile__form" data-role="profile-form" novalidate>';
+
         $html .= '<input type="hidden" name="link_id" data-role="profile-link-id" value="' . esc_attr( (string) $link_id ) . '">';
+
         $html .= '<div class="notice inline cpms-pp-profile__notice cpms-pp-profile__notice--success" data-role="profile-success" hidden role="alert"></div>';
+
         $html .= '<div class="notice inline cpms-pp-profile__notice cpms-pp-profile__notice--error" data-role="profile-error" hidden role="alert"></div>';
 
         $mobile_hidden = $login_mobile !== '' ? '' : ' hidden';
@@ -596,7 +618,8 @@ final class PatientPortalPage
         $html .= '<div class="cpms-pp-profile__grid">';
 
         foreach ( $fields as $name => $spec ) {
-            $full        = ! empty( $spec['full'] ) ? ' cpms-pp-field--full' : '';
+            $full = ! empty( $spec['full'] ) ? ' cpms-pp-field--full' : '';
+
             $initial_val = array_key_exists( $name, $me ) && $me[ $name ] !== null ? (string) $me[ $name ] : '';
 
             $html .= '<div class="cpms-pp-field' . esc_attr( $full ) . '">';
