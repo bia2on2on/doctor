@@ -100,7 +100,7 @@ final class Phase9Slice4PatientProfileUiRedTest extends WP_UnitTestCase
     private const PROFILE_CLINIC_LABEL_ROLE = 'profile-clinic-label';
 
     /** Record selector root (present only when server reports N links). */
-    private const PROFILE_SELECTOR_ROLE = 'profile-record-selector';
+    private const PROFILE_SELECTOR_ROLE = 'profile-record-select';
 
     /** Selector option data attribute carrying server-provided link_id. */
     private const SELECTOR_OPTION_ROLE = 'profile-record-option';
