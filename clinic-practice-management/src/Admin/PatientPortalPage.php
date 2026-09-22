@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Admin;
 
+use ClinicCore\Application\Patients\PatientService;
 use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
@@ -221,11 +222,14 @@ final class PatientPortalPage
             wp_die('دسترسی ندارید', 403);
         }
 
-        $userId = get_current_user_id();
+        $user_id = get_current_user_id();
+
         $today = gmdate('Y-m-d');
-        $rows = App::bookingService()->listMine($userId, gmdate('Y-m-d', strtotime('-365 days')), gmdate('Y-m-d', strtotime('+180 days')));
+
+        $rows = App::bookingService()->listMine( $user_id, gmdate( 'Y-m-d', strtotime( '-365 days' ) ), gmdate( 'Y-m-d', strtotime( '+180 days' ) ) );
 
         $upcoming = [];
+
         $past = [];
         foreach ((is_array($rows) ? $rows : []) as $row) {
             if ((string) $row['date'] >= $today
@@ -256,31 +260,80 @@ final class PatientPortalPage
             ];
         }
         $clinic_tz = self::clinic_timezone();
-        ?>
-<div class="wrap cpms-patient-portal" dir="rtl" style="max-width:860px">
-    <h1>نوبت‌های من</h1>
-    <p class="description">سلام! نوبت‌های ثبت‌شده شما در این صفحه است. تغییرات نوبت با پیامک هم اطلاع داده می‌شود.</p>
 
-    <h2>نوبت‌های پیش‌رو</h2>
-    <p class="description">نوبت‌های تأییدشده را می‌توانید تا پیش از مهلتِ تعیین‌شدهٔ مطب همین‌جا لغو کنید.</p>
-        <?php echo self::table( $upcoming, 'نوبت پیش‌رویی ندارید.', true ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- markup از پیش escape شده (esc_html/esc_attr در table()/cancel_button()) ?>
-    <div class="notice notice-error inline cpms-patient-portal__error" role="alert" data-role="cancel-error" hidden><p></p></div>
+        // Phase 9 Slice 4: Profile data — single my-records fetch (P-5) per page render.
+        $profile_records = [];
 
-        <?php echo self::notifications_section( $inbox, $clinic_tz ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- markup از پیش escape شده (esc_html/esc_attr در notifications_section()) ?>
+        $profile_initial = null;
 
-    <h2>تاریخچه</h2>
-        <?php echo self::table( $past, 'تاریخچه‌ای ثبت نشده است.', false ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- markup از پیش escape شده (esc_html در table()) ?>
+        $login_mobile = '';
 
-    <div class="card" style="max-width:840px;padding:8px 16px;margin-top:16px">
-        <p>
-            برای رزرو یا تغییر نوبت، و لغو نوبت‌هایی که دکمهٔ لغو ندارند، با مطب در تماس باشید<?php echo $phone !== '' ? ' (تلفن: <b dir="ltr">' . esc_html( $phone ) . '</b>)' : ''; ?>.
-            رزرو آنلاین اینترنتی به‌زودی فعال می‌شود.
-        </p>
-    </div>
-        <?php echo self::config_script(); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- JSON script-safe (wp_json_encode + JSON_HEX_TAG|JSON_HEX_AMP) و class با esc_attr ?>
-</div>
-        <?php
+        try {
+            $profile_records = App::patientService()->linked_records( $user_id );
+
+            if ( ! is_array( $profile_records ) ) {
+                $profile_records = [];
+            }
+
+            if ( count( $profile_records ) === 1 ) {
+                $sole = $profile_records[0];
+
+                $me_full = App::patientService()->me( $user_id, (int) $sole['link_id'] );
+
+                if ( is_array( $me_full ) ) {
+                    $me_whitelisted  = self::whitelist_me_for_client( $me_full );
+                    $profile_initial = [
+                        'record' => $sole,
+                        'me'     => $me_whitelisted,
+                    ];
+                    $login_mobile    = (string) ( $me_full['mobile'] ?? '' );
+                }
+            } elseif ( count( $profile_records ) > 1 ) {
+                try {
+                    $me_any = App::patientService()->me( $user_id, (int) $profile_records[0]['link_id'] );
+
+                    if ( is_array( $me_any ) ) {
+                        $login_mobile = (string) ( $me_any['mobile'] ?? '' );
+                    }
+                } catch ( \Throwable $e ) {
+                    $login_mobile = '';
+                }
+            }
+        } catch ( \Throwable $e ) {
+            $profile_records = [];
+
+            $profile_initial = null;
+
+            $login_mobile = '';
+        }
+
+        $html = '<div class="wrap cpms-patient-portal" dir="rtl" style="max-width:860px">';
+
+        $html .= '<section class="cpms-pp-section" data-role="appointments-section" id="appointments" aria-labelledby="cpms-pp-appointments-heading">';
+        $html .= '<h1 id="cpms-pp-appointments-heading">نوبت‌های من</h1>';
+        $html .= '<p class="description">سلام! نوبت‌های ثبت‌شده شما در این صفحه است. تغییرات نوبت با پیامک هم اطلاع داده می‌شود.</p>';
+        $html .= '<h2>نوبت‌های پیش‌رو</h2>';
+        $html .= '<p class="description">نوبت‌های تأییدشده را می‌توانید تا پیش از مهلتِ تعیین‌شدهٔ مطب همین‌جا لغو کنید.</p>';
+        $html .= self::table( $upcoming, 'نوبت پیش‌رویی ندارید.', true );
+        $html .= '<div class="notice notice-error inline cpms-patient-portal__error" role="alert" data-role="cancel-error" hidden><p></p></div>';
+        $html .= self::notifications_section( $inbox, $clinic_tz );
+        $html .= '<h2>تاریخچه</h2>';
+        $html .= self::table( $past, 'تاریخچه‌ای ثبت نشده است.', false );
+        $html .= '<div class="card" style="max-width:840px;padding:8px 16px;margin-top:16px"><p>برای رزرو یا تغییر نوبت، و لغو نوبت‌هایی که دکمهٔ لغو ندارند، با مطب در تماس باشید';
+
+        if ( $phone !== '' ) {
+            $html .= ' (تلفن: <b dir="ltr">' . esc_html( $phone ) . '</b>)';
+        }
+
+        $html .= '. رزرو آنلاین اینترنتی به‌زودی فعال می‌شود.</p></div>';
+        $html .= '</section>';
+        $html .= self::profile_section( $profile_records, $profile_initial, $login_mobile );
+        $html .= self::config_script( $profile_records, $profile_initial );
+        $html .= '</div>';
+
+        echo $html; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- markup از پیش escape شده
     }
+
 
     /**
      * پیکربندیِ امنِ runtime برای اسکریپت پورتال — فقط چهار کلید:
@@ -293,16 +346,68 @@ final class PatientPortalPage
      * عمداً هیچ clinic_id/patient_id/PHI منتشر نمی‌شود؛ مرجعِ مالکیت و Clinic سرور است.
      * `JSON_HEX_TAG|JSON_HEX_AMP` خروجی را script-safe می‌کند (`</` و `&` escape).
      */
-    private static function config_script(): string {
+    /**
+     * پیکربندیِ امنِ runtime برای اسکریپت پورتال — Slice 1/2/4 keys:
+     *  - `rest_root`: `rest_url('clinic/v1')` بدون اسلش انتهایی (در Plain permalink
+     *    شامل `index.php?rest_route=/clinic/v1` است؛ ترکیب مسیر سمت کلاینت با
+     *    همان الگوی `apiUrl()` انجام می‌شود، نه الحاقِ ساده).
+     *  - `cancel_path`: الگوی مسیر B4 با `{id}`.
+     *  - `notifications_read_path`: مسیرِ موجودِ R2b (POST `{"all":true}`) — Slice 2.
+     *  - `profile_my_records_path`/`profile_me_path`/`my_records_path`/`me_path`: مسیرهای Patient Profile (Slice 4) — نسبی به NS، بدون پیشوند تکراری.
+     *  - `profile_records`: لینک‌های فعال کاربر (link_id + clinic_name + patient_display_name + mrn + is_primary) — صرفاً برای نمایش در سلکتور؛ clinic_id/patient_id سرور-ساید enforcement.
+     *  - `profile_initial`: رکورد + me در حالت تک‌پیوند (N=1) تا فرم بدون درخواست اضافی لود شود.
+     *  - `nonce`: `wp_rest` — همان مرزِ CSRF که `cancelPermission`/`permission` می‌سنجند.
+     * `JSON_HEX_TAG|JSON_HEX_AMP` خروجی را script-safe می‌کند (`</` و `&` escape).
+     *
+     * @param array<int, array<string, mixed>> $records
+     * @param array<string, mixed>|null        $initial
+     */
+    private static function config_script( array $records = [], ?array $initial = null ): string {
+        $profile_records_payload = [];
+
+        if ( is_array( $records ) ) {
+            foreach ( $records as $r ) {
+                $profile_records_payload[] = [
+                    'link_id'              => (int) $r['link_id'],
+                    'clinic_name'          => (string) ( $r['clinic_name'] ?? '' ),
+                    'patient_display_name' => (string) ( $r['patient_display_name'] ?? '' ),
+                    'mrn'                  => (string) ( $r['mrn'] ?? '' ),
+                    'is_primary'           => (bool) ( $r['is_primary'] ?? false ),
+                ];
+            }
+        }
+
+        $profile_initial_payload = null;
+
+        if ( is_array( $initial ) && isset( $initial['record'], $initial['me'] ) ) {
+            $profile_initial_payload = [
+                'record' => [
+                    'link_id'              => (int) ( $initial['record']['link_id'] ?? 0 ),
+                    'clinic_name'          => (string) ( $initial['record']['clinic_name'] ?? '' ),
+                    'patient_display_name' => (string) ( $initial['record']['patient_display_name'] ?? '' ),
+                    'mrn'                  => (string) ( $initial['record']['mrn'] ?? '' ),
+                    'is_primary'           => (bool) ( $initial['record']['is_primary'] ?? false ),
+                ],
+                'me'     => $initial['me'],
+            ];
+        }
+
         $json = wp_json_encode(
             [
                 'rest_root'               => untrailingslashit( rest_url( self::REST_NAMESPACE ) ),
                 'cancel_path'             => self::CANCEL_PATH,
                 'notifications_read_path' => self::NOTIFICATIONS_READ_PATH,
+                'profile_my_records_path' => '/patient/my-records',
+                'profile_me_path'         => '/patient/me',
+                'my_records_path'         => '/patient/my-records',
+                'me_path'                 => '/patient/me',
+                'profile_records'         => $profile_records_payload,
+                'profile_initial'         => $profile_initial_payload,
                 'nonce'                   => wp_create_nonce( 'wp_rest' ),
             ],
             JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_UNICODE
         );
+
         if ( ! is_string( $json ) || $json === '' ) {
             return '';
         }
@@ -310,12 +415,265 @@ final class PatientPortalPage
         return '<script type="application/json" class="' . esc_attr( self::CONFIG_CLASS ) . '">' . $json . '</script>';
     }
 
+
     /**
      * بخشِ اعلان‌های داخلی (Slice 2) — سرور-رندر از پاسخِ واقعیِ G6؛ بدون polling.
      * نشانِ خوانده‌نشده و کنترلِ «خواندنِ همه» فقط وقتی شمارِ خوانده‌نشده > ۰ است
      * رندر می‌شوند (در صفر اصلاً وجود ندارند، نه اینکه پنهان یا غیرفعال باشند).
      *
      * @param array<string, mixed> $inbox خروجیِ NotificationService::inbox (notifications + unread_count).
+     */
+    /**
+     * Slice 4: بخش «پروفایل».
+     *   - 0 پیوند: empty state امن (بدون فرم، بدون دکمهٔ ایجاد/ارتباط).
+     *   - 1 پیوند: auto-select، فرم مستقیم (سلکتور در DOM نمی‌آید).
+     *   - N>1 پیوند: سلکتور بدون پیش‌انتخاب؛ فرم تا انتخاب explicit کاربر غیرفعال است.
+     *
+     * @param array<int, array<string, mixed>> $records
+     * @param array<string, mixed>|null        $initial
+     */
+    private static function profile_section( array $records, ?array $initial, string $login_mobile ): string {
+        $count = is_array( $records ) ? count( $records ) : 0;
+
+        $html = '<section class="cpms-pp-section cpms-pp-profile" data-role="profile-section" id="profile" aria-labelledby="cpms-pp-profile-heading">';
+
+        $html .= '<h1 id="cpms-pp-profile-heading">پروفایل</h1>';
+        $html .= '<p class="description">اطلاعات پروندهٔ پزشکی شما در این بخش قابل مشاهده و ویرایش است.</p>';
+
+        if ( $count === 0 ) {
+            $html .= '<div class="cpms-empty" data-role="profile-empty-state">';
+            $html .= '<p><strong>هنوز پرونده‌ای برای شما به این حساب متصل نیست.</strong></p>';
+            $html .= '<p>اگر قبلاً نوبت ثبت کرده‌اید و پرونده‌تان را نمی‌بینید، لطفاً با مطب تماس بگیرید.</p>';
+            $html .= '</div>';
+            $html .= '</section>';
+
+            return $html;
+        }
+
+        $is_single_with_initial = ( $count === 1 && is_array( $initial ) );
+
+        $hidden_attr = $is_single_with_initial ? '' : ' hidden';
+
+        $clinic_name = '';
+
+        $mrn_text = '';
+
+        if ( $is_single_with_initial ) {
+            $clinic_name = (string) ( $initial['record']['clinic_name'] ?? '' );
+
+            $mrn_raw = (string) ( $initial['record']['mrn'] ?? '' );
+
+            $mrn_text = $mrn_raw !== '' ? 'MRN: ' . $mrn_raw : '';
+        }
+
+        $html .= '<div class="cpms-pp-profile__context" data-role="profile-context"' . $hidden_attr . '>';
+        $html .= '<span class="cpms-pp-profile__context-label">مطب فعال:</span>';
+        $html .= '<span class="cpms-pp-profile__context-clinic" data-role="profile-clinic-label">' . esc_html( $clinic_name ) . '</span>';
+        $html .= '<span class="cpms-pp-profile__context-sep" aria-hidden="true">·</span>';
+        $html .= '<span class="cpms-pp-profile__context-mrn" data-role="profile-mrn">' . esc_html( $mrn_text ) . '</span>';
+        $html .= '</div>';
+
+        if ( $count > 1 ) {
+            $html .= '<div class="cpms-pp-profile__selector">';
+            $html .= '<label for="cpms-pp-record-select">مطب / پرونده:</label>';
+            $html .= '<select id="cpms-pp-record-select" data-role="profile-record-select" aria-describedby="cpms-pp-record-select-hint">';
+            $html .= '<option value="" selected>' . esc_html( 'یکی از مطب‌های مرتبط را انتخاب کنید…' ) . '</option>';
+
+            foreach ( $records as $r ) {
+                $link_id_attr = esc_attr( (string) $r['link_id'] );
+
+                $clinic = (string) ( $r['clinic_name'] ?? '' );
+
+                $display = (string) ( $r['patient_display_name'] ?? '' );
+                $display = $display !== '' ? $display : 'بیمار';
+
+                $mrn = (string) ( $r['mrn'] ?? '' );
+
+                $label = $clinic . ' — ' . $display . ' (MRN: ' . $mrn . ')';
+
+                $html .= '<option data-role="profile-record-option" data-link-id="' . $link_id_attr . '" value="' . $link_id_attr . '">' . esc_html( $label ) . '</option>';
+            }
+
+            $html .= '</select>';
+            $html .= '<p id="cpms-pp-record-select-hint" class="description">ویرایش فقط برای پروندهٔ انتخاب‌شده اعمال می‌شود.</p>';
+            $html .= '</div>';
+        }
+
+        $html .= '<div class="cpms-pp-profile__form-wrap" data-role="profile-form-wrap"';
+
+        if ( $count === 1 && is_array( $initial ) ) {
+            $html .= '>';
+            $html .= self::profile_form_markup( $initial, $login_mobile );
+            $html .= '</div>';
+        } else {
+            $html .= ' hidden></div>';
+        }
+
+        $html .= '</section>';
+
+        return $html;
+    }
+
+    /**
+     * Whitelist me-payload to ME_EDITABLE (+ mobile for read-only display) so no
+     * internal identifiers (id/mrn/clinic_id/...) leak into client config.
+     *
+     * @param array<string, mixed> $me
+     * @return array<string, mixed>
+     */
+    private static function whitelist_me_for_client( array $me ): array {
+        $out = [];
+
+        foreach ( PatientService::ME_EDITABLE as $field ) {
+            $out[ $field ] = $me[ $field ] ?? null;
+        }
+
+        $out['mobile'] = (string) ( $me['mobile'] ?? '' );
+
+        return $out;
+    }
+
+    /**
+     * فرمِ ویرایش پرونده (Slice 4) — در N=1 سرور-رندر می‌شود؛ در N>1 همین markup
+     * را جاوااسکریپت روی انتخاب explicit سمت کلاینت می‌سازد. فیلدها دقیقاً
+     * PatientService::ME_EDITABLE هستند.
+     *
+     * @param array<string,mixed>|null $initial ['record' => …, 'me' => …]
+     */
+    private static function profile_form_markup( ?array $initial, string $login_mobile ): string {
+        $me = is_array( $initial ) && isset( $initial['me'] ) && is_array( $initial['me'] ) ? $initial['me'] : [];
+
+        $record = is_array( $initial ) && isset( $initial['record'] ) && is_array( $initial['record'] ) ? $initial['record'] : [];
+
+        $link_id = (int) ( $record['link_id'] ?? 0 );
+
+        $fields = [
+            'first_name'              => [
+                'label'        => 'نام',
+                'type'         => 'text',
+                'autocomplete' => 'given-name',
+            ],
+            'last_name'               => [
+                'label'        => 'نام خانوادگی',
+                'type'         => 'text',
+                'autocomplete' => 'family-name',
+            ],
+            'national_id'             => [
+                'label'        => 'کد ملی',
+                'type'         => 'text',
+                'inputmode'    => 'numeric',
+                'autocomplete' => 'off',
+                'dir'          => 'ltr',
+            ],
+            'birth_date'              => [
+                'label'       => 'تاریخ تولد',
+                'type'        => 'text',
+                'placeholder' => 'YYYY-MM-DD',
+                'dir'         => 'ltr',
+            ],
+            'gender'                  => [
+                'label'   => 'جنسیت',
+                'type'    => 'select',
+                'options' => [
+                    ''       => 'انتخاب کنید',
+                    'male'   => 'مرد',
+                    'female' => 'زن',
+                    'other'  => 'سایر',
+                ],
+            ],
+            'address'                 => [
+                'label' => 'آدرس',
+                'type'  => 'textarea',
+                'full'  => true,
+            ],
+            'phone'                   => [
+                'label'        => 'تلفن ثابت',
+                'type'         => 'tel',
+                'autocomplete' => 'tel',
+                'dir'          => 'ltr',
+            ],
+            'emergency_contact_name'  => [
+                'label' => 'نام تماس اضطراری',
+                'type'  => 'text',
+            ],
+            'emergency_contact_phone' => [
+                'label' => 'تلفن تماس اضطراری',
+                'type'  => 'tel',
+                'dir'   => 'ltr',
+            ],
+        ];
+
+        $html = '<form class="cpms-pp-profile__form" data-role="profile-form" novalidate>';
+
+        $html .= '<input type="hidden" name="link_id" data-role="profile-link-id" value="' . esc_attr( (string) $link_id ) . '">';
+
+        $html .= '<div class="notice inline cpms-pp-profile__notice cpms-pp-profile__notice--success" data-role="profile-success" hidden role="alert"></div>';
+
+        $html .= '<div class="notice inline cpms-pp-profile__notice cpms-pp-profile__notice--error" data-role="profile-error" hidden role="alert"></div>';
+
+        $mobile_hidden = $login_mobile !== '' ? '' : ' hidden';
+
+        $html .= '<div class="cpms-pp-profile__mobile" data-role="profile-mobile-row"' . $mobile_hidden . '>';
+        $html .= '<span class="cpms-pp-profile__mobile-label">شماره موبایل ورود</span>';
+        $html .= '<div data-role="profile-login-mobile" class="cpms-pp-profile__mobile-value" dir="ltr">' . esc_html( $login_mobile ) . '</div>';
+        $html .= '<p class="description">این شماره موبایل هویت ورود شماست و از این بخش قابل تغییر نیست. برای تغییر با مطب تماس بگیرید.</p>';
+        $html .= '</div>';
+        $html .= '<div class="cpms-pp-profile__grid">';
+
+        foreach ( $fields as $name => $spec ) {
+            $full = ! empty( $spec['full'] ) ? ' cpms-pp-field--full' : '';
+
+            $initial_val = array_key_exists( $name, $me ) && $me[ $name ] !== null ? (string) $me[ $name ] : '';
+
+            $html .= '<div class="cpms-pp-field' . esc_attr( $full ) . '">';
+            $html .= '<label for="cpms-pp-' . esc_attr( $name ) . '">' . esc_html( $spec['label'] ) . '</label>';
+
+            if ( $spec['type'] === 'select' ) {
+                $html .= '<select id="cpms-pp-' . esc_attr( $name ) . '" name="' . esc_attr( $name ) . '" data-field="' . esc_attr( $name ) . '">';
+
+                foreach ( (array) $spec['options'] as $opt_val => $opt_label ) {
+                    $selected = (string) $opt_val === $initial_val ? ' selected' : '';
+
+                    $html .= '<option value="' . esc_attr( (string) $opt_val ) . '"' . $selected . '>' . esc_html( (string) $opt_label ) . '</option>';
+                }
+
+                $html .= '</select>';
+            } elseif ( $spec['type'] === 'textarea' ) {
+                $attr_str = '';
+
+                foreach ( [ 'placeholder', 'autocomplete', 'inputmode', 'dir' ] as $attr ) {
+                    if ( isset( $spec[ $attr ] ) ) {
+                        $attr_str .= ' ' . esc_attr( $attr ) . '="' . esc_attr( (string) $spec[ $attr ] ) . '"';
+                    }
+                }
+
+                $html .= '<textarea id="cpms-pp-' . esc_attr( $name ) . '" name="' . esc_attr( $name ) . '" data-field="' . esc_attr( $name ) . '" rows="2"' . $attr_str . '>' . esc_textarea( $initial_val ) . '</textarea>';
+            } else {
+                $attr_str = '';
+
+                foreach ( [ 'placeholder', 'autocomplete', 'inputmode', 'dir' ] as $attr ) {
+                    if ( isset( $spec[ $attr ] ) ) {
+                        $attr_str .= ' ' . esc_attr( $attr ) . '="' . esc_attr( (string) $spec[ $attr ] ) . '"';
+                    }
+                }
+
+                $html .= '<input id="cpms-pp-' . esc_attr( $name ) . '" name="' . esc_attr( $name ) . '" type="' . esc_attr( $spec['type'] ) . '" data-field="' . esc_attr( $name ) . '" value="' . esc_attr( $initial_val ) . '"' . $attr_str . '>';
+            }
+
+            $html .= '</div>';
+        }
+
+        $html .= '</div>';
+        $html .= '<div class="cpms-pp-profile__actions">';
+        $html .= '<button type="submit" class="cpms-pp-btn cpms-pp-btn--primary" data-role="profile-save">ذخیرهٔ اطلاعات</button>';
+        $html .= '</div>';
+        $html .= '</form>';
+
+        return $html;
+    }
+
+    /**
+     * بخشِ اعلان‌های داخلی (Slice 2) — سرور-رندر از پاسخِ واقعیِ G6؛ بدون polling.
      */
     private static function notifications_section( array $inbox, \DateTimeZone $tz ): string {
         $rows   = is_array( $inbox['notifications'] ?? null ) ? $inbox['notifications'] : [];
