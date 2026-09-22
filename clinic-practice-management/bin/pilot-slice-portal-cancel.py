@@ -391,8 +391,17 @@ def run_journey(browser, run):
             raise RuntimeError(f"exactly one runtime config script expected, got {cfg_nodes.count()}")
         cfg_raw = cfg_nodes.first.text_content() or ""
         cfg = json.loads(cfg_raw)
-        if sorted(cfg.keys()) != ["cancel_path", "nonce", "notifications_read_path", "rest_root"]:
-            raise RuntimeError(f"config keys must be exactly cancel_path/nonce/notifications_read_path/rest_root, got {sorted(cfg.keys())}")
+        required = {"cancel_path", "nonce", "notifications_read_path", "rest_root"}
+        allowed = required | {"me_path", "my_records_path", "profile_initial", "profile_me_path",
+                              "profile_my_records_path", "profile_records"}
+        if not required.issubset(set(cfg.keys())):
+            raise RuntimeError(f"config must contain cancel_path/nonce/notifications_read_path/rest_root, got {sorted(cfg.keys())}")
+        extra = set(cfg.keys()) - allowed
+        if extra:
+            raise RuntimeError(f"config contains unexpected keys {sorted(extra)}; allowed={sorted(allowed)}")
+        for forbidden in ("clinic_id", "patient_id", "organization_id", "role"):
+            if forbidden in cfg:
+                raise RuntimeError(f"config must not publish authority key {forbidden}")
         if cfg["cancel_path"] != "/appointments/{id}/cancel":
             raise RuntimeError(f"cancel_path must target existing B4, got {cfg['cancel_path']!r}")
         if cfg["notifications_read_path"] != "/notifications/read":

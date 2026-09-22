@@ -642,3 +642,191 @@
 		transition: none !important;
 	}
 }
+
+/* ================= Slice 4: Patient Profile ================= */
+
+.cpms-patient-portal-shell .cpms-pp-section {
+	background: var(--cpms-pp-surface);
+	border: 1px solid var(--cpms-pp-border);
+	border-radius: var(--cpms-pp-radius);
+	padding: 20px 16px;
+	margin-block: 16px;
+	box-shadow: var(--cpms-pp-shadow);
+}
+.cpms-patient-portal-shell .cpms-pp-section > h1,
+.cpms-patient-portal-shell .cpms-pp-section > h2 {
+	margin: 0 0 8px;
+	font-size: 1.25rem;
+}
+.cpms-patient-portal-shell .cpms-pp-section > .description {
+	margin: 0 0 16px;
+	color: var(--cpms-pp-muted);
+}
+
+.cpms-patient-portal-shell .cpms-pp-profile__context {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex-wrap: wrap;
+	background: var(--cpms-pp-primary-soft);
+	color: var(--cpms-pp-primary);
+	border-radius: var(--cpms-pp-radius-sm);
+	padding: 10px 12px;
+	margin-block-end: 16px;
+	font-size: 0.9rem;
+}
+.cpms-patient-portal-shell .cpms-pp-profile__context-label {
+	font-weight: 600;
+}
+.cpms-patient-portal-shell .cpms-pp-profile__context-clinic { font-weight: 600; }
+.cpms-patient-portal-shell .cpms-pp-profile__context-mrn {
+	color: var(--cpms-pp-muted);
+	font-variant-numeric: tabular-nums;
+}
+.cpms-patient-portal-shell .cpms-pp-profile__context-sep {
+	color: var(--cpms-pp-border);
+}
+
+.cpms-patient-portal-shell .cpms-pp-profile__selector {
+	margin-block-end: 16px;
+}
+.cpms-patient-portal-shell .cpms-pp-profile__selector label {
+	display: block;
+	font-weight: 600;
+	margin-block-end: 6px;
+}
+.cpms-patient-portal-shell .cpms-pp-profile__selector select {
+	width: 100%;
+	min-height: var(--cpms-pp-touch);
+	padding: 10px 12px;
+	border-radius: var(--cpms-pp-radius-sm);
+	border: 1px solid var(--cpms-pp-border);
+	background: var(--cpms-pp-surface);
+	font: inherit;
+	color: inherit;
+}
+.cpms-patient-portal-shell .cpms-pp-profile__selector .description {
+	margin: 6px 0 0;
+	color: var(--cpms-pp-muted);
+	font-size: 0.85rem;
+}
+
+.cpms-patient-portal-shell .cpms-pp-profile__form {
+	display: flex;
+	flex-direction: column;
+	gap: 14px;
+}
+
+.cpms-patient-portal-shell .cpms-pp-profile__mobile {
+	background: var(--cpms-pp-surface-alt);
+	border: 1px dashed var(--cpms-pp-border);
+	border-radius: var(--cpms-pp-radius-sm);
+	padding: 12px;
+}
+.cpms-patient-portal-shell .cpms-pp-profile__mobile label {
+	display: block;
+	font-weight: 600;
+	margin-block-end: 6px;
+}
+.cpms-patient-portal-shell .cpms-pp-profile__mobile input[readonly] {
+	width: 100%;
+	min-height: var(--cpms-pp-touch);
+	padding: 10px 12px;
+	border-radius: var(--cpms-pp-radius-sm);
+	border: 1px solid var(--cpms-pp-border);
+	background: #fff;
+	color: var(--cpms-pp-text);
+	direction: ltr;
+	text-align: left;
+	font-variant-numeric: tabular-nums;
+	cursor: default;
+}
+.cpms-patient-portal-shell .cpms-pp-profile__mobile .description {
+	margin: 6px 0 0;
+	color: var(--cpms-pp-muted);
+	font-size: 0.85rem;
+}
+
+.cpms-patient-portal-shell .cpms-pp-profile__grid {
+	display: grid;
+	grid-template-columns: 1fr;
+	gap: 12px;
+}
+
+.cpms-patient-portal-shell .cpms-pp-field label {
+	display: block;
+	font-weight: 600;
+	margin-block-end: 6px;
+}
+.cpms-patient-portal-shell .cpms-pp-field input,
+.cpms-patient-portal-shell .cpms-pp-field select,
+.cpms-patient-portal-shell .cpms-pp-field textarea {
+	width: 100%;
+	min-height: var(--cpms-pp-touch);
+	padding: 10px 12px;
+	border-radius: var(--cpms-pp-radius-sm);
+	border: 1px solid var(--cpms-pp-border);
+	background: var(--cpms-pp-surface);
+	font: inherit;
+	color: inherit;
+}
+.cpms-patient-portal-shell .cpms-pp-field textarea {
+	min-height: 76px;
+	resize: vertical;
+}
+.cpms-patient-portal-shell .cpms-pp-field input:focus-visible,
+.cpms-patient-portal-shell .cpms-pp-field select:focus-visible,
+.cpms-patient-portal-shell .cpms-pp-field textarea:focus-visible,
+.cpms-patient-portal-shell .cpms-pp-profile__selector select:focus-visible,
+.cpms-patient-portal-shell .cpms-pp-profile__mobile input:focus-visible {
+	outline: 2px solid var(--cpms-pp-primary);
+	outline-offset: 2px;
+	border-color: var(--cpms-pp-primary);
+}
+.cpms-patient-portal-shell .cpms-pp-field--full { grid-column: 1 / -1; }
+
+.cpms-patient-portal-shell .cpms-pp-profile__notice {
+	margin: 0;
+}
+.cpms-patient-portal-shell .cpms-pp-profile__notice.notice-success {
+	border-right-color: var(--cpms-pp-ok);
+}
+.cpms-patient-portal-shell .cpms-pp-profile__notice.notice-error {
+	border-right-color: var(--cpms-pp-danger);
+}
+
+.cpms-patient-portal-shell .cpms-pp-profile__actions {
+	display: flex;
+	justify-content: flex-start;
+}
+
+@media (min-width: 640px) {
+	.cpms-patient-portal-shell .cpms-pp-profile__grid {
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
+	.cpms-patient-portal-shell .cpms-pp-section {
+		padding: 24px;
+	}
+}
+
+
+.cpms-patient-portal-shell .cpms-pp-profile__mobile-value {
+	display: block;
+	width: 100%;
+	min-height: var(--cpms-pp-touch);
+	padding: 10px 12px;
+	border-radius: var(--cpms-pp-radius-sm);
+	border: 1px solid var(--cpms-pp-border);
+	background: #fff;
+	direction: ltr;
+	text-align: left;
+	font-variant-numeric: tabular-nums;
+	direction: ltr;
+	unicode-bidi: plaintext;
+}
+
+.cpms-patient-portal-shell .cpms-pp-profile__mobile-label {
+	display: block;
+	font-weight: 600;
+	margin-block-end: 6px;
+}
