@@ -338,7 +338,7 @@ final class PatientPortalPage
 
     /** Read-only Visits. Only a sole eligible record is resolved during rendering. */
     private static function visits_section( array $records, int $user_id ): string {
-        $html = '<section class="cpms-pp-section" id="visits" data-role="visits-section" aria-labelledby="cpms-visits-heading">';
+        $html  = '<section class="cpms-pp-section" id="visits" data-role="visits-section" aria-labelledby="cpms-visits-heading">';
         $html .= '<h1 id="cpms-visits-heading">' . esc_html__( 'ویزیت‌های من', 'cpms' ) . '</h1>';
         $html .= '<p data-role="visits-empty-state"' . ( count( $records ) > 0 ? ' hidden' : '' ) . '>' . esc_html__( 'پرونده فعالی به حساب شما متصل نیست.', 'cpms' ) . '</p>';
         if ( count( $records ) > 1 ) {
@@ -349,7 +349,7 @@ final class PatientPortalPage
             }
             $html .= '</select>';
         }
-        $sole = count( $records ) === 1 ? $records[0] : null;
+        $sole  = count( $records ) === 1 ? $records[0] : null;
         $html .= '<p data-role="visits-context">' . ( $sole ? esc_html( $sole['clinic_name'] . ' — ' . $sole['patient_display_name'] . ' — ' . $sole['mrn'] ) : '' ) . '</p>';
         $html .= '<p role="status" data-role="visits-loading" hidden>' . esc_html__( 'در حال دریافت…', 'cpms' ) . '</p>';
         $error = '';

@@ -891,10 +891,11 @@ final class ClinicalService
     /**
      * @return array<string, mixed>
      */
-    public function patientVisits(int $wpUserId, ?string $from = null, ?string $to = null, ?int $link_id = null): array
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid, WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Preserve existing public method and named arguments.
+    public function patientVisits( int $wpUserId, ?string $from = null, ?string $to = null, ?int $link_id = null ): array
     {
-        $patient = $this->selected_visit_patient( $wpUserId, $link_id );
-        $patientId = (int) $patient['id'];
+        $patient   = $this->selected_visit_patient( $wpUserId, $link_id ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Retain existing argument/local naming in this legacy method.
+        $patientId = (int) $patient['id']; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Retain existing argument/local naming in this legacy method.
         $from = $from !== null && $this->isValidDate($from) ? $from : gmdate('Y-m-d', strtotime('-1 year'));
         $to = $to !== null && $this->isValidDate($to) ? $to : gmdate('Y-m-d', strtotime('+1 day'));
 
@@ -903,7 +904,7 @@ final class ClinicalService
             ' LEFT JOIN ' . $this->db->table('cpms_clinicians') . ' c ON c.id = v.clinician_id' .
             ' WHERE v.patient_id = %d AND v.clinic_id = %d AND v.visit_date >= %s AND v.visit_date <= %s' .
             ' ORDER BY v.visit_date DESC, v.id DESC LIMIT 100',
-            [$patientId, (int) $patient['clinic_id'], $from, $to]
+            [$patientId, (int) $patient['clinic_id'], $from, $to] // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Retain existing argument/local naming in this legacy method.
         ) ?: [];
 
         return [
@@ -924,12 +925,13 @@ final class ClinicalService
      *
      * @return array<string, mixed>
      */
-    public function patientVisitDetail(int $wpUserId, int $visitId, ?int $link_id = null): array
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid, WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Preserve existing public method and named arguments.
+    public function patientVisitDetail( int $wpUserId, int $visitId, ?int $link_id = null ): array
     {
-        $patient = $this->selected_visit_patient( $wpUserId, $link_id );
-        $patientId = (int) $patient['id'];
+        $patient   = $this->selected_visit_patient( $wpUserId, $link_id ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Retain existing argument/local naming in this legacy method.
+        $patientId = (int) $patient['id']; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Retain existing argument/local naming in this legacy method.
         $visit = $this->requireVisit($visitId);
-        if ((int) $visit['patient_id'] !== $patientId || (int) $visit['clinic_id'] !== (int) $patient['clinic_id']) {
+        if ( (int) $visit['patient_id'] !== $patientId || (int) $visit['clinic_id'] !== (int) $patient['clinic_id'] ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Retain existing argument/local naming in this legacy method.
             // TP-07/TP-08 — IDOR: منابع دیگران 404 + Audit
             $this->auditAndThrow($wpUserId, 'visit', $visitId, (int) $visit['patient_id'], 'ویزیت به این بیمار تعلق ندارد');
         }
@@ -1131,17 +1133,20 @@ final class ClinicalService
     }
 
     /**
-     * بیمار متصل به کاربر (P-5) — برای نمای بیمار؛ نبود = 404.
+     * C5/C6 reuse Profile authority; adapt only the domain error type.
+     *
+     * @return array<string, mixed>
      */
     private function selected_visit_patient( int $wp_user_id, ?int $link_id ): array {
         try {
             // Reuse Profile's existing public resolver; no second selector policy.
             return App::patientService()->require_selected_patient( $wp_user_id, $link_id );
         } catch ( BookingException $error ) {
-            throw ClinicalException::of( $error->errorCode, $error->getMessage(), $error->httpStatus, $error->data );
+            throw ClinicalException::of( $error->errorCode, $error->getMessage(), $error->httpStatus, $error->data ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- Established domain exception properties.
         }
     }
 
+    /** Legacy C7 resolver; the Prescriptions-list contract is outside this slice. */
     private function requireOwnedPatient(int $wpUserId): int
     {
         $patientId = $this->db->fetchValue(
