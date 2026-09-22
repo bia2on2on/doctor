@@ -226,7 +226,7 @@ final class PatientPortalPage
 
         $today = gmdate('Y-m-d');
 
-        $rows = App::bookingService()->listMine($user_id, gmdate('Y-m-d', strtotime('-365 days')), gmdate('Y-m-d', strtotime('+180 days')));
+        $rows = App::bookingService()->listMine( $user_id, gmdate( 'Y-m-d', strtotime( '-365 days' ) ), gmdate( 'Y-m-d', strtotime( '+180 days' ) ) );
 
         $upcoming = [];
 
@@ -281,12 +281,12 @@ final class PatientPortalPage
                 $me_full = App::patientService()->me( $user_id, (int) $sole['link_id'] );
 
                 if ( is_array( $me_full ) ) {
-                    $me_whitelisted   = self::whitelist_me_for_client( $me_full );
-                    $profile_initial  = [
+                    $me_whitelisted  = self::whitelist_me_for_client( $me_full );
+                    $profile_initial = [
                         'record' => $sole,
                         'me'     => $me_whitelisted,
                     ];
-                    $login_mobile     = (string) ( $me_full['mobile'] ?? '' );
+                    $login_mobile    = (string) ( $me_full['mobile'] ?? '' );
                 }
             } elseif ( count( $profile_records ) > 1 ) {
                 try {
@@ -308,6 +308,7 @@ final class PatientPortalPage
         }
 
         $html = '<div class="wrap cpms-patient-portal" dir="rtl" style="max-width:860px">';
+
         $html .= '<section class="cpms-pp-section" data-role="appointments-section" id="appointments" aria-labelledby="cpms-pp-appointments-heading">';
         $html .= '<h1 id="cpms-pp-appointments-heading">نوبت‌های من</h1>';
         $html .= '<p class="description">سلام! نوبت‌های ثبت‌شده شما در این صفحه است. تغییرات نوبت با پیامک هم اطلاع داده می‌شود.</p>';
@@ -435,6 +436,7 @@ final class PatientPortalPage
         $count = is_array( $records ) ? count( $records ) : 0;
 
         $html = '<section class="cpms-pp-section cpms-pp-profile" data-role="profile-section" id="profile" aria-labelledby="cpms-pp-profile-heading">';
+
         $html .= '<h1 id="cpms-pp-profile-heading">پروندهٔ من</h1>';
         $html .= '<p class="description">اطلاعات پروندهٔ پزشکی شما در این بخش قابل مشاهده و ویرایش است.</p>';
 
@@ -610,6 +612,7 @@ final class PatientPortalPage
         $html .= '<div class="notice inline cpms-pp-profile__notice cpms-pp-profile__notice--error" data-role="profile-error" hidden role="alert"></div>';
 
         $mobile_hidden = $login_mobile !== '' ? '' : ' hidden';
+
         $html .= '<div class="cpms-pp-profile__mobile" data-role="profile-mobile-row"' . $mobile_hidden . '>';
         $html .= '<span class="cpms-pp-profile__mobile-label">شماره موبایل ورود</span>';
         $html .= '<div data-role="profile-login-mobile" class="cpms-pp-profile__mobile-value" dir="ltr">' . esc_html( $login_mobile ) . '</div>';
@@ -630,6 +633,7 @@ final class PatientPortalPage
 
                 foreach ( (array) $spec['options'] as $opt_val => $opt_label ) {
                     $selected = (string) $opt_val === $initial_val ? ' selected' : '';
+
                     $html .= '<option value="' . esc_attr( (string) $opt_val ) . '"' . $selected . '>' . esc_html( (string) $opt_label ) . '</option>';
                 }
 
