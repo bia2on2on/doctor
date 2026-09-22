@@ -1435,7 +1435,7 @@ jobs:
       # جدید. شواهد فقط boolean/شناسه. رمز/موبایل/کدملی/nonce در لاگ نیست.
       - name: Slice-4 profile fixture — one record + two-clinic selector + decoys
         run: |
-          WP_HOME="$WP_DIR" php bin/pilot-slice4-profile-fixture.php 2>&1 | tee /tmp/portal-profile-fixture.log
+          WP_HOME="$WP_DIR" php tests/fixtures/pilot-slice4-profile-fixture.php 2>&1 | tee /tmp/portal-profile-fixture.log
           test "${PIPESTATUS[0]}" -eq 0
           test -s /tmp/portal-profile.env
           cat /tmp/portal-profile.env >> "$GITHUB_ENV"
