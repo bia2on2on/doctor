@@ -230,6 +230,7 @@ foreach ($multiRecords as $row) {
 // Slice 5 TEST-ONLY RED: reuse these authenticated linked records for a real
 // read-only Visits browser journey. No new harness, migration or product path.
 $visits = [];
+$visitDate = gmdate('Y-m-d');
 foreach ([[$clinicA, $patientA, 'A'], [$clinicB, $patientB, 'B'], [$clinicOne, $patientOne, 'ONE']] as [$clinic, $patient, $label]) {
     $insertVisitFixture = static function (string $table, array $row) use ($wpdb, $db): int {
         if ($wpdb->insert($db->table($table), $row) !== 1) {
@@ -250,7 +251,7 @@ foreach ([[$clinicA, $patientA, 'A'], [$clinicB, $patientB, 'B'], [$clinicOne, $
     $visit = $insertVisitFixture('cpms_visits', [
         'location_id' => $location,
         'clinic_id' => $clinic, 'patient_id' => $patient, 'clinician_id' => $doctor,
-        'visit_date' => gmdate('Y-m-d'), 'source' => 'walk_in', 'status' => 'checked_out',
+        'visit_date' => $visitDate, 'source' => 'walk_in', 'status' => 'checked_out',
         'active' => 0, 'check_in_at' => $now, 'created_at' => $now, 'updated_at' => $now,
     ]);
     foreach (['patient_visible', 'doctor_private'] as $visibility) {
@@ -267,6 +268,8 @@ foreach ([[$clinicA, $patientA, 'A'], [$clinicB, $patientB, 'B'], [$clinicOne, $
 echo 'PROFILE_PUBLIC=visits_fixture_ok visits=3 notes=6' . "\n";
 
 $env = 'VISITS_PAIR=' . implode('|', array_slice($visits, 0, 2)) . "\n"
+    . 'VISITS_DATE=' . $visitDate . "\n"
+    . 'VISITS_JALALI=' . \ClinicCore\Domain\Time\Jalali::formatYmd($visitDate) . "\n"
     . 'VISITS_ONE=' . $visits[2] . "\n"
     . 'PROFILE_ONE=' . $loginOne . '|' . $passOne . '|' . $userOne . '|' . $patientOne . '|' . $linkOne . '|' . $clinicOne . "\n"
     . 'PROFILE_MULTI=' . $loginMulti . '|' . $passMulti . '|' . $userMulti . '|' . $linkA . '|' . $linkB . '|' . $patientA . '|' . $patientB . '|' . $clinicA . '|' . $clinicB . '|' . $linkForeign . '|' . $linkInactive . "\n"

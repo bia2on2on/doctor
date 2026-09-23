@@ -561,7 +561,7 @@
 			context.textContent = selected.clinic_name + ' — ' + selected.patient_display_name + ' — ' + selected.mrn;
 			request(config.visits_path, function (data) {
 				(data.visits || []).forEach(function (visit) {
-					var button = text(text(list, 'li', ''), 'button', visit.visit_date + ' — ' + (visit.clinician_name || ''));
+					var button = text(text(list, 'li', ''), 'button', visit.visit_jalali + ' — ' + (visit.clinician_name || ''));
 					button.type = 'button';
 					button.className = 'cpms-pp-btn cpms-pp-btn--ghost';
 					button.setAttribute('data-role', 'visit-open');
@@ -580,7 +580,7 @@
 			request(config.visit_detail_path.replace('{id}', id), function (data) {
 				// Explicit display allowlist. Never render raw DTOs, actor IDs,
 				// correction reasons, workflow enums, or other internal metadata.
-				text(detail, 'h2', 'جزئیات ویزیت — ' + data.visit.visit_date);
+				text(detail, 'h2', 'جزئیات ویزیت — ' + data.visit.visit_jalali);
 				text(detail, 'h3', 'یادداشت‌ها');
 				(data.notes || []).forEach(function (note) { text(detail, 'p', note.content_text); });
 				text(detail, 'h3', 'توصیه‌ها');

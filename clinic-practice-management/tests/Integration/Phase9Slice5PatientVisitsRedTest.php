@@ -7,6 +7,7 @@ namespace ClinicCore\Tests\Integration;
 use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Application\Scope\SystemClinicResolver;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Domain\Time\Jalali;
 use ClinicCore\Frontend\PatientPortalShell;
 use ClinicCore\Settings\Settings;
 use WP_REST_Request;
@@ -199,6 +200,37 @@ final class Phase9Slice5PatientVisitsRedTest extends WP_UnitTestCase
         $detail = $this->get('/visits/' . $this->other['visit'], [], $this->foreign);
         self::assertSame(200, $detail->get_status());
         self::assertSame(['Visible Foreign'], array_column($detail->get_data()['data']['notes'], 'content_text'));
+    }
+
+    public function testVisitDatesPreserveGregorianApiAndPairJalaliForDisplay(): void
+    {
+        $expected = Jalali::formatYmd($this->today);
+        $list = $this->get('/visits', ['from' => $this->today, 'to' => $this->today], $this->foreign);
+        self::assertSame(200, $list->get_status());
+        $rows = $list->get_data()['data']['visits'];
+        self::assertCount(1, $rows);
+        self::assertSame($this->other['visit'], $rows[0]['id']);
+        self::assertSame($this->today, $rows[0]['visit_date'], 'C5 raw Gregorian field stays unchanged.');
+        self::assertSame($expected, $rows[0]['visit_jalali']);
+
+        $detail = $this->get('/visits/' . $this->other['visit'], [], $this->foreign);
+        self::assertSame(200, $detail->get_status());
+        $visit = $detail->get_data()['data']['visit'];
+        self::assertSame($this->today, $visit['visit_date'], 'C6 raw Gregorian field stays unchanged.');
+        self::assertSame($expected, $visit['visit_jalali']);
+        self::assertSame($this->today, App::db()->fetchValue(
+            'SELECT visit_date FROM ' . App::db()->table('cpms_visits') . ' WHERE id = %d',
+            [$this->other['visit']]
+        ), 'Presentation must not change stored dates.');
+
+        $dom = new \DOMDocument();
+        @$dom->loadHTML('<?xml encoding="utf-8" ?>' . $this->render($this->foreign));
+        $buttons = (new \DOMXPath($dom))->query('//*[@data-role="visits-list"]//*[@data-role="visit-open"]');
+        self::assertSame(1, $buttons->length);
+        $text = $buttons->item(0)->textContent;
+        self::assertStringContainsString($expected, $text, 'Sole-record server-rendered list uses the paired display field.');
+        self::assertStringNotContainsString($this->today, $text);
+        self::assertDoesNotMatchRegularExpression('/\b[0-9]{4}-[0-9]{2}-[0-9]{2}\b/', $text);
     }
 
     public static function cardinalities(): array

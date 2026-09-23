@@ -913,6 +913,7 @@ final class ClinicalService
             'visits' => array_map(static fn (array $v): array => [
                 'id' => (int) $v['id'],
                 'visit_date' => (string) $v['visit_date'],
+                'visit_jalali'   => Jalali::formatYmd( (string) $v['visit_date'] ),
                 'status' => (string) $v['status'],
                 'source' => (string) $v['source'],
                 'clinician_name' => $v['clinician_name'],
@@ -946,6 +947,7 @@ final class ClinicalService
             'visit' => [
                 'id' => (int) $visit['id'],
                 'visit_date' => (string) $visit['visit_date'],
+                'visit_jalali' => Jalali::formatYmd( (string) $visit['visit_date'] ),
                 'status' => (string) $visit['status'],
                 'source' => (string) $visit['source'],
             ],

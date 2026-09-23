@@ -358,7 +358,7 @@ final class PatientPortalPage
             try {
                 $list = App::clinicalService()->patientVisits( $user_id, null, null, (int) $sole['link_id'] );
                 foreach ( $list['visits'] as $visit ) {
-                    $items .= '<li><button type="button" class="cpms-pp-btn cpms-pp-btn--ghost" data-role="visit-open" data-visit-id="' . esc_attr( (string) $visit['id'] ) . '">' . esc_html( $visit['visit_date'] . ' — ' . $visit['clinician_name'] ) . '</button></li>';
+                    $items .= '<li><button type="button" class="cpms-pp-btn cpms-pp-btn--ghost" data-role="visit-open" data-visit-id="' . esc_attr( (string) $visit['id'] ) . '">' . esc_html( $visit['visit_jalali'] . ' — ' . $visit['clinician_name'] ) . '</button></li>';
                 }
                 if ( $items === '' ) {
                     $items = '<li>' . esc_html__( 'ویزیتی ثبت نشده است.', 'cpms' ) . '</li>';

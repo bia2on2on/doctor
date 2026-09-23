@@ -195,6 +195,9 @@
 
 ### Phase 9 My Visits — C5/C6 record selection
 
+C5 visit rows and the C6 `visit` object preserve Gregorian `visit_date` (`Y-m-d`)
+and pair it with `visit_jalali = Jalali::formatYmd(visit_date)` for portal display.
+
 C5/C6 reuse the Profile resolver: optional `link_id` is a selector, never tenant
 or patient authority. The authenticated WP user must own a durable link whose
 Patient is active and whose persisted Clinic matches the link. Zero eligible
