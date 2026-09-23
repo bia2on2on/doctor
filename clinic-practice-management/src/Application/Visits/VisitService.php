@@ -582,9 +582,9 @@ final class VisitService
      */
     public function eventsSince( int $actor_user_id, int $since_event_id ): array { // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy PSR-style, established contract
         $this->requireQueueReader( $actor_user_id );
-        $clinic_id = $this->queueClinicId();
+        $clinic_id = $this->queueClinicId(); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
         $scope_clinician_id = $this->queueScopeClinicianId( $actor_user_id, $clinic_id, null );
-        $location_id = $this->queueLocationId( $clinic_id, $actor_user_id );
+        $location_id = $this->queueLocationId( $clinic_id, $actor_user_id ); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
         // Legacy: operational_date null => repository uses UTC (gmdate) to preserve shared behavior.
         $operational_date = null;
 
@@ -615,9 +615,9 @@ final class VisitService
      */
     public function lastEventId( int $actor_user_id ): int { // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy PSR-style, established contract
         $this->requireQueueReader( $actor_user_id );
-        $clinic_id = $this->queueClinicId();
+        $clinic_id = $this->queueClinicId(); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
         $scope_clinician_id = $this->queueScopeClinicianId( $actor_user_id, $clinic_id, null );
-        $location_id = $this->queueLocationId( $clinic_id, $actor_user_id );
+        $location_id = $this->queueLocationId( $clinic_id, $actor_user_id ); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
         // Legacy: operational_date null => repository uses UTC.
         $operational_date = null;
 
