@@ -25,8 +25,7 @@ use WP_Post;
 /**
  * Frontend entry + standalone shell for the independent doctor portal (read-only Today+Live Queue).
  */
-final class DoctorPortalShell
-{
+final class DoctorPortalShell {
     /** CPMS-owned Page slug (Plain + Pretty via core main query — no custom rewrite). */
     public const PAGE_SLUG = 'cpms-doctor-portal';
 
@@ -117,10 +116,18 @@ final class DoctorPortalShell
     }
 
     /** Alias for discovery via filters/methods */
-    public static function frontendPortalUrl(): string { return self::portal_url(); }
-    public static function frontendUrl(): string { return self::portal_url(); }
-    public static function doctorPortalFrontendUrl(): string { return self::portal_url(); }
-    public static function pageUrl(): string { return self::portal_url(); }
+    public static function frontendPortalUrl(): string {
+        return self::portal_url();
+    }
+    public static function frontendUrl(): string {
+        return self::portal_url();
+    }
+    public static function doctorPortalFrontendUrl(): string {
+        return self::portal_url();
+    }
+    public static function pageUrl(): string {
+        return self::portal_url();
+    }
 
     /** Whether the main query is the CPMS Doctor Portal page. */
     public static function is_portal_request(): bool

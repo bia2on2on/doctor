@@ -219,7 +219,7 @@ final class App
             (new HandwritingController(self::handwritingService()))->register_routes();
             (new NotificationsController(self::notificationService()))->register_routes();
             (new ReportsController(self::reportService(), self::exportService()))->register_routes();
-            (new DoctorPortalController(new \ClinicCore\Infrastructure\Repository\MembershipRepository(self::db())))->register_routes();
+            ( new DoctorPortalController( new \ClinicCore\Infrastructure\Repository\MembershipRepository( self::db() ) ) )->register_routes();
             // Endpointهای فازهای بعد (F8+) — مطابق API Contract.
         });
 

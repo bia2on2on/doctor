@@ -1001,7 +1001,7 @@ final class VisitService
                         $locationIdForDate = (int) $appScope->locationId;
                     }
                 } catch (ScopeRequiredException $e) {
-                    // no scope
+                    unset($e); // no scope
                 }
             }
         }
@@ -1014,7 +1014,7 @@ final class VisitService
                     $locationIdForDate = (int) $eligible[0];
                 }
             } catch (Throwable $e) {
-                // ignore
+                unset($e); // ignore
             }
         }
 

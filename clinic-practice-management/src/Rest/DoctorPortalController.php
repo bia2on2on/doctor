@@ -25,8 +25,7 @@ use WP_REST_Server;
  * Reuses trusted Clinic+Location scope: RestClinicContext + TrustedClinicEstablisher + ScopeContext.
  * No new auth model, no SPA, no mutation.
  */
-final class DoctorPortalController extends RestBase
-{
+final class DoctorPortalController extends RestBase {
     public function __construct(
         private readonly MembershipRepository $memberships
     ) {
@@ -164,7 +163,7 @@ final class DoctorPortalController extends RestBase
                     }
                 }
             } catch (\Throwable $e) {
-                // No explicit scope yet – leave null, frontend will show selector
+                unset($e); // No explicit scope yet – leave null, frontend will show selector
             }
         }
 
@@ -266,7 +265,7 @@ final class DoctorPortalController extends RestBase
         );
         $active = [];
         foreach ((is_array($activeRows) ? $activeRows : []) as $row) {
-            $active[(int) $row['id']] = [
+            $active[ (int) $row['id'] ] = [
                 'id' => (int) $row['id'],
                 'name' => (string) $row['name'],
                 'slug' => (string) $row['slug'],
@@ -281,8 +280,8 @@ final class DoctorPortalController extends RestBase
             $assignedIds = $this->memberships->location_ids_for((int) $membership['id']);
             $eligible = [];
             foreach ($assignedIds as $id) {
-                if (isset($active[$id])) {
-                    $eligible[] = $active[$id];
+                if (isset($active[ $id ])) {
+                    $eligible[] = $active[ $id ];
                 }
             }
             return $eligible;
