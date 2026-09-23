@@ -199,9 +199,12 @@ final class ClinicalController extends RestBase
             [
                 'methods' => WP_REST_Server::READABLE,
                 'callback' => fn (WP_REST_Request $r) => $this->patient($r,
-                    fn () => $this->clinical->patientPrescriptions($this->userId($r))),
+                    fn () => $this->clinical->patientPrescriptions($this->userId($r), isset($r['link_id']) ? (int) $r['link_id'] : null)),
                 'permission_callback' => fn (WP_REST_Request $r)
                     => $this->permAnyRole($r, [RolesAndCapabilities::ROLE_PATIENT]),
+                'args' => [
+                    'link_id' => ['required' => false, 'type' => 'integer'],
+                ],
             ],
         ]);
 

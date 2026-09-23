@@ -329,6 +329,7 @@ final class PatientPortalPage
         $html .= '</section>';
         $html .= self::profile_section( $profile_records, $profile_initial, $login_mobile );
         $html .= self::visits_section( $profile_records, $user_id );
+        $html .= self::prescriptions_section( $profile_records, $user_id );
         $html .= self::config_script( $profile_records, $profile_initial );
         $html .= '</div>';
 
@@ -370,6 +371,82 @@ final class PatientPortalPage
         $html .= '<p role="alert" data-role="visits-error"' . ( $error === '' ? ' hidden' : '' ) . '>' . esc_html( $error ) . '</p>';
         $html .= '<ul data-role="visits-list">' . $items . '</ul>';
         $html .= '<div data-role="visits-detail" aria-live="polite"></div></section>';
+        return $html;
+    }
+
+    /** Read-only Prescriptions. Only a sole eligible record is resolved during rendering. */
+    private static function prescriptions_section( array $records, int $user_id ): string {
+        $html  = '<section class="cpms-pp-section" id="prescriptions" data-role="prescriptions-section" aria-labelledby="cpms-prescriptions-heading">';
+        $html .= '<h1 id="cpms-prescriptions-heading">' . esc_html__( 'نسخه‌های من', 'cpms' ) . '</h1>';
+        $html .= '<p data-role="prescriptions-empty-state"' . ( count( $records ) > 0 ? ' hidden' : '' ) . '>' . esc_html__( 'پرونده فعالی به حساب شما متصل نیست.', 'cpms' ) . '</p>';
+        if ( count( $records ) > 1 ) {
+            $html .= '<label for="cpms-prescriptions-record">' . esc_html__( 'پرونده مطب را انتخاب کنید', 'cpms' ) . '</label>';
+            $html .= '<select id="cpms-prescriptions-record" data-role="prescriptions-record-select"><option value="">' . esc_html__( 'انتخاب پرونده…', 'cpms' ) . '</option>';
+            foreach ( $records as $record ) {
+                $html .= '<option value="' . esc_attr( (string) $record['link_id'] ) . '">' . esc_html( $record['clinic_name'] . ' — ' . $record['patient_display_name'] . ' — ' . $record['mrn'] ) . '</option>';
+            }
+            $html .= '</select>';
+        }
+        $sole  = count( $records ) === 1 ? $records[0] : null;
+        $html .= '<p data-role="prescriptions-context">' . ( $sole ? esc_html( $sole['clinic_name'] . ' — ' . $sole['patient_display_name'] . ' — ' . $sole['mrn'] ) : '' ) . '</p>';
+        $html .= '<p role="status" data-role="prescriptions-loading" hidden>' . esc_html__( 'در حال دریافت…', 'cpms' ) . '</p>';
+        $error = '';
+        $items = '';
+        if ( $sole ) {
+            try {
+                $list = App::clinicalService()->patientPrescriptions( $user_id, (int) $sole['link_id'] );
+                foreach ( $list['prescriptions'] as $rx ) {
+                    $items .= '<li data-role="prescription-item">';
+                    $items .= '<div class="cpms-pp-prescription__header">' . esc_html( $rx['prescription_number'] . ' — ' . ( $rx['created_at_jalali'] ?? '' ) ) . '</div>';
+                    if ( ! empty( $rx['items'] ) ) {
+                        $items .= '<ul class="cpms-pp-prescription__items">';
+                        foreach ( $rx['items'] as $med ) {
+                            $parts = [];
+                            if ( ! empty( $med['generic_name'] ) ) {
+                                $parts[] = (string) $med['generic_name'];
+                            }
+                            if ( ! empty( $med['brand_name'] ) ) {
+                                $parts[] = '(' . (string) $med['brand_name'] . ')';
+                            }
+                            if ( ! empty( $med['strength'] ) ) {
+                                $parts[] = (string) $med['strength'];
+                            }
+                            if ( ! empty( $med['form'] ) ) {
+                                $parts[] = (string) $med['form'];
+                            }
+                            if ( ! empty( $med['dose'] ) ) {
+                                $parts[] = (string) $med['dose'];
+                            }
+                            if ( ! empty( $med['frequency'] ) ) {
+                                $parts[] = (string) $med['frequency'];
+                            }
+                            if ( ! empty( $med['route'] ) ) {
+                                $parts[] = (string) $med['route'];
+                            }
+                            if ( ! empty( $med['duration_days'] ) ) {
+                                $parts[] = (int) $med['duration_days'] . ' روز';
+                            }
+                            $item_line = implode( ' — ', $parts );
+                            if ( ! empty( $med['instructions'] ) ) {
+                                $item_line .= ' — دستور: ' . (string) $med['instructions'];
+                            }
+                            $items .= '<li>' . esc_html( $item_line ) . '</li>';
+                        }
+                        $items .= '</ul>';
+                    }
+                    $items .= '</li>';
+                }
+                if ( $items === '' ) {
+                    $items = '<li>' . esc_html__( 'نسخه‌ای ثبت نشده است.', 'cpms' ) . '</li>';
+                }
+            } catch ( \ClinicCore\Application\Clinical\ClinicalException $exception ) {
+                $error = $exception->getMessage();
+            }
+        }
+        $html .= '<p role="alert" data-role="prescriptions-error"' . ( $error === '' ? ' hidden' : '' ) . '>' . esc_html( $error ) . '</p>';
+        $html .= '<ul data-role="prescriptions-list">' . $items . '</ul>';
+        $html .= '</section>';
+
         return $html;
     }
 
@@ -439,6 +516,7 @@ final class PatientPortalPage
                 'profile_me_path'         => '/patient/me',
                 'visits_path'             => '/visits',
                 'visit_detail_path'       => '/visits/{id}',
+                'prescriptions_path'      => '/prescriptions',
                 'my_records_path'         => '/patient/my-records',
                 'me_path'                 => '/patient/me',
                 'profile_records'         => $profile_records_payload,

@@ -592,11 +592,103 @@
 		});
 	}
 
+	/** C7: the server owns authorization. Selection and request generation are UI state only. */
+	function bindPrescriptions(config) {
+		var section = document.querySelector('[data-role="prescriptions-section"]');
+		if (!section) { return; }
+		var records = config.profile_records || [];
+		var selector = section.querySelector('[data-role="prescriptions-record-select"]');
+		var context = section.querySelector('[data-role="prescriptions-context"]');
+		var list = section.querySelector('[data-role="prescriptions-list"]');
+		var loading = section.querySelector('[data-role="prescriptions-loading"]');
+		var error = section.querySelector('[data-role="prescriptions-error"]');
+		var selected = records.length === 1 ? records[0] : null;
+		var generation = 0;
+
+		function text(parent, tag, value) {
+			var node = document.createElement(tag);
+			node.textContent = value || '';
+			parent.appendChild(node);
+			return node;
+		}
+		function renderItems(rxList) {
+			list.textContent = '';
+			if (!rxList || !rxList.length) {
+				text(list, 'li', 'نسخه‌ای ثبت نشده است.');
+				return;
+			}
+			rxList.forEach(function (rx) {
+				var item = text(list, 'li', '');
+				item.setAttribute('data-role', 'prescription-item');
+				var header = text(item, 'div', rx.prescription_number + ' — ' + (rx.created_at_jalali || ''));
+				header.className = 'cpms-pp-prescription__header';
+				if (rx.items && rx.items.length) {
+					var itemsList = text(item, 'ul', '');
+					itemsList.className = 'cpms-pp-prescription__items';
+					rx.items.forEach(function (med) {
+						var parts = [];
+						if (med.generic_name) { parts.push(med.generic_name); }
+						if (med.brand_name) { parts.push('(' + med.brand_name + ')'); }
+						if (med.strength) { parts.push(med.strength); }
+						if (med.form) { parts.push(med.form); }
+						if (med.dose) { parts.push(med.dose); }
+						if (med.frequency) { parts.push(med.frequency); }
+						if (med.route) { parts.push(med.route); }
+						if (med.duration_days) { parts.push(med.duration_days + ' روز'); }
+						var line = parts.join(' — ');
+						if (med.instructions) { line += ' — دستور: ' + med.instructions; }
+						text(itemsList, 'li', line);
+					});
+				}
+			});
+		}
+		function request(path, render) {
+			if (!selected) { return; }
+			var current = ++generation;
+			loading.hidden = false;
+			clearError(error);
+			requestJson(apiUrl(config.rest_root, path + '?link_id=' + encodeURIComponent(selected.link_id)), {
+				method: 'GET', credentials: 'same-origin', headers: { 'X-WP-Nonce': config.nonce }
+			}).then(function (result) {
+				if (current !== generation) { return; }
+				if (!result.ok || !result.body || !result.body.data) {
+					list.textContent = '';
+					showError(error, serverMessage(result) || 'دریافت نسخه‌ها انجام نشد. دوباره تلاش کنید.', serverCode(result));
+					return;
+				}
+				render(result.body.data);
+			}).catch(function () {
+				if (current !== generation) { return; }
+				list.textContent = '';
+				showError(error, 'ارتباط برقرار نشد. دوباره تلاش کنید.', 'NETWORK');
+			}).then(function () {
+				if (current === generation) { loading.hidden = true; }
+			});
+		}
+		function choose() {
+			generation++;
+			selected = null;
+			list.textContent = '';
+			context.textContent = '';
+			loading.hidden = true;
+			clearError(error);
+			records.forEach(function (record) {
+				if (String(record.link_id) === selector.value) { selected = record; }
+			});
+			if (!selected) { return; }
+			context.textContent = selected.clinic_name + ' — ' + selected.patient_display_name + ' — ' + selected.mrn;
+			request(config.prescriptions_path || '/prescriptions', function (data) {
+				renderItems(data.prescriptions || []);
+			});
+		}
+		if (selector) { selector.addEventListener('change', choose); }
+	}
+
 	function bindSectionNav() {
 		var navLinks = document.querySelectorAll('[data-role="patient-nav"] a');
 		function apply() {
 			var hash = (window.location.hash || '').replace(/^#/, '');
-			var target = (hash === 'profile' || hash === 'visits') ? hash : 'appointments';
+			var target = (hash === 'profile' || hash === 'visits' || hash === 'prescriptions') ? hash : 'appointments';
 			Array.prototype.forEach.call(navLinks, function (a) {
 				var role = a.getAttribute('data-role');
 				var isActive = role === 'nav-' + target;
@@ -718,6 +810,7 @@
 		bindMarkAllRead(config);
 		bindProfile(config);
 		bindVisits(config);
+		bindPrescriptions(config);
 		bindSectionNav();
 	}
 

@@ -57,7 +57,7 @@
 | C4 | `GET /patients/{patient_id}/files` | فایل‌های مجاز |
 | C5 | `GET /visits?from&to&link_id?` | تاریخچه ویزیت — **فقط فیلدهای patient_visible** |
 | C6 | `GET /visits/{id}?link_id?` | جزئیات ویزیت (نماهای مجاز: notes patient_visible, prescription, recommendations, follow-ups) |
-| C7 | `GET /prescriptions` | نسخه‌های من (مجاز) |
+| C7 | `GET /prescriptions?link_id?` | نسخه‌های من (مجاز) — **فقط فیلدهای patient_visible و غیر-draft** |
 | C8 | `GET /invoices` | فقط اگر `patient.profile_invoices_visible=true` |
 
 ## 4. Secretary (Authenticated: `clinic_secretary` + Capabilities)
@@ -209,3 +209,24 @@ C5 date defaults and 100-row bound, C6 ownership audit and query-level visibilit
 remain. Portal display is deliberately restricted to visit date/clinician and
 patient-visible note text/recommendation text; internal workflow/actor/correction
 metadata is not a display contract. No separate Prescriptions or Files UI.
+
+### Phase 9 My Prescriptions — C7 record selection
+
+C7 preserves Gregorian `created_at` (`Y-m-d H:i:s.000`) and pairs it with
+`created_at_jalali = Jalali::formatYmd(local_date)` for portal display, where
+`local_date` is converted to the Location's authoritative timezone before
+formatting.
+
+C7 reuses the Profile/Visits resolver: optional `link_id` is a selector, never tenant
+or patient authority. The authenticated WP user must own a durable link whose
+Patient is active and whose persisted Clinic matches the link. Zero eligible
+records or a foreign/inactive/nonexistent selector returns `404 CLINIC_NOT_FOUND`;
+one eligible record may auto-resolve; multiple records without a selector return
+`422 CLINIC_SELECTION_REQUIRED`. No primary/first fallback. Client Clinic/Patient/
+Organization/role fields do not authorize access. Query-level `is_patient_visible = 1`
+and server-side draft exclusion remain strictly enforced. Portal display is
+restricted to prescription number, Jalali date, and item clinical details (generic/brand
+name, strength, form, dose, frequency, route, duration, instructions); internal
+operational fields (`void_reason`, `is_patient_visible`, `drug_ref_id`,
+`correction_of_prescription_id`) are never exposed. Read-only: no refill, mutation,
+printing, or pharmacy integration.
