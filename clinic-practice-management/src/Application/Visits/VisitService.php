@@ -1416,7 +1416,7 @@ final class VisitService
      * @return list<int>
      */
     // phpcs:disable Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed
-    private function eligibleLocationIdsForActor(int $clinicId, int $actorUserId): array
+    private function eligibleLocationIdsForActor(int $clinicId, int $actorUserId): array // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed
     {
         if ($clinicId <= 0 || $actorUserId <= 0) {
             return [];
