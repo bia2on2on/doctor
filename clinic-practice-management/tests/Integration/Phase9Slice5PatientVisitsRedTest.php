@@ -253,7 +253,7 @@ final class Phase9Slice5PatientVisitsRedTest extends WP_UnitTestCase
         self::assertSame(1, $sections->length, 'One read-only Visits section only.');
         $section = $sections->item(0);
         self::assertSame(0, $xpath->query('.//form|.//*[@contenteditable="true"]', $section)->length, 'No visit mutations.');
-        foreach (['nav-prescriptions', 'nav-files', 'visits-edit', 'visits-delete'] as $role) {
+        foreach (['nav-files', 'visits-edit', 'visits-delete'] as $role) {
             self::assertSame(0, $xpath->query('//*[@data-role="' . $role . '"]')->length);
         }
         if ($count === 0) {

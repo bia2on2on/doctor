@@ -208,7 +208,8 @@ final class Phase9Slice6PatientPrescriptionsRedTest extends WP_UnitTestCase
 
     public function testPrescriptionDatesPreserveGregorianApiAndPairJalaliForDisplay(): void
     {
-        $utc = \DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $this->now, new \DateTimeZone('UTC'));
+        $utc = \DateTimeImmutable::createFromFormat('Y-m-d H:i:s.u', $this->now, new \DateTimeZone('UTC'))
+            ?: \DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $this->now, new \DateTimeZone('UTC'));
         self::assertNotFalse($utc);
         $local = $utc->setTimezone(new \DateTimeZone('Asia/Tehran'));
         $expectedJalali = Jalali::formatYmd($local->format('Y-m-d'));

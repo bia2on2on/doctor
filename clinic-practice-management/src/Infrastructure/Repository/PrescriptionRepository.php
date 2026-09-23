@@ -159,25 +159,19 @@ final class PrescriptionRepository
      *
      * @return list<array<string, mixed>>
      */
-    public function forPatient( int $patientId, ?bool $onlyPatientVisible, int $limit = 100, ?int $clinicId = null ): array
+    public function forPatient(int $patientId, ?bool $onlyPatientVisible, int $limit = 100): array
     {
-        $where  = 'rx.patient_id = %d';
-        $params = [ $patientId ];
-        if ( $clinicId !== null ) {
-            $where   .= ' AND rx.clinic_id = %d';
-            $params[] = $clinicId;
-        }
-        if ( $onlyPatientVisible !== null ) {
-            $where   .= ' AND rx.is_patient_visible = %d';
+        $where = 'patient_id = %d';
+        $params = [$patientId];
+        if ($onlyPatientVisible !== null) {
+            $where .= ' AND is_patient_visible = %d';
             $params[] = $onlyPatientVisible ? 1 : 0;
         }
         $params[] = $limit;
 
         return $this->db->fetchAll(
-            'SELECT rx.*, l.timezone AS location_timezone FROM ' . $this->db->table( 'cpms_prescriptions' ) . ' rx' .
-            ' LEFT JOIN ' . $this->db->table( 'cpms_visits' ) . ' v ON v.id = rx.visit_id' .
-            ' LEFT JOIN ' . $this->db->table( 'cpms_locations' ) . ' l ON l.id = COALESCE(rx.location_id, v.location_id)' .
-            ' WHERE ' . $where . ' ORDER BY rx.id DESC LIMIT %d',
+            'SELECT * FROM ' . $this->db->table('cpms_prescriptions') .
+            ' WHERE ' . $where . ' ORDER BY id DESC LIMIT %d',
             $params
         ) ?: [];
     }
