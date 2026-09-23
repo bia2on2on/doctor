@@ -530,10 +530,10 @@ final class MedicalFileService
             $wpdb->prepare(
                 'SELECT v.id AS visit_id, l.timezone FROM ' . $wpdb->prefix . 'cpms_visits v' .
                 ' JOIN ' . $wpdb->prefix . 'cpms_locations l ON l.id = v.location_id' .
-                ' WHERE v.id IN (' . $placeholders . ')',
+                ' WHERE v.id IN (' . $placeholders . ')', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare -- IN-list از %dهای ساخته‌شده با array_fill می‌آید (الگوی استاندارد وردپرس).
                 $ids
             )
-        ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        );
 
         $valid_timezones   = \DateTimeZone::listIdentifiers();
         $timezone_by_visit = [];
