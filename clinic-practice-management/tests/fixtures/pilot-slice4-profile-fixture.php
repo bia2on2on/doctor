@@ -405,6 +405,25 @@ $fileOneUp = $seedPilotFile($clinicOne, $patientOne, null, 'SYN-FILES-ONE-UP.pdf
 $seedPilotFile($clinicOne, $patientOne, $visits[2], 'SYN-PRIVATE-ONE.pdf', 'doctor_private');
 $seedPilotFile($clinicOne, $patientOne, $visits[2], 'SYN-DELETED-ONE.pdf', 'patient_visible', true);
 
+// Test-env permissions: seeding runs as the CLI user, but the browser C3 upload
+// executes under the Apache user, which must be able to create NEW shard dirs
+// ({clinic}/{xx}) inside the seeded root. Loosen the seeded tree (test-only).
+$loosenStorageTree = static function (string $dir) use (&$loosenStorageTree): void {
+    @chmod($dir, 0777);
+    foreach (scandir($dir) ?: [] as $entry) {
+        if ($entry === '.' || $entry === '..') {
+            continue;
+        }
+        $path = $dir . '/' . $entry;
+        if (is_dir($path)) {
+            $loosenStorageTree($path);
+        } else {
+            @chmod($path, 0666);
+        }
+    }
+};
+$loosenStorageTree($filesStorage);
+
 // Trusted Jalali pairing context for the visit-linked files: fixture UTC now
 // converted through the persisted Location IANA timezone (Asia/Tehran).
 $filesUtc = \DateTimeImmutable::createFromFormat('Y-m-d H:i:s.u', $now, new \DateTimeZone('UTC'))

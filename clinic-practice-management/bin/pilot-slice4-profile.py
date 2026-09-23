@@ -743,7 +743,7 @@ def run_visits_readonly(browser, run):
         section.locator(f'[data-role="visit-open"][data-visit-id="{visit_a}"]').wait_for(state="visible")
         assert "SYN-VISIBLE-B" not in section.inner_text(), "stale B detail remained after switching to A"
         assert clinic_name(MULTI["clinic_a"]) in context.inner_text()
-        assert not state["console"] and not state["pageerrors"] and not state["failed"]
+        assert not state["console"] and not state["pageerrors"] and not state["failed"], f"console/page/network hygiene broken: console={state['console']} pageerrors={state['pageerrors']} failed={state['failed']}"
         assert all(status == 200 for method, route, status in state["rest"] if route.startswith("/clinic/v1/visits"))
         overflow(page)
         save_shot(page, f"portal-visits-{run['vp']}-switch.png")
@@ -761,7 +761,7 @@ def run_visits_readonly(browser, run):
         expect(section.locator('[data-role="visits-error"]')).to_be_visible()
         expect(pane).to_be_empty()
         save_shot(page, f"portal-visits-{run['vp']}-error.png")
-        assert not state["console"] and not state["pageerrors"] and not state["failed"]
+        assert not state["console"] and not state["pageerrors"] and not state["failed"], f"console/page/network hygiene broken: console={state['console']} pageerrors={state['pageerrors']} failed={state['failed']}"
         ok(key, "B list/detail, nonce + selector-only GETs, switch clears detail, real nonce denial, RTL, no overflow/JS/network failures")
     except Exception as exc:
         fail(key, "My Visits read-only vertical contract", exc)
@@ -795,7 +795,7 @@ def run_visits_one(browser, run):
         assert request.method == "GET" and request.headers.get("x-wp-nonce") and not request.post_data
         section.get_by_text("SYN-VISIBLE-ONE", exact=False).wait_for(state="visible")
         assert "SYN-PRIVATE" not in section.inner_text()
-        assert not state["console"] and not state["pageerrors"] and not state["failed"]
+        assert not state["console"] and not state["pageerrors"] and not state["failed"], f"console/page/network hygiene broken: console={state['console']} pageerrors={state['pageerrors']} failed={state['failed']}"
         overflow(page)
         save_shot(page, f"portal-visits-{run['vp']}-one.png")
         ok(key, "sole linked record auto-resolves list/detail; real patient shell, nonce, selector-only GET, RTL, no overflow/JS/network failures")
@@ -857,7 +857,7 @@ def run_prescriptions_readonly(browser, run):
         section.locator('[data-role="prescriptions-list"]').get_by_text("SYN-GENERIC-A", exact=False).wait_for(state="visible")
         assert "SYN-GENERIC-B" not in section.inner_text(), "stale B prescriptions remained after switching to A"
         assert clinic_name(MULTI["clinic_a"]) in context.inner_text()
-        assert not state["console"] and not state["pageerrors"] and not state["failed"]
+        assert not state["console"] and not state["pageerrors"] and not state["failed"], f"console/page/network hygiene broken: console={state['console']} pageerrors={state['pageerrors']} failed={state['failed']}"
         assert all(status == 200 for method, route, status in state["rest"] if route.startswith("/clinic/v1/prescriptions"))
         overflow(page)
         save_shot(page, f"portal-prescriptions-{run['vp']}-switch.png")
@@ -870,7 +870,7 @@ def run_prescriptions_readonly(browser, run):
         selector.select_option(str(MULTI["link_b"]))
         expect(section.locator('[data-role="prescriptions-error"]')).to_be_visible()
         save_shot(page, f"portal-prescriptions-{run['vp']}-error.png")
-        assert not state["console"] and not state["pageerrors"] and not state["failed"]
+        assert not state["console"] and not state["pageerrors"] and not state["failed"], f"console/page/network hygiene broken: console={state['console']} pageerrors={state['pageerrors']} failed={state['failed']}"
         ok(key, "B list, nonce + selector-only GETs, switch clears detail, real nonce denial, RTL, no overflow/JS/network failures")
     except Exception as exc:
         fail(key, "My Prescriptions read-only vertical contract", exc)
@@ -894,7 +894,7 @@ def run_prescriptions_one(browser, run):
         assert os.environ["VISITS_DATE"] not in sole_list.inner_text()
         assert not re.search(r"\b[0-9]{4}-[0-9]{2}-[0-9]{2}\b", sole_list.inner_text())
         assert "SYN-PRIVATE" not in section.inner_text()
-        assert not state["console"] and not state["pageerrors"] and not state["failed"]
+        assert not state["console"] and not state["pageerrors"] and not state["failed"], f"console/page/network hygiene broken: console={state['console']} pageerrors={state['pageerrors']} failed={state['failed']}"
         overflow(page)
         save_shot(page, f"portal-prescriptions-{run['vp']}-one.png")
         ok(key, "sole linked record auto-resolves prescription list; real patient shell, nonce, selector-only GET, RTL, no overflow/JS/network failures")
@@ -934,12 +934,14 @@ def run_files_one(browser, run):
         up_text = up_row.inner_text()
         assert FILES_ONE["greg"] not in up_text, "visit-less upload row leaked a raw Gregorian date"
         assert not re.search(r"\d{4}/\d{2}/\d{2}", up_text), "visit-less upload row shows a fabricated Jalali date"
-        assert "SYN-PRIVATE" not in section.inner_text() and "SYN-DELETED" not in section.inner_text()
+        assert "SYN-PRIVATE" not in section.inner_text() and "SYN-DELETED" not in section.inner_text(), \
+            "private/deleted rows leaked into the sole-record section"
         # Protected download through the existing E17 stream (membership authority).
-        assert int(visit_row.locator('[data-role="file-download"]').get_attribute("data-file-id")) == FILES_ONE["visit_file"]
+        assert int(visit_row.locator('[data-role="file-download"]').get_attribute("data-file-id")) == FILES_ONE["visit_file"], \
+            "download button must target the SSR visit-linked file id"
         with page.expect_response(lambda r: wp_route(r.url) == f"/clinic/v1/files/{FILES_ONE['visit_file']}/stream") as dl:
             visit_row.locator('[data-role="file-download"]').click()
-        assert dl.value.status == 200
+        assert dl.value.status == 200, f"protected download expected 200, got {dl.value.status}"
         assert str(dl.value.headers.get("content-disposition", "")).startswith("attachment"), "stream must stay attachment"
         # Successful patient upload through the existing C3 route.
         up_input = section.locator('[data-role="files-upload-input"]')
@@ -957,7 +959,7 @@ def run_files_one(browser, run):
         )
         assert stored and re.fullmatch(r"[0-9a-f]{32}\.pdf", stored.split("/")[-1]), "randomized stored filename expected"
         assert os.path.isfile(os.path.join(FILES_STORAGE, stored)), "uploaded file must live in the protected storage"
-        assert not state["console"] and not state["pageerrors"] and not state["failed"]
+        assert not state["console"] and not state["pageerrors"] and not state["failed"], f"console/page/network hygiene broken: console={state['console']} pageerrors={state['pageerrors']} failed={state['failed']}"
         overflow(page)
         save_shot(page, f"portal-files-{run['vp']}-one.png")
         ok(key, "sole record: SSR list, trusted Jalali only, protected download, C3 upload, RTL, no overflow/JS/network failures")
@@ -979,7 +981,8 @@ def run_files_multi(browser, run):
             else None,
         )
         login(page, MULTI["login"], MULTI["password"])
-        assert db1(f"SELECT COUNT(*) FROM {T('cpms_medical_attachments')} WHERE id IN ({FILES_A},{FILES_B})") == 2
+        assert db1(f"SELECT COUNT(*) FROM {T('cpms_medical_attachments')} WHERE id IN ({FILES_A},{FILES_B})") == 2, \
+            "multi bootstrap fixtures missing"
         nav = page.locator('[data-role="nav-files"]')
         assert nav.count() == 1
         nav.click()
@@ -1039,7 +1042,7 @@ def run_files_multi(browser, run):
         # Protected download of the selected record's file.
         with page.expect_response(lambda r: wp_route(r.url) == f"/clinic/v1/files/{FILES_B}/stream") as dl:
             b_row.locator('[data-role="file-download"]').click()
-        assert dl.value.status == 200
+        assert dl.value.status == 200, f"protected download expected 200, got {dl.value.status}"
         assert str(dl.value.headers.get("content-disposition", "")).startswith("attachment")
         # Context switch: selecting A must swap the visible list (no mixing).
         with page.expect_response(
@@ -1048,7 +1051,7 @@ def run_files_multi(browser, run):
             selector.select_option(str(MULTI["link_a"]))
         expect(section.locator('[data-role="files-list"]')).to_contain_text("SYN-FILES-A.pdf")
         assert "SYN-FILES-B.pdf" not in section.inner_text(), "stale B files remained after switching to A"
-        assert not state["console"] and not state["pageerrors"] and not state["failed"]
+        assert not state["console"] and not state["pageerrors"] and not state["failed"], f"console/page/network hygiene broken: console={state['console']} pageerrors={state['pageerrors']} failed={state['failed']}"
         overflow(page)
         save_shot(page, f"portal-files-{run['vp']}-multi.png")
         ok(key, "N>1: explicit selection gates list and upload, record isolation, C3 upload ok/invalid rejected, protected download, RTL, no overflow/JS/network failures")
