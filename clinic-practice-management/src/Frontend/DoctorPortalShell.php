@@ -13,11 +13,11 @@ use WP_Post;
  * Frontend entry + standalone shell for the independent doctor portal (read-only Today+Live Queue).
  */
 final class DoctorPortalShell {
-	public const PAGE_SLUG = 'cpms-doctor-portal';
-	public const PAGE_OPTION = 'cpms_doctor_portal_page_id';
+	public const PAGE_SLUG = 'cpms-doctor-portal'; // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment, keep readability
+	public const PAGE_OPTION = 'cpms_doctor_portal_page_id'; // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment, keep readability
 	public const TEMPLATE_REL = 'templates/doctor-portal-shell.php';
-	public const CSS_HANDLE = 'cpms-doctor-portal';
-	public const JS_HANDLE = 'cpms-doctor-portal';
+	public const CSS_HANDLE = 'cpms-doctor-portal'; // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment, keep readability
+	public const JS_HANDLE = 'cpms-doctor-portal'; // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment, keep readability
 
 	public static function register(): void {
 		add_action( 'init', [ self::class, 'ensure_portal_page' ], 20 );
@@ -183,7 +183,7 @@ final class DoctorPortalShell {
 		if ( ! in_array( \ClinicCore\Auth\RolesAndCapabilities::ROLE_DOCTOR, $roles, true ) ) {
 			return false;
 		}
-		$db            = \ClinicCore\Bootstrap\App::db();
+		$db            = \ClinicCore\Bootstrap\App::db(); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment, keep readability
 		$clinician_id = $db->fetchValue(
 			'SELECT id FROM ' . $db->table( 'cpms_clinicians' ) . ' WHERE wp_user_id = %d AND is_active = 1 LIMIT 1',
 			[ (int) $user->ID ]

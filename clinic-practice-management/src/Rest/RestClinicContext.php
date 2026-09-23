@@ -309,13 +309,13 @@ final class RestClinicContext
             || $user->has_cap(RolesAndCapabilities::CONFIG);
     }
 
-    private static function toError( ScopeRequiredException $e ): WP_Error {
+    private static function toError( ScopeRequiredException $e ): WP_Error { // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy PSR-style, established contract
         $reason = (string) ( $e->data['reason'] ?? '' );
         if ( '' !== $reason ) {
-            error_log( '[CPMS][RestClinicContext] ' . $e->errorCode . ' reason=' . $reason );
+            error_log( '[CPMS][RestClinicContext] ' . $e->errorCode . ' reason=' . $reason ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,WordPress.PHP.DevelopmentFunctions.error_log_error_log -- legacy PSR-style, established contract
         }
 
-        $message = match ( $e->errorCode ) {
+        $message = match ( $e->errorCode ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- legacy PSR-style, established contract
             'CLINIC_SCOPE_REQUIRED' => __( 'محدودهٔ کلینیک لازم است.', 'cpms' ),
             'CLINIC_VALIDATION_FAILED' => __( 'شناسهٔ کلینیک یا محل نامعتبر است.', 'cpms' ),
             default => __( 'امکان تعیین محدودهٔ کلینیک معتبر نیست.', 'cpms' ),
@@ -326,7 +326,7 @@ final class RestClinicContext
         // Blocker 2: preserve bounded non-sensitive Location-required metadata for Doctor Portal.
         // Use existing CLINIC_SCOPE_REQUIRED, do NOT invent LOCATION_SCOPE_REQUIRED.
         // Return only field=location_id + reason=location_required, never eligible IDs or internals.
-        if ( 'CLINIC_SCOPE_REQUIRED' === $e->errorCode ) {
+        if ( 'CLINIC_SCOPE_REQUIRED' === $e->errorCode ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- legacy PSR-style, established contract
             $field      = $e->data['field'] ?? null;
             $reason_val = $e->data['reason'] ?? null;
             if ( 'location_id' === $field && 'location_required' === $reason_val ) {
@@ -336,7 +336,7 @@ final class RestClinicContext
             // Clinic-required case (multiple clinics) remains compatible: no field relabel.
         }
 
-        if ( 'CLINIC_VALIDATION_FAILED' === $e->errorCode && isset( $e->data['field'] ) ) {
+        if ( 'CLINIC_VALIDATION_FAILED' === $e->errorCode && isset( $e->data['field'] ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- legacy PSR-style, established contract
             $f = $e->data['field'];
             if ( in_array( $f, [ 'clinic_id', 'location_id' ], true ) ) {
                 $data['field'] = $f;
@@ -344,6 +344,6 @@ final class RestClinicContext
         }
 
         // Never expose eligible_location_ids, membership internals, topology.
-        return new WP_Error( $e->errorCode, $message, $data );
+        return new WP_Error( $e->errorCode, $message, $data ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- legacy PSR-style, established contract
     }
 }

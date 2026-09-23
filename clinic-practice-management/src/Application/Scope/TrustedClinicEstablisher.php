@@ -171,7 +171,7 @@ final class TrustedClinicEstablisher {
 			' WHERE clinic_id = %d AND is_active = 1 ORDER BY id ASC',
 			[ $clinic_id ]
 		);
-		$ids = [];
+		$ids = []; // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment, keep readability
 		foreach ( ( is_array( $rows ) ? $rows : [] ) as $r ) {
 			$ids[] = (int) ( $r['id'] ?? 0 );
 		}

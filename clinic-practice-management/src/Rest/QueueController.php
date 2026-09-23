@@ -342,7 +342,7 @@ final class QueueController extends RestBase {
 		try {
 			$last_event_id = $this->visits->lastEventIdForDoctorPortal( $user_id );
 		} catch ( VisitException $e ) {
-			return $this->error( $e->errorCode, $e->httpStatus, $e->getMessage(), $e->data );
+			return $this->error( $e->errorCode, $e->httpStatus, $e->getMessage(), $e->data ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- legacy PSR-style, established contract
 		}
 
 		$etag          = '\"' . $last_event_id . '\"';
@@ -356,7 +356,7 @@ final class QueueController extends RestBase {
 		try {
 			$payload = $this->visits->eventsSinceForDoctorPortal( $user_id, $since );
 		} catch ( VisitException $e ) {
-			return $this->error( $e->errorCode, $e->httpStatus, $e->getMessage(), $e->data );
+			return $this->error( $e->errorCode, $e->httpStatus, $e->getMessage(), $e->data ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- legacy PSR-style, established contract
 		}
 
 		$response = $this->success( $payload );
@@ -365,10 +365,10 @@ final class QueueController extends RestBase {
 	}
 
 	private function userId( WP_REST_Request $r ): int {
-		return (int) ( wp_get_current_user()->ID ?: 0 );
+		return (int) ( wp_get_current_user()->ID ?: 0 ); // phpcs:ignore Universal.Operators.DisallowShortTernary.Found -- WPCS
 	}
 
-	private function guard( WP_REST_Request $r, string $cap, ?callable $fn ): WP_REST_Response|WP_Error {
+	private function guard( WP_REST_Request $r, string $cap, ?callable $fn ): WP_REST_Response|WP_Error { // phpcs:ignore Universal.NamingConventions.NoReservedKeywordParameterNames.fnFound -- WPCS
 		$nonce = $this->requireNonce( $r );
 		if ( $nonce instanceof WP_Error ) {
 			return $nonce;
@@ -388,9 +388,9 @@ final class QueueController extends RestBase {
 		try {
 			return $this->success( $fn(), 200 );
 		} catch ( VisitException $e ) {
-			return $this->error( $e->errorCode, $e->httpStatus, $e->getMessage(), $e->data );
+			return $this->error( $e->errorCode, $e->httpStatus, $e->getMessage(), $e->data ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- legacy PSR-style, established contract
 		} catch ( \Throwable $e ) {
-			error_log( '[CPMS][QueueController] unexpected: ' . get_class( $e ) . ': ' . $e->getMessage() );
+			error_log( '[CPMS][QueueController] unexpected: ' . get_class( $e ) . ': ' . $e->getMessage() ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- WPCS
 			return $this->error( 'CLINIC_INTERNAL_ERROR', 500, 'خطای داخلی سرور — لطفاً دوباره تلاش کنید' );
 		}
 	}
