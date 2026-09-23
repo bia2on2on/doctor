@@ -474,9 +474,22 @@ final class VisitService
         $scope_clinician_id = $this->queueScopeClinicianId( $actor_user_id, $clinic_id, $clinician_id );
         $location_id        = $this->queueLocationId( $clinic_id, $actor_user_id );
 
-        // Legacy shared queue: use UTC date for Today to preserve existing wp-admin/shared behavior.
-        // Operational Location date is portal-specific (todayForDoctorPortal).
-        $operational_date = $this->nowUtc()->format( 'Y-m-d' );
+        $operational_date = null;
+        if ( null !== $location_id ) {
+            $operational_date = $this->operationalDateForLocation( $location_id, $clinic_id );
+        } else {
+            try {
+                $eligible_for_date = $this->eligibleLocationIdsForActor( $clinic_id, $actor_user_id );
+                if ( 1 === count( $eligible_for_date ) ) {
+                    $location_id = $eligible_for_date[0]; // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
+                    $operational_date = $this->operationalDateForLocation( $location_id, $clinic_id ); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
+                } else {
+                    $operational_date = $this->nowUtc()->format( 'Y-m-d' );
+                }
+            } catch ( \Throwable $e ) {
+                $operational_date = $this->nowUtc()->format( 'Y-m-d' );
+            }
+        }
 
         $queue = $this->visits->queueFor( $clinic_id, $scope_clinician_id, self::QUEUE_STATUSES, $operational_date, $location_id );
         $stats = $this->visits->statsFor( $clinic_id, $operational_date, $scope_clinician_id, $location_id );
@@ -585,8 +598,20 @@ final class VisitService
         $clinic_id = $this->queueClinicId(); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
         $scope_clinician_id = $this->queueScopeClinicianId( $actor_user_id, $clinic_id, null );
         $location_id = $this->queueLocationId( $clinic_id, $actor_user_id ); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
-        // Legacy: operational_date null => repository uses UTC (gmdate) to preserve shared behavior.
         $operational_date = null;
+        if ( null !== $location_id ) {
+            $operational_date = $this->operationalDateForLocation( $location_id, $clinic_id );
+        } else {
+            try {
+                $eligible_for_date = $this->eligibleLocationIdsForActor( $clinic_id, $actor_user_id );
+                if ( 1 === count( $eligible_for_date ) ) {
+                    $location_id = $eligible_for_date[0]; // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
+                    $operational_date = $this->operationalDateForLocation( $location_id, $clinic_id ); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
+                }
+            } catch ( \Throwable $e ) {
+                unset( $e );
+            }
+        }
 
         $events  = $this->visits->eventsSince( $clinic_id, max( 0, $since_event_id ), 200, $scope_clinician_id, $operational_date, $location_id );
         $last_id = $since_event_id;
@@ -618,8 +643,20 @@ final class VisitService
         $clinic_id = $this->queueClinicId(); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
         $scope_clinician_id = $this->queueScopeClinicianId( $actor_user_id, $clinic_id, null );
         $location_id = $this->queueLocationId( $clinic_id, $actor_user_id ); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
-        // Legacy: operational_date null => repository uses UTC.
         $operational_date = null;
+        if ( null !== $location_id ) {
+            $operational_date = $this->operationalDateForLocation( $location_id, $clinic_id );
+        } else {
+            try {
+                $eligible_for_date = $this->eligibleLocationIdsForActor( $clinic_id, $actor_user_id );
+                if ( 1 === count( $eligible_for_date ) ) {
+                    $location_id = $eligible_for_date[0]; // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
+                    $operational_date = $this->operationalDateForLocation( $location_id, $clinic_id ); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
+                }
+            } catch ( \Throwable $e ) {
+                unset( $e );
+            }
+        }
 
         return $this->visits->lastEventId( $clinic_id, $operational_date, $scope_clinician_id, $location_id );
     }
@@ -1080,6 +1117,7 @@ final class VisitService
             'clinician_id' => $clinicianId,
             'patient_id' => $patientId,
             'appointment_id' => $appointmentId,
+            'location_id' => $locationIdForDate,
             'source' => $source,
             'status' => 'checked_in',
             'visit_date' => $visitDate, // phpcs:ignore WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract

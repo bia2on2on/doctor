@@ -676,6 +676,15 @@ final class Phase4Slice4QueueSharedProfessionalTest extends WP_UnitTestCase
         global $wpdb;
         $patient = $patientId ?? $this->insertPatient($clinicId, $tag);
         $now = App::db()->nowUtcSql();
+        // Use Location-local operational date for queue (Asia/Tehran) to match portal logic
+        $tz_row = $wpdb->get_var($wpdb->prepare('SELECT timezone FROM ' . $wpdb->prefix . 'cpms_locations WHERE id = %d', $this->locationFor($clinicId)));
+        $tz_name = is_string($tz_row) && $tz_row !== '' ? $tz_row : 'Asia/Tehran';
+        try {
+            $tz = new \DateTimeZone($tz_name);
+            $visit_date = (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->setTimezone($tz)->format('Y-m-d');
+        } catch ( \Throwable $e ) {
+            $visit_date = gmdate('Y-m-d');
+        }
         $wpdb->query($wpdb->prepare(
             'INSERT INTO ' . $wpdb->prefix . 'cpms_visits
                  (clinic_id, location_id, clinician_id, patient_id, appointment_id, source, status, visit_date,
@@ -687,7 +696,7 @@ final class Phase4Slice4QueueSharedProfessionalTest extends WP_UnitTestCase
             $patient,
             'walk_in',
             'waiting',
-            gmdate('Y-m-d'),
+            $visit_date,
             $now,
             $now,
             $now,
