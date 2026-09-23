@@ -351,9 +351,11 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
         $assignedIds = $membershipRepo->location_ids_for($memAssign);
         self::assertSame([$locAssignK], $assignedIds, 'F: membership location-scoped assigned only K');
 
+        wp_set_current_user($doctorAssign);
         $resAssignedK = $this->dispatch('GET', '/'.self::REST_NS.'/queue', [], ['X-CPMS-Clinic-Id' => (string)$clinicAssign, 'X-CPMS-Location-Id' => (string)$locAssignK]);
         self::assertSame(200, $resAssignedK->get_status(), 'F: assigned active Location accepted => 200');
 
+        wp_set_current_user($doctorAssign);
         $resUnassignedM = $this->dispatch('GET', '/'.self::REST_NS.'/queue', [], ['X-CPMS-Clinic-Id' => (string)$clinicAssign, 'X-CPMS-Location-Id' => (string)$locAssignM]);
         // Current product allows unassigned Location because establisher does not check membership_locations — this is missing assignment enforcement
         // We assert what current product does, and document missing contract
