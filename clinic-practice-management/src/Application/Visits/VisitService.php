@@ -130,7 +130,7 @@ final class VisitService
             $clinicId = (int) ($appt['clinic_id'] ?? 0);
             $locationId = (int) ($appt['location_id'] ?? 0);
 
-            $this->guardDuplicateActiveVisit($patientId, (int) $appt['clinician_id']);
+            $this->guardDuplicateActiveVisit($patientId, (int) $appt['clinician_id'], $clinicId, $locationId);
 
             if ( in_array($status, ['cancelled_by_patient', 'cancelled_by_staff', 'rescheduled', 'completed'], true )) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS
                 throw VisitException::of( 'CLINIC_INVALID_APPOINTMENT_STATE', // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket -- WPCS
@@ -234,7 +234,32 @@ final class VisitService
                 throw VisitException::of('CLINIC_VALIDATION_FAILED', 'این بیمار به کلینیک دیگری تعلق دارد', 422);
             }
 
-            $this->guardDuplicateActiveVisit($patientId, $clinicianId);
+            // Determine Location for duplicate check (same as createVisit operational date logic)
+            $locationIdForGuard = null;
+            try {
+                $scope_for_guard = \ClinicCore\Application\Scope\ScopeContext::tryGet();
+                if ( $scope_for_guard !== null && $scope_for_guard->locationId !== null ) {
+                    $locationIdForGuard = (int) $scope_for_guard->locationId;
+                } else {
+                    $app_scope_for_guard = \ClinicCore\Bootstrap\App::scope();
+                    if ( $app_scope_for_guard->locationId !== null ) {
+                        $locationIdForGuard = (int) $app_scope_for_guard->locationId;
+                    }
+                }
+            } catch ( \Throwable $e ) {
+                unset( $e );
+            }
+            if ( $locationIdForGuard === null ) {
+                try {
+                    $eligible_for_guard = $this->eligibleLocationIdsForActor( $clinicId, $actorUserId );
+                    if ( 1 === count( $eligible_for_guard ) ) {
+                        $locationIdForGuard = $eligible_for_guard[0];
+                    }
+                } catch ( \Throwable $e ) {
+                    unset( $e );
+                }
+            }
+            $this->guardDuplicateActiveVisit($patientId, $clinicianId, $clinicId, $locationIdForGuard);
 
             $visit = $this->createVisit( $actorUserId, // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
                 $clinicId,
@@ -453,7 +478,18 @@ final class VisitService
         if ( null !== $location_id ) {
             $operational_date = $this->operationalDateForLocation( $location_id, $clinic_id );
         } else {
-            $operational_date = $this->nowUtc()->format( 'Y-m-d' );
+            // Defense: single eligible Location => use its operational date for Today/Queue (legacy single-clinic compat)
+            try {
+                $eligible_for_date = $this->eligibleLocationIdsForActor( $clinic_id, $actor_user_id );
+                if ( 1 === count( $eligible_for_date ) ) {
+                    $location_id        = $eligible_for_date[0];
+                    $operational_date   = $this->operationalDateForLocation( $location_id, $clinic_id );
+                } else {
+                    $operational_date = $this->nowUtc()->format( 'Y-m-d' );
+                }
+            } catch ( \Throwable $e ) {
+                $operational_date = $this->nowUtc()->format( 'Y-m-d' );
+            }
         }
 
         $queue = $this->visits->queueFor( $clinic_id, $scope_clinician_id, self::QUEUE_STATUSES, $operational_date, $location_id );
@@ -508,11 +544,11 @@ final class VisitService
                 // N>1 without explicit Location => REQUIRED
                 throw VisitException::of( 'CLINIC_SCOPE_REQUIRED', // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket -- WPCS
                     'Location scope required: multiple eligible locations',
+                    400,
                     [
                         'field'  => 'location_id',
                         'reason' => 'location_required',
-                    ],
-                    400 ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent -- WPCS
+                    ] ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent -- WPCS
             }
         }
 
@@ -566,6 +602,16 @@ final class VisitService
         $operational_date   = null;
         if ( null !== $location_id ) {
             $operational_date = $this->operationalDateForLocation( $location_id, $clinic_id );
+        } else {
+            try {
+                $eligible_for_date = $this->eligibleLocationIdsForActor( $clinic_id, $actor_user_id );
+                if ( 1 === count( $eligible_for_date ) ) {
+                    $location_id      = $eligible_for_date[0];
+                    $operational_date = $this->operationalDateForLocation( $location_id, $clinic_id );
+                }
+            } catch ( \Throwable $e ) {
+                unset( $e );
+            }
         }
 
         $events  = $this->visits->eventsSince( $clinic_id, max( 0, $since_event_id ), 200, $scope_clinician_id, $operational_date, $location_id );
@@ -601,6 +647,16 @@ final class VisitService
         $operational_date   = null;
         if ( null !== $location_id ) {
             $operational_date = $this->operationalDateForLocation( $location_id, $clinic_id );
+        } else {
+            try {
+                $eligible_for_date = $this->eligibleLocationIdsForActor( $clinic_id, $actor_user_id );
+                if ( 1 === count( $eligible_for_date ) ) {
+                    $location_id      = $eligible_for_date[0];
+                    $operational_date = $this->operationalDateForLocation( $location_id, $clinic_id );
+                }
+            } catch ( \Throwable $e ) {
+                unset( $e );
+            }
         }
 
         return $this->visits->lastEventId( $clinic_id, $operational_date, $scope_clinician_id, $location_id );
@@ -632,11 +688,11 @@ final class VisitService
             } else {
                 throw VisitException::of( 'CLINIC_SCOPE_REQUIRED', // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket -- WPCS
                     'Location scope required: multiple eligible locations',
+                    400,
                     [
                         'field'  => 'location_id',
                         'reason' => 'location_required',
-                    ],
-                    400 ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent -- WPCS
+                    ] ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent -- WPCS
             }
         }
 
@@ -690,11 +746,11 @@ final class VisitService
             } else {
                 throw VisitException::of( 'CLINIC_SCOPE_REQUIRED', // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket -- WPCS
                     'Location scope required: multiple eligible locations',
+                    400,
                     [
                         'field'  => 'location_id',
                         'reason' => 'location_required',
-                    ],
-                    400 ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent -- WPCS
+                    ] ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent -- WPCS
             }
         }
 
@@ -1214,9 +1270,16 @@ final class VisitService
 
     // ================= Helpers — Guardها و داده =================
 
-    private function guardDuplicateActiveVisit(int $patientId, int $clinicianId): void
+    private function guardDuplicateActiveVisit(int $patientId, int $clinicianId, int $clinicId = 0, ?int $locationId = null): void
     {
         $today = $this->nowUtc()->format('Y-m-d'); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- legacy alignment, keep readability
+        if ( $locationId !== null && $locationId > 0 && $clinicId > 0 ) {
+            try {
+                $today = $this->operationalDateForLocation( $locationId, $clinicId );
+            } catch ( \Throwable $e ) {
+                unset( $e );
+            }
+        }
         $existing = $this->visits->findActiveByPatientDay($patientId, $clinicianId, $today); // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
         if ( $existing !== null && in_array((string) $existing['status'], self::ACTIVE_VISIT_STATUSES, true)) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.WhiteSpace.CastStructureSpacing.NoSpaceBeforeOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS
             throw VisitException::of( 'CLINIC_DUPLICATE_ACTIVE_VISIT', // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket -- WPCS
