@@ -22,7 +22,7 @@ defined('ABSPATH') || exit; // phpcs:ignore PEAR.Functions.FunctionCallSignature
 use ClinicCore\Frontend\DoctorPortalShell;
 use ClinicCore\Auth\RolesAndCapabilities;
 
-if (!function_exists('wp_get_current_user')) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,WordPress.WhiteSpace.OperatorSpacing.NoSpaceAfter -- WPCS spacing
+if (!function_exists('wp_get_current_user')) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,WordPress.WhiteSpace.OperatorSpacing.NoSpaceAfter,WordPress.WhiteSpace.OperatorSpacing.NoSpaceBefore -- WPCS spacing
     return;
 }
 
@@ -63,7 +63,7 @@ $config = [ // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSam
     'is_doctor' => $cpms_is_doctor, // phpcs:ignore WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned -- legacy alignment
 ];
 $config_json = wp_json_encode($config, JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_UNICODE); // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- legacy, template var
-if (!is_string($config_json) || '' === $config_json) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,WordPress.WhiteSpace.OperatorSpacing.NoSpaceAfter -- WPCS spacing
+if (!is_string($config_json) || '' === $config_json) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,WordPress.WhiteSpace.OperatorSpacing.NoSpaceAfter,WordPress.WhiteSpace.OperatorSpacing.NoSpaceBefore -- WPCS spacing
     $config_json = '{}'; // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- legacy, template var
 }
 
@@ -143,12 +143,12 @@ echo $cpms_styles_html;
                 <h1 class="cpms-doctor-portal-shell__title" data-role="portal-header-title">امروز پزشک — صف زنده</h1>
             </div>
         </div>
-        <?php if ($cpms_is_doctor) : ?> // phpcs:ignore WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS spacing
+        <?php if ($cpms_is_doctor) : ?> // phpcs:ignore Squiz.ControlStructures.ControlSignature.NewlineAfterOpenBrace,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS spacing
             <div class="cpms-doctor-portal-shell__session">
                 <span class="cpms-doctor-portal-shell__who" data-role="portal-user"><?php echo esc_html($cpms_login_name); ?></span> // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS spacing
                 <a class="cpms-doc-btn cpms-doc-btn--ghost" data-role="portal-logout" href="<?php echo esc_url($cpms_logout_url); ?>">خروج</a> // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS spacing
             </div>
-        <?php elseif ($cpms_logged_in) : ?> // phpcs:ignore WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS spacing
+        <?php elseif ($cpms_logged_in) : ?> // phpcs:ignore Squiz.ControlStructures.ControlSignature.NewlineAfterOpenBrace,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS spacing
             <div class="cpms-doctor-portal-shell__session">
                 <a class="cpms-doc-btn cpms-doc-btn--ghost" href="<?php echo esc_url($cpms_logout_url); ?>">خروج</a> // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS spacing
             </div>
@@ -156,17 +156,17 @@ echo $cpms_styles_html;
     </header>
 
     <main class="cpms-doctor-portal-shell__main" role="main" data-role="portal-main" id="cpms-doctor-portal-main">
-        <?php if (!$cpms_logged_in) : ?> // phpcs:ignore WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,WordPress.WhiteSpace.OperatorSpacing.NoSpaceAfter,WordPress.WhiteSpace.OperatorSpacing.NoSpaceBefore -- WPCS spacing
+        <?php if (!$cpms_logged_in) : ?> // phpcs:ignore Squiz.ControlStructures.ControlSignature.NewlineAfterOpenBrace,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,WordPress.WhiteSpace.OperatorSpacing.NoSpaceAfter,WordPress.WhiteSpace.OperatorSpacing.NoSpaceBefore -- WPCS spacing
             <section class="cpms-doctor-portal-shell__notice" role="status" data-role="portal-login">
                 <h2>ورود به پورتال پزشک</h2>
                 <p>برای مشاهده صف امروز و بیماران، وارد حساب پزشک خود شوید.</p>
                 <p><a class="cpms-doc-btn cpms-doc-btn--primary" href="<?php echo esc_url($cpms_login_url); ?>">ورود</a></p> // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS spacing
             </section>
-        <?php elseif (!$cpms_is_doctor) : ?> // phpcs:ignore WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,WordPress.WhiteSpace.OperatorSpacing.NoSpaceAfter,WordPress.WhiteSpace.OperatorSpacing.NoSpaceBefore -- WPCS spacing
+        <?php elseif (!$cpms_is_doctor) : ?> // phpcs:ignore Squiz.ControlStructures.ControlSignature.NewlineAfterOpenBrace,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,WordPress.WhiteSpace.OperatorSpacing.NoSpaceAfter,WordPress.WhiteSpace.OperatorSpacing.NoSpaceBefore -- WPCS spacing
             <section class="cpms-doctor-portal-shell__notice" role="alert" data-role="portal-access-denied">
                 <h2>دسترسی پورتال پزشک</h2>
                 <p>این پورتال فقط برای پزشکان با پروفایل فعال است. حساب شما نقش پزشک فعال ندارد یا به پروفایل پزشک متصل نیست.</p>
-                <?php if (current_user_can(RolesAndCapabilities::ROLE_SECRETARY)) : ?> // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS spacing
+                <?php if (current_user_can(RolesAndCapabilities::ROLE_SECRETARY)) : ?> // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,Squiz.ControlStructures.ControlSignature.NewlineAfterOpenBrace,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS spacing
                     <p>حساب منشی نمی‌تواند وارد پورتال پزشک شود.</p>
                 <?php endif; ?>
                 <p><a class="cpms-doc-btn cpms-doc-btn--primary" href="<?php echo esc_url(admin_url()); ?>">بازگشت به پیشخوان</a></p> // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS spacing
