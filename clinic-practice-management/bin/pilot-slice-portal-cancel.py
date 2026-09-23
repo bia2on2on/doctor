@@ -393,9 +393,12 @@ def run_journey(browser, run):
         cfg = json.loads(cfg_raw)
         required = {"cancel_path", "nonce", "notifications_read_path", "rest_root"}
         allowed = required | {"me_path", "my_records_path", "profile_initial", "profile_me_path",
-                              "profile_my_records_path", "profile_records"}
+                              "profile_my_records_path", "profile_records", "visits_path", "visit_detail_path"}
         if not required.issubset(set(cfg.keys())):
             raise RuntimeError(f"config must contain cancel_path/nonce/notifications_read_path/rest_root, got {sorted(cfg.keys())}")
+        # Slice 5 adds only the existing C5/C6 route templates, never authority.
+        if cfg.get("visits_path") != "/visits" or cfg.get("visit_detail_path") != "/visits/{id}":
+            raise RuntimeError("Visits config must target existing C5/C6 routes")
         extra = set(cfg.keys()) - allowed
         if extra:
             raise RuntimeError(f"config contains unexpected keys {sorted(extra)}; allowed={sorted(allowed)}")

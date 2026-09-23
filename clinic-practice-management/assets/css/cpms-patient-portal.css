@@ -830,3 +830,10 @@
 	font-weight: 600;
 	margin-block-end: 6px;
 }
+
+/* Read-only Visits reuses the shell buttons and section spacing. */
+[data-role="visits-section"] { overflow-wrap: anywhere; }
+[data-role="visits-record-select"] { max-width: 100%; min-height: 44px; }
+[data-role="visits-list"] { padding-inline-start: 1.5rem; }
+[data-role="visit-open"] { max-width: 100%; white-space: normal; text-align: start; }
+[data-role="visits-detail"] p { white-space: pre-wrap; }

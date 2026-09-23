@@ -18,7 +18,7 @@ import subprocess
 import sys
 from urllib.parse import parse_qs, urlparse
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, expect
 
 BASE = os.environ.get("BASE", "http://localhost:8080").rstrip("/")
 DB_MAIN = os.environ.get("DB_MAIN", "cpms_main")
@@ -663,6 +663,132 @@ def run_multi(browser, run, capture_before, capture_after):
         ctx.close()
 
 
+def run_visits_readonly(browser, run):
+    """Slice 5 TEST-ONLY RED: actual shell/JS/REST, no mocked clinical response."""
+    key = "visits-list-detail-selector-" + run["vp"]
+    ctx, page, state = new_page(browser, run)
+    requests = []
+    page.on("request", lambda req: requests.append(req) if wp_route(req.url).startswith("/clinic/v1/visits") else None)
+    try:
+        visit_a, visit_b = [int(v) for v in os.environ["VISITS_PAIR"].split("|")]
+        assert db1(f"SELECT COUNT(*) FROM {T('cpms_visits')} WHERE id IN ({visit_a},{visit_b})") == 2
+        login(page, MULTI["login"], MULTI["password"])
+        assert_shell(page)
+        ok("visits-bootstrap", "authenticated production shell and two durable visit fixtures reached")
+        nav = page.locator('[data-role="nav-visits"]')
+        assert nav.count() == 1, "My Visits navigation missing on production shell"
+        nav.click()
+        section = page.locator('[data-role="visits-section"]')
+        selector = section.locator('[data-role="visits-record-select"]')
+        assert selector.input_value() == "", "primary/first record selected implicitly"
+        assert section.locator('[data-role="visit-open"]').count() == 0
+        assert not requests, "Clinic-specific visits requested before selection"
+        options = selector.locator('option').evaluate_all("els => els.map(e => e.value).filter(Boolean)")
+        assert set(options) == {str(MULTI["link_a"]), str(MULTI["link_b"])}
+        with page.expect_response(lambda r: wp_route(r.url) == "/clinic/v1/visits") as listing:
+            selector.select_option(str(MULTI["link_b"]))
+        assert listing.value.status == 200
+        assert [v["id"] for v in listing.value.json()["data"]["visits"]] == [visit_b]
+        context = section.locator('[data-role="visits-context"]')
+        expect(context).to_contain_text(clinic_name(MULTI["clinic_b"]))
+        expect(context).to_contain_text("SynB")
+        opener = section.locator(f'[data-role="visit-open"][data-visit-id="{visit_b}"]')
+        expect(opener).to_contain_text(os.environ["VISITS_JALALI"])
+        assert os.environ["VISITS_DATE"] not in opener.inner_text()
+        assert not re.search(r"\b[0-9]{4}-[0-9]{2}-[0-9]{2}\b", opener.inner_text())
+        with page.expect_response(lambda r: wp_route(r.url) == f"/clinic/v1/visits/{visit_b}") as detail:
+            opener.click()
+        assert detail.value.status == 200
+        pane = section.locator('[data-role="visits-detail"]')
+        pane.get_by_text("SYN-VISIBLE-B", exact=False).wait_for(state="visible")
+        heading = pane.locator("h2")
+        expect(heading).to_contain_text(os.environ["VISITS_JALALI"])
+        assert os.environ["VISITS_DATE"] not in heading.inner_text()
+        assert not re.search(r"\b[0-9]{4}-[0-9]{2}-[0-9]{2}\b", heading.inner_text())
+        ok("visits-jalali-" + run["vp"], "JS list/detail show PHP Jalali display field; raw Gregorian absent",
+           "expected=" + os.environ["VISITS_JALALI"])
+        text = pane.inner_text()
+        for forbidden in ("SYN-PRIVATE-", "SYN-INTERNAL-CORRECTION", "SYN-VISIBLE-A", "checked_out", "walk_in"):
+            assert forbidden not in text, f"unresolved/private field displayed: {forbidden}"
+        assert section.locator('form, [contenteditable="true"], [data-role="visits-edit"], [data-role="visits-delete"]').count() == 0
+        for req in requests:
+            assert req.method == "GET", "Visits must be read-only"
+            assert req.headers.get("x-wp-nonce"), "existing wp_rest nonce required"
+            params = parse_qs(urlparse(req.url).query)
+            assert params.get("link_id") == [str(MULTI["link_b"])], "selection must travel with list AND detail"
+            assert not (set(params) & {"clinic_id", "patient_id", "organization_id", "role"})
+            assert not req.post_data, "GET must not send authority in a request body"
+        assert len(requests) >= 2, "both existing C5/C6 paths must execute"
+        overflow(page)
+        save_shot(page, f"portal-visits-{run['vp']}-detail.png")
+        # A context switch must clear B detail, not leave stale Clinic history.
+        with page.expect_response(lambda r: wp_route(r.url) == "/clinic/v1/visits"):
+            selector.select_option(str(MULTI["link_a"]))
+        section.locator(f'[data-role="visit-open"][data-visit-id="{visit_a}"]').wait_for(state="visible")
+        assert "SYN-VISIBLE-B" not in section.inner_text(), "stale B detail remained after switching to A"
+        assert clinic_name(MULTI["clinic_a"]) in context.inner_text()
+        assert not state["console"] and not state["pageerrors"] and not state["failed"]
+        assert all(status == 200 for method, route, status in state["rest"] if route.startswith("/clinic/v1/visits"))
+        overflow(page)
+        save_shot(page, f"portal-visits-{run['vp']}-switch.png")
+        # Actual server denial (no mocked response): remove the nonce on detail.
+        def invalidate_nonce(route):
+            headers = dict(route.request.headers)
+            headers["x-wp-nonce"] = "invalid-test-nonce"
+            route.continue_(headers=headers)
+        page.route(f"**/visits/{visit_a}?*", invalidate_nonce)
+        with page.expect_response(lambda r: wp_route(r.url) == f"/clinic/v1/visits/{visit_a}") as denied:
+            section.locator(f'[data-role="visit-open"][data-visit-id="{visit_a}"]').click()
+        assert denied.value.status == 403
+        # Core WP may reject a bad cookie nonce before the plugin permission callback.
+        assert denied.value.json()["code"] in {"rest_cookie_invalid_nonce", "CLINIC_INVALID_NONCE"}
+        expect(section.locator('[data-role="visits-error"]')).to_be_visible()
+        expect(pane).to_be_empty()
+        save_shot(page, f"portal-visits-{run['vp']}-error.png")
+        assert not state["console"] and not state["pageerrors"] and not state["failed"]
+        ok(key, "B list/detail, nonce + selector-only GETs, switch clears detail, real nonce denial, RTL, no overflow/JS/network failures")
+    except Exception as exc:
+        fail(key, "My Visits read-only vertical contract", exc)
+    finally:
+        ctx.close()
+
+
+def run_visits_one(browser, run):
+    key = "visits-one-" + run["vp"]
+    ctx, page, state = new_page(browser, run)
+    try:
+        visit = int(os.environ["VISITS_ONE"])
+        login(page, ONE["login"], ONE["password"])
+        page.locator('[data-role="nav-visits"]').click()
+        section = page.locator('[data-role="visits-section"]')
+        assert section.locator('[data-role="visits-record-select"]').count() == 0
+        expect(section.locator('[data-role="visits-context"]')).to_contain_text(clinic_name(ONE["clinic_id"]))
+        sole_list = section.locator('[data-role="visits-list"]')
+        expect(sole_list).to_contain_text(os.environ["VISITS_JALALI"])
+        assert os.environ["VISITS_DATE"] not in sole_list.inner_text()
+        assert not re.search(r"\b[0-9]{4}-[0-9]{2}-[0-9]{2}\b", sole_list.inner_text())
+        ok("visits-jalali-sole-" + run["vp"], "sole-record SSR list shows PHP Jalali display field; raw Gregorian absent",
+           "expected=" + os.environ["VISITS_JALALI"])
+        with page.expect_response(lambda r: wp_route(r.url) == f"/clinic/v1/visits/{visit}") as response:
+            section.locator(f'[data-role="visit-open"][data-visit-id="{visit}"]').click()
+        assert response.value.status == 200
+        request = response.value.request
+        params = parse_qs(urlparse(request.url).query)
+        assert params.get("link_id") == [str(ONE["link_id"])]
+        assert not (set(params) & {"clinic_id", "patient_id", "organization_id", "role"})
+        assert request.method == "GET" and request.headers.get("x-wp-nonce") and not request.post_data
+        section.get_by_text("SYN-VISIBLE-ONE", exact=False).wait_for(state="visible")
+        assert "SYN-PRIVATE" not in section.inner_text()
+        assert not state["console"] and not state["pageerrors"] and not state["failed"]
+        overflow(page)
+        save_shot(page, f"portal-visits-{run['vp']}-one.png")
+        ok(key, "sole linked record auto-resolves list/detail; real patient shell, nonce, selector-only GET, RTL, no overflow/JS/network failures")
+    except Exception as exc:
+        fail(key, "one-record My Visits", exc)
+    finally:
+        ctx.close()
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
     print("INFO plain_permalink_browser=NOT_RUN pretty_pilot=expected")
@@ -678,6 +804,9 @@ def main():
                 capture_before=(run["vp"] == "laptop-1366"),
                 capture_after=(run["vp"] == "laptop-1366"),
             )
+        for run in VIEWPORTS:
+            run_visits_one(browser, run)
+            run_visits_readonly(browser, run)
         browser.close()
     summary = {"ok": not failures, "failed": failures}
     print(json.dumps(summary, ensure_ascii=False))

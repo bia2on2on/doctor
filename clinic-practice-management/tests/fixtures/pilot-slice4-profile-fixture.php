@@ -227,7 +227,51 @@ foreach ($multiRecords as $row) {
     }
 }
 
-$env = 'PROFILE_ONE=' . $loginOne . '|' . $passOne . '|' . $userOne . '|' . $patientOne . '|' . $linkOne . '|' . $clinicOne . "\n"
+// Slice 5 TEST-ONLY RED: reuse these authenticated linked records for a real
+// read-only Visits browser journey. No new harness, migration or product path.
+$visits = [];
+$visitDate = gmdate('Y-m-d');
+foreach ([[$clinicA, $patientA, 'A'], [$clinicB, $patientB, 'B'], [$clinicOne, $patientOne, 'ONE']] as [$clinic, $patient, $label]) {
+    $insertVisitFixture = static function (string $table, array $row) use ($wpdb, $db): int {
+        if ($wpdb->insert($db->table($table), $row) !== 1) {
+            profile_fail('visits fixture insert failed: ' . $table . ' ' . $wpdb->last_error);
+        }
+        return (int) $wpdb->insert_id;
+    };
+    $doctor = $insertVisitFixture('cpms_clinicians', [
+        'clinic_id' => $clinic, 'full_name' => 'SYN-VISITS-DOCTOR-' . $label,
+        'is_active' => 1, 'created_at' => $now, 'updated_at' => $now,
+    ]);
+    $location = (int) $wpdb->get_var($wpdb->prepare(
+        'SELECT id FROM ' . $db->table('cpms_locations') . ' WHERE clinic_id = %d', $clinic
+    ));
+    if ($location <= 0) {
+        profile_fail('visits fixture needs the existing persisted Clinic Location');
+    }
+    $visit = $insertVisitFixture('cpms_visits', [
+        'location_id' => $location,
+        'clinic_id' => $clinic, 'patient_id' => $patient, 'clinician_id' => $doctor,
+        'visit_date' => $visitDate, 'source' => 'walk_in', 'status' => 'checked_out',
+        'active' => 0, 'check_in_at' => $now, 'created_at' => $now, 'updated_at' => $now,
+    ]);
+    foreach (['patient_visible', 'doctor_private'] as $visibility) {
+        $insertVisitFixture('cpms_clinical_notes', [
+            'clinic_id' => $clinic, 'patient_id' => $patient, 'clinician_id' => $doctor,
+            'visit_id' => $visit, 'visibility' => $visibility, 'category' => 'clinical_note',
+            'content_text' => ($visibility === 'patient_visible' ? 'SYN-VISIBLE-' : 'SYN-PRIVATE-') . $label,
+            'change_reason' => 'SYN-INTERNAL-CORRECTION', 'created_by_wp_user_id' => $userMulti,
+            'created_at' => $now, 'updated_at' => $now,
+        ]);
+    }
+    $visits[] = $visit;
+}
+echo 'PROFILE_PUBLIC=visits_fixture_ok visits=3 notes=6' . "\n";
+
+$env = 'VISITS_PAIR=' . implode('|', array_slice($visits, 0, 2)) . "\n"
+    . 'VISITS_DATE=' . $visitDate . "\n"
+    . 'VISITS_JALALI=' . \ClinicCore\Domain\Time\Jalali::formatYmd($visitDate) . "\n"
+    . 'VISITS_ONE=' . $visits[2] . "\n"
+    . 'PROFILE_ONE=' . $loginOne . '|' . $passOne . '|' . $userOne . '|' . $patientOne . '|' . $linkOne . '|' . $clinicOne . "\n"
     . 'PROFILE_MULTI=' . $loginMulti . '|' . $passMulti . '|' . $userMulti . '|' . $linkA . '|' . $linkB . '|' . $patientA . '|' . $patientB . '|' . $clinicA . '|' . $clinicB . '|' . $linkForeign . '|' . $linkInactive . "\n"
     . 'PROFILE_PUBLIC=one_user=' . $userOne . ' one_patient=' . $patientOne . ' one_link=' . $linkOne . ' one_clinic=' . $clinicOne
     . ' multi_user=' . $userMulti . ' link_a=' . $linkA . ' link_b=' . $linkB
