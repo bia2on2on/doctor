@@ -29,16 +29,16 @@ if ( !function_exists('wp_get_current_user' )) {
 DoctorPortalShell::register_handles();
 DoctorPortalShell::enqueue_for_portal();
 
-$cpms_user = wp_get_current_user(); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
-$cpms_logged_in = ($cpms_user instanceof WP_User && (int) $cpms_user->ID > 0); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceAfterOpen,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceBeforeClose -- legacy alignment
-$cpms_is_doctor = $cpms_logged_in && DoctorPortalShell::isDoctorUser($cpms_user); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- legacy alignment
+$cpms_user = wp_get_current_user();
+$cpms_logged_in = ($cpms_user instanceof WP_User && (int) $cpms_user->ID > 0);
+$cpms_is_doctor = $cpms_logged_in && DoctorPortalShell::isDoctorUser($cpms_user);
 $cpms_login_name = $cpms_logged_in ? (string) $cpms_user->display_name : '';
 if ( '' === $cpms_login_name && $cpms_logged_in ) {
     $cpms_login_name = (string) $cpms_user->user_login;
 }
 
 $cpms_portal_url = DoctorPortalShell::portal_url();
-$cpms_login_url = wp_login_url( $cpms_portal_url ); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- legacy alignment
+$cpms_login_url = wp_login_url( $cpms_portal_url );
 $cpms_logout_url = $cpms_logged_in ? wp_logout_url( $cpms_portal_url ) : '';
 
 $cpms_charset = (string) get_bloginfo('charset');
@@ -55,16 +55,16 @@ ob_start();
 wp_print_scripts([DoctorPortalShell::JS_HANDLE]);
 $cpms_scripts_html = (string) ob_get_clean();
 
-$rest_root = untrailingslashit(rest_url('clinic/v1')); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- legacy, template var
-$config = [ // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning,WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- legacy, template var
-    'rest_root' => $rest_root, // phpcs:ignore WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned -- legacy alignment
-    'nonce' => wp_create_nonce( 'wp_rest' ), // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned -- legacy alignment
+$rest_root = untrailingslashit(rest_url('clinic/v1'));
+$config = [
+    'rest_root' => $rest_root,
+    'nonce' => wp_create_nonce( 'wp_rest' ),
     'portal_url' => $cpms_portal_url,
-    'is_doctor' => $cpms_is_doctor, // phpcs:ignore WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned -- legacy alignment
+    'is_doctor' => $cpms_is_doctor,
 ];
-$config_json = wp_json_encode( $config, JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_UNICODE ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- legacy, template var
+$config_json = wp_json_encode( $config, JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_UNICODE );
 if ( !is_string($config_json ) || '' === $config_json) {
-    $config_json = '{}'; // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- legacy, template var
+    $config_json = '{}';
 }
 
 ?>
@@ -133,7 +133,7 @@ echo $cpms_styles_html;
     data-cpms-portal="doctor"
     data-cpms-doctor-portal="shell"
     data-shell-contract="doctor-v1"
-    <?php echo $cpms_is_doctor ? 'data-shell-user="doctor"' : ($cpms_logged_in ? 'data-shell-user="non-doctor"' : 'data-shell-user="anonymous"');
+    <?php echo $cpms_is_doctor ? 'data-shell-user="doctor"' : ($cpms_logged_in ? 'data-shell-user="non-doctor"' : 'data-shell-user="anonymous"'); ?>
 >
     <header class="cpms-doctor-portal-shell__header" role="banner" data-role="portal-header">
         <div class="cpms-doctor-portal-shell__brand">
@@ -143,12 +143,12 @@ echo $cpms_styles_html;
                 <h1 class="cpms-doctor-portal-shell__title" data-role="portal-header-title">امروز پزشک — صف زنده</h1>
             </div>
         </div>
-        <?php if ( $cpms_is_doctor ) :
+        <?php if ( $cpms_is_doctor ) : ?>
             <div class="cpms-doctor-portal-shell__session">
                 <span class="cpms-doctor-portal-shell__who" data-role="portal-user"><?php echo esc_html( $cpms_login_name ); ?></span>
                 <a class="cpms-doc-btn cpms-doc-btn--ghost" data-role="portal-logout" href="<?php echo esc_url( $cpms_logout_url ); ?>">خروج</a>
             </div>
-        <?php elseif ( $cpms_logged_in ) :
+        <?php elseif ( $cpms_logged_in ) : ?>
             <div class="cpms-doctor-portal-shell__session">
                 <a class="cpms-doc-btn cpms-doc-btn--ghost" href="<?php echo esc_url( $cpms_logout_url ); ?>">خروج</a>
             </div>
@@ -156,17 +156,17 @@ echo $cpms_styles_html;
     </header>
 
     <main class="cpms-doctor-portal-shell__main" role="main" data-role="portal-main" id="cpms-doctor-portal-main">
-        <?php if ( ! $cpms_logged_in ) :
+        <?php if ( ! $cpms_logged_in ) : ?>
             <section class="cpms-doctor-portal-shell__notice" role="status" data-role="portal-login">
                 <h2>ورود به پورتال پزشک</h2>
                 <p>برای مشاهده صف امروز و بیماران، وارد حساب پزشک خود شوید.</p>
                 <p><a class="cpms-doc-btn cpms-doc-btn--primary" href="<?php echo esc_url( $cpms_login_url ); ?>">ورود</a></p>
             </section>
-        <?php elseif ( ! $cpms_is_doctor ) :
+        <?php elseif ( ! $cpms_is_doctor ) : ?>
             <section class="cpms-doctor-portal-shell__notice" role="alert" data-role="portal-access-denied">
                 <h2>دسترسی پورتال پزشک</h2>
                 <p>این پورتال فقط برای پزشکان با پروفایل فعال است. حساب شما نقش پزشک فعال ندارد یا به پروفایل پزشک متصل نیست.</p>
-                <?php if ( current_user_can(RolesAndCapabilities::ROLE_SECRETARY )) :
+                <?php if ( current_user_can(RolesAndCapabilities::ROLE_SECRETARY )) : ?>
                     <p>حساب منشی نمی‌تواند وارد پورتال پزشک شود.</p>
                 <?php endif; ?>
                 <p><a class="cpms-doc-btn cpms-doc-btn--primary" href="<?php echo esc_url( admin_url( )); ?>">بازگشت به پیشخوان</a></p>
@@ -265,8 +265,8 @@ function api(method, path, body, extraHeaders){
 }
 function esc(s){ return String(s==null?'':s).replace(/[&<>\"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c];}); }
 function qs(sel){ return document.querySelector(sel); }
-function show(el){ if( el ) el.hidden=false; }
-function hide(el){ if( el ) el.hidden=true; }
+function show(el){ if ( el ) el.hidden=false; }
+function hide(el){ if ( el ) el.hidden=true; }
 
 function renderContext(doctor, clinic, location){
     var titleEl = qs('[data-role="context-title"]');
