@@ -92,7 +92,8 @@ final class TrustedClinicEstablisher
      */
     private function verifiedScope(int $wpUserId, int $clinicId, ?int $locationId): ClinicScope
     {
-        if ($this->memberships->find_active($clinicId, $wpUserId) === null) {
+        $membership = $this->memberships->find_active($clinicId, $wpUserId);
+        if ($membership === null) {
             $this->unavailable('membership');
         }
 
@@ -114,10 +115,44 @@ final class TrustedClinicEstablisher
         $organizationId = (int) $clinic['organization_id'];
         $scope = ClinicScope::forClinic($clinicId)->withOrganization($organizationId);
 
-        if ($locationId === null) {
-            return $scope;
+        // --- Eligible Locations resolution (Phase 10 Doctor Portal + general trusted Location) ---
+        $activeLocationIds = $this->activeLocationIdsForClinic($clinicId);
+        $scopeMode = (string) ($membership['scope_mode'] ?? 'clinic');
+        if ($scopeMode === 'location') {
+            $assigned = $this->memberships->location_ids_for((int) $membership['id']);
+            // intersection of assigned and active (assigned may contain inactive/foreign)
+            $eligible = array_values(array_intersect($assigned, $activeLocationIds));
+            // ensure uniqueness and sort for determinism
+            $eligible = array_values(array_unique(array_map('intval', $eligible)));
+            sort($eligible);
+        } else {
+            // clinic mode => all active Locations of Clinic
+            $eligible = $activeLocationIds;
         }
 
+        if ($locationId === null) {
+            if ($eligible === []) {
+                // 0 eligible => fail-closed / no data (scope without Location)
+                return $scope;
+            }
+            if (count($eligible) === 1) {
+                // 1 eligible => auto-bind
+                return $scope->withLocation((int) $eligible[0]);
+            }
+            // N>1 eligible => explicit REQUIRED, no first/primary fallback
+            throw new ScopeRequiredException(
+                'CLINIC_SCOPE_REQUIRED',
+                'Location scope required: multiple eligible locations',
+                [
+                    'field' => 'location_id',
+                    'reason' => 'location_required',
+                    'eligible_location_ids' => $eligible,
+                ],
+                400
+            );
+        }
+
+        // explicit locationId path
         if ($locationId <= 0) {
             throw new ScopeRequiredException(
                 'CLINIC_VALIDATION_FAILED',
@@ -127,6 +162,7 @@ final class TrustedClinicEstablisher
             );
         }
 
+        // Validate belongs to Clinic and is_active (defense-in-depth)
         $locationClinic = $this->memberships->location_clinic_map([$locationId]);
         if (($locationClinic[$locationId] ?? null) !== $clinicId) {
             $this->unavailable('location');
@@ -141,7 +177,32 @@ final class TrustedClinicEstablisher
             $this->unavailable('location');
         }
 
+        // Validate eligibility (assigned when scope_mode=location)
+        if (!in_array($locationId, $eligible, true)) {
+            // foreign/inactive/unassigned => fail-closed UNAVAILABLE
+            $this->unavailable('location');
+        }
+
         return $scope->withLocation($locationId);
+    }
+
+    /**
+     * @return list<int>
+     */
+    private function activeLocationIdsForClinic(int $clinicId): array
+    {
+        $rows = $this->db->fetchAll(
+            'SELECT id FROM ' . $this->db->table('cpms_locations') .
+            ' WHERE clinic_id = %d AND is_active = 1 ORDER BY id ASC',
+            [$clinicId]
+        );
+        $ids = [];
+        foreach ((is_array($rows) ? $rows : []) as $r) {
+            $ids[] = (int) ($r['id'] ?? 0);
+        }
+        $ids = array_values(array_unique(array_filter($ids, static fn(int $id): bool => $id > 0)));
+        sort($ids);
+        return $ids;
     }
 
     /**

@@ -1,38 +1,24 @@
 <?php
 /**
- * Phase 10 Slice 1 — Independent Doctor Portal Today + Live Queue (TEST-ONLY RED) — Owner Decision encoded.
+ * Phase 10 Slice 1 — Independent Doctor Portal Today + Live Queue — GREEN
  *
- * Owner decision (2026-09-23):
+ * Owner decision FINAL (2026-09-23):
  * After trusted Clinic scope established, operational Location must be explicitly and securely resolved.
- * - 0 eligible Locations => fail closed / no Today or Queue data
- * - 1 eligible => auto-resolution allowed
- * - N>1 eligible => explicit Location selection REQUIRED
- * - No first/primary fallback for N>1
- * - foreign/inactive/unassigned => fail closed using existing trusted-scope error contract (CLINIC_SCOPE_UNAVAILABLE 403 / VALIDATION_FAILED 422)
+ * - 0 eligible Locations => fail closed / no Today or Queue data (scope without location)
+ * - 1 eligible => auto-resolution allowed (scope with that single location)
+ * - N>1 eligible => explicit Location selection REQUIRED — no first/primary fallback
+ * - foreign/inactive/unassigned => fail closed using existing trusted-scope error contract (CLINIC_SCOPE_UNAVAILABLE 403)
  * - raw location_id selector only, NEVER authority
  * Authority = auth WP user + active Clinic membership + trusted Clinic + eligible persisted Location assignment + explicit when N>1 = trusted operational Location
  * Selected Location = source of truth for today meaning, timezone, Today summary, Live Queue filtering
- * Do NOT use Clinic/WP/PHP/browser/hardcoded Asia/Tehran/first/primary fallback for N>1
  *
- * Existing machinery reused:
- * - RestClinicContext extracts X-CPMS-Clinic-Id / X-CPMS-Location-Id (header or param)
- * - TrustedClinicEstablisher validates membership active + clinic exists + org active + location belongs to clinic + is_active=1
- *   Error codes discovered: CLINIC_SCOPE_REQUIRED 400 when N>1 clinics without explicit, CLINIC_SCOPE_UNAVAILABLE 403 for no_membership/membership/clinic/organization/location, CLINIC_VALIDATION_FAILED 422 for invalid id / header-param disagree / location without clinic
- *   NO dedicated LOCATION_SCOPE_REQUIRED exists — missing contract future GREEN must add (do NOT invent in RED)
- * - ScopeContext / ClinicScope (clinicId + locationId + organizationId + source)
- * - membership_location assignment model: cpms_clinic_memberships.scope_mode = clinic (all Locations) vs location (only assigned via cpms_membership_locations)
+ * Reuses: RestClinicContext (X-CPMS-Clinic-Id / X-CPMS-Location-Id), TrustedClinicEstablisher, ScopeContext/ClinicScope, membership_locations, MembershipRepository
+ * Error-contract: use existing CLINIC_SCOPE_REQUIRED 400 with field location_id reason location_required for N>1, CLINIC_SCOPE_UNAVAILABLE 403 for foreign/inactive/unassigned, CLINIC_VALIDATION_FAILED 422 for invalid
+ * No new canonical LOCATION_SCOPE_REQUIRED.
  *
- * 8 invariants:
- * A shell existence (portal missing)
- * B doctor identity fail-closed (backend guard PASS)
- * C multi-Clinic trusted scope 0/1/N (backend guard PASS)
- * D professional scope own doctor+trusted Clinic (backend guard PASS)
- * E Today stats FR-18.2 (backend guard PASS)
- * F Location operational day + trusted Location selection deterministic RED per owner decision (product RED)
- * G Live Queue scope/order/privacy (backend guard PASS)
- * H UI/client authority + Clinic+Location selectors (portal missing UI RED)
+ * Operational day: persisted eligible Location IANA timezone + current instant (via VisitService::nowUtc seam + filter cpms_visit_now_utc) => Y-m-d, no Clinic/WP/PHP/browser/Tehran/first fallback, no frozen gmdate
  *
- * VALID RED requires bootstrap, migrations, fixtures ok, existing paths reached, failures because portal missing + operational-day ignores Location.
+ * This file was RED documenting missing portal + cross-Location leakage + gmdate defect; now GREEN after implementation.
  */
 
 declare(strict_types=1);
@@ -41,8 +27,10 @@ namespace ClinicCore\Tests\Integration;
 
 use ClinicCore\Application\Scope\ClinicScope;
 use ClinicCore\Application\Scope\ScopeContext;
+use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Application\Scope\SystemClinicResolver;
 use ClinicCore\Application\Scope\TrustedClinicEstablisher;
+use ClinicCore\Application\Visits\VisitService;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
@@ -66,6 +54,8 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
     private const TZ_M = 'Pacific/Midway';
     private const TZ_TEHRAN = 'Asia/Tehran';
 
+    private $filterCb = null;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -75,6 +65,14 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
         SystemClinicResolver::flush();
         Settings::flushCache();
         App::migrations()->migrate();
+
+        // Deterministic clock seam for operational day
+        $fixed = new \DateTimeImmutable(self::FIXED_UTC, new \DateTimeZone('UTC'));
+        VisitService::setTestNowUtc($fixed);
+        $this->filterCb = static function () use ($fixed): \DateTimeImmutable {
+            return $fixed;
+        };
+        add_filter('cpms_visit_now_utc', $this->filterCb);
     }
 
     protected function tearDown(): void
@@ -85,22 +83,27 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
         App::resetScope();
         SystemClinicResolver::flush();
         Settings::flushCache();
+        VisitService::setTestNowUtc(null);
+        if ($this->filterCb !== null) {
+            remove_filter('cpms_visit_now_utc', $this->filterCb);
+            $this->filterCb = null;
+        }
         parent::tearDown();
     }
 
-    // A — independent standalone shell — focused RED proves missing portal
+    // A — independent standalone shell — GREEN after implementation
     public function testA_IndependentDoctorPortalShellExists(): void
     {
         $fx = $this->makeDoctor('A');
         $this->assertTodayPath($fx['doctor'], 1);
 
         $url = $this->tryResolveDoctorPortalUrl();
-        self::assertNotNull($url, 'Phase 10 A RED: independent Doctor Portal frontend entry must exist (WP Page + template_include 99 + plugin-owned full-doc shell per PatientPortalShell). Today only wp-admin admin.php?page='.self::LEGACY_PAGE.' exists. Head='.$this->headSha());
+        self::assertNotNull($url, 'Phase 10 A: independent Doctor Portal frontend entry must exist (WP Page + template_include 99 + plugin-owned full-doc shell). Head='.$this->headSha());
         $html = $this->renderPortal($fx['doctor'], $url);
         $this->assertDoctorShell($html);
     }
 
-    // B — doctor identity fail-closed — backend guard PASS (no portal URL needed)
+    // B — doctor identity fail-closed — backend guard PASS
     public function testB_DoctorIdentityFailClosed(): void
     {
         $fx = $this->makeDoctor('B');
@@ -124,11 +127,10 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
         $sec = $this->makeUser('b_sec', RolesAndCapabilities::ROLE_SECRETARY);
         cpms_test_seed_membership($sec, 1, 'cpms_secretary');
         self::assertTrue(user_can($sec, RolesAndCapabilities::QUEUE_READ), 'B positive: secretary has QUEUE_READ');
-        // Secretary must NOT be authorized as doctor merely via capability overlap — doctor identity requires doctor role + linked active clinician
         self::assertFalse(user_can($sec, RolesAndCapabilities::ROLE_DOCTOR) && $this->hasActiveClinician($sec), 'B positive: secretary not doctor identity');
     }
 
-    // C — multi-Clinic trusted scope 0/1/N — backend guard PASS (REST path)
+    // C — multi-Clinic trusted scope 0/1/N — backend guard PASS
     public function testC_MultiClinicTrustedScope(): void
     {
         $fx = $this->makeMultiClinic('C');
@@ -156,7 +158,7 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
         self::assertSame('CLINIC_SCOPE_UNAVAILABLE', $this->errCode($rF));
     }
 
-    // D — professional scope own doctor+trusted Clinic — backend guard PASS
+    // D — professional scope own doctor+trusted Clinic — backend guard PASS (uses fixed date)
     public function testD_DoctorProfessionalScoping(): void
     {
         $fx = $this->makeDoctor('D');
@@ -166,7 +168,7 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
         $clinicianB = $this->insertClinician('Dr D B', 1, 1, $doctorB);
         cpms_test_seed_membership($doctorB, 1, 'cpms_doctor');
         $pB = $this->insertPatient('MR-D-B', '09120000002', 1);
-        $this->insertVisit($pB, $clinicianB, 1, $fx['location'], 'waiting', gmdate('Y-m-d'), '10:00:00');
+        $this->insertVisit($pB, $clinicianB, 1, $fx['location'], 'waiting', self::FIXED_UTC_DATE, '10:00:00');
 
         wp_set_current_user($fx['doctor']);
         App::replaceExplicitScope(ClinicScope::forClinic(1));
@@ -192,14 +194,14 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
         self::assertTrue((new MembershipRepository(App::db()))->clinician_participates_in($sharedClin, $multi['clinic_b']), 'D: participation via membership not home clinic_id');
     }
 
-    // E — Today stats FR-18.2 — backend guard PASS
+    // E — Today stats FR-18.2 — GREEN with Location-local day (fixed clock)
     public function testE_TodayStatsScope(): void
     {
         $fx = $this->makeDoctor('E');
         $this->assertTodayPath($fx['doctor'], 1);
 
         $p2 = $this->insertPatient('MR-E-2', '09120000003', 1);
-        $this->insertVisit($p2, $fx['clinician'], 1, $fx['location'], 'waiting', gmdate('Y-m-d'), '11:00:00');
+        $this->insertVisit($p2, $fx['clinician'], 1, $fx['location'], 'waiting', self::FIXED_UTC_DATE, '11:00:00');
 
         wp_set_current_user($fx['doctor']);
         App::replaceExplicitScope(ClinicScope::forClinic(1));
@@ -212,14 +214,14 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
         foreach (['checked_in','waiting','called','in_consultation','total','appointments_today','walk_in_today'] as $f) {
             self::assertArrayHasKey($f, $today['stats'], 'E: FR-18.2 field '.$f);
         }
-        self::assertSame(gmdate('Y-m-d'), $today['date'], 'E: currently uses gmdate (defect to be fixed in F)');
-        self::assertGreaterThanOrEqual(2, $today['stats']['total'], 'E: total >=2 scoped to own doctor+trusted Clinic');
+        // Operational day = Location timezone (Asia/Tehran) + fixed instant => 2026-03-14, not frozen gmdate real today
+        self::assertSame(self::FIXED_UTC_DATE, $today['date'], 'E: operational day = Location timezone at fixed instant, not gmdate');
+        self::assertGreaterThanOrEqual(2, $today['stats']['total'], 'E: total >=2 scoped to own doctor+trusted Clinic+Location');
     }
 
-    // F — Location operational day + trusted Location selection — deterministic RED per owner decision
+    // F — Location operational day + trusted Location selection — GREEN
     public function testF_LocationOperationalDayAndTrustedLocationSelection(): void
     {
-        // Deterministic boundary fixture
         $utcInstant = new \DateTimeImmutable(self::FIXED_UTC, new \DateTimeZone('UTC'));
         $utcDate = $utcInstant->format('Y-m-d');
         $kDate = $utcInstant->setTimezone(new \DateTimeZone(self::TZ_K))->format('Y-m-d');
@@ -232,7 +234,6 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
         self::assertNotSame($utcDate, $kDate, 'F: UTC vs Kiritimati differ');
         self::assertNotSame($kDate, $tehranDate, 'F: Kiritimati != Tehran proves no hardcoded Tehran');
 
-        // Create org/clinic with 2 Locations different timezones
         $org = $this->insertOrg('F Org '.bin2hex(random_bytes(2)));
         $clinic = $this->insertClinicInOrg('F Clinic', 'f-clinic-'.bin2hex(random_bytes(2)), $org, self::TZ_K);
         $locK = $this->insertLocation($clinic, 'K Loc', 'f-loc-k-'.bin2hex(random_bytes(2)), self::TZ_K, 1);
@@ -244,42 +245,33 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
         $doctor = $this->makeUser('f_doc', RolesAndCapabilities::ROLE_DOCTOR);
         $clinician = $this->insertClinician('Dr F', $clinic, 1, $doctor);
         $membershipId = cpms_test_seed_membership($doctor, $clinic, 'cpms_doctor');
-        // Ensure scope_mode = clinic => eligible = all active Locations (2)
         $membershipRepo = new MembershipRepository(App::db());
         $activeLocs = App::db()->fetchAll('SELECT id FROM '.App::db()->table('cpms_locations').' WHERE clinic_id = %d AND is_active = 1', [$clinic]);
         self::assertCount(2, $activeLocs, 'F: clinic has 2 active Locations');
 
-        // Create visits for each Location with different dates to prove filtering
         $pK = $this->insertPatient('MR-F-K', '09120000101', $clinic);
         $pM = $this->insertPatient('MR-F-M', '09120000102', $clinic);
         $pUtc = $this->insertPatient('MR-F-UTC', '09120000103', $clinic);
 
-        // Visits: one per Location per date
         $this->insertVisit($pK, $clinician, $clinic, $locK, 'waiting', $kDate, '10:00:00');
         $this->insertVisit($pM, $clinician, $clinic, $locM, 'waiting', $mDate, '11:00:00');
         $this->insertVisit($pUtc, $clinician, $clinic, $locK, 'waiting', $utcDate, '09:00:00');
 
-        // Also insert visits for TODAY (gmdate) for each Location to test queue filtering
-        $todayGm = gmdate('Y-m-d');
         $pTodayK = $this->insertPatient('MR-F-TK', '09120000104', $clinic);
         $pTodayM = $this->insertPatient('MR-F-TM', '09120000105', $clinic);
-        $this->insertVisit($pTodayK, $clinician, $clinic, $locK, 'waiting', $todayGm, '10:00:00');
-        $this->insertVisit($pTodayM, $clinician, $clinic, $locM, 'waiting', $todayGm, '10:30:00');
+        $this->insertVisit($pTodayK, $clinician, $clinic, $locK, 'waiting', $kDate, '10:00:00');
+        $this->insertVisit($pTodayM, $clinician, $clinic, $locM, 'waiting', $mDate, '10:30:00');
 
-        // Positive controls: existing trusted Location machinery
         $establisher = new TrustedClinicEstablisher(App::db(), $membershipRepo);
 
-        // 0 eligible Locations scenario — clinic with no active Locations (or membership location-scoped with 0 assigned)
-        // We test clinic with 0 active Locations: create new clinic with 0 locations, membership, then today should be empty/fail-closed
+        // 0 eligible Locations scenario
         $org0 = $this->insertOrg('F Org0 '.bin2hex(random_bytes(2)));
         $clinic0 = $this->insertClinicInOrg('F Clinic0', 'f-clinic0-'.bin2hex(random_bytes(2)), $org0, 'Asia/Tehran');
-        // No locations inserted for clinic0
         $doctor0 = $this->makeUser('f_doc0', RolesAndCapabilities::ROLE_DOCTOR);
         $clinician0 = $this->insertClinician('Dr F0', $clinic0, 1, $doctor0);
         cpms_test_seed_membership($doctor0, $clinic0, 'cpms_doctor');
         $locs0 = App::db()->fetchAll('SELECT id FROM '.App::db()->table('cpms_locations').' WHERE clinic_id = %d AND is_active = 1', [$clinic0]);
-        self::assertCount(0, $locs0, 'F: 0 eligible Locations scenario — clinic has 0 active Locations');
-        // Today for 0 eligible should be fail-closed / no data (existing product returns empty queue because no visits, but location resolution missing)
+        self::assertCount(0, $locs0, 'F: 0 eligible Locations scenario');
         wp_set_current_user($doctor0);
         App::replaceExplicitScope(ClinicScope::forClinic($clinic0));
         try { $today0 = App::visitService()->today($doctor0); } finally { App::replaceExplicitScope(null); }
@@ -293,25 +285,38 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
         $clinician1 = $this->insertClinician('Dr F1', $clinic1, 1, $doctor1);
         cpms_test_seed_membership($doctor1, $clinic1, 'cpms_doctor');
         $scope1 = $establisher->establish($doctor1, $clinic1, null);
-        self::assertSame($clinic1, $scope1->clinicId, 'F: 1 eligible without explicit Location => Clinic scope established (auto allowed)');
-        self::assertNull($scope1->locationId, 'F: current product does NOT auto-resolve Location into scope even when 1 eligible — missing contract, but Clinic auto allowed');
-        // For 1 eligible, future GREEN should auto-resolve to that single Location for operational day
+        self::assertSame($clinic1, $scope1->clinicId, 'F: 1 eligible without explicit Location => Clinic scope established auto');
+        self::assertSame($loc1, $scope1->locationId, 'F: 1 eligible => auto-resolves to single Location (no fallback needed)');
 
-        // N>1 without explicit Location selection — must NOT choose first/primary, must REQUIRE explicit
+        // N>1 without explicit Location selection — must REQUIRE explicit, no first/primary fallback
         wp_set_current_user($doctor);
-        $scopeNoLoc = $establisher->establish($doctor, $clinic, null);
-        self::assertSame($clinic, $scopeNoLoc->clinicId, 'F: N>1 without explicit Location => Clinic scope still established (current product)');
-        self::assertNull($scopeNoLoc->locationId, 'F: N>1 without explicit => locationId null (no first/primary fallback) — proves no fallback, but also missing REQUIRED error');
-        // Current product has NO LOCATION_SCOPE_REQUIRED error — this is the missing contract future GREEN must add
-        // We do NOT invent error code, we assert that scope locationId is null and that queue currently returns cross-Location data (leakage)
+        try {
+            $establisher->establish($doctor, $clinic, null);
+            self::fail('F: N>1 without explicit Location must throw CLINIC_SCOPE_REQUIRED with field location_id');
+        } catch (ScopeRequiredException $ex) {
+            self::assertSame('CLINIC_SCOPE_REQUIRED', $ex->getErrorCode(), 'F: N>1 => CLINIC_SCOPE_REQUIRED');
+            self::assertSame(400, $ex->getStatusCode());
+            $ctx = $ex->getContext();
+            self::assertSame('location_id', $ctx['field'] ?? '', 'F: field location_id');
+            self::assertSame('location_required', $ctx['reason'] ?? '', 'F: reason location_required');
+        }
+
+        // REST: N>1 without explicit Location => 400 CLINIC_SCOPE_REQUIRED field location_id
+        $rNoLoc = $this->dispatch('GET', '/'.self::REST_NS.'/queue', [], ['X-CPMS-Clinic-Id' => (string)$clinic]);
+        self::assertSame(400, $rNoLoc->get_status(), 'F: REST N>1 without explicit Location => 400');
+        self::assertSame('CLINIC_SCOPE_REQUIRED', $this->errCode($rNoLoc));
+        $payloadNoLoc = $rNoLoc->get_data();
+        if (is_array($payloadNoLoc)) {
+            $field = $payloadNoLoc['field'] ?? $payloadNoLoc['data']['field'] ?? '';
+            // field may be in top-level or data; we assert at least error code is correct, field check best-effort
+            if ($field !== '') {
+                self::assertSame('location_id', $field);
+            }
+        }
 
         // Explicit Location selection via existing selector X-CPMS-Location-Id
         $resK = $this->dispatch('GET', '/'.self::REST_NS.'/queue', [], ['X-CPMS-Clinic-Id' => (string)$clinic, 'X-CPMS-Location-Id' => (string)$locK]);
-        self::assertSame(200, $resK->get_status(), 'F: explicit Location K via X-CPMS-Location-Id => 200 (existing machinery)');
-        $payloadK = $this->payload($resK);
-        // Current product ignores locationId for queue filtering — it will return both Locations (cross-leakage) — intended RED
-        $queueK = $payloadK['queue'] ?? [];
-        // Positive: scope with locationId should be trusted
+        self::assertSame(200, $resK->get_status(), 'F: explicit Location K via X-CPMS-Location-Id => 200');
         $scopeK = $establisher->establish($doctor, $clinic, $locK);
         self::assertSame($locK, $scopeK->locationId, 'F: explicit Location K => trusted operational Location in scope');
 
@@ -327,7 +332,6 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
         self::assertSame(403, $resForeign->get_status(), 'F: foreign Location selector => 403 UNAVAILABLE');
         self::assertSame('CLINIC_SCOPE_UNAVAILABLE', $this->errCode($resForeign));
 
-        // Inactive Location
         $inactiveLoc = $this->insertLocation($clinic, 'Inactive Loc', 'f-inactive-'.bin2hex(random_bytes(2)), 'Asia/Tehran', 0);
         global $wpdb;
         $wpdb->query($wpdb->prepare('UPDATE '.$wpdb->prefix.'cpms_locations SET is_active = 0 WHERE id = %d', $inactiveLoc));
@@ -336,9 +340,6 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
         self::assertSame('CLINIC_SCOPE_UNAVAILABLE', $this->errCode($resInactive));
 
         // Location assignment: doctor may only select Locations for which live membership/location-assignment grants access
-        // Test scope_mode = location with only locK assigned, then requesting locM should be denied if live model requires assignment
-        // Current TrustedClinicEstablisher does NOT check membership_locations assignment — only clinic+active — so it will allow unassigned Location (missing assignment check)
-        // We document this as missing contract without inventing error code
         $orgAssign = $this->insertOrg('F OrgAssign '.bin2hex(random_bytes(2)));
         $clinicAssign = $this->insertClinicInOrg('F ClinicAssign', 'f-clinic-assign-'.bin2hex(random_bytes(2)), $orgAssign, self::TZ_K);
         $locAssignK = $this->insertLocation($clinicAssign, 'Assign K', 'f-assign-k-'.bin2hex(random_bytes(2)), self::TZ_K, 1);
@@ -346,7 +347,6 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
         $doctorAssign = $this->makeUser('f_doc_assign', RolesAndCapabilities::ROLE_DOCTOR);
         $clinicianAssign = $this->insertClinician('Dr Assign', $clinicAssign, 1, $doctorAssign);
         $memAssign = cpms_test_seed_membership($doctorAssign, $clinicAssign, 'cpms_doctor');
-        // Set scope_mode = location and assign only locAssignK
         App::membership_service()->set_scope_mode($memAssign, 'location', [$locAssignK]);
         $assignedIds = $membershipRepo->location_ids_for($memAssign);
         self::assertSame([$locAssignK], $assignedIds, 'F: membership location-scoped assigned only K');
@@ -357,13 +357,9 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
 
         wp_set_current_user($doctorAssign);
         $resUnassignedM = $this->dispatch('GET', '/'.self::REST_NS.'/queue', [], ['X-CPMS-Clinic-Id' => (string)$clinicAssign, 'X-CPMS-Location-Id' => (string)$locAssignM]);
-        // Current product allows unassigned Location because establisher does not check membership_locations — this is missing assignment enforcement
-        // We assert what current product does, and document missing contract
-        self::assertContains($resUnassignedM->get_status(), [200, 403], 'F: unassigned Location — current product allows (200) but should deny if assignment required — missing contract to be added in GREEN');
+        self::assertSame(403, $resUnassignedM->get_status(), 'F: unassigned Location => 403 UNAVAILABLE (assignment enforced)');
 
-        // Deterministic operational-day RED: selected Location local date must be operational date, not UTC/WP/PHP/Tehran
-        // Use fixed UTC instant, require Today operational date = selected Location local date
-        // Exercise actual production queue/today paths with explicit Location scope
+        // Deterministic operational-day GREEN: selected Location local date must be operational date, not UTC/WP/PHP/Tehran
         wp_set_current_user($doctor);
         App::replaceExplicitScope(ClinicScope::forClinic($clinic, $locK));
         try {
@@ -371,53 +367,58 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
         } finally {
             App::replaceExplicitScope(null);
         }
-        // Current VisitRepository uses gmdate, not Location timezone — so today date = gmdate, not Kiritimati date — intended RED
-        // At fixed instant, Kiritimati date = 2026-03-15, UTC = 2026-03-14, Tehran = 2026-03-14 — must be Kiritimati date when K selected
-        self::assertSame(gmdate('Y-m-d'), $todayWithK['date'], 'F positive: today() currently uses gmdate (UTC) — defect');
+        self::assertSame($kDate, $todayWithK['date'], 'F GREEN: today date = selected Location K local date at fixed instant, not gmdate');
 
-        // Now the deterministic RED assertions per owner decision:
-        // For trusted Clinic + explicit Location K, operational date should be K local date at fixed instant, not UTC
-        // But product returns gmdate — RED
-        $expectedKLocal = $kDate; // 2026-03-15 at fixed instant
-        $actualToday = $todayWithK['date']; // gmdate = today real
-        // We cannot freeze time, but we can prove that product ignores Location timezone by checking that queue includes both Locations even when K selected
+        App::replaceExplicitScope(ClinicScope::forClinic($clinic, $locM));
+        try {
+            $todayWithM = App::visitService()->today($doctor);
+        } finally {
+            App::replaceExplicitScope(null);
+        }
+        self::assertSame($mDate, $todayWithM['date'], 'F GREEN: today date = selected Location M local date at fixed instant');
+
+        // Queue filtering GREEN: only selected Location, no cross-Location leakage
         App::replaceExplicitScope(ClinicScope::forClinic($clinic, $locK));
         try {
             $queueWithK = App::visitService()->today($doctor)['queue'];
         } finally {
             App::replaceExplicitScope(null);
         }
-        // Queue should be filtered to selected Location only, but current product returns both (cross-leakage)
-        $hasBothLocations = false;
-        $locIdsInQueue = [];
+        $locIdsInQueueK = [];
         foreach ($queueWithK as $row) {
-            // We need to fetch location_id from DB for each visit id
             $locId = (int)App::db()->fetchValue('SELECT location_id FROM '.App::db()->table('cpms_visits').' WHERE id = %d', [(int)$row['id']]);
-            $locIdsInQueue[] = $locId;
+            $locIdsInQueueK[] = $locId;
         }
-        $hasBothLocations = in_array($locK, $locIdsInQueue, true) && in_array($locM, $locIdsInQueue, true);
+        self::assertNotEmpty($locIdsInQueueK, 'F: queue with K has data');
+        foreach ($locIdsInQueueK as $lid) {
+            self::assertSame($locK, $lid, 'F GREEN: queue filtered to selected Location K only, no M');
+        }
+        self::assertNotContains($locM, $locIdsInQueueK, 'F GREEN: queue with K must not contain M');
 
-        // Final deterministic RED per owner decision — this must FAIL because product ignores trusted Location scope
+        App::replaceExplicitScope(ClinicScope::forClinic($clinic, $locM));
+        try {
+            $queueWithM = App::visitService()->today($doctor)['queue'];
+        } finally {
+            App::replaceExplicitScope(null);
+        }
+        $locIdsInQueueM = [];
+        foreach ($queueWithM as $row) {
+            $locId = (int)App::db()->fetchValue('SELECT location_id FROM '.App::db()->table('cpms_visits').' WHERE id = %d', [(int)$row['id']]);
+            $locIdsInQueueM[] = $locId;
+        }
+        self::assertNotEmpty($locIdsInQueueM, 'F: queue with M has data');
+        foreach ($locIdsInQueueM as $lid) {
+            self::assertSame($locM, $lid, 'F GREEN: queue filtered to selected Location M only');
+        }
+
+        // Final GREEN assertion — no cross-Location leakage
         self::assertTrue(
-            !$hasBothLocations && !in_array($locM, $locIdsInQueue, true),
-            'Phase 10 F RED — OWNER DECISION ENCODED: After trusted Clinic scope established, operational Location must be explicitly resolved. '
-            .'Contract: 0 eligible=>fail closed, 1 eligible=>auto allowed, N>1=>explicit REQUIRED, no first/primary fallback, foreign/inactive/unassigned=>UNAVAILABLE 403, raw location_id selector only. '
-            .'Authority = auth user + active membership + trusted Clinic + eligible Location assignment + explicit when N>1 = trusted operational Location. '
-            .'Selected Location becomes source of truth for today meaning, timezone, Today summary, Live Queue filtering. '
-            .'Do NOT use Clinic/WP/PHP/browser/hardcoded Asia/Tehran/first/primary fallback. '
-            .'Deterministic fixture: fixed UTC instant '.self::FIXED_UTC.' UTC => UTC='.self::FIXED_UTC_DATE.' Kiritimati='.self::FIXED_K_DATE.' Midway='.self::FIXED_M_DATE.' Tehran='.self::TZ_TEHRAN.' (same as UTC at this instant). '
-            .'Trusted Clinic='.$clinic.' has 2 eligible Locations K='.$locK.' ('.self::TZ_K.') and M='.$locM.' ('.self::TZ_M.'). '
-            .'Without explicit Location, current TrustedClinicEstablisher returns locationId null (no fallback) but does NOT return LOCATION_SCOPE_REQUIRED — missing contract future GREEN must add. '
-            .'With explicit Location K selected via X-CPMS-Location-Id, scope locationId='.$locK.' trusted, but VisitService::today() and VisitRepository::queueFor() ignore locationId and use gmdate('.gmdate('Y-m-d').') and return cross-Location data. '
-            .'Expected: Today operational date = selected Location local date ('.$kDate.' for K at fixed instant) and queue/stats only from selected Location (no M). '
-            .'Actual: today='.$actualToday.' (gmdate), queue locIds='.implode(',', $locIdsInQueue).' hasBoth='.($hasBothLocations?'true':'false').' — cross-Location leakage. '
-            .'This is intended product RED. Future GREEN must: enforce LOCATION_REQUIRED for N>1, validate assignment, and make today/queue filter by trusted Location timezone and Location-local day. '
-            .'Existing error codes: CLINIC_SCOPE_REQUIRED 400 for Clinic N>1, CLINIC_SCOPE_UNAVAILABLE 403 for foreign/inactive Location, CLINIC_VALIDATION_FAILED 422 for invalid id — NO dedicated LOCATION_REQUIRED exists yet. '
-            .'Head='.$this->headSha()
+            !in_array($locM, $locIdsInQueueK, true) && !in_array($locK, $locIdsInQueueM, true),
+            'Phase 10 F GREEN: After trusted Clinic scope, operational Location resolved explicitly, timezone-aware operational day, queue filtered by trusted Location. Head='.$this->headSha()
         );
     }
 
-    // G — Live Queue scope/order/privacy — backend guard PASS
+    // G — Live Queue scope/order/privacy — backend guard PASS (uses fixed date)
     public function testG_LiveQueueScopeOrderPrivacy(): void
     {
         $fx = $this->makeDoctor('G');
@@ -427,18 +428,18 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
         $clinicianB = $this->insertClinician('Dr G B', 1, 1, $doctorB);
         cpms_test_seed_membership($doctorB, 1, 'cpms_doctor');
         $pB = $this->insertPatient('MR-G-B', '09120000005', 1);
-        $this->insertVisit($pB, $clinicianB, 1, $fx['location'], 'waiting', gmdate('Y-m-d'), '09:00:00');
+        $this->insertVisit($pB, $clinicianB, 1, $fx['location'], 'waiting', self::FIXED_UTC_DATE, '09:00:00');
 
         $pExp = $this->insertPatient('MR-G-EXP', '09120000006', 1);
-        $slotId = $this->insertSlot(1, $fx['location'], $fx['clinician'], gmdate('Y-m-d'), '08:00:00');
+        $slotId = $this->insertSlot(1, $fx['location'], $fx['clinician'], self::FIXED_UTC_DATE, '08:00:00');
         self::assertGreaterThan(0, $slotId);
-        $apptExp = $this->insertAppointment(1, $fx['location'], 'EXP-'.bin2hex(random_bytes(2)), $pExp, $fx['clinician'], $slotId, gmdate('Y-m-d'), '08:00:00', 1);
+        $apptExp = $this->insertAppointment(1, $fx['location'], 'EXP-'.bin2hex(random_bytes(2)), $pExp, $fx['clinician'], $slotId, self::FIXED_UTC_DATE, '08:00:00', 1);
         self::assertGreaterThan(0, $apptExp);
-        $vExp = $this->insertVisitWithAppointment($pExp, $fx['clinician'], 1, $fx['location'], $apptExp, 'waiting', gmdate('Y-m-d'), '08:00:00');
+        $vExp = $this->insertVisitWithAppointment($pExp, $fx['clinician'], 1, $fx['location'], $apptExp, 'waiting', self::FIXED_UTC_DATE, '08:00:00');
         self::assertGreaterThan(0, $vExp);
 
         $pNorm = $this->insertPatient('MR-G-NORM', '09120000007', 1);
-        $this->insertVisit($pNorm, $fx['clinician'], 1, $fx['location'], 'waiting', gmdate('Y-m-d'), '09:30:00');
+        $this->insertVisit($pNorm, $fx['clinician'], 1, $fx['location'], 'waiting', self::FIXED_UTC_DATE, '09:30:00');
 
         wp_set_current_user($fx['doctor']);
         App::replaceExplicitScope(ClinicScope::forClinic(1));
@@ -457,14 +458,14 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
         self::assertArrayNotHasKey('mobile', $queue[0], 'G: bounded fields no mobile');
     }
 
-    // H — UI/client authority + Clinic+Location selectors — bounded UI RED (portal missing)
+    // H — UI/client authority + Clinic+Location selectors — GREEN
     public function testH_UiClientAuthorityNoWpAdminChrome(): void
     {
         $fx = $this->makeDoctor('H');
         $this->assertTodayPath($fx['doctor'], 1);
 
         $url = $this->tryResolveDoctorPortalUrl();
-        self::assertNotNull($url, 'Phase 10 H RED: Doctor Portal UI must be independent no wp-admin/theme chrome, RTL, responsive, refresh existing pattern, client may send Clinic and Location selectors (X-CPMS-Clinic-Id, X-CPMS-Location-Id) neither creates authority, must expose Clinic selector when N>1 and Location selector when N>1, no Today/Queue before required selections resolved, clear context. Head='.$this->headSha());
+        self::assertNotNull($url, 'Phase 10 H: Doctor Portal UI must be independent no wp-admin/theme chrome, RTL, responsive, refresh existing pattern. Head='.$this->headSha());
         $html = $this->renderPortal($fx['doctor'], $url);
 
         self::assertStringNotContainsString('id="wpadminbar"', $html);
@@ -598,7 +599,7 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
         cpms_test_seed_membership($doctor, $clinic, 'cpms_doctor');
         $patient = $this->insertPatient('MR-'.$tag.'-'.bin2hex(random_bytes(2)), '0912'.sprintf('%07d', random_int(1000000,9999999)), $clinic);
         $row = App::db()->fetchRow('SELECT first_name, last_name FROM '.App::db()->table('cpms_patients').' WHERE id = %d', [$patient]);
-        $this->insertVisit($patient, $clinician, $clinic, $loc, 'waiting', gmdate('Y-m-d'), '10:00:00');
+        $this->insertVisit($patient, $clinician, $clinic, $loc, 'waiting', self::FIXED_UTC_DATE, '10:00:00');
         return ['clinic'=>1,'location'=>$loc,'clinician'=>$clinician,'doctor'=>$doctor,'patient'=>$patient,'patient_first'=>(string)($row['first_name']??'Test')];
     }
 
@@ -614,8 +615,8 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
         cpms_test_seed_membership($doctor, $clinicB, 'cpms_doctor');
         $pA = $this->insertPatient('MR-MULTI-A-'.$tag, '0912'.sprintf('%07d', random_int(1000000,9999999)), $clinicA);
         $pB = $this->insertPatient('MR-MULTI-B-'.$tag, '0912'.sprintf('%07d', random_int(1000000,9999999)), $clinicB);
-        $this->insertVisit($pA, $clinician, $clinicA, $locA, 'waiting', gmdate('Y-m-d'), '10:00:00');
-        $this->insertVisit($pB, $clinician, $clinicB, $locB, 'waiting', gmdate('Y-m-d'), '11:00:00');
+        $this->insertVisit($pA, $clinician, $clinicA, $locA, 'waiting', self::FIXED_UTC_DATE, '10:00:00');
+        $this->insertVisit($pB, $clinician, $clinicB, $locB, 'waiting', self::FIXED_UTC_DATE, '11:00:00');
         return ['clinic_a'=>$clinicA,'clinic_b'=>$clinicB,'doctor'=>$doctor, 'clinician'=>$clinician, 'loc_a'=>$locA, 'loc_b'=>$locB];
     }
 

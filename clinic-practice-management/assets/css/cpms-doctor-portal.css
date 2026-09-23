@@ -1,0 +1,7 @@
+/* Phase 10 Slice 1 — Doctor Portal independent shell CSS — tablet-first responsive */
+:root { --cpms-primary: #2271b1; --cpms-bg: #f6f7f7; --cpms-card-bg: #fff; --cpms-border: #dcdcde; --cpms-text: #1d2327; --cpms-muted: #646970; }
+.cpms-doctor-portal-shell { font-family: Tahoma, Vazirmatn, sans-serif; direction: rtl; }
+.cpms-doc-stats { display: flex; flex-wrap: wrap; gap: 8px; }
+.cpms-doc-stat { background: #fff; border: 1px solid var(--cpms-border); border-inline-start: 4px solid var(--cpms-primary); border-radius: 6px; padding: 10px 14px; min-width: 110px; }
+.cpms-doc-queue-list { list-style: none; margin: 0; padding: 0; }
+.cpms-doc-queue-list li { border: 1px solid var(--cpms-border); border-radius: 6px; padding: 10px; margin: 6px 0; }
