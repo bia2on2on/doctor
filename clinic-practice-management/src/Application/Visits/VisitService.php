@@ -1398,7 +1398,7 @@ final class VisitService
                 return (int) $appScope->locationId;
             }
         } catch (ScopeRequiredException $e) {
-            // no scope yet – fall through to eligible check
+            unset($e); // no scope yet – fall through to eligible check
         }
 
         // If no Location in scope, check eligible to decide 0 vs 1 vs N>1
@@ -1415,6 +1415,7 @@ final class VisitService
      *
      * @return list<int>
      */
+    // phpcs:disable Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed
     private function eligibleLocationIdsForActor(int $clinicId, int $actorUserId): array
     {
         if ($clinicId <= 0 || $actorUserId <= 0) {
@@ -1431,7 +1432,7 @@ final class VisitService
                     return $active;
                 }
             } catch (\Throwable $e) {
-                // ignore
+                unset($e); // ignore
             }
             // For secretary without membership, also return active to preserve old staff behavior (no fail-closed for staff)
             $role = $this->roleForUser($actorUserId);
@@ -1450,6 +1451,7 @@ final class VisitService
         }
         return $active;
     }
+    // phpcs:enable Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed
 
     /**
      * @return list<int>
@@ -1491,7 +1493,7 @@ final class VisitService
                     $dt = new DateTimeImmutable($filtered);
                     return $dt->setTimezone(new DateTimeZone('UTC'));
                 } catch (Throwable $e) {
-                    // ignore invalid filter value
+                    unset($e); // ignore invalid filter value
                 }
             }
         }
