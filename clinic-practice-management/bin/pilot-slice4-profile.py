@@ -789,6 +789,105 @@ def run_visits_one(browser, run):
         ctx.close()
 
 
+def run_prescriptions_readonly(browser, run):
+    """Slice 6 TEST-ONLY RED: actual shell/JS/REST, no mocked clinical response."""
+    key = "prescriptions-list-selector-" + run["vp"]
+    ctx, page, state = new_page(browser, run)
+    requests = []
+    page.on("request", lambda req: requests.append(req) if wp_route(req.url).startswith("/clinic/v1/prescriptions") else None)
+    try:
+        rx_a, rx_b = [int(v) for v in os.environ["RX_PAIR"].split("|")]
+        assert db1(f"SELECT COUNT(*) FROM {T('cpms_prescriptions')} WHERE id IN ({rx_a},{rx_b})") == 2
+        login(page, MULTI["login"], MULTI["password"])
+        assert_shell(page)
+        ok("prescriptions-bootstrap", "authenticated production shell and two durable prescription fixtures reached")
+        nav = page.locator('[data-role="nav-prescriptions"]')
+        assert nav.count() == 1, "My Prescriptions navigation missing on production shell"
+        nav.click()
+        section = page.locator('[data-role="prescriptions-section"]')
+        selector = section.locator('[data-role="prescriptions-record-select"]')
+        assert selector.input_value() == "", "primary/first record selected implicitly"
+        assert section.locator('[data-role="prescription-item"]').count() == 0
+        assert not requests, "Clinic-specific prescriptions requested before selection"
+        options = selector.locator('option').evaluate_all("els => els.map(e => e.value).filter(Boolean)")
+        assert set(options) == {str(MULTI["link_a"]), str(MULTI["link_b"])}
+        with page.expect_response(lambda r: wp_route(r.url) == "/clinic/v1/prescriptions") as listing:
+            selector.select_option(str(MULTI["link_b"]))
+        assert listing.value.status == 200
+        context = section.locator('[data-role="prescriptions-context"]')
+        expect(context).to_contain_text(clinic_name(MULTI["clinic_b"]))
+        expect(context).to_contain_text("SynB")
+        rx_list = section.locator('[data-role="prescriptions-list"]')
+        expect(rx_list).to_contain_text("SYN-GENERIC-B")
+        expect(rx_list).to_contain_text(os.environ["VISITS_JALALI"])
+        assert os.environ["VISITS_DATE"] not in rx_list.inner_text()
+        assert not re.search(r"\b[0-9]{4}-[0-9]{2}-[0-9]{2}\b", rx_list.inner_text())
+        text = rx_list.inner_text()
+        for forbidden in ("SYN-PRIVATE-", "SYN-INTERNAL-CORRECTION", "SYN-GENERIC-A", "draft", "voided"):
+            assert forbidden not in text, f"unresolved/private field displayed: {forbidden}"
+        assert section.locator('form, [contenteditable="true"], [data-role="prescriptions-edit"], [data-role="prescriptions-delete"], [data-role="prescriptions-refill"]').count() == 0
+        for req in requests:
+            assert req.method == "GET", "Prescriptions must be read-only"
+            assert req.headers.get("x-wp-nonce"), "existing wp_rest nonce required"
+            params = parse_qs(urlparse(req.url).query)
+            assert params.get("link_id") == [str(MULTI["link_b"])], "selection must travel with request"
+            assert not (set(params) & {"clinic_id", "patient_id", "organization_id", "role"})
+            assert not req.post_data, "GET must not send authority in a request body"
+        overflow(page)
+        save_shot(page, f"portal-prescriptions-{run['vp']}-b.png")
+        # Context switch must clear B prescriptions and load A.
+        with page.expect_response(lambda r: wp_route(r.url) == "/clinic/v1/prescriptions"):
+            selector.select_option(str(MULTI["link_a"]))
+        section.locator('[data-role="prescriptions-list"]').get_by_text("SYN-GENERIC-A", exact=False).wait_for(state="visible")
+        assert "SYN-GENERIC-B" not in section.inner_text(), "stale B prescriptions remained after switching to A"
+        assert clinic_name(MULTI["clinic_a"]) in context.inner_text()
+        assert not state["console"] and not state["pageerrors"] and not state["failed"]
+        assert all(status == 200 for method, route, status in state["rest"] if route.startswith("/clinic/v1/prescriptions"))
+        overflow(page)
+        save_shot(page, f"portal-prescriptions-{run['vp']}-switch.png")
+        # Server denial on invalid nonce:
+        def invalidate_nonce(route):
+            headers = dict(route.request.headers)
+            headers["x-wp-nonce"] = "invalid-test-nonce"
+            route.continue_(headers=headers)
+        page.route("**/clinic/v1/prescriptions?*", invalidate_nonce)
+        selector.select_option(str(MULTI["link_b"]))
+        expect(section.locator('[data-role="prescriptions-error"]')).to_be_visible()
+        save_shot(page, f"portal-prescriptions-{run['vp']}-error.png")
+        assert not state["console"] and not state["pageerrors"] and not state["failed"]
+        ok(key, "B list, nonce + selector-only GETs, switch clears detail, real nonce denial, RTL, no overflow/JS/network failures")
+    except Exception as exc:
+        fail(key, "My Prescriptions read-only vertical contract", exc)
+    finally:
+        ctx.close()
+
+
+def run_prescriptions_one(browser, run):
+    key = "prescriptions-one-" + run["vp"]
+    ctx, page, state = new_page(browser, run)
+    try:
+        rx = int(os.environ["RX_ONE"])
+        login(page, ONE["login"], ONE["password"])
+        page.locator('[data-role="nav-prescriptions"]').click()
+        section = page.locator('[data-role="prescriptions-section"]')
+        assert section.locator('[data-role="prescriptions-record-select"]').count() == 0
+        expect(section.locator('[data-role="prescriptions-context"]')).to_contain_text(clinic_name(ONE["clinic_id"]))
+        sole_list = section.locator('[data-role="prescriptions-list"]')
+        expect(sole_list).to_contain_text(os.environ["VISITS_JALALI"])
+        expect(sole_list).to_contain_text("SYN-GENERIC-ONE")
+        assert os.environ["VISITS_DATE"] not in sole_list.inner_text()
+        assert not re.search(r"\b[0-9]{4}-[0-9]{2}-[0-9]{2}\b", sole_list.inner_text())
+        assert "SYN-PRIVATE" not in section.inner_text()
+        assert not state["console"] and not state["pageerrors"] and not state["failed"]
+        overflow(page)
+        save_shot(page, f"portal-prescriptions-{run['vp']}-one.png")
+        ok(key, "sole linked record auto-resolves prescription list; real patient shell, nonce, selector-only GET, RTL, no overflow/JS/network failures")
+    except Exception as exc:
+        fail(key, "one-record My Prescriptions", exc)
+    finally:
+        ctx.close()
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
     print("INFO plain_permalink_browser=NOT_RUN pretty_pilot=expected")
@@ -807,6 +906,8 @@ def main():
         for run in VIEWPORTS:
             run_visits_one(browser, run)
             run_visits_readonly(browser, run)
+            run_prescriptions_one(browser, run)
+            run_prescriptions_readonly(browser, run)
         browser.close()
     summary = {"ok": not failures, "failed": failures}
     print(json.dumps(summary, ensure_ascii=False))
