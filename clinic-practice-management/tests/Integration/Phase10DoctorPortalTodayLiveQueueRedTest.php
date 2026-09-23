@@ -277,7 +277,7 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
         try { $today0 = App::visitService()->today($doctor0); } finally { App::replaceExplicitScope(null); }
         self::assertSame([], $today0['queue'], 'F: 0 eligible => no queue data (fail-closed)');
 
-        // 1 eligible Location — auto-resolution allowed
+        // 1 eligible Location — shared establisher does NOT auto-bind (pre-PR behavior), portal does
         $org1 = $this->insertOrg('F Org1 '.bin2hex(random_bytes(2)));
         $clinic1 = $this->insertClinicInOrg('F Clinic1', 'f-clinic1-'.bin2hex(random_bytes(2)), $org1, self::TZ_K);
         $loc1 = $this->insertLocation($clinic1, 'Single Loc', 'f-loc-single-'.bin2hex(random_bytes(2)), self::TZ_K, 1);
@@ -285,33 +285,67 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
         $clinician1 = $this->insertClinician('Dr F1', $clinic1, 1, $doctor1);
         cpms_test_seed_membership($doctor1, $clinic1, 'cpms_doctor');
         $scope1 = $establisher->establish($doctor1, $clinic1, null);
-        self::assertSame($clinic1, $scope1->clinicId, 'F: 1 eligible without explicit Location => Clinic scope established auto');
-        self::assertSame($loc1, $scope1->locationId, 'F: 1 eligible => auto-resolves to single Location (no fallback needed)');
+        self::assertSame($clinic1, $scope1->clinicId, 'F: shared establisher 1 eligible without explicit Location => Clinic scope established (no auto-bind in shared)');
+        // Shared does NOT auto-bind single Location — it returns without Location (pre-PR)
+        self::assertNull($scope1->locationId, 'F: shared establisher does NOT auto-bind single Location (portal boundary does)');
 
-        // N>1 without explicit Location selection — must REQUIRE explicit, no first/primary fallback
+        // Portal auto-resolution for 1 eligible — via VisitService todayForDoctorPortal
+        wp_set_current_user($doctor1);
+        \ClinicCore\Bootstrap\App::replaceExplicitScope(\ClinicCore\Application\Scope\ClinicScope::forClinic($clinic1));
+        try {
+            $today1 = \ClinicCore\Bootstrap\App::visitService()->todayForDoctorPortal($doctor1);
+        } finally {
+            \ClinicCore\Bootstrap\App::replaceExplicitScope(null);
+        }
+        self::assertSame($loc1, $today1['location_id'], 'F: portal 1 eligible => auto-resolves to single Location');
+
+        // N>1 without explicit Location — shared establisher must NOT force REQUIRED (Blocker 1 regression)
         wp_set_current_user($doctor);
         try {
-            $establisher->establish($doctor, $clinic, null);
-            self::fail('F: N>1 without explicit Location must throw CLINIC_SCOPE_REQUIRED with field location_id');
+            $scopeMulti = $establisher->establish($doctor, $clinic, null);
+            self::assertSame($clinic, $scopeMulti->clinicId, 'F: shared establisher N>1 without explicit Location => still establishes Clinic (no REQUIRED)');
+            self::assertNull($scopeMulti->locationId, 'F: shared establisher N>1 without Location => no Location bound (legacy)');
         } catch (ScopeRequiredException $ex) {
-            self::assertSame('CLINIC_SCOPE_REQUIRED', $ex->errorCode, 'F: N>1 => CLINIC_SCOPE_REQUIRED');
+            self::fail('F: shared TrustedClinicEstablisher N>1 without explicit Location must NOT throw — portal boundary does (Blocker 1). Got '.$ex->errorCode);
+        }
+
+        // Doctor Portal N>1 without explicit Location — must REQUIRE explicit (portal boundary)
+        wp_set_current_user($doctor);
+        \ClinicCore\Bootstrap\App::replaceExplicitScope(\ClinicCore\Application\Scope\ClinicScope::forClinic($clinic));
+        try {
+            \ClinicCore\Bootstrap\App::visitService()->todayForDoctorPortal($doctor);
+            self::fail('F: portal N>1 without explicit Location must throw CLINIC_SCOPE_REQUIRED with field location_id');
+        } catch (\ClinicCore\Domain\Visits\VisitException $ex) {
+            self::assertSame('CLINIC_SCOPE_REQUIRED', $ex->errorCode, 'F: portal N>1 => CLINIC_SCOPE_REQUIRED');
             self::assertSame(400, $ex->httpStatus());
             $ctx = $ex->getData();
             self::assertSame('location_id', $ctx['field'] ?? '', 'F: field location_id');
             self::assertSame('location_required', $ctx['reason'] ?? '', 'F: reason location_required');
+            self::assertArrayNotHasKey('eligible_location_ids', $ctx, 'F: must NOT return eligible IDs');
+        } finally {
+            \ClinicCore\Bootstrap\App::replaceExplicitScope(null);
         }
 
-        // REST: N>1 without explicit Location => 400 CLINIC_SCOPE_REQUIRED field location_id
+        // REST: shared /queue N>1 without explicit Location => 200 legacy (Blocker 1)
         $rNoLoc = $this->dispatch('GET', '/'.self::REST_NS.'/queue', [], ['X-CPMS-Clinic-Id' => (string)$clinic]);
-        self::assertSame(400, $rNoLoc->get_status(), 'F: REST N>1 without explicit Location => 400');
-        self::assertSame('CLINIC_SCOPE_REQUIRED', $this->errCode($rNoLoc));
-        $payloadNoLoc = $rNoLoc->get_data();
-        if (is_array($payloadNoLoc)) {
-            $field = $payloadNoLoc['field'] ?? $payloadNoLoc['data']['field'] ?? '';
-            // field may be in top-level or data; we assert at least error code is correct, field check best-effort
-            if ($field !== '') {
-                self::assertSame('location_id', $field);
-            }
+        self::assertSame(200, $rNoLoc->get_status(), 'F: REST shared /queue N>1 without explicit Location => 200 legacy (Blocker 1 regression)');
+
+        // REST: Doctor Portal /doctor/today N>1 without explicit Location => 400 CLINIC_SCOPE_REQUIRED field location_id reason location_required (Blocker 2)
+        $rNoLocPortal = $this->dispatch('GET', '/'.self::REST_NS.'/doctor/today', [], ['X-CPMS-Clinic-Id' => (string)$clinic]);
+        self::assertSame(400, $rNoLocPortal->get_status(), 'F: REST portal /doctor/today N>1 without explicit Location => 400');
+        self::assertSame('CLINIC_SCOPE_REQUIRED', $this->errCode($rNoLocPortal));
+        $payloadNoLocPortal = $rNoLocPortal->get_data();
+        // Blocker 2: assert bounded fields UNCONDITIONALLY
+        $data = $payloadNoLocPortal['data'] ?? $payloadNoLocPortal;
+        if (is_array($data)) {
+            $field = $data['field'] ?? '';
+            $reason = $data['reason'] ?? '';
+            self::assertSame('location_id', $field, 'F: portal REST field must be location_id unconditionally');
+            self::assertSame('location_required', $reason, 'F: portal REST reason must be location_required unconditionally');
+            self::assertArrayNotHasKey('eligible_location_ids', $data, 'F: must NOT return eligible IDs');
+            self::assertArrayNotHasKey('eligible_location_ids', $payloadNoLocPortal, 'F: must NOT return eligible IDs top-level');
+        } else {
+            self::fail('F: portal REST payload must be array with field/reason');
         }
 
         // Explicit Location selection via existing selector X-CPMS-Location-Id

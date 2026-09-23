@@ -1,9 +1,6 @@
 <?php
-// phpcs:disable Generic.WhiteSpace.DisallowSpaceIndent,WordPress.Files.FileName,WordPress.PHP.YodaConditions,Universal.Arrays.DisallowShortArraySyntax,WordPress.Arrays.ArrayDeclarationSpacing,NormalizedArrays.Arrays.ArrayBraceSpacing,WordPress.Security.EscapeOutput.ExceptionNotEscaped,WordPress.NamingConventions.ValidVariableName,WordPress.NamingConventions.ValidFunctionName,WordPress.WhiteSpace.ControlStructureSpacing,PEAR.Functions.FunctionCallSignature,Generic.WhiteSpace.ArbitraryParenthesesSpacing,Squiz.Functions.FunctionDeclarationArgumentSpacing,Generic.Functions.OpeningFunctionBraceKernighanRitchie,WordPress.WhiteSpace.OperatorSpacing,Generic.Formatting.MultipleStatementAlignment,WordPress.WhiteSpace.CastStructureSpacing,WordPress.NamingConventions.PrefixAllGlobals,WordPress.Arrays.MultipleStatementAlignment,WordPress.WhiteSpace.OperatorSpacing,Generic.WhiteSpace.DisallowSpaceIndent
+
 declare(strict_types=1);
-
-// phpcs:disable WordPress.NamingConventions.ValidVariableName,WordPress.NamingConventions.ValidFunctionName,WordPress.WhiteSpace.ControlStructureSpacing,PEAR.Functions.FunctionCallSignature,Generic.WhiteSpace.ArbitraryParenthesesSpacing,Squiz.Functions.FunctionDeclarationArgumentSpacing,Generic.Functions.OpeningFunctionBraceKernighanRitchie,WordPress.WhiteSpace.OperatorSpacing,Generic.Formatting.MultipleStatementAlignment,WordPress.WhiteSpace.CastStructureSpacing,WordPress.NamingConventions.PrefixAllGlobals,WordPress.Arrays.MultipleStatementAlignment,WordPress.WhiteSpace.OperatorSpacing,Generic.WhiteSpace.DisallowSpaceIndent,WordPress.Arrays.ArrayDeclarationSpacing,NormalizedArrays.Arrays.ArrayBraceSpacing
-
 
 namespace ClinicCore\Rest;
 
@@ -17,276 +14,264 @@ use WP_REST_Server;
 
 /**
  * Doctor Portal independent shell — context endpoints (read-only Today+Live Queue).
- *
- * Provides:
- * - GET /doctor/portal/context : doctor identity + eligible clinics + current clinic/location + auto-resolution
- * - GET /doctor/portal/locations?clinic_id=X : eligible locations for that clinic for current doctor
- *
- * Reuses trusted Clinic+Location scope: RestClinicContext + TrustedClinicEstablisher + ScopeContext.
- * No new auth model, no SPA, no mutation.
  */
 final class DoctorPortalController extends RestBase {
-    public function __construct(
-        private readonly MembershipRepository $memberships
-    ) {
-    }
+	public function __construct( private readonly MembershipRepository $memberships ) {
+	}
 
-    public function register_routes(): void
-    {
-        register_rest_route(self::NS, '/doctor/portal/context', [
-            [
-                'methods' => WP_REST_Server::READABLE,
-                'callback' => fn(WP_REST_Request $r) => $this->context($r),
-                'permission_callback' => fn(WP_REST_Request $r) => $this->permDoctor($r),
-            ],
-        ]);
+	public function register_routes(): void {
+		register_rest_route(
+			self::NS,
+			'/doctor/portal/context',
+			[
+				[
+					'methods'             => WP_REST_Server::READABLE,
+					'callback'            => fn( WP_REST_Request $r ) => $this->context( $r ),
+					'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_doctor( $r ),
+				],
+			]
+		);
 
-        register_rest_route(self::NS, '/doctor/portal/locations', [
-            [
-                'methods' => WP_REST_Server::READABLE,
-                'callback' => fn(WP_REST_Request $r) => $this->locations($r),
-                'permission_callback' => fn(WP_REST_Request $r) => $this->permDoctor($r),
-                'args' => [
-                    'clinic_id' => ['required' => false, 'type' => 'integer', 'sanitize_callback' => 'absint'],
-                ],
-            ],
-        ]);
+		register_rest_route(
+			self::NS,
+			'/doctor/portal/locations',
+			[
+				[
+					'methods'             => WP_REST_Server::READABLE,
+					'callback'            => fn( WP_REST_Request $r ) => $this->locations( $r ),
+					'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_doctor( $r ),
+					'args'                => [
+						'clinic_id' => [
+							'required'          => false,
+							'type'              => 'integer',
+							'sanitize_callback' => 'absint',
+						],
+					],
+				],
+			]
+		);
 
-        register_rest_route(self::NS, '/doctor/portal/clinics', [
-            [
-                'methods' => WP_REST_Server::READABLE,
-                'callback' => fn(WP_REST_Request $r) => $this->clinics($r),
-                'permission_callback' => fn(WP_REST_Request $r) => $this->permDoctor($r),
-            ],
-        ]);
-    }
+		register_rest_route(
+			self::NS,
+			'/doctor/portal/clinics',
+			[
+				[
+					'methods'             => WP_REST_Server::READABLE,
+					'callback'            => fn( WP_REST_Request $r ) => $this->clinics( $r ),
+					'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_doctor( $r ),
+				],
+			]
+		);
+	}
 
-    private function permDoctor(WP_REST_Request $r): bool|WP_Error
-    {
-        $nonce = $this->requireNonce($r);
-        if ($nonce instanceof WP_Error) {
-            return $nonce;
-        }
-        $cap = $this->requireCap(RolesAndCapabilities::QUEUE_READ);
-        if ($cap instanceof WP_Error) {
-            return $cap;
-        }
-        // Doctor identity fail-closed: must have doctor role + linked active clinician
-        $user = wp_get_current_user();
-        if (!($user instanceof \WP_User) || (int) $user->ID <= 0) {
-            return new WP_Error('CLINIC_UNAUTHORIZED', 'Unauthorized', ['status' => 401]);
-        }
-        $roles = (array) ($user->roles ?? []);
-        if (!in_array(RolesAndCapabilities::ROLE_DOCTOR, $roles, true)) {
-            return new WP_Error('CLINIC_PERMISSION_DENIED', 'Doctor role required', ['status' => 403]);
-        }
-        $db = App::db();
-        $clinicianId = $db->fetchValue(
-            'SELECT id FROM ' . $db->table('cpms_clinicians') . ' WHERE wp_user_id = %d AND is_active = 1 LIMIT 1',
-            [(int) $user->ID]
-        );
-        if ($clinicianId === null || (int) $clinicianId <= 0) {
-            return new WP_Error('CLINIC_PERMISSION_DENIED', 'Doctor not linked to active clinician', ['status' => 403]);
-        }
-        // Secretary must not enter via overlapping caps – if user has secretary role but not doctor-only? We already require doctor role.
-        // Additionally, ensure doctor participates in at least one clinic (has active membership)
-        $activeClinics = $this->memberships->active_clinic_ids_for_user((int) $user->ID);
-        if ($activeClinics === []) {
-            return new WP_Error('CLINIC_SCOPE_UNAVAILABLE', 'No active clinic membership', ['status' => 403]);
-        }
-        return true;
-    }
+	private function perm_doctor( WP_REST_Request $r ): bool|WP_Error {
+		$nonce = $this->requireNonce( $r );
+		if ( $nonce instanceof WP_Error ) {
+			return $nonce;
+		}
+		$cap = $this->requireCap( RolesAndCapabilities::QUEUE_READ );
+		if ( $cap instanceof WP_Error ) {
+			return $cap;
+		}
+		$user = wp_get_current_user();
+		if ( ! ( $user instanceof \WP_User ) || (int) $user->ID <= 0 ) {
+			return new WP_Error( 'CLINIC_UNAUTHORIZED', 'Unauthorized', [ 'status' => 401 ] );
+		}
+		$roles = (array) ( $user->roles ?? [] );
+		if ( ! in_array( RolesAndCapabilities::ROLE_DOCTOR, $roles, true ) ) {
+			return new WP_Error( 'CLINIC_PERMISSION_DENIED', 'Doctor role required', [ 'status' => 403 ] );
+		}
+		$db            = App::db();
+		$clinician_id = $db->fetchValue(
+			'SELECT id FROM ' . $db->table( 'cpms_clinicians' ) . ' WHERE wp_user_id = %d AND is_active = 1 LIMIT 1',
+			[ (int) $user->ID ]
+		);
+		if ( null === $clinician_id || (int) $clinician_id <= 0 ) {
+			return new WP_Error( 'CLINIC_PERMISSION_DENIED', 'Doctor not linked to active clinician', [ 'status' => 403 ] );
+		}
+		$active_clinics = $this->memberships->active_clinic_ids_for_user( (int) $user->ID );
+		if ( [] === $active_clinics ) {
+			return new WP_Error( 'CLINIC_SCOPE_UNAVAILABLE', 'No active clinic membership', [ 'status' => 403 ] );
+		}
+		return true;
+	}
 
-    private function context(WP_REST_Request $r): WP_REST_Response|WP_Error
-    {
-        $user = wp_get_current_user();
-        $userId = (int) ($user->ID ?? 0);
-        $db = App::db();
+	private function context( WP_REST_Request $r ): WP_REST_Response|WP_Error {
+		$user    = wp_get_current_user();
+		$user_id = (int) ( $user->ID ?? 0 );
+		$db      = App::db();
 
-        // Doctor identity
-        $clinicianRow = $db->fetchRow(
-            'SELECT id, full_name, clinic_id FROM ' . $db->table('cpms_clinicians') . ' WHERE wp_user_id = %d AND is_active = 1 LIMIT 1',
-            [$userId]
-        );
-        $clinicianId = $clinicianRow ? (int) $clinicianRow['id'] : 0;
-        $clinicianName = $clinicianRow ? (string) $clinicianRow['full_name'] : '';
+		$clinician_row = $db->fetchRow(
+			'SELECT id, full_name, clinic_id FROM ' . $db->table( 'cpms_clinicians' ) . ' WHERE wp_user_id = %d AND is_active = 1 LIMIT 1',
+			[ $user_id ]
+		);
+		$clinician_id   = $clinician_row ? (int) $clinician_row['id'] : 0;
+		$clinician_name = $clinician_row ? (string) $clinician_row['full_name'] : '';
 
-        // Eligible clinics for this doctor (active memberships)
-        $memberships = $this->memberships->active_for_user($userId);
-        $clinics = [];
-        foreach ($memberships as $m) {
-            $clinics[] = [
-                'id' => (int) $m['clinic_id'],
-                'name' => (string) ($m['clinic_name'] ?? 'Clinic ' . $m['clinic_id']),
-                'slug' => (string) ($m['clinic_slug'] ?? ''),
-                'organization_id' => 0, // will be filled from clinic row if needed
-            ];
-        }
+		$memberships = $this->memberships->active_for_user( $user_id );
+		$clinics     = [];
+		foreach ( $memberships as $m ) {
+			$clinics[] = [
+				'id'              => (int) $m['clinic_id'],
+				'name'            => (string) ( $m['clinic_name'] ?? 'Clinic ' . $m['clinic_id'] ),
+				'slug'            => (string) ( $m['clinic_slug'] ?? '' ),
+				'organization_id' => 0,
+			];
+		}
 
-        // Try to get current trusted scope (if request already has X-CPMS-Clinic-Id / Location-Id)
-        $currentClinic = null;
-        $currentLocation = null;
-        $selectedClinicId = null;
-        $selectedLocationId = null;
+		$current_clinic       = null;
+		$current_location     = null;
+		$selected_clinic_id   = null;
+		$selected_location_id = null;
 
-        // Determine auto-resolution: if 1 clinic, auto; if N>1, require explicit (no fallback)
-        if (count($clinics) === 1) {
-            $selectedClinicId = $clinics[0]['id'];
-            $currentClinic = $clinics[0];
-        } else {
-            // Check if request has explicit Clinic header (via RestClinicContext, App::scope will be set)
-            try {
-                $scope = App::scope();
-                $selectedClinicId = $scope->clinicId;
-                $selectedLocationId = $scope->locationId;
-                // Find clinic details for current
-                foreach ($clinics as $c) {
-                    if ($c['id'] === $selectedClinicId) {
-                        $currentClinic = $c;
-                        break;
-                    }
-                }
-                if ($selectedLocationId !== null) {
-                    $locRow = $db->fetchRow(
-                        'SELECT id, name, slug, timezone, is_primary, is_active FROM ' . $db->table('cpms_locations') . ' WHERE id = %d LIMIT 1',
-                        [$selectedLocationId]
-                    );
-                    if ($locRow) {
-                        $currentLocation = [
-                            'id' => (int) $locRow['id'],
-                            'name' => (string) $locRow['name'],
-                            'slug' => (string) $locRow['slug'],
-                            'timezone' => (string) $locRow['timezone'],
-                            'is_primary' => (int) $locRow['is_primary'] === 1,
-                            'is_active' => (int) $locRow['is_active'] === 1,
-                        ];
-                    }
-                }
-            } catch (\Throwable $e) {
-                unset($e); // No explicit scope yet – leave null, frontend will show selector
-            }
-        }
+		if ( 1 === count( $clinics ) ) {
+			$selected_clinic_id = $clinics[0]['id'];
+			$current_clinic     = $clinics[0];
+		} else {
+			try {
+				$scope                = App::scope();
+				$selected_clinic_id   = $scope->clinicId;
+				$selected_location_id = $scope->locationId;
+				foreach ( $clinics as $c ) {
+					if ( $c['id'] === $selected_clinic_id ) {
+						$current_clinic = $c;
+						break;
+					}
+				}
+				if ( null !== $selected_location_id ) {
+					$loc_row = $db->fetchRow(
+						'SELECT id, name, slug, timezone, is_primary, is_active FROM ' . $db->table( 'cpms_locations' ) . ' WHERE id = %d LIMIT 1',
+						[ $selected_location_id ]
+					);
+					if ( $loc_row ) {
+						$current_location = [
+							'id'         => (int) $loc_row['id'],
+							'name'       => (string) $loc_row['name'],
+							'slug'       => (string) $loc_row['slug'],
+							'timezone'   => (string) $loc_row['timezone'],
+							'is_primary' => (int) $loc_row['is_primary'] === 1,
+							'is_active'  => (int) $loc_row['is_active'] === 1,
+						];
+					}
+				}
+			} catch ( \Throwable $e ) {
+				unset( $e );
+			}
+		}
 
-        // If 1 clinic auto, also resolve its eligible locations
-        $eligibleLocations = [];
-        if ($selectedClinicId !== null) {
-            $eligibleLocations = $this->eligibleLocationsForClinic($selectedClinicId, $userId);
-            if (count($eligibleLocations) === 1) {
-                $selectedLocationId = $eligibleLocations[0]['id'];
-                $currentLocation = $eligibleLocations[0];
-            }
-        }
+		$eligible_locations = [];
+		if ( null !== $selected_clinic_id ) {
+			$eligible_locations = $this->eligible_locations_for_clinic( $selected_clinic_id, $user_id );
+			if ( 1 === count( $eligible_locations ) ) {
+				$selected_location_id = $eligible_locations[0]['id'];
+				$current_location     = $eligible_locations[0];
+			}
+		}
 
-        // For N>1 clinics, do NOT auto-select first – require explicit (fail-closed)
-        // For locations, same: N>1 requires explicit, no first/primary fallback (handled in frontend)
+		$data = [
+			'doctor'             => [
+				'wp_user_id'     => $user_id,
+				'clinician_id'   => $clinician_id,
+				'clinician_name' => $clinician_name,
+				'display_name'   => (string) $user->display_name,
+			],
+			'clinics'            => $clinics,
+			'current_clinic'     => $current_clinic,
+			'current_location'   => $current_location,
+			'selected_clinic_id' => $selected_clinic_id,
+			'selected_location_id' => $selected_location_id,
+			'eligible_locations' => $eligible_locations,
+		];
 
-        $data = [
-            'doctor' => [
-                'wp_user_id' => $userId,
-                'clinician_id' => $clinicianId,
-                'clinician_name' => $clinicianName,
-                'display_name' => (string) $user->display_name,
-            ],
-            'clinics' => $clinics,
-            'current_clinic' => $currentClinic,
-            'current_location' => $currentLocation,
-            'selected_clinic_id' => $selectedClinicId,
-            'selected_location_id' => $selectedLocationId,
-            'eligible_locations' => $eligibleLocations,
-        ];
+		return $this->success( $data );
+	}
 
-        return $this->success($data);
-    }
+	private function clinics( WP_REST_Request $r ): WP_REST_Response|WP_Error {
+		$user_id     = (int) wp_get_current_user()->ID;
+		$memberships = $this->memberships->active_for_user( $user_id );
+		$clinics     = [];
+		foreach ( $memberships as $m ) {
+			$clinics[] = [
+				'id'   => (int) $m['clinic_id'],
+				'name' => (string) ( $m['clinic_name'] ?? 'Clinic ' . $m['clinic_id'] ),
+				'slug' => (string) ( $m['clinic_slug'] ?? '' ),
+			];
+		}
+		return $this->success( [ 'clinics' => $clinics ] );
+	}
 
-    private function clinics(WP_REST_Request $r): WP_REST_Response|WP_Error
-    {
-        $userId = (int) wp_get_current_user()->ID;
-        $memberships = $this->memberships->active_for_user($userId);
-        $clinics = [];
-        foreach ($memberships as $m) {
-            $clinics[] = [
-                'id' => (int) $m['clinic_id'],
-                'name' => (string) ($m['clinic_name'] ?? 'Clinic ' . $m['clinic_id']),
-                'slug' => (string) ($m['clinic_slug'] ?? ''),
-            ];
-        }
-        return $this->success(['clinics' => $clinics]);
-    }
+	private function locations( WP_REST_Request $r ): WP_REST_Response|WP_Error {
+		$user    = wp_get_current_user();
+		$user_id = (int) ( $user->ID ?? 0 );
+		$clinic_id = (int) $r->get_param( 'clinic_id' );
 
-    private function locations(WP_REST_Request $r): WP_REST_Response|WP_Error
-    {
-        $user = wp_get_current_user();
-        $userId = (int) ($user->ID ?? 0);
-        $clinicId = (int) $r->get_param('clinic_id');
+		if ( $clinic_id <= 0 ) {
+			try {
+				$scope     = App::scope();
+				$clinic_id = $scope->clinicId;
+			} catch ( \Throwable $e ) {
+				$active = $this->memberships->active_clinic_ids_for_user( $user_id );
+				if ( 1 === count( $active ) ) {
+					$clinic_id = $active[0];
+				} else {
+					return $this->error( 'CLINIC_SCOPE_REQUIRED', 400, 'Clinic scope required for locations', [ 'field' => 'clinic_id' ] );
+				}
+			}
+		}
 
-        // If clinic_id not provided, try to get from trusted scope
-        if ($clinicId <= 0) {
-            try {
-                $scope = App::scope();
-                $clinicId = $scope->clinicId;
-            } catch (\Throwable $e) {
-                // If user has exactly 1 clinic, use it
-                $active = $this->memberships->active_clinic_ids_for_user($userId);
-                if (count($active) === 1) {
-                    $clinicId = $active[0];
-                } else {
-                    return $this->error('CLINIC_SCOPE_REQUIRED', 400, 'Clinic scope required for locations', ['field' => 'clinic_id']);
-                }
-            }
-        }
+		if ( null === $this->memberships->find_active( $clinic_id, $user_id ) ) {
+			return $this->error( 'CLINIC_SCOPE_UNAVAILABLE', 403, 'No membership for clinic', [ 'reason' => 'membership' ] );
+		}
 
-        // Validate membership for this clinic
-        if ($this->memberships->find_active($clinicId, $userId) === null) {
-            return $this->error('CLINIC_SCOPE_UNAVAILABLE', 403, 'No membership for clinic', ['reason' => 'membership']);
-        }
+		$locations = $this->eligible_locations_for_clinic( $clinic_id, $user_id );
 
-        $locations = $this->eligibleLocationsForClinic($clinicId, $userId);
+		return $this->success(
+			[
+				'locations' => $locations,
+				'clinic_id' => $clinic_id,
+			]
+		);
+	}
 
-        return $this->success(['locations' => $locations, 'clinic_id' => $clinicId]);
-    }
+	/**
+	 * @return list<array<string, mixed>>
+	 */
+	private function eligible_locations_for_clinic( int $clinic_id, int $wp_user_id ): array {
+		$db         = App::db();
+		$membership = $this->memberships->find_active( $clinic_id, $wp_user_id );
+		if ( null === $membership ) {
+			return [];
+		}
 
-    /**
-     * Eligible Locations resolution — mirrors TrustedClinicEstablisher.
-     *
-     * @return list<array<string, mixed>>
-     */
-    private function eligibleLocationsForClinic(int $clinicId, int $wpUserId): array
-    {
-        $db = App::db();
-        $membership = $this->memberships->find_active($clinicId, $wpUserId);
-        if ($membership === null) {
-            return [];
-        }
+		$active_rows = $db->fetchAll(
+			'SELECT id, name, slug, timezone, is_primary, is_active FROM ' . $db->table( 'cpms_locations' ) .
+			' WHERE clinic_id = %d AND is_active = 1 ORDER BY id ASC',
+			[ $clinic_id ]
+		);
+		$active = [];
+		foreach ( ( is_array( $active_rows ) ? $active_rows : [] ) as $row ) {
+			$active[ (int) $row['id'] ] = [
+				'id'         => (int) $row['id'],
+				'name'       => (string) $row['name'],
+				'slug'       => (string) $row['slug'],
+				'timezone'   => (string) $row['timezone'],
+				'is_primary' => (int) $row['is_primary'] === 1,
+				'is_active'  => (int) $row['is_active'] === 1,
+			];
+		}
 
-        $activeRows = $db->fetchAll(
-            'SELECT id, name, slug, timezone, is_primary, is_active FROM ' . $db->table('cpms_locations') .
-            ' WHERE clinic_id = %d AND is_active = 1 ORDER BY id ASC',
-            [$clinicId]
-        );
-        $active = [];
-        foreach ((is_array($activeRows) ? $activeRows : []) as $row) {
-            $active[ (int) $row['id'] ] = [
-                'id' => (int) $row['id'],
-                'name' => (string) $row['name'],
-                'slug' => (string) $row['slug'],
-                'timezone' => (string) $row['timezone'],
-                'is_primary' => (int) $row['is_primary'] === 1,
-                'is_active' => (int) $row['is_active'] === 1,
-            ];
-        }
+		$scope_mode = (string) ( $membership['scope_mode'] ?? 'clinic' );
+		if ( 'location' === $scope_mode ) {
+			$assigned_ids = $this->memberships->location_ids_for( (int) $membership['id'] );
+			$eligible     = [];
+			foreach ( $assigned_ids as $id ) {
+				if ( isset( $active[ $id ] ) ) {
+					$eligible[] = $active[ $id ];
+				}
+			}
+			return $eligible;
+		}
 
-        $scopeMode = (string) ($membership['scope_mode'] ?? 'clinic');
-        if ($scopeMode === 'location') {
-            $assignedIds = $this->memberships->location_ids_for((int) $membership['id']);
-            $eligible = [];
-            foreach ($assignedIds as $id) {
-                if (isset($active[ $id ])) {
-                    $eligible[] = $active[ $id ];
-                }
-            }
-            return $eligible;
-        }
-
-        return array_values($active);
-    }
+		return array_values( $active );
+	}
 }

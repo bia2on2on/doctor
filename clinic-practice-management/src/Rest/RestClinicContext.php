@@ -309,24 +309,41 @@ final class RestClinicContext
             || $user->has_cap(RolesAndCapabilities::CONFIG);
     }
 
-    private static function toError(ScopeRequiredException $e): WP_Error
-    {
-        $reason = (string) ($e->data['reason'] ?? '');
-        if ($reason !== '') {
-            error_log('[CPMS][RestClinicContext] ' . $e->errorCode . ' reason=' . $reason);
+    private static function toError( ScopeRequiredException $e ): WP_Error {
+        $reason = (string) ( $e->data['reason'] ?? '' );
+        if ( '' !== $reason ) {
+            error_log( '[CPMS][RestClinicContext] ' . $e->errorCode . ' reason=' . $reason );
         }
 
-        $message = match ($e->errorCode) {
-            'CLINIC_SCOPE_REQUIRED' => __('محدودهٔ کلینیک لازم است.', 'cpms'),
-            'CLINIC_VALIDATION_FAILED' => __('شناسهٔ کلینیک یا محل نامعتبر است.', 'cpms'),
-            default => __('امکان تعیین محدودهٔ کلینیک معتبر نیست.', 'cpms'),
+        $message = match ( $e->errorCode ) {
+            'CLINIC_SCOPE_REQUIRED' => __( 'محدودهٔ کلینیک لازم است.', 'cpms' ),
+            'CLINIC_VALIDATION_FAILED' => __( 'شناسهٔ کلینیک یا محل نامعتبر است.', 'cpms' ),
+            default => __( 'امکان تعیین محدودهٔ کلینیک معتبر نیست.', 'cpms' ),
         };
 
-        $data = ['status' => $e->httpStatus()];
-        if ($e->errorCode === 'CLINIC_VALIDATION_FAILED' && isset($e->data['field'])) {
-            $data['field'] = $e->data['field'];
+        $data = [ 'status' => $e->httpStatus() ];
+
+        // Blocker 2: preserve bounded non-sensitive Location-required metadata for Doctor Portal.
+        // Use existing CLINIC_SCOPE_REQUIRED, do NOT invent LOCATION_SCOPE_REQUIRED.
+        // Return only field=location_id + reason=location_required, never eligible IDs or internals.
+        if ( 'CLINIC_SCOPE_REQUIRED' === $e->errorCode ) {
+            $field      = $e->data['field'] ?? null;
+            $reason_val = $e->data['reason'] ?? null;
+            if ( 'location_id' === $field && 'location_required' === $reason_val ) {
+                $data['field']  = 'location_id';
+                $data['reason'] = 'location_required';
+            }
+            // Clinic-required case (multiple clinics) remains compatible: no field relabel.
         }
 
-        return new WP_Error($e->errorCode, $message, $data);
+        if ( 'CLINIC_VALIDATION_FAILED' === $e->errorCode && isset( $e->data['field'] ) ) {
+            $f = $e->data['field'];
+            if ( in_array( $f, [ 'clinic_id', 'location_id' ], true ) ) {
+                $data['field'] = $f;
+            }
+        }
+
+        // Never expose eligible_location_ids, membership internals, topology.
+        return new WP_Error( $e->errorCode, $message, $data );
     }
 }

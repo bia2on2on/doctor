@@ -1,10 +1,5 @@
 <?php
-// phpcs:disable Generic.WhiteSpace.DisallowSpaceIndent,WordPress.Files.FileName,WordPress.PHP.YodaConditions,Universal.Arrays.DisallowShortArraySyntax,WordPress.Arrays.ArrayDeclarationSpacing,NormalizedArrays.Arrays.ArrayBraceSpacing,WordPress.Security.EscapeOutput.ExceptionNotEscaped,WordPress.NamingConventions.ValidVariableName,WordPress.NamingConventions.ValidFunctionName,WordPress.WhiteSpace.ControlStructureSpacing,PEAR.Functions.FunctionCallSignature,Generic.WhiteSpace.ArbitraryParenthesesSpacing,Squiz.Functions.FunctionDeclarationArgumentSpacing,Generic.Functions.OpeningFunctionBraceKernighanRitchie,WordPress.WhiteSpace.OperatorSpacing,Generic.Formatting.MultipleStatementAlignment,WordPress.WhiteSpace.CastStructureSpacing,WordPress.NamingConventions.PrefixAllGlobals,WordPress.Arrays.MultipleStatementAlignment,WordPress.WhiteSpace.OperatorSpacing,Generic.WhiteSpace.DisallowSpaceIndent,Generic.CodeAnalysis.UnusedFunctionParameter
-
 declare(strict_types=1);
-
-// phpcs:disable WordPress.NamingConventions.ValidVariableName,WordPress.NamingConventions.ValidFunctionName,WordPress.WhiteSpace.ControlStructureSpacing,PEAR.Functions.FunctionCallSignature,Generic.WhiteSpace.ArbitraryParenthesesSpacing,Squiz.Functions.FunctionDeclarationArgumentSpacing,Generic.Functions.OpeningFunctionBraceKernighanRitchie,WordPress.WhiteSpace.OperatorSpacing,Generic.Formatting.MultipleStatementAlignment,WordPress.WhiteSpace.CastStructureSpacing,WordPress.NamingConventions.PrefixAllGlobals,WordPress.Arrays.MultipleStatementAlignment,WordPress.WhiteSpace.OperatorSpacing,Generic.WhiteSpace.DisallowSpaceIndent,WordPress.Arrays.ArrayDeclarationSpacing,NormalizedArrays.Arrays.ArrayBraceSpacing
-
 
 namespace ClinicCore\Application\Visits;
 
@@ -463,96 +458,106 @@ final class VisitService
      * (Clinic از Scope صریحِ درخواست یا Resolution سیستمی «تنها Clinic» حل می‌شود —
      * هیچ clinic_id ثابتی در این Service وجود ندارد؛ مبهَم ⇒ CLINIC_SCOPE_REQUIRED).
      *
-     * Phase 10: trusted Clinic + doctor identity + trusted operational Location +
-     * Location-local day, no cross-Location aggregation. Operational today is
-     * Location timezone + current instant (testable via setTestNowUtc).
+     * Phase 10 legacy: trusted Clinic + optional trusted Location + Location-local day when Location present.
+     * No N>1 REQUIRED for shared queue/wp-admin — that stricter rule lives in Doctor Portal boundary.
      *
      * @return array<string, mixed>
      */
-    public function today(int $actorUserId, ?int $clinicianId = null): array
-    {
-        $this->requireQueueReader($actorUserId);
-        $clinicId = $this->queueClinicId();
-        $scopeClinicianId = $this->queueScopeClinicianId($actorUserId, $clinicId, $clinicianId);
-        $locationId = $this->queueLocationId($clinicId, $actorUserId);
+    public function today( int $actor_user_id, ?int $clinician_id = null ): array {
+        $this->requireQueueReader( $actor_user_id );
+        $clinic_id          = $this->queueClinicId();
+        $scope_clinician_id = $this->queueScopeClinicianId( $actor_user_id, $clinic_id, $clinician_id );
+        $location_id        = $this->queueLocationId( $clinic_id, $actor_user_id );
 
-        // 0 eligible => fail-closed for doctor, preserve staff behavior for secretary
-        if ($locationId === null) {
-            $eligible = $this->eligibleLocationIdsForActor($clinicId, $actorUserId);
-            if ($eligible === []) {
-                $role = $this->roleForUser($actorUserId);
-                if ($role === 'doctor') {
-                    $date = $this->nowUtc()->format('Y-m-d');
-                    return [
-                        'date' => $date,
-                        'stats' => $this->emptyStats(),
-                        'queue' => [],
-                        'last_event_id' => 0,
-                        'location_id' => null,
-                    ];
-                }
-                // Staff: no location filter (preserve legacy)
-                $date = $this->nowUtc()->format('Y-m-d');
-                $queue = $this->visits->queueFor($clinicId, $scopeClinicianId, self::QUEUE_STATUSES, $date, null);
-                $stats = $this->visits->statsFor($clinicId, $date, $scopeClinicianId, null);
-                return [
-                    'date' => $date,
-                    'stats' => $stats,
-                    'queue' => array_map([$this, 'presentVisit'], $queue),
-                    'last_event_id' => $this->visits->lastEventId($clinicId, $date, $scopeClinicianId, null),
-                    'location_id' => null,
-                ];
-            }
-            // N>1 without explicit: for doctor, explicit REQUIRED (no fallback); for staff, preserve legacy (no location filter)
-            if (count($eligible) > 1) {
-                $role = $this->roleForUser($actorUserId);
-                if ($role === 'doctor') {
-                    throw VisitException::of(
-                        'CLINIC_SCOPE_REQUIRED',
-                        'Location scope required: multiple eligible locations',
-                        ['field' => 'location_id', 'reason' => 'location_required', 'eligible_location_ids' => $eligible],
-                        400
-                    );
-                }
-                // Staff/secretary: no location filter (preserve old behavior) — operational date = UTC now for determinism
-                $date = $this->nowUtc()->format('Y-m-d');
-                $queue = $this->visits->queueFor($clinicId, $scopeClinicianId, self::QUEUE_STATUSES, $date, null);
-                $stats = $this->visits->statsFor($clinicId, $date, $scopeClinicianId, null);
-                return [
-                    'date' => $date,
-                    'stats' => $stats,
-                    'queue' => array_map([$this, 'presentVisit'], $queue),
-                    'last_event_id' => $this->visits->lastEventId($clinicId, $date, $scopeClinicianId, null),
-                    'location_id' => null,
-                ];
-            }
-            // 1 eligible but not auto-bound (defense) => use it
-            $locationId = $eligible[0] ?? null;
+        $operational_date = null;
+        if ( null !== $location_id ) {
+            $operational_date = $this->operationalDateForLocation( $location_id, $clinic_id );
+        } else {
+            $operational_date = $this->nowUtc()->format( 'Y-m-d' );
         }
 
-        if ($locationId === null) {
-            // Should not reach here, but fail-closed
-            $date = $this->nowUtc()->format('Y-m-d');
+        $queue = $this->visits->queueFor( $clinic_id, $scope_clinician_id, self::QUEUE_STATUSES, $operational_date, $location_id );
+        $stats = $this->visits->statsFor( $clinic_id, $operational_date, $scope_clinician_id, $location_id );
+
+        return [
+            'date'          => $operational_date,
+            'stats'         => $stats,
+            'queue'         => array_map( [ $this, 'presentVisit' ], $queue ),
+            'last_event_id' => $this->visits->lastEventId( $clinic_id, $operational_date, $scope_clinician_id, $location_id ),
+            'location_id'   => $location_id,
+        ];
+    }
+
+    /**
+     * Doctor Portal Today — strict Location enforcement (Blocker 1).
+     *
+     * Owner decision FINAL for Doctor Portal:
+     * - 0 eligible => fail closed / no Today or Queue data
+     * - 1 eligible => auto-bind
+     * - N>1 => explicit Location REQUIRED (no first/primary fallback)
+     * - foreign/inactive/unassigned => denied (UNAVAILABLE)
+     *
+     * Uses existing CLINIC_SCOPE_REQUIRED 400 with field=location_id reason=location_required.
+     * Never returns eligible IDs.
+     *
+     * @return array<string, mixed>
+     */
+    public function todayForDoctorPortal( int $actor_user_id, ?int $clinician_id = null ): array {
+        $this->requireQueueReader( $actor_user_id );
+        $clinic_id          = $this->queueClinicId();
+        $scope_clinician_id = $this->queueScopeClinicianId( $actor_user_id, $clinic_id, $clinician_id );
+        $location_id        = $this->queueLocationId( $clinic_id, $actor_user_id );
+
+        $eligible = $this->eligibleLocationIdsForActor( $clinic_id, $actor_user_id );
+
+        if ( [] === $eligible ) {
+            $date = $this->nowUtc()->format( 'Y-m-d' );
             return [
-                'date' => $date,
-                'stats' => $this->emptyStats(),
-                'queue' => [],
+                'date'          => $date,
+                'stats'         => $this->emptyStats(),
+                'queue'         => [],
                 'last_event_id' => 0,
-                'location_id' => null,
+                'location_id'   => null,
             ];
         }
 
-        $operationalDate = $this->operationalDateForLocation($locationId, $clinicId);
+        if ( null === $location_id ) {
+            if ( 1 === count( $eligible ) ) {
+                $location_id = $eligible[0];
+            } else {
+                // N>1 without explicit Location => REQUIRED
+                throw VisitException::of(
+                    'CLINIC_SCOPE_REQUIRED',
+                    'Location scope required: multiple eligible locations',
+                    [
+                        'field'  => 'location_id',
+                        'reason' => 'location_required',
+                    ],
+                    400
+                );
+            }
+        }
 
-        $queue = $this->visits->queueFor($clinicId, $scopeClinicianId, self::QUEUE_STATUSES, $operationalDate, $locationId);
-        $stats = $this->visits->statsFor($clinicId, $operationalDate, $scopeClinicianId, $locationId);
+        // Validate explicit Location is eligible (foreign/inactive/unassigned => denied)
+        if ( ! in_array( $location_id, $eligible, true ) ) {
+            throw VisitException::of(
+                'CLINIC_SCOPE_UNAVAILABLE',
+                'Trusted clinic context is not available.',
+                [ 'reason' => 'location' ],
+                403
+            );
+        }
+
+        $operational_date = $this->operationalDateForLocation( $location_id, $clinic_id );
+        $queue            = $this->visits->queueFor( $clinic_id, $scope_clinician_id, self::QUEUE_STATUSES, $operational_date, $location_id );
+        $stats            = $this->visits->statsFor( $clinic_id, $operational_date, $scope_clinician_id, $location_id );
 
         return [
-            'date' => $operationalDate,
-            'stats' => $stats,
-            'queue' => array_map([$this, 'presentVisit'], $queue),
-            'last_event_id' => $this->visits->lastEventId($clinicId, $operationalDate, $scopeClinicianId, $locationId),
-            'location_id' => $locationId,
+            'date'          => $operational_date,
+            'stats'         => $stats,
+            'queue'         => array_map( [ $this, 'presentVisit' ], $queue ),
+            'last_event_id' => $this->visits->lastEventId( $clinic_id, $operational_date, $scope_clinician_id, $location_id ),
+            'location_id'   => $location_id,
         ];
     }
 
@@ -573,98 +578,171 @@ final class VisitService
 
     /**
      * رویدادهای صف بعد از since — Light Endpoint برای Polling کنترل‌شده.
-     * Phase 10: filtered by trusted Location + Location-local day when available.
+     * Legacy shared behavior: no N>1 REQUIRED, uses Location from scope if present else no filter.
      *
      * @return array<string, mixed>
      */
-    public function eventsSince(int $actorUserId, int $sinceEventId): array
-    {
-        $this->requireQueueReader($actorUserId);
-        $clinicId = $this->queueClinicId();
-        $scopeClinicianId = $this->queueScopeClinicianId($actorUserId, $clinicId, null);
-        $locationId = $this->queueLocationId($clinicId, $actorUserId);
-        $operationalDate = null;
-        if ($locationId !== null) {
-            $operationalDate = $this->operationalDateForLocation($locationId, $clinicId);
-        } else {
-            $eligible = $this->eligibleLocationIdsForActor($clinicId, $actorUserId);
-            if ($eligible === []) {
-                return ['events' => [], 'last_event_id' => $sinceEventId];
-            }
-            if (count($eligible) > 1) {
-                $role = $this->roleForUser($actorUserId);
-                if ($role === 'doctor') {
-                    throw VisitException::of(
-                        'CLINIC_SCOPE_REQUIRED',
-                        'Location scope required: multiple eligible locations',
-                        ['field' => 'location_id', 'reason' => 'location_required', 'eligible_location_ids' => $eligible],
-                        400
-                    );
-                }
-                // Staff: no location filter
-                $operationalDate = $this->nowUtc()->format('Y-m-d');
-            } elseif (count($eligible) === 1) {
-                $locationId = $eligible[0];
-                $operationalDate = $this->operationalDateForLocation($locationId, $clinicId);
-            }
+    public function eventsSince( int $actor_user_id, int $since_event_id ): array {
+        $this->requireQueueReader( $actor_user_id );
+        $clinic_id          = $this->queueClinicId();
+        $scope_clinician_id = $this->queueScopeClinicianId( $actor_user_id, $clinic_id, null );
+        $location_id        = $this->queueLocationId( $clinic_id, $actor_user_id );
+        $operational_date   = null;
+        if ( null !== $location_id ) {
+            $operational_date = $this->operationalDateForLocation( $location_id, $clinic_id );
         }
 
-        $events = $this->visits->eventsSince($clinicId, max(0, $sinceEventId), 200, $scopeClinicianId, $operationalDate, $locationId);
-        $lastId = $sinceEventId;
-        foreach ($events as $e) {
-            $lastId = max($lastId, (int) $e['id']);
+        $events  = $this->visits->eventsSince( $clinic_id, max( 0, $since_event_id ), 200, $scope_clinician_id, $operational_date, $location_id );
+        $last_id = $since_event_id;
+        foreach ( $events as $e ) {
+            $last_id = max( $last_id, (int) $e['id'] );
         }
 
         return [
-            'events' => array_map(static fn (array $e): array => [
-                'event_id' => (int) $e['id'],
-                'visit_id' => (int) $e['visit_id'],
-                'from_status' => $e['from_status'],
-                'to_status' => $e['to_status'],
-                'changed_at' => $e['changed_at'],
-                'actor_role' => $e['actor_role'],
-                'note' => $e['note'],
-            ], $events),
-            'last_event_id' => $lastId,
+            'events'        => array_map(
+                static fn( array $e ): array => [
+                    'event_id'   => (int) $e['id'],
+                    'visit_id'   => (int) $e['visit_id'],
+                    'from_status' => $e['from_status'],
+                    'to_status'   => $e['to_status'],
+                    'changed_at'  => $e['changed_at'],
+                    'actor_role'  => $e['actor_role'],
+                    'note'        => $e['note'],
+                ],
+                $events
+            ),
+            'last_event_id' => $last_id,
         ];
     }
 
     /**
      * آخرین event_id کلینیک — ETag کلاینت (R1).
-     * Phase 10: filtered by trusted Location + Location-local day when available.
+     * Legacy shared behavior: no N>1 REQUIRED.
      */
-    public function lastEventId(int $actorUserId): int
-    {
-        $this->requireQueueReader($actorUserId);
-        $clinicId = $this->queueClinicId();
-        $scopeClinicianId = $this->queueScopeClinicianId($actorUserId, $clinicId, null);
-        $locationId = $this->queueLocationId($clinicId, $actorUserId);
-        $operationalDate = null;
-        if ($locationId !== null) {
-            $operationalDate = $this->operationalDateForLocation($locationId, $clinicId);
-        } else {
-            $eligible = $this->eligibleLocationIdsForActor($clinicId, $actorUserId);
-            if ($eligible === []) {
-                return 0;
-            }
-            if (count($eligible) > 1) {
-                $role = $this->roleForUser($actorUserId);
-                if ($role === 'doctor') {
-                    throw VisitException::of(
-                        'CLINIC_SCOPE_REQUIRED',
-                        'Location scope required: multiple eligible locations',
-                        ['field' => 'location_id', 'reason' => 'location_required', 'eligible_location_ids' => $eligible],
-                        400
-                    );
-                }
-                $operationalDate = $this->nowUtc()->format('Y-m-d');
-            } elseif (count($eligible) === 1) {
-                $locationId = $eligible[0];
-                $operationalDate = $this->operationalDateForLocation($locationId, $clinicId);
+    public function lastEventId( int $actor_user_id ): int {
+        $this->requireQueueReader( $actor_user_id );
+        $clinic_id          = $this->queueClinicId();
+        $scope_clinician_id = $this->queueScopeClinicianId( $actor_user_id, $clinic_id, null );
+        $location_id        = $this->queueLocationId( $clinic_id, $actor_user_id );
+        $operational_date   = null;
+        if ( null !== $location_id ) {
+            $operational_date = $this->operationalDateForLocation( $location_id, $clinic_id );
+        }
+
+        return $this->visits->lastEventId( $clinic_id, $operational_date, $scope_clinician_id, $location_id );
+    }
+
+    /**
+     * Doctor Portal eventsSince — strict Location enforcement.
+     *
+     * @return array<string, mixed>
+     */
+    public function eventsSinceForDoctorPortal( int $actor_user_id, int $since_event_id ): array {
+        $this->requireQueueReader( $actor_user_id );
+        $clinic_id          = $this->queueClinicId();
+        $scope_clinician_id = $this->queueScopeClinicianId( $actor_user_id, $clinic_id, null );
+        $location_id        = $this->queueLocationId( $clinic_id, $actor_user_id );
+
+        $eligible = $this->eligibleLocationIdsForActor( $clinic_id, $actor_user_id );
+
+        if ( [] === $eligible ) {
+            return [
+                'events'        => [],
+                'last_event_id' => $since_event_id,
+            ];
+        }
+
+        if ( null === $location_id ) {
+            if ( 1 === count( $eligible ) ) {
+                $location_id = $eligible[0];
+            } else {
+                throw VisitException::of(
+                    'CLINIC_SCOPE_REQUIRED',
+                    'Location scope required: multiple eligible locations',
+                    [
+                        'field'  => 'location_id',
+                        'reason' => 'location_required',
+                    ],
+                    400
+                );
             }
         }
 
-        return $this->visits->lastEventId($clinicId, $operationalDate, $scopeClinicianId, $locationId);
+        if ( ! in_array( $location_id, $eligible, true ) ) {
+            throw VisitException::of(
+                'CLINIC_SCOPE_UNAVAILABLE',
+                'Trusted clinic context is not available.',
+                [ 'reason' => 'location' ],
+                403
+            );
+        }
+
+        $operational_date = $this->operationalDateForLocation( $location_id, $clinic_id );
+        $events           = $this->visits->eventsSince( $clinic_id, max( 0, $since_event_id ), 200, $scope_clinician_id, $operational_date, $location_id );
+        $last_id          = $since_event_id;
+        foreach ( $events as $e ) {
+            $last_id = max( $last_id, (int) $e['id'] );
+        }
+
+        return [
+            'events'        => array_map(
+                static fn( array $e ): array => [
+                    'event_id'   => (int) $e['id'],
+                    'visit_id'   => (int) $e['visit_id'],
+                    'from_status' => $e['from_status'],
+                    'to_status'   => $e['to_status'],
+                    'changed_at'  => $e['changed_at'],
+                    'actor_role'  => $e['actor_role'],
+                    'note'        => $e['note'],
+                ],
+                $events
+            ),
+            'last_event_id' => $last_id,
+        ];
+    }
+
+    /**
+     * Doctor Portal lastEventId — strict Location enforcement.
+     */
+    public function lastEventIdForDoctorPortal( int $actor_user_id ): int {
+        $this->requireQueueReader( $actor_user_id );
+        $clinic_id          = $this->queueClinicId();
+        $scope_clinician_id = $this->queueScopeClinicianId( $actor_user_id, $clinic_id, null );
+        $location_id        = $this->queueLocationId( $clinic_id, $actor_user_id );
+
+        $eligible = $this->eligibleLocationIdsForActor( $clinic_id, $actor_user_id );
+
+        if ( [] === $eligible ) {
+            return 0;
+        }
+
+        if ( null === $location_id ) {
+            if ( 1 === count( $eligible ) ) {
+                $location_id = $eligible[0];
+            } else {
+                throw VisitException::of(
+                    'CLINIC_SCOPE_REQUIRED',
+                    'Location scope required: multiple eligible locations',
+                    [
+                        'field'  => 'location_id',
+                        'reason' => 'location_required',
+                    ],
+                    400
+                );
+            }
+        }
+
+        if ( ! in_array( $location_id, $eligible, true ) ) {
+            throw VisitException::of(
+                'CLINIC_SCOPE_UNAVAILABLE',
+                'Trusted clinic context is not available.',
+                [ 'reason' => 'location' ],
+                403
+            );
+        }
+
+        $operational_date = $this->operationalDateForLocation( $location_id, $clinic_id );
+        return $this->visits->lastEventId( $clinic_id, $operational_date, $scope_clinician_id, $location_id );
     }
 
     // ================= D16 — Checkout (T9) =================
@@ -1385,25 +1463,21 @@ final class VisitService
      * Phase 10: trusted operational Location from scope.
      * Returns null when scope has no Location (0 eligible or not yet resolved).
      */
-    private function queueLocationId(int $clinicId, int $actorUserId): ?int
-    {
+    private function queueLocationId( int $clinic_id, int $actor_user_id ): ?int {
         // Try trusted scope first (established by TrustedClinicEstablisher)
         $scope = ScopeContext::tryGet();
-        if ($scope !== null && $scope->locationId !== null) {
+        if ( null !== $scope && null !== $scope->locationId ) {
             return (int) $scope->locationId;
         }
         try {
-            $appScope = App::scope();
-            if ($appScope->locationId !== null) {
-                return (int) $appScope->locationId;
+            $app_scope = App::scope();
+            if ( null !== $app_scope->locationId ) {
+                return (int) $app_scope->locationId;
             }
-        } catch (ScopeRequiredException $e) {
-            unset($e); // no scope yet – fall through to eligible check
+        } catch ( ScopeRequiredException $e ) {
+            unset( $e );
         }
 
-        // If no Location in scope, check eligible to decide 0 vs 1 vs N>1
-        // This is defense-in-depth; TrustedClinicEstablisher should have already
-        // auto-bound 1 or thrown REQUIRED for N>1.
         return null;
     }
 
@@ -1415,40 +1489,36 @@ final class VisitService
      *
      * @return list<int>
      */
-    private function eligibleLocationIdsForActor(int $clinicId, int $actorUserId): array // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter
-    {
-        // Dummy usage to satisfy WPCS UnusedFunctionParameter (params are used conditionally via try/catch and role check)
-        $clinicId = (int) $clinicId; // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter
-        $actorUserId = (int) $actorUserId; // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter
-        if ($clinicId <= 0 || $actorUserId <= 0) {
+    private function eligibleLocationIdsForActor( int $clinic_id, int $actor_user_id ): array {
+        if ( $clinic_id <= 0 || $actor_user_id <= 0 ) {
             return [];
         }
-        $membership = $this->memberships->find_active($clinicId, $actorUserId);
-        $active = $this->activeLocationIdsForClinic($clinicId);
-        if ($membership === null) {
+        $membership = $this->memberships->find_active( $clinic_id, $actor_user_id );
+        $active     = $this->activeLocationIdsForClinic( $clinic_id );
+        if ( null === $membership ) {
             // No active membership: check if actor is doctor with active clinician that participates via home clinic
             // This preserves legacy DoctorQueueScopeTest which has clinician home clinic but no membership seed
             try {
-                $clinicianId = $this->memberships->active_clinician_id_for_wp_user($actorUserId);
-                if ($clinicianId !== null && $this->memberships->clinician_participates_in($clinicianId, $clinicId)) {
+                $clinician_id = $this->memberships->active_clinician_id_for_wp_user( $actor_user_id );
+                if ( null !== $clinician_id && $this->memberships->clinician_participates_in( $clinician_id, $clinic_id ) ) {
                     return $active;
                 }
-            } catch (\Throwable $e) {
-                unset($e); // ignore
+            } catch ( \Throwable $e ) {
+                unset( $e );
             }
             // For secretary without membership, also return active to preserve old staff behavior (no fail-closed for staff)
-            $role = $this->roleForUser($actorUserId);
-            if ($role === 'secretary' || $role === 'receptionist' || $role === 'cashier') {
+            $role = $this->roleForUser( $actor_user_id );
+            if ( 'secretary' === $role || 'receptionist' === $role || 'cashier' === $role ) {
                 return $active;
             }
             return [];
         }
-        $scopeMode = (string) ($membership['scope_mode'] ?? 'clinic');
-        if ($scopeMode === 'location') {
-            $assigned = $this->memberships->location_ids_for((int) $membership['id']);
-            $eligible = array_values(array_intersect($assigned, $active));
-            $eligible = array_values(array_unique(array_map('intval', $eligible)));
-            sort($eligible);
+        $scope_mode = (string) ( $membership['scope_mode'] ?? 'clinic' );
+        if ( 'location' === $scope_mode ) {
+            $assigned = $this->memberships->location_ids_for( (int) $membership['id'] );
+            $eligible = array_values( array_intersect( $assigned, $active ) );
+            $eligible = array_values( array_unique( array_map( 'intval', $eligible ) ) );
+            sort( $eligible );
             return $eligible;
         }
         return $active;
@@ -1457,19 +1527,18 @@ final class VisitService
     /**
      * @return list<int>
      */
-    private function activeLocationIdsForClinic(int $clinicId): array
-    {
+    private function activeLocationIdsForClinic( int $clinic_id ): array {
         $rows = $this->db->fetchAll(
-            'SELECT id FROM ' . $this->db->table('cpms_locations') .
+            'SELECT id FROM ' . $this->db->table( 'cpms_locations' ) .
             ' WHERE clinic_id = %d AND is_active = 1 ORDER BY id ASC',
-            [$clinicId]
+            [ $clinic_id ]
         );
         $ids = [];
-        foreach ((is_array($rows) ? $rows : []) as $r) {
-            $ids[] = (int) ($r['id'] ?? 0);
+        foreach ( ( is_array( $rows ) ? $rows : [] ) as $r ) {
+            $ids[] = (int) ( $r['id'] ?? 0 );
         }
-        $ids = array_values(array_unique(array_filter($ids, static fn(int $id): bool => $id > 0)));
-        sort($ids);
+        $ids = array_values( array_unique( array_filter( $ids, static fn( int $id ): bool => $id > 0 ) ) );
+        sort( $ids );
         return $ids;
     }
 
@@ -1478,27 +1547,26 @@ final class VisitService
      * Uses static testNowUtc if set, otherwise WordPress filter `cpms_visit_now_utc`
      * (can return DateTimeImmutable or string), otherwise real UTC now.
      */
-    private function nowUtc(): DateTimeImmutable
-    {
-        if (self::$testNowUtc !== null) {
+    private function nowUtc(): DateTimeImmutable {
+        if ( null !== self::$testNowUtc ) {
             return self::$testNowUtc;
         }
         // WordPress filter seam for integration tests (deterministic operational day)
-        if (function_exists('apply_filters')) {
-            $filtered = apply_filters('cpms_visit_now_utc', null);
-            if ($filtered instanceof DateTimeImmutable) {
-                return $filtered->setTimezone(new DateTimeZone('UTC'));
+        if ( function_exists( 'apply_filters' ) ) {
+            $filtered = apply_filters( 'cpms_visit_now_utc', null );
+            if ( $filtered instanceof DateTimeImmutable ) {
+                return $filtered->setTimezone( new DateTimeZone( 'UTC' ) );
             }
-            if (is_string($filtered) && $filtered !== '') {
+            if ( is_string( $filtered ) && '' !== $filtered ) {
                 try {
-                    $dt = new DateTimeImmutable($filtered);
-                    return $dt->setTimezone(new DateTimeZone('UTC'));
-                } catch (Throwable $e) {
-                    unset($e); // ignore invalid filter value
+                    $dt = new DateTimeImmutable( $filtered );
+                    return $dt->setTimezone( new DateTimeZone( 'UTC' ) );
+                } catch ( Throwable $e ) {
+                    unset( $e );
                 }
             }
         }
-        return new DateTimeImmutable('now', new DateTimeZone('UTC'));
+        return new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) );
     }
 
     /**
@@ -1506,17 +1574,16 @@ final class VisitService
      * No Clinic/WP/PHP/browser/Tehran/first fallback – uses validated IANA timezone
      * from persisted eligible Location.
      */
-    private function operationalDateForLocation(int $locationId, int $clinicId): string
-    {
-        $tz = $this->resolveLocationTimezone($locationId, $clinicId);
-        if ($tz === null) {
+    private function operationalDateForLocation( int $location_id, int $clinic_id ): string {
+        $tz = $this->resolveLocationTimezone( $location_id, $clinic_id );
+        if ( null === $tz ) {
             // fail-closed: if timezone cannot be resolved, use UTC date but log
-            $this->opLog?->warning('visit.location_timezone_unresolvable', ['location_id' => $locationId, 'clinic_id' => $clinicId]);
-            return $this->nowUtc()->format('Y-m-d');
+            $this->opLog?->warning( 'visit.location_timezone_unresolvable', [ 'location_id' => $location_id, 'clinic_id' => $clinic_id ] );
+            return $this->nowUtc()->format( 'Y-m-d' );
         }
-        $nowUtc = $this->nowUtc();
-        $local = $nowUtc->setTimezone($tz);
-        return $local->format('Y-m-d');
+        $now_utc = $this->nowUtc();
+        $local   = $now_utc->setTimezone( $tz );
+        return $local->format( 'Y-m-d' );
     }
 
     /**

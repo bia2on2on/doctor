@@ -14,321 +14,384 @@ use WP_REST_Server;
 
 /**
  * Endpointهای مراجعه/صف (F4) — API Contract D1/D6/D7/D8/D16 + E1–E6 + R1.
- *
- * مجوز (5 لایه — auth-authorization.md §2.1):
- *  1) Authentication/Nonce  2) Capability/Role  3) Data-Access (Service)
- *  4) Field-Access (presentVisit)  5) Action Rules (VisitMachine).
- *
- * R1 (ADR-0007): Controlled Polling — ETag = last_event_id؛ بدون تغییر → 304
- * (Body خالی)؛ سرور فقط رویدادهای بعد از `since` برمی‌گرداند (Light).
  */
-final class QueueController extends RestBase
-{
-    /** D8: نگاشت to_status منشی → Event ماشین (Transitionهای مجاز منشی). */
-    private const SECRETARY_STATUS_EVENTS = [
-        'waiting' => 'enqueue',
-        'cancelled' => 'cancel',
-        'awaiting_payment' => 'invoice_ready',
-        'checked_out' => 'waive',
-    ];
+final class QueueController extends RestBase {
+	private const SECRETARY_STATUS_EVENTS = [
+		'waiting'          => 'enqueue',
+		'cancelled'        => 'cancel',
+		'awaiting_payment' => 'invoice_ready',
+		'checked_out'      => 'waive',
+	];
 
-    /** E3–E6: اکشنهای صف پزشک → Event ماشین (E14 complete از F5 در ClinicalController است). */
-    private const DOCTOR_EVENTS = ['call', 'recall', 'start', 'skip'];
+	private const DOCTOR_EVENTS = [ 'call', 'recall', 'start', 'skip' ];
 
-    public function __construct(private readonly VisitService $visits)
-    {
-    }
+	public function __construct( private readonly VisitService $visits ) {
+	}
 
-    public function register_routes(): void
-    {
-        // ---------- D1 — داشبورد منشی ----------
-        register_rest_route(self::NS, '/secretary/today', [
-            [
-                'methods' => WP_REST_Server::READABLE,
-                'callback' => fn (WP_REST_Request $r) => $this->guard($r, RolesAndCapabilities::QUEUE_READ, fn () => $this->visits->today($this->userId($r))),
-                'permission_callback' => fn (WP_REST_Request $r)
-                    => $this->permCap($r, RolesAndCapabilities::QUEUE_READ),
-                'args' => [
-                    'clinician_id' => ['required' => false, 'type' => 'integer', 'sanitize_callback' => 'absint'],
-                ],
-            ],
-        ]);
+	public function register_routes(): void {
+		register_rest_route(
+			self::NS,
+			'/secretary/today',
+			[
+				[
+					'methods'             => WP_REST_Server::READABLE,
+					'callback'            => fn( WP_REST_Request $r ) => $this->guard( $r, RolesAndCapabilities::QUEUE_READ, fn() => $this->visits->today( $this->userId( $r ) ) ),
+					'permission_callback' => fn( WP_REST_Request $r ) => $this->permCap( $r, RolesAndCapabilities::QUEUE_READ ),
+					'args'                => [
+						'clinician_id' => [
+							'required'          => false,
+							'type'              => 'integer',
+							'sanitize_callback' => 'absint',
+						],
+					],
+				],
+			]
+		);
 
-        // ---------- D6 — Check-in ----------
-        register_rest_route(self::NS, '/visits/checkin', [
-            [
-                'methods' => WP_REST_Server::CREATABLE,
-                'callback' => fn (WP_REST_Request $r) => $this->guard($r, RolesAndCapabilities::QUEUE_CHECKIN, function () use ($r): array {
-                    return $this->visits->checkIn(
-                        $this->userId($r),
-                        (int) $r['patient_id'],
-                        (int) $r['appointment_id'],
-                        ['note' => $r['note'] ?? null]
-                    );
-                }),
-                'permission_callback' => fn (WP_REST_Request $r)
-                    => $this->permCap($r, RolesAndCapabilities::QUEUE_CHECKIN),
-                'args' => [
-                    'patient_id' => ['required' => true, 'type' => 'integer'],
-                    'appointment_id' => ['required' => true, 'type' => 'integer'],
-                    'note' => ['required' => false, 'type' => 'string'],
-                ],
-            ],
-        ]);
+		register_rest_route(
+			self::NS,
+			'/visits/checkin',
+			[
+				[
+					'methods'             => WP_REST_Server::CREATABLE,
+					'callback'            => fn( WP_REST_Request $r ) => $this->guard(
+						$r,
+						RolesAndCapabilities::QUEUE_CHECKIN,
+						function () use ( $r ): array {
+							return $this->visits->checkIn(
+								$this->userId( $r ),
+								(int) $r['patient_id'],
+								(int) $r['appointment_id'],
+								[ 'note' => $r['note'] ?? null ]
+							);
+						}
+					),
+					'permission_callback' => fn( WP_REST_Request $r ) => $this->permCap( $r, RolesAndCapabilities::QUEUE_CHECKIN ),
+					'args'                => [
+						'patient_id'     => [ 'required' => true, 'type' => 'integer' ],
+						'appointment_id' => [ 'required' => true, 'type' => 'integer' ],
+						'note'           => [ 'required' => false, 'type' => 'string' ],
+					],
+				],
+			]
+		);
 
-        // ---------- D7 — Walk-in ----------
-        register_rest_route(self::NS, '/visits/walk-in', [
-            [
-                'methods' => WP_REST_Server::CREATABLE,
-                'callback' => fn (WP_REST_Request $r) => $this->guard($r, RolesAndCapabilities::QUEUE_CHECKIN, function () use ($r): array {
-                    return $this->visits->walkIn(
-                        $this->userId($r),
-                        (int) $r['patient_id'],
-                        (int) $r['clinician_id'],
-                        ['note' => $r['note'] ?? null]
-                    );
-                }),
-                'permission_callback' => fn (WP_REST_Request $r)
-                    => $this->permCap($r, RolesAndCapabilities::QUEUE_CHECKIN),
-                'args' => [
-                    'patient_id' => ['required' => true, 'type' => 'integer'],
-                    'clinician_id' => ['required' => true, 'type' => 'integer'],
-                    'note' => ['required' => false, 'type' => 'string'],
-                ],
-            ],
-        ]);
+		register_rest_route(
+			self::NS,
+			'/visits/walk-in',
+			[
+				[
+					'methods'             => WP_REST_Server::CREATABLE,
+					'callback'            => fn( WP_REST_Request $r ) => $this->guard(
+						$r,
+						RolesAndCapabilities::QUEUE_CHECKIN,
+						function () use ( $r ): array {
+							return $this->visits->walkIn(
+								$this->userId( $r ),
+								(int) $r['patient_id'],
+								(int) $r['clinician_id'],
+								[ 'note' => $r['note'] ?? null ]
+							);
+						}
+					),
+					'permission_callback' => fn( WP_REST_Request $r ) => $this->permCap( $r, RolesAndCapabilities::QUEUE_CHECKIN ),
+					'args'                => [
+						'patient_id'   => [ 'required' => true, 'type' => 'integer' ],
+						'clinician_id' => [ 'required' => true, 'type' => 'integer' ],
+						'note'         => [ 'required' => false, 'type' => 'string' ],
+					],
+				],
+			]
+		);
 
-        // ---------- D8 — Transition منشی ----------
-        register_rest_route(self::NS, '/visits/(?P<id>\d+)/status', [
-            [
-                'methods' => WP_REST_Server::CREATABLE,
-                'callback' => fn (WP_REST_Request $r) => $this->guard($r, RolesAndCapabilities::QUEUE_ADVANCE, function () use ($r): array {
-                    $toStatus = (string) $r['to_status'];
-                    $event = self::SECRETARY_STATUS_EVENTS[$toStatus] ?? null;
-                    if ($event === null) {
-                        throw VisitException::of(
-                            'CLINIC_VALIDATION_FAILED',
-                            'وضعیت هدف برای منشی مجاز نیست (waiting, cancelled, awaiting_payment, checked_out)',
-                            422,
-                            ['to_status' => $toStatus]
-                        );
-                    }
+		register_rest_route(
+			self::NS,
+			'/visits/(?P<id>\d+)/status',
+			[
+				[
+					'methods'             => WP_REST_Server::CREATABLE,
+					'callback'            => fn( WP_REST_Request $r ) => $this->guard(
+						$r,
+						RolesAndCapabilities::QUEUE_ADVANCE,
+						function () use ( $r ): array {
+							$to_status = (string) $r['to_status'];
+							$event     = self::SECRETARY_STATUS_EVENTS[ $to_status ] ?? null;
+							if ( null === $event ) {
+								throw VisitException::of(
+									'CLINIC_VALIDATION_FAILED',
+									'وضعیت هدف برای منشی مجاز نیست (waiting, cancelled, awaiting_payment, checked_out)',
+									422,
+									[ 'to_status' => $to_status ]
+								);
+							}
 
-                    return $this->visits->transition(
-                        $this->userId($r),
-                        (int) $r['id'],
-                        $event,
-                        ['reason' => $r['note'] ?? $r['reason'] ?? null, 'note' => $r['note'] ?? null]
-                    );
-                }),
-                'permission_callback' => fn (WP_REST_Request $r)
-                    => $this->permCap($r, RolesAndCapabilities::QUEUE_ADVANCE),
-                'args' => [
-                    'to_status' => ['required' => true, 'type' => 'string'],
-                    'note' => ['required' => false, 'type' => 'string'],
-                ],
-            ],
-        ]);
+							return $this->visits->transition(
+								$this->userId( $r ),
+								(int) $r['id'],
+								$event,
+								[
+									'reason' => $r['note'] ?? $r['reason'] ?? null,
+									'note'   => $r['note'] ?? null,
+								]
+							);
+						}
+					),
+					'permission_callback' => fn( WP_REST_Request $r ) => $this->permCap( $r, RolesAndCapabilities::QUEUE_ADVANCE ),
+					'args'                => [
+						'to_status' => [ 'required' => true, 'type' => 'string' ],
+						'note'      => [ 'required' => false, 'type' => 'string' ],
+					],
+				],
+			]
+		);
 
-        // ---------- D16 — Checkout ----------
-        register_rest_route(self::NS, '/visits/(?P<id>\d+)/checkout', [
-            [
-                'methods' => WP_REST_Server::CREATABLE,
-                'callback' => fn (WP_REST_Request $r) => $this->guard($r, RolesAndCapabilities::QUEUE_CHECKOUT, fn () => $this->checkout($r)),
-                'permission_callback' => fn (WP_REST_Request $r)
-                    => $this->permCap($r, RolesAndCapabilities::QUEUE_CHECKOUT),
-                'args' => [
-                    'waive_invoice' => ['required' => false, 'type' => 'object'],
-                ],
-            ],
-        ]);
+		register_rest_route(
+			self::NS,
+			'/visits/(?P<id>\d+)/checkout',
+			[
+				[
+					'methods'             => WP_REST_Server::CREATABLE,
+					'callback'            => fn( WP_REST_Request $r ) => $this->guard( $r, RolesAndCapabilities::QUEUE_CHECKOUT, fn() => $this->checkout( $r ) ),
+					'permission_callback' => fn( WP_REST_Request $r ) => $this->permCap( $r, RolesAndCapabilities::QUEUE_CHECKOUT ),
+					'args'                => [
+						'waive_invoice' => [ 'required' => false, 'type' => 'object' ],
+					],
+				],
+			]
+		);
 
-        // ---------- E1 — داشبورد پزشک ----------
-        register_rest_route(self::NS, '/doctor/today', [
-            [
-                'methods' => WP_REST_Server::READABLE,
-                'callback' => fn (WP_REST_Request $r) => $this->guard($r, RolesAndCapabilities::QUEUE_READ, fn () => $this->visits->today($this->userId($r))),
-                'permission_callback' => fn (WP_REST_Request $r)
-                    => $this->permCap($r, RolesAndCapabilities::QUEUE_READ),
-            ],
-        ]);
+		// E1 — داشبورد پزشک (Doctor Portal strict) — Blocker 1
+		register_rest_route(
+			self::NS,
+			'/doctor/today',
+			[
+				[
+					'methods'             => WP_REST_Server::READABLE,
+					'callback'            => fn( WP_REST_Request $r ) => $this->guard( $r, RolesAndCapabilities::QUEUE_READ, fn() => $this->visits->todayForDoctorPortal( $this->userId( $r ) ) ),
+					'permission_callback' => fn( WP_REST_Request $r ) => $this->permCap( $r, RolesAndCapabilities::QUEUE_READ ),
+				],
+			]
+		);
 
-        // ---------- E2 — صف ----------
-        register_rest_route(self::NS, '/queue', [
-            [
-                'methods' => WP_REST_Server::READABLE,
-                'callback' => fn (WP_REST_Request $r) => $this->guard($r, RolesAndCapabilities::QUEUE_READ, function () use ($r): array {
-                    $clinicianId = isset($r['clinician_id']) ? (int) $r['clinician_id'] : null;
+		register_rest_route(
+			self::NS,
+			'/doctor/portal/today',
+			[
+				[
+					'methods'             => WP_REST_Server::READABLE,
+					'callback'            => fn( WP_REST_Request $r ) => $this->guard( $r, RolesAndCapabilities::QUEUE_READ, fn() => $this->visits->todayForDoctorPortal( $this->userId( $r ) ) ),
+					'permission_callback' => fn( WP_REST_Request $r ) => $this->permCap( $r, RolesAndCapabilities::QUEUE_READ ),
+				],
+			]
+		);
 
-                    return $this->visits->today($this->userId($r), $clinicianId);
-                }),
-                'permission_callback' => fn (WP_REST_Request $r)
-                    => $this->permCap($r, RolesAndCapabilities::QUEUE_READ),
-                'args' => [
-                    'clinician_id' => ['required' => false, 'type' => 'integer', 'sanitize_callback' => 'absint'],
-                ],
-            ],
-        ]);
+		register_rest_route(
+			self::NS,
+			'/queue',
+			[
+				[
+					'methods'             => WP_REST_Server::READABLE,
+					'callback'            => fn( WP_REST_Request $r ) => $this->guard(
+						$r,
+						RolesAndCapabilities::QUEUE_READ,
+						function () use ( $r ): array {
+							$clinician_id = isset( $r['clinician_id'] ) ? (int) $r['clinician_id'] : null;
+							return $this->visits->today( $this->userId( $r ), $clinician_id );
+						}
+					),
+					'permission_callback' => fn( WP_REST_Request $r ) => $this->permCap( $r, RolesAndCapabilities::QUEUE_READ ),
+					'args'                => [
+						'clinician_id' => [
+							'required'          => false,
+							'type'              => 'integer',
+							'sanitize_callback' => 'absint',
+						],
+					],
+				],
+			]
+		);
 
-        // ---------- E3–E6 — اکشنهای پزشک ----------
-        foreach (self::DOCTOR_EVENTS as $event) {
-            register_rest_route(self::NS, '/visits/(?P<id>\d+)/' . $event, [
-                [
-                    'methods' => WP_REST_Server::CREATABLE,
-                    'callback' => fn (WP_REST_Request $r) => $this->doctorAction($r, $event),
-                    'permission_callback' => fn (WP_REST_Request $r)
-                        => $this->permCap($r, $event === 'start' ? RolesAndCapabilities::CONSULT_START : RolesAndCapabilities::QUEUE_CALL),
-                    'args' => [
-                        'reason' => ['required' => false, 'type' => 'string'], // skip الزامی — Service چک می‌کند
-                        'room' => ['required' => false, 'type' => 'string'],
-                    ],
-                ],
-            ]);
-        }
+		foreach ( self::DOCTOR_EVENTS as $event ) {
+			register_rest_route(
+				self::NS,
+				'/visits/(?P<id>\d+)/' . $event,
+				[
+					[
+						'methods'             => WP_REST_Server::CREATABLE,
+						'callback'            => fn( WP_REST_Request $r ) => $this->doctorAction( $r, $event ),
+						'permission_callback' => fn( WP_REST_Request $r ) => $this->permCap( $r, 'start' === $event ? RolesAndCapabilities::CONSULT_START : RolesAndCapabilities::QUEUE_CALL ),
+						'args'                => [
+							'reason' => [ 'required' => false, 'type' => 'string' ],
+							'room'   => [ 'required' => false, 'type' => 'string' ],
+						],
+					],
+				]
+			);
+		}
 
-        // ---------- R1 — Real-time Feed (ADR-0007) ----------
-        register_rest_route(self::NS, '/rt/queue', [
-            [
-                'methods' => WP_REST_Server::READABLE,
-                'callback' => fn (WP_REST_Request $r) => $this->rtQueue($r),
-                'permission_callback' => fn (WP_REST_Request $r)
-                    => $this->permCap($r, RolesAndCapabilities::QUEUE_READ),
-                'args' => [
-                    'since' => ['required' => false, 'type' => 'integer', 'default' => 0, 'sanitize_callback' => 'absint'],
-                ],
-            ],
-        ]);
-    }
+		register_rest_route(
+			self::NS,
+			'/rt/queue',
+			[
+				[
+					'methods'             => WP_REST_Server::READABLE,
+					'callback'            => fn( WP_REST_Request $r ) => $this->rtQueue( $r ),
+					'permission_callback' => fn( WP_REST_Request $r ) => $this->permCap( $r, RolesAndCapabilities::QUEUE_READ ),
+					'args'                => [
+						'since' => [
+							'required'          => false,
+							'type'              => 'integer',
+							'default'           => 0,
+							'sanitize_callback' => 'absint',
+						],
+					],
+				],
+			]
+		);
 
-    // ================= Handlers =================
+		register_rest_route(
+			self::NS,
+			'/doctor/portal/rt/queue',
+			[
+				[
+					'methods'             => WP_REST_Server::READABLE,
+					'callback'            => fn( WP_REST_Request $r ) => $this->rtQueuePortal( $r ),
+					'permission_callback' => fn( WP_REST_Request $r ) => $this->permCap( $r, RolesAndCapabilities::QUEUE_READ ),
+					'args'                => [
+						'since' => [
+							'required'          => false,
+							'type'              => 'integer',
+							'default'           => 0,
+							'sanitize_callback' => 'absint',
+						],
+					],
+				],
+			]
+		);
+	}
 
-    /**
-     * E3–E6: call/recall/start/skip — Capability متمایز هر اکشن.
-     *
-     * E14 (complete) از F5 به ClinicalController منتقل شده (Validation بالینی
-     * FR-8.7)؛ اینجا فقط اکشن‌های صف اعمال می‌شوند.
-     */
-    private function doctorAction(WP_REST_Request $r, string $event): WP_REST_Response|WP_Error
-    {
-        $cap = match ($event) {
-            'start' => RolesAndCapabilities::CONSULT_START,
-            default => RolesAndCapabilities::QUEUE_CALL, // call/recall/skip
-        };
+	private function doctorAction( WP_REST_Request $r, string $event ): WP_REST_Response|WP_Error {
+		$cap = match ( $event ) {
+			'start' => RolesAndCapabilities::CONSULT_START,
+			default => RolesAndCapabilities::QUEUE_CALL,
+		};
 
-        return $this->guard($r, $cap, fn () => $this->visits->transition(
-            $this->userId($r),
-            (int) $r['id'],
-            $event,
-            ['reason' => $r['reason'] ?? null, 'room' => $r['room'] ?? null]
-        ));
-    }
+		return $this->guard(
+			$r,
+			$cap,
+			fn() => $this->visits->transition(
+				$this->userId( $r ),
+				(int) $r['id'],
+				$event,
+				[
+					'reason' => $r['reason'] ?? null,
+					'room'   => $r['room'] ?? null,
+				]
+			)
+		);
+	}
 
-    /**
-     * D16: paid → check_out (V14)؛ awaiting_payment + waive → waive (V13)؛
-     * بدون پرداخت/معافیت → CLINIC_POLICY_VIOLATION (فاکتور/پرداخت واقعی = F6).
-     */
-    private function checkout(WP_REST_Request $r): array
-    {
-        $waive = $r['waive_invoice'] ?? null;
-        $waiveReason = is_array($waive) && isset($waive['reason']) ? (string) $waive['reason'] : null;
+	private function checkout( WP_REST_Request $r ): array {
+		$waive        = $r['waive_invoice'] ?? null;
+		$waive_reason = is_array( $waive ) && isset( $waive['reason'] ) ? (string) $waive['reason'] : null;
+		return $this->visits->checkout( $this->userId( $r ), (int) $r['id'], $waive_reason );
+	}
 
-        return $this->visits->checkout($this->userId($r), (int) $r['id'], $waiveReason);
-    }
+	private function rtQueue( WP_REST_Request $r ): WP_REST_Response|WP_Error {
+		$guard = $this->guard( $r, RolesAndCapabilities::QUEUE_READ, null );
+		if ( $guard instanceof WP_Error ) {
+			return $guard;
+		}
 
-    /**
-     * R1: ETag/304 — اگر کلاینت ETag آخرین رویداد را دارد → 304 بدون Body.
-     */
-    private function rtQueue(WP_REST_Request $r): WP_REST_Response|WP_Error
-    {
-        $guard = $this->guard($r, RolesAndCapabilities::QUEUE_READ, null);
-        if ($guard instanceof WP_Error) {
-            return $guard;
-        }
+		$rl = $this->rateLimit( $r, 'rt_queue_' . $this->userId( $r ), 60, MINUTE_IN_SECONDS );
+		if ( $rl instanceof WP_Error ) {
+			return $rl;
+		}
 
-        // Polling Guard (ADR-0007 — uncontrolled polling ممنوع):
-        // منشی 3s → 20/min؛ سقف با حاشیه = 60/min
-        $rl = $this->rateLimit($r, 'rt_queue_' . $this->userId($r), 60, MINUTE_IN_SECONDS);
-        if ($rl instanceof WP_Error) {
-            return $rl;
-        }
+		$user_id       = $this->userId( $r );
+		$since         = (int) ( $r['since'] ?? 0 );
+		$last_event_id = $this->visits->lastEventId( $user_id );
+		$etag          = '\"' . $last_event_id . '\"';
+		$if_none_match = trim( (string) $r->get_header( 'If-None-Match' ) );
+		if ( $if_none_match === $etag ) {
+			$not_modified = new WP_REST_Response( null, 304 );
+			$not_modified->header( 'ETag', $etag );
+			return $not_modified;
+		}
 
-        $userId = $this->userId($r);
-        $since = (int) ($r['since'] ?? 0);
+		$payload  = $this->visits->eventsSince( $user_id, $since );
+		$response = $this->success( $payload );
+		$response->header( 'ETag', $etag );
+		return $response;
+	}
 
-        // ETag = آخرین event_id کلینیک — بدون تغییر → 304 (کاهش بار)
-        $lastEventId = $this->visits->lastEventId($userId);
-        $etag = '"' . $lastEventId . '"';
-        $ifNoneMatch = trim((string) $r->get_header('If-None-Match'));
-        if ($ifNoneMatch === $etag) {
-            $notModified = new WP_REST_Response(null, 304);
-            $notModified->header('ETag', $etag);
+	private function rtQueuePortal( WP_REST_Request $r ): WP_REST_Response|WP_Error {
+		$guard = $this->guard( $r, RolesAndCapabilities::QUEUE_READ, null );
+		if ( $guard instanceof WP_Error ) {
+			return $guard;
+		}
 
-            return $notModified;
-        }
+		$rl = $this->rateLimit( $r, 'rt_queue_portal_' . $this->userId( $r ), 60, MINUTE_IN_SECONDS );
+		if ( $rl instanceof WP_Error ) {
+			return $rl;
+		}
 
-        $payload = $this->visits->eventsSince($userId, $since);
-        $response = $this->success($payload);
-        $response->header('ETag', $etag);
+		$user_id = $this->userId( $r );
+		$since   = (int) ( $r['since'] ?? 0 );
 
-        return $response;
-    }
+		try {
+			$last_event_id = $this->visits->lastEventIdForDoctorPortal( $user_id );
+		} catch ( VisitException $e ) {
+			return $this->error( $e->errorCode, $e->httpStatus, $e->getMessage(), $e->data );
+		}
 
-    // ================= Helpers =================
+		$etag          = '\"' . $last_event_id . '\"';
+		$if_none_match = trim( (string) $r->get_header( 'If-None-Match' ) );
+		if ( $if_none_match === $etag ) {
+			$not_modified = new WP_REST_Response( null, 304 );
+			$not_modified->header( 'ETag', $etag );
+			return $not_modified;
+		}
 
-    private function userId(WP_REST_Request $r): int
-    {
-        return (int) (wp_get_current_user()->ID ?: 0);
-    }
+		try {
+			$payload = $this->visits->eventsSinceForDoctorPortal( $user_id, $since );
+		} catch ( VisitException $e ) {
+			return $this->error( $e->errorCode, $e->httpStatus, $e->getMessage(), $e->data );
+		}
 
-    /**
-     * Guard استاندارد: Nonce → Capability → مجوز Clinic-scoped → اجرا؛
-     * VisitException → WP_Error.
-     *
-     * Phase 3 Slice 6B — نگاشت مجوز scoped هر مسیر صف دقیقاً همان معنای
-     * عملیات آن مسیر است (capability متناظرِ خودِ مسیر):
-     *   /secretary/today، /doctor/today، /queue، /rt/queue ⇒ cpms_queue_read
-     *   /visits/checkin، /visits/walk-in                          ⇒ cpms_queue_checkin
-     *   /visits/{id}/status                                        ⇒ cpms_queue_advance
-     *   /visits/{id}/checkout                                      ⇒ cpms_queue_checkout
-     *   /visits/{id}/call|recall|skip                              ⇒ cpms_queue_call
-     *   /visits/{id}/start                                         ⇒ cpms_consult_start
-     * Clinic معتبر از App::scope() (مرز RestClinicContext) — هرگز از payload؛
-     * عضویت فعال پایدار + مجوز scoped الزامی است؛ cap سراسری فقط
-     * defense-in-depth باقی می‌ماند. مالکیت پایدار شیء (ویزیت کلینیک دیگر)
-     * در VisitService اعمال می‌شود (404 parity).
-     *
-     * @template T
-     * @param callable(): T $fn
-     * @return WP_REST_Response|WP_Error
-     */
-    private function guard(WP_REST_Request $r, string $cap, ?callable $fn): WP_REST_Response|WP_Error
-    {
-        $nonce = $this->requireNonce($r);
-        if ($nonce instanceof WP_Error) {
-            return $nonce;
-        }
-        $perm = $this->requireCap($cap);
-        if ($perm instanceof WP_Error) {
-            return $perm;
-        }
-        $scoped = $this->requireClinicPermission($cap);
-        if ($scoped instanceof WP_Error) {
-            return $scoped;
-        }
-        if ($fn === null) {
-            return $this->success(null);
-        }
+		$response = $this->success( $payload );
+		$response->header( 'ETag', $etag );
+		return $response;
+	}
 
-        try {
-            return $this->success($fn(), 200);
-        } catch (VisitException $e) {
-            return $this->error($e->errorCode, $e->httpStatus, $e->getMessage(), $e->data);
-        } catch (\Throwable $e) {
-            // Fallback غیرمنتظره (اتخاذ از Audit Agent-2): Envelope خطای داخلی
-            // استاندارد — جزئیات Exception هرگز به کلاینت نشت نمی‌کند؛ فقط کلاس
-            // برای Debug لاگ‌شده در سمت سرور (Error Log استاندارد PHP/WP).
-            error_log('[CPMS][QueueController] unexpected: ' . get_class($e) . ': ' . $e->getMessage());
-            return $this->error('CLINIC_INTERNAL_ERROR', 500, 'خطای داخلی سرور — لطفاً دوباره تلاش کنید');
-        }
-    }
+	private function userId( WP_REST_Request $r ): int {
+		return (int) ( wp_get_current_user()->ID ?: 0 );
+	}
+
+	private function guard( WP_REST_Request $r, string $cap, ?callable $fn ): WP_REST_Response|WP_Error {
+		$nonce = $this->requireNonce( $r );
+		if ( $nonce instanceof WP_Error ) {
+			return $nonce;
+		}
+		$perm = $this->requireCap( $cap );
+		if ( $perm instanceof WP_Error ) {
+			return $perm;
+		}
+		$scoped = $this->requireClinicPermission( $cap );
+		if ( $scoped instanceof WP_Error ) {
+			return $scoped;
+		}
+		if ( null === $fn ) {
+			return $this->success( null );
+		}
+
+		try {
+			return $this->success( $fn(), 200 );
+		} catch ( VisitException $e ) {
+			return $this->error( $e->errorCode, $e->httpStatus, $e->getMessage(), $e->data );
+		} catch ( \Throwable $e ) {
+			error_log( '[CPMS][QueueController] unexpected: ' . get_class( $e ) . ': ' . $e->getMessage() );
+			return $this->error( 'CLINIC_INTERNAL_ERROR', 500, 'خطای داخلی سرور — لطفاً دوباره تلاش کنید' );
+		}
+	}
 }
