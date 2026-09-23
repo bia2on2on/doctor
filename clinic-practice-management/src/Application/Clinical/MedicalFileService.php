@@ -116,13 +116,13 @@ final class MedicalFileService
      * @param array{name?: string, tmp_name?: string, size?: int, error?: int} $file
      * @return array<string, mixed>
      */
-    public function patientUpload(int $wpUserId, array $file, int $patientId, string $category = 'other', ?int $linkId = null): array
-    {
-        $selected = $this->selectedPatient($wpUserId, $linkId);
-        $this->requireSelectedPathPatient($selected, $patientId);
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- نام عمومی تثبیت‌شدهٔ C3 (قرارداد پیش از Slice 7؛ بدنه و امضا سبک وردپرس).
+    public function patientUpload( int $wp_user_id, array $file, int $patient_id, string $category = 'other', ?int $link_id = null ): array {
+        $selected = $this->selected_patient( $wp_user_id, $link_id );
+        $this->require_selected_path_patient( $selected, $patient_id );
 
         // آپلود بیمار همیشه patient_visible (بازبینی پزشک بعدی)
-        return $this->store($wpUserId, 'patient', $file, $patientId, null, $category, 'patient_visible', $selected);
+        return $this->store( $wp_user_id, 'patient', $file, $patient_id, null, $category, 'patient_visible', $selected );
     }
 
     // ================= C4/E7 — فهرست =================
@@ -134,16 +134,16 @@ final class MedicalFileService
      *
      * @return list<array<string, mixed>>
      */
-    public function patientFiles(int $wpUserId, int $patientId, ?int $linkId = null): array
-    {
-        $selected = $this->selectedPatient($wpUserId, $linkId);
-        $this->requireSelectedPathPatient($selected, $patientId);
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- نام عمومی تثبیت‌شدهٔ C4 (قرارداد پیش از Slice 7؛ بدنه و امضا سبک وردپرس).
+    public function patientFiles( int $wp_user_id, int $patient_id, ?int $link_id = null ): array {
+        $selected = $this->selected_patient( $wp_user_id, $link_id );
+        $this->require_selected_path_patient( $selected, $patient_id );
 
-        $rows = $this->files->forPatient($patientId, true);
-        $jalali = $this->jalaliDisplayMap($rows);
+        $rows   = $this->files->forPatient( $patient_id, true );
+        $jalali = $this->jalali_display_map( $rows );
 
         return array_map(
-            fn (array $row): array => $this->presentFile($row, $jalali[(int) $row['id']] ?? null),
+            fn ( array $row ) => $this->presentFile( $row, $jalali[ (int) $row['id'] ] ?? null ),
             $rows
         );
     }
@@ -200,8 +200,8 @@ final class MedicalFileService
             // (Clinicِ ردیف فایل = Clinicِ بیمار/لینک). هیچ سلکتور کلاینتی مجوز
             // نمی‌سازد و هیچ fallback اصلی/اولی وجود ندارد. رد = همان 404 امن،
             // همیشه پیش از خواندنِ دیسک.
-            if ((string) $row['visibility'] !== 'patient_visible'
-                || !$this->patientRecordLinkedToUser($actorUserId, (int) $row['patient_id'], (int) $row['clinic_id'])) {
+            $membership = $this->patient_record_linked_to_user( $actorUserId, (int) $row['patient_id'], (int) $row['clinic_id'] ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- پارامتر قدیمیِ متدِ میزبان.
+            if ( (string) $row['visibility'] !== 'patient_visible' || ! $membership ) {
                 $this->auditAndThrow($actorUserId, 'file', $fileId, 'دسترسی به این فایل مجاز نیست', 'فایل یافت نشد');
             }
         } elseif ($isDoctor) {
@@ -300,7 +300,7 @@ final class MedicalFileService
         ?int $visitId,
         string $category,
         string $visibility,
-        ?array $selectedPatient = null
+        ?array $selected_patient = null
     ): array {
         if (!in_array($category, self::CATEGORIES, true)) {
             throw ClinicalException::of('CLINIC_VALIDATION_FAILED', 'دسته‌بندی فایل نامعتبر است', 422, ['category' => $category]);
@@ -382,10 +382,11 @@ final class MedicalFileService
             // `PatientService::require_selected_patient` حل و تأیید شده — پس
             // مالکیت، سرور-مشتق است (لینک پایدار فعال)، نه حدسِ «اولین/اصلی».
             // اینجا فقط همان حقیقتِ سروری دوباره در برابرِ مقصدِ ذخیره چک می‌شود.
-            $resolvedId = is_array($selectedPatient) ? (int) ($selectedPatient['id'] ?? 0) : 0;
-            $resolvedClinicId = is_array($selectedPatient) ? (int) ($selectedPatient['clinic_id'] ?? 0) : 0;
-            if ($resolvedId !== $patientId || $resolvedClinicId !== $patientClinicId) {
-                $this->auditAndThrow($actorUserId, 'patient', $patientId, 'دسترسی به این فایل مجاز نیست');
+            $resolved_id        = is_array( $selected_patient ) ? (int) ( $selected_patient['id'] ?? 0 ) : 0;
+            $resolved_clinic_id = is_array( $selected_patient ) ? (int) ( $selected_patient['clinic_id'] ?? 0 ) : 0;
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- پارامترهای قدیمیِ متدِ میزبان.
+            if ( $resolved_id !== $patientId || $resolved_clinic_id !== $patientClinicId ) {
+                $this->auditAndThrow( $actorUserId, 'patient', $patientId, 'دسترسی به این فایل مجاز نیست' ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- پارامترهای قدیمیِ متدِ میزبان.
             }
         }
         $storagePath = $this->storageFor($patientClinicId)->store($content, $patientClinicId, $extension);
@@ -457,12 +458,11 @@ final class MedicalFileService
      *
      * @return array<string, mixed> ردیف بیمارِ حل‌شده (id/clinic_id/…)
      */
-    private function selectedPatient(int $wpUserId, ?int $linkId): array
-    {
+    private function selected_patient( int $wp_user_id, ?int $link_id ): array {
         try {
-            return App::patientService()->require_selected_patient($wpUserId, $linkId);
-        } catch (BookingException $error) {
-            throw ClinicalException::of($error->errorCode, $error->getMessage(), $error->httpStatus, $error->data); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- Established domain exception properties.
+            return App::patientService()->require_selected_patient( $wp_user_id, $link_id );
+        } catch ( BookingException $error ) {
+            throw ClinicalException::of( $error->errorCode, $error->getMessage(), $error->httpStatus, $error->data ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- Established domain exception properties.
         }
     }
 
@@ -473,10 +473,9 @@ final class MedicalFileService
      *
      * @param array<string, mixed> $selected
      */
-    private function requireSelectedPathPatient(array $selected, int $pathPatientId): void
-    {
-        if ((int) ($selected['id'] ?? 0) !== $pathPatientId) {
-            throw ClinicalException::of('CLINIC_NOT_FOUND', 'بیماری به این حساب متصل نیست', 404);
+    private function require_selected_path_patient( array $selected, int $path_patient_id ): void {
+        if ( (int) ( $selected['id'] ?? 0 ) !== $path_patient_id ) {
+            throw ClinicalException::of( 'CLINIC_NOT_FOUND', 'بیماری به این حساب متصل نیست', 404 );
         }
     }
 
@@ -485,18 +484,19 @@ final class MedicalFileService
      * فعالِ پایدار به همان رکورد بیمار داشته باشد و Clinicِ ردیفِ فایل با
      * Clinicِ بیمار/لینک یکی باشد — پیش از هر خواندن از دیسک.
      */
-    private function patientRecordLinkedToUser(int $wpUserId, int $patientId, int $clinicId): bool
-    {
+    private function patient_record_linked_to_user( int $wp_user_id, int $patient_id, int $clinic_id ): bool {
         global $wpdb;
-        $linked = $wpdb->get_var($wpdb->prepare(
-            'SELECT 1 FROM ' . $wpdb->prefix . 'cpms_patient_user_links l' .
-            ' JOIN ' . $wpdb->prefix . 'cpms_patients p ON p.id = l.patient_id AND p.clinic_id = l.clinic_id' .
-            ' WHERE l.wp_user_id = %d AND p.id = %d AND l.clinic_id = %d AND p.status = %s LIMIT 1',
-            $wpUserId,
-            $patientId,
-            $clinicId,
-            'active'
-        )); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $linked = $wpdb->get_var(
+            $wpdb->prepare(
+                'SELECT 1 FROM ' . $wpdb->prefix . 'cpms_patient_user_links l' .
+                ' JOIN ' . $wpdb->prefix . 'cpms_patients p ON p.id = l.patient_id AND p.clinic_id = l.clinic_id' .
+                ' WHERE l.wp_user_id = %d AND p.id = %d AND l.clinic_id = %d AND p.status = %s LIMIT 1',
+                $wp_user_id,
+                $patient_id,
+                $clinic_id,
+                'active'
+            )
+        ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
         return $linked !== null;
     }
@@ -512,58 +512,61 @@ final class MedicalFileService
      *
      * @return array<int, string> fileId => Jalali `Y/m/d`
      */
-    private function jalaliDisplayMap(array $rows): array
-    {
-        $visitIds = [];
-        foreach ($rows as $row) {
-            if ($row['visit_id'] !== null) {
-                $visitIds[(int) $row['visit_id']] = true;
+    private function jalali_display_map( array $rows ): array {
+        $visit_ids = [];
+        foreach ( $rows as $row ) {
+            if ( $row['visit_id'] !== null ) {
+                $visit_ids[ (int) $row['visit_id'] ] = true;
             }
         }
-        if ($visitIds === []) {
+        if ( $visit_ids === [] ) {
             return [];
         }
 
         global $wpdb;
-        $ids = array_keys($visitIds);
-        $placeholders = implode(', ', array_fill(0, count($ids), '%d'));
-        $pairs = $wpdb->get_results($wpdb->prepare(
-            'SELECT v.id AS visit_id, l.timezone FROM ' . $wpdb->prefix . 'cpms_visits v' .
-            ' JOIN ' . $wpdb->prefix . 'cpms_locations l ON l.id = v.location_id' .
-            ' WHERE v.id IN (' . $placeholders . ')',
-            $ids
-        )); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $ids          = array_keys( $visit_ids );
+        $placeholders = implode( ', ', array_fill( 0, count( $ids ), '%d' ) );
+        $pairs        = $wpdb->get_results(
+            $wpdb->prepare(
+                'SELECT v.id AS visit_id, l.timezone FROM ' . $wpdb->prefix . 'cpms_visits v' .
+                ' JOIN ' . $wpdb->prefix . 'cpms_locations l ON l.id = v.location_id' .
+                ' WHERE v.id IN (' . $placeholders . ')',
+                $ids
+            )
+        ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
-        $validTimezones = \DateTimeZone::listIdentifiers();
-        $timezoneByVisit = [];
-        foreach ((array) $pairs as $pair) {
-            $timezone = (string) ($pair->timezone ?? '');
-            if ($timezone !== '' && in_array($timezone, $validTimezones, true)) {
-                $timezoneByVisit[(int) $pair->visit_id] = $timezone;
+        $valid_timezones   = \DateTimeZone::listIdentifiers();
+        $timezone_by_visit = [];
+        foreach ( (array) $pairs as $pair ) {
+            $timezone = (string) ( $pair->timezone ?? '' );
+            if ( $timezone !== '' && in_array( $timezone, $valid_timezones, true ) ) {
+                $timezone_by_visit[ (int) $pair->visit_id ] = $timezone;
             }
         }
-        if ($timezoneByVisit === []) {
+        if ( $timezone_by_visit === [] ) {
             return [];
         }
 
         $map = [];
-        foreach ($rows as $row) {
-            if ($row['visit_id'] === null) {
+        foreach ( $rows as $row ) {
+            if ( $row['visit_id'] === null ) {
                 continue;
             }
-            $timezone = $timezoneByVisit[(int) $row['visit_id']] ?? null;
-            if ($timezone === null) {
+            $timezone = $timezone_by_visit[ (int) $row['visit_id'] ] ?? null;
+            if ( $timezone === null ) {
                 continue; // رابطهٔ visit/location نامعتبر ⇒ حذف تاریخ، نه جایگزینی.
             }
-            $createdAt = (string) $row['created_at'];
-            $utc = \DateTimeImmutable::createFromFormat('Y-m-d H:i:s.u', $createdAt, new \DateTimeZone('UTC'))
-                ?: \DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $createdAt, new \DateTimeZone('UTC'));
-            if ($utc === false) {
+            $created_at = (string) $row['created_at'];
+            $utc        = \DateTimeImmutable::createFromFormat( 'Y-m-d H:i:s.u', $created_at, new \DateTimeZone( 'UTC' ) );
+            if ( $utc === false ) {
+                $utc = \DateTimeImmutable::createFromFormat( 'Y-m-d H:i:s', $created_at, new \DateTimeZone( 'UTC' ) );
+            }
+            if ( $utc === false ) {
                 continue;
             }
             try {
-                $map[(int) $row['id']] = Jalali::formatYmd($utc->setTimezone(new \DateTimeZone($timezone))->format('Y-m-d'));
-            } catch (\DomainException) {
+                $map[ (int) $row['id'] ] = Jalali::formatYmd( $utc->setTimezone( new \DateTimeZone( $timezone ) )->format( 'Y-m-d' ) );
+            } catch ( \DomainException ) {
                 continue; // تاریخ نامعتبر ⇒ حذف نمایشی (fail-closed).
             }
         }
@@ -802,27 +805,27 @@ final class MedicalFileService
 
     /**
      * @param array<string, mixed> $row
-     * @param string|null          $createdAtJalali تاریخ جلالی نمایشی فقط وقتی مسیرِ
+     * @param string|null          $created_at_jalali تاریخ جلالی نمایشی فقط وقتی مسیرِ
      *        موثقِ Location برقرار باشد (Slice 7)؛ در غیر این صورت کلید اصلاً
      *        منتشر نمی‌شود (حذف به‌جای حدس).
      *
      * @return array<string, mixed>
      */
-    private function presentFile(array $row, ?string $createdAtJalali = null): array
-    {
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- نام عمومی تثبیت‌شده (قرارداد پیش از Slice 7؛ بدنه و امضا سبک وردپرس).
+    private function presentFile( array $row, ?string $created_at_jalali = null ): array {
         $presented = [
-            'id' => (int) $row['id'],
-            'patient_id' => (int) ($row['patient_id'] ?? 0),
-            'visit_id' => ($row['visit_id'] ?? null) !== null ? (int) $row['visit_id'] : null,
-            'category' => (string) ($row['category'] ?? 'other'),
-            'original_filename' => (string) ($row['original_filename'] ?? ''),
-            'mime_type' => (string) ($row['mime_type'] ?? ''),
-            'file_size' => (int) ($row['file_size'] ?? 0),
-            'visibility' => (string) ($row['visibility'] ?? ''),
-            'created_at' => (string) ($row['created_at'] ?? ''),
+            'id'                => (int) ( $row['id'] ?? 0 ),
+            'patient_id'        => (int) ( $row['patient_id'] ?? 0 ),
+            'visit_id'          => ( $row['visit_id'] ?? null ) !== null ? (int) $row['visit_id'] : null,
+            'category'          => (string) ( $row['category'] ?? 'other' ),
+            'original_filename' => (string) ( $row['original_filename'] ?? '' ),
+            'mime_type'         => (string) ( $row['mime_type'] ?? '' ),
+            'file_size'         => (int) ( $row['file_size'] ?? 0 ),
+            'visibility'        => (string) ( $row['visibility'] ?? '' ),
+            'created_at'        => (string) ( $row['created_at'] ?? '' ),
         ];
-        if ($createdAtJalali !== null) {
-            $presented['created_at_jalali'] = $createdAtJalali;
+        if ( $created_at_jalali !== null ) {
+            $presented['created_at_jalali'] = $created_at_jalali;
         }
 
         return $presented;

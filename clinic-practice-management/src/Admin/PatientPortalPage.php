@@ -527,7 +527,7 @@ final class PatientPortalPage
         } else {
             $size_label = number_format_i18n( $size ) . ' ' . esc_html__( 'بایت', 'cpms' );
         }
-        $categories = [
+        $categories     = [
             'lab_result' => __( 'نتیجه آزمایش', 'cpms' ),
             'image'      => __( 'تصویر', 'cpms' ),
             'scan'       => __( 'اسکن', 'cpms' ),

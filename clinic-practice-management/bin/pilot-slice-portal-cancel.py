@@ -394,7 +394,7 @@ def run_journey(browser, run):
         required = {"cancel_path", "nonce", "notifications_read_path", "rest_root"}
         allowed = required | {"me_path", "my_records_path", "profile_initial", "profile_me_path",
                               "profile_my_records_path", "profile_records", "visits_path", "visit_detail_path",
-                              "prescriptions_path"}
+                              "prescriptions_path", "files_path", "files_stream_path"}
         if not required.issubset(set(cfg.keys())):
             raise RuntimeError(f"config must contain cancel_path/nonce/notifications_read_path/rest_root, got {sorted(cfg.keys())}")
         # Slice 5 adds only the existing C5/C6 route templates, never authority.
@@ -403,6 +403,12 @@ def run_journey(browser, run):
         # Slice 6 adds only the existing C7 route template, never authority.
         if cfg.get("prescriptions_path") != "/prescriptions":
             raise RuntimeError("Prescriptions config must target existing C7 route")
+        # Slice 7 adds only the existing C3/C4 + E17 route templates, never authority
+        # ({patient_id}/{id} are object selectors, resolved server-side).
+        if cfg.get("files_path") != "/patients/{patient_id}/files":
+            raise RuntimeError("Files config must target existing C3/C4 route")
+        if cfg.get("files_stream_path") != "/files/{id}/stream":
+            raise RuntimeError("Files stream config must target existing E17 route")
         extra = set(cfg.keys()) - allowed
         if extra:
             raise RuntimeError(f"config contains unexpected keys {sorted(extra)}; allowed={sorted(allowed)}")
