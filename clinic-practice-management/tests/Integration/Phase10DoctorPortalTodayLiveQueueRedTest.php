@@ -317,8 +317,8 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
             self::fail('F: portal N>1 without explicit Location must throw CLINIC_SCOPE_REQUIRED with field location_id');
         } catch (\ClinicCore\Domain\Visits\VisitException $ex) {
             self::assertSame('CLINIC_SCOPE_REQUIRED', $ex->errorCode, 'F: portal N>1 => CLINIC_SCOPE_REQUIRED');
-            self::assertSame(400, $ex->httpStatus());
-            $ctx = $ex->getData();
+            self::assertSame(400, $ex->httpStatus);
+            $ctx = $ex->data;
             self::assertSame('location_id', $ctx['field'] ?? '', 'F: field location_id');
             self::assertSame('location_required', $ctx['reason'] ?? '', 'F: reason location_required');
             self::assertArrayNotHasKey('eligible_location_ids', $ctx, 'F: must NOT return eligible IDs');
