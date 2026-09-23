@@ -130,6 +130,7 @@ echo $cpms_styles_html;
 			<li><a href="<?php echo esc_url( $cpms_portal_url ); ?>#profile" data-role="nav-profile">پروفایل</a></li>
 			<li><a href="<?php echo esc_url( $cpms_portal_url ); ?>#visits" data-role="nav-visits"><?php esc_html_e( 'ویزیت‌های من', 'cpms' ); ?></a></li>
 			<li><a href="<?php echo esc_url( $cpms_portal_url ); ?>#prescriptions" data-role="nav-prescriptions"><?php esc_html_e( 'نسخه‌های من', 'cpms' ); ?></a></li>
+			<li><a href="<?php echo esc_url( $cpms_portal_url ); ?>#files" data-role="nav-files"><?php esc_html_e( 'فایل‌های من', 'cpms' ); ?></a></li>
 		</ul>
 	</nav>
 	<?php endif; ?>

@@ -66,6 +66,9 @@ final class FilesController extends RestBase
         ]);
 
         // ---------- C3 — آپلود بیمار ----------
+        // `link_id` (اختیاری، integer): انتخاب رکورد بیمار در حالت چندپرونده‌ای —
+        // همان سیاستِ پروفایل/ویزیت/نسخه (بدون `link_id` و با بیش از یک رکورد فعال:
+        // 422). هیچ کلیدک کلاینت دیگری (clinic_id/organization_id/role) مجوز نمی‌سازد.
         register_rest_route(self::NS, '/patients/(?P<patient_id>\d+)/files', [
             [
                 'methods' => WP_REST_Server::CREATABLE,
@@ -74,8 +77,9 @@ final class FilesController extends RestBase
                     fn () => $this->files->patientUpload(
                         $this->userId($r),
                         $this->uploadedFile($r),
-                        (int) $r['patient_id'],
-                        (string) ($r['category'] ?? 'other')
+                        $this->pathPatientId($r),
+                        (string) ($r['category'] ?? 'other'),
+                        isset($r['link_id']) ? (int) $r['link_id'] : null
                     ),
                     true
                 ),
@@ -83,15 +87,23 @@ final class FilesController extends RestBase
                     => $this->permAnyRole($r, [RolesAndCapabilities::ROLE_PATIENT]),
                 'args' => [
                     'category' => ['required' => false, 'type' => 'string', 'default' => 'other'],
+                    'link_id' => ['required' => false, 'type' => 'integer'],
                 ],
             ],
             // ---------- C4 — فهرست فایل‌های بیمار ----------
             [
                 'methods' => WP_REST_Server::READABLE,
                 'callback' => fn (WP_REST_Request $r) => $this->patient($r,
-                    fn () => ['files' => $this->files->patientFiles($this->userId($r), (int) $r['patient_id'])]),
+                    fn () => ['files' => $this->files->patientFiles(
+                        $this->userId($r),
+                        $this->pathPatientId($r),
+                        isset($r['link_id']) ? (int) $r['link_id'] : null
+                    )]),
                 'permission_callback' => fn (WP_REST_Request $r)
                     => $this->permAnyRole($r, [RolesAndCapabilities::ROLE_PATIENT]),
+                'args' => [
+                    'link_id' => ['required' => false, 'type' => 'integer'],
+                ],
             ],
         ]);
     }
@@ -220,6 +232,18 @@ final class FilesController extends RestBase
     private function userId(WP_REST_Request $r): int
     {
         return (int) (wp_get_current_user()->ID ?: 0);
+    }
+
+    /**
+     * `patient_id` مسیر فقط هویتِ شیء/سلکتور است — همیشه از پارامترهای خودِ مسیر
+     * خوانده می‌شود (نه `$r[...]` که پارامترهای query می‌توانند بر آن سایه
+     * بیندازند). مجوز هرگز از اینجا نمی‌آید؛ سرور آن را از لینک پایدار حل می‌کند.
+     */
+    private function pathPatientId(WP_REST_Request $r): int
+    {
+        $url = $r->get_url_params();
+
+        return isset($url['patient_id']) ? (int) $url['patient_id'] : 0;
     }
 
     /**

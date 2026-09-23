@@ -845,3 +845,25 @@
 [data-role="prescription-item"] { margin-block-end: 1rem; }
 .cpms-pp-prescription__header { font-weight: 600; margin-block-end: 4px; }
 .cpms-pp-prescription__items { padding-inline-start: 1.25rem; margin-block-start: 4px; }
+
+/* Slice 7 — My Files reuses the shell buttons and section spacing. */
+[data-role="files-section"] { overflow-wrap: anywhere; }
+[data-role="files-record-select"] { max-width: 100%; min-height: 44px; }
+.cpms-pp-files__list { list-style: none; margin: 0; padding: 0; }
+.cpms-pp-file {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px 12px;
+	padding: 10px 12px;
+	border: 1px solid var(--cpms-pp-border, #dcdcde);
+	border-radius: var(--cpms-pp-radius-sm, 6px);
+	background: #fff;
+	margin-block-end: 8px;
+}
+.cpms-pp-file__name { font-weight: 600; flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.cpms-pp-file__date,
+.cpms-pp-file__meta { color: var(--cpms-pp-muted, #646970); font-size: 0.9em; }
+.cpms-pp-files__upload { margin-block-start: 16px; display: grid; gap: 8px; justify-items: start; }
+.cpms-pp-files__upload input[type="file"] { max-width: 100%; }
+.cpms-pp-files__notice { width: 100%; box-sizing: border-box; }

@@ -9,6 +9,8 @@ use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Application\Scope\TrustedClinicEstablisher;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Domain\Booking\BookingException;
+use ClinicCore\Domain\Time\Jalali;
 use ClinicCore\Infrastructure\Audit\AuditLogger;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
 use ClinicCore\Infrastructure\Repository\MedicalFileRepository;
@@ -104,36 +106,46 @@ final class MedicalFileService
     // ================= C3 — آپلود بیمار (Ownership) =================
 
     /**
+     * آپلود بیمار (C3) — Phase 9 Slice 7: انتخاب رکورد با همان سیاستِ
+     * `PatientService::require_selected_patient` (پروفایل/ویزیت/نسخه):
+     * ۰ رکورد فعال ⇒ 404 کانونیک؛ ۱ رکورد ⇒ حل خودکار؛ N>1 بدون `link_id` ⇒
+     * 422 `CLINIC_SELECTION_REQUIRED`؛ `link_id` خارجی/غیرفعال/ناموجود ⇒ 404
+     * غیرقابل‌شمارش؛ هرگز fallback به رکورد اصلی/اول. `patient_id` مسیر فقط
+     * هویتِ شیء است و باید با رکوردِ حل‌شدهٔ سروری بخواند — هیچ‌وقت مجوز نیست.
+     *
      * @param array{name?: string, tmp_name?: string, size?: int, error?: int} $file
      * @return array<string, mixed>
      */
-    public function patientUpload(int $wpUserId, array $file, int $patientId, string $category = 'other'): array
+    public function patientUpload(int $wpUserId, array $file, int $patientId, string $category = 'other', ?int $linkId = null): array
     {
-        // P-8: بیمار فقط برای پرونده خودش — بیمار دیگر → 404 + Audit
-        $owned = $this->ownedPatientId($wpUserId);
-        if ($owned !== $patientId) {
-            $this->auditAndThrow($wpUserId, 'patient', $patientId, 'آپلود فقط برای پرونده خود بیمار مجاز است');
-        }
+        $selected = $this->selectedPatient($wpUserId, $linkId);
+        $this->requireSelectedPathPatient($selected, $patientId);
 
         // آپلود بیمار همیشه patient_visible (بازبینی پزشک بعدی)
-        return $this->store($wpUserId, 'patient', $file, $patientId, null, $category, 'patient_visible');
+        return $this->store($wpUserId, 'patient', $file, $patientId, null, $category, 'patient_visible', $selected);
     }
 
     // ================= C4/E7 — فهرست =================
 
     /**
-     * فهرست برای بیمار (C4 — Ownership + فقط patient_visible).
+     * فهرست برای بیمار (C4 — Ownership + فقط patient_visible) — Phase 9 Slice 7:
+     * همان قرارداد انتخابِ C3 (بالا). نمایشِ جلالی فقط وقتی مسیرِ موثقِ
+     * `visit_id → Visit → Location → IANA timezone` برقرار باشد (fail-closed).
      *
      * @return list<array<string, mixed>>
      */
-    public function patientFiles(int $wpUserId, int $patientId): array
+    public function patientFiles(int $wpUserId, int $patientId, ?int $linkId = null): array
     {
-        $owned = $this->ownedPatientId($wpUserId);
-        if ($owned !== $patientId) {
-            $this->auditAndThrow($wpUserId, 'patient', $patientId, 'مشاهده فایل فقط برای پرونده خود بیمار مجاز است');
-        }
+        $selected = $this->selectedPatient($wpUserId, $linkId);
+        $this->requireSelectedPathPatient($selected, $patientId);
 
-        return array_map([$this, 'presentFile'], $this->files->forPatient($patientId, true));
+        $rows = $this->files->forPatient($patientId, true);
+        $jalali = $this->jalaliDisplayMap($rows);
+
+        return array_map(
+            fn (array $row): array => $this->presentFile($row, $jalali[(int) $row['id']] ?? null),
+            $rows
+        );
     }
 
     /**
@@ -182,11 +194,14 @@ final class MedicalFileService
         $isPatient = in_array(RolesAndCapabilities::ROLE_PATIENT, $roles, true);
 
         if ($isPatient) {
-            // P-8: فقط فایل خودش + patient_visible + همان Clinical Patient Record
-            $owned = $this->ownedPatientId($actorUserId);
-            if ($owned !== (int) $row['patient_id']
-                || (string) $row['visibility'] !== 'patient_visible'
-                || (int) $row['clinic_id'] !== $this->patientClinicId($owned)) {
+            // P-8 + Phase 9 Slice 7 — مجوز بر پایهٔ **عضویت پایدار**: فایل باید
+            // patient_visible و بدون حذف باشد و patient_id آن به رکوردِ بیمارِ
+            // فعالی تعلق داشته باشد که با لینک پایدار به کاربرِ جاری متصل است
+            // (Clinicِ ردیف فایل = Clinicِ بیمار/لینک). هیچ سلکتور کلاینتی مجوز
+            // نمی‌سازد و هیچ fallback اصلی/اولی وجود ندارد. رد = همان 404 امن،
+            // همیشه پیش از خواندنِ دیسک.
+            if ((string) $row['visibility'] !== 'patient_visible'
+                || !$this->patientRecordLinkedToUser($actorUserId, (int) $row['patient_id'], (int) $row['clinic_id'])) {
                 $this->auditAndThrow($actorUserId, 'file', $fileId, 'دسترسی به این فایل مجاز نیست', 'فایل یافت نشد');
             }
         } elseif ($isDoctor) {
@@ -284,7 +299,8 @@ final class MedicalFileService
         int $patientId,
         ?int $visitId,
         string $category,
-        string $visibility
+        string $visibility,
+        ?array $selectedPatient = null
     ): array {
         if (!in_array($category, self::CATEGORIES, true)) {
             throw ClinicalException::of('CLINIC_VALIDATION_FAILED', 'دسته‌بندی فایل نامعتبر است', 422, ['category' => $category]);
@@ -362,7 +378,15 @@ final class MedicalFileService
                 $patientId
             );
         } else {
-            $this->assertPatientRecord($actorUserId, $patientClinicId, $patientId);
+            // مسیر بیمار (Phase 9 Slice 7): رکوردِ هدف همین حالا از طریقِ
+            // `PatientService::require_selected_patient` حل و تأیید شده — پس
+            // مالکیت، سرور-مشتق است (لینک پایدار فعال)، نه حدسِ «اولین/اصلی».
+            // اینجا فقط همان حقیقتِ سروری دوباره در برابرِ مقصدِ ذخیره چک می‌شود.
+            $resolvedId = is_array($selectedPatient) ? (int) ($selectedPatient['id'] ?? 0) : 0;
+            $resolvedClinicId = is_array($selectedPatient) ? (int) ($selectedPatient['clinic_id'] ?? 0) : 0;
+            if ($resolvedId !== $patientId || $resolvedClinicId !== $patientClinicId) {
+                $this->auditAndThrow($actorUserId, 'patient', $patientId, 'دسترسی به این فایل مجاز نیست');
+            }
         }
         $storagePath = $this->storageFor($patientClinicId)->store($content, $patientClinicId, $extension);
 
@@ -421,24 +445,130 @@ final class MedicalFileService
     }
 
     /**
-     * بیمار متصل به کاربر (P-5) — برای C3/C4.
+     * **Phase 9 Slice 7 — سیاستِ واحدِ انتخاب رکورد بیمار برای C3/C4.**
+     *
+     * عیناً همان سیاستِ پروفایل/ویزیت/نسخه (`PatientService::require_selected_patient`)
+     * — بدون هیچ سیاست دوم و بدون هیچ fallback اصلی/اول:
+     *  - ۰ رکورد فعال ⇒ 404 کانونیک؛
+     *  - ۱ رکورد فعال ⇒ حل خودکار؛
+     *  - N>1 بدون `link_id` ⇒ 422 `CLINIC_SELECTION_REQUIRED`;
+     *  - `link_id` خارجی/غیرفعال/ناموجود ⇒ 404 کانونیک غیرقابل‌شمارش.
+     * فقط نوع خطای دامنه (Booking → Clinical) سازگار می‌شود؛ کوچک‌ترین تغییر رفتار نه.
+     *
+     * @return array<string, mixed> ردیف بیمارِ حل‌شده (id/clinic_id/…)
      */
-    private function ownedPatientId(int $wpUserId): int
+    private function selectedPatient(int $wpUserId, ?int $linkId): array
+    {
+        try {
+            return App::patientService()->require_selected_patient($wpUserId, $linkId);
+        } catch (BookingException $error) {
+            throw ClinicalException::of($error->errorCode, $error->getMessage(), $error->httpStatus, $error->data); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- Established domain exception properties.
+        }
+    }
+
+    /**
+     * `patient_id` مسیر فقط هویتِ شیء است، نه مجوز: باید دقیقاً با رکوردِ
+     * حل‌شدهٔ سروری بخواند. عدم تطابق ⇒ همان 404 کانونیکِ «یافت نشد»
+     * (اثر انگشت یکسان با سلکتورهای نامعتبر — بدون افشای وجود).
+     *
+     * @param array<string, mixed> $selected
+     */
+    private function requireSelectedPathPatient(array $selected, int $pathPatientId): void
+    {
+        if ((int) ($selected['id'] ?? 0) !== $pathPatientId) {
+            throw ClinicalException::of('CLINIC_NOT_FOUND', 'بیماری به این حساب متصل نیست', 404);
+        }
+    }
+
+    /**
+     * عضویت پایدار برای مجوز stream بیمار (Slice 7): کاربرِ جاری باید لینکِ
+     * فعالِ پایدار به همان رکورد بیمار داشته باشد و Clinicِ ردیفِ فایل با
+     * Clinicِ بیمار/لینک یکی باشد — پیش از هر خواندن از دیسک.
+     */
+    private function patientRecordLinkedToUser(int $wpUserId, int $patientId, int $clinicId): bool
     {
         global $wpdb;
-        $patientId = $wpdb->get_var($wpdb->prepare(
-            'SELECT l.patient_id FROM ' . $wpdb->prefix . 'cpms_patient_user_links l' .
-            ' JOIN ' . $wpdb->prefix . 'cpms_patients p ON p.id = l.patient_id' .
-            ' WHERE l.wp_user_id = %d AND p.status = %s ORDER BY l.is_primary DESC, l.id ASC LIMIT 1',
+        $linked = $wpdb->get_var($wpdb->prepare(
+            'SELECT 1 FROM ' . $wpdb->prefix . 'cpms_patient_user_links l' .
+            ' JOIN ' . $wpdb->prefix . 'cpms_patients p ON p.id = l.patient_id AND p.clinic_id = l.clinic_id' .
+            ' WHERE l.wp_user_id = %d AND p.id = %d AND l.clinic_id = %d AND p.status = %s LIMIT 1',
             $wpUserId,
+            $patientId,
+            $clinicId,
             'active'
         )); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
-        if ($patientId === null) {
-            throw ClinicalException::of('CLINIC_NOT_FOUND', 'بیماری به این حساب متصل نیست', 404);
+        return $linked !== null;
+    }
+
+    /**
+     * **Jalali fail-closed (Slice 7):** جفت‌سازی `created_at_jalali` فقط وقتی مسیرِ
+     * موثقِ `file.visit_id → Visit → Location → IANA timezone` برقرار باشد.
+     * آپلودِ بدون ویزیت یا رابطهٔ خراب/نامعتبر ⇒ حذف تاریخ نمایشی (نه حدسِ
+     * Clinic/WordPress/PHP/مرورگر و نه ساختِ Location). `created_at` خام هرگز
+     * تغییر نمی‌کند. یک کوئریِ کران‌دار برای همهٔ ویزیت‌های صفحه (بدون N+1).
+     *
+     * @param list<array<string, mixed>> $rows
+     *
+     * @return array<int, string> fileId => Jalali `Y/m/d`
+     */
+    private function jalaliDisplayMap(array $rows): array
+    {
+        $visitIds = [];
+        foreach ($rows as $row) {
+            if ($row['visit_id'] !== null) {
+                $visitIds[(int) $row['visit_id']] = true;
+            }
+        }
+        if ($visitIds === []) {
+            return [];
         }
 
-        return (int) $patientId;
+        global $wpdb;
+        $ids = array_keys($visitIds);
+        $placeholders = implode(', ', array_fill(0, count($ids), '%d'));
+        $pairs = $wpdb->get_results($wpdb->prepare(
+            'SELECT v.id AS visit_id, l.timezone FROM ' . $wpdb->prefix . 'cpms_visits v' .
+            ' JOIN ' . $wpdb->prefix . 'cpms_locations l ON l.id = v.location_id' .
+            ' WHERE v.id IN (' . $placeholders . ')',
+            $ids
+        )); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+        $validTimezones = \DateTimeZone::listIdentifiers();
+        $timezoneByVisit = [];
+        foreach ((array) $pairs as $pair) {
+            $timezone = (string) ($pair->timezone ?? '');
+            if ($timezone !== '' && in_array($timezone, $validTimezones, true)) {
+                $timezoneByVisit[(int) $pair->visit_id] = $timezone;
+            }
+        }
+        if ($timezoneByVisit === []) {
+            return [];
+        }
+
+        $map = [];
+        foreach ($rows as $row) {
+            if ($row['visit_id'] === null) {
+                continue;
+            }
+            $timezone = $timezoneByVisit[(int) $row['visit_id']] ?? null;
+            if ($timezone === null) {
+                continue; // رابطهٔ visit/location نامعتبر ⇒ حذف تاریخ، نه جایگزینی.
+            }
+            $createdAt = (string) $row['created_at'];
+            $utc = \DateTimeImmutable::createFromFormat('Y-m-d H:i:s.u', $createdAt, new \DateTimeZone('UTC'))
+                ?: \DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $createdAt, new \DateTimeZone('UTC'));
+            if ($utc === false) {
+                continue;
+            }
+            try {
+                $map[(int) $row['id']] = Jalali::formatYmd($utc->setTimezone(new \DateTimeZone($timezone))->format('Y-m-d'));
+            } catch (\DomainException) {
+                continue; // تاریخ نامعتبر ⇒ حذف نمایشی (fail-closed).
+            }
+        }
+
+        return $map;
     }
 
     /**
@@ -495,14 +625,6 @@ final class MedicalFileService
                 'دسترسی به این فایل مجاز نیست',
                 $resourceType === 'file' ? 'فایل یافت نشد' : 'بیمار یافت نشد'
             );
-        }
-    }
-
-    /** بیمار: فقط فایل همان Clinical Patient Record متصل به حساب. */
-    private function assertPatientRecord(int $wpUserId, int $targetClinicId, int $patientId): void
-    {
-        if ($targetClinicId !== $this->patientClinicId($this->ownedPatientId($wpUserId))) {
-            $this->auditAndThrow($wpUserId, 'patient', $patientId, 'دسترسی به این فایل مجاز نیست');
         }
     }
 
@@ -680,21 +802,29 @@ final class MedicalFileService
 
     /**
      * @param array<string, mixed> $row
+     * @param string|null          $createdAtJalali تاریخ جلالی نمایشی فقط وقتی مسیرِ
+     *        موثقِ Location برقرار باشد (Slice 7)؛ در غیر این صورت کلید اصلاً
+     *        منتشر نمی‌شود (حذف به‌جای حدس).
      *
      * @return array<string, mixed>
      */
-    private function presentFile(array $row): array
+    private function presentFile(array $row, ?string $createdAtJalali = null): array
     {
-        return [
+        $presented = [
             'id' => (int) $row['id'],
-            'patient_id' => (int) $row['patient_id'],
-            'visit_id' => $row['visit_id'] !== null ? (int) $row['visit_id'] : null,
-            'category' => (string) $row['category'],
-            'original_filename' => (string) $row['original_filename'],
-            'mime_type' => (string) $row['mime_type'],
-            'file_size' => (int) $row['file_size'],
-            'visibility' => (string) $row['visibility'],
-            'created_at' => (string) $row['created_at'],
+            'patient_id' => (int) ($row['patient_id'] ?? 0),
+            'visit_id' => ($row['visit_id'] ?? null) !== null ? (int) $row['visit_id'] : null,
+            'category' => (string) ($row['category'] ?? 'other'),
+            'original_filename' => (string) ($row['original_filename'] ?? ''),
+            'mime_type' => (string) ($row['mime_type'] ?? ''),
+            'file_size' => (int) ($row['file_size'] ?? 0),
+            'visibility' => (string) ($row['visibility'] ?? ''),
+            'created_at' => (string) ($row['created_at'] ?? ''),
         ];
+        if ($createdAtJalali !== null) {
+            $presented['created_at_jalali'] = $createdAtJalali;
+        }
+
+        return $presented;
     }
 }
