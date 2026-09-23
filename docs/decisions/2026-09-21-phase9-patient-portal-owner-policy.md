@@ -339,3 +339,60 @@ Browser است؛ **قراردادِ Android/iOS نیست** (بخش J — UNRESOL
 - **ادعای سبز در این سند نیست** (انضباطِ شواهد: NOT RUN ≠ PASS؛ Inference ≠
   fact). شواهدِ گیتِ exact-head در بدنهٔ PR (run-idها) منتشر می‌شود؛ این سند
   فقط تصمیم + دامنه + برچسب‌های صادقانه را نگه می‌دارد.
+
+
+---
+
+# بخش سوم — ثبت تصمیم نهایی مالک: بستن رسمی Phase 9 (OWNER DECISION — FORMAL PHASE 9 CLOSURE)
+
+تاریخ: 2026-09-23 · صادرشده توسط مالک (OWNER-DECIDED) · دامنه: بستن رسمی Phase 9 (Patient Portal) ·
+ثبت: همین سند — **یک محلِ تصمیم، بدون تکرار در اسناد دیگر** (ارجاع‌های وضعیتیِ کوتاه در اسنادِ statusِ زنده مجاز است).
+طبق `2026-09-05-document-precedence-policy.md`، «تصمیمات نهاییِ کارفرما» بالاترین اولویتِ سندی را دارند.
+سیاست‌ها و قراردادهای بخش‌های اول و دوم همین سند **همچنان تصمیمِ حاکم** هستند و **بدون تغییر/بازنویسی حفظ شده‌اند**.
+
+## N — تصمیم (DECISION)
+
+**OWNER DECISION (2026-09-23):** مالک **بستنِ رسمی (formal closure) فاز ۹ — Patient Portal** را
+**صراحتاً تأیید و تصویب کرد** (explicit Owner approval of formal Phase 9 closure). با این تصمیم:
+
+1. **Phase 9 = CLOSED / TECHNICALLY COMPLETE (BOUNDED).** تاریخِ بستن: **2026-09-23**.
+   چک‌پوینتِ بستن: **`72bb3fdda418914d9b7b33eed207c3c1de1a951f`** = main در لحظهٔ تصمیم
+   (mergeِ PR #110 — closure مستنداتِ My Files؛ MERGED 2026-09-23T15:53:55Z؛ والدین
+   `04d31fb1fb1b1a8e33fbf1bbf4e3803a6d3db3eb` + `ef44d7212e91b45f11b9a9e0d4d1458d65219323` = accepted headِ PR #110؛
+   post-merge روی exact merge SHA: چهار workflow لازم terminal-success — CI `35884923760` ·
+   Real WordPress Acceptance `35884923831` · Closure Gate `35884923751` · Pilot/Staging Readiness Gate `35884923752` —
+   + ۱۹/۱۹ check runs موفق).
+2. توالیِ پیاده‌سازی‌شدهٔ Patient Portal (**shell + notifications + Profile + Visits + Prescriptions + Files**)
+   طبق ترتیبِ سیاستِ مالک (بخش C) و wireframe §7 **کامل است**؛ **هیچ قابلیتِ صراحتاً الزامیِ Phase 9 باقی نمانده**
+   و **در زمانِ بستن هیچ قابلیتِ اضافیِ Phase 9 الزامی نبود** (no additional Phase 9 capability was required at closure).
+3. **همهٔ برش‌های محدودِ (bounded) از‌قبل ثبت‌شدهٔ Phase 9 همچنان CLOSED می‌مانند و بدون تغییرند:**
+   Slice 1 (PR #93) · Slice 2 (PR #96) · Slice 3 (PR #99) · Slice 4 BACKEND FOUNDATION (PR #101) ·
+   Slice 4 Patient Profile UI (PR #103) · My Visits (PR #105) · My Prescriptions (PR #107) · My Files (PR #109).
+4. **آخرین migration همچنان `2026_09_20_0022_slot_holds_patient_binding.php`** (۲۲ فایل `0001`..`0022`؛ بدون `0023`)؛
+   این بستن هیچ migration/schema ای نمی‌سازد.
+5. وضعیتِ تاریخیِ **READY FOR PHASE-CLOSURE DECISION** (چک‌پوینتِ `04d31fb1…` / مستنداتِ PR #110)
+   **به‌عنوان شواهدِ تاریخی حفظ می‌شود و بازنویسی نمی‌شود** — این تصمیم تاریخچه را تغییر نمی‌دهد تا وانمود شود
+   Phase 9 همیشه CLOSED بوده است.
+
+## O — مرزهای صریحِ این بستن (EXPLICIT NON-CLAIMS)
+
+این بستن **به‌هیچ‌وجه** موارد زیر را ادعا یا تلویح **نمی‌کند**:
+
+- تکمیلِ کلِ محصول (overall product completion)؛
+- آمادگیِ تجاری (commercial readiness)؛
+- استقرارِ production (production deployment)؛
+- go-live؛
+- release/tag (با این بستن هیچ release/tag/version-bump ساخته نمی‌شود)؛
+- تکمیلِ **Staff Portal** (خارج از Phase 9 — آینده)؛
+- تکمیلِ **mobile native / Android / iOS** (Native-client authentication همچنان UNRESOLVED FUTURE — بخش J)؛
+- تکمیلِ **provider اعلانِ آینده** (کانال‌های خارجی/providerها طبق بخش D فقط در آینده و با consent صریحِ بیمار)؛
+- **فعال‌سازیِ Organization Identity** (همگام‌سازیِ Org Identity همچنان خارج از Phase 9 است)؛
+- هیچ قابلیتِ آینده‌نگرانهٔ حدسی (speculative future feature).
+
+**Phase 10 با این بستن شروع نمی‌شود** و scope موجودِ roadmap برای فازهای بعدی دست‌نخورده می‌ماند.
+
+## P — مرزِ این ثبت (Scope of this record)
+
+- **فقط مستندات/حکمرانی:** هیچ کد محصول، تست، workflow، schema، migration، configuration یا رفتار runtime
+  با این ثبت تغییر نمی‌کند.
+- این ثبت **شروعِ هیچ کار جدیدی نیست** و هیچ قراردادِ آینده‌ای نمی‌سازد (no future contract invented).
