@@ -355,12 +355,77 @@ foreach ([[$clinicA, $patientA, 'A', $visits[0]], [$clinicB, $patientB, 'B', $vi
 }
 echo 'PROFILE_PUBLIC=prescriptions_fixture_ok prescriptions=3 items=3' . "\n";
 
+// Slice 7 TEST-ONLY RED: durable medical files on the same linked records,
+// reusing the existing protected storage stack (no parallel storage system).
+// Per record: a staff-created visit-linked visible file, a visit-less patient
+// upload, a doctor_private decoy and a soft-deleted decoy.
+$filesStorage = '/home/runner/clinic-storage-p9files';
+foreach ([$clinicA, $clinicB, $clinicOne] as $filesClinicId) {
+    \ClinicCore\Bootstrap\App::settingsFactory()->forClinic($filesClinicId)->set('files.storage_path', $filesStorage);
+}
+\ClinicCore\Settings\Settings::flushCache();
+$filesStore = new \ClinicCore\Infrastructure\Storage\LocalFileStorage($filesStorage);
+$seedPilotFile = static function (int $clinicId, int $patientId, ?int $visitId, string $name, string $visibility, bool $deleted = false) use ($wpdb, $db, $now, $filesStore): int {
+    $content = "%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R /CPMS (" . $name . ") >>\nendobj\n%%EOF\n";
+    $relative = $filesStore->store($content, $clinicId, 'pdf');
+    if ($wpdb->insert($db->table('cpms_medical_attachments'), [
+        'clinic_id' => $clinicId,
+        'patient_id' => $patientId,
+        'visit_id' => $visitId,
+        'category' => 'document',
+        'original_filename' => $name,
+        'stored_filename' => basename($relative),
+        'mime_type' => 'application/pdf',
+        'file_size' => strlen($content),
+        'storage_path' => $relative,
+        'visibility' => $visibility,
+        'uploaded_by_wp_user_id' => 0,
+        'deleted_at' => $deleted ? $now : null,
+        'created_at' => $now,
+    ]) !== 1) {
+        profile_fail('files fixture insert failed: ' . $wpdb->last_error);
+    }
+    $id = (int) $wpdb->insert_id;
+    if ($id <= 0 || !is_file($filesStore->basePath() . '/' . $relative)) {
+        profile_fail('files fixture row or physical file missing');
+    }
+
+    return $id;
+};
+$fileA = $seedPilotFile($clinicA, $patientA, $visits[0], 'SYN-FILES-A.pdf', 'patient_visible');
+$seedPilotFile($clinicA, $patientA, null, 'SYN-FILES-A-UP.pdf', 'patient_visible');
+$seedPilotFile($clinicA, $patientA, $visits[0], 'SYN-PRIVATE-A.pdf', 'doctor_private');
+$seedPilotFile($clinicA, $patientA, $visits[0], 'SYN-DELETED-A.pdf', 'patient_visible', true);
+$fileB = $seedPilotFile($clinicB, $patientB, $visits[1], 'SYN-FILES-B.pdf', 'patient_visible');
+$seedPilotFile($clinicB, $patientB, null, 'SYN-FILES-B-UP.pdf', 'patient_visible');
+$seedPilotFile($clinicB, $patientB, $visits[1], 'SYN-PRIVATE-B.pdf', 'doctor_private');
+$seedPilotFile($clinicB, $patientB, $visits[1], 'SYN-DELETED-B.pdf', 'patient_visible', true);
+$fileOne = $seedPilotFile($clinicOne, $patientOne, $visits[2], 'SYN-FILES-ONE.pdf', 'patient_visible');
+$fileOneUp = $seedPilotFile($clinicOne, $patientOne, null, 'SYN-FILES-ONE-UP.pdf', 'patient_visible');
+$seedPilotFile($clinicOne, $patientOne, $visits[2], 'SYN-PRIVATE-ONE.pdf', 'doctor_private');
+$seedPilotFile($clinicOne, $patientOne, $visits[2], 'SYN-DELETED-ONE.pdf', 'patient_visible', true);
+
+// Trusted Jalali pairing context for the visit-linked files: fixture UTC now
+// converted through the persisted Location IANA timezone (Asia/Tehran).
+$filesUtc = \DateTimeImmutable::createFromFormat('Y-m-d H:i:s.u', $now, new \DateTimeZone('UTC'))
+    ?: \DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $now, new \DateTimeZone('UTC'));
+if ($filesUtc === false) {
+    profile_fail('files fixture could not parse the fixture datetime');
+}
+$filesLocal = $filesUtc->setTimezone(new \DateTimeZone('Asia/Tehran'));
+$filesJalali = \ClinicCore\Domain\Time\Jalali::formatYmd($filesLocal->format('Y-m-d'));
+echo 'PROFILE_PUBLIC=files_fixture_ok files=12 storage=' . $filesStorage . "\n";
+
 $env = 'VISITS_PAIR=' . implode('|', array_slice($visits, 0, 2)) . "\n"
     . 'VISITS_DATE=' . $visitDate . "\n"
     . 'VISITS_JALALI=' . \ClinicCore\Domain\Time\Jalali::formatYmd($visitDate) . "\n"
     . 'VISITS_ONE=' . $visits[2] . "\n"
     . 'RX_PAIR=' . implode('|', array_slice($prescriptions, 0, 2)) . "\n"
     . 'RX_ONE=' . $prescriptions[2] . "\n"
+    . 'FILES_STORAGE=' . $filesStorage . "\n"
+    . 'FILES_A=' . $fileA . "\n"
+    . 'FILES_B=' . $fileB . "\n"
+    . 'FILES_ONE=' . $fileOne . '|' . $fileOneUp . '|' . $filesJalali . '|' . $filesLocal->format('Y-m-d') . "\n"
     . 'PROFILE_ONE=' . $loginOne . '|' . $passOne . '|' . $userOne . '|' . $patientOne . '|' . $linkOne . '|' . $clinicOne . "\n"
     . 'PROFILE_MULTI=' . $loginMulti . '|' . $passMulti . '|' . $userMulti . '|' . $linkA . '|' . $linkB . '|' . $patientA . '|' . $patientB . '|' . $clinicA . '|' . $clinicB . '|' . $linkForeign . '|' . $linkInactive . "\n"
     . 'PROFILE_PUBLIC=one_user=' . $userOne . ' one_patient=' . $patientOne . ' one_link=' . $linkOne . ' one_clinic=' . $clinicOne

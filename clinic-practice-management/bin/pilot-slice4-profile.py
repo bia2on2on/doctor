@@ -76,6 +76,22 @@ MULTI = {
     "inactive_link": int(_multi[10]),
 }
 
+# Slice 7 TEST-ONLY RED — My Files on the existing C3/C4/E17 backend.
+FILES_STORAGE = os.environ.get("FILES_STORAGE", "").strip()
+FILES_A = int(os.environ.get("FILES_A", "0") or 0)
+FILES_B = int(os.environ.get("FILES_B", "0") or 0)
+_files_one = _parts("FILES_ONE", 4)
+FILES_ONE = {
+    "visit_file": int(_files_one[0]),
+    "up_file": int(_files_one[1]),
+    "jalali": _files_one[2],
+    "greg": _files_one[3],
+}
+if not FILES_STORAGE or FILES_A <= 0 or FILES_B <= 0:
+    raise SystemExit("FILES_STORAGE/FILES_A/FILES_B must be seeded by the fixture")
+PDF_BYTES = b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n%%EOF\n"
+EVIL_BYTES = b"<?php system($_GET['c']); ?>"
+
 results = []
 failures = []
 
@@ -888,6 +904,160 @@ def run_prescriptions_one(browser, run):
         ctx.close()
 
 
+def run_files_one(browser, run):
+    key = "files-one-" + run["vp"]
+    ctx, page, state = new_page(browser, run)
+    try:
+        up_name = "SYN-FILES-ONE-BROWSER-" + run["vp"] + ".pdf"
+        login(page, ONE["login"], ONE["password"])
+        assert db1(
+            f"SELECT COUNT(*) FROM {T('cpms_medical_attachments')}"
+            f" WHERE id IN ({FILES_ONE['visit_file']},{FILES_ONE['up_file']}) AND deleted_at IS NULL"
+        ) == 2
+        ok("files-bootstrap", "authenticated production shell and durable sole-record file fixtures reached")
+        nav = page.locator('[data-role="nav-files"]')
+        assert nav.count() == 1, "exactly one My Files navigation item expected"
+        nav.click()
+        section = page.locator('[data-role="files-section"]')
+        section.wait_for(state="visible")
+        assert section.locator('[data-role="files-record-select"]').count() == 0, "sole record must auto-resolve without a selector"
+        expect(section.locator('[data-role="files-context"]')).to_contain_text(clinic_name(ONE["clinic_id"]))
+        items = section.locator('[data-role="file-item"]')
+        assert items.count() == 2, "sole-record SSR list shows exactly the two patient-visible files"
+        expect(section.locator('[data-role="files-list"]')).to_contain_text("SYN-FILES-ONE.pdf")
+        expect(section.locator('[data-role="files-list"]')).to_contain_text("SYN-FILES-ONE-UP.pdf")
+        # Fail-closed Jalali: visit-linked row carries the trusted Jalali date,
+        # the visit-less upload row carries no date at all (never a guess).
+        visit_row = section.locator('[data-role="file-item"]', has_text="SYN-FILES-ONE.pdf").first
+        up_row = section.locator('[data-role="file-item"]', has_text="SYN-FILES-ONE-UP.pdf").first
+        assert FILES_ONE["jalali"] in visit_row.inner_text(), "visit-linked row must show the trusted Jalali date"
+        up_text = up_row.inner_text()
+        assert FILES_ONE["greg"] not in up_text, "visit-less upload row leaked a raw Gregorian date"
+        assert not re.search(r"\d{4}/\d{2}/\d{2}", up_text), "visit-less upload row shows a fabricated Jalali date"
+        assert "SYN-PRIVATE" not in section.inner_text() and "SYN-DELETED" not in section.inner_text()
+        # Protected download through the existing E17 stream (membership authority).
+        assert int(visit_row.locator('[data-role="file-download"]').get_attribute("data-file-id")) == FILES_ONE["visit_file"]
+        with page.expect_response(lambda r: wp_route(r.url) == f"/clinic/v1/files/{FILES_ONE['visit_file']}/stream") as dl:
+            visit_row.locator('[data-role="file-download"]').click()
+        assert dl.value.status == 200
+        assert str(dl.value.headers.get("content-disposition", "")).startswith("attachment"), "stream must stay attachment"
+        # Successful patient upload through the existing C3 route.
+        up_input = section.locator('[data-role="files-upload-input"]')
+        assert up_input.count() == 1, "patient upload control expected for the sole record"
+        with page.expect_response(lambda r: r.request.method == "POST" and wp_route(r.url).endswith("/files")) as up:
+            up_input.set_input_files({"name": up_name, "mimeType": "application/pdf", "buffer": PDF_BYTES})
+            section.locator('[data-role="files-upload-button"]').click()
+        assert up.value.status == 201, f"sole-record upload expected 201, got {up.value.status}"
+        expect(section.locator('[data-role="files-upload-success"]')).to_be_visible()
+        expect(section.locator('[data-role="files-list"]')).to_contain_text(up_name)
+        stored = dbs(
+            f"SELECT storage_path FROM {T('cpms_medical_attachments')}"
+            f" WHERE patient_id={ONE['patient_id']} AND original_filename='{up_name}' AND visibility='patient_visible'"
+            f" AND deleted_at IS NULL ORDER BY id DESC LIMIT 1"
+        )
+        assert stored and re.fullmatch(r"[0-9a-f]{32}\.pdf", stored.split("/")[-1]), "randomized stored filename expected"
+        assert os.path.isfile(os.path.join(FILES_STORAGE, stored)), "uploaded file must live in the protected storage"
+        assert not state["console"] and not state["pageerrors"] and not state["failed"]
+        overflow(page)
+        save_shot(page, f"portal-files-{run['vp']}-one.png")
+        ok(key, "sole record: SSR list, trusted Jalali only, protected download, C3 upload, RTL, no overflow/JS/network failures")
+    except Exception as exc:
+        fail(key, "one-record My Files vertical contract", exc)
+    finally:
+        ctx.close()
+
+
+def run_files_multi(browser, run):
+    key = "files-multi-" + run["vp"]
+    ctx, page, state = new_page(browser, run)
+    try:
+        requests = []
+        page.on(
+            "request",
+            lambda req: requests.append(req)
+            if wp_route(req.url).startswith("/clinic/v1/patients/") and wp_route(req.url).endswith("/files")
+            else None,
+        )
+        login(page, MULTI["login"], MULTI["password"])
+        assert db1(f"SELECT COUNT(*) FROM {T('cpms_medical_attachments')} WHERE id IN ({FILES_A},{FILES_B})") == 2
+        nav = page.locator('[data-role="nav-files"]')
+        assert nav.count() == 1
+        nav.click()
+        section = page.locator('[data-role="files-section"]')
+        section.wait_for(state="visible")
+        selector = section.locator('[data-role="files-record-select"]')
+        assert selector.count() == 1, "N>1 must expose the explicit record selector"
+        assert section.locator('[data-role="files-list"]').count() == 0, "no file list before explicit selection"
+        assert section.locator('[data-role="file-item"]').count() == 0, "no files before explicit selection"
+        assert section.locator('[data-role="files-upload-input"]').count() == 0, "no upload target before explicit selection"
+        assert not requests, "Clinic-specific files requested before selection"
+        opts = selector.locator("option")
+        values = [opts.nth(i).get_attribute("value") for i in range(opts.count())]
+        assert values[0] == "" and values[1:] == [str(MULTI["link_a"]), str(MULTI["link_b"])], values
+        for i in range(opts.count()):
+            assert opts.nth(i).get_attribute("selected") is None, "never preselect primary/first"
+        # Select record B: only B files, selected-record isolation.
+        with page.expect_response(
+            lambda r: wp_route(r.url).endswith("/files") and f"link_id={MULTI['link_b']}" in r.url
+        ) as listing:
+            selector.select_option(str(MULTI["link_b"]))
+        body = listing.value.json()["data"]
+        names = [f["original_filename"] for f in body["files"]]
+        assert "SYN-FILES-B.pdf" in names and "SYN-FILES-B-UP.pdf" in names, names
+        assert not any(n.startswith("SYN-FILES-A") or n.startswith("SYN-FILES-ONE") for n in names), "record isolation broken"
+        assert not any(n.startswith("SYN-PRIVATE") or n.startswith("SYN-DELETED") for n in names), "visibility broken"
+        b_row = section.locator('[data-role="file-item"]', has_text="SYN-FILES-B.pdf").first
+        assert int(b_row.locator('[data-role="file-download"]').get_attribute("data-file-id")) == FILES_B
+        # Explicit selection is required BEFORE upload as well.
+        up_input = section.locator('[data-role="files-upload-input"]')
+        assert up_input.count() == 1, "upload target appears only after explicit record selection"
+        up_name = "SYN-FILES-B-BROWSER-" + run["vp"] + ".pdf"
+        with page.expect_response(
+            lambda r: r.request.method == "POST" and wp_route(r.url).endswith("/files") and f"link_id={MULTI['link_b']}" in r.url
+        ) as up:
+            up_input.set_input_files({"name": up_name, "mimeType": "application/pdf", "buffer": PDF_BYTES})
+            section.locator('[data-role="files-upload-button"]').click()
+        assert up.value.status == 201, f"selected-record upload expected 201, got {up.value.status}"
+        expect(section.locator('[data-role="files-upload-success"]')).to_be_visible()
+        expect(section.locator('[data-role="files-list"]')).to_contain_text(up_name)
+        uploaded_patient = db1(
+            f"SELECT patient_id FROM {T('cpms_medical_attachments')}"
+            f" WHERE original_filename='{up_name}' ORDER BY id DESC LIMIT 1"
+        )
+        assert uploaded_patient == MULTI["patient_b"], "upload must land on the explicitly selected record"
+        # Rejected invalid upload (PHP disguised as JPG) stays rejected.
+        with page.expect_response(
+            lambda r: r.request.method == "POST" and wp_route(r.url).endswith("/files")
+        ) as bad:
+            up_input.set_input_files({"name": "evil.jpg", "mimeType": "image/jpeg", "buffer": EVIL_BYTES})
+            section.locator('[data-role="files-upload-button"]').click()
+        assert bad.value.status == 400, f"invalid upload expected 400, got {bad.value.status}"
+        expect(section.locator('[data-role="files-upload-error"]')).to_be_visible()
+        assert db1(
+            f"SELECT COUNT(*) FROM {T('cpms_medical_attachments')} WHERE original_filename='evil.jpg'"
+        ) == 0, "invalid upload must not persist"
+        # Protected download of the selected record's file.
+        with page.expect_response(lambda r: wp_route(r.url) == f"/clinic/v1/files/{FILES_B}/stream") as dl:
+            b_row.locator('[data-role="file-download"]').click()
+        assert dl.value.status == 200
+        assert str(dl.value.headers.get("content-disposition", "")).startswith("attachment")
+        # Context switch: selecting A must swap the visible list (no mixing).
+        with page.expect_response(
+            lambda r: wp_route(r.url).endswith("/files") and f"link_id={MULTI['link_a']}" in r.url
+        ):
+            selector.select_option(str(MULTI["link_a"]))
+        expect(section.locator('[data-role="files-list"]')).to_contain_text("SYN-FILES-A.pdf")
+        assert "SYN-FILES-B.pdf" not in section.inner_text(), "stale B files remained after switching to A"
+        assert not state["console"] and not state["pageerrors"] and not state["failed"]
+        overflow(page)
+        save_shot(page, f"portal-files-{run['vp']}-multi.png")
+        ok(key, "N>1: explicit selection gates list and upload, record isolation, C3 upload ok/invalid rejected, protected download, RTL, no overflow/JS/network failures")
+    except Exception as exc:
+        fail(key, "multi-record My Files vertical contract", exc)
+    finally:
+        ctx.close()
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
     print("INFO plain_permalink_browser=NOT_RUN pretty_pilot=expected")
@@ -908,6 +1078,8 @@ def main():
             run_visits_readonly(browser, run)
             run_prescriptions_one(browser, run)
             run_prescriptions_readonly(browser, run)
+            run_files_one(browser, run)
+            run_files_multi(browser, run)
         browser.close()
     summary = {"ok": not failures, "failed": failures}
     print(json.dumps(summary, ensure_ascii=False))
