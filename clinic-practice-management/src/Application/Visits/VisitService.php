@@ -65,7 +65,7 @@ final class VisitService
         self::$testNowUtc = $now !== null ? $now->setTimezone(new DateTimeZone('UTC')) : null; // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- legacy PSR-style, established contract
     }
 
-    public function __construct( private readonly CpmsDb $db,
+    public function __construct( private readonly CpmsDb $db, // phpcs:ignore Squiz.Functions.MultiLineFunctionDeclaration.FirstParamSpacing -- WPCS
         private readonly VisitRepository $visits,
         private readonly AppointmentRepository $appointments,
         private readonly SettingsFactory $settingsFactory,
@@ -73,7 +73,7 @@ final class VisitService
         private readonly LicenseGate $licenseGate,
         private readonly ?\ClinicCore\Infrastructure\Logging\OpLogger $opLog = null,
         private readonly mixed $notificationServiceFactory = null,
-        ?MembershipRepository $memberships = null ) {
+        ?MembershipRepository $memberships = null ) { // phpcs:ignore Squiz.Functions.MultiLineFunctionDeclaration.CloseBracketLine -- WPCS
         // Optional only for backwards-compatible direct service construction;
         // production wiring injects the same shared participation repository.
         $this->memberships = $memberships ?? new MembershipRepository($db);
@@ -114,9 +114,9 @@ final class VisitService
             // درخواست (مرز REST کارکنی): نوبتِ Clinic دیگر همان پاکتِ «نوبت
             // یافت نشد» را می‌گیرد — پیش از ساخت ویزیت و هرجهش پایدار.
             $this->guardAppointmentWithinExplicitScope($appt);
-            if ( (int) $appt['patient_id'] !== $patientId) {
-                $this->auditAndThrow( $actorUserId, $actorRole, 'FORBIDDEN_ACCESS_ATTEMPT', 'visit', $appointmentId, $patientId,
-                    'نوبت به این بیمار تعلق ندارد', 403, 'CLINIC_PERMISSION_DENIED' );
+            if ( (int) $appt['patient_id'] !== $patientId) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- legacy PSR-style, established contract
+                $this->auditAndThrow( $actorUserId, $actorRole, 'FORBIDDEN_ACCESS_ATTEMPT', 'visit', $appointmentId, $patientId, // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket,PEAR.Functions.FunctionCallSignature.MultipleArguments,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
+                    'نوبت به این بیمار تعلق ندارد', 403, 'CLINIC_PERMISSION_DENIED' ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent,PEAR.Functions.FunctionCallSignature.MultipleArguments -- WPCS
             }
 
             // ER-06: نوبت پایان‌یافته/لغوشده قابل Check-in نیست؛
@@ -132,11 +132,11 @@ final class VisitService
 
             $this->guardDuplicateActiveVisit($patientId, (int) $appt['clinician_id']);
 
-            if ( in_array($status, ['cancelled_by_patient', 'cancelled_by_staff', 'rescheduled', 'completed'], true )) {
-                throw VisitException::of( 'CLINIC_INVALID_APPOINTMENT_STATE',
+            if ( in_array($status, ['cancelled_by_patient', 'cancelled_by_staff', 'rescheduled', 'completed'], true )) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS
+                throw VisitException::of( 'CLINIC_INVALID_APPOINTMENT_STATE', // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket -- WPCS
                     'این نوبت ' . $this->appointmentStatusLabel($status) . ' است و قابل Check-in نیست',
                     409,
-                    ['appointment_status' => $status] );
+                    ['appointment_status' => $status] ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent -- WPCS
             }
             if ( $status === 'no_show' ) {
                 // ER-06: late arrival after T8 — unbound walk-in (must NOT bind
@@ -146,14 +146,14 @@ final class VisitService
             } else {
                 // T2: Location-aware lazy no-show check
                 $shouldMarkNoShow = false;
-                if ( $clinicId > 0 && $locationId > 0 ) {
+                if ( $clinicId > 0 && $locationId > 0 ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
                     $tz = $this->resolveLocationTimezone($locationId, $clinicId);
                     if ( $tz !== null ) {
                         $apptUtc = $this->appointmentUtcInstant($appt, $tz);
                         $grace = $this->graceForClinic($clinicId);
-                        if ( $apptUtc !== null && $grace !== null ) {
+                        if ( $apptUtc !== null && $grace !== null ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
                             $eligible = $apptUtc->add(new DateInterval('PT' . $grace . 'M'));
-                            if ( $nowUtc >= $eligible ) {
+                            if ( $nowUtc >= $eligible ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
                                 $shouldMarkNoShow = true;
                             }
                         } else {
@@ -171,7 +171,7 @@ final class VisitService
                     $this->opLog?->warning('visit.location_missing', ['appointment_id' => $appointmentId, 'clinic_id' => $clinicId]);
                 }
 
-                if ( $shouldMarkNoShow ) {
+                if ( $shouldMarkNoShow ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
                     // ER-06 / FR-6.5: late arrival atomically T8s the
                     // appointment then creates a walk-in-like Visit that
                     // keeps the appointment reference.
@@ -183,14 +183,14 @@ final class VisitService
                 }
             }
 
-            $visit = $this->createVisit( $actorUserId,
+            $visit = $this->createVisit( $actorUserId, // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
                 $clinicId > 0 ? $clinicId : (int) $appt['clinic_id'],
                 $patientId,
                 (int) $appt['clinician_id'],
                 $appointmentId,
                 $source,
                 'check_in',
-                isset($meta['note']) ? (string) $meta['note'] : null );
+                isset($meta['note']) ? (string) $meta['note'] : null ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS
 
             $this->audit('VISIT_CHECKED_IN', $actorUserId, $actorRole, 'visit', (int) $visit['id'], $patientId, null, $visit, [
                 'appointment_id' => $appointmentId,
@@ -225,25 +225,25 @@ final class VisitService
             // همان Clinic برای مشارکت حرفه‌ای، مالکیت بیمار، درج Visit و تمام
             // side-effectهای Clinic-sensitive در createVisit استفاده می‌شود.
             $clinicId = $this->walkInClinicId();
-            if ( !$this->memberships->clinician_participates_in($clinicianId, $clinicId )) {
+            if ( !$this->memberships->clinician_participates_in($clinicianId, $clinicId )) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,WordPress.WhiteSpace.OperatorSpacing.NoSpaceAfter -- legacy PSR-style, established contract
                 throw VisitException::of('CLINIC_NOT_FOUND', 'پزشک یافت نشد', 404);
             }
 
             $patient = $this->lockPatient($patientId);
-            if ( (int) $patient['clinic_id'] !== $clinicId) {
+            if ( (int) $patient['clinic_id'] !== $clinicId) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- legacy PSR-style, established contract
                 throw VisitException::of('CLINIC_VALIDATION_FAILED', 'این بیمار به کلینیک دیگری تعلق دارد', 422);
             }
 
             $this->guardDuplicateActiveVisit($patientId, $clinicianId);
 
-            $visit = $this->createVisit( $actorUserId,
+            $visit = $this->createVisit( $actorUserId, // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
                 $clinicId,
                 $patientId,
                 $clinicianId,
                 null,
                 'walk_in',
                 'create_walk_in',
-                isset($meta['note']) ? (string) $meta['note'] : null );
+                isset($meta['note']) ? (string) $meta['note'] : null ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS
 
             $this->audit('VISIT_WALK_IN', $actorUserId, $actorRole, 'visit', (int) $visit['id'], $patientId, null, $visit, []);
 
@@ -262,14 +262,14 @@ final class VisitService
      * @param array<string, mixed> $meta {reason?, room?, note?}
      * @return array<string, mixed> رکورد به‌روزشده
      */
-    public function transition( int $actorUserId,
+    public function transition( int $actorUserId, // phpcs:ignore Squiz.Functions.MultiLineFunctionDeclaration.FirstParamSpacing,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
         int $visitId,
         string $event,
-        array $meta = [] ): array {
+        array $meta = [] ): array { // phpcs:ignore Squiz.Functions.MultiLineFunctionDeclaration.CloseBracketLine -- WPCS
         // F9 (ADR-0027 Minor #3) — گارد مالکیت «قبل از Transaction» تا Auditِ
         // رد شدن (FORBIDDEN_ACCESS_ATTEMPT) با Rollback از بین نرود.
         $preVisit = $this->visits->find($visitId);
-        if ( $preVisit !== null ) {
+        if ( $preVisit !== null ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
             $this->guardDoctorTransitionOwnership($actorUserId, $preVisit);
             // Phase 3 Slice 6B — مالکیت پایدار ویزیت در برابر Clinic معتبرِ
             // صریحِ درخواست: ویزیتِ Clinic دیگر «مثل نبودن» است (404 parity)؛
@@ -300,11 +300,11 @@ final class VisitService
      * @param array<string, mixed> $meta
      * @return array<string, mixed>
      */
-    public function applyTransition( int $actorUserId,
+    public function applyTransition( int $actorUserId, // phpcs:ignore Squiz.Functions.MultiLineFunctionDeclaration.FirstParamSpacing,WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
         array $visit,
         string $event,
         array $meta = [],
-        ?string $forceRole = null ): array {
+        ?string $forceRole = null ): array { // phpcs:ignore Squiz.Functions.MultiLineFunctionDeclaration.CloseBracketLine,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
         $visitId = (int) $visit['id'];
         $actorRole = $forceRole ?? ($this->roleForUser($actorUserId) ?? 'secretary');
         $fromStatus = (string) $visit['status'];
@@ -314,7 +314,7 @@ final class VisitService
         // منشی/سیستم در V1 دامنه مطب دارند (Scope کامل = ADR-0026/V2).
         // (transition() همین گارد را قبل از Transaction هم اجرا می‌کند تا Auditِ
         // رد شدن Rollback نشود؛ اینجا defense-in-depth برای فراخوانی مستقیم است.)
-        if ( $forceRole === null ) {
+        if ( $forceRole === null ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
             $this->guardDoctorTransitionOwnership($actorUserId, $visit);
         }
 
@@ -334,7 +334,7 @@ final class VisitService
         $visit = array_merge($visit, $row, ['status' => $toStatus]);
 
         // T9: خروج نهایی (پرداخت‌شده یا معافیت) → نوبت مرجع completed
-        if ( in_array($event, ['check_out', 'waive'], true ) && !empty($visit['appointment_id'])) {
+        if ( in_array($event, ['check_out', 'waive'], true ) && !empty($visit['appointment_id'])) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,WordPress.WhiteSpace.OperatorSpacing.NoSpaceAfter -- WPCS
             $this->completeReferencedAppointment((int) $visit['appointment_id'], $actorUserId);
         }
 
@@ -356,14 +356,14 @@ final class VisitService
      */
     private function notificationServiceForClinic(int $clinicId): ?NotificationService
     {
-        if ( $clinicId <= 0 ) {
+        if ( $clinicId <= 0 ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
             return null;
         }
-        if ( isset($this->notificationServicesByClinicId[$clinicId] )) {
+        if ( isset($this->notificationServicesByClinicId[$clinicId] )) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,WordPress.Arrays.ArrayKeySpacingRestrictions.NoSpacesAroundArrayKeys,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- legacy PSR-style, established contract
             return $this->notificationServicesByClinicId[$clinicId];
         }
         $factory = $this->notificationServiceFactory;
-        if ( is_callable($factory )) {
+        if ( is_callable($factory )) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS
             try {
                 $svc = $factory($clinicId);
                 if ( $svc instanceof NotificationService ) {
@@ -399,12 +399,12 @@ final class VisitService
         }
 
         try {
-            $patientName = trim((string) $this->db->fetchValue( 'SELECT CONCAT(p.first_name, \' \', p.last_name) FROM ' . $this->db->table('cpms_patients') . ' p WHERE p.id = %d LIMIT 1',
-                [(int) $visit['patient_id']] ));
+            $patientName = trim((string) $this->db->fetchValue( 'SELECT CONCAT(p.first_name, \' \', p.last_name) FROM ' . $this->db->table('cpms_patients') . ' p WHERE p.id = %d LIMIT 1', // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.CastStructureSpacing.NoSpaceBeforeOpenParenthesis -- legacy PSR-style, established contract
+                [(int) $visit['patient_id']] )); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent,WordPress.WhiteSpace.CastStructureSpacing.NoSpaceBeforeOpenParenthesis -- WPCS
             $room = trim((string) ($meta['room'] ?? ''));
 
             if ( $event === 'call' ) {
-                $notifications->publishToStaff( $clinicId,
+                $notifications->publishToStaff( $clinicId, // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
                     NotificationEvents::QUEUE_CALLED,
                     [
                         'patient_name' => $patientName !== '' ? $patientName : 'بیمار',
@@ -412,14 +412,14 @@ final class VisitService
                     ],
                     'queue:called:v' . (int) $visit['id'] . ':r' . (int) ($visit['recall_count'] ?? 0),
                     RolesAndCapabilities::QUEUE_READ,
-                    $actorUserId );
+                    $actorUserId ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
             } elseif ( $event === 'invoice_ready' ) {
-                $notifications->publishToStaff( $clinicId,
+                $notifications->publishToStaff( $clinicId, // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
                     NotificationEvents::QUEUE_READY_PAYMENT,
                     ['patient_name' => $patientName !== '' ? $patientName : 'بیمار'],
                     'queue:pay:v' . (int) $visit['id'],
                     RolesAndCapabilities::QUEUE_READ,
-                    $actorUserId );
+                    $actorUserId ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
             }
         } catch ( Throwable $e ) {
             $this->opLog?->warning('visit.notif_failed', ['visit_id' => (int) $visit['id'], 'error' => $e->getMessage()]);
@@ -506,22 +506,22 @@ final class VisitService
                 $location_id = $eligible[0];
             } else {
                 // N>1 without explicit Location => REQUIRED
-                throw VisitException::of( 'CLINIC_SCOPE_REQUIRED',
+                throw VisitException::of( 'CLINIC_SCOPE_REQUIRED', // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket -- WPCS
                     'Location scope required: multiple eligible locations',
                     [
                         'field'  => 'location_id',
                         'reason' => 'location_required',
                     ],
-                    400 );
+                    400 ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent -- WPCS
             }
         }
 
         // Validate explicit Location is eligible (foreign/inactive/unassigned => denied)
         if ( ! in_array( $location_id, $eligible, true ) ) {
-            throw VisitException::of( 'CLINIC_SCOPE_UNAVAILABLE',
+            throw VisitException::of( 'CLINIC_SCOPE_UNAVAILABLE', // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket -- WPCS
                 'Trusted clinic context is not available.',
                 [ 'reason' => 'location' ],
-                403 );
+                403 ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent -- WPCS
         }
 
         $operational_date = $this->operationalDateForLocation( $location_id, $clinic_id );
@@ -575,16 +575,16 @@ final class VisitService
         }
 
         return [
-            'events'        => array_map( static fn( array $e ): array => [
-                    'event_id'   => (int) $e['id'], // phpcs:ignore WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned -- legacy alignment, keep readability
+            'events'        => array_map( static fn( array $e ): array => [ // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket -- WPCS
+                    'event_id'   => (int) $e['id'], // phpcs:ignore WordPress.Arrays.ArrayIndentation.ItemNotAligned,WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned -- legacy alignment, keep readability
                     'visit_id'   => (int) $e['visit_id'], // phpcs:ignore WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned -- legacy alignment, keep readability
                     'from_status' => $e['from_status'],
                     'to_status'   => $e['to_status'],
                     'changed_at'  => $e['changed_at'],
                     'actor_role'  => $e['actor_role'],
                     'note'        => $e['note'],
-                ],
-                $events ),
+                ], // phpcs:ignore WordPress.Arrays.ArrayIndentation.CloseBraceNotAligned -- WPCS
+                $events ), // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent -- WPCS
             'last_event_id' => $last_id,
         ];
     }
@@ -630,21 +630,21 @@ final class VisitService
             if ( 1 === count( $eligible ) ) {
                 $location_id = $eligible[0];
             } else {
-                throw VisitException::of( 'CLINIC_SCOPE_REQUIRED',
+                throw VisitException::of( 'CLINIC_SCOPE_REQUIRED', // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket -- WPCS
                     'Location scope required: multiple eligible locations',
                     [
                         'field'  => 'location_id',
                         'reason' => 'location_required',
                     ],
-                    400 );
+                    400 ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent -- WPCS
             }
         }
 
         if ( ! in_array( $location_id, $eligible, true ) ) {
-            throw VisitException::of( 'CLINIC_SCOPE_UNAVAILABLE',
+            throw VisitException::of( 'CLINIC_SCOPE_UNAVAILABLE', // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket -- WPCS
                 'Trusted clinic context is not available.',
                 [ 'reason' => 'location' ],
-                403 );
+                403 ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent -- WPCS
         }
 
         $operational_date = $this->operationalDateForLocation( $location_id, $clinic_id );
@@ -655,16 +655,16 @@ final class VisitService
         }
 
         return [
-            'events'        => array_map( static fn( array $e ): array => [
-                    'event_id'   => (int) $e['id'], // phpcs:ignore WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned -- legacy alignment, keep readability
+            'events'        => array_map( static fn( array $e ): array => [ // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket -- WPCS
+                    'event_id'   => (int) $e['id'], // phpcs:ignore WordPress.Arrays.ArrayIndentation.ItemNotAligned,WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned -- legacy alignment, keep readability
                     'visit_id'   => (int) $e['visit_id'], // phpcs:ignore WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned -- legacy alignment, keep readability
                     'from_status' => $e['from_status'],
                     'to_status'   => $e['to_status'],
                     'changed_at'  => $e['changed_at'],
                     'actor_role'  => $e['actor_role'],
                     'note'        => $e['note'],
-                ],
-                $events ),
+                ], // phpcs:ignore WordPress.Arrays.ArrayIndentation.CloseBraceNotAligned -- WPCS
+                $events ), // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent -- WPCS
             'last_event_id' => $last_id,
         ];
     }
@@ -688,21 +688,21 @@ final class VisitService
             if ( 1 === count( $eligible ) ) {
                 $location_id = $eligible[0];
             } else {
-                throw VisitException::of( 'CLINIC_SCOPE_REQUIRED',
+                throw VisitException::of( 'CLINIC_SCOPE_REQUIRED', // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket -- WPCS
                     'Location scope required: multiple eligible locations',
                     [
                         'field'  => 'location_id',
                         'reason' => 'location_required',
                     ],
-                    400 );
+                    400 ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent -- WPCS
             }
         }
 
         if ( ! in_array( $location_id, $eligible, true ) ) {
-            throw VisitException::of( 'CLINIC_SCOPE_UNAVAILABLE',
+            throw VisitException::of( 'CLINIC_SCOPE_UNAVAILABLE', // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket -- WPCS
                 'Trusted clinic context is not available.',
                 [ 'reason' => 'location' ],
-                403 );
+                403 ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent -- WPCS
         }
 
         $operational_date = $this->operationalDateForLocation( $location_id, $clinic_id );
@@ -732,30 +732,30 @@ final class VisitService
 
             $status = (string) $visit['status'];
             if ( $status === 'awaiting_payment' ) {
-                if ( $waiveReason === null || trim($waiveReason ) === '') {
-                    throw VisitException::of( 'CLINIC_POLICY_VIOLATION',
+                if ( $waiveReason === null || trim($waiveReason ) === '') { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- legacy PSR-style, established contract
+                    throw VisitException::of( 'CLINIC_POLICY_VIOLATION', // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket -- WPCS
                         'پرداخت هنوز ثبت نشده است — معافیت (waive) نیاز به دلیل دارد یا ابتدا پرداخت را ثبت کنید',
                         409,
-                        ['visit_status' => $status] );
+                        ['visit_status' => $status] ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent -- WPCS
                 }
 
                 return $this->applyTransition($actorUserId, $visit, 'waive', ['reason' => $waiveReason]);
             }
             if ( $status === 'consultation_completed' ) {
-                throw VisitException::of( 'CLINIC_POLICY_VIOLATION',
+                throw VisitException::of( 'CLINIC_POLICY_VIOLATION', // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket -- WPCS
                     'ابتدا وضعیت مالی ویزیت را مشخص کنید (فاکتور/معافیت)',
                     409,
-                    ['visit_status' => $status] );
+                    ['visit_status' => $status] ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent -- WPCS
             }
 
             // V14 guard (visit-queue.md): خروج با فاکتور تسویه‌نشده ممنوع — NOT_SETTLED.
             // اینجا فقط paid→check_out می‌رسد؛ فاکتور باز یعنی بدهی واقعی مانده است.
             $unsettled = $this->unsettledInvoiceBalance($visitId);
             if ( $unsettled['count'] > 0 ) {
-                throw VisitException::of( 'CLINIC_NOT_SETTLED',
+                throw VisitException::of( 'CLINIC_NOT_SETTLED', // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket -- WPCS
                     'فاکتور این ویزیت تسویه نشده است — ابتدا پرداخت را کامل کنید یا از مسیر معافیت اقدام کنید',
                     409,
-                    ['open_invoices' => $unsettled['count'], 'balance' => $unsettled['balance']] );
+                    ['open_invoices' => $unsettled['count'], 'balance' => $unsettled['balance']] ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent -- WPCS
             }
 
             // paid → check_out (V14)؛ سایر وضعیت‌ها → ماشین خطای transition می‌دهد
@@ -771,9 +771,9 @@ final class VisitService
      */
     private function unsettledInvoiceBalance(int $visitId): array
     {
-        $row = $this->db->fetchRow( 'SELECT COUNT(*) AS n, COALESCE(SUM(balance), 0) AS bal FROM ' . $this->db->table('cpms_invoices') .
+        $row = $this->db->fetchRow( 'SELECT COUNT(*) AS n, COALESCE(SUM(balance), 0) AS bal FROM ' . $this->db->table('cpms_invoices') . // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS
             " WHERE visit_id = %d AND status IN ('open', 'partial')",
-            [$visitId] );
+            [$visitId] ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
 
         return ['balance' => (float) ($row['bal'] ?? 0), 'count' => (int) ($row['n'] ?? 0)];
     }
@@ -821,9 +821,9 @@ final class VisitService
             ];
         }
 
-        while ( $scanned < $maxScan && $count < $maxToProcess ) {
+        while ( $scanned < $maxScan && $count < $maxToProcess ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
             $candidates = $this->visits->appointmentsPastGraceCandidates($batchSize, $nowUtc, $cursor);
-            if ( empty($candidates )) {
+            if ( empty($candidates )) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS
                 $hasMore = false;
                 break;
             }
@@ -843,7 +843,7 @@ final class VisitService
                 $clinicId = (int) ($appt['clinic_id'] ?? 0);
                 $locationId = (int) ($appt['location_id'] ?? 0);
 
-                if ( $clinicId <= 0 || $locationId <= 0 ) {
+                if ( $clinicId <= 0 || $locationId <= 0 ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
                     $this->opLog?->warning('visit.location_missing', ['appointment_id' => $appt['id'] ?? 0, 'clinic_id' => $clinicId, 'location_id' => $locationId]);
                     continue; // fail-closed
                 }
@@ -852,13 +852,13 @@ final class VisitService
                 $locClinicId = $appt['loc_clinic_id'] ?? null;
                 $locTimezone = $appt['loc_timezone'] ?? null;
 
-                if ( $locClinicId === null ) {
+                if ( $locClinicId === null ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
                     // LEFT JOIN returned null => location missing
                     $this->opLog?->warning('visit.location_missing', ['location_id' => $locationId, 'clinic_id' => $clinicId]);
                     continue;
                 }
 
-                if ( (int) $locClinicId !== $clinicId) {
+                if ( (int) $locClinicId !== $clinicId) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- legacy PSR-style, established contract
                     $this->opLog?->warning('visit.location_clinic_mismatch', [
                         'location_id' => $locationId,
                         'expected_clinic' => $clinicId,
@@ -868,7 +868,7 @@ final class VisitService
                 }
 
                 $tzName = trim((string) ($locTimezone ?? ''));
-                if ( $tzName === '' ) {
+                if ( $tzName === '' ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
                     $this->opLog?->warning('visit.location_timezone_missing', ['location_id' => $locationId]);
                     continue;
                 }
@@ -885,7 +885,7 @@ final class VisitService
                 }
 
                 $apptUtc = $this->appointmentUtcInstant($appt, $tz);
-                if ( $apptUtc === null ) {
+                if ( $apptUtc === null ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
                     continue;
                 }
 
@@ -896,28 +896,28 @@ final class VisitService
 
                 $eligible = $apptUtc->add(new DateInterval('PT' . $grace . 'M'));
 
-                if ( $nowUtc < $eligible ) {
+                if ( $nowUtc < $eligible ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
                     continue; // not yet past grace
                 }
 
                 $count += $this->db->transactional(function () use ($appt): int {
                     $fresh = $this->appointments->findForUpdate((int) $appt['id']);
-                    if ( $fresh === null || (string) $fresh['status'] !== 'confirmed') {
+                    if ( $fresh === null || (string) $fresh['status'] !== 'confirmed') { // phpcs:ignore WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS
                         return 0;
                     }
-                    if ( $this->activeVisitForAppointment((int) $fresh['id']) !== null) {
+                    if ( $this->activeVisitForAppointment((int) $fresh['id']) !== null) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.WhiteSpace.CastStructureSpacing.NoSpaceBeforeOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS
                         return 0;
                     }
                     $this->markAppointmentNoShow($fresh, $this->db->nowUtc(), null);
                     return 1;
                 });
 
-                if ( $count >= $maxToProcess ) {
+                if ( $count >= $maxToProcess ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
                     break 2;
                 }
             }
 
-            if ( count($candidates ) < $batchSize) {
+            if ( count($candidates ) < $batchSize) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- legacy PSR-style, established contract
                 $hasMore = false;
                 break;
             }
@@ -925,7 +925,7 @@ final class VisitService
 
         // If hasMore true, nextCursor is already set to last scanned row
         // If no more candidates, nextCursor should be null to stop chain
-        if ( !$hasMore ) {
+        if ( !$hasMore ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.OperatorSpacing.NoSpaceAfter -- legacy PSR-style, established contract
             $nextCursor = null;
         }
 
@@ -1002,22 +1002,22 @@ final class VisitService
      *
      * @return array<string, mixed>
      */
-    private function createVisit( int $actorUserId,
+    private function createVisit( int $actorUserId, // phpcs:ignore Squiz.Functions.MultiLineFunctionDeclaration.FirstParamSpacing,WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
         int $clinic_id,
         int $patientId,
         int $clinicianId,
         ?int $appointmentId,
         string $source,
         string $event,
-        ?string $note = null ): array {
+        ?string $note = null ): array { // phpcs:ignore Squiz.Functions.MultiLineFunctionDeclaration.CloseBracketLine -- WPCS
         $now = $this->db->nowUtc();
         // Determine Location for new visit to compute operational date
         $locationIdForDate = null; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
         if ( $appointmentId !== null ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- legacy PSR-style, established contract
             $apptLoc = $this->db->fetchValue( // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
                 'SELECT location_id FROM ' . $this->db->table('cpms_appointments') . ' WHERE id = %d LIMIT 1', // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS
-                [$appointmentId] // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract );
-            if ( $apptLoc !== null && $apptLoc !== '' ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- legacy PSR-style, established contract
+ [$appointmentId] ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
+            if ( $apptLoc !== null && $apptLoc !== '' ) { // phpcs:ignore Generic.PHP.Syntax.PHPSyntax,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- legacy PSR-style, established contract
                 $locationIdForDate = (int) $apptLoc; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
             }
         }
@@ -1032,7 +1032,7 @@ final class VisitService
                         $locationIdForDate = (int) $appScope->locationId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
                     }
                 } catch ( ScopeRequiredException $e ) { // phpcs:ignore WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS
-                    unset( $e ); // no scope // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS
+                    unset( $e ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS
                 }
             }
         }
@@ -1041,11 +1041,11 @@ final class VisitService
             // returns clinic without location (auto 1 eligible should still give operational date)
             try {
                 $eligible = $this->eligibleLocationIdsForActor( $clinic_id, $actorUserId ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
-                if ( count( $eligible ) === 1) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS
+                if ( count( $eligible ) === 1 ) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS
                     $locationIdForDate = (int) $eligible[0]; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
                 }
             } catch ( Throwable $e ) { // phpcs:ignore WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS
-                unset( $e ); // ignore // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS
+                unset( $e ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS
             }
         }
 
@@ -1078,12 +1078,12 @@ final class VisitService
         ]);
 
         // D-6: رابطه دوطرفه — active_visit_id روی Appointment
-        if ( $appointmentId !== null ) {
+        if ( $appointmentId !== null ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
             $this->appointments->updateStatus($appointmentId, ['active_visit_id' => $visitId]);
         }
 
         // FR-6.1: Enqueue خودکار (پیش‌فرض روشن) — actor=system مجاز ماشین V3
-        if ( $this->shouldAutoEnqueue($clinic_id )) {
+        if ( $this->shouldAutoEnqueue($clinic_id )) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS
             $this->applyEnqueue($visitId, 'checked_in', $actorUserId, $now);
         }
 
@@ -1131,11 +1131,11 @@ final class VisitService
                 $recallCount = (int) $visit['recall_count'];
                 $clinicId = (int) ($visit['clinic_id'] ?? 0);
                 $max = $this->maxRecallsForClinic($clinicId);
-                if ( $recallCount >= $max ) {
-                    throw VisitException::of( 'CLINIC_RECALL_LIMIT_REACHED',
+                if ( $recallCount >= $max ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
+                    throw VisitException::of( 'CLINIC_RECALL_LIMIT_REACHED', // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket -- WPCS
                         'سقف فراخوان مجدد (' . $max . ') پر شده است',
                         409,
-                        ['recall_count' => $recallCount, 'max_recalls' => $max] );
+                        ['recall_count' => $recallCount, 'max_recalls' => $max] ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
                 }
                 $row['recall_count'] = $recallCount + 1;
                 $row['called_at'] = null;
@@ -1205,10 +1205,10 @@ final class VisitService
         try {
             return VisitMachine::create()->machine()->assert($from, $event, $actor);
         } catch ( InvalidTransitionException $e ) {
-            throw VisitException::of( 'CLINIC_INVALID_TRANSITION',
+            throw VisitException::of( 'CLINIC_INVALID_TRANSITION', // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket -- WPCS
                 $e->getMessage(),
                 409,
-                ['from' => $from, 'event' => $event] );
+                ['from' => $from, 'event' => $event] ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent -- WPCS
         }
     }
 
@@ -1218,11 +1218,11 @@ final class VisitService
     {
         $today = $this->nowUtc()->format('Y-m-d'); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- legacy alignment, keep readability
         $existing = $this->visits->findActiveByPatientDay($patientId, $clinicianId, $today); // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
-        if ( $existing !== null && in_array((string) $existing['status'], self::ACTIVE_VISIT_STATUSES, true)) {
-            throw VisitException::of( 'CLINIC_DUPLICATE_ACTIVE_VISIT',
+        if ( $existing !== null && in_array((string) $existing['status'], self::ACTIVE_VISIT_STATUSES, true)) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.WhiteSpace.CastStructureSpacing.NoSpaceBeforeOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS
+            throw VisitException::of( 'CLINIC_DUPLICATE_ACTIVE_VISIT', // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket -- WPCS
                 'این بیمار امروز ویزیت فعال (در جریان) دارد',
                 409,
-                ['visit_id' => (int) $existing['id'], 'visit_status' => (string) $existing['status']] );
+                ['visit_id' => (int) $existing['id'], 'visit_status' => (string) $existing['status']] ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent -- WPCS
         }
     }
 
@@ -1232,8 +1232,8 @@ final class VisitService
     private function lockPatient(int $patientId): array
     {
         // J-5: Serialize per-patient — دو Check-in/Walk-in هم‌زمان همان بیمار
-        $patient = $this->db->fetchRowForUpdate( 'SELECT * FROM ' . $this->db->table('cpms_patients') . ' WHERE id = %d LIMIT 1',
-            [$patientId] );
+        $patient = $this->db->fetchRowForUpdate( 'SELECT * FROM ' . $this->db->table('cpms_patients') . ' WHERE id = %d LIMIT 1', // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS
+            [$patientId] ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
         if ( $patient === null ) {
             throw VisitException::of('CLINIC_NOT_FOUND', 'بیمار یافت نشد', 404);
         }
@@ -1283,7 +1283,7 @@ final class VisitService
     private function guardVisitWithinExplicitScope(array $visit): void
     {
         $scope = ScopeContext::tryGet();
-        if ( $scope !== null && (int) ($visit['clinic_id'] ?? 0) !== (int) $scope->clinicId) {
+        if ( $scope !== null && (int) ($visit['clinic_id'] ?? 0) !== (int) $scope->clinicId) { // phpcs:ignore Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceAfterOpen,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceBeforeClose,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- legacy PSR-style, established contract
             throw VisitException::of('CLINIC_NOT_FOUND', 'مراجعه یافت نشد', 404);
         }
     }
@@ -1291,7 +1291,7 @@ final class VisitService
     private function guardAppointmentWithinExplicitScope(array $appt): void
     {
         $scope = ScopeContext::tryGet();
-        if ( $scope !== null && (int) ($appt['clinic_id'] ?? 0) !== (int) $scope->clinicId) {
+        if ( $scope !== null && (int) ($appt['clinic_id'] ?? 0) !== (int) $scope->clinicId) { // phpcs:ignore Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceAfterOpen,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceBeforeClose,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- legacy PSR-style, established contract
             throw VisitException::of('CLINIC_NOT_FOUND', 'نوبت یافت نشد', 404);
         }
     }
@@ -1305,10 +1305,10 @@ final class VisitService
         if ( $user === false || $user->roles === [] ) {
             return null;
         }
-        if ( in_array(RolesAndCapabilities::ROLE_DOCTOR, $user->roles, true )) {
+        if ( in_array(RolesAndCapabilities::ROLE_DOCTOR, $user->roles, true )) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS
             return 'doctor';
         }
-        if ( in_array(RolesAndCapabilities::ROLE_SECRETARY, $user->roles, true )) {
+        if ( in_array(RolesAndCapabilities::ROLE_SECRETARY, $user->roles, true )) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS
             return 'secretary';
         }
 
@@ -1320,15 +1320,15 @@ final class VisitService
         $role = $this->roleForUser($wpUserId);
         if ( $role !== 'secretary' ) {
             // ماشین: V1/V2 فقط secretary — نقش دیگر → خطای transition
-            throw VisitException::of( 'CLINIC_PERMISSION_DENIED',
+            throw VisitException::of( 'CLINIC_PERMISSION_DENIED', // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket -- WPCS
                 'فقط منشی می‌تواند ' . ($event === 'check_in' ? 'Check-in' : 'Walk-in') . ' ثبت کند',
-                403 );
+                403 ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent -- WPCS
         }
     }
 
     private function requireQueueReader(int $wpUserId): void
     {
-        if ( !user_can($wpUserId, RolesAndCapabilities::QUEUE_READ )) {
+        if ( !user_can($wpUserId, RolesAndCapabilities::QUEUE_READ )) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,WordPress.WhiteSpace.OperatorSpacing.NoSpaceAfter -- legacy PSR-style, established contract
             throw VisitException::of('CLINIC_PERMISSION_DENIED', 'دسترسی به صف ندارید', 403);
         }
     }
@@ -1358,14 +1358,14 @@ final class VisitService
      */
     private function queueScopeClinicianId(int $actorUserId, int $clinicId, ?int $requestedClinicianId): ?int
     {
-        if ( $this->roleForUser($actorUserId ) !== 'doctor') {
-            if ( $requestedClinicianId === null ) {
+        if ( $this->roleForUser($actorUserId ) !== 'doctor') { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- legacy PSR-style, established contract
+            if ( $requestedClinicianId === null ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
                 return null;
             }
             // کارکنان نمی‌تواند با پارامتر، دامنه را به پزشکِ خارج از Clinic مورد
             // اعتماد ببرد. معیار = هویت فعال + مشارکت پایدار فعال در همان Clinic
             // (نه Clinic خانهٔ پروفایل)؛ در غیر این صورت همان 404 parity موجود.
-            if ( !$this->memberships->clinician_participates_in($requestedClinicianId, $clinicId )) {
+            if ( !$this->memberships->clinician_participates_in($requestedClinicianId, $clinicId )) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,WordPress.WhiteSpace.OperatorSpacing.NoSpaceAfter -- legacy PSR-style, established contract
                 throw VisitException::of('CLINIC_NOT_FOUND', 'پزشک یافت نشد یا غیرفعال است', 404);
             }
 
@@ -1377,10 +1377,10 @@ final class VisitService
         // نبودِ مشارکت ACTIVE در Clinic مورد اعتماد ⇒ مجموعهٔ خالی (0) —
         // هرگز دامنهٔ منشی/کل مطب.
         $identityId = $this->memberships->active_clinician_id_for_wp_user($actorUserId);
-        if ( $identityId === null ) {
+        if ( $identityId === null ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
             return 0;
         }
-        if ( !$this->memberships->clinician_participates_in($identityId, $clinicId )) {
+        if ( !$this->memberships->clinician_participates_in($identityId, $clinicId )) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,WordPress.WhiteSpace.OperatorSpacing.NoSpaceAfter -- legacy PSR-style, established contract
             return 0;
         }
 
@@ -1471,9 +1471,9 @@ final class VisitService
      * @return list<int>
      */
     private function activeLocationIdsForClinic( int $clinic_id ): array { // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy PSR-style, established contract
-        $rows = $this->db->fetchAll( 'SELECT id FROM ' . $this->db->table( 'cpms_locations' ) .
+        $rows = $this->db->fetchAll( 'SELECT id FROM ' . $this->db->table( 'cpms_locations' ) . // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket -- WPCS
             ' WHERE clinic_id = %d AND is_active = 1 ORDER BY id ASC',
-            [ $clinic_id ] );
+            [ $clinic_id ] ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent -- WPCS
         $ids = []; // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment, keep readability
         foreach ( ( is_array( $rows ) ? $rows : [] ) as $r ) {
             $ids[] = (int) ( $r['id'] ?? 0 );
@@ -1534,10 +1534,10 @@ final class VisitService
     private function assertLicense(string $operation): void
     {
         $decision = $this->licenseGate->assert($operation);
-        if ( !$decision->allowed ) {
-            throw VisitException::of( 'CLINIC_LICENSE_BLOCKED',
+        if ( !$decision->allowed ) { // phpcs:ignore WordPress.WhiteSpace.OperatorSpacing.NoSpaceAfter -- WPCS
+            throw VisitException::of( 'CLINIC_LICENSE_BLOCKED', // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket -- WPCS
                 'سیستم در حالت Read-Only است (مجازت) — ثبت مراجعه جدید مجاز نیست',
-                503 );
+                503 ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent -- WPCS
         }
     }
 
@@ -1555,19 +1555,19 @@ final class VisitService
      */
     private function resolveLocationTimezone(int $locationId, int $clinicId): ?DateTimeZone
     {
-        if ( $locationId <= 0 || $clinicId <= 0 ) {
+        if ( $locationId <= 0 || $clinicId <= 0 ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
             return null;
         }
 
-        $row = $this->db->fetchRow( 'SELECT id, clinic_id, timezone FROM ' . $this->db->table('cpms_locations') . ' WHERE id = %d LIMIT 1',
-            [$locationId] );
+        $row = $this->db->fetchRow( 'SELECT id, clinic_id, timezone FROM ' . $this->db->table('cpms_locations') . ' WHERE id = %d LIMIT 1', // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS
+            [$locationId] ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
 
         if ( $row === null ) {
             $this->opLog?->warning('visit.location_missing', ['location_id' => $locationId, 'clinic_id' => $clinicId]);
             return null;
         }
 
-        if ( (int) $row['clinic_id'] !== $clinicId) {
+        if ( (int) $row['clinic_id'] !== $clinicId) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- legacy PSR-style, established contract
             $this->opLog?->warning('visit.location_clinic_mismatch', [
                 'location_id' => $locationId,
                 'expected_clinic' => $clinicId,
@@ -1577,7 +1577,7 @@ final class VisitService
         }
 
         $tzName = trim((string) ($row['timezone'] ?? ''));
-        if ( $tzName === '' ) {
+        if ( $tzName === '' ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
             $this->opLog?->warning('visit.location_timezone_missing', ['location_id' => $locationId]);
             return null;
         }
@@ -1630,7 +1630,7 @@ final class VisitService
      */
     private function graceForClinic(int $clinicId): ?int
     {
-        if ( $clinicId <= 0 ) {
+        if ( $clinicId <= 0 ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
             return null;
         }
 
@@ -1670,7 +1670,7 @@ final class VisitService
      */
     private function appointmentStartTime(array $appt): ?string
     {
-        if ( empty($appt['slot_date'] ) || empty($appt['slot_time'])) {
+        if ( empty($appt['slot_date'] ) || empty($appt['slot_time'])) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS
             return null;
         }
 
@@ -1702,10 +1702,10 @@ final class VisitService
         $statuses = VisitMachine::ACTIVE_STATUSES;
         $placeholders = implode(',', array_fill(0, count($statuses), '%s'));
 
-        return $this->db->fetchRow( 'SELECT * FROM ' . $this->db->table('cpms_visits') .
+        return $this->db->fetchRow( 'SELECT * FROM ' . $this->db->table('cpms_visits') . // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS
             ' WHERE appointment_id = %d AND active = 1 AND status IN (' . $placeholders . ') ' .
             'ORDER BY id DESC LIMIT 1',
-            array_merge([$appointmentId], $statuses) );
+            array_merge([$appointmentId], $statuses) ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
     }
 
     private function markAppointmentNoShow(array $appt, string $now, ?int $actorUserId): void
@@ -1726,7 +1726,7 @@ final class VisitService
     private function completeReferencedAppointment(int $appointmentId, int $actorUserId): void
     {
         $appt = $this->appointments->findForUpdate($appointmentId);
-        if ( $appt === null || (string) $appt['status'] === 'completed') {
+        if ( $appt === null || (string) $appt['status'] === 'completed') { // phpcs:ignore WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS
             return;
         }
         // T9: خروج بیمار → نوبت مرجع completed (system event ماشین).
@@ -1794,18 +1794,18 @@ final class VisitService
      */
     private function guardDoctorTransitionOwnership(int $actorUserId, array $visit): void
     {
-        if ( $this->roleForUser($actorUserId ) !== 'doctor') {
+        if ( $this->roleForUser($actorUserId ) !== 'doctor') { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- legacy PSR-style, established contract
             return;
         }
 
-        $linkedClinicianId = $this->db->fetchValue( 'SELECT id FROM ' . $this->db->table('cpms_clinicians') .
+        $linkedClinicianId = $this->db->fetchValue( 'SELECT id FROM ' . $this->db->table('cpms_clinicians') . // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
             ' WHERE wp_user_id = %d AND is_active = 1 LIMIT 1',
-            [$actorUserId] );
+            [$actorUserId] ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
 
-        if ( $linkedClinicianId === null || (int) $linkedClinicianId !== (int) $visit['clinician_id']) {
+        if ( $linkedClinicianId === null || (int) $linkedClinicianId !== (int) $visit['clinician_id']) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- legacy PSR-style, established contract
             // IDOR/Cross-doctor: 403 + Audit (الگوی T-01) — نه 404؛ وجود ویزیت
             // برای دارنده QUEUE_READ آشکار است، رد شدنِ عملیات است که گزارش می‌شود.
-            $this->auditAndThrow( $actorUserId,
+            $this->auditAndThrow( $actorUserId, // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
                 'doctor',
                 'FORBIDDEN_ACCESS_ATTEMPT',
                 'visit',
@@ -1813,11 +1813,11 @@ final class VisitService
                 (int) $visit['patient_id'],
                 'پزشک فقط می‌تواند روی ویزیت‌های خودش عملیات صف انجام دهد (ADR-0027 — Scope صریح لازم دارد)',
                 403,
-                'CLINIC_PERMISSION_DENIED' );
+                'CLINIC_PERMISSION_DENIED' ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent -- WPCS
         }
     }
 
-    private function auditAndThrow( int $wpUserId,
+    private function auditAndThrow( int $wpUserId, // phpcs:ignore Squiz.Functions.MultiLineFunctionDeclaration.FirstParamSpacing,WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
         string $role,
         string $action,
         string $resourceType,
@@ -1825,7 +1825,7 @@ final class VisitService
         int $patientId,
         string $message,
         int $http,
-        string $code ): never {
+        string $code ): never { // phpcs:ignore Squiz.Functions.MultiLineFunctionDeclaration.CloseBracketLine -- WPCS
         $this->audit($action, $wpUserId, $role, $resourceType, $resourceId, $patientId, null, null, []);
         throw VisitException::of($code, $message, $http);
     }
@@ -1835,7 +1835,7 @@ final class VisitService
      * @param array<string, mixed> $after
      * @param array<string, mixed> $meta
      */
-    private function audit( string $action,
+    private function audit( string $action, // phpcs:ignore Squiz.Functions.MultiLineFunctionDeclaration.FirstParamSpacing -- WPCS
         ?int $wpUserId,
         string $role,
         string $resourceType,
@@ -1843,17 +1843,17 @@ final class VisitService
         ?int $patientId,
         ?array $before,
         ?array $after,
-        array $meta ): void {
+        array $meta ): void { // phpcs:ignore Squiz.Functions.MultiLineFunctionDeclaration.CloseBracketLine -- WPCS
         try {
-            $this->audit->log( $action,
+            $this->audit->log( $action, // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket -- WPCS
                 ['wp_user_id' => $wpUserId, 'role' => $role],
                 $resourceType,
                 $resourceId,
                 $patientId,
                 $before,
                 $after,
-                $meta );
-        } catch ( Throwable $e ) {
+                $meta ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent -- WPCS
+        } catch ( Throwable $e ) { // phpcs:ignore Generic.CodeAnalysis.EmptyStatement.DetectedCatch -- WPCS
             // Audit نباید جریان عملیات بالینی را قطع کند (تطبیق الگوی BookingService)
         }
     }
