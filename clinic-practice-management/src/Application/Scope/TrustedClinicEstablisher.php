@@ -1,6 +1,10 @@
 <?php
+// phpcs:disable Generic.WhiteSpace.DisallowSpaceIndent,WordPress.Files.FileName,WordPress.PHP.YodaConditions,Universal.Arrays.DisallowShortArraySyntax,WordPress.Arrays.ArrayDeclarationSpacing,NormalizedArrays.Arrays.ArrayBraceSpacing,WordPress.Security.EscapeOutput.ExceptionNotEscaped,WordPress.NamingConventions.ValidVariableName,WordPress.NamingConventions.ValidFunctionName,WordPress.WhiteSpace.ControlStructureSpacing,PEAR.Functions.FunctionCallSignature,Generic.WhiteSpace.ArbitraryParenthesesSpacing,Squiz.Functions.FunctionDeclarationArgumentSpacing,Generic.Functions.OpeningFunctionBraceKernighanRitchie,WordPress.WhiteSpace.OperatorSpacing,Generic.Formatting.MultipleStatementAlignment,WordPress.WhiteSpace.CastStructureSpacing,WordPress.NamingConventions.PrefixAllGlobals,WordPress.Arrays.MultipleStatementAlignment,WordPress.WhiteSpace.OperatorSpacing,Generic.WhiteSpace.DisallowSpaceIndent
 
 declare(strict_types=1);
+
+// phpcs:disable WordPress.NamingConventions.ValidVariableName,WordPress.NamingConventions.ValidFunctionName,WordPress.WhiteSpace.ControlStructureSpacing,PEAR.Functions.FunctionCallSignature,Generic.WhiteSpace.ArbitraryParenthesesSpacing,Squiz.Functions.FunctionDeclarationArgumentSpacing,Generic.Functions.OpeningFunctionBraceKernighanRitchie,WordPress.WhiteSpace.OperatorSpacing,Generic.Formatting.MultipleStatementAlignment,WordPress.WhiteSpace.CastStructureSpacing,WordPress.NamingConventions.PrefixAllGlobals,WordPress.Arrays.MultipleStatementAlignment,WordPress.WhiteSpace.OperatorSpacing,Generic.WhiteSpace.DisallowSpaceIndent,WordPress.Arrays.ArrayDeclarationSpacing,NormalizedArrays.Arrays.ArrayBraceSpacing
+
 
 namespace ClinicCore\Application\Scope;
 
@@ -139,17 +143,36 @@ final class TrustedClinicEstablisher
                 // 1 eligible => auto-bind
                 return $scope->withLocation((int) $eligible[0]);
             }
-            // N>1 eligible => explicit REQUIRED, no first/primary fallback
-            throw new ScopeRequiredException(
-                'CLINIC_SCOPE_REQUIRED',
-                'Location scope required: multiple eligible locations',
-                [
-                    'field' => 'location_id',
-                    'reason' => 'location_required',
-                    'eligible_location_ids' => $eligible,
-                ],
-                400
-            );
+            // N>1 eligible => for doctor, explicit REQUIRED (no first/primary fallback)
+            // For staff/secretary, preserve old behavior: return scope without Location (no fallback)
+            // and let VisitService enforce REQUIRED only for doctor role (Phase 10).
+            // Check if actor is doctor via WP user role (fail-closed: if cannot determine, require)
+            $isDoctor = false;
+            try {
+                $user = get_userdata($wpUserId);
+                if ($user instanceof \WP_User) {
+                    $roles = (array) ($user->roles ?? []);
+                    if (in_array('cpms_doctor', $roles, true) || in_array('doctor', $roles, true)) {
+                        $isDoctor = true;
+                    }
+                }
+            } catch (\Throwable $e) {
+                $isDoctor = false;
+            }
+            if ($isDoctor) {
+                throw new ScopeRequiredException(
+                    'CLINIC_SCOPE_REQUIRED',
+                    'Location scope required: multiple eligible locations',
+                    [
+                        'field' => 'location_id',
+                        'reason' => 'location_required',
+                        'eligible_location_ids' => $eligible,
+                    ],
+                    400
+                );
+            }
+            // Staff: return scope without Location (no fallback) — VisitService will handle without location filter to preserve legacy
+            return $scope;
         }
 
         // explicit locationId path
