@@ -423,7 +423,12 @@ def run_journey(browser, run):
             raise RuntimeError("rest_root must be same-origin (rest_url-derived)")
         if not isinstance(cfg["nonce"], str) or cfg["nonce"] == "":
             raise RuntimeError("nonce must be a non-empty string")
-        if "clinic_id" in cfg_raw or "patient_id" in cfg_raw or "user_id" in cfg_raw or "recipient" in cfg_raw:
+        # Slice 7: files_path/files_stream_path legitimately carry the object-selector
+        # placeholders of the EXISTING C3/C4/E17 routes ({patient_id}/{id}) — mandated by the
+        # accepted RED config contract, never authority values. Strip exactly those sanctioned
+        # templates before the raw leak scan; every other occurrence still fails the stage.
+        cfg_raw_scan = cfg_raw.replace("{patient_id}", "").replace("{id}", "")
+        if "clinic_id" in cfg_raw_scan or "patient_id" in cfg_raw_scan or "user_id" in cfg_raw_scan or "recipient" in cfg_raw_scan:
             raise RuntimeError("config must not carry clinic_id/patient_id/user_id/recipient")
         html = page.content()
         if "data-clinic-id" in html or "data-patient-id" in html:
