@@ -17,12 +17,12 @@
 declare(strict_types=1);
 
 
-defined('ABSPATH') || exit; // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS spacing
+defined('ABSPATH') || exit;
 
 use ClinicCore\Frontend\DoctorPortalShell;
 use ClinicCore\Auth\RolesAndCapabilities;
 
-if (!function_exists('wp_get_current_user')) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,WordPress.WhiteSpace.OperatorSpacing.NoSpaceAfter,WordPress.WhiteSpace.OperatorSpacing.NoSpaceBefore -- WPCS spacing
+if ( !function_exists('wp_get_current_user' )) {
     return;
 }
 
@@ -33,37 +33,37 @@ $cpms_user = wp_get_current_user(); // phpcs:ignore Generic.Formatting.MultipleS
 $cpms_logged_in = ($cpms_user instanceof WP_User && (int) $cpms_user->ID > 0); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceAfterOpen,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceBeforeClose -- legacy alignment
 $cpms_is_doctor = $cpms_logged_in && DoctorPortalShell::isDoctorUser($cpms_user); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- legacy alignment
 $cpms_login_name = $cpms_logged_in ? (string) $cpms_user->display_name : '';
-if ('' === $cpms_login_name && $cpms_logged_in) { // phpcs:ignore WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS spacing
+if ( '' === $cpms_login_name && $cpms_logged_in ) {
     $cpms_login_name = (string) $cpms_user->user_login;
 }
 
 $cpms_portal_url = DoctorPortalShell::portal_url();
-$cpms_login_url = wp_login_url($cpms_portal_url); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- legacy alignment
-$cpms_logout_url = $cpms_logged_in ? wp_logout_url($cpms_portal_url) : ''; // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS spacing
+$cpms_login_url = wp_login_url( $cpms_portal_url ); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- legacy alignment
+$cpms_logout_url = $cpms_logged_in ? wp_logout_url( $cpms_portal_url ) : '';
 
-$cpms_charset = (string) get_bloginfo('charset'); // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS spacing
-if ('' === $cpms_charset) { // phpcs:ignore WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS spacing
+$cpms_charset = (string) get_bloginfo('charset');
+if ( '' === $cpms_charset ) {
     $cpms_charset = 'UTF-8';
 }
-$cpms_site_name = (string) get_bloginfo('name'); // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS spacing
+$cpms_site_name = (string) get_bloginfo('name');
 
 ob_start();
-wp_print_styles([DoctorPortalShell::CSS_HANDLE]); // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS spacing
+wp_print_styles([DoctorPortalShell::CSS_HANDLE]);
 $cpms_styles_html = (string) ob_get_clean();
 
 ob_start();
-wp_print_scripts([DoctorPortalShell::JS_HANDLE]); // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS spacing
+wp_print_scripts([DoctorPortalShell::JS_HANDLE]);
 $cpms_scripts_html = (string) ob_get_clean();
 
 $rest_root = untrailingslashit(rest_url('clinic/v1')); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- legacy, template var
 $config = [ // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning,WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- legacy, template var
     'rest_root' => $rest_root, // phpcs:ignore WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned -- legacy alignment
-    'nonce' => wp_create_nonce('wp_rest'), // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned -- legacy alignment
+    'nonce' => wp_create_nonce( 'wp_rest' ), // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned -- legacy alignment
     'portal_url' => $cpms_portal_url,
     'is_doctor' => $cpms_is_doctor, // phpcs:ignore WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned -- legacy alignment
 ];
-$config_json = wp_json_encode($config, JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_UNICODE); // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- legacy, template var
-if (!is_string($config_json) || '' === $config_json) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,WordPress.WhiteSpace.OperatorSpacing.NoSpaceAfter,WordPress.WhiteSpace.OperatorSpacing.NoSpaceBefore -- WPCS spacing
+$config_json = wp_json_encode( $config, JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_UNICODE ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- legacy, template var
+if ( !is_string($config_json ) || '' === $config_json) {
     $config_json = '{}'; // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- legacy, template var
 }
 
@@ -71,10 +71,10 @@ if (!is_string($config_json) || '' === $config_json) { // phpcs:ignore PEAR.Func
 <!DOCTYPE html>
 <html lang="fa" dir="rtl" data-cpms-doctor-portal-shell="v1" data-cpms-portal="doctor" data-cpms-doctor-portal="shell">
 <head>
-<meta charset="<?php echo esc_attr($cpms_charset); ?>"> // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS spacing
+<meta charset="<?php echo esc_attr( $cpms_charset ); ?>">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
-<title><?php echo esc_html('پورتال پزشک' . ('' !== $cpms_site_name ? ' — ' . $cpms_site_name : '')); ?></title> // phpcs:ignore Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceAfterOpen,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceBeforeClose,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS spacing
+<title><?php echo esc_html( 'پورتال پزشک' . ('' !== $cpms_site_name ? ' — ' . $cpms_site_name : '' )); ?></title>
 <style>
 :root { --cpms-primary: #2271b1; --cpms-bg: #f6f7f7; --cpms-card-bg: #fff; --cpms-border: #dcdcde; --cpms-text: #1d2327; --cpms-muted: #646970; }
 * { box-sizing: border-box; }
@@ -133,7 +133,7 @@ echo $cpms_styles_html;
     data-cpms-portal="doctor"
     data-cpms-doctor-portal="shell"
     data-shell-contract="doctor-v1"
-    <?php echo $cpms_is_doctor ? 'data-shell-user="doctor"' : ($cpms_logged_in ? 'data-shell-user="non-doctor"' : 'data-shell-user="anonymous"'); ?> // phpcs:ignore Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceAfterOpen,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceBeforeClose -- WPCS spacing
+    <?php echo $cpms_is_doctor ? 'data-shell-user="doctor"' : ($cpms_logged_in ? 'data-shell-user="non-doctor"' : 'data-shell-user="anonymous"');
 >
     <header class="cpms-doctor-portal-shell__header" role="banner" data-role="portal-header">
         <div class="cpms-doctor-portal-shell__brand">
@@ -143,33 +143,33 @@ echo $cpms_styles_html;
                 <h1 class="cpms-doctor-portal-shell__title" data-role="portal-header-title">امروز پزشک — صف زنده</h1>
             </div>
         </div>
-        <?php if ($cpms_is_doctor) : ?> // phpcs:ignore Squiz.ControlStructures.ControlSignature.NewlineAfterOpenBrace,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS spacing
+        <?php if ( $cpms_is_doctor ) :
             <div class="cpms-doctor-portal-shell__session">
-                <span class="cpms-doctor-portal-shell__who" data-role="portal-user"><?php echo esc_html($cpms_login_name); ?></span> // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS spacing
-                <a class="cpms-doc-btn cpms-doc-btn--ghost" data-role="portal-logout" href="<?php echo esc_url($cpms_logout_url); ?>">خروج</a> // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS spacing
+                <span class="cpms-doctor-portal-shell__who" data-role="portal-user"><?php echo esc_html( $cpms_login_name ); ?></span>
+                <a class="cpms-doc-btn cpms-doc-btn--ghost" data-role="portal-logout" href="<?php echo esc_url( $cpms_logout_url ); ?>">خروج</a>
             </div>
-        <?php elseif ($cpms_logged_in) : ?> // phpcs:ignore Squiz.ControlStructures.ControlSignature.NewlineAfterOpenBrace,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS spacing
+        <?php elseif ( $cpms_logged_in ) :
             <div class="cpms-doctor-portal-shell__session">
-                <a class="cpms-doc-btn cpms-doc-btn--ghost" href="<?php echo esc_url($cpms_logout_url); ?>">خروج</a> // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS spacing
+                <a class="cpms-doc-btn cpms-doc-btn--ghost" href="<?php echo esc_url( $cpms_logout_url ); ?>">خروج</a>
             </div>
         <?php endif; ?>
     </header>
 
     <main class="cpms-doctor-portal-shell__main" role="main" data-role="portal-main" id="cpms-doctor-portal-main">
-        <?php if (!$cpms_logged_in) : ?> // phpcs:ignore Squiz.ControlStructures.ControlSignature.NewlineAfterOpenBrace,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,WordPress.WhiteSpace.OperatorSpacing.NoSpaceAfter,WordPress.WhiteSpace.OperatorSpacing.NoSpaceBefore -- WPCS spacing
+        <?php if ( ! $cpms_logged_in ) :
             <section class="cpms-doctor-portal-shell__notice" role="status" data-role="portal-login">
                 <h2>ورود به پورتال پزشک</h2>
                 <p>برای مشاهده صف امروز و بیماران، وارد حساب پزشک خود شوید.</p>
-                <p><a class="cpms-doc-btn cpms-doc-btn--primary" href="<?php echo esc_url($cpms_login_url); ?>">ورود</a></p> // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS spacing
+                <p><a class="cpms-doc-btn cpms-doc-btn--primary" href="<?php echo esc_url( $cpms_login_url ); ?>">ورود</a></p>
             </section>
-        <?php elseif (!$cpms_is_doctor) : ?> // phpcs:ignore Squiz.ControlStructures.ControlSignature.NewlineAfterOpenBrace,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,WordPress.WhiteSpace.OperatorSpacing.NoSpaceAfter,WordPress.WhiteSpace.OperatorSpacing.NoSpaceBefore -- WPCS spacing
+        <?php elseif ( ! $cpms_is_doctor ) :
             <section class="cpms-doctor-portal-shell__notice" role="alert" data-role="portal-access-denied">
                 <h2>دسترسی پورتال پزشک</h2>
                 <p>این پورتال فقط برای پزشکان با پروفایل فعال است. حساب شما نقش پزشک فعال ندارد یا به پروفایل پزشک متصل نیست.</p>
-                <?php if (current_user_can(RolesAndCapabilities::ROLE_SECRETARY)) : ?> // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,Squiz.ControlStructures.ControlSignature.NewlineAfterOpenBrace,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS spacing
+                <?php if ( current_user_can(RolesAndCapabilities::ROLE_SECRETARY )) :
                     <p>حساب منشی نمی‌تواند وارد پورتال پزشک شود.</p>
                 <?php endif; ?>
-                <p><a class="cpms-doc-btn cpms-doc-btn--primary" href="<?php echo esc_url(admin_url()); ?>">بازگشت به پیشخوان</a></p> // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS spacing
+                <p><a class="cpms-doc-btn cpms-doc-btn--primary" href="<?php echo esc_url( admin_url( )); ?>">بازگشت به پیشخوان</a></p>
             </section>
         <?php else : ?>
             <div id="cpms-doctor-portal-app" data-cpms-doctor-portal="app">
@@ -224,11 +224,11 @@ echo $cpms_styles_html;
 (function(){
 'use strict';
 var cfgEl = document.querySelector('.cpms-doctor-portal__config');
-if (!cfgEl) return;
+if ( !cfgEl ) return;
 var CFG;
 try { CFG = JSON.parse(cfgEl.textContent || '{}'); } catch(e){ CFG = {}; }
-if (!CFG.rest_root || !CFG.nonce) return;
-if (!CFG.is_doctor) return;
+if ( !CFG.rest_root || !CFG.nonce ) return;
+if ( !CFG.is_doctor ) return;
 
 var state = {
     clinics: [],
@@ -244,17 +244,17 @@ var state = {
 
 function apiUrl(path){
     var base = CFG.rest_root;
-    if (base.indexOf('?') !== -1 && path.indexOf('?') !== -1) {
+    if ( base.indexOf('?' ) !== -1 && path.indexOf('?') !== -1) {
         return base + path.replace('?', '&');
     }
     return base + path;
 }
 function api(method, path, body, extraHeaders){
     var headers = { 'X-WP-Nonce': CFG.nonce };
-    if (extraHeaders) { for (var k in extraHeaders){ headers[k]=extraHeaders[k]; } }
+    if ( extraHeaders ) { for ( var k in extraHeaders ){ headers[k]=extraHeaders[k]; } }
     var opts = { method: method, headers: headers };
-    if (body) {
-        if (body instanceof FormData) { opts.body = body; }
+    if ( body ) {
+        if ( body instanceof FormData ) { opts.body = body; }
         else { headers['Content-Type']='application/json'; opts.body=JSON.stringify(body); }
     }
     return fetch(apiUrl(path), opts).then(function(r){
@@ -265,32 +265,32 @@ function api(method, path, body, extraHeaders){
 }
 function esc(s){ return String(s==null?'':s).replace(/[&<>\"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c];}); }
 function qs(sel){ return document.querySelector(sel); }
-function show(el){ if(el) el.hidden=false; }
-function hide(el){ if(el) el.hidden=true; }
+function show(el){ if( el ) el.hidden=false; }
+function hide(el){ if( el ) el.hidden=true; }
 
 function renderContext(doctor, clinic, location){
     var titleEl = qs('[data-role="context-title"]');
     var detailsEl = qs('[data-role="context-details"]');
-    if (!titleEl || !detailsEl) return;
-    if (!doctor) {
+    if ( !titleEl || !detailsEl ) return;
+    if ( !doctor ) {
         titleEl.textContent = 'اطلاعات پزشک یافت نشد';
         return;
     }
     titleEl.textContent = 'دکتر ' + (doctor.clinician_name || doctor.display_name || '');
     var parts = [];
-    if (clinic) parts.push('<span data-role="context-clinic">مطب: ' + esc(clinic.name) + '</span>');
-    if (location) parts.push('<span data-role="context-location">شعبه: ' + esc(location.name) + ' (' + esc(location.timezone) + ')</span>');
-    if (doctor.clinician_id) parts.push('<span>شناسه حرفه‌ای: ' + esc(doctor.clinician_id) + '</span>');
+    if ( clinic ) parts.push('<span data-role="context-clinic">مطب: ' + esc(clinic.name) + '</span>');
+    if ( location ) parts.push('<span data-role="context-location">شعبه: ' + esc(location.name) + ' (' + esc(location.timezone) + ')</span>');
+    if ( doctor.clinician_id ) parts.push('<span>شناسه حرفه‌ای: ' + esc(doctor.clinician_id) + '</span>');
     detailsEl.innerHTML = parts.join('');
 }
 
 function renderClinicSelector(){
     var wrap = qs('[data-role="clinic-selector-wrap"]');
     var sel = qs('[data-role="clinic-select"]');
-    if (!wrap || !sel) return;
-    if (state.clinics.length <= 1) {
+    if ( !wrap || !sel ) return;
+    if ( state.clinics.length <= 1 ) {
         hide(wrap);
-        if (state.clinics.length === 1) {
+        if ( state.clinics.length === 1 ) {
             state.selectedClinicId = state.clinics[0].id;
         }
         return;
@@ -304,12 +304,12 @@ function renderClinicSelector(){
 function renderLocationSelector(){
     var wrap = qs('[data-role="location-selector-wrap"]');
     var sel = qs('[data-role="location-select"]');
-    if (!wrap || !sel) return;
-    if (!state.selectedClinicId) {
+    if ( !wrap || !sel ) return;
+    if ( !state.selectedClinicId ) {
         hide(wrap);
         return;
     }
-    if (state.locations.length === 0) {
+    if ( state.locations.length === 0 ) {
         hide(wrap);
         var noData = qs('[data-role="no-data"]');
         show(noData);
@@ -317,7 +317,7 @@ function renderLocationSelector(){
         hide(qs('[data-role="queue-section"]'));
         return;
     }
-    if (state.locations.length === 1) {
+    if ( state.locations.length === 1 ) {
         hide(wrap);
         state.selectedLocationId = state.locations[0].id;
         return;
@@ -332,8 +332,8 @@ function renderToday(){
     var sec = qs('[data-role="today-section"]');
     var dateEl = qs('[data-role="today-date"]');
     var statsEl = qs('[data-role="today-stats"]');
-    if (!sec || !dateEl || !statsEl) return;
-    if (!state.today) {
+    if ( !sec || !dateEl || !statsEl ) return;
+    if ( !state.today ) {
         hide(sec);
         return;
     }
@@ -360,21 +360,21 @@ function renderQueue(){
     var empty = qs('[data-role="queue-empty"]');
     var err = qs('[data-role="queue-error"]');
     var list = qs('[data-role="queue-list"]');
-    if (!sec || !list) return;
-    if (!state.selectedClinicId || !state.selectedLocationId) {
+    if ( !sec || !list ) return;
+    if ( !state.selectedClinicId || !state.selectedLocationId ) {
         hide(sec);
         return;
     }
     show(sec);
-    if (loading) hide(loading);
-    if (state.queue.length===0) {
+    if ( loading ) hide(loading);
+    if ( state.queue.length===0 ) {
         show(empty);
         list.innerHTML='';
     } else {
         hide(empty);
         list.innerHTML = state.queue.map(function(v){
             var badge = '';
-            if (v.express) badge += ' <span class="cpms-doc-badge express">فوری</span>';
+            if ( v.express ) badge += ' <span class="cpms-doc-badge express">فوری</span>';
             var statusLabel = { waiting:'در صف', called:'فراخوانده', in_consultation:'در ویزیت' }[v.status] || v.status;
             var statusClass = 'status-' + (v.status||'');
             return '<li data-role="queue-item" data-visit-id="' + esc(v.id) + '">' +
@@ -384,19 +384,19 @@ function renderQueue(){
                 '</li>';
         }).join('');
     }
-    if (err && state.queue.length>0) hide(err);
+    if ( err && state.queue.length>0 ) hide(err);
 }
 
 function showError(msg){
     var err = qs('[data-role="queue-error"]');
-    if (!err) return;
+    if ( !err ) return;
     err.textContent = msg;
     show(err);
 }
 
 function loadContext(){
     return api('GET', '/doctor/portal/context').then(function(r){
-        if (r.status!==200) {
+        if ( r.status!==200 ) {
             throw new Error((r.body && r.body.message) || 'خطا در دریافت اطلاعات مطب‌ها');
         }
         var data = (r.body && r.body.data) || r.body || {};
@@ -404,22 +404,22 @@ function loadContext(){
         var doctor = data.doctor || null;
         var currentClinic = data.current_clinic || null;
         var currentLocation = data.current_location || null;
-        if (data.selected_clinic_id) state.selectedClinicId = data.selected_clinic_id;
-        else if (currentClinic) state.selectedClinicId = currentClinic.id;
-        else if (state.clinics.length===1) state.selectedClinicId = state.clinics[0].id;
+        if ( data.selected_clinic_id ) state.selectedClinicId = data.selected_clinic_id;
+        else if ( currentClinic ) state.selectedClinicId = currentClinic.id;
+        else if ( state.clinics.length===1 ) state.selectedClinicId = state.clinics[0].id;
 
         renderClinicSelector();
 
-        if (state.selectedClinicId) {
+        if ( state.selectedClinicId ) {
             return loadLocations(state.selectedClinicId).then(function(){
-                if (state.locations.length===1) state.selectedLocationId = state.locations[0].id;
-                else if (data.selected_location_id) state.selectedLocationId = data.selected_location_id;
-                else if (currentLocation) state.selectedLocationId = currentLocation.id;
+                if ( state.locations.length===1 ) state.selectedLocationId = state.locations[0].id;
+                else if ( data.selected_location_id ) state.selectedLocationId = data.selected_location_id;
+                else if ( currentLocation ) state.selectedLocationId = currentLocation.id;
 
                 renderLocationSelector();
                 renderContext(doctor, currentClinic, currentLocation);
 
-                if (state.selectedClinicId && state.selectedLocationId) {
+                if ( state.selectedClinicId && state.selectedLocationId ) {
                     return loadTodayAndQueue();
                 }
             });
@@ -433,24 +433,24 @@ function loadContext(){
 
 function loadLocations(clinicId){
     return api('GET', '/doctor/portal/locations?clinic_id=' + encodeURIComponent(clinicId)).then(function(r){
-        if (r.status!==200) throw new Error('خطا در دریافت شعبه‌ها');
+        if ( r.status!==200 ) throw new Error('خطا در دریافت شعبه‌ها');
         var data = (r.body && r.body.data) || r.body || {};
         state.locations = data.locations || [];
     });
 }
 
 function loadTodayAndQueue(){
-    if (!state.selectedClinicId || !state.selectedLocationId) return Promise.resolve();
+    if ( !state.selectedClinicId || !state.selectedLocationId ) return Promise.resolve();
     var headers = {
         'X-CPMS-Clinic-Id': String(state.selectedClinicId),
         'X-CPMS-Location-Id': String(state.selectedLocationId)
     };
     return api('GET', '/doctor/today', null, headers).then(function(r){
-        if (r.status===400) {
+        if ( r.status===400 ) {
             var body = r.body || {};
             var code = body.code || '';
             var data = body.data || {};
-            if (code==='CLINIC_SCOPE_REQUIRED' && data.field==='location_id') {
+            if ( code==='CLINIC_SCOPE_REQUIRED' && data.field==='location_id' ) {
                 var wrap = qs('[data-role="location-selector-wrap"]');
                 show(wrap);
                 showError('لطفاً شعبه را انتخاب کنید.');
@@ -458,10 +458,10 @@ function loadTodayAndQueue(){
             }
             throw new Error(body.message || 'خطا در دریافت امروز');
         }
-        if (r.status===403) {
+        if ( r.status===403 ) {
             throw new Error('دسترسی به این مطب/شعبه ندارید.');
         }
-        if (r.status!==200) throw new Error('خطا در دریافت امروز');
+        if ( r.status!==200 ) throw new Error('خطا در دریافت امروز');
         var payload = (r.body && r.body.data) || r.body || {};
         state.today = payload;
         state.queue = payload.queue || [];
@@ -472,28 +472,28 @@ function loadTodayAndQueue(){
 }
 
 function pollQueue(){
-    if (state.pollPaused || document.hidden) return;
-    if (!state.selectedClinicId || !state.selectedLocationId) return;
+    if ( state.pollPaused || document.hidden ) return;
+    if ( !state.selectedClinicId || !state.selectedLocationId ) return;
     var headers = {
         'X-CPMS-Clinic-Id': String(state.selectedClinicId),
         'X-CPMS-Location-Id': String(state.selectedLocationId)
     };
     var since = state.lastEventId || 0;
     api('GET', '/rt/queue?since=' + encodeURIComponent(since), null, headers).then(function(r){
-        if (r.status===304) return;
-        if (r.status!==200) return;
+        if ( r.status===304 ) return;
+        if ( r.status!==200 ) return;
         var data = (r.body && r.body.data) || r.body || {};
         var events = data.events || [];
-        if (events.length>0) {
+        if ( events.length>0 ) {
             loadTodayAndQueue();
         }
-        if (data.last_event_id) state.lastEventId = data.last_event_id;
+        if ( data.last_event_id ) state.lastEventId = data.last_event_id;
     });
 }
 
 document.addEventListener('change', function(ev){
     var clinicSel = ev.target.closest('[data-role="clinic-select"]');
-    if (clinicSel) {
+    if ( clinicSel ) {
         var val = clinicSel.value;
         state.selectedClinicId = val ? parseInt(val,10) : null;
         state.selectedLocationId = null;
@@ -503,10 +503,10 @@ document.addEventListener('change', function(ev){
         hide(qs('[data-role="today-section"]'));
         hide(qs('[data-role="queue-section"]'));
         hide(qs('[data-role="no-data"]'));
-        if (state.selectedClinicId) {
+        if ( state.selectedClinicId ) {
             loadLocations(state.selectedClinicId).then(function(){
                 renderLocationSelector();
-                if (state.locations.length===1) {
+                if ( state.locations.length===1 ) {
                     state.selectedLocationId = state.locations[0].id;
                     loadTodayAndQueue();
                 }
@@ -515,10 +515,10 @@ document.addEventListener('change', function(ev){
         return;
     }
     var locSel = ev.target.closest('[data-role="location-select"]');
-    if (locSel) {
+    if ( locSel ) {
         var v = locSel.value;
         state.selectedLocationId = v ? parseInt(v,10) : null;
-        if (state.selectedLocationId) {
+        if ( state.selectedLocationId ) {
             loadTodayAndQueue();
         } else {
             hide(qs('[data-role="today-section"]'));
@@ -529,23 +529,23 @@ document.addEventListener('change', function(ev){
 
 document.addEventListener('visibilitychange', function(){
     var ind = qs('[data-role="live-indicator"]');
-    if (document.hidden) {
+    if ( document.hidden ) {
         state.pollPaused = true;
-        if (ind) { ind.classList.add('paused'); ind.textContent='● متوقف (تب مخفی)'; }
+        if ( ind ) { ind.classList.add('paused'); ind.textContent='● متوقف (تب مخفی)'; }
     } else {
         state.pollPaused = false;
-        if (ind) { ind.classList.remove('paused'); ind.textContent='● زنده'; }
+        if ( ind ) { ind.classList.remove('paused'); ind.textContent='● زنده'; }
         pollQueue();
     }
 });
 
 function start(){
-    if (!CFG.is_doctor) return;
+    if ( !CFG.is_doctor ) return;
     loadContext().then(function(){
         state.timer = setInterval(pollQueue, 5000);
     });
 }
-if (document.readyState==='loading') document.addEventListener('DOMContentLoaded', start); else start();
+if ( document.readyState==='loading' ) document.addEventListener('DOMContentLoaded', start); else start();
 })();
 </script>
 

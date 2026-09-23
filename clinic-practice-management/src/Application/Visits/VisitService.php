@@ -65,8 +65,7 @@ final class VisitService
         self::$testNowUtc = $now !== null ? $now->setTimezone(new DateTimeZone('UTC')) : null; // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- legacy PSR-style, established contract
     }
 
-    public function __construct(
-        private readonly CpmsDb $db,
+    public function __construct( private readonly CpmsDb $db,
         private readonly VisitRepository $visits,
         private readonly AppointmentRepository $appointments,
         private readonly SettingsFactory $settingsFactory,
@@ -74,11 +73,10 @@ final class VisitService
         private readonly LicenseGate $licenseGate,
         private readonly ?\ClinicCore\Infrastructure\Logging\OpLogger $opLog = null,
         private readonly mixed $notificationServiceFactory = null,
-        ?MembershipRepository $memberships = null
-    ) {
+        ?MembershipRepository $memberships = null ) {
         // Optional only for backwards-compatible direct service construction;
         // production wiring injects the same shared participation repository.
-        $this->memberships = $memberships ?? new MembershipRepository($db);
+        $this->memberships = $memberships ?? new MembershipRepository( $db );
     }
 
     /** @var array<int, \ClinicCore\Application\Notifications\NotificationService> */
@@ -101,26 +99,24 @@ final class VisitService
         $actorRole = 'secretary';
 
         return $this->db->transactional(function () use ($actorUserId, $actorRole, $patientId, $appointmentId, $meta): array {
-            $this->lockPatient($patientId);
+            $this->lockPatient( $patientId );
 
             // Phase 7 Slice 2 — I-3/سریال‌سازی: Check-in روی همان ردیف نوبت قفل
             // می‌گیرد که T5/T6/T7 (BookingService::cancel/reschedule) قفل می‌کنند؛
             // ترتیب فعلی حفظ می‌شود (ابتدا بیمار، سپس نوبت) و مسیر قفل هم همان
             // findForUpdate موجود است. بدون این قفل، لغو/جابه‌جایی هم‌زمان می‌تواند
             // وضعیت پاره (نوبت Terminal با ویزیت زنده) را کامیت کند.
-            $appt = $this->appointments->findForUpdate($appointmentId);
-            if ($appt === null) {
+            $appt = $this->appointments->findForUpdate( $appointmentId );
+            if ( $appt === null ) {
                 throw VisitException::of('CLINIC_NOT_FOUND', 'نوبت یافت نشد', 404);
             }
             // Phase 3 Slice 6B — مالکیت پایدار نوبت در برابر Clinic معتبرِ صریحِ
             // درخواست (مرز REST کارکنی): نوبتِ Clinic دیگر همان پاکتِ «نوبت
             // یافت نشد» را می‌گیرد — پیش از ساخت ویزیت و هرجهش پایدار.
-            $this->guardAppointmentWithinExplicitScope($appt);
-            if ((int) $appt['patient_id'] !== $patientId) {
-                $this->auditAndThrow(
-                    $actorUserId, $actorRole, 'FORBIDDEN_ACCESS_ATTEMPT', 'visit', $appointmentId, $patientId,
-                    'نوبت به این بیمار تعلق ندارد', 403, 'CLINIC_PERMISSION_DENIED'
-                );
+            $this->guardAppointmentWithinExplicitScope( $appt );
+            if ( (int ) $appt['patient_id'] !== $patientId) {
+                $this->auditAndThrow( $actorUserId, $actorRole, 'FORBIDDEN_ACCESS_ATTEMPT', 'visit', $appointmentId, $patientId,
+                    'نوبت به این بیمار تعلق ندارد', 403, 'CLINIC_PERMISSION_DENIED' );
             }
 
             // ER-06: نوبت پایان‌یافته/لغوشده قابل Check-in نیست؛
@@ -136,15 +132,13 @@ final class VisitService
 
             $this->guardDuplicateActiveVisit($patientId, (int) $appt['clinician_id']);
 
-            if (in_array($status, ['cancelled_by_patient', 'cancelled_by_staff', 'rescheduled', 'completed'], true)) {
-                throw VisitException::of(
-                    'CLINIC_INVALID_APPOINTMENT_STATE',
-                    'این نوبت ' . $this->appointmentStatusLabel($status) . ' است و قابل Check-in نیست',
+            if ( in_array($status, ['cancelled_by_patient', 'cancelled_by_staff', 'rescheduled', 'completed'], true )) {
+                throw VisitException::of( 'CLINIC_INVALID_APPOINTMENT_STATE',
+                    'این نوبت ' . $this->appointmentStatusLabel( $status ) . ' است و قابل Check-in نیست',
                     409,
-                    ['appointment_status' => $status]
-                );
+                    ['appointment_status' => $status] );
             }
-            if ($status === 'no_show') {
+            if ( $status === 'no_show' ) {
                 // ER-06: late arrival after T8 — unbound walk-in (must NOT bind
                 // a genuinely active Visit to a terminal no_show appointment).
                 $source = 'walk_in';
@@ -152,14 +146,14 @@ final class VisitService
             } else {
                 // T2: Location-aware lazy no-show check
                 $shouldMarkNoShow = false;
-                if ($clinicId > 0 && $locationId > 0) {
-                    $tz = $this->resolveLocationTimezone($locationId, $clinicId);
-                    if ($tz !== null) {
-                        $apptUtc = $this->appointmentUtcInstant($appt, $tz);
-                        $grace = $this->graceForClinic($clinicId);
-                        if ($apptUtc !== null && $grace !== null) {
+                if ( $clinicId > 0 && $locationId > 0 ) {
+                    $tz = $this->resolveLocationTimezone( $locationId, $clinicId );
+                    if ( $tz !== null ) {
+                        $apptUtc = $this->appointmentUtcInstant( $appt, $tz );
+                        $grace = $this->graceForClinic( $clinicId );
+                        if ( $apptUtc !== null && $grace !== null ) {
                             $eligible = $apptUtc->add(new DateInterval('PT' . $grace . 'M'));
-                            if ($nowUtc >= $eligible) {
+                            if ( $nowUtc >= $eligible ) {
                                 $shouldMarkNoShow = true;
                             }
                         } else {
@@ -177,28 +171,26 @@ final class VisitService
                     $this->opLog?->warning('visit.location_missing', ['appointment_id' => $appointmentId, 'clinic_id' => $clinicId]);
                 }
 
-                if ($shouldMarkNoShow) {
+                if ( $shouldMarkNoShow ) {
                     // ER-06 / FR-6.5: late arrival atomically T8s the
                     // appointment then creates a walk-in-like Visit that
                     // keeps the appointment reference.
                     $this->markAppointmentNoShow($appt, $this->db->nowUtc(), $actorUserId);
                     $source = 'walk_in';
-                } elseif ($status === 'pending') {
+                } elseif ( $status === 'pending' ) {
                     // حضور بیمار = تایید نوبت (T3) — تا Checkout مسیر کامل شود
                     $this->confirmAppointment($appt, $nowSql, $actorUserId);
                 }
             }
 
-            $visit = $this->createVisit(
-                $actorUserId,
+            $visit = $this->createVisit( $actorUserId,
                 $clinicId > 0 ? $clinicId : (int) $appt['clinic_id'],
                 $patientId,
                 (int) $appt['clinician_id'],
                 $appointmentId,
                 $source,
                 'check_in',
-                isset($meta['note']) ? (string) $meta['note'] : null
-            );
+                isset($meta['note']) ? (string) $meta['note'] : null );
 
             $this->audit('VISIT_CHECKED_IN', $actorUserId, $actorRole, 'visit', (int) $visit['id'], $patientId, null, $visit, [
                 'appointment_id' => $appointmentId,
@@ -233,27 +225,25 @@ final class VisitService
             // همان Clinic برای مشارکت حرفه‌ای، مالکیت بیمار، درج Visit و تمام
             // side-effectهای Clinic-sensitive در createVisit استفاده می‌شود.
             $clinicId = $this->walkInClinicId();
-            if (!$this->memberships->clinician_participates_in($clinicianId, $clinicId)) {
+            if ( !$this->memberships->clinician_participates_in( $clinicianId, $clinicId )) {
                 throw VisitException::of('CLINIC_NOT_FOUND', 'پزشک یافت نشد', 404);
             }
 
-            $patient = $this->lockPatient($patientId);
-            if ((int) $patient['clinic_id'] !== $clinicId) {
+            $patient = $this->lockPatient( $patientId );
+            if ( (int ) $patient['clinic_id'] !== $clinicId) {
                 throw VisitException::of('CLINIC_VALIDATION_FAILED', 'این بیمار به کلینیک دیگری تعلق دارد', 422);
             }
 
-            $this->guardDuplicateActiveVisit($patientId, $clinicianId);
+            $this->guardDuplicateActiveVisit( $patientId, $clinicianId );
 
-            $visit = $this->createVisit(
-                $actorUserId,
+            $visit = $this->createVisit( $actorUserId,
                 $clinicId,
                 $patientId,
                 $clinicianId,
                 null,
                 'walk_in',
                 'create_walk_in',
-                isset($meta['note']) ? (string) $meta['note'] : null
-            );
+                isset($meta['note']) ? (string) $meta['note'] : null );
 
             $this->audit('VISIT_WALK_IN', $actorUserId, $actorRole, 'visit', (int) $visit['id'], $patientId, null, $visit, []);
 
@@ -272,30 +262,28 @@ final class VisitService
      * @param array<string, mixed> $meta {reason?, room?, note?}
      * @return array<string, mixed> رکورد به‌روزشده
      */
-    public function transition(
-        int $actorUserId,
+    public function transition( int $actorUserId,
         int $visitId,
         string $event,
-        array $meta = []
-    ): array {
+        array $meta = [] ): array {
         // F9 (ADR-0027 Minor #3) — گارد مالکیت «قبل از Transaction» تا Auditِ
         // رد شدن (FORBIDDEN_ACCESS_ATTEMPT) با Rollback از بین نرود.
-        $preVisit = $this->visits->find($visitId);
-        if ($preVisit !== null) {
-            $this->guardDoctorTransitionOwnership($actorUserId, $preVisit);
+        $preVisit = $this->visits->find( $visitId );
+        if ( $preVisit !== null ) {
+            $this->guardDoctorTransitionOwnership( $actorUserId, $preVisit );
             // Phase 3 Slice 6B — مالکیت پایدار ویزیت در برابر Clinic معتبرِ
             // صریحِ درخواست: ویزیتِ Clinic دیگر «مثل نبودن» است (404 parity)؛
             // انکار پیش از Transaction = صفر اثر جانبی پایدار.
-            $this->guardVisitWithinExplicitScope($preVisit);
+            $this->guardVisitWithinExplicitScope( $preVisit );
         }
 
         return $this->db->transactional(function () use ($actorUserId, $visitId, $event, $meta): array {
-            $visit = $this->visits->findForUpdate($visitId);
-            if ($visit === null) {
+            $visit = $this->visits->findForUpdate( $visitId );
+            if ( $visit === null ) {
                 throw VisitException::of('CLINIC_NOT_FOUND', 'مراجعه یافت نشد', 404);
             }
             // Defense-in-depth — همان مالکیت داخل Transaction (post-lock).
-            $this->guardVisitWithinExplicitScope($visit);
+            $this->guardVisitWithinExplicitScope( $visit );
 
             return $this->applyTransition($actorUserId, $visit, $event, $meta);
         });
@@ -312,15 +300,13 @@ final class VisitService
      * @param array<string, mixed> $meta
      * @return array<string, mixed>
      */
-    public function applyTransition(
-        int $actorUserId,
+    public function applyTransition( int $actorUserId,
         array $visit,
         string $event,
         array $meta = [],
-        ?string $forceRole = null
-    ): array {
+        ?string $forceRole = null ): array {
         $visitId = (int) $visit['id'];
-        $actorRole = $forceRole ?? ($this->roleForUser($actorUserId) ?? 'secretary');
+        $actorRole = $forceRole ?? ($this->roleForUser( $actorUserId ) ?? 'secretary');
         $fromStatus = (string) $visit['status'];
 
         // F9 (ADR-0027 Minor #3) — Resource Authorization سرور-side:
@@ -328,31 +314,31 @@ final class VisitService
         // منشی/سیستم در V1 دامنه مطب دارند (Scope کامل = ADR-0026/V2).
         // (transition() همین گارد را قبل از Transaction هم اجرا می‌کند تا Auditِ
         // رد شدن Rollback نشود؛ اینجا defense-in-depth برای فراخوانی مستقیم است.)
-        if ($forceRole === null) {
-            $this->guardDoctorTransitionOwnership($actorUserId, $visit);
+        if ( $forceRole === null ) {
+            $this->guardDoctorTransitionOwnership( $actorUserId, $visit );
         }
 
         $toStatus = $this->machineCheck($fromStatus, $event, $actorRole);
         $row = $this->patchForEvent($visit, $event, $toStatus, $actorUserId, $meta);
-        $this->visits->updateById($visitId, $row);
+        $this->visits->updateById( $visitId, $row );
 
         $this->visits->insertHistory($visitId, [
             'from_status' => $fromStatus,
             'to_status' => $toStatus,
             'actor_wp_user_id' => $actorUserId,
             'actor_role' => $actorRole,
-            'note' => $this->historyNote($event, $meta),
+            'note' => $this->historyNote( $event, $meta ),
             'request_id' => null,
         ]);
 
         $visit = array_merge($visit, $row, ['status' => $toStatus]);
 
         // T9: خروج نهایی (پرداخت‌شده یا معافیت) → نوبت مرجع completed
-        if (in_array($event, ['check_out', 'waive'], true) && !empty($visit['appointment_id'])) {
+        if ( in_array($event, ['check_out', 'waive'], true ) && !empty($visit['appointment_id'])) {
             $this->completeReferencedAppointment((int) $visit['appointment_id'], $actorUserId);
         }
 
-        $this->audit('VISIT_' . strtoupper($event), $actorUserId, $actorRole, 'visit', $visitId, (int) $visit['patient_id'], null, $visit, [
+        $this->audit('VISIT_' . strtoupper( $event ), $actorUserId, $actorRole, 'visit', $visitId, (int) $visit['patient_id'], null, $visit, [
             'from_status' => $fromStatus,
             'to_status' => $toStatus,
         ]);
@@ -361,7 +347,7 @@ final class VisitService
         // شکست اعلان هرگز گردش‌کار صف را نمی‌شکند (قاعده کارفرما).
         $this->publishQueueNotification($event, $visit, $actorUserId, $meta);
 
-        return $this->presentVisit($visit);
+        return $this->presentVisit( $visit );
     }
 
     /**
@@ -370,26 +356,26 @@ final class VisitService
      */
     private function notificationServiceForClinic(int $clinicId): ?NotificationService
     {
-        if ($clinicId <= 0) {
+        if ( $clinicId <= 0 ) {
             return null;
         }
-        if (isset($this->notificationServicesByClinicId[$clinicId])) {
+        if ( isset($this->notificationServicesByClinicId[$clinicId] )) {
             return $this->notificationServicesByClinicId[$clinicId];
         }
         $factory = $this->notificationServiceFactory;
-        if (is_callable($factory)) {
+        if ( is_callable( $factory )) {
             try {
-                $svc = $factory($clinicId);
-                if ($svc instanceof NotificationService) {
+                $svc = $factory( $clinicId );
+                if ( $svc instanceof NotificationService ) {
                     return $this->notificationServicesByClinicId[$clinicId] = $svc;
                 }
-            } catch (Throwable $e) {
+            } catch ( Throwable $e ) {
                 $this->opLog?->warning('visit.notif_factory_failed', ['clinic_id' => $clinicId, 'error' => $e->getMessage()]);
                 return null;
             }
         }
         // Backward compat: if factory is actually a NotificationService instance (old call-sites)
-        if ($factory instanceof NotificationService) {
+        if ( $factory instanceof NotificationService ) {
             return $factory;
         }
         return null;
@@ -407,21 +393,18 @@ final class VisitService
     private function publishQueueNotification(string $event, array $visit, int $actorUserId, array $meta): void
     {
         $clinicId = (int) ($visit['clinic_id'] ?? 0);
-        $notifications = $this->notificationServiceForClinic($clinicId);
-        if ($notifications === null) {
+        $notifications = $this->notificationServiceForClinic( $clinicId );
+        if ( $notifications === null ) {
             return;
         }
 
         try {
-            $patientName = trim((string) $this->db->fetchValue(
-                'SELECT CONCAT(p.first_name, \' \', p.last_name) FROM ' . $this->db->table('cpms_patients') . ' p WHERE p.id = %d LIMIT 1',
-                [(int) $visit['patient_id']]
-            ));
+            $patientName = trim((string) $this->db->fetchValue( 'SELECT CONCAT(p.first_name, \' \', p.last_name) FROM ' . $this->db->table('cpms_patients') . ' p WHERE p.id = %d LIMIT 1',
+                [(int) $visit['patient_id']] ));
             $room = trim((string) ($meta['room'] ?? ''));
 
-            if ($event === 'call') {
-                $notifications->publishToStaff(
-                    $clinicId,
+            if ( $event === 'call' ) {
+                $notifications->publishToStaff( $clinicId,
                     NotificationEvents::QUEUE_CALLED,
                     [
                         'patient_name' => $patientName !== '' ? $patientName : 'بیمار',
@@ -429,19 +412,16 @@ final class VisitService
                     ],
                     'queue:called:v' . (int) $visit['id'] . ':r' . (int) ($visit['recall_count'] ?? 0),
                     RolesAndCapabilities::QUEUE_READ,
-                    $actorUserId
-                );
-            } elseif ($event === 'invoice_ready') {
-                $notifications->publishToStaff(
-                    $clinicId,
+                    $actorUserId );
+            } elseif ( $event === 'invoice_ready' ) {
+                $notifications->publishToStaff( $clinicId,
                     NotificationEvents::QUEUE_READY_PAYMENT,
                     ['patient_name' => $patientName !== '' ? $patientName : 'بیمار'],
                     'queue:pay:v' . (int) $visit['id'],
                     RolesAndCapabilities::QUEUE_READ,
-                    $actorUserId
-                );
+                    $actorUserId );
             }
-        } catch (Throwable $e) {
+        } catch ( Throwable $e ) {
             $this->opLog?->warning('visit.notif_failed', ['visit_id' => (int) $visit['id'], 'error' => $e->getMessage()]);
         }
     }
@@ -526,26 +506,22 @@ final class VisitService
                 $location_id = $eligible[0];
             } else {
                 // N>1 without explicit Location => REQUIRED
-                throw VisitException::of(
-                    'CLINIC_SCOPE_REQUIRED',
+                throw VisitException::of( 'CLINIC_SCOPE_REQUIRED',
                     'Location scope required: multiple eligible locations',
                     [
                         'field'  => 'location_id',
                         'reason' => 'location_required',
                     ],
-                    400
-                );
+                    400 );
             }
         }
 
         // Validate explicit Location is eligible (foreign/inactive/unassigned => denied)
         if ( ! in_array( $location_id, $eligible, true ) ) {
-            throw VisitException::of(
-                'CLINIC_SCOPE_UNAVAILABLE',
+            throw VisitException::of( 'CLINIC_SCOPE_UNAVAILABLE',
                 'Trusted clinic context is not available.',
                 [ 'reason' => 'location' ],
-                403
-            );
+                403 );
         }
 
         $operational_date = $this->operationalDateForLocation( $location_id, $clinic_id );
@@ -599,8 +575,7 @@ final class VisitService
         }
 
         return [
-            'events'        => array_map(
-                static fn( array $e ): array => [
+            'events'        => array_map( static fn( array $e ): array => [
                     'event_id'   => (int) $e['id'], // phpcs:ignore WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned -- legacy alignment, keep readability
                     'visit_id'   => (int) $e['visit_id'], // phpcs:ignore WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned -- legacy alignment, keep readability
                     'from_status' => $e['from_status'],
@@ -609,8 +584,7 @@ final class VisitService
                     'actor_role'  => $e['actor_role'],
                     'note'        => $e['note'],
                 ],
-                $events
-            ),
+                $events ),
             'last_event_id' => $last_id,
         ];
     }
@@ -656,25 +630,21 @@ final class VisitService
             if ( 1 === count( $eligible ) ) {
                 $location_id = $eligible[0];
             } else {
-                throw VisitException::of(
-                    'CLINIC_SCOPE_REQUIRED',
+                throw VisitException::of( 'CLINIC_SCOPE_REQUIRED',
                     'Location scope required: multiple eligible locations',
                     [
                         'field'  => 'location_id',
                         'reason' => 'location_required',
                     ],
-                    400
-                );
+                    400 );
             }
         }
 
         if ( ! in_array( $location_id, $eligible, true ) ) {
-            throw VisitException::of(
-                'CLINIC_SCOPE_UNAVAILABLE',
+            throw VisitException::of( 'CLINIC_SCOPE_UNAVAILABLE',
                 'Trusted clinic context is not available.',
                 [ 'reason' => 'location' ],
-                403
-            );
+                403 );
         }
 
         $operational_date = $this->operationalDateForLocation( $location_id, $clinic_id );
@@ -685,8 +655,7 @@ final class VisitService
         }
 
         return [
-            'events'        => array_map(
-                static fn( array $e ): array => [
+            'events'        => array_map( static fn( array $e ): array => [
                     'event_id'   => (int) $e['id'], // phpcs:ignore WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned -- legacy alignment, keep readability
                     'visit_id'   => (int) $e['visit_id'], // phpcs:ignore WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned -- legacy alignment, keep readability
                     'from_status' => $e['from_status'],
@@ -695,8 +664,7 @@ final class VisitService
                     'actor_role'  => $e['actor_role'],
                     'note'        => $e['note'],
                 ],
-                $events
-            ),
+                $events ),
             'last_event_id' => $last_id,
         ];
     }
@@ -720,25 +688,21 @@ final class VisitService
             if ( 1 === count( $eligible ) ) {
                 $location_id = $eligible[0];
             } else {
-                throw VisitException::of(
-                    'CLINIC_SCOPE_REQUIRED',
+                throw VisitException::of( 'CLINIC_SCOPE_REQUIRED',
                     'Location scope required: multiple eligible locations',
                     [
                         'field'  => 'location_id',
                         'reason' => 'location_required',
                     ],
-                    400
-                );
+                    400 );
             }
         }
 
         if ( ! in_array( $location_id, $eligible, true ) ) {
-            throw VisitException::of(
-                'CLINIC_SCOPE_UNAVAILABLE',
+            throw VisitException::of( 'CLINIC_SCOPE_UNAVAILABLE',
                 'Trusted clinic context is not available.',
                 [ 'reason' => 'location' ],
-                403
-            );
+                403 );
         }
 
         $operational_date = $this->operationalDateForLocation( $location_id, $clinic_id );
@@ -758,46 +722,40 @@ final class VisitService
     public function checkout(int $actorUserId, int $visitId, ?string $waiveReason): array
     {
         return $this->db->transactional(function () use ($actorUserId, $visitId, $waiveReason): array {
-            $visit = $this->visits->findForUpdate($visitId);
-            if ($visit === null) {
+            $visit = $this->visits->findForUpdate( $visitId );
+            if ( $visit === null ) {
                 throw VisitException::of('CLINIC_NOT_FOUND', 'مراجعه یافت نشد', 404);
             }
             // Phase 3 Slice 6B — مالکیت پایدار ویزیت در برابر Clinic معتبرِ صریحِ
             // درخواست (D16 مسیر کارکنی؛ 404 parity؛ پیش از هر Transition).
-            $this->guardVisitWithinExplicitScope($visit);
+            $this->guardVisitWithinExplicitScope( $visit );
 
             $status = (string) $visit['status'];
-            if ($status === 'awaiting_payment') {
-                if ($waiveReason === null || trim($waiveReason) === '') {
-                    throw VisitException::of(
-                        'CLINIC_POLICY_VIOLATION',
+            if ( $status === 'awaiting_payment' ) {
+                if ( $waiveReason === null || trim( $waiveReason ) === '') {
+                    throw VisitException::of( 'CLINIC_POLICY_VIOLATION',
                         'پرداخت هنوز ثبت نشده است — معافیت (waive) نیاز به دلیل دارد یا ابتدا پرداخت را ثبت کنید',
                         409,
-                        ['visit_status' => $status]
-                    );
+                        ['visit_status' => $status] );
                 }
 
                 return $this->applyTransition($actorUserId, $visit, 'waive', ['reason' => $waiveReason]);
             }
-            if ($status === 'consultation_completed') {
-                throw VisitException::of(
-                    'CLINIC_POLICY_VIOLATION',
+            if ( $status === 'consultation_completed' ) {
+                throw VisitException::of( 'CLINIC_POLICY_VIOLATION',
                     'ابتدا وضعیت مالی ویزیت را مشخص کنید (فاکتور/معافیت)',
                     409,
-                    ['visit_status' => $status]
-                );
+                    ['visit_status' => $status] );
             }
 
             // V14 guard (visit-queue.md): خروج با فاکتور تسویه‌نشده ممنوع — NOT_SETTLED.
             // اینجا فقط paid→check_out می‌رسد؛ فاکتور باز یعنی بدهی واقعی مانده است.
-            $unsettled = $this->unsettledInvoiceBalance($visitId);
-            if ($unsettled['count'] > 0) {
-                throw VisitException::of(
-                    'CLINIC_NOT_SETTLED',
+            $unsettled = $this->unsettledInvoiceBalance( $visitId );
+            if ( $unsettled['count'] > 0 ) {
+                throw VisitException::of( 'CLINIC_NOT_SETTLED',
                     'فاکتور این ویزیت تسویه نشده است — ابتدا پرداخت را کامل کنید یا از مسیر معافیت اقدام کنید',
                     409,
-                    ['open_invoices' => $unsettled['count'], 'balance' => $unsettled['balance']]
-                );
+                    ['open_invoices' => $unsettled['count'], 'balance' => $unsettled['balance']] );
             }
 
             // paid → check_out (V14)؛ سایر وضعیت‌ها → ماشین خطای transition می‌دهد
@@ -813,11 +771,9 @@ final class VisitService
      */
     private function unsettledInvoiceBalance(int $visitId): array
     {
-        $row = $this->db->fetchRow(
-            'SELECT COUNT(*) AS n, COALESCE(SUM(balance), 0) AS bal FROM ' . $this->db->table('cpms_invoices') .
+        $row = $this->db->fetchRow( 'SELECT COUNT(*) AS n, COALESCE(SUM(balance), 0) AS bal FROM ' . $this->db->table('cpms_invoices') .
             " WHERE visit_id = %d AND status IN ('open', 'partial')",
-            [$visitId]
-        );
+            [$visitId] );
 
         return ['balance' => (float) ($row['bal'] ?? 0), 'count' => (int) ($row['n'] ?? 0)];
     }
@@ -854,7 +810,7 @@ final class VisitService
 
         // Depth is observability only — no arbitrary product ceiling.
         // Only negative depth is invalid (fail-closed). Upper bound is PHP_INT_MAX implicitly.
-        if ($depth < 0) {
+        if ( $depth < 0 ) {
             $this->opLog?->warning('visit.no_show_depth_invalid', ['depth' => $depth]);
             return [
                 'processed' => 0,
@@ -865,16 +821,16 @@ final class VisitService
             ];
         }
 
-        while ($scanned < $maxScan && $count < $maxToProcess) {
+        while ( $scanned < $maxScan && $count < $maxToProcess ) {
             $candidates = $this->visits->appointmentsPastGraceCandidates($batchSize, $nowUtc, $cursor);
-            if (empty($candidates)) {
+            if ( empty( $candidates )) {
                 $hasMore = false;
                 break;
             }
 
-            $hasMore = count($candidates) === $batchSize;
+            $hasMore = count( $candidates ) === $batchSize;
 
-            foreach ($candidates as $appt) {
+            foreach ( $candidates as $appt ) {
                 $scanned++;
                 // Advance cursor to current row for next batch (progress even if invalid)
                 $cursor = [
@@ -887,7 +843,7 @@ final class VisitService
                 $clinicId = (int) ($appt['clinic_id'] ?? 0);
                 $locationId = (int) ($appt['location_id'] ?? 0);
 
-                if ($clinicId <= 0 || $locationId <= 0) {
+                if ( $clinicId <= 0 || $locationId <= 0 ) {
                     $this->opLog?->warning('visit.location_missing', ['appointment_id' => $appt['id'] ?? 0, 'clinic_id' => $clinicId, 'location_id' => $locationId]);
                     continue; // fail-closed
                 }
@@ -896,13 +852,13 @@ final class VisitService
                 $locClinicId = $appt['loc_clinic_id'] ?? null;
                 $locTimezone = $appt['loc_timezone'] ?? null;
 
-                if ($locClinicId === null) {
+                if ( $locClinicId === null ) {
                     // LEFT JOIN returned null => location missing
                     $this->opLog?->warning('visit.location_missing', ['location_id' => $locationId, 'clinic_id' => $clinicId]);
                     continue;
                 }
 
-                if ((int) $locClinicId !== $clinicId) {
+                if ( (int ) $locClinicId !== $clinicId) {
                     $this->opLog?->warning('visit.location_clinic_mismatch', [
                         'location_id' => $locationId,
                         'expected_clinic' => $clinicId,
@@ -912,14 +868,14 @@ final class VisitService
                 }
 
                 $tzName = trim((string) ($locTimezone ?? ''));
-                if ($tzName === '') {
+                if ( $tzName === '' ) {
                     $this->opLog?->warning('visit.location_timezone_missing', ['location_id' => $locationId]);
                     continue;
                 }
 
                 try {
-                    $tz = new DateTimeZone($tzName);
-                } catch (Throwable $e) {
+                    $tz = new DateTimeZone( $tzName );
+                } catch ( Throwable $e ) {
                     $this->opLog?->warning('visit.location_timezone_invalid', [
                         'location_id' => $locationId,
                         'timezone' => $tzName,
@@ -928,40 +884,40 @@ final class VisitService
                     continue;
                 }
 
-                $apptUtc = $this->appointmentUtcInstant($appt, $tz);
-                if ($apptUtc === null) {
+                $apptUtc = $this->appointmentUtcInstant( $appt, $tz );
+                if ( $apptUtc === null ) {
                     continue;
                 }
 
-                $grace = $this->graceForClinic($clinicId);
-                if ($grace === null) {
+                $grace = $this->graceForClinic( $clinicId );
+                if ( $grace === null ) {
                     continue; // fail-closed
                 }
 
                 $eligible = $apptUtc->add(new DateInterval('PT' . $grace . 'M'));
 
-                if ($nowUtc < $eligible) {
+                if ( $nowUtc < $eligible ) {
                     continue; // not yet past grace
                 }
 
                 $count += $this->db->transactional(function () use ($appt): int {
                     $fresh = $this->appointments->findForUpdate((int) $appt['id']);
-                    if ($fresh === null || (string) $fresh['status'] !== 'confirmed') {
+                    if ( $fresh === null || (string ) $fresh['status'] !== 'confirmed') {
                         return 0;
                     }
-                    if ($this->activeVisitForAppointment((int) $fresh['id']) !== null) {
+                    if ( $this->activeVisitForAppointment((int ) $fresh['id']) !== null) {
                         return 0;
                     }
                     $this->markAppointmentNoShow($fresh, $this->db->nowUtc(), null);
                     return 1;
                 });
 
-                if ($count >= $maxToProcess) {
+                if ( $count >= $maxToProcess ) {
                     break 2;
                 }
             }
 
-            if (count($candidates) < $batchSize) {
+            if ( count( $candidates ) < $batchSize) {
                 $hasMore = false;
                 break;
             }
@@ -969,7 +925,7 @@ final class VisitService
 
         // If hasMore true, nextCursor is already set to last scanned row
         // If no more candidates, nextCursor should be null to stop chain
-        if (!$hasMore) {
+        if ( !$hasMore ) {
             $nextCursor = null;
         }
 
@@ -999,9 +955,9 @@ final class VisitService
      */
     public function history(int $actorUserId, int $visitId): array
     {
-        $this->requireQueueReader($actorUserId);
-        $visit = $this->visits->find($visitId);
-        if ($visit === null) {
+        $this->requireQueueReader( $actorUserId );
+        $visit = $this->visits->find( $visitId );
+        if ( $visit === null ) {
             throw VisitException::of('CLINIC_NOT_FOUND', 'مراجعه یافت نشد', 404);
         }
 
@@ -1013,7 +969,7 @@ final class VisitService
             'actor_wp_user_id' => $h['actor_wp_user_id'] !== null ? (int) $h['actor_wp_user_id'] : null,
             'actor_role' => $h['actor_role'],
             'note' => $h['note'],
-        ], $this->visits->historyFor($visitId));
+        ], $this->visits->historyFor( $visitId ));
     }
 
     /**
@@ -1023,13 +979,13 @@ final class VisitService
      */
     public function getVisit(int $actorUserId, int $visitId): array
     {
-        $this->requireQueueReader($actorUserId);
-        $visit = $this->visits->find($visitId);
-        if ($visit === null) {
+        $this->requireQueueReader( $actorUserId );
+        $visit = $this->visits->find( $visitId );
+        if ( $visit === null ) {
             throw VisitException::of('CLINIC_NOT_FOUND', 'مراجعه یافت نشد', 404);
         }
 
-        return $this->presentVisit($visit);
+        return $this->presentVisit( $visit );
     }
 
     // ================= Helpers — ساخت و Transition =================
@@ -1046,61 +1002,58 @@ final class VisitService
      *
      * @return array<string, mixed>
      */
-    private function createVisit(
-        int $actorUserId,
+    private function createVisit( int $actorUserId,
         int $clinic_id,
         int $patientId,
         int $clinicianId,
         ?int $appointmentId,
         string $source,
         string $event,
-        ?string $note = null
-    ): array {
+        ?string $note = null ): array {
         $now = $this->db->nowUtc();
         // Determine Location for new visit to compute operational date
         $locationIdForDate = null; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
-        if ($appointmentId !== null) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- legacy PSR-style, established contract
+        if ( $appointmentId !== null ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- legacy PSR-style, established contract
             $apptLoc = $this->db->fetchValue( // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
                 'SELECT location_id FROM ' . $this->db->table('cpms_appointments') . ' WHERE id = %d LIMIT 1', // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS
-                [$appointmentId] // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
-            );
-            if ($apptLoc !== null && $apptLoc !== '') { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- legacy PSR-style, established contract
+                [$appointmentId] // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract );
+            if ( $apptLoc !== null && $apptLoc !== '' ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- legacy PSR-style, established contract
                 $locationIdForDate = (int) $apptLoc; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
             }
         }
-        if ($locationIdForDate === null) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- legacy PSR-style, established contract
+        if ( $locationIdForDate === null ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- legacy PSR-style, established contract
             $scope = ScopeContext::tryGet();
-            if ($scope !== null && $scope->locationId !== null) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- legacy PSR-style, established contract
+            if ( $scope !== null && $scope->locationId !== null ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- legacy PSR-style, established contract
                 $locationIdForDate = (int) $scope->locationId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
             } else {
                 try {
                     $appScope = App::scope(); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
-                    if ($appScope->locationId !== null) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- legacy PSR-style, established contract
+                    if ( $appScope->locationId !== null ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- legacy PSR-style, established contract
                         $locationIdForDate = (int) $appScope->locationId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
                     }
-                } catch (ScopeRequiredException $e) { // phpcs:ignore WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS
-                    unset($e); // no scope // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS
+                } catch ( ScopeRequiredException $e ) { // phpcs:ignore WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS
+                    unset( $e ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS
                 }
             }
         }
-        if ($locationIdForDate === null) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- legacy PSR-style, established contract
+        if ( $locationIdForDate === null ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- legacy PSR-style, established contract
             // Defense-in-depth for single-clinic installs where SystemClinicResolver
             // returns clinic without location (auto 1 eligible should still give operational date)
             try {
-                $eligible = $this->eligibleLocationIdsForActor($clinic_id, $actorUserId); // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
-                if (count($eligible) === 1) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS
+                $eligible = $this->eligibleLocationIdsForActor( $clinic_id, $actorUserId ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
+                if ( count( $eligible ) === 1) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS
                     $locationIdForDate = (int) $eligible[0]; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
                 }
-            } catch (Throwable $e) { // phpcs:ignore WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS
-                unset($e); // ignore // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS
+            } catch ( Throwable $e ) { // phpcs:ignore WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS
+                unset( $e ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS
             }
         }
 
         $visitDate = $this->nowUtc()->format('Y-m-d'); // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
-        if ($locationIdForDate !== null && $locationIdForDate > 0) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- legacy PSR-style, established contract
+        if ( $locationIdForDate !== null && $locationIdForDate > 0 ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- legacy PSR-style, established contract
             try {
-                $visitDate = $this->operationalDateForLocation($locationIdForDate, $clinic_id); // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
-            } catch (Throwable $e) { // phpcs:ignore WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS
+                $visitDate = $this->operationalDateForLocation( $locationIdForDate, $clinic_id ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
+            } catch ( Throwable $e ) { // phpcs:ignore WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS
                 $visitDate = $this->nowUtc()->format('Y-m-d'); // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
             }
         }
@@ -1125,16 +1078,16 @@ final class VisitService
         ]);
 
         // D-6: رابطه دوطرفه — active_visit_id روی Appointment
-        if ($appointmentId !== null) {
+        if ( $appointmentId !== null ) {
             $this->appointments->updateStatus($appointmentId, ['active_visit_id' => $visitId]);
         }
 
         // FR-6.1: Enqueue خودکار (پیش‌فرض روشن) — actor=system مجاز ماشین V3
-        if ($this->shouldAutoEnqueue($clinic_id)) {
+        if ( $this->shouldAutoEnqueue( $clinic_id )) {
             $this->applyEnqueue($visitId, 'checked_in', $actorUserId, $now);
         }
 
-        return $this->presentVisit($this->visits->find($visitId) ?? ['id' => $visitId]);
+        return $this->presentVisit($this->visits->find( $visitId ) ?? ['id' => $visitId]);
     }
 
     /**
@@ -1166,7 +1119,7 @@ final class VisitService
         $now = $this->db->nowUtc();
         $row = ['status' => $toStatus];
 
-        switch ($event) {
+        switch ( $event ) {
             case 'enqueue':
                 $row['waiting_since'] = $visit['waiting_since'] ?? $now;
                 break;
@@ -1177,14 +1130,12 @@ final class VisitService
                 // J-6: سقف Recall از Settings per-Clinic
                 $recallCount = (int) $visit['recall_count'];
                 $clinicId = (int) ($visit['clinic_id'] ?? 0);
-                $max = $this->maxRecallsForClinic($clinicId);
-                if ($recallCount >= $max) {
-                    throw VisitException::of(
-                        'CLINIC_RECALL_LIMIT_REACHED',
+                $max = $this->maxRecallsForClinic( $clinicId );
+                if ( $recallCount >= $max ) {
+                    throw VisitException::of( 'CLINIC_RECALL_LIMIT_REACHED',
                         'سقف فراخوان مجدد (' . $max . ') پر شده است',
                         409,
-                        ['recall_count' => $recallCount, 'max_recalls' => $max]
-                    );
+                        ['recall_count' => $recallCount, 'max_recalls' => $max] );
                 }
                 $row['recall_count'] = $recallCount + 1;
                 $row['called_at'] = null;
@@ -1202,7 +1153,7 @@ final class VisitService
                 break;
             case 'cancel':
                 $reason = trim((string) ($meta['reason'] ?? ''));
-                if ($reason === '') {
+                if ( $reason === '' ) {
                     throw VisitException::of('CLINIC_VALIDATION_FAILED', 'دلیل لغو الزامی است', 422);
                 }
                 $row['cancel_reason'] = mb_substr($reason, 0, 255);
@@ -1211,7 +1162,7 @@ final class VisitService
                 break;
             case 'skip':
                 $reason = trim((string) ($meta['reason'] ?? ''));
-                if ($reason === '') {
+                if ( $reason === '' ) {
                     throw VisitException::of('CLINIC_VALIDATION_FAILED', 'دلیل رد شدن از صف الزامی است', 422);
                 }
                 $row['skip_reason'] = mb_substr($reason, 0, 255);
@@ -1232,7 +1183,7 @@ final class VisitService
     private function historyNote(string $event, array $meta): ?string
     {
         $note = trim((string) ($meta['reason'] ?? $meta['note'] ?? ''));
-        if ($note !== '') {
+        if ( $note !== '' ) {
             return mb_substr($note, 0, 255);
         }
 
@@ -1253,13 +1204,11 @@ final class VisitService
     {
         try {
             return VisitMachine::create()->machine()->assert($from, $event, $actor);
-        } catch (InvalidTransitionException $e) {
-            throw VisitException::of(
-                'CLINIC_INVALID_TRANSITION',
+        } catch ( InvalidTransitionException $e ) {
+            throw VisitException::of( 'CLINIC_INVALID_TRANSITION',
                 $e->getMessage(),
                 409,
-                ['from' => $from, 'event' => $event]
-            );
+                ['from' => $from, 'event' => $event] );
         }
     }
 
@@ -1269,13 +1218,11 @@ final class VisitService
     {
         $today = $this->nowUtc()->format('Y-m-d'); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- legacy alignment, keep readability
         $existing = $this->visits->findActiveByPatientDay($patientId, $clinicianId, $today); // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
-        if ($existing !== null && in_array((string) $existing['status'], self::ACTIVE_VISIT_STATUSES, true)) {
-            throw VisitException::of(
-                'CLINIC_DUPLICATE_ACTIVE_VISIT',
+        if ( $existing !== null && in_array((string ) $existing['status'], self::ACTIVE_VISIT_STATUSES, true)) {
+            throw VisitException::of( 'CLINIC_DUPLICATE_ACTIVE_VISIT',
                 'این بیمار امروز ویزیت فعال (در جریان) دارد',
                 409,
-                ['visit_id' => (int) $existing['id'], 'visit_status' => (string) $existing['status']]
-            );
+                ['visit_id' => (int) $existing['id'], 'visit_status' => (string) $existing['status']] );
         }
     }
 
@@ -1285,11 +1232,9 @@ final class VisitService
     private function lockPatient(int $patientId): array
     {
         // J-5: Serialize per-patient — دو Check-in/Walk-in هم‌زمان همان بیمار
-        $patient = $this->db->fetchRowForUpdate(
-            'SELECT * FROM ' . $this->db->table('cpms_patients') . ' WHERE id = %d LIMIT 1',
-            [$patientId]
-        );
-        if ($patient === null) {
+        $patient = $this->db->fetchRowForUpdate( 'SELECT * FROM ' . $this->db->table('cpms_patients') . ' WHERE id = %d LIMIT 1',
+            [$patientId] );
+        if ( $patient === null ) {
             throw VisitException::of('CLINIC_NOT_FOUND', 'بیمار یافت نشد', 404);
         }
 
@@ -1307,13 +1252,13 @@ final class VisitService
     private function walkInClinicId(): int
     {
         $scope = ScopeContext::tryGet();
-        if ($scope !== null) {
+        if ( $scope !== null ) {
             return (int) $scope->clinicId;
         }
 
         try {
             return App::scope()->clinicId;
-        } catch (ScopeRequiredException $e) {
+        } catch ( ScopeRequiredException $e ) {
             throw VisitException::of($e->errorCode, $e->getMessage(), $e->httpStatus(), $e->getData());
         }
     }
@@ -1338,7 +1283,7 @@ final class VisitService
     private function guardVisitWithinExplicitScope(array $visit): void
     {
         $scope = ScopeContext::tryGet();
-        if ($scope !== null && (int) ($visit['clinic_id'] ?? 0) !== (int) $scope->clinicId) {
+        if ( $scope !== null && (int ) ($visit['clinic_id'] ?? 0) !== (int) $scope->clinicId) {
             throw VisitException::of('CLINIC_NOT_FOUND', 'مراجعه یافت نشد', 404);
         }
     }
@@ -1346,7 +1291,7 @@ final class VisitService
     private function guardAppointmentWithinExplicitScope(array $appt): void
     {
         $scope = ScopeContext::tryGet();
-        if ($scope !== null && (int) ($appt['clinic_id'] ?? 0) !== (int) $scope->clinicId) {
+        if ( $scope !== null && (int ) ($appt['clinic_id'] ?? 0) !== (int) $scope->clinicId) {
             throw VisitException::of('CLINIC_NOT_FOUND', 'نوبت یافت نشد', 404);
         }
     }
@@ -1356,14 +1301,14 @@ final class VisitService
      */
     private function roleForUser(int $wpUserId): ?string
     {
-        $user = get_userdata($wpUserId);
-        if ($user === false || $user->roles === []) {
+        $user = get_userdata( $wpUserId );
+        if ( $user === false || $user->roles === [] ) {
             return null;
         }
-        if (in_array(RolesAndCapabilities::ROLE_DOCTOR, $user->roles, true)) {
+        if ( in_array(RolesAndCapabilities::ROLE_DOCTOR, $user->roles, true )) {
             return 'doctor';
         }
-        if (in_array(RolesAndCapabilities::ROLE_SECRETARY, $user->roles, true)) {
+        if ( in_array(RolesAndCapabilities::ROLE_SECRETARY, $user->roles, true )) {
             return 'secretary';
         }
 
@@ -1372,20 +1317,18 @@ final class VisitService
 
     private function requireSecretary(int $wpUserId, string $event): void
     {
-        $role = $this->roleForUser($wpUserId);
-        if ($role !== 'secretary') {
+        $role = $this->roleForUser( $wpUserId );
+        if ( $role !== 'secretary' ) {
             // ماشین: V1/V2 فقط secretary — نقش دیگر → خطای transition
-            throw VisitException::of(
-                'CLINIC_PERMISSION_DENIED',
+            throw VisitException::of( 'CLINIC_PERMISSION_DENIED',
                 'فقط منشی می‌تواند ' . ($event === 'check_in' ? 'Check-in' : 'Walk-in') . ' ثبت کند',
-                403
-            );
+                403 );
         }
     }
 
     private function requireQueueReader(int $wpUserId): void
     {
-        if (!user_can($wpUserId, RolesAndCapabilities::QUEUE_READ)) {
+        if ( !user_can($wpUserId, RolesAndCapabilities::QUEUE_READ )) {
             throw VisitException::of('CLINIC_PERMISSION_DENIED', 'دسترسی به صف ندارید', 403);
         }
     }
@@ -1415,14 +1358,14 @@ final class VisitService
      */
     private function queueScopeClinicianId(int $actorUserId, int $clinicId, ?int $requestedClinicianId): ?int
     {
-        if ($this->roleForUser($actorUserId) !== 'doctor') {
-            if ($requestedClinicianId === null) {
+        if ( $this->roleForUser( $actorUserId ) !== 'doctor') {
+            if ( $requestedClinicianId === null ) {
                 return null;
             }
             // کارکنان نمی‌تواند با پارامتر، دامنه را به پزشکِ خارج از Clinic مورد
             // اعتماد ببرد. معیار = هویت فعال + مشارکت پایدار فعال در همان Clinic
             // (نه Clinic خانهٔ پروفایل)؛ در غیر این صورت همان 404 parity موجود.
-            if (!$this->memberships->clinician_participates_in($requestedClinicianId, $clinicId)) {
+            if ( !$this->memberships->clinician_participates_in( $requestedClinicianId, $clinicId )) {
                 throw VisitException::of('CLINIC_NOT_FOUND', 'پزشک یافت نشد یا غیرفعال است', 404);
             }
 
@@ -1433,11 +1376,11 @@ final class VisitService
         // نه یکپارچه‌سازی سراسریِ Clinic و نه Clinic خانه). نبودِ هویت فعال یا
         // نبودِ مشارکت ACTIVE در Clinic مورد اعتماد ⇒ مجموعهٔ خالی (0) —
         // هرگز دامنهٔ منشی/کل مطب.
-        $identityId = $this->memberships->active_clinician_id_for_wp_user($actorUserId);
-        if ($identityId === null) {
+        $identityId = $this->memberships->active_clinician_id_for_wp_user( $actorUserId );
+        if ( $identityId === null ) {
             return 0;
         }
-        if (!$this->memberships->clinician_participates_in($identityId, $clinicId)) {
+        if ( !$this->memberships->clinician_participates_in( $identityId, $clinicId )) {
             return 0;
         }
 
@@ -1454,7 +1397,7 @@ final class VisitService
     {
         try {
             return App::scope()->clinicId;
-        } catch (ScopeRequiredException $e) {
+        } catch ( ScopeRequiredException $e ) {
             throw VisitException::of($e->errorCode, $e->getMessage(), $e->httpStatus(), $e->getData());
         }
     }
@@ -1528,11 +1471,9 @@ final class VisitService
      * @return list<int>
      */
     private function activeLocationIdsForClinic( int $clinic_id ): array { // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy PSR-style, established contract
-        $rows = $this->db->fetchAll(
-            'SELECT id FROM ' . $this->db->table( 'cpms_locations' ) .
+        $rows = $this->db->fetchAll( 'SELECT id FROM ' . $this->db->table( 'cpms_locations' ) .
             ' WHERE clinic_id = %d AND is_active = 1 ORDER BY id ASC',
-            [ $clinic_id ]
-        );
+            [ $clinic_id ] );
         $ids = []; // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment, keep readability
         foreach ( ( is_array( $rows ) ? $rows : [] ) as $r ) {
             $ids[] = (int) ( $r['id'] ?? 0 );
@@ -1592,13 +1533,11 @@ final class VisitService
      */
     private function assertLicense(string $operation): void
     {
-        $decision = $this->licenseGate->assert($operation);
-        if (!$decision->allowed) {
-            throw VisitException::of(
-                'CLINIC_LICENSE_BLOCKED',
+        $decision = $this->licenseGate->assert( $operation );
+        if ( !$decision->allowed ) {
+            throw VisitException::of( 'CLINIC_LICENSE_BLOCKED',
                 'سیستم در حالت Read-Only است (مجازت) — ثبت مراجعه جدید مجاز نیست',
-                503
-            );
+                503 );
         }
     }
 
@@ -1616,21 +1555,19 @@ final class VisitService
      */
     private function resolveLocationTimezone(int $locationId, int $clinicId): ?DateTimeZone
     {
-        if ($locationId <= 0 || $clinicId <= 0) {
+        if ( $locationId <= 0 || $clinicId <= 0 ) {
             return null;
         }
 
-        $row = $this->db->fetchRow(
-            'SELECT id, clinic_id, timezone FROM ' . $this->db->table('cpms_locations') . ' WHERE id = %d LIMIT 1',
-            [$locationId]
-        );
+        $row = $this->db->fetchRow( 'SELECT id, clinic_id, timezone FROM ' . $this->db->table('cpms_locations') . ' WHERE id = %d LIMIT 1',
+            [$locationId] );
 
-        if ($row === null) {
+        if ( $row === null ) {
             $this->opLog?->warning('visit.location_missing', ['location_id' => $locationId, 'clinic_id' => $clinicId]);
             return null;
         }
 
-        if ((int) $row['clinic_id'] !== $clinicId) {
+        if ( (int ) $row['clinic_id'] !== $clinicId) {
             $this->opLog?->warning('visit.location_clinic_mismatch', [
                 'location_id' => $locationId,
                 'expected_clinic' => $clinicId,
@@ -1640,14 +1577,14 @@ final class VisitService
         }
 
         $tzName = trim((string) ($row['timezone'] ?? ''));
-        if ($tzName === '') {
+        if ( $tzName === '' ) {
             $this->opLog?->warning('visit.location_timezone_missing', ['location_id' => $locationId]);
             return null;
         }
 
         try {
-            return new DateTimeZone($tzName);
-        } catch (Throwable $e) {
+            return new DateTimeZone( $tzName );
+        } catch ( Throwable $e ) {
             $this->opLog?->warning('visit.location_timezone_invalid', [
                 'location_id' => $locationId,
                 'timezone' => $tzName,
@@ -1664,17 +1601,17 @@ final class VisitService
     {
         $date = $appt['slot_date'] ?? '';
         $time = $appt['slot_time'] ?? '';
-        if ($date === '' || $time === '') {
+        if ( $date === '' || $time === '' ) {
             return null;
         }
 
         $dateStr = trim((string) $date) . ' ' . trim((string) $time);
         // Try H:i:s first, then H:i
         $local = DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $dateStr, $tz);
-        if ($local === false) {
+        if ( $local === false ) {
             $local = DateTimeImmutable::createFromFormat('Y-m-d H:i', $dateStr, $tz);
         }
-        if ($local === false) {
+        if ( $local === false ) {
             $this->opLog?->warning('visit.appointment_datetime_parse_failed', ['slot_date' => $date, 'slot_time' => $time]);
             return null;
         }
@@ -1685,7 +1622,7 @@ final class VisitService
     /**
      * T2: per-Clinic grace resolution via SettingsFactory — explicit clinic_id, no ambient.
      *
-     * M-2 fix: Clinic-specific grace must come ONLY from SettingsFactory::forClinic($rowClinicId)
+     * M-2 fix: Clinic-specific grace must come ONLY from SettingsFactory::forClinic( $rowClinicId )
      * where rowClinicId came from durable appointment data. If resolution fails, fail-closed for that row,
      * do NOT use legacy ambient Settings, do NOT use another Clinic, do NOT substitute fixed value.
      *
@@ -1693,15 +1630,15 @@ final class VisitService
      */
     private function graceForClinic(int $clinicId): ?int
     {
-        if ($clinicId <= 0) {
+        if ( $clinicId <= 0 ) {
             return null;
         }
 
         try {
-            $settings = $this->settingsFactory->forClinic($clinicId);
+            $settings = $this->settingsFactory->forClinic( $clinicId );
             $grace = (int) $settings->get('queue.no_show_grace_minutes', 30);
             return max(0, $grace);
-        } catch (Throwable $e) {
+        } catch ( Throwable $e ) {
             $this->opLog?->warning('visit.grace_resolve_failed', ['clinic_id' => $clinicId, 'error' => $e->getMessage()]);
             // Fail-closed: do not mark no_show if grace cannot be resolved (avoid premature / cross-Clinic bleed)
             return null;
@@ -1711,9 +1648,9 @@ final class VisitService
     private function shouldAutoEnqueue(int $clinicId): bool
     {
         try {
-            $settings = $this->settingsFactory->forClinic($clinicId);
+            $settings = $this->settingsFactory->forClinic( $clinicId );
             return (bool) $settings->get('queue.auto_enqueue', true);
-        } catch (Throwable $e) {
+        } catch ( Throwable $e ) {
             return true;
         }
     }
@@ -1721,9 +1658,9 @@ final class VisitService
     private function maxRecallsForClinic(int $clinicId): int
     {
         try {
-            $settings = $this->settingsFactory->forClinic($clinicId);
+            $settings = $this->settingsFactory->forClinic( $clinicId );
             return (int) $settings->get('queue.max_recalls', 3);
-        } catch (Throwable $e) {
+        } catch ( Throwable $e ) {
             return 3;
         }
     }
@@ -1733,7 +1670,7 @@ final class VisitService
      */
     private function appointmentStartTime(array $appt): ?string
     {
-        if (empty($appt['slot_date']) || empty($appt['slot_time'])) {
+        if ( empty($appt['slot_date'] ) || empty($appt['slot_time'])) {
             return null;
         }
 
@@ -1763,14 +1700,12 @@ final class VisitService
     private function activeVisitForAppointment(int $appointmentId): ?array
     {
         $statuses = VisitMachine::ACTIVE_STATUSES;
-        $placeholders = implode(',', array_fill(0, count($statuses), '%s'));
+        $placeholders = implode(',', array_fill(0, count( $statuses ), '%s'));
 
-        return $this->db->fetchRow(
-            'SELECT * FROM ' . $this->db->table('cpms_visits') .
+        return $this->db->fetchRow( 'SELECT * FROM ' . $this->db->table('cpms_visits') .
             ' WHERE appointment_id = %d AND active = 1 AND status IN (' . $placeholders . ') ' .
             'ORDER BY id DESC LIMIT 1',
-            array_merge([$appointmentId], $statuses)
-        );
+            array_merge([$appointmentId], $statuses) );
     }
 
     private function markAppointmentNoShow(array $appt, string $now, ?int $actorUserId): void
@@ -1790,8 +1725,8 @@ final class VisitService
 
     private function completeReferencedAppointment(int $appointmentId, int $actorUserId): void
     {
-        $appt = $this->appointments->findForUpdate($appointmentId);
-        if ($appt === null || (string) $appt['status'] === 'completed') {
+        $appt = $this->appointments->findForUpdate( $appointmentId );
+        if ( $appt === null || (string ) $appt['status'] === 'completed') {
             return;
         }
         // T9: خروج بیمار → نوبت مرجع completed (system event ماشین).
@@ -1799,7 +1734,7 @@ final class VisitService
         // ER-06: وضعیت نوبت دیرهنگام حفظ می‌شود (تاریخچه).
         try {
             $toStatus = AppointmentMachine::create()->machine()->assert((string) $appt['status'], 'visit_checked_out', 'system');
-        } catch (InvalidTransitionException $e) {
+        } catch ( InvalidTransitionException $e ) {
             $this->appointments->updateStatus($appointmentId, ['active_visit_id' => null]);
 
             return;
@@ -1859,21 +1794,18 @@ final class VisitService
      */
     private function guardDoctorTransitionOwnership(int $actorUserId, array $visit): void
     {
-        if ($this->roleForUser($actorUserId) !== 'doctor') {
+        if ( $this->roleForUser( $actorUserId ) !== 'doctor') {
             return;
         }
 
-        $linkedClinicianId = $this->db->fetchValue(
-            'SELECT id FROM ' . $this->db->table('cpms_clinicians') .
+        $linkedClinicianId = $this->db->fetchValue( 'SELECT id FROM ' . $this->db->table('cpms_clinicians') .
             ' WHERE wp_user_id = %d AND is_active = 1 LIMIT 1',
-            [$actorUserId]
-        );
+            [$actorUserId] );
 
-        if ($linkedClinicianId === null || (int) $linkedClinicianId !== (int) $visit['clinician_id']) {
+        if ( $linkedClinicianId === null || (int ) $linkedClinicianId !== (int) $visit['clinician_id']) {
             // IDOR/Cross-doctor: 403 + Audit (الگوی T-01) — نه 404؛ وجود ویزیت
             // برای دارنده QUEUE_READ آشکار است، رد شدنِ عملیات است که گزارش می‌شود.
-            $this->auditAndThrow(
-                $actorUserId,
+            $this->auditAndThrow( $actorUserId,
                 'doctor',
                 'FORBIDDEN_ACCESS_ATTEMPT',
                 'visit',
@@ -1881,13 +1813,11 @@ final class VisitService
                 (int) $visit['patient_id'],
                 'پزشک فقط می‌تواند روی ویزیت‌های خودش عملیات صف انجام دهد (ADR-0027 — Scope صریح لازم دارد)',
                 403,
-                'CLINIC_PERMISSION_DENIED'
-            );
+                'CLINIC_PERMISSION_DENIED' );
         }
     }
 
-    private function auditAndThrow(
-        int $wpUserId,
+    private function auditAndThrow( int $wpUserId,
         string $role,
         string $action,
         string $resourceType,
@@ -1895,8 +1825,7 @@ final class VisitService
         int $patientId,
         string $message,
         int $http,
-        string $code
-    ): never {
+        string $code ): never {
         $this->audit($action, $wpUserId, $role, $resourceType, $resourceId, $patientId, null, null, []);
         throw VisitException::of($code, $message, $http);
     }
@@ -1906,8 +1835,7 @@ final class VisitService
      * @param array<string, mixed> $after
      * @param array<string, mixed> $meta
      */
-    private function audit(
-        string $action,
+    private function audit( string $action,
         ?int $wpUserId,
         string $role,
         string $resourceType,
@@ -1915,20 +1843,17 @@ final class VisitService
         ?int $patientId,
         ?array $before,
         ?array $after,
-        array $meta
-    ): void {
+        array $meta ): void {
         try {
-            $this->audit->log(
-                $action,
+            $this->audit->log( $action,
                 ['wp_user_id' => $wpUserId, 'role' => $role],
                 $resourceType,
                 $resourceId,
                 $patientId,
                 $before,
                 $after,
-                $meta
-            );
-        } catch (Throwable $e) {
+                $meta );
+        } catch ( Throwable $e ) {
             // Audit نباید جریان عملیات بالینی را قطع کند (تطبیق الگوی BookingService)
         }
     }
