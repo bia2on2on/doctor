@@ -684,11 +684,262 @@
 		if (selector) { selector.addEventListener('change', choose); }
 	}
 
+	/**
+	 * Slice 7 — «فایل‌های من»: فهرستِ بیمار + دانلودِ محافظتی + آپلود بیمار روی
+	 * همان مسیرهای موجودِ C3/C4/E17. مجوز صددرصد سروری است (لینک پایدار فعال +
+	 * `link_id` برای رکوردِ انتخابی); مرورگر فقط آنچه مسیرِ موجود ایجاب می‌کند
+	 * می‌فرستد: `patient_id` مسیر، `link_id` رکورد و شناسهٔ فایل برای stream —
+	 * هیچ‌کدام مجوز نیستند. نمایش فقط فهرستِ مجاز (نام/تاریخ جلالیِ موثق/حجم/دسته).
+	 */
+	function bindFiles(config) {
+		var section = document.querySelector('[data-role="files-section"]');
+		if (!section) { return; }
+		if (!isNonEmptyString(config.files_path) || !isNonEmptyString(config.files_stream_path)) { return; }
+		var records = Array.isArray(config.profile_records) ? config.profile_records : [];
+		var selector = section.querySelector('[data-role="files-record-select"]');
+		var context = section.querySelector('[data-role="files-context"]');
+		var loading = section.querySelector('[data-role="files-loading"]');
+		var listBox = section.querySelector('[data-role="files-error"]');
+		var generation = 0;
+		var selected = null;
+
+		function findList() { return section.querySelector('[data-role="files-list"]'); }
+		function text(parent, tag, value) {
+			var node = document.createElement(tag);
+			node.textContent = value || '';
+			parent.appendChild(node);
+			return node;
+		}
+		function recordLabel(record) {
+			return (record.clinic_name || '') + ' — ' + (record.patient_display_name || '') + ' — ' + (record.mrn || '');
+		}
+		function fileSizeLabel(bytes) {
+			var size = parseInt(bytes, 10) || 0;
+			if (size >= 1048576) { return (Math.round((size / 1048576) * 10) / 10) + ' مگابایت'; }
+			if (size >= 1024) { return Math.round(size / 1024) + ' کیلوبایت'; }
+			return size + ' بایت';
+		}
+		function fileCategoryLabel(category) {
+			var labels = { lab_result: 'نتیجه آزمایش', image: 'تصویر', scan: 'اسکن', document: 'مدارک', other: 'سایر' };
+			return labels[category] || labels.other;
+		}
+		function filesUrl() {
+			if (!selected) { return ''; }
+			var path = config.files_path.replace('{patient_id}', encodeURIComponent(String(selected.patient_id)));
+			return apiUrl(config.rest_root, path + '?link_id=' + encodeURIComponent(String(selected.link_id)));
+		}
+		function streamUrl(fileId) {
+			return apiUrl(config.rest_root, config.files_stream_path.replace('{id}', encodeURIComponent(String(fileId))));
+		}
+		function renderItems(files) {
+			var list = findList();
+			if (!list) { return; }
+			list.textContent = '';
+			if (!files || !files.length) {
+				text(list, 'li', 'فایلی ثبت نشده است.');
+				return;
+			}
+			files.forEach(function (file) {
+				var item = document.createElement('li');
+				item.className = 'cpms-pp-file';
+				item.setAttribute('data-role', 'file-item');
+				var name = text(item, 'span', file.original_filename || '');
+				name.className = 'cpms-pp-file__name';
+				// تاریخ جلالی فقط وقتی سرور آن را منتشر کرده (مسیر موثق Location).
+				if (isNonEmptyString(file.created_at_jalali)) {
+					var date = text(item, 'span', file.created_at_jalali);
+					date.className = 'cpms-pp-file__date';
+					date.setAttribute('dir', 'ltr');
+				}
+				var meta = text(item, 'span', fileCategoryLabel(file.category) + ' — ' + fileSizeLabel(file.file_size));
+				meta.className = 'cpms-pp-file__meta';
+				var button = text(item, 'button', 'دریافت فایل');
+				button.type = 'button';
+				button.className = 'cpms-pp-btn cpms-pp-btn--ghost';
+				button.setAttribute('data-role', 'file-download');
+				button.setAttribute('data-file-id', String(file.id || ''));
+				list.appendChild(item);
+			});
+		}
+		function loadFiles() {
+			var list = findList();
+			if (!selected || !list) { return; }
+			var current = ++generation;
+			if (loading) { loading.hidden = false; }
+			clearError(listBox);
+			requestJson(filesUrl(), {
+				method: 'GET', credentials: 'same-origin',
+				headers: { Accept: 'application/json', 'X-WP-Nonce': config.nonce }
+			}).then(function (result) {
+				if (current !== generation) { return; }
+				var payload = result.body && result.body.data ? result.body.data : null;
+				if (!result.ok || !payload || !Array.isArray(payload.files)) {
+					list.textContent = '';
+					showError(listBox, serverMessage(result) || 'دریافت فایل‌ها انجام نشد. دوباره تلاش کنید.', serverCode(result));
+					return;
+				}
+				renderItems(payload.files);
+			}).catch(function () {
+				if (current !== generation) { return; }
+				list.textContent = '';
+				showError(listBox, 'ارتباط برقرار نشد. دوباره تلاش کنید.', 'NETWORK');
+			}).then(function () {
+				if (current === generation && loading) { loading.hidden = true; }
+			});
+		}
+		function downloadFile(fileId, button) {
+			button.disabled = true;
+			window.fetch(streamUrl(fileId), {
+				method: 'GET', credentials: 'same-origin', headers: { 'X-WP-Nonce': config.nonce }
+			}).then(function (response) {
+				if (!response.ok) { throw new Error('download denied'); }
+				return response.blob();
+			}).then(function (blob) {
+				var url = URL.createObjectURL(blob);
+				var link = document.createElement('a');
+				link.href = url;
+				link.download = '';
+				document.body.appendChild(link);
+				link.click();
+				link.parentNode.removeChild(link);
+				window.setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+			}).catch(function () {
+				showError(listBox, 'دریافت فایل انجام نشد. دوباره تلاش کنید.', 'DOWNLOAD_FAILED');
+			}).then(function () {
+				button.disabled = false;
+			});
+		}
+		function uploadNotice(kind) { return section.querySelector('[data-role="files-upload-' + kind + '"]'); }
+		function setUploadNotice(kind, message) {
+			['progress', 'success', 'error'].forEach(function (k) {
+				var box = uploadNotice(k);
+				if (!box) { return; }
+				if (k === kind) { box.textContent = message || ''; box.hidden = false; }
+				else { box.textContent = ''; box.hidden = true; }
+			});
+		}
+		function removeStaleUpload() {
+			var input = section.querySelector('[data-role="files-upload-input"]');
+			if (!input) { return; }
+			var wrap = input.closest('.cpms-pp-files__upload');
+			var node = wrap || input;
+			if (node.parentNode) { node.parentNode.removeChild(node); }
+		}
+		function buildUploadMarkup(patientId) {
+			var wrap = document.createElement('div');
+			wrap.className = 'cpms-pp-files__upload';
+			wrap.setAttribute('data-record-patient', String(patientId));
+			wrap.innerHTML = '<label for="cpms-files-upload-input-dynamic">افزودن فایل (PDF / JPG / PNG / WEBP)</label>'
+				+ '<input id="cpms-files-upload-input-dynamic" type="file" data-role="files-upload-input" accept=".pdf,.jpg,.jpeg,.png,.webp">'
+				+ '<button type="button" class="cpms-pp-btn cpms-pp-btn--primary" data-role="files-upload-button">ارسال فایل</button>'
+				+ '<p role="status" data-role="files-upload-progress" hidden>در حال ارسال فایل…</p>'
+				+ '<div class="notice inline cpms-pp-files__notice cpms-pp-files__notice--success" role="status" data-role="files-upload-success" hidden></div>'
+				+ '<div class="notice inline cpms-pp-files__notice cpms-pp-files__notice--error" role="alert" data-role="files-upload-error" hidden></div>';
+			return wrap;
+		}
+		function uploadSelectedFile() {
+			if (!selected) { return; }
+			var input = section.querySelector('[data-role="files-upload-input"]');
+			var button = section.querySelector('[data-role="files-upload-button"]');
+			if (!input || !button || button.disabled) { return; }
+			var file = input.files && input.files.length ? input.files[0] : null;
+			if (!file) {
+				setUploadNotice('error', 'ابتدا یک فایل انتخاب کنید.');
+				return;
+			}
+			button.disabled = true;
+			setUploadNotice('progress', 'در حال ارسال فایل…');
+			var form = new FormData();
+			form.append('file', file);
+			window.fetch(filesUrl(), {
+				method: 'POST', credentials: 'same-origin',
+				headers: { Accept: 'application/json', 'X-WP-Nonce': config.nonce },
+				body: form
+			}).then(function (response) {
+				return response.json().then(
+					function (body) { return { ok: response.ok, status: response.status, body: body }; },
+					function () { return { ok: false, status: response.status, body: null }; }
+				);
+			}).then(function (result) {
+				button.disabled = false;
+				if (result.ok && result.body && result.body.data) {
+					input.value = '';
+					setUploadNotice('success', 'فایل شما با موفقیت ارسال شد.');
+					loadFiles();
+					return;
+				}
+				setUploadNotice('error', serverMessage(result) || 'ارسال فایل انجام نشد. دوباره تلاش کنید.');
+			}).catch(function () {
+				button.disabled = false;
+				setUploadNotice('error', 'ارتباط برقرار نشد. دوباره تلاش کنید.');
+			});
+		}
+
+		// رکوردِ یگانه: فهرست سرور-رندر است؛ `selected` از همان حقیقتِ سروری.
+		if (!selector && records.length === 1) {
+			var soleWrap = section.querySelector('.cpms-pp-files__upload[data-record-patient]');
+			var solePatient = soleWrap ? parseInt(soleWrap.getAttribute('data-record-patient') || '', 10) : 0;
+			if (solePatient > 0) {
+				selected = { link_id: records[0].link_id, patient_id: solePatient, label: recordLabel(records[0]) };
+			}
+		}
+
+		if (selector) {
+			selector.addEventListener('change', function () {
+				generation++;
+				selected = null;
+				// تعویض رکورد: پاکسازی کامل فهرست/هدف آپلود/حالت‌های مانده.
+				var staleList = findList();
+				if (staleList && staleList.parentNode) { staleList.parentNode.removeChild(staleList); }
+				removeStaleUpload();
+				if (context) { context.textContent = ''; context.hidden = true; }
+				if (loading) { loading.hidden = true; }
+				clearError(listBox);
+				var linkId = parseInt(selector.value || '', 10);
+				if (!(linkId > 0)) { return; }
+				var record = null;
+				records.forEach(function (r) {
+					if (parseInt(r.link_id, 10) === linkId) { record = r; }
+				});
+				var option = selector.querySelector('option[value="' + selector.value + '"]');
+				var patientId = option ? parseInt(option.getAttribute('data-record-patient') || '', 10) : 0;
+				if (!record || !(patientId > 0)) { return; }
+				selected = { link_id: linkId, patient_id: patientId, label: recordLabel(record) };
+				if (context) { context.textContent = selected.label; context.hidden = false; }
+				var list = document.createElement('ul');
+				list.className = 'cpms-pp-files__list';
+				list.setAttribute('data-role', 'files-list');
+				section.appendChild(list);
+				section.appendChild(buildUploadMarkup(patientId));
+				loadFiles();
+			});
+		}
+
+		// دانلود و آپلود: رویدادها به کل بخش تفویض می‌شوند تا ردیف‌های سرور-رندر
+		// و ردیف‌های ساخته‌شدهٔ کلاینت هر دو پوشش داده شوند.
+		section.addEventListener('click', function (event) {
+			var target = event.target;
+			if (!target || !target.closest) { return; }
+			var download = target.closest('[data-role="file-download"]');
+			if (download && section.contains(download)) {
+				var fileId = download.getAttribute('data-file-id');
+				if (/^[1-9][0-9]*$/.test(fileId || '')) {
+					downloadFile(parseInt(fileId, 10), download);
+				}
+				return;
+			}
+			var upload = target.closest('[data-role="files-upload-button"]');
+			if (upload && section.contains(upload)) {
+				uploadSelectedFile();
+			}
+		});
+	}
+
 	function bindSectionNav() {
 		var navLinks = document.querySelectorAll('[data-role="patient-nav"] a');
 		function apply() {
 			var hash = (window.location.hash || '').replace(/^#/, '');
-			var target = (hash === 'profile' || hash === 'visits' || hash === 'prescriptions') ? hash : 'appointments';
+			var target = (hash === 'profile' || hash === 'visits' || hash === 'prescriptions' || hash === 'files') ? hash : 'appointments';
 			Array.prototype.forEach.call(navLinks, function (a) {
 				var role = a.getAttribute('data-role');
 				var isActive = role === 'nav-' + target;
@@ -811,6 +1062,7 @@
 		bindProfile(config);
 		bindVisits(config);
 		bindPrescriptions(config);
+		bindFiles(config);
 		bindSectionNav();
 	}
 

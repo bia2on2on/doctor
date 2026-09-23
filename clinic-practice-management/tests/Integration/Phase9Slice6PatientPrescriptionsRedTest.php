@@ -270,7 +270,9 @@ final class Phase9Slice6PatientPrescriptionsRedTest extends WP_UnitTestCase
         $section = $sections->item(0);
 
         self::assertSame(0, $xpath->query('.//form|.//*[@contenteditable="true"]', $section)->length, 'No prescription mutations.');
-        foreach (['nav-files', 'prescriptions-edit', 'prescriptions-delete', 'prescriptions-refill'] as $role) {
+        // 'nav-files' handed over to the Phase 9 Slice 7 My Files GREEN (the
+        // marker this slice itself received from Slice 5 when it landed).
+        foreach (['prescriptions-edit', 'prescriptions-delete', 'prescriptions-refill'] as $role) {
             self::assertSame(0, $xpath->query('//*[@data-role="' . $role . '"]')->length);
         }
 

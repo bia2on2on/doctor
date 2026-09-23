@@ -330,6 +330,7 @@ final class PatientPortalPage
         $html .= self::profile_section( $profile_records, $profile_initial, $login_mobile );
         $html .= self::visits_section( $profile_records, $user_id );
         $html .= self::prescriptions_section( $profile_records, $user_id );
+        $html .= self::files_section( $profile_records, $user_id );
         $html .= self::config_script( $profile_records, $profile_initial );
         $html .= '</div>';
 
@@ -451,6 +452,122 @@ final class PatientPortalPage
     }
 
     /**
+     * Phase 9 Slice 7 — «فایل‌های من» (list + دانلود محافظتی + آپلود بیمار) روی
+     * همان بک‌اند موجود C3/C4/E17 و همین پوستهٔ مصوب:
+     *   - ۰ رکورد فعال: فقط حالت خالیِ امن (بدون هدف آپلود، بدون ایجاد).
+     *   - ۱ رکورد فعال: حل خودکار — فهرستِ سرور-رندرِ فایل‌های patient_visible
+     *     + کنترل آپلود + قلاب‌های حالت (بارگذاری/خطا/پیشرفت/موفقیت/خطای آپلود).
+     *   - N>1: سلکتور رکورد بدون پیش‌انتخاب؛ تا انتخابِ صریح، نه فهرستِ
+     *     Clinic-محور رندر می‌شود نه هدف آپلود (بعد از انتخاب فقط همان رکورد).
+     * تاریخ جلالی فقط روی ردیف‌هایی نمایش می‌یابد که مسیر موثقِ
+     * `visit_id → Visit → Location → IANA timezone` برقرار باشد؛ آپلودِ بدون
+     * ویزیت بدون تاریخ می‌ماند (حذف به‌جای حدس — fail-closed).
+     * نمایش فقط از فهرستِ مجاز: نام فایل / حجم / دسته / تاریخ جلالیِ موثق؛
+     * شناسهٔ فایل صرفاً به‌عنوان سلکتورِ فنی روی دکمهٔ دانلود سوار است.
+     *
+     * @param array<int, array<string, mixed>> $records
+     */
+    private static function files_section( array $records, int $user_id ): string {
+        $html  = '<section class="cpms-pp-section" id="files" data-role="files-section" aria-labelledby="cpms-files-heading">';
+        $html .= '<h1 id="cpms-files-heading">' . esc_html__( 'فایل‌های من', 'cpms' ) . '</h1>';
+        $html .= '<p data-role="files-empty-state"' . ( count( $records ) > 0 ? ' hidden' : '' ) . '>' . esc_html__( 'پرونده فعالی به حساب شما متصل نیست.', 'cpms' ) . '</p>';
+        if ( count( $records ) > 1 ) {
+            $html .= '<label for="cpms-files-record">' . esc_html__( 'پرونده مطب را انتخاب کنید', 'cpms' ) . '</label>';
+            $html .= '<select id="cpms-files-record" data-role="files-record-select"><option value="">' . esc_html__( 'انتخاب پرونده…', 'cpms' ) . '</option>';
+            foreach ( $records as $record ) {
+                $html .= '<option value="' . esc_attr( (string) $record['link_id'] ) . '" data-record-patient="' . esc_attr( (string) ( $record['patient_id'] ?? '' ) ) . '">' . esc_html( $record['clinic_name'] . ' — ' . $record['patient_display_name'] . ' — ' . $record['mrn'] ) . '</option>';
+            }
+            $html .= '</select>';
+        }
+        $sole = count( $records ) === 1 ? $records[0] : null;
+        if ( $sole ) {
+            $html .= '<p data-role="files-context">' . esc_html( $sole['clinic_name'] . ' — ' . $sole['patient_display_name'] . ' — ' . $sole['mrn'] ) . '</p>';
+        } else {
+            $html .= '<p data-role="files-context" hidden></p>';
+        }
+        $html .= '<p role="status" data-role="files-loading" hidden>' . esc_html__( 'در حال دریافت…', 'cpms' ) . '</p>';
+        $error = '';
+        $items = '';
+        if ( $sole ) {
+            try {
+                $files = App::medicalFileService()->patientFiles( $user_id, (int) $sole['patient_id'], (int) $sole['link_id'] );
+                foreach ( $files as $file ) {
+                    $items .= self::file_item_markup( $file );
+                }
+                if ( $items === '' ) {
+                    $items = '<li>' . esc_html__( 'فایلی ثبت نشده است.', 'cpms' ) . '</li>';
+                }
+            } catch ( \Throwable $exception ) {
+                $error = $exception->getMessage();
+                $items = '<li>' . esc_html__( 'فایلی ثبت نشده است.', 'cpms' ) . '</li>';
+            }
+        }
+        $html .= '<p role="alert" data-role="files-error"' . ( $error === '' ? ' hidden' : '' ) . '>' . esc_html( $error ) . '</p>';
+        if ( $sole ) {
+            $html .= '<ul class="cpms-pp-files__list" data-role="files-list">' . $items . '</ul>';
+            $html .= self::files_upload_markup( (int) $sole['patient_id'] );
+        }
+        $html .= '</section>';
+
+        return $html;
+    }
+
+    /**
+     * یک ردیف فایل — فقط فهرستِ مجازِ نمایش (نام/تاریخ جلالیِ موثق/حجم/دسته).
+     * شناسهٔ فایل صرفاً سلکتورِ فنیِ مسیر stream است و هرگز متنِ مرئی نمی‌شود.
+     *
+     * @param array<string, mixed> $file
+     */
+    private static function file_item_markup( array $file ): string {
+        $size = (int) ( $file['file_size'] ?? 0 );
+        if ( $size >= 1048576 ) {
+            $size_label = number_format_i18n( $size / 1048576, 1 ) . ' ' . esc_html__( 'مگابایت', 'cpms' );
+        } elseif ( $size >= 1024 ) {
+            $size_label = number_format_i18n( $size / 1024, 0 ) . ' ' . esc_html__( 'کیلوبایت', 'cpms' );
+        } else {
+            $size_label = number_format_i18n( $size ) . ' ' . esc_html__( 'بایت', 'cpms' );
+        }
+        $categories     = [
+            'lab_result' => __( 'نتیجه آزمایش', 'cpms' ),
+            'image'      => __( 'تصویر', 'cpms' ),
+            'scan'       => __( 'اسکن', 'cpms' ),
+            'document'   => __( 'مدارک', 'cpms' ),
+            'other'      => __( 'سایر', 'cpms' ),
+        ];
+        $category_label = (string) ( $categories[ (string) ( $file['category'] ?? '' ) ] ?? $categories['other'] );
+
+        $html  = '<li class="cpms-pp-file" data-role="file-item">';
+        $html .= '<span class="cpms-pp-file__name">' . esc_html( (string) ( $file['original_filename'] ?? '' ) ) . '</span>';
+        // تاریخ نمایشی فقط وقتی سرور مسیر موثق Location را تأیید کرده باشد.
+        if ( isset( $file['created_at_jalali'] ) && is_string( $file['created_at_jalali'] ) && $file['created_at_jalali'] !== '' ) {
+            $html .= '<span class="cpms-pp-file__date" dir="ltr">' . esc_html( $file['created_at_jalali'] ) . '</span>';
+        }
+        $html .= '<span class="cpms-pp-file__meta">' . esc_html( $category_label . ' — ' . $size_label ) . '</span>';
+        $html .= '<button type="button" class="cpms-pp-btn cpms-pp-btn--ghost" data-role="file-download" data-file-id="' . (int) ( $file['id'] ?? 0 ) . '">' . esc_html__( 'دریافت فایل', 'cpms' ) . '</button>';
+        $html .= '</li>';
+
+        return $html;
+    }
+
+    /**
+     * کنترل آپلود بیمار (مسیر موجود C3) — ورودی فایل + دکمه + پنج قلابِ حالت.
+     * `data-record-patient` فقط برای ساختِ مسیرِ موجودِ `/patients/{patient_id}/files`
+     * توسط مرورگر است؛ مجوز با سرور است (لینک پایدار + `link_id`).
+     */
+    private static function files_upload_markup( int $patient_id ): string {
+        $html  = '<div class="cpms-pp-files__upload" data-record-patient="' . esc_attr( (string) $patient_id ) . '">';
+        $html .= '<label for="cpms-files-upload-input">' . esc_html__( 'افزودن فایل (PDF / JPG / PNG / WEBP)', 'cpms' ) . '</label>';
+        $html .= '<input id="cpms-files-upload-input" type="file" data-role="files-upload-input" accept=".pdf,.jpg,.jpeg,.png,.webp">';
+        $html .= '<button type="button" class="cpms-pp-btn cpms-pp-btn--primary" data-role="files-upload-button">' . esc_html__( 'ارسال فایل', 'cpms' ) . '</button>';
+        $html .= '<p role="status" data-role="files-upload-progress" hidden>' . esc_html__( 'در حال ارسال فایل…', 'cpms' ) . '</p>';
+        $html .= '<div class="notice inline cpms-pp-files__notice cpms-pp-files__notice--success" role="status" data-role="files-upload-success" hidden></div>';
+        $html .= '<div class="notice inline cpms-pp-files__notice cpms-pp-files__notice--error" role="alert" data-role="files-upload-error" hidden></div>';
+        $html .= '</div>';
+
+        return $html;
+    }
+
+    /**
      * پیکربندیِ امنِ runtime برای اسکریپت پورتال — فقط چهار کلید:
      *  - `rest_root`: `rest_url('clinic/v1')` بدون اسلش انتهایی (در Plain permalink
      *    شامل `index.php?rest_route=/clinic/v1` است؛ ترکیب مسیر سمت کلاینت با
@@ -469,6 +586,7 @@ final class PatientPortalPage
      *  - `cancel_path`: الگوی مسیر B4 با `{id}`.
      *  - `notifications_read_path`: مسیرِ موجودِ R2b (POST `{"all":true}`) — Slice 2.
      *  - `profile_my_records_path`/`profile_me_path`/`my_records_path`/`me_path`: مسیرهای Patient Profile (Slice 4) — نسبی به NS، بدون پیشوند تکراری.
+     *  - `files_path`/`files_stream_path`: مسیرهای موجودِ C3/C4 و E17 (Slice 7) — نسبی به NS؛ `{patient_id}`/`{id}` فقط سلکتور شیء.
      *  - `profile_records`: لینک‌های فعال کاربر (link_id + clinic_name + patient_display_name + mrn + is_primary) — صرفاً برای نمایش در سلکتور؛ clinic_id/patient_id سرور-ساید enforcement.
      *  - `profile_initial`: رکورد + me در حالت تک‌پیوند (N=1) تا فرم بدون درخواست اضافی لود شود.
      *  - `nonce`: `wp_rest` — همان مرزِ CSRF که `cancelPermission`/`permission` می‌سنجند.
@@ -517,6 +635,10 @@ final class PatientPortalPage
                 'visits_path'             => '/visits',
                 'visit_detail_path'       => '/visits/{id}',
                 'prescriptions_path'      => '/prescriptions',
+                // Slice 7 — همان مسیرهای موجودِ C3/C4/E17 (بدون هیچ مسیر جدید)؛
+                // `{patient_id}`/`{id}` فقط سلکتورِ شیء هستند — مجوز با سرور است.
+                'files_path'              => '/patients/{patient_id}/files',
+                'files_stream_path'       => '/files/{id}/stream',
                 'my_records_path'         => '/patient/my-records',
                 'me_path'                 => '/patient/me',
                 'profile_records'         => $profile_records_payload,
