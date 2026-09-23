@@ -582,11 +582,11 @@ final class VisitService
      */
     public function eventsSince( int $actor_user_id, int $since_event_id ): array { // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy PSR-style, established contract
         $this->requireQueueReader( $actor_user_id );
-        $clinic_id          = $this->queueClinicId();
+        $clinic_id = $this->queueClinicId();
         $scope_clinician_id = $this->queueScopeClinicianId( $actor_user_id, $clinic_id, null );
-        $location_id        = $this->queueLocationId( $clinic_id, $actor_user_id );
+        $location_id = $this->queueLocationId( $clinic_id, $actor_user_id );
         // Legacy: operational_date null => repository uses UTC (gmdate) to preserve shared behavior.
-        $operational_date   = null;
+        $operational_date = null;
 
         $events  = $this->visits->eventsSince( $clinic_id, max( 0, $since_event_id ), 200, $scope_clinician_id, $operational_date, $location_id );
         $last_id = $since_event_id;
@@ -615,11 +615,11 @@ final class VisitService
      */
     public function lastEventId( int $actor_user_id ): int { // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy PSR-style, established contract
         $this->requireQueueReader( $actor_user_id );
-        $clinic_id          = $this->queueClinicId();
+        $clinic_id = $this->queueClinicId();
         $scope_clinician_id = $this->queueScopeClinicianId( $actor_user_id, $clinic_id, null );
-        $location_id        = $this->queueLocationId( $clinic_id, $actor_user_id );
+        $location_id = $this->queueLocationId( $clinic_id, $actor_user_id );
         // Legacy: operational_date null => repository uses UTC.
-        $operational_date   = null;
+        $operational_date = null;
 
         return $this->visits->lastEventId( $clinic_id, $operational_date, $scope_clinician_id, $location_id );
     }
