@@ -777,7 +777,15 @@ final class Phase3Slice6BStaffClinicAuthorizationTest extends WP_UnitTestCase
     {
         global $wpdb;
         $now = App::db()->nowUtcSql();
-        $date = gmdate('Y-m-d');
+        // Use Location-local operational date to match Today filtering
+        $tz_row = $wpdb->get_var($wpdb->prepare('SELECT timezone FROM ' . $wpdb->prefix . 'cpms_locations WHERE id = %d', $locationId));
+        $tz_name = is_string($tz_row) && $tz_row !== '' ? $tz_row : 'Asia/Tehran';
+        try {
+            $tz = new \DateTimeZone($tz_name);
+            $date = (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->setTimezone($tz)->format('Y-m-d');
+        } catch ( \Throwable $e ) {
+            $date = gmdate('Y-m-d');
+        }
         $wpdb->query($wpdb->prepare(
             'INSERT INTO ' . $wpdb->prefix . 'cpms_visits
                  (clinic_id, location_id, clinician_id, patient_id, source, status, visit_date,
