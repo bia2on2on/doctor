@@ -133,7 +133,7 @@ echo $cpms_styles_html;
     data-cpms-portal="doctor"
     data-cpms-doctor-portal="shell"
     data-shell-contract="doctor-v1"
-    <?php echo $cpms_is_doctor ? 'data-shell-user="doctor"' : ( $cpms_logged_in ? 'data-shell-user="non-doctor"' : 'data-shell-user="anonymous"'); ?> // phpcs:ignore Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceBeforeClose -- WPCS
+    <?php echo $cpms_is_doctor ? 'data-shell-user="doctor"' : ( $cpms_logged_in ? 'data-shell-user="non-doctor"' : 'data-shell-user="anonymous"' ); // phpcs:ignore Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceBeforeClose -- WPCS ?>
 >
     <header class="cpms-doctor-portal-shell__header" role="banner" data-role="portal-header">
         <div class="cpms-doctor-portal-shell__brand">
