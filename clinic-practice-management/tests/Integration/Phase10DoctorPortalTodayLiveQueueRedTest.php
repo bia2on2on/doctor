@@ -22,10 +22,12 @@ declare(strict_types=1);
 
 namespace ClinicCore\Tests\Integration;
 
+use ClinicCore\Application\Scope\ClinicScope;
 use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Application\Scope\SystemClinicResolver;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Infrastructure\Repository\MembershipRepository;
 use ClinicCore\Settings\Settings;
 use WP_REST_Request;
 use WP_REST_Response;
@@ -73,7 +75,7 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
     public function testA_IndependentDoctorPortalShellExists(): void
     {
         $fx = $this->makeDoctor('A');
-        $this->assertTodayPath($fx['doctor']);
+        $this->assertTodayPath($fx['doctor'], 1);
 
         wp_set_current_user($fx['doctor']);
         $clinicianId = App::db()->fetchValue('SELECT id FROM '.App::db()->table('cpms_clinicians').' WHERE wp_user_id = %d AND is_active = 1 LIMIT 1', [$fx['doctor']]);
@@ -93,14 +95,19 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
     public function testB_DoctorIdentityFailClosed(): void
     {
         $fx = $this->makeDoctor('B');
-        $this->assertTodayPath($fx['doctor']);
+        $this->assertTodayPath($fx['doctor'], 1);
 
         self::assertNotSame($fx['doctor'], $fx['clinician'], 'B positive: WP user ID != clinician ID');
 
         // unlinked doctor sees nothing (existing behavior, positive control)
         $orphan = $this->makeUser('b_orphan', RolesAndCapabilities::ROLE_DOCTOR);
         wp_set_current_user($orphan);
-        $today = App::visitService()->today($orphan);
+        App::replaceExplicitScope(ClinicScope::forClinic(1));
+        try {
+            $today = App::visitService()->today($orphan);
+        } finally {
+            App::replaceExplicitScope(null);
+        }
         self::assertSame([], $today['queue'], 'B positive: unlinked doctor empty, not clinic-wide');
         self::assertSame(0, $today['stats']['total']);
 
@@ -108,7 +115,12 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
         $inactiveUser = $this->makeUser('b_inactive', RolesAndCapabilities::ROLE_DOCTOR);
         $inactiveClinician = $this->insertClinician('Dr B Inactive', 1, 0, $inactiveUser);
         wp_set_current_user($inactiveUser);
-        $todayInactive = App::visitService()->today($inactiveUser);
+        App::replaceExplicitScope(ClinicScope::forClinic(1));
+        try {
+            $todayInactive = App::visitService()->today($inactiveUser);
+        } finally {
+            App::replaceExplicitScope(null);
+        }
         self::assertSame([], $todayInactive['queue'], 'B positive: inactive clinician empty');
 
         // secretary has QUEUE_READ but must NOT be authorized into Doctor Portal via capability overlap
@@ -128,7 +140,7 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
     public function testC_MultiClinicTrustedScope(): void
     {
         $fx = $this->makeMultiClinic('C');
-        $this->assertTodayPath($fx['doctor']);
+        $this->assertTodayPath($fx['doctor'], $fx['clinic_a']);
 
         // 0 memberships => UNAVAILABLE 403
         $noMem = $this->makeUser('c_nomem', RolesAndCapabilities::ROLE_DOCTOR);
@@ -164,7 +176,7 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
     public function testD_DoctorProfessionalScoping(): void
     {
         $fx = $this->makeDoctor('D');
-        $this->assertTodayPath($fx['doctor']);
+        $this->assertTodayPath($fx['doctor'], 1);
 
         $doctorB = $this->makeUser('d_doc_b', RolesAndCapabilities::ROLE_DOCTOR);
         $clinicianB = $this->insertClinician('Dr D B', 1, 1, $doctorB);
@@ -173,7 +185,12 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
         $this->insertVisit($patientB, $clinicianB, 1, $fx['location'], 'waiting', gmdate('Y-m-d'), '10:30:00');
 
         wp_set_current_user($fx['doctor']);
-        $todayA = App::visitService()->today($fx['doctor']);
+        App::replaceExplicitScope(ClinicScope::forClinic(1));
+        try {
+            $todayA = App::visitService()->today($fx['doctor']);
+        } finally {
+            App::replaceExplicitScope(null);
+        }
         self::assertCount(1, $todayA['queue']);
         self::assertSame($fx['clinician'], (int)$todayA['queue'][0]['clinician_id']);
 
@@ -194,7 +211,7 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
         $sharedClinician = $this->insertClinician('Dr D Shared', $multi['clinic_a'], 1, $sharedUser);
         cpms_test_seed_membership($sharedUser, $multi['clinic_a'], 'cpms_doctor');
         cpms_test_seed_membership($sharedUser, $multi['clinic_b'], 'cpms_doctor');
-        self::assertTrue(App::membership_service()->clinician_participates_in($sharedClinician, $multi['clinic_b']), 'D positive: participation via membership not home clinic_id');
+        self::assertTrue((new MembershipRepository(App::db()))->clinician_participates_in($sharedClinician, $multi['clinic_b']), 'D positive: participation via membership not home clinic_id');
 
         $url = $this->tryResolveDoctorPortalUrl();
         self::assertNotNull($url, 'Phase 10 D RED: Doctor Portal must enforce professional scope own doctor+trusted Clinic only. Head='.$this->headSha());
@@ -207,13 +224,18 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
     public function testE_TodayStatsScope(): void
     {
         $fx = $this->makeDoctor('E');
-        $this->assertTodayPath($fx['doctor']);
+        $this->assertTodayPath($fx['doctor'], 1);
 
         $p2 = $this->insertPatient('MR-E-2', '09120000003', 1);
         $this->insertVisit($p2, $fx['clinician'], 1, $fx['location'], 'waiting', gmdate('Y-m-d'), '11:00:00');
 
         wp_set_current_user($fx['doctor']);
-        $today = App::visitService()->today($fx['doctor']);
+        App::replaceExplicitScope(ClinicScope::forClinic(1));
+        try {
+            $today = App::visitService()->today($fx['doctor']);
+        } finally {
+            App::replaceExplicitScope(null);
+        }
         self::assertArrayHasKey('date', $today);
         self::assertArrayHasKey('stats', $today);
         self::assertArrayHasKey('queue', $today);
@@ -266,8 +288,14 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
         $this->insertVisit($pK, $clinician, $clinic, $locK, 'waiting', $kDate, '10:00:00');
 
         // Positive: repo can fetch each date explicitly, today path uses gmdate
+        // Explicit scope needed because clinic count >1 after previous fixtures
         wp_set_current_user($doctor);
-        $today = App::visitService()->today($doctor);
+        App::replaceExplicitScope(ClinicScope::forClinic($clinic));
+        try {
+            $today = App::visitService()->today($doctor);
+        } finally {
+            App::replaceExplicitScope(null);
+        }
         self::assertSame(gmdate('Y-m-d'), $today['date'], 'F positive: today() currently uses gmdate (UTC) — defect');
 
         // Investigation of operational Location authority:
@@ -307,7 +335,7 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
     public function testG_LiveQueueScopeOrderPrivacy(): void
     {
         $fx = $this->makeDoctor('G');
-        $this->assertTodayPath($fx['doctor']);
+        $this->assertTodayPath($fx['doctor'], 1);
 
         $doctorB = $this->makeUser('g_doc_b', RolesAndCapabilities::ROLE_DOCTOR);
         $clinicianB = $this->insertClinician('Dr G B', 1, 1, $doctorB);
@@ -318,15 +346,24 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
         // Create express via slot+appointment with is_walkin_express=1 (proper FK chain)
         $pExp = $this->insertPatient('MR-G-EXP', '09120000006', 1);
         $slotId = $this->insertSlot(1, $fx['location'], $fx['clinician'], gmdate('Y-m-d'), '08:00:00');
+        self::assertGreaterThan(0, $slotId, 'G positive: slot created');
         $apptExp = $this->insertAppointment(1, $fx['location'], 'EXP-'.bin2hex(random_bytes(2)), $pExp, $fx['clinician'], $slotId, gmdate('Y-m-d'), '08:00:00', 1);
-        $this->insertVisitWithAppointment($pExp, $fx['clinician'], 1, $fx['location'], $apptExp, 'waiting', gmdate('Y-m-d'), '08:00:00');
+        self::assertGreaterThan(0, $apptExp, 'G positive: express appointment created');
+        $vExp = $this->insertVisitWithAppointment($pExp, $fx['clinician'], 1, $fx['location'], $apptExp, 'waiting', gmdate('Y-m-d'), '08:00:00');
+        self::assertGreaterThan(0, $vExp, 'G positive: express visit created');
 
         $pNorm = $this->insertPatient('MR-G-NORM', '09120000007', 1);
         $this->insertVisit($pNorm, $fx['clinician'], 1, $fx['location'], 'waiting', gmdate('Y-m-d'), '09:30:00');
 
         wp_set_current_user($fx['doctor']);
-        $queue = App::visitService()->today($fx['doctor'])['queue'];
-        self::assertGreaterThanOrEqual(3, count($queue), 'G positive: queue >=3');
+        // Explicit scope because other tests may have inserted extra clinics
+        App::replaceExplicitScope(ClinicScope::forClinic(1));
+        try {
+            $queue = App::visitService()->today($fx['doctor'])['queue'];
+        } finally {
+            App::replaceExplicitScope(null);
+        }
+        self::assertGreaterThanOrEqual(3, count($queue), 'G positive: queue >=3 (original + express + normal) got '.count($queue));
         $expIdx = null;
         foreach ($queue as $i=>$row) { if (!empty($row['express'])) { $expIdx=$i; break; } }
         self::assertNotNull($expIdx, 'G positive: express found');
@@ -349,7 +386,7 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
     public function testH_UiClientAuthorityNoWpAdminChrome(): void
     {
         $fx = $this->makeDoctor('H');
-        $this->assertTodayPath($fx['doctor']);
+        $this->assertTodayPath($fx['doctor'], 1);
 
         $url = $this->tryResolveDoctorPortalUrl();
         self::assertNotNull($url, 'Phase 10 H RED: UI must be independent no wp-admin/theme chrome RTL responsive tablet-first refresh existing pattern client authority only trusted Clinic selector. Head='.$this->headSha());
@@ -505,16 +542,39 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
         $pB = $this->insertPatient('MR-MULTI-B-'.$tag, '0912'.sprintf('%07d', random_int(1000000,9999999)), $clinicB);
         $this->insertVisit($pA, $clinician, $clinicA, $locA, 'waiting', gmdate('Y-m-d'), '10:00:00');
         $this->insertVisit($pB, $clinician, $clinicB, $locB, 'waiting', gmdate('Y-m-d'), '11:00:00');
-        return ['clinic_a'=>$clinicA,'clinic_b'=>$clinicB,'doctor'=>$doctor];
+        return ['clinic_a'=>$clinicA,'clinic_b'=>$clinicB,'doctor'=>$doctor, 'clinician'=>$clinician, 'loc_a'=>$locA, 'loc_b'=>$locB];
     }
 
-    private function assertTodayPath(int $userId): void
+    private function assertTodayPath(int $userId, ?int $clinicId = null): void
     {
         wp_set_current_user($userId);
-        $today = App::visitService()->today($userId);
+        $scope = null;
+        if ($clinicId !== null) {
+            $scope = ClinicScope::forClinic($clinicId);
+            App::replaceExplicitScope($scope);
+        } elseif ($this->countClinics() > 1) {
+            // When multiple clinics exist, today() without explicit scope throws CLINIC_SCOPE_REQUIRED
+            // Positive control needs explicit scope — use primary membership's clinic or clinic 1
+            $active = (new MembershipRepository(App::db()))->active_clinic_ids_for_user($userId);
+            $chosen = $active[0] ?? 1;
+            $scope = ClinicScope::forClinic((int)$chosen);
+            App::replaceExplicitScope($scope);
+        }
+        try {
+            $today = App::visitService()->today($userId);
+        } finally {
+            if ($scope !== null) {
+                App::replaceExplicitScope(null);
+            }
+        }
         self::assertArrayHasKey('queue', $today, 'positive: today() path reached');
         self::assertArrayHasKey('stats', $today);
         self::assertArrayHasKey('date', $today);
+    }
+
+    private function countClinics(): int
+    {
+        return (int)App::db()->fetchValue('SELECT COUNT(*) FROM '.App::db()->table('cpms_clinics'), []);
     }
 
     private function hasSingleOperationalAuthority(int $clinicId): bool
