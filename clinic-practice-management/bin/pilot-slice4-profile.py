@@ -966,6 +966,22 @@ def run_files_one(browser, run):
     except Exception as exc:
         fail(key, "one-record My Files vertical contract", exc)
     finally:
+        # Viewport isolation: this run uploads one extra patient-visible file on
+        # the sole record; remove this viewport's row + physical file so the next
+        # viewport's SSR list stays exactly the two seeded files.
+        try:
+            isolate_name = "SYN-FILES-ONE-BROWSER-" + run["vp"] + ".pdf"
+            isolate_path = dbs(
+                f"SELECT storage_path FROM {T('cpms_medical_attachments')}"
+                f" WHERE original_filename='{isolate_name}' ORDER BY id DESC LIMIT 1"
+            )
+            db(f"DELETE FROM {T('cpms_medical_attachments')} WHERE original_filename='{isolate_name}'")
+            if isolate_path:
+                physical = os.path.join(FILES_STORAGE, isolate_path)
+                if os.path.isfile(physical):
+                    os.remove(physical)
+        except Exception:
+            pass
         ctx.close()
 
 

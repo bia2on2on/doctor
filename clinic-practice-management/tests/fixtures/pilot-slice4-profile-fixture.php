@@ -406,8 +406,22 @@ $seedPilotFile($clinicOne, $patientOne, $visits[2], 'SYN-PRIVATE-ONE.pdf', 'doct
 $seedPilotFile($clinicOne, $patientOne, $visits[2], 'SYN-DELETED-ONE.pdf', 'patient_visible', true);
 
 // Test-env permissions: seeding runs as the CLI user, but the browser C3 upload
-// executes under the Apache user, which must be able to create NEW shard dirs
-// ({clinic}/{xx}) inside the seeded root. Loosen the seeded tree (test-only).
+// executes under the Apache user. Pre-create every shard dir ({clinic}/{00..ff})
+// world-writable so Apache never needs to mkdir (its 0750 dirs would not be
+// traversable by the pilot process either), then loosen the seeded tree.
+foreach ([$clinicA, $clinicB, $clinicOne] as $shardClinicId) {
+    $clinicDir = $filesStorage . '/' . $shardClinicId;
+    if (!is_dir($clinicDir)) {
+        @mkdir($clinicDir, 0777, true);
+    }
+    @chmod($clinicDir, 0777);
+    for ($shardIndex = 0; $shardIndex < 256; $shardIndex++) {
+        $shardDir = $clinicDir . '/' . str_pad(dechex($shardIndex), 2, '0', STR_PAD_LEFT);
+        if (!is_dir($shardDir)) {
+            @mkdir($shardDir, 0777);
+        }
+    }
+}
 $loosenStorageTree = static function (string $dir) use (&$loosenStorageTree): void {
     @chmod($dir, 0777);
     foreach (scandir($dir) ?: [] as $entry) {
