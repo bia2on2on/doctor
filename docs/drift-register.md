@@ -188,6 +188,22 @@
 > unresolved/deferred item (Patient Portal / Phase 9, full patient profile, `booking.max_future_days` 30-vs-60, A1 min-lead visibility,
 > anonymous A1/A4 rate-limit policy, cross-Clinic OTP cooldown/attempt coupling, unrelated technical debt) is pulled into Phase 8 by this
 > closure (documentation-only closure).
+>
+> **Current Phase 9 formal closure note (re-verified live 2026-09-23):** Owner Roadmap Phase 9 — Patient Portal is
+> **CLOSED / TECHNICALLY COMPLETE (BOUNDED)** on live main `72bb3fdda418914d9b7b33eed207c3c1de1a951f` (merge of PR #110 —
+> Phase 9 My Files bounded documentation closure; MERGED 2026-09-23T15:53:55Z; parents `04d31fb1fb1b1a8e33fbf1bbf4e3803a6d3db3eb` +
+> `ef44d7212e91b45f11b9a9e0d4d1458d65219323` = the exact accepted PR #110 head; open PRs at re-verification = 0). **Formal closure
+> approved by explicit Owner decision on 2026-09-23** (canonical decision record `docs/decisions/2026-09-21-phase9-patient-portal-owner-policy.md`
+> بخش سوم). Post-merge on the exact merge SHA: four required workflows terminal-success — CI `35884923760` · Real WordPress Acceptance `35884923831` ·
+> Closure Gate `35884923751` · Pilot/Staging Readiness Gate `35884923752` (+ 19/19 check runs success). All bounded Phase 9 slices remain CLOSED:
+> Slice 1 (PR #93), Slice 2 (PR #96), Slice 3 (PR #99), Slice 4 BACKEND FOUNDATION (PR #101), Slice 4 Patient Profile UI (PR #103),
+> My Visits (PR #105), My Prescriptions (PR #107), My Files (PR #109). No additional Phase 9 capability was required at closure.
+> Migration `2026_09_20_0022_slot_holds_patient_binding.php` remains the latest on main (22 files `0001`..`0022`; no `0023`).
+> The historical READY FOR PHASE-CLOSURE DECISION state (checkpoint `04d31fb1…` / PR #110) is preserved as historical evidence, not rewritten.
+> This closure resolves no drift row, promotes no drift row, and creates no new drift row. This is NOT a release, go-live, V1-complete,
+> commercial-completeness, production-deployment or overall-product-completion declaration, and it claims no Staff Portal completion,
+> native mobile completion, future notification-provider completion, Organization Identity activation, or any speculative future feature;
+> Phase 10 is not started and its existing roadmap scope is untouched (documentation-only closure).
 
 ---
 
