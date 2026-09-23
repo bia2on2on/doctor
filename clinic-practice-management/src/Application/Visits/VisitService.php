@@ -953,8 +953,6 @@ final class VisitService
             }
         }
         if ($locationIdForDate === null) {
-            // Try trusted scope Location, otherwise primary resolver will be used in Repository,
-            // but we can attempt to resolve operational date from scope if available
             $scope = ScopeContext::tryGet();
             if ($scope !== null && $scope->locationId !== null) {
                 $locationIdForDate = (int) $scope->locationId;
@@ -969,17 +967,26 @@ final class VisitService
                 }
             }
         }
+        if ($locationIdForDate === null) {
+            // Defense-in-depth for single-clinic installs where SystemClinicResolver
+            // returns clinic without location (auto 1 eligible should still give operational date)
+            try {
+                $eligible = $this->eligibleLocationIdsForActor($clinic_id, $actorUserId);
+                if (count($eligible) === 1) {
+                    $locationIdForDate = (int) $eligible[0];
+                }
+            } catch (Throwable $e) {
+                // ignore
+            }
+        }
 
-        $visitDate = gmdate('Y-m-d');
+        $visitDate = $this->nowUtc()->format('Y-m-d');
         if ($locationIdForDate !== null && $locationIdForDate > 0) {
             try {
                 $visitDate = $this->operationalDateForLocation($locationIdForDate, $clinic_id);
             } catch (Throwable $e) {
                 $visitDate = $this->nowUtc()->format('Y-m-d');
             }
-        } else {
-            // No Location yet – use testable nowUtc for determinism if set, else gmdate
-            $visitDate = $this->nowUtc()->format('Y-m-d');
         }
 
         $visitId = $this->visits->insert($clinic_id, [

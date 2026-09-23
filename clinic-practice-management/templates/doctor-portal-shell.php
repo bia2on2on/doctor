@@ -10,14 +10,6 @@
  * and `wp_rest` nonces remain available. Assets are printed explicitly and only
  * for this surface (DoctorPortalShell::enqueue_for_portal).
  *
- * Requirements:
- * - Independent shell, no wp-admin/theme chrome
- * - SSR with identity/context, Clinic selector when N>1, Location selector when N>1
- * - Today cards, Live Queue list, loading/empty/error
- * - Persian/RTL, responsive 390x844/768x1024/1366x768 tablet-first
- * - Vanilla JS only, no SPA, data minimization (FR-18.2 only)
- * - Refresh reuse GET /queue pattern, hidden-tab pause/rate
- *
  * @package ClinicCore
  */
 
@@ -32,8 +24,6 @@ if (!function_exists('wp_get_current_user')) {
     return;
 }
 
-// Ensure portal-scoped handles are registered/enqueued even if template_include
-// runs before wp_enqueue_scripts in some test paths.
 DoctorPortalShell::register_handles();
 DoctorPortalShell::enqueue_for_portal();
 
@@ -41,7 +31,7 @@ $cpms_user = wp_get_current_user();
 $cpms_logged_in = ($cpms_user instanceof WP_User && (int) $cpms_user->ID > 0);
 $cpms_is_doctor = $cpms_logged_in && DoctorPortalShell::isDoctorUser($cpms_user);
 $cpms_login_name = $cpms_logged_in ? (string) $cpms_user->display_name : '';
-if ($cpms_login_name === '' && $cpms_logged_in) {
+if ('' === $cpms_login_name && $cpms_logged_in) {
     $cpms_login_name = (string) $cpms_user->user_login;
 }
 
@@ -50,73 +40,11 @@ $cpms_login_url = wp_login_url($cpms_portal_url);
 $cpms_logout_url = $cpms_logged_in ? wp_logout_url($cpms_portal_url) : '';
 
 $cpms_charset = (string) get_bloginfo('charset');
-if ($cpms_charset === '') {
+if ('' === $cpms_charset) {
     $cpms_charset = 'UTF-8';
 }
 $cpms_site_name = (string) get_bloginfo('name');
 
-// Capture body content without theme chrome — SSR shell
-ob_start();
-if (!$cpms_logged_in) {
-    echo '<section class="cpms-doctor-portal-shell__notice" role="status" data-role="portal-login">';
-    echo '<h2>ورود به پورتال پزشک</h2>';
-    echo '<p>برای مشاهده صف امروز و بیماران، وارد حساب پزشک خود شوید.</p>';
-    echo '<p><a class="cpms-doc-btn cpms-doc-btn--primary" href="' . esc_url($cpms_login_url) . '">ورود</a></p>';
-    echo '</section>';
-} elseif (!$cpms_is_doctor) {
-    echo '<section class="cpms-doctor-portal-shell__notice" role="alert" data-role="portal-access-denied">';
-    echo '<h2>دسترسی پورتال پزشک</h2>';
-    echo '<p>این پورتال فقط برای پزشکان با پروفایل فعال است. حساب شما نقش پزشک فعال ندارد یا به پروفایل پزشک متصل نیست.</p>';
-    if (current_user_can(RolesAndCapabilities::ROLE_SECRETARY)) {
-        echo '<p>حساب منشی نمی‌تواند وارد پورتال پزشک شود.</p>';
-    }
-    echo '<p><a class="cpms-doc-btn cpms-doc-btn--primary" href="' . esc_url(admin_url()) . '">بازگشت به پیشخوان</a></p>';
-    echo '</section>';
-} else {
-    // Doctor authenticated — SSR skeleton, JS will hydrate
-    echo '<div id="cpms-doctor-portal-app" data-cpms-doctor-portal="app">';
-    echo '<section class="cpms-doc-context" data-role="doctor-context" aria-live="polite">';
-    echo '<h2 data-role="context-title">در حال بارگذاری اطلاعات پزشک…</h2>';
-    echo '<div data-role="context-details" class="cpms-doc-context-details"></div>';
-    echo '</section>';
-
-    echo '<section class="cpms-doc-selectors" data-role="selectors">';
-    echo '<div class="cpms-doc-selector" data-role="clinic-selector-wrap" hidden>';
-    echo '<label for="cpms-doc-clinic-select">مطب</label>';
-    echo '<select id="cpms-doc-clinic-select" data-role="clinic-select"><option value="">انتخاب مطب…</option></select>';
-    echo '<p class="description" data-role="clinic-hint">چند مطب فعال دارید — یکی را انتخاب کنید.</p>';
-    echo '</div>';
-    echo '<div class="cpms-doc-selector" data-role="location-selector-wrap" hidden>';
-    echo '<label for="cpms-doc-location-select">شعبه</label>';
-    echo '<select id="cpms-doc-location-select" data-role="location-select"><option value="">انتخاب شعبه…</option></select>';
-    echo '<p class="description" data-role="location-hint">چند شعبه واجد شرایط دارید — یکی را انتخاب کنید. بدون انتخاب، داده‌ای نمایش داده نمی‌شود.</p>';
-    echo '</div>';
-    echo '</section>';
-
-    echo '<section class="cpms-doc-today" data-role="today-section" hidden>';
-    echo '<h2>امروز</h2>';
-    echo '<div data-role="today-date" class="cpms-doc-date"></div>';
-    echo '<div data-role="today-stats" class="cpms-doc-stats"></div>';
-    echo '</section>';
-
-    echo '<section class="cpms-doc-queue" data-role="queue-section" hidden>';
-    echo '<h2>صف زنده <span class="cpms-doc-live" data-role="live-indicator">● زنده</span></h2>';
-    echo '<div data-role="queue-loading" class="cpms-doc-loading">در حال دریافت صف…</div>';
-    echo '<div data-role="queue-empty" class="cpms-doc-empty" hidden>صف خالی است.</div>';
-    echo '<div data-role="queue-error" class="cpms-doc-error" role="alert" hidden></div>';
-    echo '<ul data-role="queue-list" class="cpms-doc-queue-list"></ul>';
-    echo '</section>';
-
-    echo '<section class="cpms-doc-no-data" data-role="no-data" hidden>';
-    echo '<h3>داده‌ای برای نمایش وجود ندارد</h3>';
-    echo '<p>هیچ شعبه فعالی برای این مطب یافت نشد یا هنوز انتخاب انجام نشده است.</p>';
-    echo '</section>';
-
-    echo '</div>';
-}
-$cpms_body_html = (string) ob_get_clean();
-
-// Collect only the portal-scoped style/script tags (no theme wp_head/wp_footer).
 ob_start();
 wp_print_styles([DoctorPortalShell::CSS_HANDLE]);
 $cpms_styles_html = (string) ob_get_clean();
@@ -125,7 +53,6 @@ ob_start();
 wp_print_scripts([DoctorPortalShell::JS_HANDLE]);
 $cpms_scripts_html = (string) ob_get_clean();
 
-// Config payload — only rest_root + nonce, no authority keys (clinic_id, clinician_id, etc. forbidden)
 $rest_root = untrailingslashit(rest_url('clinic/v1'));
 $config = [
     'rest_root' => $rest_root,
@@ -134,19 +61,19 @@ $config = [
     'is_doctor' => $cpms_is_doctor,
 ];
 $config_json = wp_json_encode($config, JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_UNICODE);
-if (!is_string($config_json) || $config_json === '') {
+if (!is_string($config_json) || '' === $config_json) {
     $config_json = '{}';
 }
 
-?><!DOCTYPE html>
+?>
+<!DOCTYPE html>
 <html lang="fa" dir="rtl" data-cpms-doctor-portal-shell="v1" data-cpms-portal="doctor" data-cpms-doctor-portal="shell">
 <head>
 <meta charset="<?php echo esc_attr($cpms_charset); ?>">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
-<title><?php echo esc_html('پورتال پزشک' . ($cpms_site_name !== '' ? ' — ' . $cpms_site_name : '')); ?></title>
+<title><?php echo esc_html('پورتال پزشک' . ('' !== $cpms_site_name ? ' — ' . $cpms_site_name : '')); ?></title>
 <style>
-/* Minimal inline CSS for independent shell — tablet-first responsive */
 :root { --cpms-primary: #2271b1; --cpms-bg: #f6f7f7; --cpms-card-bg: #fff; --cpms-border: #dcdcde; --cpms-text: #1d2327; --cpms-muted: #646970; }
 * { box-sizing: border-box; }
 body.cpms-doctor-portal-shell-body { margin: 0; font-family: Tahoma, Vazirmatn, sans-serif; background: var(--cpms-bg); color: var(--cpms-text); line-height: 1.6; direction: rtl; }
@@ -227,10 +154,61 @@ echo $cpms_styles_html;
     </header>
 
     <main class="cpms-doctor-portal-shell__main" role="main" data-role="portal-main" id="cpms-doctor-portal-main">
-        <?php
-        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- markup produced above (escaped internally) or static safe notices.
-        echo $cpms_body_html;
-        ?>
+        <?php if (!$cpms_logged_in) : ?>
+            <section class="cpms-doctor-portal-shell__notice" role="status" data-role="portal-login">
+                <h2>ورود به پورتال پزشک</h2>
+                <p>برای مشاهده صف امروز و بیماران، وارد حساب پزشک خود شوید.</p>
+                <p><a class="cpms-doc-btn cpms-doc-btn--primary" href="<?php echo esc_url($cpms_login_url); ?>">ورود</a></p>
+            </section>
+        <?php elseif (!$cpms_is_doctor) : ?>
+            <section class="cpms-doctor-portal-shell__notice" role="alert" data-role="portal-access-denied">
+                <h2>دسترسی پورتال پزشک</h2>
+                <p>این پورتال فقط برای پزشکان با پروفایل فعال است. حساب شما نقش پزشک فعال ندارد یا به پروفایل پزشک متصل نیست.</p>
+                <?php if (current_user_can(RolesAndCapabilities::ROLE_SECRETARY)) : ?>
+                    <p>حساب منشی نمی‌تواند وارد پورتال پزشک شود.</p>
+                <?php endif; ?>
+                <p><a class="cpms-doc-btn cpms-doc-btn--primary" href="<?php echo esc_url(admin_url()); ?>">بازگشت به پیشخوان</a></p>
+            </section>
+        <?php else : ?>
+            <div id="cpms-doctor-portal-app" data-cpms-doctor-portal="app">
+                <section class="cpms-doc-context" data-role="doctor-context" aria-live="polite">
+                    <h2 data-role="context-title">در حال بارگذاری اطلاعات پزشک…</h2>
+                    <div data-role="context-details" class="cpms-doc-context-details"></div>
+                </section>
+
+                <section class="cpms-doc-selectors" data-role="selectors">
+                    <div class="cpms-doc-selector" data-role="clinic-selector-wrap" hidden>
+                        <label for="cpms-doc-clinic-select">مطب</label>
+                        <select id="cpms-doc-clinic-select" data-role="clinic-select"><option value="">انتخاب مطب…</option></select>
+                        <p class="description" data-role="clinic-hint">چند مطب فعال دارید — یکی را انتخاب کنید.</p>
+                    </div>
+                    <div class="cpms-doc-selector" data-role="location-selector-wrap" hidden>
+                        <label for="cpms-doc-location-select">شعبه</label>
+                        <select id="cpms-doc-location-select" data-role="location-select"><option value="">انتخاب شعبه…</option></select>
+                        <p class="description" data-role="location-hint">چند شعبه واجد شرایط دارید — یکی را انتخاب کنید. بدون انتخاب، داده‌ای نمایش داده نمی‌شود.</p>
+                    </div>
+                </section>
+
+                <section class="cpms-doc-today" data-role="today-section" hidden>
+                    <h2>امروز</h2>
+                    <div data-role="today-date" class="cpms-doc-date"></div>
+                    <div data-role="today-stats" class="cpms-doc-stats"></div>
+                </section>
+
+                <section class="cpms-doc-queue" data-role="queue-section" hidden>
+                    <h2>صف زنده <span class="cpms-doc-live" data-role="live-indicator">● زنده</span></h2>
+                    <div data-role="queue-loading" class="cpms-doc-loading">در حال دریافت صف…</div>
+                    <div data-role="queue-empty" class="cpms-doc-empty" hidden>صف خالی است.</div>
+                    <div data-role="queue-error" class="cpms-doc-error" role="alert" hidden></div>
+                    <ul data-role="queue-list" class="cpms-doc-queue-list"></ul>
+                </section>
+
+                <section class="cpms-doc-no-data" data-role="no-data" hidden>
+                    <h3>داده‌ای برای نمایش وجود ندارد</h3>
+                    <p>هیچ شعبه فعالی برای این مطب یافت نشد یا هنوز انتخاب انجام نشده است.</p>
+                </section>
+            </div>
+        <?php endif; ?>
     </main>
 
     <footer class="cpms-doctor-portal-shell__footer" role="contentinfo" data-role="portal-footer">
@@ -238,7 +216,7 @@ echo $cpms_styles_html;
     </footer>
 </div>
 
-<script type="application/json" class="cpms-doctor-portal__config"><?php echo $config_json; ?></script>
+<script type="application/json" class="cpms-doctor-portal__config"><?php echo $config_json; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- JSON payload, already encoded via wp_json_encode ?></script>
 
 <script>
 (function(){
@@ -248,7 +226,7 @@ if (!cfgEl) return;
 var CFG;
 try { CFG = JSON.parse(cfgEl.textContent || '{}'); } catch(e){ CFG = {}; }
 if (!CFG.rest_root || !CFG.nonce) return;
-if (!CFG.is_doctor) return; // non-doctor already shows access denied SSR
+if (!CFG.is_doctor) return;
 
 var state = {
     clinics: [],
@@ -283,7 +261,7 @@ function api(method, path, body, extraHeaders){
         });
     });
 }
-function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
+function esc(s){ return String(s==null?'':s).replace(/[&<>\"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c];}); }
 function qs(sel){ return document.querySelector(sel); }
 function show(el){ if(el) el.hidden=false; }
 function hide(el){ if(el) el.hidden=true; }
@@ -301,7 +279,6 @@ function renderContext(doctor, clinic, location){
     if (clinic) parts.push('<span data-role="context-clinic">مطب: ' + esc(clinic.name) + '</span>');
     if (location) parts.push('<span data-role="context-location">شعبه: ' + esc(location.name) + ' (' + esc(location.timezone) + ')</span>');
     if (doctor.clinician_id) parts.push('<span>شناسه حرفه‌ای: ' + esc(doctor.clinician_id) + '</span>');
-    // Note: we do NOT expose WP user ID or clinician_id as authority, only display
     detailsEl.innerHTML = parts.join('');
 }
 
@@ -316,7 +293,6 @@ function renderClinicSelector(){
         }
         return;
     }
-    // N>1 clinics => show selector, no auto fallback to first
     show(wrap);
     sel.innerHTML = '<option value="">انتخاب مطب…</option>' + state.clinics.map(function(c){
         return '<option value="' + c.id + '"' + (String(c.id)===String(state.selectedClinicId)?' selected':'') + '>' + esc(c.name) + '</option>';
@@ -344,7 +320,6 @@ function renderLocationSelector(){
         state.selectedLocationId = state.locations[0].id;
         return;
     }
-    // N>1 => explicit REQUIRED, no first/primary fallback
     show(wrap);
     sel.innerHTML = '<option value="">انتخاب شعبه…</option>' + state.locations.map(function(l){
         return '<option value="' + l.id + '"' + (String(l.id)===String(state.selectedLocationId)?' selected':'') + '>' + esc(l.name) + ' (' + esc(l.timezone) + ')</option>';
@@ -395,7 +370,7 @@ function renderQueue(){
         list.innerHTML='';
     } else {
         hide(empty);
-        list.innerHTML = state.queue.map(function(v,i){
+        list.innerHTML = state.queue.map(function(v){
             var badge = '';
             if (v.express) badge += ' <span class="cpms-doc-badge express">فوری</span>';
             var statusLabel = { waiting:'در صف', called:'فراخوانده', in_consultation:'در ویزیت' }[v.status] || v.status;
@@ -418,7 +393,6 @@ function showError(msg){
 }
 
 function loadContext(){
-    // First, get clinics for current doctor user
     return api('GET', '/doctor/portal/context').then(function(r){
         if (r.status!==200) {
             throw new Error((r.body && r.body.message) || 'خطا در دریافت اطلاعات مطب‌ها');
@@ -428,18 +402,14 @@ function loadContext(){
         var doctor = data.doctor || null;
         var currentClinic = data.current_clinic || null;
         var currentLocation = data.current_location || null;
-        // If context returns selected clinic/location (auto 1), use them
         if (data.selected_clinic_id) state.selectedClinicId = data.selected_clinic_id;
         else if (currentClinic) state.selectedClinicId = currentClinic.id;
         else if (state.clinics.length===1) state.selectedClinicId = state.clinics[0].id;
 
-        // Render clinic selector (N>1 => explicit required, no fallback)
         renderClinicSelector();
 
-        // If we have selected clinic, load its locations
         if (state.selectedClinicId) {
             return loadLocations(state.selectedClinicId).then(function(){
-                // After locations, if 1 location auto, select it
                 if (state.locations.length===1) state.selectedLocationId = state.locations[0].id;
                 else if (data.selected_location_id) state.selectedLocationId = data.selected_location_id;
                 else if (currentLocation) state.selectedLocationId = currentLocation.id;
@@ -479,7 +449,6 @@ function loadTodayAndQueue(){
             var code = body.code || '';
             var data = body.data || {};
             if (code==='CLINIC_SCOPE_REQUIRED' && data.field==='location_id') {
-                // N>1 location requires explicit selection
                 var wrap = qs('[data-role="location-selector-wrap"]');
                 show(wrap);
                 showError('لطفاً شعبه را انتخاب کنید.');
@@ -514,14 +483,12 @@ function pollQueue(){
         var data = (r.body && r.body.data) || r.body || {};
         var events = data.events || [];
         if (events.length>0) {
-            // For simplicity, reload today+queue when events appear
             loadTodayAndQueue();
         }
         if (data.last_event_id) state.lastEventId = data.last_event_id;
     });
 }
 
-// Event listeners for selectors
 document.addEventListener('change', function(ev){
     var clinicSel = ev.target.closest('[data-role="clinic-select"]');
     if (clinicSel) {

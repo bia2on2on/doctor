@@ -214,7 +214,7 @@ final class DoctorPortalController extends RestBase
     {
         $user = wp_get_current_user();
         $userId = (int) ($user->ID ?? 0);
-        $clinicId = isset($r['clinic_id']) ? (int) $r['clinic_id'] : 0;
+        $clinicId = (int) $r->get_param('clinic_id');
 
         // If clinic_id not provided, try to get from trusted scope
         if ($clinicId <= 0) {
