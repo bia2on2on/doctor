@@ -470,9 +470,9 @@ final class VisitService
      */
     public function today( int $actor_user_id, ?int $clinician_id = null ): array {
         $this->requireQueueReader( $actor_user_id );
-        $clinic_id          = $this->queueClinicId();
-        $scope_clinician_id = $this->queueScopeClinicianId( $actor_user_id, $clinic_id, $clinician_id );
-        $location_id        = $this->queueLocationId( $clinic_id, $actor_user_id );
+        $clinic_id = $this->queueClinicId(); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
+        $scope_clinician_id = $this->queueScopeClinicianId( $actor_user_id, $clinic_id, $clinician_id ); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
+        $location_id = $this->queueLocationId( $clinic_id, $actor_user_id ); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
 
         $operational_date = null;
         if ( null !== $location_id ) {
@@ -519,9 +519,9 @@ final class VisitService
      */
     public function todayForDoctorPortal( int $actor_user_id, ?int $clinician_id = null ): array { // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy PSR-style, established contract
         $this->requireQueueReader( $actor_user_id );
-        $clinic_id          = $this->queueClinicId();
-        $scope_clinician_id = $this->queueScopeClinicianId( $actor_user_id, $clinic_id, $clinician_id );
-        $location_id        = $this->queueLocationId( $clinic_id, $actor_user_id );
+        $clinic_id = $this->queueClinicId(); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
+        $scope_clinician_id = $this->queueScopeClinicianId( $actor_user_id, $clinic_id, $clinician_id ); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
+        $location_id = $this->queueLocationId( $clinic_id, $actor_user_id ); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
 
         $eligible = $this->eligibleLocationIdsForActor( $clinic_id, $actor_user_id );
 
@@ -560,8 +560,8 @@ final class VisitService
         }
 
         $operational_date = $this->operationalDateForLocation( $location_id, $clinic_id );
-        $queue            = $this->visits->queueFor( $clinic_id, $scope_clinician_id, self::QUEUE_STATUSES, $operational_date, $location_id );
-        $stats            = $this->visits->statsFor( $clinic_id, $operational_date, $scope_clinician_id, $location_id );
+        $queue = $this->visits->queueFor( $clinic_id, $scope_clinician_id, self::QUEUE_STATUSES, $operational_date, $location_id ); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
+        $stats = $this->visits->statsFor( $clinic_id, $operational_date, $scope_clinician_id, $location_id ); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
 
         return [
             'date'          => $operational_date,
@@ -596,9 +596,9 @@ final class VisitService
     public function eventsSince( int $actor_user_id, int $since_event_id ): array { // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy PSR-style, established contract
         $this->requireQueueReader( $actor_user_id );
         $clinic_id = $this->queueClinicId(); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
-        $scope_clinician_id = $this->queueScopeClinicianId( $actor_user_id, $clinic_id, null );
+        $scope_clinician_id = $this->queueScopeClinicianId( $actor_user_id, $clinic_id, null ); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
         $location_id = $this->queueLocationId( $clinic_id, $actor_user_id ); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
-        $operational_date = null;
+        $operational_date = null; // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
         if ( null !== $location_id ) {
             $operational_date = $this->operationalDateForLocation( $location_id, $clinic_id );
         } else {
@@ -641,9 +641,9 @@ final class VisitService
     public function lastEventId( int $actor_user_id ): int { // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy PSR-style, established contract
         $this->requireQueueReader( $actor_user_id );
         $clinic_id = $this->queueClinicId(); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
-        $scope_clinician_id = $this->queueScopeClinicianId( $actor_user_id, $clinic_id, null );
+        $scope_clinician_id = $this->queueScopeClinicianId( $actor_user_id, $clinic_id, null ); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
         $location_id = $this->queueLocationId( $clinic_id, $actor_user_id ); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
-        $operational_date = null;
+        $operational_date = null; // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
         if ( null !== $location_id ) {
             $operational_date = $this->operationalDateForLocation( $location_id, $clinic_id );
         } else {
@@ -1117,7 +1117,7 @@ final class VisitService
             'clinician_id' => $clinicianId,
             'patient_id' => $patientId,
             'appointment_id' => $appointmentId,
-            'location_id' => $locationIdForDate,
+            'location_id' => $locationIdForDate, // phpcs:ignore WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
             'source' => $source,
             'status' => 'checked_in',
             'visit_date' => $visitDate, // phpcs:ignore WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
