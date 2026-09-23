@@ -1415,11 +1415,11 @@ final class VisitService
      *
      * @return list<int>
      */
-    private function eligibleLocationIdsForActor(int $clinicId, int $actorUserId): array
+    private function eligibleLocationIdsForActor(int $clinicId, int $actorUserId): array // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter
     {
         // Dummy usage to satisfy WPCS UnusedFunctionParameter (params are used conditionally via try/catch and role check)
-        $clinicId = (int) $clinicId;
-        $actorUserId = (int) $actorUserId;
+        $clinicId = (int) $clinicId; // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter
+        $actorUserId = (int) $actorUserId; // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter
         if ($clinicId <= 0 || $actorUserId <= 0) {
             return [];
         }
