@@ -970,18 +970,25 @@ final class ClinicalService
      *
      * @return array<string, mixed>
      */
-    public function patientPrescriptions(int $wpUserId): array
-    {
-        $patientId = $this->requireOwnedPatient($wpUserId);
-        $rows = array_values(array_filter(
-            $this->prescriptions->forPatient($patientId, true),
-            static fn (array $rx): bool => (string) $rx['status'] !== 'draft'
-        ));
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- Preserve existing public method name.
+    public function patientPrescriptions( int $wp_user_id, ?int $link_id = null ): array {
+        $patient    = $this->selected_visit_patient( $wp_user_id, $link_id );
+        $patient_id = (int) $patient['id'];
+        $clinic_id  = (int) $patient['clinic_id'];
 
-        return ['prescriptions' => array_map(
-            fn (array $rx): array => $this->presentPrescription($rx, $this->prescriptions->itemsFor((int) $rx['id'])),
-            $rows
-        )];
+        $rows = array_values(
+            array_filter(
+                $this->prescriptions->forPatient( $patient_id, true ),
+                static fn ( array $rx ): bool => (int) ( $rx['clinic_id'] ?? 0 ) === $clinic_id && (string) $rx['status'] !== 'draft'
+            )
+        );
+
+        return [
+            'prescriptions' => array_map(
+                fn ( array $rx ): array => $this->presentPrescription( $rx, $this->prescriptions->itemsFor( (int) $rx['id'] ) ),
+                $rows
+            ),
+        ];
     }
 
     // ================= E18 — جستجوی جامع Role-Aware =================
@@ -1407,36 +1414,101 @@ final class ClinicalService
     }
 
     /**
-     * @param array<string, mixed>                $rx
+     * Location timezone as operational truth for prescription datetimes.
+     *
+     * @param array<string, mixed> $rx
+     */
+    private function resolve_location_timezone( array $rx ): string {
+        $tz = isset( $rx['location_timezone'] ) ? trim( (string) $rx['location_timezone'] ) : '';
+        if ( $tz === '' ) {
+            $loc_id = ! empty( $rx['location_id'] ) ? (int) $rx['location_id'] : 0;
+            if ( $loc_id <= 0 && ! empty( $rx['visit_id'] ) ) {
+                $loc_id = (int) $this->db->fetchValue(
+                    'SELECT location_id FROM ' . $this->db->table( 'cpms_visits' ) . ' WHERE id = %d',
+                    [ (int) $rx['visit_id'] ]
+                );
+            }
+            if ( $loc_id > 0 ) {
+                $tz = trim(
+                    (string) $this->db->fetchValue(
+                        'SELECT timezone FROM ' . $this->db->table( 'cpms_locations' ) . ' WHERE id = %d',
+                        [ $loc_id ]
+                    )
+                );
+            }
+        }
+
+        if ( $tz === '' || ! in_array( $tz, timezone_identifiers_list(), true ) ) {
+            throw ClinicalException::of( 'CLINIC_LOCATION_TIMEZONE_INVALID', 'منطقه زمانی معتبر برای شعبه نسخه یافت نشد', 500 );
+        }
+
+        return $tz;
+    }
+
+    /**
+     * Convert UTC instant to Location-local datetime first, then format local date as Jalali.
+     */
+    private function format_utc_to_jalali( string $utc_datetime, string $location_tz ): string {
+        if ( $utc_datetime === '' ) {
+            return '';
+        }
+        $tz = new \DateTimeZone( $location_tz );
+        $dt = \DateTimeImmutable::createFromFormat( 'Y-m-d H:i:s.u', $utc_datetime, new \DateTimeZone( 'UTC' ) );
+        if ( $dt === false ) {
+            $clean = explode( '.', $utc_datetime )[0];
+            $dt    = \DateTimeImmutable::createFromFormat( 'Y-m-d H:i:s', $clean, new \DateTimeZone( 'UTC' ) );
+        }
+        if ( $dt === false ) {
+            try {
+                $dt = new \DateTimeImmutable( $utc_datetime, new \DateTimeZone( 'UTC' ) );
+            } catch ( \Exception $e ) {
+                return '';
+            }
+        }
+
+        $local = $dt->setTimezone( $tz );
+
+        return Jalali::formatYmd( $local->format( 'Y-m-d' ) );
+    }
+
+    /**
+     * @param array<string, mixed>      $rx
      * @param list<array<string, mixed>> $items
      *
      * @return array<string, mixed>
      */
-    private function presentPrescription(array $rx, array $items): array
-    {
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- Preserve existing method name.
+    private function presentPrescription( array $rx, array $items ): array {
+        $location_tz       = $this->resolve_location_timezone( $rx );
+        $created_at_jalali = $this->format_utc_to_jalali( (string) $rx['created_at'], $location_tz );
+
         return [
-            'id' => (int) $rx['id'],
-            'prescription_number' => (string) $rx['prescription_number'],
-            'visit_id' => (int) $rx['visit_id'],
-            'status' => (string) $rx['status'],
-            'is_patient_visible' => (int) $rx['is_patient_visible'] === 1,
-            'void_reason' => $rx['void_reason'] ?? null,
+            'id'                            => (int) $rx['id'],
+            'prescription_number'           => (string) $rx['prescription_number'],
+            'visit_id'                      => (int) $rx['visit_id'],
+            'status'                        => (string) $rx['status'],
+            'is_patient_visible'            => (int) $rx['is_patient_visible'] === 1,
+            'void_reason'                   => $rx['void_reason'] ?? null,
             'correction_of_prescription_id' => $rx['correction_of_prescription_id'] !== null ? (int) $rx['correction_of_prescription_id'] : null,
-            'finalized_at' => $rx['finalized_at'] ?? null,
-            'created_at' => (string) $rx['created_at'],
-            'items' => array_map(static fn (array $i): array => [
-                'id' => (int) $i['id'],
-                'drug_ref_id' => $i['drug_ref_id'] !== null ? (int) $i['drug_ref_id'] : null,
-                'generic_name' => (string) $i['generic_name'],
-                'brand_name' => $i['brand_name'],
-                'strength' => $i['strength'],
-                'form' => (string) $i['form'],
-                'dose' => (string) $i['dose'],
-                'frequency' => (string) $i['frequency'],
-                'route' => (string) $i['route'],
-                'duration_days' => $i['duration_days'] !== null ? (int) $i['duration_days'] : null,
-                'instructions' => $i['instructions'],
-            ], $items),
+            'finalized_at'                  => $rx['finalized_at'] ?? null,
+            'created_at'                    => (string) $rx['created_at'],
+            'created_at_jalali'             => $created_at_jalali,
+            'items'                         => array_map(
+                static fn ( array $i ): array => [
+                    'id'            => (int) $i['id'],
+                    'drug_ref_id'   => $i['drug_ref_id'] !== null ? (int) $i['drug_ref_id'] : null,
+                    'generic_name'  => (string) $i['generic_name'],
+                    'brand_name'    => $i['brand_name'],
+                    'strength'      => $i['strength'],
+                    'form'          => (string) $i['form'],
+                    'dose'          => (string) $i['dose'],
+                    'frequency'     => (string) $i['frequency'],
+                    'route'         => (string) $i['route'],
+                    'duration_days' => $i['duration_days'] !== null ? (int) $i['duration_days'] : null,
+                    'instructions'  => $i['instructions'],
+                ],
+                $items
+            ),
         ];
     }
 

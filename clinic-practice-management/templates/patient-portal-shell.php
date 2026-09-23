@@ -129,6 +129,7 @@ echo $cpms_styles_html;
 			<li><a class="is-active" href="<?php echo esc_url( $cpms_portal_url ); ?>#appointments" data-role="nav-appointments" aria-current="page">نوبت‌های من</a></li>
 			<li><a href="<?php echo esc_url( $cpms_portal_url ); ?>#profile" data-role="nav-profile">پروفایل</a></li>
 			<li><a href="<?php echo esc_url( $cpms_portal_url ); ?>#visits" data-role="nav-visits"><?php esc_html_e( 'ویزیت‌های من', 'cpms' ); ?></a></li>
+			<li><a href="<?php echo esc_url( $cpms_portal_url ); ?>#prescriptions" data-role="nav-prescriptions"><?php esc_html_e( 'نسخه‌های من', 'cpms' ); ?></a></li>
 		</ul>
 	</nav>
 	<?php endif; ?>

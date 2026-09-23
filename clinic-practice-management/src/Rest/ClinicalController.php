@@ -197,11 +197,16 @@ final class ClinicalController extends RestBase
         // ---------- C7 — نسخه‌های من ----------
         register_rest_route(self::NS, '/prescriptions', [
             [
-                'methods' => WP_REST_Server::READABLE,
-                'callback' => fn (WP_REST_Request $r) => $this->patient($r,
-                    fn () => $this->clinical->patientPrescriptions($this->userId($r))),
+                'methods'             => WP_REST_Server::READABLE,
+                'callback'            => fn ( WP_REST_Request $r ) => $this->patient(
+                    $r,
+                    fn () => $this->clinical->patientPrescriptions( $this->userId( $r ), isset( $r['link_id'] ) ? (int) $r['link_id'] : null )
+                ),
                 'permission_callback' => fn (WP_REST_Request $r)
                     => $this->permAnyRole($r, [RolesAndCapabilities::ROLE_PATIENT]),
+                'args'                => [
+                    'link_id' => ['required' => false, 'type' => 'integer'],
+                ],
             ],
         ]);
 

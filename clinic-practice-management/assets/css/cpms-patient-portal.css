@@ -837,3 +837,11 @@
 [data-role="visits-list"] { padding-inline-start: 1.5rem; }
 [data-role="visit-open"] { max-width: 100%; white-space: normal; text-align: start; }
 [data-role="visits-detail"] p { white-space: pre-wrap; }
+
+/* Read-only Prescriptions reuses the shell buttons and section spacing. */
+[data-role="prescriptions-section"] { overflow-wrap: anywhere; }
+[data-role="prescriptions-record-select"] { max-width: 100%; min-height: 44px; }
+[data-role="prescriptions-list"] { padding-inline-start: 1.5rem; }
+[data-role="prescription-item"] { margin-block-end: 1rem; }
+.cpms-pp-prescription__header { font-weight: 600; margin-block-end: 4px; }
+.cpms-pp-prescription__items { padding-inline-start: 1.25rem; margin-block-start: 4px; }

@@ -267,10 +267,100 @@ foreach ([[$clinicA, $patientA, 'A'], [$clinicB, $patientB, 'B'], [$clinicOne, $
 }
 echo 'PROFILE_PUBLIC=visits_fixture_ok visits=3 notes=6' . "\n";
 
+// Slice 6 TEST-ONLY RED: seed durable prescriptions on the visits above.
+$prescriptions = [];
+foreach ([[$clinicA, $patientA, 'A', $visits[0]], [$clinicB, $patientB, 'B', $visits[1]], [$clinicOne, $patientOne, 'ONE', $visits[2]]] as [$clinic, $patient, $label, $visitId]) {
+    $location = (int) $wpdb->get_var($wpdb->prepare(
+        'SELECT id FROM ' . $db->table('cpms_locations') . ' WHERE clinic_id = %d', $clinic
+    ));
+    $doctor = (int) $wpdb->get_var($wpdb->prepare(
+        'SELECT id FROM ' . $db->table('cpms_clinicians') . ' WHERE clinic_id = %d ORDER BY id DESC LIMIT 1', $clinic
+    ));
+    $rx = $insertVisitFixture('cpms_prescriptions', [
+        'clinic_id' => $clinic,
+        'location_id' => $location,
+        'prescription_number' => 'RX-SYN-00' . $label,
+        'visit_id' => $visitId,
+        'patient_id' => $patient,
+        'clinician_id' => $doctor,
+        'status' => 'finalized',
+        'is_patient_visible' => 1,
+        'finalized_at' => $now,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+    $insertVisitFixture('cpms_prescription_items', [
+        'prescription_id' => $rx,
+        'generic_name' => 'SYN-GENERIC-' . $label,
+        'brand_name' => 'SYN-BRAND-' . $label,
+        'strength' => '500mg',
+        'form' => 'capsule',
+        'dose' => '1 cap',
+        'frequency' => 'TDS',
+        'route' => 'oral',
+        'duration_days' => 7,
+        'instructions' => 'Take with water ' . $label,
+        'source' => 'manual',
+        'sort_order' => 0,
+        'created_at' => $now,
+    ]);
+    // Draft prescription (must NOT appear for patient):
+    $draftRx = $insertVisitFixture('cpms_prescriptions', [
+        'clinic_id' => $clinic,
+        'location_id' => $location,
+        'prescription_number' => 'RX-DRAFT-SYN-00' . $label,
+        'visit_id' => $visitId,
+        'patient_id' => $patient,
+        'clinician_id' => $doctor,
+        'status' => 'draft',
+        'is_patient_visible' => 1,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+    $insertVisitFixture('cpms_prescription_items', [
+        'prescription_id' => $draftRx,
+        'generic_name' => 'SYN-PRIVATE-DRAFT-' . $label,
+        'dose' => '1 tab',
+        'frequency' => 'daily',
+        'form' => 'tablet',
+        'route' => 'oral',
+        'sort_order' => 0,
+        'created_at' => $now,
+    ]);
+    // Hidden prescription (is_patient_visible = 0):
+    $hiddenRx = $insertVisitFixture('cpms_prescriptions', [
+        'clinic_id' => $clinic,
+        'location_id' => $location,
+        'prescription_number' => 'RX-HIDDEN-SYN-00' . $label,
+        'visit_id' => $visitId,
+        'patient_id' => $patient,
+        'clinician_id' => $doctor,
+        'status' => 'finalized',
+        'is_patient_visible' => 0,
+        'finalized_at' => $now,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+    $insertVisitFixture('cpms_prescription_items', [
+        'prescription_id' => $hiddenRx,
+        'generic_name' => 'SYN-PRIVATE-HIDDEN-' . $label,
+        'dose' => '1 tab',
+        'frequency' => 'daily',
+        'form' => 'tablet',
+        'route' => 'oral',
+        'sort_order' => 0,
+        'created_at' => $now,
+    ]);
+    $prescriptions[] = $rx;
+}
+echo 'PROFILE_PUBLIC=prescriptions_fixture_ok prescriptions=3 items=3' . "\n";
+
 $env = 'VISITS_PAIR=' . implode('|', array_slice($visits, 0, 2)) . "\n"
     . 'VISITS_DATE=' . $visitDate . "\n"
     . 'VISITS_JALALI=' . \ClinicCore\Domain\Time\Jalali::formatYmd($visitDate) . "\n"
     . 'VISITS_ONE=' . $visits[2] . "\n"
+    . 'RX_PAIR=' . implode('|', array_slice($prescriptions, 0, 2)) . "\n"
+    . 'RX_ONE=' . $prescriptions[2] . "\n"
     . 'PROFILE_ONE=' . $loginOne . '|' . $passOne . '|' . $userOne . '|' . $patientOne . '|' . $linkOne . '|' . $clinicOne . "\n"
     . 'PROFILE_MULTI=' . $loginMulti . '|' . $passMulti . '|' . $userMulti . '|' . $linkA . '|' . $linkB . '|' . $patientA . '|' . $patientB . '|' . $clinicA . '|' . $clinicB . '|' . $linkForeign . '|' . $linkInactive . "\n"
     . 'PROFILE_PUBLIC=one_user=' . $userOne . ' one_patient=' . $patientOne . ' one_link=' . $linkOne . ' one_clinic=' . $clinicOne
