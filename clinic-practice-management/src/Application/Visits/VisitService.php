@@ -562,11 +562,22 @@ final class VisitService
         $operational_date = $this->operationalDateForLocation( $location_id, $clinic_id );
         $queue = $this->visits->queueFor( $clinic_id, $scope_clinician_id, self::QUEUE_STATUSES, $operational_date, $location_id ); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
         $stats = $this->visits->statsFor( $clinic_id, $operational_date, $scope_clinician_id, $location_id ); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
+        $scoped_clinician = $scope_clinician_id; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established VisitService local.
+        $doctor_appointments = [];
+        if ( is_int( $scoped_clinician ) && $scoped_clinician > 0 ) {
+            $doctor_appointments = $this->appointments->listForDoctorOperationalDay(
+                $clinic_id,
+                $location_id,
+                $scoped_clinician,
+                $operational_date
+            );
+        }
 
         return [
             'date'          => $operational_date,
             'stats'         => $stats,
             'queue'         => array_map( [ $this, 'presentVisit' ], $queue ),
+            'appointments'  => $doctor_appointments,
             'last_event_id' => $this->visits->lastEventId( $clinic_id, $operational_date, $scope_clinician_id, $location_id ),
             'location_id'   => $location_id,
         ];

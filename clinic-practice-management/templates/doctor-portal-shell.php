@@ -188,6 +188,19 @@ echo $cpms_styles_html;
                     <ul data-role="queue-list" class="cpms-doc-queue-list"></ul>
                 </section>
 
+                <section class="cpms-doc-appointments" data-role="appointments-section" hidden>
+                    <div class="cpms-doc-section-head">
+                        <h2>نوبت‌های امروز</h2>
+                        <span class="cpms-doc-count" data-role="appointments-count"></span>
+                    </div>
+                    <div class="cpms-doc-queue-head" aria-hidden="true">
+                        <span>بیمار و ساعت</span>
+                        <span>وضعیت</span>
+                    </div>
+                    <div data-role="appointments-empty" class="cpms-doc-empty" hidden>نوبتی برای این روز ثبت نشده است.</div>
+                    <ul data-role="appointments-list" class="cpms-doc-queue-list"></ul>
+                </section>
+
                 <section class="cpms-doc-no-data" data-role="no-data" hidden>
                     <h3>داده‌ای برای نمایش وجود ندارد</h3>
                     <p>هیچ شعبه فعالی برای این مطب یافت نشد یا هنوز انتخاب انجام نشده است.</p>
@@ -294,6 +307,7 @@ function renderLocationSelector(){
         show(noData);
         hide(qs('[data-role="today-section"]'));
         hide(qs('[data-role="queue-section"]'));
+        hide(qs('[data-role="appointments-section"]'));
         return;
     }
     if ( state.locations.length === 1 ) {
@@ -330,6 +344,66 @@ function renderToday(){
     ];
     statsEl.innerHTML = fields.map(function(f){
         return '<div class="cpms-doc-stat" data-role="stat-' + f[0] + '"><b>' + esc(s[f[0]]!=null?s[f[0]]:'—') + '</b><span>' + f[1] + '</span></div>';
+    }).join('');
+}
+
+function appointmentStatusLabel(status){
+    return {
+        pending: 'در انتظار تأیید',
+        confirmed: 'رزرو شده',
+        cancelled_by_patient: 'لغو توسط بیمار',
+        cancelled_by_staff: 'لغو توسط مطب',
+        rescheduled: 'جابه‌جا شده',
+        completed: 'انجام شده',
+        no_show: 'عدم حضور'
+    }[status] || status || '';
+}
+
+function visitStatusLabel(status){
+    return {
+        checked_in: 'پذیرش‌شده',
+        waiting: 'در صف',
+        called: 'فراخوانده',
+        in_consultation: 'در ویزیت',
+        consultation_completed: 'ویزیت تمام‌شده',
+        awaiting_payment: 'منتظر پرداخت',
+        paid: 'پرداخت‌شده',
+        checked_out: 'ترخیص‌شده',
+        cancelled: 'لغو شده',
+        skipped: 'رد شده'
+    }[status] || status || '';
+}
+
+function renderAppointments(){
+    var sec = qs('[data-role="appointments-section"]');
+    var empty = qs('[data-role="appointments-empty"]');
+    var list = qs('[data-role="appointments-list"]');
+    var count = qs('[data-role="appointments-count"]');
+    if ( !sec || !list ) return;
+    if ( !state.selectedClinicId || !state.selectedLocationId || !state.today ) {
+        hide(sec);
+        return;
+    }
+    show(sec);
+    var rows = state.today.appointments || [];
+    if ( count ) count.textContent = rows.length + ' نوبت';
+    if ( rows.length===0 ) {
+        show(empty);
+        list.innerHTML = '';
+        return;
+    }
+    hide(empty);
+    list.innerHTML = rows.map(function(row){
+        var badges = '';
+        if ( row.express ) badges += '<span class="cpms-doc-badge express">فوری</span>';
+        badges += '<span class="cpms-doc-badge status-' + esc(row.status||'') + '">' + esc(appointmentStatusLabel(row.status)) + '</span>';
+        if ( row.visit_status ) {
+            badges += '<span class="cpms-doc-badge status-' + esc(row.visit_status) + '">' + esc(visitStatusLabel(row.visit_status)) + '</span>';
+        }
+        return '<li class="cpms-doc-queue-item" data-role="appointment-item" data-appointment-id="' + esc(row.id) + '" data-status="' + esc(row.status||'') + '" data-visit-status="' + esc(row.visit_status||'') + '">' +
+            '<div class="cpms-doc-queue-main"><strong class="cpms-doc-appt-time">' + esc(row.time||'—') + '</strong>' +
+            '<strong data-role="patient-name">' + esc(row.patient_name || 'بیمار') + '</strong></div>' +
+            '<div class="cpms-doc-queue-aside">' + badges + '</div></li>';
     }).join('');
 }
 
@@ -422,11 +496,13 @@ function loadLocations(clinicId){
 
 function loadTodayAndQueue(){
     if ( !state.selectedClinicId || !state.selectedLocationId ) return Promise.resolve();
+    var requestedLocation = state.selectedLocationId;
     var headers = {
         'X-CPMS-Clinic-Id': String(state.selectedClinicId),
         'X-CPMS-Location-Id': String(state.selectedLocationId)
     };
     return api('GET', '/doctor/today', null, headers).then(function(r){
+        if ( state.selectedLocationId !== requestedLocation ) return;
         if ( r.status===400 ) {
             var body = r.body || {};
             var code = body.code || '';
@@ -434,6 +510,10 @@ function loadTodayAndQueue(){
             if ( code==='CLINIC_SCOPE_REQUIRED' && data.field==='location_id' ) {
                 var wrap = qs('[data-role="location-selector-wrap"]');
                 show(wrap);
+                state.today = null;
+                hide(qs('[data-role="today-section"]'));
+                hide(qs('[data-role="queue-section"]'));
+                hide(qs('[data-role="appointments-section"]'));
                 showError('لطفاً شعبه را انتخاب کنید.');
                 return;
             }
@@ -449,6 +529,7 @@ function loadTodayAndQueue(){
         state.lastEventId = payload.last_event_id || 0;
         renderToday();
         renderQueue();
+        renderAppointments();
     }).catch(function(e){ showError(e.message); });
 }
 
@@ -502,8 +583,10 @@ document.addEventListener('change', function(ev){
         if ( state.selectedLocationId ) {
             loadTodayAndQueue();
         } else {
+            state.today = null;
             hide(qs('[data-role="today-section"]'));
             hide(qs('[data-role="queue-section"]'));
+            hide(qs('[data-role="appointments-section"]'));
         }
     }
 });

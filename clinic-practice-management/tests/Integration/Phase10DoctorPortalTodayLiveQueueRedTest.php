@@ -522,6 +522,148 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
         self::assertTrue(str_contains($html, '/queue') || str_contains($html, 'queue') || str_contains($html, 'last_event_id') || str_contains($html, 'poll'), 'H: refresh uses existing queue endpoint');
     }
 
+    /**
+     * Post-expansion GREEN, not historical RED.
+     * Owner approved Today's Appointments after 97d626c. This proves the existing
+     * /doctor/today payload, not a new route.
+     */
+    public function testI_TodayAppointmentsScopedToTrustedOperationalDay(): void
+    {
+        $org = $this->insertOrg('I Org '.bin2hex(random_bytes(2)));
+        $clinic = $this->insertClinicInOrg('I Clinic', 'i-clinic-'.bin2hex(random_bytes(2)), $org, self::TZ_TEHRAN);
+        $locA = $this->insertLocation($clinic, 'I Loc A', 'i-a-'.bin2hex(random_bytes(2)), self::TZ_TEHRAN, 1);
+        $locB = $this->insertLocation($clinic, 'I Loc B', 'i-b-'.bin2hex(random_bytes(2)), self::TZ_TEHRAN, 0);
+        $doctor = $this->makeUser('i_doc', RolesAndCapabilities::ROLE_DOCTOR);
+        $otherDoctor = $this->makeUser('i_other', RolesAndCapabilities::ROLE_DOCTOR);
+        $clinician = $this->insertClinician('Dr I', $clinic, 1, $doctor);
+        $otherClinician = $this->insertClinician('Dr I Other', $clinic, 1, $otherDoctor);
+        cpms_test_seed_membership($doctor, $clinic, 'cpms_doctor');
+        cpms_test_seed_membership($otherDoctor, $clinic, 'cpms_doctor');
+
+        $own = $this->insertPatient('MR-I-OWN', '09121110001', $clinic);
+        $arrived = $this->insertPatient('MR-I-ARR', '09121110002', $clinic);
+        $otherDocPatient = $this->insertPatient('MR-I-OD', '09121110003', $clinic);
+        $otherLocPatient = $this->insertPatient('MR-I-OL', '09121110004', $clinic);
+        $this->renamePatient($own, 'Mina', 'OwnDay', '9081726354');
+        $this->renamePatient($arrived, 'Nima', 'Arrived', '9081726355');
+        $nationalId = '9081726354';
+        $mobile = (string) App::db()->fetchValue('SELECT mobile FROM '.App::db()->table('cpms_patients').' WHERE id = %d', [$own]);
+
+        $booked = $this->insertAppointment($clinic, $locA, 'I-BOOK-'.bin2hex(random_bytes(2)), $own, $clinician, $this->insertSlot($clinic, $locA, $clinician, self::FIXED_UTC_DATE, '09:15:00'), self::FIXED_UTC_DATE, '09:15:00', 0);
+        $arrivedAppt = $this->insertAppointment($clinic, $locA, 'I-ARR-'.bin2hex(random_bytes(2)), $arrived, $clinician, $this->insertSlot($clinic, $locA, $clinician, self::FIXED_UTC_DATE, '09:45:00'), self::FIXED_UTC_DATE, '09:45:00', 0);
+        $arrivedVisit = $this->insertVisitWithAppointment($arrived, $clinician, $clinic, $locA, $arrivedAppt, 'checked_in', self::FIXED_UTC_DATE, '09:45:00');
+        $this->linkAppointmentVisit($arrivedAppt, $arrivedVisit);
+        $otherDoctorAppt = $this->insertAppointment($clinic, $locA, 'I-OD-'.bin2hex(random_bytes(2)), $otherDocPatient, $otherClinician, $this->insertSlot($clinic, $locA, $otherClinician, self::FIXED_UTC_DATE, '10:15:00'), self::FIXED_UTC_DATE, '10:15:00', 0);
+        $otherLocAppt = $this->insertAppointment($clinic, $locB, 'I-OL-'.bin2hex(random_bytes(2)), $otherLocPatient, $clinician, $this->insertSlot($clinic, $locB, $clinician, self::FIXED_UTC_DATE, '11:15:00'), self::FIXED_UTC_DATE, '11:15:00', 0);
+
+        $clinicOther = $this->insertClinicInOrg('I Other Clinic', 'i-other-'.bin2hex(random_bytes(2)), $org, self::TZ_TEHRAN);
+        $locOther = $this->insertLocation($clinicOther, 'I Other Loc', 'i-oloc-'.bin2hex(random_bytes(2)), self::TZ_TEHRAN, 1);
+        $foreignPatient = $this->insertPatient('MR-I-OC', '09121110005', $clinicOther);
+        $otherClinicAppt = $this->insertAppointment($clinicOther, $locOther, 'I-OC-'.bin2hex(random_bytes(2)), $foreignPatient, $clinician, $this->insertSlot($clinicOther, $locOther, $clinician, self::FIXED_UTC_DATE, '12:15:00'), self::FIXED_UTC_DATE, '12:15:00', 0);
+        self::assertGreaterThan(0, $otherClinicAppt);
+
+        wp_set_current_user($doctor);
+        App::replaceExplicitScope(ClinicScope::forClinic($clinic));
+        try {
+            App::visitService()->todayForDoctorPortal($doctor);
+            self::fail('I: N>1 without explicit Location must not return appointments');
+        } catch (\ClinicCore\Domain\Visits\VisitException $ex) {
+            self::assertSame('CLINIC_SCOPE_REQUIRED', $ex->errorCode);
+            self::assertSame('location_id', $ex->data['field'] ?? '');
+            self::assertSame('location_required', $ex->data['reason'] ?? '');
+        } finally {
+            App::replaceExplicitScope(null);
+        }
+
+        $rHidden = $this->dispatch('GET', '/'.self::REST_NS.'/doctor/today', [], ['X-CPMS-Clinic-Id' => (string) $clinic]);
+        self::assertSame(400, $rHidden->get_status(), 'I: existing /doctor/today still requires Location when N>1');
+        $hiddenBody = wp_json_encode($rHidden->get_data());
+        self::assertIsString($hiddenBody);
+        self::assertStringNotContainsString('Mina OwnDay', $hiddenBody);
+        self::assertStringNotContainsString($nationalId, $hiddenBody);
+        self::assertStringNotContainsString($mobile, $hiddenBody);
+
+        App::replaceExplicitScope(ClinicScope::forClinic($clinic, $locA));
+        try {
+            $todayA = App::visitService()->todayForDoctorPortal($doctor);
+        } finally {
+            App::replaceExplicitScope(null);
+        }
+        self::assertSame(self::FIXED_UTC_DATE, $todayA['date']);
+        self::assertSame($locA, $todayA['location_id']);
+        $idsA = $this->appointmentIds($todayA);
+        self::assertEqualsCanonicalizing([$booked, $arrivedAppt], $idsA, 'I: own clinic, location, doctor, and operational day only');
+        self::assertNotContains($otherDoctorAppt, $idsA, 'I: other doctor hidden');
+        self::assertNotContains($otherLocAppt, $idsA, 'I: other location hidden');
+        self::assertNotContains($otherClinicAppt, $idsA, 'I: other clinic hidden');
+        $byId = [];
+        foreach ($todayA['appointments'] as $row) {
+            self::assertSame(['id', 'time', 'patient_name', 'status', 'visit_status', 'express'], array_keys($row));
+            $byId[(int) $row['id']] = $row;
+        }
+        self::assertSame('Mina OwnDay', $byId[$booked]['patient_name']);
+        self::assertSame('09:15', $byId[$booked]['time']);
+        self::assertSame('confirmed', $byId[$booked]['status']);
+        self::assertNull($byId[$booked]['visit_status']);
+        self::assertSame('checked_in', $byId[$arrivedAppt]['visit_status'], 'I: existing visit status is exposed, not invented');
+        $encoded = (string) wp_json_encode($todayA['appointments']);
+        self::assertStringNotContainsString($nationalId, $encoded);
+        self::assertStringNotContainsString($mobile, $encoded);
+        self::assertStringNotContainsString('patient_id', $encoded);
+        self::assertStringNotContainsString('national_id', $encoded);
+        self::assertStringNotContainsString('clinic_id', $encoded);
+        self::assertStringNotContainsString('location_id', $encoded);
+
+        $rA = $this->dispatch('GET', '/'.self::REST_NS.'/doctor/today', [], [
+            'X-CPMS-Clinic-Id' => (string) $clinic,
+            'X-CPMS-Location-Id' => (string) $locA,
+        ]);
+        self::assertSame(200, $rA->get_status(), 'I: existing doctor today route carries the list');
+        self::assertEqualsCanonicalizing([$booked, $arrivedAppt], $this->appointmentIds($this->payload($rA)));
+
+        App::replaceExplicitScope(ClinicScope::forClinic($clinic, $locB));
+        try {
+            $todayB = App::visitService()->todayForDoctorPortal($doctor);
+        } finally {
+            App::replaceExplicitScope(null);
+        }
+        self::assertSame([$otherLocAppt], $this->appointmentIds($todayB), 'I: explicit Location B shows only B');
+
+        $rForeign = $this->dispatch('GET', '/'.self::REST_NS.'/doctor/today', [], [
+            'X-CPMS-Clinic-Id' => (string) $clinic,
+            'X-CPMS-Location-Id' => (string) $locOther,
+        ]);
+        self::assertSame(403, $rForeign->get_status());
+        self::assertStringNotContainsString('Mina OwnDay', (string) wp_json_encode($rForeign->get_data()));
+
+        $clinicK = $this->insertClinicInOrg('I Kiritimati', 'i-k-'.bin2hex(random_bytes(2)), $org, self::TZ_K);
+        $locK = $this->insertLocation($clinicK, 'I K Loc', 'i-k-'.bin2hex(random_bytes(2)), self::TZ_K, 1);
+        $doctorK = $this->makeUser('i_k', RolesAndCapabilities::ROLE_DOCTOR);
+        $clinicianK = $this->insertClinician('Dr IK', $clinicK, 1, $doctorK);
+        cpms_test_seed_membership($doctorK, $clinicK, 'cpms_doctor');
+        $patientK = $this->insertPatient('MR-I-K', '09121110006', $clinicK);
+        $localAppt = $this->insertAppointment($clinicK, $locK, 'I-K-'.bin2hex(random_bytes(2)), $patientK, $clinicianK, $this->insertSlot($clinicK, $locK, $clinicianK, self::FIXED_K_DATE, '08:05:00'), self::FIXED_K_DATE, '08:05:00', 0);
+        $utcAppt = $this->insertAppointment($clinicK, $locK, 'I-UTC-'.bin2hex(random_bytes(2)), $patientK, $clinicianK, $this->insertSlot($clinicK, $locK, $clinicianK, self::FIXED_UTC_DATE, '08:25:00'), self::FIXED_UTC_DATE, '08:25:00', 0);
+        wp_set_current_user($doctorK);
+        App::replaceExplicitScope(ClinicScope::forClinic($clinicK));
+        try {
+            $todayK = App::visitService()->todayForDoctorPortal($doctorK);
+        } finally {
+            App::replaceExplicitScope(null);
+        }
+        self::assertSame(self::FIXED_K_DATE, $todayK['date'], 'I: operational day is Location-local, not the UTC date');
+        self::assertSame([$localAppt], $this->appointmentIds($todayK));
+        self::assertNotContains($utcAppt, $this->appointmentIds($todayK), 'I: UTC calendar date must not leak across the location boundary');
+
+        $url = $this->tryResolveDoctorPortalUrl();
+        self::assertNotNull($url);
+        $html = $this->renderPortal($doctor, $url);
+        self::assertStringContainsString('data-role="appointments-section"', $html);
+        self::assertStringContainsString('نوبت‌های امروز', $html);
+        self::assertStringContainsString('پذیرش‌شده', $html);
+        self::assertStringNotContainsString('/appointments/', $html);
+    }
+
     // helpers
     private function tryResolveDoctorPortalUrl(): ?string
     {
@@ -770,6 +912,24 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
         $now = App::db()->nowUtcSql();
         $wpdb->query($wpdb->prepare('INSERT INTO '.$wpdb->prefix.'cpms_schedule_slots (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, generated_from, created_at, updated_at) VALUES (%d, %d, %d, %s, %s, %d, %d, %d, %d, %d, %s, %s, %s)', $clinicId, $locId, $clinicianId, $date, $time, 20, 1, 1, 0, 1, 'manual', $now, $now));
         return (int)$wpdb->insert_id;
+    }
+
+    private function renamePatient(int $patientId, string $first, string $last, string $nationalId): void
+    {
+        global $wpdb;
+        $wpdb->query($wpdb->prepare('UPDATE '.$wpdb->prefix.'cpms_patients SET first_name = %s, last_name = %s, national_id = %s WHERE id = %d', $first, $last, $nationalId, $patientId));
+    }
+
+    private function linkAppointmentVisit(int $apptId, int $visitId): void
+    {
+        global $wpdb;
+        $wpdb->query($wpdb->prepare('UPDATE '.$wpdb->prefix.'cpms_appointments SET active_visit_id = %d WHERE id = %d', $visitId, $apptId));
+    }
+
+    private function appointmentIds(array $today): array
+    {
+        self::assertArrayHasKey('appointments', $today);
+        return array_map(static fn (array $row): int => (int) $row['id'], $today['appointments']);
     }
 
     private function insertAppointment(int $clinicId, int $locId, string $ref, int $patientId, int $clinicianId, int $slotId, string $date, string $time, int $express): int

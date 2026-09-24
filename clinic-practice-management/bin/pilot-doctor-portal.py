@@ -100,6 +100,12 @@ def _doctor(parts, kind):
             "clinic_name": parts[9],
             "location_name": parts[10],
             "clinician_name": parts[11],
+            "appt_booked": int(parts[12]),
+            "appt_arrived": int(parts[13]),
+            "appt_hidden": int(parts[14]),
+            "appt_hidden_2": int(parts[15]),
+            "booked_name": parts[16],
+            "arrived_name": parts[17],
         }
     return {
         "login": parts[0],
@@ -117,6 +123,10 @@ def _doctor(parts, kind):
         "clinic_name": parts[12],
         "loc_a_name": parts[13],
         "loc_b_name": parts[14],
+        "appt_a": int(parts[15]),
+        "appt_b": int(parts[16]),
+        "appt_colleague": int(parts[17]),
+        "appt_b_name": parts[18],
     }
 
 
@@ -345,29 +355,66 @@ def assert_queue_hugs_content(page, label):
         """() => {
           const today = document.querySelector('[data-role="today-section"]');
           const queue = document.querySelector('[data-role="queue-section"]');
-          if (!today || today.hidden || !queue || queue.hidden || window.innerWidth < 768) {
+          const appt = document.querySelector('[data-role="appointments-section"]');
+          const app = document.querySelector('#cpms-doctor-portal-app');
+          if (!today || today.hidden || !queue || queue.hidden || !appt || appt.hidden || !app || window.innerWidth < 768) {
             return { applies: false };
           }
           const a = today.getBoundingClientRect();
           const b = queue.getBoundingClientRect();
-          const cs = getComputedStyle(queue);
+          const c = appt.getBoundingClientRect();
+          const box = app.getBoundingClientRect();
+          const qcs = getComputedStyle(queue);
+          const acs = getComputedStyle(appt);
+          const usedLeft = Math.min(a.left, b.left, c.left);
+          const usedRight = Math.max(a.right, b.right, c.right);
           return {
             applies: true,
-            overlap: a.top < b.bottom - 4 && b.top < a.bottom - 4,
-            differentColumn: Math.abs(a.left - b.left) > 24,
-            alignSelf: cs.alignSelf,
-            minHeight: cs.minHeight,
-            flexGrow: cs.flexGrow
+            sideBySide: b.top < c.bottom - 4 && c.top < b.bottom - 4 && Math.abs(b.left - c.left) > 24,
+            todayAbove: a.bottom <= Math.min(b.top, c.top) + 8,
+            todaySpans: a.width > b.width + 24 && a.width > c.width + 24,
+            queueAlign: qcs.alignSelf,
+            apptAlign: acs.alignSelf,
+            queueMin: qcs.minHeight,
+            apptMin: acs.minHeight,
+            queueGrow: qcs.flexGrow,
+            apptGrow: acs.flexGrow,
+            coverage: box.width > 0 ? (usedRight - usedLeft) / box.width : 0
+          };
+        }"""
+    )
+    stacked = page.evaluate(
+        """() => {
+          const today = document.querySelector('[data-role="today-section"]');
+          const queue = document.querySelector('[data-role="queue-section"]');
+          const appt = document.querySelector('[data-role="appointments-section"]');
+          if (!today || today.hidden || !queue || queue.hidden || !appt || appt.hidden || window.innerWidth >= 768) {
+            return { applies: false };
+          }
+          const a = today.getBoundingClientRect();
+          const b = queue.getBoundingClientRect();
+          const c = appt.getBoundingClientRect();
+          return {
+            applies: true,
+            ordered: a.bottom <= b.top + 8 && b.bottom <= c.top + 8
           };
         }"""
     )
     if wide.get("applies"):
-        if not wide["overlap"] or not wide["differentColumn"]:
-            raise RuntimeError(f"{label} wide layout did not place Today beside the queue")
-        if wide["alignSelf"] == "stretch" or float(wide["flexGrow"] or 0) > 0:
-            raise RuntimeError(f"{label} queue is stretched beside Today")
-        if wide["minHeight"] not in ("0px", "auto", "none"):
-            raise RuntimeError(f"{label} queue min-height is not content-sized")
+        if not wide["sideBySide"]:
+            raise RuntimeError(f"{label} wide layout did not place the queue beside today's appointments")
+        if not wide["todayAbove"] or not wide["todaySpans"]:
+            raise RuntimeError(f"{label} Today metrics are not a compact band above the worklists")
+        if wide["queueAlign"] == "stretch" or wide["apptAlign"] == "stretch":
+            raise RuntimeError(f"{label} a worklist is stretched to the other column")
+        if float(wide["queueGrow"] or 0) > 0 or float(wide["apptGrow"] or 0) > 0:
+            raise RuntimeError(f"{label} a worklist flex-grows")
+        if wide["queueMin"] not in ("0px", "auto", "none") or wide["apptMin"] not in ("0px", "auto", "none"):
+            raise RuntimeError(f"{label} a worklist has an artificial min-height")
+        if wide["coverage"] < 0.9:
+            raise RuntimeError(f"{label} wide canvas is not used by the work area ({wide['coverage']})")
+    if stacked.get("applies") and not stacked["ordered"]:
+        raise RuntimeError(f"{label} mobile stack is not Today, then queue, then appointments")
 
 
 def assert_hygiene(page, state, label):
@@ -400,6 +447,71 @@ def today_data(state):
     if not state["todays"]:
         raise RuntimeError("today response body missing")
     return payload(state["todays"][-1])
+
+
+APPT_KEYS = {"id", "time", "patient_name", "status", "visit_status", "express"}
+APPT_STATUSES = {
+    "pending", "confirmed", "cancelled_by_patient", "cancelled_by_staff",
+    "rescheduled", "completed", "no_show",
+}
+VISIT_STATUSES = {
+    "checked_in", "waiting", "called", "in_consultation", "consultation_completed",
+    "awaiting_payment", "paid", "checked_out", "cancelled", "skipped",
+}
+
+
+def appointment_ids(page):
+    return [int(v) for v in page.locator('[data-role="appointment-item"]').evaluate_all(
+        "els => els.map(e => e.getAttribute('data-appointment-id'))"
+    ) if str(v).isdigit()]
+
+
+def assert_appointment_payload(data, expected, hidden, label):
+    rows = data.get("appointments")
+    if not isinstance(rows, list):
+        raise RuntimeError(f"{label} appointments payload missing from /doctor/today")
+    ids = []
+    for row in rows:
+        extra = set(row) - APPT_KEYS
+        if extra:
+            raise RuntimeError(f"{label} appointment exposed {sorted(extra)}")
+        if row.get("status") not in APPT_STATUSES:
+            raise RuntimeError(f"{label} appointment status is not established")
+        visit_status = row.get("visit_status")
+        if visit_status is not None and visit_status not in VISIT_STATUSES:
+            raise RuntimeError(f"{label} visit status is not established")
+        ids.append(int(row.get("id")))
+    if set(ids) != set(expected):
+        raise RuntimeError(f"{label} appointment scope {ids} != {expected}")
+    leaked = [item for item in hidden if item in ids]
+    if leaked:
+        raise RuntimeError(f"{label} hidden appointments leaked: {leaked}")
+    raw = json.dumps(rows, ensure_ascii=False).lower()
+    for token in ("mobile", "national_id", "address", "patient_id", "clinic_id", "location_id", "clinician_id"):
+        if token in raw:
+            raise RuntimeError(f"{label} appointments payload contains {token}")
+
+
+def assert_appointment_section(page, expected, hidden, label):
+    section = page.locator('[data-role="appointments-section"]')
+    if not section.is_visible():
+        raise RuntimeError(f"{label} appointments section is hidden")
+    rendered = appointment_ids(page)
+    if set(rendered) != set(expected):
+        raise RuntimeError(f"{label} rendered appointments {rendered} != {expected}")
+    if any(item in rendered for item in hidden):
+        raise RuntimeError(f"{label} rendered a hidden appointment")
+    text = section.inner_text() or ""
+    if re.search(r"\d{10,}", text):
+        raise RuntimeError(f"{label} appointments section shows a sensitive number")
+    for token in ("mobile", "national_id", "wp-admin", "clinician_id"):
+        if token in text.lower():
+            raise RuntimeError(f"{label} appointments section shows {token}")
+
+
+def assert_no_appointments_route(state, label):
+    if any(r["route"].rstrip("/").endswith("/appointments") for r in state["reqs"]):
+        raise RuntimeError(f"{label} called a separate appointments route")
 
 
 def _json(resp, label):
@@ -482,6 +594,25 @@ def prove_one(browser, doctor, vp, shot_name=None):
             raise RuntimeError("rendered queue does not match the server queue")
         if doctor["today"] not in (page.locator('[data-role="today-date"]').inner_text() or ""):
             raise RuntimeError("today date not rendered")
+        expected = [doctor["appt_booked"]]
+        if doctor["appt_arrived"]:
+            expected.append(doctor["appt_arrived"])
+        hidden = [item for item in (doctor["appt_hidden"], doctor["appt_hidden_2"]) if item]
+        assert_appointment_payload(data, expected, hidden, vp["vp"])
+        assert_appointment_section(page, expected, hidden, vp["vp"])
+        assert_no_appointments_route(state, vp["vp"])
+        section_text = page.locator('[data-role="appointments-section"]').inner_text() or ""
+        if doctor["booked_name"] not in section_text or "رزرو شده" not in section_text:
+            raise RuntimeError("booked appointment name or status is not visible")
+        if doctor["appt_arrived"]:
+            arrived = page.locator(f'[data-appointment-id="{doctor["appt_arrived"]}"]')
+            if arrived.get_attribute("data-visit-status") != "checked_in":
+                raise RuntimeError("checked-in appointment did not keep the existing visit status")
+            if doctor["arrived_name"] not in section_text or "پذیرش‌شده" not in section_text:
+                raise RuntimeError("checked-in appointment label is not visible")
+            booked = page.locator(f'[data-appointment-id="{doctor["appt_booked"]}"]')
+            if booked.get_attribute("data-visit-status"):
+                raise RuntimeError("booked appointment invented a visit status")
         stage = "authority"
         problems = authority_problems(state["reqs"], doctor["clinic_id"], {doctor["location_id"]})
         if problems:
@@ -579,6 +710,21 @@ def prove_multi(browser, doctor, vp, shots=False):
             raise RuntimeError("location A or the other doctor leaked into location B")
         if set(queue_ids(page)) != {doctor["visit_b"]}:
             raise RuntimeError("rendered queue does not match location B")
+        assert_appointment_payload(
+            data,
+            [doctor["appt_b"]],
+            [doctor["appt_a"], doctor["appt_colleague"]],
+            vp["vp"],
+        )
+        assert_appointment_section(
+            page,
+            [doctor["appt_b"]],
+            [doctor["appt_a"], doctor["appt_colleague"]],
+            vp["vp"],
+        )
+        assert_no_appointments_route(state, vp["vp"])
+        if doctor["appt_b_name"] not in (page.locator('[data-role="appointments-section"]').inner_text() or ""):
+            raise RuntimeError("selected location appointment name is not visible")
         b_reqs = [
             r for r in state["reqs"]
             if r["route"].endswith("/doctor/today") or r["route"].endswith("/rt/queue")

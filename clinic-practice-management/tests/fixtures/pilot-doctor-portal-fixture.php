@@ -186,7 +186,99 @@ $visitA = $visit($multiClinic, $locA, $clinMulti, $patient($multiClinic, 'SYN-DP
 $visitB = $visit($multiClinic, $locB, $clinMulti, $patient($multiClinic, 'SYN-DP-MB-' . $uniq, $mobile('0914')));
 $visitColleague = $visit($multiClinic, $locB, $clinColleague, $patient($multiClinic, 'SYN-DP-MC-' . $uniq, $mobile('0915')));
 
-$ids = [$visitOwn, $visitOther, $visitA, $visitB, $visitColleague];
+$namedPatient = static function (int $clinicId, string $mrn, string $mobileValue, string $first, string $last) use ($wpdb, $db, $now): int {
+    return dp_insert(
+        $wpdb,
+        'INSERT INTO ' . $db->table('cpms_patients') . ' (clinic_id, mrn, first_name, last_name, mobile, national_id, status, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, %s, %s, %s, %s)',
+        [$clinicId, $mrn, $first, $last, $mobileValue, substr(preg_replace('/\D/', '', $mobileValue) ?? '', 0, 10), 'active', $now, $now],
+        'named patient ' . $mrn
+    );
+};
+$slot = static function (int $clinicId, int $locationId, int $clinicianId, string $time) use ($wpdb, $db, $now, $today): int {
+    return dp_insert(
+        $wpdb,
+        'INSERT INTO ' . $db->table('cpms_schedule_slots') . ' (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, generated_from, created_at, updated_at) VALUES (%d, %d, %d, %s, %s, %d, %d, %d, %d, %d, %s, %s, %s)',
+        [$clinicId, $locationId, $clinicianId, $today, $time, 20, 1, 1, 0, 1, 'manual', $now, $now],
+        'slot'
+    );
+};
+$appointment = static function (int $clinicId, int $locationId, int $clinicianId, int $patientId, int $slotId, string $time, string $ref) use ($wpdb, $db, $now, $today): int {
+    return dp_insert(
+        $wpdb,
+        'INSERT INTO ' . $db->table('cpms_appointments') . ' (clinic_id, location_id, reference_code, patient_id, clinician_id, slot_id, wp_user_id, slot_date, slot_time, duration_min, slot_end_time, status, is_walkin_express, confirmed_at, created_at, updated_at) VALUES (%d, %d, %s, %d, %d, %d, %d, %s, %s, %d, %s, %s, %d, %s, %s, %s)',
+        [$clinicId, $locationId, $ref, $patientId, $clinicianId, $slotId, 0, $today, $time, 20, '00:20:00', 'confirmed', 0, $now, $now, $now],
+        'appointment'
+    );
+};
+
+$bookedName = 'Mina Booked';
+$arrivedName = 'Nima Arrived';
+$otherName = 'Sara Other';
+$betaName = 'Lale Beta';
+$apptBooked = $appointment(
+    $oneClinic,
+    $oneLoc,
+    $clinOne,
+    $namedPatient($oneClinic, 'SYN-DP-AB-' . $uniq, $mobile('0931'), 'Mina', 'Booked'),
+    $slot($oneClinic, $oneLoc, $clinOne, '09:10:00'),
+    '09:10:00',
+    'DPB' . $uniq . 'A'
+);
+$arrivedPatient = $namedPatient($oneClinic, 'SYN-DP-AA-' . $uniq, $mobile('0932'), 'Nima', 'Arrived');
+$arrivedSlot = $slot($oneClinic, $oneLoc, $clinOne, '09:40:00');
+$apptArrived = $appointment($oneClinic, $oneLoc, $clinOne, $arrivedPatient, $arrivedSlot, '09:40:00', 'DPA' . $uniq . 'A');
+$arrivedVisit = dp_insert(
+    $wpdb,
+    'INSERT INTO ' . $db->table('cpms_visits') . ' (clinic_id, location_id, clinician_id, patient_id, appointment_id, source, status, visit_date, check_in_at, waiting_since, active, created_at, updated_at) VALUES (%d, %d, %d, %d, %d, %s, %s, %s, %s, %s, 1, %s, %s)',
+    [$oneClinic, $oneLoc, $clinOne, $arrivedPatient, $apptArrived, 'scheduled', 'checked_in', $today, $now, $now, $now, $now],
+    'checked-in visit'
+);
+$linked = $wpdb->query($wpdb->prepare(
+    'UPDATE ' . $db->table('cpms_appointments') . ' SET active_visit_id = %d WHERE id = %d',
+    $arrivedVisit,
+    $apptArrived
+));
+if ($linked === false) {
+    dp_fail('appointment visit link failed');
+}
+$apptOther = $appointment(
+    $oneClinic,
+    $oneLoc,
+    $clinOther,
+    $namedPatient($oneClinic, 'SYN-DP-AO-' . $uniq, $mobile('0933'), 'Sara', 'Other'),
+    $slot($oneClinic, $oneLoc, $clinOther, '10:20:00'),
+    '10:20:00',
+    'DPO' . $uniq . 'B'
+);
+$apptA = $appointment(
+    $multiClinic,
+    $locA,
+    $clinMulti,
+    $namedPatient($multiClinic, 'SYN-DP-APA-' . $uniq, $mobile('0934'), 'Reza', 'Alpha'),
+    $slot($multiClinic, $locA, $clinMulti, '11:00:00'),
+    '11:00:00',
+    'DPM' . $uniq . 'A'
+);
+$apptB = $appointment(
+    $multiClinic,
+    $locB,
+    $clinMulti,
+    $namedPatient($multiClinic, 'SYN-DP-APB-' . $uniq, $mobile('0935'), 'Lale', 'Beta'),
+    $slot($multiClinic, $locB, $clinMulti, '11:30:00'),
+    '11:30:00',
+    'DPM' . $uniq . 'B'
+);
+$apptColleague = $appointment(
+    $multiClinic,
+    $locB,
+    $clinColleague,
+    $namedPatient($multiClinic, 'SYN-DP-APC-' . $uniq, $mobile('0936'), 'Colleague', 'Hidden'),
+    $slot($multiClinic, $locB, $clinColleague, '12:00:00'),
+    '12:00:00',
+    'DPM' . $uniq . 'C'
+);
+
+$ids = [$visitOwn, $visitOther, $visitA, $visitB, $visitColleague, $apptBooked, $apptArrived, $apptOther, $apptA, $apptB, $apptColleague];
 if (count($ids) !== count(array_unique($ids))) {
     dp_fail('visit ids must be distinct');
 }
@@ -209,6 +301,12 @@ $oneLine = implode('|', [
     'Synthetic Clinic One',
     'Synthetic Location One',
     'Synthetic Doctor A',
+    (string) $apptBooked,
+    (string) $apptArrived,
+    (string) $apptOther,
+    '0',
+    $bookedName,
+    $arrivedName,
 ]);
 $otherLine = implode('|', [
     dp_field($loginOther, 'login'),
@@ -223,6 +321,12 @@ $otherLine = implode('|', [
     'Synthetic Clinic One',
     'Synthetic Location One',
     'Synthetic Doctor B',
+    (string) $apptOther,
+    '0',
+    (string) $apptBooked,
+    (string) $apptArrived,
+    $otherName,
+    'none',
 ]);
 $multiLine = implode('|', [
     dp_field($loginMulti, 'login'),
@@ -240,6 +344,10 @@ $multiLine = implode('|', [
     'Synthetic Clinic Multi',
     'Synthetic Location A',
     'Synthetic Location B',
+    (string) $apptA,
+    (string) $apptB,
+    (string) $apptColleague,
+    $betaName,
 ]);
 $public = implode('|', [
     $url,
