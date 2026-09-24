@@ -536,8 +536,11 @@ final class Phase10DoctorPortalVisitWorkspaceRedTest extends WP_UnitTestCase
         $fxLocScoped = $this->makePortalStage('g7u');
         $locA = $fxLocScoped['location'];
         $locB = $this->insertLocation($fxLocScoped['clinic'], 'G7 Unassigned B', self::TZ_TEHRAN, 0);
-        $memId = $wpdb->get_var($wpdb->prepare('SELECT id FROM ' . $wpdb->prefix . 'cpms_memberships WHERE clinic_id = %d AND wp_user_id = %d LIMIT 1', $fxLocScoped['clinic'], $fxLocScoped['doctor']));
-        App::membership_service()->set_scope_mode((int) $memId, 'location', [$locA]);
+        $memRow = App::membership_service()->membership_for($fxLocScoped['clinic'], $fxLocScoped['doctor']);
+        self::assertIsArray($memRow, 'membership must exist for location-scoped test');
+        $memId = (int) ($memRow['id'] ?? 0);
+        self::assertGreaterThan(0, $memId, 'membership id must be positive');
+        App::membership_service()->set_scope_mode($memId, 'location', [$locA]);
         // Now eligible = [locA] only; locB is active but unassigned => using it must fail closed.
         $patientU = $this->insertPatient($fxLocScoped['clinic'], 'g7u_patient');
         $visitU = $this->insertVisit($patientU, $fxLocScoped['clinician'], $fxLocScoped['clinic'], $locA, 'in_consultation');
