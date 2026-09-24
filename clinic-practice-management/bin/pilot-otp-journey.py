@@ -165,6 +165,28 @@ def holds_state(mobile, slot_id):
     return rows
 
 
+def unique_fixture_slot_id(slot_time):
+    """Return the only fixture row for this clinic and clock time.
+
+    A time-only lookup is not the slot the browser held. WP-Cron is enabled in
+    this job and can insert another date with the same on-grid time; the click
+    uses the first rendered button, then a time-only query can watch the other
+    row. The hold contract stays on the clicked id. This only refuses a
+    duplicate clock time so that id is the fixture row, not a generated twin.
+    """
+    if not re.fullmatch(r"\d{2}:\d{2}:\d{2}", slot_time or ""):
+        raise RuntimeError("journey slot time must be HH:MM:SS")
+    rows = dbrows(
+        f"SELECT id FROM {T('cpms_schedule_slots')} "
+        f"WHERE clinic_id={CFG['clinic_id']} AND slot_time='{slot_time}' ORDER BY id"
+    )
+    if len(rows) != 1:
+        raise RuntimeError(
+            f"fixture slot time {slot_time} must be unique in clinic {CFG['clinic_id']}, got {len(rows)}"
+        )
+    return int(rows[0][0])
+
+
 def run_journey(browser, run):
     key0 = f"otp-{run['vp']}"
     mobile = run["mobile"]
@@ -245,9 +267,8 @@ def run_journey(browser, run):
         assert not any(c["name"].startswith("wordpress") for c in cookies0), "anonymous visit received WP cookies"
         pre = counts_preauth(run)
         assert pre["tokens"] == 0 and pre["patients"] == 0, f"unexpected pre-auth rows: {pre}"
-        ss0 = slot_state(db1(
-            f"SELECT id FROM {T('cpms_schedule_slots')} WHERE clinic_id={CFG['clinic_id']} AND slot_time='{run['slot_time']}'"
-        ))
+        slot_id = unique_fixture_slot_id(run["slot_time"])
+        ss0 = slot_state(slot_id)
         assert ss0 is not None, "journey slot row missing from fixture"
         cap0, bk0, hd0 = ss0
         assert (bk0, hd0) == (0, 0), f"slot capacity dirty before auth: booked={bk0} held={hd0}"
@@ -264,16 +285,19 @@ def run_journey(browser, run):
         page.wait_for_function(
             "document.querySelector('.cpms-public-booking__panel').getAttribute('data-state') !== 'loading'")
         slot_sel = f".cpms-public-booking__slot[data-slot-time^=\"{run['slot_time'][:5]}\"]"
-        page.locator(slot_sel).first.wait_for(state="visible")
+        slot_btn = page.locator(slot_sel).first
+        slot_btn.wait_for(state="visible")
+        clicked_id = int(slot_btn.get_attribute("data-slot-id") or "0")
         with page.expect_response(lambda r: "/clinic/v1/booking/quote" in r.url, timeout=25000) as a4_info:
-            page.locator(slot_sel).first.click()
+            slot_btn.click()
         a4 = a4_info.value
         assert a4.status == 200, f"A4 quote returned HTTP {a4.status}"
         page.wait_for_function(
             "document.querySelector('.cpms-public-booking__panel').getAttribute('data-state') !== 'loading'")
         page.locator('[data-role="continue-auth"]').wait_for(state="visible")
-        slot_id = db1(
-            f"SELECT id FROM {T('cpms_schedule_slots')} WHERE clinic_id={CFG['clinic_id']} AND slot_time='{run['slot_time']}'"
+        slot_id = unique_fixture_slot_id(run["slot_time"])
+        assert clicked_id == slot_id, (
+            f"clicked data-slot-id={clicked_id} != unique fixture slot {slot_id} for {run['slot_time']}"
         )
         ok(f"{key0}-02-browse", "A1/A4 واقعی و قابل‌رزرو", f"A1=200 A4=200 state=bookable slot_id={slot_id}")
 

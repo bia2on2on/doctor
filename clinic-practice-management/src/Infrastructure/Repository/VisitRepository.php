@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+
+
 namespace ClinicCore\Infrastructure\Repository;
 
 use ClinicCore\Application\Scope\PrimaryLocationResolver;
@@ -167,10 +169,14 @@ final class VisitRepository
      * صف یک پزشک (E2) یا کل کلینیک (D1) — وضعیت‌های زنده صف.
      * نوبت فوری: walk-in با نوبت مرجع express (FR-7.3) — با LEFT JOIN مشخص می‌شود.
      *
+     * Phase 10: filtering by trusted Location + Location-local day, no cross-Location aggregation.
+     * locationId is optional to preserve staff/secretary legacy where Location not yet trusted;
+     * when provided, queue is strictly per-Location.
+     *
      * @param list<string> $statuses
      * @return list<array<string, mixed>>
      */
-    public function queueFor(int $clinicId, ?int $clinicianId, array $statuses, ?string $visitDate = null): array
+    public function queueFor(int $clinicId, ?int $clinicianId, array $statuses, ?string $visitDate = null, ?int $locationId = null): array // phpcs:ignore Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingAfterOpen,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingBeforeClose,WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
     {
         $statuses = array_values($statuses);
         if ($statuses === []) {
@@ -184,6 +190,10 @@ final class VisitRepository
         if ($clinicianId !== null) {
             $where .= ' AND v.clinician_id = %d';
             $params[] = $clinicianId;
+        }
+        if ($locationId !== null) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- legacy PSR-style, established contract
+            $where .= ' AND v.location_id = %d'; // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment, keep readability
+            $params[] = $locationId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
         }
 
         $rows = $this->db->fetchAll(
@@ -211,9 +221,12 @@ final class VisitRepository
      *  - appointments_no_show: زیرمجموعه با status=no_show
      *  - walk_in_today: ویزیت‌های امروز بدون نوبت (walk-in مستقل)
      *
+     * Phase 10: when trusted Location is provided, stats are per-Location
+     * (no cross-Location aggregation), including appointments and walk-ins.
+     *
      * @return array<string, int>
      */
-    public function statsFor(int $clinicId, ?string $visitDate = null, ?int $clinicianId = null): array
+    public function statsFor(int $clinicId, ?string $visitDate = null, ?int $clinicianId = null, ?int $locationId = null): array // phpcs:ignore Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingAfterOpen,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingBeforeClose,WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
     {
         $date = $visitDate ?? gmdate('Y-m-d');
         // ADR-0030/Part1: Scope اختیاری پزشک — وقتی Actor «پزشکِ متصل» است،
@@ -223,6 +236,10 @@ final class VisitRepository
         if ($clinicianId !== null) {
             $visitWhere .= ' AND clinician_id = %d';
             $visitParams[] = $clinicianId;
+        }
+        if ($locationId !== null) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- legacy PSR-style, established contract
+            $visitWhere .= ' AND location_id = %d'; // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
+            $visitParams[] = $locationId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
         }
         $rows = $this->db->fetchAll(
             'SELECT status, COUNT(*) AS n FROM ' . $this->db->table('cpms_visits') .
@@ -247,6 +264,10 @@ final class VisitRepository
             $apptWhere .= ' AND clinician_id = %d';
             $apptParams[] = $clinicianId;
         }
+        if ($locationId !== null) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- legacy PSR-style, established contract
+            $apptWhere .= ' AND location_id = %d'; // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
+            $apptParams[] = $locationId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
+        }
         $appts = $this->db->fetchRow(
             'SELECT COUNT(*) AS total, COALESCE(SUM(status = %s), 0) AS no_show' .
             ' FROM ' . $this->db->table('cpms_appointments') .
@@ -262,6 +283,10 @@ final class VisitRepository
             $walkInWhere .= ' AND clinician_id = %d';
             $walkInParams[] = $clinicianId;
         }
+        if ($locationId !== null) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- legacy PSR-style, established contract
+            $walkInWhere .= ' AND location_id = %d'; // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
+            $walkInParams[] = $locationId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
+        }
         $walkIn = $this->db->fetchRow(
             'SELECT COUNT(*) AS n FROM ' . $this->db->table('cpms_visits') .
             ' WHERE ' . $walkInWhere,
@@ -276,16 +301,22 @@ final class VisitRepository
      * Feed رویدادهای Real-time (R1 — ADR-0007): تغییرات صف امروز بعد از event_id.
      * محدود به ویزیت‌های امروز — فید «صف» است نه تاریخچه کامل.
      *
+     * Phase 10: optional Location-local day + trusted Location filtering, no cross-Location aggregation.
+     *
      * @return list<array<string, mixed>>
      */
-    public function eventsSince(int $clinicId, int $sinceEventId, int $limit = 200, ?int $clinicianId = null): array
+    public function eventsSince(int $clinicId, int $sinceEventId, int $limit = 200, ?int $clinicianId = null, ?string $visitDate = null, ?int $locationId = null): array // phpcs:ignore Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingAfterOpen,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingBeforeClose,WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
     {
         $where = 'h.id > %d AND v.clinic_id = %d AND v.visit_date = %s';
-        $params = [$sinceEventId, $clinicId, gmdate('Y-m-d')];
+        $params = [$sinceEventId, $clinicId, $visitDate ?? gmdate('Y-m-d')]; // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
         // ADR-0030/Part1: پزشکِ متصل فقط رویدادهای ویزیت‌های خودش را در Feed می‌بیند.
         if ($clinicianId !== null) {
             $where .= ' AND v.clinician_id = %d';
             $params[] = $clinicianId;
+        }
+        if ($locationId !== null) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- legacy PSR-style, established contract
+            $where .= ' AND v.location_id = %d'; // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment, keep readability
+            $params[] = $locationId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
         }
         $rows = $this->db->fetchAll(
             'SELECT h.id, h.visit_id, h.from_status, h.to_status, h.changed_at,' .
@@ -302,14 +333,19 @@ final class VisitRepository
 
     /**
      * بیشینه id رویداد امروز کلینیک — ETag ورژن صف (R1).
+     * Phase 10: optional Location-local day + trusted Location.
      */
-    public function lastEventId(int $clinicId, ?string $visitDate = null, ?int $clinicianId = null): int
+    public function lastEventId(int $clinicId, ?string $visitDate = null, ?int $clinicianId = null, ?int $locationId = null): int // phpcs:ignore Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingAfterOpen,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingBeforeClose,WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
     {
         $where = 'v.clinic_id = %d AND v.visit_date = %s';
         $params = [$clinicId, $visitDate ?? gmdate('Y-m-d')];
         if ($clinicianId !== null) {
             $where .= ' AND v.clinician_id = %d';
             $params[] = $clinicianId;
+        }
+        if ($locationId !== null) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- legacy PSR-style, established contract
+            $where .= ' AND v.location_id = %d'; // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment, keep readability
+            $params[] = $locationId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
         }
         $row = $this->db->fetchRow(
             'SELECT MAX(h.id) AS max_id' .

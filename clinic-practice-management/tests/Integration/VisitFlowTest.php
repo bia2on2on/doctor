@@ -350,7 +350,14 @@ final class VisitFlowTest extends WP_UnitTestCase
         $express = App::visitService()->checkIn($this->secretaryUserId, $expressPatientId, $apptId);
 
         $repo = new VisitRepository(App::db());
-        $queue = $repo->queueFor(1, null, ['waiting']);
+        // Use Location-local operational date (Asia/Tehran) to match walkIn/checkIn
+        try {
+            $tz = new \DateTimeZone('Asia/Tehran');
+            $opDate = (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->setTimezone($tz)->format('Y-m-d');
+        } catch ( \Throwable $e ) {
+            $opDate = gmdate('Y-m-d');
+        }
+        $queue = $repo->queueFor(1, null, ['waiting'], $opDate);
         $this->assertCount(2, $queue);
         $this->assertSame((int) $express['id'], (int) $queue[0]['id']); // سر صف
         $this->assertSame((int) $normal['id'], (int) $queue[1]['id']);

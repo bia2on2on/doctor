@@ -67,6 +67,7 @@ use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Domain\Licensing\LicenseGate;
 use ClinicCore\Domain\Licensing\LicensePolicy;
 use ClinicCore\Domain\Licensing\SignedLicenseGate;
+use ClinicCore\Frontend\DoctorPortalShell;
 use ClinicCore\Frontend\PublicBookingShortcode;
 use ClinicCore\Infrastructure\Audit\AuditLogger;
 use ClinicCore\Infrastructure\Backup\BackupSqlDumper;
@@ -114,6 +115,7 @@ use ClinicCore\Infrastructure\Update\HttpUpdateMetadataGateway;
 use ClinicCore\Migrations\MigrationRunner;
 use ClinicCore\Rest\BookingController;
 use ClinicCore\Rest\ClinicalController;
+use ClinicCore\Rest\DoctorPortalController;
 use ClinicCore\Rest\FilesController;
 use ClinicCore\Rest\FinanceController;
 use ClinicCore\Rest\HandwritingController;
@@ -187,6 +189,7 @@ final class App
         // جداست و هیچ REST endpoint جدیدی ثبت نمی‌کند — فقط از A1/A4 موجودِ
         // عمومی استفاده می‌شود.
         PublicBookingShortcode::register();
+        DoctorPortalShell::register();
 
         if (self::$booted) {
             return;
@@ -216,6 +219,7 @@ final class App
             (new HandwritingController(self::handwritingService()))->register_routes();
             (new NotificationsController(self::notificationService()))->register_routes();
             (new ReportsController(self::reportService(), self::exportService()))->register_routes();
+            ( new DoctorPortalController( new \ClinicCore\Infrastructure\Repository\MembershipRepository( self::db() ) ) )->register_routes();
             // Endpointهای فازهای بعد (F8+) — مطابق API Contract.
         });
 
