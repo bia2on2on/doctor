@@ -814,8 +814,9 @@ def prove_queue_actions(page, state, doctor, act, skip, label):
         1 for req in state["reqs"]
         if req["method"] == "GET" and req["route"].endswith(record_suffix)
     )
+    workspace_red_error = None
     if record_reads_after != record_reads_before + 1:
-        raise RuntimeError(
+        workspace_red_error = (
             f"{label} G1 RED: selecting current Visit {act} from its Doctor Portal queue row "
             f"must make exactly one GET to the existing E7 /visits/{{id}}/record contract; "
             f"expected {record_reads_before + 1} total read(s), observed {record_reads_after}"
@@ -830,21 +831,23 @@ def prove_queue_actions(page, state, doctor, act, skip, label):
     ]
     if not record_responses or record_responses[-1]["status"] != 200:
         actual = record_responses[-1]["status"] if record_responses else "no response"
-        raise RuntimeError(
-            f"{label} G1 RED: selected Visit {act} did not open its existing E7 record; "
-            f"expected HTTP 200, observed {actual}"
-        )
-    record_headers = record_requests[-1]["headers"]
-    required_scope = {
-        "x-wp-nonce": bool(record_headers.get("x-wp-nonce")),
-        "x-cpms-clinic-id": record_headers.get("x-cpms-clinic-id") == str(doctor["clinic_id"]),
-        "x-cpms-location-id": record_headers.get("x-cpms-location-id") == str(doctor["location_id"]),
-    }
-    if not all(required_scope.values()):
-        raise RuntimeError(
-            f"{label} G1 RED: E7 workspace read must reuse the portal nonce and trusted Clinic/Location; "
-            f"scope checks={required_scope}"
-        )
+        if workspace_red_error is None:
+            workspace_red_error = (
+                f"{label} G1 RED: selected Visit {act} did not open its existing E7 record; "
+                f"expected HTTP 200, observed {actual}"
+            )
+    if record_requests:
+        record_headers = record_requests[-1]["headers"]
+        required_scope = {
+            "x-wp-nonce": bool(record_headers.get("x-wp-nonce")),
+            "x-cpms-clinic-id": record_headers.get("x-cpms-clinic-id") == str(doctor["clinic_id"]),
+            "x-cpms-location-id": record_headers.get("x-cpms-location-id") == str(doctor["location_id"]),
+        }
+        if not all(required_scope.values()) and workspace_red_error is None:
+            workspace_red_error = (
+                f"{label} G1 RED: E7 workspace read must reuse the portal nonce and trusted Clinic/Location; "
+                f"scope checks={required_scope}"
+            )
 
     # The backend still guards the invalid second START.
     r2 = portal_fetch(page, doctor, "POST", f"/visits/{act}/start")
@@ -890,6 +893,10 @@ def prove_queue_actions(page, state, doctor, act, skip, label):
         if not posts:
             raise RuntimeError(f"{label} no successful POST {suffix}")
     info(f"queue-actions-{label} act={act} skip={skip} room=1 recall_count=1 double_submit=1 empty_skip_blocked=1")
+    # Defer this one product RED until after the fixture's skip mutation completes,
+    # so later viewport runs are not contaminated by partially-consumed fixture rows.
+    if workspace_red_error is not None:
+        raise RuntimeError(workspace_red_error)
 
 
 def prove_location_actions(page, state, doctor, label):
