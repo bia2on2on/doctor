@@ -566,9 +566,12 @@ function scopeHeaders(){
 }
 
 // ================= Visit Workspace (Phase 10 Slice 3) =================
-// Selection = queue row visit_id (selector only). The read reuses the
-// established E7 GET /visits/{id}/record contract with the portal nonce and
-// the trusted Clinic/Location selector headers; authority stays server-side.
+// Selection = queue row visit_id (selector only). The read goes through the
+// Doctor Portal workspace boundary (GET /doctor/portal/visits/{id}/record),
+// which reuses the established E7 record behavior after the portal-specific
+// guard (server-derived clinician identity + trusted Clinic + trusted
+// operational Location + Visit ownership) — with the portal nonce and the
+// trusted Clinic/Location selector headers; authority stays server-side.
 
 function closeWorkspace(){
     state.workspaceVisitId = null;
@@ -611,7 +614,7 @@ function openWorkspace(visitId){
     var openedVisitId = visitId;
     var clinicId = state.selectedClinicId;
     var locationId = state.selectedLocationId;
-    api('GET', '/visits/' + encodeURIComponent(String(visitId)) + '/record', null, scopeHeaders()).then(function(r){
+    api('GET', '/doctor/portal/visits/' + encodeURIComponent(String(visitId)) + '/record', null, scopeHeaders()).then(function(r){
         // Stale guard: scope or selection changed while in flight.
         if ( state.workspaceVisitId !== openedVisitId || state.selectedClinicId !== clinicId || state.selectedLocationId !== locationId ) return;
         hide(qs('[data-role="workspace-loading"]'));
@@ -717,7 +720,7 @@ function submitWorkspaceNote(){
     }
     setNoteSubmitBusy(true);
     var submittedVisitId = visitId;
-    api('POST', '/visits/' + encodeURIComponent(String(visitId)) + '/notes', {
+    api('POST', '/doctor/portal/visits/' + encodeURIComponent(String(visitId)) + '/notes', {
         category: 'clinical_note',
         visibility: visibility,
         content_text: content

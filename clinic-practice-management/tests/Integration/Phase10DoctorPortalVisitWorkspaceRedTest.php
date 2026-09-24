@@ -1,35 +1,41 @@
 <?php
 /**
- * Phase 10 Doctor Portal Visit Workspace — TEST-ONLY RED.
+ * Phase 10 Doctor Portal Visit Workspace — BLOCKER FIX.
  *
  * Slice: Doctor Portal opens the selected current Visit using existing visit_id;
  * display bounded safe patient/Visit header; create/read notes using existing
  * backend contract (doctor_private, patient_visible); list current-Visit notes
- * in the Doctor Portal; strengthen Doctor Portal clinical access where necessary
- * so raw visit_id is selector only (authenticated doctor identity + trusted Clinic
+ * in the Doctor Portal; Doctor Portal clinical access is portal-scoped:
+ * raw visit_id is selector only (authenticated doctor identity + trusted Clinic
  * + trusted operational Location + own-doctor/Visit relationship).
  *
- * Live context (verified, not assumed):
- * - Phase 10 = IN PROGRESS; Slice 1 (PR #113) + Slice 2 (PR #117) = CLOSED
- * - Next bounded capability: Doctor visit workspace — NOT IMPLEMENTED
- * - Latest migration: 2026_09_20_0022_slot_holds_patient_binding.php (no 0023)
- * - Existing backend: E7 record, E8/E9 notes, VisitMachine, ClinicalService
- * - Existing Doctor Portal: independent shell, context/clinics/locations REST,
- *   queue actions (call/start/recall/skip) — no visit workspace UI
+ * Blocker evidence (independent review):
+ * - shared E7/E8 only enforced Clinic-scoped authorization; did NOT enforce
+ *   doctor ownership nor visit.location_id matching trusted operational Location;
+ * - G2.B incorrectly expected 200 for another same-Clinic doctor's Visit via
+ *   the portal boundary;
+ * - G2.D incorrectly expected 200 for another Location's Visit via the portal.
  *
- * OWNER-APPROVED PRODUCT DECISIONS FOR THIS SLICE:
- * 1. Complete/Reopen is OUT. It belongs to a later slice.
- * 2. Note edit/version UI is OUT. This slice is create/read only.
- * 3. Documentation cadence: do not create routine per-slice documentation churn.
+ * Contract for DOCTOR PORTAL Visit Workspace only:
+ *   authenticated WP user
+ *   + server-derived clinician identity
+ *   + active trusted Clinic
+ *   + trusted operational Location (0=>fail closed, 1=>auto, N>1=>explicit required,
+ *     foreign/inactive/unassigned=>fail closed)
+ *   + Visit owned by that clinician and at that Location
+ *   = authorized.
+ * Raw visit_id/location_id remain selectors only; cross-doctor and foreign-
+ * Location selectors fail non-enumerating (404 CLINIC_NOT_FOUND). Shared/admin/
+ * staff E7/E8 behavior stays clinic-scoped only and is preserved here as
+ * explicit regression proof.
  *
- * Existing E7/E8/patient REST assertions in this file are regression guards,
- * not product REDs. The missing queue-to-workspace behavior is tested in the
- * existing real-browser pilot (bin/pilot-doctor-portal.py) using the existing
- * queue row and established E7 record route; no new REST path is assumed.
- *
- * Product code: NO IMPLEMENTATION in this RED task. This file retains only
- * already-green backend guards; the specific missing product behavior is
- * asserted by the existing Doctor Portal browser pilot.
+ * Live context:
+ * - Latest migration: 2026_09_20_0022 (no 0023)
+ * - Backend: E7 record, E8 notes, VisitMachine, ClinicalService
+ * - Doctor Portal: shell + context/clinics/locations REST + workspace UI
+ *   (queue row -> GET /doctor/portal/visits/{id}/record, POST .../notes)
+ * - Portal workspace routes reuse E7/E8 after the portal guard; shared
+ *   E7/E8 contract is untouched.
  */
 
 declare(strict_types=1);
@@ -49,6 +55,10 @@ use WP_UnitTestCase;
 final class Phase10DoctorPortalVisitWorkspaceRedTest extends WP_UnitTestCase
 {
     private const REST_NS = 'clinic/v1';
+    private const PORTAL_RECORD = 'clinic/v1/doctor/portal/visits/%d/record';
+    private const PORTAL_NOTES  = 'clinic/v1/doctor/portal/visits/%d/notes';
+    private const SHARED_RECORD = 'clinic/v1/visits/%d/record';
+    private const SHARED_NOTES  = 'clinic/v1/visits/%d/notes';
     private const FIXED_UTC = '2026-03-14 10:00:00';
     private const FIXED_UTC_DATE = '2026-03-14';
     private const TZ_TEHRAN = 'Asia/Tehran';
@@ -97,22 +107,17 @@ final class Phase10DoctorPortalVisitWorkspaceRedTest extends WP_UnitTestCase
         $headers = $this->scopeHeaders($fx['clinic'], $fx['location']);
         wp_set_current_user($fx['doctor']);
 
-        // Create a visit in the queue that the doctor owns
         $patient = $this->insertPatient($fx['clinic'], 'g1_patient');
         $visit = $this->insertVisit($patient, $fx['clinician'], $fx['clinic'], $fx['location'], 'in_consultation');
 
-        // Green regression guard for the established E7 record contract. Portal
-        // queue-to-workspace wiring is exercised in the existing browser pilot.
-        $rRecord = $this->dispatch('GET', '/' . self::REST_NS . '/visits/' . $visit . '/record', [], $headers);
-        
-        // This should work for the own doctor with proper scope
-        self::assertSame(200, $rRecord->get_status(), 
-            'G1: Doctor can access own visit record with proper scope, got ' . $rRecord->get_status() . '/' . $this->errCode($rRecord));
-        
-        $payload = $this->payload($rRecord);
-        self::assertArrayHasKey('visit', $payload, 'G1: Record payload contains visit data');
-        self::assertSame($visit, (int) $payload['visit']['id'], 'G1: Correct visit returned');
-        
+        // Portal boundary: own doctor + trusted Clinic + trusted Location + own Visit => success.
+        $rPortal = $this->dispatch('GET', '/' . sprintf(self::PORTAL_RECORD, $visit), [], $headers);
+        self::assertSame(200, $rPortal->get_status(),
+            'G1: Doctor can access own visit via Doctor Portal workspace, got ' . $rPortal->get_status() . '/' . $this->errCode($rPortal));
+
+        $payload = $this->payload($rPortal);
+        self::assertArrayHasKey('visit', $payload, 'G1: Portal record payload contains visit data');
+        self::assertSame($visit, (int) $payload['visit']['id'], 'G1: Correct visit returned via portal');
     }
 
     // ============ Group 2 — PORTAL AUTHORITY / ISOLATION ============
@@ -121,62 +126,132 @@ final class Phase10DoctorPortalVisitWorkspaceRedTest extends WP_UnitTestCase
     {
         $fx = $this->makePortalStage('g2');
         $headers = $this->scopeHeaders($fx['clinic'], $fx['location']);
-        
-        // Create visits for different scenarios
+
+        // Own visit
         $patientOwn = $this->insertPatient($fx['clinic'], 'g2_own');
         $visitOwn = $this->insertVisit($patientOwn, $fx['clinician'], $fx['clinic'], $fx['location'], 'in_consultation');
-        
-        // Create another doctor in the same clinic
+
+        // Another doctor in same clinic
         $doctorB = $this->makeUser('g2_doc_b', RolesAndCapabilities::ROLE_DOCTOR);
         $clinicianB = $this->insertClinician('Dr G2 B', $fx['clinic'], 1, $doctorB);
         cpms_test_seed_membership($doctorB, $fx['clinic'], 'cpms_doctor');
-        
+
         $patientOther = $this->insertPatient($fx['clinic'], 'g2_other');
         $visitOther = $this->insertVisit($patientOther, $clinicianB, $fx['clinic'], $fx['location'], 'in_consultation');
-        
-        // Create a foreign clinic
+
+        // Foreign clinic
         $org = $this->insertOrg('G2 Foreign Org');
         $clinicForeign = $this->insertClinicInOrg('G2 Foreign Clinic', $org, self::TZ_TEHRAN);
         $locForeign = $this->insertLocation($clinicForeign, 'G2 Foreign Loc', self::TZ_TEHRAN, 1);
-        
+
         $clinicianForeign = $this->insertClinician('Dr G2 Foreign', $clinicForeign, 1, $fx['doctor']);
         $patientForeign = $this->insertPatient($clinicForeign, 'g2_foreign');
         $visitForeign = $this->insertVisit($patientForeign, $clinicianForeign, $clinicForeign, $locForeign, 'in_consultation');
-        
-        // A. Own doctor + own clinic + own location + own visit => SUCCESS
-        wp_set_current_user($fx['doctor']);
-        $rOwn = $this->dispatch('GET', '/' . self::REST_NS . '/visits/' . $visitOwn . '/record', [], $headers);
-        self::assertSame(200, $rOwn->get_status(), 'G2: Own doctor accesses own visit');
-        
-        // B. Shared E7 behavior remains clinic-scoped, not globally tightened by the portal slice.
-        wp_set_current_user($doctorB);
-        $rCrossDoctor = $this->dispatch('GET', '/' . self::REST_NS . '/visits/' . $visitOwn . '/record', [], $headers);
-        self::assertSame(200, $rCrossDoctor->get_status(), 'G2: Existing shared E7 access remains available to authorized clinic doctors');
-        
-        // C. Foreign clinic access => DENIED (non-enumerating 404)
-        wp_set_current_user($fx['doctor']);
-        $rForeignClinic = $this->dispatch('GET', '/' . self::REST_NS . '/visits/' . $visitForeign . '/record', [], $headers);
-        self::assertSame(404, $rForeignClinic->get_status(), 'G2: Foreign clinic access denied with 404');
-        self::assertSame('CLINIC_NOT_FOUND', $this->errCode($rForeignClinic), 'G2: Non-enumerating 404');
-        
-        // D. E7 is a shared legacy service and has no operational-Location boundary;
-        // retain its established behavior rather than imposing portal isolation globally.
+
+        // Other Location in same Clinic
         $locOther = $this->insertLocation($fx['clinic'], 'G2 Other Loc', self::TZ_TEHRAN, 0);
         $patientOtherLoc = $this->insertPatient($fx['clinic'], 'g2_otherloc');
         $visitOtherLoc = $this->insertVisit($patientOtherLoc, $fx['clinician'], $fx['clinic'], $locOther, 'in_consultation');
-        $rSharedLocation = $this->dispatch('GET', '/' . self::REST_NS . '/visits/' . $visitOtherLoc . '/record', [], $headers);
-        self::assertSame(200, $rSharedLocation->get_status(), 'G2: Existing shared E7 behavior is not globally tightened by portal Location rules');
-        
+
+        // A. Own doctor + own clinic + own location + own visit => portal SUCCESS
+        wp_set_current_user($fx['doctor']);
+        $rOwn = $this->dispatch('GET', '/' . sprintf(self::PORTAL_RECORD, $visitOwn), [], $headers);
+        self::assertSame(200, $rOwn->get_status(), 'G2.A: Portal own visit succeeds');
+
+        // B. Same Clinic but another doctor => Doctor Portal record read non-enumerating denial (404).
+        // The portal boundary must NOT return 200 for another doctor's Visit.
+        wp_set_current_user($fx['doctor']);
+        $rCrossDoctorPortal = $this->dispatch('GET', '/' . sprintf(self::PORTAL_RECORD, $visitOther), [], $headers);
+        self::assertSame(404, $rCrossDoctorPortal->get_status(), 'G2.B-portal: Portal cross-doctor visit denied non-enumerating');
+        self::assertSame('CLINIC_NOT_FOUND', $this->errCode($rCrossDoctorPortal), 'G2.B-portal: non-enumerating 404');
+
+        // Preserve explicit regression: shared E7 remains clinic-scoped (200) and is NOT tightened globally.
+        // This proves we did not make shared/admin/staff globally doctor-owned.
+        wp_set_current_user($doctorB);
+        $rCrossDoctorShared = $this->dispatch('GET', '/' . sprintf(self::SHARED_RECORD, $visitOwn), [], $headers);
+        self::assertSame(200, $rCrossDoctorShared->get_status(), 'G2.B-shared: Shared E7 remains clinic-scoped (200) for same-clinic doctor');
+
+        // C. Foreign clinic access => DENIED (non-enumerating 404) via both portal and shared.
+        wp_set_current_user($fx['doctor']);
+        $rForeignPortal = $this->dispatch('GET', '/' . sprintf(self::PORTAL_RECORD, $visitForeign), [], $headers);
+        self::assertSame(404, $rForeignPortal->get_status(), 'G2.C-portal: Portal foreign clinic denied 404');
+        self::assertSame('CLINIC_NOT_FOUND', $this->errCode($rForeignPortal), 'G2.C-portal: non-enumerating 404');
+        $rForeignShared = $this->dispatch('GET', '/' . sprintf(self::SHARED_RECORD, $visitForeign), [], $headers);
+        self::assertSame(404, $rForeignShared->get_status(), 'G2.C-shared: Shared foreign clinic denied 404');
+
+        // D. Same Clinic but another Location => Portal non-enumerating denial (404).
+        // Shared E7 has no operational-Location boundary and stays 200 — do NOT tighten globally.
+        wp_set_current_user($fx['doctor']);
+        $rCrossLocPortal = $this->dispatch('GET', '/' . sprintf(self::PORTAL_RECORD, $visitOtherLoc), [], $headers);
+        self::assertSame(404, $rCrossLocPortal->get_status(), 'G2.D-portal: Portal cross-Location visit denied non-enumerating');
+        self::assertSame('CLINIC_NOT_FOUND', $this->errCode($rCrossLocPortal), 'G2.D-portal: non-enumerating 404');
+
+        $rCrossLocShared = $this->dispatch('GET', '/' . sprintf(self::SHARED_RECORD, $visitOtherLoc), [], $headers);
+        self::assertSame(200, $rCrossLocShared->get_status(), 'G2.D-shared: Shared E7 is not globally Location-strict (200)');
+
         // E. Prove stricter behavior is Doctor-Portal-specific and does not regress shared/admin staff
-        // Secretary should still be able to access visits through their established endpoints
         $secretary = $this->makeUser('g2_secretary', RolesAndCapabilities::ROLE_SECRETARY);
         cpms_test_seed_membership($secretary, $fx['clinic'], 'cpms_secretary');
-        
+
         wp_set_current_user($secretary);
-        $rSecretary = $this->dispatch('GET', '/' . self::REST_NS . '/visits/' . $visitOwn . '/record', [], $headers);
-        // Secretary access behavior should be preserved (may be 200 or 403 depending on existing contract)
-        // The key is that it's not broken by portal-specific changes
-        self::assertSame(403, $rSecretary->get_status(), 'G2: Existing shared E7 denial for secretaries is preserved');
+        $rSecretaryShared = $this->dispatch('GET', '/' . sprintf(self::SHARED_RECORD, $visitOwn), [], $headers);
+        self::assertSame(403, $rSecretaryShared->get_status(), 'G2.E-shared: Shared E7 denial for secretaries preserved (403)');
+
+        // Portal workspace for secretary must also be denied (doctor role required at permission check).
+        $rSecretaryPortal = $this->dispatch('GET', '/' . sprintf(self::PORTAL_RECORD, $visitOwn), [], $headers);
+        self::assertSame(403, $rSecretaryPortal->get_status(), 'G2.E-portal: Portal workspace denies secretary (403)');
+        self::assertSame('CLINIC_PERMISSION_DENIED', $this->errCode($rSecretaryPortal), 'G2.E-portal: portal secretary denial is permission boundary');
+    }
+
+    // ============ Group 2b — PORTAL NOTE CREATE AUTHORITY ============
+
+    public function testGroup2b_PortalNoteCreateAuthority(): void
+    {
+        $fx = $this->makePortalStage('g2b');
+        $headers = $this->scopeHeaders($fx['clinic'], $fx['location']);
+
+        $patientOwn = $this->insertPatient($fx['clinic'], 'g2b_own');
+        $visitOwn = $this->insertVisit($patientOwn, $fx['clinician'], $fx['clinic'], $fx['location'], 'in_consultation');
+
+        $doctorB = $this->makeUser('g2b_doc_b', RolesAndCapabilities::ROLE_DOCTOR);
+        $clinicianB = $this->insertClinician('Dr G2b B', $fx['clinic'], 1, $doctorB);
+        cpms_test_seed_membership($doctorB, $fx['clinic'], 'cpms_doctor');
+        $patientOther = $this->insertPatient($fx['clinic'], 'g2b_other');
+        $visitOther = $this->insertVisit($patientOther, $clinicianB, $fx['clinic'], $fx['location'], 'in_consultation');
+
+        $locOther = $this->insertLocation($fx['clinic'], 'G2b Other Loc', self::TZ_TEHRAN, 0);
+        $patientOtherLoc = $this->insertPatient($fx['clinic'], 'g2b_otherloc');
+        $visitOtherLoc = $this->insertVisit($patientOtherLoc, $fx['clinician'], $fx['clinic'], $locOther, 'in_consultation');
+
+        $noteBody = [
+            'category' => 'clinical_note',
+            'visibility' => 'patient_visible',
+            'content_text' => 'Portal note create test',
+        ];
+
+        // D. Same B/C denial applies to Doctor Portal note create.
+
+        // Cross-doctor note create via portal => 404 non-enumerating
+        wp_set_current_user($fx['doctor']);
+        $rCrossDoctorNotePortal = $this->dispatch('POST', '/' . sprintf(self::PORTAL_NOTES, $visitOther), $noteBody, $headers);
+        self::assertSame(404, $rCrossDoctorNotePortal->get_status(), 'G2b.D-portal: Portal note create cross-doctor denied 404');
+        self::assertSame('CLINIC_NOT_FOUND', $this->errCode($rCrossDoctorNotePortal), 'G2b.D-portal: non-enumerating 404 for note create');
+
+        // Cross-Location note create via portal => 404
+        $rCrossLocNotePortal = $this->dispatch('POST', '/' . sprintf(self::PORTAL_NOTES, $visitOtherLoc), $noteBody, $headers);
+        self::assertSame(404, $rCrossLocNotePortal->get_status(), 'G2b.D-portal: Portal note create cross-Location denied 404');
+        self::assertSame('CLINIC_NOT_FOUND', $this->errCode($rCrossLocNotePortal), 'G2b.D-portal: non-enumerating 404 for note create');
+
+        // Own note create via portal must succeed (prove portal note creation works when authorized)
+        $rOwnNotePortal = $this->dispatch('POST', '/' . sprintf(self::PORTAL_NOTES, $visitOwn), $noteBody, $headers);
+        self::assertSame(200, $rOwnNotePortal->get_status(), 'G2b.D-portal: Portal own note create succeeds');
+
+        // Shared note create remains clinic-scoped (200) for same-clinic doctor on own visit — not globally tightened.
+        // This uses the shared route with the same headers but the actor is the owning doctorB on his own visit.
+        wp_set_current_user($doctorB);
+        // doctorB's own visit is visitOther — give him headers for same clinic/location (he is member)
+        $rSharedOwnNote = $this->dispatch('POST', '/' . sprintf(self::SHARED_NOTES, $visitOther), $noteBody, $headers);
+        self::assertSame(200, $rSharedOwnNote->get_status(), 'G2b.D-shared: Shared E8 remains clinic-scoped for owning doctor');
     }
 
     // ============ Group 3 — SAFE HEADER ============
@@ -186,37 +261,31 @@ final class Phase10DoctorPortalVisitWorkspaceRedTest extends WP_UnitTestCase
         $fx = $this->makePortalStage('g3');
         $headers = $this->scopeHeaders($fx['clinic'], $fx['location']);
         wp_set_current_user($fx['doctor']);
-        
+
         $patient = $this->insertPatient($fx['clinic'], 'g3_patient');
         $visit = $this->insertVisit($patient, $fx['clinician'], $fx['clinic'], $fx['location'], 'in_consultation');
-        
-        $rRecord = $this->dispatch('GET', '/' . self::REST_NS . '/visits/' . $visit . '/record', [], $headers);
-        self::assertSame(200, $rRecord->get_status(), 'G3: Record accessible');
-        
+
+        // Portal header is bounded safe patient/Visit header from already-authorized medical-view.
+        $rRecord = $this->dispatch('GET', '/' . sprintf(self::PORTAL_RECORD, $visit), [], $headers);
+        self::assertSame(200, $rRecord->get_status(), 'G3: Portal record accessible');
+
         $payload = $this->payload($rRecord);
         self::assertArrayHasKey('patient', $payload, 'G3: Patient data present');
         self::assertArrayHasKey('visit', $payload, 'G3: Visit data present');
-        
-        // Required established patient/Visit fields can be presented
+
         $patientData = $payload['patient'];
         self::assertArrayHasKey('id', $patientData, 'G3: Patient ID present');
         self::assertArrayHasKey('full_name', $patientData, 'G3: Established medical view provides patient name');
-        
+
         $visitData = $payload['visit'];
         self::assertArrayHasKey('id', $visitData, 'G3: Visit ID present');
         self::assertArrayHasKey('status', $visitData, 'G3: Visit status present');
-        
-        // Existing E7 medical-view privacy regression guard. Portal header wiring
-        // is not represented by this shared endpoint assertion.
-        
+
         $sensitiveFields = ['mobile', 'national_id', 'address', 'emergency_contact', 'emergency_phone'];
         foreach ($sensitiveFields as $field) {
-            self::assertArrayNotHasKey($field, $patientData, 
-                'G3: Sensitive field "' . $field . '" must not be exposed in portal workspace header');
+            self::assertArrayNotHasKey($field, $patientData,
+                'G3: Sensitive field \"' . $field . '\" must not be exposed in portal workspace header');
         }
-        
-        // If the record endpoint currently exposes these fields, this is a RED
-        // The portal workspace must use a bounded safe header that excludes them
     }
 
     // ============ Group 4 — PRIVATE NOTE ============
@@ -226,31 +295,28 @@ final class Phase10DoctorPortalVisitWorkspaceRedTest extends WP_UnitTestCase
         $fx = $this->makePortalStage('g4');
         $headers = $this->scopeHeaders($fx['clinic'], $fx['location']);
         wp_set_current_user($fx['doctor']);
-        
+
         $patient = $this->insertPatient($fx['clinic'], 'g4_patient');
         $visit = $this->insertVisit($patient, $fx['clinician'], $fx['clinic'], $fx['location'], 'in_consultation');
-        
-        // Portal doctor can create doctor_private note on authorized Visit
+
+        // Portal doctor can create doctor_private note via portal boundary
         $noteBody = [
             'category' => 'clinical_note',
             'visibility' => 'doctor_private',
             'content_text' => 'Private clinical observation - not for patient',
         ];
-        
-        $rCreate = $this->dispatch('POST', '/' . self::REST_NS . '/visits/' . $visit . '/notes', $noteBody, $headers);
-        self::assertSame(200, $rCreate->get_status(), 'G4: Doctor can create private note');
-        
+
+        $rCreate = $this->dispatch('POST', '/' . sprintf(self::PORTAL_NOTES, $visit), $noteBody, $headers);
+        self::assertSame(200, $rCreate->get_status(), 'G4: Doctor can create private note via portal');
         $notePayload = $this->payload($rCreate);
         self::assertArrayHasKey('id', $notePayload, 'G4: Note ID returned');
         $noteId = (int) $notePayload['id'];
-        
-        // Portal doctor can read the private note
-        $rRecord = $this->dispatch('GET', '/' . self::REST_NS . '/visits/' . $visit . '/record', [], $headers);
-        self::assertSame(200, $rRecord->get_status(), 'G4: Record accessible');
-        
+
+        // Portal doctor can read the private note via portal record
+        $rRecord = $this->dispatch('GET', '/' . sprintf(self::PORTAL_RECORD, $visit), [], $headers);
+        self::assertSame(200, $rRecord->get_status(), 'G4: Portal record accessible');
         $recordPayload = $this->payload($rRecord);
-        self::assertArrayHasKey('notes', $recordPayload, 'G4: Notes present in record');
-        
+        self::assertArrayHasKey('notes', $recordPayload, 'G4: Notes present in portal record');
         $notes = $recordPayload['notes'];
         $foundPrivate = false;
         foreach ($notes as $note) {
@@ -260,18 +326,17 @@ final class Phase10DoctorPortalVisitWorkspaceRedTest extends WP_UnitTestCase
                 break;
             }
         }
-        self::assertTrue($foundPrivate, 'G4: Private note found in doctor record');
-        
-        // Patient-facing filtering is asserted against the established C6 API in G5.
-        
-        // Existing secretary-denial regression guard: the shared record route is not granted to secretaries.
+        self::assertTrue($foundPrivate, 'G4: Private note found in doctor portal record');
+
+        // Secretary denial preserved
         $secretary = $this->makeUser('g4_secretary', RolesAndCapabilities::ROLE_SECRETARY);
         cpms_test_seed_membership($secretary, $fx['clinic'], 'cpms_secretary');
-        
+
         wp_set_current_user($secretary);
-        $rSecretaryRecord = $this->dispatch('GET', '/' . self::REST_NS . '/visits/' . $visit . '/record', [], $headers);
-        
-        self::assertSame(403, $rSecretaryRecord->get_status(), 'G4: Secretary cannot access the doctor clinical record endpoint');
+        $rSecretaryPortal = $this->dispatch('GET', '/' . sprintf(self::PORTAL_RECORD, $visit), [], $headers);
+        self::assertSame(403, $rSecretaryPortal->get_status(), 'G4: Secretary cannot access portal clinical record');
+        $rSecretaryShared = $this->dispatch('GET', '/' . sprintf(self::SHARED_RECORD, $visit), [], $headers);
+        self::assertSame(403, $rSecretaryShared->get_status(), 'G4: Secretary cannot access shared clinical record (regression)');
     }
 
     // ============ Group 5 — PATIENT-VISIBLE NOTE ============
@@ -281,43 +346,33 @@ final class Phase10DoctorPortalVisitWorkspaceRedTest extends WP_UnitTestCase
         $fx = $this->makePortalStage('g5');
         $headers = $this->scopeHeaders($fx['clinic'], $fx['location']);
         wp_set_current_user($fx['doctor']);
-        
+
         $patient = $this->insertPatient($fx['clinic'], 'g5_patient');
         $visit = $this->insertVisit($patient, $fx['clinician'], $fx['clinic'], $fx['location'], 'in_consultation');
-        
-        // Authorized portal creation uses patient_visible
+
         $noteBody = [
             'category' => 'clinical_note',
             'visibility' => 'patient_visible',
             'content_text' => 'Patient can see this note',
         ];
-        
-        $rCreate = $this->dispatch('POST', '/' . self::REST_NS . '/visits/' . $visit . '/notes', $noteBody, $headers);
-        self::assertSame(200, $rCreate->get_status(), 'G5: Doctor can create patient-visible note');
-        
+
+        $rCreate = $this->dispatch('POST', '/' . sprintf(self::PORTAL_NOTES, $visit), $noteBody, $headers);
+        self::assertSame(200, $rCreate->get_status(), 'G5: Doctor can create patient-visible note via portal');
         $notePayload = $this->payload($rCreate);
         $noteId = (int) $notePayload['id'];
-        
-        // Verify the note is patient_visible
         self::assertSame('patient_visible', $notePayload['visibility'], 'G5: Note is patient_visible');
-        
-        // Existing patient-visible note contract, exercised through patient Visit Detail.
-        // This requires checking that the patient portal can see this note
-        // through C5/C6/C7 endpoints
-        
-        // Create a private note as well
+
         $privateBody = [
             'category' => 'clinical_note',
             'visibility' => 'doctor_private',
             'content_text' => 'Private note - should not leak to patient',
         ];
-        
-        $rPrivate = $this->dispatch('POST', '/' . self::REST_NS . '/visits/' . $visit . '/notes', $privateBody, $headers);
-        self::assertSame(200, $rPrivate->get_status(), 'G5: Private note created');
+
+        $rPrivate = $this->dispatch('POST', '/' . sprintf(self::PORTAL_NOTES, $visit), $privateBody, $headers);
+        self::assertSame(200, $rPrivate->get_status(), 'G5: Private note created via portal');
         $privateNoteId = (int) $this->payload($rPrivate)['id'];
 
-        // Verify the established patient Visit Detail contract exposes only the
-        // patient-visible note; this is a guard over existing server-side filtering.
+        // Patient Visit Detail still filters to patient_visible only (existing contract)
         $patientUser = $this->makeUser('g5_patient_user', RolesAndCapabilities::ROLE_PATIENT);
         global $wpdb;
         $mobile = (string) $wpdb->get_var($wpdb->prepare(
@@ -335,16 +390,12 @@ final class Phase10DoctorPortalVisitWorkspaceRedTest extends WP_UnitTestCase
         ]);
         wp_set_current_user($patientUser);
         $rPatientDetail = $this->dispatch('GET', '/' . self::REST_NS . '/visits/' . $visit);
-        self::assertSame(200, $rPatientDetail->get_status(), 'G5: Established patient Visit Detail is accessible to linked patient');
+        self::assertSame(200, $rPatientDetail->get_status(), 'G5: Established patient Visit Detail accessible to linked patient');
         $patientPayload = $this->payload($rPatientDetail);
         self::assertCount(1, $patientPayload['notes'], 'G5: Patient sees only one visible note');
         self::assertSame($noteId, (int) $patientPayload['notes'][0]['id']);
         self::assertSame('patient_visible', $patientPayload['notes'][0]['visibility']);
-        self::assertNotSame($privateNoteId, (int) $patientPayload['notes'][0]['id'], 'G5: Private note is not exposed');
-
-        // No Organization Identity behavior is exercised or activated in this guard.
-        // The note creation should not activate Organization Identity infrastructure
-        // This is a guard to ensure we don't accidentally enable it
+        self::assertNotSame($privateNoteId, (int) $patientPayload['notes'][0]['id'], 'G5: Private note not exposed to patient');
     }
 
     // ============ Group 6 — PORTAL UI WIRING CONTRACT ============
@@ -354,73 +405,166 @@ final class Phase10DoctorPortalVisitWorkspaceRedTest extends WP_UnitTestCase
         $fx = $this->makePortalStage('g6');
         $headers = $this->scopeHeaders($fx['clinic'], $fx['location']);
         wp_set_current_user($fx['doctor']);
-        
+
         $patient = $this->insertPatient($fx['clinic'], 'g6_patient');
         $visit = $this->insertVisit($patient, $fx['clinician'], $fx['clinic'], $fx['location'], 'in_consultation');
-        
-        // Existing note-visibility validation guard: only the two supported values are accepted.
-        // The portal UI must provide these two options and no others
-        
-        // Test that invalid visibility values are rejected
+
         $invalidVisibilities = ['admin_only', 'staff_visible', 'public', ''];
-        
+
         foreach ($invalidVisibilities as $invalidVis) {
             $noteBody = [
                 'category' => 'clinical_note',
                 'visibility' => $invalidVis,
                 'content_text' => 'Test note',
             ];
-            
-            $rInvalid = $this->dispatch('POST', '/' . self::REST_NS . '/visits/' . $visit . '/notes', $noteBody, $headers);
-            self::assertSame(422, $rInvalid->get_status(), 
-                'G6: Invalid visibility "' . $invalidVis . '" rejected');
+
+            $rInvalid = $this->dispatch('POST', '/' . sprintf(self::PORTAL_NOTES, $visit), $noteBody, $headers);
+            self::assertSame(422, $rInvalid->get_status(),
+                'G6: Portal invalid visibility \"' . $invalidVis . '\" rejected');
             self::assertSame('CLINIC_VALIDATION_FAILED', $this->errCode($rInvalid),
                 'G6: Validation failure for invalid visibility');
         }
-        
-        // Test that valid visibility values are accepted
+
         $validVisibilities = ['doctor_private', 'patient_visible'];
-        
+
         foreach ($validVisibilities as $validVis) {
             $noteBody = [
                 'category' => 'clinical_note',
                 'visibility' => $validVis,
                 'content_text' => 'Test note with ' . $validVis,
             ];
-            
-            $rValid = $this->dispatch('POST', '/' . self::REST_NS . '/visits/' . $visit . '/notes', $noteBody, $headers);
+
+            $rValid = $this->dispatch('POST', '/' . sprintf(self::PORTAL_NOTES, $visit), $noteBody, $headers);
             self::assertSame(200, $rValid->get_status(),
-                'G6: Valid visibility "' . $validVis . '" accepted');
+                'G6: Portal valid visibility \"' . $validVis . '\" accepted');
         }
-        
-        // Existing REST nonce and trusted-scope regression guards.
-        // Verify that requests without proper nonce are rejected
-        $rNoNonce = $this->dispatch('POST', '/' . self::REST_NS . '/visits/' . $visit . '/notes', [
+
+        $rNoNonce = $this->dispatch('POST', '/' . sprintf(self::PORTAL_NOTES, $visit), [
             'category' => 'clinical_note',
             'visibility' => 'patient_visible',
             'content_text' => 'Test',
-        ], $headers, false); // withNonce = false
-        
-        self::assertNotSame(201, $rNoNonce->get_status(), 'G6: Request without nonce rejected');
-        
-        // UI busy/error handling remains browser acceptance for the implementation stage.
-        
-        // Test that missing required fields are rejected
-        $rMissingCategory = $this->dispatch('POST', '/' . self::REST_NS . '/visits/' . $visit . '/notes', [
+        ], $headers, false);
+
+        self::assertNotSame(201, $rNoNonce->get_status(), 'G6: Portal request without nonce rejected');
+        self::assertContains($rNoNonce->get_status(), [401, 403], 'G6: Portal nonce rejection is 401/403');
+
+        $rMissingCategory = $this->dispatch('POST', '/' . sprintf(self::PORTAL_NOTES, $visit), [
             'visibility' => 'patient_visible',
             'content_text' => 'Test',
         ], $headers);
-        
-        self::assertContains($rMissingCategory->get_status(), [400, 422], 'G6: Missing category rejected');
-        
-        $rMissingContent = $this->dispatch('POST', '/' . self::REST_NS . '/visits/' . $visit . '/notes', [
+
+        self::assertContains($rMissingCategory->get_status(), [400, 422], 'G6: Portal missing category rejected');
+
+        $rMissingContent = $this->dispatch('POST', '/' . sprintf(self::PORTAL_NOTES, $visit), [
             'category' => 'clinical_note',
             'visibility' => 'patient_visible',
         ], $headers);
-        
-        self::assertContains($rMissingContent->get_status(), [400, 422], 'G6: Missing content rejected');
-        
-        // Complete/Reopen and note-edit controls are out of this create/read slice.
+
+        self::assertContains($rMissingContent->get_status(), [400, 422], 'G6: Portal missing content rejected');
+    }
+
+    // ============ Group 7 — LOCATION POLICY (E + F) ============
+
+    public function testGroup7_PortalLocationPolicy(): void
+    {
+        // E. >1 eligible Location requires explicit trusted Location before Visit access.
+        $fxMulti = $this->makePortalStage('g7m');
+        $loc2 = $this->insertLocation($fxMulti['clinic'], 'G7 Second Loc', self::TZ_TEHRAN, 0);
+        // Now eligible = 2 (both active, scope_mode clinic). Portal without explicit Location must fail.
+        $patientMulti = $this->insertPatient($fxMulti['clinic'], 'g7m_patient');
+        $visitMulti = $this->insertVisit($patientMulti, $fxMulti['clinician'], $fxMulti['clinic'], $fxMulti['location'], 'in_consultation');
+
+        wp_set_current_user($fxMulti['doctor']);
+        // No Location header => portal must require explicit Location (400 with field=location_id)
+        $headersNoLoc = $this->scopeHeaders($fxMulti['clinic'], null);
+        $rNoLoc = $this->dispatch('GET', '/' . sprintf(self::PORTAL_RECORD, $visitMulti), [], $headersNoLoc);
+        self::assertSame(400, $rNoLoc->get_status(), 'G7.E: Portal N>1 without explicit Location requires 400');
+        self::assertSame('CLINIC_SCOPE_REQUIRED', $this->errCode($rNoLoc), 'G7.E: Location required code');
+        $dataNoLoc = $rNoLoc->get_data();
+        // Envelope: error data is inside 'data' or directly? Inspect via errData helper
+        // We check that the response carries field=location_id reason=location_required and does NOT leak eligible IDs.
+        $rawNoLoc = $this->rawErrorData($rNoLoc);
+        self::assertSame('location_id', $rawNoLoc['field'] ?? null, 'G7.E: field=location_id');
+        self::assertSame('location_required', $rawNoLoc['reason'] ?? null, 'G7.E: reason=location_required');
+        self::assertArrayNotHasKey('eligible_location_ids', $rawNoLoc, 'G7.E: must not leak eligible IDs');
+        self::assertArrayNotHasKey('eligible', $rawNoLoc, 'G7.E: must not leak eligible IDs');
+
+        // With explicit trusted Location, portal succeeds (and auto-resolution with 1 location also succeeds).
+        $headersWithLoc = $this->scopeHeaders($fxMulti['clinic'], $fxMulti['location']);
+        $rWithLoc = $this->dispatch('GET', '/' . sprintf(self::PORTAL_RECORD, $visitMulti), [], $headersWithLoc);
+        self::assertSame(200, $rWithLoc->get_status(), 'G7.E: Portal with explicit trusted Location succeeds');
+
+        // Note create also requires explicit Location when N>1
+        $noteBody = ['category' => 'clinical_note', 'visibility' => 'patient_visible', 'content_text' => 'loc test'];
+        $rNoteNoLoc = $this->dispatch('POST', '/' . sprintf(self::PORTAL_NOTES, $visitMulti), $noteBody, $headersNoLoc);
+        self::assertSame(400, $rNoteNoLoc->get_status(), 'G7.E: Portal note create N>1 without Location requires 400');
+
+        // Single-location clinic auto-resolution must still succeed without explicit header (prove 1=>auto).
+        $fxSingle = $this->makePortalStage('g7s');
+        $patientSingle = $this->insertPatient($fxSingle['clinic'], 'g7s_patient');
+        $visitSingle = $this->insertVisit($patientSingle, $fxSingle['clinician'], $fxSingle['clinic'], $fxSingle['location'], 'in_consultation');
+        wp_set_current_user($fxSingle['doctor']);
+        $rSingleNoHeader = $this->dispatch('GET', '/' . sprintf(self::PORTAL_RECORD, $visitSingle), [], $this->scopeHeaders($fxSingle['clinic'], null));
+        self::assertSame(200, $rSingleNoHeader->get_status(), 'G7.E: Single location auto-resolution succeeds without explicit header');
+
+        // F. forged/foreign/inactive/unassigned Location cannot create authority.
+
+        // Foreign Location (belongs to another clinic)
+        $orgF = $this->insertOrg('G7F Org');
+        $clinicF = $this->insertClinicInOrg('G7F Clinic', $orgF, self::TZ_TEHRAN);
+        $locF = $this->insertLocation($clinicF, 'G7F Foreign', self::TZ_TEHRAN, 1);
+        // Try to use foreign location header while clinic is fxSingle's clinic => must fail closed (403) and not create authority.
+        wp_set_current_user($fxSingle['doctor']);
+        $headersForeign = $this->scopeHeaders($fxSingle['clinic'], $locF);
+        $rForeignLoc = $this->dispatch('GET', '/' . sprintf(self::PORTAL_RECORD, $visitSingle), [], $headersForeign);
+        // RestClinicContext will fail the foreign location binding before our guard: 403 UNAVAILABLE reason location or 422.
+        self::assertContains($rForeignLoc->get_status(), [403, 422], 'G7.F: Foreign Location header fails closed');
+        if (403 === $rForeignLoc->get_status()) {
+            self::assertSame('CLINIC_SCOPE_UNAVAILABLE', $this->errCode($rForeignLoc), 'G7.F: Foreign location denial is UNAVAILABLE');
+        }
+
+        // Inactive Location
+        $locInactive = $this->insertLocation($fxSingle['clinic'], 'G7 Inactive', self::TZ_TEHRAN, 0);
+        // Deactivate it
+        global $wpdb;
+        $wpdb->query($wpdb->prepare('UPDATE ' . $wpdb->prefix . 'cpms_locations SET is_active = 0 WHERE id = %d', $locInactive));
+        $headersInactive = $this->scopeHeaders($fxSingle['clinic'], $locInactive);
+        $rInactive = $this->dispatch('GET', '/' . sprintf(self::PORTAL_RECORD, $visitSingle), [], $headersInactive);
+        self::assertContains($rInactive->get_status(), [403, 422], 'G7.F: Inactive Location fails closed');
+
+        // Unassigned Location when scope_mode = location
+        $fxLocScoped = $this->makePortalStage('g7u');
+        $locA = $fxLocScoped['location'];
+        $locB = $this->insertLocation($fxLocScoped['clinic'], 'G7 Unassigned B', self::TZ_TEHRAN, 0);
+        $memId = $wpdb->get_var($wpdb->prepare('SELECT id FROM ' . $wpdb->prefix . 'cpms_memberships WHERE clinic_id = %d AND wp_user_id = %d LIMIT 1', $fxLocScoped['clinic'], $fxLocScoped['doctor']));
+        App::membership_service()->set_scope_mode((int) $memId, 'location', [$locA]);
+        // Now eligible = [locA] only; locB is active but unassigned => using it must fail closed.
+        $patientU = $this->insertPatient($fxLocScoped['clinic'], 'g7u_patient');
+        $visitU = $this->insertVisit($patientU, $fxLocScoped['clinician'], $fxLocScoped['clinic'], $locA, 'in_consultation');
+        wp_set_current_user($fxLocScoped['doctor']);
+        $headersUnassigned = $this->scopeHeaders($fxLocScoped['clinic'], $locB);
+        $rUnassigned = $this->dispatch('GET', '/' . sprintf(self::PORTAL_RECORD, $visitU), [], $headersUnassigned);
+        self::assertContains($rUnassigned->get_status(), [403, 422], 'G7.F: Unassigned Location fails closed');
+        // But using the assigned Location succeeds
+        $headersAssigned = $this->scopeHeaders($fxLocScoped['clinic'], $locA);
+        $rAssigned = $this->dispatch('GET', '/' . sprintf(self::PORTAL_RECORD, $visitU), [], $headersAssigned);
+        self::assertSame(200, $rAssigned->get_status(), 'G7.F: Assigned Location succeeds');
+
+        // Forged Location (non-existent ID)
+        $headersForged = $this->scopeHeaders($fxSingle['clinic'], 999999);
+        $rForged = $this->dispatch('GET', '/' . sprintf(self::PORTAL_RECORD, $visitSingle), [], $headersForged);
+        self::assertContains($rForged->get_status(), [403, 422], 'G7.F: Forged Location fails closed');
+
+        // 0 eligible => fail closed
+        // Deactivate all locations for a clinic so eligible = []
+        $fxZero = $this->makePortalStage('g7z');
+        $wpdb->query($wpdb->prepare('UPDATE ' . $wpdb->prefix . 'cpms_locations SET is_active = 0 WHERE clinic_id = %d', $fxZero['clinic']));
+        $patientZ = $this->insertPatient($fxZero['clinic'], 'g7z_patient');
+        $visitZ = $this->insertVisit($patientZ, $fxZero['clinician'], $fxZero['clinic'], $fxZero['location'], 'in_consultation');
+        wp_set_current_user($fxZero['doctor']);
+        $rZero = $this->dispatch('GET', '/' . sprintf(self::PORTAL_RECORD, $visitZ), [], $this->scopeHeaders($fxZero['clinic'], $fxZero['location']));
+        // With 0 eligible, even explicit trusted Location must fail closed (no authority to create scope)
+        self::assertContains($rZero->get_status(), [403, 404], 'G7.F: 0 eligible fails closed');
     }
 
     // ================= helpers (proven Slice 1/2 patterns) =================
@@ -482,6 +626,23 @@ final class Phase10DoctorPortalVisitWorkspaceRedTest extends WP_UnitTestCase
             return (string) $b->get_error_code();
         }
         return (string) (is_array($b) ? ($b['code'] ?? '') : '');
+    }
+
+    /**
+     * Extract raw error data payload (status/details) regardless of WP_Error vs array envelope.
+     * @return array<string, mixed>
+     */
+    private function rawErrorData(WP_REST_Response $res): array
+    {
+        $b = $res->get_data();
+        if ($b instanceof \WP_Error) {
+            $d = $b->get_error_data();
+            return is_array($d) ? $d : [];
+        }
+        if (is_array($b) && isset($b['data']) && is_array($b['data'])) {
+            return is_array($b['data']) ? $b['data'] : [];
+        }
+        return is_array($b) ? $b : [];
     }
 
     /**
