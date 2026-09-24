@@ -684,8 +684,13 @@ def wait_row_status(page, vid, status, timeout=20000):
     )
 
 
-def queue_row_by_id(state, vid):
-    for row in (today_data(state).get("queue") or []):
+def today_queue_visit(page, doctor, vid, label):
+    """Fresh server truth: state['todays'] only captures the initial load and
+    explicit selections, never the journey's own reloads."""
+    t = portal_fetch(page, doctor, "GET", "/doctor/today")
+    if t["status"] != 200:
+        raise RuntimeError(f"{label} today reread failed: {t['status']}")
+    for row in (payload(t["body"]).get("queue") or []):
         if int(row.get("id") or 0) == vid:
             return row
     return {}
@@ -731,10 +736,10 @@ def prove_queue_actions(page, state, doctor, act, skip, label):
         if not control.first.is_enabled():
             raise RuntimeError(f"{label} called row {action} control is not enabled")
     # E. RECALL returns the row to waiting with a bumped recall count.
-    before = queue_row_by_id(state, act).get("recall_count", 0)
+    before = today_queue_visit(page, doctor, act, label).get("recall_count", 0)
     page.locator(row_sel(act) + ' [data-action="recall"]').click()
     wait_row_status(page, act, "waiting")
-    after = queue_row_by_id(state, act).get("recall_count", -1)
+    after = today_queue_visit(page, doctor, act, label).get("recall_count", -1)
     if int(after) != int(before) + 1:
         raise RuntimeError(f"{label} recall count did not advance ({before}->{after})")
     for action in ("call", "skip"):
@@ -794,7 +799,7 @@ def prove_queue_actions(page, state, doctor, act, skip, label):
         page.remove_listener("dialog", _on_dialog)
     if skip in queue_ids(page):
         raise RuntimeError(f"{label} skipped visit still rendered")
-    if any(int(row.get("id") or 0) == skip for row in (today_data(state).get("queue") or [])):
+    if today_queue_visit(page, doctor, skip, label):
         raise RuntimeError(f"{label} skipped visit still served")
     if not received or not all(PERSIAN_RE.search(t) for t in dialog_texts):
         raise RuntimeError(f"{label} skip prompt is not Persian")
@@ -890,13 +895,18 @@ def prove_one(browser, doctor, vp, shot_name=None):
         dedicated = [int(doctor[k]) for k in ACTION_EXTRA_KEYS if doctor.get(k)]
         order = [v["vp"] for v in VIEWPORTS]
         earlier = order[:order.index(vp["vp"])] if vp["vp"] in order else []
+        consumed_all = set()
         consumed_skip = set()
         for evp in earlier:
             keys = VP_ACTION_KEYS.get(evp)
-            if keys and doctor.get(keys[1]):
-                consumed_skip.add(int(doctor[keys[1]]))
+            if keys:
+                if doctor.get(keys[0]):
+                    consumed_all.add(int(doctor[keys[0]]))
+                if doctor.get(keys[1]):
+                    consumed_all.add(int(doctor[keys[1]]))
+                    consumed_skip.add(int(doctor[keys[1]]))
         expected_queue = set([doctor["visit_own"]] + dedicated) - consumed_skip
-        expected_waiting = 1 + len(dedicated) - 2 * len(earlier)
+        expected_waiting = 1 + len([v for v in dedicated if v not in consumed_all])
         if (data.get("stats") or {}).get("waiting") != expected_waiting:
             raise RuntimeError("today waiting count is not the doctor's own rows")
         ids = [int(row.get("id")) for row in (data.get("queue") or [])]
