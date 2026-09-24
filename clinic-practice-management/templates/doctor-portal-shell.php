@@ -78,7 +78,7 @@ if ( !is_string($config_json ) || '' === $config_json) { // phpcs:ignore PEAR.Fu
 <style>
 :root { --cpms-primary: #2271b1; --cpms-bg: #f6f7f7; --cpms-card-bg: #fff; --cpms-border: #dcdcde; --cpms-text: #1d2327; --cpms-muted: #646970; }
 * { box-sizing: border-box; }
-body.cpms-doctor-portal-shell-body { margin: 0; font-family: Tahoma, Vazirmatn, sans-serif; background: var(--cpms-bg); color: var(--cpms-text); line-height: 1.6; direction: rtl; }
+body.cpms-doctor-portal-shell-body { margin: 0; font-family: Tahoma, Vazirmatn, sans-serif; background: var(--cpms-bg); color: var(--cpms-text); line-height: 1.45; direction: rtl; }
 .cpms-doctor-portal-shell { max-width: 1366px; margin: 0 auto; padding: 12px; }
 .cpms-doctor-portal-shell__header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; background: var(--cpms-card-bg); border: 1px solid var(--cpms-border); border-radius: 8px; padding: 12px 16px; margin-bottom: 12px; }
 .cpms-doctor-portal-shell__brand { display: flex; align-items: center; gap: 12px; }
@@ -91,19 +91,25 @@ body.cpms-doctor-portal-shell-body { margin: 0; font-family: Tahoma, Vazirmatn, 
 .cpms-doc-btn--primary { background: var(--cpms-primary); color: #fff; border-color: var(--cpms-primary); }
 .cpms-doc-btn--ghost { background: transparent; }
 .cpms-doctor-portal-shell__notice { background: var(--cpms-card-bg); border: 1px solid var(--cpms-border); border-radius: 8px; padding: 20px; margin: 20px 0; }
-.cpms-doc-context, .cpms-doc-selectors, .cpms-doc-today, .cpms-doc-queue, .cpms-doc-no-data { background: var(--cpms-card-bg); border: 1px solid var(--cpms-border); border-radius: 8px; padding: 16px; margin-bottom: 12px; }
-.cpms-doc-context-details { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
-.cpms-doc-context-details span { background: #f0f6fc; border: 1px solid #2271b1; border-radius: 12px; padding: 2px 10px; font-size: 12px; }
-.cpms-doc-selector { margin-bottom: 12px; }
+.cpms-doc-context, .cpms-doc-selectors, .cpms-doc-today, .cpms-doc-queue, .cpms-doc-no-data { background: var(--cpms-card-bg); border: 1px solid var(--cpms-border); border-radius: 8px; padding: 12px 14px; margin-bottom: 8px; box-shadow: 0 1px 2px rgba(29, 35, 39, 0.06); }
+.cpms-doc-context h2, .cpms-doc-today h2, .cpms-doc-queue h2, .cpms-doc-no-data h3 { margin: 0 0 8px; font-size: 1.05rem; line-height: 1.3; font-weight: 700; }
+.cpms-doc-today h2, .cpms-doc-queue h2 { padding-bottom: 6px; border-bottom: 1px solid var(--cpms-border); }
+.cpms-doc-context-details { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; min-width: 0; }
+.cpms-doc-context-details span { background: #f4f8fc; border: 1px solid #b9d0e6; border-radius: 999px; padding: 3px 10px; font-size: 12px; font-weight: 600; line-height: 1.4; max-width: 100%; overflow-wrap: anywhere; }
+.cpms-doc-selectors:not(:has(.cpms-doc-selector:not([hidden]))) { display: none; }
+.cpms-doc-selector { margin-bottom: 0; }
+.cpms-doc-selector + .cpms-doc-selector:not([hidden]) { margin-top: 10px; }
 .cpms-doc-selector label { display: block; font-weight: 600; margin-bottom: 4px; }
-.cpms-doc-selector select { width: 100%; max-width: 400px; min-height: 44px; padding: 8px; border-radius: 6px; border: 1px solid var(--cpms-border); }
-.cpms-doc-stats { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
-.cpms-doc-stat { background: #fff; border: 1px solid var(--cpms-border); border-inline-start: 4px solid var(--cpms-primary); border-radius: 6px; padding: 10px 14px; min-width: 110px; }
-.cpms-doc-stat b { display: block; font-size: 20px; }
+.cpms-doc-selector .description { margin: 4px 0 0; color: var(--cpms-muted); font-size: 13px; line-height: 1.4; }
+.cpms-doc-selector select { width: 100%; max-width: 100%; min-height: 44px; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--cpms-border); background: #fff; color: var(--cpms-text); }
+.cpms-doc-stats { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 0; }
+.cpms-doc-stat { background: #f8fafc; border: 1px solid var(--cpms-border); border-inline-start: 4px solid var(--cpms-primary); border-radius: 6px; padding: 8px 12px; min-width: 0; flex: 1 1 104px; }
+.cpms-doc-stat b { display: block; font-size: 1.25rem; line-height: 1.2; font-variant-numeric: tabular-nums; }
 .cpms-doc-stat span { color: var(--cpms-muted); font-size: 12px; }
-.cpms-doc-date { color: var(--cpms-muted); font-size: 13px; margin-bottom: 8px; }
+.cpms-doc-date { color: var(--cpms-muted); font-size: 13px; margin: 0 0 4px; }
 .cpms-doc-queue-list { list-style: none; margin: 0; padding: 0; }
-.cpms-doc-queue-list li { border: 1px solid var(--cpms-border); border-radius: 6px; padding: 10px 12px; margin: 6px 0; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
+.cpms-doc-queue-list li { border: 1px solid var(--cpms-border); border-inline-start: 3px solid var(--cpms-primary); border-radius: 6px; padding: 8px 12px; margin: 0 0 6px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; background: #fbfcfd; }
+.cpms-doc-queue-list li:last-child { margin-bottom: 0; }
 .cpms-doc-badge { display: inline-block; font-size: 11px; border-radius: 10px; padding: 2px 8px; border: 1px solid; }
 .cpms-doc-badge.express { background: #fcf0f1; color: #b32d2e; border-color: #b32d2e; }
 .cpms-doc-badge.status-waiting { background: #fcf9e8; color: #996800; border-color: #996800; }
@@ -111,14 +117,15 @@ body.cpms-doctor-portal-shell-body { margin: 0; font-family: Tahoma, Vazirmatn, 
 .cpms-doc-badge.status-in_consultation { background: #edfaef; color: #00a32a; border-color: #00a32a; }
 .cpms-doc-live { font-size: 12px; color: #00a32a; }
 .cpms-doc-live.paused { color: #99a; }
-.cpms-doc-loading, .cpms-doc-empty, .cpms-doc-error, .cpms-doc-no-data { padding: 12px; border-radius: 6px; margin: 8px 0; }
+.cpms-doc-loading, .cpms-doc-empty, .cpms-doc-error { padding: 8px 10px; border-radius: 6px; margin: 8px 0 0; }
+.cpms-doc-no-data p { margin: 0; color: var(--cpms-muted); }
+.cpms-doc-btn:focus-visible, .cpms-doc-selector select:focus-visible { outline: 2px solid var(--cpms-primary); outline-offset: 2px; }
 .cpms-doc-loading { background: #f0f6fc; }
 .cpms-doc-empty { background: #f6f7f7; color: var(--cpms-muted); }
 .cpms-doc-error { background: #fcf0f1; color: #b32d2e; border: 1px solid #b32d2e; }
-.cpms-doctor-portal-shell__footer { text-align: center; color: var(--cpms-muted); font-size: 12px; margin-top: 20px; }
-@media (max-width: 390px) { .cpms-doctor-portal-shell { padding: 8px; } .cpms-doc-stats { gap: 6px; } .cpms-doc-stat { min-width: 90px; padding: 8px 10px; } }
-@media (min-width: 768px) { .cpms-doctor-portal-shell { padding: 16px; } .cpms-doc-selector select { max-width: 500px; } }
-@media (min-width: 1366px) { .cpms-doctor-portal-shell { padding: 20px; } }
+.cpms-doctor-portal-shell__footer { text-align: center; color: var(--cpms-muted); font-size: 12px; margin-top: 12px; }
+@media (max-width: 390px) { .cpms-doctor-portal-shell { padding: 8px; } .cpms-doc-context, .cpms-doc-today, .cpms-doc-queue { padding: 10px 12px; } .cpms-doc-stats { gap: 6px; } .cpms-doc-stat { flex-basis: 96px; padding: 8px 10px; } }
+@media (min-width: 768px) { .cpms-doc-context { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; padding: 10px 14px; } .cpms-doc-context h2 { flex: 1 1 16rem; margin: 0; min-width: 0; } .cpms-doc-context-details { margin-top: 0; justify-content: flex-end; flex: 1 1 16rem; } .cpms-doc-selector select { max-width: 28rem; } }
 </style>
 <?php
 // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- style tags from wp_print_styles (registered local handles only).

@@ -1,7 +1,12 @@
-/* Phase 10 Slice 1 — Doctor Portal independent shell CSS — tablet-first responsive */
-:root { --cpms-primary: #2271b1; --cpms-bg: #f6f7f7; --cpms-card-bg: #fff; --cpms-border: #dcdcde; --cpms-text: #1d2327; --cpms-muted: #646970; }
+/* Phase 10 Slice 1 — Doctor Portal shell. Presentation only; loaded after the template style. */
+:root { --cpms-primary: #2271b1; --cpms-bg: #eef2f6; --cpms-card-bg: #fff; --cpms-border: #d5dee8; --cpms-text: #1d2327; --cpms-muted: #5c6570; }
 .cpms-doctor-portal-shell { font-family: Tahoma, Vazirmatn, sans-serif; direction: rtl; }
-.cpms-doc-stats { display: flex; flex-wrap: wrap; gap: 8px; }
-.cpms-doc-stat { background: #fff; border: 1px solid var(--cpms-border); border-inline-start: 4px solid var(--cpms-primary); border-radius: 6px; padding: 10px 14px; min-width: 110px; }
+body.cpms-doctor-portal-shell-body { background: var(--cpms-bg); }
+.cpms-doc-context, .cpms-doc-selectors, .cpms-doc-today, .cpms-doc-queue, .cpms-doc-no-data { border-color: var(--cpms-border); box-shadow: 0 1px 2px rgba(29, 35, 39, 0.06); }
+.cpms-doc-stats { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 0; }
+.cpms-doc-stat { background: #f8fafc; border: 1px solid var(--cpms-border); border-inline-start: 4px solid var(--cpms-primary); border-radius: 6px; padding: 8px 12px; min-width: 0; flex: 1 1 104px; }
+.cpms-doc-stat b { font-variant-numeric: tabular-nums; }
 .cpms-doc-queue-list { list-style: none; margin: 0; padding: 0; }
-.cpms-doc-queue-list li { border: 1px solid var(--cpms-border); border-radius: 6px; padding: 10px; margin: 6px 0; }
+.cpms-doc-queue-list li { border: 1px solid var(--cpms-border); border-inline-start: 3px solid var(--cpms-primary); border-radius: 6px; padding: 8px 12px; margin: 0 0 6px; background: #fbfcfd; }
+.cpms-doc-queue-list li:last-child { margin-bottom: 0; }
+.cpms-doc-btn:focus-visible, .cpms-doc-selector select:focus-visible { outline: 2px solid var(--cpms-primary); outline-offset: 2px; }
