@@ -1365,11 +1365,11 @@ final class VisitService
         if ( $scope === null ) {
             return;
         }
-        if ( (int) ($visit['clinic_id'] ?? 0) !== (int) $scope->clinicId) { // phpcs:ignore Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceAfterOpen,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceBeforeClose,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- legacy PSR-style, established contract
-            throw VisitException::of('CLINIC_NOT_FOUND', 'مراجعه یافت نشد', 404);
+        if ( (int) ( $visit['clinic_id'] ?? 0 ) !== (int) $scope->clinicId ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- legacy PSR-style, established contract
+            throw VisitException::of( 'CLINIC_NOT_FOUND', 'مراجعه یافت نشد', 404 );
         }
-        if ( null !== $scope->locationId && (int) ($visit['location_id'] ?? 0) !== (int) $scope->locationId) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- legacy PSR-style, established contract
-            throw VisitException::of('CLINIC_NOT_FOUND', 'مراجعه یافت نشد', 404);
+        if ( null !== $scope->locationId && (int) ( $visit['location_id'] ?? 0 ) !== (int) $scope->locationId ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- legacy PSR-style, established contract
+            throw VisitException::of( 'CLINIC_NOT_FOUND', 'مراجعه یافت نشد', 404 );
         }
     }
 
