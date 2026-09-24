@@ -76,56 +76,12 @@ if ( !is_string($config_json ) || '' === $config_json) { // phpcs:ignore PEAR.Fu
 <meta name="robots" content="noindex, nofollow">
 <title><?php echo esc_html( 'پورتال پزشک' . ( '' !== $cpms_site_name ? ' — ' . $cpms_site_name : '' ) ); ?></title>
 <style>
-:root { --cpms-primary: #2271b1; --cpms-bg: #f6f7f7; --cpms-card-bg: #fff; --cpms-border: #dcdcde; --cpms-text: #1d2327; --cpms-muted: #646970; }
+:root { --cpms-primary: #0f5c56; --cpms-bg: #f3f6f8; --cpms-text: #1b2830; --cpms-muted: #5c6b76; --cpms-border: #e1e8ee; }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body.cpms-doctor-portal-shell-body { margin: 0; font-family: Tahoma, Vazirmatn, sans-serif; background: var(--cpms-bg); color: var(--cpms-text); line-height: 1.45; direction: rtl; }
-.cpms-doctor-portal-shell { max-width: 1366px; margin: 0 auto; padding: 12px; }
-.cpms-doctor-portal-shell__header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; background: var(--cpms-card-bg); border: 1px solid var(--cpms-border); border-radius: 8px; padding: 12px 16px; margin-bottom: 12px; }
-.cpms-doctor-portal-shell__brand { display: flex; align-items: center; gap: 12px; }
-.cpms-doctor-portal-shell__mark { background: var(--cpms-primary); color: #fff; border-radius: 6px; padding: 4px 8px; font-weight: 700; }
-.cpms-doctor-portal-shell__titles p { margin: 0; }
-.cpms-doctor-portal-shell__product { font-size: 13px; color: var(--cpms-muted); }
-.cpms-doctor-portal-shell__title { font-size: 18px; font-weight: 700; margin: 0; }
-.cpms-doctor-portal-shell__session { display: flex; align-items: center; gap: 8px; }
-.cpms-doc-btn { display: inline-block; padding: 8px 14px; border-radius: 6px; border: 1px solid var(--cpms-border); background: var(--cpms-card-bg); text-decoration: none; color: var(--cpms-text); min-height: 44px; line-height: 1.2; }
-.cpms-doc-btn--primary { background: var(--cpms-primary); color: #fff; border-color: var(--cpms-primary); }
-.cpms-doc-btn--ghost { background: transparent; }
-.cpms-doctor-portal-shell__notice { background: var(--cpms-card-bg); border: 1px solid var(--cpms-border); border-radius: 8px; padding: 20px; margin: 20px 0; }
-.cpms-doc-context, .cpms-doc-selectors, .cpms-doc-today, .cpms-doc-queue, .cpms-doc-no-data { background: var(--cpms-card-bg); border: 1px solid var(--cpms-border); border-radius: 8px; padding: 12px 14px; margin-bottom: 8px; box-shadow: 0 1px 2px rgba(29, 35, 39, 0.06); }
-.cpms-doc-context h2, .cpms-doc-today h2, .cpms-doc-queue h2, .cpms-doc-no-data h3 { margin: 0 0 8px; font-size: 1.05rem; line-height: 1.3; font-weight: 700; }
-.cpms-doc-today h2, .cpms-doc-queue h2 { padding-bottom: 6px; border-bottom: 1px solid var(--cpms-border); }
-.cpms-doc-context-details { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; min-width: 0; }
-.cpms-doc-context-details span { background: #f4f8fc; border: 1px solid #b9d0e6; border-radius: 999px; padding: 3px 10px; font-size: 12px; font-weight: 600; line-height: 1.4; max-width: 100%; overflow-wrap: anywhere; }
 .cpms-doc-selectors:not(:has(.cpms-doc-selector:not([hidden]))) { display: none; }
-.cpms-doc-selector { margin-bottom: 0; }
-.cpms-doc-selector + .cpms-doc-selector:not([hidden]) { margin-top: 10px; }
-.cpms-doc-selector label { display: block; font-weight: 600; margin-bottom: 4px; }
-.cpms-doc-selector .description { margin: 4px 0 0; color: var(--cpms-muted); font-size: 13px; line-height: 1.4; }
-.cpms-doc-selector select { width: 100%; max-width: 100%; min-height: 44px; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--cpms-border); background: #fff; color: var(--cpms-text); }
-.cpms-doc-stats { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 0; }
-.cpms-doc-stat { background: #f8fafc; border: 1px solid var(--cpms-border); border-inline-start: 4px solid var(--cpms-primary); border-radius: 6px; padding: 8px 12px; min-width: 0; flex: 1 1 104px; }
-.cpms-doc-stat b { display: block; font-size: 1.25rem; line-height: 1.2; font-variant-numeric: tabular-nums; }
-.cpms-doc-stat span { color: var(--cpms-muted); font-size: 12px; }
-.cpms-doc-date { color: var(--cpms-muted); font-size: 13px; margin: 0 0 4px; }
-.cpms-doc-queue-list { list-style: none; margin: 0; padding: 0; }
-.cpms-doc-queue-list li { border: 1px solid var(--cpms-border); border-inline-start: 3px solid var(--cpms-primary); border-radius: 6px; padding: 8px 12px; margin: 0 0 6px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; background: #fbfcfd; }
-.cpms-doc-queue-list li:last-child { margin-bottom: 0; }
-.cpms-doc-badge { display: inline-block; font-size: 11px; border-radius: 10px; padding: 2px 8px; border: 1px solid; }
-.cpms-doc-badge.express { background: #fcf0f1; color: #b32d2e; border-color: #b32d2e; }
-.cpms-doc-badge.status-waiting { background: #fcf9e8; color: #996800; border-color: #996800; }
-.cpms-doc-badge.status-called { background: #f0f6fc; color: #2271b1; border-color: #2271b1; }
-.cpms-doc-badge.status-in_consultation { background: #edfaef; color: #00a32a; border-color: #00a32a; }
-.cpms-doc-live { font-size: 12px; color: #00a32a; }
-.cpms-doc-live.paused { color: #99a; }
-.cpms-doc-loading, .cpms-doc-empty, .cpms-doc-error { padding: 8px 10px; border-radius: 6px; margin: 8px 0 0; }
-.cpms-doc-no-data p { margin: 0; color: var(--cpms-muted); }
-.cpms-doc-btn:focus-visible, .cpms-doc-selector select:focus-visible { outline: 2px solid var(--cpms-primary); outline-offset: 2px; }
-.cpms-doc-loading { background: #f0f6fc; }
-.cpms-doc-empty { background: #f6f7f7; color: var(--cpms-muted); }
-.cpms-doc-error { background: #fcf0f1; color: #b32d2e; border: 1px solid #b32d2e; }
-.cpms-doctor-portal-shell__footer { text-align: center; color: var(--cpms-muted); font-size: 12px; margin-top: 12px; }
-@media (max-width: 390px) { .cpms-doctor-portal-shell { padding: 8px; } .cpms-doc-context, .cpms-doc-today, .cpms-doc-queue { padding: 10px 12px; } .cpms-doc-stats { gap: 6px; } .cpms-doc-stat { flex-basis: 96px; padding: 8px 10px; } }
-@media (min-width: 768px) { .cpms-doc-context { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; padding: 10px 14px; } .cpms-doc-context h2 { flex: 1 1 16rem; margin: 0; min-width: 0; } .cpms-doc-context-details { margin-top: 0; justify-content: flex-end; flex: 1 1 16rem; } .cpms-doc-selector select { max-width: 28rem; } }
+.cpms-doctor-portal-shell { max-width: 1320px; margin: 0 auto; padding: 10px; }
 </style>
 <?php
 // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- style tags from wp_print_styles (registered local handles only).
@@ -181,11 +137,21 @@ echo $cpms_styles_html;
         <?php else : ?>
             <div id="cpms-doctor-portal-app" data-cpms-doctor-portal="app">
                 <section class="cpms-doc-context" data-role="doctor-context" aria-live="polite">
-                    <h2 data-role="context-title">در حال بارگذاری اطلاعات پزشک…</h2>
+                    <div class="cpms-doc-identity">
+                        <span class="cpms-doc-identity__mark" aria-hidden="true"></span>
+                        <div class="cpms-doc-identity__copy">
+                            <p class="cpms-doc-kicker">پزشک فعال</p>
+                            <h2 data-role="context-title">در حال بارگذاری اطلاعات پزشک…</h2>
+                        </div>
+                    </div>
                     <div data-role="context-details" class="cpms-doc-context-details"></div>
                 </section>
 
                 <section class="cpms-doc-selectors" data-role="selectors">
+                    <div class="cpms-doc-section-head">
+                        <h2>زمینه عملیاتی</h2>
+                    </div>
+                    <div class="cpms-doc-selector-row">
                     <div class="cpms-doc-selector" data-role="clinic-selector-wrap" hidden>
                         <label for="cpms-doc-clinic-select">مطب</label>
                         <select id="cpms-doc-clinic-select" data-role="clinic-select"><option value="">انتخاب مطب…</option></select>
@@ -196,16 +162,26 @@ echo $cpms_styles_html;
                         <select id="cpms-doc-location-select" data-role="location-select"><option value="">انتخاب شعبه…</option></select>
                         <p class="description" data-role="location-hint">چند شعبه واجد شرایط دارید — یکی را انتخاب کنید. بدون انتخاب، داده‌ای نمایش داده نمی‌شود.</p>
                     </div>
+                    </div>
                 </section>
 
                 <section class="cpms-doc-today" data-role="today-section" hidden>
-                    <h2>امروز</h2>
-                    <div data-role="today-date" class="cpms-doc-date"></div>
+                    <div class="cpms-doc-section-head">
+                        <h2>امروز</h2>
+                        <div data-role="today-date" class="cpms-doc-date"></div>
+                    </div>
                     <div data-role="today-stats" class="cpms-doc-stats"></div>
                 </section>
 
                 <section class="cpms-doc-queue" data-role="queue-section" hidden>
-                    <h2>صف زنده <span class="cpms-doc-live" data-role="live-indicator">● زنده</span></h2>
+                    <div class="cpms-doc-section-head">
+                        <h2>صف زنده</h2>
+                        <span class="cpms-doc-live" data-role="live-indicator">● زنده</span>
+                    </div>
+                    <div class="cpms-doc-queue-head" aria-hidden="true">
+                        <span>بیمار</span>
+                        <span>وضعیت و انتظار</span>
+                    </div>
                     <div data-role="queue-loading" class="cpms-doc-loading">در حال دریافت صف…</div>
                     <div data-role="queue-empty" class="cpms-doc-empty" hidden>صف خالی است.</div>
                     <div data-role="queue-error" class="cpms-doc-error" role="alert" hidden></div>
@@ -381,13 +357,15 @@ function renderQueue(){
         hide(empty);
         list.innerHTML = state.queue.map(function(v){
             var badge = '';
-            if ( v.express ) badge += ' <span class="cpms-doc-badge express">فوری</span>';
+            if ( v.express ) badge += '<span class="cpms-doc-badge express">فوری</span>';
             var statusLabel = { waiting:'در صف', called:'فراخوانده', in_consultation:'در ویزیت' }[v.status] || v.status;
             var statusClass = 'status-' + (v.status||'');
-            return '<li data-role="queue-item" data-visit-id="' + esc(v.id) + '">' +
-                '<div><strong data-role="patient-name">' + esc(v.patient_name || 'بیمار') + '</strong> ' + badge +
-                ' <span class="cpms-doc-badge ' + esc(statusClass) + '">' + esc(statusLabel) + '</span></div>' +
-                '<div class="cpms-doc-muted" style="font-size:12px">' + esc(v.source||'') + ' · انتظار: ' + esc(v.waiting_since||'') + '</div>' +
+            return '<li class="cpms-doc-queue-item" data-role="queue-item" data-visit-id="' + esc(v.id) + '" data-status="' + esc(v.status||'') + '">' +
+                '<div class="cpms-doc-queue-main"><strong data-role="patient-name">' + esc(v.patient_name || 'بیمار') + '</strong>' +
+                '<span class="cpms-doc-queue-source">' + esc(v.source||'') + '</span></div>' +
+                '<div class="cpms-doc-queue-aside">' + badge +
+                '<span class="cpms-doc-badge ' + esc(statusClass) + '">' + esc(statusLabel) + '</span>' +
+                '<span class="cpms-doc-wait">انتظار <b>' + esc(v.waiting_since||'—') + '</b></span></div>' +
                 '</li>';
         }).join('');
     }
