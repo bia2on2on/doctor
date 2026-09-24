@@ -5,6 +5,7 @@ Real WordPress page, real authenticated doctor session, real REST, and the
 existing server authorization. No new browser framework and no time freeze.
 Location-local today is the fixture's Asia/Tehran date.
 
+# Visual-evidence instrumentation (workspace + note) — deterministic waits, no sleep.
 Evidence lines are PASS/FAIL/INFO/SHOT with booleans and non-sensitive ids.
 Passwords, mobiles, nonces, and cookies are not printed.
 """
