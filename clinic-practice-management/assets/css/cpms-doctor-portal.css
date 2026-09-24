@@ -694,6 +694,7 @@ body.cpms-doctor-portal-shell-body {
 
 	#cpms-doctor-portal-app > .cpms-doc-queue {
 		grid-column: 1;
+		grid-row: 2;
 		align-self: start;
 		height: auto;
 		min-height: 0;
@@ -701,9 +702,20 @@ body.cpms-doctor-portal-shell-body {
 
 	#cpms-doctor-portal-app > .cpms-doc-today {
 		grid-column: 2;
+		grid-row: 2;
 		align-self: start;
 		height: auto;
 		min-height: 0;
+	}
+
+	#cpms-doctor-portal-app:has(.cpms-doc-selector:not([hidden])) > .cpms-doc-selectors {
+		grid-column: 1 / -1;
+		grid-row: 2;
+	}
+
+	#cpms-doctor-portal-app:has(.cpms-doc-selector:not([hidden])) > .cpms-doc-queue,
+	#cpms-doctor-portal-app:has(.cpms-doc-selector:not([hidden])) > .cpms-doc-today {
+		grid-row: 3;
 	}
 
 	.cpms-doc-stats {
