@@ -1353,12 +1353,23 @@ final class VisitService
      * کارکنی همیشه Scope صریح دارند (RestClinicContext) پس در عمل fail-closed
      * است. `applyTransition` عمداً دست‌نخورده ماند تا رفتار Finance/Jobهای
      * سیستمی (forceRole=system، M-7) تغییری نکند.
+     *
+     * Phase 10 Slice 2 — trusted Location mutation isolation: when the trusted
+     * explicit scope carries a Location, the target visit must belong to that
+     * same Location; mismatch ⇒ the same 404 parity (non-enumerating) before
+     * any state mutation. No Location in scope ⇒ legacy behavior (no-op).
      */
     private function guardVisitWithinExplicitScope(array $visit): void
     {
         $scope = ScopeContext::tryGet();
-        if ( $scope !== null && (int) ($visit['clinic_id'] ?? 0) !== (int) $scope->clinicId) { // phpcs:ignore Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceAfterOpen,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceBeforeClose,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- legacy PSR-style, established contract
-            throw VisitException::of('CLINIC_NOT_FOUND', 'مراجعه یافت نشد', 404);
+        if ( $scope === null ) {
+            return;
+        }
+        if ( (int) ( $visit['clinic_id'] ?? 0 ) !== (int) $scope->clinicId ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- legacy PSR-style, established contract
+            throw VisitException::of( 'CLINIC_NOT_FOUND', 'مراجعه یافت نشد', 404 );
+        }
+        if ( null !== $scope->locationId && (int) ( $visit['location_id'] ?? 0 ) !== (int) $scope->locationId ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- legacy PSR-style, established contract
+            throw VisitException::of( 'CLINIC_NOT_FOUND', 'مراجعه یافت نشد', 404 );
         }
     }
 

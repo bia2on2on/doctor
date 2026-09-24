@@ -537,6 +537,17 @@ body.cpms-doctor-portal-shell-body {
 .cpms-doc-queue-list li[data-status="called"] { border-inline-start-color: var(--cpms-info); }
 .cpms-doc-queue-list li[data-status="in_consultation"] { border-inline-start-color: var(--cpms-ok); }
 
+.cpms-doc-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin-top: 2px;
+}
+
+.cpms-doc-queue-item[aria-busy="true"] .cpms-doc-actions { opacity: 0.55; }
+
+.cpms-doc-queue-item[aria-busy="true"] .cpms-doc-btn { cursor: wait; }
+
 .cpms-doc-queue-main {
 	display: flex;
 	flex-direction: column;

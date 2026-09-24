@@ -182,6 +182,15 @@ $visit = static function (int $clinicId, int $locationId, int $clinicianId, int 
 
 $visitOwn = $visit($oneClinic, $oneLoc, $clinOne, $patient($oneClinic, 'SYN-DP-A-' . $uniq, $mobile('0911')));
 $visitOther = $visit($oneClinic, $oneLoc, $clinOther, $patient($oneClinic, 'SYN-DP-B-' . $uniq, $mobile('0912')));
+// Phase 10 Slice 2 GREEN: per-viewport dedicated queue-action visits for the
+// ONE doctor (call/recall/start on act_*, skip on skip_*). visit_own is never
+// mutated so the read-only assertions stay stable in every viewport run.
+$act390 = $visit($oneClinic, $oneLoc, $clinOne, $patient($oneClinic, 'SYN-DP-C1-' . $uniq, $mobile('0916')));
+$skip390 = $visit($oneClinic, $oneLoc, $clinOne, $patient($oneClinic, 'SYN-DP-S1-' . $uniq, $mobile('0917')));
+$act768 = $visit($oneClinic, $oneLoc, $clinOne, $patient($oneClinic, 'SYN-DP-C2-' . $uniq, $mobile('0918')));
+$skip768 = $visit($oneClinic, $oneLoc, $clinOne, $patient($oneClinic, 'SYN-DP-S2-' . $uniq, $mobile('0919')));
+$act1366 = $visit($oneClinic, $oneLoc, $clinOne, $patient($oneClinic, 'SYN-DP-C3-' . $uniq, $mobile('0920')));
+$skip1366 = $visit($oneClinic, $oneLoc, $clinOne, $patient($oneClinic, 'SYN-DP-S3-' . $uniq, $mobile('0921')));
 $visitA = $visit($multiClinic, $locA, $clinMulti, $patient($multiClinic, 'SYN-DP-MA-' . $uniq, $mobile('0913')));
 $visitB = $visit($multiClinic, $locB, $clinMulti, $patient($multiClinic, 'SYN-DP-MB-' . $uniq, $mobile('0914')));
 $visitColleague = $visit($multiClinic, $locB, $clinColleague, $patient($multiClinic, 'SYN-DP-MC-' . $uniq, $mobile('0915')));
@@ -278,8 +287,13 @@ $apptColleague = $appointment(
     'DPM' . $uniq . 'C'
 );
 
-$ids = [$visitOwn, $visitOther, $visitA, $visitB, $visitColleague, $apptBooked, $apptArrived, $apptOther, $apptA, $apptB, $apptColleague];
-if (count($ids) !== count(array_unique($ids))) {
+// Visits and appointments live in independent tables with independent
+// auto-increments — a visit id may legitimately equal an appointment id
+// (the harness addresses them via separate data-visit-id /
+// data-appointment-id attributes). Distinctness is only meaningful per table.
+$visitIds = [$visitOwn, $visitOther, $visitA, $visitB, $visitColleague, $act390, $skip390, $act768, $skip768, $act1366, $skip1366];
+$apptIds = [$apptBooked, $apptArrived, $apptOther, $apptA, $apptB, $apptColleague];
+if (count($visitIds) !== count(array_unique($visitIds)) || count($apptIds) !== count(array_unique($apptIds))) {
     dp_fail('visit ids must be distinct');
 }
 
@@ -307,6 +321,12 @@ $oneLine = implode('|', [
     '0',
     $bookedName,
     $arrivedName,
+    (string) $act390,
+    (string) $skip390,
+    (string) $act768,
+    (string) $skip768,
+    (string) $act1366,
+    (string) $skip1366,
 ]);
 $otherLine = implode('|', [
     dp_field($loginOther, 'login'),
