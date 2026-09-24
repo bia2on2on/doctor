@@ -559,10 +559,10 @@ final class VisitService
                 403 ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent -- WPCS
         }
 
-        $operational_date = $this->operationalDateForLocation( $location_id, $clinic_id );
-        $queue = $this->visits->queueFor( $clinic_id, $scope_clinician_id, self::QUEUE_STATUSES, $operational_date, $location_id ); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
-        $stats = $this->visits->statsFor( $clinic_id, $operational_date, $scope_clinician_id, $location_id ); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
-        $scoped_clinician = $scope_clinician_id; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established VisitService local.
+        $operational_date    = $this->operationalDateForLocation( $location_id, $clinic_id );
+        $queue               = $this->visits->queueFor( $clinic_id, $scope_clinician_id, self::QUEUE_STATUSES, $operational_date, $location_id ); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
+        $stats               = $this->visits->statsFor( $clinic_id, $operational_date, $scope_clinician_id, $location_id ); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
+        $scoped_clinician    = $scope_clinician_id; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established VisitService local.
         $doctor_appointments = [];
         if ( is_int( $scoped_clinician ) && $scoped_clinician > 0 ) {
             $doctor_appointments = $this->appointments->listForDoctorOperationalDay(
