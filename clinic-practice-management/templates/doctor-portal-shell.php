@@ -188,6 +188,45 @@ echo $cpms_styles_html;
                     <ul data-role="queue-list" class="cpms-doc-queue-list"></ul>
                 </section>
 
+                <section class="cpms-doc-workspace" data-role="workspace-section" hidden aria-label="فضای کاری ویزیت">
+                    <div class="cpms-doc-section-head">
+                        <h2 data-role="workspace-title">فضای کاری ویزیت</h2>
+                        <button type="button" class="cpms-doc-btn cpms-doc-btn--ghost" data-role="workspace-close">بستن</button>
+                    </div>
+                    <div data-role="workspace-loading" class="cpms-doc-loading" hidden>در حال دریافت پروندهٔ ویزیت…</div>
+                    <div data-role="workspace-error" class="cpms-doc-error" role="alert" hidden></div>
+                    <div data-role="workspace-body" hidden>
+                        <div class="cpms-doc-ws-header" data-role="workspace-header"></div>
+                        <div class="cpms-doc-ws-notes-wrap">
+                            <div class="cpms-doc-section-head cpms-doc-ws-subhead">
+                                <h3>یادداشت‌های این ویزیت</h3>
+                                <span class="cpms-doc-count" data-role="workspace-notes-count"></span>
+                            </div>
+                            <ul data-role="workspace-notes" class="cpms-doc-ws-notes-list"></ul>
+                            <div data-role="workspace-notes-empty" class="cpms-doc-empty" hidden>هنوز یادداشتی برای این ویزیت ثبت نشده است.</div>
+                        </div>
+                        <form class="cpms-doc-ws-form" data-role="workspace-note-form">
+                            <div class="cpms-doc-section-head cpms-doc-ws-subhead">
+                                <h3>یادداشت جدید</h3>
+                            </div>
+                            <div class="cpms-doc-ws-field">
+                                <label for="cpms-doc-ws-visibility">سطح دسترسی یادداشت</label>
+                                <select id="cpms-doc-ws-visibility" data-role="workspace-visibility">
+                                    <option value="patient_visible">قابل مشاهده برای بیمار</option>
+                                    <option value="doctor_private">خصوصی پزشک</option>
+                                </select>
+                            </div>
+                            <div class="cpms-doc-ws-field">
+                                <label for="cpms-doc-ws-content">متن یادداشت</label>
+                                <textarea id="cpms-doc-ws-content" data-role="workspace-content" rows="4"></textarea>
+                            </div>
+                            <div data-role="workspace-form-error" class="cpms-doc-error" role="alert" hidden></div>
+                            <div data-role="workspace-form-success" class="cpms-doc-success" role="status" hidden></div>
+                            <button type="submit" class="cpms-doc-btn cpms-doc-btn--primary" data-role="workspace-note-submit">ثبت یادداشت</button>
+                        </form>
+                    </div>
+                </section>
+
                 <section class="cpms-doc-appointments" data-role="appointments-section" hidden>
                     <div class="cpms-doc-section-head">
                         <h2>نوبت‌های امروز</h2>
@@ -231,7 +270,10 @@ var state = {
     queue: [],
     lastEventId: 0,
     timer: null,
-    pollPaused: false
+    pollPaused: false,
+    workspaceVisitId: null,
+    workspaceNotes: [],
+    workspaceBusy: false
 };
 
 function apiUrl(path){
@@ -516,6 +558,194 @@ function showError(msg){
     show(err);
 }
 
+function scopeHeaders(){
+    return {
+        'X-CPMS-Clinic-Id': String(state.selectedClinicId),
+        'X-CPMS-Location-Id': String(state.selectedLocationId)
+    };
+}
+
+// ================= Visit Workspace (Phase 10 Slice 3) =================
+// Selection = queue row visit_id (selector only). The read reuses the
+// established E7 GET /visits/{id}/record contract with the portal nonce and
+// the trusted Clinic/Location selector headers; authority stays server-side.
+
+function closeWorkspace(){
+    state.workspaceVisitId = null;
+    state.workspaceNotes = [];
+    hide(qs('[data-role="workspace-section"]'));
+    hide(qs('[data-role="workspace-body"]'));
+    hide(qs('[data-role="workspace-loading"]'));
+    hide(qs('[data-role="workspace-error"]'));
+    hide(qs('[data-role="workspace-form-error"]'));
+    hide(qs('[data-role="workspace-form-success"]'));
+    var contentEl = qs('[data-role="workspace-content"]');
+    if ( contentEl ) contentEl.value = '';
+    setNoteSubmitBusy(false);
+}
+
+function setNoteSubmitBusy(busy){
+    state.workspaceBusy = !!busy;
+    var btn = qs('[data-role="workspace-note-submit"]');
+    if ( !btn ) return;
+    btn.disabled = !!busy;
+    if ( busy ) btn.setAttribute('aria-busy', 'true');
+    else btn.removeAttribute('aria-busy');
+}
+
+function openWorkspace(visitId){
+    if ( !state.selectedClinicId || !state.selectedLocationId ) return;
+    var sec = qs('[data-role="workspace-section"]');
+    if ( !sec ) return;
+    state.workspaceVisitId = visitId;
+    state.workspaceNotes = [];
+    show(sec);
+    show(qs('[data-role="workspace-loading"]'));
+    hide(qs('[data-role="workspace-body"]'));
+    hide(qs('[data-role="workspace-error"]'));
+    hide(qs('[data-role="workspace-form-error"]'));
+    hide(qs('[data-role="workspace-form-success"]'));
+    setNoteSubmitBusy(false);
+    var contentEl = qs('[data-role="workspace-content"]');
+    if ( contentEl ) contentEl.value = '';
+    var openedVisitId = visitId;
+    var clinicId = state.selectedClinicId;
+    var locationId = state.selectedLocationId;
+    api('GET', '/visits/' + encodeURIComponent(String(visitId)) + '/record', null, scopeHeaders()).then(function(r){
+        // Stale guard: scope or selection changed while in flight.
+        if ( state.workspaceVisitId !== openedVisitId || state.selectedClinicId !== clinicId || state.selectedLocationId !== locationId ) return;
+        hide(qs('[data-role="workspace-loading"]'));
+        if ( r.status !== 200 ) {
+            var el = qs('[data-role="workspace-error"]');
+            if ( el ) {
+                el.textContent = (r.body && r.body.message) ? String(r.body.message).slice(0, 200) : 'خطا در دریافت پروندهٔ ویزیت — دوباره تلاش کنید';
+                show(el);
+            }
+            return;
+        }
+        var data = (r.body && r.body.data) || r.body || {};
+        renderWorkspace(data);
+    }).catch(function(){
+        if ( state.workspaceVisitId !== openedVisitId || state.selectedClinicId !== clinicId || state.selectedLocationId !== locationId ) return;
+        hide(qs('[data-role="workspace-loading"]'));
+        var el = qs('[data-role="workspace-error"]');
+        if ( el ) { el.textContent = 'خطای ارتباط در دریافت پرونده — دوباره تلاش کنید'; show(el); }
+    });
+}
+
+function genderLabel(value){
+    return { male: 'مرد', female: 'زن' }[value] || value || '';
+}
+
+function renderWorkspace(data){
+    var body = qs('[data-role="workspace-body"]');
+    if ( !body ) return;
+    renderWorkspaceHeader(data);
+    state.workspaceNotes = (data && data.notes) || [];
+    renderWorkspaceNotes();
+    show(body);
+}
+
+function renderWorkspaceHeader(data){
+    var el = qs('[data-role="workspace-header"]');
+    if ( !el ) return;
+    var p = (data && data.patient) || {};
+    var v = (data && data.visit) || {};
+    var meta = [];
+    if ( p.mrn ) meta.push('<span class="cpms-doc-ws-meta-item">MRN: <b>' + esc(p.mrn) + '</b></span>');
+    if ( p.age != null && p.age !== '' ) meta.push('<span class="cpms-doc-ws-meta-item">سن: <b>' + esc(p.age) + '</b></span>');
+    if ( p.gender ) meta.push('<span class="cpms-doc-ws-meta-item">جنسیت: <b>' + esc(genderLabel(p.gender)) + '</b></span>');
+    if ( v.visit_date ) meta.push('<span class="cpms-doc-ws-meta-item">تاریخ ویزیت: <b>' + esc(v.visit_date) + '</b></span>');
+    var statusBadge = v.status
+        ? '<span class="cpms-doc-badge status-' + esc(v.status) + '">' + esc(visitStatusLabel(v.status)) + '</span>'
+        : '';
+    el.innerHTML =
+        '<div class="cpms-doc-ws-id">' +
+            '<strong class="cpms-doc-ws-name" data-role="workspace-patient-name">' + esc(p.full_name || 'بیمار') + '</strong>' +
+            statusBadge +
+        '</div>' +
+        (meta.length ? '<div class="cpms-doc-ws-meta">' + meta.join('') + '</div>' : '');
+}
+
+function noteVisibilityLabel(visibility){
+    return visibility === 'doctor_private' ? 'خصوصی پزشک' : 'قابل مشاهده برای بیمار';
+}
+
+function noteVisibilityClass(visibility){
+    return visibility === 'doctor_private' ? 'vis-private' : 'vis-patient';
+}
+
+function renderWorkspaceNotes(){
+    var list = qs('[data-role="workspace-notes"]');
+    var empty = qs('[data-role="workspace-notes-empty"]');
+    var count = qs('[data-role="workspace-notes-count"]');
+    if ( !list ) return;
+    var notes = state.workspaceNotes;
+    if ( count ) count.textContent = notes.length + ' یادداشت';
+    if ( notes.length === 0 ) {
+        list.innerHTML = '';
+        show(empty);
+        return;
+    }
+    hide(empty);
+    list.innerHTML = notes.map(function(n){
+        return '<li class="cpms-doc-ws-note" data-note-id="' + esc(n.id) + '">' +
+            '<div class="cpms-doc-ws-note-head">' +
+                '<span class="cpms-doc-badge ' + esc(noteVisibilityClass(n.visibility)) + '">' + esc(noteVisibilityLabel(n.visibility)) + '</span>' +
+                '<span class="cpms-doc-ws-note-date">' + esc(n.created_at || '') + '</span>' +
+            '</div>' +
+            '<p class="cpms-doc-ws-note-text">' + esc(n.content_text || '') + '</p>' +
+        '</li>';
+    }).join('');
+}
+
+function submitWorkspaceNote(){
+    var visitId = state.workspaceVisitId;
+    if ( !visitId || state.workspaceBusy ) return;
+    var errEl = qs('[data-role="workspace-form-error"]');
+    var okEl = qs('[data-role="workspace-form-success"]');
+    var contentEl = qs('[data-role="workspace-content"]');
+    var visEl = qs('[data-role="workspace-visibility"]');
+    if ( !contentEl || !visEl ) return;
+    hide(errEl);
+    hide(okEl);
+    var content = String(contentEl.value || '').trim();
+    var visibility = visEl.value === 'doctor_private' ? 'doctor_private' : 'patient_visible';
+    if ( content === '' ) {
+        if ( errEl ) { errEl.textContent = 'متن یادداشت الزامی است.'; show(errEl); }
+        return;
+    }
+    setNoteSubmitBusy(true);
+    var submittedVisitId = visitId;
+    api('POST', '/visits/' + encodeURIComponent(String(visitId)) + '/notes', {
+        category: 'clinical_note',
+        visibility: visibility,
+        content_text: content
+    }, scopeHeaders()).then(function(r){
+        if ( state.workspaceVisitId !== submittedVisitId ) return;
+        setNoteSubmitBusy(false);
+        if ( r.status === 200 ) {
+            var note = (r.body && r.body.data) || r.body || {};
+            if ( note && note.id ) {
+                state.workspaceNotes = [note].concat(state.workspaceNotes);
+                renderWorkspaceNotes();
+            }
+            contentEl.value = '';
+            if ( okEl ) { okEl.textContent = 'یادداشت با موفقیت ثبت شد.'; show(okEl); }
+            return;
+        }
+        // Failed persistence is never presented as success.
+        if ( errEl ) {
+            errEl.textContent = (r.body && r.body.message) ? String(r.body.message).slice(0, 200) : 'خطا در ثبت یادداشت — دوباره تلاش کنید';
+            show(errEl);
+        }
+    }).catch(function(){
+        if ( state.workspaceVisitId !== submittedVisitId ) return;
+        setNoteSubmitBusy(false);
+        if ( errEl ) { errEl.textContent = 'خطای ارتباط در ثبت یادداشت — دوباره تلاش کنید'; show(errEl); }
+    });
+}
+
 function loadContext(){
     return api('GET', '/doctor/portal/context').then(function(r){
         if ( r.status!==200 ) {
@@ -621,13 +851,35 @@ function pollQueue(){
 }
 
 document.addEventListener('click', function(ev){
-    var btn = (ev.target && ev.target.closest) ? ev.target.closest('[data-action]') : null;
-    if ( !btn || btn.disabled ) return;
-    var row = btn.closest('[data-role="queue-item"]');
-    var visitId = btn.getAttribute('data-visit-id') || (row ? row.getAttribute('data-visit-id') : '');
-    if ( !visitId ) return;
+    var target = (ev.target && ev.target.closest) ? ev.target : null;
+    var btn = target ? target.closest('[data-action]') : null;
+    if ( btn ) {
+        if ( btn.disabled ) return;
+        var row = btn.closest('[data-role="queue-item"]');
+        var visitId = btn.getAttribute('data-visit-id') || (row ? row.getAttribute('data-visit-id') : '');
+        if ( !visitId ) return;
+        ev.preventDefault();
+        doQueueAction(visitId, btn.getAttribute('data-action'));
+        return;
+    }
+    var closeBtn = target ? target.closest('[data-role="workspace-close"]') : null;
+    if ( closeBtn ) {
+        ev.preventDefault();
+        closeWorkspace();
+        return;
+    }
+    var item = target ? target.closest('[data-role="queue-item"]') : null;
+    if ( !item ) return;
+    var selectedVisitId = item.getAttribute('data-visit-id');
+    if ( !selectedVisitId ) return;
+    openWorkspace(selectedVisitId);
+});
+
+document.addEventListener('submit', function(ev){
+    var form = (ev.target && ev.target.closest) ? ev.target.closest('[data-role="workspace-note-form"]') : null;
+    if ( !form ) return;
     ev.preventDefault();
-    doQueueAction(visitId, btn.getAttribute('data-action'));
+    submitWorkspaceNote();
 });
 
 document.addEventListener('change', function(ev){
@@ -639,6 +891,7 @@ document.addEventListener('change', function(ev){
         state.locations = [];
         state.today = null;
         state.queue = [];
+        closeWorkspace();
         hide(qs('[data-role="today-section"]'));
         hide(qs('[data-role="queue-section"]'));
         hide(qs('[data-role="no-data"]'));
@@ -657,6 +910,7 @@ document.addEventListener('change', function(ev){
     if ( locSel ) {
         var v = locSel.value;
         state.selectedLocationId = v ? parseInt(v,10) : null;
+        closeWorkspace();
         if ( state.selectedLocationId ) {
             loadTodayAndQueue();
         } else {
