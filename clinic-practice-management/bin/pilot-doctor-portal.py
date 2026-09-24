@@ -709,6 +709,25 @@ def prove_one(browser, doctor, vp, shot_name=None):
             raise RuntimeError("queue row clinician was not the server identity")
         if set(queue_ids(page)) != {doctor["visit_own"]}:
             raise RuntimeError("rendered queue does not match the server queue")
+        # Phase 10 Slice 2 TEST-ONLY RED: the waiting queue row must expose the
+        # state-driven action controls (Call + Skip) reusing the existing
+        # POST /visits/{id}/{call,recall,start,skip} routes. The merged Slice 1
+        # shell is read-only, so this fails cleanly here until GREEN wires them.
+        stage = "queue-actions"
+        waiting_row = page.locator(
+            f'[data-role="queue-item"][data-visit-id="{doctor["visit_own"]}"]'
+        )
+        if waiting_row.count() != 1:
+            raise RuntimeError("waiting queue row is not addressable for actions")
+        for action in ("call", "skip"):
+            control = waiting_row.locator(f'[data-action="{action}"]')
+            if control.count() != 1 or not control.first.is_visible():
+                raise RuntimeError(
+                    f"waiting row does not expose the {action} action control"
+                )
+            if not control.first.is_enabled():
+                raise RuntimeError(f"waiting row {action} control is not enabled")
+        stage = "today-queue"
         if doctor["today"] not in (page.locator('[data-role="today-date"]').inner_text() or ""):
             raise RuntimeError("today date not rendered")
         expected = [doctor["appt_booked"]]
