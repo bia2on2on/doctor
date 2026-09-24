@@ -153,11 +153,14 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
         // Workspace record must expose BOTH current-Visit prescriptions
         // (doctor view shows drafts too — established record() contract).
         $rPortal = $this->dispatch('GET', '/' . sprintf(self::PORTAL_RECORD, $visit), [], $headers);
-        self::assertSame(200, $rPortal->get_status(),
+        $this->gate(200, $rPortal,
             'G1: authorized portal record reaches existing workspace architecture, got '
             . $rPortal->get_status() . '/' . $this->errCode($rPortal));
 
         $payload = $this->payload($rPortal);
+        if (!isset($payload['prescriptions']) || !is_array($payload['prescriptions'])) {
+            $this->annotate('control-G1', 'G1: portal record must carry prescriptions list', json_encode(array_keys($payload), JSON_UNESCAPED_UNICODE) ?: 'payload-keys-unavailable');
+        }
         self::assertArrayHasKey('visit', $payload, 'G1: portal record carries visit');
         self::assertSame($visit, (int) $payload['visit']['id'], 'G1: correct visit');
         self::assertArrayHasKey('prescriptions', $payload, 'G1: portal workspace exposes current-Visit prescriptions');
@@ -213,7 +216,7 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
         // (INTENDED PRODUCT RED: portal write boundary does not exist yet on main).
         wp_set_current_user($fx['doctor']);
         $rOwn = $this->dispatch('POST', '/' . sprintf(self::PORTAL_RX_CREATE, $visitOwn), $body, $headers);
-        self::assertSame(200, $rOwn->get_status(),
+        $this->gate(200, $rOwn,
             'G2.A: portal draft create must succeed for authorized doctor at the intended portal boundary, got '
             . $rOwn->get_status() . '/' . $this->errCode($rOwn));
         $ownRx = $this->payload($rOwn);
@@ -222,17 +225,17 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
         // B. Cross-doctor Visit selector => non-enumerating 404 at the portal boundary.
         wp_set_current_user($fx['doctor']);
         $rCross = $this->dispatch('POST', '/' . sprintf(self::PORTAL_RX_CREATE, $visitOther), $body, $headers);
-        self::assertSame(404, $rCross->get_status(), 'G2.B: cross-doctor portal create denied non-enumerating');
+        $this->gate(404, $rCross, 'G2.B: cross-doctor portal create denied non-enumerating');
         self::assertSame('CLINIC_NOT_FOUND', $this->errCode($rCross), 'G2.B: non-enumerating 404 contract');
 
         // C. Foreign-Clinic Visit selector => non-enumerating 404.
         $rForeignClinic = $this->dispatch('POST', '/' . sprintf(self::PORTAL_RX_CREATE, $visitForeign), $body, $headers);
-        self::assertSame(404, $rForeignClinic->get_status(), 'G2.C: foreign-clinic portal create denied non-enumerating');
+        $this->gate(404, $rForeignClinic, 'G2.C: foreign-clinic portal create denied non-enumerating');
         self::assertSame('CLINIC_NOT_FOUND', $this->errCode($rForeignClinic), 'G2.C: non-enumerating 404 contract');
 
         // D. Foreign-Location Visit selector => non-enumerating 404.
         $rForeignLoc = $this->dispatch('POST', '/' . sprintf(self::PORTAL_RX_CREATE, $visitOtherLoc), $body, $headers);
-        self::assertSame(404, $rForeignLoc->get_status(), 'G2.D: foreign-location portal create denied non-enumerating');
+        $this->gate(404, $rForeignLoc, 'G2.D: foreign-location portal create denied non-enumerating');
         self::assertSame('CLINIC_NOT_FOUND', $this->errCode($rForeignLoc), 'G2.D: non-enumerating 404 contract');
 
         // E. Secretary must be denied at the portal boundary (doctor-only slice).
@@ -240,21 +243,21 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
         cpms_test_seed_membership($secretary, $fx['clinic'], 'cpms_secretary');
         wp_set_current_user($secretary);
         $rSecretary = $this->dispatch('POST', '/' . sprintf(self::PORTAL_RX_CREATE, $visitOwn), $body, $headers);
-        self::assertSame(403, $rSecretary->get_status(), 'G2.E: secretary denied at portal boundary');
+        $this->gate(403, $rSecretary, 'G2.E: secretary denied at portal boundary');
         self::assertSame('CLINIC_PERMISSION_DENIED', $this->errCode($rSecretary),
             'G2.E: secretary denial is the permission boundary');
 
         // ---- Regression guards: shared/admin E10 behavior stays untouched ----
         // Secretary on shared E10 was already denied (403) and MUST stay so.
         $rSharedSecretary = $this->dispatch('POST', '/' . sprintf(self::SHARED_RX_CREATE, $visitOwn), $body, $headers);
-        self::assertSame(403, $rSharedSecretary->get_status(),
+        $this->gate(403, $rSharedSecretary,
             'G2.reg-shared: shared E10 secretary denial preserved (global tightening prohibited in both directions)');
 
         // Owning doctor via SHARED E10 still succeeds (established backend — green);
         // proves the RED above is the MISSING PORTAL boundary, not a backend defect.
         wp_set_current_user($fx['doctor']);
         $rSharedDoctor = $this->dispatch('POST', '/' . sprintf(self::SHARED_RX_CREATE, $visitOwn), $body, $headers);
-        self::assertSame(200, $rSharedDoctor->get_status(),
+        $this->gate(200, $rSharedDoctor,
             'G2.reg-shared: shared E10 create still green for owning doctor (backend already implemented, got '
             . $rSharedDoctor->get_status() . ')');
     }
@@ -289,7 +292,7 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
         ];
 
         $rCreate = $this->dispatch('POST', '/' . sprintf(self::PORTAL_RX_CREATE, $visit), $body, $headers);
-        self::assertSame(200, $rCreate->get_status(),
+        $this->gate(200, $rCreate,
             'G3: authorized portal draft create persists (intended portal boundary), got '
             . $rCreate->get_status() . '/' . $this->errCode($rCreate));
 
@@ -354,57 +357,57 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
         // Existing domain contract enforced at the portal boundary too:
         // empty items ...
         $rEmpty = $this->dispatch('POST', $route, ['items' => []], $headers);
-        self::assertSame(422, $rEmpty->get_status(), 'G4: empty items rejected at portal boundary');
+        $this->gate(422, $rEmpty, 'G4: empty items rejected at portal boundary');
         self::assertSame('CLINIC_VALIDATION_FAILED', $this->errCode($rEmpty), 'G4: empty items => existing validation code');
 
         // required fields (existing domain rules) ...
         $rNoDose = $this->dispatch('POST', $route, [
             'items' => [['generic_name' => 'دارو', 'frequency' => '1', 'form' => 'tablet', 'route' => 'oral']],
         ], $headers);
-        self::assertSame(422, $rNoDose->get_status(), 'G4: missing required dose rejected');
+        $this->gate(422, $rNoDose, 'G4: missing required dose rejected');
         self::assertSame('CLINIC_VALIDATION_FAILED', $this->errCode($rNoDose), 'G4: missing dose code');
 
         $rNoGeneric = $this->dispatch('POST', $route, [
             'items' => [['dose' => '1', 'frequency' => '1']],
         ], $headers);
-        self::assertSame(422, $rNoGeneric->get_status(), 'G4: missing required generic_name rejected');
+        $this->gate(422, $rNoGeneric, 'G4: missing required generic_name rejected');
         self::assertSame('CLINIC_VALIDATION_FAILED', $this->errCode($rNoGeneric), 'G4: missing generic_name code');
 
         $rNoFreq = $this->dispatch('POST', $route, [
             'items' => [['generic_name' => 'دارو', 'dose' => '1']],
         ], $headers);
-        self::assertSame(422, $rNoFreq->get_status(), 'G4: missing required frequency rejected');
+        $this->gate(422, $rNoFreq, 'G4: missing required frequency rejected');
         self::assertSame('CLINIC_VALIDATION_FAILED', $this->errCode($rNoFreq), 'G4: missing frequency code');
 
         // current enums (no invented catalog/schema) ...
         $rBadForm = $this->dispatch('POST', $route, [
             'items' => [['generic_name' => 'دارو', 'dose' => '1', 'frequency' => '1', 'form' => 'lollipop']],
         ], $headers);
-        self::assertSame(422, $rBadForm->get_status(), 'G4: form outside current enum RX_FORMS rejected');
+        $this->gate(422, $rBadForm, 'G4: form outside current enum RX_FORMS rejected');
         self::assertSame('CLINIC_VALIDATION_FAILED', $this->errCode($rBadForm), 'G4: form enum code');
 
         $rBadRoute = $this->dispatch('POST', $route, [
             'items' => [['generic_name' => 'دارو', 'dose' => '1', 'frequency' => '1', 'route' => 'venous']],
         ], $headers);
-        self::assertSame(422, $rBadRoute->get_status(), 'G4: route outside current enum RX_ROUTES rejected');
+        $this->gate(422, $rBadRoute, 'G4: route outside current enum RX_ROUTES rejected');
         self::assertSame('CLINIC_VALIDATION_FAILED', $this->errCode($rBadRoute), 'G4: route enum code');
 
         // current scalar limits (duration_days 1..3650) ...
         $rDurZero = $this->dispatch('POST', $route, [
             'items' => [['generic_name' => 'دارو', 'dose' => '1', 'frequency' => '1', 'duration_days' => 0]],
         ], $headers);
-        self::assertSame(422, $rDurZero->get_status(), 'G4: duration_days=0 rejected (existing 1..3650 limit)');
+        $this->gate(422, $rDurZero, 'G4: duration_days=0 rejected (existing 1..3650 limit)');
         $rDurHuge = $this->dispatch('POST', $route, [
             'items' => [['generic_name' => 'دارو', 'dose' => '1', 'frequency' => '1', 'duration_days' => 10000]],
         ], $headers);
-        self::assertSame(422, $rDurHuge->get_status(), 'G4: duration_days>3650 rejected (existing limit)');
+        $this->gate(422, $rDurHuge, 'G4: duration_days>3650 rejected (existing limit)');
 
         // optional drug_ref_id must reference an existing drug_reference row
         // (established rule; NO catalog/schema invention in the slice).
         $rBadDrugRef = $this->dispatch('POST', $route, [
             'items' => [['generic_name' => 'دارو', 'dose' => '1', 'frequency' => '1', 'drug_ref_id' => 999999]],
         ], $headers);
-        self::assertSame(404, $rBadDrugRef->get_status(), 'G4: unknown drug_ref_id keeps established 404');
+        $this->gate(404, $rBadDrugRef, 'G4: unknown drug_ref_id keeps established 404');
         self::assertSame('CLINIC_NOT_FOUND', $this->errCode($rBadDrugRef), 'G4: unknown drug_ref_id code');
 
         // Sanity control: all established forms/routes are accepted by the
@@ -432,7 +435,7 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
         $rShared = $this->dispatch('POST', '/' . sprintf(self::SHARED_RX_CREATE, $visit), [
             'items' => [$this->validItem()], 'is_patient_visible' => true,
         ], $headers);
-        self::assertSame(200, $rShared->get_status(),
+        $this->gate(200, $rShared,
             'G5.fixture: shared E10 backend create is green (regression evidence, got ' . $rShared->get_status() . ')');
         $rxDraft = $this->payload($rShared);
         $rxId = (int) ($rxDraft['id'] ?? 0);
@@ -442,7 +445,7 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
         // A. Own authorized draft CAN be finalized through the portal boundary
         // (INTENDED PRODUCT RED: portal finalize boundary missing on main).
         $rFin = $this->dispatch('POST', '/' . sprintf(self::PORTAL_RX_FINALIZE, $rxId), [], $headers);
-        self::assertSame(200, $rFin->get_status(),
+        $this->gate(200, $rFin,
             'G5.A: authorized portal finalize succeeds at the intended boundary, got '
             . $rFin->get_status() . '/' . $this->errCode($rFin));
         $fin = $this->payload($rFin);
@@ -473,7 +476,7 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
 
         wp_set_current_user($fx['doctor']);
         $rFinForeign = $this->dispatch('POST', '/' . sprintf(self::PORTAL_RX_FINALIZE, $rxForeign), [], $headers);
-        self::assertSame(404, $rFinForeign->get_status(),
+        $this->gate(404, $rFinForeign,
             'G5.B: foreign prescription finalize denied non-enumerating at the portal boundary');
         self::assertSame('CLINIC_NOT_FOUND', $this->errCode($rFinForeign), 'G5.B: non-enumerating 404 contract');
         $rowForeign = App::db()->fetchRow(
@@ -493,12 +496,12 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
         $rSharedB = $this->dispatch('POST', '/' . sprintf(self::SHARED_RX_CREATE, $visitB), [
             'items' => [$this->validItem()], 'is_patient_visible' => true,
         ], $headers);
-        self::assertSame(200, $rSharedB->get_status(), 'G5.C.fixture: doctorB draft via shared backend green');
+        $this->gate(200, $rSharedB, 'G5.C.fixture: doctorB draft via shared backend green');
         $rxB = (int) $this->payload($rSharedB)['id'];
 
         wp_set_current_user($fx['doctor']);
         $rFinB = $this->dispatch('POST', '/' . sprintf(self::PORTAL_RX_FINALIZE, $rxB), [], $headers);
-        self::assertSame(404, $rFinB->get_status(),
+        $this->gate(404, $rFinB,
             'G5.C: cross-doctor prescription finalize denied non-enumerating at the portal boundary');
         self::assertSame('CLINIC_NOT_FOUND', $this->errCode($rFinB), 'G5.C: non-enumerating 404 contract');
 
@@ -508,9 +511,9 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
         // the row remains finalized (no new state invented).
         wp_set_current_user($doctorB);
         $rFin1 = $this->dispatch('POST', '/' . sprintf(self::SHARED_RX_FINALIZE, $rxB), [], $headers);
-        self::assertSame(200, $rFin1->get_status(), 'G5.D: shared finalize succeeds for owning doctor (green)');
+        $this->gate(200, $rFin1, 'G5.D: shared finalize succeeds for owning doctor (green)');
         $rFin2 = $this->dispatch('POST', '/' . sprintf(self::SHARED_RX_FINALIZE, $rxB), [], $headers);
-        self::assertSame(409, $rFin2->get_status(),
+        $this->gate(409, $rFin2,
             'G5.D: repeated/invalid finalize keeps established 409 (no new state, got ' . $rFin2->get_status() . ')');
         self::assertSame('CLINIC_INVALID_TRANSITION', $this->errCode($rFin2),
             'G5.D: established invalid-transition code unchanged');
@@ -538,7 +541,7 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
             'items' => [['generic_name' => 'داروی پیش‌نویس', 'dose' => '1', 'frequency' => '1']],
             'is_patient_visible' => true,
         ], $headers);
-        self::assertSame(200, $rDraft->get_status(), 'G6.fixture: draft create green');
+        $this->gate(200, $rDraft, 'G6.fixture: draft create green');
         $draft = $this->payload($rDraft);
 
         // 2) finalized + is_patient_visible=1 => established patient-visible.
@@ -546,7 +549,7 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
             'items' => [['generic_name' => 'استامینوفن', 'dose' => '1', 'frequency' => 'روزانه']],
             'is_patient_visible' => true,
         ], $headers);
-        self::assertSame(200, $rVisible->get_status(), 'G6.fixture: visible create green');
+        $this->gate(200, $rVisible, 'G6.fixture: visible create green');
         $visible = $this->payload($rVisible);
 
         // 3) finalized + is_patient_visible=0 => hidden.
@@ -554,13 +557,13 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
             'items' => [['generic_name' => 'داروی پنهان', 'dose' => '1', 'frequency' => '1']],
             'is_patient_visible' => false,
         ], $headers);
-        self::assertSame(200, $rHidden->get_status(), 'G6.fixture: hidden create green');
+        $this->gate(200, $rHidden, 'G6.fixture: hidden create green');
         $hidden = $this->payload($rHidden);
 
         $rFinV = $this->dispatch('POST', '/' . sprintf(self::SHARED_RX_FINALIZE, (int) $visible['id']), [], $headers);
-        self::assertSame(200, $rFinV->get_status(), 'G6.fixture: visible finalize green');
+        $this->gate(200, $rFinV, 'G6.fixture: visible finalize green');
         $rFinH = $this->dispatch('POST', '/' . sprintf(self::SHARED_RX_FINALIZE, (int) $hidden['id']), [], $headers);
-        self::assertSame(200, $rFinH->get_status(), 'G6.fixture: hidden finalize green');
+        $this->gate(200, $rFinH, 'G6.fixture: hidden finalize green');
 
         // Linked patient reads the established C7 endpoint (single link => auto-resolution).
         $patientUser = $this->makeUser('g6_patient_user', RolesAndCapabilities::ROLE_PATIENT);
@@ -580,9 +583,16 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
         ]);
         wp_set_current_user($patientUser);
         $rPatient = $this->dispatch('GET', '/' . self::PATIENT_RX_LIST);
-        self::assertSame(200, $rPatient->get_status(), 'G6: established patient prescriptions endpoint accessible');
+        $this->gate(200, $rPatient, 'G6: established patient prescriptions endpoint accessible');
 
         $numbers = array_column($this->payload($rPatient)['prescriptions'] ?? [], 'prescription_number');
+        if (
+            !in_array($visible['prescription_number'], $numbers, true)
+            || in_array($hidden['prescription_number'], $numbers, true)
+            || in_array($draft['prescription_number'], $numbers, true)
+        ) {
+            $this->annotate('control-G6', 'G6: established patient visibility contract drifted', json_encode($numbers, JSON_UNESCAPED_UNICODE) ?: 'unknown');
+        }
         self::assertContains($visible['prescription_number'], $numbers,
             'G6: finalized + patient-visible Rx remains visible (established patient contract)');
         self::assertNotContains($hidden['prescription_number'], $numbers,
@@ -678,6 +688,9 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
                 $missing[] = 'selector header on rx wiring (' . $header . ')';
             }
         }
+        if ($missing !== []) {
+            $this->annotate('red-G7', 'G7: Doctor Portal prescription composer/list/finalize/read-only wiring missing', implode('; ', $missing));
+        }
         self::assertSame([], $missing,
             'G7: Doctor Portal prescription composer/list/finalize/read-only wiring missing: ' . implode('; ', $missing));
     }
@@ -698,7 +711,7 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
         $rNoLoc = $this->dispatch('POST', '/' . sprintf(self::PORTAL_RX_CREATE, $visitMulti), [
             'items' => [$this->validItem()],
         ], $headersNoLoc);
-        self::assertSame(400, $rNoLoc->get_status(),
+        $this->gate(400, $rNoLoc,
             'G2b.E: portal Rx write with N>1 eligible and no explicit Location requires 400');
         self::assertSame('CLINIC_SCOPE_REQUIRED', $this->errCode($rNoLoc), 'G2b.E: Location required code');
         $rawNoLoc = $this->rawErrorData($rNoLoc);
@@ -711,7 +724,7 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
         $rWithLoc = $this->dispatch('POST', '/' . sprintf(self::PORTAL_RX_CREATE, $visitMulti), [
             'items' => [$this->validItem()],
         ], $headersWithLoc);
-        self::assertSame(200, $rWithLoc->get_status(), 'G2b.E: explicit trusted Location write succeeds');
+        $this->gate(200, $rWithLoc, 'G2b.E: explicit trusted Location write succeeds');
 
         // 1 eligible => auto-resolution allowed on write (no Location header).
         $fxSingle = $this->makePortalStage('g2bs');
@@ -721,7 +734,7 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
         $rSingle = $this->dispatch('POST', '/' . sprintf(self::PORTAL_RX_CREATE, $visitSingle), [
             'items' => [$this->validItem()],
         ], $this->scopeHeaders($fxSingle['clinic'], null));
-        self::assertSame(200, $rSingle->get_status(), 'G2b.E: single-location auto-resolution write succeeds');
+        $this->gate(200, $rSingle, 'G2b.E: single-location auto-resolution write succeeds');
 
         // 0 eligible => fail closed on write.
         $fxZero = $this->makePortalStage('g2bz');
@@ -733,7 +746,7 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
         $rZero = $this->dispatch('POST', '/' . sprintf(self::PORTAL_RX_CREATE, $visitZero), [
             'items' => [$this->validItem()],
         ], $this->scopeHeaders($fxZero['clinic'], $fxZero['location']));
-        self::assertContains($rZero->get_status(), [403, 404], 'G2b.F: zero eligible Locations fails closed on write');
+        $this->gateIn([403, 404], $rZero, 'G2b.F: zero eligible Locations fails closed on write');
     }
 
     // ================= helpers (proven Slice 3/Visit Workspace patterns) =================
@@ -782,6 +795,41 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
             'duration_days' => 7,
             'instructions' => 'با غذا',
         ];
+    }
+
+    /**
+     * Annotating status gate: identical semantics to assertSame($wanted, $r->get_status(), $message)
+     * plus a standard CI runner annotation (::error) emitted ONLY when the status
+     * is unexpected, so the exact failing assertion text is retrievable from the
+     * check-run annotations (job log blobs are not reachable from the sandbox).
+     */
+    private function gate(int $wanted, WP_REST_Response $r, string $message): void
+    {
+        $got = $r->get_status();
+        if ($got !== $wanted) {
+            $this->annotate('status', $message, 'expected=' . $wanted . ' got=' . $got . ' code=' . $this->errCode($r));
+        }
+        self::assertSame($wanted, $got, $message);
+    }
+
+    /**
+     * @param list<int> $wantedSet
+     */
+    private function gateIn(array $wantedSet, WP_REST_Response $r, string $message): void
+    {
+        $got = $r->get_status();
+        if (!in_array($got, $wantedSet, true)) {
+            $this->annotate('status-set', $message, 'expected=' . implode('|', $wantedSet) . ' got=' . $got . ' code=' . $this->errCode($r));
+        }
+        self::assertContains($got, $wantedSet, $message);
+    }
+
+    private function annotate(string $kind, string $message, string $detail): void
+    {
+        $text = trim(preg_replace('/\s+/', ' ', $message . ' :: ' . $detail));
+        // Runner command escaping (workflow command v2 parameter values).
+        $esc = str_replace(['%', "\r", "\n", ':', ','], ['%25', '%0D', '%0A', ' -', ';'], (string) $text);
+        echo '::error title=CPMS-Phase10RxWrite-' . $kind . '::' . $esc . PHP_EOL;
     }
 
     private function dispatch(string $method, string $route, array $params = [], array $headers = [], bool $withNonce = true): WP_REST_Response
