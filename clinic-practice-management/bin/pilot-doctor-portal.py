@@ -13,6 +13,7 @@ import json
 import os
 import re
 import sys
+import time
 from urllib.parse import parse_qs, urlparse
 
 from playwright.sync_api import sync_playwright
@@ -459,6 +460,26 @@ VISIT_STATUSES = {
     "awaiting_payment", "paid", "checked_out", "cancelled", "skipped",
 }
 
+# Bounded wait for the asynchronous render of the server-returned state.
+APPT_PRESENTATION_WAIT_SECONDS = 15.0
+APPT_PRESENTATION_POLL_MS = 200
+
+# Mirrors the Doctor Portal presentation contract only:
+# templates/doctor-portal-shell.php -> appointmentStatusLabel(status).
+# Keys are the established appointment statuses (APPT_STATUSES); a status that
+# has no product label fails the journey instead of accepting an unmapped label.
+APPT_STATUS_LABELS = {
+    "pending": "در انتظار تأیید",
+    "confirmed": "رزرو شده",
+    "cancelled_by_patient": "لغو توسط بیمار",
+    "cancelled_by_staff": "لغو توسط مطب",
+    "rescheduled": "جابه\u200cجا شده",
+    "completed": "انجام شده",
+    "no_show": "عدم حضور",
+}
+if set(APPT_STATUS_LABELS) != APPT_STATUSES:
+    raise SystemExit("appointment status label contract drifted from APPT_STATUSES")
+
 
 def appointment_ids(page):
     return [int(v) for v in page.locator('[data-role="appointment-item"]').evaluate_all(
@@ -512,6 +533,102 @@ def assert_appointment_section(page, expected, hidden, label):
 def assert_no_appointments_route(state, label):
     if any(r["route"].rstrip("/").endswith("/appointments") for r in state["reqs"]):
         raise RuntimeError(f"{label} called a separate appointments route")
+
+
+def server_appointment_row(state, appt_id):
+    """The expected appointment from the /doctor/today body the page rendered."""
+    rows = today_data(state).get("appointments")
+    if not isinstance(rows, list):
+        raise RuntimeError("appointments payload missing from /doctor/today")
+    for row in rows:
+        if int(row.get("id") or 0) == appt_id:
+            return row
+    raise RuntimeError(f"appointment {appt_id} is missing from the server payload")
+
+
+def expected_appointment_label(row):
+    """Actual server-returned status plus its Doctor Portal Persian label."""
+    status = row.get("status")
+    if status not in APPT_STATUSES:
+        raise RuntimeError(f"server returned an unrecognized appointment status: {status!r}")
+    if status not in APPT_STATUS_LABELS:
+        raise RuntimeError(f"no Doctor Portal label contract for appointment status {status!r}")
+    return status, APPT_STATUS_LABELS[status]
+
+
+def dom_appointment_row(page, appt_id):
+    """Published DOM state of one appointment row: identity, status, badges."""
+    return page.evaluate(
+        """(id) => {
+          const el = document.querySelector('[data-appointment-id="' + id + '"]');
+          if (!el) return { present: false, visible: false };
+          const nameEl = el.querySelector('[data-role="patient-name"]');
+          return {
+            present: true,
+            visible: !!(el.offsetParent || el.getClientRects().length),
+            status: el.getAttribute('data-status') || '',
+            name: nameEl ? (nameEl.textContent || '').trim() : '',
+            badges: Array.from(el.querySelectorAll('.cpms-doc-badge')).map((b) => ({
+              cls: b.className || '',
+              text: (b.textContent || '').trim()
+            }))
+          };
+        }""",
+        str(appt_id),
+    )
+
+
+def assert_appointment_presentation(page, state, appt_id, patient_name, label):
+    """Bind the rendered appointment row to the ACTUAL server-returned status.
+
+    The appointment is identified by its stable fixture id, its status is read
+    from the server-returned /doctor/today body the page rendered from, checked
+    against the established status contract, mapped through the bounded Doctor
+    Portal label contract, and only then compared with the DOM: same patient,
+    same ``data-status``, and the ``status-<status>`` badge carrying that label.
+    A confirmed -> no_show transition by the no-show job is therefore valid,
+    while a missing, hidden, foreign, stale, or unrecognized presentation is
+    not. The bounded wait tolerates render latency only, never a mismatch.
+    """
+    deadline = time.monotonic() + APPT_PRESENTATION_WAIT_SECONDS
+    server_status = ""
+    expected_label = ""
+    dom = {"present": False, "visible": False}
+    while True:
+        server_status, expected_label = expected_appointment_label(
+            server_appointment_row(state, appt_id)
+        )
+        dom = dom_appointment_row(page, appt_id)
+        if (
+            dom.get("present")
+            and dom.get("visible")
+            and dom.get("name") == patient_name
+            and dom.get("status") == server_status
+            and any(
+                f"status-{server_status}" in str(badge.get("cls") or "").split()
+                and expected_label in str(badge.get("text") or "")
+                for badge in dom.get("badges") or []
+            )
+        ):
+            return server_status, expected_label
+        if time.monotonic() >= deadline:
+            break
+        page.wait_for_timeout(APPT_PRESENTATION_POLL_MS)
+    if not dom.get("present"):
+        raise RuntimeError(f"{label} expected appointment {appt_id} is not rendered")
+    if not dom.get("visible"):
+        raise RuntimeError(f"{label} expected appointment {appt_id} is hidden")
+    if dom.get("name") != patient_name:
+        raise RuntimeError(f"{label} appointment {appt_id} shows the wrong patient")
+    if dom.get("status") != server_status:
+        raise RuntimeError(
+            f"{label} UI/server appointment status mismatch: "
+            f"dom={dom.get('status')!r} server={server_status!r}"
+        )
+    raise RuntimeError(
+        f"{label} appointment {appt_id} status {server_status!r} "
+        f"is not rendered as its Doctor Portal label"
+    )
 
 
 def _json(resp, label):
@@ -602,9 +719,17 @@ def prove_one(browser, doctor, vp, shot_name=None):
         assert_appointment_section(page, expected, hidden, vp["vp"])
         assert_no_appointments_route(state, vp["vp"])
         section_text = page.locator('[data-role="appointments-section"]').inner_text() or ""
-        if doctor["booked_name"] not in section_text or "رزرو شده" not in section_text:
-            raise RuntimeError("booked appointment name or status is not visible")
+        # The expected appointment is identified by its stable fixture id and the
+        # row must present the ACTUAL server-returned status (the no-show job may
+        # legitimately have moved it confirmed -> no_show), never a hardcoded one.
+        booked_status, booked_label = assert_appointment_presentation(
+            page, state, doctor["appt_booked"], doctor["booked_name"], vp["vp"]
+        )
+        arrived_status = ""
         if doctor["appt_arrived"]:
+            arrived_status, _ = assert_appointment_presentation(
+                page, state, doctor["appt_arrived"], doctor["arrived_name"], vp["vp"]
+            )
             arrived = page.locator(f'[data-appointment-id="{doctor["appt_arrived"]}"]')
             if arrived.get_attribute("data-visit-status") != "checked_in":
                 raise RuntimeError("checked-in appointment did not keep the existing visit status")
@@ -631,6 +756,8 @@ def prove_one(browser, doctor, vp, shot_name=None):
         )
         info(
             f"{key} shell=1 rtl=1 auto_clinic=1 auto_location=1 own_visit=1 other_visit=0 clinician_id_sent=0"
+            f" booked_status={booked_status} booked_label={booked_label}"
+            + (f" arrived_status={arrived_status}" if arrived_status else "")
         )
     except Exception as e:  # noqa: BLE001
         try:
