@@ -826,10 +826,11 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
 
     private function annotate(string $kind, string $message, string $detail): void
     {
-        $text = trim(preg_replace('/\s+/', ' ', $message . ' :: ' . $detail));
+        $text = trim((string) preg_replace('/\s+/', ' ', $message . ' :: ' . $detail));
         // Runner command escaping (workflow command v2 parameter values).
-        $esc = str_replace(['%', "\r", "\n", ':', ','], ['%25', '%0D', '%0A', ' -', ';'], (string) $text);
-        echo '::error title=CPMS-Phase10RxWrite-' . $kind . '::' . $esc . PHP_EOL;
+        $esc = str_replace(['%', "\r", "\n", ':', ','], ['%25', '%0D', '%0A', ' -', ';'], $text);
+        // STDERR bypasses PHPUnit output buffering (echo would be swallowed).
+        fwrite(STDERR, '::error title=CPMS-Phase10RxWrite-' . $kind . '::' . $esc . PHP_EOL);
     }
 
     private function dispatch(string $method, string $route, array $params = [], array $headers = [], bool $withNonce = true): WP_REST_Response
