@@ -1472,7 +1472,11 @@ jobs:
         run: |
           python3 -m py_compile bin/pilot-doctor-portal.py
           python3 bin/pilot-doctor-portal.py | tee /tmp/doctor-portal.log
-          test "${PIPESTATUS[0]}" -eq 0
+          BROWSER_EXIT="${PIPESTATUS[0]}"
+          if [ "${BROWSER_EXIT}" != "0" ]; then
+            echo "::error::doctor-portal-browser failed: exit=${BROWSER_EXIT} fails=$(grep '^FAIL' /tmp/doctor-portal.log 2>/dev/null | wc -l) fail_lines=$(grep '^FAIL' /tmp/doctor-portal.log 2>/dev/null | tr '\n' '~' | head -c 2500)"
+          fi
+          test "${BROWSER_EXIT}" -eq 0
 
       # خلاصهٔ Responsive باید از sandbox هم قابل بازیابی باشد: لاگِ job به blob
       # ریدایرکت می‌شود و دانلودشدنی نیست و `$GITHUB_STEP_SUMMARY` هم از API
