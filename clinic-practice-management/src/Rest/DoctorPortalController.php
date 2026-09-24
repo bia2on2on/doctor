@@ -231,7 +231,7 @@ final class DoctorPortalController extends RestBase {
 	 * selector fails non-enumerating with the established repository
 	 * convention (404 CLINIC_NOT_FOUND).
 	 */
-	private function workspace_authorize_visit( int $visit_id ): true|WP_Error {
+	private function workspace_authorize_visit( int $visit_id ): bool|WP_Error {
 		$user_id = (int) ( wp_get_current_user()->ID ?? 0 );
 
 		// 1) Trusted Clinic scope — bound by RestClinicContext from selector headers.
