@@ -287,8 +287,13 @@ $apptColleague = $appointment(
     'DPM' . $uniq . 'C'
 );
 
-$ids = [$visitOwn, $visitOther, $visitA, $visitB, $visitColleague, $apptBooked, $apptArrived, $apptOther, $apptA, $apptB, $apptColleague, $act390, $skip390, $act768, $skip768, $act1366, $skip1366];
-if (count($ids) !== count(array_unique($ids))) {
+// Visits and appointments live in independent tables with independent
+// auto-increments — a visit id may legitimately equal an appointment id
+// (the harness addresses them via separate data-visit-id /
+// data-appointment-id attributes). Distinctness is only meaningful per table.
+$visitIds = [$visitOwn, $visitOther, $visitA, $visitB, $visitColleague, $act390, $skip390, $act768, $skip768, $act1366, $skip1366];
+$apptIds = [$apptBooked, $apptArrived, $apptOther, $apptA, $apptB, $apptColleague];
+if (count($visitIds) !== count(array_unique($visitIds)) || count($apptIds) !== count(array_unique($apptIds))) {
     dp_fail('visit ids must be distinct');
 }
 
