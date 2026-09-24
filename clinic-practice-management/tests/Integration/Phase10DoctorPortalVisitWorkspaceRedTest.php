@@ -22,27 +22,14 @@
  * 2. Note edit/version UI is OUT. This slice is create/read only.
  * 3. Documentation cadence: do not create routine per-slice documentation churn.
  *
- * TEST-ONLY RED — 7 invariant groups encoding missing Visit Workspace behavior:
- *  1. PORTAL ENTRY — Doctor can select/open own current Visit from queue by visit_id
- *  2. PORTAL AUTHORITY / ISOLATION — trusted doctor + Clinic + Location + own Visit
- *  3. SAFE HEADER — required patient/Visit fields without sensitive data exposure
- *  4. PRIVATE NOTE — portal doctor can create/read doctor_private; patient/secretary cannot
- *  5. PATIENT-VISIBLE NOTE — portal creation uses patient_visible; visible via patient contract
- *  6. PORTAL UI WIRING CONTRACT — visibility selection, REST contract, error handling
- *  7. BROWSER-JOURNEY CONTRACT/HARNESS — extend existing pilot framework
+ * Existing E7/E8/patient REST assertions in this file are regression guards,
+ * not product REDs. The missing queue-to-workspace behavior is tested in the
+ * existing real-browser pilot (bin/pilot-doctor-portal.py) using the existing
+ * queue row and established E7 record route; no new REST path is assumed.
  *
- * Expected RED gaps (genuinely missing portal behavior):
- *  (R1) Portal-specific visit workspace endpoint (if needed) or strengthened
- *       authorization boundary for portal visit access
- *  (R2) Portal-specific note listing endpoint or UI wiring contract
- *  (R3) Safe header data contract (bounded patient/Visit fields)
- *  (R4) Portal UI controls for note creation with visibility selection
- *  (R5) Browser journey harness extension for workspace workflow
- *
- * All other assertions are guards over EXISTING behavior and expected to PASS.
- *
- * Product code: NO IMPLEMENTATION in this RED task. Test-only encoding of
- * missing Visit Workspace behavior and necessary portal-boundary security.
+ * Product code: NO IMPLEMENTATION in this RED task. This file retains only
+ * already-green backend guards; the specific missing product behavior is
+ * asserted by the existing Doctor Portal browser pilot.
  */
 
 declare(strict_types=1);
@@ -114,13 +101,8 @@ final class Phase10DoctorPortalVisitWorkspaceRedTest extends WP_UnitTestCase
         $patient = $this->insertPatient($fx['clinic'], 'g1_patient');
         $visit = $this->insertVisit($patient, $fx['clinician'], $fx['clinic'], $fx['location'], 'in_consultation');
 
-        // EXPECTED RED: Portal-specific visit workspace endpoint or strengthened
-        // authorization boundary for portal visit access.
-        // The portal must be able to open the selected visit by visit_id using
-        // existing visit_id as selector only (not authority).
-        
-        // Try to access the visit through a portal-specific endpoint (if it exists)
-        // or verify that the existing E7 record endpoint is properly guarded for portal use.
+        // Green regression guard for the established E7 record contract. Portal
+        // queue-to-workspace wiring is exercised in the existing browser pilot.
         $rRecord = $this->dispatch('GET', '/' . self::REST_NS . '/visits/' . $visit . '/record', [], $headers);
         
         // This should work for the own doctor with proper scope
@@ -224,9 +206,8 @@ final class Phase10DoctorPortalVisitWorkspaceRedTest extends WP_UnitTestCase
         self::assertArrayHasKey('id', $visitData, 'G3: Visit ID present');
         self::assertArrayHasKey('status', $visitData, 'G3: Visit status present');
         
-        // EXPECTED RED: Sensitive fields must NOT be exposed in portal workspace header
-        // mobile, national_id, address, emergency-contact and unrelated identity data
-        // These should be absent or explicitly filtered
+        // Existing E7 medical-view privacy regression guard. Portal header wiring
+        // is not represented by this shared endpoint assertion.
         
         $sensitiveFields = ['mobile', 'national_id', 'address', 'emergency_contact', 'emergency_phone'];
         foreach ($sensitiveFields as $field) {
@@ -283,7 +264,7 @@ final class Phase10DoctorPortalVisitWorkspaceRedTest extends WP_UnitTestCase
         
         // Patient-facing filtering is asserted against the established C6 API in G5.
         
-        // EXPECTED RED: Secretary cannot receive private content
+        // Existing secretary-denial regression guard: the shared record route is not granted to secretaries.
         $secretary = $this->makeUser('g4_secretary', RolesAndCapabilities::ROLE_SECRETARY);
         cpms_test_seed_membership($secretary, $fx['clinic'], 'cpms_secretary');
         
@@ -320,7 +301,7 @@ final class Phase10DoctorPortalVisitWorkspaceRedTest extends WP_UnitTestCase
         // Verify the note is patient_visible
         self::assertSame('patient_visible', $notePayload['visibility'], 'G5: Note is patient_visible');
         
-        // EXPECTED RED: It becomes visible through the established patient-facing contract
+        // Existing patient-visible note contract, exercised through patient Visit Detail.
         // This requires checking that the patient portal can see this note
         // through C5/C6/C7 endpoints
         
@@ -361,7 +342,7 @@ final class Phase10DoctorPortalVisitWorkspaceRedTest extends WP_UnitTestCase
         self::assertSame('patient_visible', $patientPayload['notes'][0]['visibility']);
         self::assertNotSame($privateNoteId, (int) $patientPayload['notes'][0]['id'], 'G5: Private note is not exposed');
 
-        // EXPECTED RED: No Organization Identity side effect is introduced
+        // No Organization Identity behavior is exercised or activated in this guard.
         // The note creation should not activate Organization Identity infrastructure
         // This is a guard to ensure we don't accidentally enable it
     }
@@ -377,7 +358,7 @@ final class Phase10DoctorPortalVisitWorkspaceRedTest extends WP_UnitTestCase
         $patient = $this->insertPatient($fx['clinic'], 'g6_patient');
         $visit = $this->insertVisit($patient, $fx['clinician'], $fx['clinic'], $fx['location'], 'in_consultation');
         
-        // EXPECTED RED: Note visibility selection is exactly doctor_private or patient_visible
+        // Existing note-visibility validation guard: only the two supported values are accepted.
         // The portal UI must provide these two options and no others
         
         // Test that invalid visibility values are rejected
@@ -412,7 +393,7 @@ final class Phase10DoctorPortalVisitWorkspaceRedTest extends WP_UnitTestCase
                 'G6: Valid visibility "' . $validVis . '" accepted');
         }
         
-        // EXPECTED RED: Uses real existing REST contract/nonces and trusted context
+        // Existing REST nonce and trusted-scope regression guards.
         // Verify that requests without proper nonce are rejected
         $rNoNonce = $this->dispatch('POST', '/' . self::REST_NS . '/visits/' . $visit . '/notes', [
             'category' => 'clinical_note',
@@ -422,9 +403,7 @@ final class Phase10DoctorPortalVisitWorkspaceRedTest extends WP_UnitTestCase
         
         self::assertNotSame(201, $rNoNonce->get_status(), 'G6: Request without nonce rejected');
         
-        // EXPECTED RED: Save/busy/error behavior cannot represent a failed write as success
-        // This is a UI contract that would be tested in the browser harness
-        // For now, verify that server-side errors are properly returned
+        // UI busy/error handling remains browser acceptance for the implementation stage.
         
         // Test that missing required fields are rejected
         $rMissingCategory = $this->dispatch('POST', '/' . self::REST_NS . '/visits/' . $visit . '/notes', [
@@ -441,48 +420,7 @@ final class Phase10DoctorPortalVisitWorkspaceRedTest extends WP_UnitTestCase
         
         self::assertContains($rMissingContent->get_status(), [400, 422], 'G6: Missing content rejected');
         
-        // EXPECTED RED: No edit/complete/reopen controls are required by this slice
-        // This is a scope guard - the portal UI should not include these controls
-        // This would be verified in the browser harness (Group 7)
-    }
-
-    // ============ Group 7 — BROWSER-JOURNEY CONTRACT/HARNESS ============
-
-    public function testGroup7_BrowserJourneyContractHarness(): void
-    {
-        // EXPECTED RED: Extend the existing Doctor Portal pilot/browser framework
-        // do not add a new browser framework
-        
-        // This test encodes the future GREEN journey:
-        // 1. Enter workspace (from queue)
-        // 2. Inspect safe header
-        // 3. Create private note
-        // 4. Create patient-visible note
-        // 5. Verify isolation
-        // 6. RTL/no horizontal overflow/console-network health
-        
-        // The browser harness extension would be in:
-        // clinic-practice-management/bin/pilot-doctor-portal.py
-        // or a new pilot script that extends it
-        
-        // For now, this test marks the requirement for browser harness extension
-        // The actual browser tests would be implemented in the GREEN phase
-        
-        // Verify that the pilot framework exists and can be extended
-        $pilotScript = __DIR__ . '/../../bin/pilot-doctor-portal.py';
-        self::assertFileExists($pilotScript, 'G7: Existing pilot framework exists');
-        
-        // EXPECTED RED: The pilot framework needs to be extended to cover:
-        // - Visit workspace entry from queue
-        // - Safe header inspection
-        // - Note creation workflow (private + patient-visible)
-        // - Isolation verification
-        // - RTL/responsive checks at 390x844, 768 tablet, 1366x768
-        
-        // This is a placeholder for the browser harness extension requirement
-        // The actual implementation would be in the GREEN phase
-        
-        self::assertFileIsReadable($pilotScript, 'G7: Existing Doctor Portal pilot is readable');
+        // Complete/Reopen and note-edit controls are out of this create/read slice.
     }
 
     // ================= helpers (proven Slice 1/2 patterns) =================

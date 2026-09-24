@@ -799,6 +799,53 @@ def prove_queue_actions(page, state, doctor, act, skip, label):
     wait_row_status(page, act, "in_consultation")
     if page.locator(row_sel(act) + " [data-action]").count() != 0:
         raise RuntimeError(f"{label} in-consultation row still exposes actions")
+
+    # Phase 10 Visit Workspace RED: select the existing current consultation
+    # from its established Doctor Portal queue row. The row's visit_id is only
+    # the selector; the portal must open the already-established E7 record path.
+    record_suffix = f"/visits/{act}/record"
+    record_reads_before = sum(
+        1 for req in state["reqs"]
+        if req["method"] == "GET" and req["route"].endswith(record_suffix)
+    )
+    page.locator(row_sel(act)).click()
+    page.wait_for_timeout(500)
+    record_reads_after = sum(
+        1 for req in state["reqs"]
+        if req["method"] == "GET" and req["route"].endswith(record_suffix)
+    )
+    if record_reads_after != record_reads_before + 1:
+        raise RuntimeError(
+            f"{label} G1 RED: selecting current Visit {act} from its Doctor Portal queue row "
+            f"must make exactly one GET to the existing E7 /visits/{{id}}/record contract; "
+            f"expected {record_reads_before + 1} total read(s), observed {record_reads_after}"
+        )
+    record_requests = [
+        req for req in state["reqs"]
+        if req["method"] == "GET" and req["route"].endswith(record_suffix)
+    ]
+    record_responses = [
+        resp for resp in state["rest"]
+        if resp["method"] == "GET" and resp["route"].endswith(record_suffix)
+    ]
+    if not record_responses or record_responses[-1]["status"] != 200:
+        actual = record_responses[-1]["status"] if record_responses else "no response"
+        raise RuntimeError(
+            f"{label} G1 RED: selected Visit {act} did not open its existing E7 record; "
+            f"expected HTTP 200, observed {actual}"
+        )
+    record_headers = record_requests[-1]["headers"]
+    required_scope = {
+        "x-wp-nonce": bool(record_headers.get("x-wp-nonce")),
+        "x-cpms-clinic-id": record_headers.get("x-cpms-clinic-id") == str(doctor["clinic_id"]),
+        "x-cpms-location-id": record_headers.get("x-cpms-location-id") == str(doctor["location_id"]),
+    }
+    if not all(required_scope.values()):
+        raise RuntimeError(
+            f"{label} G1 RED: E7 workspace read must reuse the portal nonce and trusted Clinic/Location; "
+            f"scope checks={required_scope}"
+        )
+
     # The backend still guards the invalid second START.
     r2 = portal_fetch(page, doctor, "POST", f"/visits/{act}/start")
     if r2["status"] != 409 or (r2["body"] or {}).get("code") != "CLINIC_INVALID_TRANSITION":
