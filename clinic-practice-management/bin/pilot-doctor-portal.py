@@ -549,15 +549,25 @@ def assert_no_appointments_route(state, label):
         raise RuntimeError(f"{label} called a separate appointments route")
 
 
-def server_appointment_row(state, appt_id):
-    """The expected appointment from the /doctor/today body the page rendered."""
-    rows = today_data(state).get("appointments")
+def server_appointment_row(page, doctor, appt_id, label):
+    """The expected appointment from a FRESH /doctor/today server read.
+
+    Deliberately NOT ``today_data(state)``: ``state["todays"][-1]`` is the
+    initial cached response captured at page load (or at an explicit Location
+    selection), while the Doctor Portal DOM is live/polled. Comparing the two
+    breaks the moment the real no-show job performs its legitimate
+    confirmed -> no_show transition (D-class harness stale-state defect).
+    The appointment is still addressed by its stable id.
+    """
+    rows = fresh_today(page, doctor, label).get("appointments")
     if not isinstance(rows, list):
-        raise RuntimeError("appointments payload missing from /doctor/today")
+        raise RuntimeError(f"{label} appointments payload missing from /doctor/today")
     for row in rows:
         if int(row.get("id") or 0) == appt_id:
             return row
-    raise RuntimeError(f"appointment {appt_id} is missing from the server payload")
+    raise RuntimeError(
+        f"{label} appointment {appt_id} is missing from the fresh server payload"
+    )
 
 
 def expected_appointment_label(row):
@@ -592,17 +602,25 @@ def dom_appointment_row(page, appt_id):
     )
 
 
-def assert_appointment_presentation(page, state, appt_id, patient_name, label):
-    """Bind the rendered appointment row to the ACTUAL server-returned status.
+def assert_appointment_presentation(page, doctor, appt_id, patient_name, label):
+    """Bind the rendered appointment row to FRESH ACTUAL server truth.
 
-    The appointment is identified by its stable fixture id, its status is read
-    from the server-returned /doctor/today body the page rendered from, checked
-    against the established status contract, mapped through the bounded Doctor
-    Portal label contract, and only then compared with the DOM: same patient,
-    same ``data-status``, and the ``status-<status>`` badge carrying that label.
-    A confirmed -> no_show transition by the no-show job is therefore valid,
-    while a missing, hidden, foreign, stale, or unrecognized presentation is
-    not. The bounded wait tolerates render latency only, never a mismatch.
+    The appointment is identified by its stable fixture id. Its CURRENT status
+    is read from a fresh authenticated ``GET /doctor/today`` issued from the
+    real browser session with the same trusted Clinic/Location selector headers
+    the portal itself sends — never from ``state["todays"][-1]``, the initial
+    cached body, which the real no-show job invalidates with its legitimate
+    confirmed -> no_show transition. The fresh status is checked against the
+    established status contract, mapped through the bounded Doctor Portal label
+    contract, and only then compared with the DOM: same patient, same
+    ``data-status``, and the ``status-<status>`` badge carrying that label.
+
+    Bounded convergence: every attempt re-reads fresh server truth and the DOM
+    back to back, so a transition landing mid-assertion is reconciled by the
+    next attempt rather than reported as a mismatch. The wait tolerates render
+    and poll latency only — it never retries toward a fixed expectation — so a
+    missing, hidden, foreign, unrecognized, mislabeled, or non-converging
+    presentation still fails.
     """
     deadline = time.monotonic() + APPT_PRESENTATION_WAIT_SECONDS
     server_status = ""
@@ -610,7 +628,7 @@ def assert_appointment_presentation(page, state, appt_id, patient_name, label):
     dom = {"present": False, "visible": False}
     while True:
         server_status, expected_label = expected_appointment_label(
-            server_appointment_row(state, appt_id)
+            server_appointment_row(page, doctor, appt_id, label)
         )
         dom = dom_appointment_row(page, appt_id)
         if (
@@ -637,7 +655,9 @@ def assert_appointment_presentation(page, state, appt_id, patient_name, label):
     if dom.get("status") != server_status:
         raise RuntimeError(
             f"{label} UI/server appointment status mismatch: "
-            f"dom={dom.get('status')!r} server={server_status!r}"
+            f"dom={dom.get('status')!r} server={server_status!r} "
+            f"(fresh /doctor/today, bounded wait "
+            f"{APPT_PRESENTATION_WAIT_SECONDS:g}s)"
         )
     raise RuntimeError(
         f"{label} appointment {appt_id} status {server_status!r} "
@@ -684,13 +704,26 @@ def wait_row_status(page, vid, status, timeout=20000):
     )
 
 
+def fresh_today(page, doctor, label, location=None):
+    """FRESH server truth for the doctor's operational day.
+
+    ``state["todays"]`` only captures the initial load and explicit selections
+    — never the journey's own reloads, and never a status change made after
+    that capture by the real no-show job under real WP-Cron. The read is issued
+    from the same authenticated browser session with the same trusted
+    Clinic/Location selector headers the portal itself sends, so it observes
+    exactly the scope the live DOM is allowed to observe.
+    """
+    t = portal_fetch(page, doctor, "GET", "/doctor/today", location=location)
+    if t["status"] != 200:
+        raise RuntimeError(f"{label} today reread failed: {t['status']}")
+    return payload(t["body"])
+
+
 def today_queue_visit(page, doctor, vid, label):
     """Fresh server truth: state['todays'] only captures the initial load and
     explicit selections, never the journey's own reloads."""
-    t = portal_fetch(page, doctor, "GET", "/doctor/today")
-    if t["status"] != 200:
-        raise RuntimeError(f"{label} today reread failed: {t['status']}")
-    for row in (payload(t["body"]).get("queue") or []):
+    for row in (fresh_today(page, doctor, label).get("queue") or []):
         if int(row.get("id") or 0) == vid:
             return row
     return {}
@@ -952,15 +985,16 @@ def prove_one(browser, doctor, vp, shot_name=None):
         assert_no_appointments_route(state, vp["vp"])
         section_text = page.locator('[data-role="appointments-section"]').inner_text() or ""
         # The expected appointment is identified by its stable fixture id and the
-        # row must present the ACTUAL server-returned status (the no-show job may
-        # legitimately have moved it confirmed -> no_show), never a hardcoded one.
+        # row must present the ACTUAL status of a FRESH /doctor/today read (the
+        # no-show job may legitimately have moved it confirmed -> no_show), never
+        # a hardcoded one and never the initially cached response.
         booked_status, booked_label = assert_appointment_presentation(
-            page, state, doctor["appt_booked"], doctor["booked_name"], vp["vp"]
+            page, doctor, doctor["appt_booked"], doctor["booked_name"], vp["vp"]
         )
         arrived_status = ""
         if doctor["appt_arrived"]:
             arrived_status, _ = assert_appointment_presentation(
-                page, state, doctor["appt_arrived"], doctor["arrived_name"], vp["vp"]
+                page, doctor, doctor["appt_arrived"], doctor["arrived_name"], vp["vp"]
             )
             arrived = page.locator(f'[data-appointment-id="{doctor["appt_arrived"]}"]')
             if arrived.get_attribute("data-visit-status") != "checked_in":
