@@ -195,10 +195,6 @@ echo $cpms_styles_html;
             </div>
         <?php endif; ?>
     </main>
-
-    <footer class="cpms-doctor-portal-shell__footer" role="contentinfo" data-role="portal-footer">
-        <p class="cpms-doctor-portal-shell__footer-text">پورتال پزشک · CPMS — مستقل، بدون کروم wp-admin/theme</p>
-    </footer>
 </div>
 
 <script type="application/json" class="cpms-doctor-portal__config"><?php echo $config_json; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- JSON payload, already encoded via wp_json_encode ?></script>

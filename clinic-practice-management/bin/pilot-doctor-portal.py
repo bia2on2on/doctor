@@ -284,8 +284,16 @@ def assert_shell(page):
     for marker in CHROME:
         if marker in content:
             raise RuntimeError(f"theme or wp-admin chrome present ({marker})")
-    if page.locator("header").count() != 1 or page.locator("footer").count() != 1:
-        raise RuntimeError("theme layout added a header or footer")
+    if page.locator("header").count() != 1:
+        raise RuntimeError("theme layout changed the shell header")
+    if page.locator("footer").count() != 0:
+        raise RuntimeError("theme layout added a footer")
+    visible = page.locator("body").inner_text() or ""
+    for phrase in ("wp-admin", "wp-admin/theme", "بدون کروم", "independent shell", "theme chrome"):
+        if phrase.lower() in visible.lower():
+            raise RuntimeError(f"technical footer or evidence text is visible ({phrase})")
+    if "بدون کروم" in content or "wp-admin/theme" in content:
+        raise RuntimeError("technical footer evidence remains in the shell document")
     title = page.locator('[data-role="portal-header-title"]').inner_text()
     if not PERSIAN_RE.search(title):
         raise RuntimeError("portal title is not Persian")
@@ -300,7 +308,47 @@ def assert_shell(page):
         raise RuntimeError(f"published config contains {leaked}")
 
 
+def assert_queue_hugs_content(page, label):
+    queue = page.locator('[data-role="queue-section"]')
+    if queue.count() == 0 or not queue.is_visible():
+        return
+    metrics = page.evaluate(
+        """() => {
+          const q = document.querySelector('[data-role="queue-section"]');
+          const cs = getComputedStyle(q);
+          let content = 0;
+          for (const el of q.children) {
+            const child = getComputedStyle(el);
+            if (el.hidden || child.display === 'none') continue;
+            const box = el.getBoundingClientRect();
+            content += box.height;
+            content += parseFloat(child.marginTop) || 0;
+            content += parseFloat(child.marginBottom) || 0;
+          }
+          const pad = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+          const border = (parseFloat(cs.borderTopWidth) || 0) + (parseFloat(cs.borderBottomWidth) || 0);
+          return {
+            minHeight: cs.minHeight,
+            specified: cs.getPropertyValue('min-height'),
+            flexGrow: cs.flexGrow,
+            height: q.getBoundingClientRect().height,
+            content: content + pad + border
+          };
+        }"""
+    )
+    if metrics["minHeight"] not in ("0px", "auto", "none"):
+        raise RuntimeError(f"{label} queue has an artificial min-height ({metrics['minHeight']})")
+    if "vh" in str(metrics["specified"]) or float(metrics["flexGrow"] or 0) > 0:
+        raise RuntimeError(f"{label} queue is stretched ({metrics['specified']}, grow={metrics['flexGrow']})")
+    slack = metrics["height"] - metrics["content"]
+    if slack > 8:
+        raise RuntimeError(
+            f"{label} queue is taller than its content by {slack:.1f}px"
+        )
+
+
 def assert_hygiene(page, state, label):
+    assert_queue_hugs_content(page, label)
     sw = page.evaluate("document.documentElement.scrollWidth")
     iw = page.evaluate("window.innerWidth")
     if sw > iw + 1:
@@ -375,6 +423,7 @@ def prove_one(browser, doctor, vp, shot_name=None):
             f'[data-role="queue-item"][data-visit-id="{doctor["visit_own"]}"]',
             timeout=20000,
         )
+        assert_queue_hugs_content(page, vp["vp"])
         if shot_name:
             shot(page, shot_name)
         stage = "auto-resolve"
@@ -449,6 +498,7 @@ def prove_multi(browser, doctor, vp, shots=False):
         stage = "before"
         goto_portal(page, state, expect_today=False)
         page.wait_for_selector('[data-role="location-selector-wrap"]:not([hidden])', timeout=20000)
+        assert_queue_hugs_content(page, vp["vp"])
         if shots:
             shot(page, "doctor-portal-multi-before-selection")
         ctx_body = payload(state["context"] or {})
@@ -491,6 +541,7 @@ def prove_multi(browser, doctor, vp, shots=False):
             arg=str(doctor["visit_b"]),
             timeout=20000,
         )
+        assert_queue_hugs_content(page, vp["vp"])
         if shots:
             shot(page, "doctor-portal-multi-after-selection")
         if select.input_value() != str(doctor["loc_b"]):
