@@ -665,10 +665,53 @@ body.cpms-doctor-portal-shell-body {
 
 	.cpms-doc-selector-row { grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); }
 
-	.cpms-doc-stats {
-		grid-template-columns: repeat(4, minmax(0, 1fr));
-		gap: 10px;
+	#cpms-doctor-portal-app {
+		display: grid;
+		grid-template-columns: minmax(0, 1.55fr) minmax(14.5rem, 0.78fr);
+		grid-auto-rows: min-content;
+		align-items: start;
+		align-content: start;
+		justify-content: start;
+		height: auto;
+		min-height: 0;
 	}
+
+	#cpms-doctor-portal-app > * {
+		width: auto;
+		max-width: 100%;
+		height: auto;
+		min-height: 0;
+		flex: none;
+		align-self: start;
+		justify-self: stretch;
+	}
+
+	.cpms-doc-context,
+	.cpms-doc-selectors,
+	.cpms-doc-no-data {
+		grid-column: 1 / -1;
+	}
+
+	#cpms-doctor-portal-app > .cpms-doc-queue {
+		grid-column: 1;
+		align-self: start;
+		height: auto;
+		min-height: 0;
+	}
+
+	#cpms-doctor-portal-app > .cpms-doc-today {
+		grid-column: 2;
+		align-self: start;
+		height: auto;
+		min-height: 0;
+	}
+
+	.cpms-doc-stats {
+		grid-template-columns: 1fr;
+		gap: 8px;
+	}
+
+	.cpms-doc-stat b { font-size: 1.45rem; }
 
 	.cpms-doc-queue { padding: 0; }
 
@@ -695,33 +738,13 @@ body.cpms-doctor-portal-shell-body {
 }
 
 @media (min-width: 1100px) {
-	.cpms-doc-stats { grid-template-columns: repeat(7, minmax(0, 1fr)); }
-
-	.cpms-doc-stat b { font-size: 1.7rem; }
-
-	#cpms-doctor-portal-app:has(.cpms-doc-selector:not([hidden])) {
-		display: grid;
-		grid-template-columns: minmax(0, 1.15fr) minmax(18rem, 0.85fr);
-		grid-auto-rows: min-content;
-		gap: 12px;
-		align-items: start;
-		align-content: start;
-		justify-content: start;
+	#cpms-doctor-portal-app {
+		grid-template-columns: minmax(0, 1.7fr) minmax(18rem, 0.62fr);
 	}
 
-	#cpms-doctor-portal-app:has(.cpms-doc-selector:not([hidden])) > * {
-		align-self: start;
-		justify-self: stretch;
-		width: 100%;
-		height: auto;
-		min-height: 0;
-	}
+	.cpms-doc-stats { grid-template-columns: 1fr 1fr; }
 
-	#cpms-doctor-portal-app:has(.cpms-doc-selector:not([hidden])) .cpms-doc-today,
-	#cpms-doctor-portal-app:has(.cpms-doc-selector:not([hidden])) .cpms-doc-queue,
-	#cpms-doctor-portal-app:has(.cpms-doc-selector:not([hidden])) .cpms-doc-no-data {
-		grid-column: 1 / -1;
-	}
+	.cpms-doc-stat b { font-size: 1.5rem; }
 }
 
 @media (max-width: 390px) {

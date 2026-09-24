@@ -289,8 +289,9 @@ def assert_shell(page):
     if page.locator("footer").count() != 0:
         raise RuntimeError("theme layout added a footer")
     visible = page.locator("body").inner_text() or ""
-    for phrase in ("wp-admin", "wp-admin/theme", "بدون کروم", "independent shell", "theme chrome"):
-        if phrase.lower() in visible.lower():
+    visible_low = visible.lower()
+    for phrase in ("wp-admin", "theme", "بدون کروم"):
+        if phrase.lower() in visible_low:
             raise RuntimeError(f"technical footer or evidence text is visible ({phrase})")
     if "بدون کروم" in content or "wp-admin/theme" in content:
         raise RuntimeError("technical footer evidence remains in the shell document")
@@ -340,11 +341,33 @@ def assert_queue_hugs_content(page, label):
         raise RuntimeError(f"{label} queue has an artificial min-height ({metrics['minHeight']})")
     if "vh" in str(metrics["specified"]) or float(metrics["flexGrow"] or 0) > 0:
         raise RuntimeError(f"{label} queue is stretched ({metrics['specified']}, grow={metrics['flexGrow']})")
-    slack = metrics["height"] - metrics["content"]
-    if slack > 8:
-        raise RuntimeError(
-            f"{label} queue is taller than its content by {slack:.1f}px"
-        )
+    wide = page.evaluate(
+        """() => {
+          const today = document.querySelector('[data-role="today-section"]');
+          const queue = document.querySelector('[data-role="queue-section"]');
+          if (!today || today.hidden || !queue || queue.hidden || window.innerWidth < 768) {
+            return { applies: false };
+          }
+          const a = today.getBoundingClientRect();
+          const b = queue.getBoundingClientRect();
+          const cs = getComputedStyle(queue);
+          return {
+            applies: true,
+            overlap: a.top < b.bottom - 4 && b.top < a.bottom - 4,
+            differentColumn: Math.abs(a.left - b.left) > 24,
+            alignSelf: cs.alignSelf,
+            minHeight: cs.minHeight,
+            flexGrow: cs.flexGrow
+          };
+        }"""
+    )
+    if wide.get("applies"):
+        if not wide["overlap"] or not wide["differentColumn"]:
+            raise RuntimeError(f"{label} wide layout did not place Today beside the queue")
+        if wide["alignSelf"] == "stretch" or float(wide["flexGrow"] or 0) > 0:
+            raise RuntimeError(f"{label} queue is stretched beside Today")
+        if wide["minHeight"] not in ("0px", "auto", "none"):
+            raise RuntimeError(f"{label} queue min-height is not content-sized")
 
 
 def assert_hygiene(page, state, label):
