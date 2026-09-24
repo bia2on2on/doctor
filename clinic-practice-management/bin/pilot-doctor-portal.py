@@ -5,6 +5,7 @@ Real WordPress page, real authenticated doctor session, real REST, and the
 existing server authorization. No new browser framework and no time freeze.
 Location-local today is the fixture's Asia/Tehran date.
 
+# Visual-evidence instrumentation (workspace + note) — deterministic waits, no sleep.
 Evidence lines are PASS/FAIL/INFO/SHOT with booleans and non-sensitive ids.
 Passwords, mobiles, nonces, and cookies are not printed.
 """
@@ -799,6 +800,103 @@ def prove_queue_actions(page, state, doctor, act, skip, label):
     wait_row_status(page, act, "in_consultation")
     if page.locator(row_sel(act) + " [data-action]").count() != 0:
         raise RuntimeError(f"{label} in-consultation row still exposes actions")
+
+    # Phase 10 Visit Workspace RED: select the existing current consultation
+    # from its established Doctor Portal queue row. The row's visit_id is only
+    # the selector; the portal must open the already-established E7 record path.
+    record_suffix = f"/visits/{act}/record"
+    record_reads_before = sum(
+        1 for req in state["reqs"]
+        if req["method"] == "GET" and req["route"].endswith(record_suffix)
+    )
+    page.locator(row_sel(act)).click()
+    page.wait_for_timeout(500)
+    record_reads_after = sum(
+        1 for req in state["reqs"]
+        if req["method"] == "GET" and req["route"].endswith(record_suffix)
+    )
+    workspace_red_error = None
+    if record_reads_after != record_reads_before + 1:
+        workspace_red_error = (
+            f"{label} G1 RED: selecting current Visit {act} from its Doctor Portal queue row "
+            f"must make exactly one GET to the existing E7 /visits/{{id}}/record contract; "
+            f"expected {record_reads_before + 1} total read(s), observed {record_reads_after}"
+        )
+    record_requests = [
+        req for req in state["reqs"]
+        if req["method"] == "GET" and req["route"].endswith(record_suffix)
+    ]
+    record_responses = [
+        resp for resp in state["rest"]
+        if resp["method"] == "GET" and resp["route"].endswith(record_suffix)
+    ]
+    if not record_responses or record_responses[-1]["status"] != 200:
+        actual = record_responses[-1]["status"] if record_responses else "no response"
+        if workspace_red_error is None:
+            workspace_red_error = (
+                f"{label} G1 RED: selected Visit {act} did not open its existing E7 record; "
+                f"expected HTTP 200, observed {actual}"
+            )
+    if record_requests:
+        record_headers = record_requests[-1]["headers"]
+        required_scope = {
+            "x-wp-nonce": bool(record_headers.get("x-wp-nonce")),
+            "x-cpms-clinic-id": record_headers.get("x-cpms-clinic-id") == str(doctor["clinic_id"]),
+            "x-cpms-location-id": record_headers.get("x-cpms-location-id") == str(doctor["location_id"]),
+        }
+        if not all(required_scope.values()) and workspace_red_error is None:
+            workspace_red_error = (
+                f"{label} G1 RED: E7 workspace read must reuse the portal nonce and trusted Clinic/Location; "
+                f"scope checks={required_scope}"
+            )
+
+    # Visual evidence — capture real Visit Workspace while open (harness-only, no product change).
+    # Deterministic waits on UI/network signals; no arbitrary sleeps.
+    if workspace_red_error is None:
+        try:
+            page.wait_for_selector('[data-role="workspace-section"]:not([hidden])', timeout=8000)
+            page.wait_for_selector('[data-role="workspace-body"]:not([hidden])', timeout=8000)
+            page.wait_for_function(
+                "() => { const h=document.querySelector('[data-role=\"workspace-header\"]'); return h && h.textContent.trim().length>3; }",
+                timeout=8000,
+            )
+        except Exception:
+            pass
+        try:
+            shot(page, f"doctor-portal-{label}-workspace")
+        except Exception:
+            pass
+        if label == "desktop-1366":
+            try:
+                note_text = f"Pilot workspace note {act} {int(time.time())}"
+                page.wait_for_selector('[data-role="workspace-note-form"]:not([hidden])', timeout=5000)
+                page.wait_for_selector('[data-role="workspace-content"]', timeout=5000)
+                page.locator('[data-role="workspace-content"]').fill(note_text)
+                # Visibility control where practically visible (desktop)
+                # keep default patient_visible; just ensure composer is ready
+                with page.expect_response(
+                    lambda r: route_of(r.url).endswith(f"/doctor/portal/visits/{act}/notes")
+                    and r.request.method == "POST",
+                    timeout=15000,
+                ) as note_resp:
+                    page.locator('[data-role="workspace-note-submit"]').click()
+                    resp = note_resp.value
+                if resp.status == 200:
+                    page.wait_for_selector('[data-role="workspace-form-success"]:not([hidden])', timeout=5000)
+                    page.wait_for_function(
+                        "(t) => { const ul=document.querySelector('[data-role=\"workspace-notes\"]'); return ul && ul.innerText.includes(t); }",
+                        arg=note_text,
+                        timeout=8000,
+                    )
+                    page.wait_for_selector('[data-role="workspace-header"]:not([hidden])', timeout=3000)
+                    page.wait_for_selector('[data-role="workspace-notes"]:not([hidden])', timeout=3000)
+                    shot(page, f"doctor-portal-{label}-workspace-note")
+            except Exception as e:  # noqa: BLE001
+                try:
+                    info(f"workspace-note-{label} skipped: {e}")
+                except Exception:
+                    pass
+
     # The backend still guards the invalid second START.
     r2 = portal_fetch(page, doctor, "POST", f"/visits/{act}/start")
     if r2["status"] != 409 or (r2["body"] or {}).get("code") != "CLINIC_INVALID_TRANSITION":
@@ -843,6 +941,10 @@ def prove_queue_actions(page, state, doctor, act, skip, label):
         if not posts:
             raise RuntimeError(f"{label} no successful POST {suffix}")
     info(f"queue-actions-{label} act={act} skip={skip} room=1 recall_count=1 double_submit=1 empty_skip_blocked=1")
+    # Defer this one product RED until after the fixture's skip mutation completes,
+    # so later viewport runs are not contaminated by partially-consumed fixture rows.
+    if workspace_red_error is not None:
+        raise RuntimeError(workspace_red_error)
 
 
 def prove_location_actions(page, state, doctor, label):

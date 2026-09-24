@@ -753,6 +753,13 @@ body.cpms-doctor-portal-shell-body {
 		min-height: 0;
 	}
 
+	#cpms-doctor-portal-app > .cpms-doc-workspace {
+		grid-column: 1 / -1;
+		align-self: start;
+		height: auto;
+		min-height: 0;
+	}
+
 	#cpms-doctor-portal-app > .cpms-doc-appointments {
 		grid-column: 2;
 		grid-row: 3;
@@ -826,3 +833,199 @@ body.cpms-doctor-portal-shell-body {
 	.cpms-doc-stat { padding: 8px 10px 10px; }
 	.cpms-doc-stat b { font-size: 1.35rem; }
 }
+
+/* ================= Phase 10 Slice 3 — Visit Workspace ================= */
+
+.cpms-doc-queue-list [data-role="queue-item"] { cursor: pointer; }
+
+.cpms-doc-success {
+	padding: 8px 12px;
+	border-radius: var(--cpms-radius-sm);
+	margin: 8px 14px;
+	font-size: 13px;
+	background: var(--cpms-ok-soft);
+	color: var(--cpms-ok);
+	border: 1px solid var(--cpms-ok-line);
+}
+
+.cpms-doc-workspace {
+	min-width: 0;
+	background: var(--cpms-card);
+	border: 1px solid var(--cpms-border);
+	border-radius: var(--cpms-radius);
+	box-shadow: var(--cpms-shadow);
+	padding: 0 0 12px;
+}
+
+.cpms-doc-workspace .cpms-doc-section-head {
+	margin: 0;
+	padding: 10px 14px;
+	border-bottom: 1px solid var(--cpms-line);
+}
+
+.cpms-doc-ws-subhead {
+	padding: 8px 14px 4px;
+	border-bottom: 0;
+	margin-bottom: 0;
+}
+
+.cpms-doc-ws-subhead h3 {
+	margin: 0;
+	font-size: 14px;
+	font-weight: 700;
+	overflow-wrap: anywhere;
+}
+
+.cpms-doc-ws-header {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	min-width: 0;
+	margin: 10px 14px;
+	padding: 10px 12px;
+	background: var(--cpms-primary-soft);
+	border: 1px solid var(--cpms-primary-line);
+	border-radius: var(--cpms-radius-sm);
+}
+
+.cpms-doc-ws-id {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px;
+	min-width: 0;
+}
+
+.cpms-doc-ws-name {
+	font-size: 16px;
+	font-weight: 700;
+	overflow-wrap: anywhere;
+	min-width: 0;
+}
+
+.cpms-doc-ws-meta {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px 14px;
+	min-width: 0;
+	color: var(--cpms-muted);
+	font-size: 12.5px;
+}
+
+.cpms-doc-ws-meta-item {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	max-width: 100%;
+	overflow-wrap: anywhere;
+}
+
+.cpms-doc-ws-meta-item b {
+	color: var(--cpms-text);
+	font-variant-numeric: tabular-nums;
+	overflow-wrap: anywhere;
+}
+
+.cpms-doc-ws-notes-list {
+	list-style: none;
+	margin: 4px 14px 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.cpms-doc-ws-note {
+	min-width: 0;
+	padding: 8px 12px;
+	background: var(--cpms-slate-soft);
+	border: 1px solid var(--cpms-border);
+	border-radius: var(--cpms-radius-sm);
+}
+
+.cpms-doc-ws-note-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: space-between;
+	gap: 6px;
+	margin-bottom: 6px;
+	min-width: 0;
+}
+
+.cpms-doc-ws-note-date {
+	color: var(--cpms-muted);
+	font-size: 12px;
+	font-variant-numeric: tabular-nums;
+	overflow-wrap: anywhere;
+}
+
+.cpms-doc-ws-note-text {
+	margin: 0;
+	font-size: 13.5px;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+.cpms-doc-badge.vis-private {
+	background: var(--cpms-wait-soft);
+	color: var(--cpms-wait);
+	border-color: var(--cpms-wait-line);
+}
+
+.cpms-doc-badge.vis-patient {
+	background: var(--cpms-info-soft);
+	color: var(--cpms-info);
+	border-color: var(--cpms-info-line);
+}
+
+.cpms-doc-ws-form {
+	margin-top: 6px;
+	min-width: 0;
+}
+
+.cpms-doc-ws-field {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	margin: 8px 14px 0;
+	min-width: 0;
+}
+
+.cpms-doc-ws-field label {
+	font-size: 13px;
+	font-weight: 700;
+	color: var(--cpms-text);
+}
+
+.cpms-doc-ws-field select,
+.cpms-doc-ws-field textarea {
+	width: 100%;
+	max-width: 100%;
+	min-height: 44px;
+	padding: 8px 10px;
+	border: 1px solid var(--cpms-border-strong);
+	border-radius: var(--cpms-radius-sm);
+	background: #fff;
+	color: var(--cpms-text);
+	font-family: inherit;
+	font-size: 14px;
+	line-height: 1.5;
+}
+
+.cpms-doc-ws-field textarea { resize: vertical; }
+
+.cpms-doc-ws-field select:focus-visible,
+.cpms-doc-ws-field textarea:focus-visible {
+	outline: 2px solid var(--cpms-primary);
+	outline-offset: 2px;
+}
+
+.cpms-doc-ws-form [data-role="workspace-note-submit"] {
+	margin: 10px 14px 0;
+}
+
+.cpms-doc-ws-form [data-role="workspace-note-submit"][aria-busy="true"] { cursor: wait; }
+
+.cpms-doc-workspace [data-role="workspace-form-error"],
+.cpms-doc-workspace [data-role="workspace-form-success"] { margin: 8px 14px 0; }
