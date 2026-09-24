@@ -86,9 +86,17 @@ def _parts(name, n):
     return parts
 
 
+ACTION_EXTRA_KEYS = ("act390", "skip390", "act768", "skip768", "act1366", "skip1366")
+VP_ACTION_KEYS = {
+    "mobile-390": ("act390", "skip390"),
+    "tablet-768": ("act768", "skip768"),
+    "desktop-1366": ("act1366", "skip1366"),
+}
+
+
 def _doctor(parts, kind):
     if kind == "one":
-        return {
+        d = {
             "login": parts[0],
             "password": parts[1],
             "user_id": int(parts[2]),
@@ -108,6 +116,12 @@ def _doctor(parts, kind):
             "booked_name": parts[16],
             "arrived_name": parts[17],
         }
+        # Slice 2 GREEN: per-viewport dedicated action visits (ONE only; the
+        # OTHER line carries no extras and stays visibility-only).
+        for i, key in enumerate(ACTION_EXTRA_KEYS):
+            raw = parts[18 + i] if len(parts) > 18 + i else ""
+            d[key] = int(raw) if str(raw).isdigit() else 0
+        return d
     return {
         "login": parts[0],
         "password": parts[1],
@@ -655,6 +669,176 @@ def goto_portal(page, state, expect_today):
     assert_shell(page)
 
 
+def row_sel(vid):
+    return f'[data-role="queue-item"][data-visit-id="{vid}"]'
+
+
+def wait_row_status(page, vid, status, timeout=20000):
+    page.wait_for_function(
+        """([vid, st]) => {
+          const el = document.querySelector('[data-role="queue-item"][data-visit-id="' + vid + '"]');
+          return !!el && el.getAttribute('data-status') === st;
+        }""",
+        arg=[str(vid), status],
+        timeout=timeout,
+    )
+
+
+def queue_row_by_id(state, vid):
+    for row in (today_data(state).get("queue") or []):
+        if int(row.get("id") or 0) == vid:
+            return row
+    return {}
+
+
+def portal_fetch(page, doctor, method, route, body=None, location=None):
+    """Real REST from the real browser session: existing route + wp_rest nonce
+    + trusted Clinic/Location selector headers. No client authority keys."""
+    loc = doctor.get("location_id") if location is None else location
+    return page.evaluate(
+        """async (a) => {
+          const cfg = JSON.parse(document.querySelector('script.cpms-doctor-portal__config').textContent || '{}');
+          const headers = {'X-WP-Nonce': cfg.nonce, 'X-CPMS-Clinic-Id': String(a.clinic), 'X-CPMS-Location-Id': String(a.location)};
+          const opts = {method: a.method, headers};
+          if (a.body !== null && a.body !== undefined) { headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(a.body); }
+          const r = await fetch(cfg.rest_root + a.route, opts);
+          let j = {}; try { j = await r.json(); } catch (e) {}
+          return {status: r.status, body: j};
+        }""",
+        {"method": method, "route": route, "body": body,
+         "clinic": doctor["clinic_id"], "location": loc},
+    )
+
+
+def prove_queue_actions(page, state, doctor, act, skip, label):
+    # B0. Room-carrying CALL through the existing route (backend contract).
+    r = portal_fetch(page, doctor, "POST", f"/visits/{act}/call", {"room": "3"})
+    if r["status"] != 200:
+        raise RuntimeError(f"{label} room call POST failed: {r['status']}")
+    rt = portal_fetch(page, doctor, "GET", "/rt/queue?since=0")
+    if rt["status"] != 200:
+        raise RuntimeError(f"{label} rt/queue not readable after call")
+    events = payload(rt["body"]).get("events") or []
+    hits = [e for e in events if int(e.get("visit_id") or 0) == act]
+    if len(hits) != 1 or hits[0].get("to_status") != "called" or "3" not in str(hits[0].get("note") or ""):
+        raise RuntimeError(f"{label} secretary queue event misses the room call")
+    wait_row_status(page, act, "called")
+    # C. CALLED row exposes Start + Recall + Skip, all enabled.
+    for action in ("start", "recall", "skip"):
+        control = page.locator(row_sel(act) + f' [data-action="{action}"]')
+        if control.count() != 1 or not control.first.is_visible():
+            raise RuntimeError(f"{label} called row misses the {action} control")
+        if not control.first.is_enabled():
+            raise RuntimeError(f"{label} called row {action} control is not enabled")
+    # E. RECALL returns the row to waiting with a bumped recall count.
+    before = queue_row_by_id(state, act).get("recall_count", 0)
+    page.locator(row_sel(act) + ' [data-action="recall"]').click()
+    wait_row_status(page, act, "waiting")
+    after = queue_row_by_id(state, act).get("recall_count", -1)
+    if int(after) != int(before) + 1:
+        raise RuntimeError(f"{label} recall count did not advance ({before}->{after})")
+    for action in ("call", "skip"):
+        control = page.locator(row_sel(act) + f' [data-action="{action}"]')
+        if control.count() != 1 or not control.first.is_visible() or not control.first.is_enabled():
+            raise RuntimeError(f"{label} recalled row misses enabled {action}")
+    # G. Double-submit: controls disable while the CALL is in flight.
+    def _slow_call(route):
+        time.sleep(1.5)
+        route.continue_()
+
+    page.route("**/visits/*/call", _slow_call)
+    page.locator(row_sel(act) + ' [data-action="call"]').click()
+    disabled = page.locator(row_sel(act) + ' [data-action="call"]').is_disabled()
+    busy = page.locator(row_sel(act)).get_attribute("aria-busy")
+    page.unroute("**/visits/*/call")
+    if not disabled:
+        raise RuntimeError(f"{label} call control not disabled while pending")
+    if busy != "true":
+        raise RuntimeError(f"{label} row misses the busy marker while pending")
+    wait_row_status(page, act, "called")
+    # D. START moves the row to in_consultation with no queue actions left.
+    page.locator(row_sel(act) + ' [data-action="start"]').click()
+    wait_row_status(page, act, "in_consultation")
+    if page.locator(row_sel(act) + " [data-action]").count() != 0:
+        raise RuntimeError(f"{label} in-consultation row still exposes actions")
+    # The backend still guards the invalid second START.
+    r2 = portal_fetch(page, doctor, "POST", f"/visits/{act}/start")
+    if r2["status"] != 409 or (r2["body"] or {}).get("code") != "CLINIC_INVALID_TRANSITION":
+        raise RuntimeError(f"{label} second start not guarded: {r2['status']}")
+    # F0. An empty skip reason is blocked in the UI without any request.
+    skip_posts_before = len([e for e in state["rest"] if e["method"] == "POST" and e["route"].endswith(f"/visits/{skip}/skip")])
+    dialog_texts = []
+    answers = [""]
+    received = []
+
+    def _on_dialog(d):
+        dialog_texts.append(d.message or "")
+        received.append(d)
+        d.accept(answers.pop(0) if answers else "")
+
+    page.on("dialog", _on_dialog)
+    try:
+        page.locator(row_sel(skip) + ' [data-action="skip"]').click()
+        page.wait_for_selector('[data-role="queue-error"]:not([hidden])', timeout=5000)
+        skip_posts_now = len([e for e in state["rest"] if e["method"] == "POST" and e["route"].endswith(f"/visits/{skip}/skip")])
+        if skip_posts_now != skip_posts_before:
+            raise RuntimeError(f"{label} empty skip reason reached the server")
+        err_text = page.locator('[data-role="queue-error"]').inner_text() or ""
+        if not PERSIAN_RE.search(err_text):
+            raise RuntimeError(f"{label} skip error feedback is not Persian")
+        # F. A non-empty reason skips through the server; the row leaves the queue.
+        answers.append("بیمار موقتاً خارج شد")
+        page.locator(row_sel(skip) + ' [data-action="skip"]').click()
+        page.wait_for_selector(row_sel(skip), state="detached", timeout=20000)
+    finally:
+        page.remove_listener("dialog", _on_dialog)
+    if skip in queue_ids(page):
+        raise RuntimeError(f"{label} skipped visit still rendered")
+    if any(int(row.get("id") or 0) == skip for row in (today_data(state).get("queue") or [])):
+        raise RuntimeError(f"{label} skipped visit still served")
+    if not received or not all(PERSIAN_RE.search(t) for t in dialog_texts):
+        raise RuntimeError(f"{label} skip prompt is not Persian")
+    # Every UI mutation POST succeeded through the existing routes.
+    for suffix in (f"/visits/{act}/call", f"/visits/{act}/recall",
+                   f"/visits/{act}/start", f"/visits/{skip}/skip"):
+        posts = [e for e in state["rest"] if e["method"] == "POST" and e["route"].endswith(suffix) and e["status"] == 200]
+        if not posts:
+            raise RuntimeError(f"{label} no successful POST {suffix}")
+    info(f"queue-actions-{label} act={act} skip={skip} room=1 recall_count=1 double_submit=1 empty_skip_blocked=1")
+
+
+def prove_location_actions(page, state, doctor, label):
+    sel = page.locator('[data-role="location-select"]')
+    # Selected Location A action works on A, then resets via recall.
+    sel.select_option(str(doctor["loc_a"]))
+    page.wait_for_function(
+        """(visitId) => !!document.querySelector('[data-role="queue-item"][data-visit-id="' + visitId + '"][data-status="waiting"]')""",
+        arg=str(doctor["visit_a"]),
+        timeout=20000,
+    )
+    page.locator(row_sel(doctor["visit_a"]) + ' [data-action="call"]').click()
+    wait_row_status(page, doctor["visit_a"], "called")
+    page.locator(row_sel(doctor["visit_a"]) + ' [data-action="recall"]').click()
+    wait_row_status(page, doctor["visit_a"], "waiting")
+    # Attempting an A-visit action under B scope is rejected; nothing mutates.
+    sel.select_option(str(doctor["loc_b"]))
+    page.wait_for_function(
+        """(visitId) => !!document.querySelector('[data-role="queue-item"][data-visit-id="' + visitId + '"]')""",
+        arg=str(doctor["visit_b"]),
+        timeout=20000,
+    )
+    r = portal_fetch(page, doctor, "POST", f"/visits/{doctor['visit_a']}/call", None, location=doctor["loc_b"])
+    if r["status"] != 404 or (r["body"] or {}).get("code") != "CLINIC_NOT_FOUND":
+        raise RuntimeError(f"{label} cross-location action not rejected: {r['status']}")
+    sel.select_option(str(doctor["loc_a"]))
+    page.wait_for_function(
+        """(visitId) => !!document.querySelector('[data-role="queue-item"][data-visit-id="' + visitId + '"][data-status="waiting"]')""",
+        arg=str(doctor["visit_a"]),
+        timeout=20000,
+    )
+    info(f"location-actions-{label} a_call_recall=1 b_on_a=404")
+
+
 def prove_one(browser, doctor, vp, shot_name=None):
     key = f"doctor-portal-{vp['vp']}-{'one' if shot_name else 'other'}"
     stage = "login"
@@ -700,19 +884,31 @@ def prove_one(browser, doctor, vp, shot_name=None):
         data = today_data(state)
         if data.get("date") != doctor["today"] or data.get("location_id") != doctor["location_id"]:
             raise RuntimeError("today operational date or location mismatch")
-        if (data.get("stats") or {}).get("waiting") != 1:
-            raise RuntimeError("today waiting count is not the doctor's own row")
+        # Slice 2 GREEN: ONE carries per-viewport dedicated action visits; the
+        # OTHER run carries none. Earlier viewport runs consume their own pair
+        # (act -> in_consultation stays queued, skip -> skipped leaves).
+        dedicated = [int(doctor[k]) for k in ACTION_EXTRA_KEYS if doctor.get(k)]
+        order = [v["vp"] for v in VIEWPORTS]
+        earlier = order[:order.index(vp["vp"])] if vp["vp"] in order else []
+        consumed_skip = set()
+        for evp in earlier:
+            keys = VP_ACTION_KEYS.get(evp)
+            if keys and doctor.get(keys[1]):
+                consumed_skip.add(int(doctor[keys[1]]))
+        expected_queue = set([doctor["visit_own"]] + dedicated) - consumed_skip
+        expected_waiting = 1 + len(dedicated) - 2 * len(earlier)
+        if (data.get("stats") or {}).get("waiting") != expected_waiting:
+            raise RuntimeError("today waiting count is not the doctor's own rows")
         ids = [int(row.get("id")) for row in (data.get("queue") or [])]
-        if doctor["visit_own"] not in ids or doctor["visit_other"] in ids:
+        if set(ids) != expected_queue or doctor["visit_other"] in ids:
             raise RuntimeError(f"queue isolation failed: {ids}")
         if any(int(row.get("clinician_id") or 0) != doctor["clinician_id"] for row in data.get("queue") or []):
             raise RuntimeError("queue row clinician was not the server identity")
-        if set(queue_ids(page)) != {doctor["visit_own"]}:
+        if set(queue_ids(page)) != expected_queue:
             raise RuntimeError("rendered queue does not match the server queue")
-        # Phase 10 Slice 2 TEST-ONLY RED: the waiting queue row must expose the
-        # state-driven action controls (Call + Skip) reusing the existing
-        # POST /visits/{id}/{call,recall,start,skip} routes. The merged Slice 1
-        # shell is read-only, so this fails cleanly here until GREEN wires them.
+        # Phase 10 Slice 2 GREEN: state-driven action controls on the waiting
+        # row (Call + Skip) reusing the existing POST /visits/{id}/{...}
+        # routes, plus the full mutation journey on this viewport's pair.
         stage = "queue-actions"
         waiting_row = page.locator(
             f'[data-role="queue-item"][data-visit-id="{doctor["visit_own"]}"]'
@@ -727,6 +923,13 @@ def prove_one(browser, doctor, vp, shot_name=None):
                 )
             if not control.first.is_enabled():
                 raise RuntimeError(f"waiting row {action} control is not enabled")
+        pair_keys = VP_ACTION_KEYS.get(vp["vp"])
+        did_actions = bool(pair_keys and doctor.get(pair_keys[0]) and doctor.get(pair_keys[1]))
+        if did_actions:
+            prove_queue_actions(
+                page, state, doctor,
+                int(doctor[pair_keys[0]]), int(doctor[pair_keys[1]]), vp["vp"],
+            )
         stage = "today-queue"
         if doctor["today"] not in (page.locator('[data-role="today-date"]').inner_text() or ""):
             raise RuntimeError("today date not rendered")
@@ -771,7 +974,7 @@ def prove_one(browser, doctor, vp, shot_name=None):
         ok(
             key,
             "independent shell, one location auto-resolves, own queue only, selector authority",
-            f"clinic={doctor['clinic_id']} location={doctor['location_id']} own={doctor['visit_own']} other_hidden=1 clinician_id_sent=0 sw={sw} iw={iw}",
+            f"clinic={doctor['clinic_id']} location={doctor['location_id']} own={doctor['visit_own']} other_hidden=1 clinician_id_sent=0 actions={1 if did_actions else 0} sw={sw} iw={iw}",
         )
         info(
             f"{key} shell=1 rtl=1 auto_clinic=1 auto_location=1 own_visit=1 other_visit=0 clinician_id_sent=0"
@@ -877,6 +1080,8 @@ def prove_multi(browser, doctor, vp, shots=False):
         ]
         if not b_reqs or any(r["headers"].get("x-cpms-location-id") != str(doctor["loc_b"]) for r in b_reqs):
             raise RuntimeError("operational requests were not bound to location B")
+        stage = "location-actions"
+        prove_location_actions(page, state, doctor, vp["vp"])
         stage = "authority"
         problems = authority_problems(
             state["reqs"], doctor["clinic_id"], {doctor["loc_a"], doctor["loc_b"]}

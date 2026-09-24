@@ -407,6 +407,24 @@ function renderAppointments(){
     }).join('');
 }
 
+function queueActions(v){
+    var id = esc(v.id);
+    if ( v.status === 'waiting' ) {
+        return '<div class="cpms-doc-actions" data-role="queue-actions">' +
+            '<button type="button" class="cpms-doc-btn cpms-doc-btn--primary" data-action="call" data-visit-id="' + id + '">فراخوان</button>' +
+            '<button type="button" class="cpms-doc-btn cpms-doc-btn--ghost" data-action="skip" data-visit-id="' + id + '">رد کردن</button>' +
+            '</div>';
+    }
+    if ( v.status === 'called' ) {
+        return '<div class="cpms-doc-actions" data-role="queue-actions">' +
+            '<button type="button" class="cpms-doc-btn cpms-doc-btn--primary" data-action="start" data-visit-id="' + id + '">شروع ویزیت</button>' +
+            '<button type="button" class="cpms-doc-btn cpms-doc-btn--ghost" data-action="recall" data-visit-id="' + id + '">فراخوان مجدد</button>' +
+            '<button type="button" class="cpms-doc-btn cpms-doc-btn--ghost" data-action="skip" data-visit-id="' + id + '">رد کردن</button>' +
+            '</div>';
+    }
+    return '';
+}
+
 function renderQueue(){
     var sec = qs('[data-role="queue-section"]');
     var loading = qs('[data-role="queue-loading"]');
@@ -428,7 +446,7 @@ function renderQueue(){
         list.innerHTML = state.queue.map(function(v){
             var badge = '';
             if ( v.express ) badge += '<span class="cpms-doc-badge express">فوری</span>';
-            var statusLabel = { waiting:'در صف', called:'فراخوانده', in_consultation:'در ویزیت' }[v.status] || v.status;
+            var statusLabel = visitStatusLabel(v.status);
             var statusClass = 'status-' + (v.status||'');
             return '<li class="cpms-doc-queue-item" data-role="queue-item" data-visit-id="' + esc(v.id) + '" data-status="' + esc(v.status||'') + '">' +
                 '<div class="cpms-doc-queue-main"><strong data-role="patient-name">' + esc(v.patient_name || 'بیمار') + '</strong>' +
@@ -436,10 +454,59 @@ function renderQueue(){
                 '<div class="cpms-doc-queue-aside">' + badge +
                 '<span class="cpms-doc-badge ' + esc(statusClass) + '">' + esc(statusLabel) + '</span>' +
                 '<span class="cpms-doc-wait">انتظار <b>' + esc(v.waiting_since||'—') + '</b></span></div>' +
+                queueActions(v) +
                 '</li>';
         }).join('');
     }
     if ( err && state.queue.length>0 ) hide(err);
+}
+
+function setRowBusy(row, busy){
+    if ( !row ) return;
+    if ( busy ) row.setAttribute('aria-busy', 'true');
+    else row.removeAttribute('aria-busy');
+    var btns = row.querySelectorAll('[data-action]');
+    for ( var i=0; i<btns.length; i++ ) btns[i].disabled = busy;
+}
+
+function actionErrorMessage(r){
+    var fallback = 'خطا در انجام عملیات — دوباره تلاش کنید';
+    if ( !r || !r.body ) return fallback;
+    var msg = r.body.message;
+    if ( typeof msg === 'string' && msg !== '' ) return msg.slice(0, 200);
+    return fallback;
+}
+
+function doQueueAction(visitId, action){
+    var row = document.querySelector('[data-role="queue-item"][data-visit-id="' + visitId + '"]');
+    if ( row && row.getAttribute('aria-busy') === 'true' ) return;
+    var body = null;
+    if ( action === 'skip' ) {
+        var input = window.prompt('علت رد کردن را بنویسید:', '');
+        if ( input === null ) return;
+        var reason = String(input).trim().slice(0, 255);
+        if ( reason === '' ) {
+            showError('علت رد کردن الزامی است.');
+            return;
+        }
+        body = { reason: reason };
+    }
+    setRowBusy(row, true);
+    var headers = {
+        'X-CPMS-Clinic-Id': String(state.selectedClinicId),
+        'X-CPMS-Location-Id': String(state.selectedLocationId)
+    };
+    api('POST', '/visits/' + encodeURIComponent(String(visitId)) + '/' + action, body, headers).then(function(r){
+        if ( r.status === 200 ) {
+            loadTodayAndQueue();
+            return;
+        }
+        setRowBusy(row, false);
+        showError(actionErrorMessage(r));
+    }).catch(function(){
+        setRowBusy(row, false);
+        showError('خطای ارتباط — دوباره تلاش کنید');
+    });
 }
 
 function showError(msg){
@@ -552,6 +619,16 @@ function pollQueue(){
         if ( data.last_event_id ) state.lastEventId = data.last_event_id;
     });
 }
+
+document.addEventListener('click', function(ev){
+    var btn = (ev.target && ev.target.closest) ? ev.target.closest('[data-action]') : null;
+    if ( !btn || btn.disabled ) return;
+    var row = btn.closest('[data-role="queue-item"]');
+    var visitId = btn.getAttribute('data-visit-id') || (row ? row.getAttribute('data-visit-id') : '');
+    if ( !visitId ) return;
+    ev.preventDefault();
+    doQueueAction(visitId, btn.getAttribute('data-action'));
+});
 
 document.addEventListener('change', function(ev){
     var clinicSel = ev.target.closest('[data-role="clinic-select"]');

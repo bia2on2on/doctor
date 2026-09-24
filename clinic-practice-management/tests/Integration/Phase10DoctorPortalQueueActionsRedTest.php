@@ -13,12 +13,14 @@
  *   FR-18.2) + roadmap: Doctor Portal queue actions — NOT IMPLEMENTED.
  * - Latest migration: 2026_09_20_0022_slot_holds_patient_binding.php (no 0023).
  *
- * Intended RED gaps (exactly two):
- *  (R1) Selected-Location mutation isolation — the mutation guard checks the
- *       trusted Clinic but not the trusted operational Location, so a
- *       cross-Location call currently succeeds. Group 5 must FAIL until GREEN.
- *  (R2) Doctor Portal queue-row action controls + request wiring are missing
- *       from the merged read-only shell. Group 8 must FAIL until GREEN.
+ * GREEN resolution of the two accepted RED gaps (RED head 7dd488e):
+ *  (R1) Selected-Location mutation isolation — the mutation guard now checks
+ *       the trusted operational Location as well as the trusted Clinic, so a
+ *       cross-Location call is denied with 404 CLINIC_NOT_FOUND. Group 5 is
+ *       GREEN, including side-effect-free denial (C) and the no-Location
+ *       legacy regression (D).
+ *  (R2) Doctor Portal queue-row action controls + request wiring are wired in
+ *       the portal shell. Group 8 is GREEN without weakening any assertion.
  *
  * All other groups are guards over EXISTING behavior and are expected to PASS:
  *  1. Valid existing queue transitions via real REST (call/start/recall/skip).
@@ -29,7 +31,9 @@
  *  7. Secretary observability after doctor CALL (history + /rt/queue +
  *     QUEUE_CALLED + room contract + bounded fields).
  *
- * Product code: NOT modified. No migration. No new route. No new state.
+ * Product code: smallest GREEN — Location check in the existing mutation guard
+ * plus state-appropriate queue-row controls reusing the existing routes and
+ * machine. No migration. No new route. No new state.
  */
 
 declare(strict_types=1);
@@ -301,6 +305,10 @@ final class Phase10DoctorPortalQueueActionsRedTest extends WP_UnitTestCase
         $doctor = $this->makeUser('g5_doc', RolesAndCapabilities::ROLE_DOCTOR);
         $clinician = $this->insertClinician('Dr G5', $clinic, 1, $doctor);
         cpms_test_seed_membership($doctor, $clinic, 'cpms_doctor');
+        // A secretary recipient makes the C side-effect assertions non-vacuous:
+        // each successful CALL emits exactly one QUEUE_CALLED row for her.
+        $secretary = $this->makeUser('g5_sec', RolesAndCapabilities::ROLE_SECRETARY);
+        cpms_test_seed_membership($secretary, $clinic, 'cpms_secretary');
 
         $v1 = $this->insertVisit($this->insertPatient($clinic, 'g5a'), $clinician, $clinic, $loc1, 'waiting');
         $v2 = $this->insertVisit($this->insertPatient($clinic, 'g5b'), $clinician, $clinic, $loc2, 'waiting');
@@ -314,12 +322,27 @@ final class Phase10DoctorPortalQueueActionsRedTest extends WP_UnitTestCase
         $r3 = $this->dispatch('POST', '/' . self::REST_NS . '/visits/' . $v3 . '/call', [], $this->scopeHeaders($clinic, $loc2));
         self::assertSame(200, $r3->get_status(), 'G5 positive: L2 visit under trusted L2 succeeds');
 
-        // RED: L2 visit under trusted L1 MUST be denied (same Clinic, same
+        // GREEN (C): the cross-Location denial must be side-effect free — no
+        // status change, no status-history row, no queue notification. Both
+        // positive controls above already emitted one QUEUE_CALLED each.
+        $notifBefore = count($this->notifRows('queue_called'));
+        self::assertSame(2, $notifBefore, 'G5: positive controls emitted exactly two QUEUE_CALLED rows');
+
+        // L2 visit under trusted L1 MUST be denied (same Clinic, same
         // doctor, otherwise valid state) — canonical non-enumerating denial.
         $r2 = $this->dispatch('POST', '/' . self::REST_NS . '/visits/' . $v2 . '/call', [], $this->scopeHeaders($clinic, $loc1));
-        self::assertSame(404, $r2->get_status(), 'G5 RED: cross-Location mutation must be denied, got ' . $r2->get_status() . '/' . $this->errCode($r2));
+        self::assertSame(404, $r2->get_status(), 'G5: cross-Location mutation must be denied, got ' . $r2->get_status() . '/' . $this->errCode($r2));
         self::assertSame('CLINIC_NOT_FOUND', $this->errCode($r2));
-        self::assertSame('waiting', (string) $this->findVisit($v2)['status'], 'G5 RED: denied mutation leaves state untouched');
+        self::assertSame('waiting', (string) $this->findVisit($v2)['status'], 'G5: denied mutation leaves state untouched');
+        self::assertCount(0, App::visitService()->history($doctor, $v2), 'G5: denied mutation writes no status history');
+        self::assertSame($notifBefore, count($this->notifRows('queue_called')), 'G5: denied mutation emits no notification');
+
+        // GREEN (D): trusted Clinic with NO Location in scope keeps the
+        // established legacy/shared contract — no global Location rule.
+        $v4 = $this->insertVisit($this->insertPatient($clinic, 'g5d'), $clinician, $clinic, $loc2, 'waiting');
+        $r4 = $this->dispatch('POST', '/' . self::REST_NS . '/visits/' . $v4 . '/call', [], $this->scopeHeaders($clinic));
+        self::assertSame(200, $r4->get_status(), 'G5 legacy: no-Location scope mutation stays valid');
+        self::assertSame('called', (string) $this->findVisit($v4)['status']);
     }
 
     // ============ Group 6 — nonce / capability / role authorization ============
@@ -421,7 +444,7 @@ final class Phase10DoctorPortalQueueActionsRedTest extends WP_UnitTestCase
         self::assertStringNotContainsString('national_id', $encoded, 'G7: no national id leakage');
     }
 
-    // ============ Group 8 — portal action visibility + wiring — EXPECTED UI RED ============
+    // ============ Group 8 — portal action visibility + wiring — GREEN ============
 
     public function testGroup8_DoctorPortalActionVisibilityAndRequestWiring(): void
     {
@@ -461,7 +484,7 @@ final class Phase10DoctorPortalQueueActionsRedTest extends WP_UnitTestCase
             }
         }
 
-        // RED: state-driven queue-row action controls + request wiring are missing.
+        // GREEN: state-driven queue-row action controls + request wiring exist.
         $missing = [];
         foreach (['call' => 'waiting', 'skip' => 'waiting/called', 'start' => 'called', 'recall' => 'called'] as $action => $states) {
             if (!str_contains($ui, 'data-action="' . $action . '"')) {
@@ -474,7 +497,7 @@ final class Phase10DoctorPortalQueueActionsRedTest extends WP_UnitTestCase
         if (!str_contains($ui, 'X-WP-Nonce') || !str_contains($ui, 'X-CPMS-Clinic-Id') || !str_contains($ui, 'X-CPMS-Location-Id')) {
             $missing[] = 'nonce + Clinic/Location selector headers on mutation wiring';
         }
-        self::assertSame([], $missing, 'G8 RED: Doctor Portal queue action controls/wiring missing: ' . implode('; ', $missing));
+        self::assertSame([], $missing, 'G8: Doctor Portal queue action controls/wiring missing: ' . implode('; ', $missing));
     }
 
     // ================= helpers (proven Slice 1 / RestQueue patterns) =================
