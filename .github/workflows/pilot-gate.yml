@@ -1457,7 +1457,11 @@ jobs:
       - name: Doctor Portal fixture — one location + multi location + isolation
         run: |
           WP_HOME="$WP_DIR" php tests/fixtures/pilot-doctor-portal-fixture.php 2>&1 | tee /tmp/doctor-portal-fixture.log
-          test "${PIPESTATUS[0]}" -eq 0
+          FIX_EXIT="${PIPESTATUS[0]}"
+          if [ "${FIX_EXIT}" != "0" ] || [ ! -s /tmp/doctor-portal.env ]; then
+            echo "::error::doctor-portal-fixture failed: exit=${FIX_EXIT} env_bytes=$(wc -c < /tmp/doctor-portal.env 2>/dev/null || echo MISSING) log_tail=$(tail -c 1500 /tmp/doctor-portal-fixture.log 2>/dev/null | tr '\n' '~')"
+          fi
+          test "${FIX_EXIT}" -eq 0
           test -s /tmp/doctor-portal.env
           cat /tmp/doctor-portal.env >> "$GITHUB_ENV"
           grep '^DOCTOR_PORTAL_PUBLIC=' /tmp/doctor-portal.env
