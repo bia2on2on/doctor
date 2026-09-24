@@ -306,11 +306,11 @@ final class DoctorPortalController extends RestBase {
 	 *
 	 * @template T
 	 *
-	 * @param callable(): T $fn
+	 * @param callable(): T $callback
 	 */
-	private function workspace_wrap( callable $fn ): WP_REST_Response|WP_Error {
+	private function workspace_wrap( callable $callback ): WP_REST_Response|WP_Error {
 		try {
-			return $this->success( $fn(), 200 );
+			return $this->success( $callback(), 200 );
 		} catch ( \ClinicCore\Application\Clinical\ClinicalException $e ) {
 			return $this->error( $e->errorCode, $e->httpStatus, $e->getMessage(), $e->data ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- legacy PSR-style, established contract
 		} catch ( \ClinicCore\Domain\Visits\VisitException $e ) {
