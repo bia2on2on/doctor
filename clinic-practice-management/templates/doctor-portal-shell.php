@@ -263,7 +263,7 @@ function api(method, path, body, extraHeaders){
         });
     });
 }
-function esc(s){ return String(s==null?'':s).replace(/[&<>\"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c];}); }
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
 function qs(sel){ return document.querySelector(sel); }
 function show(el){ if ( el ) el.hidden=false; }
 function hide(el){ if ( el ) el.hidden=true; }

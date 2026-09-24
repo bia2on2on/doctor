@@ -54,6 +54,19 @@ def fail(key, title, err):
     print(f"FAIL {key} — {title} — {err}")
 
 
+def page_hint(page):
+    try:
+        path = urlparse(page.url or "").path or "/"
+        shell = page.locator("html").get_attribute("data-cpms-doctor-portal-shell") or "0"
+        user = "0"
+        if page.locator("[data-shell-user]").count():
+            user = page.locator("[data-shell-user]").first.get_attribute("data-shell-user") or "0"
+        denied = 1 if page.locator('[data-role="portal-access-denied"]').count() else 0
+        return f"path={path} shell={shell} user={user} denied={denied}"
+    except Exception:
+        return "hint=unavailable"
+
+
 def info(line):
     print(f"INFO {line}")
 
@@ -421,7 +434,7 @@ def prove_one(browser, doctor, vp, shot_name=None):
             shot(page, f"doctor-portal-FAIL-{key}-{stage}")
         except Exception:
             pass
-        fail(key, vp["vp"], e)
+        fail(key, vp["vp"], f"{e} ({page_hint(page)})")
         raise
     finally:
         ctx.close()
@@ -519,7 +532,7 @@ def prove_multi(browser, doctor, vp, shots=False):
             shot(page, f"doctor-portal-FAIL-{key}-{stage}")
         except Exception:
             pass
-        fail(key, vp["vp"], e)
+        fail(key, vp["vp"], f"{e} ({page_hint(page)})")
         raise
     finally:
         ctx.close()
