@@ -230,7 +230,7 @@ foreach ($multiRecords as $row) {
 // Slice 5 TEST-ONLY RED: reuse these authenticated linked records for a real
 // read-only Visits browser journey. No new harness, migration or product path.
 $visits = [];
-$visitDate = gmdate('Y-m-d');
+$visitDate = (new DateTimeImmutable('now', new DateTimeZone('Asia/Tehran')))->format('Y-m-d');
 foreach ([[$clinicA, $patientA, 'A'], [$clinicB, $patientB, 'B'], [$clinicOne, $patientOne, 'ONE']] as [$clinic, $patient, $label]) {
     $insertVisitFixture = static function (string $table, array $row) use ($wpdb, $db): int {
         if ($wpdb->insert($db->table($table), $row) !== 1) {
