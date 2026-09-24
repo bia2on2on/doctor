@@ -849,6 +849,53 @@ def prove_queue_actions(page, state, doctor, act, skip, label):
                 f"scope checks={required_scope}"
             )
 
+    # Visual evidence — capture real Visit Workspace while open (harness-only, no product change).
+    # Deterministic waits on UI/network signals; no arbitrary sleeps.
+    if workspace_red_error is None:
+        try:
+            page.wait_for_selector('[data-role="workspace-section"]:not([hidden])', timeout=8000)
+            page.wait_for_selector('[data-role="workspace-body"]:not([hidden])', timeout=8000)
+            page.wait_for_function(
+                "() => { const h=document.querySelector('[data-role=\"workspace-header\"]'); return h && h.textContent.trim().length>3; }",
+                timeout=8000,
+            )
+        except Exception:
+            pass
+        try:
+            shot(page, f"doctor-portal-{label}-workspace")
+        except Exception:
+            pass
+        if label == "desktop-1366":
+            try:
+                note_text = f"Pilot workspace note {act} {int(time.time())}"
+                page.wait_for_selector('[data-role="workspace-note-form"]:not([hidden])', timeout=5000)
+                page.wait_for_selector('[data-role="workspace-content"]', timeout=5000)
+                page.locator('[data-role="workspace-content"]').fill(note_text)
+                # Visibility control where practically visible (desktop)
+                # keep default patient_visible; just ensure composer is ready
+                with page.expect_response(
+                    lambda r: route_of(r.url).endswith(f"/doctor/portal/visits/{act}/notes")
+                    and r.request.method == "POST",
+                    timeout=15000,
+                ) as note_resp:
+                    page.locator('[data-role="workspace-note-submit"]').click()
+                    resp = note_resp.value
+                if resp.status == 200:
+                    page.wait_for_selector('[data-role="workspace-form-success"]:not([hidden])', timeout=5000)
+                    page.wait_for_function(
+                        "(t) => { const ul=document.querySelector('[data-role=\"workspace-notes\"]'); return ul && ul.innerText.includes(t); }",
+                        arg=note_text,
+                        timeout=8000,
+                    )
+                    page.wait_for_selector('[data-role="workspace-header"]:not([hidden])', timeout=3000)
+                    page.wait_for_selector('[data-role="workspace-notes"]:not([hidden])', timeout=3000)
+                    shot(page, f"doctor-portal-{label}-workspace-note")
+            except Exception as e:  # noqa: BLE001
+                try:
+                    info(f"workspace-note-{label} skipped: {e}")
+                except Exception:
+                    pass
+
     # The backend still guards the invalid second START.
     r2 = portal_fetch(page, doctor, "POST", f"/visits/{act}/start")
     if r2["status"] != 409 or (r2["body"] or {}).get("code") != "CLINIC_INVALID_TRANSITION":
