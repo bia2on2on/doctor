@@ -947,6 +947,153 @@ def prove_queue_actions(page, state, doctor, act, skip, label):
         raise RuntimeError(workspace_red_error)
 
 
+def prove_workspace_rx(page, state, doctor, visit_id, label, mutate):
+    # Phase 10 Rx write — Visit Workspace prescription area. Selection remains
+    # the open workspace's visit_id (selector only); writes go through the
+    # Doctor Portal prescription boundary with the portal nonce + trusted
+    # Clinic/Location selector headers. clinician_id is never sent.
+    sec = '[data-role="workspace-rx-section"]:not([hidden])'
+    page.wait_for_selector(sec, timeout=8000)
+    # The list itself is an empty <ul> before the first prescription (zero-height
+    # => Playwright "hidden"); the usable gates are section + form + empty state.
+    page.wait_for_selector('[data-role="workspace-rx-form"]:not([hidden])', timeout=8000)
+    if page.locator('[data-role="workspace-rx-list"]').count() != 1:
+        raise RuntimeError(f"{label} rx list element missing")
+    for marker in ("workspace-rx-generic-name", "workspace-rx-dose", "workspace-rx-frequency",
+                   "workspace-rx-route", "workspace-rx-duration-days", "workspace-rx-instructions",
+                   "workspace-rx-form-select", "workspace-rx-submit"):
+        el = page.locator(f'[data-role="{marker}"]')
+        if el.count() != 1 or not el.first.is_enabled():
+            raise RuntimeError(f"{label} rx composer control {marker} not usable")
+    # Fresh action visit has no prescriptions yet — empty state (F-state).
+    page.wait_for_selector('[data-role="workspace-rx-empty"]:not([hidden])', timeout=5000)
+    if not mutate:
+        assert_queue_hugs_content(page, label)
+        shot(page, f"doctor-portal-{label}-workspace-rx")
+        info(f"workspace-rx-{label} render=1 composer=1 empty=1 mutate=0")
+        return
+
+    # ---- desktop-1366 full mutation journey ------------------------------------
+    rc_before = len(state["rest"])
+    generic = f"پنستر پایلوت نسخه {visit_id}"
+    page.locator('[data-role="workspace-rx-generic-name"]').fill(generic)
+    page.locator('[data-role="workspace-rx-frequency"]').fill("هر ۸ ساعت")
+    page.locator('[data-role="workspace-rx-form-select"]').select_option("capsule")
+    page.locator('[data-role="workspace-rx-route"]').select_option("oral")
+    page.locator('[data-role="workspace-rx-duration-days"]').fill("7")
+    page.locator('[data-role="workspace-rx-instructions"]').fill("با غذا")
+    # Failed-write proof: missing dose must surface as the established server
+    # 422 — never as success.
+    with page.expect_response(
+        lambda r: route_of(r.url).endswith(f"/doctor/portal/visits/{visit_id}/prescriptions")
+        and r.request.method == "POST",
+        timeout=15000,
+    ) as bad_info:
+        page.locator('[data-role="workspace-rx-submit"]').click()
+    if bad_info.value.status != 422 or (bad_info.value.json() or {}).get("code") != "CLINIC_VALIDATION_FAILED":
+        raise RuntimeError(f"{label} invalid create not rejected with the established 422")
+    page.wait_for_selector('[data-role="workspace-rx-error"]:not([hidden])', timeout=5000)
+    if page.locator('[data-role="workspace-rx-success"]').is_visible():
+        raise RuntimeError(f"{label} failed create displayed success")
+    if page.locator('[data-role="workspace-rx-empty"]').is_visible() is False:
+        raise RuntimeError(f"{label} failed create mutated the list")
+    # Busy + double-submit guard while the valid create is in flight.
+    page.locator('[data-role="workspace-rx-dose"]').fill("1 قرص")
+
+    def _slow_create(route):
+        time.sleep(1.0)
+        route.continue_()
+
+    page.route("**/doctor/portal/visits/*/prescriptions", _slow_create)
+    with page.expect_response(
+        lambda r: route_of(r.url).endswith(f"/doctor/portal/visits/{visit_id}/prescriptions")
+        and r.request.method == "POST",
+        timeout=15000,
+    ) as create_info:
+        page.locator('[data-role="workspace-rx-submit"]').click()
+        page.wait_for_selector('[data-role="workspace-rx-busy"]:not([hidden])', timeout=5000)
+        if not page.locator('[data-role="workspace-rx-submit"]').is_disabled():
+            raise RuntimeError(f"{label} create submit not disabled while in flight")
+    page.unroute("**/doctor/portal/visits/*/prescriptions")
+    create_resp = create_info.value
+    if create_resp.status != 200:
+        raise RuntimeError(f"{label} create draft failed: {create_resp.status}")
+    rx = payload(create_resp.json())
+    rx_id = int(rx.get("id") or 0)
+    if rx_id <= 0 or rx.get("status") != "draft":
+        raise RuntimeError(f"{label} create did not return a draft: {rx}")
+    page.wait_for_selector('[data-role="workspace-rx-success"]:not([hidden])', timeout=5000)
+    page.wait_for_selector(
+        f'[data-role="workspace-rx-item"][data-rx-id="{rx_id}"][data-status="draft"]',
+        timeout=5000,
+    )
+    page.wait_for_function(
+        "(t) => { const ul=document.querySelector('[data-role=\"workspace-rx-list\"]'); return ul && ul.innerText.includes(t); }",
+        arg=generic,
+        timeout=8000,
+    )
+    if page.locator('[data-role="workspace-rx-generic-name"]').input_value() != "":
+        raise RuntimeError(f"{label} composer not cleared after successful create")
+    # Selector headers only, no client authority.
+    create_reqs = [e for e in state["rest"] if e["method"] == "POST"
+                   and e["route"].endswith(f"/doctor/portal/visits/{visit_id}/prescriptions")]
+    if not create_reqs:
+        raise RuntimeError(f"{label} create request not observed")
+    shot(page, f"doctor-portal-{label}-workspace-rx")
+
+    # Finalize through the portal boundary — server resolves prescription->Visit.
+    fin_btn = page.locator(f'[data-role="workspace-rx-item"][data-rx-id="{rx_id}"] [data-role="workspace-rx-finalize"]')
+    if fin_btn.count() != 1 or not fin_btn.first.is_enabled():
+        raise RuntimeError(f"{label} draft does not expose an enabled finalize control")
+
+    def _slow_fin(route):
+        time.sleep(1.0)
+        route.continue_()
+
+    page.route("**/doctor/portal/prescriptions/*/finalize", _slow_fin)
+    with page.expect_response(
+        lambda r: route_of(r.url).endswith(f"/doctor/portal/prescriptions/{rx_id}/finalize")
+        and r.request.method == "POST",
+        timeout=15000,
+    ) as fin_info:
+        fin_btn.first.click()
+        if not page.locator(f'[data-role="workspace-rx-item"][data-rx-id="{rx_id}"] [data-role="workspace-rx-finalize"]').is_disabled():
+            raise RuntimeError(f"{label} finalize control not disabled while in flight")
+    page.unroute("**/doctor/portal/prescriptions/*/finalize")
+    fin_resp = fin_info.value
+    if fin_resp.status != 200:
+        raise RuntimeError(f"{label} finalize failed: {fin_resp.status}")
+    fin = payload(fin_resp.json())
+    if fin.get("status") != "finalized" or not fin.get("finalized_at"):
+        raise RuntimeError(f"{label} finalize did not establish finalized/finalized_at: {fin}")
+    page.wait_for_selector(
+        f'[data-role="workspace-rx-item"][data-rx-id="{rx_id}"][data-status="finalized"]',
+        timeout=5000,
+    )
+    page.wait_for_selector(
+        f'[data-role="workspace-rx-item"][data-rx-id="{rx_id}"] [data-role="workspace-rx-readonly"]',
+        timeout=5000,
+    )
+    if page.locator(f'[data-role="workspace-rx-item"][data-rx-id="{rx_id}"] [data-role="workspace-rx-finalize"]').count() != 0:
+        raise RuntimeError(f"{label} finalized item still exposes a finalize control")
+    shot(page, f"doctor-portal-{label}-workspace-rx-finalized")
+    # Repeat finalize keeps the established 409 invalid-transition semantics.
+    r2 = portal_fetch(page, doctor, "POST", f"/doctor/portal/prescriptions/{rx_id}/finalize")
+    if r2["status"] != 409 or (r2["body"] or {}).get("code") != "CLINIC_INVALID_TRANSITION":
+        raise RuntimeError(f"{label} repeat finalize not guarded: {r2['status']}")
+    new_rx_posts = [
+        e for e in state["reqs"]
+        if e["method"] == "POST" and "/prescriptions" in e["route"]
+    ]
+    for hit in new_rx_posts:
+        if "clinician_id" in (hit["url"] + hit["body"]):
+            raise RuntimeError(f"{label} clinician_id leaked into a prescription request")
+    info(
+        f"workspace-rx-{label} create=1 draft=1 busy=1 dblsubmit=1 failed422=1"
+        f" finalize=1 readonly=1 repeat409=1 clinician_id_sent=0"
+    )
+
+
 def prove_location_actions(page, state, doctor, label):
     sel = page.locator('[data-role="location-select"]')
     # Selected Location A action works on A, then resets via recall.
@@ -1074,6 +1221,16 @@ def prove_one(browser, doctor, vp, shot_name=None):
             prove_queue_actions(
                 page, state, doctor,
                 int(doctor[pair_keys[0]]), int(doctor[pair_keys[1]]), vp["vp"],
+            )
+            # Phase 10 Rx write — after queue actions the act visit is in
+            # consultation and its workspace is open; drive the real Doctor
+            # Portal prescription area for this viewport. Full create/finalize
+            # mutation runs once (desktop); every viewport proves the
+            # responsive render + composer/empty states.
+            stage = "workspace-rx"
+            prove_workspace_rx(
+                page, state, doctor, int(doctor[pair_keys[0]]), vp["vp"],
+                mutate=(vp["vp"] == "desktop-1366"),
             )
         stage = "today-queue"
         if doctor["today"] not in (page.locator('[data-role="today-date"]').inner_text() or ""):

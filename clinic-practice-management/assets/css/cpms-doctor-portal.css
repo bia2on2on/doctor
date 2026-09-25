@@ -818,6 +818,26 @@ body.cpms-doctor-portal-shell-body {
 	.cpms-doc-queue-aside { justify-content: flex-end; }
 }
 
+/* Phase 10 — tablet Live Queue readability (768–1099px band only).
+   In this band the app grid splits queue/appointments 50/50 and the ≥768 row
+   template (minmax(0,1fr) auto) puts badges/waiting/actions in the auto track,
+   squeezing the patient-name track near zero; overflow-wrap then broke long
+   identifiers character-by-character (owner-reported defect at exactly 768px).
+   Minimal fix: the Live Queue row reverts to its established single-column
+   stack (the <768 mobile layout) so the name always gets the full column
+   width; desktop (≥1100px) keeps the wider asymmetric split and compact
+   horizontal rows. Scoped to the Live Queue section — appointments unchanged. */
+
+@media (min-width: 768px) and (max-width: 1099.98px) {
+	.cpms-doc-queue .cpms-doc-queue-list li {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.cpms-doc-queue .cpms-doc-queue-aside {
+		justify-content: flex-start;
+	}
+}
+
 @media (min-width: 1100px) {
 	#cpms-doctor-portal-app {
 		grid-template-columns: minmax(0, 1.7fr) minmax(18rem, 0.62fr);
@@ -1029,3 +1049,144 @@ body.cpms-doctor-portal-shell-body {
 
 .cpms-doc-workspace [data-role="workspace-form-error"],
 .cpms-doc-workspace [data-role="workspace-form-success"] { margin: 8px 14px 0; }
+
+/* ================= Phase 10 Rx write — Visit Workspace prescriptions ================= */
+
+.cpms-doc-ws-rx {
+	min-width: 0;
+}
+
+.cpms-doc-ws-rx-list {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	min-width: 0;
+}
+
+.cpms-doc-ws-rx-item {
+	border: 1px solid var(--cpms-border-strong);
+	border-radius: var(--cpms-radius-sm);
+	background: var(--cpms-card);
+	padding: 8px 10px;
+	margin: 0 14px;
+	min-width: 0;
+}
+
+.cpms-doc-ws-rx-head {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	gap: 6px;
+	flex-wrap: wrap;
+	min-width: 0;
+}
+
+.cpms-doc-ws-rx-head [data-role="workspace-rx-number"] {
+	font-weight: 700;
+	font-variant-numeric: tabular-nums;
+	overflow-wrap: anywhere;
+}
+
+.cpms-doc-badge.rx-status-draft {
+	background: var(--cpms-wait-soft);
+	color: var(--cpms-wait);
+	border-color: var(--cpms-wait-line);
+}
+
+.cpms-doc-badge.rx-status-finalized {
+	background: var(--cpms-ok-soft);
+	color: var(--cpms-ok);
+	border-color: var(--cpms-ok-line);
+}
+
+.cpms-doc-ws-rx-items {
+	list-style: none;
+	margin: 6px 0 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	font-size: 13.5px;
+	min-width: 0;
+}
+
+.cpms-doc-ws-rx-item-row {
+	overflow-wrap: anywhere;
+}
+
+.cpms-doc-ws-rx-row {
+	margin-top: 8px;
+	display: flex;
+	justify-content: flex-start;
+	align-items: center;
+	gap: 8px;
+	min-width: 0;
+}
+
+.cpms-doc-ws-rx-row [data-role="workspace-rx-finalize"] {
+	min-height: 44px;
+}
+
+.cpms-doc-ws-rx-row [data-role="workspace-rx-finalize"][aria-busy="true"] {
+	cursor: wait;
+}
+
+.cpms-doc-ws-rx-row [data-role="workspace-rx-readonly"] {
+	color: var(--cpms-muted);
+	font-size: 12.5px;
+}
+
+.cpms-doc-ws-form [data-role="workspace-rx-submit"] {
+	margin: 10px 14px 0;
+}
+
+.cpms-doc-ws-form [data-role="workspace-rx-submit"][aria-busy="true"] {
+	cursor: wait;
+}
+
+.cpms-doc-ws-field input[type="text"],
+.cpms-doc-ws-field input[type="number"] {
+	width: 100%;
+	max-width: 100%;
+	min-height: 44px;
+	padding: 8px 10px;
+	border: 1px solid var(--cpms-border-strong);
+	border-radius: var(--cpms-radius-sm);
+	background: #fff;
+	color: var(--cpms-text);
+	font-family: inherit;
+	font-size: 14px;
+	line-height: 1.5;
+}
+
+.cpms-doc-ws-field input[type="text"]:focus-visible,
+.cpms-doc-ws-field input[type="number"]:focus-visible {
+	outline: 2px solid var(--cpms-primary);
+	outline-offset: 2px;
+}
+
+.cpms-doc-ws-check label {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-size: 13px;
+	font-weight: 400;
+	min-height: 44px;
+	cursor: pointer;
+}
+
+.cpms-doc-ws-check input[type="checkbox"] {
+	width: 20px;
+	height: 20px;
+	min-height: auto;
+	flex: 0 0 auto;
+}
+
+.cpms-doc-workspace [data-role="workspace-rx-error"],
+.cpms-doc-workspace [data-role="workspace-rx-success"],
+.cpms-doc-workspace [data-role="workspace-rx-busy"] {
+	margin: 8px 14px 0;
+}
