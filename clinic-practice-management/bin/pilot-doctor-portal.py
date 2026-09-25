@@ -1714,6 +1714,225 @@ def prove_workspace_recfu(page, state, doctor, visit_id, label, mutate):
     )
 
 
+def prove_workspace_complete(page, state, doctor, visit_id, label, mutate):
+    # Phase 10 — Chief Complaint + Visit Complete inside the open Visit
+    # Workspace. The Visit id is only the selector; Complete goes through the
+    # Doctor Portal boundary POST /doctor/portal/visits/{id}/complete with the
+    # portal nonce + trusted Clinic/Location selector headers, reusing the
+    # established E14 completeConsultation (Chief Complaint policy 422, state
+    # machine 409, history, audit). Chief Complaint is authored through the
+    # established portal note boundary with category chief_complaint. No Reopen.
+    page.wait_for_selector('[data-role="workspace-consult-complete-section"]:not([hidden])', timeout=8000)
+    page.wait_for_selector('[data-role="workspace-cc-form"]:not([hidden])', timeout=8000)
+    page.wait_for_selector('[data-role="workspace-consult-complete-submit"]:not([hidden])', timeout=8000)
+    submit = page.locator('[data-role="workspace-consult-complete-submit"]')
+    if submit.count() != 1 or not submit.first.is_enabled():
+        raise RuntimeError(f"{label} Complete control not usable for the current consultation")
+    box = submit.bounding_box()
+    if not box or box["height"] < 40:
+        raise RuntimeError(f"{label} Complete control is below a touch target")
+    for marker in ("workspace-cc-text", "workspace-cc-visibility", "workspace-cc-submit"):
+        el = page.locator(f'[data-role="{marker}"]')
+        if el.count() != 1 or not el.first.is_enabled():
+            raise RuntimeError(f"{label} Chief Complaint control {marker} not usable")
+    cc_vis = page.locator('[data-role="workspace-cc-visibility"]')
+    offered = cc_vis.locator("option").evaluate_all("els => els.map(e => e.getAttribute('value'))")
+    if offered != ["patient_visible", "doctor_private"] or cc_vis.input_value() != "patient_visible":
+        raise RuntimeError(f"{label} Chief Complaint visibility does not keep the established options/default: {offered}")
+    for marker in ("workspace-consult-complete-busy", "workspace-consult-complete-error", "workspace-consult-complete-success"):
+        el = page.locator(f'[data-role="{marker}"]')
+        if el.count() != 1 or el.first.is_visible():
+            raise RuntimeError(f"{label} Complete feedback {marker} missing or visible before any attempt")
+    if page.locator('[data-role*="reopen"]').count() != 0:
+        raise RuntimeError(f"{label} a Reopen control is exposed")
+    if not mutate:
+        assert_queue_hugs_content(page, label)
+        shot(page, f"doctor-portal-{label}-workspace-complete")
+        info(f"workspace-complete-{label} render=1 cc_form=1 complete_control=1 reopen_controls=0 mutate=0")
+        return
+
+    # ---- desktop-1366 full Complete journey ------------------------------------
+    mark = nav_mark(page)
+    complete_route = f"/doctor/portal/visits/{visit_id}/complete"
+    glob = "**/doctor/portal/visits/*/complete"
+
+    def complete_posts():
+        return [e for e in state["reqs"] if e["method"] == "POST" and e["route"].endswith(complete_route)]
+
+    def is_complete(r):
+        return route_of(r.url).endswith(complete_route) and r.request.method == "POST"
+
+    def _slow_complete(route):
+        time.sleep(1.0)
+        route.continue_()
+
+    # A. The explicit confirmation is honoured: dismissing it sends nothing.
+    posts_before = len(complete_posts())
+    page.once("dialog", lambda d: d.dismiss())
+    submit.click()
+    page.wait_for_timeout(400)
+    if len(complete_posts()) != posts_before:
+        raise RuntimeError(f"{label} Complete was sent although the confirmation was dismissed")
+
+    # B. complete_prereq_422 — the fixture Clinic keeps the established default
+    # policy (Chief Complaint required) and no chief_complaint note exists yet:
+    # the backend answers 422, the UI points at the Chief Complaint control.
+    if page.locator('[data-role="workspace-note-cc"]').count() != 0:
+        raise RuntimeError(f"{label} fixture Visit already carries a Chief Complaint")
+    page.once("dialog", lambda d: d.accept())
+    with page.expect_response(is_complete, timeout=15000) as first:
+        submit.click()
+    body = first.value.json() or {}
+    if (
+        first.value.status != 422
+        or body.get("code") != "CLINIC_VALIDATION_FAILED"
+        or (body.get("data") or {}).get("missing") != "chief_complaint"
+    ):
+        raise RuntimeError(f"{label} missing Chief Complaint not rejected with the established 422: {first.value.status}")
+    page.wait_for_selector('[data-role="workspace-consult-complete-error"]:not([hidden])', timeout=5000)
+    err_text = page.locator('[data-role="workspace-consult-complete-error"]').inner_text() or ""
+    if not PERSIAN_RE.search(err_text) or "شکایت اصلی" not in err_text:
+        raise RuntimeError(f"{label} 422 prerequisite message does not point at the Chief Complaint control")
+    if page.locator('[data-role="workspace-consult-complete-success"]').is_visible():
+        raise RuntimeError(f"{label} rejected Complete displayed success")
+    if not submit.is_visible() or not submit.is_enabled():
+        raise RuntimeError(f"{label} Complete control not re-enabled after the 422")
+    if page.locator(row_sel(visit_id)).count() != 1:
+        raise RuntimeError(f"{label} rejected Complete removed the Visit from the Live Queue")
+
+    # C. complete_stale_guard — close the workspace while a Complete is in
+    # flight; the late response must not paint the (no longer open) Visit.
+    page.route(glob, _slow_complete)
+    try:
+        page.once("dialog", lambda d: d.accept())
+        with page.expect_response(is_complete, timeout=15000) as stale:
+            submit.click()
+            page.wait_for_selector('[data-role="workspace-consult-complete-busy"]:not([hidden])', timeout=5000)
+            page.locator('[data-role="workspace-close"]').click()
+            page.wait_for_selector('[data-role="workspace-section"]', state="hidden", timeout=5000)
+    finally:
+        page.unroute(glob)
+    if stale.value.status != 422:
+        raise RuntimeError(f"{label} stale-guard probe expected the same 422, got {stale.value.status}")
+    page.wait_for_timeout(400)
+    painted = page.evaluate(
+        """() => ({
+          err: document.querySelector('[data-role="workspace-consult-complete-error"]').hidden,
+          ok: document.querySelector('[data-role="workspace-consult-complete-success"]').hidden,
+          sec: document.querySelector('[data-role="workspace-section"]').hidden
+        })"""
+    )
+    if not (painted["err"] and painted["ok"] and painted["sec"]):
+        raise RuntimeError(f"{label} stale Complete response painted a closed workspace: {painted}")
+
+    # Re-open the same current consultation from its Live Queue row.
+    with page.expect_response(
+        lambda r: route_of(r.url).endswith(f"/visits/{visit_id}/record") and r.request.method == "GET",
+        timeout=15000,
+    ):
+        page.locator(row_sel(visit_id)).click()
+    page.wait_for_selector('[data-role="workspace-body"]:not([hidden])', timeout=8000)
+    page.wait_for_selector('[data-role="workspace-consult-complete-submit"]:not([hidden])', timeout=8000)
+
+    # D. Author the Chief Complaint through the real note boundary.
+    cc_text = f"شکایت اصلی پایلوت {visit_id} — سردرد"
+    page.locator('[data-role="workspace-cc-text"]').fill(cc_text)
+    with page.expect_response(
+        lambda r: route_of(r.url).endswith(f"/doctor/portal/visits/{visit_id}/notes") and r.request.method == "POST",
+        timeout=15000,
+    ) as cc_info:
+        page.locator('[data-role="workspace-cc-submit"]').click()
+    if cc_info.value.status != 200:
+        raise RuntimeError(f"{label} Chief Complaint write failed: {cc_info.value.status}")
+    note = payload(cc_info.value.json())
+    if (
+        note.get("category") != "chief_complaint"
+        or note.get("visibility") != "patient_visible"
+        or note.get("content_text") != cc_text
+    ):
+        raise RuntimeError(f"{label} Chief Complaint round-trip mismatch: {note}")
+    page.wait_for_selector('[data-role="workspace-cc-success"]:not([hidden])', timeout=5000)
+    page.wait_for_selector('[data-role="workspace-note-cc"]', timeout=5000)
+    cc_posts = [
+        e for e in state["reqs"]
+        if e["method"] == "POST" and e["route"].endswith(f"/doctor/portal/visits/{visit_id}/notes")
+    ]
+    if not cc_posts or json.loads(cc_posts[-1]["body"] or "{}").get("category") != "chief_complaint":
+        raise RuntimeError(f"{label} Chief Complaint request did not carry the established category")
+
+    # E. complete_double_submit — busy + disabled while in flight; a second
+    # activation (even with the confirmation auto-accepted) sends nothing.
+    accepted = []
+
+    def _accept(d):
+        accepted.append(1)
+        d.accept()
+
+    posts_before = len(complete_posts())
+    page.on("dialog", _accept)
+    page.route(glob, _slow_complete)
+    try:
+        with page.expect_response(is_complete, timeout=15000) as done_info:
+            submit.click()
+            page.wait_for_selector('[data-role="workspace-consult-complete-busy"]:not([hidden])', timeout=5000)
+            if not submit.is_disabled():
+                raise RuntimeError(f"{label} Complete control not disabled while in flight")
+            submit.dispatch_event("click")
+    finally:
+        page.unroute(glob)
+        page.remove_listener("dialog", _accept)
+    if len(complete_posts()) - posts_before != 1 or len(accepted) != 1:
+        raise RuntimeError(
+            f"{label} double submit not prevented (posts={len(complete_posts()) - posts_before}, confirms={len(accepted)})"
+        )
+    if done_info.value.status != 200:
+        raise RuntimeError(f"{label} Complete failed after the Chief Complaint: {done_info.value.status}")
+    visit = payload(done_info.value.json())
+    if visit.get("status") != "consultation_completed" or int(visit.get("id") or 0) != visit_id:
+        raise RuntimeError(f"{label} Complete did not return the completed Visit: {visit.get('status')}")
+    page.wait_for_selector('[data-role="workspace-consult-complete-success"]:not([hidden])', timeout=5000)
+    page.wait_for_selector('[data-role="workspace-consult-complete-submit"]', state="hidden", timeout=5000)
+    if page.locator('[data-role="workspace-consult-complete-error"]').is_visible():
+        raise RuntimeError(f"{label} successful Complete still shows an error")
+    page.wait_for_selector('[data-role="workspace-header"] .status-consultation_completed', timeout=5000)
+    page.wait_for_selector('[data-role="workspace-consult-complete-hint"]:not([hidden])', timeout=5000)
+
+    # F. complete_queue_left — REST refresh (no reload) drops the Visit from the
+    # rendered Live Queue and from fresh server truth.
+    page.wait_for_selector(row_sel(visit_id), state="detached", timeout=20000)
+    if today_queue_visit(page, doctor, visit_id, label):
+        raise RuntimeError(f"{label} completed Visit still served in the Live Queue")
+    if page.locator('[data-role*="reopen"]').count() != 0:
+        raise RuntimeError(f"{label} a Reopen control appeared after Complete")
+    shot(page, f"doctor-portal-{label}-workspace-complete-done")
+
+    # G. complete_repeat_409 — a sequential repeat through the same portal
+    # boundary keeps the established state-machine answer (not a concurrency proof).
+    rep = portal_fetch(page, doctor, "POST", complete_route)
+    rep_body = rep["body"] or {}
+    if rep["status"] != 409 or rep_body.get("code") != "CLINIC_INVALID_TRANSITION":
+        raise RuntimeError(f"{label} repeat Complete not rejected with the established 409: {rep['status']}")
+
+    # Selector headers only, no client authority, empty Complete body.
+    for hit in complete_posts():
+        if hit["body"]:
+            raise RuntimeError(f"{label} Complete request carried a body")
+        if hit["headers"].get("x-cpms-clinic-id") != str(doctor["clinic_id"]) or hit["headers"].get(
+            "x-cpms-location-id"
+        ) != str(doctor["location_id"]) or not hit["headers"].get("x-wp-nonce"):
+            raise RuntimeError(f"{label} Complete request misses nonce/selector headers")
+        for key in ("clinician_id", "organization_id", "role"):
+            if key in hit["url"] or any(key in hk or key in str(hv) for hk, hv in hit["headers"].items()):
+                raise RuntimeError(f"{label} client authority key {key} leaked into a Complete request")
+    reloads, rest_calls, harness_navs = assert_no_product_reload(page, mark, label)
+    info(
+        f"workspace-complete-{label} confirm_cancel=1 complete_prereq_422=1 complete_stale_guard=1"
+        f" cc_authored=1 cc_visibility=patient_visible complete_double_submit=1 complete_200=1"
+        f" complete_queue_left=1 complete_repeat_409=1 reopen_controls=0 product_reloads={reloads}"
+        f" rest_calls={rest_calls} harness_navs={harness_navs} clinician_id_sent=0"
+    )
+
+
 def prove_location_actions(page, state, doctor, label):
     sel = page.locator('[data-role="location-select"]')
     # Selected Location A action works on A, then resets via recall.
@@ -1867,6 +2086,15 @@ def prove_one(browser, doctor, vp, shot_name=None, probe_fallback=False):
             # desktop, responsive composer + empty states on every viewport.
             stage = "workspace-recfu"
             prove_workspace_recfu(
+                page, state, doctor, int(doctor[pair_keys[0]]), vp["vp"],
+                mutate=(vp["vp"] == "desktop-1366"),
+            )
+            # Phase 10 — Chief Complaint + Visit Complete in the same open
+            # workspace: full 422 -> Chief Complaint -> 200 -> queue-left journey
+            # on desktop (last viewport, so earlier runs keep their fixtures);
+            # responsive render of the Complete area on every viewport.
+            stage = "workspace-complete"
+            prove_workspace_complete(
                 page, state, doctor, int(doctor[pair_keys[0]]), vp["vp"],
                 mutate=(vp["vp"] == "desktop-1366"),
             )

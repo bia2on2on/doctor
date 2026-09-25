@@ -201,6 +201,18 @@ final class DoctorPortalController extends RestBase {
 				],
 			]
 		);
+
+		register_rest_route(
+			self::NS,
+			'/doctor/portal/visits/(?P<id>\d+)/complete',
+			[
+				[
+					'methods'             => WP_REST_Server::CREATABLE,
+					'callback'            => fn( WP_REST_Request $r ) => $this->workspace_complete_consultation( $r ),
+					'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_workspace( $r, RolesAndCapabilities::CONSULT_COMPLETE ),
+				],
+			]
+		);
 	}
 
 	private function perm_doctor( WP_REST_Request $r ): bool|WP_Error {
@@ -364,6 +376,26 @@ final class DoctorPortalController extends RestBase {
 		}
 		return $this->workspace_wrap(
 			fn() => App::clinicalService()->addFollowUp( (int) wp_get_current_user()->ID, $visit_id, $this->workspace_body( $r ) )
+		);
+	}
+
+	/**
+	 * Phase 10 — Visit Complete (portal boundary).
+	 *
+	 * Thin adapter: the portal Visit guard (server-derived clinician, active
+	 * Clinic, trusted Location, Visit ownership) runs FIRST, then the
+	 * established E14 completeConsultation is reused unchanged — its Chief
+	 * Complaint policy (422), state machine (409 on repeat/wrong state),
+	 * history and audit. No extra audit and no finance side effect here.
+	 */
+	private function workspace_complete_consultation( WP_REST_Request $r ): WP_REST_Response|WP_Error {
+		$visit_id = (int) $r['id'];
+		$guard    = $this->workspace_authorize_visit( $visit_id );
+		if ( $guard instanceof WP_Error ) {
+			return $guard;
+		}
+		return $this->workspace_wrap(
+			fn() => App::clinicalService()->completeConsultation( (int) wp_get_current_user()->ID, $visit_id )
 		);
 	}
 
