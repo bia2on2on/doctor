@@ -381,6 +381,36 @@ body.cpms-doctor-portal-shell-body { margin: 0; font-family: Tahoma, Vazirmatn, 
                                 <button type="submit" class="cpms-doc-btn cpms-doc-btn--primary" data-role="workspace-fu-submit">ثبت پیگیری</button>
                             </form>
                         </div>
+                        <div class="cpms-doc-ws-consult" data-role="workspace-consult-complete-section">
+                            <div class="cpms-doc-section-head cpms-doc-ws-subhead">
+                                <h3>شکایت اصلی و پایان ویزیت</h3>
+                            </div>
+                            <p class="cpms-doc-ws-cc-state" data-role="workspace-cc-state" role="status"></p>
+                            <form class="cpms-doc-ws-form" data-role="workspace-cc-form">
+                                <div class="cpms-doc-ws-field">
+                                    <label for="cpms-doc-ws-cc-text">شکایت اصلی بیمار</label>
+                                    <textarea id="cpms-doc-ws-cc-text" data-role="workspace-cc-text" rows="2"></textarea>
+                                </div>
+                                <div class="cpms-doc-ws-field">
+                                    <label for="cpms-doc-ws-cc-visibility">سطح دسترسی</label>
+                                    <select id="cpms-doc-ws-cc-visibility" data-role="workspace-cc-visibility">
+                                        <option value="patient_visible">قابل مشاهده برای بیمار</option>
+                                        <option value="doctor_private">خصوصی پزشک</option>
+                                    </select>
+                                </div>
+                                <div data-role="workspace-cc-busy" class="cpms-doc-loading" hidden>در حال ثبت شکایت اصلی…</div>
+                                <div data-role="workspace-cc-error" class="cpms-doc-error" role="alert" hidden></div>
+                                <div data-role="workspace-cc-success" class="cpms-doc-success" role="status" hidden></div>
+                                <button type="submit" class="cpms-doc-btn cpms-doc-btn--ghost" data-role="workspace-cc-submit">ثبت شکایت اصلی</button>
+                            </form>
+                            <div class="cpms-doc-ws-consult-end">
+                                <p class="cpms-doc-ws-cc-state" data-role="workspace-consult-complete-hint" hidden></p>
+                                <div data-role="workspace-consult-complete-busy" class="cpms-doc-loading" hidden>در حال پایان ویزیت…</div>
+                                <div data-role="workspace-consult-complete-error" class="cpms-doc-error" role="alert" hidden></div>
+                                <div data-role="workspace-consult-complete-success" class="cpms-doc-success" role="status" hidden></div>
+                                <button type="button" class="cpms-doc-btn cpms-doc-btn--primary" data-role="workspace-consult-complete-submit" hidden>پایان ویزیت</button>
+                            </div>
+                        </div>
                     </div>
                 </section>
 
@@ -436,7 +466,11 @@ var state = {
     workspaceRec: [],
     workspaceRecBusy: false,
     workspaceFu: [],
-    workspaceFuBusy: false
+    workspaceFuBusy: false,
+    workspaceStatus: '',
+    workspaceData: null,
+    workspaceCcBusy: false,
+    workspaceCompleteBusy: false
 };
 
 function apiUrl(path){
@@ -789,6 +823,7 @@ function closeWorkspace(){
     setNoteSubmitBusy(false);
     resetRxUi();
     resetRecFuUi();
+    resetConsultUi();
 }
 
 function setNoteSubmitBusy(busy){
@@ -815,6 +850,7 @@ function openWorkspace(visitId){
     setNoteSubmitBusy(false);
     resetRxUi();
     resetRecFuUi();
+    resetConsultUi();
     var contentEl = qs('[data-role="workspace-content"]');
     if ( contentEl ) contentEl.value = '';
     var openedVisitId = visitId;
@@ -858,6 +894,9 @@ function renderWorkspace(data){
     renderWorkspaceRec();
     state.workspaceFu = (data && data.follow_ups) || [];
     renderWorkspaceFu();
+    state.workspaceData = data || null;
+    state.workspaceStatus = String((data && data.visit && data.visit.status) || '');
+    renderConsultComplete();
     show(body);
 }
 
@@ -906,6 +945,7 @@ function renderWorkspaceNotes(){
     list.innerHTML = notes.map(function(n){
         return '<li class="cpms-doc-ws-note" data-note-id="' + esc(n.id) + '">' +
             '<div class="cpms-doc-ws-note-head">' +
+                (n.category === 'chief_complaint' ? '<span class="cpms-doc-badge" data-role="workspace-note-cc">شکایت اصلی</span>' : '') +
                 '<span class="cpms-doc-badge ' + esc(noteVisibilityClass(n.visibility)) + '">' + esc(noteVisibilityLabel(n.visibility)) + '</span>' +
                 '<span class="cpms-doc-ws-note-date">' + esc(n.created_at || '') + '</span>' +
             '</div>' +
@@ -1373,6 +1413,175 @@ function submitWorkspaceFu(){
     });
 }
 
+// ================= Visit Workspace — Chief Complaint + Visit Complete (Phase 10) =================
+// Chief Complaint reuses the established portal note boundary with the
+// established chief_complaint category and visibility options. Whether it is
+// REQUIRED before Complete stays the server's per-Clinic policy: the 422 is
+// surfaced here, never pre-empted or invented client-side. Complete goes
+// through the Doctor Portal Visit boundary with the portal nonce and the
+// trusted Clinic/Location selector headers only; authority, ownership, the
+// Visit state machine, history and audit all stay server-side. No Reopen.
+
+function hasChiefComplaint(){
+    for ( var i = 0; i < state.workspaceNotes.length; i++ ) {
+        if ( state.workspaceNotes[i] && state.workspaceNotes[i].category === 'chief_complaint' ) return true;
+    }
+    return false;
+}
+
+function setCcBusy(busy){
+    state.workspaceCcBusy = !!busy;
+    var btn = qs('[data-role="workspace-cc-submit"]');
+    if ( btn ) {
+        btn.disabled = !!busy;
+        if ( busy ) btn.setAttribute('aria-busy', 'true');
+        else btn.removeAttribute('aria-busy');
+    }
+    var busyEl = qs('[data-role="workspace-cc-busy"]');
+    if ( busyEl ) {
+        if ( busy ) show(busyEl); else hide(busyEl);
+    }
+}
+
+function renderConsultComplete(){
+    var ccState = qs('[data-role="workspace-cc-state"]');
+    if ( ccState ) {
+        ccState.textContent = hasChiefComplaint()
+            ? 'شکایت اصلی برای این ویزیت ثبت شده است.'
+            : 'شکایت اصلی هنوز برای این ویزیت ثبت نشده است.';
+    }
+    var status = state.workspaceStatus;
+    var btn = qs('[data-role="workspace-consult-complete-submit"]');
+    var hint = qs('[data-role="workspace-consult-complete-hint"]');
+    // Only a current consultation offers Complete; the server still decides.
+    if ( btn ) btn.hidden = status !== 'in_consultation';
+    if ( !hint ) return;
+    if ( status === 'in_consultation' ) {
+        hint.textContent = '';
+        hide(hint);
+        return;
+    }
+    hint.textContent = status === 'consultation_completed'
+        ? 'این ویزیت پایان یافته است.'
+        : 'پایان ویزیت پس از شروع ویزیت در دسترس است.';
+    show(hint);
+}
+
+function resetConsultUi(){
+    state.workspaceStatus = '';
+    state.workspaceData = null;
+    setCcBusy(false);
+    setCompleteBusy(false);
+    var ccText = qs('[data-role="workspace-cc-text"]');
+    if ( ccText ) ccText.value = '';
+    var ccVis = qs('[data-role="workspace-cc-visibility"]');
+    if ( ccVis ) ccVis.selectedIndex = 0;
+    var roles = ['workspace-cc-error', 'workspace-cc-success', 'workspace-consult-complete-error', 'workspace-consult-complete-success', 'workspace-consult-complete-hint', 'workspace-consult-complete-submit'];
+    for ( var i = 0; i < roles.length; i++ ) hide(qs('[data-role="' + roles[i] + '"]'));
+}
+
+function submitWorkspaceCc(){
+    var visitId = state.workspaceVisitId;
+    if ( !visitId || state.workspaceCcBusy ) return;
+    var errEl = qs('[data-role="workspace-cc-error"]');
+    var okEl = qs('[data-role="workspace-cc-success"]');
+    var textEl = qs('[data-role="workspace-cc-text"]');
+    var visEl = qs('[data-role="workspace-cc-visibility"]');
+    if ( !textEl || !visEl ) return;
+    hide(errEl);
+    hide(okEl);
+    var visibility = visEl.value === 'doctor_private' ? 'doctor_private' : 'patient_visible';
+    setCcBusy(true);
+    var submittedVisitId = visitId;
+    // Established note boundary; content validation stays server-side.
+    api('POST', '/doctor/portal/visits/' + encodeURIComponent(String(visitId)) + '/notes', {
+        category: 'chief_complaint',
+        visibility: visibility,
+        content_text: String(textEl.value || '').trim()
+    }, scopeHeaders()).then(function(r){
+        if ( state.workspaceVisitId !== submittedVisitId ) return;
+        setCcBusy(false);
+        if ( r.status === 200 ) {
+            var note = (r.body && r.body.data) || r.body || {};
+            if ( note && note.id ) {
+                state.workspaceNotes = [note].concat(state.workspaceNotes);
+                renderWorkspaceNotes();
+            }
+            textEl.value = '';
+            hide(qs('[data-role="workspace-consult-complete-error"]'));
+            renderConsultComplete();
+            if ( okEl ) { okEl.textContent = 'شکایت اصلی با موفقیت ثبت شد.'; show(okEl); }
+            return;
+        }
+        // Failed persistence is never presented as success.
+        if ( errEl ) { errEl.textContent = recFuFeedbackError(r, 'خطا در ثبت شکایت اصلی — دوباره تلاش کنید'); show(errEl); }
+    }).catch(function(){
+        if ( state.workspaceVisitId !== submittedVisitId ) return;
+        setCcBusy(false);
+        if ( errEl ) { errEl.textContent = 'خطای ارتباط در ثبت شکایت اصلی — دوباره تلاش کنید'; show(errEl); }
+    });
+}
+
+function setCompleteBusy(busy){
+    state.workspaceCompleteBusy = !!busy;
+    var btn = qs('[data-role="workspace-consult-complete-submit"]');
+    if ( btn ) {
+        btn.disabled = !!busy;
+        if ( busy ) btn.setAttribute('aria-busy', 'true');
+        else btn.removeAttribute('aria-busy');
+    }
+    var busyEl = qs('[data-role="workspace-consult-complete-busy"]');
+    if ( busyEl ) {
+        if ( busy ) show(busyEl); else hide(busyEl);
+    }
+}
+
+function submitWorkspaceComplete(){
+    var visitId = state.workspaceVisitId;
+    // Double-submit guard: one in-flight Complete per open Visit.
+    if ( !visitId || state.workspaceCompleteBusy ) return;
+    var errEl = qs('[data-role="workspace-consult-complete-error"]');
+    var okEl = qs('[data-role="workspace-consult-complete-success"]');
+    hide(errEl);
+    hide(okEl);
+    if ( !window.confirm('پایان این ویزیت ثبت شود؟ ویزیت از صف زنده خارج می‌شود.') ) return;
+    setCompleteBusy(true);
+    var submittedVisitId = visitId;
+    var clinicId = state.selectedClinicId;
+    var locationId = state.selectedLocationId;
+    api('POST', '/doctor/portal/visits/' + encodeURIComponent(String(visitId)) + '/complete', null, scopeHeaders()).then(function(r){
+        // Stale guard: another Visit or scope is open now — never paint it.
+        if ( state.workspaceVisitId !== submittedVisitId || state.selectedClinicId !== clinicId || state.selectedLocationId !== locationId ) return;
+        setCompleteBusy(false);
+        var body = r.body || {};
+        if ( r.status === 200 ) {
+            var visit = body.data || {};
+            state.workspaceStatus = String(visit.status || 'consultation_completed');
+            var d = state.workspaceData;
+            if ( d && d.visit ) { d.visit.status = state.workspaceStatus; renderWorkspaceHeader(d); }
+            renderConsultComplete();
+            if ( okEl ) { okEl.textContent = 'ویزیت با موفقیت پایان یافت.'; show(okEl); }
+            loadTodayAndQueue();
+            return;
+        }
+        var missing = (body.data && body.data.missing) || '';
+        var msg = recFuFeedbackError(r, 'خطا در پایان ویزیت — دوباره تلاش کنید');
+        if ( r.status === 422 && body.code === 'CLINIC_VALIDATION_FAILED' && missing === 'chief_complaint' ) {
+            msg = 'پیش از پایان ویزیت، «شکایت اصلی بیمار» را در همین بخش ثبت کنید.';
+            var ccText = qs('[data-role="workspace-cc-text"]');
+            if ( ccText ) ccText.focus();
+        } else if ( r.status === 409 && body.code === 'CLINIC_INVALID_TRANSITION' ) {
+            msg = 'این ویزیت در وضعیت قابل پایان نیست (ممکن است قبلاً پایان یافته باشد).';
+            loadTodayAndQueue();
+        }
+        if ( errEl ) { errEl.textContent = msg; show(errEl); }
+    }).catch(function(){
+        if ( state.workspaceVisitId !== submittedVisitId ) return;
+        setCompleteBusy(false);
+        if ( errEl ) { errEl.textContent = 'خطای ارتباط در پایان ویزیت — دوباره تلاش کنید'; show(errEl); }
+    });
+}
+
 function loadContext(){
     return api('GET', '/doctor/portal/context').then(function(r){
         if ( r.status!==200 ) {
@@ -1495,6 +1704,13 @@ document.addEventListener('click', function(ev){
         closeWorkspace();
         return;
     }
+    var completeBtn = target ? target.closest('[data-role="workspace-consult-complete-submit"]') : null;
+    if ( completeBtn ) {
+        ev.preventDefault();
+        if ( completeBtn.disabled ) return;
+        submitWorkspaceComplete();
+        return;
+    }
     var finBtn = target ? target.closest('[data-role="workspace-rx-finalize"]') : null;
     if ( finBtn ) {
         ev.preventDefault();
@@ -1520,6 +1736,12 @@ document.addEventListener('submit', function(ev){
     if ( fuForm ) {
         ev.preventDefault();
         submitWorkspaceFu();
+        return;
+    }
+    var ccForm = (ev.target && ev.target.closest) ? ev.target.closest('[data-role="workspace-cc-form"]') : null;
+    if ( ccForm ) {
+        ev.preventDefault();
+        submitWorkspaceCc();
         return;
     }
     var rxForm = (ev.target && ev.target.closest) ? ev.target.closest('[data-role="workspace-rx-form"]') : null;

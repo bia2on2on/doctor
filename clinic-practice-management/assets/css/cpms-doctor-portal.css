@@ -1274,3 +1274,44 @@ body.cpms-doctor-portal-shell-body {
 		align-items: start;
 	}
 }
+
+/* ================= Phase 10 — Visit Workspace Chief Complaint + Visit Complete ================= */
+
+.cpms-doc-ws-consult {
+	min-width: 0;
+	margin-top: 12px;
+	padding-top: 4px;
+	border-top: 1px solid var(--cpms-border);
+}
+
+.cpms-doc-ws-cc-state {
+	margin: 4px 14px 0;
+	font-size: 13px;
+	color: var(--cpms-muted);
+	overflow-wrap: anywhere;
+}
+
+.cpms-doc-ws-consult-end {
+	min-width: 0;
+	margin-top: 8px;
+}
+
+.cpms-doc-ws-form [data-role="workspace-cc-submit"],
+.cpms-doc-ws-consult-end [data-role="workspace-consult-complete-submit"] {
+	margin: 10px 14px 0;
+	min-height: 44px;
+}
+
+.cpms-doc-ws-form [data-role="workspace-cc-submit"][aria-busy="true"],
+.cpms-doc-ws-consult-end [data-role="workspace-consult-complete-submit"][aria-busy="true"] {
+	cursor: wait;
+}
+
+.cpms-doc-workspace [data-role="workspace-cc-error"],
+.cpms-doc-workspace [data-role="workspace-cc-success"],
+.cpms-doc-workspace [data-role="workspace-cc-busy"],
+.cpms-doc-workspace [data-role="workspace-consult-complete-error"],
+.cpms-doc-workspace [data-role="workspace-consult-complete-success"],
+.cpms-doc-workspace [data-role="workspace-consult-complete-busy"] {
+	margin: 8px 14px 0;
+}
