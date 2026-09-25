@@ -278,7 +278,7 @@ def reset_net(state):
     state["locations"] = None
 
 
-# Hybrid rendering contract (owner decision; docs/decisions Phase 10 §7):
+# Hybrid rendering contract (owner decision; docs/decisions/2026-09-24-phase10-doctor-portal-owner-authorization.md §7):
 # daily operational interactions use REST/AJAX, never a routine full reload.
 NAV = {}
 

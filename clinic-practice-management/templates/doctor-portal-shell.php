@@ -32,7 +32,7 @@ DoctorPortalShell::enqueue_for_portal();
 // Embed mode: when the canonical shared Staff Portal shell mounts this
 // doctor operational module it sets $cpms_staff_embed = true and owns the
 // <html>/<head>, the header, the navigation and the printed assets.
-// Standalone mode (legacy Doctor Portal URL) is byte-for-byte unchanged.
+// Standalone mode (legacy Doctor Portal URL) is functionally unchanged.
 $cpms_staff_embed = isset( $cpms_staff_embed ) && true === $cpms_staff_embed;
 
 $cpms_user = wp_get_current_user(); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
@@ -97,10 +97,10 @@ body.cpms-doctor-portal-shell-body { margin: 0; font-family: Tahoma, Vazirmatn, 
 .cpms-doc-selectors:not(:has(.cpms-doc-selector:not([hidden]))) { display: none; }
 .cpms-doctor-portal-shell { max-width: 1320px; margin: 0 auto; padding: 10px; }
 </style>
-<?php
-// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- style tags from wp_print_styles (registered local handles only).
-echo $cpms_styles_html;
-?>
+    <?php
+    // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- style tags from wp_print_styles (registered local handles only).
+    echo $cpms_styles_html;
+    ?>
 </head>
 <body class="cpms-doctor-portal-shell-body">
 <div
@@ -1597,10 +1597,10 @@ if ( document.readyState==='loading' ) document.addEventListener('DOMContentLoad
 </script>
 <?php if ( ! $cpms_staff_embed ) : ?>
 
-<?php
-// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- script tags from wp_print_scripts (registered local handles only).
-echo $cpms_scripts_html;
-?>
+    <?php
+    // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- script tags from wp_print_scripts (registered local handles only).
+    echo $cpms_scripts_html;
+    ?>
 </body>
 </html>
 <?php endif; ?>

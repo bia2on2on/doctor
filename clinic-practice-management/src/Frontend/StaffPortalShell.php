@@ -17,7 +17,7 @@
  * standalone full-document template. No rewrite framework, no SPA router,
  * no frontend build system, no parallel authentication backend.
  *
- * Rendering model (owner contract, docs/adr/0003): HYBRID, not a full SPA.
+ * Rendering model (owner decision, docs/decisions/2026-09-24-phase10-doctor-portal-owner-authorization.md §7): HYBRID, not a full SPA.
  * The shell, navigation and main page structure are server-rendered; the
  * delivered daily operational interactions keep using REST/AJAX.
  *
@@ -93,7 +93,6 @@ final class StaffPortalShell {
 		add_action( 'init', array( self::class, 'ensure_portal_page' ), 21 );
 		add_filter( 'template_include', array( self::class, 'filter_template_include' ), 99 );
 		add_filter( 'show_admin_bar', array( self::class, 'hide_admin_bar_on_portal' ), 20 );
-		add_action( 'wp_enqueue_scripts', array( self::class, 'register_handles' ), 5 );
 		add_action( 'wp_enqueue_scripts', array( self::class, 'enqueue_for_portal' ), 21 );
 		add_action( 'template_redirect', array( self::class, 'send_private_cache_headers' ), 0 );
 	}
@@ -237,7 +236,9 @@ final class StaffPortalShell {
 	}
 
 	/**
-	 * Register the reused doctor handles (idempotent; no new bundle).
+	 * Register the reused doctor handles (idempotent; no new bundle). Frontend
+	 * registration on every request is already owned by DoctorPortalShell; this
+	 * is only called explicitly by the shell template.
 	 */
 	public static function register_handles(): void {
 		DoctorPortalShell::register_handles();

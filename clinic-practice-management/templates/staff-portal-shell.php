@@ -28,11 +28,11 @@
 
 declare(strict_types=1);
 
-defined('ABSPATH') || exit; // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS
+defined( 'ABSPATH' ) || exit;
 
 use ClinicCore\Frontend\StaffPortalShell;
 
-if (!function_exists('wp_get_current_user')) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,WordPress.WhiteSpace.OperatorSpacing.NoSpaceAfter -- WPCS
+if ( ! function_exists( 'wp_get_current_user' ) ) {
     return;
 }
 
@@ -40,35 +40,35 @@ StaffPortalShell::register_handles();
 StaffPortalShell::enqueue_for_portal();
 
 $cpms_user       = wp_get_current_user();
-$cpms_logged_in  = ($cpms_user instanceof WP_User && (int) $cpms_user->ID > 0);
-$cpms_modules    = StaffPortalShell::eligible_modules($cpms_logged_in ? (int) $cpms_user->ID : 0);
-$cpms_doctor_mod = in_array(StaffPortalShell::MODULE_DOCTOR, array_column($cpms_modules, 'id'), true);
+$cpms_logged_in  = $cpms_user instanceof WP_User && (int) $cpms_user->ID > 0;
+$cpms_modules    = StaffPortalShell::eligible_modules( $cpms_logged_in ? (int) $cpms_user->ID : 0 );
+$cpms_doctor_mod = in_array( StaffPortalShell::MODULE_DOCTOR, array_column( $cpms_modules, 'id' ), true );
 
 $cpms_login_name = $cpms_logged_in ? (string) $cpms_user->display_name : '';
-if ('' === $cpms_login_name && $cpms_logged_in) {
+if ( '' === $cpms_login_name && $cpms_logged_in ) {
     $cpms_login_name = (string) $cpms_user->user_login;
 }
 
 $cpms_portal_url = StaffPortalShell::portal_url();
-$cpms_login_url  = wp_login_url($cpms_portal_url);
-$cpms_logout_url = $cpms_logged_in ? wp_logout_url($cpms_portal_url) : '';
+$cpms_login_url  = wp_login_url( $cpms_portal_url );
+$cpms_logout_url = $cpms_logged_in ? wp_logout_url( $cpms_portal_url ) : '';
 
-$cpms_charset = (string) get_bloginfo('charset');
-if ('' === $cpms_charset) {
+$cpms_charset = (string) get_bloginfo( 'charset' );
+if ( '' === $cpms_charset ) {
     $cpms_charset = 'UTF-8';
 }
-$cpms_site_name = (string) get_bloginfo('name');
+$cpms_site_name = (string) get_bloginfo( 'name' );
 
 $cpms_styles_html  = '';
 $cpms_scripts_html = '';
-if ($cpms_doctor_mod) {
-    // REUSE of the delivered doctor assets — same handles, printed once.
+if ( $cpms_doctor_mod ) {
+    // REUSE of the delivered doctor assets: same handles, printed once.
     ob_start();
-    wp_print_styles([StaffPortalShell::DOCTOR_CSS_HANDLE]); // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS
+    wp_print_styles( array( StaffPortalShell::DOCTOR_CSS_HANDLE ) );
     $cpms_styles_html = (string) ob_get_clean();
 
     ob_start();
-    wp_print_scripts([StaffPortalShell::DOCTOR_JS_HANDLE]); // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS
+    wp_print_scripts( array( StaffPortalShell::DOCTOR_JS_HANDLE ) );
     $cpms_scripts_html = (string) ob_get_clean();
 }
 
@@ -76,18 +76,24 @@ $cpms_header_title = $cpms_doctor_mod ? 'امروز پزشک — صف زنده' 
 
 // The doctor stylesheet is scoped to these existing classes; carrying them when
 // the doctor module is mounted reuses the delivered design without copying CSS.
-$cpms_wrap_class = 'cpms-staff-portal-shell' . ($cpms_doctor_mod ? ' cpms-doctor-portal-shell' : '');
-$cpms_body_class = 'cpms-staff-portal-shell-body' . ($cpms_doctor_mod ? ' cpms-doctor-portal-shell-body' : '');
-$cpms_shell_user = $cpms_doctor_mod ? 'doctor' : ($cpms_logged_in ? 'non-doctor' : 'anonymous');
+$cpms_wrap_class = $cpms_doctor_mod ? 'cpms-staff-portal-shell cpms-doctor-portal-shell' : 'cpms-staff-portal-shell';
+$cpms_body_class = $cpms_doctor_mod ? 'cpms-staff-portal-shell-body cpms-doctor-portal-shell-body' : 'cpms-staff-portal-shell-body';
+$cpms_shell_user = 'anonymous';
+if ( $cpms_doctor_mod ) {
+    $cpms_shell_user = 'doctor';
+} elseif ( $cpms_logged_in ) {
+    $cpms_shell_user = 'non-doctor';
+}
+$cpms_title_full = '' !== $cpms_site_name ? $cpms_header_title . ' — ' . $cpms_site_name : $cpms_header_title;
 
 ?>
 <!DOCTYPE html>
-<html lang="fa" dir="rtl" data-cpms-staff-portal-shell="v1" data-cpms-portal="staff"<?php echo $cpms_doctor_mod ? ' data-cpms-doctor-portal-shell="v1"' : ''; ?>>
+<html lang="fa" dir="rtl" data-cpms-staff-portal-shell="v1" data-cpms-portal="staff"<?php if ( $cpms_doctor_mod ) : ?> data-cpms-doctor-portal-shell="v1"<?php endif; ?>>
 <head>
-<meta charset="<?php echo esc_attr($cpms_charset); ?>">
+<meta charset="<?php echo esc_attr( $cpms_charset ); ?>">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
-<title><?php echo esc_html($cpms_header_title . ('' !== $cpms_site_name ? ' — ' . $cpms_site_name : '')); ?></title>
+<title><?php echo esc_html( $cpms_title_full ); ?></title>
 <style>
 :root { --cpms-primary: #0f5c56; --cpms-bg: #f3f6f8; --cpms-text: #1b2830; --cpms-muted: #5c6b76; --cpms-border: #e1e8ee; }
 * { box-sizing: border-box; }
@@ -106,42 +112,42 @@ body.cpms-staff-portal-shell-body { margin: 0; font-family: Tahoma, Vazirmatn, s
 echo $cpms_styles_html;
 ?>
 </head>
-<body class="<?php echo esc_attr($cpms_body_class); ?>">
+<body class="<?php echo esc_attr( $cpms_body_class ); ?>">
 <div
     id="cpms-staff-portal-shell"
-    class="<?php echo esc_attr($cpms_wrap_class); ?>"
+    class="<?php echo esc_attr( $cpms_wrap_class ); ?>"
     data-cpms-staff-portal-shell="v1"
     data-cpms-portal="staff"
     data-shell-contract="staff-v1"
-    data-shell-user="<?php echo esc_attr($cpms_shell_user); ?>"
+    data-shell-user="<?php echo esc_attr( $cpms_shell_user ); ?>"
 >
     <header class="cpms-doctor-portal-shell__header cpms-staff-portal-shell__header" role="banner" data-role="portal-header">
         <div class="cpms-doctor-portal-shell__brand">
             <span class="cpms-doctor-portal-shell__mark" aria-hidden="true">CPMS</span>
             <div class="cpms-doctor-portal-shell__titles">
                 <p class="cpms-doctor-portal-shell__product">پورتال کارکنان</p>
-                <h1 class="cpms-doctor-portal-shell__title" data-role="portal-header-title"><?php echo esc_html($cpms_header_title); ?></h1>
+                <h1 class="cpms-doctor-portal-shell__title" data-role="portal-header-title"><?php echo esc_html( $cpms_header_title ); ?></h1>
             </div>
         </div>
-        <?php if ($cpms_logged_in) : ?>
+        <?php if ( $cpms_logged_in ) : ?>
             <div class="cpms-doctor-portal-shell__session">
-                <span class="cpms-doctor-portal-shell__who" data-role="portal-user"><?php echo esc_html($cpms_login_name); ?></span>
-                <a class="cpms-doc-btn cpms-doc-btn--ghost" data-role="portal-logout" href="<?php echo esc_url($cpms_logout_url); ?>">خروج</a>
+                <span class="cpms-doctor-portal-shell__who" data-role="portal-user"><?php echo esc_html( $cpms_login_name ); ?></span>
+                <a class="cpms-doc-btn cpms-doc-btn--ghost" data-role="portal-logout" href="<?php echo esc_url( $cpms_logout_url ); ?>">خروج</a>
             </div>
         <?php endif; ?>
     </header>
 
-    <?php if ([] !== $cpms_modules) : ?>
+    <?php if ( array() !== $cpms_modules ) : ?>
         <nav class="cpms-staff-portal-shell__nav" data-role="staff-nav" aria-label="ماژول‌های عملیاتی">
             <ul class="cpms-staff-portal-shell__nav-list">
-                <?php foreach ($cpms_modules as $cpms_module) : ?>
-                    <li><a class="cpms-staff-portal-shell__nav-link" data-role="staff-module-link" data-cpms-staff-module="<?php echo esc_attr((string) $cpms_module['id']); ?>" aria-current="page" href="<?php echo esc_url($cpms_portal_url); ?>"><?php echo esc_html((string) $cpms_module['title']); ?></a></li>
+                <?php foreach ( $cpms_modules as $cpms_module ) : ?>
+                    <li><a class="cpms-staff-portal-shell__nav-link" data-role="staff-module-link" data-cpms-staff-module="<?php echo esc_attr( $cpms_module['id'] ); ?>" aria-current="page" href="<?php echo esc_url( $cpms_portal_url ); ?>"><?php echo esc_html( $cpms_module['title'] ); ?></a></li>
                 <?php endforeach; ?>
             </ul>
         </nav>
     <?php endif; ?>
 
-<?php if ($cpms_doctor_mod) : ?>
+<?php if ( $cpms_doctor_mod ) : ?>
     <?php
     // Mount the delivered doctor operational module in embed mode: this shell
     // owns the document, header and navigation; the module contributes <main>,
@@ -149,15 +155,15 @@ echo $cpms_styles_html;
     // shell wrapper exactly as it does in the legacy document.
     $cpms_staff_embed = true;
     $cpms_is_doctor   = true;
-    include StaffPortalShell::module_template_path(); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- module template, escapes internally
+    include StaffPortalShell::module_template_path();
     ?>
 <?php else : ?>
     <main class="cpms-staff-portal-shell__main" role="main" data-role="portal-main">
-        <?php if (!$cpms_logged_in) : ?>
+        <?php if ( ! $cpms_logged_in ) : ?>
             <section class="cpms-staff-portal-shell__notice" role="status" data-role="portal-login">
                 <h2>ورود به پورتال کارکنان</h2>
                 <p>برای دسترسی به بخش‌های عملیاتی، وارد حساب کاربری خود شوید.</p>
-                <p><a class="cpms-doc-btn cpms-doc-btn--primary" href="<?php echo esc_url($cpms_login_url); ?>">ورود</a></p>
+                <p><a class="cpms-doc-btn cpms-doc-btn--primary" href="<?php echo esc_url( $cpms_login_url ); ?>">ورود</a></p>
             </section>
         <?php else : ?>
             <section class="cpms-staff-portal-shell__notice" role="alert" data-role="portal-access-denied">
