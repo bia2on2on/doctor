@@ -29,17 +29,27 @@ if ( !function_exists('wp_get_current_user' )) { // phpcs:ignore PEAR.Functions.
 DoctorPortalShell::register_handles();
 DoctorPortalShell::enqueue_for_portal();
 
+// Embed mode: when the canonical shared Staff Portal shell mounts this
+// doctor operational module it sets $cpms_staff_embed = true and owns the
+// <html>/<head>, the header, the navigation and the printed assets.
+// Standalone mode (legacy Doctor Portal URL) is byte-for-byte unchanged.
+$cpms_staff_embed = isset( $cpms_staff_embed ) && true === $cpms_staff_embed;
+
 $cpms_user = wp_get_current_user(); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
 $cpms_logged_in = ($cpms_user instanceof WP_User && (int) $cpms_user->ID > 0); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceAfterOpen,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceBeforeClose -- legacy alignment
-$cpms_is_doctor = $cpms_logged_in && DoctorPortalShell::isDoctorUser($cpms_user); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- legacy alignment
+if ( ! $cpms_staff_embed ) {
+    $cpms_is_doctor = $cpms_logged_in && DoctorPortalShell::isDoctorUser($cpms_user); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- legacy alignment
+}
 $cpms_login_name = $cpms_logged_in ? (string) $cpms_user->display_name : '';
 if ( '' === $cpms_login_name && $cpms_logged_in ) {
     $cpms_login_name = (string) $cpms_user->user_login;
 }
 
-$cpms_portal_url = DoctorPortalShell::portal_url();
-$cpms_login_url = wp_login_url( $cpms_portal_url ); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
-$cpms_logout_url = $cpms_logged_in ? wp_logout_url( $cpms_portal_url ) : '';
+if ( ! $cpms_staff_embed ) {
+    $cpms_portal_url = DoctorPortalShell::portal_url();
+    $cpms_login_url = wp_login_url( $cpms_portal_url ); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
+    $cpms_logout_url = $cpms_logged_in ? wp_logout_url( $cpms_portal_url ) : '';
+}
 
 $cpms_charset = (string) get_bloginfo('charset'); // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS
 if ( '' === $cpms_charset ) {
@@ -47,13 +57,16 @@ if ( '' === $cpms_charset ) {
 }
 $cpms_site_name = (string) get_bloginfo('name'); // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS
 
-ob_start();
-wp_print_styles([DoctorPortalShell::CSS_HANDLE]); // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS
-$cpms_styles_html = (string) ob_get_clean();
+if ( ! $cpms_staff_embed ) {
+    // In embed mode the Staff Portal shell prints these (same handles, once).
+    ob_start();
+    wp_print_styles([DoctorPortalShell::CSS_HANDLE]); // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS
+    $cpms_styles_html = (string) ob_get_clean();
 
-ob_start();
-wp_print_scripts([DoctorPortalShell::JS_HANDLE]); // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS
-$cpms_scripts_html = (string) ob_get_clean();
+    ob_start();
+    wp_print_scripts([DoctorPortalShell::JS_HANDLE]); // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS
+    $cpms_scripts_html = (string) ob_get_clean();
+}
 
 $rest_root = untrailingslashit(rest_url('clinic/v1')); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- template var, not global
 $config = [ // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning,WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- legacy alignment
@@ -68,6 +81,7 @@ if ( !is_string($config_json ) || '' === $config_json) { // phpcs:ignore PEAR.Fu
 }
 
 ?>
+<?php if ( ! $cpms_staff_embed ) : ?>
 <!DOCTYPE html>
 <html lang="fa" dir="rtl" data-cpms-doctor-portal-shell="v1" data-cpms-portal="doctor" data-cpms-doctor-portal="shell">
 <head>
@@ -118,6 +132,7 @@ echo $cpms_styles_html;
         <?php endif; ?>
     </header>
 
+<?php endif; ?>
     <main class="cpms-doctor-portal-shell__main" role="main" data-role="portal-main" id="cpms-doctor-portal-main">
         <?php if ( ! $cpms_logged_in ) : ?>
             <section class="cpms-doctor-portal-shell__notice" role="status" data-role="portal-login">
@@ -1580,6 +1595,7 @@ function start(){
 if ( document.readyState==='loading' ) document.addEventListener('DOMContentLoaded', start); else start();
 })();
 </script>
+<?php if ( ! $cpms_staff_embed ) : ?>
 
 <?php
 // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- script tags from wp_print_scripts (registered local handles only).
@@ -1587,3 +1603,4 @@ echo $cpms_scripts_html;
 ?>
 </body>
 </html>
+<?php endif; ?>

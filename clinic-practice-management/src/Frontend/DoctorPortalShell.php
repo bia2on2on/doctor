@@ -121,6 +121,28 @@ final class DoctorPortalShell {
 		if ( ! self::is_portal_request() ) {
 			return $template;
 		}
+
+		/*
+		 * Phase 10 — legacy Doctor Portal URL is a backward-compatible ENTRY to
+		 * the shared operational Staff Portal. When the actor is actually
+		 * eligible for the delivered doctor module, the legacy URL renders the
+		 * SAME shared shell (alias) instead of a second, divergent document.
+		 *
+		 * Chosen over a redirect because it is the smaller and safer option:
+		 * one shared container, no extra navigation, no redirect loop, and the
+		 * existing doctor bookmarks keep their exact DOM/REST behaviour.
+		 *
+		 * Non-eligible visitors (anonymous, patient-only, secretary,
+		 * accountant, administrator, suspended/no membership) keep the existing
+		 * login / access-denied document byte for byte.
+		 */
+		if ( StaffPortalShell::doctor_module_eligible( get_current_user_id() ) ) {
+			$shared = StaffPortalShell::template_path();
+			if ( is_readable( $shared ) ) {
+				return $shared;
+			}
+		}
+
 		$owned = self::template_path();
 		if ( ! is_readable( $owned ) ) {
 			return $template;

@@ -302,6 +302,17 @@ if (!is_string($url) || !str_starts_with($url, 'http') || str_contains($url, '/w
     dp_fail('portal url is not a frontend permalink');
 }
 
+// Phase 10 — canonical shared Staff Portal entry (the legacy Doctor Portal URL
+// above stays the backward-compatible doctor entry). Resolved via the product
+// seam only; the fixture never creates the Page itself.
+$staffUrl = \ClinicCore\Frontend\StaffPortalShell::portal_url();
+if (!is_string($staffUrl) || !str_starts_with($staffUrl, 'http') || str_contains($staffUrl, '/wp-admin/')) {
+    dp_fail('staff portal url is not a frontend permalink');
+}
+if (rtrim($staffUrl, '/') === rtrim($url, '/')) {
+    dp_fail('staff portal url must differ from the legacy doctor portal url');
+}
+
 $oneLine = implode('|', [
     dp_field($loginOne, 'login'),
     dp_field($passOne, 'pass'),
@@ -386,6 +397,7 @@ $public = implode('|', [
 file_put_contents(
     '/tmp/doctor-portal.env',
     'DOCTOR_PORTAL_URL=' . $url . "\n"
+    . 'STAFF_PORTAL_URL=' . $staffUrl . "\n"
     . 'DOCTOR_ONE=' . $oneLine . "\n"
     . 'DOCTOR_OTHER=' . $otherLine . "\n"
     . 'DOCTOR_MULTI=' . $multiLine . "\n"
