@@ -69,6 +69,7 @@ use ClinicCore\Domain\Licensing\LicensePolicy;
 use ClinicCore\Domain\Licensing\SignedLicenseGate;
 use ClinicCore\Frontend\DoctorPortalShell;
 use ClinicCore\Frontend\PublicBookingShortcode;
+use ClinicCore\Frontend\StaffPortalShell;
 use ClinicCore\Infrastructure\Audit\AuditLogger;
 use ClinicCore\Infrastructure\Backup\BackupSqlDumper;
 use ClinicCore\Infrastructure\Backup\ProtectedBackupStore;
@@ -190,6 +191,9 @@ final class App
         // عمومی استفاده می‌شود.
         PublicBookingShortcode::register();
         DoctorPortalShell::register();
+        // Phase 10 — canonical shared operational Staff Portal container. The
+        // legacy Doctor Portal entry above remains a compatibility entry (one-time redirect).
+        StaffPortalShell::register();
 
         if (self::$booted) {
             return;

@@ -26,6 +26,55 @@ final class DoctorPortalShell {
 		add_action( 'wp_enqueue_scripts', [ self::class, 'register_handles' ], 5 );
 		add_action( 'wp_enqueue_scripts', [ self::class, 'enqueue_for_portal' ], 20 );
 		add_action( 'template_redirect', [ self::class, 'send_private_cache_headers' ], 0 );
+		add_action( 'template_redirect', [ self::class, 'redirect_legacy_entry_to_staff_portal' ], 1 );
+	}
+
+	/**
+	 * Phase 10 — ONE-TIME server-side compatibility redirect.
+	 *
+	 * The legacy Doctor Portal URL is a compatibility ENTRY only, never a
+	 * second visual shell: an actor who is eligible for the delivered doctor
+	 * module is sent once (302, private/no-cache) to the canonical Staff
+	 * Portal, which then serves the one shared shell. The target is the
+	 * plugin-owned canonical Page permalink only: no request input, no
+	 * authority ids, tokens or nonces in the URL, so no open redirect.
+	 * Authorization is unchanged; every REST call re-authorizes as before.
+	 */
+	public static function redirect_legacy_entry_to_staff_portal(): void {
+		$target = self::legacy_redirect_target( get_current_user_id() );
+		if ( '' === $target ) {
+			return;
+		}
+		wp_safe_redirect( $target, 302, 'CPMS' );
+		exit;
+	}
+
+	/**
+	 * Canonical Staff Portal URL for an eligible doctor on the legacy entry,
+	 * or '' when no redirect applies (not the legacy Page, not eligible, or
+	 * the canonical Page is unavailable). Non-eligible visitors keep the
+	 * existing legacy login / access-denied document. Loop-safe: never
+	 * targets the legacy Page and never fires on the canonical Page.
+	 *
+	 * @param int $user_id WordPress user id.
+	 */
+	public static function legacy_redirect_target( int $user_id ): string {
+		if ( ! self::is_portal_request() || StaffPortalShell::is_portal_request() ) {
+			return '';
+		}
+		if ( ! StaffPortalShell::doctor_module_eligible( $user_id ) ) {
+			return '';
+		}
+		$staff_page  = StaffPortalShell::ensure_portal_page();
+		$legacy_page = (int) get_option( self::PAGE_OPTION, 0 );
+		if ( $staff_page <= 0 || $staff_page === $legacy_page ) {
+			return '';
+		}
+		$target = get_permalink( $staff_page );
+		if ( ! is_string( $target ) || '' === $target ) {
+			return '';
+		}
+		return $target;
 	}
 
 	public static function ensure_portal_page(): int {
@@ -121,6 +170,28 @@ final class DoctorPortalShell {
 		if ( ! self::is_portal_request() ) {
 			return $template;
 		}
+
+		/*
+		 * Phase 10 — legacy Doctor Portal URL is a backward-compatible ENTRY to
+		 * the shared operational Staff Portal. On a real request an eligible
+		 * doctor never reaches this point: redirect_legacy_entry_to_staff_portal()
+		 * sends them once to the canonical URL. This branch is only the
+		 * fail-safe for paths where that redirect did not run (e.g. canonical
+		 * Page unavailable, or template resolution without template_redirect):
+		 * it still renders the SAME shared shell, never the old standalone
+		 * doctor document.
+		 *
+		 * Non-eligible visitors (anonymous, patient-only, secretary,
+		 * accountant, administrator, suspended/no membership) keep the existing
+		 * login / access-denied document byte for byte.
+		 */
+		if ( StaffPortalShell::doctor_module_eligible( get_current_user_id() ) ) {
+			$shared = StaffPortalShell::template_path();
+			if ( is_readable( $shared ) ) {
+				return $shared;
+			}
+		}
+
 		$owned = self::template_path();
 		if ( ! is_readable( $owned ) ) {
 			return $template;
