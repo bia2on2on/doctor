@@ -818,6 +818,26 @@ body.cpms-doctor-portal-shell-body {
 	.cpms-doc-queue-aside { justify-content: flex-end; }
 }
 
+/* Phase 10 — tablet Live Queue readability (768–1099px band only).
+   In this band the app grid splits queue/appointments 50/50 and the ≥768 row
+   template (minmax(0,1fr) auto) puts badges/waiting/actions in the auto track,
+   squeezing the patient-name track near zero; overflow-wrap then broke long
+   identifiers character-by-character (owner-reported defect at exactly 768px).
+   Minimal fix: the Live Queue row reverts to its established single-column
+   stack (the <768 mobile layout) so the name always gets the full column
+   width; desktop (≥1100px) keeps the wider asymmetric split and compact
+   horizontal rows. Scoped to the Live Queue section — appointments unchanged. */
+
+@media (min-width: 768px) and (max-width: 1099.98px) {
+	.cpms-doc-queue .cpms-doc-queue-list li {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.cpms-doc-queue .cpms-doc-queue-aside {
+		justify-content: flex-start;
+	}
+}
+
 @media (min-width: 1100px) {
 	#cpms-doctor-portal-app {
 		grid-template-columns: minmax(0, 1.7fr) minmax(18rem, 0.62fr);
