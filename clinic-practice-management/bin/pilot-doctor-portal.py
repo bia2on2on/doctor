@@ -479,6 +479,21 @@ VISIT_STATUSES = {
 APPT_PRESENTATION_WAIT_SECONDS = 15.0
 APPT_PRESENTATION_POLL_MS = 200
 
+# PHASE B — the ONE controlled real Doctor Portal refresh allowed for a
+# legitimately stale DOM. The fallback is a single straight-line branch (never
+# inside a loop, never retried), so one assertion can never trigger a second
+# controlled refresh.
+APPT_FALLBACK_REFRESH_MAX = 1
+
+# Runtime evidence for the repaired convergence path, printed as INFO lines.
+# These counters are what show whether PHASE B was exercised in a given run:
+# on natural convergence all three stay 0 for that assertion.
+FALLBACK_STATS = {
+    "fallback_refresh": 0,
+    "refresh_response_bound": 0,
+    "post_refresh_dom_match": 0,
+}
+
 # Mirrors the Doctor Portal presentation contract only:
 # templates/doctor-portal-shell.php -> appointmentStatusLabel(status).
 # Keys are the established appointment statuses (APPT_STATUSES); a status that
@@ -550,6 +565,17 @@ def assert_no_appointments_route(state, label):
         raise RuntimeError(f"{label} called a separate appointments route")
 
 
+def appointment_row(data, appt_id, label, source):
+    """The expected appointment inside ONE server payload, by stable id."""
+    rows = data.get("appointments")
+    if not isinstance(rows, list):
+        raise RuntimeError(f"{label} appointments payload missing from {source}")
+    for row in rows:
+        if int(row.get("id") or 0) == appt_id:
+            return row
+    raise RuntimeError(f"{label} appointment {appt_id} is missing from {source}")
+
+
 def server_appointment_row(page, doctor, appt_id, label):
     """The expected appointment from a FRESH /doctor/today server read.
 
@@ -560,14 +586,8 @@ def server_appointment_row(page, doctor, appt_id, label):
     confirmed -> no_show transition (D-class harness stale-state defect).
     The appointment is still addressed by its stable id.
     """
-    rows = fresh_today(page, doctor, label).get("appointments")
-    if not isinstance(rows, list):
-        raise RuntimeError(f"{label} appointments payload missing from /doctor/today")
-    for row in rows:
-        if int(row.get("id") or 0) == appt_id:
-            return row
-    raise RuntimeError(
-        f"{label} appointment {appt_id} is missing from the fresh server payload"
+    return appointment_row(
+        fresh_today(page, doctor, label), appt_id, label, "the fresh /doctor/today payload"
     )
 
 
@@ -603,6 +623,127 @@ def dom_appointment_row(page, appt_id):
     )
 
 
+def appointment_dom_converged(dom, patient_name, server_status, expected_label):
+    """The ONE convergence predicate: this rendered row IS current server truth.
+
+    Same patient, same ``data-status``, and the ``status-<status>`` badge
+    carrying the established Doctor Portal label. Everything the repaired
+    invariant must still fail on (missing, hidden, foreign patient,
+    unrecognized/mismatched status, missing badge class, wrong label) is
+    decided here.
+    """
+    return bool(
+        dom.get("present")
+        and dom.get("visible")
+        and dom.get("name") == patient_name
+        and dom.get("status") == server_status
+        and any(
+            f"status-{server_status}" in str(badge.get("cls") or "").split()
+            and expected_label in str(badge.get("text") or "")
+            for badge in dom.get("badges") or []
+        )
+    )
+
+
+def appointment_presentation_problem(dom, patient_name, server_status, expected_label):
+    """Why a rendered row is NOT the expected presentation (None when it is)."""
+    if not dom.get("present"):
+        return "is not rendered"
+    if not dom.get("visible"):
+        return "is hidden"
+    if dom.get("name") != patient_name:
+        return "shows the wrong patient"
+    if dom.get("status") != server_status:
+        return (
+            f"UI/server appointment status mismatch: dom={dom.get('status')!r} "
+            f"server={server_status!r}"
+        )
+    if not appointment_dom_converged(dom, patient_name, server_status, expected_label):
+        return (
+            f"status {server_status!r} is not rendered as its Doctor Portal label "
+            f"{expected_label!r}"
+        )
+    return None
+
+
+def refresh_appointment_presentation(page, doctor, appt_id, patient_name, label):
+    """PHASE B — exactly ONE controlled refresh for a legitimately stale DOM.
+
+    The Doctor Portal re-renders its appointments from ``/doctor/today`` on
+    document load and on an explicit Location selection. An APPOINTMENT-only
+    transition (the real ``visits.no_show`` sweep, confirmed -> no_show, actor
+    ``system``) publishes no Visit realtime event, so the live DOM can
+    legitimately stay on its previous render while the server has already moved
+    on. The ONE doctor in this fixture has a single eligible Location — the
+    portal hides the Location selector and auto-resolves it (asserted earlier in
+    this journey) — so re-selecting the current Location is not an available
+    path, and the smallest established user-visible refresh is a normal portal
+    navigation: the same established path the journey itself uses on entry.
+
+    Deterministic pairing, never a mock: the REAL ``/doctor/today`` response of
+    THIS refresh is bound with ``expect_response`` BEFORE the navigation, the
+    expected row is read from that bound payload, and the re-rendered DOM of
+    that same document is compared against it. No later fetch is compared with
+    an older render, no response is fulfilled from test code, and no test-only
+    endpoint is invented.
+
+    Exactly one refresh can occur: this function is reached from one
+    straight-line branch, is never called inside a loop, and performs exactly
+    one navigation. The counter delta is re-asserted per call as a tripwire.
+    """
+    before = dict(FALLBACK_STATS)
+    today_pred = lambda r: route_of(r.url).endswith("/doctor/today")
+    FALLBACK_STATS["fallback_refresh"] += 1
+    if FALLBACK_STATS["fallback_refresh"] - before["fallback_refresh"] > APPT_FALLBACK_REFRESH_MAX:
+        raise RuntimeError(f"{label} a second controlled fallback refresh was attempted")
+    with page.expect_response(today_pred, timeout=25000) as today_info:
+        page.goto(PORTAL_URL, wait_until="domcontentloaded")
+    bound = payload(
+        _json(today_info.value, "today (bound to the one controlled refresh)")
+    )
+    if bound.get("location_id") != doctor["location_id"] or bound.get("date") != doctor["today"]:
+        raise RuntimeError(
+            f"{label} the /doctor/today response bound to the one controlled refresh is "
+            f"not the fixture's operational scope"
+        )
+    FALLBACK_STATS["refresh_response_bound"] += 1
+    row = appointment_row(
+        bound,
+        appt_id,
+        label,
+        "the /doctor/today response bound to the one controlled refresh",
+    )
+    server_status, expected_label = expected_appointment_label(row)
+    # The appointment row of THIS document is the render of that bound response.
+    try:
+        page.wait_for_selector(
+            f'[data-role="appointment-item"][data-appointment-id="{appt_id}"]',
+            state="attached",
+            timeout=25000,
+        )
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(
+            f"{label} appointment {appt_id} did not render from the /doctor/today "
+            f"response bound to the one controlled refresh: {e}"
+        ) from e
+    dom = dom_appointment_row(page, appt_id)
+    problem = appointment_presentation_problem(
+        dom, patient_name, server_status, expected_label
+    )
+    if problem:
+        raise RuntimeError(
+            f"{label} appointment {appt_id} {problem} (after ONE controlled Doctor "
+            f"Portal refresh, against the /doctor/today response bound to it)"
+        )
+    FALLBACK_STATS["post_refresh_dom_match"] += 1
+    info(
+        f"{label} appointment {appt_id} appointment-status-fallback "
+        f"fallback_refresh=1 refresh_response_bound=1 post_refresh_dom_match=1 "
+        f"status={server_status}"
+    )
+    return server_status, expected_label
+
+
 def assert_appointment_presentation(page, doctor, appt_id, patient_name, label):
     """Bind the rendered appointment row to FRESH ACTUAL server truth.
 
@@ -611,16 +752,23 @@ def assert_appointment_presentation(page, doctor, appt_id, patient_name, label):
     real browser session with the same trusted Clinic/Location selector headers
     the portal itself sends — never from ``state["todays"][-1]``, the initial
     cached body, which the real no-show job invalidates with its legitimate
-    confirmed -> no_show transition. The fresh status is checked against the
+    confirmed -> no_show transition. That truth is checked against the
     established status contract, mapped through the bounded Doctor Portal label
-    contract, and only then compared with the DOM: same patient, same
-    ``data-status``, and the ``status-<status>`` badge carrying that label.
+    contract, and compared with the DOM: same patient, same ``data-status``, and
+    the ``status-<status>`` badge carrying that label.
 
-    Bounded convergence: every attempt re-reads fresh server truth and the DOM
-    back to back, so a transition landing mid-assertion is reconciled by the
-    next attempt rather than reported as a mismatch. The wait tolerates render
-    and poll latency only — it never retries toward a fixed expectation — so a
-    missing, hidden, foreign, unrecognized, mislabeled, or non-converging
+    PHASE A — the established bounded convergence path stays first: every
+    attempt re-reads fresh server truth and the DOM back to back, so a
+    transition landing mid-assertion is reconciled by the next attempt rather
+    than reported as a mismatch. The wait tolerates render and poll latency
+    only — it never retries toward a fixed expectation — and nothing is
+    refreshed while DOM and server already agree.
+
+    PHASE B — only when that bounded path is exhausted and DOM/server still
+    legitimately differ, exactly ONE controlled real Doctor Portal refresh is
+    performed and the row is compared against the response bound to it (see
+    ``refresh_appointment_presentation``). A missing, hidden, foreign,
+    unrecognized, mislabeled, non-converging, or refresh-unexplained
     presentation still fails.
     """
     deadline = time.monotonic() + APPT_PRESENTATION_WAIT_SECONDS
@@ -632,37 +780,99 @@ def assert_appointment_presentation(page, doctor, appt_id, patient_name, label):
             server_appointment_row(page, doctor, appt_id, label)
         )
         dom = dom_appointment_row(page, appt_id)
-        if (
-            dom.get("present")
-            and dom.get("visible")
-            and dom.get("name") == patient_name
-            and dom.get("status") == server_status
-            and any(
-                f"status-{server_status}" in str(badge.get("cls") or "").split()
-                and expected_label in str(badge.get("text") or "")
-                for badge in dom.get("badges") or []
+        if appointment_dom_converged(dom, patient_name, server_status, expected_label):
+            info(
+                f"{label} appointment {appt_id} appointment-status-convergence "
+                f"fallback_refresh=0 refresh_response_bound=0 post_refresh_dom_match=0 "
+                f"status={server_status}"
             )
-        ):
             return server_status, expected_label
         if time.monotonic() >= deadline:
             break
         page.wait_for_timeout(APPT_PRESENTATION_POLL_MS)
-    if not dom.get("present"):
-        raise RuntimeError(f"{label} expected appointment {appt_id} is not rendered")
-    if not dom.get("visible"):
-        raise RuntimeError(f"{label} expected appointment {appt_id} is hidden")
-    if dom.get("name") != patient_name:
-        raise RuntimeError(f"{label} appointment {appt_id} shows the wrong patient")
-    if dom.get("status") != server_status:
-        raise RuntimeError(
-            f"{label} UI/server appointment status mismatch: "
-            f"dom={dom.get('status')!r} server={server_status!r} "
-            f"(fresh /doctor/today, bounded wait "
-            f"{APPT_PRESENTATION_WAIT_SECONDS:g}s)"
+    # The bounded path is exhausted with a legitimate divergence: the DOM still
+    # shows its previous render of an appointment-only transition. ONE
+    # controlled refresh follows — never a retry loop, never a longer sleep,
+    # never a status whitelist — then the strict comparison above.
+    info(
+        f"{label} appointment {appt_id} stale-dom-before-fallback "
+        f"dom={dom.get('status')!r} server={server_status!r} "
+        f"bounded_wait_s={APPT_PRESENTATION_WAIT_SECONDS:g}"
+    )
+    return refresh_appointment_presentation(page, doctor, appt_id, patient_name, label)
+
+
+def probe_controlled_refresh(page, doctor, appt_id, patient_name, label):
+    """Deterministic probe of the PHASE B path inside the real browser journey.
+
+    The divergence the repaired invariant must survive cannot be produced on
+    demand without manufacturing a product transition (the real no-show sweep
+    is WP-Cron + Location-local grace driven), so the DOM STATE itself is
+    reproduced client-side: an already-verified row is knocked back to a
+    legitimate previous-render shape (an established status other than current
+    server truth, with that status's badge class and label). Nothing
+    server-side is touched — no DB write, no product transition, no workflow
+    change, no mocked or fulfilled response — and the repair is performed by
+    exactly the same ONE controlled refresh helper the natural fallback uses.
+    The perturbation is wiped by that refresh's own re-render.
+    """
+    before = dict(FALLBACK_STATS)
+    server_status, expected_label = expected_appointment_label(
+        server_appointment_row(page, doctor, appt_id, label)
+    )
+    dom = dom_appointment_row(page, appt_id)
+    if appointment_dom_converged(dom, patient_name, server_status, expected_label):
+        stale_status = "pending" if server_status != "pending" else "confirmed"
+        outcome = page.evaluate(
+            """([id, cur, cls, text, status]) => {
+              const el = document.querySelector('[data-appointment-id="' + id + '"]');
+              if (!el) return 'row-missing';
+              const badge = el.querySelector('.cpms-doc-badge.' + cur);
+              if (!badge) return 'badge-missing';
+              el.setAttribute('data-status', status);
+              badge.className = 'cpms-doc-badge ' + cls;
+              badge.textContent = text;
+              return 'perturbed';
+            }""",
+            [
+                str(appt_id),
+                f"status-{server_status}",
+                f"status-{stale_status}",
+                APPT_STATUS_LABELS[stale_status],
+                stale_status,
+            ],
         )
-    raise RuntimeError(
-        f"{label} appointment {appt_id} status {server_status!r} "
-        f"is not rendered as its Doctor Portal label"
+        if outcome != "perturbed":
+            raise RuntimeError(f"{label} fallback probe could not reproduce the stale DOM ({outcome})")
+        stale = dom_appointment_row(page, appt_id)
+        if appointment_dom_converged(stale, patient_name, server_status, expected_label):
+            raise RuntimeError(f"{label} fallback probe produced a row that still converges")
+        info(
+            f"{label} fallback-probe stale_dom=1 source=injected dom_before={stale.get('status')!r} "
+            f"server={server_status!r}"
+        )
+    else:
+        info(
+            f"{label} fallback-probe stale_dom=1 source=natural dom_before={dom.get('status')!r} "
+            f"server={server_status!r}"
+        )
+    bound_status, bound_label = refresh_appointment_presentation(
+        page, doctor, appt_id, patient_name, label
+    )
+    delta = {key: FALLBACK_STATS[key] - before[key] for key in FALLBACK_STATS}
+    expected = {"fallback_refresh": 1, "refresh_response_bound": 1, "post_refresh_dom_match": 1}
+    if delta != expected:
+        raise RuntimeError(
+            f"{label} fallback probe counter delta {delta} is not exactly one bound refresh"
+        )
+    after = dom_appointment_row(page, appt_id)
+    if not appointment_dom_converged(after, patient_name, bound_status, bound_label):
+        raise RuntimeError(
+            f"{label} fallback probe did not restore the presentation from the bound refresh"
+        )
+    info(
+        f"{label} fallback-probe fallback_refresh=1 refresh_response_bound=1 "
+        f"post_refresh_dom_match=1 dom_after={after.get('status')!r} status={bound_status}"
     )
 
 
@@ -1311,7 +1521,7 @@ def prove_location_actions(page, state, doctor, label):
     info(f"location-actions-{label} a_call_recall=1 b_on_a=404")
 
 
-def prove_one(browser, doctor, vp, shot_name=None):
+def prove_one(browser, doctor, vp, shot_name=None, probe_fallback=False):
     key = f"doctor-portal-{vp['vp']}-{'one' if shot_name else 'other'}"
     stage = "login"
     ctx, page, state = new_page(browser, vp)
@@ -1456,6 +1666,14 @@ def prove_one(browser, doctor, vp, shot_name=None):
             booked = page.locator(f'[data-appointment-id="{doctor["appt_booked"]}"]')
             if booked.get_attribute("data-visit-status"):
                 raise RuntimeError("booked appointment invented a visit status")
+        if probe_fallback:
+            # Harness-level determinism for the PHASE B fallback: exercise the
+            # ONE controlled refresh against the real portal and the real
+            # /doctor/today response on this run (see probe_controlled_refresh).
+            stage = "fallback-probe"
+            probe_controlled_refresh(
+                page, doctor, doctor["appt_booked"], doctor["booked_name"], vp["vp"]
+            )
         stage = "authority"
         problems = authority_problems(state["reqs"], doctor["clinic_id"], {doctor["location_id"]})
         if problems:
@@ -1611,7 +1829,9 @@ def main():
         browser = p.chromium.launch()
         for vp in VIEWPORTS:
             try:
-                prove_one(browser, ONE, vp, vp["shot"])
+                # The fallback probe runs once, on the desktop journey, so the
+                # deterministic PHASE B exercise does not multiply per viewport.
+                prove_one(browser, ONE, vp, vp["shot"], probe_fallback=(vp["vp"] == "desktop-1366"))
             except Exception:
                 continue
         desktop = VIEWPORTS[2]
