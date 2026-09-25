@@ -1094,6 +1094,191 @@ def prove_workspace_rx(page, state, doctor, visit_id, label, mutate):
     )
 
 
+def prove_workspace_recfu(page, state, doctor, visit_id, label, mutate):
+    # Phase 10 — Visit Workspace recommendation + follow-up authoring. Selection
+    # stays the open workspace's visit_id (selector only); writes go through the
+    # Doctor Portal recommendation/follow-up boundaries with the portal nonce +
+    # trusted Clinic/Location selector headers. clinician_id is never sent;
+    # the shared E12/E13 domain contract (types/validation/visibility/audit) is
+    # reused unchanged.
+    page.wait_for_selector('[data-role="workspace-rec-section"]:not([hidden])', timeout=8000)
+    page.wait_for_selector('[data-role="workspace-rec-form"]:not([hidden])', timeout=8000)
+    page.wait_for_selector('[data-role="workspace-fu-section"]:not([hidden])', timeout=8000)
+    page.wait_for_selector('[data-role="workspace-fu-form"]:not([hidden])', timeout=8000)
+    if page.locator('[data-role="workspace-rec-list"]').count() != 1:
+        raise RuntimeError(f"{label} recommendation list element missing")
+    if page.locator('[data-role="workspace-fu-list"]').count() != 1:
+        raise RuntimeError(f"{label} follow-up list element missing")
+    for marker in ("workspace-rec-type", "workspace-rec-text", "workspace-rec-visible",
+                   "workspace-rec-submit", "workspace-fu-needed", "workspace-fu-date",
+                   "workspace-fu-interval-days", "workspace-fu-reason", "workspace-fu-submit"):
+        el = page.locator(f'[data-role="{marker}"]')
+        if el.count() != 1 or not el.first.is_enabled():
+            raise RuntimeError(f"{label} rec/fu composer control {marker} not usable")
+    # The established seven recommendation types must be offered by the composer.
+    type_select = page.locator('[data-role="workspace-rec-type"]')
+    offered = type_select.locator("option").evaluate_all("els => els.map(e => e.getAttribute('value'))")
+    for rec_type in ("diet", "rest", "activity", "care", "lab", "followup", "other"):
+        if rec_type not in offered:
+            raise RuntimeError(f"{label} recommendation type {rec_type} missing from the composer")
+    # Fresh action visit has no recommendations/follow-ups yet — empty states.
+    page.wait_for_selector('[data-role="workspace-rec-empty"]:not([hidden])', timeout=5000)
+    page.wait_for_selector('[data-role="workspace-fu-empty"]:not([hidden])', timeout=5000)
+    if not mutate:
+        assert_queue_hugs_content(page, label)
+        shot(page, f"doctor-portal-{label}-workspace-recfu")
+        info(f"workspace-recfu-{label} render=1 rec_composer=1 fu_composer=1 types=7 empty=1 mutate=0")
+        return
+
+    # ---- desktop-1366 full mutation journey ------------------------------------
+    rec_text = f"توصیه پایلوت {visit_id} — استراحت"
+    # Failed-write proof: empty recommendation text must surface as the established
+    # server 422 — never as success and never as a rendered row.
+    with page.expect_response(
+        lambda r: route_of(r.url).endswith(f"/doctor/portal/visits/{visit_id}/recommendations")
+        and r.request.method == "POST",
+        timeout=15000,
+    ) as bad_rec:
+        page.locator('[data-role="workspace-rec-submit"]').click()
+    if bad_rec.value.status != 422 or (bad_rec.value.json() or {}).get("code") != "CLINIC_VALIDATION_FAILED":
+        raise RuntimeError(f"{label} invalid recommendation not rejected with the established 422")
+    page.wait_for_selector('[data-role="workspace-rec-error"]:not([hidden])', timeout=5000)
+    if page.locator('[data-role="workspace-rec-success"]').is_visible():
+        raise RuntimeError(f"{label} failed recommendation write displayed success")
+    if page.locator('[data-role="workspace-rec-list"] [data-role="workspace-rec-item"]').count() != 0:
+        raise RuntimeError(f"{label} failed recommendation write mutated the list")
+
+    # Valid recommendation, patient-visible option exercised, busy + double-submit
+    # guard while the write is in flight.
+    type_select.select_option("rest")
+    page.locator('[data-role="workspace-rec-text"]').fill(rec_text)
+    visible = page.locator('[data-role="workspace-rec-visible"]')
+    visible.uncheck()
+    if visible.is_checked():
+        raise RuntimeError(f"{label} recommendation patient-visible control did not uncheck")
+    visible.check()
+    if not visible.is_checked():
+        raise RuntimeError(f"{label} recommendation patient-visible control did not check")
+
+    def _slow_rec(route):
+        time.sleep(1.0)
+        route.continue_()
+
+    page.route("**/doctor/portal/visits/*/recommendations", _slow_rec)
+    with page.expect_response(
+        lambda r: route_of(r.url).endswith(f"/doctor/portal/visits/{visit_id}/recommendations")
+        and r.request.method == "POST",
+        timeout=15000,
+    ) as rec_info:
+        page.locator('[data-role="workspace-rec-submit"]').click()
+        page.wait_for_selector('[data-role="workspace-rec-busy"]:not([hidden])', timeout=5000)
+        if not page.locator('[data-role="workspace-rec-submit"]').is_disabled():
+            raise RuntimeError(f"{label} recommendation submit not disabled while in flight")
+    page.unroute("**/doctor/portal/visits/*/recommendations")
+    rec_resp = rec_info.value
+    if rec_resp.status != 200:
+        raise RuntimeError(f"{label} recommendation create failed: {rec_resp.status}")
+    rec_body = payload(rec_resp.json())
+    created = [row for row in (rec_body.get("recommendations") or []) if row.get("text") == rec_text]
+    if len(created) != 1:
+        raise RuntimeError(f"{label} recommendation create did not return the new row: {rec_body}")
+    rec_row = created[0]
+    rec_id = int(rec_row.get("id") or 0)
+    if rec_id <= 0 or rec_row.get("type") != "rest" or rec_row.get("is_patient_visible") is not True:
+        raise RuntimeError(f"{label} recommendation round-trip mismatch: {rec_row}")
+    page.wait_for_selector('[data-role="workspace-rec-success"]:not([hidden])', timeout=5000)
+    page.wait_for_selector(f'[data-role="workspace-rec-item"][data-rec-id="{rec_id}"]', timeout=5000)
+    page.wait_for_function(
+        "(t) => { const el=document.querySelector('[data-role=\"workspace-rec-list\"]'); return !!(el && el.innerText.includes(t)); }",
+        arg=rec_text,
+        timeout=8000,
+    )
+    if page.locator('[data-role="workspace-rec-text"]').input_value() != "":
+        raise RuntimeError(f"{label} recommendation composer not cleared after success")
+    shot(page, f"doctor-portal-{label}-workspace-rec")
+
+    # Failed-write proof: is_needed=true without date/interval must be rejected
+    # with the established 422 — never presented as success.
+    with page.expect_response(
+        lambda r: route_of(r.url).endswith(f"/doctor/portal/visits/{visit_id}/follow-ups")
+        and r.request.method == "POST",
+        timeout=15000,
+    ) as bad_fu:
+        page.locator('[data-role="workspace-fu-submit"]').click()
+    if bad_fu.value.status != 422 or (bad_fu.value.json() or {}).get("code") != "CLINIC_VALIDATION_FAILED":
+        raise RuntimeError(f"{label} invalid follow-up not rejected with the established 422")
+    page.wait_for_selector('[data-role="workspace-fu-error"]:not([hidden])', timeout=5000)
+    if page.locator('[data-role="workspace-fu-success"]').is_visible():
+        raise RuntimeError(f"{label} failed follow-up write displayed success")
+    if page.locator('[data-role="workspace-fu-list"] [data-role="workspace-fu-item"]').count() != 0:
+        raise RuntimeError(f"{label} failed follow-up write mutated the list")
+
+    # Valid follow-up (interval variant), busy + double-submit guard in flight.
+    fu_reason = f"کنترل پایلوت {visit_id}"
+    page.locator('[data-role="workspace-fu-interval-days"]').fill("30")
+    page.locator('[data-role="workspace-fu-reason"]').fill(fu_reason)
+
+    def _slow_fu(route):
+        time.sleep(1.0)
+        route.continue_()
+
+    page.route("**/doctor/portal/visits/*/follow-ups", _slow_fu)
+    with page.expect_response(
+        lambda r: route_of(r.url).endswith(f"/doctor/portal/visits/{visit_id}/follow-ups")
+        and r.request.method == "POST",
+        timeout=15000,
+    ) as fu_info:
+        page.locator('[data-role="workspace-fu-submit"]').click()
+        page.wait_for_selector('[data-role="workspace-fu-busy"]:not([hidden])', timeout=5000)
+        if not page.locator('[data-role="workspace-fu-submit"]').is_disabled():
+            raise RuntimeError(f"{label} follow-up submit not disabled while in flight")
+    page.unroute("**/doctor/portal/visits/*/follow-ups")
+    fu_resp = fu_info.value
+    if fu_resp.status != 200:
+        raise RuntimeError(f"{label} follow-up create failed: {fu_resp.status}")
+    fu = payload(fu_resp.json())
+    fu_id = int(fu.get("id") or 0)
+    if (
+        fu_id <= 0
+        or fu.get("is_needed") is not True
+        or int(fu.get("interval_days") or 0) != 30
+        or fu.get("status") != "pending"
+    ):
+        raise RuntimeError(f"{label} follow-up round-trip mismatch: {fu}")
+    page.wait_for_selector('[data-role="workspace-fu-success"]:not([hidden])', timeout=5000)
+    page.wait_for_selector(f'[data-role="workspace-fu-item"][data-fu-id="{fu_id}"]', timeout=5000)
+    page.wait_for_function(
+        "(t) => { const el=document.querySelector('[data-role=\"workspace-fu-list\"]'); return !!(el && el.innerText.includes(t)); }",
+        arg=fu_reason,
+        timeout=8000,
+    )
+    if page.locator('[data-role="workspace-fu-interval-days"]').input_value() != "":
+        raise RuntimeError(f"{label} follow-up composer not cleared after success")
+    shot(page, f"doctor-portal-{label}-workspace-fu")
+
+    # Selector headers only, no client authority, and both failed writes stayed failed.
+    posts = [
+        e for e in state["reqs"]
+        if e["method"] == "POST" and (
+            e["route"].endswith(f"/doctor/portal/visits/{visit_id}/recommendations")
+            or e["route"].endswith(f"/doctor/portal/visits/{visit_id}/follow-ups")
+        )
+    ]
+    if len(posts) < 4:
+        raise RuntimeError(f"{label} rec/fu authoring requests not observed: {len(posts)}")
+    for hit in posts:
+        for key in ("clinician_id", "organization_id", "role"):
+            if key in (hit["url"] + hit["body"]):
+                raise RuntimeError(f"{label} client authority key {key} leaked into a rec/fu request")
+            for hk, hv in hit["headers"].items():
+                if key in hk or key in str(hv):
+                    raise RuntimeError(f"{label} client authority key {key} leaked into a rec/fu request header")
+    info(
+        f"workspace-recfu-{label} rec_create=1 rec_failed422=1 rec_busy=1 rec_public=1"
+        f" fu_create=1 fu_failed422=1 fu_busy=1 clinician_id_sent=0"
+    )
+
+
 def prove_location_actions(page, state, doctor, label):
     sel = page.locator('[data-role="location-select"]')
     # Selected Location A action works on A, then resets via recall.
@@ -1229,6 +1414,14 @@ def prove_one(browser, doctor, vp, shot_name=None):
             # responsive render + composer/empty states.
             stage = "workspace-rx"
             prove_workspace_rx(
+                page, state, doctor, int(doctor[pair_keys[0]]), vp["vp"],
+                mutate=(vp["vp"] == "desktop-1366"),
+            )
+            # Phase 10 — Recommendation + Follow-Up authoring inside the same
+            # open Visit Workspace: full create/visibility/validation journey on
+            # desktop, responsive composer + empty states on every viewport.
+            stage = "workspace-recfu"
+            prove_workspace_recfu(
                 page, state, doctor, int(doctor[pair_keys[0]]), vp["vp"],
                 mutate=(vp["vp"] == "desktop-1366"),
             )

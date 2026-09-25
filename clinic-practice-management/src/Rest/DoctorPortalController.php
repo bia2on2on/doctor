@@ -147,6 +147,60 @@ final class DoctorPortalController extends RestBase {
 				],
 			]
 		);
+
+		// Phase 10 — Recommendation + Follow-Up authoring inside the Visit
+		// Workspace. Same adapter architecture as the notes/Rx boundaries:
+		// portal-specific guard in front of the established shared E12/E13
+		// behavior (which stays untouched).
+		register_rest_route(
+			self::NS,
+			'/doctor/portal/visits/(?P<id>\d+)/recommendations',
+			[
+				[
+					'methods'             => WP_REST_Server::CREATABLE,
+					'callback'            => fn( WP_REST_Request $r ) => $this->workspace_add_recommendations( $r ),
+					'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_workspace( $r, RolesAndCapabilities::REC_CREATE ),
+					'args'                => [
+						'items' => [
+							'required' => true,
+							'type'     => 'array',
+							'items'    => [ 'type' => 'object' ],
+						],
+					],
+				],
+			]
+		);
+
+		register_rest_route(
+			self::NS,
+			'/doctor/portal/visits/(?P<id>\d+)/follow-ups',
+			[
+				[
+					'methods'             => WP_REST_Server::CREATABLE,
+					'callback'            => fn( WP_REST_Request $r ) => $this->workspace_add_follow_up( $r ),
+					'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_workspace( $r, RolesAndCapabilities::REC_CREATE ),
+					'args'                => [
+						'is_needed'      => [
+							'required' => false,
+							'type'     => 'boolean',
+							'default'  => true,
+						],
+						'suggested_date' => [
+							'required' => false,
+							'type'     => 'string',
+						],
+						'interval_days'  => [
+							'required' => false,
+							'type'     => 'integer',
+						],
+						'reason'         => [
+							'required' => false,
+							'type'     => 'string',
+						],
+					],
+				],
+			]
+		);
 	}
 
 	private function perm_doctor( WP_REST_Request $r ): bool|WP_Error {
@@ -272,6 +326,44 @@ final class DoctorPortalController extends RestBase {
 		}
 		return $this->workspace_wrap(
 			fn() => App::clinicalService()->createPrescription( (int) wp_get_current_user()->ID, $visit_id, $this->workspace_body( $r ) )
+		);
+	}
+
+	/**
+	 * Phase 10 — recommendation authoring (portal boundary).
+	 *
+	 * Reuses the established E12 behavior (established type set, text
+	 * validation, per-item patient visibility, server-derived ownership,
+	 * existing audit) AFTER the portal-specific Visit guard; the shared E12
+	 * contract itself stays untouched.
+	 */
+	private function workspace_add_recommendations( WP_REST_Request $r ): WP_REST_Response|WP_Error {
+		$visit_id = (int) $r['id'];
+		$guard    = $this->workspace_authorize_visit( $visit_id );
+		if ( $guard instanceof WP_Error ) {
+			return $guard;
+		}
+		return $this->workspace_wrap(
+			fn() => App::clinicalService()->addRecommendations( (int) wp_get_current_user()->ID, $visit_id, $this->workspace_body( $r ) )
+		);
+	}
+
+	/**
+	 * Phase 10 — follow-up authoring (portal boundary).
+	 *
+	 * Reuses the established E13 behavior (is_needed / suggested_date /
+	 * interval_days / reason contract, existing audit, reminder processing
+	 * left to the existing jobs path) AFTER the portal-specific Visit guard;
+	 * the shared E13 contract itself stays untouched.
+	 */
+	private function workspace_add_follow_up( WP_REST_Request $r ): WP_REST_Response|WP_Error {
+		$visit_id = (int) $r['id'];
+		$guard    = $this->workspace_authorize_visit( $visit_id );
+		if ( $guard instanceof WP_Error ) {
+			return $guard;
+		}
+		return $this->workspace_wrap(
+			fn() => App::clinicalService()->addFollowUp( (int) wp_get_current_user()->ID, $visit_id, $this->workspace_body( $r ) )
 		);
 	}
 

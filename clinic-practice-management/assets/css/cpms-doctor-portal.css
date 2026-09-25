@@ -1190,3 +1190,87 @@ body.cpms-doctor-portal-shell-body {
 .cpms-doc-workspace [data-role="workspace-rx-busy"] {
 	margin: 8px 14px 0;
 }
+
+/* ================= Phase 10 — Visit Workspace recommendations + follow-up ================= */
+
+.cpms-doc-ws-rec,
+.cpms-doc-ws-fu {
+	min-width: 0;
+}
+
+.cpms-doc-ws-rec-list,
+.cpms-doc-ws-fu-list {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	min-width: 0;
+}
+
+.cpms-doc-ws-rec-item,
+.cpms-doc-ws-fu-item {
+	border: 1px solid var(--cpms-border-strong);
+	border-radius: var(--cpms-radius-sm);
+	background: var(--cpms-card);
+	padding: 8px 10px;
+	margin: 0 14px;
+	min-width: 0;
+}
+
+.cpms-doc-ws-rec-head,
+.cpms-doc-ws-fu-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: space-between;
+	gap: 6px;
+	min-width: 0;
+}
+
+.cpms-doc-ws-rec-type,
+.cpms-doc-ws-fu-when,
+.cpms-doc-ws-fu-status,
+.cpms-doc-ws-rec-date {
+	font-size: 12.5px;
+	color: var(--cpms-muted);
+	font-variant-numeric: tabular-nums;
+	overflow-wrap: anywhere;
+}
+
+.cpms-doc-ws-rec-text,
+.cpms-doc-ws-fu-reason {
+	margin: 6px 0 0;
+	font-size: 13.5px;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+.cpms-doc-ws-form [data-role="workspace-rec-submit"],
+.cpms-doc-ws-form [data-role="workspace-fu-submit"] {
+	margin: 10px 14px 0;
+}
+
+.cpms-doc-ws-form [data-role="workspace-rec-submit"][aria-busy="true"],
+.cpms-doc-ws-form [data-role="workspace-fu-submit"][aria-busy="true"] {
+	cursor: wait;
+}
+
+.cpms-doc-workspace [data-role="workspace-rec-error"],
+.cpms-doc-workspace [data-role="workspace-rec-success"],
+.cpms-doc-workspace [data-role="workspace-rec-busy"],
+.cpms-doc-workspace [data-role="workspace-fu-error"],
+.cpms-doc-workspace [data-role="workspace-fu-success"],
+.cpms-doc-workspace [data-role="workspace-fu-busy"] {
+	margin: 8px 14px 0;
+}
+
+@media (min-width: 768px) {
+	.cpms-doc-ws-rec-list,
+	.cpms-doc-ws-fu-list {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+		align-items: start;
+	}
+}
