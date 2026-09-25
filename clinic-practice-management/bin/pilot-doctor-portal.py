@@ -954,8 +954,11 @@ def prove_workspace_rx(page, state, doctor, visit_id, label, mutate):
     # Clinic/Location selector headers. clinician_id is never sent.
     sec = '[data-role="workspace-rx-section"]:not([hidden])'
     page.wait_for_selector(sec, timeout=8000)
-    page.wait_for_selector('[data-role="workspace-rx-list"]', timeout=8000)
+    # The list itself is an empty <ul> before the first prescription (zero-height
+    # => Playwright "hidden"); the usable gates are section + form + empty state.
     page.wait_for_selector('[data-role="workspace-rx-form"]:not([hidden])', timeout=8000)
+    if page.locator('[data-role="workspace-rx-list"]').count() != 1:
+        raise RuntimeError(f"{label} rx list element missing")
     for marker in ("workspace-rx-generic-name", "workspace-rx-dose", "workspace-rx-frequency",
                    "workspace-rx-route", "workspace-rx-duration-days", "workspace-rx-instructions",
                    "workspace-rx-form-select", "workspace-rx-submit"):
