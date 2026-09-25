@@ -136,18 +136,38 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
         $visit = $this->insertVisit($patient, $fx['clinician'], $fx['clinic'], $fx['location'], 'in_consultation');
 
         // REAL fixtures (established schema): one draft + one finalized Rx on this Visit.
-        $rxDraft = $this->insertPrescription($visit, $patient, $fx['clinician'], $fx['clinic'], 'draft', 0);
+        // D1 fix: distinct deterministic ordinal per prescription ROW on the same
+        // Visit — the real u_rx_number uniqueness constraint must be honoured and
+        // each fixture insert must be proven to have persisted (>0, helper guard).
+        $rxDraft = $this->insertPrescription($visit, $patient, $fx['clinician'], $fx['clinic'], 'draft', 0, 0);
         $this->insertRxItem($rxDraft, [
             'generic_name' => 'Ibuprofen', 'brand_name' => null, 'strength' => '400mg',
             'form' => 'tablet', 'dose' => '1 قرص', 'frequency' => 'هر 8 ساعت',
             'route' => 'oral', 'duration_days' => 5, 'instructions' => 'بعد از غذا',
         ]);
-        $rxFinal = $this->insertPrescription($visit, $patient, $fx['clinician'], $fx['clinic'], 'finalized', 1);
+        $rxFinal = $this->insertPrescription($visit, $patient, $fx['clinician'], $fx['clinic'], 'finalized', 1, 1);
         $this->insertRxItem($rxFinal, [
             'generic_name' => 'Amoxicillin', 'brand_name' => null, 'strength' => '500mg',
             'form' => 'capsule', 'dose' => '1 کپسول', 'frequency' => 'هر 12 ساعت',
             'route' => 'oral', 'duration_days' => 7, 'instructions' => null,
         ]);
+
+        // D1 guard: BOTH fixture prescriptions on the same Visit really persisted
+        // (per-row unique prescription_number — would have collided before the fix).
+        self::assertGreaterThan(0, $rxDraft, 'G1.fixture: draft Rx row persisted');
+        self::assertGreaterThan(0, $rxFinal, 'G1.fixture: finalized Rx row persisted');
+        self::assertNotSame($rxDraft, $rxFinal, 'G1.fixture: two distinct prescription rows');
+        $fixtureRows = App::db()->fetchAll(
+            'SELECT id, prescription_number FROM ' . App::db()->table('cpms_prescriptions') .
+            ' WHERE id IN (%d, %d) ORDER BY id ASC',
+            [$rxDraft, $rxFinal]
+        ) ?: [];
+        self::assertCount(2, $fixtureRows, 'G1.fixture: both same-Visit prescription rows persisted in DB');
+        self::assertNotSame(
+            (string) $fixtureRows[0]['prescription_number'],
+            (string) $fixtureRows[1]['prescription_number'],
+            'G1.fixture: per-row unique prescription_number (real u_rx_number honoured)'
+        );
 
         // The existing/portal architecture is REACHED: own authorized Visit
         // Workspace record must expose BOTH current-Visit prescriptions
@@ -199,12 +219,22 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
         $patientOther = $this->insertPatient($fx['clinic'], 'g2_other');
         $visitOther = $this->insertVisit($patientOther, $clinicianB, $fx['clinic'], $fx['location'], 'in_consultation');
 
+        // D2 fix: a genuinely SEPARATE WP user for the foreign-clinic clinician —
+        // reusing the stage doctor's user collides with u_clinician_user and used to
+        // silently zero the clinician + foreign-Visit FK insert. Helpers now fail
+        // loudly (>0) if any fixture ever breaks again.
+        $foreignUser = $this->makeUser('g2_foreign_user', RolesAndCapabilities::ROLE_DOCTOR);
         $org = $this->insertOrg('G2 Foreign Org');
         $clinicForeign = $this->insertClinicInOrg('G2 Foreign Clinic', $org, self::TZ_TEHRAN);
         $locForeign = $this->insertLocation($clinicForeign, 'G2 Foreign Loc', self::TZ_TEHRAN, 1);
-        $clinicianForeign = $this->insertClinician('Dr G2 Foreign', $clinicForeign, 1, $fx['doctor']);
+        $clinicianForeign = $this->insertClinician('Dr G2 Foreign', $clinicForeign, 1, $foreignUser);
+        self::assertGreaterThan(0, $clinicianForeign, 'G2.fixture: foreign clinician persisted with a distinct WP user');
         $patientForeign = $this->insertPatient($clinicForeign, 'g2_foreign');
         $visitForeign = $this->insertVisit($patientForeign, $clinicianForeign, $clinicForeign, $locForeign, 'in_consultation');
+        self::assertGreaterThan(0, $visitForeign, 'G2.fixture: foreign Visit really persisted');
+        $visitForeignRow = $this->findVisitRow($visitForeign);
+        self::assertSame($clinicForeign, (int) $visitForeignRow['clinic_id'], 'G2.fixture: foreign Visit bound to foreign Clinic');
+        self::assertSame($clinicianForeign, (int) $visitForeignRow['clinician_id'], 'G2.fixture: foreign Visit bound to foreign clinician');
 
         $locOther = $this->insertLocation($fx['clinic'], 'G2 Other Loc', self::TZ_TEHRAN, 0);
         $patientOtherLoc = $this->insertPatient($fx['clinic'], 'g2_otherloc');
@@ -466,12 +496,16 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
 
         // B. Foreign prescription cannot be finalized through the portal
         // boundary (non-enumerating 404) — foreign-clinic prescription.
+        // D2 fix: foreign clinician gets its OWN WP user (u_clinician_user 1:1).
+        $foreignUser = $this->makeUser('g5_foreign_user', RolesAndCapabilities::ROLE_DOCTOR);
         $orgF = $this->insertOrg('G5 Foreign Org');
         $clinicF = $this->insertClinicInOrg('G5 Foreign Clinic', $orgF, self::TZ_TEHRAN);
         $locF = $this->insertLocation($clinicF, 'G5 Foreign Loc', self::TZ_TEHRAN, 1);
-        $clinicianF = $this->insertClinician('Dr G5 Foreign', $clinicF, 1, $fx['doctor']);
+        $clinicianF = $this->insertClinician('Dr G5 Foreign', $clinicF, 1, $foreignUser);
+        self::assertGreaterThan(0, $clinicianF, 'G5.B.fixture: foreign clinician persisted with a distinct WP user');
         $patientF = $this->insertPatient($clinicF, 'g5_foreign');
         $visitF = $this->insertVisit($patientF, $clinicianF, $clinicF, $locF, 'in_consultation');
+        self::assertGreaterThan(0, $visitF, 'G5.B.fixture: foreign Visit really persisted');
         $rxForeign = $this->insertPrescription($visitF, $patientF, $clinicianF, $clinicF, 'draft', 1);
 
         wp_set_current_user($fx['doctor']);
@@ -884,6 +918,19 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
         return is_array($b) ? $b : [];
     }
 
+    /**
+     * @return array<string, mixed>
+     */
+    private function findVisitRow(int $visitId): array
+    {
+        $row = App::db()->fetchRow(
+            'SELECT * FROM ' . App::db()->table('cpms_visits') . ' WHERE id = %d',
+            [$visitId]
+        );
+        self::assertIsArray($row, 'visit row must exist in DB');
+        return $row;
+    }
+
     private function makeUser(string $login, string $role): int
     {
         $u = $login . '_' . bin2hex(random_bytes(3));
@@ -900,7 +947,9 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
         global $wpdb;
         $now = App::db()->nowUtcSql();
         $wpdb->query($wpdb->prepare('INSERT INTO ' . $wpdb->prefix . 'cpms_organizations (name, slug, status, created_at, updated_at) VALUES (%s, %s, %s, %s, %s)', $name, 'org-' . bin2hex(random_bytes(3)), 'active', $now, $now));
-        return (int) $wpdb->insert_id;
+        $id = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $id, 'organization fixture row must persist');
+        return $id;
     }
 
     private function insertClinicInOrg(string $name, int $orgId, string $tz): int
@@ -919,7 +968,9 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
         global $wpdb;
         $now = App::db()->nowUtcSql();
         $wpdb->query($wpdb->prepare('INSERT INTO ' . $wpdb->prefix . 'cpms_locations (clinic_id, name, slug, timezone, is_primary, is_active, created_at, updated_at) VALUES (%d, %s, %s, %s, %d, 1, %s, %s)', $clinicId, $name, 'loc-' . bin2hex(random_bytes(3)), $tz, $primary, $now, $now));
-        return (int) $wpdb->insert_id;
+        $id = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $id, 'location fixture row must persist');
+        return $id;
     }
 
     private function insertClinician(string $name, int $clinicId, int $active, int $wpUserId): int
@@ -927,7 +978,10 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
         global $wpdb;
         $now = App::db()->nowUtcSql();
         $wpdb->query($wpdb->prepare('INSERT INTO ' . $wpdb->prefix . 'cpms_clinicians (clinic_id, full_name, wp_user_id, is_active, created_at, updated_at) VALUES (%d, %s, %d, %d, %s, %s)', $clinicId, $name, $wpUserId, $active, $now, $now));
-        return (int) $wpdb->insert_id;
+        $id = (int) $wpdb->insert_id;
+        // Loud fixture guard (D2): duplicate wp_user_id (u_clinician_user) must fail LOUDLY.
+        self::assertGreaterThan(0, $id, 'clinician fixture row must persist (wp_user_id must be distinct)');
+        return $id;
     }
 
     private function insertPatient(int $clinicId, string $tag): int
@@ -937,7 +991,9 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
         $mrn = 'MR-QA-' . strtoupper($tag) . '-' . bin2hex(random_bytes(2));
         $mobile = '0912' . sprintf('%07d', random_int(1000000, 9999999));
         $wpdb->query($wpdb->prepare('INSERT INTO ' . $wpdb->prefix . 'cpms_patients (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, %s, %s, %s)', $clinicId, $mrn, 'Test', 'Patient ' . substr($mrn, -4), $mobile, 'active', $now, $now));
-        return (int) $wpdb->insert_id;
+        $id = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $id, 'patient fixture row must persist');
+        return $id;
     }
 
     private function insertVisit(int $patientId, int $clinicianId, int $clinicId, int $locId, string $status): int
@@ -946,19 +1002,27 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
         $now = App::db()->nowUtcSql();
         $active = 'skipped' === $status ? 0 : 1;
         $wpdb->query($wpdb->prepare('INSERT INTO ' . $wpdb->prefix . 'cpms_visits (clinic_id, location_id, clinician_id, patient_id, source, status, visit_date, check_in_at, waiting_since, active, created_at, updated_at) VALUES (%d, %d, %d, %d, %s, %s, %s, %s, %s, %d, %s, %s)', $clinicId, $locId, $clinicianId, $patientId, 'walk_in', $status, self::FIXED_UTC_DATE, self::FIXED_UTC_DATE . ' 10:00:00', self::FIXED_UTC_DATE . ' 10:00:00', $active, $now, $now));
-        return (int) $wpdb->insert_id;
+        $id = (int) $wpdb->insert_id;
+        // Loud fixture guard (D2): FK/duplicate failures must fail LOUDLY, never become
+        // a fake "404 proof" via insert_id = 0.
+        self::assertGreaterThan(0, $id, 'visit fixture row must persist (clinician/location patient FKs must be valid)');
+        return $id;
     }
 
     /**
      * REAL fixture row — established schema (status draft/finalized; no void in this slice).
+     *
+     * D1 fix: prescription_number is deterministically unique PER ROW. Service-generated
+     * numbers live in the RX-000xxx band; fixture space uses 'RX-9' + padded visit id
+     * (4 digits) + an explicit per-call ordinal, so two fixture rows on the SAME Visit
+     * can never collide on the real u_rx_number UNIQUE key. No randomness — fully
+     * reproducible; the product constraint is honoured, never relaxed/bypassed.
      */
-    private function insertPrescription(int $visitId, int $patientId, int $clinicianId, int $clinicId, string $status, int $visible): int
+    private function insertPrescription(int $visitId, int $patientId, int $clinicianId, int $clinicId, string $status, int $visible, int $ordinal = 0): int
     {
         global $wpdb;
         $now = App::db()->nowUtcSql();
-        // Deterministic unique number (service-generated numbers live at RX-000000..;
-        // fixture space uses the RX-9xxxxx band, keyed by unique visit id).
-        $number = 'RX-9' . sprintf('%05d', $visitId % 100000);
+        $number = 'RX-9' . sprintf('%04d', $visitId % 10000) . $ordinal;
         $finalizedAt = 'finalized' === $status ? $wpdb->prepare('%s', $now) : 'NULL';
         $wpdb->query($wpdb->prepare(
             'INSERT INTO ' . $wpdb->prefix . 'cpms_prescriptions (clinic_id, prescription_number, visit_id, patient_id, clinician_id, status, is_patient_visible, void_reason, correction_of_prescription_id, finalized_at, created_at, updated_at) VALUES (%d, %s, %d, %d, %d, %s, %d, NULL, NULL, '
