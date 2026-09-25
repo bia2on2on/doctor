@@ -292,6 +292,80 @@ echo $cpms_styles_html;
                                 <button type="submit" class="cpms-doc-btn cpms-doc-btn--primary" data-role="workspace-rx-submit">ثبت نسخه (پیش‌نویس)</button>
                             </form>
                         </div>
+                        <div class="cpms-doc-ws-rec" data-role="workspace-rec-section">
+                            <div class="cpms-doc-section-head cpms-doc-ws-subhead">
+                                <h3>توصیه‌های این ویزیت</h3>
+                                <span class="cpms-doc-count" data-role="workspace-rec-count"></span>
+                            </div>
+                            <ul data-role="workspace-rec-list" class="cpms-doc-ws-rec-list"></ul>
+                            <div data-role="workspace-rec-empty" class="cpms-doc-empty" hidden>هنوز توصیه‌ای برای این ویزیت ثبت نشده است.</div>
+                            <form class="cpms-doc-ws-form" data-role="workspace-rec-form">
+                                <div class="cpms-doc-section-head cpms-doc-ws-subhead">
+                                    <h3>توصیهٔ جدید</h3>
+                                </div>
+                                <div class="cpms-doc-ws-field">
+                                    <label for="cpms-doc-ws-rec-type">نوع توصیه</label>
+                                    <select id="cpms-doc-ws-rec-type" data-role="workspace-rec-type">
+                                        <option value="diet">رژیم غذایی</option>
+                                        <option value="rest">استراحت</option>
+                                        <option value="activity">فعالیت</option>
+                                        <option value="care">مراقبت</option>
+                                        <option value="lab">آزمایش</option>
+                                        <option value="followup">پیگیری</option>
+                                        <option value="other">سایر</option>
+                                    </select>
+                                </div>
+                                <div class="cpms-doc-ws-field">
+                                    <label for="cpms-doc-ws-rec-text">متن توصیه</label>
+                                    <textarea id="cpms-doc-ws-rec-text" data-role="workspace-rec-text" rows="3" maxlength="1000"></textarea>
+                                </div>
+                                <div class="cpms-doc-ws-field cpms-doc-ws-check">
+                                    <label for="cpms-doc-ws-rec-visible">
+                                        <input id="cpms-doc-ws-rec-visible" type="checkbox" data-role="workspace-rec-visible" checked>
+                                        قابل مشاهده برای بیمار
+                                    </label>
+                                </div>
+                                <div data-role="workspace-rec-busy" class="cpms-doc-loading" hidden>در حال ثبت توصیه…</div>
+                                <div data-role="workspace-rec-error" class="cpms-doc-error" role="alert" hidden></div>
+                                <div data-role="workspace-rec-success" class="cpms-doc-success" role="status" hidden></div>
+                                <button type="submit" class="cpms-doc-btn cpms-doc-btn--primary" data-role="workspace-rec-submit">ثبت توصیه</button>
+                            </form>
+                        </div>
+                        <div class="cpms-doc-ws-fu" data-role="workspace-fu-section">
+                            <div class="cpms-doc-section-head cpms-doc-ws-subhead">
+                                <h3>پیگیری‌های این ویزیت</h3>
+                                <span class="cpms-doc-count" data-role="workspace-fu-count"></span>
+                            </div>
+                            <ul data-role="workspace-fu-list" class="cpms-doc-ws-fu-list"></ul>
+                            <div data-role="workspace-fu-empty" class="cpms-doc-empty" hidden>هنوز پیگیری‌ای برای این ویزیت ثبت نشده است.</div>
+                            <form class="cpms-doc-ws-form" data-role="workspace-fu-form">
+                                <div class="cpms-doc-section-head cpms-doc-ws-subhead">
+                                    <h3>پیگیری جدید</h3>
+                                </div>
+                                <div class="cpms-doc-ws-field cpms-doc-ws-check">
+                                    <label for="cpms-doc-ws-fu-needed">
+                                        <input id="cpms-doc-ws-fu-needed" type="checkbox" data-role="workspace-fu-needed" checked>
+                                        نیاز به پیگیری
+                                    </label>
+                                </div>
+                                <div class="cpms-doc-ws-field">
+                                    <label for="cpms-doc-ws-fu-date">تاریخ پیشنهادی (YYYY-MM-DD)</label>
+                                    <input id="cpms-doc-ws-fu-date" type="text" inputmode="numeric" placeholder="2026-04-10" autocomplete="off" data-role="workspace-fu-date">
+                                </div>
+                                <div class="cpms-doc-ws-field">
+                                    <label for="cpms-doc-ws-fu-interval-days">یا بازه (روز)</label>
+                                    <input id="cpms-doc-ws-fu-interval-days" type="number" min="1" max="3650" inputmode="numeric" data-role="workspace-fu-interval-days">
+                                </div>
+                                <div class="cpms-doc-ws-field">
+                                    <label for="cpms-doc-ws-fu-reason">علت پیگیری</label>
+                                    <input id="cpms-doc-ws-fu-reason" type="text" maxlength="255" autocomplete="off" data-role="workspace-fu-reason">
+                                </div>
+                                <div data-role="workspace-fu-busy" class="cpms-doc-loading" hidden>در حال ثبت پیگیری…</div>
+                                <div data-role="workspace-fu-error" class="cpms-doc-error" role="alert" hidden></div>
+                                <div data-role="workspace-fu-success" class="cpms-doc-success" role="status" hidden></div>
+                                <button type="submit" class="cpms-doc-btn cpms-doc-btn--primary" data-role="workspace-fu-submit">ثبت پیگیری</button>
+                            </form>
+                        </div>
                     </div>
                 </section>
 
@@ -343,7 +417,11 @@ var state = {
     workspaceNotes: [],
     workspaceBusy: false,
     workspaceRx: [],
-    workspaceRxBusy: false
+    workspaceRxBusy: false,
+    workspaceRec: [],
+    workspaceRecBusy: false,
+    workspaceFu: [],
+    workspaceFuBusy: false
 };
 
 function apiUrl(path){
@@ -657,6 +735,31 @@ function resetRxUi(){
     clearRxComposer();
 }
 
+function resetRecFuUi(){
+    state.workspaceRec = [];
+    state.workspaceFu = [];
+    setRecBusy(false);
+    setFuBusy(false);
+    var recList = qs('[data-role="workspace-rec-list"]');
+    if ( recList ) recList.innerHTML = '';
+    var recCount = qs('[data-role="workspace-rec-count"]');
+    if ( recCount ) recCount.textContent = '';
+    show(qs('[data-role="workspace-rec-empty"]'));
+    hide(qs('[data-role="workspace-rec-busy"]'));
+    hide(qs('[data-role="workspace-rec-error"]'));
+    hide(qs('[data-role="workspace-rec-success"]'));
+    clearRecComposer();
+    var fuList = qs('[data-role="workspace-fu-list"]');
+    if ( fuList ) fuList.innerHTML = '';
+    var fuCount = qs('[data-role="workspace-fu-count"]');
+    if ( fuCount ) fuCount.textContent = '';
+    show(qs('[data-role="workspace-fu-empty"]'));
+    hide(qs('[data-role="workspace-fu-busy"]'));
+    hide(qs('[data-role="workspace-fu-error"]'));
+    hide(qs('[data-role="workspace-fu-success"]'));
+    clearFuComposer();
+}
+
 function closeWorkspace(){
     state.workspaceVisitId = null;
     state.workspaceNotes = [];
@@ -670,6 +773,7 @@ function closeWorkspace(){
     if ( contentEl ) contentEl.value = '';
     setNoteSubmitBusy(false);
     resetRxUi();
+    resetRecFuUi();
 }
 
 function setNoteSubmitBusy(busy){
@@ -695,6 +799,7 @@ function openWorkspace(visitId){
     hide(qs('[data-role="workspace-form-success"]'));
     setNoteSubmitBusy(false);
     resetRxUi();
+    resetRecFuUi();
     var contentEl = qs('[data-role="workspace-content"]');
     if ( contentEl ) contentEl.value = '';
     var openedVisitId = visitId;
@@ -734,6 +839,10 @@ function renderWorkspace(data){
     renderWorkspaceNotes();
     state.workspaceRx = (data && data.prescriptions) || [];
     renderWorkspaceRx();
+    state.workspaceRec = (data && data.recommendations) || [];
+    renderWorkspaceRec();
+    state.workspaceFu = (data && data.follow_ups) || [];
+    renderWorkspaceFu();
     show(body);
 }
 
@@ -1024,6 +1133,231 @@ function finalizeWorkspaceRx(btn, rxId){
     });
 }
 
+// ============ Visit Workspace — recommendations + follow-up (Phase 10) ============
+// Writes go through the Doctor Portal recommendation/follow-up boundaries
+// (/doctor/portal/visits/{id}/recommendations|follow-ups) with the portal
+// nonce and trusted Clinic/Location selector headers ONLY. clinician_id is
+// never sent; authority stays server-derived and the shared E12/E13 domain
+// contract (types/validation/visibility/audit) is reused unchanged.
+
+var REC_TYPE_LABELS = {
+    diet: 'رژیم غذایی',
+    rest: 'استراحت',
+    activity: 'فعالیت',
+    care: 'مراقبت',
+    lab: 'آزمایش',
+    followup: 'پیگیری',
+    other: 'سایر'
+};
+
+function recTypeLabel(type){
+    var key = String(type == null ? '' : type);
+    if ( REC_TYPE_LABELS[key] ) return REC_TYPE_LABELS[key];
+    return esc(key);
+}
+
+function setRecBusy(busy){
+    state.workspaceRecBusy = !!busy;
+    var btn = qs('[data-role="workspace-rec-submit"]');
+    if ( btn ) {
+        btn.disabled = !!busy;
+        if ( busy ) btn.setAttribute('aria-busy', 'true');
+        else btn.removeAttribute('aria-busy');
+    }
+    var busyEl = qs('[data-role="workspace-rec-busy"]');
+    if ( busyEl ) {
+        if ( busy ) show(busyEl); else hide(busyEl);
+    }
+}
+
+function setFuBusy(busy){
+    state.workspaceFuBusy = !!busy;
+    var btn = qs('[data-role="workspace-fu-submit"]');
+    if ( btn ) {
+        btn.disabled = !!busy;
+        if ( busy ) btn.setAttribute('aria-busy', 'true');
+        else btn.removeAttribute('aria-busy');
+    }
+    var busyEl = qs('[data-role="workspace-fu-busy"]');
+    if ( busyEl ) {
+        if ( busy ) show(busyEl); else hide(busyEl);
+    }
+}
+
+function clearRecComposer(){
+    var text = qs('[data-role="workspace-rec-text"]');
+    if ( text ) text.value = '';
+    var type = qs('[data-role="workspace-rec-type"]');
+    if ( type ) type.selectedIndex = 0;
+    var visible = qs('[data-role="workspace-rec-visible"]');
+    if ( visible ) visible.checked = true;
+}
+
+function clearFuComposer(){
+    var date = qs('[data-role="workspace-fu-date"]');
+    if ( date ) date.value = '';
+    var interval = qs('[data-role="workspace-fu-interval-days"]');
+    if ( interval ) interval.value = '';
+    var reason = qs('[data-role="workspace-fu-reason"]');
+    if ( reason ) reason.value = '';
+    var needed = qs('[data-role="workspace-fu-needed"]');
+    if ( needed ) needed.checked = true;
+}
+
+function recFuFeedbackError(r, fallback){
+    if ( !r || !r.body ) return fallback;
+    var msg = r.body.message;
+    if ( typeof msg === 'string' && msg !== '' ) return msg.slice(0, 200);
+    return fallback;
+}
+
+function renderWorkspaceRec(){
+    var list = qs('[data-role="workspace-rec-list"]');
+    var empty = qs('[data-role="workspace-rec-empty"]');
+    var count = qs('[data-role="workspace-rec-count"]');
+    if ( !list ) return;
+    var recs = state.workspaceRec;
+    if ( count ) count.textContent = recs.length + ' توصیه';
+    if ( recs.length === 0 ) {
+        list.innerHTML = '';
+        show(empty);
+        return;
+    }
+    hide(empty);
+    list.innerHTML = recs.map(function(rec){
+        return '<li class="cpms-doc-ws-rec-item" data-role="workspace-rec-item" data-rec-id="' + esc(rec.id) + '">' +
+            '<div class="cpms-doc-ws-rec-head">' +
+                '<span class="cpms-doc-badge vis-' + (rec.is_patient_visible ? 'patient' : 'private') + '">' +
+                    (rec.is_patient_visible ? 'قابل مشاهده برای بیمار' : 'خصوصی') +
+                '</span>' +
+                '<span class="cpms-doc-ws-rec-type">' + recTypeLabel(rec.type) + '</span>' +
+                '<span class="cpms-doc-ws-rec-date">' + esc(rec.created_at || '') + '</span>' +
+            '</div>' +
+            '<p class="cpms-doc-ws-rec-text">' + esc(rec.text || '') + '</p>' +
+        '</li>';
+    }).join('');
+}
+
+function renderWorkspaceFu(){
+    var list = qs('[data-role="workspace-fu-list"]');
+    var empty = qs('[data-role="workspace-fu-empty"]');
+    var count = qs('[data-role="workspace-fu-count"]');
+    if ( !list ) return;
+    var followUps = state.workspaceFu;
+    if ( count ) count.textContent = followUps.length + ' پیگیری';
+    if ( followUps.length === 0 ) {
+        list.innerHTML = '';
+        show(empty);
+        return;
+    }
+    hide(empty);
+    list.innerHTML = followUps.map(function(fu){
+        var when = [];
+        if ( fu.suggested_date ) when.push('تاریخ: ' + esc(fu.suggested_date));
+        if ( fu.interval_days != null && fu.interval_days !== '' ) when.push('بازه: ' + esc(fu.interval_days) + ' روز');
+        if ( when.length === 0 ) when.push('بدون تاریخ/بازه');
+        return '<li class="cpms-doc-ws-fu-item" data-role="workspace-fu-item" data-fu-id="' + esc(fu.id) + '" data-needed="' + (fu.is_needed ? '1' : '0') + '">' +
+            '<div class="cpms-doc-ws-fu-head">' +
+                '<span class="cpms-doc-badge">' +
+                    (fu.is_needed ? 'نیاز به پیگیری' : 'نیازی نیست') +
+                '</span>' +
+                '<span class="cpms-doc-ws-fu-when">' + when.join(' · ') + '</span>' +
+                '<span class="cpms-doc-ws-fu-status">' + esc(fu.status || '') + '</span>' +
+            '</div>' +
+            (fu.reason ? '<p class="cpms-doc-ws-fu-reason">' + esc(fu.reason) + '</p>' : '') +
+        '</li>';
+    }).join('');
+}
+
+function submitWorkspaceRec(){
+    var visitId = state.workspaceVisitId;
+    if ( !visitId || state.workspaceRecBusy ) return;
+    var errEl = qs('[data-role="workspace-rec-error"]');
+    var okEl = qs('[data-role="workspace-rec-success"]');
+    var typeEl = qs('[data-role="workspace-rec-type"]');
+    var textEl = qs('[data-role="workspace-rec-text"]');
+    var visEl = qs('[data-role="workspace-rec-visible"]');
+    if ( !typeEl || !textEl ) return;
+    hide(errEl);
+    hide(okEl);
+    setRecBusy(true);
+    var submittedVisitId = visitId;
+    // POST /doctor/portal/visits/{id}/recommendations — selector headers only.
+    api('POST', '/doctor/portal/visits/' + encodeURIComponent(String(visitId)) + '/recommendations', {
+        items: [{
+            type: typeEl.value,
+            text: String(textEl.value || '').trim(),
+            is_patient_visible: !!(visEl && visEl.checked)
+        }]
+    }, scopeHeaders()).then(function(r){
+        if ( state.workspaceVisitId !== submittedVisitId ) return;
+        setRecBusy(false);
+        if ( r.status === 200 ) {
+            var data = (r.body && r.body.data) || {};
+            if ( data && data.recommendations ) {
+                state.workspaceRec = data.recommendations;
+                renderWorkspaceRec();
+            }
+            clearRecComposer();
+            if ( okEl ) { okEl.textContent = 'توصیه با موفقیت ثبت شد.'; show(okEl); }
+            return;
+        }
+        // Failed persistence is never presented as success.
+        if ( errEl ) { errEl.textContent = recFuFeedbackError(r, 'خطا در ثبت توصیه — دوباره تلاش کنید'); show(errEl); }
+    }).catch(function(){
+        if ( state.workspaceVisitId !== submittedVisitId ) return;
+        setRecBusy(false);
+        if ( errEl ) { errEl.textContent = 'خطای ارتباط در ثبت توصیه — دوباره تلاش کنید'; show(errEl); }
+    });
+}
+
+function submitWorkspaceFu(){
+    var visitId = state.workspaceVisitId;
+    if ( !visitId || state.workspaceFuBusy ) return;
+    var errEl = qs('[data-role="workspace-fu-error"]');
+    var okEl = qs('[data-role="workspace-fu-success"]');
+    var neededEl = qs('[data-role="workspace-fu-needed"]');
+    var dateEl = qs('[data-role="workspace-fu-date"]');
+    var intervalEl = qs('[data-role="workspace-fu-interval-days"]');
+    var reasonEl = qs('[data-role="workspace-fu-reason"]');
+    hide(errEl);
+    hide(okEl);
+    var body = { is_needed: !(neededEl && !neededEl.checked) };
+    var dateVal = dateEl ? String(dateEl.value || '').trim() : '';
+    var intervalVal = intervalEl ? String(intervalEl.value || '').trim() : '';
+    if ( dateVal !== '' ) body.suggested_date = dateVal;
+    if ( intervalVal !== '' ) {
+        var interval = parseInt(intervalVal, 10);
+        if ( !isNaN(interval) ) body.interval_days = interval;
+    }
+    if ( reasonEl && String(reasonEl.value || '').trim() !== '' ) {
+        body.reason = String(reasonEl.value).trim();
+    }
+    setFuBusy(true);
+    var submittedVisitId = visitId;
+    // POST /doctor/portal/visits/{id}/follow-ups — selector headers only.
+    api('POST', '/doctor/portal/visits/' + encodeURIComponent(String(visitId)) + '/follow-ups', body, scopeHeaders()).then(function(r){
+        if ( state.workspaceVisitId !== submittedVisitId ) return;
+        setFuBusy(false);
+        if ( r.status === 200 ) {
+            var fu = (r.body && r.body.data) || null;
+            if ( fu && fu.id ) {
+                state.workspaceFu = [fu].concat(state.workspaceFu);
+                renderWorkspaceFu();
+            }
+            clearFuComposer();
+            if ( okEl ) { okEl.textContent = 'پیگیری با موفقیت ثبت شد.'; show(okEl); }
+            return;
+        }
+        // Failed persistence is never presented as success.
+        if ( errEl ) { errEl.textContent = recFuFeedbackError(r, 'خطا در ثبت پیگیری — دوباره تلاش کنید'); show(errEl); }
+    }).catch(function(){
+        if ( state.workspaceVisitId !== submittedVisitId ) return;
+        setFuBusy(false);
+        if ( errEl ) { errEl.textContent = 'خطای ارتباط در ثبت پیگیری — دوباره تلاش کنید'; show(errEl); }
+    });
+}
+
 function loadContext(){
     return api('GET', '/doctor/portal/context').then(function(r){
         if ( r.status!==200 ) {
@@ -1161,6 +1495,18 @@ document.addEventListener('click', function(ev){
 });
 
 document.addEventListener('submit', function(ev){
+    var recForm = (ev.target && ev.target.closest) ? ev.target.closest('[data-role="workspace-rec-form"]') : null;
+    if ( recForm ) {
+        ev.preventDefault();
+        submitWorkspaceRec();
+        return;
+    }
+    var fuForm = (ev.target && ev.target.closest) ? ev.target.closest('[data-role="workspace-fu-form"]') : null;
+    if ( fuForm ) {
+        ev.preventDefault();
+        submitWorkspaceFu();
+        return;
+    }
     var rxForm = (ev.target && ev.target.closest) ? ev.target.closest('[data-role="workspace-rx-form"]') : null;
     if ( rxForm ) {
         ev.preventDefault();
