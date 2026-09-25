@@ -224,6 +224,74 @@ echo $cpms_styles_html;
                             <div data-role="workspace-form-success" class="cpms-doc-success" role="status" hidden></div>
                             <button type="submit" class="cpms-doc-btn cpms-doc-btn--primary" data-role="workspace-note-submit">ثبت یادداشت</button>
                         </form>
+                        <div class="cpms-doc-ws-rx" data-role="workspace-rx-section">
+                            <div class="cpms-doc-section-head cpms-doc-ws-subhead">
+                                <h3>نسخه‌های این ویزیت</h3>
+                                <span class="cpms-doc-count" data-role="workspace-rx-count"></span>
+                            </div>
+                            <ul data-role="workspace-rx-list" class="cpms-doc-ws-rx-list"></ul>
+                            <div data-role="workspace-rx-empty" class="cpms-doc-empty" hidden>هنوز نسخه‌ای برای این ویزیت ثبت نشده است.</div>
+                            <form class="cpms-doc-ws-form" data-role="workspace-rx-form">
+                                <div class="cpms-doc-section-head cpms-doc-ws-subhead">
+                                    <h3>نسخهٔ جدید</h3>
+                                </div>
+                                <div class="cpms-doc-ws-field">
+                                    <label for="cpms-doc-ws-rx-generic">نام ژنریک دارو</label>
+                                    <input id="cpms-doc-ws-rx-generic" type="text" data-role="workspace-rx-generic-name" maxlength="190" autocomplete="off">
+                                </div>
+                                <div class="cpms-doc-ws-field">
+                                    <label for="cpms-doc-ws-rx-dose">مقدار مصرف</label>
+                                    <input id="cpms-doc-ws-rx-dose" type="text" data-role="workspace-rx-dose" maxlength="64" autocomplete="off">
+                                </div>
+                                <div class="cpms-doc-ws-field">
+                                    <label for="cpms-doc-ws-rx-frequency">تکرار مصرف</label>
+                                    <input id="cpms-doc-ws-rx-frequency" type="text" data-role="workspace-rx-frequency" maxlength="64" autocomplete="off">
+                                </div>
+                                <div class="cpms-doc-ws-field">
+                                    <label for="cpms-doc-ws-rx-form">فرم دارو</label>
+                                    <select id="cpms-doc-ws-rx-form" data-role="workspace-rx-form-select">
+                                        <option value="tablet">قرص</option>
+                                        <option value="capsule">کپسول</option>
+                                        <option value="syrup">شربت</option>
+                                        <option value="injection">آمپول</option>
+                                        <option value="ointment">پماد</option>
+                                        <option value="drops">قطره</option>
+                                        <option value="inhaler">استنشاقی</option>
+                                        <option value="other">سایر</option>
+                                    </select>
+                                </div>
+                                <div class="cpms-doc-ws-field">
+                                    <label for="cpms-doc-ws-rx-route">مسیر مصرف</label>
+                                    <select id="cpms-doc-ws-rx-route" data-role="workspace-rx-route">
+                                        <option value="oral">خوراکی</option>
+                                        <option value="iv">وریدی</option>
+                                        <option value="im">عضلانی</option>
+                                        <option value="sc">زیرجلدی</option>
+                                        <option value="topical">موضعی</option>
+                                        <option value="inhaled">استنشاقی</option>
+                                        <option value="other">سایر</option>
+                                    </select>
+                                </div>
+                                <div class="cpms-doc-ws-field">
+                                    <label for="cpms-doc-ws-rx-duration">مدت مصرف (روز)</label>
+                                    <input id="cpms-doc-ws-rx-duration" type="number" min="1" max="3650" inputmode="numeric" data-role="workspace-rx-duration-days">
+                                </div>
+                                <div class="cpms-doc-ws-field">
+                                    <label for="cpms-doc-ws-rx-instructions">دستور مصرف</label>
+                                    <input id="cpms-doc-ws-rx-instructions" type="text" data-role="workspace-rx-instructions" maxlength="500" autocomplete="off">
+                                </div>
+                                <div class="cpms-doc-ws-field cpms-doc-ws-check">
+                                    <label for="cpms-doc-ws-rx-visible">
+                                        <input id="cpms-doc-ws-rx-visible" type="checkbox" data-role="workspace-rx-visible" checked>
+                                        قابل مشاهده برای بیمار (پس از نهایی‌سازی)
+                                    </label>
+                                </div>
+                                <div data-role="workspace-rx-busy" class="cpms-doc-loading" hidden>در حال ثبت نسخه…</div>
+                                <div data-role="workspace-rx-error" class="cpms-doc-error" role="alert" hidden></div>
+                                <div data-role="workspace-rx-success" class="cpms-doc-success" role="status" hidden></div>
+                                <button type="submit" class="cpms-doc-btn cpms-doc-btn--primary" data-role="workspace-rx-submit">ثبت نسخه (پیش‌نویس)</button>
+                            </form>
+                        </div>
                     </div>
                 </section>
 
@@ -273,7 +341,9 @@ var state = {
     pollPaused: false,
     workspaceVisitId: null,
     workspaceNotes: [],
-    workspaceBusy: false
+    workspaceBusy: false,
+    workspaceRx: [],
+    workspaceRxBusy: false
 };
 
 function apiUrl(path){
@@ -573,6 +643,20 @@ function scopeHeaders(){
 // operational Location + Visit ownership) — with the portal nonce and the
 // trusted Clinic/Location selector headers; authority stays server-side.
 
+function resetRxUi(){
+    state.workspaceRx = [];
+    setRxBusy(false);
+    var list = qs('[data-role="workspace-rx-list"]');
+    if ( list ) list.innerHTML = '';
+    var count = qs('[data-role="workspace-rx-count"]');
+    if ( count ) count.textContent = '';
+    show(qs('[data-role="workspace-rx-empty"]'));
+    hide(qs('[data-role="workspace-rx-busy"]'));
+    hide(qs('[data-role="workspace-rx-error"]'));
+    hide(qs('[data-role="workspace-rx-success"]'));
+    clearRxComposer();
+}
+
 function closeWorkspace(){
     state.workspaceVisitId = null;
     state.workspaceNotes = [];
@@ -585,6 +669,7 @@ function closeWorkspace(){
     var contentEl = qs('[data-role="workspace-content"]');
     if ( contentEl ) contentEl.value = '';
     setNoteSubmitBusy(false);
+    resetRxUi();
 }
 
 function setNoteSubmitBusy(busy){
@@ -609,6 +694,7 @@ function openWorkspace(visitId){
     hide(qs('[data-role="workspace-form-error"]'));
     hide(qs('[data-role="workspace-form-success"]'));
     setNoteSubmitBusy(false);
+    resetRxUi();
     var contentEl = qs('[data-role="workspace-content"]');
     if ( contentEl ) contentEl.value = '';
     var openedVisitId = visitId;
@@ -646,6 +732,8 @@ function renderWorkspace(data){
     renderWorkspaceHeader(data);
     state.workspaceNotes = (data && data.notes) || [];
     renderWorkspaceNotes();
+    state.workspaceRx = (data && data.prescriptions) || [];
+    renderWorkspaceRx();
     show(body);
 }
 
@@ -746,6 +834,193 @@ function submitWorkspaceNote(){
         if ( state.workspaceVisitId !== submittedVisitId ) return;
         setNoteSubmitBusy(false);
         if ( errEl ) { errEl.textContent = 'خطای ارتباط در ثبت یادداشت — دوباره تلاش کنید'; show(errEl); }
+    });
+}
+
+// ================= Visit Workspace — prescriptions (Phase 10 Rx write) =================
+// Write goes through the Doctor Portal prescription boundary
+// (/doctor/portal/visits/{id}/prescriptions, /doctor/portal/prescriptions/{id}/finalize)
+// with the portal nonce and trusted Clinic/Location selector headers ONLY.
+// clinician_id is never sent; authority stays server-derived.
+
+function setRxBusy(busy){
+    state.workspaceRxBusy = !!busy;
+    var btn = qs('[data-role="workspace-rx-submit"]');
+    if ( btn ) {
+        btn.disabled = !!busy;
+        if ( busy ) btn.setAttribute('aria-busy', 'true');
+        else btn.removeAttribute('aria-busy');
+    }
+    var busyEl = qs('[data-role="workspace-rx-busy"]');
+    if ( busyEl ) {
+        if ( busy ) show(busyEl); else hide(busyEl);
+    }
+}
+
+function clearRxComposer(){
+    var ids = ['workspace-rx-generic-name', 'workspace-rx-dose', 'workspace-rx-frequency', 'workspace-rx-duration-days', 'workspace-rx-instructions'];
+    for ( var i = 0; i < ids.length; i++ ) {
+        var el = qs('[data-role="' + ids[i] + '"]');
+        if ( el ) el.value = '';
+    }
+    var form = qs('[data-role="workspace-rx-form-select"]');
+    if ( form ) form.selectedIndex = 0;
+    var route = qs('[data-role="workspace-rx-route"]');
+    if ( route ) route.selectedIndex = 0;
+    var visible = qs('[data-role="workspace-rx-visible"]');
+    if ( visible ) visible.checked = true;
+}
+
+function rxStatusLabel(status){
+    return { draft: 'پیش‌نویس', finalized: 'نهایی‌شده — فقط خواندنی' }[status] || status || '';
+}
+
+function renderWorkspaceRx(){
+    var list = qs('[data-role="workspace-rx-list"]');
+    var empty = qs('[data-role="workspace-rx-empty"]');
+    var count = qs('[data-role="workspace-rx-count"]');
+    if ( !list ) return;
+    var rxList = state.workspaceRx;
+    if ( count ) count.textContent = rxList.length + ' نسخه';
+    if ( rxList.length === 0 ) {
+        list.innerHTML = '';
+        show(empty);
+        return;
+    }
+    hide(empty);
+    list.innerHTML = rxList.map(function(rx){
+        var items = (rx.items || []).map(function(it){
+            return '<li class="cpms-doc-ws-rx-item-row" data-role="workspace-rx-item-row">' +
+                '<strong>' + esc(it.generic_name || '') + '</strong>' +
+                ' — ' + esc(it.dose || '') + ' · ' + esc(it.frequency || '') +
+                (it.duration_days != null && it.duration_days !== '' ? ' · ' + esc(it.duration_days) + ' روز' : '') +
+                (it.instructions ? ' · ' + esc(it.instructions) : '') +
+                '</li>';
+        }).join('');
+        var control = rx.status === 'draft'
+            ? '<button type="button" class="cpms-doc-btn cpms-doc-btn--primary" data-role="workspace-rx-finalize" data-rx-id="' + esc(rx.id) + '">نهایی‌سازی نسخه</button>'
+            : '<span data-role="workspace-rx-readonly">نهایی‌شده — فقط خواندنی</span>';
+        return '<li class="cpms-doc-ws-rx-item" data-role="workspace-rx-item" data-rx-id="' + esc(rx.id) + '" data-status="' + esc(rx.status || '') + '">' +
+            '<div class="cpms-doc-ws-rx-head">' +
+                '<span data-role="workspace-rx-number">' + esc(rx.prescription_number || '') + '</span>' +
+                '<span class="cpms-doc-badge rx-status-' + esc(rx.status || '') + '">' + esc(rxStatusLabel(rx.status)) + '</span>' +
+            '</div>' +
+            '<ul class="cpms-doc-ws-rx-items">' + items + '</ul>' +
+            '<div class="cpms-doc-ws-rx-row">' + control + '</div>' +
+        '</li>';
+    }).join('');
+}
+
+function upsertWorkspaceRx(rx){
+    if ( !rx || !rx.id ) return;
+    var next = [];
+    var found = false;
+    for ( var i = 0; i < state.workspaceRx.length; i++ ) {
+        if ( String(state.workspaceRx[i].id) === String(rx.id) ) {
+            next.push(rx);
+            found = true;
+        } else {
+            next.push(state.workspaceRx[i]);
+        }
+    }
+    if ( !found ) next.unshift(rx);
+    state.workspaceRx = next;
+    renderWorkspaceRx();
+}
+
+function rxFeedbackError(r){
+    var fallback = 'خطا در ذخیرهٔ نسخه — دوباره تلاش کنید';
+    if ( !r || !r.body ) return fallback;
+    var msg = r.body.message;
+    if ( typeof msg === 'string' && msg !== '' ) return msg.slice(0, 200);
+    return fallback;
+}
+
+function submitWorkspaceRx(){
+    var visitId = state.workspaceVisitId;
+    if ( !visitId || state.workspaceRxBusy ) return;
+    var errEl = qs('[data-role="workspace-rx-error"]');
+    var okEl = qs('[data-role="workspace-rx-success"]');
+    hide(errEl);
+    hide(okEl);
+    var value = function(role){
+        var el = qs('[data-role="' + role + '"]');
+        return el ? String(el.value || '').trim() : '';
+    };
+    var genericName = value('workspace-rx-generic-name');
+    var dose = value('workspace-rx-dose');
+    var frequency = value('workspace-rx-frequency');
+    var formSel = qs('[data-role="workspace-rx-form-select"]');
+    var routeSel = qs('[data-role="workspace-rx-route"]');
+    var durationRaw = value('workspace-rx-duration-days');
+    var visibleEl = qs('[data-role="workspace-rx-visible"]');
+    var item = {
+        generic_name: genericName,
+        dose: dose,
+        frequency: frequency,
+        form: formSel ? formSel.value : 'tablet',
+        route: routeSel ? routeSel.value : 'oral',
+        instructions: value('workspace-rx-instructions')
+    };
+    if ( durationRaw !== '' ) {
+        var duration = parseInt(durationRaw, 10);
+        if ( !isNaN(duration) ) item.duration_days = duration;
+    }
+    setRxBusy(true);
+    var submittedVisitId = visitId;
+    // POST /doctor/portal/visits/{id}/prescriptions — selector headers only.
+    api('POST', '/doctor/portal/visits/' + encodeURIComponent(String(visitId)) + '/prescriptions', {
+        items: [item],
+        is_patient_visible: !!(visibleEl && visibleEl.checked)
+    }, scopeHeaders()).then(function(r){
+        if ( state.workspaceVisitId !== submittedVisitId ) return;
+        setRxBusy(false);
+        if ( r.status === 200 ) {
+            var rx = (r.body && r.body.data) || r.body || {};
+            if ( rx && rx.id ) upsertWorkspaceRx(rx);
+            clearRxComposer();
+            if ( okEl ) { okEl.textContent = 'نسخه با موفقیت به‌صورت پیش‌نویس ثبت شد.'; show(okEl); }
+            return;
+        }
+        // Failed persistence is never presented as success.
+        if ( errEl ) { errEl.textContent = rxFeedbackError(r); show(errEl); }
+    }).catch(function(){
+        if ( state.workspaceVisitId !== submittedVisitId ) return;
+        setRxBusy(false);
+        if ( errEl ) { errEl.textContent = 'خطای ارتباط در ثبت نسخه — دوباره تلاش کنید'; show(errEl); }
+    });
+}
+
+function finalizeWorkspaceRx(btn, rxId){
+    if ( !btn || btn.disabled ) return;
+    var visitId = state.workspaceVisitId;
+    if ( !visitId ) return;
+    var errEl = qs('[data-role="workspace-rx-error"]');
+    var okEl = qs('[data-role="workspace-rx-success"]');
+    hide(errEl);
+    hide(okEl);
+    btn.disabled = true;
+    btn.setAttribute('aria-busy', 'true');
+    var submittedVisitId = visitId;
+    // POST /doctor/portal/prescriptions/{id}/finalize — selector only;
+    // server resolves prescription->Visit ownership before delegating.
+    api('POST', '/doctor/portal/prescriptions/' + encodeURIComponent(String(rxId)) + '/finalize', null, scopeHeaders()).then(function(r){
+        if ( state.workspaceVisitId !== submittedVisitId ) return;
+        btn.disabled = false;
+        btn.removeAttribute('aria-busy');
+        if ( r.status === 200 ) {
+            var rx = (r.body && r.body.data) || r.body || {};
+            if ( rx && rx.id ) upsertWorkspaceRx(rx);
+            if ( okEl ) { okEl.textContent = 'نسخه نهایی شد و فقط خواندنی است.'; show(okEl); }
+            return;
+        }
+        // Repeat/invalid finalize keeps the established failure surface.
+        if ( errEl ) { errEl.textContent = rxFeedbackError(r); show(errEl); }
+    }).catch(function(){
+        if ( state.workspaceVisitId !== submittedVisitId ) return;
+        btn.disabled = false;
+        btn.removeAttribute('aria-busy');
+        if ( errEl ) { errEl.textContent = 'خطای ارتباط در نهایی‌سازی — دوباره تلاش کنید'; show(errEl); }
     });
 }
 
@@ -871,6 +1146,13 @@ document.addEventListener('click', function(ev){
         closeWorkspace();
         return;
     }
+    var finBtn = target ? target.closest('[data-role="workspace-rx-finalize"]') : null;
+    if ( finBtn ) {
+        ev.preventDefault();
+        if ( finBtn.disabled ) return;
+        finalizeWorkspaceRx(finBtn, finBtn.getAttribute('data-rx-id'));
+        return;
+    }
     var item = target ? target.closest('[data-role="queue-item"]') : null;
     if ( !item ) return;
     var selectedVisitId = item.getAttribute('data-visit-id');
@@ -879,6 +1161,12 @@ document.addEventListener('click', function(ev){
 });
 
 document.addEventListener('submit', function(ev){
+    var rxForm = (ev.target && ev.target.closest) ? ev.target.closest('[data-role="workspace-rx-form"]') : null;
+    if ( rxForm ) {
+        ev.preventDefault();
+        submitWorkspaceRx();
+        return;
+    }
     var form = (ev.target && ev.target.closest) ? ev.target.closest('[data-role="workspace-note-form"]') : null;
     if ( !form ) return;
     ev.preventDefault();

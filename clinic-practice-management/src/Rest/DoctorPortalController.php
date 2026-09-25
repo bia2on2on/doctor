@@ -108,6 +108,45 @@ final class DoctorPortalController extends RestBase {
 				],
 			]
 		);
+
+		// Phase 10 Rx write — Doctor Portal prescription boundary. Same adapter
+		// architecture as the Visit Workspace: portal-specific guard in front
+		// of the established shared E10/E11 behavior (which stays untouched).
+		register_rest_route(
+			self::NS,
+			'/doctor/portal/visits/(?P<id>\d+)/prescriptions',
+			[
+				[
+					'methods'             => WP_REST_Server::CREATABLE,
+					'callback'            => fn( WP_REST_Request $r ) => $this->workspace_create_prescription( $r ),
+					'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_workspace( $r, RolesAndCapabilities::RX_CREATE ),
+					'args'                => [
+						'items'              => [
+							'required' => true,
+							'type'     => 'array',
+							'items'    => [ 'type' => 'object' ],
+						],
+						'is_patient_visible' => [
+							'required' => false,
+							'type'     => 'boolean',
+							'default'  => true,
+						],
+					],
+				],
+			]
+		);
+
+		register_rest_route(
+			self::NS,
+			'/doctor/portal/prescriptions/(?P<id>\d+)/finalize',
+			[
+				[
+					'methods'             => WP_REST_Server::CREATABLE,
+					'callback'            => fn( WP_REST_Request $r ) => $this->workspace_finalize_prescription( $r ),
+					'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_workspace( $r, RolesAndCapabilities::RX_CREATE ),
+				],
+			]
+		);
 	}
 
 	private function perm_doctor( WP_REST_Request $r ): bool|WP_Error {
@@ -215,6 +254,62 @@ final class DoctorPortalController extends RestBase {
 		return $this->workspace_wrap(
 			fn() => App::clinicalService()->addNote( (int) wp_get_current_user()->ID, $visit_id, $this->workspace_body( $r ) )
 		);
+	}
+
+	/**
+	 * Phase 10 Rx write — draft prescription creation (portal boundary).
+	 *
+	 * Reuses the established E10 create (structured item
+	 * validation/enums/duration limits, drug_ref existence, established
+	 * prescription number, draft lifecycle start, existing audit) AFTER the
+	 * portal-specific Visit guard; the shared E10 contract stays untouched.
+	 */
+	private function workspace_create_prescription( WP_REST_Request $r ): WP_REST_Response|WP_Error {
+		$visit_id = (int) $r['id'];
+		$guard    = $this->workspace_authorize_visit( $visit_id );
+		if ( $guard instanceof WP_Error ) {
+			return $guard;
+		}
+		return $this->workspace_wrap(
+			fn() => App::clinicalService()->createPrescription( (int) wp_get_current_user()->ID, $visit_id, $this->workspace_body( $r ) )
+		);
+	}
+
+	/**
+	 * Phase 10 Rx write — draft finalize (portal boundary).
+	 *
+	 * The raw prescription_id is only a selector: the SERVER resolves its
+	 * owning Visit and authorizes THAT Visit through the portal boundary
+	 * before delegating to the established E11 transition (existing
+	 * finalized_at, existing repeat-finalize 409 semantics, existing audit).
+	 * The shared E11 contract stays untouched.
+	 */
+	private function workspace_finalize_prescription( WP_REST_Request $r ): WP_REST_Response|WP_Error {
+		$rx_id = (int) $r['id'];
+		$guard = $this->workspace_authorize_prescription( $rx_id );
+		if ( $guard instanceof WP_Error ) {
+			return $guard;
+		}
+		return $this->workspace_wrap(
+			fn() => App::clinicalService()->finalizePrescription( (int) wp_get_current_user()->ID, $rx_id )
+		);
+	}
+
+	/**
+	 * Server-side prescription -> Visit ownership resolution for the portal
+	 * boundary. Unknown OR foreign-Visit prescription selectors collapse to
+	 * the same non-enumerating 404; existence is never leaked.
+	 */
+	private function workspace_authorize_prescription( int $prescription_id ): bool|WP_Error {
+		$db = App::db();
+		$rx = $db->fetchRow(
+			'SELECT id, visit_id FROM ' . $db->table( 'cpms_prescriptions' ) . ' WHERE id = %d LIMIT 1',
+			[ $prescription_id ]
+		);
+		if ( null === $rx ) {
+			return new WP_Error( 'CLINIC_NOT_FOUND', 'نسخه یافت نشد', [ 'status' => 404 ] );
+		}
+		return $this->workspace_authorize_visit( (int) $rx['visit_id'] );
 	}
 
 	/**
