@@ -192,7 +192,7 @@ final class App
         PublicBookingShortcode::register();
         DoctorPortalShell::register();
         // Phase 10 — canonical shared operational Staff Portal container. The
-        // legacy Doctor Portal entry above remains as a compatibility alias.
+        // legacy Doctor Portal entry above remains a compatibility entry (one-time redirect).
         StaffPortalShell::register();
 
         if (self::$booted) {

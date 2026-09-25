@@ -162,6 +162,23 @@ try {
     dp_fail('membership: ' . $e->getMessage());
 }
 
+// Phase 10 — NON-doctor staff actor with an ACTIVE membership in the same
+// Clinic. Proves the legacy Doctor Portal entry is not an authorization
+// bypass: no compatibility redirect and no doctor module for this actor.
+$loginSecretary = 'dpsec' . $uniq;
+$passSecretary = 'DpSec-' . $uniq . '-2026!';
+$userSecretary = wp_create_user($loginSecretary, $passSecretary, $loginSecretary . '@pilot.local');
+if (is_wp_error($userSecretary)) {
+    dp_fail('secretary user create failed');
+}
+$userSecretary = (int) $userSecretary;
+(new WP_User($userSecretary))->set_role('cpms_secretary');
+try {
+    \ClinicCore\Bootstrap\App::membership_service()->create_membership($oneClinic, $userSecretary, 'cpms_secretary');
+} catch (Throwable $e) {
+    dp_fail('secretary membership: ' . $e->getMessage());
+}
+
 $patient = static function (int $clinicId, string $mrn, string $mobile) use ($wpdb, $db, $now): int {
     return dp_insert(
         $wpdb,
@@ -398,6 +415,7 @@ file_put_contents(
     '/tmp/doctor-portal.env',
     'DOCTOR_PORTAL_URL=' . $url . "\n"
     . 'STAFF_PORTAL_URL=' . $staffUrl . "\n"
+    . 'STAFF_SECRETARY=' . implode('|', [$loginSecretary, $passSecretary, (string) $userSecretary]) . "\n"
     . 'DOCTOR_ONE=' . $oneLine . "\n"
     . 'DOCTOR_OTHER=' . $otherLine . "\n"
     . 'DOCTOR_MULTI=' . $multiLine . "\n"

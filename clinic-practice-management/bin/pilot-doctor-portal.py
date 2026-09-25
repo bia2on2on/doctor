@@ -10,6 +10,7 @@ Evidence lines are PASS/FAIL/INFO/SHOT with booleans and non-sensitive ids.
 Passwords, mobiles, nonces, and cookies are not printed.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -160,6 +161,10 @@ if STAFF_URL.rstrip("/") == PORTAL_URL.rstrip("/"):
 ONE = _doctor(_parts("DOCTOR_ONE", 12), "one")
 OTHER = _doctor(_parts("DOCTOR_OTHER", 12), "one")
 MULTI = _doctor(_parts("DOCTOR_MULTI", 15), "multi")
+_sec = _parts("STAFF_SECRETARY", 3)
+# Non-doctor staff actor (active membership in the ONE clinic): legacy entry
+# must NOT redirect and must NOT expose the doctor module (no authz bypass).
+SECRETARY = {"login": _sec[0], "password": _sec[1], "user_id": int(_sec[2])}
 
 
 def payload(body):
@@ -416,10 +421,143 @@ def assert_staff_shell(page):
         raise RuntimeError("doctor module navigation entry is not visible")
     if page.locator('script[type="application/json"][class*="__config"]').count() != 1:
         raise RuntimeError("shared shell must publish exactly one runtime config")
+    assert_single_staff_document(page)
     content = page.content()
     for marker in ROLE_SWITCH_MARKERS:
         if marker in content:
             raise RuntimeError(f"role switcher / strongest-role surface present ({marker})")
+
+
+# ONE visual shell (owner visual review of PR #124): the final document must be
+# the single Staff Portal shell. The earlier marker checks (staff root present,
+# no wp-admin chrome strings) could pass while an old Doctor Portal wrapper or
+# identity was still present; these selectors make that impossible.
+EXACTLY_ONE = (
+    "#cpms-staff-portal-shell",
+    'div[data-cpms-staff-portal-shell="v1"]',
+    '[data-shell-contract="staff-v1"]',
+    "header",
+    '[data-role="portal-header"]',
+    '[data-role="portal-header-title"]',
+    '[data-role="staff-nav"]',
+    "main",
+    '[role="main"]',
+    "#cpms-doctor-portal-app",
+    "script.cpms-doctor-portal__config",
+    'script[src*="/assets/js/cpms-doctor-portal.js"]',
+    'link[rel="stylesheet"][href*="/assets/css/cpms-doctor-portal.css"]',
+    'script:not([src]):not([type="application/json"])',
+)
+MUST_BE_ABSENT = (
+    # old standalone Doctor Portal document/wrapper identity
+    "#cpms-doctor-portal-shell",
+    '[data-cpms-portal="doctor"]',
+    '[data-cpms-doctor-portal="shell"]',
+    '[data-shell-contract="doctor-v1"]',
+    # wp-admin chrome / admin bar
+    "#wpadminbar",
+    "#adminmenu",
+    "#adminmenuwrap",
+    "#adminmenuback",
+    "#wpwrap",
+    "#wpcontent",
+    "#wpbody",
+    "#wpfooter",
+    ".wp-toolbar",
+    "#admin-bar-css",
+    "#admin-bar-inline-css",
+    # active Theme / block-theme layout (the shell never calls wp_head/get_header)
+    ".wp-site-blocks",
+    ".wp-block-template-part",
+    ".site-header",
+    ".site-footer",
+    "#masthead",
+    "#colophon",
+    "footer",
+    "#global-styles-inline-css",
+    "#wp-block-library-css",
+    'link[href*="/wp-content/themes/"]',
+    'script[src*="/wp-content/themes/"]',
+)
+LEGACY_PRODUCT_LABEL = "پورتال پزشک"
+STAFF_PRODUCT_LABEL = "پورتال کارکنان"
+
+
+def assert_single_staff_document(page):
+    counts = page.evaluate(
+        """(sels) => { const o = {}; for (const s of sels) o[s] = document.querySelectorAll(s).length; return o; }""",
+        list(EXACTLY_ONE + MUST_BE_ABSENT),
+    )
+    wrong = [f"{sel}={counts[sel]}" for sel in EXACTLY_ONE if counts[sel] != 1]
+    if wrong:
+        raise RuntimeError(f"not exactly one Staff Portal shell/document part: {wrong}")
+    present = [f"{sel}={counts[sel]}" for sel in MUST_BE_ABSENT if counts[sel] != 0]
+    if present:
+        raise RuntimeError(f"old Doctor Portal wrapper / wp-admin / theme chrome present: {present}")
+    classes = page.evaluate("[document.documentElement.className, document.body.className]")
+    for token in ("wp-toolbar", "admin-bar", "wp-admin", "wp-core-ui"):
+        if any(token in (c or "").split() for c in classes):
+            raise RuntimeError(f"wp-admin/admin-bar class on html/body ({token})")
+    products = page.locator(".cpms-doctor-portal-shell__product").all_inner_texts()
+    if [t.strip() for t in products] != [STAFF_PRODUCT_LABEL]:
+        raise RuntimeError(f"header identity is not the Staff Portal ({products})")
+    if LEGACY_PRODUCT_LABEL in page.content() or LEGACY_PRODUCT_LABEL in (page.title() or ""):
+        raise RuntimeError("old Doctor Portal identity text present in the final document")
+
+
+SHELL_FINGERPRINT_JS = """() => {
+  const shell = document.querySelector('#cpms-staff-portal-shell');
+  const sig = (el) => el.tagName.toLowerCase() + (el.id ? '#' + el.id : '')
+    + (el.getAttribute('data-role') ? '[' + el.getAttribute('data-role') + ']' : '')
+    + '.' + Array.from(el.classList).sort().join('.');
+  const all = (s) => Array.from(document.querySelectorAll(s));
+  return JSON.stringify({
+    html: ['data-cpms-staff-portal-shell', 'data-cpms-portal', 'data-cpms-doctor-portal-shell', 'lang', 'dir']
+      .map((a) => document.documentElement.getAttribute(a)),
+    body: document.body.className,
+    title: document.title,
+    shell: shell ? sig(shell) : null,
+    children: shell ? Array.from(shell.children).map(sig) : [],
+    product: all('.cpms-doctor-portal-shell__product').map((e) => e.textContent.trim()),
+    heading: all('[data-role="portal-header-title"]').map((e) => e.textContent.trim()),
+    nav: all('[data-cpms-staff-module]').map((e) => e.getAttribute('data-cpms-staff-module')),
+    css: all('link[rel="stylesheet"]').map((e) => new URL(e.href).pathname),
+    js: all('script[src]').map((e) => new URL(e.src).pathname),
+  });
+}"""
+CANON_FP = {}
+
+
+def shell_fingerprint(page):
+    raw = page.evaluate(SHELL_FINGERPRINT_JS)
+    return raw, hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+
+
+def assert_queue_readable(page, label):
+    """Live Queue stays readable (no character-by-character wrapping) and the
+    Staff Portal navigation does not crush the operational content."""
+    m = page.evaluate(
+        """() => {
+          const q = document.querySelector('[data-role="queue-section"]');
+          const names = Array.from(document.querySelectorAll('[data-role="queue-item"] [data-role="patient-name"]'));
+          const out = { queue_w: q ? Math.round(q.getBoundingClientRect().width) : 0, vw: window.innerWidth, min_w: 99999, max_lines: 0, n: names.length };
+          for (const el of names) {
+            const r = el.getBoundingClientRect();
+            const box = (el.closest('.cpms-doc-queue-main') || el).getBoundingClientRect();
+            const lh = parseFloat(getComputedStyle(el).lineHeight) || (parseFloat(getComputedStyle(el).fontSize) * 1.45);
+            out.min_w = Math.min(out.min_w, Math.round(box.width));
+            out.max_lines = Math.max(out.max_lines, Math.round(r.height / lh));
+          }
+          return out;
+        }"""
+    )
+    if m["n"] == 0:
+        raise RuntimeError(f"{label} live queue has no rendered patient rows")
+    if m["queue_w"] < 0.4 * min(m["vw"], 1320):
+        raise RuntimeError(f"{label} live queue crushed by the shell ({m})")
+    if m["min_w"] < 64 or m["max_lines"] > 3:
+        raise RuntimeError(f"{label} live queue patient names wrap character-by-character ({m})")
+    return m
 
 
 def assert_queue_hugs_content(page, label):
@@ -1631,6 +1769,14 @@ def prove_one(browser, doctor, vp, shot_name=None, probe_fallback=False):
         )
         assert_queue_hugs_content(page, vp["vp"])
         if shot_name:
+            assert_single_staff_document(page)
+            qm = assert_queue_readable(page, vp["vp"])
+            fp_raw, fp = shell_fingerprint(page)
+            CANON_FP[vp["vp"]] = fp_raw
+            info(
+                f"canonical-shell-{vp['vp']} fingerprint={fp} single_shell=1 legacy_wrapper=0 wp_admin_chrome=0 "
+                f"theme_chrome=0 queue_w={qm['queue_w']} name_min_w={qm['min_w']} name_max_lines={qm['max_lines']}"
+            )
             shot(page, shot_name)
             shot(page, f"staff-portal-{vp['vp']}-canonical-landing")
         stage = "auto-resolve"
@@ -1922,10 +2068,16 @@ def prove_multi(browser, doctor, vp, shots=False):
         ctx.close()
 
 
+def _path_query(url):
+    parsed = urlparse(url or "")
+    return parsed.path, parsed.query
+
+
 def prove_legacy(browser, doctor, vp):
-    """Legacy Doctor Portal URL = backward-compatible entry to the SAME shared
-    Staff Portal shell (alias): one HTTP 200 document, no redirect (so no loop),
-    same WordPress session, same doctor experience and REST authority."""
+    """Legacy Doctor Portal URL = compatibility ENTRY only (owner visual review
+    of PR #124): ONE server-side redirect to the canonical Staff Portal, then the
+    SAME single Staff Portal shell as the canonical entry. Same WordPress
+    session, same doctor module and REST authority; no loop; no second shell."""
     key = f"staff-portal-{vp['vp']}-legacy-entry"
     stage = "login"
     ctx, page, state = new_page(browser, vp)
@@ -1937,16 +2089,34 @@ def prove_legacy(browser, doctor, vp):
         with page.expect_response(context_pred, timeout=25000) as ctx_info:
             resp = harness_goto(page, PORTAL_URL, wait_until="domcontentloaded")
         if resp is None or resp.status != 200:
-            raise RuntimeError(f"legacy entry did not return one 200 document ({getattr(resp, 'status', None)})")
-        if resp.request.redirected_from is not None:
-            raise RuntimeError("legacy entry redirected (alias contract expects the same shell, no hop)")
-        legacy = urlparse(PORTAL_URL)
-        final = urlparse(page.url or "")
-        if (final.path, final.query) != (legacy.path, legacy.query):
-            raise RuntimeError(f"legacy bookmark did not stay on its URL ({final.path}?{final.query})")
+            raise RuntimeError(f"legacy entry did not end in one 200 document ({getattr(resp, 'status', None)})")
+        hop = resp.request.redirected_from
+        if hop is None:
+            raise RuntimeError("legacy entry served its own document instead of the one-time compatibility redirect")
+        if hop.redirected_from is not None:
+            raise RuntimeError("legacy entry produced more than one redirect (chain/loop)")
+        if _path_query(hop.url) != _path_query(PORTAL_URL):
+            raise RuntimeError(f"redirect did not start at the legacy URL ({urlparse(hop.url).path})")
+        hop_resp = hop.response()
+        hop_status = hop_resp.status if hop_resp is not None else None
+        if hop_status != 302:
+            raise RuntimeError(f"compatibility redirect is not a single 302 ({hop_status})")
+        location = (hop_resp.headers or {}).get("location", "")
+        if _path_query(location) != _path_query(STAFF_URL):
+            raise RuntimeError(f"compatibility redirect target is not the canonical Staff Portal ({urlparse(location).path})")
+        loc_keys = {k.lower() for k in parse_qs(urlparse(location).query, keep_blank_values=True)}
+        leaked = loc_keys & (FORBIDDEN_KEYS | {"clinic_id", "location_id", "_wpnonce", "nonce", "redirect_to", "token"})
+        if leaked:
+            raise RuntimeError(f"redirect URL carries authority/nonce/redirect keys {sorted(leaked)}")
+        if _path_query(page.url) != _path_query(STAFF_URL):
+            raise RuntimeError(f"final URL is not the canonical Staff Portal ({urlparse(page.url or '').path})")
         after = nav_mark(page)
-        if after["harness_docs"] - before["harness_docs"] != 1 or after["product_docs"] != before["product_docs"]:
-            raise RuntimeError("legacy entry produced more than one document navigation (loop/redirect)")
+        harness_docs = after["harness_docs"] - before["harness_docs"]
+        if after["product_docs"] != before["product_docs"] or harness_docs not in (1, 2):
+            raise RuntimeError(
+                f"legacy entry navigation count unexpected (harness={harness_docs}, "
+                f"product={after['product_docs'] - before['product_docs']})"
+            )
         context = payload(_json(ctx_info.value, "context (legacy entry)"))
         if (context.get("doctor") or {}).get("clinician_id") != doctor["clinician_id"]:
             raise RuntimeError("legacy entry lost the authenticated doctor session/identity")
@@ -1957,13 +2127,86 @@ def prove_legacy(browser, doctor, vp):
             f'[data-role="queue-item"][data-visit-id="{doctor["visit_own"]}"]',
             timeout=20000,
         )
+        stage = "same-shell-as-canonical"
+        fp_raw, fp = shell_fingerprint(page)
+        canon = CANON_FP.get(vp["vp"])
+        if canon is None:
+            raise RuntimeError("canonical fingerprint missing for this viewport (canonical journey failed)")
+        if fp_raw != canon:
+            raise RuntimeError(f"legacy final shell differs from the canonical shell (legacy={fp_raw} canonical={canon})")
+        qm = assert_queue_readable(page, vp["vp"])
         shot(page, key)
         stage = "hygiene"
         sw, iw = assert_hygiene(page, state, vp["vp"])
         ok(
             key,
-            "legacy Doctor Portal URL renders the shared Staff Portal doctor experience",
-            f"status=200 redirects=0 same_url=1 session=1 staff_shell=1 module=doctor sw={sw} iw={iw}",
+            "legacy Doctor Portal URL is a compatibility entry to the ONE Staff Portal shell",
+            f"initial={urlparse(PORTAL_URL).path} status_chain=302>200 redirects=1 final={urlparse(page.url).path} "
+            f"final_is_canonical=1 session=1 staff_shell=1 single_shell=1 legacy_wrapper=0 wp_admin_chrome=0 "
+            f"theme_chrome=0 same_as_canonical=1 fingerprint={fp} module=doctor harness_docs={harness_docs} "
+            f"product_reloads=0 queue_w={qm['queue_w']} name_min_w={qm['min_w']} name_max_lines={qm['max_lines']} "
+            f"sw={sw} iw={iw}",
+        )
+    except Exception as e:  # noqa: BLE001
+        try:
+            shot(page, f"doctor-portal-FAIL-{key}-{stage}")
+        except Exception:
+            pass
+        fail(key, vp["vp"], f"{e} ({page_hint(page)})")
+        raise
+    finally:
+        ctx.close()
+
+
+def _assert_no_doctor_module(page, label):
+    if page.locator("[data-cpms-staff-module]").count() != 0:
+        raise RuntimeError(f"{label} exposes a Staff Portal module")
+    if page.locator("#cpms-doctor-portal-app").count() != 0:
+        raise RuntimeError(f"{label} renders the doctor operational module")
+    if page.locator('[data-shell-user="doctor"]').count() != 0:
+        raise RuntimeError(f"{label} renders a doctor shell user")
+    for raw in page.locator('script[type="application/json"][class*="__config"]').all_text_contents():
+        try:
+            cfg = json.loads(raw or "{}")
+        except Exception:  # noqa: BLE001
+            cfg = {}
+        if cfg.get("is_doctor") is True:
+            raise RuntimeError(f"{label} publishes a doctor runtime config")
+
+
+def prove_legacy_not_eligible(browser, vp):
+    """Legacy entry is NOT an authorization bypass: an anonymous visitor and a
+    non-doctor staff member with an ACTIVE Clinic membership get no
+    compatibility redirect and no doctor module (existing legacy notices)."""
+    key = f"staff-portal-{vp['vp']}-legacy-not-eligible"
+    stage = "anonymous"
+    ctx, page, state = new_page(browser, vp)
+    try:
+        for actor in ("anonymous", "secretary"):
+            stage = actor
+            if actor == "secretary":
+                login(page, SECRETARY)
+            resp = harness_goto(page, PORTAL_URL, wait_until="domcontentloaded")
+            if resp is None or resp.status != 200:
+                raise RuntimeError(f"{actor} legacy entry status {getattr(resp, 'status', None)}")
+            if resp.request.redirected_from is not None:
+                raise RuntimeError(f"{actor} was redirected by the legacy entry")
+            if _path_query(page.url) != _path_query(PORTAL_URL):
+                raise RuntimeError(f"{actor} left the legacy URL")
+            _assert_no_doctor_module(page, f"{actor} legacy entry")
+            notice = '[data-role="portal-login"]' if actor == "anonymous" else '[data-role="portal-access-denied"]'
+            if page.locator(notice).count() != 1:
+                raise RuntimeError(f"{actor} legacy entry lacks the existing notice {notice}")
+        stage = "secretary-canonical"
+        resp = harness_goto(page, STAFF_URL, wait_until="domcontentloaded")
+        if resp is None or resp.status != 200:
+            raise RuntimeError(f"secretary canonical status {getattr(resp, 'status', None)}")
+        _assert_no_doctor_module(page, "secretary canonical entry")
+        ok(
+            key,
+            "legacy entry grants no redirect and no doctor module to non-eligible actors",
+            "anonymous: redirects=0 module=none notice=login; secretary(active membership): redirects=0 "
+            "module=none notice=access-denied; secretary canonical: module=none",
         )
     except Exception as e:  # noqa: BLE001
         try:
@@ -1993,6 +2236,10 @@ def main():
             except Exception:
                 continue
         desktop = VIEWPORTS[2]
+        try:
+            prove_legacy_not_eligible(browser, desktop)
+        except Exception:
+            pass
         try:
             prove_one(browser, OTHER, desktop, None)
         except Exception:

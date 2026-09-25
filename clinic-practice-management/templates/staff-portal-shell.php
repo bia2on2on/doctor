@@ -20,8 +20,9 @@
  * Visitors without an eligible module receive a staff-level notice only: no
  * doctor markup, no module assets and no REST nonce payload.
  *
- * The legacy Doctor Portal URL renders this SAME shell for eligible doctors
- * (alias), so there is one shared operational container and no redirect loop.
+ * The legacy Doctor Portal URL sends eligible doctors here with ONE
+ * server-side compatibility redirect (DoctorPortalShell), so there is one
+ * shared operational container and one visual shell; no redirect loop.
  *
  * @package ClinicCore
  */
