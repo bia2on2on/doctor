@@ -88,7 +88,7 @@ $cpms_title_full = '' !== $cpms_site_name ? $cpms_header_title . ' — ' . $cpms
 
 ?>
 <!DOCTYPE html>
-<html lang="fa" dir="rtl" data-cpms-staff-portal-shell="v1" data-cpms-portal="staff"<?php if ( $cpms_doctor_mod ) : ?> data-cpms-doctor-portal-shell="v1"<?php endif; ?>>
+<html lang="fa" dir="rtl" data-cpms-staff-portal-shell="v1" data-cpms-portal="staff"<?php echo $cpms_doctor_mod ? ' data-cpms-doctor-portal-shell="v1"' : ''; ?>>
 <head>
 <meta charset="<?php echo esc_attr( $cpms_charset ); ?>">
 <meta name="viewport" content="width=device-width, initial-scale=1">
