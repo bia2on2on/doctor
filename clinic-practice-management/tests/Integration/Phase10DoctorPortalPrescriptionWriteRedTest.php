@@ -863,13 +863,9 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
         $text = trim((string) preg_replace('/\s+/', ' ', $message . ' :: ' . $detail));
         // Runner command escaping (workflow command v2 parameter values).
         $esc = str_replace(['%', "\r", "\n", ':', ','], ['%25', '%0D', '%0A', ' -', ';'], $text);
-        // Caller-of-caller line — unique file/line per gate site; the runner
-        // dedupes fileless annotations, so file+line is required for visibility.
-        $bt = debug_backtrace(\DEBUG_BACKTRACE_IGNORE_ARGS, 3);
-        // Element 1 = the gate()/direct call site in the test method.
-        $line = (int) ($bt[1]['line'] ?? 0);
-        $file = 'clinic-practice-management/tests/Integration/Phase10DoctorPortalPrescriptionWriteRedTest.php';
-        fwrite(STDERR, '::error file=' . $file . ',line=' . $line . ',title=CPMS-Phase10RxWrite-' . $kind . '::' . $esc . PHP_EOL);
+        // Quoted identifier inside the title keeps each gate distinct for the
+        // runner's annotation stream (evidence-only; assertions are untouched).
+        fwrite(STDERR, '::warning title=CPMS RxWriteGate status=' . $kind . '::' . $esc . PHP_EOL);
     }
 
     private function dispatch(string $method, string $route, array $params = [], array $headers = [], bool $withNonce = true): WP_REST_Response
