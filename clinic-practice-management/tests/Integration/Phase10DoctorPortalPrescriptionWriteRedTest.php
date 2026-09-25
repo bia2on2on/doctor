@@ -863,10 +863,13 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
         $text = trim((string) preg_replace('/\s+/', ' ', $message . ' :: ' . $detail));
         // Runner command escaping (workflow command v2 parameter values).
         $esc = str_replace(['%', "\r", "\n", ':', ','], ['%25', '%0D', '%0A', ' -', ';'], $text);
-        // Unique title per assertion site (G-label) — runner dedupes identical titles.
-        $tokens = trim(preg_replace('/[^A-Za-z0-9._-]/', '', strstr($message, ':', true) ?: substr($message, 0, 12)));
-        // STDERR bypasses PHPUnit output buffering (echo would be swallowed).
-        fwrite(STDERR, '::error title=CPMS-Phase10RxWrite-' . $kind . '-' . $tokens . '::' . $esc . PHP_EOL);
+        // Caller-of-caller line — unique file/line per gate site; the runner
+        // dedupes fileless annotations, so file+line is required for visibility.
+        $bt = debug_backtrace(\DEBUG_BACKTRACE_IGNORE_ARGS, 3);
+        // Element 1 = the gate()/direct call site in the test method.
+        $line = (int) ($bt[1]['line'] ?? 0);
+        $file = 'clinic-practice-management/tests/Integration/Phase10DoctorPortalPrescriptionWriteRedTest.php';
+        fwrite(STDERR, '::error file=' . $file . ',line=' . $line . ',title=CPMS-Phase10RxWrite-' . $kind . '::' . $esc . PHP_EOL);
     }
 
     private function dispatch(string $method, string $route, array $params = [], array $headers = [], bool $withNonce = true): WP_REST_Response
