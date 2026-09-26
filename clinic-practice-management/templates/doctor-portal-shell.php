@@ -381,6 +381,44 @@ body.cpms-doctor-portal-shell-body { margin: 0; font-family: Tahoma, Vazirmatn, 
                                 <button type="submit" class="cpms-doc-btn cpms-doc-btn--primary" data-role="workspace-fu-submit">ثبت پیگیری</button>
                             </form>
                         </div>
+                        <div class="cpms-doc-ws-files" data-role="workspace-visit-files-section">
+                            <div class="cpms-doc-section-head cpms-doc-ws-subhead">
+                                <h3>فایل‌های این ویزیت</h3>
+                                <span class="cpms-doc-count" data-role="workspace-visit-files-count"></span>
+                            </div>
+                            <ul data-role="workspace-visit-files-list" class="cpms-doc-ws-files-list"></ul>
+                            <div data-role="workspace-visit-files-empty" class="cpms-doc-empty" hidden>هنوز فایلی برای این ویزیت ثبت نشده است.</div>
+                            <form class="cpms-doc-ws-form" data-role="workspace-visit-files-upload-form">
+                                <div class="cpms-doc-section-head cpms-doc-ws-subhead">
+                                    <h3>افزودن فایل</h3>
+                                </div>
+                                <div class="cpms-doc-ws-field">
+                                    <label for="cpms-doc-ws-file-input">فایل (PDF/JPG/PNG/WEBP)</label>
+                                    <input id="cpms-doc-ws-file-input" type="file" accept=".pdf,.jpg,.jpeg,.png,.webp" data-role="workspace-visit-files-upload-input">
+                                </div>
+                                <div class="cpms-doc-ws-field">
+                                    <label for="cpms-doc-ws-file-category">دسته‌بندی</label>
+                                    <select id="cpms-doc-ws-file-category" data-role="workspace-visit-files-category">
+                                        <option value="other">سایر</option>
+                                        <option value="lab_result">نتیجه آزایش</option>
+                                        <option value="image">تصویر</option>
+                                        <option value="scan">اسکن</option>
+                                        <option value="document">سند</option>
+                                    </select>
+                                </div>
+                                <div class="cpms-doc-ws-field">
+                                    <label for="cpms-doc-ws-file-visibility">سطح دسترسی</label>
+                                    <select id="cpms-doc-ws-file-visibility" data-role="workspace-visit-files-visibility">
+                                        <option value="patient_visible">قابل مشاهده برای بیمار</option>
+                                        <option value="doctor_private">خصوصی پزشک</option>
+                                    </select>
+                                </div>
+                                <div data-role="workspace-visit-files-upload-busy" class="cpms-doc-loading" hidden>در حال آپلود فایل…</div>
+                                <div data-role="workspace-visit-files-upload-error" class="cpms-doc-error" role="alert" hidden></div>
+                                <div data-role="workspace-visit-files-upload-success" class="cpms-doc-success" role="status" hidden></div>
+                                <button type="submit" class="cpms-doc-btn cpms-doc-btn--primary" data-role="workspace-visit-files-upload-submit">آپلود فایل</button>
+                            </form>
+                        </div>
                         <div class="cpms-doc-ws-consult" data-role="workspace-consult-complete-section">
                             <div class="cpms-doc-section-head cpms-doc-ws-subhead">
                                 <h3>شکایت اصلی و پایان ویزیت</h3>
@@ -443,6 +481,17 @@ body.cpms-doctor-portal-shell-body { margin: 0; font-family: Tahoma, Vazirmatn, 
 'use strict';
 var cfgEl = document.querySelector('.cpms-doctor-portal__config');
 if ( !cfgEl ) return;
+
+// Visit Workspace — Medical Files (Phase 10): the upload control is disabled
+// while a transfer is in flight (double-submit guard).
+function workspaceVisitUploadBusy(busy){
+    var btn = qs('[data-role="workspace-visit-files-upload-submit"]');
+    if ( !btn ) return;
+    btn.disabled = !!busy;
+    if ( busy ) btn.setAttribute('aria-busy', 'true');
+    else btn.removeAttribute('aria-busy');
+}
+
 var CFG;
 try { CFG = JSON.parse(cfgEl.textContent || '{}'); } catch(e){ CFG = {}; }
 if ( !CFG.rest_root || !CFG.nonce ) return;
@@ -467,6 +516,8 @@ var state = {
     workspaceRecBusy: false,
     workspaceFu: [],
     workspaceFuBusy: false,
+    workspaceFiles: [],
+    workspaceFilesBusy: false,
     workspaceStatus: '',
     workspaceData: null,
     workspaceCcBusy: false,
@@ -823,6 +874,7 @@ function closeWorkspace(){
     setNoteSubmitBusy(false);
     resetRxUi();
     resetRecFuUi();
+    resetFilesUi();
     resetConsultUi();
 }
 
@@ -850,6 +902,7 @@ function openWorkspace(visitId){
     setNoteSubmitBusy(false);
     resetRxUi();
     resetRecFuUi();
+    resetFilesUi();
     resetConsultUi();
     var contentEl = qs('[data-role="workspace-content"]');
     if ( contentEl ) contentEl.value = '';
@@ -894,6 +947,8 @@ function renderWorkspace(data){
     renderWorkspaceRec();
     state.workspaceFu = (data && data.follow_ups) || [];
     renderWorkspaceFu();
+    state.workspaceFiles = (data && data.files) || [];
+    renderWorkspaceFiles();
     state.workspaceData = data || null;
     state.workspaceStatus = String((data && data.visit && data.visit.status) || '');
     renderConsultComplete();
@@ -1413,6 +1468,179 @@ function submitWorkspaceFu(){
     });
 }
 
+// ================= Visit Workspace — Medical Files (Phase 10) =================
+// The list renders from the established record payload (data.files) with a
+// bounded doctor allowlist (name/category/visibility/size/mime/created). The
+// upload goes through the Doctor Portal file boundary as multipart FormData
+// over REST (selector headers only; the server derives patient/Visit authority
+// and the shared MedicalFileService stays authoritative for validation,
+// storage and audit). Open/download is an authorized protected fetch ->
+// blob -> temporary object URL -> save -> revoke — never a public/storage URL.
+
+function resetFilesUi(){
+    state.workspaceFiles = [];
+    state.workspaceFilesBusy = false;
+    workspaceVisitUploadBusy(false);
+    var list = qs('[data-role="workspace-visit-files-list"]');
+    if ( list ) list.innerHTML = '';
+    var count = qs('[data-role="workspace-visit-files-count"]');
+    if ( count ) count.textContent = '';
+    show(qs('[data-role="workspace-visit-files-empty"]'));
+    hide(qs('[data-role="workspace-visit-files-upload-busy"]'));
+    hide(qs('[data-role="workspace-visit-files-upload-error"]'));
+    hide(qs('[data-role="workspace-visit-files-upload-success"]'));
+    var input = qs('[data-role="workspace-visit-files-upload-input"]');
+    if ( input ) input.value = '';
+}
+
+function fileCategoryLabel(category){
+    return {
+        lab_result: 'نتیجه آزایش',
+        image: 'تصویر',
+        scan: 'اسکن',
+        document: 'سند',
+        other: 'سایر'
+    }[category] || category || '';
+}
+
+function fileSizeLabel(bytes){
+    var n = parseInt(bytes, 10);
+    if ( isNaN(n) || n < 0 ) return '';
+    if ( n < 1024 ) return n + ' بایت';
+    if ( n < 1048576 ) return Math.round(n / 1024) + ' کیلوبایت';
+    return (Math.round(n / 10485.76) / 100) + ' مگابایت';
+}
+
+function renderWorkspaceFiles(){
+    var list = qs('[data-role="workspace-visit-files-list"]');
+    var empty = qs('[data-role="workspace-visit-files-empty"]');
+    var count = qs('[data-role="workspace-visit-files-count"]');
+    var files = state.workspaceFiles || [];
+    if ( !list ) return;
+    if ( count ) count.textContent = files.length ? String(files.length) : '';
+    if ( !files.length ) {
+        list.textContent = '';
+        show(empty);
+        return;
+    }
+    hide(empty);
+    // Bounded allowlist rendering (id/original_filename/category/visibility/
+    // file_size/mime_type/created_at) with output escaping; the temporary
+    // object URL is created only at open time and revoked after use.
+    list.innerHTML = files.map(function(f){
+        var id = String(f.id);
+        var label = String(f.original_filename == null ? '' : f.original_filename);
+        return '<li class="cpms-doc-ws-file-item" data-role="workspace-visit-file-item" data-file-id="' + esc(id) + '">' +
+            '<span class="cpms-doc-ws-file-name">' + esc(label) + '</span>' +
+            '<span class="cpms-doc-ws-file-meta">' +
+                esc(String(fileCategoryLabel(f.category))) + ' · ' +
+                esc(String(noteVisibilityLabel(f.visibility))) + ' · ' +
+                esc(String(fileSizeLabel(f.file_size))) + ' · ' +
+                esc(String(f.mime_type || '')) + ' · ' +
+                esc(String(f.created_at || '')) +
+            '</span>' +
+            '<button type="button" class="cpms-doc-btn cpms-doc-btn--ghost" data-role="workspace-visit-file-open" data-file-id="' + esc(id) + '" data-file-name="' + esc(label) + '">باز کردن / دانلود</button>' +
+        '</li>';
+    }).join('');
+}
+
+function workspaceFilesFeedbackError(r){
+    var fallback = 'خطا در آپلود فایل — دوباره تلاش کنید';
+    if ( !r || !r.body ) return fallback;
+    var msg = r.body.message;
+    if ( typeof msg === 'string' && msg !== '' ) return msg.slice(0, 200);
+    return fallback;
+}
+
+function submitWorkspaceVisitFiles(){
+    var visitId = state.workspaceVisitId;
+    if ( !visitId || state.workspaceFilesBusy ) return;
+    var input = qs('[data-role="workspace-visit-files-upload-input"]');
+    var category = qs('[data-role="workspace-visit-files-category"]');
+    var visibility = qs('[data-role="workspace-visit-files-visibility"]');
+    var errEl = qs('[data-role="workspace-visit-files-upload-error"]');
+    var okEl = qs('[data-role="workspace-visit-files-upload-success"]');
+    hide(errEl);
+    hide(okEl);
+    if ( !input || !input.files || !input.files.length ) {
+        if ( errEl ) { errEl.textContent = 'ابتدا یک فایل انتخاب کنید.'; show(errEl); }
+        return;
+    }
+    // Client hints only (accept/labels) — the server is authoritative for real
+    // MIME sniffing, extension match, size ceiling, category and visibility.
+    var fd = new FormData();
+    fd.append('file', input.files[0]);
+    fd.append('category', category ? category.value : 'other');
+    fd.append('visibility', visibility ? visibility.value : 'patient_visible');
+    state.workspaceFilesBusy = true;
+    workspaceVisitUploadBusy(true);
+    show(qs('[data-role="workspace-visit-files-upload-busy"]'));
+    var submittedVisitId = visitId;
+    // POST /doctor/portal/visits/{id}/files — multipart FormData over REST;
+    // no form navigation and no reload. Selector headers only.
+    api('POST', '/doctor/portal/visits/' + encodeURIComponent(String(visitId)) + '/files', fd, scopeHeaders()).then(function(r){
+        if ( state.workspaceVisitId !== submittedVisitId ) return;
+        state.workspaceFilesBusy = false;
+        workspaceVisitUploadBusy(false);
+        hide(qs('[data-role="workspace-visit-files-upload-busy"]'));
+        if ( r.status === 201 ) {
+            var file = (r.body && r.body.data) || r.body || {};
+            state.workspaceFiles = [file].concat(state.workspaceFiles || []);
+            renderWorkspaceFiles();
+            if ( input ) input.value = '';
+            if ( okEl ) { okEl.textContent = 'فایل با موفقیت بارگذاری شد.'; show(okEl); }
+            return;
+        }
+        // A rejected upload is never presented as success and adds no row.
+        if ( errEl ) { errEl.textContent = workspaceFilesFeedbackError(r); show(errEl); }
+    }).catch(function(){
+        if ( state.workspaceVisitId !== submittedVisitId ) return;
+        state.workspaceFilesBusy = false;
+        workspaceVisitUploadBusy(false);
+        hide(qs('[data-role="workspace-visit-files-upload-busy"]'));
+        if ( errEl ) { errEl.textContent = 'خطای ارتباط در آپلود فایل — دوباره تلاش کنید'; show(errEl); }
+    });
+}
+
+function workspaceVisitFileOpen(fileId, filename){
+    var visitId = state.workspaceVisitId;
+    if ( !visitId || !fileId ) return;
+    var errEl = qs('[data-role="workspace-visit-files-upload-error"]');
+    hide(errEl);
+    var openedVisitId = visitId;
+    var headers = scopeHeaders();
+    headers['X-WP-Nonce'] = CFG.nonce;
+    // Authorized protected fetch (portal boundary) -> blob -> temporary
+    // object URL -> save/open -> revoke after use. The object URL is never
+    // persisted in the DOM/state and no public/storage URL is ever used.
+    fetch(apiUrl('/doctor/portal/visits/' + encodeURIComponent(String(visitId)) + '/files/' + encodeURIComponent(String(fileId)) + '/stream'), {
+        method: 'GET',
+        credentials: 'same-origin',
+        headers: headers
+    }).then(function(res){
+        if ( state.workspaceVisitId !== openedVisitId ) return null;
+        if ( !res.ok ) {
+            return res.json().then(function(j){
+                throw new Error((j && j.message) || 'خطا در دریافت فایل');
+            }, function(){ throw new Error('خطا در دریافت فایل'); });
+        }
+        return res.blob();
+    }).then(function(blob){
+        if ( !blob ) return;
+        var url = URL.createObjectURL(blob);
+        var link = document.createElement('a');
+        link.href = url;
+        link.download = String(filename || 'file');
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
+    }).catch(function(e){
+        if ( state.workspaceVisitId !== openedVisitId ) return;
+        if ( errEl ) { errEl.textContent = String((e && e.message) || 'خطا در دریافت فایل').slice(0, 200); show(errEl); }
+    });
+}
+
 // ================= Visit Workspace — Chief Complaint + Visit Complete (Phase 10) =================
 // Chief Complaint reuses the established portal note boundary with the
 // established chief_complaint category and visibility options. Whether it is
@@ -1711,6 +1939,13 @@ document.addEventListener('click', function(ev){
         submitWorkspaceComplete();
         return;
     }
+    var openFile = target ? target.closest('[data-role="workspace-visit-file-open"]') : null;
+    if ( openFile ) {
+        ev.preventDefault();
+        if ( openFile.disabled ) return;
+        workspaceVisitFileOpen(parseInt(openFile.getAttribute('data-file-id'), 10), openFile.getAttribute('data-file-name'));
+        return;
+    }
     var finBtn = target ? target.closest('[data-role="workspace-rx-finalize"]') : null;
     if ( finBtn ) {
         ev.preventDefault();
@@ -1726,6 +1961,12 @@ document.addEventListener('click', function(ev){
 });
 
 document.addEventListener('submit', function(ev){
+    var filesForm = (ev.target && ev.target.closest) ? ev.target.closest('[data-role="workspace-visit-files-upload-form"]') : null;
+    if ( filesForm ) {
+        ev.preventDefault();
+        submitWorkspaceVisitFiles();
+        return;
+    }
     var recForm = (ev.target && ev.target.closest) ? ev.target.closest('[data-role="workspace-rec-form"]') : null;
     if ( recForm ) {
         ev.preventDefault();

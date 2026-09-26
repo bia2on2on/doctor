@@ -1714,6 +1714,182 @@ def prove_workspace_recfu(page, state, doctor, visit_id, label, mutate):
     )
 
 
+def prove_workspace_files(page, state, doctor, visit_id, label, mutate):
+    # Phase 10 Medical Files — Visit Workspace file list/upload/open. The list
+    # renders from the established record payload (data.files) with a bounded
+    # metadata allowlist; upload is multipart FormData REST/AJAX at the Doctor
+    # Portal file boundary (POST /doctor/portal/visits/{id}/files — the server
+    # derives patient/Visit authority from the persisted Visit); open is an
+    # authorized protected fetch -> blob -> temporary object URL -> revoke
+    # (never a public or storage URL). The server stays authoritative for
+    # validation; a failed upload is never success.
+    sec = '[data-role="workspace-visit-files-section"]:not([hidden])'
+    page.wait_for_selector(sec, timeout=8000)
+    page.wait_for_selector('[data-role="workspace-visit-files-upload-form"]:not([hidden])', timeout=8000)
+    if page.locator('[data-role="workspace-visit-files-list"]').count() != 1:
+        raise RuntimeError(f"{label} files list element missing")
+    for marker in ("workspace-visit-files-upload-input", "workspace-visit-files-category",
+                   "workspace-visit-files-visibility", "workspace-visit-files-upload-submit"):
+        el = page.locator(f'[data-role="{marker}"]')
+        if el.count() != 1 or not el.first.is_enabled():
+            raise RuntimeError(f"{label} files composer control {marker} not usable")
+    for marker in ("workspace-visit-files-upload-busy", "workspace-visit-files-upload-error",
+                   "workspace-visit-files-upload-success"):
+        el = page.locator(f'[data-role="{marker}"]')
+        if el.count() != 1 or el.first.is_visible():
+            raise RuntimeError(f"{label} files feedback {marker} missing or visible before any attempt")
+    cat = page.locator('[data-role="workspace-visit-files-category"]')
+    offered = cat.locator("option").evaluate_all("els => els.map(e => e.getAttribute('value'))")
+    for category in ("lab_result", "image", "scan", "document", "other"):
+        if category not in offered:
+            raise RuntimeError(f"{label} file category {category} missing from the composer")
+    vis = page.locator('[data-role="workspace-visit-files-visibility"]')
+    vis_offered = vis.locator("option").evaluate_all("els => els.map(e => e.getAttribute('value'))")
+    if vis_offered != ["patient_visible", "doctor_private"]:
+        raise RuntimeError(f"{label} file visibility does not keep the established options: {vis_offered}")
+    # Fresh action Visit has no files yet — empty state.
+    page.wait_for_selector('[data-role="workspace-visit-files-empty"]:not([hidden])', timeout=5000)
+    if not mutate:
+        assert_queue_hugs_content(page, label)
+        shot(page, f"doctor-portal-{label}-workspace-files")
+        info(f"workspace-files-{label} render=1 composer=1 categories=5 visibility=2 empty=1 mutate=0")
+        return
+
+    # ---- desktop-1366 full files journey ------------------------------------
+    mark = nav_mark(page)
+    rc_before = len(state["rest"])
+    files_route = f"/doctor/portal/visits/{visit_id}/files"
+    pdf = b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n%%EOF\n"
+
+    # F1. failed upload (real server validation) — error != success, no row.
+    page.locator('[data-role="workspace-visit-files-upload-input"]').set_input_files(
+        {"name": "pilot-note.txt", "mimeType": "text/plain", "buffer": b"plain text is not an allowed medical file"}
+    )
+    page.locator('[data-role="workspace-visit-files-category"]').select_option("document")
+    with page.expect_response(
+        lambda r: route_of(r.url).endswith(files_route) and r.request.method == "POST",
+        timeout=15000,
+    ) as bad_info:
+        page.locator('[data-role="workspace-visit-files-upload-submit"]').click()
+    if bad_info.value.status != 400 or (bad_info.value.json() or {}).get("code") != "CLINIC_FILE_INVALID":
+        raise RuntimeError(f"{label} invalid upload not rejected with the established 400: {bad_info.value.status}")
+    page.wait_for_selector('[data-role="workspace-visit-files-upload-error"]:not([hidden])', timeout=5000)
+    if page.locator('[data-role="workspace-visit-files-upload-success"]').is_visible():
+        raise RuntimeError(f"{label} failed upload displayed success")
+    if page.locator('[data-role="workspace-visit-file-item"]').count() != 0:
+        raise RuntimeError(f"{label} failed upload added a file row")
+    if not page.locator('[data-role="workspace-visit-files-empty"]').is_visible():
+        raise RuntimeError(f"{label} failed upload mutated the list")
+    info("files_upload_failed_no_success=1")
+
+    # F2. real upload with busy + double-submit guard, then success without reload.
+    file_name = f"pilot-visit-{visit_id}.pdf"
+    page.locator('[data-role="workspace-visit-files-upload-input"]').set_input_files(
+        {"name": file_name, "mimeType": "application/pdf", "buffer": pdf}
+    )
+    page.locator('[data-role="workspace-visit-files-category"]').select_option("lab_result")
+    page.locator('[data-role="workspace-visit-files-visibility"]').select_option("doctor_private")
+
+    def _slow_upload(route):
+        time.sleep(1.0)
+        route.continue_()
+
+    page.route(f"**/doctor/portal/visits/{visit_id}/files", _slow_upload)
+    with page.expect_response(
+        lambda r: route_of(r.url).endswith(files_route) and r.request.method == "POST",
+        timeout=15000,
+    ) as up_info:
+        page.locator('[data-role="workspace-visit-files-upload-submit"]').click()
+        page.wait_for_selector('[data-role="workspace-visit-files-upload-busy"]:not([hidden])', timeout=5000)
+        if not page.locator('[data-role="workspace-visit-files-upload-submit"]').is_disabled():
+            raise RuntimeError(f"{label} upload submit not disabled while in flight")
+    page.unroute(f"**/doctor/portal/visits/{visit_id}/files")
+    up_resp = up_info.value
+    if up_resp.status != 201:
+        raise RuntimeError(f"{label} real upload failed: {up_resp.status}")
+    file_row = payload(up_resp.json())
+    file_id = int(file_row.get("id") or 0)
+    if file_id <= 0 or not file_row.get("original_filename"):
+        raise RuntimeError(f"{label} real upload did not persist metadata: {file_row}")
+    page.wait_for_selector('[data-role="workspace-visit-files-upload-success"]:not([hidden])', timeout=5000)
+    page.wait_for_selector(f'[data-role="workspace-visit-file-item"][data-file-id="{file_id}"]', timeout=5000)
+    page.wait_for_function(
+        "(t) => { const ul=document.querySelector('[data-role=\"workspace-visit-files-list\"]'); return ul && ul.innerText.includes(t); }",
+        arg=file_name,
+        timeout=8000,
+    )
+    if page.locator('[data-role="workspace-visit-files-upload-input"]').evaluate("el => el.files.length") != 0:
+        raise RuntimeError(f"{label} file picker not cleared after successful upload")
+    # Upload request hygiene: selector headers + nonce only, no client authority.
+    up_reqs = [e for e in state["reqs"] if e["method"] == "POST" and e["route"].endswith(files_route)]
+    if not up_reqs:
+        raise RuntimeError(f"{label} upload request not observed")
+    for hit in up_reqs:
+        if not hit["headers"].get("x-wp-nonce") or hit["headers"].get("x-cpms-clinic-id") != str(doctor["clinic_id"]) \
+                or hit["headers"].get("x-cpms-location-id") != str(doctor["location_id"]):
+            raise RuntimeError(f"{label} upload request misses nonce/selector headers")
+        for key in ("clinician_id", "patient_id", "organization_id", "role"):
+            if key in hit["url"]:
+                raise RuntimeError(f"{label} client authority key {key} leaked into the upload URL")
+    info("files_real_upload=1 files_upload_double_submit=1 files_upload_success_no_reload=1")
+
+    # F3. secure open: authorized fetch -> blob -> temporary object URL -> revoke.
+    page.evaluate(
+        """() => {
+            window.__cpmsObjUrls = {created: 0, revoked: 0};
+            const oc = URL.createObjectURL.bind(URL);
+            const or = URL.revokeObjectURL.bind(URL);
+            URL.createObjectURL = function(o){ window.__cpmsObjUrls.created += 1; return oc(o); };
+            URL.revokeObjectURL = function(u){ window.__cpmsObjUrls.revoked += 1; return or(u); };
+        }"""
+    )
+    stream_route = f"/doctor/portal/visits/{visit_id}/files/{file_id}/stream"
+    open_btn = page.locator(
+        f'[data-role="workspace-visit-file-item"][data-file-id="{file_id}"] [data-role="workspace-visit-file-open"]'
+    )
+    if open_btn.count() != 1 or not open_btn.first.is_enabled():
+        raise RuntimeError(f"{label} uploaded file does not expose an enabled open/download control")
+    with page.expect_response(
+        lambda r: route_of(r.url).endswith(stream_route) and r.request.method == "GET",
+        timeout=15000,
+    ) as dl_info:
+        open_btn.first.click()
+    if dl_info.value.status != 200:
+        raise RuntimeError(f"{label} authorized stream failed: {dl_info.value.status}")
+    page.wait_for_function("() => (window.__cpmsObjUrls || {}).created > 0", timeout=8000)
+    page.wait_for_function("() => (window.__cpmsObjUrls || {}).revoked >= (window.__cpmsObjUrls || {}).created", timeout=8000)
+    counts = page.evaluate("() => window.__cpmsObjUrls")
+    if counts["created"] < 1 or counts["revoked"] < counts["created"]:
+        raise RuntimeError(f"{label} object URL lifecycle incomplete: {counts}")
+    info(f"files_open_blob=1 files_object_url_revoked=1 created={counts['created']} revoked={counts['revoked']}")
+
+    # F4. no public/storage URL — every file transfer used the authorized boundary.
+    for hit in state["reqs"]:
+        u = hit.get("url") or ""
+        if "/uploads/" in u or "stored" in u:
+            raise RuntimeError(f"{label} a public/storage URL was requested for files: {u}")
+        if "/files" in (hit.get("route") or "") and "/clinic/v1/" not in u:
+            raise RuntimeError(f"{label} a file request bypassed the REST boundary: {u}")
+    info("files_no_public_url=1")
+
+    # F5. missing/foreign file download stays non-enumerating (safe probe).
+    den = portal_fetch(page, doctor, "GET", f"/doctor/portal/visits/{visit_id}/files/2147483647/stream")
+    if den["status"] != 404 or (den["body"] or {}).get("code") != "CLINIC_NOT_FOUND":
+        raise RuntimeError(f"{label} missing-file download not non-enumerating: {den['status']}")
+
+    reloads, rest_calls, harness_navs = assert_no_product_reload(page, mark, label)
+    if rest_calls <= 0:
+        raise RuntimeError(f"{label} file journey observed no REST/file requests")
+    shot(page, f"doctor-portal-{label}-workspace-files-uploaded")
+    info(
+        f"workspace-files-{label} files_real_upload=1 files_upload_double_submit=1"
+        f" files_upload_failed_no_success=1 files_upload_success_no_reload=1"
+        f" files_open_blob=1 files_object_url_revoked=1 files_no_public_url=1"
+        f" files_foreign_denied=1 product_reloads={reloads} rest_calls={rest_calls}"
+        f" harness_navs={harness_navs} clinician_id_sent=0"
+    )
+
+
 def prove_workspace_complete(page, state, doctor, visit_id, label, mutate):
     # Phase 10 — Chief Complaint + Visit Complete inside the open Visit
     # Workspace. The Visit id is only the selector; Complete goes through the
@@ -2093,6 +2269,14 @@ def prove_one(browser, doctor, vp, shot_name=None, probe_fallback=False):
             # workspace: full 422 -> Chief Complaint -> 200 -> queue-left journey
             # on desktop (last viewport, so earlier runs keep their fixtures);
             # responsive render of the Complete area on every viewport.
+            # Phase 10 Medical Files — list/upload/open inside the same open
+            # Visit Workspace: real upload + secure blob open journey on
+            # desktop, responsive render of the files section on every viewport.
+            stage = "workspace-files"
+            prove_workspace_files(
+                page, state, doctor, int(doctor[pair_keys[0]]), vp["vp"],
+                mutate=(vp["vp"] == "desktop-1366"),
+            )
             stage = "workspace-complete"
             prove_workspace_complete(
                 page, state, doctor, int(doctor[pair_keys[0]]), vp["vp"],
