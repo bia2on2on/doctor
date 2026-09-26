@@ -30,18 +30,17 @@ final class DoctorHandwritingPage
     public static function register(): void
     {
         add_action('admin_menu', [self::class, 'menu']);
-        add_action('admin_enqueue_scripts', [self::class, 'enqueueAssets']);
+        add_action( 'admin_enqueue_scripts', [ self::class, 'enqueue_assets' ] );
     }
 
     /** The wp-admin handwriting screen is the only admin consumer of the shared engine. */
-    public static function enqueueAssets(string $hookSuffix): void
-    {
-        if (!str_contains($hookSuffix, 'cpms-handwriting') || !current_user_can(RolesAndCapabilities::NOTE_CREATE)) {
+    public static function enqueue_assets( string $hook_suffix ): void {
+        if ( ! str_contains( $hook_suffix, 'cpms-handwriting' ) || ! current_user_can( RolesAndCapabilities::NOTE_CREATE ) ) {
             return;
         }
         \ClinicCore\Frontend\DoctorPortalShell::register_handwriting_assets();
-        wp_enqueue_style(\ClinicCore\Frontend\DoctorPortalShell::HANDWRITING_HANDLE);
-        wp_enqueue_script(\ClinicCore\Frontend\DoctorPortalShell::HANDWRITING_HANDLE);
+        wp_enqueue_style( \ClinicCore\Frontend\DoctorPortalShell::HANDWRITING_HANDLE );
+        wp_enqueue_script( \ClinicCore\Frontend\DoctorPortalShell::HANDWRITING_HANDLE );
     }
 
     public static function menu(): void

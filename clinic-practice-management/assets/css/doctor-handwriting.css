@@ -33,3 +33,12 @@
 .cpms-hw-modal-actions{display:flex;gap:10px;justify-content:center;margin-top:14px;flex-wrap:wrap}
 .cpms-hw-modal-actions .button{min-height:44px}
 @media (max-width:782px){#cpms-hw-tools{width:64px}.cpms-hw-tool,.cpms-hw-btn{min-width:48px;min-height:48px;font-size:17px}}
+#cpms-hw-app *,#cpms-hw-app *::before,#cpms-hw-app *::after{box-sizing:border-box}
+#cpms-hw-app{max-width:100vw;max-height:100dvh;overflow:hidden}
+#cpms-hw-app :is(button,select,a):focus-visible,#cpms-hw-conflict button:focus-visible{outline:3px solid #165e99;outline-offset:2px}
+#cpms-hw-head{min-width:0}
+#cpms-hw-pages{min-width:0;max-width:100%;overflow-x:auto}
+#cpms-hw-body{min-width:0}
+#cpms-hw-tools{flex-shrink:0;max-width:24vw}
+#cpms-hw-stage{min-width:0}
+#cpms-hw-conflict .cpms-hw-modal-box{max-height:95dvh;overflow:auto}

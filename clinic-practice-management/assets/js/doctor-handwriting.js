@@ -351,7 +351,7 @@
 
     canvas.addEventListener('pointerdown', function (e) {
         if (!state.current) { return; }
-        canvas.setPointerCapture(e.pointerId);
+        try { canvas.setPointerCapture(e.pointerId); } catch (ignore) { /* Synthetic CI pointer is not a native active pointer. */ }
         pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
         // لمس یک‌انگشتی = جابجایی (Palm rejection: فقط pen/mouse رسم می‌کنند)

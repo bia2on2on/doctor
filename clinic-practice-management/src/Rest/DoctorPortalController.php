@@ -256,54 +256,65 @@ final class DoctorPortalController extends RestBase {
 		);
 		// Visit-scoped handwriting: every document/page selector is rebound to the Visit.
 		$hw_base = '/doctor/portal/visits/(?P<id>\\d+)/handwriting';
-		register_rest_route( self::NS, $hw_base, [
+		register_rest_route(
+			self::NS,
+			$hw_base,
 			[
-				'methods' => WP_REST_Server::READABLE,
-				'callback' => fn( WP_REST_Request $r ) => $this->workspace_handwriting( $r, 'list' ),
+			[
+				'methods'             => WP_REST_Server::READABLE,
+				'callback'            => fn( WP_REST_Request $r ) => $this->workspace_handwriting( $r, 'list' ),
 				'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_workspace( $r, RolesAndCapabilities::MEDICAL_READ ),
-				'args' => $this->workspace_inert_client_args(),
+				'args'                => $this->workspace_inert_client_args(),
 			],
 			[
-				'methods' => WP_REST_Server::CREATABLE,
-				'callback' => fn( WP_REST_Request $r ) => $this->workspace_handwriting( $r, 'create' ),
+				'methods'             => WP_REST_Server::CREATABLE,
+				'callback'            => fn( WP_REST_Request $r ) => $this->workspace_handwriting( $r, 'create' ),
 				'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_workspace( $r, RolesAndCapabilities::NOTE_CREATE ),
-				'args' => $this->workspace_inert_client_args(),
+				'args'                => $this->workspace_inert_client_args(),
 			],
-		] );
-		register_rest_route( self::NS, $hw_base . '/documents/(?P<document_id>\\d+)/pages', [
-			'methods' => WP_REST_Server::CREATABLE,
-			'callback' => fn( WP_REST_Request $r ) => $this->workspace_handwriting( $r, 'add' ),
+			]
+		);
+		register_rest_route(
+			self::NS,
+			$hw_base . '/documents/(?P<document_id>\\d+)/pages',
+			[
+			'methods'             => WP_REST_Server::CREATABLE,
+			'callback'            => fn( WP_REST_Request $r ) => $this->workspace_handwriting( $r, 'add' ),
 			'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_workspace( $r, RolesAndCapabilities::NOTE_CREATE ),
-			'args' => $this->workspace_inert_client_args(),
-		] );
-		register_rest_route( self::NS, $hw_base . '/pages/(?P<page_id>\\d+)', [
+			'args'                => $this->workspace_inert_client_args(),
+			]
+		);
+		register_rest_route(
+			self::NS,
+			$hw_base . '/pages/(?P<page_id>\\d+)',
 			[
-				'methods' => WP_REST_Server::READABLE,
-				'callback' => fn( WP_REST_Request $r ) => $this->workspace_handwriting( $r, 'page' ),
+			[
+				'methods'             => WP_REST_Server::READABLE,
+				'callback'            => fn( WP_REST_Request $r ) => $this->workspace_handwriting( $r, 'page' ),
 				'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_workspace( $r, RolesAndCapabilities::MEDICAL_READ ),
-				'args' => $this->workspace_inert_client_args(),
+				'args'                => $this->workspace_inert_client_args(),
 			],
 			[
-				'methods' => WP_REST_Server::EDITABLE,
-				'callback' => fn( WP_REST_Request $r ) => $this->workspace_handwriting( $r, 'save' ),
+				'methods'             => WP_REST_Server::EDITABLE,
+				'callback'            => fn( WP_REST_Request $r ) => $this->workspace_handwriting( $r, 'save' ),
 				'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_workspace( $r, RolesAndCapabilities::NOTE_CREATE ),
-				'args' => $this->workspace_inert_client_args(),
+				'args'                => $this->workspace_inert_client_args(),
 			],
-		] );
-
+			]
+		);
 	}
 
 	/** Rebind every selector to the authorized Visit before calling the shared engine service. */
 	private function workspace_handwriting( WP_REST_Request $r, string $operation ): WP_REST_Response|WP_Error {
 		$visit_id = (int) $r['id'];
-		$guard = $this->workspace_authorize_visit( $visit_id );
+		$guard    = $this->workspace_authorize_visit( $visit_id );
 		if ( $guard instanceof WP_Error ) {
 			$this->workspace_handwriting_denial( $visit_id, $operation );
 			return $guard;
 		}
 
 		$document_id = (int) ( $r['document_id'] ?? 0 );
-		$page_id = (int) ( $r['page_id'] ?? 0 );
+		$page_id     = (int) ( $r['page_id'] ?? 0 );
 		if ( 'add' === $operation || 'page' === $operation || 'save' === $operation ) {
 			$db = App::db();
 			if ( 'add' === $operation ) {
@@ -324,7 +335,7 @@ final class DoctorPortalController extends RestBase {
 			}
 		}
 
-		$actor = (int) wp_get_current_user()->ID;
+		$actor   = (int) wp_get_current_user()->ID;
 		$service = App::handwritingService();
 		try {
 			switch ( $operation ) {

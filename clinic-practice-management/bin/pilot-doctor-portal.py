@@ -192,6 +192,7 @@ def new_page(browser, vp):
     ctx = browser.new_context(
         viewport={"width": vp["w"], "height": vp["h"]},
         locale="fa-IR",
+        has_touch=True,
         ignore_https_errors=True,
     )
     page = ctx.new_page()
@@ -1890,6 +1891,91 @@ def prove_workspace_files(page, state, doctor, visit_id, label, mutate):
     )
 
 
+def prove_workspace_handwriting(page, state, doctor, visit_id, label, mutate):
+    """Real Visit Workspace canvas, REST persistence, offline retry and conflict."""
+    mark = nav_mark(page)
+    page.locator('[data-role="workspace-handwriting-open"]').click()
+    page.wait_for_selector('#cpms-hw-app:not([hidden]) #cpms-hw-canvas', timeout=10000)
+    page.wait_for_selector('#cpms-hw-sync[data-state="saved"]', timeout=12000)
+    if page.evaluate('document.documentElement.scrollWidth > window.innerWidth'):
+        raise RuntimeError(f"{label} handwriting horizontal overflow")
+    shot(page, f"doctor-portal-{label}-handwriting")
+    if mutate:
+        canvas = page.locator('#cpms-hw-canvas')
+        box = canvas.bounding_box()
+        if not box:
+            raise RuntimeError("handwriting canvas not visible")
+        x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+
+        def pen(offset):
+            for event, dx, pressure in (("pointerdown", 0, .4), ("pointermove", 24, .8), ("pointerup", 24, .8)):
+                canvas.dispatch_event(event, {
+                    "pointerId": 17, "pointerType": "pen", "pressure": pressure,
+                    "clientX": x + dx + offset, "clientY": y + dx,
+                    "bubbles": True,
+                })
+
+        pen(0)
+        page.wait_for_selector('#cpms-hw-sync[data-state="saved"]', timeout=20000)
+        base = f"/wp-json/clinic/v1/doctor/portal/visits/{visit_id}/handwriting"
+        # Same authenticated browser, but a second tab's revision is applied
+        # directly by REST so the first tab exercises the actual conflict path.
+        def server_page():
+            return page.evaluate('''async ({url, clinic, location}) => {
+                const cfg = JSON.parse(document.querySelector('.cpms-doctor-portal__config').textContent);
+                const h = {'X-WP-Nonce': cfg.nonce, 'X-CPMS-Clinic-Id': String(clinic), 'X-CPMS-Location-Id': String(location)};
+                const doc = await (await fetch(cfg.rest_root + url.replace('/wp-json/clinic/v1', ''), {headers:h})).json();
+                const id = doc.data.document.pages[0].id;
+                const page = await (await fetch(cfg.rest_root + url.replace('/wp-json/clinic/v1', '') + '/pages/' + id, {headers:h})).json();
+                return page.data;
+            }''', {"url": base, "clinic": doctor["clinic_id"], "location": doctor["location_id"]})
+
+        persisted = server_page()
+        if not persisted.get("strokes") or persisted["strokes"][0]["points"][0][2] != .4:
+            raise RuntimeError("pen pressure/strokes not persisted")
+        page.locator('[data-role="workspace-handwriting-close"]').click()
+        page.locator('[data-role="workspace-handwriting-open"]').click()
+        page.wait_for_selector('#cpms-hw-sync[data-state="saved"]', timeout=12000)
+        if server_page()["strokes"] != persisted["strokes"]:
+            raise RuntimeError("reopened Visit handwriting lost persisted strokes")
+        offline_failures_before = len(state["failed"])
+        page.context.set_offline(True)
+        pen(40)
+        page.wait_for_selector('#cpms-hw-sync[data-state="offline"]', timeout=20000)
+        page.context.set_offline(False)
+        expected_offline = state["failed"][offline_failures_before:]
+        if any("ERR_INTERNET_DISCONNECTED" not in failure for failure in expected_offline):
+            raise RuntimeError(f"unexpected offline network failure: {expected_offline}")
+        del state["failed"][offline_failures_before:]
+        page.evaluate("window.dispatchEvent(new Event('online'))")
+        page.wait_for_selector('#cpms-hw-sync[data-state="saved"]', timeout=20000)
+        resumed = server_page()
+        if len(resumed["strokes"]) < 2:
+            raise RuntimeError("offline IndexedDB queue did not resume")
+        # External-tab write advances the revision; editor retains its old base.
+        outcome = page.evaluate('''async ({url, id, revision, strokes, clinic, location}) => {
+            const cfg = JSON.parse(document.querySelector('.cpms-doctor-portal__config').textContent);
+            const h = {'X-WP-Nonce': cfg.nonce, 'X-CPMS-Clinic-Id': String(clinic), 'X-CPMS-Location-Id': String(location),
+                'Content-Type':'application/json', 'Idempotency-Key': crypto.randomUUID()};
+            const data = JSON.stringify(strokes);
+            const enc = btoa(data);
+            const r = await fetch(cfg.rest_root + url.replace('/wp-json/clinic/v1', '') + '/pages/' + id,
+                {method:'PUT', headers:h, body:JSON.stringify({client_revision:revision+1, stroke_data:enc})});
+            return r.status;
+        }''', {"url": base, "id": resumed["id"], "revision": resumed["client_revision"],
+            "strokes": resumed["strokes"], "clinic": doctor["clinic_id"], "location": doctor["location_id"]})
+        if outcome != 200:
+            raise RuntimeError(f"second-tab save returned {outcome}")
+        pen(80)
+        page.wait_for_selector('#cpms-hw-conflict:not([hidden])', timeout=20000)
+        shot(page, f"doctor-portal-{label}-handwriting-conflict")
+        page.locator('#cpms-hw-keep-server').click()
+    page.locator('[data-role="workspace-handwriting-close"]').click()
+    reloads, rest_calls, _ = assert_no_product_reload(page, mark, label + '-handwriting')
+    info(f"handwriting-{label} product_reloads={reloads} rest_calls={rest_calls} "
+         f"synthetic_pen={int(mutate)} offline_resume={int(mutate)} conflict={int(mutate)}")
+
+
 def prove_workspace_complete(page, state, doctor, visit_id, label, mutate):
     # Phase 10 — Chief Complaint + Visit Complete inside the open Visit
     # Workspace. The Visit id is only the selector; Complete goes through the
@@ -2274,6 +2360,11 @@ def prove_one(browser, doctor, vp, shot_name=None, probe_fallback=False):
             # desktop, responsive render of the files section on every viewport.
             stage = "workspace-files"
             prove_workspace_files(
+                page, state, doctor, int(doctor[pair_keys[0]]), vp["vp"],
+                mutate=(vp["vp"] == "desktop-1366"),
+            )
+            stage = "workspace-handwriting"
+            prove_workspace_handwriting(
                 page, state, doctor, int(doctor[pair_keys[0]]), vp["vp"],
                 mutate=(vp["vp"] == "desktop-1366"),
             )

@@ -2170,6 +2170,11 @@ function start(){
 if ( document.readyState==='loading' ) document.addEventListener('DOMContentLoaded', start); else start();
 })();
 </script>
+
+<?php
+// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- registered local handwriting script only.
+wp_print_scripts( [ DoctorPortalShell::HANDWRITING_HANDLE ] );
+?>
 <?php if ( ! $cpms_staff_embed ) : ?>
 
     <?php
@@ -2179,8 +2184,3 @@ if ( document.readyState==='loading' ) document.addEventListener('DOMContentLoad
 </body>
 </html>
 <?php endif; ?>
-
-<?php
-// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- registered local handwriting script only.
-wp_print_scripts( [ DoctorPortalShell::HANDWRITING_HANDLE ] );
-?>
