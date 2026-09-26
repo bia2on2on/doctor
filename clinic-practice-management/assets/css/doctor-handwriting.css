@@ -44,7 +44,7 @@
 #cpms-hw-conflict .cpms-hw-modal-box{max-height:95dvh;overflow:auto}
 /* Keep the A4 page prominent without cropping or changing its aspect ratio. */
 #cpms-hw-stage{background:#e3e7ed}
-@media (max-width:600px){
+@media (max-width:900px){
 #cpms-hw-body{flex-direction:column}
 #cpms-hw-tools{width:100%;max-width:none;flex-direction:row;align-items:center;gap:6px;padding:6px 8px;overflow-x:auto;overflow-y:hidden;scrollbar-width:thin}
 #cpms-hw-tools > *{flex-shrink:0}

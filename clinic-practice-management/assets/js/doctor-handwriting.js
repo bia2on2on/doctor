@@ -251,6 +251,9 @@
         var w = state.current.width, h = state.current.height;
         var sw = stage.clientWidth, sh = stage.clientHeight;
         var scale = Math.min((sw - 16) / w, (sh - 16) / h);
+        // A portrait page fitted to a wide viewport leaves most of the writing area gray.
+        // Start closer on tablet/desktop; existing zoom and touch pan still reach the full page.
+        if (sw > 600) { scale = Math.min((sw - 16) / w, scale * (sw < 900 ? 1.2 : 1.55)); }
         state.view = { scale: scale, tx: (sw - w * scale) / 2, ty: (sh - h * scale) / 2 };
     }
 
