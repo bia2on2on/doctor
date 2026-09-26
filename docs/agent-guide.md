@@ -1528,3 +1528,28 @@ final class XxxService {
 - **Untouched (per owner MUST-NOT list):** routes, authorization, selector sanitization, Clinic/Location behavior, Visit/file binding, `MedicalFileService`, storage, upload validation, stream/download, Patient Portal, wp-admin, tests, fixture, pilot, CSS/layout, roles/capabilities, migration (latest remains `2026_09_20_0022_slot_holds_patient_binding.php`), owner-decision docs, Phase state. Accepted RED test unchanged (blob `55068e8b…`).
 - **Local verification:** diff inspection = text literals only (no security/logic line); Node php-parser TOKEN/PARSE OK on the template. PHPUnit/phpcs/PHPStan/Playwright NOT RUN locally (no PHP runtime) — exact-head CI of the final SHA (this log commit) is the runtime authority and binds all merge evidence.
 - **Sequence per owner order:** exact-head gates on the final SHA → READY → MERGE COMMIT (no squash/rebase/branch-delete) → POST-MERGE exact merge-SHA gates → writer retirement (read-only forever after merge). Handwriting/stylus + doctor/patient print = the NEXT product requirement — **NOT started, NOT designed** here (a NEW read-only reconstruction determines its contract after #126 closes). Phase 10 stays IN PROGRESS; Phase 11 NOT started.
+
+### [2026-09-26 UTC] — NEW WRITER — Phase 10 bounded documentation closure (docs-only) — PRs #113..#126
+
+- **Live recon (verified via `gh api repos/bia2on2on/doctor/pulls/{n}` and `git rev-parse origin/main`):** authoritative main SHA at start = `fb861736d0b384ae8b5b54000822f0c2566b234f` (merge of PR #126); open PRs = 0; latest migration = `2026_09_20_0022_slot_holds_patient_binding.php` (22 files 0001..0022, no 0023). Merge SHAs/dates verified live:
+  - PR #113 MERGED 2026-09-24T08:27:29Z merge `b49a777367a3bdf15f9ad944eab4e65ca70c5b26`
+  - PR #115 MERGED 2026-09-24T09:33:05Z merge `84d664982517dd98c30678816e068e38c7d541fe`
+  - PR #116 MERGED 2026-09-24T10:43:38Z merge `e9177bcd80c80c59fc08153a6760fb24a3c6c493`
+  - PR #117 MERGED 2026-09-24T12:56:18Z merge `87625a03fd92e966de7b13930fc3fb9651138b9f`
+  - PR #118 MERGED 2026-09-24T13:31:47Z merge `2dbb8d4a5e21b0b7ff6f4d1bc1c8b0332250bf55`
+  - PR #119 MERGED 2026-09-24T14:09:35Z merge `911be1645c9f3eb1e518c514a3e0e433005bf1f3`
+  - PR #120 MERGED 2026-09-24T22:17:29Z merge `972df97cebb23d3877515daf4c46e282ef37935a`
+  - PR #121 MERGED 2026-09-25T11:44:07Z merge `4656a66096d8ec5287d67d5304161ce36138a7f9`
+  - PR #122 MERGED 2026-09-25T14:54:52Z merge `5e202c663ae2304f9b04c69394d7bb80f958c5bf`
+  - PR #123 MERGED 2026-09-25T15:28:46Z merge `705d14c041bd2ba9d7df5459c58525f2dc6d5690`
+  - PR #124 MERGED 2026-09-25T21:31:34Z merge `aa42888c7ab641c86d1c45c200dfb887861e6ff1`
+  - PR #125 MERGED 2026-09-25T23:23:25Z merge `f1bb5d49bf92307005fe41af348a1341b1e99f28`
+  - PR #126 MERGED 2026-09-26T02:22:56Z merge `fb861736d0b384ae8b5b54000822f0c2566b234f`
+- **Current content at start:** `docs/project-current-state.md` recorded only up to PR #117 (Slice 2) — stale for #120..#126; `docs/decisions/2026-09-24-phase10-doctor-portal-owner-authorization.md` §7-4 still called PR #124 "DRAFT" (line `**پیاده‌سازیِ بنیاد:** PR #124 (**DRAFT** — ...)`); `docs/roadmap/roadmap.md` Phase 10 row stopped at PR #117 — provably stale.
+- **Bounded edits (docs-only, zero product files):**
+  - `docs/project-current-state.md` — replaced top integrated checkpoint with new main `fb861736d0b384ae8b5b54000822f0c2566b234f` (PR #126 merge) and full slice list with exact SHAs/dates above; replaced Phase 10 table row with same slice list; stated explicitly: Phase 10 IN PROGRESS — NOT CLOSED; handwriting/stylus is NEXT and REQUIRED before closure; prescription print NOT a closure requirement; Phase 11 NOT STARTED.
+  - `docs/decisions/2026-09-24-phase10-doctor-portal-owner-authorization.md` — corrected ONLY §7-4 line: PR #124 is MERGED with SHA `aa42888c7ab641c86d1c45c200dfb887861e6ff1` and date 2026-09-25T21:31:34Z, owner visual review correction (one-time 302 legacy entry) is live; did NOT rewrite/paraphrase/reorder durable paragraphs §5–§8; appended nothing about handwriting model.
+  - `docs/roadmap/roadmap.md` — minimal correction of Phase 10 row to include all slices #113..#126 with same SHAs/dates, same IN PROGRESS / NOT CLOSED / NEXT / REQUIRED statements.
+  - `docs/agent-guide.md` — this append-only entry (no rewrite of prior entries).
+- **Evidence honesty:** every SHA/date cited above came from live `gh api` reads (no remembered values); no intermediate failure or retry in the gh api reads; if any value were NOT RETRIEVED it would be marked as such — none were.
+- **Scope discipline:** docs-only diff; zero files under src/, templates/, assets/, tests/; no product code, no tests, no migrations, no schema, no routes, no capabilities, no UI; tenant/security/privacy untouched; diff small enough for one-pass review; forward-only history, no rebase/force-push/reset --hard/git clean; no mass formatting; do not reopen/comment on PR #112; do not claim handwriting/stylus delivered; do not close Phase 10; do not start Phase 11.
