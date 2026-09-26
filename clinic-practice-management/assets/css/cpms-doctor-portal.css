@@ -1168,6 +1168,50 @@ body.cpms-doctor-portal-shell-body {
 	outline-offset: 2px;
 }
 
+/* Compact, separated medication rows; the saved prescription list is unchanged. */
+.cpms-doc-ws-rx-compose-item {
+	min-width: 0;
+	margin: 10px 14px;
+	padding: 8px 10px 10px;
+	border: 1px solid var(--cpms-border-strong);
+	border-radius: var(--cpms-radius-sm);
+}
+
+.cpms-doc-ws-rx-compose-item legend {
+	padding: 0 6px;
+	font-size: 13px;
+	font-weight: 700;
+}
+
+.cpms-doc-ws-rx-fields {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 8px 10px;
+}
+
+.cpms-doc-ws-rx-fields .cpms-doc-ws-field {
+	margin: 0;
+}
+
+.cpms-doc-ws-rx-fields .cpms-doc-ws-field:first-child,
+.cpms-doc-ws-rx-fields .cpms-doc-ws-field:last-child {
+	grid-column: 1 / -1;
+}
+
+.cpms-doc-ws-rx-compose-item [data-role="workspace-rx-remove"] {
+	margin-top: 8px;
+}
+
+.cpms-doc-ws-rx-add {
+	margin: 0 14px;
+}
+
+@media (min-width: 1100px) {
+	.cpms-doc-ws-rx-fields {
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+	}
+}
+
 .cpms-doc-ws-check label {
 	display: flex;
 	align-items: center;
