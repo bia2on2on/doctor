@@ -1949,7 +1949,7 @@ def prove_workspace_handwriting(page, state, doctor, visit_id, label, mutate):
              f" pressure={pressure if type(pressure) in (int, float) else 'non-numeric'}"
              f" pressure_type={type(pressure).__name__} put_statuses={put_statuses[:4]}"
              f" put_count={len(put_statuses)}")
-        if not persisted.get("strokes") or persisted["strokes"][0]["points"][0][2] != .4:
+        if not strokes or not points or type(pressure) not in (int, float) or not (abs(pressure - .4) <= 1e-6):
             raise RuntimeError("pen pressure/strokes not persisted")
         page.locator('[data-role="workspace-handwriting-close"]').click()
         page.locator('[data-role="workspace-handwriting-open"]').click()
