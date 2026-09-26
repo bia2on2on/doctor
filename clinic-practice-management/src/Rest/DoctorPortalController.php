@@ -20,8 +20,6 @@ final class DoctorPortalController extends RestBase {
 	}
 
 	public function register_routes(): void {
-		// Route-specific response metadata only; the trusted-scope binder still denies first.
-		add_filter( 'rest_request_before_callbacks', [ $this, 'handwriting_location_denial' ], 11, 3 );
 		register_rest_route(
 			self::NS,
 			'/doctor/portal/context',
