@@ -250,7 +250,7 @@
         if (!state.current) { return; }
         var w = state.current.width, h = state.current.height;
         var sw = stage.clientWidth, sh = stage.clientHeight;
-        var scale = Math.min((sw - 40) / w, (sh - 40) / h);
+        var scale = Math.min((sw - 16) / w, (sh - 16) / h);
         state.view = { scale: scale, tx: (sw - w * scale) / 2, ty: (sh - h * scale) / 2 };
     }
 

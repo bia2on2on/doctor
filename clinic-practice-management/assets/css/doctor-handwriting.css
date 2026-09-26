@@ -42,3 +42,16 @@
 #cpms-hw-tools{flex-shrink:0;max-width:24vw}
 #cpms-hw-stage{min-width:0}
 #cpms-hw-conflict .cpms-hw-modal-box{max-height:95dvh;overflow:auto}
+/* Keep the A4 page prominent without cropping or changing its aspect ratio. */
+#cpms-hw-stage{background:#e3e7ed}
+@media (max-width:600px){
+#cpms-hw-body{flex-direction:column}
+#cpms-hw-tools{width:100%;max-width:none;flex-direction:row;align-items:center;gap:6px;padding:6px 8px;overflow-x:auto;overflow-y:hidden;scrollbar-width:thin}
+#cpms-hw-tools > *{flex-shrink:0}
+#cpms-hw-tools .cpms-hw-tool{min-width:64px;min-height:56px;flex-direction:column;gap:1px;line-height:1}
+#cpms-hw-tools .cpms-hw-tool::after{content:attr(title);font-size:11px;line-height:1.2;white-space:nowrap}
+#cpms-hw-tools .cpms-hw-tool[data-tool=eraser]::after{content:'پاک‌کن'}
+#cpms-hw-tools .cpms-hw-sep{width:1px;height:32px;border-top:0;border-inline-start:1px dashed #c3c4c7;margin:0 3px}
+#cpms-hw-tools .cpms-hw-sizes,#cpms-hw-tools .cpms-hw-colors{flex-direction:row}
+#cpms-hw-tools #cpms-hw-template{width:72px}
+}
