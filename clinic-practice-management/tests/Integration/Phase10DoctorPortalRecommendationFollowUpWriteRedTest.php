@@ -842,7 +842,7 @@ final class Phase10DoctorPortalRecommendationFollowUpWriteRedTest extends WP_Uni
         $latestMigration = (string) App::db()->fetchValue(
             'SELECT version FROM ' . App::db()->table('cpms_schema_migrations') . ' ORDER BY version DESC LIMIT 1'
         );
-        self::assertSame('2026_09_20_0022', $latestMigration, 'G7.E: no migration/schema change in this slice');
+        self::assertSame('2026_09_26_0023', $latestMigration, 'G7.E: no migration/schema change in this slice');
     }
 
     // ============ Group 8 — PORTAL UI / BROWSER CONTRACT (intended RED: composer missing) ============

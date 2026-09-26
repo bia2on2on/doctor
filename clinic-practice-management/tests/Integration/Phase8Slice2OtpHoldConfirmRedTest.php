@@ -1722,6 +1722,10 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
         self::assertIsString($versionBeforeRollback, 'The applied migration version must be readable.');
         $originalVersion = $versionBeforeRollback;
         try {
+            if ($versionBeforeRollback === '2026_09_26_0023') {
+                $this->withRealTables(static fn (): ?string => App::migrations()->rollbackOne());
+                $versionBeforeRollback = App::migrations()->currentVersion();
+            }
             if ($versionBeforeRollback === '2026_09_20_0022') {
                 // Latest is 0022 (slot_holds.patient_id) — first rollback is 0022, which must not affect clinic_id.
                 $rolled1 = $this->withRealTables(static fn (): ?string => App::migrations()->rollbackOne());

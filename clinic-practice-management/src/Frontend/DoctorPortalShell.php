@@ -24,7 +24,9 @@ final class DoctorPortalShell {
 		add_filter( 'template_include', [ self::class, 'filter_template_include' ], 99 );
 		add_filter( 'show_admin_bar', [ self::class, 'hide_admin_bar_on_portal' ], 20 );
 		add_action( 'wp_enqueue_scripts', [ self::class, 'register_handles' ], 5 );
+		add_action( 'admin_enqueue_scripts', [ self::class, 'register_handwriting_assets' ], 5 );
 		add_action( 'wp_enqueue_scripts', [ self::class, 'enqueue_for_portal' ], 20 );
+		add_action( 'wp_enqueue_scripts', [ self::class, 'enqueue_handwriting_for_staff' ], 21 );
 		add_action( 'template_redirect', [ self::class, 'send_private_cache_headers' ], 0 );
 		add_action( 'template_redirect', [ self::class, 'redirect_legacy_entry_to_staff_portal' ], 1 );
 	}
@@ -230,6 +232,32 @@ final class DoctorPortalShell {
 		$version = defined( 'CPMS_VERSION' ) ? (string) CPMS_VERSION : 'dev';
 		wp_register_style( self::CSS_HANDLE, $base . '/assets/css/cpms-doctor-portal.css', [], $version );
 		wp_register_script( self::JS_HANDLE, $base . '/assets/js/cpms-doctor-portal.js', [], $version, true );
+	}
+
+	public const HANDWRITING_HANDLE = 'cpms-doctor-handwriting';
+
+	/** Register the shared editor once; only the two handwriting surfaces enqueue it. */
+	public static function register_handwriting_assets(): void {
+		$base = self::plugin_url_base();
+		if ( '' === $base ) {
+			return;
+		}
+		$root = dirname( __DIR__, 2 );
+		if ( ! wp_style_is( self::HANDWRITING_HANDLE, 'registered' ) ) {
+			wp_register_style( self::HANDWRITING_HANDLE, $base . '/assets/css/doctor-handwriting.css', [], (string) filemtime( $root . '/assets/css/doctor-handwriting.css' ) );
+		}
+		if ( ! wp_script_is( self::HANDWRITING_HANDLE, 'registered' ) ) {
+			wp_register_script( self::HANDWRITING_HANDLE, $base . '/assets/js/doctor-handwriting.js', [], (string) filemtime( $root . '/assets/js/doctor-handwriting.js' ), true );
+		}
+	}
+
+	public static function enqueue_handwriting_for_staff(): void {
+		if ( ! \ClinicCore\Frontend\StaffPortalShell::is_portal_request() || ! self::isDoctorUser( wp_get_current_user() ) ) {
+			return;
+		}
+		self::register_handwriting_assets();
+		wp_enqueue_style( self::HANDWRITING_HANDLE );
+		wp_enqueue_script( self::HANDWRITING_HANDLE );
 	}
 
 	public static function enqueue_for_portal(): void {

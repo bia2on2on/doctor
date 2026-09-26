@@ -254,7 +254,172 @@ final class DoctorPortalController extends RestBase {
 				],
 			]
 		);
+		// Visit-scoped handwriting: every document/page selector is rebound to the Visit.
+		$hw_base = '/doctor/portal/visits/(?P<id>\\d+)/handwriting';
+		register_rest_route(
+			self::NS,
+			$hw_base,
+			[
+				[
+					'methods'             => WP_REST_Server::READABLE,
+					'callback'            => fn( WP_REST_Request $r ) => $this->workspace_handwriting( $r, 'list' ),
+					'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_workspace( $r, RolesAndCapabilities::MEDICAL_READ ),
+					'args'                => $this->workspace_inert_client_args(),
+				],
+				[
+					'methods'             => WP_REST_Server::CREATABLE,
+					'callback'            => fn( WP_REST_Request $r ) => $this->workspace_handwriting( $r, 'create' ),
+					'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_workspace( $r, RolesAndCapabilities::NOTE_CREATE ),
+					'args'                => $this->workspace_inert_client_args(),
+				],
+			]
+		);
+		register_rest_route(
+			self::NS,
+			$hw_base . '/documents/(?P<document_id>\\d+)/pages',
+			[
+				'methods'             => WP_REST_Server::CREATABLE,
+				'callback'            => fn( WP_REST_Request $r ) => $this->workspace_handwriting( $r, 'add' ),
+				'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_workspace( $r, RolesAndCapabilities::NOTE_CREATE ),
+				'args'                => $this->workspace_inert_client_args(),
+			]
+		);
+		register_rest_route(
+			self::NS,
+			$hw_base . '/pages/(?P<page_id>\\d+)',
+			[
+				[
+					'methods'             => WP_REST_Server::READABLE,
+					'callback'            => fn( WP_REST_Request $r ) => $this->workspace_handwriting( $r, 'page' ),
+					'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_workspace( $r, RolesAndCapabilities::MEDICAL_READ ),
+					'args'                => $this->workspace_inert_client_args(),
+				],
+				[
+					'methods'             => WP_REST_Server::EDITABLE,
+					'callback'            => fn( WP_REST_Request $r ) => $this->workspace_handwriting( $r, 'save' ),
+					'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_workspace( $r, RolesAndCapabilities::NOTE_CREATE ),
+					'args'                => $this->workspace_inert_client_args(),
+				],
+			]
+		);
 	}
+
+	/**
+	 * Preserve bounded operational-Location denial metadata when the established
+	 * trusted-scope binder rejects an explicit Location before our Visit guard.
+	 * This cannot turn a denial into authorization and never exposes eligible IDs.
+	 *
+	 * @param mixed $response Response from the existing binder.
+	 * @param mixed $handler Matched REST handler.
+	 * @param mixed $request Current REST request.
+	 * @return mixed
+	 */
+	public function handwriting_location_denial( mixed $response, mixed $handler, mixed $request ): mixed {
+		unset( $handler );
+		if ( ! $response instanceof WP_Error || ! $request instanceof WP_REST_Request ) {
+			return $response;
+		}
+		if ( 'CLINIC_SCOPE_UNAVAILABLE' !== $response->get_error_code() || ! preg_match( '#^/clinic/v1/doctor/portal/visits/([0-9]+)/handwriting(?:/|$)#', $request->get_route(), $matches ) ) {
+			return $response;
+		}
+		$clinic   = $request->get_header( 'X-CPMS-Clinic-Id' );
+		$location = $request->get_header( 'X-CPMS-Location-Id' );
+		if ( ! is_string( $clinic ) || ! ctype_digit( $clinic ) || ! is_string( $location ) || ! ctype_digit( $location ) ) {
+			return $response;
+		}
+		$clinic_id   = (int) $clinic;
+		$location_id = (int) $location;
+		$user_id     = (int) get_current_user_id();
+		$user        = wp_get_current_user();
+		if ( $clinic_id < 1 || $location_id < 1 || $user_id < 1 || ! in_array( RolesAndCapabilities::ROLE_DOCTOR, (array) $user->roles, true ) || null === $this->memberships->find_active( $clinic_id, $user_id ) ) {
+			return $response;
+		}
+		$eligible = array_map( static fn( array $row ): int => (int) $row['id'], $this->eligible_locations_for_clinic( $clinic_id, $user_id ) );
+		if ( in_array( $location_id, $eligible, true ) ) {
+			return $response;
+		}
+		$this->workspace_handwriting_denial( (int) $matches[1], 'location' );
+		return new WP_Error( 'CLINIC_SCOPE_UNAVAILABLE', $response->get_error_message(), [ 'status' => 403, 'reason' => 'location' ] );
+	}
+
+	/** Rebind every selector to the authorized Visit before calling the shared engine service. */
+	private function workspace_handwriting( WP_REST_Request $r, string $operation ): WP_REST_Response|WP_Error {
+		$visit_id = (int) $r['id'];
+		$guard    = $this->workspace_authorize_visit( $visit_id );
+		if ( $guard instanceof WP_Error ) {
+			$this->workspace_handwriting_denial( $visit_id, $operation );
+			return $guard;
+		}
+
+		$document_id = (int) ( $r['document_id'] ?? 0 );
+		$page_id     = (int) ( $r['page_id'] ?? 0 );
+		if ( 'add' === $operation || 'page' === $operation || 'save' === $operation ) {
+			$db = App::db();
+			if ( 'add' === $operation ) {
+				$document = $db->fetchRow(
+					'SELECT id, visit_id, clinic_id FROM ' . $db->table( 'cpms_handwriting_documents' ) . ' WHERE id = %d LIMIT 1',
+					[ $document_id ]
+				);
+			} else {
+				$document = $db->fetchRow(
+					'SELECT d.id, d.visit_id, d.clinic_id FROM ' . $db->table( 'cpms_handwriting_pages' ) . ' p INNER JOIN ' . $db->table( 'cpms_handwriting_documents' ) . ' d ON d.id = p.document_id WHERE p.id = %d LIMIT 1',
+					[ $page_id ]
+				);
+			}
+			// Even a valid foreign document/page is indistinguishable from a missing one.
+			if ( null === $document || (int) $document['visit_id'] !== $visit_id || (int) $document['clinic_id'] !== (int) App::scope()->clinicId ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- existing scope contract
+				$this->workspace_handwriting_denial( $visit_id, $operation );
+				return new WP_Error( 'CLINIC_NOT_FOUND', 'مراجعه یافت نشد', [ 'status' => 404 ] );
+			}
+		}
+
+		$actor   = (int) wp_get_current_user()->ID;
+		$service = App::handwritingService();
+		try {
+			switch ( $operation ) {
+				case 'list':
+					$list = $service->listDocuments( $actor, $visit_id ); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- next statement assigns an array key, not a peer variable
+					$list['autosave_sec'] = max( 2, (int) App::settingsFactory()->forClinic( (int) App::scope()->clinicId )->get( 'hw.autosave_sec', 5 ) ); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- array key and established scope contract
+
+					$scope        = App::scope();
+					$eligible     = $this->eligible_locations_for_clinic( (int) $scope->clinicId, $actor ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- trusted scope property
+					$location_id  = $scope->locationId ?? ( 1 === count( $eligible ) ? $eligible[0]['id'] : null ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- trusted scope property
+					$clinician_id = $this->memberships->active_clinician_id_for_wp_user( $actor );
+
+					$list['paper_context'] = null !== $location_id && null !== $clinician_id
+						? \ClinicCore\Application\Handwriting\PrescriptionPaperContext::for_visit( App::db(), $visit_id, (int) $scope->clinicId, (int) $location_id, $clinician_id ) // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- trusted scope property
+						: null;
+					return $this->success( $list );
+				case 'create':
+					return $this->success( $service->createDocument( $actor, $visit_id, null, [] ), 201 );
+				case 'add':
+					$body = array_intersect_key( $this->workspace_body( $r ), array_flip( [ 'width', 'height', 'background_template' ] ) );
+					return $this->success( $service->addPage( $actor, $document_id, $body ), 201 );
+				case 'page':
+					return $this->success( $service->getPage( $actor, $page_id ) );
+				case 'save':
+					$key = $this->idempotencyKey( $r );
+					if ( null === $key ) {
+						return $this->error( 'CLINIC_VALIDATION', 400, 'هدر Idempotency-Key (UUID) برای ذخیره دست‌خط الزامی است' );
+					}
+					$body   = array_intersect_key( $this->workspace_body( $r ), array_flip( [ 'client_revision', 'stroke_data', 'width', 'height', 'background_template', 'saved_by', 'conflict_reason' ] ) );
+					$result = $service->savePage( $actor, $page_id, $body, $key );
+					return $this->success( $result['response'], $result['status'] );
+			}
+		} catch ( \ClinicCore\Application\Handwriting\HandwritingException $e ) {
+			return $this->error( $e->errorCode, $e->httpStatus, $e->getMessage(), $e->data ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- existing exception contract
+		} catch ( \Throwable $e ) {
+			error_log( '[CPMS][DoctorPortalController] handwriting: ' . $e->getMessage() ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- existing controller convention
+			return $this->error( 'CLINIC_INTERNAL_ERROR', 500, 'خطای داخلی سرور — لطفاً دوباره تلاش کنید' );
+		}
+		return $this->error( 'CLINIC_NOT_FOUND', 404, 'مراجعه یافت نشد' );
+	}
+
+	private function workspace_handwriting_denial( int $visit_id, string $operation ): void {
+		$user = wp_get_current_user();
+		App::audit()->log( 'FORBIDDEN_ACCESS_ATTEMPT', [ 'wp_user_id' => (int) $user->ID, 'role' => RolesAndCapabilities::ROLE_DOCTOR ], 'handwriting', $visit_id, null, null, null, [ 'operation' => $operation ] );
+	}
+
 
 	private function perm_doctor( WP_REST_Request $r ): bool|WP_Error {
 		$nonce = $this->requireNonce( $r );

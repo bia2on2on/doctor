@@ -192,11 +192,12 @@ def new_page(browser, vp):
     ctx = browser.new_context(
         viewport={"width": vp["w"], "height": vp["h"]},
         locale="fa-IR",
+        has_touch=True,
         ignore_https_errors=True,
     )
     page = ctx.new_page()
     page.set_default_timeout(25000)
-    state = {"reqs": [], "rest": [], "context": None, "locations": None, "todays": [], "console": [], "pageerrors": [], "failed": []}
+    state = {"reqs": [], "rest": [], "context": None, "locations": None, "todays": [], "console": [], "pageerrors": [], "failed": [], "hygiene_stage": "before-offline", "hygiene_events": []}
     NAV[id(page)] = {"harness": False, "harness_docs": 0, "product_docs": 0, "product_paths": [], "rest_total": 0}
 
     def on_nav_request(req):
@@ -237,6 +238,16 @@ def new_page(browser, vp):
             "method": resp.request.method,
         })
 
+    def safe_error(text):
+        # Whitelist known browser/network phrases; never print arbitrary JS text.
+        if "Failed to fetch" in text:
+            return "Failed to fetch"
+        match = re.search(r"ERR_[A-Z_]+", text)
+        return match.group(0) if match else "other-redacted"
+
+    def safe_path(url):
+        return re.sub(r"/[0-9]+(?=/|$)", "/{id}", route_of(url))[:120]
+
     def on_console(msg):
         if msg.type != "error":
             return
@@ -244,9 +255,12 @@ def new_page(browser, vp):
         if "favicon" in txt or "Failed to load resource" in txt:
             return
         state["console"].append(txt)
+        state["hygiene_events"].append((state["hygiene_stage"], "console", safe_error(txt), "none", "none", "none"))
 
     def on_pageerror(err):
-        state["pageerrors"].append(str(err)[:200])
+        text = str(err)[:200]
+        state["pageerrors"].append(text)
+        state["hygiene_events"].append((state["hygiene_stage"], "pageerror", safe_error(text), "none", "none", "none"))
 
     def on_requestfailed(req):
         url = req.url
@@ -256,6 +270,7 @@ def new_page(browser, vp):
         if "ERR_ABORTED" in failure:
             return
         state["failed"].append(failure[:80])
+        state["hygiene_events"].append((state["hygiene_stage"], "requestfailed", safe_error(failure), req.method if req.method in ("GET", "POST", "PUT", "DELETE") else "other", safe_path(url), "none"))
 
     page.on("request", on_request)
     page.on("request", on_nav_request)
@@ -674,6 +689,13 @@ def assert_hygiene(page, state, label):
     if not box or box["height"] < 40 or box["width"] < 40:
         raise RuntimeError(f"{label} logout control is below a touch target")
     if state["console"] or state["pageerrors"] or state["failed"]:
+        events = state["hygiene_events"]
+        info(f"hygiene-diagnostic-{label} console={len(state['console'])}"
+             f" pageerrors={len(state['pageerrors'])} failed={len(state['failed'])}"
+             f" events={len(events)}")
+        for stage, kind, message, method, path, status in events[:8]:
+            info(f"hygiene-diagnostic-{label} stage={stage} kind={kind}"
+                 f" message={message} method={method} path={path} status={status}")
         raise RuntimeError(f"{label} console/page/network hygiene broken")
     return sw, iw
 
@@ -1890,6 +1912,111 @@ def prove_workspace_files(page, state, doctor, visit_id, label, mutate):
     )
 
 
+def prove_workspace_handwriting(page, state, doctor, visit_id, label, mutate):
+    """Real Visit Workspace canvas, REST persistence, offline retry and conflict."""
+    mark = nav_mark(page)
+    page.locator('[data-role="workspace-handwriting-open"]').click()
+    page.wait_for_selector('#cpms-hw-app:not([hidden]) #cpms-hw-canvas', timeout=10000)
+    page.wait_for_selector('#cpms-hw-sync[data-state="saved"]', timeout=12000)
+    if page.evaluate('document.documentElement.scrollWidth > window.innerWidth'):
+        raise RuntimeError(f"{label} handwriting horizontal overflow")
+    shot(page, f"doctor-portal-{label}-handwriting")
+    if mutate:
+        canvas = page.locator('#cpms-hw-canvas')
+        box = canvas.bounding_box()
+        if not box:
+            raise RuntimeError("handwriting canvas not visible")
+        x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+
+        def pen(offset):
+            for event, dx, pressure in (("pointerdown", 0, .4), ("pointermove", 24, .8), ("pointerup", 24, .8)):
+                canvas.dispatch_event(event, {
+                    "pointerId": 17, "pointerType": "pen", "pressure": pressure,
+                    "clientX": x + dx + offset, "clientY": y + dx,
+                    "bubbles": True,
+                })
+
+        def sync_state():
+            value = page.locator('#cpms-hw-sync').get_attribute('data-state')
+            return value if value in ('saved', 'saving', 'dirty', 'offline', 'conflict', 'error') else 'other'
+
+        before_pen = sync_state()
+        rest_before_pen = len(state["rest"])
+        pen(0)
+        after_pen = sync_state()
+        page.wait_for_selector('#cpms-hw-sync[data-state="saved"]', timeout=20000)
+        after_wait = sync_state()
+        base = f"/wp-json/clinic/v1/doctor/portal/visits/{visit_id}/handwriting"
+        # Same authenticated browser, but a second tab's revision is applied
+        # directly by REST so the first tab exercises the actual conflict path.
+        def server_page():
+            return page.evaluate('''async ({url, clinic, location}) => {
+                const cfg = JSON.parse(document.querySelector('.cpms-doctor-portal__config').textContent);
+                const h = {'X-WP-Nonce': cfg.nonce, 'X-CPMS-Clinic-Id': String(clinic), 'X-CPMS-Location-Id': String(location)};
+                const doc = await (await fetch(cfg.rest_root + url.replace('/wp-json/clinic/v1', ''), {headers:h})).json();
+                const id = doc.data.document.pages[0].id;
+                const page = await (await fetch(cfg.rest_root + url.replace('/wp-json/clinic/v1', '') + '/pages/' + id, {headers:h})).json();
+                return page.data;
+            }''', {"url": base, "clinic": doctor["clinic_id"], "location": doctor["location_id"]})
+
+        persisted = server_page()
+        strokes = persisted.get("strokes") or []
+        points = strokes[0].get("points") or [] if strokes and isinstance(strokes[0], dict) else []
+        pressure = points[0][2] if points and len(points[0]) > 2 else None
+        put_statuses = [hit["status"] for hit in state["rest"][rest_before_pen:]
+                        if hit["method"] == "PUT" and "/handwriting/pages/" in hit["route"]]
+        info(f"handwriting-pen-diagnostic-{label} before={before_pen} after_pen={after_pen}"
+             f" after_wait={after_wait} strokes={len(strokes)} points={len(points)}"
+             f" pressure={pressure if type(pressure) in (int, float) else 'non-numeric'}"
+             f" pressure_type={type(pressure).__name__} put_statuses={put_statuses[:4]}"
+             f" put_count={len(put_statuses)}")
+        if not strokes or not points or type(pressure) not in (int, float) or not (abs(pressure - .4) <= 1e-6):
+            raise RuntimeError("pen pressure/strokes not persisted")
+        page.locator('[data-role="workspace-handwriting-close"]').click()
+        page.locator('[data-role="workspace-handwriting-open"]').click()
+        page.wait_for_selector('#cpms-hw-sync[data-state="saved"]', timeout=12000)
+        if server_page()["strokes"] != persisted["strokes"]:
+            raise RuntimeError("reopened Visit handwriting lost persisted strokes")
+        offline_failures_before = len(state["failed"])
+        state["hygiene_stage"] = "handwriting-offline"
+        page.context.set_offline(True)
+        pen(40)
+        page.wait_for_selector('#cpms-hw-sync[data-state="offline"]', timeout=20000)
+        page.context.set_offline(False)
+        state["hygiene_stage"] = "after-handwriting-offline"
+        expected_offline = state["failed"][offline_failures_before:]
+        if any("ERR_INTERNET_DISCONNECTED" not in failure for failure in expected_offline):
+            raise RuntimeError(f"unexpected offline network failure: {expected_offline}")
+        del state["failed"][offline_failures_before:]
+        page.evaluate("window.dispatchEvent(new Event('online'))")
+        page.wait_for_selector('#cpms-hw-sync[data-state="saved"]', timeout=20000)
+        resumed = server_page()
+        if len(resumed["strokes"]) < 2:
+            raise RuntimeError("offline IndexedDB queue did not resume")
+        # External-tab write advances the revision; editor retains its old base.
+        outcome = page.evaluate('''async ({url, id, revision, strokes, clinic, location}) => {
+            const cfg = JSON.parse(document.querySelector('.cpms-doctor-portal__config').textContent);
+            const h = {'X-WP-Nonce': cfg.nonce, 'X-CPMS-Clinic-Id': String(clinic), 'X-CPMS-Location-Id': String(location),
+                'Content-Type':'application/json', 'Idempotency-Key': crypto.randomUUID()};
+            const data = JSON.stringify(strokes);
+            const enc = btoa(data);
+            const r = await fetch(cfg.rest_root + url.replace('/wp-json/clinic/v1', '') + '/pages/' + id,
+                {method:'PUT', headers:h, body:JSON.stringify({client_revision:revision+1, stroke_data:enc})});
+            return r.status;
+        }''', {"url": base, "id": resumed["id"], "revision": resumed["client_revision"],
+            "strokes": resumed["strokes"], "clinic": doctor["clinic_id"], "location": doctor["location_id"]})
+        if outcome != 200:
+            raise RuntimeError(f"second-tab save returned {outcome}")
+        pen(80)
+        page.wait_for_selector('#cpms-hw-conflict:not([hidden])', timeout=20000)
+        shot(page, f"doctor-portal-{label}-handwriting-conflict")
+        page.locator('#cpms-hw-keep-server').click()
+    page.locator('[data-role="workspace-handwriting-close"]').click()
+    reloads, rest_calls, _ = assert_no_product_reload(page, mark, label + '-handwriting')
+    info(f"handwriting-{label} product_reloads={reloads} rest_calls={rest_calls} "
+         f"synthetic_pen={int(mutate)} offline_resume={int(mutate)} conflict={int(mutate)}")
+
+
 def prove_workspace_complete(page, state, doctor, visit_id, label, mutate):
     # Phase 10 — Chief Complaint + Visit Complete inside the open Visit
     # Workspace. The Visit id is only the selector; Complete goes through the
@@ -2277,6 +2404,11 @@ def prove_one(browser, doctor, vp, shot_name=None, probe_fallback=False):
                 page, state, doctor, int(doctor[pair_keys[0]]), vp["vp"],
                 mutate=(vp["vp"] == "desktop-1366"),
             )
+            stage = "workspace-handwriting"
+            prove_workspace_handwriting(
+                page, state, doctor, int(doctor[pair_keys[0]]), vp["vp"],
+                mutate=(vp["vp"] == "desktop-1366"),
+            )
             stage = "workspace-complete"
             prove_workspace_complete(
                 page, state, doctor, int(doctor[pair_keys[0]]), vp["vp"],
@@ -2631,6 +2763,89 @@ def prove_legacy_not_eligible(browser, vp):
         ctx.close()
 
 
+def prove_handwriting_admin(browser, doctor, vp):
+    """Same extracted engine remains operational on the original wp-admin page."""
+    key = "handwriting-wp-admin-regression"
+    ctx, page, state = new_page(browser, vp)
+
+    def render_dump(tab, label):
+        def redact(text, limit):
+            text = re.sub(r'\s+', ' ', text or '').strip()[:limit]
+            return re.sub(r'\S+@\S+|https?://\S+|\b\d+\b', '[redacted]', text)
+
+        content = tab.locator('#wpbody-content')
+        raw = content.inner_text() if content.count() else ''
+        notices = tab.locator('.notice-warning')
+        notice = notices.first.inner_text() if notices.count() else ''
+        assets = tab.evaluate("performance.getEntriesByType('resource').filter(r => /doctor-handwriting/.test(r.name)).length")
+        info(f"{label} title={redact(tab.title(), 60)} body_class={redact(tab.locator('body').get_attribute('class'), 60)}"
+             f" app={tab.locator('#cpms-hw-app').count()} canvas={tab.locator('#cpms-hw-canvas').count()}"
+             f" hw_cfg={int(tab.evaluate('Boolean(window.CPMS_HW)'))} hw_engine={int(tab.evaluate('Boolean(window.CPMSHandwriting)'))}"
+             f" engine_assets={assets} content_len={len(raw)} content={redact(raw, 160)}"
+             f" notices={notices.count()} notice1={redact(notice, 120)}")
+
+    try:
+        login(page, doctor)
+        goto_portal(page, state, expect_today=True)
+        identity_response = portal_fetch(page, doctor, "GET", "/doctor/portal/context")
+        identity = payload(identity_response["body"]).get("doctor") or {} if identity_response["status"] == 200 else {}
+        session_user = identity.get("wp_user_id")
+        session_clinician = identity.get("clinician_id")
+        info(f"wp-admin-journey-identity expected_user={doctor['user_id']} expected_clinician={doctor['clinician_id']}"
+             f" session_user={int(session_user) if isinstance(session_user, int) and session_user > 0 else 'none'}"
+             f" session_clinician={int(session_clinician) if isinstance(session_clinician, int) and session_clinician > 0 else 'none'}")
+        visit = doctor["visit_own"]
+        url = f"{BASE}/wp-admin/admin.php?page=cpms-handwriting&visit_id={visit}"
+        response = harness_goto(page, url, wait_until="domcontentloaded")
+        if not response or response.status != 200:
+            raise RuntimeError(f"wp-admin handwriting HTTP {getattr(response, 'status', None)}")
+        admin_bar = page.locator('#wpadminbar').count() > 0
+        body_wp_admin = page.locator('body.wp-admin').count() > 0
+        display_name = (page.locator('#wp-admin-bar-my-account .display-name').first.text_content() or '').strip()[:40] if page.locator('#wp-admin-bar-my-account .display-name').count() else ''
+        notices = page.locator('.notice-warning')
+        cpms_notice = 'این صفحه از طریق دکمه «🖋️ دست‌خط» در صفحه ویزیت باز می‌شود.'
+        notice_is_cpms = notices.filter(has_text=cpms_notice).count() > 0
+        info(f"wp-admin-identity admin_bar={int(admin_bar)} body_wp_admin={int(body_wp_admin)}"
+             f" identity={display_name or 'none'} app={page.locator('#cpms-hw-app').count()}"
+             f" canvas={page.locator('#cpms-hw-canvas').count()} notice_count={notices.count()}"
+             f" notice_is_cpms={'yes' if notice_is_cpms else 'no'}")
+        info(f"wp-admin-journey-preconditions visit_id={visit} notice_text={'yes' if notice_is_cpms else 'no'}"
+             f" page_app={page.locator('#cpms-hw-app').count()} canvas={page.locator('#cpms-hw-canvas').count()}")
+        render_dump(page, 'wp-admin-render')
+        control = ctx.new_page()
+        control.goto(f"{BASE}/wp-admin/admin.php?page=cpms-doctor&visit_id={visit}", wait_until="domcontentloaded")
+        render_dump(control, 'wp-admin-control')
+        control.close()
+        if not admin_bar or not body_wp_admin or session_user != doctor["user_id"] or session_clinician != doctor["clinician_id"]:
+            raise RuntimeError("wp-admin journey identity does not match expected doctor")
+        if not notice_is_cpms and not page.locator('#cpms-hw-app').count():
+            notice = (notices.first.inner_text() or '')[:120] if notices.count() else ''
+            safe_notice = re.sub(r'\S+@\S+|https?://\S+|\b\d+\b', '[redacted]', notice).replace('\n', ' ')
+            info(f"wp-admin-other-notice {safe_notice or 'none'}")
+        page.wait_for_selector('#cpms-hw-app #cpms-hw-canvas', state="attached", timeout=10000)
+        page.wait_for_selector('#cpms-hw-sync[data-state="saved"]', timeout=20000)
+        if not page.evaluate("Boolean(window.CPMSHandwriting && window.CPMS_HW)"):
+            raise RuntimeError("wp-admin did not load the single extracted engine")
+        if page.locator('#cpms-hw-pages .cpms-hw-page-tab').count() == 0:
+            raise RuntimeError("wp-admin handwriting pages not loaded")
+        shot(page, "doctor-portal-handwriting-wp-admin-regression")
+        ok(key, "original wp-admin handwriting editor loads the same engine", "saved=1 pages=1")
+    except Exception as error:  # noqa: BLE001
+        try:
+            render_dump(page, 'wp-admin-render-failure')
+        except Exception:  # noqa: BLE001
+            pass
+        shot(page, "doctor-portal-FAIL-handwriting-wp-admin")
+        detail = (f"url_path={urlparse(page.url).path} page={parse_qs(urlparse(page.url).query).get('page', [''])[0]} "
+                  f"visit={parse_qs(urlparse(page.url).query).get('visit_id', [''])[0]} "
+                  f"app={page.locator('#cpms-hw-app').count()} canvas={page.locator('#cpms-hw-canvas').count()} "
+                  f"notice={page.locator('.notice-warning').count()} denied={int('not allowed' in page.content().lower())}")
+        fail(key, "wp-admin handwriting regression", f"{error} ({detail})")
+        raise
+    finally:
+        ctx.close()
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
     with sync_playwright() as p:
@@ -2648,6 +2863,10 @@ def main():
             except Exception:
                 continue
         desktop = VIEWPORTS[2]
+        try:
+            prove_handwriting_admin(browser, ONE, desktop)
+        except Exception:
+            pass
         try:
             prove_legacy_not_eligible(browser, desktop)
         except Exception:

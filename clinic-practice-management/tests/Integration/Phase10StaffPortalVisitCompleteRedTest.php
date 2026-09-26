@@ -100,7 +100,7 @@ final class Phase10StaffPortalVisitCompleteRedTest extends WP_UnitTestCase
     private const FIXED_UTC = '2026-03-14 10:00:00';
     private const FIXED_UTC_DATE = '2026-03-14';
     private const TZ_TEHRAN = 'Asia/Tehran';
-    private const LATEST_MIGRATION = '2026_09_20_0022';
+    private const LATEST_MIGRATION = '2026_09_26_0023';
 
     /** Established clinical note enums; Complete must not add a category or visibility state. */
     private const NOTE_CATEGORY_ENUM = "enum('chief_complaint','history','examination','diagnosis','clinical_note','recommendation_text','private_note','other')";
