@@ -255,8 +255,11 @@ final class StaffPortalShell {
 			return;
 		}
 		self::register_handles();
+		DoctorPortalShell::register_handwriting_assets();
 		wp_enqueue_style( self::DOCTOR_CSS_HANDLE );
+		wp_enqueue_style( DoctorPortalShell::HANDWRITING_HANDLE );
 		wp_enqueue_script( self::DOCTOR_JS_HANDLE );
+		wp_enqueue_script( DoctorPortalShell::HANDWRITING_HANDLE );
 	}
 
 	/**
