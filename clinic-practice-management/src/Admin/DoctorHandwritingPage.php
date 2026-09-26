@@ -4,8 +4,11 @@ declare(strict_types=1);
 
 namespace ClinicCore\Admin;
 
+use ClinicCore\Application\Scope\TrustedClinicEstablisher;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Infrastructure\Repository\MembershipRepository;
+use ClinicCore\Infrastructure\Repository\VisitRepository;
 
 /**
  * ویرایشگر دست‌خط پزشک (F7) — Full-Screen Canvas (wireframes/doctor.md §3).
@@ -62,10 +65,29 @@ final class DoctorHandwritingPage
             wp_die('دسترسی ندارید', 403);
         }
 
-        $clinician = self::ownClinician();
         $visitId = isset($_GET['visit_id']) ? absint($_GET['visit_id']) : 0; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+        $clinicianId = null;
+        $settings = null;
+        $userId = get_current_user_id();
+        if ( $visitId > 0 && $userId > 0 ) {
+            try {
+                $db = App::db();
+                $memberships = new MembershipRepository( $db );
+                $clinicianId = $memberships->active_clinician_id_for_wp_user( $userId );
+                $visit = $clinicianId ? (new VisitRepository( $db ))->find( $visitId ) : null;
+                if ( $visit !== null && (int) $visit[ 'clinician_id' ] === $clinicianId && (int) $visit[ 'clinic_id' ] > 0 ) {
+                    $clinicId = (int) $visit[ 'clinic_id' ];
+                    $scope = (new TrustedClinicEstablisher( $db, $memberships ))->establish( $userId, $clinicId );
+                    if ( (int) $scope->clinicId === $clinicId && App::authorization_service()->can( $userId, $clinicId, RolesAndCapabilities::NOTE_CREATE ) ) {
+                        $settings = App::settingsFactory()->forClinic( $clinicId );
+                    }
+                }
+            } catch ( \Throwable $e ) {
+                unset( $e ); // Missing, ambiguous or untrusted scope never exposes the editor.
+            }
+        }
 
-        if ($clinician === null || $visitId < 1) {
+        if ( $settings === null ) {
             echo '<div class="wrap" dir="rtl"><h1>دست‌خط</h1>' .
                 '<div class="notice notice-warning"><p>این صفحه از طریق دکمه «🖋️ دست‌خط» در صفحه ویزیت باز می‌شود.</p></div></div>';
 
@@ -76,9 +98,9 @@ final class DoctorHandwritingPage
             'rest_url' => esc_url_raw(rest_url('clinic/v1/')),
             'nonce' => wp_create_nonce('wp_rest'),
             'visit_id' => $visitId,
-            'clinician_id' => $clinician['id'],
-            'autosave_sec' => max(2, (int) App::settings()->get('hw.autosave_sec', 5)),
-            'local_retain' => (string) App::settings()->get('hw.local_retain', 'off'),
+            'clinician_id' => $clinicianId,
+            'autosave_sec' => max( 2, (int) $settings->get( 'hw.autosave_sec', 5 ) ),
+            'local_retain' => (string) $settings->get( 'hw.local_retain', 'off' ),
             'back_url' => admin_url('admin.php?page=cpms-doctor&visit_id=' . $visitId),
             'can_upload' => current_user_can(RolesAndCapabilities::FILE_UPLOAD),
         ];
@@ -160,22 +182,4 @@ window.CPMS_HW = <?php echo wp_json_encode($config); ?>;
 <?php
     }
 
-    /**
-     * کلینسین متصل به کاربر جاری (الگوی DoctorDashboardPage — ماتریس 4.3).
-     *
-     * @return array{id: int, name: string}|null
-     */
-    private static function ownClinician(): ?array
-    {
-        $row = App::db()->fetchRow(
-            'SELECT id, full_name FROM ' . App::db()->table('cpms_clinicians') .
-            ' WHERE wp_user_id = %d AND is_active = 1 LIMIT 1',
-            [get_current_user_id()]
-        );
-        if ($row === null) {
-            return null;
-        }
-
-        return ['id' => (int) $row['id'], 'name' => (string) $row['full_name']];
-    }
 }
