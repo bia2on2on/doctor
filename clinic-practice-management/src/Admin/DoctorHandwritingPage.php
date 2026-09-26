@@ -74,7 +74,7 @@ final class DoctorHandwritingPage
             try {
                 $db           = App::db();
                 $memberships  = new MembershipRepository( $db );
-                $clinician_id  = $memberships->active_clinician_id_for_wp_user( $user_id );
+                $clinician_id = $memberships->active_clinician_id_for_wp_user( $user_id );
                 $visits       = new VisitRepository( $db );
                 $visit        = $clinician_id ? $visits->find( $visit_id ) : null;
                 if ( $visit !== null && (int) $visit['clinician_id'] === $clinician_id && (int) $visit['clinic_id'] > 0 ) {
@@ -105,15 +105,15 @@ final class DoctorHandwritingPage
         }
 
         $config = [
-            'rest_url'      => esc_url_raw(rest_url('clinic/v1/')),
-            'nonce'         => wp_create_nonce('wp_rest'),
+            'rest_url'      => esc_url_raw( rest_url( 'clinic/v1/' ) ),
+            'nonce'         => wp_create_nonce( 'wp_rest' ),
             'visit_id'      => $visit_id,
             'paper_context' => $paper_context,
             'clinician_id'  => $clinician_id,
             'autosave_sec'  => max( 2, (int) $settings->get( 'hw.autosave_sec', 5 ) ),
             'local_retain'  => (string) $settings->get( 'hw.local_retain', 'off' ),
             'back_url'      => admin_url( 'admin.php?page=cpms-doctor&visit_id=' . $visit_id ),
-            'can_upload'    => current_user_can(RolesAndCapabilities::FILE_UPLOAD),
+            'can_upload'    => current_user_can( RolesAndCapabilities::FILE_UPLOAD ),
         ];
         ?>
 <div id="cpms-hw-app" dir="rtl" data-visit="<?php echo (int) $visit_id; ?>">

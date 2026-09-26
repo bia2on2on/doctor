@@ -23,8 +23,8 @@ return [
         $db->query( "ALTER TABLE {$table} MODIFY COLUMN `background_template` ENUM('blank','lined','graph','form','prescription') NOT NULL DEFAULT 'lined'" );
     },
     'down'        => static function ( CpmsDb $db ): void {
-        $table  = $db->table( 'cpms_handwriting_pages' );
-        $count  = (int) $db->fetchValue( "SELECT COUNT(*) FROM {$table} WHERE background_template = 'prescription'" );
+        $table = $db->table( 'cpms_handwriting_pages' );
+        $count = (int) $db->fetchValue( "SELECT COUNT(*) FROM {$table} WHERE background_template = 'prescription'" );
         if ( $count > 0 ) {
             throw new RuntimeException( 'Cannot roll back prescription stationery while prescription pages exist.' );
         }
