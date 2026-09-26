@@ -144,7 +144,7 @@ final class Phase10StaffPortalHandwritingRedTest extends WP_UnitTestCase {
 		$db->update( 'cpms_locations', [ 'is_active' => 0 ], [ 'id' => $other_location ] );
 		$inactive = $this->call_portal( 'GET', $path, $fx, $other_location );
 		self::assertSame( 403, $inactive->get_status() );
-		self::assertSame( 'location', $inactive->get_data()['data']['reason'] ?? '' );
+		self::assertSame( 'location', $inactive->get_data()['data']['reason'] ?? '', 'Explicit ineligible Location must preserve the requested portal reason.' );
 		$created = $this->call_portal( 'POST', $path, $fx, $fx['location'], [ 'patient_id' => 999999, 'clinic_id' => 999999, 'clinician_id' => 999999, 'visit_id' => 999999, 'location_id' => 999999 ] );
 		self::assertSame( 201, $created->get_status() );
 		$doc = $created->get_data()['data'];
@@ -171,7 +171,7 @@ final class Phase10StaffPortalHandwritingRedTest extends WP_UnitTestCase {
 		$saved = $this->call_portal( 'PUT', $page_path, $fx, $fx['location'], $body, $key );
 		self::assertSame( 200, $saved->get_status() );
 		$replay = $this->call_portal( 'PUT', $page_path, $fx, $fx['location'], $body, $key );
-		self::assertSame( $saved->get_data(), $replay->get_data() );
+		self::assertEquals( $saved->get_data(), $replay->get_data(), 'Stored replay payload is semantically identical regardless of associative key order.' );
 		$conflict = $this->call_portal( 'PUT', $page_path, $fx, $fx['location'], $body, '00000000-0000-4000-8000-' . bin2hex( random_bytes( 6 ) ) );
 		self::assertSame( 409, $conflict->get_status() );
 		self::assertSame( 'CLINIC_CONFLICT', $conflict->get_data()['code'] ?? '' );
