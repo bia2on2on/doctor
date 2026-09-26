@@ -1619,6 +1619,13 @@ def prove_workspace_rx_multi(page, state, doctor, visit_id, label):
     sw, iw = assert_hygiene(page, state, label + "-rx-two")
     shot(page, f"doctor-portal-{label}-rx-multi-composer")
     route = f"/doctor/portal/visits/{visit_id}/prescriptions"
+    # Compare persistence to persistence, not to the UI's cached list after
+    # the preceding invalid-write regression. Keep that existing probe intact.
+    record_route = f"/doctor/portal/visits/{visit_id}/record"
+    initial_record = portal_fetch(page, doctor, "GET", record_route)
+    if initial_record["status"] != 200:
+        raise RuntimeError(f"{label} authorized persisted baseline read failed")
+    persisted_before = len(payload(initial_record["body"]).get("prescriptions", []))
     req_start = len(state["reqs"])
     with page.expect_response(lambda r: route_of(r.url).endswith(route) and r.request.method == "POST") as created:
         form.locator('[data-role="workspace-rx-submit"]').focus()
@@ -1649,10 +1656,10 @@ def prove_workspace_rx_multi(page, state, doctor, visit_id, label):
     if rows.count() != 1 or rows.first.locator('[data-role="workspace-rx-generic-name"]').input_value() != "":
         raise RuntimeError(f"{label} successful create must reset to one empty row")
     # Independent existing E7 read proves persistence, not just echoed JSON/DOM.
-    record = portal_fetch(page, doctor, "GET", f"/visits/{visit_id}/record")
+    record = portal_fetch(page, doctor, "GET", record_route)
     prescriptions = payload(record["body"]).get("prescriptions", [])
     persisted = [p for p in prescriptions if int(p["id"]) == rx_id]
-    if record["status"] != 200 or len(prescriptions) != before + 1 or len(persisted) != 1:
+    if record["status"] != 200 or len(prescriptions) != persisted_before + 1 or len(persisted) != 1:
         raise RuntimeError(f"{label} persisted prescription count/binding mismatch")
     stored = persisted[0]
     if stored.get("prescription_number") != rx.get("prescription_number") or [i["generic_name"] for i in stored.get("items", [])] != [names[0], names[2]]:

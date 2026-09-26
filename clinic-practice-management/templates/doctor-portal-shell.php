@@ -323,6 +323,10 @@ body.cpms-doctor-portal-shell-body { margin: 0; font-family: Tahoma, Vazirmatn, 
                                 <div class="cpms-doc-section-head cpms-doc-ws-subhead">
                                     <h3>نسخهٔ جدید</h3>
                                 </div>
+                                <div data-role="workspace-rx-compose-items">
+                                    <fieldset class="cpms-doc-ws-rx-compose-item" data-role="workspace-rx-compose-item">
+                                        <legend data-role="workspace-rx-item-title">دارو 1</legend>
+                                        <div class="cpms-doc-ws-rx-fields">
                                 <div class="cpms-doc-ws-field">
                                     <label for="cpms-doc-ws-rx-generic">نام ژنریک دارو</label>
                                     <input id="cpms-doc-ws-rx-generic" type="text" data-role="workspace-rx-generic-name" maxlength="190" autocomplete="off">
@@ -368,6 +372,11 @@ body.cpms-doctor-portal-shell-body { margin: 0; font-family: Tahoma, Vazirmatn, 
                                     <label for="cpms-doc-ws-rx-instructions">دستور مصرف</label>
                                     <input id="cpms-doc-ws-rx-instructions" type="text" data-role="workspace-rx-instructions" maxlength="500" autocomplete="off">
                                 </div>
+                                        </div>
+                                        <button type="button" class="cpms-doc-btn" data-role="workspace-rx-remove" hidden>حذف دارو</button>
+                                    </fieldset>
+                                </div>
+                                <button type="button" class="cpms-doc-btn cpms-doc-ws-rx-add" data-role="workspace-rx-add">افزودن دارو</button>
                                 <div class="cpms-doc-ws-field cpms-doc-ws-check">
                                     <label for="cpms-doc-ws-rx-visible">
                                         <input id="cpms-doc-ws-rx-visible" type="checkbox" data-role="workspace-rx-visible" checked>
@@ -1143,6 +1152,12 @@ function submitWorkspaceNote(){
 
 function setRxBusy(busy){
     state.workspaceRxBusy = !!busy;
+    var composer = qs('[data-role="workspace-rx-form"]');
+    if ( composer ) {
+        Array.prototype.forEach.call(composer.querySelectorAll('input, select, button'), function(el){
+            el.disabled = !!busy;
+        });
+    }
     var btn = qs('[data-role="workspace-rx-submit"]');
     if ( btn ) {
         btn.disabled = !!busy;
@@ -1155,16 +1170,55 @@ function setRxBusy(busy){
     }
 }
 
+// Row controls are local composition only; validation and authority stay on the server.
+var rxRowSequence = 1;
+
+function clearRxItem(row){
+    Array.prototype.forEach.call(row.querySelectorAll('input'), function(el){ el.value = ''; });
+    Array.prototype.forEach.call(row.querySelectorAll('select'), function(el){ el.selectedIndex = 0; });
+}
+
+function numberRxItems(){
+    var rows = document.querySelectorAll('[data-role="workspace-rx-compose-item"]');
+    Array.prototype.forEach.call(rows, function(row, i){
+        row.querySelector('[data-role="workspace-rx-item-title"]').textContent = 'دارو ' + (i + 1);
+        var remove = row.querySelector('[data-role="workspace-rx-remove"]');
+        remove.hidden = i === 0;
+        remove.setAttribute('aria-label', 'حذف دارو ' + (i + 1));
+    });
+}
+
+function addRxItem(){
+    if ( state.workspaceRxBusy ) return;
+    var list = qs('[data-role="workspace-rx-compose-items"]');
+    if ( !list || !list.firstElementChild ) return;
+    var row = list.firstElementChild.cloneNode(true);
+    var suffix = '-' + (++rxRowSequence);
+    // Keep the original row/IDs; cloned labels always target unique controls.
+    Array.prototype.forEach.call(row.querySelectorAll('[id]'), function(el){ el.id += suffix; });
+    Array.prototype.forEach.call(row.querySelectorAll('label[for]'), function(el){ el.htmlFor += suffix; });
+    clearRxItem(row);
+    list.appendChild(row);
+    numberRxItems();
+    row.querySelector('[data-role="workspace-rx-generic-name"]').focus();
+}
+
+function removeRxItem(btn){
+    if ( state.workspaceRxBusy ) return;
+    var row = btn.closest('[data-role="workspace-rx-compose-item"]');
+    var first = qs('[data-role="workspace-rx-compose-item"]');
+    if ( !row || row === first ) return;
+    row.remove();
+    numberRxItems();
+    qs('[data-role="workspace-rx-add"]').focus();
+}
+
 function clearRxComposer(){
-    var ids = ['workspace-rx-generic-name', 'workspace-rx-dose', 'workspace-rx-frequency', 'workspace-rx-duration-days', 'workspace-rx-instructions'];
-    for ( var i = 0; i < ids.length; i++ ) {
-        var el = qs('[data-role="' + ids[i] + '"]');
-        if ( el ) el.value = '';
-    }
-    var form = qs('[data-role="workspace-rx-form-select"]');
-    if ( form ) form.selectedIndex = 0;
-    var route = qs('[data-role="workspace-rx-route"]');
-    if ( route ) route.selectedIndex = 0;
+    var rows = document.querySelectorAll('[data-role="workspace-rx-compose-item"]');
+    Array.prototype.forEach.call(rows, function(row, i){
+        if ( i === 0 ) clearRxItem(row); else row.remove();
+    });
+    numberRxItems();
     var visible = qs('[data-role="workspace-rx-visible"]');
     if ( visible ) visible.checked = true;
 }
@@ -1241,34 +1295,33 @@ function submitWorkspaceRx(){
     var okEl = qs('[data-role="workspace-rx-success"]');
     hide(errEl);
     hide(okEl);
-    var value = function(role){
-        var el = qs('[data-role="' + role + '"]');
-        return el ? String(el.value || '').trim() : '';
-    };
-    var genericName = value('workspace-rx-generic-name');
-    var dose = value('workspace-rx-dose');
-    var frequency = value('workspace-rx-frequency');
-    var formSel = qs('[data-role="workspace-rx-form-select"]');
-    var routeSel = qs('[data-role="workspace-rx-route"]');
-    var durationRaw = value('workspace-rx-duration-days');
+    var rows = document.querySelectorAll('[data-role="workspace-rx-compose-item"]');
+    var items = Array.prototype.map.call(rows, function(row){
+        var value = function(role){
+            var el = row.querySelector('[data-role="' + role + '"]');
+            return el ? String(el.value || '').trim() : '';
+        };
+        var item = {
+            generic_name: value('workspace-rx-generic-name'),
+            dose: value('workspace-rx-dose'),
+            frequency: value('workspace-rx-frequency'),
+            form: value('workspace-rx-form-select'),
+            route: value('workspace-rx-route'),
+            instructions: value('workspace-rx-instructions')
+        };
+        var durationRaw = value('workspace-rx-duration-days');
+        if ( durationRaw !== '' ) {
+            var duration = parseInt(durationRaw, 10);
+            if ( !isNaN(duration) ) item.duration_days = duration;
+        }
+        return item;
+    });
     var visibleEl = qs('[data-role="workspace-rx-visible"]');
-    var item = {
-        generic_name: genericName,
-        dose: dose,
-        frequency: frequency,
-        form: formSel ? formSel.value : 'tablet',
-        route: routeSel ? routeSel.value : 'oral',
-        instructions: value('workspace-rx-instructions')
-    };
-    if ( durationRaw !== '' ) {
-        var duration = parseInt(durationRaw, 10);
-        if ( !isNaN(duration) ) item.duration_days = duration;
-    }
     setRxBusy(true);
     var submittedVisitId = visitId;
     // POST /doctor/portal/visits/{id}/prescriptions — selector headers only.
     api('POST', '/doctor/portal/visits/' + encodeURIComponent(String(visitId)) + '/prescriptions', {
-        items: [item],
+        items: items,
         is_patient_visible: !!(visibleEl && visibleEl.checked)
     }, scopeHeaders()).then(function(r){
         if ( state.workspaceVisitId !== submittedVisitId ) return;
@@ -2061,6 +2114,18 @@ document.addEventListener('click', function(ev){
         ev.preventDefault();
         if ( openFile.disabled ) return;
         workspaceVisitFileOpen(parseInt(openFile.getAttribute('data-file-id'), 10), openFile.getAttribute('data-file-name'));
+        return;
+    }
+    var addRxBtn = target ? target.closest('[data-role="workspace-rx-add"]') : null;
+    if ( addRxBtn ) {
+        ev.preventDefault();
+        addRxItem();
+        return;
+    }
+    var removeRxBtn = target ? target.closest('[data-role="workspace-rx-remove"]') : null;
+    if ( removeRxBtn ) {
+        ev.preventDefault();
+        removeRxItem(removeRxBtn);
         return;
     }
     var finBtn = target ? target.closest('[data-role="workspace-rx-finalize"]') : null;
