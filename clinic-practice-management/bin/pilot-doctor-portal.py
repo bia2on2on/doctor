@@ -2769,11 +2769,24 @@ def prove_handwriting_admin(browser, doctor, vp):
     ctx, page, state = new_page(browser, vp)
     try:
         login(page, doctor)
-        visit = doctor.get("act1366") or doctor["visit_own"]
+        goto_portal(page, state, expect_today=True)
+        identity_response = portal_fetch(page, doctor, "GET", "/doctor/portal/context")
+        identity = payload(identity_response["body"]).get("doctor") or {} if identity_response["status"] == 200 else {}
+        session_user = identity.get("wp_user_id")
+        session_clinician = identity.get("clinician_id")
+        info(f"wp-admin-journey-identity expected_user={doctor['user_id']} expected_clinician={doctor['clinician_id']}"
+             f" session_user={int(session_user) if isinstance(session_user, int) and session_user > 0 else 'none'}"
+             f" session_clinician={int(session_clinician) if isinstance(session_clinician, int) and session_clinician > 0 else 'none'}")
+        visit = doctor["visit_own"]
         url = f"{BASE}/wp-admin/admin.php?page=cpms-handwriting&visit_id={visit}"
         response = harness_goto(page, url, wait_until="domcontentloaded")
         if not response or response.status != 200:
             raise RuntimeError(f"wp-admin handwriting HTTP {getattr(response, 'status', None)}")
+        notice_text = page.locator('.notice-warning').filter(has_text='این صفحه از طریق دکمه').count() > 0
+        info(f"wp-admin-journey-preconditions visit_id={visit} notice_text={'yes' if notice_text else 'no'}"
+             f" page_app={page.locator('#cpms-hw-app').count()} canvas={page.locator('#cpms-hw-canvas').count()}")
+        if session_user != doctor["user_id"] or session_clinician != doctor["clinician_id"]:
+            raise RuntimeError("wp-admin journey session does not match expected doctor")
         page.wait_for_selector('#cpms-hw-app #cpms-hw-canvas', state="attached", timeout=10000)
         page.wait_for_selector('#cpms-hw-sync[data-state="saved"]', timeout=20000)
         if not page.evaluate("Boolean(window.CPMSHandwriting && window.CPMS_HW)"):
