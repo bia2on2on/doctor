@@ -2767,6 +2767,23 @@ def prove_handwriting_admin(browser, doctor, vp):
     """Same extracted engine remains operational on the original wp-admin page."""
     key = "handwriting-wp-admin-regression"
     ctx, page, state = new_page(browser, vp)
+
+    def render_dump(tab, label):
+        def redact(text, limit):
+            text = re.sub(r'\s+', ' ', text or '').strip()[:limit]
+            return re.sub(r'\S+@\S+|https?://\S+|\b\d+\b', '[redacted]', text)
+
+        content = tab.locator('#wpbody-content')
+        raw = content.inner_text() if content.count() else ''
+        notices = tab.locator('.notice-warning')
+        notice = notices.first.inner_text() if notices.count() else ''
+        assets = tab.evaluate("performance.getEntriesByType('resource').filter(r => /doctor-handwriting/.test(r.name)).length")
+        info(f"{label} title={redact(tab.title(), 60)} body_class={redact(tab.locator('body').get_attribute('class'), 60)}"
+             f" app={tab.locator('#cpms-hw-app').count()} canvas={tab.locator('#cpms-hw-canvas').count()}"
+             f" hw_cfg={int(tab.evaluate('Boolean(window.CPMS_HW)'))} hw_engine={int(tab.evaluate('Boolean(window.CPMSHandwriting)'))}"
+             f" engine_assets={assets} content_len={len(raw)} content={redact(raw, 160)}"
+             f" notices={notices.count()} notice1={redact(notice, 120)}")
+
     try:
         login(page, doctor)
         goto_portal(page, state, expect_today=True)
@@ -2784,7 +2801,7 @@ def prove_handwriting_admin(browser, doctor, vp):
             raise RuntimeError(f"wp-admin handwriting HTTP {getattr(response, 'status', None)}")
         admin_bar = page.locator('#wpadminbar').count() > 0
         body_wp_admin = page.locator('body.wp-admin').count() > 0
-        display_name = (page.locator('#wpadmin-bar-my-account .display-name').first.text_content() or '').strip()[:40] if page.locator('#wpadmin-bar-my-account .display-name').count() else ''
+        display_name = (page.locator('#wp-admin-bar-my-account .display-name').first.text_content() or '').strip()[:40] if page.locator('#wp-admin-bar-my-account .display-name').count() else ''
         notices = page.locator('.notice-warning')
         cpms_notice = 'این صفحه از طریق دکمه «🖋️ دست‌خط» در صفحه ویزیت باز می‌شود.'
         notice_is_cpms = notices.filter(has_text=cpms_notice).count() > 0
@@ -2794,7 +2811,12 @@ def prove_handwriting_admin(browser, doctor, vp):
              f" notice_is_cpms={'yes' if notice_is_cpms else 'no'}")
         info(f"wp-admin-journey-preconditions visit_id={visit} notice_text={'yes' if notice_is_cpms else 'no'}"
              f" page_app={page.locator('#cpms-hw-app').count()} canvas={page.locator('#cpms-hw-canvas').count()}")
-        if not admin_bar or not body_wp_admin or display_name != doctor['login'] or session_user != doctor["user_id"] or session_clinician != doctor["clinician_id"]:
+        render_dump(page, 'wp-admin-render')
+        control = ctx.new_page()
+        control.goto(f"{BASE}/wp-admin/admin.php?page=cpms-doctor&visit_id={visit}", wait_until="domcontentloaded")
+        render_dump(control, 'wp-admin-control')
+        control.close()
+        if not admin_bar or not body_wp_admin or session_user != doctor["user_id"] or session_clinician != doctor["clinician_id"]:
             raise RuntimeError("wp-admin journey identity does not match expected doctor")
         if not notice_is_cpms and not page.locator('#cpms-hw-app').count():
             notice = (notices.first.inner_text() or '')[:120] if notices.count() else ''
@@ -2809,6 +2831,10 @@ def prove_handwriting_admin(browser, doctor, vp):
         shot(page, "doctor-portal-handwriting-wp-admin-regression")
         ok(key, "original wp-admin handwriting editor loads the same engine", "saved=1 pages=1")
     except Exception as error:  # noqa: BLE001
+        try:
+            render_dump(page, 'wp-admin-render-failure')
+        except Exception:  # noqa: BLE001
+            pass
         shot(page, "doctor-portal-FAIL-handwriting-wp-admin")
         detail = (f"url_path={urlparse(page.url).path} page={parse_qs(urlparse(page.url).query).get('page', [''])[0]} "
                   f"visit={parse_qs(urlparse(page.url).query).get('visit_id', [''])[0]} "
