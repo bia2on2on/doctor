@@ -477,6 +477,10 @@ jobs:
           if [ "$pyrc" -ne 0 ]; then
             echo "::error::WPCS gate script failed (see output below)"
             cat /tmp/wpcs-new.txt
+            # Surface exact changed-line findings when Actions log downloads are unavailable.
+            while IFS= read -r violation; do
+              echo "::warning::${violation}"
+            done < /tmp/wpcs-new.txt
             exit 1
           fi
 
