@@ -65,21 +65,23 @@ final class DoctorHandwritingPage
             wp_die('دسترسی ندارید', 403);
         }
 
-        $visitId = isset($_GET['visit_id']) ? absint($_GET['visit_id']) : 0; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
-        $clinicianId = null;
-        $settings = null;
-        $userId = get_current_user_id();
-        if ( $visitId > 0 && $userId > 0 ) {
+        $visit_id     = isset($_GET['visit_id']) ? absint($_GET['visit_id']) : 0; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+        $clinician_id = null;
+        $settings     = null;
+        $user_id      = get_current_user_id();
+        if ( $visit_id > 0 && $user_id > 0 ) {
             try {
-                $db = App::db();
-                $memberships = new MembershipRepository( $db );
-                $clinicianId = $memberships->active_clinician_id_for_wp_user( $userId );
-                $visit = $clinicianId ? (new VisitRepository( $db ))->find( $visitId ) : null;
-                if ( $visit !== null && (int) $visit[ 'clinician_id' ] === $clinicianId && (int) $visit[ 'clinic_id' ] > 0 ) {
-                    $clinicId = (int) $visit[ 'clinic_id' ];
-                    $scope = (new TrustedClinicEstablisher( $db, $memberships ))->establish( $userId, $clinicId );
-                    if ( (int) $scope->clinicId === $clinicId && App::authorization_service()->can( $userId, $clinicId, RolesAndCapabilities::NOTE_CREATE ) ) {
-                        $settings = App::settingsFactory()->forClinic( $clinicId );
+                $db           = App::db();
+                $memberships  = new MembershipRepository( $db );
+                $clinician_id = $memberships->active_clinician_id_for_wp_user( $user_id );
+                $visits       = new VisitRepository( $db );
+                $visit        = $clinician_id ? $visits->find( $visit_id ) : null;
+                if ( $visit !== null && (int) $visit['clinician_id'] === $clinician_id && (int) $visit['clinic_id'] > 0 ) {
+                    $clinic_id = (int) $visit['clinic_id'];
+                    $establisher = new TrustedClinicEstablisher( $db, $memberships );
+                    $scope       = $establisher->establish( $user_id, $clinic_id );
+                    if ( (int) $scope->clinicId === $clinic_id && App::authorization_service()->can( $user_id, $clinic_id, RolesAndCapabilities::NOTE_CREATE ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established ClinicScope property
+                        $settings = App::settingsFactory()->forClinic( $clinic_id );
                     }
                 }
             } catch ( \Throwable $e ) {
@@ -97,15 +99,15 @@ final class DoctorHandwritingPage
         $config = [
             'rest_url' => esc_url_raw(rest_url('clinic/v1/')),
             'nonce' => wp_create_nonce('wp_rest'),
-            'visit_id' => $visitId,
-            'clinician_id' => $clinicianId,
+            'visit_id' => $visit_id,
+            'clinician_id' => $clinician_id,
             'autosave_sec' => max( 2, (int) $settings->get( 'hw.autosave_sec', 5 ) ),
             'local_retain' => (string) $settings->get( 'hw.local_retain', 'off' ),
-            'back_url' => admin_url('admin.php?page=cpms-doctor&visit_id=' . $visitId),
+            'back_url' => admin_url('admin.php?page=cpms-doctor&visit_id=' . $visit_id),
             'can_upload' => current_user_can(RolesAndCapabilities::FILE_UPLOAD),
         ];
         ?>
-<div id="cpms-hw-app" dir="rtl" data-visit="<?php echo (int) $visitId; ?>">
+<div id="cpms-hw-app" dir="rtl" data-visit="<?php echo (int) $visit_id; ?>">
     <div id="cpms-hw-head">
         <a id="cpms-hw-close" href="<?php echo esc_url((string) $config['back_url']); ?>" title="بستن">✕</a>
         <nav id="cpms-hw-pages" aria-label="صفحات"></nav>
