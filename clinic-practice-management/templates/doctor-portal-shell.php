@@ -2177,7 +2177,7 @@ if ( document.readyState==='loading' ) document.addEventListener('DOMContentLoad
 
 <?php
 // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- print the registered local footer-group script before the standalone shell closes.
-wp_scripts()->do_items( [ DoctorPortalShell::HANDWRITING_HANDLE ], 1 );
+wp_print_scripts( [ DoctorPortalShell::HANDWRITING_HANDLE ] );
 ?>
 <?php if ( ! $cpms_staff_embed ) : ?>
 

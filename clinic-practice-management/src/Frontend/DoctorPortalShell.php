@@ -24,6 +24,7 @@ final class DoctorPortalShell {
 		add_filter( 'template_include', [ self::class, 'filter_template_include' ], 99 );
 		add_filter( 'show_admin_bar', [ self::class, 'hide_admin_bar_on_portal' ], 20 );
 		add_action( 'wp_enqueue_scripts', [ self::class, 'register_handles' ], 5 );
+		add_action( 'admin_enqueue_scripts', [ self::class, 'register_handwriting_assets' ], 5 );
 		add_action( 'wp_enqueue_scripts', [ self::class, 'enqueue_for_portal' ], 20 );
 		add_action( 'wp_enqueue_scripts', [ self::class, 'enqueue_handwriting_for_staff' ], 21 );
 		add_action( 'template_redirect', [ self::class, 'send_private_cache_headers' ], 0 );
