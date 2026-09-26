@@ -116,13 +116,13 @@ final class Phase10StaffPortalHandwritingRedTest extends WP_UnitTestCase {
 	public function test_prescription_context_and_switching_preserve_strokes(): void {
 		$fx = $this->stage();
 		$db = \ClinicCore\Bootstrap\App::db();
-		$context = \ClinicCore\Application\Handwriting\PrescriptionPaperContext::forVisit( $db, $fx['visit'], $fx['clinic'], $fx['location'], $fx['clinician'] );
+		$context = \ClinicCore\Application\Handwriting\PrescriptionPaperContext::for_visit( $db, $fx['visit'], $fx['clinic'], $fx['location'], $fx['clinician'] );
 		self::assertSame( 'Dr HW', $context['doctor'] ?? null );
 		self::assertSame( 'HW loc', $context['location'] ?? null );
 		self::assertSame( 'HW Patient', $context['patient'] ?? null );
 		self::assertSame( gmdate( 'Y-m-d' ), $context['date'] ?? null );
 		foreach ( [ [ 999999, $fx['location'], $fx['clinician'] ], [ $fx['clinic'], 999999, $fx['clinician'] ], [ $fx['clinic'], $fx['location'], 999999 ] ] as $foreign ) {
-			self::assertNull( \ClinicCore\Application\Handwriting\PrescriptionPaperContext::forVisit( $db, $fx['visit'], ...$foreign ) );
+			self::assertNull( \ClinicCore\Application\Handwriting\PrescriptionPaperContext::for_visit( $db, $fx['visit'], ...$foreign ) );
 		}
 		$path = '/clinic/v1/doctor/portal/visits/' . $fx['visit'] . '/handwriting';
 		self::assertSame( $context, $this->call_portal( 'GET', $path, $fx, $fx['location'], [ 'patient_id' => 999999, 'location_id' => 999999 ] )->get_data()['data']['paper_context'] ?? null );

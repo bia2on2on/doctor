@@ -35,7 +35,9 @@ final class HandwritingService
     private const MAX_STROKES = 5000;
     private const MAX_POINTS_PER_STROKE = 4096;
     private const TOOLS = ['pen', 'highlighter'];
+
     private const TEMPLATES = ['blank', 'lined', 'graph', 'form', 'prescription'];
+
     private const SAVE_SOURCES = ['autosave', 'manual', 'sync_recovery'];
 
     public const GC_PAGE_BATCH_SIZE = 50;

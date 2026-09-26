@@ -380,12 +380,14 @@ final class DoctorPortalController extends RestBase {
 				case 'list':
 					$list = $service->listDocuments( $actor, $visit_id ); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- next statement assigns an array key, not a peer variable
 					$list['autosave_sec'] = max( 2, (int) App::settingsFactory()->forClinic( (int) App::scope()->clinicId )->get( 'hw.autosave_sec', 5 ) ); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- array key and established scope contract
-					$scope = App::scope();
-					$eligible = $this->eligible_locations_for_clinic( (int) $scope->clinicId, $actor );
-					$location_id = $scope->locationId ?? ( 1 === count( $eligible ) ? $eligible[0]['id'] : null );
+
+					$scope        = App::scope();
+					$eligible     = $this->eligible_locations_for_clinic( (int) $scope->clinicId, $actor ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- trusted scope property
+					$location_id  = $scope->locationId ?? ( 1 === count( $eligible ) ? $eligible[0]['id'] : null ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- trusted scope property
 					$clinician_id = $this->memberships->active_clinician_id_for_wp_user( $actor );
+
 					$list['paper_context'] = null !== $location_id && null !== $clinician_id
-						? \ClinicCore\Application\Handwriting\PrescriptionPaperContext::forVisit( App::db(), $visit_id, (int) $scope->clinicId, (int) $location_id, $clinician_id )
+						? \ClinicCore\Application\Handwriting\PrescriptionPaperContext::for_visit( App::db(), $visit_id, (int) $scope->clinicId, (int) $location_id, $clinician_id ) // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- trusted scope property
 						: null;
 					return $this->success( $list );
 				case 'create':
