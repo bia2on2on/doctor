@@ -397,6 +397,34 @@ $multiLine = implode('|', [
     (string) $apptColleague,
     $betaName,
 ]);
+// Phase 10 files journey — the established protected-storage seeding for real
+// browser uploads (same pattern as pilot-slice4-profile-fixture): per-Clinic
+// `files.storage_path` outside the DocumentRoot, with every {clinic}/{xx} shard
+// pre-created world-writable so the Apache user never needs to mkdir at 0750
+// and the pilot process can traverse the tree.
+$filesStorage = '/home/runner/clinic-storage-doctor-portal';
+foreach ([$oneClinic, $multiClinic] as $filesClinicId) {
+    \ClinicCore\Bootstrap\App::settingsFactory()->forClinic($filesClinicId)->set('files.storage_path', $filesStorage);
+}
+\ClinicCore\Settings\Settings::flushCache();
+if (!is_dir($filesStorage)) {
+    @mkdir($filesStorage, 0777, true);
+}
+@chmod($filesStorage, 0777);
+foreach ([$oneClinic, $multiClinic] as $shardClinicId) {
+    $clinicDir = $filesStorage . '/' . $shardClinicId;
+    if (!is_dir($clinicDir)) {
+        @mkdir($clinicDir, 0777, true);
+    }
+    @chmod($clinicDir, 0777);
+    for ($shardIndex = 0; $shardIndex < 256; $shardIndex++) {
+        $shardDir = $clinicDir . '/' . str_pad(dechex($shardIndex), 2, '0', STR_PAD_LEFT);
+        if (!is_dir($shardDir)) {
+            @mkdir($shardDir, 0777);
+        }
+    }
+}
+
 $public = implode('|', [
     $url,
     (string) $oneClinic,

@@ -1806,7 +1806,7 @@ def prove_workspace_files(page, state, doctor, visit_id, label, mutate):
     page.unroute(f"**/doctor/portal/visits/{visit_id}/files")
     up_resp = up_info.value
     if up_resp.status != 201:
-        raise RuntimeError(f"{label} real upload failed: {up_resp.status}")
+        raise RuntimeError(f"{label} real upload failed: {up_resp.status} body={str(safe_json(up_resp))[:300]}")
     file_row = payload(up_resp.json())
     file_id = int(file_row.get("id") or 0)
     if file_id <= 0 or not file_row.get("original_filename"):

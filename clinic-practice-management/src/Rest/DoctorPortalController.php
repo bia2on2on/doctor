@@ -238,7 +238,7 @@ final class DoctorPortalController extends RestBase {
 							'type'     => 'string',
 							'default'  => 'patient_visible',
 						],
-					],
+					] + $this->workspace_inert_client_args(),
 				],
 			]
 		);
@@ -250,6 +250,7 @@ final class DoctorPortalController extends RestBase {
 					'methods'             => WP_REST_Server::READABLE,
 					'callback'            => fn( WP_REST_Request $r ) => $this->workspace_stream_visit_file( $r ),
 					'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_workspace( $r, RolesAndCapabilities::FILE_READ ),
+					'args'                => $this->workspace_inert_client_args(),
 				],
 			]
 		);
@@ -457,6 +458,27 @@ final class DoctorPortalController extends RestBase {
 		return $this->workspace_wrap(
 			fn() => App::clinicalService()->finalizePrescription( (int) wp_get_current_user()->ID, $rx_id )
 		);
+	}
+
+	/**
+	 * Client authority keys are deliberately inert at the portal file boundary:
+	 * the SERVER derives patient/clinician/clinic/Location from the persisted
+	 * authorized Visit (route selector + trusted selector headers only). Each
+	 * key is dropped at arg sanitization — before the shared scope binder reads
+	 * any selector — so a forged body key can never create authority, retarget
+	 * a row, or block/alter a legitimate request (accepted Phase 10 contract:
+	 * forged patient_id/clinician_id/clinic_id/location_id/visit_id are inert).
+	 *
+	 * @return array<string, array<string, mixed>>
+	 */
+	private function workspace_inert_client_args(): array {
+		return [
+			'patient_id'   => [ 'required' => false, 'sanitize_callback' => static fn() => null ],
+			'clinician_id' => [ 'required' => false, 'sanitize_callback' => static fn() => null ],
+			'clinic_id'    => [ 'required' => false, 'sanitize_callback' => static fn() => null ],
+			'location_id'  => [ 'required' => false, 'sanitize_callback' => static fn() => null ],
+			'visit_id'     => [ 'required' => false, 'sanitize_callback' => static fn() => null ],
+		];
 	}
 
 	/**
