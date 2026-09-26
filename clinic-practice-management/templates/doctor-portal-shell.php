@@ -1989,6 +1989,10 @@ function pollQueue(){
             loadTodayAndQueue();
         }
         if ( data.last_event_id ) state.lastEventId = data.last_event_id;
+    }, function(err){
+        // Background fetch has no HTTP response when offline; leave HTTP results unchanged.
+        if ( err instanceof TypeError ) return;
+        throw err;
     });
 }
 
