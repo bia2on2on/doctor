@@ -213,7 +213,7 @@ body.cpms-doctor-portal-shell-body { margin: 0; font-family: Tahoma, Vazirmatn, 
                     <div data-role="workspace-body" hidden>
                         <div class="cpms-doc-ws-header" data-role="workspace-header"></div>
                         <button type="button" class="cpms-doc-btn cpms-doc-btn--ghost" data-role="workspace-handwriting-open">🖋️ دست‌خط ویزیت</button>
-<div id="cpms-hw-app" dir="rtl" data-role="workspace-handwriting-editor" data-autosave-sec="<?php echo esc_attr( (string) max( 2, (int) \ClinicCore\Bootstrap\App::settings()->get( 'hw.autosave_sec', 5 ) ) ); ?>" hidden role="dialog" aria-label="دست‌خط ویزیت">
+<div id="cpms-hw-app" dir="rtl" data-role="workspace-handwriting-editor" hidden role="dialog" aria-label="دست‌خط ویزیت">
     <header id="cpms-hw-head">
         <button type="button" id="cpms-hw-close" aria-label="بستن دست‌خط" data-role="workspace-handwriting-close">✕</button>
         <nav id="cpms-hw-pages" aria-label="صفحات"></nav>
@@ -2019,7 +2019,7 @@ function openHandwriting(){
         portal: true, rest_url: CFG.rest_root + '/', nonce: CFG.nonce,
         visit_id: handwritingVisit,
         scope_headers: scopeHeaders(),
-        autosave_sec: Math.max(2, parseInt(editor.getAttribute('data-autosave-sec'), 10) || 5),
+        autosave_sec: 5,
         local_retain: 'off', can_upload: false
     });
     document.getElementById('cpms-hw-close').focus();

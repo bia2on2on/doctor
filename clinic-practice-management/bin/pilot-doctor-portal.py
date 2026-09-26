@@ -2722,6 +2722,32 @@ def prove_legacy_not_eligible(browser, vp):
         ctx.close()
 
 
+def prove_handwriting_admin(browser, doctor, vp):
+    """Same extracted engine remains operational on the original wp-admin page."""
+    key = "handwriting-wp-admin-regression"
+    ctx, page, state = new_page(browser, vp)
+    try:
+        login(page, doctor)
+        visit = doctor.get("act1366") or doctor["visit_own"]
+        url = f"{BASE}/wp-admin/admin.php?page=cpms-handwriting&visit_id={visit}"
+        response = harness_goto(page, url, wait_until="domcontentloaded")
+        if not response or response.status != 200:
+            raise RuntimeError(f"wp-admin handwriting HTTP {getattr(response, 'status', None)}")
+        page.wait_for_selector('#cpms-hw-app #cpms-hw-canvas', timeout=10000)
+        page.wait_for_selector('#cpms-hw-sync[data-state="saved"]', timeout=20000)
+        if not page.evaluate("Boolean(window.CPMSHandwriting && window.CPMS_HW)"):
+            raise RuntimeError("wp-admin did not load the single extracted engine")
+        if page.locator('#cpms-hw-pages .cpms-hw-page-tab').count() == 0:
+            raise RuntimeError("wp-admin handwriting pages not loaded")
+        shot(page, "doctor-portal-handwriting-wp-admin-regression")
+        ok(key, "original wp-admin handwriting editor loads the same engine", "saved=1 pages=1")
+    except Exception as error:  # noqa: BLE001
+        fail(key, "wp-admin handwriting regression", str(error))
+        raise
+    finally:
+        ctx.close()
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
     with sync_playwright() as p:
@@ -2739,6 +2765,10 @@ def main():
             except Exception:
                 continue
         desktop = VIEWPORTS[2]
+        try:
+            prove_handwriting_admin(browser, ONE, desktop)
+        except Exception:
+            pass
         try:
             prove_legacy_not_eligible(browser, desktop)
         except Exception:

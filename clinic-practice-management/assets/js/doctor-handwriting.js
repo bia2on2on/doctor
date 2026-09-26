@@ -158,6 +158,7 @@
     function boot() {
         api('GET', 'handwriting/documents?visit_id=' + CFG.visit_id).then(function (r) {
             if (r.status !== 200) { throw new Error('load'); }
+            if (CFG.portal && r.body.data) { CFG.autosave_sec = Math.max(2, Number(r.body.data.autosave_sec) || 5); }
             var doc = r.body.data && r.body.data.document;
             if (!doc) {
                 // اولین بار: ایجاد سند با یک صفحه A4

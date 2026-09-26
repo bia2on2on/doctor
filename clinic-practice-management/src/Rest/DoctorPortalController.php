@@ -260,46 +260,46 @@ final class DoctorPortalController extends RestBase {
 			self::NS,
 			$hw_base,
 			[
-			[
-				'methods'             => WP_REST_Server::READABLE,
-				'callback'            => fn( WP_REST_Request $r ) => $this->workspace_handwriting( $r, 'list' ),
-				'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_workspace( $r, RolesAndCapabilities::MEDICAL_READ ),
-				'args'                => $this->workspace_inert_client_args(),
-			],
-			[
-				'methods'             => WP_REST_Server::CREATABLE,
-				'callback'            => fn( WP_REST_Request $r ) => $this->workspace_handwriting( $r, 'create' ),
-				'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_workspace( $r, RolesAndCapabilities::NOTE_CREATE ),
-				'args'                => $this->workspace_inert_client_args(),
-			],
+				[
+					'methods'             => WP_REST_Server::READABLE,
+					'callback'            => fn( WP_REST_Request $r ) => $this->workspace_handwriting( $r, 'list' ),
+					'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_workspace( $r, RolesAndCapabilities::MEDICAL_READ ),
+					'args'                => $this->workspace_inert_client_args(),
+				],
+				[
+					'methods'             => WP_REST_Server::CREATABLE,
+					'callback'            => fn( WP_REST_Request $r ) => $this->workspace_handwriting( $r, 'create' ),
+					'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_workspace( $r, RolesAndCapabilities::NOTE_CREATE ),
+					'args'                => $this->workspace_inert_client_args(),
+				],
 			]
 		);
 		register_rest_route(
 			self::NS,
 			$hw_base . '/documents/(?P<document_id>\\d+)/pages',
 			[
-			'methods'             => WP_REST_Server::CREATABLE,
-			'callback'            => fn( WP_REST_Request $r ) => $this->workspace_handwriting( $r, 'add' ),
-			'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_workspace( $r, RolesAndCapabilities::NOTE_CREATE ),
-			'args'                => $this->workspace_inert_client_args(),
+				'methods'             => WP_REST_Server::CREATABLE,
+				'callback'            => fn( WP_REST_Request $r ) => $this->workspace_handwriting( $r, 'add' ),
+				'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_workspace( $r, RolesAndCapabilities::NOTE_CREATE ),
+				'args'                => $this->workspace_inert_client_args(),
 			]
 		);
 		register_rest_route(
 			self::NS,
 			$hw_base . '/pages/(?P<page_id>\\d+)',
 			[
-			[
-				'methods'             => WP_REST_Server::READABLE,
-				'callback'            => fn( WP_REST_Request $r ) => $this->workspace_handwriting( $r, 'page' ),
-				'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_workspace( $r, RolesAndCapabilities::MEDICAL_READ ),
-				'args'                => $this->workspace_inert_client_args(),
-			],
-			[
-				'methods'             => WP_REST_Server::EDITABLE,
-				'callback'            => fn( WP_REST_Request $r ) => $this->workspace_handwriting( $r, 'save' ),
-				'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_workspace( $r, RolesAndCapabilities::NOTE_CREATE ),
-				'args'                => $this->workspace_inert_client_args(),
-			],
+				[
+					'methods'             => WP_REST_Server::READABLE,
+					'callback'            => fn( WP_REST_Request $r ) => $this->workspace_handwriting( $r, 'page' ),
+					'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_workspace( $r, RolesAndCapabilities::MEDICAL_READ ),
+					'args'                => $this->workspace_inert_client_args(),
+				],
+				[
+					'methods'             => WP_REST_Server::EDITABLE,
+					'callback'            => fn( WP_REST_Request $r ) => $this->workspace_handwriting( $r, 'save' ),
+					'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_workspace( $r, RolesAndCapabilities::NOTE_CREATE ),
+					'args'                => $this->workspace_inert_client_args(),
+				],
 			]
 		);
 	}
@@ -340,7 +340,9 @@ final class DoctorPortalController extends RestBase {
 		try {
 			switch ( $operation ) {
 				case 'list':
-					return $this->success( $service->listDocuments( $actor, $visit_id ) );
+					$list = $service->listDocuments( $actor, $visit_id );
+					$list['autosave_sec'] = max( 2, (int) App::settingsFactory()->forClinic( (int) App::scope()->clinicId )->get( 'hw.autosave_sec', 5 ) ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established scope contract
+					return $this->success( $list );
 				case 'create':
 					return $this->success( $service->createDocument( $actor, $visit_id, null, [] ), 201 );
 				case 'add':
@@ -353,7 +355,7 @@ final class DoctorPortalController extends RestBase {
 					if ( null === $key ) {
 						return $this->error( 'CLINIC_VALIDATION', 400, 'هدر Idempotency-Key (UUID) برای ذخیره دست‌خط الزامی است' );
 					}
-					$body = array_intersect_key( $this->workspace_body( $r ), array_flip( [ 'client_revision', 'stroke_data', 'width', 'height', 'background_template', 'saved_by', 'conflict_reason' ] ) );
+					$body   = array_intersect_key( $this->workspace_body( $r ), array_flip( [ 'client_revision', 'stroke_data', 'width', 'height', 'background_template', 'saved_by', 'conflict_reason' ] ) );
 					$result = $service->savePage( $actor, $page_id, $body, $key );
 					return $this->success( $result['response'], $result['status'] );
 			}
