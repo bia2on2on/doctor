@@ -1479,6 +1479,8 @@ def prove_workspace_rx(page, state, doctor, visit_id, label, mutate):
     rx_id = int(rx.get("id") or 0)
     if rx_id <= 0 or rx.get("status") != "draft":
         raise RuntimeError(f"{label} create did not return a draft: {rx}")
+    if len(rx.get("items", [])) != 1 or len(create_resp.request.post_data_json.get("items", [])) != 1:
+        raise RuntimeError(f"{label} existing one-row composition changed")
     page.wait_for_selector('[data-role="workspace-rx-success"]:not([hidden])', timeout=5000)
     page.wait_for_selector(
         f'[data-role="workspace-rx-item"][data-rx-id="{rx_id}"][data-status="draft"]',
@@ -1549,6 +1551,125 @@ def prove_workspace_rx(page, state, doctor, visit_id, label, mutate):
         f"workspace-rx-{label} create=1 draft=1 busy=1 dblsubmit=1 failed422=1"
         f" finalize=1 readonly=1 repeat409=1 clinician_id_sent=0"
     )
+
+
+
+def prove_workspace_rx_multi(page, state, doctor, visit_id, label):
+    """Real UI -> ONE existing create -> persisted record, at every viewport.
+
+    The preceding desktop journey remains the one-item regression. No DOM
+    injection, mocked response, new fixture, or direct API create is used here.
+    """
+    form = page.locator('[data-role="workspace-rx-form"]')
+    names = [f"داروی اول {label}", f"حذف شود {label}", f"داروی دوم {label}"]
+    before = page.locator('[data-role="workspace-rx-item"]').count()
+    form.locator('[data-role="workspace-rx-generic-name"]').fill(names[0])
+    form.locator('[data-role="workspace-rx-dose"]').fill("1 قرص")
+    form.locator('[data-role="workspace-rx-frequency"]').fill("روزانه")
+    # RED anchor: a real authorized workspace and usable first item precede
+    # the missing product action; bootstrap/fixtures must already have passed.
+    add = form.get_by_role("button", name="افزودن دارو", exact=True)
+    if add.count() != 1:
+        raise RuntimeError(f"{label} multi-item contract: authorized composer cannot add a second medication before one create")
+    rows = form.locator('[data-role="workspace-rx-compose-item"]')
+    if rows.count() != 1 or rows.first.get_by_role("button", name=re.compile("حذف")).is_visible():
+        raise RuntimeError(f"{label} first medication must remain non-removable")
+    req_start = len(state["reqs"])
+    for i in (1, 2):
+        add.focus()
+        page.keyboard.press("Enter")
+        if rows.count() != i + 1:
+            raise RuntimeError(f"{label} keyboard add did not append exactly one medication")
+        row = rows.nth(i)
+        generic = row.locator('[data-role="workspace-rx-generic-name"]')
+        if not generic.evaluate("e => e === document.activeElement"):
+            raise RuntimeError(f"{label} new medication did not receive keyboard focus")
+        if generic.input_value() != "":
+            raise RuntimeError(f"{label} new medication copied previous input")
+        page.keyboard.type(names[i])
+        page.keyboard.press("Tab")
+        if not row.locator('[data-role="workspace-rx-dose"]').evaluate("e => e === document.activeElement"):
+            raise RuntimeError(f"{label} medication tab order broken")
+        page.keyboard.type("2")
+        row.locator('[data-role="workspace-rx-frequency"]').fill("شب‌ها")
+        row.locator('[data-role="workspace-rx-form-select"]').select_option("syrup")
+        row.locator('[data-role="workspace-rx-route"]').select_option("oral")
+        row.locator('[data-role="workspace-rx-duration-days"]').fill("5")
+        row.locator('[data-role="workspace-rx-instructions"]').fill("بعد از غذا")
+    sw3, iw3 = assert_hygiene(page, state, label + "-rx-three")
+    # Remove a populated middle row using the keyboard. Remaining values/order
+    # must survive; removal never touches an already persisted prescription.
+    remove = rows.nth(1).get_by_role("button", name=re.compile("حذف"))
+    remove.focus()
+    page.keyboard.press("Enter")
+    if rows.count() != 2:
+        raise RuntimeError(f"{label} remove did not leave two medications")
+    if not add.evaluate("e => e === document.activeElement"):
+        raise RuntimeError(f"{label} removal left keyboard focus detached")
+    if not form.evaluate("""f => {
+        const ids = [...f.querySelectorAll('[id]')].map(e => e.id);
+        return ids.length === new Set(ids).size && [...f.querySelectorAll('label[for]')]
+            .every(l => f.querySelector('[id="' + l.htmlFor + '"]'));
+    }"""):
+        raise RuntimeError(f"{label} medication labels or unique IDs broken")
+    # Existing queue polling can continue; row interactions add no other REST.
+    row_requests = state["reqs"][req_start:]
+    if any(e["method"] != "GET" or not e["route"].endswith(("/rt/queue", "/queue", "/doctor/today")) for e in row_requests):
+        raise RuntimeError(f"{label} medication row controls made a network request")
+    sw, iw = assert_hygiene(page, state, label + "-rx-two")
+    shot(page, f"doctor-portal-{label}-rx-multi-composer")
+    route = f"/doctor/portal/visits/{visit_id}/prescriptions"
+    req_start = len(state["reqs"])
+    with page.expect_response(lambda r: route_of(r.url).endswith(route) and r.request.method == "POST") as created:
+        form.locator('[data-role="workspace-rx-submit"]').focus()
+        page.keyboard.press("Enter")
+    response = created.value
+    if response.status != 200:
+        raise RuntimeError(f"{label} multi-item create HTTP {response.status}")
+    rx = payload(response.json())
+    posts = [e for e in state["reqs"][req_start:] if e["method"] == "POST" and e["route"].endswith(route)]
+    if len(posts) != 1:
+        raise RuntimeError(f"{label} one composition must issue exactly one create")
+    body = json.loads(posts[0]["body"])
+    expected = [
+        {"generic_name": names[0], "dose": "1 قرص", "frequency": "روزانه", "form": "tablet", "route": "oral", "instructions": ""},
+        {"generic_name": names[2], "dose": "2", "frequency": "شب‌ها", "form": "syrup", "route": "oral", "duration_days": 5, "instructions": "بعد از غذا"},
+    ]
+    if body != {"items": expected, "is_patient_visible": True}:
+        raise RuntimeError(f"{label} create must carry both current rows only, with existing fields")
+    rx_id = int(rx.get("id") or 0)
+    if rx_id <= 0 or rx.get("status") != "draft" or len(rx.get("items", [])) != 2:
+        raise RuntimeError(f"{label} one two-item draft was not returned")
+    item = page.locator(f'[data-role="workspace-rx-item"][data-rx-id="{rx_id}"]')
+    item.wait_for(state="visible")
+    if page.locator('[data-role="workspace-rx-item"]').count() != before + 1:
+        raise RuntimeError(f"{label} second medication produced another prescription")
+    if item.locator('[data-role="workspace-rx-item-row"]').count() != 2 or any(n not in item.inner_text() for n in (names[0], names[2])):
+        raise RuntimeError(f"{label} one prescription does not render both medications")
+    if rows.count() != 1 or rows.first.locator('[data-role="workspace-rx-generic-name"]').input_value() != "":
+        raise RuntimeError(f"{label} successful create must reset to one empty row")
+    # Independent existing E7 read proves persistence, not just echoed JSON/DOM.
+    record = portal_fetch(page, doctor, "GET", f"/visits/{visit_id}/record")
+    prescriptions = payload(record["body"]).get("prescriptions", [])
+    persisted = [p for p in prescriptions if int(p["id"]) == rx_id]
+    if record["status"] != 200 or len(prescriptions) != before + 1 or len(persisted) != 1:
+        raise RuntimeError(f"{label} persisted prescription count/binding mismatch")
+    stored = persisted[0]
+    if stored.get("prescription_number") != rx.get("prescription_number") or [i["generic_name"] for i in stored.get("items", [])] != [names[0], names[2]]:
+        raise RuntimeError(f"{label} persisted items/number mismatch or removed medication persisted")
+    finalize = item.locator('[data-role="workspace-rx-finalize"]')
+    if not finalize.is_enabled():
+        raise RuntimeError(f"{label} existing finalization unavailable")
+    with page.expect_response(lambda r: route_of(r.url).endswith(f"/doctor/portal/prescriptions/{rx_id}/finalize") and r.request.method == "POST") as finalized:
+        finalize.click()
+    if finalized.value.status != 200:
+        raise RuntimeError(f"{label} two-item finalization failed")
+    item.locator('[data-role="workspace-rx-readonly"]').wait_for(state="visible")
+    assert_hygiene(page, state, label + "-rx-finalized")
+    shot(page, f"doctor-portal-{label}-rx-multi-finalized")
+    info(f"workspace-rx-multi-{label} authorized=1 keyboard_add=2 remove_middle=1 row_requests=0"
+         f" create_requests=1 request_items=2 persisted_rx_delta=1 persisted_items=2 removed_absent=1"
+         f" finalize=1 reset_rows=1 labels_unique=1 sw={sw} iw={iw} sw3={sw3} iw3={iw3} hygiene=clean")
 
 
 def prove_workspace_recfu(page, state, doctor, visit_id, label, mutate):
@@ -2384,6 +2505,8 @@ def prove_one(browser, doctor, vp, shot_name=None, probe_fallback=False):
                 page, state, doctor, int(doctor[pair_keys[0]]), vp["vp"],
                 mutate=(vp["vp"] == "desktop-1366"),
             )
+            stage = "workspace-rx-multi"
+            prove_workspace_rx_multi(page, state, doctor, int(doctor[pair_keys[0]]), vp["vp"])
             # Phase 10 — Recommendation + Follow-Up authoring inside the same
             # open Visit Workspace: full create/visibility/validation journey on
             # desktop, responsive composer + empty states on every viewport.
