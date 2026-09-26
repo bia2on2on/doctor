@@ -210,7 +210,7 @@ final class App
         // Keep the route-specific denial metadata hook alive across REST server resets in WP tests.
         add_filter(
             'rest_request_before_callbacks',
-            [new DoctorPortalController(new \ClinicCore\Infrastructure\Repository\MembershipRepository(self::db())), 'handwriting_location_denial'],
+            [ new DoctorPortalController( new \ClinicCore\Infrastructure\Repository\MembershipRepository( self::db() ) ), 'handwriting_location_denial' ],
             11,
             3
         );
