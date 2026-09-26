@@ -212,6 +212,78 @@ body.cpms-doctor-portal-shell-body { margin: 0; font-family: Tahoma, Vazirmatn, 
                     <div data-role="workspace-error" class="cpms-doc-error" role="alert" hidden></div>
                     <div data-role="workspace-body" hidden>
                         <div class="cpms-doc-ws-header" data-role="workspace-header"></div>
+                        <button type="button" class="cpms-doc-btn cpms-doc-btn--ghost" data-role="workspace-handwriting-open">🖋️ دست‌خط ویزیت</button>
+<div id="cpms-hw-app" dir="rtl" data-role="workspace-handwriting-editor" data-autosave-sec="<?php echo esc_attr( (string) max( 2, (int) \ClinicCore\Bootstrap\App::settings()->get( 'hw.autosave_sec', 5 ) ) ); ?>" hidden role="dialog" aria-label="دست‌خط ویزیت">
+    <header id="cpms-hw-head">
+        <button type="button" id="cpms-hw-close" aria-label="بستن دست‌خط" data-role="workspace-handwriting-close">✕</button>
+        <nav id="cpms-hw-pages" aria-label="صفحات"></nav>
+        <button type="button" class="cpms-hw-btn" id="cpms-hw-addpage" title="افزودن صفحه">＋ صفحه</button>
+        <span id="cpms-hw-sync" class="cpms-hw-sync" data-state="loading">⏳ در حال بارگذاری…</span>
+    </header>
+
+    <div id="cpms-hw-body">
+        <aside id="cpms-hw-tools">
+            <button type="button" class="cpms-hw-tool is-active" data-tool="pen" title="قلم">🖊️</button>
+            <button type="button" class="cpms-hw-tool" data-tool="highlighter" title="هایلایتر">🖍️</button>
+            <button type="button" class="cpms-hw-tool" data-tool="eraser" title="پاک‌کن (سطح Stroke)">🟥</button>
+            <div class="cpms-hw-sep"></div>
+            <div class="cpms-hw-sizes" title="اندازه قلم">
+                <button type="button" class="cpms-hw-size" data-size="2"><i style="width:4px;height:4px"></i></button>
+                <button type="button" class="cpms-hw-size is-active" data-size="4"><i style="width:8px;height:8px"></i></button>
+                <button type="button" class="cpms-hw-size" data-size="8"><i style="width:14px;height:14px"></i></button>
+                <button type="button" class="cpms-hw-size" data-size="16"><i style="width:20px;height:20px"></i></button>
+            </div>
+            <div class="cpms-hw-colors" title="رنگ">
+                <button type="button" class="cpms-hw-color is-active" data-color="#1a1a2e" style="background:#1a1a2e"></button>
+                <button type="button" class="cpms-hw-color" data-color="#c0392b" style="background:#c0392b"></button>
+                <button type="button" class="cpms-hw-color" data-color="#1665d8" style="background:#1665d8"></button>
+                <button type="button" class="cpms-hw-color" data-color="#2e7d32" style="background:#2e7d32"></button>
+            </div>
+            <div class="cpms-hw-sep"></div>
+            <button type="button" class="cpms-hw-btn" id="cpms-hw-undo" title="Undo">↩️</button>
+            <button type="button" class="cpms-hw-btn" id="cpms-hw-redo" title="Redo">↪️</button>
+            <button type="button" class="cpms-hw-btn" id="cpms-hw-zout" title="کوچک‌نمایی">➖</button>
+            <button type="button" class="cpms-hw-btn" id="cpms-hw-zin" title="بزرگ‌نمایی">➕</button>
+            <button type="button" class="cpms-hw-btn" id="cpms-hw-zreset" title="اندازه اصلی">⤢ ۱:۱</button>
+            <button type="button" class="cpms-hw-btn" id="cpms-hw-full" title="Full-Screen">⛶</button>
+            <div class="cpms-hw-sep"></div>
+            <button type="button" class="cpms-hw-btn" id="cpms-hw-image" hidden disabled aria-label="افزودن تصویر">🖼️</button>
+            <input type="file" id="cpms-hw-image-input" accept="image/*" hidden>
+            <select id="cpms-hw-template" title="قالب صفحه" aria-label="قالب صفحه">
+                <option value="lined">خط‌دار</option>
+                <option value="blank">ساده</option>
+                <option value="graph">مربع‌دار</option>
+                <option value="form">فرم</option>
+            </select>
+            <button type="button" class="cpms-hw-btn cpms-hw-save-now" id="cpms-hw-save" title="ذخیره الان">💾 ذخیره</button>
+        </aside>
+
+        <main id="cpms-hw-stage"><canvas id="cpms-hw-canvas"></canvas></main>
+    </div>
+</div>
+
+<div id="cpms-hw-conflict" class="cpms-hw-modal" hidden>
+    <div class="cpms-hw-modal-box">
+        <h2>⚠️ تضاد نسخه‌ها</h2>
+        <p>این صفحه از جای دیگری (مثلاً دستگاه دیگر) تغییر کرده است. کدام نسخه را نگه می‌دارید؟</p>
+        <div class="cpms-hw-tabs">
+            <button type="button" class="cpms-hw-tab is-active" data-tab="mine">نسخه من</button>
+            <button type="button" class="cpms-hw-tab" data-tab="server">نسخه سرور</button>
+        </div>
+        <div class="cpms-hw-tabpanes">
+            <canvas id="cpms-hw-cv-mine" width="310" height="438"></canvas>
+            <canvas id="cpms-hw-cv-server" width="310" height="438" hidden></canvas>
+        </div>
+        <div class="cpms-hw-modal-actions">
+            <button type="button" class="button button-primary" id="cpms-hw-keep-mine">بازنویسی با نسخه من</button>
+            <button type="button" class="button" id="cpms-hw-keep-server">نگه‌داشتن نسخه سرور</button>
+        </div>
+    </div>
+</div>
+
+
+
+
                         <div class="cpms-doc-ws-notes-wrap">
                             <div class="cpms-doc-section-head cpms-doc-ws-subhead">
                                 <h3>یادداشت‌های این ویزیت</h3>
@@ -474,6 +546,10 @@ body.cpms-doctor-portal-shell-body { margin: 0; font-family: Tahoma, Vazirmatn, 
     </main>
 </div>
 
+<?php
+// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- registered local handwriting stylesheet only.
+wp_print_styles( [ DoctorPortalShell::HANDWRITING_HANDLE ] );
+?>
 <script type="application/json" class="cpms-doctor-portal__config"><?php echo $config_json; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- JSON payload, already encoded via wp_json_encode ?></script>
 
 <script>
@@ -861,6 +937,7 @@ function resetRecFuUi(){
 }
 
 function closeWorkspace(){
+    if (handwritingStop) closeHandwriting();
     state.workspaceVisitId = null;
     state.workspaceNotes = [];
     hide(qs('[data-role="workspace-section"]'));
@@ -891,6 +968,7 @@ function openWorkspace(visitId){
     if ( !state.selectedClinicId || !state.selectedLocationId ) return;
     var sec = qs('[data-role="workspace-section"]');
     if ( !sec ) return;
+    if (handwritingStop) closeHandwriting();
     state.workspaceVisitId = visitId;
     state.workspaceNotes = [];
     show(sec);
@@ -1914,8 +1992,42 @@ function pollQueue(){
     });
 }
 
+var handwritingStop = null;
+var handwritingVisit = null;
+function closeHandwriting(){
+    if (handwritingStop) { handwritingStop(); handwritingStop = null; }
+    var editor = document.getElementById('cpms-hw-app');
+    var conflict = document.getElementById('cpms-hw-conflict');
+    if (editor) { editor.hidden = true; }
+    if (conflict) { conflict.hidden = true; }
+    handwritingVisit = null;
+    var open = qs('[data-role="workspace-handwriting-open"]');
+    if (open) { open.focus(); }
+}
+function openHandwriting(){
+    if (!state.workspaceVisitId || !state.selectedClinicId || !state.selectedLocationId || !window.CPMSHandwriting) return;
+    if (handwritingStop) closeHandwriting();
+    // Fresh DOM for a new Visit: old canvas listeners cannot retarget the next Visit.
+    ['cpms-hw-app', 'cpms-hw-conflict'].forEach(function(id){
+        var old = document.getElementById(id);
+        if (old) old.replaceWith(old.cloneNode(true));
+    });
+    var editor = document.getElementById('cpms-hw-app');
+    editor.hidden = false;
+    handwritingVisit = state.workspaceVisitId;
+    handwritingStop = window.CPMSHandwriting.start({
+        portal: true, rest_url: CFG.rest_root + '/', nonce: CFG.nonce,
+        visit_id: handwritingVisit,
+        scope_headers: scopeHeaders(),
+        autosave_sec: Math.max(2, parseInt(editor.getAttribute('data-autosave-sec'), 10) || 5),
+        local_retain: 'off', can_upload: false
+    });
+    document.getElementById('cpms-hw-close').focus();
+}
 document.addEventListener('click', function(ev){
     var target = (ev.target && ev.target.closest) ? ev.target : null;
+    if (target && target.closest('[data-role="workspace-handwriting-close"]')) { ev.preventDefault(); closeHandwriting(); return; }
+    if (target && target.closest('[data-role="workspace-handwriting-open"]')) { ev.preventDefault(); openHandwriting(); return; }
     var btn = target ? target.closest('[data-action]') : null;
     if ( btn ) {
         if ( btn.disabled ) return;
@@ -2067,3 +2179,8 @@ if ( document.readyState==='loading' ) document.addEventListener('DOMContentLoad
 </body>
 </html>
 <?php endif; ?>
+
+<?php
+// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- registered local handwriting script only.
+wp_print_scripts( [ DoctorPortalShell::HANDWRITING_HANDLE ] );
+?>

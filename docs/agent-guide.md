@@ -1553,3 +1553,10 @@ final class XxxService {
   - `docs/agent-guide.md` — this append-only entry (no rewrite of prior entries).
 - **Evidence honesty:** every SHA/date cited above came from live `gh api` reads (no remembered values); no intermediate failure or retry in the gh api reads; if any value were NOT RETRIEVED it would be marked as such — none were.
 - **Scope discipline:** docs-only diff; zero files under src/, templates/, assets/, tests/; no product code, no tests, no migrations, no schema, no routes, no capabilities, no UI; tenant/security/privacy untouched; diff small enough for one-pass review; forward-only history, no rebase/force-push/reset --hard/git clean; no mass formatting; do not reopen/comment on PR #112; do not claim handwriting/stylus delivered; do not close Phase 10; do not start Phase 11.
+
+## Phase 10 handwriting inside canonical Visit Workspace — PR #128 (in progress)
+
+- Test-only RED commit `52d33ba` added only `Phase10StaffPortalHandwritingRedTest.php`; CI run `36214788345` integration: 1241 tests / 33537 assertions / 2 product-path failures, 0 errors. Do not infer authority coverage from those two tests.
+- Preserve the existing handwriting service, controller, repository, migrations, roles, and patient portal byte-for-byte. Reuse the portal Visit guard and the existing service. The admin and Visit Workspace surfaces must share exactly one canvas engine asset.
+- Background-image annotation on the portal is excluded until a portal-safe server-derived patient upload/stream boundary is explicitly delivered. CI synthetic pointer pressure does not establish real Apple Pencil/S-Pen pressure or palm rejection; owner device verification is still required.
+- This entry records implementation work, not acceptance: keep PR draft until all authority tests, browser evidence, exact-head gates and owner review are complete. Do not merge without independent review and visual approval.
