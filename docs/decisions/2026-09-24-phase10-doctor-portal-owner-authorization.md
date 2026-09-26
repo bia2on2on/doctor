@@ -156,7 +156,7 @@ contract) در این برش افزوده نمی‌شود** و هیچ ساختا
 
 عبارتِ «**پیاده‌سازیِ Staff Portal اکنون ممنوع**» در بخش K سندِ Phase 9 مقیدِ زمانِ Phase 9 بود؛ با این تصمیمِ صریح‌ترِ مالک، **فقط برای بنیادِ پوستهٔ مشترک با ماژولِ پزشکِ موجود** جایگزین می‌شود. سایر قیودِ بخش K (جدایی navigation/authority/tenant/viewهای حساسِ Patient و Staff) کاملاً معتبر می‌مانند.
 
-**پیاده‌سازیِ بنیاد:** PR #124 (**DRAFT** — در انتظارِ پذیرش و تأییدِ بصریِ مالک؛ این سند ادغام یا بستنِ آن را اعلام **نمی‌کند**).
+**پیاده‌سازیِ بنیاد:** PR #124 **MERGED** — merge SHA `aa42888c7ab641c86d1c45c200dfb887861e6ff1` MERGED 2026-09-25T21:31:34Z (verified live via `gh api repos/bia2on2on/doctor/pulls/124 --jq .merge_commit_sha/.merged_at`); owner visual review correction (one-time 302 legacy entry) is live.
 
 ---
 
