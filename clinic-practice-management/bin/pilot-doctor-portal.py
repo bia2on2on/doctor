@@ -197,7 +197,7 @@ def new_page(browser, vp):
     )
     page = ctx.new_page()
     page.set_default_timeout(25000)
-    state = {"reqs": [], "rest": [], "context": None, "locations": None, "todays": [], "console": [], "pageerrors": [], "failed": []}
+    state = {"reqs": [], "rest": [], "context": None, "locations": None, "todays": [], "console": [], "pageerrors": [], "failed": [], "hygiene_stage": "before-offline", "hygiene_events": []}
     NAV[id(page)] = {"harness": False, "harness_docs": 0, "product_docs": 0, "product_paths": [], "rest_total": 0}
 
     def on_nav_request(req):
@@ -238,6 +238,16 @@ def new_page(browser, vp):
             "method": resp.request.method,
         })
 
+    def safe_error(text):
+        # Whitelist known browser/network phrases; never print arbitrary JS text.
+        if "Failed to fetch" in text:
+            return "Failed to fetch"
+        match = re.search(r"ERR_[A-Z_]+", text)
+        return match.group(0) if match else "other-redacted"
+
+    def safe_path(url):
+        return re.sub(r"/[0-9]+(?=/|$)", "/{id}", route_of(url))[:120]
+
     def on_console(msg):
         if msg.type != "error":
             return
@@ -245,9 +255,12 @@ def new_page(browser, vp):
         if "favicon" in txt or "Failed to load resource" in txt:
             return
         state["console"].append(txt)
+        state["hygiene_events"].append((state["hygiene_stage"], "console", safe_error(txt), "none", "none", "none"))
 
     def on_pageerror(err):
-        state["pageerrors"].append(str(err)[:200])
+        text = str(err)[:200]
+        state["pageerrors"].append(text)
+        state["hygiene_events"].append((state["hygiene_stage"], "pageerror", safe_error(text), "none", "none", "none"))
 
     def on_requestfailed(req):
         url = req.url
@@ -257,6 +270,7 @@ def new_page(browser, vp):
         if "ERR_ABORTED" in failure:
             return
         state["failed"].append(failure[:80])
+        state["hygiene_events"].append((state["hygiene_stage"], "requestfailed", safe_error(failure), req.method if req.method in ("GET", "POST", "PUT", "DELETE") else "other", safe_path(url), "none"))
 
     page.on("request", on_request)
     page.on("request", on_nav_request)
@@ -675,6 +689,13 @@ def assert_hygiene(page, state, label):
     if not box or box["height"] < 40 or box["width"] < 40:
         raise RuntimeError(f"{label} logout control is below a touch target")
     if state["console"] or state["pageerrors"] or state["failed"]:
+        events = state["hygiene_events"]
+        info(f"hygiene-diagnostic-{label} console={len(state['console'])}"
+             f" pageerrors={len(state['pageerrors'])} failed={len(state['failed'])}"
+             f" events={len(events)}")
+        for stage, kind, message, method, path, status in events[:8]:
+            info(f"hygiene-diagnostic-{label} stage={stage} kind={kind}"
+                 f" message={message} method={method} path={path} status={status}")
         raise RuntimeError(f"{label} console/page/network hygiene broken")
     return sw, iw
 
@@ -1957,10 +1978,12 @@ def prove_workspace_handwriting(page, state, doctor, visit_id, label, mutate):
         if server_page()["strokes"] != persisted["strokes"]:
             raise RuntimeError("reopened Visit handwriting lost persisted strokes")
         offline_failures_before = len(state["failed"])
+        state["hygiene_stage"] = "handwriting-offline"
         page.context.set_offline(True)
         pen(40)
         page.wait_for_selector('#cpms-hw-sync[data-state="offline"]', timeout=20000)
         page.context.set_offline(False)
+        state["hygiene_stage"] = "after-handwriting-offline"
         expected_offline = state["failed"][offline_failures_before:]
         if any("ERR_INTERNET_DISCONNECTED" not in failure for failure in expected_offline):
             raise RuntimeError(f"unexpected offline network failure: {expected_offline}")
