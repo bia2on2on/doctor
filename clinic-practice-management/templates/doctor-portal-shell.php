@@ -400,7 +400,7 @@ body.cpms-doctor-portal-shell-body { margin: 0; font-family: Tahoma, Vazirmatn, 
                                     <label for="cpms-doc-ws-file-category">دسته‌بندی</label>
                                     <select id="cpms-doc-ws-file-category" data-role="workspace-visit-files-category">
                                         <option value="other">سایر</option>
-                                        <option value="lab_result">نتیجه آزایش</option>
+                                        <option value="lab_result">نتیجه آزمایش</option>
                                         <option value="image">تصویر</option>
                                         <option value="scan">اسکن</option>
                                         <option value="document">سند</option>
@@ -1495,7 +1495,7 @@ function resetFilesUi(){
 
 function fileCategoryLabel(category){
     return {
-        lab_result: 'نتیجه آزایش',
+        lab_result: 'نتیجه آزمایش',
         image: 'تصویر',
         scan: 'اسکن',
         document: 'سند',
