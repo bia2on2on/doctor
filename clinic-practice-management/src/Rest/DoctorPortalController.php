@@ -213,6 +213,47 @@ final class DoctorPortalController extends RestBase {
 				],
 			]
 		);
+
+		// Phase 10 Medical Files — Visit Workspace file boundary. Same adapter
+		// architecture as the rest of the Visit Workspace: portal-specific guard
+		// in front of the established shared E16/E17 file behavior (which stays
+		// untouched). The route carries the Visit selector; the body carries only
+		// the file + category + visibility — never authority.
+		register_rest_route(
+			self::NS,
+			'/doctor/portal/visits/(?P<id>\d+)/files',
+			[
+				[
+					'methods'             => WP_REST_Server::CREATABLE,
+					'callback'            => fn( WP_REST_Request $r ) => $this->workspace_upload_visit_file( $r ),
+					'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_workspace( $r, RolesAndCapabilities::FILE_UPLOAD ),
+					'args'                => [
+						'category'   => [
+							'required' => false,
+							'type'     => 'string',
+							'default'  => 'other',
+						],
+						'visibility' => [
+							'required' => false,
+							'type'     => 'string',
+							'default'  => 'patient_visible',
+						],
+					] + $this->workspace_inert_client_args(),
+				],
+			]
+		);
+		register_rest_route(
+			self::NS,
+			'/doctor/portal/visits/(?P<id>\d+)/files/(?P<file_id>\d+)/stream',
+			[
+				[
+					'methods'             => WP_REST_Server::READABLE,
+					'callback'            => fn( WP_REST_Request $r ) => $this->workspace_stream_visit_file( $r ),
+					'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_workspace( $r, RolesAndCapabilities::FILE_READ ),
+					'args'                => $this->workspace_inert_client_args(),
+				],
+			]
+		);
 	}
 
 	private function perm_doctor( WP_REST_Request $r ): bool|WP_Error {
@@ -420,6 +461,129 @@ final class DoctorPortalController extends RestBase {
 	}
 
 	/**
+	 * Client authority keys are deliberately inert at the portal file boundary:
+	 * the SERVER derives patient/clinician/clinic/Location from the persisted
+	 * authorized Visit (route selector + trusted selector headers only). Each
+	 * key is dropped at arg sanitization — before the shared scope binder reads
+	 * any selector — so a forged body key can never create authority, retarget
+	 * a row, or block/alter a legitimate request (accepted Phase 10 contract:
+	 * forged patient_id/clinician_id/clinic_id/location_id/visit_id are inert).
+	 *
+	 * @return array<string, array<string, mixed>>
+	 */
+	private function workspace_inert_client_args(): array {
+		return [
+			'patient_id'   => [ 'required' => false, 'sanitize_callback' => static fn() => null ],
+			'clinician_id' => [ 'required' => false, 'sanitize_callback' => static fn() => null ],
+			'clinic_id'    => [ 'required' => false, 'sanitize_callback' => static fn() => null ],
+			'location_id'  => [ 'required' => false, 'sanitize_callback' => static fn() => null ],
+			'visit_id'     => [ 'required' => false, 'sanitize_callback' => static fn() => null ],
+		];
+	}
+
+	/**
+	 * Phase 10 Medical Files — Visit Workspace upload (portal boundary).
+	 *
+	 * The client may select ONLY: the Visit via the route, the uploaded file,
+	 * category and visibility. The SERVER derives patient/clinician/clinic from
+	 * the persisted authorized Visit and delegates storage/validation/audit to
+	 * the established MedicalFileService (shared E16 — reused, never duplicated).
+	 * Client patient_id/clinician_id/clinic_id/location_id/visit_id keys are
+	 * never read — a forged key cannot create authority or re-target the upload.
+	 */
+	private function workspace_upload_visit_file( WP_REST_Request $r ): WP_REST_Response|WP_Error {
+		$visit_id = (int) $r['id'];
+		$guard    = $this->workspace_authorize_visit( $visit_id );
+		if ( $guard instanceof WP_Error ) {
+			return $guard;
+		}
+		$limited = $this->rateLimit( $r, 'files:upload:' . (int) wp_get_current_user()->ID, 10, 3600 );
+		if ( $limited instanceof WP_Error ) {
+			return $limited;
+		}
+		// Server-derived patient — read only from the persisted authorized Visit.
+		$db    = App::db();
+		$visit = $db->fetchRow(
+			'SELECT id, patient_id FROM ' . $db->table( 'cpms_visits' ) . ' WHERE id = %d LIMIT 1',
+			[ $visit_id ]
+		);
+		if ( null === $visit ) {
+			return new WP_Error( 'CLINIC_NOT_FOUND', 'مراجعه یافت نشد', [ 'status' => 404 ] );
+		}
+		$actor      = (int) wp_get_current_user()->ID;
+		$patient_id = (int) $visit['patient_id']; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established snake_case row/domain name
+		$category   = (string) ( $r['category'] ?? 'other' );
+		$visibility = (string) ( $r['visibility'] ?? 'patient_visible' );
+		$file       = $this->workspace_uploaded_file( $r );
+
+		return $this->workspace_wrap(
+			fn() => App::medicalFileService()->upload( $actor, $file, $patient_id, $visit_id, $category, $visibility ),
+			201
+		);
+	}
+
+	/**
+	 * Phase 10 Medical Files — Visit Workspace secure open/download (portal
+	 * boundary). The file_id is a selector ONLY: the persisted file -> Visit
+	 * binding is checked against the authorized current Visit BEFORE any disk
+	 * read, then the established protected MedicalFileService::stream (shared
+	 * E17) does resource authorization, visibility and audit. A file of another
+	 * Visit is never downloadable just because the patient matches; a null-Visit
+	 * (patient-level) file never silently gains current-Visit authority. Every
+	 * file-dimension denial shares one non-enumerating fingerprint.
+	 */
+	private function workspace_stream_visit_file( WP_REST_Request $r ): WP_REST_Response|WP_Error {
+		$visit_id = (int) $r['id'];
+		$guard    = $this->workspace_authorize_visit( $visit_id );
+		if ( $guard instanceof WP_Error ) {
+			return $guard;
+		}
+		$file_id = (int) $r['file_id'];
+		$db      = App::db();
+		$file    = $db->fetchRow(
+			'SELECT id, visit_id FROM ' . $db->table( 'cpms_medical_attachments' ) . ' WHERE id = %d AND deleted_at IS NULL LIMIT 1',
+			[ $file_id ]
+		);
+		if ( null === $file || null === $file['visit_id'] || (int) $file['visit_id'] !== $visit_id ) {
+			return new WP_Error( 'CLINIC_NOT_FOUND', 'فایل یافت نشد', [ 'status' => 404 ] );
+		}
+		try {
+			$payload = App::medicalFileService()->stream( (int) wp_get_current_user()->ID, $file_id );
+		} catch ( \ClinicCore\Application\Clinical\ClinicalException $e ) {
+			return $this->error( $e->errorCode, $e->httpStatus, $e->getMessage(), $e->data ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- legacy PSR-style, established contract
+		} catch ( \Throwable $e ) {
+			unset( $e );
+			error_log( '[CPMS][DoctorPortalController] unexpected stream: file ' . $file_id ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- established controller convention
+
+			return $this->error( 'CLINIC_INTERNAL_ERROR', 500, 'خطای داخلی سرور — لطفاً دوباره تلاش کنید' );
+		}
+		// Same protected delivery contract as the established shared stream.
+		$response = new WP_REST_Response( $payload['content'], 200 );
+		$response->header( 'Content-Type', $payload['mime_type'] );
+		$response->header( 'Content-Length', (string) $payload['size'] );
+		$response->header( 'Content-Disposition', 'attachment; filename="' . rawurlencode( $payload['original_filename'] ) . '"' );
+		$response->header( 'Cache-Control', 'private, max-age=0, no-cache' );
+		$response->header( 'X-Content-Type-Options', 'nosniff' );
+
+		return $response;
+	}
+
+	/**
+	 * Multipart upload payload ($_FILES shape). The portal file boundary accepts
+	 * only this one file field plus category/visibility selectors.
+	 *
+	 * @return array{name?: string, tmp_name?: string, size?: int, error?: int}
+	 */
+	private function workspace_uploaded_file( WP_REST_Request $r ): array {
+		$files = $r->get_file_params();
+		if ( ! is_array( $files ) || ! isset( $files['file'] ) || ! is_array( $files['file'] ) ) {
+			return [];
+		}
+
+		return $files['file'];
+	}
+
+	/**
 	 * Server-side prescription -> Visit ownership resolution for the portal
 	 * boundary. Unknown OR foreign-Visit prescription selectors collapse to
 	 * the same non-enumerating 404; existence is never leaked.
@@ -520,16 +684,17 @@ final class DoctorPortalController extends RestBase {
 	}
 
 	/**
-	 * Envelope for the reused ClinicalService calls (same convention as the
-	 * shared clinical controller — bounded error codes, no raw leakage).
+	 * Envelope for the reused ClinicalService/MedicalFileService calls (same
+	 * convention as the shared clinical controller — bounded error codes, no
+	 * raw leakage).
 	 *
 	 * @template T
 	 *
 	 * @param callable(): T $callback
 	 */
-	private function workspace_wrap( callable $callback ): WP_REST_Response|WP_Error {
+	private function workspace_wrap( callable $callback, int $status = 200 ): WP_REST_Response|WP_Error {
 		try {
-			return $this->success( $callback(), 200 );
+			return $this->success( $callback(), $status );
 		} catch ( \ClinicCore\Application\Clinical\ClinicalException $e ) {
 			return $this->error( $e->errorCode, $e->httpStatus, $e->getMessage(), $e->data ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- legacy PSR-style, established contract
 		} catch ( \ClinicCore\Domain\Visits\VisitException $e ) {

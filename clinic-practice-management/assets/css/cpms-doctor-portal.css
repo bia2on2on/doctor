@@ -1315,3 +1315,48 @@ body.cpms-doctor-portal-shell-body {
 .cpms-doc-workspace [data-role="workspace-consult-complete-busy"] {
 	margin: 8px 14px 0;
 }
+
+/* ===================== Visit Workspace — Medical Files (Phase 10) ===================== */
+.cpms-doc-ws-files {
+    margin-top: 16px;
+    border-top: 1px solid #e2e4e7;
+    padding-top: 12px;
+}
+.cpms-doc-ws-files-list {
+    list-style: none;
+    margin: 0 0 12px;
+    padding: 0;
+}
+.cpms-doc-ws-file-item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 10px;
+    margin-bottom: 8px;
+    border: 1px solid #dcdcde;
+    border-radius: 8px;
+    background: #fff;
+}
+.cpms-doc-ws-file-name {
+    font-weight: 600;
+    word-break: break-all;
+}
+.cpms-doc-ws-file-meta {
+    font-size: 12px;
+    color: #555;
+    word-break: break-word;
+}
+.cpms-doc-ws-file-item .cpms-doc-btn {
+    align-self: flex-start;
+    min-height: 40px;
+}
+.cpms-doc-ws-form input[type="file"] {
+    width: 100%;
+    padding: 6px 0;
+}
+.cpms-doc-ws-form [data-role="workspace-visit-files-upload-submit"] {
+    min-height: 40px;
+}
+.cpms-doc-ws-form [data-role="workspace-visit-files-upload-submit"][aria-busy="true"] {
+    cursor: wait;
+}

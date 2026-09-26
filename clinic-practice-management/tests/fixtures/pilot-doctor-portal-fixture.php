@@ -397,6 +397,54 @@ $multiLine = implode('|', [
     (string) $apptColleague,
     $betaName,
 ]);
+// Phase 10 files journey — the established protected-storage seeding for real
+// browser uploads (same pattern as pilot-slice4-profile-fixture): per-Clinic
+// `files.storage_path` outside the DocumentRoot, with every {clinic}/{xx} shard
+// pre-created world-writable so the Apache user never needs to mkdir at 0750
+// and the pilot process can traverse the tree.
+$filesStorage = '/home/runner/clinic-storage-doctor-portal';
+foreach ([$oneClinic, $multiClinic] as $filesClinicId) {
+    \ClinicCore\Bootstrap\App::settingsFactory()->forClinic($filesClinicId)->set('files.storage_path', $filesStorage);
+}
+\ClinicCore\Settings\Settings::flushCache();
+if (!is_dir($filesStorage)) {
+    @mkdir($filesStorage, 0777, true);
+}
+@chmod($filesStorage, 0777);
+foreach ([$oneClinic, $multiClinic] as $shardClinicId) {
+    $clinicDir = $filesStorage . '/' . $shardClinicId;
+    if (!is_dir($clinicDir)) {
+        @mkdir($clinicDir, 0777, true);
+    }
+    @chmod($clinicDir, 0777);
+    for ($shardIndex = 0; $shardIndex < 256; $shardIndex++) {
+        $shardDir = $clinicDir . '/' . str_pad(dechex($shardIndex), 2, '0', STR_PAD_LEFT);
+        if (!is_dir($shardDir)) {
+            @mkdir($shardDir, 0777);
+        }
+    }
+}
+// Test-env permissions (established pilot-slice4-profile-fixture pattern):
+// seeding runs as the CLI user but the browser upload executes under the
+// Apache user; mkdir() modes are umask-masked (0777 -> 0755), so recursively
+// loosen ONLY this pilot test storage root (never any production path) so the
+// web-server user can write shards. Storage stays private/outside the webroot.
+$loosenStorageTree = static function (string $dir) use (&$loosenStorageTree): void {
+    @chmod($dir, 0777);
+    foreach (scandir($dir) ?: [] as $entry) {
+        if ($entry === '.' || $entry === '..') {
+            continue;
+        }
+        $path = $dir . '/' . $entry;
+        if (is_dir($path)) {
+            $loosenStorageTree($path);
+        } else {
+            @chmod($path, 0666);
+        }
+    }
+};
+$loosenStorageTree($filesStorage);
+
 $public = implode('|', [
     $url,
     (string) $oneClinic,
