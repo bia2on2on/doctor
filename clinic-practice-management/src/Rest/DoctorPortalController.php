@@ -340,7 +340,7 @@ final class DoctorPortalController extends RestBase {
 		try {
 			switch ( $operation ) {
 				case 'list':
-					$list = $service->listDocuments( $actor, $visit_id );
+					$list = $service->listDocuments( $actor, $visit_id ); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- next statement assigns an array key, not a peer variable
 					$list['autosave_sec'] = max( 2, (int) App::settingsFactory()->forClinic( (int) App::scope()->clinicId )->get( 'hw.autosave_sec', 5 ) ); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- array key and established scope contract
 					return $this->success( $list );
 				case 'create':

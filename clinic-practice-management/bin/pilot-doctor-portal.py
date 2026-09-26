@@ -2743,7 +2743,10 @@ def prove_handwriting_admin(browser, doctor, vp):
         ok(key, "original wp-admin handwriting editor loads the same engine", "saved=1 pages=1")
     except Exception as error:  # noqa: BLE001
         shot(page, "doctor-portal-FAIL-handwriting-wp-admin")
-        detail = f"url_path={urlparse(page.url).path} app={page.locator('#cpms-hw-app').count()} canvas={page.locator('#cpms-hw-canvas').count()}"
+        detail = (f"url_path={urlparse(page.url).path} page={parse_qs(urlparse(page.url).query).get('page', [''])[0]} "
+                  f"visit={parse_qs(urlparse(page.url).query).get('visit_id', [''])[0]} "
+                  f"app={page.locator('#cpms-hw-app').count()} canvas={page.locator('#cpms-hw-canvas').count()} "
+                  f"notice={page.locator('.notice-warning').count()} denied={int('not allowed' in page.content().lower())}")
         fail(key, "wp-admin handwriting regression", f"{error} ({detail})")
         raise
     finally:

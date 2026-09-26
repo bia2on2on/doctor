@@ -128,7 +128,7 @@ final class DoctorHandwritingPage
             <button type="button" class="cpms-hw-btn cpms-hw-save-now" id="cpms-hw-save" title="ذخیره الان">💾 ذخیره</button>
         </aside>
 
-        <main id="cpms-hw-stage"><canvas id="cpms-hw-canvas"></canvas></main>
+        <div id="cpms-hw-stage"><canvas id="cpms-hw-canvas"></canvas></div>
     </div>
 </div>
 
