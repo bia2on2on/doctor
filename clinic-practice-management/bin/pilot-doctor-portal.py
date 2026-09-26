@@ -2782,11 +2782,24 @@ def prove_handwriting_admin(browser, doctor, vp):
         response = harness_goto(page, url, wait_until="domcontentloaded")
         if not response or response.status != 200:
             raise RuntimeError(f"wp-admin handwriting HTTP {getattr(response, 'status', None)}")
-        notice_text = page.locator('.notice-warning').filter(has_text='این صفحه از طریق دکمه').count() > 0
-        info(f"wp-admin-journey-preconditions visit_id={visit} notice_text={'yes' if notice_text else 'no'}"
+        admin_bar = page.locator('#wpadminbar').count() > 0
+        body_wp_admin = page.locator('body.wp-admin').count() > 0
+        display_name = (page.locator('#wpadmin-bar-my-account .display-name').first.text_content() or '').strip()[:40] if page.locator('#wpadmin-bar-my-account .display-name').count() else ''
+        notices = page.locator('.notice-warning')
+        cpms_notice = 'این صفحه از طریق دکمه «🖋️ دست‌خط» در صفحه ویزیت باز می‌شود.'
+        notice_is_cpms = notices.filter(has_text=cpms_notice).count() > 0
+        info(f"wp-admin-identity admin_bar={int(admin_bar)} body_wp_admin={int(body_wp_admin)}"
+             f" identity={display_name or 'none'} app={page.locator('#cpms-hw-app').count()}"
+             f" canvas={page.locator('#cpms-hw-canvas').count()} notice_count={notices.count()}"
+             f" notice_is_cpms={'yes' if notice_is_cpms else 'no'}")
+        info(f"wp-admin-journey-preconditions visit_id={visit} notice_text={'yes' if notice_is_cpms else 'no'}"
              f" page_app={page.locator('#cpms-hw-app').count()} canvas={page.locator('#cpms-hw-canvas').count()}")
-        if session_user != doctor["user_id"] or session_clinician != doctor["clinician_id"]:
-            raise RuntimeError("wp-admin journey session does not match expected doctor")
+        if not admin_bar or not body_wp_admin or display_name != doctor['login'] or session_user != doctor["user_id"] or session_clinician != doctor["clinician_id"]:
+            raise RuntimeError("wp-admin journey identity does not match expected doctor")
+        if not notice_is_cpms and not page.locator('#cpms-hw-app').count():
+            notice = (notices.first.inner_text() or '')[:120] if notices.count() else ''
+            safe_notice = re.sub(r'\S+@\S+|https?://\S+|\b\d+\b', '[redacted]', notice).replace('\n', ' ')
+            info(f"wp-admin-other-notice {safe_notice or 'none'}")
         page.wait_for_selector('#cpms-hw-app #cpms-hw-canvas', state="attached", timeout=10000)
         page.wait_for_selector('#cpms-hw-sync[data-state="saved"]', timeout=20000)
         if not page.evaluate("Boolean(window.CPMSHandwriting && window.CPMS_HW)"):
