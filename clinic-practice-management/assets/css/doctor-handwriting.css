@@ -42,7 +42,7 @@
 #cpms-hw-tools{flex-shrink:0;max-width:24vw}
 #cpms-hw-stage{min-width:0}
 #cpms-hw-conflict .cpms-hw-modal-box{max-height:95dvh;overflow:auto}
-/* Keep the A4 page prominent without cropping or changing its aspect ratio. */
+/* Keep the A4 page proportionate; the canvas stage clips the desktop width-fit view. */
 #cpms-hw-stage{background:#e3e7ed}
 @media (max-width:900px){
 #cpms-hw-body{flex-direction:column}

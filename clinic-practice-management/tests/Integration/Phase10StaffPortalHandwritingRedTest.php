@@ -103,6 +103,43 @@ final class Phase10StaffPortalHandwritingRedTest extends WP_UnitTestCase {
 		return compact( 'clinic', 'location', 'doctor', 'visit', 'patient', 'clinician' );
 	}
 
+	public function test_prescription_template_schema_and_legacy_values(): void {
+		$this->stage();
+		$db = \ClinicCore\Bootstrap\App::db();
+		$row = $db->fetchRow( 'SHOW COLUMNS FROM ' . $db->table( 'cpms_handwriting_pages' ) . ' LIKE %s', [ 'background_template' ] );
+		self::assertNotNull( $row );
+		foreach ( [ 'blank', 'lined', 'graph', 'form', 'prescription' ] as $choice ) {
+			self::assertStringContainsString( "'" . $choice . "'", (string) $row['Type'] );
+		}
+	}
+
+	public function test_prescription_context_and_switching_preserve_strokes(): void {
+		$fx = $this->stage();
+		$db = \ClinicCore\Bootstrap\App::db();
+		$context = \ClinicCore\Application\Handwriting\PrescriptionPaperContext::forVisit( $db, $fx['visit'], $fx['clinic'], $fx['location'], $fx['clinician'] );
+		self::assertSame( 'Dr HW', $context['doctor'] ?? null );
+		self::assertSame( 'HW loc', $context['location'] ?? null );
+		self::assertSame( 'HW Patient', $context['patient'] ?? null );
+		self::assertSame( gmdate( 'Y-m-d' ), $context['date'] ?? null );
+		foreach ( [ [ 999999, $fx['location'], $fx['clinician'] ], [ $fx['clinic'], 999999, $fx['clinician'] ], [ $fx['clinic'], $fx['location'], 999999 ] ] as $foreign ) {
+			self::assertNull( \ClinicCore\Application\Handwriting\PrescriptionPaperContext::forVisit( $db, $fx['visit'], ...$foreign ) );
+		}
+		$path = '/clinic/v1/doctor/portal/visits/' . $fx['visit'] . '/handwriting';
+		self::assertSame( $context, $this->call_portal( 'GET', $path, $fx, $fx['location'], [ 'patient_id' => 999999, 'location_id' => 999999 ] )->get_data()['data']['paper_context'] ?? null );
+		$created = $this->call_portal( 'POST', $path, $fx, $fx['location'] );
+		self::assertSame( 201, $created->get_status() );
+		$page = $path . '/pages/' . (int) $created->get_data()['data']['pages'][0]['id'];
+		$stroke = base64_encode( (string) wp_json_encode( [ [ 'id' => 'kept', 'points' => [ [ 100, 200, 0.5, 123 ], [ 101, 201, 0.5, 124 ] ] ] ] ) );
+		foreach ( [ 'blank', 'lined', 'prescription', 'blank', 'graph', 'form' ] as $index => $template ) {
+			$saved = $this->call_portal( 'PUT', $page, $fx, $fx['location'], [ 'client_revision' => $index + 1, 'background_template' => $template, 'stroke_data' => $stroke ], '00000000-0000-4000-8000-' . bin2hex( random_bytes( 6 ) ) );
+			self::assertSame( 200, $saved->get_status(), $template );
+			$reloaded = $this->call_portal( 'GET', $page, $fx, $fx['location'] );
+			self::assertSame( $template, $reloaded->get_data()['data']['background_template'] ?? null );
+			self::assertSame( 'kept', $reloaded->get_data()['data']['strokes'][0]['id'] ?? null );
+			self::assertEquals( 100.0, $reloaded->get_data()['data']['strokes'][0]['points'][0][0] ?? null );
+		}
+	}
+
 	/** @param array<string,int> $fx */
 	private function call_portal( string $method, string $route, array $fx, ?int $location = null, array $body = [], ?string $key = null ): \WP_REST_Response {
 		$request = new WP_REST_Request( $method, $route );

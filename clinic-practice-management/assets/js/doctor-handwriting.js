@@ -19,6 +19,7 @@
         backoffIdx: 0, retryTimer: null,
         conflictServer: null, // وضعیت سرور از 409 (برای دیالوگ)
         template: 'lined', bgImage: null, bgAttachmentId: null,
+        paperContext: CFG.paper_context || null,
         closed: false
     };
     var BACKOFF = [5000, 30000, 120000, 600000, 1800000]; // ADR-0014
@@ -159,6 +160,7 @@
         api('GET', 'handwriting/documents?visit_id=' + CFG.visit_id).then(function (r) {
             if (r.status !== 200) { throw new Error('load'); }
             if (CFG.portal && r.body.data) { CFG.autosave_sec = Math.max(2, Number(r.body.data.autosave_sec) || 5); }
+            if (CFG.portal && r.body.data) { state.paperContext = r.body.data.paper_context || null; }
             var doc = r.body.data && r.body.data.document;
             if (!doc) {
                 // اولین بار: ایجاد سند با یک صفحه A4
@@ -252,9 +254,9 @@
         var sw = stage.clientWidth, sh = stage.clientHeight;
         var scale = Math.min((sw - 16) / w, (sh - 16) / h);
         // A portrait page fitted to a wide viewport leaves most of the writing area gray.
-        // Start closer on tablet/desktop; existing zoom and touch pan still reach the full page.
-        if (sw > 600) { scale = Math.min((sw - 16) / w, scale * (sw < 900 ? 1.2 : 1.55)); }
-        state.view = { scale: scale, tx: (sw - w * scale) / 2, ty: (sh - h * scale) / 2 };
+        // Tablet starts closer; desktop fits page width, with vertical pan to reach the rest.
+        if (sw > 600) { scale = sw >= 900 ? (sw - 16) / w : Math.min((sw - 16) / w, scale * 1.2); }
+        state.view = { scale: scale, tx: (sw - w * scale) / 2, ty: sw >= 900 ? 8 : (sh - h * scale) / 2 };
     }
 
     function draw() {
@@ -295,6 +297,22 @@
         ctx.lineWidth = 1;
         if (state.bgImage) {
             ctx.drawImage(state.bgImage, 0, 0, w, h);
+        } else if (state.template === 'prescription') {
+            var paper = state.paperContext || {};
+            ctx.direction = 'rtl';
+            ctx.textAlign = 'right';
+            ctx.fillStyle = '#25344a';
+            ctx.font = 'bold 36px sans-serif';
+            ctx.fillText('برگه نسخه', w - 70, 85);
+            ctx.font = '27px sans-serif';
+            if (paper.doctor) { ctx.fillText('پزشک: ' + paper.doctor, w - 70, 145, w - 140); }
+            if (paper.location) { ctx.fillText('مرکز: ' + paper.location, w - 70, 195, w - 140); }
+            if (paper.patient) { ctx.fillText('بیمار: ' + paper.patient, w - 70, 260, w - 140); }
+            if (paper.date) { ctx.fillText('تاریخ ویزیت: ' + paper.date, w - 70, 310, w - 140); }
+            ctx.strokeStyle = '#aab8ca';
+            ctx.beginPath(); ctx.moveTo(60, 345); ctx.lineTo(w - 60, 345); ctx.stroke();
+            ctx.fillText('امضا و مهر پزشک', w - 70, h - 115);
+            ctx.beginPath(); ctx.moveTo(w - 440, h - 90); ctx.lineTo(w - 70, h - 90); ctx.stroke();
         } else if (state.template === 'lined') {
             ctx.strokeStyle = '#cfd8e3';
             for (var y = 120; y < h; y += 56) {
@@ -444,6 +462,7 @@
 
     stage.addEventListener('wheel', function (e) {
         e.preventDefault();
+        if (e.shiftKey && stage.clientWidth >= 900) { panBy(0, -e.deltaY); return; }
         var rect = canvas.getBoundingClientRect();
         zoomAt(e.clientX - rect.left, e.clientY - rect.top, state.view.scale * (e.deltaY < 0 ? 1.12 : 0.89));
     }, { passive: false });

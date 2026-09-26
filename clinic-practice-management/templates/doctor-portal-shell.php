@@ -252,6 +252,7 @@ body.cpms-doctor-portal-shell-body { margin: 0; font-family: Tahoma, Vazirmatn, 
             <select id="cpms-hw-template" title="قالب صفحه" aria-label="قالب صفحه">
                 <option value="lined">خط‌دار</option>
                 <option value="blank">ساده</option>
+                <option value="prescription">برگه نسخه</option>
                 <option value="graph">مربع‌دار</option>
                 <option value="form">فرم</option>
             </select>
