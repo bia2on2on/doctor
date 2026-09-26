@@ -2733,7 +2733,7 @@ def prove_handwriting_admin(browser, doctor, vp):
         response = harness_goto(page, url, wait_until="domcontentloaded")
         if not response or response.status != 200:
             raise RuntimeError(f"wp-admin handwriting HTTP {getattr(response, 'status', None)}")
-        page.wait_for_selector('#cpms-hw-app #cpms-hw-canvas', timeout=10000)
+        page.wait_for_selector('#cpms-hw-app #cpms-hw-canvas', state="attached", timeout=10000)
         page.wait_for_selector('#cpms-hw-sync[data-state="saved"]', timeout=20000)
         if not page.evaluate("Boolean(window.CPMSHandwriting && window.CPMS_HW)"):
             raise RuntimeError("wp-admin did not load the single extracted engine")
@@ -2742,7 +2742,9 @@ def prove_handwriting_admin(browser, doctor, vp):
         shot(page, "doctor-portal-handwriting-wp-admin-regression")
         ok(key, "original wp-admin handwriting editor loads the same engine", "saved=1 pages=1")
     except Exception as error:  # noqa: BLE001
-        fail(key, "wp-admin handwriting regression", str(error))
+        shot(page, "doctor-portal-FAIL-handwriting-wp-admin")
+        detail = f"url_path={urlparse(page.url).path} app={page.locator('#cpms-hw-app').count()} canvas={page.locator('#cpms-hw-canvas').count()}"
+        fail(key, "wp-admin handwriting regression", f"{error} ({detail})")
         raise
     finally:
         ctx.close()

@@ -84,12 +84,12 @@ final class DoctorHandwritingPage
         ];
         ?>
 <div id="cpms-hw-app" dir="rtl" data-visit="<?php echo (int) $visitId; ?>">
-    <header id="cpms-hw-head">
+    <div id="cpms-hw-head">
         <a id="cpms-hw-close" href="<?php echo esc_url((string) $config['back_url']); ?>" title="بستن">✕</a>
         <nav id="cpms-hw-pages" aria-label="صفحات"></nav>
         <button type="button" class="cpms-hw-btn" id="cpms-hw-addpage" title="افزودن صفحه">＋ صفحه</button>
         <span id="cpms-hw-sync" class="cpms-hw-sync" data-state="loading">⏳ در حال بارگذاری…</span>
-    </header>
+    </div>
 
     <div id="cpms-hw-body">
         <aside id="cpms-hw-tools">

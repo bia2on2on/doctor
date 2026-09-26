@@ -341,7 +341,7 @@ final class DoctorPortalController extends RestBase {
 			switch ( $operation ) {
 				case 'list':
 					$list = $service->listDocuments( $actor, $visit_id );
-					$list['autosave_sec'] = max( 2, (int) App::settingsFactory()->forClinic( (int) App::scope()->clinicId )->get( 'hw.autosave_sec', 5 ) ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established scope contract
+					$list['autosave_sec'] = max( 2, (int) App::settingsFactory()->forClinic( (int) App::scope()->clinicId )->get( 'hw.autosave_sec', 5 ) ); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- array key and established scope contract
 					return $this->success( $list );
 				case 'create':
 					return $this->success( $service->createDocument( $actor, $visit_id, null, [] ), 201 );
