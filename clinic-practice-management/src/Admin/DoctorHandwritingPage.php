@@ -65,7 +65,7 @@ final class DoctorHandwritingPage
             wp_die('دسترسی ندارید', 403);
         }
 
-        $visit_id     = isset($_GET['visit_id']) ? absint($_GET['visit_id']) : 0; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+        $visit_id     = isset( $_GET['visit_id'] ) ? absint( $_GET['visit_id'] ) : 0; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
         $clinician_id = null;
         $settings     = null;
         $user_id      = get_current_user_id();
@@ -77,7 +77,7 @@ final class DoctorHandwritingPage
                 $visits       = new VisitRepository( $db );
                 $visit        = $clinician_id ? $visits->find( $visit_id ) : null;
                 if ( $visit !== null && (int) $visit['clinician_id'] === $clinician_id && (int) $visit['clinic_id'] > 0 ) {
-                    $clinic_id = (int) $visit['clinic_id'];
+                    $clinic_id   = (int) $visit['clinic_id'];
                     $establisher = new TrustedClinicEstablisher( $db, $memberships );
                     $scope       = $establisher->establish( $user_id, $clinic_id );
                     if ( (int) $scope->clinicId === $clinic_id && App::authorization_service()->can( $user_id, $clinic_id, RolesAndCapabilities::NOTE_CREATE ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established ClinicScope property
@@ -99,11 +99,11 @@ final class DoctorHandwritingPage
         $config = [
             'rest_url' => esc_url_raw(rest_url('clinic/v1/')),
             'nonce' => wp_create_nonce('wp_rest'),
-            'visit_id' => $visit_id,
+            'visit_id'     => $visit_id,
             'clinician_id' => $clinician_id,
             'autosave_sec' => max( 2, (int) $settings->get( 'hw.autosave_sec', 5 ) ),
             'local_retain' => (string) $settings->get( 'hw.local_retain', 'off' ),
-            'back_url' => admin_url('admin.php?page=cpms-doctor&visit_id=' . $visit_id),
+            'back_url'     => admin_url( 'admin.php?page=cpms-doctor&visit_id=' . $visit_id ),
             'can_upload' => current_user_can(RolesAndCapabilities::FILE_UPLOAD),
         ];
         ?>
