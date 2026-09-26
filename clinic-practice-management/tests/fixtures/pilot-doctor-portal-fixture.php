@@ -424,6 +424,26 @@ foreach ([$oneClinic, $multiClinic] as $shardClinicId) {
         }
     }
 }
+// Test-env permissions (established pilot-slice4-profile-fixture pattern):
+// seeding runs as the CLI user but the browser upload executes under the
+// Apache user; mkdir() modes are umask-masked (0777 -> 0755), so recursively
+// loosen ONLY this pilot test storage root (never any production path) so the
+// web-server user can write shards. Storage stays private/outside the webroot.
+$loosenStorageTree = static function (string $dir) use (&$loosenStorageTree): void {
+    @chmod($dir, 0777);
+    foreach (scandir($dir) ?: [] as $entry) {
+        if ($entry === '.' || $entry === '..') {
+            continue;
+        }
+        $path = $dir . '/' . $entry;
+        if (is_dir($path)) {
+            $loosenStorageTree($path);
+        } else {
+            @chmod($path, 0666);
+        }
+    }
+};
+$loosenStorageTree($filesStorage);
 
 $public = implode('|', [
     $url,
