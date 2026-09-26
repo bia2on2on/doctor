@@ -145,6 +145,8 @@ final class Phase10StaffPortalHandwritingRedTest extends WP_UnitTestCase {
 		$inactive = $this->call_portal( 'GET', $path, $fx, $other_location );
 		self::assertSame( 403, $inactive->get_status() );
 		self::assertSame( 'location', $inactive->get_data()['data']['reason'] ?? '', 'Explicit ineligible Location must preserve the requested portal reason.' );
+		$inactive_audit = $db->fetchValue( 'SELECT COUNT(*) FROM ' . $db->table( 'cpms_audit_logs' ) . ' WHERE action = %s AND resource_id = %d AND meta_json LIKE %s', [ 'FORBIDDEN_ACCESS_ATTEMPT', $fx['visit'], '%location%' ] );
+		self::assertSame( 1, (int) $inactive_audit, 'Explicit inactive Location denial is audited once.' );
 		$created = $this->call_portal( 'POST', $path, $fx, $fx['location'], [ 'patient_id' => 999999, 'clinic_id' => 999999, 'clinician_id' => 999999, 'visit_id' => 999999, 'location_id' => 999999 ] );
 		self::assertSame( 201, $created->get_status() );
 		$doc = $created->get_data()['data'];
@@ -175,8 +177,12 @@ final class Phase10StaffPortalHandwritingRedTest extends WP_UnitTestCase {
 		$conflict = $this->call_portal( 'PUT', $page_path, $fx, $fx['location'], $body, '00000000-0000-4000-8000-' . bin2hex( random_bytes( 6 ) ) );
 		self::assertSame( 409, $conflict->get_status() );
 		self::assertSame( 'CLINIC_CONFLICT', $conflict->get_data()['code'] ?? '' );
-		$count = $db->fetchValue( 'SELECT COUNT(*) FROM ' . $db->table( 'cpms_audit_logs' ) . ' WHERE action = %s AND resource_id = %d', [ 'HW_PAGE_SAVE', $page_id ] );
-		self::assertSame( 1, (int) $count, 'Replay and conflict cannot log success.' );
+		$success_count = $db->fetchValue( 'SELECT COUNT(*) FROM ' . $db->table( 'cpms_audit_logs' ) . ' WHERE action = %s AND resource_id = %d AND after_json IS NOT NULL', [ 'HW_PAGE_SAVE', $page_id ] );
+		$denial_count = $db->fetchValue( 'SELECT COUNT(*) FROM ' . $db->table( 'cpms_audit_logs' ) . ' WHERE action = %s AND resource_id = %d AND after_json IS NULL', [ 'HW_PAGE_SAVE', $page_id ] );
+		self::assertSame( 1, (int) $success_count, 'Replay and conflict cannot log another successful save.' );
+		self::assertSame( 1, (int) $denial_count, 'Conflict is audited as a denial, never a success.' );
+		$page_after_conflict = $this->call_portal( 'GET', $page_path, $fx, $fx['location'] );
+		self::assertSame( 1, $page_after_conflict->get_data()['data']['client_revision'] ?? null, 'Replay and conflict do not bump the revision.' );
 		$now = $db->nowUtcSql();
 		$org = $db->fetchValue( 'SELECT organization_id FROM ' . $db->table( 'cpms_clinics' ) . ' WHERE id = %d', [ $fx['clinic'] ] );
 		self::assertTrue( $db->insert( 'cpms_clinics', [ 'organization_id' => (int) $org, 'name' => 'Foreign HW clinic', 'slug' => 'hw-foreign-' . bin2hex( random_bytes( 4 ) ), 'timezone' => 'Asia/Tehran', 'created_at' => $now, 'updated_at' => $now ] ) );

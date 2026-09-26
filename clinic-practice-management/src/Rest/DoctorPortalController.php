@@ -20,6 +20,8 @@ final class DoctorPortalController extends RestBase {
 	}
 
 	public function register_routes(): void {
+		// Route-specific response metadata only; the trusted-scope binder still denies first.
+		add_filter( 'rest_request_before_callbacks', [ $this, 'handwriting_location_denial' ], 11, 3 );
 		register_rest_route(
 			self::NS,
 			'/doctor/portal/context',
@@ -302,6 +304,44 @@ final class DoctorPortalController extends RestBase {
 				],
 			]
 		);
+	}
+
+	/**
+	 * Preserve bounded operational-Location denial metadata when the established
+	 * trusted-scope binder rejects an explicit Location before our Visit guard.
+	 * This cannot turn a denial into authorization and never exposes eligible IDs.
+	 *
+	 * @param mixed $response Response from the existing binder.
+	 * @param mixed $handler Matched REST handler.
+	 * @param mixed $request Current REST request.
+	 * @return mixed
+	 */
+	public function handwriting_location_denial( mixed $response, mixed $handler, mixed $request ): mixed {
+		unset( $handler );
+		if ( ! $response instanceof WP_Error || ! $request instanceof WP_REST_Request ) {
+			return $response;
+		}
+		if ( 'CLINIC_SCOPE_UNAVAILABLE' !== $response->get_error_code() || ! preg_match( '#^/clinic/v1/doctor/portal/visits/([0-9]+)/handwriting(?:/|$)#', $request->get_route(), $matches ) ) {
+			return $response;
+		}
+		$clinic   = $request->get_header( 'X-CPMS-Clinic-Id' );
+		$location = $request->get_header( 'X-CPMS-Location-Id' );
+		if ( ! is_string( $clinic ) || ! ctype_digit( $clinic ) || ! is_string( $location ) || ! ctype_digit( $location ) ) {
+			return $response;
+		}
+		$clinic_id   = (int) $clinic;
+		$location_id = (int) $location;
+		$user_id     = (int) get_current_user_id();
+		$user        = wp_get_current_user();
+		if ( $clinic_id < 1 || $location_id < 1 || $user_id < 1 || ! in_array( RolesAndCapabilities::ROLE_DOCTOR, (array) $user->roles, true ) || null === $this->memberships->find_active( $clinic_id, $user_id ) ) {
+			return $response;
+		}
+		$eligible = array_map( static fn( array $row ): int => (int) $row['id'], $this->eligible_locations_for_clinic( $clinic_id, $user_id ) );
+		if ( in_array( $location_id, $eligible, true ) ) {
+			return $response;
+		}
+		$this->workspace_handwriting_denial( (int) $matches[1], 'location' );
+		return new WP_Error( 'CLINIC_SCOPE_UNAVAILABLE', $response->get_error_message(), [ 'status' => 403, 'reason' => 'location' ] );
 	}
 
 	/** Rebind every selector to the authorized Visit before calling the shared engine service. */
