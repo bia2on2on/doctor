@@ -1915,8 +1915,16 @@ def prove_workspace_handwriting(page, state, doctor, visit_id, label, mutate):
                     "bubbles": True,
                 })
 
+        def sync_state():
+            value = page.locator('#cpms-hw-sync').get_attribute('data-state')
+            return value if value in ('saved', 'saving', 'dirty', 'offline', 'conflict', 'error') else 'other'
+
+        before_pen = sync_state()
+        rest_before_pen = len(state["rest"])
         pen(0)
+        after_pen = sync_state()
         page.wait_for_selector('#cpms-hw-sync[data-state="saved"]', timeout=20000)
+        after_wait = sync_state()
         base = f"/wp-json/clinic/v1/doctor/portal/visits/{visit_id}/handwriting"
         # Same authenticated browser, but a second tab's revision is applied
         # directly by REST so the first tab exercises the actual conflict path.
@@ -1931,6 +1939,16 @@ def prove_workspace_handwriting(page, state, doctor, visit_id, label, mutate):
             }''', {"url": base, "clinic": doctor["clinic_id"], "location": doctor["location_id"]})
 
         persisted = server_page()
+        strokes = persisted.get("strokes") or []
+        points = strokes[0].get("points") or [] if strokes and isinstance(strokes[0], dict) else []
+        pressure = points[0][2] if points and len(points[0]) > 2 else None
+        put_statuses = [hit["status"] for hit in state["rest"][rest_before_pen:]
+                        if hit["method"] == "PUT" and "/handwriting/pages/" in hit["route"]]
+        info(f"handwriting-pen-diagnostic-{label} before={before_pen} after_pen={after_pen}"
+             f" after_wait={after_wait} strokes={len(strokes)} points={len(points)}"
+             f" pressure={pressure if type(pressure) in (int, float) else 'non-numeric'}"
+             f" pressure_type={type(pressure).__name__} put_statuses={put_statuses[:4]}"
+             f" put_count={len(put_statuses)}")
         if not persisted.get("strokes") or persisted["strokes"][0]["points"][0][2] != .4:
             raise RuntimeError("pen pressure/strokes not persisted")
         page.locator('[data-role="workspace-handwriting-close"]').click()
