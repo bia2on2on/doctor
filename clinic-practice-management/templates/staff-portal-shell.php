@@ -43,7 +43,9 @@ StaffPortalShell::enqueue_for_portal();
 $cpms_user       = wp_get_current_user();
 $cpms_logged_in  = $cpms_user instanceof WP_User && (int) $cpms_user->ID > 0;
 $cpms_modules    = StaffPortalShell::eligible_modules( $cpms_logged_in ? (int) $cpms_user->ID : 0 );
-$cpms_doctor_mod = in_array( StaffPortalShell::MODULE_DOCTOR, array_column( $cpms_modules, 'id' ), true );
+$cpms_module_id  = $cpms_logged_in ? StaffPortalShell::select_module( (int) $cpms_user->ID ) : null;
+$cpms_doctor_mod = StaffPortalShell::MODULE_DOCTOR === $cpms_module_id;
+$cpms_reception_mod = StaffPortalShell::MODULE_RECEPTION === $cpms_module_id;
 
 $cpms_login_name = $cpms_logged_in ? (string) $cpms_user->display_name : '';
 if ( '' === $cpms_login_name && $cpms_logged_in ) {
@@ -73,7 +75,12 @@ if ( $cpms_doctor_mod ) {
     $cpms_scripts_html = (string) ob_get_clean();
 }
 
-$cpms_header_title = $cpms_doctor_mod ? 'امروز پزشک — صف زنده' : 'پورتال کارکنان';
+$cpms_header_title = 'پورتال کارکنان';
+if ( $cpms_doctor_mod ) {
+    $cpms_header_title = 'امروز پزشک — صف زنده';
+} elseif ( $cpms_reception_mod ) {
+    $cpms_header_title = 'پذیرش — نوبت‌های امروز';
+}
 
 // The doctor stylesheet is scoped to these existing classes; carrying them when
 // the doctor module is mounted reuses the delivered design without copying CSS.
@@ -82,6 +89,8 @@ $cpms_body_class = $cpms_doctor_mod ? 'cpms-staff-portal-shell-body cpms-doctor-
 $cpms_shell_user = 'anonymous';
 if ( $cpms_doctor_mod ) {
     $cpms_shell_user = 'doctor';
+} elseif ( $cpms_reception_mod ) {
+    $cpms_shell_user = 'secretary';
 } elseif ( $cpms_logged_in ) {
     $cpms_shell_user = 'non-doctor';
 }
@@ -142,7 +151,16 @@ echo $cpms_styles_html;
         <nav class="cpms-staff-portal-shell__nav" data-role="staff-nav" aria-label="ماژول‌های عملیاتی">
             <ul class="cpms-staff-portal-shell__nav-list">
                 <?php foreach ( $cpms_modules as $cpms_module ) : ?>
-                    <li><a class="cpms-staff-portal-shell__nav-link" data-role="staff-module-link" data-cpms-staff-module="<?php echo esc_attr( $cpms_module['id'] ); ?>" aria-current="page" href="<?php echo esc_url( $cpms_portal_url ); ?>"><?php echo esc_html( $cpms_module['title'] ); ?></a></li>
+                    <?php
+                    // Module-aware href: the doctor link stays the bare canonical
+                    // portal URL (established journey), the reception link selects
+                    // its module explicitly. aria-current marks the ACTIVE module.
+                    $cpms_module_active = $cpms_module['id'] === $cpms_module_id;
+                    $cpms_module_href   = StaffPortalShell::MODULE_DOCTOR === $cpms_module['id']
+                        ? $cpms_portal_url
+                        : add_query_arg( StaffPortalShell::MODULE_PARAM, (string) $cpms_module['id'], $cpms_portal_url );
+                    ?>
+                    <li><a class="cpms-staff-portal-shell__nav-link" data-role="staff-module-link" data-cpms-staff-module="<?php echo esc_attr( $cpms_module['id'] ); ?>"<?php echo $cpms_module_active ? ' aria-current="page"' : ''; ?> href="<?php echo esc_url( $cpms_module_href ); ?>"><?php echo esc_html( $cpms_module['title'] ); ?></a></li>
                 <?php endforeach; ?>
             </ul>
         </nav>
@@ -157,6 +175,15 @@ echo $cpms_styles_html;
     $cpms_staff_embed = true;
     $cpms_is_doctor   = true;
     include StaffPortalShell::module_template_path();
+    ?>
+<?php elseif ( $cpms_reception_mod ) : ?>
+    <?php
+    // Mount the delivered reception module (Phase 11 Slice 1) in embed mode:
+    // this shell owns the document, header and navigation; the module
+    // contributes <main>, its runtime config and its REST/AJAX behaviour, and
+    // closes the shell wrapper exactly like the doctor module.
+    $cpms_staff_embed = true;
+    include StaffPortalShell::reception_module_template_path();
     ?>
 <?php else : ?>
     <main class="cpms-staff-portal-shell__main" role="main" data-role="portal-main">

@@ -254,6 +254,96 @@ final class AppointmentRepository
     }
 
     /**
+     * Reception operational-day booked list (Phase 11 — Staff Portal reception boundary).
+     *
+     * The caller supplies the trusted clinic, the trusted selected Location and
+     * the Location-local operational day. This query does not establish scope
+     * and does not return contact, identity or clinical fields: one bounded row
+     * per booked appointment is enough to identify the patient at reception.
+     *
+     * Booked = the check-in-eligible live statuses (pending/confirmed); rows of
+     * other statuses (cancelled/rescheduled/completed/no_show) are never listed.
+     *
+     * @param int    $clinic_id   Trusted clinic.
+     * @param int    $location_id Trusted selected Location. Non-positive returns none.
+     * @param string $date        Location-local operational day, Y-m-d.
+     * @return list<array<string, mixed>>
+     */
+    public function list_for_reception_operational_day( int $clinic_id, int $location_id, string $date ): array {
+        if ( $clinic_id <= 0 || $location_id <= 0 ) {
+            return [];
+        }
+        if ( ! preg_match( '/^\d{4}-\d{2}-\d{2}$/', $date ) ) {
+            return [];
+        }
+
+        $sql = 'SELECT a.id, a.slot_time, a.status, a.is_walkin_express, a.active_visit_id,'
+            . ' a.patient_id, p.first_name AS patient_first_name, p.last_name AS patient_last_name,'
+            . ' v.id AS visit_id, v.status AS visit_status'
+            . ' FROM ' . $this->db->table( 'cpms_appointments' ) . ' a'
+            . ' INNER JOIN ' . $this->db->table( 'cpms_patients' ) . ' p'
+            . ' ON p.id = a.patient_id AND p.clinic_id = a.clinic_id'
+            . ' LEFT JOIN ' . $this->db->table( 'cpms_visits' ) . ' v'
+            . ' ON v.clinic_id = a.clinic_id'
+            . ' AND v.location_id = a.location_id'
+            . ' AND v.clinician_id = a.clinician_id'
+            . ' AND v.visit_date = a.slot_date'
+            . ' AND ( v.appointment_id = a.id OR v.id = a.active_visit_id )'
+            . ' WHERE a.clinic_id = %d AND a.location_id = %d'
+            . ' AND a.slot_date = %s'
+            . " AND a.status IN ('pending', 'confirmed')"
+            . ' ORDER BY a.slot_time ASC, a.id ASC';
+
+        $rows = $this->db->fetchAll(
+            $sql,
+            [ $clinic_id, $location_id, $date ]
+        );
+
+        return $this->present_reception_operational_day( is_array( $rows ) ? $rows : [] );
+    }
+
+    /**
+     * Collapse the joined day list to one bounded row per booked appointment.
+     *
+     * @param list<array<string, mixed>> $rows Joined appointment rows.
+     * @return list<array<string, mixed>>
+     */
+    private function present_reception_operational_day( array $rows ): array {
+        $chosen = [];
+        foreach ( $rows as $row ) {
+            $id = (int) $row['id'];
+            if ( ! isset( $chosen[ $id ] ) ) {
+                $chosen[ $id ] = $row;
+                continue;
+            }
+            $active_visit_id = (int) ( $row['active_visit_id'] ?? 0 );
+            $visit_id        = (int) ( $row['visit_id'] ?? 0 );
+            $current_visit   = (int) ( $chosen[ $id ]['visit_id'] ?? 0 );
+            if ( $active_visit_id > 0 && $visit_id === $active_visit_id ) {
+                $chosen[ $id ] = $row;
+            } elseif ( $current_visit <= 0 && $visit_id > 0 ) {
+                $chosen[ $id ] = $row;
+            }
+        }
+
+        $presented = [];
+        foreach ( $chosen as $row ) {
+            $visit_status = $row['visit_status'] ?? null;
+            $presented[]  = [
+                'id'           => (int) $row['id'],
+                'patient_id'   => (int) $row['patient_id'],
+                'time'         => substr( (string) $row['slot_time'], 0, 5 ),
+                'patient_name' => trim( (string) ( $row['patient_first_name'] ?? '' ) . ' ' . (string) ( $row['patient_last_name'] ?? '' ) ),
+                'status'       => (string) $row['status'],
+                'visit_status' => is_string( $visit_status ) && '' !== $visit_status ? $visit_status : null,
+                'express'      => 1 === (int) ( $row['is_walkin_express'] ?? 0 ),
+            ];
+        }
+
+        return $presented;
+    }
+
+    /**
      * بررسی تکراری: آیا بیمار همین Slot را (در وضعیت‌های Active) قبلاً رزرو کرده؟
      * (CLINIC_DUPLICATE_APPOINTMENT — بدون Idempotency-Key).
      *

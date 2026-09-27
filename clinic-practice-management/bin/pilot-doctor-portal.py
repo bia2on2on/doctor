@@ -2832,9 +2832,20 @@ def prove_legacy(browser, doctor, vp):
         ctx.close()
 
 
-def _assert_no_doctor_module(page, label):
-    if page.locator("[data-cpms-staff-module]").count() != 0:
-        raise RuntimeError(f"{label} exposes a Staff Portal module")
+def _assert_no_doctor_module(page, label, allow_reception=False):
+    """No DOCTOR module for non-doctors. Phase 11 Slice 1: the same secretary is
+    now legitimately reception-eligible on the canonical staff portal, so the
+    secretary-canonical stage may see exactly the reception module — the doctor
+    module stays forbidden there (legacy boundary: this changes no legacy
+    wp-admin/Doctor Portal semantics)."""
+    modules = page.locator("[data-cpms-staff-module]")
+    ids = [modules.nth(i).get_attribute("data-cpms-staff-module") for i in range(modules.count())]
+    if allow_reception:
+        foreign = [i for i in ids if i != "reception"]
+        if foreign:
+            raise RuntimeError(f"{label} exposes a non-reception module {ids}")
+    elif ids:
+        raise RuntimeError(f"{label} exposes a Staff Portal module {ids}")
     if page.locator("#cpms-doctor-portal-app").count() != 0:
         raise RuntimeError(f"{label} renders the doctor operational module")
     if page.locator('[data-shell-user="doctor"]').count() != 0:
@@ -2875,12 +2886,12 @@ def prove_legacy_not_eligible(browser, vp):
         resp = harness_goto(page, STAFF_URL, wait_until="domcontentloaded")
         if resp is None or resp.status != 200:
             raise RuntimeError(f"secretary canonical status {getattr(resp, 'status', None)}")
-        _assert_no_doctor_module(page, "secretary canonical entry")
+        _assert_no_doctor_module(page, "secretary canonical entry", allow_reception=True)
         ok(
             key,
             "legacy entry grants no redirect and no doctor module to non-eligible actors",
             "anonymous: redirects=0 module=none notice=login; secretary(active membership): redirects=0 "
-            "module=none notice=access-denied; secretary canonical: module=none",
+            "doctor-module=none on legacy; secretary canonical: doctor-module=none reception-module=present",
         )
     except Exception as e:  # noqa: BLE001
         try:

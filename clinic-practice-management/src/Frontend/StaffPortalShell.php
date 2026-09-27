@@ -60,6 +60,24 @@ final class StaffPortalShell {
 	public const MODULE_TEMPLATE_REL = 'templates/doctor-portal-shell.php';
 
 	/**
+	 * Phase 11 Slice 1 — delivered reception operational module (Arrival Board),
+	 * mounted in embed mode inside the same canonical shared Staff Portal shell.
+	 */
+	public const MODULE_RECEPTION = 'reception';
+
+	/**
+	 * Plugin-owned reception module template (embed mode).
+	 */
+	public const RECEPTION_TEMPLATE_REL = 'templates/staff-reception.php';
+
+	/**
+	 * Read-only URL query parameter selecting the mounted module. A selector
+	 * only: it never grants authority, and ineligible values fall back to the
+	 * default eligible module.
+	 */
+	public const MODULE_PARAM = 'cpms-module';
+
+	/**
 	 * Reused doctor stylesheet handle (no duplicated bundle).
 	 */
 	public const DOCTOR_CSS_HANDLE = DoctorPortalShell::CSS_HANDLE;
@@ -70,8 +88,8 @@ final class StaffPortalShell {
 	public const DOCTOR_JS_HANDLE = DoctorPortalShell::JS_HANDLE;
 
 	/**
-	 * The ONLY operational module delivered in this slice. Future modules are
-	 * added only after their own product work; no placeholder is registered.
+	 * The doctor operational module. Future modules are added only after their
+	 * own product work; no placeholder is registered.
 	 */
 	public const MODULE_DOCTOR = 'doctor';
 
@@ -84,6 +102,19 @@ final class StaffPortalShell {
 	public const DOCTOR_MODULE_CAPS = array(
 		RolesAndCapabilities::QUEUE_READ,
 		RolesAndCapabilities::MEDICAL_READ,
+	);
+
+	/**
+	 * Existing capabilities the delivered reception module relies on: queue
+	 * reads for the board plus the established check-in/enqueue arrival
+	 * transitions. No new capability is introduced for reception.
+	 *
+	 * @var list<string>
+	 */
+	public const RECEPTION_MODULE_CAPS = array(
+		RolesAndCapabilities::QUEUE_READ,
+		RolesAndCapabilities::QUEUE_CHECKIN,
+		RolesAndCapabilities::QUEUE_ADVANCE,
 	);
 
 	/**
@@ -210,6 +241,13 @@ final class StaffPortalShell {
 	}
 
 	/**
+	 * Absolute path of the mounted reception module template.
+	 */
+	public static function reception_module_template_path(): string {
+		return self::plugin_dir() . '/' . self::RECEPTION_TEMPLATE_REL;
+	}
+
+	/**
 	 * Suppress the admin bar on the operational surface.
 	 *
 	 * @param bool $show Current admin bar visibility.
@@ -251,7 +289,7 @@ final class StaffPortalShell {
 		if ( ! self::is_portal_request() ) {
 			return;
 		}
-		if ( ! self::doctor_module_eligible( get_current_user_id() ) ) {
+		if ( self::MODULE_DOCTOR !== self::select_module( get_current_user_id() ) ) {
 			return;
 		}
 		self::register_handles();
@@ -274,7 +312,48 @@ final class StaffPortalShell {
 				'id'    => self::MODULE_DOCTOR,
 				'title' => 'امروز پزشک — صف زنده',
 			),
+			array(
+				'id'    => self::MODULE_RECEPTION,
+				'title' => 'پذیرش — نوبت‌های امروز',
+			),
 		);
+	}
+
+	/**
+	 * Read-only view selector from the URL query. Never authoritative: the
+	 * value only picks among modules the actor is already eligible for, and
+	 * anything unknown falls back to the default eligible module.
+	 *
+	 * @return string Requested module id, or '' when none/unknown.
+	 */
+	public static function requested_module(): string {
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only view selector, no state change.
+		$raw = isset( $_GET[ self::MODULE_PARAM ] ) ? sanitize_key( (string) wp_unslash( $_GET[ self::MODULE_PARAM ] ) ) : '';
+		if ( in_array( $raw, array( self::MODULE_DOCTOR, self::MODULE_RECEPTION ), true ) ) {
+			return $raw;
+		}
+		return '';
+	}
+
+	/**
+	 * The module mounted for this request: a validated eligible request, else
+	 * the DEFAULT first eligible module in registered order (doctor first, so
+	 * the established doctor journey is byte-compatible). Null when nothing is
+	 * eligible.
+	 *
+	 * @param int $user_id WordPress user id.
+	 * @return string|null
+	 */
+	public static function select_module( int $user_id ): ?string {
+		$eligible_ids = array_column( self::eligible_modules( $user_id ), 'id' );
+		$requested    = self::requested_module();
+		if ( '' !== $requested && in_array( $requested, $eligible_ids, true ) ) {
+			return $requested;
+		}
+		if ( array() === $eligible_ids ) {
+			return null;
+		}
+		return (string) $eligible_ids[0];
 	}
 
 	/**
@@ -303,6 +382,9 @@ final class StaffPortalShell {
 	public static function module_eligible( string $module_id, int $user_id ): bool {
 		if ( self::MODULE_DOCTOR === $module_id ) {
 			return self::doctor_module_eligible( $user_id );
+		}
+		if ( self::MODULE_RECEPTION === $module_id ) {
+			return self::reception_module_eligible( $user_id );
 		}
 		return false;
 	}
@@ -344,7 +426,7 @@ final class StaffPortalShell {
 
 		$auth = App::authorization_service();
 		foreach ( App::membership_service()->active_clinic_ids_for_user( $user_id ) as $clinic_id ) {
-			if ( self::clinic_grants_all( $auth, $user_id, (int) $clinic_id ) ) {
+			if ( self::clinic_grants_all( $auth, $user_id, (int) $clinic_id, self::DOCTOR_MODULE_CAPS ) ) {
 				return true;
 			}
 		}
@@ -352,17 +434,57 @@ final class StaffPortalShell {
 	}
 
 	/**
-	 * Whether ONE Clinic grants every doctor module capability to the actor.
+	 * Reception module VISIBILITY (Phase 11 Slice 1). Mirrors the delivered
+	 * reception REST boundary and never widens it. This strict contract lives
+	 * ONLY here and on the new portal boundary; legacy wp-admin Secretary
+	 * Queue semantics are untouched.
+	 *
+	 * ROLE, CAPABILITY and CLINIC MEMBERSHIP stay separate:
+	 *   - WP role: the reception module is secretary-specific.
+	 *   - membership: an ACTIVE Clinic membership is required.
+	 *   - capability: ALL module capabilities must be effective inside the SAME
+	 *     Clinic via AuthorizationService (explicit deny, then grant, then preset).
+	 *   - Location: not decided here; the module keeps the 0/1/N policy per call.
+	 *
+	 * @param int $user_id WordPress user id.
+	 */
+	public static function reception_module_eligible( int $user_id ): bool {
+		if ( $user_id <= 0 ) {
+			return false;
+		}
+		$user = get_userdata( $user_id );
+		if ( false === $user || ! $user->exists() ) {
+			return false;
+		}
+		if ( ! in_array( RolesAndCapabilities::ROLE_SECRETARY, (array) $user->roles, true ) ) {
+			return false;
+		}
+		if ( ! user_can( $user_id, 'read' ) ) {
+			return false;
+		}
+
+		$auth = App::authorization_service();
+		foreach ( App::membership_service()->active_clinic_ids_for_user( $user_id ) as $clinic_id ) {
+			if ( self::clinic_grants_all( $auth, $user_id, (int) $clinic_id, self::RECEPTION_MODULE_CAPS ) ) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Whether ONE Clinic grants every module capability to the actor.
 	 *
 	 * @param \ClinicCore\Application\Authorization\AuthorizationService $auth      Authorization service.
 	 * @param int                                                        $user_id   WordPress user id.
 	 * @param int                                                        $clinic_id Trusted durable Clinic id.
+	 * @param list<string>                                              $caps      Module capabilities to require.
 	 */
-	private static function clinic_grants_all( $auth, int $user_id, int $clinic_id ): bool {
+	private static function clinic_grants_all( $auth, int $user_id, int $clinic_id, array $caps ): bool {
 		if ( $clinic_id <= 0 ) {
 			return false;
 		}
-		foreach ( self::DOCTOR_MODULE_CAPS as $cap ) {
+		foreach ( $caps as $cap ) {
 			if ( ! $auth->can( $user_id, $clinic_id, $cap ) ) {
 				return false;
 			}

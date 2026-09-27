@@ -125,6 +125,7 @@ use ClinicCore\Rest\NotificationsController;
 use ClinicCore\Rest\OtpController;
 use ClinicCore\Rest\PatientController;
 use ClinicCore\Rest\QueueController;
+use ClinicCore\Rest\ReceptionPortalController;
 use ClinicCore\Rest\ReportsController;
 use ClinicCore\Rest\RestClinicContext;
 use ClinicCore\Rest\ScheduleController;
@@ -231,6 +232,8 @@ final class App
             (new NotificationsController(self::notificationService()))->register_routes();
             (new ReportsController(self::reportService(), self::exportService()))->register_routes();
             ( new DoctorPortalController( new \ClinicCore\Infrastructure\Repository\MembershipRepository( self::db() ) ) )->register_routes();
+            // Phase 11 Slice 1 — Staff Portal reception boundary (stricter contract lives there).
+            ( new ReceptionPortalController( new \ClinicCore\Infrastructure\Repository\MembershipRepository( self::db() ), new \ClinicCore\Infrastructure\Repository\AppointmentRepository( self::db() ) ) )->register_routes();
             // Endpointهای فازهای بعد (F8+) — مطابق API Contract.
         });
 
