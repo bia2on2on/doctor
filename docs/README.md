@@ -2,6 +2,8 @@
 
 مستندات معماری و نیازمندی‌ها — نسخه 2.0 — 2026-09-08
 
+> **Current checkpoint (2026-09-27):** Phase 10 remains FORMALLY CLOSED (BOUNDED); **Phase 11 — Clinic Reception = STARTED / IN PROGRESS — NOT CLOSED**. Slice 1 Staff Portal Reception Arrival Board delivered via merged PR #133 (`a9ca3e4f4832e3ad67d2844314fa92169b3a438a`); latest migration `2026_09_26_0023_handwriting_prescription_paper.php`. See the [bounded post-merge checkpoint](project-current-state.md#phase11-slice1). Dated checkpoint notices below are historical, not current-main claims.
+
 > # 🔴 مرجع فازبندی اجرایی
 >
 > ## **Owner-approved Phase 0..20 Roadmap = authoritative execution roadmap.**
@@ -62,6 +64,7 @@
 | [`drift-register.md`](drift-register.md) | تعارض اسناد با معماری هدف + فاز مالک هر مورد |
 | [`architecture/phase2-tenant-context-remediation-design.md`](architecture/phase2-tenant-context-remediation-design.md) | **🔴 APPROVED DESIGN DIRECTION — NOT YET IMPLEMENTED** — طراحی ترمیم Tenant Context در Jobهای پس‌زمینه / timezone عملیاتیِ Location / پیکربندی SMS per-Clinic (**شامل credentialِ sealed**) / انتساب tenant در لاگ عملیاتی / طبقه‌بندیِ **T/S/W** برای **۱۵ نوعِ واقعیِ ثبت‌شده** (§A-3) + **۶ سوالِ طراحیِ پیش از هر migration آینده** (بدونِ رزروِ شماره) + مشخصاتِ **۱۴ تستِ RED ‏(RT-1..RT-14)**. **بازبینیِ مستقلِ معماری 2026-09-12 → حکمِ مالک `B`؛ اصلاحاتِ C-1..C-9 اعمال شد** (**فقط طراحی — هیچ پیاده‌سازی/تستی انجام نشده**) |
 | [`agent-guide.md`](agent-guide.md) | راهنمای عملیاتی ایجنت‌ها + قواعد الزامی |
+| [`governance/engineering-tooling.md`](governance/engineering-tooling.md) | قرارداد واحد و authoritative ابزارها/Skills، مرز نصب و وابستگی، GitHub Connectivity / Action Window و بازیابی |
 
 ---
 
