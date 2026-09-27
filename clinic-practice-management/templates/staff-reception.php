@@ -9,6 +9,14 @@
  * read-only queue status board (waiting / called / in_consultation / skipped)
  * reflecting the EXISTING doctor call/start/recall/skip actions.
  *
+ * Phase 11 Slice 2 adds a read-only Clinic patient search panel: it calls the
+ * reception search boundary (a thin adapter over the ESTABLISHED
+ * PatientService::search contract), renders the bounded search presentation
+ * (masked national ID) and lets the secretary mark ONE result as selected.
+ * The selection is presentation-only: it is never posted anywhere, creates no
+ * authority, and is not coupled to the arrival action. Location never filters
+ * this Clinic-scoped search.
+ *
  * Embed contract (same as the doctor module): the shell owns the document,
  * header and navigation; this module contributes its <main>, ONE inline style
  * block, ONE runtime config JSON and ONE inline script, and closes with
@@ -81,6 +89,21 @@ $cpms_reception_cfg = [
 .cpms-staff-reception .cpms-sr-status--ok { color: var(--cpms-primary); }
 .cpms-staff-reception .cpms-sr-empty { color: var(--cpms-muted); padding: 10px 4px; }
 .cpms-staff-reception .cpms-sr-live { min-height: 1.4em; }
+.cpms-staff-reception .cpms-sr-search h2 { margin: 0 0 8px; font-size: 1rem; }
+.cpms-staff-reception .cpms-sr-search-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; }
+.cpms-staff-reception .cpms-sr-search-field { display: flex; flex-direction: column; gap: 4px; flex: 1 1 260px; min-width: 0; font-size: 0.86rem; }
+.cpms-staff-reception .cpms-sr-search-input { min-height: 40px; width: 100%; box-sizing: border-box; padding: 6px 10px; border: 1px solid var(--cpms-border); border-radius: 8px; background: #fff; font-size: 0.95rem; }
+.cpms-staff-reception .cpms-sr-search-input:focus-visible, .cpms-staff-reception .cpms-sr-search-result:focus-visible { outline: 2px solid var(--cpms-primary); outline-offset: 1px; }
+.cpms-staff-reception .cpms-sr-search-state { margin: 8px 0 0; font-size: 0.86rem; color: var(--cpms-muted); min-height: 1.3em; overflow-wrap: anywhere; }
+.cpms-staff-reception .cpms-sr-search-state--error { color: #a12828; }
+.cpms-staff-reception .cpms-sr-search-results { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; max-height: 360px; overflow-y: auto; }
+.cpms-staff-reception .cpms-sr-search-result { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; width: 100%; min-height: 44px; box-sizing: border-box; padding: 8px 10px; border: 1px solid var(--cpms-border); border-radius: 8px; background: #fff; color: inherit; font: inherit; font-size: 0.9rem; text-align: right; cursor: pointer; }
+.cpms-staff-reception .cpms-sr-search-result[aria-pressed="true"] { border-color: var(--cpms-primary); background: #eef7f6; box-shadow: inset 3px 0 0 var(--cpms-primary); }
+.cpms-staff-reception .cpms-sr-search-meta { color: var(--cpms-muted); font-size: 0.84rem; overflow-wrap: anywhere; }
+.cpms-staff-reception .cpms-sr-search-meta bdi { unicode-bidi: isolate; }
+.cpms-staff-reception .cpms-sr-search-selected { margin: 10px 0 0; padding: 10px; border: 1px solid var(--cpms-primary); border-radius: 8px; background: #f3faf9; display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; justify-content: space-between; }
+.cpms-staff-reception .cpms-sr-search-selected-body { min-width: 0; overflow-wrap: anywhere; }
+.cpms-staff-reception .cpms-sr-search-selected-note { display: block; font-size: 0.8rem; color: var(--cpms-muted); }
 @media (max-width: 768px) {
     .cpms-staff-reception .cpms-sr-top { flex-direction: column; align-items: stretch; }
     .cpms-staff-reception .cpms-sr-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -105,6 +128,26 @@ $cpms_reception_cfg = [
     </section>
 
     <section class="cpms-sr-panel cpms-sr-status cpms-sr-live" data-role="sr-status" role="status" aria-live="polite">در حال بارگذاری…</section>
+
+    <section class="cpms-sr-panel cpms-sr-search" data-role="sr-search" aria-labelledby="cpms-sr-search-title">
+        <h2 id="cpms-sr-search-title">جستجوی بیمار در کلینیک</h2>
+        <form class="cpms-sr-search-form" data-role="sr-search-form" role="search" novalidate>
+            <label class="cpms-sr-search-field" for="cpms-sr-search-input">
+                <span>نام، نام خانوادگی، موبایل، کد ملی یا شمارهٔ پرونده</span>
+                <input type="search" id="cpms-sr-search-input" class="cpms-sr-search-input" data-role="sr-search-input" maxlength="64" autocomplete="off" spellcheck="false" enterkeyhint="search" aria-describedby="cpms-sr-search-state">
+            </label>
+            <button type="submit" class="cpms-sr-btn cpms-sr-btn--ghost" data-role="sr-search-submit">جستجو</button>
+        </form>
+        <p class="cpms-sr-search-state" id="cpms-sr-search-state" data-role="sr-search-state" role="status" aria-live="polite">برای جستجو دست‌کم ۲ نویسه وارد کنید.</p>
+        <ul class="cpms-sr-search-results" data-role="sr-search-results" aria-label="نتایج جستجوی بیمار"></ul>
+        <div class="cpms-sr-search-selected" data-role="sr-search-selected" hidden>
+            <div class="cpms-sr-search-selected-body">
+                <strong>بیمار انتخاب‌شده:</strong> <span data-role="sr-search-selected-text"></span>
+                <span class="cpms-sr-search-selected-note">فقط برای شناسایی — هیچ تغییری در پرونده یا نوبت ایجاد نمی‌شود.</span>
+            </div>
+            <button type="button" class="cpms-sr-btn cpms-sr-btn--ghost" data-role="sr-search-clear">لغو انتخاب</button>
+        </div>
+    </section>
 
     <section class="cpms-sr-board" data-role="sr-board">
         <div class="cpms-sr-stats" data-role="sr-stats" hidden>
@@ -503,6 +546,202 @@ $cpms_reception_cfg = [
             loadBoard(false);
         }
     });
+
+    // ---- Phase 11 Slice 2: read-only Clinic patient search ----
+    // Calls the reception adapter over the ESTABLISHED patient search contract
+    // (min 2 chars, server-bounded limit, masked national ID). Debounced; a
+    // stale response never overwrites a newer query. The selected result is a
+    // local, presentation-only copy of the bounded search row: it is never
+    // posted anywhere and is not coupled to the arrival action.
+    var SEARCH_MIN = 2;
+    var SEARCH_DEBOUNCE_MS = 350;
+    var SEARCH_LIMIT_HINT = 25;
+    var SEARCH_IDLE = 'برای جستجو دست‌کم ۲ نویسه وارد کنید.';
+    var search = { timer: null, seq: 0, lastQuery: '', results: [], selected: null };
+
+    function faDigits(value) {
+        return String(value).replace(/[0-9]/g, function (d) { return '۰۱۲۳۴۵۶۷۸۹'.charAt(Number(d)); });
+    }
+
+    function setSearchState(text, isError) {
+        var node = el('sr-search-state');
+        if (!node) {
+            return;
+        }
+        node.textContent = text || '';
+        node.className = 'cpms-sr-search-state' + (isError ? ' cpms-sr-search-state--error' : '');
+    }
+
+    function patientLabel(p) {
+        var name = String((p.first_name || '') + ' ' + (p.last_name || '')).trim();
+        return name || ('بیمار ' + p.id);
+    }
+
+    function patientMeta(p) {
+        var meta = [];
+        if (p.mrn) {
+            meta.push('پرونده: <bdi>' + escapeHtml(p.mrn) + '</bdi>');
+        }
+        if (p.mobile) {
+            meta.push('موبایل: <bdi>' + escapeHtml(p.mobile) + '</bdi>');
+        }
+        if (p.national_id) {
+            meta.push('کد ملی: <bdi>' + escapeHtml(p.national_id) + '</bdi>');
+        }
+        return meta.join(' · ');
+    }
+
+    function syncSearchPressed() {
+        var buttons = document.querySelectorAll('[data-role="sr-search-result"]');
+        var selectedId = search.selected ? String(search.selected.id) : '';
+        for (var i = 0; i < buttons.length; i += 1) {
+            buttons[i].setAttribute('aria-pressed', buttons[i].getAttribute('data-patient-id') === selectedId ? 'true' : 'false');
+        }
+    }
+
+    function renderSearchResults() {
+        var list = el('sr-search-results');
+        if (!list) {
+            return;
+        }
+        var html = '';
+        for (var i = 0; i < search.results.length; i += 1) {
+            var p = search.results[i];
+            html += '<li><button type="button" class="cpms-sr-search-result" data-role="sr-search-result" data-patient-id="' + escapeHtml(p.id) + '" aria-pressed="false">' +
+                '<span class="cpms-sr-name" data-role="sr-search-result-name">' + escapeHtml(patientLabel(p)) + '</span>' +
+                '<span class="cpms-sr-search-meta">' + patientMeta(p) + '</span>' +
+                '</button></li>';
+        }
+        list.innerHTML = html;
+        syncSearchPressed();
+    }
+
+    function renderSelected() {
+        var box = el('sr-search-selected');
+        var text = el('sr-search-selected-text');
+        if (!box || !text) {
+            return;
+        }
+        if (!search.selected) {
+            text.innerHTML = '';
+            box.hidden = true;
+            return;
+        }
+        text.innerHTML = '<span class="cpms-sr-name">' + escapeHtml(patientLabel(search.selected)) + '</span> <span class="cpms-sr-search-meta">' + patientMeta(search.selected) + '</span>';
+        box.hidden = false;
+    }
+
+    function runSearch(force) {
+        var input = el('sr-search-input');
+        var q = input ? String(input.value || '').trim() : '';
+        if (search.timer) {
+            window.clearTimeout(search.timer);
+            search.timer = null;
+        }
+        if (q.length < SEARCH_MIN) {
+            search.seq += 1;
+            search.lastQuery = '';
+            search.results = [];
+            renderSearchResults();
+            setSearchState(SEARCH_IDLE, false);
+            return;
+        }
+        if (!force && q === search.lastQuery) {
+            return;
+        }
+        search.lastQuery = q;
+        search.seq += 1;
+        var seq = search.seq;
+        setSearchState('در حال جستجو…', false);
+        var path = '/staff/portal/reception/patients/search' + (CONFIG.restRoot.indexOf('?') === -1 ? '?' : '&') + 'q=' + encodeURIComponent(q);
+        api(path).then(function (result) {
+            if (seq !== search.seq) {
+                return;
+            }
+            if (!result.ok) {
+                search.lastQuery = '';
+                search.results = [];
+                renderSearchResults();
+                if (result.status === 403) {
+                    setSearchState('دسترسی جستجوی بیمار برای شما فعال نیست.', true);
+                } else {
+                    setSearchState('جستجو انجام نشد: ' + errorMessageOf(result.body, ''), true);
+                }
+                return;
+            }
+            var rows = (result.body && Array.isArray(result.body.data)) ? result.body.data : [];
+            search.results = rows;
+            renderSearchResults();
+            if (rows.length === 0) {
+                setSearchState('بیماری با این مشخصات در این کلینیک یافت نشد.', false);
+            } else if (rows.length >= SEARCH_LIMIT_HINT) {
+                setSearchState(faDigits(rows.length) + ' نتیجهٔ نخست نمایش داده شد؛ برای یافتن دقیق‌تر، عبارت کامل‌تری وارد کنید.', false);
+            } else {
+                setSearchState(faDigits(rows.length) + ' بیمار یافت شد. برای شناسایی، روی بیمار موردنظر بزنید.', false);
+            }
+        }).catch(function () {
+            if (seq !== search.seq) {
+                return;
+            }
+            search.lastQuery = '';
+            setSearchState('خطای شبکه هنگام جستجو.', true);
+        });
+    }
+
+    function selectSearchResult(button) {
+        var id = String(button.getAttribute('data-patient-id') || '');
+        for (var i = 0; i < search.results.length; i += 1) {
+            if (String(search.results[i].id) === id) {
+                search.selected = search.results[i];
+                break;
+            }
+        }
+        syncSearchPressed();
+        renderSelected();
+    }
+
+    (function bindSearch() {
+        var panel = el('sr-search');
+        var form = el('sr-search-form');
+        var input = el('sr-search-input');
+        if (!panel || !form || !input) {
+            return;
+        }
+        form.addEventListener('submit', function (event) {
+            event.preventDefault();
+            runSearch(true);
+        });
+        input.addEventListener('input', function () {
+            if (search.timer) {
+                window.clearTimeout(search.timer);
+            }
+            if (String(input.value || '').trim().length < SEARCH_MIN) {
+                runSearch(false);
+                return;
+            }
+            search.timer = window.setTimeout(function () {
+                search.timer = null;
+                runSearch(false);
+            }, SEARCH_DEBOUNCE_MS);
+        });
+        panel.addEventListener('click', function (event) {
+            var target = event.target;
+            if (!target || !target.closest) {
+                return;
+            }
+            var result = target.closest('[data-role="sr-search-result"]');
+            if (result) {
+                selectSearchResult(result);
+                return;
+            }
+            if (target.closest('[data-role="sr-search-clear"]')) {
+                search.selected = null;
+                syncSearchPressed();
+                renderSelected();
+                input.focus();
+            }
+        });
+    }());
 
     function poll() {
         loadBoard(true).then(function () {

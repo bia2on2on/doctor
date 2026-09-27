@@ -91,6 +91,8 @@ PUB = {
     "today_tehran": _pub[7],
     "today_tokyo": _pub[8],
 }
+_srch = parts("RECEPTION_SEARCH", 3)
+SEARCH = {"probe": int(_srch[0]), "foreign": int(_srch[1]), "nid_last4": _srch[2]}
 
 
 def page_hint(page):
@@ -685,6 +687,175 @@ def run_queue_states_journey(browser, vp):
         ctx.close()
 
 
+SEARCH_ROUTE = "/staff/portal/reception/patients/search"
+
+
+def search_calls(state):
+    return [r for r in state["rest"] if r["route"].endswith(SEARCH_ROUTE)]
+
+
+def search_result_ids(page):
+    items = page.locator('[data-role="sr-search-result"]')
+    return [int(items.nth(i).get_attribute("data-patient-id") or 0) for i in range(items.count())]
+
+
+def wait_search_state(page, needle, timeout=15000):
+    page.wait_for_function(
+        """(needle) => { const n = document.querySelector('[data-role="sr-search-state"]'); return !!n && (n.textContent || '').indexOf(needle) !== -1; }""",
+        arg=needle,
+        timeout=timeout,
+    )
+
+
+def assert_no_horizontal_overflow(page, label):
+    over = page.evaluate(
+        "() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - document.documentElement.clientWidth"
+    )
+    if over > 1:
+        raise RuntimeError(f"{label} horizontal overflow {over}px")
+
+
+def run_search_journey(browser, vp):
+    """Phase 11 Slice 2 — read-only Clinic patient search inside Reception.
+    Idle/too-short, debounced search, masked national ID, Clinic isolation,
+    Location-neutral results, read-only selection (no write traffic, no
+    action controls), no-results state, no overflow, board still intact."""
+    key = f"reception-search-{vp['vp']}"
+    stage = "login"
+    ctx, page, state = new_page(browser, vp)
+    try:
+        login(page, SECRETARY)
+        stage = "reception-entry"
+        resp = harness_goto(page, RECEPTION_URL, wait_until="domcontentloaded")
+        if resp is None or resp.status != 200:
+            raise RuntimeError(f"reception entry status {getattr(resp, 'status', None)}")
+        page.wait_for_selector('[data-role="reception-app"]', state="attached", timeout=15000)
+        assert_reception_shell(page)
+        page.wait_for_selector('[data-role="sr-location-select"]', state="visible", timeout=15000)
+        select_location(page, PUB["loc_tehran"])
+        wait_rows_count(page, 4)
+        if not (page.locator('[data-role="sr-clinic"]').inner_text() or "").strip():
+            raise RuntimeError("trusted Clinic context chip must stay visible")
+
+        stage = "idle"
+        search_input = page.locator('[data-role="sr-search-input"]')
+        if not search_input.is_visible():
+            raise RuntimeError("search input must be visible inside Reception")
+        if page.locator('[data-role="sr-search"] label[for="cpms-sr-search-input"]').count() != 1:
+            raise RuntimeError("search input must carry a visible Persian label")
+        wait_search_state(page, "دست‌کم ۲")
+        search_input.fill("P")
+        page.wait_for_timeout(900)
+        if search_calls(state):
+            raise RuntimeError("a one-character query must not hit the server")
+        wait_search_state(page, "دست‌کم ۲")
+        assert_no_horizontal_overflow(page, "idle")
+        shot(page, f"reception-{vp['vp']}-search-idle")
+
+        stage = "results"
+        mark = nav_mark(page)
+        search_input.fill("")
+        search_input.type("Probe", delay=60)
+        wait_search_state(page, "یافت شد")
+        calls = search_calls(state)
+        if not calls or len(calls) > 2:
+            raise RuntimeError(f"debounced typing must issue 1..2 search calls, got {len(calls)}")
+        if any(c["method"] != "GET" or c["status"] != 200 for c in calls):
+            raise RuntimeError(f"search calls must be successful GETs: {calls}")
+        ids = search_result_ids(page)
+        if ids != [SEARCH["probe"]]:
+            raise RuntimeError(f"search must return exactly the trusted-Clinic probe, got {ids}")
+        if SEARCH["foreign"] in ids:
+            raise RuntimeError("foreign-Clinic patient leaked into Reception search")
+        result_text = page.locator('[data-role="sr-search-result"]').first.inner_text() or ""
+        if "***" + SEARCH["nid_last4"] not in result_text:
+            raise RuntimeError("national ID must render in the established masked form")
+        assert_no_horizontal_overflow(page, "results")
+        shot(page, f"reception-{vp['vp']}-search-results")
+
+        stage = "selection"
+        board_before = page.locator('[data-role="sr-appointments-body"]').inner_text() or ""
+        writes_before = [r for r in state["rest"] if r["method"] != "GET"]
+        page.locator(f'[data-role="sr-search-result"][data-patient-id="{SEARCH["probe"]}"]').click()
+        page.wait_for_selector('[data-role="sr-search-selected"]', state="visible", timeout=5000)
+        if page.locator('[data-role="sr-search-result"][aria-pressed="true"]').count() != 1:
+            raise RuntimeError("exactly one result must be marked selected")
+        selected = page.locator('[data-role="sr-search-selected"]')
+        if "***" + SEARCH["nid_last4"] not in (selected.inner_text() or ""):
+            raise RuntimeError("selected state must keep the masked national ID")
+        buttons = selected.locator("button")
+        roles = [buttons.nth(i).get_attribute("data-role") for i in range(buttons.count())]
+        if roles != ["sr-search-clear"]:
+            raise RuntimeError(f"selected state must expose no action besides clearing, got {roles}")
+        if page.locator('[data-role="sr-search"] [data-role="sr-arrive"], [data-role="sr-search"] [data-role="sr-recover"], [data-role="sr-search"] a[href]').count() != 0:
+            raise RuntimeError("search panel must not expose arrival/navigation actions")
+        page.wait_for_timeout(600)
+        writes_after = [r for r in state["rest"] if r["method"] != "GET"]
+        if len(writes_after) != len(writes_before):
+            raise RuntimeError("selecting a search result must not issue any write request")
+        board_after = page.locator('[data-role="sr-appointments-body"]').inner_text() or ""
+        if board_before != board_after:
+            raise RuntimeError("selecting a search result must not change the Arrival Board")
+        assert_no_horizontal_overflow(page, "selected")
+        shot(page, f"reception-{vp['vp']}-search-selected")
+
+        stage = "location-neutral"
+        select_location(page, PUB["loc_tokyo"])
+        wait_rows_count(page, 0)
+        with page.expect_response(lambda r: SEARCH_ROUTE in r.url, timeout=15000) as resp_info:
+            page.locator('[data-role="sr-search-submit"]').click()
+        if resp_info.value.status != 200:
+            raise RuntimeError(f"search from the other Location answered {resp_info.value.status}")
+        wait_search_state(page, "یافت شد")
+        if search_result_ids(page) != [SEARCH["probe"]]:
+            raise RuntimeError("Location selection must not change the Clinic search result")
+        if not page.locator('[data-role="sr-search-selected"]').is_visible():
+            raise RuntimeError("the read-only selection must survive a Location switch")
+        select_location(page, PUB["loc_tehran"])
+        wait_rows_count(page, 4)
+
+        stage = "no-results"
+        search_input.fill("zzqx-no-such-patient")
+        wait_search_state(page, "یافت نشد")
+        if page.locator('[data-role="sr-search-result"]').count() != 0:
+            raise RuntimeError("no-results state must render no result rows")
+        assert_no_horizontal_overflow(page, "no-results")
+        shot(page, f"reception-{vp['vp']}-search-no-results")
+
+        stage = "clear"
+        page.locator('[data-role="sr-search-clear"]').click()
+        page.wait_for_selector('[data-role="sr-search-selected"]', state="hidden", timeout=5000)
+
+        rest_delta = assert_no_product_reload(page, mark, "search")
+        if any(r["method"] != "GET" for r in state["rest"]):
+            raise RuntimeError("the search journey must be read-only (GET only)")
+        assert_authority_headers(state, PUB["clinic"], {PUB["loc_tehran"], PUB["loc_tokyo"]})
+        assert_hygiene(state, key)
+        ok(
+            key,
+            "reception clinic patient search is bounded, masked, Location-neutral and read-only",
+            f"vp={vp['vp']} results=1 foreign=0 masked=1 selected=1 writes=0 search_calls={len(search_calls(state))} rest={rest_delta} reloaded=0 overflow=0",
+        )
+    except Exception as e:
+        try:
+            dump = {
+                "search_state": (page.locator('[data-role="sr-search-state"]').inner_text() or "")[:120],
+                "results": page.locator('[data-role="sr-search-result"]').count(),
+                "rest_tail": [f"{r['method']} {r['route']}={r['status']}" for r in state["rest"][-6:]],
+            }
+            info(f"fail-dump {vp['vp']} stage={stage} {dump}")
+        except Exception:
+            pass
+        try:
+            shot(page, f"reception-FAIL-{key}-{stage}")
+        except Exception:
+            pass
+        fail(key, vp["vp"], f"{e} ({page_hint(page)})")
+        raise
+    finally:
+        ctx.close()
+
+
 def main():
     if not RECEPTION_URL or not STAFF_URL:
         raise SystemExit("RECEPTION_URL / STAFF_PORTAL_URL must be set by the fixture")
@@ -709,6 +880,13 @@ def main():
             run_queue_states_journey(browser, VIEWPORTS[2])
         except Exception:
             hard_fail = True
+        # Phase 11 Slice 2 — read-only Clinic patient search at all widths
+        # (after the Slice 1 journeys, which stay unchanged).
+        for vp in VIEWPORTS:
+            try:
+                run_search_journey(browser, vp)
+            except Exception:
+                hard_fail = True
         browser.close()
     print("---")
     print(f"SUMMARY pass={sum(1 for r in results if r['status'] == 'PASS')} fail={len(failures)}")

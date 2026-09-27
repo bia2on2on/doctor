@@ -162,6 +162,30 @@ foreach (['a', 'b', 'c', 'd'] as $tag) {
     );
 }
 
+// Phase 11 Slice 2 — read-only Clinic patient search proof. One UNBOOKED
+// patient of this Clinic with a national ID (masked presentation proof) and a
+// same-name decoy in ANOTHER Clinic of the same Organization (Clinic isolation
+// proof; dormant Organization patient identity is not touched).
+$probeNid = sprintf('%010d', hexdec(substr($uniq, 0, 7)) % 10000000000);
+$probeId = rp_insert(
+    $wpdb,
+    'INSERT INTO ' . $db->table('cpms_patients') . ' (clinic_id, mrn, first_name, last_name, mobile, national_id, status, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, %s, %s, %s, %s)',
+    [$clinicId, 'MR-RP-PROBE-' . $uniq, 'Search', 'Probe', '0912' . sprintf('%06d', hexdec(substr($uniq, 0, 6)) % 1000000) . '5', $probeNid, 'active', $now, $now],
+    'search probe patient'
+);
+$foreignClinicId = rp_insert(
+    $wpdb,
+    'INSERT INTO ' . $db->table('cpms_clinics') . ' (name, slug, timezone, organization_id, address, phone, created_at, updated_at) VALUES (%s, %s, %s, %d, NULL, NULL, %s, %s)',
+    ['Synthetic Foreign Clinic', 'rp-foreign-' . $uniq, 'Asia/Tehran', $orgId, $now, $now],
+    'foreign clinic'
+);
+$foreignProbeId = rp_insert(
+    $wpdb,
+    'INSERT INTO ' . $db->table('cpms_patients') . ' (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, %s, %s, %s)',
+    [$foreignClinicId, 'MR-RP-FOREIGN-' . $uniq, 'Search', 'Probe', '0935' . sprintf('%06d', hexdec(substr($uniq, 0, 6)) % 1000000) . '9', 'active', $now, $now],
+    'foreign search probe patient'
+);
+
 // Tehran Location: exactly four of TODAY's booked rows (first is express) —
 // one per real-browser journey (three viewport arrivals + one partial-arrival
 // recovery journey), so each journey performs its OWN arrival on its OWN row.
@@ -246,9 +270,15 @@ file_put_contents(
         $todayTehran,
         $todayTokyo,
     ]) . "\n"
+    . 'RECEPTION_SEARCH=' . implode('|', [
+        (string) $probeId,
+        (string) $foreignProbeId,
+        substr($probeNid, -4),
+    ]) . "\n"
 );
 
 echo 'fixture: reception clinic=' . $clinicId
     . ' loc_tehran=' . $locTehran . ' loc_tokyo=' . $locTokyo
     . ' appts=' . $apptExpress . ',' . $apptPlain . ',' . $apptThird . ',' . $apptPartial
-    . ' today_tehran=' . $todayTehran . ' today_tokyo=' . $todayTokyo . "\n";
+    . ' today_tehran=' . $todayTehran . ' today_tokyo=' . $todayTokyo
+    . ' search_probe=' . $probeId . ' foreign_probe=' . $foreignProbeId . "\n";

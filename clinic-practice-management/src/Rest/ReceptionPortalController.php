@@ -30,6 +30,15 @@
  *   - operational "today" comes from the selected Location IANA timezone via
  *     the established VisitService operational-day contract.
  *
+ * Phase 11 Slice 2 — Clinic patient search (read-only selection): the
+ * reception search route is a thin adapter over the ESTABLISHED
+ * PatientService::search() (→ PatientRepository::search() + the bounded
+ * searchView presentation with masked national ID). It adds only the strict
+ * reception boundary (secretary role + ACTIVE membership + clinic-scoped
+ * cpms_patient_read) in front of that contract. Patient identity is
+ * Clinic-scoped: the reception Location selection is deliberately NOT a
+ * filter, and no patient query, service, role, capability or schema is added.
+ *
  * @package ClinicCore
  */
 
@@ -39,6 +48,7 @@ namespace ClinicCore\Rest;
 
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Domain\Booking\BookingException;
 use ClinicCore\Domain\Visits\VisitException;
 use ClinicCore\Infrastructure\Repository\AppointmentRepository;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
@@ -48,7 +58,8 @@ use WP_REST_Response;
 use WP_REST_Server;
 
 /**
- * Staff Portal reception boundary — context, board (read-only) and arrival.
+ * Staff Portal reception boundary — context, board (read-only), arrival and
+ * read-only Clinic patient search.
  */
 final class ReceptionPortalController extends RestBase {
 
@@ -82,6 +93,29 @@ final class ReceptionPortalController extends RestBase {
 					'methods'             => WP_REST_Server::READABLE,
 					'callback'            => fn( WP_REST_Request $r ) => $this->board( $r ),
 					'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_reception( $r, [ RolesAndCapabilities::QUEUE_READ ] ),
+				],
+			]
+		);
+
+		register_rest_route(
+			self::NS,
+			'/staff/portal/reception/patients/search',
+			[
+				[
+					'methods'             => WP_REST_Server::READABLE,
+					'callback'            => fn( WP_REST_Request $r ) => $this->patient_search( $r ),
+					'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_reception( $r, [ RolesAndCapabilities::PATIENT_READ ] ),
+					'args'                => [
+						'q'     => [
+							'required' => true,
+							'type'     => 'string',
+						],
+						'limit' => [
+							'required' => false,
+							'type'     => 'integer',
+							'default'  => 25,
+						],
+					],
 				],
 			]
 		);
@@ -146,6 +180,28 @@ final class ReceptionPortalController extends RestBase {
 		}
 
 		return true;
+	}
+
+	/**
+	 * Reception Clinic patient search (read-only): delegates to the ESTABLISHED
+	 * PatientService::search() contract — trimmed query, minimum 2 characters
+	 * (CLINIC_VALIDATION_FAILED otherwise), limit clamped by the service, trusted
+	 * Clinic from App::scope(), active patients only, bounded searchView with the
+	 * masked national ID. The Location selector is intentionally ignored here:
+	 * patient identity is Clinic-scoped and Location never filters this search.
+	 * Nothing is written; a returned patient id stays a selector only.
+	 */
+	private function patient_search( WP_REST_Request $r ): WP_REST_Response|WP_Error {
+		try {
+			return $this->success(
+				App::patientService()->search(
+					(string) $r->get_param( 'q' ),
+					(int) $r->get_param( 'limit' )
+				)
+			);
+		} catch ( BookingException $e ) {
+			return $this->error( $e->errorCode, $e->httpStatus, $e->getMessage(), $e->data ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established BookingException contract
+		}
 	}
 
 	/**
