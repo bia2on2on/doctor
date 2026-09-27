@@ -179,8 +179,11 @@ $cpms_reception_cfg = [
         return document.querySelector('[data-role="' + role + '"]');
     }
 
+    var statusKind = null;
+
     function setStatus(text, kind) {
         var node = el('sr-status');
+        statusKind = text ? kind : null;
         if (!node) {
             return;
         }
@@ -413,7 +416,9 @@ $cpms_reception_cfg = [
                 return;
             }
             renderBoard(payloadOf(result.body));
-            if (!silent) {
+            // Keep durable success/status messages across silent refreshes; a
+            // silent success after an error means the board recovered.
+            if (!silent || statusKind === 'error') {
                 setStatus('', null);
             }
         }).catch(function () {

@@ -76,15 +76,16 @@ def parts(name, n):
 
 _sec = parts("RECEPTION_SECRETARY", 3)
 SECRETARY = {"login": _sec[0], "password": _sec[1], "user_id": int(_sec[2])}
-_pub = parts("RECEPTION_PUBLIC", 7)
+_pub = parts("RECEPTION_PUBLIC", 8)
 PUB = {
     "clinic": int(_pub[0]),
     "loc_tehran": int(_pub[1]),
     "loc_tokyo": int(_pub[2]),
     "appt_express": int(_pub[3]),
     "appt_plain": int(_pub[4]),
-    "today_tehran": _pub[5],
-    "today_tokyo": _pub[6],
+    "appt_third": int(_pub[5]),
+    "today_tehran": _pub[6],
+    "today_tokyo": _pub[7],
 }
 
 
@@ -338,7 +339,7 @@ def assert_hygiene(state, label):
         )
 
 
-def run_journey(browser, vp):
+def run_journey(browser, vp, arrive_id, expect_queue):
     key = f"reception-{vp['vp']}-arrival"
     stage = "login"
     ctx, page, state = new_page(browser, vp)
@@ -364,7 +365,7 @@ def run_journey(browser, vp):
 
         stage = "board"
         select_location(page, PUB["loc_tehran"])
-        wait_rows_count(page, 2)
+        wait_rows_count(page, 3)
         date_text = page.locator('[data-role="sr-date"]').inner_text() or ""
         if PUB["today_tehran"] not in date_text:
             raise RuntimeError(f"Tehran board date must be the Location-local day, got {date_text[:60]}")
@@ -372,7 +373,7 @@ def run_journey(browser, vp):
             int(rows(page).nth(i).get_attribute("data-appointment-id"))
             for i in range(rows(page).count())
         )
-        want_ids = sorted([PUB["appt_express"], PUB["appt_plain"]])
+        want_ids = sorted([PUB["appt_express"], PUB["appt_plain"], PUB["appt_third"]])
         if got_ids != want_ids:
             raise RuntimeError(f"board must show exactly today's booked rows for the trusted Location, got {got_ids}")
         if row_of(page, PUB["appt_express"]).locator(".cpms-sr-badge--express").count() != 1:
@@ -381,11 +382,14 @@ def run_journey(browser, vp):
 
         stage = "arrival"
         mark = nav_mark(page)
-        row_of(page, PUB["appt_express"]).locator('[data-role="sr-arrive"]').click()
+        row_of(page, arrive_id).locator('[data-role="sr-arrive"]').click()
         wait_status_contains(page, "حضور ثبت شد")
-        wait_row_text(page, PUB["appt_express"], "در انتظار")
-        if page.locator('[data-role="sr-queue-row"]').count() != 1:
-            raise RuntimeError("waiting queue must show exactly the arrived patient")
+        wait_row_text(page, arrive_id, "در انتظار")
+        queue_rows = page.locator('[data-role="sr-queue-row"]').count()
+        if queue_rows != expect_queue:
+            raise RuntimeError(
+                f"waiting queue must show {expect_queue} arrived patient(s) after this arrival, got {queue_rows}"
+            )
         rest_delta = assert_no_product_reload(page, mark, "arrival")
         arrivals = [r for r in state["rest"] if r["route"].endswith("/reception/arrivals")]
         if not arrivals or arrivals[-1]["status"] != 200 or arrivals[-1]["method"] != "POST":
@@ -397,7 +401,7 @@ def run_journey(browser, vp):
         ok(
             key,
             "reception arrival runs existing check-in + enqueue to waiting",
-            f"vp={vp['vp']} rows=2 arrived=1 waiting=1 rest={rest_delta} reloaded=0",
+            f"vp={vp['vp']} rows=3 arrived=1 waiting={expect_queue} rest={rest_delta} reloaded=0",
         )
 
         stage = "empty"
@@ -420,7 +424,7 @@ def run_journey(browser, vp):
             shot(page, f"reception-{vp['vp']}-error")
             ctx.set_offline(False)
             select_location(page, PUB["loc_tehran"])
-            wait_rows_count(page, 2)
+            wait_rows_count(page, 3)
 
         assert_authority_headers(state, PUB["clinic"], {PUB["loc_tehran"], PUB["loc_tokyo"]})
         assert_hygiene(state, f"reception-{vp['vp']}")
@@ -461,9 +465,14 @@ def main():
     with sync_playwright() as p:
         browser = p.chromium.launch()
         hard_fail = False
-        for vp in VIEWPORTS:
+        per_vp_arrival = [
+            (PUB["appt_express"], 1),
+            (PUB["appt_plain"], 2),
+            (PUB["appt_third"], 3),
+        ]
+        for vp, (arrive_id, expect_queue) in zip(VIEWPORTS, per_vp_arrival):
             try:
-                run_journey(browser, vp)
+                run_journey(browser, vp, arrive_id, expect_queue)
             except Exception:
                 hard_fail = True
         browser.close()

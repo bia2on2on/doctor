@@ -115,7 +115,7 @@ try {
 
 $patientIds = [];
 $patientIndex = 0;
-foreach (['a', 'b'] as $tag) {
+foreach (['a', 'b', 'c'] as $tag) {
     $patientIndex++;
     $patientIds[$tag] = rp_insert(
         $wpdb,
@@ -135,17 +135,22 @@ foreach (['a', 'b'] as $tag) {
     );
 }
 
-// Tehran Location: exactly two of TODAY's booked rows (first is express).
+// Tehran Location: exactly three of TODAY's booked rows (first is express) —
+// one per real-browser viewport journey, so each journey performs its OWN
+// arrival on its OWN row (an arrived row's action correctly disables).
 // Slots sit in the NEAR FUTURE of the Location-local day: the EXISTING ER-06
 // check-in semantics treat an arrival after slot start + per-Clinic grace as a
 // late arrival (no_show + walk-in-like visit), so the happy-path journey must
 // arrive within the grace window like a real reception desk.
 $nowTehran = new DateTimeImmutable('now', new DateTimeZone('Asia/Tehran'));
-$slotExpress = (int) $nowTehran->format('H') >= 23 ? $nowTehran->setTime(23, 55) : $nowTehran->add(new DateInterval('PT10M'));
-$slotPlain = (int) $nowTehran->format('H') >= 23 ? $nowTehran->setTime(23, 57) : $nowTehran->add(new DateInterval('PT30M'));
+$lateToday = (int) $nowTehran->format('H') >= 23;
+$slotExpress = $lateToday ? $nowTehran->setTime(23, 55) : $nowTehran->add(new DateInterval('PT10M'));
+$slotPlain = $lateToday ? $nowTehran->setTime(23, 57) : $nowTehran->add(new DateInterval('PT30M'));
+$slotThird = $lateToday ? $nowTehran->setTime(23, 58) : $nowTehran->add(new DateInterval('PT50M'));
 $apptExpress = null;
 $apptPlain = null;
-foreach ([['a', $slotExpress->format('H:i:s'), 1], ['b', $slotPlain->format('H:i:s'), 0]] as $spec) {
+$apptThird = null;
+foreach ([['a', $slotExpress->format('H:i:s'), 1], ['b', $slotPlain->format('H:i:s'), 0], ['c', $slotThird->format('H:i:s'), 0]] as $spec) {
     [$tag, $time, $express] = $spec;
     $slotId = rp_insert(
         $wpdb,
@@ -161,8 +166,10 @@ foreach ([['a', $slotExpress->format('H:i:s'), 1], ['b', $slotPlain->format('H:i
     );
     if ($express === 1) {
         $apptExpress = $apptId;
-    } else {
+    } elseif ($tag === 'b') {
         $apptPlain = $apptId;
+    } else {
+        $apptThird = $apptId;
     }
 }
 // Tokyo Location: deliberately NO booked rows (empty state proof).
@@ -184,6 +191,7 @@ file_put_contents(
         (string) $locTokyo,
         (string) $apptExpress,
         (string) $apptPlain,
+        (string) $apptThird,
         $todayTehran,
         $todayTokyo,
     ]) . "\n"
@@ -191,5 +199,5 @@ file_put_contents(
 
 echo 'fixture: reception clinic=' . $clinicId
     . ' loc_tehran=' . $locTehran . ' loc_tokyo=' . $locTokyo
-    . ' appts=' . $apptExpress . ',' . $apptPlain
+    . ' appts=' . $apptExpress . ',' . $apptPlain . ',' . $apptThird
     . ' today_tehran=' . $todayTehran . ' today_tokyo=' . $todayTokyo . "\n";
