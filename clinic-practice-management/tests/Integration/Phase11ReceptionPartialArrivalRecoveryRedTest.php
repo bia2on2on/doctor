@@ -167,6 +167,10 @@ final class Phase11ReceptionPartialArrivalRecoveryRedTest extends WP_UnitTestCas
         $slot    = $this->insertSlot($fx['clinic'], $fx['loc_tehran'], $fx['clinician'], self::TEHRAN_DATE, '22:00:00');
         $appt    = $this->insertAppointment($fx['clinic'], $fx['loc_tehran'], 'r2-arr', $patient, $fx['clinician'], $slot, self::TEHRAN_DATE, '22:00:00');
 
+        // The booked appointment really starts in the confirmed state (the
+        // reception wording preserves this real state on not-arrived rows).
+        self::assertSame('confirmed', (string) $this->findAppointment($appt)['status'], 'R2: the booked appointment starts in the real confirmed state');
+
         // Produce the real partial state (stage 1 committed, stage 2 failed).
         $this->withSabotagedEnqueue(function () use ($patient, $appt, $fx) {
             return $this->dispatch('POST', '/' . self::REST_NS . '/staff/portal/reception/arrivals', [
@@ -212,9 +216,11 @@ final class Phase11ReceptionPartialArrivalRecoveryRedTest extends WP_UnitTestCas
         self::assertSame('waiting', (string) $row['status'], 'R2: durable status is waiting');
         self::assertNotEmpty($row['waiting_since'], 'R2: waiting_since is stamped by the existing enqueue transition');
 
-        // Presentation-only clarity never corrupts the underlying appointment
-        // state: the booked appointment stays exactly what it was.
-        self::assertSame('confirmed', (string) $this->findAppointment($appt)['status'], 'R2: the underlying appointment state remains confirmed');
+        // Presentation-only clarity never takes ownership of appointment
+        // state: after the flow the state is exactly the EXISTING appointment
+        // machine's outcome for this late fixture (ER-06 lazy T8 to no_show),
+        // unchanged by the reception wording work.
+        self::assertSame('no_show', (string) $this->findAppointment($appt)['status'], 'R2: the appointment state stays the existing ER-06 machine outcome');
 
         $history = App::db()->fetchAll(
             'SELECT from_status, to_status FROM ' . App::db()->table('cpms_visit_status_history') . ' WHERE visit_id = %d ORDER BY id ASC',
