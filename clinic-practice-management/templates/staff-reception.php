@@ -23,6 +23,8 @@ declare(strict_types=1);
 
 defined( 'ABSPATH' ) || exit;
 
+use ClinicCore\Frontend\StaffPortalShell;
+
 if ( empty( $cpms_staff_embed ) ) {
     // Standalone access is fail-closed: reception only lives inside the shell.
     ?>
@@ -37,16 +39,14 @@ if ( empty( $cpms_staff_embed ) ) {
     return;
 }
 
-use ClinicCore\Frontend\StaffPortalShell;
-
 if ( ! class_exists( 'ClinicCore\Frontend\StaffPortalShell' ) ) {
     require_once __DIR__ . '/../src/Frontend/StaffPortalShell.php';
 }
 
 $cpms_reception_cfg = [
-    'rest_root'   => esc_url_raw( rest_url() ),
-    'nonce'       => esc_attr( wp_create_nonce( 'wp_rest' ) ),
-    'portal_url'  => esc_url_raw( StaffPortalShell::portal_url() ),
+    'rest_root'    => esc_url_raw( untrailingslashit( rest_url( 'clinic/v1' ) ) ),
+    'nonce'        => esc_attr( wp_create_nonce( 'wp_rest' ) ),
+    'portal_url'   => esc_url_raw( StaffPortalShell::portal_url() ),
     'is_reception' => true,
 ];
 ?>
@@ -91,7 +91,7 @@ $cpms_reception_cfg = [
 }
 </style>
 <div class="cpms-staff-reception" data-role="reception-app">
-<main id="cpms-staff-reception-main" class="cpms-staff-reception-main" data-cpms-staff-module="reception">
+<main id="cpms-staff-reception-main" class="cpms-staff-reception-main" role="main" data-cpms-staff-module="reception">
     <section class="cpms-sr-panel cpms-sr-top" data-role="sr-top">
         <div class="cpms-sr-chips" data-role="sr-scope">
             <span class="cpms-sr-chip cpms-sr-chip--primary" data-role="sr-clinic" title="کلینیک مورد اعتماد">—</span>
@@ -385,6 +385,8 @@ $cpms_reception_cfg = [
                 state.locationId = Number(data.selected_location_id);
             }
             renderScope();
+        }).catch(function () {
+            setStatus('خطای شبکه هنگام دریافت محدودهٔ کاری.', 'error');
         });
     }
 
@@ -412,6 +414,8 @@ $cpms_reception_cfg = [
             }
             renderBoard(payloadOf(result.body));
             setStatus('', null);
+        }).catch(function () {
+            setStatus('خطای شبکه هنگام دریافت تختهٔ پذیرش.', 'error');
         });
     }
 

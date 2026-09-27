@@ -309,7 +309,7 @@ final class ReceptionPortalController extends RestBase {
 		// durably belong to the trusted Clinic AND the trusted selected
 		// Location (and to the selected patient). Any mismatch shares the one
 		// canonical non-enumerating 404 fingerprint, before any durable change.
-		$db  = App::db();
+		$db   = App::db();
 		$appt = $db->fetchRow(
 			'SELECT id, clinic_id, location_id, patient_id FROM ' . $db->table( 'cpms_appointments' ) . ' WHERE id = %d LIMIT 1',
 			[ $appointment_id ]

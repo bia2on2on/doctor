@@ -225,11 +225,6 @@ def status_text(page):
     return (page.locator('[data-role="sr-status"]').inner_text() or "").strip()
 
 
-def wait_for(page, fn, label, timeout=15000):
-    page.wait_for_function(fn, timeout=timeout, arg=None)
-    return label
-
-
 def rows(page):
     return page.locator('[data-role="sr-row"]')
 
@@ -370,7 +365,6 @@ def run_journey(browser, vp):
         stage = "board"
         select_location(page, PUB["loc_tehran"])
         wait_rows_count(page, 2)
-        wait_for(page, lambda: True, "rows")
         date_text = page.locator('[data-role="sr-date"]').inner_text() or ""
         if PUB["today_tehran"] not in date_text:
             raise RuntimeError(f"Tehran board date must be the Location-local day, got {date_text[:60]}")
