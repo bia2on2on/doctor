@@ -94,6 +94,16 @@ PUB = {
 }
 _srch = parts("RECEPTION_SEARCH", 3)
 SEARCH = {"probe": int(_srch[0]), "foreign": int(_srch[1]), "nid_last4": _srch[2]}
+_wi = parts("RECEPTION_WALKIN", 9)
+WALKIN = {
+    "c1": int(_wi[0]),
+    "c2": int(_wi[1]),
+    "decoy": int(_wi[2]),
+    "patients": {"mobile-390": int(_wi[3]), "tablet-768": int(_wi[4]), "desktop-1366": int(_wi[5]), "partial": int(_wi[6])},
+    "mrn": {"mobile-390": _wi[7] + "MOBILE" + _wi[8], "tablet-768": _wi[7] + "TABLET" + _wi[8], "desktop-1366": _wi[7] + "DESKTOP" + _wi[8], "partial": _wi[7] + "PARTIAL" + _wi[8]},
+}
+WALKIN_ROUTE = "/staff/portal/reception/walk-ins"
+CLINICIANS_ROUTE = "/staff/portal/reception/clinicians"
 
 
 def page_hint(page):
@@ -1054,6 +1064,290 @@ def run_create_journey(browser, vp):
         ctx.close()
 
 
+def walkin_calls(state):
+    return [r for r in state["rest"] if r["route"].rstrip("/").endswith(WALKIN_ROUTE)]
+
+
+def wait_walkin_state(page, needle, timeout=15000):
+    page.wait_for_function(
+        """(needle) => { const n = document.querySelector('[data-role="sr-walkin-state"]'); return !!n && (n.textContent || '').indexOf(needle) !== -1; }""",
+        arg=needle,
+        timeout=timeout,
+    )
+
+
+def walkin_options(page):
+    select = page.locator('[data-role="sr-walkin-clinician"]')
+    opts = select.locator("option")
+    return [opts.nth(i).get_attribute("value") or "" for i in range(opts.count())]
+
+
+def wait_walkin_many(page, timeout=15000):
+    page.wait_for_function(
+        """() => { const w = document.querySelector('[data-role="sr-walkin-clinician-wrap"]'); const s = document.querySelector('[data-role="sr-walkin-clinician"]'); return !!w && !w.hidden && !!s && s.options.length > 1; }""",
+        timeout=timeout,
+    )
+
+
+def wait_walkin_single(page, timeout=15000):
+    page.wait_for_function(
+        """() => { const d = document.querySelector('[data-role="sr-walkin-doctor"]'); const w = document.querySelector('[data-role="sr-walkin-clinician-wrap"]'); return !!d && !d.hidden && !!w && w.hidden; }""",
+        timeout=timeout,
+    )
+
+
+def select_walkin_patient(page, tag):
+    search_input = page.locator('[data-role="sr-search-input"]')
+    search_input.fill("")
+    search_input.type(WALKIN["mrn"][tag], delay=10)
+    wait_search_state(page, "یافت شد")
+    pid = WALKIN["patients"][tag]
+    if pid not in search_result_ids(page):
+        raise RuntimeError(f"walk-in patient {pid} must be found through Slice 2 search")
+    page.locator(f'[data-role="sr-search-result"][data-patient-id="{pid}"]').click()
+    page.wait_for_selector('[data-role="sr-search-selected"]', state="visible", timeout=5000)
+    page.wait_for_selector('[data-role="sr-walkin"]', state="visible", timeout=5000)
+
+
+def queue_names(page):
+    body = page.locator('[data-role="sr-queue-body"]')
+    return body.inner_text() or ""
+
+
+def run_walkin_journey(browser, vp, doctor_key):
+    """Phase 11 Slice 4 — walk-in for the selected Clinic patient.
+
+    Tehran (N=2 eligible doctors): explicit choice, no first-row fallback,
+    decoy (home-Clinic metadata only) never offered; Tokyo (N=1): shown and
+    auto-selected; switching back invalidates the selection; one explicit
+    submit reaches waiting through the existing machine with no appointment;
+    a resubmission is the bounded duplicate conflict.
+    """
+    key = f"reception-walkin-{vp['vp']}"
+    stage = "login"
+    ctx, page, state = new_page(browser, vp)
+    try:
+        login(page, SECRETARY)
+        stage = "reception-entry"
+        resp = harness_goto(page, RECEPTION_URL, wait_until="domcontentloaded")
+        if resp is None or resp.status != 200:
+            raise RuntimeError(f"reception entry status {getattr(resp, 'status', None)}")
+        page.wait_for_selector('[data-role="reception-app"]', state="attached", timeout=15000)
+        assert_reception_shell(page)
+        page.wait_for_selector('[data-role="sr-location-select"]', state="visible", timeout=15000)
+        select_location(page, PUB["loc_tehran"])
+        wait_rows_count(page, 4)
+        if page.locator('[data-role="sr-walkin"]').is_visible():
+            raise RuntimeError("walk-in section must stay hidden until a patient is selected")
+
+        stage = "select-patient"
+        mark = nav_mark(page)
+        select_walkin_patient(page, vp["vp"])
+
+        stage = "tehran-many"
+        wait_walkin_many(page)
+        values = walkin_options(page)
+        if values[0] != "" or sorted(int(v) for v in values[1:]) != sorted([WALKIN["c1"], WALKIN["c2"]]):
+            raise RuntimeError(f"Tehran must offer exactly the two eligible doctors after a blank prompt, got {values}")
+        if str(WALKIN["decoy"]) in values:
+            raise RuntimeError("home-Clinic-only decoy clinician must never be offered")
+        if page.locator('[data-role="sr-walkin-clinician"]').input_value() != "":
+            raise RuntimeError("N>1 doctors must not preselect a first-row fallback")
+        if not page.locator('[data-role="sr-walkin-submit"]').is_disabled():
+            raise RuntimeError("submit must stay disabled until a doctor is chosen")
+        if page.locator('[data-role="sr-walkin"] a[href], [data-role="sr-walkin"] [data-role*="appointment"], [data-role="sr-walkin"] [data-role*="invoice"]').count() != 0:
+            raise RuntimeError("walk-in section must expose no appointment/finance/navigation controls")
+        assert_no_horizontal_overflow(page, "walkin-choose")
+        shot(page, f"reception-{vp['vp']}-walkin-choose")
+
+        stage = "tokyo-single"
+        select_location(page, PUB["loc_tokyo"])
+        wait_rows_count(page, 0)
+        wait_walkin_single(page)
+        doctor_text = page.locator('[data-role="sr-walkin-doctor"]').inner_text() or ""
+        if "Dr Walkin Second" not in doctor_text:
+            raise RuntimeError(f"Tokyo must show its single eligible doctor clearly, got {doctor_text[:80]}")
+        if page.locator('[data-role="sr-walkin-submit"]').is_disabled():
+            raise RuntimeError("single eligible doctor must be auto-selected (submit enabled)")
+        assert_no_horizontal_overflow(page, "walkin-single")
+        shot(page, f"reception-{vp['vp']}-walkin-single")
+
+        stage = "tehran-reset"
+        select_location(page, PUB["loc_tehran"])
+        wait_rows_count(page, 4)
+        wait_walkin_many(page)
+        if page.locator('[data-role="sr-walkin-clinician"]').input_value() != "":
+            raise RuntimeError("a Location change must invalidate the doctor selection")
+        if not page.locator('[data-role="sr-walkin-submit"]').is_disabled():
+            raise RuntimeError("submit must be disabled again after a Location change")
+
+        stage = "submit"
+        doctor_id = WALKIN[doctor_key]
+        page.select_option('[data-role="sr-walkin-clinician"]', str(doctor_id))
+        writes_before = [r for r in state["rest"] if r["method"] != "GET"]
+        with page.expect_response(lambda r: r.url and WALKIN_ROUTE in r.url and r.request.method == "POST", timeout=15000) as resp_info:
+            page.locator('[data-role="sr-walkin-submit"]').click()
+        if resp_info.value.status != 200:
+            raise RuntimeError(f"walk-in answered {resp_info.value.status}")
+        body = resp_info.value.json()
+        data = body.get("data", body) if isinstance(body, dict) else {}
+        if (data.get("visit") or {}).get("status") != "waiting" or (data.get("walk_in") or {}).get("complete") is not True:
+            raise RuntimeError("walk-in must complete in waiting through the existing enqueue")
+        if (data.get("visit") or {}).get("appointment_id") is not None or (data.get("visit") or {}).get("source") != "walk_in":
+            raise RuntimeError("walk-in must not create/convert an appointment")
+        wait_walkin_state(page, "صف انتظار")
+        page.wait_for_function(
+            """(name) => { const b = document.querySelector('[data-role="sr-queue-body"]'); return !!b && (b.textContent || '').indexOf(name) !== -1; }""",
+            arg={"mobile-390": "Walkin Mobile", "tablet-768": "Walkin Tablet", "desktop-1366": "Walkin Desktop"}[vp["vp"]],
+            timeout=15000,
+        )
+        wait_rows_count(page, 4)
+        new_writes = [r for r in state["rest"] if r["method"] != "GET"][len(writes_before):]
+        routes = [f"{w['method']} {w['route']}={w['status']}" for w in new_writes]
+        if len(new_writes) != 1 or not new_writes[0]["route"].rstrip("/").endswith(WALKIN_ROUTE):
+            raise RuntimeError(f"walk-in must be the only write, got {routes}")
+        if not page.locator('[data-role="sr-walkin-submit"]').is_disabled():
+            raise RuntimeError("a completed walk-in must not stay re-submittable without a change")
+        assert_no_horizontal_overflow(page, "walkin-success")
+        shot(page, f"reception-{vp['vp']}-walkin-success")
+
+        stage = "duplicate"
+        select_location(page, PUB["loc_tokyo"])
+        wait_rows_count(page, 0)
+        wait_walkin_single(page)
+        select_location(page, PUB["loc_tehran"])
+        wait_rows_count(page, 4)
+        wait_walkin_many(page)
+        page.select_option('[data-role="sr-walkin-clinician"]', str(doctor_id))
+        with page.expect_response(lambda r: r.url and WALKIN_ROUTE in r.url and r.request.method == "POST", timeout=15000) as dup_info:
+            page.locator('[data-role="sr-walkin-submit"]').click()
+        if dup_info.value.status != 409:
+            raise RuntimeError(f"resubmission must be the bounded duplicate conflict, got {dup_info.value.status}")
+        wait_walkin_state(page, "مراجعهٔ فعال")
+        dup_text = page.locator('[data-role="sr-walkin-state"]').inner_text() or ""
+        if any(tok in dup_text for tok in ("SQL", "visit_id", "cpms_", "Duplicate")):
+            raise RuntimeError("duplicate message leaked internals")
+        assert_no_horizontal_overflow(page, "walkin-duplicate")
+        shot(page, f"reception-{vp['vp']}-walkin-duplicate")
+
+        rest_delta = assert_no_product_reload(page, mark, "walk-in")
+        assert_authority_headers(state, PUB["clinic"], {PUB["loc_tehran"], PUB["loc_tokyo"]})
+        assert_hygiene(state, key)
+        ok(
+            key,
+            "reception walk-in: 0/1/N doctors, explicit submit reaches waiting, no appointment, bounded duplicate",
+            f"vp={vp['vp']} tehran_n=2 tokyo_auto=1 decoy=0 reset=1 waiting=1 appts=4 dup=409 walkin_posts={len(walkin_calls(state))} rest={rest_delta} reloaded=0 overflow=0",
+        )
+    except Exception as e:
+        try:
+            dump = {
+                "walkin_state": (page.locator('[data-role="sr-walkin-state"]').inner_text() or "")[:120],
+                "rest_tail": [f"{r['method']} {r['route']}={r['status']}" for r in state["rest"][-8:]],
+            }
+            info(f"fail-dump {vp['vp']} stage={stage} {dump}")
+        except Exception:
+            pass
+        try:
+            shot(page, f"reception-FAIL-{key}-{stage}")
+        except Exception:
+            pass
+        fail(key, vp["vp"], f"{e} ({page_hint(page)})")
+        raise
+    finally:
+        ctx.close()
+
+
+def run_walkin_partial_journey(browser, vp):
+    """Phase 11 Slice 4 — recoverable partial walk-in (TEST-ONLY cookie
+    sabotage of the existing enqueue UPDATE): never shown as success, the
+    recovery control completes the existing enqueue for the SAME server-derived
+    Visit, and a further submit is the bounded duplicate (no second Visit)."""
+    from urllib.parse import urlsplit
+
+    key = f"reception-walkin-partial-{vp['vp']}"
+    stage = "login"
+    ctx, page, state = new_page(browser, vp)
+    try:
+        login(page, SECRETARY)
+        stage = "reception-entry"
+        resp = harness_goto(page, RECEPTION_URL, wait_until="domcontentloaded")
+        if resp is None or resp.status != 200:
+            raise RuntimeError(f"reception entry status {getattr(resp, 'status', None)}")
+        page.wait_for_selector('[data-role="reception-app"]', state="attached", timeout=15000)
+        page.wait_for_selector('[data-role="sr-location-select"]', state="visible", timeout=15000)
+        select_location(page, PUB["loc_tehran"])
+        wait_rows_count(page, 4)
+        select_walkin_patient(page, "partial")
+        wait_walkin_many(page)
+        page.select_option('[data-role="sr-walkin-clinician"]', str(WALKIN["c1"]))
+
+        stage = "partial"
+        mark = nav_mark(page)
+        host = urlsplit(RECEPTION_URL).hostname or ""
+        ctx.add_cookies([{"name": "rp_sabotage", "value": "1", "domain": host, "path": "/"}])
+        with page.expect_response(lambda r: r.url and WALKIN_ROUTE in r.url and r.request.method == "POST", timeout=15000) as p_info:
+            page.locator('[data-role="sr-walkin-submit"]').click()
+        ctx.add_cookies([{"name": "rp_sabotage", "value": "0", "domain": host, "path": "/"}])
+        if p_info.value.status < 400:
+            raise RuntimeError(f"partial walk-in must not answer success, got {p_info.value.status}")
+        pbody = p_info.value.json()
+        if pbody.get("code") != "CLINIC_WALK_IN_INCOMPLETE" or ((pbody.get("data") or {}).get("visit_status")) != "checked_in":
+            raise RuntimeError("partial walk-in must report the durable checked_in state")
+        wait_walkin_state(page, "قرارگیری در صف انجام نشد")
+        page.wait_for_selector('[data-role="sr-walkin-recover"]', state="visible", timeout=5000)
+        if page.locator('[data-role="sr-walkin-submit"]').is_visible():
+            raise RuntimeError("partial state must offer recovery, not a fresh submit")
+        page.wait_for_timeout(6500)
+        if "قرارگیری در صف انجام نشد" not in (page.locator('[data-role="sr-walkin-state"]').inner_text() or ""):
+            raise RuntimeError("silent refresh erased the partial walk-in message")
+        assert_no_horizontal_overflow(page, "walkin-partial")
+        shot(page, f"reception-{vp['vp']}-walkin-partial")
+
+        stage = "recover"
+        with page.expect_response(lambda r: r.url and WALKIN_ROUTE in r.url and r.request.method == "POST", timeout=15000) as r_info:
+            page.locator('[data-role="sr-walkin-recover"]').click()
+        if r_info.value.status != 200:
+            raise RuntimeError(f"recovery must succeed in one retry, got {r_info.value.status}")
+        rdata = (r_info.value.json() or {}).get("data") or {}
+        if (rdata.get("walk_in") or {}).get("created") != "existing" or (rdata.get("visit") or {}).get("status") != "waiting":
+            raise RuntimeError("recovery must enqueue the existing server-derived walk-in Visit")
+        wait_walkin_state(page, "صف انتظار")
+        page.wait_for_function(
+            """() => { const b = document.querySelector('[data-role="sr-queue-body"]'); return !!b && (b.textContent || '').indexOf('Walkin Partial') !== -1; }""",
+            timeout=15000,
+        )
+        if page.locator('[data-role="sr-walkin-recover"]').is_visible():
+            raise RuntimeError("recovery control must disappear after completion")
+        assert_no_horizontal_overflow(page, "walkin-recovered")
+        shot(page, f"reception-{vp['vp']}-walkin-recovered")
+
+        rest_delta = assert_no_product_reload(page, mark, "walk-in recovery")
+        assert_authority_headers(state, PUB["clinic"], {PUB["loc_tehran"], PUB["loc_tokyo"]})
+        assert_hygiene(state, key)
+        ok(
+            key,
+            "partial walk-in stays checked_in (not success) and one recovery completes the existing enqueue",
+            f"vp={vp['vp']} partial_http={p_info.value.status} sticky=1 recover_http=200 created=existing rest={rest_delta} reloaded=0",
+        )
+    except Exception as e:
+        try:
+            dump = {
+                "walkin_state": (page.locator('[data-role="sr-walkin-state"]').inner_text() or "")[:120],
+                "rest_tail": [f"{r['method']} {r['route']}={r['status']}" for r in state["rest"][-8:]],
+            }
+            info(f"fail-dump {vp['vp']} stage={stage} {dump}")
+        except Exception:
+            pass
+        try:
+            shot(page, f"reception-FAIL-{key}-{stage}")
+        except Exception:
+            pass
+        fail(key, vp["vp"], f"{e} ({page_hint(page)})")
+        raise
+    finally:
+        ctx.close()
+
+
 def main():
     if not RECEPTION_URL or not STAFF_URL:
         raise SystemExit("RECEPTION_URL / STAFF_PORTAL_URL must be set by the fixture")
@@ -1091,6 +1385,17 @@ def main():
                 run_create_journey(browser, vp)
             except Exception:
                 hard_fail = True
+        # Phase 11 Slice 4 — walk-in for the selected Clinic patient (after
+        # Slices 1–3, which stay unchanged).
+        for vp, doctor_key in zip(VIEWPORTS, ("c1", "c2", "c1")):
+            try:
+                run_walkin_journey(browser, vp, doctor_key)
+            except Exception:
+                hard_fail = True
+        try:
+            run_walkin_partial_journey(browser, VIEWPORTS[2])
+        except Exception:
+            hard_fail = True
         browser.close()
     print("---")
     print(f"SUMMARY pass={sum(1 for r in results if r['status'] == 'PASS')} fail={len(failures)}")

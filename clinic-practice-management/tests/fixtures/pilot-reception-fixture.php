@@ -133,6 +133,63 @@ if ($wpdb->query($wpdb->prepare('UPDATE ' . $db->table('cpms_clinicians') . ' SE
     rp_fail('clinician bind: ' . $wpdb->last_error);
 }
 
+// Phase 11 Slice 4 — walk-in eligibility stage (existing tables/services only).
+// Dr Reception is durably assigned to Tehran. A second doctor whose HOME
+// clinicians.clinic_id is the foreign Clinic participates here through an
+// ACTIVE membership and is assigned to Tehran + Tokyo ⇒ Tehran N=2, Tokyo 1.
+// A decoy clinician (home = this Clinic, raw Tehran assignment row, NO bound
+// user / membership) must never be offered: home metadata is not authority.
+try {
+    \ClinicCore\Bootstrap\App::membership_service()->assign_clinician_locations($clinicianId, [$locTehran]);
+} catch (\Throwable $e) {
+    rp_fail('clinician location assign: ' . $e->getMessage());
+}
+$walkinForeignHome = rp_insert(
+    $wpdb,
+    'INSERT INTO ' . $db->table('cpms_clinics') . ' (name, slug, timezone, organization_id, address, phone, created_at, updated_at) VALUES (%s, %s, %s, %d, NULL, NULL, %s, %s)',
+    ['Synthetic Walk-in Home Clinic', 'rp-wihome-' . $uniq, 'Asia/Tehran', $orgId, $now, $now],
+    'walk-in second doctor home clinic'
+);
+$doctor2Login = 'rpdoc2-' . $uniq;
+$doctor2UserId = wp_create_user($doctor2Login, 'RpDoc2-' . $uniq . '-2026!', $doctor2Login . '@pilot.local');
+if (is_wp_error($doctor2UserId)) {
+    rp_fail('second doctor user create failed');
+}
+(new WP_User((int) $doctor2UserId))->set_role('cpms_doctor');
+$clinician2Id = rp_insert(
+    $wpdb,
+    'INSERT INTO ' . $db->table('cpms_clinicians') . ' (clinic_id, wp_user_id, full_name, specialty, room, is_active, created_at, updated_at) VALUES (%d, %d, %s, NULL, NULL, 1, %s, %s)',
+    [$walkinForeignHome, (int) $doctor2UserId, 'Dr Walkin Second ' . $uniq, $now, $now],
+    'second walk-in clinician'
+);
+try {
+    \ClinicCore\Bootstrap\App::membership_service()->create_membership($clinicId, (int) $doctor2UserId, 'cpms_doctor');
+    \ClinicCore\Bootstrap\App::membership_service()->assign_clinician_locations($clinician2Id, [$locTehran, $locTokyo]);
+} catch (\Throwable $e) {
+    rp_fail('second doctor participation: ' . $e->getMessage());
+}
+$decoyClinicianId = rp_insert(
+    $wpdb,
+    'INSERT INTO ' . $db->table('cpms_clinicians') . ' (clinic_id, wp_user_id, full_name, specialty, room, is_active, created_at, updated_at) VALUES (%d, NULL, %s, NULL, NULL, 1, %s, %s)',
+    [$clinicId, 'Dr Decoy ' . $uniq, $now, $now],
+    'decoy clinician'
+);
+rp_insert(
+    $wpdb,
+    'INSERT INTO ' . $db->table('cpms_clinician_locations') . ' (clinician_id, location_id, created_at) VALUES (%d, %d, %s)',
+    [$decoyClinicianId, $locTehran, $now],
+    'decoy raw location row'
+);
+$walkinPatients = [];
+foreach (['MOBILE', 'TABLET', 'DESKTOP', 'PARTIAL'] as $wIndex => $wTag) {
+    $walkinPatients[$wTag] = rp_insert(
+        $wpdb,
+        'INSERT INTO ' . $db->table('cpms_patients') . ' (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, %s, %s, %s)',
+        [$clinicId, 'MR-RP-WI-' . $wTag . '-' . $uniq, 'Walkin', ucfirst(strtolower($wTag)), '0913' . sprintf('%06d', hexdec(substr($uniq, 0, 6)) % 1000000) . (string) ($wIndex + 1), 'active', $now, $now],
+        'walk-in patient ' . $wTag
+    );
+}
+
 // The EXISTING standalone Doctor Portal page (the same product page the
 // established doctor journeys exercise) for the call/start evidence.
 $doctorUrl = \ClinicCore\Frontend\DoctorPortalShell::portal_url();
@@ -274,6 +331,17 @@ file_put_contents(
         (string) $probeId,
         (string) $foreignProbeId,
         substr($probeNid, -4),
+    ]) . "\n"
+    . 'RECEPTION_WALKIN=' . implode('|', [
+        (string) $clinicianId,
+        (string) $clinician2Id,
+        (string) $decoyClinicianId,
+        (string) $walkinPatients['MOBILE'],
+        (string) $walkinPatients['TABLET'],
+        (string) $walkinPatients['DESKTOP'],
+        (string) $walkinPatients['PARTIAL'],
+        'MR-RP-WI-',
+        '-' . $uniq,
     ]) . "\n"
 );
 
