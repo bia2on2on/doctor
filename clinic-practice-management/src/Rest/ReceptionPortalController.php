@@ -73,6 +73,9 @@ use WP_REST_Server;
  */
 final class ReceptionPortalController extends RestBase {
 
+	/** Upper bound for one Location's eligible-doctor options (bounded query). */
+	private const CLINICIAN_OPTION_LIMIT = 100;
+
 	/**
 	 * @param MembershipRepository $memberships Membership lookup (trusted Clinic/Location eligibility).
 	 */
@@ -162,6 +165,40 @@ final class ReceptionPortalController extends RestBase {
 						'gender'      => [
 							'required' => false,
 							'type'     => 'string',
+						],
+					],
+				],
+			]
+		);
+
+		register_rest_route(
+			self::NS,
+			'/staff/portal/reception/clinicians',
+			[
+				[
+					'methods'             => WP_REST_Server::READABLE,
+					'callback'            => fn( WP_REST_Request $r ) => $this->clinicians( $r ),
+					'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_reception( $r, [ RolesAndCapabilities::QUEUE_CHECKIN ] ),
+				],
+			]
+		);
+
+		register_rest_route(
+			self::NS,
+			'/staff/portal/reception/walk-ins',
+			[
+				[
+					'methods'             => WP_REST_Server::CREATABLE,
+					'callback'            => fn( WP_REST_Request $r ) => $this->walk_in( $r ),
+					'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_reception( $r, [ RolesAndCapabilities::QUEUE_CHECKIN, RolesAndCapabilities::QUEUE_ADVANCE ] ),
+					'args'                => [
+						'patient_id'   => [
+							'required' => true,
+							'type'     => 'integer',
+						],
+						'clinician_id' => [
+							'required' => true,
+							'type'     => 'integer',
 						],
 					],
 				],
@@ -567,6 +604,266 @@ final class ReceptionPortalController extends RestBase {
 			$fresh   = $this->fresh_visit( $user_id, (int) ( $visit['id'] ?? 0 ) );
 			return $this->arrival_incomplete( 'ok', (int) ( $visit['id'] ?? 0 ), (string) ( $fresh['status'] ?? 'checked_in' ), $code, $message );
 		}
+	}
+
+	/**
+	 * Reception eligible doctors (read-only) for the trusted Clinic + trusted
+	 * operational Location under the strict 0/1/N Location policy. Bounded
+	 * option rows only (id + display name): no user/admin/private data, no
+	 * broad directory. 0 eligible Locations ⇒ fail-closed empty payload.
+	 */
+	private function clinicians( WP_REST_Request $r ): WP_REST_Response|WP_Error {
+		unset( $r );
+		$resolved = $this->resolve_reception_location( (int) get_current_user_id() );
+		if ( $resolved instanceof WP_Error ) {
+			return $resolved;
+		}
+		if ( null === $resolved['location_id'] ) {
+			return $this->success(
+				[
+					'location_id'   => null,
+					'location_name' => null,
+					'clinicians'    => [],
+				]
+			);
+		}
+
+		return $this->success(
+			[
+				'location_id'   => (int) $resolved['location_id'],
+				'location_name' => $resolved['location_name'],
+				'clinicians'    => $this->eligible_clinicians( (int) $resolved['clinic_id'], (int) $resolved['location_id'], null ),
+			]
+		);
+	}
+
+	/**
+	 * The one Reception walk-in action for an explicitly selected Clinic
+	 * patient + explicitly selected (or single auto-resolved in the UI)
+	 * eligible doctor. Delegates to the EXISTING VisitService::walkIn()
+	 * (create_walk_in → checked_in, established duplicate guard, history,
+	 * VISIT_WALK_IN audit, per-Clinic auto-enqueue) and, when auto-enqueue
+	 * legitimately leaves checked_in, the EXISTING enqueue transition
+	 * (checked_in → waiting). No new status/machine; no appointment.
+	 *
+	 * Recoverable partial: when the walk-in committed but enqueue did not,
+	 * the response is NEVER a success. A retry derives the existing Visit
+	 * SERVER-SIDE from the established duplicate-active-Visit rule and
+	 * enqueues it ONLY when it is this trusted Clinic + Location + patient +
+	 * doctor, source=walk_in, no appointment, still checked_in. Any other
+	 * existing active Visit keeps the established bounded conflict. A
+	 * client-supplied visit id is never read.
+	 */
+	private function walk_in( WP_REST_Request $r ): WP_REST_Response|WP_Error {
+		$user_id      = (int) get_current_user_id();
+		$patient_id   = (int) ( $r['patient_id'] ?? 0 );
+		$clinician_id = (int) ( $r['clinician_id'] ?? 0 );
+		if ( $patient_id <= 0 || $clinician_id <= 0 ) {
+			return $this->error( 'CLINIC_VALIDATION_FAILED', 422, 'شناسه بیمار یا پزشک نامعتبر است' );
+		}
+
+		$resolved = $this->resolve_reception_location( $user_id );
+		if ( $resolved instanceof WP_Error ) {
+			return $resolved;
+		}
+		if ( null === $resolved['location_id'] ) {
+			// 0 eligible Locations: fail closed — no reception mutation at all.
+			return $this->error( 'CLINIC_SCOPE_UNAVAILABLE', 403, 'امکان تعیین محدودهٔ کلینیک معتبر نیست.', [ 'reason' => 'location' ] );
+		}
+		$clinic_id   = (int) $resolved['clinic_id'];
+		$location_id = (int) $resolved['location_id'];
+
+		// Patient selector: must be an ACTIVE patient of the trusted Clinic
+		// (the same population Reception search/create can select). Foreign,
+		// archived and unknown ids share one non-enumerating fingerprint.
+		$db      = App::db();
+		$patient = $db->fetchRow(
+			'SELECT id, clinic_id, status FROM ' . $db->table( 'cpms_patients' ) . ' WHERE id = %d LIMIT 1',
+			[ $patient_id ]
+		);
+		if ( null === $patient || (int) $patient['clinic_id'] !== $clinic_id || 'active' !== (string) $patient['status'] ) {
+			return $this->error( 'CLINIC_NOT_FOUND', 404, 'بیمار یافت نشد' );
+		}
+
+		// Doctor selector: must be eligible for the trusted Clinic AND the
+		// trusted Location (stricter than the shared participation check:
+		// home-Clinic metadata never authorizes a Reception walk-in).
+		if ( [] === $this->eligible_clinicians( $clinic_id, $location_id, $clinician_id ) ) {
+			return $this->error( 'CLINIC_NOT_FOUND', 404, 'پزشک یافت نشد' );
+		}
+
+		try {
+			$visit = App::visitService()->walkIn( $user_id, $patient_id, $clinician_id );
+		} catch ( VisitException $e ) {
+			$recoverable = $this->recoverable_walk_in( $e, $clinic_id, $location_id, $patient_id, $clinician_id );
+			if ( null !== $recoverable ) {
+				return $this->walk_in_enqueue( $user_id, $recoverable, 'existing' );
+			}
+			if ( 'CLINIC_DUPLICATE_ACTIVE_VISIT' === $e->errorCode ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established VisitException contract
+				// Established conflict, bounded: the existing state only.
+				return $this->error( $e->errorCode, $e->httpStatus, $e->getMessage(), [ 'visit_status' => (string) ( $e->data['visit_status'] ?? '' ) ] ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established VisitException contract
+			}
+			return $this->error( $e->errorCode, $e->httpStatus, $e->getMessage(), $e->data ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established VisitException contract
+		}
+
+		if ( 'waiting' === (string) ( $visit['status'] ?? '' ) ) {
+			// The existing per-Clinic auto-enqueue already produced waiting.
+			return $this->walk_in_success( $visit, 'new', 'auto' );
+		}
+
+		return $this->walk_in_enqueue( $user_id, (int) ( $visit['id'] ?? 0 ), 'new' );
+	}
+
+	/**
+	 * Server-side recovery target from the ESTABLISHED duplicate guard
+	 * (same patient + doctor + operational day): recoverable only when the
+	 * durable row is this trusted Clinic + Location + patient + doctor,
+	 * source=walk_in without appointment, active, still checked_in.
+	 */
+	private function recoverable_walk_in( VisitException $e, int $clinic_id, int $location_id, int $patient_id, int $clinician_id ): ?int {
+		if ( 'CLINIC_DUPLICATE_ACTIVE_VISIT' !== $e->errorCode ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established VisitException contract
+			return null;
+		}
+		$visit_id = (int) ( $e->data['visit_id'] ?? 0 ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established VisitException contract
+		if ( $visit_id <= 0 ) {
+			return null;
+		}
+		$db  = App::db();
+		$row = $db->fetchRow(
+			'SELECT id, clinic_id, location_id, patient_id, clinician_id, appointment_id, source, status, active FROM ' . $db->table( 'cpms_visits' ) . ' WHERE id = %d LIMIT 1',
+			[ $visit_id ]
+		);
+		if (
+			null === $row
+			|| (int) $row['clinic_id'] !== $clinic_id
+			|| (int) $row['location_id'] !== $location_id
+			|| (int) $row['patient_id'] !== $patient_id
+			|| (int) $row['clinician_id'] !== $clinician_id
+			|| null !== $row['appointment_id']
+			|| 'walk_in' !== (string) $row['source']
+			|| 1 !== (int) $row['active']
+			|| 'checked_in' !== (string) $row['status']
+		) {
+			return null;
+		}
+
+		return (int) $row['id'];
+	}
+
+	/**
+	 * EXISTING enqueue transition (checked_in → waiting) on a walk-in Visit;
+	 * the response truth is the DURABLE state, never an in-memory return.
+	 */
+	private function walk_in_enqueue( int $user_id, int $visit_id, string $created ): WP_REST_Response|WP_Error {
+		try {
+			App::visitService()->transition( $user_id, $visit_id, 'enqueue' );
+		} catch ( \Throwable $e ) {
+			error_log( '[CPMS][ReceptionPortalController] walk-in enqueue: ' . $e->getMessage() ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- established controller convention
+			$fresh = $this->fresh_visit( $user_id, $visit_id );
+			if ( 'waiting' === (string) ( $fresh['status'] ?? '' ) ) {
+				// Durable truth: a concurrent request already completed it.
+				return $this->walk_in_success( $fresh, $created, 'ok' );
+			}
+			$code    = $e instanceof VisitException ? $e->errorCode : 'CLINIC_INTERNAL_ERROR'; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established VisitException contract
+			$message = $e instanceof VisitException ? $e->getMessage() : 'افزودن به صف انجام نشد';
+			return $this->walk_in_incomplete( $created, (string) ( $fresh['status'] ?? 'checked_in' ), $code, $message );
+		}
+
+		$fresh   = $this->fresh_visit( $user_id, $visit_id );
+		$outcome = (string) ( $fresh['status'] ?? '' );
+		if ( 'waiting' !== $outcome ) {
+			return $this->walk_in_incomplete( $created, ( '' === $outcome ? 'checked_in' : $outcome ), 'CLINIC_INVALID_TRANSITION', 'افزودن به صف انجام نشد' );
+		}
+
+		return $this->walk_in_success( $fresh, $created, 'ok' );
+	}
+
+	/**
+	 * @param array<string, mixed> $visit Established presentVisit() row.
+	 */
+	private function walk_in_success( array $visit, string $created, string $enqueue ): WP_REST_Response {
+		$bounded = [];
+		foreach ( [ 'id', 'patient_id', 'patient_name', 'clinician_id', 'clinician_name', 'appointment_id', 'source', 'status', 'check_in_at', 'waiting_since', 'active' ] as $key ) {
+			$bounded[ $key ] = $visit[ $key ] ?? null;
+		}
+
+		return $this->success(
+			[
+				'visit'   => $bounded,
+				'walk_in' => [
+					'created'       => $created,
+					'enqueue'       => $enqueue,
+					'outcome'       => (string) ( $visit['status'] ?? '' ),
+					'complete'      => true,
+					'enqueue_error' => null,
+				],
+			]
+		);
+	}
+
+	/**
+	 * Honest partial walk-in envelope: the walk-in Visit exists in checked_in
+	 * but enqueue did not complete. Never a success; carries only the durable
+	 * state (no visit id — recovery authority is derived server-side).
+	 */
+	private function walk_in_incomplete( string $created, string $outcome, string $code, string $message ): WP_Error {
+		return $this->error(
+			'CLINIC_WALK_IN_INCOMPLETE',
+			500,
+			'ورود حضوری ثبت شد اما قرارگیری بیمار در صف انجام نشد',
+			[
+				'visit_status' => $outcome,
+				'walk_in'      => [
+					'created'       => $created,
+					'enqueue'       => 'failed',
+					'outcome'       => $outcome,
+					'complete'      => false,
+					'enqueue_error' => [
+						'code'    => $code,
+						'message' => $message,
+					],
+				],
+			]
+		);
+	}
+
+	/**
+	 * Doctors eligible for the trusted Clinic + trusted operational Location:
+	 * ACTIVE professional identity + ACTIVE durable Clinic participation
+	 * (membership of the bound user in THIS Clinic; a location-scoped
+	 * membership must include this Location) + durable assignment to this
+	 * ACTIVE Location of this Clinic. clinicians.clinic_id (home Clinic) is
+	 * deliberately never read. One bounded query; optional id narrows it to
+	 * a single selector check.
+	 *
+	 * @return list<array{id: int, name: string}>
+	 */
+	private function eligible_clinicians( int $clinic_id, int $location_id, ?int $clinician_id ): array {
+		$db     = App::db();
+		$sql    = 'SELECT c.id, c.full_name FROM ' . $db->table( 'cpms_clinicians' ) . ' c' .
+			' INNER JOIN ' . $db->table( 'cpms_clinician_locations' ) . ' cl ON cl.clinician_id = c.id AND cl.location_id = %d' .
+			' INNER JOIN ' . $db->table( 'cpms_locations' ) . ' l ON l.id = cl.location_id AND l.clinic_id = %d AND l.is_active = 1' .
+			' INNER JOIN ' . $db->table( 'cpms_clinic_memberships' ) . " m ON m.wp_user_id = c.wp_user_id AND m.clinic_id = %d AND m.status = 'active'" .
+			' WHERE c.is_active = 1 AND c.wp_user_id > 0' .
+			" AND ( m.scope_mode = 'clinic' OR EXISTS ( SELECT 1 FROM " . $db->table( 'cpms_membership_locations' ) . ' ml WHERE ml.membership_id = m.id AND ml.location_id = cl.location_id ) )';
+		$params = [ $location_id, $clinic_id, $clinic_id ];
+		if ( null !== $clinician_id ) {
+			$sql     .= ' AND c.id = %d';
+			$params[] = $clinician_id;
+		}
+		$sql     .= ' ORDER BY c.full_name ASC, c.id ASC LIMIT %d';
+		$params[] = self::CLINICIAN_OPTION_LIMIT;
+
+		$rows = $db->fetchAll( $sql, $params );
+		$out  = [];
+		foreach ( ( is_array( $rows ) ? $rows : [] ) as $row ) {
+			$out[] = [
+				'id'   => (int) $row['id'],
+				'name' => (string) $row['full_name'],
+			];
+		}
+
+		return $out;
 	}
 
 	/**

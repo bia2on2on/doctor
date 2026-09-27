@@ -123,6 +123,17 @@ $cpms_reception_cfg = [
 .cpms-staff-reception .cpms-sr-create input:focus-visible, .cpms-staff-reception .cpms-sr-create select:focus-visible { outline: 2px solid var(--cpms-primary); outline-offset: 1px; }
 .cpms-staff-reception .cpms-sr-create-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 0; }
 .cpms-staff-reception .cpms-sr-create-error { margin: 8px 0 0; font-size: 0.86rem; color: #a12828; overflow-wrap: anywhere; }
+.cpms-staff-reception .cpms-sr-walkin { display: grid; gap: 8px; }
+.cpms-staff-reception .cpms-sr-walkin h2 { margin: 0; font-size: 1rem; }
+.cpms-staff-reception .cpms-sr-walkin-meta { margin: 0; font-size: 0.86rem; color: var(--cpms-muted); overflow-wrap: anywhere; }
+.cpms-staff-reception .cpms-sr-walkin-field { display: flex; flex-direction: column; gap: 4px; max-width: 420px; font-size: 0.86rem; }
+.cpms-staff-reception .cpms-sr-walkin-field select { min-height: 40px; width: 100%; box-sizing: border-box; padding: 6px 10px; border: 1px solid var(--cpms-border); border-radius: 8px; background: #fff; font-size: 0.95rem; }
+.cpms-staff-reception .cpms-sr-walkin-field select:focus-visible { outline: 2px solid var(--cpms-primary); outline-offset: 1px; }
+.cpms-staff-reception .cpms-sr-walkin-doctor { margin: 0; font-size: 0.92rem; overflow-wrap: anywhere; }
+.cpms-staff-reception .cpms-sr-walkin-state { margin: 0; min-height: 1.3em; font-size: 0.88rem; overflow-wrap: anywhere; }
+.cpms-staff-reception .cpms-sr-walkin-state--error { color: #a12828; }
+.cpms-staff-reception .cpms-sr-walkin-state--ok { color: var(--cpms-primary); font-weight: bold; }
+.cpms-staff-reception .cpms-sr-walkin-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 @media (max-width: 768px) {
     .cpms-staff-reception .cpms-sr-top { flex-direction: column; align-items: stretch; }
     .cpms-staff-reception .cpms-sr-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -212,6 +223,21 @@ $cpms_reception_cfg = [
                 <span class="cpms-sr-search-selected-note" data-role="sr-search-selected-note">فقط برای شناسایی — هیچ تغییری در پرونده یا نوبت ایجاد نمی‌شود.</span>
             </div>
             <button type="button" class="cpms-sr-btn cpms-sr-btn--ghost" data-role="sr-search-clear">لغو انتخاب</button>
+        </div>
+    </section>
+
+    <section class="cpms-sr-panel cpms-sr-walkin" data-role="sr-walkin" aria-labelledby="cpms-sr-walkin-title" hidden>
+        <h2 id="cpms-sr-walkin-title">ورود حضوری بدون نوبت</h2>
+        <p class="cpms-sr-walkin-meta">بیمار انتخاب‌شده، بدون ساخت نوبت، مستقیم وارد صف انتظار پزشک می‌شود. موقعیت: <strong data-role="sr-walkin-location">—</strong></p>
+        <label class="cpms-sr-walkin-field" for="cpms-sr-walkin-clinician" data-role="sr-walkin-clinician-wrap" hidden>
+            <span>پزشک <span class="cpms-sr-create-req">*</span></span>
+            <select id="cpms-sr-walkin-clinician" data-role="sr-walkin-clinician"></select>
+        </label>
+        <p class="cpms-sr-walkin-doctor" data-role="sr-walkin-doctor" hidden></p>
+        <p class="cpms-sr-walkin-state" data-role="sr-walkin-state" role="status" aria-live="polite"></p>
+        <div class="cpms-sr-walkin-actions">
+            <button type="button" class="cpms-sr-btn" data-role="sr-walkin-submit" disabled>ثبت ورود حضوری و افزودن به صف</button>
+            <button type="button" class="cpms-sr-btn" data-role="sr-walkin-recover" hidden>تکمیل ورود به صف</button>
         </div>
     </section>
 
@@ -610,6 +636,9 @@ $cpms_reception_cfg = [
             state.locationName = '';
             setStatus('در حال بارگذاری…', null);
             loadBoard(false);
+            // Phase 11 Slice 4: a Location change invalidates the doctor list and
+            // any doctor selection immediately (never carried across Locations).
+            walkinReload();
         }
     });
 
@@ -707,11 +736,13 @@ $cpms_reception_cfg = [
             text.innerHTML = '';
             box.hidden = true;
             setSelectedNote(false);
+            walkinOnPatient();
             return;
         }
         text.innerHTML = '<span class="cpms-sr-name">' + escapeHtml(patientLabel(search.selected)) + '</span> <span class="cpms-sr-search-meta">' + patientMeta(search.selected) + '</span>';
         box.hidden = false;
         setSelectedNote(Boolean(search.created && search.selected && String(search.created) === String(search.selected.id)));
+        walkinOnPatient();
     }
 
     function runSearch(force) {
@@ -952,6 +983,235 @@ $cpms_reception_cfg = [
             setCreateError('خطای شبکه هنگام ثبت بیمار.');
         });
     }
+
+    // ---- Phase 11 Slice 4: walk-in for the selected Clinic patient ----
+    // Doctor options come from the bounded reception adapter for the trusted
+    // Clinic + current operational Location (0 ⇒ disabled, 1 ⇒ shown and
+    // auto-selected, N ⇒ explicit choice, never a first-row fallback). The
+    // explicit submit posts ONLY patient_id + clinician_id; the server owns
+    // Clinic/Location/eligibility and the existing walk-in → enqueue path.
+    // A recoverable partial is completed by re-posting the same selectors —
+    // the server derives the existing walk-in Visit itself.
+    var walkin = { patientId: null, seq: 0, locationId: null, clinicians: [], selectedId: null, busy: false, done: false };
+
+    function setWalkinState(text, kind) {
+        var node = el('sr-walkin-state');
+        if (!node) {
+            return;
+        }
+        node.textContent = text || '';
+        node.className = 'cpms-sr-walkin-state' + (kind === 'error' ? ' cpms-sr-walkin-state--error' : (kind === 'ok' ? ' cpms-sr-walkin-state--ok' : ''));
+    }
+
+    function walkinSync() {
+        var submit = el('sr-walkin-submit');
+        if (submit) {
+            submit.disabled = walkin.busy || walkin.done || !walkin.patientId || !walkin.selectedId ||
+                !walkin.locationId || String(walkin.locationId) !== String(state.locationId || walkin.locationId);
+        }
+        var recover = el('sr-walkin-recover');
+        if (recover) {
+            recover.disabled = walkin.busy;
+        }
+    }
+
+    function walkinShowRecover(show) {
+        var recover = el('sr-walkin-recover');
+        var submit = el('sr-walkin-submit');
+        if (recover) {
+            recover.hidden = !show;
+        }
+        if (submit) {
+            submit.hidden = Boolean(show);
+        }
+    }
+
+    function walkinClear() {
+        walkin.seq += 1;
+        walkin.locationId = null;
+        walkin.clinicians = [];
+        walkin.selectedId = null;
+        walkin.done = false;
+        walkinShowRecover(false);
+        var wrap = el('sr-walkin-clinician-wrap');
+        var select = el('sr-walkin-clinician');
+        var doctor = el('sr-walkin-doctor');
+        if (select) {
+            select.innerHTML = '';
+        }
+        if (wrap) {
+            wrap.hidden = true;
+        }
+        if (doctor) {
+            doctor.hidden = true;
+            doctor.textContent = '';
+        }
+        var loc = el('sr-walkin-location');
+        if (loc) {
+            loc.textContent = '—';
+        }
+        walkinSync();
+    }
+
+    function walkinRender(data) {
+        walkin.locationId = data.location_id ? Number(data.location_id) : null;
+        walkin.clinicians = Array.isArray(data.clinicians) ? data.clinicians : [];
+        walkin.selectedId = null;
+        var loc = el('sr-walkin-location');
+        if (loc) {
+            loc.textContent = String(data.location_name || state.locationName || '—');
+        }
+        var wrap = el('sr-walkin-clinician-wrap');
+        var select = el('sr-walkin-clinician');
+        var doctor = el('sr-walkin-doctor');
+        if (!walkin.locationId) {
+            setWalkinState('موقعیت عملیاتی فعالی در دسترس نیست — ورود حضوری ممکن نیست.', 'error');
+        } else if (walkin.clinicians.length === 0) {
+            setWalkinState('پزشکی برای این موقعیت در دسترس نیست — ورود حضوری ممکن نیست.', 'error');
+        } else if (walkin.clinicians.length === 1) {
+            walkin.selectedId = Number(walkin.clinicians[0].id);
+            if (doctor) {
+                doctor.textContent = 'پزشک: ' + String(walkin.clinicians[0].name || '') + ' (تنها پزشک در دسترس این موقعیت — خودکار انتخاب شد)';
+                doctor.hidden = false;
+            }
+            setWalkinState('', null);
+        } else {
+            if (select) {
+                var html = '<option value="">— انتخاب پزشک —</option>';
+                for (var i = 0; i < walkin.clinicians.length; i += 1) {
+                    html += '<option value="' + escapeHtml(walkin.clinicians[i].id) + '">' + escapeHtml(walkin.clinicians[i].name) + '</option>';
+                }
+                select.innerHTML = html;
+                select.value = '';
+            }
+            if (wrap) {
+                wrap.hidden = false;
+            }
+            setWalkinState('انتخاب پزشک الزامی است.', null);
+        }
+        walkinSync();
+    }
+
+    function walkinReload() {
+        walkinClear();
+        var section = el('sr-walkin');
+        if (!walkin.patientId) {
+            if (section) {
+                section.hidden = true;
+            }
+            setWalkinState('', null);
+            return;
+        }
+        if (section) {
+            section.hidden = false;
+        }
+        if (state.locations.length > 1 && !state.locationId) {
+            setWalkinState('ابتدا موقعیت عملیاتی را انتخاب کنید.', 'error');
+            return;
+        }
+        var seq = walkin.seq;
+        setWalkinState('در حال بارگذاری پزشکان…', null);
+        api('/staff/portal/reception/clinicians').then(function (result) {
+            if (seq !== walkin.seq) {
+                return;
+            }
+            if (!result.ok) {
+                setWalkinState(errorCodeOf(result.body) === 'CLINIC_SCOPE_REQUIRED' ? 'ابتدا موقعیت عملیاتی را انتخاب کنید.' : errorMessageOf(result.body, 'بارگذاری پزشکان انجام نشد.'), 'error');
+                return;
+            }
+            walkinRender(payloadOf(result.body));
+        }).catch(function () {
+            if (seq === walkin.seq) {
+                setWalkinState('خطای شبکه هنگام بارگذاری پزشکان.', 'error');
+            }
+        });
+    }
+
+    function walkinOnPatient() {
+        var id = search.selected ? Number(search.selected.id) : null;
+        if (id === walkin.patientId) {
+            return;
+        }
+        walkin.patientId = id;
+        walkinReload();
+    }
+
+    function walkinSubmit(isRecovery) {
+        if (walkin.busy || !walkin.patientId || !walkin.selectedId || !walkin.locationId) {
+            return;
+        }
+        if (state.locationId && String(walkin.locationId) !== String(state.locationId)) {
+            // Stale list from a previous Location: never submit it.
+            walkinReload();
+            return;
+        }
+        walkin.busy = true;
+        walkinSync();
+        var seq = walkin.seq;
+        setWalkinState(isRecovery ? 'در حال تکمیل ورود به صف…' : 'در حال ثبت ورود حضوری…', null);
+        api('/staff/portal/reception/walk-ins', { method: 'POST', body: { patient_id: walkin.patientId, clinician_id: walkin.selectedId } })
+            .then(function (result) {
+                if (seq !== walkin.seq) {
+                    return null;
+                }
+                var data = payloadOf(result.body);
+                var info = data.walk_in || {};
+                var code = errorCodeOf(result.body);
+                if (result.ok && info.complete === true) {
+                    var visit = data.visit || {};
+                    walkin.done = true;
+                    walkinShowRecover(false);
+                    setWalkinState('ورود حضوری ثبت شد و بیمار در صف انتظار ' + String(visit.clinician_name || 'پزشک') + ' قرار گرفت.', 'ok');
+                } else if (code === 'CLINIC_WALK_IN_INCOMPLETE' || info.complete === false) {
+                    walkinShowRecover(true);
+                    setWalkinState('ورود حضوری ثبت شد، اما قرارگیری در صف انجام نشد — برای تکمیل، «تکمیل ورود به صف» را بزنید.', 'error');
+                } else if (code === 'CLINIC_DUPLICATE_ACTIVE_VISIT') {
+                    walkinShowRecover(false);
+                    walkin.done = true;
+                    var existing = data.visit_status ? ' (وضعیت فعلی: ' + statusLabel(String(data.visit_status)) + ')' : '';
+                    setWalkinState('این بیمار امروز نزد همین پزشک مراجعهٔ فعال دارد' + existing + ' — مراجعهٔ تازه ثبت نشد.', 'error');
+                } else if (code === 'CLINIC_SCOPE_REQUIRED') {
+                    setWalkinState('ابتدا موقعیت عملیاتی را انتخاب کنید.', 'error');
+                } else {
+                    setWalkinState((isRecovery ? 'تکمیل ورود به صف انجام نشد: ' : 'ثبت ورود حضوری انجام نشد: ') + errorMessageOf(result.body, 'خطای نامشخص'), 'error');
+                }
+                return loadBoard(true);
+            })
+            .catch(function () {
+                if (seq === walkin.seq) {
+                    setWalkinState('خطای شبکه هنگام ثبت ورود حضوری.', 'error');
+                }
+            })
+            .then(function () {
+                walkin.busy = false;
+                walkinSync();
+            });
+    }
+
+    (function bindWalkin() {
+        var select = el('sr-walkin-clinician');
+        if (select) {
+            select.addEventListener('change', function () {
+                walkin.selectedId = select.value ? Number(select.value) : null;
+                walkin.done = false;
+                walkinShowRecover(false);
+                setWalkinState(walkin.selectedId ? '' : 'انتخاب پزشک الزامی است.', null);
+                walkinSync();
+            });
+        }
+        var submit = el('sr-walkin-submit');
+        if (submit) {
+            submit.addEventListener('click', function () {
+                walkinSubmit(false);
+            });
+        }
+        var recover = el('sr-walkin-recover');
+        if (recover) {
+            recover.addEventListener('click', function () {
+                walkinSubmit(true);
+            });
+        }
+    }());
 
     function poll() {
         loadBoard(true).then(function () {
