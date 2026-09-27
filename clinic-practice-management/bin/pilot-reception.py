@@ -1539,8 +1539,8 @@ def run_booking_journey(browser, vp):
         shot(page, f"reception-{vp['vp']}-booking-success")
 
         stage = "duplicate"
-        if page.locator('[data-role="sr-book-submit"]').is_disabled():
-            raise RuntimeError("after successful create, the UI must not permit a duplicate without a new slot choice")
+        if not page.locator('[data-role="sr-book-submit"]').is_disabled():
+            raise RuntimeError("after successful create, the UI must disable submit until a new slot is explicitly selected")
         # Re-select the same concrete slot while it still has one unit of
         # capacity. Duplicate for this same patient must be a bounded conflict,
         # not a second appointment.
