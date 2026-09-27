@@ -212,6 +212,10 @@ final class Phase11ReceptionPartialArrivalRecoveryRedTest extends WP_UnitTestCas
         self::assertSame('waiting', (string) $row['status'], 'R2: durable status is waiting');
         self::assertNotEmpty($row['waiting_since'], 'R2: waiting_since is stamped by the existing enqueue transition');
 
+        // Presentation-only clarity never corrupts the underlying appointment
+        // state: the booked appointment stays exactly what it was.
+        self::assertSame('confirmed', (string) $this->findAppointment($appt)['status'], 'R2: the underlying appointment state remains confirmed');
+
         $history = App::db()->fetchAll(
             'SELECT from_status, to_status FROM ' . App::db()->table('cpms_visit_status_history') . ' WHERE visit_id = %d ORDER BY id ASC',
             [$visitId]
@@ -370,6 +374,7 @@ final class Phase11ReceptionPartialArrivalRecoveryRedTest extends WP_UnitTestCas
         self::assertStringContainsString('تکمیل ورود به صف', $html, 'R5: the recovery action is clearly labeled');
         self::assertStringContainsString('اما قرارگیری در صف انجام نشد', $html, 'R5: the partial-failure message is distinct and actionable');
         self::assertStringContainsString('statusSticky', $html, 'R5: the sticky status mechanism exists (silent refresh must not erase the partial message)');
+        self::assertStringContainsString('هنوز پذیرش نشده', $html, 'R5: a booked-but-not-received row clearly says the patient has not been received yet');
     }
 
     // ================= helpers (TEST-ONLY) =================

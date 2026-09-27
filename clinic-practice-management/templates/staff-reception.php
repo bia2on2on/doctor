@@ -318,7 +318,10 @@ $cpms_reception_cfg = [
             var row = rows[i];
             var canArrive = !row.visit_status && (row.status === 'pending' || row.status === 'confirmed');
             var canRecover = row.visit_status === 'checked_in';
-            var badge = row.visit_status ? statusBadge(row.visit_status) : '<span class="cpms-sr-badge">' + escapeHtml(row.status === 'confirmed' ? 'تاییدشده' : 'رزرو شده') + '</span>';
+            // Presentation-only clarity: the real appointment state badge is
+            // kept as-is; a booked row without a visit also shows that the
+            // patient has NOT yet been received (no state semantics change).
+            var badge = row.visit_status ? statusBadge(row.visit_status) : '<span class="cpms-sr-badge">' + escapeHtml(row.status === 'confirmed' ? 'تاییدشده' : 'رزرو شده') + '</span> <span class="cpms-sr-badge cpms-sr-badge--not-received">هنوز پذیرش نشده</span>';
             var express = row.express ? ' <span class="cpms-sr-badge cpms-sr-badge--express">فوری</span>' : '';
             // Recoverable partial (checked_in) keeps a clear completion action;
             // queued/in-service rows expose NO retry action at all.

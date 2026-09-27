@@ -76,6 +76,9 @@ def parts(name, n):
 
 _sec = parts("RECEPTION_SECRETARY", 3)
 SECRETARY = {"login": _sec[0], "password": _sec[1], "user_id": int(_sec[2])}
+_doc = parts("RECEPTION_DOCTOR", 3)
+DOCTOR = {"login": _doc[0], "password": _doc[1], "user_id": int(_doc[2])}
+DOCTOR_URL = os.environ.get("RECEPTION_DOCTOR_URL", "").strip()
 _pub = parts("RECEPTION_PUBLIC", 9)
 PUB = {
     "clinic": int(_pub[0]),
@@ -382,6 +385,15 @@ def run_journey(browser, vp, arrive_id, expect_queue):
             raise RuntimeError(f"board must show exactly today's booked rows for the trusted Location, got {got_ids}")
         if row_of(page, PUB["appt_express"]).locator(".cpms-sr-badge--express").count() != 1:
             raise RuntimeError("express booking must render its badge")
+        # Booked-but-not-received clarity (presentation-only): the not-yet-
+        # arrived row keeps its real appointment state AND says so clearly.
+        own_row_text = row_of(page, arrive_id).inner_text() or ""
+        if "هنوز پذیرش نشده" not in own_row_text:
+            raise RuntimeError("a booked-but-not-received row must clearly say the patient has not been received yet")
+        if "تاییدشده" not in own_row_text and "رزرو شده" not in own_row_text:
+            raise RuntimeError("the real appointment state badge must remain alongside the clarification")
+        if vp["vp"] == "mobile-390":
+            shot(page, "reception-mobile-390-booked-not-received")
         shot(page, f"reception-{vp['vp']}-board")
 
         stage = "arrival"
@@ -564,6 +576,103 @@ def run_partial_journey(browser, vp):
         ctx.close()
 
 
+def run_queue_states_journey(browser, vp):
+    """Called / in-consultation visual evidence. The reception patient is put
+    into waiting through the established flow, then the EXISTING authorized
+    Doctor module (real doctor login, real queue actions on the real Doctor
+    Portal page) calls and starts that patient; the Reception board is
+    observed showing both existing queue states. No direct DB mutation."""
+    key = f"reception-queue-states-{vp['vp']}"
+    stage = "secretary-setup"
+    ctx, page, state = new_page(browser, vp)
+    dctx = None
+    try:
+        login(page, SECRETARY)
+        resp = harness_goto(page, RECEPTION_URL, wait_until="domcontentloaded")
+        if resp is None or resp.status != 200:
+            raise RuntimeError(f"reception entry status {getattr(resp, 'status', None)}")
+        page.wait_for_selector('[data-role="reception-app"]', state="attached", timeout=15000)
+        select_location(page, PUB["loc_tehran"])
+        wait_rows_count(page, 4)
+        # The recovered partial-arrival patient is in waiting via the
+        # established check-in + enqueue flow (previous journey).
+        wait_row_text(page, PUB["appt_partial"], "در انتظار")
+
+        stage = "doctor-call"
+        dctx, dpage, dstate = new_page(browser, vp)
+        login(dpage, DOCTOR)
+        resp = harness_goto(dpage, DOCTOR_URL, wait_until="domcontentloaded")
+        if resp is None or resp.status != 200:
+            raise RuntimeError(f"doctor portal entry status {getattr(resp, 'status', None)}")
+        dpage.wait_for_selector('[data-role="queue-item"]', state="attached", timeout=20000)
+        # Bind "that patient" across the two real UIs: reception row name →
+        # the doctor queue row of the same patient (visit id from the DOM).
+        name = (row_of(page, PUB["appt_partial"]).locator(".cpms-sr-name").inner_text() or "").strip()
+        target = dpage.locator('[data-role="queue-item"]').filter(has_text=name)
+        if target.count() != 1:
+            raise RuntimeError(f"doctor queue must hold exactly one row for this patient, got {target.count()}")
+        vid = target.get_attribute("data-visit-id") or ""
+        if not vid:
+            raise RuntimeError("doctor queue row must carry its visit id")
+        target.locator('[data-action="call"]').click()
+        dpage.wait_for_function(
+            """([vid, st]) => {
+              const el = document.querySelector('[data-role="queue-item"][data-visit-id="' + vid + '"]');
+              return !!el && el.getAttribute('data-status') === st;
+            }""",
+            arg=[vid, "called"],
+            timeout=20000,
+        )
+
+        stage = "reception-called"
+        wait_row_text(page, PUB["appt_partial"], "فراخوانی‌شده")
+        shot(page, f"reception-{vp['vp']}-called")
+
+        stage = "doctor-start"
+        target.locator('[data-action="start"]').click()
+        dpage.wait_for_function(
+            """([vid, st]) => {
+              const el = document.querySelector('[data-role="queue-item"][data-visit-id="' + vid + '"]');
+              return !!el && el.getAttribute('data-status') === st;
+            }""",
+            arg=[vid, "in_consultation"],
+            timeout=20000,
+        )
+
+        stage = "reception-in-consultation"
+        wait_row_text(page, PUB["appt_partial"], "در ویزیت")
+        shot(page, f"reception-{vp['vp']}-in-consultation")
+
+        assert_authority_headers(state, PUB["clinic"], {PUB["loc_tehran"], PUB["loc_tokyo"]})
+        assert_hygiene(state, f"reception-{vp['vp']}-queue-states")
+        assert_hygiene(dstate, f"doctor-{vp['vp']}-queue-states")
+        ok(
+            key,
+            "reception board shows the existing doctor queue states after real doctor actions",
+            f"vp={vp['vp']} called=1 in_consultation=1 visit={vid}",
+        )
+    except Exception as e:
+        try:
+            dump = {
+                "status_text": (page.locator('[data-role="sr-status"]').inner_text() or "")[:160],
+                "rows": rows(page).count(),
+                "rest_tail": [f"{r['method']} {r['route']}={r['status']}" for r in state["rest"][-6:]],
+            }
+            info(f"fail-dump {vp['vp']} stage={stage} {dump}")
+        except Exception:
+            pass
+        try:
+            shot(page, f"reception-FAIL-{key}-{stage}")
+        except Exception:
+            pass
+        fail(key, vp["vp"], f"{e} ({page_hint(page)})")
+        raise
+    finally:
+        if dctx is not None:
+            dctx.close()
+        ctx.close()
+
+
 def main():
     if not RECEPTION_URL or not STAFF_URL:
         raise SystemExit("RECEPTION_URL / STAFF_PORTAL_URL must be set by the fixture")
@@ -582,6 +691,10 @@ def main():
                 hard_fail = True
         try:
             run_partial_journey(browser, VIEWPORTS[0])
+        except Exception:
+            hard_fail = True
+        try:
+            run_queue_states_journey(browser, VIEWPORTS[2])
         except Exception:
             hard_fail = True
         browser.close()

@@ -113,6 +113,33 @@ try {
     rp_fail('secretary membership: ' . $e->getMessage());
 }
 
+// Authorized doctor for the EXISTING Doctor-module queue evidence (call/start
+// by the real doctor path): WP cpms_doctor role + ACTIVE membership + the
+// clinicians row bound to that user — existing presets only, no new role or
+// capability is introduced.
+$doctorLogin = 'rpdoc-' . $uniq;
+$doctorPass = 'RpDoc-' . $uniq . '-2026!';
+$doctorUserId = wp_create_user($doctorLogin, $doctorPass, $doctorLogin . '@pilot.local');
+if (is_wp_error($doctorUserId)) {
+    rp_fail('doctor user create failed');
+}
+(new WP_User((int) $doctorUserId))->set_role('cpms_doctor');
+try {
+    \ClinicCore\Bootstrap\App::membership_service()->create_membership($clinicId, (int) $doctorUserId, 'cpms_doctor');
+} catch (\Throwable $e) {
+    rp_fail('doctor membership: ' . $e->getMessage());
+}
+if ($wpdb->query($wpdb->prepare('UPDATE ' . $db->table('cpms_clinicians') . ' SET wp_user_id = %d WHERE id = %d', (int) $doctorUserId, $clinicianId)) === false) {
+    rp_fail('clinician bind: ' . $wpdb->last_error);
+}
+
+// The EXISTING standalone Doctor Portal page (the same product page the
+// established doctor journeys exercise) for the call/start evidence.
+$doctorUrl = \ClinicCore\Frontend\DoctorPortalShell::portal_url();
+if (!is_string($doctorUrl) || $doctorUrl === '' || $doctorUrl === home_url('/')) {
+    rp_fail('doctor portal URL invalid: ' . (string) $doctorUrl);
+}
+
 $patientIds = [];
 $patientIndex = 0;
 foreach (['a', 'b', 'c', 'd'] as $tag) {
@@ -206,6 +233,8 @@ file_put_contents(
     'RECEPTION_URL=' . $receptionUrl . "\n"
     . 'STAFF_PORTAL_URL=' . $url . "\n"
     . 'RECEPTION_SECRETARY=' . implode('|', [$login, $pass, (string) $userId]) . "\n"
+    . 'RECEPTION_DOCTOR=' . implode('|', [$doctorLogin, $doctorPass, (string) $doctorUserId]) . "\n"
+    . 'RECEPTION_DOCTOR_URL=' . $doctorUrl . "\n"
     . 'RECEPTION_PUBLIC=' . implode('|', [
         (string) $clinicId,
         (string) $locTehran,
