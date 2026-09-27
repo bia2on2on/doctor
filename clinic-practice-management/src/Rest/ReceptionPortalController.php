@@ -366,7 +366,7 @@ final class ReceptionPortalController extends RestBase {
 			}
 			return $this->success(
 				[
-					'visit'   => ( $fresh ?: $visit ),
+					'visit'   => ( [] !== $fresh ) ? $fresh : $visit,
 					'arrival' => [
 						'check_in'      => 'existing',
 						'enqueue'       => 'ok',
@@ -408,15 +408,15 @@ final class ReceptionPortalController extends RestBase {
 			$visit = App::visitService()->transition( $user_id, (int) $visit['id'], 'enqueue' );
 			// The response truth is the DURABLE visit state, never the
 			// transition's in-memory return (contract truthfulness).
-			$fresh   = $this->fresh_visit( $user_id, (int) ( $visit['id'] ?? 0 ) );
-			$outcome = (string) ( $fresh['status'] ?? '' );
+			$fresh    = $this->fresh_visit( $user_id, (int) ( $visit['id'] ?? 0 ) );
+			$outcome  = (string) ( $fresh['status'] ?? '' );
 			$complete = 'waiting' === $outcome;
 			if ( ! $complete ) {
 				return $this->arrival_incomplete( 'ok', (int) ( $visit['id'] ?? 0 ), ( '' === $outcome ? 'checked_in' : $outcome ), 'CLINIC_INVALID_TRANSITION', 'افزودن به صف انجام نشد' );
 			}
 			return $this->success(
 				[
-					'visit'   => ( $fresh ?: $visit ),
+					'visit'   => ( [] !== $fresh ) ? $fresh : $visit,
 					'arrival' => [
 						'check_in'      => 'ok',
 						'enqueue'       => 'ok',
