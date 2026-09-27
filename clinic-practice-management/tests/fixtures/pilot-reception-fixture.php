@@ -114,7 +114,9 @@ try {
 }
 
 $patientIds = [];
+$patientIndex = 0;
 foreach (['a', 'b'] as $tag) {
+    $patientIndex++;
     $patientIds[$tag] = rp_insert(
         $wpdb,
         'INSERT INTO ' . $db->table('cpms_patients') . ' (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, %s, %s, %s)',
@@ -123,7 +125,8 @@ foreach (['a', 'b'] as $tag) {
             'MR-RP-' . strtoupper($tag) . '-' . $uniq,
             'Reception',
             'Patient ' . strtoupper($tag),
-            '0912' . sprintf('%07d', hexdec(substr($uniq, 0, 6)) % 1000000),
+            // Unique per patient: cpms_patients.u_pat_mobile is unique per clinic.
+            '0912' . sprintf('%06d', hexdec(substr($uniq, 0, 6)) % 1000000) . (string) $patientIndex,
             'active',
             $now,
             $now,
