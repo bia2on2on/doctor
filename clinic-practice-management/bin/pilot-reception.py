@@ -1551,6 +1551,9 @@ def run_booking_journey(browser, vp):
         if duplicate_info.value.status != 409 or duplicate_info.value.json().get("code") != "CLINIC_DUPLICATE_APPOINTMENT":
             raise RuntimeError(f"same-patient same-slot duplicate must be bounded 409, got {duplicate_info.value.status}")
         wait_book_state(page, "نوبت تکراری ثبت نشد")
+        # The UI performs one bounded availability refresh after the explicit
+        # duplicate response; finish it before measuring the next date change.
+        wait_book_slot(page, selected_slot_id)
         if page.locator('[data-role="sr-row"][data-appointment-id="' + str(appointment.get("id")) + '"]').count() != 1:
             raise RuntimeError("duplicate submission must not create a second board appointment")
 
