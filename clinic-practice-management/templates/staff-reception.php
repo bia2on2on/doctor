@@ -180,10 +180,12 @@ $cpms_reception_cfg = [
     }
 
     var statusKind = null;
+    var statusSticky = false;
 
-    function setStatus(text, kind) {
+    function setStatus(text, kind, sticky) {
         var node = el('sr-status');
         statusKind = text ? kind : null;
+        statusSticky = Boolean(text && sticky);
         if (!node) {
             return;
         }
@@ -315,11 +317,17 @@ $cpms_reception_cfg = [
         for (var i = 0; i < rows.length; i += 1) {
             var row = rows[i];
             var canArrive = !row.visit_status && (row.status === 'pending' || row.status === 'confirmed');
+            var canRecover = row.visit_status === 'checked_in';
             var badge = row.visit_status ? statusBadge(row.visit_status) : '<span class="cpms-sr-badge">' + escapeHtml(row.status === 'confirmed' ? 'تاییدشده' : 'رزرو شده') + '</span>';
             var express = row.express ? ' <span class="cpms-sr-badge cpms-sr-badge--express">فوری</span>' : '';
-            var action = canArrive
-                ? '<button type="button" class="cpms-sr-btn" data-role="sr-arrive" data-patient-id="' + escapeHtml(row.patient_id) + '" data-appointment-id="' + escapeHtml(row.id) + '">حضوریافت / آماده شد</button>'
-                : '<button type="button" class="cpms-sr-btn cpms-sr-btn--ghost" disabled>' + escapeHtml(statusLabel(row.visit_status)) + '</button>';
+            // Recoverable partial (checked_in) keeps a clear completion action;
+            // queued/in-service rows expose NO retry action at all.
+            var action = '';
+            if (canRecover) {
+                action = '<button type="button" class="cpms-sr-btn cpms-sr-btn--recover" data-role="sr-recover" data-patient-id="' + escapeHtml(row.patient_id) + '" data-appointment-id="' + escapeHtml(row.id) + '" title="حضور ثبت شده است؛ قرارگیری در صف انتظار هنوز کامل نشده">تکمیل ورود به صف</button>';
+            } else if (canArrive) {
+                action = '<button type="button" class="cpms-sr-btn" data-role="sr-arrive" data-patient-id="' + escapeHtml(row.patient_id) + '" data-appointment-id="' + escapeHtml(row.id) + '">حضوریافت / آماده شد</button>';
+            }
             html += '<tr data-role="sr-row" data-appointment-id="' + escapeHtml(row.id) + '">' +
                 '<td data-role="sr-row-time">' + escapeHtml(row.time) + '</td>' +
                 '<td class="cpms-sr-name" data-role="sr-row-name">' + escapeHtml(row.patient_name) + express + '</td>' +
@@ -416,9 +424,11 @@ $cpms_reception_cfg = [
                 return;
             }
             renderBoard(payloadOf(result.body));
-            // Keep durable success/status messages across silent refreshes; a
-            // silent success after an error means the board recovered.
-            if (!silent || statusKind === 'error') {
+            // Keep durable success/status messages across silent refreshes. A
+            // silent success may clear only a NON-sticky error (e.g. a network
+            // hiccup on refresh) — the actionable partial-arrival message is
+            // sticky until an explicit/new action or a successful recovery.
+            if (!silent || (statusKind === 'error' && !statusSticky)) {
                 setStatus('', null);
             }
         }).catch(function () {
@@ -434,21 +444,32 @@ $cpms_reception_cfg = [
         button.disabled = true;
         var patientId = Number(button.getAttribute('data-patient-id') || 0);
         var appointmentId = Number(button.getAttribute('data-appointment-id') || 0);
-        setStatus('در حال ثبت حضور…', null);
+        var isRecovery = button.getAttribute('data-role') === 'sr-recover';
+        setStatus(isRecovery ? 'در حال تکمیل ورود به صف…' : 'در حال ثبت حضور…', null);
         api('/staff/portal/reception/arrivals', { method: 'POST', body: { patient_id: patientId, appointment_id: appointmentId } })
             .then(function (result) {
                 var data = payloadOf(result.body);
                 var arrival = data.arrival || {};
+                var code = (result.body && result.body.code) || (data && data.code) || '';
                 if (!result.ok) {
-                    setStatus('ثبت حضور انجام نشد: ' + errorMessageOf(result.body, ''), 'error');
-                    return;
+                    if (code === 'CLINIC_ARRIVAL_INCOMPLETE' || arrival.complete === false) {
+                        // Actionable partial: arrival recorded, queue placement
+                        // still needs completion. Sticky — a silent board
+                        // refresh must not erase it; only a new action or a
+                        // successful recovery clears it.
+                        var partialErr = (arrival.enqueue_error && arrival.enqueue_error.message) ? arrival.enqueue_error.message : 'افزودن به صف انجام نشد';
+                        setStatus('حضور ثبت شد، اما قرارگیری در صف انجام نشد (' + partialErr + ') — برای تکمیل، «تکمیل ورود به صف» را بزنید.', 'error', true);
+                    } else {
+                        setStatus((isRecovery ? 'تکمیل ورود به صف انجام نشد: ' : 'ثبت حضور انجام نشد: ') + errorMessageOf(result.body, ''), 'error');
+                    }
+                    return loadBoard(true);
                 }
                 if (arrival.complete) {
                     setStatus('حضور ثبت شد و بیمار در صف انتظار قرار گرفت.', 'ok');
                 } else {
-                    // Honest partial: check-in committed, enqueue did not.
+                    // Defensive: never claim success over an incomplete arrival.
                     var partial = (arrival.enqueue_error && arrival.enqueue_error.message) ? arrival.enqueue_error.message : 'افزودن به صف انجام نشد';
-                    setStatus('حضور ثبت شد؛ افزودن به صف ناقص ماند (' + partial + ') — وضعیت فعلی: ' + statusLabel(arrival.outcome), 'error');
+                    setStatus('حضور ثبت شد، اما قرارگیری در صف انجام نشد (' + partial + ') — برای تکمیل، «تکمیل ورود به صف» را بزنید.', 'error', true);
                 }
                 return loadBoard(true);
             })
@@ -462,8 +483,11 @@ $cpms_reception_cfg = [
 
     document.addEventListener('click', function (event) {
         var target = event.target;
-        if (target && target.getAttribute && target.getAttribute('data-role') === 'sr-arrive') {
-            arrive(target);
+        if (target && target.getAttribute) {
+            var role = target.getAttribute('data-role');
+            if (role === 'sr-arrive' || role === 'sr-recover') {
+                arrive(target);
+            }
         }
     });
 

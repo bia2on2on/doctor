@@ -280,10 +280,13 @@ final class ReceptionPortalController extends RestBase {
 	 * The one reception arrival action: EXISTING check-in then the EXISTING
 	 * enqueue transition, in valid order, ending in the EXISTING waiting state.
 	 *
-	 * Partial honesty: if the check-in transition succeeds but the enqueue
-	 * transition cannot complete, the response never claims full success — the
-	 * reported outcome is the durable visit state with an explicit
-	 * enqueue_error (complete=false). A real failure is never hidden.
+	 * Recoverable partial: if stage 1 (check-in) commits but stage 2 (enqueue)
+	 * cannot complete, the response is NEVER a success — it is the bounded
+	 * CLINIC_ARRIVAL_INCOMPLETE envelope carrying the durable checked_in state.
+	 * A retry for the same authorized appointment derives its target
+	 * server-side (appointment + trusted Clinic + selected Location) and runs
+	 * ONLY the existing enqueue transition on the existing visit — never a
+	 * second check-in. A client-supplied visit id is never authority.
 	 */
 	private function arrivals( WP_REST_Request $r ): WP_REST_Response|WP_Error {
 		$user_id        = (int) get_current_user_id();
@@ -325,6 +328,53 @@ final class ReceptionPortalController extends RestBase {
 			return $this->error( 'CLINIC_PERMISSION_DENIED', 403, 'نوبت به این بیمار تعلق ندارد' );
 		}
 
+		// RECOVERY — the same authorized appointment may already carry its
+		// valid active Visit stuck in `checked_in` (stage 1 committed, stage 2
+		// failed). The recovery target is derived SERVER-SIDE from the
+		// authorized appointment + trusted Clinic + selected Location; a
+		// client-supplied visit id is never authority. No broad transaction
+		// hides the intermediate state — it is real and recoverable.
+		$active = $db->fetchRow(
+			'SELECT id, status FROM ' . $db->table( 'cpms_visits' ) . ' WHERE appointment_id = %d AND clinic_id = %d AND location_id = %d AND active = 1 ORDER BY id DESC LIMIT 1',
+			[ $appointment_id, $clinic_id, $location_id ]
+		);
+		if ( null !== $active ) {
+			$active_status = (string) $active['status'];
+			if ( 'checked_in' !== $active_status ) {
+				// Already queued / in service (waiting, called, in_consultation,
+				// …) — fail closed; no valid retry action exists for this row.
+				return $this->error( 'CLINIC_INVALID_APPOINTMENT_STATE', 409, 'این نوبت هم‌اکنون در صف پذیرش یا ویزیت است', [ 'visit_status' => $active_status ] );
+			}
+
+			// Execute ONLY the existing enqueue transition on the existing
+			// visit — the established checked_in→waiting machine path.
+			try {
+				$visit = App::visitService()->transition( $user_id, (int) $active['id'], 'enqueue' );
+			} catch ( \Throwable $e ) {
+				error_log( '[CPMS][ReceptionPortalController] recovery enqueue: ' . $e->getMessage() ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- established controller convention
+				$code    = $e instanceof VisitException ? $e->errorCode : 'CLINIC_INTERNAL_ERROR'; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established VisitException contract
+				$message = $e instanceof VisitException ? $e->getMessage() : 'افزودن به صف انجام نشد';
+				return $this->arrival_incomplete( 'existing', (int) $active['id'], 'checked_in', $code, $message );
+			}
+			$outcome  = (string) ( $visit['status'] ?? '' );
+			$complete = 'waiting' === $outcome;
+			if ( ! $complete ) {
+				return $this->arrival_incomplete( 'existing', (int) $active['id'], ( '' === $outcome ? 'checked_in' : $outcome ), 'CLINIC_INVALID_TRANSITION', 'افزودن به صف انجام نشد' );
+			}
+			return $this->success(
+				[
+					'visit'   => $visit,
+					'arrival' => [
+						'check_in'      => 'existing',
+						'enqueue'       => 'ok',
+						'outcome'       => $outcome,
+						'complete'      => true,
+						'enqueue_error' => null,
+					],
+				]
+			);
+		}
+
 		// Stage 1 — EXISTING authorized check-in transition (new→checked_in,
 		// with the existing per-Clinic auto-enqueue behavior inside its own
 		// established transaction).
@@ -355,44 +405,54 @@ final class ReceptionPortalController extends RestBase {
 			$visit    = App::visitService()->transition( $user_id, (int) $visit['id'], 'enqueue' );
 			$outcome  = (string) ( $visit['status'] ?? '' );
 			$complete = 'waiting' === $outcome;
+			if ( ! $complete ) {
+				return $this->arrival_incomplete( 'ok', (int) ( $visit['id'] ?? 0 ), ( '' === $outcome ? 'checked_in' : $outcome ), 'CLINIC_INVALID_TRANSITION', 'افزودن به صف انجام نشد' );
+			}
 			return $this->success(
 				[
 					'visit'   => $visit,
 					'arrival' => [
 						'check_in'      => 'ok',
-						'enqueue'       => $complete ? 'ok' : 'failed',
+						'enqueue'       => 'ok',
 						'outcome'       => $outcome,
-						'complete'      => $complete,
-						'enqueue_error' => $complete ? null : [
-							'code'    => 'CLINIC_INVALID_TRANSITION',
-							'message' => 'افزودن به صف انجام نشد',
-						],
+						'complete'      => true,
+						'enqueue_error' => null,
 					],
 				]
 			);
 		} catch ( \Throwable $e ) {
-			// Honest partial: check-in committed, enqueue did not — report the
-			// durable state and the real failure; never claim full success.
+			// Honest partial: check-in committed, enqueue did not — the
+			// response is a real failure that preserves the partial checked_in
+			// outcome; it is never silently turned into generic success.
 			error_log( '[CPMS][ReceptionPortalController] enqueue stage: ' . $e->getMessage() ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- established controller convention
 			$code    = $e instanceof VisitException ? $e->errorCode : 'CLINIC_INTERNAL_ERROR'; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established VisitException contract
 			$message = $e instanceof VisitException ? $e->getMessage() : 'افزودن به صف انجام نشد';
 			$fresh   = $this->fresh_visit( $user_id, (int) ( $visit['id'] ?? 0 ) );
-			return $this->success(
-				[
-					'visit'   => $fresh,
-					'arrival' => [
-						'check_in'      => 'ok',
-						'enqueue'       => 'failed',
-						'outcome'       => (string) ( $fresh['status'] ?? 'checked_in' ),
-						'complete'      => false,
-						'enqueue_error' => [
-							'code'    => $code,
-							'message' => $message,
-						],
-					],
-				]
-			);
+			return $this->arrival_incomplete( 'ok', (int) ( $visit['id'] ?? 0 ), (string) ( $fresh['status'] ?? 'checked_in' ), $code, $message );
 		}
+	}
+
+	/**
+	 * Honest partial-arrival envelope (contract truthfulness): stage 1 may be
+	 * committed while the enqueue stage is not. Never a success — the bounded,
+	 * non-sensitive CLINIC_ARRIVAL_INCOMPLETE failure carries the durable
+	 * state so the UI can offer the recovery action.
+	 */
+	private function arrival_incomplete( string $check_in_stage, int $visit_id, string $outcome, string $code, string $message ): WP_Error {
+		return $this->error( 'CLINIC_ARRIVAL_INCOMPLETE', 500, 'حضور ثبت شد اما قرارگیری بیمار در صف انجام نشد', [
+			'visit_id'     => $visit_id,
+			'visit_status' => $outcome,
+			'arrival'      => [
+				'check_in'      => $check_in_stage,
+				'enqueue'       => 'failed',
+				'outcome'       => $outcome,
+				'complete'      => false,
+				'enqueue_error' => [
+					'code'    => $code,
+					'message' => $message,
+				],
+			],
+		] );
 	}
 
 	/**
