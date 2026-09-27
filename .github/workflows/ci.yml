@@ -243,7 +243,7 @@ jobs:
             echo '--- Phase11 Reception testcases ---'
             grep '^testcase ' "$SPLIT" | grep -E 'Phase11StaffPortalReceptionArrivalRedTest|Phase11ReceptionPartialArrivalRecoveryRedTest' || true
             echo '--- failing testcases + failure messages (all suites) ---'
-            grep -E '^(testcase |failure )' "$SPLIT" | grep -B1 '^failure ' | head -n 24 || true
+            grep -E '^(testcase |failure |!\[CDATA)' "$SPLIT" | grep -B1 -A2 '^failure ' | head -n 30 || true
               echo '--- Phase6 Slice 4 regression testcases ---'
               grep '^testcase ' "$SPLIT" | grep -E 'RestScheduleTest|Phase6ScheduleExplicitLocationTest|Phase4Slice1ProfessionalMultiClinicParticipationTest|ScheduleRegenerationClinicScopeRedTest|SchedulingLocationLocalBoundaryRedTest|SlotsGenerateLocationLocalTemporalRedTest|SlotsGenerateM2WiringRedTest' || true
               # Slice 6 keeps named-suite evidence explicit (additive; no gate change).

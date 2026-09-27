@@ -123,7 +123,11 @@ final class Phase11ReceptionPartialArrivalRecoveryRedTest extends WP_UnitTestCas
 
         // HTTP/product truthfulness — the partial outcome is never a success.
         self::assertGreaterThanOrEqual(400, $res->get_status(), 'R1: a partial arrival must not claim success at the HTTP level — got ' . $res->get_status());
-        self::assertSame('CLINIC_ARRIVAL_INCOMPLETE', $this->errCode($res), 'R1: the partial outcome carries its own non-generic code — got ' . $this->errCode($res));
+        self::assertSame(
+            'CLINIC_ARRIVAL_INCOMPLETE',
+            $this->errCode($res),
+            'R1: the partial outcome carries its own non-generic code — got=' . $this->errCode($res) . ' body=' . substr((string) wp_json_encode((array) $res->get_data()), 0, 300)
+        );
 
         // Bounded, non-sensitive partial report.
         $data    = $this->errorData($res);
@@ -213,7 +217,11 @@ final class Phase11ReceptionPartialArrivalRecoveryRedTest extends WP_UnitTestCas
             [$visitId]
         );
         $seq = array_map(static fn (array $h): string => (string) ($h['from_status'] ?? 'null') . '>' . (string) $h['to_status'], is_array($history) ? $history : []);
-        self::assertSame(['null>checked_in', 'checked_in>waiting'], $seq, 'R2: check-in ran once; enqueue is the only added transition');
+        self::assertSame(
+            ['null>checked_in', 'checked_in>waiting'],
+            $seq,
+            'R2: check-in ran once; enqueue is the only added transition — got=' . wp_json_encode($seq)
+        );
     }
 
     // ============ R3 — Recovery authority is server-side and fail-closed ============
