@@ -494,6 +494,13 @@ def run_partial_journey(browser, vp):
         shot(page, f"reception-{vp['vp']}-partial")
 
         stage = "recovery-control"
+        # The board re-renders after the failed arrival; wait for the recovery
+        # control itself (not just row count) so stale rows cannot race us.
+        page.wait_for_selector(
+            f'[data-appointment-id="{PUB["appt_partial"]}"] [data-role="sr-recover"]',
+            state="attached",
+            timeout=15000,
+        )
         wait_rows_count(page, 4)
         if row_of(page, PUB["appt_partial"]).locator('[data-role="sr-recover"]').count() != 1:
             raise RuntimeError("checked_in row must expose exactly one recovery action")
