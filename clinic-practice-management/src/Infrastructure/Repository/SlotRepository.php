@@ -153,6 +153,53 @@ final class SlotRepository
     }
 
     /**
+     * Phase 11 Slice 5 — Reception booking: the ALREADY-GENERATED available
+     * slots of ONE doctor at ONE trusted Location on ONE Location-local
+     * operational day.
+     *
+     * Read-only and deliberately narrow: it never generates, repairs, moves or
+     * reschedules a slot (no second scheduler, no lazy generation — a weekly
+     * template without generated rows offers nothing). "Available" is the
+     * established formula (`is_open = 1` AND real free capacity
+     * `capacity - booked_count - held_count > 0`), bounded by the trusted
+     * Clinic + Location + clinician + date, so ONE bounded query answers ONE
+     * reception selection change (never a per-slot request).
+     *
+     * Scope is the caller's job: every id here is an already-trusted selector.
+     * `slot_date`/`slot_time` are Location wall-clock values, so this query
+     * never compares them against a UTC frame — deciding whether a row has
+     * already started belongs to the caller that owns the Location timezone.
+     *
+     * @param int    $clinic_id    Trusted Clinic. Non-positive returns none.
+     * @param int    $location_id  Trusted selected Location. Non-positive returns none.
+     * @param int    $clinician_id Selected eligible doctor. Non-positive returns none.
+     * @param string $date         Location-local operational day, Y-m-d. Malformed returns none.
+     * @return list<array<string, mixed>>
+     */
+    public function list_available_for_reception_day( int $clinic_id, int $location_id, int $clinician_id, string $date ): array {
+        if ( $clinic_id <= 0 || $location_id <= 0 || $clinician_id <= 0 ) {
+            return [];
+        }
+        if ( ! preg_match( '/^\d{4}-\d{2}-\d{2}$/', $date ) ) {
+            return [];
+        }
+
+        $rows = $this->db->fetchAll(
+            'SELECT id, clinician_id, location_id, slot_date, slot_time, duration_min,'
+                . ' capacity, booked_count, held_count,'
+                . ' (capacity - booked_count - held_count) AS capacity_left'
+                . ' FROM ' . $this->db->table( 'cpms_schedule_slots' )
+                . ' WHERE clinic_id = %d AND location_id = %d AND clinician_id = %d'
+                . ' AND slot_date = %s AND is_open = 1'
+                . ' AND capacity - booked_count - held_count > 0'
+                . ' ORDER BY slot_time ASC, id ASC',
+            [ $clinic_id, $location_id, $clinician_id, $date ]
+        );
+
+        return is_array( $rows ) ? $rows : [];
+    }
+
+    /**
      * Hold اتمیک — یک واحد ظرفیت رزرو موقت (B1).
      *
      * @return bool true اگر Hold موفق (دروغ = ظرفیت تمام → CLINIC_SLOT_TAKEN)

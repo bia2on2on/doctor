@@ -44,6 +44,10 @@ VIEWPORTS = [
 
 results = []
 failures = []
+# Existing four booked fixture rows remain the exact Slice 1–4 invariant.
+# Slice 5 creates one same-day row per booking journey, so this additive counter
+# tracks only those durable new rows across the three viewport journeys.
+BOOKING_BOARD_ROWS = 4
 
 
 def ok(key, title, detail=""):
@@ -94,6 +98,18 @@ PUB = {
 }
 _srch = parts("RECEPTION_SEARCH", 3)
 SEARCH = {"probe": int(_srch[0]), "foreign": int(_srch[1]), "nid_last4": _srch[2]}
+_bk = parts("RECEPTION_BOOKING", 14)
+BOOKING = {
+    "c1": int(_bk[0]),
+    "c2": int(_bk[1]),
+    "slots": {"free_a": int(_bk[2]), "free_b": int(_bk[3]), "free_c": int(_bk[4]), "full": int(_bk[5]), "closed": int(_bk[6]), "future": int(_bk[7])},
+    "slot_by_vp": {"mobile-390": int(_bk[2]), "tablet-768": int(_bk[3]), "desktop-1366": int(_bk[4])},
+    "tomorrow": _bk[8],
+    "patients": {"mobile-390": int(_bk[9]), "tablet-768": int(_bk[10]), "desktop-1366": int(_bk[11])},
+    "mrn": {"mobile-390": _bk[12] + "MOBILE" + _bk[13], "tablet-768": _bk[12] + "TABLET" + _bk[13], "desktop-1366": _bk[12] + "DESKTOP" + _bk[13]},
+}
+SLOTS_ROUTE = "/staff/portal/reception/slots"
+APPOINTMENTS_ROUTE = "/staff/portal/reception/appointments"
 _wi = parts("RECEPTION_WALKIN", 9)
 WALKIN = {
     "c1": int(_wi[0]),
@@ -1348,6 +1364,253 @@ def run_walkin_partial_journey(browser, vp):
         ctx.close()
 
 
+def wait_book_state(page, needle, timeout=15000):
+    page.wait_for_function(
+        """(needle) => { const n = document.querySelector('[data-role="sr-book-state"]'); return !!n && (n.textContent || '').indexOf(needle) !== -1; }""",
+        arg=needle,
+        timeout=timeout,
+    )
+
+
+def book_slot_ids(page):
+    nodes = page.locator('[data-role="sr-book-slot"]')
+    return [int(nodes.nth(i).get_attribute("data-slot-id") or 0) for i in range(nodes.count())]
+
+
+def wait_book_slot(page, slot_id, timeout=15000):
+    page.wait_for_function(
+        """(id) => Array.from(document.querySelectorAll('[data-role="sr-book-slot"]')).some((n) => n.getAttribute('data-slot-id') === String(id))""",
+        arg=int(slot_id),
+        timeout=timeout,
+    )
+
+
+def select_booking_patient(page, tag):
+    search_input = page.locator('[data-role="sr-search-input"]')
+    search_input.fill("")
+    search_input.type(BOOKING["mrn"][tag], delay=10)
+    wait_search_state(page, "یافت شد")
+    pid = BOOKING["patients"][tag]
+    if pid not in search_result_ids(page):
+        raise RuntimeError(f"booking patient {pid} must be found through the existing Clinic search")
+    page.locator(f'[data-role="sr-search-result"][data-patient-id="{pid}"]').click()
+    page.wait_for_selector('[data-role="sr-search-selected"]', state="visible", timeout=5000)
+    page.wait_for_selector('[data-role="sr-book"]', state="visible", timeout=5000)
+
+
+def run_booking_journey(browser, vp):
+    """Slice 5: selected patient → Location → eligible doctors → persisted slots → confirmed appointment.
+
+    Verifies free/full/closed slot filtering, 0/1/N doctor selection, bounded
+    slot reads, Location invalidation, explicit slot_id POST only, honest stale
+    full handling, duplicate prevention, same-day board visibility, future
+    appointment exclusion from today's board, and absence of Visit/queue side
+    effects. Each viewport uses a distinct patient so journeys are independent.
+    """
+    global BOOKING_BOARD_ROWS
+    board_rows = BOOKING_BOARD_ROWS
+    selected_slot_id = BOOKING["slot_by_vp"][vp["vp"]]
+    key = f"reception-booking-{vp['vp']}"
+    stage = "login"
+    ctx, page, state = new_page(browser, vp)
+    try:
+        login(page, SECRETARY)
+        stage = "reception-entry"
+        resp = harness_goto(page, RECEPTION_URL, wait_until="domcontentloaded")
+        if resp is None or resp.status != 200:
+            raise RuntimeError(f"reception entry status {getattr(resp, 'status', None)}")
+        page.wait_for_selector('[data-role="reception-app"]', state="attached", timeout=15000)
+        assert_reception_shell(page)
+        page.wait_for_selector('[data-role="sr-location-select"]', state="visible", timeout=15000)
+        select_location(page, PUB["loc_tehran"])
+        wait_rows_count(page, board_rows)
+        if page.locator('[data-role="sr-book"]').is_visible():
+            raise RuntimeError("booking section must stay hidden until a patient is selected")
+
+        stage = "select-patient"
+        mark = nav_mark(page)
+        select_booking_patient(page, vp["vp"])
+        page.wait_for_selector('[data-role="sr-book-clinician-wrap"]', state="visible", timeout=15000)
+
+        stage = "tehran-doctors-and-free-slots"
+        clinician_select = page.locator('[data-role="sr-book-clinician"]')
+        page.wait_for_function(
+            """() => { const s = document.querySelector('[data-role="sr-book-clinician"]'); return !!s && s.options.length > 1; }""",
+            timeout=15000,
+        )
+        cvalues = [clinician_select.locator("option").nth(i).get_attribute("value") or "" for i in range(clinician_select.locator("option").count())]
+        if cvalues[0] != "" or sorted(int(v) for v in cvalues[1:]) != sorted([BOOKING["c1"], BOOKING["c2"]]):
+            raise RuntimeError(f"Tehran must offer exactly eligible doctors and no first-row fallback, got {cvalues}")
+        if not page.locator('[data-role="sr-book-submit"]').is_disabled():
+            raise RuntimeError("booking submit must be disabled until explicit doctor and slot selections")
+        if page.locator('[data-role="sr-book"] input[type="time"]').count() != 0:
+            raise RuntimeError("booking must not expose free-form time authority")
+        if page.locator('[data-role="sr-book"] a[href], [data-role="sr-book"] [data-role*="invoice"]').count() != 0:
+            raise RuntimeError("booking section must expose no navigation/finance actions")
+
+        # Select a real doctor and slot first so the Location switch must
+        # actively invalidate a previously valid booking context.
+        stage = "location-invalidation-prepare"
+        page.select_option('[data-role="sr-book-clinician"]', str(BOOKING["c1"]))
+        wait_book_slot(page, selected_slot_id)
+        page.locator(f'[data-role="sr-book-slot"][data-slot-id="{selected_slot_id}"]').click()
+        if page.locator('[data-role="sr-book-submit"]').is_disabled():
+            raise RuntimeError("a concrete selected slot must enable submission before Location invalidation")
+
+        # Location switching clears all previously selected booking context.
+        stage = "location-invalidation"
+        select_location(page, PUB["loc_tokyo"])
+        wait_rows_count(page, 0)
+        page.wait_for_function(
+            """() => { const d = document.querySelector('[data-role="sr-book-doctor"]'); return !!d && !d.hidden; }""",
+            timeout=15000,
+        )
+        if "Dr Walkin Second" not in (page.locator('[data-role="sr-book-doctor"]').inner_text() or ""):
+            raise RuntimeError("Tokyo's sole Location-eligible clinician must be auto-selected clearly")
+        if page.locator('[data-role="sr-book-submit"]').is_enabled() or page.locator('[data-role="sr-book-slot"][aria-pressed="true"]').count() != 0:
+            raise RuntimeError("Location switch must invalidate the selected slot and disable submission")
+        select_location(page, PUB["loc_tehran"])
+        wait_rows_count(page, board_rows)
+        page.wait_for_selector('[data-role="sr-book-clinician-wrap"]', state="visible", timeout=15000)
+        if clinician_select.input_value() != "":
+            raise RuntimeError("switching back to Tehran must clear the previous clinician")
+
+        stage = "select-doctor-read-bounded-slots"
+        select_calls_before = len([r for r in state["rest"] if r["route"].rstrip("/").endswith(SLOTS_ROUTE)])
+        page.select_option('[data-role="sr-book-clinician"]', str(BOOKING["c1"]))
+        wait_book_slot(page, selected_slot_id)
+        offered = book_slot_ids(page)
+        if BOOKING["slots"]["full"] in offered or BOOKING["slots"]["closed"] in offered or BOOKING["slots"]["future"] in offered:
+            raise RuntimeError(f"only persisted open slots for the selected day may be offered, got {offered}")
+        # The fixture's free slots may be filtered if they became past while
+        # earlier independent journeys ran; fail honestly with the bounded read.
+        if any(BOOKING["slots"][key] not in offered for key in ("free_a", "free_b", "free_c")):
+            raise RuntimeError(f"both seeded future-today FREE slots must be offered, got {offered}")
+        if len([r for r in state["rest"] if r["route"].rstrip("/").endswith(SLOTS_ROUTE)]) - select_calls_before != 1:
+            raise RuntimeError("one doctor selection must cause exactly one bounded slot read")
+        slot_requests = [r for r in state["reqs"] if r["route"].rstrip("/").endswith(SLOTS_ROUTE)]
+        if any(r["method"] != "GET" for r in slot_requests):
+            raise RuntimeError("slot reads must be bounded GETs; no per-slot writes/reads")
+        assert_no_horizontal_overflow(page, "booking-free-slots")
+        shot(page, f"reception-{vp['vp']}-booking-free-slots")
+
+        stage = "same-day-create"
+        patient_id = BOOKING["patients"][vp["vp"]]
+        patient_before = [r for r in state["rest"] if r["method"] != "GET"]
+        page.locator(f'[data-role="sr-book-slot"][data-slot-id="{selected_slot_id}"]').click()
+        if page.locator('[data-role="sr-book-submit"]').is_disabled():
+            raise RuntimeError("explicit patient + clinician + slot must enable booking")
+        # One additional patient-selected write is not expected: only appointment create may write.
+        with page.expect_response(lambda r: r.url and APPOINTMENTS_ROUTE in r.url and r.request.method == "POST", timeout=15000) as create_info:
+            page.locator('[data-role="sr-book-submit"]').click()
+        create_resp = create_info.value
+        if create_resp.status != 200:
+            raise RuntimeError(f"appointment create answered {create_resp.status}")
+        create_json = create_resp.json()
+        create_data = create_json.get("data", create_json) if isinstance(create_json, dict) else {}
+        appointment = create_data.get("appointment") or {}
+        if appointment.get("status") != "confirmed" or not appointment.get("id") or not appointment.get("reference_code"):
+            raise RuntimeError(f"appointment must be one confirmed row with the established view, got {appointment}")
+        if appointment.get("date") != PUB["today_tehran"] or not appointment.get("time"):
+            raise RuntimeError(f"same-day appointment must use the selected persisted slot's operational date/time, got {appointment}")
+        post_body = create_resp.request.post_data_json
+        if not isinstance(post_body, dict) or int(post_body.get("patient_id") or 0) != patient_id or int(post_body.get("clinician_id") or 0) != BOOKING["c1"] or int(post_body.get("slot_id") or 0) != selected_slot_id:
+            raise RuntimeError(f"create request must carry selected patient, eligible doctor and persisted slot_id, got {post_body}")
+        if "date" in post_body or "time" in post_body or "slot_date" in post_body or "slot_time" in post_body:
+            raise RuntimeError("free-form date/time must never be sent as booking authority")
+        if create_data.get("reception", {}).get("on_operational_day") is not True:
+            raise RuntimeError("same-day appointment must be marked on the operational day")
+        BOOKING_BOARD_ROWS = board_rows + 1
+        wait_rows_count(page, BOOKING_BOARD_ROWS)
+        board_row = page.locator(f'[data-role="sr-row"][data-appointment-id="{appointment.get("id")}"]')
+        if board_row.count() != 1 or "Booking " not in (board_row.inner_text() or ""):
+            raise RuntimeError("same-day created appointment must appear on the reception day board")
+        wait_book_state(page, "نوبت ثبت شد")
+        if page.locator('[data-role="sr-queue-row"]').count() != 4:
+            raise RuntimeError("appointment creation must not create or alter a queue/Visit")
+        create_writes = [r for r in state["rest"] if r["method"] != "GET"][len(patient_before):]
+        if len(create_writes) != 1 or not create_writes[0]["route"].rstrip("/").endswith(APPOINTMENTS_ROUTE):
+            raise RuntimeError(f"booking journey must issue exactly one write, got {create_writes}")
+        request = [r for r in state["reqs"] if r["route"].rstrip("/").endswith(APPOINTMENTS_ROUTE) and r["method"] == "POST"][-1]
+        # The request-body assertion above proves that slot_id is the only
+        # date/time authority carried by the browser.
+        assert_no_horizontal_overflow(page, "booking-success")
+        shot(page, f"reception-{vp['vp']}-booking-success")
+
+        stage = "duplicate"
+        if page.locator('[data-role="sr-book-submit"]').is_disabled():
+            raise RuntimeError("after successful create, the UI must not permit a duplicate without a new slot choice")
+        # Re-select the same concrete slot while it still has one unit of
+        # capacity. Duplicate for this same patient must be a bounded conflict,
+        # not a second appointment.
+        wait_book_slot(page, selected_slot_id)
+        page.locator(f'[data-role="sr-book-slot"][data-slot-id="{selected_slot_id}"]').click()
+        with page.expect_response(lambda r: r.url and APPOINTMENTS_ROUTE in r.url and r.request.method == "POST", timeout=15000) as duplicate_info:
+            page.locator('[data-role="sr-book-submit"]').click()
+        if duplicate_info.value.status != 409 or duplicate_info.value.json().get("code") != "CLINIC_DUPLICATE_APPOINTMENT":
+            raise RuntimeError(f"same-patient same-slot duplicate must be bounded 409, got {duplicate_info.value.status}")
+        wait_book_state(page, "نوبت تکراری ثبت نشد")
+        if page.locator('[data-role="sr-row"][data-appointment-id="' + str(appointment.get("id")) + '"]').count() != 1:
+            raise RuntimeError("duplicate submission must not create a second board appointment")
+
+        stage = "future-date"
+        # Choose the Jalali option by its ISO value; the visible copy remains
+        # the server-provided Jalali label. Each date selection costs one read.
+        before_date = len([r for r in state["rest"] if r["route"].rstrip("/").endswith(SLOTS_ROUTE)])
+        page.select_option('[data-role="sr-book-date"]', BOOKING["tomorrow"])
+        wait_book_slot(page, BOOKING["slots"]["future"])
+        if len([r for r in state["rest"] if r["route"].rstrip("/").endswith(SLOTS_ROUTE)]) - before_date != 1:
+            raise RuntimeError("one date selection must cause exactly one bounded slot read")
+        if BOOKING["slots"]["full"] in book_slot_ids(page) or BOOKING["slots"]["closed"] in book_slot_ids(page):
+            raise RuntimeError("full/closed slots must never be offered")
+        page.locator(f'[data-role="sr-book-slot"][data-slot-id="{BOOKING["slots"]["future"]}"]').click()
+        with page.expect_response(lambda r: r.url and APPOINTMENTS_ROUTE in r.url and r.request.method == "POST", timeout=15000) as future_info:
+            page.locator('[data-role="sr-book-submit"]').click()
+        if future_info.value.status != 200:
+            raise RuntimeError(f"future appointment create answered {future_info.value.status}")
+        future_json = future_info.value.json()
+        future_data = future_json.get("data", future_json) if isinstance(future_json, dict) else {}
+        future_appt = future_data.get("appointment") or {}
+        if future_appt.get("status") != "confirmed" or str(future_appt.get("date") or "") != BOOKING["tomorrow"]:
+            raise RuntimeError("future booking must remain confirmed on its future operational date")
+        if future_data.get("reception", {}).get("on_operational_day") is not False:
+            raise RuntimeError("future appointment must be marked off today's operational board")
+        wait_rows_count(page, BOOKING_BOARD_ROWS)
+        if page.locator(f'[data-role="sr-row"][data-appointment-id="{future_appt.get("id")}"]').count() != 0:
+            raise RuntimeError("future appointment must not appear on today's reception board")
+        if page.locator('[data-role="sr-queue-row"]').count() != 4:
+            raise RuntimeError("future appointment must not create a Visit/queue row")
+        assert_no_horizontal_overflow(page, "booking-future")
+        shot(page, f"reception-{vp['vp']}-booking-future")
+
+        assert_no_product_reload(page, mark, "appointment booking")
+        assert_authority_headers(state, PUB["clinic"], {PUB["loc_tehran"], PUB["loc_tokyo"]})
+        assert_hygiene(state, key)
+        ok(
+            key,
+            "reception booking: explicit persisted slot → confirmed appointment; no Visit/queue/payment; future stays future",
+            f"vp={vp['vp']} free_full_closed=1 location_reset=1 same_day_board=1 future_board=0 duplicate=409 board_rows={BOOKING_BOARD_ROWS} queue_rows=4 slots_reads={len([r for r in state['rest'] if r['route'].rstrip('/').endswith(SLOTS_ROUTE)])} create_posts={len([r for r in state['rest'] if r['route'].rstrip('/').endswith(APPOINTMENTS_ROUTE) and r['method']=='POST'])} reloaded=0 overflow=0",
+        )
+    except Exception as e:
+        try:
+            dump = {
+                "booking_state": (page.locator('[data-role="sr-book-state"]').inner_text() or "")[:160],
+                "slot_ids": book_slot_ids(page),
+                "rest_tail": [f"{r['method']} {r['route']}={r['status']}" for r in state["rest"][-12:]],
+            }
+            info(f"fail-dump {vp['vp']} stage={stage} {dump}")
+        except Exception:
+            pass
+        try:
+            shot(page, f"reception-FAIL-{key}-{stage}")
+        except Exception:
+            pass
+        fail(key, vp["vp"], f"{e} ({page_hint(page)})")
+        raise
+    finally:
+        ctx.close()
+
+
 def main():
     if not RECEPTION_URL or not STAFF_URL:
         raise SystemExit("RECEPTION_URL / STAFF_PORTAL_URL must be set by the fixture")
@@ -1396,6 +1659,14 @@ def main():
             run_walkin_partial_journey(browser, VIEWPORTS[2])
         except Exception:
             hard_fail = True
+        # Phase 11 Slice 5 — confirmed appointments from already-generated
+        # persisted slots, only after the existing walk-in journeys have kept
+        # their exact four-row board invariant.
+        for vp in VIEWPORTS:
+            try:
+                run_booking_journey(browser, vp)
+            except Exception:
+                hard_fail = True
         browser.close()
     print("---")
     print(f"SUMMARY pass={sum(1 for r in results if r['status'] == 'PASS')} fail={len(failures)}")

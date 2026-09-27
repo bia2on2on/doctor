@@ -49,6 +49,23 @@
  * is never written as patient ownership. No walk-in / appointment /
  * check-in / queue / Visit is created.
  *
+ * Phase 11 Slice 5 — create an appointment for an already-selected Clinic
+ * patient: `GET /staff/portal/reception/slots` reads the ALREADY-GENERATED
+ * available slots of one explicitly selected eligible doctor inside the trusted
+ * operational Location for one Location-local operational date (ONE bounded
+ * read per selection change, persisted rows only — a template without generated
+ * slots offers nothing), and `POST /staff/portal/reception/appointments`
+ * delegates the booking to the ESTABLISHED BookingService::createByStaff()
+ * (the same service behind `POST /clinic/v1/appointments`) after re-verifying
+ * the concrete persisted slot_id against the trusted Clinic + Location + the
+ * selected eligible doctor + open state. slot_id is the only booking authority:
+ * the persisted row supplies date/time, never the client. Both routes sit
+ * behind the existing perm_reception with clinic-scoped cpms_appt_create. No
+ * booking rule is duplicated, no second scheduler, no slot generation, no
+ * Visit / queue / check-in / walk-in / payment, no reschedule/cancel, no
+ * migration, no new role/capability, no reuse of the public availability route
+ * (its authority derives from clinicians.clinic_id).
+ *
  * @package ClinicCore
  */
 
@@ -59,9 +76,11 @@ namespace ClinicCore\Rest;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Booking\BookingException;
+use ClinicCore\Domain\Time\Jalali;
 use ClinicCore\Domain\Visits\VisitException;
 use ClinicCore\Infrastructure\Repository\AppointmentRepository;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
+use ClinicCore\Infrastructure\Repository\SlotRepository;
 use WP_Error;
 use WP_REST_Request;
 use WP_REST_Response;
@@ -69,19 +88,27 @@ use WP_REST_Server;
 
 /**
  * Staff Portal reception boundary — context, board (read-only), arrival,
- * read-only Clinic patient search, and bounded Clinic patient create.
+ * read-only Clinic patient search, bounded Clinic patient create, eligible
+ * doctors + walk-in, and appointment booking from an explicitly selected
+ * already-generated slot.
  */
 final class ReceptionPortalController extends RestBase {
 
 	/** Upper bound for one Location's eligible-doctor options (bounded query). */
 	private const CLINICIAN_OPTION_LIMIT = 100;
 
+	/** Hard ceiling for the selectable-day options of one slot read (bounded payload). */
+	private const DAY_OPTION_LIMIT = 62;
+
 	/**
 	 * @param MembershipRepository $memberships Membership lookup (trusted Clinic/Location eligibility).
+	 * @param AppointmentRepository $appointments Bounded operational-day appointment presentation.
+	 * @param SlotRepository $slots Already-generated slot reads + persisted slot re-verification.
 	 */
 	public function __construct(
 		private readonly MembershipRepository $memberships,
-		private readonly AppointmentRepository $appointments
+		private readonly AppointmentRepository $appointments,
+		private readonly SlotRepository $slots
 	) {
 	}
 
@@ -199,6 +226,63 @@ final class ReceptionPortalController extends RestBase {
 						'clinician_id' => [
 							'required' => true,
 							'type'     => 'integer',
+						],
+					],
+				],
+			]
+		);
+
+		register_rest_route(
+			self::NS,
+			'/staff/portal/reception/slots',
+			[
+				[
+					'methods'             => WP_REST_Server::READABLE,
+					'callback'            => fn( WP_REST_Request $r ) => $this->reception_slots( $r ),
+					'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_reception( $r, [ RolesAndCapabilities::APPT_CREATE ] ),
+					'args'                => [
+						'clinician_id' => [
+							'required' => true,
+							'type'     => 'integer',
+						],
+						// Deliberately an unformatted string: the Location-local
+						// date is validated by this boundary so a malformed
+						// selector answers with the established bounded
+						// CLINIC_VALIDATION_FAILED envelope instead of a generic
+						// framework parameter error.
+						'date'         => [
+							'required' => false,
+							'type'     => 'string',
+						],
+					],
+				],
+			]
+		);
+
+		register_rest_route(
+			self::NS,
+			'/staff/portal/reception/appointments',
+			[
+				[
+					'methods'             => WP_REST_Server::CREATABLE,
+					'callback'            => fn( WP_REST_Request $r ) => $this->reception_appointment_create( $r ),
+					'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_reception( $r, [ RolesAndCapabilities::APPT_CREATE ] ),
+					'args'                => [
+						'patient_id'   => [
+							'required' => true,
+							'type'     => 'integer',
+						],
+						'clinician_id' => [
+							'required' => true,
+							'type'     => 'integer',
+						],
+						'slot_id'      => [
+							'required' => true,
+							'type'     => 'integer',
+						],
+						'reason'       => [
+							'required' => false,
+							'type'     => 'string',
 						],
 					],
 				],
@@ -828,6 +912,356 @@ final class ReceptionPortalController extends RestBase {
 	}
 
 	/**
+	 * Reception slot read (Phase 11 Slice 5): the ALREADY-GENERATED available
+	 * slots of ONE explicitly selected eligible doctor, inside the trusted
+	 * operational Location, for ONE Location-local operational date.
+	 *
+	 * ONE bounded read per selection change — never a per-slot request and never
+	 * a poll. Only persisted rows are read: a weekly template without generated
+	 * slots offers nothing and nothing is fabricated here (no second scheduler,
+	 * no lazy generation). The PUBLIC availability route is deliberately not
+	 * reused: its Clinic authority derives from clinicians.clinic_id (home
+	 * Clinic) and it is not Location-bounded, while reception authority is the
+	 * trusted Clinic + the trusted selected Location.
+	 *
+	 * The Location IANA timezone is the operational authority (Gregorian Y-m-d
+	 * selector + the existing Jalali presentation); a malformed date selector is
+	 * a bounded 422 and a date outside the Clinic booking horizon answers
+	 * honestly empty rather than inventing capacity.
+	 */
+	private function reception_slots( WP_REST_Request $r ): WP_REST_Response|WP_Error {
+		$user_id      = (int) get_current_user_id();
+		$clinician_id = (int) ( $r['clinician_id'] ?? 0 );
+		if ( $clinician_id <= 0 ) {
+			return $this->error( 'CLINIC_VALIDATION_FAILED', 422, 'شناسهٔ پزشک نامعتبر است' );
+		}
+
+		$resolved = $this->resolve_reception_location( $user_id );
+		if ( $resolved instanceof WP_Error ) {
+			return $resolved;
+		}
+		if ( null === $resolved['location_id'] ) {
+			// 0 eligible Locations: fail closed — the read answers with no scope
+			// and no slot, never a guessed Location.
+			return $this->success( $this->empty_slot_day( $clinician_id ) );
+		}
+
+		$clinic_id   = (int) $resolved['clinic_id'];
+		$location_id = (int) $resolved['location_id'];
+		$timezone    = $this->operational_timezone( (string) ( $resolved['timezone'] ?? '' ), $location_id, $clinic_id );
+
+		// Doctor selector: eligible for the trusted Clinic AND the trusted
+		// Location through the delivered Slice 4 contract; home-Clinic metadata
+		// never authorizes a reception booking.
+		$clinicians = $this->eligible_clinicians( $clinic_id, $location_id, $clinician_id );
+		if ( [] === $clinicians ) {
+			return $this->error( 'CLINIC_NOT_FOUND', 404, 'پزشک یافت نشد' );
+		}
+
+		$now_local        = ( new \DateTimeImmutable( 'now', new \DateTimeZone( 'UTC' ) ) )->setTimezone( new \DateTimeZone( $timezone ) );
+		$operational_date = $now_local->format( 'Y-m-d' );
+		$horizon_days     = $this->booking_horizon_days( $clinic_id );
+		$horizon_end      = $this->plus_days( $operational_date, $horizon_days );
+
+		$requested = trim( (string) ( $r['date'] ?? '' ) );
+		if ( '' === $requested ) {
+			$date = $operational_date;
+		} else {
+			$date = $this->valid_local_date( $requested );
+			if ( null === $date ) {
+				return $this->error( 'CLINIC_VALIDATION_FAILED', 422, 'تاریخ نامعتبر است' );
+			}
+		}
+
+		// The explicit date is a SELECTOR for querying valid slots, never
+		// authority to fabricate one: outside the bounded window nothing is read
+		// and nothing is offered.
+		$rows = [];
+		if ( $date >= $operational_date && $date <= $horizon_end ) {
+			$rows = $this->slots->list_available_for_reception_day( $clinic_id, $location_id, $clinician_id, $date );
+		}
+
+		$slots     = [];
+		$local_now = $now_local->format( 'H:i:s' );
+		foreach ( $rows as $row ) {
+			$time = substr( (string) $row['slot_time'], 0, 8 );
+			// On the operational day an already-started slot is never offered:
+			// the delegated staff create would only reject it, so the read stays
+			// honest about what reception can book right now.
+			if ( $date === $operational_date && $time <= $local_now ) {
+				continue;
+			}
+			$slots[] = [
+				'slot_id'       => (int) $row['id'],
+				'time'          => substr( $time, 0, 5 ),
+				'duration_min'  => (int) $row['duration_min'],
+				'capacity_left' => (int) $row['capacity_left'],
+			];
+		}
+
+		return $this->success(
+			[
+				'clinic_id'        => $clinic_id,
+				'location_id'      => $location_id,
+				'location_name'    => $resolved['location_name'],
+				'timezone'         => $timezone,
+				'clinician_id'     => $clinician_id,
+				'clinician_name'   => (string) ( $clinicians[0]['name'] ?? '' ),
+				'date'             => $date,
+				'jalali'           => Jalali::formatYmd( $date ),
+				'operational_date' => $operational_date,
+				'horizon_end'      => $horizon_end,
+				'days'             => $this->selectable_days( $operational_date, $horizon_days ),
+				'slots'            => $slots,
+			]
+		);
+	}
+
+	/**
+	 * Reception appointment create (Phase 11 Slice 5): ONE confirmed appointment
+	 * for an explicitly selected Clinic patient in an explicitly selected,
+	 * already-generated slot.
+	 *
+	 * Delegation, never duplication: the booking itself runs through the
+	 * EXISTING BookingService::createByStaff() — the same service behind
+	 * POST /clinic/v1/appointments — with its established license gate, trusted
+	 * Clinic resolution, participation check, slot re-resolution, Location
+	 * timezone window (staff minimum lead 0 + the Clinic booking horizon), the
+	 * transactional duplicate + atomic capacity guards, the confirmed state with
+	 * machine checks, reference numbering, audit and op-log. This boundary adds
+	 * only the STRICT reception contract in front of it and re-verifies the
+	 * persisted slot against the trusted scope. No booking rule is restated.
+	 *
+	 * slot_id is the ONLY booking authority: the concrete persisted slot is
+	 * re-read and re-verified here (trusted Clinic + trusted Location + selected
+	 * eligible doctor + open) and the persisted row supplies the date/time. A
+	 * client date/time is never authority. Stale availability fails honestly
+	 * (404 non-enumerating here, or the established 409 from the delegated
+	 * transaction). No Visit / queue / check-in / walk-in / payment, no
+	 * reschedule, no cancel, no slot generation.
+	 */
+	private function reception_appointment_create( WP_REST_Request $r ): WP_REST_Response|WP_Error {
+		$user_id      = (int) get_current_user_id();
+		$patient_id   = (int) ( $r['patient_id'] ?? 0 );
+		$clinician_id = (int) ( $r['clinician_id'] ?? 0 );
+		$slot_id      = (int) ( $r['slot_id'] ?? 0 );
+		if ( $patient_id <= 0 || $clinician_id <= 0 ) {
+			return $this->error( 'CLINIC_VALIDATION_FAILED', 422, 'شناسهٔ بیمار یا پزشک نامعتبر است' );
+		}
+		if ( $slot_id <= 0 ) {
+			return $this->error( 'CLINIC_VALIDATION_FAILED', 422, 'شناسهٔ اسلات نامعتبر است' );
+		}
+		$reason = $r['reason'] ?? null;
+
+		$resolved = $this->resolve_reception_location( $user_id );
+		if ( $resolved instanceof WP_Error ) {
+			return $resolved;
+		}
+		if ( null === $resolved['location_id'] ) {
+			// 0 eligible Locations: fail closed — no reception mutation at all.
+			return $this->error( 'CLINIC_SCOPE_UNAVAILABLE', 403, 'امکان تعیین محدودهٔ کلینیک معتبر نیست.', [ 'reason' => 'location' ] );
+		}
+		$clinic_id   = (int) $resolved['clinic_id'];
+		$location_id = (int) $resolved['location_id'];
+
+		// Patient selector: an ACTIVE patient of the trusted Clinic — the same
+		// population reception search/create can select. Foreign, archived and
+		// unknown ids share one non-enumerating fingerprint.
+		$db      = App::db();
+		$patient = $db->fetchRow(
+			'SELECT id, clinic_id, status FROM ' . $db->table( 'cpms_patients' ) . ' WHERE id = %d LIMIT 1',
+			[ $patient_id ]
+		);
+		if ( null === $patient || (int) $patient['clinic_id'] !== $clinic_id || 'active' !== (string) $patient['status'] ) {
+			return $this->error( 'CLINIC_NOT_FOUND', 404, 'بیمار یافت نشد' );
+		}
+
+		// Doctor selector: eligible for the trusted Clinic AND the trusted
+		// Location (stricter than the shared participation check that the
+		// delegated service repeats internally).
+		if ( [] === $this->eligible_clinicians( $clinic_id, $location_id, $clinician_id ) ) {
+			return $this->error( 'CLINIC_NOT_FOUND', 404, 'پزشک یافت نشد' );
+		}
+
+		// Slot selector: re-read the PERSISTED row and re-verify every trusted
+		// selector BEFORE delegating. Capacity, duplicates and the booking
+		// window stay the delegated service's authority inside its transaction.
+		$slot = $this->slots->findByIdAndClinic( $slot_id, $clinic_id );
+		if (
+			null === $slot
+			|| (int) $slot['location_id'] !== $location_id
+			|| (int) $slot['clinician_id'] !== $clinician_id
+			|| 1 !== (int) $slot['is_open']
+		) {
+			return $this->error( 'CLINIC_NOT_FOUND', 404, 'اسلات انتخابی یافت نشد' );
+		}
+
+		$slot_date = (string) $slot['slot_date'];
+		$slot_time = substr( (string) $slot['slot_time'], 0, 8 );
+
+		try {
+			$view = App::bookingService()->createByStaff(
+				$user_id,
+				$patient_id,
+				$clinician_id,
+				$slot_date,
+				$slot_time,
+				is_string( $reason ) && '' !== trim( $reason ) ? trim( $reason ) : null,
+				$slot_id
+			);
+		} catch ( BookingException $e ) {
+			return $this->error( $e->errorCode, $e->httpStatus, $e->getMessage(), $e->data ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established BookingException contract
+		} catch ( \Throwable $e ) {
+			// Never a fake success and never a raw stack in the response.
+			error_log( '[CPMS][ReceptionPortalController] appointment create: ' . $e->getMessage() ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- established controller convention
+
+			return $this->error( 'CLINIC_INTERNAL_ERROR', 500, 'ثبت نوبت انجام نشد' );
+		}
+
+		$timezone         = $this->operational_timezone( (string) ( $resolved['timezone'] ?? '' ), $location_id, $clinic_id );
+		$operational_date = ( new \DateTimeImmutable( 'now', new \DateTimeZone( 'UTC' ) ) )->setTimezone( new \DateTimeZone( $timezone ) )->format( 'Y-m-d' );
+
+		return $this->success(
+			[
+				// The established representation, verbatim.
+				'appointment' => $view,
+				'reception'   => [
+					'clinic_id'          => $clinic_id,
+					'location_id'        => $location_id,
+					'location_name'      => $resolved['location_name'],
+					'operational_date'   => $operational_date,
+					'on_operational_day' => $slot_date === $operational_date,
+				],
+			]
+		);
+	}
+
+	/**
+	 * Fail-closed empty slot day (0 eligible Locations ⇒ no reception scope).
+	 *
+	 * @return array<string, mixed>
+	 */
+	private function empty_slot_day( int $clinician_id ): array {
+		return [
+			'clinic_id'        => null,
+			'location_id'      => null,
+			'location_name'    => null,
+			'timezone'         => null,
+			'clinician_id'     => $clinician_id,
+			'clinician_name'   => null,
+			'date'             => null,
+			'jalali'           => null,
+			'operational_date' => null,
+			'horizon_end'      => null,
+			'days'             => [],
+			'slots'            => [],
+		];
+	}
+
+	/**
+	 * Operational timezone of the trusted Location. Mirrors the established
+	 * operational-day contract: an unresolved/invalid persisted timezone falls
+	 * back to the UTC frame and is recorded — never silently presented as the
+	 * Location truth.
+	 */
+	private function operational_timezone( string $timezone, int $location_id, int $clinic_id ): string {
+		$name = trim( $timezone );
+		$zone = null;
+		if ( '' !== $name ) {
+			try {
+				$zone = new \DateTimeZone( $name );
+			} catch ( \Throwable $e ) {
+				unset( $e );
+				$zone = null;
+			}
+		}
+		if ( null !== $zone ) {
+			return $name;
+		}
+
+		App::op()->warning(
+			'reception.location_timezone_unresolvable',
+			[
+				'location_id' => $location_id,
+				'clinic_id'   => $clinic_id,
+			]
+		);
+
+		return 'UTC';
+	}
+
+	/**
+	 * Clinic booking horizon (existing booking.max_future_days policy), bounded
+	 * for the reception day-option payload. Fail closed to the operational day
+	 * only when the Clinic policy cannot be read.
+	 */
+	private function booking_horizon_days( int $clinic_id ): int {
+		try {
+			$days = (int) App::settingsFactory()->forClinic( $clinic_id )->get( 'booking.max_future_days', 60 );
+		} catch ( \Throwable $e ) {
+			unset( $e );
+
+			return 0;
+		}
+
+		return max( 0, min( $days, self::DAY_OPTION_LIMIT - 1 ) );
+	}
+
+	/**
+	 * Strict Y-m-d validation of a client date SELECTOR: a calendar-impossible
+	 * value (2026-13-45) is rejected instead of being rolled over into
+	 * authority.
+	 */
+	private function valid_local_date( string $raw ): ?string {
+		if ( 1 !== preg_match( '/^\d{4}-\d{2}-\d{2}$/', $raw ) ) {
+			return null;
+		}
+		$parsed = \DateTimeImmutable::createFromFormat( '!Y-m-d', $raw, new \DateTimeZone( 'UTC' ) );
+		if ( false === $parsed || $parsed->format( 'Y-m-d' ) !== $raw ) {
+			return null;
+		}
+
+		return $raw;
+	}
+
+	/**
+	 * Pure calendar arithmetic on an already Location-local Y-m-d label.
+	 */
+	private function plus_days( string $date, int $days ): string {
+		$base = \DateTimeImmutable::createFromFormat( '!Y-m-d', $date, new \DateTimeZone( 'UTC' ) );
+		if ( false === $base ) {
+			return $date;
+		}
+
+		return $base->modify( '+' . max( 0, $days ) . ' day' )->format( 'Y-m-d' );
+	}
+
+	/**
+	 * Bounded selectable-day options for the Persian date selector: the
+	 * operational day plus the Clinic booking horizon, each with the existing
+	 * Jalali presentation (server-side only — no client calendar conversion).
+	 *
+	 * @return list<array{date: string, jalali: string}>
+	 */
+	private function selectable_days( string $from, int $horizon_days ): array {
+		$cursor = \DateTimeImmutable::createFromFormat( '!Y-m-d', $from, new \DateTimeZone( 'UTC' ) );
+		if ( false === $cursor ) {
+			return [];
+		}
+		$limit = max( 0, min( $horizon_days, self::DAY_OPTION_LIMIT - 1 ) );
+		$days  = [];
+		for ( $offset = 0; $offset <= $limit; $offset++ ) {
+			$date   = $cursor->modify( '+' . $offset . ' day' )->format( 'Y-m-d' );
+			$days[] = [
+				'date'   => $date,
+				'jalali' => Jalali::formatYmd( $date ),
+			];
+		}
+
+		return $days;
+	}
+
+	/**
 	 * Doctors eligible for the trusted Clinic + trusted operational Location:
 	 * ACTIVE professional identity + ACTIVE durable Clinic participation
 	 * (membership of the bound user in THIS Clinic; a location-scoped
@@ -914,7 +1348,12 @@ final class ReceptionPortalController extends RestBase {
 	/**
 	 * Strict reception Location resolution (0/1/N policy).
 	 *
-	 * @return array{clinic_id: int, location_id: int|null, location_name: string|null}|WP_Error
+	 * The resolved row also carries the persisted IANA `timezone` of the trusted
+	 * Location: it is the operational authority for the reception appointment
+	 * surface (Phase 11 Slice 5). Additive only — every existing caller keeps
+	 * reading `clinic_id` / `location_id` / `location_name` unchanged.
+	 *
+	 * @return array{clinic_id: int, location_id: int|null, location_name: string|null, timezone: string|null}|WP_Error
 	 */
 	private function resolve_reception_location( int $user_id ): array|WP_Error {
 		try {
@@ -933,6 +1372,7 @@ final class ReceptionPortalController extends RestBase {
 				'clinic_id'     => $clinic_id,
 				'location_id'   => null,
 				'location_name' => null,
+				'timezone'      => null,
 			];
 		}
 
@@ -950,6 +1390,7 @@ final class ReceptionPortalController extends RestBase {
 				'clinic_id'     => $clinic_id,
 				'location_id'   => $explicit,
 				'location_name' => (string) $by_id[ $explicit ]['name'],
+				'timezone'      => (string) ( $by_id[ $explicit ]['timezone'] ?? '' ),
 			];
 		}
 
@@ -959,6 +1400,7 @@ final class ReceptionPortalController extends RestBase {
 				'clinic_id'     => $clinic_id,
 				'location_id'   => $only_id,
 				'location_name' => (string) $by_id[ $only_id ]['name'],
+				'timezone'      => (string) ( $by_id[ $only_id ]['timezone'] ?? '' ),
 			];
 		}
 

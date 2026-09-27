@@ -134,6 +134,27 @@ $cpms_reception_cfg = [
 .cpms-staff-reception .cpms-sr-walkin-state--error { color: #a12828; }
 .cpms-staff-reception .cpms-sr-walkin-state--ok { color: var(--cpms-primary); font-weight: bold; }
 .cpms-staff-reception .cpms-sr-walkin-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.cpms-staff-reception .cpms-sr-book { display: grid; gap: 8px; }
+.cpms-staff-reception .cpms-sr-book h2 { margin: 0; font-size: 1rem; }
+.cpms-staff-reception .cpms-sr-book-meta { margin: 0; font-size: 0.86rem; color: var(--cpms-muted); overflow-wrap: anywhere; }
+.cpms-staff-reception .cpms-sr-book-fields { display: flex; flex-wrap: wrap; gap: 10px; }
+.cpms-staff-reception .cpms-sr-book-field { display: flex; flex-direction: column; gap: 4px; flex: 1 1 180px; min-width: 160px; max-width: 420px; font-size: 0.86rem; }
+.cpms-staff-reception .cpms-sr-book-field select, .cpms-staff-reception .cpms-sr-book-field input { min-height: 40px; width: 100%; box-sizing: border-box; padding: 6px 10px; border: 1px solid var(--cpms-border); border-radius: 8px; background: #fff; font-size: 0.95rem; }
+.cpms-staff-reception .cpms-sr-book-field select:focus-visible, .cpms-staff-reception .cpms-sr-book-field input:focus-visible { outline: 2px solid var(--cpms-primary); outline-offset: 1px; }
+.cpms-staff-reception .cpms-sr-book-doctor { margin: 0; font-size: 0.92rem; overflow-wrap: anywhere; }
+.cpms-staff-reception .cpms-sr-book-slots { margin: 0; padding: 8px; border: 1px solid var(--cpms-border); border-radius: 8px; }
+.cpms-staff-reception .cpms-sr-book-slots legend { padding: 0 4px; font-size: 0.86rem; color: var(--cpms-muted); }
+.cpms-staff-reception .cpms-sr-book-slots-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.cpms-staff-reception .cpms-sr-book-slot { min-height: 40px; padding: 6px 10px; border: 1px solid var(--cpms-border); border-radius: 8px; background: #fff; font-size: 0.92rem; cursor: pointer; }
+.cpms-staff-reception .cpms-sr-book-slot[aria-pressed="true"] { border-color: var(--cpms-primary); background: #f3faf9; font-weight: bold; }
+.cpms-staff-reception .cpms-sr-book-slot:focus-visible { outline: 2px solid var(--cpms-primary); outline-offset: 1px; }
+.cpms-staff-reception .cpms-sr-book-slot:disabled { opacity: 0.6; cursor: not-allowed; }
+.cpms-staff-reception .cpms-sr-book-slot-cap { display: block; font-size: 0.75rem; color: var(--cpms-muted); font-weight: normal; }
+.cpms-staff-reception .cpms-sr-book-empty { margin: 0; font-size: 0.88rem; color: var(--cpms-muted); }
+.cpms-staff-reception .cpms-sr-book-state { margin: 0; min-height: 1.3em; font-size: 0.88rem; overflow-wrap: anywhere; }
+.cpms-staff-reception .cpms-sr-book-state--error { color: #a12828; }
+.cpms-staff-reception .cpms-sr-book-state--ok { color: var(--cpms-primary); font-weight: bold; }
+.cpms-staff-reception .cpms-sr-book-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 @media (max-width: 768px) {
     .cpms-staff-reception .cpms-sr-top { flex-direction: column; align-items: stretch; }
     .cpms-staff-reception .cpms-sr-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -238,6 +259,34 @@ $cpms_reception_cfg = [
         <div class="cpms-sr-walkin-actions">
             <button type="button" class="cpms-sr-btn" data-role="sr-walkin-submit" disabled>ثبت ورود حضوری و افزودن به صف</button>
             <button type="button" class="cpms-sr-btn" data-role="sr-walkin-recover" hidden>تکمیل ورود به صف</button>
+        </div>
+    </section>
+
+    <section class="cpms-sr-panel cpms-sr-book" data-role="sr-book" aria-labelledby="cpms-sr-book-title" hidden>
+        <h2 id="cpms-sr-book-title">ثبت نوبت برای بیمار انتخاب‌شده</h2>
+        <p class="cpms-sr-book-meta">نوبت فقط از ساعت‌های آزادِ از پیش ساخته‌شدهٔ همین موقعیت انتخاب می‌شود و هیچ ویزیت، صف، ورود حضوری یا پرداختی ایجاد نمی‌کند. موقعیت: <strong data-role="sr-book-location">—</strong></p>
+        <div class="cpms-sr-book-fields">
+            <label class="cpms-sr-book-field" for="cpms-sr-book-clinician" data-role="sr-book-clinician-wrap" hidden>
+                <span>پزشک <span class="cpms-sr-create-req">*</span></span>
+                <select id="cpms-sr-book-clinician" data-role="sr-book-clinician"></select>
+            </label>
+            <label class="cpms-sr-book-field" for="cpms-sr-book-date" data-role="sr-book-date-wrap" hidden>
+                <span>تاریخ <span class="cpms-sr-create-req">*</span></span>
+                <select id="cpms-sr-book-date" data-role="sr-book-date"></select>
+            </label>
+            <label class="cpms-sr-book-field" for="cpms-sr-book-reason">
+                <span>دلیل مراجعه (اختیاری)</span>
+                <input type="text" id="cpms-sr-book-reason" data-role="sr-book-reason" maxlength="255" autocomplete="off">
+            </label>
+        </div>
+        <p class="cpms-sr-book-doctor" data-role="sr-book-doctor" hidden></p>
+        <fieldset class="cpms-sr-book-slots">
+            <legend>ساعت آزاد</legend>
+            <div class="cpms-sr-book-slots-list" data-role="sr-book-slots" role="group" aria-label="ساعت‌های آزادِ قابل انتخاب"></div>
+        </fieldset>
+        <p class="cpms-sr-book-state" data-role="sr-book-state" role="status" aria-live="polite"></p>
+        <div class="cpms-sr-book-actions">
+            <button type="button" class="cpms-sr-btn" data-role="sr-book-submit" disabled>ثبت نوبت</button>
         </div>
     </section>
 
@@ -626,6 +675,9 @@ $cpms_reception_cfg = [
             if (role === 'sr-arrive' || role === 'sr-recover') {
                 arrive(target);
             }
+            if (role === 'sr-book-slot') {
+                bookSelectSlot(target);
+            }
         }
     });
 
@@ -639,6 +691,9 @@ $cpms_reception_cfg = [
             // Phase 11 Slice 4: a Location change invalidates the doctor list and
             // any doctor selection immediately (never carried across Locations).
             walkinReload();
+            // Phase 11 Slice 5: the same rule for booking — a Location change
+            // invalidates the doctor, date and slot selection immediately.
+            bookReload();
         }
     });
 
@@ -737,12 +792,14 @@ $cpms_reception_cfg = [
             box.hidden = true;
             setSelectedNote(false);
             walkinOnPatient();
+            bookOnPatient();
             return;
         }
         text.innerHTML = '<span class="cpms-sr-name">' + escapeHtml(patientLabel(search.selected)) + '</span> <span class="cpms-sr-search-meta">' + patientMeta(search.selected) + '</span>';
         box.hidden = false;
         setSelectedNote(Boolean(search.created && search.selected && String(search.created) === String(search.selected.id)));
         walkinOnPatient();
+        bookOnPatient();
     }
 
     function runSearch(force) {
@@ -1209,6 +1266,407 @@ $cpms_reception_cfg = [
         if (recover) {
             recover.addEventListener('click', function () {
                 walkinSubmit(true);
+            });
+        }
+    }());
+
+    // ---- Phase 11 Slice 5: create an appointment from an explicitly selected slot ----
+    // The patient is already selected (Slice 2/3) and the Location is already
+    // trusted (Slice 1 policy). This module adds ONE bounded slot read per
+    // selection change (doctor or date) — never a per-slot request, never a
+    // poll. The server owns the operational day (Location IANA timezone), the
+    // Jalali presentation and the availability formula; slot_id is the only
+    // booking authority and no free-form date/time is ever sent. Booking itself
+    // is the existing staff-create service: no Visit, no queue, no check-in, no
+    // walk-in, no payment.
+    var book = { patientId: null, seq: 0, locationId: null, clinicians: [], clinicianId: null, days: [], date: null, slots: [], slotId: null, busy: false, done: false };
+
+    function setBookState(text, kind) {
+        var node = el('sr-book-state');
+        if (!node) {
+            return;
+        }
+        node.textContent = text || '';
+        node.className = 'cpms-sr-book-state' + (kind === 'error' ? ' cpms-sr-book-state--error' : (kind === 'ok' ? ' cpms-sr-book-state--ok' : ''));
+    }
+
+    function bookSync() {
+        var submit = el('sr-book-submit');
+        if (submit) {
+            submit.disabled = book.busy || book.done || !book.patientId || !book.clinicianId || !book.slotId ||
+                !book.locationId || String(book.locationId) !== String(state.locationId || book.locationId);
+        }
+        var buttons = document.querySelectorAll('[data-role="sr-book-slot"]');
+        for (var i = 0; i < buttons.length; i += 1) {
+            buttons[i].disabled = book.busy;
+        }
+        var clinician = el('sr-book-clinician');
+        var date = el('sr-book-date');
+        var reason = el('sr-book-reason');
+        var location = el('sr-location-select');
+        if (clinician) {
+            clinician.disabled = book.busy;
+        }
+        if (date) {
+            date.disabled = book.busy;
+        }
+        if (reason) {
+            reason.disabled = book.busy;
+        }
+        if (location) {
+            location.disabled = book.busy;
+        }
+        var patientControls = document.querySelectorAll('[data-role="sr-search-result"], [data-role="sr-search-clear"], [data-role="sr-search-submit"], [data-role="sr-search-input"]');
+        for (var j = 0; j < patientControls.length; j += 1) {
+            patientControls[j].disabled = book.busy;
+        }
+    }
+
+    function bookRenderSlots() {
+        var list = el('sr-book-slots');
+        if (!list) {
+            return;
+        }
+        if (!book.slots.length) {
+            list.innerHTML = '<p class="cpms-sr-book-empty" data-role="sr-book-slots-empty">برای این پزشک در این تاریخ ساعت آزادی ثبت نشده است.</p>';
+            return;
+        }
+        var html = '';
+        for (var i = 0; i < book.slots.length; i += 1) {
+            var slot = book.slots[i];
+            var pressed = book.slotId && String(book.slotId) === String(slot.slot_id) ? 'true' : 'false';
+            html += '<button type="button" class="cpms-sr-book-slot" data-role="sr-book-slot" data-slot-id="' + escapeHtml(slot.slot_id) + '" aria-pressed="' + pressed + '">' +
+                escapeHtml(slot.time) +
+                '<span class="cpms-sr-book-slot-cap">ظرفیت باقی‌مانده ' + faDigits(slot.capacity_left) + ' · ' + faDigits(slot.duration_min) + ' دقیقه</span>' +
+                '</button>';
+        }
+        list.innerHTML = html;
+    }
+
+    function bookRenderDays() {
+        var select = el('sr-book-date');
+        var wrap = el('sr-book-date-wrap');
+        if (!select || !wrap) {
+            return;
+        }
+        if (!book.days.length) {
+            select.innerHTML = '';
+            wrap.hidden = true;
+            return;
+        }
+        var html = '';
+        for (var i = 0; i < book.days.length; i += 1) {
+            var day = book.days[i];
+            html += '<option value="' + escapeHtml(day.date) + '"' + (String(day.date) === String(book.date) ? ' selected' : '') + '>' + escapeHtml(day.jalali) + '</option>';
+        }
+        select.innerHTML = html;
+        select.value = String(book.date || book.days[0].date);
+        wrap.hidden = false;
+    }
+
+    function bookClearSlots() {
+        book.seq += 1;
+        book.slots = [];
+        book.slotId = null;
+        bookRenderSlots();
+        bookSync();
+    }
+
+    function bookClear() {
+        book.seq += 1;
+        book.locationId = null;
+        book.clinicians = [];
+        book.clinicianId = null;
+        book.days = [];
+        book.date = null;
+        book.slots = [];
+        book.slotId = null;
+        book.done = false;
+        var clinicianWrap = el('sr-book-clinician-wrap');
+        var clinicianSelect = el('sr-book-clinician');
+        var doctor = el('sr-book-doctor');
+        var dateWrap = el('sr-book-date-wrap');
+        var dateSelect = el('sr-book-date');
+        var reason = el('sr-book-reason');
+        var location = el('sr-book-location');
+        if (clinicianSelect) {
+            clinicianSelect.innerHTML = '';
+        }
+        if (clinicianWrap) {
+            clinicianWrap.hidden = true;
+        }
+        if (doctor) {
+            doctor.hidden = true;
+            doctor.textContent = '';
+        }
+        if (dateSelect) {
+            dateSelect.innerHTML = '';
+        }
+        if (dateWrap) {
+            dateWrap.hidden = true;
+        }
+        if (reason) {
+            reason.value = '';
+        }
+        if (location) {
+            location.textContent = '—';
+        }
+        bookRenderSlots();
+        bookSync();
+    }
+
+    function bookLoadSlots(preserveMessage) {
+        preserveMessage = Boolean(preserveMessage);
+        if (!book.patientId || !book.clinicianId) {
+            return;
+        }
+        book.seq += 1;
+        var seq = book.seq;
+        book.slots = [];
+        book.slotId = null;
+        bookRenderSlots();
+        bookSync();
+        if (!preserveMessage) {
+            setBookState('در حال بارگذاری ساعت‌های آزاد…', null);
+        }
+        var path = '/staff/portal/reception/slots' + (CONFIG.restRoot.indexOf('?') === -1 ? '?' : '&') +
+            'clinician_id=' + encodeURIComponent(String(book.clinicianId)) +
+            (book.date ? '&date=' + encodeURIComponent(String(book.date)) : '');
+        api(path).then(function (result) {
+            if (seq !== book.seq) {
+                return;
+            }
+            if (!result.ok) {
+                var code = errorCodeOf(result.body);
+                setBookState(code === 'CLINIC_SCOPE_REQUIRED' ? 'ابتدا موقعیت عملیاتی را انتخاب کنید.' : errorMessageOf(result.body, 'بارگذاری ساعت‌های آزاد انجام نشد.'), 'error');
+                return;
+            }
+            var data = payloadOf(result.body);
+            book.locationId = data.location_id ? Number(data.location_id) : null;
+            book.days = Array.isArray(data.days) ? data.days : [];
+            book.slots = Array.isArray(data.slots) ? data.slots : [];
+            book.date = data.date ? String(data.date) : null;
+            bookRenderDays();
+            bookRenderSlots();
+            if (!book.locationId) {
+                setBookState('موقعیت عملیاتی فعالی در دسترس نیست — ثبت نوبت ممکن نیست.', 'error');
+            } else if (!preserveMessage && !book.slots.length) {
+                setBookState('برای این پزشک در این تاریخ ساعت آزادی ثبت نشده است — تاریخ یا پزشک دیگری را انتخاب کنید.', null);
+            } else if (!preserveMessage) {
+                setBookState('یک ساعت آزاد را انتخاب کنید و سپس «ثبت نوبت» را بزنید.', null);
+            }
+            bookSync();
+        }).catch(function () {
+            if (seq === book.seq) {
+                setBookState('خطای شبکه هنگام بارگذاری ساعت‌های آزاد.', 'error');
+            }
+        });
+    }
+
+    function bookRenderClinicians(data) {
+        book.locationId = data.location_id ? Number(data.location_id) : null;
+        book.clinicians = Array.isArray(data.clinicians) ? data.clinicians : [];
+        book.clinicianId = null;
+        var location = el('sr-book-location');
+        if (location) {
+            location.textContent = String(data.location_name || state.locationName || '—');
+        }
+        var wrap = el('sr-book-clinician-wrap');
+        var select = el('sr-book-clinician');
+        var doctor = el('sr-book-doctor');
+        if (!book.locationId) {
+            setBookState('موقعیت عملیاتی فعالی در دسترس نیست — ثبت نوبت ممکن نیست.', 'error');
+        } else if (!book.clinicians.length) {
+            setBookState('پزشکی برای این موقعیت در دسترس نیست — ثبت نوبت ممکن نیست.', 'error');
+        } else if (book.clinicians.length === 1) {
+            book.clinicianId = Number(book.clinicians[0].id);
+            if (select) {
+                select.innerHTML = '';
+            }
+            if (wrap) {
+                wrap.hidden = true;
+            }
+            if (doctor) {
+                doctor.textContent = 'پزشک: ' + String(book.clinicians[0].name || '') + ' (تنها پزشک در دسترس این موقعیت — خودکار انتخاب شد)';
+                doctor.hidden = false;
+            }
+            setBookState('', null);
+            bookSync();
+            bookLoadSlots();
+            return;
+        } else {
+            if (select) {
+                var html = '<option value="">— انتخاب پزشک —</option>';
+                for (var i = 0; i < book.clinicians.length; i += 1) {
+                    html += '<option value="' + escapeHtml(book.clinicians[i].id) + '">' + escapeHtml(book.clinicians[i].name) + '</option>';
+                }
+                select.innerHTML = html;
+                select.value = '';
+            }
+            if (wrap) {
+                wrap.hidden = false;
+            }
+            if (doctor) {
+                doctor.hidden = true;
+                doctor.textContent = '';
+            }
+            setBookState('پزشک را انتخاب کنید تا ساعت‌های آزاد همان پزشک بارگذاری شود.', null);
+        }
+        bookSync();
+    }
+
+    function bookReload() {
+        bookClear();
+        var section = el('sr-book');
+        if (!book.patientId) {
+            if (section) {
+                section.hidden = true;
+            }
+            setBookState('', null);
+            return;
+        }
+        if (section) {
+            section.hidden = false;
+        }
+        if (state.locations.length > 1 && !state.locationId) {
+            setBookState('ابتدا موقعیت عملیاتی را انتخاب کنید.', 'error');
+            return;
+        }
+        book.seq += 1;
+        var seq = book.seq;
+        setBookState('در حال بارگذاری پزشکان…', null);
+        api('/staff/portal/reception/clinicians').then(function (result) {
+            if (seq !== book.seq) {
+                return;
+            }
+            if (!result.ok) {
+                setBookState(errorCodeOf(result.body) === 'CLINIC_SCOPE_REQUIRED' ? 'ابتدا موقعیت عملیاتی را انتخاب کنید.' : errorMessageOf(result.body, 'بارگذاری پزشکان انجام نشد.'), 'error');
+                return;
+            }
+            bookRenderClinicians(payloadOf(result.body));
+        }).catch(function () {
+            if (seq === book.seq) {
+                setBookState('خطای شبکه هنگام بارگذاری پزشکان.', 'error');
+            }
+        });
+    }
+
+    function bookOnPatient() {
+        if (book.busy) {
+            return;
+        }
+        var id = search.selected ? Number(search.selected.id) : null;
+        if (id === book.patientId) {
+            return;
+        }
+        book.patientId = id;
+        bookReload();
+    }
+
+    function bookSelectSlot(button) {
+        if (book.busy) {
+            return;
+        }
+        var id = Number(button.getAttribute('data-slot-id') || 0);
+        if (!id) {
+            return;
+        }
+        book.slotId = id;
+        book.done = false;
+        var buttons = document.querySelectorAll('[data-role="sr-book-slot"]');
+        var chosen = null;
+        for (var i = 0; i < buttons.length; i += 1) {
+            buttons[i].setAttribute('aria-pressed', Number(buttons[i].getAttribute('data-slot-id') || 0) === id ? 'true' : 'false');
+        }
+        for (var j = 0; j < book.slots.length; j += 1) {
+            if (Number(book.slots[j].slot_id) === id) {
+                chosen = book.slots[j];
+            }
+        }
+        setBookState(chosen ? ('ساعت ' + String(chosen.time) + ' انتخاب شد — برای ثبت، «ثبت نوبت» را بزنید.') : '', null);
+        bookSync();
+    }
+
+    function bookSubmit() {
+        if (book.busy || !book.patientId || !book.clinicianId || !book.slotId || !book.locationId) {
+            return;
+        }
+        if (state.locationId && String(book.locationId) !== String(state.locationId)) {
+            // Stale slot context from a previous Location: never submit it.
+            bookReload();
+            return;
+        }
+        book.busy = true;
+        bookSync();
+        var seq = book.seq;
+        var reasonNode = el('sr-book-reason');
+        var reason = reasonNode ? String(reasonNode.value || '').trim() : '';
+        setBookState('در حال ثبت نوبت…', null);
+        api('/staff/portal/reception/appointments', { method: 'POST', body: { patient_id: book.patientId, clinician_id: book.clinicianId, slot_id: book.slotId, reason: reason } })
+            .then(function (result) {
+                if (seq !== book.seq) {
+                    return null;
+                }
+                var data = payloadOf(result.body);
+                var code = errorCodeOf(result.body);
+                if (result.ok && data.appointment) {
+                    var appt = data.appointment;
+                    book.done = true;
+                    book.slotId = null;
+                    setBookState('نوبت ثبت شد: ' + String(appt.jalali || '') + ' ساعت ' + String(appt.time || '') + ' — کد پیگیری ' + String(appt.reference_code || '') + ' (تاییدشده). هیچ ویزیت یا صفی ایجاد نشد.', 'ok');
+                } else if (code === 'CLINIC_DUPLICATE_APPOINTMENT') {
+                    setBookState('این بیمار در همین ساعت نوبت فعال دارد — نوبت تکراری ثبت نشد.', 'error');
+                } else if (code === 'CLINIC_SLOT_TAKEN') {
+                    setBookState('ظرفیت این ساعت پر شده است — فهرست تازه‌سازی شد، ساعت دیگری انتخاب کنید.', 'error');
+                } else if (code === 'CLINIC_POLICY_VIOLATION') {
+                    setBookState('این ساعت دیگر در بازهٔ مجاز رزرو نیست — فهرست ساعت‌ها تازه‌سازی شد.', 'error');
+                } else if (code === 'CLINIC_NOT_FOUND') {
+                    setBookState('این ساعت دیگر در دسترس نیست — فهرست ساعت‌ها تازه‌سازی شد.', 'error');
+                } else if (code === 'CLINIC_SCOPE_REQUIRED') {
+                    setBookState('ابتدا موقعیت عملیاتی را انتخاب کنید.', 'error');
+                } else {
+                    setBookState('ثبت نوبت انجام نشد: ' + errorMessageOf(result.body, 'خطای نامشخص'), 'error');
+                }
+                return loadBoard(true);
+            })
+            .catch(function () {
+                if (seq === book.seq) {
+                    setBookState('خطای شبکه هنگام ثبت نوبت.', 'error');
+                }
+            })
+            .then(function () {
+                book.busy = false;
+                book.done = false;
+                // ONE bounded re-read after an explicit action: the offered
+                // availability must reflect the durable truth again.
+                bookLoadSlots(true);
+            });
+    }
+
+    (function bindBook() {
+        var clinician = el('sr-book-clinician');
+        if (clinician) {
+            clinician.addEventListener('change', function () {
+                book.clinicianId = clinician.value ? Number(clinician.value) : null;
+                bookClearSlots();
+                setBookState(book.clinicianId ? '' : 'انتخاب پزشک الزامی است.', null);
+                if (book.clinicianId) {
+                    bookLoadSlots();
+                }
+            });
+        }
+        var date = el('sr-book-date');
+        if (date) {
+            date.addEventListener('change', function () {
+                book.date = date.value ? String(date.value) : null;
+                bookClearSlots();
+                bookLoadSlots();
+            });
+        }
+        var submit = el('sr-book-submit');
+        if (submit) {
+            submit.addEventListener('click', function () {
+                bookSubmit();
             });
         }
     }());
