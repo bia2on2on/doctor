@@ -374,6 +374,9 @@ final class Phase11ReceptionPartialArrivalRecoveryRedTest extends WP_UnitTestCas
     {
         $fx = $this->stageR('r5');
         $this->seedMembership($fx['secretary'], $fx['clinic'], 'cpms_secretary');
+        $patient = $this->insertPatient($fx['clinic'], 'r5a');
+        $slot    = $this->insertSlot($fx['clinic'], $fx['loc_tehran'], $fx['clinician'], self::TEHRAN_DATE, '22:00:00');
+        $appt    = $this->insertAppointment($fx['clinic'], $fx['loc_tehran'], 'r5-nb', $patient, $fx['clinician'], $slot, self::TEHRAN_DATE, '22:00:00');
         $html = $this->renderStaffPortal($fx['secretary']);
 
         self::assertStringContainsString('sr-recover', $html, 'R5: the checked_in recovery control marker exists');
@@ -381,6 +384,8 @@ final class Phase11ReceptionPartialArrivalRecoveryRedTest extends WP_UnitTestCas
         self::assertStringContainsString('اما قرارگیری در صف انجام نشد', $html, 'R5: the partial-failure message is distinct and actionable');
         self::assertStringContainsString('statusSticky', $html, 'R5: the sticky status mechanism exists (silent refresh must not erase the partial message)');
         self::assertStringContainsString('هنوز پذیرش نشده', $html, 'R5: a booked-but-not-received row clearly says the patient has not been received yet');
+        self::assertStringContainsString('تاییدشده', $html, 'R5: the true appointment state label remains shown separately from the clarification');
+        self::assertSame('confirmed', (string) $this->findAppointment($appt)['status'], 'R5: the underlying appointment remains confirmed - the wording is presentation-only');
     }
 
     // ================= helpers (TEST-ONLY) =================
