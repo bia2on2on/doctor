@@ -323,7 +323,7 @@ final class Phase11ReceptionAppointmentCreateRedTest extends WP_UnitTestCase
         App::membership_service()->set_scope_mode($mid, 'location', [$many['locB']]);
         self::assertSame(403, $this->create($many, $pn, $many['c2'], $nslot, $many['locA'])->get_status(), 'A3: unassigned Location rejected');
         $autoSlot = $this->insertSlot($many['clinic'], $many['locB'], $many['c2'], $tomorrow, '10:00:00');
-        $auto     = $this->dispatch('GET', self::SLOTS, ['clinician_id' => $many['c2']], $this->scopeHeaders($many['clinic']));
+        $auto     = $this->dispatch('GET', self::SLOTS, ['clinician_id' => $many['c2'], 'date' => $tomorrow], $this->scopeHeaders($many['clinic']));
         self::assertSame(200, $auto->get_status(), 'A3: single eligible Location auto-resolves for the slot read — ' . $this->errCode($auto));
         self::assertSame($many['locB'], (int) ($this->payload($auto)['location_id'] ?? 0), 'A3: auto-resolved Location = B');
         self::assertContains($autoSlot, $this->slotIds($auto), 'A3: the auto-resolved Location offers its own slots');

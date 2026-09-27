@@ -1424,6 +1424,7 @@ def run_booking_journey(browser, vp):
         page.wait_for_selector('[data-role="sr-location-select"]', state="visible", timeout=15000)
         select_location(page, PUB["loc_tehran"])
         wait_rows_count(page, board_rows)
+        queue_rows_before = page.locator('[data-role="sr-queue-row"]').count()
         if page.locator('[data-role="sr-book"]').is_visible():
             raise RuntimeError("booking section must stay hidden until a patient is selected")
 
@@ -1526,8 +1527,8 @@ def run_booking_journey(browser, vp):
         if board_row.count() != 1 or "Booking " not in (board_row.inner_text() or ""):
             raise RuntimeError("same-day created appointment must appear on the reception day board")
         wait_book_state(page, "نوبت ثبت شد")
-        if page.locator('[data-role="sr-queue-row"]').count() != 4:
-            raise RuntimeError("appointment creation must not create or alter a queue/Visit")
+        if page.locator('[data-role="sr-queue-row"]').count() != queue_rows_before:
+            raise RuntimeError("appointment creation must not create or alter an existing queue/Visit")
         create_writes = [r for r in state["rest"] if r["method"] != "GET"][len(patient_before):]
         if len(create_writes) != 1 or not create_writes[0]["route"].rstrip("/").endswith(APPOINTMENTS_ROUTE):
             raise RuntimeError(f"booking journey must issue exactly one write, got {create_writes}")
@@ -1578,8 +1579,8 @@ def run_booking_journey(browser, vp):
         wait_rows_count(page, BOOKING_BOARD_ROWS)
         if page.locator(f'[data-role="sr-row"][data-appointment-id="{future_appt.get("id")}"]').count() != 0:
             raise RuntimeError("future appointment must not appear on today's reception board")
-        if page.locator('[data-role="sr-queue-row"]').count() != 4:
-            raise RuntimeError("future appointment must not create a Visit/queue row")
+        if page.locator('[data-role="sr-queue-row"]').count() != queue_rows_before:
+            raise RuntimeError("future appointment must not create or alter an existing Visit/queue row")
         assert_no_horizontal_overflow(page, "booking-future")
         shot(page, f"reception-{vp['vp']}-booking-future")
 
@@ -1589,7 +1590,7 @@ def run_booking_journey(browser, vp):
         ok(
             key,
             "reception booking: explicit persisted slot → confirmed appointment; no Visit/queue/payment; future stays future",
-            f"vp={vp['vp']} free_full_closed=1 location_reset=1 same_day_board=1 future_board=0 duplicate=409 board_rows={BOOKING_BOARD_ROWS} queue_rows=4 slots_reads={len([r for r in state['rest'] if r['route'].rstrip('/').endswith(SLOTS_ROUTE)])} create_posts={len([r for r in state['rest'] if r['route'].rstrip('/').endswith(APPOINTMENTS_ROUTE) and r['method']=='POST'])} reloaded=0 overflow=0",
+            f"vp={vp['vp']} free_full_closed=1 location_reset=1 same_day_board=1 future_board=0 duplicate=409 board_rows={BOOKING_BOARD_ROWS} queue_rows={queue_rows_before} slots_reads={len([r for r in state['rest'] if r['route'].rstrip('/').endswith(SLOTS_ROUTE)])} create_posts={len([r for r in state['rest'] if r['route'].rstrip('/').endswith(APPOINTMENTS_ROUTE) and r['method']=='POST'])} reloaded=0 overflow=0",
         )
     except Exception as e:
         try:
