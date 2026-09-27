@@ -244,18 +244,28 @@ final class Phase11ReceptionPatientCreateRedTest extends WP_UnitTestCase
         self::assertSame($beforeA, $this->countPatients($a['clinic']), 'S4: foreign selector creates no Clinic A row');
         self::assertSame($beforeB, $this->countPatients($b['clinic']), 'S4: foreign selector creates no Clinic B row');
 
-        // Body clinic_id of B is never authority — create lands in trusted A.
-        $res = $this->dispatch('POST', self::CREATE, [
-            'first_name' => 'Trusted',
+        // Body clinic_id of B is never authority. The established binder
+        // fail-closes when header and param disagree — it does not create in B.
+        $conflict = $this->dispatch('POST', self::CREATE, [
+            'first_name' => 'Twin',
             'last_name'  => 'Bodyid',
             'mobile'     => '09121110032',
             'clinic_id'  => $b['clinic'],
+        ], $this->scopeHeaders($a['clinic'], $a['loc_a']));
+        self::assertNotSame(200, $conflict->get_status(), 'S4: disagreeing body clinic_id fail-closes');
+        self::assertSame($beforeA, $this->countPatients($a['clinic']), 'S4: disagreeing body clinic_id creates no Clinic A row');
+        self::assertSame($beforeB, $this->countPatients($b['clinic']), 'S4: disagreeing body clinic_id creates no Clinic B row');
+
+        $res = $this->dispatch('POST', self::CREATE, [
+            'first_name' => 'Trusted',
+            'last_name'  => 'Bodyid',
+            'mobile'     => '09121110033',
         ], $this->scopeHeaders($a['clinic'], $a['loc_a']));
         self::assertSame(200, $res->get_status(), 'S4: trusted-Clinic create answers — ' . $this->errCode($res));
         $row = $this->createPayload($res);
         $pid = (int) ($row['id'] ?? 0);
         self::assertGreaterThan(0, $pid, 'S4: patient id returned');
-        self::assertSame($a['clinic'], $this->patientClinic($pid), 'S4: patient is created in the trusted Clinic, not the body clinic_id');
+        self::assertSame($a['clinic'], $this->patientClinic($pid), 'S4: patient is created in the trusted Clinic');
         self::assertSame($beforeB, $this->countPatients($b['clinic']), 'S4: Clinic B row count unchanged');
     }
 
@@ -271,7 +281,7 @@ final class Phase11ReceptionPatientCreateRedTest extends WP_UnitTestCase
             'first_name'  => 'Loc',
             'last_name'   => 'Neutral',
             'mobile'      => '09121110041',
-            'location_id' => $fx['loc_b'],
+            'location_id' => $fx['loc_a'],
         ], $this->scopeHeaders($fx['clinic'], $fx['loc_a']));
         self::assertSame(200, $res->get_status(), 'S5: create with a selected Location answers — ' . $this->errCode($res));
         $pid = (int) ($this->createPayload($res)['id'] ?? 0);

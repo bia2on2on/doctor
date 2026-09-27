@@ -273,7 +273,7 @@ final class ReceptionPortalController extends RestBase {
 		try {
 			$created = App::patientService()->create( $fields, (int) get_current_user_id() );
 
-			return $this->success( App::patientService()->toSearchView( $created ) );
+			return $this->success( App::patientService()->to_search_view( $created ) );
 		} catch ( BookingException $e ) {
 			return $this->error( $e->errorCode, $e->httpStatus, $e->getMessage(), $e->data ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established BookingException contract
 		}
