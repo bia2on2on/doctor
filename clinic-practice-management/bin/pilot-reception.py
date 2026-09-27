@@ -14,6 +14,7 @@ import json
 import os
 import re
 import sys
+import time
 from urllib.parse import urlparse
 
 from playwright.sync_api import sync_playwright
@@ -688,6 +689,7 @@ def run_queue_states_journey(browser, vp):
 
 
 SEARCH_ROUTE = "/staff/portal/reception/patients/search"
+CREATE_ROUTE = "/staff/portal/reception/patients"
 
 
 def search_calls(state):
@@ -856,6 +858,202 @@ def run_search_journey(browser, vp):
         ctx.close()
 
 
+def is_create_path(url):
+    path = (urlparse(url).path or "").rstrip("/")
+    return path.endswith(CREATE_ROUTE)
+
+
+def create_calls(state):
+    return [r for r in state["rest"] if r["route"].rstrip("/").endswith(CREATE_ROUTE)]
+
+
+def make_nid(seed):
+    body = f"{(100000000 + (int(seed) % 800000000)):09d}"[:9]
+    total = sum(int(body[i]) * (10 - i) for i in range(9))
+    rem = total % 11
+    check = 0 if rem == 0 else (1 if rem == 1 else 11 - rem)
+    nid = body + str(check)
+    if len(set(nid)) == 1:
+        return make_nid(int(seed) + 19)
+    return nid
+
+
+def run_create_journey(browser, vp):
+    """Phase 11 Slice 3 — create a Clinic patient then read-only select.
+
+    Search miss exposes create; small form; successful create becomes the
+    existing selected presentation (masked national ID); no automatic
+    Visit/appointment/queue; duplicate mobile and national-ID conflict stay
+    bounded product errors; clear-selection and Slice 2 search still work.
+    """
+    key = f"reception-create-{vp['vp']}"
+    stage = "login"
+    ctx, page, state = new_page(browser, vp)
+    try:
+        login(page, SECRETARY)
+        stage = "reception-entry"
+        resp = harness_goto(page, RECEPTION_URL, wait_until="domcontentloaded")
+        if resp is None or resp.status != 200:
+            raise RuntimeError(f"reception entry status {getattr(resp, 'status', None)}")
+        page.wait_for_selector('[data-role="reception-app"]', state="attached", timeout=15000)
+        assert_reception_shell(page)
+        page.wait_for_selector('[data-role="sr-location-select"]', state="visible", timeout=15000)
+        select_location(page, PUB["loc_tehran"])
+        wait_rows_count(page, 4)
+
+        stage = "search-miss"
+        mark = nav_mark(page)
+        board_before = page.locator('[data-role="sr-appointments-body"]').inner_text() or ""
+        search_input = page.locator('[data-role="sr-search-input"]')
+        search_input.fill("zzqx-create-miss")
+        wait_search_state(page, "یافت نشد")
+        create_open = page.locator('[data-role="sr-create-open"]')
+        if not create_open.is_visible():
+            raise RuntimeError("create action must appear after a search miss")
+        assert_no_horizontal_overflow(page, "create-miss")
+        shot(page, f"reception-{vp['vp']}-create-miss")
+
+        stage = "form"
+        create_open.click()
+        page.wait_for_selector('[data-role="sr-create"]', state="visible", timeout=5000)
+        for role in ("sr-create-first-name", "sr-create-last-name", "sr-create-mobile"):
+            loc = page.locator(f'[data-role="{role}"]')
+            if not loc.is_visible():
+                raise RuntimeError(f"required field {role} must be visible")
+        if not page.locator('[data-role="sr-create-national-id"]').is_visible():
+            raise RuntimeError("optional national ID field must be present")
+        assert_no_horizontal_overflow(page, "create-form")
+        shot(page, f"reception-{vp['vp']}-create-form")
+
+        stage = "success"
+        vp_n = {"mobile-390": 1, "tablet-768": 2, "desktop-1366": 3}[vp["vp"]]
+        stamp = int(time.time()) % 100000
+        mobile = f"0935{(stamp * 10 + vp_n) % 10000000:07d}"
+        mobile2 = f"0936{(stamp * 10 + vp_n) % 10000000:07d}"
+        nid = make_nid(stamp * 10 + vp_n)
+        page.locator('[data-role="sr-create-first-name"]').fill("ساخته")
+        page.locator('[data-role="sr-create-last-name"]').fill("پذیرش")
+        page.locator('[data-role="sr-create-mobile"]').fill(mobile)
+        page.locator('[data-role="sr-create-national-id"]').fill(nid)
+        page.locator('[data-role="sr-create-birth-date"]').fill("1985-04-01")
+        page.locator('[data-role="sr-create-gender"]').select_option("female")
+        writes_before = [r for r in state["rest"] if r["method"] != "GET"]
+        with page.expect_response(lambda r: is_create_path(r.url) and r.request.method == "POST", timeout=15000) as resp_info:
+            page.locator('[data-role="sr-create-submit"]').click()
+        created = resp_info.value
+        if created.status != 200:
+            raise RuntimeError(f"reception create answered {created.status}")
+        page.wait_for_selector('[data-role="sr-search-selected"]', state="visible", timeout=8000)
+        wait_search_state(page, "ثبت شد")
+        selected = page.locator('[data-role="sr-search-selected"]')
+        selected_text = selected.inner_text() or ""
+        if "***" + nid[-4:] not in selected_text:
+            raise RuntimeError("created selection must show the masked national ID")
+        if "ساخته" not in selected_text:
+            raise RuntimeError("created selection must show the new patient name")
+        if page.locator('[data-role="sr-create"]').is_visible():
+            raise RuntimeError("create form must close after success")
+        writes_after = [r for r in state["rest"] if r["method"] != "GET"]
+        new_writes = writes_after[len(writes_before) :]
+        routes = [f"{w['method']} {w['route']}={w['status']}" for w in new_writes]
+        if len(new_writes) != 1 or new_writes[0]["method"] != "POST" or not new_writes[0]["route"].rstrip("/").endswith(CREATE_ROUTE):
+            raise RuntimeError(f"create must be the only write, got {routes}")
+        if any("arrivals" in w["route"] or "/visits" in w["route"] or "appointments" in w["route"] or "queue" in w["route"] for w in new_writes):
+            raise RuntimeError("create must not trigger arrival/visit/appointment/queue writes")
+        board_after = page.locator('[data-role="sr-appointments-body"]').inner_text() or ""
+        if board_before != board_after:
+            raise RuntimeError("successful create must not change the Arrival Board")
+        assert_no_horizontal_overflow(page, "create-success")
+        shot(page, f"reception-{vp['vp']}-create-success")
+
+        stage = "duplicate-mobile"
+        page.locator('[data-role="sr-create-open"]').click()
+        page.wait_for_selector('[data-role="sr-create"]', state="visible", timeout=5000)
+        page.locator('[data-role="sr-create-first-name"]').fill("تکراری")
+        page.locator('[data-role="sr-create-last-name"]').fill("موبایل")
+        page.locator('[data-role="sr-create-mobile"]').fill(mobile)
+        page.locator('[data-role="sr-create-national-id"]').fill("")
+        with page.expect_response(lambda r: is_create_path(r.url) and r.request.method == "POST", timeout=15000) as dup_info:
+            page.locator('[data-role="sr-create-submit"]').click()
+        if dup_info.value.status == 200:
+            raise RuntimeError("duplicate mobile must not succeed")
+        page.wait_for_function(
+            """() => { const n = document.querySelector('[data-role="sr-create-error"]'); return !!n && !n.hidden && (n.textContent || '').indexOf('موبایل') !== -1; }""",
+            timeout=8000,
+        )
+        dup_err = page.locator('[data-role="sr-create-error"]').inner_text() or ""
+        if not dup_err.strip():
+            raise RuntimeError("duplicate mobile must show a bounded error")
+        if any(tok in dup_err for tok in ("SQL", "Duplicate", "u_pat_", "cpms_patients")):
+            raise RuntimeError("duplicate mobile error leaked internals")
+        if page.locator('[data-role="sr-create-mobile"]').input_value() != mobile:
+            raise RuntimeError("failed create must preserve the entered mobile")
+        if "ساخته" not in (page.locator('[data-role="sr-search-selected"]').inner_text() or ""):
+            raise RuntimeError("failed duplicate must not replace the already created selection")
+        assert_no_horizontal_overflow(page, "create-dup-mobile")
+        shot(page, f"reception-{vp['vp']}-create-dup-mobile")
+
+        stage = "nid-conflict"
+        page.locator('[data-role="sr-create-first-name"]').fill("تکراری")
+        page.locator('[data-role="sr-create-last-name"]').fill("کدملی")
+        page.locator('[data-role="sr-create-mobile"]').fill(mobile2)
+        page.locator('[data-role="sr-create-national-id"]').fill(nid)
+        with page.expect_response(lambda r: is_create_path(r.url) and r.request.method == "POST", timeout=15000) as nid_info:
+            page.locator('[data-role="sr-create-submit"]').click()
+        if nid_info.value.status == 200:
+            raise RuntimeError("national-ID conflict must not succeed")
+        page.wait_for_function(
+            """() => { const n = document.querySelector('[data-role="sr-create-error"]'); return !!n && !n.hidden && (n.textContent || '').indexOf('کد ملی') !== -1; }""",
+            timeout=8000,
+        )
+        nid_err = page.locator('[data-role="sr-create-error"]').inner_text() or ""
+        if any(tok in nid_err for tok in ("SQL", "Duplicate", "u_pat_nid", "cpms_patients")):
+            raise RuntimeError("national-ID conflict leaked internals")
+        if page.locator('[data-role="sr-create"]').is_hidden():
+            raise RuntimeError("national-ID conflict must keep the form open")
+        assert_no_horizontal_overflow(page, "create-nid")
+        shot(page, f"reception-{vp['vp']}-create-nid")
+
+        stage = "clear"
+        page.locator('[data-role="sr-search-clear"]').click()
+        page.wait_for_selector('[data-role="sr-search-selected"]', state="hidden", timeout=5000)
+
+        stage = "search-after"
+        search_input.fill("")
+        search_input.type("Probe", delay=40)
+        wait_search_state(page, "یافت شد")
+        if search_result_ids(page) != [SEARCH["probe"]]:
+            raise RuntimeError("Slice 2 search must still find the probe after create")
+        wait_rows_count(page, 4)
+
+        rest_delta = assert_no_product_reload(page, mark, "create")
+        assert_authority_headers(state, PUB["clinic"], {PUB["loc_tehran"], PUB["loc_tokyo"]})
+        assert_hygiene(state, key)
+        ok(
+            key,
+            "reception clinic patient create is bounded, masked and does not auto-queue",
+            f"vp={vp['vp']} create=1 dup=1 nid=1 masked=1 writes_create={len(create_calls(state))} rest={rest_delta} reloaded=0 overflow=0",
+        )
+    except Exception as e:
+        try:
+            dump = {
+                "search_state": (page.locator('[data-role="sr-search-state"]').inner_text() or "")[:120],
+                "create_error": (page.locator('[data-role="sr-create-error"]').inner_text() or "")[:120],
+                "rest_tail": [f"{r['method']} {r['route']}={r['status']}" for r in state["rest"][-8:]],
+            }
+            info(f"fail-dump {vp['vp']} stage={stage} {dump}")
+        except Exception:
+            pass
+        try:
+            shot(page, f"reception-FAIL-{key}-{stage}")
+        except Exception:
+            pass
+        fail(key, vp["vp"], f"{e} ({page_hint(page)})")
+        raise
+    finally:
+        ctx.close()
+
+
 def main():
     if not RECEPTION_URL or not STAFF_URL:
         raise SystemExit("RECEPTION_URL / STAFF_PORTAL_URL must be set by the fixture")
@@ -885,6 +1083,12 @@ def main():
         for vp in VIEWPORTS:
             try:
                 run_search_journey(browser, vp)
+            except Exception:
+                hard_fail = True
+        # Phase 11 Slice 3 — create Clinic patient then read-only select.
+        for vp in VIEWPORTS:
+            try:
+                run_create_journey(browser, vp)
             except Exception:
                 hard_fail = True
         browser.close()

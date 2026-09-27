@@ -451,6 +451,7 @@ final class Phase11ReceptionPatientCreateRedTest extends WP_UnitTestCase
         $this->seedMembership($fx['secretary'], $fx['clinic'], 'cpms_secretary');
         wp_set_current_user($fx['secretary']);
         $before = $this->workflowFingerprint($fx['clinic']);
+        $identitiesBefore = $this->countIdentities();
 
         $res = $this->dispatch('POST', self::CREATE, [
             'first_name'            => 'Private',
@@ -480,7 +481,7 @@ final class Phase11ReceptionPatientCreateRedTest extends WP_UnitTestCase
         self::assertTrue($stored['medical_history'] === null || $stored['medical_history'] === '', 'S11: Reception must not write clinical history');
         self::assertTrue($stored['address'] === null || $stored['address'] === '', 'S11: Reception must not write address');
         self::assertTrue(!isset($stored['identity_id']) || $stored['identity_id'] === null || $stored['identity_id'] === '', 'S11: identity_id stays dormant');
-        self::assertSame(0, $this->countIdentities(), 'S11: Organization patient-identity table stays empty for this create');
+        self::assertSame($identitiesBefore, $this->countIdentities(), 'S11: Organization patient-identity table is not written by Reception create');
 
         $after = $this->workflowFingerprint($fx['clinic']);
         self::assertSame($before['cpms_visits'], $after['cpms_visits'], 'S11: no Visit created');

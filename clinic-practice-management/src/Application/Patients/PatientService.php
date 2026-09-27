@@ -264,7 +264,15 @@ final class PatientService
             'updated_at' => $this->db->nowUtcSql(),
         ];
 
+        $this->assertUniqueNationalId($clinicId, isset($data['national_id']) ? (string) $data['national_id'] : null);
+
         $id = $this->patients->create($data);
+        if ($this->db->wpdb()->last_error !== '' || $id <= 0) {
+            // Map the known same-Clinic national-ID uniqueness collision to a
+            // bounded product error. Unrelated SQL failures stay internal.
+            $this->assertUniqueNationalId($clinicId, isset($data['national_id']) ? (string) $data['national_id'] : null);
+            throw new BookingException('CLINIC_INTERNAL_ERROR', 'ثبت بیمار انجام نشد', 500);
+        }
         $row = (array) $this->patients->find($id);
 
         $this->audit->log(
@@ -528,22 +536,50 @@ final class PatientService
     }
 
     /**
+     * Bounded Clinic-search / Reception-selection presentation (masked national ID).
+     * Reused by Reception create so the UI never receives staffView clinical fields.
+     *
+     * @param array<string, mixed> $row
+     * @return array<string, mixed>
+     */
+    public function toSearchView(array $row): array
+    {
+        return $this->searchView($row);
+    }
+
+    /**
      * @param array<string, mixed> $row
      * @return array<string, mixed>
      */
     private function searchView(array $row): array
     {
+        $nid = $row['national_id'] ?? null;
+
         return [
             'id' => (int) $row['id'],
             'mrn' => (string) $row['mrn'],
             'first_name' => (string) $row['first_name'],
             'last_name' => (string) $row['last_name'],
             'mobile' => (string) $row['mobile'],
-            'national_id' => $row['national_id'] !== null ? NationalIdValidator::mask((string) $row['national_id']) : null,
-            'birth_date' => $row['birth_date'] !== null ? (string) $row['birth_date'] : null,
-            'gender' => (string) $row['gender'],
-            'status' => (string) $row['status'],
+            'national_id' => ($nid !== null && $nid !== '') ? NationalIdValidator::mask((string) $nid) : null,
+            'birth_date' => ($row['birth_date'] ?? null) !== null && $row['birth_date'] !== '' ? (string) $row['birth_date'] : null,
+            'gender' => (string) ($row['gender'] ?? ''),
+            'status' => (string) ($row['status'] ?? ''),
         ];
+    }
+
+    /**
+     * Same-Clinic national-ID uniqueness: bounded product error, never a raw
+     * SQL/index leak. Empty/null national ID is not a uniqueness key.
+     */
+    private function assertUniqueNationalId(int $clinicId, ?string $nationalId): void
+    {
+        if ($nationalId === null || $nationalId === '') {
+            return;
+        }
+        if ($this->patients->find_by_national_id($clinicId, $nationalId) !== null) {
+            throw new BookingException('CLINIC_VALIDATION_FAILED', 'این کد ملی متعلق به بیمار دیگری است');
+        }
     }
 
     /**
