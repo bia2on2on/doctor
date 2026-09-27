@@ -1599,6 +1599,7 @@ $cpms_reception_cfg = [
         book.busy = true;
         bookSync();
         var seq = book.seq;
+        var refreshedAfterSubmit = false;
         var reasonNode = el('sr-book-reason');
         var reason = reasonNode ? String(reasonNode.value || '').trim() : '';
         setBookState('در حال ثبت نوبت…', null);
@@ -1627,6 +1628,12 @@ $cpms_reception_cfg = [
                 } else {
                     setBookState('ثبت نوبت انجام نشد: ' + errorMessageOf(result.body, 'خطای نامشخص'), 'error');
                 }
+                // Start the bounded availability refresh immediately after the
+                // durable POST response: clear the now-stale slot options before
+                // yielding to the board refresh. The explicit response message
+                // remains visible while the fresh slot list is fetched.
+                refreshedAfterSubmit = true;
+                bookLoadSlots(true);
                 return loadBoard(true);
             })
             .catch(function () {
@@ -1637,9 +1644,13 @@ $cpms_reception_cfg = [
             .then(function () {
                 book.busy = false;
                 book.done = false;
-                // ONE bounded re-read after an explicit action: the offered
-                // availability must reflect the durable truth again.
-                bookLoadSlots(true);
+                if (!refreshedAfterSubmit) {
+                    // Network failure: no response confirmed the mutation, but
+                    // the displayed availability is still re-read honestly.
+                    bookLoadSlots(true);
+                } else {
+                    bookSync();
+                }
             });
     }
 

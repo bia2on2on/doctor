@@ -1563,8 +1563,9 @@ def run_booking_journey(browser, vp):
         before_date = len([r for r in state["rest"] if r["route"].rstrip("/").endswith(SLOTS_ROUTE)])
         page.select_option('[data-role="sr-book-date"]', BOOKING["tomorrow"])
         wait_book_slot(page, BOOKING["slots"]["future"])
-        if len([r for r in state["rest"] if r["route"].rstrip("/").endswith(SLOTS_ROUTE)]) - before_date != 1:
-            raise RuntimeError("one date selection must cause exactly one bounded slot read")
+        date_read_count = len([r for r in state["rest"] if r["route"].rstrip("/").endswith(SLOTS_ROUTE)]) - before_date
+        if date_read_count != 1:
+            raise RuntimeError(f"one date selection must cause exactly one bounded slot read, observed delta={date_read_count}")
         if BOOKING["slots"]["full"] in book_slot_ids(page) or BOOKING["slots"]["closed"] in book_slot_ids(page):
             raise RuntimeError("full/closed slots must never be offered")
         page.locator(f'[data-role="sr-book-slot"][data-slot-id="{BOOKING["slots"]["future"]}"]').click()
