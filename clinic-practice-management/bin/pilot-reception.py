@@ -76,7 +76,7 @@ def parts(name, n):
 
 _sec = parts("RECEPTION_SECRETARY", 3)
 SECRETARY = {"login": _sec[0], "password": _sec[1], "user_id": int(_sec[2])}
-_pub = parts("RECEPTION_PUBLIC", 8)
+_pub = parts("RECEPTION_PUBLIC", 9)
 PUB = {
     "clinic": int(_pub[0]),
     "loc_tehran": int(_pub[1]),
@@ -84,8 +84,9 @@ PUB = {
     "appt_express": int(_pub[3]),
     "appt_plain": int(_pub[4]),
     "appt_third": int(_pub[5]),
-    "today_tehran": _pub[6],
-    "today_tokyo": _pub[7],
+    "appt_partial": int(_pub[6]),
+    "today_tehran": _pub[7],
+    "today_tokyo": _pub[8],
 }
 
 
@@ -365,7 +366,7 @@ def run_journey(browser, vp, arrive_id, expect_queue):
 
         stage = "board"
         select_location(page, PUB["loc_tehran"])
-        wait_rows_count(page, 3)
+        wait_rows_count(page, 4)
         date_text = page.locator('[data-role="sr-date"]').inner_text() or ""
         if PUB["today_tehran"] not in date_text:
             raise RuntimeError(f"Tehran board date must be the Location-local day, got {date_text[:60]}")
@@ -373,7 +374,7 @@ def run_journey(browser, vp, arrive_id, expect_queue):
             int(rows(page).nth(i).get_attribute("data-appointment-id"))
             for i in range(rows(page).count())
         )
-        want_ids = sorted([PUB["appt_express"], PUB["appt_plain"], PUB["appt_third"]])
+        want_ids = sorted([PUB["appt_express"], PUB["appt_plain"], PUB["appt_third"], PUB["appt_partial"]])
         if got_ids != want_ids:
             raise RuntimeError(f"board must show exactly today's booked rows for the trusted Location, got {got_ids}")
         if row_of(page, PUB["appt_express"]).locator(".cpms-sr-badge--express").count() != 1:
@@ -401,7 +402,7 @@ def run_journey(browser, vp, arrive_id, expect_queue):
         ok(
             key,
             "reception arrival runs existing check-in + enqueue to waiting",
-            f"vp={vp['vp']} rows=3 arrived=1 waiting={expect_queue} rest={rest_delta} reloaded=0",
+            f"vp={vp['vp']} rows=4 arrived=1 waiting={expect_queue} rest={rest_delta} reloaded=0",
         )
 
         stage = "empty"
@@ -424,7 +425,7 @@ def run_journey(browser, vp, arrive_id, expect_queue):
             shot(page, f"reception-{vp['vp']}-error")
             ctx.set_offline(False)
             select_location(page, PUB["loc_tehran"])
-            wait_rows_count(page, 3)
+            wait_rows_count(page, 4)
 
         assert_authority_headers(state, PUB["clinic"], {PUB["loc_tehran"], PUB["loc_tokyo"]})
         assert_hygiene(state, f"reception-{vp['vp']}")
@@ -459,6 +460,98 @@ def run_journey(browser, vp, arrive_id, expect_queue):
         ctx.close()
 
 
+def run_partial_journey(browser, vp):
+    """B–E of the acceptance browser evidence: a partial arrival ending in
+    checked_in, the visible recovery action/message, one retry reaching
+    waiting without a duplicate Visit (server-side proof in the integration
+    regression), and a sticky partial status that silent refreshes do not
+    erase. Failure injection is the TEST-ONLY cookie-sabotage mu-plugin
+    (tests/fixtures/pilot-reception-sabotage-mu.php) — no production hook."""
+    from urllib.parse import urlsplit
+
+    key = f"reception-partial-{vp['vp']}"
+    stage = "login"
+    ctx, page, state = new_page(browser, vp)
+    try:
+        login(page, SECRETARY)
+        stage = "partial-setup"
+        resp = harness_goto(page, RECEPTION_URL, wait_until="domcontentloaded")
+        if resp is None or resp.status != 200:
+            raise RuntimeError(f"reception entry status {getattr(resp, 'status', None)}")
+        page.wait_for_selector('[data-role="reception-app"]', state="attached", timeout=15000)
+        select_location(page, PUB["loc_tehran"])
+        wait_rows_count(page, 4)
+
+        stage = "partial-arrival"
+        host = urlsplit(RECEPTION_URL).hostname or ""
+        ctx.add_cookies([{"name": "rp_sabotage", "value": "1", "domain": host, "path": "/"}])
+        row_of(page, PUB["appt_partial"]).locator('[data-role="sr-arrive"]').click()
+        wait_status_contains(page, "قرارگیری در صف انجام نشد")
+        arrivals = [r for r in state["rest"] if r["route"].endswith("/reception/arrivals")]
+        if not arrivals or arrivals[-1]["status"] < 400 or arrivals[-1]["method"] != "POST":
+            raise RuntimeError(f"partial arrival must answer non-success: {arrivals[-3:]}")
+        ctx.clear_cookies()
+        shot(page, f"reception-{vp['vp']}-partial")
+
+        stage = "recovery-control"
+        wait_rows_count(page, 4)
+        if row_of(page, PUB["appt_partial"]).locator('[data-role="sr-recover"]').count() != 1:
+            raise RuntimeError("checked_in row must expose exactly one recovery action")
+        row_text = row_of(page, PUB["appt_partial"]).inner_text() or ""
+        if "در انتظار" in row_text:
+            raise RuntimeError("partial arrival must end honestly in checked_in, not waiting")
+
+        stage = "sticky-status"
+        page.wait_for_timeout(6500)
+        status_now = (page.locator('[data-role="sr-status"]').inner_text() or "")
+        if "قرارگیری در صف انجام نشد" not in status_now:
+            raise RuntimeError("silent refresh erased the actionable partial-failure message")
+        if row_of(page, PUB["appt_partial"]).locator('[data-role="sr-recover"]').count() != 1:
+            raise RuntimeError("the recovery action must survive silent refreshes")
+        shot(page, f"reception-{vp['vp']}-partial-sticky")
+
+        stage = "recovery"
+        mark = nav_mark(page)
+        row_of(page, PUB["appt_partial"]).locator('[data-role="sr-recover"]').click()
+        wait_status_contains(page, "حضور ثبت شد و بیمار در صف انتظار قرار گرفت")
+        wait_row_text(page, PUB["appt_partial"], "در انتظار")
+        arrivals = [r for r in state["rest"] if r["route"].endswith("/reception/arrivals")]
+        if arrivals[-1]["status"] != 200 or arrivals[-1]["method"] != "POST":
+            raise RuntimeError(f"the recovery must succeed in one retry: {arrivals[-2:]}")
+        if row_of(page, PUB["appt_partial"]).locator('[data-role="sr-arrive"], [data-role="sr-recover"]').count() != 0:
+            raise RuntimeError("a queued row must expose no arrival/recovery action")
+        if page.locator('[data-role="sr-queue-row"]').count() != 4:
+            raise RuntimeError("the waiting queue must show all four arrived patients")
+        rest_delta = assert_no_product_reload(page, mark, "recovery")
+        shot(page, f"reception-{vp['vp']}-partial-recovered")
+
+        assert_authority_headers(state, PUB["clinic"], {PUB["loc_tehran"], PUB["loc_tokyo"]})
+        assert_hygiene(state, f"reception-{vp['vp']}-partial")
+        ok(
+            key,
+            "partial arrival ends checked_in and one retry completes the existing enqueue",
+            f"vp={vp['vp']} partial_http=400+ sticky=1 recover_http=200 waiting=4 rest={rest_delta} reloaded=0",
+        )
+    except Exception as e:
+        try:
+            dump = {
+                "status_text": (page.locator('[data-role="sr-status"]').inner_text() or "")[:160],
+                "rows": rows(page).count(),
+                "rest_tail": [f"{r['method']} {r['route']}={r['status']}" for r in state["rest"][-6:]],
+            }
+            info(f"fail-dump {vp['vp']} stage={stage} {dump}")
+        except Exception:
+            pass
+        try:
+            shot(page, f"reception-FAIL-{key}-{stage}")
+        except Exception:
+            pass
+        fail(key, vp["vp"], f"{e} ({page_hint(page)})")
+        raise
+    finally:
+        ctx.close()
+
+
 def main():
     if not RECEPTION_URL or not STAFF_URL:
         raise SystemExit("RECEPTION_URL / STAFF_PORTAL_URL must be set by the fixture")
@@ -475,6 +568,10 @@ def main():
                 run_journey(browser, vp, arrive_id, expect_queue)
             except Exception:
                 hard_fail = True
+        try:
+            run_partial_journey(browser, VIEWPORTS[0])
+        except Exception:
+            hard_fail = True
         browser.close()
     print("---")
     print(f"SUMMARY pass={sum(1 for r in results if r['status'] == 'PASS')} fail={len(failures)}")

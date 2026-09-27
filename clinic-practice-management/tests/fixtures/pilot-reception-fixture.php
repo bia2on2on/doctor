@@ -115,7 +115,7 @@ try {
 
 $patientIds = [];
 $patientIndex = 0;
-foreach (['a', 'b', 'c'] as $tag) {
+foreach (['a', 'b', 'c', 'd'] as $tag) {
     $patientIndex++;
     $patientIds[$tag] = rp_insert(
         $wpdb,
@@ -135,9 +135,9 @@ foreach (['a', 'b', 'c'] as $tag) {
     );
 }
 
-// Tehran Location: exactly three of TODAY's booked rows (first is express) —
-// one per real-browser viewport journey, so each journey performs its OWN
-// arrival on its OWN row (an arrived row's action correctly disables).
+// Tehran Location: exactly four of TODAY's booked rows (first is express) —
+// one per real-browser journey (three viewport arrivals + one partial-arrival
+// recovery journey), so each journey performs its OWN arrival on its OWN row.
 // Slots sit in the NEAR FUTURE of the Location-local day: the EXISTING ER-06
 // check-in semantics treat an arrival after slot start + per-Clinic grace as a
 // late arrival (no_show + walk-in-like visit), so the happy-path journey must
@@ -147,10 +147,12 @@ $lateToday = (int) $nowTehran->format('H') >= 23;
 $slotExpress = $lateToday ? $nowTehran->setTime(23, 55) : $nowTehran->add(new DateInterval('PT10M'));
 $slotPlain = $lateToday ? $nowTehran->setTime(23, 57) : $nowTehran->add(new DateInterval('PT30M'));
 $slotThird = $lateToday ? $nowTehran->setTime(23, 58) : $nowTehran->add(new DateInterval('PT50M'));
+$slotPartial = $lateToday ? $nowTehran->setTime(23, 59) : $nowTehran->add(new DateInterval('PT70M'));
 $apptExpress = null;
 $apptPlain = null;
 $apptThird = null;
-foreach ([['a', $slotExpress->format('H:i:s'), 1], ['b', $slotPlain->format('H:i:s'), 0], ['c', $slotThird->format('H:i:s'), 0]] as $spec) {
+$apptPartial = null;
+foreach ([['a', $slotExpress->format('H:i:s'), 1], ['b', $slotPlain->format('H:i:s'), 0], ['c', $slotThird->format('H:i:s'), 0], ['d', $slotPartial->format('H:i:s'), 0]] as $spec) {
     [$tag, $time, $express] = $spec;
     $slotId = rp_insert(
         $wpdb,
@@ -168,9 +170,28 @@ foreach ([['a', $slotExpress->format('H:i:s'), 1], ['b', $slotPlain->format('H:i
         $apptExpress = $apptId;
     } elseif ($tag === 'b') {
         $apptPlain = $apptId;
-    } else {
+    } elseif ($tag === 'c') {
         $apptThird = $apptId;
+    } else {
+        $apptPartial = $apptId;
     }
+}
+
+// The EXISTING per-Clinic two-stage knob: with auto-enqueue off, the reception
+// action runs the established check-in then the explicit enqueue transition —
+// the exact surface the partial-arrival acceptance covers (FR-6.1 keeps the
+// auto path for clinics that leave it on).
+(new \ClinicCore\Settings\Settings($db, $clinicId))->set('queue.auto_enqueue', false);
+
+// TEST-ONLY: install the cookie-triggered enqueue sabotage mu-plugin so the
+// real-browser journey can witness a partial arrival and its recovery. The
+// mu-plugin is inert without the rp_sabotage cookie and is never shipped.
+$muDir = defined('WPMU_PLUGIN_DIR') ? WPMU_PLUGIN_DIR : (WP_CONTENT_DIR . '/mu-plugins');
+if (!is_dir($muDir) && !mkdir($muDir, 0777, true) && !is_dir($muDir)) {
+    rp_fail('mu-plugins dir unavailable');
+}
+if (!copy(__DIR__ . '/pilot-reception-sabotage-mu.php', $muDir . '/rp-partial-sabotage.php')) {
+    rp_fail('sabotage mu-plugin install failed');
 }
 // Tokyo Location: deliberately NO booked rows (empty state proof).
 
@@ -192,6 +213,7 @@ file_put_contents(
         (string) $apptExpress,
         (string) $apptPlain,
         (string) $apptThird,
+        (string) $apptPartial,
         $todayTehran,
         $todayTokyo,
     ]) . "\n"
@@ -199,5 +221,5 @@ file_put_contents(
 
 echo 'fixture: reception clinic=' . $clinicId
     . ' loc_tehran=' . $locTehran . ' loc_tokyo=' . $locTokyo
-    . ' appts=' . $apptExpress . ',' . $apptPlain . ',' . $apptThird
+    . ' appts=' . $apptExpress . ',' . $apptPlain . ',' . $apptThird . ',' . $apptPartial
     . ' today_tehran=' . $todayTehran . ' today_tokyo=' . $todayTokyo . "\n";

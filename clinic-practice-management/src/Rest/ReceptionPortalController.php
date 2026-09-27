@@ -356,14 +356,17 @@ final class ReceptionPortalController extends RestBase {
 				$message = $e instanceof VisitException ? $e->getMessage() : 'افزودن به صف انجام نشد';
 				return $this->arrival_incomplete( 'existing', (int) $active['id'], 'checked_in', $code, $message );
 			}
-			$outcome  = (string) ( $visit['status'] ?? '' );
+			// The response truth is the DURABLE visit state, never the
+			// transition's in-memory return (contract truthfulness).
+			$fresh    = $this->fresh_visit( $user_id, (int) $active['id'] );
+			$outcome  = (string) ( $fresh['status'] ?? '' );
 			$complete = 'waiting' === $outcome;
 			if ( ! $complete ) {
 				return $this->arrival_incomplete( 'existing', (int) $active['id'], ( '' === $outcome ? 'checked_in' : $outcome ), 'CLINIC_INVALID_TRANSITION', 'افزودن به صف انجام نشد' );
 			}
 			return $this->success(
 				[
-					'visit'   => $visit,
+					'visit'   => ( $fresh ?: $visit ),
 					'arrival' => [
 						'check_in'      => 'existing',
 						'enqueue'       => 'ok',
@@ -402,15 +405,18 @@ final class ReceptionPortalController extends RestBase {
 
 		// Stage 2 — EXISTING authorized enqueue transition (checked_in→waiting).
 		try {
-			$visit    = App::visitService()->transition( $user_id, (int) $visit['id'], 'enqueue' );
-			$outcome  = (string) ( $visit['status'] ?? '' );
+			$visit = App::visitService()->transition( $user_id, (int) $visit['id'], 'enqueue' );
+			// The response truth is the DURABLE visit state, never the
+			// transition's in-memory return (contract truthfulness).
+			$fresh   = $this->fresh_visit( $user_id, (int) ( $visit['id'] ?? 0 ) );
+			$outcome = (string) ( $fresh['status'] ?? '' );
 			$complete = 'waiting' === $outcome;
 			if ( ! $complete ) {
 				return $this->arrival_incomplete( 'ok', (int) ( $visit['id'] ?? 0 ), ( '' === $outcome ? 'checked_in' : $outcome ), 'CLINIC_INVALID_TRANSITION', 'افزودن به صف انجام نشد' );
 			}
 			return $this->success(
 				[
-					'visit'   => $visit,
+					'visit'   => ( $fresh ?: $visit ),
 					'arrival' => [
 						'check_in'      => 'ok',
 						'enqueue'       => 'ok',

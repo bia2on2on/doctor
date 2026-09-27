@@ -375,9 +375,14 @@ final class Phase11ReceptionPartialArrivalRecoveryRedTest extends WP_UnitTestCas
     // ================= helpers (TEST-ONLY) =================
 
     /**
-     * TEST-ONLY failure injection: sabotage exactly the UPDATE that writes the
-     * waiting transition (existing WordPress `query` filter — no production
-     * test hook). Stage 1 (check-in → checked_in) is untouched.
+     * TEST-ONLY failure injection: make EXACTLY the enqueue transition
+     * (table cpms_visits, value 'waiting') throw — the same failure mode the
+     * established machine/lock/ownership guards produce in production.
+     * Throwing from the existing WordPress `query` filter keeps this entirely
+     * test-side: no production test hook exists or is added. Stage 1 (check-in
+     * → checked_in) is untouched. (A broken-SQL replacement would NOT do: the
+     * established CpmsDb runs non-strict outside migrations and would silently
+     * no-op the UPDATE while the transition reports in-memory success.)
      *
      * @template T
      * @param callable():T $fn
@@ -387,7 +392,7 @@ final class Phase11ReceptionPartialArrivalRecoveryRedTest extends WP_UnitTestCas
     {
         $sabotage = static function (string $q): string {
             if (preg_match('/^\s*UPDATE\b/i', $q) && false !== strpos($q, 'cpms_visits') && false !== strpos($q, "'waiting'")) {
-                return 'UPDATE `cpms_sabotage_nonexistent` SET `x` = 1';
+                throw new \RuntimeException('test-only enqueue sabotage');
             }
             return $q;
         };
