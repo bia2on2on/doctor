@@ -9,6 +9,12 @@
  * state). Appointment dates are each Location's LOCAL operational day — the
  * browser does not freeze time and no timezone is hardcoded.
  *
+ * Phase 11 Slice 5 adds the appointment-booking stage: already-generated FREE /
+ * FULL / CLOSED slots for today plus one FREE slot on the next Tehran-local day,
+ * and one booking patient per viewport journey. Slots only — no extra booked row
+ * is seeded, so the four-row Slice 1 board invariant holds until a real journey
+ * books one through the UI.
+ *
  * Stdout is redacted. Passwords go only to /tmp/reception.env.
  */
 
@@ -285,6 +291,55 @@ foreach ([['a', $slotExpress->format('H:i:s'), 1], ['b', $slotPlain->format('H:i
     }
 }
 
+// Phase 11 Slice 5 — appointment booking stage: ALREADY-GENERATED slots only
+// (the pilot never generates a schedule and the reception boundary never
+// fabricates one). Dr Reception at Tehran carries two FREE slots for the
+// explicit-selection journeys — free_a with capacity 2 so the same persisted
+// slot can prove the bounded duplicate rule for one patient and the honest
+// remaining-capacity indicator for another — plus one FULL and one CLOSED slot
+// that must never be offered, and one FREE slot on the NEXT Tehran-local day
+// for the future-date journey (a future appointment must never enter today's
+// board or queue). No appointment row is inserted here: the booking journeys
+// create them through the real UI, so the Slice 1 board invariant (exactly four
+// booked rows for today) is unchanged until a journey books one.
+$slotFreeA   = $lateToday ? $nowTehran->setTime(23, 45) : $nowTehran->add(new DateInterval('PT95M'));
+$slotFreeB   = $lateToday ? $nowTehran->setTime(23, 47) : $nowTehran->add(new DateInterval('PT115M'));
+$slotFreeC   = $lateToday ? $nowTehran->setTime(23, 49) : $nowTehran->add(new DateInterval('PT135M'));
+$slotFull    = $lateToday ? $nowTehran->setTime(23, 51) : $nowTehran->add(new DateInterval('PT155M'));
+$slotClosed  = $lateToday ? $nowTehran->setTime(23, 53) : $nowTehran->add(new DateInterval('PT175M'));
+$tomorrowTehran = $nowTehran->add(new DateInterval('P1D'))->format('Y-m-d');
+$futureTime     = '10:00:00';
+
+$bookingSlotIds = [];
+foreach ([
+    ['free_a', $todayTehran, $slotFreeA->format('H:i:s'), 2, 0, 1],
+    ['free_b', $todayTehran, $slotFreeB->format('H:i:s'), 2, 0, 1],
+    ['free_c', $todayTehran, $slotFreeC->format('H:i:s'), 2, 0, 1],
+    ['full', $todayTehran, $slotFull->format('H:i:s'), 1, 1, 1],
+    ['closed', $todayTehran, $slotClosed->format('H:i:s'), 1, 0, 0],
+    ['future', $tomorrowTehran, $futureTime, 4, 0, 1],
+] as $bookingSpec) {
+    [$bookingKey, $bookingDate, $bookingTime, $bookingCapacity, $bookingBooked, $bookingOpen] = $bookingSpec;
+    $bookingSlotIds[$bookingKey] = rp_insert(
+        $wpdb,
+        'INSERT INTO ' . $db->table('cpms_schedule_slots') . ' (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, generated_from, created_at, updated_at) VALUES (%d, %d, %d, %s, %s, %d, %d, %d, %d, %d, %s, %s, %s)',
+        [$clinicId, $locTehran, $clinicianId, $bookingDate, $bookingTime, 20, $bookingCapacity, $bookingBooked, 0, $bookingOpen, 'manual', $now, $now],
+        'booking slot ' . $bookingKey
+    );
+}
+
+// One booking patient per viewport journey (each journey books its own patient,
+// so no journey depends on another one's mutable state).
+$bookingPatients = [];
+foreach (['MOBILE', 'TABLET', 'DESKTOP'] as $bookingIndex => $bookingTag) {
+    $bookingPatients[$bookingTag] = rp_insert(
+        $wpdb,
+        'INSERT INTO ' . $db->table('cpms_patients') . ' (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, %s, %s, %s)',
+        [$clinicId, 'MR-RP-BK-' . $bookingTag . '-' . $uniq, 'Booking', ucfirst(strtolower($bookingTag)), '0914' . sprintf('%06d', hexdec(substr($uniq, 0, 6)) % 1000000) . (string) ($bookingIndex + 2), 'active', $now, $now],
+        'booking patient ' . $bookingTag
+    );
+}
+
 // The EXISTING per-Clinic two-stage knob: with auto-enqueue off, the reception
 // action runs the established check-in then the explicit enqueue transition —
 // the exact surface the partial-arrival acceptance covers (FR-6.1 keeps the
@@ -332,6 +387,22 @@ file_put_contents(
         (string) $foreignProbeId,
         substr($probeNid, -4),
     ]) . "\n"
+    . 'RECEPTION_BOOKING=' . implode('|', [
+        (string) $clinicianId,
+        (string) $clinician2Id,
+        (string) $bookingSlotIds['free_a'],
+        (string) $bookingSlotIds['free_b'],
+        (string) $bookingSlotIds['free_c'],
+        (string) $bookingSlotIds['full'],
+        (string) $bookingSlotIds['closed'],
+        (string) $bookingSlotIds['future'],
+        $tomorrowTehran,
+        (string) $bookingPatients['MOBILE'],
+        (string) $bookingPatients['TABLET'],
+        (string) $bookingPatients['DESKTOP'],
+        'MR-RP-BK-',
+        '-' . $uniq,
+    ]) . "\n"
     . 'RECEPTION_WALKIN=' . implode('|', [
         (string) $clinicianId,
         (string) $clinician2Id,
@@ -349,4 +420,5 @@ echo 'fixture: reception clinic=' . $clinicId
     . ' loc_tehran=' . $locTehran . ' loc_tokyo=' . $locTokyo
     . ' appts=' . $apptExpress . ',' . $apptPlain . ',' . $apptThird . ',' . $apptPartial
     . ' today_tehran=' . $todayTehran . ' today_tokyo=' . $todayTokyo
-    . ' search_probe=' . $probeId . ' foreign_probe=' . $foreignProbeId . "\n";
+    . ' search_probe=' . $probeId . ' foreign_probe=' . $foreignProbeId
+    . ' booking_slots=' . implode(',', $bookingSlotIds) . ' tomorrow_tehran=' . $tomorrowTehran . "\n";
