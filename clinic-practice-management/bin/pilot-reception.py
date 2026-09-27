@@ -604,7 +604,17 @@ def run_queue_states_journey(browser, vp):
         resp = harness_goto(dpage, DOCTOR_URL, wait_until="domcontentloaded")
         if resp is None or resp.status != 200:
             raise RuntimeError(f"doctor portal entry status {getattr(resp, 'status', None)}")
-        dpage.wait_for_selector('[data-role="queue-item"]', state="attached", timeout=20000)
+        dpage.wait_for_selector('script.cpms-doctor-portal__config', state="attached", timeout=15000)
+        # The Doctor Portal enforces the SAME Location policy: 0 => fail closed,
+        # 1 => auto, N>1 => explicit REQUIRED. Drive its existing selector when
+        # the queue is not auto-bound.
+        try:
+            dpage.wait_for_selector('[data-role="queue-item"]', state="attached", timeout=8000)
+        except Exception:
+            loc_sel = dpage.locator('[data-role="location-select"]')
+            loc_sel.wait_for(state="visible", timeout=10000)
+            dpage.select_option('[data-role="location-select"]', str(PUB["loc_tehran"]))
+            dpage.wait_for_selector('[data-role="queue-item"]', state="attached", timeout=20000)
         # Bind "that patient" across the two real UIs: reception row name →
         # the doctor queue row of the same patient (visit id from the DOM).
         name = (row_of(page, PUB["appt_partial"]).locator(".cpms-sr-name").inner_text() or "").strip()
@@ -657,6 +667,8 @@ def run_queue_states_journey(browser, vp):
                 "status_text": (page.locator('[data-role="sr-status"]').inner_text() or "")[:160],
                 "rows": rows(page).count(),
                 "rest_tail": [f"{r['method']} {r['route']}={r['status']}" for r in state["rest"][-6:]],
+                "doctor_rows": dpage.locator('[data-role="queue-item"]').count() if dctx is not None else -1,
+                "doctor_rest": [f"{r['method']} {r['route']}={r['status']}" for r in dstate["rest"][-6:]] if dctx is not None else [],
             }
             info(f"fail-dump {vp['vp']} stage={stage} {dump}")
         except Exception:
