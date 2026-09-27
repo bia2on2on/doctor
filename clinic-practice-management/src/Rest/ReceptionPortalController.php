@@ -39,6 +39,16 @@
  * Clinic-scoped: the reception Location selection is deliberately NOT a
  * filter, and no patient query, service, role, capability or schema is added.
  *
+ * Phase 11 Slice 3 — create Clinic patient, then read-only select: the
+ * reception create route is a thin adapter over the ESTABLISHED
+ * PatientService::create() (→ PatientRepository::create, Clinic-scoped MRN,
+ * mobile normalization/duplicate). It adds only the strict reception
+ * boundary (secretary role + ACTIVE membership + clinic-scoped
+ * cpms_patient_create) and returns the SAME bounded searchView used by
+ * Slice 2 — never staffView. Location is visible in Reception context but
+ * is never written as patient ownership. No walk-in / appointment /
+ * check-in / queue / Visit is created.
+ *
  * @package ClinicCore
  */
 
@@ -58,8 +68,8 @@ use WP_REST_Response;
 use WP_REST_Server;
 
 /**
- * Staff Portal reception boundary — context, board (read-only), arrival and
- * read-only Clinic patient search.
+ * Staff Portal reception boundary — context, board (read-only), arrival,
+ * read-only Clinic patient search, and bounded Clinic patient create.
  */
 final class ReceptionPortalController extends RestBase {
 
@@ -114,6 +124,44 @@ final class ReceptionPortalController extends RestBase {
 							'required' => false,
 							'type'     => 'integer',
 							'default'  => 25,
+						],
+					],
+				],
+			]
+		);
+
+		register_rest_route(
+			self::NS,
+			'/staff/portal/reception/patients',
+			[
+				[
+					'methods'             => WP_REST_Server::CREATABLE,
+					'callback'            => fn( WP_REST_Request $r ) => $this->patient_create( $r ),
+					'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_reception( $r, [ RolesAndCapabilities::PATIENT_CREATE ] ),
+					'args'                => [
+						'first_name'  => [
+							'required' => true,
+							'type'     => 'string',
+						],
+						'last_name'   => [
+							'required' => true,
+							'type'     => 'string',
+						],
+						'mobile'      => [
+							'required' => true,
+							'type'     => 'string',
+						],
+						'national_id' => [
+							'required' => false,
+							'type'     => 'string',
+						],
+						'birth_date'  => [
+							'required' => false,
+							'type'     => 'string',
+						],
+						'gender'      => [
+							'required' => false,
+							'type'     => 'string',
 						],
 					],
 				],
@@ -199,6 +247,33 @@ final class ReceptionPortalController extends RestBase {
 					(int) $r->get_param( 'limit' )
 				)
 			);
+		} catch ( BookingException $e ) {
+			return $this->error( $e->errorCode, $e->httpStatus, $e->getMessage(), $e->data ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established BookingException contract
+		}
+	}
+
+	/**
+	 * Reception Clinic patient create: delegates to the ESTABLISHED
+	 * PatientService::create() contract (trusted Clinic from App::scope(),
+	 * mobile normalize/duplicate, generated MRN). Only the small form fields
+	 * are forwarded — clinical/address/emergency/MRN/clinic_id/location_id
+	 * from the body never become writes. The response is the Slice 2
+	 * searchView (masked national ID), never staffView. Location is not a
+	 * patient-ownership field and is not required for this mutation.
+	 */
+	private function patient_create( WP_REST_Request $r ): WP_REST_Response|WP_Error {
+		$fields = [];
+		foreach ( [ 'first_name', 'last_name', 'mobile', 'national_id', 'birth_date', 'gender' ] as $key ) {
+			$value = $r->get_param( $key );
+			if ( null !== $value && '' !== $value ) {
+				$fields[ $key ] = $value;
+			}
+		}
+
+		try {
+			$created = App::patientService()->create( $fields, (int) get_current_user_id() );
+
+			return $this->success( App::patientService()->to_search_view( $created ) );
 		} catch ( BookingException $e ) {
 			return $this->error( $e->errorCode, $e->httpStatus, $e->getMessage(), $e->data ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established BookingException contract
 		}

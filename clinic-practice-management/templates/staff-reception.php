@@ -17,6 +17,11 @@
  * authority, and is not coupled to the arrival action. Location never filters
  * this Clinic-scoped search.
  *
+ * Phase 11 Slice 3 adds a SMALL create-patient form on the same panel. Create
+ * posts to the reception adapter over PatientService::create, then places the
+ * new patient into the EXISTING read-only selected presentation. No walk-in,
+ * appointment, check-in, queue or Visit is started.
+ *
  * Embed contract (same as the doctor module): the shell owns the document,
  * header and navigation; this module contributes its <main>, ONE inline style
  * block, ONE runtime config JSON and ONE inline script, and closes with
@@ -104,6 +109,20 @@ $cpms_reception_cfg = [
 .cpms-staff-reception .cpms-sr-search-selected { margin: 10px 0 0; padding: 10px; border: 1px solid var(--cpms-primary); border-radius: 8px; background: #f3faf9; display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; justify-content: space-between; }
 .cpms-staff-reception .cpms-sr-search-selected-body { min-width: 0; overflow-wrap: anywhere; }
 .cpms-staff-reception .cpms-sr-search-selected-note { display: block; font-size: 0.8rem; color: var(--cpms-muted); }
+.cpms-staff-reception .cpms-sr-search-selected-note--ok { color: var(--cpms-primary); }
+.cpms-staff-reception .cpms-sr-create-open { margin: 8px 0 0; }
+.cpms-staff-reception .cpms-sr-create { margin: 10px 0 0; padding: 10px; border: 1px dashed var(--cpms-border); border-radius: 8px; background: #fbfcfd; }
+.cpms-staff-reception .cpms-sr-create h3 { margin: 0 0 8px; font-size: 0.95rem; }
+.cpms-staff-reception .cpms-sr-create-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.cpms-staff-reception .cpms-sr-create-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; font-size: 0.86rem; }
+.cpms-staff-reception .cpms-sr-create-field--wide { grid-column: 1 / -1; }
+.cpms-staff-reception .cpms-sr-create-optional { margin: 10px 0 0; padding-top: 8px; border-top: 1px solid var(--cpms-border); }
+.cpms-staff-reception .cpms-sr-create-optional-legend { display: block; margin: 0 0 6px; font-size: 0.78rem; color: var(--cpms-muted); }
+.cpms-staff-reception .cpms-sr-create-req { color: #a12828; }
+.cpms-staff-reception .cpms-sr-create input, .cpms-staff-reception .cpms-sr-create select { min-height: 40px; width: 100%; box-sizing: border-box; padding: 6px 10px; border: 1px solid var(--cpms-border); border-radius: 8px; background: #fff; font-size: 0.95rem; }
+.cpms-staff-reception .cpms-sr-create input:focus-visible, .cpms-staff-reception .cpms-sr-create select:focus-visible { outline: 2px solid var(--cpms-primary); outline-offset: 1px; }
+.cpms-staff-reception .cpms-sr-create-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 0; }
+.cpms-staff-reception .cpms-sr-create-error { margin: 8px 0 0; font-size: 0.86rem; color: #a12828; overflow-wrap: anywhere; }
 @media (max-width: 768px) {
     .cpms-staff-reception .cpms-sr-top { flex-direction: column; align-items: stretch; }
     .cpms-staff-reception .cpms-sr-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -111,6 +130,7 @@ $cpms_reception_cfg = [
     .cpms-staff-reception .cpms-sr-table, .cpms-staff-reception .cpms-sr-table tbody, .cpms-staff-reception .cpms-sr-table tr, .cpms-staff-reception .cpms-sr-table td { display: block; width: 100%; }
     .cpms-staff-reception .cpms-sr-table tr { border-bottom: 1px solid var(--cpms-border); padding: 8px 0; }
     .cpms-staff-reception .cpms-sr-table td { border-bottom: 0; padding: 3px 4px; }
+    .cpms-staff-reception .cpms-sr-create-grid { grid-template-columns: 1fr; }
 }
 </style>
 <div class="cpms-staff-reception" data-role="reception-app">
@@ -139,11 +159,57 @@ $cpms_reception_cfg = [
             <button type="submit" class="cpms-sr-btn cpms-sr-btn--ghost" data-role="sr-search-submit">جستجو</button>
         </form>
         <p class="cpms-sr-search-state" id="cpms-sr-search-state" data-role="sr-search-state" role="status" aria-live="polite">برای جستجو دست‌کم ۲ نویسه وارد کنید.</p>
+        <button type="button" class="cpms-sr-btn cpms-sr-btn--ghost cpms-sr-create-open" data-role="sr-create-open" hidden>ثبت بیمار جدید</button>
+        <form class="cpms-sr-create" data-role="sr-create" hidden novalidate>
+            <h3>ثبت بیمار تازه</h3>
+            <div class="cpms-sr-create-grid">
+                <label class="cpms-sr-create-field" for="cpms-sr-create-first-name">
+                    <span>نام <span class="cpms-sr-create-req">*</span></span>
+                    <input type="text" id="cpms-sr-create-first-name" name="first_name" data-role="sr-create-first-name" maxlength="120" autocomplete="off" required>
+                </label>
+                <label class="cpms-sr-create-field" for="cpms-sr-create-last-name">
+                    <span>نام خانوادگی <span class="cpms-sr-create-req">*</span></span>
+                    <input type="text" id="cpms-sr-create-last-name" name="last_name" data-role="sr-create-last-name" maxlength="120" autocomplete="off" required>
+                </label>
+                <label class="cpms-sr-create-field cpms-sr-create-field--wide" for="cpms-sr-create-mobile">
+                    <span>موبایل <span class="cpms-sr-create-req">*</span></span>
+                    <input type="tel" id="cpms-sr-create-mobile" name="mobile" data-role="sr-create-mobile" maxlength="20" inputmode="tel" autocomplete="off" required>
+                </label>
+            </div>
+            <div class="cpms-sr-create-optional">
+                <span class="cpms-sr-create-optional-legend">اختیاری</span>
+                <div class="cpms-sr-create-grid">
+                    <label class="cpms-sr-create-field" for="cpms-sr-create-national-id">
+                        <span>کد ملی</span>
+                        <input type="text" id="cpms-sr-create-national-id" name="national_id" data-role="sr-create-national-id" maxlength="10" inputmode="numeric" autocomplete="off">
+                    </label>
+                    <label class="cpms-sr-create-field" for="cpms-sr-create-birth-date">
+                        <span>تاریخ تولد</span>
+                        <input type="date" id="cpms-sr-create-birth-date" name="birth_date" data-role="sr-create-birth-date" autocomplete="off">
+                    </label>
+                    <label class="cpms-sr-create-field" for="cpms-sr-create-gender">
+                        <span>جنسیت</span>
+                        <select id="cpms-sr-create-gender" name="gender" data-role="sr-create-gender">
+                            <option value="">—</option>
+                            <option value="female">زن</option>
+                            <option value="male">مرد</option>
+                            <option value="other">دیگر</option>
+                            <option value="unknown">نامشخص</option>
+                        </select>
+                    </label>
+                </div>
+            </div>
+            <p class="cpms-sr-create-error" data-role="sr-create-error" role="alert" hidden></p>
+            <div class="cpms-sr-create-actions">
+                <button type="submit" class="cpms-sr-btn" data-role="sr-create-submit">ثبت بیمار</button>
+                <button type="button" class="cpms-sr-btn cpms-sr-btn--ghost" data-role="sr-create-cancel">انصراف</button>
+            </div>
+        </form>
         <ul class="cpms-sr-search-results" data-role="sr-search-results" aria-label="نتایج جستجوی بیمار"></ul>
         <div class="cpms-sr-search-selected" data-role="sr-search-selected" hidden>
             <div class="cpms-sr-search-selected-body">
                 <strong>بیمار انتخاب‌شده:</strong> <span data-role="sr-search-selected-text"></span>
-                <span class="cpms-sr-search-selected-note">فقط برای شناسایی — هیچ تغییری در پرونده یا نوبت ایجاد نمی‌شود.</span>
+                <span class="cpms-sr-search-selected-note" data-role="sr-search-selected-note">فقط برای شناسایی — هیچ تغییری در پرونده یا نوبت ایجاد نمی‌شود.</span>
             </div>
             <button type="button" class="cpms-sr-btn cpms-sr-btn--ghost" data-role="sr-search-clear">لغو انتخاب</button>
         </div>
@@ -557,7 +623,8 @@ $cpms_reception_cfg = [
     var SEARCH_DEBOUNCE_MS = 350;
     var SEARCH_LIMIT_HINT = 25;
     var SEARCH_IDLE = 'برای جستجو دست‌کم ۲ نویسه وارد کنید.';
-    var search = { timer: null, seq: 0, lastQuery: '', results: [], selected: null };
+    var search = { timer: null, seq: 0, lastQuery: '', results: [], selected: null, created: null };
+    var createBusy = false;
 
     function faDigits(value) {
         return String(value).replace(/[0-9]/g, function (d) { return '۰۱۲۳۴۵۶۷۸۹'.charAt(Number(d)); });
@@ -616,6 +683,20 @@ $cpms_reception_cfg = [
         syncSearchPressed();
     }
 
+    function setSelectedNote(created) {
+        var note = el('sr-search-selected-note');
+        if (!note) {
+            return;
+        }
+        if (created) {
+            note.textContent = 'بیمار با موفقیت ثبت شد — فقط برای شناسایی؛ هیچ نوبت یا ویزیتی ایجاد نشد.';
+            note.className = 'cpms-sr-search-selected-note cpms-sr-search-selected-note--ok';
+        } else {
+            note.textContent = 'فقط برای شناسایی — هیچ تغییری در پرونده یا نوبت ایجاد نمی‌شود.';
+            note.className = 'cpms-sr-search-selected-note';
+        }
+    }
+
     function renderSelected() {
         var box = el('sr-search-selected');
         var text = el('sr-search-selected-text');
@@ -625,10 +706,12 @@ $cpms_reception_cfg = [
         if (!search.selected) {
             text.innerHTML = '';
             box.hidden = true;
+            setSelectedNote(false);
             return;
         }
         text.innerHTML = '<span class="cpms-sr-name">' + escapeHtml(patientLabel(search.selected)) + '</span> <span class="cpms-sr-search-meta">' + patientMeta(search.selected) + '</span>';
         box.hidden = false;
+        setSelectedNote(Boolean(search.created && search.selected && String(search.created) === String(search.selected.id)));
     }
 
     function runSearch(force) {
@@ -673,7 +756,11 @@ $cpms_reception_cfg = [
             search.results = rows;
             renderSearchResults();
             if (rows.length === 0) {
-                setSearchState('بیماری با این مشخصات در این کلینیک یافت نشد.', false);
+                setSearchState('بیماری با این مشخصات در این کلینیک یافت نشد. می‌توانید بیمار تازه را ثبت کنید.', false);
+                var createOpenMiss = el('sr-create-open');
+                if (createOpenMiss && el('sr-create') && el('sr-create').hidden) {
+                    createOpenMiss.hidden = false;
+                }
             } else if (rows.length >= SEARCH_LIMIT_HINT) {
                 setSearchState(faDigits(rows.length) + ' نتیجهٔ نخست نمایش داده شد؛ برای یافتن دقیق‌تر، عبارت کامل‌تری وارد کنید.', false);
             } else {
@@ -739,9 +826,132 @@ $cpms_reception_cfg = [
                 syncSearchPressed();
                 renderSelected();
                 input.focus();
+                return;
+            }
+            if (target.closest('[data-role="sr-create-open"]')) {
+                openCreate();
+                return;
+            }
+            if (target.closest('[data-role="sr-create-cancel"]')) {
+                closeCreate(false);
             }
         });
+        var createForm = el('sr-create');
+        if (createForm) {
+            createForm.addEventListener('submit', submitCreate);
+        }
+        var createOpen = el('sr-create-open');
+        if (createOpen) {
+            createOpen.hidden = false;
+        }
     }());
+
+    function setCreateError(text) {
+        var node = el('sr-create-error');
+        if (!node) {
+            return;
+        }
+        node.textContent = text || '';
+        node.hidden = !text;
+    }
+
+    function openCreate() {
+        var form = el('sr-create');
+        if (!form) {
+            return;
+        }
+        form.hidden = false;
+        var open = el('sr-create-open');
+        if (open) {
+            open.hidden = true;
+        }
+        setCreateError('');
+        var first = el('sr-create-first-name');
+        if (first) {
+            first.focus();
+        }
+    }
+
+    function closeCreate(reset) {
+        var form = el('sr-create');
+        if (form) {
+            form.hidden = true;
+            if (reset) {
+                form.reset();
+            }
+        }
+        var open = el('sr-create-open');
+        if (open) {
+            open.hidden = false;
+        }
+        setCreateError('');
+    }
+
+    function submitCreate(event) {
+        event.preventDefault();
+        if (createBusy) {
+            return;
+        }
+        var firstNode = el('sr-create-first-name');
+        var lastNode = el('sr-create-last-name');
+        var mobileNode = el('sr-create-mobile');
+        var first = firstNode ? String(firstNode.value || '').trim() : '';
+        var last = lastNode ? String(lastNode.value || '').trim() : '';
+        var mobile = mobileNode ? String(mobileNode.value || '').trim() : '';
+        if (!first || !last || !mobile) {
+            setCreateError('نام، نام خانوادگی و موبایل الزامی است.');
+            return;
+        }
+        var body = { first_name: first, last_name: last, mobile: mobile };
+        var nidNode = el('sr-create-national-id');
+        var birthNode = el('sr-create-birth-date');
+        var genderNode = el('sr-create-gender');
+        var nid = nidNode ? String(nidNode.value || '').trim() : '';
+        var birth = birthNode ? String(birthNode.value || '').trim() : '';
+        var gender = genderNode ? String(genderNode.value || '').trim() : '';
+        if (nid) {
+            body.national_id = nid;
+        }
+        if (birth) {
+            body.birth_date = birth;
+        }
+        if (gender) {
+            body.gender = gender;
+        }
+        createBusy = true;
+        var submit = el('sr-create-submit');
+        if (submit) {
+            submit.disabled = true;
+        }
+        setCreateError('');
+        api('/staff/portal/reception/patients', { method: 'POST', body: body }).then(function (result) {
+            createBusy = false;
+            if (submit) {
+                submit.disabled = false;
+            }
+            if (!result.ok) {
+                setCreateError(errorMessageOf(result.body, 'ثبت بیمار انجام نشد.'));
+                return;
+            }
+            var row = payloadOf(result.body);
+            if (!row || !row.id) {
+                setCreateError('ثبت بیمار انجام نشد.');
+                return;
+            }
+            search.created = row.id;
+            search.selected = row;
+            syncSearchPressed();
+            renderSelected();
+            closeCreate(true);
+            setSearchState('بیمار با موفقیت ثبت شد.', false);
+        }).catch(function () {
+            createBusy = false;
+            if (submit) {
+                submit.disabled = false;
+            }
+            setCreateError('خطای شبکه هنگام ثبت بیمار.');
+        });
+    }
 
     function poll() {
         loadBoard(true).then(function () {
