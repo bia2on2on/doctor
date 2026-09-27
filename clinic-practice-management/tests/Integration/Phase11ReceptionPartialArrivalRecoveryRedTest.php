@@ -218,7 +218,7 @@ final class Phase11ReceptionPartialArrivalRecoveryRedTest extends WP_UnitTestCas
 
         // Presentation-only clarity never takes ownership of appointment
         // state: after the flow the state is exactly the EXISTING appointment
-        // machine's outcome for this late fixture (ER-06 lazy T8 to no_show),
+        // machine outcome for this late fixture (ER-06 lazy T8 to no_show),
         // unchanged by the reception wording work.
         self::assertSame('no_show', (string) $this->findAppointment($appt)['status'], 'R2: the appointment state stays the existing ER-06 machine outcome');
 
