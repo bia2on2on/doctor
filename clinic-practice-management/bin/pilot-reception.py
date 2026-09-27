@@ -431,6 +431,21 @@ def run_journey(browser, vp):
         )
     except Exception as e:
         try:
+            dump = {
+                "status_text": (page.locator('[data-role="sr-status"]').inner_text() or "")[:160],
+                "rows": rows(page).count(),
+                "row_ids": [
+                    rows(page).nth(i).get_attribute("data-appointment-id")
+                    for i in range(rows(page).count())
+                ],
+                "rest_tail": [
+                    f"{r['method']} {r['route']}={r['status']}" for r in state["rest"][-6:]
+                ],
+            }
+            info(f"fail-dump {vp['vp']} stage={stage} {dump}")
+        except Exception:
+            pass
+        try:
             shot(page, f"reception-FAIL-{key}-{stage}")
         except Exception:
             pass

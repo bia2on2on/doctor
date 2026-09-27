@@ -413,7 +413,9 @@ $cpms_reception_cfg = [
                 return;
             }
             renderBoard(payloadOf(result.body));
-            setStatus('', null);
+            if (!silent) {
+                setStatus('', null);
+            }
         }).catch(function () {
             setStatus('خطای شبکه هنگام دریافت تختهٔ پذیرش.', 'error');
         });
