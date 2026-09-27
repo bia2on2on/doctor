@@ -355,6 +355,9 @@ def run_journey(browser, vp, arrive_id, expect_queue):
 
         stage = "strict-location"
         # N>1 Locations: explicit selection REQUIRED before ANY reception data.
+        # Wait for the selector to become VISIBLE (context load is async) so
+        # the pre-boot DOM cannot race the assertions.
+        page.wait_for_selector('[data-role="sr-location-select"]', state="visible", timeout=15000)
         if page.locator('[data-role="sr-location-select"]').count() != 1:
             raise RuntimeError("multi-Location clinic must render the explicit Location selector")
         if not page.locator('[data-role="sr-location-select"]').is_visible():
@@ -490,7 +493,9 @@ def run_partial_journey(browser, vp):
         arrivals = [r for r in state["rest"] if r["route"].endswith("/reception/arrivals")]
         if not arrivals or arrivals[-1]["status"] < 400 or arrivals[-1]["method"] != "POST":
             raise RuntimeError(f"partial arrival must answer non-success: {arrivals[-3:]}")
-        ctx.clear_cookies()
+        # Disarm WITHOUT touching the WP login cookies (clearing all cookies
+        # logs the user out — the REST nonce check then fails with 403).
+        ctx.add_cookies([{"name": "rp_sabotage", "value": "0", "domain": host, "path": "/"}])
         shot(page, f"reception-{vp['vp']}-partial")
 
         stage = "recovery-control"

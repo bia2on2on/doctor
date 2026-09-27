@@ -18,7 +18,7 @@
 add_filter(
 	'query',
 	static function ($q) {
-		if (!is_string($q) || !isset($_COOKIE['rp_sabotage'])) {
+		if (!is_string($q) || ($_COOKIE['rp_sabotage'] ?? '') !== '1') {
 			return $q;
 		}
 		if (preg_match('/^\s*UPDATE\b/i', $q) && false !== strpos($q, 'cpms_visits') && false !== strpos($q, "'waiting'")) {
