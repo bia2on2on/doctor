@@ -439,20 +439,25 @@ final class ReceptionPortalController extends RestBase {
 	 * state so the UI can offer the recovery action.
 	 */
 	private function arrival_incomplete( string $check_in_stage, int $visit_id, string $outcome, string $code, string $message ): WP_Error {
-		return $this->error( 'CLINIC_ARRIVAL_INCOMPLETE', 500, 'حضور ثبت شد اما قرارگیری بیمار در صف انجام نشد', [
-			'visit_id'     => $visit_id,
-			'visit_status' => $outcome,
-			'arrival'      => [
-				'check_in'      => $check_in_stage,
-				'enqueue'       => 'failed',
-				'outcome'       => $outcome,
-				'complete'      => false,
-				'enqueue_error' => [
-					'code'    => $code,
-					'message' => $message,
+		return $this->error(
+			'CLINIC_ARRIVAL_INCOMPLETE',
+			500,
+			'حضور ثبت شد اما قرارگیری بیمار در صف انجام نشد',
+			[
+				'visit_id'     => $visit_id,
+				'visit_status' => $outcome,
+				'arrival'      => [
+					'check_in'      => $check_in_stage,
+					'enqueue'       => 'failed',
+					'outcome'       => $outcome,
+					'complete'      => false,
+					'enqueue_error' => [
+						'code'    => $code,
+						'message' => $message,
+					],
 				],
-			],
-		] );
+			]
+		);
 	}
 
 	/**

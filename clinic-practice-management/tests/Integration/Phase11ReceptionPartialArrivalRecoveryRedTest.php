@@ -176,6 +176,17 @@ final class Phase11ReceptionPartialArrivalRecoveryRedTest extends WP_UnitTestCas
             [$appt]
         );
 
+        // Server-side derivation pin: before any retry runs, the existing
+        // valid active visit must be visible through the trusted appointment
+        // + Clinic + selected Location relationship (the recovery authority).
+        $lookup = App::db()->fetchRow(
+            'SELECT id, status FROM ' . App::db()->table('cpms_visits') . ' WHERE appointment_id = %d AND clinic_id = %d AND location_id = %d AND active = 1 ORDER BY id DESC LIMIT 1',
+            [$appt, $fx['clinic'], $fx['loc_tehran']]
+        );
+        self::assertIsArray($lookup, 'R2-pre: the existing active visit must be visible to the trusted-relationship lookup');
+        self::assertSame($visitId, (int) ($lookup['id'] ?? 0), 'R2-pre: the lookup resolves exactly the partial visit');
+        self::assertSame('checked_in', (string) ($lookup['status'] ?? ''), 'R2-pre: the durable partial state is checked_in');
+
         // RETRY — same authorized reception workflow, no sabotage.
         $res = $this->dispatch('POST', '/' . self::REST_NS . '/staff/portal/reception/arrivals', [
             'patient_id'     => $patient,
