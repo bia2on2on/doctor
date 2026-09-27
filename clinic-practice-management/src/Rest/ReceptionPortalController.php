@@ -170,8 +170,8 @@ final class ReceptionPortalController extends RestBase {
 		$selected_location_id = null;
 		try {
 			$scope                = App::scope();
-			$selected_clinic_id   = (int) $scope->clinicId;
-			$selected_location_id = null !== $scope->locationId ? (int) $scope->locationId : null;
+			$selected_clinic_id   = (int) $scope->clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established ClinicScope contract.
+			$selected_location_id = null !== $scope->locationId ? (int) $scope->locationId : null; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established ClinicScope contract.
 		} catch ( \Throwable $e ) {
 			unset( $e );
 			if ( 1 === count( $clinics ) ) {
@@ -420,8 +420,8 @@ final class ReceptionPortalController extends RestBase {
 	private function resolve_reception_location( int $user_id ): array|WP_Error {
 		try {
 			$scope     = App::scope();
-			$clinic_id = (int) $scope->clinicId;
-			$explicit  = null !== $scope->locationId ? (int) $scope->locationId : null;
+			$clinic_id = (int) $scope->clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established ClinicScope contract.
+			$explicit  = null !== $scope->locationId ? (int) $scope->locationId : null; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established ClinicScope contract.
 		} catch ( \Throwable $e ) {
 			unset( $e );
 			return $this->error( 'CLINIC_SCOPE_REQUIRED', 400, 'محدودهٔ کلینیک لازم است.' );
@@ -431,9 +431,9 @@ final class ReceptionPortalController extends RestBase {
 		if ( [] === $eligible ) {
 			// 0 eligible: fail closed — no reception data, no reception mutation.
 			return [
-				'clinic_id'      => $clinic_id,
-				'location_id'    => null,
-				'location_name'  => null,
+				'clinic_id'     => $clinic_id,
+				'location_id'   => null,
+				'location_name' => null,
 			];
 		}
 
@@ -448,18 +448,18 @@ final class ReceptionPortalController extends RestBase {
 				return $this->error( 'CLINIC_SCOPE_UNAVAILABLE', 403, 'امکان تعیین محدودهٔ کلینیک معتبر نیست.', [ 'reason' => 'location' ] );
 			}
 			return [
-				'clinic_id'      => $clinic_id,
-				'location_id'    => $explicit,
-				'location_name'  => (string) $by_id[ $explicit ]['name'],
+				'clinic_id'     => $clinic_id,
+				'location_id'   => $explicit,
+				'location_name' => (string) $by_id[ $explicit ]['name'],
 			];
 		}
 
 		if ( 1 === count( $by_id ) ) {
-			$only_id = (int) ( (array_keys( $by_id )[0] ?? 0 ) );
+			$only_id = (int) ( array_keys( $by_id )[0] ?? 0 );
 			return [
-				'clinic_id'      => $clinic_id,
-				'location_id'    => $only_id,
-				'location_name'  => (string) $by_id[ $only_id ]['name'],
+				'clinic_id'     => $clinic_id,
+				'location_id'   => $only_id,
+				'location_name' => (string) $by_id[ $only_id ]['name'],
 			];
 		}
 
@@ -506,13 +506,13 @@ final class ReceptionPortalController extends RestBase {
 			return [];
 		}
 
-		$db         = App::db();
+		$db          = App::db();
 		$active_rows = $db->fetchAll(
 			'SELECT id, name, slug, timezone, is_primary, is_active FROM ' . $db->table( 'cpms_locations' ) .
 			' WHERE clinic_id = %d AND is_active = 1 ORDER BY id ASC',
 			[ $clinic_id ]
 		);
-		$active = [];
+		$active      = [];
 		foreach ( ( is_array( $active_rows ) ? $active_rows : [] ) as $row ) {
 			$active[ (int) $row['id'] ] = [
 				'id'         => (int) $row['id'],

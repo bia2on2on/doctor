@@ -40,11 +40,11 @@ if ( ! function_exists( 'wp_get_current_user' ) ) {
 StaffPortalShell::register_handles();
 StaffPortalShell::enqueue_for_portal();
 
-$cpms_user       = wp_get_current_user();
-$cpms_logged_in  = $cpms_user instanceof WP_User && (int) $cpms_user->ID > 0;
-$cpms_modules    = StaffPortalShell::eligible_modules( $cpms_logged_in ? (int) $cpms_user->ID : 0 );
-$cpms_module_id  = $cpms_logged_in ? StaffPortalShell::select_module( (int) $cpms_user->ID ) : null;
-$cpms_doctor_mod = StaffPortalShell::MODULE_DOCTOR === $cpms_module_id;
+$cpms_user          = wp_get_current_user();
+$cpms_logged_in     = $cpms_user instanceof WP_User && (int) $cpms_user->ID > 0;
+$cpms_modules       = StaffPortalShell::eligible_modules( $cpms_logged_in ? (int) $cpms_user->ID : 0 );
+$cpms_module_id     = $cpms_logged_in ? StaffPortalShell::select_module( (int) $cpms_user->ID ) : null;
+$cpms_doctor_mod    = StaffPortalShell::MODULE_DOCTOR === $cpms_module_id;
 $cpms_reception_mod = StaffPortalShell::MODULE_RECEPTION === $cpms_module_id;
 
 $cpms_login_name = $cpms_logged_in ? (string) $cpms_user->display_name : '';
