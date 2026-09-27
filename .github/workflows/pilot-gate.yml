@@ -1478,6 +1478,34 @@ jobs:
           fi
           test "${BROWSER_EXIT}" -eq 0
 
+      # Phase 11 Slice 1 — همان Chromium و همان وردپرس. تختهٔ پذیرش پورتال کارکنان:
+      # انتخاب الزامی Location (N>1)، نوبت‌های امروزِ همان Location، یک اقدام حضور
+      # با سرویس‌ها/گذارهای موجود، صف فقط‌خواندنی و حالت‌های خالی/خطا. بدون فریم‌ورک
+      # جدید و بدون توقف زمان.
+      - name: Reception fixture — two Locations + today's booked rows + empty Location
+        run: |
+          WP_HOME="$WP_DIR" php tests/fixtures/pilot-reception-fixture.php 2>&1 | tee /tmp/reception-fixture.log
+          FIX_EXIT="${PIPESTATUS[0]}"
+          if [ "${FIX_EXIT}" != "0" ] || [ ! -s /tmp/reception.env ]; then
+            echo "::error::reception-fixture failed: exit=${FIX_EXIT} env_bytes=$(wc -c < /tmp/reception.env 2>/dev/null || echo MISSING) log_tail=$(tail -c 1500 /tmp/reception-fixture.log 2>/dev/null | tr '\n' '~')"
+          fi
+          test "${FIX_EXIT}" -eq 0
+          test -s /tmp/reception.env
+          cat /tmp/reception.env >> "$GITHUB_ENV"
+          grep '^RECEPTION_PUBLIC=' /tmp/reception.env
+
+      - name: Staff Portal Reception — real browser (390×844, 768×1024, 1366×768)
+        env:
+          BASE: http://localhost:8080
+        run: |
+          python3 -m py_compile bin/pilot-reception.py
+          python3 bin/pilot-reception.py | tee /tmp/reception.log
+          BROWSER_EXIT="${PIPESTATUS[0]}"
+          if [ "${BROWSER_EXIT}" != "0" ]; then
+            echo "::error::reception-browser failed: exit=${BROWSER_EXIT} fails=$(grep '^FAIL' /tmp/reception.log 2>/dev/null | wc -l) fail_lines=$(grep '^FAIL' /tmp/reception.log 2>/dev/null | tr '\n' '~' | head -c 2500)"
+          fi
+          test "${BROWSER_EXIT}" -eq 0
+
       # خلاصهٔ Responsive باید از sandbox هم قابل بازیابی باشد: لاگِ job به blob
       # ریدایرکت می‌شود و دانلودشدنی نیست و `$GITHUB_STEP_SUMMARY` هم از API
       # خوانده نمی‌شود. پس همان خلاصهٔ PASS/FAIL (که برای صفحهٔ عمومیِ shortcode
@@ -1626,6 +1654,28 @@ jobs:
             gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@/tmp/doctor-portal-evidence.md || true
           fi
 
+      - name: Post Reception evidence to PR
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "### Phase 11 Slice 1 Reception Arrival Board browser evidence (run ${{ github.run_id }}, job ${GITHUB_JOB}, sha ${{ github.sha }})"
+            echo '```'
+            echo '--- fixture public ids only ---'
+            grep '^RECEPTION_PUBLIC=' /tmp/reception.env 2>/dev/null || echo '(RECEPTION_PUBLIC not produced — reception NOT exercised)'
+            echo '--- PASS/FAIL/INFO/SHOT ---'
+            grep -E '^(PASS|FAIL|INFO|SHOT)' /tmp/reception.log 2>/dev/null || echo '(reception.log missing)'
+            echo '```'
+            echo 'Evidence is booleans and synthetic ids only. Screenshot pixels are not inspected by this comment.'
+          } > /tmp/reception-evidence.md
+          PR=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number' 2>/dev/null || true)
+          if [ -n "$PR" ]; then
+            gh pr comment "$PR" --body-file /tmp/reception-evidence.md || echo "::notice::PR comment failed (permissions?)"
+          else
+            gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@/tmp/reception-evidence.md || true
+          fi
+
       - name: Debug dump به PR (لاگ Blob از Sandbox در دسترس نیست)
         if: failure()
         run: |
@@ -1636,7 +1686,7 @@ jobs:
                      /tmp/perms.txt /tmp/audit-actions.txt /tmp/jobs-queued.txt /tmp/jobs-success.txt /tmp/failed-jobs.txt \
                      /tmp/tick-1.log /tmp/tick-2.log /tmp/restore.log /tmp/orig-files.txt /tmp/restored-files.txt /tmp/backup-hashes.txt /tmp/backup-counts.txt \
                      /tmp/health.json /tmp/avail.json /tmp/unauth.json /tmp/probe-body.txt \
-                     /tmp/leak.txt /tmp/leak2.txt /tmp/cpms-tick.log /tmp/tick-manual.log /tmp/health-check.log /tmp/pw.log /tmp/resp.log /tmp/journey.log /tmp/otp-journey-fixture.log /tmp/slice3.log /tmp/slice3-fixture.log /tmp/portal-cancel.log /tmp/portal-cancel-fixture.log /tmp/portal-profile.log /tmp/portal-profile-fixture.log /tmp/doctor-portal.log /tmp/doctor-portal-fixture.log; do
+                     /tmp/leak.txt /tmp/leak2.txt /tmp/cpms-tick.log /tmp/tick-manual.log /tmp/health-check.log /tmp/pw.log /tmp/resp.log /tmp/journey.log /tmp/otp-journey-fixture.log /tmp/slice3.log /tmp/slice3-fixture.log /tmp/portal-cancel.log /tmp/portal-cancel-fixture.log /tmp/portal-profile.log /tmp/portal-profile-fixture.log /tmp/doctor-portal.log /tmp/doctor-portal-fixture.log /tmp/reception.log /tmp/reception-fixture.log; do
               if [ -f "$f" ]; then echo "--- $f (tail 50) ---"; tail -50 "$f"; fi
             done
             echo '--- apache diagnostics ---'
