@@ -816,8 +816,13 @@ final class Phase11ReceptionAppointmentRescheduleRedTest extends WP_UnitTestCase
         $ctrlSrc     = $this->insertSlot($fx['clinic'], $fx['locA'], $fx['c1'], $tomorrow, '10:30:00', 1, ['booked' => 1]);
         $ctrlAppt    = $this->insertAppointment($fx['clinic'], $fx['locA'], $ctrlPatient, $fx['c1'], $ctrlSrc, $tomorrow, '10:30:00', 'confirmed');
         $ctrlDest    = $this->insertSlot($fx['clinic'], $fx['locA'], $fx['c1'], $tomorrow, '11:30:00', 1);
+        // The established shared route declares slot_date + slot_time as required
+        // args (exact slot_id is still the identity authority); the control calls
+        // the SHARED contract exactly as its own route contract requires.
         $shared      = $this->dispatch('POST', self::SHARED . $ctrlAppt . '/reschedule', [
             'clinician_id' => $fx['c1'],
+            'slot_date'    => $tomorrow,
+            'slot_time'    => '11:30:00',
             'slot_id'      => $ctrlDest,
         ], $headers, true, $this->uuid());
         self::assertSame(200, $shared->get_status(), 'C8: shared established staff reschedule reachable — ' . $this->errCode($shared));
