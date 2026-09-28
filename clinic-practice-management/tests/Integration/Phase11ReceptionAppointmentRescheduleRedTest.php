@@ -864,11 +864,12 @@ final class Phase11ReceptionAppointmentRescheduleRedTest extends WP_UnitTestCase
             ['beyond', $fx['clinic'], $fx['locA'], $beyond, 'confirmed'],
             ['other_location', $fx['clinic'], $fx['locB'], $tomorrow, 'confirmed'],
             ['foreign', $fx['clinicF'], $fx['locF'], $tomorrow, 'confirmed'],
-        ] as [$key, $clinic, $loc, $date, $status]) {
+        ] as $index => [$key, $clinic, $loc, $date, $status]) {
+            $time = sprintf('12:%02d:00', $index * 5);
             $pid = $clinic === $fx['clinic'] ? $patient : $this->insertPatient($fx['clinicF'], 'foreign');
             $clinician = $clinic === $fx['clinic'] ? $fx['c1'] : $fx['c5'];
-            $slot = $this->insertSlot($clinic, $loc, $clinician, $date, '12:00:00', 1, ['booked' => 1]);
-            $records[$key] = $this->insertAppointment($clinic, $loc, $pid, $clinician, $slot, $date, '12:00:00', $status);
+            $slot = $this->insertSlot($clinic, $loc, $clinician, $date, $time, 1, ['booked' => 1]);
+            $records[$key] = $this->insertAppointment($clinic, $loc, $pid, $clinician, $slot, $date, $time, $status);
         }
         $headers = $this->scopeHeaders($fx['clinic'], $fx['locA']);
         $read = $this->dispatch('GET', '/clinic/v1/staff/portal/reception/upcoming', [], $headers);

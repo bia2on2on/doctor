@@ -541,6 +541,24 @@ final class ReceptionPortalController extends RestBase {
 		);
 	}
 
+	/** Bounded future bookings; scope and operational date are server-owned. */
+	private function upcoming( WP_REST_Request $r ): WP_REST_Response|WP_Error {
+		unset( $r );
+		$resolved = $this->resolve_reception_location( (int) get_current_user_id() );
+		if ( $resolved instanceof WP_Error ) {
+			return $resolved;
+		}
+		if ( null === $resolved['location_id'] ) {
+			return $this->success( [ 'appointments' => [] ] );
+		}
+		$clinic_id    = (int) $resolved['clinic_id'];
+		$location_id  = (int) $resolved['location_id'];
+		$timezone     = $this->operational_timezone( (string) ( $resolved['timezone'] ?? '' ), $location_id, $clinic_id );
+		$today        = ( new \DateTimeImmutable( 'now', new \DateTimeZone( $timezone ) ) )->format( 'Y-m-d' );
+		$through      = $this->plus_days( $today, $this->booking_horizon_days( $clinic_id ) );
+		return $this->success( [ 'appointments' => $this->appointments->list_for_reception_upcoming( $clinic_id, $location_id, $today, $through ) ] );
+	}
+
 	/**
 	 * Reception board: today's booked patients for the trusted Location plus a
 	 * read-only view of the existing queue (waiting / called / in_consultation
@@ -549,24 +567,6 @@ final class ReceptionPortalController extends RestBase {
 	 * trusted Location ⇒ CLINIC_SCOPE_REQUIRED (location_required, no eligible
 	 * ids); foreign/inactive/unassigned ⇒ CLINIC_SCOPE_UNAVAILABLE.
 	 */
-	/** Bounded future bookings; scope and operational date are server-owned. */
-	private function upcoming( WP_REST_Request $r ): WP_REST_Response|WP_Error {
-	    unset( $r );
-	    $resolved = $this->resolve_reception_location( (int) get_current_user_id() );
-	    if ( $resolved instanceof WP_Error ) {
-	        return $resolved;
-	    }
-	    if ( null === $resolved['location_id'] ) {
-	        return $this->success( [ 'appointments' => [] ] );
-	    }
-	    $clinic_id = (int) $resolved['clinic_id'];
-	    $location_id = (int) $resolved['location_id'];
-	    $timezone = $this->operational_timezone( (string) ( $resolved['timezone'] ?? '' ), $location_id, $clinic_id );
-	    $today = ( new \DateTimeImmutable( 'now', new \DateTimeZone( $timezone ) ) )->format( 'Y-m-d' );
-	    $through = $this->plus_days( $today, $this->booking_horizon_days( $clinic_id ) );
-	    return $this->success( [ 'appointments' => $this->appointments->list_for_reception_upcoming( $clinic_id, $location_id, $today, $through ) ] );
-	}
-
 	private function board( WP_REST_Request $r ): WP_REST_Response|WP_Error {
 		unset( $r );
 		$user_id  = (int) get_current_user_id();
