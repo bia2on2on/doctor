@@ -1913,15 +1913,16 @@ def run_cancel_journey(browser, vp):
                 raise RuntimeError("an off-operational-day cancel journey must not put its appointment on today's board")
         if row.locator('[data-role="sr-cancel-open"]').count() != 1:
             raise RuntimeError("a booked-not-received row must expose exactly one explicit cancel action")
-        if row.locator('[data-role="sr-cancel-form"]').count() != 0:
+        cancel_surface_role = "sr-cancel-form" if cancel_is_today else "sr-row-cancel"
+        cancel_surface = page.locator(f'[data-role="{cancel_surface_role}"][data-appointment-id="{appt_id}"]')
+        if cancel_surface.count() != 1 or cancel_surface.is_visible():
             raise RuntimeError("the confirmation/reason surface must stay closed until the cancel action is chosen")
 
         stage = "open-confirmation"
         page.locator(f'[data-role="sr-cancel-open"][data-appointment-id="{appt_id}"]').click()
-        form = page.locator(f'[data-role="sr-cancel-form"][data-appointment-id="{appt_id}"]')
-        if not form.is_visible():
+        if not cancel_surface.is_visible():
             raise RuntimeError("choosing Cancel must open the compact confirmation surface in place")
-        reason_input = page.locator(f'[data-role="sr-cancel-form"][data-appointment-id="{appt_id}"] [data-role="sr-cancel-reason"]')
+        reason_input = cancel_surface.locator('[data-role="sr-cancel-reason"]')
         if not reason_input.is_visible():
             raise RuntimeError("the optional reason field must be visible")
         if reason == "" and reason_input.input_value() != "":
