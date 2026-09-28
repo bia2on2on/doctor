@@ -2058,6 +2058,10 @@ def run_reschedule_journey(browser, vp):
     dest_doctor = RESCHEDULE_DEST_DOCTOR[tag]
     patient_id = RESCHEDULE["patients"][tag]
     same_day = dest_date == PUB["today_tehran"]
+    # The destination candidates are always the EXISTING bounded read of the
+    # CURRENT trusted Location; the journey captures exactly that response.
+    slot_read_filter = lambda r: r.request.method == "GET" and route_of(r.url) == "/clinic/v1" + SLOTS_ROUTE
+    dest_read_value = None
     key = f"reception-reschedule-{tag}"
     stage = "login"
     ctx, page, state = new_page(browser, vp)
@@ -2123,8 +2127,12 @@ def run_reschedule_journey(browser, vp):
                 raise RuntimeError("a received/queue row must never expose a reschedule action")
         current_doctor_name = source_row.locator('[data-role="sr-reschedule-open"]').get_attribute("data-clinician-name") or ""
         current_time = (source_row.locator('[data-role="sr-row-time"]').inner_text() or "").strip()
-        source_row.locator('[data-role="sr-reschedule-open"]').click()
+        with page.expect_response(slot_read_filter, timeout=15000) as opened_read:
+            source_row.locator('[data-role="sr-reschedule-open"]').click()
         page.wait_for_selector('[data-section="sr-reschedule"]', state="visible", timeout=10000)
+        # For a same-day, same-doctor destination this first read IS the
+        # destination read; the other viewports replace it below.
+        dest_read_value = opened_read.value
         context_text = (page.locator('[data-role="sr-reschedule-context"]').inner_text() or "").strip()
         if f"Reschedule {tag.split('-')[0].capitalize()}" not in context_text or current_time not in context_text:
             raise RuntimeError(f"the panel must show the current patient/time context, got {context_text}")
@@ -2140,7 +2148,9 @@ def run_reschedule_journey(browser, vp):
         if clinician_select.input_value() != str(RESCHEDULE["c1"]):
             raise RuntimeError("the current doctor must be the initially selectable destination")
         if dest_doctor != RESCHEDULE["c1"]:
-            clinician_select.select_option(str(dest_doctor))
+            with page.expect_response(slot_read_filter, timeout=15000) as switched_read:
+                clinician_select.select_option(str(dest_doctor))
+            dest_read_value = switched_read.value
             # Changing the destination doctor clears the stale slot state.
             if page.locator('[data-role="sr-reschedule-slot"][aria-pressed="true"]').count() != 0:
                 raise RuntimeError("changing the destination doctor must clear the previous slot selection")
@@ -2151,19 +2161,19 @@ def run_reschedule_journey(browser, vp):
         if not same_day:
             if date_select.locator(f'option[value="{dest_date}"]').count() != 1:
                 raise RuntimeError("the Location-local destination date must be selectable")
-            date_select.select_option(dest_date)
+            with page.expect_response(slot_read_filter, timeout=15000) as dated_read:
+                date_select.select_option(dest_date)
+            dest_read_value = dated_read.value
         elif date_select.input_value() != dest_date:
             raise RuntimeError(f"a same-day destination must default to the operational date, got {date_select.input_value()}")
         wait_reschedule_slot(page, dest_slot)
         # The rendered candidates come from the EXISTING bounded read of the
         # CURRENT Location only: the journey correlates them with that read.
-        slot_reads = [
-            r for r in state["rest"]
-            if r["route"].rstrip("/").endswith(SLOTS_ROUTE) and r["status"] == 200
-        ]
-        if not slot_reads:
+        if dest_read_value is None:
             raise RuntimeError("no existing slot read answered for the destination")
-        last_slots = slot_reads[-1]["json"]
+        if dest_read_value.status != 200:
+            raise RuntimeError(f"the destination slot read answered {dest_read_value.status}")
+        last_slots = dest_read_value.json()
         last_slots = last_slots.get("data", last_slots) if isinstance(last_slots, dict) else {}
         if int(last_slots.get("location_id") or 0) != PUB["loc_tehran"]:
             raise RuntimeError(f"the destination slot read must stay in the CURRENT trusted Location, got {last_slots.get('location_id')}")
