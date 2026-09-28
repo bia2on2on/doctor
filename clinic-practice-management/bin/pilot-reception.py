@@ -110,6 +110,11 @@ BOOKING = {
 }
 SLOTS_ROUTE = "/staff/portal/reception/slots"
 APPOINTMENTS_ROUTE = "/staff/portal/reception/appointments"
+# Captured REST routes keep the WordPress namespace prefix
+# (`/clinic/v1/staff/portal/reception/appointments/<id>/cancel`), so the
+# reception cancel mutation is identified by its concrete path shape — the
+# namespace-prefixed route still ends with this exact suffix.
+CANCEL_PATH_RE = re.compile(r"/staff/portal/reception/appointments/[0-9]+/cancel$")
 _cx = parts("RECEPTION_CANCEL", 9)
 CANCEL = {
     "c1": int(_cx[0]),
@@ -1627,7 +1632,7 @@ def cancel_posts(state):
     return [
         r
         for r in state["rest"]
-        if r["method"] == "POST" and r["route"].startswith(APPOINTMENTS_ROUTE + "/") and r["route"].endswith("/cancel")
+        if r["method"] == "POST" and CANCEL_PATH_RE.search(r["route"]) is not None
     ]
 
 

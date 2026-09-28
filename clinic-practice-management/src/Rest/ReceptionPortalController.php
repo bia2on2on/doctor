@@ -1159,6 +1159,47 @@ final class ReceptionPortalController extends RestBase {
 	}
 
 	/**
+	 * Phase 11 Slice 6 — the reception cancel route resolves its trusted Clinic
+	 * and operational Location EXCLUSIVELY from the server-side reception scope
+	 * (trusted request headers + ACTIVE membership + the 0/1/N Location policy).
+	 *
+	 * The established shared binder also honours raw `clinic_id`/`location_id`
+	 * REQUEST PARAMETERS as scope selectors and answers 422
+	 * `CLINIC_VALIDATION_FAILED` when one of them disagrees with the trusted
+	 * header. A raw request field is never authority on this boundary: it must
+	 * not create scope, not switch scope, and not turn a scope mismatch into a
+	 * validation error ahead of the boundary's own persisted-row check.
+	 *
+	 * Both raw selectors are therefore removed from the request for this ONE
+	 * route BEFORE authority establishment (this filter runs at priority 1,
+	 * ahead of the shared binder at priority 10). The request then continues
+	 * normally and the reception boundary answers with its canonical
+	 * non-enumerating fingerprint. Every other route keeps the established
+	 * RestClinicContext behaviour untouched.
+	 *
+	 * @param mixed $response Response passed through by the filter (untouched).
+	 * @param mixed $handler  Matched route handler (unused).
+	 * @param mixed $request  Incoming REST request.
+	 * @return mixed
+	 */
+	public static function reception_cancel_ignore_scope_selectors( mixed $response, mixed $handler, mixed $request ): mixed {
+		unset( $handler );
+		if ( ! $request instanceof WP_REST_Request ) {
+			return $response;
+		}
+		if ( 1 !== preg_match( '#^/clinic/v1/staff/portal/reception/appointments/[0-9]+/cancel$#', (string) $request->get_route() ) ) {
+			return $response;
+		}
+		// Established WordPress REST request semantics: a null parameter value is
+		// "no selector supplied" — exactly how the shared boundary already treats
+		// an absent raw field. Nothing else about the request is altered.
+		$request->set_param( 'clinic_id', null );
+		$request->set_param( 'location_id', null );
+
+		return $response;
+	}
+
+	/**
 	 * Reception cancel of ONE booked appointment at the CURRENT trusted
 	 * operational Location.
 	 *
