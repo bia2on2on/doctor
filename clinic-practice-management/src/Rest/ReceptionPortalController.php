@@ -313,6 +313,32 @@ final class ReceptionPortalController extends RestBase {
 
 		register_rest_route(
 			self::NS,
+			'/staff/portal/reception/appointments/(?P<id>\d+)/reschedule',
+			[
+				[
+					'methods'             => WP_REST_Server::CREATABLE,
+					'callback'            => fn( WP_REST_Request $r ) => $this->reception_appointment_reschedule( $r ),
+					'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_reception( $r, [ RolesAndCapabilities::APPT_RESCHEDULE ] ),
+					// Args are typed but deliberately NOT `required`: the reception
+					// boundary owns its own bounded 422 validation envelope for a
+					// missing / non-positive selector (never a generic REST envelope).
+					'args'                => [
+						'id'           => [
+							'type' => 'integer',
+						],
+						'clinician_id' => [
+							'type' => 'integer',
+						],
+						'slot_id'      => [
+							'type' => 'integer',
+						],
+					],
+				],
+			]
+		);
+
+		register_rest_route(
+			self::NS,
 			'/staff/portal/reception/arrivals',
 			[
 				[
@@ -543,6 +569,10 @@ final class ReceptionPortalController extends RestBase {
 				'location_id'   => $location_id,
 				'location_name' => $resolved['location_name'],
 				'appointments'  => $this->appointments->list_for_reception_operational_day( $clinic_id, $location_id, $date ),
+				// Phase 11 Slice 7 — اضافهٔ فقط‌خواندنی: نگاشتِ «نوبت → پزشک فعلی» برای
+				// نمایش زمینهٔ جابه‌جایی در همان موقعیت. همان یک روز/موقعیت، یک کوئری
+				// محدود، و هیچ‌گاه Authority (هر Mutation پزشک را سمت سرور حل می‌کند).
+				'clinicians'    => $this->appointments->clinician_labels_for_reception_operational_day( $clinic_id, $location_id, $date ),
 				'queue'         => $today['queue'],
 				'stats'         => $today['stats'],
 				'last_event_id' => (int) ( $today['last_event_id'] ?? 0 ),
@@ -1187,7 +1217,48 @@ final class ReceptionPortalController extends RestBase {
 		if ( ! $request instanceof WP_REST_Request ) {
 			return $response;
 		}
-		if ( 1 !== preg_match( '#^/clinic/v1/staff/portal/reception/appointments/[0-9]+/cancel$#', (string) $request->get_route() ) ) {
+
+		return self::ignore_raw_scope_selectors( $request, '#^/clinic/v1/staff/portal/reception/appointments/[0-9]+/cancel$#', $response );
+	}
+
+	/**
+	 * Phase 11 Slice 7 — the reception reschedule route (ONE route) owns its
+	 * trusted Clinic + operational Location EXCLUSIVELY from the server-side
+	 * reception scope, exactly like the cancel route above: raw
+	 * `clinic_id`/`location_id` request parameters are removed BEFORE authority
+	 * establishment (this filter runs at priority 1, ahead of the shared binder
+	 * at priority 10). A raw selector therefore cannot create scope, switch
+	 * scope, or turn a scope mismatch into a validation error ahead of the
+	 * boundary's own persisted-row checks; the boundary then answers with its
+	 * canonical non-enumerating fingerprint. Every other route keeps the
+	 * established RestClinicContext behaviour untouched.
+	 *
+	 * @param mixed $response Response passed through by the filter (untouched).
+	 * @param mixed $handler  Matched route handler (unused).
+	 * @param mixed $request  Incoming REST request.
+	 * @return mixed
+	 */
+	public static function reception_reschedule_ignore_scope_selectors( mixed $response, mixed $handler, mixed $request ): mixed {
+		unset( $handler );
+		if ( ! $request instanceof WP_REST_Request ) {
+			return $response;
+		}
+
+		return self::ignore_raw_scope_selectors( $request, '#^/clinic/v1/staff/portal/reception/appointments/[0-9]+/reschedule$#', $response );
+	}
+
+	/**
+	 * Route-local raw scope-selector removal shared by the two reception
+	 * appointment mutation routes. Only the ONE matching route is altered, and
+	 * only by clearing those two raw fields.
+	 *
+	 * @param WP_REST_Request $request Incoming REST request.
+	 * @param string          $pattern Exact route shape this filter owns.
+	 * @param mixed           $response Response passed through by the filter.
+	 * @return mixed
+	 */
+	private static function ignore_raw_scope_selectors( WP_REST_Request $request, string $pattern, mixed $response ): mixed {
+		if ( 1 !== preg_match( $pattern, (string) $request->get_route() ) ) {
 			return $response;
 		}
 		// Established WordPress REST request semantics: a null parameter value is
@@ -1282,6 +1353,166 @@ final class ReceptionPortalController extends RestBase {
 				'reception'   => [
 					'clinic_id'   => $clinic_id,
 					'location_id' => $location_id,
+				],
+			]
+		);
+	}
+
+	/**
+	 * Reception reschedule of ONE booked appointment to an eligible doctor + a
+	 * persisted slot of the CURRENT trusted operational Location (Phase 11
+	 * Slice 7).
+	 *
+	 * The reschedule itself is NEVER re-implemented here: it is delegated to the
+	 * ESTABLISHED staff contract (`BookingService::rescheduleByStaff()`, the same
+	 * service behind `POST /clinic/v1/appointments/{id}/reschedule`), so the
+	 * existing machine transition, replacement appointment, slot locking, old-slot
+	 * release, new-slot claim, capacity, Clinic horizon, audit, reminder
+	 * cancellation, notification/SMS and idempotency storage stay authoritative.
+	 *
+	 * The Reception-specific boundary is the SAME-LOCATION proof. The shared
+	 * service proves the trusted CLINIC only
+	 * (`assertAppointmentWithinExplicitScope()`), so a same-Clinic appointment or
+	 * slot living at ANOTHER operational Location would otherwise be mutable — or
+	 * reachable — from the wrong Location. Cross-Location reschedule is a
+	 * separate, NOT-authorized product capability, so both the source appointment
+	 * and the destination slot are re-read and compared to the resolved trusted
+	 * operational Location BEFORE delegation; the destination slot is additionally
+	 * re-verified against the selected eligible clinician and its open state. Raw
+	 * ids stay selectors only: the persisted slot row supplies the destination
+	 * date/time, never the client.
+	 *
+	 * The `Idempotency-Key` requirement, the PENDING claim, the completed replay,
+	 * the duplicate-in-flight 409 and the release-on-failure semantics are the
+	 * EXISTING reschedule idempotency contract — this boundary only keeps the
+	 * established UUID header contract in front of it.
+	 */
+	private function reception_appointment_reschedule( WP_REST_Request $r ): WP_REST_Response|WP_Error {
+		$user_id        = (int) get_current_user_id();
+		$appointment_id = (int) ( $r['id'] ?? 0 );
+		$clinician_id   = (int) ( $r['clinician_id'] ?? 0 );
+		$slot_id        = (int) ( $r['slot_id'] ?? 0 );
+
+		// The established reschedule contract requires a UUID Idempotency-Key.
+		// The same bounded envelope and message are kept — no second system.
+		$idem_key = $this->idempotencyKey( $r );
+		if ( null === $idem_key ) {
+			return $this->error( 'CLINIC_VALIDATION_FAILED', 400, 'هدر Idempotency-Key (UUID) برای reschedule الزامی است' );
+		}
+		if ( $appointment_id <= 0 ) {
+			return $this->error( 'CLINIC_VALIDATION_FAILED', 422, 'شناسهٔ نوبت نامعتبر است' );
+		}
+		if ( $clinician_id <= 0 ) {
+			return $this->error( 'CLINIC_VALIDATION_FAILED', 422, 'شناسهٔ پزشک نامعتبر است' );
+		}
+		if ( $slot_id <= 0 ) {
+			// A persisted slot_id is the ONLY destination authority: free-form
+			// client date/time is never a booking input on this boundary.
+			return $this->error( 'CLINIC_VALIDATION_FAILED', 422, 'شناسهٔ اسلات مقصد نامعتبر است' );
+		}
+
+		$resolved = $this->resolve_reception_location( $user_id );
+		if ( $resolved instanceof WP_Error ) {
+			return $resolved;
+		}
+		if ( null === $resolved['location_id'] ) {
+			// 0 eligible Locations: fail closed — no reception mutation at all.
+			return $this->error( 'CLINIC_SCOPE_UNAVAILABLE', 403, 'امکان تعیین محدودهٔ کلینیک معتبر نیست.', [ 'reason' => 'location' ] );
+		}
+		$clinic_id   = (int) $resolved['clinic_id'];
+		$location_id = (int) $resolved['location_id'];
+
+		// Source appointment selector: re-read the PERSISTED row and prove trusted
+		// Clinic AND the CURRENT trusted operational Location before any durable
+		// change. Foreign Clinic, same-Clinic other-Location and unknown ids share
+		// one non-enumerating fingerprint — cross-Location reschedule is out of
+		// scope for this slice.
+		$db  = App::db();
+		$row = $db->fetchRow(
+			'SELECT id, clinic_id, location_id FROM ' . $db->table( 'cpms_appointments' ) . ' WHERE id = %d LIMIT 1',
+			[ $appointment_id ]
+		);
+		if (
+			null === $row
+			|| (int) $row['clinic_id'] !== $clinic_id
+			|| (int) $row['location_id'] !== $location_id
+		) {
+			return $this->error( 'CLINIC_NOT_FOUND', 404, 'نوبت یافت نشد' );
+		}
+
+		// Destination clinician selector: durable eligibility for the trusted
+		// Clinic AND the CURRENT trusted Location (home-Clinic metadata never
+		// authorizes a reception reschedule).
+		if ( [] === $this->eligible_clinicians( $clinic_id, $location_id, $clinician_id ) ) {
+			return $this->error( 'CLINIC_NOT_FOUND', 404, 'پزشک یافت نشد' );
+		}
+
+		// Destination slot selector: re-read the PERSISTED row and re-verify every
+		// trusted selector BEFORE delegating — same Clinic, the CURRENT trusted
+		// Location, the selected eligible clinician and the open state. Capacity,
+		// duplicates, the machine state, the active-Visit guard and the booking
+		// window stay the delegated service's authority inside its transaction.
+		$slot = $this->slots->findByIdAndClinic( $slot_id, $clinic_id );
+		if (
+			null === $slot
+			|| (int) $slot['location_id'] !== $location_id
+			|| (int) $slot['clinician_id'] !== $clinician_id
+			|| 1 !== (int) $slot['is_open']
+		) {
+			return $this->error( 'CLINIC_NOT_FOUND', 404, 'اسلات مقصد یافت نشد' );
+		}
+
+		$slot_date = (string) $slot['slot_date'];
+		$slot_time = substr( (string) $slot['slot_time'], 0, 8 );
+
+		try {
+			$view = App::bookingService()->rescheduleByStaff(
+				$user_id,
+				$appointment_id,
+				$clinician_id,
+				$slot_date,
+				$slot_time,
+				$idem_key,
+				$slot_id
+			);
+		} catch ( BookingException $e ) {
+			// The established bounded envelopes are preserved exactly as the
+			// shared contract defines them: an invalid machine transition, an
+			// active visit, a taken slot, a duplicate in flight or a policy
+			// violation answer 409, a missing row answers 404 and a blocked
+			// license answers 503 — no new envelope is invented here.
+			return $this->error( $e->errorCode, $e->httpStatus, $e->getMessage(), $e->data ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established BookingException contract
+		} catch ( \Throwable $e ) {
+			// Never a fake success and never a raw stack in the response.
+			error_log( '[CPMS][ReceptionPortalController] appointment reschedule: ' . $e->getMessage() ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- established controller convention
+
+			return $this->error( 'CLINIC_INTERNAL_ERROR', 500, 'جابه‌جایی نوبت انجام نشد' );
+		}
+
+		$timezone         = $this->operational_timezone( (string) ( $resolved['timezone'] ?? '' ), $location_id, $clinic_id );
+		$operational_date = ( new \DateTimeImmutable( 'now', new \DateTimeZone( 'UTC' ) ) )->setTimezone( new \DateTimeZone( $timezone ) )->format( 'Y-m-d' );
+		$new_date         = (string) ( $view['date'] ?? $slot_date );
+
+		// Bounded reception response: the replacement appointment identity/status
+		// and the explicit old→new relationship the board refresh needs, plus the
+		// trusted scope it happened in. No PHI, no clinical data, no internal
+		// idempotency record, no unrelated scheduling internals.
+		return $this->success(
+			[
+				// The established representation, narrowed to reception's needs.
+				'appointment' => [
+					'appointment_id'          => (int) ( $view['appointment_id'] ?? 0 ),
+					'previous_appointment_id' => (int) ( $view['previous_appointment_id'] ?? $appointment_id ),
+					'status'                  => (string) ( $view['status'] ?? '' ),
+					'date'                    => $new_date,
+					'time'                    => (string) ( $view['time'] ?? substr( $slot_time, 0, 5 ) ),
+					'jalali'                  => (string) ( $view['jalali'] ?? Jalali::formatYmd( $new_date ) ),
+					'reference_code'          => (string) ( $view['reference_code'] ?? '' ),
+				],
+				'reception'   => [
+					'clinic_id'          => $clinic_id,
+					'location_id'        => $location_id,
+					'on_operational_day' => $new_date === $operational_date,
 				],
 			]
 		);
@@ -1579,6 +1810,7 @@ final class ReceptionPortalController extends RestBase {
 			'location_id'   => null,
 			'location_name' => null,
 			'appointments'  => [],
+			'clinicians'    => [],
 			'queue'         => [],
 			'stats'         => [],
 			'last_event_id' => 0,

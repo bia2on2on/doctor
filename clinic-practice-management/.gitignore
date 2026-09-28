@@ -1,2 +1,5 @@
 vendor/
 .phpunit.cache/
+# Python bytecode از اجرای ابزارهای محلی (pilot/fixture): هرگز commit نمی‌شود
+__pycache__/
+*.pyc

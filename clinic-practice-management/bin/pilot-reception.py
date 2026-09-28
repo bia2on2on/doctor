@@ -122,6 +122,7 @@ CANCEL = {
     "patients": {"mobile-390": int(_cx[4]), "tablet-768": int(_cx[5]), "desktop-1366": int(_cx[6])},
     "mrn": {"mobile-390": _cx[7] + "MOBILE" + _cx[8], "tablet-768": _cx[7] + "TABLET" + _cx[8], "desktop-1366": _cx[7] + "DESKTOP" + _cx[8]},
 }
+_rs = parts("RECEPTION_RESCHEDULE", 16)
 _wi = parts("RECEPTION_WALKIN", 9)
 WALKIN = {
     "c1": int(_wi[0]),
@@ -130,6 +131,32 @@ WALKIN = {
     "patients": {"mobile-390": int(_wi[3]), "tablet-768": int(_wi[4]), "desktop-1366": int(_wi[5]), "partial": int(_wi[6])},
     "mrn": {"mobile-390": _wi[7] + "MOBILE" + _wi[8], "tablet-768": _wi[7] + "TABLET" + _wi[8], "desktop-1366": _wi[7] + "DESKTOP" + _wi[8], "partial": _wi[7] + "PARTIAL" + _wi[8]},
 }
+# Phase 11 Slice 7 — reschedule within the CURRENT trusted Location. The
+# destination is ALWAYS a persisted slot of the CURRENT operational Location
+# (cross-Location reschedule is a product decision OUT OF SCOPE): the journey
+# books its own source slot through the existing Slice 5 UI, then reschedules
+# that confirmed row through the new boundary and proves the old row leaves the
+# board, the destination slot is claimed, the released source slot is offered
+# again by the existing bounded read and no Visit/queue/payment appears.
+RESCHEDULE = {
+    "c1": int(_rs[0]),
+    "c2": int(_rs[1]),
+    "source": {"mobile-390": int(_rs[2]), "tablet-768": int(_rs[3]), "desktop-1366": int(_rs[4])},
+    "dest": {"mobile-390": int(_rs[5]), "tablet-768": int(_rs[6]), "desktop-1366": int(_rs[7])},
+    "dest_date": {"mobile-390": _rs[8], "tablet-768": _rs[9], "desktop-1366": _rs[10]},
+    "patients": {"mobile-390": int(_rs[11]), "tablet-768": int(_rs[12]), "desktop-1366": int(_rs[13])},
+    "mrn": {"mobile-390": _rs[14] + "MOBILE" + _rs[15], "tablet-768": _rs[14] + "TABLET" + _rs[15], "desktop-1366": _rs[14] + "DESKTOP" + _rs[15]},
+}
+# The destination doctor per viewport: MOBILE stays on the SAME clinician,
+# TABLET explicitly switches to the OTHER eligible clinician of the same
+# Location, DESKTOP stays on the current one with an off-operational-day date.
+RESCHEDULE_DEST_DOCTOR = {
+    "mobile-390": RESCHEDULE["c1"],
+    "tablet-768": RESCHEDULE["c2"],
+    "desktop-1366": RESCHEDULE["c1"],
+}
+RESCHEDULE_PATH_RE = re.compile(r"/staff/portal/reception/appointments/[0-9]+/reschedule$")
+UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 WALKIN_ROUTE = "/staff/portal/reception/walk-ins"
 CLINICIANS_ROUTE = "/staff/portal/reception/clinicians"
 
@@ -1967,6 +1994,331 @@ def run_cancel_journey(browser, vp):
         ctx.close()
 
 
+def reschedule_posts(state):
+    return [
+        r
+        for r in state["rest"]
+        if r["method"] == "POST" and RESCHEDULE_PATH_RE.search(r["route"]) is not None
+    ]
+
+
+def reschedule_slot_ids(page):
+    nodes = page.locator('[data-role="sr-reschedule-slot"]')
+    return [int(nodes.nth(i).get_attribute("data-slot-id") or 0) for i in range(nodes.count())]
+
+
+def wait_reschedule_slot(page, slot_id, timeout=15000):
+    page.wait_for_function(
+        """(id) => Array.from(document.querySelectorAll('[data-role="sr-reschedule-slot"]')).some((n) => n.getAttribute('data-slot-id') === String(id))""",
+        arg=int(slot_id),
+        timeout=timeout,
+    )
+
+
+def wait_reschedule_state(page, needle, timeout=15000):
+    page.wait_for_function(
+        """(needle) => { const n = document.querySelector('[data-role="sr-reschedule-state"]'); return !!n && (n.textContent || '').indexOf(needle) !== -1; }""",
+        arg=needle,
+        timeout=timeout,
+    )
+
+
+def select_reschedule_patient(page, tag):
+    search_input = page.locator('[data-role="sr-search-input"]')
+    search_input.fill("")
+    search_input.type(RESCHEDULE["mrn"][tag], delay=10)
+    wait_search_state(page, "یافت شد")
+    pid = RESCHEDULE["patients"][tag]
+    if pid not in search_result_ids(page):
+        raise RuntimeError(f"reschedule patient {pid} must be found through the existing Clinic search")
+    page.locator(f'[data-role="sr-search-result"][data-patient-id="{pid}"]').click()
+    page.wait_for_selector('[data-role="sr-search-selected"]', state="visible", timeout=5000)
+    page.wait_for_selector('[data-role="sr-book"]', state="visible", timeout=5000)
+
+
+def run_reschedule_journey(browser, vp):
+    """Slice 7: reschedule a booked appointment WITHIN the CURRENT trusted Location.
+
+    The journey books its own capacity-1 source slot through the existing Slice 5
+    UI (so the source row is genuinely confirmed, on today's board and
+    not-yet-received), then reschedules it through the new Reception boundary:
+    explicit action on the row, current context, destination doctor of the SAME
+    Location, a Location-local date, an ALREADY-GENERATED persisted slot of that
+    same Location, explicit confirm with the EXISTING Idempotency-Key contract
+    (double-click safe), the old row leaving the board, the same-day new row
+    appearing through the existing board read (or an off-operational-day
+    destination staying OFF today's board), the destination slot claimed and the
+    released source slot offered again by the EXISTING bounded read — with no
+    Visit/queue/payment and Cancel still a separate distinct action.
+    """
+    tag = vp["vp"]
+    source_slot = RESCHEDULE["source"][tag]
+    dest_slot = RESCHEDULE["dest"][tag]
+    dest_date = RESCHEDULE["dest_date"][tag]
+    dest_doctor = RESCHEDULE_DEST_DOCTOR[tag]
+    patient_id = RESCHEDULE["patients"][tag]
+    same_day = dest_date == PUB["today_tehran"]
+    # The destination candidates are always the EXISTING bounded read of the
+    # CURRENT trusted Location; the journey captures exactly that response.
+    slot_read_filter = lambda r: r.request.method == "GET" and route_of(r.url) == "/clinic/v1" + SLOTS_ROUTE
+    dest_read_value = None
+    key = f"reception-reschedule-{tag}"
+    stage = "login"
+    ctx, page, state = new_page(browser, vp)
+    try:
+        login(page, SECRETARY)
+        stage = "reception-entry"
+        resp = harness_goto(page, RECEPTION_URL, wait_until="domcontentloaded")
+        if resp is None or resp.status != 200:
+            raise RuntimeError(f"reception entry status {getattr(resp, 'status', None)}")
+        page.wait_for_selector('[data-role="reception-app"]', state="attached", timeout=15000)
+        assert_reception_shell(page)
+        page.wait_for_selector('[data-role="sr-location-select"]', state="visible", timeout=15000)
+        select_location(page, PUB["loc_tehran"])
+        page.wait_for_function(
+            """() => document.querySelectorAll('[data-role="sr-row"]').length > 0""",
+            timeout=15000,
+        )
+        rows_before = rows(page).count()
+        queue_before = page.locator('[data-role="sr-queue-row"]').count()
+        if rows_before < 1 or queue_before < 1:
+            raise RuntimeError(f"reschedule journey expects booked rows and received queue rows, got {rows_before}/{queue_before}")
+        # The module never offers another-Location selection inside reschedule.
+        if page.locator('[data-role="sr-reschedule-location"]').count() != 0:
+            raise RuntimeError("reschedule must not expose another-Location selector")
+        if page.locator('[data-role="sr-reschedule-form"]').is_visible():
+            raise RuntimeError("the reschedule panel must stay hidden until the explicit action is chosen")
+
+        stage = "book-owned-source"
+        mark = nav_mark(page)
+        select_reschedule_patient(page, tag)
+        page.wait_for_selector('[data-role="sr-book-clinician-wrap"]', state="visible", timeout=15000)
+        page.select_option('[data-role="sr-book-clinician"]', str(RESCHEDULE["c1"]))
+        wait_book_slot(page, source_slot)
+        page.locator(f'[data-role="sr-book-slot"][data-slot-id="{source_slot}"]').click()
+        with page.expect_response(lambda r: r.url and APPOINTMENTS_ROUTE in r.url and r.request.method == "POST", timeout=15000) as create_info:
+            page.locator('[data-role="sr-book-submit"]').click()
+        if create_info.value.status != 200:
+            raise RuntimeError(f"source booking answered {create_info.value.status}")
+        create_data = create_info.value.json()
+        create_data = create_data.get("data", create_data) if isinstance(create_data, dict) else {}
+        appointment = create_data.get("appointment") or {}
+        source_appt = int(appointment.get("id") or 0)
+        if appointment.get("status") != "confirmed" or source_appt <= 0:
+            raise RuntimeError(f"the journey needs one confirmed source row, got {appointment}")
+        wait_slot_absent(page, source_slot)
+        wait_rows_count(page, rows_before + 1)
+        source_row = row_of(page, source_appt)
+        if source_row.count() != 1:
+            raise RuntimeError("the booked source row must be on the reception board")
+
+        stage = "explicit-reschedule-action"
+        # Cancel stays a SEPARATE distinct action on the very same row, and only
+        # a confirmed not-yet-received row offers the reschedule action.
+        if source_row.locator('[data-role="sr-cancel-open"]').count() != 1:
+            raise RuntimeError("Cancel must remain a separate action on the booked row")
+        if source_row.locator('[data-role="sr-reschedule-open"]').count() != 1:
+            raise RuntimeError("a confirmed not-yet-received row must expose exactly one explicit reschedule action")
+        if source_row.locator('[data-role="sr-reschedule-form"]').count() != 0:
+            raise RuntimeError("the panel must stay closed until the reschedule action is chosen")
+        queue_rows = page.locator('[data-role="sr-queue-row"]')
+        for i in range(queue_rows.count()):
+            if queue_rows.nth(i).locator('[data-role="sr-reschedule-open"]').count() != 0:
+                raise RuntimeError("a received/queue row must never expose a reschedule action")
+        current_doctor_name = source_row.locator('[data-role="sr-reschedule-open"]').get_attribute("data-clinician-name") or ""
+        current_time = (source_row.locator('[data-role="sr-row-time"]').inner_text() or "").strip()
+        with page.expect_response(slot_read_filter, timeout=15000) as opened_read:
+            source_row.locator('[data-role="sr-reschedule-open"]').click()
+        page.wait_for_selector('[data-section="sr-reschedule"]', state="visible", timeout=10000)
+        # For a same-day, same-doctor destination this first read IS the
+        # destination read; the other viewports replace it below.
+        dest_read_value = opened_read.value
+        context_text = (page.locator('[data-role="sr-reschedule-context"]').inner_text() or "").strip()
+        if f"Reschedule {tag.split('-')[0].capitalize()}" not in context_text or current_time not in context_text:
+            raise RuntimeError(f"the panel must show the current patient/time context, got {context_text}")
+        if current_doctor_name and current_doctor_name not in context_text:
+            raise RuntimeError(f"the panel must show the current doctor context, got {context_text}")
+
+        stage = "destination-doctor"
+        page.wait_for_selector('[data-role="sr-reschedule-clinician-wrap"]', state="visible", timeout=15000)
+        clinician_select = page.locator('[data-role="sr-reschedule-clinician"]')
+        options = [clinician_select.locator("option").nth(i).get_attribute("value") for i in range(clinician_select.locator("option").count())]
+        if str(RESCHEDULE["c1"]) not in options or str(RESCHEDULE["c2"]) not in options:
+            raise RuntimeError(f"the eligible doctors of the CURRENT Location must be offered, got {options}")
+        if clinician_select.input_value() != str(RESCHEDULE["c1"]):
+            raise RuntimeError("the current doctor must be the initially selectable destination")
+        if dest_doctor != RESCHEDULE["c1"]:
+            with page.expect_response(slot_read_filter, timeout=15000) as switched_read:
+                clinician_select.select_option(str(dest_doctor))
+            dest_read_value = switched_read.value
+            # Changing the destination doctor clears the stale slot state.
+            if page.locator('[data-role="sr-reschedule-slot"][aria-pressed="true"]').count() != 0:
+                raise RuntimeError("changing the destination doctor must clear the previous slot selection")
+
+        stage = "destination-date-and-slot"
+        page.wait_for_selector('[data-role="sr-reschedule-date"]', state="visible", timeout=15000)
+        date_select = page.locator('[data-role="sr-reschedule-date"]')
+        if not same_day:
+            if date_select.locator(f'option[value="{dest_date}"]').count() != 1:
+                raise RuntimeError("the Location-local destination date must be selectable")
+            with page.expect_response(slot_read_filter, timeout=15000) as dated_read:
+                date_select.select_option(dest_date)
+            dest_read_value = dated_read.value
+        elif date_select.input_value() != dest_date:
+            raise RuntimeError(f"a same-day destination must default to the operational date, got {date_select.input_value()}")
+        wait_reschedule_slot(page, dest_slot)
+        # The rendered candidates come from the EXISTING bounded read of the
+        # CURRENT Location only: the journey correlates them with that read.
+        if dest_read_value is None:
+            raise RuntimeError("no existing slot read answered for the destination")
+        if dest_read_value.status != 200:
+            raise RuntimeError(f"the destination slot read answered {dest_read_value.status}")
+        last_slots = dest_read_value.json()
+        last_slots = last_slots.get("data", last_slots) if isinstance(last_slots, dict) else {}
+        if int(last_slots.get("location_id") or 0) != PUB["loc_tehran"]:
+            raise RuntimeError(f"the destination slot read must stay in the CURRENT trusted Location, got {last_slots.get('location_id')}")
+        offered = set(int(s.get("slot_id") or 0) for s in (last_slots.get("slots") or []))
+        rendered = set(reschedule_slot_ids(page))
+        if not rendered or not rendered.issubset(offered):
+            raise RuntimeError(f"the panel must render exactly the existing read's slots, rendered={sorted(rendered)} offered={sorted(offered)}")
+        page.locator(f'[data-role="sr-reschedule-slot"][data-slot-id="{dest_slot}"]').click()
+        selected_text = (page.locator('[data-role="sr-reschedule-selected"]').inner_text() or "").strip()
+        dest_time_short = next(
+            (str(s.get("time") or "") for s in (last_slots.get("slots") or []) if int(s.get("slot_id") or 0) == dest_slot),
+            "",
+        )
+        if dest_time_short == "" or dest_time_short not in selected_text:
+            raise RuntimeError(f"the chosen persisted slot must be shown before submit, got {selected_text}")
+        if page.locator('[data-role="sr-reschedule-confirm"]').is_disabled():
+            raise RuntimeError("the explicit confirm must be enabled once a persisted destination slot is chosen")
+
+        stage = "explicit-submit-with-idempotency-key"
+        with page.expect_response(lambda r: r.url and RESCHEDULE_PATH_RE.search(r.url) is not None and r.request.method == "POST", timeout=20000) as res_info:
+            page.evaluate(
+                """() => { const b = document.querySelector('[data-role="sr-reschedule-confirm"]'); b.click(); b.click(); }"""
+            )
+        posts = reschedule_posts(state)
+        if len(posts) != 1:
+            raise RuntimeError(f"double-submit must stay exactly one explicit reschedule mutation, got {posts}")
+        if res_info.value.status != 200:
+            raise RuntimeError(f"reception reschedule answered {res_info.value.status}")
+        headers = {k.lower(): v for k, v in (res_info.value.request.headers or {}).items()}
+        idem = headers.get("idempotency-key", "")
+        if not UUID_RE.match(idem or ""):
+            raise RuntimeError(f"the reschedule must carry the existing UUID Idempotency-Key contract, got {idem!r}")
+        body = res_info.value.request.post_data_json
+        if not isinstance(body, dict) or sorted(body.keys()) != ["clinician_id", "slot_id"]:
+            raise RuntimeError(f"the reschedule must send only the selected doctor + persisted slot, got {body}")
+        if int(body.get("clinician_id") or 0) != dest_doctor or int(body.get("slot_id") or 0) != dest_slot:
+            raise RuntimeError(f"the reschedule must send the chosen destination, got {body}")
+        if "clinic_id" in body or "location_id" in body or "slot_date" in body or "slot_time" in body:
+            raise RuntimeError("raw scope selectors and client date/time must never be sent as authority")
+        res_json = res_info.value.json()
+        res_data = res_json.get("data", res_json) if isinstance(res_json, dict) else {}
+        if sorted(res_data.keys()) != ["appointment", "reception"]:
+            raise RuntimeError(f"the reschedule response must stay bounded, got {sorted(res_data.keys())}")
+        view = res_data.get("appointment") or {}
+        if sorted(view.keys()) != ["appointment_id", "date", "jalali", "previous_appointment_id", "reference_code", "status", "time"]:
+            raise RuntimeError(f"the bounded appointment view must carry only the documented keys, got {sorted(view.keys())}")
+        if int(view.get("previous_appointment_id") or 0) != source_appt or view.get("status") != "confirmed":
+            raise RuntimeError(f"the established old→new relationship is expected, got {view}")
+        if view.get("date") != dest_date:
+            raise RuntimeError(f"the persisted destination date is expected, got {view.get('date')}")
+        scope = res_data.get("reception") or {}
+        if sorted(scope.keys()) != ["clinic_id", "location_id", "on_operational_day"]:
+            raise RuntimeError(f"the reception scope view must stay bounded, got {sorted(scope.keys())}")
+        if int(scope.get("clinic_id") or 0) != PUB["clinic"] or int(scope.get("location_id") or 0) != PUB["loc_tehran"]:
+            raise RuntimeError(f"the reschedule must stay in the CURRENT trusted scope, got {scope}")
+        if bool(scope.get("on_operational_day")) is not same_day:
+            raise RuntimeError(f"the operational-day flag must match the destination date, got {scope}")
+        new_appt = int(view.get("appointment_id") or 0)
+        if new_appt <= 0:
+            raise RuntimeError("the replacement appointment identity is required")
+
+        stage = "board-outcome"
+        wait_reschedule_state(page, "کد پیگیری")
+        page.wait_for_function(
+            """(id) => !document.querySelector('[data-role="sr-row"][data-appointment-id="' + id + '"]')""",
+            arg=str(source_appt),
+            timeout=15000,
+        )
+        if same_day:
+            page.wait_for_function(
+                """(id) => !!document.querySelector('[data-role="sr-row"][data-appointment-id="' + id + '"]')""",
+                arg=str(new_appt),
+                timeout=15000,
+            )
+            new_row = row_of(page, new_appt)
+            if (new_row.locator('[data-role="sr-row-time"]').inner_text() or "").strip() != (dest_time_short or "")[:5]:
+                raise RuntimeError("the same-day board row must show the persisted destination time")
+            # The replacement is still NOT received: it keeps the explicit
+            # actions a booked row owns (Cancel stays distinct) and no Visit.
+            if new_row.locator('[data-role="sr-cancel-open"]').count() != 1 or new_row.locator('[data-role="sr-reschedule-open"]').count() != 1:
+                raise RuntimeError("the replacement must stay a booked-not-received row with its own distinct actions")
+            wait_rows_count(page, rows_before + 1)
+        else:
+            if row_of(page, new_appt).count() != 0:
+                raise RuntimeError("an off-operational-day destination must stay OFF today's board")
+            wait_rows_count(page, rows_before)
+        if page.locator('[data-role="sr-queue-row"]').count() != queue_before:
+            raise RuntimeError("reschedule must not create or alter a Visit/queue row")
+
+        stage = "claimed-and-released-through-existing-reads"
+        # The destination slot is claimed: the existing read no longer offers it.
+        page.wait_for_function(
+            """(id) => !Array.from(document.querySelectorAll('[data-role="sr-reschedule-slot"]')).some((n) => n.getAttribute('data-slot-id') === String(id))""",
+            arg=int(dest_slot),
+            timeout=15000,
+        )
+        # The released source slot is offered again by the EXISTING bounded read.
+        if dest_doctor != RESCHEDULE["c1"]:
+            page.select_option('[data-role="sr-reschedule-clinician"]', str(RESCHEDULE["c1"]))
+        date_select_after = page.locator('[data-role="sr-reschedule-date"]')
+        if dest_date == PUB["today_tehran"]:
+            date_select_after.select_option(RESCHEDULE["dest_date"]["desktop-1366"])
+        date_select_after.select_option(PUB["today_tehran"])
+        wait_reschedule_slot(page, source_slot)
+        if page.locator('[data-role="sr-queue-row"]').count() != queue_before:
+            raise RuntimeError("the released slot must not create a Visit/queue row")
+        assert_no_horizontal_overflow(page, "reschedule-outcome")
+        shot(page, f"reception-{tag}-reschedule-outcome")
+
+        stage = "writes-bounded"
+        writes = [r for r in state["rest"] if r["method"] != "GET"]
+        reschedules = [r for r in writes if RESCHEDULE_PATH_RE.search(r["route"]) is not None]
+        creates = [r for r in writes if r["route"].rstrip("/").endswith(APPOINTMENTS_ROUTE)]
+        if len(reschedules) != 1 or len(creates) != 1 or len(writes) != 2:
+            raise RuntimeError(f"reschedule journey must issue exactly one create and one reschedule write, got {writes}")
+
+        rest_delta = assert_no_product_reload(page, mark, "reschedule")
+        assert_authority_headers(state, PUB["clinic"], {PUB["loc_tehran"], PUB["loc_tokyo"]})
+        assert_hygiene(state, key)
+        ok(
+            key,
+            "reception reschedule: explicit action + persisted same-Location slot → old row rescheduled, destination claimed, source released, no Visit/queue",
+            f"vp={vp['vp']} same_day={int(same_day)} dest_doctor={dest_doctor} reschedule_posts=1 create_posts=1 board_rows={rows_before}->{rows(page).count()} queue_rows={queue_before} idem_key=uuid dest_claimed=1 source_reoffered=1 reloaded=0 overflow=0",
+        )
+    except Exception as e:
+        try:
+            dump = {
+                "reschedule_state": (page.locator('[data-role="sr-reschedule-state"]').inner_text() or "")[:160],
+                "panel_visible": page.locator('[data-role="sr-reschedule-form"]').is_visible(),
+                "slots": reschedule_slot_ids(page),
+                "rest_tail": [f"{r['method']} {r['route']}={r['status']}" for r in state["rest"][-12:]],
+            }
+            info(f"fail-dump {vp['vp']} stage={stage} {dump}")
+        except Exception:
+            pass
+        try:
+            shot(page, f"reception-FAIL-{key}-{stage}")
+        except Exception:
+            pass
+        fail(key, vp["vp"], f"{e} ({page_hint(page)})")
+        raise
+    finally:
+        ctx.close()
+
+
 def main():
     if not RECEPTION_URL or not STAFF_URL:
         raise SystemExit("RECEPTION_URL / STAFF_PORTAL_URL must be set by the fixture")
@@ -2030,6 +2382,15 @@ def main():
         for vp in VIEWPORTS:
             try:
                 run_cancel_journey(browser, vp)
+            except Exception:
+                hard_fail = True
+        # Phase 11 Slice 7 — reschedule a booked appointment WITHIN the CURRENT
+        # trusted Location. Each journey books its own source slot and moves the
+        # row to its own persisted destination slot of the same Location, so the
+        # earlier journeys' invariants stay untouched.
+        for vp in VIEWPORTS:
+            try:
+                run_reschedule_journey(browser, vp)
             except Exception:
                 hard_fail = True
         browser.close()

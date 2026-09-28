@@ -303,6 +303,45 @@ final class AppointmentRepository
     }
 
     /**
+     * Bounded appointment→clinician labels for ONE reception operational day.
+     *
+     * Phase 11 Slice 7 — additive read-only projection used ONLY to display the
+     * current doctor of a booked row and to pre-select that doctor in the
+     * reschedule destination list when still eligible. The board ROW allowlist is
+     * untouched; this is a sibling, root-level projection. ONE bounded query for
+     * the whole operational day (never a per-row/N+1 read) and never authority:
+     * every mutation re-resolves its clinician server-side.
+     *
+     * @return list<array{appointment_id: int, clinician_id: int, clinician_name: string}>
+     */
+    public function clinician_labels_for_reception_operational_day( int $clinic_id, int $location_id, string $date ): array {
+        if ( ! preg_match( '/^\d{4}-\d{2}-\d{2}$/', $date ) ) {
+            return [];
+        }
+
+        $rows = $this->db->fetchAll(
+            'SELECT a.id AS appointment_id, a.clinician_id, c.full_name AS clinician_name'
+            . ' FROM ' . $this->db->table( 'cpms_appointments' ) . ' a'
+            . ' LEFT JOIN ' . $this->db->table( 'cpms_clinicians' ) . ' c ON c.id = a.clinician_id'
+            . ' WHERE a.clinic_id = %d AND a.location_id = %d AND a.slot_date = %s'
+            . " AND a.status IN ('pending', 'confirmed')"
+            . ' ORDER BY a.id ASC',
+            [ $clinic_id, $location_id, $date ]
+        );
+
+        $labels = [];
+        foreach ( is_array( $rows ) ? $rows : [] as $row ) {
+            $labels[] = [
+                'appointment_id' => (int) $row['appointment_id'],
+                'clinician_id'   => (int) $row['clinician_id'],
+                'clinician_name' => (string) ( $row['clinician_name'] ?? '' ),
+            ];
+        }
+
+        return $labels;
+    }
+
+    /**
      * Collapse the joined day list to one bounded row per booked appointment.
      *
      * @param list<array<string, mixed>> $rows Joined appointment rows.

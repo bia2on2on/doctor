@@ -371,6 +371,60 @@ foreach (['MOBILE', 'TABLET', 'DESKTOP'] as $cancelIndex => $cancelTag) {
     );
 }
 
+// Phase 11 Slice 7 — reception reschedule stage: one dedicated ACTIVE patient,
+// one dedicated capacity-1 SOURCE slot and one dedicated capacity-1
+// DESTINATION slot per viewport journey. No appointment row is inserted here
+// either: each journey first books its own source slot through the real Slice 5
+// UI (so the source row is genuinely confirmed, on today's board and
+// not-yet-received), then reschedules that row through the new boundary. The
+// Slice 1 board invariant (four booked fixture rows) therefore stays intact
+// until a journey books one, exactly like the Slice 5/Slice 6 stages.
+//
+// Destinations stay inside the CURRENT trusted Location (cross-Location is out
+// of scope): MOBILE → the same clinician later today, TABLET → the OTHER
+// eligible clinician at the same Location, DESKTOP → the next Tehran-local day
+// (so the journey can prove an off-operational-day destination stays OFF
+// today's board). When an offset crosses local midnight the destination is
+// simply on the next local day, and the exported date tells the journey which
+// branch to assert.
+$rescheduleSourceOffsets = ['MOBILE' => 35, 'TABLET' => 55, 'DESKTOP' => 65];
+$rescheduleDestOffsets   = ['MOBILE' => 75, 'TABLET' => 100];
+$rescheduleLateSource    = ['MOBILE' => '23:14:00', 'TABLET' => '23:18:00', 'DESKTOP' => '23:22:00'];
+$rescheduleSlots = ['source' => [], 'dest' => [], 'dest_date' => [], 'patient' => []];
+$rescheduleDestDoctor = ['MOBILE' => $clinicianId, 'TABLET' => $clinician2Id, 'DESKTOP' => $clinicianId];
+foreach (['MOBILE', 'TABLET', 'DESKTOP'] as $resIndex => $resTag) {
+    $sourceAt = $lateToday
+        ? $nowTehran->setTime((int) substr($rescheduleLateSource[$resTag], 0, 2), (int) substr($rescheduleLateSource[$resTag], 3, 2))
+        : $nowTehran->add(new DateInterval('PT' . $rescheduleSourceOffsets[$resTag] . 'M'));
+    if ($sourceAt->format('Y-m-d') !== $todayTehran) {
+        $sourceAt = $nowTehran->setTime(23, 55);
+    }
+    $rescheduleSlots['source'][$resTag] = rp_insert(
+        $wpdb,
+        'INSERT INTO ' . $db->table('cpms_schedule_slots') . ' (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, generated_from, created_at, updated_at) VALUES (%d, %d, %d, %s, %s, %d, %d, %d, %d, %d, %s, %s, %s)',
+        [$clinicId, $locTehran, $clinicianId, $todayTehran, $sourceAt->format('H:i:s'), 20, 1, 0, 0, 1, 'manual', $now, $now],
+        'reschedule source slot ' . $resTag
+    );
+    if ($resTag === 'DESKTOP') {
+        $destAt   = new DateTimeImmutable($tomorrowTehran . ' 11:00:00', new DateTimeZone('Asia/Tehran'));
+    } else {
+        $destAt = $nowTehran->add(new DateInterval('PT' . $rescheduleDestOffsets[$resTag] . 'M'));
+    }
+    $rescheduleSlots['dest_date'][$resTag] = $destAt->format('Y-m-d');
+    $rescheduleSlots['dest'][$resTag] = rp_insert(
+        $wpdb,
+        'INSERT INTO ' . $db->table('cpms_schedule_slots') . ' (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, generated_from, created_at, updated_at) VALUES (%d, %d, %d, %s, %s, %d, %d, %d, %d, %d, %s, %s, %s)',
+        [$clinicId, $locTehran, $rescheduleDestDoctor[$resTag], $destAt->format('Y-m-d'), $destAt->format('H:i:s'), 20, 1, 0, 0, 1, 'manual', $now, $now],
+        'reschedule destination slot ' . $resTag
+    );
+    $rescheduleSlots['patient'][$resTag] = rp_insert(
+        $wpdb,
+        'INSERT INTO ' . $db->table('cpms_patients') . ' (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, %s, %s, %s)',
+        [$clinicId, 'MR-RP-RS-' . $resTag . '-' . $uniq, 'Reschedule', ucfirst(strtolower($resTag)), '0913' . sprintf('%06d', hexdec(substr($uniq, 0, 6)) % 1000000) . (string) ($resIndex + 8), 'active', $now, $now],
+        'reschedule patient ' . $resTag
+    );
+}
+
 // The EXISTING per-Clinic two-stage knob: with auto-enqueue off, the reception
 // action runs the established check-in then the explicit enqueue transition —
 // the exact surface the partial-arrival acceptance covers (FR-6.1 keeps the
@@ -445,6 +499,24 @@ file_put_contents(
         'MR-RP-WI-',
         '-' . $uniq,
     ]) . "\n"
+    . 'RECEPTION_RESCHEDULE=' . implode('|', [
+        (string) $clinicianId,
+        (string) $clinician2Id,
+        (string) $rescheduleSlots['source']['MOBILE'],
+        (string) $rescheduleSlots['source']['TABLET'],
+        (string) $rescheduleSlots['source']['DESKTOP'],
+        (string) $rescheduleSlots['dest']['MOBILE'],
+        (string) $rescheduleSlots['dest']['TABLET'],
+        (string) $rescheduleSlots['dest']['DESKTOP'],
+        $rescheduleSlots['dest_date']['MOBILE'],
+        $rescheduleSlots['dest_date']['TABLET'],
+        $rescheduleSlots['dest_date']['DESKTOP'],
+        (string) $rescheduleSlots['patient']['MOBILE'],
+        (string) $rescheduleSlots['patient']['TABLET'],
+        (string) $rescheduleSlots['patient']['DESKTOP'],
+        'MR-RP-RS-',
+        '-' . $uniq,
+    ]) . "\n"
     . 'RECEPTION_CANCEL=' . implode('|', [
         (string) $clinicianId,
         (string) $cancelSlotIds['MOBILE'],
@@ -464,4 +536,6 @@ echo 'fixture: reception clinic=' . $clinicId
     . ' today_tehran=' . $todayTehran . ' today_tokyo=' . $todayTokyo
     . ' search_probe=' . $probeId . ' foreign_probe=' . $foreignProbeId
     . ' booking_slots=' . implode(',', $bookingSlotIds) . ' tomorrow_tehran=' . $tomorrowTehran
-    . ' cancel_slots=' . implode(',', $cancelSlotIds) . "\n";
+    . ' cancel_slots=' . implode(',', $cancelSlotIds)
+    . ' reschedule_slots=' . implode(',', $rescheduleSlots['source'])
+    . ' reschedule_dest=' . implode(',', $rescheduleSlots['dest']) . "\n";
