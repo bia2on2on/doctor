@@ -291,6 +291,28 @@ final class ReceptionPortalController extends RestBase {
 
 		register_rest_route(
 			self::NS,
+			'/staff/portal/reception/appointments/(?P<id>\d+)/cancel',
+			[
+				[
+					'methods'             => WP_REST_Server::CREATABLE,
+					'callback'            => fn( WP_REST_Request $r ) => $this->reception_appointment_cancel( $r ),
+					'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_reception( $r, [ RolesAndCapabilities::APPT_CANCEL ] ),
+					'args'                => [
+						'id'     => [
+							'required' => true,
+							'type'     => 'integer',
+						],
+						'reason' => [
+							'required' => false,
+							'type'     => 'string',
+						],
+					],
+				],
+			]
+		);
+
+		register_rest_route(
+			self::NS,
 			'/staff/portal/reception/arrivals',
 			[
 				[
@@ -1131,6 +1153,135 @@ final class ReceptionPortalController extends RestBase {
 					'location_name'      => $resolved['location_name'],
 					'operational_date'   => $operational_date,
 					'on_operational_day' => $slot_date === $operational_date,
+				],
+			]
+		);
+	}
+
+	/**
+	 * Phase 11 Slice 6 — the reception cancel route resolves its trusted Clinic
+	 * and operational Location EXCLUSIVELY from the server-side reception scope
+	 * (trusted request headers + ACTIVE membership + the 0/1/N Location policy).
+	 *
+	 * The established shared binder also honours raw `clinic_id`/`location_id`
+	 * REQUEST PARAMETERS as scope selectors and answers 422
+	 * `CLINIC_VALIDATION_FAILED` when one of them disagrees with the trusted
+	 * header. A raw request field is never authority on this boundary: it must
+	 * not create scope, not switch scope, and not turn a scope mismatch into a
+	 * validation error ahead of the boundary's own persisted-row check.
+	 *
+	 * Both raw selectors are therefore removed from the request for this ONE
+	 * route BEFORE authority establishment (this filter runs at priority 1,
+	 * ahead of the shared binder at priority 10). The request then continues
+	 * normally and the reception boundary answers with its canonical
+	 * non-enumerating fingerprint. Every other route keeps the established
+	 * RestClinicContext behaviour untouched.
+	 *
+	 * @param mixed $response Response passed through by the filter (untouched).
+	 * @param mixed $handler  Matched route handler (unused).
+	 * @param mixed $request  Incoming REST request.
+	 * @return mixed
+	 */
+	public static function reception_cancel_ignore_scope_selectors( mixed $response, mixed $handler, mixed $request ): mixed {
+		unset( $handler );
+		if ( ! $request instanceof WP_REST_Request ) {
+			return $response;
+		}
+		if ( 1 !== preg_match( '#^/clinic/v1/staff/portal/reception/appointments/[0-9]+/cancel$#', (string) $request->get_route() ) ) {
+			return $response;
+		}
+		// Established WordPress REST request semantics: a null parameter value is
+		// "no selector supplied" — exactly how the shared boundary already treats
+		// an absent raw field. Nothing else about the request is altered.
+		$request->set_param( 'clinic_id', null );
+		$request->set_param( 'location_id', null );
+
+		return $response;
+	}
+
+	/**
+	 * Reception cancel of ONE booked appointment at the CURRENT trusted
+	 * operational Location.
+	 *
+	 * The cancellation itself is NEVER re-implemented here: it is delegated to
+	 * the ESTABLISHED staff contract (`BookingService::cancelByStaff()`, the
+	 * same service behind `POST /clinic/v1/appointments/{id}/cancel`) so the
+	 * existing machine transition, slot release, audit, notification/reminder
+	 * cancellation and active-Visit guard stay authoritative.
+	 *
+	 * The Reception-specific boundary is the Location proof. The shared
+	 * service's `assertAppointmentWithinExplicitScope()` proves the trusted
+	 * CLINIC only, so a same-Clinic appointment living at ANOTHER operational
+	 * Location would otherwise be mutable from the wrong Location. The
+	 * persisted Location is therefore re-read and compared to the resolved
+	 * trusted operational Location BEFORE delegation; a mismatch shares the
+	 * canonical non-enumerating "appointment not found" fingerprint.
+	 *
+	 * The reason is OPTIONAL and is passed through unchanged: the established
+	 * service keeps the max-length/truncation contract (mb_substr 255, empty ⇒
+	 * NULL). Raw ids are selectors only — never authority.
+	 */
+	private function reception_appointment_cancel( WP_REST_Request $r ): WP_REST_Response|WP_Error {
+		$user_id        = (int) get_current_user_id();
+		$appointment_id = (int) ( $r['id'] ?? 0 );
+		if ( $appointment_id <= 0 ) {
+			return $this->error( 'CLINIC_VALIDATION_FAILED', 422, 'شناسهٔ نوبت نامعتبر است' );
+		}
+		$reason = $r['reason'] ?? null;
+
+		$resolved = $this->resolve_reception_location( $user_id );
+		if ( $resolved instanceof WP_Error ) {
+			return $resolved;
+		}
+		if ( null === $resolved['location_id'] ) {
+			// 0 eligible Locations: fail closed — no reception mutation at all.
+			return $this->error( 'CLINIC_SCOPE_UNAVAILABLE', 403, 'امکان تعیین محدودهٔ کلینیک معتبر نیست.', [ 'reason' => 'location' ] );
+		}
+		$clinic_id   = (int) $resolved['clinic_id'];
+		$location_id = (int) $resolved['location_id'];
+
+		// Appointment selector: re-read the PERSISTED row and prove trusted
+		// Clinic AND trusted operational Location before any durable change.
+		// Foreign Clinic, same-Clinic other-Location and unknown ids share one
+		// non-enumerating fingerprint.
+		$db  = App::db();
+		$row = $db->fetchRow(
+			'SELECT id, clinic_id, location_id FROM ' . $db->table( 'cpms_appointments' ) . ' WHERE id = %d LIMIT 1',
+			[ $appointment_id ]
+		);
+		if (
+			null === $row
+			|| (int) $row['clinic_id'] !== $clinic_id
+			|| (int) $row['location_id'] !== $location_id
+		) {
+			return $this->error( 'CLINIC_NOT_FOUND', 404, 'نوبت یافت نشد' );
+		}
+
+		try {
+			$view = App::bookingService()->cancelByStaff( $user_id, $appointment_id, is_string( $reason ) ? $reason : null );
+		} catch ( BookingException $e ) {
+			// Existing bounded envelopes: HAS_ACTIVE_VISIT (409),
+			// CLINIC_INVALID_TRANSITION (409), CLINIC_NOT_FOUND (404), …
+			return $this->error( $e->errorCode, $e->httpStatus, $e->getMessage(), $e->data ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established BookingException contract
+		} catch ( \Throwable $e ) {
+			// Never a fake success and never a raw stack in the response.
+			error_log( '[CPMS][ReceptionPortalController] appointment cancel: ' . $e->getMessage() ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- established controller convention
+
+			return $this->error( 'CLINIC_INTERNAL_ERROR', 500, 'لغو نوبت انجام نشد' );
+		}
+
+		// Bounded reception response: the cancelled appointment identity/status
+		// plus the trusted scope it was cancelled in. No PHI, no clinical data,
+		// no unrelated scheduling internals.
+		return $this->success(
+			[
+				'appointment' => [
+					'appointment_id' => (int) ( $view['appointment_id'] ?? $appointment_id ),
+					'status'         => (string) ( $view['status'] ?? '' ),
+				],
+				'reception'   => [
+					'clinic_id'   => $clinic_id,
+					'location_id' => $location_id,
 				],
 			]
 		);
