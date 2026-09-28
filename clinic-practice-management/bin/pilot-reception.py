@@ -108,6 +108,11 @@ BOOKING = {
     "patients": {"mobile-390": int(_bk[9]), "tablet-768": int(_bk[10]), "desktop-1366": int(_bk[11])},
     "mrn": {"mobile-390": _bk[12] + "MOBILE" + _bk[13], "tablet-768": _bk[12] + "TABLET" + _bk[13], "desktop-1366": _bk[12] + "DESKTOP" + _bk[13]},
 }
+_up = parts("RECEPTION_UPCOMING", 10)
+UPCOMING = {
+    "future": {"appointment": int(_up[0]), "patient": int(_up[1]), "source": int(_up[2]), "dest": int(_up[3]), "date": _up[4]},
+    "today": {"appointment": int(_up[5]), "patient": int(_up[6]), "source": int(_up[7]), "dest": int(_up[8]), "date": _up[9]},
+}
 SLOTS_ROUTE = "/staff/portal/reception/slots"
 APPOINTMENTS_ROUTE = "/staff/portal/reception/appointments"
 # Captured REST routes keep the WordPress namespace prefix
@@ -2343,6 +2348,131 @@ def run_reschedule_journey(browser, vp):
         ctx.close()
 
 
+def run_upcoming_transition(browser, vp, kind):
+    """An actual Upcoming-row action through the existing Reception T7 route."""
+    proof = UPCOMING[kind]
+    key = f"reception-upcoming-{kind}-reschedule-{vp['vp']}"
+    stage = "login"
+    ctx, page, state = new_page(browser, vp)
+    try:
+        login(page, SECRETARY)
+        resp = harness_goto(page, RECEPTION_URL, wait_until="domcontentloaded")
+        if resp is None or resp.status != 200:
+            raise RuntimeError("reception entry unavailable")
+        page.wait_for_selector('[data-role="sr-location-select"]', state="visible", timeout=15000)
+        select_location(page, PUB["loc_tehran"])
+        page.wait_for_selector('[data-role="sr-row"]', state="attached", timeout=15000)
+        queue_before = page.locator('[data-role="sr-queue-row"]').count()
+        board_before = rows(page).count()
+        source = page.locator(f'[data-role="sr-upcoming-row"][data-appointment-id="{proof["appointment"]}"]')
+        source.wait_for(state="visible", timeout=15000)
+        if source.locator('[data-role="sr-reschedule-open"]').count() != 1 or row_of(page, proof["appointment"]).count():
+            raise RuntimeError("source must be actionable ONLY from the upcoming list")
+        mark = nav_mark(page)
+        stage = "open-upcoming-row"
+        with page.expect_response(lambda r: r.request.method == "GET" and route_of(r.url) == "/clinic/v1" + SLOTS_ROUTE, timeout=15000):
+            source.locator('[data-role="sr-reschedule-open"]').click()
+        page.wait_for_selector('[data-role="sr-reschedule-date"]', state="visible", timeout=15000)
+        context = page.locator('[data-role="sr-reschedule-context"]').inner_text()
+        if "Upcoming " + kind.capitalize() not in context:
+            raise RuntimeError("the upcoming patient context must survive opening the action")
+        if int(page.locator('[data-role="sr-location-select"]').input_value()) != PUB["loc_tehran"]:
+            raise RuntimeError("operational Location changed unexpectedly")
+        stage = "choose-persisted-destination"
+        date_select = page.locator('[data-role="sr-reschedule-date"]')
+        if date_select.input_value() != proof["date"]:
+            with page.expect_response(lambda r: r.request.method == "GET" and route_of(r.url) == "/clinic/v1" + SLOTS_ROUTE, timeout=15000) as candidate_read:
+                date_select.select_option(proof["date"])
+            candidate = candidate_read.value.json()
+            candidate = candidate.get("data", candidate)
+            if int(candidate.get("location_id") or 0) != PUB["loc_tehran"] or proof["dest"] not in [int(row["slot_id"]) for row in candidate.get("slots", [])]:
+                raise RuntimeError("destination must be offered by the same-Location persisted slot read")
+        wait_reschedule_slot(page, proof["dest"])
+        page.locator(f'[data-role="sr-reschedule-slot"][data-slot-id="{proof["dest"]}"]').click()
+        if page.locator('[data-role="sr-reschedule-confirm"]').is_disabled():
+            raise RuntimeError("explicit destination must enable confirmation")
+        stage = "one-bound-reschedule"
+        before = len(state["reqs"])
+        route = f"/clinic/v1/staff/portal/reception/appointments/{proof['appointment']}/reschedule"
+        with page.expect_response(lambda r: r.request.method == "POST" and route_of(r.url) == route, timeout=20000) as action:
+            page.evaluate("""() => { const b = document.querySelector('[data-role="sr-reschedule-confirm"]'); b.click(); b.click(); }""")
+        result = action.value
+        if result.status != 200:
+            raise RuntimeError(f"upcoming reschedule failed: HTTP {result.status}")
+        # INITIATED requests from this click, not historical responses or a
+        # cleared log; duplicate POSTs anywhere in the action window fail.
+        mutations = [r for r in state["reqs"][before:] if r["method"] == "POST" and RESCHEDULE_PATH_RE.search(r["route"])]
+        if len(mutations) != 1 or mutations[0]["route"] != route:
+            raise RuntimeError(f"one exact source-bound mutation required, got {mutations}")
+        headers = {k.lower(): v for k, v in result.request.headers.items()}
+        if not UUID_RE.match(headers.get("idempotency-key", "")):
+            raise RuntimeError("missing UUID Idempotency-Key")
+        body = result.request.post_data_json
+        if not isinstance(body, dict) or sorted(body) != ["clinician_id", "slot_id"] or int(body["clinician_id"]) != RESCHEDULE["c1"] or int(body["slot_id"]) != proof["dest"]:
+            raise RuntimeError("reschedule body must select only the trusted doctor and persisted slot")
+        payload = result.json()
+        payload = payload.get("data", payload)
+        replacement = payload.get("appointment") or {}
+        new_id = int(replacement.get("appointment_id") or 0)
+        if new_id <= 0 or int(replacement.get("previous_appointment_id") or 0) != proof["appointment"] or replacement.get("status") != "confirmed" or replacement.get("date") != proof["date"]:
+            raise RuntimeError("replacement must be confirmed on the selected persisted date")
+        if int(payload.get("reception", {}).get("location_id") or 0) != PUB["loc_tehran"]:
+            raise RuntimeError("reschedule response left the current Location")
+        stage = "server-read-row-transition"
+        source.wait_for(state="detached", timeout=15000)
+        replacement_upcoming = page.locator(f'[data-role="sr-upcoming-row"][data-appointment-id="{new_id}"]')
+        if kind == "future":
+            replacement_upcoming.wait_for(state="visible", timeout=15000)
+            if "Upcoming Future" not in replacement_upcoming.inner_text() or row_of(page, new_id).count():
+                raise RuntimeError("future replacement must appear only in upcoming")
+            wait_rows_count(page, board_before)
+        else:
+            page.wait_for_function("""(id) => !!document.querySelector('[data-role="sr-row"][data-appointment-id="' + id + '"]')""", arg=str(new_id), timeout=15000)
+            if replacement_upcoming.count() or row_of(page, new_id).locator('[data-role="sr-row-status"]').count() != 1:
+                raise RuntimeError("today replacement must appear only on the today's board")
+            wait_rows_count(page, board_before + 1)
+        if page.locator('[data-role="sr-queue-row"]').count() != queue_before:
+            raise RuntimeError("reschedule created or modified the Visit/queue")
+        stage = "slot-claim-release"
+        # Destination was capacity one: the existing availability read must
+        # omit it. The old capacity-one source must reappear on tomorrow.
+        page.locator('[data-role="sr-upcoming-refresh"]').click()
+        if date_select.input_value() != BOOKING["tomorrow"]:
+            with page.expect_response(lambda r: r.request.method == "GET" and route_of(r.url) == "/clinic/v1" + SLOTS_ROUTE, timeout=15000):
+                date_select.select_option(BOOKING["tomorrow"])
+        wait_reschedule_slot(page, proof["source"])
+        if kind == "future":
+            if proof["dest"] in reschedule_slot_ids(page):
+                raise RuntimeError("claimed destination remains available")
+        else:
+            with page.expect_response(lambda r: r.request.method == "GET" and route_of(r.url) == "/clinic/v1" + SLOTS_ROUTE, timeout=15000) as after_today:
+                date_select.select_option(PUB["today_tehran"])
+            read = after_today.value.json()
+            read = read.get("data", read)
+            if proof["dest"] in [int(row["slot_id"]) for row in read.get("slots", [])]:
+                raise RuntimeError("claimed today destination remains available")
+        if len([r for r in state["reqs"][before:] if r["method"] == "POST" and RESCHEDULE_PATH_RE.search(r["route"])]) != 1:
+            raise RuntimeError("late duplicate reschedule mutation")
+        if page.locator('[data-role="sr-queue-row"]').count() != queue_before:
+            raise RuntimeError("slot verification created queue side effects")
+        assert_no_horizontal_overflow(page, key)
+        shot(page, key)
+        assert_no_product_reload(page, mark, key)
+        assert_authority_headers(state, PUB["clinic"], {PUB["loc_tehran"]})
+        assert_hygiene(state, key)
+        ok(key, "upcoming row -> same-Location reschedule through existing endpoint", "mutation=1 idem=uuid source_reoffered=1 destination_claimed=1 server_transition=1 queue_unchanged=1 overflow=0")
+    except Exception as exc:
+        info(f"upcoming-fail {key} stage={stage} {exc}")
+        try:
+            shot(page, f"reception-FAIL-{key}-{stage}")
+        except Exception:
+            pass
+        fail(key, "upcoming transition", str(exc))
+        raise
+    finally:
+        ctx.close()
+
+
 def main():
     if not RECEPTION_URL or not STAFF_URL:
         raise SystemExit("RECEPTION_URL / STAFF_PORTAL_URL must be set by the fixture")
@@ -2415,6 +2545,11 @@ def main():
         for vp in VIEWPORTS:
             try:
                 run_reschedule_journey(browser, vp)
+            except Exception:
+                hard_fail = True
+        for kind, vp in [("future", VIEWPORTS[2]), ("today", VIEWPORTS[1])]:
+            try:
+                run_upcoming_transition(browser, vp, kind)
             except Exception:
                 hard_fail = True
         browser.close()
