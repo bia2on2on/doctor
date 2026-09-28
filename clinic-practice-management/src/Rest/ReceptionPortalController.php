@@ -1476,10 +1476,11 @@ final class ReceptionPortalController extends RestBase {
 				$slot_id
 			);
 		} catch ( BookingException $e ) {
-			// Existing bounded envelopes: CLINIC_INVALID_TRANSITION (409),
-			// HAS_ACTIVE_VISIT (409), CLINIC_SLOT_TAKEN (409),
-			// CLINIC_DUPLICATE_IN_FLIGHT (409), CLINIC_POLICY_VIOLATION (409),
-			// CLINIC_NOT_FOUND (404), CLINIC_LICENSE_BLOCKED (503), …
+			// The established bounded envelopes are preserved exactly as the
+			// shared contract defines them: an invalid machine transition, an
+			// active visit, a taken slot, a duplicate in flight or a policy
+			// violation answer 409, a missing row answers 404 and a blocked
+			// license answers 503 — no new envelope is invented here.
 			return $this->error( $e->errorCode, $e->httpStatus, $e->getMessage(), $e->data ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established BookingException contract
 		} catch ( \Throwable $e ) {
 			// Never a fake success and never a raw stack in the response.
