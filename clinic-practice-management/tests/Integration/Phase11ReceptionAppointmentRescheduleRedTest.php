@@ -842,6 +842,61 @@ final class Phase11ReceptionAppointmentRescheduleRedTest extends WP_UnitTestCase
         }
     }
 
+    /** Phase 11 upcoming: authoritative future window, location isolation and existing mutations. */
+    public function testUpcomingCurrentLocationReadAndExistingReschedule(): void
+    {
+        $fx = $this->stage('upcoming');
+        $this->seedMembership($fx['secretary'], $fx['clinic'], 'cpms_secretary');
+        wp_set_current_user($fx['secretary']);
+        $tomorrow = $this->localDate(self::TZ, '+1 day');
+        $later = $this->localDate(self::TZ, '+2 days');
+        $today = $this->localDate(self::TZ);
+        $beyond = $this->localDate(self::TZ, '+61 days');
+        $patient = $this->insertPatient($fx['clinic'], 'upcoming');
+        $records = [];
+        foreach ([
+            ['today', $fx['clinic'], $fx['locA'], $today, 'confirmed'],
+            ['tomorrow', $fx['clinic'], $fx['locA'], $tomorrow, 'confirmed'],
+            ['later', $fx['clinic'], $fx['locA'], $later, 'pending'],
+            ['cancelled', $fx['clinic'], $fx['locA'], $later, 'cancelled_by_staff'],
+            ['old', $fx['clinic'], $fx['locA'], $later, 'rescheduled'],
+            ['no_show', $fx['clinic'], $fx['locA'], $later, 'no_show'],
+            ['beyond', $fx['clinic'], $fx['locA'], $beyond, 'confirmed'],
+            ['other_location', $fx['clinic'], $fx['locB'], $tomorrow, 'confirmed'],
+            ['foreign', $fx['clinicF'], $fx['locF'], $tomorrow, 'confirmed'],
+        ] as $index => [$key, $clinic, $loc, $date, $status]) {
+            $time = sprintf('12:%02d:00', $index * 5);
+            $pid = $clinic === $fx['clinic'] ? $patient : $this->insertPatient($fx['clinicF'], 'foreign');
+            $clinician = $clinic === $fx['clinic'] ? $fx['c1'] : $fx['c5'];
+            $slot = $this->insertSlot($clinic, $loc, $clinician, $date, $time, 1, ['booked' => 1]);
+            $records[$key] = $this->insertAppointment($clinic, $loc, $pid, $clinician, $slot, $date, $time, $status);
+        }
+        $headers = $this->scopeHeaders($fx['clinic'], $fx['locA']);
+        $read = $this->dispatch('GET', '/clinic/v1/staff/portal/reception/upcoming', [], $headers);
+        self::assertSame(200, $read->get_status(), 'future read: ' . $this->errCode($read));
+        $rows = $this->payload($read)['appointments'] ?? [];
+        self::assertSame([$records['tomorrow'], $records['later']], array_column($rows, 'id'));
+        self::assertSame(['clinician_id', 'clinician_name', 'date', 'id', 'jalali', 'patient_id', 'patient_name', 'status', 'time'], $this->sortedKeys($rows[0]));
+        self::assertSame('Dr One upcoming', $rows[0]['clinician_name']);
+        self::assertSame(\ClinicCore\Domain\Time\Jalali::formatYmd($tomorrow), $rows[0]['jalali']);
+        self::assertNotEmpty($rows[0]['patient_name']);
+        self::assertSame(400, $this->dispatch('GET', '/clinic/v1/staff/portal/reception/upcoming', [], $this->scopeHeaders($fx['clinic']))->get_status(), 'N locations require explicit selection');
+        wp_set_current_user($fx['doc1']);
+        self::assertSame(403, $this->dispatch('GET', '/clinic/v1/staff/portal/reception/upcoming', [], $headers)->get_status(), 'doctor cannot use secretary read');
+        wp_set_current_user($fx['secretary']);
+        $dest = $this->insertSlot($fx['clinic'], $fx['locA'], $fx['c1'], $later, '14:00:00', 1);
+        $move = $this->reschedule($fx, $records['tomorrow'], $fx['locA'], $fx['c1'], $dest, $this->uuid());
+        self::assertSame(200, $move->get_status(), 'existing Reception reschedule: ' . $this->errCode($move));
+        $replacement = (int) ($this->payload($move)['appointment']['appointment_id'] ?? 0);
+        $fresh = $this->payload($this->dispatch('GET', '/clinic/v1/staff/portal/reception/upcoming', [], $headers))['appointments'] ?? [];
+        self::assertSame([$records['later'], $replacement], array_column($fresh, 'id'));
+        self::assertNotContains($records['tomorrow'], array_column($fresh, 'id'));
+        $html = $this->renderReception($fx['secretary']);
+        self::assertStringContainsString('data-role="sr-upcoming-rows"', $html);
+        self::assertStringContainsString('data-role="sr-upcoming-row"', $html);
+        self::assertStringContainsString('پزشک:', $html);
+    }
+
     // ================= helpers (TEST-ONLY) =================
 
     /**

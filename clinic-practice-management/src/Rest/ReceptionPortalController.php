@@ -115,6 +115,18 @@ final class ReceptionPortalController extends RestBase {
 	public function register_routes(): void {
 		register_rest_route(
 			self::NS,
+			'/staff/portal/reception/upcoming',
+			[
+				[
+					'methods'             => WP_REST_Server::READABLE,
+					'callback'            => fn( WP_REST_Request $r ) => $this->upcoming( $r ),
+					'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_reception( $r, [ RolesAndCapabilities::APPT_READ ] ),
+				],
+			]
+		);
+
+		register_rest_route(
+			self::NS,
 			'/staff/portal/reception/context',
 			[
 				[
@@ -527,6 +539,24 @@ final class ReceptionPortalController extends RestBase {
 				'selected_location_id' => $selected_location_id,
 			]
 		);
+	}
+
+	/** Bounded future bookings; scope and operational date are server-owned. */
+	private function upcoming( WP_REST_Request $r ): WP_REST_Response|WP_Error {
+		unset( $r );
+		$resolved = $this->resolve_reception_location( (int) get_current_user_id() );
+		if ( $resolved instanceof WP_Error ) {
+			return $resolved;
+		}
+		if ( null === $resolved['location_id'] ) {
+			return $this->success( [ 'appointments' => [] ] );
+		}
+		$clinic_id   = (int) $resolved['clinic_id'];
+		$location_id = (int) $resolved['location_id'];
+		$timezone    = $this->operational_timezone( (string) ( $resolved['timezone'] ?? '' ), $location_id, $clinic_id );
+		$today       = ( new \DateTimeImmutable( 'now', new \DateTimeZone( $timezone ) ) )->format( 'Y-m-d' );
+		$through     = $this->plus_days( $today, $this->booking_horizon_days( $clinic_id ) );
+		return $this->success( [ 'appointments' => $this->appointments->list_for_reception_upcoming( $clinic_id, $location_id, $today, $through ) ] );
 	}
 
 	/**

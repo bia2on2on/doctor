@@ -425,6 +425,42 @@ foreach (['MOBILE', 'TABLET', 'DESKTOP'] as $resIndex => $resTag) {
     );
 }
 
+// Slice 8 evidence-only future sources and persisted destinations. The fixture
+// seeds booked appointments; both transitions themselves run through the real
+// Reception UI/service, never by changing the source status in the fixture.
+$upcomingProof = [];
+$upcomingDestToday = $nowTehran->add(new DateInterval('PT90M'));
+if ($upcomingDestToday->format('Y-m-d') !== $todayTehran) {
+    $upcomingDestToday = $nowTehran->setTime(23, 54);
+}
+foreach (['future' => [$tomorrowTehran, '13:00:00', $nowTehran->add(new DateInterval('P2D'))->format('Y-m-d'), '15:00:00'],
+          'today' => [$tomorrowTehran, '14:00:00', $todayTehran, $upcomingDestToday->format('H:i:s')]] as $kind => $spec) {
+    [$sourceDate, $sourceTime, $destDate, $destTime] = $spec;
+    $proofPatient = rp_insert(
+        $wpdb,
+        'INSERT INTO ' . $db->table('cpms_patients') . ' (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, %s, %s, %s)',
+        [$clinicId, 'MR-RP-UP-' . $kind . '-' . $uniq, 'Upcoming', ucfirst($kind), '0916' . sprintf('%06d', hexdec(substr($uniq, 0, 6)) % 1000000) . ($kind === 'future' ? '1' : '2'), 'active', $now, $now],
+        'upcoming patient ' . $kind
+    );
+    $proofSlots = [];
+    foreach (['source' => [$sourceDate, $sourceTime, 1], 'dest' => [$destDate, $destTime, 0]] as $position => $slotSpec) {
+        [$slotDate, $slotTime, $booked] = $slotSpec;
+        $proofSlots[$position] = rp_insert(
+            $wpdb,
+            'INSERT INTO ' . $db->table('cpms_schedule_slots') . ' (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, generated_from, created_at, updated_at) VALUES (%d, %d, %d, %s, %s, %d, %d, %d, %d, %d, %s, %s, %s)',
+            [$clinicId, $locTehran, $clinicianId, $slotDate, $slotTime, 20, 1, $booked, 0, 1, 'manual', $now, $now],
+            'upcoming ' . $kind . ' ' . $position
+        );
+    }
+    $proofAppt = rp_insert(
+        $wpdb,
+        'INSERT INTO ' . $db->table('cpms_appointments') . ' (clinic_id, location_id, reference_code, patient_id, clinician_id, slot_id, wp_user_id, slot_date, slot_time, duration_min, slot_end_time, status, is_walkin_express, confirmed_at, created_at, updated_at) VALUES (%d, %d, %s, %d, %d, %d, %d, %s, %s, %d, %s, %s, %d, %s, %s, %s)',
+        [$clinicId, $locTehran, 'rp-up-' . $kind . '-' . $uniq, $proofPatient, $clinicianId, $proofSlots['source'], 0, $sourceDate, $sourceTime, 20, $sourceTime, 'confirmed', 0, $now, $now, $now],
+        'upcoming appointment ' . $kind
+    );
+    $upcomingProof[$kind] = ['appointment' => $proofAppt, 'patient' => $proofPatient, 'source' => $proofSlots['source'], 'dest' => $proofSlots['dest'], 'dest_date' => $destDate];
+}
+
 // The EXISTING per-Clinic two-stage knob: with auto-enqueue off, the reception
 // action runs the established check-in then the explicit enqueue transition —
 // the exact surface the partial-arrival acceptance covers (FR-6.1 keeps the
@@ -516,6 +552,18 @@ file_put_contents(
         (string) $rescheduleSlots['patient']['DESKTOP'],
         'MR-RP-RS-',
         '-' . $uniq,
+    ]) . "\n"
+    . 'RECEPTION_UPCOMING=' . implode('|', [
+        (string) $upcomingProof['future']['appointment'],
+        (string) $upcomingProof['future']['patient'],
+        (string) $upcomingProof['future']['source'],
+        (string) $upcomingProof['future']['dest'],
+        $upcomingProof['future']['dest_date'],
+        (string) $upcomingProof['today']['appointment'],
+        (string) $upcomingProof['today']['patient'],
+        (string) $upcomingProof['today']['source'],
+        (string) $upcomingProof['today']['dest'],
+        $upcomingProof['today']['dest_date'],
     ]) . "\n"
     . 'RECEPTION_CANCEL=' . implode('|', [
         (string) $clinicianId,

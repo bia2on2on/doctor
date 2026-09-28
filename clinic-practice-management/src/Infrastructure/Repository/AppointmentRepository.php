@@ -302,6 +302,39 @@ final class AppointmentRepository
         return $this->present_reception_operational_day( is_array( $rows ) ? $rows : [] );
     }
 
+    /** Future actionable bookings in the trusted Location and Clinic booking window. */
+    public function list_for_reception_upcoming( int $clinic_id, int $location_id, string $today, string $through ): array {
+        if ( $clinic_id <= 0 || $location_id <= 0 || ! preg_match( '/^\d{4}-\d{2}-\d{2}$/', $today ) || ! preg_match( '/^\d{4}-\d{2}-\d{2}$/', $through ) || $through <= $today ) {
+            return [];
+        }
+        $rows = $this->db->fetchAll(
+            'SELECT a.id, a.patient_id, a.clinician_id, a.slot_date, a.slot_time, a.status,'
+            . ' p.first_name, p.last_name, c.full_name AS clinician_name'
+            . ' FROM ' . $this->db->table( 'cpms_appointments' ) . ' a'
+            . ' INNER JOIN ' . $this->db->table( 'cpms_patients' ) . ' p ON p.id = a.patient_id AND p.clinic_id = a.clinic_id'
+            . ' LEFT JOIN ' . $this->db->table( 'cpms_clinicians' ) . ' c ON c.id = a.clinician_id'
+            . ' WHERE a.clinic_id = %d AND a.location_id = %d AND a.slot_date > %s AND a.slot_date <= %s'
+            . " AND a.status IN ('pending', 'confirmed')"
+            . ' ORDER BY a.slot_date ASC, a.slot_time ASC, a.id ASC LIMIT 500',
+            [ $clinic_id, $location_id, $today, $through ]
+        );
+        $out  = [];
+        foreach ( is_array( $rows ) ? $rows : [] as $row ) {
+            $out[] = [
+                'id'             => (int) $row['id'],
+                'patient_id'     => (int) $row['patient_id'],
+                'patient_name'   => trim( (string) $row['first_name'] . ' ' . (string) $row['last_name'] ),
+                'clinician_id'   => (int) $row['clinician_id'],
+                'clinician_name' => (string) ( $row['clinician_name'] ?? '' ),
+                'date'           => (string) $row['slot_date'],
+                'jalali'         => \ClinicCore\Domain\Time\Jalali::formatYmd( (string) $row['slot_date'] ),
+                'time'           => substr( (string) $row['slot_time'], 0, 5 ),
+                'status'         => (string) $row['status'],
+            ];
+        }
+        return $out;
+    }
+
     /**
      * Bounded appointment→clinician labels for ONE reception operational day.
      *
