@@ -551,11 +551,11 @@ final class ReceptionPortalController extends RestBase {
 		if ( null === $resolved['location_id'] ) {
 			return $this->success( [ 'appointments' => [] ] );
 		}
-		$clinic_id    = (int) $resolved['clinic_id'];
-		$location_id  = (int) $resolved['location_id'];
-		$timezone     = $this->operational_timezone( (string) ( $resolved['timezone'] ?? '' ), $location_id, $clinic_id );
-		$today        = ( new \DateTimeImmutable( 'now', new \DateTimeZone( $timezone ) ) )->format( 'Y-m-d' );
-		$through      = $this->plus_days( $today, $this->booking_horizon_days( $clinic_id ) );
+		$clinic_id   = (int) $resolved['clinic_id'];
+		$location_id = (int) $resolved['location_id'];
+		$timezone    = $this->operational_timezone( (string) ( $resolved['timezone'] ?? '' ), $location_id, $clinic_id );
+		$today       = ( new \DateTimeImmutable( 'now', new \DateTimeZone( $timezone ) ) )->format( 'Y-m-d' );
+		$through     = $this->plus_days( $today, $this->booking_horizon_days( $clinic_id ) );
 		return $this->success( [ 'appointments' => $this->appointments->list_for_reception_upcoming( $clinic_id, $location_id, $today, $through ) ] );
 	}
 
