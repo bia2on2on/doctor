@@ -215,7 +215,12 @@ final class App
         // 10), so a raw selector can neither create/switch scope nor collide
         // with the trusted header scope. Every other route keeps the established
         // RestClinicContext behaviour unchanged.
-        add_filter('rest_request_before_callbacks', [ReceptionPortalController::class, 'reception_cancel_ignore_scope_selectors'], 1, 3);
+        add_filter(
+            'rest_request_before_callbacks',
+            [ReceptionPortalController::class, 'reception_cancel_ignore_scope_selectors'],
+            1,
+            3
+        );
         // Keep the route-specific denial metadata hook alive across REST server resets in WP tests.
         add_filter(
             'rest_request_before_callbacks',
