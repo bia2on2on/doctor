@@ -110,7 +110,7 @@ final class Phase12StaffPortalFinanceBoardTest extends WP_UnitTestCase
         self::assertArrayHasKey('Patient Board', $byPatient);
         self::assertSame('Asia/Tokyo', $this->locationTimezone($location));
         self::assertSame([
-            'status' => 'open', 'total' => '1234.00',
+            'status' => 'partial', 'total' => '1234.00',
             'paid' => '300.00', 'remaining' => '934.00', 'currency' => 'IRR',
         ], $byPatient['Patient Board']['invoice']);
         self::assertArrayHasKey('NoInvoice Board', $byPatient);
@@ -144,16 +144,22 @@ final class Phase12StaffPortalFinanceBoardTest extends WP_UnitTestCase
         $url = StaffPortalShell::portal_url();
         $path = (string) (wp_parse_url($url, PHP_URL_PATH) ?? '/');
         $query = (string) (wp_parse_url($url, PHP_URL_QUERY) ?? '');
-        $this->go_to($path . ($query !== '' ? '?' . $query . '&' : '?') . 'cpms-module=finance');
-        $baseline = get_stylesheet_directory() . '/page.php';
-        if (!is_readable($baseline)) {
-            $baseline = get_stylesheet_directory() . '/index.php';
+        $previousGet = $_GET;
+        $_GET[StaffPortalShell::MODULE_PARAM] = StaffPortalShell::MODULE_FINANCE;
+        try {
+            $this->go_to($path . ($query !== '' ? '?' . $query . '&' : '?') . 'cpms-module=finance');
+            $baseline = get_stylesheet_directory() . '/page.php';
+            if (!is_readable($baseline)) {
+                $baseline = get_stylesheet_directory() . '/index.php';
+            }
+            $template = (string) apply_filters('template_include', $baseline);
+            self::assertNotSame($baseline, $template, 'template_include must use the plugin-owned Staff Portal template');
+            ob_start();
+            include $template;
+            return (string) ob_get_clean();
+        } finally {
+            $_GET = $previousGet;
         }
-        $template = (string) apply_filters('template_include', $baseline);
-        self::assertNotSame($baseline, $template, 'template_include must use the plugin-owned Staff Portal template');
-        ob_start();
-        include $template;
-        return (string) ob_get_clean();
     }
 
     private function makeUser(string $login, string $role): int
@@ -222,7 +228,7 @@ final class Phase12StaffPortalFinanceBoardTest extends WP_UnitTestCase
         $now = App::db()->nowUtcSql();
         self::assertNotFalse($wpdb->insert($wpdb->prefix . 'cpms_invoices', [
             'clinic_id' => $clinicId, 'location_id' => $locationId, 'invoice_number' => 'INV-BOARD-1',
-            'patient_id' => $patientId, 'visit_id' => $visitId, 'status' => 'open', 'subtotal' => '1234.00',
+            'patient_id' => $patientId, 'visit_id' => $visitId, 'status' => 'partial', 'subtotal' => '1234.00',
             'total' => '1234.00', 'currency' => 'IRR', 'paid_amount' => '300.00', 'balance' => '934.00',
             'issued_by_wp_user_id' => $actorId, 'created_at' => $now, 'updated_at' => $now,
         ]), 'invoice fixture insert');

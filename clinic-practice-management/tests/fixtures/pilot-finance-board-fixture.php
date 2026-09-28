@@ -1,0 +1,134 @@
+<?php
+/**
+ * Synthetic awaiting-payment rows for the existing Pilot Staff Portal browser gate.
+ * Reuses the one-Clinic Secretary created by pilot-doctor-portal-fixture.php.
+ */
+
+require getenv('WP_HOME') . '/wp-load.php';
+
+global $wpdb;
+
+$db = \ClinicCore\Bootstrap\App::db();
+$secretary = explode('|', (string) getenv('STAFF_SECRETARY'));
+$portalFixture = explode('|', (string) getenv('DOCTOR_PORTAL_PUBLIC'));
+if (count($secretary) < 3 || count($portalFixture) < 3) {
+    fwrite(STDERR, "FINANCE_BOARD_FIXTURE_ERROR: prerequisite Staff Portal fixture missing\n");
+    exit(1);
+}
+
+[$login, $password] = array_slice($secretary, 0, 2);
+$clinicId = (int) $portalFixture[1];
+$locationId = (int) $portalFixture[2];
+$secretaryId = (int) $secretary[2];
+$clinicianId = (int) $wpdb->get_var(
+    $wpdb->prepare(
+        'SELECT id FROM ' . $db->table('cpms_clinicians') . ' WHERE clinic_id = %d AND is_active = 1 ORDER BY id ASC LIMIT 1',
+        $clinicId
+    )
+);
+if ($clinicId <= 0 || $locationId <= 0 || $secretaryId <= 0 || $clinicianId <= 0) {
+    fwrite(STDERR, "FINANCE_BOARD_FIXTURE_ERROR: trusted synthetic identifiers unavailable\n");
+    exit(1);
+}
+
+$now = $db->nowUtcSql();
+$date = (new DateTimeImmutable('now', new DateTimeZone('Asia/Tehran')))->format('Y-m-d');
+$nonce = substr(bin2hex(random_bytes(4)), 0, 8);
+$patients = array(
+    array('Synthetic Invoice ' . $nonce, 'invoice'),
+    array('Synthetic NoInvoice ' . $nonce, 'noinvoice'),
+);
+$patientIds = array();
+$visitIds = array();
+foreach ($patients as [$name, $kind]) {
+    $inserted = $wpdb->insert(
+        $db->table('cpms_patients'),
+        array(
+            'clinic_id'  => $clinicId,
+            'mrn'        => 'SYN-FIN-' . strtoupper($kind) . '-' . $nonce,
+            'first_name' => $name,
+            'last_name'  => 'Fixture',
+            'mobile'     => '09' . random_int(1000000000, 9999999999),
+            'status'     => 'active',
+            'created_at' => $now,
+            'updated_at' => $now,
+        )
+    );
+    if ( false === $inserted ) {
+        fwrite(STDERR, "FINANCE_BOARD_FIXTURE_ERROR: patient seed failed\n");
+        exit(1);
+    }
+    $patientId = (int) $wpdb->insert_id;
+    $visitInserted = $wpdb->insert(
+        $db->table('cpms_visits'),
+        array(
+            'clinic_id'   => $clinicId,
+            'location_id' => $locationId,
+            'clinician_id'=> $clinicianId,
+            'patient_id'  => $patientId,
+            'source'      => 'walk_in',
+            'status'      => 'awaiting_payment',
+            'visit_date'  => $date,
+            'check_in_at' => $now,
+            'waiting_since' => $now,
+            'active'      => 1,
+            'created_at'  => $now,
+            'updated_at'  => $now,
+        )
+    );
+    if ( false === $visitInserted ) {
+        fwrite(STDERR, "FINANCE_BOARD_FIXTURE_ERROR: visit seed failed\n");
+        exit(1);
+    }
+    $patientIds[$kind] = $patientId;
+    $visitIds[$kind] = (int) $wpdb->insert_id;
+}
+
+$invoiceInserted = $wpdb->insert(
+    $db->table('cpms_invoices'),
+    array(
+        'clinic_id'            => $clinicId,
+        'location_id'          => $locationId,
+        'invoice_number'       => 'SYN-FIN-' . $nonce,
+        'patient_id'           => $patientIds['invoice'],
+        'visit_id'             => $visitIds['invoice'],
+        'status'               => 'partial',
+        'subtotal'             => '1234.00',
+        'total'                => '1234.00',
+        'currency'             => 'IRR',
+        'paid_amount'          => '300.00',
+        'balance'              => '934.00',
+        'issued_by_wp_user_id' => $secretaryId,
+        'created_at'           => $now,
+        'updated_at'           => $now,
+    )
+);
+if ( false === $invoiceInserted ) {
+    fwrite(STDERR, "FINANCE_BOARD_FIXTURE_ERROR: invoice seed failed\n");
+    exit(1);
+}
+
+$portalUrl = add_query_arg(
+    \ClinicCore\Frontend\StaffPortalShell::MODULE_PARAM,
+    \ClinicCore\Frontend\StaffPortalShell::MODULE_FINANCE,
+    \ClinicCore\Frontend\StaffPortalShell::portal_url()
+);
+$env = array(
+    'FINANCE_BOARD_URL'       => $portalUrl,
+    'FINANCE_BOARD_LOGIN'     => $login,
+    'FINANCE_BOARD_PASS'      => $password,
+    'FINANCE_BOARD_CLINIC_ID' => (string) $clinicId,
+    'FINANCE_BOARD_LOCATION_ID' => (string) $locationId,
+    'FINANCE_BOARD_INVOICE_PATIENT' => $patients[0][0] . ' Fixture',
+    'FINANCE_BOARD_NO_INVOICE_PATIENT' => $patients[1][0] . ' Fixture',
+);
+$lines = array();
+foreach ($env as $key => $value) {
+    if ( str_contains( $value, "\n" ) || str_contains( $value, "\r" ) ) {
+        fwrite(STDERR, "FINANCE_BOARD_FIXTURE_ERROR: unsafe environment value\n");
+        exit(1);
+    }
+    $lines[] = $key . '=' . $value;
+}
+file_put_contents('/tmp/finance-board.env', implode("\n", $lines) . "\n");
+echo 'fixture: finance-board clinic=' . $clinicId . ' location=' . $locationId . ' synthetic_rows=2 invoice_rows=1 timezone=Asia/Tehran' . "\n";

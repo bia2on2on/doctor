@@ -158,7 +158,7 @@ final class Phase10StaffPortalShellFoundationRedTest extends WP_UnitTestCase
      *
      * @var list<string>
      */
-    private const FUTURE_MODULE_IDS = ['secretary', 'accountant', 'receptionist', 'cashier', 'finance'];
+    private const FUTURE_MODULE_IDS = ['secretary', 'accountant', 'receptionist', 'cashier'];
 
     /**
      * Accepted greppable markers for the shared Staff Portal shell ROOT.
