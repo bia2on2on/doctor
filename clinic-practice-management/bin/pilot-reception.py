@@ -15,7 +15,7 @@ import os
 import re
 import sys
 import time
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlparse
 
 from playwright.sync_api import sync_playwright
 
@@ -177,7 +177,14 @@ def new_page(browser, vp):
         if not req.url.startswith(BASE) or "/clinic/v1" not in req.url:
             return
         headers = {k.lower(): v for k, v in req.headers.items()}
-        state["reqs"].append({"method": req.method, "route": route_of(req.url), "headers": headers})
+        state["reqs"].append(
+            {
+                "method": req.method,
+                "route": route_of(req.url),
+                "query": dict(parse_qsl(urlparse(req.url).query, keep_blank_values=True)),
+                "headers": headers,
+            }
+        )
 
     def on_response(resp):
         if not resp.url.startswith(BASE) or "/clinic/v1" not in resp.url:
@@ -1397,6 +1404,70 @@ def wait_book_slot(page, slot_id, timeout=15000):
     )
 
 
+# The reception slot read is exactly this namespace-prefixed path; anything else
+# is a different operation and must never satisfy a slot-read measurement.
+SLOT_READ_PATH = "/clinic/v1" + SLOTS_ROUTE
+SLOT_READ_SETTLE_TIMEOUT_MS = 15000
+
+
+def slot_read_requests(state, since=0):
+    """Slot reads INITIATED by the browser, from an initiated-request index.
+
+    Requests are used (not responses) so the measurement is bound to the action
+    under test: a stale response arriving later can never be counted, and a
+    genuine duplicate GET is never missed.
+    """
+    return [r for r in state["reqs"][since:] if r["route"].rstrip("/") == SLOT_READ_PATH]
+
+
+def slot_read_responses(state, since=0):
+    return [r for r in state["rest"][since:] if r["route"].rstrip("/") == SLOT_READ_PATH]
+
+
+def wait_slot_reads_settled(page, state, timeout_ms=SLOT_READ_SETTLE_TIMEOUT_MS):
+    """Deterministic baseline barrier: every slot read initiated so far has its
+    response recorded, i.e. nothing relevant is still in flight.
+
+    Condition-based and bounded — the poll interval is not a timing assumption.
+    Captured history is never cleared, so a real duplicate read still shows up.
+    """
+    deadline = time.monotonic() + (timeout_ms / 1000.0)
+    while True:
+        pending = len(slot_read_requests(state)) - len(slot_read_responses(state))
+        if pending <= 0:
+            return
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"slot reads did not settle within {timeout_ms}ms ({pending} still in flight)")
+        page.wait_for_timeout(25)
+
+
+def selected_date_value(page):
+    if page is None:
+        return ""
+    node = page.locator('[data-role="sr-book-date"]')
+    return str(node.input_value() or "") if node.count() else ""
+
+
+def assert_bounded_slot_read(read, location_id, expected_clinician=None, expected_date=None, page=None):
+    """One slot read must be a bounded GET of the reception slots endpoint, bound
+    to the trusted operational Location and — where the request exposes them — to
+    the explicitly selected clinician and date. Nothing client-invented passes."""
+    if read["method"] != "GET":
+        raise RuntimeError(f"slot reads must be bounded GETs, got {read['method']} {read['route']}")
+    if str(read["headers"].get("x-cpms-location-id", "")) != str(location_id):
+        raise RuntimeError(
+            "the slot read must be bound to the trusted operational Location, got "
+            f"{read['headers'].get('x-cpms-location-id')}"
+        )
+    query = read.get("query") or {}
+    if expected_clinician is not None and str(query.get("clinician_id", "")) != str(expected_clinician):
+        raise RuntimeError(f"the slot read must be bound to the explicitly selected clinician, got {query}")
+    if "date" in query:
+        reference = str(expected_date) if expected_date is not None else selected_date_value(page)
+        if str(query["date"]) != reference:
+            raise RuntimeError(f"the slot read date must match the selected date, got {query['date']} vs {reference}")
+
+
 def select_booking_patient(page, tag):
     search_input = page.locator('[data-role="sr-search-input"]')
     search_input.fill("")
@@ -1489,7 +1560,13 @@ def run_booking_journey(browser, vp):
             raise RuntimeError("switching back to Tehran must clear the previous clinician")
 
         stage = "select-doctor-read-bounded-slots"
-        select_calls_before = len([r for r in state["rest"] if r["route"].rstrip("/").endswith(SLOTS_ROUTE)])
+        # Deterministic baseline for the measured action:
+        #  (a) every slot read initiated so far has SETTLED — a stale/in-flight
+        #      response can therefore no longer land inside the measured window;
+        #  (b) the initiated-request index is snapshotted, so the measurement is
+        #      what THIS action initiates, never responses that merely arrive.
+        wait_slot_reads_settled(page, state)
+        requests_before = len(state["reqs"])
         page.select_option('[data-role="sr-book-clinician"]', str(BOOKING["c1"]))
         wait_book_slot(page, selected_slot_id)
         offered = book_slot_ids(page)
@@ -1499,10 +1576,16 @@ def run_booking_journey(browser, vp):
         # earlier independent journeys ran; fail honestly with the bounded read.
         if any(BOOKING["slots"][key] not in offered for key in ("free_a", "free_b", "free_c")):
             raise RuntimeError(f"both seeded future-today FREE slots must be offered, got {offered}")
-        if len([r for r in state["rest"] if r["route"].rstrip("/").endswith(SLOTS_ROUTE)]) - select_calls_before != 1:
-            raise RuntimeError("one doctor selection must cause exactly one bounded slot read")
-        slot_requests = [r for r in state["reqs"] if r["route"].rstrip("/").endswith(SLOTS_ROUTE)]
-        if any(r["method"] != "GET" for r in slot_requests):
+        wait_slot_reads_settled(page, state)
+        initiated = slot_read_requests(state, requests_before)
+        if len(initiated) != 1:
+            raise RuntimeError(
+                "one doctor selection must initiate exactly one bounded slot read, got "
+                + str([(r["method"], r["route"]) for r in initiated])
+            )
+        assert_bounded_slot_read(initiated[0], PUB["loc_tehran"], expected_clinician=BOOKING["c1"])
+        # No slot read anywhere in this journey may be anything but a bounded GET.
+        if any(r["method"] != "GET" for r in slot_read_requests(state)):
             raise RuntimeError("slot reads must be bounded GETs; no per-slot writes/reads")
         assert_no_horizontal_overflow(page, "booking-free-slots")
         shot(page, f"reception-{vp['vp']}-booking-free-slots")
@@ -1571,13 +1654,28 @@ def run_booking_journey(browser, vp):
 
         stage = "future-date"
         # Choose the Jalali option by its ISO value; the visible copy remains
-        # the server-provided Jalali label. Each date selection costs one read.
-        before_date = len([r for r in state["rest"] if r["route"].rstrip("/").endswith(SLOTS_ROUTE)])
+        # the server-provided Jalali label. Each date selection initiates one
+        # bounded slot read, measured on INITIATED requests from a settled
+        # baseline — the same deterministic form as the doctor-selection
+        # measurement, never responses that happen to arrive afterwards.
+        wait_slot_reads_settled(page, state)
+        requests_before = len(state["reqs"])
         page.select_option('[data-role="sr-book-date"]', BOOKING["tomorrow"])
         wait_book_slot(page, BOOKING["slots"]["future"])
-        date_read_count = len([r for r in state["rest"] if r["route"].rstrip("/").endswith(SLOTS_ROUTE)]) - before_date
-        if date_read_count != 1:
-            raise RuntimeError(f"one date selection must cause exactly one bounded slot read, observed delta={date_read_count}")
+        wait_slot_reads_settled(page, state)
+        date_reads = slot_read_requests(state, requests_before)
+        if len(date_reads) != 1:
+            raise RuntimeError(
+                "one date selection must initiate exactly one bounded slot read, got "
+                + str([(r["method"], r["route"]) for r in date_reads])
+            )
+        assert_bounded_slot_read(
+            date_reads[0],
+            PUB["loc_tehran"],
+            expected_clinician=BOOKING["c1"],
+            expected_date=BOOKING["tomorrow"],
+            page=page,
+        )
         if BOOKING["slots"]["full"] in book_slot_ids(page) or BOOKING["slots"]["closed"] in book_slot_ids(page):
             raise RuntimeError("full/closed slots must never be offered")
         page.locator(f'[data-role="sr-book-slot"][data-slot-id="{BOOKING["slots"]["future"]}"]').click()
