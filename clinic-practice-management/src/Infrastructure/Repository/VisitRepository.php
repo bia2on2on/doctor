@@ -213,6 +213,48 @@ final class VisitRepository
     }
 
     /**
+     * Bounded Phase 12 Staff Portal finance projection. One joined query keeps
+     * the CURRENT Clinic + Location + operational day + awaiting_payment state
+     * together and avoids per-row patient/clinician/invoice lookups. Invoice
+     * data is nullable: a visit without a legitimate active invoice has no
+     * financial values fabricated for it.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function awaitingPaymentFinanceBoard(int $clinicId, int $locationId, string $visitDate, int $limit = 101): array
+    {
+        $limit = max(1, min(101, $limit));
+
+        $rows = $this->db->fetchAll(
+            'SELECT v.id AS visit_id, v.visit_date, v.check_in_at,' .
+            ' p.first_name AS patient_first_name, p.last_name AS patient_last_name,' .
+            ' c.full_name AS clinician_name,' .
+            ' a.slot_time AS appointment_time,' .
+            ' i.status AS invoice_status, i.total AS invoice_total,' .
+            ' i.paid_amount AS invoice_paid_amount, i.balance AS invoice_balance, i.currency AS invoice_currency' .
+            ' FROM ' . $this->db->table('cpms_visits') . ' v' .
+            ' INNER JOIN ' . $this->db->table('cpms_patients') . ' p ON p.id = v.patient_id AND p.clinic_id = v.clinic_id' .
+            ' INNER JOIN ' . $this->db->table('cpms_clinicians') . ' c ON c.id = v.clinician_id' .
+            ' LEFT JOIN ' . $this->db->table('cpms_appointments') . ' a ON a.id = v.appointment_id' .
+            ' AND a.clinic_id = v.clinic_id AND a.location_id = v.location_id' .
+            ' LEFT JOIN (' .
+                ' SELECT visit_id, MAX(id) AS invoice_id' .
+                ' FROM ' . $this->db->table('cpms_invoices') .
+                " WHERE clinic_id = %d AND status != 'voided' AND (location_id = %d OR location_id IS NULL)" .
+                ' GROUP BY visit_id' .
+            ') latest_invoice ON latest_invoice.visit_id = v.id' .
+            ' LEFT JOIN ' . $this->db->table('cpms_invoices') . ' i ON i.id = latest_invoice.invoice_id' .
+            ' AND i.clinic_id = v.clinic_id AND i.patient_id = v.patient_id' .
+            ' AND i.visit_id = v.id AND (i.location_id = v.location_id OR i.location_id IS NULL)' .
+            " WHERE v.clinic_id = %d AND v.location_id = %d AND v.visit_date = %s AND v.status = 'awaiting_payment'" .
+            ' ORDER BY COALESCE(a.slot_time, TIME(v.check_in_at)) ASC, v.id ASC LIMIT %d',
+            [$clinicId, $locationId, $clinicId, $locationId, $visitDate, $limit]
+        );
+
+        return is_array($rows) ? $rows : [];
+    }
+
+    /**
      * آمار روز (D1/E1) — شمارش بر اساس status.
      *
      * غنی‌سازی داشبورد امروز (§16 دستور F4): علاوه بر شمارش ویزیت‌ها بر اساس

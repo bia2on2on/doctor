@@ -65,6 +65,19 @@ final class StaffPortalShell {
 	 */
 	public const MODULE_RECEPTION = 'reception';
 
+	/** Phase 12 Slice 1 — read-only awaiting-payment Finance board. */
+	public const MODULE_FINANCE = 'finance';
+
+	/** Plugin-owned Finance module template (embed mode). */
+	public const FINANCE_TEMPLATE_REL = 'templates/staff-finance-board.php';
+
+	/** Existing read authority required by the Finance board, all in one Clinic. */
+	public const FINANCE_MODULE_CAPS = array(
+		RolesAndCapabilities::FINANCE_READ,
+		RolesAndCapabilities::INVOICE_READ,
+		RolesAndCapabilities::QUEUE_READ,
+	);
+
 	/**
 	 * Plugin-owned reception module template (embed mode).
 	 */
@@ -247,6 +260,11 @@ final class StaffPortalShell {
 		return self::plugin_dir() . '/' . self::RECEPTION_TEMPLATE_REL;
 	}
 
+	/** Absolute path of the mounted read-only Finance module template. */
+	public static function finance_module_template_path(): string {
+		return self::plugin_dir() . '/' . self::FINANCE_TEMPLATE_REL;
+	}
+
 	/**
 	 * Suppress the admin bar on the operational surface.
 	 *
@@ -316,6 +334,10 @@ final class StaffPortalShell {
 				'id'    => self::MODULE_RECEPTION,
 				'title' => 'پذیرش — نوبت‌های امروز',
 			),
+			array(
+				'id'    => self::MODULE_FINANCE,
+				'title' => 'مالی — در انتظار پرداخت',
+			),
 		);
 	}
 
@@ -329,7 +351,7 @@ final class StaffPortalShell {
 	public static function requested_module(): string {
 		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only view selector, no state change.
 		$raw = isset( $_GET[ self::MODULE_PARAM ] ) ? sanitize_key( (string) wp_unslash( $_GET[ self::MODULE_PARAM ] ) ) : '';
-		if ( in_array( $raw, array( self::MODULE_DOCTOR, self::MODULE_RECEPTION ), true ) ) {
+		if ( in_array( $raw, array( self::MODULE_DOCTOR, self::MODULE_RECEPTION, self::MODULE_FINANCE ), true ) ) {
 			return $raw;
 		}
 		return '';
@@ -385,6 +407,9 @@ final class StaffPortalShell {
 		}
 		if ( self::MODULE_RECEPTION === $module_id ) {
 			return self::reception_module_eligible( $user_id );
+		}
+		if ( self::MODULE_FINANCE === $module_id ) {
+			return self::finance_module_eligible( $user_id );
 		}
 		return false;
 	}
@@ -466,6 +491,34 @@ final class StaffPortalShell {
 		$auth = App::authorization_service();
 		foreach ( App::membership_service()->active_clinic_ids_for_user( $user_id ) as $clinic_id ) {
 			if ( self::clinic_grants_all( $auth, $user_id, (int) $clinic_id, self::RECEPTION_MODULE_CAPS ) ) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Finance board visibility is derived from the existing global and
+	 * Clinic-scoped finance + invoice + queue read authority. Membership alone
+	 * is never sufficient; no role or capability is introduced here.
+	 */
+	public static function finance_module_eligible( int $user_id ): bool {
+		if ( $user_id <= 0 ) {
+			return false;
+		}
+		$user = get_userdata( $user_id );
+		if ( false === $user || ! $user->exists() ) {
+			return false;
+		}
+		foreach ( self::FINANCE_MODULE_CAPS as $cap ) {
+			if ( ! $user->has_cap( $cap ) ) {
+				return false;
+			}
+		}
+
+		$auth = App::authorization_service();
+		foreach ( App::membership_service()->active_clinic_ids_for_user( $user_id ) as $clinic_id ) {
+			if ( self::clinic_grants_all( $auth, $user_id, (int) $clinic_id, self::FINANCE_MODULE_CAPS ) ) {
 				return true;
 			}
 		}
