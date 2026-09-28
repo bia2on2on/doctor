@@ -400,12 +400,12 @@ foreach (['MOBILE', 'TABLET', 'DESKTOP'] as $cancelIndex => $cancelTag) {
 // Destinations stay inside the CURRENT trusted Location (cross-Location is out
 // of scope): MOBILE → the same clinician later than its source, TABLET → the
 // OTHER eligible clinician at the same Location, DESKTOP → the next Tehran-local
-// day. Give the UI journey an explicit two-hour runway; each persisted instant
+// day. Give the UI journey an explicit three-hour runway; each persisted instant
 // owns its actual Tehran-local date, so crossing midnight moves the whole slot
 // (date and time) forward rather than wrapping a time onto today.
 $rescheduleSourceOffsets = ['MOBILE' => 35, 'TABLET' => 55, 'DESKTOP' => 65];
 $rescheduleDestOffsets   = ['MOBILE' => 75, 'TABLET' => 100];
-$rescheduleRunwayMinutes = 120;
+$rescheduleRunwayMinutes = 180;
 $rescheduleSlots = ['source' => [], 'source_date' => [], 'dest' => [], 'dest_date' => [], 'patient' => []];
 $rescheduleDestDoctor = ['MOBILE' => $clinicianId, 'TABLET' => $clinician2Id, 'DESKTOP' => $clinicianId];
 foreach (['MOBILE', 'TABLET', 'DESKTOP'] as $resIndex => $resTag) {
