@@ -145,9 +145,9 @@ final class Phase12StaffPortalFinanceBoardTest extends WP_UnitTestCase
         $path = (string) (wp_parse_url($url, PHP_URL_PATH) ?? '/');
         $query = (string) (wp_parse_url($url, PHP_URL_QUERY) ?? '');
         $previousGet = $_GET;
-        $_GET[StaffPortalShell::MODULE_PARAM] = StaffPortalShell::MODULE_FINANCE;
         try {
             $this->go_to($path . ($query !== '' ? '?' . $query . '&' : '?') . 'cpms-module=finance');
+            $_GET[StaffPortalShell::MODULE_PARAM] = StaffPortalShell::MODULE_FINANCE;
             $baseline = get_stylesheet_directory() . '/page.php';
             if (!is_readable($baseline)) {
                 $baseline = get_stylesheet_directory() . '/index.php';

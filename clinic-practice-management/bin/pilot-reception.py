@@ -360,8 +360,8 @@ def assert_reception_shell(page):
         page.locator('[data-role="staff-module-link"]').nth(i).get_attribute("data-cpms-staff-module")
         for i in range(page.locator('[data-role="staff-module-link"]').count())
     ]
-    if nav_ids != ["reception"]:
-        raise RuntimeError(f"staff navigation must expose exactly the reception module, got {nav_ids}")
+    if nav_ids != ["reception", "finance"]:
+        raise RuntimeError(f"staff navigation must expose authorized reception + finance modules, got {nav_ids}")
     if not page.locator('[data-role="staff-module-link"]').first.is_visible():
         raise RuntimeError("reception module navigation entry is not visible")
     if page.locator('[data-role="reception-app"]').count() != 1:
