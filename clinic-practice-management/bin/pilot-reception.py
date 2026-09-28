@@ -1753,6 +1753,14 @@ def run_cancel_journey(browser, vp):
         shot(page, f"reception-{tag}-cancel-confirm")
 
         stage = "cancel-booked-row"
+        # The unrelated patient selection is captured BEFORE the mutation so the
+        # journey can prove the cancellation neither re-creates nor clears it.
+        # The panel carries the patient label/meta (never a numeric id), so the
+        # id-anchored proof is the pressed search-result row below.
+        selected_box = page.locator('[data-role="sr-search-selected"]')
+        selected_before = (selected_box.inner_text() or "").strip()
+        if not selected_box.is_visible() or not selected_before:
+            raise RuntimeError("the cancel journey requires the selected-patient panel before cancelling")
         # Double-submit safety: two synchronous activations must still produce
         # exactly ONE explicit mutation.
         with page.expect_response(
@@ -1800,10 +1808,12 @@ def run_cancel_journey(browser, vp):
         # the unreceived state must not be re-created.
         if page.locator('[data-role="sr-queue-row"]').count() != queue_before:
             raise RuntimeError("cancellation must not create or alter a queue/Visit row")
-        # The unrelated patient selection survives the cancellation untouched.
-        selected = page.locator('[data-role="sr-search-selected"]')
-        if not selected.is_visible() or str(patient_id) not in (selected.inner_text() or ""):
+        # The unrelated patient selection survives the cancellation untouched:
+        # same panel text, and the SAME id-anchored search result stays pressed.
+        if not selected_box.is_visible() or (selected_box.inner_text() or "").strip() != selected_before:
             raise RuntimeError("cancellation must not create/clear the unrelated patient selection")
+        if page.locator(f'[data-role="sr-search-result"][data-patient-id="{patient_id}"][aria-pressed="true"]').count() != 1:
+            raise RuntimeError("the explicitly selected patient must stay the selected search result after cancellation")
         assert_no_horizontal_overflow(page, "cancel-success")
         shot(page, f"reception-{tag}-cancel-success")
 
@@ -1841,6 +1851,9 @@ def run_cancel_journey(browser, vp):
             dump = {
                 "status": status_text(page)[:160],
                 "cancel_rows": page.locator('[data-role="sr-row-cancel"]').count(),
+                "selected_visible": page.locator('[data-role="sr-search-selected"]').is_visible(),
+                "selected_text": (page.locator('[data-role="sr-search-selected"]').inner_text() or "").strip()[:80],
+                "pressed_results": page.locator('[data-role="sr-search-result"][aria-pressed="true"]').count(),
                 "rest_tail": [f"{r['method']} {r['route']}={r['status']}" for r in state["rest"][-12:]],
             }
             info(f"fail-dump {vp['vp']} stage={stage} {dump}")
