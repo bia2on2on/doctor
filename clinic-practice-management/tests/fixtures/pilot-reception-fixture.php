@@ -310,6 +310,26 @@ $slotClosed  = $lateToday ? $nowTehran->setTime(23, 53) : $nowTehran->add(new Da
 $tomorrowTehran = $nowTehran->add(new DateInterval('P1D'))->format('Y-m-d');
 $futureTime     = '10:00:00';
 
+// Cancel journeys need three distinct, still-future slots when their browser
+// stage runs (after the other viewport journeys). Use today's operational date
+// only when the latest slot plus a 60-minute run-up remains before Tehran
+// midnight; otherwise put all three on the supported +2-day booking date so
+// they stay future even if the fixture/browser stage crosses midnight.
+$cancelOffsets      = [105, 125, 145];
+$cancelRunwayMinutes = 60;
+$cancelLatestAt     = $nowTehran->add(new DateInterval('PT' . (max($cancelOffsets) + $cancelRunwayMinutes) . 'M'));
+$cancelDate         = $cancelLatestAt->format('Y-m-d') === $todayTehran
+    ? $todayTehran
+    : $nowTehran->add(new DateInterval('P2D'))->format('Y-m-d');
+if ($cancelDate === $todayTehran) {
+    $cancelSlotTimes = [];
+    foreach ($cancelOffsets as $cancelOffset) {
+        $cancelSlotTimes[] = $nowTehran->add(new DateInterval('PT' . $cancelOffset . 'M'))->format('H:i:s');
+    }
+} else {
+    $cancelSlotTimes = ['10:15:00', '10:35:00', '10:55:00'];
+}
+
 $bookingSlotIds = [];
 foreach ([
     ['free_a', $todayTehran, $slotFreeA->format('H:i:s'), 2, 0, 1],
@@ -349,15 +369,11 @@ foreach (['MOBILE', 'TABLET', 'DESKTOP'] as $bookingIndex => $bookingTag) {
 // by the journey's own appointment, so the freed slot can be proven only after
 // the cancellation actually happened.
 $cancelSlotIds = [];
-$cancelLateTimes = ['23:42:00', '23:44:00', '23:46:00'];
 foreach (['MOBILE', 'TABLET', 'DESKTOP'] as $cancelIndex => $cancelTag) {
-    $cancelTime = $lateToday
-        ? $cancelLateTimes[$cancelIndex]
-        : $nowTehran->add(new DateInterval('PT' . (105 + $cancelIndex * 20) . 'M'))->format('H:i:s');
     $cancelSlotIds[$cancelTag] = rp_insert(
         $wpdb,
         'INSERT INTO ' . $db->table('cpms_schedule_slots') . ' (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, generated_from, created_at, updated_at) VALUES (%d, %d, %d, %s, %s, %d, %d, %d, %d, %d, %s, %s, %s)',
-        [$clinicId, $locTehran, $clinicianId, $todayTehran, $cancelTime, 20, 1, 0, 0, 1, 'manual', $now, $now],
+        [$clinicId, $locTehran, $clinicianId, $cancelDate, $cancelSlotTimes[$cancelIndex], 20, 1, 0, 0, 1, 'manual', $now, $now],
         'cancel slot ' . $cancelTag
     );
 }
@@ -575,6 +591,7 @@ file_put_contents(
         (string) $cancelPatients['DESKTOP'],
         'MR-RP-CX-',
         '-' . $uniq,
+        $cancelDate,
     ]) . "\n"
 );
 

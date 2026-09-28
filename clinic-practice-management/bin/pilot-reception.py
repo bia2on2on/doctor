@@ -120,12 +120,13 @@ APPOINTMENTS_ROUTE = "/staff/portal/reception/appointments"
 # reception cancel mutation is identified by its concrete path shape — the
 # namespace-prefixed route still ends with this exact suffix.
 CANCEL_PATH_RE = re.compile(r"/staff/portal/reception/appointments/[0-9]+/cancel$")
-_cx = parts("RECEPTION_CANCEL", 9)
+_cx = parts("RECEPTION_CANCEL", 10)
 CANCEL = {
     "c1": int(_cx[0]),
     "slots": {"mobile-390": int(_cx[1]), "tablet-768": int(_cx[2]), "desktop-1366": int(_cx[3])},
     "patients": {"mobile-390": int(_cx[4]), "tablet-768": int(_cx[5]), "desktop-1366": int(_cx[6])},
     "mrn": {"mobile-390": _cx[7] + "MOBILE" + _cx[8], "tablet-768": _cx[7] + "TABLET" + _cx[8], "desktop-1366": _cx[7] + "DESKTOP" + _cx[8]},
+    "date": _cx[9],
 }
 _rs = parts("RECEPTION_RESCHEDULE", 16)
 _wi = parts("RECEPTION_WALKIN", 9)
@@ -1818,13 +1819,14 @@ def run_cancel_journey(browser, vp):
     (so the cancellation has a real, fully-claimed slot to release), then
     cancels that row through the new Reception boundary: explicit action,
     confirmation + OPTIONAL reason (empty on mobile), double-submit safety, one
-    explicit mutation, the row leaving the actionable board, the existing
-    patient selection preserved, no Visit/queue side effect, and the freed slot
-    offered again by the EXISTING bounded slot read.
+    explicit mutation, the row leaving the actionable board or Upcoming panel,
+    the existing patient selection preserved, no Visit/queue side effect, and
+    the freed slot offered again by the EXISTING bounded slot read.
     """
     tag = vp["vp"]
     slot_id = CANCEL["slots"][tag]
     patient_id = CANCEL["patients"][tag]
+    cancel_is_today = CANCEL["date"] == PUB["today_tehran"]
     reason = "" if tag == "mobile-390" else f"لغو پذیرش {tag}"
     key = f"reception-cancel-{tag}"
     stage = "login"
@@ -1867,6 +1869,13 @@ def run_cancel_journey(browser, vp):
         select_cancel_patient(page, tag)
         page.wait_for_selector('[data-role="sr-book-clinician-wrap"]', state="visible", timeout=15000)
         page.select_option('[data-role="sr-book-clinician"]', str(CANCEL["c1"]))
+        # The fixture may use a supported +2-day date when the same-day slots
+        # cannot retain a deterministic runway before operational midnight.
+        date_select = page.locator('[data-role="sr-book-date"]')
+        if date_select.input_value() != CANCEL["date"]:
+            if date_select.locator(f'option[value="{CANCEL["date"]}"]').count() != 1:
+                raise RuntimeError(f"cancel slot date must be an existing selectable booking day: {CANCEL['date']}")
+            date_select.select_option(CANCEL["date"])
         # BEFORE the appointment exists the dedicated capacity-1 slot is free…
         wait_book_slot(page, slot_id)
         page.locator(f'[data-role="sr-book-slot"][data-slot-id="{slot_id}"]').click()
@@ -1882,10 +1891,18 @@ def run_cancel_journey(browser, vp):
             raise RuntimeError(f"cancel journey needs one confirmed booked row, got {appointment}")
         # …fully claimed once the journey's own appointment holds it…
         wait_slot_absent(page, slot_id)
-        wait_rows_count(page, rows_before + 1)
-        row = row_of(page, appt_id)
-        if row.count() != 1:
-            raise RuntimeError("the freshly booked row must appear on today's actionable board")
+        if cancel_is_today:
+            wait_rows_count(page, rows_before + 1)
+            row = row_of(page, appt_id)
+            if row.count() != 1:
+                raise RuntimeError("the freshly booked row must appear on today's actionable board")
+        else:
+            wait_rows_count(page, rows_before)
+            page.locator('[data-role="sr-upcoming-refresh"]').click()
+            row = page.locator(f'[data-role="sr-upcoming-row"][data-appointment-id="{appt_id}"]')
+            row.wait_for(state="visible", timeout=15000)
+            if row_of(page, appt_id).count() != 0:
+                raise RuntimeError("an off-operational-day cancel journey must not put its appointment on today's board")
         if row.locator('[data-role="sr-cancel-open"]').count() != 1:
             raise RuntimeError("a booked-not-received row must expose exactly one explicit cancel action")
         if row.locator('[data-role="sr-cancel-form"]').count() != 0:
@@ -1925,11 +1942,14 @@ def run_cancel_journey(browser, vp):
                 """(id) => { const b = document.querySelector('[data-role="sr-cancel-confirm"][data-appointment-id="' + id + '"]'); b.click(); b.click(); }""",
                 appt_id,
             )
-        page.wait_for_function(
-            """(id) => { const r = document.querySelector('[data-role="sr-row"][data-appointment-id="' + id + '"]'); return !r; }""",
-            arg=appt_id,
-            timeout=15000,
-        )
+        if cancel_is_today:
+            page.wait_for_function(
+                """(id) => { const r = document.querySelector('[data-role="sr-row"][data-appointment-id="' + id + '"]'); return !r; }""",
+                arg=appt_id,
+                timeout=15000,
+            )
+        else:
+            row.wait_for(state="detached", timeout=15000)
         posts = cancel_posts(state)
         if len(posts) != 1 or posts[0]["status"] != 200:
             raise RuntimeError(f"one explicit cancel mutation expected, got {posts}")
@@ -1957,7 +1977,7 @@ def run_cancel_journey(browser, vp):
         wait_status_contains(page, "لغو شد")
         wait_rows_count(page, rows_before)
         if row_of(page, appt_id).count() != 0:
-            raise RuntimeError("the cancelled row must leave the actionable board")
+            raise RuntimeError("the cancelled row must not remain on the actionable board")
         # The cancellation is not an arrival: no queue/Visit row may appear and
         # the unreceived state must not be re-created.
         if page.locator('[data-role="sr-queue-row"]').count() != queue_before:
@@ -1977,7 +1997,7 @@ def run_cancel_journey(browser, vp):
         page.select_option('[data-role="sr-book-date"]', BOOKING["tomorrow"])
         wait_book_slot(page, BOOKING["slots"]["future"])
         wait_slot_absent(page, slot_id)
-        page.select_option('[data-role="sr-book-date"]', PUB["today_tehran"])
+        page.select_option('[data-role="sr-book-date"]', CANCEL["date"])
         wait_book_slot(page, slot_id)
         if slot_id not in book_slot_ids(page):
             raise RuntimeError("the released slot must be offered again by the existing slot read")
@@ -1997,7 +2017,7 @@ def run_cancel_journey(browser, vp):
         assert_hygiene(state, key)
         ok(
             key,
-            "reception cancel: explicit action + optional reason → booked row leaves the board, slot released, no Visit/queue",
+            "reception cancel: explicit action + optional reason → booked row leaves the board/Upcoming panel, slot released, no Visit/queue",
             f"vp={vp['vp']} reason={'empty' if reason == '' else 'supplied'} create_posts=1 cancel_posts=1 board_rows={rows_before}->{rows_before} queue_rows={queue_before} slot_reoffered=1 selection_kept=1 rest={rest_delta} reloaded=0 overflow=0",
         )
     except Exception as e:
