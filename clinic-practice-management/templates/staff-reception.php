@@ -621,7 +621,7 @@ $cpms_reception_cfg = [
                 : '';
             html += '<tr data-role="sr-row" data-appointment-id="' + escapeHtml(row.id) + '">' +
                 '<td data-role="sr-row-time">' + escapeHtml(row.time) + '</td>' +
-                '<td class="cpms-sr-name" data-role="sr-row-name">' + escapeHtml(row.patient_name) + express + ' · پزشک: ' + escapeHtml(doctor.name) + '</td>' +
+                '<td data-role="sr-row-name"><span class="cpms-sr-name">' + escapeHtml(row.patient_name) + express + '</span> <span>· پزشک: ' + escapeHtml(doctor.name) + '</span></td>' +
                 '<td data-role="sr-row-status">' + badge + '</td>' +
                 '<td data-role="sr-row-action"><div class="cpms-sr-actions">' + action + rescheduleAction + cancelAction + '</div></td>' +
                 '</tr>' + cancelRow;
