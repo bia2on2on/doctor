@@ -163,7 +163,9 @@ final class FinancePortalController extends RestBase {
 		}
 
 		$date = ( new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) ) )->setTimezone( $timezone )->format( 'Y-m-d' );
+
 		$rows = $this->visits->awaiting_payment_finance_board( $clinic_id, $location_id, $date, self::RESULT_LIMIT + 1 );
+
 		$has_more = count( $rows ) > self::RESULT_LIMIT;
 		if ( $has_more ) {
 			$rows = array_slice( $rows, 0, self::RESULT_LIMIT );
@@ -181,13 +183,13 @@ final class FinancePortalController extends RestBase {
 
 			$invoice_exists = isset( $row['invoice_status'] ) && '' !== (string) $row['invoice_status'];
 			$visits[]       = array(
-				'patient_name'      => trim( (string) $row['patient_first_name'] . ' ' . (string) $row['patient_last_name'] ),
-				'clinician_name'    => (string) $row['clinician_name'],
-				'operational_date'  => (string) $row['visit_date'],
-				'jalali_date'       => Jalali::formatYmd( (string) $row['visit_date'] ),
-				'operational_time'  => $time,
-				'visit_status'      => 'awaiting_payment',
-				'invoice'           => $invoice_exists ? array(
+				'patient_name'     => trim( (string) $row['patient_first_name'] . ' ' . (string) $row['patient_last_name'] ),
+				'clinician_name'   => (string) $row['clinician_name'],
+				'operational_date' => (string) $row['visit_date'],
+				'jalali_date'      => Jalali::formatYmd( (string) $row['visit_date'] ),
+				'operational_time' => $time,
+				'visit_status'     => 'awaiting_payment',
+				'invoice'          => $invoice_exists ? array(
 					'status'    => (string) $row['invoice_status'],
 					'total'     => (string) $row['invoice_total'],
 					'paid'      => (string) $row['invoice_paid_amount'],
