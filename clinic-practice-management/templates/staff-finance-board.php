@@ -68,10 +68,15 @@ if ( empty( $cpms_staff_embed ) ) {
         </div>
     </section>
 </main>
-<script type="application/json" id="cpms-finance-board-config"><?php echo wp_json_encode( [
+<script type="application/json" id="cpms-finance-board-config">
+<?php
+$cpms_finance_board_config = array(
     'rest_root' => esc_url_raw( untrailingslashit( rest_url( 'clinic/v1' ) ) ),
-    'nonce' => esc_attr( wp_create_nonce( 'wp_rest' ) ),
-] ); ?></script>
+    'nonce'     => esc_attr( wp_create_nonce( 'wp_rest' ) ),
+);
+echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- JSON config is encoded by wp_json_encode.
+?>
+</script>
 <script>
 (function () {
     'use strict';
