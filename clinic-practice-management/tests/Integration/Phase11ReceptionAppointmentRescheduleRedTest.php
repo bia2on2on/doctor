@@ -95,6 +95,7 @@ declare(strict_types=1);
 namespace ClinicCore\Tests\Integration;
 
 use ClinicCore\Application\Scope\ScopeContext;
+use ClinicCore\Application\Scope\ClinicScope;
 use ClinicCore\Application\Scope\SystemClinicResolver;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
@@ -819,12 +820,12 @@ final class Phase11ReceptionAppointmentRescheduleRedTest extends WP_UnitTestCase
         // The established shared route declares slot_date + slot_time as required
         // args (exact slot_id is still the identity authority); the control calls
         // the SHARED contract exactly as its own route contract requires.
-        $shared      = $this->dispatch('POST', self::SHARED . $ctrlAppt . '/reschedule', [
+        $shared      = $this->dispatchSharedReschedule($fx['clinic'], $ctrlAppt, [
             'clinician_id' => $fx['c1'],
             'slot_date'    => $tomorrow,
             'slot_time'    => '11:30:00',
             'slot_id'      => $ctrlDest,
-        ], $headers, true, $this->uuid());
+        ], $this->uuid());
         self::assertSame(200, $shared->get_status(), 'C8: shared established staff reschedule reachable — ' . $this->errCode($shared));
         $sharedView = $this->payload($shared);
         self::assertSame('confirmed', (string) ($sharedView['status'] ?? ''), 'C8: established reschedule produces a confirmed replacement');
@@ -940,6 +941,40 @@ final class Phase11ReceptionAppointmentRescheduleRedTest extends WP_UnitTestCase
         }
 
         return $headers;
+    }
+
+    /**
+     * The ESTABLISHED shared staff reschedule route is deliberately EXEMPT from
+     * the trusted-Clinic binder (`RestClinicContext::requiresTrustedClinic()`
+     * skips `/clinic/v1/appointments/{id}/reschedule` because the same route is
+     * also the patient-self path). Its staff branch therefore operates on the
+     * caller's explicit Clinic scope — exactly as the established Phase 7 staff
+     * REST entry does — so this CONTROL installs that explicit scope for the
+     * call and clears it again: the rest of the suite keeps proving that the
+     * Reception boundary binds its OWN scope from the trusted request headers.
+     *
+     * @param array<string, mixed>  $params
+     * @param array<string, string> $headers
+     */
+    private function dispatchSharedReschedule(int $clinicId, int $appointmentId, array $params, string $idemKey): WP_REST_Response
+    {
+        ScopeContext::clear();
+        App::resetScope();
+        $request = new WP_REST_Request('POST', self::SHARED . $appointmentId . '/reschedule');
+        foreach ($params as $k => $v) {
+            $request->set_param($k, $v);
+        }
+        $request->set_header('X-WP-Nonce', wp_create_nonce('wp_rest'));
+        $request->set_header('X-CPMS-Clinic-Id', (string) $clinicId);
+        $request->set_header('Idempotency-Key', $idemKey);
+
+        ScopeContext::set(ClinicScope::forClinic($clinicId));
+        try {
+            return rest_do_request($request);
+        } finally {
+            ScopeContext::clear();
+            App::resetScope();
+        }
     }
 
     /**
