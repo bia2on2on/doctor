@@ -391,40 +391,36 @@ foreach (['MOBILE', 'TABLET', 'DESKTOP'] as $cancelIndex => $cancelTag) {
 // one dedicated capacity-1 SOURCE slot and one dedicated capacity-1
 // DESTINATION slot per viewport journey. No appointment row is inserted here
 // either: each journey first books its own source slot through the real Slice 5
-// UI (so the source row is genuinely confirmed, on today's board and
-// not-yet-received), then reschedules that row through the new boundary. The
+// UI (so the source row is genuinely confirmed and not-yet-received; its
+// date determines whether it appears on today's board or in Upcoming), then
+// reschedules that row through the new boundary. The
 // Slice 1 board invariant (four booked fixture rows) therefore stays intact
 // until a journey books one, exactly like the Slice 5/Slice 6 stages.
 //
 // Destinations stay inside the CURRENT trusted Location (cross-Location is out
-// of scope): MOBILE → the same clinician later today, TABLET → the OTHER
-// eligible clinician at the same Location, DESKTOP → the next Tehran-local day
-// (so the journey can prove an off-operational-day destination stays OFF
-// today's board). When an offset crosses local midnight the destination is
-// simply on the next local day, and the exported date tells the journey which
-// branch to assert.
+// of scope): MOBILE → the same clinician later than its source, TABLET → the
+// OTHER eligible clinician at the same Location, DESKTOP → the next Tehran-local
+// day. Give the UI journey an explicit two-hour runway; each persisted instant
+// owns its actual Tehran-local date, so crossing midnight moves the whole slot
+// (date and time) forward rather than wrapping a time onto today.
 $rescheduleSourceOffsets = ['MOBILE' => 35, 'TABLET' => 55, 'DESKTOP' => 65];
 $rescheduleDestOffsets   = ['MOBILE' => 75, 'TABLET' => 100];
-$rescheduleLateSource    = ['MOBILE' => '23:14:00', 'TABLET' => '23:18:00', 'DESKTOP' => '23:22:00'];
-$rescheduleSlots = ['source' => [], 'dest' => [], 'dest_date' => [], 'patient' => []];
+$rescheduleRunwayMinutes = 120;
+$rescheduleSlots = ['source' => [], 'source_date' => [], 'dest' => [], 'dest_date' => [], 'patient' => []];
 $rescheduleDestDoctor = ['MOBILE' => $clinicianId, 'TABLET' => $clinician2Id, 'DESKTOP' => $clinicianId];
 foreach (['MOBILE', 'TABLET', 'DESKTOP'] as $resIndex => $resTag) {
-    $sourceAt = $lateToday
-        ? $nowTehran->setTime((int) substr($rescheduleLateSource[$resTag], 0, 2), (int) substr($rescheduleLateSource[$resTag], 3, 2))
-        : $nowTehran->add(new DateInterval('PT' . $rescheduleSourceOffsets[$resTag] . 'M'));
-    if ($sourceAt->format('Y-m-d') !== $todayTehran) {
-        $sourceAt = $nowTehran->setTime(23, 55);
-    }
+    $sourceAt = $nowTehran->add(new DateInterval('PT' . ($rescheduleSourceOffsets[$resTag] + $rescheduleRunwayMinutes) . 'M'));
+    $rescheduleSlots['source_date'][$resTag] = $sourceAt->format('Y-m-d');
     $rescheduleSlots['source'][$resTag] = rp_insert(
         $wpdb,
         'INSERT INTO ' . $db->table('cpms_schedule_slots') . ' (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, generated_from, created_at, updated_at) VALUES (%d, %d, %d, %s, %s, %d, %d, %d, %d, %d, %s, %s, %s)',
-        [$clinicId, $locTehran, $clinicianId, $todayTehran, $sourceAt->format('H:i:s'), 20, 1, 0, 0, 1, 'manual', $now, $now],
+        [$clinicId, $locTehran, $clinicianId, $sourceAt->format('Y-m-d'), $sourceAt->format('H:i:s'), 20, 1, 0, 0, 1, 'manual', $now, $now],
         'reschedule source slot ' . $resTag
     );
     if ($resTag === 'DESKTOP') {
         $destAt   = new DateTimeImmutable($tomorrowTehran . ' 11:00:00', new DateTimeZone('Asia/Tehran'));
     } else {
-        $destAt = $nowTehran->add(new DateInterval('PT' . $rescheduleDestOffsets[$resTag] . 'M'));
+        $destAt = $nowTehran->add(new DateInterval('PT' . ($rescheduleDestOffsets[$resTag] + $rescheduleRunwayMinutes) . 'M'));
     }
     $rescheduleSlots['dest_date'][$resTag] = $destAt->format('Y-m-d');
     $rescheduleSlots['dest'][$resTag] = rp_insert(
@@ -568,6 +564,9 @@ file_put_contents(
         (string) $rescheduleSlots['patient']['DESKTOP'],
         'MR-RP-RS-',
         '-' . $uniq,
+        $rescheduleSlots['source_date']['MOBILE'],
+        $rescheduleSlots['source_date']['TABLET'],
+        $rescheduleSlots['source_date']['DESKTOP'],
     ]) . "\n"
     . 'RECEPTION_UPCOMING=' . implode('|', [
         (string) $upcomingProof['future']['appointment'],
