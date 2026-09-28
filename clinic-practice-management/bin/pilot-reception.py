@@ -1725,6 +1725,30 @@ def run_booking_journey(browser, vp):
         assert_no_horizontal_overflow(page, "booking-future")
         shot(page, f"reception-{vp['vp']}-booking-future")
 
+        # Slice 8: the future booking is discoverable without wp-admin, in the
+        # current Location only; cancellation reuses Slice 6's existing route.
+        stage = "upcoming-discovery-and-cancel"
+        future_id = str(future_appt["id"])
+        future_row = page.locator(f'[data-role="sr-upcoming-row"][data-appointment-id="{future_id}"]')
+        future_row.wait_for(state="visible", timeout=15000)
+        future_text = future_row.inner_text()
+        if not future_appt.get("jalali") or str(future_appt["jalali"]) not in future_text or str(future_appt["time"]) not in future_text or "پزشک:" not in future_text or "Booking " not in future_text:
+            raise RuntimeError("upcoming row must show patient, doctor, Jalali date and time")
+        if page.locator(f'[data-role="sr-row"][data-appointment-id="{future_id}"]').count():
+            raise RuntimeError("future row duplicated on today's board")
+        assert_no_horizontal_overflow(page, "upcoming-discovery")
+        shot(page, f"reception-{vp['vp']}-upcoming-discovery")
+        future_row.locator('[data-role="sr-cancel-open"]').click()
+        with page.expect_response(lambda r: r.request.method == "POST" and route_of(r.url).rstrip("/").endswith(f"/appointments/{future_id}/cancel"), timeout=15000) as cancel_info:
+            future_row.locator('[data-role="sr-cancel-confirm"]').click()
+        if cancel_info.value.status != 200:
+            raise RuntimeError(f"upcoming cancel returned {cancel_info.value.status}")
+        future_row.wait_for(state="detached", timeout=15000)
+        if page.locator(f'[data-role="sr-row"][data-appointment-id="{future_id}"]').count():
+            raise RuntimeError("cancelled future row cannot appear on today's board")
+        assert_no_horizontal_overflow(page, "upcoming-cancel")
+        shot(page, f"reception-{vp['vp']}-upcoming-cancel")
+
         assert_no_product_reload(page, mark, "appointment booking")
         assert_authority_headers(state, PUB["clinic"], {PUB["loc_tehran"], PUB["loc_tokyo"]})
         assert_hygiene(state, key)

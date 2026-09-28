@@ -375,6 +375,13 @@ $cpms_reception_cfg = [
             </table>
         </div>
 
+        <div class="cpms-sr-panel" data-role="sr-upcoming-panel">
+            <h2>نوبت‌های آینده</h2>
+            <button type="button" class="cpms-sr-btn cpms-sr-btn--ghost" data-role="sr-upcoming-refresh">تازه‌سازی نوبت‌های آینده</button>
+            <div data-role="sr-upcoming-state" role="status">در حال بارگذاری…</div>
+            <div data-role="sr-upcoming-rows"></div>
+        </div>
+
         <div class="cpms-sr-panel" data-role="sr-queue-panel">
             <table class="cpms-sr-table" data-role="sr-queue">
                 <thead>
@@ -614,13 +621,48 @@ $cpms_reception_cfg = [
                 : '';
             html += '<tr data-role="sr-row" data-appointment-id="' + escapeHtml(row.id) + '">' +
                 '<td data-role="sr-row-time">' + escapeHtml(row.time) + '</td>' +
-                '<td class="cpms-sr-name" data-role="sr-row-name">' + escapeHtml(row.patient_name) + express + '</td>' +
+                '<td class="cpms-sr-name" data-role="sr-row-name">' + escapeHtml(row.patient_name) + express + ' · پزشک: ' + escapeHtml(doctor.name) + '</td>' +
                 '<td data-role="sr-row-status">' + badge + '</td>' +
                 '<td data-role="sr-row-action"><div class="cpms-sr-actions">' + action + rescheduleAction + cancelAction + '</div></td>' +
                 '</tr>' + cancelRow;
         }
         body.innerHTML = html;
     }
+
+    var upcomingSeq = 0;
+    function loadUpcoming() {
+        var seq = ++upcomingSeq;
+        var container = document.querySelector('[data-role="sr-upcoming-rows"]');
+        var message = document.querySelector('[data-role="sr-upcoming-state"]');
+        if (!container || !message) { return; }
+        container.innerHTML = '';
+        message.textContent = 'در حال بارگذاری…';
+        if (!state.locationId) {
+            message.textContent = 'ابتدا موقعیت عملیاتی را انتخاب کنید.';
+            return;
+        }
+        api('/staff/portal/reception/upcoming').then(function (result) {
+            if (seq !== upcomingSeq) { return; }
+            if (!result.ok) { message.textContent = 'خطا در دریافت نوبت‌های آینده: ' + errorMessageOf(result.body, 'دوباره تلاش کنید.'); return; }
+            var rows = payloadOf(result.body).appointments || [];
+            message.textContent = rows.length ? '' : 'نوبت آینده‌ای در بازهٔ رزرو این موقعیت ثبت نشده است.';
+            var html = '';
+            rows.forEach(function (row) {
+                var id = escapeHtml(row.id);
+                var name = escapeHtml(row.patient_name);
+                var doctor = escapeHtml(row.clinician_name);
+                html += '<div class="cpms-sr-panel" data-role="sr-upcoming-row" data-appointment-id="' + id + '">' +
+                    '<p><strong>' + name + '</strong> · پزشک: ' + doctor + ' · ' + escapeHtml(row.jalali) + ' · ' + escapeHtml(row.time) + ' · ' + (row.status === 'confirmed' ? 'تاییدشده' : 'رزرو شده') + '</p>' +
+                    '<div class="cpms-sr-actions"><button type="button" class="cpms-sr-btn cpms-sr-btn--ghost" data-role="sr-cancel-open" data-appointment-id="' + id + '">لغو نوبت</button>' +
+                    (row.status === 'confirmed' ? '<button type="button" class="cpms-sr-btn cpms-sr-btn--reschedule" data-role="sr-reschedule-open" data-appointment-id="' + id + '" data-patient-id="' + escapeHtml(row.patient_id) + '" data-patient-name="' + name + '" data-appointment-time="' + escapeHtml(row.time) + '" data-clinician-id="' + escapeHtml(row.clinician_id) + '" data-clinician-name="' + doctor + '">جابه‌جایی نوبت</button>' : '') + '</div>' +
+                    '<div data-role="sr-row-cancel" data-appointment-id="' + id + '" hidden><label>دلیل لغو (اختیاری) <input type="text" data-role="sr-cancel-reason"></label><button type="button" class="cpms-sr-btn" data-role="sr-cancel-confirm" data-appointment-id="' + id + '">تأیید لغو نوبت</button><button type="button" class="cpms-sr-btn cpms-sr-btn--ghost" data-role="sr-cancel-abort" data-appointment-id="' + id + '">انصراف</button></div></div>';
+            });
+            container.innerHTML = html;
+        }).catch(function () { if (seq === upcomingSeq) { message.textContent = 'خطای شبکه هنگام دریافت نوبت‌های آینده.'; } });
+    }
+    document.addEventListener('click', function (event) {
+        if (event.target.closest('[data-role="sr-upcoming-refresh"]')) { loadUpcoming(); }
+    });
 
     function renderQueue(rows) {
         var body = el('sr-queue-body');
@@ -862,7 +904,7 @@ $cpms_reception_cfg = [
                     cancelClose(id);
                     setStatus('نوبت لغو شد و از تختهٔ پذیرش خارج شد. اسلات آزاد شد؛ هیچ ویزیت یا صفی ایجاد نشد.', 'ok');
                     refreshed = true;
-                    return loadBoard(true);
+                    return loadBoard(true).then(loadUpcoming);
                 }
                 // Honest bounded error surface: an active Visit / already
                 // cancelled / out-of-scope row keeps its row and shows the
@@ -1368,7 +1410,7 @@ $cpms_reception_cfg = [
             }
             refreshedAfterSubmit = true;
             rescheduleLoadSlots(true);
-            return loadBoard(true);
+            return loadBoard(true).then(function () { if (result.ok && data.appointment) { loadUpcoming(); } });
         }).catch(function () {
             if (seq === reschedule.seq) {
                 setRescheduleState('خطای شبکه هنگام جابه‌جایی نوبت — همان کلید دوباره ارسال می‌شود.', 'error');
@@ -1451,6 +1493,7 @@ $cpms_reception_cfg = [
             rescheduleAbort();
             setStatus('در حال بارگذاری…', null);
             loadBoard(false);
+            loadUpcoming();
             // Phase 11 Slice 4: a Location change invalidates the doctor list and
             // any doctor selection immediately (never carried across Locations).
             walkinReload();
@@ -2397,7 +2440,7 @@ $cpms_reception_cfg = [
                 // remains visible while the fresh slot list is fetched.
                 refreshedAfterSubmit = true;
                 bookLoadSlots(true);
-                return loadBoard(true);
+                return loadBoard(true).then(function () { if (result.ok && data.appointment) { loadUpcoming(); } });
             })
             .catch(function () {
                 if (seq === book.seq) {
@@ -2455,7 +2498,7 @@ $cpms_reception_cfg = [
 
     setStatus('در حال بارگذاری…', null);
     loadContext().then(function () {
-        return loadBoard(false);
+        return loadBoard(false).then(loadUpcoming);
     }).then(poll);
 }());
 </script>
