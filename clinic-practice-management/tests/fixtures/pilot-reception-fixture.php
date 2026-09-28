@@ -313,14 +313,14 @@ $futureTime     = '10:00:00';
 // Cancel journeys need three distinct, still-future slots when their browser
 // stage runs (after the other viewport journeys). Use today's operational date
 // only when the latest slot plus a 60-minute run-up remains before Tehran
-// midnight; otherwise put all three on the supported +2-day booking date so
-// they stay future even if the fixture/browser stage crosses midnight.
+// midnight; otherwise put all three on the existing booking journey's supported next-day
+// date so they stay future even if the fixture/browser stage crosses midnight.
 $cancelOffsets      = [105, 125, 145];
 $cancelRunwayMinutes = 60;
 $cancelLatestAt     = $nowTehran->add(new DateInterval('PT' . (max($cancelOffsets) + $cancelRunwayMinutes) . 'M'));
 $cancelDate         = $cancelLatestAt->format('Y-m-d') === $todayTehran
     ? $todayTehran
-    : $nowTehran->add(new DateInterval('P2D'))->format('Y-m-d');
+    : $tomorrowTehran;
 if ($cancelDate === $todayTehran) {
     $cancelSlotTimes = [];
     foreach ($cancelOffsets as $cancelOffset) {

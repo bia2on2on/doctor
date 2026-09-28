@@ -1826,7 +1826,6 @@ def run_cancel_journey(browser, vp):
     tag = vp["vp"]
     slot_id = CANCEL["slots"][tag]
     patient_id = CANCEL["patients"][tag]
-    cancel_is_today = CANCEL["date"] == PUB["today_tehran"]
     reason = "" if tag == "mobile-390" else f"لغو پذیرش {tag}"
     key = f"reception-cancel-{tag}"
     stage = "login"
@@ -1869,8 +1868,8 @@ def run_cancel_journey(browser, vp):
         select_cancel_patient(page, tag)
         page.wait_for_selector('[data-role="sr-book-clinician-wrap"]', state="visible", timeout=15000)
         page.select_option('[data-role="sr-book-clinician"]', str(CANCEL["c1"]))
-        # The fixture may use a supported +2-day date when the same-day slots
-        # cannot retain a deterministic runway before operational midnight.
+        # The fixture uses the existing journey's supported next-day option
+        # when same-day slots cannot retain a deterministic midnight runway.
         date_select = page.locator('[data-role="sr-book-date"]')
         if date_select.input_value() != CANCEL["date"]:
             if date_select.locator(f'option[value="{CANCEL["date"]}"]').count() != 1:
@@ -1889,6 +1888,12 @@ def run_cancel_journey(browser, vp):
         appt_id = int(appointment.get("id") or 0)
         if appointment.get("status") != "confirmed" or appt_id <= 0:
             raise RuntimeError(f"cancel journey needs one confirmed booked row, got {appointment}")
+        on_operational_day = (create_data.get("reception") or {}).get("on_operational_day")
+        if not isinstance(on_operational_day, bool):
+            raise RuntimeError("booking response must classify the appointment against the current operational day")
+        cancel_is_today = on_operational_day
+        # The server's operational-day classification handles the fixture date
+        # becoming today if this browser journey crosses Tehran midnight.
         # …fully claimed once the journey's own appointment holds it…
         wait_slot_absent(page, slot_id)
         if cancel_is_today:
@@ -1994,10 +1999,26 @@ def run_cancel_journey(browser, vp):
         stage = "slot-released-through-existing-read"
         # Only the EXISTING bounded slot read can show the release: change the
         # date away and back, then the freed capacity-1 slot must be offered.
-        page.select_option('[data-role="sr-book-date"]', BOOKING["tomorrow"])
-        wait_book_slot(page, BOOKING["slots"]["future"])
-        wait_slot_absent(page, slot_id)
-        page.select_option('[data-role="sr-book-date"]', CANCEL["date"])
+        date_select = page.locator('[data-role="sr-book-date"]')
+        selectable_dates = date_select.locator("option").evaluate_all("(options) => options.map((option) => option.value)")
+        alternate_date = next((value for value in selectable_dates if value != CANCEL["date"]), None)
+        if not alternate_date:
+            raise RuntimeError("the booking journey must expose another selectable date for a fresh slot read")
+        wait_slot_reads_settled(page, state)
+        reads_before = len(slot_read_requests(state))
+        date_select.select_option(alternate_date)
+        wait_slot_reads_settled(page, state)
+        alternate_reads = slot_read_requests(state, reads_before)
+        if len(alternate_reads) != 1:
+            raise RuntimeError(f"changing away from the cancel date must initiate one slot read, got {len(alternate_reads)}")
+        assert_bounded_slot_read(
+            alternate_reads[0],
+            PUB["loc_tehran"],
+            expected_clinician=CANCEL["c1"],
+            expected_date=alternate_date,
+            page=page,
+        )
+        date_select.select_option(CANCEL["date"])
         wait_book_slot(page, slot_id)
         if slot_id not in book_slot_ids(page):
             raise RuntimeError("the released slot must be offered again by the existing slot read")
