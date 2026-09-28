@@ -2,7 +2,7 @@
 
 مستندات معماری و نیازمندی‌ها — نسخه 2.0 — 2026-09-08
 
-> **Current checkpoint (2026-09-27):** Phase 10 remains FORMALLY CLOSED (BOUNDED); **Phase 11 — Clinic Reception = STARTED / IN PROGRESS — NOT CLOSED**. Slice 1 Staff Portal Reception Arrival Board delivered via merged PR #133 (`a9ca3e4f4832e3ad67d2844314fa92169b3a438a`); latest migration `2026_09_26_0023_handwriting_prescription_paper.php`. See the [bounded post-merge checkpoint](project-current-state.md#phase11-slice1). Dated checkpoint notices below are historical, not current-main claims.
+> **Current checkpoint (2026-09-28):** main = `93b71db3bdd151c629d4c3647ebdff768df98cc9` (merge of PR #141); open PRs = 0; latest migration `2026_09_26_0023_handwriting_prescription_paper.php` (unchanged by Phase 11). **Phase 11 — Clinic Reception = ✅ FORMALLY CLOSED / TECHNICALLY COMPLETE (BOUNDED)** — delivered through merged PR #133 (Slice 1 Arrival Board) and PRs #135–#141 (patient search; patient create; walk-in; appointment create from an already-generated slot; appointment cancel; same-Location reschedule; bounded upcoming-appointments read), with the final Owner whole-Phase-11 visual acceptance recorded 2026-09-28 (no blocking responsive/RTL/overflow/control-layout defect; three non-blocking observations preserved as observations only). Phase 10 remains FORMALLY CLOSED (BOUNDED); Phase 12..20 remain NOT STARTED. No commercial/production/go-live readiness is claimed. See the [Phase 11 closure checkpoint](project-current-state.md#phase11-slice1). Dated checkpoint notices below are historical, not current-main claims.
 
 > # 🔴 مرجع فازبندی اجرایی
 >
