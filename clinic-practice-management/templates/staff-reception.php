@@ -894,7 +894,6 @@ $cpms_reception_cfg = [
     // a stale slot after the doctor/date changes, and never synthesizes state.
     var reschedule = {
         appointmentId: null,
-        patientId: null,
         patientName: '',
         appointmentTime: '',
         currentClinicianId: null,
@@ -966,7 +965,7 @@ $cpms_reception_cfg = [
         }
         var buttons = document.querySelectorAll('[data-role="sr-reschedule-slot"]');
         for (var i = 0; i < buttons.length; i += 1) {
-            buttons[i].disabled = reschedule.busy;
+            buttons[i].disabled = reschedule.busy || reschedule.done;
         }
     }
 
@@ -1264,7 +1263,6 @@ $cpms_reception_cfg = [
             section.hidden = true;
         }
         reschedule.appointmentId = null;
-        reschedule.patientId = null;
         reschedule.patientName = '';
         reschedule.appointmentTime = '';
         reschedule.currentClinicianId = null;
@@ -1302,7 +1300,9 @@ $cpms_reception_cfg = [
     }
 
     function rescheduleSelectSlot(button) {
-        if (reschedule.busy) {
+        // After a successful outcome the source row is no longer a booked row:
+        // the panel stays an honest terminal report until it is reopened.
+        if (reschedule.busy || reschedule.done) {
             return;
         }
         var id = Number(button.getAttribute('data-slot-id') || 0);
@@ -1360,7 +1360,7 @@ $cpms_reception_cfg = [
             } else if (code === 'CLINIC_DUPLICATE_IN_FLIGHT') {
                 setRescheduleState('درخواست قبلی همین جابه‌جایی در حال پردازش است — دوباره ارسال نکنید.', 'error');
             } else if (code === 'CLINIC_NOT_FOUND') {
-                setRescheduleState('این نوبت یا اسلات مقصد دیگر در همین موقعیت در دسترس نیست.', 'error', true);
+                setRescheduleState('این نوبت یا اسلات مقصد دیگر در همین موقعیت در دسترس نیست.', 'error');
             } else if (code === 'CLINIC_SCOPE_REQUIRED' || code === 'CLINIC_SCOPE_UNAVAILABLE') {
                 setRescheduleState('موقعیت عملیاتی معتبر این جابه‌جایی در دسترس نیست.', 'error');
             } else {
