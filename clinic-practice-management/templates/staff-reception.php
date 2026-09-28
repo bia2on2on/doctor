@@ -89,6 +89,13 @@ $cpms_reception_cfg = [
 .cpms-staff-reception .cpms-sr-btn { min-height: 40px; min-width: 96px; padding: 6px 14px; border: 1px solid var(--cpms-primary); border-radius: 8px; background: var(--cpms-primary); color: #fff; font-size: 0.9rem; cursor: pointer; }
 .cpms-staff-reception .cpms-sr-btn[disabled] { opacity: 0.55; cursor: default; }
 .cpms-staff-reception .cpms-sr-btn--ghost { background: #fff; color: var(--cpms-primary); }
+.cpms-staff-reception .cpms-sr-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.cpms-staff-reception .cpms-sr-cancel { display: grid; gap: 8px; padding: 8px 2px; }
+.cpms-staff-reception .cpms-sr-cancel[hidden], .cpms-staff-reception tr[data-role="sr-row-cancel"][hidden] { display: none; }
+.cpms-staff-reception .cpms-sr-cancel-hint { margin: 0; color: var(--cpms-muted); font-size: 0.88rem; }
+.cpms-staff-reception .cpms-sr-cancel-field { display: grid; gap: 4px; font-size: 0.88rem; }
+.cpms-staff-reception .cpms-sr-cancel-field input { min-height: 40px; padding: 6px 10px; border: 1px solid #c9ccd6; border-radius: 8px; }
+.cpms-staff-reception .cpms-sr-cancel-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .cpms-staff-reception .cpms-sr-status { font-size: 0.92rem; overflow-wrap: anywhere; }
 .cpms-staff-reception .cpms-sr-status--error { color: #a12828; }
 .cpms-staff-reception .cpms-sr-status--ok { color: var(--cpms-primary); }
@@ -497,11 +504,17 @@ $cpms_reception_cfg = [
             body.innerHTML = '<tr><td colspan="4" class="cpms-sr-empty">نوبتی برای امروز در این موقعیت ثبت نشده است.</td></tr>';
             return;
         }
-        var html = '';
-        for (var i = 0; i < rows.length; i += 1) {
-            var row = rows[i];
-            var canArrive = !row.visit_status && (row.status === 'pending' || row.status === 'confirmed');
-            var canRecover = row.visit_status === 'checked_in';
+            var html = '';
+            for (var i = 0; i < rows.length; i += 1) {
+                var row = rows[i];
+                var canArrive = !row.visit_status && (row.status === 'pending' || row.status === 'confirmed');
+                var canRecover = row.visit_status === 'checked_in';
+                // Presentation rule (not a second state machine): a booked row
+                // that has NOT entered the Visit/queue workflow yet is the only
+                // row offered cancellation. Rows already received / waiting /
+                // called / in consultation expose no cancel action — the
+                // backend stays authoritative for every refusal.
+                var canCancel = canArrive;
             // Presentation-only clarity: the real appointment state badge is
             // kept as-is; a booked row without a visit also shows that the
             // patient has NOT yet been received (no state semantics change).
@@ -515,12 +528,29 @@ $cpms_reception_cfg = [
             } else if (canArrive) {
                 action = '<button type="button" class="cpms-sr-btn" data-role="sr-arrive" data-patient-id="' + escapeHtml(row.patient_id) + '" data-appointment-id="' + escapeHtml(row.id) + '">حضوریافت / آماده شد</button>';
             }
+            var cancelAction = canCancel
+                ? '<button type="button" class="cpms-sr-btn cpms-sr-btn--ghost" data-role="sr-cancel-open" data-appointment-id="' + escapeHtml(row.id) + '">لغو نوبت</button>'
+                : '';
+            var cancelRow = canCancel
+                ? '<tr data-role="sr-row-cancel" data-appointment-id="' + escapeHtml(row.id) + '" hidden><td colspan="4">' +
+                    '<div class="cpms-sr-cancel" data-role="sr-cancel-form" data-appointment-id="' + escapeHtml(row.id) + '">' +
+                        '<p class="cpms-sr-cancel-hint">لغو این نوبت آن را از تختهٔ پذیرش خارج می‌کند و اسلات آزاد می‌شود. دلیل اختیاری است.</p>' +
+                        '<label class="cpms-sr-cancel-field">دلیل لغو (اختیاری)' +
+                            '<input type="text" data-role="sr-cancel-reason" autocomplete="off" placeholder="مثلاً: درخواست بیمار">' +
+                        '</label>' +
+                        '<div class="cpms-sr-cancel-actions">' +
+                            '<button type="button" class="cpms-sr-btn" data-role="sr-cancel-confirm" data-appointment-id="' + escapeHtml(row.id) + '">تأیید لغو نوبت</button>' +
+                            '<button type="button" class="cpms-sr-btn cpms-sr-btn--ghost" data-role="sr-cancel-abort" data-appointment-id="' + escapeHtml(row.id) + '">انصراف</button>' +
+                        '</div>' +
+                    '</div>' +
+                '</td></tr>'
+                : '';
             html += '<tr data-role="sr-row" data-appointment-id="' + escapeHtml(row.id) + '">' +
                 '<td data-role="sr-row-time">' + escapeHtml(row.time) + '</td>' +
                 '<td class="cpms-sr-name" data-role="sr-row-name">' + escapeHtml(row.patient_name) + express + '</td>' +
                 '<td data-role="sr-row-status">' + badge + '</td>' +
-                '<td data-role="sr-row-action">' + action + '</td>' +
-                '</tr>';
+                '<td data-role="sr-row-action"><div class="cpms-sr-actions">' + action + cancelAction + '</div></td>' +
+                '</tr>' + cancelRow;
         }
         body.innerHTML = html;
     }
@@ -668,12 +698,118 @@ $cpms_reception_cfg = [
             });
     }
 
+    // ---- Phase 11 Slice 6: cancel a booked appointment (trusted Location) ----
+    // One explicit mutation plus the EXISTING board refresh. The cancellation
+    // itself is the established staff-cancel service behind the Reception
+    // adapter — nothing about transitions, slot release, audit, notification or
+    // the active-Visit guard is re-implemented here. The reason is OPTIONAL and
+    // is sent as typed (server-side length policy stays authoritative).
+    var cancelBusy = false;
+
+    function cancelRowNode(appointmentId) {
+        return document.querySelector('[data-role="sr-row-cancel"][data-appointment-id="' + String(appointmentId) + '"]');
+    }
+
+    function cancelClose(appointmentId) {
+        var wrap = cancelRowNode(appointmentId);
+        if (wrap) {
+            wrap.hidden = true;
+            var reason = wrap.querySelector('[data-role="sr-cancel-reason"]');
+            if (reason) {
+                reason.value = '';
+            }
+        }
+    }
+
+    function cancelOpen(target) {
+        if (state.busy || cancelBusy) {
+            return;
+        }
+        var id = target.getAttribute('data-appointment-id');
+        if (!id) {
+            return;
+        }
+        // Only one open confirmation at a time.
+        var wrappers = document.querySelectorAll('[data-role="sr-row-cancel"]');
+        for (var i = 0; i < wrappers.length; i += 1) {
+            wrappers[i].hidden = true;
+        }
+        var wrap = cancelRowNode(id);
+        if (!wrap) {
+            return;
+        }
+        wrap.hidden = false;
+        setStatus('برای لغو، دلیل اختیاری را وارد کنید و «تأیید لغو نوبت» را بزنید.', null);
+        var reason = wrap.querySelector('[data-role="sr-cancel-reason"]');
+        if (reason) {
+            reason.focus();
+        }
+    }
+
+    function cancelSubmit(target) {
+        if (cancelBusy) {
+            return;
+        }
+        var id = target.getAttribute('data-appointment-id');
+        if (!id) {
+            return;
+        }
+        var wrap = cancelRowNode(id);
+        if (!wrap) {
+            return;
+        }
+        var reasonNode = wrap.querySelector('[data-role="sr-cancel-reason"]');
+        var reason = reasonNode ? String(reasonNode.value || '').trim() : '';
+        // Prevent double submit: no second request can leave this window, and
+        // the confirm button is disabled for the duration.
+        cancelBusy = true;
+        target.disabled = true;
+        setStatus('در حال لغو نوبت…', null);
+        var refreshed = false;
+        api('/staff/portal/reception/appointments/' + encodeURIComponent(id) + '/cancel', { method: 'POST', body: { reason: reason } })
+            .then(function (result) {
+                var data = payloadOf(result.body);
+                if (result.ok && data.appointment) {
+                    cancelClose(id);
+                    setStatus('نوبت لغو شد و از تختهٔ پذیرش خارج شد. اسلات آزاد شد؛ هیچ ویزیت یا صفی ایجاد نشد.', 'ok');
+                    refreshed = true;
+                    return loadBoard(true);
+                }
+                // Honest bounded error surface: an active Visit / already
+                // cancelled / out-of-scope row keeps its row and shows the
+                // server message — never a fake success.
+                setStatus('لغو نوبت انجام نشد: ' + errorMessageOf(result.body, ''), 'error', true);
+                refreshed = true;
+                return loadBoard(true);
+            })
+            .catch(function () {
+                setStatus('خطای شبکه هنگام لغو نوبت.', 'error');
+            })
+            .then(function () {
+                cancelBusy = false;
+                target.disabled = false;
+                if (!refreshed) {
+                    loadBoard(true);
+                }
+            });
+    }
+
     document.addEventListener('click', function (event) {
         var target = event.target;
         if (target && target.getAttribute) {
             var role = target.getAttribute('data-role');
             if (role === 'sr-arrive' || role === 'sr-recover') {
                 arrive(target);
+            }
+            if (role === 'sr-cancel-open') {
+                cancelOpen(target);
+            }
+            if (role === 'sr-cancel-confirm') {
+                cancelSubmit(target);
+            }
+            if (role === 'sr-cancel-abort') {
+                cancelClose(target.getAttribute('data-appointment-id'));
+                setStatus('', null);
             }
             if (role === 'sr-book-slot') {
                 bookSelectSlot(target);

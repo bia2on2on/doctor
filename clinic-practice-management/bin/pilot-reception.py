@@ -110,6 +110,13 @@ BOOKING = {
 }
 SLOTS_ROUTE = "/staff/portal/reception/slots"
 APPOINTMENTS_ROUTE = "/staff/portal/reception/appointments"
+_cx = parts("RECEPTION_CANCEL", 9)
+CANCEL = {
+    "c1": int(_cx[0]),
+    "slots": {"mobile-390": int(_cx[1]), "tablet-768": int(_cx[2]), "desktop-1366": int(_cx[3])},
+    "patients": {"mobile-390": int(_cx[4]), "tablet-768": int(_cx[5]), "desktop-1366": int(_cx[6])},
+    "mrn": {"mobile-390": _cx[7] + "MOBILE" + _cx[8], "tablet-768": _cx[7] + "TABLET" + _cx[8], "desktop-1366": _cx[7] + "DESKTOP" + _cx[8]},
+}
 _wi = parts("RECEPTION_WALKIN", 9)
 WALKIN = {
     "c1": int(_wi[0]),
@@ -1616,6 +1623,234 @@ def run_booking_journey(browser, vp):
         ctx.close()
 
 
+def cancel_posts(state):
+    return [
+        r
+        for r in state["rest"]
+        if r["method"] == "POST" and r["route"].startswith(APPOINTMENTS_ROUTE + "/") and r["route"].endswith("/cancel")
+    ]
+
+
+def wait_slot_absent(page, slot_id, timeout=15000):
+    page.wait_for_function(
+        """(id) => !Array.from(document.querySelectorAll('[data-role="sr-book-slot"]')).some((n) => n.getAttribute('data-slot-id') === String(id))""",
+        arg=int(slot_id),
+        timeout=timeout,
+    )
+
+
+def select_cancel_patient(page, tag):
+    search_input = page.locator('[data-role="sr-search-input"]')
+    search_input.fill("")
+    search_input.type(CANCEL["mrn"][tag], delay=10)
+    wait_search_state(page, "یافت شد")
+    pid = CANCEL["patients"][tag]
+    if pid not in search_result_ids(page):
+        raise RuntimeError(f"cancel patient {pid} must be found through the existing Clinic search")
+    page.locator(f'[data-role="sr-search-result"][data-patient-id="{pid}"]').click()
+    page.wait_for_selector('[data-role="sr-search-selected"]', state="visible", timeout=5000)
+    page.wait_for_selector('[data-role="sr-book"]', state="visible", timeout=5000)
+
+
+def run_cancel_journey(browser, vp):
+    """Slice 6: cancel a booked appointment at the trusted Location.
+
+    The journey books its own dedicated capacity-1 slot through the Slice 5 UI
+    (so the cancellation has a real, fully-claimed slot to release), then
+    cancels that row through the new Reception boundary: explicit action,
+    confirmation + OPTIONAL reason (empty on mobile), double-submit safety, one
+    explicit mutation, the row leaving the actionable board, the existing
+    patient selection preserved, no Visit/queue side effect, and the freed slot
+    offered again by the EXISTING bounded slot read.
+    """
+    tag = vp["vp"]
+    slot_id = CANCEL["slots"][tag]
+    patient_id = CANCEL["patients"][tag]
+    reason = "" if tag == "mobile-390" else f"لغو پذیرش {tag}"
+    key = f"reception-cancel-{tag}"
+    stage = "login"
+    ctx, page, state = new_page(browser, vp)
+    try:
+        login(page, SECRETARY)
+        stage = "reception-entry"
+        resp = harness_goto(page, RECEPTION_URL, wait_until="domcontentloaded")
+        if resp is None or resp.status != 200:
+            raise RuntimeError(f"reception entry status {getattr(resp, 'status', None)}")
+        page.wait_for_selector('[data-role="reception-app"]', state="attached", timeout=15000)
+        assert_reception_shell(page)
+        page.wait_for_selector('[data-role="sr-location-select"]', state="visible", timeout=15000)
+        select_location(page, PUB["loc_tehran"])
+        page.wait_for_selector('[data-role="sr-status"]', state="attached", timeout=15000)
+        page.wait_for_function(
+            """() => document.querySelectorAll('[data-role="sr-row"]').length > 0""",
+            timeout=15000,
+        )
+        rows_before = rows(page).count()
+        queue_before = page.locator('[data-role="sr-queue-row"]').count()
+        if rows_before < 1 or queue_before < 1:
+            raise RuntimeError(f"cancel journey expects booked rows and received queue rows, got {rows_before}/{queue_before}")
+
+        # Booked-not-received rows are the ONLY rows offered cancellation: a
+        # received/queue row (and a checked_in recovery row, when present) must
+        # carry no cancel control — the backend stays authoritative for every
+        # refusal, the board only presents the objectively appropriate action.
+        queue_rows = page.locator('[data-role="sr-queue-row"]')
+        for i in range(queue_rows.count()):
+            if queue_rows.nth(i).locator('[data-role="sr-cancel-open"]').count() != 0:
+                raise RuntimeError("queue rows must never expose a cancel action")
+        recover = page.locator('[data-role="sr-row"]:has([data-role="sr-recover"])')
+        for i in range(recover.count()):
+            if recover.nth(i).locator('[data-role="sr-cancel-open"]').count() != 0:
+                raise RuntimeError("a checked_in recovery row must not expose a cancel action")
+
+        stage = "book-owned-slot"
+        mark = nav_mark(page)
+        select_cancel_patient(page, tag)
+        page.wait_for_selector('[data-role="sr-book-clinician-wrap"]', state="visible", timeout=15000)
+        page.select_option('[data-role="sr-book-clinician"]', str(CANCEL["c1"]))
+        # BEFORE the appointment exists the dedicated capacity-1 slot is free…
+        wait_book_slot(page, slot_id)
+        page.locator(f'[data-role="sr-book-slot"][data-slot-id="{slot_id}"]').click()
+        with page.expect_response(lambda r: r.url and APPOINTMENTS_ROUTE in r.url and r.request.method == "POST", timeout=15000) as create_info:
+            page.locator('[data-role="sr-book-submit"]').click()
+        if create_info.value.status != 200:
+            raise RuntimeError(f"pre-cancel booking answered {create_info.value.status}")
+        create_data = create_info.value.json()
+        create_data = create_data.get("data", create_data) if isinstance(create_data, dict) else {}
+        appointment = create_data.get("appointment") or {}
+        appt_id = int(appointment.get("id") or 0)
+        if appointment.get("status") != "confirmed" or appt_id <= 0:
+            raise RuntimeError(f"cancel journey needs one confirmed booked row, got {appointment}")
+        # …fully claimed once the journey's own appointment holds it…
+        wait_slot_absent(page, slot_id)
+        wait_rows_count(page, rows_before + 1)
+        row = row_of(page, appt_id)
+        if row.count() != 1:
+            raise RuntimeError("the freshly booked row must appear on today's actionable board")
+        if row.locator('[data-role="sr-cancel-open"]').count() != 1:
+            raise RuntimeError("a booked-not-received row must expose exactly one explicit cancel action")
+        if row.locator('[data-role="sr-cancel-form"]').count() != 0:
+            raise RuntimeError("the confirmation/reason surface must stay closed until the cancel action is chosen")
+
+        stage = "open-confirmation"
+        page.locator(f'[data-role="sr-cancel-open"][data-appointment-id="{appt_id}"]').click()
+        form = page.locator(f'[data-role="sr-cancel-form"][data-appointment-id="{appt_id}"]')
+        if not form.is_visible():
+            raise RuntimeError("choosing Cancel must open the compact confirmation surface in place")
+        reason_input = page.locator(f'[data-role="sr-cancel-form"][data-appointment-id="{appt_id}"] [data-role="sr-cancel-reason"]')
+        if not reason_input.is_visible():
+            raise RuntimeError("the optional reason field must be visible")
+        if reason == "" and reason_input.input_value() != "":
+            raise RuntimeError("the optional reason must start empty")
+        if reason != "":
+            reason_input.fill(reason)
+        assert_no_horizontal_overflow(page, "cancel-confirm")
+        shot(page, f"reception-{tag}-cancel-confirm")
+
+        stage = "cancel-booked-row"
+        # Double-submit safety: two synchronous activations must still produce
+        # exactly ONE explicit mutation.
+        with page.expect_response(
+            lambda r: r.url and (APPOINTMENTS_ROUTE + "/" + str(appt_id) + "/cancel") in r.url and r.request.method == "POST",
+            timeout=15000,
+        ) as cancel_info:
+            page.evaluate(
+                """(id) => { const b = document.querySelector('[data-role="sr-cancel-confirm"][data-appointment-id="' + id + '"]'); b.click(); b.click(); }""",
+                appt_id,
+            )
+        page.wait_for_function(
+            """(id) => { const r = document.querySelector('[data-role="sr-row"][data-appointment-id="' + id + '"]'); return !r; }""",
+            arg=appt_id,
+            timeout=15000,
+        )
+        posts = cancel_posts(state)
+        if len(posts) != 1 or posts[0]["status"] != 200:
+            raise RuntimeError(f"one explicit cancel mutation expected, got {posts}")
+        if cancel_info.value.status != 200:
+            raise RuntimeError(f"reception cancel answered {cancel_info.value.status}")
+        cancel_json = cancel_info.value.json()
+        cancel_data = cancel_json.get("data", cancel_json) if isinstance(cancel_json, dict) else {}
+        cancelled = cancel_data.get("appointment") or {}
+        if sorted(cancel_data.keys()) != ["appointment", "reception"]:
+            raise RuntimeError(f"cancel response must stay bounded, got {sorted(cancel_data.keys())}")
+        if sorted(cancelled.keys()) != ["appointment_id", "status"] or int(cancelled.get("appointment_id") or 0) != appt_id:
+            raise RuntimeError(f"cancelled appointment view must carry only id+status, got {cancelled}")
+        if cancelled.get("status") != "cancelled_by_staff":
+            raise RuntimeError(f"the existing staff-cancel terminal state is expected, got {cancelled.get('status')}")
+        scope = cancel_data.get("reception") or {}
+        if int(scope.get("clinic_id") or 0) != PUB["clinic"] or int(scope.get("location_id") or 0) != PUB["loc_tehran"]:
+            raise RuntimeError(f"cancel response must echo the trusted server scope, got {scope}")
+        body = cancel_info.value.request.post_data_json
+        if not isinstance(body, dict):
+            raise RuntimeError("cancel request body unavailable for the optional-reason proof")
+        if str(body.get("reason") or "") != reason:
+            raise RuntimeError(f"the optional reason must be sent exactly as chosen, got {body}")
+        if "clinic_id" in body or "location_id" in body:
+            raise RuntimeError("raw clinic/location selectors must never be sent as authority")
+        wait_status_contains(page, "لغو شد")
+        wait_rows_count(page, rows_before)
+        if row_of(page, appt_id).count() != 0:
+            raise RuntimeError("the cancelled row must leave the actionable board")
+        # The cancellation is not an arrival: no queue/Visit row may appear and
+        # the unreceived state must not be re-created.
+        if page.locator('[data-role="sr-queue-row"]').count() != queue_before:
+            raise RuntimeError("cancellation must not create or alter a queue/Visit row")
+        # The unrelated patient selection survives the cancellation untouched.
+        selected = page.locator('[data-role="sr-search-selected"]')
+        if not selected.is_visible() or str(patient_id) not in (selected.inner_text() or ""):
+            raise RuntimeError("cancellation must not create/clear the unrelated patient selection")
+        assert_no_horizontal_overflow(page, "cancel-success")
+        shot(page, f"reception-{tag}-cancel-success")
+
+        stage = "slot-released-through-existing-read"
+        # Only the EXISTING bounded slot read can show the release: change the
+        # date away and back, then the freed capacity-1 slot must be offered.
+        page.select_option('[data-role="sr-book-date"]', BOOKING["tomorrow"])
+        wait_book_slot(page, BOOKING["slots"]["future"])
+        wait_slot_absent(page, slot_id)
+        page.select_option('[data-role="sr-book-date"]', PUB["today_tehran"])
+        wait_book_slot(page, slot_id)
+        if slot_id not in book_slot_ids(page):
+            raise RuntimeError("the released slot must be offered again by the existing slot read")
+        if page.locator('[data-role="sr-queue-row"]').count() != queue_before:
+            raise RuntimeError("the released slot must not create a Visit/queue row")
+        assert_no_horizontal_overflow(page, "cancel-slot-released")
+
+        stage = "writes-bounded"
+        writes = [r for r in state["rest"] if r["method"] != "GET"]
+        cancels = [r for r in writes if r["route"].endswith("/cancel")]
+        creates = [r for r in writes if r["route"].rstrip("/").endswith(APPOINTMENTS_ROUTE)]
+        if len(cancels) != 1 or len(creates) != 1 or len(writes) != 2:
+            raise RuntimeError(f"cancel journey must issue exactly one create and one cancel write, got {writes}")
+
+        rest_delta = assert_no_product_reload(page, mark, "cancel")
+        assert_authority_headers(state, PUB["clinic"], {PUB["loc_tehran"], PUB["loc_tokyo"]})
+        assert_hygiene(state, key)
+        ok(
+            key,
+            "reception cancel: explicit action + optional reason → booked row leaves the board, slot released, no Visit/queue",
+            f"vp={vp['vp']} reason={'empty' if reason == '' else 'supplied'} create_posts=1 cancel_posts=1 board_rows={rows_before}->{rows_before} queue_rows={queue_before} slot_reoffered=1 selection_kept=1 rest={rest_delta} reloaded=0 overflow=0",
+        )
+    except Exception as e:
+        try:
+            dump = {
+                "status": status_text(page)[:160],
+                "cancel_rows": page.locator('[data-role="sr-row-cancel"]').count(),
+                "rest_tail": [f"{r['method']} {r['route']}={r['status']}" for r in state["rest"][-12:]],
+            }
+            info(f"fail-dump {vp['vp']} stage={stage} {dump}")
+        except Exception:
+            pass
+        try:
+            shot(page, f"reception-FAIL-{key}-{stage}")
+        except Exception:
+            pass
+        fail(key, vp["vp"], f"{e} ({page_hint(page)})")
+        raise
+    finally:
+        ctx.close()
+
+
 def main():
     if not RECEPTION_URL or not STAFF_URL:
         raise SystemExit("RECEPTION_URL / STAFF_PORTAL_URL must be set by the fixture")
@@ -1670,6 +1905,15 @@ def main():
         for vp in VIEWPORTS:
             try:
                 run_booking_journey(browser, vp)
+            except Exception:
+                hard_fail = True
+        # Phase 11 Slice 6 — cancel a booked appointment at the trusted
+        # Location. Each journey books its own dedicated capacity-1 slot and
+        # then cancels it, so the board row count returns to what it was and the
+        # earlier journeys' invariants stay untouched.
+        for vp in VIEWPORTS:
+            try:
+                run_cancel_journey(browser, vp)
             except Exception:
                 hard_fail = True
         browser.close()

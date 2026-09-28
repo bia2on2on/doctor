@@ -340,6 +340,37 @@ foreach (['MOBILE', 'TABLET', 'DESKTOP'] as $bookingIndex => $bookingTag) {
     );
 }
 
+// Phase 11 Slice 6 — reception cancel stage: one dedicated ACTIVE patient and
+// one dedicated capacity-1 slot per viewport journey. No appointment row is
+// inserted here either: each journey first books through the real Slice 5 UI,
+// then cancels that booked row through the new boundary. This keeps the Slice 1
+// board invariant (four booked fixture rows) intact and makes the slot release
+// observable through the EXISTING bounded slot read: capacity 1 is fully claimed
+// by the journey's own appointment, so the freed slot can be proven only after
+// the cancellation actually happened.
+$cancelSlotIds = [];
+$cancelLateTimes = ['23:42:00', '23:44:00', '23:46:00'];
+foreach (['MOBILE', 'TABLET', 'DESKTOP'] as $cancelIndex => $cancelTag) {
+    $cancelTime = $lateToday
+        ? $cancelLateTimes[$cancelIndex]
+        : $nowTehran->add(new DateInterval('PT' . (105 + $cancelIndex * 20) . 'M'))->format('H:i:s');
+    $cancelSlotIds[$cancelTag] = rp_insert(
+        $wpdb,
+        'INSERT INTO ' . $db->table('cpms_schedule_slots') . ' (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, generated_from, created_at, updated_at) VALUES (%d, %d, %d, %s, %s, %d, %d, %d, %d, %d, %s, %s, %s)',
+        [$clinicId, $locTehran, $clinicianId, $todayTehran, $cancelTime, 20, 1, 0, 0, 1, 'manual', $now, $now],
+        'cancel slot ' . $cancelTag
+    );
+}
+$cancelPatients = [];
+foreach (['MOBILE', 'TABLET', 'DESKTOP'] as $cancelIndex => $cancelTag) {
+    $cancelPatients[$cancelTag] = rp_insert(
+        $wpdb,
+        'INSERT INTO ' . $db->table('cpms_patients') . ' (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, %s, %s, %s)',
+        [$clinicId, 'MR-RP-CX-' . $cancelTag . '-' . $uniq, 'Cancel', ucfirst(strtolower($cancelTag)), '0912' . sprintf('%06d', hexdec(substr($uniq, 0, 6)) % 1000000) . (string) ($cancelIndex + 6), 'active', $now, $now],
+        'cancel patient ' . $cancelTag
+    );
+}
+
 // The EXISTING per-Clinic two-stage knob: with auto-enqueue off, the reception
 // action runs the established check-in then the explicit enqueue transition —
 // the exact surface the partial-arrival acceptance covers (FR-6.1 keeps the
@@ -414,6 +445,17 @@ file_put_contents(
         'MR-RP-WI-',
         '-' . $uniq,
     ]) . "\n"
+    . 'RECEPTION_CANCEL=' . implode('|', [
+        (string) $clinicianId,
+        (string) $cancelSlotIds['MOBILE'],
+        (string) $cancelSlotIds['TABLET'],
+        (string) $cancelSlotIds['DESKTOP'],
+        (string) $cancelPatients['MOBILE'],
+        (string) $cancelPatients['TABLET'],
+        (string) $cancelPatients['DESKTOP'],
+        'MR-RP-CX-',
+        '-' . $uniq,
+    ]) . "\n"
 );
 
 echo 'fixture: reception clinic=' . $clinicId
@@ -421,4 +463,5 @@ echo 'fixture: reception clinic=' . $clinicId
     . ' appts=' . $apptExpress . ',' . $apptPlain . ',' . $apptThird . ',' . $apptPartial
     . ' today_tehran=' . $todayTehran . ' today_tokyo=' . $todayTokyo
     . ' search_probe=' . $probeId . ' foreign_probe=' . $foreignProbeId
-    . ' booking_slots=' . implode(',', $bookingSlotIds) . ' tomorrow_tehran=' . $tomorrowTehran . "\n";
+    . ' booking_slots=' . implode(',', $bookingSlotIds) . ' tomorrow_tehran=' . $tomorrowTehran
+    . ' cancel_slots=' . implode(',', $cancelSlotIds) . "\n";
