@@ -97,6 +97,7 @@ namespace ClinicCore\Tests\Integration;
 use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Application\Scope\ClinicScope;
 use ClinicCore\Application\Scope\SystemClinicResolver;
+use ClinicCore\Application\Visits\VisitService;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Sms\SmsEvents;
@@ -176,6 +177,7 @@ final class Phase11ReceptionAppointmentRescheduleRedTest extends WP_UnitTestCase
         App::resetScope();
         SystemClinicResolver::flush();
         Settings::flushCache();
+        VisitService::setTestNowUtc(null);
         App::migrations()->migrate();
     }
 
@@ -190,6 +192,7 @@ final class Phase11ReceptionAppointmentRescheduleRedTest extends WP_UnitTestCase
         App::resetScope();
         SystemClinicResolver::flush();
         Settings::flushCache();
+        VisitService::setTestNowUtc(null);
         parent::tearDown();
     }
 
@@ -625,7 +628,12 @@ final class Phase11ReceptionAppointmentRescheduleRedTest extends WP_UnitTestCase
         $fx = $this->stage('c6');
         $this->seedMembership($fx['secretary'], $fx['clinic'], 'cpms_secretary');
         wp_set_current_user($fx['secretary']);
-        $headers = $this->scopeHeaders($fx['clinic'], $fx['locA']);
+        $headers    = $this->scopeHeaders($fx['clinic'], $fx['locA']);
+        $nowUtc     = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+        VisitService::setTestNowUtc($nowUtc);
+        $localNow   = $nowUtc->setTimezone(new \DateTimeZone(self::TZ));
+        $today      = $localNow->format('Y-m-d');
+        $sourceTime = $localNow->format('H:i:00');
 
         // A. A pending source follows the EXISTING machine behaviour (T7 is
         //    confirmed-only) — bounded, honest, and mutating nothing.
@@ -654,10 +662,10 @@ final class Phase11ReceptionAppointmentRescheduleRedTest extends WP_UnitTestCase
 
         // C. An ACTIVE Visit (I-3) blocks honestly: no slot release, no
         //    destination appointment, no false success.
-        $p3                        = $this->insertPatient($fx['clinic'], 'c6c');
-        [$src3, $src3Date, $src3T] = $this->insertFutureSlot($fx['clinic'], $fx['locA'], $fx['c1'], 360, 1, ['booked' => 1]);
-        $appt3                     = $this->insertAppointment($fx['clinic'], $fx['locA'], $p3, $fx['c1'], $src3, $src3Date, $src3T, 'confirmed');
-        $visit                     = $this->insertLiveVisit($fx['clinic'], $fx['locA'], $fx['c1'], $p3, $appt3, $src3Date);
+        $p3    = $this->insertPatient($fx['clinic'], 'c6c');
+        $src3  = $this->insertSlot($fx['clinic'], $fx['locA'], $fx['c1'], $today, $sourceTime, 1, ['booked' => 1]);
+        $appt3 = $this->insertAppointment($fx['clinic'], $fx['locA'], $p3, $fx['c1'], $src3, $today, $sourceTime, 'confirmed');
+        $visit = $this->insertLiveVisit($fx['clinic'], $fx['locA'], $fx['c1'], $p3, $appt3, $today);
         [$dest3]                   = $this->insertFutureSlot($fx['clinic'], $fx['locA'], $fx['c1'], 420);
         $blocked                   = $this->reschedule($fx, $appt3, $fx['locA'], $fx['c1'], $dest3, $this->uuid());
         self::assertSame(409, $blocked->get_status(), 'C6: active Visit blocks the reschedule — ' . $this->errCode($blocked));

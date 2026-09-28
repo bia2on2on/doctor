@@ -75,6 +75,7 @@ namespace ClinicCore\Tests\Integration;
 
 use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Application\Scope\SystemClinicResolver;
+use ClinicCore\Application\Visits\VisitService;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Frontend\StaffPortalShell;
@@ -133,6 +134,7 @@ final class Phase11ReceptionAppointmentCancelRedTest extends WP_UnitTestCase
         App::resetScope();
         SystemClinicResolver::flush();
         Settings::flushCache();
+        VisitService::setTestNowUtc(null);
         App::migrations()->migrate();
     }
 
@@ -147,6 +149,7 @@ final class Phase11ReceptionAppointmentCancelRedTest extends WP_UnitTestCase
         App::resetScope();
         SystemClinicResolver::flush();
         Settings::flushCache();
+        VisitService::setTestNowUtc(null);
         parent::tearDown();
     }
 
@@ -451,15 +454,26 @@ final class Phase11ReceptionAppointmentCancelRedTest extends WP_UnitTestCase
         $this->seedMembership($fx['secretary'], $fx['clinic'], 'cpms_secretary');
         wp_set_current_user($fx['secretary']);
         $headers = $this->scopeHeaders($fx['clinic'], $fx['locA']);
-        $today   = $this->localDate(self::TZ);
+        $nowUtc  = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+        VisitService::setTestNowUtc($nowUtc);
+        $localNow = $nowUtc->setTimezone(new \DateTimeZone(self::TZ));
+        $today    = $localNow->format('Y-m-d');
+        $arrival  = $localNow->modify('+2 minutes');
+        if ($arrival->format('Y-m-d') !== $today) {
+            // Keep the appointment on this operational day and within the
+            // existing grace window when the test starts near local midnight.
+            $arrival = $localNow->modify('-2 minutes');
+        }
+        $arrivalTime = $arrival->format('H:i:00');
+        $cancelTime  = $arrival->modify('-1 minute')->format('H:i:00');
 
         $pCancel = $this->insertPatient($fx['clinic'], 'c6cancel');
-        $slotC   = $this->insertSlot($fx['clinic'], $fx['locA'], $fx['c1'], $today, '17:15:00', 1, ['booked' => 1]);
-        $apptC   = $this->insertAppointment($fx['clinic'], $fx['locA'], $pCancel, $fx['c1'], $slotC, $today, '17:15:00', 'confirmed');
+        $slotC   = $this->insertSlot($fx['clinic'], $fx['locA'], $fx['c1'], $today, $cancelTime, 1, ['booked' => 1]);
+        $apptC   = $this->insertAppointment($fx['clinic'], $fx['locA'], $pCancel, $fx['c1'], $slotC, $today, $cancelTime, 'confirmed');
 
         $pArrive = $this->insertPatient($fx['clinic'], 'c6arrive');
-        $slotK   = $this->insertSlot($fx['clinic'], $fx['locA'], $fx['c1'], $today, '18:15:00', 1, ['booked' => 1]);
-        $apptK   = $this->insertAppointment($fx['clinic'], $fx['locA'], $pArrive, $fx['c1'], $slotK, $today, '18:15:00', 'confirmed');
+        $slotK   = $this->insertSlot($fx['clinic'], $fx['locA'], $fx['c1'], $today, $arrivalTime, 1, ['booked' => 1]);
+        $apptK   = $this->insertAppointment($fx['clinic'], $fx['locA'], $pArrive, $fx['c1'], $slotK, $today, $arrivalTime, 'confirmed');
 
         $before = $this->boardAppointmentIds($this->dispatch('GET', self::BOARD, [], $headers));
         self::assertContains($apptC, $before, 'C6: both rows start on the board');
