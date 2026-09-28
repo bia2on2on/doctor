@@ -162,6 +162,31 @@ $cpms_reception_cfg = [
 .cpms-staff-reception .cpms-sr-book-state--error { color: #a12828; }
 .cpms-staff-reception .cpms-sr-book-state--ok { color: var(--cpms-primary); font-weight: bold; }
 .cpms-staff-reception .cpms-sr-book-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.cpms-staff-reception .cpms-sr-btn--reschedule { background: #fff; color: #2b5aa8; border-color: #2b5aa8; }
+.cpms-staff-reception .cpms-sr-reschedule[hidden] { display: none; }
+.cpms-staff-reception .cpms-sr-reschedule { display: grid; gap: 8px; }
+.cpms-staff-reception .cpms-sr-reschedule h2 { margin: 0; font-size: 1rem; }
+.cpms-staff-reception .cpms-sr-reschedule-meta { margin: 0; font-size: 0.86rem; color: var(--cpms-muted); overflow-wrap: anywhere; }
+.cpms-staff-reception .cpms-sr-reschedule-context { margin: 0; padding: 8px 10px; border: 1px solid var(--cpms-border); border-radius: 8px; background: #fafbfe; font-size: 0.9rem; overflow-wrap: anywhere; }
+.cpms-staff-reception .cpms-sr-reschedule-fields { display: flex; flex-wrap: wrap; gap: 10px; }
+.cpms-staff-reception .cpms-sr-reschedule-field { display: flex; flex-direction: column; gap: 4px; flex: 1 1 180px; min-width: 160px; max-width: 420px; font-size: 0.86rem; }
+.cpms-staff-reception .cpms-sr-reschedule-field select { min-height: 40px; width: 100%; box-sizing: border-box; padding: 6px 10px; border: 1px solid var(--cpms-border); border-radius: 8px; background: #fff; font-size: 0.95rem; }
+.cpms-staff-reception .cpms-sr-reschedule-field select:focus-visible { outline: 2px solid var(--cpms-primary); outline-offset: 1px; }
+.cpms-staff-reception .cpms-sr-reschedule-doctor { margin: 0; font-size: 0.92rem; overflow-wrap: anywhere; }
+.cpms-staff-reception .cpms-sr-reschedule-slots { margin: 0; padding: 8px; border: 1px solid var(--cpms-border); border-radius: 8px; }
+.cpms-staff-reception .cpms-sr-reschedule-slots legend { padding: 0 4px; font-size: 0.86rem; color: var(--cpms-muted); }
+.cpms-staff-reception .cpms-sr-reschedule-slots-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.cpms-staff-reception .cpms-sr-reschedule-slot { min-height: 40px; padding: 6px 10px; border: 1px solid var(--cpms-border); border-radius: 8px; background: #fff; font-size: 0.92rem; cursor: pointer; }
+.cpms-staff-reception .cpms-sr-reschedule-slot[aria-pressed="true"] { border-color: #2b5aa8; background: #eff4fc; font-weight: bold; }
+.cpms-staff-reception .cpms-sr-reschedule-slot:focus-visible { outline: 2px solid var(--cpms-primary); outline-offset: 1px; }
+.cpms-staff-reception .cpms-sr-reschedule-slot:disabled { opacity: 0.6; cursor: not-allowed; }
+.cpms-staff-reception .cpms-sr-reschedule-slot-cap { display: block; font-size: 0.75rem; color: var(--cpms-muted); font-weight: normal; }
+.cpms-staff-reception .cpms-sr-reschedule-empty { margin: 0; font-size: 0.88rem; color: var(--cpms-muted); }
+.cpms-staff-reception .cpms-sr-reschedule-selected { margin: 0; min-height: 1.3em; font-size: 0.88rem; color: var(--cpms-primary); }
+.cpms-staff-reception .cpms-sr-reschedule-state { margin: 0; min-height: 1.3em; font-size: 0.88rem; overflow-wrap: anywhere; }
+.cpms-staff-reception .cpms-sr-reschedule-state--error { color: #a12828; }
+.cpms-staff-reception .cpms-sr-reschedule-state--ok { color: var(--cpms-primary); font-weight: bold; }
+.cpms-staff-reception .cpms-sr-reschedule-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 @media (max-width: 768px) {
     .cpms-staff-reception .cpms-sr-top { flex-direction: column; align-items: stretch; }
     .cpms-staff-reception .cpms-sr-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -294,6 +319,35 @@ $cpms_reception_cfg = [
         <p class="cpms-sr-book-state" data-role="sr-book-state" role="status" aria-live="polite"></p>
         <div class="cpms-sr-book-actions">
             <button type="button" class="cpms-sr-btn" data-role="sr-book-submit" disabled>ثبت نوبت</button>
+        </div>
+    </section>
+
+    <section class="cpms-sr-panel cpms-sr-reschedule" data-section="sr-reschedule" aria-labelledby="cpms-sr-reschedule-title" hidden>
+        <div class="cpms-sr-reschedule" data-role="sr-reschedule-form">
+            <h2 id="cpms-sr-reschedule-title">جابه‌جایی نوبت</h2>
+            <p class="cpms-sr-reschedule-meta">جابه‌جایی فقط داخل همین موقعیت عملیاتی انجام می‌شود؛ اسلات مقصد باید از پیش ساخته‌شده و آزاد باشد و هیچ ویزیت، صف، ورود حضوری یا پرداختی ایجاد نمی‌شود. همین موقعیتِ فعال: <strong data-role="sr-reschedule-context-scope">—</strong></p>
+            <p class="cpms-sr-reschedule-context" data-role="sr-reschedule-context" role="note">—</p>
+            <div class="cpms-sr-reschedule-fields">
+                <label class="cpms-sr-reschedule-field" for="cpms-sr-reschedule-clinician" data-role="sr-reschedule-clinician-wrap" hidden>
+                    <span>پزشک مقصد</span>
+                    <select id="cpms-sr-reschedule-clinician" data-role="sr-reschedule-clinician"></select>
+                </label>
+                <label class="cpms-sr-reschedule-field" for="cpms-sr-reschedule-date" data-role="sr-reschedule-date-wrap" hidden>
+                    <span>تاریخ</span>
+                    <select id="cpms-sr-reschedule-date" data-role="sr-reschedule-date"></select>
+                </label>
+            </div>
+            <p class="cpms-sr-reschedule-doctor" data-role="sr-reschedule-doctor" hidden></p>
+            <fieldset class="cpms-sr-reschedule-slots">
+                <legend>ساعت آزادِ مقصد — فقط اسلات‌های از پیش ساخته‌شدهٔ همین موقعیت</legend>
+                <div class="cpms-sr-reschedule-slots-list" data-role="sr-reschedule-slots" role="group" aria-label="ساعت‌های آزادِ قابل انتخاب"></div>
+            </fieldset>
+            <p class="cpms-sr-reschedule-selected" data-role="sr-reschedule-selected"></p>
+            <p class="cpms-sr-reschedule-state" data-role="sr-reschedule-state" role="status" aria-live="polite"></p>
+            <div class="cpms-sr-reschedule-actions">
+                <button type="button" class="cpms-sr-btn" data-role="sr-reschedule-confirm" disabled>تأیید جابه‌جایی نوبت</button>
+                <button type="button" class="cpms-sr-btn cpms-sr-btn--ghost" data-role="sr-reschedule-abort">انصراف</button>
+            </div>
         </div>
     </section>
 
@@ -531,6 +585,19 @@ $cpms_reception_cfg = [
             var cancelAction = canCancel
                 ? '<button type="button" class="cpms-sr-btn cpms-sr-btn--ghost" data-role="sr-cancel-open" data-appointment-id="' + escapeHtml(row.id) + '">لغو نوبت</button>'
                 : '';
+            // Phase 11 Slice 7 — presentation rule only (never a second state
+            // machine): the existing T7 machine reschedules a CONFIRMED row and
+            // the I-3 guard blocks a row with an active Visit, so the explicit
+            // reschedule action is offered ONLY on a confirmed, not-yet-received
+            // row. `doctor` carries the current clinician SELECTOR (id + name)
+            // from the bounded day projection so the panel can show the current
+            // context and pre-select that doctor when still eligible — the server
+            // re-resolves every clinician on every mutation.
+            var doctor = doctorsOf(row.id);
+            var canReschedule = !row.visit_status && row.status === 'confirmed';
+            var rescheduleAction = canReschedule
+                ? '<button type="button" class="cpms-sr-btn cpms-sr-btn--reschedule" data-role="sr-reschedule-open" data-appointment-id="' + escapeHtml(row.id) + '" data-patient-id="' + escapeHtml(row.patient_id) + '" data-patient-name="' + escapeHtml(row.patient_name) + '" data-appointment-time="' + escapeHtml(row.time) + '" data-clinician-id="' + escapeHtml(doctor.id) + '" data-clinician-name="' + escapeHtml(doctor.name) + '">جابه‌جایی نوبت</button>'
+                : '';
             var cancelRow = canCancel
                 ? '<tr data-role="sr-row-cancel" data-appointment-id="' + escapeHtml(row.id) + '" hidden><td colspan="4">' +
                     '<div class="cpms-sr-cancel" data-role="sr-cancel-form" data-appointment-id="' + escapeHtml(row.id) + '">' +
@@ -549,7 +616,7 @@ $cpms_reception_cfg = [
                 '<td data-role="sr-row-time">' + escapeHtml(row.time) + '</td>' +
                 '<td class="cpms-sr-name" data-role="sr-row-name">' + escapeHtml(row.patient_name) + express + '</td>' +
                 '<td data-role="sr-row-status">' + badge + '</td>' +
-                '<td data-role="sr-row-action"><div class="cpms-sr-actions">' + action + cancelAction + '</div></td>' +
+                '<td data-role="sr-row-action"><div class="cpms-sr-actions">' + action + rescheduleAction + cancelAction + '</div></td>' +
                 '</tr>' + cancelRow;
         }
         body.innerHTML = html;
@@ -576,7 +643,29 @@ $cpms_reception_cfg = [
         body.innerHTML = html;
     }
 
+    // Phase 11 Slice 7 — bounded appointment→clinician labels shipped with the
+    // EXISTING board read (one projection, no extra request): used only as a
+    // display selector for the reschedule panel context.
+    var dayDoctors = {};
+
+    function doctorsIndex(data) {
+        dayDoctors = {};
+        var rows = data && Array.isArray(data.clinicians) ? data.clinicians : [];
+        for (var i = 0; i < rows.length; i += 1) {
+            var row = rows[i] || {};
+            dayDoctors[String(row.appointment_id)] = {
+                id: row.clinician_id ? Number(row.clinician_id) : null,
+                name: String(row.clinician_name || '')
+            };
+        }
+    }
+
+    function doctorsOf(appointmentId) {
+        return dayDoctors[String(appointmentId)] || { id: null, name: '' };
+    }
+
     function renderBoard(data) {
+        doctorsIndex(data);
         state.date = data.date || null;
         if (data.location_id) {
             state.locationId = Number(data.location_id);
@@ -794,6 +883,529 @@ $cpms_reception_cfg = [
             });
     }
 
+    // ---- Phase 11 Slice 7: reschedule a booked appointment (trusted Location) ----
+    // ONE explicit mutation plus the EXISTING board refresh. The reschedule is
+    // the established staff contract behind this Reception adapter — the machine
+    // transition, replacement appointment, slot locking/release/claim, capacity,
+    // Clinic horizon, audit, reminder cancellation, notification/SMS and
+    // idempotency storage all stay server-side. The destination is ALWAYS a
+    // persisted slot of the CURRENT trusted operational Location picked from the
+    // existing Slice 5 read; the panel never lists another Location, never keeps
+    // a stale slot after the doctor/date changes, and never synthesizes state.
+    var reschedule = {
+        appointmentId: null,
+        patientId: null,
+        patientName: '',
+        appointmentTime: '',
+        currentClinicianId: null,
+        currentClinicianName: '',
+        locationId: null,
+        clinicians: [],
+        clinicianId: null,
+        days: [],
+        date: null,
+        slots: [],
+        slotId: null,
+        seq: 0,
+        busy: false,
+        done: false,
+        idemKey: null
+    };
+
+    function rescheduleSection() {
+        return document.querySelector('[data-section="sr-reschedule"]');
+    }
+
+    function setRescheduleState(text, kind) {
+        var node = el('sr-reschedule-state');
+        if (!node) {
+            return;
+        }
+        node.textContent = text || '';
+        node.className = 'cpms-sr-reschedule-state' + (kind === 'error' ? ' cpms-sr-reschedule-state--error' : (kind === 'ok' ? ' cpms-sr-reschedule-state--ok' : ''));
+    }
+
+    /** استثنای کدپیگیری: یک کلید UUID برای هر تلاشِ صریح؛ همان کلید در تکرارِ
+     * همان تلاش (خطای شبکه) دوباره فرستاده می‌شود و سرور مالک PENDING/Replay است. */
+    function rescheduleIdemKey() {
+        if (!reschedule.idemKey) {
+            if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+                reschedule.idemKey = String(window.crypto.randomUUID());
+            } else {
+                var bytes = new Uint8Array(16);
+                window.crypto.getRandomValues(bytes);
+                bytes[6] = (bytes[6] & 0x0f) | 0x40;
+                bytes[8] = (bytes[8] & 0x3f) | 0x80;
+                var hex = '';
+                for (var i = 0; i < 16; i += 1) {
+                    hex += (bytes[i] + 0x100).toString(16).slice(1);
+                }
+                reschedule.idemKey = hex.slice(0, 8) + '-' + hex.slice(8, 12) + '-' + hex.slice(12, 16) + '-' + hex.slice(16, 20) + '-' + hex.slice(20);
+            }
+        }
+        return reschedule.idemKey;
+    }
+
+    function rescheduleSync() {
+        var confirm = el('sr-reschedule-confirm');
+        if (confirm) {
+            confirm.disabled = reschedule.busy || reschedule.done || !reschedule.appointmentId || !reschedule.clinicianId || !reschedule.slotId ||
+                !reschedule.locationId || String(reschedule.locationId) !== String(state.locationId || reschedule.locationId);
+        }
+        var clinician = el('sr-reschedule-clinician');
+        var date = el('sr-reschedule-date');
+        var abort = el('sr-reschedule-abort');
+        if (clinician) {
+            clinician.disabled = reschedule.busy;
+        }
+        if (date) {
+            date.disabled = reschedule.busy;
+        }
+        if (abort) {
+            abort.disabled = reschedule.busy && !reschedule.done;
+        }
+        var buttons = document.querySelectorAll('[data-role="sr-reschedule-slot"]');
+        for (var i = 0; i < buttons.length; i += 1) {
+            buttons[i].disabled = reschedule.busy;
+        }
+    }
+
+    function rescheduleContext(scopeName) {
+        var parts = [];
+        if (reschedule.patientName) {
+            parts.push('بیمار: ' + reschedule.patientName);
+        }
+        if (reschedule.appointmentTime) {
+            parts.push('ساعت فعلی: ' + reschedule.appointmentTime);
+        }
+        if (reschedule.currentClinicianName) {
+            parts.push('پزشک فعلی: ' + reschedule.currentClinicianName);
+        } else if (reschedule.currentClinicianId) {
+            parts.push('پزشک فعلی: #' + reschedule.currentClinicianId);
+        }
+        var node = el('sr-reschedule-context');
+        if (node) {
+            node.textContent = parts.length ? parts.join(' — ') : '—';
+        }
+        var scope = el('sr-reschedule-context-scope');
+        if (scope) {
+            scope.textContent = String(scopeName || state.locationName || '—');
+        }
+    }
+
+    function rescheduleRenderSlots() {
+        var list = el('sr-reschedule-slots');
+        if (!list) {
+            return;
+        }
+        if (!reschedule.slots.length) {
+            list.innerHTML = '<p class="cpms-sr-reschedule-empty" data-role="sr-reschedule-slots-empty">برای این پزشک در این تاریخ ساعت آزادی در همین موقعیت ثبت نشده است.</p>';
+            return;
+        }
+        var html = '';
+        for (var i = 0; i < reschedule.slots.length; i += 1) {
+            var slot = reschedule.slots[i];
+            var pressed = reschedule.slotId && String(reschedule.slotId) === String(slot.slot_id) ? 'true' : 'false';
+            html += '<button type="button" class="cpms-sr-reschedule-slot" data-role="sr-reschedule-slot" data-slot-id="' + escapeHtml(slot.slot_id) + '" aria-pressed="' + pressed + '">' +
+                escapeHtml(slot.time) +
+                '<span class="cpms-sr-reschedule-slot-cap">ظرفیت باقی‌مانده ' + faDigits(slot.capacity_left) + ' · ' + faDigits(slot.duration_min) + ' دقیقه</span>' +
+                '</button>';
+        }
+        list.innerHTML = html;
+    }
+
+    function rescheduleRenderDays() {
+        var select = el('sr-reschedule-date');
+        var wrap = el('sr-reschedule-date-wrap');
+        if (!select || !wrap) {
+            return;
+        }
+        if (!reschedule.days.length) {
+            select.innerHTML = '';
+            wrap.hidden = true;
+            return;
+        }
+        var html = '';
+        for (var i = 0; i < reschedule.days.length; i += 1) {
+            var day = reschedule.days[i];
+            html += '<option value="' + escapeHtml(day.date) + '"' + (String(day.date) === String(reschedule.date) ? ' selected' : '') + '>' + escapeHtml(day.jalali) + '</option>';
+        }
+        select.innerHTML = html;
+        select.value = String(reschedule.date || reschedule.days[0].date);
+        wrap.hidden = false;
+    }
+
+    function rescheduleRenderSelected() {
+        var node = el('sr-reschedule-selected');
+        if (!node) {
+            return;
+        }
+        var chosen = null;
+        for (var i = 0; i < reschedule.slots.length; i += 1) {
+            if (Number(reschedule.slots[i].slot_id) === Number(reschedule.slotId)) {
+                chosen = reschedule.slots[i];
+            }
+        }
+        node.textContent = chosen ? ('اسلات مقصد انتخاب شد: ' + reschedule.date + ' ساعت ' + chosen.time + ' — برای ثبت، «تأیید جابه‌جایی نوبت» را بزنید.') : '';
+    }
+
+    function rescheduleClearSlots() {
+        reschedule.seq += 1;
+        reschedule.slots = [];
+        reschedule.slotId = null;
+        reschedule.idemKey = null;
+        rescheduleRenderSlots();
+        rescheduleRenderSelected();
+        rescheduleSync();
+    }
+
+    function rescheduleLoadSlots(preserveMessage) {
+        preserveMessage = Boolean(preserveMessage);
+        if (!reschedule.appointmentId || !reschedule.clinicianId) {
+            return;
+        }
+        reschedule.seq += 1;
+        var seq = reschedule.seq;
+        reschedule.slots = [];
+        reschedule.slotId = null;
+        rescheduleRenderSlots();
+        rescheduleRenderSelected();
+        rescheduleSync();
+        if (!preserveMessage) {
+            setRescheduleState('در حال بارگذاری ساعت‌های آزاد همین موقعیت…', null);
+        }
+        var path = '/staff/portal/reception/slots' + (CONFIG.restRoot.indexOf('?') === -1 ? '?' : '&') +
+            'clinician_id=' + encodeURIComponent(String(reschedule.clinicianId)) +
+            (reschedule.date ? '&date=' + encodeURIComponent(String(reschedule.date)) : '');
+        api(path).then(function (result) {
+            if (seq !== reschedule.seq) {
+                return;
+            }
+            if (!result.ok) {
+                setRescheduleState(errorCodeOf(result.body) === 'CLINIC_SCOPE_REQUIRED' ? 'ابتدا موقعیت عملیاتی را انتخاب کنید.' : errorMessageOf(result.body, 'بارگذاری ساعت‌های آزاد انجام نشد.'), 'error');
+                return;
+            }
+            var data = payloadOf(result.body);
+            reschedule.locationId = data.location_id ? Number(data.location_id) : null;
+            reschedule.days = Array.isArray(data.days) ? data.days : [];
+            reschedule.slots = Array.isArray(data.slots) ? data.slots : [];
+            reschedule.date = data.date ? String(data.date) : null;
+            rescheduleRenderDays();
+            rescheduleRenderSlots();
+            rescheduleRenderSelected();
+            if (!reschedule.locationId) {
+                setRescheduleState('موقعیت عملیاتی فعالی در دسترس نیست — جابه‌جایی ممکن نیست.', 'error');
+            } else if (!preserveMessage && !reschedule.slots.length) {
+                setRescheduleState('برای این پزشک در این تاریخ ساعت آزادی ثبت نشده است — پزشک یا تاریخ دیگری را انتخاب کنید.', null);
+            } else if (!preserveMessage) {
+                setRescheduleState('یک ساعت آزاد را انتخاب کنید و سپس «تأیید جابه‌جایی نوبت» را بزنید.', null);
+            }
+            rescheduleSync();
+        }).catch(function () {
+            if (seq === reschedule.seq) {
+                setRescheduleState('خطای شبکه هنگام بارگذاری ساعت‌های آزاد.', 'error');
+            }
+        });
+    }
+
+    function rescheduleRenderClinicians() {
+        var wrap = el('sr-reschedule-clinician-wrap');
+        var select = el('sr-reschedule-clinician');
+        var doctor = el('sr-reschedule-doctor');
+        reschedule.clinicianId = null;
+        if (!reschedule.clinicians.length) {
+            if (select) {
+                select.innerHTML = '';
+            }
+            if (wrap) {
+                wrap.hidden = true;
+            }
+            if (doctor) {
+                doctor.hidden = true;
+            }
+            setRescheduleState('پزشکی برای این موقعیت در دسترس نیست — جابه‌جایی ممکن نیست.', 'error');
+            rescheduleSync();
+            return;
+        }
+        if (reschedule.clinicians.length === 1) {
+            reschedule.clinicianId = Number(reschedule.clinicians[0].id);
+            if (select) {
+                select.innerHTML = '';
+            }
+            if (wrap) {
+                wrap.hidden = true;
+            }
+            if (doctor) {
+                doctor.textContent = 'پزشک مقصد: ' + String(reschedule.clinicians[0].name || '') + ' (تنها پزشک در دسترس این موقعیت — خودکار انتخاب شد)';
+                doctor.hidden = false;
+            }
+            setRescheduleState('', null);
+            rescheduleSync();
+            rescheduleLoadSlots();
+            return;
+        }
+        var selected = '';
+        var html = '<option value="">— انتخاب پزشک —</option>';
+        for (var i = 0; i < reschedule.clinicians.length; i += 1) {
+            var id = Number(reschedule.clinicians[i].id);
+            // پزشک فعلیِ همین نوبت اگر هنوز واجد شرایط همین موقعیت باشد، از ابتدا
+            // در فهرست قابل انتخاب است (انتخاب صریح، بدون تغییر خودکار مقصد).
+            if (reschedule.currentClinicianId && id === Number(reschedule.currentClinicianId)) {
+                selected = String(id);
+            }
+            html += '<option value="' + escapeHtml(id) + '">' + escapeHtml(reschedule.clinicians[i].name) + '</option>';
+        }
+        if (select) {
+            select.innerHTML = html;
+            select.value = selected;
+        }
+        if (wrap) {
+            wrap.hidden = false;
+        }
+        if (selected) {
+            reschedule.clinicianId = Number(selected);
+        }
+        if (doctor) {
+            doctor.hidden = true;
+            doctor.textContent = '';
+        }
+        setRescheduleState(selected ? 'در حال بارگذاری ساعت‌های آزاد همین موقعیت…' : 'پزشک مقصد را انتخاب کنید تا ساعت‌های آزاد همان پزشک در همین موقعیت بارگذاری شود.', null);
+        rescheduleSync();
+        if (reschedule.clinicianId) {
+            rescheduleLoadSlots();
+        }
+    }
+
+    function rescheduleLoadClinicians() {
+        if (!reschedule.appointmentId) {
+            return;
+        }
+        reschedule.seq += 1;
+        var seq = reschedule.seq;
+        reschedule.clinicians = [];
+        reschedule.clinicianId = null;
+        reschedule.days = [];
+        reschedule.date = null;
+        reschedule.slots = [];
+        reschedule.slotId = null;
+        reschedule.done = false;
+        reschedule.idemKey = null;
+        var wrap = el('sr-reschedule-clinician-wrap');
+        var select = el('sr-reschedule-clinician');
+        var doctor = el('sr-reschedule-doctor');
+        if (select) {
+            select.innerHTML = '';
+        }
+        if (wrap) {
+            wrap.hidden = true;
+        }
+        if (doctor) {
+            doctor.hidden = true;
+        }
+        var dateWrap = el('sr-reschedule-date-wrap');
+        if (dateWrap) {
+            dateWrap.hidden = true;
+        }
+        rescheduleRenderSlots();
+        rescheduleRenderSelected();
+        setRescheduleState('در حال بارگذاری پزشکان همین موقعیت…', null);
+        api('/staff/portal/reception/clinicians').then(function (result) {
+            if (seq !== reschedule.seq) {
+                return;
+            }
+            if (!result.ok) {
+                setRescheduleState(errorCodeOf(result.body) === 'CLINIC_SCOPE_REQUIRED' ? 'ابتدا موقعیت عملیاتی را انتخاب کنید.' : errorMessageOf(result.body, 'بارگذاری پزشکان انجام نشد.'), 'error');
+                return;
+            }
+            var data = payloadOf(result.body);
+            reschedule.locationId = data.location_id ? Number(data.location_id) : null;
+            reschedule.clinicians = Array.isArray(data.clinicians) ? data.clinicians : [];
+            rescheduleContext(data.location_name || state.locationName || '');
+            rescheduleRenderClinicians();
+        }).catch(function () {
+            if (seq === reschedule.seq) {
+                setRescheduleState('خطای شبکه هنگام بارگذاری پزشکان.', 'error');
+            }
+        });
+    }
+
+    function rescheduleOpen(target) {
+        if (state.busy || reschedule.busy) {
+            return;
+        }
+        var id = target.getAttribute('data-appointment-id');
+        if (!id) {
+            return;
+        }
+        // فقط یک تأیید باز در هر لحظه (لغو هم بسته می‌شود).
+        var wrappers = document.querySelectorAll('[data-role="sr-row-cancel"]');
+        for (var i = 0; i < wrappers.length; i += 1) {
+            wrappers[i].hidden = true;
+        }
+        var section = rescheduleSection();
+        reschedule.appointmentId = Number(id);
+        reschedule.patientName = String(target.getAttribute('data-patient-name') || '');
+        reschedule.appointmentTime = String(target.getAttribute('data-appointment-time') || '');
+        reschedule.currentClinicianId = Number(target.getAttribute('data-clinician-id') || 0) || null;
+        reschedule.currentClinicianName = String(target.getAttribute('data-clinician-name') || '');
+        if (section) {
+            section.hidden = false;
+        }
+        setStatus('', null);
+        setRescheduleState('', null);
+        rescheduleContext('');
+        rescheduleLoadClinicians();
+    }
+
+    function rescheduleAbort() {
+        reschedule.seq += 1;
+        var section = rescheduleSection();
+        if (section) {
+            section.hidden = true;
+        }
+        reschedule.appointmentId = null;
+        reschedule.patientId = null;
+        reschedule.patientName = '';
+        reschedule.appointmentTime = '';
+        reschedule.currentClinicianId = null;
+        reschedule.currentClinicianName = '';
+        reschedule.locationId = null;
+        reschedule.clinicians = [];
+        reschedule.clinicianId = null;
+        reschedule.days = [];
+        reschedule.date = null;
+        reschedule.slots = [];
+        reschedule.slotId = null;
+        reschedule.done = false;
+        reschedule.idemKey = null;
+        var select = el('sr-reschedule-clinician');
+        if (select) {
+            select.innerHTML = '';
+        }
+        var wrap = el('sr-reschedule-clinician-wrap');
+        if (wrap) {
+            wrap.hidden = true;
+        }
+        var doctor = el('sr-reschedule-doctor');
+        if (doctor) {
+            doctor.hidden = true;
+            doctor.textContent = '';
+        }
+        var dateWrap = el('sr-reschedule-date-wrap');
+        if (dateWrap) {
+            dateWrap.hidden = true;
+        }
+        rescheduleRenderSlots();
+        rescheduleRenderSelected();
+        setRescheduleState('', null);
+        rescheduleSync();
+    }
+
+    function rescheduleSelectSlot(button) {
+        if (reschedule.busy) {
+            return;
+        }
+        var id = Number(button.getAttribute('data-slot-id') || 0);
+        if (!id) {
+            return;
+        }
+        reschedule.slotId = id;
+        reschedule.done = false;
+        reschedule.idemKey = null;
+        var buttons = document.querySelectorAll('[data-role="sr-reschedule-slot"]');
+        for (var i = 0; i < buttons.length; i += 1) {
+            buttons[i].setAttribute('aria-pressed', Number(buttons[i].getAttribute('data-slot-id') || 0) === id ? 'true' : 'false');
+        }
+        rescheduleRenderSelected();
+        setRescheduleState('', null);
+        rescheduleSync();
+    }
+
+    function rescheduleSubmit() {
+        if (reschedule.busy || reschedule.done || !reschedule.appointmentId || !reschedule.clinicianId || !reschedule.slotId) {
+            return;
+        }
+        if (state.locationId && reschedule.locationId && String(reschedule.locationId) !== String(state.locationId)) {
+            rescheduleLoadClinicians();
+            return;
+        }
+        reschedule.busy = true;
+        rescheduleSync();
+        var seq = reschedule.seq;
+        var refreshedAfterSubmit = false;
+        setRescheduleState('در حال جابه‌جایی نوبت…', null);
+        api('/staff/portal/reception/appointments/' + encodeURIComponent(String(reschedule.appointmentId)) + '/reschedule', {
+            method: 'POST',
+            headers: { 'Idempotency-Key': rescheduleIdemKey() },
+            body: { clinician_id: reschedule.clinicianId, slot_id: reschedule.slotId }
+        }).then(function (result) {
+            if (seq !== reschedule.seq) {
+                return null;
+            }
+            var data = payloadOf(result.body);
+            var code = errorCodeOf(result.body);
+            if (result.ok && data.appointment) {
+                var appt = data.appointment;
+                reschedule.done = true;
+                reschedule.slotId = null;
+                setRescheduleState('نوبت جابه‌جا شد: ' + String(appt.jalali || '') + ' ساعت ' + String(appt.time || '') + ' — کد پیگیری ' + String(appt.reference_code || '') + ' (تاییدشده). هیچ ویزیت، صف، ورود حضوری یا پرداختی ایجاد نشد.', 'ok');
+            } else if (code === 'HAS_ACTIVE_VISIT') {
+                setRescheduleState('این نوبت ویزیت فعال دارد و جابه‌جا نمی‌شود — وضعیت ویزیت را بررسی کنید.', 'error');
+            } else if (code === 'CLINIC_INVALID_TRANSITION' || code === 'CLINIC_CANCEL_NOT_ALLOWED') {
+                setRescheduleState('این وضعیت نوبت اجازهٔ جابه‌جایی نمی‌دهد؛ تخته تازه‌سازی می‌شود.', 'error');
+            } else if (code === 'CLINIC_SLOT_TAKEN') {
+                setRescheduleState('ظرفیت این ساعت پر شده است — فهرست ساعت‌ها تازه‌سازی شد، ساعت دیگری انتخاب کنید.', 'error');
+            } else if (code === 'CLINIC_POLICY_VIOLATION') {
+                setRescheduleState('این ساعت دیگر در بازهٔ مجاز جابه‌جایی نیست — فهرست ساعت‌ها تازه‌سازی شد.', 'error');
+            } else if (code === 'CLINIC_DUPLICATE_IN_FLIGHT') {
+                setRescheduleState('درخواست قبلی همین جابه‌جایی در حال پردازش است — دوباره ارسال نکنید.', 'error');
+            } else if (code === 'CLINIC_NOT_FOUND') {
+                setRescheduleState('این نوبت یا اسلات مقصد دیگر در همین موقعیت در دسترس نیست.', 'error', true);
+            } else if (code === 'CLINIC_SCOPE_REQUIRED' || code === 'CLINIC_SCOPE_UNAVAILABLE') {
+                setRescheduleState('موقعیت عملیاتی معتبر این جابه‌جایی در دسترس نیست.', 'error');
+            } else {
+                setRescheduleState('جابه‌جایی نوبت انجام نشد: ' + errorMessageOf(result.body, 'خطای نامشخص'), 'error');
+            }
+            refreshedAfterSubmit = true;
+            rescheduleLoadSlots(true);
+            return loadBoard(true);
+        }).catch(function () {
+            if (seq === reschedule.seq) {
+                setRescheduleState('خطای شبکه هنگام جابه‌جایی نوبت — همان کلید دوباره ارسال می‌شود.', 'error');
+            }
+        }).then(function () {
+            reschedule.busy = false;
+            rescheduleSync();
+            if (!refreshedAfterSubmit) {
+                return loadBoard(true);
+            }
+            return null;
+        });
+    }
+
+    (function bindReschedule() {
+        var clinician = el('sr-reschedule-clinician');
+        if (clinician) {
+            clinician.addEventListener('change', function () {
+                reschedule.clinicianId = clinician.value ? Number(clinician.value) : null;
+                reschedule.date = null;
+                rescheduleClearSlots();
+                setRescheduleState(reschedule.clinicianId ? '' : 'انتخاب پزشک مقصد الزامی است.', null);
+                if (reschedule.clinicianId) {
+                    rescheduleLoadSlots();
+                }
+            });
+        }
+        var date = el('sr-reschedule-date');
+        if (date) {
+            date.addEventListener('change', function () {
+                reschedule.date = date.value ? String(date.value) : null;
+                rescheduleClearSlots();
+                rescheduleLoadSlots();
+            });
+        }
+    }());
+
     document.addEventListener('click', function (event) {
         var target = event.target;
         if (target && target.getAttribute) {
@@ -811,6 +1423,18 @@ $cpms_reception_cfg = [
                 cancelClose(target.getAttribute('data-appointment-id'));
                 setStatus('', null);
             }
+            if (role === 'sr-reschedule-open') {
+                rescheduleOpen(target);
+            }
+            if (role === 'sr-reschedule-slot') {
+                rescheduleSelectSlot(target);
+            }
+            if (role === 'sr-reschedule-confirm') {
+                rescheduleSubmit();
+            }
+            if (role === 'sr-reschedule-abort') {
+                rescheduleAbort();
+            }
             if (role === 'sr-book-slot') {
                 bookSelectSlot(target);
             }
@@ -822,6 +1446,9 @@ $cpms_reception_cfg = [
         if (target && target.getAttribute && target.getAttribute('data-role') === 'sr-location-select') {
             state.locationId = Number(target.value || 0);
             state.locationName = '';
+            // A Location switch invalidates the panel: the destination is ALWAYS
+            // the CURRENT trusted Location — nothing switches automatically.
+            rescheduleAbort();
             setStatus('در حال بارگذاری…', null);
             loadBoard(false);
             // Phase 11 Slice 4: a Location change invalidates the doctor list and

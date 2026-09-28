@@ -221,6 +221,17 @@ final class App
             1,
             3
         );
+        // Phase 11 Slice 7 — the same narrow, route-local rule for the reception
+        // reschedule route: it derives trusted Clinic + operational Location from
+        // the server-side reception scope only, so raw `clinic_id`/`location_id`
+        // request parameters are removed for that ONE route before authority
+        // establishment. RestClinicContext itself stays untouched.
+        add_filter(
+            'rest_request_before_callbacks',
+            [ReceptionPortalController::class, 'reception_reschedule_ignore_scope_selectors'],
+            1,
+            3
+        );
         // Keep the route-specific denial metadata hook alive across REST server resets in WP tests.
         add_filter(
             'rest_request_before_callbacks',
