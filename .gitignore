@@ -8,3 +8,6 @@ vendor/
 clinic-practice-management/dist/
 clinic-practice-management/pilot-screenshots/
 clinic-practice-management/pilot-responsive-results.json
+# Python bytecode از اجرای ابزارهای محلی (pilot/fixture): هرگز commit نمی‌شود
+__pycache__/
+*.pyc
