@@ -1871,9 +1871,12 @@ def run_cancel_journey(browser, vp):
         # The fixture uses the existing journey's supported next-day option
         # when same-day slots cannot retain a deterministic midnight runway.
         date_select = page.locator('[data-role="sr-book-date"]')
+        cancel_date_option = date_select.locator(f'option[value="{CANCEL["date"]}"]')
+        # Selecting the clinician initiates the first slot read, whose response
+        # supplies the selectable dates; wait for that server-owned option
+        # instead of racing the initial availability request.
+        cancel_date_option.wait_for(state="attached", timeout=15000)
         if date_select.input_value() != CANCEL["date"]:
-            if date_select.locator(f'option[value="{CANCEL["date"]}"]').count() != 1:
-                raise RuntimeError(f"cancel slot date must be an existing selectable booking day: {CANCEL['date']}")
             date_select.select_option(CANCEL["date"])
         # BEFORE the appointment exists the dedicated capacity-1 slot is free…
         wait_book_slot(page, slot_id)
