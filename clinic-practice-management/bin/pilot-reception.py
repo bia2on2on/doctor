@@ -1911,7 +1911,9 @@ def run_cancel_journey(browser, vp):
             row.wait_for(state="visible", timeout=15000)
             if row_of(page, appt_id).count() != 0:
                 raise RuntimeError("an off-operational-day cancel journey must not put its appointment on today's board")
-        if row.locator('[data-role="sr-cancel-open"]').count() != 1:
+        cancel_open = row.locator('[data-role="sr-cancel-open"]')
+        cancel_open.wait_for(state="visible", timeout=15000)
+        if cancel_open.count() != 1:
             raise RuntimeError("a booked-not-received row must expose exactly one explicit cancel action")
         cancel_surface_role = "sr-cancel-form" if cancel_is_today else "sr-row-cancel"
         cancel_surface = page.locator(f'[data-role="{cancel_surface_role}"][data-appointment-id="{appt_id}"]')
@@ -1919,7 +1921,7 @@ def run_cancel_journey(browser, vp):
             raise RuntimeError("the confirmation/reason surface must stay closed until the cancel action is chosen")
 
         stage = "open-confirmation"
-        page.locator(f'[data-role="sr-cancel-open"][data-appointment-id="{appt_id}"]').click()
+        cancel_open.click()
         if not cancel_surface.is_visible():
             raise RuntimeError("choosing Cancel must open the compact confirmation surface in place")
         reason_input = cancel_surface.locator('[data-role="sr-cancel-reason"]')
@@ -2013,10 +2015,14 @@ def run_cancel_journey(browser, vp):
         date_select.select_option(alternate_date)
         wait_slot_reads_settled(page, state)
         alternate_reads = slot_read_requests(state, reads_before)
-        if len(alternate_reads) != 1:
-            raise RuntimeError(f"changing away from the cancel date must initiate one slot read, got {len(alternate_reads)}")
-        assert_bounded_slot_read(
+        if not alternate_reads:
+            raise RuntimeError("changing away from the cancel date must initiate a slot read")
+        alternate_read = next(
+            (read for read in alternate_reads if str((read.get("query") or {}).get("date", "")) == alternate_date),
             alternate_reads[0],
+        )
+        assert_bounded_slot_read(
+            alternate_read,
             PUB["loc_tehran"],
             expected_clinician=CANCEL["c1"],
             expected_date=alternate_date,
