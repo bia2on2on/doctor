@@ -196,8 +196,8 @@ if ( empty( $cpms_staff_embed ) ) {
             </div>
         </form>
     </section>
-    <!-- Phase 12 Slice 5 — read-only receipt of a NORMAL fully settled invoice.
-        It is only ever filled from the server's durable settlement truth, and
+    <!-- Phase 12 Slice 5 — read-only receipt of a NORMAL fully paid invoice.
+        It is only ever filled from the server's durable payment truth, and
         it is printed through the browser's own print path; there is no
         mutation, no server-side document and no other finance action here. -->
     <section class="cpms-finance-board__panel" data-role="finance-receipt" aria-label="رسید پرداخت" hidden>
@@ -439,7 +439,7 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
                 var invoiceCell = renderInvoice(visit.invoice);
                 var remaining = visit.invoice ? String(visit.invoice.remaining) : '';
                 var currency = visit.invoice ? String(visit.invoice.currency) : '';
-                // A settled row always offers the read-only receipt; checkout
+                // A fully paid row always offers the read-only receipt; checkout
                 // stays exactly the Slice 4 write control it was.
                 var receiptCell = visit.invoice && String(visit.invoice.status) === 'paid'
                     ? '<button type="button" class="cpms-finance-board__action" data-role="finance-receipt-open" data-visit-id="' + Number(visit.visit_id) + '" data-patient="' + esc(visit.patient_name) + '">رسید</button>'
@@ -498,7 +498,7 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
         return labels[method] || method;
     }
     // The receipt body is a bounded projection of the server's durable
-    // settlement truth; every value is escaped and nothing beyond the printed
+    // payment truth; every value is escaped and nothing beyond the printed
     // receipt fields is rendered.
     function renderReceipt(receipt) {
         var totals = receipt.totals || {};
@@ -539,7 +539,7 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
                 var code = result.body && result.body.code || '';
                 if (code === 'CLINIC_RECEIPT_NOT_ELIGIBLE') {
                     // Fail closed: accounting history that cannot be proven as
-                    // the normal settled path is never turned into a receipt.
+                    // the normal fully paid path is never turned into a receipt.
                     closeReceipt();
                     setStatus('رسید این فاکتور در دسترس نیست؛ مسیر تسویهٔ عادی و کامل آن قابل اثبات نیست.', 'error');
                     return;

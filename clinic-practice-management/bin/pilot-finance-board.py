@@ -15,12 +15,14 @@ full settlement, is the checked-out target), with the explicit confirmation
 step, a deliberate double submit (the UI guard keeps one request), and
 persistence verified against server truth after a reload. Settlement never
 auto-checks-out; the unrelated fixture paid row is untouched.
-Phase 12 Slice 5 — read-only printable receipt of the NORMAL fully settled
+Phase 12 Slice 5 — read-only printable receipt of the NORMAL fully paid
 invoice: the affordance (one receipt control per settled row) at all three
-viewports, the receipt opened from server truth for an invoice issued AND
-settled through this run (every value a projection of durable rows), and the
-browser `window.print()` path invoked with the receipt surface isolated while
-proving no mutation request is issued. No server-side document is produced.
+viewports, the receipt opened from server truth for the durable invoice behind
+the visit settled through this run (durable invoice number, stored total,
+every recorded manual payment, zero balance, Location-local Jalali dates), and
+the browser `window.print()` path invoked with the receipt surface isolated
+while proving no mutation request is issued. No server-side document is
+produced.
 
 The harness reuses the EXISTING pilot gate entry point (fixture + Playwright in
 the responsive job); no new browser infrastructure is added. Pixels are emitted
@@ -47,6 +49,7 @@ NO_INVOICE_PATIENT = os.environ["FINANCE_BOARD_NO_INVOICE_PATIENT"]
 ELIGIBLE_PATIENT = os.environ["FINANCE_BOARD_ELIGIBLE_PATIENT"]
 PAYMENT_PATIENT = os.environ["FINANCE_BOARD_PAYMENT_PATIENT"]
 CHECKOUT_PATIENT = os.environ["FINANCE_BOARD_CHECKOUT_PATIENT"]
+CAPTURE_INVOICE = os.environ["FINANCE_BOARD_CAPTURE_INVOICE"]
 VIEWPORTS = [
     ("mobile", 390, 844),
     ("tablet", 768, 1024),
@@ -472,14 +475,14 @@ with sync_playwright() as playwright:
     )
 
     # ------------------------------------------------------------------
-    # Phase 12 Slice 5 — read-only printable receipt of the NORMAL fully
-    # settled invoice behind the visit that was issued and settled through
-    # THIS run, and the browser print path invoked without any mutation.
+    # Phase 12 Slice 5 — read-only printable receipt of the NORMAL fully paid
+    # invoice behind the visit that was settled through THIS run, and the
+    # browser print path invoked without any mutation.
     # ------------------------------------------------------------------
     receipt_panel = open_receipt(page, settled_paid_row)
     require(receipt_panel.is_visible(), "slice5: the receipt panel opens from server truth")
     receipt_text = receipt_panel.locator('[data-role="finance-receipt-body"]').inner_text()
-    require("INV-" in receipt_text, "slice5: the receipt shows the server-issued invoice number")
+    require(CAPTURE_INVOICE in receipt_text, "slice5: the receipt shows the durable server-issued invoice number")
     require(PAYMENT_TOTAL in receipt_text, "slice5: the receipt shows the issued total 500000.00")
     require("نقد" in receipt_text and "ثبت دستی" in receipt_text, "slice5: every recorded manual method of this settlement is shown")
     require("0.00" in receipt_text, "slice5: the receipt shows the settled zero balance")
@@ -508,7 +511,7 @@ with sync_playwright() as playwright:
     )
     require(not receipt_mutations, "slice5: opening and printing the receipt issues no mutation request")
     require(
-        "INV-" in receipt_panel.locator('[data-role="finance-receipt-body"]').inner_text(),
+        CAPTURE_INVOICE in receipt_panel.locator('[data-role="finance-receipt-body"]').inner_text(),
         "slice5: the printed receipt is still the server truth after the print call",
     )
     receipt_panel.locator('[data-role="finance-receipt-close"]').click()
