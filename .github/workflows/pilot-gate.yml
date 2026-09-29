@@ -1466,6 +1466,26 @@ jobs:
           cat /tmp/doctor-portal.env >> "$GITHUB_ENV"
           grep '^DOCTOR_PORTAL_PUBLIC=' /tmp/doctor-portal.env
 
+      - name: Phase 12 Finance board fixture — awaiting-payment rows + invoice/no-invoice
+        run: |
+          WP_HOME="$WP_DIR" php tests/fixtures/pilot-finance-board-fixture.php 2>&1 | tee /tmp/finance-board-fixture.log
+          test "${PIPESTATUS[0]}" -eq 0
+          test -s /tmp/finance-board.env
+          cat /tmp/finance-board.env >> "$GITHUB_ENV"
+          grep '^FINANCE_BOARD_URL=' /tmp/finance-board.env
+
+      - name: Phase 12 Finance board — real browser (390×844, 768×1024, 1366×768)
+        env:
+          BASE: http://localhost:8080
+        run: |
+          python3 -m py_compile bin/pilot-finance-board.py
+          python3 bin/pilot-finance-board.py | tee /tmp/finance-board-browser.log
+          BROWSER_EXIT="${PIPESTATUS[0]}"
+          if [ "${BROWSER_EXIT}" != "0" ]; then
+            echo "::error::finance-board-browser failed: exit=${BROWSER_EXIT} fails=$(grep '^FAIL' /tmp/finance-board-browser.log 2>/dev/null | wc -l) fail_lines=$(grep '^FAIL' /tmp/finance-board-browser.log 2>/dev/null | tr '\n' '~' | head -c 2500)"
+          fi
+          test "${BROWSER_EXIT}" -eq 0
+
       - name: Doctor Portal — real browser (390×844, 768×1024, 1366×768)
         env:
           BASE: http://localhost:8080

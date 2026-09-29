@@ -97,6 +97,7 @@ namespace ClinicCore\Tests\Integration;
 use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Application\Scope\ClinicScope;
 use ClinicCore\Application\Scope\SystemClinicResolver;
+use ClinicCore\Application\Visits\VisitService;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Sms\SmsEvents;
@@ -176,6 +177,7 @@ final class Phase11ReceptionAppointmentRescheduleRedTest extends WP_UnitTestCase
         App::resetScope();
         SystemClinicResolver::flush();
         Settings::flushCache();
+        VisitService::setTestNowUtc(null);
         App::migrations()->migrate();
     }
 
@@ -190,6 +192,7 @@ final class Phase11ReceptionAppointmentRescheduleRedTest extends WP_UnitTestCase
         App::resetScope();
         SystemClinicResolver::flush();
         Settings::flushCache();
+        VisitService::setTestNowUtc(null);
         parent::tearDown();
     }
 
@@ -201,7 +204,7 @@ final class Phase11ReceptionAppointmentRescheduleRedTest extends WP_UnitTestCase
         $this->seedMembership($fx['secretary'], $fx['clinic'], 'cpms_secretary');
         wp_set_current_user($fx['secretary']);
         $headers = $this->scopeHeaders($fx['clinic'], $fx['locA']);
-        $today   = $this->localDate(self::TZ);
+        [$today] = $this->pinTodayBoardClock();
 
         // UI — Reception carries the compact reschedule surface inside the booked board.
         $html = $this->renderReception($fx['secretary']);
@@ -219,7 +222,9 @@ final class Phase11ReceptionAppointmentRescheduleRedTest extends WP_UnitTestCase
 
         // The booked row is on the actionable board for the trusted Location.
         $patient                       = $this->insertPatient($fx['clinic'], 'c1');
-        [$source, $srcDate, $sourceT]  = $this->insertFutureSlot($fx['clinic'], $fx['locA'], $fx['c1'], 120, 1, ['booked' => 1]);
+        $srcDate = $today;
+        $sourceT = '09:00:00';
+        $source  = $this->insertSlot($fx['clinic'], $fx['locA'], $fx['c1'], $srcDate, $sourceT, 1, ['booked' => 1]);
         $appt                          = $this->insertAppointment($fx['clinic'], $fx['locA'], $patient, $fx['c1'], $source, $srcDate, $sourceT, 'confirmed');
         [$dest, $destDate, $destT]     = $this->insertFutureSlot($fx['clinic'], $fx['locA'], $fx['c2'], 160);
         self::assertContains($appt, $this->boardAppointmentIds($this->dispatch('GET', self::BOARD, [], $headers)), 'C1: the booked row is actionable on the board');
@@ -625,7 +630,12 @@ final class Phase11ReceptionAppointmentRescheduleRedTest extends WP_UnitTestCase
         $fx = $this->stage('c6');
         $this->seedMembership($fx['secretary'], $fx['clinic'], 'cpms_secretary');
         wp_set_current_user($fx['secretary']);
-        $headers = $this->scopeHeaders($fx['clinic'], $fx['locA']);
+        $headers    = $this->scopeHeaders($fx['clinic'], $fx['locA']);
+        $nowUtc     = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+        VisitService::setTestNowUtc($nowUtc);
+        $localNow   = $nowUtc->setTimezone(new \DateTimeZone(self::TZ));
+        $today      = $localNow->format('Y-m-d');
+        $sourceTime = $localNow->format('H:i:00');
 
         // A. A pending source follows the EXISTING machine behaviour (T7 is
         //    confirmed-only) — bounded, honest, and mutating nothing.
@@ -654,10 +664,10 @@ final class Phase11ReceptionAppointmentRescheduleRedTest extends WP_UnitTestCase
 
         // C. An ACTIVE Visit (I-3) blocks honestly: no slot release, no
         //    destination appointment, no false success.
-        $p3                        = $this->insertPatient($fx['clinic'], 'c6c');
-        [$src3, $src3Date, $src3T] = $this->insertFutureSlot($fx['clinic'], $fx['locA'], $fx['c1'], 360, 1, ['booked' => 1]);
-        $appt3                     = $this->insertAppointment($fx['clinic'], $fx['locA'], $p3, $fx['c1'], $src3, $src3Date, $src3T, 'confirmed');
-        $visit                     = $this->insertLiveVisit($fx['clinic'], $fx['locA'], $fx['c1'], $p3, $appt3, $src3Date);
+        $p3    = $this->insertPatient($fx['clinic'], 'c6c');
+        $src3  = $this->insertSlot($fx['clinic'], $fx['locA'], $fx['c1'], $today, $sourceTime, 1, ['booked' => 1]);
+        $appt3 = $this->insertAppointment($fx['clinic'], $fx['locA'], $p3, $fx['c1'], $src3, $today, $sourceTime, 'confirmed');
+        $visit = $this->insertLiveVisit($fx['clinic'], $fx['locA'], $fx['c1'], $p3, $appt3, $today);
         [$dest3]                   = $this->insertFutureSlot($fx['clinic'], $fx['locA'], $fx['c1'], 420);
         $blocked                   = $this->reschedule($fx, $appt3, $fx['locA'], $fx['c1'], $dest3, $this->uuid());
         self::assertSame(409, $blocked->get_status(), 'C6: active Visit blocks the reschedule — ' . $this->errCode($blocked));
@@ -684,12 +694,14 @@ final class Phase11ReceptionAppointmentRescheduleRedTest extends WP_UnitTestCase
         $this->seedMembership($fx['secretary'], $fx['clinic'], 'cpms_secretary');
         wp_set_current_user($fx['secretary']);
         $headers = $this->scopeHeaders($fx['clinic'], $fx['locA']);
-        $today   = $this->localDate(self::TZ);
+        [$today, $tomorrow] = $this->pinTodayBoardClock();
 
         // A. Same-day destination: the old row leaves today's board and the new
         //    confirmed row appears through the EXISTING board read.
         $p1                            = $this->insertPatient($fx['clinic'], 'c7a');
-        [$src1, $src1Date, $src1T]     = $this->insertFutureSlot($fx['clinic'], $fx['locA'], $fx['c1'], 120, 1, ['booked' => 1]);
+        $src1Date = $today;
+        $src1T    = '09:00:00';
+        $src1     = $this->insertSlot($fx['clinic'], $fx['locA'], $fx['c1'], $src1Date, $src1T, 1, ['booked' => 1]);
         $appt1                         = $this->insertAppointment($fx['clinic'], $fx['locA'], $p1, $fx['c1'], $src1, $src1Date, $src1T, 'confirmed');
         [$dest1, $dest1Date, $dest1T]  = $this->insertFutureSlot($fx['clinic'], $fx['locA'], $fx['c2'], 180);
         self::assertContains($appt1, $this->boardAppointmentIds($this->dispatch('GET', self::BOARD, [], $headers)), 'C7: the old row starts on the board');
@@ -715,10 +727,12 @@ final class Phase11ReceptionAppointmentRescheduleRedTest extends WP_UnitTestCase
 
         // B. Future destination: the old row leaves today's board and the future
         //    appointment does NOT appear on today's board.
-        $p2                        = $this->insertPatient($fx['clinic'], 'c7b');
-        [$src2, $src2Date, $src2T] = $this->insertFutureSlot($fx['clinic'], $fx['locA'], $fx['c1'], 240, 1, ['booked' => 1]);
-        $appt2                     = $this->insertAppointment($fx['clinic'], $fx['locA'], $p2, $fx['c1'], $src2, $src2Date, $src2T, 'confirmed');
-        $futureDate                = $this->localDate(self::TZ, '+1 day');
+        $p2        = $this->insertPatient($fx['clinic'], 'c7b');
+        $src2Date  = $today;
+        $src2T     = '09:30:00';
+        $src2      = $this->insertSlot($fx['clinic'], $fx['locA'], $fx['c1'], $src2Date, $src2T, 1, ['booked' => 1]);
+        $appt2     = $this->insertAppointment($fx['clinic'], $fx['locA'], $p2, $fx['c1'], $src2, $src2Date, $src2T, 'confirmed');
+        $futureDate                = $tomorrow;
         $dest2                     = $this->insertSlot($fx['clinic'], $fx['locA'], $fx['c1'], $futureDate, '09:00:00', 1);
 
         $future = $this->reschedule($fx, $appt2, $fx['locA'], $fx['c1'], $dest2, $this->uuid());
@@ -749,10 +763,13 @@ final class Phase11ReceptionAppointmentRescheduleRedTest extends WP_UnitTestCase
         $this->seedMembership($fx['secretary'], $fx['clinic'], 'cpms_secretary');
         wp_set_current_user($fx['secretary']);
         $headers = $this->scopeHeaders($fx['clinic'], $fx['locA']);
+        [$today, $tomorrow] = $this->pinTodayBoardClock();
 
         // Slice 1 — Arrival Board: a booked row is received into the queue.
         $p1                        = $this->insertPatient($fx['clinic'], 'c8board');
-        [$s1, $s1Date, $s1T]       = $this->insertFutureSlot($fx['clinic'], $fx['locA'], $fx['c1'], 120);
+        $s1Date                    = $today;
+        $s1T                       = '09:00:00';
+        $s1                        = $this->insertSlot($fx['clinic'], $fx['locA'], $fx['c1'], $s1Date, $s1T, 1);
         $a1                        = $this->insertAppointment($fx['clinic'], $fx['locA'], $p1, $fx['c1'], $s1, $s1Date, $s1T, 'confirmed');
         $board                     = $this->dispatch('GET', self::BOARD, [], $headers);
         self::assertSame(200, $board->get_status(), 'C8: the Slice 1 board answers');
@@ -784,7 +801,6 @@ final class Phase11ReceptionAppointmentRescheduleRedTest extends WP_UnitTestCase
         self::assertSame(0, $this->appointmentCountForPatient($p4), 'C8: walk-in still creates no appointment');
 
         // Slice 5 — appointment create from an already-generated persisted slot.
-        $tomorrow = $this->localDate(self::TZ, '+1 day');
         $slot5    = $this->insertSlot($fx['clinic'], $fx['locA'], $fx['c1'], $tomorrow, '09:00:00', 2);
         $read5    = $this->dispatch('GET', self::SLOTS, ['clinician_id' => $fx['c1'], 'date' => $tomorrow], $headers);
         self::assertSame(200, $read5->get_status(), 'C8: the Slice 5 slot read answers — ' . $this->errCode($read5));
@@ -1166,6 +1182,24 @@ final class Phase11ReceptionAppointmentRescheduleRedTest extends WP_UnitTestCase
         sort($ids);
 
         return $ids;
+    }
+
+    /**
+     * Pin today's Reception board date to a stable morning instant and return
+     * that operational date plus its next local date. Board-source fixtures use
+     * future morning slots so they remain eligible and visible at any wall time.
+     *
+     * @return array{0: string, 1: string}
+     */
+    private function pinTodayBoardClock(): array
+    {
+        $timezone = new \DateTimeZone(self::TZ);
+        $nowUtc   = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+        $today    = $nowUtc->setTimezone($timezone)->format('Y-m-d');
+        $fixedUtc = (new \DateTimeImmutable($today . ' 08:00:00', $timezone))->setTimezone(new \DateTimeZone('UTC'));
+        VisitService::setTestNowUtc($fixedUtc);
+
+        return [$today, $fixedUtc->setTimezone($timezone)->modify('+1 day')->format('Y-m-d')];
     }
 
     /** Location-local date in the given IANA frame (never UTC/WP/PHP ambient). */

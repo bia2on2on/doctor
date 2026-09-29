@@ -425,13 +425,13 @@ ROLE_SWITCH_MARKERS = ("role-switcher", "role_switcher", "switch-role", "switch_
 
 
 def assert_staff_shell(page):
-    """Shared Staff Portal container with ONLY the delivered doctor module."""
+    """Doctor shell plus the existing-capability Finance read module."""
     if page.locator("html").get_attribute("data-cpms-staff-portal-shell") != "v1":
         raise RuntimeError("shared Staff Portal shell root missing")
-    modules = page.locator("[data-cpms-staff-module]")
+    modules = page.locator('[data-role="staff-module-link"]')
     ids = [modules.nth(i).get_attribute("data-cpms-staff-module") for i in range(modules.count())]
-    if ids != ["doctor"]:
-        raise RuntimeError(f"staff navigation must expose exactly the doctor module, got {ids}")
+    if ids != ["doctor", "finance"]:
+        raise RuntimeError(f"staff navigation must expose doctor + authorized finance modules, got {ids}")
     if not modules.first.is_visible():
         raise RuntimeError("doctor module navigation entry is not visible")
     if page.locator('script[type="application/json"][class*="__config"]').count() != 1:
@@ -2833,19 +2833,14 @@ def prove_legacy(browser, doctor, vp):
 
 
 def _assert_no_doctor_module(page, label, allow_reception=False):
-    """No DOCTOR module for non-doctors. Phase 11 Slice 1: the same secretary is
-    now legitimately reception-eligible on the canonical staff portal, so the
-    secretary-canonical stage may see exactly the reception module — the doctor
-    module stays forbidden there (legacy boundary: this changes no legacy
-    wp-admin/Doctor Portal semantics)."""
-    modules = page.locator("[data-cpms-staff-module]")
+    """Legacy denies doctor content; canonical Secretary may see authorized modules."""
+    modules = page.locator('[data-role="staff-module-link"]')
     ids = [modules.nth(i).get_attribute("data-cpms-staff-module") for i in range(modules.count())]
     if allow_reception:
-        foreign = [i for i in ids if i != "reception"]
-        if foreign:
-            raise RuntimeError(f"{label} exposes a non-reception module {ids}")
+        if ids != ["reception", "finance"]:
+            raise RuntimeError(f"{label} must expose reception + authorized finance modules, got {ids}")
     elif ids:
-        raise RuntimeError(f"{label} exposes a Staff Portal module {ids}")
+        raise RuntimeError(f"{label} exposes Staff Portal navigation modules {ids}")
     if page.locator("#cpms-doctor-portal-app").count() != 0:
         raise RuntimeError(f"{label} renders the doctor operational module")
     if page.locator('[data-shell-user="doctor"]').count() != 0:

@@ -87,6 +87,15 @@
 | D17 | `GET /invoices/{id}/receipt` | `cpms_invoice_read` | رسید **JSON ساخت‌یافته + نمای چاپ UI (window.print)** — Deterministic (M-5) + تاریخ جلالی؛ PDF سمت سرور = Backlog (بدون Dependency جدید) |
 | D18 | `GET /finance/summary?from&to` | `cpms_finance_read` | آمار مالی (Revenue, By-Method, Refunded, Open Balances, آخرین پرداخت‌ها) — تاریخ‌ها `YYYY-MM-DD` (پیش‌فرض امروز UTC) |
 
+### Phase 12 Slice 1 — Staff Portal Finance (read-only)
+
+| Method/Path | Existing read authority | Contract |
+|---|---|---|
+| `GET /staff/portal/finance/context` | `cpms_finance_read` + `cpms_invoice_read` + `cpms_queue_read`, each via the existing global and same-Clinic authorization layers | Returns only trusted Clinic id and the actor's active/assigned Location choices. Zero eligible Locations returns no choices; one may resolve automatically; multiple require an explicit trusted Location selector. Raw ids never grant authority. |
+| `GET /staff/portal/finance/awaiting-payment` | Same three existing read capabilities | Current trusted Clinic + Location, Location-local current operational date, and only `awaiting_payment`. Maximum 100 returned rows (`has_more` signals truncation). Projection: patient and clinician display names, visit date/time and state; active invoice status/totals/paid/remaining/currency when legitimately linked. `invoice: null` means no active invoice; no financial values are inferred. Jalali date is presentation only. No mutation or audit side effect. |
+
+Both routes are GET-only, nonce-authenticated, and mounted in the independent Staff Portal. They do not expose invoice items, payment records, patient identifiers, clinical data, or finance actions.
+
 ## 5. Doctor (Authenticated: `clinic_doctor` + Capabilities)
 
 | # | Method/Path | Cap | توضیح |
