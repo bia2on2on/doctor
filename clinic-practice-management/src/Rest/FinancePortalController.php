@@ -169,8 +169,8 @@ final class FinancePortalController extends RestBase {
 
 		return $this->success(
 			array(
-				'clinic_id'          => $clinic_id,
-				'locations'          => array_values(
+				'clinic_id'           => $clinic_id,
+				'locations'           => array_values(
 					array_map(
 						static fn( array $location ): array => array(
 							'id'   => (int) $location['id'],
@@ -179,11 +179,11 @@ final class FinancePortalController extends RestBase {
 						$locations
 					)
 				),
-				'location_id'        => $location_id,
-				'location_name'      => null === $location_id ? null : (string) $locations[ $location_id ]['name'],
-				'selection_required' => count( $locations ) > 1 && null === $location_id,
+				'location_id'         => $location_id,
+				'location_name'       => null === $location_id ? null : (string) $locations[ $location_id ]['name'],
+				'selection_required'  => count( $locations ) > 1 && null === $location_id,
 				// Phase 12 Slice 2 — UI hint only; the mutation route re-checks.
-				'can_issue_invoice'  => $this->can_issue_invoice( $clinic_id, $user_id ),
+				'can_issue_invoice'   => $this->can_issue_invoice( $clinic_id, $user_id ),
 				// Phase 12 Slice 3 — UI hint only; the capture route re-checks.
 				'can_capture_payment' => $this->can_capture_payment( $clinic_id, $user_id ),
 			)
