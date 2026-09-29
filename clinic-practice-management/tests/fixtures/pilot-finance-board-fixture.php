@@ -108,6 +108,68 @@ if ( false === $invoiceInserted ) {
     exit(1);
 }
 
+// Phase 12 Slice 2 — one consultation-completed Visit for FIRST issuance. It
+// gets its own clinician so the existing awaiting-payment rows and the
+// clinician-scoped Doctor Portal views stay exactly as they were.
+$eligibleClinicianInserted = $wpdb->insert(
+    $db->table('cpms_clinicians'),
+    array(
+        'clinic_id'  => $clinicId,
+        'full_name'  => 'Synthetic Finance Doctor ' . $nonce,
+        'is_active'  => 1,
+        'created_at' => $now,
+        'updated_at' => $now,
+    )
+);
+if ( false === $eligibleClinicianInserted ) {
+    fwrite(STDERR, "FINANCE_BOARD_FIXTURE_ERROR: eligible clinician seed failed\n");
+    exit(1);
+}
+$eligibleClinicianId = (int) $wpdb->insert_id;
+
+$eligiblePatientName = 'Synthetic Eligible ' . $nonce;
+$eligiblePatientInserted = $wpdb->insert(
+    $db->table('cpms_patients'),
+    array(
+        'clinic_id'  => $clinicId,
+        'mrn'        => 'SYN-FIN-ELIGIBLE-' . strtoupper($nonce),
+        'first_name' => $eligiblePatientName,
+        'last_name'  => 'Fixture',
+        'mobile'     => '09' . random_int(1000000000, 9999999999),
+        'status'     => 'active',
+        'created_at' => $now,
+        'updated_at' => $now,
+    )
+);
+if ( false === $eligiblePatientInserted ) {
+    fwrite(STDERR, "FINANCE_BOARD_FIXTURE_ERROR: eligible patient seed failed\n");
+    exit(1);
+}
+$eligiblePatientId = (int) $wpdb->insert_id;
+
+$eligibleVisitInserted = $wpdb->insert(
+    $db->table('cpms_visits'),
+    array(
+        'clinic_id'     => $clinicId,
+        'location_id'   => $locationId,
+        'clinician_id'  => $eligibleClinicianId,
+        'patient_id'    => $eligiblePatientId,
+        'source'        => 'walk_in',
+        'status'        => 'consultation_completed',
+        'visit_date'    => $date,
+        'check_in_at'   => $now,
+        'waiting_since' => $now,
+        'active'        => 1,
+        'created_at'    => $now,
+        'updated_at'    => $now,
+    )
+);
+if ( false === $eligibleVisitInserted ) {
+    fwrite(STDERR, "FINANCE_BOARD_FIXTURE_ERROR: eligible visit seed failed\n");
+    exit(1);
+}
+$eligibleVisitId = (int) $wpdb->insert_id;
+
 $portalUrl = add_query_arg(
     \ClinicCore\Frontend\StaffPortalShell::MODULE_PARAM,
     \ClinicCore\Frontend\StaffPortalShell::MODULE_FINANCE,
@@ -121,6 +183,7 @@ $env = array(
     'FINANCE_BOARD_LOCATION_ID' => (string) $locationId,
     'FINANCE_BOARD_INVOICE_PATIENT' => $patients[0][0] . ' Fixture',
     'FINANCE_BOARD_NO_INVOICE_PATIENT' => $patients[1][0] . ' Fixture',
+    'FINANCE_BOARD_ELIGIBLE_PATIENT' => $eligiblePatientName . ' Fixture',
 );
 $lines = array();
 foreach ($env as $key => $value) {
@@ -131,4 +194,4 @@ foreach ($env as $key => $value) {
     $lines[] = $key . '=' . $value;
 }
 file_put_contents('/tmp/finance-board.env', implode("\n", $lines) . "\n");
-echo 'fixture: finance-board clinic=' . $clinicId . ' location=' . $locationId . ' synthetic_rows=2 invoice_rows=1 timezone=Asia/Tehran' . "\n";
+echo 'fixture: finance-board clinic=' . $clinicId . ' location=' . $locationId . ' synthetic_rows=2 invoice_rows=1 eligible_rows=1 eligible_visit=' . $eligibleVisitId . ' timezone=Asia/Tehran' . "\n";
