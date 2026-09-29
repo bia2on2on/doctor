@@ -96,6 +96,17 @@
 
 Both routes are GET-only, nonce-authenticated, and mounted in the independent Staff Portal. They do not expose invoice items, payment records, patient identifiers, clinical data, or finance actions.
 
+### Phase 12 Slice 2 — Staff Portal Finance: first invoice issuance (bounded)
+
+Scope: the NORMAL first-invoice workflow for Visits whose current status is exactly `consultation_completed`. The re-issue/recovery path for `awaiting_payment` Visits (including a Visit whose previous invoice was voided) is deliberately **NOT** exposed here.
+
+| Method/Path | Existing authority | Contract |
+|---|---|---|
+| `GET /staff/portal/finance/invoice-eligible` | `cpms_finance_read` + `cpms_invoice_read` + `cpms_queue_read`, each via the existing global and same-Clinic authorization layers (identical to the Slice 1 board) | Current trusted Clinic + CURRENT trusted operational Location (0 eligible ⇒ fail closed; 1 ⇒ auto-resolution; N>1 ⇒ explicit trusted Location selector required), Location-local operational date, and only `consultation_completed`. Deterministic order (scheduled slot time, else check-in time, then Visit id). Maximum 100 returned rows; `has_more` signals truncation (LIMIT 101). Projection is minimal: `visit_id` (selector only), patient display name, clinician display name, operational date/Jalali date/time, and the status literal. No mobile, national id, clinical, prescription, file, invoice-item or payment data. No cross-Location/global fallback. |
+| `POST /staff/portal/finance/visits/{id}/invoice` | `cpms_invoice_create` via the existing global capability check plus the same-Clinic authorization layer; the delegated service re-authorizes identically | Body `{items:[{description, quantity, unit_price}]}` — the smallest commercially useful item composition; invoice-level and item-level `discount`, `tax`, `service_id` are not accepted or forwarded by this portal route. Before delegation the Visit must belong to the trusted Clinic **and** to the CURRENT trusted operational Location **and** be exactly `consultation_completed`; otherwise the route fails closed without disclosing the Visit (404 `CLINIC_NOT_FOUND`), or returns 409 `CLINIC_INVALID_TRANSITION` for a same-Location Visit in another state. On success it delegates to the EXISTING `FinanceService::issueInvoice()` (unchanged) and returns that existing invoice view with **201**; totals remain computed by the existing `InvoiceCalc`/`FinanceService` path. The existing duplicate-active-invoice guard (409 `CLINIC_POLICY_VIOLATION`) and 404 parity are preserved unchanged. The existing backend transition `invoice_ready` (VisitMachine V11: `consultation_completed` → `awaiting_payment`) then moves the Visit out of this list and onto the existing Slice 1 awaiting-payment board. No payment capture/settle/waive/void/refund/adjustment/receipt/online payment/POS device integration is added. |
+
+The Slice 1 `GET /staff/portal/finance/context` response additionally carries the server-derived `can_issue_invoice` flag (existing `cpms_invoice_create` + same-Clinic authority) so the module only renders the issuance panel for an actor who could actually issue; the flag is a UI hint and never authority — the mutation route re-checks.
+
 ## 5. Doctor (Authenticated: `clinic_doctor` + Capabilities)
 
 | # | Method/Path | Cap | توضیح |

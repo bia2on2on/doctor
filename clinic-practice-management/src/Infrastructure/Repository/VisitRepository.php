@@ -254,6 +254,37 @@ final class VisitRepository
     }
 
     /**
+     * Bounded Phase 12 Slice 2 projection of invoice-eligible Visits: CURRENT
+     * Clinic + CURRENT operational Location + Location-local operational day +
+     * exactly `consultation_completed`. One joined query keeps patient and
+     * clinician display names with the row (no per-row lookups) and reads no
+     * invoice/payment column at all — first issuance is the only exposed
+     * workflow, so no financial value is inferred here.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function invoice_eligible_consultation_completed( int $clinic_id, int $location_id, string $visit_date, int $limit = 101 ): array {
+        $limit = max( 1, min( 101, $limit ) );
+
+        $rows = $this->db->fetchAll(
+            'SELECT v.id AS visit_id, v.visit_date, v.check_in_at,' .
+            ' p.first_name AS patient_first_name, p.last_name AS patient_last_name,' .
+            ' c.full_name AS clinician_name,' .
+            ' a.slot_time AS appointment_time' .
+            ' FROM ' . $this->db->table( 'cpms_visits' ) . ' v' .
+            ' INNER JOIN ' . $this->db->table( 'cpms_patients' ) . ' p ON p.id = v.patient_id AND p.clinic_id = v.clinic_id' .
+            ' INNER JOIN ' . $this->db->table( 'cpms_clinicians' ) . ' c ON c.id = v.clinician_id' .
+            ' LEFT JOIN ' . $this->db->table( 'cpms_appointments' ) . ' a ON a.id = v.appointment_id' .
+            ' AND a.clinic_id = v.clinic_id AND a.location_id = v.location_id' .
+            " WHERE v.clinic_id = %d AND v.location_id = %d AND v.visit_date = %s AND v.status = 'consultation_completed'" .
+            ' ORDER BY COALESCE(a.slot_time, TIME(v.check_in_at)) ASC, v.id ASC LIMIT %d',
+            array( $clinic_id, $location_id, $visit_date, $limit )
+        );
+
+        return is_array( $rows ) ? $rows : array();
+    }
+
+    /**
      * آمار روز (D1/E1) — شمارش بر اساس status.
      *
      * غنی‌سازی داشبورد امروز (§16 دستور F4): علاوه بر شمارش ویزیت‌ها بر اساس
