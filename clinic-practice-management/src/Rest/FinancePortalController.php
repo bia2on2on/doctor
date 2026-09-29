@@ -20,6 +20,19 @@
  *           VisitService::checkout(actor, visitId, null) contract — no second
  *           checkout engine, no waive reason on this surface, no new
  *           capability/state/migration.
+ * Slice 5 — bounded READ-ONLY receipt of the NORMAL fully settled invoice
+ *           behind a CURRENT trusted Location Visit. GET only: no mutation, no
+ *           audit side effect, no server PDF and no second receipt engine — a
+ *           Staff Portal projection/adapter over the EXISTING persisted
+ *           finance rows, printed through the browser. Eligibility is derived
+ *           from durable rows only (exactly one non-voided invoice in `paid`
+ *           with a zero balance that reconciles with its clean captured
+ *           payments, no voided/refunded payment, no adjustment row, items
+ *           present and no durable waiver transition) and every other shape
+ *           fails closed with 409 CLINIC_RECEIPT_NOT_ELIGIBLE + a bounded
+ *           reason — accounting history is never hidden, no new receipt state
+ *           is invented, and the existing D17 back-office receipt route and
+ *           wp-admin print flow stay untouched.
  */
 
 declare(strict_types=1);
@@ -35,6 +48,7 @@ use ClinicCore\Domain\Time\Jalali;
 use ClinicCore\Domain\Visits\VisitException;
 use ClinicCore\Infrastructure\Repository\InvoiceRepository;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
+use ClinicCore\Infrastructure\Repository\PaymentRepository;
 use ClinicCore\Infrastructure\Repository\VisitRepository;
 use DateTimeImmutable;
 use DateTimeZone;
@@ -74,16 +88,19 @@ final class FinancePortalController extends RestBase {
 	public function __construct(
 		MembershipRepository $memberships,
 		VisitRepository $visits,
-		InvoiceRepository $invoices
+		InvoiceRepository $invoices,
+		PaymentRepository $payments
 	) {
 		$this->memberships = $memberships;
 		$this->visits      = $visits;
 		$this->invoices    = $invoices;
+		$this->payments    = $payments;
 	}
 
 	private MembershipRepository $memberships;
 	private VisitRepository $visits;
 	private InvoiceRepository $invoices;
+	private PaymentRepository $payments;
 
 	public function register_routes(): void {
 		register_rest_route(
@@ -178,6 +195,24 @@ final class FinancePortalController extends RestBase {
 					'methods'             => \WP_REST_Server::CREATABLE,
 					'callback'            => fn( WP_REST_Request $request ) => $this->checkout( $request ),
 					'permission_callback' => fn( WP_REST_Request $request ) => $this->permission( $request, array( self::CHECKOUT_CAP ) ),
+				),
+			)
+		);
+
+		// Phase 12 Slice 5 — READ-ONLY receipt of the NORMAL fully settled
+		// invoice behind a CURRENT trusted Location Visit. The existing
+		// `cpms_invoice_read` authority authorizes the read (global + scoped,
+		// exactly the existing D12b/D17 read class this Staff Portal receipt
+		// projects); the Visit id in the path is a selector, never authority,
+		// and the route has no mutation, no audit side effect and no PDF.
+		register_rest_route(
+			self::NS,
+			'/staff/portal/finance/visits/(?P<id>\d+)/receipt',
+			array(
+				array(
+					'methods'             => \WP_REST_Server::READABLE,
+					'callback'            => fn( WP_REST_Request $request ) => $this->receipt( $request ),
+					'permission_callback' => fn( WP_REST_Request $request ) => $this->permission( $request, array( RolesAndCapabilities::INVOICE_READ ) ),
 				),
 			)
 		);
@@ -716,9 +751,243 @@ final class FinancePortalController extends RestBase {
 	}
 
 	/**
+	 * Phase 12 Slice 5 — bounded READ-ONLY receipt of the NORMAL fully settled
+	 * invoice behind a CURRENT trusted Location Visit.
+	 *
+	 * The Visit id in the path is a selector, never authority: the persisted
+	 * Visit is loaded server-side and must belong to the trusted Clinic AND to
+	 * the CURRENT trusted operational Location; foreign Clinic, same-Clinic
+	 * foreign/unassigned/inactive Location and unknown ids keep the established
+	 * non-enumerating 404 `CLINIC_NOT_FOUND` parity, and the 0/1/N Location
+	 * policy (including the invalid-timezone fail-closed branch) is exactly the
+	 * Slice 1–4 policy.
+	 *
+	 * Eligibility is derived from DURABLE rows only — no new "clean receipt"
+	 * state, no schema change, no migration:
+	 *   1. exactly ONE non-voided invoice on the Visit and NO voided invoice
+	 *      (an ambiguous or voided invoice set is correction/re-issue
+	 *      evidence → `correction_evidence`);
+	 *   2. that invoice is exactly `paid`, not voided, `total > 0`,
+	 *      `paid_amount = total` and `balance = 0` (else `invoice_not_settled`);
+	 *   3. every payment row is a clean capture — `captured`,
+	 *      `refunded_amount = 0`, no void markers — and no
+	 *      `cpms_payment_adjustments` row exists for the invoice (else
+	 *      `correction_evidence`); at least one payment row is required and the
+	 *      captured sum must equal `paid_amount` (else `settlement_integrity`);
+	 *   4. at least one line item exists (else `items_missing`);
+	 *   5. the append-only Visit history holds no `awaiting_payment →
+	 *      checked_out` waiver transition (else `waive_evidence`).
+	 * Anything else fails closed with 409 `CLINIC_RECEIPT_NOT_ELIGIBLE` and the
+	 * bounded `reason`; nothing is written on any path and the correction
+	 * evidence itself is never mutated or erased.
+	 *
+	 * Presentation: stored UTC instants are converted FIRST to the CURRENT
+	 * trusted Location timezone (the persisted Location IANA zone) and only
+	 * then formatted, including the repository `Jalali` utility — never a UTC
+	 * date substring, the WP/PHP ambient timezone or a hardcoded zone.
+	 */
+	private function receipt( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+		$scope = $this->trusted_scope();
+		if ( $scope instanceof WP_Error ) {
+			return $scope;
+		}
+
+		$clinic_id = (int) $scope->clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established ClinicScope contract.
+		$locations = $this->eligible_locations( $clinic_id, (int) get_current_user_id() );
+		if ( $locations instanceof WP_Error ) {
+			return $locations;
+		}
+		if ( array() === $locations ) {
+			return $this->error( 'CLINIC_SCOPE_UNAVAILABLE', 403, 'موقعیت عملیاتی معتبر نیست.', array( 'reason' => 'location' ) );
+		}
+		$current = $this->current_location( $scope, $locations );
+		if ( $current instanceof WP_Error ) {
+			return $current;
+		}
+		$location_id = (int) $current['location_id'];
+		$timezone    = $current['timezone'];
+
+		$visit_id = (int) $request['id'];
+		$visit    = $this->visits->find( $visit_id );
+		if (
+			null === $visit
+			|| $clinic_id !== (int) $visit['clinic_id']
+			|| $location_id !== (int) ( $visit['location_id'] ?? 0 )
+		) {
+			// Cross-Clinic and cross-Location selectors are indistinguishable
+			// from a missing Visit (404 parity — no existence disclosure).
+			return $this->error( 'CLINIC_NOT_FOUND', 404, 'ویزیت یافت نشد' );
+		}
+
+		$invoices = $this->invoices->forVisit( $visit_id );
+		$active   = array_values(
+			array_filter(
+				$invoices,
+				static fn( array $invoice ): bool => 'voided' !== (string) $invoice['status']
+			)
+		);
+		if ( array() === $active ) {
+			// The waive/no-invoice path (and any Visit without a finance
+			// document): there is nothing to print as a paid receipt.
+			return $this->receipt_not_eligible( 'invoice_missing' );
+		}
+		if ( 1 !== count( $active ) || count( $invoices ) !== count( $active ) ) {
+			// More than one non-voided invoice, or a voided invoice in the
+			// Visit's durable history: correction/re-issue evidence.
+			return $this->receipt_not_eligible( 'correction_evidence' );
+		}
+
+		$invoice = $active[0];
+		if (
+			'paid' !== (string) $invoice['status']
+			|| null !== ( $invoice['void_reason'] ?? null )
+			|| null !== ( $invoice['voided_at'] ?? null )
+			|| $this->cents( $invoice['total'] ?? 0 ) <= 0
+			|| $this->cents( $invoice['paid_amount'] ?? 0 ) !== $this->cents( $invoice['total'] ?? 0 )
+			|| 0 !== $this->cents( $invoice['balance'] ?? 0 )
+		) {
+			return $this->receipt_not_eligible( 'invoice_not_settled' );
+		}
+
+		$invoice_id = (int) $invoice['id'];
+		$payments   = $this->payments->forInvoice( $invoice_id );
+		$captured   = array();
+		foreach ( $payments as $payment ) {
+			if (
+				'captured' !== (string) $payment['status']
+				|| 0 !== $this->cents( $payment['refunded_amount'] ?? 0 )
+				|| null !== ( $payment['void_reason'] ?? null )
+				|| null !== ( $payment['voided_at'] ?? null )
+				|| null !== ( $payment['voided_by_wp_user_id'] ?? null )
+			) {
+				// Correction/refund evidence on the durable payment rows: fail
+				// closed instead of printing a misleading clean receipt.
+				return $this->receipt_not_eligible( 'correction_evidence' );
+			}
+			$captured[] = $payment;
+		}
+		if ( array() !== $this->invoices->adjustmentsFor( $invoice_id ) ) {
+			return $this->receipt_not_eligible( 'correction_evidence' );
+		}
+		if ( array() === $captured ) {
+			return $this->receipt_not_eligible( 'settlement_integrity' );
+		}
+		$captured_sum = 0;
+		foreach ( $captured as $payment ) {
+			$captured_sum += $this->cents( $payment['amount'] ?? 0 );
+		}
+		if ( $captured_sum !== $this->cents( $invoice['paid_amount'] ?? 0 ) ) {
+			return $this->receipt_not_eligible( 'settlement_integrity' );
+		}
+
+		$items = $this->invoices->itemsFor( $invoice_id );
+		if ( array() === $items ) {
+			return $this->receipt_not_eligible( 'items_missing' );
+		}
+
+		foreach ( $this->visits->historyFor( $visit_id ) as $transition ) {
+			if (
+				'awaiting_payment' === (string) ( $transition['from_status'] ?? '' )
+				&& 'checked_out' === (string) ( $transition['to_status'] ?? '' )
+			) {
+				// The durable waiver transition (checkout WITHOUT a
+				// settlement): never print this as a paid receipt.
+				return $this->receipt_not_eligible( 'waive_evidence' );
+			}
+		}
+
+		$clinic = App::db()->fetchRow(
+			'SELECT name, address, phone FROM ' . App::db()->table( 'cpms_clinics' ) . ' WHERE id = %d LIMIT 1',
+			array( $clinic_id )
+		);
+		$patient = App::db()->fetchRow(
+			'SELECT first_name, last_name FROM ' . App::db()->table( 'cpms_patients' ) . ' WHERE id = %d LIMIT 1',
+			array( (int) $invoice['patient_id'] )
+		);
+
+		$invoice_date = $this->location_date( (string) $invoice['created_at'], $timezone );
+
+		return $this->success(
+			array(
+				'receipt' => array(
+					// Display identity only — the receipt never carries MRN,
+					// mobile, national id, clinical data or internal ids.
+					'clinic'              => array(
+						'name'    => (string) ( $clinic['name'] ?? '' ),
+						'address' => $clinic['address'] ?? null,
+						'phone'   => $clinic['phone'] ?? null,
+					),
+					'patient'             => array(
+						'name' => null !== $patient
+							? trim( (string) $patient['first_name'] . ' ' . (string) $patient['last_name'] )
+							: '',
+					),
+					'invoice_number'      => (string) $invoice['invoice_number'],
+					'invoice_date'        => $invoice_date,
+					'jalali_invoice_date' => Jalali::formatYmd( $invoice_date ),
+					'items'               => array_map(
+						static fn( array $item ): array => array(
+							'description' => (string) $item['description'],
+							'quantity'    => (string) $item['quantity'],
+							'unit_price'  => (string) $item['unit_price'],
+							'amount'      => (string) $item['amount'],
+						),
+						$items
+					),
+					'totals'              => array(
+						'subtotal'    => (string) $invoice['subtotal'],
+						'discount'    => (string) $invoice['discount'],
+						'tax'         => (string) $invoice['tax'],
+						'total'       => (string) $invoice['total'],
+						'paid_amount' => (string) $invoice['paid_amount'],
+						'balance'     => (string) $invoice['balance'],
+						'currency'    => (string) $invoice['currency'],
+					),
+					'payments'            => array_map(
+						fn( array $payment ): array => array(
+							'payment_number' => (string) $payment['payment_number'],
+							'method'         => (string) $payment['method'],
+							'amount'         => (string) $payment['amount'],
+							'paid_at'        => $this->location_date( (string) $payment['paid_at'], $timezone ),
+							'jalali_paid_at' => Jalali::formatYmd( $this->location_date( (string) $payment['paid_at'], $timezone ) ),
+						),
+						$captured
+					),
+				),
+			)
+		);
+	}
+
+	/** Bounded, explicit, non-enumerating eligibility failure. */
+	private function receipt_not_eligible( string $reason ): WP_Error {
+		return $this->error(
+			'CLINIC_RECEIPT_NOT_ELIGIBLE',
+			409,
+			'رسید این فاکتور در دسترس نیست؛ مسیر تسویهٔ عادی و کامل آن قابل اثبات نیست.',
+			array( 'reason' => $reason )
+		);
+	}
+
+	/** Integer cents — exact money comparison, never float equality. */
+	private function cents( mixed $value ): int {
+		return (int) round( ( (float) $value ) * 100 );
+	}
+
+	/**
+	 * Stored UTC instant → Location-local `Y-m-d` in the authoritative
+	 * CURRENT Location timezone (presentation only; storage stays UTC).
+	 */
+	private function location_date( string $instant, DateTimeZone $timezone ): string {
+		return ( new DateTimeImmutable( $instant, new DateTimeZone( 'UTC' ) ) )
+			->setTimezone( $timezone )
+			->format( 'Y-m-d' );
+	}
+
+	/**
 	 * CURRENT trusted operational Location, its timezone and the Location-local
 	 * operational date — one policy implementation shared by the Slice 1 board
-	 * and both Slice 2 routes. Raw ids are selectors, never authority: an
+	 * and both Slice 2 routes.
+	 * Raw ids are selectors, never authority: an
 	 * unavailable or unassigned selection fails closed, and N>1 never
 	 * auto-resolves.
 	 *

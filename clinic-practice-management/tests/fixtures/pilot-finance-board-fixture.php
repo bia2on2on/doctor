@@ -120,6 +120,56 @@ if ( false === $checkoutInvoiceInserted ) {
     fwrite(STDERR, "FINANCE_BOARD_FIXTURE_ERROR: checkout invoice seed failed\n");
     exit(1);
 }
+$checkoutInvoiceId = (int) $wpdb->insert_id;
+
+// Phase 12 Slice 5 — the paid Visit above carries a COMPLETE normal
+// settlement history, so its receipt is exercised through the real Staff
+// Portal read path: one line item and one clean captured payment (no void, no
+// refund, no adjustment, no waive). The invoice columns themselves are
+// untouched, so the existing Slice 1/3/4 boards and journeys see exactly the
+// same settlement summary as before.
+$checkoutItemInserted = $wpdb->insert(
+    $db->table('cpms_invoice_items'),
+    array(
+        'invoice_id'  => $checkoutInvoiceId,
+        'service_id'  => null,
+        'description' => 'ویزیت و مشاورهٔ سرپایی (فیکسچر)',
+        'quantity'    => '1.00',
+        'unit_price'  => '250000.00',
+        'amount'      => '250000.00',
+        'discount'    => '0.00',
+    )
+);
+if ( false === $checkoutItemInserted ) {
+    fwrite(STDERR, "FINANCE_BOARD_FIXTURE_ERROR: checkout item seed failed\n");
+    exit(1);
+}
+
+$checkoutPaymentInserted = $wpdb->insert(
+    $db->table('cpms_payments'),
+    array(
+        'clinic_id'             => $clinicId,
+        'payment_number'        => 'SYN-FIN-CHK-PAY-' . strtoupper($nonce),
+        'invoice_id'            => $checkoutInvoiceId,
+        'patient_id'            => $patientIds['checkout'],
+        'amount'                => '250000.00',
+        'method'                => 'cash',
+        'transaction_ref'       => null,
+        'idempotency_key'       => 'syn-fin-chk-' . $nonce,
+        'status'                => 'captured',
+        'refunded_amount'       => '0.00',
+        'paid_at'               => $now,
+        'received_by_wp_user_id' => $secretaryId,
+        'void_reason'           => null,
+        'voided_at'             => null,
+        'voided_by_wp_user_id'  => null,
+        'created_at'            => $now,
+    )
+);
+if ( false === $checkoutPaymentInserted ) {
+    fwrite(STDERR, "FINANCE_BOARD_FIXTURE_ERROR: checkout payment seed failed\n");
+    exit(1);
+}
 
 $invoiceInserted = $wpdb->insert(
     $db->table('cpms_invoices'),
@@ -260,4 +310,4 @@ foreach ($env as $key => $value) {
     $lines[] = $key . '=' . $value;
 }
 file_put_contents('/tmp/finance-board.env', implode("\n", $lines) . "\n");
-echo 'fixture: finance-board clinic=' . $clinicId . ' location=' . $locationId . ' synthetic_rows=4 invoice_rows=3 open_capture_invoice=1 paid_checkout_visit=1 eligible_rows=1 eligible_visit=' . $eligibleVisitId . ' timezone=Asia/Tehran' . "\n";
+echo 'fixture: finance-board clinic=' . $clinicId . ' location=' . $locationId . ' synthetic_rows=4 invoice_rows=3 open_capture_invoice=1 paid_checkout_visit=1 receipt_ready_visits=1 eligible_rows=1 eligible_visit=' . $eligibleVisitId . ' timezone=Asia/Tehran' . "\n";

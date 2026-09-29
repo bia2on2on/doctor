@@ -66,6 +66,15 @@ if ( empty( $cpms_staff_embed ) ) {
 .cpms-finance-board__form-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .cpms-finance-board__submit { min-height: 40px; padding: 6px 16px; border: 1px solid var(--cpms-border); border-radius: 8px; background: #1d2327; color: #fff; font: inherit; cursor: pointer; }
 .cpms-finance-board__submit[disabled] { opacity: .6; cursor: default; }
+/* Phase 12 Slice 5 — the read-only receipt surface. Everything here is a
+   projection of server truth; printing uses the browser's own print path and
+   never a server-side document. */
+.cpms-finance-board__receipt-body { display: grid; gap: 4px; margin: 6px 0 12px; }
+.cpms-finance-board__receipt-row { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; margin: 0; padding: 5px 0; border-bottom: 1px solid var(--cpms-border); }
+.cpms-finance-board__receipt-row:last-child { border-bottom: 0; }
+.cpms-finance-board__receipt-total { font-weight: 700; }
+.cpms-finance-board__receipt-table { width: 100%; border-collapse: collapse; margin: 6px 0 10px; }
+.cpms-finance-board__receipt-table th, .cpms-finance-board__receipt-table td { padding: 6px 4px; border-bottom: 1px solid var(--cpms-border); text-align: right; vertical-align: top; overflow-wrap: anywhere; }
 @media (max-width: 760px) {
     .cpms-finance-board__panel { padding: 11px; }
     .cpms-finance-board__table thead { display: none; }
@@ -77,6 +86,18 @@ if ( empty( $cpms_staff_embed ) ) {
     .cpms-finance-board__empty { display: block !important; }
     .cpms-finance-board__fields { grid-template-columns: minmax(0, 1fr); }
     .cpms-finance-board__action, .cpms-finance-board__submit { width: 100%; }
+}
+/* Print isolation: only the receipt surface is printed; the portal chrome and
+   every other panel are masked while the browser print dialog is active. */
+@media print {
+    body.cpms-finance-printing { background: #fff; }
+    body.cpms-finance-printing * { visibility: hidden !important; }
+    body.cpms-finance-printing [data-role="finance-receipt"],
+    body.cpms-finance-printing [data-role="finance-receipt"] * { visibility: visible !important; }
+    body.cpms-finance-printing [data-role="finance-receipt"] { position: absolute; top: 0; right: 0; left: 0; width: 100%; margin: 0; border: 0; padding: 0; }
+    body.cpms-finance-printing [data-role="finance-receipt-print"],
+    body.cpms-finance-printing [data-role="finance-receipt-close"],
+    body.cpms-finance-printing [data-role="finance-receipt-hint"] { display: none !important; }
 }
 </style>
 <main class="cpms-finance-board" data-role="finance-root" aria-labelledby="cpms-finance-board-title">
@@ -175,6 +196,19 @@ if ( empty( $cpms_staff_embed ) ) {
             </div>
         </form>
     </section>
+    <!-- Phase 12 Slice 5 — read-only receipt of a NORMAL fully settled invoice.
+         It is only ever filled from the server's durable settlement truth, and
+         it is printed through the browser's own print path; there is no
+         mutation, no server-side document and no other finance action here. -->
+    <section class="cpms-finance-board__panel" data-role="finance-receipt" aria-label="رسید پرداخت" hidden>
+        <h2 class="cpms-finance-board__heading">رسید پرداخت</h2>
+        <p class="cpms-finance-board__hint" data-role="finance-receipt-hint">این رسید فقط از دادهٔ پایدارِ مسیر تسویهٔ عادی ساخته می‌شود و تاریخ‌های آن بر پایهٔ منطقهٔ زمانی موقعیت عملیاتی جاری است.</p>
+        <div class="cpms-finance-board__receipt-body" data-role="finance-receipt-body"></div>
+        <div class="cpms-finance-board__form-actions">
+            <button type="button" class="cpms-finance-board__submit" data-role="finance-receipt-print">چاپ رسید</button>
+            <button type="button" class="cpms-finance-board__action" data-role="finance-receipt-close">بستن</button>
+        </div>
+    </section>
 </main>
 <script type="application/json" id="cpms-finance-board-config">
 <?php
@@ -192,7 +226,7 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
     var config;
     try { config = JSON.parse(configNode.textContent); } catch (error) { return; }
     var root = String(config.rest_root || '').replace(/\/$/, '');
-    var state = { clinicId: null, locationId: null, locations: [], busy: false, canIssue: false, canCapture: false, canCheckOut: false, selectedVisit: null, selectedInvoice: null, paymentKey: null, selectedCheckoutVisit: null };
+    var state = { clinicId: null, locationId: null, locations: [], busy: false, canIssue: false, canCapture: false, canCheckOut: false, selectedVisit: null, selectedInvoice: null, paymentKey: null, selectedCheckoutVisit: null, selectedReceiptVisit: null, receiptLabel: '' };
     var locationSelect = document.querySelector('[data-role="finance-location"]');
     var rowsNode = document.querySelector('[data-role="finance-rows"]');
     var eligiblePanel = document.querySelector('[data-role="finance-eligible"]');
@@ -212,6 +246,10 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
     var checkoutTargetNode = document.querySelector('[data-role="finance-checkout-target"]');
     var checkoutSubmitNode = document.querySelector('[data-role="finance-checkout-submit"]');
     var checkoutCancelNode = document.querySelector('[data-role="finance-checkout-cancel"]');
+    var receiptPanel = document.querySelector('[data-role="finance-receipt"]');
+    var receiptBodyNode = document.querySelector('[data-role="finance-receipt-body"]');
+    var receiptPrintNode = document.querySelector('[data-role="finance-receipt-print"]');
+    var receiptCloseNode = document.querySelector('[data-role="finance-receipt-close"]');
     var formNode = document.querySelector('[data-role="finance-issue-form"]');
     var targetNode = document.querySelector('[data-role="finance-issue-target"]');
     var descriptionInput = document.querySelector('[data-role="finance-issue-description"]');
@@ -401,9 +439,15 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
                 var invoiceCell = renderInvoice(visit.invoice);
                 var remaining = visit.invoice ? String(visit.invoice.remaining) : '';
                 var currency = visit.invoice ? String(visit.invoice.currency) : '';
-                var actionCell = state.canCheckOut
+                // A settled row always offers the read-only receipt; checkout
+                // stays exactly the Slice 4 write control it was.
+                var receiptCell = visit.invoice && String(visit.invoice.status) === 'paid'
+                    ? '<button type="button" class="cpms-finance-board__action" data-role="finance-receipt-open" data-visit-id="' + Number(visit.visit_id) + '" data-patient="' + esc(visit.patient_name) + '">رسید</button>'
+                    : '';
+                var actionCell = (state.canCheckOut
                     ? '<button type="button" class="cpms-finance-board__action" data-role="finance-checkout-open" data-visit-id="' + Number(visit.visit_id) + '" data-patient="' + esc(visit.patient_name) + '" data-remaining="' + esc(remaining) + '" data-currency="' + esc(currency) + '">خروج از کلینیک</button>'
-                    : '<span class="cpms-finance-board__muted">—</span>';
+                    : '') + receiptCell;
+                if (!actionCell) actionCell = '<span class="cpms-finance-board__muted">—</span>';
                 var values = [
                     '<span class="cpms-finance-board__patient">' + esc(visit.patient_name) + '</span>',
                     esc(visit.clinician_name),
@@ -418,6 +462,11 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
             }).join('');
         }
         if (state.selectedCheckoutVisit && !selectedStillListed) closeCheckoutForm();
+        if (state.selectedReceiptVisit && !visits.some(function (visit) {
+            return Number(visit.visit_id) === Number(state.selectedReceiptVisit);
+        })) {
+            closeReceipt();
+        }
         if (data.has_more) setStatus('فهرست ویزیت‌های پرداخت‌شده به ۱۰۰ مورد محدود شده است.', '');
     }
     function openCheckoutForm(visitId, patientName, remaining, currency) {
@@ -434,6 +483,100 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
         checkoutPanel.hidden = true;
         checkoutFormNode.hidden = true;
         checkoutTargetNode.textContent = '';
+    }
+    function closeReceipt() {
+        state.selectedReceiptVisit = null;
+        state.receiptLabel = '';
+        receiptPanel.hidden = true;
+        receiptBodyNode.innerHTML = '';
+    }
+    function receiptRow(label, value) {
+        return '<p class="cpms-finance-board__receipt-row"><span class="cpms-finance-board__muted">' + esc(label) + '</span><span>' + esc(value) + '</span></p>';
+    }
+    function methodLabel(method) {
+        var labels = { cash: 'نقد', card_pos: 'کارت‌خوان — ثبت دستی', other: 'سایر' };
+        return labels[method] || method;
+    }
+    // The receipt body is a bounded projection of the server's durable
+    // settlement truth; every value is escaped and nothing beyond the printed
+    // receipt fields is rendered.
+    function renderReceipt(receipt) {
+        var totals = receipt.totals || {};
+        var currency = String(totals.currency || '');
+        var items = Array.isArray(receipt.items) ? receipt.items : [];
+        var payments = Array.isArray(receipt.payments) ? receipt.payments : [];
+        var itemRows = items.map(function (item) {
+            return '<tr><td>' + esc(item.description) + '</td><td>' + esc(item.quantity) + '</td><td>' + esc(item.unit_price) + '</td><td>' + esc(item.amount) + '</td></tr>';
+        }).join('');
+        var paymentRows = payments.map(function (payment) {
+            return receiptRow(
+                String(payment.payment_number || '') + ' · ' + methodLabel(String(payment.method || '')) + ' · ' + String(payment.amount || '') + ' ' + currency,
+                String(payment.paid_at || '') + (payment.jalali_paid_at ? ' · ' + String(payment.jalali_paid_at) : '')
+            );
+        }).join('');
+        receiptBodyNode.innerHTML =
+            '<p class="cpms-finance-board__target">' + esc((receipt.clinic || {}).name || '') +
+                (receipt.clinic && receipt.clinic.phone ? ' · ' + esc(receipt.clinic.phone) : '') + '</p>' +
+            (receipt.clinic && receipt.clinic.address ? '<p class="cpms-finance-board__hint">' + esc(receipt.clinic.address) + '</p>' : '') +
+            receiptRow('بیمار', (receipt.patient || {}).name || '') +
+            receiptRow('شمارهٔ فاکتور', receipt.invoice_number || '') +
+            receiptRow('تاریخ فاکتور', String(receipt.invoice_date || '') + (receipt.jalali_invoice_date ? ' · ' + String(receipt.jalali_invoice_date) : '')) +
+            '<table class="cpms-finance-board__receipt-table"><thead><tr><th>شرح</th><th>تعداد</th><th>مبلغ واحد</th><th>مبلغ</th></tr></thead><tbody>' + itemRows + '</tbody></table>' +
+            receiptRow('جمع جزء', String(totals.subtotal || '') + ' ' + currency) +
+            receiptRow('تخفیف', String(totals.discount || '') + ' ' + currency) +
+            receiptRow('مالیات', String(totals.tax || '') + ' ' + currency) +
+            '<p class="cpms-finance-board__receipt-row cpms-finance-board__receipt-total"><span>مبلغ کل</span><span>' + esc(String(totals.total || '') + ' ' + currency) + '</span></p>' +
+            receiptRow('پرداخت‌شده', String(totals.paid_amount || '') + ' ' + currency) +
+            receiptRow('باقی‌مانده', String(totals.balance || '') + ' ' + currency) +
+            paymentRows;
+    }
+    function openReceipt(visitId) {
+        if (state.busy || !visitId) return;
+        state.busy = true;
+        request('/staff/portal/finance/visits/' + Number(visitId) + '/receipt').then(function (result) {
+            state.busy = false;
+            if (!result.ok) {
+                var code = result.body && result.body.code || '';
+                if (code === 'CLINIC_RECEIPT_NOT_ELIGIBLE') {
+                    // Fail closed: accounting history that cannot be proven as
+                    // the normal settled path is never turned into a receipt.
+                    closeReceipt();
+                    setStatus('رسید این فاکتور در دسترس نیست؛ مسیر تسویهٔ عادی و کامل آن قابل اثبات نیست.', 'error');
+                    return;
+                }
+                setStatus(showError(result, 'دریافت رسید ناموفق بود.'), 'error');
+                return;
+            }
+            var data = payload(result);
+            state.selectedReceiptVisit = Number(visitId);
+            state.receiptLabel = String((data.receipt || {}).invoice_number || '');
+            renderReceipt(data.receipt || {});
+            receiptPanel.hidden = false;
+            setStatus('رسید از دادهٔ پایدار سرور خوانده شد.', '');
+        }).catch(function () {
+            state.busy = false;
+            setStatus('ارتباط با سرویس مالی برقرار نشد.', 'error');
+        });
+    }
+    // Browser print only: the receipt surface is isolated from the portal
+    // chrome while the browser print dialog is active, then the page returns
+    // to its normal state. No server-side document is produced.
+    function printReceipt() {
+        if (!state.selectedReceiptVisit) return;
+        var previousTitle = document.title;
+        document.title = 'رسید ' + String(state.receiptLabel || '');
+        document.body.classList.add('cpms-finance-printing');
+        var cleanup = function () {
+            document.body.classList.remove('cpms-finance-printing');
+            document.title = previousTitle;
+            window.removeEventListener('afterprint', cleanup);
+        };
+        window.addEventListener('afterprint', cleanup);
+        try {
+            window.print();
+        } finally {
+            window.setTimeout(cleanup, 1500);
+        }
     }
     function loadPaid() {
         if (state.busy) return Promise.resolve();
@@ -607,6 +750,14 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
     });
     checkoutCancelNode.addEventListener('click', function () { closeCheckoutForm(); });
 
+    paidRowsNode.addEventListener('click', function (event) {
+        var trigger = event.target && event.target.closest ? event.target.closest('[data-role="finance-receipt-open"]') : null;
+        if (!trigger) return;
+        openReceipt(trigger.getAttribute('data-visit-id'));
+    });
+    receiptPrintNode.addEventListener('click', function () { printReceipt(); });
+    receiptCloseNode.addEventListener('click', function () { closeReceipt(); });
+
     eligibleRowsNode.addEventListener('click', function (event) {
         var trigger = event.target && event.target.closest ? event.target.closest('[data-role="finance-issue-open"]') : null;
         if (!trigger) return;
@@ -625,6 +776,7 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
         closeIssueForm();
         closePayForm();
         closeCheckoutForm();
+        closeReceipt();
         refreshAll();
     });
 

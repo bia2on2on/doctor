@@ -15,6 +15,12 @@ full settlement, is the checked-out target), with the explicit confirmation
 step, a deliberate double submit (the UI guard keeps one request), and
 persistence verified against server truth after a reload. Settlement never
 auto-checks-out; the unrelated fixture paid row is untouched.
+Phase 12 Slice 5 — read-only printable receipt of the NORMAL fully settled
+invoice: the affordance (one receipt control per settled row) at all three
+viewports, the receipt opened from server truth for an invoice issued AND
+settled through this run (every value a projection of durable rows), and the
+browser `window.print()` path invoked with the receipt surface isolated while
+proving no mutation request is issued. No server-side document is produced.
 
 The harness reuses the EXISTING pilot gate entry point (fixture + Playwright in
 the responsive job); no new browser infrastructure is added. Pixels are emitted
@@ -64,6 +70,25 @@ def require(condition, message):
         print("FAIL " + message)
     else:
         print("PASS " + message)
+
+
+def open_receipt(page, row):
+    """Ask a settled row for its read-only receipt and wait for the panel.
+
+    Retried briefly because the click is a no-op while a server-truth board
+    refresh still holds the module's busy guard (the same guard that blocks a
+    double submit).
+    """
+    trigger = row.locator('[data-role="finance-receipt-open"]')
+    panel = page.locator('[data-role="finance-receipt"]')
+    for _attempt in range(4):
+        trigger.click()
+        try:
+            panel.wait_for(state="visible", timeout=5000)
+            break
+        except Exception:
+            page.wait_for_timeout(500)
+    return panel
 
 
 with sync_playwright() as playwright:
@@ -211,8 +236,8 @@ with sync_playwright() as playwright:
             f"{label}: the checkout control carries a positive visit selector",
         )
         require(
-            paid_panel.locator("button, input, form, select").count() == 1,
-            f"{label}: the paid panel itself stays free of other mutation controls",
+            paid_panel.locator("button, input, form, select").count() == 2,
+            f"{label}: the paid panel offers exactly the read-only receipt and the single checkout control",
         )
         checkout_panel = page.locator('[data-role="finance-checkout"]')
         require(checkout_panel.is_hidden(), f"{label}: the checkout confirmation panel is closed until a row asks for it")
@@ -231,6 +256,40 @@ with sync_playwright() as playwright:
             and "0.00" in page.locator('[data-role="finance-paid-rows"] tr').filter(has_text=CHECKOUT_PATIENT).inner_text(),
             f"{label}: the untouched paid visit still shows its settled summary",
         )
+
+        # Phase 12 Slice 5 — the read-only receipt affordance: exactly one
+        # receipt control per settled row, the panel stays closed until asked,
+        # and the opened receipt is the server's durable settlement truth.
+        receipt_controls = paid_panel.locator('[data-role="finance-receipt-open"]')
+        require(receipt_controls.count() == 1, f"{label}: exactly one read-only receipt control per settled row")
+        receipt_selectors = receipt_controls.evaluate_all("els => els.map(e => Number(e.getAttribute('data-visit-id')))")
+        require(
+            all(isinstance(value, int) and value > 0 for value in receipt_selectors),
+            f"{label}: the receipt control carries a positive visit selector",
+        )
+        receipt_panel = page.locator('[data-role="finance-receipt"]')
+        require(receipt_panel.is_hidden(), f"{label}: the receipt panel is closed until a row asks for it")
+        open_receipt(page, paid_row)
+        require(receipt_panel.is_visible(), f"{label}: the receipt panel opens from server truth")
+        receipt_text = receipt_panel.locator('[data-role="finance-receipt-body"]').inner_text()
+        require(CHECKOUT_PATIENT in receipt_text, f"{label}: the receipt names the settled patient from server truth")
+        require(receipt_text.count("250000.00") >= 2, f"{label}: the receipt shows the stored total and the paid amount")
+        require("نقد" in receipt_text, f"{label}: the receipt shows the recorded manual payment line")
+        require(
+            re.search(r"\d{4}/\d{2}/\d{2}", receipt_text) is not None,
+            f"{label}: the receipt carries a Location-local Jalali date",
+        )
+        require(
+            receipt_panel.locator("button").count() == 2,
+            f"{label}: the receipt panel offers exactly one print and one close control",
+        )
+        require(
+            receipt_panel.locator('[data-role^="finance-checkout"]').count() == 0,
+            f"{label}: the printed receipt surface carries no mutation affordance",
+        )
+        page.screenshot(path=str(OUT / f"finance-receipt-{label}.png"), full_page=True)
+        receipt_panel.locator('[data-role="finance-receipt-close"]').click()
+        require(receipt_panel.is_hidden(), f"{label}: closing the receipt leaves the board unchanged")
 
         dimensions = page.evaluate(
             "({width: innerWidth, scroll: document.documentElement.scrollWidth, board: document.querySelector('[data-role=finance-board]').getBoundingClientRect().width, eligible: document.querySelector('[data-role=finance-eligible]').getBoundingClientRect().width, payment: document.querySelector('[data-role=finance-payment]').getBoundingClientRect().width, paid: document.querySelector('[data-role=finance-paid]').getBoundingClientRect().width})"
@@ -410,6 +469,54 @@ with sync_playwright() as playwright:
     require(
         page.locator('[data-role="finance-rows"] tr').filter(has_text=PAYMENT_PATIENT).count() == 0,
         "slice4: the settled visit is off the awaiting board (no double listing)",
+    )
+
+    # ------------------------------------------------------------------
+    # Phase 12 Slice 5 — read-only printable receipt of the NORMAL fully
+    # settled invoice behind the visit that was issued and settled through
+    # THIS run, and the browser print path invoked without any mutation.
+    # ------------------------------------------------------------------
+    receipt_panel = open_receipt(page, settled_paid_row)
+    require(receipt_panel.is_visible(), "slice5: the receipt panel opens from server truth")
+    receipt_text = receipt_panel.locator('[data-role="finance-receipt-body"]').inner_text()
+    require("INV-" in receipt_text, "slice5: the receipt shows the server-issued invoice number")
+    require(PAYMENT_TOTAL in receipt_text, "slice5: the receipt shows the issued total 500000.00")
+    require("نقد" in receipt_text and "ثبت دستی" in receipt_text, "slice5: every recorded manual method of this settlement is shown")
+    require("0.00" in receipt_text, "slice5: the receipt shows the settled zero balance")
+    require(
+        re.search(r"\d{4}/\d{2}/\d{2}", receipt_text) is not None,
+        "slice5: the receipt carries a Location-local Jalali date",
+    )
+    page.screenshot(path=str(OUT / "finance-receipt-settled-desktop.png"), full_page=True)
+    receipt_mutations = []
+    page.on(
+        "request",
+        lambda request: receipt_mutations.append(request.method)
+        if "/wp-json/" in request.url and request.method != "GET"
+        else None,
+    )
+    page.evaluate(
+        "window.__cpmsPrintCalled = false; window.__cpmsPrintClass = false;"
+        "window.print = function () { window.__cpmsPrintCalled = true;"
+        " window.__cpmsPrintClass = document.body.classList.contains('cpms-finance-printing'); };"
+    )
+    receipt_panel.locator('[data-role="finance-receipt-print"]').click()
+    page.wait_for_function("window.__cpmsPrintCalled === true", timeout=10000)
+    require(
+        page.evaluate("window.__cpmsPrintCalled === true && window.__cpmsPrintClass === true"),
+        "slice5: the print action invokes the browser print path with the receipt surface isolated",
+    )
+    require(not receipt_mutations, "slice5: opening and printing the receipt issues no mutation request")
+    require(
+        "INV-" in receipt_panel.locator('[data-role="finance-receipt-body"]').inner_text(),
+        "slice5: the printed receipt is still the server truth after the print call",
+    )
+    receipt_panel.locator('[data-role="finance-receipt-close"]').click()
+    require(receipt_panel.is_hidden(), "slice5: the receipt panel returns to rest")
+    require(
+        page.locator('[data-role="finance-paid-rows"] tr').filter(has_text=PAYMENT_PATIENT).count() == 1
+        and "0.00" in page.locator('[data-role="finance-paid-rows"] tr').filter(has_text=PAYMENT_PATIENT).inner_text(),
+        "slice5: reading and printing the receipt leaves the settled row untouched",
     )
 
     settled_paid_row.locator('[data-role="finance-checkout-open"]').click()
