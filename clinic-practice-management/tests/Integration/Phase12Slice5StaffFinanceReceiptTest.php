@@ -700,7 +700,16 @@ final class Phase12Slice5StaffFinanceReceiptTest extends WP_UnitTestCase
             'paid_at' => self::PAYMENT_ONE_AT,
         ]);
         $awaitingPatient = $this->insertPatient($clinic, 'ControlsAwaiting');
-        $awaitingVisit = $this->insertVisit($clinic, $location, $awaitingPatient, $clinician, '2026-06-16', self::INVOICE_CREATED_AT, 'awaiting_payment');
+        $paidBoardPatient = $this->insertPatient($clinic, 'ControlsPaidBoard');
+        // The Slice 1/4 boards are day-scoped to the CURRENT Location-local
+        // operational day, so the GREEN-today control rows carry today's date
+        // while the D17 control above keeps its fixed instant.
+        $today = (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))
+            ->setTimezone(new \DateTimeZone('Asia/Tehran'))
+            ->format('Y-m-d');
+        $awaitingVisit = $this->insertVisit($clinic, $location, $awaitingPatient, $clinician, $today, App::db()->nowUtcSql(), 'awaiting_payment');
+        $paidBoardVisit = $this->insertVisit($clinic, $location, $paidBoardPatient, $clinician, $today, App::db()->nowUtcSql(), 'paid');
+        $this->seedSettledInvoice($clinic, $location, $paidBoardPatient, $paidBoardVisit, $secretary, '50000.00', App::db()->nowUtcSql());
 
         $patientRow = $this->patientRow($patient);
         wp_set_current_user($secretary);
@@ -734,9 +743,12 @@ final class Phase12Slice5StaffFinanceReceiptTest extends WP_UnitTestCase
         self::assertSame(200, $paid->get_status(), 'the Slice 4 paid board stays available — ' . $this->errorCode($paid));
         $paidRows = $this->payload($paid)['visits'] ?? [];
         self::assertNotEmpty($paidRows, 'the settled Visit is on the paid board');
+        $paidBoardIds = [];
         foreach ($paidRows as $row) {
             self::assertSame(self::PAID_ROW_KEYS, array_keys($row), 'the Slice 4 projection is unchanged by this slice');
+            $paidBoardIds[] = (int) $row['visit_id'];
         }
+        self::assertContains($paidBoardVisit, $paidBoardIds, 'the settled paid Visit is the GREEN-today paid-board row');
 
         // Context keeps its existing flags (no new flag is required by this slice).
         $context = $this->dispatch('GET', self::CONTEXT, [], $this->scopeHeaders($clinic, $location));
