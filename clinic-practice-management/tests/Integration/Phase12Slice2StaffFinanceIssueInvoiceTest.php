@@ -310,7 +310,12 @@ final class Phase12Slice2StaffFinanceIssueInvoiceTest extends WP_UnitTestCase
         self::assertCount(1, $invoice['items'] ?? []);
         self::assertSame('ویزیت و مشاوره', $invoice['items'][0]['description'] ?? null);
         self::assertSame(500000.0, (float) ($invoice['items'][0]['unit_price'] ?? -1));
-        self::assertSame(0.0, (float) ($invoice['items'][0]['discount'] ?? -1));
+        self::assertArrayNotHasKey('discount', $invoice['items'][0], 'this slice exposes no item-level discount at all');
+        self::assertSame(
+            500000.0,
+            (float) ($invoice['items'][0]['amount'] ?? -1),
+            'the full unit price is billed — the hostile item discount sent with the request was ignored'
+        );
 
         self::assertSame(
             'awaiting_payment',
@@ -423,7 +428,7 @@ final class Phase12Slice2StaffFinanceIssueInvoiceTest extends WP_UnitTestCase
             self::SHARED_ISSUE,
             [],
             $this->scopeHeaders($clinic, $location),
-            ['items' => [['description' => 'بازیابی', 'quantity' => 1, 'unit_price' => 100000]]]
+            ['visit_id' => $voidedVisit, 'items' => [['description' => 'بازیابی', 'quantity' => 1, 'unit_price' => 100000]]]
         );
         self::assertSame(201, $shared->get_status(), 'the existing shared issuance semantics for awaiting_payment remain available through the existing route — ' . $this->errorCode($shared));
 
@@ -433,7 +438,7 @@ final class Phase12Slice2StaffFinanceIssueInvoiceTest extends WP_UnitTestCase
             self::SHARED_ISSUE,
             [],
             $this->scopeHeaders($clinic, $location),
-            ['items' => [['description' => 'تکرار', 'quantity' => 1, 'unit_price' => 100000]]]
+            ['visit_id' => $voidedVisit, 'items' => [['description' => 'تکرار', 'quantity' => 1, 'unit_price' => 100000]]]
         );
         self::assertSame(409, $duplicate->get_status());
         self::assertSame('CLINIC_POLICY_VIOLATION', $this->errorCode($duplicate));
