@@ -312,7 +312,11 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
         }).then(function (result) {
             state.busy = false;
             submitNode.disabled = false;
-            if (!result.ok) { setStatus(showError(result, 'صدور فاکتور ناموفق بود.'), 'error'); return; }
+            if (!result.ok) {
+                setStatus(showError(result, 'صدور فاکتور ناموفق بود.'), 'error');
+                refreshAll();
+                return;
+            }
             var invoice = payload(result);
             closeIssueForm();
             setStatus('فاکتور ' + String(invoice.invoice_number || '') + ' صادر شد.', '');
