@@ -2180,10 +2180,12 @@ def run_reschedule_journey(browser, vp):
         page.select_option('[data-role="sr-book-clinician"]', str(RESCHEDULE["c1"]))
         source_date_select = page.locator('[data-role="sr-book-date"]')
         if source_date != PUB["today_tehran"]:
-            if source_date_select.locator(f'option[value="{source_date}"]').count() != 1:
+            source_date_option = source_date_select.locator(f'option[value="{source_date}"]')
+            source_date_option.wait_for(state="attached", timeout=15000)
+            if source_date_option.count() != 1:
                 raise RuntimeError("the reschedule source's future Tehran-local date must be selectable")
             wait_slot_reads_settled(page, state)
-            source_reads_before = len(slot_read_requests(state))
+            source_reads_before = len(state["reqs"])
             with page.expect_response(slot_read_filter, timeout=15000) as source_read:
                 source_date_select.select_option(source_date)
             if source_read.value.status != 200:
