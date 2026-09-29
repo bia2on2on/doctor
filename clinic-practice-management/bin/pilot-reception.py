@@ -2238,7 +2238,13 @@ def run_reschedule_journey(browser, vp):
             if queue_rows.nth(i).locator('[data-role="sr-reschedule-open"]').count() != 0:
                 raise RuntimeError("a received/queue row must never expose a reschedule action")
         current_doctor_name = source_row.locator('[data-role="sr-reschedule-open"]').get_attribute("data-clinician-name") or ""
-        current_time = (source_row.locator('[data-role="sr-row-time"]').inner_text() or "").strip()
+        if source_on_board:
+            current_time = (source_row.locator('[data-role="sr-row-time"]').inner_text() or "").strip()
+        else:
+            action_time = source_row.locator('[data-role="sr-reschedule-open"]').get_attribute("data-appointment-time")
+            if not action_time or not action_time.strip():
+                raise RuntimeError("the upcoming source row must expose a non-empty data-appointment-time on its reschedule action")
+            current_time = action_time.strip()
         with page.expect_response(slot_read_filter, timeout=15000) as opened_read:
             source_row.locator('[data-role="sr-reschedule-open"]').click()
         page.wait_for_selector('[data-section="sr-reschedule"]', state="visible", timeout=10000)
