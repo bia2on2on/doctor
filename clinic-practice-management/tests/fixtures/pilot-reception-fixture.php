@@ -302,12 +302,16 @@ foreach ([['a', $slotExpress->format('H:i:s'), 1], ['b', $slotPlain->format('H:i
 // board or queue). No appointment row is inserted here: the booking journeys
 // create them through the real UI, so the Slice 1 board invariant (exactly four
 // booked rows for today) is unchanged until a journey books one.
-$slotFreeA   = $lateToday ? $nowTehran->setTime(23, 45) : $nowTehran->add(new DateInterval('PT95M'));
-$slotFreeB   = $lateToday ? $nowTehran->setTime(23, 47) : $nowTehran->add(new DateInterval('PT115M'));
-$slotFreeC   = $lateToday ? $nowTehran->setTime(23, 49) : $nowTehran->add(new DateInterval('PT135M'));
-$slotFull    = $lateToday ? $nowTehran->setTime(23, 51) : $nowTehran->add(new DateInterval('PT155M'));
-$slotClosed  = $lateToday ? $nowTehran->setTime(23, 53) : $nowTehran->add(new DateInterval('PT175M'));
+$slotFreeA   = $nowTehran->add(new DateInterval('PT95M'));
+$slotFreeB   = $nowTehran->add(new DateInterval('PT115M'));
+$slotFreeC   = $nowTehran->add(new DateInterval('PT135M'));
+$slotFull    = $nowTehran->add(new DateInterval('PT155M'));
+$slotClosed  = $nowTehran->add(new DateInterval('PT175M'));
 $tomorrowTehran = $nowTehran->add(new DateInterval('P1D'))->format('Y-m-d');
+$bookingDate = $slotFreeA->format('Y-m-d');
+$bookingFutureDate = $bookingDate === $todayTehran
+    ? $tomorrowTehran
+    : $nowTehran->add(new DateInterval('P2D'))->format('Y-m-d');
 $futureTime     = '10:00:00';
 
 // Cancel journeys need three distinct, still-future slots when their browser
@@ -332,18 +336,18 @@ if ($cancelDate === $todayTehran) {
 
 $bookingSlotIds = [];
 foreach ([
-    ['free_a', $todayTehran, $slotFreeA->format('H:i:s'), 2, 0, 1],
-    ['free_b', $todayTehran, $slotFreeB->format('H:i:s'), 2, 0, 1],
-    ['free_c', $todayTehran, $slotFreeC->format('H:i:s'), 2, 0, 1],
-    ['full', $todayTehran, $slotFull->format('H:i:s'), 1, 1, 1],
-    ['closed', $todayTehran, $slotClosed->format('H:i:s'), 1, 0, 0],
-    ['future', $tomorrowTehran, $futureTime, 4, 0, 1],
+    ['free_a', $slotFreeA->format('Y-m-d'), $slotFreeA->format('H:i:s'), 2, 0, 1],
+    ['free_b', $slotFreeB->format('Y-m-d'), $slotFreeB->format('H:i:s'), 2, 0, 1],
+    ['free_c', $slotFreeC->format('Y-m-d'), $slotFreeC->format('H:i:s'), 2, 0, 1],
+    ['full', $slotFull->format('Y-m-d'), $slotFull->format('H:i:s'), 1, 1, 1],
+    ['closed', $slotClosed->format('Y-m-d'), $slotClosed->format('H:i:s'), 1, 0, 0],
+    ['future', $bookingFutureDate, $futureTime, 4, 0, 1],
 ] as $bookingSpec) {
-    [$bookingKey, $bookingDate, $bookingTime, $bookingCapacity, $bookingBooked, $bookingOpen] = $bookingSpec;
+    [$bookingKey, $bSlotDate, $bSlotTime, $bookingCapacity, $bookingBooked, $bookingOpen] = $bookingSpec;
     $bookingSlotIds[$bookingKey] = rp_insert(
         $wpdb,
         'INSERT INTO ' . $db->table('cpms_schedule_slots') . ' (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, generated_from, created_at, updated_at) VALUES (%d, %d, %d, %s, %s, %d, %d, %d, %d, %d, %s, %s, %s)',
-        [$clinicId, $locTehran, $clinicianId, $bookingDate, $bookingTime, 20, $bookingCapacity, $bookingBooked, 0, $bookingOpen, 'manual', $now, $now],
+        [$clinicId, $locTehran, $clinicianId, $bSlotDate, $bSlotTime, 20, $bookingCapacity, $bookingBooked, 0, $bookingOpen, 'manual', $now, $now],
         'booking slot ' . $bookingKey
     );
 }
@@ -535,6 +539,8 @@ file_put_contents(
         (string) $bookingPatients['DESKTOP'],
         'MR-RP-BK-',
         '-' . $uniq,
+        $bookingDate,
+        $bookingFutureDate,
     ]) . "\n"
     . 'RECEPTION_WALKIN=' . implode('|', [
         (string) $clinicianId,
