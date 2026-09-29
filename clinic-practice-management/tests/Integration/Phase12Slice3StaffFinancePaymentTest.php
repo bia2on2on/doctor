@@ -390,7 +390,10 @@ final class Phase12Slice3StaffFinancePaymentTest extends WP_UnitTestCase
 
     /**
      * Group 4 — amount contract: positive integer Rial, server balance is the
-     * maximum, and client-supplied money/status fields are ignored.
+     * maximum, and client-supplied money/status/identity fields are never
+     * authority. Client Clinic/Location selectors are not silently ignored
+     * either: the shared boundary fails closed (422) on disagreement with the
+     * trusted headers.
      */
     public function testAmountIsServerBoundedAndClientSuppliedMoneyNeverBecomesAuthority(): void
     {
@@ -448,10 +451,9 @@ final class Phase12Slice3StaffFinancePaymentTest extends WP_UnitTestCase
             'paid_amount' => 999999,
             'status' => 'paid',
             'currency' => 'USD',
-            'clinic_id' => $foreignClinic,
-            'location_id' => 999999,
             'visit_id' => $otherVisit,
             'patient_id' => $otherPatient,
+            'invoice_id' => 2147480000,
             'discount' => 999999,
             'tax' => 999999,
         ], $this->uuid());
@@ -465,6 +467,26 @@ final class Phase12Slice3StaffFinancePaymentTest extends WP_UnitTestCase
         self::assertSame($patient, (int) $stored['patient_id'], 'the persisted invoice patient is authoritative');
         self::assertSame($clinic, (int) $stored['clinic_id']);
         self::assertSame(1, $this->paymentCount($invoice));
+
+        // A body that tries to re-select the Clinic/Location is not merely
+        // ignored — the shared trusted-scope boundary fails closed on
+        // header/parameter disagreement before this route runs, and nothing is
+        // written. Client selectors are never authority (asserted here, not
+        // assumed).
+        $disagreement = $this->pay($invoice, $clinic, $location, [
+            'amount' => 100000,
+            'method' => 'cash',
+            'clinic_id' => $foreignClinic,
+            'location_id' => 999999,
+        ], $this->uuid());
+        self::assertSame(422, $disagreement->get_status(), 'client Clinic/Location selectors in the body never become authority');
+        self::assertSame('CLINIC_VALIDATION_FAILED', $this->errorCode($disagreement));
+        self::assertSame(1, $this->paymentCount($invoice), 'the rejected selector disagreement writes nothing');
+        self::assertSame(
+            'partial',
+            (string) App::db()->fetchValue('SELECT status FROM ' . App::db()->table('cpms_invoices') . ' WHERE id = %d', [$invoice]),
+            'the persisted invoice state is untouched by the rejected request'
+        );
     }
 
     /**
