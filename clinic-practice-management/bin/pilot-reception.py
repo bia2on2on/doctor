@@ -1789,7 +1789,7 @@ def run_booking_journey(browser, vp):
         ok(
             key,
             "reception booking: explicit persisted slot → confirmed appointment; no Visit/queue/payment; future stays future",
-            f"vp={vp['vp']} free_full_closed=1 location_reset=1 same_day_board=1 future_board=0 duplicate=409 board_rows={BOOKING_BOARD_ROWS} queue_rows={queue_rows_before} slots_reads={len([r for r in state['rest'] if r['route'].rstrip('/').endswith(SLOTS_ROUTE)])} create_posts={len([r for r in state['rest'] if r['route'].rstrip('/').endswith(APPOINTMENTS_ROUTE) and r['method']=='POST'])} reloaded=0 overflow=0",
+            f"vp={vp['vp']} free_full_closed=1 location_reset=1 same_day_board={1 if booking_on_board else 0} future_board=0 duplicate=409 board_rows={BOOKING_BOARD_ROWS} queue_rows={queue_rows_before} slots_reads={len([r for r in state['rest'] if r['route'].rstrip('/').endswith(SLOTS_ROUTE)])} create_posts={len([r for r in state['rest'] if r['route'].rstrip('/').endswith(APPOINTMENTS_ROUTE) and r['method']=='POST'])} reloaded=0 overflow=0",
         )
     except Exception as e:
         try:
