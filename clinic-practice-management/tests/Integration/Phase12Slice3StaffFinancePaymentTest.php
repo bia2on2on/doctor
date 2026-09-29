@@ -101,9 +101,18 @@ final class Phase12Slice3StaffFinancePaymentTest extends WP_UnitTestCase
     /** Methods this portal slice exposes (online is deliberately absent). */
     private const PORTAL_METHODS = ['cash', 'card_pos', 'other'];
 
-    /** Finance actions this slice must NOT grow into the module. */
+    /**
+     * Finance actions this slice must NOT grow into the module.
+     * Phase 12 Slice 4 deliberately supersedes the `checkout` pin of this
+     * slice: the owner-approved Slice 4 scope adds the bounded
+     * paid/checkout-ready panel + NORMAL paid checkout to this module (the
+     * committed Phase 12 Slice 4 RED suite requires the `finance-checkout-*`
+     * panel wiring in this same template). `waive`/`refund`/`void`/
+     * `adjustment`/`reissue`/`settle` stay forbidden here and are pinned by
+     * the Slice 4 template tripwire as well.
+     */
     private const FORBIDDEN_ACTION_VOCABULARY = [
-        'void_', 'voidReason', 'waive', 'refund', 'adjustment', 'reissue', 'checkout', 'settle',
+        'void_', 'voidReason', 'waive', 'refund', 'adjustment', 'reissue', 'settle',
     ];
 
     /** Device/provider integration vocabulary that must not appear anywhere. */
