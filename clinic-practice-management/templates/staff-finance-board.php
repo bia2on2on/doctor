@@ -67,8 +67,8 @@ if ( empty( $cpms_staff_embed ) ) {
 .cpms-finance-board__submit { min-height: 40px; padding: 6px 16px; border: 1px solid var(--cpms-border); border-radius: 8px; background: #1d2327; color: #fff; font: inherit; cursor: pointer; }
 .cpms-finance-board__submit[disabled] { opacity: .6; cursor: default; }
 /* Phase 12 Slice 5 — the read-only receipt surface. Everything here is a
-   projection of server truth; printing uses the browser's own print path and
-   never a server-side document. */
+    projection of server truth; printing uses the browser's own print path and
+    never a server-side document. */
 .cpms-finance-board__receipt-body { display: grid; gap: 4px; margin: 6px 0 12px; }
 .cpms-finance-board__receipt-row { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; margin: 0; padding: 5px 0; border-bottom: 1px solid var(--cpms-border); }
 .cpms-finance-board__receipt-row:last-child { border-bottom: 0; }
@@ -88,7 +88,7 @@ if ( empty( $cpms_staff_embed ) ) {
     .cpms-finance-board__action, .cpms-finance-board__submit { width: 100%; }
 }
 /* Print isolation: only the receipt surface is printed; the portal chrome and
-   every other panel are masked while the browser print dialog is active. */
+    every other panel are masked while the browser print dialog is active. */
 @media print {
     body.cpms-finance-printing { background: #fff; }
     body.cpms-finance-printing * { visibility: hidden !important; }
@@ -197,9 +197,9 @@ if ( empty( $cpms_staff_embed ) ) {
         </form>
     </section>
     <!-- Phase 12 Slice 5 — read-only receipt of a NORMAL fully settled invoice.
-         It is only ever filled from the server's durable settlement truth, and
-         it is printed through the browser's own print path; there is no
-         mutation, no server-side document and no other finance action here. -->
+        It is only ever filled from the server's durable settlement truth, and
+        it is printed through the browser's own print path; there is no
+        mutation, no server-side document and no other finance action here. -->
     <section class="cpms-finance-board__panel" data-role="finance-receipt" aria-label="رسید پرداخت" hidden>
         <h2 class="cpms-finance-board__heading">رسید پرداخت</h2>
         <p class="cpms-finance-board__hint" data-role="finance-receipt-hint">این رسید فقط از دادهٔ پایدارِ مسیر تسویهٔ عادی ساخته می‌شود و تاریخ‌های آن بر پایهٔ منطقهٔ زمانی موقعیت عملیاتی جاری است.</p>

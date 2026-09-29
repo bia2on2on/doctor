@@ -896,7 +896,7 @@ final class FinancePortalController extends RestBase {
 			}
 		}
 
-		$clinic = App::db()->fetchRow(
+		$clinic  = App::db()->fetchRow(
 			'SELECT name, address, phone FROM ' . App::db()->table( 'cpms_clinics' ) . ' WHERE id = %d LIMIT 1',
 			array( $clinic_id )
 		);
