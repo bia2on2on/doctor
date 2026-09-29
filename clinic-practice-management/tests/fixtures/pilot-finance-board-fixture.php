@@ -37,6 +37,10 @@ $nonce = substr(bin2hex(random_bytes(4)), 0, 8);
 $patients = array(
     array('Synthetic Invoice ' . $nonce, 'invoice'),
     array('Synthetic NoInvoice ' . $nonce, 'noinvoice'),
+    // Phase 12 Slice 3 — a dedicated open invoice the responsive/app journey
+    // captures against: first a REAL partial payment, then an EXACT full
+    // settlement (both through the existing finance service via the UI).
+    array('Synthetic Capture ' . $nonce, 'capture'),
 );
 $patientIds = array();
 $visitIds = array();
@@ -105,6 +109,33 @@ $invoiceInserted = $wpdb->insert(
 );
 if ( false === $invoiceInserted ) {
     fwrite(STDERR, "FINANCE_BOARD_FIXTURE_ERROR: invoice seed failed\n");
+    exit(1);
+}
+
+// Phase 12 Slice 3 — the untouched OPEN invoice for the manual capture journey
+// (500000.00 Rial, nothing paid yet) so the browser flow can prove a partial
+// capture and then an exact full settlement against server truth.
+$captureInvoiceInserted = $wpdb->insert(
+    $db->table('cpms_invoices'),
+    array(
+        'clinic_id'            => $clinicId,
+        'location_id'          => $locationId,
+        'invoice_number'       => 'SYN-FIN-CAP-' . $nonce,
+        'patient_id'           => $patientIds['capture'],
+        'visit_id'             => $visitIds['capture'],
+        'status'               => 'open',
+        'subtotal'             => '500000.00',
+        'total'                => '500000.00',
+        'currency'             => 'IRR',
+        'paid_amount'          => '0.00',
+        'balance'              => '500000.00',
+        'issued_by_wp_user_id' => $secretaryId,
+        'created_at'           => $now,
+        'updated_at'           => $now,
+    )
+);
+if ( false === $captureInvoiceInserted ) {
+    fwrite(STDERR, "FINANCE_BOARD_FIXTURE_ERROR: capture invoice seed failed\n");
     exit(1);
 }
 
@@ -184,6 +215,7 @@ $env = array(
     'FINANCE_BOARD_INVOICE_PATIENT' => $patients[0][0] . ' Fixture',
     'FINANCE_BOARD_NO_INVOICE_PATIENT' => $patients[1][0] . ' Fixture',
     'FINANCE_BOARD_ELIGIBLE_PATIENT' => $eligiblePatientName . ' Fixture',
+    'FINANCE_BOARD_PAYMENT_PATIENT' => $patients[2][0] . ' Fixture',
 );
 $lines = array();
 foreach ($env as $key => $value) {
@@ -194,4 +226,4 @@ foreach ($env as $key => $value) {
     $lines[] = $key . '=' . $value;
 }
 file_put_contents('/tmp/finance-board.env', implode("\n", $lines) . "\n");
-echo 'fixture: finance-board clinic=' . $clinicId . ' location=' . $locationId . ' synthetic_rows=2 invoice_rows=1 eligible_rows=1 eligible_visit=' . $eligibleVisitId . ' timezone=Asia/Tehran' . "\n";
+echo 'fixture: finance-board clinic=' . $clinicId . ' location=' . $locationId . ' synthetic_rows=3 invoice_rows=2 open_capture_invoice=1 eligible_rows=1 eligible_visit=' . $eligibleVisitId . ' timezone=Asia/Tehran' . "\n";

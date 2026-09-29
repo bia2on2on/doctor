@@ -5,12 +5,17 @@ Phase 12 Slice 1 — read-only awaiting-payment board.
 Phase 12 Slice 2 — first issuance for the CURRENT trusted Location's
 consultation-completed Visits, proven through the real REST delegation and the
 existing awaiting-payment board (no second finance implementation).
+Phase 12 Slice 3 — manual payment capture against an EXISTING invoice: one REAL
+partial payment and one REAL exact full settlement, exercised through the UI and
+verified against server truth after a reload. Manual entry only (cash /
+card_pos / other) — no hardware, provider or device integration is exercised.
 
 The harness reuses the EXISTING pilot gate entry point (fixture + Playwright in
 the responsive job); no new browser infrastructure is added. Pixels are emitted
 as artifacts and are not interpreted as visual approval here.
 """
 
+import json
 import os
 import re
 import sys
@@ -28,6 +33,7 @@ LOCATION_ID = os.environ["FINANCE_BOARD_LOCATION_ID"]
 INVOICE_PATIENT = os.environ["FINANCE_BOARD_INVOICE_PATIENT"]
 NO_INVOICE_PATIENT = os.environ["FINANCE_BOARD_NO_INVOICE_PATIENT"]
 ELIGIBLE_PATIENT = os.environ["FINANCE_BOARD_ELIGIBLE_PATIENT"]
+PAYMENT_PATIENT = os.environ["FINANCE_BOARD_PAYMENT_PATIENT"]
 VIEWPORTS = [
     ("mobile", 390, 844),
     ("tablet", 768, 1024),
@@ -35,6 +41,11 @@ VIEWPORTS = [
 ]
 ISSUE_DESCRIPTION = "ویزیت و مشاورهٔ سرپایی"
 ISSUE_UNIT_PRICE = 500000
+# Phase 12 Slice 3 — the fixture's open capture invoice (500000.00 Rial).
+PAYMENT_TOTAL = "500000.00"
+PAYMENT_PARTIAL = 200000
+PAYMENT_REMAINDER = "300000.00"
+PAYMENT_SETTLEMENT = 300000
 OUT = Path("pilot-screenshots")
 OUT.mkdir(exist_ok=True)
 failures = []
@@ -82,8 +93,9 @@ with sync_playwright() as playwright:
         page.locator('[data-role="finance-board"]').wait_for(state="visible", timeout=20000)
         page.get_by_text(INVOICE_PATIENT, exact=True).wait_for(state="visible", timeout=20000)
         page.get_by_text(NO_INVOICE_PATIENT, exact=True).wait_for(state="visible", timeout=20000)
+        page.get_by_text(PAYMENT_PATIENT, exact=True).wait_for(state="visible", timeout=20000)
         page.wait_for_function(
-            "document.querySelectorAll('[data-role=finance-rows] tr').length === 2",
+            "document.querySelectorAll('[data-role=finance-rows] tr').length === 3",
             timeout=20000,
         )
 
@@ -91,7 +103,11 @@ with sync_playwright() as playwright:
         rows = board.locator("tbody tr")
         invoice_row = rows.filter(has_text=INVOICE_PATIENT)
         no_invoice_row = rows.filter(has_text=NO_INVOICE_PATIENT)
-        require(rows.count() == 2, f"{label}: exactly the two current awaiting-payment visits render")
+        capture_row = rows.filter(has_text=PAYMENT_PATIENT)
+        require(rows.count() == 3, f"{label}: exactly the three current awaiting-payment visits render")
+        require(capture_row.count() == 1, f"{label}: the open capture invoice row is present exactly once")
+        require(PAYMENT_TOTAL in capture_row.inner_text(), f"{label}: the capture invoice exposes its server total")
+        require("باز" in capture_row.inner_text(), f"{label}: the capture invoice is open before any capture")
         require(invoice_row.count() == 1, f"{label}: invoice patient row is present exactly once")
         require(no_invoice_row.count() == 1, f"{label}: no-invoice patient row is present exactly once")
         require(invoice_row.get_by_text("1234.00", exact=False).count() == 1, f"{label}: invoice total is visible once")
@@ -100,8 +116,22 @@ with sync_playwright() as playwright:
         require("فاکتور ثبت نشده" in no_invoice_row.inner_text(), f"{label}: missing invoice is explicit and has no fabricated amount")
         require("پرداخت بخشی" in invoice_row.inner_text(), f"{label}: partial invoice state is localized")
         require("SYN-FIN-" not in board.inner_text(), f"{label}: invoice number is not exposed")
-        require("patient_id" not in board.inner_html() and "invoice_id" not in board.inner_html(), f"{label}: identifiers are not exposed")
-        require(board.locator("button, input, form").count() == 0, f"{label}: board exposes no mutation controls")
+        require("patient_id" not in board.inner_html(), f"{label}: patient identifiers are not exposed")
+        require("SYN-FIN-" not in board.inner_html(), f"{label}: internal patient/mrn strings stay out of the markup")
+        # Phase 12 Slice 3 — the board grows EXACTLY one manual capture control
+        # per invoice-bearing row (the no-invoice row keeps none); the control
+        # carries only the selector id it posts to.
+        capture_controls = board.locator('[data-role="finance-pay-open"]')
+        require(capture_controls.count() == 2, f"{label}: exactly one capture control per invoice-bearing row")
+        require(
+            board.locator("button, input, form, select").count() == 2,
+            f"{label}: the board itself stays free of other mutation controls",
+        )
+        selectors = capture_controls.evaluate_all("els => els.map(e => Number(e.getAttribute('data-invoice-id')))")
+        require(
+            all(isinstance(value, int) and value > 0 for value in selectors),
+            f"{label}: every capture control carries a positive invoice selector",
+        )
         require(page.locator("[data-role='finance-location']").is_hidden(), f"{label}: trusted single Location auto-resolves")
 
         # Phase 12 Slice 2 — first-issuance panel (read-only inspection here; the
@@ -129,12 +159,36 @@ with sync_playwright() as playwright:
             f"{label}: cancelling leaves the eligible visit untouched",
         )
 
+        # Phase 12 Slice 3 — the capture panel stays out of the way until a row
+        # asks for it, offers manual methods only, and cancels without a write.
+        payment_panel = page.locator('[data-role="finance-payment"]')
+        require(payment_panel.is_hidden(), f"{label}: the capture panel is closed until a row asks for it")
+        capture_row.locator('[data-role="finance-pay-open"]').click()
+        payment_panel.wait_for(state="visible", timeout=10000)
+        pay_form = payment_panel.locator('[data-role="finance-pay-form"]')
+        method_values = pay_form.locator('[data-role="finance-pay-method"] option').evaluate_all("els => els.map(e => e.value)")
+        require(method_values == ["cash", "card_pos", "other"], f"{label}: the capture form offers manual methods only, got {method_values}")
+        require(
+            pay_form.locator('[data-role="finance-pay-amount"], [data-role="finance-pay-method"], [data-role="finance-pay-submit"]').count() == 3,
+            f"{label}: the capture form exposes amount + method + one submit",
+        )
+        require("ریال" in pay_form.inner_text(), f"{label}: the capture amount is declared in Rial")
+        require("online" not in payment_panel.inner_html().lower(), f"{label}: online payment is not offered in the portal UI")
+        pay_form.locator('[data-role="finance-pay-cancel"]').click()
+        require(payment_panel.is_hidden(), f"{label}: cancelling the capture form performs no mutation")
+        require(
+            page.locator('[data-role="finance-rows"] tr').filter(has_text=PAYMENT_PATIENT).count() == 1
+            and PAYMENT_TOTAL in page.locator('[data-role="finance-rows"] tr').filter(has_text=PAYMENT_PATIENT).inner_text(),
+            f"{label}: the untouched capture invoice still shows its open total",
+        )
+
         dimensions = page.evaluate(
-            "({width: innerWidth, scroll: document.documentElement.scrollWidth, board: document.querySelector('[data-role=finance-board]').getBoundingClientRect().width, eligible: document.querySelector('[data-role=finance-eligible]').getBoundingClientRect().width})"
+            "({width: innerWidth, scroll: document.documentElement.scrollWidth, board: document.querySelector('[data-role=finance-board]').getBoundingClientRect().width, eligible: document.querySelector('[data-role=finance-eligible]').getBoundingClientRect().width, payment: document.querySelector('[data-role=finance-payment]').getBoundingClientRect().width})"
         )
         require(dimensions["scroll"] <= dimensions["width"] + 1, f"{label}: no horizontal viewport overflow")
         require(dimensions["board"] <= dimensions["width"] + 1, f"{label}: board fits viewport width")
         require(dimensions["eligible"] <= dimensions["width"] + 1, f"{label}: first-issuance panel fits viewport width")
+        require(dimensions["payment"] <= dimensions["width"] + 1, f"{label}: capture panel fits viewport width")
         require("/wp-admin/" not in urlparse(page.url).path, f"{label}: remains in independent front-end Staff Portal")
         page.screenshot(path=str(OUT / f"finance-board-{label}.png"), full_page=True)
         print(f"INFO {label}: {width}x{height}, clinic={CLINIC_ID}, location={LOCATION_ID}")
@@ -170,7 +224,7 @@ with sync_playwright() as playwright:
         timeout=30000,
     )
     page.wait_for_function(
-        "document.querySelectorAll('[data-role=finance-rows] tr').length === 3",
+        "document.querySelectorAll('[data-role=finance-rows] tr').length === 4",
         timeout=30000,
     )
     status_text = page.locator('[data-role="finance-status"]').inner_text()
@@ -188,7 +242,7 @@ with sync_playwright() as playwright:
 
     page.reload(wait_until="networkidle")
     page.wait_for_function(
-        "document.querySelectorAll('[data-role=finance-rows] tr').length === 3",
+        "document.querySelectorAll('[data-role=finance-rows] tr').length === 4",
         timeout=20000,
     )
     require(
@@ -198,6 +252,89 @@ with sync_playwright() as playwright:
     require(
         page.locator('[data-role="finance-rows"] tr').filter(has_text=ELIGIBLE_PATIENT).count() == 1,
         "refresh: the issued visit is still on the awaiting-payment board (server truth)",
+    )
+
+    # ------------------------------------------------------------------
+    # Phase 12 Slice 3 — real manual capture journey (desktop viewport):
+    # one REAL partial payment, then one REAL exact full settlement, both
+    # verified against server truth after a reload. Manual entry only.
+    # ------------------------------------------------------------------
+    def capture_row():
+        return page.locator('[data-role="finance-rows"] tr').filter(has_text=PAYMENT_PATIENT)
+
+    def open_capture_form():
+        row = capture_row()
+        require(row.count() == 1, "capture: exactly one open capture-invoice row before posting")
+        row.locator('[data-role="finance-pay-open"]').click()
+        form = page.locator('[data-role="finance-pay-form"]')
+        form.wait_for(state="visible", timeout=10000)
+        return form
+
+    partial_form = open_capture_form()
+    partial_form.locator('[data-role="finance-pay-amount"]').fill(str(PAYMENT_PARTIAL))
+    partial_form.locator('[data-role="finance-pay-method"]').select_option("cash")
+    page.screenshot(path=str(OUT / "finance-capture-partial-desktop.png"), full_page=True)
+    # Double submit on purpose: the UI guard must keep exactly ONE payment.
+    page.evaluate(
+        "() => { const f = document.querySelector('[data-role=\"finance-pay-form\"]');"
+        " f.dispatchEvent(new Event('submit', {cancelable: true, bubbles: true}));"
+        " f.dispatchEvent(new Event('submit', {cancelable: true, bubbles: true})); }"
+    )
+    page.wait_for_function(
+        "(function(){var r=document.querySelectorAll('[data-role=finance-rows] tr');"
+        "for (var i=0;i<r.length;i++){if(r[i].innerText.indexOf(" + json.dumps(PAYMENT_PATIENT) + ")!==-1){"
+        "return r[i].innerText.indexOf(" + json.dumps(PAYMENT_REMAINDER) + ")!==-1;}}return false;})()",
+        timeout=30000,
+    )
+    partial_row = capture_row()
+    require(partial_row.count() == 1, "capture: the partially paid visit stays on the board")
+    require("پرداخت بخشی" in partial_row.inner_text(), "capture: the row reports the server-derived partial state")
+    require(PAYMENT_REMAINDER in partial_row.inner_text(), "capture: the row shows the reduced server-derived remaining")
+    require("در انتظار پرداخت" in partial_row.inner_text(), "capture: a partial capture never settles the visit")
+    require(
+        page.locator('[data-role="finance-status"]').inner_text() != "",
+        "capture: the delegated result is reported to the operator",
+    )
+    page.screenshot(path=str(OUT / "finance-capture-partial-done-desktop.png"), full_page=True)
+
+    page.reload(wait_until="networkidle")
+    page.wait_for_function(
+        "(function(){var r=document.querySelectorAll('[data-role=finance-rows] tr');"
+        "for (var i=0;i<r.length;i++){if(r[i].innerText.indexOf(" + json.dumps(PAYMENT_PATIENT) + ")!==-1){"
+        "return r[i].innerText.indexOf(" + json.dumps(PAYMENT_REMAINDER) + ")!==-1;}}return false;})()",
+        timeout=20000,
+    )
+    require(
+        page.locator('[data-role="finance-rows"] tr').filter(has_text=PAYMENT_PATIENT).count() == 1,
+        "capture refresh: the partial payment is server truth, not a browser-only state",
+    )
+
+    settlement_form = open_capture_form()
+    settlement_form.locator('[data-role="finance-pay-amount"]').fill(str(PAYMENT_SETTLEMENT))
+    settlement_form.locator('[data-role="finance-pay-method"]').select_option("card_pos")
+    settlement_form.locator('[data-role="finance-pay-submit"]').click()
+    page.wait_for_function(
+        "(function(){var r=document.querySelectorAll('[data-role=finance-rows] tr');"
+        "for (var i=0;i<r.length;i++){if(r[i].innerText.indexOf(" + json.dumps(PAYMENT_PATIENT) + ")!==-1){return false;}}"
+        "return r.length === 3;})()",
+        timeout=30000,
+    )
+    require(capture_row().count() == 0, "capture: the exactly settled visit leaves the awaiting-payment board")
+    require(page.locator('[data-role="finance-payment"]').is_hidden(), "capture: the closed panel returns to rest after settlement")
+    require(
+        page.locator('[data-role="finance-rows"] tr').filter(has_text=INVOICE_PATIENT).count() == 1,
+        "capture: unrelated awaiting-payment rows are untouched by the settlement",
+    )
+    page.screenshot(path=str(OUT / "finance-capture-settled-desktop.png"), full_page=True)
+
+    page.reload(wait_until="networkidle")
+    page.wait_for_function(
+        "document.querySelectorAll('[data-role=finance-rows] tr').length === 3",
+        timeout=20000,
+    )
+    require(
+        page.locator('[data-role="finance-rows"] tr').filter(has_text=PAYMENT_PATIENT).count() == 0,
+        "capture refresh: the settled visit stays off the board (server truth, no checkout)",
     )
 
     require(not page_errors, "no uncaught browser exceptions")
@@ -217,4 +354,7 @@ with sync_playwright() as playwright:
 if failures:
     print(f"FAILURES {len(failures)}")
     sys.exit(1)
-print("PASS Phase 12 Staff Portal Finance board + first-issuance browser acceptance")
+print(
+    "PASS Phase 12 Staff Portal Finance board + first-issuance + manual capture "
+    "(1 real partial, 1 real exact settlement) browser acceptance"
+)

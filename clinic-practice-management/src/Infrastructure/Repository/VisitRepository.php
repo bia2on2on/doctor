@@ -229,6 +229,10 @@ final class VisitRepository
             ' p.first_name AS patient_first_name, p.last_name AS patient_last_name,' .
             ' c.full_name AS clinician_name,' .
             ' a.slot_time AS appointment_time,' .
+            // Phase 12 Slice 3 — the two selector-only ids the capture action
+            // needs; `i.id` (not the subquery id) so the id is NULL exactly
+            // when the legitimately linked invoice join did not match.
+            ' i.id AS invoice_id,' .
             ' i.status AS invoice_status, i.total AS invoice_total,' .
             ' i.paid_amount AS invoice_paid_amount, i.balance AS invoice_balance, i.currency AS invoice_currency' .
             ' FROM ' . $this->db->table( 'cpms_visits' ) . ' v' .

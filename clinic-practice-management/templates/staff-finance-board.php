@@ -5,9 +5,15 @@
  * Slice 1: read-only awaiting-payment board.
  * Slice 2: bounded first issuance for CURRENT trusted Location
  *          consultation-completed Visits. The mutation delegates to the
- *          existing finance boundary; the module carries no other finance
- *          mutation, no tax/discount/service management, and no device
- *          integration, and no wp-admin template/chrome is used.
+ *          existing finance boundary.
+ * Slice 3: bounded manual capture of one payment (partial or the exact
+ *          remaining balance) against an existing invoice of the CURRENT
+ *          trusted Location. Manual entry only — cash / card_pos / other are
+ *          recorded by hand from what the operator reads off the payment
+ *          instrument; nothing is captured automatically and no hardware is
+ *          involved. The mutation delegates to the existing finance boundary.
+ * The module carries no other finance mutation, no tax/discount/service
+ * management, and no wp-admin template/chrome is used.
  */
 
 declare(strict_types=1);
@@ -42,6 +48,7 @@ if ( empty( $cpms_staff_embed ) ) {
 .cpms-finance-board__patient { font-weight: 700; }
 .cpms-finance-board__invoice { display: grid; gap: 2px; min-width: 125px; }
 .cpms-finance-board__invoice strong { font-weight: 700; }
+.cpms-finance-board__invoice .cpms-finance-board__action { margin-top: 6px; }
 .cpms-finance-board__muted { color: var(--cpms-muted); }
 .cpms-finance-board__empty { padding: 16px 8px !important; text-align: center !important; color: var(--cpms-muted); }
 .cpms-finance-board__action { min-height: 36px; padding: 6px 12px; border: 1px solid var(--cpms-border); border-radius: 8px; background: #fff; font: inherit; cursor: pointer; }
@@ -50,7 +57,7 @@ if ( empty( $cpms_staff_embed ) ) {
 .cpms-finance-board__target { margin: 0; font-weight: 700; }
 .cpms-finance-board__fields { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr); gap: 8px; align-items: end; }
 .cpms-finance-board__field { display: grid; gap: 4px; min-width: 0; color: var(--cpms-muted); }
-.cpms-finance-board__field input { min-height: 40px; width: 100%; min-width: 0; padding: 6px 10px; border: 1px solid var(--cpms-border); border-radius: 8px; background: #fff; font: inherit; color: inherit; }
+.cpms-finance-board__field input, .cpms-finance-board__field select { min-height: 40px; width: 100%; min-width: 0; padding: 6px 10px; border: 1px solid var(--cpms-border); border-radius: 8px; background: #fff; font: inherit; color: inherit; }
 .cpms-finance-board__form-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .cpms-finance-board__submit { min-height: 40px; padding: 6px 16px; border: 1px solid var(--cpms-border); border-radius: 8px; background: #1d2327; color: #fff; font: inherit; cursor: pointer; }
 .cpms-finance-board__submit[disabled] { opacity: .6; cursor: default; }
@@ -116,6 +123,32 @@ if ( empty( $cpms_staff_embed ) ) {
             </table>
         </div>
     </section>
+    <section class="cpms-finance-board__panel" data-role="finance-payment" aria-label="ثبت دستی پرداخت" hidden>
+        <h2 class="cpms-finance-board__heading">ثبت پرداخت</h2>
+        <p class="cpms-finance-board__hint">پرداخت دریافت‌شده به‌صورت دستی ثبت می‌شود؛ مبلغ بیش از باقی‌ماندهٔ سرور پذیرفته نمی‌شود و ثبت کامل، فاکتور را تسویه می‌کند.</p>
+        <form class="cpms-finance-board__form" data-role="finance-pay-form">
+            <p class="cpms-finance-board__target" data-role="finance-pay-target" aria-live="polite"></p>
+            <div class="cpms-finance-board__fields">
+                <label class="cpms-finance-board__field">مبلغ (ریال)
+                    <input type="number" min="1" step="1" required data-role="finance-pay-amount" aria-label="مبلغ پرداخت به ریال">
+                </label>
+                <label class="cpms-finance-board__field">روش پرداخت
+                    <select data-role="finance-pay-method" aria-label="روش پرداخت">
+                        <option value="cash">نقد</option>
+                        <option value="card_pos">کارت‌خوان — ثبت دستی</option>
+                        <option value="other">سایر</option>
+                    </select>
+                </label>
+                <label class="cpms-finance-board__field">شمارهٔ پیگیری (اختیاری)
+                    <input type="text" maxlength="128" data-role="finance-pay-ref" aria-label="شمارهٔ پیگیری اختیاری">
+                </label>
+            </div>
+            <div class="cpms-finance-board__form-actions">
+                <button type="submit" class="cpms-finance-board__submit" data-role="finance-pay-submit">ثبت پرداخت</button>
+                <button type="button" class="cpms-finance-board__action" data-role="finance-pay-cancel">انصراف</button>
+            </div>
+        </form>
+    </section>
 </main>
 <script type="application/json" id="cpms-finance-board-config">
 <?php
@@ -133,11 +166,19 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
     var config;
     try { config = JSON.parse(configNode.textContent); } catch (error) { return; }
     var root = String(config.rest_root || '').replace(/\/$/, '');
-    var state = { clinicId: null, locationId: null, locations: [], busy: false, canIssue: false, selectedVisit: null };
+    var state = { clinicId: null, locationId: null, locations: [], busy: false, canIssue: false, canCapture: false, selectedVisit: null, selectedInvoice: null, paymentKey: null };
     var locationSelect = document.querySelector('[data-role="finance-location"]');
     var rowsNode = document.querySelector('[data-role="finance-rows"]');
     var eligiblePanel = document.querySelector('[data-role="finance-eligible"]');
     var eligibleRowsNode = document.querySelector('[data-role="finance-eligible-rows"]');
+    var paymentPanel = document.querySelector('[data-role="finance-payment"]');
+    var payFormNode = document.querySelector('[data-role="finance-pay-form"]');
+    var payTargetNode = document.querySelector('[data-role="finance-pay-target"]');
+    var payAmountInput = document.querySelector('[data-role="finance-pay-amount"]');
+    var payMethodSelect = document.querySelector('[data-role="finance-pay-method"]');
+    var payRefInput = document.querySelector('[data-role="finance-pay-ref"]');
+    var paySubmitNode = document.querySelector('[data-role="finance-pay-submit"]');
+    var payCancelNode = document.querySelector('[data-role="finance-pay-cancel"]');
     var formNode = document.querySelector('[data-role="finance-issue-form"]');
     var targetNode = document.querySelector('[data-role="finance-issue-target"]');
     var descriptionInput = document.querySelector('[data-role="finance-issue-description"]');
@@ -165,8 +206,11 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
         if (state.locationId) value['X-CPMS-Location-Id'] = String(state.locationId);
         return value;
     }
-    function request(path, method, body) {
+    function request(path, method, body, extraHeaders) {
         var options = { method: method || 'GET', headers: headers(), credentials: 'same-origin', cache: 'no-store' };
+        if (extraHeaders) {
+            Object.keys(extraHeaders).forEach(function (name) { options.headers[name] = String(extraHeaders[name]); });
+        }
         if (body !== undefined) {
             options.headers['Content-Type'] = 'application/json';
             options.body = JSON.stringify(body);
@@ -202,10 +246,49 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
     function operationalStamp(visit) {
         return esc(visit.operational_date) + (visit.jalali_date ? ' · ' + esc(visit.jalali_date) : '') + ' · ' + esc(visit.operational_time);
     }
+    // One Idempotency-Key per capture attempt target: a double submit or a
+    // retry after a dropped response replays the same payment server-side
+    // instead of writing a second one. A new target gets a new key.
+    function paymentKey() {
+        if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+            return String(window.crypto.randomUUID()).toLowerCase();
+        }
+        var bytes = new Uint8Array(16);
+        if (window.crypto && window.crypto.getRandomValues) {
+            window.crypto.getRandomValues(bytes);
+        } else {
+            for (var i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256);
+        }
+        bytes[6] = (bytes[6] & 0x0f) | 0x40;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        var hex = '';
+        for (var j = 0; j < 16; j++) hex += ('0' + bytes[j].toString(16)).slice(-2);
+        return hex.slice(0, 8) + '-' + hex.slice(8, 12) + '-' + hex.slice(12, 16) + '-' + hex.slice(16, 20) + '-' + hex.slice(20);
+    }
     function closeIssueForm() {
         state.selectedVisit = null;
         formNode.hidden = true;
         targetNode.textContent = '';
+    }
+    function closePayForm() {
+        state.selectedInvoice = null;
+        state.paymentKey = null;
+        paymentPanel.hidden = true;
+        payFormNode.hidden = true;
+        payTargetNode.textContent = '';
+    }
+    function openPayForm(invoiceId, patientName, remaining, currency) {
+        if (!state.canCapture || !invoiceId) return;
+        state.selectedInvoice = Number(invoiceId);
+        state.paymentKey = paymentKey();
+        payTargetNode.textContent = 'فاکتور ' + patientName + ' — باقی‌ماندهٔ سرور: ' + String(remaining) + ' ' + String(currency);
+        payAmountInput.value = '';
+        payMethodSelect.value = 'cash';
+        payRefInput.value = '';
+        paySubmitNode.disabled = false;
+        paymentPanel.hidden = false;
+        payFormNode.hidden = false;
+        payAmountInput.focus();
     }
     function openIssueForm(visitId, patientName) {
         if (!state.canIssue || !visitId) return;
@@ -243,23 +326,34 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
     }
     function renderBoard(data) {
         var visits = Array.isArray(data.visits) ? data.visits : [];
+        var invoiceStillListed = false;
         dateNode.textContent = 'تاریخ عملیاتی: ' + String(data.date || '—') + (data.jalali_date ? ' · ' + String(data.jalali_date) : '');
         if (!visits.length) {
             rowsNode.innerHTML = '<tr><td class="cpms-finance-board__empty" colspan="5">برای این موقعیت در انتظار پرداختی وجود ندارد.</td></tr>';
         } else {
             rowsNode.innerHTML = visits.map(function (visit) {
+                if (visit.invoice_id && Number(visit.invoice_id) === Number(state.selectedInvoice)) invoiceStillListed = true;
+                var invoiceCell = renderInvoice(visit.invoice);
+                if (state.canCapture && visit.invoice_id && visit.invoice) {
+                    invoiceCell += '<button type="button" class="cpms-finance-board__action" data-role="finance-pay-open"' +
+                        ' data-invoice-id="' + Number(visit.invoice_id) + '"' +
+                        ' data-patient="' + esc(visit.patient_name) + '"' +
+                        ' data-remaining="' + esc(visit.invoice.remaining) + '"' +
+                        ' data-currency="' + esc(visit.invoice.currency) + '">ثبت پرداخت</button>';
+                }
                 var values = [
                     '<span class="cpms-finance-board__patient">' + esc(visit.patient_name) + '</span>',
                     esc(visit.clinician_name),
                     operationalStamp(visit),
                     'در انتظار پرداخت',
-                    renderInvoice(visit.invoice)
+                    invoiceCell
                 ];
                 return '<tr>' + values.map(function (value, index) {
                     return '<td data-label="' + boardLabels[index] + '">' + value + '</td>';
                 }).join('') + '</tr>';
             }).join('');
         }
+        if (state.selectedInvoice && !invoiceStillListed) closePayForm();
         if (data.has_more) setStatus('فهرست به ۱۰۰ مورد محدود شده است؛ همهٔ نتایج در این نما نشان داده نمی‌شوند.', '');
     }
     function loadEligible() {
@@ -328,6 +422,61 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
         });
     }
 
+    function submitPayment() {
+        if (state.busy || !state.selectedInvoice) return;
+        var amount = Number(payAmountInput.value);
+        var method = String(payMethodSelect.value || '');
+        if (!isFinite(amount) || amount <= 0 || Math.floor(amount) !== amount) {
+            setStatus('مبلغ پرداخت باید عدد صحیح مثبت (ریال) باشد.', 'error');
+            return;
+        }
+        if (method !== 'cash' && method !== 'card_pos' && method !== 'other') {
+            setStatus('روش پرداخت را انتخاب کنید.', 'error');
+            return;
+        }
+        var body = { amount: amount, method: method };
+        var reference = String(payRefInput.value || '').trim();
+        if (reference) body.transaction_ref = reference;
+        var key = state.paymentKey || paymentKey();
+        state.paymentKey = key;
+        state.busy = true;
+        paySubmitNode.disabled = true;
+        request('/staff/portal/finance/invoices/' + Number(state.selectedInvoice) + '/payments', 'POST', body, { 'Idempotency-Key': key }).then(function (result) {
+            state.busy = false;
+            paySubmitNode.disabled = false;
+            if (!result.ok) {
+                setStatus(showError(result, 'ثبت پرداخت ناموفق بود.'), 'error');
+                refreshAll();
+                return;
+            }
+            var data = payload(result);
+            var replay = data && data.idempotent_replay === true;
+            closePayForm();
+            setStatus(replay ? 'این پرداخت پیش‌تر ثبت شده بود؛ همان رکورد بازخوانی شد.' : 'پرداخت ' + String(amount) + ' ریال ثبت شد.', '');
+            refreshAll();
+        }).catch(function () {
+            state.busy = false;
+            paySubmitNode.disabled = false;
+            setStatus('ارتباط با سرویس مالی برقرار نشد.', 'error');
+        });
+    }
+
+    rowsNode.addEventListener('click', function (event) {
+        var trigger = event.target && event.target.closest ? event.target.closest('[data-role="finance-pay-open"]') : null;
+        if (!trigger) return;
+        openPayForm(
+            trigger.getAttribute('data-invoice-id'),
+            String(trigger.getAttribute('data-patient') || ''),
+            String(trigger.getAttribute('data-remaining') || ''),
+            String(trigger.getAttribute('data-currency') || '')
+        );
+    });
+    payFormNode.addEventListener('submit', function (event) {
+        event.preventDefault();
+        submitPayment();
+    });
+    payCancelNode.addEventListener('click', function () { closePayForm(); });
+
     eligibleRowsNode.addEventListener('click', function (event) {
         var trigger = event.target && event.target.closest ? event.target.closest('[data-role="finance-issue-open"]') : null;
         if (!trigger) return;
@@ -343,6 +492,7 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
         rowsNode.innerHTML = '<tr><td class="cpms-finance-board__empty" colspan="5">در حال بارگذاری…</td></tr>';
         eligibleRowsNode.innerHTML = '<tr><td class="cpms-finance-board__empty" colspan="5">در حال بارگذاری…</td></tr>';
         closeIssueForm();
+        closePayForm();
         refreshAll();
     });
 
@@ -354,7 +504,9 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
         state.locations = Array.isArray(context.locations) ? context.locations : [];
         state.locationId = Number(context.location_id || 0) || null;
         state.canIssue = context.can_issue_invoice === true;
+        state.canCapture = context.can_capture_payment === true;
         eligiblePanel.hidden = !state.canIssue;
+        if (!state.canCapture) closePayForm();
         if (state.locations.length > 1) {
             locationSelect.hidden = false;
             locationSelect.innerHTML = '<option value="">انتخاب موقعیت</option>' + state.locations.map(function (location) {

@@ -105,7 +105,10 @@ final class Phase12StaffPortalFinanceBoardTest extends WP_UnitTestCase
             self::assertSame($date, $row['operational_date']);
             self::assertSame('awaiting_payment', $row['visit_status']);
             self::assertMatchesRegularExpression('/^\d{2}:\d{2}$/', $row['operational_time']);
-            self::assertSame(['patient_name', 'clinician_name', 'operational_date', 'jalali_date', 'operational_time', 'visit_status', 'invoice'], array_keys($row));
+            // Phase 12 Slice 3 delta: exactly the two selector-only ids are
+            // added (visit_id, invoice_id); the rest of the projection is
+            // unchanged and still privacy-minimal.
+            self::assertSame(['visit_id', 'patient_name', 'clinician_name', 'operational_date', 'jalali_date', 'operational_time', 'visit_status', 'invoice_id', 'invoice'], array_keys($row));
         }
         self::assertArrayHasKey('Patient Board', $byPatient);
         self::assertSame('Asia/Tokyo', $this->locationTimezone($location));
@@ -113,7 +116,11 @@ final class Phase12StaffPortalFinanceBoardTest extends WP_UnitTestCase
             'status' => 'partial', 'total' => '1234.00',
             'paid' => '300.00', 'remaining' => '934.00', 'currency' => 'IRR',
         ], $byPatient['Patient Board']['invoice']);
+        self::assertSame($visitWithInvoice, (int) $byPatient['Patient Board']['visit_id'], 'visit_id is the persisted Visit selector');
+        self::assertGreaterThan(0, (int) $byPatient['Patient Board']['invoice_id'], 'the legitimately linked invoice exposes its selector id');
         self::assertArrayHasKey('NoInvoice Board', $byPatient);
+        self::assertSame($visitWithoutInvoice, (int) $byPatient['NoInvoice Board']['visit_id']);
+        self::assertNull($byPatient['NoInvoice Board']['invoice_id'], 'no linked invoice ⇒ no selector');
         self::assertNull($byPatient['NoInvoice Board']['invoice'], 'missing invoice must remain null, not a fabricated zero balance');
 
         self::assertSame($visitBefore, App::db()->fetchValue('SELECT status FROM ' . App::db()->table('cpms_visits') . ' WHERE id = %d', [$visitWithInvoice]));

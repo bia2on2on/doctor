@@ -467,7 +467,16 @@ final class Phase12Slice2StaffFinanceIssueInvoiceTest extends WP_UnitTestCase
         self::assertStringContainsString('invoice-eligible', $template, 'the module reads the bounded invoice-eligible surface');
         self::assertStringContainsString('finance-eligible', $template, 'the module exposes an eligible-row contract');
         self::assertStringContainsString('data-role="finance-issue-submit"', $template, 'the module exposes the first-issuance control');
-        self::assertStringNotContainsString('card_pos', $template, 'no card/POS device integration may appear in this slice');
+        // Phase 12 Slice 3 deliberately supersedes the Slice 2 wording of this
+        // line: `card_pos` is now the established MANUAL method value of the
+        // capture form (the payment was taken outside CPMS — by a card reader at
+        // the desk or otherwise — and is recorded by hand here). It must stay a
+        // pure label: no reader/device integration vocabulary and no `online`
+        // payment appear anywhere in the module (asserted by the stricter
+        // Phase12Slice3StaffFinancePaymentTest tripwire).
+        foreach (['terminal', 'online'] as $no_integration) {
+            self::assertStringNotContainsString($no_integration, $template, 'no card/POS or online integration may appear: ' . $no_integration);
+        }
         foreach (['void_', 'voidReason', 'settle', 'waive', 'refund', 'adjustment', 'reissue'] as $forbidden) {
             self::assertStringNotContainsString($forbidden, $template, 'forbidden finance action vocabulary must not appear: ' . $forbidden);
         }
