@@ -624,7 +624,7 @@ final class Phase12Slice5StaffFinanceReceiptTest extends WP_UnitTestCase
         $partialPatient = $this->insertPatient($clinic, 'EligPartial');
         $partialVisit = $this->insertVisit($clinic, $location, $partialPatient, $clinician, '2026-06-16', $now, 'awaiting_payment');
         $partialInvoice = $this->insertInvoice($clinic, $location, $partialPatient, $partialVisit, $secretary, 'partial', '100000.00', '30000.00', '70000.00', [
-            'invoice_number' => 'INV-SLICE5-PARTIAL-' . bin2hex(random_bytes(3)),
+            'invoice_number' => 'INV-S5-PARTIAL-' . bin2hex(random_bytes(3)),
         ]);
         $this->insertItem($partialInvoice, 'مشاوره', '1.00', '100000.00', '100000.00');
         $this->insertPayment($clinic, $partialInvoice, $partialPatient, '30000.00', 'cash', []);
@@ -633,7 +633,7 @@ final class Phase12Slice5StaffFinanceReceiptTest extends WP_UnitTestCase
         $mismatchPatient = $this->insertPatient($clinic, 'EligMismatch');
         $mismatchVisit = $this->insertVisit($clinic, $location, $mismatchPatient, $clinician, '2026-06-16', $now, 'paid');
         $this->insertInvoice($clinic, $location, $mismatchPatient, $mismatchVisit, $secretary, 'paid', '100000.00', '100000.00', '0.00', [
-            'invoice_number' => 'INV-SLICE5-MISMATCH-' . bin2hex(random_bytes(3)),
+            'invoice_number' => 'INV-S5-MISMATCH-' . bin2hex(random_bytes(3)),
         ]);
 
         // (e) a settled invoice with no line items.
