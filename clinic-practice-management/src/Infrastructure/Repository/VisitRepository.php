@@ -289,6 +289,50 @@ final class VisitRepository
     }
 
     /**
+     * Bounded Phase 12 Slice 4 projection of paid/checkout-ready Visits:
+     * CURRENT Clinic + CURRENT operational Location + Location-local
+     * operational day + exactly `paid`. One joined query keeps patient and
+     * clinician display names with the row (no per-row lookups). The
+     * settlement summary is the minimal "active (non-voided) latest invoice"
+     * shape of the Slice 1 board — used for checkout confirmation only;
+     * `invoice: null` means no active invoice, no financial value inferred.
+     * No invoice/payment identifier or number is selected.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function paid_checkout_ready_board( int $clinic_id, int $location_id, string $visit_date, int $limit = 101 ): array {
+        $limit = max( 1, min( 101, $limit ) );
+
+        $rows = $this->db->fetchAll(
+            'SELECT v.id AS visit_id, v.visit_date, v.check_in_at,' .
+            ' p.first_name AS patient_first_name, p.last_name AS patient_last_name,' .
+            ' c.full_name AS clinician_name,' .
+            ' a.slot_time AS appointment_time,' .
+            ' i.status AS invoice_status, i.total AS invoice_total,' .
+            ' i.paid_amount AS invoice_paid_amount, i.balance AS invoice_balance, i.currency AS invoice_currency' .
+            ' FROM ' . $this->db->table( 'cpms_visits' ) . ' v' .
+            ' INNER JOIN ' . $this->db->table( 'cpms_patients' ) . ' p ON p.id = v.patient_id AND p.clinic_id = v.clinic_id' .
+            ' INNER JOIN ' . $this->db->table( 'cpms_clinicians' ) . ' c ON c.id = v.clinician_id' .
+            ' LEFT JOIN ' . $this->db->table( 'cpms_appointments' ) . ' a ON a.id = v.appointment_id' .
+            ' AND a.clinic_id = v.clinic_id AND a.location_id = v.location_id' .
+            ' LEFT JOIN (' .
+                ' SELECT visit_id, MAX(id) AS invoice_id' .
+                ' FROM ' . $this->db->table( 'cpms_invoices' ) .
+                " WHERE clinic_id = %d AND status != 'voided' AND (location_id = %d OR location_id IS NULL)" .
+                ' GROUP BY visit_id' .
+            ') latest_invoice ON latest_invoice.visit_id = v.id' .
+            ' LEFT JOIN ' . $this->db->table( 'cpms_invoices' ) . ' i ON i.id = latest_invoice.invoice_id' .
+            ' AND i.clinic_id = v.clinic_id AND i.patient_id = v.patient_id' .
+            ' AND i.visit_id = v.id AND (i.location_id = v.location_id OR i.location_id IS NULL)' .
+            " WHERE v.clinic_id = %d AND v.location_id = %d AND v.visit_date = %s AND v.status = 'paid'" .
+            ' ORDER BY COALESCE(a.slot_time, TIME(v.check_in_at)) ASC, v.id ASC LIMIT %d',
+            array( $clinic_id, $location_id, $clinic_id, $location_id, $visit_date, $limit )
+        );
+
+        return is_array( $rows ) ? $rows : array();
+    }
+
+    /**
      * آمار روز (D1/E1) — شمارش بر اساس status.
      *
      * غنی‌سازی داشبورد امروز (§16 دستور F4): علاوه بر شمارش ویزیت‌ها بر اساس

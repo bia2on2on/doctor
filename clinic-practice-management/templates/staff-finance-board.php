@@ -12,6 +12,11 @@
  *          recorded by hand from what the operator reads off the payment
  *          instrument; nothing is captured automatically and no hardware is
  *          involved. The mutation delegates to the existing finance boundary.
+ * Slice 4: bounded paid/checkout-ready board for the CURRENT trusted
+ *          Location (exact persisted `paid` state) + the explicit,
+ *          confirmed NORMAL paid checkout action. The mutation delegates to
+ *          the existing queue checkout boundary; no other finance action is
+ *          added here.
  * The module carries no other finance mutation, no tax/discount/service
  * management, and no wp-admin template/chrome is used.
  */
@@ -149,6 +154,27 @@ if ( empty( $cpms_staff_embed ) ) {
             </div>
         </form>
     </section>
+    <section class="cpms-finance-board__panel" data-role="finance-paid" aria-label="تختهٔ ویزیت‌های پرداخت‌شده — آمادهٔ خروج">
+        <h2 class="cpms-finance-board__heading">ویزیت‌های پرداخت‌شده — آمادهٔ خروج</h2>
+        <p class="cpms-finance-board__hint">ویزیت‌های «پرداخت کامل» امروزِ همین موقعیت عملیاتی. خروج، یک اقدام صریح و تأییدشدهٔ منشی است؛ پس از تأیید، ویزیت از این فهرست خارج می‌شود.</p>
+        <div class="cpms-finance-board__table-wrap">
+            <table class="cpms-finance-board__table">
+                <thead><tr><th>بیمار</th><th>پزشک</th><th>تاریخ و ساعت عملیاتی</th><th>وضعیت ویزیت</th><th>فاکتور</th><th>اقدام</th></tr></thead>
+                <tbody data-role="finance-paid-rows"><tr><td class="cpms-finance-board__empty" colspan="6">در حال بارگذاری…</td></tr></tbody>
+            </table>
+        </div>
+    </section>
+    <section class="cpms-finance-board__panel" data-role="finance-checkout" aria-label="تأیید خروج ویزیت" hidden>
+        <h2 class="cpms-finance-board__heading">تأیید خروج از کلینیک</h2>
+        <form class="cpms-finance-board__form" data-role="finance-checkout-form">
+            <p class="cpms-finance-board__target" data-role="finance-checkout-target" aria-live="polite"></p>
+            <p class="cpms-finance-board__hint">با تأیید، ویزیت به وضعیت «خارج‌شده» می‌رود و این عملیات قابل بازگشت نیست.</p>
+            <div class="cpms-finance-board__form-actions">
+                <button type="submit" class="cpms-finance-board__submit" data-role="finance-checkout-submit">تأیید خروج</button>
+                <button type="button" class="cpms-finance-board__action" data-role="finance-checkout-cancel">انصراف</button>
+            </div>
+        </form>
+    </section>
 </main>
 <script type="application/json" id="cpms-finance-board-config">
 <?php
@@ -166,7 +192,7 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
     var config;
     try { config = JSON.parse(configNode.textContent); } catch (error) { return; }
     var root = String(config.rest_root || '').replace(/\/$/, '');
-    var state = { clinicId: null, locationId: null, locations: [], busy: false, canIssue: false, canCapture: false, selectedVisit: null, selectedInvoice: null, paymentKey: null };
+    var state = { clinicId: null, locationId: null, locations: [], busy: false, canIssue: false, canCapture: false, canCheckOut: false, selectedVisit: null, selectedInvoice: null, paymentKey: null, selectedCheckoutVisit: null };
     var locationSelect = document.querySelector('[data-role="finance-location"]');
     var rowsNode = document.querySelector('[data-role="finance-rows"]');
     var eligiblePanel = document.querySelector('[data-role="finance-eligible"]');
@@ -179,6 +205,13 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
     var payRefInput = document.querySelector('[data-role="finance-pay-ref"]');
     var paySubmitNode = document.querySelector('[data-role="finance-pay-submit"]');
     var payCancelNode = document.querySelector('[data-role="finance-pay-cancel"]');
+    var paidPanel = document.querySelector('[data-role="finance-paid"]');
+    var paidRowsNode = document.querySelector('[data-role="finance-paid-rows"]');
+    var checkoutPanel = document.querySelector('[data-role="finance-checkout"]');
+    var checkoutFormNode = document.querySelector('[data-role="finance-checkout-form"]');
+    var checkoutTargetNode = document.querySelector('[data-role="finance-checkout-target"]');
+    var checkoutSubmitNode = document.querySelector('[data-role="finance-checkout-submit"]');
+    var checkoutCancelNode = document.querySelector('[data-role="finance-checkout-cancel"]');
     var formNode = document.querySelector('[data-role="finance-issue-form"]');
     var targetNode = document.querySelector('[data-role="finance-issue-target"]');
     var descriptionInput = document.querySelector('[data-role="finance-issue-description"]');
@@ -190,6 +223,7 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
     var dateNode = document.querySelector('[data-role="finance-date"]');
     var boardLabels = ['بیمار', 'پزشک', 'تاریخ و ساعت عملیاتی', 'وضعیت ویزیت', 'فاکتور'];
     var eligibleLabels = ['بیمار', 'پزشک', 'تاریخ و ساعت عملیاتی', 'وضعیت ویزیت', 'اقدام'];
+    var paidLabels = ['بیمار', 'پزشک', 'تاریخ و ساعت عملیاتی', 'وضعیت ویزیت', 'فاکتور', 'اقدام'];
 
     function esc(value) {
         return String(value === null || value === undefined ? '' : value)
@@ -356,6 +390,86 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
         if (state.selectedInvoice && !invoiceStillListed) closePayForm();
         if (data.has_more) setStatus('فهرست به ۱۰۰ مورد محدود شده است؛ همهٔ نتایج در این نما نشان داده نمی‌شوند.', '');
     }
+    function renderPaid(data) {
+        var visits = Array.isArray(data.visits) ? data.visits : [];
+        var selectedStillListed = false;
+        if (!visits.length) {
+            paidRowsNode.innerHTML = '<tr><td class="cpms-finance-board__empty" colspan="6">برای این موقعیت ویزیت پرداخت‌شده‌ای وجود ندارد.</td></tr>';
+        } else {
+            paidRowsNode.innerHTML = visits.map(function (visit) {
+                if (visit.visit_id && Number(visit.visit_id) === Number(state.selectedCheckoutVisit)) selectedStillListed = true;
+                var invoiceCell = renderInvoice(visit.invoice);
+                var remaining = visit.invoice ? String(visit.invoice.remaining) : '';
+                var currency = visit.invoice ? String(visit.invoice.currency) : '';
+                var actionCell = state.canCheckOut
+                    ? '<button type="button" class="cpms-finance-board__action" data-role="finance-checkout-open" data-visit-id="' + Number(visit.visit_id) + '" data-patient="' + esc(visit.patient_name) + '" data-remaining="' + esc(remaining) + '" data-currency="' + esc(currency) + '">خروج از کلینیک</button>'
+                    : '<span class="cpms-finance-board__muted">—</span>';
+                var values = [
+                    '<span class="cpms-finance-board__patient">' + esc(visit.patient_name) + '</span>',
+                    esc(visit.clinician_name),
+                    operationalStamp(visit),
+                    'پرداخت کامل',
+                    invoiceCell,
+                    actionCell
+                ];
+                return '<tr>' + values.map(function (value, index) {
+                    return '<td data-label="' + paidLabels[index] + '">' + value + '</td>';
+                }).join('') + '</tr>';
+            }).join('');
+        }
+        if (state.selectedCheckoutVisit && !selectedStillListed) closeCheckoutForm();
+        if (data.has_more) setStatus('فهرست ویزیت‌های پرداخت‌شده به ۱۰۰ مورد محدود شده است.', '');
+    }
+    function openCheckoutForm(visitId, patientName, remaining, currency) {
+        if (!state.canCheckOut || !visitId) return;
+        state.selectedCheckoutVisit = Number(visitId);
+        var summary = remaining ? ' — فاکتور: باقی‌ماندهٔ سرور ' + String(remaining) + ' ' + String(currency) : ' — بدون فاکتور فعال';
+        checkoutTargetNode.textContent = 'خروج بیمار ' + patientName + summary;
+        checkoutSubmitNode.disabled = false;
+        checkoutPanel.hidden = false;
+        checkoutFormNode.hidden = false;
+    }
+    function closeCheckoutForm() {
+        state.selectedCheckoutVisit = null;
+        checkoutPanel.hidden = true;
+        checkoutFormNode.hidden = true;
+        checkoutTargetNode.textContent = '';
+    }
+    function loadPaid() {
+        if (state.busy) return Promise.resolve();
+        if (state.locations.length > 1 && !state.locationId) return Promise.resolve();
+        state.busy = true;
+        return request('/staff/portal/finance/paid').then(function (result) {
+            if (!result.ok) { setStatus(showError(result, 'دریافت تختهٔ پرداخت‌شده ناموفق بود.'), 'error'); return; }
+            renderPaid(payload(result));
+        }).catch(function () {
+            setStatus('ارتباط با تختهٔ پرداخت‌شده برقرار نشد.', 'error');
+        }).then(function () {
+            state.busy = false;
+        });
+    }
+    function submitCheckout() {
+        if (state.busy || !state.selectedCheckoutVisit) return;
+        state.busy = true;
+        checkoutSubmitNode.disabled = true;
+        request('/staff/portal/finance/visits/' + Number(state.selectedCheckoutVisit) + '/checkout', 'POST', {}).then(function (result) {
+            state.busy = false;
+            checkoutSubmitNode.disabled = false;
+            if (!result.ok) {
+                var message = result.body && result.body.message ? result.body.message : 'خروج ویزیت ناموفق بود.';
+                setStatus(message, 'error');
+                refreshAll();
+                return;
+            }
+            closeCheckoutForm();
+            setStatus('ویزیت خارج شد؛ فهرست از سرور به‌روز شد.', '');
+            refreshAll();
+        }).catch(function () {
+            state.busy = false;
+            checkoutSubmitNode.disabled = false;
+            setStatus('ارتباط با سرویس مالی برقرار نشد.', 'error');
+        });
+    }
     function loadEligible() {
         if (!state.canIssue) return Promise.resolve();
         if (state.busy) return Promise.resolve();
@@ -389,7 +503,7 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
         });
     }
     function refreshAll() {
-        return loadEligible().then(function () { return loadBoard(); });
+        return loadEligible().then(function () { return loadBoard(); }).then(function () { return loadPaid(); });
     }
     function submitIssue() {
         if (state.busy || !state.selectedVisit) return;
@@ -477,6 +591,22 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
     });
     payCancelNode.addEventListener('click', function () { closePayForm(); });
 
+    paidRowsNode.addEventListener('click', function (event) {
+        var trigger = event.target && event.target.closest ? event.target.closest('[data-role="finance-checkout-open"]') : null;
+        if (!trigger) return;
+        openCheckoutForm(
+            trigger.getAttribute('data-visit-id'),
+            String(trigger.getAttribute('data-patient') || ''),
+            String(trigger.getAttribute('data-remaining') || ''),
+            String(trigger.getAttribute('data-currency') || '')
+        );
+    });
+    checkoutFormNode.addEventListener('submit', function (event) {
+        event.preventDefault();
+        submitCheckout();
+    });
+    checkoutCancelNode.addEventListener('click', function () { closeCheckoutForm(); });
+
     eligibleRowsNode.addEventListener('click', function (event) {
         var trigger = event.target && event.target.closest ? event.target.closest('[data-role="finance-issue-open"]') : null;
         if (!trigger) return;
@@ -491,8 +621,10 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
         state.locationId = Number(locationSelect.value || 0) || null;
         rowsNode.innerHTML = '<tr><td class="cpms-finance-board__empty" colspan="5">در حال بارگذاری…</td></tr>';
         eligibleRowsNode.innerHTML = '<tr><td class="cpms-finance-board__empty" colspan="5">در حال بارگذاری…</td></tr>';
+        paidRowsNode.innerHTML = '<tr><td class="cpms-finance-board__empty" colspan="6">در حال بارگذاری…</td></tr>';
         closeIssueForm();
         closePayForm();
+        closeCheckoutForm();
         refreshAll();
     });
 
@@ -505,8 +637,10 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
         state.locationId = Number(context.location_id || 0) || null;
         state.canIssue = context.can_issue_invoice === true;
         state.canCapture = context.can_capture_payment === true;
+        state.canCheckOut = context.can_check_out === true;
         eligiblePanel.hidden = !state.canIssue;
         if (!state.canCapture) closePayForm();
+        if (!state.canCheckOut) closeCheckoutForm();
         if (state.locations.length > 1) {
             locationSelect.hidden = false;
             locationSelect.innerHTML = '<option value="">انتخاب موقعیت</option>' + state.locations.map(function (location) {
