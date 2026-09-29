@@ -8,6 +8,12 @@
  *           existing FinanceService::issueInvoice() contract; existing
  *           Clinic-scoped permissions authorize every call and no new role,
  *           capability, state or schema is introduced.
+ * Slice 3 — bounded manual payment capture for an EXISTING invoice whose
+ *           persisted Visit belongs to the CURRENT trusted operational
+ *           Location. The mutation delegates to the existing
+ *           FinanceService::recordPayment() contract; the invoice is a
+ *           selector, never authority, and no second payment/totals/state
+ *           engine, migration, capability or device/POS integration is added.
  */
 
 declare(strict_types=1);
@@ -21,6 +27,7 @@ use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Time\Jalali;
 use ClinicCore\Domain\Visits\VisitException;
+use ClinicCore\Infrastructure\Repository\InvoiceRepository;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
 use ClinicCore\Infrastructure\Repository\VisitRepository;
 use DateTimeImmutable;
@@ -30,7 +37,7 @@ use WP_Error;
 use WP_REST_Request;
 use WP_REST_Response;
 
-/** Read-only finance board + bounded first issuance for the Staff Portal. */
+/** Read-only finance board + bounded first issuance + bounded payment capture. */
 final class FinancePortalController extends RestBase {
 
 	private const READ_CAPS = array(
@@ -42,18 +49,32 @@ final class FinancePortalController extends RestBase {
 	/** Phase 12 Slice 2 — the existing capability that authorizes first issuance. */
 	private const WRITE_CAP = RolesAndCapabilities::INVOICE_CREATE;
 
+	/** Phase 12 Slice 3 — the existing capability that authorizes a capture. */
+	private const PAYMENT_CAP = RolesAndCapabilities::PAYMENT_CREATE;
+
+	/**
+	 * Phase 12 Slice 3 — methods this portal slice exposes. `online` stays a
+	 * backend method on the existing D13 contract; it is deliberately NOT
+	 * exposed here, and `card_pos` means only “recorded manually” — no device
+	 * communication of any kind is implemented or implied.
+	 */
+	private const PAYMENT_METHODS = array( 'cash', 'card_pos', 'other' );
+
 	private const RESULT_LIMIT = 100;
 
 	public function __construct(
 		MembershipRepository $memberships,
-		VisitRepository $visits
+		VisitRepository $visits,
+		InvoiceRepository $invoices
 	) {
 		$this->memberships = $memberships;
 		$this->visits      = $visits;
+		$this->invoices    = $invoices;
 	}
 
 	private MembershipRepository $memberships;
 	private VisitRepository $visits;
+	private InvoiceRepository $invoices;
 
 	public function register_routes(): void {
 		register_rest_route(
@@ -105,6 +126,22 @@ final class FinancePortalController extends RestBase {
 				),
 			)
 		);
+
+		// Phase 12 Slice 3 — manual payment capture against an EXISTING invoice;
+		// no request schema is declared so that amount/method validation stays
+		// exactly the delegated service contract (422 CLINIC_VALIDATION_FAILED /
+		// CLINIC_OVERPAYMENT), never a second validation engine.
+		register_rest_route(
+			self::NS,
+			'/staff/portal/finance/invoices/(?P<id>\d+)/payments',
+			array(
+				array(
+					'methods'             => \WP_REST_Server::CREATABLE,
+					'callback'            => fn( WP_REST_Request $request ) => $this->payment( $request ),
+					'permission_callback' => fn( WP_REST_Request $request ) => $this->permission( $request, array( self::PAYMENT_CAP ) ),
+				),
+			)
+		);
 	}
 
 	/** Context returns only eligible Location choices; no patient or finance data. */
@@ -132,8 +169,8 @@ final class FinancePortalController extends RestBase {
 
 		return $this->success(
 			array(
-				'clinic_id'          => $clinic_id,
-				'locations'          => array_values(
+				'clinic_id'           => $clinic_id,
+				'locations'           => array_values(
 					array_map(
 						static fn( array $location ): array => array(
 							'id'   => (int) $location['id'],
@@ -142,11 +179,13 @@ final class FinancePortalController extends RestBase {
 						$locations
 					)
 				),
-				'location_id'        => $location_id,
-				'location_name'      => null === $location_id ? null : (string) $locations[ $location_id ]['name'],
-				'selection_required' => count( $locations ) > 1 && null === $location_id,
+				'location_id'         => $location_id,
+				'location_name'       => null === $location_id ? null : (string) $locations[ $location_id ]['name'],
+				'selection_required'  => count( $locations ) > 1 && null === $location_id,
 				// Phase 12 Slice 2 — UI hint only; the mutation route re-checks.
-				'can_issue_invoice'  => $this->can_issue_invoice( $clinic_id, $user_id ),
+				'can_issue_invoice'   => $this->can_issue_invoice( $clinic_id, $user_id ),
+				// Phase 12 Slice 3 — UI hint only; the capture route re-checks.
+				'can_capture_payment' => $this->can_capture_payment( $clinic_id, $user_id ),
 			)
 		);
 	}
@@ -196,12 +235,16 @@ final class FinancePortalController extends RestBase {
 		foreach ( $rows as $row ) {
 			$invoice_exists = isset( $row['invoice_status'] ) && '' !== (string) $row['invoice_status'];
 			$visits[]       = array(
+				// Phase 12 Slice 3 — stable selector ids for the capture action;
+				// selectors only, never authority.
+				'visit_id'         => (int) $row['visit_id'],
 				'patient_name'     => trim( (string) $row['patient_first_name'] . ' ' . (string) $row['patient_last_name'] ),
 				'clinician_name'   => (string) $row['clinician_name'],
 				'operational_date' => (string) $row['visit_date'],
 				'jalali_date'      => Jalali::formatYmd( (string) $row['visit_date'] ),
 				'operational_time' => $this->operational_time( $row, $current['timezone'] ),
 				'visit_status'     => 'awaiting_payment',
+				'invoice_id'       => ( $invoice_exists && null !== ( $row['invoice_id'] ?? null ) ) ? (int) $row['invoice_id'] : null,
 				'invoice'          => $invoice_exists ? array(
 					'status'    => (string) $row['invoice_status'],
 					'total'     => (string) $row['invoice_total'],
@@ -379,6 +422,107 @@ final class FinancePortalController extends RestBase {
 	}
 
 	/**
+	 * Phase 12 Slice 3 — ONE manual payment against an EXISTING invoice (a
+	 * partial amount or the exact remaining balance) whose persisted Visit
+	 * belongs to the CURRENT trusted operational Location of the trusted
+	 * Clinic. Raw invoice/visit ids are selectors, never authority: the
+	 * PERSISTED invoice and its PERSISTED Visit are loaded server-side and
+	 * must belong to the trusted Clinic AND to the CURRENT trusted Location
+	 * before anything is delegated; foreign Clinic and same-Clinic foreign
+	 * Location ids are indistinguishable from an unknown invoice (404 parity).
+	 * The mutation itself is the existing FinanceService::recordPayment() —
+	 * no second payment/totals/state engine, no new state, and no device/POS
+	 * integration (`card_pos` is manual recording only). Client-supplied
+	 * amounts/totals/balances/statuses/ids are never forwarded as authority.
+	 */
+	private function payment( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+		$key = $this->idempotencyKey( $request );
+		if ( null === $key ) {
+			// Same established contract as the existing D13 route: a missing or
+			// malformed Idempotency-Key never reaches the service.
+			return $this->error( 'CLINIC_VALIDATION_FAILED', 400, 'هدر Idempotency-Key (UUID) برای ثبت پرداخت الزامی است' );
+		}
+
+		$scope = $this->trusted_scope();
+		if ( $scope instanceof WP_Error ) {
+			return $scope;
+		}
+
+		$clinic_id = (int) $scope->clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established ClinicScope contract.
+		$locations = $this->eligible_locations( $clinic_id, (int) get_current_user_id() );
+		if ( $locations instanceof WP_Error ) {
+			return $locations;
+		}
+		if ( array() === $locations ) {
+			return $this->error( 'CLINIC_SCOPE_UNAVAILABLE', 403, 'موقعیت عملیاتی معتبر نیست.', array( 'reason' => 'location' ) );
+		}
+		$current = $this->current_location( $scope, $locations );
+		if ( $current instanceof WP_Error ) {
+			return $current;
+		}
+		$location_id = (int) $current['location_id'];
+
+		$invoice_id = (int) $request['id'];
+		$invoice    = $this->invoices->find( $invoice_id );
+		if ( null === $invoice || $clinic_id !== (int) $invoice['clinic_id'] ) {
+			// Cross-Clinic and unknown selectors never disclose existence.
+			return $this->error( 'CLINIC_NOT_FOUND', 404, 'فاکتور یافت نشد' );
+		}
+
+		$visit_id = (int) ( $invoice['visit_id'] ?? 0 );
+		$visit    = $visit_id > 0 ? $this->visits->find( $visit_id ) : null;
+		if (
+			null === $visit
+			|| $clinic_id !== (int) $visit['clinic_id']
+			|| $location_id !== (int) ( $visit['location_id'] ?? 0 )
+		) {
+			// A same-Clinic invoice whose Visit lives at another Location is
+			// not payable from here and is not disclosed either.
+			return $this->error( 'CLINIC_NOT_FOUND', 404, 'فاکتور یافت نشد' );
+		}
+		$invoice_location = $invoice['location_id'] ?? null;
+		if ( null !== $invoice_location && (int) $invoice_location !== $location_id ) {
+			// An invoice explicitly stamped with another Location is never
+			// treated as this Location's invoice.
+			return $this->error( 'CLINIC_NOT_FOUND', 404, 'فاکتور یافت نشد' );
+		}
+
+		$params = $this->body( $request );
+		$method = isset( $params['method'] ) && is_string( $params['method'] ) ? $params['method'] : '';
+		if ( ! in_array( $method, self::PAYMENT_METHODS, true ) ) {
+			// `online` remains a backend method on the existing shared route but
+			// is deliberately not exposed by this Staff Portal slice.
+			return $this->error( 'CLINIC_VALIDATION_FAILED', 422, 'روش پرداخت نامعتبر است (cash/card_pos/other)' );
+		}
+
+		// Only the three delegated fields are forwarded; the amount contract
+		// (positive integer Rial, ≤ server balance, 422 otherwise) stays owned
+		// by the existing service. The reference is optional and its existing
+		// bounds/validation are unchanged.
+		$payload = array(
+			'amount' => $params['amount'] ?? null,
+			'method' => $method,
+		);
+		if ( isset( $params['transaction_ref'] ) && ( is_string( $params['transaction_ref'] ) || is_numeric( $params['transaction_ref'] ) ) ) {
+			$payload['transaction_ref'] = $params['transaction_ref'];
+		}
+
+		try {
+			$result = App::financeService()->recordPayment( (int) get_current_user_id(), $invoice_id, $payload, $key );
+		} catch ( FinanceException $exception ) {
+			return $this->error( $exception->errorCode, $exception->httpStatus, $exception->getMessage(), $exception->data ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established FinanceException contract.
+		} catch ( Throwable $exception ) {
+			error_log( '[CPMS][FinancePortalController] unexpected: ' . get_class( $exception ) . ': ' . $exception->getMessage() ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- established controller convention
+			return $this->error( 'CLINIC_INTERNAL_ERROR', 500, 'خطای داخلی سرور — لطفاً دوباره تلاش کنید' );
+		}
+
+		// First capture 201; an idempotent replay of the same key keeps the
+		// existing 200 + CLINIC_IDEMPOTENCY_REPLAY contract and never creates a
+		// second payment.
+		return $this->success( $result, empty( $result['idempotent_replay'] ) ? 201 : 200 );
+	}
+
+	/**
 	 * CURRENT trusted operational Location, its timezone and the Location-local
 	 * operational date — one policy implementation shared by the Slice 1 board
 	 * and both Slice 2 routes. Raw ids are selectors, never authority: an
@@ -447,6 +591,20 @@ final class FinancePortalController extends RestBase {
 		}
 
 		return App::authorization_service()->can( $user_id, $clinic_id, self::WRITE_CAP );
+	}
+
+	/**
+	 * Phase 12 Slice 3 — existing cpms_payment_create authority for this Clinic,
+	 * exposed as a UI hint only (the capture route re-checks). No role gains
+	 * access: the Slice 1/2 read+module contract is unchanged.
+	 */
+	private function can_capture_payment( int $clinic_id, int $user_id ): bool {
+		$user = $user_id > 0 ? get_userdata( $user_id ) : false;
+		if ( false === $user || ! $user->exists() || ! $user->has_cap( self::PAYMENT_CAP ) ) {
+			return false;
+		}
+
+		return App::authorization_service()->can( $user_id, $clinic_id, self::PAYMENT_CAP );
 	}
 
 	/**

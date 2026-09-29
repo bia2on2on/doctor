@@ -259,7 +259,10 @@ final class App
             ( new DoctorPortalController( new \ClinicCore\Infrastructure\Repository\MembershipRepository( self::db() ) ) )->register_routes();
             // Phase 11 Slices 1–5 — Staff Portal reception boundary (stricter contract lives there).
             ( new ReceptionPortalController( new \ClinicCore\Infrastructure\Repository\MembershipRepository( self::db() ), new \ClinicCore\Infrastructure\Repository\AppointmentRepository( self::db() ), new \ClinicCore\Infrastructure\Repository\SlotRepository( self::db() ) ) )->register_routes();
-            ( new FinancePortalController( new MembershipRepository( self::db() ), new VisitRepository( self::db() ) ) )->register_routes();
+            // Phase 12 Slices 1–3 — Staff Portal finance boundary. Slice 3 adds the
+            // InvoiceRepository the capture guard needs to load the PERSISTED
+            // invoice; the mutation itself delegates to self::financeService().
+            ( new FinancePortalController( new MembershipRepository( self::db() ), new VisitRepository( self::db() ), new InvoiceRepository( self::db() ) ) )->register_routes();
             // Endpointهای فازهای بعد (F8+) — مطابق API Contract.
         });
 
