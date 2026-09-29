@@ -107,6 +107,8 @@ BOOKING = {
     "tomorrow": _bk[8],
     "patients": {"mobile-390": int(_bk[9]), "tablet-768": int(_bk[10]), "desktop-1366": int(_bk[11])},
     "mrn": {"mobile-390": _bk[12] + "MOBILE" + _bk[13], "tablet-768": _bk[12] + "TABLET" + _bk[13], "desktop-1366": _bk[12] + "DESKTOP" + _bk[13]},
+    "date": _bk[14] if len(_bk) > 14 else PUB["today_tehran"],
+    "future_date": _bk[15] if len(_bk) > 15 else _bk[8],
 }
 _up = parts("RECEPTION_UPCOMING", 10)
 UPCOMING = {
@@ -1526,6 +1528,9 @@ def run_booking_journey(browser, vp):
     """
     global BOOKING_BOARD_ROWS
     board_rows = BOOKING_BOARD_ROWS
+    booking_date = BOOKING.get("date") or PUB["today_tehran"]
+    booking_on_board = booking_date == PUB["today_tehran"]
+    future_date = BOOKING.get("future_date") or BOOKING["tomorrow"]
     selected_slot_id = BOOKING["slot_by_vp"][vp["vp"]]
     key = f"reception-booking-{vp['vp']}"
     stage = "login"
@@ -1570,6 +1575,11 @@ def run_booking_journey(browser, vp):
         # actively invalidate a previously valid booking context.
         stage = "location-invalidation-prepare"
         page.select_option('[data-role="sr-book-clinician"]', str(BOOKING["c1"]))
+        if not booking_on_board:
+            date_select = page.locator('[data-role="sr-book-date"]')
+            date_option = date_select.locator(f'option[value="{booking_date}"]')
+            date_option.wait_for(state="attached", timeout=15000)
+            date_select.select_option(booking_date)
         wait_book_slot(page, selected_slot_id)
         page.locator(f'[data-role="sr-book-slot"][data-slot-id="{selected_slot_id}"]').click()
         if page.locator('[data-role="sr-book-submit"]').is_disabled():
@@ -1602,14 +1612,6 @@ def run_booking_journey(browser, vp):
         wait_slot_reads_settled(page, state)
         requests_before = len(state["reqs"])
         page.select_option('[data-role="sr-book-clinician"]', str(BOOKING["c1"]))
-        wait_book_slot(page, selected_slot_id)
-        offered = book_slot_ids(page)
-        if BOOKING["slots"]["full"] in offered or BOOKING["slots"]["closed"] in offered or BOOKING["slots"]["future"] in offered:
-            raise RuntimeError(f"only persisted open slots for the selected day may be offered, got {offered}")
-        # The fixture's free slots may be filtered if they became past while
-        # earlier independent journeys ran; fail honestly with the bounded read.
-        if any(BOOKING["slots"][key] not in offered for key in ("free_a", "free_b", "free_c")):
-            raise RuntimeError(f"both seeded future-today FREE slots must be offered, got {offered}")
         wait_slot_reads_settled(page, state)
         initiated = slot_read_requests(state, requests_before)
         if len(initiated) != 1:
@@ -1618,6 +1620,19 @@ def run_booking_journey(browser, vp):
                 + str([(r["method"], r["route"]) for r in initiated])
             )
         assert_bounded_slot_read(initiated[0], PUB["loc_tehran"], expected_clinician=BOOKING["c1"])
+        if not booking_on_board:
+            date_select = page.locator('[data-role="sr-book-date"]')
+            date_option = date_select.locator(f'option[value="{booking_date}"]')
+            date_option.wait_for(state="attached", timeout=15000)
+            date_select.select_option(booking_date)
+        wait_book_slot(page, selected_slot_id)
+        offered = book_slot_ids(page)
+        if BOOKING["slots"]["full"] in offered or BOOKING["slots"]["closed"] in offered or BOOKING["slots"]["future"] in offered:
+            raise RuntimeError(f"only persisted open slots for the selected day may be offered, got {offered}")
+        # The fixture's free slots may be filtered if they became past while
+        # earlier independent journeys ran; fail honestly with the bounded read.
+        if any(BOOKING["slots"][key] not in offered for key in ("free_a", "free_b", "free_c")):
+            raise RuntimeError(f"both seeded future-today FREE slots must be offered, got {offered}")
         # No slot read anywhere in this journey may be anything but a bounded GET.
         if any(r["method"] != "GET" for r in slot_read_requests(state)):
             raise RuntimeError("slot reads must be bounded GETs; no per-slot writes/reads")
@@ -1641,20 +1656,28 @@ def run_booking_journey(browser, vp):
         appointment = create_data.get("appointment") or {}
         if appointment.get("status") != "confirmed" or not appointment.get("id") or not appointment.get("reference_code"):
             raise RuntimeError(f"appointment must be one confirmed row with the established view, got {appointment}")
-        if appointment.get("date") != PUB["today_tehran"] or not appointment.get("time"):
-            raise RuntimeError(f"same-day appointment must use the selected persisted slot's operational date/time, got {appointment}")
+        if appointment.get("date") != booking_date or not appointment.get("time"):
+            raise RuntimeError(f"appointment must use the selected persisted slot's operational date/time, got {appointment}")
         post_body = create_resp.request.post_data_json
         if not isinstance(post_body, dict) or int(post_body.get("patient_id") or 0) != patient_id or int(post_body.get("clinician_id") or 0) != BOOKING["c1"] or int(post_body.get("slot_id") or 0) != selected_slot_id:
             raise RuntimeError(f"create request must carry selected patient, eligible doctor and persisted slot_id, got {post_body}")
         if "date" in post_body or "time" in post_body or "slot_date" in post_body or "slot_time" in post_body:
             raise RuntimeError("free-form date/time must never be sent as booking authority")
-        if create_data.get("reception", {}).get("on_operational_day") is not True:
-            raise RuntimeError("same-day appointment must be marked on the operational day")
-        BOOKING_BOARD_ROWS = board_rows + 1
-        wait_rows_count(page, BOOKING_BOARD_ROWS)
-        board_row = page.locator(f'[data-role="sr-row"][data-appointment-id="{appointment.get("id")}"]')
-        if board_row.count() != 1 or "Booking " not in (board_row.inner_text() or ""):
-            raise RuntimeError("same-day created appointment must appear on the reception day board")
+        if create_data.get("reception", {}).get("on_operational_day") is not booking_on_board:
+            raise RuntimeError(f"appointment on_operational_day must be {booking_on_board}")
+        if booking_on_board:
+            BOOKING_BOARD_ROWS = board_rows + 1
+            wait_rows_count(page, BOOKING_BOARD_ROWS)
+            board_row = page.locator(f'[data-role="sr-row"][data-appointment-id="{appointment.get("id")}"]')
+            if board_row.count() != 1 or "Booking " not in (board_row.inner_text() or ""):
+                raise RuntimeError("same-day created appointment must appear on the reception day board")
+        else:
+            wait_rows_count(page, board_rows)
+            page.locator('[data-role="sr-upcoming-refresh"]').click()
+            upcoming_row = page.locator(f'[data-role="sr-upcoming-row"][data-appointment-id="{appointment.get("id")}"]')
+            upcoming_row.wait_for(state="visible", timeout=15000)
+            if page.locator(f'[data-role="sr-row"][data-appointment-id="{appointment.get("id")}"]').count() != 0:
+                raise RuntimeError("next-day created appointment must not appear on today's reception board")
         wait_book_state(page, "نوبت ثبت شد")
         if page.locator('[data-role="sr-queue-row"]').count() != queue_rows_before:
             raise RuntimeError("appointment creation must not create or alter an existing queue/Visit")
@@ -1683,8 +1706,12 @@ def run_booking_journey(browser, vp):
         # The UI performs one bounded availability refresh after the explicit
         # duplicate response; finish it before measuring the next date change.
         wait_book_slot(page, selected_slot_id)
-        if page.locator('[data-role="sr-row"][data-appointment-id="' + str(appointment.get("id")) + '"]').count() != 1:
-            raise RuntimeError("duplicate submission must not create a second board appointment")
+        if booking_on_board:
+            if page.locator('[data-role="sr-row"][data-appointment-id="' + str(appointment.get("id")) + '"]').count() != 1:
+                raise RuntimeError("duplicate submission must not create a second board appointment")
+        else:
+            if page.locator('[data-role="sr-row"][data-appointment-id="' + str(appointment.get("id")) + '"]').count() != 0:
+                raise RuntimeError("duplicate submission must not create a board appointment")
 
         stage = "future-date"
         # Choose the Jalali option by its ISO value; the visible copy remains
@@ -1694,7 +1721,7 @@ def run_booking_journey(browser, vp):
         # measurement, never responses that happen to arrive afterwards.
         wait_slot_reads_settled(page, state)
         requests_before = len(state["reqs"])
-        page.select_option('[data-role="sr-book-date"]', BOOKING["tomorrow"])
+        page.select_option('[data-role="sr-book-date"]', future_date)
         wait_book_slot(page, BOOKING["slots"]["future"])
         wait_slot_reads_settled(page, state)
         date_reads = slot_read_requests(state, requests_before)
@@ -1707,7 +1734,7 @@ def run_booking_journey(browser, vp):
             date_reads[0],
             PUB["loc_tehran"],
             expected_clinician=BOOKING["c1"],
-            expected_date=BOOKING["tomorrow"],
+            expected_date=future_date,
             page=page,
         )
         if BOOKING["slots"]["full"] in book_slot_ids(page) or BOOKING["slots"]["closed"] in book_slot_ids(page):
@@ -1720,7 +1747,7 @@ def run_booking_journey(browser, vp):
         future_json = future_info.value.json()
         future_data = future_json.get("data", future_json) if isinstance(future_json, dict) else {}
         future_appt = future_data.get("appointment") or {}
-        if future_appt.get("status") != "confirmed" or str(future_appt.get("date") or "") != BOOKING["tomorrow"]:
+        if future_appt.get("status") != "confirmed" or str(future_appt.get("date") or "") != future_date:
             raise RuntimeError("future booking must remain confirmed on its future operational date")
         if future_data.get("reception", {}).get("on_operational_day") is not False:
             raise RuntimeError("future appointment must be marked off today's operational board")
