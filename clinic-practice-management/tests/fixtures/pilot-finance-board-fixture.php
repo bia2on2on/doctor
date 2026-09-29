@@ -41,6 +41,10 @@ $patients = array(
     // captures against: first a REAL partial payment, then an EXACT full
     // settlement (both through the existing finance service via the UI).
     array('Synthetic Capture ' . $nonce, 'capture'),
+    // Phase 12 Slice 4 — a dedicated paid Visit (settlement complete) for the
+    // paid/checkout-ready board: the real checkout journey targets the
+    // capture visit after its REAL settlement; this row stays untouched.
+    array('Synthetic Checkout ' . $nonce, 'checkout'),
 );
 $patientIds = array();
 $visitIds = array();
@@ -63,6 +67,9 @@ foreach ($patients as [$name, $kind]) {
         exit(1);
     }
     $patientId = (int) $wpdb->insert_id;
+    // Phase 12 Slice 4 — the checkout patient starts ALREADY paid (its
+    // settlement is complete); everyone else starts awaiting_payment.
+    $visitStatus = 'checkout' === $kind ? 'paid' : 'awaiting_payment';
     $visitInserted = $wpdb->insert(
         $db->table('cpms_visits'),
         array(
@@ -71,7 +78,7 @@ foreach ($patients as [$name, $kind]) {
             'clinician_id'=> $clinicianId,
             'patient_id'  => $patientId,
             'source'      => 'walk_in',
-            'status'      => 'awaiting_payment',
+            'status'      => $visitStatus,
             'visit_date'  => $date,
             'check_in_at' => $now,
             'waiting_since' => $now,
@@ -86,6 +93,32 @@ foreach ($patients as [$name, $kind]) {
     }
     $patientIds[$kind] = $patientId;
     $visitIds[$kind] = (int) $wpdb->insert_id;
+}
+
+// Phase 12 Slice 4 — the settlement-complete invoice behind the paid Visit:
+// fully paid, zero remaining — the board's settlement summary shows it.
+$checkoutInvoiceInserted = $wpdb->insert(
+    $db->table('cpms_invoices'),
+    array(
+        'clinic_id'            => $clinicId,
+        'location_id'          => $locationId,
+        'invoice_number'       => 'SYN-FIN-CHK-' . $nonce,
+        'patient_id'           => $patientIds['checkout'],
+        'visit_id'             => $visitIds['checkout'],
+        'status'               => 'paid',
+        'subtotal'             => '250000.00',
+        'total'                => '250000.00',
+        'currency'             => 'IRR',
+        'paid_amount'          => '250000.00',
+        'balance'              => '0.00',
+        'issued_by_wp_user_id' => $secretaryId,
+        'created_at'           => $now,
+        'updated_at'           => $now,
+    )
+);
+if ( false === $checkoutInvoiceInserted ) {
+    fwrite(STDERR, "FINANCE_BOARD_FIXTURE_ERROR: checkout invoice seed failed\n");
+    exit(1);
 }
 
 $invoiceInserted = $wpdb->insert(
@@ -216,6 +249,7 @@ $env = array(
     'FINANCE_BOARD_NO_INVOICE_PATIENT' => $patients[1][0] . ' Fixture',
     'FINANCE_BOARD_ELIGIBLE_PATIENT' => $eligiblePatientName . ' Fixture',
     'FINANCE_BOARD_PAYMENT_PATIENT' => $patients[2][0] . ' Fixture',
+    'FINANCE_BOARD_CHECKOUT_PATIENT' => $patients[3][0] . ' Fixture',
 );
 $lines = array();
 foreach ($env as $key => $value) {
@@ -226,4 +260,4 @@ foreach ($env as $key => $value) {
     $lines[] = $key . '=' . $value;
 }
 file_put_contents('/tmp/finance-board.env', implode("\n", $lines) . "\n");
-echo 'fixture: finance-board clinic=' . $clinicId . ' location=' . $locationId . ' synthetic_rows=3 invoice_rows=2 open_capture_invoice=1 eligible_rows=1 eligible_visit=' . $eligibleVisitId . ' timezone=Asia/Tehran' . "\n";
+echo 'fixture: finance-board clinic=' . $clinicId . ' location=' . $locationId . ' synthetic_rows=4 invoice_rows=3 open_capture_invoice=1 paid_checkout_visit=1 eligible_rows=1 eligible_visit=' . $eligibleVisitId . ' timezone=Asia/Tehran' . "\n";

@@ -9,6 +9,12 @@ Phase 12 Slice 3 — manual payment capture against an EXISTING invoice: one REA
 partial payment and one REAL exact full settlement, exercised through the UI and
 verified against server truth after a reload. Manual entry only (cash /
 card_pos / other) — no hardware, provider or device integration is exercised.
+Phase 12 Slice 4 — paid/checkout-ready board for the CURRENT trusted Location:
+one REAL paid → checked_out journey (the capture visit, after its REAL exact
+full settlement, is the checked-out target), with the explicit confirmation
+step, a deliberate double submit (the UI guard keeps one request), and
+persistence verified against server truth after a reload. Settlement never
+auto-checks-out; the unrelated fixture paid row is untouched.
 
 The harness reuses the EXISTING pilot gate entry point (fixture + Playwright in
 the responsive job); no new browser infrastructure is added. Pixels are emitted
@@ -34,6 +40,7 @@ INVOICE_PATIENT = os.environ["FINANCE_BOARD_INVOICE_PATIENT"]
 NO_INVOICE_PATIENT = os.environ["FINANCE_BOARD_NO_INVOICE_PATIENT"]
 ELIGIBLE_PATIENT = os.environ["FINANCE_BOARD_ELIGIBLE_PATIENT"]
 PAYMENT_PATIENT = os.environ["FINANCE_BOARD_PAYMENT_PATIENT"]
+CHECKOUT_PATIENT = os.environ["FINANCE_BOARD_CHECKOUT_PATIENT"]
 VIEWPORTS = [
     ("mobile", 390, 844),
     ("tablet", 768, 1024),
@@ -182,13 +189,57 @@ with sync_playwright() as playwright:
             f"{label}: the untouched capture invoice still shows its open total",
         )
 
+        # Phase 12 Slice 4 — the paid/checkout-ready board shows EXACTLY the
+        # fixture's paid visit (the capture visit is still awaiting payment),
+        # with the settled-invoice summary and exactly one checkout control.
+        paid_panel = page.locator('[data-role="finance-paid"]')
+        paid_panel.wait_for(state="visible", timeout=20000)
+        paid_row = paid_panel.locator("tbody tr").filter(has_text=CHECKOUT_PATIENT)
+        paid_row.wait_for(state="visible", timeout=20000)
+        require(
+            page.locator('[data-role="finance-paid-rows"] tr').count() == 1,
+            f"{label}: the paid board lists exactly the one paid visit of the CURRENT Location",
+        )
+        require(paid_row.count() == 1, f"{label}: the fixture paid visit is present exactly once")
+        require("پرداخت کامل" in paid_row.inner_text(), f"{label}: the paid row states the fully-paid state")
+        require("0.00" in paid_row.inner_text(), f"{label}: the settled invoice summary shows zero remaining")
+        checkout_controls = paid_panel.locator('[data-role="finance-checkout-open"]')
+        require(checkout_controls.count() == 1, f"{label}: exactly one checkout control per paid row")
+        checkout_selectors = checkout_controls.evaluate_all("els => els.map(e => Number(e.getAttribute('data-visit-id')))")
+        require(
+            all(isinstance(value, int) and value > 0 for value in checkout_selectors),
+            f"{label}: the checkout control carries a positive visit selector",
+        )
+        require(
+            paid_panel.locator("button, input, form, select").count() == 1,
+            f"{label}: the paid panel itself stays free of other mutation controls",
+        )
+        checkout_panel = page.locator('[data-role="finance-checkout"]')
+        require(checkout_panel.is_hidden(), f"{label}: the checkout confirmation panel is closed until a row asks for it")
+        paid_row.locator('[data-role="finance-checkout-open"]').click()
+        checkout_panel.wait_for(state="visible", timeout=10000)
+        checkout_form = checkout_panel.locator('[data-role="finance-checkout-form"]')
+        require(CHECKOUT_PATIENT in checkout_panel.locator('[data-role="finance-checkout-target"]').inner_text(), f"{label}: the confirmation names the selected patient")
+        require(
+            checkout_form.locator('[data-role="finance-checkout-submit"], [data-role="finance-checkout-cancel"]').count() == 2,
+            f"{label}: the confirmation offers exactly one confirm and one cancel control",
+        )
+        checkout_form.locator('[data-role="finance-checkout-cancel"]').click()
+        require(checkout_panel.is_hidden(), f"{label}: cancelling the checkout confirmation performs no mutation")
+        require(
+            page.locator('[data-role="finance-paid-rows"] tr').filter(has_text=CHECKOUT_PATIENT).count() == 1
+            and "0.00" in page.locator('[data-role="finance-paid-rows"] tr').filter(has_text=CHECKOUT_PATIENT).inner_text(),
+            f"{label}: the untouched paid visit still shows its settled summary",
+        )
+
         dimensions = page.evaluate(
-            "({width: innerWidth, scroll: document.documentElement.scrollWidth, board: document.querySelector('[data-role=finance-board]').getBoundingClientRect().width, eligible: document.querySelector('[data-role=finance-eligible]').getBoundingClientRect().width, payment: document.querySelector('[data-role=finance-payment]').getBoundingClientRect().width})"
+            "({width: innerWidth, scroll: document.documentElement.scrollWidth, board: document.querySelector('[data-role=finance-board]').getBoundingClientRect().width, eligible: document.querySelector('[data-role=finance-eligible]').getBoundingClientRect().width, payment: document.querySelector('[data-role=finance-payment]').getBoundingClientRect().width, paid: document.querySelector('[data-role=finance-paid]').getBoundingClientRect().width})"
         )
         require(dimensions["scroll"] <= dimensions["width"] + 1, f"{label}: no horizontal viewport overflow")
         require(dimensions["board"] <= dimensions["width"] + 1, f"{label}: board fits viewport width")
         require(dimensions["eligible"] <= dimensions["width"] + 1, f"{label}: first-issuance panel fits viewport width")
         require(dimensions["payment"] <= dimensions["width"] + 1, f"{label}: capture panel fits viewport width")
+        require(dimensions["paid"] <= dimensions["width"] + 1, f"{label}: paid panel fits viewport width")
         require("/wp-admin/" not in urlparse(page.url).path, f"{label}: remains in independent front-end Staff Portal")
         page.screenshot(path=str(OUT / f"finance-board-{label}.png"), full_page=True)
         print(f"INFO {label}: {width}x{height}, clinic={CLINIC_ID}, location={LOCATION_ID}")
@@ -337,6 +388,81 @@ with sync_playwright() as playwright:
         "capture refresh: the settled visit stays off the board (server truth, no checkout)",
     )
 
+    # ------------------------------------------------------------------
+    # Phase 12 Slice 4 — real paid → checked_out journey (desktop viewport).
+    # The capture visit is now genuinely `paid` through its REAL exact full
+    # settlement above; the explicit, confirmed checkout removes it.
+    # ------------------------------------------------------------------
+    paid_panel = page.locator('[data-role="finance-paid"]')
+    paid_panel.wait_for(state="visible", timeout=20000)
+    page.wait_for_function(
+        "document.querySelectorAll('[data-role=finance-paid-rows] tr').length === 2",
+        timeout=20000,
+    )
+    settled_paid_row = paid_panel.locator("tbody tr").filter(has_text=PAYMENT_PATIENT)
+    require(settled_paid_row.count() == 1, "slice4: the exactly settled visit surfaced on the paid board after the real settlement (server truth)")
+    require("پرداخت کامل" in settled_paid_row.inner_text(), "slice4: the settled visit is fully paid, not checked out")
+    require("0.00" in settled_paid_row.inner_text(), "slice4: the settled invoice reports zero remaining")
+    require(
+        page.locator('[data-role="finance-paid-rows"] tr').filter(has_text=CHECKOUT_PATIENT).count() == 1,
+        "slice4: the unrelated fixture paid row is untouched",
+    )
+    require(
+        page.locator('[data-role="finance-rows"] tr').filter(has_text=PAYMENT_PATIENT).count() == 0,
+        "slice4: the settled visit is off the awaiting board (no double listing)",
+    )
+
+    settled_paid_row.locator('[data-role="finance-checkout-open"]').click()
+    checkout_panel = page.locator('[data-role="finance-checkout"]')
+    checkout_panel.wait_for(state="visible", timeout=10000)
+    checkout_form = checkout_panel.locator('[data-role="finance-checkout-form"]')
+    require(
+        PAYMENT_PATIENT in checkout_panel.locator('[data-role="finance-checkout-target"]').inner_text(),
+        "slice4: the confirmation names the selected patient before the explicit confirm",
+    )
+    page.screenshot(path=str(OUT / "finance-checkout-confirm-desktop.png"), full_page=True)
+    # Double submit on purpose: the UI guard must keep exactly ONE checkout.
+    page.evaluate(
+        "() => { const f = document.querySelector('[data-role=\"finance-checkout-form\"]');"
+        " f.dispatchEvent(new Event('submit', {cancelable: true, bubbles: true}));"
+        " f.dispatchEvent(new Event('submit', {cancelable: true, bubbles: true})); }"
+    )
+    page.wait_for_function(
+        "(function(){var r=document.querySelectorAll('[data-role=finance-paid-rows] tr');"
+        "for (var i=0;i<r.length;i++){if(r[i].innerText.indexOf(" + json.dumps(PAYMENT_PATIENT) + ")!==-1){return false;}}"
+        "return r.length === 1;})()",
+        timeout=30000,
+    )
+    require(
+        page.locator('[data-role="finance-paid-rows"] tr').filter(has_text=PAYMENT_PATIENT).count() == 0,
+        "slice4: the checked-out visit leaves the paid board",
+    )
+    require(
+        page.locator('[data-role="finance-status"]').inner_text() != "",
+        "slice4: the delegated result is reported to the operator",
+    )
+    require(checkout_panel.is_hidden(), "slice4: the confirmation panel returns to rest after checkout")
+    page.screenshot(path=str(OUT / "finance-checkout-done-desktop.png"), full_page=True)
+
+    page.reload(wait_until="networkidle")
+    page.wait_for_function(
+        "document.querySelectorAll('[data-role=finance-paid-rows] tr').length === 1",
+        timeout=20000,
+    )
+    require(
+        page.locator('[data-role="finance-paid-rows"] tr').filter(has_text=PAYMENT_PATIENT).count() == 0,
+        "slice4 refresh: the checked-out visit stays off the paid board (server truth, persisted)",
+    )
+    require(
+        page.locator('[data-role="finance-rows"] tr').filter(has_text=PAYMENT_PATIENT).count() == 0,
+        "slice4 refresh: the checked-out visit is also absent from the awaiting board",
+    )
+    require(
+        page.locator('[data-role="finance-paid-rows"] tr').filter(has_text=CHECKOUT_PATIENT).count() == 1
+        and "0.00" in page.locator('[data-role="finance-paid-rows"] tr').filter(has_text=CHECKOUT_PATIENT).inner_text(),
+        "slice4 refresh: the unrelated paid row is untouched and still settled",
+    )
+
     require(not page_errors, "no uncaught browser exceptions")
     require(not console_errors, "no browser console errors")
     require(not bad_responses, "no failed HTTP/API responses")
@@ -356,5 +482,6 @@ if failures:
     sys.exit(1)
 print(
     "PASS Phase 12 Staff Portal Finance board + first-issuance + manual capture "
-    "(1 real partial, 1 real exact settlement) browser acceptance"
+    "(1 real partial, 1 real exact settlement) + paid checkout "
+    "(1 real paid -> checked_out) browser acceptance"
 )

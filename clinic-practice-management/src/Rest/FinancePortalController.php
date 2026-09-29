@@ -14,6 +14,12 @@
  *           FinanceService::recordPayment() contract; the invoice is a
  *           selector, never authority, and no second payment/totals/state
  *           engine, migration, capability or device/POS integration is added.
+ * Slice 4 — bounded paid/checkout-ready board for the CURRENT trusted
+ *           operational Location (exact persisted status `paid`) + the NORMAL
+ *           paid checkout action. The mutation delegates to the EXISTING
+ *           VisitService::checkout(actor, visitId, null) contract — no second
+ *           checkout engine, no waive reason on this surface, no new
+ *           capability/state/migration.
  */
 
 declare(strict_types=1);
@@ -37,7 +43,7 @@ use WP_Error;
 use WP_REST_Request;
 use WP_REST_Response;
 
-/** Read-only finance board + bounded first issuance + bounded payment capture. */
+/** Read-only finance board + bounded first issuance + bounded payment capture + bounded paid checkout. */
 final class FinancePortalController extends RestBase {
 
 	private const READ_CAPS = array(
@@ -51,6 +57,9 @@ final class FinancePortalController extends RestBase {
 
 	/** Phase 12 Slice 3 — the existing capability that authorizes a capture. */
 	private const PAYMENT_CAP = RolesAndCapabilities::PAYMENT_CREATE;
+
+	/** Phase 12 Slice 4 — the existing capability that authorizes a paid checkout. */
+	private const CHECKOUT_CAP = RolesAndCapabilities::QUEUE_CHECKOUT;
 
 	/**
 	 * Phase 12 Slice 3 — methods this portal slice exposes. `online` stays a
@@ -142,6 +151,36 @@ final class FinancePortalController extends RestBase {
 				),
 			)
 		);
+
+		// Phase 12 Slice 4 — bounded read of the CURRENT Location paid
+		// (checkout-ready) Visits: exact persisted status `paid`.
+		register_rest_route(
+			self::NS,
+			'/staff/portal/finance/paid',
+			array(
+				array(
+					'methods'             => \WP_REST_Server::READABLE,
+					'callback'            => fn( WP_REST_Request $request ) => $this->paid_board( $request ),
+					'permission_callback' => fn( WP_REST_Request $request ) => $this->permission( $request ),
+				),
+			)
+		);
+
+		// Phase 12 Slice 4 — NORMAL paid checkout only; no request schema is
+		// declared (the route reads no body field) and the delegation never
+		// receives a waive reason — the existing D16 waiver path stays on the
+		// shared back-office route only.
+		register_rest_route(
+			self::NS,
+			'/staff/portal/finance/visits/(?P<id>\d+)/checkout',
+			array(
+				array(
+					'methods'             => \WP_REST_Server::CREATABLE,
+					'callback'            => fn( WP_REST_Request $request ) => $this->checkout( $request ),
+					'permission_callback' => fn( WP_REST_Request $request ) => $this->permission( $request, array( self::CHECKOUT_CAP ) ),
+				),
+			)
+		);
 	}
 
 	/** Context returns only eligible Location choices; no patient or finance data. */
@@ -186,6 +225,8 @@ final class FinancePortalController extends RestBase {
 				'can_issue_invoice'   => $this->can_issue_invoice( $clinic_id, $user_id ),
 				// Phase 12 Slice 3 — UI hint only; the capture route re-checks.
 				'can_capture_payment' => $this->can_capture_payment( $clinic_id, $user_id ),
+				// Phase 12 Slice 4 — UI hint only; the checkout route re-checks.
+				'can_check_out'       => $this->can_check_out( $clinic_id, $user_id ),
 			)
 		);
 	}
@@ -322,6 +363,89 @@ final class FinancePortalController extends RestBase {
 				'jalali_date'      => Jalali::formatYmd( (string) $row['visit_date'] ),
 				'operational_time' => $this->operational_time( $row, $current['timezone'] ),
 				'visit_status'     => 'consultation_completed',
+			);
+		}
+
+		return $this->success(
+			array(
+				'date'          => $date,
+				'jalali_date'   => Jalali::formatYmd( $date ),
+				'location_id'   => $location_id,
+				'location_name' => (string) $current['name'],
+				'visits'        => $visits,
+				'has_more'      => $has_more,
+			)
+		);
+	}
+
+	/**
+	 * Phase 12 Slice 4 — bounded paid/checkout-ready read: CURRENT trusted
+	 * Location, Location-local operational day, exact persisted status `paid`,
+	 * deterministic order, at most 100 returned rows (one joined query).
+	 * Projection is minimal: display names + operational day/time + status
+	 * literal, plus the minimal settlement summary of the legitimately linked
+	 * active invoice when it exists (`invoice: null` otherwise). No identifier,
+	 * number or other finance internal leaves this read.
+	 */
+	private function paid_board( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+		unset( $request );
+		$scope = $this->trusted_scope();
+		if ( $scope instanceof WP_Error ) {
+			return $scope;
+		}
+
+		$clinic_id = (int) $scope->clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established ClinicScope contract.
+		$locations = $this->eligible_locations( $clinic_id, (int) get_current_user_id() );
+		if ( $locations instanceof WP_Error ) {
+			return $locations;
+		}
+		if ( array() === $locations ) {
+			return $this->success(
+				array(
+					'date'          => null,
+					'jalali_date'   => null,
+					'location_id'   => null,
+					'location_name' => null,
+					'visits'        => array(),
+					'has_more'      => false,
+				)
+			);
+		}
+
+		$current = $this->current_location( $scope, $locations );
+		if ( $current instanceof WP_Error ) {
+			return $current;
+		}
+
+		$location_id = (int) $current['location_id'];
+		$date        = (string) $current['date'];
+
+		$rows     = $this->visits->paid_checkout_ready_board( $clinic_id, $location_id, $date, self::RESULT_LIMIT + 1 );
+		$has_more = count( $rows ) > self::RESULT_LIMIT;
+		if ( $has_more ) {
+			$rows = array_slice( $rows, 0, self::RESULT_LIMIT );
+		}
+
+		$visits = array();
+		foreach ( $rows as $row ) {
+			$invoice_exists = isset( $row['invoice_status'] ) && '' !== (string) $row['invoice_status'];
+			$visits[]       = array(
+				'visit_id'         => (int) $row['visit_id'],
+				'patient_name'     => trim( (string) $row['patient_first_name'] . ' ' . (string) $row['patient_last_name'] ),
+				'clinician_name'   => (string) $row['clinician_name'],
+				'operational_date' => (string) $row['visit_date'],
+				'jalali_date'      => Jalali::formatYmd( (string) $row['visit_date'] ),
+				'operational_time' => $this->operational_time( $row, $current['timezone'] ),
+				'visit_status'     => 'paid',
+				// Minimal settlement summary for checkout confirmation only —
+				// never an identifier or a number.
+				'invoice'          => $invoice_exists ? array(
+					'status'    => (string) $row['invoice_status'],
+					'total'     => (string) $row['invoice_total'],
+					'paid'      => (string) $row['invoice_paid_amount'],
+					'remaining' => (string) $row['invoice_balance'],
+					'currency'  => (string) $row['invoice_currency'],
+				) : null,
 			);
 		}
 
@@ -523,6 +647,75 @@ final class FinancePortalController extends RestBase {
 	}
 
 	/**
+	 * Phase 12 Slice 4 — ONE paid checkout (the NORMAL paid workflow only).
+	 * The Visit id in the path is a selector, never authority: the PERSISTED
+	 * Visit is loaded server-side and must belong to the trusted Clinic AND to
+	 * the CURRENT trusted operational Location AND be exactly `paid`; a
+	 * foreign Clinic, a same-Clinic foreign/unassigned/inactive Location or an
+	 * unknown id shares the established non-enumerating 404 `CLINIC_NOT_FOUND`
+	 * parity. No body field is read and no waive reason is ever forwarded —
+	 * the `awaiting_payment → waive` path is NOT exposed on this surface. The
+	 * mutation itself is the EXISTING VisitService::checkout(actor, visitId,
+	 * null): the V14 unsettled-invoice guard, the state machine, the
+	 * checked-out stamp, the append-only history/audit and the established
+	 * side effects all stay exactly as the shared D16 route produces them.
+	 */
+	private function checkout( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+		$scope = $this->trusted_scope();
+		if ( $scope instanceof WP_Error ) {
+			return $scope;
+		}
+
+		$clinic_id = (int) $scope->clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established ClinicScope contract.
+		$locations = $this->eligible_locations( $clinic_id, (int) get_current_user_id() );
+		if ( $locations instanceof WP_Error ) {
+			return $locations;
+		}
+		if ( array() === $locations ) {
+			return $this->error( 'CLINIC_SCOPE_UNAVAILABLE', 403, 'موقعیت عملیاتی معتبر نیست.', array( 'reason' => 'location' ) );
+		}
+		$current = $this->current_location( $scope, $locations );
+		if ( $current instanceof WP_Error ) {
+			return $current;
+		}
+		$location_id = (int) $current['location_id'];
+
+		$visit_id = (int) $request['id'];
+		$visit    = $this->visits->find( $visit_id );
+		if (
+			null === $visit
+			|| $clinic_id !== (int) $visit['clinic_id']
+			|| $location_id !== (int) ( $visit['location_id'] ?? 0 )
+		) {
+			// Cross-Clinic and cross-Location selectors are indistinguishable
+			// from a missing Visit (404 parity — no existence disclosure).
+			return $this->error( 'CLINIC_NOT_FOUND', 404, 'ویزیت یافت نشد' );
+		}
+		if ( 'paid' !== (string) $visit['status'] ) {
+			// Only the persisted `paid` state is acceptable here; every other
+			// state keeps the established invalid-transition semantics — this
+			// surface never accepts a waive reason.
+			return $this->error(
+				'CLINIC_INVALID_TRANSITION',
+				409,
+				'خروج از کلینیک فقط برای ویزیت پرداخت‌شده در این موقعیت عملیاتی ممکن است',
+				array( 'visit_status' => (string) $visit['status'] )
+			);
+		}
+
+		try {
+			$result = App::visitService()->checkout( (int) get_current_user_id(), $visit_id, null );
+		} catch ( VisitException $exception ) {
+			return $this->error( $exception->errorCode, $exception->httpStatus, $exception->getMessage(), $exception->data ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established VisitException contract.
+		} catch ( Throwable $exception ) {
+			error_log( '[CPMS][FinancePortalController] unexpected: ' . get_class( $exception ) . ': ' . $exception->getMessage() ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- established controller convention
+			return $this->error( 'CLINIC_INTERNAL_ERROR', 500, 'خطای داخلی سرور — لطفاً دوباره تلاش کنید' );
+		}
+
+		return $this->success( $result );
+	}
+
+	/**
 	 * CURRENT trusted operational Location, its timezone and the Location-local
 	 * operational date — one policy implementation shared by the Slice 1 board
 	 * and both Slice 2 routes. Raw ids are selectors, never authority: an
@@ -605,6 +798,20 @@ final class FinancePortalController extends RestBase {
 		}
 
 		return App::authorization_service()->can( $user_id, $clinic_id, self::PAYMENT_CAP );
+	}
+
+	/**
+	 * Phase 12 Slice 4 — existing cpms_queue_checkout authority for this
+	 * Clinic, exposed as a UI hint only (the checkout route re-checks). No
+	 * role gains access: the Slice 1/2/3 module contract is unchanged.
+	 */
+	private function can_check_out( int $clinic_id, int $user_id ): bool {
+		$user = $user_id > 0 ? get_userdata( $user_id ) : false;
+		if ( false === $user || ! $user->exists() || ! $user->has_cap( self::CHECKOUT_CAP ) ) {
+			return false;
+		}
+
+		return App::authorization_service()->can( $user_id, $clinic_id, self::CHECKOUT_CAP );
 	}
 
 	/**
