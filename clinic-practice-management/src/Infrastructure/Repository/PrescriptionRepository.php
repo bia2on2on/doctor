@@ -199,28 +199,31 @@ final class PrescriptionRepository
      *
      * @return list<array<string, mixed>>
      */
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- Repository-wide established camelCase method naming.
     public function finalizedPortalHistory(
-        int $clinicId,
-        int $locationId,
-        int $clinicianId,
+        int $clinic_id,
+        int $location_id,
+        int $clinician_id,
         int $limit
     ): array {
-        return $this->db->fetchAll(
+        $rows = $this->db->fetchAll(
             'SELECT rx.id AS prescription_id, rx.visit_id AS visit_id,' .
             ' rx.prescription_number AS prescription_number, rx.finalized_at AS finalized_at,' .
             ' p.first_name AS patient_first_name, p.last_name AS patient_last_name' .
-            ' FROM ' . $this->db->table('cpms_prescriptions') . ' rx' .
-            ' INNER JOIN ' . $this->db->table('cpms_visits') . ' v ON v.id = rx.visit_id' .
-            ' INNER JOIN ' . $this->db->table('cpms_patients') . ' p ON p.id = rx.patient_id' .
+            ' FROM ' . $this->db->table( 'cpms_prescriptions' ) . ' rx' .
+            ' INNER JOIN ' . $this->db->table( 'cpms_visits' ) . ' v ON v.id = rx.visit_id' .
+            ' INNER JOIN ' . $this->db->table( 'cpms_patients' ) . ' p ON p.id = rx.patient_id' .
             ' WHERE rx.clinic_id = %d AND rx.clinician_id = %d' .
             " AND rx.status = 'finalized' AND rx.finalized_at IS NOT NULL" .
             ' AND v.clinic_id = %d AND v.location_id = %d AND v.clinician_id = %d' .
             ' AND v.patient_id = rx.patient_id AND p.clinic_id = rx.clinic_id' .
-            ' AND EXISTS (SELECT 1 FROM ' . $this->db->table('cpms_prescription_items') .
+            ' AND EXISTS (SELECT 1 FROM ' . $this->db->table( 'cpms_prescription_items' ) .
             ' i WHERE i.prescription_id = rx.id)' .
             ' ORDER BY rx.finalized_at DESC, rx.id DESC LIMIT %d',
-            [$clinicId, $clinicianId, $clinicId, $locationId, $clinicianId, $limit]
-        ) ?: [];
+            [ $clinic_id, $clinician_id, $clinic_id, $location_id, $clinician_id, $limit ]
+        );
+
+        return is_array( $rows ) ? $rows : [];
     }
 
     /**

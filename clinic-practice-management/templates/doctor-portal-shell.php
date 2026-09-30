@@ -203,6 +203,22 @@ body.cpms-doctor-portal-shell-body { margin: 0; font-family: Tahoma, Vazirmatn, 
                     <ul data-role="queue-list" class="cpms-doc-queue-list"></ul>
                 </section>
 
+                <?php // Phase 13 Slice 2 — bounded finalized structured-prescription history + reprint (read-only). ?>
+                <section class="cpms-doc-rx-history" data-role="rx-history-section" hidden aria-label="نسخه‌های نهایی‌شده">
+                    <div class="cpms-doc-section-head">
+                        <h2>نسخه‌های نهایی‌شدهٔ من (این شعبه)</h2>
+                        <span class="cpms-doc-count" data-role="rx-history-count"></span>
+                    </div>
+                    <div class="cpms-doc-queue-head" aria-hidden="true">
+                        <span>نسخه و بیمار</span>
+                        <span>تاریخ نهایی‌سازی</span>
+                    </div>
+                    <div data-role="rx-history-empty" class="cpms-doc-empty" hidden>هنوز نسخهٔ نهایی‌شده‌ای در این شعبه ثبت نکرده‌اید.</div>
+                    <div data-role="rx-history-error" class="cpms-doc-error" role="alert" hidden></div>
+                    <ul data-role="rx-history-list" class="cpms-doc-queue-list"></ul>
+                    <p data-role="rx-history-more" class="cpms-doc-hint" hidden>فقط تازه‌ترین نسخه‌ها نمایش داده می‌شود.</p>
+                </section>
+
                 <section class="cpms-doc-workspace" data-role="workspace-section" hidden aria-label="فضای کاری ویزیت">
                     <div class="cpms-doc-section-head">
                         <h2 data-role="workspace-title">فضای کاری ویزیت</h2>
@@ -532,22 +548,6 @@ body.cpms-doctor-portal-shell-body { margin: 0; font-family: Tahoma, Vazirmatn, 
                             </div>
                         </div>
                     </div>
-                </section>
-
-                <?php // Phase 13 Slice 2 — bounded finalized structured-prescription history + reprint (read-only). ?>
-                <section class="cpms-doc-rx-history" data-role="rx-history-section" hidden aria-label="نسخه‌های نهایی‌شده">
-                    <div class="cpms-doc-section-head">
-                        <h2>نسخه‌های نهایی‌شدهٔ من (این شعبه)</h2>
-                        <span class="cpms-doc-count" data-role="rx-history-count"></span>
-                    </div>
-                    <div class="cpms-doc-queue-head" aria-hidden="true">
-                        <span>نسخه و بیمار</span>
-                        <span>تاریخ نهایی‌سازی</span>
-                    </div>
-                    <div data-role="rx-history-empty" class="cpms-doc-empty" hidden>هنوز نسخهٔ نهایی‌شده‌ای در این شعبه ثبت نکرده‌اید.</div>
-                    <div data-role="rx-history-error" class="cpms-doc-error" role="alert" hidden></div>
-                    <ul data-role="rx-history-list" class="cpms-doc-queue-list"></ul>
-                    <p data-role="rx-history-more" class="cpms-doc-hint" hidden>فقط تازه‌ترین نسخه‌ها نمایش داده می‌شود.</p>
                 </section>
 
                 <section class="cpms-doc-appointments" data-role="appointments-section" hidden>
@@ -1567,6 +1567,9 @@ function finalizeWorkspaceRx(btn, rxId){
             var rx = (r.body && r.body.data) || r.body || {};
             if ( rx && rx.id ) upsertWorkspaceRx(rx);
             if ( okEl ) { okEl.textContent = 'نسخه نهایی شد و فقط خواندنی است.'; show(okEl); }
+            // Phase 13 Slice 2 — one user-initiated refresh of the bounded history
+            // after a real finalization (still no polling, still read-only).
+            loadRxHistory();
             return;
         }
         // Repeat/invalid finalize keeps the established failure surface.
@@ -2172,7 +2175,9 @@ function loadContext(){
                 renderContext(doctor, currentClinic, currentLocation);
 
                 if ( state.selectedClinicId && state.selectedLocationId ) {
-                    return loadTodayAndQueue();
+                    // Phase 13 Slice 2 — the bounded history is scope-driven, never polled:
+                    // it is read once per established/changed Clinic+Location scope.
+                    return loadTodayAndQueue().then(loadRxHistory);
                 }
             });
         } else {
@@ -2228,7 +2233,6 @@ function loadTodayAndQueue(){
         renderToday();
         renderQueue();
         renderAppointments();
-        loadRxHistory();
     }).catch(function(e){ showError(e.message); });
 }
 
@@ -2424,7 +2428,7 @@ document.addEventListener('change', function(ev){
                 renderLocationSelector();
                 if ( state.locations.length===1 ) {
                     state.selectedLocationId = state.locations[0].id;
-                    loadTodayAndQueue();
+                    loadTodayAndQueue().then(loadRxHistory);
                 }
             });
         }
@@ -2436,7 +2440,7 @@ document.addEventListener('change', function(ev){
         state.selectedLocationId = v ? parseInt(v,10) : null;
         closeWorkspace();
         if ( state.selectedLocationId ) {
-            loadTodayAndQueue();
+            loadTodayAndQueue().then(loadRxHistory);
         } else {
             state.today = null;
             state.rxHistory = [];

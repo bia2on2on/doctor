@@ -69,7 +69,31 @@ def page_hint(page):
         if page.locator("[data-shell-user]").count():
             user = page.locator("[data-shell-user]").first.get_attribute("data-shell-user") or "0"
         denied = 1 if page.locator('[data-role="portal-access-denied"]').count() else 0
-        return f"path={path} shell={shell} user={user} denied={denied}"
+        # Operational diagnostics: the raw job log is not readable through the
+        # API, so every FAIL must carry enough live DOM state to attribute the
+        # failure (queue rows and their statuses, the visible error banner and
+        # the section visibility) without opening an artifact.
+        diag = page.evaluate(
+            """() => {
+              const rows = Array.from(document.querySelectorAll('[data-role="queue-item"]'))
+                .map(el => el.getAttribute('data-visit-id') + ':' + (el.getAttribute('data-status') || '?'));
+              const err = document.querySelector('[data-role="portal-error"], [data-role="queue-error"]');
+              const vis = (sel) => { const el = document.querySelector(sel); return el && !el.hidden ? 1 : 0; };
+              return {
+                rows: rows.join(','),
+                err: err && !err.hidden ? (err.textContent || '').trim().slice(0, 120) : '',
+                today: vis('[data-role="today-section"]'),
+                queue: vis('[data-role="queue-section"]'),
+                hist: vis('[data-role="rx-history-section"]'),
+                hidden: document.hidden ? 1 : 0
+              };
+            }"""
+        )
+        return (
+            f"path={path} shell={shell} user={user} denied={denied} "
+            f"rows=[{diag['rows']}] today={diag['today']} queue={diag['queue']} "
+            f"history={diag['hist']} doc_hidden={diag['hidden']} err={diag['err']!r}"
+        )
     except Exception:
         return "hint=unavailable"
 

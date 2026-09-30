@@ -938,71 +938,77 @@ final class ClinicalService
         int $trusted_location_id,
         int $limit
     ): array {
-        $this->requireCap($actor_user_id, RolesAndCapabilities::RX_READ, 'history');
-        if ($actor_user_id <= 0 || $clinic_id <= 0 || $clinician_id <= 0 || $trusted_location_id <= 0 || $limit <= 0) {
+        $this->requireCap( $actor_user_id, RolesAndCapabilities::RX_READ, 'history' );
+        if ( $actor_user_id <= 0 || $clinic_id <= 0 || $clinician_id <= 0 || $trusted_location_id <= 0 || $limit <= 0 ) {
             throw ClinicalException::of(
                 'CLINIC_SCOPE_UNAVAILABLE',
                 'Trusted clinic context is not available.',
                 403,
-                ['reason' => 'location']
+                [ 'reason' => 'location' ]
             );
         }
-        if (!App::authorization_service()->can($actor_user_id, $clinic_id, RolesAndCapabilities::RX_READ)) {
-            throw ClinicalException::of('CLINIC_PERMISSION_DENIED', 'دسترسی لازم را ندارید', 403, ['scope' => 'history']);
+        if ( ! App::authorization_service()->can( $actor_user_id, $clinic_id, RolesAndCapabilities::RX_READ ) ) {
+            throw ClinicalException::of(
+                'CLINIC_PERMISSION_DENIED',
+                'دسترسی لازم را ندارید',
+                403,
+                [ 'scope' => 'history' ]
+            );
         }
 
         $location = $this->db->fetchRow(
-            'SELECT id, timezone FROM ' . $this->db->table('cpms_locations') .
+            'SELECT id, timezone FROM ' . $this->db->table( 'cpms_locations' ) .
             ' WHERE id = %d AND clinic_id = %d AND is_active = 1 LIMIT 1',
-            [$trusted_location_id, $clinic_id]
+            [ $trusted_location_id, $clinic_id ]
         );
-        if ($location === null || trim((string) ($location['timezone'] ?? '')) === '') {
+        if ( $location === null || trim( (string) ( $location['timezone'] ?? '' ) ) === '' ) {
             throw ClinicalException::of(
                 'CLINIC_SCOPE_UNAVAILABLE',
                 'Trusted Location timezone is not available.',
                 403,
-                ['reason' => 'location']
+                [ 'reason' => 'location' ]
             );
         }
-        $timezone_id = trim((string) $location['timezone']);
-        if (!in_array($timezone_id, \DateTimeZone::listIdentifiers(\DateTimeZone::ALL_WITH_BC), true)) {
+        $timezone_id = trim( (string) $location['timezone'] );
+        if ( ! in_array( $timezone_id, \DateTimeZone::listIdentifiers( \DateTimeZone::ALL_WITH_BC ), true ) ) {
             throw ClinicalException::of(
                 'CLINIC_SCOPE_UNAVAILABLE',
                 'Trusted Location timezone is not valid.',
                 403,
-                ['reason' => 'location']
+                [ 'reason' => 'location' ]
             );
         }
 
+        // ONE bounded statement; limit+1 only probes `has_more` (established convention).
         $rows = $this->prescriptions->finalizedPortalHistory(
             $clinic_id,
             $trusted_location_id,
             $clinician_id,
             $limit + 1
         );
-        $has_more = count($rows) > $limit;
-        if ($has_more) {
-            $rows = array_slice($rows, 0, $limit);
+        $has_more = count( $rows ) > $limit;
+        if ( $has_more ) {
+            $rows = array_slice( $rows, 0, $limit );
         }
 
         $prescriptions = [];
-        foreach ($rows as $row) {
-            $date_view = $this->portal_print_date_view((string) $row['finalized_at'], $timezone_id);
+        foreach ( $rows as $row ) {
+            $date_view       = $this->portal_print_date_view( (string) $row['finalized_at'], $timezone_id );
             $prescriptions[] = [
                 // Selectors only — required to invoke the existing Slice 1 print route,
                 // which independently re-validates authority and eligibility.
-                'prescription_id' => (int) $row['prescription_id'],
-                'visit_id' => (int) $row['visit_id'],
+                'prescription_id'     => (int) $row['prescription_id'],
+                'visit_id'            => (int) $row['visit_id'],
                 'prescription_number' => (string) $row['prescription_number'],
-                'patient_name' => trim((string) $row['patient_first_name'] . ' ' . (string) $row['patient_last_name']),
-                'finalized_at_local' => $date_view['local'],
+                'patient_name'        => trim( (string) $row['patient_first_name'] . ' ' . (string) $row['patient_last_name'] ),
+                'finalized_at_local'  => $date_view['local'],
                 'finalized_at_jalali' => $date_view['jalali'],
             ];
         }
 
         return [
             'prescriptions' => $prescriptions,
-            'has_more' => $has_more,
+            'has_more'      => $has_more,
         ];
     }
 
