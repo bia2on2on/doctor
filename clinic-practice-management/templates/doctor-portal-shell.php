@@ -1251,7 +1251,10 @@ function renderWorkspaceRx(){
         }).join('');
         var control = rx.status === 'draft'
             ? '<button type="button" class="cpms-doc-btn cpms-doc-btn--primary" data-role="workspace-rx-finalize" data-rx-id="' + esc(rx.id) + '">نهایی‌سازی نسخه</button>'
-            : '<span data-role="workspace-rx-readonly">نهایی‌شده — فقط خواندنی</span>';
+            : (rx.status === 'finalized' && rx.finalized_at && Array.isArray(rx.items) && rx.items.length > 0
+                ? '<span data-role="workspace-rx-readonly">نهایی‌شده — فقط خواندنی</span>' +
+                '<button type="button" class="cpms-doc-btn cpms-doc-btn--ghost" data-role="workspace-rx-print" data-rx-id="' + esc(rx.id) + '">چاپ نسخه</button>'
+                : '<span data-role="workspace-rx-readonly">نسخه در دسترس نیست</span>');
         return '<li class="cpms-doc-ws-rx-item" data-role="workspace-rx-item" data-rx-id="' + esc(rx.id) + '" data-status="' + esc(rx.status || '') + '">' +
             '<div class="cpms-doc-ws-rx-head">' +
                 '<span data-role="workspace-rx-number">' + esc(rx.prescription_number || '') + '</span>' +
@@ -1261,6 +1264,118 @@ function renderWorkspaceRx(){
             '<div class="cpms-doc-ws-rx-row">' + control + '</div>' +
         '</li>';
     }).join('');
+}
+
+function printText(parent, tag, value, className){
+    var node = document.createElement(tag || 'span');
+    if ( className ) node.className = className;
+    node.textContent = value == null ? '' : String(value);
+    parent.appendChild(node);
+    return node;
+}
+
+function buildPrescriptionPrintSurface(data){
+    var surface = document.createElement('main');
+    surface.id = 'cpms-doctor-prescription-print-surface';
+    surface.setAttribute('dir', 'rtl');
+    surface.setAttribute('lang', 'fa');
+    surface.setAttribute('aria-label', 'نسخهٔ ساخت‌یافته');
+
+    printText(surface, 'h1', 'نسخهٔ ساخت‌یافته', 'cpms-doctor-prescription-print-title');
+    var identity = document.createElement('dl');
+    identity.className = 'cpms-doctor-prescription-print-identity';
+    [
+        ['شماره نسخه', data.prescription_number],
+        ['بیمار', data.patient && data.patient.name],
+        ['پزشک', data.clinician && data.clinician.name],
+        ['تخصص', data.clinician && data.clinician.specialty],
+        ['شعبه', data.location && data.location.name],
+        ['تاریخ نهایی‌سازی (جلالی)', data.finalized_at_jalali],
+        ['تاریخ محلی', data.finalized_at_local]
+    ].filter(function(pair){ return pair[1] != null && String(pair[1]) !== ''; }).forEach(function(pair){
+        var group = document.createElement('div');
+        var label = printText(group, 'dt', pair[0]);
+        label.className = 'cpms-doctor-prescription-print-label';
+        printText(group, 'dd', pair[1] == null ? '' : pair[1]);
+        identity.appendChild(group);
+    });
+    surface.appendChild(identity);
+
+    var table = document.createElement('table');
+    table.className = 'cpms-doctor-prescription-print-items';
+    var head = document.createElement('thead');
+    var headRow = document.createElement('tr');
+    ['دارو', 'مقدار و روش مصرف', 'برنامه', 'دستور'].forEach(function(label){ printText(headRow, 'th', label); });
+    head.appendChild(headRow);
+    table.appendChild(head);
+    var body = document.createElement('tbody');
+    (data.items || []).forEach(function(item){
+        var row = document.createElement('tr');
+        var drug = [item.generic_name, item.brand_name, item.strength].filter(function(value){ return value != null && String(value) !== ''; }).join(' — ');
+        var formLabels = {tablet:'قرص', capsule:'کپسول', syrup:'شربت', injection:'آمپول', ointment:'پماد', drops:'قطره', inhaler:'استنشاقی', other:'سایر'};
+        var routeLabels = {oral:'خوراکی', iv:'وریدی', im:'عضلانی', sc:'زیرجلدی', topical:'موضعی', inhaled:'استنشاقی', other:'سایر'};
+        printText(row, 'td', drug);
+        printText(row, 'td', [item.dose, formLabels[item.form] || item.form, routeLabels[item.route] || item.route].filter(Boolean).join(' · '));
+        printText(row, 'td', [item.frequency, item.duration_days == null ? '' : String(item.duration_days) + ' روز'].filter(Boolean).join(' · '));
+        printText(row, 'td', item.instructions || '—');
+        body.appendChild(row);
+    });
+    table.appendChild(body);
+    surface.appendChild(table);
+    return surface;
+}
+
+function printWorkspaceRx(button, rxId){
+    var visitId = state.workspaceVisitId;
+    if ( !visitId || !rxId || button.disabled ) return;
+    var submittedVisitId = String(visitId);
+    var submittedClinicId = String(state.selectedClinicId || '');
+    var submittedLocationId = String(state.selectedLocationId || '');
+    var errorEl = qs('[data-role="workspace-rx-error"]');
+    var originalLabel = button.textContent;
+    button.disabled = true;
+    button.setAttribute('aria-busy', 'true');
+    if ( errorEl ) hide(errorEl);
+    api('GET', '/doctor/portal/visits/' + encodeURIComponent(submittedVisitId) + '/prescriptions/' + encodeURIComponent(String(rxId)) + '/print', null, scopeHeaders()).then(function(r){
+        if ( state.workspaceVisitId !== submittedVisitId || String(state.selectedClinicId || '') !== submittedClinicId || String(state.selectedLocationId || '') !== submittedLocationId ) return;
+        if ( r.status !== 200 ) {
+            throw new Error((r.body && r.body.message) ? String(r.body.message).slice(0, 200) : 'چاپ نسخه در دسترس نیست.');
+        }
+        var data = (r.body && r.body.data) || r.body || {};
+        var surface = buildPrescriptionPrintSurface(data);
+        document.body.appendChild(surface);
+        var finished = false;
+        var finishPrint = function(){
+            if ( finished ) return;
+            finished = true;
+            window.removeEventListener('afterprint', finishPrint);
+            document.body.classList.remove('cpms-doctor-prescription-printing');
+            if ( surface.parentNode ) surface.parentNode.removeChild(surface);
+            if ( button.isConnected ) {
+                button.disabled = false;
+                button.removeAttribute('aria-busy');
+                button.textContent = originalLabel;
+            }
+        };
+        window.addEventListener('afterprint', finishPrint);
+        document.body.classList.add('cpms-doctor-prescription-printing');
+        try {
+            window.print();
+        } catch (error) {
+            finishPrint();
+            throw error;
+        }
+    }).catch(function(error){
+        if ( button.isConnected ) {
+            button.disabled = false;
+            button.removeAttribute('aria-busy');
+            button.textContent = originalLabel;
+        }
+        if ( state.workspaceVisitId === submittedVisitId && errorEl ) {
+            errorEl.textContent = error && error.message ? error.message : 'خطای ارتباط در چاپ نسخه — دوباره تلاش کنید';
+            show(errorEl);
+        }
+    });
 }
 
 function upsertWorkspaceRx(rx){
@@ -2126,6 +2241,13 @@ document.addEventListener('click', function(ev){
     if ( removeRxBtn ) {
         ev.preventDefault();
         removeRxItem(removeRxBtn);
+        return;
+    }
+    var printBtn = target ? target.closest('[data-role="workspace-rx-print"]') : null;
+    if ( printBtn ) {
+        ev.preventDefault();
+        if ( printBtn.disabled ) return;
+        printWorkspaceRx(printBtn, printBtn.getAttribute('data-rx-id'));
         return;
     }
     var finBtn = target ? target.closest('[data-role="workspace-rx-finalize"]') : null;

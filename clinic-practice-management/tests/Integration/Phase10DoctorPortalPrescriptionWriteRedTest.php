@@ -661,10 +661,8 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
         foreach (['workspace-note-form', 'workspace-visibility', 'workspace-content', 'workspace-note-submit'] as $keep) {
             self::assertStringContainsString($keep, $ui, 'G7 guard: Visit Workspace note wiring preserved (' . $keep . ')');
         }
-        // (b) no exclusion-scope PRESCRIPTION controls anywhere near the portal
-        // UI: no prescription void (این برش void را ندارد) and no prescription
-        // print. Both remain undelivered on this surface, so both negatives are
-        // still valid and are kept unchanged.
+        // (b) prescription void remains excluded from the portal surface. The
+        // separate Phase 13 Slice 1 structured print control is now authorized.
         //
         // The two former PORTAL-WIDE negatives `stylus` and `handwriting-canvas`
         // are deliberately removed as STALE, VACUOUS markers.
@@ -696,7 +694,7 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
         // recommendation/follow-up contract rather than a prescription one, so
         // it is outside this bounded change; it is recorded here so the finding
         // is not lost.
-        foreach (['rx-void', 'rx_void', 'data-action="void"', 'voidPrescription', 'rx-print'] as $forbidden) {
+        foreach (['rx-void', 'rx_void', 'data-action="void"', 'voidPrescription'] as $forbidden) {
             self::assertStringNotContainsString($forbidden, $ui, 'G7 guard: out-of-scope prescription control must not exist (' . $forbidden . ')');
         }
 
@@ -814,6 +812,257 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
             'items' => [$this->validItem()],
         ], $this->scopeHeaders($fxZero['clinic'], $fxZero['location']));
         $this->gateIn([403, 404], $rZero, 'G2b.F: zero eligible Locations fails closed on write');
+    }
+
+    // ============ Phase 13 Slice 1 — structured prescription print (TEST-ONLY RED) ============
+
+    public function testPhase13FinalizedPortalPrescriptionPrintIsMinimalLocalAndReadOnly(): void
+    {
+        $fx = $this->makePortalStage('p13print');
+        $headers = $this->scopeHeaders($fx['clinic'], $fx['location']);
+        global $wpdb;
+        $wpdb->update($wpdb->prefix . 'cpms_locations', ['timezone' => 'Pacific/Kiritimati'], ['id' => $fx['location']]);
+
+        $patientId = $this->insertPatient($fx['clinic'], 'p13print');
+        $visitId = $this->insertVisit($patientId, $fx['clinician'], $fx['clinic'], $fx['location'], 'in_consultation');
+        wp_set_current_user($fx['doctor']);
+
+        // Establish a real structured prescription through existing E10/E11 truth.
+        $created = $this->dispatch('POST', '/' . sprintf(self::SHARED_RX_CREATE, $visitId), [
+            'items' => [$this->validItem()],
+            'is_patient_visible' => false,
+        ], $headers);
+        $this->gate(200, $created, 'P13.RED.fixture: existing E10 creates the structured draft');
+        $rx = $this->payload($created);
+        $rxId = (int) ($rx['id'] ?? 0);
+        self::assertGreaterThan(0, $rxId, 'P13.RED.fixture: E10 returned a persisted prescription');
+        $finalized = $this->dispatch('POST', '/' . sprintf(self::SHARED_RX_FINALIZE, $rxId), [], $headers);
+        $this->gate(200, $finalized, 'P13.RED.fixture: existing E11 finalizes the prescription');
+        self::assertSame('finalized', $this->payload($finalized)['status'] ?? null, 'P13.RED.fixture: persisted lifecycle is finalized');
+
+        // A deliberately boundary-crossing UTC instant proves Location-local day authority.
+        $wpdb->update(
+            $wpdb->prefix . 'cpms_prescriptions',
+            ['finalized_at' => '2026-03-20 10:30:00.000'],
+            ['id' => $rxId]
+        );
+        $beforePrescription = App::db()->fetchRow(
+            'SELECT * FROM ' . App::db()->table('cpms_prescriptions') . ' WHERE id = %d',
+            [$rxId]
+        );
+        $patientRow = App::db()->fetchRow(
+            'SELECT first_name, last_name FROM ' . App::db()->table('cpms_patients') . ' WHERE id = %d',
+            [$patientId]
+        );
+        self::assertIsArray($patientRow, 'P13.fixture: persisted patient display identity exists');
+        $beforeItems = App::db()->fetchAll(
+            'SELECT * FROM ' . App::db()->table('cpms_prescription_items') . ' WHERE prescription_id = %d ORDER BY sort_order ASC, id ASC',
+            [$rxId]
+        );
+        $beforeVisit = $this->findVisitRow($visitId);
+        $beforePrescriptionAudit = App::db()->fetchAll(
+            'SELECT * FROM ' . App::db()->table('cpms_audit_logs') .
+            ' WHERE actor_wp_user_id = %d AND ((resource_type = %s AND resource_id = %d) OR (resource_type = %s AND resource_id = %d)) ORDER BY id ASC',
+            [$fx['doctor'], 'prescription', $rxId, 'visit', $visitId]
+        );
+        $beforePrintAudit = (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') .
+            ' WHERE action = %s AND actor_wp_user_id = %d AND resource_type = %s AND resource_id = %d',
+            ['PRESCRIPTION_PRINTED', $fx['doctor'], 'prescription', $rxId]
+        );
+
+        $printRoute = '/clinic/v1/doctor/portal/visits/' . $visitId . '/prescriptions/' . $rxId . '/print';
+        $response = $this->dispatch(
+            'GET',
+            $printRoute,
+            ['clinician_id' => 999999],
+            $headers
+        );
+        $this->gate(200, $response,
+            'P13.RED: an authorized Doctor Portal GET must return a finalized structured prescription print view');
+
+        $doctorUser = get_userdata($fx['doctor']);
+        self::assertNotFalse($doctorUser);
+        $doctorUser->set_role('subscriber');
+        $withoutCapability = $this->dispatch('GET', $printRoute, [], $headers);
+        $this->gate(403, $withoutCapability, 'P13: a clinician identity without the existing prescription-read capability is denied');
+        $doctorUser->set_role(RolesAndCapabilities::ROLE_DOCTOR);
+
+        $view = $this->payload($response);
+        self::assertSame(
+            ['prescription_number', 'patient', 'clinician', 'location', 'finalized_at_local', 'finalized_at_jalali', 'items'],
+            array_keys($view),
+            'P13: print projection has only the minimum prescription display contract'
+        );
+        self::assertSame('2026-03-21 00:30', $view['finalized_at_local'], 'P13: use trusted Location timezone before extracting local date/time');
+        self::assertSame('1405/01/02', $view['finalized_at_jalali'], 'P13: Jalali conversion receives the Location-local Gregorian date');
+        self::assertSame(trim((string) $patientRow['first_name'] . ' ' . (string) $patientRow['last_name']), $view['patient']['name']);
+        self::assertSame('Dr QA p13print', $view['clinician']['name']);
+        self::assertSame('Stage Loc p13print', $view['location']['name']);
+        self::assertSame(['name'], array_keys($view['patient']), 'P13: patient projection contains display name only');
+        self::assertSame(['name', 'specialty'], array_keys($view['clinician']), 'P13: professional projection excludes private identity');
+        self::assertSame(['name'], array_keys($view['location']), 'P13: Location projection contains display identity only');
+        self::assertSame(
+            ['generic_name', 'brand_name', 'strength', 'form', 'dose', 'frequency', 'route', 'duration_days', 'instructions'],
+            array_keys($view['items'][0]),
+            'P13: item truth and instructions are preserved without internal item identifiers'
+        );
+        self::assertSame('Amoxicillin', $view['items'][0]['generic_name']);
+        self::assertSame('با غذا', $view['items'][0]['instructions']);
+        self::assertArrayNotHasKey('mrn', $view['patient']);
+        self::assertArrayNotHasKey('patient_id', $view['patient']);
+        self::assertArrayNotHasKey('clinician_id', $view['clinician']);
+        self::assertArrayNotHasKey('location_id', $view['location']);
+
+        self::assertSame($beforePrescription, App::db()->fetchRow(
+            'SELECT * FROM ' . App::db()->table('cpms_prescriptions') . ' WHERE id = %d', [$rxId]
+        ), 'P13: GET must not mutate the finalized prescription');
+        self::assertSame($beforeItems, App::db()->fetchAll(
+            'SELECT * FROM ' . App::db()->table('cpms_prescription_items') . ' WHERE prescription_id = %d ORDER BY sort_order ASC, id ASC', [$rxId]
+        ), 'P13: GET must not mutate structured items');
+        self::assertSame($beforeVisit, $this->findVisitRow($visitId), 'P13: GET must not mutate the Visit');
+        self::assertSame($beforePrescriptionAudit, App::db()->fetchAll(
+            'SELECT * FROM ' . App::db()->table('cpms_audit_logs') .
+            ' WHERE actor_wp_user_id = %d AND ((resource_type = %s AND resource_id = %d) OR (resource_type = %s AND resource_id = %d)) ORDER BY id ASC',
+            [$fx['doctor'], 'prescription', $rxId, 'visit', $visitId]
+        ), 'P13: GET has no audit side effect for the authorized prescription or Visit');
+        self::assertSame($beforePrintAudit, (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') .
+            ' WHERE action = %s AND actor_wp_user_id = %d AND resource_type = %s AND resource_id = %d',
+            ['PRESCRIPTION_PRINTED', $fx['doctor'], 'prescription', $rxId]
+        ), 'P13: legacy PRESCRIPTION_PRINTED audit remains absent from the portal read');
+    }
+
+    public function testPhase13PortalPrintRejectsDraftForeignSelectorsMissingNonceAndUntrustedLocation(): void
+    {
+        $fx = $this->makePortalStage('p13auth');
+        $headers = $this->scopeHeaders($fx['clinic'], $fx['location']);
+        $patientId = $this->insertPatient($fx['clinic'], 'p13auth');
+        $visitId = $this->insertVisit($patientId, $fx['clinician'], $fx['clinic'], $fx['location'], 'in_consultation');
+        wp_set_current_user($fx['doctor']);
+
+        $created = $this->dispatch('POST', '/' . sprintf(self::SHARED_RX_CREATE, $visitId), [
+            'items' => [$this->validItem()],
+            'is_patient_visible' => false,
+        ], $headers);
+        $this->gate(200, $created, 'P13.fixture: existing E10 creates a structured draft');
+        $rxId = (int) ($this->payload($created)['id'] ?? 0);
+        self::assertGreaterThan(0, $rxId);
+        $printRoute = '/clinic/v1/doctor/portal/visits/' . $visitId . '/prescriptions/' . $rxId . '/print';
+
+        $draft = $this->dispatch('GET', $printRoute, [], $headers);
+        $this->gate(404, $draft, 'P13: drafts are ineligible with established non-enumerating semantics');
+        self::assertSame('CLINIC_NOT_FOUND', $this->errCode($draft));
+
+        $finalized = $this->dispatch('POST', '/' . sprintf(self::SHARED_RX_FINALIZE, $rxId), [], $headers);
+        $this->gate(200, $finalized, 'P13.fixture: existing E11 finalizes the structured prescription');
+
+        $withoutNonce = $this->dispatch('GET', $printRoute, [], $headers, false);
+        $this->gateIn([401, 403], $withoutNonce, 'P13: existing WordPress nonce/auth boundary is required');
+        wp_set_current_user(0);
+        $anonymous = $this->dispatch('GET', $printRoute, [], $headers);
+        $this->gateIn([401, 403], $anonymous, 'P13: anonymous print read is denied');
+        wp_set_current_user($fx['doctor']);
+
+        $peerDoctor = $this->makeUser('p13peer_doc', RolesAndCapabilities::ROLE_DOCTOR);
+        $peerClinician = $this->insertClinician('Dr QA p13peer', $fx['clinic'], 1, $peerDoctor);
+        cpms_test_seed_membership($peerDoctor, $fx['clinic'], 'cpms_doctor');
+        $peerPatient = $this->insertPatient($fx['clinic'], 'p13peer');
+        $peerVisit = $this->insertVisit($peerPatient, $peerClinician, $fx['clinic'], $fx['location'], 'in_consultation');
+        wp_set_current_user($peerDoctor);
+        $peerCreate = $this->dispatch('POST', '/' . sprintf(self::SHARED_RX_CREATE, $peerVisit), [
+            'items' => [$this->validItem(['generic_name' => 'Peer item'])],
+            'is_patient_visible' => false,
+        ], $headers);
+        $this->gate(200, $peerCreate, 'P13.fixture: second professional has a valid Clinic-owned prescription');
+        $peerRxId = (int) ($this->payload($peerCreate)['id'] ?? 0);
+        self::assertGreaterThan(0, $peerRxId);
+        $peerFinalize = $this->dispatch('POST', '/' . sprintf(self::SHARED_RX_FINALIZE, $peerRxId), [], $headers);
+        $this->gate(200, $peerFinalize, 'P13.fixture: peer prescription is genuinely finalized');
+
+        wp_set_current_user($fx['doctor']);
+        $peerVisitRead = $this->dispatch(
+            'GET',
+            '/clinic/v1/doctor/portal/visits/' . $peerVisit . '/prescriptions/' . $peerRxId . '/print',
+            [],
+            $headers
+        );
+        $this->gate(404, $peerVisitRead, 'P13: another doctor’s Visit in the same Clinic is non-enumerating');
+        self::assertSame('CLINIC_NOT_FOUND', $this->errCode($peerVisitRead));
+
+        $foreign = $this->makePortalStage('p13foreign');
+        $foreignPatient = $this->insertPatient($foreign['clinic'], 'p13foreign');
+        $foreignVisit = $this->insertVisit(
+            $foreignPatient,
+            $foreign['clinician'],
+            $foreign['clinic'],
+            $foreign['location'],
+            'in_consultation'
+        );
+        wp_set_current_user($foreign['doctor']);
+        $foreignCreate = $this->dispatch('POST', '/' . sprintf(self::SHARED_RX_CREATE, $foreignVisit), [
+            'items' => [$this->validItem(['generic_name' => 'Foreign item'])],
+            'is_patient_visible' => false,
+        ], $this->scopeHeaders($foreign['clinic'], $foreign['location']));
+        $this->gate(200, $foreignCreate, 'P13.fixture: foreign Clinic owns its own persisted object');
+        $foreignRxId = (int) ($this->payload($foreignCreate)['id'] ?? 0);
+        self::assertGreaterThan(0, $foreignRxId);
+        $foreignFinalize = $this->dispatch(
+            'POST',
+            '/' . sprintf(self::SHARED_RX_FINALIZE, $foreignRxId),
+            [],
+            $this->scopeHeaders($foreign['clinic'], $foreign['location'])
+        );
+        $this->gate(200, $foreignFinalize, 'P13.fixture: foreign prescription is genuinely finalized');
+
+        wp_set_current_user($fx['doctor']);
+        $foreignVisitRead = $this->dispatch(
+            'GET',
+            '/clinic/v1/doctor/portal/visits/' . $foreignVisit . '/prescriptions/' . $foreignRxId . '/print',
+            [],
+            $headers
+        );
+        $this->gate(404, $foreignVisitRead, 'P13: foreign Visit/Clinic selector is non-enumerating');
+        self::assertSame('CLINIC_NOT_FOUND', $this->errCode($foreignVisitRead));
+
+        $foreignPrescriptionRead = $this->dispatch(
+            'GET',
+            '/clinic/v1/doctor/portal/visits/' . $visitId . '/prescriptions/' . $foreignRxId . '/print',
+            [],
+            $headers
+        );
+        $this->gate(404, $foreignPrescriptionRead, 'P13: foreign prescription cannot be rebound to an owned Visit');
+        self::assertSame('CLINIC_NOT_FOUND', $this->errCode($foreignPrescriptionRead));
+
+        $untrustedLocation = $this->dispatch(
+            'GET',
+            $printRoute,
+            [],
+            $this->scopeHeaders($fx['clinic'], $foreign['location'])
+        );
+        $this->gateIn([403, 404], $untrustedLocation, 'P13: foreign Location selector fails closed');
+
+        $secondLocation = $this->insertLocation($fx['clinic'], 'Stage Loc p13second', self::TZ_TEHRAN, 0);
+        $missingLocation = $this->dispatch(
+            'GET',
+            $printRoute,
+            [],
+            $this->scopeHeaders($fx['clinic'])
+        );
+        $this->gateIn([400, 403], $missingLocation, 'P13: multiple Locations require explicit trusted selection; no first/global fallback');
+        $foreignVisitLocation = $this->dispatch(
+            'GET',
+            $printRoute,
+            [],
+            $this->scopeHeaders($fx['clinic'], $secondLocation)
+        );
+        $this->gateIn([403, 404], $foreignVisitLocation, 'P13: a trusted but Visit-irrelevant Location is rejected');
+
+        global $wpdb;
+        $wpdb->update($wpdb->prefix . 'cpms_locations', ['timezone' => 'Not/A_Zone'], ['id' => $fx['location']]);
+        $invalidTimezone = $this->dispatch('GET', $printRoute, [], $headers);
+        $this->gate(403, $invalidTimezone, 'P13: invalid persisted Location timezone fails closed without ambient-timezone fallback');
+        self::assertSame('CLINIC_SCOPE_UNAVAILABLE', $this->errCode($invalidTimezone));
     }
 
     // ================= helpers (proven Slice 3/Visit Workspace patterns) =================

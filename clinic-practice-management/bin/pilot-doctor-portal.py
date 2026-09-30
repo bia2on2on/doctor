@@ -1554,6 +1554,134 @@ def prove_workspace_rx(page, state, doctor, visit_id, label, mutate):
 
 
 
+def prove_finalized_rx_print(page, state, visit_id, rx_id, expected_number, expected_names, label):
+    """Print one server-finalized prescription through window.print, safely stubbed."""
+    item = page.locator(f'[data-role="workspace-rx-item"][data-rx-id="{rx_id}"]')
+    button = item.locator('[data-role="workspace-rx-print"]')
+    if button.count() != 1 or not button.is_enabled():
+        raise RuntimeError(f"{label} finalized prescription has no enabled structured print control")
+    if item.locator('[data-role="workspace-rx-finalize"]').count() != 0:
+        raise RuntimeError(f"{label} finalized prescription still exposes mutation/finalize control")
+    if item.locator('input, textarea, select, [data-role*="edit"], [data-role*="correct"]').count() != 0:
+        raise RuntimeError(f"{label} finalized prescription unexpectedly exposes an edit/correction surface")
+
+    page.emulate_media(media="print")
+    page.evaluate("""() => {
+        window.__cpmsOriginalPrint = window.print;
+        window.__cpmsPrintCalls = 0;
+        window.__cpmsPrintState = null;
+        window.print = function () {
+            window.__cpmsPrintCalls += 1;
+            const surface = document.getElementById('cpms-doctor-prescription-print-surface');
+            const visibleSiblings = Array.from(document.body.children)
+                .filter((node) => getComputedStyle(node).display !== 'none')
+                .map((node) => node.id || node.tagName.toLowerCase());
+            window.__cpmsPrintState = {
+                surface: !!surface,
+                bodyClass: document.body.classList.contains('cpms-doctor-prescription-printing'),
+                visibleSiblings: visibleSiblings,
+                direction: surface ? getComputedStyle(surface).direction : '',
+                drawingNodes: surface ? surface.querySelectorAll('canvas, img, svg, iframe, object, embed').length : -1,
+                overflow: surface ? surface.scrollWidth > surface.clientWidth + 2 : true,
+                text: surface ? surface.innerText : ''
+            };
+        };
+    }""")
+
+    def _slow_print(route):
+        time.sleep(0.25)
+        route.continue_()
+
+    route_pattern = f"**/doctor/portal/visits/{visit_id}/prescriptions/{rx_id}/print"
+    page.route(route_pattern, _slow_print)
+    req_start = len(state["reqs"])
+    with page.expect_response(
+        lambda r: route_of(r.url).endswith(f"/doctor/portal/visits/{visit_id}/prescriptions/{rx_id}/print")
+        and r.request.method == "GET",
+        timeout=15000,
+    ) as print_info:
+        button.click()
+        if not button.is_disabled():
+            raise RuntimeError(f"{label} print control is not disabled while the authoritative projection loads")
+    page.unroute(route_pattern)
+    response = print_info.value
+    if response.status != 200:
+        raise RuntimeError(f"{label} finalized prescription projection returned HTTP {response.status}")
+    data = payload(response.json())
+    expected_keys = [
+        "prescription_number", "patient", "clinician", "location",
+        "finalized_at_local", "finalized_at_jalali", "items",
+    ]
+    if list(data.keys()) != expected_keys or data.get("prescription_number") != expected_number:
+        raise RuntimeError(f"{label} print response is not the expected minimal server projection")
+    if list(data.get("patient", {}).keys()) != ["name"]:
+        raise RuntimeError(f"{label} print response exposes non-minimal patient identity")
+    if list(data.get("clinician", {}).keys()) != ["name", "specialty"] or list(data.get("location", {}).keys()) != ["name"]:
+        raise RuntimeError(f"{label} print response exposes non-minimal professional or Location identity")
+    if len(data.get("items", [])) != 2 or [i.get("generic_name") for i in data["items"]] != expected_names:
+        raise RuntimeError(f"{label} print projection does not preserve both persisted medication rows")
+    if data["items"][1].get("instructions") != "بعد از غذا":
+        raise RuntimeError(f"{label} print projection omitted persisted medication instructions")
+    for forbidden in ("id", "visit_id", "prescription_id", "patient_id", "mrn", "mobile", "notes", "files", "audit"):
+        if forbidden in data or forbidden in data["patient"] or forbidden in data["clinician"] or forbidden in data["location"]:
+            raise RuntimeError(f"{label} print projection includes forbidden private/internal key {forbidden}")
+
+    surface = page.locator("#cpms-doctor-prescription-print-surface")
+    surface.wait_for(state="attached", timeout=5000)
+    page.emulate_media(media="print")
+    print_state = page.evaluate("window.__cpmsPrintState")
+    if not print_state or not print_state["surface"] or not print_state["bodyClass"]:
+        raise RuntimeError(f"{label} window.print was not called with the temporary print surface isolated")
+    if print_state["direction"] != "rtl" or print_state["visibleSiblings"] != ["cpms-doctor-prescription-print-surface"]:
+        raise RuntimeError(f"{label} print media did not isolate the RTL surface from portal chrome")
+    if print_state["drawingNodes"] != 0 or any(name not in print_state["text"] for name in expected_names):
+        raise RuntimeError(f"{label} print surface contains no structured items or exposes a handwriting/stationery node")
+    if print_state["overflow"]:
+        raise RuntimeError(f"{label} responsive structured print surface overflows horizontally")
+    if not data["location"].get("name") or not data["clinician"].get("name") or not data["patient"].get("name"):
+        raise RuntimeError(f"{label} print surface is missing its persisted identities")
+    shot(page, f"doctor-portal-{label}-structured-rx-print")
+
+    # The stub deliberately leaves print mode pending so the media state above
+    # can be inspected; dispatch the browser's normal completion event now.
+    page.evaluate("window.dispatchEvent(new Event('afterprint'))")
+    page.wait_for_function(
+        "() => !document.body.classList.contains('cpms-doctor-prescription-printing') && "
+        "!document.getElementById('cpms-doctor-prescription-print-surface')",
+        timeout=5000,
+    )
+    page.emulate_media(media="screen")
+    if not button.is_enabled() or page.locator("#cpms-doctor-prescription-print-surface").count() != 0:
+        raise RuntimeError(f"{label} afterprint did not restore the normal portal and control")
+    if page.locator("#cpms-staff-portal-shell").count() != 1 or page.locator("#cpms-staff-portal-shell").is_hidden():
+        raise RuntimeError(f"{label} normal shared Staff Portal shell was not retained outside print mode")
+    if page.locator('[data-role="staff-nav"]').count() != 1 or page.locator('[data-role="staff-nav"]').is_hidden():
+        raise RuntimeError(f"{label} normal portal navigation was not retained outside print mode")
+
+    requests = state["reqs"][req_start:]
+    expected_route = f"/doctor/portal/visits/{visit_id}/prescriptions/{rx_id}/print"
+    print_requests = [request for request in requests if request["route"].endswith(expected_route)]
+    mutations = [request for request in requests if request["method"] != "GET"]
+    if len(print_requests) != 1 or print_requests[0]["method"] != "GET" or mutations:
+        raise RuntimeError(
+            f"{label} print did not issue exactly one authoritative GET without REST mutations "
+            f"(print_gets={len(print_requests)} mutation_methods={[request['method'] for request in mutations]})"
+        )
+    if window_calls := page.evaluate("window.__cpmsPrintCalls"):
+        if window_calls != 1:
+            raise RuntimeError(f"{label} native browser print was invoked {window_calls} times instead of once")
+    else:
+        raise RuntimeError(f"{label} window.print was not observed")
+    page.evaluate("""() => {
+        if (window.__cpmsOriginalPrint) window.print = window.__cpmsOriginalPrint;
+        delete window.__cpmsOriginalPrint;
+        delete window.__cpmsPrintCalls;
+        delete window.__cpmsPrintState;
+    }""")
+    info(f"workspace-rx-print-{label} finalized=1 server_truth=1 items=2 instructions=1 privacy=1 "
+         f"print_calls=1 get_only=1 mutation=0 rtl_isolated=1 handwriting_surface=0 navigation_restored=1")
+
+
 def prove_workspace_rx_multi(page, state, doctor, visit_id, label):
     """Real UI -> ONE existing create -> persisted record, at every viewport.
 
@@ -1649,6 +1777,8 @@ def prove_workspace_rx_multi(page, state, doctor, visit_id, label):
         raise RuntimeError(f"{label} one two-item draft was not returned")
     item = page.locator(f'[data-role="workspace-rx-item"][data-rx-id="{rx_id}"]')
     item.wait_for(state="visible")
+    if item.locator('[data-role="workspace-rx-print"]').count() != 0:
+        raise RuntimeError(f"{label} draft prescription improperly exposes structured printing")
     if page.locator('[data-role="workspace-rx-item"]').count() != before + 1:
         raise RuntimeError(f"{label} second medication produced another prescription")
     if item.locator('[data-role="workspace-rx-item-row"]').count() != 2 or any(n not in item.inner_text() for n in (names[0], names[2])):
@@ -1672,6 +1802,15 @@ def prove_workspace_rx_multi(page, state, doctor, visit_id, label):
     if finalized.value.status != 200:
         raise RuntimeError(f"{label} two-item finalization failed")
     item.locator('[data-role="workspace-rx-readonly"]').wait_for(state="visible")
+    prove_finalized_rx_print(
+        page,
+        state,
+        visit_id,
+        rx_id,
+        rx.get("prescription_number"),
+        [names[0], names[2]],
+        label,
+    )
     assert_hygiene(page, state, label + "-rx-finalized")
     shot(page, f"doctor-portal-{label}-rx-multi-finalized")
     info(f"workspace-rx-multi-{label} authorized=1 keyboard_add=2 remove_middle=1 row_requests=0"
