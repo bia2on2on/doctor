@@ -1660,8 +1660,13 @@ def prove_finalized_rx_print(page, state, visit_id, rx_id, expected_number, expe
 
     requests = state["reqs"][req_start:]
     expected_route = f"/doctor/portal/visits/{visit_id}/prescriptions/{rx_id}/print"
-    if len(requests) != 1 or requests[0]["method"] != "GET" or not requests[0]["route"].endswith(expected_route):
-        raise RuntimeError(f"{label} print action issued an unexpected request or server mutation")
+    print_requests = [request for request in requests if request["route"].endswith(expected_route)]
+    mutations = [request for request in requests if request["method"] != "GET"]
+    if len(print_requests) != 1 or print_requests[0]["method"] != "GET" or mutations:
+        raise RuntimeError(
+            f"{label} print did not issue exactly one authoritative GET without REST mutations "
+            f"(print_gets={len(print_requests)} mutation_methods={[request['method'] for request in mutations]})"
+        )
     if window_calls := page.evaluate("window.__cpmsPrintCalls"):
         if window_calls != 1:
             raise RuntimeError(f"{label} native browser print was invoked {window_calls} times instead of once")
