@@ -1582,6 +1582,7 @@ def prove_finalized_rx_print(page, state, visit_id, rx_id, expected_number, expe
                 visibleSiblings: visibleSiblings,
                 direction: surface ? getComputedStyle(surface).direction : '',
                 drawingNodes: surface ? surface.querySelectorAll('canvas, img, svg, iframe, object, embed').length : -1,
+                overflow: surface ? surface.scrollWidth > surface.clientWidth + 2 : true,
                 text: surface ? surface.innerText : ''
             };
         };
@@ -1613,6 +1614,10 @@ def prove_finalized_rx_print(page, state, visit_id, rx_id, expected_number, expe
     ]
     if list(data.keys()) != expected_keys or data.get("prescription_number") != expected_number:
         raise RuntimeError(f"{label} print response is not the expected minimal server projection")
+    if list(data.get("patient", {}).keys()) != ["name"]:
+        raise RuntimeError(f"{label} print response exposes non-minimal patient identity")
+    if list(data.get("clinician", {}).keys()) != ["name", "specialty"] or list(data.get("location", {}).keys()) != ["name"]:
+        raise RuntimeError(f"{label} print response exposes non-minimal professional or Location identity")
     if len(data.get("items", [])) != 2 or [i.get("generic_name") for i in data["items"]] != expected_names:
         raise RuntimeError(f"{label} print projection does not preserve both persisted medication rows")
     if data["items"][1].get("instructions") != "بعد از غذا":
@@ -1631,6 +1636,8 @@ def prove_finalized_rx_print(page, state, visit_id, rx_id, expected_number, expe
         raise RuntimeError(f"{label} print media did not isolate the RTL surface from portal chrome")
     if print_state["drawingNodes"] != 0 or any(name not in print_state["text"] for name in expected_names):
         raise RuntimeError(f"{label} print surface contains no structured items or exposes a handwriting/stationery node")
+    if print_state["overflow"]:
+        raise RuntimeError(f"{label} responsive structured print surface overflows horizontally")
     if not data["location"].get("name") or not data["clinician"].get("name") or not data["patient"].get("name"):
         raise RuntimeError(f"{label} print surface is missing its persisted identities")
     shot(page, f"doctor-portal-{label}-structured-rx-print")
