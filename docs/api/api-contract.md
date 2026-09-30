@@ -292,3 +292,9 @@ name, strength, form, dose, frequency, route, duration, instructions); internal
 operational fields (`void_reason`, `is_patient_visible`, `drug_ref_id`,
 `correction_of_prescription_id`) are never exposed. Read-only: no refill, mutation,
 printing, or pharmacy integration.
+
+### Phase 13 Slice 1 — Doctor Portal structured prescription print
+
+| Method/Path | Existing authority | Contract |
+|---|---|---|
+| `GET /doctor/portal/visits/{id}/prescriptions/{prescription_id}/print` | Existing Doctor Portal nonce/session + doctor-role + `cpms_rx_read` guard; server-derived active clinician; trusted Clinic and existing trusted-Location 0/1/N policy | Read-only projection for one **finalized** structured prescription whose persisted Visit, Clinic, patient, clinician and trusted active Location all match. Path IDs are selectors only. Missing, draft, voided, cross-Visit, cross-doctor, foreign-Clinic or otherwise mismatched prescription returns the established non-enumerating `404 CLINIC_NOT_FOUND`; unavailable trusted Location/timezone fails closed. `finalized_at` is stored UTC; convert through the persisted Visit Location's valid IANA timezone before returning the local Gregorian datetime and `Jalali::formatYmd(local_date)`. Response contains only `prescription_number`, patient display name, clinician name/specialty, trusted Location name, local finalized date/time, Jalali finalized date, and the structured item display fields (generic/brand/strength/form/dose/frequency/route/duration/instructions). No patient MRN, mobile, national ID, internal IDs, notes, files, audit metadata, or correction fields. No mutation and no audit side effect. The Doctor Portal invokes the browser's `window.print()` with a temporary RTL print surface isolated from portal/theme chrome; no server PDF or wp-admin/theme dependency. |

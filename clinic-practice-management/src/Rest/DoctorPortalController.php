@@ -138,6 +138,19 @@ final class DoctorPortalController extends RestBase {
 
 		register_rest_route(
 			self::NS,
+			'/doctor/portal/visits/(?P<id>\d+)/prescriptions/(?P<prescription_id>\d+)/print',
+			[
+				[
+					'methods'             => WP_REST_Server::READABLE,
+					'callback'            => fn( WP_REST_Request $r ) => $this->workspace_print_prescription( $r ),
+					'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_workspace( $r, RolesAndCapabilities::RX_READ ),
+					'args'                => $this->workspace_inert_client_args(),
+				],
+			]
+		);
+
+		register_rest_route(
+			self::NS,
 			'/doctor/portal/prescriptions/(?P<id>\d+)/finalize',
 			[
 				[
@@ -626,6 +639,34 @@ final class DoctorPortalController extends RestBase {
 	}
 
 	/**
+	 * Phase 13 Slice 1 — read-only structured prescription print projection.
+	 * The Visit selector is authorized first; the prescription selector is then
+	 * rebound to that exact persisted Visit in ClinicalService. The Location id
+	 * comes only from the portal's trusted 0/1/N policy, never request data.
+	 */
+	private function workspace_print_prescription( WP_REST_Request $r ): WP_REST_Response|WP_Error {
+		$visit_id             = (int) $r['id'];
+		$prescription_id      = (int) $r['prescription_id'];
+		$trusted_location_id  = null;
+		$guard                = $this->workspace_authorize_visit( $visit_id, $trusted_location_id );
+		if ( $guard instanceof WP_Error ) {
+			return $guard;
+		}
+		if ( null === $trusted_location_id || $trusted_location_id <= 0 ) {
+			return $this->error( 'CLINIC_SCOPE_UNAVAILABLE', 403, 'Trusted clinic context is not available.', [ 'reason' => 'location' ] );
+		}
+
+		return $this->workspace_wrap(
+			fn() => App::clinicalService()->finalizedPrescriptionForPortalPrint(
+				(int) wp_get_current_user()->ID,
+				$visit_id,
+				$prescription_id,
+				$trusted_location_id
+			)
+		);
+	}
+
+	/**
 	 * Client authority keys are deliberately inert at the portal file boundary:
 	 * the SERVER derives patient/clinician/clinic/Location from the persisted
 	 * authorized Visit (route selector + trusted selector headers only). Each
@@ -779,7 +820,7 @@ final class DoctorPortalController extends RestBase {
 	 * selector fails non-enumerating with the established repository
 	 * convention (404 CLINIC_NOT_FOUND).
 	 */
-	private function workspace_authorize_visit( int $visit_id ): bool|WP_Error {
+	private function workspace_authorize_visit( int $visit_id, ?int &$trusted_location_id = null ): bool|WP_Error {
 		$user_id = (int) ( wp_get_current_user()->ID ?? 0 );
 
 		// 1) Trusted Clinic scope — bound by RestClinicContext from selector headers.
@@ -844,6 +885,8 @@ final class DoctorPortalController extends RestBase {
 		) {
 			return new WP_Error( 'CLINIC_NOT_FOUND', 'مراجعه یافت نشد', [ 'status' => 404 ] );
 		}
+
+		$trusted_location_id = $location_id;
 
 		return true;
 	}

@@ -780,6 +780,154 @@ final class ClinicalService
      *
      * @return array<string, mixed>
      */
+    // ================= Phase 13 Slice 1 — Doctor Portal structured print =================
+
+    /**
+     * Minimal read-only print projection for an already-finalized structured
+     * prescription in the independent Doctor Portal. The caller supplies the
+     * Location resolved by workspace_authorize_visit(); it is checked again
+     * against the persisted Visit and active Clinic-owned Location here.
+     *
+     * This is deliberately separate from the legacy P12/admin print path below:
+     * that path includes broader clinical data and writes PRESCRIPTION_PRINTED.
+     *
+     * @return array<string, mixed>
+     */
+    public function finalizedPrescriptionForPortalPrint(
+        int $actorUserId,
+        int $visitId,
+        int $prescriptionId,
+        int $trustedLocationId
+    ): array {
+        $this->requireCap($actorUserId, RolesAndCapabilities::RX_READ, 'print');
+        $visit = $this->requireVisit($visitId);
+        $this->requireOwnVisit($actorUserId, $visit);
+        $this->assertVisitInActiveClinic($visit);
+        $this->authorizeScoped(
+            $actorUserId,
+            (int) $visit['clinic_id'],
+            RolesAndCapabilities::RX_READ,
+            'visit',
+            $visitId,
+            (int) $visit['patient_id']
+        );
+
+        if ($trustedLocationId <= 0 || (int) $visit['location_id'] !== $trustedLocationId) {
+            throw ClinicalException::of('CLINIC_SCOPE_UNAVAILABLE', 'Trusted Location is not available.', 403, ['reason' => 'location']);
+        }
+
+        $rx = $this->prescriptions->find($prescriptionId);
+        if (
+            $rx === null
+            || (int) $rx['visit_id'] !== $visitId
+            || (int) $rx['clinic_id'] !== (int) $visit['clinic_id']
+            || (int) $rx['patient_id'] !== (int) $visit['patient_id']
+            || (int) $rx['clinician_id'] !== (int) $visit['clinician_id']
+            || (string) $rx['status'] !== 'finalized'
+            || empty($rx['finalized_at'])
+        ) {
+            throw ClinicalException::of('CLINIC_NOT_FOUND', 'نسخه یافت نشد', 404);
+        }
+
+        $location = $this->db->fetchRow(
+            'SELECT id, name, timezone FROM ' . $this->db->table('cpms_locations') .
+            ' WHERE id = %d AND clinic_id = %d AND is_active = 1 LIMIT 1',
+            [$trustedLocationId, (int) $visit['clinic_id']]
+        );
+        if ($location === null || trim((string) ($location['timezone'] ?? '')) === '') {
+            throw ClinicalException::of('CLINIC_SCOPE_UNAVAILABLE', 'Trusted Location timezone is not available.', 403, ['reason' => 'location']);
+        }
+
+        $timezoneId = trim((string) $location['timezone']);
+        if (!in_array($timezoneId, \DateTimeZone::listIdentifiers(\DateTimeZone::ALL_WITH_BC), true)) {
+            throw ClinicalException::of('CLINIC_SCOPE_UNAVAILABLE', 'Trusted Location timezone is not valid.', 403, ['reason' => 'location']);
+        }
+        $dateView = $this->portalPrintDateView((string) $rx['finalized_at'], $timezoneId);
+
+        $patient = $this->db->fetchRow(
+            'SELECT first_name, last_name FROM ' . $this->db->table('cpms_patients') .
+            ' WHERE id = %d AND clinic_id = %d LIMIT 1',
+            [(int) $visit['patient_id'], (int) $visit['clinic_id']]
+        );
+        $clinician = $this->db->fetchRow(
+            'SELECT full_name, specialty FROM ' . $this->db->table('cpms_clinicians') .
+            ' WHERE id = %d AND is_active = 1 LIMIT 1',
+            [(int) $visit['clinician_id']]
+        );
+        if ($patient === null || $clinician === null) {
+            throw ClinicalException::of('CLINIC_NOT_FOUND', 'اطلاعات نسخه یافت نشد', 404);
+        }
+
+        $items = array_map(
+            static fn(array $item): array => [
+                'generic_name' => (string) $item['generic_name'],
+                'brand_name' => $item['brand_name'],
+                'strength' => $item['strength'],
+                'form' => (string) $item['form'],
+                'dose' => (string) $item['dose'],
+                'frequency' => (string) $item['frequency'],
+                'route' => (string) $item['route'],
+                'duration_days' => $item['duration_days'] !== null ? (int) $item['duration_days'] : null,
+                'instructions' => $item['instructions'],
+            ],
+            $this->prescriptions->itemsFor($prescriptionId)
+        );
+
+        if ($items === []) {
+            throw ClinicalException::of('CLINIC_NOT_FOUND', 'اقلام نسخه یافت نشد', 404);
+        }
+
+        return [
+            'prescription_number' => (string) $rx['prescription_number'],
+            'patient' => [
+                'name' => trim((string) $patient['first_name'] . ' ' . (string) $patient['last_name']),
+            ],
+            'clinician' => [
+                'name' => (string) $clinician['full_name'],
+                'specialty' => $clinician['specialty'],
+            ],
+            'location' => [
+                'name' => (string) $location['name'],
+            ],
+            'finalized_at_local' => $dateView['local'],
+            'finalized_at_jalali' => $dateView['jalali'],
+            'items' => $items,
+        ];
+    }
+
+    /**
+     * Convert one persisted UTC finalized_at instant through its trusted
+     * Location IANA timezone before deriving either Gregorian or Jalali output.
+     *
+     * @return array{local: string, jalali: string}
+     */
+    private function portalPrintDateView(string $utcValue, string $timezoneId): array {
+        if (!preg_match('/^(\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2})(?:\\.(\\d{1,6}))?$/D', $utcValue, $matches)) {
+            throw ClinicalException::of('CLINIC_NOT_FOUND', 'نسخه یافت نشد', 404);
+        }
+
+        $fraction = str_pad((string) ($matches[2] ?? ''), 6, '0');
+        $normalized = $matches[1] . '.' . $fraction;
+        $utc = new \DateTimeZone('UTC');
+        $instant = \DateTimeImmutable::createFromFormat('!Y-m-d H:i:s.u', $normalized, $utc);
+        $parseErrors = \DateTimeImmutable::getLastErrors();
+        if (
+            $instant === false
+            || (is_array($parseErrors) && ($parseErrors['warning_count'] > 0 || $parseErrors['error_count'] > 0))
+            || $instant->format('Y-m-d H:i:s.u') !== $normalized
+        ) {
+            throw ClinicalException::of('CLINIC_NOT_FOUND', 'نسخه یافت نشد', 404);
+        }
+
+        $local = $instant->setTimezone(new \DateTimeZone($timezoneId));
+        $localDate = $local->format('Y-m-d');
+
+        return [
+            'local' => $local->format('Y-m-d H:i'),
+            'jalali' => Jalali::formatYmd($localDate),
+        ];
+    }
+
     // ================= P12 — نمای چاپ نسخه (Part 2 / ADR-0031) =================
 
     /**
