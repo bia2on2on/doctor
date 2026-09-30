@@ -24,6 +24,12 @@
  * state, no schema change, no migration). The receipt is returned only when:
  *   - the Visit exists and belongs to the trusted Clinic AND to the CURRENT
  *     trusted operational Location (raw ids are selectors only);
+ *   - the selected invoice (and every payment row used for it) is durably
+ *     OWNED by that Visit: `visit_id`/`clinic_id`/`patient_id` agree with the
+ *     anchor, and `location_id` is either NULL (the established nullable
+ *     finance Location) or the Visit Location exactly; any durable ownership
+ *     mismatch fails closed with the same non-enumerating 404 parity as a
+ *     foreign Visit and never renders another patient's data;
  *   - the Visit has exactly one non-voided invoice and no voided invoice;
  *   - that invoice is exactly `paid`, not voided, `total > 0`,
  *     `paid_amount = total`, `balance = 0`, and `paid_amount` equals the sum of
@@ -37,7 +43,9 @@
  * Anything else fails closed with 409 `CLINIC_RECEIPT_NOT_ELIGIBLE` + a
  * bounded `reason` (`invoice_missing`, `invoice_not_settled`,
  * `correction_evidence`, `settlement_integrity`, `items_missing`,
- * `waive_evidence`) and mutates nothing.
+ * `waive_evidence`) and mutates nothing; a durable ownership/linkage mismatch
+ * instead uses the 404 `CLINIC_NOT_FOUND` parity, because an inconsistent row
+ * is never repaired, never partially rendered and never disclosed.
  *
  * Deliberately OUT of scope (asserted as absent, not implemented): refund UI,
  * void UI, adjustment UI, waive, new payment, checkout mutation, online
@@ -184,6 +192,9 @@ final class Phase12Slice5StaffFinanceReceiptTest extends WP_UnitTestCase
         $mrn = (string) $patientRow['mrn'];
 
         wp_set_current_user($secretary);
+        // FULL persisted rows (not just counts): a before/after comparison of
+        // these values detects UPDATEs as well as INSERT/DELETE.
+        $rowsBefore = $this->persistedReceiptRows($visit, $invoice);
         $before = $this->readOnlySnapshot();
         $queries = [];
         $capture = function (string $query) use (&$queries): string {
@@ -262,13 +273,18 @@ final class Phase12Slice5StaffFinanceReceiptTest extends WP_UnitTestCase
         // N+1 guard above is the projection-specific assertion.
         self::assertLessThanOrEqual(24, count($queries), 'the whole receipt read stays bounded');
 
-        self::assertSame($before, $this->readOnlySnapshot(), 'the receipt GET performs no mutation and no audit side effect');
+        self::assertSame(
+            $rowsBefore,
+            $this->persistedReceiptRows($visit, $invoice),
+            'every persisted row the receipt reads (Visit, invoice, items, payments, adjustments, history, patient, clinic) is value-identical after the GET'
+        );
+        self::assertSame($before, $this->readOnlySnapshot(), 'the receipt GET inserts or deletes no row (count-level guard) and writes no audit row');
 
         // GET-only: the same path never accepts a mutation verb.
         $post = $this->dispatch('POST', sprintf(self::RECEIPT, $visit), [], $this->scopeHeaders($clinic, $location));
         self::assertSame(404, $post->get_status(), 'the receipt surface is GET-only');
         self::assertSame('rest_no_route', $this->errorCode($post));
-        self::assertSame($before, $this->readOnlySnapshot(), 'a rejected POST writes nothing');
+        self::assertSame($before, $this->readOnlySnapshot(), 'a rejected POST inserts or deletes no row (count-level guard)');
         self::assertNotSame(0, $firstPayment, 'the seeded clean capture exists');
     }
 
@@ -430,7 +446,7 @@ final class Phase12Slice5StaffFinanceReceiptTest extends WP_UnitTestCase
             self::assertStringNotContainsString('receipt', strtolower((string) wp_json_encode($response->get_data())), $label . ' never returns receipt data');
         }
 
-        self::assertSame($before, $this->readOnlySnapshot(), 'no rejected selector read writes anything');
+        self::assertSame($before, $this->readOnlySnapshot(), 'no rejected selector read writes anything (count-level guard)');
     }
 
     /**
@@ -680,7 +696,181 @@ final class Phase12Slice5StaffFinanceReceiptTest extends WP_UnitTestCase
             );
         }
 
-        self::assertSame($before, $this->readOnlySnapshot(), 'no ineligible path writes anything');
+        self::assertSame($before, $this->readOnlySnapshot(), 'no ineligible path writes anything (count-level guard)');
+    }
+
+    /**
+     * Group 10 — durable ownership/linkage: the persisted Visit is the
+     * tenant/Location anchor, so an invoice or payment row that disagrees with
+     * that anchor on the durable fields it actually carries (visit_id /
+     * clinic_id / patient_id / nullable location_id) can never produce a
+     * receipt — not a partial projection and not another patient's display
+     * name. Inconsistent rows are neither repaired nor disclosed: they stay
+     * indistinguishable from a missing Visit (the established non-enumerating
+     * 404 parity). `location_id` follows the established nullable
+     * finance-Location rule of migration 0015 (`FinanceService` persists NULL
+     * when the Visit carries no Location; the Slice 4 paid board joins
+     * `location_id = %d OR location_id IS NULL`), so NULL stays printable while
+     * any non-NULL value must match the Visit Location exactly.
+     */
+    public function testReceiptFailsClosedWhenDurableRowsDoNotBelongToTheAuthorizedVisit(): void
+    {
+        $org = $this->insertOrg('Slice5 ownership org');
+        $clinic = $this->insertClinic($org, 'Slice5 Ownership Clinic', 'Asia/Tehran');
+        $location = $this->insertLocation($clinic, 'Asia/Tehran');
+        $otherLocation = $this->insertLocation($clinic, 'Asia/Tehran');
+        $foreignClinic = $this->insertClinic($org, 'Slice5 Ownership Foreign', 'Asia/Tehran');
+        $foreignLocation = $this->insertLocation($foreignClinic, 'Asia/Tehran');
+        $secretary = $this->makeUser('phase12_slice5_owner_secretary', RolesAndCapabilities::ROLE_SECRETARY);
+        cpms_test_seed_membership($secretary, $clinic, 'cpms_secretary');
+        $clinician = $this->insertClinician($clinic, 'Dr Ownership5');
+        $patient = $this->insertPatient($clinic, 'Owner5');
+        $otherPatient = $this->insertPatient($clinic, 'Owner5Other');
+        $foreignPatient = $this->insertPatient($foreignClinic, 'Owner5Foreign');
+
+        $patientName = $this->displayName($patient);
+        $otherName = $this->displayName($otherPatient);
+        $foreignName = $this->displayName($foreignPatient);
+
+        /**
+         * Seeds a fully eligible-looking settlement (paid/zero balance, one
+         * item, one clean captured payment, no adjustment, no waive) so that
+         * ONLY the deliberately broken durable linkage can reject it.
+         *
+         * @param array<string, mixed> $invoiceOverrides
+         * @param array<string, mixed> $paymentOverrides
+         */
+        $settle = function (int $visitId, array $invoiceOverrides = [], array $paymentOverrides = []) use ($clinic, $location, $patient, $secretary): int {
+            $invoice = $this->insertInvoice($clinic, $location, $patient, $visitId, $secretary, 'paid', '150000.00', '150000.00', '0.00', array_merge([
+                'invoice_number' => 'INV-S5-OWN-' . bin2hex(random_bytes(4)),
+                'created_at' => self::INVOICE_CREATED_AT,
+                'updated_at' => self::INVOICE_CREATED_AT,
+            ], $invoiceOverrides));
+            $this->insertItem($invoice, 'مشاوره و ویزیت', '1.00', '150000.00', '150000.00');
+            $this->insertPayment($clinic, $invoice, $patient, '150000.00', 'cash', array_merge([
+                'payment_number' => 'PAY-S5-OWN-' . bin2hex(random_bytes(4)),
+                'paid_at' => self::INVOICE_CREATED_AT,
+            ], $paymentOverrides));
+            $this->seedVisitHistory($visitId, 'awaiting_payment', 'paid', 'پرداخت کامل شد');
+
+            return $invoice;
+        };
+
+        wp_set_current_user($secretary);
+
+        // Reference rejection: a selector that resolves to no Visit at all.
+        // Every ownership mismatch must be indistinguishable from it.
+        $reference = $this->dispatch('GET', sprintf(self::RECEIPT, 987654321), [], $this->scopeHeaders($clinic, $location));
+        self::assertSame(404, $reference->get_status(), 'the non-enumerating reference rejection is 404');
+        self::assertSame('CLINIC_NOT_FOUND', $this->errorCode($reference));
+        $referenceEnvelope = (array) $reference->get_data();
+
+        $mismatches = [];
+
+        // (a) invoice→Visit linkage: the anchor Visit carries no finance
+        //     document of its own while a settled invoice exists on a sibling
+        //     Visit of the same Clinic/Location (the durable selector mismatch
+        //     the schema can express: `cpms_invoices.visit_id`).
+        $linkageVisit = $this->insertVisit($clinic, $location, $patient, $clinician, '2026-06-16', self::INVOICE_CREATED_AT, 'paid');
+        $siblingVisit = $this->insertVisit($clinic, $location, $patient, $clinician, '2026-06-16', self::INVOICE_CREATED_AT, 'paid');
+        $siblingInvoice = $settle($siblingVisit);
+        $mismatches['invoice visit linkage'] = [$linkageVisit, $siblingInvoice, 409, 'CLINIC_RECEIPT_NOT_ELIGIBLE'];
+
+        // (b) invoice.clinic_id disagrees with the authorized Clinic.
+        $clinicVisit = $this->insertVisit($clinic, $location, $patient, $clinician, '2026-06-16', self::INVOICE_CREATED_AT, 'paid');
+        $clinicInvoice = $settle($clinicVisit, ['clinic_id' => $foreignClinic]);
+        $mismatches['invoice clinic linkage'] = [$clinicVisit, $clinicInvoice, 404, 'CLINIC_NOT_FOUND'];
+
+        // (c) invoice.patient_id points at another patient of the same Clinic —
+        //     the receipt must never render that patient's name.
+        $patientVisit = $this->insertVisit($clinic, $location, $patient, $clinician, '2026-06-16', self::INVOICE_CREATED_AT, 'paid');
+        $patientInvoice = $settle($patientVisit, ['patient_id' => $otherPatient]);
+        $mismatches['invoice patient linkage'] = [$patientVisit, $patientInvoice, 404, 'CLINIC_NOT_FOUND'];
+
+        // (d) invoice.location_id points at another Location of the same Clinic.
+        $invoiceLocationVisit = $this->insertVisit($clinic, $location, $patient, $clinician, '2026-06-16', self::INVOICE_CREATED_AT, 'paid');
+        $invoiceLocationInvoice = $settle($invoiceLocationVisit, ['location_id' => $otherLocation]);
+        $mismatches['invoice location linkage'] = [$invoiceLocationVisit, $invoiceLocationInvoice, 404, 'CLINIC_NOT_FOUND'];
+
+        // (e) a captured payment of that invoice belongs to another Clinic.
+        $paymentClinicVisit = $this->insertVisit($clinic, $location, $patient, $clinician, '2026-06-16', self::INVOICE_CREATED_AT, 'paid');
+        $paymentClinicInvoice = $settle($paymentClinicVisit, [], ['clinic_id' => $foreignClinic]);
+        $mismatches['payment clinic linkage'] = [$paymentClinicVisit, $paymentClinicInvoice, 404, 'CLINIC_NOT_FOUND'];
+
+        // (f) a captured payment belongs to another patient of the same Clinic.
+        $paymentPatientVisit = $this->insertVisit($clinic, $location, $patient, $clinician, '2026-06-16', self::INVOICE_CREATED_AT, 'paid');
+        $paymentPatientInvoice = $settle($paymentPatientVisit, [], ['patient_id' => $otherPatient]);
+        $mismatches['payment patient linkage'] = [$paymentPatientVisit, $paymentPatientInvoice, 404, 'CLINIC_NOT_FOUND'];
+
+        // (g) a captured payment carries another Location of the same Clinic.
+        $paymentLocationVisit = $this->insertVisit($clinic, $location, $patient, $clinician, '2026-06-16', self::INVOICE_CREATED_AT, 'paid');
+        $paymentLocationInvoice = $settle($paymentLocationVisit, [], ['location_id' => $otherLocation]);
+        $mismatches['payment location linkage'] = [$paymentLocationVisit, $paymentLocationInvoice, 404, 'CLINIC_NOT_FOUND'];
+
+        foreach ($mismatches as $label => $case) {
+            [$target, $invoiceId, $status, $code] = $case;
+            $rowsBefore = $this->persistedReceiptRows($target, $invoiceId);
+            $before = $this->readOnlySnapshot();
+            $response = $this->dispatch('GET', sprintf(self::RECEIPT, $target), [], $this->scopeHeaders($clinic, $location));
+            $data = (array) $response->get_data();
+
+            self::assertSame($status, $response->get_status(), $label . ' must fail closed — got ' . $response->get_status());
+            self::assertSame($code, $this->errorCode($response), $label . ' uses the established fail-closed code');
+            self::assertSame(
+                [],
+                array_intersect(self::RECEIPT_KEYS, array_keys($this->payload($response))),
+                $label . ' returns no receipt projection'
+            );
+            self::assertArrayNotHasKey('receipt', $this->payload($response), $label . ' never carries a receipt payload');
+
+            $encoded = (string) wp_json_encode($data);
+            self::assertStringNotContainsString($otherName, $encoded, $label . ' never leaks another patient of the Clinic');
+            self::assertStringNotContainsString($foreignName, $encoded, $label . ' never leaks a foreign-Clinic patient');
+            self::assertStringNotContainsString($patientName, $encoded, $label . ' never leaks even the anchor patient name (no partial projection)');
+
+            if (404 === $status) {
+                self::assertSame(
+                    $referenceEnvelope,
+                    $data,
+                    $label . ' is indistinguishable from a missing Visit (non-enumerating parity)'
+                );
+            } else {
+                self::assertSame(
+                    'invoice_missing',
+                    (string) ($this->errorData($response)['reason'] ?? ''),
+                    'the unreachable-invoice case stays inside the bounded eligibility vocabulary'
+                );
+            }
+
+            self::assertSame($rowsBefore, $this->persistedReceiptRows($target, $invoiceId), $label . ' repairs nothing: every persisted row is value-identical');
+            self::assertSame($before, $this->readOnlySnapshot(), $label . ' writes nothing (count-level guard)');
+        }
+
+        // Positive side of the proven policy: the established nullable finance
+        // Location (NULL — what the normal capture path persists) is legitimate
+        // because the Visit carries the authoritative Location.
+        $legacyVisit = $this->insertVisit($clinic, $location, $patient, $clinician, '2026-06-16', self::INVOICE_CREATED_AT, 'paid');
+        $settle($legacyVisit, [
+            'location_id' => null,
+            'invoice_number' => 'INV-SLICE5-LEGACY-NULL',
+        ]);
+        $legacy = $this->dispatch('GET', sprintf(self::RECEIPT, $legacyVisit), [], $this->scopeHeaders($clinic, $location));
+        self::assertSame(200, $legacy->get_status(), 'a legacy NULL invoice.location_id stays printable — ' . $this->errorCode($legacy));
+        $legacyReceipt = $this->payload($legacy)['receipt'] ?? null;
+        self::assertIsArray($legacyReceipt, 'the NULL-Location receipt is the bounded projection');
+        self::assertSame(self::RECEIPT_KEYS, array_keys($legacyReceipt));
+        self::assertSame('INV-SLICE5-LEGACY-NULL', (string) $legacyReceipt['invoice_number']);
+        self::assertSame($patientName, (string) $legacyReceipt['patient']['name'], 'the ANCHOR patient is displayed, never another patient');
+
+        // A payment row that does carry a Location is consistent only when it
+        // matches the Visit Location exactly.
+        $locatedVisit = $this->insertVisit($clinic, $location, $patient, $clinician, '2026-06-16', self::INVOICE_CREATED_AT, 'paid');
+        $settle($locatedVisit, ['invoice_number' => 'INV-SLICE5-LOCATED'], ['location_id' => $location]);
+        $located = $this->dispatch('GET', sprintf(self::RECEIPT, $locatedVisit), [], $this->scopeHeaders($clinic, $location));
+        self::assertSame(200, $located->get_status(), 'a payment Location equal to the Visit Location is consistent — ' . $this->errorCode($located));
+        self::assertSame('INV-SLICE5-LOCATED', (string) ($this->payload($located)['receipt']['invoice_number'] ?? ''));
+
+        self::assertNotSame(0, $foreignLocation, 'the foreign Location fixture exists (no invented authority)');
     }
 
     /**
@@ -1138,6 +1328,37 @@ final class Phase12Slice5StaffFinanceReceiptTest extends WP_UnitTestCase
         self::assertNotFalse($wpdb->insert($wpdb->prefix . 'cpms_invoices', $row), 'invoice fixture insert');
 
         return (int) $wpdb->insert_id;
+    }
+
+    private function displayName(int $patientId): string
+    {
+        $row = $this->patientRow($patientId);
+
+        return trim((string) $row['first_name'] . ' ' . (string) $row['last_name']);
+    }
+
+    /**
+     * The full persisted rows the receipt path reads for one Visit/invoice.
+     * Comparing the returned values before/after a GET detects UPDATEs, which
+     * a count-level snapshot by construction cannot.
+     *
+     * @return array<string, mixed>
+     */
+    private function persistedReceiptRows(int $visitId, int $invoiceId): array
+    {
+        $all = static fn (string $sql, array $params): array => (array) App::db()->fetchAll($sql, $params);
+        $one = static fn (string $sql, array $params): ?array => App::db()->fetchRow($sql, $params);
+
+        return [
+            'visit' => $one('SELECT * FROM ' . App::db()->table('cpms_visits') . ' WHERE id = %d LIMIT 1', [$visitId]),
+            'invoice' => $one('SELECT * FROM ' . App::db()->table('cpms_invoices') . ' WHERE id = %d LIMIT 1', [$invoiceId]),
+            'items' => $all('SELECT * FROM ' . App::db()->table('cpms_invoice_items') . ' WHERE invoice_id = %d ORDER BY id ASC', [$invoiceId]),
+            'payments' => $all('SELECT * FROM ' . App::db()->table('cpms_payments') . ' WHERE invoice_id = %d ORDER BY id ASC', [$invoiceId]),
+            'adjustments' => $all('SELECT * FROM ' . App::db()->table('cpms_payment_adjustments') . ' WHERE invoice_id = %d ORDER BY id ASC', [$invoiceId]),
+            'history' => $all('SELECT * FROM ' . App::db()->table('cpms_visit_status_history') . ' WHERE visit_id = %d ORDER BY id ASC', [$visitId]),
+            'patient' => $one('SELECT * FROM ' . App::db()->table('cpms_patients') . ' WHERE id = (SELECT patient_id FROM ' . App::db()->table('cpms_visits') . ' WHERE id = %d) LIMIT 1', [$visitId]),
+            'clinic' => $one('SELECT * FROM ' . App::db()->table('cpms_clinics') . ' WHERE id = (SELECT clinic_id FROM ' . App::db()->table('cpms_visits') . ' WHERE id = %d) LIMIT 1', [$visitId]),
+        ];
     }
 
     /** @return array<string, int> */

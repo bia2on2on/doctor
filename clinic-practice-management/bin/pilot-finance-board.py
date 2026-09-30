@@ -21,8 +21,9 @@ viewports, the receipt opened from server truth for the durable invoice behind
 the visit settled through this run (durable invoice number, stored total,
 every recorded manual payment, zero balance, Location-local Jalali dates), and
 the browser `window.print()` path invoked with the receipt surface isolated
-while proving no mutation request is issued. No server-side document is
-produced.
+while proving that no non-GET REST request is issued across the complete
+receipt open → print → close flow (the listener is attached before the open).
+No server-side document is produced.
 
 The harness reuses the EXISTING pilot gate entry point (fixture + Playwright in
 the responsive job); no new browser infrastructure is added. Pixels are emitted
@@ -479,6 +480,16 @@ with sync_playwright() as playwright:
     # invoice behind the visit that was settled through THIS run, and the
     # browser print path invoked without any mutation.
     # ------------------------------------------------------------------
+    # The no-mutation listener is attached BEFORE the receipt is opened, so the
+    # complete open → print → close flow is covered: a listener attached after
+    # the open could only ever prove that the print call itself was clean.
+    receipt_mutations = []
+    page.on(
+        "request",
+        lambda request: receipt_mutations.append(request.method)
+        if "/wp-json/" in request.url and request.method != "GET"
+        else None,
+    )
     receipt_panel = open_receipt(page, settled_paid_row)
     require(receipt_panel.is_visible(), "slice5: the receipt panel opens from server truth")
     receipt_text = receipt_panel.locator('[data-role="finance-receipt-body"]').inner_text()
@@ -491,13 +502,6 @@ with sync_playwright() as playwright:
         "slice5: the receipt carries a Location-local Jalali date",
     )
     page.screenshot(path=str(OUT / "finance-receipt-settled-desktop.png"), full_page=True)
-    receipt_mutations = []
-    page.on(
-        "request",
-        lambda request: receipt_mutations.append(request.method)
-        if "/wp-json/" in request.url and request.method != "GET"
-        else None,
-    )
     page.evaluate(
         "window.__cpmsPrintCalled = false; window.__cpmsPrintClass = false;"
         "window.print = function () { window.__cpmsPrintCalled = true;"
@@ -509,13 +513,16 @@ with sync_playwright() as playwright:
         page.evaluate("window.__cpmsPrintCalled === true && window.__cpmsPrintClass === true"),
         "slice5: the print action invokes the browser print path with the receipt surface isolated",
     )
-    require(not receipt_mutations, "slice5: opening and printing the receipt issues no mutation request")
     require(
         CAPTURE_INVOICE in receipt_panel.locator('[data-role="finance-receipt-body"]').inner_text(),
         "slice5: the printed receipt is still the server truth after the print call",
     )
     receipt_panel.locator('[data-role="finance-receipt-close"]').click()
     require(receipt_panel.is_hidden(), "slice5: the receipt panel returns to rest")
+    require(
+        not receipt_mutations,
+        "slice5: opening, printing and closing the receipt issue no non-GET REST request",
+    )
     require(
         page.locator('[data-role="finance-paid-rows"] tr').filter(has_text=PAYMENT_PATIENT).count() == 1
         and "0.00" in page.locator('[data-role="finance-paid-rows"] tr').filter(has_text=PAYMENT_PATIENT).inner_text(),

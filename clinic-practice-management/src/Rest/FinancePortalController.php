@@ -837,7 +837,21 @@ final class FinancePortalController extends RestBase {
 			return $this->receipt_not_eligible( 'correction_evidence' );
 		}
 
-		$invoice = $active[0];
+		$invoice    = $active[0];
+		$invoice_id = (int) $invoice['id'];
+		$payments   = $this->payments->forInvoice( $invoice_id );
+
+		// Durable ownership/linkage guard: the persisted Visit is the
+		// tenant/Location anchor, so the selected invoice and every payment row
+		// used below must be internally consistent with that Visit before any
+		// value is read, evaluated or rendered. Inconsistent durable rows are
+		// never repaired and never disclosed: the established non-enumerating
+		// 404 parity applies (same shape as the cross-Clinic/cross-Location
+		// Visit rejection above and as `FinanceService` invoice ownership).
+		if ( ! $this->receipt_rows_owned_by_visit( $visit, $invoice, $payments ) ) {
+			return $this->error( 'CLINIC_NOT_FOUND', 404, 'ویزیت یافت نشد' );
+		}
+
 		if (
 			'paid' !== (string) $invoice['status']
 			|| null !== ( $invoice['void_reason'] ?? null )
@@ -849,9 +863,7 @@ final class FinancePortalController extends RestBase {
 			return $this->receipt_not_eligible( 'invoice_not_settled' );
 		}
 
-		$invoice_id = (int) $invoice['id'];
-		$payments   = $this->payments->forInvoice( $invoice_id );
-		$captured   = array();
+		$captured = array();
 		foreach ( $payments as $payment ) {
 			if (
 				'captured' !== (string) $payment['status']
@@ -966,6 +978,64 @@ final class FinancePortalController extends RestBase {
 			'رسید این فاکتور در دسترس نیست؛ مسیر تسویهٔ عادی و کامل آن قابل اثبات نیست.',
 			array( 'reason' => $reason )
 		);
+	}
+
+	/**
+	 * Ownership/linkage guard for the receipt projection: every durable row the
+	 * receipt uses must belong to the already-authorized persisted Visit.
+	 *
+	 * `location_id` follows the established nullable-Location rule of the
+	 * finance schema (migration 0015 makes `cpms_invoices`/`cpms_payments`
+	 * `location_id` NULL-able, `FinanceService` persists NULL when the Visit
+	 * carries no Location, and the Slice 4 paid board joins
+	 * `(location_id = %d OR location_id IS NULL)`): NULL is legitimate because
+	 * the Visit carries the authoritative Location, while any non-NULL value
+	 * must equal that Visit Location exactly.
+	 *
+	 * @param array<string, mixed>       $visit    persisted, already-authorized Visit anchor.
+	 * @param array<string, mixed>       $invoice  single non-voided invoice selected for the Visit.
+	 * @param list<array<string, mixed>> $payments every durable payment row of that invoice.
+	 */
+	private function receipt_rows_owned_by_visit( array $visit, array $invoice, array $payments ): bool {
+		$visit_id    = (int) ( $visit['id'] ?? 0 );
+		$clinic_id   = (int) ( $visit['clinic_id'] ?? 0 );
+		$patient_id  = (int) ( $visit['patient_id'] ?? 0 );
+		$location_id = (int) ( $visit['location_id'] ?? 0 );
+
+		if (
+			(int) ( $invoice['visit_id'] ?? 0 ) !== $visit_id
+			|| (int) ( $invoice['clinic_id'] ?? 0 ) !== $clinic_id
+			|| (int) ( $invoice['patient_id'] ?? 0 ) !== $patient_id
+			|| ! $this->receipt_location_matches( $invoice['location_id'] ?? null, $location_id )
+		) {
+			return false;
+		}
+
+		$invoice_id = (int) ( $invoice['id'] ?? 0 );
+		foreach ( $payments as $payment ) {
+			if (
+				(int) ( $payment['invoice_id'] ?? 0 ) !== $invoice_id
+				|| (int) ( $payment['clinic_id'] ?? 0 ) !== $clinic_id
+				|| (int) ( $payment['patient_id'] ?? 0 ) !== $patient_id
+				|| ! $this->receipt_location_matches( $payment['location_id'] ?? null, $location_id )
+			) {
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	/**
+	 * NULL is the legitimate legacy/omitted finance Location (the Visit is the
+	 * anchor); any other value must match the Visit Location exactly.
+	 */
+	private function receipt_location_matches( mixed $row_location_id, int $visit_location_id ): bool {
+		if ( null === $row_location_id ) {
+			return true;
+		}
+
+		return (int) $row_location_id === $visit_location_id;
 	}
 
 	/** Integer cents — exact money comparison, never float equality. */
