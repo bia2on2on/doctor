@@ -859,7 +859,7 @@ final class ClinicalService
         }
         $date_view = $this->portal_print_date_view( (string) $rx['finalized_at'], $timezone_id );
 
-        $patient  = $this->db->fetchRow(
+        $patient   = $this->db->fetchRow(
             'SELECT first_name, last_name FROM ' . $this->db->table( 'cpms_patients' ) .
             ' WHERE id = %d AND clinic_id = %d LIMIT 1',
             [ (int) $visit['patient_id'], (int) $visit['clinic_id'] ]
