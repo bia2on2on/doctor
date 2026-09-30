@@ -177,6 +177,53 @@ final class PrescriptionRepository
     }
 
     /**
+     * Phase 13 Slice 2 — bounded Doctor Portal finalized-prescription history.
+     *
+     * ONE bounded statement (no N+1 enrichment, no unbounded read). Every row
+     * returned is proven by persisted relationships only:
+     *   - prescription belongs to its Visit (`rx.visit_id = v.id`);
+     *   - Visit belongs to the trusted Clinic AND the prescription carries the
+     *     same durable Clinic;
+     *   - Visit belongs to the CURRENT trusted Location (resolved by the
+     *     established strict 0/1/N policy before this call);
+     *   - Visit patient == prescription patient (and the patient row belongs
+     *     to the same Clinic);
+     *   - Visit clinician == prescription clinician == the server-derived
+     *     current doctor;
+     *   - lifecycle is exactly `finalized` with a persisted `finalized_at`
+     *     (drafts and voided/ineligible states are excluded) and at least one
+     *     structured item exists, i.e. the row is eligible for the delivered
+     *     Phase 13 Slice 1 structured print flow.
+     * Deterministic order: newest finalized first with a stable id tie-break.
+     * The caller passes limit+1 to derive `has_more` (established convention).
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function finalizedPortalHistory(
+        int $clinicId,
+        int $locationId,
+        int $clinicianId,
+        int $limit
+    ): array {
+        return $this->db->fetchAll(
+            'SELECT rx.id AS prescription_id, rx.visit_id AS visit_id,' .
+            ' rx.prescription_number AS prescription_number, rx.finalized_at AS finalized_at,' .
+            ' p.first_name AS patient_first_name, p.last_name AS patient_last_name' .
+            ' FROM ' . $this->db->table('cpms_prescriptions') . ' rx' .
+            ' INNER JOIN ' . $this->db->table('cpms_visits') . ' v ON v.id = rx.visit_id' .
+            ' INNER JOIN ' . $this->db->table('cpms_patients') . ' p ON p.id = rx.patient_id' .
+            ' WHERE rx.clinic_id = %d AND rx.clinician_id = %d' .
+            " AND rx.status = 'finalized' AND rx.finalized_at IS NOT NULL" .
+            ' AND v.clinic_id = %d AND v.location_id = %d AND v.clinician_id = %d' .
+            ' AND v.patient_id = rx.patient_id AND p.clinic_id = rx.clinic_id' .
+            ' AND EXISTS (SELECT 1 FROM ' . $this->db->table('cpms_prescription_items') .
+            ' i WHERE i.prescription_id = rx.id)' .
+            ' ORDER BY rx.finalized_at DESC, rx.id DESC LIMIT %d',
+            [$clinicId, $clinicianId, $clinicId, $locationId, $clinicianId, $limit]
+        ) ?: [];
+    }
+
+    /**
      * شماره بعدی نسخه (RX-NNNNNN) — از MAX فعلی + 1 (داخل Transaction فراخوانی شود).
      */
     public function nextPrescriptionNumber(): string

@@ -534,6 +534,22 @@ body.cpms-doctor-portal-shell-body { margin: 0; font-family: Tahoma, Vazirmatn, 
                     </div>
                 </section>
 
+                <?php // Phase 13 Slice 2 — bounded finalized structured-prescription history + reprint (read-only). ?>
+                <section class="cpms-doc-rx-history" data-role="rx-history-section" hidden aria-label="نسخه‌های نهایی‌شده">
+                    <div class="cpms-doc-section-head">
+                        <h2>نسخه‌های نهایی‌شدهٔ من (این شعبه)</h2>
+                        <span class="cpms-doc-count" data-role="rx-history-count"></span>
+                    </div>
+                    <div class="cpms-doc-queue-head" aria-hidden="true">
+                        <span>نسخه و بیمار</span>
+                        <span>تاریخ نهایی‌سازی</span>
+                    </div>
+                    <div data-role="rx-history-empty" class="cpms-doc-empty" hidden>هنوز نسخهٔ نهایی‌شده‌ای در این شعبه ثبت نکرده‌اید.</div>
+                    <div data-role="rx-history-error" class="cpms-doc-error" role="alert" hidden></div>
+                    <ul data-role="rx-history-list" class="cpms-doc-queue-list"></ul>
+                    <p data-role="rx-history-more" class="cpms-doc-hint" hidden>فقط تازه‌ترین نسخه‌ها نمایش داده می‌شود.</p>
+                </section>
+
                 <section class="cpms-doc-appointments" data-role="appointments-section" hidden>
                     <div class="cpms-doc-section-head">
                         <h2>نوبت‌های امروز</h2>
@@ -607,7 +623,9 @@ var state = {
     workspaceStatus: '',
     workspaceData: null,
     workspaceCcBusy: false,
-    workspaceCompleteBusy: false
+    workspaceCompleteBusy: false,
+    rxHistory: [],
+    rxHistoryHasMore: false
 };
 
 function apiUrl(path){
@@ -1326,18 +1344,25 @@ function buildPrescriptionPrintSurface(data){
 }
 
 function printWorkspaceRx(button, rxId){
-    var visitId = state.workspaceVisitId;
+    if ( !state.workspaceVisitId || !rxId || button.disabled ) return;
+    printPrescription(button, state.workspaceVisitId, rxId, qs('[data-role="workspace-rx-error"]'), true);
+}
+
+// Phase 13 Slice 1 print flow — ONE print engine. The Visit Workspace and the
+// Phase 13 Slice 2 history rows both call it with selectors only; the REST
+// route re-validates authority and eligibility on every invocation.
+function printPrescription(button, visitId, rxId, errorEl, guardWorkspace){
     if ( !visitId || !rxId || button.disabled ) return;
     var submittedVisitId = String(visitId);
     var submittedClinicId = String(state.selectedClinicId || '');
     var submittedLocationId = String(state.selectedLocationId || '');
-    var errorEl = qs('[data-role="workspace-rx-error"]');
     var originalLabel = button.textContent;
     button.disabled = true;
     button.setAttribute('aria-busy', 'true');
     if ( errorEl ) hide(errorEl);
     api('GET', '/doctor/portal/visits/' + encodeURIComponent(submittedVisitId) + '/prescriptions/' + encodeURIComponent(String(rxId)) + '/print', null, scopeHeaders()).then(function(r){
-        if ( state.workspaceVisitId !== submittedVisitId || String(state.selectedClinicId || '') !== submittedClinicId || String(state.selectedLocationId || '') !== submittedLocationId ) return;
+        if ( guardWorkspace && String(state.workspaceVisitId) !== submittedVisitId ) return;
+        if ( String(state.selectedClinicId || '') !== submittedClinicId || String(state.selectedLocationId || '') !== submittedLocationId ) return;
         if ( r.status !== 200 ) {
             throw new Error((r.body && r.body.message) ? String(r.body.message).slice(0, 200) : 'چاپ نسخه در دسترس نیست.');
         }
@@ -1371,10 +1396,74 @@ function printWorkspaceRx(button, rxId){
             button.removeAttribute('aria-busy');
             button.textContent = originalLabel;
         }
-        if ( state.workspaceVisitId === submittedVisitId && errorEl ) {
+        if ( errorEl && ( !guardWorkspace || String(state.workspaceVisitId) === submittedVisitId ) ) {
             errorEl.textContent = error && error.message ? error.message : 'خطای ارتباط در چاپ نسخه — دوباره تلاش کنید';
             show(errorEl);
         }
+    });
+}
+
+// ========== Phase 13 Slice 2 — bounded finalized prescription history ==========
+// Read-only projection of the CURRENT trusted Location. No polling, no
+// mutation: the list exists only so an existing finalized structured
+// prescription can be reprinted through the delivered Slice 1 print route.
+function renderRxHistory(){
+    var sec = qs('[data-role="rx-history-section"]');
+    var list = qs('[data-role="rx-history-list"]');
+    var empty = qs('[data-role="rx-history-empty"]');
+    var count = qs('[data-role="rx-history-count"]');
+    var more = qs('[data-role="rx-history-more"]');
+    if ( !sec || !list ) return;
+    show(sec);
+    var rows = state.rxHistory || [];
+    if ( count ) count.textContent = rows.length + ' نسخه';
+    if ( more ) { if ( state.rxHistoryHasMore ) show(more); else hide(more); }
+    if ( rows.length === 0 ) {
+        list.innerHTML = '';
+        show(empty);
+        return;
+    }
+    hide(empty);
+    list.innerHTML = rows.map(function(row){
+        return '<li class="cpms-doc-queue-item cpms-doc-rx-history-item" data-role="rx-history-item" data-rx-id="' + esc(row.prescription_id) + '">' +
+            '<div class="cpms-doc-rx-history-main">' +
+                '<span data-role="rx-history-number">' + esc(row.prescription_number || '') + '</span>' +
+                '<span data-role="rx-history-patient">' + esc(row.patient_name || '') + '</span>' +
+            '</div>' +
+            '<div class="cpms-doc-rx-history-when">' +
+                '<span data-role="rx-history-jalali">' + esc(row.finalized_at_jalali || '') + '</span>' +
+                '<span data-role="rx-history-local">' + esc(row.finalized_at_local || '') + '</span>' +
+            '</div>' +
+            '<div class="cpms-doc-rx-history-actions">' +
+                '<button type="button" class="cpms-doc-btn cpms-doc-btn--ghost" data-role="rx-history-print"' +
+                ' data-rx-id="' + esc(row.prescription_id) + '" data-visit-id="' + esc(row.visit_id) + '">چاپ دوباره</button>' +
+            '</div>' +
+        '</li>';
+    }).join('');
+}
+
+function loadRxHistory(){
+    var sec = qs('[data-role="rx-history-section"]');
+    var errorEl = qs('[data-role="rx-history-error"]');
+    if ( !sec ) return Promise.resolve();
+    if ( !state.selectedClinicId || !state.selectedLocationId ) { hide(sec); return Promise.resolve(); }
+    var requestedClinic = String(state.selectedClinicId);
+    var requestedLocation = String(state.selectedLocationId);
+    if ( errorEl ) hide(errorEl);
+    return api('GET', '/doctor/portal/prescriptions/history', null, scopeHeaders()).then(function(r){
+        if ( String(state.selectedClinicId) !== requestedClinic || String(state.selectedLocationId) !== requestedLocation ) return;
+        if ( r.status !== 200 ) {
+            state.rxHistory = [];
+            state.rxHistoryHasMore = false;
+            hide(sec);
+            return;
+        }
+        var data = (r.body && r.body.data) || r.body || {};
+        state.rxHistory = data.prescriptions || [];
+        state.rxHistoryHasMore = !!data.has_more;
+        renderRxHistory();
+    }, function(){
+        hide(sec);
     });
 }
 
@@ -2122,6 +2211,7 @@ function loadTodayAndQueue(){
                 hide(qs('[data-role="today-section"]'));
                 hide(qs('[data-role="queue-section"]'));
                 hide(qs('[data-role="appointments-section"]'));
+                hide(qs('[data-role="rx-history-section"]'));
                 showError('لطفاً شعبه را انتخاب کنید.');
                 return;
             }
@@ -2138,6 +2228,7 @@ function loadTodayAndQueue(){
         renderToday();
         renderQueue();
         renderAppointments();
+        loadRxHistory();
     }).catch(function(e){ showError(e.message); });
 }
 
@@ -2243,6 +2334,19 @@ document.addEventListener('click', function(ev){
         removeRxItem(removeRxBtn);
         return;
     }
+    var historyPrintBtn = target ? target.closest('[data-role="rx-history-print"]') : null;
+    if ( historyPrintBtn ) {
+        ev.preventDefault();
+        if ( historyPrintBtn.disabled ) return;
+        printPrescription(
+            historyPrintBtn,
+            historyPrintBtn.getAttribute('data-visit-id'),
+            historyPrintBtn.getAttribute('data-rx-id'),
+            qs('[data-role="rx-history-error"]'),
+            false
+        );
+        return;
+    }
     var printBtn = target ? target.closest('[data-role="workspace-rx-print"]') : null;
     if ( printBtn ) {
         ev.preventDefault();
@@ -2313,6 +2417,7 @@ document.addEventListener('change', function(ev){
         closeWorkspace();
         hide(qs('[data-role="today-section"]'));
         hide(qs('[data-role="queue-section"]'));
+        hide(qs('[data-role="rx-history-section"]'));
         hide(qs('[data-role="no-data"]'));
         if ( state.selectedClinicId ) {
             loadLocations(state.selectedClinicId).then(function(){
@@ -2334,9 +2439,12 @@ document.addEventListener('change', function(ev){
             loadTodayAndQueue();
         } else {
             state.today = null;
+            state.rxHistory = [];
+            state.rxHistoryHasMore = false;
             hide(qs('[data-role="today-section"]'));
             hide(qs('[data-role="queue-section"]'));
             hide(qs('[data-role="appointments-section"]'));
+            hide(qs('[data-role="rx-history-section"]'));
         }
     }
 });

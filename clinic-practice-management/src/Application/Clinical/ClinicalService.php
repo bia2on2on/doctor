@@ -913,6 +913,100 @@ final class ClinicalService
     }
 
     /**
+     * Phase 13 Slice 2 — bounded, read-only Doctor Portal history of the
+     * finalized STRUCTURED prescriptions this doctor may reprint at the
+     * CURRENT trusted Location.
+     *
+     * Authority is server-derived: the caller supplies the trusted Clinic,
+     * the CURRENT trusted Location (already resolved by the established
+     * strict 0/1/N policy) and the server-derived clinician identity; this
+     * method additionally re-checks the existing prescription-read
+     * capability/policy and the persisted Location timezone before any date
+     * is derived. No mutation, no audit write, no N+1: exactly one bounded
+     * repository statement plus the Location lookup.
+     *
+     * The projection is privacy-minimal — only the selectors required to
+     * invoke the delivered Slice 1 print route plus the reference number,
+     * patient display name and the Location-local/Jalali finalized date.
+     *
+     * @return array{prescriptions: list<array<string, mixed>>, has_more: bool}
+     */
+    public function finalized_prescription_history_for_portal(
+        int $actor_user_id,
+        int $clinic_id,
+        int $clinician_id,
+        int $trusted_location_id,
+        int $limit
+    ): array {
+        $this->requireCap($actor_user_id, RolesAndCapabilities::RX_READ, 'history');
+        if ($actor_user_id <= 0 || $clinic_id <= 0 || $clinician_id <= 0 || $trusted_location_id <= 0 || $limit <= 0) {
+            throw ClinicalException::of(
+                'CLINIC_SCOPE_UNAVAILABLE',
+                'Trusted clinic context is not available.',
+                403,
+                ['reason' => 'location']
+            );
+        }
+        if (!App::authorization_service()->can($actor_user_id, $clinic_id, RolesAndCapabilities::RX_READ)) {
+            throw ClinicalException::of('CLINIC_PERMISSION_DENIED', 'دسترسی لازم را ندارید', 403, ['scope' => 'history']);
+        }
+
+        $location = $this->db->fetchRow(
+            'SELECT id, timezone FROM ' . $this->db->table('cpms_locations') .
+            ' WHERE id = %d AND clinic_id = %d AND is_active = 1 LIMIT 1',
+            [$trusted_location_id, $clinic_id]
+        );
+        if ($location === null || trim((string) ($location['timezone'] ?? '')) === '') {
+            throw ClinicalException::of(
+                'CLINIC_SCOPE_UNAVAILABLE',
+                'Trusted Location timezone is not available.',
+                403,
+                ['reason' => 'location']
+            );
+        }
+        $timezone_id = trim((string) $location['timezone']);
+        if (!in_array($timezone_id, \DateTimeZone::listIdentifiers(\DateTimeZone::ALL_WITH_BC), true)) {
+            throw ClinicalException::of(
+                'CLINIC_SCOPE_UNAVAILABLE',
+                'Trusted Location timezone is not valid.',
+                403,
+                ['reason' => 'location']
+            );
+        }
+
+        $rows = $this->prescriptions->finalizedPortalHistory(
+            $clinic_id,
+            $trusted_location_id,
+            $clinician_id,
+            $limit + 1
+        );
+        $has_more = count($rows) > $limit;
+        if ($has_more) {
+            $rows = array_slice($rows, 0, $limit);
+        }
+
+        $prescriptions = [];
+        foreach ($rows as $row) {
+            $date_view = $this->portal_print_date_view((string) $row['finalized_at'], $timezone_id);
+            $prescriptions[] = [
+                // Selectors only — required to invoke the existing Slice 1 print route,
+                // which independently re-validates authority and eligibility.
+                'prescription_id' => (int) $row['prescription_id'],
+                'visit_id' => (int) $row['visit_id'],
+                'prescription_number' => (string) $row['prescription_number'],
+                'patient_name' => trim((string) $row['patient_first_name'] . ' ' . (string) $row['patient_last_name']),
+                'finalized_at_local' => $date_view['local'],
+                'finalized_at_jalali' => $date_view['jalali'],
+            ];
+        }
+
+        return [
+            'prescriptions' => $prescriptions,
+            'has_more' => $has_more,
+        ];
+    }
+
+    /**
      * Convert one persisted UTC finalized_at instant through its trusted
      * Location IANA timezone before deriving either Gregorian or Jalali output.
      *

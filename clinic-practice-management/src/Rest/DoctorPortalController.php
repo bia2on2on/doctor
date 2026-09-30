@@ -16,6 +16,14 @@ use WP_REST_Server;
  * Doctor Portal independent shell — context endpoints (read-only Today+Live Queue).
  */
 final class DoctorPortalController extends RestBase {
+	/**
+	 * Established portal bounded-list result limit (same convention as the
+	 * delivered Staff/Finance Portal boards: fetch limit+1, return at most
+	 * limit rows and report `has_more`). Deliberately NOT the legacy
+	 * `past_visits` 50.
+	 */
+	private const HISTORY_RESULT_LIMIT = 100;
+
 	public function __construct( private readonly MembershipRepository $memberships ) {
 	}
 
@@ -143,6 +151,23 @@ final class DoctorPortalController extends RestBase {
 				[
 					'methods'             => WP_REST_Server::READABLE,
 					'callback'            => fn( WP_REST_Request $r ) => $this->workspace_print_prescription( $r ),
+					'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_workspace( $r, RolesAndCapabilities::RX_READ ),
+					'args'                => $this->workspace_inert_client_args(),
+				],
+			]
+		);
+
+		// Phase 13 Slice 2 — bounded finalized structured-prescription history
+		// for the CURRENT trusted Location. Read-only projection whose only
+		// purpose is to let the doctor re-invoke the delivered Slice 1 print
+		// route, which independently re-validates authority and eligibility.
+		register_rest_route(
+			self::NS,
+			'/doctor/portal/prescriptions/history',
+			[
+				[
+					'methods'             => WP_REST_Server::READABLE,
+					'callback'            => fn( WP_REST_Request $r ) => $this->prescription_history( $r ),
 					'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_workspace( $r, RolesAndCapabilities::RX_READ ),
 					'args'                => $this->workspace_inert_client_args(),
 				],
@@ -667,6 +692,37 @@ final class DoctorPortalController extends RestBase {
 	}
 
 	/**
+	 * Phase 13 Slice 2 — bounded finalized structured-prescription history.
+	 *
+	 * Read-only. Authority is entirely server-derived (trusted Clinic +
+	 * clinician<->WP-user mapping + CURRENT trusted Location under the strict
+	 * 0/1/N policy); every client-supplied identity argument is inert. The
+	 * response carries only the privacy-minimal reprint row; listing a row
+	 * never grants print authority — the existing Slice 1 print route
+	 * re-validates independently.
+	 */
+	private function prescription_history( WP_REST_Request $r ): WP_REST_Response|WP_Error {
+		unset( $r );
+		$clinic_id    = 0;
+		$clinician_id = 0;
+		$location_id  = 0;
+		$context      = $this->workspace_trusted_context( $clinic_id, $clinician_id, $location_id );
+		if ( $context instanceof WP_Error ) {
+			return $context;
+		}
+
+		return $this->workspace_wrap(
+			fn() => App::clinicalService()->finalized_prescription_history_for_portal(
+				(int) wp_get_current_user()->ID,
+				$clinic_id,
+				$clinician_id,
+				$location_id,
+				self::HISTORY_RESULT_LIMIT
+			)
+		);
+	}
+
+	/**
 	 * Client authority keys are deliberately inert at the portal file boundary:
 	 * the SERVER derives patient/clinician/clinic/Location from the persisted
 	 * authorized Visit (route selector + trusted selector headers only). Each
@@ -807,6 +863,75 @@ final class DoctorPortalController extends RestBase {
 	}
 
 	/**
+	 * Server-derived Doctor Portal authority WITHOUT a Visit selector:
+	 * trusted Clinic (established scope), server-derived clinician identity
+	 * (clinician<->WP-user mapping; client input is never authority) and the
+	 * CURRENT operational Location under the established strict 0/1/N policy
+	 * (0 => fail closed, 1 => auto-resolution, N>1 => explicit eligible
+	 * Location required — never a first/primary/global fallback,
+	 * foreign/inactive/unassigned => fail closed).
+	 *
+	 * @param int $clinic_id    Out: trusted Clinic id.
+	 * @param int $clinician_id Out: server-derived clinician id.
+	 * @param int $location_id  Out: CURRENT trusted Location id.
+	 */
+	private function workspace_trusted_context( int &$clinic_id, int &$clinician_id, int &$location_id ): bool|WP_Error {
+		$user_id = (int) ( wp_get_current_user()->ID ?? 0 );
+
+		// 1) Trusted Clinic scope — bound by RestClinicContext from selector headers.
+		try {
+			$scope = App::scope();
+		} catch ( \Throwable $e ) {
+			unset( $e );
+			return new WP_Error( 'CLINIC_SCOPE_REQUIRED', 'Clinic scope required', [ 'status' => 400 ] );
+		}
+		$clinic_id = (int) $scope->clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- legacy PSR-style, established contract
+
+		// 2) Server-derived clinician identity — never client-provided.
+		try {
+			$derived = $this->memberships->active_clinician_id_for_wp_user( $user_id );
+		} catch ( \Throwable $e ) {
+			unset( $e );
+			$derived = null; // Ambiguous identities fail closed.
+		}
+		if ( null === $derived || ! $this->memberships->clinician_participates_in( $derived, $clinic_id ) ) {
+			return new WP_Error( 'CLINIC_PERMISSION_DENIED', 'Doctor identity is not active in the trusted clinic', [ 'status' => 403 ] );
+		}
+		$clinician_id = (int) $derived;
+
+		// 3) Trusted operational Location — Doctor Portal 0/1/N policy.
+		$eligible = array_map(
+			static fn( array $loc ): int => (int) $loc['id'],
+			$this->eligible_locations_for_clinic( $clinic_id, $user_id )
+		);
+		if ( [] === $eligible ) {
+			return new WP_Error( 'CLINIC_SCOPE_UNAVAILABLE', 'Trusted clinic context is not available.', [ 'status' => 403, 'reason' => 'location' ] );
+		}
+		$selected = $scope->locationId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- legacy PSR-style, established contract
+		if ( null === $selected ) {
+			if ( 1 !== count( $eligible ) ) {
+				// N>1 without explicit Location => REQUIRED; never guess the first.
+				return new WP_Error(
+					'CLINIC_SCOPE_REQUIRED',
+					'Location scope required: multiple eligible locations',
+					[
+						'status' => 400,
+						'field'  => 'location_id',
+						'reason' => 'location_required',
+					]
+				);
+			}
+			$selected = $eligible[0];
+		} elseif ( ! in_array( $selected, $eligible, true ) ) {
+			// Foreign/inactive/unassigned explicit Location => fail closed.
+			return new WP_Error( 'CLINIC_SCOPE_UNAVAILABLE', 'Trusted clinic context is not available.', [ 'status' => 403, 'reason' => 'location' ] );
+		}
+		$location_id = (int) $selected;
+
+		return true;
+	}
+
+	/**
 	 * Portal-specific Visit Workspace authority — the narrow Doctor Portal
 	 * boundary in front of the shared E7/E8 behavior.
 	 *
@@ -821,54 +946,12 @@ final class DoctorPortalController extends RestBase {
 	 * convention (404 CLINIC_NOT_FOUND).
 	 */
 	private function workspace_authorize_visit( int $visit_id, ?int &$trusted_location_id = null ): bool|WP_Error {
-		$user_id = (int) ( wp_get_current_user()->ID ?? 0 );
-
-		// 1) Trusted Clinic scope — bound by RestClinicContext from selector headers.
-		try {
-			$scope = App::scope();
-		} catch ( \Throwable $e ) {
-			unset( $e );
-			return new WP_Error( 'CLINIC_SCOPE_REQUIRED', 'Clinic scope required', [ 'status' => 400 ] );
-		}
-		$clinic_id = (int) $scope->clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- legacy PSR-style, established contract
-
-		// 2) Server-derived clinician identity — never client-provided.
-		try {
-			$clinician_id = $this->memberships->active_clinician_id_for_wp_user( $user_id );
-		} catch ( \Throwable $e ) {
-			unset( $e );
-			$clinician_id = null; // Ambiguous identities fail closed.
-		}
-		if ( null === $clinician_id || ! $this->memberships->clinician_participates_in( $clinician_id, $clinic_id ) ) {
-			return new WP_Error( 'CLINIC_PERMISSION_DENIED', 'Doctor identity is not active in the trusted clinic', [ 'status' => 403 ] );
-		}
-
-		// 3) Trusted operational Location — Doctor Portal 0/1/N policy.
-		$eligible = array_map(
-			static fn( array $loc ): int => (int) $loc['id'],
-			$this->eligible_locations_for_clinic( $clinic_id, $user_id )
-		);
-		if ( [] === $eligible ) {
-			return new WP_Error( 'CLINIC_SCOPE_UNAVAILABLE', 'Trusted clinic context is not available.', [ 'status' => 403, 'reason' => 'location' ] );
-		}
-		$location_id = $scope->locationId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- legacy PSR-style, established contract
-		if ( null === $location_id ) {
-			if ( 1 !== count( $eligible ) ) {
-				// N>1 without explicit Location => REQUIRED; never guess the first.
-				return new WP_Error(
-					'CLINIC_SCOPE_REQUIRED',
-					'Location scope required: multiple eligible locations',
-					[
-						'status' => 400,
-						'field'  => 'location_id',
-						'reason' => 'location_required',
-					]
-				);
-			}
-			$location_id = $eligible[0];
-		} elseif ( ! in_array( $location_id, $eligible, true ) ) {
-			// Foreign/inactive/unassigned explicit Location => fail closed.
-			return new WP_Error( 'CLINIC_SCOPE_UNAVAILABLE', 'Trusted clinic context is not available.', [ 'status' => 403, 'reason' => 'location' ] );
+		$clinic_id    = 0;
+		$clinician_id = 0;
+		$location_id  = 0;
+		$context      = $this->workspace_trusted_context( $clinic_id, $clinician_id, $location_id );
+		if ( $context instanceof WP_Error ) {
+			return $context;
 		}
 
 		// 4) Visit ownership — every mismatch is the same non-enumerating 404.
