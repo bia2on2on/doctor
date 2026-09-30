@@ -661,10 +661,8 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
         foreach (['workspace-note-form', 'workspace-visibility', 'workspace-content', 'workspace-note-submit'] as $keep) {
             self::assertStringContainsString($keep, $ui, 'G7 guard: Visit Workspace note wiring preserved (' . $keep . ')');
         }
-        // (b) no exclusion-scope PRESCRIPTION controls anywhere near the portal
-        // UI: no prescription void (این برش void را ندارد) and no prescription
-        // print. Both remain undelivered on this surface, so both negatives are
-        // still valid and are kept unchanged.
+        // (b) prescription void remains excluded from the portal surface. The
+        // separate Phase 13 Slice 1 structured print control is now authorized.
         //
         // The two former PORTAL-WIDE negatives `stylus` and `handwriting-canvas`
         // are deliberately removed as STALE, VACUOUS markers.
@@ -696,7 +694,7 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
         // recommendation/follow-up contract rather than a prescription one, so
         // it is outside this bounded change; it is recorded here so the finding
         // is not lost.
-        foreach (['rx-void', 'rx_void', 'data-action="void"', 'voidPrescription', 'rx-print'] as $forbidden) {
+        foreach (['rx-void', 'rx_void', 'data-action="void"', 'voidPrescription'] as $forbidden) {
             self::assertStringNotContainsString($forbidden, $ui, 'G7 guard: out-of-scope prescription control must not exist (' . $forbidden . ')');
         }
 

@@ -886,8 +886,6 @@ final class Phase10DoctorPortalRecommendationFollowUpWriteRedTest extends WP_Uni
         foreach ([
             'rx-void',
             'data-action="void"',
-            'rx-print',
-            'prescription-print',
             'stylus',
             'handwriting-canvas',
             'workspace-file',

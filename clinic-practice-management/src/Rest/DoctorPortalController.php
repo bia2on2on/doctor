@@ -645,10 +645,10 @@ final class DoctorPortalController extends RestBase {
 	 * comes only from the portal's trusted 0/1/N policy, never request data.
 	 */
 	private function workspace_print_prescription( WP_REST_Request $r ): WP_REST_Response|WP_Error {
-		$visit_id             = (int) $r['id'];
-		$prescription_id      = (int) $r['prescription_id'];
-		$trusted_location_id  = null;
-		$guard                = $this->workspace_authorize_visit( $visit_id, $trusted_location_id );
+		$visit_id            = (int) $r['id'];
+		$prescription_id     = (int) $r['prescription_id'];
+		$trusted_location_id = null;
+		$guard               = $this->workspace_authorize_visit( $visit_id, $trusted_location_id );
 		if ( $guard instanceof WP_Error ) {
 			return $guard;
 		}
@@ -657,7 +657,7 @@ final class DoctorPortalController extends RestBase {
 		}
 
 		return $this->workspace_wrap(
-			fn() => App::clinicalService()->finalizedPrescriptionForPortalPrint(
+			fn() => App::clinicalService()->finalized_prescription_for_portal_print(
 				(int) wp_get_current_user()->ID,
 				$visit_id,
 				$prescription_id,
