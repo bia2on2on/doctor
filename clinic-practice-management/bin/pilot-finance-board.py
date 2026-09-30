@@ -35,7 +35,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from playwright.sync_api import sync_playwright
 
@@ -74,6 +74,46 @@ def require(condition, message):
         print("FAIL " + message)
     else:
         print("PASS " + message)
+
+
+def is_rest_url(url):
+    """True when the URL addresses the WordPress REST API.
+
+    Both supported permalink forms count as REST:
+      * pretty permalinks  -> the path contains `/wp-json/...`
+      * plain permalinks   -> `?rest_route=...` (also URL-encoded), which is the
+        form WordPress serves when pretty permalinks are off
+    Static/asset requests (`/wp-content/...`, stylesheets, documents) never
+    match, so they can never be misclassified as REST mutations.
+    """
+    parsed = urlparse(url)
+    if not parsed.path.startswith("/wp-json/") and "/wp-json/" not in parsed.path:
+        query = parse_qs(parsed.query, keep_blank_values=True)
+        route = query.get("rest_route", [""])[0]
+        return route.startswith("/")
+    return True
+
+
+def rest_classifier_self_test():
+    """Deterministic proof that the listener classifier sees BOTH REST forms.
+
+    Runs before the browser journey: a blind spot here would silently weaken
+    the receipt no-mutation evidence, so it is asserted, not assumed.
+    """
+    pretty = "http://localhost:8080/wp-json/clinic/v1/patients/1"
+    plain = "http://localhost:8080/?rest_route=/clinic/v1/patients/1"
+    encoded = "http://localhost:8080/index.php?rest_route=%2Fclinic%2Fv1%2Fpatients%2F1"
+    non_rest = [
+        "http://localhost:8080/wp-content/plugins/cpms/app.js",
+        "http://localhost:8080/wp-admin/admin.php?page=cpms-finance",
+        "http://localhost:8080/",
+        "http://localhost:8080/index.php?rest_route_not=/clinic/v1/patients/1",
+    ]
+    require(is_rest_url(pretty), "slice5 listener classifier: pretty permalink /wp-json/ URLs are REST")
+    require(is_rest_url(plain), "slice5 listener classifier: plain permalink ?rest_route= URLs are REST")
+    require(is_rest_url(encoded), "slice5 listener classifier: URL-encoded ?rest_route= URLs are REST")
+    for url in non_rest:
+        require(not is_rest_url(url), "slice5 listener classifier: non-REST request stays non-REST (" + url + ")")
 
 
 def open_receipt(page, row):
@@ -482,12 +522,15 @@ with sync_playwright() as playwright:
     # ------------------------------------------------------------------
     # The no-mutation listener is attached BEFORE the receipt is opened, so the
     # complete open → print → close flow is covered: a listener attached after
-    # the open could only ever prove that the print call itself was clean.
+    # the open could only ever prove that the print call itself was clean. The
+    # classifier is self-tested first so a REST URL form can never be silently
+    # missed (both pretty `/wp-json/` and plain `?rest_route=` forms count).
+    rest_classifier_self_test()
     receipt_mutations = []
     page.on(
         "request",
-        lambda request: receipt_mutations.append(request.method)
-        if "/wp-json/" in request.url and request.method != "GET"
+        lambda request: receipt_mutations.append((request.method, request.url))
+        if is_rest_url(request.url) and request.method != "GET"
         else None,
     )
     receipt_panel = open_receipt(page, settled_paid_row)
@@ -521,7 +564,8 @@ with sync_playwright() as playwright:
     require(receipt_panel.is_hidden(), "slice5: the receipt panel returns to rest")
     require(
         not receipt_mutations,
-        "slice5: opening, printing and closing the receipt issue no non-GET REST request",
+        "slice5: opening, printing and closing the receipt issue no non-GET REST request "
+        "(both pretty /wp-json/ and plain ?rest_route= forms; observed: " + repr(receipt_mutations) + ")",
     )
     require(
         page.locator('[data-role="finance-paid-rows"] tr').filter(has_text=PAYMENT_PATIENT).count() == 1

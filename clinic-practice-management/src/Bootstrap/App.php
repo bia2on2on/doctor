@@ -264,9 +264,12 @@ final class App
             // invoice; Slice 4 adds the paid board + portal checkout, which
             // delegates to self::visitService() (no second checkout engine);
             // Slice 5 adds the PaymentRepository the read-only receipt needs to
-            // prove the durable settlement from its captured payment rows.
+            // prove the durable settlement from its captured payment rows, plus
+            // the PatientRepository it re-reads through to prove the persisted
+            // patient is the Visit's patient inside the trusted Clinic before
+            // any display identity is rendered.
             // Every mutation delegates to the existing services unchanged.
-            ( new FinancePortalController( new MembershipRepository( self::db() ), new VisitRepository( self::db() ), new InvoiceRepository( self::db() ), new PaymentRepository( self::db() ) ) )->register_routes();
+            ( new FinancePortalController( new MembershipRepository( self::db() ), new VisitRepository( self::db() ), new InvoiceRepository( self::db() ), new PaymentRepository( self::db() ), new PatientRepository( self::db() ) ) )->register_routes();
             // Endpointهای فازهای بعد (F8+) — مطابق API Contract.
         });
 

@@ -48,6 +48,7 @@ use ClinicCore\Domain\Time\Jalali;
 use ClinicCore\Domain\Visits\VisitException;
 use ClinicCore\Infrastructure\Repository\InvoiceRepository;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
+use ClinicCore\Infrastructure\Repository\PatientRepository;
 use ClinicCore\Infrastructure\Repository\PaymentRepository;
 use ClinicCore\Infrastructure\Repository\VisitRepository;
 use DateTimeImmutable;
@@ -89,18 +90,21 @@ final class FinancePortalController extends RestBase {
 		MembershipRepository $memberships,
 		VisitRepository $visits,
 		InvoiceRepository $invoices,
-		PaymentRepository $payments
+		PaymentRepository $payments,
+		PatientRepository $patients
 	) {
 		$this->memberships = $memberships;
 		$this->visits      = $visits;
 		$this->invoices    = $invoices;
 		$this->payments    = $payments;
+		$this->patients    = $patients;
 	}
 
 	private MembershipRepository $memberships;
 	private VisitRepository $visits;
 	private InvoiceRepository $invoices;
 	private PaymentRepository $payments;
+	private PatientRepository $patients;
 
 	public function register_routes(): void {
 		register_rest_route(
@@ -841,14 +845,21 @@ final class FinancePortalController extends RestBase {
 		$invoice_id = (int) $invoice['id'];
 		$payments   = $this->payments->forInvoice( $invoice_id );
 
+		// The persisted patient is loaded through the existing repository and
+		// proven to be the Visit's patient INSIDE the trusted Clinic before any
+		// identity is rendered: the display name must never come from a row that
+		// another Clinic owns.
+		$patient = $this->patients->find( (int) ( $visit['patient_id'] ?? 0 ) );
+
 		// Durable ownership/linkage guard: the persisted Visit is the
-		// tenant/Location anchor, so the selected invoice and every payment row
-		// used below must be internally consistent with that Visit before any
-		// value is read, evaluated or rendered. Inconsistent durable rows are
-		// never repaired and never disclosed: the established non-enumerating
-		// 404 parity applies (same shape as the cross-Clinic/cross-Location
-		// Visit rejection above and as `FinanceService` invoice ownership).
-		if ( ! $this->receipt_rows_owned_by_visit( $visit, $invoice, $payments ) ) {
+		// tenant/Location anchor, so the patient row, the selected invoice and
+		// every payment row used below must be internally consistent with that
+		// Visit before any value is read, evaluated or rendered. Inconsistent
+		// durable rows are never repaired and never disclosed: the established
+		// non-enumerating 404 parity applies (same shape as the
+		// cross-Clinic/cross-Location Visit rejection above and as
+		// `FinanceService` invoice ownership).
+		if ( ! $this->receipt_rows_owned_by_visit( $visit, $invoice, $payments, $patient ) ) {
 			return $this->error( 'CLINIC_NOT_FOUND', 404, 'ویزیت یافت نشد' );
 		}
 
@@ -908,13 +919,9 @@ final class FinancePortalController extends RestBase {
 			}
 		}
 
-		$clinic  = App::db()->fetchRow(
+		$clinic = App::db()->fetchRow(
 			'SELECT name, address, phone FROM ' . App::db()->table( 'cpms_clinics' ) . ' WHERE id = %d LIMIT 1',
 			array( $clinic_id )
-		);
-		$patient = App::db()->fetchRow(
-			'SELECT first_name, last_name FROM ' . App::db()->table( 'cpms_patients' ) . ' WHERE id = %d LIMIT 1',
-			array( (int) $invoice['patient_id'] )
 		);
 
 		$invoice_date = $this->location_date( (string) $invoice['created_at'], $timezone );
@@ -929,6 +936,10 @@ final class FinancePortalController extends RestBase {
 						'address' => $clinic['address'] ?? null,
 						'phone'   => $clinic['phone'] ?? null,
 					),
+					// The ownership guard above proved this row exists, is the Visit's
+					// own patient and belongs to the trusted Clinic, so the identity is
+					// always read from that row (the ternary's empty branch is
+					// unreachable and never a fallback identity).
 					'patient'             => array(
 						'name' => null !== $patient
 							? trim( (string) $patient['first_name'] . ' ' . (string) $patient['last_name'] )
@@ -982,25 +993,41 @@ final class FinancePortalController extends RestBase {
 
 	/**
 	 * Ownership/linkage guard for the receipt projection: every durable row the
-	 * receipt uses must belong to the already-authorized persisted Visit.
+	 * receipt uses — the patient identity row, the selected invoice and every
+	 * payment row of it — must belong to the already-authorized persisted Visit.
 	 *
-	 * `location_id` follows the established nullable-Location rule of the
-	 * finance schema (migration 0015 makes `cpms_invoices`/`cpms_payments`
-	 * `location_id` NULL-able, `FinanceService` persists NULL when the Visit
-	 * carries no Location, and the Slice 4 paid board joins
-	 * `(location_id = %d OR location_id IS NULL)`): NULL is legitimate because
-	 * the Visit carries the authoritative Location, while any non-NULL value
-	 * must equal that Visit Location exactly.
+	 * The patient row is required to be the Visit's own patient inside the
+	 * trusted Clinic (`cpms_patients.clinic_id`), so a Visit/Patient
+	 * cross-Clinic inconsistency can never render a foreign patient's name.
 	 *
-	 * @param array<string, mixed>       $visit    persisted, already-authorized Visit anchor.
-	 * @param array<string, mixed>       $invoice  single non-voided invoice selected for the Visit.
-	 * @param list<array<string, mixed>> $payments every durable payment row of that invoice.
+	 * `location_id`: the Visit architecture carries a mandatory, backfilled
+	 * Location (migration 0013 — NOT NULL + deterministic backfill), while the
+	 * finance columns `cpms_invoices.location_id` / `cpms_payments.location_id`
+	 * stay NULL-able for legacy durable rows (migration 0015) and existing
+	 * finance reads already tolerate that NULL in specific established paths
+	 * (the Slice 4 paid board joins `location_id = %d OR location_id IS NULL`).
+	 * This guard therefore accepts a NULL finance Location ONLY as that bounded
+	 * legacy-compatibility case, after Clinic/Visit/patient ownership is proven;
+	 * any non-NULL finance Location must equal the persisted Visit Location
+	 * exactly. Legacy rows are never migrated or backfilled here.
+	 *
+	 * @param array<string, mixed>            $visit    persisted, already-authorized Visit anchor.
+	 * @param array<string, mixed>            $invoice  single non-voided invoice selected for the Visit.
+	 * @param list<array<string, mixed>>      $payments every durable payment row of that invoice.
+	 * @param array<string, mixed>|null       $patient  persisted patient row of the Visit, or null when absent.
 	 */
-	private function receipt_rows_owned_by_visit( array $visit, array $invoice, array $payments ): bool {
+	private function receipt_rows_owned_by_visit( array $visit, array $invoice, array $payments, ?array $patient ): bool {
 		$visit_id    = (int) ( $visit['id'] ?? 0 );
 		$clinic_id   = (int) ( $visit['clinic_id'] ?? 0 );
 		$patient_id  = (int) ( $visit['patient_id'] ?? 0 );
 		$location_id = (int) ( $visit['location_id'] ?? 0 );
+
+		// Patient ownership: the persisted patient must be exactly the Visit's
+		// patient and must belong to the same (trusted) Clinic. A missing row or
+		// another Clinic's row is an ownership failure, not a printable blank.
+		if ( ! $this->receipt_patient_owned_by_visit( $patient, $clinic_id, $patient_id ) ) {
+			return false;
+		}
 
 		if (
 			(int) ( $invoice['visit_id'] ?? 0 ) !== $visit_id
@@ -1027,8 +1054,27 @@ final class FinancePortalController extends RestBase {
 	}
 
 	/**
-	 * NULL is the legitimate legacy/omitted finance Location (the Visit is the
-	 * anchor); any other value must match the Visit Location exactly.
+	 * The persisted patient row must be exactly the Visit's patient AND belong
+	 * to the Visit's Clinic (already authorized as the trusted Clinic); the row
+	 * is read through the existing `PatientRepository`, never ad-hoc.
+	 *
+	 * @param array<string, mixed>|null $patient    persisted patient row loaded for the Visit.
+	 * @param int                       $clinic_id  trusted Clinic of the authorized Visit.
+	 * @param int                       $patient_id patient id persisted on the Visit (and on the invoice).
+	 */
+	private function receipt_patient_owned_by_visit( ?array $patient, int $clinic_id, int $patient_id ): bool {
+		if ( null === $patient ) {
+			return false;
+		}
+
+		return (int) ( $patient['id'] ?? 0 ) === $patient_id
+			&& (int) ( $patient['clinic_id'] ?? 0 ) === $clinic_id;
+	}
+
+	/**
+	 * NULL is the bounded legacy/backward-compatible finance Location (the
+	 * persisted Visit remains the Location anchor); any non-NULL value must
+	 * match the Visit Location exactly.
 	 */
 	private function receipt_location_matches( mixed $row_location_id, int $visit_location_id ): bool {
 		if ( null === $row_location_id ) {

@@ -701,17 +701,25 @@ final class Phase12Slice5StaffFinanceReceiptTest extends WP_UnitTestCase
 
     /**
      * Group 10 — durable ownership/linkage: the persisted Visit is the
-     * tenant/Location anchor, so an invoice or payment row that disagrees with
-     * that anchor on the durable fields it actually carries (visit_id /
-     * clinic_id / patient_id / nullable location_id) can never produce a
-     * receipt — not a partial projection and not another patient's display
-     * name. Inconsistent rows are neither repaired nor disclosed: they stay
-     * indistinguishable from a missing Visit (the established non-enumerating
-     * 404 parity). `location_id` follows the established nullable
-     * finance-Location rule of migration 0015 (`FinanceService` persists NULL
-     * when the Visit carries no Location; the Slice 4 paid board joins
-     * `location_id = %d OR location_id IS NULL`), so NULL stays printable while
-     * any non-NULL value must match the Visit Location exactly.
+     * tenant/Location anchor, so the patient row, the selected invoice and
+     * every payment row that disagree with that anchor on the durable fields
+     * they actually carry (patient clinic_id, visit_id / clinic_id /
+     * patient_id, nullable location_id) can never produce a receipt — not a
+     * partial projection and not another patient's display name. Inconsistent
+     * rows are neither repaired nor disclosed: they stay indistinguishable
+     * from a missing Visit (the established non-enumerating 404 parity).
+     *
+     * `location_id`: the Visit architecture itself has a mandatory, backfilled
+     * Location (migration 0013 — NOT NULL + deterministic backfill); the
+     * finance columns `cpms_invoices.location_id` / `cpms_payments.location_id`
+     * stay NULL-able only for legacy/backward-compatible durable rows
+     * (migration 0015), and existing finance reads already tolerate that NULL
+     * in specific established paths (the Slice 4 paid board joins
+     * `location_id = %d OR location_id IS NULL`). Slice 5 therefore accepts a
+     * NULL finance Location ONLY as that bounded legacy-compatibility case,
+     * after Clinic/Visit/patient ownership is proven; any non-NULL finance
+     * Location must equal the persisted Visit Location exactly. No legacy row
+     * is migrated or backfilled by this slice.
      */
     public function testReceiptFailsClosedWhenDurableRowsDoNotBelongToTheAuthorizedVisit(): void
     {
@@ -807,6 +815,49 @@ final class Phase12Slice5StaffFinanceReceiptTest extends WP_UnitTestCase
         $paymentLocationInvoice = $settle($paymentLocationVisit, [], ['location_id' => $otherLocation]);
         $mismatches['payment location linkage'] = [$paymentLocationVisit, $paymentLocationInvoice, 404, 'CLINIC_NOT_FOUND'];
 
+        // (h) the patient row behind the Visit belongs to ANOTHER Clinic. The
+        //     schema permits it (single-column FKs; no composite
+        //     clinic/patient constraint), so the inconsistent durable state is
+        //     constructed deliberately — and proven to exist below — instead of
+        //     being asserted about in the abstract. Without the patient-Clinic
+        //     ownership guard this path rendered the FOREIGN patient's name.
+        $foreignPatientVisit = $this->insertVisit($clinic, $location, $foreignPatient, $clinician, '2026-06-16', self::INVOICE_CREATED_AT, 'paid');
+        $foreignPatientInvoice = $settle($foreignPatientVisit, ['patient_id' => $foreignPatient], ['patient_id' => $foreignPatient]);
+        self::assertSame(
+            $foreignClinic,
+            (int) $this->patientRow($foreignPatient)['clinic_id'],
+            'precondition: the fixture patient durably belongs to the foreign Clinic'
+        );
+        self::assertSame(
+            $foreignPatient,
+            (int) $this->visitRow($foreignPatientVisit)['patient_id'],
+            'precondition: the trusted-Clinic Visit really points at the foreign-Clinic patient'
+        );
+        self::assertSame(
+            $clinic,
+            (int) $this->visitRow($foreignPatientVisit)['clinic_id'],
+            'precondition: the Visit itself stays in the trusted Clinic (only the patient link is inconsistent)'
+        );
+        $mismatches['patient clinic linkage (foreign patient)'] = [$foreignPatientVisit, $foreignPatientInvoice, 404, 'CLINIC_NOT_FOUND'];
+
+        // (i) an existing patient row is relinked to another Clinic while a
+        //     trusted-Clinic Visit still points at it — the same ownership
+        //     failure reached through a durable UPDATE rather than an insert.
+        $relinkedVisit = $this->insertVisit($clinic, $location, $otherPatient, $clinician, '2026-06-16', self::INVOICE_CREATED_AT, 'paid');
+        $relinkedInvoice = $settle($relinkedVisit, ['patient_id' => $otherPatient], ['patient_id' => $otherPatient]);
+        $this->relinkPatientClinic($otherPatient, $foreignClinic);
+        self::assertSame(
+            $foreignClinic,
+            (int) $this->patientRow($otherPatient)['clinic_id'],
+            'precondition: the relink to the foreign Clinic really persisted'
+        );
+        self::assertSame(
+            $otherPatient,
+            (int) $this->visitRow($relinkedVisit)['patient_id'],
+            'precondition: the Visit still references the relinked patient'
+        );
+        $mismatches['patient clinic linkage (relinked patient)'] = [$relinkedVisit, $relinkedInvoice, 404, 'CLINIC_NOT_FOUND'];
+
         foreach ($mismatches as $label => $case) {
             [$target, $invoiceId, $status, $code] = $case;
             $rowsBefore = $this->persistedReceiptRows($target, $invoiceId);
@@ -846,9 +897,10 @@ final class Phase12Slice5StaffFinanceReceiptTest extends WP_UnitTestCase
             self::assertSame($before, $this->readOnlySnapshot(), $label . ' writes nothing (count-level guard)');
         }
 
-        // Positive side of the proven policy: the established nullable finance
-        // Location (NULL — what the normal capture path persists) is legitimate
-        // because the Visit carries the authoritative Location.
+        // Positive side of the proven policy: a NULL finance Location is the
+        // bounded legacy-compatibility case (the nullable 0015 column), never
+        // "the Visit has no Location" — the resulting Location authority is the
+        // persisted Visit Location, so the receipt stays printable.
         $legacyVisit = $this->insertVisit($clinic, $location, $patient, $clinician, '2026-06-16', self::INVOICE_CREATED_AT, 'paid');
         $settle($legacyVisit, [
             'location_id' => null,
@@ -1328,6 +1380,21 @@ final class Phase12Slice5StaffFinanceReceiptTest extends WP_UnitTestCase
         self::assertNotFalse($wpdb->insert($wpdb->prefix . 'cpms_invoices', $row), 'invoice fixture insert');
 
         return (int) $wpdb->insert_id;
+    }
+
+    /**
+     * Test fixture only: move an existing patient row to another Clinic so a
+     * Visit→Patient cross-Clinic inconsistency can be constructed (the schema
+     * permits it — the FK is on `patient_id` alone, with no composite
+     * clinic/patient constraint).
+     */
+    private function relinkPatientClinic(int $patientId, int $clinicId): void
+    {
+        global $wpdb;
+        self::assertNotFalse(
+            $wpdb->update($wpdb->prefix . 'cpms_patients', ['clinic_id' => $clinicId], ['id' => $patientId]),
+            'patient clinic relink fixture write'
+        );
     }
 
     private function displayName(int $patientId): string
