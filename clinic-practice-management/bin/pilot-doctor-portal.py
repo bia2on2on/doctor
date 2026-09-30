@@ -1758,7 +1758,7 @@ def prove_rx_history_state(page, state, label):
     return count
 
 
-def prove_rx_history(page, state, doctor, label, history_response):
+def prove_rx_history(page, state, doctor, label):
     """One real history row -> the EXISTING Slice 1 print route -> back to history."""
     expected = state.get("last_finalized_rx") or {}
     number = expected.get("number")
@@ -1771,9 +1771,18 @@ def prove_rx_history(page, state, doctor, label, history_response):
     section.wait_for(state="visible", timeout=15000)
     if page.locator('[data-role="rx-history-list"]').count() != 1:
         raise RuntimeError(f"{label} history list container is missing")
-    if history_response.status != 200:
-        raise RuntimeError(f"{label} bounded history read returned HTTP {history_response.status}")
-    data = assert_history_payload(history_response.json(), label)
+    # The load-time history read is proven from the recorded response status
+    # (its body is not retained by the browser across the navigation); the
+    # payload contract is proven on a fresh authorized read of the SAME route
+    # from the SAME session with the same trusted selector headers.
+    load_reads = [r for r in state["rest"] if r["route"].endswith("/doctor/portal/prescriptions/history")]
+    if not load_reads or load_reads[-1]["status"] != 200:
+        status = load_reads[-1]["status"] if load_reads else "no response"
+        raise RuntimeError(f"{label} bounded history read returned HTTP {status}")
+    fresh = portal_fetch(page, doctor, "GET", "/doctor/portal/prescriptions/history")
+    if fresh["status"] != 200:
+        raise RuntimeError(f"{label} bounded history re-read returned HTTP {fresh['status']}")
+    data = assert_history_payload(fresh["body"], label)
     rows = data["prescriptions"]
     if not any(row["prescription_number"] == number for row in rows):
         raise RuntimeError(f"{label} the finalized prescription is missing from the doctor's bounded history")
@@ -2900,10 +2909,10 @@ def prove_one(browser, doctor, vp, shot_name=None, probe_fallback=False):
                 lambda r: route_of(r.url).endswith("/doctor/portal/prescriptions/history")
                 and r.request.method == "GET",
                 timeout=25000,
-            ) as history_info:
+            ):
                 goto_portal(page, state, expect_today=True)
             prove_rx_history_state(page, state, vp["vp"])
-            prove_rx_history(page, state, doctor, vp["vp"], history_info.value)
+            prove_rx_history(page, state, doctor, vp["vp"])
         stage = "no-reload"
         reloads, rest_calls, harness_navs = assert_no_product_reload(page, nav0, vp["vp"])
         info(
