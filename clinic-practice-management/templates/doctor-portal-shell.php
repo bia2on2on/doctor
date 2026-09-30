@@ -1253,7 +1253,7 @@ function renderWorkspaceRx(){
             ? '<button type="button" class="cpms-doc-btn cpms-doc-btn--primary" data-role="workspace-rx-finalize" data-rx-id="' + esc(rx.id) + '">نهایی‌سازی نسخه</button>'
             : (rx.status === 'finalized' && rx.finalized_at && Array.isArray(rx.items) && rx.items.length > 0
                 ? '<span data-role="workspace-rx-readonly">نهایی‌شده — فقط خواندنی</span>' +
-                  '<button type="button" class="cpms-doc-btn cpms-doc-btn--ghost" data-role="workspace-rx-print" data-rx-id="' + esc(rx.id) + '">چاپ نسخه</button>'
+                '<button type="button" class="cpms-doc-btn cpms-doc-btn--ghost" data-role="workspace-rx-print" data-rx-id="' + esc(rx.id) + '">چاپ نسخه</button>'
                 : '<span data-role="workspace-rx-readonly">نسخه در دسترس نیست</span>');
         return '<li class="cpms-doc-ws-rx-item" data-role="workspace-rx-item" data-rx-id="' + esc(rx.id) + '" data-status="' + esc(rx.status || '') + '">' +
             '<div class="cpms-doc-ws-rx-head">' +

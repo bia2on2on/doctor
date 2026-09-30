@@ -859,7 +859,7 @@ final class ClinicalService
         }
         $date_view = $this->portal_print_date_view( (string) $rx['finalized_at'], $timezone_id );
 
-        $patient = $this->db->fetchRow(
+        $patient  = $this->db->fetchRow(
             'SELECT first_name, last_name FROM ' . $this->db->table( 'cpms_patients' ) .
             ' WHERE id = %d AND clinic_id = %d LIMIT 1',
             [ (int) $visit['patient_id'], (int) $visit['clinic_id'] ]
@@ -927,7 +927,7 @@ final class ClinicalService
         $normalized   = $matches[1] . '.' . $fraction;
         $utc          = new \DateTimeZone( 'UTC' );
         $instant      = \DateTimeImmutable::createFromFormat( '!Y-m-d H:i:s.u', $normalized, $utc );
-        $parse_errors = \DateTimeImmutable::getLastErrors( );
+        $parse_errors = \DateTimeImmutable::getLastErrors();
         if (
             $instant === false
             || ( is_array( $parse_errors ) && ( $parse_errors['warning_count'] > 0 || $parse_errors['error_count'] > 0 ) )
