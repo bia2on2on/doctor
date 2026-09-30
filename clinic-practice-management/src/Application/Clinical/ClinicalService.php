@@ -980,7 +980,7 @@ final class ClinicalService
         }
 
         // ONE bounded statement; limit+1 only probes `has_more` (established convention).
-        $rows = $this->prescriptions->finalizedPortalHistory(
+        $rows     = $this->prescriptions->finalizedPortalHistory(
             $clinic_id,
             $trusted_location_id,
             $clinician_id,
