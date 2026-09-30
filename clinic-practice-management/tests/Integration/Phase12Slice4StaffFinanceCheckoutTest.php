@@ -76,12 +76,17 @@ use ClinicCore\Application\Scope\SystemClinicResolver;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Frontend\StaffPortalShell;
+use ClinicCore\Tests\Integration\Fixtures\Phase12ReadOnlyRowEvidence;
 use WP_REST_Request;
 use WP_REST_Response;
 use WP_UnitTestCase;
 
+require_once __DIR__ . '/Fixtures/Phase12ReadOnlyRowEvidence.php';
+
 final class Phase12Slice4StaffFinanceCheckoutTest extends WP_UnitTestCase
 {
+    use Phase12ReadOnlyRowEvidence;
+
     private const CONTEXT = '/clinic/v1/staff/portal/finance/context';
     private const PAID = '/clinic/v1/staff/portal/finance/paid';
     private const CHECKOUT = '/clinic/v1/staff/portal/finance/visits/%d/checkout';
@@ -153,10 +158,26 @@ final class Phase12Slice4StaffFinanceCheckoutTest extends WP_UnitTestCase
         $secretary = $this->makeUser('phase12_slice4_board_secretary', RolesAndCapabilities::ROLE_SECRETARY);
         cpms_test_seed_membership($secretary, $clinic, 'cpms_secretary');
         $clinician = $this->insertClinician($clinic, 'Dr Slice Four');
+        // ONE coherent Location-local day anchor for the whole current-day
+        // fixture (TEST fixture only — the persisted Location row above stays
+        // the product's timezone authority; Asia/Tehran is named here solely
+        // because this fixture intentionally builds that Location's timezone).
+        // The operational day, the previous operational day and BOTH persisted
+        // UTC check-ins are all derived from this single local instant, so no
+        // fixture Visit can carry a `visit_date` on a different Location-local
+        // day than its own `check_in_at`. The previous two-clock derivation took
+        // the days from the Tehran-local instant but the check-ins from
+        // `UTC now - 4h/-2h`, which crosses the Tehran local day boundary during
+        // part of every UTC day (and left the `yesterday` row claiming a
+        // previous-day `visit_date` with a same-day check-in). Both check-in
+        // times stay inside the SAME local day and keep their established
+        // relative order, so the projection's deterministic
+        // `TIME(check_in_at) ASC, id ASC` policy assertion is unchanged.
         $timezone = new \DateTimeZone('Asia/Tehran');
-        $date = (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->setTimezone($timezone)->format('Y-m-d');
-        $yesterday = (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->setTimezone($timezone)->modify('-1 day')->format('Y-m-d');
-        $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+        $utc = new \DateTimeZone('UTC');
+        $localDay = (new \DateTimeImmutable('now', $timezone))->setTime(9, 0);
+        $date = $localDay->format('Y-m-d');
+        $yesterday = $localDay->modify('-1 day')->format('Y-m-d');
 
         $settledPatient = $this->insertPatient($clinic, 'BoardSettled');
         $barePatient = $this->insertPatient($clinic, 'BoardBare');
@@ -166,21 +187,27 @@ final class Phase12Slice4StaffFinanceCheckoutTest extends WP_UnitTestCase
         $awaitingPatient = $this->insertPatient($clinic, 'BoardAwaiting');
         $consultingPatient = $this->insertPatient($clinic, 'BoardConsulting');
 
-        $firstCheckIn = $now->modify('-4 hours')->format('Y-m-d H:i:s');
-        $secondCheckIn = $now->modify('-2 hours')->format('Y-m-d H:i:s');
+        $firstCheckIn = $localDay->setTimezone($utc)->format('Y-m-d H:i:s');
+        $secondCheckIn = $localDay->setTime(11, 0)->setTimezone($utc)->format('Y-m-d H:i:s');
+        $yesterdayCheckIn = $localDay->modify('-1 day')->setTime(10, 0)->setTimezone($utc)->format('Y-m-d H:i:s');
         $settledVisit = $this->insertVisit($clinic, $location, $settledPatient, $clinician, $date, $firstCheckIn, 'paid');
         $bareVisit = $this->insertVisit($clinic, $location, $barePatient, $clinician, $date, $secondCheckIn, 'paid');
+        // The other-Location / foreign-Clinic decoys deliberately keep the SAME
+        // operational day and check-in instant, so the trusted Clinic and the
+        // trusted Location are the only differences.
         $otherLocationVisit = $this->insertVisit($clinic, $otherLocation, $otherLocationPatient, $clinician, $date, $firstCheckIn, 'paid');
-        $this->insertVisit($foreignClinic, $this->insertLocation($foreignClinic, 'Asia/Tehran'), $foreignPatient, $clinician, $date, $firstCheckIn, 'paid');
-        $this->insertVisit($clinic, $location, $yesterdayPatient, $clinician, $yesterday, $firstCheckIn, 'paid');
-        $this->insertVisit($clinic, $location, $awaitingPatient, $clinician, $date, $firstCheckIn, 'awaiting_payment');
-        $this->insertVisit($clinic, $location, $consultingPatient, $clinician, $date, $firstCheckIn, 'in_consultation');
+        $foreignVisit = $this->insertVisit($foreignClinic, $this->insertLocation($foreignClinic, 'Asia/Tehran'), $foreignPatient, $clinician, $date, $firstCheckIn, 'paid');
+        $yesterdayVisit = $this->insertVisit($clinic, $location, $yesterdayPatient, $clinician, $yesterday, $yesterdayCheckIn, 'paid');
+        $awaitingVisit = $this->insertVisit($clinic, $location, $awaitingPatient, $clinician, $date, $firstCheckIn, 'awaiting_payment');
+        $consultingVisit = $this->insertVisit($clinic, $location, $consultingPatient, $clinician, $date, $firstCheckIn, 'in_consultation');
+        $fixtureVisits = [$settledVisit, $bareVisit, $otherLocationVisit, $foreignVisit, $yesterdayVisit, $awaitingVisit, $consultingVisit];
 
         // The settled invoice the row summarizes; an open invoice that belongs
         // to another Location of the same Clinic must not be claimed as the
         // CURRENT-Location row's invoice.
-        $this->insertInvoice($clinic, $location, $settledPatient, $settledVisit, $secretary, 'paid', '100000.00', '100000.00', '0.00');
-        $this->insertInvoice($clinic, $otherLocation, $otherLocationPatient, $otherLocationVisit, $secretary, 'open', '50000.00', '0.00', '50000.00');
+        $settledInvoice = $this->insertInvoice($clinic, $location, $settledPatient, $settledVisit, $secretary, 'paid', '100000.00', '100000.00', '0.00');
+        $otherLocationInvoice = $this->insertInvoice($clinic, $otherLocation, $otherLocationPatient, $otherLocationVisit, $secretary, 'open', '50000.00', '0.00', '50000.00');
+        $fixtureInvoices = [$settledInvoice, $otherLocationInvoice];
 
         $mobile = (string) App::db()->fetchValue('SELECT mobile FROM ' . App::db()->table('cpms_patients') . ' WHERE id = %d', [$settledPatient]);
         $mrn = (string) App::db()->fetchValue('SELECT mrn FROM ' . App::db()->table('cpms_patients') . ' WHERE id = %d', [$settledPatient]);
@@ -194,6 +221,15 @@ final class Phase12Slice4StaffFinanceCheckoutTest extends WP_UnitTestCase
         self::assertTrue((bool) ($this->payload($context)['can_check_out'] ?? false), 'context must expose the server-derived can_check_out flag for a secretary holding cpms_queue_checkout in this Clinic');
 
         $readOnlyBefore = $this->readOnlySnapshot();
+        // Read-only immutability evidence: the count snapshot stays as the
+        // INSERT/DELETE signal; the FULL persisted rows of this GET's own
+        // fixture (every listed AND excluded Visit of the day — including the
+        // foreign-Clinic and previous-day decoys — both invoices, their
+        // items/payments/adjustments, Visit status history and the trusted
+        // Clinic's audit rows) are additionally compared by VALUE, so an
+        // in-place UPDATE — a rewritten settlement amount, a flipped Visit
+        // status, a re-linked invoice Location — cannot pass as "no mutation".
+        $rowsBefore = $this->persistedFinanceRows($clinic, $fixtureVisits, $fixtureInvoices);
         $projectionQueries = 0;
         $capture = function (string $query) use (&$projectionQueries): string {
             if (str_contains($query, 'AS visit_id') && str_contains($query, 'cpms_visits')) {
@@ -254,6 +290,11 @@ final class Phase12Slice4StaffFinanceCheckoutTest extends WP_UnitTestCase
             self::assertStringNotContainsString($excluded, $encoded, $excluded . ' must not appear anywhere in the payload');
         }
 
+        self::assertSame(
+            $rowsBefore,
+            $this->persistedFinanceRows($clinic, $fixtureVisits, $fixtureInvoices),
+            'every persisted row this read touches (listed and excluded Visits, both invoices, invoice items, payments, adjustments, Visit status history, Clinic audit rows) is value-identical after the GET — no in-place UPDATE'
+        );
         self::assertSame($readOnlyBefore, $this->readOnlySnapshot(), 'the paid board read performs no mutation');
     }
 

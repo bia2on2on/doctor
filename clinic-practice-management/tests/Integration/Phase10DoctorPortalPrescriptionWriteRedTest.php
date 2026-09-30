@@ -661,10 +661,25 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
         foreach (['workspace-note-form', 'workspace-visibility', 'workspace-content', 'workspace-note-submit'] as $keep) {
             self::assertStringContainsString($keep, $ui, 'G7 guard: Visit Workspace note wiring preserved (' . $keep . ')');
         }
-        // (b) no exclusion-scope controls anywhere near the portal UI:
-        // no void (این برش void را ندارد), no print, no handwriting/stylus.
-        foreach (['rx-void', 'rx_void', 'data-action="void"', 'voidPrescription', 'rx-print', 'stylus', 'handwriting-canvas'] as $forbidden) {
-            self::assertStringNotContainsString($forbidden, $ui, 'G7 guard: out-of-scope control must not exist (' . $forbidden . ')');
+        // (b) no exclusion-scope PRESCRIPTION controls anywhere near the portal
+        // UI: no prescription void (این برش void را ندارد) and no prescription
+        // print. Both remain undelivered on this surface, so both negatives are
+        // still valid and are kept unchanged.
+        //
+        // The two former PORTAL-WIDE negatives `stylus` and `handwriting-canvas`
+        // are deliberately removed here: handwriting was intentionally delivered
+        // afterwards in this SAME Doctor Portal (the Visit Workspace handwriting
+        // editor — `workspace-handwriting-open` / `cpms-hw-canvas` in
+        // templates/doctor-portal-shell.php + assets/js/doctor-handwriting.js,
+        // migration 2026_09_26_0023), so a prescription contract asserting that
+        // no stylus/handwriting-canvas literal exists anywhere in the portal
+        // contradicted the delivered product and was stale. This is a scoping
+        // correction only: the handwriting surface keeps its own dedicated
+        // coverage (Phase10StaffPortalHandwritingRedTest, HandwritingFlowTest),
+        // which is untouched and not weakened by this change, and every
+        // prescription-specific assertion of this class stays in force.
+        foreach (['rx-void', 'rx_void', 'data-action="void"', 'voidPrescription', 'rx-print'] as $forbidden) {
+            self::assertStringNotContainsString($forbidden, $ui, 'G7 guard: out-of-scope prescription control must not exist (' . $forbidden . ')');
         }
 
         // --- INTENDED PRODUCT RED: prescription composer/wiring missing ---

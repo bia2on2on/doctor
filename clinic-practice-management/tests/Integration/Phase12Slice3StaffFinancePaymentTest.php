@@ -71,12 +71,17 @@ use ClinicCore\Application\Scope\SystemClinicResolver;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Frontend\StaffPortalShell;
+use ClinicCore\Tests\Integration\Fixtures\Phase12ReadOnlyRowEvidence;
 use WP_REST_Request;
 use WP_REST_Response;
 use WP_UnitTestCase;
 
+require_once __DIR__ . '/Fixtures/Phase12ReadOnlyRowEvidence.php';
+
 final class Phase12Slice3StaffFinancePaymentTest extends WP_UnitTestCase
 {
+    use Phase12ReadOnlyRowEvidence;
+
     private const CONTEXT = '/clinic/v1/staff/portal/finance/context';
     private const BOARD = '/clinic/v1/staff/portal/finance/awaiting-payment';
     private const PAY = '/clinic/v1/staff/portal/finance/invoices/%d/payments';
@@ -167,8 +172,10 @@ final class Phase12Slice3StaffFinancePaymentTest extends WP_UnitTestCase
         $invoice = $this->insertInvoice($clinic, $location, $withInvoice, $invoiceVisit, $secretary, 'open');
         // Same Clinic, foreign Location invoice for a CURRENT-Location Visit:
         // the board must not claim it as this row's invoice.
-        $this->insertInvoice($clinic, $otherLocation, $crossLocation, $crossVisit, $secretary, 'open');
-        $this->insertInvoice($clinic, $otherLocation, $foreignLocation, $otherVisit, $secretary, 'open');
+        $crossInvoice = $this->insertInvoice($clinic, $otherLocation, $crossLocation, $crossVisit, $secretary, 'open');
+        $otherInvoice = $this->insertInvoice($clinic, $otherLocation, $foreignLocation, $otherVisit, $secretary, 'open');
+        $fixtureVisits = [$invoiceVisit, $plainVisit, $crossVisit, $otherVisit];
+        $fixtureInvoices = [$invoice, $crossInvoice, $otherInvoice];
 
         $mobile = (string) App::db()->fetchValue(
             'SELECT mobile FROM ' . App::db()->table('cpms_patients') . ' WHERE id = %d',
@@ -184,6 +191,14 @@ final class Phase12Slice3StaffFinancePaymentTest extends WP_UnitTestCase
         self::assertSame(200, $context->get_status(), 'Slice 1 context stays available — ' . $this->errorCode($context));
 
         $readOnlyBefore = $this->readOnlySnapshot();
+        // Read-only immutability evidence: the count snapshot stays as the
+        // INSERT/DELETE signal; the FULL persisted rows of this GET's own
+        // fixture (every listed AND excluded Visit of the day, all three
+        // invoices, their items/payments/adjustments, Visit status history and
+        // the Clinic's audit rows) are additionally compared by VALUE, so an
+        // in-place UPDATE — a rewritten balance, a flipped Visit status, a
+        // re-linked invoice Location — cannot pass as "no mutation".
+        $rowsBefore = $this->persistedFinanceRows($clinic, $fixtureVisits, $fixtureInvoices);
         $projectionQueries = 0;
         $capture = function (string $query) use (&$projectionQueries): string {
             if (str_contains($query, 'AS visit_id') && str_contains($query, 'cpms_visits')) {
@@ -228,6 +243,11 @@ final class Phase12Slice3StaffFinancePaymentTest extends WP_UnitTestCase
             self::assertStringNotContainsString($forbidden, $encoded, 'projection keeps no ' . $forbidden . ' field');
         }
 
+        self::assertSame(
+            $rowsBefore,
+            $this->persistedFinanceRows($clinic, $fixtureVisits, $fixtureInvoices),
+            'every persisted row this read touches (listed and excluded Visits, all three invoices, invoice items, payments, adjustments, Visit status history, Clinic audit rows) is value-identical after the GET — no in-place UPDATE'
+        );
         self::assertSame($readOnlyBefore, $this->readOnlySnapshot(), 'the board read performs no mutation');
     }
 

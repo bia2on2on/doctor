@@ -168,6 +168,17 @@ RESCHEDULE_PATH_RE = re.compile(r"/staff/portal/reception/appointments/[0-9]+/re
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 WALKIN_ROUTE = "/staff/portal/reception/walk-ins"
 CLINICIANS_ROUTE = "/staff/portal/reception/clinicians"
+BOARD_ROUTE = "/staff/portal/reception/board"
+# The Reception page owns a PERIODIC SILENT refresh of its board: poll() ->
+# loadBoard(true) -> GET /clinic/v1/staff/portal/reception/board, re-armed
+# every POLL_MS (5000 ms) in templates/staff-reception.php. That request — not
+# elapsed wall time — is the server-owned refresh a sticky partial-failure
+# message and its recovery control have to survive, so the partial journeys
+# wait for its real HTTP response instead of sleeping past one poll interval.
+# The bound is the file's standard 15 s bounded wait (POLL_MS is 5 s): no
+# timeout inflation.
+BOARD_REFRESH_PATH = "/clinic/v1" + BOARD_ROUTE
+BOARD_REFRESH_TIMEOUT_MS = 15000
 
 
 def page_hint(page):
@@ -194,7 +205,7 @@ def new_page(browser, vp):
     )
     page = ctx.new_page()
     page.set_default_timeout(25000)
-    state = {"reqs": [], "rest": [], "console": [], "pageerrors": [], "failed": []}
+    state = {"reqs": [], "rest": [], "console": [], "pageerrors": [], "failed": [], "unanswered": []}
     NAV[id(page)] = {"harness": False, "harness_docs": 0, "product_docs": 0, "rest_total": 0}
 
     def on_nav_request(req):
@@ -250,6 +261,12 @@ def new_page(browser, vp):
         if not url.startswith(BASE) or "favicon" in url or ".map" in url:
             return
         failure = req.failure or "failed"
+        # A request that never produced a response must not be counted as still
+        # in flight by the settle barriers (board / slot reads), including the
+        # aborted case that is deliberately NOT a hygiene failure. Recording the
+        # route keeps that pending accounting sound without changing any verdict.
+        if "/clinic/v1" in url:
+            state["unanswered"].append(route_of(url))
         if "ERR_ABORTED" in failure:
             return
         if "ERR_INTERNET_DISCONNECTED" in failure or "ERR_NETWORK_CHANGED" in failure:
@@ -348,6 +365,67 @@ def wait_row_text(page, appointment_id, needle, timeout=15000):
         arg={"id": str(appointment_id), "needle": needle},
         timeout=timeout,
     )
+
+
+def board_refresh_requests(state, since=0):
+    """Silent board refreshes INITIATED by the browser, from a state index.
+
+    Requests are used (not responses) for the in-flight accounting so the
+    measurement is bound to what the page actually issued: a stale response
+    arriving later can never be counted as settling a pending refresh.
+    """
+    return [r for r in state["reqs"][since:] if r["route"].rstrip("/") == BOARD_REFRESH_PATH]
+
+
+def board_refresh_responses(state, since=0):
+    """Silent board refresh RESPONSES recorded by the page listener."""
+    return [r for r in state["rest"][since:] if r["route"].rstrip("/") == BOARD_REFRESH_PATH]
+
+
+def wait_board_refreshes_settled(page, state, timeout_ms=BOARD_REFRESH_TIMEOUT_MS):
+    """Bounded barrier: every silent board refresh initiated so far has its
+    response recorded, i.e. no refresh is still in flight.
+
+    Same condition-based idiom as wait_slot_reads_settled — the poll interval is
+    never a timing assumption. Captured history is never cleared, so a real
+    duplicate refresh still shows up in the evidence.
+    """
+    deadline = time.monotonic() + (timeout_ms / 1000.0)
+    while True:
+        unanswered = sum(1 for route in state["unanswered"] if route.rstrip("/") == BOARD_REFRESH_PATH)
+        pending = len(board_refresh_requests(state)) - len(board_refresh_responses(state)) - unanswered
+        if pending <= 0:
+            return
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"board refreshes did not settle within {timeout_ms}ms ({pending} still in flight)")
+        page.wait_for_timeout(25)
+
+
+def wait_next_board_refresh(page, state, timeout_ms=BOARD_REFRESH_TIMEOUT_MS):
+    """Wait for the NEXT server-owned silent board refresh and require that it
+    COMPLETED SUCCESSFULLY.
+
+    The refresh is the page's own periodic poll (GET /clinic/v1/staff/portal/
+    reception/board), not a harness action. Any refresh still in flight from the
+    preceding mutation is drained first, so the response observed here is a
+    fresh periodic one. This replaces the former bare sleep: sticky-state
+    evidence is now proven against an actual successful server refresh rather
+    than against elapsed wall time. Bounded — no fixed sleep, no timeout
+    inflation beyond the file's standard bounded wait.
+    """
+    wait_board_refreshes_settled(page, state, timeout_ms)
+    with page.expect_response(
+        lambda r: r.request.method == "GET" and route_of(r.url).rstrip("/") == BOARD_REFRESH_PATH,
+        timeout=timeout_ms,
+    ) as pending:
+        pass
+    resp = pending.value
+    if resp.status != 200:
+        raise RuntimeError(
+            "the periodic silent board refresh must complete successfully before sticky-state "
+            f"evidence is claimed, got {resp.status}"
+        )
+    return {"method": resp.request.method, "status": resp.status, "route": BOARD_REFRESH_PATH}
 
 
 def assert_reception_shell(page):
@@ -610,12 +688,20 @@ def run_partial_journey(browser, vp):
             raise RuntimeError("partial arrival must end honestly in checked_in, not waiting")
 
         stage = "sticky-status"
-        page.wait_for_timeout(6500)
+        # Prove the silent refresh itself: the page's own PERIODIC board poll
+        # (GET /clinic/v1/staff/portal/reception/board, re-armed every 5000 ms)
+        # must have COMPLETED SUCCESSFULLY before we claim the sticky
+        # partial-failure message and its recovery control survived it. This
+        # replaces the former bare wait_for_timeout(6500): elapsed wall time
+        # proved neither that a server-owned refresh happened nor that it
+        # succeeded. Bounded wait, no added sleep, no timeout inflation.
+        refresh = wait_next_board_refresh(page, state)
+        proof = f"{refresh['method']} {refresh['route']}={refresh['status']}"
         status_now = (page.locator('[data-role="sr-status"]').inner_text() or "")
         if "قرارگیری در صف انجام نشد" not in status_now:
-            raise RuntimeError("silent refresh erased the actionable partial-failure message")
+            raise RuntimeError(f"silent refresh erased the actionable partial-failure message (after successful {proof})")
         if row_of(page, PUB["appt_partial"]).locator('[data-role="sr-recover"]').count() != 1:
-            raise RuntimeError("the recovery action must survive silent refreshes")
+            raise RuntimeError(f"the recovery action must survive silent refreshes (after successful {proof})")
         shot(page, f"reception-{vp['vp']}-partial-sticky")
 
         stage = "recovery"
@@ -638,7 +724,7 @@ def run_partial_journey(browser, vp):
         ok(
             key,
             "partial arrival ends checked_in and one retry completes the existing enqueue",
-            f"vp={vp['vp']} partial_http=400+ sticky=1 recover_http=200 waiting=4 rest={rest_delta} reloaded=0",
+            f"vp={vp['vp']} partial_http=400+ sticky=1 board_refresh={refresh['method']}:{refresh['status']} recover_http=200 waiting=4 rest={rest_delta} reloaded=0",
         )
     except Exception as e:
         try:
@@ -1368,9 +1454,20 @@ def run_walkin_partial_journey(browser, vp):
         page.wait_for_selector('[data-role="sr-walkin-recover"]', state="visible", timeout=5000)
         if page.locator('[data-role="sr-walkin-submit"]').is_visible():
             raise RuntimeError("partial state must offer recovery, not a fresh submit")
-        page.wait_for_timeout(6500)
+        # Prove the silent refresh itself: the page's own PERIODIC board poll
+        # (GET /clinic/v1/staff/portal/reception/board, re-armed every 5000 ms)
+        # must have COMPLETED SUCCESSFULLY before we claim the sticky partial
+        # walk-in message and its recovery control survived it. This replaces
+        # the former bare wait_for_timeout(6500): elapsed wall time proved
+        # neither that a server-owned refresh happened nor that it succeeded.
+        # Bounded wait, no added sleep, no timeout inflation.
+        refresh = wait_next_board_refresh(page, state)
+        proof = f"{refresh['method']} {refresh['route']}={refresh['status']}"
         if "قرارگیری در صف انجام نشد" not in (page.locator('[data-role="sr-walkin-state"]').inner_text() or ""):
-            raise RuntimeError("silent refresh erased the partial walk-in message")
+            raise RuntimeError(f"silent refresh erased the partial walk-in message (after successful {proof})")
+        page.wait_for_selector('[data-role="sr-walkin-recover"]', state="visible", timeout=5000)
+        if page.locator('[data-role="sr-walkin-submit"]').is_visible():
+            raise RuntimeError(f"the recovery control must survive the silent refresh, not a fresh submit (after successful {proof})")
         assert_no_horizontal_overflow(page, "walkin-partial")
         shot(page, f"reception-{vp['vp']}-walkin-partial")
 
@@ -1398,7 +1495,7 @@ def run_walkin_partial_journey(browser, vp):
         ok(
             key,
             "partial walk-in stays checked_in (not success) and one recovery completes the existing enqueue",
-            f"vp={vp['vp']} partial_http={p_info.value.status} sticky=1 recover_http=200 created=existing rest={rest_delta} reloaded=0",
+            f"vp={vp['vp']} partial_http={p_info.value.status} sticky=1 board_refresh={refresh['method']}:{refresh['status']} recover_http=200 created=existing rest={rest_delta} reloaded=0",
         )
     except Exception as e:
         try:
