@@ -1653,8 +1653,10 @@ def prove_finalized_rx_print(page, state, visit_id, rx_id, expected_number, expe
     page.emulate_media(media="screen")
     if not button.is_enabled() or page.locator("#cpms-doctor-prescription-print-surface").count() != 0:
         raise RuntimeError(f"{label} afterprint did not restore the normal portal and control")
-    if page.locator("#cpms-doctor-portal-shell").count() != 1 or page.locator("#cpms-doctor-portal-shell").is_hidden():
-        raise RuntimeError(f"{label} normal Doctor Portal shell was not retained outside print mode")
+    if page.locator("#cpms-staff-portal-shell").count() != 1 or page.locator("#cpms-staff-portal-shell").is_hidden():
+        raise RuntimeError(f"{label} normal shared Staff Portal shell was not retained outside print mode")
+    if page.locator('[data-role="staff-nav"]').count() != 1 or page.locator('[data-role="staff-nav"]').is_hidden():
+        raise RuntimeError(f"{label} normal portal navigation was not retained outside print mode")
 
     requests = state["reqs"][req_start:]
     expected_route = f"/doctor/portal/visits/{visit_id}/prescriptions/{rx_id}/print"

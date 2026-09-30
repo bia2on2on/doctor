@@ -860,10 +860,15 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
             [$rxId]
         );
         $beforeVisit = $this->findVisitRow($visitId);
-        $beforeAudit = (int) App::db()->fetchValue('SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs'));
+        $beforePrescriptionAudit = App::db()->fetchAll(
+            'SELECT * FROM ' . App::db()->table('cpms_audit_logs') .
+            ' WHERE actor_wp_user_id = %d AND ((resource_type = %s AND resource_id = %d) OR (resource_type = %s AND resource_id = %d)) ORDER BY id ASC',
+            [$fx['doctor'], 'prescription', $rxId, 'visit', $visitId]
+        );
         $beforePrintAudit = (int) App::db()->fetchValue(
-            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE action = %s',
-            ['PRESCRIPTION_PRINTED']
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') .
+            ' WHERE action = %s AND actor_wp_user_id = %d AND resource_type = %s AND resource_id = %d',
+            ['PRESCRIPTION_PRINTED', $fx['doctor'], 'prescription', $rxId]
         );
 
         $printRoute = '/clinic/v1/doctor/portal/visits/' . $visitId . '/prescriptions/' . $rxId . '/print';
@@ -916,10 +921,15 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
             'SELECT * FROM ' . App::db()->table('cpms_prescription_items') . ' WHERE prescription_id = %d ORDER BY sort_order ASC, id ASC', [$rxId]
         ), 'P13: GET must not mutate structured items');
         self::assertSame($beforeVisit, $this->findVisitRow($visitId), 'P13: GET must not mutate the Visit');
-        self::assertSame($beforeAudit, (int) App::db()->fetchValue('SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs')),
-            'P13: GET has no audit side effect');
+        self::assertSame($beforePrescriptionAudit, App::db()->fetchAll(
+            'SELECT * FROM ' . App::db()->table('cpms_audit_logs') .
+            ' WHERE actor_wp_user_id = %d AND ((resource_type = %s AND resource_id = %d) OR (resource_type = %s AND resource_id = %d)) ORDER BY id ASC',
+            [$fx['doctor'], 'prescription', $rxId, 'visit', $visitId]
+        ), 'P13: GET has no audit side effect for the authorized prescription or Visit');
         self::assertSame($beforePrintAudit, (int) App::db()->fetchValue(
-            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE action = %s', ['PRESCRIPTION_PRINTED']
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') .
+            ' WHERE action = %s AND actor_wp_user_id = %d AND resource_type = %s AND resource_id = %d',
+            ['PRESCRIPTION_PRINTED', $fx['doctor'], 'prescription', $rxId]
         ), 'P13: legacy PRESCRIPTION_PRINTED audit remains absent from the portal read');
     }
 
