@@ -76,12 +76,17 @@ use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Time\Jalali;
 use ClinicCore\Frontend\StaffPortalShell;
+use ClinicCore\Tests\Integration\Fixtures\Phase12ReadOnlyRowEvidence;
 use WP_REST_Request;
 use WP_REST_Response;
 use WP_UnitTestCase;
 
+require_once __DIR__ . '/Fixtures/Phase12ReadOnlyRowEvidence.php';
+
 final class Phase12Slice5StaffFinanceReceiptTest extends WP_UnitTestCase
 {
+    use Phase12ReadOnlyRowEvidence;
+
     private const RECEIPT = '/clinic/v1/staff/portal/finance/visits/%d/receipt';
     private const CONTEXT = '/clinic/v1/staff/portal/finance/context';
     private const BOARD = '/clinic/v1/staff/portal/finance/awaiting-payment';
@@ -285,6 +290,11 @@ final class Phase12Slice5StaffFinanceReceiptTest extends WP_UnitTestCase
         self::assertSame(404, $post->get_status(), 'the receipt surface is GET-only');
         self::assertSame('rest_no_route', $this->errorCode($post));
         self::assertSame($before, $this->readOnlySnapshot(), 'a rejected POST inserts or deletes no row (count-level guard)');
+        self::assertSame(
+            $rowsBefore,
+            $this->persistedReceiptRows($visit, $invoice),
+            'the rejected mutation verb leaves every persisted row the receipt reads value-identical too — no in-place UPDATE'
+        );
         self::assertNotSame(0, $firstPayment, 'the seeded clean capture exists');
     }
 
@@ -369,6 +379,13 @@ final class Phase12Slice5StaffFinanceReceiptTest extends WP_UnitTestCase
         self::assertSame('CLINIC_INVALID_NONCE', $this->errorCode($noNonce));
 
         $before = $this->readOnlySnapshot();
+        // Read-only immutability evidence for the accepted AND rejected receipt
+        // reads of this group: the count snapshot stays as the INSERT/DELETE
+        // signal, and the FULL persisted rows of the tested Visit's fixture
+        // (Visit, its invoice(s), items, payments, adjustments, Visit status
+        // history and the Clinic's audit rows) are additionally compared by
+        // VALUE — an in-place UPDATE cannot pass as "writes nothing".
+        $rowsBefore = $this->persistedFinanceRows($clinic, [$visit]);
 
         // 2) A secretary with the existing invoice-read authority reads it.
         $ok = $this->dispatch('GET', sprintf(self::RECEIPT, $visit), [], $this->scopeHeaders($clinic, $location));
@@ -403,6 +420,11 @@ final class Phase12Slice5StaffFinanceReceiptTest extends WP_UnitTestCase
         self::assertSame(403, $nomember->get_status());
         self::assertSame('CLINIC_SCOPE_UNAVAILABLE', $this->errorCode($nomember));
 
+        self::assertSame(
+            $rowsBefore,
+            $this->persistedFinanceRows($clinic, [$visit]),
+            'every persisted row of the tested Visit (Visit, invoice(s), items, payments, adjustments, Visit status history, Clinic audit rows) is value-identical after the accepted and rejected receipt reads — no in-place UPDATE'
+        );
         self::assertSame($before, $this->readOnlySnapshot(), 'no rejected receipt read writes anything');
     }
 
@@ -439,6 +461,13 @@ final class Phase12Slice5StaffFinanceReceiptTest extends WP_UnitTestCase
             'foreign-Clinic Visit' => $foreignVisit,
             'unknown Visit id' => 999999999,
         ];
+        // Read-only immutability evidence for the rejected selector reads: the
+        // count snapshot stays as the global INSERT/DELETE signal, and the FULL
+        // persisted rows of every targeted Visit (including the foreign-Clinic
+        // one) plus the trusted Clinic's audit rows are additionally compared
+        // by VALUE — a rejected read that silently UPDATEs a targeted row can
+        // no longer pass as "wrote nothing".
+        $rowsBefore = $this->persistedFinanceRows($clinic, array_values($cases));
         foreach ($cases as $label => $target) {
             $response = $this->dispatch('GET', sprintf(self::RECEIPT, $target), [], $this->scopeHeaders($clinic, $location));
             self::assertSame(404, $response->get_status(), $label . ' selector must fail closed with 404 parity');
@@ -446,6 +475,11 @@ final class Phase12Slice5StaffFinanceReceiptTest extends WP_UnitTestCase
             self::assertStringNotContainsString('receipt', strtolower((string) wp_json_encode($response->get_data())), $label . ' never returns receipt data');
         }
 
+        self::assertSame(
+            $rowsBefore,
+            $this->persistedFinanceRows($clinic, array_values($cases)),
+            'every targeted persisted row (Visit, its invoice(s), items, payments, adjustments, Visit status history, trusted-Clinic audit rows) is value-identical after the rejected selector reads — no in-place UPDATE'
+        );
         self::assertSame($before, $this->readOnlySnapshot(), 'no rejected selector read writes anything (count-level guard)');
     }
 
@@ -586,6 +620,17 @@ final class Phase12Slice5StaffFinanceReceiptTest extends WP_UnitTestCase
             'voided invoice on the Visit' => $reissueVisit,
             'ambiguous non-voided invoices' => $ambiguousVisit,
         ];
+        // Read-only immutability evidence at its most material: the whole point
+        // of this group is that durable correction evidence (void markers,
+        // void reasons, refunded amounts, credit adjustments, voided invoices)
+        // is neither erased nor rewritten by an ineligible receipt read. The
+        // count snapshot stays as the INSERT/DELETE signal; the FULL persisted
+        // rows of all five Visits — their invoices (including the voided and
+        // the ambiguous second ones), items, payments, adjustments, Visit
+        // status history and the Clinic's audit rows — are additionally
+        // compared by VALUE, so an in-place UPDATE of a void/refund/adjustment
+        // field can no longer pass.
+        $rowsBefore = $this->persistedFinanceRows($clinic, array_values($cases));
         foreach ($cases as $label => $target) {
             $response = $this->dispatch('GET', sprintf(self::RECEIPT, $target), [], $this->scopeHeaders($clinic, $location));
             self::assertSame(409, $response->get_status(), $label . ' must fail closed rather than print misleading accounting history');
@@ -594,6 +639,11 @@ final class Phase12Slice5StaffFinanceReceiptTest extends WP_UnitTestCase
             self::assertContains((string) ($this->errorData($response)['reason'] ?? ''), self::ELIGIBILITY_REASONS, $label . ' stays inside the enumerated reason vocabulary');
         }
 
+        self::assertSame(
+            $rowsBefore,
+            $this->persistedFinanceRows($clinic, array_values($cases)),
+            'every durable correction row this group reads (Visits, voided/ambiguous invoices, items, voided/refunded payments, credit adjustments, Visit status history, Clinic audit rows) is value-identical after the ineligible reads — no in-place UPDATE'
+        );
         self::assertSame($before, $this->readOnlySnapshot(), 'no ineligible receipt read mutates or erases correction/refund/adjustment data');
         self::assertSame(
             1,
@@ -678,6 +728,16 @@ final class Phase12Slice5StaffFinanceReceiptTest extends WP_UnitTestCase
             'items_missing' => $bareVisit,
             'waive_evidence' => $waiveVisit,
         ];
+        // Read-only immutability evidence: the eligibility verdicts of this
+        // group are derived from durable accounting rows (open/partial balance,
+        // non-reconciling totals, missing items, waive history). The count
+        // snapshot stays as the INSERT/DELETE signal; the FULL persisted rows
+        // of all six Visits — their invoices, items, payments, adjustments,
+        // Visit status history (including the seeded waive transition) and the
+        // Clinic's audit rows — are additionally compared by VALUE, so a
+        // rejected read that silently reconciles or rewrites the accounting
+        // can no longer pass.
+        $rowsBefore = $this->persistedFinanceRows($clinic, array_values($expected));
         foreach ($expected as $label => $target) {
             $reason = str_contains($label, 'partial') ? 'invoice_not_settled' : $label;
             $response = $this->dispatch('GET', sprintf(self::RECEIPT, $target), [], $this->scopeHeaders($clinic, $location));
@@ -696,6 +756,11 @@ final class Phase12Slice5StaffFinanceReceiptTest extends WP_UnitTestCase
             );
         }
 
+        self::assertSame(
+            $rowsBefore,
+            $this->persistedFinanceRows($clinic, array_values($expected)),
+            'every persisted row the eligibility verdicts are derived from (Visits, invoices, items, payments, adjustments, Visit status history, Clinic audit rows) is value-identical after the ineligible reads — no in-place UPDATE'
+        );
         self::assertSame($before, $this->readOnlySnapshot(), 'no ineligible path writes anything (count-level guard)');
     }
 

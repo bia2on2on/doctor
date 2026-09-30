@@ -661,10 +661,43 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
         foreach (['workspace-note-form', 'workspace-visibility', 'workspace-content', 'workspace-note-submit'] as $keep) {
             self::assertStringContainsString($keep, $ui, 'G7 guard: Visit Workspace note wiring preserved (' . $keep . ')');
         }
-        // (b) no exclusion-scope controls anywhere near the portal UI:
-        // no void (این برش void را ندارد), no print, no handwriting/stylus.
-        foreach (['rx-void', 'rx_void', 'data-action="void"', 'voidPrescription', 'rx-print', 'stylus', 'handwriting-canvas'] as $forbidden) {
-            self::assertStringNotContainsString($forbidden, $ui, 'G7 guard: out-of-scope control must not exist (' . $forbidden . ')');
+        // (b) no exclusion-scope PRESCRIPTION controls anywhere near the portal
+        // UI: no prescription void (این برش void را ندارد) and no prescription
+        // print. Both remain undelivered on this surface, so both negatives are
+        // still valid and are kept unchanged.
+        //
+        // The two former PORTAL-WIDE negatives `stylus` and `handwriting-canvas`
+        // are deliberately removed as STALE, VACUOUS markers.
+        //
+        // Verified against this head: neither literal occurs anywhere in the
+        // product source (`src/`, `templates/`, `assets/`) — 0 occurrences — and
+        // neither occurs in the surface this group actually reads
+        // ($ui = templates/doctor-portal-shell.php + assets/js/cpms-doctor-portal.js).
+        // They were speculative identifiers for a handwriting/stylus surface
+        // that has since been DELIVERED in this same Doctor Portal under
+        // DIFFERENT names (the Visit Workspace handwriting editor:
+        // `workspace-handwriting-open`, `cpms-hw-stage`, `cpms-hw-canvas` in
+        // templates/doctor-portal-shell.php, assets/js/doctor-handwriting.js,
+        // assets/css/doctor-handwriting.css; migration 2026_09_26_0023).
+        //
+        // So both assertions matched nothing before that delivery and match
+        // nothing after it: they never protected a contract. What they DID do
+        // was leave a PRESCRIPTION class declaring that this portal carries no
+        // handwriting surface at all — contradicting the delivered product in
+        // intent and misleading anyone reading this negative list as a map of
+        // what is genuinely undelivered. Removing them costs no real coverage:
+        //   - the delivered handwriting surface keeps its own dedicated
+        //     coverage (Phase10StaffPortalHandwritingRedTest,
+        //     HandwritingFlowTest), untouched and not weakened here;
+        //   - every prescription-specific negative of this class stays in force.
+        //
+        // The same two stale literals also remain in
+        // Phase10DoctorPortalRecommendationFollowUpWriteRedTest. That class is a
+        // recommendation/follow-up contract rather than a prescription one, so
+        // it is outside this bounded change; it is recorded here so the finding
+        // is not lost.
+        foreach (['rx-void', 'rx_void', 'data-action="void"', 'voidPrescription', 'rx-print'] as $forbidden) {
+            self::assertStringNotContainsString($forbidden, $ui, 'G7 guard: out-of-scope prescription control must not exist (' . $forbidden . ')');
         }
 
         // --- INTENDED PRODUCT RED: prescription composer/wiring missing ---

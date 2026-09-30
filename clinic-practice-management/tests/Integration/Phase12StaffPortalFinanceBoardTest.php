@@ -9,12 +9,17 @@ use ClinicCore\Application\Scope\SystemClinicResolver;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Frontend\StaffPortalShell;
+use ClinicCore\Tests\Integration\Fixtures\Phase12ReadOnlyRowEvidence;
 use WP_REST_Request;
 use WP_REST_Response;
 use WP_UnitTestCase;
 
+require_once __DIR__ . '/Fixtures/Phase12ReadOnlyRowEvidence.php';
+
 final class Phase12StaffPortalFinanceBoardTest extends WP_UnitTestCase
 {
+    use Phase12ReadOnlyRowEvidence;
+
     private const REST_NS = 'clinic/v1';
 
     protected function setUp(): void
@@ -48,15 +53,36 @@ final class Phase12StaffPortalFinanceBoardTest extends WP_UnitTestCase
         $patientWithoutInvoice = $this->insertPatient($clinic, 'NoInvoice');
         $patientOtherLocation = $this->insertPatient($clinic, 'OtherLocation');
         $clinician = $this->insertClinician($clinic, 'Dr Board');
-        $date = (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->setTimezone(new \DateTimeZone('Asia/Tokyo'))->format('Y-m-d');
-        $checkIn = (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->modify('-2 hours')->format('Y-m-d H:i:s');
+        // ONE coherent Location-local instant (TEST fixture only — the persisted
+        // Location row above stays the product's timezone authority, and
+        // Asia/Tokyo is named here solely because this fixture intentionally
+        // builds a non-UTC Location). BOTH the operational day AND the persisted
+        // UTC check-in are derived from that single instant, so a fixture Visit
+        // can never claim a `visit_date` on a different Location-local day than
+        // its own `check_in_at`. The previous two-clock derivation took the day
+        // from the Tokyo-local instant but the check-in from `UTC now - 2
+        // hours`, which crosses the Tokyo local day boundary during part of
+        // every UTC day and silently desynchronised the fixture.
+        $timezone = new \DateTimeZone('Asia/Tokyo');
+        $localCheckIn = new \DateTimeImmutable('now', $timezone);
+        $date = $localCheckIn->format('Y-m-d');
+        $checkIn = $localCheckIn->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s');
         $visitWithInvoice = $this->insertVisit($clinic, $location, $patientWithInvoice, $clinician, $date, $checkIn, 'awaiting_payment');
         $visitWithoutInvoice = $this->insertVisit($clinic, $location, $patientWithoutInvoice, $clinician, $date, $checkIn, 'awaiting_payment');
+        // The other-Location decoy deliberately keeps the SAME operational day
+        // and check-in instant, so the trusted Location is the only difference
+        // between it and the projected rows.
         $this->insertVisit($clinic, $otherLocation, $patientOtherLocation, $clinician, $date, $checkIn, 'awaiting_payment');
         $this->insertVisit($clinic, $location, $patientOtherLocation, $clinician, $date, $checkIn, 'waiting');
         $this->insertInvoice($clinic, $location, $patientWithInvoice, $visitWithInvoice, $actor);
 
+        // Read-only immutability evidence: the count snapshot stays as the
+        // INSERT/DELETE signal, and the FULL persisted rows of this GET's own
+        // fixture (the tested Visits, their invoices, invoice items, payments,
+        // adjustments, Visit status history and the Clinic's audit rows) are
+        // additionally compared by VALUE so an in-place UPDATE cannot pass.
         $readOnlyBefore = $this->readOnlySnapshot();
+        $rowsBefore = $this->persistedFinanceRows($clinic, [$visitWithInvoice, $visitWithoutInvoice]);
         $visitBefore = App::db()->fetchValue('SELECT status FROM ' . App::db()->table('cpms_visits') . ' WHERE id = %d', [$visitWithInvoice]);
 
         self::assertTrue(StaffPortalShell::finance_module_eligible($actor), 'secretary with existing same-Clinic finance/invoice/queue read authority is eligible');
@@ -124,6 +150,11 @@ final class Phase12StaffPortalFinanceBoardTest extends WP_UnitTestCase
         self::assertNull($byPatient['NoInvoice Board']['invoice'], 'missing invoice must remain null, not a fabricated zero balance');
 
         self::assertSame($visitBefore, App::db()->fetchValue('SELECT status FROM ' . App::db()->table('cpms_visits') . ' WHERE id = %d', [$visitWithInvoice]));
+        self::assertSame(
+            $rowsBefore,
+            $this->persistedFinanceRows($clinic, [$visitWithInvoice, $visitWithoutInvoice]),
+            'every persisted row this read touches (Visit, invoice, invoice items, payments, adjustments, Visit status history, Clinic audit rows) is value-identical after the GET — no in-place UPDATE'
+        );
         self::assertSame($readOnlyBefore, $this->readOnlySnapshot(), 'read routes do not mutate invoice/payment, visit history/state, audit, idempotency, job, or notification data');
     }
 
