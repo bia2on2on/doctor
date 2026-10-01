@@ -3,10 +3,15 @@
  * Synthetic Phase 14 Reports fixture for the existing Pilot Chromium job.
  *
  * One Organization with three Clinics (Alpha, Beta, Gamma), each with one
- * Location, one Clinician and waiting visits on ONE fixed explicit business
- * date (never "today"):
+ * Location and one Clinician. Waiting samples are recorded on ONE fixed,
+ * explicit business date (never "today"):
  *   Alpha: 600s + 300s  -> avg 450s over 2 visits
  *   Beta : 120s         -> avg 120s over 1 visit
+ *   Gamma: 900s         -> never granted to the synthetic reporters
+ * Separate completed consultations exercise the existing Visit Duration
+ * aggregate on that same stored visit_date:
+ *   Alpha: 600s + 1200s -> avg 900s over 2 visits
+ *   Beta : 300s         -> avg 300s over 1 visit
  *   Gamma: 900s         -> never granted to the synthetic reporters
  *
  * Two synthetic report readers (global cpms_report_read through the existing
@@ -90,6 +95,28 @@ $visit('alpha', '11:00:00', '11:05:00');
 $visit('beta', '09:00:00', '09:02:00');
 $visit('gamma', '08:00:00', '08:15:00');
 
+$durationVisit = static function (string $key, string $startedTime, string $completedTime, ?string $timestampDate = null) use ($wpdb, $db, $now, $date, $clinics, $uniq): void {
+    $c = $clinics[$key];
+    $timestampDate = $timestampDate ?? $date;
+    $patientId = rp_insert($wpdb, $db->table('cpms_patients'), [
+        'clinic_id' => $c['id'], 'mrn' => 'SYN-RPD-' . strtoupper($key) . '-' . bin2hex(random_bytes(3)),
+        'first_name' => 'Synthetic Reports Duration', 'last_name' => 'Patient ' . $uniq,
+        'mobile' => '08' . random_int(1000000000, 9999999999), 'status' => 'active', 'created_at' => $now, 'updated_at' => $now,
+    ], $key . ' duration patient');
+    rp_insert($wpdb, $db->table('cpms_visits'), [
+        'clinic_id' => $c['id'], 'location_id' => $c['location'], 'clinician_id' => $c['clinician'], 'patient_id' => $patientId,
+        'source' => 'walk_in', 'status' => 'consultation_completed', 'visit_date' => $date,
+        'check_in_at' => $timestampDate . ' ' . $startedTime . '.000', 'waiting_since' => null, 'called_at' => null,
+        'consultation_started_at' => $timestampDate . ' ' . $startedTime . '.000',
+        'consultation_completed_at' => $timestampDate . ' ' . $completedTime . '.000',
+        'active' => 0, 'created_at' => $now, 'updated_at' => $now,
+    ], $key . ' duration visit');
+};
+$durationVisit('alpha', '10:00:00', '10:10:00');
+$durationVisit('alpha', '11:00:00', '11:20:00');
+$durationVisit('beta', '06:30:00', '06:35:00', '2026-03-15');
+$durationVisit('gamma', '08:00:00', '08:15:00');
+
 $memberships = \ClinicCore\Bootstrap\App::membership_service();
 $multiLogin  = 'rpmulti' . $uniq;
 $multiPass   = 'RpMulti-' . $uniq . '-2026!';
@@ -117,6 +144,7 @@ $env = [
     'REPORTS_SINGLE_LOGIN' => $singleLogin,
     'REPORTS_SINGLE_PASS'  => $singlePass,
     'REPORTS_DATE'         => $date,
+    'REPORTS_EMPTY_DATE'   => '2026-03-15',
     'REPORTS_ALPHA_ID'     => (string) $clinics['alpha']['id'],
     'REPORTS_ALPHA_NAME'   => $clinics['alpha']['name'],
     'REPORTS_BETA_ID'      => (string) $clinics['beta']['id'],
@@ -132,4 +160,4 @@ foreach ($env as $key => $value) {
     $lines[] = $key . '=' . $value;
 }
 file_put_contents('/tmp/reports.env', implode("\n", $lines) . "\n");
-echo 'fixture: reports clinics=3 reporters=2 (multi=2 eligible, single=1 eligible) visits_alpha=2 visits_beta=1 visits_gamma=1 date=' . $date . "\n";
+echo 'fixture: reports clinics=3 reporters=2 (multi=2 eligible, single=1 eligible) waiting_alpha=2 waiting_beta=1 waiting_gamma=1 duration_alpha=2 duration_beta=1 duration_gamma=1 date=' . $date . ' empty_date=2026-03-15' . "\n";
