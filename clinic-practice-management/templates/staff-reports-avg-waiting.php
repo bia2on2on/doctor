@@ -1,18 +1,21 @@
 <?php
 /**
- * Phase 14 Slice 1 — Reports module inside the independent Staff Portal.
+ * Phase 14 Slices 1–2 — Reports module inside the independent Staff Portal.
  *
- * A read-only Average Waiting surface for ONE explicitly selected Gregorian
- * Y-m-d date. It reuses the existing `GET /clinic/v1/reports/avg_waiting`
+ * A read-only Average Waiting and Visit Duration surface for ONE explicitly
+ * selected Gregorian Y-m-d date. Each action reuses its existing GET report
  * route (from = to = the selected date); it calculates nothing itself and adds
- * no REST route. The Clinic is chosen through the existing REST Clinic-context
- * header (`X-CPMS-Clinic-Id`): 1 eligible Clinic is shown and sent as-is, N>1
- * require an explicit selection (no first-Clinic fallback). The id is a
- * SELECTOR only — the REST boundary validates it against the authenticated
- * user's active membership and the report capability on every request, and the
- * own-vs-Clinic scope stays server-decided. No Location id is ever sent. Only the aggregate (average + visit count) is shown — never visit rows,
- * patient data or clinical detail. No wp-admin chrome, selector, chart, export
- * or print surface.
+ * no REST route or service. Visit Duration is the consultation interval from
+ * consultation_started_at to consultation_completed_at, for records with both
+ * timestamps, grouped by the already-recorded visit_date. The Clinic is chosen
+ * through the existing REST Clinic-context header (X-CPMS-Clinic-Id): 1 eligible
+ * Clinic is shown and sent as-is, N>1 require an explicit selection (no
+ * first-Clinic fallback). The id is a SELECTOR only — the REST boundary validates
+ * it against active membership and report capability on every request, and the
+ * own-vs-Clinic scope stays server-decided. No Location id is ever sent. Only
+ * aggregates (sample count + average) are shown — never visit rows, patient data
+ * or clinical detail. No wp-admin chrome, Location selector, chart, export or
+ * print surface.
  */
 
 declare(strict_types=1);
@@ -42,6 +45,7 @@ $cpms_reports_clinics = \ClinicCore\Frontend\StaffPortalShell::reports_eligible_
 .cpms-reports-board__clinic { margin: 0 0 10px; overflow-wrap: anywhere; }
 .cpms-reports-board__submit { min-height: 40px; padding: 6px 16px; border: 1px solid var(--cpms-border); border-radius: 8px; background: #1d2327; color: #fff; font: inherit; cursor: pointer; }
 .cpms-reports-board__submit[disabled] { opacity: .6; cursor: default; }
+.cpms-reports-board__submit--duration { background: #fff; color: var(--cpms-text); }
 .cpms-reports-board__status { min-height: 1.5em; margin: 0; overflow-wrap: anywhere; }
 .cpms-reports-board__status[data-kind="error"] { color: #a12828; }
 .cpms-reports-board__metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 0; }
@@ -79,16 +83,25 @@ $cpms_reports_clinics = \ClinicCore\Frontend\StaffPortalShell::reports_eligible_
             <label class="cpms-reports-board__field">تاریخ گزارش (میلادی، YYYY-MM-DD)
                 <input type="date" name="date" required inputmode="numeric" placeholder="YYYY-MM-DD" pattern="\d{4}-\d{2}-\d{2}" autocomplete="off" data-role="reports-date-input" aria-describedby="cpms-reports-board-status">
             </label>
-            <button type="submit" class="cpms-reports-board__submit" data-role="reports-submit">نمایش گزارش</button>
+            <button type="submit" class="cpms-reports-board__submit" data-role="reports-submit">نمایش میانگین زمان انتظار</button>
+            <button type="button" class="cpms-reports-board__submit cpms-reports-board__submit--duration" data-role="reports-visit-duration-action" aria-controls="cpms-reports-visit-duration-result">نمایش میانگین مدت مشاوره</button>
         </form>
 <?php endif; ?>
     </section>
     <p class="cpms-reports-board__panel cpms-reports-board__status" id="cpms-reports-board-status" data-role="reports-status" role="status" aria-live="polite"<?php echo array() === $cpms_reports_clinics ? ' hidden' : ''; ?>><?php echo count( $cpms_reports_clinics ) > 1 ? 'برای مشاهدهٔ گزارش، یک کلینیک و یک تاریخ انتخاب کنید.' : 'برای مشاهدهٔ گزارش، یک تاریخ انتخاب کنید.'; ?></p>
-    <section class="cpms-reports-board__panel" data-role="reports-result" aria-label="نتیجهٔ گزارش" hidden>
+    <section class="cpms-reports-board__panel" data-role="reports-result" aria-label="نتیجهٔ گزارش میانگین زمان انتظار" hidden>
         <p class="cpms-reports-board__hint" data-role="reports-result-meta"></p>
         <dl class="cpms-reports-board__metrics">
             <div class="cpms-reports-board__metric"><dt>میانگین زمان انتظار</dt><dd data-role="reports-avg"></dd></div>
             <div class="cpms-reports-board__metric"><dt>تعداد ویزیت‌های نمونه</dt><dd data-role="reports-count"></dd></div>
+        </dl>
+    </section>
+    <section class="cpms-reports-board__panel" id="cpms-reports-visit-duration-result" data-role="reports-visit-duration-result" aria-label="نتیجهٔ گزارش مدت مشاوره" hidden>
+        <p class="cpms-reports-board__hint" data-role="reports-visit-duration-description">میانگین مدت مشاوره از زمان شروع ثبت‌شدهٔ مشاوره (<code>consultation_started_at</code>) تا زمان پایان ثبت‌شدهٔ آن (<code>consultation_completed_at</code>) محاسبه می‌شود و فقط ویزیت‌هایی را دربرمی‌گیرد که هر دو زمان را دارند. تاریخ بر پایهٔ تاریخ ثبت‌شدهٔ ویزیت (<code>visit_date</code>) است.</p>
+        <p class="cpms-reports-board__hint" data-role="reports-visit-duration-meta"></p>
+        <dl class="cpms-reports-board__metrics">
+            <div class="cpms-reports-board__metric"><dt>تعداد ویزیت‌های نمونه</dt><dd data-role="reports-visit-duration-count">—</dd></div>
+            <div class="cpms-reports-board__metric"><dt>میانگین مدت مشاوره</dt><dd data-role="reports-visit-duration-average">—</dd></div>
         </dl>
     </section>
 </main>
@@ -114,25 +127,68 @@ echo wp_json_encode( $cpms_reports_board_config ); // phpcs:ignore WordPress.Sec
     var clinicFixed = document.querySelector('[data-role="reports-clinic-fixed"]');
     var input = document.querySelector('[data-role="reports-date-input"]');
     var submit = document.querySelector('[data-role="reports-submit"]');
+    var durationAction = document.querySelector('[data-role="reports-visit-duration-action"]');
     var statusNode = document.querySelector('[data-role="reports-status"]');
     var resultNode = document.querySelector('[data-role="reports-result"]');
     var metaNode = document.querySelector('[data-role="reports-result-meta"]');
     var avgNode = document.querySelector('[data-role="reports-avg"]');
     var countNode = document.querySelector('[data-role="reports-count"]');
+    var durationResultNode = document.querySelector('[data-role="reports-visit-duration-result"]');
+    var durationMetaNode = document.querySelector('[data-role="reports-visit-duration-meta"]');
+    var durationCountNode = document.querySelector('[data-role="reports-visit-duration-count"]');
+    var durationAverageNode = document.querySelector('[data-role="reports-visit-duration-average"]');
     var ticket = 0;
+    var activeController = null;
+    var activeTimer = null;
     var TIMEOUT_MS = 20000;
+    var routes = {
+        avg_waiting: '/reports/avg_waiting',
+        visit_duration: '/reports/visit_duration'
+    };
 
     function setStatus(message, kind) {
         statusNode.textContent = message || '';
         statusNode.dataset.kind = kind || '';
+    }
+    function setActionsDisabled(disabled) {
+        submit.disabled = disabled;
+        durationAction.disabled = disabled;
+    }
+    function clearResults() {
+        resultNode.hidden = true;
+        metaNode.textContent = '';
+        avgNode.textContent = '';
+        countNode.textContent = '';
+        durationResultNode.hidden = true;
+        durationMetaNode.textContent = '';
+        durationCountNode.textContent = '';
+        durationAverageNode.textContent = '';
+    }
+    function cancelActive() {
+        ticket += 1;
+        if (activeTimer !== null) window.clearTimeout(activeTimer);
+        activeTimer = null;
+        if (activeController !== null) {
+            activeController.abort();
+            activeController = null;
+        }
+        setActionsDisabled(false);
+        return ticket;
     }
     function fa(number) { return Number(number).toLocaleString('fa-IR'); }
     // The server is authoritative; this only avoids a pointless request.
     function validDate(value) {
         var match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
         if (!match) return false;
-        var probe = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
-        return probe.getUTCFullYear() === Number(match[1]) && probe.getUTCMonth() === Number(match[2]) - 1 && probe.getUTCDate() === Number(match[3]);
+        var year = Number(match[1]);
+        var month = Number(match[2]) - 1;
+        var day = Number(match[3]);
+        if (year < 1) return false;
+        // setUTCFullYear avoids Date.UTC's special 1900 offset for years 00–99.
+        var probe = new Date(0);
+        probe.setUTCHours(0, 0, 0, 0);
+        probe.setUTCFullYear(year, month, day);
+        return probe.getUTCFullYear() === year && probe.getUTCMonth() === month && probe.getUTCDate() === day;
     }
     function duration(totalSeconds) {
         var seconds = Math.max(0, Math.round(Number(totalSeconds) || 0));
@@ -157,6 +213,19 @@ echo wp_json_encode( $cpms_reports_board_config ); // phpcs:ignore WordPress.Sec
         }
         return /^[1-9][0-9]{0,18}$/.test(raw) ? { id: raw, name: name } : null;
     }
+    function selectionKey() {
+        var clinic = chosenClinic();
+        return (clinic ? clinic.id : '') + '|' + String(input.value || '');
+    }
+    var currentSelection = selectionKey();
+    function invalidateSelection() {
+        var nextSelection = selectionKey();
+        if (nextSelection === currentSelection) return;
+        currentSelection = nextSelection;
+        cancelActive();
+        clearResults();
+        setStatus('برای دریافت هر گزارش، یک تاریخ انتخاب کنید و یکی از دکمه‌های گزارش را بزنید.', '');
+    }
     function errorMessage(status, code) {
         if (code === 'CLINIC_VALIDATION_FAILED') return 'تاریخ یا کلینیک واردشده معتبر نیست؛ تاریخ را به‌صورت میلادی و با قالب YYYY-MM-DD وارد کنید.';
         if (code === 'CLINIC_SCOPE_REQUIRED') return 'ابتدا یک کلینیک را انتخاب کنید.';
@@ -164,19 +233,24 @@ echo wp_json_encode( $cpms_reports_board_config ); // phpcs:ignore WordPress.Sec
         if (status === 401 || status === 403 || code === 'CLINIC_PERMISSION_DENIED' || code === 'CLINIC_INVALID_NONCE') return 'دسترسی شما به این گزارش مجاز نیست یا نشست منقضی شده است.';
         return 'دریافت گزارش ناموفق بود. دوباره تلاش کنید.';
     }
-    function endpoint(date) {
-        var url = root + '/reports/avg_waiting';
+    function endpoint(type, date) {
+        var path = routes[type];
+        if (!path) return '';
+        var url = root + path;
         // Plain permalinks already carry a query (?rest_route=…): join with &.
         var glue = url.indexOf('?') === -1 ? '?' : '&';
         return url + glue + 'from=' + encodeURIComponent(date) + '&to=' + encodeURIComponent(date);
     }
-    function render(data, date, clinic) {
+    function resultMeta(data, date, clinic) {
+        var scope = data && data.scope === 'own' ? 'فقط ویزیت‌های مربوط به شما' : 'مجموع ویزیت‌های کلینیک';
+        var jalali = data && data.from_jalali ? ' — ' + String(data.from_jalali) : '';
+        return 'کلینیک: ' + clinic.name + ' · تاریخ ثبت‌شدهٔ ویزیت: ' + date + jalali + ' · ' + scope;
+    }
+    function renderWaiting(data, date, clinic) {
         var summary = data && data.summary ? data.summary : {};
         var visits = Number(summary.visits) || 0;
         resultNode.hidden = false;
-        var scope = data && data.scope === 'own' ? 'فقط ویزیت‌های مربوط به شما' : 'مجموع ویزیت‌های کلینیک';
-        var jalali = data && data.from_jalali ? ' — ' + String(data.from_jalali) : '';
-        metaNode.textContent = 'کلینیک: ' + clinic.name + ' · تاریخ ثبت‌شدهٔ ویزیت: ' + date + jalali + ' · ' + scope;
+        metaNode.textContent = resultMeta(data, date, clinic);
         if (visits === 0) {
             avgNode.textContent = '—';
             countNode.textContent = fa(0);
@@ -187,16 +261,45 @@ echo wp_json_encode( $cpms_reports_board_config ); // phpcs:ignore WordPress.Sec
         countNode.textContent = fa(visits);
         setStatus('گزارش دریافت شد.', '');
     }
-    function load(date, clinic) {
-        var current = ++ticket;
+    function renderVisitDuration(data, date, clinic) {
+        var summary = data && data.summary ? data.summary : null;
+        var visits = summary ? Number(summary.visits) : NaN;
+        if (!Number.isFinite(visits) || visits < 0 || Math.floor(visits) !== visits) {
+            setStatus('دادهٔ گزارش معتبر نیست. دوباره تلاش کنید.', 'error');
+            return;
+        }
+        durationResultNode.hidden = false;
+        durationMetaNode.textContent = resultMeta(data, date, clinic);
+        durationCountNode.textContent = fa(visits);
+        if (visits === 0) {
+            durationAverageNode.textContent = '—';
+            setStatus('برای این تاریخ ویزیتی با هر دو زمان شروع و پایان مشاوره ثبت نشده است.', '');
+            return;
+        }
+        var averageSeconds = Number(summary.avg_sec);
+        if (!Number.isFinite(averageSeconds) || averageSeconds < 0) {
+            durationResultNode.hidden = true;
+            setStatus('دادهٔ گزارش معتبر نیست. دوباره تلاش کنید.', 'error');
+            return;
+        }
+        durationAverageNode.textContent = duration(averageSeconds);
+        setStatus('گزارش مدت مشاوره دریافت شد.', '');
+    }
+    function loadReport(type, date, clinic) {
+        var current = cancelActive();
         var controller = typeof AbortController === 'function' ? new AbortController() : null;
-        var timer = controller ? window.setTimeout(function () { controller.abort(); }, TIMEOUT_MS) : null;
+        activeController = controller;
+        if (controller) {
+            activeTimer = window.setTimeout(function () {
+                if (current === ticket && activeController === controller) controller.abort();
+            }, TIMEOUT_MS);
+        }
         var options = { method: 'GET', headers: { 'X-WP-Nonce': String(config.nonce || ''), 'X-CPMS-Clinic-Id': clinic.id, 'Accept': 'application/json' }, credentials: 'same-origin', cache: 'no-store' };
         if (controller) options.signal = controller.signal;
-        submit.disabled = true;
-        resultNode.hidden = true;
+        clearResults();
+        setActionsDisabled(true);
         setStatus('در حال دریافت گزارش…', '');
-        fetch(endpoint(date), options).then(function (response) {
+        fetch(endpoint(type, date), options).then(function (response) {
             return response.json().catch(function () { return {}; }).then(function (body) {
                 return { ok: response.ok, status: response.status, body: body };
             });
@@ -206,52 +309,61 @@ echo wp_json_encode( $cpms_reports_board_config ); // phpcs:ignore WordPress.Sec
                 setStatus(errorMessage(result.status, result.body && result.body.code || ''), 'error');
                 return;
             }
-            render(result.body && result.body.data ? result.body.data : {}, date, clinic);
+            var data = result.body && result.body.data ? result.body.data : {};
+            if (type === 'visit_duration') renderVisitDuration(data, date, clinic);
+            else renderWaiting(data, date, clinic);
         }).catch(function () {
             if (current !== ticket) return;
             setStatus('دریافت گزارش ناموفق بود. دوباره تلاش کنید.', 'error');
         }).then(function () {
-            if (timer) window.clearTimeout(timer);
-            if (current === ticket) submit.disabled = false;
+            if (current !== ticket) return;
+            if (activeTimer !== null) window.clearTimeout(activeTimer);
+            activeTimer = null;
+            activeController = null;
+            setActionsDisabled(false);
         });
     }
-
-    form.addEventListener('submit', function (event) {
-        event.preventDefault();
-        if (submit.disabled) return;
+    function runReport(type) {
+        if (submit.disabled || durationAction.disabled) return;
         var clinic = chosenClinic();
         if (!clinic) {
-            resultNode.hidden = true;
+            cancelActive();
+            clearResults();
             setStatus('ابتدا یک کلینیک را انتخاب کنید.', 'error');
             if (clinicSelect) clinicSelect.focus();
             return;
         }
         var date = String(input.value || '').trim();
         if (date === '') {
-            resultNode.hidden = true;
+            cancelActive();
+            clearResults();
             setStatus('ابتدا یک تاریخ انتخاب کنید.', 'error');
             input.focus();
             return;
         }
         if (!validDate(date)) {
-            resultNode.hidden = true;
+            cancelActive();
+            clearResults();
             setStatus('تاریخ واردشده معتبر نیست؛ آن را به‌صورت میلادی و با قالب YYYY-MM-DD وارد کنید.', 'error');
             input.focus();
             return;
         }
-        load(date, clinic);
+        loadReport(type, date, clinic);
+    }
+
+    form.addEventListener('submit', function (event) {
+        event.preventDefault();
+        runReport('avg_waiting');
+    });
+    durationAction.addEventListener('click', function (event) {
+        event.preventDefault();
+        runReport('visit_duration');
     });
 
-    // A different Clinic invalidates any shown/in-flight result: never leave one
-    // Clinic's numbers on screen under another Clinic's selection.
-    if (clinicSelect) {
-        clinicSelect.addEventListener('change', function () {
-            ticket += 1;
-            submit.disabled = false;
-            resultNode.hidden = true;
-            setStatus('برای مشاهدهٔ گزارش، تاریخ را انتخاب و «نمایش گزارش» را بزنید.', '');
-        });
-    }
+    // A Clinic or date change invalidates both displayed and in-flight results.
+    if (clinicSelect) clinicSelect.addEventListener('change', invalidateSelection);
+    input.addEventListener('input', invalidateSelection);
+    input.addEventListener('change', invalidateSelection);
 }());
 </script>
 </div>

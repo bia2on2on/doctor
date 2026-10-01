@@ -1,12 +1,12 @@
 <?php
 /**
- * Phase 14 Slice 2 — TEST-ONLY RED for aggregate Visit Duration in the
- * existing Staff Portal Reports module.
+ * Phase 14 Slice 2 — acceptance coverage for aggregate Visit Duration in the
+ * existing Staff Portal Reports module. This test was first introduced as the
+ * test-only RED preserved in the PR history; it now guards the completed GREEN.
  *
- * The existing GET route is the green control: its explicit Clinic/date
- * requests must return the current ReportService aggregate and no PHI. The
- * intended product RED is the missing Visit Duration action in the real
- * Reports template_include render path; no production code is changed here.
+ * The existing GET route is the backend control: explicit Clinic/date requests
+ * must return the current ReportService aggregate and no PHI. The product
+ * contract is asserted on the real Reports template_include render path.
  */
 
 declare(strict_types=1);
@@ -174,9 +174,9 @@ final class Phase14StaffPortalReportsVisitDurationRedTest extends WP_UnitTestCas
     }
 
     /**
-     * Slice 2 product assertion: the canonical, already-delivered Staff Reports
-     * module has no Visit Duration action/result yet. All existing-path and
-     * Slice 1 selector/date preconditions are asserted before this intended RED.
+     * Slice 2 product assertion: the canonical Staff Reports module reuses its
+     * existing Clinic/date selection for an aggregate-only Visit Duration action.
+     * All Slice 1 selector/date preconditions remain enforced.
      */
     public function testExistingStaffReportsPathExposesAggregateOnlyVisitDurationActionAndResult(): void
     {
@@ -214,17 +214,18 @@ final class Phase14StaffPortalReportsVisitDurationRedTest extends WP_UnitTestCas
         self::assertMatchesRegularExpression('/\brequired\b/', $dateInputs[0][0]);
         self::assertDoesNotMatchRegularExpression('/\bvalue="/', $dateInputs[0][0], 'one explicit date, never an implicit today');
 
-        // INTENDED RED — all preconditions above pass on current main; the
-        // missing product behavior is the Visit Duration action in this module.
+        // The Visit Duration action is part of this same Reports form and does
+        // not introduce another date or Clinic selector.
         self::assertSame(
             1,
             preg_match_all('/<(?:button|input)\b[^>]*data-role="reports-visit-duration-action"[^>]*>/i', $root),
             'Phase 14 Slice 2: the existing Staff Reports module exposes a Visit Duration action'
         );
+        self::assertSame(1, preg_match('/<button\b(?=[^>]*data-role="reports-visit-duration-action")[^>]*>/i', $root, $durationAction));
+        self::assertMatchesRegularExpression('/\btype="button"/', $durationAction[0], 'Visit Duration is an independent action, not the Average Waiting submit action');
 
-        // Forward acceptance contract, reached after the action is implemented:
-        // reuse the existing GET route, display only aggregates, and use a
-        // no-average marker for a zero-sample result.
+        // The product contract reuses the existing GET route, displays only
+        // aggregate values, and identifies the stored-date consultation metric.
         $normalizedHtml = str_replace('\\/', '/', $html);
         self::assertStringContainsString('/reports/visit_duration', $normalizedHtml, 'reuse GET /clinic/v1/reports/visit_duration');
         self::assertSame(
@@ -235,7 +236,11 @@ final class Phase14StaffPortalReportsVisitDurationRedTest extends WP_UnitTestCas
         self::assertSame(1, preg_match('/<dd\b[^>]*data-role="reports-visit-duration-count"/', $durationResult[1]), 'show aggregate visit/sample count');
         self::assertSame(1, preg_match('/<dd\b[^>]*data-role="reports-visit-duration-average"/', $durationResult[1]), 'show average consultation duration');
         self::assertSame(2, preg_match_all('/<dd\b/', $durationResult[1]), 'count and average are the only displayed values');
-        self::assertStringContainsString('—', $durationResult[1], 'zero samples display no average, not zero seconds');
+        self::assertSame(1, preg_match('/data-role="reports-visit-duration-average">—<\/dd>/', $durationResult[1]), 'zero samples display a dash rather than a zero-second average');
+        self::assertSame(1, preg_match('/<p\b(?=[^>]*data-role="reports-visit-duration-description")[^>]*>(.*?)<\/p>/s', $durationResult[1], $durationDescription));
+        foreach (['consultation_started_at', 'consultation_completed_at', 'visit_date'] as $metricField) {
+            self::assertStringContainsString($metricField, $durationDescription[1], 'describe the consultation metric and stored visit date explicitly');
+        }
         self::assertDoesNotMatchRegularExpression('/<(?:table|tr|canvas)\b|patient_(?:name|id)|\bmrn\b|diagnosis|clinical_note|reports-location/i', $root, 'no PHI rows, drilldown, Location selector or chart');
         foreach (['/reports/visit_duration/export', '/reports/visit_duration/print', '/reports/visits'] as $forbidden) {
             self::assertStringNotContainsString($forbidden, $normalizedHtml, 'Slice 2 excludes ' . $forbidden);
