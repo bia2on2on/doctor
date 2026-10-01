@@ -1,13 +1,16 @@
 <?php
 /**
- * Phase 14 Slices 1–2 — Reports module inside the independent Staff Portal.
+ * Phase 14 Slices 1–3 — Reports module inside the independent Staff Portal.
  *
- * A read-only Average Waiting and Visit Duration surface for ONE explicitly
- * selected Gregorian Y-m-d date. Each action reuses its existing GET report
+ * A read-only Average Waiting, Visit Duration and Walk-in-visits-recorded
+ * surface for ONE explicitly selected Gregorian Y-m-d date. Each action reuses its existing GET report
  * route (from = to = the selected date); it calculates nothing itself and adds
  * no REST route or service. Visit Duration is the consultation interval from
  * consultation_started_at to consultation_completed_at, for records with both
- * timestamps, grouped by the already-recorded visit_date. The Clinic is chosen
+ * timestamps, grouped by the already-recorded visit_date. Walk-in visits recorded
+ * counts Visit records whose stored source is exactly walk_in on that stored
+ * visit_date — all statuses, all sources otherwise excluded, never the 500-row
+ * list cap. The Clinic is chosen
  * through the existing REST Clinic-context header (X-CPMS-Clinic-Id): 1 eligible
  * Clinic is shown and sent as-is, N>1 require an explicit selection (no
  * first-Clinic fallback). The id is a SELECTOR only — the REST boundary validates
@@ -45,7 +48,7 @@ $cpms_reports_clinics = \ClinicCore\Frontend\StaffPortalShell::reports_eligible_
 .cpms-reports-board__clinic { margin: 0 0 10px; overflow-wrap: anywhere; }
 .cpms-reports-board__submit { min-height: 40px; padding: 6px 16px; border: 1px solid var(--cpms-border); border-radius: 8px; background: #1d2327; color: #fff; font: inherit; cursor: pointer; }
 .cpms-reports-board__submit[disabled] { opacity: .6; cursor: default; }
-.cpms-reports-board__submit--duration { background: #fff; color: var(--cpms-text); }
+.cpms-reports-board__submit--duration, .cpms-reports-board__submit--walkin { background: #fff; color: var(--cpms-text); }
 .cpms-reports-board__status { min-height: 1.5em; margin: 0; overflow-wrap: anywhere; }
 .cpms-reports-board__status[data-kind="error"] { color: #a12828; }
 .cpms-reports-board__metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 0; }
@@ -85,6 +88,7 @@ $cpms_reports_clinics = \ClinicCore\Frontend\StaffPortalShell::reports_eligible_
             </label>
             <button type="submit" class="cpms-reports-board__submit" data-role="reports-submit">نمایش میانگین زمان انتظار</button>
             <button type="button" class="cpms-reports-board__submit cpms-reports-board__submit--duration" data-role="reports-visit-duration-action" aria-controls="cpms-reports-visit-duration-result">نمایش میانگین مدت مشاوره</button>
+            <button type="button" class="cpms-reports-board__submit cpms-reports-board__submit--walkin" data-role="reports-walk-in-count-action" aria-controls="cpms-reports-walk-in-count-result">نمایش تعداد ویزیت‌های بدون نوبت ثبت‌شده</button>
         </form>
 <?php endif; ?>
     </section>
@@ -102,6 +106,13 @@ $cpms_reports_clinics = \ClinicCore\Frontend\StaffPortalShell::reports_eligible_
         <dl class="cpms-reports-board__metrics">
             <div class="cpms-reports-board__metric"><dt>تعداد ویزیت‌های نمونه</dt><dd data-role="reports-visit-duration-count">—</dd></div>
             <div class="cpms-reports-board__metric"><dt>میانگین مدت مشاوره</dt><dd data-role="reports-visit-duration-average">—</dd></div>
+        </dl>
+    </section>
+    <section class="cpms-reports-board__panel" id="cpms-reports-walk-in-count-result" data-role="reports-walk-in-count-result" aria-label="نتیجهٔ گزارش ویزیت‌های بدون نوبت ثبت‌شده" hidden>
+        <p class="cpms-reports-board__hint" data-role="reports-walk-in-count-description">این عدد «تعداد رکوردهای ویزیت» با منبع ثبت‌شدهٔ <code>walk_in</code> است که تاریخ ثبت‌شدهٔ ویزیت (<code>visit_date</code>) آن‌ها برابر تاریخ انتخاب‌شده باشد. شمارش شامل همهٔ وضعیت‌های ویزیت است؛ بیماران یکتا، نوبت‌ها، ویزیت‌های تکمیل‌شده یا فقط Walk-inهای ساخته‌شده توسط پذیرش را نمی‌شمارد و ادعای یک روز تقویمی محلیِ واحد برای همهٔ موقعیت‌های کلینیک نیست.</p>
+        <p class="cpms-reports-board__hint" data-role="reports-walk-in-count-meta"></p>
+        <dl class="cpms-reports-board__metrics">
+            <div class="cpms-reports-board__metric"><dt>تعداد رکوردهای ویزیت با منبع walk_in</dt><dd data-role="reports-walk-in-count">—</dd></div>
         </dl>
     </section>
 </main>
@@ -137,13 +148,18 @@ echo wp_json_encode( $cpms_reports_board_config ); // phpcs:ignore WordPress.Sec
     var durationMetaNode = document.querySelector('[data-role="reports-visit-duration-meta"]');
     var durationCountNode = document.querySelector('[data-role="reports-visit-duration-count"]');
     var durationAverageNode = document.querySelector('[data-role="reports-visit-duration-average"]');
+    var walkInAction = document.querySelector('[data-role="reports-walk-in-count-action"]');
+    var walkInResultNode = document.querySelector('[data-role="reports-walk-in-count-result"]');
+    var walkInMetaNode = document.querySelector('[data-role="reports-walk-in-count-meta"]');
+    var walkInCountNode = document.querySelector('[data-role="reports-walk-in-count"]');
     var ticket = 0;
     var activeController = null;
     var activeTimer = null;
     var TIMEOUT_MS = 20000;
     var routes = {
         avg_waiting: '/reports/avg_waiting',
-        visit_duration: '/reports/visit_duration'
+        visit_duration: '/reports/visit_duration',
+        walk_ins_recorded: '/reports/walk_ins_recorded'
     };
 
     function setStatus(message, kind) {
@@ -153,6 +169,7 @@ echo wp_json_encode( $cpms_reports_board_config ); // phpcs:ignore WordPress.Sec
     function setActionsDisabled(disabled) {
         submit.disabled = disabled;
         durationAction.disabled = disabled;
+        walkInAction.disabled = disabled;
     }
     function clearResults() {
         resultNode.hidden = true;
@@ -163,6 +180,9 @@ echo wp_json_encode( $cpms_reports_board_config ); // phpcs:ignore WordPress.Sec
         durationMetaNode.textContent = '';
         durationCountNode.textContent = '';
         durationAverageNode.textContent = '';
+        walkInResultNode.hidden = true;
+        walkInMetaNode.textContent = '';
+        walkInCountNode.textContent = '';
     }
     function cancelActive() {
         ticket += 1;
@@ -285,6 +305,20 @@ echo wp_json_encode( $cpms_reports_board_config ); // phpcs:ignore WordPress.Sec
         durationAverageNode.textContent = duration(averageSeconds);
         setStatus('گزارش مدت مشاوره دریافت شد.', '');
     }
+    // Aggregate-only count of Visit records whose STORED source is walk_in on the
+    // STORED visit_date. Status never redefines the metric; zero is a real 0.
+    function renderWalkInCount(data, date, clinic) {
+        var summary = data && data.summary ? data.summary : null;
+        var count = summary ? Number(summary.count) : NaN;
+        if (!Number.isFinite(count) || count < 0 || Math.floor(count) !== count) {
+            setStatus('دادهٔ گزارش معتبر نیست. دوباره تلاش کنید.', 'error');
+            return;
+        }
+        walkInResultNode.hidden = false;
+        walkInMetaNode.textContent = resultMeta(data, date, clinic);
+        walkInCountNode.textContent = fa(count);
+        setStatus(count === 0 ? 'در این تاریخ هیچ ویزیت بدون نوبت ثبت نشده است.' : 'گزارش ویزیت‌های بدون نوبت ثبت‌شده دریافت شد.', '');
+    }
     function loadReport(type, date, clinic) {
         var current = cancelActive();
         var controller = typeof AbortController === 'function' ? new AbortController() : null;
@@ -311,6 +345,7 @@ echo wp_json_encode( $cpms_reports_board_config ); // phpcs:ignore WordPress.Sec
             }
             var data = result.body && result.body.data ? result.body.data : {};
             if (type === 'visit_duration') renderVisitDuration(data, date, clinic);
+            else if (type === 'walk_ins_recorded') renderWalkInCount(data, date, clinic);
             else renderWaiting(data, date, clinic);
         }).catch(function () {
             if (current !== ticket) return;
@@ -324,7 +359,7 @@ echo wp_json_encode( $cpms_reports_board_config ); // phpcs:ignore WordPress.Sec
         });
     }
     function runReport(type) {
-        if (submit.disabled || durationAction.disabled) return;
+        if (submit.disabled || durationAction.disabled || walkInAction.disabled) return;
         var clinic = chosenClinic();
         if (!clinic) {
             cancelActive();
@@ -358,6 +393,10 @@ echo wp_json_encode( $cpms_reports_board_config ); // phpcs:ignore WordPress.Sec
     durationAction.addEventListener('click', function (event) {
         event.preventDefault();
         runReport('visit_duration');
+    });
+    walkInAction.addEventListener('click', function (event) {
+        event.preventDefault();
+        runReport('walk_ins_recorded');
     });
 
     // A Clinic or date change invalidates both displayed and in-flight results.

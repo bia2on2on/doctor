@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Real-browser acceptance for the existing Staff Portal Reports module.
 
-Covers Slice 1 Average Waiting plus Slice 2 Visit Duration on the EXISTING
-pilot gate entry point (fixture + Playwright in the responsive job; no new
-browser infrastructure):
+Covers Slice 1 Average Waiting, Slice 2 Visit Duration and Slice 3 Walk-in
+visits recorded on the EXISTING pilot gate entry point (fixture + Playwright in
+the responsive job; no new browser infrastructure):
 
   * a reporter with exactly ONE eligible Clinic: no selector, the Clinic is shown
     and the existing `X-CPMS-Clinic-Id` header carries it;
@@ -14,6 +14,13 @@ browser infrastructure):
   * Visit Duration reports only the count and consultation average, clears when
     Clinic/date changes, and shows a dash (not a zero-second average) for no
     samples;
+  * Walk-in visits recorded reports only the aggregate count of Visit records
+    whose STORED source is `walk_in` on the STORED visit_date, for the selected
+    Clinic and one explicit date (`from = to`): the >500-cap-free count is
+    correct per Clinic, other dates and non-walk-in sources are excluded, visit
+    status never redefines the metric, zero is a real 0 (never a dash), Clinic /
+    date changes (and a late response) cannot leak one context's number into
+    another, and there is no print/export surface for it;
   * a forged selector (an option for a Clinic the reporter is not a member of,
     injected into the DOM) is rejected by the server and shows a coherent error,
     never another Clinic's numbers.
@@ -34,7 +41,11 @@ from playwright.sync_api import sync_playwright
 BASE = os.environ.get("BASE", "http://localhost:8080").rstrip("/")
 URL = os.environ["REPORTS_URL"]
 DATE = os.environ["REPORTS_DATE"]
+OTHER_DATE = os.environ["REPORTS_OTHER_DATE"]
 EMPTY_DATE = os.environ["REPORTS_EMPTY_DATE"]
+WALKIN_ALPHA = os.environ["REPORTS_WALKIN_ALPHA"]
+WALKIN_BETA = os.environ["REPORTS_WALKIN_BETA"]
+WALKIN_ALPHA_OTHER_DATE = os.environ["REPORTS_WALKIN_OTHER_DATE"]
 ALPHA_ID = os.environ["REPORTS_ALPHA_ID"]
 ALPHA_NAME = os.environ["REPORTS_ALPHA_NAME"]
 BETA_ID = os.environ["REPORTS_BETA_ID"]
@@ -89,7 +100,7 @@ def new_session(playwright, who):
 
     def on_request(request):
         decoded_url = unquote(request.url)
-        route = next((name for name in ("avg_waiting", "visit_duration") if f"reports/{name}" in decoded_url), None)
+        route = next((name for name in ("avg_waiting", "visit_duration", "walk_ins_recorded") if f"reports/{name}" in decoded_url), None)
         if route is not None:
             query = parse_qs(urlparse(request.url).query, keep_blank_values=True)
             state["report_requests"].append(
@@ -126,21 +137,28 @@ def geometry(page, label, who):
                 date: box('[data-role=reports-date-input]'),
                 submit: box('[data-role=reports-submit]'),
                 duration_action: box('[data-role=reports-visit-duration-action]'),
+                walkin_action: box('[data-role=reports-walk-in-count-action]'),
                 select: box('[data-role=reports-clinic-select]'),
             };
         }"""
     )
     require(metrics["scroll"] <= metrics["inner"] + 1, f"{label} {who}: no whole-page horizontal overflow ({metrics['scroll']} <= {metrics['inner']})")
-    for key in ("date", "submit", "duration_action") + (("select",) if who == "multi" else ()):
+    for key in ("date", "submit", "duration_action", "walkin_action") + (("select",) if who == "multi" else ()):
         box = metrics[key]
         ok = box is not None and box["width"] > 40 and box["height"] >= 30 and box["left"] >= -1 and box["right"] <= metrics["inner"] + 1
         require(ok, f"{label} {who}: {key} control is inside the viewport and large enough to use")
 
 
+BUTTONS = {
+    "avg_waiting": '[data-role="reports-submit"]',
+    "visit_duration": '[data-role="reports-visit-duration-action"]',
+    "walk_ins_recorded": '[data-role="reports-walk-in-count-action"]',
+}
+
+
 def submit_report(page, date, report="avg_waiting"):
     page.fill('[data-role="reports-date-input"]', date)
-    button = '[data-role="reports-visit-duration-action"]' if report == "visit_duration" else '[data-role="reports-submit"]'
-    page.click(button)
+    page.click(BUTTONS[report])
 
 
 def wait_status(page, predicate_js, label):
@@ -304,6 +322,129 @@ with sync_playwright() as playwright:
         geometry(page, label + " Visit Duration empty result", "multi")
         page.screenshot(path=str(OUT / f"reports-multi-duration-empty-{label}.png"), full_page=True)
 
+        # ---- Slice 3: Walk-in visits recorded (aggregate-only, read-only) ----
+        walkin_result = page.locator('[data-role="reports-walk-in-count-result"]')
+        walkin_action = page.locator('[data-role="reports-walk-in-count-action"]')
+        require(walkin_action.count() == 1 and walkin_action.is_visible(), f"{label} multi: Walk-in count action is reachable")
+        walkin_description = page.locator('[data-role="reports-walk-in-count-description"]').inner_text()
+        require("walk_in" in walkin_description and "visit_date" in walkin_description, f"{label} multi: Walk-in metric names the STORED source walk_in and the STORED visit_date")
+        require("یکتا" in walkin_description, f"{label} multi: Walk-in metric states it is not a unique-patient count")
+        for forbidden in ("/reports/walk_ins_recorded/print", "/reports/walk_ins_recorded/export"):
+            require(forbidden not in page.locator('[data-role="reports-root"]').inner_html(), f"{label} multi: no print/export surface for the Walk-in count ({forbidden})")
+        require(
+            page.locator('[data-role="reports-root"] a[href*="/print"], [data-role="reports-root"] a[href*="/export"], [data-role="reports-root"] button[data-role*="print"], [data-role="reports-root"] button[data-role*="export"]').count() == 0,
+            f"{label} multi: the Walk-in surface offers no print/CSV affordance",
+        )
+
+        # Beta on the recorded date: 3 walk_in rows (complete/incomplete/cancelled-ish states included).
+        page.fill('[data-role="reports-date-input"]', DATE)
+        require(walkin_result.is_hidden() and page.locator('[data-role="reports-visit-duration-result"]').is_hidden(), f"{label} multi: date change clears the Walk-in count (and the prior report) immediately")
+        before = len(state["report_requests"])
+        submit_report(page, DATE, "walk_ins_recorded")
+        walkin_result.wait_for(state="visible", timeout=20000)
+        req = state["report_requests"][-1]
+        require(len(state["report_requests"]) == before + 1 and req["route"] == "walk_ins_recorded" and req["clinic"] == BETA_ID and req["from"] == DATE and req["to"] == DATE and req["method"] == "GET", f"{label} multi: Walk-in count uses the read-only endpoint, Beta header and from=to={DATE}")
+        require(req["location"] is None and req["clinic_query"] is None, f"{label} multi: Walk-in count sends neither a Location id nor a raw clinic_id")
+        text = ascii_digits(walkin_result.inner_text())
+        count = ascii_digits(page.locator('[data-role="reports-walk-in-count"]').inner_text())
+        require(BETA_NAME in text and ALPHA_NAME not in text and GAMMA_NAME not in text, f"{label} multi: Walk-in count is labelled with the selected Clinic only")
+        require(count.strip() == WALKIN_BETA, f"{label} multi: Beta walk-in count is {WALKIN_BETA} stored walk_in records (got '{count.strip()}')")
+        require("SYN-RP-" not in page.content() and "Patient" not in walkin_result.inner_text(), f"{label} multi: Walk-in count exposes no patient data")
+        require(page.locator('[data-role="reports-result"]').is_hidden(), f"{label} multi: the Walk-in action replaces the other report regions")
+        geometry(page, label + " Walk-in Beta result", "multi")
+        page.screenshot(path=str(OUT / f"reports-multi-walkin-beta-{label}.png"), full_page=True)
+
+        # Alpha on the same date: 5 walk_in rows — a `scheduled` row on the same date
+        # is excluded by source, so a source-blind count would read 6.
+        select.select_option(ALPHA_ID)
+        require(walkin_result.is_hidden() and page.locator('[data-role="reports-walk-in-count"]').inner_text() == "", f"{label} multi: Clinic switch clears stale Walk-in data immediately")
+        submit_report(page, DATE, "walk_ins_recorded")
+        walkin_result.wait_for(state="visible", timeout=20000)
+        req = state["report_requests"][-1]
+        require(req["route"] == "walk_ins_recorded" and req["clinic"] == ALPHA_ID and req["from"] == DATE and req["to"] == DATE, f"{label} multi: Alpha Walk-in count uses the Alpha selector and from=to={DATE}")
+        count = ascii_digits(page.locator('[data-role="reports-walk-in-count"]').inner_text())
+        require(count.strip() == WALKIN_ALPHA, f"{label} multi: Alpha walk-in count is {WALKIN_ALPHA} — every status, non-walk-in source excluded (got '{count.strip()}')")
+        require(ALPHA_NAME in ascii_digits(walkin_result.inner_text()) and BETA_NAME not in walkin_result.inner_text(), f"{label} multi: Alpha Walk-in count is labelled with Alpha only")
+        geometry(page, label + " Walk-in Alpha result", "multi")
+        page.screenshot(path=str(OUT / f"reports-multi-walkin-alpha-{label}.png"), full_page=True)
+
+        if label == "desktop":
+            # Deliver a genuine old-Clinic Walk-in response only AFTER the selector
+            # changes, proving the UI ticket rejects late data for this report too.
+            page.evaluate(
+                """() => {
+                    const nativeFetch = window.fetch.bind(window);
+                    window.__holdNextWalkIn = true;
+                    window.__heldWalkInSettled = false;
+                    window.__releaseHeldWalkIn = null;
+                    window.fetch = (resource, options) => {
+                        const url = typeof resource === 'string' ? resource : resource.url;
+                        if (!window.__holdNextWalkIn || !url.includes('/reports/walk_ins_recorded')) return nativeFetch(resource, options);
+                        window.__holdNextWalkIn = false;
+                        const lateOptions = Object.assign({}, options || {});
+                        delete lateOptions.signal;
+                        return new Promise((resolve, reject) => {
+                            window.__releaseHeldWalkIn = () => {
+                                window.__releaseHeldWalkIn = null;
+                                nativeFetch(resource, lateOptions).then(response => {
+                                    window.__heldWalkInSettled = true;
+                                    resolve(response);
+                                }, error => {
+                                    window.__heldWalkInSettled = true;
+                                    reject(error);
+                                });
+                            };
+                        });
+                    };
+                }"""
+            )
+            before = len(state["report_requests"])
+            page.click('[data-role="reports-walk-in-count-action"]')
+            page.wait_for_function("typeof window.__releaseHeldWalkIn === 'function'", timeout=20000)
+            select.select_option(BETA_ID)
+            require(walkin_result.is_hidden() and page.locator('[data-role="reports-walk-in-count"]').inner_text() == "", "desktop multi: Clinic change clears data while an old Walk-in request is pending")
+            require(len(state["report_requests"]) == before, "desktop multi: delayed Walk-in request has not been sent before the Clinic switch")
+            page.evaluate("window.__releaseHeldWalkIn()")
+            page.wait_for_function("window.__heldWalkInSettled === true", timeout=20000)
+            req = state["report_requests"][-1]
+            require(req["route"] == "walk_ins_recorded" and req["clinic"] == ALPHA_ID and req["from"] == DATE and req["to"] == DATE, "desktop multi: the delayed Walk-in response is for the prior Alpha selection")
+            require(walkin_result.is_hidden() and page.locator('[data-role="reports-walk-in-count"]').inner_text() == "", "desktop multi: a late Alpha Walk-in response cannot repopulate results after switching to Beta")
+            select.select_option(ALPHA_ID)
+
+        # Another recorded date is a different day (and Alpha's other-date row is separate).
+        page.fill('[data-role="reports-date-input"]', OTHER_DATE)
+        require(walkin_result.is_hidden(), f"{label} multi: changing the recorded date hides the previous Walk-in count")
+        submit_report(page, OTHER_DATE, "walk_ins_recorded")
+        walkin_result.wait_for(state="visible", timeout=20000)
+        req = state["report_requests"][-1]
+        require(req["route"] == "walk_ins_recorded" and req["clinic"] == ALPHA_ID and req["from"] == OTHER_DATE and req["to"] == OTHER_DATE, f"{label} multi: Walk-in count for another date uses that explicit date for from/to")
+        count = ascii_digits(page.locator('[data-role="reports-walk-in-count"]').inner_text())
+        require(count.strip() == WALKIN_ALPHA_OTHER_DATE, f"{label} multi: only the rows stored on the requested date are counted (got '{count.strip()}', expected {WALKIN_ALPHA_OTHER_DATE})")
+
+        # Zero is a real 0, not a dash and not an error.
+        select.select_option(BETA_ID)
+        page.fill('[data-role="reports-date-input"]', EMPTY_DATE)
+        require(walkin_result.is_hidden(), f"{label} multi: Clinic+date change clears the Walk-in count")
+        submit_report(page, EMPTY_DATE, "walk_ins_recorded")
+        walkin_result.wait_for(state="visible", timeout=20000)
+        count = ascii_digits(page.locator('[data-role="reports-walk-in-count"]').inner_text())
+        require(count.strip() == "0", f"{label} multi: a date with no walk_in rows shows a real 0 (got '{count.strip()}')")
+        require("—" not in count and page.locator('[data-role="reports-status"]').get_attribute("data-kind") != "error", f"{label} multi: zero walk-in count is a valid result, not a dash or an error")
+        geometry(page, label + " Walk-in zero result", "multi")
+        page.screenshot(path=str(OUT / f"reports-multi-walkin-zero-{label}.png"), full_page=True)
+
+        # Slice 1 / Slice 2 remain functional after the Walk-in journey.
+        select.select_option(ALPHA_ID)
+        before = len(state["report_requests"])
+        submit_report(page, DATE)
+        page.locator('[data-role="reports-result"]').wait_for(state="visible", timeout=20000)
+        req = state["report_requests"][-1]
+        count = ascii_digits(page.locator('[data-role="reports-count"]').inner_text())
+        avg = ascii_digits(page.locator('[data-role="reports-avg"]').inner_text())
+        require(len(state["report_requests"]) == before + 1 and req["route"] == "avg_waiting" and req["clinic"] == ALPHA_ID and req["from"] == DATE and req["to"] == DATE, f"{label} multi: Average Waiting still works after the Walk-in journey")
+        require(count.strip() == "2" and "7" in avg and "30" in avg, f"{label} multi: Average Waiting aggregate is unchanged (2 visits / 7 min 30 s)")
+        require(walkin_result.is_hidden() and page.locator('[data-role="reports-visit-duration-result"]').is_hidden(), f"{label} multi: running Average Waiting clears the other report regions")
+
         # Empty date with a Clinic selected: coherent error, no request.
         before = len(state["report_requests"])
         page.fill('[data-role="reports-date-input"]', "")
@@ -378,6 +519,24 @@ with sync_playwright() as playwright:
         geometry(page, label + " Visit Duration result", "single")
         page.screenshot(path=str(OUT / f"reports-single-duration-{label}.png"), full_page=True)
 
+        before = len(state["report_requests"])
+        submit_report(page, DATE, "walk_ins_recorded")
+        walkin_result = page.locator('[data-role="reports-walk-in-count-result"]')
+        walkin_result.wait_for(state="visible", timeout=20000)
+        req = state["report_requests"][-1]
+        require(len(state["report_requests"]) == before + 1 and req["route"] == "walk_ins_recorded" and req["clinic"] == ALPHA_ID and req["from"] == DATE and req["to"] == DATE and req["method"] == "GET", f"{label} single: Walk-in count sends exactly one GET request with the fixed Clinic and from=to={DATE}")
+        count = ascii_digits(page.locator('[data-role="reports-walk-in-count"]').inner_text())
+        require(count.strip() == WALKIN_ALPHA, f"{label} single: fixed-Clinic walk-in count is {WALKIN_ALPHA} (got '{count.strip()}')")
+        require("SYN-RP-" not in page.content() and "Patient" not in walkin_result.inner_text(), f"{label} single: Walk-in count exposes no patient data")
+        for forbidden in ("/reports/walk_ins_recorded/print", "/reports/walk_ins_recorded/export"):
+            require(forbidden not in page.locator('[data-role="reports-root"]').inner_html(), f"{label} single: no print/export surface for the Walk-in count ({forbidden})")
+        require(
+            page.locator('[data-role="reports-root"] a[href*="/print"], [data-role="reports-root"] a[href*="/export"], [data-role="reports-root"] button[data-role*="print"], [data-role="reports-root"] button[data-role*="export"]').count() == 0,
+            f"{label} single: the Walk-in surface offers no print/CSV affordance",
+        )
+        geometry(page, label + " Walk-in result", "single")
+        page.screenshot(path=str(OUT / f"reports-single-walkin-{label}.png"), full_page=True)
+
     require(not state["page_errors"], "single: no uncaught browser exceptions")
     require(not state["console"], "single: no browser console errors")
     require(not state["bad"], "single: no unexpected failed HTTP/API responses")
@@ -390,4 +549,4 @@ with sync_playwright() as playwright:
 if failures:
     print(f"FAILURES {len(failures)}")
     sys.exit(1)
-print("PASS Phase 14 Staff Portal Reports browser acceptance (Average Waiting + Visit Duration; N=2 explicit, N=1 fixed, stale/empty/forged cases)")
+print("PASS Phase 14 Staff Portal Reports browser acceptance (Average Waiting + Visit Duration + Walk-in visits recorded; N=2 explicit, N=1 fixed, stale/zero/forged cases)")
