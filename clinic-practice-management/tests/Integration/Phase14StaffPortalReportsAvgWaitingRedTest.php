@@ -24,7 +24,9 @@
  * `avg_waiting` contract and its authorization) is already-delivered behavior;
  * those parts are asserted FIRST in each test (and in the pure control test)
  * and must stay GREEN. The RED assertions are the ones that name the missing
- * Phase 14 module. The string `reports` is used instead of a new class
+ * Phase 14 module. The negative authorization test (user lacking
+ * cpms_report_read) is a fail-closed regression guard that is independent of
+ * module registration, so it is GREEN both before and after the module exists. The string `reports` is used instead of a new class
  * constant on purpose, so the failure is an assertion, not an undefined-constant
  * fatal.
  */
@@ -172,7 +174,9 @@ final class Phase14StaffPortalReportsAvgWaitingRedTest extends WP_UnitTestCase
         self::assertSame($auditBefore, $this->reportReadAuditCount(), 'rendering the page never silently runs a report for a default date');
     }
 
-    // ============ RED 3 — lacking cpms_report_read is not authorized; raw selector creates no authority ============
+    // ============ NEGATIVE — lacking cpms_report_read is not offered/authorized; raw selector creates no authority ============
+    // (Corrected: an earlier revision wrongly asserted the reports module is registered. Registration is
+    // global and says nothing about a user lacking the capability; that was a test-contract defect.)
 
     public function testUserLackingReportReadIsNotAuthorizedForReportsSurface(): void
     {
@@ -191,11 +195,12 @@ final class Phase14StaffPortalReportsAvgWaitingRedTest extends WP_UnitTestCase
         }
         self::assertSame('CLINIC_PERMISSION_DENIED', $this->errorCode($denied));
 
-        // Missing Phase 14 product surface: the module exists, and still excludes these actors.
-        self::assertContains(self::MODULE, array_column(StaffPortalShell::registered_modules(), 'id'), 'Staff Portal registers a reports module');
+        // Fail-closed contract. It must hold whether or not a reports module is
+        // registered (it must NOT depend on module registration/visibility for a
+        // user who lacks the capability), so nothing here asserts registration.
         foreach ([$secretary, $memberOnly] as $actor) {
             self::assertFalse(StaffPortalShell::module_eligible(self::MODULE, $actor), 'user lacking cpms_report_read is not eligible for the reports surface');
-            self::assertNotContains(self::MODULE, array_column(StaffPortalShell::eligible_modules($actor), 'id'));
+            self::assertNotContains(self::MODULE, array_column(StaffPortalShell::eligible_modules($actor), 'id'), 'the reports surface is not offered');
             self::assertNotSame(self::MODULE, StaffPortalShell::select_module($actor), 'a raw cpms-module selector never selects an ineligible module');
         }
 
