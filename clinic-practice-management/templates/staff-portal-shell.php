@@ -47,6 +47,7 @@ $cpms_module_id     = $cpms_logged_in ? StaffPortalShell::select_module( (int) $
 $cpms_doctor_mod    = StaffPortalShell::MODULE_DOCTOR === $cpms_module_id;
 $cpms_reception_mod = StaffPortalShell::MODULE_RECEPTION === $cpms_module_id;
 $cpms_finance_mod   = StaffPortalShell::MODULE_FINANCE === $cpms_module_id;
+$cpms_reports_mod   = StaffPortalShell::MODULE_REPORTS === $cpms_module_id;
 
 $cpms_login_name = $cpms_logged_in ? (string) $cpms_user->display_name : '';
 if ( '' === $cpms_login_name && $cpms_logged_in ) {
@@ -83,6 +84,8 @@ if ( $cpms_doctor_mod ) {
     $cpms_header_title = 'پذیرش — نوبت‌های امروز';
 } elseif ( $cpms_finance_mod ) {
     $cpms_header_title = 'مالی — در انتظار پرداخت';
+} elseif ( $cpms_reports_mod ) {
+    $cpms_header_title = 'گزارش — میانگین زمان انتظار';
 }
 
 // The doctor stylesheet is scoped to these existing classes; carrying them when
@@ -96,6 +99,8 @@ if ( $cpms_doctor_mod ) {
     $cpms_shell_user = 'secretary';
 } elseif ( $cpms_finance_mod ) {
     $cpms_shell_user = 'finance';
+} elseif ( $cpms_reports_mod ) {
+    $cpms_shell_user = 'reports';
 } elseif ( $cpms_logged_in ) {
     $cpms_shell_user = 'non-doctor';
 }
@@ -195,6 +200,12 @@ echo $cpms_styles_html;
     // Phase 12 Slice 1 — a read-only finance board, never wp-admin chrome.
     $cpms_staff_embed = true;
     include StaffPortalShell::finance_module_template_path();
+    ?>
+<?php elseif ( $cpms_reports_mod ) : ?>
+    <?php
+    // Phase 14 Slice 1 — read-only Average Waiting report, never wp-admin chrome.
+    $cpms_staff_embed = true;
+    include StaffPortalShell::reports_module_template_path();
     ?>
 <?php else : ?>
     <main class="cpms-staff-portal-shell__main" role="main" data-role="portal-main">

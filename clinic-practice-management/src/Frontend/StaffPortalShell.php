@@ -78,6 +78,17 @@ final class StaffPortalShell {
 		RolesAndCapabilities::QUEUE_READ,
 	);
 
+	/** Phase 14 Slice 1 — read-only Average Waiting report for one explicit date. */
+	public const MODULE_REPORTS = 'reports';
+
+	/** Plugin-owned Reports module template (embed mode). */
+	public const REPORTS_TEMPLATE_REL = 'templates/staff-reports-avg-waiting.php';
+
+	/** Existing read authority required by the Reports module (no new capability). */
+	public const REPORTS_MODULE_CAPS = array(
+		RolesAndCapabilities::REPORT_READ,
+	);
+
 	/**
 	 * Plugin-owned reception module template (embed mode).
 	 */
@@ -260,6 +271,11 @@ final class StaffPortalShell {
 		return self::plugin_dir() . '/' . self::RECEPTION_TEMPLATE_REL;
 	}
 
+	/** Absolute path of the mounted read-only Reports module template. */
+	public static function reports_module_template_path(): string {
+		return self::plugin_dir() . '/' . self::REPORTS_TEMPLATE_REL;
+	}
+
 	/** Absolute path of the mounted read-only Finance module template. */
 	public static function finance_module_template_path(): string {
 		return self::plugin_dir() . '/' . self::FINANCE_TEMPLATE_REL;
@@ -338,6 +354,10 @@ final class StaffPortalShell {
 				'id'    => self::MODULE_FINANCE,
 				'title' => 'مالی — در انتظار پرداخت',
 			),
+			array(
+				'id'    => self::MODULE_REPORTS,
+				'title' => 'گزارش — میانگین زمان انتظار',
+			),
 		);
 	}
 
@@ -351,7 +371,7 @@ final class StaffPortalShell {
 	public static function requested_module(): string {
 		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only view selector, no state change.
 		$raw = isset( $_GET[ self::MODULE_PARAM ] ) ? sanitize_key( (string) wp_unslash( $_GET[ self::MODULE_PARAM ] ) ) : '';
-		if ( in_array( $raw, array( self::MODULE_DOCTOR, self::MODULE_RECEPTION, self::MODULE_FINANCE ), true ) ) {
+		if ( in_array( $raw, array( self::MODULE_DOCTOR, self::MODULE_RECEPTION, self::MODULE_FINANCE, self::MODULE_REPORTS ), true ) ) {
 			return $raw;
 		}
 		return '';
@@ -410,6 +430,9 @@ final class StaffPortalShell {
 		}
 		if ( self::MODULE_FINANCE === $module_id ) {
 			return self::finance_module_eligible( $user_id );
+		}
+		if ( self::MODULE_REPORTS === $module_id ) {
+			return self::reports_module_eligible( $user_id );
 		}
 		return false;
 	}
@@ -519,6 +542,38 @@ final class StaffPortalShell {
 		$auth = App::authorization_service();
 		foreach ( App::membership_service()->active_clinic_ids_for_user( $user_id ) as $clinic_id ) {
 			if ( self::clinic_grants_all( $auth, $user_id, (int) $clinic_id, self::FINANCE_MODULE_CAPS ) ) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Reports module visibility (Phase 14 Slice 1): the existing global
+	 * `cpms_report_read` capability AND an ACTIVE Clinic membership that grants
+	 * it. Membership alone is never sufficient; no role or capability is added.
+	 * Visibility only — the REST report route re-authorizes every request and
+	 * decides the trusted Clinic and own-vs-Clinic scope.
+	 *
+	 * @param int $user_id WordPress user id.
+	 */
+	public static function reports_module_eligible( int $user_id ): bool {
+		if ( $user_id <= 0 ) {
+			return false;
+		}
+		$user = get_userdata( $user_id );
+		if ( false === $user || ! $user->exists() ) {
+			return false;
+		}
+		foreach ( self::REPORTS_MODULE_CAPS as $cap ) {
+			if ( ! $user->has_cap( $cap ) ) {
+				return false;
+			}
+		}
+
+		$auth = App::authorization_service();
+		foreach ( App::membership_service()->active_clinic_ids_for_user( $user_id ) as $clinic_id ) {
+			if ( self::clinic_grants_all( $auth, $user_id, (int) $clinic_id, self::REPORTS_MODULE_CAPS ) ) {
 				return true;
 			}
 		}

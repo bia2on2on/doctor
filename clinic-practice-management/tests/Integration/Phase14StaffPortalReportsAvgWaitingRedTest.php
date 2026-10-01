@@ -1,7 +1,11 @@
 <?php
 /**
  * Phase 14 Slice 1 — Staff Portal read-only Average Waiting reporting surface
- * for ONE explicitly selected date — TEST-ONLY RED.
+ * for ONE explicitly selected date.
+ *
+ * History: introduced as a TEST-ONLY RED (the three product assertions below
+ * failed because the module did not exist). The same suite is the GREEN
+ * acceptance once the `reports` Staff Portal module is implemented.
  *
  * Authorized Slice 1 contract (Product Owner, 2026-10-01):
  *   - the surface is a read-only module of the canonical Staff Portal
