@@ -1508,3 +1508,54 @@ body.cpms-doctor-portal-shell-body {
 		break-inside: avoid;
 	}
 }
+
+/* Phase 13 Slice 2 — bounded finalized prescription history (read-only list +
+   reprint action). Mobile-first; no new layout system, no new dependency. */
+.cpms-doc-rx-history-item {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	align-items: stretch;
+}
+
+.cpms-doc-rx-history-main {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	min-width: 0;
+}
+
+.cpms-doc-rx-history-main [data-role="rx-history-number"] {
+	font-weight: 700;
+	font-size: 15px;
+}
+
+.cpms-doc-rx-history-when {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px 12px;
+	font-size: 13px;
+	opacity: 0.85;
+}
+
+.cpms-doc-rx-history-actions {
+	display: flex;
+	justify-content: flex-start;
+}
+
+.cpms-doc-rx-history-actions .cpms-doc-btn {
+	min-height: 40px;
+}
+
+@media (min-width: 768px) {
+	.cpms-doc-rx-history-item {
+		flex-direction: row;
+		align-items: center;
+		justify-content: space-between;
+		gap: 16px;
+	}
+
+	.cpms-doc-rx-history-when {
+		flex: 0 0 auto;
+	}
+}

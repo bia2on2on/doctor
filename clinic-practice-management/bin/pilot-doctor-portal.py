@@ -69,7 +69,31 @@ def page_hint(page):
         if page.locator("[data-shell-user]").count():
             user = page.locator("[data-shell-user]").first.get_attribute("data-shell-user") or "0"
         denied = 1 if page.locator('[data-role="portal-access-denied"]').count() else 0
-        return f"path={path} shell={shell} user={user} denied={denied}"
+        # Operational diagnostics: the raw job log is not readable through the
+        # API, so every FAIL must carry enough live DOM state to attribute the
+        # failure (queue rows and their statuses, the visible error banner and
+        # the section visibility) without opening an artifact.
+        diag = page.evaluate(
+            """() => {
+              const rows = Array.from(document.querySelectorAll('[data-role="queue-item"]'))
+                .map(el => el.getAttribute('data-visit-id') + ':' + (el.getAttribute('data-status') || '?'));
+              const err = document.querySelector('[data-role="portal-error"], [data-role="queue-error"]');
+              const vis = (sel) => { const el = document.querySelector(sel); return el && !el.hidden ? 1 : 0; };
+              return {
+                rows: rows.join(','),
+                err: err && !err.hidden ? (err.textContent || '').trim().slice(0, 120) : '',
+                today: vis('[data-role="today-section"]'),
+                queue: vis('[data-role="queue-section"]'),
+                hist: vis('[data-role="rx-history-section"]'),
+                hidden: document.hidden ? 1 : 0
+              };
+            }"""
+        )
+        return (
+            f"path={path} shell={shell} user={user} denied={denied} "
+            f"rows=[{diag['rows']}] today={diag['today']} queue={diag['queue']} "
+            f"history={diag['hist']} doc_hidden={diag['hidden']} err={diag['err']!r}"
+        )
     except Exception:
         return "hint=unavailable"
 
@@ -1682,6 +1706,153 @@ def prove_finalized_rx_print(page, state, visit_id, rx_id, expected_number, expe
          f"print_calls=1 get_only=1 mutation=0 rtl_isolated=1 handwriting_surface=0 navigation_restored=1")
 
 
+# ===== Phase 13 Slice 2 — bounded finalized prescription history + reprint =====
+HISTORY_EMPTY_PROVEN = {"done": False}
+HISTORY_ROW_KEYS = [
+    "prescription_id",
+    "visit_id",
+    "prescription_number",
+    "patient_name",
+    "finalized_at_local",
+    "finalized_at_jalali",
+]
+HISTORY_FORBIDDEN_KEYS = (
+    "patient_id", "clinician_id", "clinic_id", "location_id", "mrn",
+    "mobile", "national_id", "notes", "files", "audit", "items", "status",
+)
+
+
+def assert_history_payload(body, label):
+    data = payload(body)
+    if list(data.keys()) != ["prescriptions", "has_more"]:
+        raise RuntimeError(f"{label} history envelope is not the bounded minimal contract")
+    rows = data["prescriptions"]
+    if len(rows) > 100:
+        raise RuntimeError(f"{label} history response exceeded the bounded result limit")
+    for row in rows:
+        if list(row.keys()) != HISTORY_ROW_KEYS:
+            raise RuntimeError(f"{label} history row is not privacy-minimal: {list(row.keys())}")
+        for forbidden in HISTORY_FORBIDDEN_KEYS:
+            if forbidden in row:
+                raise RuntimeError(f"{label} history row exposes forbidden key {forbidden}")
+    return data
+
+
+def prove_rx_history_state(page, state, label):
+    """Empty/populated state of the bounded history surface on THIS load."""
+    section = page.locator('[data-role="rx-history-section"]')
+    section.wait_for(state="visible", timeout=15000)
+    history_responses = [r for r in state["reqs"] if r["route"].endswith("/doctor/portal/prescriptions/history")]
+    if not history_responses:
+        raise RuntimeError(f"{label} the portal did not read the dedicated bounded history endpoint")
+    if section.locator('canvas, [data-role*="handwriting"]').count() != 0:
+        raise RuntimeError(f"{label} history surface exposes a handwriting node")
+    rows = page.locator('[data-role="rx-history-item"]')
+    count = rows.count()
+    if count == 0:
+        if not page.locator('[data-role="rx-history-empty"]').is_visible():
+            raise RuntimeError(f"{label} empty history state is not rendered")
+        HISTORY_EMPTY_PROVEN["done"] = True
+        shot(page, f"doctor-portal-{label}-rx-history-empty")
+        info(f"rx-history-{label} state=empty rows=0 handwriting=0")
+    return count
+
+
+def prove_rx_history(page, state, doctor, label):
+    """One real history row -> the EXISTING Slice 1 print route -> back to history."""
+    expected = state.get("last_finalized_rx") or {}
+    number = expected.get("number")
+    rx_id = expected.get("id")
+    visit_id = expected.get("visit_id")
+    if not number or not rx_id:
+        raise RuntimeError(f"{label} no server-finalized prescription is available for the history journey")
+
+    section = page.locator('[data-role="rx-history-section"]')
+    section.wait_for(state="visible", timeout=15000)
+    if page.locator('[data-role="rx-history-list"]').count() != 1:
+        raise RuntimeError(f"{label} history list container is missing")
+    # The load-time history read is proven from the recorded response status
+    # (its body is not retained by the browser across the navigation); the
+    # payload contract is proven on a fresh authorized read of the SAME route
+    # from the SAME session with the same trusted selector headers.
+    load_reads = [r for r in state["rest"] if r["route"].endswith("/doctor/portal/prescriptions/history")]
+    if not load_reads or load_reads[-1]["status"] != 200:
+        status = load_reads[-1]["status"] if load_reads else "no response"
+        raise RuntimeError(f"{label} bounded history read returned HTTP {status}")
+    fresh = portal_fetch(page, doctor, "GET", "/doctor/portal/prescriptions/history")
+    if fresh["status"] != 200:
+        raise RuntimeError(f"{label} bounded history re-read returned HTTP {fresh['status']}")
+    data = assert_history_payload(fresh["body"], label)
+    rows = data["prescriptions"]
+    if not any(row["prescription_number"] == number for row in rows):
+        raise RuntimeError(f"{label} the finalized prescription is missing from the doctor's bounded history")
+    finalized_dates = [row["finalized_at_local"] for row in rows]
+    if sorted(finalized_dates, reverse=True) != finalized_dates:
+        raise RuntimeError(f"{label} history order is not newest-finalized-first")
+
+    row = page.locator(f'[data-role="rx-history-item"][data-rx-id="{rx_id}"]')
+    row.wait_for(state="visible", timeout=15000)
+    row_text = row.inner_text() or ""
+    if number not in row_text:
+        raise RuntimeError(f"{label} history row does not present its prescription reference")
+    if row.locator('input, textarea, select, [data-role*="edit"], [data-role*="correct"]').count() != 0:
+        raise RuntimeError(f"{label} history row exposes a mutation/correction surface")
+    button = row.locator('[data-role="rx-history-print"]')
+    if button.count() != 1 or not button.is_enabled():
+        raise RuntimeError(f"{label} history row has no enabled reprint control")
+    shot(page, f"doctor-portal-{label}-rx-history")
+
+    page.evaluate("""() => {
+        window.__cpmsOriginalPrint = window.print;
+        window.__cpmsPrintCalls = 0;
+        window.print = function () { window.__cpmsPrintCalls += 1; };
+    }""")
+    req_start = len(state["reqs"])
+    expected_route = f"/doctor/portal/visits/{visit_id}/prescriptions/{rx_id}/print"
+    with page.expect_response(
+        lambda r: route_of(r.url).endswith(expected_route) and r.request.method == "GET",
+        timeout=15000,
+    ) as print_info:
+        button.click()
+    print_response = print_info.value
+    if print_response.status != 200:
+        raise RuntimeError(f"{label} reprint through the existing print route returned HTTP {print_response.status}")
+    print_data = payload(print_response.json())
+    if list(print_data.keys()) != [
+        "prescription_number", "patient", "clinician", "location",
+        "finalized_at_local", "finalized_at_jalali", "items",
+    ] or print_data.get("prescription_number") != number:
+        raise RuntimeError(f"{label} reprint did not reuse the delivered Slice 1 print projection")
+    page.wait_for_function("() => window.__cpmsPrintCalls === 1", timeout=8000)
+    page.evaluate("window.dispatchEvent(new Event('afterprint'))")
+    page.wait_for_function(
+        "() => !document.body.classList.contains('cpms-doctor-prescription-printing') && "
+        "!document.getElementById('cpms-doctor-prescription-print-surface')",
+        timeout=8000,
+    )
+    if not section.is_visible() or not button.is_enabled():
+        raise RuntimeError(f"{label} the doctor did not return to the usable history surface after printing")
+    if page.locator("#cpms-staff-portal-shell").count() != 1 or page.locator("#cpms-staff-portal-shell").is_hidden():
+        raise RuntimeError(f"{label} the independent portal shell was not retained after the reprint journey")
+    requests = state["reqs"][req_start:]
+    mutations = [r for r in requests if r["method"] != "GET"]
+    print_gets = [r for r in requests if r["route"].endswith(expected_route)]
+    if mutations or len(print_gets) != 1:
+        raise RuntimeError(
+            f"{label} the reprint journey is not read-only/single-read "
+            f"(mutations={[r['method'] for r in mutations]} prints={len(print_gets)})"
+        )
+    page.evaluate("""() => {
+        if (window.__cpmsOriginalPrint) window.print = window.__cpmsOriginalPrint;
+        delete window.__cpmsOriginalPrint;
+        delete window.__cpmsPrintCalls;
+    }""")
+    info(
+        f"rx-history-{label} rows={len(rows)} has_more={int(bool(data['has_more']))} bounded=1 privacy=1"
+        f" ordered=1 reprint_route=existing print_calls=1 mutation=0 handwriting=0 wp_admin=0"
+    )
+
+
 def prove_workspace_rx_multi(page, state, doctor, visit_id, label):
     """Real UI -> ONE existing create -> persisted record, at every viewport.
 
@@ -1811,6 +1982,11 @@ def prove_workspace_rx_multi(page, state, doctor, visit_id, label):
         [names[0], names[2]],
         label,
     )
+    state["last_finalized_rx"] = {
+        "id": rx_id,
+        "visit_id": visit_id,
+        "number": rx.get("prescription_number"),
+    }
     assert_hygiene(page, state, label + "-rx-finalized")
     shot(page, f"doctor-portal-{label}-rx-multi-finalized")
     info(f"workspace-rx-multi-{label} authorized=1 keyboard_add=2 remove_middle=1 row_requests=0"
@@ -2620,6 +2796,8 @@ def prove_one(browser, doctor, vp, shot_name=None, probe_fallback=False):
         # Phase 10 Slice 2 GREEN: state-driven action controls on the waiting
         # row (Call + Skip) reusing the existing POST /visits/{id}/{...}
         # routes, plus the full mutation journey on this viewport's pair.
+        stage = "rx-history-state"
+        prove_rx_history_state(page, state, vp["vp"])
         stage = "queue-actions"
         waiting_row = page.locator(
             f'[data-role="queue-item"][data-visit-id="{doctor["visit_own"]}"]'
@@ -2722,6 +2900,19 @@ def prove_one(browser, doctor, vp, shot_name=None, probe_fallback=False):
             probe_controlled_refresh(
                 page, doctor, doctor["appt_booked"], doctor["booked_name"], vp["vp"]
             )
+        if did_actions:
+            # Phase 13 Slice 2 — bounded finalized prescription history +
+            # reprint through the EXISTING Slice 1 print route, on a fresh
+            # portal load (no polling architecture for this surface).
+            stage = "rx-history"
+            with page.expect_response(
+                lambda r: route_of(r.url).endswith("/doctor/portal/prescriptions/history")
+                and r.request.method == "GET",
+                timeout=25000,
+            ):
+                goto_portal(page, state, expect_today=True)
+            prove_rx_history_state(page, state, vp["vp"])
+            prove_rx_history(page, state, doctor, vp["vp"])
         stage = "no-reload"
         reloads, rest_calls, harness_navs = assert_no_product_reload(page, nav0, vp["vp"])
         info(
