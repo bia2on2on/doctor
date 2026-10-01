@@ -13,6 +13,17 @@
  *   Alpha: 600s + 1200s -> avg 900s over 2 visits
  *   Beta : 300s         -> avg 300s over 1 visit
  *   Gamma: 900s         -> never granted to the synthetic reporters
+ * Phase 14 Slice 3 — the read-only "Walk-in visits recorded" aggregate counts the
+ * rows already above plus deliberately excluded controls, on the same stored
+ * visit_date:
+ *   Alpha: 5 walk_in on the date (2 waiting + 2 consultation + 1 cancelled)
+ *          + 1 `scheduled` on the date (source filter) and 1 walk_in on an
+ *          OTHER date (date filter) -> Alpha@date = 5, Alpha@other_date = 1
+ *   Beta : 3 walk_in on the date (1 waiting + 1 consultation + 1 in_consultation)
+ *   Gamma: 2 walk_in -> never granted to the synthetic reporters
+ *   the empty date has 0 walk_in rows -> a real zero, displayed as 0
+ * Visit status therefore never redefines the metric: only stored `source` and
+ * stored `visit_date` do.
  *
  * Two synthetic report readers (global cpms_report_read through the existing
  * Clinic Manager role + ACTIVE memberships):
@@ -30,6 +41,7 @@ $db   = \ClinicCore\Bootstrap\App::db();
 $now  = $db->nowUtcSql();
 $uniq = substr(bin2hex(random_bytes(4)), 0, 8);
 $date = '2026-03-14';
+$otherDate = '2026-03-13';
 
 function rp_fail(string $msg): void
 {
@@ -117,6 +129,29 @@ $durationVisit('alpha', '11:00:00', '11:20:00');
 $durationVisit('beta', '06:30:00', '06:35:00', '2026-03-15');
 $durationVisit('gamma', '08:00:00', '08:15:00');
 
+/**
+ * Phase 14 Slice 3 controls — one Visit row per call, with an explicit stored
+ * source/status/visit_date. No patient data is ever projected into the aggregate.
+ */
+$metricVisit = static function (string $key, string $visitDate, string $source, string $status) use ($wpdb, $db, $now, $clinics, $uniq): void {
+    $c = $clinics[$key];
+    $patientId = rp_insert($wpdb, $db->table('cpms_patients'), [
+        'clinic_id' => $c['id'], 'mrn' => 'SYN-RPW-' . strtoupper($key) . '-' . bin2hex(random_bytes(3)),
+        'first_name' => 'Synthetic Reports Walkin', 'last_name' => 'Patient ' . $uniq,
+        'mobile' => '07' . random_int(1000000000, 9999999999), 'status' => 'active', 'created_at' => $now, 'updated_at' => $now,
+    ], $key . ' metric patient');
+    rp_insert($wpdb, $db->table('cpms_visits'), [
+        'clinic_id' => $c['id'], 'location_id' => $c['location'], 'clinician_id' => $c['clinician'], 'patient_id' => $patientId,
+        'source' => $source, 'status' => $status, 'visit_date' => $visitDate,
+        'check_in_at' => $visitDate . ' 07:00:00.000', 'waiting_since' => null, 'called_at' => null,
+        'active' => $status === 'cancelled' ? 0 : 1, 'created_at' => $now, 'updated_at' => $now,
+    ], $key . ' metric visit');
+};
+$metricVisit('alpha', $date, 'walk_in', 'cancelled');          // status must not redefine the metric
+$metricVisit('alpha', $date, 'scheduled', 'consultation_completed'); // source filter
+$metricVisit('alpha', $otherDate, 'walk_in', 'consultation_completed'); // date filter
+$metricVisit('beta', $date, 'walk_in', 'in_consultation');     // incomplete status still counts
+
 $memberships = \ClinicCore\Bootstrap\App::membership_service();
 $multiLogin  = 'rpmulti' . $uniq;
 $multiPass   = 'RpMulti-' . $uniq . '-2026!';
@@ -144,7 +179,11 @@ $env = [
     'REPORTS_SINGLE_LOGIN' => $singleLogin,
     'REPORTS_SINGLE_PASS'  => $singlePass,
     'REPORTS_DATE'         => $date,
+    'REPORTS_OTHER_DATE'   => $otherDate,
     'REPORTS_EMPTY_DATE'   => '2026-03-15',
+    'REPORTS_WALKIN_ALPHA' => '5',
+    'REPORTS_WALKIN_BETA'  => '3',
+    'REPORTS_WALKIN_OTHER_DATE' => '1',
     'REPORTS_ALPHA_ID'     => (string) $clinics['alpha']['id'],
     'REPORTS_ALPHA_NAME'   => $clinics['alpha']['name'],
     'REPORTS_BETA_ID'      => (string) $clinics['beta']['id'],
@@ -160,4 +199,4 @@ foreach ($env as $key => $value) {
     $lines[] = $key . '=' . $value;
 }
 file_put_contents('/tmp/reports.env', implode("\n", $lines) . "\n");
-echo 'fixture: reports clinics=3 reporters=2 (multi=2 eligible, single=1 eligible) waiting_alpha=2 waiting_beta=1 waiting_gamma=1 duration_alpha=2 duration_beta=1 duration_gamma=1 date=' . $date . ' empty_date=2026-03-15' . "\n";
+echo 'fixture: reports clinics=3 reporters=2 (multi=2 eligible, single=1 eligible) waiting_alpha=2 waiting_beta=1 waiting_gamma=1 duration_alpha=2 duration_beta=1 duration_gamma=1 walkin_alpha=5 walkin_beta=3 walkin_alpha_other=1 date=' . $date . ' other_date=' . $otherDate . ' empty_date=2026-03-15' . "\n";

@@ -146,17 +146,21 @@ final class ReportsAuthzTest extends WP_UnitTestCase
 
     // ================= Catalog + Scope =================
 
-    public function testCatalogListsTwelveTypesForDoctorWithOwnScope(): void
+    // Phase 14 Slice 3: the authorized catalog gained ONE read-only aggregate type
+    // (`walk_ins_recorded`) on top of the twelve established report types.
+    public function testCatalogListsAllKnownReportTypesForDoctorWithOwnScope(): void
     {
         wp_set_current_user($this->doctorAUserId);
         $res = $this->dispatch('GET', self::NS . '/reports');
         $this->assertSame(200, $res->get_status());
         $data = $this->payload($res);
-        $this->assertCount(12, $data['reports']);
+        $this->assertCount(13, $data['reports']);
         $this->assertSame('own', $data['reports'][0]['scope']);
         $ids = array_column($data['reports'], 'type');
         $this->assertContains('revenue', $ids);
         $this->assertContains('follow_ups_due', $ids);
+        $this->assertContains('walk_ins_recorded', $ids, 'Phase 14 Slice 3 aggregate type is offered to a report reader');
+        $this->assertSame($ids, array_values(array_unique($ids)), 'catalog lists each type exactly once');
         foreach ($data['reports'] as $r) {
             $this->assertTrue($r['available'], 'پزشک همه Capهای نوع را دارد: ' . $r['type']);
         }
@@ -302,7 +306,7 @@ final class ReportsAuthzTest extends WP_UnitTestCase
 
         foreach ([
             'appointments_today', 'appointments_week', 'visits', 'cancellations', 'no_shows',
-            'walk_ins', 'avg_waiting', 'visit_duration', 'revenue', 'payment_methods',
+            'walk_ins', 'avg_waiting', 'visit_duration', 'walk_ins_recorded', 'revenue', 'payment_methods',
             'open_balances', 'follow_ups_due',
         ] as $type) {
             $res = $this->dispatch('GET', self::NS . '/reports/' . $type);

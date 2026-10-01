@@ -525,7 +525,7 @@ final class ReportsExportClinicAuthorizationTest extends WP_UnitTestCase
 
         $catalog = $this->dispatchGet(self::NS . '/reports', $clinicId, $actorId);
         self::assertSame(200, $catalog->get_status(), 'an authorized reader must still read the catalog');
-        self::assertCount(12, $this->payload($catalog)['reports']);
+        self::assertCount(13, $this->payload($catalog)['reports'], 'twelve established types + the Phase 14 Slice 3 read-only aggregate');
 
         $print = $this->dispatchGet(self::NS . '/reports/revenue/print', $clinicId, $actorId);
         self::assertSame(200, $print->get_status(), 'an authorized reader must still print');

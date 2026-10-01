@@ -14,7 +14,7 @@ use ClinicCore\Settings\SettingsFactory;
 use Closure;
 
 /**
- * سرویس گزارش (F8 — FR-19.2: ۱۲ گزارش + G5).
+ * سرویس گزارش (F8 — FR-19.2: ۱۲ گزارش + G5 + Phase 14 Slice 3 walk_ins_recorded).
  *
  * مدل دسترسی (permission-matrix §2/§3/§6 + ADR-0026 D-8/D-15 + قواعد کارفرما):
  *  - همه گزارش‌ها: `cpms_report_read` (پیش‌فرض فقط پزشک؛ منشی ❌).
@@ -31,12 +31,25 @@ use Closure;
  *
  * Performance (FR-19.4): بازه bounded (`reports.max_range_days`)، کوئری‌های
  * Aggregate تک-عبارتی (بدون N+1)، سقف ردیف لیست‌ها (500) + has_more.
+ *
+ * Phase 14 Slice 3 — جداسازی «خواندن» از «چاپ/Export»: متادیتای هر نوع
+ * (`print_export`) تعیین می‌کند آیا آن نوع از `/print` و `/export` در
+ * دسترس است یا نه؛ `walk_ins_recorded` فقط-خواندنی است.
  */
 final class ReportService
 {
     private const ROW_LIMIT = 500;
 
-    /** @var array<string, array{label: string, caps: list<string>, kind: string, default_days: int}> */
+    /**
+     * پیکربندی هر نوع گزارش.
+     *
+     * `print_export` (Phase 14 Slice 3): فقط برای نوع‌هایی که از مسیرهای
+     * چاپ/Export پشتیبانی می‌کنند صریح است؛ نبودِ آن = پشتیبانی (سازگاری با
+     * ۱۲ نوع موجود). نوعِ `walk_ins_recorded` عمداً فقط-خواندنی است و هرگز به
+     * مسیرهای `/print` و `/export` راه نمی‌یابد.
+     *
+     * @var array<string, array{label: string, caps: list<string>, kind: string, default_days: int, print_export?: bool}>
+     */
     private const TYPES = [
         // عملیاتی — لیست با نام بیمار (نیاز patient_read)
         'appointments_today' => ['label' => 'نوبت‌های امروز', 'caps' => [RolesAndCapabilities::PATIENT_READ], 'kind' => 'appointments', 'default_days' => 0],
@@ -48,6 +61,8 @@ final class ReportService
         // عملیاتی — Aggregate بدون PHI
         'avg_waiting' => ['label' => 'میانگین زمان انتظار', 'caps' => [], 'kind' => 'avg_waiting', 'default_days' => 30],
         'visit_duration' => ['label' => 'میانگین مدت ویزیت', 'caps' => [], 'kind' => 'visit_duration', 'default_days' => 30],
+        // فقط-خواندنی (GET): چاپ/Export برای این نوع در دسترس نیست.
+        'walk_ins_recorded'  => ['label' => 'ویزیت‌های بدون نوبت ثبت‌شده', 'caps' => [], 'kind' => 'walk_ins_recorded', 'default_days' => 0, 'print_export' => false],
         // مالی — Aggregate⊥Detail (D-8) — بدون نام بیمار
         'revenue' => ['label' => 'درآمد (روز/ماه)', 'caps' => [RolesAndCapabilities::FINANCE_READ], 'kind' => 'revenue', 'default_days' => 30],
         'payment_methods' => ['label' => 'روش‌های پرداخت', 'caps' => [RolesAndCapabilities::FINANCE_READ], 'kind' => 'payment_methods', 'default_days' => 30],
@@ -117,6 +132,36 @@ final class ReportService
         return isset(self::TYPES[$type]);
     }
 
+    /**
+     * نوع‌های پشتیبانی‌شده برای مسیرهای چاپ/Export.
+     *
+     * Phase 14 Slice 3 — جداسازیِ «نوع‌های خواندنی» از «نوع‌های چاپ/Export»:
+     * یک نوع می‌تواند از `GET /reports/{type}` خوانده شود و در همان حال از
+     * `/reports/{type}/print` و `/reports/{type}/export` در دسترس نباشد. منبع
+     * حقیقت همین متادیتای نوع است (نه فهرست دومی در Controller).
+     *
+     * @return list<string>
+     */
+    public function type_ids( bool $print_export_only = false ): array {
+        $ids = [];
+        foreach ( self::TYPES as $id => $meta ) {
+            if ( $print_export_only && ! $this->supports_print_export( $id ) ) {
+                continue;
+            }
+            $ids[] = $id;
+        }
+
+        return $ids;
+    }
+
+    /**
+     * آیا این نوع از مسیرهای چاپ/Export پشتیبانی می‌کند؟ (پیش‌فرض: بله —
+     * فقط نوع‌هایی که صریحاً `print_export => false` دارند مستثنا هستند.)
+     */
+    public function supports_print_export( string $type ): bool {
+        return ( self::TYPES[ $type ]['print_export'] ?? true ) === true;
+    }
+
     public function typeLabel(string $type): string
     {
         return self::TYPES[$type]['label'] ?? $type;
@@ -170,6 +215,7 @@ final class ReportService
             'visits' => $this->reportVisits($scopeMode, $clinicianId, $range, $limit),
             'avg_waiting' => $this->reportAvgWaiting($scopeMode, $clinicianId, $range),
             'visit_duration' => $this->reportVisitDuration($scopeMode, $clinicianId, $range),
+            'walk_ins_recorded' => $this->report_walk_in_count( $scopeMode, $clinicianId, $range ), // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- existing run() scope locals
             'revenue' => $this->reportRevenue($scopeMode, $clinicianId, $range),
             'payment_methods' => $this->reportPaymentMethods($scopeMode, $clinicianId, $range),
             'open_balances' => $this->reportOpenBalances($scopeMode, $clinicianId, $range, $limit),
@@ -436,6 +482,42 @@ final class ReportService
                 'avg_duration_sec' => (int) $r['avg_duration_sec'],
                 'avg_duration_min' => (int) round(((int) $r['avg_duration_sec']) / 60),
             ], $rows),
+            'has_more' => false,
+        ];
+    }
+
+    /**
+     * تعداد «ویزیت‌های بدون نوبت ثبت‌شده» در بازه — Aggregate بدون PHI (D-8).
+     *
+     * تعریف: تعداد رکوردهای Visit که
+     *   - `source` ذخیره‌شده دقیقاً `walk_in` است، و
+     *   - `visit_date` ذخیره‌شده داخل بازهٔ درخواستی است (UI یک تاریخ صریح با
+     *     `from = to` می‌فرستد)،
+     * و در Clinic مورد اعتماد (و در صورت وجود Clinician متصل، فقط ویزیت‌های
+     * خودِ همان پزشک — Scope سرور-side).
+     *
+     * این عدد **نیست**: بیماران یکتا، تعداد نوبت‌ها، ویزیت‌های تکمیل‌شده، یا
+     * فقط Walk-inهای ساخته‌شده توسط پذیرش؛ و ادعای «یک روز تقویمی محلیِ واحد
+     * برای همهٔ Locationها» هم نیست — ملاک، همان `visit_date` ثبت‌شده است.
+     *
+     * وضعیت ویزیت (completed/cancelled/waiting/…) این متریک را بازتعریف نمی‌کند:
+     * تنها `source` و `visit_date` تعیین‌کننده‌اند. بدون JOIN به بیمار (هیچ
+     * ردیف بیمار/ویزیت در پاسخ نیست) و بدون سقف ۵۰۰ ردیفیِ گزارش‌های فهرستی —
+     * شمارش کامل با یک کوئری COUNT(*) انجام می‌شود.
+     *
+     * @param array<string, mixed> $range
+     * @return array<string, mixed>
+     */
+    private function report_walk_in_count( string $scope_mode, ?int $clinician_id, array $range ): array {
+        $sql            = 'SELECT COUNT(*) AS walk_in_count
+                FROM ' . $this->db->table( 'cpms_visits' ) . ' v
+                WHERE v.clinic_id = %d AND v.source = %s AND v.visit_date BETWEEN %s AND %s';
+        $params         = [ $this->trustedClinicId(), 'walk_in', $range['from'], $range['to'] ];
+        [$sql, $params] = $this->applyScope( $sql, $params, 'v.clinician_id', $scope_mode, $clinician_id );
+
+        return [
+            'summary'  => [ 'count' => (int) $this->db->fetchValue( $sql, $params ) ],
+            'rows'     => [],
             'has_more' => false,
         ];
     }
