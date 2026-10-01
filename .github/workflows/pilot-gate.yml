@@ -1526,6 +1526,33 @@ jobs:
           fi
           test "${BROWSER_EXIT}" -eq 0
 
+      # Phase 14 Slice 1 (multi-Clinic repair) — همان Chromium و همان وردپرس. ماژول
+      # گزارش‌ها: یک Clinic مجاز (خودکار) / دو Clinic مجاز (انتخاب صریح، بدون پیش‌فرض)
+      # / انتخابگر جعلی (رد سمت سرور). بدون فریم‌ورک جدید و بدون توقف زمان.
+      - name: Phase 14 Reports fixture — two eligible Clinics + one eligible Clinic + foreign Clinic
+        run: |
+          WP_HOME="$WP_DIR" php tests/fixtures/pilot-reports-fixture.php 2>&1 | tee /tmp/reports-fixture.log
+          FIX_EXIT="${PIPESTATUS[0]}"
+          if [ "${FIX_EXIT}" != "0" ] || [ ! -s /tmp/reports.env ]; then
+            echo "::error::reports-fixture failed: exit=${FIX_EXIT} env_bytes=$(wc -c < /tmp/reports.env 2>/dev/null || echo MISSING) log_tail=$(tail -c 1500 /tmp/reports-fixture.log 2>/dev/null | tr '\n' '~')"
+          fi
+          test "${FIX_EXIT}" -eq 0
+          test -s /tmp/reports.env
+          cat /tmp/reports.env >> "$GITHUB_ENV"
+          grep '^REPORTS_URL=' /tmp/reports.env
+
+      - name: Staff Portal Reports — real browser (390×844, 768×1024, 1366×768)
+        env:
+          BASE: http://localhost:8080
+        run: |
+          python3 -m py_compile bin/pilot-reports.py
+          python3 bin/pilot-reports.py | tee /tmp/reports-browser.log
+          BROWSER_EXIT="${PIPESTATUS[0]}"
+          if [ "${BROWSER_EXIT}" != "0" ]; then
+            echo "::error::reports-browser failed: exit=${BROWSER_EXIT} fails=$(grep '^FAIL' /tmp/reports-browser.log 2>/dev/null | wc -l) fail_lines=$(grep '^FAIL' /tmp/reports-browser.log 2>/dev/null | tr '\n' '~' | head -c 2500)"
+          fi
+          test "${BROWSER_EXIT}" -eq 0
+
       # خلاصهٔ Responsive باید از sandbox هم قابل بازیابی باشد: لاگِ job به blob
       # ریدایرکت می‌شود و دانلودشدنی نیست و `$GITHUB_STEP_SUMMARY` هم از API
       # خوانده نمی‌شود. پس همان خلاصهٔ PASS/FAIL (که برای صفحهٔ عمومیِ shortcode

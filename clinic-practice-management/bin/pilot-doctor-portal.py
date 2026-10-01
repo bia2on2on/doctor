@@ -449,13 +449,13 @@ ROLE_SWITCH_MARKERS = ("role-switcher", "role_switcher", "switch-role", "switch_
 
 
 def assert_staff_shell(page):
-    """Doctor shell plus the existing-capability Finance read module."""
+    """Doctor shell plus the existing-capability Finance and Reports read modules."""
     if page.locator("html").get_attribute("data-cpms-staff-portal-shell") != "v1":
         raise RuntimeError("shared Staff Portal shell root missing")
     modules = page.locator('[data-role="staff-module-link"]')
     ids = [modules.nth(i).get_attribute("data-cpms-staff-module") for i in range(modules.count())]
-    if ids != ["doctor", "finance"]:
-        raise RuntimeError(f"staff navigation must expose doctor + authorized finance modules, got {ids}")
+    if ids != ["doctor", "finance", "reports"]:
+        raise RuntimeError(f"staff navigation must expose doctor + authorized finance + reports modules, got {ids}")
     if not modules.first.is_visible():
         raise RuntimeError("doctor module navigation entry is not visible")
     if page.locator('script[type="application/json"][class*="__config"]').count() != 1:

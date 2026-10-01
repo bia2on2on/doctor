@@ -78,6 +78,17 @@ final class StaffPortalShell {
 		RolesAndCapabilities::QUEUE_READ,
 	);
 
+	/** Phase 14 Slice 1 — read-only Average Waiting report for one explicit date. */
+	public const MODULE_REPORTS = 'reports';
+
+	/** Plugin-owned Reports module template (embed mode). */
+	public const REPORTS_TEMPLATE_REL = 'templates/staff-reports-avg-waiting.php';
+
+	/** Existing read authority required by the Reports module (no new capability). */
+	public const REPORTS_MODULE_CAPS = array(
+		RolesAndCapabilities::REPORT_READ,
+	);
+
 	/**
 	 * Plugin-owned reception module template (embed mode).
 	 */
@@ -260,6 +271,11 @@ final class StaffPortalShell {
 		return self::plugin_dir() . '/' . self::RECEPTION_TEMPLATE_REL;
 	}
 
+	/** Absolute path of the mounted read-only Reports module template. */
+	public static function reports_module_template_path(): string {
+		return self::plugin_dir() . '/' . self::REPORTS_TEMPLATE_REL;
+	}
+
 	/** Absolute path of the mounted read-only Finance module template. */
 	public static function finance_module_template_path(): string {
 		return self::plugin_dir() . '/' . self::FINANCE_TEMPLATE_REL;
@@ -338,6 +354,10 @@ final class StaffPortalShell {
 				'id'    => self::MODULE_FINANCE,
 				'title' => 'مالی — در انتظار پرداخت',
 			),
+			array(
+				'id'    => self::MODULE_REPORTS,
+				'title' => 'گزارش — میانگین زمان انتظار',
+			),
 		);
 	}
 
@@ -351,7 +371,7 @@ final class StaffPortalShell {
 	public static function requested_module(): string {
 		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only view selector, no state change.
 		$raw = isset( $_GET[ self::MODULE_PARAM ] ) ? sanitize_key( (string) wp_unslash( $_GET[ self::MODULE_PARAM ] ) ) : '';
-		if ( in_array( $raw, array( self::MODULE_DOCTOR, self::MODULE_RECEPTION, self::MODULE_FINANCE ), true ) ) {
+		if ( in_array( $raw, array( self::MODULE_DOCTOR, self::MODULE_RECEPTION, self::MODULE_FINANCE, self::MODULE_REPORTS ), true ) ) {
 			return $raw;
 		}
 		return '';
@@ -410,6 +430,9 @@ final class StaffPortalShell {
 		}
 		if ( self::MODULE_FINANCE === $module_id ) {
 			return self::finance_module_eligible( $user_id );
+		}
+		if ( self::MODULE_REPORTS === $module_id ) {
+			return self::reports_module_eligible( $user_id );
 		}
 		return false;
 	}
@@ -523,6 +546,77 @@ final class StaffPortalShell {
 			}
 		}
 		return false;
+	}
+
+	/**
+	 * Reports module visibility (Phase 14 Slice 1): the existing global
+	 * `cpms_report_read` capability AND at least one ACTIVE Clinic membership
+	 * that grants it (see {@see self::reports_eligible_clinics()}). Membership
+	 * alone is never sufficient; no role or capability is added. Visibility
+	 * only — the REST report route re-authorizes every request and decides the
+	 * trusted Clinic and own-vs-Clinic scope.
+	 *
+	 * @param int $user_id WordPress user id.
+	 */
+	public static function reports_module_eligible( int $user_id ): bool {
+		return array() !== self::reports_eligible_clinics( $user_id );
+	}
+
+	/**
+	 * Clinics the actor may select for the Reports module, in stable id order.
+	 *
+	 * Eligible = the WordPress user holds the global `cpms_report_read`
+	 * capability AND has an ACTIVE membership in that Clinic whose Clinic-scoped
+	 * authorization grants it AND the Clinic's Organization is active (the same
+	 * conditions the REST trusted-scope establisher enforces). The list only
+	 * drives what the page offers; it is NEVER authority — every report request
+	 * is re-validated server-side by the REST Clinic-context boundary.
+	 *
+	 * @param int $user_id WordPress user id.
+	 * @return list<array{id:int,name:string}>
+	 */
+	public static function reports_eligible_clinics( int $user_id ): array {
+		if ( $user_id <= 0 ) {
+			return array();
+		}
+		$user = get_userdata( $user_id );
+		if ( false === $user || ! $user->exists() ) {
+			return array();
+		}
+		foreach ( self::REPORTS_MODULE_CAPS as $cap ) {
+			if ( ! $user->has_cap( $cap ) ) {
+				return array();
+			}
+		}
+
+		$auth = App::authorization_service();
+		$ids  = array();
+		foreach ( App::membership_service()->active_clinic_ids_for_user( $user_id ) as $clinic_id ) {
+			if ( self::clinic_grants_all( $auth, $user_id, (int) $clinic_id, self::REPORTS_MODULE_CAPS ) ) {
+				$ids[] = (int) $clinic_id;
+			}
+		}
+		if ( array() === $ids ) {
+			return array();
+		}
+
+		$db   = App::db();
+		$rows = $db->fetchAll(
+			'SELECT c.id, c.name FROM ' . $db->table( 'cpms_clinics' ) . ' c
+			 INNER JOIN ' . $db->table( 'cpms_organizations' ) . ' o ON o.id = c.organization_id
+			 WHERE o.status = \'active\' AND c.id IN (' . implode( ',', array_fill( 0, count( $ids ), '%d' ) ) . ')
+			 ORDER BY c.id ASC',
+			$ids
+		);
+
+		$clinics = array();
+		foreach ( $rows as $row ) {
+			$clinics[] = array(
+				'id'   => (int) $row['id'],
+				'name' => (string) $row['name'],
+			);
+		}
+		return $clinics;
 	}
 
 	/**
