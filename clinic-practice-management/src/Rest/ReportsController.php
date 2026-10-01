@@ -52,8 +52,8 @@ final class ReportsController extends RestBase
         // ReportService): نوع‌های «خواندنی» و نوع‌های «چاپ/Export». یک نوع
         // فقط-خواندنی هرگز در الگوی چاپ/Export حاضر نیست، پس این دو مسیر برای
         // آن ۴۰۴ می‌دهند؛ هیچ Allowlist جدا و دستیِ دومی نگه‌داری نمی‌شود.
-        $readType = '(?P<type>' . implode('|', $this->reports->typeIds()) . ')';
-        $printExportType = '(?P<type>' . implode('|', $this->reports->typeIds(true)) . ')';
+        $read_type         = '(?P<type>' . implode( '|', $this->reports->type_ids() ) . ')';
+        $print_export_type = '(?P<type>' . implode( '|', $this->reports->type_ids( true ) ) . ')';
 
         register_rest_route(self::NS, '/reports', [
             [
@@ -66,67 +66,89 @@ final class ReportsController extends RestBase
             ],
         ]);
 
-        register_rest_route(self::NS, '/reports/' . $readType, [
+        register_rest_route(
+            self::NS,
+            '/reports/' . $read_type,
             [
-                'methods' => WP_REST_Server::READABLE,
-                'callback' => fn (WP_REST_Request $r) => $this->staff($r, RolesAndCapabilities::REPORT_READ, fn (): array => $this->reports->run(
-                    $this->userId($r),
-                    (string) $r['type'],
-                    $r['from'] ?? null,
-                    $r['to'] ?? null
-                )),
-                'permission_callback' => fn (WP_REST_Request $r)
-                    => $this->permCap($r, RolesAndCapabilities::REPORT_READ),
-                'args' => [
-                    // اعتبارسنجی تاریخ در Service (CLINIC_VALIDATION_FAILED/422) —
-                    // نه format:date وردپرس (400 rest_invalid_param)
-                    'from' => ['required' => false, 'type' => 'string'],
-                    'to' => ['required' => false, 'type' => 'string'],
-                ],
-            ],
-        ]);
-
-        register_rest_route(self::NS, '/reports/' . $printExportType . '/print', [
-            [
-                'methods' => WP_REST_Server::READABLE,
-                'callback' => fn (WP_REST_Request $r) => $this->printView($r),
-                'permission_callback' => fn (WP_REST_Request $r)
-                    => $this->permCap($r, RolesAndCapabilities::REPORT_READ),
-                'args' => [
-                    // اعتبارسنجی تاریخ در Service (CLINIC_VALIDATION_FAILED/422) —
-                    // نه format:date وردپرس (400 rest_invalid_param)
-                    'from' => ['required' => false, 'type' => 'string'],
-                    'to' => ['required' => false, 'type' => 'string'],
-                ],
-            ],
-        ]);
-
-        register_rest_route(self::NS, '/reports/' . $printExportType . '/export', [
-            [
-                'methods' => WP_REST_Server::CREATABLE,
-                'callback' => fn (WP_REST_Request $r) => $this->staff(
-                    $r,
-                    RolesAndCapabilities::REPORT_READ,
-                    fn (): array => $this->exports->request(
-                        $this->userId($r),
-                        (string) $r['type'],
-                        $r['from'] ?? null,
-                        $r['to'] ?? null
+                [
+                    'methods'              => WP_REST_Server::READABLE,
+                    'callback'             => fn ( WP_REST_Request $r ) => $this->staff(
+                        $r,
+                        RolesAndCapabilities::REPORT_READ,
+                        fn (): array => $this->reports->run(
+                            $this->userId( $r ),
+                            (string) $r['type'],
+                            $r['from'] ?? null,
+                            $r['to'] ?? null
+                        )
                     ),
-                    202,
-                    // EXPORT جداگانه لازم است (فقط REPORT_READ کافی نیست).
-                    RolesAndCapabilities::EXPORT
-                ),
-                'permission_callback' => fn (WP_REST_Request $r)
-                    => $this->permCap($r, RolesAndCapabilities::REPORT_READ),
-                'args' => [
-                    // اعتبارسنجی تاریخ در Service (CLINIC_VALIDATION_FAILED/422) —
-                    // نه format:date وردپرس (400 rest_invalid_param)
-                    'from' => ['required' => false, 'type' => 'string'],
-                    'to' => ['required' => false, 'type' => 'string'],
+                    'permission_callback'  => fn ( WP_REST_Request $r ) => $this->permCap(
+                        $r,
+                        RolesAndCapabilities::REPORT_READ
+                    ),
+                    'args'                 => [
+                        // اعتبارسنجی تاریخ در Service (CLINIC_VALIDATION_FAILED/422) —
+                        // نه format:date وردپرس (400 rest_invalid_param)
+                        'from' => [ 'required' => false, 'type' => 'string' ],
+                        'to'   => [ 'required' => false, 'type' => 'string' ],
+                    ],
                 ],
-            ],
-        ]);
+            ]
+        );
+
+        register_rest_route(
+            self::NS,
+            '/reports/' . $print_export_type . '/print',
+            [
+                [
+                    'methods'              => WP_REST_Server::READABLE,
+                    'callback'             => fn ( WP_REST_Request $r ) => $this->printView( $r ),
+                    'permission_callback'  => fn ( WP_REST_Request $r ) => $this->permCap(
+                        $r,
+                        RolesAndCapabilities::REPORT_READ
+                    ),
+                    'args'                 => [
+                        // اعتبارسنجی تاریخ در Service (CLINIC_VALIDATION_FAILED/422) —
+                        // نه format:date وردپرس (400 rest_invalid_param)
+                        'from' => [ 'required' => false, 'type' => 'string' ],
+                        'to'   => [ 'required' => false, 'type' => 'string' ],
+                    ],
+                ],
+            ]
+        );
+
+        register_rest_route(
+            self::NS,
+            '/reports/' . $print_export_type . '/export',
+            [
+                [
+                    'methods'              => WP_REST_Server::CREATABLE,
+                    'callback'             => fn ( WP_REST_Request $r ) => $this->staff(
+                        $r,
+                        RolesAndCapabilities::REPORT_READ,
+                        fn (): array => $this->exports->request(
+                            $this->userId( $r ),
+                            (string) $r['type'],
+                            $r['from'] ?? null,
+                            $r['to'] ?? null
+                        ),
+                        202,
+                        // EXPORT جداگانه لازم است (فقط REPORT_READ کافی نیست).
+                        RolesAndCapabilities::EXPORT
+                    ),
+                    'permission_callback'  => fn ( WP_REST_Request $r ) => $this->permCap(
+                        $r,
+                        RolesAndCapabilities::REPORT_READ
+                    ),
+                    'args'                 => [
+                        // اعتبارسنجی تاریخ در Service (CLINIC_VALIDATION_FAILED/422) —
+                        // نه format:date وردپرس (400 rest_invalid_param)
+                        'from' => [ 'required' => false, 'type' => 'string' ],
+                        'to'   => [ 'required' => false, 'type' => 'string' ],
+                    ],
+                ],
+            ]
+        );
 
         register_rest_route(self::NS, '/reports/exports', [
             [

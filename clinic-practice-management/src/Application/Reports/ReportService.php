@@ -62,7 +62,7 @@ final class ReportService
         'avg_waiting' => ['label' => 'میانگین زمان انتظار', 'caps' => [], 'kind' => 'avg_waiting', 'default_days' => 30],
         'visit_duration' => ['label' => 'میانگین مدت ویزیت', 'caps' => [], 'kind' => 'visit_duration', 'default_days' => 30],
         // فقط-خواندنی (GET): چاپ/Export برای این نوع در دسترس نیست.
-        'walk_ins_recorded' => ['label' => 'ویزیت‌های بدون نوبت ثبت‌شده', 'caps' => [], 'kind' => 'walk_ins_recorded', 'default_days' => 0, 'print_export' => false],
+        'walk_ins_recorded'  => ['label' => 'ویزیت‌های بدون نوبت ثبت‌شده', 'caps' => [], 'kind' => 'walk_ins_recorded', 'default_days' => 0, 'print_export' => false],
         // مالی — Aggregate⊥Detail (D-8) — بدون نام بیمار
         'revenue' => ['label' => 'درآمد (روز/ماه)', 'caps' => [RolesAndCapabilities::FINANCE_READ], 'kind' => 'revenue', 'default_days' => 30],
         'payment_methods' => ['label' => 'روش‌های پرداخت', 'caps' => [RolesAndCapabilities::FINANCE_READ], 'kind' => 'payment_methods', 'default_days' => 30],
@@ -142,11 +142,10 @@ final class ReportService
      *
      * @return list<string>
      */
-    public function typeIds(bool $printExportOnly = false): array
-    {
+    public function type_ids( bool $print_export_only = false ): array {
         $ids = [];
-        foreach (self::TYPES as $id => $meta) {
-            if ($printExportOnly && !$this->supportsPrintExport($id)) {
+        foreach ( self::TYPES as $id => $meta ) {
+            if ( $print_export_only && ! $this->supports_print_export( $id ) ) {
                 continue;
             }
             $ids[] = $id;
@@ -159,9 +158,8 @@ final class ReportService
      * آیا این نوع از مسیرهای چاپ/Export پشتیبانی می‌کند؟ (پیش‌فرض: بله —
      * فقط نوع‌هایی که صریحاً `print_export => false` دارند مستثنا هستند.)
      */
-    public function supportsPrintExport(string $type): bool
-    {
-        return (self::TYPES[$type]['print_export'] ?? true) === true;
+    public function supports_print_export( string $type ): bool {
+        return ( self::TYPES[ $type ]['print_export'] ?? true ) === true;
     }
 
     public function typeLabel(string $type): string
@@ -217,7 +215,7 @@ final class ReportService
             'visits' => $this->reportVisits($scopeMode, $clinicianId, $range, $limit),
             'avg_waiting' => $this->reportAvgWaiting($scopeMode, $clinicianId, $range),
             'visit_duration' => $this->reportVisitDuration($scopeMode, $clinicianId, $range),
-            'walk_ins_recorded' => $this->reportWalkInCount($scopeMode, $clinicianId, $range),
+            'walk_ins_recorded' => $this->report_walk_in_count( $scopeMode, $clinicianId, $range ), // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- existing run() scope locals
             'revenue' => $this->reportRevenue($scopeMode, $clinicianId, $range),
             'payment_methods' => $this->reportPaymentMethods($scopeMode, $clinicianId, $range),
             'open_balances' => $this->reportOpenBalances($scopeMode, $clinicianId, $range, $limit),
@@ -510,17 +508,16 @@ final class ReportService
      * @param array<string, mixed> $range
      * @return array<string, mixed>
      */
-    private function reportWalkInCount(string $scopeMode, ?int $clinicianId, array $range): array
-    {
-        $sql = 'SELECT COUNT(*) AS walk_in_count
-                FROM ' . $this->db->table('cpms_visits') . ' v
+    private function report_walk_in_count( string $scope_mode, ?int $clinician_id, array $range ): array {
+        $sql            = 'SELECT COUNT(*) AS walk_in_count
+                FROM ' . $this->db->table( 'cpms_visits' ) . ' v
                 WHERE v.clinic_id = %d AND v.source = %s AND v.visit_date BETWEEN %s AND %s';
-        $params = [$this->trustedClinicId(), 'walk_in', $range['from'], $range['to']];
-        [$sql, $params] = $this->applyScope($sql, $params, 'v.clinician_id', $scopeMode, $clinicianId);
+        $params         = [ $this->trustedClinicId(), 'walk_in', $range['from'], $range['to'] ];
+        [$sql, $params] = $this->applyScope( $sql, $params, 'v.clinician_id', $scope_mode, $clinician_id );
 
         return [
-            'summary' => ['count' => (int) $this->db->fetchValue($sql, $params)],
-            'rows' => [],
+            'summary'  => [ 'count' => (int) $this->db->fetchValue( $sql, $params ) ],
+            'rows'     => [],
             'has_more' => false,
         ];
     }
