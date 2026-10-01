@@ -146,7 +146,7 @@ final class Phase14StaffPortalReportsClinicScopeTest extends WP_UnitTestCase
         self::assertSame(3, preg_match_all('/<option\b[^>]*value="(\d*)"[^>]*>/', $m[1], $options), 'placeholder + two Clinics');
         self::assertSame(['', (string) $this->clinicA, (string) $this->clinicB], $options[1], 'placeholder first, then each eligible Clinic exactly once');
         self::assertDoesNotMatchRegularExpression('/<option\b[^>]*\bselected\b/', $m[1], 'no Clinic is pre-selected (no first-Clinic fallback)');
-        self::assertStringNotContainsString('data-role="reports-clinic-fixed"', $html);
+        self::assertDoesNotMatchRegularExpression('/<p\b[^>]*data-role="reports-clinic-fixed"/', $html, 'N>1 renders no fixed single-Clinic element (the page script only mentions the hook)');
         self::assertStringNotContainsString('Clinic Scope Foreign', $html);
         self::assertStringNotContainsString('Clinic Scope Suspended Org', $html);
         self::assertStringNotContainsString('reports-location', $html, 'no Location selector');

@@ -62,15 +62,15 @@ $cpms_reports_clinics = \ClinicCore\Frontend\StaffPortalShell::reports_eligible_
 <?php if ( array() === $cpms_reports_clinics ) : ?>
         <p class="cpms-reports-board__status" data-role="reports-no-clinic" data-kind="error">کلینیکی با دسترسی مشاهدهٔ گزارش برای شما در دسترس نیست.</p>
 <?php else : ?>
-<?php if ( 1 === count( $cpms_reports_clinics ) ) : ?>
+	<?php if ( 1 === count( $cpms_reports_clinics ) ) : ?>
         <p class="cpms-reports-board__clinic" data-role="reports-clinic-fixed" data-clinic-id="<?php echo esc_attr( (string) $cpms_reports_clinics[0]['id'] ); ?>">کلینیک: <strong data-role="reports-clinic-name"><?php echo esc_html( $cpms_reports_clinics[0]['name'] ); ?></strong></p>
 <?php endif; ?>
         <form class="cpms-reports-board__form" data-role="reports-avg-waiting-form" novalidate>
-<?php if ( count( $cpms_reports_clinics ) > 1 ) : ?>
+	<?php if ( count( $cpms_reports_clinics ) > 1 ) : ?>
             <label class="cpms-reports-board__field">کلینیک
                 <select name="clinic" required data-role="reports-clinic-select" aria-describedby="cpms-reports-board-status">
                     <option value="">انتخاب کلینیک…</option>
-<?php foreach ( $cpms_reports_clinics as $cpms_reports_clinic ) : ?>
+		<?php foreach ( $cpms_reports_clinics as $cpms_reports_clinic ) : ?>
                     <option value="<?php echo esc_attr( (string) $cpms_reports_clinic['id'] ); ?>"><?php echo esc_html( $cpms_reports_clinic['name'] ); ?></option>
 <?php endforeach; ?>
                 </select>
