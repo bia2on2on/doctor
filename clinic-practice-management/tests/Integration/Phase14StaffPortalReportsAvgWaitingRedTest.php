@@ -173,7 +173,11 @@ final class Phase14StaffPortalReportsAvgWaitingRedTest extends WP_UnitTestCase
             self::assertStringNotContainsString($forbidden, $normalized, 'Slice 1 excludes: ' . $forbidden);
         }
         self::assertStringNotContainsString('<canvas', $html, 'no chart');
-        self::assertStringNotContainsString('<select', $html, 'no Location (or other) selector');
+        // Phase 14 multi-Clinic repair: the ONLY selector the module may render is the
+        // Clinic select, and only when the actor has N>1 eligible Clinics (covered in
+        // Phase14StaffPortalReportsClinicScopeTest). This single-Clinic actor gets none.
+        self::assertStringNotContainsString('<select', $html, 'a single eligible Clinic renders no selector');
+        self::assertStringNotContainsString('reports-location', $html, 'no Location selector');
 
         self::assertSame($auditBefore, $this->reportReadAuditCount(), 'rendering the page never silently runs a report for a default date');
     }

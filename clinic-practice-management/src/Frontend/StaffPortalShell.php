@@ -550,34 +550,73 @@ final class StaffPortalShell {
 
 	/**
 	 * Reports module visibility (Phase 14 Slice 1): the existing global
-	 * `cpms_report_read` capability AND an ACTIVE Clinic membership that grants
-	 * it. Membership alone is never sufficient; no role or capability is added.
-	 * Visibility only — the REST report route re-authorizes every request and
-	 * decides the trusted Clinic and own-vs-Clinic scope.
+	 * `cpms_report_read` capability AND at least one ACTIVE Clinic membership
+	 * that grants it (see {@see self::reports_eligible_clinics()}). Membership
+	 * alone is never sufficient; no role or capability is added. Visibility
+	 * only — the REST report route re-authorizes every request and decides the
+	 * trusted Clinic and own-vs-Clinic scope.
 	 *
 	 * @param int $user_id WordPress user id.
 	 */
 	public static function reports_module_eligible( int $user_id ): bool {
+		return array() !== self::reports_eligible_clinics( $user_id );
+	}
+
+	/**
+	 * Clinics the actor may select for the Reports module, in stable id order.
+	 *
+	 * Eligible = the WordPress user holds the global `cpms_report_read`
+	 * capability AND has an ACTIVE membership in that Clinic whose Clinic-scoped
+	 * authorization grants it AND the Clinic's Organization is active (the same
+	 * conditions the REST trusted-scope establisher enforces). The list only
+	 * drives what the page offers; it is NEVER authority — every report request
+	 * is re-validated server-side by the REST Clinic-context boundary.
+	 *
+	 * @param int $user_id WordPress user id.
+	 * @return list<array{id:int,name:string}>
+	 */
+	public static function reports_eligible_clinics( int $user_id ): array {
 		if ( $user_id <= 0 ) {
-			return false;
+			return array();
 		}
 		$user = get_userdata( $user_id );
 		if ( false === $user || ! $user->exists() ) {
-			return false;
+			return array();
 		}
 		foreach ( self::REPORTS_MODULE_CAPS as $cap ) {
 			if ( ! $user->has_cap( $cap ) ) {
-				return false;
+				return array();
 			}
 		}
 
 		$auth = App::authorization_service();
+		$ids  = array();
 		foreach ( App::membership_service()->active_clinic_ids_for_user( $user_id ) as $clinic_id ) {
 			if ( self::clinic_grants_all( $auth, $user_id, (int) $clinic_id, self::REPORTS_MODULE_CAPS ) ) {
-				return true;
+				$ids[] = (int) $clinic_id;
 			}
 		}
-		return false;
+		if ( array() === $ids ) {
+			return array();
+		}
+
+		$db   = App::db();
+		$rows = $db->fetchAll(
+			'SELECT c.id, c.name FROM ' . $db->table( 'cpms_clinics' ) . ' c
+			 INNER JOIN ' . $db->table( 'cpms_organizations' ) . ' o ON o.id = c.organization_id
+			 WHERE o.status = \'active\' AND c.id IN (' . implode( ',', array_fill( 0, count( $ids ), '%d' ) ) . ')
+			 ORDER BY c.id ASC',
+			$ids
+		);
+
+		$clinics = array();
+		foreach ( $rows as $row ) {
+			$clinics[] = array(
+				'id'   => (int) $row['id'],
+				'name' => (string) $row['name'],
+			);
+		}
+		return $clinics;
 	}
 
 	/**
