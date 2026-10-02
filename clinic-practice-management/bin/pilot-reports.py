@@ -25,10 +25,11 @@ the responsive job; no new browser infrastructure):
     injected into the DOM) is rejected by the server and shows a coherent error,
     never another Clinic's numbers.
 
-Per viewport (390x844, 768x1024, 1366x768): no whole-page horizontal overflow,
-date field / Clinic select / both actions usable inside the viewport, a coherent
-result or error state. Screenshots are written as artifacts only; this script
-makes DOM/network assertions and does NOT interpret pixels as visual approval.
+Per viewport (360x844, 390x844, 768x1024, 1024x1024, 1366x768, 1440x900): no
+whole-page horizontal overflow, date field / Clinic select / both actions usable
+inside the viewport, a coherent result or error state. Screenshots are written as
+artifacts only; this script makes DOM/network assertions and does NOT interpret
+pixels as visual approval.
 """
 
 import os
@@ -57,9 +58,12 @@ USERS = {
     "single": (os.environ["REPORTS_SINGLE_LOGIN"], os.environ["REPORTS_SINGLE_PASS"]),
 }
 VIEWPORTS = [
+    ("mobile-360", 360, 844),
     ("mobile", 390, 844),
     ("tablet", 768, 1024),
+    ("tablet-1024", 1024, 1024),
     ("desktop", 1366, 768),
+    ("desktop-1440", 1440, 900),
 ]
 OUT = Path("pilot-screenshots")
 OUT.mkdir(exist_ok=True)
