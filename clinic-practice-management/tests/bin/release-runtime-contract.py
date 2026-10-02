@@ -71,16 +71,21 @@ def main():
         for package in packages:
             license_files = list((vendor / package).glob("[Ll][Ii][Cc][Ee][Nn][Ss][Ee]*"))
             require(any(path.is_file() for path in license_files), f"Missing upstream license: {package}")
-        require((vendor / "aws/aws-sdk-php/NOTICE").is_file(), "Missing AWS upstream NOTICE")
+        for package in ("aws/aws-sdk-php", "aws/aws-crt-php"):
+            require((vendor / package / "NOTICE").is_file(), f"Missing upstream NOTICE: {package}")
+        require((vendor / "aws/aws-sdk-php/THIRD-PARTY-LICENSES").is_file(), "Missing SDK third-party licenses")
+        require((vendor / "composer/LICENSE").is_file(), "Missing Composer runtime MIT license")
         notice = (root / "THIRD-PARTY-NOTICES.md").read_text()
-        require(all(package in notice for package in packages), "Third-party notice omits a runtime package")
+        for name, package in packages.items():
+            require(f"| {name} | {package['version']} | {package['license'][0]} |" in notice,
+                    f"Third-party notice does not match the exact locked package/version/license: {name}")
         require("Apache-2.0" in notice and "MIT" in notice, "Third-party notice omits license closure")
         for filename in ("ClassLoader.php", "autoload_real.php", "autoload_static.php", "autoload_files.php",
                          "platform_check.php", "InstalledVersions.php", "installed.php"):
             require((vendor / "composer" / filename).is_file(), f"Composer runtime file missing: {filename}")
 
         probe = str(PLUGIN / "tests/bin/release-s3-client-smoke.php")
-        subprocess.run(["php", probe, str(root), "release"], check=True)
+        subprocess.run(["php", probe, str(root), "release", str(PLUGIN / "composer.lock")], check=True)
         # Exercise the actual entry point without vendor, not a broken Composer
         # environment. App::boot is a no-op fixture; real WP boot has existing gates.
         source = scratch / "source-without-vendor"

@@ -66,11 +66,26 @@ namespace {
     check($client->getRegion() === 'us-east-1', 'Wrong region');
     check($client->getConfig('use_path_style_endpoint') === true, 'Path-style must be explicit');
     check($client->getConfig('signature_version') === 'v4', 'SigV4 configuration missing');
-    check($client->getConfig('http')['verify'] === true, 'TLS verification must stay enabled');
+    // HTTP is a value option, not exposed by getConfig(). Read its stored default
+    // without creating/executing an S3 command (official 3.399.0 AwsClient field).
+    $http = (new \ReflectionProperty(\Aws\AwsClient::class, 'defaultRequestOptions'))->getValue($client);
+    check($http['verify'] === true, 'TLS verification must stay enabled');
     check($client->getCredentials()->wait()->getAccessKeyId() === 'CPMS_SMOKE_ONLY_NOT_PRODUCTION',
           'Credentials must be the explicit non-production fixture');
     check($calls === 0, 'SDK construction attempted HTTP');
     check(\Composer\InstalledVersions::getVersion('aws/aws-sdk-php') === '3.399.0.0', 'Runtime install metadata missing');
+    $lock = json_decode(file_get_contents($argv[3]), true, 512, JSON_THROW_ON_ERROR);
+    $expected = [];
+    foreach ($lock['packages'] as $package) {
+        $expected[] = $package['name'];
+        check(\Composer\InstalledVersions::getPrettyVersion($package['name']) === $package['version'],
+              'Installed runtime version differs from committed lock: ' . $package['name']);
+    }
+    $rootPackage = \Composer\InstalledVersions::getRootPackage();
+    $actual = array_values(array_diff(\Composer\InstalledVersions::getInstalledPackages(), [$rootPackage['name']]));
+    sort($actual);
+    sort($expected);
+    check($actual === $expected && $rootPackage['dev'] === false, 'Runtime metadata contains dev/unlocked packages');
     echo 'PASS: built plugin autoload -> official S3Client 3.399.0, HTTPS, region, path-style, SigV4, TLS verify; '
         . "explicit dummy credentials; HTTP calls = 0; PHP " . PHP_VERSION . "\n";
 }

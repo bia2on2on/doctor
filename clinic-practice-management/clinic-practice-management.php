@@ -20,18 +20,25 @@ define('CPMS_PLUGIN_FILE', __FILE__);
 define('CPMS_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('CPMS_PLUGIN_URL', plugin_dir_url(__FILE__));
 
-// PSR-4 autoloader (composer نبود → autoload سبک داخلی)
-spl_autoload_register(function (string $class): void {
-    $prefix = 'ClinicCore\\';
-    if (strncmp($class, $prefix, strlen($prefix)) !== 0) {
-        return;
-    }
-    $relative = substr($class, strlen($prefix));
-    $file = CPMS_PLUGIN_DIR . 'src/' . str_replace('\\', '/', $relative) . '.php';
-    if (is_file($file)) {
-        require $file;
-    }
-});
+// Release: Composer handles the existing PSR-4 map and runtime dependencies.
+// Source/test checkouts without vendor retain the same lightweight fallback.
+if ( is_file( CPMS_PLUGIN_DIR . 'vendor/autoload.php' ) ) {
+    require_once CPMS_PLUGIN_DIR . 'vendor/autoload.php';
+} else {
+    spl_autoload_register(
+        static function ( string $class ): void {
+            $prefix = 'ClinicCore\\';
+            if ( strncmp( $class, $prefix, strlen( $prefix ) ) !== 0 ) {
+                return;
+            }
+            $relative = substr( $class, strlen( $prefix ) );
+            $file     = CPMS_PLUGIN_DIR . 'src/' . str_replace( '\\', '/', $relative ) . '.php';
+            if ( is_file( $file ) ) {
+                require $file;
+            }
+        }
+    );
+}
 
 use ClinicCore\Bootstrap\App;
 
