@@ -53,6 +53,9 @@ jobs:
       - name: Build release ZIP (whitelist-only)
         run: bash bin/build-release.sh
 
+      - name: Runtime SDK contract (built ZIP, no network)
+        run: python3 tests/bin/release-runtime-contract.py
+
       - name: Policy — forbidden content scan (اسمبل ZIP)
         run: |
           unzip -l dist/clinic-practice-management-1.0.0.zip > /tmp/ziplist.txt
