@@ -199,7 +199,7 @@ def measure_top_entries(parent_dir: Path, limit: int = 10) -> list[dict[str, Any
 
 
 def measure_package_directories(vendor_dir: Path, limit: int = 10) -> list[dict[str, Any]]:
-    """Measure installed package directories (vendor/<org>/<pkg> plus vendor/composer), sorted by bytes."""
+    """Measure installed production package directories (vendor/<org>/<pkg>), sorted descending by bytes."""
     pkg_dirs: list[dict[str, Any]] = []
     if not vendor_dir.is_dir():
         return pkg_dirs
@@ -207,8 +207,6 @@ def measure_package_directories(vendor_dir: Path, limit: int = 10) -> list[dict[
         if not org_dir.is_dir() or org_dir.is_symlink():
             continue
         if org_dir.name in ("composer", "bin"):
-            b, c = measure_directory(org_dir)
-            pkg_dirs.append({"package_dir": f"vendor/{org_dir.name}", "bytes": b, "files": c})
             continue
         for pkg_dir in sorted(org_dir.iterdir(), key=lambda p: p.name):
             if pkg_dir.is_dir() and not pkg_dir.is_symlink():
@@ -396,17 +394,23 @@ def render_markdown_report(report: dict[str, Any]) -> str:
         lines.append(
             "| PHP Series | Simulated Platform | Fresh Solver (`composer update --no-dev`) | "
             "Primary Lock (`composer install --no-dev --dry-run`) | Resolved SDK Version | "
-            "Package Count | Closure Signature | Matches Primary Closure | Verification Mode |"
+            "Package Count | Closure Signature | Differing Packages vs Primary (8.1) | Verification Mode |"
         )
         lines.append("|---|---|---|---|---|---:|---|---|---|")
         for p in report["platform_compatibility"]["php_matrix"]:
+            diffs = p.get("differing_packages_vs_primary") or {}
+            diff_str = (
+                ", ".join(f"{k}: {v['primary']} -> {v['fresh']}" for k, v in sorted(diffs.items()))
+                if diffs
+                else "(identical closure)"
+            )
             lines.append(
                 f"| PHP {p['php_series']} | `{p['simulated_platform_php']}` | "
                 f"`rc={p['fresh_resolution_rc']}` ({'PASS' if p['fresh_resolution_ok'] else 'FAIL'}) | "
                 f"`rc={p['primary_lock_dry_run_rc']}` ({'PASS' if p['primary_lock_dry_run_ok'] else 'FAIL'}) | "
                 f"`{p['resolved_sdk_version']}` | {p['package_count']} | "
                 f"`{p['closure_signature_sha256'][:12]}` | "
-                f"`{p['matches_primary_lock_packages']}` | `{p['verification_mode']}` |"
+                f"`{diff_str}` | `{p['verification_mode']}` |"
             )
         lines.append("")
 
@@ -557,6 +561,7 @@ def run_evidence(json_out: Path, md_out: Path) -> int:
     vendor_zip_sha256 = ""
     aws_sdk_bytes = 0
     aws_sdk_file_count = 0
+    all_pkg_dirs: list[dict[str, Any]] = []
     top_10_pkg_dirs: list[dict[str, Any]] = []
     top_10_first_level_vendor: list[dict[str, Any]] = []
     top_10_sdk_src: list[dict[str, Any]] = []
@@ -779,7 +784,8 @@ def run_evidence(json_out: Path, md_out: Path) -> int:
             vendor_zip_bytes = create_vendor_zip(vendor_dir, vendor_zip_path)
             vendor_zip_sha256 = sha256_file(vendor_zip_path)
 
-            top_10_pkg_dirs = measure_package_directories(vendor_dir, limit=10)
+            all_pkg_dirs = measure_package_directories(vendor_dir, limit=100)
+            top_10_pkg_dirs = all_pkg_dirs[:10]
             top_10_first_level_vendor = measure_top_entries(vendor_dir, limit=10)
             top_10_sdk_src = measure_top_entries(sdk_dir / "src", limit=10)
 
@@ -787,6 +793,7 @@ def run_evidence(json_out: Path, md_out: Path) -> int:
                 failures.append("One or more footprint measurements returned 0.")
 
             # 10. Platform compatibility across PHP 8.1, 8.2, 8.3, 8.4
+            primary_pkg_map = {str(p["name"]): str(p["version"]) for p in packages_summary}
             for series, sim_php in TARGET_PHP_SERIES:
                 # (a) Fresh solver resolution with config.platform.php = sim_php
                 sim_fresh_dir = temp_root / f"platform-fresh-{series}"
@@ -817,6 +824,7 @@ def run_evidence(json_out: Path, md_out: Path) -> int:
                 fresh_pkg_count = 0
                 fresh_closure_sig = ""
                 matches_primary = False
+                differing_pkgs: dict[str, dict[str, str]] = {}
                 if rc_fresh == 0 and fresh_lock.is_file():
                     fl_data = json.loads(fresh_lock.read_text(encoding="utf-8"))
                     fl_pkgs = fl_data.get("packages", [])
@@ -825,15 +833,25 @@ def run_evidence(json_out: Path, md_out: Path) -> int:
                     fl_map = {str(p.get("name", "")): str(p.get("version", "")) for p in fl_pkgs}
                     fresh_sdk_ver = fl_map.get(CANDIDATE_PACKAGE, "")
                     matches_primary = fresh_closure_sig == closure_signature_sha256
+                    for pkg_name in sorted(set(primary_pkg_map.keys()) | set(fl_map.keys())):
+                        p_ver = primary_pkg_map.get(pkg_name, "(absent)")
+                        f_ver = fl_map.get(pkg_name, "(absent)")
+                        if p_ver != f_ver:
+                            differing_pkgs[pkg_name] = {"primary": p_ver, "fresh": f_ver}
 
-                # (b) Primary lock dry-run installability under config.platform.php = sim_php
+                # (b) Primary lock dry-run installability under platform-overrides.php = sim_php
                 sim_lock_dir = temp_root / f"platform-lock-{series}"
                 sim_lock_dir.mkdir(parents=True)
                 (sim_lock_dir / "composer.json").write_text(
                     json.dumps(make_composer_json_payload(platform_php=sim_php), indent=4) + "\n",
                     encoding="utf-8",
                 )
-                shutil.copy2(lock_path, sim_lock_dir / "composer.lock")
+                lock_copy = dict(lock_data)
+                lock_copy["platform-overrides"] = {"php": sim_php}
+                (sim_lock_dir / "composer.lock").write_text(
+                    json.dumps(lock_copy, indent=4) + "\n",
+                    encoding="utf-8",
+                )
                 rc_lock_dry, _dry_out, dry_err = run_cmd(
                     [
                         "composer",
@@ -871,6 +889,7 @@ def run_evidence(json_out: Path, md_out: Path) -> int:
                         "package_count": fresh_pkg_count,
                         "closure_signature_sha256": fresh_closure_sig,
                         "matches_primary_lock_packages": matches_primary,
+                        "differing_packages_vs_primary": differing_pkgs,
                         "verification_mode": "composer_platform_config_solver_and_lock_dry_run_only",
                         "runtime_executed": False,
                     }
@@ -963,6 +982,7 @@ def run_evidence(json_out: Path, md_out: Path) -> int:
             "aws_sdk_directory_bytes": aws_sdk_bytes,
             "aws_sdk_file_count": aws_sdk_file_count,
             "top_10_package_directories": top_10_pkg_dirs,
+            "all_package_directories": all_pkg_dirs,
             "top_10_first_level_vendor_entries": top_10_first_level_vendor,
             "top_10_aws_sdk_src_entries": top_10_sdk_src,
         },
