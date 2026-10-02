@@ -50,15 +50,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.1'
+          extensions: curl, mbstring, xml
+          coverage: none
+          tools: composer:v2
+
       - name: Build release ZIP (whitelist-only)
         run: bash bin/build-release.sh
 
+      - name: Runtime SDK contract (built ZIP, no network)
+        run: python3 tests/bin/release-runtime-contract.py
+
       - name: Policy — forbidden content scan (اسمبل ZIP)
         run: |
-          unzip -l dist/clinic-practice-management-1.0.0.zip > /tmp/ziplist.txt
-          if grep -Eqi '\.git|\.env|tests/|phpunit|composer\.(json|lock)|vendor/|\.log|pilot-(seed|smoke|responsive)' /tmp/ziplist.txt; then
+          unzip -Z1 dist/clinic-practice-management-1.0.0.zip > /tmp/ziplist.txt
+          if grep -Eqi '\.git|\.env|tests/|phpunit|composer\.(json|lock)|installed\.json|auth\.json|(^|/)credentials$|/(\.cache|cache)/|vendor/(phpstan|php-stubs|yoast|szepeviktor)/|\.log|pilot-(seed|smoke|responsive)' /tmp/ziplist.txt; then
             echo 'FORBIDDEN CONTENT FOUND:' >&2
-            grep -Ei '\.git|\.env|tests/|phpunit|composer|vendor|\.log|pilot-' /tmp/ziplist.txt >&2
+            grep -Ei '\.git|\.env|tests/|phpunit|composer\.(json|lock)|installed\.json|auth\.json|(^|/)credentials$|/(\.cache|cache)/|vendor/(phpstan|php-stubs|yoast|szepeviktor)/|\.log|pilot-' /tmp/ziplist.txt >&2
             exit 1
           fi
           mkdir -p /tmp/zscan && unzip -qq dist/clinic-practice-management-1.0.0.zip -d /tmp/zscan
@@ -73,7 +83,7 @@ jobs:
             echo "zip: $(du -h dist/clinic-practice-management-1.0.0.zip | cut -f1) — $(wc -l < dist/clinic-practice-management-1.0.0-manifest.txt) files"
             cat dist/clinic-practice-management-1.0.0.zip.sha256
             echo '```'
-            echo '### Policy: **CLEAN** — بدون .git/.env/tests/phpunit/composer/vendor/logs/pilot-tools/secrets'
+            echo '### Policy: **CLEAN** — locked runtime vendor allowed; no dev/tests/.git/.env/Composer manifests/auth/cache/logs/pilot-tools/secrets'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4

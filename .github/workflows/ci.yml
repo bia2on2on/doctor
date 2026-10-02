@@ -60,11 +60,83 @@ jobs:
           extensions: mbstring, xml
           coverage: none
 
-      - name: Install dependencies
-        run: composer install --prefer-dist --no-progress --no-interaction
+      - name: Install dependencies (committed lock)
+        run: |
+          test -f composer.lock
+          composer install --prefer-dist --no-progress --no-interaction
+
+      - name: Production lock audit / license evidence (PHP floor)
+        if: matrix.php == '8.1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          composer validate --strict --no-check-publish
+          composer audit --locked --no-dev --abandoned=fail --format=json > /tmp/cpms-composer-audit.json
+          composer licenses --no-dev --format=json > /tmp/cpms-composer-licenses.json
+          cat /tmp/cpms-composer-audit.json
+          cat /tmp/cpms-composer-licenses.json
+          sha256sum composer.lock
+          # Mirror exact, non-secret lock/audit evidence using the existing PR
+          # evidence pattern. Some agent environments cannot read artifact blobs.
+          if [ -n "$PR_NUMBER" ]; then
+            {
+              echo "### Production Composer evidence (PHP 8.1; run ${{ github.run_id }}, attempt ${{ github.run_attempt }})"
+              echo '```'
+              sha256sum composer.lock
+              cat /tmp/cpms-composer-audit.json
+              cat /tmp/cpms-composer-licenses.json
+              echo '```'
+              echo '<details><summary>Exact lock evidence (gzip + base64; SHA256 above)</summary>'
+              echo
+              echo '```text'
+              gzip -n -c composer.lock | base64 -w0
+              echo
+              echo '```'
+              echo '</details>'
+            } > /tmp/cpms-composer-evidence.md
+            gh pr comment "$PR_NUMBER" --body-file /tmp/cpms-composer-evidence.md \
+              || echo '::notice::Composer evidence mirror failed (non-fatal; audit remains blocking)'
+          fi
+
+      - name: Archive production lock audit evidence
+        if: matrix.php == '8.1' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: composer-lock-evidence-${{ github.run_id }}
+          path: |
+            clinic-practice-management/composer.lock
+            /tmp/cpms-composer-audit.json
+            /tmp/cpms-composer-licenses.json
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Run unit tests (no WP)
         run: php -d memory_limit=512M vendor/bin/phpunit --testsuite Unit
+
+      - name: Locked production install / platform / built-ZIP SDK smoke
+        run: |
+          set -o pipefail
+          bash bin/build-release.sh 2>&1 | tee /tmp/cpms-release-build.log
+          python3 tests/bin/release-runtime-contract.py 2>&1 | tee /tmp/cpms-release-runtime.log
+
+      - name: Mirror built-runtime evidence onto the PR
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          if [ -n "$PR_NUMBER" ]; then
+            {
+              echo "### Built runtime evidence (PHP ${{ matrix.php }}; run ${{ github.run_id }}, attempt ${{ github.run_attempt }})"
+              echo '```'
+              tail -n 80 /tmp/cpms-release-build.log 2>/dev/null || echo '(build not reached)'
+              cat /tmp/cpms-release-runtime.log 2>/dev/null || echo '(runtime probe not reached)'
+              echo '```'
+            } > /tmp/cpms-release-runtime-evidence.md
+            gh pr comment "$PR_NUMBER" --body-file /tmp/cpms-release-runtime-evidence.md \
+              || echo '::notice::Built-runtime evidence mirror failed (non-fatal; build/probe remain blocking)'
+          fi
 
   integration:
     name: Integration (WP 6.7 + MySQL 8)
