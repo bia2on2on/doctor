@@ -48,10 +48,14 @@ namespace ClinicCore\Infrastructure\Backup;
  *    magic/versionِ ناسازگار همه **یک** کدِ خطای یکسان می‌دهند (بدون اوراکلِ
  *    تمایزدهنده): encrypt ⇒ `CLINIC_BACKUP_ENCRYPTION_FAILED` و
  *    decrypt ⇒ `CLINIC_BACKUP_DECRYPTION_FAILED`.
- *  - خروجی ابتدا در فایلِ موقتِ همجوارِ مقصد (sibling) با نامِ تصادفی نوشته و در
- *    پایان با `rename` جایگزین می‌شود؛ مقصدِ موجود هرگز با خروجیِ ناقص جایگزین
- *    نمی‌شود، در هر مسیرِ شکست فایلِ موقت پاک می‌شود و هیچ مقصدِ شبیهِ‌موفقیت
- *    باقی نمی‌ماند.
+ *  - خروجی ابتدا در فایلِ موقتِ همجوارِ مقصد (sibling) نوشته و در پایان با
+ *    `rename` جایگزین می‌شود؛ فایلِ موقت **انحصاری** ساخته می‌شود
+ *    (`fopen(..., 'xb')` ⇒ `O_CREAT|O_EXCL`، بدونِ هیچ check-then-open): مسیرِ
+ *    موقتِ موجود هرگز truncate نمی‌شود، سیم‌لینک دنبال نمی‌شود، برخورد با نامِ
+ *    اشغال‌شده با نامِ تصادفیِ بعدی (تعدادِ تلاشِ محدود) دور زده می‌شود و در
+ *    نهایت شکست، عملیات fail-closed است. مقصدِ موجود هرگز با خروجیِ ناقص
+ *    جایگزین نمی‌شود، در هر مسیرِ شکست فقط فایلِ موقتی که **خودمان ساخته‌ایم**
+ *    پاک می‌شود و هیچ مقصدِ شبیهِ‌موفقیت باقی نمی‌ماند.
  *  - فایلِ مبدأ در هیچ مسیرِ موفق/ناموفقی تغییر نمی‌کند و حذف نمی‌شود؛ مبدأ و
  *    مقصدِ یکسان (realpath) صریحاً رد می‌شود.
  *  - نتیجهٔ همهٔ توابعِ فایل‌سیستمی بررسی می‌شود و هیچ خطایی به «موفقیت» تبدیل
@@ -81,6 +85,20 @@ final class BackupEncryptionEnvelope {
 
 	/** framingِ ثابت هر فایل: ۸ بایت magic + ۲۴ بایت هدر. */
 	private const ENVELOPE_OVERHEAD = 8 + self::HEADER_BYTES;
+
+	/**
+	 * پسوندِ نامِ فایلِ موقتِ همجوار. تلاشِ **اولِ** ساخت عمداً با همین نامِ قطعی
+	 * انجام می‌شود تا سناریوی برخورد به‌صورت قطعی (نه احتمالی) قابلِ آزمایش باشد؛
+	 * تلاش‌های بعدی نامِ تصادفیِ رمزنگاری‌شده می‌گیرند. قطعی‌بودنِ نام ایمن است
+	 * چون ساخت **انحصاری** است: مسیرِ موجود truncate نمی‌شود و سیم‌لینک دنبال نمی‌شود.
+	 */
+	private const TEMP_SUFFIX = '.cpms-part';
+
+	/**
+	 * سقفِ تلاش برای ساختِ انحصاریِ فایلِ موقت (۱ تلاشِ قطعی + تلاش‌های تصادفی)؛
+	 * پس از آن عملیات fail-closed شکست می‌خورد و مقصد دست‌نخورده می‌ماند.
+	 */
+	private const TEMP_CREATE_ATTEMPTS = 8;
 
 	private const ENCRYPT_FAILED = 'CLINIC_BACKUP_ENCRYPTION_FAILED';
 
@@ -120,9 +138,8 @@ final class BackupEncryptionEnvelope {
 			$source = self::open_source( $source_path, self::ENCRYPT_FAILED, self::ENCRYPT_MESSAGE );
 			self::assert_distinct_destination( $source_path, $destination_path, self::ENCRYPT_FAILED, self::ENCRYPT_MESSAGE );
 
-			$size   = self::source_size( $source, self::ENCRYPT_FAILED, self::ENCRYPT_MESSAGE );
-			$temp   = self::temporary_sibling( $destination_path );
-			$output = self::open_output( $temp, self::ENCRYPT_FAILED, self::ENCRYPT_MESSAGE );
+			$size              = self::source_size( $source, self::ENCRYPT_FAILED, self::ENCRYPT_MESSAGE );
+			[ $output, $temp ] = self::open_exclusive_output( $destination_path, self::ENCRYPT_FAILED, self::ENCRYPT_MESSAGE );
 
 			[ $state, $header ] = self::start_encryption( $key );
 			self::write_all( $output, self::MAGIC . $header, self::ENCRYPT_FAILED, self::ENCRYPT_MESSAGE );
@@ -205,9 +222,8 @@ final class BackupEncryptionEnvelope {
 				throw BackupException::of( self::DECRYPT_FAILED, self::DECRYPT_MESSAGE );
 			}
 
-			$state  = self::start_decryption( substr( $prefix, 8, self::HEADER_BYTES ), $key );
-			$temp   = self::temporary_sibling( $destination_path );
-			$output = self::open_output( $temp, self::DECRYPT_FAILED, self::DECRYPT_MESSAGE );
+			$state             = self::start_decryption( substr( $prefix, 8, self::HEADER_BYTES ), $key );
+			[ $output, $temp ] = self::open_exclusive_output( $destination_path, self::DECRYPT_FAILED, self::DECRYPT_MESSAGE );
 
 			$remaining = $size - self::ENVELOPE_OVERHEAD;
 			$finished  = false;
@@ -258,14 +274,6 @@ final class BackupEncryptionEnvelope {
 		} finally {
 			self::release( $output, $source, $temp );
 		}
-	}
-
-	/**
-	 * نامِ موقتِ همجوارِ مقصد (هم‌فایل‌سیستم ⇒ `rename` اتمیک) — تصادفی و بدونِ
-	 * نشتِ محتوا؛ در هر مسیرِ شکست پاک می‌شود.
-	 */
-	private static function temporary_sibling( string $destination_path ): string {
-		return $destination_path . '.cpms-part-' . bin2hex( random_bytes( 6 ) );
 	}
 
 	/**
@@ -350,17 +358,28 @@ final class BackupEncryptionEnvelope {
 	}
 
 	/**
-	 * ساختِ فایلِ موقت در همان مسیرِ مقصد (هم‌فایل‌سیستم ⇒ renameِ اتمیک).
+	 * ساختِ **انحصاری** فایلِ موقت در همان مسیرِ مقصد (هم‌فایل‌سیستم ⇒ renameِ
+	 * اتمیک). تلاشِ اول با نامِ قطعیِ `TEMP_SUFFIX` و تلاش‌های بعدی با نامِ
+	 * تصادفیِ رمزنگاری‌شده انجام می‌شود؛ این‌جا **هیچ** `file_exists` قبلی‌ای
+	 * وجود ندارد — انحصار را خودِ عملیاتِ بازکردن با پرچمِ `'x'` تحمیل می‌کند
+	 * (`O_CREAT|O_EXCL`: اگر مسیر از قبل موجود باشد بازکردن شکست می‌خورد و
+	 * بایت‌های فایلِ موجودِ بیگانه هرگز truncate/بازنویسی نمی‌شوند؛ سیم‌لینک هم
+	 * دنبال نمی‌شود). پس از سقفِ تلاش‌ها عملیات fail-closed است.
 	 *
-	 * @return resource
+	 * @return array{0: resource, 1: string} [handle, temp path]
 	 */
-	private static function open_output( string $temp_path, string $error_code, string $message ) {
-		$handle = @fopen( $temp_path, 'wb' );
-		if ( false === $handle ) {
-			throw BackupException::of( $error_code, $message );
+	private static function open_exclusive_output( string $destination_path, string $error_code, string $message ): array {
+		for ( $attempt = 0; $attempt < self::TEMP_CREATE_ATTEMPTS; $attempt++ ) {
+			$suffix = 0 === $attempt ? self::TEMP_SUFFIX : self::TEMP_SUFFIX . '-' . bin2hex( random_bytes( 6 ) );
+
+			// 'x' = O_CREAT|O_EXCL: ساختِ انحصاری؛ مسیرِ موجود هرگز truncate/بازنویسی نمی‌شود.
+			$handle = @fopen( $destination_path . $suffix, 'xb' );
+			if ( false !== $handle ) {
+				return [ $handle, $destination_path . $suffix ];
+			}
 		}
 
-		return $handle;
+		throw BackupException::of( $error_code, $message );
 	}
 
 	/**
@@ -419,7 +438,10 @@ final class BackupEncryptionEnvelope {
 	}
 
 	/**
-	 * پاک‌سازیِ قطعی در finally: بستنِ handleها و حذفِ فایلِ موقتِ باقی‌مانده.
+	 * پاک‌سازیِ قطعی در finally: بستنِ handleها و حذفِ فایلِ موقت — اما **فقط**
+	 * اگر همین فراخوانی آن را انحصاری ساخته باشد (`$temp_path` صرفاً پس از یک
+	 * ساختِ انحصاریِ موفق مقدار می‌گیرد). یک فایلِ بیگانهٔ برخوردکننده هرگز
+	 * حذف نمی‌شود، چون نه handle‌ای از آن داریم و نه مسیرش این‌جا ثبت می‌شود.
 	 *
 	 * @param resource|null $output
 	 * @param resource|null $source
