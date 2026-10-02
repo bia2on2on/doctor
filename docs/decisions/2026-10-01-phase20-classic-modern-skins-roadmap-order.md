@@ -128,6 +128,24 @@
 
 ---
 
+## بخش دوازدهم — به‌روزرسانی 2026-10-02: Reporting در دامنهٔ اسکین «Modern» + نیازمندی‌های طراحیِ آیندهٔ Reports
+
+**منبع:** بازبینیِ بصریِ مالکِ محصول روی Phase 14 — Reporting (2026-10-02)؛ ثبتِ بستنِ Phase 14 در [`docs/project-current-state.md#phase14-closure`](../project-current-state.md#phase14-closure). این بخش **فقط ثبتِ جهت و نیازمندیِ آینده است**؛ هیچ طراحی، CSS، قالب یا پیاده‌سازیِ Modern انجام نشده و ادعا نمی‌شود.
+
+- **دامنهٔ اسکین Modern صراحتاً شامل Reporting است** — در کنار Doctor، Staff/Reception، Patient Portal، Finance/Receipt و Visit Workspace/Prescription. Reports نباید روی یک طراحیِ یکباره/جدا (disconnected one-off design) بماند؛ Phase 20 باید زبانِ بصری را به‌صورت منسجم در همهٔ پورتال‌ها حل کند.
+- **اصولِ مصوبِ قبلی حفظ می‌شود:** Classic حفظ می‌شود (جایگزینیِ مخرب ممنوع)؛ Modern یک اسکینِ منسجمِ کاربردِ CPMS است، **نه** یک WordPress Theme؛ منطق تجاری/امنیت/اجازه‌دهی/tenancy/قواعد Clinic/Location/workflows/data model/معماریِ پورتالِ مستقلِ CPMS بدون تغییر می‌مانند.
+- **در حال حاضر بازطراحیِ یکبارهٔ Reports انجام نمی‌شود** (هیچ کارِ طراحی/CSS/قالبِ Reports به‌عنوان استثنای یکباره مجاز نیست).
+- **نیازمندی‌های طراحیِ آیندهٔ Reports (future design requirements — NOT implemented features):**
+  1. ترکیب‌بندیِ بهترِ فضای کاریِ دسکتاپِ عریض و استفادهٔ عامدانه از فضا (کاهشِ فضای مرده).
+  2. سلسله‌مراتبِ Report Control Bar / فیلترها.
+  3. خلاصهٔ بصریِ قوی‌ترِ aggregate/KPI.
+  4. سلسله‌مراتبِ روشن‌ترِ نتیجه و روایت‌گریِ بصری (visual storytelling).
+  5. حالت‌های مدرنِ خالی/صفر/خطا (empty/zero/error states).
+  6. فضای کاریِ موبایلِ عامدانه طراحی‌شده برای گزارش‌گیری (نه فرمِ چیده‌شده/کوچک‌شده).
+  7. سیستمِ منسجمِ typography/spacing/surface/control که به سطوحِ Doctor، Reception، Finance، Patient و فضای کاریِ بالینی قابلِ انتقال باشد.
+
+---
+
 ## پیامدهای صریحِ این تصمیم (تا قبل از Phase 20)
 
 - فازهای ۱۴ تا ۱۹ با ظاهر Classic فعلی ادامه می‌یابند و به ترتیب نقشهٔ راه اجرا می‌شوند.
