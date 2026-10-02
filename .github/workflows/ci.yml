@@ -529,3 +529,76 @@ jobs:
           } > /tmp/wpcs-evidence.md
           gh pr comment "$PR_NUMBER" --body-file /tmp/wpcs-evidence.md \
             || echo '::notice::WPCS evidence mirror failed (non-fatal)'
+
+  # ------------------------------------------------------------------
+  # TEMPORARY EVIDENCE-ONLY JOB (NOT FOR MERGE):
+  # Measures candidate aws/aws-sdk-php:~3.399.0 in an isolated runner temp
+  # directory without touching product composer.json, composer.lock, vendor/,
+  # runtime code, or release packaging.
+  # ------------------------------------------------------------------
+  aws-sdk-evidence:
+    name: Disposable AWS SDK Evidence (aws/aws-sdk-php:~3.399.0)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mbstring, xml, simplexml, curl, dom, json, openssl, intl, zip
+          tools: composer:v2
+          coverage: none
+
+      - name: Run self-tests for disposable AWS SDK evidence tool
+        working-directory: ${{ github.workspace }}
+        run: python3 bin/aws-sdk-evidence.py --self-test
+
+      - name: Measure candidate aws/aws-sdk-php:~3.399.0 in runner temp
+        working-directory: ${{ github.workspace }}
+        run: |
+          python3 bin/aws-sdk-evidence.py \
+            --json-out /tmp/aws-sdk-evidence.json \
+            --md-out /tmp/aws-sdk-evidence.md
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::Repository working tree was modified during disposable evidence run."
+            git status --short
+            exit 1
+          fi
+
+      - name: Upload disposable AWS SDK evidence artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aws-sdk-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            /tmp/aws-sdk-evidence.json
+            /tmp/aws-sdk-evidence.md
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Post disposable AWS SDK evidence to PR
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          if [ -z "$PR_NUMBER" ]; then
+            echo 'AWS SDK evidence: not a pull_request run — PR comment skipped.'
+            exit 0
+          fi
+          if [ ! -s /tmp/aws-sdk-evidence.md ]; then
+            echo '::error::/tmp/aws-sdk-evidence.md is missing or empty.'
+            exit 1
+          fi
+          {
+            cat /tmp/aws-sdk-evidence.md
+            echo ""
+            echo "<details><summary>Raw JSON Evidence (<code>aws-sdk-evidence.json</code>)</summary>"
+            echo ""
+            echo '```json'
+            cat /tmp/aws-sdk-evidence.json
+            echo '```'
+            echo "</details>"
+          } > /tmp/aws-sdk-pr-comment.md
+          gh pr comment "$PR_NUMBER" --body-file /tmp/aws-sdk-pr-comment.md
+
