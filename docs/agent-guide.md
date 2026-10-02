@@ -2012,3 +2012,11 @@ This entry corrects the evidence prose of the immediately preceding Phase 13 Sli
 - **CI:** در این نقطه PENDING است؛ نتیجهٔ exact-head در ورودیِ تکمیلی ثبت خواهد شد (هیچ «سبز»ی بدون run-id ادعا نمی‌شود). بررسی‌های محلی: `git diff --check` + تأییدِ delta فقط `docs/`.
 - **موارد باز/تحویل به ایجنت بعد:** Technical Director بازبینیِ PR باز (بدون merge)؛ ادامهٔ کار = هیچ (Phase 14 بسته است)؛ فازِ بعدی طبق roadmap فقط با مجوزِ صریح مالک آغاز می‌شود.
 - **وضعیت tree:** clean پس از کامیت.
+
+#### [2026-10-02 ~05:50 UTC] — تکمیلِ ورودیِ بالا (ایجنت Arena، شاخه `arena/01a0fb13-doctor`): SHA / PR / شواهدِ exact-head
+
+- **کامیتِ مستندات (docs-only):** `b614f9a53c96bec1c10e37b12288536a8bde9243` — delta صرفاً `docs/` (شش فایل: `project-current-state.md`، `roadmap/roadmap.md`، `agent-guide.md`، `README.md`، `governance/project-phase-taxonomy.md`، `decisions/2026-10-01-phase20-classic-modern-skins-roadmap-order.md`)؛ **صفر** تغییر کد محصول/CSS/قالب/تست/هارنس/workflow/migration/dependency/رفتار زمانِ اجرا. `git diff --check` سبز.
+- **PR:** **#161** — باز / غیر-Draft / MERGEABLE / base=`main` / head=`arena/01a0fb13-doctor` — **تنها PR بازِ مخزن**؛ **DO NOT MERGE** (در انتظار بازبینیِ Technical Director).
+- **Exact-head روی `b614f9a…`:** هر چهار workflow لازم terminal-success — CI `36969162648` · Real WordPress Acceptance `36969162681` · Pilot/Staging Readiness Gate `36969151752` · Closure Gate `36969151670` — و **۱۹/۱۹ check runs `completed`/`success`** (صفر غیرموفق).
+- **این ورودیِ تکمیلی** خودش یک کامیت docs-only روی همان شاخهٔ PR است؛ وضعیتِ exact-head آن در PR #161 قابل مشاهده است و در گزارشِ تحویلِ نشست ثبت می‌شود.
+- **وضعیت tree:** clean پس از کامیت.
