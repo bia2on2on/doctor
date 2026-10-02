@@ -181,28 +181,28 @@ final class S3BackupDeploymentConfig {
 		string $secret_access_key,
 		string $encryption_key
 	) {
-		$this->endpoint_getter = static function () use ($endpoint): string {
+		$this->endpoint_getter          = static function () use ( $endpoint ): string {
 			return $endpoint;
 		};
-		$this->region_getter = static function () use ($region): string {
+		$this->region_getter            = static function () use ( $region ): string {
 			return $region;
 		};
-		$this->bucket_getter = static function () use ($bucket): string {
+		$this->bucket_getter            = static function () use ( $bucket ): string {
 			return $bucket;
 		};
-		$this->prefix_getter = static function () use ($key_prefix): string {
+		$this->prefix_getter            = static function () use ( $key_prefix ): string {
 			return $key_prefix;
 		};
-		$this->path_style_getter = static function () use ($use_path_style): bool {
+		$this->path_style_getter        = static function () use ( $use_path_style ): bool {
 			return $use_path_style;
 		};
-		$this->access_key_id_getter = static function () use ($access_key_id): string {
+		$this->access_key_id_getter     = static function () use ( $access_key_id ): string {
 			return $access_key_id;
 		};
-		$this->secret_access_key_getter = static function () use ($secret_access_key): string {
+		$this->secret_access_key_getter = static function () use ( $secret_access_key ): string {
 			return $secret_access_key;
 		};
-		$this->encryption_key_getter = static function () use ($encryption_key): string {
+		$this->encryption_key_getter    = static function () use ( $encryption_key ): string {
 			return $encryption_key;
 		};
 	}
@@ -220,14 +220,14 @@ final class S3BackupDeploymentConfig {
 	 */
 	// phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- نامِ عمومیِ تثبیت‌شدهٔ قراردادِ Phase 15 Slice 2B (suiteِ RED پذیرفته‌شده).
 	public static function fromReader( callable $reader ): ?self {
-		$raw_endpoint  = $reader( self::NAME_ENDPOINT );
-		$raw_region    = $reader( self::NAME_REGION );
-		$raw_bucket    = $reader( self::NAME_BUCKET );
-		$raw_prefix    = $reader( self::NAME_PREFIX );
-		$raw_path      = $reader( self::NAME_PATH_STYLE );
-		$raw_access    = $reader( self::NAME_ACCESS_KEY_ID );
-		$raw_secret    = $reader( self::NAME_SECRET_ACCESS_KEY );
-		$raw_key_b64   = $reader( self::NAME_ENCRYPTION_KEY_B64 );
+		$raw_endpoint = $reader( self::NAME_ENDPOINT );
+		$raw_region   = $reader( self::NAME_REGION );
+		$raw_bucket   = $reader( self::NAME_BUCKET );
+		$raw_prefix   = $reader( self::NAME_PREFIX );
+		$raw_path     = $reader( self::NAME_PATH_STYLE );
+		$raw_access   = $reader( self::NAME_ACCESS_KEY_ID );
+		$raw_secret   = $reader( self::NAME_SECRET_ACCESS_KEY );
+		$raw_key_b64  = $reader( self::NAME_ENCRYPTION_KEY_B64 );
 
 		$present_any = null !== $raw_endpoint || null !== $raw_region || null !== $raw_bucket
 			|| null !== $raw_prefix || null !== $raw_path || null !== $raw_access
@@ -443,6 +443,7 @@ final class S3BackupDeploymentConfig {
 	 * فقط HTTPS مطلق با host؛ بدونِ userinfo/query/fragment (مسیر مجاز است).
 	 */
 	private static function is_https_endpoint( string $value ): bool {
+		// phpcs:ignore WordPress.WP.AlternativeFunctions.parse_url_parse_url -- کلاس باید بدونِ WordPress قابلِ Unit-test باشد؛ PHP 8 parse_url در تست‌ها پین شده است.
 		$parts = parse_url( $value );
 		if ( ! is_array( $parts ) ) {
 			return false;
@@ -494,6 +495,7 @@ final class S3BackupDeploymentConfig {
 		if ( ! \defined( 'SODIUM_CRYPTO_SECRETSTREAM_XCHACHA20POLY1305_KEYBYTES' ) ) {
 			return null;
 		}
+		// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_decode -- رمزگشاییِ سخت‌گیرانهٔ کلیدِ ۳۲بایتیِ deployment است؛ هیچ استفادهٔ obfuscation وجود ندارد.
 		$decoded = base64_decode( $key_b64, true );
 		if ( ! is_string( $decoded ) ) {
 			return null;

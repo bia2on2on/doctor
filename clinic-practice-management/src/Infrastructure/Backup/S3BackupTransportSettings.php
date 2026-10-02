@@ -61,25 +61,25 @@ final class S3BackupTransportSettings {
 		string $access_key_id,
 		string $secret_access_key
 	) {
-		$this->endpoint_getter = static function () use ($endpoint): string {
+		$this->endpoint_getter          = static function () use ( $endpoint ): string {
 			return $endpoint;
 		};
-		$this->region_getter = static function () use ($region): string {
+		$this->region_getter            = static function () use ( $region ): string {
 			return $region;
 		};
-		$this->bucket_getter = static function () use ($bucket): string {
+		$this->bucket_getter            = static function () use ( $bucket ): string {
 			return $bucket;
 		};
-		$this->prefix_getter = static function () use ($key_prefix): string {
+		$this->prefix_getter            = static function () use ( $key_prefix ): string {
 			return $key_prefix;
 		};
-		$this->path_style_getter = static function () use ($use_path_style): bool {
+		$this->path_style_getter        = static function () use ( $use_path_style ): bool {
 			return $use_path_style;
 		};
-		$this->access_key_id_getter = static function () use ($access_key_id): string {
+		$this->access_key_id_getter     = static function () use ( $access_key_id ): string {
 			return $access_key_id;
 		};
-		$this->secret_access_key_getter = static function () use ($secret_access_key): string {
+		$this->secret_access_key_getter = static function () use ( $secret_access_key ): string {
 			return $secret_access_key;
 		};
 	}
