@@ -261,7 +261,7 @@ final class Phase15S3ConfigAndClientFactoryRedTest extends TestCase
         $class = $this->configClass();
 
         self::assertNull(
-            $class::fromReader($this->mapReader([])),
+            $class::fromReader(self::readerFor([])),
             'an all-absent configuration is the explicit "disabled / not configured" state: fromReader() returns null (there is deliberately no CPMS_S3_ENABLED flag)'
         );
 
@@ -282,13 +282,14 @@ final class Phase15S3ConfigAndClientFactoryRedTest extends TestCase
     {
         $class = $this->configClass();
 
-        $error = $this->captureError(static function () use ($class, $map): void {
-            $class::fromReader(self::readerFor($map));
+        $reader = self::readerFor($map);
+        $error = $this->captureError(static function () use ($class, $reader): void {
+            $class::fromReader($reader);
         });
 
         self::assertNotNull($error, 'a partially present configuration must fail closed, never silently disable or configure');
         self::assertSame(self::E_PARTIAL, $error->getErrorCode(), 'the partial state must use the bounded partial-config error code');
-        self::assertSame([], $error->getData(), 'config errors must not carry values in their data array');
+        self::assertSame([], $error->data, 'config errors must not carry values in their data array');
     }
 
     public static function providerPartialConfigurationMaps(): iterable
@@ -338,13 +339,14 @@ final class Phase15S3ConfigAndClientFactoryRedTest extends TestCase
         $map = self::fullValidMap();
         $map[$name] = $badValue;
 
-        $error = $this->captureError(static function () use ($class, $map): void {
-            $class::fromReader(self::readerFor($map));
+        $reader = self::readerFor($map);
+        $error = $this->captureError(static function () use ($class, $reader): void {
+            $class::fromReader($reader);
         });
 
         self::assertNotNull($error, 'the malformed ' . $name . ' value must be rejected');
         self::assertSame($expectedCode, $error->getErrorCode(), 'the malformed ' . $name . ' value must fail with its bounded error code');
-        self::assertSame([], $error->getData(), 'config errors must not carry values in their data array');
+        self::assertSame([], $error->data, 'config errors must not carry values in their data array');
     }
 
     public static function providerInvalidFieldValues(): iterable
@@ -540,8 +542,9 @@ final class Phase15S3ConfigAndClientFactoryRedTest extends TestCase
                 $map[$name] = $value;
             }
 
-            $error = $this->captureError(static function () use ($class, $map): void {
-                $class::fromReader(self::readerFor($map));
+            $reader = self::readerFor($map);
+            $error = $this->captureError(static function () use ($class, $reader): void {
+                $class::fromReader($reader);
             });
 
             self::assertNotNull($error, 'expected a bounded error for ' . $expectedCode);
@@ -557,7 +560,7 @@ final class Phase15S3ConfigAndClientFactoryRedTest extends TestCase
                 }
             }
 
-            self::assertSame([], $error->getData(), 'the exception data array must stay empty for ' . $expectedCode);
+            self::assertSame([], $error->data, 'the exception data array must stay empty for ' . $expectedCode);
         }
     }
 
@@ -743,8 +746,8 @@ final class Phase15S3ConfigAndClientFactoryRedTest extends TestCase
         self::assertTrue(class_exists(self::CONFIG), self::RED_MESSAGE);
         self::assertTrue(is_callable([self::CONFIG, 'fromReader']), 'contract: public static function S3BackupDeploymentConfig::fromReader(callable $reader): ?self');
         self::assertTrue(is_callable([self::CONFIG, 'fromDeploymentConstants']), 'contract: public static function S3BackupDeploymentConfig::fromDeploymentConstants(): ?self (production reader over defined()/constant())');
-        self::assertTrue(is_callable([self::CONFIG, 'transportSettings']), 'contract: public function S3BackupDeploymentConfig::transportSettings(): S3BackupTransportSettings');
-        self::assertTrue(is_callable([self::CONFIG, 'encryptionKeyForBackupEnvelope']), 'contract: the deliberately narrow in-memory accessor encryptionKeyForBackupEnvelope() for the future backup-encryption layer');
+        self::assertTrue(method_exists(self::CONFIG, 'transportSettings'), 'contract: public function S3BackupDeploymentConfig::transportSettings(): S3BackupTransportSettings');
+        self::assertTrue(method_exists(self::CONFIG, 'encryptionKeyForBackupEnvelope'), 'contract: the deliberately narrow in-memory accessor encryptionKeyForBackupEnvelope() for the future backup-encryption layer');
 
         foreach (self::nameConstantsOf(self::CONFIG) as $constantName => $deploymentName) {
             self::assertSame(
@@ -805,18 +808,27 @@ final class Phase15S3ConfigAndClientFactoryRedTest extends TestCase
      * The smallest repository-consistent reader seam: a callable/map reader.
      * Tests never mutate the global environment or define process constants.
      *
+     * The map is held in a per-test-class registry and the returned closure
+     * captures ONLY its string key: exception traces carry the reader as a
+     * live frame argument, and print_r/var_dump render a Closure's captured
+     * state — a map-capturing closure would leak fixture values into the very
+     * secrecy surfaces these tests scan.
+     */
+    private static array $reader_maps = [];
+
+    private static int $reader_seq = 0;
+
+    /**
      * @param array<string, mixed> $map
      */
     private static function readerFor(array $map): \Closure
     {
-        return static function (string $name) use ($map) {
-            return array_key_exists($name, $map) ? $map[$name] : null;
-        };
-    }
+        $key = 'm' . ++self::$reader_seq;
+        self::$reader_maps[$key] = $map;
 
-    private function mapReader(array $map): \Closure
-    {
-        return self::readerFor($map);
+        return static function (string $name) use ($key) {
+            return array_key_exists($name, self::$reader_maps[$key]) ? self::$reader_maps[$key][$name] : null;
+        };
     }
 
     /**
