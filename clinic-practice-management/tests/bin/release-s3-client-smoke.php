@@ -57,6 +57,7 @@ namespace {
             'secret' => 'CPMS_SMOKE_ONLY_NOT_PRODUCTION',
         ],
         'http' => ['verify' => true],
+        'csm' => false,
         'http_handler' => static function () use (&$calls): never {
             ++$calls;
             throw new \RuntimeException('Network is forbidden in the release SDK smoke');
@@ -82,10 +83,20 @@ namespace {
               'Installed runtime version differs from committed lock: ' . $package['name']);
     }
     $rootPackage = \Composer\InstalledVersions::getRootPackage();
-    $actual = array_values(array_diff(\Composer\InstalledVersions::getInstalledPackages(), [$rootPackage['name']]));
+    // getInstalledPackages() includes virtual PSR "-implementation" provides.
+    // Count concrete installed packages, not those non-file aliases.
+    $actual = [];
+    foreach (\Composer\InstalledVersions::getInstalledPackages() as $name) {
+        if ($name !== $rootPackage['name'] && \Composer\InstalledVersions::getInstallPath($name) !== null) {
+            $actual[] = $name;
+        }
+    }
     sort($actual);
     sort($expected);
-    check($actual === $expected && $rootPackage['dev'] === false, 'Runtime metadata contains dev/unlocked packages');
+    check($actual === $expected && $rootPackage['dev'] === false,
+          'Runtime metadata contains dev/unlocked packages: ' . json_encode([
+              'actual' => $actual, 'expected' => $expected, 'dev' => $rootPackage['dev'],
+          ], JSON_THROW_ON_ERROR));
     echo 'PASS: built plugin autoload -> official S3Client 3.399.0, HTTPS, region, path-style, SigV4, TLS verify; '
         . "explicit dummy credentials; HTTP calls = 0; PHP " . PHP_VERSION . "\n";
 }
