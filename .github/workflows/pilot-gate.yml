@@ -65,10 +65,10 @@ jobs:
 
       - name: Policy — forbidden content scan (اسمبل ZIP)
         run: |
-          unzip -l dist/clinic-practice-management-1.0.0.zip > /tmp/ziplist.txt
-          if grep -Eqi '\.git|\.env|tests/|phpunit|composer\.(json|lock)|installed\.json|auth\.json|/credentials|/(\.cache|cache)/|vendor/(phpstan|php-stubs|yoast|szepeviktor)/|\.log|pilot-(seed|smoke|responsive)' /tmp/ziplist.txt; then
+          unzip -Z1 dist/clinic-practice-management-1.0.0.zip > /tmp/ziplist.txt
+          if grep -Eqi '\.git|\.env|tests/|phpunit|composer\.(json|lock)|installed\.json|auth\.json|(^|/)credentials$|/(\.cache|cache)/|vendor/(phpstan|php-stubs|yoast|szepeviktor)/|\.log|pilot-(seed|smoke|responsive)' /tmp/ziplist.txt; then
             echo 'FORBIDDEN CONTENT FOUND:' >&2
-            grep -Ei '\.git|\.env|tests/|phpunit|composer\.(json|lock)|installed\.json|auth\.json|/credentials|/(\.cache|cache)/|vendor/(phpstan|php-stubs|yoast|szepeviktor)/|\.log|pilot-' /tmp/ziplist.txt >&2
+            grep -Ei '\.git|\.env|tests/|phpunit|composer\.(json|lock)|installed\.json|auth\.json|(^|/)credentials$|/(\.cache|cache)/|vendor/(phpstan|php-stubs|yoast|szepeviktor)/|\.log|pilot-' /tmp/ziplist.txt >&2
             exit 1
           fi
           mkdir -p /tmp/zscan && unzip -qq dist/clinic-practice-management-1.0.0.zip -d /tmp/zscan

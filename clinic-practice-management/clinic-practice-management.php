@@ -26,12 +26,12 @@ if ( is_file( CPMS_PLUGIN_DIR . 'vendor/autoload.php' ) ) {
     require_once CPMS_PLUGIN_DIR . 'vendor/autoload.php';
 } else {
     spl_autoload_register(
-        static function ( string $class ): void {
+        static function ( string $class_name ): void {
             $prefix = 'ClinicCore\\';
-            if ( strncmp( $class, $prefix, strlen( $prefix ) ) !== 0 ) {
+            if ( strncmp( $class_name, $prefix, strlen( $prefix ) ) !== 0 ) {
                 return;
             }
-            $relative = substr( $class, strlen( $prefix ) );
+            $relative = substr( $class_name, strlen( $prefix ) );
             $file     = CPMS_PLUGIN_DIR . 'src/' . str_replace( '\\', '/', $relative ) . '.php';
             if ( is_file( $file ) ) {
                 require $file;

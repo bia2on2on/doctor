@@ -108,7 +108,8 @@ echo "VENDOR:     $(du -sh "$VENDOR" | cut -f1) / $(find "$VENDOR" -type f | wc 
 
 # --- Policy self-check (شکست = build fail) ---
 MANIFEST="$OUT/${NAME}-${VERSION}-manifest.txt"
-FORBIDDEN='(^|/)(\.git[^/]*|\.env[^/]*|tests?|docs|node_modules|\.cache|cache|auth\.json|credentials|phpunit[^/]*|phpstan|php-stubs|yoast|szepeviktor|composer\.(json|lock)|installed\.json|[^/]*\.log|pilot-[^/]*)(/|$)'
+# Credentials/*.php is official SDK code, not a stored credential file.
+FORBIDDEN='(^|/)(\.git[^/]*|\.env[^/]*|tests?|docs|node_modules|\.cache|cache|auth\.json|phpunit[^/]*|phpstan|php-stubs|yoast|szepeviktor|composer\.(json|lock)|installed\.json|[^/]*\.log|pilot-[^/]*)(/|$)|(^|/)credentials$'
 if grep -Eqi "$FORBIDDEN" "$MANIFEST"; then
   echo 'POLICY VIOLATION: forbidden file in manifest' >&2
   grep -Ei "$FORBIDDEN" "$MANIFEST" >&2

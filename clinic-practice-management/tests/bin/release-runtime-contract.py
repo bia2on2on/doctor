@@ -38,11 +38,14 @@ def main():
             for name in names:
                 parts = Path(name).parts
                 require(parts[0] == NAME and ".." not in parts, f"Unsafe ZIP path: {name}")
+                # SDK src/Credentials/ contains classes, not persisted credentials.
+                require(not (parts[-1].lower() == "credentials" and not name.endswith("/")),
+                        f"Stored credential file in release: {name}")
                 for part in parts:
                     lower = part.lower()
                     require(not (lower.startswith((".git", ".env", "phpunit", "pilot-"))
                                  or lower in {"tests", "test", "docs", "node_modules", ".cache", "cache",
-                                              "auth.json", "credentials", "composer.json", "composer.lock",
+                                              "auth.json", "composer.json", "composer.lock",
                                               "installed.json", "phpstan", "php-stubs", "yoast", "szepeviktor"}
                                  or lower.endswith(".log")), f"Forbidden release content: {name}")
             zipped.extractall(scratch)
