@@ -244,14 +244,16 @@ final class Phase15S3MirrorReconstructionRedTest extends WP_UnitTestCase
     }
 
     // ---------------------------------------------------------------------
-    // Intended RED and future behavior contracts. Each missing API is an
-    // assertion failure with a stable message; none invokes a missing symbol.
+    // Implemented behavior contracts. Missing APIs fail as stable assertions;
+    // the public reconstruction operation is an instance method, not static.
     // ---------------------------------------------------------------------
 
-    public function testIntendedRedIsAnExplicitMissingOperationContractAssertion(): void
+    public function test_reconstruction_operation_contract_is_explicit_and_instance_scoped(): void
     {
         $class = $this->recoveryClass();
-        self::assertTrue(is_callable([$class, self::RECOVERY_METHOD]), 'contract: the new public reconstruction operation is callable');
+        $method = new \ReflectionMethod( $class, self::RECOVERY_METHOD );
+        self::assertTrue( $method->isPublic( ), 'contract: the new reconstruction operation is public' );
+        self::assertFalse( $method->isStatic( ), 'contract: the new reconstruction operation uses its configured instance' );
 
         // Reuse the one established restore-preflight path by adding only an
         // optional read-only source boundary; no second verifier/preflight stack.
@@ -515,6 +517,24 @@ final class Phase15S3MirrorReconstructionRedTest extends WP_UnitTestCase
             $outcome = $this->expectRemoteFailure($remote, $pointer, $this->fixtureKey(), $stage);
             self::assertLessThanOrEqual(1, count($outcome['requests']), 'contract: Slice 2C pointer aggregate evidence must match the authenticated catalog before payload downloads');
         }
+
+        $remote = $this->buildRemoteFixture( );
+        $remote['catalog']['entries'][0]['remote_verification'] = BackupS3Mirror::STRENGTH_ACKNOWLEDGED;
+        $remote = $this->withCatalog( $remote, $remote['catalog'] );
+        $pointer = $remote['pointer'];
+        $pointer['verification'] = BackupS3Mirror::STRENGTH_VERIFIED;
+        $stage = $this->stagePath( );
+        $outcome = $this->expectRemoteFailure(
+            $remote,
+            $pointer,
+            $this->fixtureKey( ),
+            $stage
+        );
+        self::assertCount(
+            1,
+            $outcome['requests'],
+            'contract: VERIFIED aggregate evidence cannot contain an ACKNOWLEDGED catalog entry'
+        );
     }
 
     public function testAuthenticatedLocalManifestDigestMustMatchReconstructedManifestBytes(): void
@@ -746,7 +766,11 @@ final class Phase15S3MirrorReconstructionRedTest extends WP_UnitTestCase
         $remote = $this->withCatalog($remote, $remote['catalog']);
         $stage = $this->stagePath();
         $outcome = $this->expectRemoteFailure($remote, $remote['pointer'], $this->fixtureKey(), $stage);
-        self::assertCount(1, $outcome['requests'], 'contract: oversized per-object metadata is rejected before downloading object bytes');
+        self::assertCount(
+            0,
+            $outcome['requests'],
+            'contract: the accepted aggregate pointer ceiling is stricter than the per-object cap, so oversized metadata is rejected before any remote read; no giant object bytes are allocated'
+        );
     }
 
     public function testAggregateStagingBoundFailsBeforeFetchingOversizedObjectBytes(): void
@@ -759,7 +783,11 @@ final class Phase15S3MirrorReconstructionRedTest extends WP_UnitTestCase
         $remote = $this->withCatalog($remote, $remote['catalog']);
         $stage = $this->stagePath();
         $outcome = $this->expectRemoteFailure($remote, $remote['pointer'], $this->fixtureKey(), $stage);
-        self::assertCount(1, $outcome['requests'], 'contract: aggregate encrypted-plus-plaintext staging estimate is bounded before object downloads');
+        self::assertCount(
+            0,
+            $outcome['requests'],
+            'contract: the pointer aggregate ciphertext ceiling rejects this encrypted-plus-plaintext overage before any remote read; no oversized fixture is allocated'
+        );
     }
 
     public function testCatalogJsonInputIsBoundedAndMalformedJsonFailsClosed(): void
@@ -857,12 +885,16 @@ final class Phase15S3MirrorReconstructionRedTest extends WP_UnitTestCase
     private function recoveryClass(): string
     {
         self::assertTrue(class_exists(self::RECOVERY_CLASS), self::MISSING_CONTRACT_MESSAGE);
-        self::assertTrue(is_callable([self::RECOVERY_CLASS, self::RECOVERY_METHOD]), 'contract: public reconstructAndPreflight(array $pointer): array exists');
+        self::assertTrue(
+            method_exists( self::RECOVERY_CLASS, self::RECOVERY_METHOD ),
+            'contract: public reconstructAndPreflight(array $pointer): array exists'
+        );
 
         $reflection = new \ReflectionClass(self::RECOVERY_CLASS);
         self::assertTrue($reflection->isFinal(), 'contract: the operation is a concrete application service, not a new production provider interface');
         $method = $reflection->getMethod(self::RECOVERY_METHOD);
         self::assertTrue($method->isPublic());
+        self::assertFalse( $method->isStatic( ) );
         self::assertSame(1, $method->getNumberOfParameters());
         self::assertSame('pointer', $method->getParameters()[0]->getName());
         $parameterType = $method->getParameters()[0]->getType();

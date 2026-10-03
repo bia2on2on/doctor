@@ -270,14 +270,15 @@ final class BackupService
     /**
      * @return array<string, mixed>
      */
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- Preserve the established public restore-preflight API.
     public function restorePreflight(
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Preserve existing named-argument compatibility.
         string $backupId,
-        ?ProtectedBackupStore $sourceOverride = null
-    ): array
-    {
+        ?ProtectedBackupStore $source_override = null
+    ): array {
         // Remote reconstruction supplies its unique, private staging store here;
         // existing callers continue to resolve active/legacy sources unchanged.
-        $source = $sourceOverride ?? $this->resolveSourceStore($backupId);
+        $source = $source_override ?? $this->resolveSourceStore( $backupId );
         $dir = $source->dirOf($backupId);
         $raw = $this->readManifestIn($source, $backupId);
         if ($raw === null) {
