@@ -584,6 +584,103 @@ final class Phase15S3MirrorReconstructionRedTest extends WP_UnitTestCase
         $this->assertPathAbsent($stage, 'contract: the stage is removed after restore preflight returns');
     }
 
+    public function testRestorePreflightDatabaseProbeFailureFailsClosedWithoutMutation(): void
+    {
+        $class = $this->recoveryClass();
+        $this->assertNoRestoreApplyCall($class);
+        $remote = $this->buildRemoteFixture();
+        $databaseBefore = $this->databaseSnapshot();
+        $storageBefore = $this->activeClinicalStorageSnapshot();
+        $stage = $this->stagePath();
+        $databaseProbeCalls = 0;
+        $preflightReached = false;
+        $nonReadQueries = [];
+
+        // The existing wpdb query filter is a test-only seam: let the real
+        // BackupService::restorePreflight issue SELECT 1, but return SELECT 0
+        // to exercise its real dbOk() non-success branch without disconnecting
+        // the integration database or changing production code.
+        $queryObserver = function ( $query ) use ( &$databaseProbeCalls, &$preflightReached, &$nonReadQueries, $stage, $remote ): string {
+            $query = (string) $query;
+            if ( trim( $query ) === 'SELECT 1' ) {
+                ++$databaseProbeCalls;
+                $stagedBackup = $stage . '/' . self::BACKUP_ID;
+                self::assertDirectoryExists( $stagedBackup, 'contract: the valid reconstruction is complete when restorePreflight probes database reachability' );
+                self::assertSame(
+                    $this->expectedFilesFromFixture(),
+                    $this->fileMap( $stagedBackup ),
+                    'contract: the real restorePreflight path sees the complete reconstructed plaintext layout'
+                );
+                self::assertSame(
+                    $remote['catalog']['local_manifest_sha256'],
+                    hash_file( 'sha256', $stagedBackup . '/manifest.json' ),
+                    'contract: authenticated manifest evidence is intact when the database probe runs'
+                );
+                $verified = LocalBackupVerifier::verify( $stagedBackup, self::BACKUP_ID, true );
+                self::assertTrue( $verified['ok'], 'contract: local verification succeeds before database reachability fails' );
+                self::assertSame( [], $verified['errors'] );
+                $preflightReached = true;
+
+                return 'SELECT 0';
+            }
+
+            if ( preg_match( '/^\s*(?:SELECT|SHOW|EXPLAIN|DESCRIBE)\b/i', $query ) !== 1 ) {
+                $nonReadQueries[] = 'non-read SQL was issued';
+            }
+
+            return $query;
+        };
+        add_filter( 'query', $queryObserver, 999, 1 );
+        try {
+            $outcome = $this->expectRemoteFailure(
+                $remote,
+                $remote['pointer'],
+                $this->fixtureKey(),
+                $stage
+            );
+        } finally {
+            remove_filter( 'query', $queryObserver, 999 );
+        }
+
+        self::assertSame( 1, $databaseProbeCalls, 'contract: one real SELECT 1 reachability probe is forced to the non-success result' );
+        self::assertTrue( $preflightReached, 'contract: reconstruction reaches the existing verifier/preflight before the probe fails' );
+        self::assertCount( count( $remote['objects'] ), $outcome['requests'], 'contract: catalog and all payload objects are fetched before preflight failure' );
+        $this->assertOnlyOpaqueKeysWereRequested( $outcome['requests'], $remote['pointer'] );
+        self::assertSame( [], $nonReadQueries, 'safety: the failed preflight issues no SQL writes, DDL or import statements' );
+        $this->assertPathAbsent( $stage, 'safety: owned ciphertext and plaintext staging is removed after the preflight failure' );
+
+        $error = $outcome['error'];
+        self::assertSame( 'CLINIC_BACKUP_MIRROR_RECOVERY_FAILED', $error->getErrorCode() );
+        self::assertSame( 'remote backup reconstruction failed', $error->getMessage() );
+        self::assertSame( [], $error->data, 'security: the failure exposes no diagnostic or provider data' );
+        $errorSurfaces = strtolower( $error->getErrorCode() . "\n" . $error->getMessage() . "\n" . json_encode( $error->data ) . "\n" . (string) $error );
+        $sensitiveMarkers = array_merge(
+            [
+                $stage,
+                self::BACKUP_ID,
+                (string) $remote['pointer']['mirror_id'],
+                (string) $remote['pointer']['catalog_object_id'],
+                'Authorization:',
+                'AWS4-HMAC-SHA256',
+                'Credential=',
+                'Signature=',
+                'X-Amz-Algorithm',
+                'X-Amz-Credential',
+                'X-Amz-Signature',
+                'X-Amz-Security-Token',
+            ],
+            array_map( 'strval', array_keys( $remote['objects'] ) )
+        );
+        foreach ( $sensitiveMarkers as $marker ) {
+            if ( $marker !== '' ) {
+                self::assertStringNotContainsString( strtolower( $marker ), $errorSurfaces, 'security: bounded failure hides paths, backup/object identifiers and signed or authentication data' );
+            }
+        }
+
+        self::assertSame( $databaseBefore, $this->databaseSnapshot(), 'safety: failed restore preflight leaves the active database unchanged' );
+        self::assertSame( $storageBefore, $this->activeClinicalStorageSnapshot(), 'safety: failed restore preflight leaves all active clinical storage unchanged' );
+    }
+
     public function testAuthenticatedCatalogIsFullyValidatedBeforeTheFirstPlaintextFileIsWritten(): void
     {
         $this->recoveryClass();
