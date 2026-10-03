@@ -553,16 +553,24 @@ final class BackupS3Mirror {
      * مدلِ SDK قفل‌شده برای PutObject هر دو فیلد را نگاشت می‌کند (`ChecksumSHA256` ←
      * `x-amz-checksum-sha256`، `Size` ← `x-amz-object-size`)، اما در مستنداتِ AWS فیلدِ
      * طول **اختیاری و وابسته به AppendObject/S3 Express One Zone** است؛ پس:
-     *  - checksum برگشتی هم‌خوان ⇒ VERIFIED — بدونِ هیچ شرطِ طولی؛
-     *  - checksum برگشتی موجود نباشد ⇒ ACKNOWLEDGED؛
-     *  - checksum برگشتی صریحاً ناهم‌خوان ⇒ Fail-Closed (نه تنزل)؛
-     *  - طولِ صریحاً متناقض (نادر) ⇒ Fail-Closed — این فقط ردِّ تناقض است، نه
-     *    اثباتِ لازم؛ برای رسیدن به VERIFIED هرگز لازم/بررسی نیست.
+     *  - اگر Length صراحتاً در پاسخ باشد، **اول** با اندازهٔ ciphertext محلی سنجیده
+     *    می‌شود (تجزیهٔ عددی؛ برابر نبودن ⇒ هر مقدارِ قابل‌اتکایی نیست): تناقضِ صریح ⇒
+     *    Fail-Closed. این قاعده هیچ‌گاه VERIFIED نمی‌سازد و نبودِ Length هرگز تنزل/مانع
+     *    نیست — برای همین هیچ تنزلی (از جمله ACKNOWLEDGED) نباید پیش از آن رخ دهد.
+     *  - سپس checksum برگشتی: هم‌خوان ⇒ VERIFIED (بدونِ هیچ شرطِ طولی)؛ موجود نباشد ⇒
+     *    ACKNOWLEDGED؛ صریحاً ناهم‌خوان ⇒ Fail-Closed (نه تنزل).
      * HEAD برای اثباتِ بدنه استفاده نمی‌شود؛ ETag و اکویِ metadata دلیلِ برابریِ بدنه نیستند.
      *
      * @param array<string, mixed> $result پاسخِ تجزیه‌شدهٔ PutObject (Result::toArray)
      */
 	private function strength_from_acknowledgement( array $result, int $bytes, string $digest_b64 ): string {
+		// (۱) تناقضِ صریحِ طول — پیش از هر تنزلی بررسی می‌شود، وگرنه پاسخِ فاقدِ checksum
+		// در گامِ بعدی به ACKNOWLEDGED تنزل می‌کند و تناقض هرگز دیده نمی‌شود.
+		if ( isset( $result['Size'] ) && (int) $result['Size'] !== $bytes ) {
+			throw BackupException::of( self::E_SIZE_MISMATCH, 'S3 mirror size verification failed' );
+		}
+
+		// (۲) تنها چیزی که VERIFIED را مجاز می‌کند: checksum برگشتیِ خودِ PutObject.
 		$echoed = trim( (string) ( $result['ChecksumSHA256'] ?? '' ) );
 		if ( $echoed === '' ) {
 			// endpoint اثباتِ checksum ندارد ⇒ ACKNOWLEDGED، نه بیشتر.
@@ -570,11 +578,6 @@ final class BackupS3Mirror {
 		}
 		if ( ! hash_equals( $digest_b64, $echoed ) ) {
 			throw BackupException::of( self::E_CHECKSUM_MISMATCH, 'S3 mirror checksum verification failed' );
-		}
-
-		// رسیدن به VERIFIED هرگز به `Size` وابسته نیست؛ آن را فقط برای ردِّ تناقضِ صریح می‌خوانیم.
-		if ( isset( $result['Size'] ) && (int) $result['Size'] !== $bytes ) {
-			throw BackupException::of( self::E_SIZE_MISMATCH, 'S3 mirror size verification failed' );
 		}
 
 		return self::STRENGTH_VERIFIED;

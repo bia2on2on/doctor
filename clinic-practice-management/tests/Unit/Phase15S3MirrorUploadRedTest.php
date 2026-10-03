@@ -915,6 +915,56 @@ final class Phase15S3MirrorUploadRedTest extends TestCase
         self::assertCount(4, $this->putRequests($requests), 'contract: no verification request is invented to rescue the weaker claim');
     }
 
+    /**
+     * Decision order: an explicitly contradictory length fails closed even when the
+     * endpoint reports no checksum at all — the ACKNOWLEDGED downgrade must never
+     * pre-empt the size rejection. (Size stays OPTIONAL: absence of it is never a
+     * downgrade, see the ACKNOWLEDGED/VERIFIED fixtures; a reported length can only
+     * veto, never create VERIFIED.)
+     */
+    public function testMatchingReportedLengthNeitherBlocksNorCreatesVerified(): void
+    {
+        $this->mirrorClass();
+        $this->requireSecretstream();
+        $root     = $this->workspace();
+        $this->writeLocalBackup($root, self::BACKUP_ID);
+        $requests = array();
+        $result   = $this->mirror($root, 'verified-matching-length', $requests)->mirrorBackup(self::BACKUP_ID);
+
+        self::assertSame(self::RESULT_VERIFIED, (string) ($result['result'] ?? ''), 'contract: an endpoint that reports a matching length is still VERIFIED on the checksum — the length agreement is not treated as a contradiction');
+        foreach (array_values((array) ($result['objects'] ?? array())) as $object) {
+            self::assertSame(self::STRENGTH_VERIFIED, (string) ($object['strength'] ?? ''));
+        }
+
+        // The mirror image: the very same reported length, with no checksum, must NOT
+        // be enough to reach VERIFIED — a size can veto, it can never certify.
+        $root2     = $this->workspace();
+        $this->writeLocalBackup($root2, self::BACKUP_ID);
+        $requests2 = array();
+        $result2   = $this->mirror($root2, 'matching-length-no-checksum', $requests2)->mirrorBackup(self::BACKUP_ID);
+        self::assertSame(self::RESULT_ACKNOWLEDGED, (string) ($result2['result'] ?? ''), 'contract: a matching x-amz-object-size alone never creates VERIFIED');
+        self::assertNotSame(self::STRENGTH_VERIFIED, (string) ($result2['verification'] ?? ''));
+        foreach (array_values((array) ($result2['objects'] ?? array())) as $object) {
+            self::assertSame(self::STRENGTH_ACKNOWLEDGED, (string) ($object['strength'] ?? ''));
+        }
+    }
+
+    public function testContradictoryReportedLengthFailsClosedEvenWithoutChecksum(): void
+    {
+        $this->mirrorClass();
+        $this->requireSecretstream();
+        $root     = $this->workspace();
+        $this->writeLocalBackup($root, self::BACKUP_ID);
+        $before   = $this->snapshot($root);
+        $requests = array();
+
+        $failure = $this->captureMirrorFailure($this->mirror($root, 'size-contradiction-no-checksum', $requests), self::BACKUP_ID);
+        self::assertSame(self::E_SIZE_MISMATCH, $failure['code'], 'contract: no returned checksum does not license an ACKNOWLEDGED result for an object whose reported length contradicts the bytes that were sent');
+        self::assertCount(1, $this->putRequests($requests), 'contract: the remaining objects and the catalog are not uploaded after the contradiction is seen');
+        $this->assertOnlyBoundedSelfCleanup($requests, $this->putPaths($requests), 1);
+        self::assertSame($before, $this->snapshot($root), 'contract: the local source stays byte-identical');
+    }
+
     public function testExplicitChecksumMismatchFailsClosed(): void
     {
         $this->mirrorClass();
@@ -1559,6 +1609,20 @@ final class Phase15S3MirrorUploadRedTest extends TestCase
                 // contradiction may veto VERIFIED — absence stays harmless.
                 $responseHeaders['x-amz-checksum-sha256'] = (string) ($headers['x-amz-checksum-sha256'] ?? '');
                 $responseHeaders['x-amz-object-size']    = (string) (strlen($body) + 1);
+            } elseif ('verified-matching-length' === $policy) {
+                // A conformant endpoint that DOES report x-amz-object-size, and reports it
+                // correctly: the agreement must neither block nor create VERIFIED.
+                $responseHeaders['x-amz-checksum-sha256'] = (string) ($headers['x-amz-checksum-sha256'] ?? '');
+                $responseHeaders['x-amz-object-size']     = (string) strlen($body);
+            } elseif ('matching-length-no-checksum' === $policy) {
+                // The mirror image: a correct reported length and no checksum at all.
+                // A length alone is never service proof of the body.
+                $responseHeaders['x-amz-object-size'] = (string) strlen($body);
+            } elseif ('size-contradiction-no-checksum' === $policy) {
+                // The ordering trap: an endpoint with no usable checksum to report AND an
+                // explicitly impossible length. A checksum-first implementation would
+                // return the ACKNOWLEDGED downgrade before ever looking at the length.
+                $responseHeaders['x-amz-object-size'] = (string) (strlen($body) + 1);
             }
 
             return new FulfilledPromise(new Response(200, $responseHeaders, ''));
