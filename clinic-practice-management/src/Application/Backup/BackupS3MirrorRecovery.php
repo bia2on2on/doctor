@@ -295,10 +295,10 @@ final class BackupS3MirrorRecovery {
         $remaining_data_ciphertext_bytes  = $data_ciphertext_bytes;
         $downloaded_data_ciphertext_bytes = 0;
         foreach ( $validated['entries'] as $entry ) {
-            $object_id                       = $entry['object_id'];
-            $cipher_path                     = $download_dir . '/' . $object_id . '.enc';
-            $remote_key                      = $this->remote_object_key( $config, $mirror_id, $object_id );
-            $entry_bytes                     = $entry['ciphertext_bytes'];
+            $object_id                        = $entry['object_id'];
+            $cipher_path                      = $download_dir . '/' . $object_id . '.enc';
+            $remote_key                       = $this->remote_object_key( $config, $mirror_id, $object_id );
+            $entry_bytes                      = $entry['ciphertext_bytes'];
             $remaining_data_ciphertext_bytes -= $entry_bytes;
             if ( $remaining_data_ciphertext_bytes < 0 ) {
                 throw $this->recovery_failure();

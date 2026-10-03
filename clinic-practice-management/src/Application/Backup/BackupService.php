@@ -482,7 +482,7 @@ final class BackupService
             if ( $row !== null ) {
                 $decoded = json_decode( (string) ( $row['value_json'] ?? '' ), true );
                 if ( is_string( $decoded ) ) {
-                    $path = trim($decoded);
+                    $path = trim( $decoded );
                 } elseif ( $fail_closed_on_settings_lookup_failure ) {
                     throw BackupException::of(
                         'CLINIC_BACKUP_ENUMERATION_FAILED',
