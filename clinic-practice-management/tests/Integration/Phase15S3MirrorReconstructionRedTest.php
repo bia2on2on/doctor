@@ -295,7 +295,7 @@ final class Phase15S3MirrorReconstructionRedTest extends WP_UnitTestCase
         self::assertGreaterThan(1, count($requests), 'contract: the catalog and every encrypted data object are fetched through the official handler');
         self::assertSame(array_fill(0, count($requests), 'GET'), array_column($requests, 'method'), 'contract: reconstruction only reads remote objects');
         $this->assertOnlyOpaqueKeysWereRequested($requests, $remote['pointer']);
-        $this->assertDirectoryDoesNotExist($stage, 'contract: private download and reconstruction staging is removed after success');
+        $this->assertPathAbsent($stage, 'contract: private download and reconstruction staging is removed after success');
     }
 
     public function testReconstructedBackupPassesTheExistingVerifierAndRestorePreflightAgainstTheStage(): void
@@ -335,7 +335,7 @@ final class Phase15S3MirrorReconstructionRedTest extends WP_UnitTestCase
         self::assertSame(1, $preflightCalls, 'contract: BackupService::restorePreflight() reaches its existing database check once for the staged backup');
         self::assertTrue($verifiedAtPreflight);
         $this->assertSuccessfulBoundedResult($result, $remote['pointer']);
-        $this->assertDirectoryDoesNotExist($stage, 'contract: the stage is removed after restore preflight returns');
+        $this->assertPathAbsent($stage, 'contract: the stage is removed after restore preflight returns');
     }
 
     public function testAuthenticatedCatalogIsFullyValidatedBeforeTheFirstPlaintextFileIsWritten(): void
@@ -367,7 +367,7 @@ final class Phase15S3MirrorReconstructionRedTest extends WP_UnitTestCase
 
         self::assertTrue($observed);
         $this->assertSuccessfulBoundedResult($result, $remote['pointer']);
-        $this->assertDirectoryDoesNotExist($stage, 'contract: the private stage is removed after successful verification');
+        $this->assertPathAbsent($stage, 'contract: the private stage is removed after successful verification');
     }
 
     public function testWrongEncryptionKeyFailsClosed(): void
@@ -820,11 +820,11 @@ final class Phase15S3MirrorReconstructionRedTest extends WP_UnitTestCase
         $requests = [];
         $result = $this->invokeRecovery($remote, $remote['pointer'], $this->fixtureKey(), $successStage, $requests);
         $this->assertSuccessfulBoundedResult($result, $remote['pointer']);
-        $this->assertDirectoryDoesNotExist($successStage, 'contract: successful reconstruction leaves no downloaded ciphertext or plaintext staging');
+        $this->assertPathAbsent($successStage, 'contract: successful reconstruction leaves no downloaded ciphertext or plaintext staging');
 
         $failureStage = $this->stagePath();
         $this->expectRemoteFailure($remote, $remote['pointer'], str_repeat(self::WRONG_KEY_BYTE, 32), $failureStage);
-        $this->assertDirectoryDoesNotExist($failureStage, 'contract: failed authentication leaves no private staging');
+        $this->assertPathAbsent($failureStage, 'contract: failed authentication leaves no private staging');
     }
 
     public function testBoundedFailureOutputsAndNewLogsNeverExposeSecretsPHIPathsOrObjectKeys(): void
@@ -926,7 +926,7 @@ final class Phase15S3MirrorReconstructionRedTest extends WP_UnitTestCase
             self::fail('contract: failures surface only as a bounded BackupException, not raw ' . get_class($error));
         } finally {
             if ($assertStageClean) {
-                $this->assertDirectoryDoesNotExist($stage, 'contract: operation-owned staging is removed after every failure');
+                $this->assertPathAbsent($stage, 'contract: operation-owned staging is removed after every failure');
             }
         }
 
@@ -1331,7 +1331,7 @@ final class Phase15S3MirrorReconstructionRedTest extends WP_UnitTestCase
         return $files;
     }
 
-    private function assertDirectoryDoesNotExist(string $path, string $message): void
+    private function assertPathAbsent(string $path, string $message): void
     {
         self::assertFalse(file_exists($path) || is_link($path), $message);
     }
