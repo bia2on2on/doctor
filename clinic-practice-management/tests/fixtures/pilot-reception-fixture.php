@@ -293,26 +293,39 @@ foreach ([['a', $slotExpress->format('H:i:s'), 1], ['b', $slotPlain->format('H:i
 
 // Phase 11 Slice 5 — appointment booking stage: ALREADY-GENERATED slots only
 // (the pilot never generates a schedule and the reception boundary never
-// fabricates one). Dr Reception at Tehran carries two FREE slots for the
-// explicit-selection journeys — free_a with capacity 2 so the same persisted
-// slot can prove the bounded duplicate rule for one patient and the honest
-// remaining-capacity indicator for another — plus one FULL and one CLOSED slot
-// that must never be offered, and one FREE slot on the NEXT Tehran-local day
-// for the future-date journey (a future appointment must never enter today's
-// board or queue). No appointment row is inserted here: the booking journeys
-// create them through the real UI, so the Slice 1 board invariant (exactly four
-// booked rows for today) is unchanged until a journey books one.
-$slotFreeA   = $nowTehran->add(new DateInterval('PT95M'));
-$slotFreeB   = $nowTehran->add(new DateInterval('PT115M'));
-$slotFreeC   = $nowTehran->add(new DateInterval('PT135M'));
-$slotFull    = $nowTehran->add(new DateInterval('PT155M'));
-$slotClosed  = $nowTehran->add(new DateInterval('PT175M'));
-$tomorrowTehran = $nowTehran->add(new DateInterval('P1D'))->format('Y-m-d');
-$bookingDate = $slotFreeA->format('Y-m-d');
-$bookingFutureDate = $bookingDate === $todayTehran
-    ? $tomorrowTehran
-    : $nowTehran->add(new DateInterval('P2D'))->format('Y-m-d');
-$futureTime     = '10:00:00';
+// fabricates one). Dr Reception at Tehran carries three deterministic FREE slots
+// for the explicit-selection journeys on one shared future Tehran-local date —
+// free_a has capacity 2 so the same persisted slot can prove the bounded
+// duplicate rule for one patient and the honest remaining-capacity indicator for
+// another — plus one FULL and one CLOSED slot that must never be offered, and
+// one FREE slot on the following Tehran-local date for the future-date journey
+// (a future appointment must never enter today's board or queue). No appointment
+// row is inserted here: the booking journeys create them through the real UI, so
+// the Slice 1 board invariant (exactly four booked rows for today) is unchanged
+// until a journey books one.
+$slotFull          = $nowTehran->add(new DateInterval('PT155M'));
+$slotClosed        = $nowTehran->add(new DateInterval('PT175M'));
+$tomorrowTehran    = $nowTehran->add(new DateInterval('P1D'))->format('Y-m-d');
+$bookingDate       = $tomorrowTehran;
+$bookingFutureDate = $nowTehran->add(new DateInterval('P2D'))->format('Y-m-d');
+$futureTime        = '10:00:00';
+$bookingTimezone   = $nowTehran->getTimezone();
+$slotFreeA         = new DateTimeImmutable($bookingDate . ' 11:30:00', $bookingTimezone);
+$slotFreeB         = new DateTimeImmutable($bookingDate . ' 11:50:00', $bookingTimezone);
+$slotFreeC         = new DateTimeImmutable($bookingDate . ' 12:10:00', $bookingTimezone);
+$freeBookingSlots  = [
+    'free_a' => $slotFreeA,
+    'free_b' => $slotFreeB,
+    'free_c' => $slotFreeC,
+];
+if ($bookingDate <= $todayTehran || $bookingFutureDate <= $bookingDate) {
+    rp_fail('booking dates must remain future and ordered for the Tehran Location fixture');
+}
+foreach ($freeBookingSlots as $bookingKey => $slotAt) {
+    if ($slotAt->format('Y-m-d') !== $bookingDate || $slotAt <= $nowTehran) {
+        rp_fail($bookingKey . ' must be future on the shared Tehran-local booking date');
+    }
+}
 
 // Cancel journeys need three distinct, still-future slots when their browser
 // stage runs (after the other viewport journeys). Use today's operational date
