@@ -278,6 +278,7 @@ final class BackupService
     ): array {
         // Remote reconstruction supplies its unique, private staging store here;
         // existing callers continue to resolve active/legacy sources unchanged.
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Preserve the established public parameter name.
         $source = $source_override ?? $this->resolveSourceStore( $backupId );
         $dir = $source->dirOf($backupId);
         $raw = $this->readManifestIn($source, $backupId);

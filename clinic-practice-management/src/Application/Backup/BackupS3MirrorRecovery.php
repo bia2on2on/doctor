@@ -88,13 +88,13 @@ final class BackupS3MirrorRecovery {
 
         try {
             $pointer = $this->validate_pointer( $pointer );
-            $config  = $this->resolve_config( );
-            $key     = $config->encryptionKeyForBackupEnvelope( );
+            $config  = $this->resolve_config();
+            $key     = $config->encryptionKeyForBackupEnvelope();
             $client  = S3BackupClientFactory::create(
-                $config->transportSettings( ),
+                $config->transportSettings(),
                 $this->http_handler
             );
-            $stage   = $this->create_stage_root( );
+            $stage   = $this->create_stage_root();
             $result  = $this->reconstruct( $pointer, $config, $key, $client, $stage );
         } catch ( BackupException $error ) {
             // Preserve only this operation's fixed, bounded errors and the
@@ -106,13 +106,13 @@ final class BackupS3MirrorRecovery {
                 'CLINIC_BACKUP_ENCRYPTION_FAILED',
                 'CLINIC_BACKUP_DECRYPTION_FAILED',
             ];
-            $primary_error = in_array( $error->getErrorCode( ), $safe_codes, true )
+            $primary_error = in_array( $error->getErrorCode(), $safe_codes, true )
                 ? $error
-                : $this->recovery_failure( );
+                : $this->recovery_failure();
         } catch ( Throwable ) {
             // SDK, stream, filesystem and JSON exceptions may contain provider
             // configuration, object keys, paths or payload excerpts.
-            $primary_error = $this->recovery_failure( );
+            $primary_error = $this->recovery_failure();
         }
 
         if ( $stage !== null && ! $this->remove_owned_stage( $stage ) ) {
@@ -123,14 +123,14 @@ final class BackupS3MirrorRecovery {
             throw $primary_error;
         }
         if ( ! is_array( $result ) ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
 
         return $result;
     }
 
     private function resolve_config(): S3BackupDeploymentConfig {
-        $config = $this->config ?? S3BackupDeploymentConfig::fromDeploymentConstants( );
+        $config = $this->config ?? S3BackupDeploymentConfig::fromDeploymentConstants();
         if ( ! $config instanceof S3BackupDeploymentConfig ) {
             throw BackupException::of( self::ERROR_NOT_CONFIGURED, self::MESSAGE_NOT_CONFIGURED );
         }
@@ -153,7 +153,7 @@ final class BackupS3MirrorRecovery {
      */
     private function validate_pointer( array $pointer ): array {
         if ( ! $this->has_exact_keys( $pointer, BackupS3Mirror::POINTER_FIELDS ) ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
 
         $backup_id = $pointer['backup_id'];
@@ -161,20 +161,20 @@ final class BackupS3MirrorRecovery {
             || strlen( $backup_id ) > self::MAX_BACKUP_ID_BYTES
             || preg_match( '/^[0-9a-z][0-9a-z._-]{3,120}$/D', $backup_id ) !== 1
         ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
         if ( ! is_string( $pointer['mirror_id'] )
             || ! is_string( $pointer['catalog_object_id'] )
             || ! $this->is_opaque_id( $pointer['mirror_id'] )
             || ! $this->is_opaque_id( $pointer['catalog_object_id'] )
         ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
         if ( ! is_int( $pointer['object_count'] )
             || $pointer['object_count'] < 3
             || $pointer['object_count'] > self::MAX_REMOTE_OBJECT_COUNT
         ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
         if ( ! is_int( $pointer['ciphertext_bytes'] )
             || $pointer['ciphertext_bytes'] < self::MIN_ENVELOPE_BYTES
@@ -183,7 +183,7 @@ final class BackupS3MirrorRecovery {
                 2
             )
         ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
         if ( ! is_string( $pointer['verification'] )
             || ! in_array(
@@ -195,7 +195,7 @@ final class BackupS3MirrorRecovery {
             || $pointer['timestamp'] <= 0
             || $pointer['result_code'] !== 'ok'
         ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
 
         return [
@@ -224,7 +224,7 @@ final class BackupS3MirrorRecovery {
     ): array {
         $stage_root          = $stage['path'];
         $stage_real          = $stage['real'];
-        $bucket              = $config->bucket( );
+        $bucket              = $config->bucket();
         $mirror_id           = (string) $pointer['mirror_id'];
         $catalog_id          = (string) $pointer['catalog_object_id'];
         $catalog_cipher_path = $stage_root . '/.catalog.enc';
@@ -244,15 +244,15 @@ final class BackupS3MirrorRecovery {
         $this->assert_private_staged_file( $catalog_json_path, $stage_real );
         $catalog_json_bytes = $this->file_size( $catalog_json_path );
         if ( $catalog_json_bytes < 1 || $catalog_json_bytes > self::MAX_CATALOG_JSON_BYTES ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
         $catalog_json = file_get_contents( $catalog_json_path );
         if ( ! is_string( $catalog_json ) || strlen( $catalog_json ) !== $catalog_json_bytes ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
         $catalog = json_decode( $catalog_json, true, 64, JSON_THROW_ON_ERROR );
         if ( ! is_array( $catalog ) || array_is_list( $catalog ) ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
 
         $validated             = $this->validate_catalog( $pointer, $catalog, $catalog_cipher_bytes );
@@ -261,7 +261,7 @@ final class BackupS3MirrorRecovery {
         try {
             $stage_store = ProtectedBackupStore::active( $stage_root );
         } catch ( Throwable ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
         $backup_dir   = $stage_root . '/' . $pointer['backup_id'];
         $backup_real  = $this->create_backup_directory( $backup_dir, $stage_real );
@@ -300,7 +300,7 @@ final class BackupS3MirrorRecovery {
             }
         }
         if ( ! is_array( $manifest_entry ) ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
 
         $manifest_path = $destinations[ $manifest_entry['object_id'] ];
@@ -315,7 +315,7 @@ final class BackupS3MirrorRecovery {
         if ( ! is_string( $manifest_hash )
             || ! hash_equals( $validated['local_manifest_sha256'], $manifest_hash )
         ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
         $this->write_exclusive_file(
             $backup_real . '/manifest.json.sha256',
@@ -343,14 +343,14 @@ final class BackupS3MirrorRecovery {
                 $stage_store
             );
         } catch ( Throwable ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
         if ( ( $preflight['integrity_ok'] ?? false ) !== true
             || ( $preflight['db_reachable'] ?? false ) !== true
             || ( $preflight['restore_safe'] ?? false ) !== true
             || ( $preflight['legacy_unverified'] ?? true ) !== false
         ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
 
         return [
@@ -399,7 +399,7 @@ final class BackupS3MirrorRecovery {
             || ! array_is_list( $catalog['entries'] )
             || count( $catalog['entries'] ) > self::MAX_REMOTE_OBJECT_COUNT - 1
         ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
 
         $entries          = [];
@@ -423,7 +423,7 @@ final class BackupS3MirrorRecovery {
                     ]
                 )
             ) {
-                throw $this->recovery_failure( );
+                throw $this->recovery_failure();
             }
             if ( ! is_string( $entry['role'] )
                 || ! is_string( $entry['logical_path'] )
@@ -444,18 +444,18 @@ final class BackupS3MirrorRecovery {
                     && $entry['remote_verification'] !== BackupS3Mirror::STRENGTH_VERIFIED
                 )
             ) {
-                throw $this->recovery_failure( );
+                throw $this->recovery_failure();
             }
 
             $object_id = $entry['object_id'];
             if ( isset( $object_ids[ $object_id ] ) ) {
-                throw $this->recovery_failure( );
+                throw $this->recovery_failure();
             }
             $object_ids[ $object_id ] = true;
 
             $path = $entry['logical_path'];
             if ( ! $this->is_allowed_logical_path( $entry['role'], $path ) ) {
-                throw $this->recovery_failure( );
+                throw $this->recovery_failure();
             }
             $path_key = strtolower( $path );
             foreach ( $path_keys as $existing_path => $_present ) {
@@ -465,7 +465,7 @@ final class BackupS3MirrorRecovery {
                 ) {
                     // Exact duplicates, case-fold aliases and file/directory
                     // prefix collisions are all ambiguous destinations.
-                    throw $this->recovery_failure( );
+                    throw $this->recovery_failure();
                 }
             }
             $path_keys[ $path_key ] = true;
@@ -475,14 +475,14 @@ final class BackupS3MirrorRecovery {
             } elseif ( $entry['role'] === 'manifest' ) {
                 ++$manifest_count;
             } elseif ( $entry['role'] !== 'storage' ) {
-                throw $this->recovery_failure( );
+                throw $this->recovery_failure();
             }
 
             if ( $ciphertext_bytes > PHP_INT_MAX - $entry['ciphertext_bytes'] ) {
-                throw $this->recovery_failure( );
+                throw $this->recovery_failure();
             }
             $ciphertext_bytes += $entry['ciphertext_bytes'];
-            $entries[] = [
+            $entries[]         = [
                 'role'                => $entry['role'],
                 'logical_path'        => $path,
                 'object_id'           => $object_id,
@@ -497,7 +497,7 @@ final class BackupS3MirrorRecovery {
             || count( $entries ) + 1 !== $pointer['object_count']
             || $ciphertext_bytes !== $pointer['ciphertext_bytes']
         ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
 
         // Every stored ciphertext can expand to no more than its byte size.
@@ -507,7 +507,7 @@ final class BackupS3MirrorRecovery {
             self::MAX_AGGREGATE_STAGED_BYTES - self::MANIFEST_SIDECAR_BYTES,
             2
         ) ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
         $data_ciphertext_bytes = $ciphertext_bytes - $catalog_cipher_bytes;
         if ( $data_ciphertext_bytes < 0
@@ -516,7 +516,7 @@ final class BackupS3MirrorRecovery {
                 2
             )
         ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
 
         return [
@@ -533,12 +533,12 @@ final class BackupS3MirrorRecovery {
         if ( $data_ciphertext_bytes < 0
             || $data_ciphertext_bytes > intdiv( PHP_INT_MAX - self::MANIFEST_SIDECAR_BYTES, 2 )
         ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
         $required_bytes = ( $data_ciphertext_bytes * 2 ) + self::MANIFEST_SIDECAR_BYTES;
         $free_bytes     = @disk_free_space( $stage_root );
         if ( ( ! is_float( $free_bytes ) && ! is_int( $free_bytes ) ) || $free_bytes < $required_bytes ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
     }
 
@@ -589,38 +589,38 @@ final class BackupS3MirrorRecovery {
     /** @return array{path: string, real: string, device: int, inode: int} */
     private function create_stage_root(): array {
         if ( PHP_INT_SIZE < 8 ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
         $requested = $this->staging_root;
         if ( $requested === null || $requested === '' ) {
-            $requested = rtrim( (string) sys_get_temp_dir( ), '/' )
+            $requested = rtrim( (string) sys_get_temp_dir(), '/' )
                 . '/cpms-mirror-recovery-'
                 . bin2hex( random_bytes( 16 ) );
         }
         $requested = $this->canonical_candidate( $requested );
         if ( $requested === null || file_exists( $requested ) || is_link( $requested ) ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
         $parent = realpath( dirname( $requested ) );
         if ( ! is_string( $parent ) || ! is_dir( $parent ) ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
         $path = rtrim( str_replace( '\\', '/', $parent ), '/' ) . '/' . basename( $requested );
         if ( $this->is_forbidden_stage_location( $path )
             || PrivateStorageLocation::isInsideWebRoot( $path )
         ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
         if ( ! @mkdir( $path, 0700, false ) ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
 
         $stat = @lstat( $path );
         if ( ! is_array( $stat ) || ( ( $stat['mode'] & 0170000 ) !== 0040000 ) || is_link( $path ) ) {
             if ( ( file_exists( $path ) || is_link( $path ) ) && ! @rmdir( $path ) ) {
-                throw $this->cleanup_incomplete_failure( );
+                throw $this->cleanup_incomplete_failure();
             }
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
         $real  = realpath( $path );
         $stage = [
@@ -638,18 +638,18 @@ final class BackupS3MirrorRecovery {
                 || $this->is_forbidden_stage_location( $real )
                 || PrivateStorageLocation::isInsideWebRoot( $real )
             ) {
-                throw $this->recovery_failure( );
+                throw $this->recovery_failure();
             }
         } catch ( Throwable $error ) {
             if ( ! $this->remove_owned_stage( $stage ) ) {
                 throw $this->cleanup_incomplete_failure(
-                    $error instanceof BackupException ? $error : $this->recovery_failure( )
+                    $error instanceof BackupException ? $error : $this->recovery_failure()
                 );
             }
             if ( $error instanceof BackupException ) {
                 throw $error;
             }
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
 
         return $stage;
@@ -657,9 +657,9 @@ final class BackupS3MirrorRecovery {
 
     private function is_forbidden_stage_location( string $candidate ): bool {
         $store_paths = [
-            $this->backup_service->store( )->basePath( ),
-            ProtectedBackupStore::defaultBasePath( ),
-            ProtectedBackupStore::legacyBasePath( ),
+            $this->backup_service->store()->basePath(),
+            ProtectedBackupStore::defaultBasePath(),
+            ProtectedBackupStore::legacyBasePath(),
         ];
         foreach ( $store_paths as $store_path ) {
             $canonical_store = $this->canonical_existing_or_future_path( $store_path );
@@ -747,9 +747,9 @@ final class BackupS3MirrorRecovery {
         string $object_id
     ): string {
         if ( ! $this->is_opaque_id( $mirror_id ) || ! $this->is_opaque_id( $object_id ) ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
-        $prefix = $config->keyPrefix( );
+        $prefix = $config->keyPrefix();
         return ( $prefix === '' ? '' : $prefix . '/' ) . $mirror_id . '/' . $object_id;
     }
 
@@ -773,13 +773,13 @@ final class BackupS3MirrorRecovery {
             }
             $destination = $backup_real . '/' . $entry['logical_path'];
             if ( file_exists( $destination ) || is_link( $destination ) ) {
-                throw $this->recovery_failure( );
+                throw $this->recovery_failure();
             }
             $parent_real = realpath( dirname( $destination ) );
             if ( ! is_string( $parent_real )
                 || ! $this->is_within_canonical_path( $parent_real, $stage_real )
             ) {
-                throw $this->recovery_failure( );
+                throw $this->recovery_failure();
             }
             $destinations[ $entry['object_id'] ] = $destination;
         }
@@ -789,10 +789,10 @@ final class BackupS3MirrorRecovery {
 
     private function create_backup_directory( string $path, string $stage_real ): string {
         if ( file_exists( $path ) || is_link( $path ) || ! @mkdir( $path, 0700, false ) ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
         if ( ! @chmod( $path, 0700 ) ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
         $real = realpath( $path );
         if ( ! is_string( $real )
@@ -800,7 +800,7 @@ final class BackupS3MirrorRecovery {
             || ( ( $this->file_mode( $path ) & 0077 ) !== 0 )
             || ! $this->is_within_canonical_path( $real, $stage_real )
         ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
 
         return $real;
@@ -808,48 +808,48 @@ final class BackupS3MirrorRecovery {
 
     private function create_contained_directory( string $path, string $stage_real ): void {
         if ( is_link( $path ) ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
         if ( ! file_exists( $path ) ) {
             if ( ! @mkdir( $path, 0700, false ) ) {
-                throw $this->recovery_failure( );
+                throw $this->recovery_failure();
             }
             if ( ! @chmod( $path, 0700 ) ) {
-                throw $this->recovery_failure( );
+                throw $this->recovery_failure();
             }
         }
         if ( ! is_dir( $path ) || is_link( $path ) ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
         $real = realpath( $path );
         if ( ! is_string( $real )
             || ( ( $this->file_mode( $path ) & 0077 ) !== 0 )
             || ! $this->is_within_canonical_path( $real, $stage_real )
         ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
     }
 
     private function reserve_destination( string $path, string $stage_real ): void {
         if ( file_exists( $path ) || is_link( $path ) ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
         $parent_real = realpath( dirname( $path ) );
         if ( ! is_string( $parent_real ) || ! $this->is_within_canonical_path( $parent_real, $stage_real ) ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
         $handle = @fopen( $path, 'xb' );
         if ( ! is_resource( $handle ) ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
         $ok     = @chmod( $path, 0600 );
         $closed = fclose( $handle );
         if ( ! $ok || ! $closed || ( ( $this->file_mode( $path ) & 0077 ) !== 0 ) ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
         $real = realpath( $path );
         if ( ! is_string( $real ) || ! $this->is_within_canonical_path( $real, $stage_real ) ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
     }
 
@@ -857,7 +857,7 @@ final class BackupS3MirrorRecovery {
         $this->reserve_destination( $path, $stage_real );
         $handle = @fopen( $path, 'wb' );
         if ( ! is_resource( $handle ) ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
         $flush_ok = false;
         $close_ok = false;
@@ -869,7 +869,7 @@ final class BackupS3MirrorRecovery {
         }
         clearstatcache( true, $path );
         if ( ! $flush_ok || ! $close_ok || filesize( $path ) !== strlen( $contents ) ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
     }
 
@@ -894,29 +894,29 @@ final class BackupS3MirrorRecovery {
                 ]
             );
         } catch ( Throwable ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
         $body = $response['Body'] ?? null;
         if ( ! $body instanceof StreamInterface ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
         $response_length = $this->response_content_length( $response['ContentLength'] ?? null );
         if ( $response_length !== null && $response_length > $maximum_bytes ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
         if ( $expected_bytes !== null
             && $response_length !== null
             && $response_length !== $expected_bytes
         ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
         if ( file_exists( $destination ) || is_link( $destination ) ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
 
         $handle = @fopen( $destination, 'xb' );
         if ( ! is_resource( $handle ) ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
         $digest       = hash_init( 'sha256' );
         $actual_bytes = 0;
@@ -924,50 +924,50 @@ final class BackupS3MirrorRecovery {
         $close_ok     = false;
         try {
             if ( ! @chmod( $destination, 0600 ) ) {
-                throw $this->recovery_failure( );
+                throw $this->recovery_failure();
             }
-            while ( ! $body->eof( ) ) {
+            while ( ! $body->eof() ) {
                 $chunk = $body->read( 8192 );
                 if ( ! is_string( $chunk ) || $chunk === '' ) {
-                    if ( $body->eof( ) ) {
+                    if ( $body->eof() ) {
                         break;
                     }
-                    throw $this->recovery_failure( );
+                    throw $this->recovery_failure();
                 }
                 $chunk_bytes = strlen( $chunk );
                 if ( $actual_bytes > $maximum_bytes - $chunk_bytes
                     || ( $expected_bytes !== null && $actual_bytes > $expected_bytes - $chunk_bytes )
                 ) {
-                    throw $this->recovery_failure( );
+                    throw $this->recovery_failure();
                 }
                 $this->write_all( $handle, $chunk );
                 hash_update( $digest, $chunk );
                 $actual_bytes += $chunk_bytes;
             }
             if ( $response_length !== null && $actual_bytes !== $response_length ) {
-                throw $this->recovery_failure( );
+                throw $this->recovery_failure();
             }
             if ( $expected_bytes !== null && $actual_bytes !== $expected_bytes ) {
-                throw $this->recovery_failure( );
+                throw $this->recovery_failure();
             }
             if ( is_string( $expected_sha256 )
                 && ! hash_equals( $expected_sha256, hash_final( $digest ) )
             ) {
-                throw $this->recovery_failure( );
+                throw $this->recovery_failure();
             }
             if ( ( $this->file_mode( $destination ) & 0077 ) !== 0 ) {
-                throw $this->recovery_failure( );
+                throw $this->recovery_failure();
             }
             $flush_ok = fflush( $handle );
             if ( ! $flush_ok ) {
-                throw $this->recovery_failure( );
+                throw $this->recovery_failure();
             }
         } finally {
             $close_ok = fclose( $handle );
         }
         clearstatcache( true, $destination );
         if ( ! $flush_ok || ! $close_ok || filesize( $destination ) !== $actual_bytes ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
 
         return $actual_bytes;
@@ -990,19 +990,19 @@ final class BackupS3MirrorRecovery {
             }
         }
 
-        throw $this->recovery_failure( );
+        throw $this->recovery_failure();
     }
 
     private function assert_private_staged_file( string $path, string $stage_real ): void {
         if ( is_link( $path ) || ! is_file( $path ) || ! @chmod( $path, 0600 ) ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
         $real = realpath( $path );
         if ( ! is_string( $real )
             || ( ( $this->file_mode( $path ) & 0077 ) !== 0 )
             || ! $this->is_within_canonical_path( $real, $stage_real )
         ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
     }
 
@@ -1010,7 +1010,7 @@ final class BackupS3MirrorRecovery {
         clearstatcache( true, $path );
         $size = is_file( $path ) ? filesize( $path ) : false;
         if ( ! is_int( $size ) || $size < 0 ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
 
         return $size;
@@ -1023,7 +1023,7 @@ final class BackupS3MirrorRecovery {
         while ( $offset < $length ) {
             $written = fwrite( $handle, substr( $bytes, $offset ) );
             if ( ! is_int( $written ) || $written < 1 ) {
-                throw $this->recovery_failure( );
+                throw $this->recovery_failure();
             }
             $offset += $written;
         }
@@ -1097,7 +1097,7 @@ final class BackupS3MirrorRecovery {
         clearstatcache( true, $path );
         $mode = fileperms( $path );
         if ( ! is_int( $mode ) ) {
-            throw $this->recovery_failure( );
+            throw $this->recovery_failure();
         }
 
         return $mode & 0777;
@@ -1126,7 +1126,7 @@ final class BackupS3MirrorRecovery {
             ],
         ];
         if ( $primary_error instanceof BackupException ) {
-            $data['primary_error_code'] = $primary_error->getErrorCode( );
+            $data['primary_error_code'] = $primary_error->getErrorCode();
         }
 
         return BackupException::of(

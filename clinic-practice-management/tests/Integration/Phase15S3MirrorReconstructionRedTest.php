@@ -252,8 +252,8 @@ final class Phase15S3MirrorReconstructionRedTest extends WP_UnitTestCase
     {
         $class = $this->recoveryClass();
         $method = new \ReflectionMethod( $class, self::RECOVERY_METHOD );
-        self::assertTrue( $method->isPublic( ), 'contract: the new reconstruction operation is public' );
-        self::assertFalse( $method->isStatic( ), 'contract: the new reconstruction operation uses its configured instance' );
+        self::assertTrue( $method->isPublic(), 'contract: the new reconstruction operation is public' );
+        self::assertFalse( $method->isStatic(), 'contract: the new reconstruction operation uses its configured instance' );
 
         // Reuse the one established restore-preflight path by adding only an
         // optional read-only source boundary; no second verifier/preflight stack.
@@ -518,16 +518,16 @@ final class Phase15S3MirrorReconstructionRedTest extends WP_UnitTestCase
             self::assertLessThanOrEqual(1, count($outcome['requests']), 'contract: Slice 2C pointer aggregate evidence must match the authenticated catalog before payload downloads');
         }
 
-        $remote = $this->buildRemoteFixture( );
+        $remote = $this->buildRemoteFixture();
         $remote['catalog']['entries'][0]['remote_verification'] = BackupS3Mirror::STRENGTH_ACKNOWLEDGED;
         $remote = $this->withCatalog( $remote, $remote['catalog'] );
         $pointer = $remote['pointer'];
         $pointer['verification'] = BackupS3Mirror::STRENGTH_VERIFIED;
-        $stage = $this->stagePath( );
+        $stage = $this->stagePath();
         $outcome = $this->expectRemoteFailure(
             $remote,
             $pointer,
-            $this->fixtureKey( ),
+            $this->fixtureKey(),
             $stage
         );
         self::assertCount(
@@ -809,22 +809,52 @@ final class Phase15S3MirrorReconstructionRedTest extends WP_UnitTestCase
     public function testInsufficientPrivateFilesystemSpaceFailsBeforeDataDownloads(): void
     {
         $this->recoveryClass();
-        self::assertDirectoryExists('/dev/shm', 'control: the Linux CI runner provides a bounded tmpfs for a no-allocation free-space test');
-        $free = disk_free_space('/dev/shm');
-        self::assertNotFalse($free);
-        self::assertGreaterThan(0, (int) $free);
-        self::assertLessThan(self::MAX_ENCRYPTED_OBJECT_BYTES, (int) $free, 'control: CI tmpfs is smaller than one permitted remote object; no giant fixture is allocated');
+        self::assertDirectoryExists(
+            '/dev/shm',
+            'control: the Linux CI runner provides a bounded tmpfs for a no-allocation free-space test'
+        );
+        $free = disk_free_space( '/dev/shm' );
+        self::assertNotFalse( $free );
+        self::assertGreaterThan( 0, (int) $free );
 
         $remote = $this->buildRemoteFixture();
-        $remote['catalog']['entries'][2]['ciphertext_bytes'] = (int) $free + 1;
-        $remote = $this->withCatalog($remote, $remote['catalog']);
-        $stage = '/dev/shm/cpms-phase15-stage-' . bin2hex(random_bytes(8));
+        $storage_entry = $remote['catalog']['entries'][2];
+        $fixed_ciphertext_bytes = (int) $remote['pointer']['ciphertext_bytes'] - (int) $storage_entry['ciphertext_bytes'];
+        $maximum_pointer_ciphertext_bytes = intdiv( self::MAX_AGGREGATE_STAGED_BYTES - 64, 2 );
+        $candidate_ciphertext_bytes = intdiv( (int) $free, 2 ) + 1;
+        self::assertLessThanOrEqual(
+            self::MAX_ENCRYPTED_OBJECT_BYTES,
+            $candidate_ciphertext_bytes,
+            'control: metadata-only test input remains under the existing per-object cap; no giant fixture is allocated'
+        );
+        self::assertLessThanOrEqual(
+            $maximum_pointer_ciphertext_bytes - $fixed_ciphertext_bytes,
+            $candidate_ciphertext_bytes,
+            'control: metadata-only test input remains under the accepted pointer aggregate ceiling'
+        );
+        $remote['catalog']['entries'][2]['ciphertext_bytes'] = $candidate_ciphertext_bytes;
+        $remote = $this->withCatalog( $remote, $remote['catalog'] );
+        self::assertLessThanOrEqual(
+            $maximum_pointer_ciphertext_bytes,
+            $remote['pointer']['ciphertext_bytes'],
+            'control: recomputed pointer metadata remains within the accepted aggregate ceiling'
+        );
+        $stage = '/dev/shm/cpms-phase15-stage-' . bin2hex( random_bytes( 8 ) );
         try {
-            $outcome = $this->expectRemoteFailure($remote, $remote['pointer'], $this->fixtureKey(), $stage);
-            self::assertCount(1, $outcome['requests'], 'contract: available private staging space is checked after catalog authentication but before object download/reconstruction');
+            $outcome = $this->expectRemoteFailure(
+                $remote,
+                $remote['pointer'],
+                $this->fixtureKey(),
+                $stage
+            );
+            self::assertCount(
+                1,
+                $outcome['requests'],
+                'contract: authenticated metadata exceeds available space before any data-object download; no giant fixture is allocated'
+            );
         } finally {
-            if (is_dir($stage)) {
-                $this->removeTree($stage);
+            if ( is_dir( $stage ) ) {
+                $this->removeTree( $stage );
             }
         }
     }
@@ -894,7 +924,7 @@ final class Phase15S3MirrorReconstructionRedTest extends WP_UnitTestCase
         self::assertTrue($reflection->isFinal(), 'contract: the operation is a concrete application service, not a new production provider interface');
         $method = $reflection->getMethod(self::RECOVERY_METHOD);
         self::assertTrue($method->isPublic());
-        self::assertFalse( $method->isStatic( ) );
+        self::assertFalse( $method->isStatic() );
         self::assertSame(1, $method->getNumberOfParameters());
         self::assertSame('pointer', $method->getParameters()[0]->getName());
         $parameterType = $method->getParameters()[0]->getType();
