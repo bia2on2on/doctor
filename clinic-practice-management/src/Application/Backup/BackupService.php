@@ -270,9 +270,14 @@ final class BackupService
     /**
      * @return array<string, mixed>
      */
-    public function restorePreflight(string $backupId): array
+    public function restorePreflight(
+        string $backupId,
+        ?ProtectedBackupStore $sourceOverride = null
+    ): array
     {
-        $source = $this->resolveSourceStore($backupId);
+        // Remote reconstruction supplies its unique, private staging store here;
+        // existing callers continue to resolve active/legacy sources unchanged.
+        $source = $sourceOverride ?? $this->resolveSourceStore($backupId);
         $dir = $source->dirOf($backupId);
         $raw = $this->readManifestIn($source, $backupId);
         if ($raw === null) {
