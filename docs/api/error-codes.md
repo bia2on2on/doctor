@@ -134,6 +134,7 @@
 | `CLINIC_BACKUP_MIRROR_UPLOAD_FAILED` | 502 | پاسخ موفق PutObject دریافت نشد (transport/auth/شبکه)؛ نظافت bounded از اشیاء همین تلاش attempted می‌شود | — |
 | `CLINIC_BACKUP_MIRROR_CHECKSUM_MISMATCH` | 500 | اثبات checksum سرویس با digest محلی ciphertext هم‌خوان نیست — شکست صریح، نه تنزل به acknowledged | — |
 | `CLINIC_BACKUP_MIRROR_SIZE_MISMATCH` | 500 | endpoint صراحتاً طولی متناقض با اندازه ciphertext محلی اعلام کرده — شکست صریح؛ نبودِ این فیلد هرگز مانعِ VERIFIED نیست | — |
+| `CLINIC_BACKUP_MIRROR_RECOVERY_FAILED` | 502 | بازسازی غیرمخربِ آینهٔ دوردست یا preflight موجود شکست خورد؛ هیچ Restore/Apply یا تغییر دادهٔ تولیدی انجام نمی‌شود | — |
 
 ## Scope / Multi-Clinic (Phase 2 — ADR-0031)
 

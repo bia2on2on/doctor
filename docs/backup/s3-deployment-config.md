@@ -1,8 +1,8 @@
-# Phase 15 — Slice 2B: پیکربندی استقرار S3 (checkpoint عملیاتی محدود)
+# Phase 15 — Slice 2B–2D: پیکربندی و عملیات محدودِ S3
 
-> **دامنهٔ این سند محدود است:** قراردادِ پیکربندی/امنیتِ Slice 2B + قراردادِ عملیاتِ صریحِ آینه‌سازیِ Slice 2C. این راهنمای عمومیِ عملیاتِ S3 یا «remote backup» نیست و **هیچ ادعایی دربارهٔ محافظتِ ریموت، بازیابی یا آمادگیِ بکاپِ ابری نمی‌کند**.
+> **دامنهٔ این سند محدود است:** قراردادِ پیکربندی/امنیتِ Slice 2B، آینه‌سازیِ دستیِ Slice 2C و بازسازیِ غیرمخربِ Slice 2D فقط تا preflight موجود. این راهنمای عمومیِ عملیاتِ S3 یا «remote backup» نیست و **هیچ ادعایی دربارهٔ محافظتِ تضمین‌شدهٔ ریموت، Restore تولیدی، آمادگیِ provider pilot یا RPO/RTO نمی‌کند**.
 >
-> **وضعیت (پس از Slice 2C):** یک عملیاتِ **صریحِ دستی** وجود دارد — آینه‌سازیِ رمزنگاری‌شدهٔ **یک** بکاپِ محلیِ موجود روی S3 (`BackupS3Mirror::mirrorBackup()`)؛ یعنی «آپلودِ رمزنگاری‌شدهٔ یک‌طرفه». **هیچ download/recovery، هیچ integration خودکار با `backup.run`/زمان‌بند، هیچ remote retention و هیچ UI/Settings در این فازها وجود ندارد** (فیلدهای پیکربندی هنوز فقط ثابت‌های deployment‌اند).
+> **وضعیت (پس از Slice 2D):** دو عملیاتِ **صریح و دستی** وجود دارد: آینه‌سازیِ رمزنگاری‌شدهٔ **یک** بکاپِ محلیِ موجود (`BackupS3Mirror::mirrorBackup()`) و دریافت/بازسازیِ همان آینه در staging خصوصی با `BackupS3MirrorRecovery::reconstructAndPreflight(array $pointer)`. نتیجهٔ دومی فقط **«remote reconstruction passed existing restore preflight»** است: بازسازی از verifier و restore preflight موجود می‌گذرد؛ این عملیات `restoreApply()` را فراخوانی نمی‌کند و جداول یا storage تولیدی را تغییر نمی‌دهد. **هیچ integration خودکار با `backup.run`/زمان‌بند، remote retention/delete lifecycle یا UI/Settings وجود ندارد** (فیلدهای پیکربندی همچنان فقط ثابت‌های deployment‌اند).
 
 ## نام ثابت‌ها (تک منبعِ حقیقت — production)
 
@@ -42,9 +42,9 @@
 
 شیءهای config/transport هیچ مقدار حساسی در پراپرتیِ قابلِ dump نگه نمی‌دارند (نگهداری در Closure + `__debugInfo` بدونِ مقدار + `__serialize()` خالی + `__unserialize()` که بازیابی را **فوراً رد می‌کند** — هیچ کپیِ serializeشده هرگز به شیءِ قابلِ استفاده برنمی‌گردد + بدونِ `__toString`/`JsonSerializable`). نتیجه: `var_dump`/`print_r`/`var_export`/`serialize`/`json_encode` مسیرِ افشای credential/کلید ندارند و `unserialize(serialize($obj))` با خطای محدودِ ثابت (`CLINIC_BACKUP_S3_CONFIG_RESTORE_REJECTED` / `CLINIC_BACKUP_S3_TRANSPORT_RESTORE_REJECTED`) شکست می‌خورد. محدودیتِ شناخته‌شده: این تضمین‌ها برای **خطاهای** `BackupException` (پیام/کد/data ثابت) و سطح‌های debug/serialization فوق است — لاگ‌گیریِ دستیِ مقادیرِ بازگشتیِ accessorها خارج از پیمان است و هرگز نباید انجام شود.
 
-## صریحاً خارج از این slice
+## مرز فعلی و موارد صریحاً خارج از scope
 
-upload/download، تغییرِ `BackupService`/`backup.run`، persistence، Settings/UI، migration، provider abstraction، remote status/verification، و **هر ادعای محافظتِ ریموت یا رعایتِ HIPAA/PHI**. بکاپِ ریموتِ فعال هنوز وجود ندارد.
+Slice 2D فقط دریافت و بازسازیِ موقتِ ciphertext را برای رسیدن به verifier و restore preflight موجود اضافه می‌کند. **Destructive restore/apply،** تغییرِ `backup.run` یا زمان‌بند، persistence/تنظیمات UI، migration، provider abstraction، remote retention/delete lifecycle و provider pilot خارج از scope هستند. این preflight نه Restore تولیدی است، نه تضمینِ محافظتِ ریموت و نه شاهدِ RPO/RTO یا رعایتِ HIPAA/PHI.
 ---
 
 ## Slice 2C — آینه‌سازیِ صریحِ رمزنگاری‌شدهٔ یک بکاپِ محلیِ موجود
@@ -66,4 +66,14 @@ $result = $mirror->mirrorBackup($existingLocalBackupId);   // throw BackupExcept
 - **ردپای ماندگار:** فقط audit/operation log موجود با pointer هشت‌فیلده (`backup_id`, `mirror_id`, `catalog_object_id`, `object_count`, `ciphertext_bytes`, `verification`, `timestamp`, `result_code`) — بدونِ مسیر منطقی، PHI، secret یا مقدارِ پیکربندی.
 - **کدهای خطا:** `CLINIC_BACKUP_MIRROR_NOT_CONFIGURED` / `_LOCAL_INVALID` / `_ENCRYPTION_FAILED` / `_OBJECT_TOO_LARGE` / `_UPLOAD_FAILED` / `_CHECKSUM_MISMATCH` / `_SIZE_MISMATCH` (پیام‌های ثابت، `data` همیشه خالی جز evidenceٔ نظافت).
 - **نکتهٔ عملیاتی:** هیچ سازوکارِ فراخوانیِ خودکاری اضافه نشده — UI/Settings/Job در این slice ممنوع بود؛ اپراتور باید صریحاً این عملیات را صدا بزند. تست‌ها در `tests/Unit/Phase15S3MirrorUploadRedTest.php` (بدونِ شبکه/endpoint واقعی — seamٔ مستند `http_handler` Slice 2B).
+
+## Slice 2D — بازسازیِ غیرمخرب تا restore preflight موجود
+
+کلاسِ نهایی `ClinicCore\Application\Backup\BackupS3MirrorRecovery` عملیاتِ دستیِ `reconstructAndPreflight(array $pointer)` را ارائه می‌کند. ورودی فقط pointer هشت‌فیلدهٔ Slice 2C است؛ object key فقط از prefix پیکربندی‌شده و شناسه‌های opaqueِ معتبرِ آینه/کاتالوگ/شیء ساخته می‌شود. دریافت با `S3Client` رسمی و seamِ handler موجود انجام می‌شود؛ ETag هرگز SHA-256 فرض نمی‌شود.
+
+- کاتالوگِ رمز‌شده با `BackupEncryptionEnvelope` احراز/باز می‌شود؛ سقف JSON آن **1 MiB** است و format/version/envelope/هویت/شمار/aggregate evidence به‌صورت fail-closed بررسی می‌شود. مسیرهای مجاز فقط `db.sql`، `manifest.json` و `storage/<clinic-id>/<relative-path>` هستند؛ مسیرهای مطلق/ناامن، کنترل‌کاراکتر، backslash، alias، duplicate، symlink escape و مقصد خارج از stage رد می‌شوند.
+- حداکثر **1024 شیء با احتساب کاتالوگ**، حداکثر **4 GiB ciphertext برای هر شیء** (همان سقف Slice 2C) و حداکثر **8 GiB برای بودجهٔ تجمیعیِ ciphertext + plaintextِ stage** اعمال می‌شود؛ free-space guard پیش از دانلود payload اجرا می‌شود. این‌ها سقف‌های فنیِ پذیرش‌اند، نه تضمینِ اندازهٔ قابل‌بازیابی در همهٔ میزبان‌ها.
+- اندازهٔ کاتالوگ و اندازه/hash هر payload مطابق catalogِ احراز‌شده بررسی می‌شود؛ همهٔ envelopeها احراز می‌شوند. فقط `db.sql`، `manifest.json`، فایل‌های storageِ معتبر و sidecar محلیِ `manifest.json.sha256` ساخته می‌شوند. hash مانیفست پیش از verifier سنجیده می‌شود. verifier و `BackupService::restorePreflight()` موجود استفاده می‌شوند؛ هیچ `restoreApply()`/SQL اجرا یا storage تولیدی دستکاری نمی‌شود.
+- staging یکتا و owner-only بیرون از webroot و ریشه‌های بکاپ ساخته می‌شود. کاتالوگ، ciphertext و plaintext در موفقیت و شکست پاک می‌شوند؛ شکستِ cleanup فقط evidenceٔ محدودِ cleanup و کدِ خطای اولیهٔ غیرحساس را نشان می‌دهد. نتیجهٔ موفق فقط `remote reconstruction passed existing restore preflight` است.
+- برای Slice 2D هیچ job/scheduler، `backup.run` integration، retention/delete، UI/Settings یا API/provider abstraction اضافه نشده است. این بررسی، اثباتِ restore واقعی یا RPO/RTO نیست.
 

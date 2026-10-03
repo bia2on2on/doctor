@@ -25,8 +25,6 @@ global $wpdb;
 $db = \ClinicCore\Bootstrap\App::db();
 $now = $db->nowUtcSql();
 $uniq = substr(bin2hex(random_bytes(4)), 0, 8);
-$todayTehran = (new DateTimeImmutable('now', new DateTimeZone('Asia/Tehran')))->format('Y-m-d');
-$todayTokyo  = (new DateTimeImmutable('now', new DateTimeZone('Asia/Tokyo')))->format('Y-m-d');
 
 function rp_fail(string $msg): void
 {
@@ -256,7 +254,13 @@ $foreignProbeId = rp_insert(
 // check-in semantics treat an arrival after slot start + per-Clinic grace as a
 // late arrival (no_show + walk-in-like visit), so the happy-path journey must
 // arrive within the grace window like a real reception desk.
+// Take one Location-day snapshot after the non-date fixture setup and before
+// any date-sensitive rows are seeded. Baseline appointments, all relative slot
+// dates, upcoming proofs and the browser oracle below derive from this same
+// instant, so earlier setup crossing Tehran midnight cannot split day references.
 $nowTehran = new DateTimeImmutable('now', new DateTimeZone('Asia/Tehran'));
+$todayTehran = $nowTehran->format('Y-m-d');
+$todayTokyo = $nowTehran->setTimezone(new DateTimeZone('Asia/Tokyo'))->format('Y-m-d');
 $lateToday = (int) $nowTehran->format('H') >= 23;
 $slotExpress = $lateToday ? $nowTehran->setTime(23, 55) : $nowTehran->add(new DateInterval('PT10M'));
 $slotPlain = $lateToday ? $nowTehran->setTime(23, 57) : $nowTehran->add(new DateInterval('PT30M'));
@@ -293,26 +297,39 @@ foreach ([['a', $slotExpress->format('H:i:s'), 1], ['b', $slotPlain->format('H:i
 
 // Phase 11 Slice 5 — appointment booking stage: ALREADY-GENERATED slots only
 // (the pilot never generates a schedule and the reception boundary never
-// fabricates one). Dr Reception at Tehran carries two FREE slots for the
-// explicit-selection journeys — free_a with capacity 2 so the same persisted
-// slot can prove the bounded duplicate rule for one patient and the honest
-// remaining-capacity indicator for another — plus one FULL and one CLOSED slot
-// that must never be offered, and one FREE slot on the NEXT Tehran-local day
-// for the future-date journey (a future appointment must never enter today's
-// board or queue). No appointment row is inserted here: the booking journeys
-// create them through the real UI, so the Slice 1 board invariant (exactly four
-// booked rows for today) is unchanged until a journey books one.
-$slotFreeA   = $nowTehran->add(new DateInterval('PT95M'));
-$slotFreeB   = $nowTehran->add(new DateInterval('PT115M'));
-$slotFreeC   = $nowTehran->add(new DateInterval('PT135M'));
-$slotFull    = $nowTehran->add(new DateInterval('PT155M'));
-$slotClosed  = $nowTehran->add(new DateInterval('PT175M'));
-$tomorrowTehran = $nowTehran->add(new DateInterval('P1D'))->format('Y-m-d');
-$bookingDate = $slotFreeA->format('Y-m-d');
-$bookingFutureDate = $bookingDate === $todayTehran
-    ? $tomorrowTehran
-    : $nowTehran->add(new DateInterval('P2D'))->format('Y-m-d');
-$futureTime     = '10:00:00';
+// fabricates one). Dr Reception at Tehran carries three deterministic FREE slots
+// for the explicit-selection journeys on one shared future Tehran-local date —
+// free_a has capacity 2 so the same persisted slot can prove the bounded
+// duplicate rule for one patient and the honest remaining-capacity indicator for
+// another — plus one FULL and one CLOSED slot that must never be offered, and
+// one FREE slot on the following Tehran-local date for the future-date journey
+// (a future appointment must never enter today's board or queue). No appointment
+// row is inserted here: the booking journeys create them through the real UI, so
+// the Slice 1 board invariant (exactly four booked rows for today) is unchanged
+// until a journey books one.
+$slotFull          = $nowTehran->add(new DateInterval('PT155M'));
+$slotClosed        = $nowTehran->add(new DateInterval('PT175M'));
+$tomorrowTehran    = $nowTehran->add(new DateInterval('P1D'))->format('Y-m-d');
+$bookingDate       = $tomorrowTehran;
+$bookingFutureDate = $nowTehran->add(new DateInterval('P2D'))->format('Y-m-d');
+$futureTime        = '10:00:00';
+$bookingTimezone   = $nowTehran->getTimezone();
+$slotFreeA         = new DateTimeImmutable($bookingDate . ' 11:30:00', $bookingTimezone);
+$slotFreeB         = new DateTimeImmutable($bookingDate . ' 11:50:00', $bookingTimezone);
+$slotFreeC         = new DateTimeImmutable($bookingDate . ' 12:10:00', $bookingTimezone);
+$freeBookingSlots  = [
+    'free_a' => $slotFreeA,
+    'free_b' => $slotFreeB,
+    'free_c' => $slotFreeC,
+];
+if ($bookingDate <= $todayTehran || $bookingFutureDate <= $bookingDate) {
+    rp_fail('booking dates must remain future and ordered for the Tehran Location fixture');
+}
+foreach ($freeBookingSlots as $bookingKey => $slotAt) {
+    if ($slotAt->format('Y-m-d') !== $bookingDate || $slotAt <= $nowTehran) {
+        rp_fail($bookingKey . ' must be future on the shared Tehran-local booking date');
+    }
+}
 
 // Cancel journeys need three distinct, still-future slots when their browser
 // stage runs (after the other viewport journeys). Use today's operational date

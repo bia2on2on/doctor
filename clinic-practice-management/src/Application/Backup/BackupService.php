@@ -62,6 +62,15 @@ final class BackupService
         return $this->store;
     }
 
+    /**
+     * @return list<string> Normalized active roots from every Clinic's installed backup model.
+     * @throws BackupException If the authoritative Clinic/settings inventory cannot be resolved.
+     */
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- Narrow read-only access to the existing installation-wide storage enumeration.
+    public function activeClinicalStorageRoots(): array {
+        return array_keys( $this->enumerateActiveClinicalStorageRoots( true ) );
+    }
+
     // ================= CREATE / LIST / VERIFY / DELETE / PRUNE =================
 
     /**
@@ -270,9 +279,16 @@ final class BackupService
     /**
      * @return array<string, mixed>
      */
-    public function restorePreflight(string $backupId): array
-    {
-        $source = $this->resolveSourceStore($backupId);
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- Preserve the established public restore-preflight API.
+    public function restorePreflight(
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Preserve existing named-argument compatibility.
+        string $backupId,
+        ?ProtectedBackupStore $source_override = null
+    ): array {
+        // Remote reconstruction supplies its unique, private staging store here;
+        // existing callers continue to resolve active/legacy sources unchanged.
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Preserve the established public parameter name.
+        $source = $source_override ?? $this->resolveSourceStore( $backupId );
         $dir = $source->dirOf($backupId);
         $raw = $this->readManifestIn($source, $backupId);
         if ($raw === null) {
@@ -422,7 +438,8 @@ final class BackupService
      *
      * @return array<string, list<int>> map normalizedBasePath => list clinicIds using it
      */
-    private function enumerateActiveClinicalStorageRoots(): array
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- Preserve the existing private enumerator name while adding strict recovery mode.
+    private function enumerateActiveClinicalStorageRoots( bool $fail_closed_on_settings_lookup_failure = false ): array
     {
         $rootsMap = []; // normalized => clinicIds
 
@@ -447,29 +464,49 @@ final class BackupService
 
         foreach ($clinicIds as $cid) {
             $path = '';
+            $row  = null;
             try {
                 $row = $this->db->fetchRow(
                     'SELECT value_json FROM ' . $this->db->table('cpms_settings') . ' WHERE clinic_id = %d AND `key` = %s',
                     [$cid, 'files.storage_path']
                 );
-                if ($row !== null) {
-                    $decoded = json_decode((string) ($row['value_json'] ?? ''), true);
-                    if (is_string($decoded)) {
-                        $path = trim($decoded);
-                    }
-                }
             } catch (\Throwable) {
-                $path = '';
+                if ( $fail_closed_on_settings_lookup_failure ) {
+                    throw BackupException::of(
+                        'CLINIC_BACKUP_ENUMERATION_FAILED',
+                        'clinic storage settings enumeration failed'
+                    );
+                }
+            }
+
+            if ( $row !== null ) {
+                $decoded = json_decode( (string) ( $row['value_json'] ?? '' ), true );
+                if ( is_string( $decoded ) ) {
+                    $path = trim( $decoded );
+                } elseif ( $fail_closed_on_settings_lookup_failure ) {
+                    throw BackupException::of(
+                        'CLINIC_BACKUP_ENUMERATION_FAILED',
+                        'clinic storage root setting is invalid'
+                    );
+                }
             }
 
             if ($path === '') {
+                // No row or an explicitly empty path follows the existing
+                // LocalFileStorage model's documented default-root behavior.
                 $path = LocalFileStorage::defaultBasePath();
             }
 
             // Validate — fail closed if inside webroot
             $normalized = $this->validateAndNormalizeStoragePath($path);
 
-            if ($normalized === '') {
+            if ( $normalized === '' ) {
+                if ( $fail_closed_on_settings_lookup_failure ) {
+                    throw BackupException::of(
+                        'CLINIC_BACKUP_ENUMERATION_FAILED',
+                        'clinic storage root could not be resolved'
+                    );
+                }
                 continue;
             }
 
