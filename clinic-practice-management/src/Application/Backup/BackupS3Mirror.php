@@ -30,15 +30,22 @@
  *    دقیقاً 1 GiB زیرِ سقفِ رسمی است. هیچ آستانهٔ ساختگی (مثلاً ۶۴MiB) استفاده نشده
  *    و `ObjectUploader::DEFAULT_MULTIPART_THRESHOLD` نیز heuristic خودکار است، نه limit.
  *    شیءِ بزرگ‌تر **پیش از** هر درخواست، Fail-Closed رد می‌شود.
- *  - راستی‌آزماییِ هر شیء: اندازه + SHA-256ِ محلیِ ciphertext محاسبه و همان digest
- *    به‌صورتِ `ChecksumSHA256` (هدر `x-amz-checksum-sha256`) در همان PUT ارسال می‌شود؛
- *    پاسخِ موفقِ PutObject (2xx) شرطِ لازمِ هر ادعاست. اگر endpoint اثباتِ سرویس را
- *    برگرداند (`PutObjectOutput.ChecksumSHA256` هم‌خوان با digest محلی و
- *    `x-amz-object-size` برابر اندازهٔ ciphertext محلی) ⇒ `VERIFIED`؛ اگر نتواند ⇒
- *    `ACKNOWLEDGED` که **هرگز** verified گزارش/لاگ نمی‌شود. ناهم‌خوانیِ **صریحِ**
- *    checksum یا size ⇒ شکستِ Fail-Closed. ETag و metadataِ اکوی‌شده هرگز دلیلِ
- *    برابریِ بدنه نیستند؛ HEAD هم برای اثباتِ بدنه استفاده نمی‌شود (پس جز PUT و
- *    نظافتِ bounded، هیچ درخواستِ دیگری در این عملیات نیست).
+ *  - راستی‌آزماییِ هر شیء: اندازه (برای گیتِ سقف و ثبتِ catalog/ContentLength) و
+ *    SHA-256ِ محلیِ ciphertext محاسبه و همان digest به‌صورتِ `ChecksumSHA256`
+ *    (هدر `x-amz-checksum-sha256`) در همان PUT ارسال می‌شود؛ پاسخِ موفقِ PutObject
+ *    (2xx) شرطِ لازمِ هر ادعاست. اثباتِ سرویس **همان checksum برگشتی** است:
+ *    `PutObjectOutput.ChecksumSHA256` هم‌خوان با digest محلی ⇒ `VERIFIED`. اگر
+ *    endpoint این فیلد را برنگرداند ⇒ `ACKNOWLEDGED` که **هرگز** verified
+ *    گزارش/لاگ نمی‌شود. ناهم‌خوانیِ **صریحِ** checksum ⇒ Fail-Closed؛ ردِ checksum
+ *    توسط سرویس هم از همان مسیرِ خطای SDK (پاسخِ غیرموفق) Fail-Closed است.
+ *    چرا طولِ برگشتی شرط نیست: در مستنداتِ خودِ AWS، `x-amz-object-size` در پاسخِ
+ *    PutObject «only present if you append to an object» و مخصوصِ S3 Express One Zone
+ *    است ⇒ اتکا به آن برای رسیدن به VERIFIED عملاً unreachable می‌کرد. این عملیات
+ *    `ContentLength` را صریح می‌فرستد و اگر endpoint طولی **متناقض** اعلام کند
+ *    Fail-Closed رد می‌شود؛ ولی نبودِ آن هیچ‌گاه مانعِ VERIFIED نیست و نبودش به‌معنای
+ *    عدمِ ارسالِ بدنه نیست (اندازهٔ بدنه از همان ابتدا محلی و قطعی است).
+ *    ETag و metadataِ اکوی‌شده هرگز دلیلِ برابریِ بدنه نیستند؛ HEAD هم برای اثباتِ
+ *    بدنه استفاده نمی‌شود (پس جز PUT و نظافتِ bounded، هیچ درخواستِ دیگری نیست).
  *  - نتیجهٔ سطح‌مجموعه: همه `VERIFIED` ⇒ `RESULT_VERIFIED`؛ همه ≥ `ACKNOWLEDGED` با
  *    حداقل یک `ACKNOWLEDGED` ⇒ `RESULT_ACKNOWLEDGED`؛ هر شیء ناموفق ⇒ عملیات ناموفق.
  *    کاتالوگ هم در همین تجمیع حساب می‌شود. «آخری‌بودنِ کاتالوگ» فقط ترتیب/کمکِ
@@ -541,11 +548,19 @@ final class BackupS3Mirror {
 	}
 
 	/**
-     * حداقلِ راستی‌آزماییِ مجاز پس از ack — دقیقاً همان چیزی که مدلِ SDK قفل‌شده
-     * برای PutObject exposes: `ChecksumSHA256` و `Size` در پاسخِ خودِ PUT.
-     * (HEAD برای اثباتِ بدنه استفاده نمی‌شود؛ ETag و اکویِ metadata دلیلِ برابریِ بدنه نیستند.)
+     * تنها اثباتِ مجازِ VERIFIED: checksum برگشتیِ خودِ PutObject.
      *
-     * @param array<string, mixed> $result
+     * مدلِ SDK قفل‌شده برای PutObject هر دو فیلد را نگاشت می‌کند (`ChecksumSHA256` ←
+     * `x-amz-checksum-sha256`، `Size` ← `x-amz-object-size`)، اما در مستنداتِ AWS فیلدِ
+     * طول **اختیاری و وابسته به AppendObject/S3 Express One Zone** است؛ پس:
+     *  - checksum برگشتی هم‌خوان ⇒ VERIFIED — بدونِ هیچ شرطِ طولی؛
+     *  - checksum برگشتی موجود نباشد ⇒ ACKNOWLEDGED؛
+     *  - checksum برگشتی صریحاً ناهم‌خوان ⇒ Fail-Closed (نه تنزل)؛
+     *  - طولِ صریحاً متناقض (نادر) ⇒ Fail-Closed — این فقط ردِّ تناقض است، نه
+     *    اثباتِ لازم؛ برای رسیدن به VERIFIED هرگز لازم/بررسی نیست.
+     * HEAD برای اثباتِ بدنه استفاده نمی‌شود؛ ETag و اکویِ metadata دلیلِ برابریِ بدنه نیستند.
+     *
+     * @param array<string, mixed> $result پاسخِ تجزیه‌شدهٔ PutObject (Result::toArray)
      */
 	private function strength_from_acknowledgement( array $result, int $bytes, string $digest_b64 ): string {
 		$echoed = trim( (string) ( $result['ChecksumSHA256'] ?? '' ) );
@@ -557,12 +572,8 @@ final class BackupS3Mirror {
 			throw BackupException::of( self::E_CHECKSUM_MISMATCH, 'S3 mirror checksum verification failed' );
 		}
 
-		$remote_size = $result['Size'] ?? null;
-		if ( $remote_size === null ) {
-			// checksum هم‌خوان ولی طولِ اعلام‌شده در دسترس نیست ⇒ اثباتِ کامل نداریم.
-			return self::STRENGTH_ACKNOWLEDGED;
-		}
-		if ( (int) $remote_size !== $bytes ) {
+		// رسیدن به VERIFIED هرگز به `Size` وابسته نیست؛ آن را فقط برای ردِّ تناقضِ صریح می‌خوانیم.
+		if ( isset( $result['Size'] ) && (int) $result['Size'] !== $bytes ) {
 			throw BackupException::of( self::E_SIZE_MISMATCH, 'S3 mirror size verification failed' );
 		}
 

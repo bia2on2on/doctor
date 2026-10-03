@@ -156,15 +156,20 @@
  *       skips its own checksum computation (Aws\S3\ApplyChecksumMiddleware::
  *       hasAlgorithmHeader()) and forwards the body byte-for-byte — no
  *       aws-chunked framing and no trailer rewriting.
- *     - the service proof is read from the PutObject OUTPUT members of the same
- *       model: ChecksumSHA256 (header `x-amz-checksum-sha256`) and Size (header
- *       `x-amz-object-size`). An object is VERIFIED only when a 2xx
- *       acknowledgement, an echoed checksum equal to the local digest, an echoed
- *       size equal to the local ciphertext byte size and a local ContentLength
- *       equal to that same size ALL hold.
- *     - a 2xx acknowledgement without comparable proof is ACKNOWLEDGED and is
- *       never reported or recorded as verified.
- *     - an explicit checksum or size disagreement fails closed.
+ *     - the service proof is the echoed checksum: PutObject OUTPUT member ChecksumSHA256
+ *       (header `x-amz-checksum-sha256`) of the same model. An object is VERIFIED when
+ *       a 2xx acknowledgement and an echoed checksum equal to the local digest hold
+ *       (the request itself carried the exact ContentLength and that same digest).
+ *       Nothing more is required: AWS documents PutObject's `x-amz-object-size` as
+ *       "only present if you append to an object" (S3 Express One Zone directory
+ *       buckets), so an ordinary PUT response does NOT generally carry an object size
+ *       and VERIFIED must never depend on it. `Size` is read for exactly one purpose —
+ *       rejecting an endpoint that explicitly reports a CONTRADICTORY length.
+ *     - a 2xx acknowledgement without a comparable echoed checksum is ACKNOWLEDGED and
+ *       is never reported or recorded as verified.
+ *     - an explicit checksum disagreement — or an explicitly contradictory length —
+ *       fails closed; a request/service checksum rejection fails closed through the
+ *       normal SDK error path (no 2xx, so no upload was acknowledged at all).
  *     - an ETag is never a SHA-256 proof and echoed application metadata is never
  *       body-hash proof (the ACKNOWLEDGED test supplies both as decoys).
  *     - catalog-last is an ordering/recovery aid for a later reader, NOT an atomic
@@ -429,7 +434,7 @@ final class Phase15S3MirrorUploadRedTest extends TestCase
         self::assertSame((string) strlen($ciphertext), (string) ($requests[0]['headers']['content-length'] ?? ''), 'control: the exact Content-Length reaches the endpoint');
         self::assertSame(base64_encode(hash('sha256', $ciphertext, true)), (string) ($requests[0]['headers']['x-amz-checksum-sha256'] ?? ''), 'control: the pinned SDK forwards an explicit ChecksumSHA256 as x-amz-checksum-sha256');
         self::assertSame('ZZZ=', (string) $result['ChecksumSHA256'], 'control: a mocked service checksum is readable from the PutObject result — the only checksum proof the future operation may use');
-        self::assertSame(strlen($ciphertext), (int) $result['Size'], 'control: a mocked service object size is readable from the PutObject result');
+        self::assertSame(strlen($ciphertext), (int) $result['Size'], 'control: the modeled Size member is readable WHEN an endpoint returns it — the mirror uses it only to reject an explicit contradiction and never requires it as evidence');
         self::assertSame('"deadbeef"', (string) $result['ETag'], 'control: the ETag is observable but is not a checksum proof');
 
         $rejects  = array();
@@ -792,6 +797,33 @@ final class Phase15S3MirrorUploadRedTest extends TestCase
     // T7/T8 — checksum-capable versus checksum-incapable endpoints
     // ========================================================================
 
+    public function testControlVerifiedFixtureIsARealisticPutObjectResponse(): void
+    {
+        $config   = S3BackupDeploymentConfig::fromReader($this->readerFor($this->deploymentMap()));
+        $requests = array();
+        $client   = S3BackupClientFactory::create($config->transportSettings(), $this->recordingHandler($requests, 'verified'));
+
+        $ciphertext = "cipher\x00bytes\xff";
+        $result     = $client->putObject(array(
+            'Bucket'         => self::FAKE_BUCKET,
+            'Key'            => self::FAKE_PREFIX . '/m0/o0',
+            'Body'           => $ciphertext,
+            'ContentLength'  => strlen($ciphertext),
+            'ChecksumSHA256' => base64_encode(hash('sha256', $ciphertext, true)),
+        ));
+
+        self::assertSame(
+            base64_encode(hash('sha256', $ciphertext, true)),
+            (string) $result['ChecksumSHA256'],
+            'control: the VERIFIED fixture does expose the echoed service checksum the product relies on'
+        );
+        self::assertFalse(
+            isset($result['Size']),
+            'control: the VERIFIED fixture is a REALISTIC ordinary PutObject response — it reports no object size at all, so VERIFIED cannot be reaching for one'
+        );
+        self::assertSame('"' . hash('md5', $ciphertext) . '"', (string) $result['ETag'], 'control: the fixture still returns an ETag, which is not proof of anything');
+    }
+
     public function testChecksumCapableEndpointYieldsVerifiedObjectsAndVerifiedSet(): void
     {
         $this->mirrorClass();
@@ -807,7 +839,7 @@ final class Phase15S3MirrorUploadRedTest extends TestCase
         $objects = array_values((array) ($result['objects'] ?? array()));
         self::assertCount(4, $objects, 'contract: every object including the encrypted catalog is accounted for');
         foreach ($objects as $object) {
-            self::assertSame(self::STRENGTH_VERIFIED, (string) ($object['strength'] ?? ''), 'contract: an object is VERIFIED only because the service checksum and size proofs matched');
+            self::assertSame(self::STRENGTH_VERIFIED, (string) ($object['strength'] ?? ''), 'contract: an object is VERIFIED because the service echoed the same SHA-256 the request carried — no object-size response is involved (this fixture emits none)');
         }
         self::assertStringNotContainsString('protected', strtolower((string) ($result['result'] ?? '')), 'contract: no remote-protection claim');
         self::assertStringNotContainsString('recoverab', strtolower((string) ($result['result'] ?? '')), 'contract: no recoverability claim');
@@ -836,6 +868,52 @@ final class Phase15S3MirrorUploadRedTest extends TestCase
     // ========================================================================
     // T9/T10/T11 — disagreement and transport failure fail closed
     // ========================================================================
+
+    /**
+     * Test correction 4: an ETag alone must never upgrade an object — even when it
+     * is literally the SHA-256 of the uploaded body (a plain-PUT ETag is MD5-like,
+     * and either way it is not the service checksum member the policy is built on).
+     */
+    public function testEtagDecoyWithoutChecksumIsAcknowledgedNeverVerified(): void
+    {
+        $this->mirrorClass();
+        $this->requireSecretstream();
+        $root     = $this->workspace();
+        $this->writeLocalBackup($root, self::BACKUP_ID);
+        $requests = array();
+        $result   = $this->mirror($root, 'etag-decoy', $requests)->mirrorBackup(self::BACKUP_ID);
+
+        self::assertTrue((bool) ($result['ok'] ?? false));
+        self::assertSame(self::RESULT_ACKNOWLEDGED, (string) ($result['result'] ?? ''), 'contract: an ETag is not the service checksum — the set stays ACKNOWLEDGED');
+        self::assertNotSame(self::STRENGTH_VERIFIED, (string) ($result['verification'] ?? ''));
+        foreach (array_values((array) ($result['objects'] ?? array())) as $object) {
+            self::assertSame(self::STRENGTH_ACKNOWLEDGED, (string) ($object['strength'] ?? ''), 'contract: no object is VERIFIED on an ETag alone, even a SHA-256-valued one');
+        }
+        self::assertCount(4, $this->putRequests($requests), 'contract: no verification request is invented to rescue the weaker claim');
+    }
+
+    /**
+     * Test correction 5: an application-metadata echo of the exact digest must never
+     * upgrade an object — the value came from our own request, so it is not a
+     * service-side measurement (the product never reads x-amz-meta-* at all).
+     */
+    public function testMetadataEchoWithoutChecksumIsAcknowledgedNeverVerified(): void
+    {
+        $this->mirrorClass();
+        $this->requireSecretstream();
+        $root     = $this->workspace();
+        $this->writeLocalBackup($root, self::BACKUP_ID);
+        $requests = array();
+        $result   = $this->mirror($root, 'metadata-decoy', $requests)->mirrorBackup(self::BACKUP_ID);
+
+        self::assertTrue((bool) ($result['ok'] ?? false));
+        self::assertSame(self::RESULT_ACKNOWLEDGED, (string) ($result['result'] ?? ''), 'contract: an echoed metadata value is not the service checksum — the set stays ACKNOWLEDGED');
+        self::assertNotSame(self::STRENGTH_VERIFIED, (string) ($result['verification'] ?? ''));
+        foreach (array_values((array) ($result['objects'] ?? array())) as $object) {
+            self::assertSame(self::STRENGTH_ACKNOWLEDGED, (string) ($object['strength'] ?? ''), 'contract: no object is VERIFIED on a metadata round-trip alone');
+        }
+        self::assertCount(4, $this->putRequests($requests), 'contract: no verification request is invented to rescue the weaker claim');
+    }
 
     public function testExplicitChecksumMismatchFailsClosed(): void
     {
@@ -887,7 +965,12 @@ final class Phase15S3MirrorUploadRedTest extends TestCase
         self::assertSame(array(), $this->relativeListing($scratch), 'contract: local temporary state is cleaned even when the remote cleanup failed');
     }
 
-    public function testRemoteSizeMismatchFailsClosed(): void
+    /**
+     * Pinning the ONLY role left to a reported length: an endpoint that explicitly
+     * contradicts the request's Content-Length fails closed. (Length is never
+     * required to reach VERIFIED — see the VERIFIED fixture, which reports none.)
+     */
+    public function testContradictoryReportedLengthFailsClosed(): void
     {
         $this->mirrorClass();
         $this->requireSecretstream();
@@ -897,7 +980,7 @@ final class Phase15S3MirrorUploadRedTest extends TestCase
         $requests = array();
 
         $failure = $this->captureMirrorFailure($this->mirror($root, 'size-mismatch', $requests), self::BACKUP_ID);
-        self::assertSame(self::E_SIZE_MISMATCH, $failure['code'], 'contract: an echoed remote object size that differs from the local ciphertext size fails closed');
+        self::assertSame(self::E_SIZE_MISMATCH, $failure['code'], 'contract: an endpoint that explicitly reports a length contradicting the local ciphertext size fails closed (the echoed checksum alone did NOT upgrade it)');
         self::assertCount(1, $this->putRequests($requests), 'contract: the remaining objects and the catalog are not uploaded after a length disagreement');
         $this->assertOnlyBoundedSelfCleanup($requests, $this->putPaths($requests), 1);
         self::assertSame($before, $this->snapshot($root));
@@ -1449,20 +1532,31 @@ final class Phase15S3MirrorUploadRedTest extends TestCase
 
             $responseHeaders = array('ETag' => '"' . hash('md5', $body) . '"');
             if ('verified' === $policy) {
-                // A checksum-capable endpoint: it accepts the supplied digest and
-                // echoes both the service checksum and the stored object size.
+                // A checksum-capable endpoint: it accepts the supplied digest and echoes
+                // the service checksum. An ordinary PutObject response carries no object
+                // size (AWS documents x-amz-object-size as append/S3-Express-only), so
+                // none is fabricated here — VERIFIED must follow from the checksum alone.
                 $responseHeaders['x-amz-checksum-sha256'] = (string) ($headers['x-amz-checksum-sha256'] ?? '');
-                $responseHeaders['x-amz-object-size']    = (string) strlen($body);
             } elseif ('acknowledged' === $policy) {
                 // A checksum-incapable endpoint, with decoys: an ETag equal to the
                 // local digest and echoed application metadata. Neither is body-hash
                 // proof, so no object may be upgraded to VERIFIED.
                 $responseHeaders['ETag']              = '"' . hash('sha256', $body) . '"';
                 $responseHeaders['x-amz-meta-sha256'] = base64_encode(hash('sha256', $body, true));
+            } elseif ('etag-decoy' === $policy) {
+                // Isolated decoy: the ONLY thing that looks like proof is an ETag
+                // equal to the SHA-256 of the body. Never body-hash proof.
+                $responseHeaders['ETag'] = '"' . hash('sha256', $body) . '"';
+            } elseif ('metadata-decoy' === $policy) {
+                // Isolated decoy: application metadata echoing the exact digest.
+                // The endpoint stores it verbatim and returns it; it proves nothing.
+                $responseHeaders['x-amz-meta-sha256'] = base64_encode(hash('sha256', $body, true));
             } elseif ('checksum-mismatch' === $policy) {
                 $responseHeaders['x-amz-checksum-sha256'] = base64_encode(hash('sha256', $body . 'tampered', true));
-                $responseHeaders['x-amz-object-size']    = (string) strlen($body);
             } elseif ('size-mismatch' === $policy) {
+                // A deliberately contradictory endpoint: the checksum matches yet it
+                // reports a length that cannot be true. Only such an EXPLICIT
+                // contradiction may veto VERIFIED — absence stays harmless.
                 $responseHeaders['x-amz-checksum-sha256'] = (string) ($headers['x-amz-checksum-sha256'] ?? '');
                 $responseHeaders['x-amz-object-size']    = (string) (strlen($body) + 1);
             }

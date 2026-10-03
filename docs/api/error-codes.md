@@ -133,7 +133,7 @@
 | `CLINIC_BACKUP_MIRROR_OBJECT_TOO_LARGE` | 413 | اندازه ciphertext از سقف تک‌PUT (4 GiB) بیشتر است — رد پیش از هر درخواست؛ multipart در این فاز وجود ندارد | — |
 | `CLINIC_BACKUP_MIRROR_UPLOAD_FAILED` | 502 | پاسخ موفق PutObject دریافت نشد (transport/auth/شبکه)؛ نظافت bounded از اشیاء همین تلاش attempted می‌شود | — |
 | `CLINIC_BACKUP_MIRROR_CHECKSUM_MISMATCH` | 500 | اثبات checksum سرویس با digest محلی ciphertext هم‌خوان نیست — شکست صریح، نه تنزل به acknowledged | — |
-| `CLINIC_BACKUP_MIRROR_SIZE_MISMATCH` | 500 | طول اعلام‌شده سرویس با اندازه ciphertext محلی برابر نیست — شکست صریح | — |
+| `CLINIC_BACKUP_MIRROR_SIZE_MISMATCH` | 500 | endpoint صراحتاً طولی متناقض با اندازه ciphertext محلی اعلام کرده — شکست صریح؛ نبودِ این فیلد هرگز مانعِ VERIFIED نیست | — |
 
 ## Scope / Multi-Clinic (Phase 2 — ADR-0031)
 
