@@ -1,6 +1,8 @@
 # Phase 15 — Slice 2B: پیکربندی استقرار S3 (checkpoint عملیاتی محدود)
 
-> **دامنهٔ این سند محدود است:** فقط قراردادِ پیکربندی/امنیتِ Slice 2B — راهنمای عملیاتِ S3، upload/download یا «remote backup» **نیست**. هیچ ادعایی دربارهٔ محافظتِ ریموت یا آمادگیِ بکاپِ ابری نمی‌کند. هنوز **هیچ آپلودی** وجود ندارد؛ این فقط فوندیشنِ پیکربندی + کارخانهٔ کلاینتِ بدونِ شبکه است.
+> **دامنهٔ این سند محدود است:** قراردادِ پیکربندی/امنیتِ Slice 2B + قراردادِ عملیاتِ صریحِ آینه‌سازیِ Slice 2C. این راهنمای عمومیِ عملیاتِ S3 یا «remote backup» نیست و **هیچ ادعایی دربارهٔ محافظتِ ریموت، بازیابی یا آمادگیِ بکاپِ ابری نمی‌کند**.
+>
+> **وضعیت (پس از Slice 2C):** یک عملیاتِ **صریحِ دستی** وجود دارد — آینه‌سازیِ رمزنگاری‌شدهٔ **یک** بکاپِ محلیِ موجود روی S3 (`BackupS3Mirror::mirrorBackup()`)؛ یعنی «آپلودِ رمزنگاری‌شدهٔ یک‌طرفه». **هیچ download/recovery، هیچ integration خودکار با `backup.run`/زمان‌بند، هیچ remote retention و هیچ UI/Settings در این فازها وجود ندارد** (فیلدهای پیکربندی هنوز فقط ثابت‌های deployment‌اند).
 
 ## نام ثابت‌ها (تک منبعِ حقیقت — production)
 
@@ -34,7 +36,7 @@
 
 ## پیمان محصولی کلیدِ آبجکت ریموت (بدون ادعای تشخیص PHI)
 
-خودِ CPMS هرگز شناسهٔ بیمار/Clinic/بالینی به کلیدِ آبجکتِ ریموت نمی‌افزاید؛ کلیدِ آبجکت فقط از prefixِ deployment و نامِ فایل‌های بکاپِ متعلق به CPMS ساخته می‌شود. نرم‌افزار **نمی‌تواند** و **ادعا نمی‌کند** که PHI داخلِ prefixِ دلخواهِ پیکربندی‌شده را معنایی تشخیص می‌دهد — مسئولیتِ انتخابِ prefix بدونِ شناسهٔ بیمار با اپراتورِ deployment است.
+خودِ CPMS هرگز شناسهٔ بیمار/Clinic/بالینی به کلیدِ آبجکتِ ریموت نمی‌افزاید. از Slice 2C شکلِ کلید **صریحاً opaque** است: `prefixِ deployment + '/' + شناسهٔ ۳۲‌کاراکتریِ آینه + '/' + شناسهٔ ۳۲‌کاراکتریِ شیء` — هر دو شناسه ۱۶ بایت تصادفیِ رمزنگاری‌شده (۱۲۸ بیت)‌اند و **هیچ** نام فایل، مسیر نسبی، شناسهٔ بکاپِ محلی، timestampِ مشتق‌شده از آن یا هویتِ tenant در کلید نمی‌آید. نرم‌افزار **نمی‌تواند** و **ادعا نمی‌کند** که PHI داخلِ prefixِ دلخواهِ پیکربندی‌شده را معنایی تشخیص می‌دهد — مسئولیتِ انتخابِ prefix بدونِ شناسهٔ بیمار با اپراتورِ deployment است.
 
 ## مخفی‌کاری در سطح شیء
 
@@ -43,3 +45,25 @@
 ## صریحاً خارج از این slice
 
 upload/download، تغییرِ `BackupService`/`backup.run`، persistence، Settings/UI، migration، provider abstraction، remote status/verification، و **هر ادعای محافظتِ ریموت یا رعایتِ HIPAA/PHI**. بکاپِ ریموتِ فعال هنوز وجود ندارد.
+---
+
+## Slice 2C — آینه‌سازیِ صریحِ رمزنگاری‌شدهٔ یک بکاپِ محلیِ موجود
+
+کلاس: `ClinicCore\Application\Backup\BackupS3Mirror` (final، بدونِ interface/provider/DI). ورودیِ تنها = شناسهٔ یک بکاپِ **موجود**؛ هیچ بکاپِ تازه‌ای ساخته نمی‌شود و به `backup.run` وصل نیست.
+
+```php
+$result = $mirror->mirrorBackup($existingLocalBackupId);   // throw BackupException در شکست
+```
+
+- **پیش‌شرط محلی (Fail-Closed، پیش از هر درخواست):** همان راستی‌آزماییِ تثبیت‌شده (`LocalBackupVerifier` — منطقِ `BackupService::verifyIn`) + الزامِ وجودِ `manifest.json.sha256`. بکاپِ ناموجود/دست‌کاری‌شده/غیرقابل‌اثبات رد می‌شود و **هیچ** درخواستی نمی‌رود.
+- **مجموعهٔ ریموت:** `db.sql` + `manifest.json` + یک شیء به‌ازای هر فایلِ storageِ مندرج در مانیفست + **یک کاتالوگِ فقط‌ریموت که آخر از همه آپلود می‌شود**. `manifest.json.sha256` عمداً شیءِ ریموت نیست.
+- **رمزنگاری:** فقط `BackupEncryptionEnvelope` (قالب `CPMSBK01`)؛ هر شیء پیش از درخواست رمزنگاری می‌شود و **فقط ciphertext** وارد بدنهٔ SDK می‌شود (stream از فایلِ موقت — بدونِ بارگذاری کل ciphertext در حافظه). کلید فقط از `encryptionKeyForBackupEnvelope()` خوانده می‌شود و هرگز در client config/metadata/log/audit/error/نامِ شیء نمی‌آید.
+- **کاتالوگ v1:** `format = cpms-s3-mirror-catalog`، `format_version = 1`، `mirror_id`، `catalog_object_id`، `local_backup_id`، `local_manifest_sha256`، `envelope_format`/`envelope_format_version` و `entries[] = {role: database|manifest|storage, logical_path, object_id, ciphertext_bytes, ciphertext_sha256, remote_verification}`. مسیرهای منطقی **فقط** داخل plaintextِ کاتالوگ مجازند چون خودِ شیء رمزنگاری‌شده است. هیچ credential/کلیدی در آن نیست. کاتالوگ artifact خصوصیِ موقتِ محلی است (در plaintext و ciphertext) که در **همهٔ** مسیرهای پایان پاک می‌شود و هیچ جدول/fایلِ ماندگاری و هیچ migration نمی‌سازد.
+- **سقفِ تک‌بخشی:** `PutObject` تنها عملیاتِ upload است؛ `MAX_ENCRYPTED_OBJECT_BYTES = 4 * 1024^3 = 4294967296` **بایت ciphertext** (واحد: بایتِ باینری) — یعنی ۱ GiB زیرِ سقفِ رسمیِ AWS برای یک PUT (5 GB = 5368709120 بایت؛ همان عدد در SDK قفل‌شده: `MultipartUploader::PART_MAX_SIZE`). شیءِ بزرگ‌تر **پیش از** درخواست با `CLINIC_BACKUP_MIRROR_OBJECT_TOO_LARGE` رد می‌شود. multipart/`UploadPart`/`MultipartUploader` در این slice وجود ندارد و آستانهٔ خودکارِ ۱۶MiB SDK به‌عنوان limit تفسیر نمی‌شود.
+- **VERIFIED در برابر ACKNOWLEDGED:** برای هر شیء، digestِ SHA-256ِ ciphertext در همان PUT با `ChecksumSHA256` ارسال می‌شود (+ `ContentLength`). اگر endpoint در پاسخِ خودِ PUT، `ChecksumSHA256` هم‌خوان برگرداند ⇒ `VERIFIED`. اگر اثباتِ checksum در دسترس نباشد ⇒ `ACKNOWLEDGED` که هرگز verified گزارش/لاگ نمی‌شود. هیچ **شرطِ طولی** برای رسیدن به VERIFIED نیست: خودِ AWS در مرجعِ `PutObject` می‌گوید `x-amz-object-size` «only present if you append to an object» (AppendObject، S3 Express One Zone) — پس پاسخِ معمولیِ PUT طولِ شیء را تضمین نمی‌کند؛ اگر endpoint صراحتاً طولِ **متناقضی** اعلام کند Fail-Closed رد می‌شود (`..._SIZE_MISMATCH`) که فقط ردِّ تناقض است، نه اثباتِ لازم. ناهم‌خوانیِ **صریحِ** checksum ⇒ `CLINIC_BACKUP_MIRROR_CHECKSUM_MISMATCH`؛ ردِ checksum توسط سرویس هم از همان مسیرِ خطای SDK (پاسخِ غیرموفق) شکستِ صریح است، نه تنزل به acknowledged. ETag و metadataِ اکوی‌شده هرگز دلیلِ برابریِ بدنه نیستند و HEAD برای اثباتِ بدنه استفاده نمی‌شود.
+- **نتیجهٔ سطح‌مجموعه:** همه `VERIFIED` ⇒ `encrypted upload verified`؛ حداقل یک `ACKNOWLEDGED` ⇒ `encrypted upload acknowledged; checksum verification unavailable`؛ هر شکست ⇒ عملیات ناموفق. این «پایانِ ترتیبِ آپلود» ادعای تراکنشِ اتمیک یا visibility هم‌زمان نیست.
+- **رفتار در شکست:** مبدأ محلی بایت‌به‌بایت دست‌نخورده، بدونِ prune/invalidation، بدونِ plaintext fallback، با پیامِ bounded بدونِ حساسیت. اگر پیش از شکست شیءِ ریموتی ساخته شده باشد، **فقط** همان اشیاءِ همین تلاش به‌صورتِ best-effort پاک می‌شوند (بدونِ هیچ API عمومیِ delete/retention و بدونِ ListObjects)؛ اگر نظافت کامل نشود، evidenceٔ bounded (`attempted/failed/object_ids`ِ opaque) در `data['cleanup']` خطا و لاگِ عملیاتی ثبت می‌شود.
+- **ردپای ماندگار:** فقط audit/operation log موجود با pointer هشت‌فیلده (`backup_id`, `mirror_id`, `catalog_object_id`, `object_count`, `ciphertext_bytes`, `verification`, `timestamp`, `result_code`) — بدونِ مسیر منطقی، PHI، secret یا مقدارِ پیکربندی.
+- **کدهای خطا:** `CLINIC_BACKUP_MIRROR_NOT_CONFIGURED` / `_LOCAL_INVALID` / `_ENCRYPTION_FAILED` / `_OBJECT_TOO_LARGE` / `_UPLOAD_FAILED` / `_CHECKSUM_MISMATCH` / `_SIZE_MISMATCH` (پیام‌های ثابت، `data` همیشه خالی جز evidenceٔ نظافت).
+- **نکتهٔ عملیاتی:** هیچ سازوکارِ فراخوانیِ خودکاری اضافه نشده — UI/Settings/Job در این slice ممنوع بود؛ اپراتور باید صریحاً این عملیات را صدا بزند. تست‌ها در `tests/Unit/Phase15S3MirrorUploadRedTest.php` (بدونِ شبکه/endpoint واقعی — seamٔ مستند `http_handler` Slice 2B).
+

@@ -127,6 +127,13 @@
 | `CLINIC_BACKUP_CONFIRM_REQUIRED` | 409 | Restore نیازمند تأیید صریح (CLI `--yes` / فرم Admin) است؛ از Job خودکار هرگز اجرا نمی‌شود | — |
 | `CLINIC_BACKUP_PREFLIGHT_FAILED` | 409 | Preflight Restore رد شد (تمامیت بکاپ یا دسترس‌پذیری DB) — چیزی تغییر نکرده است | — |
 | `CLINIC_BACKUP_STORAGE_INSIDE_WEBROOT` | 500 | **OD-9** — ریشهٔ بکاپ فعال داخل DocumentRoot است: نوشتن Fail-Closed رد می‌شود (مسیر ناامن عوض نمی‌شود؛ خواندن به‌عنوان مبدأ legacy مجاز است). Safety Backup پیش از Restore به ریشهٔ خصوصی امن هدایت می‌شود | پس از اصلاح پیکربندی |
+| `CLINIC_BACKUP_MIRROR_NOT_CONFIGURED` | 500 | آینه‌سازی S3 درخواست شده ولی پیکربندی استقرار S3 وجود ندارد — هیچ درخواست راه‌دور نمی‌رود | — |
+| `CLINIC_BACKUP_MIRROR_LOCAL_INVALID` | 409 | بکاپ محلیِ خواسته‌شده ناموجود است یا از راستی‌آزمایی تثبیت‌شده (شامل sidecar مانیفست) رد می‌شود — Fail-Closed پیش از هر درخواست | — |
+| `CLINIC_BACKUP_MIRROR_ENCRYPTION_FAILED` | 500 | رمزنگاری یک شیء با `BackupEncryptionEnvelope` ممکن نشد؛ هیچ plaintext و هیچ درخواستی ارسال نمی‌شود | — |
+| `CLINIC_BACKUP_MIRROR_OBJECT_TOO_LARGE` | 413 | اندازه ciphertext از سقف تک‌PUT (4 GiB) بیشتر است — رد پیش از هر درخواست؛ multipart در این فاز وجود ندارد | — |
+| `CLINIC_BACKUP_MIRROR_UPLOAD_FAILED` | 502 | پاسخ موفق PutObject دریافت نشد (transport/auth/شبکه)؛ نظافت bounded از اشیاء همین تلاش attempted می‌شود | — |
+| `CLINIC_BACKUP_MIRROR_CHECKSUM_MISMATCH` | 500 | اثبات checksum سرویس با digest محلی ciphertext هم‌خوان نیست — شکست صریح، نه تنزل به acknowledged | — |
+| `CLINIC_BACKUP_MIRROR_SIZE_MISMATCH` | 500 | endpoint صراحتاً طولی متناقض با اندازه ciphertext محلی اعلام کرده — شکست صریح؛ نبودِ این فیلد هرگز مانعِ VERIFIED نیست | — |
 
 ## Scope / Multi-Clinic (Phase 2 — ADR-0031)
 

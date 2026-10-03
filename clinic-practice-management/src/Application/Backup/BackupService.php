@@ -38,9 +38,11 @@ use ClinicCore\Settings\InstallationSettings;
  */
 final class BackupService
 {
-    private const MANIFEST_HASH_OK = 'ok';
-    private const MANIFEST_HASH_MISSING = 'missing';
-    private const MANIFEST_HASH_MISMATCH = 'mismatch';
+    // Slice 2C: منبع حقیقتِ یگانهٔ وضعیتِ sidecar در `LocalBackupVerifier` است —
+    // این‌ها فقط alias هستند تا هیچ درفتِ معنایی بین دو مسیر ممکن نشود.
+    // (وضعیتِ 'ok' عمداً alias نشده: تنها مصرف‌کننده‌اش خودِ delegate بود.)
+    private const MANIFEST_HASH_MISSING  = LocalBackupVerifier::HASH_MISSING;
+    private const MANIFEST_HASH_MISMATCH = LocalBackupVerifier::HASH_MISMATCH;
 
     public const ENGINE_VERSION = '1.0.0';
 
@@ -150,15 +152,7 @@ final class BackupService
 
     private function manifestHashState(string $dir): string
     {
-        $expected = @file_get_contents($dir . '/manifest.json.sha256');
-        if (!is_string($expected) || trim($expected) === '') {
-            return self::MANIFEST_HASH_MISSING;
-        }
-        $actual = hash_file('sha256', $dir . '/manifest.json');
-
-        return is_string($actual) && hash_equals(trim($expected), $actual)
-            ? self::MANIFEST_HASH_OK
-            : self::MANIFEST_HASH_MISMATCH;
+        return LocalBackupVerifier::manifestHashState( $dir );
     }
 
     /**
@@ -215,36 +209,17 @@ final class BackupService
     }
 
     /**
+     * Slice 2C: همان راستی‌آزماییِ تثبیت‌شده، از منبع یگانه (`LocalBackupVerifier`)؛
+     * شکلِ نتیجهٔ عمومیِ این متد (ok/errors/warnings) عمداً بدونِ تغییر است تا هیچ
+     * مصرف‌کنندهٔ موجودی (Admin/REST) تحت‌تأثیر قرار نگیرد.
+     *
      * @return array{ok: bool, errors: list<string>, warnings: list<string>}
      */
     private function verifyIn(ProtectedBackupStore $source, string $backupId): array
     {
-        $dir = $source->dirOf($backupId);
-        $raw = $this->readManifestIn($source, $backupId);
-        if ($raw === null) {
-            return ['ok' => false, 'errors' => ['manifest missing/corrupt'], 'warnings' => []];
-        }
-        $warnings = [];
-        $shaState = $this->manifestHashState($dir);
-        if ($shaState === self::MANIFEST_HASH_MISMATCH) {
-            return ['ok' => false, 'errors' => ['manifest.json tampered'], 'warnings' => []];
-        }
-        if ($shaState === self::MANIFEST_HASH_MISSING) {
-            $warnings[] = 'manifest.json.sha256 missing — legacy backup; manifest authenticity cannot be verified';
-        }
-        if ((string) ($raw['backup_id'] ?? '') !== $backupId) {
-            return ['ok' => false, 'errors' => ['manifest backup_id mismatch'], 'warnings' => []];
-        }
-
-        $result = BackupManifest::verifyFiles($raw, function (string $rel) use ($dir): ?array {
-            $abs = $dir . '/' . $rel;
-            if (!is_file($abs)) {
-                return null;
-            }
-
-            return ['size' => (int) filesize($abs), 'sha256' => hash_file('sha256', $abs) ?: ''];
-        });
-        $result['warnings'] = array_merge($warnings, (array) ($result['warnings'] ?? []));
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- نامِ پارامترِ این متدِ موجود است.
+        $result = LocalBackupVerifier::verify( $source->dirOf( $backupId ), $backupId );
+        unset( $result['manifest'] );
 
         return $result;
     }
