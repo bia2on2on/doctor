@@ -81,7 +81,9 @@
  *     )
  *     public function mirrorBackup(string $local_backup_id): array
  *     public static function pointerFromResult(array $result): array
- *     private function assertCiphertextWithinSinglePutLimit(int $bytes): void
+ *     one private size gate with the SHAPE (int $ciphertextBytes): void — the name is
+ *     deliberately NOT pinned (a RED-guessed private name is not product contract);
+ *     exactly one such seam may exist and it must fail closed before any request
  *
  *   PUBLIC CONSTANTS:
  *     CATALOG_FORMAT           = 'cpms-s3-mirror-catalog'
@@ -846,8 +848,43 @@ final class Phase15S3MirrorUploadRedTest extends TestCase
 
         $failure = $this->captureMirrorFailure($this->mirror($root, 'checksum-mismatch', $requests), self::BACKUP_ID);
         self::assertSame(self::E_CHECKSUM_MISMATCH, $failure['code'], 'contract: a service checksum that disagrees with the local ciphertext digest fails closed (no silent downgrade to ACKNOWLEDGED)');
-        self::assertCount(1, $requests, 'contract: nothing further is uploaded after an explicit checksum disagreement');
+        self::assertCount(1, $this->putRequests($requests), 'contract: nothing further is uploaded after an explicit checksum disagreement');
+        // The PUT was accepted before the proof disagreed, so the stored-but-unverified object
+        // is exactly the one object this attempt may clean up — nothing else.
+        $this->assertOnlyBoundedSelfCleanup($requests, $this->putPaths($requests), 1);
         self::assertSame($before, $this->snapshot($root), 'contract: the local backup stays byte-identical on a failed mirror');
+    }
+
+    public function testIncompleteFailedAttemptCleanupIsRecordedAsBoundedEvidence(): void
+    {
+        $this->mirrorClass();
+        $this->requireSecretstream();
+        $root     = $this->workspace();
+        $this->writeLocalBackup($root, self::BACKUP_ID);
+        $before   = $this->snapshot($root);
+        $scratch  = $this->scratch($root);
+        $requests = array();
+
+        // PUTs 1-2 accepted, PUT 3 rejected, every DELETE of the resulting cleanup rejected.
+        $failure = $this->captureMirrorFailure($this->mirror($root, 'cleanup-fails', $requests), self::BACKUP_ID);
+        self::assertSame(self::E_UPLOAD_FAILED, $failure['code'], 'contract: an incomplete cleanup never replaces the original bounded failure code');
+        $cleanup = $failure['data']['cleanup'] ?? null;
+        self::assertIsArray($cleanup, 'contract: a cleanup that could not complete is not hidden — bounded evidence travels with the failure');
+        self::assertSame(array('attempted', 'failed', 'object_ids'), array_keys($cleanup), 'contract: cleanup evidence is exactly the bounded shape');
+        self::assertSame(2, $cleanup['attempted'], 'contract: at most the objects this attempt stored are touched');
+        self::assertSame(2, $cleanup['failed'], 'contract: failed cleanups are counted, not swallowed');
+        self::assertCount(2, $cleanup['object_ids'], 'contract: the evidence names only opaque object ids of this attempt');
+        foreach ($cleanup['object_ids'] as $object_id) {
+            self::assertSame(1, preg_match('/^[0-9a-f]{32}$/', (string) $object_id), 'contract: cleanup evidence carries opaque ids only');
+        }
+        self::assertSame(array('cleanup'), array_keys($failure['data']), 'contract: no other failure payload exists');
+        $this->assertOnlyBoundedSelfCleanup($requests, $this->putPaths($requests), 2);
+        $blob = json_encode($failure['data'], JSON_UNESCAPED_SLASHES);
+        foreach (array(self::BACKUP_ID, 'storage/', 'manifest.json', 'db.sql', self::NOTE_MARKER, self::PATIENT_MARKER, self::FAKE_SECRET, self::FAKE_ACCESS_KEY, self::FAKE_ENDPOINT) as $forbidden) {
+            self::assertSame(0, substr_count((string) $blob, $forbidden), 'contract: cleanup evidence never leaks identifiers, paths, markers or configuration values');
+        }
+        self::assertSame($before, $this->snapshot($root), 'contract: an incomplete remote cleanup never touches or prunes the local source');
+        self::assertSame(array(), $this->relativeListing($scratch), 'contract: local temporary state is cleaned even when the remote cleanup failed');
     }
 
     public function testRemoteSizeMismatchFailsClosed(): void
@@ -861,7 +898,8 @@ final class Phase15S3MirrorUploadRedTest extends TestCase
 
         $failure = $this->captureMirrorFailure($this->mirror($root, 'size-mismatch', $requests), self::BACKUP_ID);
         self::assertSame(self::E_SIZE_MISMATCH, $failure['code'], 'contract: an echoed remote object size that differs from the local ciphertext size fails closed');
-        self::assertCount(1, $requests);
+        self::assertCount(1, $this->putRequests($requests), 'contract: the remaining objects and the catalog are not uploaded after a length disagreement');
+        $this->assertOnlyBoundedSelfCleanup($requests, $this->putPaths($requests), 1);
         self::assertSame($before, $this->snapshot($root));
     }
 
@@ -876,14 +914,16 @@ final class Phase15S3MirrorUploadRedTest extends TestCase
         $first = array();
         $early = $this->captureMirrorFailure($this->mirror($root, 'reject-first', $first), self::BACKUP_ID);
         self::assertSame(self::E_UPLOAD_FAILED, $early['code'], 'contract: a transport/auth failure maps to the bounded upload-failed code');
-        self::assertCount(1, $first, 'contract: the remaining objects, catalog included, are not uploaded after a failure');
+        self::assertCount(1, $first, 'contract: nothing further is uploaded and nothing is cleaned (this attempt created no object), and the remaining objects, catalog included, are never sent');
 
         $later = array();
         $mid   = $this->captureMirrorFailure($this->mirror($root, 'reject-at-3', $later), self::BACKUP_ID);
         self::assertSame(self::E_UPLOAD_FAILED, $mid['code']);
-        self::assertCount(3, $later, 'contract: exactly the objects attempted up to the failure are sent; the catalog is not uploaded when the data set never completed');
-        $tail = json_decode($this->decrypt($root, $later[count($later) - 1]['body'], 'tail'), true);
-        self::assertTrue(! is_array($tail) || self::CATALOG_FORMAT !== ($tail['format'] ?? null), 'contract: the last request of an incomplete set is not a catalog');
+        $puts = $this->putRequests($later);
+        self::assertCount(3, $puts, 'contract: exactly the objects attempted up to the failure are uploaded; the catalog is not uploaded when the data set never completed');
+        $this->assertOnlyBoundedSelfCleanup($later, $this->putPaths($later), 2);
+        $tail = json_decode($this->decrypt($root, $puts[count($puts) - 1]['body'], 'tail'), true);
+        self::assertTrue(! is_array($tail) || self::CATALOG_FORMAT !== ($tail['format'] ?? null), 'contract: the last uploaded object of an incomplete set is not a catalog');
         self::assertSame($before, $this->snapshot($root), 'contract: no local change and no local pruning on failure');
 
         foreach (array($early, $mid) as $failure) {
@@ -979,14 +1019,23 @@ final class Phase15S3MirrorUploadRedTest extends TestCase
         $this->writeLocalBackup($root, self::BACKUP_ID);
         $requests = array();
         $mirror   = $this->mirror($root, 'verified', $requests);
-        $guard    = null;
-        foreach (array('assertCiphertextWithinSinglePutLimit', 'assertWithinSinglePutLimit') as $candidate) {
-            if (method_exists($class, $candidate)) {
-                $guard = new \ReflectionMethod($class, $candidate);
-                break;
+        // The gate is pinned by SHAPE, not by name: one and only one method taking a
+        // single int (the ciphertext byte size) and returning void. A RED-guessed
+        // private name is not product contract, so GREEN may name it freely — but it
+        // may not grow a second size story or a multipart fallback.
+        $guard = null;
+        foreach ((new \ReflectionClass($class))->getMethods() as $method) {
+            $parameters = $method->getParameters();
+            if (1 !== count($parameters) || 'void' !== (string) $method->getReturnType()) {
+                continue;
+            }
+            $type = $parameters[0]->getType();
+            if ($type instanceof \ReflectionNamedType && 'int' === $type->getName() && ! $type->allowsNull()) {
+                self::assertNull($guard, 'contract: exactly ONE single-PUT size gate may exist — no second size story, no multipart fallback in this slice');
+                $guard = $method;
             }
         }
-        self::assertNotNull($guard, 'contract: the operation must own exactly one bounded fail-closed single-PUT size gate (private function assertCiphertextWithinSinglePutLimit(int $bytes): void)');
+        self::assertNotNull($guard, 'contract: the operation must own one bounded fail-closed single-PUT size gate — shape: (int $ciphertextBytes): void, fail-closed BEFORE any S3 request');
         $guard->setAccessible(true);
 
         $guard->invoke($mirror, self::MAX_ENCRYPTED_OBJECT_BYTES);
@@ -1048,7 +1097,7 @@ final class Phase15S3MirrorUploadRedTest extends TestCase
         $failedRequests = array();
         $failure        = $this->captureMirrorFailure($this->mirror($root, 'reject-at-2', $failedRequests, $scratch), self::BACKUP_ID);
         self::assertSame(self::E_UPLOAD_FAILED, $failure['code']);
-        self::assertSame(array(), $this->relativeListing($scratch), "contract: the operation's own temporary ciphertext/catalog state is also cleaned after failure (bounded failed-attempt cleanup; no remote delete in this slice)");
+        self::assertSame(array(), $this->relativeListing($scratch), "contract: the operation's own temporary ciphertext/catalog state is also cleaned after failure (bounded failed-attempt cleanup may issue this attempt's own DELETEs only)");
         self::assertSame(self::LOCAL_LAYOUT, $this->relativeListing($root . '/' . self::BACKUP_ID), 'contract: a failed mirror leaves no local residue in the backup directory');
     }
 
@@ -1260,6 +1309,58 @@ final class Phase15S3MirrorUploadRedTest extends TestCase
     }
 
     /**
+     * The ONLY non-upload request Slice 2C may issue is bounded best-effort cleanup of the
+     * objects THIS attempt already PUT (its own opaque keys). Pinning it this way keeps
+     * "nothing further is uploaded after a failure" exact while still allowing — and
+     * constraining — the cleanup that GREEN added for failed attempts.
+     *
+     * @param array<int, array<string, mixed>> $requests
+     * @param list<string>                     $put_paths
+     */
+    private function assertOnlyBoundedSelfCleanup(array $requests, array $put_paths, int $max_deletes): void
+    {
+        $deletes = 0;
+        foreach ($requests as $request) {
+            if ('PUT' === $request['method']) {
+                continue;
+            }
+            ++$deletes;
+            self::assertLessThanOrEqual($max_deletes, $deletes, 'contract: cleanup touches at most the objects this attempt uploaded — no bucket sweep');
+            self::assertSame('DELETE', $request['method'], 'contract: no operation kind other than PUT and this-attempt-only DELETE exists in Slice 2C');
+            self::assertContains((string) $request['path'], $put_paths, 'contract: cleanup may only target objects THIS attempt uploaded');
+            self::assertSame(
+                1,
+                preg_match('#^/' . preg_quote(self::FAKE_BUCKET, '#') . '/' . preg_quote(self::FAKE_PREFIX, '#') . '/[0-9a-f]{32}/[0-9a-f]{32}$#', (string) $request['path']),
+                'contract: cleanup keys keep the opaque bucket/prefix/mirror/object shape'
+            );
+        }
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $requests
+     *
+     * @return list<string>
+     */
+    private function putPaths(array $requests): array
+    {
+        return array_values(array_map(static fn (array $request): string => (string) $request['path'], $this->putRequests($requests)));
+    }
+
+    /**
+     * Upload requests only: Slice 2C may additionally issue the bounded best-effort
+     * cleanup of its own objects after a partial failure, so "what was uploaded" is
+     * always counted over PUTs, never over total requests.
+     *
+     * @param array<int, array<string, mixed>> $requests
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function putRequests(array $requests): array
+    {
+        return array_values(array_filter($requests, static fn (array $request): bool => 'PUT' === $request['method']));
+    }
+
+    /**
      * @param array<int, array<string, mixed>> $requests
      */
     private function mirror(string $root, string $policy, array &$requests, ?string $scratch = null): object
@@ -1283,7 +1384,12 @@ final class Phase15S3MirrorUploadRedTest extends TestCase
         try {
             $result = $mirror->mirrorBackup($backupId);
         } catch (BackupException $error) {
-            return array('code' => $error->getErrorCode(), 'message' => $error->getMessage());
+            return array(
+                'code'    => $error->getErrorCode(),
+                'message' => $error->getMessage(),
+                // Bounded failure payload (Slice 2C: cleanup evidence only, never secrets/paths).
+                'data'    => $error->data,
+            );
         } catch (\Throwable $error) {
             self::fail('contract: a failed mirror must surface a bounded BackupException, never a raw ' . get_class($error) . ' (' . substr($error->getMessage(), 0, 160) . ')');
         }
@@ -1328,6 +1434,14 @@ final class Phase15S3MirrorUploadRedTest extends TestCase
             }
             if ('reject-at-3' === $policy && 3 === $index) {
                 return new RejectedPromise(new \RuntimeException('mock endpoint: transient failure (fixture)'));
+            }
+            if ('cleanup-fails' === $policy) {
+                if ('DELETE' === $request->getMethod()) {
+                    return new RejectedPromise(new \RuntimeException('mock endpoint: delete denied (fixture)'));
+                }
+                if (3 === $index) {
+                    return new RejectedPromise(new \RuntimeException('mock endpoint: transient failure (fixture)'));
+                }
             }
             if ('raw' === $policy) {
                 return new FulfilledPromise(new Response(200, array('ETag' => '"deadbeef"', 'x-amz-checksum-sha256' => 'ZZZ=', 'x-amz-object-size' => (string) strlen($body)), ''));
