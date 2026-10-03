@@ -61,8 +61,8 @@ final class BackupS3MirrorRecovery {
      * contract constants; tests may scale them down through reflection without
      * changing or widening any production limit.
      */
-    private int $catalog_download_limit_bytes = self::MAX_CATALOG_CIPHERTEXT_BYTES;
-    private int $object_download_limit_bytes = self::MAX_ENCRYPTED_OBJECT_BYTES;
+    private int $catalog_download_limit_bytes    = self::MAX_CATALOG_CIPHERTEXT_BYTES;
+    private int $object_download_limit_bytes     = self::MAX_ENCRYPTED_OBJECT_BYTES;
     private int $aggregate_download_budget_bytes = self::MAX_AGGREGATE_STAGED_BYTES;
 
     /** @var callable|null Slice 2B's documented local-only SDK test-handler seam. */
@@ -248,12 +248,12 @@ final class BackupS3MirrorRecovery {
             self::MAX_AGGREGATE_STAGED_BYTES,
             max( 0, $this->aggregate_download_budget_bytes )
         );
-        $catalog_download_limit = min(
+        $catalog_download_limit    = min(
             self::MAX_CATALOG_CIPHERTEXT_BYTES,
             max( 0, $this->catalog_download_limit_bytes ),
             $aggregate_download_budget
         );
-        $catalog_cipher_bytes = $this->download_object(
+        $catalog_cipher_bytes      = $this->download_object(
             $client,
             $bucket,
             $catalog_key,
@@ -291,14 +291,14 @@ final class BackupS3MirrorRecovery {
         $download_dir = $stage_root . '/.objects';
         $this->create_contained_directory( $download_dir, $stage_real );
 
-        $cipher_paths                    = [];
-        $remaining_data_ciphertext_bytes = $data_ciphertext_bytes;
+        $cipher_paths                     = [];
+        $remaining_data_ciphertext_bytes  = $data_ciphertext_bytes;
         $downloaded_data_ciphertext_bytes = 0;
         foreach ( $validated['entries'] as $entry ) {
-            $object_id = $entry['object_id'];
-            $cipher_path = $download_dir . '/' . $object_id . '.enc';
-            $remote_key = $this->remote_object_key( $config, $mirror_id, $object_id );
-            $entry_bytes = $entry['ciphertext_bytes'];
+            $object_id                       = $entry['object_id'];
+            $cipher_path                     = $download_dir . '/' . $object_id . '.enc';
+            $remote_key                      = $this->remote_object_key( $config, $mirror_id, $object_id );
+            $entry_bytes                     = $entry['ciphertext_bytes'];
             $remaining_data_ciphertext_bytes -= $entry_bytes;
             if ( $remaining_data_ciphertext_bytes < 0 ) {
                 throw $this->recovery_failure();
@@ -306,23 +306,23 @@ final class BackupS3MirrorRecovery {
 
             // Reserve the complete plaintext output and not-yet-downloaded
             // ciphertext before choosing this object's streaming ceiling.
-            $reserved_before_current = $catalog_cipher_bytes
+            $reserved_before_current           = $catalog_cipher_bytes
                 + $catalog_json_bytes
                 + $downloaded_data_ciphertext_bytes
                 + $remaining_data_ciphertext_bytes
                 + $data_ciphertext_bytes
                 + self::MANIFEST_SIDECAR_BYTES;
-            $remaining_aggregate_bytes = max(
+            $remaining_aggregate_bytes         = max(
                 0,
                 $aggregate_download_budget - $reserved_before_current
             );
-            $object_download_limit = min(
+            $object_download_limit             = min(
                 self::MAX_ENCRYPTED_OBJECT_BYTES,
                 max( 0, $this->object_download_limit_bytes ),
                 $entry_bytes,
                 $remaining_aggregate_bytes
             );
-            $actual_ciphertext_bytes = $this->download_object(
+            $actual_ciphertext_bytes           = $this->download_object(
                 $client,
                 $bucket,
                 $remote_key,
@@ -333,7 +333,7 @@ final class BackupS3MirrorRecovery {
                 $stage_real
             );
             $downloaded_data_ciphertext_bytes += $actual_ciphertext_bytes;
-            $cipher_paths[ $object_id ] = $cipher_path;
+            $cipher_paths[ $object_id ]        = $cipher_path;
         }
 
         // All paths were validated before any payload request. Create and
@@ -1007,7 +1007,10 @@ final class BackupS3MirrorRecovery {
             $this->assert_private_staged_file( $destination, $stage_real );
             $sink = $this->bounded_download_sink( $handle, $hard_limit );
 
-            $on_headers = function ( ResponseInterface $response, ?RequestInterface $_request = null ) use ( &$response_length, $hard_limit ): void {
+            $on_headers = function ( ResponseInterface $response, ?RequestInterface $request = null ) use ( &$response_length, $hard_limit ): void {
+                if ( $request !== null && strtoupper( $request->getMethod() ) !== 'GET' ) {
+                    throw new \RuntimeException( 'bounded download requires a GET response' );
+                }
                 $response_length = $this->trustworthy_content_length(
                     $response->getHeader( 'Content-Length' )
                 );
@@ -1028,7 +1031,7 @@ final class BackupS3MirrorRecovery {
                     ],
                 ]
             );
-            $body = $response['Body'] ?? null;
+            $body     = $response['Body'] ?? null;
             if ( ! $body instanceof StreamInterface ) {
                 throw $this->recovery_failure();
             }
@@ -1066,7 +1069,7 @@ final class BackupS3MirrorRecovery {
                 try {
                     $sink->close();
                 } catch ( Throwable ) {
-                    // The owned staging root is also removed by the caller.
+                    @unlink( $destination );
                 }
             } elseif ( is_resource( $handle ) ) {
                 @fclose( $handle );
@@ -1105,15 +1108,18 @@ final class BackupS3MirrorRecovery {
         return FnStream::decorate(
             $stream,
             [
-                '__toString' => static fn (): string => '',
+                '__toString'  => static fn (): string => '',
                 'getContents' => static function (): string {
                     throw new \RuntimeException( 'bounded download sink is write-only' );
                 },
-                'isReadable' => static fn (): bool => false,
-                'read' => static function ( int $length ): string {
+                'isReadable'  => static fn (): bool => false,
+                'read'        => static function ( int $length ): string {
+                    if ( $length < 0 ) {
+                        throw new \InvalidArgumentException( 'bounded download read length is invalid' );
+                    }
                     throw new \RuntimeException( 'bounded download sink is write-only' );
                 },
-                'write' => $write,
+                'write'       => $write,
             ]
         );
     }

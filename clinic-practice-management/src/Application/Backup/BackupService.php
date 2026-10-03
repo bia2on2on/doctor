@@ -67,9 +67,8 @@ final class BackupService
      * @throws BackupException If the authoritative Clinic/settings inventory cannot be resolved.
      */
     // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- Narrow read-only access to the existing installation-wide storage enumeration.
-    public function activeClinicalStorageRoots(): array
-    {
-        return array_keys($this->enumerateActiveClinicalStorageRoots(true));
+    public function activeClinicalStorageRoots(): array {
+        return array_keys( $this->enumerateActiveClinicalStorageRoots( true ) );
     }
 
     // ================= CREATE / LIST / VERIFY / DELETE / PRUNE =================
@@ -439,7 +438,8 @@ final class BackupService
      *
      * @return array<string, list<int>> map normalizedBasePath => list clinicIds using it
      */
-    private function enumerateActiveClinicalStorageRoots(bool $failClosedOnSettingsLookupFailure = false): array
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- Preserve the existing private enumerator name while adding strict recovery mode.
+    private function enumerateActiveClinicalStorageRoots( bool $fail_closed_on_settings_lookup_failure = false ): array
     {
         $rootsMap = []; // normalized => clinicIds
 
@@ -464,14 +464,14 @@ final class BackupService
 
         foreach ($clinicIds as $cid) {
             $path = '';
-            $row = null;
+            $row  = null;
             try {
                 $row = $this->db->fetchRow(
                     'SELECT value_json FROM ' . $this->db->table('cpms_settings') . ' WHERE clinic_id = %d AND `key` = %s',
                     [$cid, 'files.storage_path']
                 );
             } catch (\Throwable) {
-                if ($failClosedOnSettingsLookupFailure) {
+                if ( $fail_closed_on_settings_lookup_failure ) {
                     throw BackupException::of(
                         'CLINIC_BACKUP_ENUMERATION_FAILED',
                         'clinic storage settings enumeration failed'
@@ -479,11 +479,11 @@ final class BackupService
                 }
             }
 
-            if ($row !== null) {
-                $decoded = json_decode((string) ($row['value_json'] ?? ''), true);
-                if (is_string($decoded)) {
+            if ( $row !== null ) {
+                $decoded = json_decode( (string) ( $row['value_json'] ?? '' ), true );
+                if ( is_string( $decoded ) ) {
                     $path = trim($decoded);
-                } elseif ($failClosedOnSettingsLookupFailure) {
+                } elseif ( $fail_closed_on_settings_lookup_failure ) {
                     throw BackupException::of(
                         'CLINIC_BACKUP_ENUMERATION_FAILED',
                         'clinic storage root setting is invalid'
@@ -500,8 +500,8 @@ final class BackupService
             // Validate — fail closed if inside webroot
             $normalized = $this->validateAndNormalizeStoragePath($path);
 
-            if ($normalized === '') {
-                if ($failClosedOnSettingsLookupFailure) {
+            if ( $normalized === '' ) {
+                if ( $fail_closed_on_settings_lookup_failure ) {
                     throw BackupException::of(
                         'CLINIC_BACKUP_ENUMERATION_FAILED',
                         'clinic storage root could not be resolved'
