@@ -152,7 +152,7 @@ final class BackupService
 
     private function manifestHashState(string $dir): string
     {
-        return LocalBackupVerifier::manifestHashState($dir);
+        return LocalBackupVerifier::manifestHashState( $dir );
     }
 
     /**
@@ -217,8 +217,10 @@ final class BackupService
      */
     private function verifyIn(ProtectedBackupStore $source, string $backupId): array
     {
-        $result = LocalBackupVerifier::verify($source->dirOf($backupId), $backupId);
-        unset($result['manifest']);
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
+        //   نامِ پارامترِ این متدِ موجود است؛ تغییرِ نام‌های سراسری در دامنهٔ این slice نیست.
+        $result = LocalBackupVerifier::verify( $source->dirOf( $backupId ), $backupId );
+        unset( $result['manifest'] );
 
         return $result;
     }

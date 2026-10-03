@@ -84,20 +84,19 @@ use ClinicCore\Infrastructure\Logging\OpLogger;
 /**
  * عملیاتِ صریحِ آینه‌سازیِ رمزنگاری‌شدهٔ یک بکاپِ محلیِ موجود (بدونِ recovery).
  */
-final class BackupS3Mirror
-{
+final class BackupS3Mirror {
 	/** قالبِ کاتالوگِ فقط‌راه‌دور. */
-	public const CATALOG_FORMAT = 'cpms-s3-mirror-catalog';
+	public const CATALOG_FORMAT         = 'cpms-s3-mirror-catalog';
 	public const CATALOG_FORMAT_VERSION = 1;
 
 	/** سقفِ تک‌PUT روی ciphertext: 4 GiB = 4 * 1024^3 = 4294967296 بایت (باینری، صریح). */
 	public const MAX_ENCRYPTED_OBJECT_BYTES = 4294967296;
 
-	public const STRENGTH_VERIFIED = 'VERIFIED';
+	public const STRENGTH_VERIFIED     = 'VERIFIED';
 	public const STRENGTH_ACKNOWLEDGED = 'ACKNOWLEDGED';
 
 	/** تنها دو ادعای مجازِ سطح‌مجموعه. */
-	public const RESULT_VERIFIED = 'encrypted upload verified';
+	public const RESULT_VERIFIED     = 'encrypted upload verified';
 	public const RESULT_ACKNOWLEDGED = 'encrypted upload acknowledged; checksum verification unavailable';
 
 	/** تنها فیلدهای مجازِ ردپای ماندگار (audit/عملیاتی) — به همین ترتیب. */
@@ -114,8 +113,8 @@ final class BackupS3Mirror
 
 	private const ROLE_DATABASE = 'database';
 	private const ROLE_MANIFEST = 'manifest';
-	private const ROLE_STORAGE = 'storage';
-	private const ROLE_CATALOG = 'catalog';
+	private const ROLE_STORAGE  = 'storage';
+	private const ROLE_CATALOG  = 'catalog';
 
 	/** ۱۶ بایت تصادفیِ رمزنگاری‌شده ⇒ ۱۲۸ بیت آنتروپی برای هر دو شناسهٔ opaque. */
 	private const ID_BYTES = 16;
@@ -124,21 +123,21 @@ final class BackupS3Mirror
 	private const ENVELOPE_FORMAT_VERSION = 1;
 
 	/** کدهای خطا — registry: `docs/api/error-codes.md` (خانوادهٔ CLINIC_BACKUP_*، ADR-0019). */
-	private const E_NOT_CONFIGURED = 'CLINIC_BACKUP_MIRROR_NOT_CONFIGURED';
-	private const E_LOCAL_INVALID = 'CLINIC_BACKUP_MIRROR_LOCAL_INVALID';
+	private const E_NOT_CONFIGURED    = 'CLINIC_BACKUP_MIRROR_NOT_CONFIGURED';
+	private const E_LOCAL_INVALID     = 'CLINIC_BACKUP_MIRROR_LOCAL_INVALID';
 	private const E_ENCRYPTION_FAILED = 'CLINIC_BACKUP_MIRROR_ENCRYPTION_FAILED';
-	private const E_OBJECT_TOO_LARGE = 'CLINIC_BACKUP_MIRROR_OBJECT_TOO_LARGE';
-	private const E_UPLOAD_FAILED = 'CLINIC_BACKUP_MIRROR_UPLOAD_FAILED';
+	private const E_OBJECT_TOO_LARGE  = 'CLINIC_BACKUP_MIRROR_OBJECT_TOO_LARGE';
+	private const E_UPLOAD_FAILED     = 'CLINIC_BACKUP_MIRROR_UPLOAD_FAILED';
 	private const E_CHECKSUM_MISMATCH = 'CLINIC_BACKUP_MIRROR_CHECKSUM_MISMATCH';
-	private const E_SIZE_MISMATCH = 'CLINIC_BACKUP_MIRROR_SIZE_MISMATCH';
+	private const E_SIZE_MISMATCH     = 'CLINIC_BACKUP_MIRROR_SIZE_MISMATCH';
 
-	private const SCRATCH_PREFIX = 'cpms-mirror-';
+	private const SCRATCH_PREFIX  = 'cpms-mirror-';
 	private const DEFAULT_DB_FILE = 'db.sql';
-	private const MANIFEST_FILE = 'manifest.json';
+	private const MANIFEST_FILE   = 'manifest.json';
 
 	/** اقدام‌های لاگِ عملیاتی/audit — هم‌خانوادهٔ BACKUP_CREATED / BACKUP_DELETED. */
-	private const OP_UPLOADED = 'BACKUP_MIRROR_UPLOADED';
-	private const OP_FAILED = 'BACKUP_MIRROR_FAILED';
+	private const OP_UPLOADED           = 'BACKUP_MIRROR_UPLOADED';
+	private const OP_FAILED             = 'BACKUP_MIRROR_FAILED';
 	private const OP_CLEANUP_INCOMPLETE = 'BACKUP_MIRROR_CLEANUP_INCOMPLETE';
 
 	/**
@@ -174,37 +173,37 @@ final class BackupS3Mirror
 		}
 
 		// (1) پیش‌شرطِ محلی — پیش از هر درخواستِ راه‌دور (Fail-Closed).
-		$local = $this->verify_local( $local_backup_id );
-		$dir = (string) $local['dir'];
-		$manifest = (array) $local['manifest'];
+		$local        = $this->verify_local( $local_backup_id );
+		$dir          = (string) $local['dir'];
+		$manifest     = (array) $local['manifest'];
 		$manifest_sha = (string) hash_file( 'sha256', $dir . '/' . self::MANIFEST_FILE );
 
 		$mirror_id = $this->hex_id();
-		$key_root = rtrim( $config->keyPrefix(), '/' ) . '/' . $mirror_id;
+		$key_root  = rtrim( $config->keyPrefix(), '/' ) . '/' . $mirror_id;
 		// تنها نقطهٔ خواندنِ کلید؛ هرگز به client/log/error/نامِ شیء نمی‌رسد.
 		$encryption_key = $config->encryptionKeyForBackupEnvelope();
-		$scratch = $this->scratch_root();
-		$bucket = $config->bucket();
+		$scratch        = $this->scratch_root();
+		$bucket         = $config->bucket();
 
-		$staged = array();
-		$uploaded = array();
-		$objects = array();
-		$entries = array();
-		$total_bytes = 0;
+		$staged       = array();
+		$uploaded     = array();
+		$objects      = array();
+		$entries      = array();
+		$total_bytes  = 0;
 		$all_verified = true;
-		$client = null;
+		$client       = null;
 
 		try {
 			$client = $this->client_for( $config );
 
 			// (2) اشیاءِ داده — هرکدام: رمزنگاریِ محلی → گیتِ اندازه → PUT → strength.
 			foreach ( $this->remote_objects( $dir, $manifest ) as $object ) {
-				$source = (string) $object['source'];
+				$source      = (string) $object['source'];
 				$plain_bytes = self::bytes_of( $source );
 				// پیش‌سنجیِ تحلیلی: مانعِ تخصیصِ ciphertextِ محکوم‌به‌رد می‌شود.
 				$this->assert_ciphertext_within_single_put_limit( $this->expected_ciphertext_bytes( $plain_bytes ) );
 
-				$object_id = $this->hex_id();
+				$object_id   = $this->hex_id();
 				$cipher_path = $scratch['dir'] . '/' . self::SCRATCH_PREFIX . $object_id . '.enc';
 				$staged[] = $cipher_path;
 				$this->encrypt_to_scratch( $source, $cipher_path, $encryption_key );
@@ -234,19 +233,19 @@ final class BackupS3Mirror
 				}
 
 				$objects[] = array(
-					'role' => (string) $object['role'],
-					'logical_path' => (string) $object['logical_path'],
-					'object_id' => $object_id,
-					'ciphertext_bytes' => $cipher_bytes,
+					'role'              => (string) $object['role'],
+					'logical_path'      => (string) $object['logical_path'],
+					'object_id'         => $object_id,
+					'ciphertext_bytes'  => $cipher_bytes,
 					'ciphertext_sha256' => $cipher_sha,
-					'strength' => $strength,
+					'strength'          => $strength,
 				);
 				$entries[] = array(
-					'role' => (string) $object['role'],
-					'logical_path' => (string) $object['logical_path'],
-					'object_id' => $object_id,
-					'ciphertext_bytes' => $cipher_bytes,
-					'ciphertext_sha256' => $cipher_sha,
+					'role'                => (string) $object['role'],
+					'logical_path'        => (string) $object['logical_path'],
+					'object_id'           => $object_id,
+					'ciphertext_bytes'    => $cipher_bytes,
+					'ciphertext_sha256'   => $cipher_sha,
 					'remote_verification' => $strength,
 				);
 				$total_bytes += $cipher_bytes;
@@ -254,7 +253,7 @@ final class BackupS3Mirror
 
 			// (3) کاتالوگ — تنها شیءِ «فقط‌راه‌دور»، آخر از همه (کمکِ ترتیب/بازیابی، نه اتمیسیتی).
 			$catalog_object_id = $this->hex_id();
-			$catalog_plain = $scratch['dir'] . '/' . self::SCRATCH_PREFIX . $catalog_object_id . '.catalog.json';
+			$catalog_plain     = $scratch['dir'] . '/' . self::SCRATCH_PREFIX . $catalog_object_id . '.catalog.json';
 			$staged[] = $catalog_plain;
 			$this->write_catalog( $catalog_plain, $mirror_id, $catalog_object_id, $local_backup_id, $manifest_sha, $entries );
 
@@ -286,28 +285,28 @@ final class BackupS3Mirror
 				$all_verified = false;
 			}
 			$objects[] = array(
-				'role' => self::ROLE_CATALOG,
+				'role'              => self::ROLE_CATALOG,
 				// کاتالوگ همتای محلی ندارد؛ logical_path فقط در plaintextٔ رمزنگاری‌شدهٔ خودش مجاز است.
-				'logical_path' => null,
-				'object_id' => $catalog_object_id,
-				'ciphertext_bytes' => $cipher_bytes,
+				'logical_path'      => null,
+				'object_id'         => $catalog_object_id,
+				'ciphertext_bytes'  => $cipher_bytes,
 				'ciphertext_sha256' => $cipher_sha,
-				'strength' => $strength,
+				'strength'          => $strength,
 			);
 			$total_bytes += $cipher_bytes;
 
 			$result = array(
-				'ok' => true,
-				'result' => $all_verified ? self::RESULT_VERIFIED : self::RESULT_ACKNOWLEDGED,
-				'backup_id' => $local_backup_id,
-				'mirror_id' => $mirror_id,
+				'ok'                => true,
+				'result'            => $all_verified ? self::RESULT_VERIFIED : self::RESULT_ACKNOWLEDGED,
+				'backup_id'         => $local_backup_id,
+				'mirror_id'         => $mirror_id,
 				'catalog_object_id' => $catalog_object_id,
-				'object_count' => count( $objects ),
-				'ciphertext_bytes' => $total_bytes,
-				'verification' => $all_verified ? self::STRENGTH_VERIFIED : self::STRENGTH_ACKNOWLEDGED,
-				'timestamp' => time(),
-				'result_code' => 'ok',
-				'objects' => $objects,
+				'object_count'      => count( $objects ),
+				'ciphertext_bytes'  => $total_bytes,
+				'verification'      => $all_verified ? self::STRENGTH_VERIFIED : self::STRENGTH_ACKNOWLEDGED,
+				'timestamp'         => time(),
+				'result_code'       => 'ok',
+				'objects'           => $objects,
 			);
 			$this->record_success( $result );
 
@@ -329,14 +328,14 @@ final class BackupS3Mirror
 	// phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- نامِ عمومیِ تثبیت‌شدهٔ قرارداد Phase 15 (suiteٔ RED پذیرفته‌شده).
 	public static function pointerFromResult( array $result ): array {
 		return array(
-			'backup_id' => (string) ( $result['backup_id'] ?? '' ),
-			'mirror_id' => (string) ( $result['mirror_id'] ?? '' ),
+			'backup_id'         => (string) ( $result['backup_id'] ?? '' ),
+			'mirror_id'         => (string) ( $result['mirror_id'] ?? '' ),
 			'catalog_object_id' => (string) ( $result['catalog_object_id'] ?? '' ),
-			'object_count' => (int) ( $result['object_count'] ?? 0 ),
-			'ciphertext_bytes' => (int) ( $result['ciphertext_bytes'] ?? 0 ),
-			'verification' => (string) ( $result['verification'] ?? '' ),
-			'timestamp' => (int) ( $result['timestamp'] ?? 0 ),
-			'result_code' => (string) ( $result['result_code'] ?? 'unknown' ),
+			'object_count'      => (int) ( $result['object_count'] ?? 0 ),
+			'ciphertext_bytes'  => (int) ( $result['ciphertext_bytes'] ?? 0 ),
+			'verification'      => (string) ( $result['verification'] ?? '' ),
+			'timestamp'         => (int) ( $result['timestamp'] ?? 0 ),
+			'result_code'       => (string) ( $result['result_code'] ?? 'unknown' ),
 		);
 	}
 
@@ -377,21 +376,21 @@ final class BackupS3Mirror
      * @return list<array{role: string, logical_path: string, source: string}>
      */
 	private function remote_objects( string $dir, array $manifest ): array {
-		$db_file = (string) ( $manifest['db']['file'] ?? self::DEFAULT_DB_FILE );
+		$db_file      = (string) ( $manifest['db']['file'] ?? self::DEFAULT_DB_FILE );
 		$storage_root = (string) ( $manifest['storage']['root'] ?? 'storage' );
 		self::assert_relative( $db_file );
 		self::assert_relative( $storage_root );
 
 		$objects = array(
 			array(
-				'role' => self::ROLE_DATABASE,
+				'role'         => self::ROLE_DATABASE,
 				'logical_path' => $db_file,
-				'source' => $dir . '/' . $db_file,
+				'source'       => $dir . '/' . $db_file,
 			),
 			array(
-				'role' => self::ROLE_MANIFEST,
+				'role'         => self::ROLE_MANIFEST,
 				'logical_path' => self::MANIFEST_FILE,
-				'source' => $dir . '/' . self::MANIFEST_FILE,
+				'source'       => $dir . '/' . self::MANIFEST_FILE,
 			),
 		);
 
@@ -405,9 +404,9 @@ final class BackupS3Mirror
 			}
 			self::assert_relative( $rel );
 			$objects[] = array(
-				'role' => self::ROLE_STORAGE,
+				'role'         => self::ROLE_STORAGE,
 				'logical_path' => $storage_root . '/' . $rel,
-				'source' => $dir . '/' . $storage_root . '/' . $rel,
+				'source'       => $dir . '/' . $storage_root . '/' . $rel,
 			);
 		}
 
@@ -451,15 +450,15 @@ final class BackupS3Mirror
 		}
 		$json = (string) json_encode(
 			array(
-				'format' => self::CATALOG_FORMAT,
-				'format_version' => self::CATALOG_FORMAT_VERSION,
-				'mirror_id' => $mirror_id,
-				'catalog_object_id' => $catalog_object_id,
-				'local_backup_id' => $backup_id,
-				'local_manifest_sha256' => $manifest_sha,
-				'envelope_format' => BackupEncryptionEnvelope::MAGIC,
+				'format'                  => self::CATALOG_FORMAT,
+				'format_version'          => self::CATALOG_FORMAT_VERSION,
+				'mirror_id'               => $mirror_id,
+				'catalog_object_id'       => $catalog_object_id,
+				'local_backup_id'         => $backup_id,
+				'local_manifest_sha256'   => $manifest_sha,
+				'envelope_format'         => BackupEncryptionEnvelope::MAGIC,
 				'envelope_format_version' => self::ENVELOPE_FORMAT_VERSION,
-				'entries' => $entries,
+				'entries'                 => $entries,
 			),
 			JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
 		);
@@ -506,10 +505,10 @@ final class BackupS3Mirror
 			try {
 				$result = $client->putObject(
 					array(
-						'Bucket' => $bucket,
-						'Key' => $key,
-						'Body' => $handle,
-						'ContentLength' => $bytes,
+						'Bucket'         => $bucket,
+						'Key'            => $key,
+						'Body'           => $handle,
+						'ContentLength'  => $bytes,
 						// digest از پیش محاسبه‌شده ⇒ SDK هشِ خودش را حساب نمی‌کند
 						// (Aws\S3\ApplyChecksumMiddleware::hasAlgorithmHeader) و بدنه را
 						// بایت‌به‌بایت منتقل می‌کند: بدونِ aws-chunked، بدونِ تغییرِ trailer.
@@ -587,7 +586,7 @@ final class BackupS3Mirror
      * اندازهٔ واقعیِ ciphertext است؛ این فقط از نوشتنِ بیهودهٔ گیگابایت‌ها جلوگیری می‌کند.
      */
 	private function expected_ciphertext_bytes( int $plain_bytes ): int {
-		$chunk = BackupEncryptionEnvelope::CHUNK_BYTES;
+		$chunk  = BackupEncryptionEnvelope::CHUNK_BYTES;
 		$frames = $chunk > 0 ? (int) ceil( $plain_bytes / $chunk ) : 1;
 		if ( $frames < 1 ) {
 			$frames = 1;
@@ -661,8 +660,8 @@ final class BackupS3Mirror
      * @return array{attempted: int, failed: int, object_ids: list<string>}
      */
 	private function delete_attempted_objects( S3Client $client, string $bucket, string $key_root, array $uploaded ): array {
-		$attempted = 0;
-		$failed = 0;
+		$attempted  = 0;
+		$failed     = 0;
 		$failed_ids = array();
 		foreach ( $uploaded as $object_id ) {
 			++$attempted;
@@ -702,11 +701,11 @@ final class BackupS3Mirror
 		$this->op_log(
 			self::OP_FAILED,
 			array(
-				'backup_id' => $backup_id,
-				'mirror_id' => $mirror_id,
-				'error_code' => $error->getErrorCode(),
+				'backup_id'        => $backup_id,
+				'mirror_id'        => $mirror_id,
+				'error_code'       => $error->getErrorCode(),
 				'uploaded_objects' => count( $uploaded ),
-				'cleanup_deleted' => $cleanup['attempted'] - $cleanup['failed'],
+				'cleanup_deleted'  => $cleanup['attempted'] - $cleanup['failed'],
 			)
 		);
 		if ( $cleanup['failed'] === 0 ) {
@@ -716,10 +715,10 @@ final class BackupS3Mirror
 		$this->op_log(
 			self::OP_CLEANUP_INCOMPLETE,
 			array(
-				'backup_id' => $backup_id,
-				'mirror_id' => $mirror_id,
-				'cleanup_attempted' => $cleanup['attempted'],
-				'cleanup_failed' => $cleanup['failed'],
+				'backup_id'                 => $backup_id,
+				'mirror_id'                 => $mirror_id,
+				'cleanup_attempted'         => $cleanup['attempted'],
+				'cleanup_failed'            => $cleanup['failed'],
 				'cleanup_failed_object_ids' => $cleanup['object_ids'],
 			)
 		);
