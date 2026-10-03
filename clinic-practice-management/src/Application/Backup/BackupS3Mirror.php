@@ -205,7 +205,7 @@ final class BackupS3Mirror {
 
 				$object_id   = $this->hex_id();
 				$cipher_path = $scratch['dir'] . '/' . self::SCRATCH_PREFIX . $object_id . '.enc';
-				$staged[] = $cipher_path;
+				$staged[]    = $cipher_path;
 				$this->encrypt_to_scratch( $source, $cipher_path, $encryption_key );
 
 				$cipher_bytes = self::bytes_of( $cipher_path );
@@ -232,7 +232,7 @@ final class BackupS3Mirror {
 					$all_verified = false;
 				}
 
-				$objects[] = array(
+				$objects[]    = array(
 					'role'              => (string) $object['role'],
 					'logical_path'      => (string) $object['logical_path'],
 					'object_id'         => $object_id,
@@ -240,7 +240,7 @@ final class BackupS3Mirror {
 					'ciphertext_sha256' => $cipher_sha,
 					'strength'          => $strength,
 				);
-				$entries[] = array(
+				$entries[]    = array(
 					'role'                => (string) $object['role'],
 					'logical_path'        => (string) $object['logical_path'],
 					'object_id'           => $object_id,
@@ -254,11 +254,11 @@ final class BackupS3Mirror {
 			// (3) کاتالوگ — تنها شیءِ «فقط‌راه‌دور»، آخر از همه (کمکِ ترتیب/بازیابی، نه اتمیسیتی).
 			$catalog_object_id = $this->hex_id();
 			$catalog_plain     = $scratch['dir'] . '/' . self::SCRATCH_PREFIX . $catalog_object_id . '.catalog.json';
-			$staged[] = $catalog_plain;
+			$staged[]          = $catalog_plain;
 			$this->write_catalog( $catalog_plain, $mirror_id, $catalog_object_id, $local_backup_id, $manifest_sha, $entries );
 
 			$cipher_path = $scratch['dir'] . '/' . self::SCRATCH_PREFIX . $catalog_object_id . '.enc';
-			$staged[] = $cipher_path;
+			$staged[]    = $cipher_path;
 			$this->encrypt_to_scratch( $catalog_plain, $cipher_path, $encryption_key );
 
 			$cipher_bytes = self::bytes_of( $cipher_path );
@@ -284,7 +284,7 @@ final class BackupS3Mirror {
 			if ( $strength !== self::STRENGTH_VERIFIED ) {
 				$all_verified = false;
 			}
-			$objects[] = array(
+			$objects[]    = array(
 				'role'              => self::ROLE_CATALOG,
 				// کاتالوگ همتای محلی ندارد؛ logical_path فقط در plaintextٔ رمزنگاری‌شدهٔ خودش مجاز است.
 				'logical_path'      => null,
@@ -594,7 +594,7 @@ final class BackupS3Mirror {
 		$header = defined( 'SODIUM_CRYPTO_SECRETSTREAM_XCHACHA20POLY1305_HEADERBYTES' )
 			? (int) SODIUM_CRYPTO_SECRETSTREAM_XCHACHA20POLY1305_HEADERBYTES
 			: 24;
-		$tag = defined( 'SODIUM_CRYPTO_SECRETSTREAM_XCHACHA20POLY1305_ABYTES' )
+		$tag    = defined( 'SODIUM_CRYPTO_SECRETSTREAM_XCHACHA20POLY1305_ABYTES' )
 			? (int) SODIUM_CRYPTO_SECRETSTREAM_XCHACHA20POLY1305_ABYTES
 			: 17;
 

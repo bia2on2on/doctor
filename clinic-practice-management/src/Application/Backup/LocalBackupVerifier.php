@@ -34,9 +34,9 @@ use ClinicCore\Domain\Backup\BackupManifest;
  */
 final class LocalBackupVerifier {
 	/** sidecar موجود و هم‌خوان ⇒ اصالتِ مانیفست اثبات‌شده. */
-	public const HASH_OK       = 'ok';
+	public const HASH_OK = 'ok';
 	/** sidecar غایب ⇒ وضعیتِ legacy (در مسیرِ معمولی فقط هشدار است، نه خطا). */
-	public const HASH_MISSING  = 'missing';
+	public const HASH_MISSING = 'missing';
 	/** sidecar موجود ولی ناهم‌خوان ⇒ مانیفست دست‌کاری‌شده. */
 	public const HASH_MISMATCH = 'mismatch';
 

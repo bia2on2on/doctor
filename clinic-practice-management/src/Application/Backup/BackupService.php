@@ -41,7 +41,7 @@ final class BackupService
     // Slice 2C: منبع حقیقتِ یگانهٔ وضعیتِ sidecar در `LocalBackupVerifier` است —
     // این‌ها فقط alias هستند تا هیچ درفتِ معنایی بین دو مسیر ممکن نشود.
     // (وضعیتِ 'ok' عمداً alias نشده: تنها مصرف‌کننده‌اش خودِ delegate بود.)
-    private const MANIFEST_HASH_MISSING = LocalBackupVerifier::HASH_MISSING;
+    private const MANIFEST_HASH_MISSING  = LocalBackupVerifier::HASH_MISSING;
     private const MANIFEST_HASH_MISMATCH = LocalBackupVerifier::HASH_MISMATCH;
 
     public const ENGINE_VERSION = '1.0.0';
@@ -217,8 +217,7 @@ final class BackupService
      */
     private function verifyIn(ProtectedBackupStore $source, string $backupId): array
     {
-        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
-        //   نامِ پارامترِ این متدِ موجود است؛ تغییرِ نام‌های سراسری در دامنهٔ این slice نیست.
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- نامِ پارامترِ این متدِ موجود است.
         $result = LocalBackupVerifier::verify( $source->dirOf( $backupId ), $backupId );
         unset( $result['manifest'] );
 
