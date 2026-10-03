@@ -15,6 +15,7 @@ import os
 import re
 import sys
 import time
+from datetime import date, timedelta
 from urllib.parse import parse_qsl, urlparse
 
 from playwright.sync_api import sync_playwright
@@ -98,7 +99,7 @@ PUB = {
 }
 _srch = parts("RECEPTION_SEARCH", 3)
 SEARCH = {"probe": int(_srch[0]), "foreign": int(_srch[1]), "nid_last4": _srch[2]}
-_bk = parts("RECEPTION_BOOKING", 14)
+_bk = parts("RECEPTION_BOOKING", 16)
 BOOKING = {
     "c1": int(_bk[0]),
     "c2": int(_bk[1]),
@@ -107,8 +108,8 @@ BOOKING = {
     "tomorrow": _bk[8],
     "patients": {"mobile-390": int(_bk[9]), "tablet-768": int(_bk[10]), "desktop-1366": int(_bk[11])},
     "mrn": {"mobile-390": _bk[12] + "MOBILE" + _bk[13], "tablet-768": _bk[12] + "TABLET" + _bk[13], "desktop-1366": _bk[12] + "DESKTOP" + _bk[13]},
-    "date": _bk[14] if len(_bk) > 14 else PUB["today_tehran"],
-    "future_date": _bk[15] if len(_bk) > 15 else _bk[8],
+    "date": _bk[14],
+    "future_date": _bk[15],
 }
 _up = parts("RECEPTION_UPCOMING", 10)
 UPCOMING = {
@@ -2692,9 +2693,50 @@ def run_upcoming_transition(browser, vp, kind):
         ctx.close()
 
 
+def assert_fixture_operational_date_contract():
+    """Reject mixed-day fixture values before starting the real browser."""
+    try:
+        today = date.fromisoformat(PUB["today_tehran"])
+        today_tokyo = date.fromisoformat(PUB["today_tokyo"])
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("fixture operational dates must use ISO YYYY-MM-DD") from exc
+
+    tomorrow = today + timedelta(days=1)
+    future = today + timedelta(days=2)
+    expected_dates = [
+        ("booking tomorrow", BOOKING["tomorrow"], tomorrow.isoformat()),
+        ("booking date", BOOKING["date"], tomorrow.isoformat()),
+        ("booking future date", BOOKING["future_date"], future.isoformat()),
+        ("upcoming future destination", UPCOMING["future"]["date"], future.isoformat()),
+        ("upcoming today destination", UPCOMING["today"]["date"], today.isoformat()),
+        ("desktop reschedule destination", RESCHEDULE["dest_date"]["desktop-1366"], tomorrow.isoformat()),
+    ]
+    for label, actual, expected in expected_dates:
+        if actual != expected:
+            raise RuntimeError(f"{label} must share Tehran operational date {today.isoformat()}, got {actual}")
+
+    tomorrow_or_today = {today.isoformat(), tomorrow.isoformat()}
+    if today_tokyo.isoformat() not in tomorrow_or_today:
+        raise RuntimeError("Tokyo day must derive from the same fixture instant as the Tehran day")
+    if CANCEL["date"] not in tomorrow_or_today:
+        raise RuntimeError("cancel fixture date must remain today or tomorrow from the shared Tehran reference")
+    for date_group in (RESCHEDULE["source_date"], RESCHEDULE["dest_date"]):
+        if any(value not in tomorrow_or_today for value in date_group.values()):
+            raise RuntimeError("reschedule slots must remain on today or tomorrow from the shared Tehran reference")
+
+    ok(
+        "reception-operational-date-reference",
+        "fixture and browser oracle share one Tehran operational-day snapshot",
+        f"today={today.isoformat()} tomorrow={tomorrow.isoformat()} future={future.isoformat()}",
+    )
+
+
 def main():
     if not RECEPTION_URL or not STAFF_URL:
         raise SystemExit("RECEPTION_URL / STAFF_PORTAL_URL must be set by the fixture")
+    # Regression guard for a setup/browser midnight split: every relative date
+    # exported by PHP must agree with this one fixture-provided Tehran day.
+    assert_fixture_operational_date_contract()
     with sync_playwright() as p:
         browser = p.chromium.launch()
         hard_fail = False

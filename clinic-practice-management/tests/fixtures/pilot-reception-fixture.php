@@ -25,8 +25,6 @@ global $wpdb;
 $db = \ClinicCore\Bootstrap\App::db();
 $now = $db->nowUtcSql();
 $uniq = substr(bin2hex(random_bytes(4)), 0, 8);
-$todayTehran = (new DateTimeImmutable('now', new DateTimeZone('Asia/Tehran')))->format('Y-m-d');
-$todayTokyo  = (new DateTimeImmutable('now', new DateTimeZone('Asia/Tokyo')))->format('Y-m-d');
 
 function rp_fail(string $msg): void
 {
@@ -256,7 +254,13 @@ $foreignProbeId = rp_insert(
 // check-in semantics treat an arrival after slot start + per-Clinic grace as a
 // late arrival (no_show + walk-in-like visit), so the happy-path journey must
 // arrive within the grace window like a real reception desk.
+// Take one Location-day snapshot after the non-date fixture setup and before
+// any date-sensitive rows are seeded. Baseline appointments, all relative slot
+// dates, upcoming proofs and the browser oracle below derive from this same
+// instant, so earlier setup crossing Tehran midnight cannot split day references.
 $nowTehran = new DateTimeImmutable('now', new DateTimeZone('Asia/Tehran'));
+$todayTehran = $nowTehran->format('Y-m-d');
+$todayTokyo = $nowTehran->setTimezone(new DateTimeZone('Asia/Tokyo'))->format('Y-m-d');
 $lateToday = (int) $nowTehran->format('H') >= 23;
 $slotExpress = $lateToday ? $nowTehran->setTime(23, 55) : $nowTehran->add(new DateInterval('PT10M'));
 $slotPlain = $lateToday ? $nowTehran->setTime(23, 57) : $nowTehran->add(new DateInterval('PT30M'));
