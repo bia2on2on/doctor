@@ -24,8 +24,9 @@ use Psr\Http\Message\StreamInterface;
 use WP_UnitTestCase;
 
 /**
- * Phase 15 Slice 2D — TEST-ONLY RED for remote mirror reconstruction + the
- * existing restore preflight. No production operation exists on the RED head.
+ * Phase 15 Slice 2D — the historical RED is preserved; these tests exercise
+ * the current GREEN remote reconstruction plus the existing restore preflight.
+ * Reconstruction remains non-destructive and does not call restoreApply.
  *
  * All AWS traffic below is intercepted by the pinned SDK's documented
  * S3BackupClientFactory http_handler seam. The fixture source, bucket, endpoint,
@@ -36,12 +37,11 @@ final class Phase15S3MirrorReconstructionRedTest extends WP_UnitTestCase
     private const RECOVERY_CLASS = 'ClinicCore\\Application\\Backup\\BackupS3MirrorRecovery';
     private const RECOVERY_METHOD = 'reconstructAndPreflight';
 
-    private const MISSING_CONTRACT_MESSAGE = 'Phase 15 Slice 2D INTENDED PRODUCT RED: the bounded '
-        . 'remote-mirror reconstruction operation is missing (expected '
-        . 'ClinicCore\\Application\\Backup\\BackupS3MirrorRecovery::reconstructAndPreflight(array $pointer): array). '
+    private const MISSING_CONTRACT_MESSAGE = 'Phase 15 Slice 2D GREEN contract is unavailable in this test run: '
+        . 'expected ClinicCore\\Application\\Backup\\BackupS3MirrorRecovery::reconstructAndPreflight(array $pointer): array. '
         . 'The Slice 2C catalog/pointer, Slice 2B official S3Client handler, Slice 1 envelope, LocalBackupVerifier '
         . 'and existing BackupService::restorePreflight controls are tested independently below; this is an explicit '
-        . 'contract assertion, not a missing-class fatal or fixture/bootstrap failure.';
+        . 'contract assertion, not a fixture/bootstrap failure.';
 
     private const FAKE_ENDPOINT = 'https://cpms-recovery-red.invalid';
     private const FAKE_REGION = 'cpms-recovery-red-1';
@@ -68,6 +68,10 @@ final class Phase15S3MirrorReconstructionRedTest extends WP_UnitTestCase
 
     private string $root;
     private string $testStorageRoot;
+    private string $secondTestStorageRoot;
+    private int $activeStorageOrganizationId = 0;
+    private int $activeStorageClinicId = 0;
+    private int $secondActiveStorageClinicId = 0;
     private ProtectedBackupStore $sourceStore;
     private ProtectedBackupStore $operationStore;
     private BackupService $localBackupService;
@@ -86,11 +90,15 @@ final class Phase15S3MirrorReconstructionRedTest extends WP_UnitTestCase
 
         $this->sourceStore = ProtectedBackupStore::active($this->root . '/source-store');
         $this->operationStore = ProtectedBackupStore::active($this->root . '/operation-store');
-        $this->testStorageRoot = $this->root . '/active-storage-probe';
+        $this->testStorageRoot = $this->root . '/clinical-container/active-storage-probe';
+        $this->secondTestStorageRoot = $this->root . '/secondary-clinical-container/active-storage-probe';
         mkdir($this->testStorageRoot, 0700, true);
-        file_put_contents($this->testStorageRoot . '/unchanged-sentinel.txt', 'test-owned storage sentinel');
+        mkdir($this->secondTestStorageRoot, 0700, true);
+        file_put_contents($this->testStorageRoot . '/unchanged-sentinel.txt', 'test-owned primary storage sentinel');
+        file_put_contents($this->secondTestStorageRoot . '/unchanged-sentinel.txt', 'test-owned secondary storage sentinel');
 
         $this->writeLocalBackupFixture();
+        $this->registerActiveClinicalStorageRoot();
         $db = App::db();
         $dumper = new BackupSqlDumper($db);
         $settings = App::installationSettings();
@@ -117,10 +125,22 @@ final class Phase15S3MirrorReconstructionRedTest extends WP_UnitTestCase
             $op,
             $this->testStorageRoot
         );
+        $activeRoots = $this->operationBackupService->activeClinicalStorageRoots();
+        self::assertContains(
+            $this->testStorageRoot,
+            $activeRoots,
+            'fixture precondition: the first active storage root is read through the existing all-Clinic backup configuration model'
+        );
+        self::assertContains(
+            $this->secondTestStorageRoot,
+            $activeRoots,
+            'fixture precondition: the second Clinic storage root is also read through the existing all-Clinic backup configuration model'
+        );
     }
 
     protected function tearDown(): void
     {
+        $this->removeActiveClinicalStorageRoot();
         if (isset($this->root) && is_dir($this->root)) {
             $this->removeTree($this->root);
         }
@@ -128,7 +148,7 @@ final class Phase15S3MirrorReconstructionRedTest extends WP_UnitTestCase
     }
 
     // ---------------------------------------------------------------------
-    // Delivered foundations: these controls must remain GREEN on the RED head.
+    // Delivered Slice 2A–2C foundations remain green beside current Slice 2D behavior.
     // ---------------------------------------------------------------------
 
     public function testControlSlice2CCatalogFixtureAndEncryptedRemoteSetCanBeBuilt(): void
@@ -244,8 +264,7 @@ final class Phase15S3MirrorReconstructionRedTest extends WP_UnitTestCase
     }
 
     // ---------------------------------------------------------------------
-    // Implemented behavior contracts. Missing APIs fail as stable assertions;
-    // the public reconstruction operation is an instance method, not static.
+    // Implemented behavior contracts for the public instance-scoped operation.
     // ---------------------------------------------------------------------
 
     public function test_reconstruction_operation_contract_is_explicit_and_instance_scoped(): void
@@ -275,12 +294,34 @@ final class Phase15S3MirrorReconstructionRedTest extends WP_UnitTestCase
             'MAX_ENCRYPTED_OBJECT_BYTES' => BackupS3Mirror::MAX_ENCRYPTED_OBJECT_BYTES,
             'MAX_AGGREGATE_STAGED_BYTES' => self::MAX_AGGREGATE_STAGED_BYTES,
             'MAX_CATALOG_JSON_BYTES' => self::MAX_CATALOG_JSON_BYTES,
+            'MAX_CATALOG_CIPHERTEXT_BYTES' => self::MAX_CATALOG_JSON_BYTES + 49,
+            'MANIFEST_SIDECAR_BYTES' => 64,
         ];
         foreach ($expected as $name => $value) {
             $constant = $reflection->getReflectionConstant($name);
             self::assertNotFalse($constant, 'contract: named recovery bound exists: ' . $name);
             self::assertSame($value, $constant->getValue(), 'contract: explicit conservative technical bound in the documented unit: ' . $name);
         }
+        self::assertLessThan(
+            $expected['MAX_ENCRYPTED_OBJECT_BYTES'],
+            $expected['MAX_CATALOG_CIPHERTEXT_BYTES'],
+            'contract: catalog ciphertext has its own smaller one-MiB-plus-envelope ceiling'
+        );
+        self::assertSame(
+            $expected['MAX_CATALOG_CIPHERTEXT_BYTES'],
+            $reflection->getProperty('catalog_download_limit_bytes')->getDefaultValue(),
+            'contract: production catalog download limit defaults to the catalog ciphertext cap'
+        );
+        self::assertSame(
+            $expected['MAX_ENCRYPTED_OBJECT_BYTES'],
+            $reflection->getProperty('object_download_limit_bytes')->getDefaultValue(),
+            'contract: production payload download limit defaults to the inherited per-object cap'
+        );
+        self::assertSame(
+            $expected['MAX_AGGREGATE_STAGED_BYTES'],
+            $reflection->getProperty('aggregate_download_budget_bytes')->getDefaultValue(),
+            'contract: production aggregate transfer budget defaults to the unchanged staging cap'
+        );
     }
 
     public function testValidEncryptedMirrorReconstructsTheExistingLayoutAndReturnsABoundedPass(): void
@@ -298,6 +339,209 @@ final class Phase15S3MirrorReconstructionRedTest extends WP_UnitTestCase
         self::assertSame(array_fill(0, count($requests), 'GET'), array_column($requests, 'method'), 'contract: reconstruction only reads remote objects');
         $this->assertOnlyOpaqueKeysWereRequested($requests, $remote['pointer']);
         $this->assertPathAbsent($stage, 'contract: private download and reconstruction staging is removed after success');
+    }
+
+    public function testOversizedContentLengthIsRejectedBeforeAnyBodyBytesAreConsumed(): void
+    {
+        $class = $this->recoveryClass();
+        $reflection = new \ReflectionClass( $class );
+        $catalogLimit = (int) $reflection->getReflectionConstant( 'MAX_CATALOG_CIPHERTEXT_BYTES' )->getValue();
+        $remote = $this->buildRemoteFixture();
+        $catalogId = (string) $remote['pointer']['catalog_object_id'];
+        $catalogBodyBytes = strlen( $remote['objects'][ $catalogId ] );
+        self::assertLessThan( $catalogLimit, $catalogBodyBytes, 'fixture precondition: catalog response is small; only its declared length is oversized' );
+
+        $delivered = [];
+        $catalogStage = $this->stagePath();
+        $catalogOutcome = $this->expectRemoteFailure(
+            $remote,
+            $remote['pointer'],
+            $this->fixtureKey(),
+            $catalogStage,
+            [
+                'content_length_overrides' => [ $catalogId => $catalogLimit + 1 ],
+                'chunk_size' => 1,
+                'on_body_chunk' => static function ( string $objectId, string $chunk ) use ( &$delivered ): void {
+                    $delivered[ $objectId ] = ( $delivered[ $objectId ] ?? 0 ) + strlen( $chunk );
+                },
+            ]
+        );
+        self::assertCount( 1, $catalogOutcome['requests'], 'contract: an oversized catalog header fails on the first GetObject' );
+        self::assertSame( 0, $delivered[ $catalogId ] ?? 0, 'contract: the catalog on_headers rejection happens before body consumption' );
+
+        $entry = $remote['catalog']['entries'][0];
+        $objectId = (string) $entry['object_id'];
+        $expectedObjectBytes = (int) $entry['ciphertext_bytes'];
+        $delivered = [];
+        $payloadStage = $this->stagePath();
+        $payloadOutcome = $this->expectRemoteFailure(
+            $remote,
+            $remote['pointer'],
+            $this->fixtureKey(),
+            $payloadStage,
+            [
+                'content_length_overrides' => [ $objectId => $expectedObjectBytes + 1 ],
+                'chunk_size' => 1,
+                'on_body_chunk' => static function ( string $requestedId, string $chunk ) use ( &$delivered ): void {
+                    $delivered[ $requestedId ] = ( $delivered[ $requestedId ] ?? 0 ) + strlen( $chunk );
+                },
+            ]
+        );
+        self::assertCount( 2, $payloadOutcome['requests'], 'contract: catalog succeeds and the oversized payload header is rejected before its body' );
+        self::assertSame( 0, $delivered[ $objectId ] ?? 0, 'contract: an oversized payload Content-Length cannot cause body consumption' );
+    }
+
+    public function testCatalogBodyWithoutContentLengthStopsAtItsSmallerStreamingCeiling(): void
+    {
+        $remote = $this->buildRemoteFixture();
+        $catalogId = (string) $remote['pointer']['catalog_object_id'];
+        $catalogBody = (string) $remote['objects'][ $catalogId ];
+        $catalogLimit = strlen( $catalogBody ) - 1;
+        self::assertGreaterThan( 0, $catalogLimit);
+        self::assertLessThan( BackupS3Mirror::MAX_ENCRYPTED_OBJECT_BYTES, $catalogLimit );
+
+        $delivered = 0;
+        $writtenAtFailure = null;
+        $stage = $this->stagePath();
+        $outcome = $this->expectRemoteFailure(
+            $remote,
+            $remote['pointer'],
+            $this->fixtureKey(),
+            $stage,
+            [
+                'omit_content_length' => [ $catalogId ],
+                'chunk_size' => 1,
+                'on_body_chunk' => static function ( string $objectId, string $chunk ) use ( &$delivered, $catalogId ): void {
+                    if ( $objectId === $catalogId ) {
+                        $delivered += strlen( $chunk );
+                    }
+                },
+                'on_sink_failure' => static function ( string $objectId, StreamInterface $sink, \Throwable $_error ) use ( &$writtenAtFailure, $catalogId ): void {
+                    if ( $objectId === $catalogId ) {
+                        $writtenAtFailure = $sink->getSize();
+                    }
+                },
+            ],
+            true,
+            [ 'catalog_download_limit_bytes' => $catalogLimit ]
+        );
+
+        self::assertCount( 1, $outcome['requests'], 'contract: the catalog sink terminates before any payload request' );
+        self::assertSame( $catalogLimit + 1, $delivered, 'contract: the stream is stopped at the catalog ceiling, not consumed in full' );
+        self::assertSame( $catalogLimit, $writtenAtFailure, 'contract: partial catalog ciphertext never exceeds its byte ceiling' );
+    }
+
+    public function testPayloadSinkStopsForMissingMalformedChunkedAndUnderstatedLengths(): void
+    {
+        $remote = $this->buildRemoteFixture();
+        $entry = $remote['catalog']['entries'][0];
+        $objectId = (string) $entry['object_id'];
+        $expectedBytes = (int) $entry['ciphertext_bytes'];
+        $payloadLimit = $expectedBytes - 1;
+        $oversizedBody = (string) $remote['objects'][ $objectId ] . 'x';
+
+        foreach ( [ 'missing', 'malformed', 'chunked', 'understated' ] as $headerCase ) {
+            $delivered = 0;
+            $writtenAtFailure = null;
+            $handlerOptions = [
+                'body_overrides' => [ $objectId => $oversizedBody ],
+                'chunk_size' => 1,
+                'on_body_chunk' => static function ( string $requestedId, string $chunk ) use ( &$delivered, $objectId ): void {
+                    if ( $requestedId === $objectId ) {
+                        $delivered += strlen( $chunk );
+                    }
+                },
+                'on_sink_failure' => static function ( string $requestedId, StreamInterface $sink, \Throwable $_error ) use ( &$writtenAtFailure, $objectId ): void {
+                    if ( $requestedId === $objectId ) {
+                        $writtenAtFailure = $sink->getSize();
+                    }
+                },
+            ];
+            if ( $headerCase === 'missing' || $headerCase === 'chunked' ) {
+                $handlerOptions['omit_content_length'] = [ $objectId ];
+            } elseif ( $headerCase === 'malformed' ) {
+                $handlerOptions['content_length_overrides'] = [ $objectId => 'not-a-length' ];
+            } else {
+                $handlerOptions['content_length_overrides'] = [ $objectId => $payloadLimit - 1 ];
+            }
+            if ( $headerCase === 'chunked' ) {
+                $handlerOptions['chunked_objects'] = [ $objectId ];
+            }
+
+            $stage = $this->stagePath();
+            $outcome = $this->expectRemoteFailure(
+                $remote,
+                $remote['pointer'],
+                $this->fixtureKey(),
+                $stage,
+                $handlerOptions,
+                true,
+                [ 'object_download_limit_bytes' => $payloadLimit ]
+            );
+
+            self::assertCount( 2, $outcome['requests'], 'contract: payload ' . $headerCase . ' header allows the bounded sink to handle the body' );
+            self::assertSame( $payloadLimit + 1, $delivered, 'contract: payload ' . $headerCase . ' stream stops at the first byte beyond its object ceiling' );
+            self::assertSame( $payloadLimit, $writtenAtFailure, 'contract: payload ' . $headerCase . ' partial file is capped exactly at the object ceiling' );
+            self::assertLessThan( strlen( $oversizedBody ), $delivered, 'contract: payload ' . $headerCase . ' body is not fully consumed or buffered' );
+        }
+    }
+
+    public function testPayloadSinkUsesTheRemainingAggregateStagingBudget(): void
+    {
+        $remote = $this->buildRemoteFixture();
+        $entries = $remote['catalog']['entries'];
+        $entry = $entries[0];
+        $objectId = (string) $entry['object_id'];
+        $objectBytes = (int) $entry['ciphertext_bytes'];
+        $remainingLimit = $objectBytes - 1;
+        $dataCiphertextBytes = array_sum( array_map( static fn ( array $item ): int => (int) $item['ciphertext_bytes'], $entries ) );
+        $futureCiphertextBytes = $dataCiphertextBytes - $objectBytes;
+        $catalogId = (string) $remote['pointer']['catalog_object_id'];
+        $catalogCiphertextBytes = strlen( (string) $remote['objects'][ $catalogId ] );
+        $catalogPlaintextBytes = strlen( (string) $remote['catalog_json'] );
+        $sidecarConstant = ( new \ReflectionClass( self::RECOVERY_CLASS ) )
+            ->getReflectionConstant( 'MANIFEST_SIDECAR_BYTES' );
+        self::assertNotFalse( $sidecarConstant );
+        $sidecarBytes = (int) $sidecarConstant->getValue();
+        $scaledAggregateBudget = $catalogCiphertextBytes
+            + $catalogPlaintextBytes
+            + $futureCiphertextBytes
+            + $dataCiphertextBytes
+            + $sidecarBytes
+            + $remainingLimit;
+        self::assertLessThan( self::MAX_AGGREGATE_STAGED_BYTES, $scaledAggregateBudget );
+        self::assertLessThan( $objectBytes, $remainingLimit );
+
+        $delivered = 0;
+        $writtenAtFailure = null;
+        $stage = $this->stagePath();
+        $outcome = $this->expectRemoteFailure(
+            $remote,
+            $remote['pointer'],
+            $this->fixtureKey(),
+            $stage,
+            [
+                'body_overrides' => [ $objectId => (string) $remote['objects'][ $objectId ] . 'x' ],
+                'omit_content_length' => [ $objectId ],
+                'chunk_size' => 1,
+                'on_body_chunk' => static function ( string $requestedId, string $chunk ) use ( &$delivered, $objectId ): void {
+                    if ( $requestedId === $objectId ) {
+                        $delivered += strlen( $chunk );
+                    }
+                },
+                'on_sink_failure' => static function ( string $requestedId, StreamInterface $sink, \Throwable $_error ) use ( &$writtenAtFailure, $objectId ): void {
+                    if ( $requestedId === $objectId ) {
+                        $writtenAtFailure = $sink->getSize();
+                    }
+                },
+            ],
+            true,
+            [ 'aggregate_download_budget_bytes' => $scaledAggregateBudget ]
+        );
+
+        self::assertCount( 2, $outcome['requests'], 'contract: the catalog is downloaded and the payload reaches its remaining aggregate budget' );
+        self::assertSame( $remainingLimit + 1, $delivered, 'contract: cumulative staging allowance is enforced during payload receipt' );
+        self::assertSame( $remainingLimit, $writtenAtFailure, 'contract: payload partial file cannot exceed remaining aggregate staging allowance' );
     }
 
     public function testReconstructedBackupPassesTheExistingVerifierAndRestorePreflightAgainstTheStage(): void
@@ -859,6 +1103,72 @@ final class Phase15S3MirrorReconstructionRedTest extends WP_UnitTestCase
         }
     }
 
+    public function testStageCannotOverlapAnyActiveClinicalRootAndFailsBeforeS3Requests(): void
+    {
+        $remote = $this->buildRemoteFixture();
+        $clinicalBefore = $this->activeClinicalStorageSnapshot();
+        self::assertArrayHasKey( 'unchanged-sentinel.txt', $this->fileMap( $this->testStorageRoot ) );
+        self::assertArrayHasKey( 'unchanged-sentinel.txt', $this->fileMap( $this->secondTestStorageRoot ) );
+
+        $nestedStage = $this->secondTestStorageRoot . '/reconstruction-stage';
+        $nestedOutcome = $this->expectRemoteFailure(
+            $remote,
+            $remote['pointer'],
+            $this->fixtureKey(),
+            $nestedStage
+        );
+        self::assertCount( 0, $nestedOutcome['requests'], 'safety: a stage nested under the second active clinical root fails before the first GetObject' );
+        self::assertSame( $clinicalBefore, $this->activeClinicalStorageSnapshot(), 'safety: nested-stage rejection leaves every active clinical storage tree unchanged' );
+
+        $enclosingStage = dirname( $this->secondTestStorageRoot );
+        $enclosingBefore = $this->fileMap( $enclosingStage );
+        $class = $this->recoveryClass();
+        $probeRequests = [];
+        $probe = new $class(
+            $this->operationBackupService,
+            $this->deploymentConfig( $this->fixtureKey() ),
+            $this->getObjectHandler(
+                $remote['objects'],
+                $probeRequests,
+                (string) $remote['pointer']['catalog_object_id']
+            ),
+            $enclosingStage
+        );
+        $forbiddenCheck = new \ReflectionMethod( $class, 'is_forbidden_stage_location' );
+        $forbiddenCheck->setAccessible( true );
+        self::assertTrue(
+            $forbiddenCheck->invoke( $probe, $enclosingStage ),
+            'safety: the canonical overlap helper detects when an active clinical root lies below the stage candidate'
+        );
+        $enclosingOutcome = $this->expectRemoteFailure(
+            $remote,
+            $remote['pointer'],
+            $this->fixtureKey(),
+            $enclosingStage,
+            [],
+            false
+        );
+        self::assertCount( 0, $enclosingOutcome['requests'], 'safety: an existing candidate that encloses an active root is rejected before any GetObject' );
+        self::assertTrue( is_dir( $enclosingStage ), 'safety: the preexisting parent is not removed as operation-owned staging' );
+        self::assertSame( $enclosingBefore, $this->fileMap( $enclosingStage ), 'safety: enclosing-stage rejection does not modify the parent tree' );
+        self::assertSame( $clinicalBefore, $this->activeClinicalStorageSnapshot(), 'safety: enclosing-stage rejection leaves every active clinical storage tree unchanged' );
+
+        $clinicSettings = App::settingsFactory()->forClinic( $this->secondActiveStorageClinicId );
+        $clinicSettings->set( 'files.storage_path', 'unresolved/trusted-clinic-root' );
+        try {
+            $unresolvedOutcome = $this->expectRemoteFailure(
+                $remote,
+                $remote['pointer'],
+                $this->fixtureKey(),
+                $this->stagePath()
+            );
+            self::assertCount( 0, $unresolvedOutcome['requests'], 'safety: an uncanonicalizable trusted Clinic root fails closed before any S3 request' );
+        } finally {
+            $clinicSettings->set( 'files.storage_path', $this->secondTestStorageRoot );
+        }
+        self::assertSame( $clinicalBefore, $this->activeClinicalStorageSnapshot(), 'safety: unresolved-root rejection leaves active clinical storage unchanged' );
+    }
+
     public function testExistingRealBackupDirectoryCannotBeUsedAsReconstructionDestination(): void
     {
         $this->recoveryClass();
@@ -870,19 +1180,65 @@ final class Phase15S3MirrorReconstructionRedTest extends WP_UnitTestCase
         self::assertSame($before, $this->fileMap($existing), 'contract: an existing real local backup directory is never overwritten or cleaned');
     }
 
-    public function testAllOwnedStagingIsRemovedAfterSuccessAndFailure(): void
+    public function testAllOwnedStagingIsRemovedAfterSuccessAndFailureWithoutApplyingTheBackup(): void
     {
-        $this->recoveryClass();
+        $class = $this->recoveryClass();
+        $this->assertNoRestoreApplyCall($class);
         $remote = $this->buildRemoteFixture();
+
+        $successDatabaseBefore = $this->databaseSnapshot();
+        $successStorageBefore = $this->activeClinicalStorageSnapshot();
         $successStage = $this->stagePath();
+        $successNonReadQueries = [];
+        $successQueryObserver = static function ( string $query ) use ( &$successNonReadQueries ): string {
+            if ( preg_match( '/^\\s*(?:SELECT|SHOW|EXPLAIN|DESCRIBE)\\b/i', ltrim( $query ) ) !== 1 ) {
+                $successNonReadQueries[] = 'non-read SQL was issued';
+            }
+
+            return $query;
+        };
+        add_filter( 'query', $successQueryObserver, 999, 1 );
         $requests = [];
-        $result = $this->invokeRecovery($remote, $remote['pointer'], $this->fixtureKey(), $successStage, $requests);
+        try {
+            $result = $this->invokeRecovery($remote, $remote['pointer'], $this->fixtureKey(), $successStage, $requests);
+        } finally {
+            remove_filter( 'query', $successQueryObserver, 999 );
+        }
+        self::assertSame( [], $successNonReadQueries, 'safety: successful reconstruction issues no SQL writes, DDL, or import statements' );
         $this->assertSuccessfulBoundedResult($result, $remote['pointer']);
         $this->assertPathAbsent($successStage, 'contract: successful reconstruction leaves no downloaded ciphertext or plaintext staging');
+        self::assertSame($successDatabaseBefore, $this->databaseSnapshot(), 'safety: successful reconstruction/import preflight does not import SQL or mutate relevant database state');
+        self::assertSame(
+            $successStorageBefore,
+            $this->activeClinicalStorageSnapshot(),
+            'safety: successful reconstruction does not mutate any authoritative active clinical storage root'
+        );
 
+        $failureDatabaseBefore = $this->databaseSnapshot();
+        $failureStorageBefore = $this->activeClinicalStorageSnapshot();
         $failureStage = $this->stagePath();
-        $this->expectRemoteFailure($remote, $remote['pointer'], str_repeat(self::WRONG_KEY_BYTE, 32), $failureStage);
+        $failureNonReadQueries = [];
+        $failureQueryObserver = static function ( string $query ) use ( &$failureNonReadQueries ): string {
+            if ( preg_match( '/^\\s*(?:SELECT|SHOW|EXPLAIN|DESCRIBE)\\b/i', ltrim( $query ) ) !== 1 ) {
+                $failureNonReadQueries[] = 'non-read SQL was issued';
+            }
+
+            return $query;
+        };
+        add_filter( 'query', $failureQueryObserver, 999, 1 );
+        try {
+            $this->expectRemoteFailure($remote, $remote['pointer'], str_repeat(self::WRONG_KEY_BYTE, 32), $failureStage);
+        } finally {
+            remove_filter( 'query', $failureQueryObserver, 999 );
+        }
+        self::assertSame( [], $failureNonReadQueries, 'safety: representative reconstruction failure issues no SQL writes, DDL, or import statements' );
         $this->assertPathAbsent($failureStage, 'contract: failed authentication leaves no private staging');
+        self::assertSame($failureDatabaseBefore, $this->databaseSnapshot(), 'safety: representative reconstruction failure does not import SQL or mutate relevant database state');
+        self::assertSame(
+            $failureStorageBefore,
+            $this->activeClinicalStorageSnapshot(),
+            'safety: representative reconstruction failure does not mutate any authoritative active clinical storage root'
+        );
     }
 
     public function testBoundedFailureOutputsAndNewLogsNeverExposeSecretsPHIPathsOrObjectKeys(): void
@@ -909,7 +1265,7 @@ final class Phase15S3MirrorReconstructionRedTest extends WP_UnitTestCase
     }
 
     // ---------------------------------------------------------------------
-    // Contract helpers — no missing-class instantiation or production seam.
+    // Contract helpers — no additional production API is introduced for tests.
     // ---------------------------------------------------------------------
 
     private function recoveryClass(): string
@@ -937,8 +1293,8 @@ final class Phase15S3MirrorReconstructionRedTest extends WP_UnitTestCase
         return self::RECOVERY_CLASS;
     }
 
-    /** @param array<string, mixed> $remote @param array<string, mixed> $pointer @param array<string, mixed> $handlerOptions */
-    private function invokeRecovery(array $remote, array $pointer, string $key, string $stage, array &$requests, array $handlerOptions = []): array
+    /** @param array<string, mixed> $remote @param array<string, mixed> $pointer @param array<string, mixed> $handlerOptions @param array<string, int> $testLimits */
+    private function invokeRecovery(array $remote, array $pointer, string $key, string $stage, array &$requests, array $handlerOptions = [], array $testLimits = []): array
     {
         $class = $this->recoveryClass();
         $handler = $this->getObjectHandler($remote['objects'], $requests, (string) $remote['pointer']['catalog_object_id'], $handlerOptions);
@@ -948,6 +1304,11 @@ final class Phase15S3MirrorReconstructionRedTest extends WP_UnitTestCase
             $handler,
             $stage
         );
+        foreach ( $testLimits as $property_name => $limit ) {
+            $property = new \ReflectionProperty( $class, $property_name );
+            $property->setAccessible( true );
+            $property->setValue( $recovery, $limit );
+        }
 
         return $recovery->reconstructAndPreflight($pointer);
     }
@@ -956,6 +1317,7 @@ final class Phase15S3MirrorReconstructionRedTest extends WP_UnitTestCase
      * @param array<string, mixed>      $remote
      * @param array<string, mixed>|null $pointer
      * @param array<string, mixed>      $handlerOptions
+     * @param array<string, int>         $testLimits
      *
      * @return array{error: BackupException, requests: list<array<string, mixed>>}
      */
@@ -965,7 +1327,8 @@ final class Phase15S3MirrorReconstructionRedTest extends WP_UnitTestCase
         ?string $key = null,
         ?string $stage = null,
         array $handlerOptions = [],
-        bool $assertStageClean = true
+        bool $assertStageClean = true,
+        array $testLimits = []
     ): array {
         $requests = [];
         $stage = $stage ?? $this->stagePath();
@@ -976,7 +1339,8 @@ final class Phase15S3MirrorReconstructionRedTest extends WP_UnitTestCase
                 $key ?? $this->fixtureKey(),
                 $stage,
                 $requests,
-                $handlerOptions
+                $handlerOptions,
+                $testLimits
             );
             self::fail('contract: invalid or unsafe remote mirror input must fail closed');
         } catch (AssertionFailedError $error) {
@@ -1175,14 +1539,63 @@ final class Phase15S3MirrorReconstructionRedTest extends WP_UnitTestCase
                 return new FulfilledPromise(new Response(404, ['Content-Type' => 'application/xml'], '<Error><Code>NoSuchKey</Code></Error>'));
             }
 
-            $body = $objects[$objectId];
+            $body = array_key_exists($objectId, $options['body_overrides'] ?? [])
+                ? (string) $options['body_overrides'][$objectId]
+                : $objects[$objectId];
             $etag = $options['etag_overrides'][$objectId] ?? ('"' . md5($body) . '"');
-            return new FulfilledPromise(new Response(200, [
+            $headers = [
                 'Content-Type' => 'application/octet-stream',
-                'Content-Length' => (string) strlen($body),
                 'ETag' => $etag,
                 'Last-Modified' => 'Wed, 15 Jan 2026 09:30:00 GMT',
-            ], $body));
+            ];
+            $lengthOverrides = $options['content_length_overrides'] ?? [];
+            if ( array_key_exists( $objectId, $lengthOverrides ) ) {
+                if ( $lengthOverrides[ $objectId ] !== null ) {
+                    $headers['Content-Length'] = (string) $lengthOverrides[ $objectId ];
+                }
+            } elseif ( ! in_array( $objectId, $options['omit_content_length'] ?? [], true ) ) {
+                $headers['Content-Length'] = (string) strlen( $body );
+            }
+            if ( in_array( $objectId, $options['chunked_objects'] ?? [], true ) ) {
+                $headers['Transfer-Encoding'] = 'chunked';
+            }
+
+            $response = new Response( 200, $headers, '' );
+            $onHeaders = $handlerOptions['on_headers'] ?? null;
+            if ( is_callable( $onHeaders ) ) {
+                try {
+                    $onHeaders( $response );
+                } catch ( \Throwable $error ) {
+                    return new RejectedPromise( $error );
+                }
+            }
+
+            $sink = $handlerOptions['sink'] ?? null;
+            if ( $sink instanceof StreamInterface ) {
+                $chunkSize = max( 1, (int) ( $options['chunk_size'] ?? 8192 ) );
+                $bodyBytes = strlen( $body );
+                for ( $offset = 0; $offset < $bodyBytes; $offset += $chunkSize ) {
+                    $chunk = substr( $body, $offset, $chunkSize );
+                    if ( isset( $options['on_body_chunk'] ) && is_callable( $options['on_body_chunk'] ) ) {
+                        $options['on_body_chunk']( $objectId, $chunk );
+                    }
+                    try {
+                        $sink->write( $chunk );
+                    } catch ( \Throwable $error ) {
+                        if ( isset( $options['on_sink_failure'] ) && is_callable( $options['on_sink_failure'] ) ) {
+                            $options['on_sink_failure']( $objectId, $sink, $error );
+                        }
+                        return new RejectedPromise( $error );
+                    }
+                }
+                if ( $sink->isSeekable() ) {
+                    $sink->rewind();
+                }
+
+                return new FulfilledPromise( new Response( 200, $headers, $sink ) );
+            }
+
+            return new FulfilledPromise( new Response( 200, $headers, $body ) );
         };
     }
 
@@ -1209,6 +1622,96 @@ final class Phase15S3MirrorReconstructionRedTest extends WP_UnitTestCase
     private function fixtureKey(): string
     {
         return str_repeat(self::FIXTURE_KEY_BYTE, 32);
+    }
+
+    private function registerActiveClinicalStorageRoot(): void
+    {
+        global $wpdb;
+        $db = App::db();
+        $now = $db->nowUtcSql();
+        $orgSlug = 'phase15-recovery-org-' . bin2hex(random_bytes(5));
+        $orgResult = $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_organizations (name, slug, status, created_at, updated_at) VALUES (%s, %s, %s, %s, %s)',
+            'Phase 15 Recovery Fixture',
+            $orgSlug,
+            'active',
+            $now,
+            $now
+        ));
+        self::assertNotFalse($orgResult, 'fixture precondition: create an isolated organization for the active-storage setting');
+        $this->activeStorageOrganizationId = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $this->activeStorageOrganizationId);
+
+        $clinicSlug = 'phase15-recovery-clinic-' . bin2hex(random_bytes(5));
+        $clinicResult = $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_clinics (organization_id, name, slug, timezone, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, %s)',
+            $this->activeStorageOrganizationId,
+            'Phase 15 Recovery Fixture Clinic',
+            $clinicSlug,
+            'Europe/Berlin',
+            $now,
+            $now
+        ));
+        self::assertNotFalse($clinicResult, 'fixture precondition: create an isolated clinic for the active-storage setting');
+        $this->activeStorageClinicId = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $this->activeStorageClinicId);
+
+        App::settingsFactory()->forClinic($this->activeStorageClinicId)->set(
+            'files.storage_path',
+            $this->testStorageRoot
+        );
+
+        $secondClinicSlug = 'phase15-recovery-clinic-' . bin2hex(random_bytes(5));
+        $secondClinicResult = $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_clinics (organization_id, name, slug, timezone, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, %s)',
+            $this->activeStorageOrganizationId,
+            'Phase 15 Recovery Second Fixture Clinic',
+            $secondClinicSlug,
+            'Europe/Berlin',
+            $now,
+            $now
+        ));
+        self::assertNotFalse($secondClinicResult, 'fixture precondition: create a second Clinic with a distinct active-storage root');
+        $this->secondActiveStorageClinicId = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $this->secondActiveStorageClinicId);
+        App::settingsFactory()->forClinic($this->secondActiveStorageClinicId)->set(
+            'files.storage_path',
+            $this->secondTestStorageRoot
+        );
+    }
+
+    private function removeActiveClinicalStorageRoot(): void
+    {
+        global $wpdb;
+        $wpdb->query( 'SET FOREIGN_KEY_CHECKS = 0' );
+        try {
+            foreach ( [ $this->activeStorageClinicId, $this->secondActiveStorageClinicId ] as $clinicId ) {
+                if ( $clinicId <= 0 ) {
+                    continue;
+                }
+                $wpdb->delete(
+                    $wpdb->prefix . 'cpms_settings',
+                    ['clinic_id' => $clinicId],
+                    ['%d']
+                );
+                $wpdb->delete(
+                    $wpdb->prefix . 'cpms_clinics',
+                    ['id' => $clinicId],
+                    ['%d']
+                );
+            }
+            if ( $this->activeStorageOrganizationId > 0 ) {
+                $wpdb->delete(
+                    $wpdb->prefix . 'cpms_organizations',
+                    ['id' => $this->activeStorageOrganizationId],
+                    ['%d']
+                );
+            }
+        } finally {
+            $wpdb->query( 'SET FOREIGN_KEY_CHECKS = 1' );
+        }
+        App::settingsFactory()->reset();
+        \ClinicCore\Settings\Settings::flushCache();
     }
 
     private function writeLocalBackupFixture(): void
@@ -1393,6 +1896,66 @@ final class Phase15S3MirrorReconstructionRedTest extends WP_UnitTestCase
         return $files;
     }
 
+    /** @return list<string> Opaque hashes for every authoritative active Clinic root. */
+    private function activeClinicalStorageSnapshot(): array
+    {
+        $roots = $this->operationBackupService->activeClinicalStorageRoots();
+        sort( $roots, SORT_STRING );
+        $snapshots = [];
+        foreach ( $roots as $root ) {
+            $snapshots[] = hash( 'sha256', serialize( $this->storageTreeSnapshot( $root ) ) );
+        }
+
+        return $snapshots;
+    }
+
+    /** @return array<string, mixed> */
+    private function storageTreeSnapshot( string $root ): array
+    {
+        $rootReal = realpath( $root );
+        $scanRoot = is_string( $rootReal ) && is_dir( $rootReal ) ? $rootReal : null;
+        $snapshot = [
+            'root_exists' => $scanRoot !== null,
+            'root_mode' => $scanRoot !== null ? ( fileperms( $scanRoot ) & 0777 ) : null,
+            'root_link' => is_link( $root ) ? @readlink( $root ) : null,
+            'directories' => [],
+            'files' => [],
+            'links' => [],
+        ];
+        if ( $scanRoot === null ) {
+            return $snapshot;
+        }
+
+        $iterator = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator( $scanRoot, \FilesystemIterator::SKIP_DOTS )
+        );
+        foreach ( $iterator as $entry ) {
+            $path = $entry->getPathname();
+            $relative = str_replace( '\\', '/', substr( $path, strlen( rtrim( $scanRoot, '/' ) ) + 1 ) );
+            if ( $entry->isLink() ) {
+                $target = @readlink( $path );
+                $snapshot['links'][ $relative ] = is_string( $target ) ? $target : null;
+            } elseif ( $entry->isDir() ) {
+                $snapshot['directories'][ $relative ] = [
+                    'mode' => fileperms( $path ) & 0777,
+                    'mtime' => filemtime( $path ),
+                ];
+            } elseif ( $entry->isFile() ) {
+                $snapshot['files'][ $relative ] = [
+                    'mode' => fileperms( $path ) & 0777,
+                    'mtime' => filemtime( $path ),
+                    'size' => filesize( $path ),
+                    'sha256' => hash_file( 'sha256', $path ),
+                ];
+            }
+        }
+        foreach ( [ 'directories', 'files', 'links' ] as $key ) {
+            ksort( $snapshot[ $key ] );
+        }
+
+        return $snapshot;
+    }
+
     private function assertPathAbsent(string $path, string $message): void
     {
         self::assertFalse(file_exists($path) || is_link($path), $message);
@@ -1439,9 +2002,6 @@ final class Phase15S3MirrorReconstructionRedTest extends WP_UnitTestCase
             if (!$isCpms && !$isOptions) {
                 continue;
             }
-            if (str_ends_with($table, 'cpms_audit_logs') || str_ends_with($table, 'cpms_operational_logs')) {
-                continue;
-            }
             $safeTable = str_replace('`', '``', $table);
             $rows = (array) $wpdb->get_results('SELECT * FROM `' . $safeTable . '`', ARRAY_A);
             usort($rows, static fn (array $left, array $right): int => strcmp(serialize($left), serialize($right)));
@@ -1457,6 +2017,7 @@ final class Phase15S3MirrorReconstructionRedTest extends WP_UnitTestCase
         $file = (new \ReflectionClass($class))->getFileName();
         self::assertIsString($file);
         $tokens = token_get_all((string) file_get_contents($file));
+        $restoreApplyCalls = 0;
         foreach ($tokens as $index => $token) {
             if (!is_array($token) || $token[0] !== T_STRING || $token[1] !== 'restoreApply') {
                 continue;
@@ -1466,10 +2027,18 @@ final class Phase15S3MirrorReconstructionRedTest extends WP_UnitTestCase
                 if (is_array($candidate) && in_array($candidate[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
                     continue;
                 }
-                self::assertNotSame('(', is_array($candidate) ? $candidate[1] : $candidate, 'contract: recovery never calls destructive BackupService::restoreApply()');
+                if ((is_array($candidate) ? $candidate[1] : $candidate) === '(') {
+                    ++$restoreApplyCalls;
+                }
                 break;
             }
         }
+
+        self::assertSame(
+            0,
+            $restoreApplyCalls,
+            'contract: recovery has no direct destructive BackupService::restoreApply() call'
+        );
     }
 
     private function removeTree(string $path): void

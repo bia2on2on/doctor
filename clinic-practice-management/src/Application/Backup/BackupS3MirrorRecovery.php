@@ -20,6 +20,10 @@ use ClinicCore\Infrastructure\Backup\ProtectedBackupStore;
 use ClinicCore\Infrastructure\Backup\S3BackupClientFactory;
 use ClinicCore\Infrastructure\Backup\S3BackupDeploymentConfig;
 use ClinicCore\Infrastructure\Storage\PrivateStorageLocation;
+use GuzzleHttp\Psr7\FnStream;
+use GuzzleHttp\Psr7\Utils;
+use Psr\Http\Message\RequestInterface;
+use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\StreamInterface;
 use Throwable;
 
@@ -51,6 +55,15 @@ final class BackupS3MirrorRecovery {
     private const MESSAGE_NOT_CONFIGURED       = 'S3 backup reconstruction is not configured';
     private const MESSAGE_RECOVERY_FAILED      = 'remote backup reconstruction failed';
     private const SUCCESS_RESULT               = 'remote reconstruction passed existing restore preflight';
+
+    /**
+     * Private lower-only transfer limits. Defaults remain the production
+     * contract constants; tests may scale them down through reflection without
+     * changing or widening any production limit.
+     */
+    private int $catalog_download_limit_bytes = self::MAX_CATALOG_CIPHERTEXT_BYTES;
+    private int $object_download_limit_bytes = self::MAX_ENCRYPTED_OBJECT_BYTES;
+    private int $aggregate_download_budget_bytes = self::MAX_AGGREGATE_STAGED_BYTES;
 
     /** @var callable|null Slice 2B's documented local-only SDK test-handler seam. */
     private $http_handler;
@@ -231,14 +244,24 @@ final class BackupS3MirrorRecovery {
         $catalog_json_path   = $stage_root . '/.catalog.json';
         $catalog_key         = $this->remote_object_key( $config, $mirror_id, $catalog_id );
 
+        $aggregate_download_budget = min(
+            self::MAX_AGGREGATE_STAGED_BYTES,
+            max( 0, $this->aggregate_download_budget_bytes )
+        );
+        $catalog_download_limit = min(
+            self::MAX_CATALOG_CIPHERTEXT_BYTES,
+            max( 0, $this->catalog_download_limit_bytes ),
+            $aggregate_download_budget
+        );
         $catalog_cipher_bytes = $this->download_object(
             $client,
             $bucket,
             $catalog_key,
             $catalog_cipher_path,
-            self::MAX_CATALOG_CIPHERTEXT_BYTES,
+            $catalog_download_limit,
             null,
-            null
+            null,
+            $stage_real
         );
         BackupEncryptionEnvelope::decryptFile( $catalog_cipher_path, $catalog_json_path, $key );
         $this->assert_private_staged_file( $catalog_json_path, $stage_real );
@@ -268,20 +291,48 @@ final class BackupS3MirrorRecovery {
         $download_dir = $stage_root . '/.objects';
         $this->create_contained_directory( $download_dir, $stage_real );
 
-        $cipher_paths = [];
+        $cipher_paths                    = [];
+        $remaining_data_ciphertext_bytes = $data_ciphertext_bytes;
+        $downloaded_data_ciphertext_bytes = 0;
         foreach ( $validated['entries'] as $entry ) {
-            $object_id   = $entry['object_id'];
+            $object_id = $entry['object_id'];
             $cipher_path = $download_dir . '/' . $object_id . '.enc';
-            $remote_key  = $this->remote_object_key( $config, $mirror_id, $object_id );
-            $this->download_object(
+            $remote_key = $this->remote_object_key( $config, $mirror_id, $object_id );
+            $entry_bytes = $entry['ciphertext_bytes'];
+            $remaining_data_ciphertext_bytes -= $entry_bytes;
+            if ( $remaining_data_ciphertext_bytes < 0 ) {
+                throw $this->recovery_failure();
+            }
+
+            // Reserve the complete plaintext output and not-yet-downloaded
+            // ciphertext before choosing this object's streaming ceiling.
+            $reserved_before_current = $catalog_cipher_bytes
+                + $catalog_json_bytes
+                + $downloaded_data_ciphertext_bytes
+                + $remaining_data_ciphertext_bytes
+                + $data_ciphertext_bytes
+                + self::MANIFEST_SIDECAR_BYTES;
+            $remaining_aggregate_bytes = max(
+                0,
+                $aggregate_download_budget - $reserved_before_current
+            );
+            $object_download_limit = min(
+                self::MAX_ENCRYPTED_OBJECT_BYTES,
+                max( 0, $this->object_download_limit_bytes ),
+                $entry_bytes,
+                $remaining_aggregate_bytes
+            );
+            $actual_ciphertext_bytes = $this->download_object(
                 $client,
                 $bucket,
                 $remote_key,
                 $cipher_path,
-                self::MAX_ENCRYPTED_OBJECT_BYTES,
-                $entry['ciphertext_bytes'],
-                $entry['ciphertext_sha256']
+                $object_download_limit,
+                $entry_bytes,
+                $entry['ciphertext_sha256'],
+                $stage_real
             );
+            $downloaded_data_ciphertext_bytes += $actual_ciphertext_bytes;
             $cipher_paths[ $object_id ] = $cipher_path;
         }
 
@@ -598,7 +649,7 @@ final class BackupS3MirrorRecovery {
                 . bin2hex( random_bytes( 16 ) );
         }
         $requested = $this->canonical_candidate( $requested );
-        if ( $requested === null || file_exists( $requested ) || is_link( $requested ) ) {
+        if ( $requested === null ) {
             throw $this->recovery_failure();
         }
         $parent = realpath( dirname( $requested ) );
@@ -609,6 +660,9 @@ final class BackupS3MirrorRecovery {
         if ( $this->is_forbidden_stage_location( $path )
             || PrivateStorageLocation::isInsideWebRoot( $path )
         ) {
+            throw $this->recovery_failure();
+        }
+        if ( file_exists( $path ) || is_link( $path ) ) {
             throw $this->recovery_failure();
         }
         if ( ! @mkdir( $path, 0700, false ) ) {
@@ -656,6 +710,33 @@ final class BackupS3MirrorRecovery {
     }
 
     private function is_forbidden_stage_location( string $candidate ): bool {
+        $canonical_candidate = $this->canonical_existing_or_future_path( $candidate );
+        if ( ! is_string( $canonical_candidate ) ) {
+            throw $this->recovery_failure();
+        }
+
+        try {
+            $clinical_roots = $this->backup_service->activeClinicalStorageRoots();
+        } catch ( Throwable ) {
+            throw $this->recovery_failure();
+        }
+        foreach ( $clinical_roots as $clinical_root ) {
+            if ( ! is_string( $clinical_root ) || $clinical_root === '' ) {
+                throw $this->recovery_failure();
+            }
+            $canonical_clinical_root = $this->canonical_existing_or_future_path( $clinical_root );
+            if ( ! is_string( $canonical_clinical_root ) ) {
+                // A trusted root that cannot be resolved must never be silently
+                // omitted from the staging disjointness check.
+                throw $this->recovery_failure();
+            }
+            if ( $this->canonical_path_contains( $canonical_candidate, $canonical_clinical_root )
+                || $this->canonical_path_contains( $canonical_clinical_root, $canonical_candidate )
+            ) {
+                return true;
+            }
+        }
+
         $store_paths = [
             $this->backup_service->store()->basePath(),
             ProtectedBackupStore::defaultBasePath(),
@@ -663,9 +744,13 @@ final class BackupS3MirrorRecovery {
         ];
         foreach ( $store_paths as $store_path ) {
             $canonical_store = $this->canonical_existing_or_future_path( $store_path );
-            if ( $canonical_store !== null
-                && ( $this->is_within_canonical_path( $candidate, $canonical_store )
-                    || $this->is_within_canonical_path( $canonical_store, $candidate ) )
+            if ( ! is_string( $canonical_store ) ) {
+                // Backup roots are trusted exclusions too; an unresolved one
+                // cannot be silently omitted from the staging safety check.
+                throw $this->recovery_failure();
+            }
+            if ( $this->canonical_path_contains( $canonical_candidate, $canonical_store )
+                || $this->canonical_path_contains( $canonical_store, $canonical_candidate )
             ) {
                 // Neither place staging inside a backup root nor make the
                 // stage a parent that cleanup could recursively erase.
@@ -728,6 +813,12 @@ final class BackupS3MirrorRecovery {
         }
 
         return $resolved;
+    }
+
+    private function canonical_path_contains( string $candidate, string $root ): bool {
+        $root = rtrim( $root, '/' );
+
+        return $candidate === $root || str_starts_with( $candidate, $root . '/' );
     }
 
     private function is_within_canonical_path( string $candidate, string $root ): bool {
@@ -874,8 +965,11 @@ final class BackupS3MirrorRecovery {
     }
 
     /**
-     * Stream GetObject into exclusive private storage, enforcing actual length
-     * and SHA-256. ETag is deliberately never inspected.
+     * Stream GetObject directly into an exclusive private file sink. A
+     * trustworthy oversized Content-Length is rejected in Guzzle's
+     * pre-consumption on_headers hook; the write-only sink independently
+     * enforces the hard ceiling for absent, malformed, chunked or dishonest
+     * lengths. ETag is deliberately never inspected.
      */
     private function download_object(
         S3Client $client,
@@ -884,33 +978,18 @@ final class BackupS3MirrorRecovery {
         string $destination,
         int $maximum_bytes,
         ?int $expected_bytes,
-        ?string $expected_sha256
+        ?string $expected_sha256,
+        string $stage_real
     ): int {
-        try {
-            $response = $client->getObject(
-                [
-                    'Bucket' => $bucket,
-                    'Key'    => $key,
-                ]
-            );
-        } catch ( Throwable ) {
-            throw $this->recovery_failure();
-        }
-        $body = $response['Body'] ?? null;
-        if ( ! $body instanceof StreamInterface ) {
-            throw $this->recovery_failure();
-        }
-        $response_length = $this->response_content_length( $response['ContentLength'] ?? null );
-        if ( $response_length !== null && $response_length > $maximum_bytes ) {
-            throw $this->recovery_failure();
-        }
-        if ( $expected_bytes !== null
-            && $response_length !== null
-            && $response_length !== $expected_bytes
-        ) {
-            throw $this->recovery_failure();
-        }
+        $maximum_bytes = max( 0, $maximum_bytes );
+        $hard_limit    = $expected_bytes === null
+            ? $maximum_bytes
+            : min( $maximum_bytes, max( 0, $expected_bytes ) );
         if ( file_exists( $destination ) || is_link( $destination ) ) {
+            throw $this->recovery_failure();
+        }
+        $parent_real = realpath( dirname( $destination ) );
+        if ( ! is_string( $parent_real ) || ! $this->is_within_canonical_path( $parent_real, $stage_real ) ) {
             throw $this->recovery_failure();
         }
 
@@ -918,79 +997,149 @@ final class BackupS3MirrorRecovery {
         if ( ! is_resource( $handle ) ) {
             throw $this->recovery_failure();
         }
-        $digest       = hash_init( 'sha256' );
-        $actual_bytes = 0;
-        $flush_ok     = false;
-        $close_ok     = false;
+        $sink            = null;
+        $response_length = null;
+        $completed       = false;
         try {
             if ( ! @chmod( $destination, 0600 ) ) {
                 throw $this->recovery_failure();
             }
-            while ( ! $body->eof() ) {
-                $chunk = $body->read( 8192 );
-                if ( ! is_string( $chunk ) || $chunk === '' ) {
-                    if ( $body->eof() ) {
-                        break;
-                    }
-                    throw $this->recovery_failure();
+            $this->assert_private_staged_file( $destination, $stage_real );
+            $sink = $this->bounded_download_sink( $handle, $hard_limit );
+
+            $on_headers = function ( ResponseInterface $response, ?RequestInterface $_request = null ) use ( &$response_length, $hard_limit ): void {
+                $response_length = $this->trustworthy_content_length(
+                    $response->getHeader( 'Content-Length' )
+                );
+                if ( $response_length !== null && $response_length > $hard_limit ) {
+                    // Guzzle calls this hook before handing response-body bytes
+                    // to the sink, so no over-limit prefix is consumed here.
+                    throw new \RuntimeException( 'response exceeds bounded download sink' );
                 }
-                $chunk_bytes = strlen( $chunk );
-                if ( $actual_bytes > $maximum_bytes - $chunk_bytes
-                    || ( $expected_bytes !== null && $actual_bytes > $expected_bytes - $chunk_bytes )
-                ) {
-                    throw $this->recovery_failure();
-                }
-                $this->write_all( $handle, $chunk );
-                hash_update( $digest, $chunk );
-                $actual_bytes += $chunk_bytes;
-            }
-            if ( $response_length !== null && $actual_bytes !== $response_length ) {
+            };
+
+            $response = $client->getObject(
+                [
+                    'Bucket' => $bucket,
+                    'Key'    => $key,
+                    '@http'  => [
+                        'sink'       => $sink,
+                        'on_headers' => $on_headers,
+                    ],
+                ]
+            );
+            $body = $response['Body'] ?? null;
+            if ( ! $body instanceof StreamInterface ) {
                 throw $this->recovery_failure();
             }
-            if ( $expected_bytes !== null && $actual_bytes !== $expected_bytes ) {
+
+            // The response body is the same write-only stream passed as the
+            // SDK sink. Never read or stringify it in PHP.
+            if ( $body !== $sink ) {
                 throw $this->recovery_failure();
             }
-            if ( is_string( $expected_sha256 )
-                && ! hash_equals( $expected_sha256, hash_final( $digest ) )
+            $sink->close();
+            $sink   = null;
+            $handle = null;
+
+            $this->assert_private_staged_file( $destination, $stage_real );
+            $actual_bytes = $this->file_size( $destination );
+            if ( $actual_bytes > $hard_limit
+                || ( $response_length !== null && $actual_bytes !== $response_length )
+                || ( $expected_bytes !== null && $actual_bytes !== $expected_bytes )
             ) {
                 throw $this->recovery_failure();
             }
-            if ( ( $this->file_mode( $destination ) & 0077 ) !== 0 ) {
-                throw $this->recovery_failure();
+            if ( is_string( $expected_sha256 ) ) {
+                $actual_sha256 = hash_file( 'sha256', $destination );
+                if ( ! is_string( $actual_sha256 ) || ! hash_equals( $expected_sha256, $actual_sha256 ) ) {
+                    throw $this->recovery_failure();
+                }
             }
-            $flush_ok = fflush( $handle );
-            if ( ! $flush_ok ) {
-                throw $this->recovery_failure();
-            }
-        } finally {
-            $close_ok = fclose( $handle );
-        }
-        clearstatcache( true, $destination );
-        if ( ! $flush_ok || ! $close_ok || filesize( $destination ) !== $actual_bytes ) {
-            throw $this->recovery_failure();
-        }
 
-        return $actual_bytes;
+            $completed = true;
+            return $actual_bytes;
+        } catch ( Throwable ) {
+            throw $this->recovery_failure();
+        } finally {
+            if ( $sink instanceof StreamInterface ) {
+                try {
+                    $sink->close();
+                } catch ( Throwable ) {
+                    // The owned staging root is also removed by the caller.
+                }
+            } elseif ( is_resource( $handle ) ) {
+                @fclose( $handle );
+            }
+            if ( ! $completed && ( file_exists( $destination ) || is_link( $destination ) ) ) {
+                @unlink( $destination );
+            }
+        }
     }
 
-    private function response_content_length( mixed $value ): ?int {
-        if ( $value === null ) {
+    /**
+     * @param resource $handle
+     */
+    private function bounded_download_sink( $handle, int $maximum_bytes ): StreamInterface {
+        $stream  = Utils::streamFor( $handle );
+        $written = 0;
+        $write   = static function ( string $chunk ) use ( $stream, &$written, $maximum_bytes ): int {
+            $chunk_bytes = strlen( $chunk );
+            if ( $chunk_bytes > $maximum_bytes - $written ) {
+                throw new \LengthException( 'bounded download sink limit reached' );
+            }
+
+            $offset = 0;
+            while ( $offset < $chunk_bytes ) {
+                $written_bytes = $stream->write( substr( $chunk, $offset ) );
+                if ( $written_bytes < 1 ) {
+                    throw new \RuntimeException( 'bounded download sink write failed' );
+                }
+                $offset += $written_bytes;
+            }
+            $written += $chunk_bytes;
+
+            return $chunk_bytes;
+        };
+
+        return FnStream::decorate(
+            $stream,
+            [
+                '__toString' => static fn (): string => '',
+                'getContents' => static function (): string {
+                    throw new \RuntimeException( 'bounded download sink is write-only' );
+                },
+                'isReadable' => static fn (): bool => false,
+                'read' => static function ( int $length ): string {
+                    throw new \RuntimeException( 'bounded download sink is write-only' );
+                },
+                'write' => $write,
+            ]
+        );
+    }
+
+    /** @param list<string> $values */
+    private function trustworthy_content_length( array $values ): ?int {
+        if ( count( $values ) !== 1 ) {
             return null;
         }
-        if ( is_int( $value ) && $value >= 0 ) {
-            return $value;
+        $value = trim( $values[0], " \t" );
+        if ( $value === '' || preg_match( '/^[0-9]+$/D', $value ) !== 1 ) {
+            return null;
         }
-        if ( is_string( $value )
-            && strlen( $value ) <= 19
-            && preg_match( '/^(?:0|[1-9][0-9]*)$/D', $value ) === 1
+        $normalized = ltrim( $value, '0' );
+        if ( $normalized === '' ) {
+            return 0;
+        }
+        $maximum = (string) PHP_INT_MAX;
+        if ( strlen( $normalized ) > strlen( $maximum )
+            || ( strlen( $normalized ) === strlen( $maximum ) && strcmp( $normalized, $maximum ) > 0 )
         ) {
-            $parsed = (int) $value;
-            if ( (string) $parsed === $value && $parsed >= 0 ) {
-                return $parsed;
-            }
+            // PHP_INT_MAX is still greater than every supported transfer cap.
+            return PHP_INT_MAX;
         }
 
-        throw $this->recovery_failure();
+        return (int) $normalized;
     }
 
     private function assert_private_staged_file( string $path, string $stage_real ): void {

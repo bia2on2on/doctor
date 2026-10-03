@@ -62,6 +62,16 @@ final class BackupService
         return $this->store;
     }
 
+    /**
+     * @return list<string> Normalized active roots from every Clinic's installed backup model.
+     * @throws BackupException If the authoritative Clinic/settings inventory cannot be resolved.
+     */
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- Narrow read-only access to the existing installation-wide storage enumeration.
+    public function activeClinicalStorageRoots(): array
+    {
+        return array_keys($this->enumerateActiveClinicalStorageRoots(true));
+    }
+
     // ================= CREATE / LIST / VERIFY / DELETE / PRUNE =================
 
     /**
@@ -429,7 +439,7 @@ final class BackupService
      *
      * @return array<string, list<int>> map normalizedBasePath => list clinicIds using it
      */
-    private function enumerateActiveClinicalStorageRoots(): array
+    private function enumerateActiveClinicalStorageRoots(bool $failClosedOnSettingsLookupFailure = false): array
     {
         $rootsMap = []; // normalized => clinicIds
 
@@ -454,22 +464,36 @@ final class BackupService
 
         foreach ($clinicIds as $cid) {
             $path = '';
+            $row = null;
             try {
                 $row = $this->db->fetchRow(
                     'SELECT value_json FROM ' . $this->db->table('cpms_settings') . ' WHERE clinic_id = %d AND `key` = %s',
                     [$cid, 'files.storage_path']
                 );
-                if ($row !== null) {
-                    $decoded = json_decode((string) ($row['value_json'] ?? ''), true);
-                    if (is_string($decoded)) {
-                        $path = trim($decoded);
-                    }
-                }
             } catch (\Throwable) {
-                $path = '';
+                if ($failClosedOnSettingsLookupFailure) {
+                    throw BackupException::of(
+                        'CLINIC_BACKUP_ENUMERATION_FAILED',
+                        'clinic storage settings enumeration failed'
+                    );
+                }
+            }
+
+            if ($row !== null) {
+                $decoded = json_decode((string) ($row['value_json'] ?? ''), true);
+                if (is_string($decoded)) {
+                    $path = trim($decoded);
+                } elseif ($failClosedOnSettingsLookupFailure) {
+                    throw BackupException::of(
+                        'CLINIC_BACKUP_ENUMERATION_FAILED',
+                        'clinic storage root setting is invalid'
+                    );
+                }
             }
 
             if ($path === '') {
+                // No row or an explicitly empty path follows the existing
+                // LocalFileStorage model's documented default-root behavior.
                 $path = LocalFileStorage::defaultBasePath();
             }
 
@@ -477,6 +501,12 @@ final class BackupService
             $normalized = $this->validateAndNormalizeStoragePath($path);
 
             if ($normalized === '') {
+                if ($failClosedOnSettingsLookupFailure) {
+                    throw BackupException::of(
+                        'CLINIC_BACKUP_ENUMERATION_FAILED',
+                        'clinic storage root could not be resolved'
+                    );
+                }
                 continue;
             }
 
