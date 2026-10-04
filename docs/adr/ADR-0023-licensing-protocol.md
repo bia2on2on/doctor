@@ -24,7 +24,7 @@ F1–F9 shipped CPMS with a deliberate licensing **seam**: `Domain/Licensing/Lic
 
 ### 3. State semantics (spec §15) — amended by employer decision 2026-09-06
 Distinct states, stored + exposed:
-- `ACTIVE`, `EXPIRING` (within grace boundary, warnings only), `GRACE` (default 7 days, renewal path; read/write of new business allowed with persistent warning — policy), `RESTRICTED` (new independent licensed activity blocked per entitlement; historical access, safe export, and finishing in-progress workflow allowed), plus `SUSPENDED`/`REVOKED` (from a *verified signed* document), `INVALID` (signature/authenticity failure), `UNKNOWN/UNREACHABLE` (network failure with no usable cache).
+- `ACTIVE`, `EXPIRING` (within grace boundary, warnings only), `GRACE` (default 7 days, renewal path; read/write of new business allowed with persistent warning — policy), `RESTRICTED` (still *represented* as expired/restricted/needs-renewal; **enforcement is cause-aware — amended by Phase 16 Slice 1**: ordinary commercial expiration no longer blocks new independent licensed activity, while every other `RESTRICTED` cause still does — see §5; historical access, safe export, and finishing in-progress workflow always allowed), plus `SUSPENDED`/`REVOKED` (from a *verified signed* document), `INVALID` (signature/authenticity failure), `UNKNOWN/UNREACHABLE` (network failure with no usable cache).
 
 **Pre-activation states (employer decision — never conflate with normal license GRACE):**
 - `NOT_CONFIGURED` — defensive only: no install/window row exists yet (pre-migration or broken env). Open, but Health/Admin flag it.
@@ -49,7 +49,16 @@ Critical distinctions enforced in code and tests:
 - Downgrades never delete/deactivate historical entities; only *creation/activation* beyond limits is blocked — deterministically and race-safely (UNIQUE constraints + transactional checks; tests required).
 
 ### 5. Operation gating
-`assert(OP_*)` decisions per existing enum; RESTRICTED/SUSPENDED/REVOKED/INVALID block *new* protected ops with `CLINIC_LICENSE_BLOCKED` (503), while:
+`assert(OP_*)` decisions per existing enum; SUSPENDED/REVOKED/INVALID block *new* protected ops with `CLINIC_LICENSE_BLOCKED` (503).
+
+**`RESTRICTED` is cause-aware (amended by Phase 16 Slice 1).** The gate distinguishes the *cause* of `RESTRICTED` from the existing current-state `status` + `reason`:
+- **Ordinary commercial expiration** — a previously valid signed document that is simply past expiry grace, i.e. the internally derived cause `expired` — **no longer blocks** the protected new-business operations. The annual term ending alone does not freeze ordinary clinical new business.
+- **Every other `RESTRICTED` cause still blocks, fail-closed:** activation-window exhaustion (`activation_window_expired`), migration-grace exhaustion (`migration_grace_expired`), vendor-unreachable/stale cache (`expired_unreachable`), and any absent/empty/unknown/malformed cause.
+- The cause match is exact; `SUSPENDED`/`REVOKED`/`INVALID`/`UNREACHABLE` and unknown states are **not** relaxed by this amendment.
+- Representation is unchanged: an ordinarily-expired license is still reported as `RESTRICTED` with reason `expired` and `needs_renewal`, and the gate still reports itself read-only, so status and renewal visibility are unaffected.
+- `CLINIC_LICENSE_BLOCKED` remains the code wherever the gate actually denies an operation.
+
+In all of these cases:
 - reads/history/export stay open;
 - in-progress visit clinical workflow (note/prescription/complete), payment/checkout to finish the current visit remain **allowed** (spec §16) — implemented as exempt operations on the gate, mirroring the F4 walk-in read-only precedent (`VisitLicenseGateTest`).
 
@@ -64,8 +73,8 @@ New codes registered in `docs/api/error-codes.md`: `CLINIC_LICENSE_BLOCKED` (exi
 | **ACTIVATION_GRACE** | pre-F10 install upgraded to licensing, no doc yet, inside 30-day migration grace | Uninterrupted operation (no sudden disruption of existing customer) | Signed doc stored, or grace ends → RESTRICTED |
 | **GRACE (license)** | Valid cached doc *expired* within 7-day renewal grace | New business allowed with persistent warning (renewal path) | Renewed doc, or grace ends → RESTRICTED |
 | **UNREACHABLE** | Vendor server unreachable **after** a valid cached doc | Cached signed state governs (bounded 3-day post-expiry window), then explicit UNREACHABLE; network failure ≠ invalid | Server reachable again / doc refresh |
-| **RESTRICTED** | Entitlement expired beyond grace, or activation window/migration grace ended without a doc | New independent activity blocked; history/export/safe completion/hygiene always open | Valid signed doc stored |
-| **SUSPENDED / REVOKED** | *Verified signed* document flags it (never from network failure) | Same operational posture as RESTRICTED plus explicit reason; distinct from outage | New signed doc from vendor |
+| **RESTRICTED** | Entitlement expired beyond grace, or activation window/migration grace ended without a doc | **Cause-aware (Phase 16 Slice 1):** ordinary commercial expiration (verified signed doc past grace — internal cause `expired`) does *not* block new independent activity; every other cause (activation-window / migration-grace exhaustion, vendor-unreachable/stale, absent/unknown cause) does, fail-closed. History/export/safe completion/hygiene always open | Valid signed doc stored |
+| **SUSPENDED / REVOKED** | *Verified signed* document flags it (never from network failure) | Same operational posture as the *blocking* RESTRICTED causes plus explicit reason; distinct from outage | New signed doc from vendor |
 | **DEVELOPMENT** | Explicit `CPMS_DEV_MODE`/`cpms_license_dev_mode` only | Everything open; visible 🧪 badge; no auto-detection | Constant/filter removed |
 
 ## Consequences
