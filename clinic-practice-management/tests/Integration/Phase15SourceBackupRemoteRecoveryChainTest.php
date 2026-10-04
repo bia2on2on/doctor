@@ -618,6 +618,44 @@ final class Phase15SourceBackupRemoteRecoveryChainTest extends WP_UnitTestCase
     }
 
     // ---------------------------------------------------------------------
+    // Direct regression on the chain path precondition itself: the strict
+    // `\z` end anchor must refuse a trailing-newline relative path.
+    // ---------------------------------------------------------------------
+
+    public function testChainCompatibleStoragePathHelperRejectsATrailingNewlineRelativePath(): void
+    {
+        /*
+         * `BackupS3MirrorRecovery::is_allowed_logical_path()` refuses every
+         * control byte and anchors its charset pattern with `$` plus the `D`
+         * modifier, so recovery rejects a logical path that ends in a newline.
+         * A bare `$` in this suite's helper would still match before ONE
+         * trailing newline and would therefore certify such a path as
+         * chain-compatible. Both halves are asserted: the identical path
+         * without the newline is accepted first, so the rejection below is
+         * caused by the newline alone and never by an over-tightened charset.
+         */
+        $relative = '12/ab/f.' . self::FILE_EXTENSION;
+        $this->assertChainCompatibleStoragePath($relative);
+
+        $rejected = null;
+        try {
+            $this->assertChainCompatibleStoragePath($relative . "\n");
+        } catch (AssertionFailedError $error) {
+            $rejected = $error->getMessage();
+        }
+
+        self::assertIsString(
+            $rejected,
+            'chain precondition: the strict end anchor rejects a trailing-newline relative path that recovery itself refuses'
+        );
+        self::assertStringContainsString(
+            'ASCII charset both validators accept',
+            (string) $rejected,
+            'chain precondition: the rejection comes from the strict charset anchor, not from an unrelated length or component bound'
+        );
+    }
+
+    // ---------------------------------------------------------------------
     // Real source artifact — produced only by the production backup engine.
     // ---------------------------------------------------------------------
 
@@ -742,15 +780,24 @@ final class Phase15SourceBackupRemoteRecoveryChainTest extends WP_UnitTestCase
      * device name.
      *
      * The single ASCII charset assertion below subsumes the UTF-8, control-byte,
-     * backslash, absolute-path and drive-prefix rules; the explicit length
-     * assertions enforce the recovery bound on the full logical path and on each
-     * component. Only the public `MAX_REMOTE_OBJECT_COUNT` is read from the
-     * production class - by the caller - and no production limit is changed.
+     * backslash, absolute-path and drive-prefix rules. Its end anchor is the
+     * strict `\z`, never a bare `$`. Both production patterns express that
+     * same strictness with `$` plus the `D` modifier - recovery checks
+     * `/^[A-Za-z0-9._\/-]+$/D` - whereas a bare `$` also matches before ONE
+     * trailing newline, so a relative path ending in a newline would satisfy
+     * this helper while `is_allowed_logical_path()` refuses it as a control
+     * byte. `\z` closes exactly that gap and nothing else: the identical
+     * path without the newline is still accepted. The explicit length
+     * assertions enforce the recovery bound on the full logical path and on
+     * each component. Only the public `MAX_REMOTE_OBJECT_COUNT` is read from
+     * the production class - by the caller - and no production limit is
+     * changed. The trailing-newline rejection is asserted directly by
+     * `testChainCompatibleStoragePathHelperRejectsATrailingNewlineRelativePath`.
      */
     private function assertChainCompatibleStoragePath(string $relative): void
     {
         self::assertMatchesRegularExpression(
-            '/^[1-9][0-9]{0,9}\/[A-Za-z0-9._\/-]+$/',
+            '/^[1-9][0-9]{0,9}\/[A-Za-z0-9._\/-]+\z/',
             $relative,
             'chain precondition: a real clinical relative path is Clinic-scoped and uses only the ASCII charset both validators accept'
         );
