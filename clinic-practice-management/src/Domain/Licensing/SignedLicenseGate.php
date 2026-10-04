@@ -17,6 +17,14 @@ namespace ClinicCore\Domain\Licensing;
  *    تاریخچه/Export، و تمام گردش‌کارِ بالینیِ ویزیتِ در جریان (این مسیرها
  *    اصلاً assert نمی‌کنند — الگوی F4: transitions در Read-Only مجاز).
  *
+ * استثنای Phase 16 Slice 1 (جهت تجاری: واحد = Organization؛ پایه = Annual
+ * License + Version Rights): «انقضای عادی تجاری» — یعنی صرفاً پایانِ سالانهٔ
+ * مجوزِ معتبر — فعالیت بالینیِ جدید را مسدود نمی‌کند. این استثنا **علت‌محور**
+ * و باریک است (status=RESTRICTED + reason=expired)؛ پایان پنجرهٔ فعال‌سازی،
+ * vendor-unreachable/stale، suspension، revocation، سند نامعتبر و علتِ
+ * ناشناخته/غایب همگی همان رفتار قبلی را دارند (fail-closed). نمایش وضعیت و
+ * نیاز به تمدید (state/isReadOnly/statusMeta) هیچ تغییری نمی‌کند.
+ *
  * این فایل در Domain است ولی به Provider تزئینی وابسته است؛ خود Gate خالص
  * (بدون WP/DB/شبکه) و با FakeProvider واحدتست می‌شود.
  */
@@ -33,6 +41,18 @@ final class SignedLicenseGate implements LicenseGate
         LicenseGate::OP_INVOICE_CREATE,
     ];
 
+    /**
+     * تنها `reason` به‌رسمیت‌شناخته‌شده برای «انقضای عادی تجاری» در وضعیت
+     * RESTRICTED — همان خروجیِ `LicenseStateMachine::compute()` برای سندِ
+     * verifiedِ منقضیِ خارج از expiry_grace.
+     *
+     * تطبیق **دقیق** است: همسایه‌های معنایی مثل `expired_unreachable`
+     * (vendor-unreachable/stale) یا `activation_window_expired` /
+     * `migration_grace_expired` (پایان پنجرهٔ فعال‌سازی) صریحاً بیرون از این
+     * استثنا هستند و مسدود می‌مانند.
+     */
+    private const REASON_ORDINARY_EXPIRATION = 'expired';
+
     public function __construct(private readonly LicenseStateProvider $provider)
     {
     }
@@ -47,6 +67,11 @@ final class SignedLicenseGate implements LicenseGate
         }
         if (!in_array($operation, self::BLOCKED_UNDER_RESTRICTION, true)) {
             // لغو/به‌روزرسانی/بهداشت/تکمیل — همیشه مجاز
+            return LicenseDecision::allow();
+        }
+        if ($status === LicenseStatus::RESTRICTED && ($state['reason'] ?? null) === self::REASON_ORDINARY_EXPIRATION) {
+            // انقضای عادی تجاری (پایانِ صرفِ سالانه) — فعالیت بالینیِ جدید آزاد.
+            // نمایش وضعیت/تمدید عمداً دست‌نخورده می‌ماند (state/isReadOnly).
             return LicenseDecision::allow();
         }
 
