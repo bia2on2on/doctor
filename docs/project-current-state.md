@@ -4,6 +4,10 @@
 > Do **not** use a previous chat session as memory.
 >
 
+<a id="phase15-closure"></a>
+
+> **FORMAL CLOSURE — Phase 15 Backup & Recovery = ✅ FORMALLY CLOSED / TECHNICALLY COMPLETE (BOUNDED)** (this closure is documentation-only; no product/runtime/test/workflow/schema/migration/deployment/dependency changes in this closure PR; NEW writer; verified live 2026-10-04): the authoritative pre-PR GitHub `main` = fetched `origin/main` = **`724d6425ea3df2b31a73d9b587789a00fcd01bc8`**, the exact merge SHA for **PR #170** (MERGED 2026-10-04T14:54:18Z). On that exact SHA, all required workflows are terminal-success and **19/19 check runs completed/success** (CI `37210990528` · Real WordPress Acceptance `37210990561` · Closure Gate `37210990510` · Pilot/Staging Readiness `37210990514`). **Open PRs = 0** before writing; latest migration is `2026_09_26_0023_handwriting_prescription_paper.php` (23 versioned migrations). **Bounded scope only:** the implemented manual encrypted remote S3 mirror plus reconstruction, verification, and existing restore preflight. **Explicit non-claims:** no real-provider durability proof; no production/replacement-host pilot proof; no destructive remote restore from the S3 reconstruction path; no remote retention/deletion lifecycle; no scheduled S3 mirroring; no external alerting guarantee; no numerical RPO/RTO guarantee; no commercial/go-live-readiness claim. See [`backup-recovery.md`](backup/backup-recovery.md) and [`s3-deployment-config.md`](backup/s3-deployment-config.md).
+
 <a id="phase14-closure"></a>
 <a id="phase14-next"></a>
 <a id="phase14-slice3-red"></a>
