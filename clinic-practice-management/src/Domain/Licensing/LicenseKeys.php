@@ -50,7 +50,7 @@ final class LicenseKeys
      * The existing one-key path, selected only for legacy document shape.
      */
     public static function legacy_public_key(): string {
-        return self::publicKey( );
+        return self::publicKey();
     }
 
     /**
@@ -96,7 +96,7 @@ final class LicenseKeys
             return null;
         }
 
-        $keys = self::trusted_public_keys( );
+        $keys = self::trusted_public_keys();
 
         return $keys[ $key_id ] ?? null;
     }

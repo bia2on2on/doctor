@@ -73,7 +73,7 @@ final class LicenseSignature
         return self::verify(
             self::canonicalJson( $payload ),
             $signature_b64,
-            LicenseKeys::legacy_public_key( )
+            LicenseKeys::legacy_public_key()
         );
     }
 
