@@ -4,6 +4,15 @@
 >
 > **وضعیت (پس از Slice 2D):** دو عملیاتِ **صریح و دستی** وجود دارد: آینه‌سازیِ رمزنگاری‌شدهٔ **یک** بکاپِ محلیِ موجود (`BackupS3Mirror::mirrorBackup()`) و دریافت/بازسازیِ همان آینه در staging خصوصی با `BackupS3MirrorRecovery::reconstructAndPreflight(array $pointer)`. نتیجهٔ دومی فقط **«remote reconstruction passed existing restore preflight»** است: بازسازی از verifier و restore preflight موجود می‌گذرد؛ این عملیات `restoreApply()` را فراخوانی نمی‌کند و جداول یا storage تولیدی را تغییر نمی‌دهد. **هیچ integration خودکار با `backup.run`/زمان‌بند، remote retention/delete lifecycle یا UI/Settings وجود ندارد** (فیلدهای پیکربندی همچنان فقط ثابت‌های deployment‌اند).
 
+## دامنهٔ artifact بکاپ بر پایهٔ کدِ اجراشونده
+
+`BackupService::createBackup()` بکاپ را در سطحِ کلِ نصب می‌سازد؛ نه فقط Clinic جاری.
+
+- `db.sql` شامل جدول‌هایی است که dumper با الگوی `CpmsDb::dbPrefix() . 'cpms_%'` به `SHOW TABLES LIKE` می‌یابد (پیشوندِ پیکربندی‌شدهٔ WordPress به‌علاوهٔ `cpms_…`). جدول‌های WordPress Core، `wp_users`، `wp_options`، نقش‌ها و جدول‌های افزونه‌های دیگر در این dump نیستند.
+- `storage/` از تمام ریشه‌های بالینیِ فعالِ استخراج‌شده از `cpms_clinics` و Settingِ هر Clinic با کلید `files.storage_path` در `cpms_settings` گردآوری می‌شود؛ مسیر خالی از پیش‌فرضِ `LocalFileStorage` پیروی می‌کند. فایل‌ها بازگشتی، با مسیر نسبیِ مجاز و segment اولِ شناسهٔ Clinic عددیِ مثبت، کپی می‌شوند؛ ریشه‌های یکسان deduplicate و تعارضِ محتوای هم‌مسیر fail-closed می‌شود. با صفر Clinic مجموعهٔ فایل بالینی خالی است.
+- `wp-content/uploads` یا فایل‌های عمومی دیگر جداگانه پیمایش نمی‌شوند: فایل‌های بیرون از ریشه‌های بالینیِ فعال خارج‌اند؛ اگر فایلی واقعاً زیرِ یک ریشهٔ فعال باشد و قاعدهٔ مسیر بالا را بگذراند، صرف‌نظر از منشأ اولیه‌اش ممکن است داخل شود. فایل‌های plugin/source و پیکربندیِ deployment (از جمله `wp-config.php`/includeهای استقرار) کپی نمی‌شوند.
+- آرتیفکتِ محلی (`db.sql`، `storage/`، `manifest.json` و `manifest.json.sha256`) **plaintext** است؛ checksum رمزنگاری نیست. S3 mirror نسخه‌های رمزنگاری‌شدهٔ `db.sql`، `manifest.json`، فایل‌های storage و catalog را می‌فرستد؛ envelopeِ remote قالب `CPMSBK01` و Sodium secretstream XChaCha20-Poly1305ِ احراز‌شده است؛ sidecarِ `manifest.json.sha256` remote نمی‌شود. مقدارِ ثابت‌های deploymentِ credential و کلید رمزنگاریِ S3 بخشی از آرتیفکت نیستند.
+
 ## نام ثابت‌ها (تک منبعِ حقیقت — production)
 
 تنها منبعِ پیکربندیِ تولیدی، ثابت‌های PHP تعریف‌شده در لایهٔ deployment است (`wp-config.php` یا include مدیریت‌شدهٔ سرور). **بدونِ fallback به getenv در این slice؛ بدونِ ذخیره در DB/options؛ بدون `CPMS_S3_ENABLED`.**
@@ -28,7 +37,7 @@
 
 ## مالکیت کلید رمزنگاری و جدایی از ترابرد
 
-`CPMS_BACKUP_ENCRYPTION_KEY_B64` متعلق به **رمزنگاری بکاپ** است (`BackupEncryptionEnvelope` — Slice 1)، نه ترابردِ S3. کلیدِ رمزگشایی‌شده فقط در حافظه و فقط از طریقِ `S3BackupDeploymentConfig::encryptionKeyForBackupEnvelope()` در دسترس است؛ نمایِ ترابردی (`S3BackupTransportSettings`) و کارخانهٔ کلاینت (`S3BackupClientFactory`) کلید را حمل/منتقل نمی‌کنند و کلید هرگز وارد پیکربندی AWS SDK نمی‌شود. تولید و چرخشِ کلید مسئولیتِ deployment (خارج از افزونه و خارج از DB) است — همان الگوی «کلید بیرون از persistence» Slice 1.
+`CPMS_BACKUP_ENCRYPTION_KEY_B64` متعلق به **رمزنگاری بکاپ** است (`BackupEncryptionEnvelope` — Slice 1)، نه ترابردِ S3. custody نسخهٔ اصلی باید بیرون از میزبان و در سامانهٔ مدیریت رازِ تحتِ کنترلِ اپراتور بماند؛ برای اجرای mirror یا reconstruction، همان نسخه باید از آن مرجع به ثابتِ deployment `CPMS_BACKUP_ENCRYPTION_KEY_B64` در فرایند CPMS provision شود. این قرارداد از `wp-config.php` یا include مدیریت‌شدهٔ deployment و از `defined()/constant()` می‌خواند (نه `getenv()` و نه DB/options). کلیدِ رمزگشایی‌شده فقط در حافظه و فقط از طریقِ `S3BackupDeploymentConfig::encryptionKeyForBackupEnvelope()` در دسترس است؛ نمایِ ترابردی (`S3BackupTransportSettings`) و کارخانهٔ کلاینت (`S3BackupClientFactory`) کلید را حمل/منتقل نمی‌کنند و کلید هرگز وارد پیکربندی AWS SDK نمی‌شود. catalog/pointer شناسهٔ کلید ندارد؛ برای هر mirror باید مرجع/نسخهٔ دقیقِ همان کلید در custody خارجی معلوم باشد. چارچوبِ key-ID/rotation/KMS در این slice وجود ندارد.
 
 ## کارخانهٔ کلاینت (بدون شبکه)
 
@@ -63,7 +72,7 @@ $result = $mirror->mirrorBackup($existingLocalBackupId);   // throw BackupExcept
 - **VERIFIED در برابر ACKNOWLEDGED:** برای هر شیء، digestِ SHA-256ِ ciphertext در همان PUT با `ChecksumSHA256` ارسال می‌شود (+ `ContentLength`). اگر endpoint در پاسخِ خودِ PUT، `ChecksumSHA256` هم‌خوان برگرداند ⇒ `VERIFIED`. اگر اثباتِ checksum در دسترس نباشد ⇒ `ACKNOWLEDGED` که هرگز verified گزارش/لاگ نمی‌شود. هیچ **شرطِ طولی** برای رسیدن به VERIFIED نیست: خودِ AWS در مرجعِ `PutObject` می‌گوید `x-amz-object-size` «only present if you append to an object» (AppendObject، S3 Express One Zone) — پس پاسخِ معمولیِ PUT طولِ شیء را تضمین نمی‌کند؛ اگر endpoint صراحتاً طولِ **متناقضی** اعلام کند Fail-Closed رد می‌شود (`..._SIZE_MISMATCH`) که فقط ردِّ تناقض است، نه اثباتِ لازم. ناهم‌خوانیِ **صریحِ** checksum ⇒ `CLINIC_BACKUP_MIRROR_CHECKSUM_MISMATCH`؛ ردِ checksum توسط سرویس هم از همان مسیرِ خطای SDK (پاسخِ غیرموفق) شکستِ صریح است، نه تنزل به acknowledged. ETag و metadataِ اکوی‌شده هرگز دلیلِ برابریِ بدنه نیستند و HEAD برای اثباتِ بدنه استفاده نمی‌شود.
 - **نتیجهٔ سطح‌مجموعه:** همه `VERIFIED` ⇒ `encrypted upload verified`؛ حداقل یک `ACKNOWLEDGED` ⇒ `encrypted upload acknowledged; checksum verification unavailable`؛ هر شکست ⇒ عملیات ناموفق. این «پایانِ ترتیبِ آپلود» ادعای تراکنشِ اتمیک یا visibility هم‌زمان نیست.
 - **رفتار در شکست:** مبدأ محلی بایت‌به‌بایت دست‌نخورده، بدونِ prune/invalidation، بدونِ plaintext fallback، با پیامِ bounded بدونِ حساسیت. اگر پیش از شکست شیءِ ریموتی ساخته شده باشد، **فقط** همان اشیاءِ همین تلاش به‌صورتِ best-effort پاک می‌شوند (بدونِ هیچ API عمومیِ delete/retention و بدونِ ListObjects)؛ اگر نظافت کامل نشود، evidenceٔ bounded (`attempted/failed/object_ids`ِ opaque) در `data['cleanup']` خطا و لاگِ عملیاتی ثبت می‌شود.
-- **ردپای ماندگار:** فقط audit/operation log موجود با pointer هشت‌فیلده (`backup_id`, `mirror_id`, `catalog_object_id`, `object_count`, `ciphertext_bytes`, `verification`, `timestamp`, `result_code`) — بدونِ مسیر منطقی، PHI، secret یا مقدارِ پیکربندی.
+- **ردپای ماندگار (مشروط):** اگر `AuditLogger`/`OpLogger` موجود به سازنده تزریق شود، log محلی فقط projection هشت‌فیلدهٔ pointer (`backup_id`, `mirror_id`, `catalog_object_id`, `object_count`, `ciphertext_bytes`, `verification`, `timestamp`, `result_code`) را می‌گیرد — بدونِ مسیر منطقی، PHI، secret یا مقدارِ پیکربندی. Mirror در هر حال result برمی‌گرداند؛ جدول یا remote index برای pointer ساخته نمی‌شود.
 - **کدهای خطا:** `CLINIC_BACKUP_MIRROR_NOT_CONFIGURED` / `_LOCAL_INVALID` / `_ENCRYPTION_FAILED` / `_OBJECT_TOO_LARGE` / `_UPLOAD_FAILED` / `_CHECKSUM_MISMATCH` / `_SIZE_MISMATCH` (پیام‌های ثابت، `data` همیشه خالی جز evidenceٔ نظافت).
 - **نکتهٔ عملیاتی:** هیچ سازوکارِ فراخوانیِ خودکاری اضافه نشده — UI/Settings/Job در این slice ممنوع بود؛ اپراتور باید صریحاً این عملیات را صدا بزند. تست‌ها در `tests/Unit/Phase15S3MirrorUploadRedTest.php` (بدونِ شبکه/endpoint واقعی — seamٔ مستند `http_handler` Slice 2B).
 
@@ -76,6 +85,92 @@ $result = $mirror->mirrorBackup($existingLocalBackupId);   // throw BackupExcept
 - اندازهٔ کاتالوگ و اندازه/hash هر payload مطابق catalogِ احراز‌شده بررسی می‌شود؛ همهٔ envelopeها احراز می‌شوند. فقط `db.sql`، `manifest.json`، فایل‌های storageِ معتبر و sidecar محلیِ `manifest.json.sha256` ساخته می‌شوند. hash مانیفست پیش از verifier سنجیده می‌شود. verifier و `BackupService::restorePreflight()` موجود استفاده می‌شوند؛ هیچ `restoreApply()`/SQL اجرا یا storage تولیدی دستکاری نمی‌شود.
 - staging یکتا و owner-only بیرون از webroot و ریشه‌های بکاپ ساخته می‌شود. کاتالوگ، ciphertext و plaintext در موفقیت و شکست پاک می‌شوند؛ شکستِ cleanup فقط evidenceٔ محدودِ cleanup و کدِ خطای اولیهٔ غیرحساس را نشان می‌دهد. نتیجهٔ موفق فقط `remote reconstruction passed existing restore preflight` است.
 - برای Slice 2D هیچ job/scheduler، `backup.run` integration، retention/delete، UI/Settings یا API/provider abstraction اضافه نشده است. این بررسی، اثباتِ restore واقعی یا RPO/RTO نیست.
+
+## قراردادِ محدودِ بازیابی پس از ازدست‌رفتنِ میزبان
+
+این قرارداد فقط به دو service صریحِ Slice 2C/2D مربوط است. S3 mirror به `backup.run` وصل نیست؛ `bin/cpms backup`، Admin و REST مسیرِ S3 mirror/reconstruction ندارند. هیچ دستور CLI، route یا UI جدیدی در این راهنما تعریف نمی‌شود.
+
+### Pointer دقیق و نگهداریِ خارج از میزبان
+
+پس از mirror موفق، `BackupS3Mirror::pointerFromResult()` دقیقاً این هشت کلید را **به همین ترتیب** برمی‌گرداند؛ pointer هیچ credential، secret یا مقصدی ندارد:
+
+| ترتیب | کلید | نوع/قیدِ موفقیت |
+| --- | --- | --- |
+| 1 | `backup_id` | string؛ شناسهٔ بکاپِ محلیِ منبع |
+| 2 | `mirror_id` | string؛ شناسهٔ opaque با ۳۲ رقمِ hex کوچک |
+| 3 | `catalog_object_id` | string؛ شناسهٔ opaque با ۳۲ رقمِ hex کوچک |
+| 4 | `object_count` | integer؛ تعداد کلِ آبجکت‌ها با احتساب catalog |
+| 5 | `ciphertext_bytes` | integer؛ مجموعِ بایت‌های ciphertext |
+| 6 | `verification` | `VERIFIED` یا `ACKNOWLEDGED` |
+| 7 | `timestamp` | integer؛ Unix epoch seconds |
+| 8 | `result_code` | برای نتیجهٔ موفق: `ok` |
+
+اگر caller، `AuditLogger` و/یا `OpLogger` اختیاری را به `BackupS3Mirror` بدهد، pointer در log محلی ثبت می‌شود؛ منبعِ قطعیِ فراخوانی، result برگشتی و `pointerFromResult()` است. در هر حالت remote pointer index یا فهرست‌کردن/جست‌وجوی آبجکت‌ها وجود ندارد. `mirror_id` و `catalog_object_id` برای ساختنِ کلیدِ catalog و `backup_id` برای نام‌گذاریِ stage لازم‌اند؛ شناسه‌های آبجکت تصادفی و opaque هستند. با از دست‌رفتنِ میزبان، log محلی نیز ممکن است از دست برود و pointer را نمی‌توان از روی bucket فهرست‌شده بازسازی کرد. برای اجرای procedure مستندِ ازدست‌رفتنِ کاملِ میزبان، حفظِ pointer بیرون از میزبانِ اصلیِ CPMS **الزامی** است و باید پس از ازدست‌رفتنِ همان میزبان نیز مستقلاً قابل‌بازیابی بماند. کدِ فعلیِ CPMS pointer را از caller می‌گیرد و **مخزن/آبجکت‌ستِ جداگانه‌ای را الزام نمی‌کند**؛ packetی که به‌طور مستقل قابل‌شناسایی و دریافت باشد در همان bucket نیز ذاتاً توسط کدِ reconstruction پشتیبانی‌نشده نیست، مشروط بر اینکه راهِ دریافتِ آن پس از ازدست‌رفتنِ میزبان واقعاً در دسترس باشد. چون CPMS pointer index/listing ندارد، کشف و دریافتِ packet مسئولیتِ اپراتور است. نگهداریِ packet در bucket، account یا failure-domain جداگانه می‌تواند به‌عنوان توصیهٔ عملیاتی برای تاب‌آوری بیشتر مناسب باشد، اما **توصیه است، نه invariant یا الزامِ فنیِ CPMS**.
+
+### حداقلِ recovery packet معمولی
+
+Packet عملیاتیِ خارج از میزبان می‌تواند این مواردِ غیرمحرمانه را داشته باشد:
+
+1. pointer هشت‌فیلدهٔ بالا؛
+2. مقصدِ لازم برای همان mirror: `endpoint`، `region`، `bucket`، **prefix نرمال‌شده** (خالی هم مقدار معتبری است) و `path-style` به‌صورت boolean؛
+3. فقط **reference**های بیرونی برای secretِ `CPMS_S3_ACCESS_KEY_ID` و `CPMS_S3_SECRET_ACCESS_KEY` (یا یک reference به secret recordی که هر دو را فراهم می‌کند)؛ و reference/version دقیقِ رازِ `CPMS_BACKUP_ENCRYPTION_KEY_B64` که در همان mirror استفاده شد.
+
+Reference شناسهٔ محل custody است، نه مقدارِ secret. catalog و pointer نسخه/شناسهٔ کلید را حمل نمی‌کنند؛ کلیدِ درست باید همان کلیدِ رمزگشایی باشد. در packet معمولی **هرگز** secret value، رشتهٔ Base64 یا بایتِ کلید، داده/شناسهٔ بیمار یا Clinic، PHI، header یا token/cookie مربوط به Authorization، یا URL امضاشده/پیش‌امضاشده قرار ندهید. هیچ نمونهٔ مقدارِ محرمانه در این سند وجود ندارد.
+
+### پیش‌نیازهای میزبانِ جایگزین
+
+برای رسیدن به `reconstructAndPreflight()` لازم است:
+
+- CPMS با کدِ Slice 2D و autoload/dependencyهای production موجود، در WordPressی که به‌طور عادی bootstrap شده اجرا شود؛ PHP حداقل `8.1`، runtime شصت‌وچهاربیتی، Sodium و AWS SDK موجود باشند.
+- خودِ بکاپِ محلیِ مبدأ روی میزبانِ ازدست‌رفته برای این مرحله لازم نیست: payload از S3 بازسازی می‌شود. بااین‌حال، فرایند به WordPress/CPMS bootstrapped و MySQL قابل‌دسترسی نیاز دارد: `App::backupService()` وابستگی‌های موجود را می‌سازد و restore preflight در پایان فقط probeِ اتصالِ DB (`SELECT 1`) را انجام می‌دهد؛ این به‌تنهایی DBِ مقصدِ restore را آماده یا دادهٔ SQL را import نمی‌کند.
+- ثابت‌های deploymentِ جدول بالا هنگام اجرای PHP حاضر باشند؛ `CPMS_S3_PREFIX` همان مقدارِ نرمال‌شده، و ثابتِ کلید از reference/version بیرونیِ دقیق provision شده باشد. میزبان باید دسترسی HTTPS/TLS به endpoint داشته باشد و credential باید اجازهٔ خواندنِ آبجکت‌های همان مقصد را بدهد.
+- دایرکتوریِ موقتِ سیستم برای ساختِ stage قابل‌نوشتن و دارای فضای کافی برای این آینه باشد (سقفِ aggregate کد 8 GiB). کد stage یکتا با مجوز owner-only `0700` می‌سازد و مسیر زیرِ webroot، ریشهٔ بکاپ یا ریشهٔ بالینیِ فعال را رد می‌کند.
+
+### فراخوانیِ service در حدِ موجود
+
+فقط از یک context مورداعتماد که WordPress/CPMS را bootstrap کرده و secretها را از مرجع بیرونی به ثابت‌های deployment provision کرده است، این service callها قابل استفاده‌اند؛ snippetها **دستور CLI نیستند** و مسیر عمومیِ آمادهٔ اپراتور محسوب نمی‌شوند:
+
+```php
+$config = \ClinicCore\Infrastructure\Backup\S3BackupDeploymentConfig::fromDeploymentConstants();
+if (!$config instanceof \ClinicCore\Infrastructure\Backup\S3BackupDeploymentConfig) {
+    throw new \RuntimeException('S3 backup deployment configuration is unavailable.');
+}
+$backupService = \ClinicCore\Bootstrap\App::backupService();
+$mirror = new \ClinicCore\Application\Backup\BackupS3Mirror($backupService->store(), $config);
+$result = $mirror->mirrorBackup($existingLocalBackupId); // بکاپِ موجود و verifier-passing
+$pointer = \ClinicCore\Application\Backup\BackupS3Mirror::pointerFromResult($result);
+// pointer + مقصدِ غیرمحرمانه + secret references را خارج از این میزبان حفظ کنید.
+```
+
+روی میزبان جایگزین، پس از provision همان secret version و فراهم‌کردنِ pointer با نوع‌های بالا:
+
+```php
+$config = \ClinicCore\Infrastructure\Backup\S3BackupDeploymentConfig::fromDeploymentConstants();
+$recovery = new \ClinicCore\Application\Backup\BackupS3MirrorRecovery(
+    \ClinicCore\Bootstrap\App::backupService(),
+    $config
+);
+$result = $recovery->reconstructAndPreflight($pointer);
+```
+
+### چهار نتیجهٔ متفاوت — نه یک ادعای واحد
+
+| مرحله | آنچه کد بررسی می‌کند | آنچه ثابت نمی‌کند |
+| --- | --- | --- |
+| آپلودِ `ACKNOWLEDGED` | endpoint درخواستِ PutObject را پذیرفته؛ checksum هم‌خوان در پاسخ در دسترس نبوده است | برابریِ بایت‌های نگه‌داری‌شده یا دوامِ provider |
+| آپلودِ `VERIFIED` | پاسخِ PutObject برای هر آبجکت، `ChecksumSHA256` هم‌خوان با checksum محلی داشته است | دوام/تکثیرِ بلندمدت در provider واقعی |
+| reconstruction verification | دریافت، اندازه/hashهای catalog، رمزگشاییِ احراز‌شده، manifest و `LocalBackupVerifier` روی stage موفق‌اند | اجرای SQL یا بازگشت کاملِ سرویس |
+| restore preflight | `BackupService::restorePreflight()` روی stage موفق است و probe اتصال DB را می‌گذراند | اجرای restore روی یک target واقعی یا یک تمرین کاملِ disaster recovery |
+
+`BackupS3MirrorRecovery::reconstructAndPreflight()` **`restoreApply()` را صدا نمی‌زند**، SQL را اجرا نمی‌کند و storage تولیدی را تغییر نمی‌دهد. Restore مخرب، عملیات جداگانهٔ محلیِ `restoreApply()` است؛ remote destructive restore در این قابلیت وجود ندارد. نتیجهٔ فعلی فقط `remote reconstruction passed existing restore preflight` است و **اثباتِ disaster recovery کامل، دوامِ provider، RPO یا RTO نیست**.
+
+### قطعِ ناگهانی و stage خصوصیِ باقیمانده
+
+در اجرای عادی، `finally` پاک‌سازیِ stage را تلاش می‌کند. اگر process یا میزبان ناگهانی متوقف شود، `finally` اجرا نمی‌شود و stage یکتای زیرِ دایرکتوریِ موقتِ سیستم با پیشوندِ `cpms-mirror-recovery-` ممکن است بماند؛ آن stage می‌تواند plaintextِ `db.sql`، manifest و فایل‌های بالینی را در کنار catalog/ciphertext موقت داشته باشد. **هیچ janitor خودکاری وجود ندارد.** فقط پس از تأیید از راهِ supervisor/process inventory که هیچ recovery process فعالی از همان میزبان/کاربر در حال اجرا نیست، اپراتور مجاز است candidate را با بررسیِ ownership، mode و symlinkها به‌صورت دستی inspect کند و فقط stageِ واقعاً رهاشده را حذف کند؛ اگر فعالیتی نامشخص است، حذف نکنید. حذف معمولی/`unlink` وعدهٔ secure wipe یا محوشدنِ فیزیکیِ بایت‌ها نیست.
+
+### حدِ شواهدِ provider
+
+Integration chain موجود، artifact واقعیِ `BackupService::createBackup()` را از mirror تا reconstruction/preflight عبور می‌دهد، اما AWS HTTP را با seamِ `http_handler` درون‌فرایندی intercept و fake می‌کند. به endpoint یا provider واقعی درخواست نمی‌فرستد و بنابراین durability، رفتار یا پایداریِ S3-compatible provider واقعی را اثبات نمی‌کند.
 
 ### پوششِ یکپارچهٔ زنجیرهٔ واقعی (منبعِ واقعی → آینه → بازسازی)
 
