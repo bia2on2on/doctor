@@ -308,7 +308,8 @@ final class LicenseService implements LicenseStateProvider
             throw new LicenseGatewayException('License document has invalid dates', false, 'CLINIC_LICENSE_INVALID');
         }
 
-        if (!LicenseSignature::verifyLicenseDocument($payload, $signatureB64)) {
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
+        if ( ! LicenseSignature::verify_license_document( $payload, $signatureB64 ) ) {
             throw new LicenseGatewayException('License signature verification failed', false, 'CLINIC_LICENSE_INVALID');
         }
 

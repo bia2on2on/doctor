@@ -46,19 +46,18 @@ final class LicenseSignature
      *
      * @param array<string, mixed> $payload
      */
-    public static function verifyLicenseDocument(array $payload, string $signatureB64): bool
-    {
-        $hasSchemaVersion = array_key_exists('schema_version', $payload);
-        $hasKeyId = array_key_exists('key_id', $payload);
+    public static function verify_license_document( array $payload, string $signature_b64 ): bool {
+        $has_schema_version = array_key_exists( 'schema_version', $payload );
+        $has_key_id         = array_key_exists( 'key_id', $payload );
 
-        if (!$hasSchemaVersion && !$hasKeyId) {
-            return self::verifyLegacyDocument($payload, $signatureB64);
+        if ( ! $has_schema_version && ! $has_key_id ) {
+            return self::verify_legacy_document( $payload, $signature_b64 );
         }
-        if (!$hasSchemaVersion || !$hasKeyId) {
+        if ( ! $has_schema_version || ! $has_key_id ) {
             return false;
         }
 
-        return self::verifyVersionedDocument($payload, $signatureB64);
+        return self::verify_versioned_document( $payload, $signature_b64 );
     }
 
     /**
@@ -66,16 +65,15 @@ final class LicenseSignature
      *
      * @param array<string, mixed> $payload
      */
-    private static function verifyLegacyDocument(array $payload, string $signatureB64): bool
-    {
-        if (array_key_exists('schema_version', $payload) || array_key_exists('key_id', $payload)) {
+    private static function verify_legacy_document( array $payload, string $signature_b64 ): bool {
+        if ( array_key_exists( 'schema_version', $payload ) || array_key_exists( 'key_id', $payload ) ) {
             return false;
         }
 
         return self::verify(
-            self::canonicalJson($payload),
-            $signatureB64,
-            LicenseKeys::legacyPublicKey()
+            self::canonicalJson( $payload ),
+            $signature_b64,
+            LicenseKeys::legacy_public_key( )
         );
     }
 
@@ -85,19 +83,22 @@ final class LicenseSignature
      *
      * @param array<string, mixed> $payload
      */
-    private static function verifyVersionedDocument(array $payload, string $signatureB64): bool
-    {
-        $schemaVersion = $payload['schema_version'] ?? null;
-        if (!is_int($schemaVersion) || $schemaVersion !== self::DOCUMENT_SCHEMA_VERSION) {
+    private static function verify_versioned_document( array $payload, string $signature_b64 ): bool {
+        $schema_version = $payload['schema_version'] ?? null;
+        if ( ! is_int( $schema_version ) || $schema_version !== self::DOCUMENT_SCHEMA_VERSION ) {
             return false;
         }
 
-        $publicKeyB64 = LicenseKeys::publicKeyFor($payload['key_id'] ?? null);
-        if ($publicKeyB64 === null) {
+        $public_key_b64 = LicenseKeys::public_key_for( $payload['key_id'] ?? null );
+        if ( $public_key_b64 === null ) {
             return false;
         }
 
-        return self::verify(self::canonicalJson($payload), $signatureB64, $publicKeyB64);
+        return self::verify(
+            self::canonicalJson( $payload ),
+            $signature_b64,
+            $public_key_b64
+        );
     }
 
     /**

@@ -30,18 +30,15 @@ final class LicenseKeys
      */
     public const TRUSTED_PUBLIC_KEYS_B64 = [];
 
-    private const MAX_KEY_ID_LENGTH = 64;
+    private const MAX_KEY_ID_LENGTH       = 64;
     private const MAX_TRUSTED_PUBLIC_KEYS = 32;
 
-    /**
-     * Existing one-key path, used only for documents with neither versioned field.
-     */
-    public static function legacyPublicKey(): string
+    public static function publicKey(): string
     {
         $key = self::PRODUCTION_PUBLIC_B64;
         if (function_exists('apply_filters')) {
-            $filtered = apply_filters('cpms_license_public_key', $key);
-            if (is_string($filtered) && $filtered !== '') {
+            $filtered = (string) apply_filters('cpms_license_public_key', $key);
+            if ($filtered !== '') {
                 return $filtered;
             }
         }
@@ -50,11 +47,10 @@ final class LicenseKeys
     }
 
     /**
-     * Backward-compatible alias for callers of the historical single-key seam.
+     * The existing one-key path, selected only for legacy document shape.
      */
-    public static function publicKey(): string
-    {
-        return self::legacyPublicKey();
+    public static function legacy_public_key(): string {
+        return self::publicKey( );
     }
 
     /**
@@ -63,31 +59,30 @@ final class LicenseKeys
      *
      * @return array<string, string>
      */
-    public static function trustedPublicKeys(): array
-    {
+    public static function trusted_public_keys(): array {
         $keys = self::TRUSTED_PUBLIC_KEYS_B64;
-        if (function_exists('apply_filters')) {
-            $filtered = apply_filters('cpms_license_public_keys', $keys);
-            if (!is_array($filtered)) {
+        if ( function_exists( 'apply_filters' ) ) {
+            $filtered = apply_filters( 'cpms_license_public_keys', $keys );
+            if ( ! is_array( $filtered ) ) {
                 return [];
             }
             $keys = $filtered;
         }
 
-        if (count($keys) > self::MAX_TRUSTED_PUBLIC_KEYS) {
+        if ( count( $keys ) > self::MAX_TRUSTED_PUBLIC_KEYS ) {
             return [];
         }
 
         $trusted = [];
-        foreach ($keys as $keyId => $publicKeyB64) {
-            if (!is_string($keyId)
-                || !self::isValidKeyId($keyId)
-                || !is_string($publicKeyB64)
-                || trim($publicKeyB64) === ''
+        foreach ( $keys as $key_id => $public_key_b64 ) {
+            if ( ! is_string( $key_id )
+                || ! self::is_valid_key_id( $key_id )
+                || ! is_string( $public_key_b64 )
+                || trim( $public_key_b64 ) === ''
             ) {
                 return [];
             }
-            $trusted[$keyId] = $publicKeyB64;
+            $trusted[ $key_id ] = $public_key_b64;
         }
 
         return $trusted;
@@ -96,24 +91,22 @@ final class LicenseKeys
     /**
      * Resolve an exact, valid identifier against the locally trusted ring.
      */
-    public static function publicKeyFor(mixed $keyId): ?string
-    {
-        if (!self::isValidKeyId($keyId)) {
+    public static function public_key_for( mixed $key_id ): ?string {
+        if ( ! self::is_valid_key_id( $key_id ) ) {
             return null;
         }
 
-        $keys = self::trustedPublicKeys();
+        $keys = self::trusted_public_keys( );
 
-        return $keys[$keyId] ?? null;
+        return $keys[ $key_id ] ?? null;
     }
 
     /**
      * key_id is a bounded, case-sensitive ASCII identifier, not key material.
      */
-    public static function isValidKeyId(mixed $keyId): bool
-    {
-        return is_string($keyId)
-            && strlen($keyId) <= self::MAX_KEY_ID_LENGTH
-            && preg_match('/\A[A-Za-z0-9][A-Za-z0-9._-]*\z/', $keyId) === 1;
+    public static function is_valid_key_id( mixed $key_id ): bool {
+        return is_string( $key_id )
+            && strlen( $key_id ) <= self::MAX_KEY_ID_LENGTH
+            && preg_match( '/\A[A-Za-z0-9][A-Za-z0-9._-]*\z/', $key_id ) === 1;
     }
 }
