@@ -65,7 +65,7 @@
 
 ## 7. مرز امنیتی مقصد بکاپ (OD-9 — الزام‌آور از Phase 1)
 
-> **قاعده:** ریشهٔ بکاپِ **فعال** (Setting `backup.storage_path` یا پیش‌فرض) باید **بیرون از DocumentRoot** باشد. بکاپ حاوی همان PHI و یک dump کامل پایگاه داده است — `.htaccess` روی nginx خوانده نمی‌شود و مرز مجوز نیست.
+> **قاعده:** ریشهٔ بکاپِ **فعال** (Setting `backup.storage_path` یا پیش‌فرض) باید **بیرون از DocumentRoot** باشد. بکاپ حاوی همان PHI و فقط dump جدول‌هایی است که dumper با الگوی `CpmsDb::dbPrefix() . 'cpms_%'` انتخاب می‌کند؛ این dump کاملِ پایگاه دادهٔ WordPress نیست و جدول‌های WordPress Core/users/options/roles را شامل نمی‌شود — `.htaccess` روی nginx خوانده نمی‌شود و مرز مجوز نیست.
 
 | وضعیت | رفتار سیستم |
 |---|---|
