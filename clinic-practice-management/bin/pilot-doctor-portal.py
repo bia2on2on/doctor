@@ -18,7 +18,7 @@ import sys
 import time
 from urllib.parse import parse_qs, urlparse
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
 BASE = os.environ.get("BASE", "http://localhost:8080").rstrip("/")
 OUT = "pilot-screenshots"
@@ -212,6 +212,18 @@ def route_of(url):
     return parsed.path.rstrip("/") or "/"
 
 
+def safe_error(text):
+    """Bounded, non-sensitive reduction of a browser/network failure phrase.
+
+    Whitelist only: never echo arbitrary JS or network text, and never a URL,
+    query string, header, cookie or credential, into harness evidence.
+    """
+    if "Failed to fetch" in text:
+        return "Failed to fetch"
+    match = re.search(r"ERR_[A-Z_]+", text)
+    return match.group(0) if match else "other-redacted"
+
+
 def new_page(browser, vp):
     ctx = browser.new_context(
         viewport={"width": vp["w"], "height": vp["h"]},
@@ -261,13 +273,6 @@ def new_page(browser, vp):
             "status": resp.status,
             "method": resp.request.method,
         })
-
-    def safe_error(text):
-        # Whitelist known browser/network phrases; never print arbitrary JS text.
-        if "Failed to fetch" in text:
-            return "Failed to fetch"
-        match = re.search(r"ERR_[A-Z_]+", text)
-        return match.group(0) if match else "other-redacted"
 
     def safe_path(url):
         return re.sub(r"/[0-9]+(?=/|$)", "/{id}", route_of(url))[:120]
@@ -749,6 +754,15 @@ VISIT_STATUSES = {
 # Bounded wait for the asynchronous render of the server-returned state.
 APPT_PRESENTATION_WAIT_SECONDS = 15.0
 APPT_PRESENTATION_POLL_MS = 200
+
+# E7 Visit Workspace evidence — bounded, event-based synchronization.
+# The harness waits for the TERMINAL OUTCOME of the one expected E7 GET (its
+# matching response, a matching request failure, or this bound), never for
+# arbitrary elapsed time: a fixed blind wait could expire before the response
+# was recorded, which made a healthy HTTP 200 indistinguishable from a
+# genuinely missing one. The bound equals the page default timeout already
+# installed by new_page(), so no assertion is relaxed and no sleep is added.
+E7_RECORD_OUTCOME_TIMEOUT_MS = 25000
 
 # PHASE B — the ONE controlled real Doctor Portal refresh allowed for a
 # legitimately stale DOM. The fallback is a single straight-line branch (never
@@ -1286,12 +1300,55 @@ def prove_queue_actions(page, state, doctor, act, skip, label):
     # from its established Doctor Portal queue row. The row's visit_id is only
     # the selector; the portal must open the already-established E7 record path.
     record_suffix = f"/visits/{act}/record"
+
+    def _is_record_get(method, url):
+        # Route match only. The URL itself, its query and every header stay out
+        # of harness evidence; only the bounded outcome is ever reported.
+        if method != "GET":
+            return False
+        try:
+            return route_of(url).endswith(record_suffix)
+        except Exception:  # noqa: BLE001
+            return False
+
     record_reads_before = sum(
         1 for req in state["reqs"]
         if req["method"] == "GET" and req["route"].endswith(record_suffix)
     )
-    page.locator(row_sel(act)).click()
-    page.wait_for_timeout(500)
+
+    # Bounded, event-based synchronization on the ONE expected E7 outcome, using
+    # the same expect_response/requestfailed Playwright mechanism this harness
+    # already relies on elsewhere. Three terminal outcomes stay distinguishable:
+    #   (a) the matching response arrived -> its ACTUAL status is asserted, so a
+    #       genuine non-200 is reported and never hidden;
+    #   (b) the matching request failed -> only a whitelisted, bounded failure
+    #       token is reported (safe_error), never arbitrary network text;
+    #   (c) neither happened inside the bound -> reported as no terminal outcome.
+    # The bound equals the page default timeout installed by new_page(); no
+    # assertion is weakened and no sleep duration is introduced or extended.
+    record_failures = []
+
+    def _on_record_requestfailed(req):
+        if _is_record_get(req.method, req.url):
+            record_failures.append(safe_error(req.failure or "failed"))
+
+    record_outcome = "no-terminal-outcome"
+    record_status = None
+    page.on("requestfailed", _on_record_requestfailed)
+    try:
+        with page.expect_response(
+            lambda resp: _is_record_get(resp.request.method, resp.url),
+            timeout=E7_RECORD_OUTCOME_TIMEOUT_MS,
+        ) as record_info:
+            page.locator(row_sel(act)).click()
+        record_outcome = "response"
+        record_status = record_info.value.status
+    except PlaywrightTimeoutError:
+        if record_failures:
+            record_outcome = "request-failed"
+    finally:
+        page.remove_listener("requestfailed", _on_record_requestfailed)
+
     record_reads_after = sum(
         1 for req in state["reqs"]
         if req["method"] == "GET" and req["route"].endswith(record_suffix)
@@ -1307,16 +1364,17 @@ def prove_queue_actions(page, state, doctor, act, skip, label):
         req for req in state["reqs"]
         if req["method"] == "GET" and req["route"].endswith(record_suffix)
     ]
-    record_responses = [
-        resp for resp in state["rest"]
-        if resp["method"] == "GET" and resp["route"].endswith(record_suffix)
-    ]
-    if not record_responses or record_responses[-1]["status"] != 200:
-        actual = record_responses[-1]["status"] if record_responses else "no response"
+    if record_outcome == "response":
+        observed = record_status
+    elif record_outcome == "request-failed":
+        observed = f"request failed ({','.join(sorted(set(record_failures)))})"
+    else:
+        observed = f"no terminal outcome within {E7_RECORD_OUTCOME_TIMEOUT_MS}ms"
+    if record_outcome != "response" or record_status != 200:
         if workspace_red_error is None:
             workspace_red_error = (
                 f"{label} G1 RED: selected Visit {act} did not open its existing E7 record; "
-                f"expected HTTP 200, observed {actual}"
+                f"expected HTTP 200, observed {observed}"
             )
     if record_requests:
         record_headers = record_requests[-1]["headers"]
