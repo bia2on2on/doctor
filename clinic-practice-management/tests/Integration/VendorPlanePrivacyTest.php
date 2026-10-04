@@ -213,7 +213,9 @@ final class VendorPlanePrivacyTest extends WP_UnitTestCase
         $body = json_decode($this->captured[0]['body'], true);
         $this->assertIsArray($body);
         $this->assertNoSentinelInCaptured('license refresh');
-        $allowed = ['install_id', 'license_id', 'environment', 'version'];
+        // Phase 16 Slice 2: `domain` عمداً به refresh اضافه شد (ابردادهٔ مجازِ
+        // ADR-0028 §2) — بقیهٔ قیدها (بدون PHI، فقط کلیدهای allowlist) دست‌نخورده است.
+        $allowed = ['install_id', 'license_id', 'environment', 'version', 'domain'];
         foreach (array_keys($body) as $k) {
             $this->assertContains($k, $allowed);
         }

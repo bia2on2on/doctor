@@ -261,11 +261,21 @@ $foreignProbeId = rp_insert(
 $nowTehran = new DateTimeImmutable('now', new DateTimeZone('Asia/Tehran'));
 $todayTehran = $nowTehran->format('Y-m-d');
 $todayTokyo = $nowTehran->setTimezone(new DateTimeZone('Asia/Tokyo'))->format('Y-m-d');
-$lateToday = (int) $nowTehran->format('H') >= 23;
+// All four rows below carry $todayTehran as their slot_date, so the FURTHEST
+// planned same-day slot (+70 minutes — the partial-arrival journey) is the
+// binding runway: as soon as that instant would leave the Tehran operational
+// day, every row must use the existing late-day strategy instead of pairing a
+// next-day slot_time with the prior slot_date (e.g. a 22:50–22:59 setup).
+$lateToday = $nowTehran->add(new DateInterval('PT70M'))->format('Y-m-d') !== $todayTehran;
 $slotExpress = $lateToday ? $nowTehran->setTime(23, 55) : $nowTehran->add(new DateInterval('PT10M'));
 $slotPlain = $lateToday ? $nowTehran->setTime(23, 57) : $nowTehran->add(new DateInterval('PT30M'));
 $slotThird = $lateToday ? $nowTehran->setTime(23, 58) : $nowTehran->add(new DateInterval('PT50M'));
 $slotPartial = $lateToday ? $nowTehran->setTime(23, 59) : $nowTehran->add(new DateInterval('PT70M'));
+foreach (['express' => $slotExpress, 'plain' => $slotPlain, 'third' => $slotThird, 'partial' => $slotPartial] as $slotTag => $slotAt) {
+    if ($slotAt->format('Y-m-d') !== $todayTehran) {
+        rp_fail('same-day ' . $slotTag . ' slot must not cross the Tehran operational day');
+    }
+}
 $apptExpress = null;
 $apptPlain = null;
 $apptThird = null;
