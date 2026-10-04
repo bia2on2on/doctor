@@ -166,6 +166,18 @@ final class Phase15SourceBackupRemoteRecoveryChainTest extends WP_UnitTestCase
     private const NOTE_MARKER     = 'CPMS-SYNTHETIC-BACKUP-NOTE-MARKER-NOT-REAL';
     private const FILE_EXTENSION  = 'pdf';
 
+    /**
+     * Recovery's logical-path bounds, mirrored for the chain precondition.
+     * `BackupS3MirrorRecovery` declares both as PRIVATE constants
+     * (`MAX_LOGICAL_PATH_BYTES`, `MAX_PATH_COMPONENT_BYTES`), so a test cannot
+     * read them through `constant()`; the delivered values are pinned here
+     * exactly as the accepted Slice 2D suite pins the other recovery bounds.
+     * The public `MAX_REMOTE_OBJECT_COUNT` IS read from the production class.
+     * No production limit is altered, widened or narrowed by this file.
+     */
+    private const RECOVERY_MAX_LOGICAL_PATH_BYTES   = 2048;
+    private const RECOVERY_MAX_PATH_COMPONENT_BYTES = 255;
+
     /** One shared random private root; every owned path lives below it. */
     private string $root;
     private string $clinicalRootA;
@@ -661,15 +673,23 @@ final class Phase15SourceBackupRemoteRecoveryChainTest extends WP_UnitTestCase
             (string) file_get_contents($dir . '/storage/' . $this->clinicalRelB),
             'fixture precondition: the carried bytes of the second clinical file are exactly what the production storage service wrote'
         );
-        // Shared-harness bound: the installation-wide inventory must stay inside
-        // the delivered remote-object ceiling (catalog excluded).
+        /*
+         * Shared-harness bound, derived from the REAL recovery contract:
+         *   object_count = catalog + db.sql + manifest.json + storage files
+         * and recovery requires object_count <= MAX_REMOTE_OBJECT_COUNT
+         * (validate_pointer) together with
+         *   count(entries) <= MAX_REMOTE_OBJECT_COUNT - 1,
+         * entries = db.sql + manifest.json + storage files (validate_catalog).
+         * Both reduce to the same storage allowance, so all THREE non-storage
+         * objects must be subtracted from the ceiling — not only the catalog.
+         */
+        $maxRemoteObjects = (int) constant(self::RECOVERY_CLASS . '::MAX_REMOTE_OBJECT_COUNT');
         self::assertLessThanOrEqual(
-            (int) constant(self::RECOVERY_CLASS . '::MAX_REMOTE_OBJECT_COUNT') - 1,
+            $maxRemoteObjects - 3,
             count($files),
-            'harness bound: the shared installation-wide clinical inventory stays inside the delivered remote-object ceiling'
+            'harness bound: catalog + db.sql + manifest.json + the installation-wide clinical inventory stays inside the delivered remote-object ceiling'
         );
-        // Sufficient precondition for both real validators on the chain:
-        // BackupS3Mirror::assert_relative() and the recovery logical-path rule.
+        // Each real storage path must satisfy both real chain validators.
         foreach ($paths as $relative) {
             $this->assertChainCompatibleStoragePath($relative);
         }
@@ -705,24 +725,45 @@ final class Phase15SourceBackupRemoteRecoveryChainTest extends WP_UnitTestCase
     }
 
     /**
-     * Exactly the shape both real validators on the chain require for a storage
-     * entry, so a shared-harness inventory difference can never be mistaken for
-     * a chain defect: `BackupS3Mirror::assert_relative()` accepts only
-     * `[A-Za-z0-9._/-]` relative paths without `..`, and the recovery
-     * logical-path rule additionally requires `storage/<positive clinic id>/…`
-     * with at least three safe, bounded, non-reserved path components.
+     * Sufficient precondition for BOTH real path validators on the chain, so a
+     * shared-harness inventory difference can never be mistaken for a chain
+     * defect.
+     *
+     * Mirror side - `BackupS3Mirror::assert_relative()` on the manifest-declared
+     * relative path: non-empty, not absolute, no `..`, and only the charset
+     * `[A-Za-z0-9._/-]`.
+     *
+     * Recovery side - `BackupS3MirrorRecovery::is_allowed_logical_path()` on the
+     * FULL logical path `storage/<relative>`: at most 2048 bytes; valid UTF-8;
+     * no control byte, backslash, leading `/`, `..` or `^[A-Za-z]:` drive
+     * prefix; only `[A-Za-z0-9._/-]`; at least three components with `storage`
+     * first and a positive Clinic id second; and every component non-empty, not
+     * `.` or `..`, at most 255 bytes, without a trailing dot and not a reserved
+     * device name.
+     *
+     * The single ASCII charset assertion below subsumes the UTF-8, control-byte,
+     * backslash, absolute-path and drive-prefix rules; the explicit length
+     * assertions enforce the recovery bound on the full logical path and on each
+     * component. Only the public `MAX_REMOTE_OBJECT_COUNT` is read from the
+     * production class - by the caller - and no production limit is changed.
      */
     private function assertChainCompatibleStoragePath(string $relative): void
     {
         self::assertMatchesRegularExpression(
             '/^[1-9][0-9]{0,9}\/[A-Za-z0-9._\/-]+$/',
             $relative,
-            'chain precondition: a real clinical relative path is Clinic-scoped and uses only validator-safe characters'
+            'chain precondition: a real clinical relative path is Clinic-scoped and uses only the ASCII charset both validators accept'
         );
         self::assertStringNotContainsString(
             '..',
             $relative,
             'chain precondition: no traversal component reaches the mirror or the recovery validator'
+        );
+        $logicalPath = 'storage/' . $relative;
+        self::assertLessThanOrEqual(
+            self::RECOVERY_MAX_LOGICAL_PATH_BYTES,
+            strlen($logicalPath),
+            'chain precondition: the full logical path stays inside the recovery logical-path bound'
         );
         $parts = explode('/', $relative);
         self::assertGreaterThanOrEqual(
@@ -733,7 +774,12 @@ final class Phase15SourceBackupRemoteRecoveryChainTest extends WP_UnitTestCase
         foreach ($parts as $part) {
             self::assertNotSame('', $part, 'chain precondition: no empty path component');
             self::assertNotSame('.', $part, 'chain precondition: no dot path component');
-            self::assertLessThanOrEqual(255, strlen($part), 'chain precondition: every path component stays inside the bounded component length');
+            self::assertNotSame('..', $part, 'chain precondition: no dot-dot path component');
+            self::assertLessThanOrEqual(
+                self::RECOVERY_MAX_PATH_COMPONENT_BYTES,
+                strlen($part),
+                'chain precondition: every path component stays inside the recovery component bound'
+            );
             self::assertFalse(str_ends_with($part, '.'), 'chain precondition: no trailing-dot path component');
             self::assertDoesNotMatchRegularExpression(
                 '/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i',
