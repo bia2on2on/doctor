@@ -100,7 +100,7 @@
 
 | Code | HTTP | Meaning | Retry-able |
 |---|---|---|---|
-| `CLINIC_LICENSE_BLOCKED` | 503 | لایسنس اجازه عملیات جدید را نمی‌دهد (RESTRICTED/SUSPENDED/REVOKED/INVALID/UNREACHABLE) — Read/تاریخچه/Export آزاد (spec §16) | — |
+| `CLINIC_LICENSE_BLOCKED` | 503 | لایسنس اجازه عملیات جدید را نمی‌دهد (SUSPENDED/REVOKED/INVALID/UNREACHABLE؛ و در RESTRICTED به‌جز وقتی علتِ داخلیِ آن «انقضای عادی تجاری» = `expired` باشد) — Read/تاریخچه/Export آزاد (spec §16) | — |
 | `CLINIC_LICENSE_UNREACHABLE` | 503 | سرویس لایسنس دسترس‌نیست (Network/Timeout/5xx) — قطع شبکه ≠ نامعتبر | ✅ |
 | `CLINIC_LICENSE_INVALID` | 503 | سند/امضا نامعتبر یا مربوط به نصب دیگر — با داده‌ی معتبرِ جدید رفع می‌شود | — |
 | `CLINIC_LICENSE_ENTITLEMENT` | 403 | Feature شامل سند جاری نیست (fail-closed برای کلید ناشناخته) | — |
@@ -112,6 +112,8 @@
 | `CLINIC_LICENSE_ENDPOINT_INSECURE` | 500 | Endpoint لایسنس باید HTTPS باشد | — |
 | `CLINIC_LICENSE_NOT_CONFIGURED` | 500 | آدرس سرور لایسنس تنظیم نشده (عملیات به‌صورت NOT_CONFIGURED ادامه دارد؛ Setup در Health/Admin) | — |
 | `CLINIC_LICENSE_NOT_ACTIVATED` | 409 | Refresh بدون فعال‌سازی قبلی (ابتدا Activate با کلید/سند) | — |
+
+> **Phase 16 Slice 1 — `RESTRICTED` علت‌محور است:** «انقضای عادی تجاری» (سندِ امضاشدهٔ معتبری که صرفاً از grace گذشته باشد؛ علتِ داخلیِ مشتق‌شده `expired`) همچنان با همان وضعیتِ expired/restricted/needs-renewal نمایش داده می‌شود، ولی عملیاتِ محافظت‌شدهٔ کسب‌وکارِ جدید را صرفاً به‌خاطرِ پایانِ سالانه مسدود نمی‌کند. سایر علت‌های `RESTRICTED` — پایان پنجرهٔ فعال‌سازی/مهلت مهاجرت، vendor-unreachable/stale، و علتِ غایب/ناشناخته (fail-closed) — همچنان مسدود می‌کنند. `CLINIC_LICENSE_BLOCKED` هر جا Gate واقعاً عملیاتی را رد کند برقرار می‌ماند.
 
 ## Backup / Restore (F10 — spec §22–§25)
 
