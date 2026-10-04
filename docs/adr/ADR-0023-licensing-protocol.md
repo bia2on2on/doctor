@@ -20,7 +20,7 @@ F1–F9 shipped CPMS with a deliberate licensing **seam**: `Domain/Licensing/Lic
 ### 2. Local state, not remote truth
 - The gate reads a **local, signed license document** persisted on the customer site (`cpms_license_state`, migration 0008). The document is produced by the vendor server, **Ed25519-signed** by a vendor release-signing key whose **public** key ships in the plugin.
 - A background job (`license.refresh`) periodically fetches a fresh document; all state transitions are computed **locally** from the last successfully verified document + wall-clock expiry. Ordinary page loads never hit the network.
-- Installation identity: high-entropy random install UUID stored locally (`cpms_license_install`), registered with the server at activation. Domain is metadata only (normalization documented), never the sole identity (spec §18).
+- Installation identity: high-entropy random install UUID stored locally (`cpms_license_install`), registered with the server at activation. Domain is metadata — and, **when the signed document carries a `domain` claim, an additional signed activation binding** (Phase 16 Slice 2, normalization documented) — never the sole identity and never a replacement for `install_id` (spec §18).
 
 ### 3. State semantics (spec §15) — amended by employer decision 2026-09-06
 Distinct states, stored + exposed:
@@ -58,12 +58,18 @@ Critical distinctions enforced in code and tests:
 - Representation is unchanged: an ordinarily-expired license is still reported as `RESTRICTED` with reason `expired` and `needs_renewal`, and the gate still reports itself read-only, so status and renewal visibility are unaffected.
 - `CLINIC_LICENSE_BLOCKED` remains the code wherever the gate actually denies an operation.
 
+**Signed domain binding (Phase 16 Slice 2).** A verified signed document that carries a `domain` claim is valid only for the canonical local site domain, derived from WordPress `home_url()` with the single documented rule (lower-case + leading `www.` removed; no IDN/punycode/path/port policy, and never the request host/`HTTP_HOST`). The same canonicalization is applied to both sides of the comparison.
+- **Mismatch — or a present but empty/non-string/unusable claim — fails closed:** the stored document is kept, the state is `RESTRICTED` with the bounded internal reason `binding_mismatch`, and the protected new-business operations are denied through the existing gate (only the exact `expired` cause keeps the ordinary-expiration exception — `binding_mismatch` never does). Reads/history, patient update, cancel/hygiene, in-progress clinical workflow completion, backup/restore, export/recovery and security functions remain open; nothing is deleted.
+- **Reversible:** with the document untouched, restoring the bound local domain restores the normal state; no local persistence or migration is added and no `WP_ENVIRONMENT_TYPE`-style bypass exists.
+- **A document without a `domain` claim is legacy/unbound** and keeps the pre-slice behavior. `install_id` verification is unchanged.
+- Refresh sends the current canonical domain through the existing `VendorGateway` contract (already an allowed metadata category per ADR-0028 §2).
+
 In all of these cases:
 - reads/history/export stay open;
 - in-progress visit clinical workflow (note/prescription/complete), payment/checkout to finish the current visit remain **allowed** (spec §16) — implemented as exempt operations on the gate, mirroring the F4 walk-in read-only precedent (`VisitLicenseGateTest`).
 
 ### 6. Error codes & logs
-New codes registered in `docs/api/error-codes.md`: `CLINIC_LICENSE_BLOCKED` (exists), `CLINIC_LICENSE_UNREACHABLE`, `CLINIC_LICENSE_INVALID`, `CLINIC_LICENSE_RESTRICTED`, `CLINIC_LICENSE_ENTITLEMENT`, `CLINIC_LICENSE_LIMIT_REACHED`, `CLINIC_LICENSE_ACTIVATION_FAILED`. Operational logs carry only license/install identifiers — never PHI, never signing secrets, never full tokens.
+New codes registered in `docs/api/error-codes.md`: `CLINIC_LICENSE_BLOCKED` (exists), `CLINIC_LICENSE_UNREACHABLE`, `CLINIC_LICENSE_INVALID`, `CLINIC_LICENSE_RESTRICTED`, `CLINIC_LICENSE_ENTITLEMENT`, `CLINIC_LICENSE_LIMIT_REACHED`, `CLINIC_LICENSE_ACTIVATION_FAILED`. Phase 16 Slice 2 adds **no new API error code**: `binding_mismatch` is a bounded *internal state reason* surfaced through the existing `CLINIC_LICENSE_BLOCKED` (503). Operational logs carry only license/install identifiers — never PHI, never signing secrets, never full tokens.
 
 ### Distinction table (must never be conflated)
 
