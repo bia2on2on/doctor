@@ -28,7 +28,7 @@ interface VendorGateway
     /**
      * Refresh سند جاری.
      *
-     * @param array<string, mixed> $request {install_id, license_id, environment, version}
+     * @param array<string, mixed> $request {install_id, license_id, environment, version, domain}
      *
      * @return array{payload: array<string, mixed>, signature_b64: string}
      *

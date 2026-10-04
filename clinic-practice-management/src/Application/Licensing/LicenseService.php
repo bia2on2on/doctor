@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ClinicCore\Application\Licensing;
 
 use ClinicCore\Domain\Licensing\EntitlementRegistry;
+use ClinicCore\Domain\Licensing\LicenseDomain;
 use ClinicCore\Domain\Licensing\LicenseKeys;
 use ClinicCore\Domain\Licensing\LicensePolicy;
 use ClinicCore\Domain\Licensing\LicenseSignature;
@@ -26,6 +27,22 @@ use ClinicCore\Infrastructure\Db\CpmsDb;
 final class LicenseService implements LicenseStateProvider
 {
     private const PRODUCT = 'cpms';
+
+    /**
+     * Phase 16 Slice 2 — علتِ محدودکنندهٔ «عدم‌تطابقِ دامنهٔ امضاشده».
+     *
+     * دامنه هویتِ مجوز نیست و جای install_id را نمی‌گیرد؛ فقط یک قیدِ
+     * فعال‌سازیِ امضاشده است. علت عمداً محدود/مشخص است تا Gate آن را
+     * مسدودکننده بداند (فقط `expired` استثنای Phase 16 Slice 1 را دارد).
+     */
+    private const REASON_BINDING_MISMATCH = 'binding_mismatch';
+
+    /**
+     * علتِ «انقضای عادی تجاری» — همان استثنای Phase 16 Slice 1 در
+     * `SignedLicenseGate::assert()`. برای اینکه قیدِ دامنه از آن استثنا عبور
+     * نکند، این‌جا صریحاً شناخته می‌شود (تطبیقِ دقیق، بدون prefix/contains).
+     */
+    private const REASON_ORDINARY_EXPIRATION = 'expired';
 
     public function __construct(
         private readonly LicenseRepository $repo,
@@ -63,6 +80,7 @@ final class LicenseService implements LicenseStateProvider
                 : LicenseStateMachine::UNREACHABLE;
 
             $out = LicenseStateMachine::compute($payload, $verdict, time(), $this->policy);
+            $out = $this->applyDomainBinding( $out, $payload );
 
             return [
                 'status' => $out['status'],
@@ -224,11 +242,16 @@ final class LicenseService implements LicenseStateProvider
             return $this->statusMeta();
         }
         try {
+            // Phase 16 Slice 2 — دامنهٔ canonical جاری سایت در همان قراردادِ
+            // موجود (ابردادهٔ مجازِ ADR-0028 §2؛ از قبل در allowlistِ
+            // HttpVendorGateway) تا سندِ تازه به همین دامنه مقید بماند. آیتمِ
+            // `domain` با هم‌ترازیِ دقیقِ WPCS اضافه شده است.
             $doc = $this->gateway->refresh([
                 'install_id' => (string) ($row['install_id'] ?? $this->installId()),
                 'license_id' => (string) ($row['license_id'] ?? ''),
                 'environment' => $this->environment(),
                 'version' => defined('CPMS_VERSION') ? CPMS_VERSION : 'dev',
+                'domain'      => $this->domain(),
             ]);
             $this->verifyAndStore($doc['payload'], $doc['signature_b64']);
 
@@ -328,6 +351,11 @@ final class LicenseService implements LicenseStateProvider
         return 'production';
     }
 
+    /**
+     * دامنهٔ canonical محلی — تنها مشتقِ مجاز از `home_url()` است و با
+     * استفاده از همان seamِ مشترک (`LicenseDomain`)، یکی‌بودنِ
+     * canonicalizationِ سند و سایت تضمین می‌شود (lower-case + حذفِ `www.`).
+     */
     private function domain(): string
     {
         if (!function_exists('home_url')) {
@@ -335,6 +363,59 @@ final class LicenseService implements LicenseStateProvider
         }
         $host = (string) parse_url((string) home_url(), PHP_URL_HOST);
 
-        return strtolower(preg_replace('/^www\./', '', $host) ?? '');
+        return LicenseDomain::canonicalize( $host );
+    }
+
+    /**
+     * Phase 16 Slice 2 — قیدِ دامنهٔ امضاشده (signed domain binding).
+     *
+     * - سندِ بدونِ ادعای `domain` = legacy/unbound ⇒ وضعیتِ محاسبه‌شده دست‌نخورده
+     *   می‌ماند (سازگاریِ عقب‌رو).
+     * - ادعای حاضرِ منطبق (پس از canonicalizationِ مشترک) ⇒ دست‌نخورده.
+     * - ادعای حاضرِ نامنطبق یا غیرقابلِ استفاده ⇒ RESTRICTED با علتِ محدودِ
+     *   `binding_mismatch` — مگر آنکه وضعیت به‌خودیِ خود مسدودکننده‌تر باشد
+     *   (SUSPENDED/REVOKED/INVALID/UNREACHABLE یا RESTRICTED با علتی جز
+     *   انقضای عادیِ تجاری) که در آن صورت علتِ شدیدتر حفظ می‌شود.
+     * - استثنای «انقضای عادی تجاری» (reason دقیقاً 'expired') از قیدِ دامنه
+     *   عبور نمی‌کند: سندِ منقضیِ متصل به دامنهٔ دیگر مسدود می‌ماند.
+     *
+     * @param array{status:string, reason:string, expires_at:int|null, needs_renewal:bool} $outcome
+     * @param array<string, mixed>|null $payload
+     * @return array{status:string, reason:string, expires_at:int|null, needs_renewal:bool}
+     */
+    private function applyDomainBinding( array $outcome, ?array $payload ): array {
+        if ( $payload === null || ! array_key_exists( 'domain', $payload ) ) {
+            return $outcome;
+        }
+        $claim = LicenseDomain::canonicalize( $payload['domain'] );
+        if ( $claim !== '' && $claim === $this->domain() ) {
+            return $outcome;
+        }
+        if ( $this->isSelfBlocking( $outcome ) ) {
+            return $outcome;
+        }
+
+        return [
+            'status'        => LicenseStatus::RESTRICTED,
+            'reason'        => self::REASON_BINDING_MISMATCH,
+            'expires_at'    => $outcome['expires_at'],
+            'needs_renewal' => true,
+        ];
+    }
+
+    /**
+     * آیا وضعیتِ محاسبه‌شده به‌خودیِ خود (بدون قیدِ دامنه) مسدودکننده است؟
+     *
+     * @param array{status:string, reason:string, expires_at:int|null, needs_renewal:bool} $outcome
+     */
+    private function isSelfBlocking( array $outcome ): bool {
+        if ( LicenseStatus::allowsNewBusiness( $outcome['status'] ) ) {
+            return false;
+        }
+        if ( $outcome['status'] === LicenseStatus::RESTRICTED && $outcome['reason'] === self::REASON_ORDINARY_EXPIRATION ) {
+            return false;
+        }
+
+        return true;
     }
 }
