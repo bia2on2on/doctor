@@ -98,7 +98,7 @@
 | `backup.enabled` | `false` | bool | بکاپ دورهای (Job `backup.run`) — فعالسازی آگاهانه |
 | `backup.interval_hours` | `24` | int | فاصله بکاپ دورهای |
 | `backup.keep_count` | `14` | int | Retention: نگهداری N نسخه آخر (V1 بدون Tiering) |
-| `backup.storage_path` | `''` | string | مسیر مطلق مخزن بکاپ؛ خالی = `{WP_CONTENT_DIR}/cpms-backups` (گارد سرور خودکار) |
+| `backup.storage_path` | `''` | string | مسیر مطلق مخزن بکاپ؛ خالی = `ProtectedBackupStore::defaultBasePath()` = `PrivateStorageLocation::path('cpms-backups')` (ریشهٔ خصوصیِ تنظیم‌شده با `CPMS_PRIVATE_STORAGE_DIR` یا والدِ `ABSPATH`، بیرون از DocumentRoot به‌طور پیش‌فرض). مسیر سفارشیِ داخل webroot به مبدأ legacy فقط‌خواندنی تبدیل می‌شود؛ نوشتن Fail-Closed است. |
 | `backup.last_run_at` | `0` | int (ts) | آخرین بکاپ موفق (نوشتهشده توسط Job/دستی) |
 | `update.check_interval_hours` | `24` | int | TTL کش بررسی بهروزرسانی (transient) |
 | `update.channel` | `stable` | enum stable\|beta | کانال انتشار |
@@ -127,4 +127,4 @@
 | `CPMS_PEPPER` (هش OTP/Hash IP) | `wp-config.php` / Env | ❌ repository، ❌ wp_options |
 | SMS پنل (API Key/Token/Password) | `cpms_settings.sms.auth` — **فقط Ciphertext AES-256-GCM (Vault، ADR-0025)**؛ کلید Vault: Env `CPMS_SECRET_KEY` یا Salt نصب | ❌ plaintext در settings، ❌ repository، ❌ log، ❌ REST، ❌ Audit |
 | OCR API Key (V1.5) | `wp-config.php` / Env | ❌ جدول settings |
-| Backup Key | خارج سرور | ❌ روی سرور |
+| `CPMS_BACKUP_ENCRYPTION_KEY_B64` (Backup Key) | custody بیرونی در secret store؛ reference/version دقیقِ کلیدِ mirror باید مستقل ثبت شود. برای اجرا، **همان نسخهٔ کلید** باید از راهِ deployment به ثابت PHP با همین نام در `wp-config.php` یا include مدیریت‌شده provision شود؛ processِ جایگزین نیز برای reconstruction به همان نسخه نیاز دارد. | ❌ repository، ❌ `wp_options`/DB، ❌ log، ❌ مقدارِ secret در recovery packet |
