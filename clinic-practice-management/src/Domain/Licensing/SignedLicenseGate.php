@@ -73,8 +73,8 @@ final class SignedLicenseGate implements LicenseGate
         // (پایانِ صرفِ سالانهٔ مجوزِ معتبر): status=RESTRICTED با reason دقیقاً
         // 'expired'. fail-closed: نبودِ کلید reason، مقدارِ خالی/ناشناخته/
         // غیررشته‌ای، یا هر status دیگر ⇒ همان رفتارِ قبلیِ مسدود.
-        $restrictedReason = $state['reason'] ?? null;
-        if ( $status === LicenseStatus::RESTRICTED && $restrictedReason === self::REASON_ORDINARY_EXPIRATION ) {
+        $restricted_reason = $state['reason'] ?? null;
+        if ( $status === LicenseStatus::RESTRICTED && $restricted_reason === self::REASON_ORDINARY_EXPIRATION ) {
             // فعالیت بالینیِ جدید آزاد؛ نمایش وضعیت/تمدید عمداً دست‌نخورده
             // می‌ماند (state/isReadOnly/statusMeta).
             return LicenseDecision::allow();
