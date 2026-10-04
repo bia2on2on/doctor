@@ -92,6 +92,15 @@
  *       per-test fresh installation, no fresh `wp-config.php` and no empty
  *       database. Claiming a "clean/fresh target bootstrap" here would be
  *       false, and no such claim is made.
+ *     - `createBackup()` is installation-wide by design, so the real artifact
+ *       also carries whatever other active Clinic roots the shared harness
+ *       resolves at that moment (earlier tests can leave committed Clinic rows
+ *       whose per-Clinic settings were rolled back, which then resolve to the
+ *       documented default clinical root). This file therefore never asserts an
+ *       absolute storage count: the two clinical files owned by this test are
+ *       asserted by containment and by bytes, every count is derived from the
+ *       real manifest, and each storage path is checked against the exact shape
+ *       the two real chain validators require.
  *
  * Representing a genuinely fresh target would require material new
  * infrastructure (a second WordPress test architecture), which this slice
@@ -318,10 +327,10 @@ final class Phase15SourceBackupRemoteRecoveryChainTest extends WP_UnitTestCase
 
         // ── no plaintext backup payload is ever an S3 object body ──
         $plaintexts = $this->sourcePlaintexts($source);
-        self::assertCount(
+        self::assertSame(
             $storageCount + 2,
-            $plaintexts,
-            'fixture precondition: the real logical set is db.sql + manifest.json + one entry per real clinical file'
+            count($plaintexts),
+            'fixture precondition: the real logical set read from disk is db.sql + manifest.json + one entry per real clinical file listed by the real manifest'
         );
         foreach ($objects as $objectId => $body) {
             foreach ($this->plaintextMarkers() as $marker) {
@@ -617,13 +626,53 @@ final class Phase15SourceBackupRemoteRecoveryChainTest extends WP_UnitTestCase
         self::assertSame($backupId, (string) $raw['backup_id']);
         self::assertSame(self::NOTE_MARKER, (string) $raw['note'], 'fixture precondition: the note marker is inside the real manifest only');
 
+        /*
+         * `createBackup()` is INSTALLATION-WIDE by design (the delivered M-2
+         * multi-clinic contract): it must carry every active Clinic root
+         * resolved from `cpms_clinics` + `cpms_settings`, never just the current
+         * or first Clinic. On the shared, already-migrated CI harness other
+         * tests can leave committed Clinic rows whose per-Clinic settings were
+         * rolled back, so those Clinics resolve to the documented default
+         * clinical root and their existing clinical files legitimately join this
+         * real backup. An absolute storage count would therefore couple this
+         * slice to the whole suite's execution order — so the two files owned by
+         * this test are asserted by containment and by bytes instead, and every
+         * count below is derived from the real manifest.
+         */
         $files = (array) $raw['storage']['files'];
-        self::assertCount(2, $files, 'fixture precondition: the real backup contains exactly the two real clinical files');
-        $paths = array_column($files, 'path');
-        sort($paths);
-        $expected = [$this->clinicalRelA, $this->clinicalRelB];
-        sort($expected);
-        self::assertSame($expected, $paths, 'fixture precondition: the real backup carries the real per-Clinic relative paths, not a synthetic layout');
+        $paths = array_map('strval', array_column($files, 'path'));
+        self::assertContains(
+            $this->clinicalRelA,
+            $paths,
+            'fixture precondition: the first real clinical file is carried at its authoritative per-Clinic relative path'
+        );
+        self::assertContains(
+            $this->clinicalRelB,
+            $paths,
+            'fixture precondition: the second real clinical file is carried at its authoritative per-Clinic relative path'
+        );
+        self::assertSame(
+            self::CLINICAL_A . "\n",
+            (string) file_get_contents($dir . '/storage/' . $this->clinicalRelA),
+            'fixture precondition: the carried bytes of the first clinical file are exactly what the production storage service wrote'
+        );
+        self::assertSame(
+            self::CLINICAL_B . "\n",
+            (string) file_get_contents($dir . '/storage/' . $this->clinicalRelB),
+            'fixture precondition: the carried bytes of the second clinical file are exactly what the production storage service wrote'
+        );
+        // Shared-harness bound: the installation-wide inventory must stay inside
+        // the delivered remote-object ceiling (catalog excluded).
+        self::assertLessThanOrEqual(
+            (int) constant(self::RECOVERY_CLASS . '::MAX_REMOTE_OBJECT_COUNT') - 1,
+            count($files),
+            'harness bound: the shared installation-wide clinical inventory stays inside the delivered remote-object ceiling'
+        );
+        // Sufficient precondition for both real validators on the chain:
+        // BackupS3Mirror::assert_relative() and the recovery logical-path rule.
+        foreach ($paths as $relative) {
+            $this->assertChainCompatibleStoragePath($relative);
+        }
 
         $verify = $this->sourceBackupService->verifyBackup($backupId);
         self::assertTrue($verify['ok'], 'fixture precondition: the real artifact passes the existing local verification');
@@ -653,6 +702,45 @@ final class Phase15SourceBackupRemoteRecoveryChainTest extends WP_UnitTestCase
         }
 
         return $plaintexts;
+    }
+
+    /**
+     * Exactly the shape both real validators on the chain require for a storage
+     * entry, so a shared-harness inventory difference can never be mistaken for
+     * a chain defect: `BackupS3Mirror::assert_relative()` accepts only
+     * `[A-Za-z0-9._/-]` relative paths without `..`, and the recovery
+     * logical-path rule additionally requires `storage/<positive clinic id>/…`
+     * with at least three safe, bounded, non-reserved path components.
+     */
+    private function assertChainCompatibleStoragePath(string $relative): void
+    {
+        self::assertMatchesRegularExpression(
+            '/^[1-9][0-9]{0,9}\/[A-Za-z0-9._\/-]+$/',
+            $relative,
+            'chain precondition: a real clinical relative path is Clinic-scoped and uses only validator-safe characters'
+        );
+        self::assertStringNotContainsString(
+            '..',
+            $relative,
+            'chain precondition: no traversal component reaches the mirror or the recovery validator'
+        );
+        $parts = explode('/', $relative);
+        self::assertGreaterThanOrEqual(
+            2,
+            count($parts),
+            'chain precondition: storage/<clinic id>/<relative> keeps at least three logical components'
+        );
+        foreach ($parts as $part) {
+            self::assertNotSame('', $part, 'chain precondition: no empty path component');
+            self::assertNotSame('.', $part, 'chain precondition: no dot path component');
+            self::assertLessThanOrEqual(255, strlen($part), 'chain precondition: every path component stays inside the bounded component length');
+            self::assertFalse(str_ends_with($part, '.'), 'chain precondition: no trailing-dot path component');
+            self::assertDoesNotMatchRegularExpression(
+                '/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i',
+                $part,
+                'chain precondition: no reserved device-name path component'
+            );
+        }
     }
 
     /** @return list<string> */
