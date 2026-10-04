@@ -6,7 +6,6 @@ namespace ClinicCore\Application\Licensing;
 
 use ClinicCore\Domain\Licensing\EntitlementRegistry;
 use ClinicCore\Domain\Licensing\LicenseDomain;
-use ClinicCore\Domain\Licensing\LicenseKeys;
 use ClinicCore\Domain\Licensing\LicensePolicy;
 use ClinicCore\Domain\Licensing\LicenseSignature;
 use ClinicCore\Domain\Licensing\LicenseStateMachine;
@@ -309,8 +308,7 @@ final class LicenseService implements LicenseStateProvider
             throw new LicenseGatewayException('License document has invalid dates', false, 'CLINIC_LICENSE_INVALID');
         }
 
-        $message = LicenseSignature::canonicalJson($payload);
-        if (!LicenseSignature::verify($message, $signatureB64, LicenseKeys::publicKey())) {
+        if (!LicenseSignature::verifyLicenseDocument($payload, $signatureB64)) {
             throw new LicenseGatewayException('License signature verification failed', false, 'CLINIC_LICENSE_INVALID');
         }
 

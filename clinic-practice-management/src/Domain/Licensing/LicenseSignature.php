@@ -19,6 +19,8 @@ namespace ClinicCore\Domain\Licensing;
  */
 final class LicenseSignature
 {
+    public const DOCUMENT_SCHEMA_VERSION = 2;
+
     public static function available(): bool
     {
         return extension_loaded('sodium') && function_exists('sodium_crypto_sign_verify_detached');
@@ -34,6 +36,68 @@ final class LicenseSignature
         self::ksortRecursive($payload);
 
         return (string) json_encode($payload, JSON_UNESCAPED_UNICODE);
+    }
+
+    /**
+     * Verify one signed-license document using its explicit compatibility format.
+     *
+     * No version fields selects only the bounded legacy format. Presence of either
+     * field opts into the new format; partial metadata never falls back to legacy.
+     *
+     * @param array<string, mixed> $payload
+     */
+    public static function verifyLicenseDocument(array $payload, string $signatureB64): bool
+    {
+        $hasSchemaVersion = array_key_exists('schema_version', $payload);
+        $hasKeyId = array_key_exists('key_id', $payload);
+
+        if (!$hasSchemaVersion && !$hasKeyId) {
+            return self::verifyLegacyDocument($payload, $signatureB64);
+        }
+        if (!$hasSchemaVersion || !$hasKeyId) {
+            return false;
+        }
+
+        return self::verifyVersionedDocument($payload, $signatureB64);
+    }
+
+    /**
+     * Explicit, format-bounded compatibility path for old documents only.
+     *
+     * @param array<string, mixed> $payload
+     */
+    private static function verifyLegacyDocument(array $payload, string $signatureB64): bool
+    {
+        if (array_key_exists('schema_version', $payload) || array_key_exists('key_id', $payload)) {
+            return false;
+        }
+
+        return self::verify(
+            self::canonicalJson($payload),
+            $signatureB64,
+            LicenseKeys::legacyPublicKey()
+        );
+    }
+
+    /**
+     * v2 selects exactly one trusted public key before checking the detached signature.
+     * The key_id and schema_version remain part of the canonicalized signed payload.
+     *
+     * @param array<string, mixed> $payload
+     */
+    private static function verifyVersionedDocument(array $payload, string $signatureB64): bool
+    {
+        $schemaVersion = $payload['schema_version'] ?? null;
+        if (!is_int($schemaVersion) || $schemaVersion !== self::DOCUMENT_SCHEMA_VERSION) {
+            return false;
+        }
+
+        $publicKeyB64 = LicenseKeys::publicKeyFor($payload['key_id'] ?? null);
+        if ($publicKeyB64 === null) {
+            return false;
+        }
+
+        return self::verify(self::canonicalJson($payload), $signatureB64, $publicKeyB64);
     }
 
     /**
