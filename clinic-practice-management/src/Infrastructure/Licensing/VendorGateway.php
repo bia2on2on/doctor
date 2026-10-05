@@ -11,6 +11,15 @@ namespace ClinicCore\Infrastructure\Licensing;
  *  - TLS + Timeout (اتصال و درخواست) + طبقه‌بندی خطا داشته باشد،
  *  - هرگز PHI نفرستد (payload فقط ابرداده‌ی Allowlist — ADR-0028 §2)،
  *  - برای تست/استیجینگ قابل تعویض باشد (Mock/Fixture خارج از src).
+ *
+ * Phase 16 Slice 4 — activation identity boundary (ADR-0023 §2): the signed
+ * payload returned by activate()/refresh() MAY carry `activation_id`, the
+ * central service's activation RECORD id for this installation. Only the
+ * external central service issues/supersedes activation records and enforces
+ * "one active production activation per standard License"; CPMS verifies and
+ * stores the signed claim (LicenseActivationId grammar), never counts
+ * activations from local state, and does not echo the claim back — the
+ * request allowlist is unchanged.
  */
 interface VendorGateway
 {
