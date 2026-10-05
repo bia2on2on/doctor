@@ -85,6 +85,218 @@ In all of these cases:
 ### 6. Error codes & logs
 New codes registered in `docs/api/error-codes.md`: `CLINIC_LICENSE_BLOCKED` (exists), `CLINIC_LICENSE_UNREACHABLE`, `CLINIC_LICENSE_INVALID`, `CLINIC_LICENSE_RESTRICTED`, `CLINIC_LICENSE_ENTITLEMENT`, `CLINIC_LICENSE_LIMIT_REACHED`, `CLINIC_LICENSE_ACTIVATION_FAILED`. Phase 16 Slice 2 adds **no new API error code**: `binding_mismatch` is a bounded *internal state reason* surfaced through the existing `CLINIC_LICENSE_BLOCKED` (503). Operational logs carry only license/install identifiers — never PHI, never signing secrets, never full tokens.
 
+### 7. Central License Service Contract (Phase 16 Slice 5) — **SPECIFICATION ONLY**
+
+**Nature of this section.** This is an architecture/protocol *specification* of the boundary between CPMS and the **future external Central License Service**. It is written so that the central service can be built against a frozen client contract. **Nothing here is implemented and nothing here authorizes implementation.** This slice creates **no** central service, **no** HTTP endpoint, **no** CLI, **no** UI, **no** billing/payment, **no** activation counting, **no** migration, **no** new local enforcement, and **no** production signing key. Anything not already delivered in CPMS is marked **FUTURE/OPEN** and must not be read as implemented. This section is the single source of truth for the CPMS↔central-service contract; no second licensing architecture document is introduced.
+
+#### 7.1 Authority split
+
+**Central License Service is authoritative for:**
+- the commercial **Organization** account/reference that owns the License;
+- **License** commercial state (term, renewal, entitlement composition);
+- **production activation records** (`activation_id` is the opaque record identifier);
+- the invariant **"at most one ACTIVE production activation per standard License"** — a fact only the central service can know;
+- **activation supersession / rebind** (the central service decides which activation record is the current one);
+- **issuance of signed license documents** (Ed25519, private key never in CPMS);
+- **renewal decisions**.
+
+**CPMS is authoritative only for:**
+- its own local `install_id` (`cpms_license_install`, high-entropy, 32 hex);
+- its own local configured domain identity (canonical `home_url()` host — the only derivation in `src/`);
+- local cryptographic verification (Ed25519, key selection from the CPMS-configured trusted ring);
+- its local signed state (`cpms_license_state.payload_json`);
+- local product/entitlement decisions **allowed by the verified document**.
+
+**Hard boundary:** CPMS must **never** claim, from local state, that another installation is globally active, that a global activation slot is free, or that an activation is unique. CPMS never counts activations. Local state is *one installation's view*, not global truth. Conversely the central service is never a patient/medical datastore (ADR-0028).
+
+#### 7.2 Activation model
+
+Conceptual relation (no new CPMS schema, table, or column is implied):
+
+```
+Organization  ──owns──▶  License  ──has──▶  Activation  ──identifies──▶  install_id
+                                            (activation_id)              ├── domain
+                                                                         └── environment class
+```
+
+- **Organization** is the commercial License owner. **Organization ≠ Installation.** A Clinic is *not* the primary License owner.
+- **License** is the commercial object sold. **Standard** sale ⇒ **at most one ACTIVE production activation at a time**.
+- **Activation** is the central activation *record*; `activation_id` is its opaque, vendor-issued identifier (delivered as an optional signed claim on v2 documents — §2, Phase 16 Slice 4).
+- **`install_id`** is the technical activation identity (mandatory, independently verified — never replaced by `domain` or `activation_id`).
+- **`domain`** is an *additional* signed activation binding (Phase 16 Slice 2), not an identity and not a substitute.
+- **environment class** is the `production` / `staging` / `development` / `local` classification carried as request metadata (`WP_ENVIRONMENT_TYPE`, defaulting to `production`).
+
+Rules for standard production Licenses:
+- at most **one ACTIVE production activation** at any time;
+- activating or rebinding a **replacement** must **supersede** the previous production activation **centrally** (the old record stops being the active one);
+- **no requirement to physically delete the old CPMS installation** — supersession is a central record state, not a remote instruction to the old host;
+- **the client cannot enforce global uniqueness by itself**; only the central service can.
+
+**Deliberately not frozen here:** staging / development / DR activation policy (including whether non-production environments consume the single production activation) is **OPEN** (§7.9). Enterprise multi-activation policy is **OPEN**.
+
+#### 7.3 ACTIVATE request/response contract
+
+##### 7.3.1 CURRENT — exactly what executing CPMS sends
+
+`LicenseService::activateWithKey()` builds the request; `HttpVendorGateway::allowlisted()` is the hard allowlist. Anything outside it is dropped before transmission.
+
+| Field | Source in executing code | Notes |
+|---|---|---|
+| `install_id` | `LicenseService::installId()` → `cpms_license_install.install_id` | 32 hex chars; the technical activation identity |
+| `environment` | `LicenseService::environment()` = `WP_ENVIRONMENT_TYPE` or `'production'` | metadata only, never a bypass |
+| `license_key` | admin-entered key (`SystemPage::licenseActivate`) | presented once at activation |
+| `version` | `CPMS_VERSION` or `'dev'` | plugin version |
+| `wp_version` | `get_bloginfo('version')` or `''` | compatibility metadata |
+| `php_version` | `PHP_VERSION` | compatibility metadata |
+| `domain` | `LicenseService::domain()` = canonical `home_url()` host (lower-case, leading `www.` removed) | sent since Phase 16 Slice 2 |
+
+The **full** `HttpVendorGateway::allowlisted()` set is exactly: `install_id`, `license_id`, `environment`, `license_key`, `version`, `wp_version`, `php_version`, `domain`. On *activation* CPMS currently populates all of them **except `license_id`** (it has none yet — the server assigns it).
+
+**Transport (CURRENT):** `POST {server_url}/activate`, JSON body, `Content-Type: application/json`, `Accept: application/json`, header `X-CPMS-Install: <install_id>`. HTTPS-only (`http://` ⇒ `CLINIC_LICENSE_ENDPOINT_INSECURE`), SSRF-guarded destination, `redirection => 0`, a single default request timeout of **10 s** (`HttpVendorGateway::DEFAULT_TIMEOUT`; no separate connect timeout and **no retry inside the gateway** — retry/backoff belongs to the `license.refresh` job only).
+
+**Response envelope (CURRENT):** `{"payload": {…}, "signature_b64": "…"}`. Any other shape ⇒ `CLINIC_LICENSE_MALFORMED`.
+
+**Response status classification (CURRENT):** `401`/`403` ⇒ `CLINIC_LICENSE_ACTIVATION_FAILED` (permanent); `429` ⇒ `CLINIC_LICENSE_RATE_LIMITED` (retryable); `408`/`5xx` ⇒ `CLINIC_LICENSE_SERVER_ERROR` (retryable); any other non-2xx ⇒ `CLINIC_LICENSE_SERVER_ERROR` (permanent); WP HTTP error ⇒ `CLINIC_LICENSE_UNREACHABLE` (retryable).
+
+##### 7.3.2 CURRENT — what the signed payload must already contain to be accepted
+
+`LicenseService::verifyAndStore()` is the single ingestion seam (shared by online activation, offline document activation, and refresh). It enforces:
+
+- `product` === `'cpms'`;
+- `install_id` === the local `install_id` (**install binding**);
+- `license_id` non-empty string;
+- `expires_at` integer > 0;
+- `issued_at` optional integer; when present, `expires_at >= issued_at`;
+- a valid detached Ed25519 signature — legacy (unversioned, single configured key) or v2 (`schema_version: 2` + `key_id` selecting exactly one key from the CPMS-configured ring). Partial metadata, malformed/unknown `schema_version` or `key_id`, or signature/key mismatch ⇒ `CLINIC_LICENSE_INVALID`, fail-closed, nothing persisted.
+
+##### 7.3.3 FUTURE — the minimum a successful v2 activation response must carry
+
+A successful **v2** activation response from the central service should carry, at minimum, the already-delivered signed claims:
+
+| Claim | Delivered today | Purpose |
+|---|---|---|
+| `install_id` | ✅ mandatory | install binding |
+| `domain` | ✅ optional, signed | domain binding (`binding_mismatch` when it mismatches) |
+| `activation_id` | ✅ optional on v2, validated when present | central activation-record handle (1..64 bytes, `[A-Za-z0-9][A-Za-z0-9._-]*`) |
+| `schema_version` | ✅ `2` (JSON integer) | format selection |
+| `key_id` | ✅ bounded ASCII id ≤ 64 bytes, `[A-Za-z][A-Za-z0-9._-]*` | selects one trusted public key |
+| `license_id` | ✅ mandatory | CPMS license identifier |
+| `issued_at` / `expires_at` | ✅ supported | term/expiry fields already enforced |
+| `entitlements.features` / `entitlements.limits` | ✅ supported | feature flags + numeric limits (`doctors`, `staff`, `branches`) |
+| `revoked` / `suspended` / `reason` | ✅ read from the signed payload by `LicenseStateMachine` | explicit signed commercial verdict (issuance policy = OPEN) |
+
+**Explicitly FUTURE/OPEN — NOT implemented, NOT wire fields today:** an Organization wire identifier (`org_ref`/`organization_id`/`org_slug`), plan/capacity values (`plan`, `seats`, `version_rights`, `update_rights_until`), a renewal/term-extension field, an activation-count field, a rebind/supersede request field, and any `License → Organization` claim inside the signed payload. The commercial *unit* is the Organization (product decision, and the rationale recorded in the Phase 16 Slice 1 note in `SignedLicenseGate`), but **CPMS currently has no Organization claim in the signed document and sends no Organization field in any request**. These are central-service-side concepts to be specified when their policy is decided.
+
+**Offline activation (CURRENT, unchanged):** `LicenseService::activateWithDocument()` ingests a signed document through the *same* `verifyAndStore()` seam with no network and no `license_key`. Offline and online activation therefore share identical authenticity, install-binding, domain-binding and expiry behavior.
+
+#### 7.4 REFRESH contract
+
+##### 7.4.1 CURRENT — exactly what executing CPMS sends
+
+`LicenseService::refresh()` sends **only**:
+
+| Field | Source |
+|---|---|
+| `install_id` | stored `cpms_license_state.install_id`, falling back to `LicenseService::installId()` |
+| `license_id` | stored `cpms_license_state.license_id` |
+| `environment` | `WP_ENVIRONMENT_TYPE` or `'production'` |
+| `version` | `CPMS_VERSION` or `'dev'` |
+| `domain` | canonical `home_url()` host |
+
+**Precision note (must not be "documented" away):** refresh does **not** send `license_key`, `wp_version`, or `php_version`, and does **not** send `activation_id`. CPMS never echoes the activation handle back to the central service — the request allowlist is unchanged by Phase 16 Slice 4. The endpoint is `POST {server_url}/refresh`, with the same transport, allowlist, envelope and status classification as activation. Refresh requires an existing stored state row (otherwise `CLINIC_LICENSE_NOT_ACTIVATED`), and is a no-op when no gateway is configured (manual/offline activation path).
+
+##### 7.4.2 Central semantics to be implemented by the future central service
+
+- **Matching active activation** ⇒ issue a freshly signed license document for the same `install_id` / `domain` / `activation_id`, with a new `issued_at`/`expires_at`. CPMS verifies and stores it through the same seam.
+- **Superseded or conflicting activation** (e.g. the record was superseded by a rebind, or another production activation took the single slot) ⇒ the central service **may** return a bounded commercial response **or** signed state carrying `revoked`/`suspended`/`reason`. **Which of those, and with what clinical consequence, is a later revocation/suspension policy decision and is OPEN** (§7.9). CPMS already distinguishes a *verified signed* `SUSPENDED`/`REVOKED` from a transport failure (§7.6) and already treats both as fail-closed blocking causes; no additional client restriction is specified here.
+- **Temporary network / TLS / DNS / server failure is a TRANSPORT FAILURE, NOT a piracy verdict.** It is recorded as `CLINIC_LICENSE_UNREACHABLE` (retryable) and surfaced through the existing unreachable/stale-cache policy. Network unavailability is never evidence of an invalid license, never proof of piracy, and never grounds for destroying or withholding anything.
+- **No PHI is transmitted** on refresh or activation: the allowlist is metadata-only and `VendorPlanePrivacyTest` asserts a medical sentinel never appears in URL, headers, or body.
+- **No clinical request waits on refresh.** Refresh runs only from the recurring `license.refresh` job (`LicenseRefreshHandler` → `refreshDue()` → `refresh()`), with exponential backoff (`1h × 2^min(fails,5)` + jitter, capped ~32h). The gate reads local signed state only.
+
+**Not decided here:** the numeric production refresh interval and the numeric offline grace duration. Current *code* defaults exist (`LicensePolicy`: `renewIntervalHours = 24`, `unreachableGraceDays = 3`, `expiryGraceDays = 7`, `throttleIntervalHours = 6`) and remain internal client-side policy, **not** a central-service commitment; the authoritative production values are **OPEN** (§7.9).
+
+#### 7.5 REBIND / MIGRATION (conceptual central operation)
+
+Legitimate migration must remain possible without punishing the customer. The central operation is conceptual only — **no endpoint, CLI, UI, admin action, or support workflow is built in this slice, and no rebind-count/frequency limit is defined.**
+
+| Scenario | What changes | Central operation |
+|---|---|---|
+| **Same-domain server migration** with preserved database and preserved `install_id` | nothing observable | No rebind needed. The existing activation record remains active; the restored database carries the same `install_id`, so refreshed/issued documents keep matching. |
+| **New-install migration** with a new `install_id` | `install_id` changes | Central service **supersedes** the old production activation and issues a newly signed document bound to the **new** `install_id`. The old installation is not required to be deleted. |
+| **Production domain change** | signed `domain` claim changes | Central service **rebinds** the activation to the new canonical domain and issues a newly signed document whose `domain` claim matches. Until then the local gate holds `RESTRICTED` / `binding_mismatch` (reversible, non-destructive). |
+
+**Minimum rule for all three:** the central service supersedes/rebinds the activation record and issues a **newly signed document that matches the new legitimate installation/domain state**. CPMS's side of every scenario is unchanged: verify the new document locally and store it. No client-side "migration mode", no local unbinding, no local deletion of prior state, and no bypass of the domain binding.
+
+#### 7.6 OFFLINE / FAILURE semantics — four things that must never be conflated
+
+| # | Condition | Authority | CURRENT delivered behavior |
+|---|---|---|---|
+| **A** | **Local signed state still valid** | local, from the last verified signed document + server-side wall clock | `ACTIVE` / `EXPIRING` / `GRACE`; ordinary clinical new business allowed |
+| **B** | **Ordinary commercial expiration** (verified signed document simply past its expiry grace) | local, derived cause `expired` | Still *represented* as `RESTRICTED` / `expired` / `needs_renewal`, and the gate still reports read-only — but per Phase 16 Slice 1 the protected **new-business** operations are **not** blocked by the annual term ending alone. Every other `RESTRICTED` cause still blocks, fail-closed. |
+| **C** | **Transport / unreachable** (network, TLS, DNS, timeout, 5xx, 429) | *no authority* — absence of an answer | `CLINIC_LICENSE_UNREACHABLE` (retryable) + bounded unreachable/stale-cache policy, then explicit `UNREACHABLE`. **This is not a verdict.** It never proves piracy and never deletes, hides, or ransoms anything. |
+| **D** | **Explicit central suspension / revocation / conflict** | central, delivered as a **verified signed** document carrying `revoked`/`suspended`/`reason` | `SUSPENDED` / `REVOKED` — blocking causes, never produced by a network failure, and **not** relaxed by the ordinary-expiration exception. |
+
+Recorded rules that already hold: network unreachable ≠ invalid; a signature/authenticity failure is `INVALID`, distinct from both an outage and a signed verdict; offline activation is validated exactly like online activation; and in **all** of A–D, reads/history/export, backup/restore, export/recovery, security functions, and completion of in-progress clinical workflow remain open — nothing is deleted.
+
+**OPEN (§7.9):** the central *policy* for when a superseded/conflicting activation becomes `SUSPENDED`/`REVOKED`, and any clinical restriction beyond the existing gate posture for those states.
+
+#### 7.7 SECURITY / PRIVACY invariants
+
+- **Ed25519 signed state.** Verification is local and Ed25519-only (`sodium_crypto_sign_verify_detached`); missing sodium ⇒ fail-closed (`false`), never an open gate.
+- **Private keys stay outside CPMS**, outside the repository, outside the plugin package, outside the database, and outside the license payload. CPMS ships **public verification material only**; the repository's production value is a deliberate placeholder and the v2 trusted ring is intentionally empty — real release keys remain a commercialization/release blocker.
+- **Public-key rotation is delivered** through v2 `key_id` + the CPMS-configured trusted ring (`LicenseKeys::TRUSTED_PUBLIC_KEYS_B64` / `cpms_license_public_keys`, bounded to 32 keys). Old and new keys may be trusted concurrently during rotation. **No remote key fetching, no TOFU**: the ring comes only from CPMS configuration, never from a request parameter or from a license document, and there is no fallback from v2 verification to the legacy key.
+- **No PHI / no clinical payload on the control plane.** The vendor-bound allowlist is metadata-only (ADR-0028 §2) and is asserted by test.
+- **`install_id`, `domain`, `activation_id` are commercial/technical metadata, not authorization authority.** None of them is tenancy, scope, or capability authority; `activation_id` is opaque, non-secret, non-PHI, stored in plain local state, and is **not** a bearer credential.
+- **No always-online clinical dependency.** Ordinary page loads never touch the network; the gate reads local signed state only.
+- **Honest tamper boundary:** an attacker with full PHP/DB/filesystem control on a self-hosted installation can patch local enforcement. This architecture therefore makes **no "uncrackable PHP" claim**. Data/history/backup/restore/export/recovery/security are never held hostage by licensing, and destructive DRM is explicitly out of scope.
+
+#### 7.8 ANTI-SHARING claim — precise
+
+**What the architecture CAN enforce:**
+- the central service can **refuse** to issue, and can **supersede**, additional production activations, so a standard License has at most one ACTIVE production activation;
+- the signed **installation** (`install_id`), **domain** (`domain`) and **activation** (`activation_id`) claims make a casual copy to another domain or another installation **invalid** — it fails local verification (`CLINIC_LICENSE_INVALID` / `binding_mismatch`) until a **newly issued** document is obtained from the central service;
+- official **update / support / service value** can be made to depend on legitimate licensing (ADR-0029 gates update offers on verified entitlement + signed manifest), without ever disabling the already-installed version.
+
+**What it CANNOT guarantee:**
+- a determined attacker with full PHP/DB/filesystem control can patch client-side enforcement — there is no tamper-proof self-hosted client;
+- **same-domain full clones are not globally distinguishable by the CPMS client alone** (identical `install_id` and identical canonical `domain` verify identically); only central-side evidence (activation-record history, issuance patterns, rate/audit signals) can speak to that, and that analysis is out of scope here;
+- nothing in this contract is a piracy *verdict*: absence of connectivity, a transport error, or a locally expired document is not proof of infringement.
+
+#### 7.9 FUTURE / OPEN decisions (explicitly not decided by this slice)
+
+1. **production refresh interval** (numeric);
+2. **offline grace duration** (numeric);
+3. **staging / development / DR activation policy** — including whether non-production environments consume the single production activation;
+4. **Enterprise multi-activation policy**;
+5. **rebind limits** (count / frequency / cooldown);
+6. **suspension / revocation clinical semantics** — central issuance policy plus any restriction beyond the existing gate posture;
+7. **security-update rights after term expiry** (what an ordinarily-expired installation may still receive);
+8. **Organization wire identifier** — the claim/field by which the central service names the owning Organization to CPMS;
+9. **Plan / capacity values** (`plan`, seats, `version_rights`, update-rights window);
+10. **billing / payment implementation** — entirely outside CPMS.
+
+#### 7.10 CONSISTENCY — cross-checked against executing code
+
+Verified against the working tree, not against memory:
+
+| Claim in this section | Executing evidence |
+|---|---|
+| activation request fields | `LicenseService::activateWithKey()` + `HttpVendorGateway::allowlisted()` |
+| refresh request fields (`install_id, license_id, environment, version, domain` only) | `LicenseService::refresh()` |
+| no `activation_id` echoed to the vendor | `LicenseService::refresh()` / `activateWithKey()` + unchanged `HttpVendorGateway::allowlisted()` |
+| response envelope `{payload, signature_b64}` + status classification | `HttpVendorGateway::call()` |
+| mandatory payload fields (`product`, `install_id`, `license_id`, `expires_at`, `issued_at`) | `LicenseService::verifyAndStore()` |
+| signed schema v2 / `key_id` ring / legacy separation | `LicenseSignature::verify_license_document()` + `LicenseKeys` |
+| signed domain binding + `binding_mismatch` | `LicenseService::applyDomainBinding()` + `LicenseDomain` |
+| optional `activation_id` grammar | `LicenseActivationId::is_valid()` + `LicenseSignature::verify_versioned_document()` |
+| ordinary expiration does not freeze new business | `SignedLicenseGate::assert()` (exact reason `expired` only) |
+| unreachable ≠ invalid; signed revoked/suspended ≠ outage | `LicenseStateMachine::compute()` |
+| refresh only from the job, never from a request path | `LicenseRefreshHandler` + `LicenseService::refreshDue()` |
+| no PHI on the control plane | `HttpVendorGateway::allowlisted()` + `VendorPlanePrivacyTest` |
+| no migration, no new table/column for activation state | `2026_09_07_0008_licensing.php` (latest migration `2026_09_26_0023_handwriting_prescription_paper.php`) |
+
+**No field, endpoint, status, or behavior above is claimed as implemented unless it appears in the executing code listed here.** Everything else in §7 is either already-delivered behavior or explicitly marked FUTURE/OPEN.
+
 ### Distinction table (must never be conflated)
 
 | Concept | Trigger | Effect while it lasts | Ends how |
