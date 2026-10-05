@@ -22,7 +22,9 @@ use WP_UnitTestCase;
  * Phase 16 Slice 6A — representation-only signed v2 update-rights boundary.
  *
  * Runs the actual LicenseService + LicenseSignature verifier + existing state
- * table on WP/MySQL. No availability enforcement belongs to this slice.
+ * table on WP/MySQL. Slice 6A delivered representation only (no enforcement);
+ * Phase 16 Slice 6B (UpdateRightsEnforcementTest) enforces the boundary in the
+ * update plane, so the availability expectation below is the 6B contract.
  */
 final class LicenseUpdateRightsClaimTest extends WP_UnitTestCase
 {
@@ -365,7 +367,7 @@ final class LicenseUpdateRightsClaimTest extends WP_UnitTestCase
         $this->assertSame($withoutClaim, $withClaim);
     }
 
-    public function testCurrentUpdateAvailabilityIsUnchangedAndClaimNeverGrantsUpdatesEntitlement(): void
+    public function testBoundaryIsEnforcedInTheUpdatePlaneAndNeverGrantsUpdatesEntitlement(): void
     {
         $service = $this->service();
         $releasePayload = [
@@ -408,12 +410,13 @@ final class LicenseUpdateRightsClaimTest extends WP_UnitTestCase
         $withoutClaim = $updates->checkForUpdates(force: true);
         $this->assertTrue($withoutClaim['available']);
 
+        // Phase 16 Slice 6B supersedes the Slice 6A expectation: a claim whose boundary is
+        // before the signed publication now makes the same ordinary release unavailable.
         $licensePayload['update_rights_until'] = time() - 60;
         $this->installDocument($service, $licensePayload, $this->ringKeypair);
         $withExpiredBoundary = $updates->checkForUpdates(force: true);
-        $this->assertTrue($withExpiredBoundary['available'], 'this slice must not enforce the publication-rights boundary');
-        unset($withoutClaim['checked_at'], $withExpiredBoundary['checked_at']);
-        $this->assertSame($withoutClaim, $withExpiredBoundary);
+        $this->assertFalse($withExpiredBoundary['available'], 'the publication-rights boundary is enforced in the update plane');
+        $this->assertSame('update_rights_expired', $withExpiredBoundary['reason']);
         $this->assertSame(2, $gateway->fetchCount);
 
         $licensePayload = $this->v2Payload($service, [

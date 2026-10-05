@@ -8,6 +8,7 @@ use ClinicCore\Application\Licensing\LicenseService;
 use ClinicCore\Domain\Licensing\LicenseStatus;
 use ClinicCore\Domain\Update\ReleaseManifest;
 use ClinicCore\Domain\Update\ReleaseSignature;
+use ClinicCore\Domain\Update\UpdateRightsBoundary;
 use ClinicCore\Infrastructure\Update\UpdateMetadataGateway;
 use ClinicCore\Settings\Settings;
 
@@ -78,9 +79,13 @@ final class UpdateService
             return ['available' => false, 'reason' => 'not_entitled', 'checked_at' => time()];
         }
 
-        $cacheKey = self::CACHE_PREFIX . '_' . $channel;
-        $ttl = max(60, (int) $this->settings->get('update.check_interval_hours', 24) * 3600);
-        $cached = function_exists('get_transient') ? get_transient($cacheKey) : false;
+        // Phase 16 Slice 6B — مرزِ امضاشدهٔ حقوقِ نسخه از سندِ تأییدشدهٔ ذخیره‌شده
+        // (بعد از entitlementِ پایه و پیش از هر شبکه). نتیجهٔ کش‌شده به همان مرز
+        // گره می‌خورد تا تصمیمِ مسدودِ قدیمی پس از تمدید باقی نماند.
+        $rights    = UpdateRightsBoundary::from_claim( $this->licenses->update_rights_until() );
+        $cache_key = self::CACHE_PREFIX . '_' . $channel . '_' . $rights->fingerprint();
+        $ttl       = max( 60, (int) $this->settings->get( 'update.check_interval_hours', 24 ) * 3600 );
+        $cached    = function_exists( 'get_transient' ) ? get_transient( $cache_key ) : false;
         if (!$force && is_array($cached) && isset($cached['checked_at']) && (time() - (int) $cached['checked_at']) < $ttl) {
             return $cached;
         }
@@ -93,23 +98,30 @@ final class UpdateService
                 $channel,
                 (string) (defined('CPMS_VERSION') ? CPMS_VERSION : '0'),
                 function_exists('get_bloginfo') ? (string) get_bloginfo('version') : '0',
-                PHP_VERSION
+                PHP_VERSION,
+                $rights
             );
         } catch (\Throwable $e) {
             $result = ['available' => false, 'reason' => 'fetch_failed', 'checked_at' => time()];
         }
         $result['checked_at'] = time();
         if (function_exists('set_transient')) {
-            set_transient($cacheKey, $result, $ttl);
+            set_transient( $cache_key, $result, $ttl );
         }
 
         return $result;
     }
 
     /**
-     * ارزیابی مانیفست (خالص نسبت به شبکه): امضا → ساختار → applicability.
+     * ارزیابی مانیفست (خالص نسبت به شبکه): امضا → ساختار → channel → applicability
+     * → مرزِ «حقوقِ نسخه» (Phase 16 Slice 6B).
+     *
+     * ترتیبِ اعتماد عمدی است: entitlementِ پایه در `checkForUpdates()` پیش از هر
+     * شبکه تصمیم می‌گیرد و این‌جا تکرار نمی‌شود؛ استثنای `release_kind=security`
+     * فقط تصمیمِ مرز را تغییر می‌دهد و هیچ شکستِ قبلی را جبران نمی‌کند.
      *
      * @param array<string, mixed> $payload
+     * @param UpdateRightsBoundary|null $rights مرزِ امضاشدهٔ ذخیره‌شده (null = بدون‌مرز/سازگاری)
      *
      * @return array<string, mixed>
      */
@@ -117,21 +129,26 @@ final class UpdateService
         array $payload,
         string $signatureB64,
         string $channel,
-        string $currentVersion,
-        string $wpVersion,
-        string $phpVersion
+        string $current_version,
+        string $wp_version,
+        string $php_version,
+        ?UpdateRightsBoundary $rights = null
     ): array {
         if (!ReleaseSignature::verify($payload, $signatureB64)) {
             return ['available' => false, 'reason' => 'invalid_signature'];
         }
         if (!ReleaseManifest::isValid($payload)) {
-            return ['available' => false, 'reason' => 'invalid_manifest'];
+            return ['available' => false, 'reason' => UpdateRightsBoundary::REASON_INVALID_MANIFEST];
         }
         if ((string) ($payload['channel'] ?? 'stable') !== $channel) {
             return ['available' => false, 'reason' => 'channel_mismatch'];
         }
-        if (!ReleaseManifest::isApplicable($payload, $currentVersion, $wpVersion, $phpVersion)) {
+        if ( ! ReleaseManifest::isApplicable( $payload, $current_version, $wp_version, $php_version ) ) {
             return ['available' => false, 'reason' => 'not_applicable'];
+        }
+        $denial = ( $rights ?? UpdateRightsBoundary::unbounded() )->denial_reason( $payload );
+        if ( $denial !== null ) {
+            return ['available' => false, 'reason' => $denial];
         }
 
         return [

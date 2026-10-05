@@ -15,6 +15,16 @@ final class ReleaseManifest
     public const CHANNELS = ['stable', 'beta'];
 
     /**
+     * Phase 16 Slice 6B — ردهٔ انتشار (ADR-0029 §1)، داخلِ payload و بنابراین امضاشده.
+     *
+     * غیبتِ `release_kind` سازگار است و `normal` معنا می‌دهد؛ هر مقدارِ حاضرِ خارج
+     * از این enum بسته، مانیفست را نامعتبر می‌کند (fail-closed).
+     */
+    public const RELEASE_KIND_NORMAL   = 'normal';
+    public const RELEASE_KIND_SECURITY = 'security';
+    public const RELEASE_KINDS         = [self::RELEASE_KIND_NORMAL, self::RELEASE_KIND_SECURITY];
+
+    /**
      * @param array<string, mixed> $raw
      *
      * @return list<string>
@@ -47,6 +57,11 @@ final class ReleaseManifest
         if (isset($raw['signed_at']) && !is_numeric($raw['signed_at'])) {
             $errors[] = 'invalid signed_at';
         }
+        // Phase 16 Slice 6B — `release_kind` اختیاری است (غیبت = normal سازگار)، اما
+        // مقدارِ حاضر باید در enum بسته باشد؛ غیررشته/ناشناخته = نامعتبر.
+        if ( array_key_exists( 'release_kind', $raw ) && ! self::is_valid_release_kind( $raw['release_kind'] ) ) {
+            $errors[] = 'invalid release_kind';
+        }
 
         return $errors;
     }
@@ -54,6 +69,48 @@ final class ReleaseManifest
     public static function isValid(array $raw): bool
     {
         return self::validate($raw) === [];
+    }
+
+    /**
+     * @param mixed $kind
+     */
+    private static function is_valid_release_kind( mixed $kind ): bool {
+        return is_string( $kind ) && in_array( $kind, self::RELEASE_KINDS, true );
+    }
+
+    /**
+     * ردهٔ امضاشدهٔ انتشار. فراخوان باید مانیفست را قبلاً اعتبارسنجی کرده باشد:
+     * غیبت = `normal` (سازگاری با مانیفست‌های امضاشدهٔ موجود)، و مقدارِ ناشناختهٔ
+     * حاضر همان‌جا در validate() رد می‌شود.
+     *
+     * @param array<string, mixed> $raw
+     */
+    public static function release_kind( array $raw ): string {
+        $kind = $raw['release_kind'] ?? null;
+
+        return self::is_valid_release_kind( $kind ) ? (string) $kind : self::RELEASE_KIND_NORMAL;
+    }
+
+    /**
+     * @param array<string, mixed> $raw
+     */
+    public static function is_security_release( array $raw ): bool {
+        return self::release_kind( $raw ) === self::RELEASE_KIND_SECURITY;
+    }
+
+    /**
+     * Phase 16 Slice 6B — `signed_at`ِ عددِ صحیح (تنها ورودیِ قطعیِ مقایسهٔ حقوقِ نسخه).
+     *
+     * `null` = غایب یا غیرِعددِ صحیح. سازگاریِ بدون‌مرز دست‌نخورده می‌ماند (validate
+     * همان قاعدهٔ numeric را برای مانیفست‌های بدونِ ادعا نگه می‌دارد)، اما هیچ
+     * مقایسهٔ مرزی هرگز روی رشته/اعشار/غایب انجام نمی‌شود.
+     *
+     * @param array<string, mixed> $raw
+     */
+    public static function signed_at( array $raw ): ?int {
+        $value = $raw['signed_at'] ?? null;
+
+        return is_int( $value ) ? $value : null;
     }
 
     /**

@@ -151,6 +151,28 @@ final class LicenseService implements LicenseStateProvider
     }
 
     /**
+     * Phase 16 Slice 6B — مرزِ امضاشدهٔ «حقوقِ نسخه» از همان payloadِ تأییدشدهٔ
+     * ذخیره‌شده (بدونِ ستون/جدول/ابردادهٔ تازه).
+     *
+     * فقط عددِ صحیحِ مثبتِ v2 مرز است؛ غیبت/legacy/نامعتبر = null (بدون‌مرز) و
+     * صفحهٔ به‌روزرسانی رفتارِ فعلی را نگه می‌دارد. هیچ ساعتِ محلی در این تصمیم
+     * دخالت ندارد و مقدار هرگز به سرویس مرکزی/درخواست‌ها برنمی‌گردد.
+     */
+    public function update_rights_until(): ?int {
+        $row = $this->stateRowSafe();
+        if ( $row === null ) {
+            return null;
+        }
+        $payload = $this->decodePayload( (string) ( $row['payload_json'] ?? '' ) );
+        if ( $payload === null ) {
+            return null;
+        }
+        $claim = $payload['update_rights_until'] ?? null;
+
+        return is_int( $claim ) && $claim > 0 ? $claim : null;
+    }
+
+    /**
      * وضعیت کامل برای UI/Health (بدون کلید حساس).
      *
      * @return array<string, mixed>

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ClinicCore\Tests\Unit;
 
 use ClinicCore\Domain\Update\ReleaseManifest;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -58,6 +59,50 @@ final class ReleaseManifestTest extends TestCase
         $m = $this->valid();
         $m['channel'] = 'beta';
         $this->assertTrue(ReleaseManifest::isValid($m)); // beta مجاز است
+    }
+
+    /**
+     * @return array<string, array{0: mixed}>
+     */
+    public static function malformedReleaseKindValues(): array
+    {
+        return [
+            'uppercase security keyword' => ['SECURITY'],
+            'trailing whitespace' => ['security '],
+            'unknown kind' => ['critical'],
+            'misspelled kind' => ['securty'],
+            'empty string' => [''],
+            'boolean true' => [true],
+            'integer' => [1],
+            'float' => [1.0],
+            'null' => [null],
+            'list' => [['security']],
+            'map' => [['kind' => 'security']],
+        ];
+    }
+
+    public function testAbsentReleaseKindStaysAValidNormalManifest(): void
+    {
+        $m = $this->valid();
+        $this->assertArrayNotHasKey('release_kind', $m);
+        $this->assertTrue(ReleaseManifest::isValid($m), 'existing signed manifests without release_kind must stay valid');
+    }
+
+    public function testNormalAndSecurityAreTheAcceptedReleaseKinds(): void
+    {
+        foreach (['normal', 'security'] as $kind) {
+            $m = $this->valid();
+            $m['release_kind'] = $kind;
+            $this->assertTrue(ReleaseManifest::isValid($m), 'release_kind=' . $kind);
+        }
+    }
+
+    #[DataProvider('malformedReleaseKindValues')]
+    public function testUnknownOrMalformedReleaseKindInvalidatesTheManifest(mixed $kind): void
+    {
+        $m = $this->valid();
+        $m['release_kind'] = $kind;
+        $this->assertFalse(ReleaseManifest::isValid($m), 'release_kind must fail closed when present but unrecognised');
     }
 
     public function testApplicableRequiresNewerVersionAndEnvironments(): void
