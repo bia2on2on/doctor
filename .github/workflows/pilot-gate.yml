@@ -145,6 +145,10 @@ jobs:
           # including PR pushes (no network, no WordPress, no `ab` binary needed).
           python3 -m py_compile bin/pilot-bench-report.py
           python3 bin/pilot-bench-report.py --test
+          {
+            echo '### Pilot benchmark harness self-test — PASSED on this run'
+            echo '`bin/pilot-bench-report.py --test` (deterministic: no network, no WordPress, no `ab` binary) — ab parsing, report generation, honesty fields and the artifact privacy gate. This runs regardless of the benchmark step, which is schedule/workflow_dispatch-only.'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Environment specs (گزارش واقعی محیط)
         run: |
