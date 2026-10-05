@@ -140,6 +140,11 @@ jobs:
           php -l bin/pilot-seed.php
           php -l bin/pilot-smoke.php
           bash -n bin/build-release.sh
+          # The benchmark step itself only runs on schedule/workflow_dispatch, so its
+          # parse/report/privacy logic is proven deterministically here instead — on every run,
+          # including PR pushes (no network, no WordPress, no `ab` binary needed).
+          python3 -m py_compile bin/pilot-bench-report.py
+          python3 bin/pilot-bench-report.py --test
 
       - name: Environment specs (گزارش واقعی محیط)
         run: |
@@ -570,36 +575,149 @@ jobs:
           echo 'REST envelope checks ✓'
 
       # ---------- Performance benchmark ----------
-      - name: Performance benchmark — ab (p50/p95/p99 + RPS + error rate)
+      # Phase 17 Slice 0 — MEASUREMENT ONLY (collection ≠ NFR adjudication).
+      #   • the fixed endpoint set is unchanged: /health, /availability, /wp-json/
+      #   • the pre-existing c=10/50/100 warm measurements are preserved verbatim (same URL,
+      #     same -n, same two warm-up requests); c=1 is newly added at every endpoint
+      #   • a cold phase runs FIRST, right after a web/PHP process-group restart
+      #   • correctness failures stay loud (unparsable `ab` output, Non-2xx responses);
+      #     NO latency threshold is asserted here — shared-runner latency is not reference-server
+      #     evidence. Reference-environment NFR adjudication remains report-pilot-gate.md §12.3
+      #   • per-run numbers are persisted as an artifact for this exact run/head SHA and are
+      #     deliberately never committed into Git history
+      - name: Performance benchmark — ab (cold + warm, c=1/10/50/100) → JSON/MD artifact
         if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' }}
         run: |
           FROM=$(date -u +%F); TO=$(date -u -d "+29 days" +%F)
-          : > /tmp/bench.txt
-          bench() {
-            URL="$1"; N="$2"; C="$3"; L="$4"
-            curl -s -o /dev/null "$URL"; curl -s -o /dev/null "$URL"  # warm (opcache + mysql buffer)
-            ab -q -n "$N" -c "$C" "$URL" > /tmp/ab.txt 2>&1
-            RPS=$(grep -m1 'Requests per second' /tmp/ab.txt | grep -oE '[0-9.]+')
-            P50=$(grep -m1 '^ *50%' /tmp/ab.txt | grep -oE '[0-9.]+$')
-            P95=$(grep -m1 '^ *95%' /tmp/ab.txt | grep -oE '[0-9.]+$')
-            P99=$(grep -m1 '^ *99%' /tmp/ab.txt | grep -oE '[0-9.]+$')
-            FAILN=$(grep -m1 'Failed requests' /tmp/ab.txt | grep -oE '[0-9]+$')
-            NON2XX=$(grep -m1 'Non-2xx responses' /tmp/ab.txt | grep -oE '[0-9]+$' || echo 0)
-            [ -n "$RPS" ] && [ -n "$P95" ] || { echo "AB PARSE FAIL ($L c=$C)"; cat /tmp/ab.txt; exit 1; }
-            echo "$L | c=$C | p50=${P50}ms p95=${P95}ms p99=${P99}ms | rps=$RPS | failed=$FAILN non2xx=${NON2XX:-0}" | tee -a /tmp/bench.txt
-            [ "${NON2XX:-0}" = "0" ] || { echo "NON-2xx RESPONSES: $L c=$C"; exit 1; }
+          BENCH=/tmp/cpms-bench
+          RAW="$BENCH/raw"
+          MANIFEST="$BENCH/manifest.jsonl"
+          OUT="$BENCH/cpms-pilot-benchmark"
+          rm -rf "$BENCH"; mkdir -p "$RAW"
+          : > "$MANIFEST"; : > /tmp/bench.txt
+
+          # ---- cold boundary ------------------------------------------------------------
+          # Restarting the web/PHP process group is the ONLY cold primitive this harness can
+          # actually guarantee: the next request lands on fresh PHP processes with an empty
+          # opcode cache. Readiness is awaited at TCP level, because an HTTP probe would itself
+          # warm the stack and void the label. The MySQL InnoDB buffer pool and the OS page
+          # cache are NOT flushed and are NOT claimed to be cold — "cold" here means
+          # process-level cold only, and the artifact states exactly that.
+          sudo service apache2 restart
+          TCP_READY=0
+          for i in $(seq 1 30); do
+            if (exec 3<>/dev/tcp/127.0.0.1/8080) 2>/dev/null; then TCP_READY=1; break; fi
+            sleep 1
+          done
+          [ "$TCP_READY" = "1" ] || { echo '::error::cold boundary broken — Apache did not resume listening on :8080; refusing to label any measurement as cold'; exit 1; }
+          echo 'cold boundary: Apache/mod_php restarted, listener back, zero HTTP requests sent since the restart'
+
+          # ---- one measurement = one raw ab dump + one manifest line ---------------------
+          SEQ=0
+          measure() {
+            local PHASE="$1" LABEL="$2" ENDPOINT="$3" ROUTE="$4" QUERY="$5" N="$6" C="$7" WARM="$8"
+            local URL="$WP_URL$ROUTE$QUERY" NAME
+            SEQ=$((SEQ + 1))
+            NAME=$(printf '%03d-%s-%s' "$SEQ" "$PHASE" "$ENDPOINT")
+            if [ "$WARM" -gt 0 ]; then
+              for i in $(seq 1 "$WARM"); do curl -s -o /dev/null "$URL"; done  # pre-existing warm-up (opcache + mysql buffer)
+            fi
+            if ! ab -q -n "$N" -c "$C" "$URL" > "$RAW/$NAME.ab.txt" 2>&1; then
+              echo "::warning::ab exited non-zero for $LABEL c=$C (recorded below as a parse failure)"
+              tail -20 "$RAW/$NAME.ab.txt" || true
+            fi
+            cp "$RAW/$NAME.ab.txt" /tmp/ab.txt  # pre-existing debug-dump path stays meaningful
+            printf '{"seq":%d,"phase":"%s","label":"%s","endpoint":"%s","path":"%s","concurrency":%d,"requests":%d,"warmup_requests":%d,"raw":"%s.ab.txt"}\n' \
+              "$SEQ" "$PHASE" "$LABEL" "$ENDPOINT" "$ROUTE" "$C" "$N" "$WARM" "$NAME" >> "$MANIFEST"
           }
-          for C in 10 50 100; do bench "$WP_URL/wp-json/clinic/v1/health" 3000 "$C" "GET /health (عمومی)"; done
-          for C in 10 50 100; do bench "$WP_URL/wp-json/clinic/v1/availability?clinician_id=1&from=$FROM&to=$TO" 1500 "$C" "GET /availability (تقویم — NFR-PERF-1)"; done
-          bench "$WP_URL/wp-json/" 1000 50 "GET /wp-json/ (مرجع WP core)"
+
+          # ---- cold phase: first traffic after the restart, no warm-up, c=1 ---------------
+          measure cold 'GET /health (عمومی)' health '/wp-json/clinic/v1/health' '' 200 1 0
+          measure cold 'GET /availability (تقویم — NFR-PERF-1)' availability '/wp-json/clinic/v1/availability' "?clinician_id=1&from=$FROM&to=$TO" 200 1 0
+          measure cold 'GET /wp-json/ (مرجع WP core)' wp-json-root '/wp-json/' '' 200 1 0
+
+          # ---- warm phase: the pre-existing measurements, preserved exactly, plus new c=1 --
+          measure warm 'GET /health (عمومی)' health '/wp-json/clinic/v1/health' '' 200 1 2
+          for C in 10 50 100; do measure warm 'GET /health (عمومی)' health '/wp-json/clinic/v1/health' '' 3000 "$C" 2; done
+          measure warm 'GET /availability (تقویم — NFR-PERF-1)' availability '/wp-json/clinic/v1/availability' "?clinician_id=1&from=$FROM&to=$TO" 200 1 2
+          for C in 10 50 100; do measure warm 'GET /availability (تقویم — NFR-PERF-1)' availability '/wp-json/clinic/v1/availability' "?clinician_id=1&from=$FROM&to=$TO" 1500 "$C" 2; done
+          measure warm 'GET /wp-json/ (مرجع WP core)' wp-json-root '/wp-json/' '' 200 1 2
+          measure warm 'GET /wp-json/ (مرجع WP core)' wp-json-root '/wp-json/' '' 1000 50 2
+
+          # ---- raw dumps are scanned before they are ever uploaded ------------------------
+          SCAN_RC=0
+          python3 bin/pilot-bench-report.py --scan-dir "$RAW" || SCAN_RC=$?
+          if [ "$SCAN_RC" != "0" ]; then
+            echo '::error::raw benchmark dumps contain forbidden content (cookie/authorization/nonce/credential/PHI) — dumps deleted, nothing uploaded'
+            rm -rf "$RAW"
+          fi
+
+          # ---- environment + run binding for the artifact ---------------------------------
+          PHP_CLI=$(php -v | head -1)
+          APACHE_VER=$(apache2 -v | head -1)
+          MYSQL_CLIENT=$(mysql --version | head -1)
+          MYSQL_SERVER=$(mysql -h 127.0.0.1 -P 3306 -uroot -proot -N -e 'SELECT VERSION();' 2>/dev/null || echo 'not-retrieved')
+          WP_VER=$(wp core version --path="$WP_DIR" --allow-root 2>/dev/null || echo 'not-retrieved')
+          APACHE_PHP=$(ls /usr/lib/php/ 2>/dev/null | head -1 || true); [ -n "$APACHE_PHP" ] || APACHE_PHP='not-listed'
+          OPCACHE_INI=$(ls /etc/php/*/apache2/conf.d/ 2>/dev/null | grep -i opcache | head -1 || true)
+          [ -n "$OPCACHE_INI" ] || OPCACHE_INI='no-opcache-ini-under-apache2-confd (runtime state NOT probed — no PHP probe is written into the webroot)'
+          DATASET=$(tail -1 /tmp/seed.json 2>/dev/null | tr -d '\n' || echo 'not-retrieved')
+
+          RC=0
+          python3 bin/pilot-bench-report.py \
+            --manifest "$MANIFEST" --raw-dir "$RAW" --out-prefix "$OUT" \
+            --meta "run_id=${{ github.run_id }}" \
+            --meta "run_attempt=${{ github.run_attempt }}" \
+            --meta "head_sha=${{ github.sha }}" \
+            --meta "workflow=${{ github.workflow }}" \
+            --meta "event_name=${{ github.event_name }}" \
+            --meta "ref=${{ github.ref_name }}" \
+            --meta "runner=$RUNNER_NAME $RUNNER_OS" \
+            --meta "php_cli=$PHP_CLI" \
+            --meta "apache=$APACHE_VER" \
+            --meta "apache_php_dir=$APACHE_PHP" \
+            --meta "opcache_ini=$OPCACHE_INI" \
+            --meta "mysql_client=$MYSQL_CLIENT" \
+            --meta "mysql_server=$MYSQL_SERVER" \
+            --meta "wordpress=$WP_VER" \
+            --meta "dataset=$DATASET" \
+            --meta "cold_definition=first request after an Apache/mod_php restart in this step; TCP-only readiness wait; DB buffer pool and page cache NOT flushed" \
+            --meta "warm_definition=pre-existing measurements on the already-served stack, each preceded by the two pre-existing curl warm-ups" \
+            --meta "nfr_adjudication=NOT ADJUDICATED HERE — reference-server benchmark required (report-pilot-gate.md §12.3)" \
+            || RC=$?
+          cat "$OUT.txt" >> /tmp/bench.txt 2>/dev/null || true
+
           {
-            echo '## Performance Benchmark (ab — اندازه‌گیری واقعی)'
+            echo '## Performance Benchmark (ab — اندازه‌گیری واقعی؛ Phase 17 Slice 0: cold + warm)'
             echo '```'
             cat /tmp/bench.txt
             echo
             echo "dataset: $(tail -1 /tmp/seed.json)"
             echo '```'
+            echo
+            echo '**معنای دقیق cold/warm در این هارنس:** `cold` = نخستین Request‌ها بلافاصله پس از restart کردن Apache/mod_php در همین step (فرآیندهای تازهٔ PHP با opcode cache خالی؛ انتظار readiness فقط در سطح TCP، بدون هیچ Request گرم‌کننده). این **cold-cache در زیرساخت نیست**: InnoDB buffer pool و OS page cache پاک نشده‌اند و این هارنس نمی‌تواند آن‌ها را تضمین کند. `warm` = اندازه‌گیری‌های پیشین روی همان stackِ سرویس‌شده، هرکدام با دو Request گرم‌کنندهٔ قبلی. سطوح c=10/50/100 حفظ شده‌اند و c=1 افزوده شده است.'
+            echo
+            echo '**این گام فقط اندازه‌گیری است:** هیچ آستانهٔ latency در CI اعمال **نمی‌شود** و NFR-PERF پاس/شکست اعلام **نمی‌شود**؛ داوری به بنچمارک سرور مرجع موکول است (`report-pilot-gate.md` §12.3 — BLOCKED_BY_ENVIRONMENT). تنها شکست‌های این گام، شکست‌های صحت‌اند: خروجی قابل‌تحلیل‌نبودن `ab` یا پاسخ Non-2xx.'
+            echo
+            echo '**Artifact:** `pilot-benchmark-${{ github.run_id }}` → `cpms-pilot-benchmark.json` (ماشین‌خوان) + `.md` (انسانی) + `.txt` + `manifest.jsonl` + raw dumps — bound به run `${{ github.run_id }}` attempt `${{ github.run_attempt }}` و SHA `${{ github.sha }}`. اعداد per-run عمداً در تاریخچهٔ Git commit نمی‌شوند.'
           } >> "$GITHUB_STEP_SUMMARY"
+
+          [ "$RC" = "0" ] || { echo "BENCHMARK CORRECTNESS FAILURE (rc=$RC) — collection/HTTP-correctness only; no latency threshold exists in this step"; exit "$RC"; }
+          echo 'benchmark collected: no NFR verdict claimed (adjudication stays with report-pilot-gate.md §12.3)'
+
+      - name: Upload benchmark artifact (per-run numbers never enter Git history)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pilot-benchmark-${{ github.run_id }}
+          path: |
+            /tmp/cpms-bench/cpms-pilot-benchmark.json
+            /tmp/cpms-bench/cpms-pilot-benchmark.md
+            /tmp/cpms-bench/cpms-pilot-benchmark.txt
+            /tmp/cpms-bench/manifest.jsonl
+            /tmp/cpms-bench/raw/
+          retention-days: 14
+          if-no-files-found: ignore
 
       # ---------- Security configuration review ----------
       - name: Security config review (debug/salts/prefix/headers/perms/PHI-leak)
