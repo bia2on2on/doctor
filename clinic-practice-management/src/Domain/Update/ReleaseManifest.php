@@ -20,9 +20,9 @@ final class ReleaseManifest
      * غیبتِ `release_kind` سازگار است و `normal` معنا می‌دهد؛ هر مقدارِ حاضرِ خارج
      * از این enum بسته، مانیفست را نامعتبر می‌کند (fail-closed).
      */
-    public const RELEASE_KIND_NORMAL = 'normal';
+    public const RELEASE_KIND_NORMAL   = 'normal';
     public const RELEASE_KIND_SECURITY = 'security';
-    public const RELEASE_KINDS = [self::RELEASE_KIND_NORMAL, self::RELEASE_KIND_SECURITY];
+    public const RELEASE_KINDS         = [self::RELEASE_KIND_NORMAL, self::RELEASE_KIND_SECURITY];
 
     /**
      * @param array<string, mixed> $raw
@@ -59,7 +59,7 @@ final class ReleaseManifest
         }
         // Phase 16 Slice 6B — `release_kind` اختیاری است (غیبت = normal سازگار)، اما
         // مقدارِ حاضر باید در enum بسته باشد؛ غیررشته/ناشناخته = نامعتبر.
-        if (array_key_exists('release_kind', $raw) && !self::isValidReleaseKind($raw['release_kind'])) {
+        if ( array_key_exists( 'release_kind', $raw ) && ! self::is_valid_release_kind( $raw['release_kind'] ) ) {
             $errors[] = 'invalid release_kind';
         }
 
@@ -74,9 +74,8 @@ final class ReleaseManifest
     /**
      * @param mixed $kind
      */
-    private static function isValidReleaseKind(mixed $kind): bool
-    {
-        return is_string($kind) && in_array($kind, self::RELEASE_KINDS, true);
+    private static function is_valid_release_kind( mixed $kind ): bool {
+        return is_string( $kind ) && in_array( $kind, self::RELEASE_KINDS, true );
     }
 
     /**
@@ -86,19 +85,17 @@ final class ReleaseManifest
      *
      * @param array<string, mixed> $raw
      */
-    public static function releaseKind(array $raw): string
-    {
+    public static function release_kind( array $raw ): string {
         $kind = $raw['release_kind'] ?? null;
 
-        return self::isValidReleaseKind($kind) ? (string) $kind : self::RELEASE_KIND_NORMAL;
+        return self::is_valid_release_kind( $kind ) ? (string) $kind : self::RELEASE_KIND_NORMAL;
     }
 
     /**
      * @param array<string, mixed> $raw
      */
-    public static function isSecurityRelease(array $raw): bool
-    {
-        return self::releaseKind($raw) === self::RELEASE_KIND_SECURITY;
+    public static function is_security_release( array $raw ): bool {
+        return self::release_kind( $raw ) === self::RELEASE_KIND_SECURITY;
     }
 
     /**
@@ -110,11 +107,10 @@ final class ReleaseManifest
      *
      * @param array<string, mixed> $raw
      */
-    public static function signedAt(array $raw): ?int
-    {
+    public static function signed_at( array $raw ): ?int {
         $value = $raw['signed_at'] ?? null;
 
-        return is_int($value) ? $value : null;
+        return is_int( $value ) ? $value : null;
     }
 
     /**

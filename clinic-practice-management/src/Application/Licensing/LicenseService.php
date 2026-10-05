@@ -158,19 +158,18 @@ final class LicenseService implements LicenseStateProvider
      * صفحهٔ به‌روزرسانی رفتارِ فعلی را نگه می‌دارد. هیچ ساعتِ محلی در این تصمیم
      * دخالت ندارد و مقدار هرگز به سرویس مرکزی/درخواست‌ها برنمی‌گردد.
      */
-    public function updateRightsUntil(): ?int
-    {
+    public function update_rights_until(): ?int {
         $row = $this->stateRowSafe();
-        if ($row === null) {
+        if ( $row === null ) {
             return null;
         }
-        $payload = $this->decodePayload((string) ($row['payload_json'] ?? ''));
-        if ($payload === null) {
+        $payload = $this->decodePayload( (string) ( $row['payload_json'] ?? '' ) );
+        if ( $payload === null ) {
             return null;
         }
         $claim = $payload['update_rights_until'] ?? null;
 
-        return is_int($claim) && $claim > 0 ? $claim : null;
+        return is_int( $claim ) && $claim > 0 ? $claim : null;
     }
 
     /**

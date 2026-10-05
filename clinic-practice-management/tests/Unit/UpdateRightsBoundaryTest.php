@@ -53,18 +53,18 @@ final class UpdateRightsBoundaryTest extends TestCase
     #[DataProvider('nonBoundaryClaims')]
     public function testAbsentOrUnusableClaimStaysUnbounded(mixed $claim): void
     {
-        $boundary = UpdateRightsBoundary::fromClaim($claim);
+        $boundary = UpdateRightsBoundary::from_claim($claim);
 
         $this->assertSame('none', $boundary->fingerprint());
         // بدونِ مرز هیچ تصمیمی محدود نمی‌شود — سازگاریِ کاملِ رفتارِ فعلی.
-        $this->assertNull($boundary->denialReason($this->manifest(self::BOUNDARY + 86400)));
-        $this->assertNull(UpdateRightsBoundary::unbounded()->denialReason($this->manifest(self::BOUNDARY)));
+        $this->assertNull($boundary->denial_reason($this->manifest(self::BOUNDARY + 86400)));
+        $this->assertNull(UpdateRightsBoundary::unbounded()->denial_reason($this->manifest(self::BOUNDARY)));
     }
 
     public function testPositiveIntegerClaimBecomesTheBoundaryFingerprint(): void
     {
-        $this->assertSame('until-' . self::BOUNDARY, UpdateRightsBoundary::fromClaim(self::BOUNDARY)->fingerprint());
-        $this->assertSame('until-' . PHP_INT_MAX, UpdateRightsBoundary::fromClaim(PHP_INT_MAX)->fingerprint());
+        $this->assertSame('until-' . self::BOUNDARY, UpdateRightsBoundary::from_claim(self::BOUNDARY)->fingerprint());
+        $this->assertSame('until-' . PHP_INT_MAX, UpdateRightsBoundary::from_claim(PHP_INT_MAX)->fingerprint());
     }
 
     /**
@@ -86,7 +86,7 @@ final class UpdateRightsBoundaryTest extends TestCase
         $manifest = $this->manifest($signedAt);
         $manifest['release_kind'] = 'normal';
 
-        $this->assertSame($expected, UpdateRightsBoundary::fromClaim(self::BOUNDARY)->denialReason($manifest));
+        $this->assertSame($expected, UpdateRightsBoundary::from_claim(self::BOUNDARY)->denial_reason($manifest));
     }
 
     public function testSignedSecurityReleasePassesTheBoundary(): void
@@ -95,7 +95,7 @@ final class UpdateRightsBoundaryTest extends TestCase
         $manifest['release_kind'] = 'security';
 
         $this->assertNull(
-            UpdateRightsBoundary::fromClaim(self::BOUNDARY)->denialReason($manifest),
+            UpdateRightsBoundary::from_claim(self::BOUNDARY)->denial_reason($manifest),
             'security is the only exception to the ordinary publication boundary'
         );
     }
@@ -121,7 +121,7 @@ final class UpdateRightsBoundaryTest extends TestCase
 
         $this->assertSame(
             UpdateRightsBoundary::REASON_RIGHTS_EXPIRED,
-            UpdateRightsBoundary::fromClaim(self::BOUNDARY)->denialReason($manifest),
+            UpdateRightsBoundary::from_claim(self::BOUNDARY)->denial_reason($manifest),
             'only the exact signed enum value may use the security exception'
         );
     }
@@ -153,11 +153,11 @@ final class UpdateRightsBoundaryTest extends TestCase
 
         $this->assertSame(
             UpdateRightsBoundary::REASON_INVALID_MANIFEST,
-            UpdateRightsBoundary::fromClaim(self::BOUNDARY)->denialReason($manifest),
+            UpdateRightsBoundary::from_claim(self::BOUNDARY)->denial_reason($manifest),
             'a bounded decision requires a real integer publication timestamp'
         );
         $this->assertNull(
-            UpdateRightsBoundary::unbounded()->denialReason($manifest),
+            UpdateRightsBoundary::unbounded()->denial_reason($manifest),
             'without a claim the manifest shape stays the structural check concern'
         );
     }

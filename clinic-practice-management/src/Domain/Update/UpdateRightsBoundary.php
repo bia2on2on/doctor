@@ -22,8 +22,8 @@ namespace ClinicCore\Domain\Update;
  *
  * خالص است: بدون WP/DB/شبکه/زمان — و هیچ‌گاه ذخیره‌سازی/ابردادهٔ تازه نمی‌سازد.
  */
-final class UpdateRightsBoundary
-{
+final class UpdateRightsBoundary {
+
     /**
      * Manifest unusable for a bounded decision (structure or signed_at) — same bounded
      * code the structural check in `UpdateService::evaluateManifest()` returns.
@@ -35,26 +35,23 @@ final class UpdateRightsBoundary
      */
     public const REASON_RIGHTS_EXPIRED = 'update_rights_expired';
 
-    private function __construct(private readonly ?int $until)
-    {
+    private function __construct( private readonly ?int $until ) {
     }
 
     /**
      * بدونِ مرز — سندِ بدونِ ادعا/legacy/نامعتبر.
      */
-    public static function unbounded(): self
-    {
-        return new self(null);
+    public static function unbounded(): self {
+        return new self( null );
     }
 
     /**
      * ادعای اختیاریِ v2: فقط عددِ صحیحِ مثبت مرز می‌سازد؛ هر چیزِ دیگر «بدون‌مرز»
      * است (fail-open عمدی برای سازگاری، چون سندِ نامعتبرِ حاویِ ادعا هرگز ذخیره
-     * نمی‌شود: `LicenseSignature::verify_license_document()` آن را رد می‌کند).
+     * نمی‌شود: `LicenseSignature` آن را رد می‌کند).
      */
-    public static function fromClaim(mixed $claim): self
-    {
-        return is_int($claim) && $claim > 0 ? new self($claim) : new self(null);
+    public static function from_claim( mixed $claim ): self {
+        return is_int( $claim ) && $claim > 0 ? new self( $claim ) : new self( null );
     }
 
     /**
@@ -62,8 +59,7 @@ final class UpdateRightsBoundary
      * تصمیمِ مسدودِ قدیمی پس از تمدید باقی نماند؛ فقط مکانیزمِ transientِ موجود،
      * بدون migration/جدول/ستون/reconciliation.
      */
-    public function fingerprint(): string
-    {
+    public function fingerprint(): string {
         return $this->until === null ? 'none' : 'until-' . $this->until;
     }
 
@@ -76,21 +72,20 @@ final class UpdateRightsBoundary
      *
      * @return string|null null = مجاز؛ در غیر این صورت دلیلِ محدود
      */
-    public function denialReason(array $manifest): ?string
-    {
-        if ($this->until === null) {
+    public function denial_reason( array $manifest ): ?string {
+        if ( $this->until === null ) {
             return null;
         }
-        $signedAt = ReleaseManifest::signedAt($manifest);
-        if ($signedAt === null) {
+        $signed_at = ReleaseManifest::signed_at( $manifest );
+        if ( $signed_at === null ) {
             return self::REASON_INVALID_MANIFEST;
         }
-        if ($signedAt <= $this->until) {
+        if ( $signed_at <= $this->until ) {
             return null;
         }
         // استثنای امنیتی فقط از داخلِ payloadِ امضاشده خوانده می‌شود؛ نامِ ناشناخته
         // (مثلاً `SECURITY`) هرگز security نیست ⇒ مسدود می‌ماند (fail-closed).
-        if (ReleaseManifest::isSecurityRelease($manifest)) {
+        if ( ReleaseManifest::is_security_release( $manifest ) ) {
             return null;
         }
 
