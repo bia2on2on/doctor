@@ -51,6 +51,8 @@ final class UpdateRightsEnforcementTest extends WP_UnitTestCase
     private const BOUNDARY_RENEWED = 1952000000;
     private const ANCIENT_BOUNDARY = 1000000000;
     private const ANCIENT_PUBLICATION = 1500000000;
+    /** Dedicated boundary for the blocked bridge test (own decision-cache key). */
+    private const BOUNDARY_BRIDGE = 1893463300;
 
     private string $ringKeypair;
     private string $releaseKeypair;
@@ -124,9 +126,9 @@ final class UpdateRightsEnforcementTest extends WP_UnitTestCase
         $this->assertTrue($this->check($this->updates($service, $this->document($withoutSignedAt)))['available']);
 
         // Numeric string `signed_at` — accepted today, and still accepted without a rights claim.
-        $this->assertTrue($this->check($this->updates($service, $this->document($this->releasePayload([
-            'signed_at' => (string) self::BOUNDARY_LATE,
-        ])))['available']);
+        $numericString = $this->releasePayload(['signed_at' => (string) self::BOUNDARY_LATE]);
+        $result = $this->check($this->updates($service, $this->document($numericString)));
+        $this->assertTrue($result['available']);
     }
 
     // ==================== 2. bounded + ordinary ⇒ compare signed integers ====================
@@ -538,9 +540,12 @@ final class UpdateRightsEnforcementTest extends WP_UnitTestCase
     public function testWpUpdateBridgeDoesNotOfferOrDownloadARightsBlockedRelease(): void
     {
         $service = $this->service();
-        $this->installBoundary($service, self::BOUNDARY);
+        $this->installBoundary($service, self::BOUNDARY_BRIDGE);
 
-        $release = $this->releasePayload(['release_kind' => 'normal', 'signed_at' => self::BOUNDARY_LATE]);
+        $release = $this->releasePayload([
+            'release_kind' => 'normal',
+            'signed_at' => self::BOUNDARY_BRIDGE + 1,
+        ]);
         $gateway = new RecordingUpdateGateway($this->document($release));
         $updates = new UpdateService(App::settings(), $service, $gateway);
         $bridge = new WpUpdateBridge(static fn (): UpdateService => $updates);
