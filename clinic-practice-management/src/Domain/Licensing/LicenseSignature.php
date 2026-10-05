@@ -44,6 +44,13 @@ final class LicenseSignature
      * No version fields selects only the bounded legacy format. Presence of either
      * field opts into the new format; partial metadata never falls back to legacy.
      *
+     * Phase 16 Slice 4 — signed activation identity: a v2 document MAY carry
+     * `activation_id` (central activation RECORD id, see LicenseActivationId).
+     * Absent ⇒ accepted (bounded compatibility rule); present ⇒ must satisfy the
+     * bounded grammar or the whole document fails closed. The legacy format
+     * predates the claim, so a legacy document carrying it fails closed too.
+     * The value stays inside the canonical signed payload like every other key.
+     *
      * @param array<string, mixed> $payload
      */
     public static function verify_license_document( array $payload, string $signature_b64 ): bool {
@@ -69,6 +76,10 @@ final class LicenseSignature
         if ( array_key_exists( 'schema_version', $payload ) || array_key_exists( 'key_id', $payload ) ) {
             return false;
         }
+        // Old documents predate the v2 activation identity claim (Phase 16 Slice 4).
+        if ( array_key_exists( 'activation_id', $payload ) ) {
+            return false;
+        }
 
         return self::verify(
             self::canonicalJson( $payload ),
@@ -91,6 +102,12 @@ final class LicenseSignature
 
         $public_key_b64 = LicenseKeys::public_key_for( $payload['key_id'] ?? null );
         if ( $public_key_b64 === null ) {
+            return false;
+        }
+        // Phase 16 Slice 4 — optional signed activation identity: absent is accepted
+        // (the central service issues no activation records yet); a present claim
+        // must be a bounded ASCII identifier or the document fails closed.
+        if ( array_key_exists( 'activation_id', $payload ) && ! LicenseActivationId::is_valid( $payload['activation_id'] ) ) {
             return false;
         }
 
