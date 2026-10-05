@@ -196,6 +196,42 @@ final class LicenseUpdateRightsClaimTest extends WP_UnitTestCase
         }
     }
 
+    public function testMalformedUpdateRightsClaimOnOnlineActivationFailsClosed(): void
+    {
+        $gateway = new class($this) implements VendorGateway {
+            public function __construct(private readonly LicenseUpdateRightsClaimTest $test)
+            {
+            }
+
+            public function isConfigured(): bool
+            {
+                return true;
+            }
+
+            public function activate(array $request): array
+            {
+                return $this->test->documentForRequest($request, 'not-an-integer');
+            }
+
+            public function refresh(array $request): array
+            {
+                throw new \RuntimeException('online activation fixture does not refresh');
+            }
+        };
+        $service = $this->service($gateway);
+        $repository = new LicenseRepository(App::db());
+        $apiCode = null;
+
+        try {
+            $service->activateWithKey('fixture-key');
+        } catch (LicenseGatewayException $exception) {
+            $apiCode = $exception->apiCode();
+        }
+
+        $this->assertNull($repository->state(), 'malformed online activation must persist no verified document');
+        $this->assertSame('CLINIC_LICENSE_INVALID', $apiCode);
+    }
+
     public function testOnlineActivationRefreshAndOfflineActivationShareTheClaimContract(): void
     {
         $gateway = new class($this) implements VendorGateway {
@@ -203,10 +239,10 @@ final class LicenseUpdateRightsClaimTest extends WP_UnitTestCase
             public array $requests = [];
 
             /** @var mixed */
-            public $activationBoundary = 'not-an-integer';
+            public $activationBoundary = 1893463200;
 
             /** @var mixed */
-            public $refreshBoundary = null;
+            public $refreshBoundary = 1893463201;
 
             public function __construct(private readonly LicenseUpdateRightsClaimTest $test)
             {
@@ -232,42 +268,32 @@ final class LicenseUpdateRightsClaimTest extends WP_UnitTestCase
             }
         };
         $service = $this->service($gateway);
-        $repository = new LicenseRepository(App::db());
 
-        try {
-            $service->activateWithKey('fixture-key');
-            $this->fail('malformed update_rights_until on online activation must be rejected');
-        } catch (LicenseGatewayException $exception) {
-            $this->assertSame('CLINIC_LICENSE_INVALID', $exception->apiCode());
-        }
-        $this->assertNull($repository->state(), 'rejected online activation must persist no document');
-
-        $gateway->activationBoundary = 1893463200;
         $this->assertSame(LicenseStatus::ACTIVE, $service->activateWithKey('fixture-key')['status']);
         $this->assertSame(1893463200, $this->storedPayload()['update_rights_until'] ?? null);
 
-        $gateway->refreshBoundary = 1893463201;
         $this->assertSame(LicenseStatus::ACTIVE, $service->refresh()['status']);
-        $verifiedPayload = $this->storedPayload();
-        $this->assertSame(1893463201, $verifiedPayload['update_rights_until'] ?? null);
-        $verifiedState = $this->stateProjection($service);
-
-        $gateway->refreshBoundary = true;
-        try {
-            $service->refresh();
-            $this->fail('malformed update_rights_until on refresh must be rejected');
-        } catch (LicenseGatewayException $exception) {
-            $this->assertSame('CLINIC_LICENSE_INVALID', $exception->apiCode());
-        }
-        $this->assertSame($verifiedPayload, $this->storedPayload(), 'rejected refresh must retain the last verified payload');
-        $this->assertSame($verifiedState, $this->stateProjection($service), 'rejected refresh must retain the prior local license state');
+        $this->assertSame(1893463201, $this->storedPayload()['update_rights_until'] ?? null);
 
         $this->installDocument(
             $service,
             $this->v2Payload($service, ['update_rights_until' => 1893463202]),
             $this->ringKeypair
         );
-        $this->assertSame(1893463202, $this->storedPayload()['update_rights_until'] ?? null);
+        $verifiedPayload = $this->storedPayload();
+        $this->assertSame(1893463202, $verifiedPayload['update_rights_until'] ?? null);
+        $verifiedState = $this->stateProjection($service);
+
+        $gateway->refreshBoundary = true;
+        $apiCode = null;
+        try {
+            $service->refresh();
+        } catch (LicenseGatewayException $exception) {
+            $apiCode = $exception->apiCode();
+        }
+        $this->assertSame($verifiedPayload, $this->storedPayload(), 'rejected refresh must retain the last verified payload');
+        $this->assertSame($verifiedState, $this->stateProjection($service), 'rejected refresh must retain the prior local license state');
+        $this->assertSame('CLINIC_LICENSE_INVALID', $apiCode, 'malformed update_rights_until on refresh must be rejected');
 
         foreach ($gateway->requests as $sent) {
             $this->assertArrayNotHasKey('update_rights_until', $sent['request'], $sent['action'] . ' metadata must not contain the claim');
