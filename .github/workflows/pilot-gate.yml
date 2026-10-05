@@ -140,14 +140,15 @@ jobs:
           php -l bin/pilot-seed.php
           php -l bin/pilot-smoke.php
           bash -n bin/build-release.sh
-          # The benchmark step itself only runs on schedule/workflow_dispatch, so its
-          # parse/report/privacy logic is proven deterministically here instead — on every run,
-          # including PR pushes (no network, no WordPress, no `ab` binary needed).
+          # The benchmark step runs on every watched push (main / arena/**) as well as on
+          # schedule and workflow_dispatch. The parse/report/privacy self-tests below prove
+          # that logic deterministically on every run, regardless of whether `ab`/the server
+          # are reachable (no network, no WordPress, no `ab` binary needed).
           python3 -m py_compile bin/pilot-bench-report.py
           python3 bin/pilot-bench-report.py --test
           {
             echo '### Pilot benchmark harness self-test — PASSED on this run'
-            echo '`bin/pilot-bench-report.py --test` (deterministic: no network, no WordPress, no `ab` binary) — ab parsing, report generation, honesty fields and the artifact privacy gate. This runs regardless of the benchmark step, which is schedule/workflow_dispatch-only.'
+            echo '`bin/pilot-bench-report.py --test` (deterministic: no network, no WordPress, no `ab` binary) — ab parsing, report generation, honesty fields and the artifact privacy gate. This runs on every gate run; the live benchmark step itself runs on watched pushes (`main` / `arena/**`) as well as on `schedule` and `workflow_dispatch`.'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Environment specs (گزارش واقعی محیط)
@@ -579,7 +580,9 @@ jobs:
           echo 'REST envelope checks ✓'
 
       # ---------- Performance benchmark ----------
-      # Phase 17 Slice 0 — MEASUREMENT ONLY (collection ≠ NFR adjudication).
+      # Phase 17 Slice 0 / Slice 0.5 — MEASUREMENT ONLY (collection ≠ NFR adjudication).
+      #   • runs on watched pushes (`main` / `arena/**`) as well as on weekly schedule and
+      #     workflow_dispatch — ordinary engineering activity produces run-bound artifacts
       #   • the fixed endpoint set is unchanged: /health, /availability, /wp-json/
       #   • the pre-existing c=10/50/100 warm measurements are preserved verbatim (same URL,
       #     same -n, same two warm-up requests); c=1 is newly added at every endpoint
@@ -587,17 +590,21 @@ jobs:
       #   • correctness failures stay loud (unparsable `ab` output, Non-2xx responses);
       #     NO latency threshold is asserted here — shared-runner latency is not reference-server
       #     evidence. Reference-environment NFR adjudication remains report-pilot-gate.md §12.3
+      #   • raw ab dumps are staged outside the artifact upload glob and moved into the upload
+      #     path ONLY after the privacy scan passes; a crash/cancel or scan failure cannot leak
+      #     unscanned dumps to the `if: always()` artifact upload
       #   • per-run numbers are persisted as an artifact for this exact run/head SHA and are
       #     deliberately never committed into Git history
       - name: Performance benchmark — ab (cold + warm, c=1/10/50/100) → JSON/MD artifact
-        if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' }}
+        if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || github.event_name == 'push' }}
         run: |
           FROM=$(date -u +%F); TO=$(date -u -d "+29 days" +%F)
           BENCH=/tmp/cpms-bench
+          RAW_STAGE=/tmp/cpms-bench-raw-stage   # staged OUTSIDE the artifact upload path so a crash/cancel before the privacy scan cannot leak unscanned dumps
           RAW="$BENCH/raw"
           MANIFEST="$BENCH/manifest.jsonl"
           OUT="$BENCH/cpms-pilot-benchmark"
-          rm -rf "$BENCH"; mkdir -p "$RAW"
+          rm -rf "$BENCH" "$RAW_STAGE"; mkdir -p "$BENCH" "$RAW_STAGE"
           : > "$MANIFEST"; : > /tmp/bench.txt
 
           # ---- cold boundary ------------------------------------------------------------
@@ -626,11 +633,11 @@ jobs:
             if [ "$WARM" -gt 0 ]; then
               for i in $(seq 1 "$WARM"); do curl -s -o /dev/null "$URL"; done  # pre-existing warm-up (opcache + mysql buffer)
             fi
-            if ! ab -q -n "$N" -c "$C" "$URL" > "$RAW/$NAME.ab.txt" 2>&1; then
+            if ! ab -q -n "$N" -c "$C" "$URL" > "$RAW_STAGE/$NAME.ab.txt" 2>&1; then
               echo "::warning::ab exited non-zero for $LABEL c=$C (recorded below as a parse failure)"
-              tail -20 "$RAW/$NAME.ab.txt" || true
+              tail -20 "$RAW_STAGE/$NAME.ab.txt" || true
             fi
-            cp "$RAW/$NAME.ab.txt" /tmp/ab.txt  # pre-existing debug-dump path stays meaningful
+            cp "$RAW_STAGE/$NAME.ab.txt" /tmp/ab.txt  # pre-existing debug-dump path stays meaningful
             printf '{"seq":%d,"phase":"%s","label":"%s","endpoint":"%s","path":"%s","concurrency":%d,"requests":%d,"warmup_requests":%d,"raw":"%s.ab.txt"}\n' \
               "$SEQ" "$PHASE" "$LABEL" "$ENDPOINT" "$ROUTE" "$C" "$N" "$WARM" "$NAME" >> "$MANIFEST"
           }
@@ -648,13 +655,21 @@ jobs:
           measure warm 'GET /wp-json/ (مرجع WP core)' wp-json-root '/wp-json/' '' 200 1 2
           measure warm 'GET /wp-json/ (مرجع WP core)' wp-json-root '/wp-json/' '' 1000 50 2
 
-          # ---- raw dumps are scanned before they are ever uploaded ------------------------
+          # ---- raw dumps are scanned BEFORE they are moved into the upload path -----------
+          # Staged dumps live OUTSIDE the artifact upload glob, so a partial-run crash/cancel
+          # or a scan failure cannot leave unscanned material for `if: always()` to upload.
+          # Only a clean scan moves them into $RAW (which IS in the upload glob); a scan
+          # failure deletes the stage so there is nothing to upload.
           SCAN_RC=0
-          python3 bin/pilot-bench-report.py --scan-dir "$RAW" || SCAN_RC=$?
+          python3 bin/pilot-bench-report.py --scan-dir "$RAW_STAGE" || SCAN_RC=$?
           if [ "$SCAN_RC" != "0" ]; then
-            echo '::error::raw benchmark dumps contain forbidden content (cookie/authorization/nonce/credential/PHI) — dumps deleted, nothing uploaded'
-            rm -rf "$RAW"
+            echo '::error::raw benchmark dumps contain forbidden content (cookie/authorization/nonce/credential/PHI) — staged dumps deleted, nothing uploaded'
+            rm -rf "$RAW_STAGE"
+            exit "$SCAN_RC"
           fi
+          mkdir -p "$RAW"
+          mv "$RAW_STAGE"/*.ab.txt "$RAW"/ 2>/dev/null || true
+          rm -rf "$RAW_STAGE"   # stage is now empty; remove it so no later step can confuse it with upload content
 
           # ---- environment + run binding for the artifact ---------------------------------
           PHP_CLI=$(php -v | head -1)
