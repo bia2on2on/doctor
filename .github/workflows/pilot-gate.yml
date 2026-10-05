@@ -627,17 +627,22 @@ jobs:
           SEQ=0
           measure() {
             local PHASE="$1" LABEL="$2" ENDPOINT="$3" ROUTE="$4" QUERY="$5" N="$6" C="$7" WARM="$8"
-            local URL="$WP_URL$ROUTE$QUERY" NAME
+            local URL="$WP_URL$ROUTE$QUERY" NAME AB_RC=0
             SEQ=$((SEQ + 1))
             NAME=$(printf '%03d-%s-%s' "$SEQ" "$PHASE" "$ENDPOINT")
             if [ "$WARM" -gt 0 ]; then
               for i in $(seq 1 "$WARM"); do curl -s -o /dev/null "$URL"; done  # pre-existing warm-up (opcache + mysql buffer)
             fi
             if ! ab -q -n "$N" -c "$C" "$URL" > "$RAW_STAGE/$NAME.ab.txt" 2>&1; then
-              echo "::warning::ab exited non-zero for $LABEL c=$C (recorded below as a parse failure)"
-              tail -20 "$RAW_STAGE/$NAME.ab.txt" || true
+              AB_RC=$?
+              echo "::warning::ab exited non-zero (rc=$AB_RC) for seq=$SEQ phase=$PHASE label=$LABEL c=$C n=$N — recorded as a parse/correctness failure; raw dump stays in scan-staging and is NOT printed/copied/uploaded before privacy scan"
             fi
-            cp "$RAW_STAGE/$NAME.ab.txt" /tmp/ab.txt  # pre-existing debug-dump path stays meaningful
+            # NOTE: do NOT copy or tail the raw dump here (/tmp/ab.txt removed): raw bytes
+            # must not leave the scan-staging directory before the privacy scan succeeds.
+            # Diagnostics on failure are carried via structured means (::warning lines above
+            # with seq/phase/label/c/n/rc, and the post-scan report from pilot-bench-report.py
+            # which emits measurement name/phase/concurrency/failure-reason into cpms-pilot-benchmark.{txt,md,json}
+            # and /tmp/bench.txt), never via raw-dump tails.
             printf '{"seq":%d,"phase":"%s","label":"%s","endpoint":"%s","path":"%s","concurrency":%d,"requests":%d,"warmup_requests":%d,"raw":"%s.ab.txt"}\n' \
               "$SEQ" "$PHASE" "$LABEL" "$ENDPOINT" "$ROUTE" "$C" "$N" "$WARM" "$NAME" >> "$MANIFEST"
           }
@@ -929,7 +934,7 @@ jobs:
           {
             echo "### Pilot Gate FAILURE — job: ${GITHUB_JOB} (run ${{ github.run_id }})"
             echo '```'
-            for f in /tmp/apt.log /tmp/seed.json /tmp/smoke.log /tmp/bench.txt /tmp/ab.txt /tmp/headers.txt \
+            for f in /tmp/apt.log /tmp/seed.json /tmp/smoke.log /tmp/bench.txt /tmp/headers.txt \
                      /tmp/perms.txt /tmp/audit-actions.txt /tmp/jobs-queued.txt /tmp/jobs-success.txt /tmp/failed-jobs.txt \
                      /tmp/tick-1.log /tmp/tick-2.log /tmp/restore.log /tmp/orig-files.txt /tmp/restored-files.txt /tmp/backup-hashes.txt /tmp/backup-counts.txt \
                      /tmp/health.json /tmp/avail.json /tmp/unauth.json /tmp/probe-body.txt \
@@ -1110,7 +1115,7 @@ jobs:
           {
             echo "### Pilot Gate FAILURE — job: ${GITHUB_JOB} (run ${{ github.run_id }})"
             echo '```'
-            for f in /tmp/apt.log /tmp/seed.json /tmp/smoke.log /tmp/bench.txt /tmp/ab.txt /tmp/headers.txt \
+            for f in /tmp/apt.log /tmp/seed.json /tmp/smoke.log /tmp/bench.txt /tmp/headers.txt \
                      /tmp/perms.txt /tmp/audit-actions.txt /tmp/jobs-queued.txt /tmp/jobs-success.txt /tmp/failed-jobs.txt \
                      /tmp/tick-1.log /tmp/tick-2.log /tmp/restore.log /tmp/orig-files.txt /tmp/restored-files.txt /tmp/backup-hashes.txt /tmp/backup-counts.txt \
                      /tmp/health.json /tmp/avail.json /tmp/unauth.json /tmp/probe-body.txt \
@@ -1876,7 +1881,7 @@ jobs:
           {
             echo "### Pilot Gate FAILURE — job: ${GITHUB_JOB} (run ${{ github.run_id }})"
             echo '```'
-            for f in /tmp/apt.log /tmp/seed.json /tmp/smoke.log /tmp/bench.txt /tmp/ab.txt /tmp/headers.txt \
+            for f in /tmp/apt.log /tmp/seed.json /tmp/smoke.log /tmp/bench.txt /tmp/headers.txt \
                      /tmp/perms.txt /tmp/audit-actions.txt /tmp/jobs-queued.txt /tmp/jobs-success.txt /tmp/failed-jobs.txt \
                      /tmp/tick-1.log /tmp/tick-2.log /tmp/restore.log /tmp/orig-files.txt /tmp/restored-files.txt /tmp/backup-hashes.txt /tmp/backup-counts.txt \
                      /tmp/health.json /tmp/avail.json /tmp/unauth.json /tmp/probe-body.txt \
