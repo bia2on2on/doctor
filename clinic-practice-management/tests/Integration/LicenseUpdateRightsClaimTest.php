@@ -330,7 +330,7 @@ final class LicenseUpdateRightsClaimTest extends WP_UnitTestCase
         $this->assertSame('expired', $withoutClaim['reason']);
         $this->assertTrue($withoutClaim['needs_renewal']);
         foreach (SignedLicenseGate::BLOCKED_UNDER_RESTRICTION as $operation) {
-            $this->assertTrue($withoutClaim['gate'][$operation], 'ordinary expiration must not block new business');
+            $this->assertTrue($withoutClaim['gate'][$operation]['allowed'], 'ordinary expiration must not block new business');
         }
 
         $payload['update_rights_until'] = 1893463200;
