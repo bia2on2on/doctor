@@ -52,30 +52,27 @@
 - p95 REST از Logها (هر ساعت)؛ Alert اگر p95 > 300ms برای ۱۰ دقیقه پیاپی (Alerting در F9/Production Hardening).
 - صفحات عمومی: Overhead افزونه با Profiler (Query Count + Time) در نمونه‌های دوره‌ای.
 
-## 7. وضعیت اجرای هارنس (ثبت 2026-10-05 — Phase 17 Slice 0؛ فقط ثبتِ «چه چیزی عملاً اندازه گرفته می‌شود»)
+## 7. وضعیت اجرای هارنس و تشخیص ظرفیت (ثبت 2026-10-05 — Phase 17؛ فقط اندازه‌گیری)
 
-> این بخش **اهداف §1 و متدولوژی §3 و قواعد Quality Gate §5 را تغییر نمی‌دهد و جایگزین آن‌ها نمی‌شود**؛
-> فقط صادقانه ثبت می‌کند هارنس خودکار موجود **چه چیزی را واقعاً انجام می‌دهد و چه چیزی را انجام نمی‌دهد**،
-> تا هیچ خواننده‌ای از «سبز بودن گیت» نتیجهٔ NFR استخراج نکند. مرجع تصمیم مالک برای داوری نهایی همچنان
-> بنچمارک **سرور مرجع** است (`docs/phase-reports/report-pilot-gate.md` §12.3 — BLOCKED_BY_ENVIRONMENT).
+> این بخش **اهداف §1 و متدولوژی §3 و قواعد Quality Gate §5 را تغییر نمی‌دهد و جایگزین آن‌ها نمی‌شود**؛ فقط آنچه هارنس Pilot/Staging واقعاً اندازه می‌گیرد را ثبت می‌کند. اعداد shared GitHub runner شواهد انطباق NFR نیستند؛ داوری سرور مرجع همچنان در `docs/phase-reports/report-pilot-gate.md` §12.3 با وضعیت `BLOCKED_BY_ENVIRONMENT` باقی می‌ماند.
 
-**گام اجرای فعلی:** `staging-gate` ← step «Performance benchmark — ab (cold + warm, c=1/10/50/100) → JSON/MD artifact»
-در `.github/workflows/pilot-gate.yml`؛ منطقی که `ab` را تحلیل و خروجی را تولید می‌کند:
-`clinic-practice-management/bin/pilot-bench-report.py` (استاندارد stdlib، با self-test قطعی `--test` که در گام
-«Lint gate tools» روی **هر** ران اجرا می‌شود، نه فقط ران‌های بنچمارک).
+**گام‌های فعال در همان job موجود `staging-gate`:**
 
-| بند §3 (متدولوژی الزامی) | آنچه هارنس فعلی واقعاً انجام می‌دهد | شکاف بازمانده |
+- `Performance benchmark — ab (cold + warm, c=1/10/50/100)` در `.github/workflows/pilot-gate.yml` همچنان همان endpointها، تعداد درخواست‌ها، warm-upها و ۱۳ ردیف established را اجرا می‌کند؛ این slice هیچ ردیفی را حذف/تغییر نمی‌دهد و فقط تشخیص را به‌صورت additive کنار هر اجرای `ab` جمع می‌کند.
+- `bin/pilot-bench-diagnostics.py` با stdlib و `/proc`، بدون package جدید، `ab` را به‌عنوان child اجرا و در همان بازه نمونه‌برداری می‌کند. فایل‌های diagnostic فقط summaryهای bounded دارند: تعداد نمونه/فاصله/مدت، CPU و memory میزبان، CPU/RSS خود `ab`، و CPU/RSS/count گروه Apache/PHP. full process list، command line، environment، config text و HTTP data ذخیره نمی‌شوند.
+- قبل از ردیف‌ها، `apache2ctl -M`/`-V`/`-t -D DUMP_RUN_CFG` و فقط directiveهای شناخته‌شده برای active MPM خوانده می‌شوند. خروجی ساختاریافتهٔ bounded شامل `active_mpm`، `php_execution_mode`، runner CPU count و `ServerLimit`، `ThreadLimit`، `ThreadsPerChild`، `MaxRequestWorkers`، `MaxConnectionsPerChild` است. نبود/بدشکلی هر مقدار = **DIAGNOSTIC MEASUREMENT FAILURE**؛ با خطای ab/HTTP اشتباه نمی‌شود.
+
+**Diagnostic schema / invariant contract:** `cpms.pilot-bench-diagnostics/1` در artifact داخلی و `cpms.pilot-bench-evidence/2` برای projection REST. Static fields دقیقاً شامل runner CPU count، active MPM، PHP mode و پنج مقدار capacity هستند. هر level باید یک JSON object دقیقاً با status `ok`، همان `seq`/phase/concurrency، exit-code bounded، sample count/interval/elapsed و فیلدهای CPU/memory/RSS/process-count bounded داشته باشد؛ `host_cpu_avg_pct ≤ host_cpu_max_pct`، process count ≥ 1، runner CPU count در همهٔ rows برابر static است، row count و sequence با benchmark manifest دقیقاً برابرند، و هر number finite است. Safe projection فقط این fields صریح + established benchmark rows + exact run binding را منتشر می‌کند؛ extra fields، enum/type/range violations، missing fields، tampering یا privacy sentinelها fail-closed هستند.
+
+| سؤال | آنچه این هارنس اکنون اندازه می‌گیرد | محدودیت/تفسیر |
 |---|---|---|
-| ۱. محیط | PHP/Apache/MySQL/WP نسخه‌ها و `runner` + `run_id`/`run_attempt`/`head_sha` در `run` هم‌JSON ثبت می‌شوند | شناسهٔ دقیق CPU/RAM/Disk ابر ثبت نمی‌شود (runner اشتراکی GitHub Actions است، نه محیط تجاری) |
-| ۲. حجم داده | dataset از `pilot-seed` (خروجی JSON `/tmp/seed.json`) در artifact درج می‌شود؛ شمارش واقعی رکوردها | **تک‌کلینیکی**: `bin/pilot-seed.php` صراحتاً «exactly one clinic» را الزام می‌کند؛ بار معنادار چندکلینیکی اندازه گرفته **نمی‌شود** |
-| ۳. وضعیت Cache | `cold` = نخستین Request‌ها پس از restart فرآیندهای Apache/mod_php (opcode cache خالی، بدون هیچ warm-up؛ انتظار readiness فقط در سطح TCP). `warm` = همان اندازه‌گیری‌ها روی stack سرویس‌شده با ۲ Request گرم‌کننده (رفتار پیشین) | cold **در سطح زیرساخت نیست**: InnoDB buffer pool و OS page cache پاک نمی‌شوند و هارنس ادعای آن را نمی‌کند. warm-up پیشین ۲ Request بود (نه ۱۰۰ Requestِ §3) و عمداً تغییر نکرد تا اندازه‌گیری‌های تاریخی قابل‌مقایسه بمانند |
-| ۴. هم‌زمانی | سطوح **1 / 10 / 50 / 100**؛ `c=1` افزوده شد و `c=10/50/100` عیناً حفظ شدند (همان URL، همان `-n`) | ابزار `ab` است نه `k6`/`wrk`؛ طول هر سطح با **تعداد Request** کنترل می‌شود (`n=200/1500/3000`) نه «≥۵ دقیقه در سطح»؛ `-n 200` در `c=1` یعنی درصد p95 با رزولوشن خام |
-| ۵. خروجی | P50/P95/P99 + RPS + failed + Non-2xx → artifact `pilot-benchmark-<run_id>` (JSON ماشین‌خوان + MD انسانی + TXT هم‌شکلِ `bench.txt` پیشین + manifest + raw dumps) با `retention-days: 14`؛ **به‌علاوه (Slice 0.6)** یک projectionِ **allowlisted** (`cpms.pilot-bench-evidence/1` — فقط seq / phase cold\|warm / label ثابتِ endpoint / concurrency / تعداد Request / p50-p95-p99 / req-s / failed / non-2xx + bindingِ run) با همان الگویِ موجودِ evidence-comment به PR یا commit-comment post می‌شود تا از **GitHub REST** (بدونِ artifact access) خوانده شود؛ ساختش از گزارشِ ساختاریافتهٔ **پس از اسکنِ حریمِ خصوصی** است و هر ساختارِ نامنتظرِ آن fail-closed رد می‌شود | اعداد per-run **عمداً در تاریخچهٔ Git commit نمی‌شوند** (comment تاریخچهٔ Git نیست)؛ پس مسیر `reports/benchmarks/<date>-<env>.md` در این مخزن پر نمی‌شود و Artifact پس از انقضا در دسترس نیست → ثبت دستی خلاصه در گزارش فاز، در زمان بستن فاز |
-| §5 Quality Gate | **هیچ** آستانهٔ latency در CI اعمال نمی‌شود؛ فقط شکست‌های صحت (خروجی غیرقابل‌تحلیل `ab` / Non-2xx) گام را قرمز می‌کنند | «شکست p95 < 300ms = بلوک Quality Gate» در محیط سرور مرجع داوری می‌شود، نه روی runner اشتراکی؛ هارنس هرگز پاس/شکست NFR-PERF اعلام نمی‌کند |
+| Apache MPM و ظرفیت | active MPM و effective bounded `ServerLimit`/`ThreadLimit`/`ThreadsPerChild`/`MaxRequestWorkers`/`MaxConnectionsPerChild` + mod_php/PHP handler mode | config arbitrary/full text منتشر نمی‌شود؛ این actual staging process/config evidence است، نه reference-server configuration |
+| CPU میزبان | samples aligned with each `ab` level؛ avg/max host CPU normalized to total host utilization؛ runner CPU count | runner shared است؛ CPU دیگر jobs/host noise را از application CPU به‌طور کامل جدا نمی‌کند |
+| Memory میزبان | minimum `MemAvailable` و maximum used percentage در هر level | memory pressure/NUMA/IO cache و DB container memory جداگانه اندازه‌گیری نمی‌شود |
+| load generator vs server | `ab` CPU/RSS جدا از aggregate Apache/PHP CPU/RSS/process count در همان samples | در این topology هر دو روی runner هستند؛ attribution کاملِ host contention ممکن نیست، اما dominance نسبیِ host/ab/server را قابل مشاهده می‌کند |
+| correctness | parser قبلی همچنان failed/non-2xx و missing/unparseable را گزارش می‌کند | diagnostic collection failure جداگانه با `DIAGNOSTIC MEASUREMENT FAILURE` گزارش و evidence آن level منتشر نمی‌شود |
 
-**چهار خطِ قرمزِ این هارنس (تغییرناپذیر تا بستن فاز):**
-۱) اعداد runner اشتراکی **شواهد انطباق NFR نیستند** (در هیچ جهتی)؛
-۲) اعداد per-run در تاریخچه commit نمی‌شوند؛
-۳) جمع‌آوری اندازه‌گیری ≠ داوری Quality Gate — داوری در §12.3 گزارش Pilot باقی است؛
-۴) تنها payloadِ مجازِ خروج از runner به سطحِ REST، همان projectionِ **allowlisted** است (فیلدهای صریحِ بالا + binding)؛ raw dump / header / body / متنِ آزاد / متادیتای محیط هرگز منتشر نمی‌شود و ساختارِ ناسازگار fail-closed رد می‌شود (خطِ قرمزِ ۱ و ۲ را تغییر نمی‌دهد).
+**Measurement-only guardrails (unchanged):** هیچ latency threshold در workflow اضافه نشده؛ safe comment هیچ response/header/body/config text/PHI/credential/cookie/nonce/path/free-form label یا unallowlisted environment metadata ندارد؛ `contents: read`, `actions: read`, `pull-requests: write` تغییری نکرده؛ اعداد per-run به Git commit نمی‌شوند. هدف‌ها و reference-server adjudication هنوز open هستند و **Phase 17 IN PROGRESS** است.
+
+**Accepted comparison provenance:** PR #183 head `14d306dd2541003c6f33473b073afcf393785e06`, Pilot/Staging run `37377598773` (push), REST-visible 13-row evidence. Warm health c=10/50/100: p95 `283/1437/2737 ms`, RPS `45.79/46.80/46.54`; availability c=10/50/100: p95 `309/1515/3043 ms`, RPS `42.14/43.78/42.83`; WordPress root c=50: p95 `1661 ms`, RPS `39.00`; all rows failed=0 and non-2xx=0. This remains shared-runner evidence only, not an NFR verdict.
 

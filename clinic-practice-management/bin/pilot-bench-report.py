@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-pilot-bench-report.py — Phase 17 Slice 0: deterministic parse/report layer for the
+pilot-bench-report.py — Phase 17 bounded capacity diagnosis: deterministic parse/report layer for the
 existing Pilot/Staging `ab` benchmark step (MEASUREMENT ONLY).
 
 What this tool is:
@@ -27,6 +27,9 @@ bin/wpcs-changed-lines.py, both of which expose a `--test` self-test mode used b
                            report — refused fail-closed on malformed/unexpected structure
     --verify-evidence FILE re-validate an existing projection file against the allowlist
                            (no network, no writes) — used before publication
+    --diagnostics-dir DIR read bounded Apache/host diagnostic JSON produced by
+                           pilot-bench-diagnostics.py; measurement failure is fail-closed and
+                           reported separately from ab/product correctness
     --meta KEY=VALUE       repeatable run/environment metadata recorded verbatim in JSON+MD
     --fail-file PATH       optional: also write the human-readable failure reason here
 
@@ -43,8 +46,11 @@ Safe evidence projection: the ONLY benchmark payload allowed to leave the runner
 REST-visible PR/commit comment. It publishes an explicit allowlist per measurement
 (seq, phase cold|warm, fixed endpoint label, concurrency, request counts, p50/p95/p99,
 requests/sec, failed and non-2xx counts) plus the run binding (run_id, run_attempt,
-event_name, head_sha, ref). Raw `ab` bytes, response/header/body content, environment
-metadata, free-form manifest text, URLs/paths and file contents can never enter it.
+event_name, head_sha, ref). This slice additionally publishes only the bounded diagnostic
+schema: runner CPU count, active MPM, five effective worker-capacity values, and per-level
+summary fields for host CPU/memory, Apache/PHP server CPU/memory/process count, and `ab`
+CPU/RSS. Raw `ab` bytes, response/header/body content, environment metadata, free-form
+manifest text, URLs/paths and file contents can never enter it.
 
 Privacy invariant (contract §9): the generated JSON/MD/TXT are scanned before being written;
 Cookie/nonce/credential/PHI-shaped content aborts the run with rc=1. Only numbers, fixed
@@ -206,6 +212,164 @@ def parse_ab_output(raw: str, expected_path: Optional[str] = None) -> Tuple[Dict
 
 
 # ---------------------------------------------------------------------------
+# Bounded native diagnostics
+# ---------------------------------------------------------------------------
+
+DIAGNOSTIC_SCHEMA = "cpms.pilot-bench-diagnostics/1"
+DIAGNOSTIC_STATIC_FIELDS: Tuple[str, ...] = (
+    "schema",
+    "status",
+    "runner_cpu_count",
+    "active_mpm",
+    "php_execution_mode",
+    "server_limit",
+    "thread_limit",
+    "threads_per_child",
+    "max_request_workers",
+    "max_connections_per_child",
+)
+DIAGNOSTIC_ROW_FIELDS: Tuple[str, ...] = (
+    "schema",
+    "seq",
+    "phase",
+    "concurrency",
+    "status",
+    "command_exit_code",
+    "sample_count",
+    "sample_interval_ms",
+    "elapsed_ms",
+    "runner_cpu_count",
+    "host_cpu_avg_pct",
+    "host_cpu_max_pct",
+    "host_mem_available_min_mb",
+    "host_mem_used_max_pct",
+    "ab_cpu_avg_pct",
+    "ab_cpu_max_pct",
+    "ab_rss_max_mb",
+    "server_cpu_avg_pct",
+    "server_cpu_max_pct",
+    "server_rss_max_mb",
+    "server_process_count_max",
+)
+DIAGNOSTIC_RESOURCE_FIELDS: Tuple[str, ...] = (
+    "seq",
+    "sample_count",
+    "sample_interval_ms",
+    "elapsed_ms",
+    "host_cpu_avg_pct",
+    "host_cpu_max_pct",
+    "host_mem_available_min_mb",
+    "host_mem_used_max_pct",
+    "ab_cpu_avg_pct",
+    "ab_cpu_max_pct",
+    "ab_rss_max_mb",
+    "server_cpu_avg_pct",
+    "server_cpu_max_pct",
+    "server_rss_max_mb",
+    "server_process_count_max",
+)
+DIAGNOSTIC_MPMS: Tuple[str, ...] = ("event", "worker", "prefork")
+DIAGNOSTIC_PHP_MODES: Tuple[str, ...] = ("mod_php", "php_fpm")
+DIAGNOSTIC_MAX_CPU = 256
+DIAGNOSTIC_MAX_COUNT = 10_000
+DIAGNOSTIC_MAX_MB = 10_000_000.0
+DIAGNOSTIC_MAX_PROCESS_CPU = 25_600.0
+
+
+class DiagnosticInputRefused(ValueError):
+    """The native diagnostic evidence is absent, malformed, or not measurement-safe."""
+
+
+def _diagnostic_int(value: Any, field: str, low: int, high: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+        raise DiagnosticInputRefused(f"{field}: bounded integer invariant failed")
+    return value
+
+
+def _diagnostic_number(value: Any, field: str, low: float, high: float) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise DiagnosticInputRefused(f"{field}: bounded number invariant failed")
+    number = float(value)
+    if not math.isfinite(number) or not low <= number <= high:
+        raise DiagnosticInputRefused(f"{field}: bounded number invariant failed")
+    return number
+
+
+def _load_json_file(path: Path) -> Dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        raise DiagnosticInputRefused("diagnostic_file_invalid")
+    if not isinstance(value, dict):
+        raise DiagnosticInputRefused("diagnostic_object_expected")
+    return value
+
+
+def _validate_diagnostic_static(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict) or set(raw) != set(DIAGNOSTIC_STATIC_FIELDS):
+        raise DiagnosticInputRefused("diagnostic_static_field_set_invalid")
+    if raw["schema"] != DIAGNOSTIC_SCHEMA or raw["status"] != "ok":
+        raise DiagnosticInputRefused("diagnostic_static_not_ok")
+    result = dict(raw)
+    result["runner_cpu_count"] = _diagnostic_int(raw["runner_cpu_count"], "runner_cpu_count", 1, DIAGNOSTIC_MAX_CPU)
+    if raw["active_mpm"] not in DIAGNOSTIC_MPMS:
+        raise DiagnosticInputRefused("active_mpm_not_allowlisted")
+    if raw["php_execution_mode"] not in DIAGNOSTIC_PHP_MODES:
+        raise DiagnosticInputRefused("php_execution_mode_not_allowlisted")
+    for field in ("server_limit", "thread_limit", "threads_per_child", "max_request_workers", "max_connections_per_child"):
+        result[field] = _diagnostic_int(raw[field], field, 0, 1_000_000)
+    if result["threads_per_child"] < 1 or result["max_request_workers"] < 1:
+        raise DiagnosticInputRefused("worker_capacity_not_bounded")
+    return result
+
+
+def _validate_diagnostic_row(raw: Any, expected_seq: int) -> Dict[str, Any]:
+    if not isinstance(raw, dict) or set(raw) != set(DIAGNOSTIC_ROW_FIELDS):
+        raise DiagnosticInputRefused("diagnostic_row_field_set_invalid")
+    if raw["schema"] != DIAGNOSTIC_SCHEMA or raw["status"] != "ok":
+        raise DiagnosticInputRefused("diagnostic_row_not_ok")
+    seq = _diagnostic_int(raw["seq"], "diagnostic.seq", 1, 9999)
+    if seq != expected_seq:
+        raise DiagnosticInputRefused("diagnostic_seq_not_contiguous")
+    phase = raw["phase"]
+    if phase not in ("cold", "warm"):
+        raise DiagnosticInputRefused("diagnostic_phase_invalid")
+    _diagnostic_int(raw["concurrency"], "diagnostic.concurrency", 1, 1000)
+    _diagnostic_int(raw["command_exit_code"], "diagnostic.command_exit_code", 0, 255)
+    _diagnostic_int(raw["sample_count"], "diagnostic.sample_count", 1, DIAGNOSTIC_MAX_COUNT)
+    _diagnostic_number(raw["sample_interval_ms"], "diagnostic.sample_interval_ms", 1.0, 10_000.0)
+    _diagnostic_number(raw["elapsed_ms"], "diagnostic.elapsed_ms", 0.0, 3_600_000.0)
+    _diagnostic_int(raw["runner_cpu_count"], "diagnostic.runner_cpu_count", 1, DIAGNOSTIC_MAX_CPU)
+    for field in ("host_cpu_avg_pct", "host_cpu_max_pct", "host_mem_used_max_pct"):
+        _diagnostic_number(raw[field], "diagnostic." + field, 0.0, 100.0)
+    for field in ("ab_cpu_avg_pct", "ab_cpu_max_pct", "server_cpu_avg_pct", "server_cpu_max_pct"):
+        _diagnostic_number(raw[field], "diagnostic." + field, 0.0, DIAGNOSTIC_MAX_PROCESS_CPU)
+    for field in ("host_mem_available_min_mb", "ab_rss_max_mb", "server_rss_max_mb"):
+        _diagnostic_number(raw[field], "diagnostic." + field, 0.0, DIAGNOSTIC_MAX_MB)
+    _diagnostic_int(raw["server_process_count_max"], "diagnostic.server_process_count_max", 1, DIAGNOSTIC_MAX_COUNT)
+    if raw["host_cpu_avg_pct"] > raw["host_cpu_max_pct"]:
+        raise DiagnosticInputRefused("diagnostic_host_cpu_not_monotonic")
+    return dict(raw)
+
+
+def read_diagnostics(directory: Path, expected_count: int) -> Dict[str, Any]:
+    """Read only the helper's exact bounded JSON shape; never read raw command output."""
+    if not directory.is_dir():
+        raise DiagnosticInputRefused("diagnostic_directory_missing")
+    static = _validate_diagnostic_static(_load_json_file(directory / "static.json"))
+    files = sorted(path for path in directory.glob("level-*.json") if path.is_file())
+    if len(files) != expected_count:
+        raise DiagnosticInputRefused("diagnostic_level_count_mismatch")
+    rows = [_validate_diagnostic_row(_load_json_file(path), index) for index, path in enumerate(files, start=1)]
+    if [row["seq"] for row in rows] != list(range(1, expected_count + 1)):
+        raise DiagnosticInputRefused("diagnostic_level_sequence_mismatch")
+    for row in rows:
+        if row["runner_cpu_count"] != static["runner_cpu_count"]:
+            raise DiagnosticInputRefused("diagnostic_runner_cpu_count_mismatch")
+    return {"schema": DIAGNOSTIC_SCHEMA, "status": "ok", "static": static, "measurements": rows}
+
+
+# ---------------------------------------------------------------------------
 # Report
 # ---------------------------------------------------------------------------
 
@@ -233,12 +397,17 @@ ADJUDICATION = (
 )
 
 
-def build_report(measurements: List[Dict[str, Any]], meta: Dict[str, Any]) -> Dict[str, Any]:
+def build_report(measurements: List[Dict[str, Any]], meta: Dict[str, Any],
+                 diagnostics: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    if diagnostics is not None and diagnostics.get("status") == "ok":
+        by_seq = {row["seq"]: row for row in diagnostics["measurements"]}
+        for measurement in measurements:
+            if measurement.get("seq") in by_seq:
+                measurement["diagnostics"] = by_seq[measurement["seq"]]
     return {
-        "schema": "cpms.pilot-benchmark/1",
-        "purpose": (
-            "Phase 17 Slice 0 — baseline measurement only; no product optimization, no latency "
-            "gate, no NFR adjudication, no committed numbers"
+        "schema": "cpms.pilot-benchmark/2",        "purpose": (
+            "Phase 17 bounded capacity diagnosis — measurement only; no product optimization, "
+            "no latency gate, no NFR adjudication, no committed numbers"
         ),
         "run": meta,
         "endpoints": [
@@ -268,6 +437,7 @@ def build_report(measurements: List[Dict[str, Any]], meta: Dict[str, Any]) -> Di
         "adjudication": ADJUDICATION,
         "latency_threshold_enforced": False,
         "nfr_perf_pass_claim": False,
+        "diagnostics": diagnostics,
         "measurement_count": len(measurements),
         "measurements": measurements,
     }
@@ -372,16 +542,16 @@ def render_legacy_lines(report: Dict[str, Any]) -> List[str]:
 # PARSED + PRIVACY-SCANNED structured measurements and emits an explicit
 # allowlist of fields — never raw `ab` bytes, never free-form text, never the
 # manifest `label` (which is human prose), never a URL/path, never environment
-# metadata. Every emitted field is validated (type/range/allowlist) before the
-# file is written; malformed or unexpected structure REFUSES the projection
+# metadata except the explicitly allowlisted diagnostic summaries. Every emitted field is
+# validated (type/range/allowlist) before the file is written; malformed or unexpected structure REFUSES the projection
 # (fail closed) and nothing is published.
 # ---------------------------------------------------------------------------
 
-SAFE_EVIDENCE_SCHEMA = "cpms.pilot-bench-evidence/1"
+SAFE_EVIDENCE_SCHEMA = "cpms.pilot-bench-evidence/2"
 SAFE_EVIDENCE_PURPOSE = (
     "Phase 17 — allowlisted privacy-safe projection of one Pilot/Staging benchmark run; "
     "measurement only, no NFR-PERF adjudication, no raw benchmark bytes, no free-form text, "
-    "no environment metadata"
+    "no unallowlisted environment metadata"
 )
 
 # The endpoint LABEL is a constant mapped from the endpoint KEY. Free-form
@@ -402,6 +572,7 @@ SAFE_TOP_LEVEL_FIELDS: Tuple[str, ...] = (
     "purpose",
     "binding",
     "measurement_count",
+    "diagnostics",
     "measurements",
 )
 SAFE_BINDING_KEYS: Tuple[str, ...] = ("run_id", "run_attempt", "event_name", "head_sha", "ref")
@@ -419,6 +590,34 @@ SAFE_MEASUREMENT_FIELDS: Tuple[str, ...] = (
     "requests_per_second",
     "failed_requests",
     "non_2xx_responses",
+)
+SAFE_DIAGNOSTIC_FIELDS: Tuple[str, ...] = (
+    "runner_cpu_count",
+    "active_mpm",
+    "php_execution_mode",
+    "server_limit",
+    "thread_limit",
+    "threads_per_child",
+    "max_request_workers",
+    "max_connections_per_child",
+    "measurements",
+)
+SAFE_DIAGNOSTIC_ROW_FIELDS: Tuple[str, ...] = ("seq", "resources")
+SAFE_DIAGNOSTIC_RESOURCE_FIELDS: Tuple[str, ...] = (
+    "sample_count",
+    "sample_interval_ms",
+    "elapsed_ms",
+    "host_cpu_avg_pct",
+    "host_cpu_max_pct",
+    "host_mem_available_min_mb",
+    "host_mem_used_max_pct",
+    "ab_cpu_avg_pct",
+    "ab_cpu_max_pct",
+    "ab_rss_max_mb",
+    "server_cpu_avg_pct",
+    "server_cpu_max_pct",
+    "server_rss_max_mb",
+    "server_process_count_max",
 )
 
 MAX_LATENCY_MS = 3_600_000.0  # 1 hour — far above any runner measurement, still bounded
@@ -566,6 +765,76 @@ def _validate_measurement_row(raw: Any, expected_seq: int) -> Dict[str, Any]:
     }
 
 
+def _validate_safe_resource(raw: Any, field_prefix: str = "diagnostic.resources") -> Dict[str, Any]:
+    if not isinstance(raw, dict) or set(raw) != set(SAFE_DIAGNOSTIC_RESOURCE_FIELDS):
+        raise EvidenceRefused(f"{field_prefix}: unexpected field set")
+    result = dict(raw)
+    result["sample_count"] = _safe_int(result["sample_count"], field_prefix + ".sample_count", 1, DIAGNOSTIC_MAX_COUNT)
+    for field in ("sample_interval_ms",):
+        result[field] = _safe_number(result[field], field_prefix + "." + field, 1.0, 10_000.0)
+    result["elapsed_ms"] = _safe_number(result["elapsed_ms"], field_prefix + ".elapsed_ms", 0.0, 3_600_000.0)
+    for field in ("host_cpu_avg_pct", "host_cpu_max_pct", "host_mem_used_max_pct"):
+        result[field] = _safe_number(result[field], field_prefix + "." + field, 0.0, 100.0)
+    for field in ("ab_cpu_avg_pct", "ab_cpu_max_pct", "server_cpu_avg_pct", "server_cpu_max_pct"):
+        result[field] = _safe_number(result[field], field_prefix + "." + field, 0.0, DIAGNOSTIC_MAX_PROCESS_CPU)
+    for field in ("host_mem_available_min_mb", "ab_rss_max_mb", "server_rss_max_mb"):
+        result[field] = _safe_number(result[field], field_prefix + "." + field, 0.0, DIAGNOSTIC_MAX_MB)
+    result["server_process_count_max"] = _safe_int(
+        result["server_process_count_max"], field_prefix + ".server_process_count_max", 1, DIAGNOSTIC_MAX_COUNT
+    )
+    if result["host_cpu_avg_pct"] > result["host_cpu_max_pct"]:
+        raise EvidenceRefused(f"{field_prefix}: host CPU average exceeds maximum")
+    return result
+
+
+def _project_safe_diagnostics(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict) or raw.get("schema") != DIAGNOSTIC_SCHEMA or raw.get("status") != "ok":
+        raise EvidenceRefused("report.diagnostics: missing or not-ok")
+    try:
+        static = _validate_diagnostic_static(raw.get("static"))
+        static_projection = {field: static[field] for field in DIAGNOSTIC_STATIC_FIELDS if field not in ("schema", "status")}
+        rows_in = raw.get("measurements")
+        if not isinstance(rows_in, list) or not rows_in:
+            raise EvidenceRefused("report.diagnostics.measurements: expected a non-empty list")
+        rows: List[Dict[str, Any]] = []
+        for index, row in enumerate(rows_in, start=1):
+            checked = _validate_diagnostic_row(row, index)
+            resources = {field: checked[field] for field in SAFE_DIAGNOSTIC_RESOURCE_FIELDS}
+            rows.append({"seq": checked["seq"], "resources": _validate_safe_resource(resources)})
+        return {
+            **static_projection,
+            "measurements": rows,
+        }
+    except DiagnosticInputRefused as exc:
+        raise EvidenceRefused(str(exc))
+
+
+def _validate_safe_diagnostics(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict) or set(raw) != set(SAFE_DIAGNOSTIC_FIELDS):
+        raise EvidenceRefused("evidence.diagnostics: unexpected field set")
+    result = dict(raw)
+    result["runner_cpu_count"] = _safe_int(result["runner_cpu_count"], "diagnostics.runner_cpu_count", 1, DIAGNOSTIC_MAX_CPU)
+    if result["active_mpm"] not in DIAGNOSTIC_MPMS:
+        raise EvidenceRefused("evidence.diagnostics.active_mpm: not allowlisted")
+    if result["php_execution_mode"] not in DIAGNOSTIC_PHP_MODES:
+        raise EvidenceRefused("evidence.diagnostics.php_execution_mode: not allowlisted")
+    for field in ("server_limit", "thread_limit", "threads_per_child", "max_request_workers", "max_connections_per_child"):
+        result[field] = _safe_int(result[field], "diagnostics." + field, 0, 1_000_000)
+    if result["threads_per_child"] < 1 or result["max_request_workers"] < 1:
+        raise EvidenceRefused("evidence.diagnostics: worker capacity is not bounded")
+    rows = result["measurements"]
+    if not isinstance(rows, list) or not rows:
+        raise EvidenceRefused("evidence.diagnostics.measurements: expected a non-empty list")
+    normalized_rows: List[Dict[str, Any]] = []
+    for index, row in enumerate(rows, start=1):
+        if not isinstance(row, dict) or set(row) != set(SAFE_DIAGNOSTIC_ROW_FIELDS):
+            raise EvidenceRefused("evidence.diagnostics.measurement: unexpected field set")
+        seq = _safe_int(row["seq"], "diagnostics.measurement.seq", index, index)
+        normalized_rows.append({"seq": seq, "resources": _validate_safe_resource(row["resources"])})
+    result["measurements"] = normalized_rows
+    return result
+
+
 def build_safe_evidence(report: Dict[str, Any]) -> Dict[str, Any]:
     """Project a parsed+scanned benchmark report onto the allowlisted evidence schema.
 
@@ -590,6 +859,9 @@ def build_safe_evidence(report: Dict[str, Any]) -> Dict[str, Any]:
     declared = report.get("measurement_count")
     if isinstance(declared, bool) or not isinstance(declared, int) or declared != len(measurements_in):
         raise EvidenceRefused("report.measurement_count: does not match the measurement list length")
+    diagnostics = _project_safe_diagnostics(report.get("diagnostics"))
+    if len(diagnostics["measurements"]) != len(measurements_in):
+        raise EvidenceRefused("report.diagnostics.measurements: does not match benchmark row count")
 
     rows: List[Dict[str, Any]] = []
     for index, raw in enumerate(measurements_in, start=1):
@@ -624,6 +896,7 @@ def build_safe_evidence(report: Dict[str, Any]) -> Dict[str, Any]:
         "purpose": SAFE_EVIDENCE_PURPOSE,
         "binding": binding,
         "measurement_count": len(rows),
+        "diagnostics": diagnostics,
         "measurements": rows,
     }
 
@@ -643,6 +916,7 @@ def validate_safe_evidence(evidence: Any) -> Dict[str, Any]:
     if evidence["purpose"] != SAFE_EVIDENCE_PURPOSE:
         raise EvidenceRefused("evidence.purpose: unexpected value")
     binding = _validate_binding(evidence["binding"])
+    diagnostics = _validate_safe_diagnostics(evidence["diagnostics"])
     measurements = evidence["measurements"]
     if not isinstance(measurements, list) or not measurements:
         raise EvidenceRefused("evidence.measurements: expected a non-empty list")
@@ -655,6 +929,7 @@ def validate_safe_evidence(evidence: Any) -> Dict[str, Any]:
         "purpose": SAFE_EVIDENCE_PURPOSE,
         "binding": binding,
         "measurement_count": len(rows),
+        "diagnostics": diagnostics,
         "measurements": rows,
     }
 
@@ -676,6 +951,28 @@ def render_safe_evidence_markdown(evidence: Dict[str, Any]) -> str:
             "| {seq} | {phase} | `{endpoint_label}` | {concurrency} | {requests_planned} | "
             "{requests_complete} | {p50_ms} | {p95_ms} | {p99_ms} | {requests_per_second} | "
             "{failed_requests} | {non_2xx_responses} |".format(**row)
+        )
+    diagnostic = evidence["diagnostics"]
+    lines += [
+        "",
+        "### Bounded capacity diagnostics (allowlisted)",
+        "",
+        "MPM: `{active_mpm}` · PHP mode: `{php_execution_mode}` · runner CPUs: {runner_cpu_count} · "
+        "ServerLimit: {server_limit} · ThreadLimit: {thread_limit} · ThreadsPerChild: {threads_per_child} · "
+        "MaxRequestWorkers: {max_request_workers} · MaxConnectionsPerChild: {max_connections_per_child}".format(**diagnostic),
+        "",
+        "| seq | samples | host CPU avg/max % | host available min MB | host used max % | ab CPU avg/max % | server CPU avg/max % | server RSS max MB | server processes max |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    for diagnostic_row in diagnostic["measurements"]:
+        resource = diagnostic_row["resources"]
+        lines.append(
+            "| {seq} | {sample_count} | {host_cpu_avg_pct}/{host_cpu_max_pct} | "
+            "{host_mem_available_min_mb} | {host_mem_used_max_pct} | "
+            "{ab_cpu_avg_pct}/{ab_cpu_max_pct} | {server_cpu_avg_pct}/{server_cpu_max_pct} | "
+            "{server_rss_max_mb} | {server_process_count_max} |".format(
+                seq=diagnostic_row["seq"], **resource
+            )
         )
     lines += [
         "",
@@ -804,6 +1101,20 @@ def run(args: argparse.Namespace) -> int:
     raw_dir = Path(args.raw_dir)
     measurements: List[Dict[str, Any]] = []
     failures: List[str] = []
+    diagnostics: Optional[Dict[str, Any]] = None
+    diagnostics_dir = getattr(args, "diagnostics_dir", "") or ""
+    if diagnostics_dir:
+        try:
+            diagnostics = read_diagnostics(Path(diagnostics_dir), len(entries))
+        except DiagnosticInputRefused as exc:
+            # This is deliberately a distinct collection failure. It must not be
+            # reported as an ab/product failure and cannot produce publishable evidence.
+            diagnostics = {
+                "schema": DIAGNOSTIC_SCHEMA,
+                "status": "measurement_failed",
+                "error_code": str(exc),
+            }
+            failures.append("DIAGNOSTIC MEASUREMENT FAILURE: %s" % exc)
 
     for entry in entries:
         raw_path = raw_dir / entry["raw"]
@@ -842,7 +1153,7 @@ def run(args: argparse.Namespace) -> int:
             }
         )
 
-    report = build_report(measurements, meta)
+    report = build_report(measurements, meta, diagnostics)
     markdown = render_markdown(report)
     legacy = render_legacy_lines(report)
     payload = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
@@ -1063,7 +1374,7 @@ def _selftests() -> int:
         }],
         {"head_sha": "0" * 40, "run_id": "1"},
     )
-    check("schema", report["schema"] == "cpms.pilot-benchmark/1")
+    check("schema", report["schema"] == "cpms.pilot-benchmark/2")
     check("no-latency-gate", report["latency_threshold_enforced"] is False)
     check("no-nfr-pass-claim", report["nfr_perf_pass_claim"] is False)
     check("cold-not-infra-cold", "NOT an infrastructure-level cold-cache" in report["cold_definition"])
@@ -1317,14 +1628,42 @@ def _selftests() -> int:
             "metrics": metrics if metrics is not None else _metrics(),
         }
 
+    def _diagnostic_row(seq: int, phase: str, concurrency: int) -> Dict[str, Any]:
+        return {
+            "schema": DIAGNOSTIC_SCHEMA, "seq": seq, "phase": phase, "concurrency": concurrency,
+            "status": "ok", "command_exit_code": 0, "sample_count": 10,
+            "sample_interval_ms": 200.0, "elapsed_ms": 2000.0, "runner_cpu_count": 2,
+            "host_cpu_avg_pct": 40.0, "host_cpu_max_pct": 60.0,
+            "host_mem_available_min_mb": 512.0, "host_mem_used_max_pct": 75.0,
+            "ab_cpu_avg_pct": 20.0, "ab_cpu_max_pct": 30.0, "ab_rss_max_mb": 10.0,
+            "server_cpu_avg_pct": 45.0, "server_cpu_max_pct": 70.0,
+            "server_rss_max_mb": 100.0, "server_process_count_max": 5,
+        }
+
+    def _diagnostic_for(measurements: List[Dict[str, Any]]) -> Dict[str, Any]:
+        return {
+            "schema": DIAGNOSTIC_SCHEMA, "status": "ok",
+            "static": {
+                "schema": DIAGNOSTIC_SCHEMA, "status": "ok", "runner_cpu_count": 2,
+                "active_mpm": "event", "php_execution_mode": "mod_php",
+                "server_limit": 16, "thread_limit": 64, "threads_per_child": 25,
+                "max_request_workers": 400, "max_connections_per_child": 0,
+            },
+            "measurements": ([_diagnostic_row(index, m["phase"], m["concurrency"])
+                              for index, m in enumerate(measurements, start=1)]
+                             if isinstance(measurements, list) else []),
+        }
+
     def _report(measurements, run=None, **extra):
         report = {
-            "schema": "cpms.pilot-benchmark/1",
+            "schema": "cpms.pilot-benchmark/2",
             "run": run if run is not None else _run_meta(),
             "measurement_count": len(measurements),
             "measurements": measurements,
         }
         report.update(extra)
+        if "diagnostics" not in report:
+            report["diagnostics"] = _diagnostic_for(measurements)
         return report
 
     def _refuses(name: str, report: Any) -> None:
@@ -1361,6 +1700,36 @@ def _selftests() -> int:
               "head_sha": "a" * 40, "ref": "arena/1ffa1d19-doctor",
           }, str(evidence["binding"]))
     check("evidence-count", evidence["measurement_count"] == 1)
+    check("diagnostic-field-set",
+          set(evidence["diagnostics"]) == set(SAFE_DIAGNOSTIC_FIELDS))
+    check("diagnostic-static-values",
+          evidence["diagnostics"]["active_mpm"] == "event"
+          and evidence["diagnostics"]["php_execution_mode"] == "mod_php"
+          and evidence["diagnostics"]["runner_cpu_count"] == 2
+          and evidence["diagnostics"]["max_request_workers"] == 400)
+    check("diagnostic-row-field-set",
+          set(evidence["diagnostics"]["measurements"][0]) == set(SAFE_DIAGNOSTIC_ROW_FIELDS))
+    check("diagnostic-resource-field-set",
+          set(evidence["diagnostics"]["measurements"][0]["resources"])
+          == set(SAFE_DIAGNOSTIC_RESOURCE_FIELDS))
+    for field in SAFE_DIAGNOSTIC_FIELDS:
+        tampered_diagnostic = json.loads(evidence_json)
+        tampered_diagnostic["diagnostics"].pop(field)
+        try:
+            validate_safe_evidence(tampered_diagnostic)
+        except EvidenceRefused:
+            pass
+        else:
+            check("diagnostic-field-removal-refused-" + field, False)
+    for field in SAFE_DIAGNOSTIC_RESOURCE_FIELDS:
+        tampered_resource = json.loads(evidence_json)
+        tampered_resource["diagnostics"]["measurements"][0]["resources"].pop(field)
+        try:
+            validate_safe_evidence(tampered_resource)
+        except EvidenceRefused:
+            pass
+        else:
+            check("diagnostic-resource-removal-refused-" + field, False)
     check("evidence-no-verbatim-label-in-output", "برچسب آزاد" not in evidence_json + evidence_md)
     check("evidence-endpoint-label-is-constant-set",
           [build_safe_evidence(_report([_measurement(1, "cold", key, 1, 200)]))[
@@ -1531,6 +1900,15 @@ def _selftests() -> int:
                                            ENDPOINT_PATHS[endpoint], concurrency, planned,
                                            2 if phase == "warm" else 0, dump_name)))
         manifest3.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        diag3 = root3 / "diagnostics"
+        diag3.mkdir()
+        diagnostic_fixture = _diagnostic_for([_measurement(seq, phase, endpoint, concurrency, planned)
+                                              for seq, phase, endpoint, concurrency, planned in MATRIX])
+        (diag3 / "static.json").write_text(json.dumps(diagnostic_fixture["static"]), encoding="utf-8")
+        for diagnostic_row in diagnostic_fixture["measurements"]:
+            (diag3 / ("level-%03d.json" % diagnostic_row["seq"])).write_text(
+                json.dumps(diagnostic_row), encoding="utf-8"
+            )
         out3 = root3 / "out" / "bench"
         ev_prefix = root3 / "out" / "bench.evidence"
         rc7 = run(argparse.Namespace(
@@ -1538,7 +1916,7 @@ def _selftests() -> int:
             meta=["run_id=37361708008", "run_attempt=1", "head_sha=" + "b" * 40,
                   "event_name=push", "ref=arena/1ffa1d19-doctor",
                   "runner=GitHub Actions 24.04", "php_cli=8.1"],
-            fail_file="", evidence_prefix=str(ev_prefix),
+            diagnostics_dir=str(diag3), fail_file="", evidence_prefix=str(ev_prefix),
         ))
         check("evidence-e2e-rc-zero", rc7 == 0, "rc=%s" % rc7)
         ev3 = json.loads(Path(str(ev_prefix) + ".json").read_text(encoding="utf-8"))
@@ -1557,7 +1935,7 @@ def _selftests() -> int:
         md3 = Path(str(ev_prefix) + ".md").read_text(encoding="utf-8")
         check("evidence-e2e-md-rows",
               sum(1 for line in md3.splitlines()
-                  if line.startswith("| ") and line.split("|")[1].strip().isdigit()) == 13,
+                  if line.startswith("| ") and "`GET " in line) == 13,
               str([line for line in md3.splitlines() if line.startswith("| ")][:3]))
         check("evidence-e2e-md-verified", verify_evidence_file(Path(str(ev_prefix) + ".md")) == 0)
         check("evidence-e2e-clean-scan",
@@ -1621,6 +1999,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     parser.add_argument("--manifest", default="/tmp/cpms-bench/manifest.jsonl")
     parser.add_argument("--raw-dir", default="/tmp/cpms-bench/raw")
+    parser.add_argument(
+        "--diagnostics-dir",
+        default="",
+        help="read static.json and one level-*.json per benchmark row from the bounded native diagnostic helper",
+    )
     parser.add_argument("--out-prefix", default="/tmp/cpms-bench/cpms-pilot-benchmark")
     parser.add_argument(
         "--evidence-prefix",

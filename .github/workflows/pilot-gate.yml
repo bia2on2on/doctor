@@ -144,7 +144,8 @@ jobs:
           # schedule and workflow_dispatch. The parse/report/privacy self-tests below prove
           # that logic deterministically on every run, regardless of whether `ab`/the server
           # are reachable (no network, no WordPress, no `ab` binary needed).
-          python3 -m py_compile bin/pilot-bench-report.py
+          python3 -m py_compile bin/pilot-bench-report.py bin/pilot-bench-diagnostics.py
+          python3 bin/pilot-bench-diagnostics.py --test
           python3 bin/pilot-bench-report.py --test
           {
             echo '### Pilot benchmark harness self-test — PASSED on this run'
@@ -608,9 +609,10 @@ jobs:
           BENCH=/tmp/cpms-bench
           RAW_STAGE=/tmp/cpms-bench-raw-stage   # staged OUTSIDE the artifact upload path so a crash/cancel before the privacy scan cannot leak unscanned dumps
           RAW="$BENCH/raw"
+          DIAG="$BENCH/diagnostics"
           MANIFEST="$BENCH/manifest.jsonl"
           OUT="$BENCH/cpms-pilot-benchmark"
-          rm -rf "$BENCH" "$RAW_STAGE"; mkdir -p "$BENCH" "$RAW_STAGE"
+          rm -rf "$BENCH" "$RAW_STAGE"; mkdir -p "$BENCH" "$RAW_STAGE" "$DIAG"
           : > "$MANIFEST"; : > /tmp/bench.txt
 
           # ---- cold boundary ------------------------------------------------------------
@@ -629,6 +631,15 @@ jobs:
           [ "$TCP_READY" = "1" ] || { echo '::error::cold boundary broken — Apache did not resume listening on :8080; refusing to label any measurement as cold'; exit 1; }
           echo 'cold boundary: Apache/mod_php restarted, listener back, zero HTTP requests sent since the restart'
 
+          # ---- bounded static Apache/PHP capacity evidence -------------------------------
+          STATIC_RC=0
+          python3 bin/pilot-bench-diagnostics.py collect-static --out "$DIAG/static.json" || STATIC_RC=$?
+          if [ "$STATIC_RC" != "0" ]; then
+            echo '::error::DIAGNOSTIC MEASUREMENT FAILURE — Apache MPM/worker-capacity collection failed; benchmark rows may continue but no safe diagnostic evidence will be published'
+          else
+            echo 'diagnostic static evidence collected: active MPM, mod_php handler, bounded worker-capacity values, runner CPU count'
+          fi
+
           # ---- one measurement = one raw ab dump + one manifest line ---------------------
           SEQ=0
           measure() {
@@ -639,9 +650,13 @@ jobs:
             if [ "$WARM" -gt 0 ]; then
               for i in $(seq 1 "$WARM"); do curl -s -o /dev/null "$URL"; done  # pre-existing warm-up (opcache + mysql buffer)
             fi
-            if ! ab -q -n "$N" -c "$C" "$URL" > "$RAW_STAGE/$NAME.ab.txt" 2>&1; then
-              AB_RC=$?
-              echo "::warning::ab exited non-zero (rc=$AB_RC) for seq=$SEQ phase=$PHASE label=$LABEL c=$C n=$N — recorded as a parse/correctness failure; raw dump stays in scan-staging and is NOT printed/copied/uploaded before privacy scan"
+            DIAG_RC=0
+            python3 bin/pilot-bench-diagnostics.py measure \
+              --seq "$SEQ" --phase "$PHASE" --concurrency "$C" \
+              --raw-out "$RAW_STAGE/$NAME.ab.txt" --out "$DIAG/level-$NAME.json" \
+              -- ab -q -n "$N" -c "$C" "$URL" || DIAG_RC=$?
+            if [ "$DIAG_RC" != "0" ]; then
+              echo "::warning::DIAGNOSTIC MEASUREMENT FAILURE (rc=$DIAG_RC) for seq=$SEQ phase=$PHASE c=$C n=$N — raw dump remains in scan-staging; parser will distinguish this from ab/product correctness"
             fi
             # NOTE: do NOT copy or tail the raw dump here (/tmp/ab.txt removed): raw bytes
             # must not leave the scan-staging directory before the privacy scan succeeds.
@@ -695,7 +710,7 @@ jobs:
 
           RC=0
           python3 bin/pilot-bench-report.py \
-            --manifest "$MANIFEST" --raw-dir "$RAW" --out-prefix "$OUT" \
+            --manifest "$MANIFEST" --raw-dir "$RAW" --diagnostics-dir "$DIAG" --out-prefix "$OUT" \
             --evidence-prefix "$OUT.evidence" \
             --meta "run_id=${{ github.run_id }}" \
             --meta "run_attempt=${{ github.run_attempt }}" \
@@ -744,9 +759,12 @@ jobs:
       # Phase 17 measurements are retrievable via GitHub REST.
       # WHAT IS POSTED: only the validated allowlist — measurement seq, phase cold|warm, LABEL
       # from the fixed endpoint set (never free-form manifest text), concurrency, request counts,
-      # p50/p95/p99, requests/sec, failed + non-2xx counts, plus the run binding (run_id,
-      # run_attempt, event_name, head_sha, ref). No raw `ab` dump, response/header/body content,
-      # environment metadata, path or free-form text ever enters the projection.
+      # p50/p95/p99, requests/sec, failed + non-2xx counts, plus the bounded diagnostics:
+      # runner CPU count, active MPM, PHP handler mode, five worker-capacity values, and per-level
+      # sample count/interval, host CPU/memory, `ab` CPU/RSS, and Apache/PHP server CPU/RSS/process
+      # count. The run binding (run_id, run_attempt, event_name, head_sha, ref) is included.
+      # No raw `ab` dump, response/header/body content, unallowlisted environment metadata, path or
+      # free-form text ever enters the projection.
       # PUBLICATION vs CORRECTNESS: publication reuses the repository-native evidence-comment
       # pattern (PR comment when a PR exists, otherwise a commit comment) and is append-only; a
       # GitHub/API permission or network failure is reported as `::notice::` and does NOT make
@@ -782,6 +800,7 @@ jobs:
             /tmp/cpms-bench/cpms-pilot-benchmark.md
             /tmp/cpms-bench/cpms-pilot-benchmark.txt
             /tmp/cpms-bench/manifest.jsonl
+            /tmp/cpms-bench/diagnostics/
             /tmp/cpms-bench/raw/
           retention-days: 14
           if-no-files-found: ignore
