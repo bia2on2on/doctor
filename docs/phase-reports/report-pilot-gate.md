@@ -191,7 +191,7 @@ Backup (DB+Storage) → MySQL دوم (@3307، instance مستقل) → Restore D
 
 ### 12.3 Benchmark سرور مرجع (داوری Quality Gate عملکرد)
 - **Requirement:** سرور 4 vCPU/8GB مطابق SRS با dataset واقعی (یا کپی Synthetic قبل از Go-Live)؛ Apache/PHP/MySQL با کانفیگ Production (worker count/opcache مطابق استقرار).
-- **دستور:** `ab -n 2000 -c 50` روی `GET /wp-json/clinic/v1/availability` + `/health` (طبق performance-baseline §متد: سطوح ۱/۱۰/۵۰/۱۰۰، ≥۵ دقیقه در سطح هدف با wrk/k6 برای long-run) — همان اسکریپت Gate قابل اجرا.
+- **دستور:** `ab -n 2000 -c 50` روی `GET /wp-json/clinic/v1/availability` + `/health` (طبق `docs/performance/performance-baseline.md` §3 «روش Benchmark» — بند ۴: سطوح هم‌زمانی 1/10/50/100 و ≥۵ دقیقه در سطح هدف با wrk/k6 برای long-run؛ بند ۳: Cold/Warm) — همان اسکریپت Gate قابل اجرا.
 - **Acceptance (طبق baseline مصوب):** REST تعاملی **p95 < 300ms** (تصمیم کارفرما F2) + NFR-PERF-1: **P95 < 500ms @ c=50** + Error rate 0 → ثبت در `reports/benchmarks/<date>-prod.md` با specs سرور. در صورت شکست p95<300ms در Core Endpoints → Quality Gate بلوک تا Profiling/بهینه‌سازی یا ADR با توجیه (طبق baseline §قاعده).
 
 ### 12.4 تست دستگاه فیزیکی

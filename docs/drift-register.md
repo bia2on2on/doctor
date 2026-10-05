@@ -572,3 +572,21 @@ Agent حذف/تغییر داده نشده‌اند؛ نسخهٔ حدسی باز�
 > به‌طورِ خاص، دربارهٔ `cpms_operational_logs` **هیچ مسیرِ خواندنِ production‌ای وجود ندارد**
 > (فقط `OpLogger` می‌نویسد و `OpLogCleanupHandler` بر پایهٔ retention حذف می‌کند) ⇒ **ادعای نشتی
 > ثبت نمی‌شود**. این سه ردیف فقط **بدهیِ مستنداتی/کامنتی** هستند.
+
+---
+
+## بخش ۱۰ — ثبت‌های Phase 17 (بدهیِ cross-reference، 2026-10-05)
+
+### ۱۰-A — 🕒 ارجاعِ بندِ منسوخِ «performance-baseline §18» (۸ محل در ۷ فایل)
+
+| | |
+|---|---|
+| **محل‌ها (راستی‌آزمایی‌شده با grep روی main)** | `clinic-practice-management/src/Application/Jobs/ReportExportHandler.php:12` · `clinic-practice-management/src/Application/Reports/ExportService.php:31` · `clinic-practice-management/CHANGELOG.md:40` · `docs/api/api-contract.md:200` (G5) · `docs/phase-reports/report-f8.md:4,67` · `docs/phase-reports/report-f9.md:87` · `docs/settings-reference.md:63` |
+| **متنِ کهنه** | «Export async/خارج از مسیر REST (performance-baseline **§18**)» |
+| **واقعیتِ راستی‌آزمایی‌شده** | `docs/performance/performance-baseline.md` **هیچ §18 ندارد** (بخش‌های آن از §1 تا §7 است؛ §7 در 2026-10-05 افزوده شد). خودِ همان سند در سطر ۲۵ این قاعده را با برچسب «(Baseline §18)» نامبرده — یعنی منشأ شماره، شمارهٔ **سند دیگری/شماره‌گذاری تاریخی** است و `docs/engineering-baseline.md` §18 امروز «IN-PROGRESS VISITS» است (نه Export). **قاعدهٔ جاریِ زنده** در این دو مرجع است: `docs/engineering-baseline.md` §2 «PERFORMANCE» (جملهٔ «عملیات سنگین باید Background Job باشند، از جمله … Large Export») و `docs/performance/performance-baseline.md` §1 (ردیف «عملیات سنگین (خارج از هدف REST) … **async/Job Queue**») + §4 («Async-First») |
+| **چرا در Slice 0 فاز ۱۷ اصلاح نشد** | اصلاحِ واقعی یعنی ویرایشِ **۲ docblock در کد محصول** + ۶ سند؛ این برش **فقط‌اندازه‌گیری** است و مجوزِ لمسِ فایلِ PHP/قرارداد محصول را ندارد. شمارهٔ دقیقِ مبدأ (کدام سند/کامی از «§18») **NOT ESTABLISHED** است ⇒ حدس زدن ممنوع؛ فقط ثبتِ واقعیتِ جاری مجاز بود |
+| **فاز مالک / اقدام** | 🕒 **DEFERRED** — پاک‌سازیِ فقط‌کامنتی/مستنداتی با فازِ مالکِ خود (فاز ۱۹/۲۰ یا تسکِ docsِ مستقل)؛ **هیچ رفتار/قراردادی تغییر نمی‌کند** و هیچ نقصِ عملکردی یا امنیتی را تأیید/ادعا نمی‌کند |
+
+> **صریح‌سازی:** این ردیف یک **نقصِ مستنداتی (cross-reference)** است، نه نقصِ محصول: کدِ واقعیِ Export
+> همان‌طور که در `api-contract.md` G5 و تست‌های موجود ثبت است async است و این ثبت آن رفتار را تغییر نمی‌دهد.
+> **هیچ** ادعایی دربارهٔ «بهینه‌سازیِ عملکردِ لازم بودن» از این ردیف استخراج نشود.
