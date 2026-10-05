@@ -85,9 +85,9 @@ In all of these cases:
 ### 6. Error codes & logs
 New codes registered in `docs/api/error-codes.md`: `CLINIC_LICENSE_BLOCKED` (exists), `CLINIC_LICENSE_UNREACHABLE`, `CLINIC_LICENSE_INVALID`, `CLINIC_LICENSE_RESTRICTED`, `CLINIC_LICENSE_ENTITLEMENT`, `CLINIC_LICENSE_LIMIT_REACHED`, `CLINIC_LICENSE_ACTIVATION_FAILED`. Phase 16 Slice 2 adds **no new API error code**: `binding_mismatch` is a bounded *internal state reason* surfaced through the existing `CLINIC_LICENSE_BLOCKED` (503). Operational logs carry only license/install identifiers — never PHI, never signing secrets, never full tokens.
 
-### 7. Central License Service Contract (Phase 16 Slice 5) — **SPECIFICATION ONLY**
+### 7. Central License Service Contract (Phase 16 Slice 5 + Slice 6A) — **CLIENT CONTRACT / EXTERNAL SERVICE SPECIFICATION**
 
-**Nature of this section.** This is an architecture/protocol *specification* of the boundary between CPMS and the **future external Central License Service**. It is written so that the central service can be built against a frozen client contract. **Nothing here is implemented and nothing here authorizes implementation.** This slice creates **no** central service, **no** HTTP endpoint, **no** CLI, **no** UI, **no** billing/payment, **no** activation counting, **no** migration, **no** new local enforcement, and **no** production signing key. Anything not already delivered in CPMS is marked **FUTURE/OPEN** and must not be read as implemented. This section is the single source of truth for the CPMS↔central-service contract; no second licensing architecture document is introduced.
+**Nature of this section.** This section specifies the boundary between CPMS and the **future external Central License Service**; rows marked CURRENT describe executing behavior. Phase 16 Slice 6A delivers only local verification/storage of the optional v2 `update_rights_until` claim. The external central service, update-rights enforcement, security-release manifest marker, billing/payment, activation counting, new persistence/migration, and production signing-key provisioning are **not** implemented here. Anything else not already delivered in CPMS is marked **FUTURE/OPEN** and must not be read as implemented. This section remains the single source of truth for the CPMS↔central-service contract; no second licensing architecture document is introduced.
 
 #### 7.1 Authority split
 
@@ -167,7 +167,8 @@ The **full** `HttpVendorGateway::allowlisted()` set is exactly: `install_id`, `l
 - `license_id` non-empty string;
 - `expires_at` integer > 0;
 - `issued_at` optional integer; when present, `expires_at >= issued_at`;
-- a valid detached Ed25519 signature — legacy (unversioned, single configured key) or v2 (`schema_version: 2` + `key_id` selecting exactly one key from the CPMS-configured ring). Partial metadata, malformed/unknown `schema_version` or `key_id`, or signature/key mismatch ⇒ `CLINIC_LICENSE_INVALID`, fail-closed, nothing persisted.
+- a valid detached Ed25519 signature — legacy (unversioned, single configured key) or v2 (`schema_version: 2` + `key_id` selecting exactly one key from the CPMS-configured ring). Partial metadata, malformed/unknown `schema_version` or `key_id`, or signature/key mismatch ⇒ `CLINIC_LICENSE_INVALID`, fail-closed, nothing persisted;
+- optional v2 `update_rights_until`: if present, a PHP/JSON integer greater than zero; absent remains accepted. Legacy/unversioned documents must not carry the claim, because it requires v2 key-ring provenance. It remains a field of the canonical signed payload, is stored only inside the existing `payload_json`, and malformed/provenance-invalid documents are rejected as `CLINIC_LICENSE_INVALID` before persistence.
 
 ##### 7.3.3 FUTURE — the minimum a successful v2 activation response must carry
 
@@ -183,11 +184,20 @@ A successful **v2** activation response from the central service should carry, a
 | `license_id` | ✅ mandatory | CPMS license identifier |
 | `issued_at` / `expires_at` | ✅ supported | term/expiry fields already enforced |
 | `entitlements.features` / `entitlements.limits` | ✅ supported | feature flags + numeric limits (`doctors`, `staff`, `branches`) |
+| `update_rights_until` | ✅ optional v2 claim; positive JSON integer; forbidden on legacy | ordinary release-publication rights boundary; stored only in signed `payload_json`; no update enforcement in this slice |
 | `revoked` / `suspended` / `reason` | ✅ read from the signed payload by `LicenseStateMachine` | explicit signed commercial verdict (issuance policy = OPEN) |
 
-**Explicitly FUTURE/OPEN — NOT implemented, NOT wire fields today:** an Organization wire identifier (`org_ref`/`organization_id`/`org_slug`), plan/capacity values (`plan`, `seats`, `version_rights`, `update_rights_until`), a renewal/term-extension field, an activation-count field, a rebind/supersede request field, and any `License → Organization` claim inside the signed payload. The commercial *unit* is the Organization (product decision, and the rationale recorded in the Phase 16 Slice 1 note in `SignedLicenseGate`), but **CPMS currently has no Organization claim in the signed document and sends no Organization field in any request**. These are central-service-side concepts to be specified when their policy is decided.
+**Explicitly FUTURE/OPEN — NOT implemented, NOT wire fields today:** an Organization wire identifier (`org_ref`/`organization_id`/`org_slug`), plan/capacity values (`plan`, `seats`, broader `version_rights` policy), a renewal/term-extension field, an activation-count field, a rebind/supersede request field, and any `License → Organization` claim inside the signed payload. The commercial *unit* is the Organization (product decision, and the rationale recorded in the Phase 16 Slice 1 note in `SignedLicenseGate`), but **CPMS currently has no Organization claim in the signed document and sends no Organization field in any request**. These are central-service-side concepts to be specified when their policy is decided.
 
-**Offline activation (CURRENT, unchanged):** `LicenseService::activateWithDocument()` ingests a signed document through the *same* `verifyAndStore()` seam with no network and no `license_key`. Offline and online activation therefore share identical authenticity, install-binding, domain-binding and expiry behavior.
+#### 7.3.4 `update_rights_until` — CURRENT representation, FUTURE enforcement (Phase 16 Slice 6A)
+
+- The claim is **optional on v2** and must be a PHP/JSON integer `> 0`; it is forbidden on a legacy/unversioned document because it requires the locally trusted v2 key-ring provenance. It is covered by the ordinary canonical Ed25519 signature and persists verbatim only inside the existing `payload_json`. No dedicated column/table or outbound activation/refresh field is added.
+- Semantics: an **epoch-second publication-rights boundary for ordinary releases**. The claim does not change `LicenseStatus`, reason, `needs_renewal`, entitlements, `SignedLicenseGate`, domain binding, `activation_id`, ordinary-expiration behavior, or update availability in this slice. Ordinary expiration still does not disable the legally obtained installed CPMS version.
+- **No update-rights enforcement exists in this slice.** Current `UpdateService` behavior remains based on its existing `updates` feature entitlement and verified/applicable signed release manifest; it does not consume this claim.
+- Future ordinary-release eligibility must compare `update_rights_until` with the **signed release manifest's publication timestamp**, not the local wall clock.
+- Approved future enforcement requirement: releases explicitly classified as security releases **in the signed release manifest** remain eligible beyond the ordinary boundary. The signed-manifest security marker and this enforcement are **not implemented here**; `ReleaseManifest` has not been changed to add such a marker.
+
+**Offline activation (CURRENT, unchanged):** `LicenseService::activateWithDocument()` ingests a signed document through the *same* `verifyAndStore()` seam with no network and no `license_key`. Offline and online activation therefore share identical authenticity, install-binding, domain-binding and expiry behavior, plus the v2 claim-validation contract above.
 
 #### 7.4 REFRESH contract
 
@@ -262,7 +272,7 @@ Recorded rules that already hold: network unreachable ≠ invalid; a signature/a
 - **same-domain full clones are not globally distinguishable by the CPMS client alone** (identical `install_id` and identical canonical `domain` verify identically); only central-side evidence (activation-record history, issuance patterns, rate/audit signals) can speak to that, and that analysis is out of scope here;
 - nothing in this contract is a piracy *verdict*: absence of connectivity, a transport error, or a locally expired document is not proof of infringement.
 
-#### 7.9 FUTURE / OPEN decisions (explicitly not decided by this slice)
+#### 7.9 FUTURE / OPEN decisions and approved deferred requirements (not implemented in this slice)
 
 1. **production refresh interval** (numeric);
 2. **offline grace duration** (numeric);
@@ -270,9 +280,9 @@ Recorded rules that already hold: network unreachable ≠ invalid; a signature/a
 4. **Enterprise multi-activation policy**;
 5. **rebind limits** (count / frequency / cooldown);
 6. **suspension / revocation clinical semantics** — central issuance policy plus any restriction beyond the existing gate posture;
-7. **security-update rights after term expiry** (what an ordinarily-expired installation may still receive);
+7. **Future enforcement work (approved, not implemented):** compare ordinary-release publication time to the signed `update_rights_until` boundary; releases explicitly classified as security releases in the signed manifest remain eligible beyond it. The security marker and enforcement are not part of Slice 6A;
 8. **Organization wire identifier** — the claim/field by which the central service names the owning Organization to CPMS;
-9. **Plan / capacity values** (`plan`, seats, `version_rights`, update-rights window);
+9. **Plan / capacity values** (`plan`, seats, broader `version_rights` policy);
 10. **billing / payment implementation** — entirely outside CPMS.
 
 #### 7.10 CONSISTENCY — cross-checked against executing code
@@ -289,11 +299,13 @@ Verified against the working tree, not against memory:
 | signed schema v2 / `key_id` ring / legacy separation | `LicenseSignature::verify_license_document()` + `LicenseKeys` |
 | signed domain binding + `binding_mismatch` | `LicenseService::applyDomainBinding()` + `LicenseDomain` |
 | optional `activation_id` grammar | `LicenseActivationId::is_valid()` + `LicenseSignature::verify_versioned_document()` |
+| optional v2 `update_rights_until` (integer `> 0`, legacy forbidden, payload_json only) | `LicenseSignature::verify_license_document()` + `LicenseUpdateRightsClaimTest` |
+| no update-rights enforcement / existing update result and entitlement behavior | unchanged `UpdateService` + `LicenseUpdateRightsClaimTest` |
 | ordinary expiration does not freeze new business | `SignedLicenseGate::assert()` (exact reason `expired` only) |
 | unreachable ≠ invalid; signed revoked/suspended ≠ outage | `LicenseStateMachine::compute()` |
 | refresh only from the job, never from a request path | `LicenseRefreshHandler` + `LicenseService::refreshDue()` |
 | no PHI on the control plane | `HttpVendorGateway::allowlisted()` + `VendorPlanePrivacyTest` |
-| no migration, no new table/column for activation state | `2026_09_07_0008_licensing.php` (latest migration `2026_09_26_0023_handwriting_prescription_paper.php`) |
+| no migration, no dedicated update-rights table/column; claim uses existing `payload_json` | `LicenseRepository::saveVerified()` + `LicenseUpdateRightsClaimTest` (latest migration remains `2026_09_26_0023_handwriting_prescription_paper.php`) |
 
 **No field, endpoint, status, or behavior above is claimed as implemented unless it appears in the executing code listed here.** Everything else in §7 is either already-delivered behavior or explicitly marked FUTURE/OPEN.
 

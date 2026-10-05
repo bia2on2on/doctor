@@ -151,6 +151,7 @@ final class VendorPlanePrivacyTest extends WP_UnitTestCase
             'wp_version' => '6.7',
             'php_version' => '8.2',
             'domain' => 'clinic.example',
+            'update_rights_until' => 1893463200,
             'patient_name' => self::SENTINEL,
             'notes' => self::SENTINEL,
             'full_row' => self::SENTINEL,
@@ -159,10 +160,12 @@ final class VendorPlanePrivacyTest extends WP_UnitTestCase
         $this->assertNotSame([], $this->captured);
         $body = json_decode($this->captured[0]['body'], true);
         $this->assertIsArray($body);
-        $allowed = ['install_id', 'license_id', 'environment', 'license_key', 'version', 'wp_version', 'php_version', 'domain'];
-        foreach (array_keys($body) as $k) {
-            $this->assertContains($k, $allowed, "کلید خارج از Allowlist در Body: {$k}");
-        }
+        $keys = array_keys($body);
+        sort($keys);
+        $expectedKeys = ['install_id', 'environment', 'license_key', 'version', 'wp_version', 'php_version', 'domain'];
+        sort($expectedKeys);
+        $this->assertSame($expectedKeys, $keys, 'activation request keys must remain the existing metadata allowlist');
+        $this->assertArrayNotHasKey('update_rights_until', $body);
         $this->assertArrayNotHasKey('patient_name', $body);
         $this->assertNoSentinelInCaptured('license activate');
         $this->assertSame(0, preg_match('/SENTINEL/', (string) json_encode($this->captured[0]['headers'])));
@@ -188,7 +191,11 @@ final class VendorPlanePrivacyTest extends WP_UnitTestCase
         $body = json_decode($this->captured[0]['body'], true);
         $this->assertIsArray($body);
         $this->assertSame($installId, $body['install_id'] ?? null);
-        $this->assertSame([], array_diff(array_keys($body), ['install_id', 'environment', 'license_key', 'version', 'wp_version', 'php_version', 'domain']));
+        $keys = array_keys($body);
+        sort($keys);
+        $expectedKeys = ['install_id', 'environment', 'license_key', 'version', 'wp_version', 'php_version', 'domain'];
+        sort($expectedKeys);
+        $this->assertSame($expectedKeys, $keys, 'full activation request keys must remain unchanged');
         $this->assertNoSentinelInCaptured('license full activation');
     }
 
@@ -215,10 +222,12 @@ final class VendorPlanePrivacyTest extends WP_UnitTestCase
         $this->assertNoSentinelInCaptured('license refresh');
         // Phase 16 Slice 2: `domain` عمداً به refresh اضافه شد (ابردادهٔ مجازِ
         // ADR-0028 §2) — بقیهٔ قیدها (بدون PHI، فقط کلیدهای allowlist) دست‌نخورده است.
-        $allowed = ['install_id', 'license_id', 'environment', 'version', 'domain'];
-        foreach (array_keys($body) as $k) {
-            $this->assertContains($k, $allowed);
-        }
+        $keys = array_keys($body);
+        sort($keys);
+        $expectedKeys = ['install_id', 'license_id', 'environment', 'version', 'domain'];
+        sort($expectedKeys);
+        $this->assertSame($expectedKeys, $keys, 'refresh request keys must remain unchanged');
+        $this->assertArrayNotHasKey('update_rights_until', $body);
     }
 
     // ================= Update outbound =================
