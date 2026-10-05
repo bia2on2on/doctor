@@ -456,7 +456,7 @@ final class UpdateRightsEnforcementTest extends WP_UnitTestCase
         // The boundary still applies to the update plane after ordinary expiration.
         $blocked = $this->check($this->updates($service, $this->document($this->releasePayload([
             'release_kind' => 'normal',
-            'signed_at' => self::BOUNDARY_LATE,
+            'signed_at' => self::BOUNDARY_RENEWED,
         ]))));
         $this->assertFalse($blocked['available']);
         $this->assertSame('update_rights_expired', $blocked['reason']);
