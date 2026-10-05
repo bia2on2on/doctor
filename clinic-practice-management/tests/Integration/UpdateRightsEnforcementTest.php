@@ -74,15 +74,14 @@ final class UpdateRightsEnforcementTest extends WP_UnitTestCase
         $this->issuedAt = time() - 60;
         $this->expiresAt = time() + 30 * 86400;
 
-        add_filter(self::LEGACY_KEY_FILTER, static fn (): string => base64_encode(
-            sodium_crypto_sign_publickey($this->ringKeypair)
-        ));
-        add_filter(self::KEY_RING_FILTER, static fn (): array => [
-            self::KEY_ID => base64_encode(sodium_crypto_sign_publickey($this->ringKeypair)),
-        ]);
-        add_filter(self::RELEASE_KEY_FILTER, static fn (): string => base64_encode(
-            sodium_crypto_sign_publickey($this->releaseKeypair)
-        ));
+        // Public keys are resolved once and captured by value: a static closure must never
+        // reference $this (CI: "Using $this when not in object context").
+        $legacyPublic = base64_encode(sodium_crypto_sign_publickey($this->ringKeypair));
+        $ringPublic = base64_encode(sodium_crypto_sign_publickey($this->ringKeypair));
+        $releasePublic = base64_encode(sodium_crypto_sign_publickey($this->releaseKeypair));
+        add_filter(self::LEGACY_KEY_FILTER, static fn (): string => $legacyPublic);
+        add_filter(self::KEY_RING_FILTER, static fn (): array => [self::KEY_ID => $ringPublic]);
+        add_filter(self::RELEASE_KEY_FILTER, static fn (): string => $releasePublic);
     }
 
     protected function tearDown(): void
