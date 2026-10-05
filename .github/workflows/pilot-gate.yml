@@ -148,7 +148,7 @@ jobs:
           python3 bin/pilot-bench-report.py --test
           {
             echo '### Pilot benchmark harness self-test — PASSED on this run'
-            echo '`bin/pilot-bench-report.py --test` (deterministic: no network, no WordPress, no `ab` binary) — ab parsing, report generation, honesty fields and the artifact privacy gate. This runs on every gate run; the live benchmark step itself runs on watched pushes (`main` / `arena/**`) as well as on `schedule` and `workflow_dispatch`.'
+            echo '`bin/pilot-bench-report.py --test` (deterministic: no network, no WordPress, no `ab` binary) — ab parsing, report generation, honesty fields, the artifact privacy gate and the REST-visible safe evidence projection (exact allowlist field sets, fixed endpoint labels, cold|warm-only phases, fail-closed refusal of malformed/unexpected values, sentinel-absence and tamper-refusal). This runs on every gate run; the live benchmark step itself runs on watched pushes (`main` / `arena/**`) as well as on `schedule` and `workflow_dispatch`.'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Environment specs (گزارش واقعی محیط)
@@ -595,6 +595,12 @@ jobs:
       #     unscanned dumps to the `if: always()` artifact upload
       #   • per-run numbers are persisted as an artifact for this exact run/head SHA and are
       #     deliberately never committed into Git history
+      #   • additionally (and only for the five binding keys + numeric measurement fields) the
+      #     NEXT step posts a validated ALLOWLIST projection of this same run through the existing
+      #     evidence-comment pattern, so the numbers are retrievable via GitHub REST without any
+      #     artifact/blob access. That projection is not Git history either, and it is generated
+      #     by `bin/pilot-bench-report.py --evidence-prefix` from the post-privacy-scan structured
+      #     report — never from raw `ab` bytes and never by shell text extraction
       - name: Performance benchmark — ab (cold + warm, c=1/10/50/100) → JSON/MD artifact
         if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || github.event_name == 'push' }}
         run: |
@@ -690,6 +696,7 @@ jobs:
           RC=0
           python3 bin/pilot-bench-report.py \
             --manifest "$MANIFEST" --raw-dir "$RAW" --out-prefix "$OUT" \
+            --evidence-prefix "$OUT.evidence" \
             --meta "run_id=${{ github.run_id }}" \
             --meta "run_attempt=${{ github.run_attempt }}" \
             --meta "head_sha=${{ github.sha }}" \
@@ -728,6 +735,42 @@ jobs:
 
           [ "$RC" = "0" ] || { echo "BENCHMARK CORRECTNESS FAILURE (rc=$RC) — collection/HTTP-correctness only; no latency threshold exists in this step"; exit "$RC"; }
           echo 'benchmark collected: no NFR verdict claimed (adjudication stays with report-pilot-gate.md §12.3)'
+
+      # ---------- REST-visible safe benchmark evidence (allowlist only) ----------
+      # WHY: the run-bound artifact `pilot-benchmark-<run_id>` (14-day retention) is the only
+      # place the numbers exist, and an engineering agent without artifact/blob access cannot
+      # read it. This step posts the DEDICATED allowlist projection produced by the report step
+      # (`$OUT.evidence.md`, generated from the post-privacy-scan structured report) so the real
+      # Phase 17 measurements are retrievable via GitHub REST.
+      # WHAT IS POSTED: only the validated allowlist — measurement seq, phase cold|warm, LABEL
+      # from the fixed endpoint set (never free-form manifest text), concurrency, request counts,
+      # p50/p95/p99, requests/sec, failed + non-2xx counts, plus the run binding (run_id,
+      # run_attempt, event_name, head_sha, ref). No raw `ab` dump, response/header/body content,
+      # environment metadata, path or free-form text ever enters the projection.
+      # PUBLICATION vs CORRECTNESS: publication reuses the repository-native evidence-comment
+      # pattern (PR comment when a PR exists, otherwise a commit comment) and is append-only; a
+      # GitHub/API permission or network failure is reported as `::notice::` and does NOT make
+      # benchmark correctness depend on comment publication. The pre-publication re-validation
+      # failure (`::error::`) is an evidence-integrity failure, not a latency/NFR judgement.
+      # No new workflow/job/dependency/trigger/threshold is added; this step runs only after the
+      # benchmark step above SUCCEEDED (default `success()` step condition).
+      - name: Post safe benchmark evidence projection (REST-visible, allowlist only)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          EVIDENCE=/tmp/cpms-bench/cpms-pilot-benchmark.evidence.md
+          if [ ! -f "$EVIDENCE" ]; then
+            echo '::warning::safe evidence projection not produced (benchmark step did not run or refused it fail-closed) — nothing posted'
+            exit 0
+          fi
+          python3 bin/pilot-bench-report.py --verify-evidence "$EVIDENCE" \
+            || { echo '::error::safe evidence projection failed pre-publication re-validation — NOT posted (fail closed)'; exit 1; }
+          PR=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number' 2>/dev/null || true)
+          if [ -n "$PR" ]; then
+            gh pr comment "$PR" --body-file "$EVIDENCE" || echo "::notice::safe benchmark evidence PR comment failed (GitHub/API permission or network) — benchmark correctness is unaffected; numbers remain in artifact pilot-benchmark-${{ github.run_id }}"
+          else
+            gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@"$EVIDENCE" || echo "::notice::safe benchmark evidence commit comment failed (GitHub/API permission or network) — benchmark correctness is unaffected; numbers remain in artifact pilot-benchmark-${{ github.run_id }}"
+          fi
 
       - name: Upload benchmark artifact (per-run numbers never enter Git history)
         if: always()
