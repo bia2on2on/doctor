@@ -46,10 +46,10 @@ final class LicenseSignature
      *
      * Phase 16 Slice 4 — signed activation identity: a v2 document MAY carry
      * `activation_id` (central activation RECORD id, see LicenseActivationId).
-     * Absent ⇒ accepted (bounded compatibility rule); present ⇒ must satisfy the
-     * bounded grammar or the whole document fails closed. The legacy format
-     * predates the claim, so a legacy document carrying it fails closed too.
-     * The value stays inside the canonical signed payload like every other key.
+     * Phase 16 Slice 6A — a v2 document MAY also carry `update_rights_until`,
+     * an optional positive integer epoch-second claim. Both claims stay inside
+     * the canonical signed payload; activation_id keeps its bounded grammar,
+     * update_rights_until is integer-only and legacy documents carry neither.
      *
      * @param array<string, mixed> $payload
      */
@@ -76,8 +76,8 @@ final class LicenseSignature
         if ( array_key_exists( 'schema_version', $payload ) || array_key_exists( 'key_id', $payload ) ) {
             return false;
         }
-        // Old documents predate the v2 activation identity claim (Phase 16 Slice 4).
-        if ( array_key_exists( 'activation_id', $payload ) ) {
+        // Legacy documents predate both v2-only signed claims; reject either without v2 key-ring provenance.
+        if ( array_key_exists( 'activation_id', $payload ) || array_key_exists( 'update_rights_until', $payload ) ) {
             return false;
         }
 
@@ -108,6 +108,11 @@ final class LicenseSignature
         // (the central service issues no activation records yet); a present claim
         // must be a bounded ASCII identifier or the document fails closed.
         if ( array_key_exists( 'activation_id', $payload ) && ! LicenseActivationId::is_valid( $payload['activation_id'] ) ) {
+            return false;
+        }
+        // Phase 16 Slice 6A — absent is backward-compatible; present must be a positive PHP/JSON integer.
+        if ( array_key_exists( 'update_rights_until', $payload )
+            && ( ! is_int( $payload['update_rights_until'] ) || $payload['update_rights_until'] <= 0 ) ) {
             return false;
         }
 

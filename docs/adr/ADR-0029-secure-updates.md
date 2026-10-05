@@ -15,7 +15,7 @@ Self-hosted CPMS needs a way to ship fixes while keeping the customer in control
 - Canonicalization identical to ADR-0023 (k-sort + JSON_UNESCAPED_UNICODE) so both sides sign/verify the same bytes.
 
 ### 2. Delivery (V1)
-- Official distribution channel: vendor server exposes the manifest over HTTPS (out-of-repo; contract here + mock in tests). The WordPress update screen sees CPMS as an update *only after*: license is not restricting updates (`entitlements.updates` true) AND manifest verifies AND `package_sha256` matches the artifact.
+- Official distribution channel: vendor server exposes the manifest over HTTPS (out-of-repo; contract here + mock in tests). The WordPress update screen sees CPMS as an update *only after* `UpdateService::isUpdateEntitled()` returns true (pre-activation/development allowance, otherwise the existing signed `entitlements.features.updates` feature), the manifest verifies, and `package_sha256` matches the artifact.
 - `pre_set_site_transient_update_plugins` injection is limited to CPMS's own slug, cached (transient, TTL `update.check_interval_hours`, default 24), with bounded HTTP timeout and **no per-request network** on clinic pages.
 - Artifact integrity: package sha256 checked **before** WP's installer touches it; unsigned/unverifiable manifests are never offered.
 
@@ -25,7 +25,7 @@ Self-hosted CPMS needs a way to ship fixes while keeping the customer in control
 
 ### 4. Entitlement & downgrade
 - `update.channel` setting chooses stable (default) vs beta; admin capability `cpms_config` gates changes.
-- Refusal to update never disables the clinic; an expired license disables *auto-offer* of new updates but existing installs keep working (historical/current-workflow rights preserved, ADR-0023 §5).
+- Refusal to update never disables the clinic or the legally obtained installed CPMS version. Current offer availability uses the existing `UpdateService` entitlement decision (pre-activation/development allowance, otherwise signed `entitlements.features.updates`) plus the verified/applicable signed release manifest; ordinary expiration is not a separate update-rights check. `update_rights_until` enforcement against signed release publication metadata is future work recorded in ADR-0023 §7.3.4, not current behavior.
 
 ## Consequences
 + Fix delivery without weakening the customer boundary; authenticity verifiable by anyone with the shipped public key.
