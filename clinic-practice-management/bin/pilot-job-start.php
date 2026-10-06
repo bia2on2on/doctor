@@ -164,7 +164,7 @@ function cpms_pilot_job_start_main( array $args ): void {
             // triggers the queue — only the production fast-wake path requested by
             // the enqueue itself may start these rows. A bounded wait keeps the
             // observation honest instead of inventing a start.
-            $deadline = microtime( true ) + 20.0;
+            $deadline            = microtime( true ) + 20.0;
             $started_before_wait = (int) $db->fetchValue(
                 'SELECT COUNT(*) FROM ' . $table .
                 ' WHERE type = %s AND JSON_UNQUOTE(JSON_EXTRACT(payload_json, ' .
@@ -192,9 +192,9 @@ function cpms_pilot_job_start_main( array $args ): void {
                 "'$.pilot_measurement_correlation')) = %s AND started_at IS NOT NULL",
                 [ $job_type, $token ]
             );
-            $wake_after = cpms_pilot_job_start_wake_state();
-            $lock_after = cpms_pilot_job_start_cron_lock_state();
-            $tick_age   = 'NOT_RETRIEVED';
+            $wake_after          = cpms_pilot_job_start_wake_state();
+            $lock_after          = cpms_pilot_job_start_cron_lock_state();
+            $tick_age            = 'NOT_RETRIEVED';
             try {
                 // Queue's own persisted tick marker (bounded age, no timestamp echo):
                 // distinguishes "wake callback ran" from "nothing ran at all".
