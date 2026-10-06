@@ -96,6 +96,8 @@
 
 **شمارش query:** اندازه‌گیری **نشده (NOT MEASURED)**. شمارشِ منصفانهٔ هر request در حالتِ غیرفعال نیازمند مشاهده‌گرِ متعلق‌به CPMS (که طبق تعریف وجود ندارد) یا query-logging سراسریِ ناامن/وابستگی جدید است؛ شواهدِ نامتقارن از یک شکافِ صادقانه بدتر است.
 
+**محلِ منطق:** منطقِ جمع‌آوری (نمونه‌برداری، غیرفعال/فعال‌سازی، اثباتِ بازیابی) در هارنس stdlib-only `clinic-practice-management/bin/pilot-page-overhead.py` با `--test` قطعی در گامِ Lint است — نه در یک بلوکِ شلِ درونِ YAML؛ دلیلِ فنی: GitHub طول یک عبارتِ `run:` را به **۲۱٬۰۰۰ کاراکتر** محدود می‌کند و نسخهٔ درون‌خطیِ این گام آن را رد می‌کرد (workflow file از کار می‌افتاد). این همان الگویِ مستقرِ `bin/pilot-bench-report.py` و `bin/pilot-bench-diagnostics.py` است.
+
 **ایمنیِ غیرفعال‌سازی (فقط نمونهٔ یک‌بار‌مصرفِ Pilot/Staging داخل workflow):** فقط مکانیزم بومیِ وردپرس (`wp plugin deactivate` / `wp plugin activate`)؛ بدون uninstall/حذف، بدون اجرای هوکِ مخرب، بدون تغییر جدول/تنظیمات/دادهٔ CPMS. بازیابی با `trap ... EXIT` **و** به‌صورت درون‌خطی پیش از round پایانی تضمین شده است. پس از round غیرفعال، گام ثابت می‌کند: افزونه فعال است، endpoint عمومیِ سلامتِ CPMS کد ۲۰۰ می‌دهد، رویداد `cpms_jobs_tick` زمان‌بندی است، و نسخهٔ migrationها و اثرانگشتِ تعداد جدول/ستون‌های CPMS تغییر نکرده‌اند. شکستِ هر بازیابی، گام را با صدای بلند fail می‌کند.
 
 **Measurement-only guardrails (تغییرناپذیر):** هیچ آستانهٔ latency در workflow اضافه نشده؛ projection امن شامل هیچ URL آزاد، هدر، بدنه، مسیر فایل‌سیستم، فهرست افزونه، متن/مقدار SQL، nonce/cookie/کلید، metadata محیطی یا PHI نمی‌شود؛ ۱۳ ردیف بنچمارک و بلاک profiling بدون تغییر مانده‌اند و بلاک `page_overhead` فقط به‌صورت additive به `cpms.pilot-bench-evidence/4` افزوده شده است؛ مجوزهای workflow (`contents: read`, `actions: read`, `pull-requests: write`) تغییر نکرده‌اند.
