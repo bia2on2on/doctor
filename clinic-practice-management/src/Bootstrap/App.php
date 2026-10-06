@@ -311,9 +311,12 @@ final class App
         // committed. Same `App::runTick()` lock/claim machinery as the recurring
         // trigger; the minute-cadenced `cpms_jobs_tick` above is NOT changed and
         // stays the recovery/fallback trigger on hosts where the spawn cannot run.
-        add_action(JobWake::HOOK, static function (): void {
-            self::runTick(self::WAKE_TICK_LIMIT);
-        });
+        add_action(
+            JobWake::HOOK,
+            static function (): void {
+                self::runTick( self::WAKE_TICK_LIMIT );
+            }
+        );
 
         // Migration خودکار و ایمن (idempotent) — هنگام admin_init و rest_api_init
         add_action('admin_init', static function (): void {
@@ -1129,7 +1132,7 @@ final class App
     {
         if (self::$jobs === null) {
             // Phase 17 — the queue persists; the fast wake-up is an advisory hint.
-            self::$jobs = new JobQueue(self::db(), self::op(), new JobWake());
+            self::$jobs = new JobQueue( self::db(), self::op(), new JobWake() );
         }
 
         return self::$jobs;

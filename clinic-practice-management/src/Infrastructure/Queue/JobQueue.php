@@ -64,13 +64,13 @@ final class JobQueue
             'created_at' => $this->db->nowUtcSql(),
         ]);
 
-        $jobId = (int) $this->db->wpdb_last_insert_id();
+        $job_id = (int) $this->db->wpdb_last_insert_id();
 
         // Advisory fast wake-up (never throws, never changes the result above).
         // The heavy handler is NOT run here and no caller waits for it.
         $this->wake?->request();
 
-        return $jobId;
+        return $job_id;
     }
 
     /**

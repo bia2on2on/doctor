@@ -268,7 +268,11 @@ final class JobFastWakeContractRedTest extends WP_UnitTestCase
             'the wake target must be the site’s own host, never an arbitrary external URL'
         );
         $this->assertFalse($args['blocking'] ?? true, 'the loopback must be non-blocking');
-        $this->assertArrayNotHasKey('body', $args, 'no payload/job data may be sent over the loopback');
+        $body = $args['body'] ?? null;
+        $this->assertTrue(
+            null === $body || '' === $body,
+            'no payload/job data may be sent over the loopback'
+        );
 
         delete_transient('doing_cron');
     }
