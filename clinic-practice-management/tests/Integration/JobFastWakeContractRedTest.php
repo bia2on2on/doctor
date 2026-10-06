@@ -138,6 +138,54 @@ final class JobFastWakeContractRedTest extends WP_UnitTestCase
         );
     }
 
+    /**
+     * STEP 5 request-path overhead bound: the production enqueue path must not
+     * perform any network call, and a burst may reserve at most one
+     * installation-wide wake scheduling attempt (repeated attempts inside the
+     * coalescing window are skipped, not re-scheduled).
+     */
+    public function testBurstEnqueueDoesNoNetworkAndReservesOneWakeSchedule(): void
+    {
+        if (!class_exists(JobWake::class)) {
+            $this->fail('ClinicCore\Application\Jobs\JobWake does not exist yet (missing fast-wake contract)');
+        }
+
+        $http_calls        = 0;
+        $schedule_attempts = 0;
+
+        add_filter(
+            'pre_http_request',
+            static function ($pre) use (&$http_calls) {
+                $http_calls++;
+
+                return false;
+            },
+            10,
+            1
+        );
+        add_filter(
+            'pre_schedule_event',
+            static function ($pre, $event) use (&$schedule_attempts) {
+                if (is_object($event) && isset($event->hook) && JobWake::HOOK === $event->hook) {
+                    $schedule_attempts++;
+                }
+
+                return $pre;
+            },
+            10,
+            2
+        );
+
+        $this->enqueueBackupRuns(25);
+
+        remove_all_filters('pre_http_request');
+        remove_all_filters('pre_schedule_event');
+
+        $this->assertSame(0, $http_calls, 'the enqueue request path must never perform a network call');
+        $this->assertSame(1, $schedule_attempts, 'a burst must attempt exactly one installation-wide wake scheduling');
+        $this->assertSame(1, $this->pendingEvents(JobWake::HOOK), 'exactly one wake event may remain pending after a burst');
+    }
+
     public function testRecurringMinuteTickRemainsRegisteredAndUnchanged(): void
     {
         $before = wp_get_scheduled_event(self::RECURRING_HOOK);
