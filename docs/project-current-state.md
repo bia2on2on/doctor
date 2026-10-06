@@ -4,11 +4,64 @@
 > Do **not** use a previous chat session as memory.
 >
 
+<a id="phase17-closure"></a>
+
+## Phase 17 — Performance: ✅ FORMALLY CLOSED / TECHNICALLY COMPLETE (BOUNDED)
+
+**Closure decision and anchor (verified live 2026-10-06 UTC):** The Technical Director decision is recorded as **FORMALLY CLOSED / TECHNICALLY COMPLETE (BOUNDED)**. At pre-write verification, authoritative GitHub `main` = fetched `origin/main` = session `HEAD` = **`030ec14da8f190778a6c07c02e82eba56591a3ba`**, the exact merge SHA of **PR #189** (MERGED 2026-10-06T20:44:10Z); there were no open PRs. The latest migration on `main` remains **`2026_09_26_0023_handwriting_prescription_paper.php`**; Phase 17 added no migration. This is a bounded technical closure, not a commercial-readiness decision.
+
+**Exact post-merge closure on the merge SHA:** each run below is a native `push` to `main` with `head_sha=030ec14da8f190778a6c07c02e82eba56591a3ba`; every workflow run and every job is terminal `completed` / `success`.
+
+| Required workflow | Exact `push → main` run | Result |
+|---|---:|---|
+| CI | [37528698093](https://github.com/bia2on2on/doctor/actions/runs/37528698093) | `completed / success` |
+| Real WordPress Acceptance | [37528698203](https://github.com/bia2on2on/doctor/actions/runs/37528698203) | `completed / success` |
+| Closure Gate | [37528698109](https://github.com/bia2on2on/doctor/actions/runs/37528698109) | `completed / success` |
+| Pilot/Staging Readiness Gate | [37528698315](https://github.com/bia2on2on/doctor/actions/runs/37528698315) | `completed / success` |
+
+The exact merge-SHA check-runs API reports **19/19 completed-success** (workflow job counts 8 + 2 + 5 + 4). The merge-SHA numeric benchmark artifact remained **NOT RETRIEVED**. These workflow/check results prove merge-SHA gate closure only; PR-head benchmark numbers below are not attributed to the merge SHA.
+
+**Delivered bounded Phase-17 scope:**
+- Per-push performance benchmark infrastructure, with cold/warm and concurrency evidence.
+- Privacy-safe benchmark evidence bound to its exact run and source SHA.
+- Bounded capacity diagnosis for CPU, memory, worker/capacity, and load-generator-versus-server evidence.
+- Comparative CPMS request profiling against an active-plugin WordPress route, including bounded query-count and aggregate DB-time evidence for the profiled routes.
+- Public-page `ACTIVE` versus `DEACTIVATED` overhead measurement (external/request-level timing; query count for that comparison is **NOT MEASURED**).
+- Background-job first-start measurement with **explicit tick measured separately** from the autonomous path.
+- The autonomous fast-wake product path: persist first → coalesced, args-free wake → deferred WordPress-native non-blocking cron spawn → existing `App::runTick()` → existing DB lock and `JobQueue::claim()` as the only processing authority. The minute fallback is unchanged.
+
+**Run-bound job-start evidence (Pilot/shared-runner measurements, not merge-SHA numeric evidence):**
+
+| Mode | Run / exact pushed head SHA | 100-job result |
+|---|---|---|
+| `explicit_tick` | Run [37489607493](https://github.com/bia2on2on/doctor/actions/runs/37489607493), attempt 1 / `push`, ref `arena/eba49573-doctor`, head `26e2114f94d5f617296c4f3effcdf999377ea2d8` (PR #188) | `p50/p95/p99/max = 2000/2000/2000/2000 ms`; not-started 0; processing failures 0. This is explicitly ticked, **not autonomous**. |
+| `autonomous` | Run [37521600403](https://github.com/bia2on2on/doctor/actions/runs/37521600403), attempt 1 / `push`, ref `arena/977086bf-doctor`, head `d08f8804cf043adbcf81e90cdeb69d09fa1fde5f` (PR #189) | `p50/p95/p99/max = 0/1000/1000/1000 ms`; not-started 0; processing failures 0. `p50=0` denotes the same one-second timestamp bucket, not literal zero latency. |
+| `autonomous` | Run [37524176843](https://github.com/bia2on2on/doctor/actions/runs/37524176843), attempt 1 / `push`, ref `arena/977086bf-doctor`, accepted PR #189 head `848b411d58a9ce8be261f890d4a6fc386bda7e74` | `p50/p95/p99/max = 1000/1000/1000/1000 ms`; not-started 0; processing failures 0. |
+
+The two autonomous 100-job runs demonstrate fast start **under a healthy supported WordPress loopback environment only**. Each numeric result remains bound to its own PR head, run, attempt, event, and ref; none is a merge-SHA number. The minute fallback remains. Hosts that disable or block loopback do **not** receive a portable `<5 s` guarantee; this is **not a universal SLA**.
+
+**Performance direction (design/acceptance direction, not a universal benchmark claim):** CPMS is engineered to remain effectively unnoticeable on ordinary WordPress installs, including common sites with roughly **20–30 plugins**. This does **not** claim that every 20–30-plugin combination was benchmarked.
+
+**N+1 wording and boundary:** Queue/dashboard data paths use bounded, joined, or batched query structures; relevant tests and profiling support **no observed N+1 regression**. A universal numerical N+1 budget was **not** independently runtime-proven on every queue/dashboard UI path. A queue-specific numerical query-budget pin remains optional future hardening, not a closure blocker.
+
+**Explicit remaining B-class non-claims (not completed/demonstrated):**
+- Reference 4-vCPU / 8-GB NFR adjudication.
+- Full `k6`/`wrk` methodology with at least five minutes at every level.
+- Customer-like / multi-Clinic load pilot.
+- Production p95 monitoring and alerting.
+- Production/reference-server dashboard-overhead adjudication.
+- Full reference-environment cold-cache depth.
+- No production, commercial, release, deployment, or go-live readiness claim.
+
+**Optional future work only — no optimization promises:** consider consolidating the shared CPMS init/bootstrap query pattern (27 queries) only if future evidence proves a material benefit; optionally add a queue-specific numerical query-count pin; profile deeper only if new evidence indicates a bottleneck. None is a Phase-17 closure blocker or a committed optimization.
+
+The future **Custom Role & Permission Management** workstream remains **frozen after Phase 19 and before Phase 20**; this closure neither implements nor reorders it. **Phase 17 closure ≠ commercial readiness.**
+
 <a id="current-state-2026-10-06"></a>
 
 <a id="current-state-2026-10-06-queue-first-start-autonomous"></a>
 
-> **Live checkpoint 2026-10-06 UTC (Phase 17 — autonomous fast-wake ADJUDICATED on the same slice/PR; session branch `arena/977086bf-doctor`):** authoritative GitHub `main` = fetched `origin/main` = **`972c641c5a11fe9be65766752a76f6086a6f80a4`** (merge SHA of PR #188) — unchanged. Sole open PR = **[#189](https://github.com/bia2on2on/doctor/pull/189)**, **DRAFT**, unmerged, head **`d08f8804cf043adbcf81e90cdeb69d09fa1fde5f`**, base `main`, mergeable. **Phase 17 remains 🚧 IN PROGRESS**; latest migration unchanged **`2026_09_26_0023_handwriting_prescription_paper.php`**; the frozen future **Custom Role & Permission Management** workstream (after Phase 19, before Phase 20) is **untouched**.
+> **Historical live checkpoint 2026-10-06 UTC (Phase 17 — autonomous fast-wake ADJUDICATED on the same slice/PR; superseded by [the formal closure](#phase17-closure), preserved—not rewritten; session branch `arena/977086bf-doctor`):** authoritative GitHub `main` = fetched `origin/main` = **`972c641c5a11fe9be65766752a76f6086a6f80a4`** (merge SHA of PR #188) — unchanged. Sole open PR = **[#189](https://github.com/bia2on2on/doctor/pull/189)**, **DRAFT**, unmerged, head **`d08f8804cf043adbcf81e90cdeb69d09fa1fde5f`**, base `main`, mergeable. **Phase 17 remains 🚧 IN PROGRESS**; latest migration unchanged **`2026_09_26_0023_handwriting_prescription_paper.php`**; the frozen future **Custom Role & Permission Management** workstream (after Phase 19, before Phase 20) is **untouched**.
 >
 > **Autonomous fast-wake evidence (run-bound, measurement-only; head `d08f8804cf043adbcf81e90cdeb69d09fa1fde5f`):** Pilot/Staging run **`37521600403`**, `run_attempt=1`, `event_name=push`, `ref=arena/977086bf-doctor`; **100** synthetic system-scoped `backup.run` jobs through the production enqueue path with **no tick call anywhere in that step**; `measurement_mode=autonomous`; **`p50/p95/p99/max = 0/1000/1000/1000 ms`**; **`not_started=0`**; **`processing_failures=0`**. `p50=0` means `created_at` and `started_at` fell in the **same one-second bucket** (whole-second honest quantization), **not** literal zero latency.
 >
@@ -30,7 +83,7 @@
 > **Checkpoint 2026-10-06 UTC (Phase 17 — autonomous background-job fast start; pre-adjudication checkpoint of this same slice; SUPERSEDED by the live adjudicated checkpoint above and preserved, not rewritten):** authoritative GitHub `main` = fetched `origin/main` = **`972c641c5a11fe9be65766752a76f6086a6f80a4`** = the merge SHA of **PR #188** (Phase 17 queue first-start latency, MERGED 2026-10-06T16:57:47Z; merge-SHA closure complete: merge tree == `origin/main` tree == `HEAD` tree == `484266f9183271bf9b2ab80c4526b11c8f5069b2`). **Open PRs = 0 at this preflight**; the only open PR afterwards is **[#189](https://github.com/bia2on2on/doctor/pull/189)**, **DRAFT** against `main` on this fixed session branch. **Phase 17 remains 🚧 IN PROGRESS**; latest migration unchanged **`2026_09_26_0023_handwriting_prescription_paper.php`** (23 versioned files); frozen Custom-Role/Permission workstream untouched. **Slice:** make a newly enqueued due CPMS job **autonomously claimable/startable < 5 s without waiting for the one-minute trigger**, while that trigger stays the recovery/fallback authority. **Chosen mechanism (smallest safe):** `JobQueue::enqueue()` persists the row FIRST, then requests ONE installation-wide WordPress-native single event `cpms_jobs_wake` (no args — no job/Clinic/user identity; WordPress core dedupes identical events within ±10 minutes and the enqueue path skips scheduling while one is pending, so bursts coalesce), and ARMS one non-blocking loopback spawn per request that executes on WordPress's own `shutdown` action through the supported API `spawn_cron()` (site's own `wp-cron.php`, `blocking=false`, `timeout=0.01`, WordPress's own `DOING_CRON` / 60-second `doing_cron` lock / due-event rules). The wake callback calls the **existing** `App::runTick()` with a bounded batch (`App::WAKE_TICK_LIMIT = 200`), so the MySQL `GET_LOCK('cpms_jobs_tick')` and `JobQueue::claim()` remain the only processing authority; **no queue redesign, no Redis/external queue/daemon/vendor call/new package, no new privileged endpoint, no caller-controlled URL, no PHI or job data over the loopback, and enqueue success never depends on the wake-up** (persist-first + minute fallback). The recurring `cpms_jobs_tick` / `cpms_minute` registration is **unchanged**. **Environment-dependent limitation (explicit non-claim):** where the host cannot spawn/loop the WordPress cron request, only the existing minute trigger runs and **no <5 s claim is made** — the fast path is *capable* under a healthy supported WordPress loopback, never an unconditional production SLA. **Measurement (run-bound, measurement-only):** the accepted `/5` harness gained an honest `autonomous` mode — 100 synthetic non-PHI `backup.run` samples through the production enqueue API, **no tick call**, bounded 20 s wait for first-start evidence, whole-second-honest quantization, published `measurement_mode` (pinned to the file it came from; `explicit_tick` remains the labelled control of the same run), `p50/p95/p99/max` and outcome counts in the existing `job_start` block. No latency threshold may fail CI; processing/privacy correctness may. Test-only RED head for this slice: `e51e457146305a90abf46de8e48a58b1a19914d0`. Phase 17 is **not** closed; no NFR/reference-server or go-live readiness is claimed.
 >
 
-> **Live checkpoint 2026-10-06 UTC (Phase 17 queue first-start; measurement-only; recorded after live-evidence verification):** authoritative GitHub `main` = fetched `origin/main` = **`b79c0667562dc1ac4793777b9e5177d357b1edd8`**, the merge SHA of PR #187 (merged 2026-10-06T11:20:13Z). The sole open PR is **[#188](https://github.com/bia2on2on/doctor/pull/188)**, DRAFT against `main`, on the fixed session branch `arena/eba49573-doctor`; it is unmerged. The implementation/evidence head recorded below is **`26e2114f94d5f617296c4f3effcdf999377ea2d8`**; the documentation update follows that validated code head. **Phase 17 remains 🚧 IN PROGRESS**; migration state remains `2026_09_26_0023_handwriting_prescription_paper.php` (23 versioned files); frozen roadmap ordering is unchanged.
+> **Historical live checkpoint 2026-10-06 UTC (Phase 17 queue first-start; measurement-only; superseded by [the formal closure](#phase17-closure), preserved—not rewritten; recorded after live-evidence verification):** authoritative GitHub `main` = fetched `origin/main` = **`b79c0667562dc1ac4793777b9e5177d357b1edd8`**, the merge SHA of PR #187 (merged 2026-10-06T11:20:13Z). The sole open PR is **[#188](https://github.com/bia2on2on/doctor/pull/188)**, DRAFT against `main`, on the fixed session branch `arena/eba49573-doctor`; it is unmerged. The implementation/evidence head recorded below is **`26e2114f94d5f617296c4f3effcdf999377ea2d8`**; the documentation update follows that validated code head. **Phase 17 remains 🚧 IN PROGRESS**; migration state remains `2026_09_26_0023_handwriting_prescription_paper.php` (23 versioned files); frozen roadmap ordering is unchanged.
 >
 > **Exact-head workflows/checks for implementation head `26e2114f94d5f617296c4f3effcdf999377ea2d8`:** Pilot/Staging **`37489607493` — success**; Closure **`37489607296` — success**; CI **`37489614236` — success**; Real WordPress Acceptance **`37489614293` — success**. Aggregate: **19/19 check-runs completed successfully**. The Pilot REST comment [#6020088659](https://github.com/bia2on2on/doctor/pull/188#issuecomment-6020088659) was fetched via paginated REST and validated against the local evidence allowlist; binding is run `37489607493`, attempt `1`, event `push`, the exact head above, ref `arena/eba49573-doctor`.
 >
