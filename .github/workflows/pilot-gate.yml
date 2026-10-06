@@ -708,7 +708,14 @@ jobs:
           PROFILE_WARM=5
           : > "$RAW_STAGE/profiling.samples.tsv"
           profile_endpoint() {
-            local ENDPOINT="$1" ROUTE="$2" QUERY="$3" URL="$WP_URL$ROUTE$QUERY" CODE HDR JSON i
+            # NOTE: one `local` per line — bash expands every word BEFORE any of the
+            # assignments take effect, so `local URL="$WP_URL$ROUTE$QUERY"` on the same
+            # line as `ROUTE=...` would freeze URL at the bare host (no route/query).
+            local ENDPOINT="$1"
+            local ROUTE="$2"
+            local QUERY="$3"
+            local URL="$WP_URL$ROUTE$QUERY"
+            local CODE HDR JSON i
             echo "::notice::profiling — sampling endpoint=$ENDPOINT ($PROFILE_N sequential c=1 after $PROFILE_WARM warm-ups)"
             for i in $(seq 1 "$PROFILE_WARM"); do curl -s -o /dev/null "$URL"; done
             for i in $(seq 1 "$PROFILE_N"); do
