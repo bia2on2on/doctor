@@ -68,7 +68,7 @@ function cpms_pilot_job_start_main( array $args ): void {
         fwrite( STDOUT, $lock['present'] ? "1\n" : "0\n" );
         exit( 0 );
     }
-    $token  = getenv( 'CPMS_JOB_START_TOKEN' );
+    $token = getenv( 'CPMS_JOB_START_TOKEN' );
     if ( ! is_string( $token ) || 1 !== preg_match( '/\A[a-f0-9]{32}\z/D', $token ) ) {
         cpms_pilot_job_start_refuse( 'token' );
     }
