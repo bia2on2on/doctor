@@ -746,6 +746,152 @@ jobs:
           [ "$TCP_READY" = "1" ] || { echo '::error::profiling teardown broken — Apache did not resume listening on :8080'; exit 1; }
           echo "profiling collected: 3 endpoints x $PROFILE_N sequential samples (c=1, ${PROFILE_WARM} warm-ups discarded each)"
 
+          # ---- public-page CPMS plugin overhead: ACTIVE vs DEACTIVATED -------------
+          # WHY THIS EXISTS: the previous comparative-profiling slice measured only the
+          # incremental CPMS cost ABOVE an active-plugin WordPress route baseline. It
+          # could NOT measure the cost of loading CPMS itself, because `RequestProfiler`
+          # lives inside CPMS and therefore cannot run while CPMS is deactivated.
+          # Nothing is synthesised for the deactivated state: the primary comparison
+          # uses an EXTERNAL request-level timing (one curl GET per sample, timed by
+          # the client) that is identical in both states — same disposable WordPress
+          # install, same page, same runner, same DB, same tool, same warm policy.
+          #
+          # PAGE: the WordPress FRONT PAGE of this clean install — core-created public
+          # content (NOT a CPMS-owned portal page), no PHI, no authenticated clinical
+          # state, anonymous GET only, and present with CPMS active AND deactivated.
+          #
+          # SAFETY: WordPress-native deactivation only (`wp plugin deactivate`) — no
+          # uninstall, no delete, no destructive hooks, no CPMS table/setting/data
+          # change. Reactivation is guaranteed by an EXIT trap AND performed inline
+          # before the closing round, then PROVEN (plugin active + CPMS bootstrap/health
+          # + migrations and schema unchanged). A failed recovery fails this step loudly
+          # so no later gate step can run against a deactivated environment.
+          #
+          # QUERY COUNTS ARE NOT MEASURED: a fair per-request count in the DEACTIVATED
+          # state would need a CPMS-owned observer (absent by definition) or global
+          # query logging (unsafe / a new dependency). Asymmetrical evidence is worse
+          # than an honest gap.
+          OH_STAGE="$RAW_STAGE/overhead"
+          mkdir -p "$OH_STAGE"
+          OH_PAGE='home'
+          OH_ROUTE='/'
+          OH_SAMPLES=100
+          OH_WARMUP=5
+          OH_ORDERING='active_deactivated_active'
+          OH_RESTORE_NEEDED=0
+
+          cpms_schema_fingerprint() {
+            {
+              mysql -h 127.0.0.1 -P 3306 -uroot -proot -N -B -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='${DB_MAIN}' AND table_name LIKE 'cpmswp_cpms_%';" 2>/dev/null
+              printf '/'
+              mysql -h 127.0.0.1 -P 3306 -uroot -proot -N -B -e "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='${DB_MAIN}' AND table_name LIKE 'cpmswp_cpms_%';" 2>/dev/null
+            } | tr -d '[:space:]'
+          }
+          cpms_schema_version() {
+            wp eval 'echo \ClinicCore\Bootstrap\App::migrations()->currentVersion();' --path="$WP_DIR" --allow-root 2>/dev/null | tr -d '[:space:]'
+          }
+          cpms_overhead_restore() {
+            if [ "$OH_RESTORE_NEEDED" = "1" ]; then
+              echo '::error::public-page overhead — failure path: forcing CPMS reactivation before leaving this step'
+              wp plugin activate clinic-practice-management --path="$WP_DIR" --allow-root \
+                || echo '::error::CPMS REACTIVATION FAILED — this disposable environment is NOT safe for later gate steps'
+              OH_RESTORE_NEEDED=0
+            fi
+          }
+          trap cpms_overhead_restore EXIT
+
+          OH_FINGERPRINT_BEFORE=$(cpms_schema_fingerprint)
+          OH_VERSION_BEFORE=$(cpms_schema_version)
+          case "$OH_FINGERPRINT_BEFORE" in
+            [0-9]*/[0-9]*) ;;
+            *) echo '::error::public-page overhead boundary broken — CPMS schema fingerprint unavailable before deactivation'; exit 1;;
+          esac
+          case "$OH_VERSION_BEFORE" in
+            2026_*) ;;
+            *) echo '::error::public-page overhead boundary broken — CPMS schema version unavailable before deactivation'; exit 1;;
+          esac
+
+          overhead_round() {
+            local ROUND="$1"
+            local STATE="$2"
+            local URL="$3"
+            local i OUT CODE SEC PROBE
+            echo "::notice::public-page overhead — round=$ROUND state=$STATE ($OH_SAMPLES sequential c=1 samples after $OH_WARMUP warm-ups)"
+            PROBE=$(curl -s -o /dev/null -w '%{http_code}' "$URL")
+            if [ "$PROBE" != '200' ]; then
+              echo "::error::public-page overhead boundary broken — round=$ROUND state=$STATE probe returned $PROBE (expected 200)"
+              return 1
+            fi
+            for i in $(seq 1 "$OH_WARMUP"); do curl -s -o /dev/null "$URL"; done
+            for i in $(seq 1 "$OH_SAMPLES"); do
+              OUT=$(curl -s -o /dev/null -w '%{http_code} %{time_total}' "$URL")
+              CODE=${OUT%% *}
+              SEC=${OUT##* }
+              printf '%s\t%s\t%s\t%s\n' "$ROUND" "$STATE" "$CODE" "$SEC" >> "$OH_STAGE/page-overhead.samples.tsv"
+            done
+          }
+
+          OH_URL="$WP_URL$OH_ROUTE"
+          : > "$OH_STAGE/page-overhead.samples.tsv"
+
+          # ---- round 1: ACTIVE (active-first is the deterministic policy) -----------
+          if ! wp plugin is-active clinic-practice-management --path="$WP_DIR" --allow-root; then
+            echo '::error::public-page overhead boundary broken — CPMS is not active before the ACTIVE round'
+            exit 1
+          fi
+          overhead_round 1 active "$OH_URL" || exit 1
+
+          # ---- round 2: DEACTIVATED (disposable Pilot/Staging instance ONLY) --------
+          OH_RESTORE_NEEDED=1
+          wp plugin deactivate clinic-practice-management --path="$WP_DIR" --allow-root \
+            || { echo '::error::public-page overhead boundary broken — CPMS deactivation failed'; exit 1; }
+          if wp plugin is-active clinic-practice-management --path="$WP_DIR" --allow-root; then
+            echo '::error::public-page overhead boundary broken — CPMS is still active after deactivation'
+            exit 1
+          fi
+          overhead_round 2 deactivated "$OH_URL" || exit 1
+
+          # ---- guaranteed reactivation + safety proof (inline; EXIT trap is backup) --
+          wp plugin activate clinic-practice-management --path="$WP_DIR" --allow-root \
+            || { echo '::error::CPMS REACTIVATION FAILED after the DEACTIVATED round'; exit 1; }
+          OH_RESTORE_NEEDED=0
+          if ! wp plugin is-active clinic-practice-management --path="$WP_DIR" --allow-root; then
+            echo '::error::CPMS REACTIVATION PROOF FAILED — CPMS is not active'
+            exit 1
+          fi
+          OH_HEALTH=$(curl -s -o /dev/null -w '%{http_code}' "$WP_URL/wp-json/clinic/v1/health")
+          if [ "$OH_HEALTH" != '200' ]; then
+            echo "::error::CPMS REACTIVATION PROOF FAILED — the public CPMS health endpoint returned $OH_HEALTH (expected 200)"
+            exit 1
+          fi
+          OH_CRON=$(wp cron event list --path="$WP_DIR" --allow-root 2>/dev/null | grep -c 'cpms_jobs_tick' || true)
+          if [ "$OH_CRON" = '0' ]; then
+            echo '::error::CPMS REACTIVATION PROOF FAILED — cpms_jobs_tick is not scheduled'
+            exit 1
+          fi
+          OH_VERSION_AFTER=$(cpms_schema_version)
+          OH_FINGERPRINT_AFTER=$(cpms_schema_fingerprint)
+          if [ "$OH_VERSION_AFTER" != "$OH_VERSION_BEFORE" ]; then
+            echo '::error::CPMS REACTIVATION PROOF FAILED — migrations/schema version changed across the deactivation cycle'
+            exit 1
+          fi
+          if [ "$OH_FINGERPRINT_AFTER" != "$OH_FINGERPRINT_BEFORE" ]; then
+            echo '::error::CPMS REACTIVATION PROOF FAILED — CPMS table/column fingerprint changed across the deactivation cycle'
+            exit 1
+          fi
+          echo "::notice::public-page overhead — CPMS reactivated and proven: plugin active, public health 200, jobs tick scheduled, schema version $OH_VERSION_AFTER and table/column fingerprint $OH_FINGERPRINT_AFTER unchanged"
+
+          # ---- round 3: ACTIVE again, closing the sandwich --------------------------
+          overhead_round 3 active "$OH_URL" || exit 1
+
+          printf '{"schema":"cpms.page-overhead/1","page":"%s","ordering":"%s","samples_per_round":%d,"warmup_per_round":%d,"concurrency":1}\n' \
+            "$OH_PAGE" "$OH_ORDERING" "$OH_SAMPLES" "$OH_WARMUP" > "$OH_STAGE/page-overhead.params.json"
+          echo "public-page overhead collected: page=$OH_PAGE ordering=$OH_ORDERING — 3 rounds x $OH_SAMPLES samples (c=1, $OH_WARMUP warm-ups discarded each)"
+          {
+            echo '### Public-page CPMS plugin overhead (ACTIVE vs DEACTIVATED)'
+            echo "The WordPress front page of this disposable install was measured in three rounds of $OH_SAMPLES sequential c=1 samples ($OH_WARMUP warm-ups discarded each), ordering **active → deactivated → active** so shared-runner drift is observable from the two active rounds. Timing is **external/request-level** (client-timed curl): the CPMS profiler cannot run while CPMS is deactivated and no profiler data is synthesised for that state. CPMS was deactivated WordPress-natively (no uninstall, no delete, no destructive hooks) and **reactivation is proven**: plugin active, public CPMS health endpoint 200, \`cpms_jobs_tick\` scheduled, schema version and CPMS table/column fingerprint unchanged. **Query counts are NOT MEASURED.** No latency threshold is applied and no NFR verdict is claimed."
+          } >> "$GITHUB_STEP_SUMMARY"
+
           # ---- raw dumps are scanned BEFORE they are moved into the upload path -----------
           # Staged dumps live OUTSIDE the artifact upload glob, so a partial-run crash/cancel
           # or a scan failure cannot leave unscanned material for `if: always()` to upload.
@@ -758,9 +904,10 @@ jobs:
             rm -rf "$RAW_STAGE"
             exit "$SCAN_RC"
           fi
-          mkdir -p "$RAW" "$BENCH/profiling"
+          mkdir -p "$RAW" "$BENCH/profiling" "$BENCH/overhead"
           mv "$RAW_STAGE"/*.ab.txt "$RAW"/ 2>/dev/null || true
           mv "$RAW_STAGE"/profiling.samples.tsv "$RAW_STAGE"/profiling.params.json "$BENCH/profiling"/ 2>/dev/null || true
+          mv "$RAW_STAGE"/overhead/page-overhead.samples.tsv "$RAW_STAGE"/overhead/page-overhead.params.json "$BENCH/overhead"/ 2>/dev/null || true
           rm -rf "$RAW_STAGE"   # stage is now empty; remove it so no later step can confuse it with upload content
 
           # ---- environment + run binding for the artifact ---------------------------------
@@ -776,7 +923,7 @@ jobs:
 
           RC=0
           python3 bin/pilot-bench-report.py \
-            --manifest "$MANIFEST" --raw-dir "$RAW" --diagnostics-dir "$DIAG" --profiling-dir "$BENCH/profiling" --out-prefix "$OUT" \
+            --manifest "$MANIFEST" --raw-dir "$RAW" --diagnostics-dir "$DIAG" --profiling-dir "$BENCH/profiling" --overhead-dir "$BENCH/overhead" --out-prefix "$OUT" \
             --evidence-prefix "$OUT.evidence" \
             --meta "run_id=${{ github.run_id }}" \
             --meta "run_attempt=${{ github.run_attempt }}" \
@@ -830,8 +977,11 @@ jobs:
       # sample count/interval, host CPU/memory, `ab` CPU/RSS, and Apache/PHP server CPU/RSS/process
       # count, plus the additive request-level profiling aggregates (per-endpoint sequential
       # c=1 samples: server-side segment means/maxima, CPMS-layer query counts, CPMS DB-time
-      # means/maxima, `$wpdb` min/max — no SQL, no values, no PHI). The run binding (run_id,
-      # run_attempt, event_name, head_sha, ref) is included.
+      # means/maxima, `$wpdb` min/max — no SQL, no values, no PHI), plus the additive
+      # public-page CPMS plugin overhead block (fixed page token/label, sandwich ordering,
+      # per-round sample/warmup counts, p50/p95/p99/mean and non-2xx count, and the pooled
+      # ACTIVE-vs-DEACTIVATED p95 delta — no URL, no path, no plugin list, no SQL). The run
+      # binding (run_id, run_attempt, event_name, head_sha, ref) is included.
       # No raw `ab` dump, response/header/body content, unallowlisted environment metadata, path or
       # free-form text ever enters the projection.
       # PUBLICATION vs CORRECTNESS: publication reuses the repository-native evidence-comment
@@ -871,6 +1021,7 @@ jobs:
             /tmp/cpms-bench/manifest.jsonl
             /tmp/cpms-bench/diagnostics/
             /tmp/cpms-bench/profiling/
+            /tmp/cpms-bench/overhead/
             /tmp/cpms-bench/raw/
           retention-days: 14
           if-no-files-found: ignore

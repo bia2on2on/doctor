@@ -562,6 +562,221 @@ def aggregate_profiling(batch: Any) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Public-page CPMS plugin overhead (ACTIVE vs DEACTIVATED)
+# ---------------------------------------------------------------------------
+
+def _overhead_int(value: Any, field: str, low: int, high: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise PageOverheadRefused(f"{field}: expected integer, got {type(value).__name__}")
+    if not low <= value <= high:
+        raise PageOverheadRefused(f"{field}: integer out of range {low}..{high}")
+    return value
+
+
+def _validate_page_overhead_params(raw: Any) -> Dict[str, Any]:
+    """Validate `page-overhead.params.json` — exact field set, allowlisted tokens."""
+    if not isinstance(raw, dict):
+        raise PageOverheadRefused("page_overhead.params: expected object")
+    expected = {"schema", "page", "ordering", "samples_per_round", "warmup_per_round",
+                "concurrency"}
+    if set(raw) != expected:
+        raise PageOverheadRefused(
+            "page_overhead.params: unexpected field set (expected exactly "
+            + ", ".join(sorted(expected)) + ")"
+        )
+    if raw["schema"] != OVERHEAD_SCHEMA:
+        raise PageOverheadRefused("page_overhead.params.schema: unexpected value")
+    page = raw["page"]
+    if not isinstance(page, str) or page not in SAFE_OVERHEAD_PAGES:
+        raise PageOverheadRefused("page_overhead.params.page: not an allowlisted page token")
+    ordering = raw["ordering"]
+    if not isinstance(ordering, str) or ordering not in SAFE_OVERHEAD_ORDERINGS:
+        raise PageOverheadRefused("page_overhead.params.ordering: not an allowlisted ordering")
+    samples = _overhead_int(raw["samples_per_round"], "page_overhead.params.samples_per_round",
+                            1, OVERHEAD_MAX_SAMPLES)
+    warmup = _overhead_int(raw["warmup_per_round"], "page_overhead.params.warmup_per_round",
+                           0, OVERHEAD_MAX_SAMPLES)
+    concurrency = _overhead_int(raw["concurrency"], "page_overhead.params.concurrency",
+                                1, MAX_CONCURRENCY)
+    return {
+        "page": page,
+        "ordering": ordering,
+        "samples_per_round": samples,
+        "warmup_per_round": warmup,
+        "concurrency": concurrency,
+    }
+
+
+def read_page_overhead(directory: Path) -> Dict[str, Any]:
+    """Read the public-page overhead pass: params JSON + per-sample TSV.
+
+    Each TSV line is `round \\\\t state \\\\t http_code \\\\t seconds`. Blank lines are
+    tolerated; anything malformed refuses the WHOLE batch — a partial ACTIVE/
+    DEACTIVATED comparison is never published, because the deactivated state cannot
+    be re-derived later.
+    """
+    if not directory.is_dir():
+        raise PageOverheadRefused("page_overhead_directory_missing")
+    params_path = directory / "page-overhead.params.json"
+    samples_path = directory / "page-overhead.samples.tsv"
+    if not params_path.is_file():
+        raise PageOverheadRefused("page_overhead_params_missing")
+    if not samples_path.is_file():
+        raise PageOverheadRefused("page_overhead_samples_missing")
+    try:
+        params = _validate_page_overhead_params(json.loads(params_path.read_text(encoding="utf-8")))
+    except json.JSONDecodeError as exc:
+        raise PageOverheadRefused(f"page_overhead.params: malformed JSON ({exc})")
+    samples: List[Dict[str, Any]] = []
+    for lineno, line in enumerate(samples_path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip():
+            continue
+        cells = line.split("\t")
+        if len(cells) != 4:
+            raise PageOverheadRefused(
+                f"page_overhead.samples.tsv line {lineno}: expected 4 tab cells")
+        raw_round, raw_state, raw_code, raw_seconds = cells
+        try:
+            round_index = int(raw_round.strip())
+        except ValueError:
+            raise PageOverheadRefused(
+                f"page_overhead.samples.tsv line {lineno}: round is not an integer")
+        if not 1 <= round_index <= len(SAFE_OVERHEAD_ROUND_STATES):
+            raise PageOverheadRefused(
+                f"page_overhead.samples.tsv line {lineno}: round out of range")
+        expected_state = SAFE_OVERHEAD_ROUND_STATES[round_index - 1]
+        if raw_state.strip() != expected_state:
+            raise PageOverheadRefused(
+                f"page_overhead.samples.tsv line {lineno}: state must be "
+                f"{expected_state} for round {round_index}")
+        try:
+            code = int(raw_code.strip())
+        except ValueError:
+            raise PageOverheadRefused(
+                f"page_overhead.samples.tsv line {lineno}: http_code is not an integer")
+        if not 100 <= code <= 599:
+            raise PageOverheadRefused(
+                f"page_overhead.samples.tsv line {lineno}: http_code out of range")
+        try:
+            seconds = float(raw_seconds.strip())
+        except ValueError:
+            raise PageOverheadRefused(
+                f"page_overhead.samples.tsv line {lineno}: seconds is not a number")
+        if not math.isfinite(seconds) or not 0.0 < seconds <= OVERHEAD_MAX_SECONDS:
+            raise PageOverheadRefused(
+                f"page_overhead.samples.tsv line {lineno}: seconds out of range")
+        samples.append({
+            "round": round_index,
+            "state": expected_state,
+            "http_code": code,
+            "seconds": seconds,
+        })
+    if not samples:
+        raise PageOverheadRefused("page_overhead.samples: no samples")
+    return {
+        "schema": OVERHEAD_SCHEMA,
+        "status": "ok",
+        "params": params,
+        "samples": samples,
+    }
+
+
+def _percentile_nearest_rank(values: List[float], percent: float) -> float:
+    """Nearest-rank percentile: index = ceil(p/100 * n) - 1 (clamped, 1-based)."""
+    ordered = sorted(values)
+    index = int(math.ceil(percent / 100.0 * len(ordered))) - 1
+    if index < 0:
+        index = 0
+    if index >= len(ordered):
+        index = len(ordered) - 1
+    return ordered[index]
+
+
+def _overhead_ms(seconds: float) -> float:
+    return round(seconds * 1000.0, 3)
+
+
+def _overhead_round_stats(round_index: int, state: str, values: List[float],
+                          non_2xx: int, warmup: int) -> Dict[str, Any]:
+    return {
+        "round": round_index,
+        "state": state,
+        "samples": len(values),
+        "warmup": warmup,
+        "p50_ms": _overhead_ms(_percentile_nearest_rank(values, 50.0)),
+        "p95_ms": _overhead_ms(_percentile_nearest_rank(values, 95.0)),
+        "p99_ms": _overhead_ms(_percentile_nearest_rank(values, 99.0)),
+        "mean_ms": round(sum(_overhead_ms(value) for value in values) / len(values), 3),
+        "non_2xx_count": non_2xx,
+    }
+
+
+def aggregate_page_overhead(batch: Any) -> Dict[str, Any]:
+    """Aggregate validated samples into the ACTIVE-vs-DEACTIVATED overhead evidence.
+
+    Every declared round must contribute exactly `samples_per_round` samples, in the
+    exact sandwich order, with the allowlisted states. The headline delta pools the
+    samples of BOTH ACTIVE rounds (a larger, drift-averaging sample set) against the
+    single DEACTIVATED round; per-round p95 values stay published so the two ACTIVE
+    rounds can be compared directly to expose temporal drift.
+    """
+    if not isinstance(batch, dict) or batch.get("schema") != OVERHEAD_SCHEMA:
+        raise PageOverheadRefused("page_overhead.batch: unexpected batch")
+    if batch.get("status") != "ok":
+        raise PageOverheadRefused("page_overhead.batch: batch is not ok")
+    params = batch.get("params")
+    samples = batch.get("samples")
+    if not isinstance(params, dict):
+        raise PageOverheadRefused("page_overhead.batch: params are not an object")
+    expected = params.get("samples_per_round")
+    if isinstance(expected, bool) or not isinstance(expected, int) or expected < 1:
+        raise PageOverheadRefused("page_overhead.batch: invalid samples_per_round")
+    warmup = params.get("warmup_per_round")
+    if isinstance(warmup, bool) or not isinstance(warmup, int) or warmup < 0:
+        raise PageOverheadRefused("page_overhead.batch: invalid warmup_per_round")
+    if not isinstance(samples, list) or not samples:
+        raise PageOverheadRefused("page_overhead.batch: samples are not a non-empty list")
+
+    rounds: List[Dict[str, Any]] = []
+    pooled: Dict[str, List[float]] = {state: [] for state in SAFE_OVERHEAD_STATES}
+    for round_index, expected_state in enumerate(SAFE_OVERHEAD_ROUND_STATES, start=1):
+        rows = [row for row in samples if row["round"] == round_index]
+        if len(rows) != expected:
+            raise PageOverheadRefused(
+                f"page_overhead.batch: round {round_index} has {len(rows)} samples, "
+                f"expected {expected}")
+        if any(row["state"] != expected_state for row in rows):
+            raise PageOverheadRefused(
+                f"page_overhead.batch: round {round_index} has a state mismatch")
+        values = [row["seconds"] for row in rows]
+        non_2xx = sum(1 for row in rows if not 200 <= row["http_code"] <= 299)
+        rounds.append(_overhead_round_stats(round_index, expected_state, values, non_2xx, warmup))
+        pooled[expected_state].extend(values)
+
+    active_p95 = _overhead_ms(_percentile_nearest_rank(pooled["active"], 95.0))
+    deactivated_p95 = _overhead_ms(_percentile_nearest_rank(pooled["deactivated"], 95.0))
+    delta = round(active_p95 - deactivated_p95, 3)
+    delta_percent: Optional[float] = None
+    if deactivated_p95 > 0:
+        delta_percent = round(100.0 * delta / deactivated_p95, 3)
+    return {
+        "page": params["page"],
+        "page_label": SAFE_OVERHEAD_PAGES[params["page"]],
+        "ordering": params["ordering"],
+        "samples_per_round": expected,
+        "warmup_per_round": warmup,
+        "concurrency": params["concurrency"],
+        "rounds": rounds,
+        "overhead": {
+            "active_p95_ms": active_p95,
+            "deactivated_p95_ms": deactivated_p95,
+            "delta_ms": delta,
+            "delta_percent": delta_percent,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
 # Report
 # ---------------------------------------------------------------------------
 
@@ -591,7 +806,8 @@ ADJUDICATION = (
 
 def build_report(measurements: List[Dict[str, Any]], meta: Dict[str, Any],
                  diagnostics: Optional[Dict[str, Any]] = None,
-                 profiling: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                 profiling: Optional[Dict[str, Any]] = None,
+                 page_overhead: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     if diagnostics is not None and diagnostics.get("status") == "ok":
         by_seq = {row["seq"]: row for row in diagnostics["measurements"]}
         for measurement in measurements:
@@ -632,6 +848,7 @@ def build_report(measurements: List[Dict[str, Any]], meta: Dict[str, Any],
         "nfr_perf_pass_claim": False,
         "diagnostics": diagnostics,
         "profiling": profiling,
+        "page_overhead": page_overhead,
         "measurement_count": len(measurements),
         "measurements": measurements,
     }
@@ -741,7 +958,7 @@ def render_legacy_lines(report: Dict[str, Any]) -> List[str]:
 # (fail closed) and nothing is published.
 # ---------------------------------------------------------------------------
 
-SAFE_EVIDENCE_SCHEMA = "cpms.pilot-bench-evidence/3"
+SAFE_EVIDENCE_SCHEMA = "cpms.pilot-bench-evidence/4"
 SAFE_EVIDENCE_PURPOSE = (
     "Phase 17 — allowlisted privacy-safe projection of one Pilot/Staging benchmark run; "
     "measurement only, no NFR-PERF adjudication, no raw benchmark bytes, no free-form text, "
@@ -822,6 +1039,68 @@ SAFE_PROFILING_ENDPOINT_FIELDS: Tuple[str, ...] = (
 PROFILING_MAX_SAMPLES = 10_000
 PROFILING_MAX_QUERIES = 1_000_000
 
+# Public-page CPMS plugin overhead (Phase 17 — ACTIVE vs DEACTIVATED, measurement only).
+#
+# `RequestProfiler` lives INSIDE CPMS, so it cannot produce CPMS profiling data while
+# the plugin is deactivated. Faking an equivalent in the deactivated state would be
+# asymmetrical evidence, so it is forbidden. The only boundary common to both states
+# is an EXTERNAL, request-level timing: one `curl` GET per sample, timed by the client
+# (`%{time_total}`), collected identically in ACTIVE and DEACTIVATED rounds from the
+# same disposable WordPress install, same page, same runner, same DB.
+#
+# The page is a FIXED ALLOWLIST token, never a URL: `home` = the WordPress front page
+# of the clean Pilot/Staging install (core-created content, no CPMS-owned page, no
+# PHI, no authenticated state, present with CPMS active AND deactivated).
+#
+# Query counts are deliberately NOT part of this contract: a fair per-request query
+# count in the DEACTIVATED state would require a CPMS-owned observer (absent by
+# definition) or global query logging (unsafe + a new dependency). They are reported
+# as NOT MEASURED rather than manufactured asymmetrically.
+#
+# Sample rows are `round \t state \t http_code \t seconds`; percentiles use the
+# nearest-rank definition over the collected samples of a round (or, for the headline
+# delta, over the pooled samples of all ACTIVE rounds).
+OVERHEAD_SCHEMA = "cpms.page-overhead/1"
+SAFE_OVERHEAD_PAGES: Dict[str, str] = {"home": "Public front page"}
+SAFE_OVERHEAD_STATES: Tuple[str, ...] = ("active", "deactivated")
+# The sandwich: ACTIVE -> DEACTIVATED -> ACTIVE. Rounds 1 and 3 bracket round 2 so
+# temporal/shared-runner drift is observable from the two ACTIVE p95 values instead of
+# being assumed away. Active-first is the deterministic policy: the install starts
+# active, and every later gate step needs it active.
+SAFE_OVERHEAD_ORDERINGS: Tuple[str, ...] = ("active_deactivated_active",)
+SAFE_OVERHEAD_ROUND_STATES: Tuple[str, ...] = ("active", "deactivated", "active")
+OVERHEAD_MAX_SAMPLES = 10_000
+OVERHEAD_MAX_PERCENT = 100_000.0
+OVERHEAD_MAX_SECONDS = 3600.0  # = MAX_LATENCY_MS / 1000 (MAX_LATENCY_MS is declared below)
+SAFE_OVERHEAD_FIELDS: Tuple[str, ...] = (
+    "page",
+    "page_label",
+    "ordering",
+    "samples_per_round",
+    "warmup_per_round",
+    "concurrency",
+    "rounds",
+    "overhead",
+)
+SAFE_OVERHEAD_ROUND_FIELDS: Tuple[str, ...] = (
+    "round",
+    "state",
+    "samples",
+    "warmup",
+    "p50_ms",
+    "p95_ms",
+    "p99_ms",
+    "mean_ms",
+    "non_2xx_count",
+)
+SAFE_OVERHEAD_DELTA_FIELDS: Tuple[str, ...] = (
+    "active_p95_ms",
+    "deactivated_p95_ms",
+    "delta_ms",
+    "delta_percent",
+)
+OVERHEAD_MD_HEADING = "Public-page CPMS plugin overhead (ACTIVE vs DEACTIVATED)"
+
 # The endpoint LABEL is a constant mapped from the endpoint KEY. Free-form
 # manifest/report text (human labels, query strings, paths, `ab` banner echo)
 # can never enter the projection.
@@ -842,6 +1121,7 @@ SAFE_TOP_LEVEL_FIELDS: Tuple[str, ...] = (
     "measurement_count",
     "diagnostics",
     "profiling",
+    "page_overhead",
     "measurements",
 )
 SAFE_BINDING_KEYS: Tuple[str, ...] = ("run_id", "run_attempt", "event_name", "head_sha", "ref")
@@ -900,6 +1180,10 @@ SAFE_EVIDENCE_JSON_FENCE_RE = re.compile(r"^```json\n(?P<body>\{.*?\n\})\n```$",
 
 class EvidenceRefused(ValueError):
     """The safe projection cannot be validated — nothing may be published (fail closed)."""
+
+
+class PageOverheadRefused(ValueError):
+    """The public-page ACTIVE-vs-DEACTIVATED input is unusable — refuse, never partial."""
 
 
 def _describe(value: Any) -> str:
@@ -1182,6 +1466,123 @@ def _validate_safe_profiling(raw: Any) -> Dict[str, Any]:
     }
 
 
+def _checked_overhead_round(raw: Any, index: int, expected_state: str,
+                            expected_samples: int, expected_warmup: int) -> Dict[str, Any]:
+    """Validate one published overhead round (shared by projection + re-validation)."""
+    where = "page_overhead.rounds[%d]" % index
+    if not isinstance(raw, dict) or set(raw) != set(SAFE_OVERHEAD_ROUND_FIELDS):
+        raise EvidenceRefused(f"{where}: unexpected field set")
+    round_index = _safe_int(raw["round"], where + ".round", index, index)
+    state = raw["state"]
+    if not isinstance(state, str) or state not in SAFE_OVERHEAD_STATES:
+        raise EvidenceRefused(f"{where}.state: not an allowlisted state")
+    if state != expected_state:
+        raise EvidenceRefused(
+            f"{where}.state: expected {expected_state} for the declared ordering")
+    samples = _safe_int(raw["samples"], where + ".samples", expected_samples, expected_samples)
+    warmup = _safe_int(raw["warmup"], where + ".warmup", expected_warmup, expected_warmup)
+    p50 = _safe_number(raw["p50_ms"], where + ".p50_ms", 0.0, MAX_LATENCY_MS)
+    p95 = _safe_number(raw["p95_ms"], where + ".p95_ms", 0.0, MAX_LATENCY_MS)
+    p99 = _safe_number(raw["p99_ms"], where + ".p99_ms", 0.0, MAX_LATENCY_MS)
+    mean = _safe_number(raw["mean_ms"], where + ".mean_ms", 0.0, MAX_LATENCY_MS)
+    if not p50 <= p95 <= p99:
+        raise EvidenceRefused(f"{where}: percentiles are not monotonic (p50<=p95<=p99)")
+    # A non-2xx sample means the page did not render in that state: the comparison is
+    # meaningless and must never be published as overhead.
+    non_2xx = _safe_int(raw["non_2xx_count"], where + ".non_2xx_count", 0, samples)
+    if non_2xx != 0:
+        raise EvidenceRefused(f"{where}.non_2xx_count: non-2xx samples are refused")
+    return {
+        "round": round_index,
+        "state": state,
+        "samples": samples,
+        "warmup": warmup,
+        "p50_ms": p50,
+        "p95_ms": p95,
+        "p99_ms": p99,
+        "mean_ms": mean,
+        "non_2xx_count": non_2xx,
+    }
+
+
+def _checked_overhead_delta(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict) or set(raw) != set(SAFE_OVERHEAD_DELTA_FIELDS):
+        raise EvidenceRefused("page_overhead.overhead: unexpected field set")
+    active = _safe_number(raw["active_p95_ms"], "page_overhead.overhead.active_p95_ms",
+                          0.0, MAX_LATENCY_MS)
+    deactivated = _safe_number(raw["deactivated_p95_ms"],
+                               "page_overhead.overhead.deactivated_p95_ms", 0.0, MAX_LATENCY_MS)
+    delta = _safe_number(raw["delta_ms"], "page_overhead.overhead.delta_ms",
+                         -MAX_LATENCY_MS, MAX_LATENCY_MS)
+    if abs(delta - (active - deactivated)) > 0.01:
+        raise EvidenceRefused(
+            "page_overhead.overhead.delta_ms: does not equal active minus deactivated p95")
+    percent = raw["delta_percent"]
+    if percent is None:
+        checked_percent: Optional[float] = None
+    else:
+        checked_percent = _safe_number(percent, "page_overhead.overhead.delta_percent",
+                                       -OVERHEAD_MAX_PERCENT, OVERHEAD_MAX_PERCENT)
+        if deactivated > 0 and abs(checked_percent - 100.0 * delta / deactivated) > 0.05:
+            raise EvidenceRefused(
+                "page_overhead.overhead.delta_percent: inconsistent with the published delta")
+    return {
+        "active_p95_ms": active,
+        "deactivated_p95_ms": deactivated,
+        "delta_ms": delta,
+        "delta_percent": checked_percent,
+    }
+
+
+def _checked_page_overhead(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict) or set(raw) != set(SAFE_OVERHEAD_FIELDS):
+        raise EvidenceRefused("page_overhead: unexpected field set")
+    page = raw["page"]
+    if not isinstance(page, str) or page not in SAFE_OVERHEAD_PAGES:
+        raise EvidenceRefused("page_overhead.page: not an allowlisted page token")
+    label = raw["page_label"]
+    if label != SAFE_OVERHEAD_PAGES[page]:
+        raise EvidenceRefused("page_overhead.page_label: not the constant label for that page")
+    ordering = raw["ordering"]
+    if not isinstance(ordering, str) or ordering not in SAFE_OVERHEAD_ORDERINGS:
+        raise EvidenceRefused("page_overhead.ordering: not an allowlisted ordering")
+    samples = _safe_int(raw["samples_per_round"], "page_overhead.samples_per_round",
+                        1, OVERHEAD_MAX_SAMPLES)
+    warmup = _safe_int(raw["warmup_per_round"], "page_overhead.warmup_per_round",
+                       0, OVERHEAD_MAX_SAMPLES)
+    concurrency = _safe_int(raw["concurrency"], "page_overhead.concurrency", 1, MAX_CONCURRENCY)
+    rounds_in = raw["rounds"]
+    if not isinstance(rounds_in, list) or len(rounds_in) != len(SAFE_OVERHEAD_ROUND_STATES):
+        raise EvidenceRefused(
+            "page_overhead.rounds: expected exactly the declared sandwich rounds")
+    rounds = [
+        _checked_overhead_round(round_in, index, SAFE_OVERHEAD_ROUND_STATES[index - 1],
+                                samples, warmup)
+        for index, round_in in enumerate(rounds_in, start=1)
+    ]
+    return {
+        "page": page,
+        "page_label": label,
+        "ordering": ordering,
+        "samples_per_round": samples,
+        "warmup_per_round": warmup,
+        "concurrency": concurrency,
+        "rounds": rounds,
+        "overhead": _checked_overhead_delta(raw["overhead"]),
+    }
+
+
+def _project_safe_page_overhead(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict) or raw.get("schema") != OVERHEAD_SCHEMA:
+        raise EvidenceRefused("report.page_overhead: missing or unexpected schema")
+    if raw.get("status") != "ok":
+        raise EvidenceRefused("report.page_overhead: not ok")
+    # The published block carries only the contract fields; the report wrapper
+    # (`schema`/`status`) is transport, not evidence.
+    body = {key: value for key, value in raw.items() if key not in ("schema", "status")}
+    return _checked_page_overhead(body)
+
+
 def build_safe_evidence(report: Dict[str, Any]) -> Dict[str, Any]:
     """Project a parsed+scanned benchmark report onto the allowlisted evidence schema.
 
@@ -1210,6 +1611,7 @@ def build_safe_evidence(report: Dict[str, Any]) -> Dict[str, Any]:
     if len(diagnostics["measurements"]) != len(measurements_in):
         raise EvidenceRefused("report.diagnostics.measurements: does not match benchmark row count")
     profiling = _project_safe_profiling(report.get("profiling"))
+    page_overhead = _project_safe_page_overhead(report.get("page_overhead"))
 
     rows: List[Dict[str, Any]] = []
     for index, raw in enumerate(measurements_in, start=1):
@@ -1246,6 +1648,7 @@ def build_safe_evidence(report: Dict[str, Any]) -> Dict[str, Any]:
         "measurement_count": len(rows),
         "diagnostics": diagnostics,
         "profiling": profiling,
+        "page_overhead": page_overhead,
         "measurements": rows,
     }
 
@@ -1267,6 +1670,7 @@ def validate_safe_evidence(evidence: Any) -> Dict[str, Any]:
     binding = _validate_binding(evidence["binding"])
     diagnostics = _validate_safe_diagnostics(evidence["diagnostics"])
     profiling = _validate_safe_profiling(evidence["profiling"])
+    page_overhead = _checked_page_overhead(evidence["page_overhead"])
     measurements = evidence["measurements"]
     if not isinstance(measurements, list) or not measurements:
         raise EvidenceRefused("evidence.measurements: expected a non-empty list")
@@ -1281,6 +1685,7 @@ def validate_safe_evidence(evidence: Any) -> Dict[str, Any]:
         "measurement_count": len(rows),
         "diagnostics": diagnostics,
         "profiling": profiling,
+        "page_overhead": page_overhead,
         "measurements": rows,
     }
 
@@ -1348,7 +1753,41 @@ def render_safe_evidence_markdown(evidence: Dict[str, Any]) -> str:
                 endpoint=endpoint, **aggregate
             )
         )
+    overhead = evidence["page_overhead"]
+    delta = overhead["overhead"]
     lines += [
+        "",
+        "### " + OVERHEAD_MD_HEADING,
+        "",
+        "Page `{page}` = `{page_label}`. Ordering `{ordering}` (active first, then "
+        "deactivated, then active again — the two active rounds bracket the deactivated "
+        "round so shared-runner drift is observable). {samples} sequential c=1 curl-timed "
+        "samples per round after {warmup} warm-up requests, same WordPress install, same "
+        "page, same runner, same DB. Timing is EXTERNAL/request-level because the CPMS "
+        "profiler cannot run while CPMS is deactivated; no profiler data is synthesised "
+        "for the deactivated state. Query counts are NOT MEASURED (no fair CPMS-free "
+        "observer exists without unsafe global query logging).".format(
+            page=overhead["page"], page_label=overhead["page_label"],
+            ordering=overhead["ordering"], samples=overhead["samples_per_round"],
+            warmup=overhead["warmup_per_round"]),
+        "",
+        "| round | state | samples | warmup | p50 ms | p95 ms | p99 ms | mean ms | non-2xx |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    for row in overhead["rounds"]:
+        lines.append(
+            "| {round} | {state} | {samples} | {warmup} | {p50_ms} | {p95_ms} | {p99_ms} | "
+            "{mean_ms} | {non_2xx_count} |".format(**row)
+        )
+    lines += [
+        "",
+        "Overhead (pooled ACTIVE rounds vs the DEACTIVATED round): active p95 "
+        "**{active} ms**, deactivated p95 **{deactivated} ms**, delta "
+        "**{delta} ms**{percent}. Percentiles are nearest-rank.".format(
+            active=delta["active_p95_ms"], deactivated=delta["deactivated_p95_ms"],
+            delta=delta["delta_ms"],
+            percent=("" if delta["delta_percent"] is None
+                     else " (%s%%)" % delta["delta_percent"])),
         "",
         "Measurement-only semantics (unchanged): no latency threshold is applied and no NFR-PERF "
         "pass/fail is claimed; shared-runner numbers are NOT reference-server adjudication "
@@ -1510,6 +1949,37 @@ def run(args: argparse.Namespace) -> int:
             }
             failures.append("PROFILING MEASUREMENT FAILURE: %s" % exc)
 
+    page_overhead: Optional[Dict[str, Any]] = None
+    overhead_dir = getattr(args, "overhead_dir", "") or ""
+    if overhead_dir:
+        try:
+            overhead_batch = read_page_overhead(Path(overhead_dir))
+            page_overhead = {
+                "schema": OVERHEAD_SCHEMA,
+                "status": "ok",
+                **aggregate_page_overhead(overhead_batch),
+            }
+            if any(row["non_2xx_count"] for row in page_overhead["rounds"]):
+                # The page did not render in one of the states: the ACTIVE-vs-DEACTIVATED
+                # comparison is void and must never be published as overhead.
+                page_overhead = {
+                    "schema": OVERHEAD_SCHEMA,
+                    "status": "measurement_failed",
+                    "error_code": "non_2xx_sample",
+                }
+                failures.append(
+                    "PAGE OVERHEAD MEASUREMENT FAILURE: non-2xx sample in at least one state"
+                )
+        except PageOverheadRefused as exc:
+            # Distinct collection failure, like diagnostics/profiling: fail closed before
+            # any safe publication; never reported as an ab/product correctness failure.
+            page_overhead = {
+                "schema": OVERHEAD_SCHEMA,
+                "status": "measurement_failed",
+                "error_code": str(exc),
+            }
+            failures.append("PAGE OVERHEAD MEASUREMENT FAILURE: %s" % exc)
+
     for entry in entries:
         raw_path = raw_dir / entry["raw"]
         if not raw_path.is_file():
@@ -1547,7 +2017,7 @@ def run(args: argparse.Namespace) -> int:
             }
         )
 
-    report = build_report(measurements, meta, diagnostics, profiling)
+    report = build_report(measurements, meta, diagnostics, profiling, page_overhead)
     markdown = render_markdown(report)
     legacy = render_legacy_lines(report)
     payload = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
@@ -1759,6 +2229,21 @@ def _write_profiling_tree(root: Path, per_endpoint: int = 3, warmup: int = 5) ->
             )
             lines.append("%s\t200\t%s" % (endpoint, json.dumps(sample, ensure_ascii=False)))
     (root / "profiling.samples.tsv").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _write_overhead_tree(root: Path, per_round: int = 4, warmup: int = 2) -> None:
+    """Write a valid public-page overhead input dir (params + per-sample TSV)."""
+    (root / "page-overhead.params.json").write_text(
+        json.dumps({"schema": OVERHEAD_SCHEMA, "page": "home",
+                    "ordering": "active_deactivated_active",
+                    "samples_per_round": per_round, "warmup_per_round": warmup,
+                    "concurrency": 1}), encoding="utf-8")
+    lines: List[str] = []
+    for round_index, state in enumerate(SAFE_OVERHEAD_ROUND_STATES, start=1):
+        for index in range(per_round):
+            seconds = 0.050 + 0.001 * index + 0.010 * round_index
+            lines.append("%d\t%s\t200\t%.6f" % (round_index, state, seconds))
+    (root / "page-overhead.samples.tsv").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _selftests() -> int:
@@ -2118,6 +2603,18 @@ def _selftests() -> int:
             "aggregates": json.loads(json.dumps(_profiling_aggregates)),
         }
 
+    with tempfile.TemporaryDirectory() as _overhead_tmp:
+        _write_overhead_tree(Path(_overhead_tmp), per_round=4, warmup=2)
+        _overhead_batch = read_page_overhead(Path(_overhead_tmp))
+        _overhead_aggregate = aggregate_page_overhead(_overhead_batch)
+
+    def _overhead_for() -> Dict[str, Any]:
+        return {
+            "schema": OVERHEAD_SCHEMA,
+            "status": "ok",
+            **json.loads(json.dumps(_overhead_aggregate)),
+        }
+
     def _report(measurements, run=None, **extra):
         report = {
             "schema": "cpms.pilot-benchmark/2",
@@ -2130,6 +2627,8 @@ def _selftests() -> int:
             report["diagnostics"] = _diagnostic_for(measurements)
         if "profiling" not in report:
             report["profiling"] = _profiling_for()
+        if "page_overhead" not in report:
+            report["page_overhead"] = _overhead_for()
         return report
 
     def _refuses(name: str, report: Any) -> None:
@@ -2378,6 +2877,9 @@ def _selftests() -> int:
         prof3 = root3 / "profiling"
         prof3.mkdir()
         _write_profiling_tree(prof3, per_endpoint=3, warmup=5)
+        oh3 = root3 / "overhead"
+        oh3.mkdir()
+        _write_overhead_tree(oh3, per_round=4, warmup=2)
         out3 = root3 / "out" / "bench"
         ev_prefix = root3 / "out" / "bench.evidence"
         rc7 = run(argparse.Namespace(
@@ -2385,7 +2887,7 @@ def _selftests() -> int:
             meta=["run_id=37361708008", "run_attempt=1", "head_sha=" + "b" * 40,
                   "event_name=push", "ref=arena/1ffa1d19-doctor",
                   "runner=GitHub Actions 24.04", "php_cli=8.1"],
-            diagnostics_dir=str(diag3), profiling_dir=str(prof3),
+            diagnostics_dir=str(diag3), profiling_dir=str(prof3), overhead_dir=str(oh3),
             fail_file="", evidence_prefix=str(ev_prefix),
         ))
         check("evidence-e2e-rc-zero", rc7 == 0, "rc=%s" % rc7)
@@ -2416,7 +2918,7 @@ def _selftests() -> int:
         check("evidence-e2e-no-env-metadata",
               "runner" not in ev3 and "php_cli" not in ev3
               and "GitHub Actions" not in md3 and "8.1" not in md3)
-        check("evidence-e2e-schema-3", ev3["schema"] == "cpms.pilot-bench-evidence/3")
+        check("evidence-e2e-schema-4", ev3["schema"] == "cpms.pilot-bench-evidence/4")
         check("evidence-e2e-profiling-present",
               set(ev3["profiling"]["endpoints"]) == {"health", "availability", "wp-json-root"}
               and ev3["profiling"]["endpoints"]["health"]["n"] == 3)
@@ -2436,6 +2938,7 @@ def _selftests() -> int:
             manifest=str(manifest4), raw_dir=str(raw3), out_prefix=str(root3 / "out2" / "bench"),
             meta=["run_id=1", "run_attempt=1", "head_sha=" + "b" * 40, "event_name=push",
                   "ref=main"],
+            diagnostics_dir="", profiling_dir="", overhead_dir=str(oh3),
             fail_file="", evidence_prefix=str(ev_prefix2),
         ))
         check("evidence-e2e-failing-run-rc1", rc8 == 1, "rc=%s" % rc8)
@@ -2506,7 +3009,7 @@ def _selftests() -> int:
             }
             pevidence = build_safe_evidence(report)
             check("profiling-evidence-schema",
-                  pevidence["schema"] == "cpms.pilot-bench-evidence/3", pevidence["schema"])
+                  pevidence["schema"] == "cpms.pilot-bench-evidence/4", pevidence["schema"])
             check("profiling-evidence-top-level",
                   set(pevidence) == set(SAFE_TOP_LEVEL_FIELDS) and "profiling" in pevidence,
                   str(sorted(pevidence)))
@@ -2771,12 +3274,6 @@ def _selftests() -> int:
         def _zero_samples(root: Path) -> None:
             _write_overhead(root, samples=0)
 
-        def _non2xx_sample(root: Path) -> None:
-            _write_overhead(root)
-            text = (root / "page-overhead.samples.tsv").read_text(encoding="utf-8")
-            (root / "page-overhead.samples.tsv").write_text(
-                text.replace("2\tactive\t200\t", "2\tactive\t500\t", 1), encoding="utf-8")
-
         def _nonnumeric_seconds(root: Path) -> None:
             _write_overhead(root)
             text = (root / "page-overhead.samples.tsv").read_text(encoding="utf-8")
@@ -2800,7 +3297,6 @@ def _selftests() -> int:
         _orefuses("state-not-allowlisted", _bad_state)
         _orefuses("ordering-not-allowlisted", _bad_ordering)
         _orefuses("page-not-allowlisted", _bad_page)
-        _orefuses("non2xx-sample", _non2xx_sample)
         _orefuses("seconds-nonnumeric", _nonnumeric_seconds)
         _orefuses("seconds-negative", _negative_seconds)
         _orefuses("unexpected-fourth-round", _fourth_round)
@@ -2834,9 +3330,35 @@ def _selftests() -> int:
             check("overhead-aggregate-non2xx-zero",
                   all(row["non_2xx_count"] == 0 for row in aggregate["rounds"]))
 
-            # 10d) the projection carries it and re-validates; every tamper is refused
+            # 10c-2) a non-2xx sample is COUNTED, never silently dropped, and the published
+        #        projection refuses it (the page did not render in that state).
+        with tempfile.TemporaryDirectory() as nz_tmp:
+            nz_root = Path(nz_tmp)
+            _write_overhead(nz_root, samples=4, warmup=2)
+            text = (nz_root / "page-overhead.samples.tsv").read_text(encoding="utf-8")
+            (nz_root / "page-overhead.samples.tsv").write_text(
+                text.replace("2\tdeactivated\t200\t", "2\tdeactivated\t500\t", 1),
+                encoding="utf-8")
+            nz_batch = read_page_overhead(nz_root)
+            nz_aggregate = aggregate_page_overhead(nz_batch)
+            check("overhead-counts-non2xx",
+                  [row["non_2xx_count"] for row in nz_aggregate["rounds"]] == [0, 1, 0],
+                  str([row["non_2xx_count"] for row in nz_aggregate["rounds"]]))
+            nz_report = _report([_measurement(1, "cold", "health", 1, 200)],
+                                page_overhead=dict(nz_aggregate, schema=OVERHEAD_SCHEMA,
+                                                   status="ok"))
+            try:
+                build_safe_evidence(nz_report)
+            except EvidenceRefused:
+                pass
+            else:
+                check("overhead-refuses-non2xx-sample", False, "unexpectedly accepted")
+
+        # 10d) the projection carries it and re-validates; every tamper is refused
             overhead_report = _report([_measurement(1, "cold", "health", 1, 200)],
-                                      page_overhead=aggregate)
+                                      page_overhead=dict(aggregate,
+                                                         schema=OVERHEAD_SCHEMA,
+                                                         status="ok"))
             overhead_evidence = build_safe_evidence(overhead_report)
             check("overhead-evidence-field-set",
                   set(overhead_evidence["page_overhead"]) == set(SAFE_OVERHEAD_FIELDS))
@@ -2986,6 +3508,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--profiling-dir",
         default="",
         help="read profiling.params.json + profiling.samples.tsv from the request-level profiling pass",
+    )
+    parser.add_argument(
+        "--overhead-dir",
+        default="",
+        help=(
+            "read page-overhead.params.json + page-overhead.samples.tsv from the "
+            "public-page CPMS plugin overhead pass (ACTIVE vs DEACTIVATED)"
+        ),
     )
     parser.add_argument("--out-prefix", default="/tmp/cpms-bench/cpms-pilot-benchmark")
     parser.add_argument(
