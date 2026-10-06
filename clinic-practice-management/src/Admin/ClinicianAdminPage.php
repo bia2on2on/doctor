@@ -746,7 +746,7 @@ final class ClinicianAdminPage
 
         try {
             return self::tryEstablishAuthorizedScope( $actor_user_id, RolesAndCapabilities::CONFIG ) !== null;
-        } catch (\Throwable) {
+        } catch ( \Throwable ) {
             return false;
         }
     }

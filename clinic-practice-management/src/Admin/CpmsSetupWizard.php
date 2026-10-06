@@ -132,8 +132,8 @@ final class CpmsSetupWizard
             <nav aria-label="گام‌های راه‌اندازی" style="display:flex;gap:8px;flex-wrap:wrap;margin:16px 0;">
                 <?php foreach ($steps as $i => $s) : ?>
                     <?php
-                    $current = $i === $index;
-                    $done = $i < $index;
+                    $current    = $i === $index;
+                    $done       = $i < $index;
                     $icon_class = $current ? 'dashicons-star-filled' : ( $done ? 'dashicons-yes' : 'dashicons-marker' );
                     $icon_style = $current ? 'background:#2271b1;color:#fff;padding:2px 8px;border-radius:3px;' : ( $done ? 'color:#00a32a;' : 'color:#787c82;' );
                     ?>
@@ -318,7 +318,7 @@ final class CpmsSetupWizard
         try {
             $scope = ScopeContext::tryGet() ?? App::scope();
             $canonical = App::clinicRepository()->find((int) $scope->clinicId);
-        } catch (\Throwable) {
+        } catch ( \Throwable ) {
             $canonical = null;
         }
 
@@ -354,7 +354,8 @@ final class CpmsSetupWizard
             <p class="description">این اطلاعات فقط برای شناسایی کلینیک است و هیچ دادهٔ پزشکی در آن نیست. منبع canonical: cpms_clinics — timezone عملیاتی از Location است و اینجا ویرایش نمی‌شود.</p>
             <?php self::submit_step_form( 'clinic', 'ذخیره و ادامه' ); ?>
         </div>
-        <?php self::close_step_form();
+        <?php
+        self::close_step_form();
     }
 
     private static function renderBooking(Settings $settings): void
@@ -378,7 +379,8 @@ final class CpmsSetupWizard
             <p class="description">پس از ذخیره، همین مقادیر به‌عنوان پیش‌فرض در رزرو نوبت استفاده می‌شوند.</p>
             <?php self::submit_step_form( 'booking', 'ذخیره و ادامه' ); ?>
         </div>
-        <?php self::close_step_form();
+        <?php
+        self::close_step_form();
     }
 
     private static function renderUsers(): void
@@ -529,12 +531,13 @@ final class CpmsSetupWizard
     private static function canonical_clinic_name( Settings $settings ): string {
         try {
             $scope = ScopeContext::tryGet() ?? App::scope();
-            $row = App::clinicRepository()->find( (int) $scope->clinicId );
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ScopeContext exposes the public domain property as clinicId.
+            $row   = App::clinicRepository()->find( (int) $scope->clinicId );
             if ( is_array( $row ) ) {
                 // An empty canonical value is a real blocker; never mask it with stale settings.
                 return trim( (string) ( $row['name'] ?? '' ) );
             }
-        } catch (\Throwable) {
+        } catch ( \Throwable ) {
             // Fallback is limited to legacy installs where the canonical row is unavailable.
         }
 
