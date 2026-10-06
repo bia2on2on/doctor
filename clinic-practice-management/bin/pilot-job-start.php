@@ -36,28 +36,28 @@ function cpms_pilot_job_start_refuse(): never {
 function cpms_pilot_job_start_main( array $args ): void {
     $wp_home = getenv( 'WP_HOME' );
     if ( ! is_string( $wp_home ) || '' === trim( $wp_home ) ) {
-        cpms_pilot_job_start_refuse( );
+        cpms_pilot_job_start_refuse();
     }
 
     $wp_load = rtrim( $wp_home, DIRECTORY_SEPARATOR ) . DIRECTORY_SEPARATOR . 'wp-load.php';
     if ( ! is_file( $wp_load ) ) {
-        cpms_pilot_job_start_refuse( );
+        cpms_pilot_job_start_refuse();
     }
 
     require_once $wp_load;
-    App::boot( );
+    App::boot();
 
     $action = $args[1] ?? '';
     $token  = getenv( 'CPMS_JOB_START_TOKEN' );
     if ( ! is_string( $token ) || 1 !== preg_match( '/\A[a-f0-9]{32}\z/D', $token ) ) {
-        cpms_pilot_job_start_refuse( );
+        cpms_pilot_job_start_refuse();
     }
 
     $sample_count = 100;
     $job_type     = 'backup.run';
 
     try {
-        $db = App::db( );
+        $db = App::db();
 
         // This is a SYSTEM-scope job. The one seeded synthetic Clinic check is
         // only a fail-closed Pilot bootstrap precondition; no Clinic id is
@@ -66,18 +66,18 @@ function cpms_pilot_job_start_main( array $args ): void {
             'SELECT COUNT(*) FROM ' . $db->table( 'cpms_clinics' )
         );
         if ( 1 !== $clinic_count ) {
-            cpms_pilot_job_start_refuse( );
+            cpms_pilot_job_start_refuse();
         }
 
         // BackupRunHandler is a no-op while backups are disabled. Never let
         // this measurement create backup files or invoke a configured provider.
-        if ( false !== App::installationSettings( )->getBackupEnabled( ) ) {
-            cpms_pilot_job_start_refuse( );
+        if ( false !== App::installationSettings()->getBackupEnabled() ) {
+            cpms_pilot_job_start_refuse();
         }
 
         $priority = App::RECURRING_JOBS[ $job_type ] ?? null;
         if ( ! is_int( $priority ) || 1 !== $priority ) {
-            cpms_pilot_job_start_refuse( );
+            cpms_pilot_job_start_refuse();
         }
 
         $table = $db->table( 'cpms_jobs' );
@@ -90,25 +90,25 @@ function cpms_pilot_job_start_main( array $args ): void {
                 [ $job_type, $token ]
             );
             if ( 0 !== $existing ) {
-                cpms_pilot_job_start_refuse( );
+                cpms_pilot_job_start_refuse();
             }
 
             for ( $index = 0; $index < $sample_count; $index++ ) {
-                $id = App::jobs( )->enqueue(
+                $id = App::jobs()->enqueue(
                     $job_type,
                     [ 'pilot_measurement_correlation' => $token ],
                     priority: $priority,
                     maxAttempts: 1
                 );
                 if ( $id < 1 ) {
-                    cpms_pilot_job_start_refuse( );
+                    cpms_pilot_job_start_refuse();
                 }
             }
             exit( 0 );
         }
 
         if ( 'collect' !== $action ) {
-            cpms_pilot_job_start_refuse( );
+            cpms_pilot_job_start_refuse();
         }
 
         $rows = $db->fetchAll(
@@ -118,7 +118,7 @@ function cpms_pilot_job_start_main( array $args ): void {
             [ $job_type, $token ]
         );
         if ( $sample_count !== count( $rows ) ) {
-            cpms_pilot_job_start_refuse( );
+            cpms_pilot_job_start_refuse();
         }
 
         $samples = [];
@@ -134,16 +134,16 @@ function cpms_pilot_job_start_main( array $args ): void {
 
         $raw_path = getenv( 'CPMS_JOB_START_RAW_PATH' );
         if ( ! is_string( $raw_path ) || '' === $raw_path || file_exists( $raw_path ) ) {
-            cpms_pilot_job_start_refuse( );
+            cpms_pilot_job_start_refuse();
         }
-        $temporary_root = realpath( sys_get_temp_dir( ) );
+        $temporary_root = realpath( sys_get_temp_dir() );
         $raw_directory  = realpath( dirname( $raw_path ) );
         if ( false === $temporary_root || false === $raw_directory ) {
-            cpms_pilot_job_start_refuse( );
+            cpms_pilot_job_start_refuse();
         }
         $temporary_prefix = $temporary_root . DIRECTORY_SEPARATOR . 'cpms-job-start.';
         if ( ! str_starts_with( $raw_directory, $temporary_prefix ) ) {
-            cpms_pilot_job_start_refuse( );
+            cpms_pilot_job_start_refuse();
         }
 
         $raw     = [
@@ -155,9 +155,9 @@ function cpms_pilot_job_start_main( array $args ): void {
         ];
         $encoded = wp_json_encode( $raw, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR );
         if ( ! is_string( $encoded ) ) {
-            cpms_pilot_job_start_refuse( );
+            cpms_pilot_job_start_refuse();
         }
-        $json           = $encoded . "\n";
+        $json = $encoded . "\n";
         // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_umask -- Private temporary raw evidence must be owner-only.
         $previous_umask = umask( 0077 );
         try {
@@ -171,11 +171,11 @@ function cpms_pilot_job_start_main( array $args ): void {
         // Enforce owner-only access on this private, disposable-run evidence file.
         // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_chmod -- Private temporary raw evidence must be owner-only.
         if ( ! is_int( $written ) || $written !== strlen( $json ) || ! chmod( $raw_path, 0600 ) ) {
-            cpms_pilot_job_start_refuse( );
+            cpms_pilot_job_start_refuse();
         }
     } catch ( \Throwable ) {
         // Never echo DB errors, queue payloads, IDs, or arbitrary exception text.
-        cpms_pilot_job_start_refuse( );
+        cpms_pilot_job_start_refuse();
     }
 }
 
