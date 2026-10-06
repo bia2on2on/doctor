@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Infrastructure\Queue;
 
+use ClinicCore\Application\Jobs\JobWake;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Logging\OpLogger;
 
@@ -29,8 +30,17 @@ final class JobQueue
     /** علتِ گذارِ نهایی: خطای قطعی که با قرارداد `NonRetryableJobFailure` اعلام شده است. */
     public const TERMINAL_CAUSE_NON_RETRYABLE = 'non_retryable';
 
-    public function __construct(private readonly CpmsDb $db, private readonly OpLogger $op)
-    {
+    /**
+     * @param JobWake|null $wake Phase 17 — advisory fast-wake requester. Optional
+     *        on purpose: persistence is the queue's job, the wake-up is a hint.
+     *        When it is absent (or fails) the row still waits for the existing
+     *        recurring minute trigger.
+     */
+    public function __construct(
+        private readonly CpmsDb $db,
+        private readonly OpLogger $op,
+        private readonly ?JobWake $wake = null
+    ) {
     }
 
     public function enqueue(
@@ -40,6 +50,8 @@ final class JobQueue
         int $priority = 5,
         int $maxAttempts = 3 // تصمیم کارفرما F1-D3
     ): int {
+        // Persist FIRST: the row is committed before any wake-up attempt, and the
+        // queue row stays the source of truth either way (Phase 17).
         $this->db->insert('cpms_jobs', [
             'type' => $type,
             'payload_json' => json_encode($payload, JSON_UNESCAPED_UNICODE) ?: null,
@@ -52,7 +64,13 @@ final class JobQueue
             'created_at' => $this->db->nowUtcSql(),
         ]);
 
-        return (int) $this->db->wpdb_last_insert_id();
+        $job_id = (int) $this->db->wpdb_last_insert_id();
+
+        // Advisory fast wake-up (never throws, never changes the result above).
+        // The heavy handler is NOT run here and no caller waits for it.
+        $this->wake?->request();
+
+        return $job_id;
     }
 
     /**

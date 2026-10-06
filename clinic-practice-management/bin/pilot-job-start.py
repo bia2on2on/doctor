@@ -25,7 +25,8 @@ JOB_TYPE = "backup.run"
 SAMPLE_COUNT = 100
 MAX_LATENCY_MS = 3_600_000
 TIMESTAMP_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.000$")
-RAW_FIELDS = ("schema", "status", "job_type", "sample_count", "samples")
+MEASUREMENT_MODES = ("explicit_tick", "autonomous")
+RAW_FIELDS = ("schema", "status", "measurement_mode", "job_type", "sample_count", "samples")
 SAMPLE_FIELDS = ("created_at", "started_at", "status", "attempts", "max_attempts")
 OUTPUT_FIELDS = (
     "schema",
@@ -84,6 +85,9 @@ def aggregate_raw_job_start(raw: Any) -> Dict[str, Any]:
     raw_obj = _exact_fields(raw, RAW_FIELDS, "raw")
     if raw_obj["schema"] != RAW_SCHEMA or raw_obj["status"] != "ok":
         raise JobStartRefused("raw_schema_or_status")
+    mode = raw_obj["measurement_mode"]
+    if not isinstance(mode, str) or mode not in MEASUREMENT_MODES:
+        raise JobStartRefused("raw_measurement_mode")
     if raw_obj["job_type"] != JOB_TYPE:
         raise JobStartRefused("raw_job_type")
     declared = _plain_int(raw_obj["sample_count"], SAMPLE_COUNT, SAMPLE_COUNT, "sample_count")
@@ -131,7 +135,7 @@ def aggregate_raw_job_start(raw: Any) -> Dict[str, Any]:
     result = {
         "schema": JOB_START_SCHEMA,
         "status": "ok",
-        "measurement_mode": "explicit_tick",
+        "measurement_mode": mode,
         "job_type": JOB_TYPE,
         "sample_count": declared,
         "p50_ms": _nearest_rank(ordered, 50),
@@ -181,7 +185,7 @@ def write_aggregate(path: Path, aggregate: Dict[str, Any]) -> None:
         output.write(payload)
 
 
-def _fixture_raw() -> Dict[str, Any]:
+def _fixture_raw(mode: str = "explicit_tick") -> Dict[str, Any]:
     base = datetime(2026, 1, 1, 0, 0, 0)
     samples = []
     for index in range(SAMPLE_COUNT):
@@ -197,6 +201,7 @@ def _fixture_raw() -> Dict[str, Any]:
     return {
         "schema": RAW_SCHEMA,
         "status": "ok",
+        "measurement_mode": mode,
         "job_type": JOB_TYPE,
         "sample_count": SAMPLE_COUNT,
         "samples": samples,
@@ -238,7 +243,17 @@ def _selftests() -> int:
     check("processing-failure-separate-from-start-latency",
           failed["processing_failure_count"] == 1 and failed["p50_ms"] == valid["p50_ms"])
 
+    autonomous_fixture = _fixture_raw("autonomous")
+    autonomous = aggregate_raw_job_start(autonomous_fixture)
+    check("autonomous-mode-is-carried-not-relabelled",
+          autonomous["measurement_mode"] == "autonomous"
+          and autonomous["p95_ms"] == valid["p95_ms"])
+
     refuses("refuses-top-level-extra-payload", lambda raw: raw.update({"payload": {"phi": "sentinel"}}))
+    refuses("refuses-unknown-measurement-mode",
+            lambda raw: raw.update({"measurement_mode": "forced_tick"}))
+    refuses("refuses-missing-measurement-mode",
+            lambda raw: raw.pop("measurement_mode"))
     refuses("refuses-unknown-job-type", lambda raw: raw.update({"job_type": "patient.export"}))
     refuses("refuses-count-mismatch", lambda raw: raw.update({"sample_count": SAMPLE_COUNT - 1}))
     refuses("refuses-row-extra-id", lambda raw: raw["samples"][0].update({"id": 123}))
@@ -297,7 +312,8 @@ def main(argv: List[str] | None = None) -> int:
     except (JobStartRefused, OSError, ValueError):
         print("JOB_START: evidence refused; no aggregate was published", file=sys.stderr)
         return 1
-    print("JOB_START: 100 explicit-tick samples aggregated; no latency threshold applied")
+    print("JOB_START: 100 {mode} samples aggregated; no latency threshold applied".format(
+        mode=aggregate["measurement_mode"]))
     return 0
 
 

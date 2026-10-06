@@ -10,6 +10,7 @@
 
 declare(strict_types=1);
 
+use ClinicCore\Application\Jobs\JobWake;
 use ClinicCore\Bootstrap\App;
 
 if ( 'cli' !== PHP_SAPI ) {
@@ -19,11 +20,18 @@ if ( 'cli' !== PHP_SAPI ) {
 /**
  * Stop with a generic CLI refusal message.
  *
+ * The optional reason is reduced to a fixed lowercase/underscore allowlist (max
+ * 32 chars) so the run-bound diagnostic line can never carry free-form text.
+ *
+ * @param string $reason Bounded refusal reason code.
  * @return never
  */
-function cpms_pilot_job_start_refuse(): never {
+function cpms_pilot_job_start_refuse( string $reason = 'unspecified' ): never {
+    $reason = substr( (string) preg_replace( '/[^a-z_]/', '', strtolower( $reason ) ), 0, 32 );
     // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fwrite -- CLI-only generic refusal; WP_Filesystem is not available here.
     fwrite( STDERR, "JOB_START: precondition or collection refused\n" );
+    // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fwrite -- CLI fixed-key diagnostic; WP_Filesystem is not available here.
+    fwrite( STDOUT, 'DIAG exit.refusal_reason=' . ( '' === $reason ? 'unspecified' : $reason ) . "\n" );
     exit( 1 );
 }
 
@@ -48,10 +56,39 @@ function cpms_pilot_job_start_main( array $args ): void {
     App::boot();
 
     $action = $args[1] ?? '';
-    $token  = getenv( 'CPMS_JOB_START_TOKEN' );
+
+    if ( 'lock-state' === $action ) {
+        // READ-ONLY bounded probe used by the Pilot's bounded wait: prints exactly
+        // "1" while WordPress's own `doing_cron` spawn lock is held and "0" while it is
+        // free. It never clears, resets or overrides the lock, never trades it for a new
+        // one and never ticks the queue — the lock is only observed, then allowed to
+        // lapse naturally under WordPress's own WP_CRON_LOCK_TIMEOUT.
+        $lock = cpms_pilot_job_start_cron_lock_state();
+        // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fwrite -- CLI fixed-key probe output; WP_Filesystem is not available here.
+        fwrite( STDOUT, $lock['present'] ? "1\n" : "0\n" );
+        exit( 0 );
+    }
+    $token = getenv( 'CPMS_JOB_START_TOKEN' );
     if ( ! is_string( $token ) || 1 !== preg_match( '/\A[a-f0-9]{32}\z/D', $token ) ) {
+        cpms_pilot_job_start_refuse( 'token' );
+    }
+
+    $mode = getenv( 'CPMS_JOB_START_MODE' );
+    $mode = is_string( $mode ) && '' !== trim( $mode ) ? trim( $mode ) : 'explicit_tick';
+    if ( ! in_array( $mode, [ 'explicit_tick', 'autonomous' ], true ) ) {
+        // Unsupported measurement mode — never guess a label.
         cpms_pilot_job_start_refuse();
     }
+
+    // ---- Phase 17 bounded diagnostics (fixed keys; booleans/bounded integers) ----
+    //
+    // Printed for the run summary only — never written into the raw or published
+    // evidence file. Purpose: attribute a blocked autonomous fast-wake path to a
+    // concrete cause (pending/due event, WordPress cron lock, loopback dispatch,
+    // callback/claim execution) instead of guessing. No URL, filesystem path,
+    // token, job id, payload, SQL, header or free-form exception text is emitted:
+    // only fixed keys with booleans, small bounded integers or NOT_RETRIEVED.
+    cpms_pilot_job_start_diag_reset();
 
     $sample_count = 100;
     $job_type     = 'backup.run';
@@ -66,13 +103,13 @@ function cpms_pilot_job_start_main( array $args ): void {
             'SELECT COUNT(*) FROM ' . $db->table( 'cpms_clinics' )
         );
         if ( 1 !== $clinic_count ) {
-            cpms_pilot_job_start_refuse();
+            cpms_pilot_job_start_refuse( 'clinic_count' );
         }
 
         // BackupRunHandler is a no-op while backups are disabled. Never let
         // this measurement create backup files or invoke a configured provider.
         if ( false !== App::installationSettings()->getBackupEnabled() ) {
-            cpms_pilot_job_start_refuse();
+            cpms_pilot_job_start_refuse( 'backup_enabled' );
         }
 
         $priority = App::RECURRING_JOBS[ $job_type ] ?? null;
@@ -83,6 +120,19 @@ function cpms_pilot_job_start_main( array $args ): void {
         $table = $db->table( 'cpms_jobs' );
 
         if ( 'enqueue' === $action ) {
+            $wake_before = cpms_pilot_job_start_wake_state();
+            cpms_pilot_job_start_diag( 'enqueue.wake_event_pending_before', $wake_before['pending'] ? 'true' : 'false' );
+            cpms_pilot_job_start_diag( 'enqueue.wake_event_due_delta_ms_before', (string) $wake_before['due_delta_ms'] );
+
+            // Pure observer (never alters the response): records whether WordPress
+            // actually started the site-local cron loopback in this process's
+            // deferred shutdown spawn.
+            add_filter( 'pre_http_request', 'cpms_pilot_job_start_observe_loopback', 10, 3 );
+
+            // Runs after WordPress's own shutdown hook (where the wake spawn is
+            // deferred), so the observed lock/wake state is the post-spawn state.
+            register_shutdown_function( 'cpms_pilot_job_start_diag_enqueue_shutdown' );
+
             $existing = (int) $db->fetchValue(
                 'SELECT COUNT(*) FROM ' . $table .
                 ' WHERE type = %s AND JSON_UNQUOTE(JSON_EXTRACT(payload_json, ' .
@@ -90,7 +140,7 @@ function cpms_pilot_job_start_main( array $args ): void {
                 [ $job_type, $token ]
             );
             if ( 0 !== $existing ) {
-                cpms_pilot_job_start_refuse();
+                cpms_pilot_job_start_refuse( 'enqueue_existing' );
             }
 
             for ( $index = 0; $index < $sample_count; $index++ ) {
@@ -101,7 +151,17 @@ function cpms_pilot_job_start_main( array $args ): void {
                     maxAttempts: 1
                 );
                 if ( $id < 1 ) {
-                    cpms_pilot_job_start_refuse();
+                    cpms_pilot_job_start_refuse( 'enqueue_insert' );
+                }
+            }
+
+            if ( 'autonomous' === $mode ) {
+                // Run-bound testimony of the production fast-wake request: this
+                // producer never calls a tick, and because the loopback spawn is
+                // deferred to the end of this request, the wake event scheduled by
+                // the ordinary enqueue path must still be pending here.
+                if ( false === wp_next_scheduled( JobWake::HOOK ) ) {
+                    cpms_pilot_job_start_refuse( 'enqueue_wake_not_pending' );
                 }
             }
             exit( 0 );
@@ -111,6 +171,61 @@ function cpms_pilot_job_start_main( array $args ): void {
             cpms_pilot_job_start_refuse();
         }
 
+        if ( 'autonomous' === $mode ) {
+            // Autonomous mode: bounded wait for first-start evidence. Nothing here
+            // triggers the queue — only the production fast-wake path requested by
+            // the enqueue itself may start these rows. A bounded wait keeps the
+            // observation honest instead of inventing a start.
+            $deadline            = microtime( true ) + 20.0;
+            $started_before_wait = (int) $db->fetchValue(
+                'SELECT COUNT(*) FROM ' . $table .
+                ' WHERE type = %s AND JSON_UNQUOTE(JSON_EXTRACT(payload_json, ' .
+                "'$.pilot_measurement_correlation')) = %s AND started_at IS NOT NULL",
+                [ $job_type, $token ]
+            );
+            do {
+                $waiting = (int) $db->fetchValue(
+                    'SELECT COUNT(*) FROM ' . $table .
+                    ' WHERE type = %s AND JSON_UNQUOTE(JSON_EXTRACT(payload_json, ' .
+                    "'$.pilot_measurement_correlation')) = %s AND started_at IS NULL",
+                    [ $job_type, $token ]
+                );
+                if ( 0 === $waiting ) {
+                    break;
+                }
+                usleep( 500000 );
+            } while ( microtime( true ) < $deadline );
+        }
+
+        if ( 'autonomous' === $mode ) {
+            $started_after_wait = (int) $db->fetchValue(
+                'SELECT COUNT(*) FROM ' . $table .
+                ' WHERE type = %s AND JSON_UNQUOTE(JSON_EXTRACT(payload_json, ' .
+                "'$.pilot_measurement_correlation')) = %s AND started_at IS NOT NULL",
+                [ $job_type, $token ]
+            );
+            $wake_after         = cpms_pilot_job_start_wake_state();
+            $lock_after         = cpms_pilot_job_start_cron_lock_state();
+            $tick_age           = 'NOT_RETRIEVED';
+            try {
+                // Queue's own persisted tick marker (bounded age, no timestamp echo):
+                // distinguishes "wake callback ran" from "nothing ran at all".
+                $tick_at = (int) ( App::queueHealth()['last_tick_at'] ?? 0 );
+                if ( $tick_at > 0 ) {
+                    $tick_age = (string) max( -600000, min( 600000, (int) round( ( microtime( true ) - $tick_at ) * 1000 ) ) );
+                }
+            } catch ( \Throwable ) {
+                $tick_age = 'NOT_RETRIEVED';
+            }
+            cpms_pilot_job_start_diag( 'collect.started_count_before_wait', (string) $started_before_wait );
+            cpms_pilot_job_start_diag( 'collect.started_count_after_wait', (string) $started_after_wait );
+            cpms_pilot_job_start_diag( 'collect.wake_event_pending_after_wait', $wake_after['pending'] ? 'true' : 'false' );
+            cpms_pilot_job_start_diag( 'collect.wake_event_due_delta_ms_after_wait', (string) $wake_after['due_delta_ms'] );
+            cpms_pilot_job_start_diag( 'collect.doing_cron_lock_present', $lock_after['present'] ? 'true' : 'false' );
+            cpms_pilot_job_start_diag( 'collect.doing_cron_lock_age_ms', (string) $lock_after['age_ms'] );
+            cpms_pilot_job_start_diag( 'collect.tick_age_ms', $tick_age );
+        }
+
         $rows = $db->fetchAll(
             'SELECT status, attempts, max_attempts, created_at, started_at FROM ' . $table .
             ' WHERE type = %s AND JSON_UNQUOTE(JSON_EXTRACT(payload_json, ' .
@@ -118,7 +233,8 @@ function cpms_pilot_job_start_main( array $args ): void {
             [ $job_type, $token ]
         );
         if ( $sample_count !== count( $rows ) ) {
-            cpms_pilot_job_start_refuse();
+            cpms_pilot_job_start_diag( 'collect.rows_found', (string) count( $rows ) );
+            cpms_pilot_job_start_refuse( 'collect_row_count' );
         }
 
         $samples = [];
@@ -147,11 +263,12 @@ function cpms_pilot_job_start_main( array $args ): void {
         }
 
         $raw     = [
-            'schema'       => 'cpms.pilot-job-start-raw/1',
-            'status'       => 'ok',
-            'job_type'     => $job_type,
-            'sample_count' => $sample_count,
-            'samples'      => $samples,
+            'schema'           => 'cpms.pilot-job-start-raw/1',
+            'status'           => 'ok',
+            'measurement_mode' => $mode,
+            'job_type'         => $job_type,
+            'sample_count'     => $sample_count,
+            'samples'          => $samples,
         ];
         $encoded = wp_json_encode( $raw, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR );
         if ( ! is_string( $encoded ) ) {
@@ -177,6 +294,108 @@ function cpms_pilot_job_start_main( array $args ): void {
         // Never echo DB errors, queue payloads, IDs, or arbitrary exception text.
         cpms_pilot_job_start_refuse();
     }
+}
+
+/** Loopback observer state for the enqueue phase (fixed-key diagnostics only). */
+function cpms_pilot_job_start_loopback_started(): bool {
+    return true === ( $GLOBALS['cpms_pilot_job_start_loopback'] ?? false );
+}
+
+/**
+ * Marks that WordPress started the site-local cron loopback request.
+ *
+ * @return void
+ */
+function cpms_pilot_job_start_note_loopback(): void {
+    $GLOBALS['cpms_pilot_job_start_loopback'] = true;
+}
+
+/**
+ * Pure pre_http_request observer: never alters the response (false = continue).
+ *
+ * @param mixed $pre Short-circuit value.
+ * @return mixed
+ */
+function cpms_pilot_job_start_observe_loopback( $pre ) {
+    $args = func_get_args();
+    $url  = $args[2] ?? '';
+    if ( is_string( $url ) && '/wp-cron.php' === substr( (string) wp_parse_url( $url, PHP_URL_PATH ), -11 ) ) {
+        cpms_pilot_job_start_note_loopback();
+    }
+
+    return $pre;
+}
+
+/**
+ * Resets the per-process bounded diagnostic state.
+ *
+ * @return void
+ */
+function cpms_pilot_job_start_diag_reset(): void {
+    $GLOBALS['cpms_pilot_job_start_loopback'] = false;
+}
+
+/**
+ * Emits one fixed-key diagnostic line (booleans/bounded integers only).
+ *
+ * @param string $key   Fixed diagnostic key.
+ * @param string $value Already-formatted boolean/bounded integer value.
+ * @return void
+ */
+function cpms_pilot_job_start_diag( string $key, string $value ): void {
+    // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fwrite -- CLI fixed-key diagnostic; WP_Filesystem is not available here.
+    fwrite( STDOUT, 'DIAG ' . $key . '=' . $value . "\n" );
+}
+
+/**
+ * Pending wake event and its bounded due delta in ms (±10 minutes).
+ *
+ * @return array{pending: bool, due_delta_ms: string|int}
+ */
+function cpms_pilot_job_start_wake_state(): array {
+    if ( ! function_exists( 'wp_next_scheduled' ) ) {
+        return [ 'pending' => false, 'due_delta_ms' => 'NOT_RETRIEVED' ];
+    }
+    $timestamp = wp_next_scheduled( JobWake::HOOK );
+    if ( false === $timestamp ) {
+        return [ 'pending' => false, 'due_delta_ms' => 'NOT_RETRIEVED' ];
+    }
+    $delta = (int) round( ( (int) $timestamp - microtime( true ) ) * 1000 );
+
+    return [ 'pending' => true, 'due_delta_ms' => max( -600000, min( 600000, $delta ) ) ];
+}
+
+/**
+ * WordPress cron spawn lock (READ-ONLY): never cleared, reset or overridden.
+ *
+ * @return array{present: bool, age_ms: string|int}
+ */
+function cpms_pilot_job_start_cron_lock_state(): array {
+    try {
+        $lock = get_transient( 'doing_cron' );
+    } catch ( \Throwable ) {
+        return [ 'present' => false, 'age_ms' => 'NOT_RETRIEVED' ];
+    }
+    if ( ! is_numeric( $lock ) || (float) $lock <= 0 ) {
+        return [ 'present' => false, 'age_ms' => 'NOT_RETRIEVED' ];
+    }
+    $age = (int) round( ( microtime( true ) - (float) $lock ) * 1000 );
+
+    return [ 'present' => true, 'age_ms' => max( -600000, min( 600000, $age ) ) ];
+}
+
+/**
+ * Post-spawn diagnostics for the enqueue phase (runs after WordPress shutdown).
+ *
+ * @return void
+ */
+function cpms_pilot_job_start_diag_enqueue_shutdown(): void {
+    $wake = cpms_pilot_job_start_wake_state();
+    $lock = cpms_pilot_job_start_cron_lock_state();
+    cpms_pilot_job_start_diag( 'enqueue.loopback_request_started', cpms_pilot_job_start_loopback_started() ? 'true' : 'false' );
+    cpms_pilot_job_start_diag( 'enqueue.wake_event_pending_after', $wake['pending'] ? 'true' : 'false' );
+    cpms_pilot_job_start_diag( 'enqueue.doing_cron_lock_present_after', $lock['present'] ? 'true' : 'false' );
+    cpms_pilot_job_start_diag( 'enqueue.doing_cron_lock_age_ms_after', (string) $lock['age_ms'] );
 }
 
 cpms_pilot_job_start_main( $argv );

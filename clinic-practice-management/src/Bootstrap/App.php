@@ -42,6 +42,7 @@ use ClinicCore\Application\Jobs\HoldsExpireHandler;
 use ClinicCore\Application\Jobs\IdemCleanupHandler;
 use ClinicCore\Application\Jobs\OpLogCleanupHandler;
 use ClinicCore\Application\Jobs\JobsDispatcher;
+use ClinicCore\Application\Jobs\JobWake;
 use ClinicCore\Application\Jobs\LicenseRefreshHandler;
 use ClinicCore\Application\Jobs\NotifDispatchHandler;
 use ClinicCore\Application\Jobs\OtpCleanupHandler;
@@ -304,6 +305,18 @@ final class App
         add_action('cpms_jobs_tick', static function (): void {
             self::runTick(20);
         });
+
+        // Phase 17 — fast wake (autonomous fast-start path). One installation-wide
+        // single event, requested by `JobQueue::enqueue()` after the job row is
+        // committed. Same `App::runTick()` lock/claim machinery as the recurring
+        // trigger; the minute-cadenced `cpms_jobs_tick` above is NOT changed and
+        // stays the recovery/fallback trigger on hosts where the spawn cannot run.
+        add_action(
+            JobWake::HOOK,
+            static function (): void {
+                self::runTick( self::WAKE_TICK_LIMIT );
+            }
+        );
 
         // Migration خودکار و ایمن (idempotent) — هنگام admin_init و rest_api_init
         add_action('admin_init', static function (): void {
@@ -1118,7 +1131,8 @@ final class App
     public static function jobs(): JobQueue
     {
         if (self::$jobs === null) {
-            self::$jobs = new JobQueue(self::db(), self::op());
+            // Phase 17 — the queue persists; the fast wake-up is an advisory hint.
+            self::$jobs = new JobQueue( self::db(), self::op(), new JobWake() );
         }
 
         return self::$jobs;
@@ -1508,6 +1522,17 @@ final class App
      */
     /** F1-7 — قفل یکپارچهٔ Tick: WP-Cron و `bin/cpms jobs tick` همان مکانیزم MySQL دارند. */
     public const TICK_LOCK = 'cpms_jobs_tick';
+
+    /**
+     * Phase 17 — سقفِ بستهٔ Tick مسیرِ Fast Wake.
+     *
+     * رویدادِ `cpms_jobs_wake` یک درخواستِ Loopback کوتاه است؛ برای اینکه یک
+     * انفجارِ enqueue (مثلاً ۱۰۰ Job) به‌جای انتظار تا Tick دقیقه‌ای در همان
+     * مسیرِ Fast شروع شود، همین یک فراخوانی (همان `App::runTick()` با قفلِ
+     * موجود) تا این سقف پردازش می‌کند. تریگرِ دوره‌ای دقیقه‌ای دست‌نخورده است
+     * (سقفِ خودش = ۲۰).
+     */
+    public const WAKE_TICK_LIMIT = 200;
 
     /**
      * Phase 2 (RT-12): عمومی شد تا گارْدِ drift بتواند **بدون Reflection** این
