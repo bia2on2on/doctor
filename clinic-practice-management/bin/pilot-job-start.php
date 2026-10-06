@@ -10,6 +10,7 @@
 
 declare(strict_types=1);
 
+use ClinicCore\Application\Jobs\JobWake;
 use ClinicCore\Bootstrap\App;
 
 if ( 'cli' !== PHP_SAPI ) {
@@ -50,6 +51,13 @@ function cpms_pilot_job_start_main( array $args ): void {
     $action = $args[1] ?? '';
     $token  = getenv( 'CPMS_JOB_START_TOKEN' );
     if ( ! is_string( $token ) || 1 !== preg_match( '/\A[a-f0-9]{32}\z/D', $token ) ) {
+        cpms_pilot_job_start_refuse();
+    }
+
+    $mode = getenv( 'CPMS_JOB_START_MODE' );
+    $mode = is_string( $mode ) && '' !== trim( $mode ) ? trim( $mode ) : 'explicit_tick';
+    if ( ! in_array( $mode, [ 'explicit_tick', 'autonomous' ], true ) ) {
+        // Unsupported measurement mode — never guess a label.
         cpms_pilot_job_start_refuse();
     }
 
@@ -104,11 +112,41 @@ function cpms_pilot_job_start_main( array $args ): void {
                     cpms_pilot_job_start_refuse();
                 }
             }
+
+            if ( 'autonomous' === $mode ) {
+                // Run-bound testimony of the production fast-wake request: this
+                // producer never calls a tick, and because the loopback spawn is
+                // deferred to the end of this request, the wake event scheduled by
+                // the ordinary enqueue path must still be pending here.
+                if ( false === wp_next_scheduled( JobWake::HOOK ) ) {
+                    cpms_pilot_job_start_refuse();
+                }
+            }
             exit( 0 );
         }
 
         if ( 'collect' !== $action ) {
             cpms_pilot_job_start_refuse();
+        }
+
+        if ( 'autonomous' === $mode ) {
+            // Autonomous mode: bounded wait for first-start evidence. Nothing here
+            // triggers the queue — only the production fast-wake path requested by
+            // the enqueue itself may start these rows. A bounded wait keeps the
+            // observation honest instead of inventing a start.
+            $deadline = microtime( true ) + 20.0;
+            do {
+                $waiting = (int) $db->fetchValue(
+                    'SELECT COUNT(*) FROM ' . $table .
+                    ' WHERE type = %s AND JSON_UNQUOTE(JSON_EXTRACT(payload_json, ' .
+                    "'$.pilot_measurement_correlation')) = %s AND started_at IS NULL",
+                    [ $job_type, $token ]
+                );
+                if ( 0 === $waiting ) {
+                    break;
+                }
+                usleep( 500000 );
+            } while ( microtime( true ) < $deadline );
         }
 
         $rows = $db->fetchAll(
@@ -147,11 +185,12 @@ function cpms_pilot_job_start_main( array $args ): void {
         }
 
         $raw     = [
-            'schema'       => 'cpms.pilot-job-start-raw/1',
-            'status'       => 'ok',
-            'job_type'     => $job_type,
-            'sample_count' => $sample_count,
-            'samples'      => $samples,
+            'schema'           => 'cpms.pilot-job-start-raw/1',
+            'status'           => 'ok',
+            'measurement_mode' => $mode,
+            'job_type'         => $job_type,
+            'sample_count'     => $sample_count,
+            'samples'          => $samples,
         ];
         $encoded = wp_json_encode( $raw, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR );
         if ( ! is_string( $encoded ) ) {

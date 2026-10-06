@@ -153,7 +153,7 @@ jobs:
           {
             echo '### Pilot benchmark harness self-test — PASSED on this run'
             echo '`bin/pilot-bench-report.py --test` (deterministic: no network, no WordPress, no `ab` binary) — ab parsing, report generation, honesty fields, the artifact privacy gate and the REST-visible safe evidence projection (exact allowlist field sets, fixed endpoint labels, cold|warm-only phases, fail-closed refusal of malformed/unexpected values, sentinel-absence and tamper-refusal). This runs on every gate run; the live benchmark step itself runs on watched pushes (`main` / `arena/**`) as well as on `schedule` and `workflow_dispatch`.'
-            echo 'The Phase 17 queue-start self-test (`bin/pilot-job-start.py --test`) also proves fail-closed first-claim/retry/outcome validation and nearest-rank stats; live jobs use the production enqueue API and an explicitly labelled tick before System Cron.'
+            echo 'The Phase 17 queue-start self-test (`bin/pilot-job-start.py --test`) also proves fail-closed first-claim/retry/outcome validation, the pinned measurement label and nearest-rank stats; the live autonomous pass uses the production enqueue API and the production fast-wake path with NO tick call, while the explicit-tick control pass stays explicitly labelled and the System Cron step follows both.'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Environment specs (گزارش واقعی محیط)
@@ -353,6 +353,37 @@ jobs:
           fi
           python3 bin/pilot-job-start.py --raw "$TEMP_DIR/raw.json" --out /tmp/cpms-pilot-job-start.json
           echo 'Phase 17 job-start sample set: explicit_tick; first persisted claim; 100 synthetic non-PHI samples; no latency threshold.' >> "$GITHUB_STEP_SUMMARY"
+
+      # ---------- Phase 17 autonomous fast-wake first-start measurement ----------
+      # Identical production enqueue API, but NO tick call anywhere in this step: the
+      # only trigger for these 100 rows is the production fast-wake path that the
+      # ordinary enqueue itself requested (installation-wide `cpms_jobs_wake` single
+      # event + WordPress-native non-blocking loopback spawn through spawn_cron()).
+      # The bounded wait is observation only — it neither ticks nor mutates the queue.
+      # Placed before the System Cron step so no daemon can be mistaken for the fast path.
+      - name: Phase 17 queue first-start — autonomous fast wake, 100 synthetic jobs
+        run: |
+          set -euo pipefail
+          TEMP_DIR=$(mktemp -d /tmp/cpms-job-start-auto.XXXXXX)
+          chmod 700 "$TEMP_DIR"
+          trap 'unset CPMS_JOB_START_TOKEN CPMS_JOB_START_RAW_PATH CPMS_JOB_START_MODE; rm -rf "$TEMP_DIR"' EXIT
+          export CPMS_JOB_START_MODE=autonomous
+          export CPMS_JOB_START_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
+          export CPMS_JOB_START_RAW_PATH="$TEMP_DIR/raw.json"
+          if ! WP_HOME="$WP_DIR" php bin/pilot-job-start.php enqueue >/dev/null 2>&1; then
+            echo '::error::synthetic job enqueue refused by the fail-closed preconditions'; exit 1
+          fi
+          if ! WP_HOME="$WP_DIR" php bin/pilot-job-start.php collect >/dev/null 2>&1; then
+            echo '::warning::autonomous first-start evidence was NOT adjudicated within the bounded wait (no tick was called; minute fallback untouched) — the run-bound job-start block stays explicit_tick'
+            echo 'Phase 17 autonomous job-start: NOT ADJUDICATED (bounded wait expired); published job-start block stays explicit_tick.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if ! python3 bin/pilot-job-start.py --raw "$TEMP_DIR/raw.json" --out /tmp/cpms-pilot-job-start-autonomous.json; then
+            echo '::warning::autonomous first-start aggregate refused (fail closed) — the run-bound job-start block stays explicit_tick'
+            echo 'Phase 17 autonomous job-start: AGGREGATE REFUSED (fail closed); published job-start block stays explicit_tick.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo 'Phase 17 job-start sample set: autonomous (production fast-wake path only; no tick call); first persisted claim; 100 synthetic non-PHI samples; no latency threshold.' >> "$GITHUB_STEP_SUMMARY"
 
       # ---------- System Cron verification ----------
       - name: System Cron — daemon واقعی + bin/cpms (دستور تولید طبق user-guide)
@@ -842,9 +873,23 @@ jobs:
           [ -n "$OPCACHE_INI" ] || OPCACHE_INI='no-opcache-ini-under-apache2-confd (runtime state NOT probed — no PHP probe is written into the webroot)'
           DATASET=$(tail -1 /tmp/seed.json 2>/dev/null | tr -d '\n' || echo 'not-retrieved')
 
+          # Job-start block binding for THIS run: prefer the run-bound autonomous
+          # evidence when the fast-wake path produced it, otherwise publish the
+          # explicit-tick block measured earlier in this same run. The label is always
+          # pinned to the file it came from — a forced-tick aggregate can never be
+          # relabelled as autonomous (and vice versa).
+          JOB_START_FILE=/tmp/cpms-pilot-job-start.json
+          JOB_START_MODE=explicit_tick
+          if [ -f /tmp/cpms-pilot-job-start-autonomous.json ]; then
+            JOB_START_FILE=/tmp/cpms-pilot-job-start-autonomous.json
+            JOB_START_MODE=autonomous
+          else
+            echo '::warning::autonomous fast-start evidence was not produced for this run — the job-start block is published under its explicit_tick label'
+          fi
+
           RC=0
           python3 bin/pilot-bench-report.py \
-            --manifest "$MANIFEST" --raw-dir "$RAW" --diagnostics-dir "$DIAG" --profiling-dir "$BENCH/profiling" --overhead-dir "$BENCH/overhead" --job-start /tmp/cpms-pilot-job-start.json --job-start-mode explicit_tick --out-prefix "$OUT" \
+            --manifest "$MANIFEST" --raw-dir "$RAW" --diagnostics-dir "$DIAG" --profiling-dir "$BENCH/profiling" --overhead-dir "$BENCH/overhead" --job-start "$JOB_START_FILE" --job-start-mode "$JOB_START_MODE" --out-prefix "$OUT" \
             --evidence-prefix "$OUT.evidence" \
             --meta "run_id=${{ github.run_id }}" \
             --meta "run_attempt=${{ github.run_attempt }}" \
@@ -902,7 +947,9 @@ jobs:
       # public-page CPMS plugin overhead block (fixed page token/label, sandwich ordering,
       # per-round sample/warmup counts, p50/p95/p99/mean and non-2xx count, and the pooled
       # ACTIVE-vs-DEACTIVATED p95 delta — no URL, no path, no plugin list, no SQL), plus the
-      # additive queue first-start allowlist only: measurement_mode, fixed `backup.run` type,
+      # additive queue first-start allowlist only: measurement_mode (`autonomous` when the
+      # run-bound fast-wake evidence exists, otherwise the `explicit_tick` control from the
+      # same run — never a relabelled block), fixed `backup.run` type,
       # sample count, p50/p95/p99/max, not-started count and processing-failure count. No job ID,
       # payload, correlation token, SQL, Clinic/patient label, or arbitrary error is published.
       # The run binding (run_id, run_attempt, event_name, head_sha, ref) is included.
