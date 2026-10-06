@@ -360,7 +360,21 @@ jobs:
           if [ "$SITE_HTTP" != "200" ] || [ "$HEALTH_HTTP" != "200" ] || ! grep -q '"ok":true' "$HEALTH_BODY"; then
             echo "::error::autonomous measurement preconditions not met (site_http=$SITE_HTTP cpms_health_http=$HEALTH_HTTP)"; exit 1
           fi
-          PRE_DIAG="DIAG workflow.site_http_status=$SITE_HTTP DIAG workflow.cpms_health_http_status=$HEALTH_HTTP "
+          # Bounded, READ-ONLY wait for WordPress's own cron spawn lock to lapse
+          # naturally. A previous legitimate spawn can hold core's `doing_cron` lock for
+          # up to WP_CRON_LOCK_TIMEOUT (60 s), and while it is held core correctly refuses
+          # the next spawn — exactly the failure this measurement hit before. The lock is
+          # only observed here: it is never cleared, deleted, reset, overridden, replaced
+          # or shortened, no tick is called, and the wait is bounded.
+          LOCK_WAIT_START=$(date +%s)
+          LOCK_PRESENT=1
+          while [ $(( $(date +%s) - LOCK_WAIT_START )) -lt 75 ]; do
+            LOCK_PRESENT=$(WP_HOME="$WP_DIR" php bin/pilot-job-start.php lock-state 2>/dev/null | tail -1 || echo 1)
+            [ "$LOCK_PRESENT" = "0" ] && break
+            sleep 5
+          done
+          LOCK_WAIT_MS=$(( ($(date +%s) - LOCK_WAIT_START) * 1000 ))
+          PRE_DIAG="DIAG workflow.site_http_status=$SITE_HTTP DIAG workflow.cpms_health_http_status=$HEALTH_HTTP DIAG workflow.doing_cron_free_wait_ms=$LOCK_WAIT_MS DIAG workflow.doing_cron_lock_present_at_enqueue=$LOCK_PRESENT "
           export CPMS_JOB_START_MODE=autonomous
           export CPMS_JOB_START_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
           export CPMS_JOB_START_RAW_PATH="$TEMP_DIR/raw.json"

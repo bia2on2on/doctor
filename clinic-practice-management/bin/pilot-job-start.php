@@ -56,6 +56,18 @@ function cpms_pilot_job_start_main( array $args ): void {
     App::boot();
 
     $action = $args[1] ?? '';
+
+    if ( 'lock-state' === $action ) {
+        // READ-ONLY bounded probe used by the Pilot's bounded wait: prints exactly
+        // "1" while WordPress's own `doing_cron` spawn lock is held and "0" while it is
+        // free. It never clears, resets or overrides the lock, never trades it for a new
+        // one and never ticks the queue — the lock is only observed, then allowed to
+        // lapse naturally under WordPress's own WP_CRON_LOCK_TIMEOUT.
+        $lock = cpms_pilot_job_start_cron_lock_state();
+        // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fwrite -- CLI fixed-key probe output; WP_Filesystem is not available here.
+        fwrite( STDOUT, $lock['present'] ? "1\n" : "0\n" );
+        exit( 0 );
+    }
     $token  = getenv( 'CPMS_JOB_START_TOKEN' );
     if ( ! is_string( $token ) || 1 !== preg_match( '/\A[a-f0-9]{32}\z/D', $token ) ) {
         cpms_pilot_job_start_refuse( 'token' );
