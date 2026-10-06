@@ -49,8 +49,10 @@ requests/sec, failed and non-2xx counts) plus the run binding (run_id, run_attem
 event_name, head_sha, ref). This slice additionally publishes only the bounded diagnostic
 schema: runner CPU count, active MPM, five effective worker-capacity values, and per-level
 summary fields for host CPU/memory, Apache/PHP server CPU/memory/process count, and `ab`
-CPU/RSS. Raw `ab` bytes, response/header/body content, environment metadata, free-form
-manifest text, URLs/paths and file contents can never enter it.
+CPU/RSS; the additive Phase 17 job-start block carries only mode, fixed job type, sample
+count, p50/p95/p99/max, not-started count, and processing-failure count. Raw `ab` bytes,
+queue payloads/IDs, response/header/body content, environment metadata, free-form manifest
+text, URLs/paths and file contents can never enter it.
 
 Privacy invariant (contract §9): the generated JSON/MD/TXT are scanned before being written;
 Cookie/nonce/credential/PHI-shaped content aborts the run with rc=1. Only numbers, fixed
@@ -807,7 +809,8 @@ ADJUDICATION = (
 def build_report(measurements: List[Dict[str, Any]], meta: Dict[str, Any],
                  diagnostics: Optional[Dict[str, Any]] = None,
                  profiling: Optional[Dict[str, Any]] = None,
-                 page_overhead: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                 page_overhead: Optional[Dict[str, Any]] = None,
+                 job_start: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     if diagnostics is not None and diagnostics.get("status") == "ok":
         by_seq = {row["seq"]: row for row in diagnostics["measurements"]}
         for measurement in measurements:
@@ -849,6 +852,7 @@ def build_report(measurements: List[Dict[str, Any]], meta: Dict[str, Any],
         "diagnostics": diagnostics,
         "profiling": profiling,
         "page_overhead": page_overhead,
+        "job_start": job_start,
         "measurement_count": len(measurements),
         "measurements": measurements,
     }
@@ -880,6 +884,23 @@ def render_markdown(report: Dict[str, Any]) -> str:
                 non2xx=metrics.get("non_2xx_responses") or 0,
             )
         )
+    job_start = report.get("job_start")
+    if isinstance(job_start, dict) and job_start.get("status") == "ok":
+        lines += [
+            "",
+            "## Background-job first-start latency (Phase 17 measurement only)",
+            "",
+            "| mode | job type | samples | p50 ms | p95 ms | p99 ms | max ms | not started | processing failures |",
+            "|---|---|---:|---:|---:|---:|---:|---:|---:|",
+            "| {measurement_mode} | {job_type} | {sample_count} | {p50_ms} | {p95_ms} | {p99_ms} | "
+            "{max_ms} | {not_started_count} | {processing_failure_count} |".format(**job_start),
+            "",
+            "Boundary: persisted `created_at` to the first claim's persisted `started_at` for the exact "
+            "sample row; each sample has `max_attempts=1` and `attempts=1`, so retry overwrites cannot "
+            "masquerade as first start. Stored timestamps are UTC at whole-second precision (`.000`); "
+            "percentiles use nearest-rank. Processing failures are separate from start latency. "
+            "This run is explicitly tick-triggered, not autonomous; no latency threshold is applied.",
+        ]
     lines += [
         "",
         "## What the harness actually did",
@@ -958,12 +979,45 @@ def render_legacy_lines(report: Dict[str, Any]) -> List[str]:
 # (fail closed) and nothing is published.
 # ---------------------------------------------------------------------------
 
-SAFE_EVIDENCE_SCHEMA = "cpms.pilot-bench-evidence/4"
+SAFE_EVIDENCE_SCHEMA = "cpms.pilot-bench-evidence/5"
 SAFE_EVIDENCE_PURPOSE = (
     "Phase 17 — allowlisted privacy-safe projection of one Pilot/Staging benchmark run; "
     "measurement only, no NFR-PERF adjudication, no raw benchmark bytes, no free-form text, "
     "no unallowlisted environment metadata"
 )
+JOB_START_SCHEMA = "cpms.pilot-job-start/1"
+JOB_START_SAMPLE_COUNT = 100
+JOB_START_TIMESTAMP_QUANTUM_MS = 1000
+SAFE_JOB_START_MODES: Tuple[str, ...] = ("autonomous", "explicit_tick")
+SAFE_JOB_START_TYPES: Tuple[str, ...] = ("backup.run",)
+SAFE_JOB_START_FIELDS: Tuple[str, ...] = (
+    "measurement_mode",
+    "job_type",
+    "sample_count",
+    "p50_ms",
+    "p95_ms",
+    "p99_ms",
+    "max_ms",
+    "not_started_count",
+    "processing_failure_count",
+)
+
+
+def _job_start_test_input() -> Dict[str, Any]:
+    return {
+        "schema": JOB_START_SCHEMA,
+        "status": "ok",
+        "measurement_mode": "explicit_tick",
+        "job_type": "backup.run",
+        "sample_count": JOB_START_SAMPLE_COUNT,
+        "p50_ms": 49_000,
+        "p95_ms": 94_000,
+        "p99_ms": 98_000,
+        "max_ms": 99_000,
+        "not_started_count": 0,
+        "processing_failure_count": 1,
+    }
+
 
 # Request-level profiling (Phase 17 comparative profiling — measurement only).
 # The profiling pass takes sequential c=1 samples per endpoint with the server-side
@@ -1122,6 +1176,7 @@ SAFE_TOP_LEVEL_FIELDS: Tuple[str, ...] = (
     "diagnostics",
     "profiling",
     "page_overhead",
+    "job_start",
     "measurements",
 )
 SAFE_BINDING_KEYS: Tuple[str, ...] = ("run_id", "run_attempt", "event_name", "head_sha", "ref")
@@ -1583,12 +1638,68 @@ def _project_safe_page_overhead(raw: Any) -> Dict[str, Any]:
     return _checked_page_overhead(body)
 
 
+def _checked_job_start(raw: Any) -> Dict[str, Any]:
+    """Validate the exact REST-visible job-start allowlist; latency is never a gate."""
+    if not isinstance(raw, dict) or set(raw) != set(SAFE_JOB_START_FIELDS):
+        raise EvidenceRefused("job_start: unexpected field set")
+    mode = raw["measurement_mode"]
+    if not isinstance(mode, str) or mode not in SAFE_JOB_START_MODES:
+        raise EvidenceRefused("job_start.measurement_mode: not allowlisted")
+    job_type = raw["job_type"]
+    if not isinstance(job_type, str) or job_type not in SAFE_JOB_START_TYPES:
+        raise EvidenceRefused("job_start.job_type: not allowlisted")
+    sample_count = _safe_int(raw["sample_count"], "job_start.sample_count",
+                              JOB_START_SAMPLE_COUNT, JOB_START_SAMPLE_COUNT)
+    statistics = {}
+    for field in ("p50_ms", "p95_ms", "p99_ms", "max_ms"):
+        value = _safe_int(raw[field], "job_start." + field, 0, MAX_LATENCY_MS)
+        if value % JOB_START_TIMESTAMP_QUANTUM_MS != 0:
+            raise EvidenceRefused("job_start." + field + ": violates whole-second timestamp resolution")
+        statistics[field] = value
+    p50 = statistics["p50_ms"]
+    p95 = statistics["p95_ms"]
+    p99 = statistics["p99_ms"]
+    maximum = statistics["max_ms"]
+    if not p50 <= p95 <= p99 <= maximum:
+        raise EvidenceRefused("job_start: percentiles/max are not monotonic")
+    not_started = _safe_int(raw["not_started_count"], "job_start.not_started_count", 0, sample_count)
+    if not_started != 0:
+        raise EvidenceRefused("job_start.not_started_count: unfinished starts are refused")
+    processing_failures = _safe_int(
+        raw["processing_failure_count"], "job_start.processing_failure_count", 0, sample_count
+    )
+    if not_started + processing_failures > sample_count:
+        raise EvidenceRefused("job_start: outcome counts exceed the sample count")
+    return {
+        "measurement_mode": mode,
+        "job_type": job_type,
+        "sample_count": sample_count,
+        "p50_ms": p50,
+        "p95_ms": p95,
+        "p99_ms": p99,
+        "max_ms": maximum,
+        "not_started_count": not_started,
+        "processing_failure_count": processing_failures,
+    }
+
+
+def _project_safe_job_start(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict) or raw.get("schema") != JOB_START_SCHEMA:
+        raise EvidenceRefused("report.job_start: missing or unexpected schema")
+    if raw.get("status") != "ok":
+        raise EvidenceRefused("report.job_start: not ok")
+    # Strip only the fixed transport wrapper; exact field equality rejects every
+    # extra value, including IDs, payloads, correlation tokens, or raw errors.
+    body = {key: value for key, value in raw.items() if key not in ("schema", "status")}
+    return _checked_job_start(body)
+
+
 def build_safe_evidence(report: Dict[str, Any]) -> Dict[str, Any]:
     """Project a parsed+scanned benchmark report onto the allowlisted evidence schema.
 
-    Only the five binding keys and the numeric measurement fields listed in
-    `SAFE_MEASUREMENT_FIELDS` are ever copied; everything else in the report
-    (environment metadata, human labels, paths, raw-dump references) is dropped.
+    Only the five binding keys, fixed endpoint labels, and the exact job-start mode/type/count/stat
+    fields are copied. Everything else in the report (environment metadata, human labels, paths,
+    raw-dump references, queue payloads/IDs, and arbitrary errors) is dropped.
     Raises `EvidenceRefused` on any malformed/unexpected structure or value.
     """
     if not isinstance(report, dict):
@@ -1612,6 +1723,7 @@ def build_safe_evidence(report: Dict[str, Any]) -> Dict[str, Any]:
         raise EvidenceRefused("report.diagnostics.measurements: does not match benchmark row count")
     profiling = _project_safe_profiling(report.get("profiling"))
     page_overhead = _project_safe_page_overhead(report.get("page_overhead"))
+    job_start = _project_safe_job_start(report.get("job_start"))
 
     rows: List[Dict[str, Any]] = []
     for index, raw in enumerate(measurements_in, start=1):
@@ -1649,6 +1761,7 @@ def build_safe_evidence(report: Dict[str, Any]) -> Dict[str, Any]:
         "diagnostics": diagnostics,
         "profiling": profiling,
         "page_overhead": page_overhead,
+        "job_start": job_start,
         "measurements": rows,
     }
 
@@ -1671,6 +1784,7 @@ def validate_safe_evidence(evidence: Any) -> Dict[str, Any]:
     diagnostics = _validate_safe_diagnostics(evidence["diagnostics"])
     profiling = _validate_safe_profiling(evidence["profiling"])
     page_overhead = _checked_page_overhead(evidence["page_overhead"])
+    job_start = _checked_job_start(evidence["job_start"])
     measurements = evidence["measurements"]
     if not isinstance(measurements, list) or not measurements:
         raise EvidenceRefused("evidence.measurements: expected a non-empty list")
@@ -1686,12 +1800,13 @@ def validate_safe_evidence(evidence: Any) -> Dict[str, Any]:
         "diagnostics": diagnostics,
         "profiling": profiling,
         "page_overhead": page_overhead,
+        "job_start": job_start,
         "measurements": rows,
     }
 
 
 def render_safe_evidence_markdown(evidence: Dict[str, Any]) -> str:
-    """Render the exact REST comment body from a VALIDATED projection (numbers only)."""
+    """Render the exact REST comment body from a validated, fixed-field projection."""
     binding = evidence["binding"]
     lines: List[str] = [
         "### Phase 17 — Pilot/Staging benchmark evidence (allowlisted projection)",
@@ -1779,6 +1894,7 @@ def render_safe_evidence_markdown(evidence: Dict[str, Any]) -> str:
             "| {round} | {state} | {samples} | {warmup} | {p50_ms} | {p95_ms} | {p99_ms} | "
             "{mean_ms} | {non_2xx_count} |".format(**row)
         )
+    job_start = evidence["job_start"]
     lines += [
         "",
         "Overhead (pooled ACTIVE rounds vs the DEACTIVATED round): active p95 "
@@ -1788,6 +1904,13 @@ def render_safe_evidence_markdown(evidence: Dict[str, Any]) -> str:
             delta=delta["delta_ms"],
             percent=("" if delta["delta_percent"] is None
                      else " (%s%%)" % delta["delta_percent"])),
+        "",
+        "### Background-job start latency (allowlisted)",
+        "",
+        "| mode | job type | samples | p50 ms | p95 ms | p99 ms | max ms | not started | processing failures |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|",
+        "| {measurement_mode} | {job_type} | {sample_count} | {p50_ms} | {p95_ms} | {p99_ms} | "
+        "{max_ms} | {not_started_count} | {processing_failure_count} |".format(**job_start),
         "",
         "Measurement-only semantics (unchanged): no latency threshold is applied and no NFR-PERF "
         "pass/fail is claimed; shared-runner numbers are NOT reference-server adjudication "
@@ -1899,6 +2022,41 @@ def parse_meta(pairs: List[str]) -> Dict[str, Any]:
     return meta
 
 
+def _job_start_json_object(pairs: List[Tuple[str, Any]]) -> Dict[str, Any]:
+    obj: Dict[str, Any] = {}
+    for key, value in pairs:
+        if key in obj:
+            raise EvidenceRefused("job_start_file_duplicate_key")
+        obj[key] = value
+    return obj
+
+
+def _reject_job_start_json_constant(value: str) -> None:
+    raise EvidenceRefused("job_start_file_nonfinite_number")
+
+
+def read_job_start_file(path: Path, expected_mode: str = "explicit_tick") -> Dict[str, Any]:
+    """Read the producer aggregate and pin its mode to the trusted workflow path."""
+    if expected_mode not in SAFE_JOB_START_MODES:
+        raise EvidenceRefused("job_start_expected_mode_not_allowlisted")
+    try:
+        if not path.is_file() or path.stat().st_size > 65_536:
+            raise EvidenceRefused("job_start_file_missing_or_oversize")
+        raw = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=_job_start_json_object,
+            parse_constant=_reject_job_start_json_constant,
+        )
+    except EvidenceRefused:
+        raise
+    except (OSError, UnicodeError, json.JSONDecodeError, RecursionError) as exc:
+        raise EvidenceRefused("job_start_file_invalid") from exc
+    projection = _project_safe_job_start(raw)
+    if projection["measurement_mode"] != expected_mode:
+        raise EvidenceRefused("job_start_mode_mismatch")
+    return raw
+
+
 def run(args: argparse.Namespace) -> int:
     manifest = Path(args.manifest)
     if not manifest.is_file():
@@ -1980,6 +2138,22 @@ def run(args: argparse.Namespace) -> int:
             }
             failures.append("PAGE OVERHEAD MEASUREMENT FAILURE: %s" % exc)
 
+    job_start: Optional[Dict[str, Any]] = None
+    job_start_path = getattr(args, "job_start", "") or ""
+    expected_job_start_mode = getattr(args, "job_start_mode", "explicit_tick")
+    if job_start_path:
+        try:
+            job_start = read_job_start_file(Path(job_start_path), expected_job_start_mode)
+        except EvidenceRefused:
+            job_start = {
+                "schema": JOB_START_SCHEMA,
+                "status": "measurement_failed",
+                "error_code": "input_refused",
+            }
+            failures.append("JOB START MEASUREMENT FAILURE: aggregate input refused")
+    else:
+        failures.append("JOB START MEASUREMENT FAILURE: aggregate input missing")
+
     for entry in entries:
         raw_path = raw_dir / entry["raw"]
         if not raw_path.is_file():
@@ -2017,7 +2191,7 @@ def run(args: argparse.Namespace) -> int:
             }
         )
 
-    report = build_report(measurements, meta, diagnostics, profiling, page_overhead)
+    report = build_report(measurements, meta, diagnostics, profiling, page_overhead, job_start)
     markdown = render_markdown(report)
     legacy = render_legacy_lines(report)
     payload = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
@@ -2335,6 +2509,8 @@ def _selftests() -> int:
     # 6) end-to-end over a temp tree
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
+        job_start_file = root / "job-start.json"
+        job_start_file.write_text(json.dumps(_job_start_test_input()), encoding="utf-8")
         raw_dir = root / "raw"
         raw_dir.mkdir()
         (raw_dir / "001.ab.txt").write_text(FIXTURE_AB, encoding="utf-8")
@@ -2349,6 +2525,7 @@ def _selftests() -> int:
         )
         out = root / "out" / "bench"
         rc = run(argparse.Namespace(
+            job_start=str(job_start_file),
             manifest=str(manifest), raw_dir=str(raw_dir), out_prefix=str(out),
             meta=["run_id=1", "head_sha=" + "0" * 40, "event_name=workflow_dispatch", "wp_url=http://localhost:8080"],
             fail_file=str(root / "fail.txt"),
@@ -2374,6 +2551,7 @@ def _selftests() -> int:
             encoding="utf-8",
         )
         rc2 = run(argparse.Namespace(
+            job_start=str(job_start_file),
             manifest=str(manifest2), raw_dir=str(raw_dir),
             out_prefix=str(root / "out2" / "bench"), meta=[], fail_file=str(root / "fail2.txt"),
         ))
@@ -2388,6 +2566,7 @@ def _selftests() -> int:
             encoding="utf-8",
         )
         rc3 = run(argparse.Namespace(
+            job_start=str(job_start_file),
             manifest=str(manifest3), raw_dir=str(raw_dir),
             out_prefix=str(root / "out3" / "bench"), meta=[], fail_file="",
         ))
@@ -2397,6 +2576,7 @@ def _selftests() -> int:
         manifest4 = root / "empty.jsonl"
         manifest4.write_text("\n", encoding="utf-8")
         rc4 = run(argparse.Namespace(
+            job_start=str(job_start_file),
             manifest=str(manifest4), raw_dir=str(raw_dir),
             out_prefix=str(root / "out4" / "bench"), meta=[], fail_file="",
         ))
@@ -2416,6 +2596,7 @@ def _selftests() -> int:
         )
         out5 = root / "out5" / "bench"
         rc5 = run(argparse.Namespace(
+            job_start=str(job_start_file),
             manifest=str(manifest5), raw_dir=str(raw_dir),
             out_prefix=str(out5), meta=[], fail_file="",
         ))
@@ -2440,6 +2621,7 @@ def _selftests() -> int:
         )
         out6 = root / "out6" / "bench"
         rc6 = run(argparse.Namespace(
+            job_start=str(job_start_file),
             manifest=str(manifest6), raw_dir=str(raw_dir),
             out_prefix=str(out6), meta=[], fail_file="",
         ))
@@ -2615,6 +2797,11 @@ def _selftests() -> int:
             **json.loads(json.dumps(_overhead_aggregate)),
         }
 
+    def _job_start_for(**overrides: Any) -> Dict[str, Any]:
+        job_start = _job_start_test_input()
+        job_start.update(overrides)
+        return job_start
+
     def _report(measurements, run=None, **extra):
         report = {
             "schema": "cpms.pilot-benchmark/2",
@@ -2629,6 +2816,8 @@ def _selftests() -> int:
             report["profiling"] = _profiling_for()
         if "page_overhead" not in report:
             report["page_overhead"] = _overhead_for()
+        if "job_start" not in report:
+            report["job_start"] = _job_start_for()
         return report
 
     def _refuses(name: str, report: Any) -> None:
@@ -2665,6 +2854,81 @@ def _selftests() -> int:
               "head_sha": "a" * 40, "ref": "arena/1ffa1d19-doctor",
           }, str(evidence["binding"]))
     check("evidence-count", evidence["measurement_count"] == 1)
+    check("job-start-schema-5", evidence["schema"] == "cpms.pilot-bench-evidence/5")
+    check("job-start-top-level-field-declared", "job_start" in SAFE_TOP_LEVEL_FIELDS)
+    check("job-start-field-set",
+          set(evidence["job_start"]) == set(SAFE_JOB_START_FIELDS),
+          str(sorted(evidence["job_start"])))
+    check("job-start-values-and-separate-outcome",
+          evidence["job_start"] == {
+              "measurement_mode": "explicit_tick", "job_type": "backup.run",
+              "sample_count": 100, "p50_ms": 49_000, "p95_ms": 94_000,
+              "p99_ms": 98_000, "max_ms": 99_000, "not_started_count": 0,
+              "processing_failure_count": 1,
+          }, str(evidence["job_start"]))
+    check("job-start-markdown-section",
+          "### Background-job start latency (allowlisted)" in evidence_md)
+    check("job-start-high-latency-is-data",
+          _checked_job_start(dict(evidence["job_start"], p50_ms=5_000, p95_ms=6_000,
+                                  p99_ms=7_000, max_ms=8_000))["p95_ms"] == 6_000)
+    check("job-start-autonomous-enum-supported",
+          _checked_job_start(dict(evidence["job_start"],
+                                  measurement_mode="autonomous"))["measurement_mode"] == "autonomous")
+    with tempfile.TemporaryDirectory() as job_start_tmp:
+        job_start_path = Path(job_start_tmp) / "aggregate.json"
+        job_start_path.write_text(json.dumps(_job_start_test_input()), encoding="utf-8")
+        check("job-start-file-mode-pinned-to-explicit-tick",
+              read_job_start_file(job_start_path)["measurement_mode"] == "explicit_tick")
+        try:
+            read_job_start_file(job_start_path, "autonomous")
+        except EvidenceRefused:
+            check("job-start-file-refuses-forced-tick-as-autonomous", True)
+        else:
+            check("job-start-file-refuses-forced-tick-as-autonomous", False)
+        job_start_path.write_text(
+            '{"schema":"cpms.pilot-job-start/1","schema":"cpms.pilot-job-start/1"}',
+            encoding="utf-8",
+        )
+        try:
+            read_job_start_file(job_start_path)
+        except EvidenceRefused:
+            check("job-start-file-duplicate-key-refused", True)
+        else:
+            check("job-start-file-duplicate-key-refused", False)
+        job_start_path.write_text("NaN", encoding="utf-8")
+        try:
+            read_job_start_file(job_start_path)
+        except EvidenceRefused:
+            check("job-start-file-nonfinite-refused", True)
+        else:
+            check("job-start-file-nonfinite-refused", False)
+
+    def _job_start_refuses(name: str, mutate) -> None:
+        candidate = _report([_measurement(1, "cold", "health", 1, 200)])
+        mutate(candidate["job_start"])
+        _refuses("job-start-" + name, candidate)
+
+    _job_start_refuses("mode", lambda block: block.update({"measurement_mode": "forced_tick"}))
+    _job_start_refuses("job-type", lambda block: block.update({"job_type": "patient.export"}))
+    _job_start_refuses("count", lambda block: block.update({"sample_count": 99}))
+    _job_start_refuses("missing-field", lambda block: block.pop("max_ms"))
+    _job_start_refuses("extra-id", lambda block: block.update({"id": 8123}))
+    _job_start_refuses("extra-payload", lambda block: block.update({"payload": "SYN-0042"}))
+    _job_start_refuses("extra-correlation", lambda block: block.update({"correlation": "random-token"}))
+    _job_start_refuses("not-started", lambda block: block.update({"not_started_count": 1}))
+    _job_start_refuses("nonfinite", lambda block: block.update({"p95_ms": float("nan")}))
+    _job_start_refuses("subsecond-stat", lambda block: block.update({"p50_ms": 1_500}))
+    _job_start_refuses("nonmonotonic", lambda block: block.update({"p95_ms": 48_000}))
+    _job_start_refuses("max-below-p99", lambda block: block.update({"max_ms": 97_000}))
+    _job_start_refuses("processing-failure-bool",
+                       lambda block: block.update({"processing_failure_count": True}))
+    missing_job_start = _report([_measurement(1, "cold", "health", 1, 200)])
+    missing_job_start.pop("job_start")
+    _refuses("job-start-missing", missing_job_start)
+    failed_job_start = _report([_measurement(1, "cold", "health", 1, 200)])
+    failed_job_start["job_start"]["status"] = "measurement_failed"
+    _refuses("job-start-failed-status", failed_job_start)
+
     check("diagnostic-field-set",
           set(evidence["diagnostics"]) == set(SAFE_DIAGNOSTIC_FIELDS))
     check("diagnostic-static-values",
@@ -2847,6 +3111,8 @@ def _selftests() -> int:
     #     and a failing run produces NO evidence file at all (fail closed)
     with tempfile.TemporaryDirectory() as tmp3:
         root3 = Path(tmp3)
+        job_start_file = root3 / "job-start.json"
+        job_start_file.write_text(json.dumps(_job_start_test_input()), encoding="utf-8")
         raw3 = root3 / "raw"
         raw3.mkdir()
         manifest3 = root3 / "manifest.jsonl"
@@ -2883,6 +3149,7 @@ def _selftests() -> int:
         out3 = root3 / "out" / "bench"
         ev_prefix = root3 / "out" / "bench.evidence"
         rc7 = run(argparse.Namespace(
+            job_start=str(job_start_file),
             manifest=str(manifest3), raw_dir=str(raw3), out_prefix=str(out3),
             meta=["run_id=37361708008", "run_attempt=1", "head_sha=" + "b" * 40,
                   "event_name=push", "ref=arena/1ffa1d19-doctor",
@@ -2918,7 +3185,7 @@ def _selftests() -> int:
         check("evidence-e2e-no-env-metadata",
               "runner" not in ev3 and "php_cli" not in ev3
               and "GitHub Actions" not in md3 and "8.1" not in md3)
-        check("evidence-e2e-schema-4", ev3["schema"] == "cpms.pilot-bench-evidence/4")
+        check("evidence-e2e-schema-5", ev3["schema"] == "cpms.pilot-bench-evidence/5")
         check("evidence-e2e-profiling-present",
               set(ev3["profiling"]["endpoints"]) == {"health", "availability", "wp-json-root"}
               and ev3["profiling"]["endpoints"]["health"]["n"] == 3)
@@ -2935,6 +3202,7 @@ def _selftests() -> int:
         )
         ev_prefix2 = root3 / "out2" / "bench.evidence"
         rc8 = run(argparse.Namespace(
+            job_start=str(job_start_file),
             manifest=str(manifest4), raw_dir=str(raw3), out_prefix=str(root3 / "out2" / "bench"),
             meta=["run_id=1", "run_attempt=1", "head_sha=" + "b" * 40, "event_name=push",
                   "ref=main"],
@@ -2948,7 +3216,7 @@ def _selftests() -> int:
 
     # 9) request-level profiling contract (Phase 17 comparative profiling — measurement
     #    only). The NameError wrapper is a permanent contract tripwire: if the
-    #    profiling reader/aggregator or the `/3` evidence projection ever goes missing,
+    #    profiling reader/aggregator or the `/5` evidence projection ever goes missing,
     #    `--test` fails loudly here instead of somewhere obscure.
     def _profiling_checks() -> None:
         check("profiling-names-exist", callable(read_profiling) and callable(aggregate_profiling))
@@ -3009,7 +3277,7 @@ def _selftests() -> int:
             }
             pevidence = build_safe_evidence(report)
             check("profiling-evidence-schema",
-                  pevidence["schema"] == "cpms.pilot-bench-evidence/4", pevidence["schema"])
+                  pevidence["schema"] == "cpms.pilot-bench-evidence/5", pevidence["schema"])
             check("profiling-evidence-top-level",
                   set(pevidence) == set(SAFE_TOP_LEVEL_FIELDS) and "profiling" in pevidence,
                   str(sorted(pevidence)))
@@ -3182,15 +3450,15 @@ def _selftests() -> int:
 
     # 10) public-page CPMS plugin overhead contract (Phase 17 — ACTIVE vs DEACTIVATED,
     #     measurement only). The NameError wrapper is the same permanent contract
-    #     tripwire used for profiling: if the overhead reader/aggregator or the `/4`
+    #     tripwire used for profiling: if the overhead reader/aggregator or the `/5`
     #     evidence projection ever goes missing, `--test` fails loudly here instead of
     #     publishing (or silently omitting) asymmetrical evidence.
     def _overhead_checks() -> None:
         # 10a) the contract must be wired into the published projection at all
         check("overhead-top-level-field-declared",
               "page_overhead" in SAFE_TOP_LEVEL_FIELDS, str(sorted(SAFE_TOP_LEVEL_FIELDS)))
-        check("overhead-evidence-schema-4",
-              SAFE_EVIDENCE_SCHEMA == "cpms.pilot-bench-evidence/4", SAFE_EVIDENCE_SCHEMA)
+        check("overhead-evidence-schema-5",
+              SAFE_EVIDENCE_SCHEMA == "cpms.pilot-bench-evidence/5", SAFE_EVIDENCE_SCHEMA)
         check("overhead-block-in-projection",
               isinstance(evidence.get("page_overhead"), dict), str(sorted(evidence)))
         check("overhead-block-in-markdown",
@@ -3429,6 +3697,8 @@ def _selftests() -> int:
         # 10e) missing overhead data must fail closed in the driver (no silent omission)
         with tempfile.TemporaryDirectory() as oh_tmp2:
             root4 = Path(oh_tmp2)
+            job_start_file4 = root4 / "job-start.json"
+            job_start_file4.write_text(json.dumps(_job_start_test_input()), encoding="utf-8")
             raw4 = root4 / "raw"
             raw4.mkdir()
             (raw4 / "001-cold-health.ab.txt").write_text(FIXTURE_AB, encoding="utf-8")
@@ -3449,6 +3719,7 @@ def _selftests() -> int:
             _write_profiling_tree(prof4, per_endpoint=3, warmup=5)
             ev_prefix4 = root4 / "out" / "bench.evidence"
             rc9 = run(argparse.Namespace(
+                job_start=str(job_start_file4),
                 manifest=str(manifest4), raw_dir=str(raw4),
                 out_prefix=str(root4 / "out" / "bench"),
                 meta=["run_id=42", "run_attempt=1", "head_sha=" + "c" * 40,
@@ -3516,6 +3787,17 @@ def main(argv: Optional[List[str]] = None) -> int:
             "read page-overhead.params.json + page-overhead.samples.tsv from the "
             "public-page CPMS plugin overhead pass (ACTIVE vs DEACTIVATED)"
         ),
+    )
+    parser.add_argument(
+        "--job-start",
+        default="/tmp/cpms-bench/cpms-pilot-job-start.json",
+        help="read the fail-closed privacy-safe Phase 17 queue first-start aggregate",
+    )
+    parser.add_argument(
+        "--job-start-mode",
+        choices=SAFE_JOB_START_MODES,
+        default="explicit_tick",
+        help="pin aggregate mode to the trusted collection path (default: explicit_tick)",
     )
     parser.add_argument("--out-prefix", default="/tmp/cpms-bench/cpms-pilot-benchmark")
     parser.add_argument(

@@ -139,18 +139,21 @@ jobs:
         run: |
           php -l bin/pilot-seed.php
           php -l bin/pilot-smoke.php
+          php -l bin/pilot-job-start.php
           bash -n bin/build-release.sh
           # The benchmark step runs on every watched push (main / arena/**) as well as on
           # schedule and workflow_dispatch. The parse/report/privacy self-tests below prove
           # that logic deterministically on every run, regardless of whether `ab`/the server
           # are reachable (no network, no WordPress, no `ab` binary needed).
-          python3 -m py_compile bin/pilot-bench-report.py bin/pilot-bench-diagnostics.py bin/pilot-page-overhead.py
+          python3 -m py_compile bin/pilot-bench-report.py bin/pilot-bench-diagnostics.py bin/pilot-page-overhead.py bin/pilot-job-start.py
           python3 bin/pilot-bench-diagnostics.py --test
           python3 bin/pilot-bench-report.py --test
           python3 bin/pilot-page-overhead.py --test
+          python3 bin/pilot-job-start.py --test
           {
             echo '### Pilot benchmark harness self-test — PASSED on this run'
             echo '`bin/pilot-bench-report.py --test` (deterministic: no network, no WordPress, no `ab` binary) — ab parsing, report generation, honesty fields, the artifact privacy gate and the REST-visible safe evidence projection (exact allowlist field sets, fixed endpoint labels, cold|warm-only phases, fail-closed refusal of malformed/unexpected values, sentinel-absence and tamper-refusal). This runs on every gate run; the live benchmark step itself runs on watched pushes (`main` / `arena/**`) as well as on `schedule` and `workflow_dispatch`.'
+            echo 'The Phase 17 queue-start self-test (`bin/pilot-job-start.py --test`) also proves fail-closed first-claim/retry/outcome validation and nearest-rank stats; live jobs use the production enqueue API and an explicitly labelled tick before System Cron.'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Environment specs (گزارش واقعی محیط)
@@ -317,6 +320,39 @@ jobs:
             echo 'WP ITSELF NOT SERVING (rest_route)'; exit 1
           fi
           curl -s -o /dev/null -w '%{http_code}\n' "$WP_URL/wp-json/" | grep -q 200 || { echo 'PRETTY PERMALINKS BROKEN (rewrite)'; exit 1; }
+
+      # ---------- Phase 17 background-job first-start measurement ----------
+      # runTick() processes the GLOBAL due queue; only the 100 token-correlated rows are
+      # aggregated. This fresh Pilot is still before patient/appointment seeding; the due
+      # recurring handlers were audited for that empty synthetic state, and backup is guarded
+      # disabled. Do not interpret the tick as isolated to the 100 samples.
+      # The System Cron step below starts the daemon and performs its manual tick first;
+      # keep this controlled observation ahead of it and label it explicit_tick only.
+      # The Pilot PHP producer runs from this checkout (not the whitelist-only Release ZIP);
+      # the actual tick command below comes from the deployed Release ZIP.
+      - name: Phase 17 queue first-start — explicit tick, 100 synthetic jobs
+        run: |
+          set -euo pipefail
+          PLUGIN_DIR="$WP_DIR/wp-content/plugins/clinic-practice-management"
+          TEMP_DIR=$(mktemp -d /tmp/cpms-job-start.XXXXXX)
+          chmod 700 "$TEMP_DIR"
+          trap 'unset CPMS_JOB_START_TOKEN CPMS_JOB_START_RAW_PATH; rm -rf "$TEMP_DIR"' EXIT
+          export CPMS_JOB_START_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
+          export CPMS_JOB_START_RAW_PATH="$TEMP_DIR/raw.json"
+          if ! WP_HOME="$WP_DIR" php bin/pilot-job-start.php enqueue >/dev/null 2>&1; then
+            echo '::error::synthetic job enqueue refused by the fail-closed preconditions'; exit 1
+          fi
+          if ! TICK_OUTPUT=$(WP_HOME="$WP_DIR" php "$PLUGIN_DIR/bin/cpms" jobs tick --limit=200 2>/dev/null); then
+            echo '::error::explicit production-path tick failed'; exit 1
+          fi
+          if [[ ! "$TICK_OUTPUT" =~ ^Processed[[:space:]][0-9]+[[:space:]]job[(]s[)]$ ]]; then
+            echo '::error::production tick did not return its safe processed-count form'; exit 1
+          fi
+          if ! WP_HOME="$WP_DIR" php bin/pilot-job-start.php collect >/dev/null 2>&1; then
+            echo '::error::synthetic sample collection refused'; exit 1
+          fi
+          python3 bin/pilot-job-start.py --raw "$TEMP_DIR/raw.json" --out /tmp/cpms-pilot-job-start.json
+          echo 'Phase 17 job-start sample set: explicit_tick; first persisted claim; 100 synthetic non-PHI samples; no latency threshold.' >> "$GITHUB_STEP_SUMMARY"
 
       # ---------- System Cron verification ----------
       - name: System Cron — daemon واقعی + bin/cpms (دستور تولید طبق user-guide)
@@ -808,7 +844,7 @@ jobs:
 
           RC=0
           python3 bin/pilot-bench-report.py \
-            --manifest "$MANIFEST" --raw-dir "$RAW" --diagnostics-dir "$DIAG" --profiling-dir "$BENCH/profiling" --overhead-dir "$BENCH/overhead" --out-prefix "$OUT" \
+            --manifest "$MANIFEST" --raw-dir "$RAW" --diagnostics-dir "$DIAG" --profiling-dir "$BENCH/profiling" --overhead-dir "$BENCH/overhead" --job-start /tmp/cpms-pilot-job-start.json --job-start-mode explicit_tick --out-prefix "$OUT" \
             --evidence-prefix "$OUT.evidence" \
             --meta "run_id=${{ github.run_id }}" \
             --meta "run_attempt=${{ github.run_attempt }}" \
@@ -865,8 +901,11 @@ jobs:
       # means/maxima, `$wpdb` min/max — no SQL, no values, no PHI), plus the additive
       # public-page CPMS plugin overhead block (fixed page token/label, sandwich ordering,
       # per-round sample/warmup counts, p50/p95/p99/mean and non-2xx count, and the pooled
-      # ACTIVE-vs-DEACTIVATED p95 delta — no URL, no path, no plugin list, no SQL). The run
-      # binding (run_id, run_attempt, event_name, head_sha, ref) is included.
+      # ACTIVE-vs-DEACTIVATED p95 delta — no URL, no path, no plugin list, no SQL), plus the
+      # additive queue first-start allowlist only: measurement_mode, fixed `backup.run` type,
+      # sample count, p50/p95/p99/max, not-started count and processing-failure count. No job ID,
+      # payload, correlation token, SQL, Clinic/patient label, or arbitrary error is published.
+      # The run binding (run_id, run_attempt, event_name, head_sha, ref) is included.
       # No raw `ab` dump, response/header/body content, unallowlisted environment metadata, path or
       # free-form text ever enters the projection.
       # PUBLICATION vs CORRECTNESS: publication reuses the repository-native evidence-comment
@@ -874,8 +913,9 @@ jobs:
       # GitHub/API permission or network failure is reported as `::notice::` and does NOT make
       # benchmark correctness depend on comment publication. The pre-publication re-validation
       # failure (`::error::`) is an evidence-integrity failure, not a latency/NFR judgement.
-      # No new workflow/job/dependency/trigger/threshold is added; this step runs only after the
-      # benchmark step above SUCCEEDED (default `success()` step condition).
+      # This publisher stays inside the existing workflow job/permissions; no new publication
+      # job, dependency, trigger, or latency threshold is added. It runs only after the benchmark
+      # step above SUCCEEDED (default `success()` step condition).
       - name: Post safe benchmark evidence projection (REST-visible, allowlist only)
         env:
           GH_TOKEN: ${{ github.token }}
