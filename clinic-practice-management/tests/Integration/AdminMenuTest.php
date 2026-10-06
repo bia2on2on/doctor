@@ -93,6 +93,27 @@ final class AdminMenuTest extends WP_UnitTestCase
         }
     }
 
+    public function testAdvancedPermissionsLabelIsDistinctFromStaffManagement(): void
+    {
+        $this->runAdminMenu();
+
+        $rolesMenu = null;
+        foreach ($GLOBALS['submenu']['cpms-dashboard'] ?? [] as $row) {
+            if (($row[2] ?? '') === 'cpms-roles') {
+                $rolesMenu = $row;
+                break;
+            }
+        }
+        $this->assertNotNull($rolesMenu, 'صفحهٔ مجوزهای پیشرفته باید در منو ثبت شود');
+        $this->assertSame('مجوزهای پیشرفته', $rolesMenu[1] ?? null, 'عنوان منوی مجوزهای پیشرفته باید از مدیریت پرسنل متمایز باشد');
+
+        ob_start();
+        RoleCapabilitiesPage::render();
+        $html = (string) ob_get_clean();
+        preg_match('/<h1>(.*?)<\/h1>/s', $html, $heading);
+        $this->assertSame('مجوزهای پیشرفته', $heading[1] ?? null, 'عنوان صفحهٔ مجوزهای پیشرفته نباید با صفحهٔ پرسنل یکی باشد');
+    }
+
     public function testRehomedSubmenusDoNotAppearUnderToolsOrSettings(): void
     {
         $this->runAdminMenu();

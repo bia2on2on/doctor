@@ -15,9 +15,11 @@
 غلط / هر خطای Console مرورگر = FAIL.
 """
 
+import base64
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 
@@ -51,11 +53,20 @@ console_errors = []  # (page_tag, text, url)
 page_errors = []     # (page_tag, text, url)
 
 CRITICAL_RE = re.compile(r"critical error|خطای بحرانی|wp-die-message", re.IGNORECASE)
+SENSITIVE_EVIDENCE_RE = re.compile(
+    r"(?i)([\w-]*(?:nonce|password|passwd|cookie|token|authorization|secret)[\w-]*\s*[=:]\s*)[^&\s<>\"']+"
+)
+
+
+def redact_evidence(value):
+    """Remove common secret-shaped values from diagnostic strings before publication."""
+    return SENSITIVE_EVIDENCE_RE.sub(r"\g<1>[redacted]", str(value))
 
 
 def check(name, ok, detail=""):
-    results.append((name, bool(ok), str(detail)[:1200]))
-    print(("PASS " if ok else "FAIL ") + name + (" — " + str(detail)[:1200] if detail else ""), flush=True)
+    safe_detail = redact_evidence(detail)[:1200]
+    results.append((name, bool(ok), safe_detail))
+    print(("PASS " if ok else "FAIL ") + name + (" — " + safe_detail if safe_detail else ""), flush=True)
 
 
 def is_cpms_url(url):
@@ -247,21 +258,29 @@ def excerpt(body, limit=400):
     return re.sub(r"\s+", " ", text).strip()[:limit]
 
 
+def write_safe_page_record(tag, name, status, critical_error, denied=None):
+    """Persist only non-sensitive page metadata, never HTML/form values/nonces."""
+    record = {
+        "screen": name,
+        "http_status": int(status),
+        "critical_error": bool(critical_error),
+    }
+    if denied is not None:
+        record["denied"] = bool(denied)
+    with open(f"{OUT}/logs/{tag}-{name}.json", "w") as f:
+        json.dump(record, f, ensure_ascii=False, indent=2)
+
+
 def goto_admin(page, tag, path, shot_name):
     resp = page.goto(f"{BASE}/wp-admin/{path}", wait_until="domcontentloaded")
     page.wait_for_timeout(1200)  # settle کوتاه برای رندر/JS (بدون مکث طولانی)
     status = resp.status if resp else 0
     body = page.content()
     page.screenshot(path=f"{OUT}/screenshots/{shot_name}.png", full_page=True)
-    with open(f"{OUT}/logs/{tag}-{shot_name}.html", "w") as f:
-        f.write(body or "")
-    check(f"{tag}.{shot_name}.http200", status == 200, f"HTTP {status}")
     crit = CRITICAL_RE.search(body or "")
-    detail = path
-    if crit:
-        s = max(0, crit.start() - 500)
-        detail = "…" + re.sub(r"\s+", " ", (body or "")[s : crit.end() + 500]).strip() + "…"
-    check(f"{tag}.{shot_name}.no_critical_error", not crit, detail)
+    write_safe_page_record(tag, shot_name, status, crit is not None)
+    check(f"{tag}.{shot_name}.http200", status == 200, f"HTTP {status} — {shot_name}")
+    check(f"{tag}.{shot_name}.no_critical_error", crit is None, f"critical_error={crit is not None} — {shot_name}")
     return status, body
 
 
@@ -286,14 +305,13 @@ def assert_denied(page, tag, path, name):
     status = resp.status if resp else 0
     body = page.content()
     page.screenshot(path=f"{OUT}/screenshots/{name}.png", full_page=True)
-    with open(f"{OUT}/logs/{tag}-{name}.html", "w") as f:
-        f.write(body or "")
     denied = (
         status in (401, 403)
         or "not allowed to access this page" in (body or "").lower()
         or "دسترسی ندارید" in (body or "")
         or "You need a higher level of permission" in (body or "")
     )
+    write_safe_page_record(tag, name, status, CRITICAL_RE.search(body or "") is not None, denied=denied)
     check(f"{tag}.direct.{name}.denied", denied, f"HTTP {status} (باید DENIED باشد)")
     # فقط ردِ عمدی را می‌سنجیم؛ خطاهای مرورگر این ناوبری (403 resource-load) خارج از گیت است.
     del console_errors[before_c:]
@@ -506,6 +524,223 @@ def new_persona_context(browser, width=1440, height=900):
     return browser.new_context(viewport={"width": width, "height": height}, locale="fa-IR")
 
 
+def _wizard_wp_eval(code, extra_env=None):
+    """Run a bounded disposable-WordPress fixture operation without echoing output."""
+    wp_dir = os.environ.get("WP_DIR", "").strip()
+    if not wp_dir:
+        raise RuntimeError("wizard_wp_dir_unavailable")
+    env = os.environ.copy()
+    env["MANAGER_CLINIC_ID"] = MANAGER_CLINIC_ID
+    if extra_env:
+        env.update(extra_env)
+    try:
+        result = subprocess.run(
+            ["wp", "eval", code, f"--path={wp_dir}", "--allow-root"],
+            capture_output=True,
+            text=True,
+            timeout=45,
+            env=env,
+        )
+    except Exception as exc:
+        raise RuntimeError("wizard_wp_cli_" + type(exc).__name__) from None
+    if result.returncode != 0:
+        raise RuntimeError("wizard_wp_cli_fixture_failed")
+    return result.stdout
+
+
+def _wizard_clinic_profile_snapshot():
+    code = r'''global $wpdb;
+$clinicId = (int) getenv('MANAGER_CLINIC_ID');
+if ($clinicId <= 0) { exit(41); }
+$db = \ClinicCore\Bootstrap\App::db();
+$table = $db->table('cpms_clinics');
+$row = $wpdb->get_row($wpdb->prepare('SELECT name, address, phone FROM ' . $table . ' WHERE id = %d', $clinicId), ARRAY_A);
+if (!is_array($row)) { exit(42); }
+echo 'CPMS_WIZARD_PROFILE_B64=' . base64_encode(wp_json_encode($row)) . PHP_EOL;'''
+    output = _wizard_wp_eval(code)
+    marker = next((line for line in output.splitlines() if line.startswith("CPMS_WIZARD_PROFILE_B64=")), "")
+    if not marker:
+        raise RuntimeError("wizard_clinic_profile_snapshot_missing")
+    try:
+        profile = json.loads(base64.b64decode(marker.split("=", 1)[1], validate=True).decode("utf-8"))
+    except Exception:
+        raise RuntimeError("wizard_clinic_profile_snapshot_invalid") from None
+    if not isinstance(profile, dict) or set(profile) != {"name", "address", "phone"}:
+        raise RuntimeError("wizard_clinic_profile_snapshot_invalid")
+    return profile
+
+
+def _wizard_set_clinic_profile(profile):
+    encoded = base64.b64encode(json.dumps(profile, ensure_ascii=False).encode("utf-8")).decode("ascii")
+    code = r'''global $wpdb;
+$clinicId = (int) getenv('MANAGER_CLINIC_ID');
+$raw = base64_decode((string) getenv('CPMS_WIZARD_PROFILE_B64'), true);
+$profile = is_string($raw) ? json_decode($raw, true) : null;
+if ($clinicId <= 0 || !is_array($profile) || array_diff(array_keys($profile), ['name', 'address', 'phone'])) { exit(43); }
+$db = \ClinicCore\Bootstrap\App::db();
+$result = $wpdb->update($db->table('cpms_clinics'), $profile, ['id' => $clinicId]);
+if ($result === false) { exit(44); }
+echo 'CPMS_WIZARD_PROFILE_UPDATED' . PHP_EOL;'''
+    output = _wizard_wp_eval(code, {"CPMS_WIZARD_PROFILE_B64": encoded})
+    if "CPMS_WIZARD_PROFILE_UPDATED" not in output:
+        raise RuntimeError("wizard_clinic_profile_update_missing")
+
+
+def _wizard_form(page, step, field_names):
+    forms = page.locator('form[method="post"][action*="admin-post.php"]')
+    form = forms.first
+    if forms.count() != 1:
+        check(f"manager.wizard.{step}.single_post_form", False, f"count={forms.count()}")
+        return form
+    action = form.locator('input[name="action"]')
+    step_input = form.locator('input[name="step"]')
+    nonce = form.locator('input[name="_wpnonce"]')
+    owned = all(form.locator(f'input[name="{name}"]').count() == 1 for name in field_names)
+    ok = (
+        action.count() == 1
+        and action.get_attribute("value") == "cpms_wizard_save"
+        and step_input.count() == 1
+        and step_input.get_attribute("value") == step
+        and nonce.count() == 1
+        and form.locator('button[type="submit"]').count() == 1
+        and owned
+    )
+    check(f"manager.wizard.{step}.form_owns_inputs_nonce_action_step_submit", ok, "form structure only; values are not recorded")
+    return form
+
+
+def wizard_acceptance(page):
+    """Real authenticated CPMS manager wizard submit/revisit and action-link proof.
+
+    The clean-WP fixture temporarily blanks only the canonical Clinic display name
+    so the clinic repair action is rendered. The profile is restored in `finally`;
+    no user, membership, clinician, patient, appointment, or clinical record is changed.
+    """
+    profile_before = _wizard_clinic_profile_snapshot()
+    blank_profile = dict(profile_before)
+    blank_profile["name"] = ""
+    try:
+        _wizard_set_clinic_profile(blank_profile)
+        page.set_viewport_size({"width": 1440, "height": 900})
+        status, _ = goto_admin(page, "manager", "admin.php?page=cpms-wizard&step=finish", "cpms-wizard-blockers")
+        clinic_action = page.locator('[data-cpms-wizard-action="clinic"]')
+        clinic_action_count = clinic_action.count()
+        check("manager.wizard.blocker.clinic_link_visible", status == 200 and clinic_action_count == 1,
+              "missing canonical name exposes its clinic-step repair action")
+        clinic_href = clinic_action.get_attribute("href") if clinic_action_count else ""
+        clinic_query = parse_qs(urlparse(clinic_href or "").query)
+        check("manager.wizard.blocker.clinic_link_is_whitelisted_step",
+              clinic_query.get("page") == ["cpms-wizard"] and clinic_query.get("step") == ["clinic"],
+              "destination is the registered clinic step")
+        clinic_response = page.goto(clinic_href or f"{BASE}/wp-admin/admin.php?page=cpms-wizard&step=clinic",
+                                    wait_until="domcontentloaded")
+        check("manager.wizard.blocker.clinic_link_resolves",
+              clinic_response is not None and clinic_response.status == 200
+              and page.locator('input[name="clinic_name"]').count() == 1,
+              "authorized manager reached the clinic repair form")
+
+        clinic_fields = {
+            "clinic_name": "کلینیک پذیرش آزمایشی",
+            "clinic_address": "تهران، خیابان آزادی، پلاک ۱۲",
+            "clinic_phone": "۰۲۱-۱۲۳۴۵۶۷۸",
+        }
+        form = _wizard_form(page, "clinic", list(clinic_fields))
+        review_link = form.locator('a[href*="step=review"]')
+        review_href = review_link.get_attribute("href") if review_link.count() else ""
+        check("manager.wizard.review_affordance_resolves", bool(review_href), "review link targets the registered step")
+        if review_href:
+            review_response = page.goto(review_href, wait_until="domcontentloaded")
+            check("manager.wizard.review_affordance_target", review_response is not None
+                  and review_response.status == 200
+                  and page.locator('[data-cpms-wizard-step="review"][aria-current="step"]').count() == 1,
+                  "review step rendered without changing saved progress")
+
+        clinic_url = f"{BASE}/wp-admin/admin.php?page=cpms-wizard&step=clinic"
+        clinic_response = page.goto(clinic_url, wait_until="domcontentloaded")
+        clinic_form = _wizard_form(page, "clinic", list(clinic_fields))
+        for name, value in clinic_fields.items():
+            clinic_form.locator(f'input[name="{name}"]').fill(value)
+        with page.expect_navigation(wait_until="domcontentloaded"):
+            clinic_form.locator('button[type="submit"]').click()
+        clinic_after_post = page.content()
+        check("manager.wizard.clinic.post_success_no_missing_name_error",
+              "ذخیره شد." in clinic_after_post and "نام کلینیک الزامی است." not in clinic_after_post,
+              "valid Persian clinic POST succeeded; submitted values are not recorded")
+        check("manager.wizard.clinic.post_advanced_saved_progress",
+              page.locator('[data-cpms-wizard-step="booking"][aria-current="step"]').count() == 1,
+              "the existing POST handler advanced persisted progress to booking")
+
+        clinic_response = page.goto(clinic_url, wait_until="domcontentloaded")
+        persisted_clinic = all(
+            page.locator(f'input[name="{name}"]').input_value() == value
+            for name, value in clinic_fields.items()
+        )
+        check("manager.wizard.clinic.revisit_persisted_canonical_profile",
+              clinic_response is not None and clinic_response.status == 200 and persisted_clinic,
+              "canonical Clinic name/address/phone reloaded after POST; values are not recorded")
+        assert_no_overflow(page, "manager-wizard-desktop", "clinic-1440")
+        page.screenshot(path=f"{OUT}/screenshots/cpms-wizard-clinic-desktop.png", full_page=True)
+
+        booking_values = {"duration": "35", "capacity": "2", "lead": "4", "future": "120", "cancel": "18"}
+        booking_url = f"{BASE}/wp-admin/admin.php?page=cpms-wizard&step=booking"
+        booking_response = page.goto(booking_url, wait_until="domcontentloaded")
+        booking_form = _wizard_form(page, "booking", list(booking_values))
+        for name, value in booking_values.items():
+            booking_form.locator(f'input[name="{name}"]').fill(value)
+        with page.expect_navigation(wait_until="domcontentloaded"):
+            booking_form.locator('button[type="submit"]').click()
+        booking_after_post = page.content()
+        check("manager.wizard.booking.post_success_and_progress",
+              "ذخیره شد." in booking_after_post
+              and page.locator('[data-cpms-wizard-step="users"][aria-current="step"]').count() == 1,
+              "valid custom booking values saved and the existing POST handler advanced progress")
+        booking_response = page.goto(booking_url, wait_until="domcontentloaded")
+        persisted_booking = all(
+            page.locator(f'input[name="{name}"]').input_value() == value
+            for name, value in booking_values.items()
+        )
+        check("manager.wizard.booking.revisit_persisted_custom_values",
+              booking_response is not None and booking_response.status == 200 and persisted_booking,
+              "all five custom values reloaded; values are not recorded")
+        assert_no_overflow(page, "manager-wizard-desktop", "booking-1440")
+        page.screenshot(path=f"{OUT}/screenshots/cpms-wizard-booking-desktop.png", full_page=True)
+
+        doctors_response = page.goto(f"{BASE}/wp-admin/admin.php?page=cpms-wizard&step=doctors",
+                                     wait_until="domcontentloaded")
+        clinicians_action = page.locator('[data-cpms-wizard-action="clinicians"]')
+        clinicians_href = clinicians_action.get_attribute("href") if clinicians_action.count() else ""
+        clinicians_response = page.goto(clinicians_href, wait_until="domcontentloaded") if clinicians_href else None
+        clinicians_heading = page.locator("h1").inner_text() if clinicians_response is not None else ""
+        check("manager.wizard.clinicians_action_resolves_for_authorized_member",
+              doctors_response is not None and doctors_response.status == 200
+              and clinicians_response is not None and clinicians_response.status == 200
+              and "پزشکان و برنامه" in clinicians_heading,
+              "trusted-membership manager reached the existing clinicians destination")
+
+        health_response = page.goto(f"{BASE}/wp-admin/admin.php?page=cpms-wizard&step=health",
+                                    wait_until="domcontentloaded")
+        system_action = page.locator('[data-cpms-wizard-action="system"]')
+        system_href = system_action.get_attribute("href") if system_action.count() else ""
+        system_response = page.goto(system_href, wait_until="domcontentloaded") if system_href else None
+        system_heading = page.locator("h1").inner_text() if system_response is not None else ""
+        check("manager.wizard.system_action_resolves_for_authorized_config_user",
+              health_response is not None and health_response.status == 200
+              and system_response is not None and system_response.status == 200
+              and "سیستم" in system_heading,
+              "authorized manager reached the existing system health destination")
+
+        page.set_viewport_size({"width": 390, "height": 844})
+        for step in ("clinic", "booking"):
+            response = page.goto(f"{BASE}/wp-admin/admin.php?page=cpms-wizard&step={step}",
+                                 wait_until="domcontentloaded")
+            check(f"manager.wizard.{step}.mobile_http200", response is not None and response.status == 200,
+                  "mobile wizard page loaded at 390px")
+            assert_no_overflow(page, "manager-wizard-mobile", f"{step}-390")
+            page.screenshot(path=f"{OUT}/screenshots/cpms-wizard-{step}-mobile-390.png", full_page=True)
+    finally:
+        _wizard_set_clinic_profile(profile_before)
+
+
 def wp_route_and_params(url):
     """route/param یک URL را دقیقاً همان‌طور که وردپرس حل می‌کند برمی‌گرداند.
 
@@ -568,10 +803,9 @@ def public_booking_permalink(browser):
     status = resp.status if resp else 0
     body = pub_page.content()
     pub_page.screenshot(path=f"{OUT}/screenshots/{tag}-plain.png", full_page=True)
-    with open(f"{OUT}/logs/{tag}-plain.html", "w") as f:
-        f.write(body or "")
+    write_safe_page_record(tag, "plain", status, CRITICAL_RE.search(body or "") is not None)
 
-    check(f"{tag}.http200", status == 200, f"HTTP {status} @ {pub_page.url}")
+    check(f"{tag}.http200", status == 200, f"HTTP {status}")
     check(f"{tag}.anonymous_no_login_redirect", "wp-login.php" not in (pub_page.url or ""), f"final={pub_page.url}")
     check(f"{tag}.shortcode_not_echoed", "[cpms_public_booking" not in (body or ""),
           "shortcode باید توسط وردپرس اجرا شود، نه اینکه عیناً برگردد")
@@ -972,7 +1206,26 @@ with sync_playwright() as p:
                     if mm:
                         goto_admin(page, "manager", "admin.php?page=cpms-clinicians&" + mm.group(0), "cpms-mgr-schedule")
             except Exception as e:  # pragma: no cover
-                check("manager.doctor_schedule.link_found", False, str(e))
+                check("manager.doctor_schedule.link_found", False, type(e).__name__)
+
+            wizard_console_start = len(console_errors)
+            wizard_page_error_start = len(page_errors)
+            try:
+                wizard_acceptance(page)
+            except Exception as e:  # pragma: no cover
+                check("manager.wizard.flow_completed", False, type(e).__name__)
+            wizard_console_errors = [
+                error for error in console_errors[wizard_console_start:]
+                if error[0] == "manager" and is_cpms_url(error[2])
+            ]
+            wizard_page_errors = [
+                error for error in page_errors[wizard_page_error_start:]
+                if error[0] == "manager" and is_cpms_url(error[2])
+            ]
+            check("manager.wizard.no_flow_console_errors", not wizard_console_errors,
+                  f"{len(wizard_console_errors)} console errors (messages suppressed)")
+            check("manager.wizard.no_flow_page_errors", not wizard_page_errors,
+                  f"{len(wizard_page_errors)} page errors (messages suppressed)")
         page.close()
         mgrctx.close()
 
@@ -1020,15 +1273,15 @@ with sync_playwright() as p:
 # ---------- خطاهای مرورگر (فقط در صفحات CPMS؛ نه در صفحهٔ فرود وردپرس profile.php) ----------
 with open(f"{OUT}/logs/browser-console-errors.log", "w") as f:
     for tag, msg, url in console_errors:
-        f.write(f"[{tag}] {msg} <{url}>\n")
+        f.write(f"[{tag}] {redact_evidence(msg)} <{redact_evidence(url)}>\n")
 with open(f"{OUT}/logs/browser-page-errors.log", "w") as f:
     for tag, msg, url in page_errors:
-        f.write(f"[{tag}] {msg} <{url}>\n")
+        f.write(f"[{tag}] {redact_evidence(msg)} <{redact_evidence(url)}>\n")
 
 cm_errors = [e for e in console_errors if is_cpms_url(e[2])]
 pg_errors = [e for e in page_errors if is_cpms_url(e[2])]
-check("browser.no_console_errors", len(cm_errors) == 0, f"{len(cm_errors)} خطا در صفحات CPMS — " + " || ".join(f"[{t}] {m[:400]} <{u[:100]}>" for t, m, u in cm_errors[:4]))
-check("browser.no_page_errors", len(pg_errors) == 0, f"{len(pg_errors)} خطا در صفحات CPMS — " + " || ".join(f"[{t}] {m[:400]} <{u[:100]}>" for t, m, u in pg_errors[:4]))
+check("browser.no_console_errors", len(cm_errors) == 0, f"{len(cm_errors)} console errors in CPMS pages (messages suppressed)")
+check("browser.no_page_errors", len(pg_errors) == 0, f"{len(pg_errors)} page errors in CPMS pages (messages suppressed)")
 
 # ---------- جمع‌بندی ----------
 failed = [r for r in results if not r[1]]
