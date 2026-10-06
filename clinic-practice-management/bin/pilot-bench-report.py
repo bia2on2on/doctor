@@ -1310,6 +1310,63 @@ def _entry(seq: int, phase: str, label: str, endpoint: str, path: str, concurren
     }
 
 
+def _profile_sample(endpoint: str, **overrides: Any) -> Dict[str, Any]:
+    """One valid `cpms.req-profile/1` per-request header payload (self-test fixture)."""
+    sample = {
+        "schema": "cpms.req-profile/1",
+        "endpoint": endpoint,
+        "t_total_ms": 20.0,
+        "t_boot_ms": 5.0,
+        "t_init_ms": 3.0,
+        "t_dispatch_ms": 12.0,
+        "cpms_q": 30,
+        "cpms_q_boot": 0,
+        "cpms_q_init": 24,
+        "cpms_q_dispatch": 6,
+        "cpms_db_ms": 7.5,
+        "cpms_db_ms_boot": 0.0,
+        "cpms_db_ms_init": 3.0,
+        "cpms_db_ms_dispatch": 4.5,
+        "wp_q": 42,
+        "wp_q_boot": 30,
+        "wp_q_init": 4,
+        "wp_q_dispatch": 8,
+    }
+    sample.update(overrides)
+    return sample
+
+
+def _write_profiling_tree(root: Path, per_endpoint: int = 3, warmup: int = 5) -> None:
+    """Write a valid profiling input dir: `profiling.params.json` + `profiling.samples.tsv`.
+
+    CPMS-layer counts stay constant across samples (the constancy invariant);
+    `$wpdb` totals vary by sample index (the min/max invariant); per-endpoint
+    dispatch shapes differ so aggregation separation is observable.
+    """
+    params = {"samples_per_endpoint": per_endpoint, "warmup_per_endpoint": warmup, "concurrency": 1}
+    (root / "profiling.params.json").write_text(json.dumps(params), encoding="utf-8")
+    shapes = {
+        "health": {"dispatch_ms": 12.0},
+        "availability": {"dispatch_ms": 14.0},
+        "wp-json-root": {"dispatch_ms": 10.0, "cpms_q": 24, "cpms_q_dispatch": 0,
+                         "cpms_db_ms": 3.0, "cpms_db_ms_dispatch": 0.0},
+    }
+    lines: List[str] = []
+    for endpoint, shape in shapes.items():
+        base_dispatch = float(shape.pop("dispatch_ms"))
+        for index in range(per_endpoint):
+            sample = _profile_sample(
+                endpoint,
+                **shape,
+                t_dispatch_ms=base_dispatch + index,
+                t_total_ms=8.0 + base_dispatch + index,
+                wp_q=42 + index,
+                wp_q_dispatch=8 + index,
+            )
+            lines.append("%s\t200\t%s" % (endpoint, json.dumps(sample, ensure_ascii=False)))
+    (root / "profiling.samples.tsv").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def _selftests() -> int:
     import tempfile
 
@@ -1966,6 +2023,241 @@ def _selftests() -> int:
         check("evidence-e2e-failing-run-no-evidence",
               not Path(str(ev_prefix2) + ".json").exists()
               and not Path(str(ev_prefix2) + ".md").exists())
+
+    # 9) request-level profiling contract (Phase 17 comparative profiling — measurement
+    #    only). RED: `read_profiling` / `aggregate_profiling` / the `/3` evidence
+    #    projection do not exist yet — the first missing name raises NameError, which the
+    #    wrapper below records as one deterministic RED line. GREEN must make every
+    #    check in this block pass without touching any check above.
+    def _profiling_checks() -> None:
+        check("profiling-names-exist", callable(read_profiling) and callable(aggregate_profiling))
+
+        def _prefuses(name: str, make_tree) -> None:
+            with tempfile.TemporaryDirectory() as bad_tmp:
+                bad_root = Path(bad_tmp)
+                make_tree(bad_root)
+                try:
+                    batch = read_profiling(bad_root)
+                except ProfilingInputRefused:
+                    return
+                try:
+                    aggregate_profiling(batch)
+                except ProfilingInputRefused:
+                    return
+                check("profiling-refuses-" + name, False, "unexpectedly accepted")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_profiling_tree(root, per_endpoint=3, warmup=5)
+            batch = read_profiling(root)
+            check("profiling-batch-schema",
+                  batch["schema"] == "cpms.req-profile-batch/1" and batch["status"] == "ok")
+            check("profiling-params",
+                  batch["params"] == {"samples_per_endpoint": 3, "warmup_per_endpoint": 5,
+                                      "concurrency": 1}, str(batch["params"]))
+            check("profiling-sample-count", len(batch["samples"]) == 9, str(len(batch["samples"])))
+            agg = aggregate_profiling(batch)
+            check("profiling-agg-endpoints",
+                  set(agg["endpoints"]) == {"health", "availability", "wp-json-root"})
+            check("profiling-agg-n",
+                  all(agg["endpoints"][ep]["n"] == 3
+                      for ep in ("health", "availability", "wp-json-root")))
+            health = agg["endpoints"]["health"]
+            check("profiling-agg-mean", health["t_total_mean_ms"] == 21.0,
+                  str(health["t_total_mean_ms"]))
+            check("profiling-agg-max", health["t_total_max_ms"] == 22.0,
+                  str(health["t_total_max_ms"]))
+            check("profiling-agg-dispatch-mean", health["t_dispatch_mean_ms"] == 13.0)
+            check("profiling-agg-cpms-q",
+                  health["cpms_q"] == 30 and health["cpms_q_init"] == 24
+                  and health["cpms_q_dispatch"] == 6 and health["cpms_q_boot"] == 0)
+            check("profiling-agg-wp-minmax",
+                  health["wp_q_min"] == 42 and health["wp_q_max"] == 44
+                  and health["wp_q_dispatch_min"] == 8 and health["wp_q_dispatch_max"] == 10)
+            check("profiling-agg-db-mean", health["cpms_db_total_mean_ms"] == 7.5)
+            check("profiling-agg-index-zero-dispatch",
+                  agg["endpoints"]["wp-json-root"]["cpms_q_dispatch"] == 0
+                  and agg["endpoints"]["wp-json-root"]["cpms_q"] == 24)
+            check("profiling-agg-availability-separate",
+                  agg["endpoints"]["availability"]["t_dispatch_mean_ms"] == 15.0)
+
+            report = _report([_measurement(1, "cold", "health", 1, 200)])
+            report["profiling"] = {
+                "schema": "cpms.req-profile-batch/1", "status": "ok",
+                "params": batch["params"], "aggregates": agg,
+            }
+            pevidence = build_safe_evidence(report)
+            check("profiling-evidence-schema",
+                  pevidence["schema"] == "cpms.pilot-bench-evidence/3", pevidence["schema"])
+            check("profiling-evidence-top-level",
+                  set(pevidence) == set(SAFE_TOP_LEVEL_FIELDS) and "profiling" in pevidence,
+                  str(sorted(pevidence)))
+            check("profiling-evidence-block-field-set",
+                  set(pevidence["profiling"]) == set(SAFE_PROFILING_FIELDS),
+                  str(sorted(pevidence["profiling"])))
+            check("profiling-evidence-endpoint-keys",
+                  set(pevidence["profiling"]["endpoints"])
+                  == {"health", "availability", "wp-json-root"})
+            check("profiling-evidence-endpoint-field-set",
+                  set(pevidence["profiling"]["endpoints"]["health"])
+                  == set(SAFE_PROFILING_ENDPOINT_FIELDS),
+                  str(sorted(pevidence["profiling"]["endpoints"]["health"])))
+            pjson = json.dumps(pevidence, ensure_ascii=False, indent=2)
+            pmd = render_safe_evidence_markdown(pevidence)
+            check("profiling-md-section", "### Request-level profiling (allowlisted)" in pmd)
+            check("profiling-md-clean", scan_forbidden(pmd) == [] and scan_forbidden(pjson) == [],
+                  str(scan_forbidden(pmd) + scan_forbidden(pjson)))
+            (root / "pevidence.json").write_text(pjson + "\n", encoding="utf-8")
+            check("profiling-verify-roundtrip",
+                  verify_evidence_file(root / "pevidence.json") == 0)
+            for field in SAFE_PROFILING_ENDPOINT_FIELDS:
+                tampered_ep = json.loads(pjson)
+                tampered_ep["profiling"]["endpoints"]["health"].pop(field)
+                try:
+                    validate_safe_evidence(tampered_ep)
+                except EvidenceRefused:
+                    pass
+                else:
+                    check("profiling-endpoint-removal-refused-" + field, False)
+            for field in SAFE_PROFILING_FIELDS:
+                tampered_block = json.loads(pjson)
+                tampered_block["profiling"].pop(field)
+                try:
+                    validate_safe_evidence(tampered_block)
+                except EvidenceRefused:
+                    pass
+                else:
+                    check("profiling-block-removal-refused-" + field, False)
+            tampered_extra = json.loads(pjson)
+            tampered_extra["profiling"]["endpoints"]["health"]["sql_text"] = "SELECT 1"
+            try:
+                validate_safe_evidence(tampered_extra)
+            except EvidenceRefused:
+                pass
+            else:
+                check("profiling-extra-field-refused", False)
+            missing = _report([_measurement(1, "cold", "health", 1, 200)])
+            missing.pop("profiling", None)
+            try:
+                build_safe_evidence(missing)
+            except EvidenceRefused:
+                pass
+            else:
+                check("profiling-missing-block-refused", False)
+            failed_status = _report([_measurement(1, "cold", "health", 1, 200)])
+            failed_status["profiling"] = {"schema": "cpms.req-profile-batch/1",
+                                          "status": "measurement_failed", "error_code": "x"}
+            try:
+                build_safe_evidence(failed_status)
+            except EvidenceRefused:
+                pass
+            else:
+                check("profiling-failed-status-refused", False)
+
+        # read/aggregate-level refusals (fail closed, never partial evidence)
+        def _mutate_sample(bad_root: Path, endpoint: str, index: int, mutate) -> None:
+            _write_profiling_tree(bad_root, per_endpoint=3, warmup=5)
+            tsv = bad_root / "profiling.samples.tsv"
+            out: List[str] = []
+            seen = 0
+            for line in tsv.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                ep, code, payload = line.split("\t")
+                if ep == endpoint:
+                    if seen == index:
+                        sample = json.loads(payload)
+                        mutate(sample)
+                        payload = json.dumps(sample, ensure_ascii=False)
+                    seen += 1
+                out.append("%s\t%s\t%s" % (ep, code, payload))
+            tsv.write_text("\n".join(out) + "\n", encoding="utf-8")
+
+        def _rewrite_line(bad_root: Path, lineno: int, new_line: str) -> None:
+            _write_profiling_tree(bad_root, per_endpoint=3, warmup=5)
+            tsv = bad_root / "profiling.samples.tsv"
+            kept = [line for line in tsv.read_text(encoding="utf-8").splitlines() if line.strip()]
+            kept[lineno] = new_line
+            tsv.write_text("\n".join(kept) + "\n", encoding="utf-8")
+
+        _prefuses("tsv-bad-endpoint",
+                  lambda r: _rewrite_line(
+                      r, 0, "HEALTH\t200\t%s" % json.dumps(_profile_sample("health"))))
+        _prefuses("tsv-other-endpoint",
+                  lambda r: _rewrite_line(
+                      r, 0, "other\t200\t%s" % json.dumps(_profile_sample("other"))))
+        _prefuses("http-500",
+                  lambda r: _rewrite_line(
+                      r, 0, "health\t500\t%s" % json.dumps(_profile_sample("health"))))
+        _prefuses("endpoint-mismatch",
+                  lambda r: _rewrite_line(
+                      r, 0, "health\t200\t%s" % json.dumps(_profile_sample("availability"))))
+        _prefuses("profile-malformed", lambda r: _rewrite_line(r, 0, "health\t200\t{nope"))
+        _prefuses("profile-missing-field",
+                  lambda r: _mutate_sample(r, "health", 0, lambda s: s.pop("t_boot_ms")))
+        _prefuses("profile-extra-field",
+                  lambda r: _mutate_sample(
+                      r, "health", 0, lambda s: s.update({"sql_text": "SELECT 1"})))
+        _prefuses("profile-bad-schema",
+                  lambda r: _mutate_sample(
+                      r, "health", 0, lambda s: s.update({"schema": "cpms.req-profile/2"})))
+        _prefuses("profile-bad-endpoint",
+                  lambda r: _mutate_sample(
+                      r, "health", 0, lambda s: s.update({"endpoint": "/clinic/v1/health"})))
+        _prefuses("profile-negative-t",
+                  lambda r: _mutate_sample(
+                      r, "health", 0, lambda s: s.update({"t_dispatch_ms": -1.0})))
+        _prefuses("profile-t-sum",
+                  lambda r: _mutate_sample(
+                      r, "health", 0, lambda s: s.update({"t_total_ms": 999.0})))
+        _prefuses("profile-q-sum",
+                  lambda r: _mutate_sample(r, "health", 0, lambda s: s.update({"cpms_q": 999})))
+        _prefuses("profile-negative-q",
+                  lambda r: _mutate_sample(r, "health", 0, lambda s: s.update({"wp_q": -1})))
+        _prefuses("profile-float-q",
+                  lambda r: _mutate_sample(
+                      r, "health", 0, lambda s: s.update({"cpms_q": 3.5})))
+        _prefuses("profile-nan",
+                  lambda r: _rewrite_line(
+                      r, 0, "health\t200\t%s"
+                      % json.dumps(_profile_sample("health", t_total_ms=float("nan")),
+                                   allow_nan=True)))
+        def _drop_params(bad_root: Path) -> None:
+            _write_profiling_tree(bad_root, per_endpoint=3, warmup=5)
+            (bad_root / "profiling.params.json").unlink()
+
+        def _extra_params(bad_root: Path) -> None:
+            _write_profiling_tree(bad_root, per_endpoint=3, warmup=5)
+            (bad_root / "profiling.params.json").write_text(
+                json.dumps({"samples_per_endpoint": 3, "warmup_per_endpoint": 5,
+                            "concurrency": 1, "note": "free text"}),
+                encoding="utf-8")
+
+        def _zero_params(bad_root: Path) -> None:
+            _write_profiling_tree(bad_root, per_endpoint=3, warmup=5)
+            (bad_root / "profiling.params.json").write_text(
+                json.dumps({"samples_per_endpoint": 0, "warmup_per_endpoint": 5,
+                            "concurrency": 1}),
+                encoding="utf-8")
+
+        def _short_samples(bad_root: Path) -> None:
+            _write_profiling_tree(bad_root, per_endpoint=3, warmup=5)
+            tsv = bad_root / "profiling.samples.tsv"
+            kept = [line for line in tsv.read_text(encoding="utf-8").splitlines() if line.strip()]
+            tsv.write_text("\n".join(kept[:8]) + "\n", encoding="utf-8")
+
+        _prefuses("params-missing", _drop_params)
+        _prefuses("params-extra", _extra_params)
+        _prefuses("params-zero-samples", _zero_params)
+        _prefuses("short-samples", _short_samples)
+        _prefuses("varying-cpms-q",
+                  lambda r: _mutate_sample(
+                      r, "health", 1, lambda s: s.update({"cpms_q": 31, "cpms_q_dispatch": 7})))
+
+    try:
+        _profiling_checks()
+    except NameError as exc:
+        check("profiling-contract-implemented", False, "missing profiling contract: %s" % exc)
 
     # 7) the scanner itself
     check("privacy-trips-cookie", "cookie" in scan_forbidden("Set-Cookie: sid=abc"))
