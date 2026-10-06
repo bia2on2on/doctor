@@ -532,13 +532,14 @@ final class CpmsSetupWizard
         try {
             $scope = ScopeContext::tryGet() ?? App::scope();
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ScopeContext exposes the public domain property as clinicId.
-            $row   = App::clinicRepository()->find( (int) $scope->clinicId );
+            $row = App::clinicRepository()->find( (int) $scope->clinicId );
             if ( is_array( $row ) ) {
                 // An empty canonical value is a real blocker; never mask it with stale settings.
                 return trim( (string) ( $row['name'] ?? '' ) );
             }
         } catch ( \Throwable ) {
             // Fallback is limited to legacy installs where the canonical row is unavailable.
+            return trim( (string) ( $settings->get( 'setup.clinic.name', '' ) ?? '' ) );
         }
 
         return trim( (string) ( $settings->get( 'setup.clinic.name', '' ) ?? '' ) );
