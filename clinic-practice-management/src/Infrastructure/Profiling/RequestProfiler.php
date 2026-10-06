@@ -251,8 +251,13 @@ final class RequestProfiler {
             }
         }
         foreach ( ['t_ns', 'cpms_q', 'cpms_db_ns', 'wp_q'] as $key ) {
-            if ( $init[ $key ] < $boot[ $key ] || $dispatch[ $key ] < $init[ $key ]
-                || $respond[ $key ] < $dispatch[ $key ] ) {
+            if ( $init[ $key ] < $boot[ $key ] ) {
+                return null;
+            }
+            if ( $dispatch[ $key ] < $init[ $key ] ) {
+                return null;
+            }
+            if ( $respond[ $key ] < $dispatch[ $key ] ) {
                 return null;
             }
         }
