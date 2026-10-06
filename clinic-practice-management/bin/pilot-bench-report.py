@@ -2677,6 +2677,274 @@ def _selftests() -> int:
     except NameError as exc:
         check("profiling-contract-implemented", False, "missing profiling contract: %s" % exc)
 
+    # 10) public-page CPMS plugin overhead contract (Phase 17 — ACTIVE vs DEACTIVATED,
+    #     measurement only). The NameError wrapper is the same permanent contract
+    #     tripwire used for profiling: if the overhead reader/aggregator or the `/4`
+    #     evidence projection ever goes missing, `--test` fails loudly here instead of
+    #     publishing (or silently omitting) asymmetrical evidence.
+    def _overhead_checks() -> None:
+        # 10a) the contract must be wired into the published projection at all
+        check("overhead-top-level-field-declared",
+              "page_overhead" in SAFE_TOP_LEVEL_FIELDS, str(sorted(SAFE_TOP_LEVEL_FIELDS)))
+        check("overhead-evidence-schema-4",
+              SAFE_EVIDENCE_SCHEMA == "cpms.pilot-bench-evidence/4", SAFE_EVIDENCE_SCHEMA)
+        check("overhead-block-in-projection",
+              isinstance(evidence.get("page_overhead"), dict), str(sorted(evidence)))
+        check("overhead-block-in-markdown",
+              "Public-page CPMS plugin overhead" in evidence_md)
+        # 10b) reader + aggregator exist (implementation names; absent => NameError)
+        check("overhead-reader-exists",
+              callable(read_page_overhead) and callable(aggregate_page_overhead))
+        check("overhead-schema-constant", OVERHEAD_SCHEMA == "cpms.page-overhead/1")
+        check("overhead-pages-allowlist",
+              dict(SAFE_OVERHEAD_PAGES) == {"home": "Public front page"})
+        check("overhead-states-allowlist",
+              tuple(SAFE_OVERHEAD_STATES) == ("active", "deactivated"))
+        check("overhead-ordering-allowlist",
+              tuple(SAFE_OVERHEAD_ORDERINGS) == ("active_deactivated_active",))
+        check("overhead-round-fields",
+              tuple(SAFE_OVERHEAD_ROUND_FIELDS)
+              == ("round", "state", "samples", "warmup", "p50_ms", "p95_ms", "p99_ms",
+                  "mean_ms", "non_2xx_count"))
+
+        def _write_overhead(root: Path, samples: int = 4, warmup: int = 2,
+                            page: str = "home", ordering: str = "active_deactivated_active",
+                            concurrency: int = 1,
+                            rounds=((1, "active"), (2, "deactivated"), (3, "active")),
+                            seconds=None) -> None:
+            (root / "page-overhead.params.json").write_text(
+                json.dumps({"schema": OVERHEAD_SCHEMA, "page": page, "ordering": ordering,
+                            "samples_per_round": samples, "warmup_per_round": warmup,
+                            "concurrency": concurrency}), encoding="utf-8")
+            lines: List[str] = []
+            for round_index, state in rounds:
+                for index in range(samples):
+                    value = (0.050 + 0.001 * index + 0.010 * round_index) if seconds is None \
+                        else seconds(round_index, index)
+                    lines.append("%d\t%s\t200\t%.6f" % (round_index, state, value))
+            (root / "page-overhead.samples.tsv").write_text(
+                "\n".join(lines) + "\n", encoding="utf-8")
+
+        def _orefuses(name: str, build) -> None:
+            with tempfile.TemporaryDirectory() as bad_tmp:
+                bad_root = Path(bad_tmp)
+                build(bad_root)
+                try:
+                    batch = read_page_overhead(bad_root)
+                    aggregate_page_overhead(batch)
+                except PageOverheadRefused:
+                    return
+            check("overhead-refuses-" + name, False, "unexpectedly accepted")
+
+        def _drop_params(root: Path) -> None:
+            _write_overhead(root)
+            (root / "page-overhead.params.json").unlink()
+
+        def _extra_params(root: Path) -> None:
+            _write_overhead(root)
+            (root / "page-overhead.params.json").write_text(
+                json.dumps({"schema": OVERHEAD_SCHEMA, "page": "home",
+                            "ordering": "active_deactivated_active", "samples_per_round": 4,
+                            "warmup_per_round": 2, "concurrency": 1, "url": "http://x/"}),
+                encoding="utf-8")
+
+        def _drop_samples(root: Path) -> None:
+            _write_overhead(root)
+            (root / "page-overhead.samples.tsv").unlink()
+
+        def _short_round(root: Path) -> None:
+            _write_overhead(root)
+            lines = [line for line in (root / "page-overhead.samples.tsv")
+                     .read_text(encoding="utf-8").splitlines() if line.strip()]
+            (root / "page-overhead.samples.tsv").write_text(
+                "\n".join(lines[:-1]) + "\n", encoding="utf-8")
+
+        def _bad_state(root: Path) -> None:
+            _write_overhead(root, rounds=((1, "active"), (2, "disabled"), (3, "active")))
+
+        def _bad_ordering(root: Path) -> None:
+            _write_overhead(root, ordering="deactivated_active_deactivated")
+
+        def _bad_page(root: Path) -> None:
+            _write_overhead(root, page="/?p=2")
+
+        def _zero_samples(root: Path) -> None:
+            _write_overhead(root, samples=0)
+
+        def _non2xx_sample(root: Path) -> None:
+            _write_overhead(root)
+            text = (root / "page-overhead.samples.tsv").read_text(encoding="utf-8")
+            (root / "page-overhead.samples.tsv").write_text(
+                text.replace("2\tactive\t200\t", "2\tactive\t500\t", 1), encoding="utf-8")
+
+        def _nonnumeric_seconds(root: Path) -> None:
+            _write_overhead(root)
+            text = (root / "page-overhead.samples.tsv").read_text(encoding="utf-8")
+            first, _, rest = text.partition("\n")
+            (root / "page-overhead.samples.tsv").write_text(
+                "1\tactive\t200\tslow\n" + rest, encoding="utf-8")
+
+        def _negative_seconds(root: Path) -> None:
+            _write_overhead(root, seconds=lambda r, i: -0.5)
+
+        def _fourth_round(root: Path) -> None:
+            _write_overhead(root,
+                            rounds=((1, "active"), (2, "deactivated"), (3, "active"),
+                                    (4, "deactivated")))
+
+        _orefuses("params-missing", _drop_params)
+        _orefuses("params-extra", _extra_params)
+        _orefuses("params-zero-samples", _zero_samples)
+        _orefuses("samples-missing", _drop_samples)
+        _orefuses("round-short", _short_round)
+        _orefuses("state-not-allowlisted", _bad_state)
+        _orefuses("ordering-not-allowlisted", _bad_ordering)
+        _orefuses("page-not-allowlisted", _bad_page)
+        _orefuses("non2xx-sample", _non2xx_sample)
+        _orefuses("seconds-nonnumeric", _nonnumeric_seconds)
+        _orefuses("seconds-negative", _negative_seconds)
+        _orefuses("unexpected-fourth-round", _fourth_round)
+
+        # 10c) a valid tree aggregates into the exact contract shape
+        with tempfile.TemporaryDirectory() as oh_tmp:
+            oh_root = Path(oh_tmp)
+            _write_overhead(oh_root, samples=4, warmup=2)
+            batch = read_page_overhead(oh_root)
+            check("overhead-batch-schema", batch.get("schema") == OVERHEAD_SCHEMA)
+            check("overhead-batch-sample-count", len(batch.get("samples", [])) == 12)
+            aggregate = aggregate_page_overhead(batch)
+            check("overhead-aggregate-field-set",
+                  set(aggregate) == set(SAFE_OVERHEAD_FIELDS), str(sorted(aggregate)))
+            check("overhead-aggregate-round-count", len(aggregate["rounds"]) == 3)
+            check("overhead-aggregate-states",
+                  [row["state"] for row in aggregate["rounds"]]
+                  == ["active", "deactivated", "active"])
+            check("overhead-aggregate-round-field-set",
+                  set(aggregate["rounds"][0]) == set(SAFE_OVERHEAD_ROUND_FIELDS))
+            check("overhead-aggregate-monotonic-p50-p95-p99",
+                  all(row["p50_ms"] <= row["p95_ms"] <= row["p99_ms"]
+                      for row in aggregate["rounds"]))
+            check("overhead-aggregate-delta-field-set",
+                  set(aggregate["overhead"]) == set(SAFE_OVERHEAD_DELTA_FIELDS))
+            check("overhead-aggregate-delta-arithmetic",
+                  abs(aggregate["overhead"]["delta_ms"]
+                      - (aggregate["overhead"]["active_p95_ms"]
+                         - aggregate["overhead"]["deactivated_p95_ms"])) < 0.01,
+                  str(aggregate["overhead"]))
+            check("overhead-aggregate-non2xx-zero",
+                  all(row["non_2xx_count"] == 0 for row in aggregate["rounds"]))
+
+            # 10d) the projection carries it and re-validates; every tamper is refused
+            overhead_report = _report([_measurement(1, "cold", "health", 1, 200)],
+                                      page_overhead=aggregate)
+            overhead_evidence = build_safe_evidence(overhead_report)
+            check("overhead-evidence-field-set",
+                  set(overhead_evidence["page_overhead"]) == set(SAFE_OVERHEAD_FIELDS))
+            check("overhead-evidence-page-label",
+                  overhead_evidence["page_overhead"]["page_label"] == "Public front page")
+            check("overhead-evidence-roundtrip",
+                  validate_safe_evidence(json.loads(json.dumps(overhead_evidence)))[
+                      "page_overhead"]["overhead"]["delta_ms"]
+                  == overhead_evidence["page_overhead"]["overhead"]["delta_ms"])
+            overhead_md = render_safe_evidence_markdown(overhead_evidence)
+            check("overhead-evidence-markdown-rounds",
+                  overhead_md.count("| 1 | active |") >= 1
+                  and "active_deactivated_active" in overhead_md)
+            check("overhead-evidence-markdown-measurement-only",
+                  "no NFR-PERF pass/fail is claimed" in overhead_md)
+            for sentinel in ("http://", "localhost", "/home/runner", "wp-content",
+                             "clinic-practice-management", "wp plugin", "Set-Cookie"):
+                check("overhead-blocks-sentinel-%s" % sentinel,
+                      sentinel not in json.dumps(overhead_evidence["page_overhead"])
+                      and sentinel not in overhead_md, sentinel)
+            overhead_json = json.dumps(overhead_evidence, ensure_ascii=False, indent=2)
+            check("overhead-evidence-passes-privacy-scan",
+                  scan_forbidden(overhead_json) == []
+                  and scan_forbidden(overhead_md) == [])
+
+            def _oevidence_refuses(name: str, mutate) -> None:
+                candidate = json.loads(json.dumps(overhead_evidence))
+                mutate(candidate)
+                try:
+                    validate_safe_evidence(candidate)
+                except EvidenceRefused:
+                    return
+                check("overhead-evidence-refuses-" + name, False, "unexpectedly accepted")
+
+            _oevidence_refuses("missing-block", lambda c: c.pop("page_overhead"))
+            _oevidence_refuses("extra-field",
+                               lambda c: c["page_overhead"].update({"url": "http://x/"}))
+            for field in SAFE_OVERHEAD_FIELDS:
+                _oevidence_refuses("drop-" + field,
+                                   lambda c, f=field: c["page_overhead"].pop(f))
+            _oevidence_refuses("page-not-allowlisted",
+                               lambda c: c["page_overhead"].update({"page": "sample-page"}))
+            _oevidence_refuses("label-mismatch",
+                               lambda c: c["page_overhead"].update({"page_label": "Home"}))
+            _oevidence_refuses("state-swapped",
+                               lambda c: c["page_overhead"]["rounds"][1].update(
+                                   {"state": "active"}))
+            _oevidence_refuses("round-non-contiguous",
+                               lambda c: c["page_overhead"]["rounds"][2].update({"round": 4}))
+            _oevidence_refuses("sample-count-mismatch",
+                               lambda c: c["page_overhead"]["rounds"][0].update({"samples": 3}))
+            _oevidence_refuses("percentiles-not-monotonic",
+                               lambda c: c["page_overhead"]["rounds"][0].update(
+                                   {"p50_ms": 999.0}))
+            _oevidence_refuses("non2xx-nonzero",
+                               lambda c: c["page_overhead"]["rounds"][0].update(
+                                   {"non_2xx_count": 1}))
+            _oevidence_refuses("p95-nan",
+                               lambda c: c["page_overhead"]["rounds"][0].update(
+                                   {"p95_ms": float("nan")}))
+            _oevidence_refuses("delta-mismatch",
+                               lambda c: c["page_overhead"]["overhead"].update(
+                                   {"delta_ms": 0.0}))
+            _oevidence_refuses("delta-non-finite",
+                               lambda c: c["page_overhead"]["overhead"].update(
+                                   {"delta_ms": float("inf")}))
+
+        # 10e) missing overhead data must fail closed in the driver (no silent omission)
+        with tempfile.TemporaryDirectory() as oh_tmp2:
+            root4 = Path(oh_tmp2)
+            raw4 = root4 / "raw"
+            raw4.mkdir()
+            (raw4 / "001-cold-health.ab.txt").write_text(FIXTURE_AB, encoding="utf-8")
+            manifest4 = root4 / "manifest.jsonl"
+            manifest4.write_text(
+                json.dumps(_entry(1, "cold", FREE_FORM_MARKER, "health",
+                                  "/wp-json/clinic/v1/health", 1, 200, 0,
+                                  "001-cold-health.ab.txt")) + "\n", encoding="utf-8")
+            diag4 = root4 / "diagnostics"
+            diag4.mkdir()
+            diagnostic4 = _diagnostic_for([_measurement(1, "cold", "health", 1, 200)])
+            (diag4 / "static.json").write_text(json.dumps(diagnostic4["static"]),
+                                               encoding="utf-8")
+            (diag4 / "level-001.json").write_text(
+                json.dumps(diagnostic4["measurements"][0]), encoding="utf-8")
+            prof4 = root4 / "profiling"
+            prof4.mkdir()
+            _write_profiling_tree(prof4, per_endpoint=3, warmup=5)
+            ev_prefix4 = root4 / "out" / "bench.evidence"
+            rc9 = run(argparse.Namespace(
+                manifest=str(manifest4), raw_dir=str(raw4),
+                out_prefix=str(root4 / "out" / "bench"),
+                meta=["run_id=42", "run_attempt=1", "head_sha=" + "c" * 40,
+                      "event_name=push", "ref=arena/eddf7af0-doctor"],
+                diagnostics_dir=str(diag4), profiling_dir=str(prof4),
+                overhead_dir=str(root4 / "absent-overhead"),
+                fail_file="", evidence_prefix=str(ev_prefix4),
+            ))
+            check("overhead-missing-refuses-publication", rc9 == 1, "rc=%s" % rc9)
+            check("overhead-missing-no-evidence-file",
+                  not Path(str(ev_prefix4) + ".json").exists())
+
+    try:
+        _overhead_checks()
+    except NameError as exc:
+        check("overhead-contract-implemented", False,
+              "missing public-page ACTIVE-vs-DEACTIVATED overhead contract: %s" % exc)
+
     # 7) the scanner itself
     check("privacy-trips-cookie", "cookie" in scan_forbidden("Set-Cookie: sid=abc"))
     check("privacy-trips-nonce", "nonce" in scan_forbidden("_wpnonce=deadbeef"))
