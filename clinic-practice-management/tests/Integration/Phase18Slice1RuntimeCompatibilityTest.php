@@ -79,7 +79,7 @@ final class Phase18Slice1RuntimeCompatibilityTest extends WP_UnitTestCase
     {
         wp_set_current_user(0); // بدون احراز — همان سطحِ دسترسیِ عمومی
 
-        $response = rest_do_request(new WP_REST_Request('GET', 'clinic/v1/health'));
+        $response = rest_do_request(new WP_REST_Request('GET', '/clinic/v1/health'));
         self::assertInstanceOf(WP_REST_Response::class, $response);
         self::assertSame(200, $response->get_status());
 

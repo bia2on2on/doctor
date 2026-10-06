@@ -144,7 +144,7 @@ final class SystemHealthRuntimeCompatibilityTest extends TestCase
 
     public function testWordPressCheckEmitsTheHealthRowContract(): void
     {
-        $row = SystemHealthService::wordPressVersionCheck('6.7.2');
+        $row = SystemHealthService::wordpress_version_check('6.7.2');
 
         self::assertHealthRowShape($row, self::WP_KEY);
     }
@@ -152,7 +152,7 @@ final class SystemHealthRuntimeCompatibilityTest extends TestCase
     public function testWordPressBelowDeclaredFloorFails(): void
     {
         foreach (self::WP_BELOW_FLOOR as $version) {
-            $row = SystemHealthService::wordPressVersionCheck($version);
+            $row = SystemHealthService::wordpress_version_check($version);
 
             self::assertSame(SystemHealthService::FAIL, $row['status'], $version . ' باید زیرِ کف باشد.');
             self::assertStringContainsString($version, $row['detail'], $version);
@@ -162,7 +162,7 @@ final class SystemHealthRuntimeCompatibilityTest extends TestCase
     public function testWordPressAtOrAboveDeclaredFloorPasses(): void
     {
         foreach (self::WP_SUPPORTED as $version) {
-            $row = SystemHealthService::wordPressVersionCheck($version);
+            $row = SystemHealthService::wordpress_version_check($version);
 
             self::assertSame(SystemHealthService::PASS, $row['status'], $version . ' باید روی/بالای کف باشد.');
         }
@@ -171,7 +171,7 @@ final class SystemHealthRuntimeCompatibilityTest extends TestCase
     public function testUnusableWordPressVersionEvidenceNeverPasses(): void
     {
         foreach (self::unusableVersions() as $version) {
-            $row = SystemHealthService::wordPressVersionCheck($version);
+            $row = SystemHealthService::wordpress_version_check($version);
 
             self::assertNotSame(SystemHealthService::PASS, $row['status'], 'مدرکِ نامعتبر هرگز PASS نیست: ' . var_export($version, true));
             self::assertSame(SystemHealthService::UNKNOWN, $row['status'], 'ناتجزیه‌پذیر ⇒ UNKNOWN (ادعایِ کاذب نشود): ' . var_export($version, true));
@@ -182,7 +182,7 @@ final class SystemHealthRuntimeCompatibilityTest extends TestCase
 
     public function testDatabaseServerCheckEmitsTheHealthRowContract(): void
     {
-        $row = SystemHealthService::databaseServerVersionCheck('8.0.33');
+        $row = SystemHealthService::database_server_version_check('8.0.33');
 
         self::assertHealthRowShape($row, self::DB_KEY);
     }
@@ -190,7 +190,7 @@ final class SystemHealthRuntimeCompatibilityTest extends TestCase
     public function testMySqlBelowDeclaredFloorFails(): void
     {
         foreach (self::MYSQL_BELOW_FLOOR as $version) {
-            $row = SystemHealthService::databaseServerVersionCheck($version);
+            $row = SystemHealthService::database_server_version_check($version);
 
             self::assertSame(SystemHealthService::FAIL, $row['status'], $version . ' باید زیرِ کف باشد.');
         }
@@ -199,7 +199,7 @@ final class SystemHealthRuntimeCompatibilityTest extends TestCase
     public function testMySqlAtOrAboveDeclaredFloorPasses(): void
     {
         foreach (self::MYSQL_SUPPORTED as $version) {
-            $row = SystemHealthService::databaseServerVersionCheck($version);
+            $row = SystemHealthService::database_server_version_check($version);
 
             self::assertSame(SystemHealthService::PASS, $row['status'], $version . ' باید روی/بالای کف باشد.');
         }
@@ -208,7 +208,7 @@ final class SystemHealthRuntimeCompatibilityTest extends TestCase
     public function testUnusableDatabaseServerVersionEvidenceNeverPasses(): void
     {
         foreach (self::unusableVersions() as $version) {
-            $row = SystemHealthService::databaseServerVersionCheck($version);
+            $row = SystemHealthService::database_server_version_check($version);
 
             self::assertNotSame(SystemHealthService::PASS, $row['status'], 'مدرکِ نامعتبر هرگز PASS نیست: ' . var_export($version, true));
             self::assertSame(SystemHealthService::UNKNOWN, $row['status'], 'ناتجزیه‌پذیر ⇒ UNKNOWN (ادعایِ کاذب نشود): ' . var_export($version, true));
@@ -223,7 +223,7 @@ final class SystemHealthRuntimeCompatibilityTest extends TestCase
     public function testMariaDbEvidenceNeverClaimsTheMySqlFloor(): void
     {
         foreach (self::mariaDbVersions() as $version) {
-            $row = SystemHealthService::databaseServerVersionCheck($version);
+            $row = SystemHealthService::database_server_version_check($version);
 
             self::assertNotSame(SystemHealthService::PASS, $row['status'], 'MariaDB مجوزِ PASS روی کفِ MySQL نمی‌گیرد: ' . $version);
             self::assertSame(SystemHealthService::UNKNOWN, $row['status'], 'سیاستِ MariaDB اعلام نشده ⇒ UNKNOWN: ' . $version);

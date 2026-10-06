@@ -112,9 +112,14 @@ final class SystemHealthService
         $mem = (int) ini_get('memory_limit');
         $add('php.memory', 'PHP memory_limit', $mem <= 0 || $mem >= 128 ? self::PASS : self::WARNING, ini_get('memory_limit') ?: '?');
 
-        // ---------- وردپرس (کفِ اعلام‌شده — spec §40) ----------
-        $wpCheck = self::wordPressVersionCheck($this->runningWordPressVersion());
-        $add($wpCheck['key'], $wpCheck['label'], $wpCheck['status'], $wpCheck['detail']);
+        // کفِ اعلام‌شدهٔ وردپرس (spec §40) — فقط گزارش، بدون PHI.
+        $wp_check = self::wordpress_version_check( $this->running_wordpress_version() );
+        $add(
+            $wp_check['key'],
+            $wp_check['label'],
+            $wp_check['status'],
+            $wp_check['detail']
+        );
 
         // ---------- دیتابیس ----------
         $dbOk = false;
@@ -125,9 +130,14 @@ final class SystemHealthService
         }
         $add('db.reachable', 'دیتابیس', $dbOk ? self::PASS : self::FAIL, $dbOk ? 'اتصال برقرار است' : 'عدم دسترسی به دیتابیس');
 
-        // کفِ اعلام‌شدهٔ MySQL — گزارشِ سطحِ نصب (بدون PHI).
-        $dbCheck = self::databaseServerVersionCheck($this->databaseServerVersion());
-        $add($dbCheck['key'], $dbCheck['label'], $dbCheck['status'], $dbCheck['detail']);
+        // کفِ اعلام‌شدهٔ MySQL (SRS §2.2) — فقط گزارش، بدون PHI.
+        $db_check = self::database_server_version_check( $this->database_server_version() );
+        $add(
+            $db_check['key'],
+            $db_check['label'],
+            $db_check['status'],
+            $db_check['detail']
+        );
 
         $migrated = false;
         $schemaVersion = '';
@@ -228,16 +238,13 @@ final class SystemHealthService
      *
      * @return array{key:string,label:string,status:string,detail:string}
      */
-    public static function wordPressVersionCheck(?string $version): array
-    {
-        $key = 'wp.version';
-        $label = 'نسخهٔ وردپرس';
-        $parsed = self::parseVersion($version);
+    public static function wordpress_version_check( ?string $version ): array {
+        $parsed = self::parse_version( $version );
 
-        if ($parsed === null) {
+        if ( null === $parsed ) {
             return [
-                'key' => $key,
-                'label' => $label,
+                'key'    => 'wp.version',
+                'label'  => 'نسخهٔ وردپرس',
                 'status' => self::UNKNOWN,
                 'detail' => 'نسخهٔ وردپرس در دسترس نیست یا قابل‌تشخیص نیست — برآورده‌شدنِ کفِ '
                     . self::MIN_WORDPRESS_VERSION . ' تأییدپذیر نیست',
@@ -245,10 +252,10 @@ final class SystemHealthService
         }
 
         return [
-            'key' => $key,
-            'label' => $label,
-            'status' => version_compare($parsed, self::MIN_WORDPRESS_VERSION, '>=') ? self::PASS : self::FAIL,
-            'detail' => trim((string) $version) . ' — کفِ اعلام‌شده: ' . self::MIN_WORDPRESS_VERSION,
+            'key'    => 'wp.version',
+            'label'  => 'نسخهٔ وردپرس',
+            'status' => version_compare( $parsed, self::MIN_WORDPRESS_VERSION, '>=' ) ? self::PASS : self::FAIL,
+            'detail' => trim( (string) $version ) . ' — کفِ اعلام‌شده: ' . self::MIN_WORDPRESS_VERSION,
         ];
     }
 
@@ -264,27 +271,25 @@ final class SystemHealthService
      *
      * @return array{key:string,label:string,status:string,detail:string}
      */
-    public static function databaseServerVersionCheck(?string $version): array
-    {
-        $key = 'db.mysql_version';
-        $label = 'نسخهٔ سرور دیتابیس (MySQL)';
-        $raw = trim((string) $version);
+    public static function database_server_version_check( ?string $version ): array {
+        $raw = trim( (string) $version );
 
-        if ($raw !== '' && stripos($raw, 'mariadb') !== false) {
+        if ( '' !== $raw && false !== stripos( $raw, 'mariadb' ) ) {
             return [
-                'key' => $key,
-                'label' => $label,
+                'key'    => 'db.mysql_version',
+                'label'  => 'نسخهٔ سرور دیتابیس (MySQL)',
                 'status' => self::UNKNOWN,
                 'detail' => 'MariaDB شناسایی شد — کفِ اعلام‌شده فقط MySQL '
                     . self::MIN_MYSQL_VERSION . ' است و سیاستِ MariaDB اعلام نشده است',
             ];
         }
 
-        $parsed = self::parseVersion($raw);
-        if ($parsed === null) {
+        $parsed = self::parse_version( $raw );
+
+        if ( null === $parsed ) {
             return [
-                'key' => $key,
-                'label' => $label,
+                'key'    => 'db.mysql_version',
+                'label'  => 'نسخهٔ سرور دیتابیس (MySQL)',
                 'status' => self::UNKNOWN,
                 'detail' => 'نسخهٔ سرور دیتابیس در دسترس نیست یا قابل‌تشخیص نیست — برآورده‌شدنِ کفِ MySQL '
                     . self::MIN_MYSQL_VERSION . ' تأییدپذیر نیست',
@@ -292,9 +297,9 @@ final class SystemHealthService
         }
 
         return [
-            'key' => $key,
-            'label' => $label,
-            'status' => version_compare($parsed, self::MIN_MYSQL_VERSION, '>=') ? self::PASS : self::FAIL,
+            'key'    => 'db.mysql_version',
+            'label'  => 'نسخهٔ سرور دیتابیس (MySQL)',
+            'status' => version_compare( $parsed, self::MIN_MYSQL_VERSION, '>=' ) ? self::PASS : self::FAIL,
             'detail' => $raw . ' — کفِ اعلام‌شده: MySQL ' . self::MIN_MYSQL_VERSION,
         ];
     }
@@ -338,14 +343,14 @@ final class SystemHealthService
      * `get_bloginfo()` بیرون از وردپرس وجود ندارد؛ نبودش «نسخهٔ نامعلوم»
      * است، نه «نسخهٔ تأییدشده».
      */
-    private function runningWordPressVersion(): ?string
-    {
-        if (!function_exists('get_bloginfo')) {
+    private function running_wordpress_version(): ?string {
+        if ( ! function_exists( 'get_bloginfo' ) ) {
             return null;
         }
-        $version = get_bloginfo('version');
 
-        return is_string($version) && trim($version) !== '' ? trim($version) : null;
+        $version = get_bloginfo( 'version' );
+
+        return is_string( $version ) && '' !== trim( $version ) ? trim( $version ) : null;
     }
 
     /**
@@ -355,15 +360,14 @@ final class SystemHealthService
      * فقط یک برچسبِ نسخه خوانده می‌شود — بدون PHI، بدون دادهٔ tenant و بدون
      * هیچ اثرِ تغییردهنده (read-only).
      */
-    private function databaseServerVersion(): ?string
-    {
+    private function database_server_version(): ?string {
         try {
-            $version = $this->db->fetchValue('SELECT VERSION()');
-        } catch (\Throwable) {
+            $version = $this->db->fetchValue( 'SELECT VERSION()' );
+        } catch ( \Throwable ) {
             return null;
         }
 
-        return is_string($version) && trim($version) !== '' ? trim($version) : null;
+        return is_string( $version ) && '' !== trim( $version ) ? trim( $version ) : null;
     }
 
     /**
@@ -372,16 +376,18 @@ final class SystemHealthService
      * `8.0.33-0ubuntu0.22.04.1` ⇒ `8.0.33` · `6.7.2` ⇒ `6.7.2` ·
      * `banana` و `''` ⇒ null (یعنی غیرقابل‌اتکا، نه «کمتر از کف»).
      */
-    private static function parseVersion(?string $version): ?string
-    {
-        if ($version === null) {
+    private static function parse_version( ?string $version ): ?string {
+        if ( null === $version ) {
             return null;
         }
-        $trimmed = trim($version);
-        if ($trimmed === '') {
+
+        $trimmed = trim( $version );
+
+        if ( '' === $trimmed ) {
             return null;
         }
-        if (preg_match('/^\d+(?:\.\d+)*/', $trimmed, $m) !== 1) {
+
+        if ( 1 !== preg_match( '/^\d+(?:\.\d+)*/', $trimmed, $m ) ) {
             return null;
         }
 
