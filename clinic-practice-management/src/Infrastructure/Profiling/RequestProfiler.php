@@ -214,7 +214,7 @@ final class RequestProfiler {
             return;
         }
         ++self::$cpms_queries;
-        $elapsed          = self::now_ns() - $start_ns;
+        $elapsed           = self::now_ns() - $start_ns;
         self::$cpms_db_ns += $elapsed > 0 ? $elapsed : 0;
     }
 
