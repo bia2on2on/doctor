@@ -144,9 +144,10 @@ jobs:
           # schedule and workflow_dispatch. The parse/report/privacy self-tests below prove
           # that logic deterministically on every run, regardless of whether `ab`/the server
           # are reachable (no network, no WordPress, no `ab` binary needed).
-          python3 -m py_compile bin/pilot-bench-report.py bin/pilot-bench-diagnostics.py
+          python3 -m py_compile bin/pilot-bench-report.py bin/pilot-bench-diagnostics.py bin/pilot-page-overhead.py
           python3 bin/pilot-bench-diagnostics.py --test
           python3 bin/pilot-bench-report.py --test
+          python3 bin/pilot-page-overhead.py --test
           {
             echo '### Pilot benchmark harness self-test — PASSED on this run'
             echo '`bin/pilot-bench-report.py --test` (deterministic: no network, no WordPress, no `ab` binary) — ab parsing, report generation, honesty fields, the artifact privacy gate and the REST-visible safe evidence projection (exact allowlist field sets, fixed endpoint labels, cold|warm-only phases, fail-closed refusal of malformed/unexpected values, sentinel-absence and tamper-refusal). This runs on every gate run; the live benchmark step itself runs on watched pushes (`main` / `arena/**`) as well as on `schedule` and `workflow_dispatch`.'
@@ -746,6 +747,36 @@ jobs:
           [ "$TCP_READY" = "1" ] || { echo '::error::profiling teardown broken — Apache did not resume listening on :8080'; exit 1; }
           echo "profiling collected: 3 endpoints x $PROFILE_N sequential samples (c=1, ${PROFILE_WARM} warm-ups discarded each)"
 
+          # ---- public-page CPMS plugin overhead: ACTIVE vs DEACTIVATED -------------
+          # Measures what the previous comparative-profiling slice could NOT: the cost
+          # of LOADING CPMS itself. `RequestProfiler` lives inside CPMS, so it cannot
+          # run while the plugin is deactivated, and NO profiler data is synthesised for
+          # that state — the comparison uses an external/request-level timing
+          # (client-timed curl) identical in both states. Page = the WordPress front
+          # page of this clean install (fixed allowlist token `home`). Query counts are
+          # NOT MEASURED. Deactivation is WordPress-native and confined to this
+          # disposable instance; reactivation is guaranteed by the collector's
+          # finally-block AND by the shell trap below, and is proven before the step
+          # continues. The logic lives in `bin/pilot-page-overhead.py` (stdlib only,
+          # deterministic `--test` in the lint step) — GitHub caps a `run:` expression
+          # at 21,000 characters and an inline shell version of this pass would push
+          # the step over that limit.
+          OH_MARKER="$BENCH/overhead-marker"
+          cpms_overhead_restore() {
+            if [ -f "$OH_MARKER" ]; then
+              echo '::error::public-page overhead — failure path: forcing CPMS reactivation'
+              wp plugin activate clinic-practice-management --path="$WP_DIR" --allow-root \
+                || echo '::error::CPMS REACTIVATION FAILED — this environment is NOT safe for later gate steps'
+              rm -f "$OH_MARKER"
+            fi
+          }
+          trap cpms_overhead_restore EXIT
+          python3 bin/pilot-page-overhead.py collect \
+            --out-dir "$RAW_STAGE/overhead" --marker "$OH_MARKER" \
+            --page-url "$WP_URL/" --health-url "$WP_URL/wp-json/clinic/v1/health" \
+            --wp-path "$WP_DIR" --db "$DB_MAIN" --db-prefix cpmswp_ \
+            --samples 100 --warmup 5 || exit 1
+
           # ---- raw dumps are scanned BEFORE they are moved into the upload path -----------
           # Staged dumps live OUTSIDE the artifact upload glob, so a partial-run crash/cancel
           # or a scan failure cannot leave unscanned material for `if: always()` to upload.
@@ -758,9 +789,10 @@ jobs:
             rm -rf "$RAW_STAGE"
             exit "$SCAN_RC"
           fi
-          mkdir -p "$RAW" "$BENCH/profiling"
+          mkdir -p "$RAW" "$BENCH/profiling" "$BENCH/overhead"
           mv "$RAW_STAGE"/*.ab.txt "$RAW"/ 2>/dev/null || true
           mv "$RAW_STAGE"/profiling.samples.tsv "$RAW_STAGE"/profiling.params.json "$BENCH/profiling"/ 2>/dev/null || true
+          mv "$RAW_STAGE"/overhead/page-overhead.samples.tsv "$RAW_STAGE"/overhead/page-overhead.params.json "$BENCH/overhead"/ 2>/dev/null || true
           rm -rf "$RAW_STAGE"   # stage is now empty; remove it so no later step can confuse it with upload content
 
           # ---- environment + run binding for the artifact ---------------------------------
@@ -776,7 +808,7 @@ jobs:
 
           RC=0
           python3 bin/pilot-bench-report.py \
-            --manifest "$MANIFEST" --raw-dir "$RAW" --diagnostics-dir "$DIAG" --profiling-dir "$BENCH/profiling" --out-prefix "$OUT" \
+            --manifest "$MANIFEST" --raw-dir "$RAW" --diagnostics-dir "$DIAG" --profiling-dir "$BENCH/profiling" --overhead-dir "$BENCH/overhead" --out-prefix "$OUT" \
             --evidence-prefix "$OUT.evidence" \
             --meta "run_id=${{ github.run_id }}" \
             --meta "run_attempt=${{ github.run_attempt }}" \
@@ -830,8 +862,11 @@ jobs:
       # sample count/interval, host CPU/memory, `ab` CPU/RSS, and Apache/PHP server CPU/RSS/process
       # count, plus the additive request-level profiling aggregates (per-endpoint sequential
       # c=1 samples: server-side segment means/maxima, CPMS-layer query counts, CPMS DB-time
-      # means/maxima, `$wpdb` min/max — no SQL, no values, no PHI). The run binding (run_id,
-      # run_attempt, event_name, head_sha, ref) is included.
+      # means/maxima, `$wpdb` min/max — no SQL, no values, no PHI), plus the additive
+      # public-page CPMS plugin overhead block (fixed page token/label, sandwich ordering,
+      # per-round sample/warmup counts, p50/p95/p99/mean and non-2xx count, and the pooled
+      # ACTIVE-vs-DEACTIVATED p95 delta — no URL, no path, no plugin list, no SQL). The run
+      # binding (run_id, run_attempt, event_name, head_sha, ref) is included.
       # No raw `ab` dump, response/header/body content, unallowlisted environment metadata, path or
       # free-form text ever enters the projection.
       # PUBLICATION vs CORRECTNESS: publication reuses the repository-native evidence-comment
@@ -871,6 +906,7 @@ jobs:
             /tmp/cpms-bench/manifest.jsonl
             /tmp/cpms-bench/diagnostics/
             /tmp/cpms-bench/profiling/
+            /tmp/cpms-bench/overhead/
             /tmp/cpms-bench/raw/
           retention-days: 14
           if-no-files-found: ignore
