@@ -174,7 +174,7 @@ final class App
         // the server-side `CPMS_PROFILE=1` flag is present (disposable Pilot runner
         // only); deliberately before the idempotence guard so a repeated boot still
         // restarts the profile exactly like a fresh request would.
-        RequestProfiler::markBoot();
+        RequestProfiler::mark_boot();
 
         // ==================================================================
         // Frontend عمومی (خارج از wp-admin) — Phase 8 Slice 1 / FR-3.5 / UC-01
@@ -251,13 +251,13 @@ final class App
 
         // Phase 17 profiling (measurement only): request-level bounded markers.
         // Each callback self-guards on the server-side flag, so disarmed requests
-        // pay one memoized check and observe zero behavior change. `markApiInit`
+        // pay one memoized check and observe zero behavior change. `mark_api_init`
         // runs first (@1) so the init segment includes route registration and the
-        // migration check; `attachProfile` runs last (@999) so the dispatch segment
+        // migration check; `attach_profile` runs last (@999) so the dispatch segment
         // includes permission + handler + serialization.
-        add_action('rest_api_init', [RequestProfiler::class, 'markApiInit'], 1);
-        add_filter('rest_pre_dispatch', [RequestProfiler::class, 'markDispatch'], 1, 3);
-        add_filter('rest_post_dispatch', [RequestProfiler::class, 'attachProfile'], 999, 3);
+        add_action( 'rest_api_init', [RequestProfiler::class, 'mark_api_init'], 1 );
+        add_filter( 'rest_pre_dispatch', [RequestProfiler::class, 'mark_dispatch'], 1, 3 );
+        add_filter( 'rest_post_dispatch', [RequestProfiler::class, 'attach_profile'], 999, 3 );
 
         add_action('rest_api_init', static function (): void {
             (new HealthController())->register_routes();

@@ -688,20 +688,28 @@ jobs:
           # samples per endpoint from the SAME stack, then removes the flag and restores
           # the server. A missing/invalid sample is a PROFILING MEASUREMENT FAILURE
           # (fail closed; distinct from ab/product correctness).
+          sudo a2enmod env >/dev/null   # SetEnv needs mod_env (default-on; be explicit, idempotent)
           echo 'SetEnv CPMS_PROFILE 1' | sudo tee /etc/apache2/conf-available/cpms-profile.conf >/dev/null
           sudo a2enconf cpms-profile >/dev/null
-          sudo service apache2 restart
+          sudo apache2ctl configtest || { echo '::error::profiling boundary broken — cpms-profile conf failed apache configtest'; exit 1; }
+          sudo service apache2 restart || { echo '::error::profiling boundary broken — Apache restart failed after enabling CPMS_PROFILE'; exit 1; }
           TCP_READY=0
           for i in $(seq 1 30); do
             if (exec 3<>/dev/tcp/127.0.0.1/8080) 2>/dev/null; then TCP_READY=1; break; fi
             sleep 1
           done
           [ "$TCP_READY" = "1" ] || { echo '::error::profiling boundary broken — Apache did not resume listening on :8080 after enabling CPMS_PROFILE'; exit 1; }
+          # Arm probe: the flag must be LIVE (visible to PHP) before sampling starts —
+          # a disarmed pass would collect 200s with no header and fail late at sample 1.
+          ARM_PROBE=$(curl -s -D - -o /dev/null "$WP_URL/wp-json/clinic/v1/health" | grep -ci '^x-cpms-profile:' || true)
+          echo "::notice::profiling arm probe — X-CPMS-Profile header count on a warm request: $ARM_PROBE"
+          [ "$ARM_PROBE" = "1" ] || { echo '::error::profiling boundary broken — profiler did not arm (SetEnv CPMS_PROFILE not visible to PHP despite configtest+restart)'; exit 1; }
           PROFILE_N=25
           PROFILE_WARM=5
           : > "$RAW_STAGE/profiling.samples.tsv"
           profile_endpoint() {
             local ENDPOINT="$1" ROUTE="$2" QUERY="$3" URL="$WP_URL$ROUTE$QUERY" CODE HDR JSON i
+            echo "::notice::profiling — sampling endpoint=$ENDPOINT ($PROFILE_N sequential c=1 after $PROFILE_WARM warm-ups)"
             for i in $(seq 1 "$PROFILE_WARM"); do curl -s -o /dev/null "$URL"; done
             for i in $(seq 1 "$PROFILE_N"); do
               HDR=$(mktemp)
@@ -714,6 +722,7 @@ jobs:
               fi
               printf '%s\t%s\t%s\n' "$ENDPOINT" "$CODE" "$JSON" >> "$RAW_STAGE/profiling.samples.tsv"
             done
+            echo "::notice::profiling — endpoint=$ENDPOINT collected ($PROFILE_N samples)"
           }
           profile_endpoint health '/wp-json/clinic/v1/health' '' || exit 1
           profile_endpoint availability '/wp-json/clinic/v1/availability' "?clinician_id=1&from=$FROM&to=$TO" || exit 1
@@ -721,7 +730,7 @@ jobs:
           printf '{"samples_per_endpoint":%d,"warmup_per_endpoint":%d,"concurrency":1}\n' "$PROFILE_N" "$PROFILE_WARM" > "$RAW_STAGE/profiling.params.json"
           sudo a2disconf cpms-profile >/dev/null
           sudo rm -f /etc/apache2/conf-available/cpms-profile.conf
-          sudo service apache2 restart
+          sudo service apache2 restart || { echo '::error::profiling teardown broken — Apache restart failed after disabling CPMS_PROFILE'; exit 1; }
           TCP_READY=0
           for i in $(seq 1 30); do
             if (exec 3<>/dev/tcp/127.0.0.1/8080) 2>/dev/null; then TCP_READY=1; break; fi

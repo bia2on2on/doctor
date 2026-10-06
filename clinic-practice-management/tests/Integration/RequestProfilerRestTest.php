@@ -77,7 +77,7 @@ final class RequestProfilerRestTest extends WP_UnitTestCase
         $_SERVER['CPMS_PROFILE'] = '1';
         putenv('CPMS_PROFILE=1');
         RequestProfiler::reset();
-        RequestProfiler::markBoot();
+        RequestProfiler::mark_boot();
         do_action('rest_api_init');
     }
 
@@ -95,6 +95,16 @@ final class RequestProfilerRestTest extends WP_UnitTestCase
             $request->set_header($name, $value);
         }
         $response = rest_do_request($request);
+        // Core applies `rest_post_dispatch` only in `serve_request()` (the real-HTTP
+        // path); `rest_do_request()` drives `dispatch()` directly and never fires it.
+        // Mirror that exact core step here so the header contract is proven the same
+        // way production emits it over HTTP (WP 6.7 `WP_REST_Server::serve_request`).
+        $response = apply_filters(
+            'rest_post_dispatch',
+            rest_ensure_response($response),
+            rest_get_server(),
+            $request
+        );
         $this->assertInstanceOf(WP_REST_Response::class, $response);
 
         return $response;
@@ -102,9 +112,9 @@ final class RequestProfilerRestTest extends WP_UnitTestCase
 
     public function testProfilerHooksAreRegistered(): void
     {
-        $this->assertSame(1, has_filter('rest_api_init', [RequestProfiler::class, 'markApiInit']));
-        $this->assertSame(1, has_filter('rest_pre_dispatch', [RequestProfiler::class, 'markDispatch']));
-        $this->assertSame(999, has_filter('rest_post_dispatch', [RequestProfiler::class, 'attachProfile']));
+        $this->assertSame(1, has_filter('rest_api_init', [RequestProfiler::class, 'mark_api_init']));
+        $this->assertSame(1, has_filter('rest_pre_dispatch', [RequestProfiler::class, 'mark_dispatch']));
+        $this->assertSame(999, has_filter('rest_post_dispatch', [RequestProfiler::class, 'attach_profile']));
     }
 
     public function testDisarmedDispatchEmitsNoHeader(): void
@@ -241,7 +251,7 @@ final class RequestProfilerRestTest extends WP_UnitTestCase
 
             // Rollback path = START + inner statement + ROLLBACK.
             try {
-                $before = RequestProfiler::cpmsQueryCount();
+                $before = RequestProfiler::cpms_query_count();
                 $db->transactional(static function () use ($db) {
                     $db->fetchValue('SELECT 1');
                     throw new \RuntimeException('rollback probe');
@@ -249,7 +259,7 @@ final class RequestProfilerRestTest extends WP_UnitTestCase
                 $this->fail('transactional() must rethrow');
             } catch (\RuntimeException $e) {
                 $this->assertSame('rollback probe', $e->getMessage());
-                $this->assertSame(3, RequestProfiler::cpmsQueryCount() - $before);
+                $this->assertSame(3, RequestProfiler::cpms_query_count() - $before);
             }
         } finally {
             $db->query("DROP TABLE IF EXISTS {$table}");
@@ -261,8 +271,8 @@ final class RequestProfilerRestTest extends WP_UnitTestCase
      */
     private function assertQueryDelta(int $expected, callable $call): void
     {
-        $before = RequestProfiler::cpmsQueryCount();
+        $before = RequestProfiler::cpms_query_count();
         $call();
-        $this->assertSame($expected, RequestProfiler::cpmsQueryCount() - $before);
+        $this->assertSame($expected, RequestProfiler::cpms_query_count() - $before);
     }
 }

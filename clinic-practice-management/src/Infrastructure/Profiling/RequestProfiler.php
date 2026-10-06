@@ -30,8 +30,7 @@ namespace ClinicCore\Infrastructure\Profiling;
  * Disarmed cost is one memoized static check per hook/query call-site — no timing,
  * no snapshots, no behavior change.
  */
-final class RequestProfiler
-{
+final class RequestProfiler {
     public const SCHEMA = 'cpms.req-profile/1';
 
     public const HEADER = 'X-CPMS-Profile';
@@ -43,9 +42,9 @@ final class RequestProfiler
 
     /** Exact route → published endpoint token. Anything else maps to `other` (never echoed). */
     private const ENDPOINTS = [
-        '/clinic/v1/health' => 'health',
+        '/clinic/v1/health'       => 'health',
         '/clinic/v1/availability' => 'availability',
-        '/' => 'wp-json-root',
+        '/'                       => 'wp-json-root',
     ];
 
     private static ?bool $armed = null;
@@ -55,17 +54,16 @@ final class RequestProfiler
     /** @var array<string, array{t_ns: int, cpms_q: int, cpms_db_ns: int, wp_q: int}> */
     private static array $markers = [];
 
-    private static int $cpmsQueries = 0;
+    private static int $cpms_queries = 0;
 
-    private static int $cpmsDbNs = 0;
+    private static int $cpms_db_ns = 0;
 
     /**
      * Whether profiling is armed for this request (memoized; `reset()` clears it).
      */
-    public static function armed(): bool
-    {
-        if (self::$armed === null) {
-            $flag = $_SERVER[self::ENV_FLAG] ?? getenv(self::ENV_FLAG);
+    public static function armed(): bool {
+        if ( self::$armed === null ) {
+            $flag        = $_SERVER[ self::ENV_FLAG ] ?? getenv( self::ENV_FLAG );
             self::$armed = $flag === '1';
         }
 
@@ -75,25 +73,23 @@ final class RequestProfiler
     /**
      * Clear memoized arming, markers, endpoint and counters (request restart / tests).
      */
-    public static function reset(): void
-    {
-        self::$armed = null;
-        self::$endpoint = 'other';
-        self::$markers = [];
-        self::$cpmsQueries = 0;
-        self::$cpmsDbNs = 0;
+    public static function reset(): void {
+        self::$armed        = null;
+        self::$endpoint     = 'other';
+        self::$markers      = [];
+        self::$cpms_queries = 0;
+        self::$cpms_db_ns   = 0;
     }
 
     /**
      * Monotonic nanoseconds where available, wall-clock fallback otherwise.
      */
-    public static function nowNs(): int
-    {
-        if (function_exists('hrtime')) {
-            return (int) hrtime(true);
+    public static function now_ns(): int {
+        if ( function_exists( 'hrtime' ) ) {
+            return (int) hrtime( true );
         }
 
-        return (int) (microtime(true) * 1_000_000_000);
+        return (int) ( microtime( true ) * 1_000_000_000 );
     }
 
     /**
@@ -104,19 +100,19 @@ final class RequestProfiler
      */
     public static function mark(
         string $phase,
-        ?int $tNs = null,
-        ?int $cpmsQ = null,
-        ?int $cpmsDbNs = null,
-        ?int $wpQ = null
+        ?int $t_ns = null,
+        ?int $cpms_q = null,
+        ?int $cpms_db_ns = null,
+        ?int $wp_q = null
     ): void {
-        if (!self::armed() || !in_array($phase, self::PHASES, true)) {
+        if ( ! self::armed() || ! in_array( $phase, self::PHASES, true ) ) {
             return;
         }
-        self::$markers[$phase] = [
-            't_ns' => $tNs ?? self::nowNs(),
-            'cpms_q' => $cpmsQ ?? self::$cpmsQueries,
-            'cpms_db_ns' => $cpmsDbNs ?? self::$cpmsDbNs,
-            'wp_q' => $wpQ ?? self::wpQueryCount(),
+        self::$markers[ $phase ] = [
+            't_ns'       => $t_ns ?? self::now_ns(),
+            'cpms_q'     => $cpms_q ?? self::$cpms_queries,
+            'cpms_db_ns' => $cpms_db_ns ?? self::$cpms_db_ns,
+            'wp_q'       => $wp_q ?? self::wp_query_count(),
         ];
     }
 
@@ -124,24 +120,22 @@ final class RequestProfiler
      * Start of a profiled request (called from `App::boot()`): restart the profile
      * and record the boot marker.
      */
-    public static function markBoot(): void
-    {
-        if (!self::armed()) {
+    public static function mark_boot(): void {
+        if ( ! self::armed() ) {
             return;
         }
-        self::$endpoint = 'other';
-        self::$markers = [];
-        self::$cpmsQueries = 0;
-        self::$cpmsDbNs = 0;
-        self::mark('boot');
+        self::$endpoint     = 'other';
+        self::$markers      = [];
+        self::$cpms_queries = 0;
+        self::$cpms_db_ns   = 0;
+        self::mark( 'boot' );
     }
 
     /**
      * `rest_api_init` @ priority 1 — before CPMS route registration + migration check.
      */
-    public static function markApiInit(): void
-    {
-        self::mark('api_init');
+    public static function mark_api_init(): void {
+        self::mark( 'api_init' );
     }
 
     /**
@@ -153,12 +147,11 @@ final class RequestProfiler
      * @param mixed $request
      * @return mixed
      */
-    public static function markDispatch($result, $server, $request)
-    {
-        if (self::armed() && $request instanceof \WP_REST_Request) {
-            $route = $request->get_route();
-            self::$endpoint = self::endpointForRoute(is_string($route) ? $route : null);
-            self::mark('dispatch');
+    public static function mark_dispatch( $result, $server, $request ) {
+        if ( self::armed() && $request instanceof \WP_REST_Request ) {
+            $route          = $request->get_route();
+            self::$endpoint = self::endpoint_for_route( is_string( $route ) ? $route : null );
+            self::mark( 'dispatch' );
         }
 
         return $result;
@@ -169,25 +162,31 @@ final class RequestProfiler
      * the header to `WP_REST_Response` results only. Anything else (errors, missing
      * data) is returned unmodified.
      *
+     * NOTE: core applies this filter only in `serve_request()` (the real-HTTP path);
+     * `rest_do_request()` drives `dispatch()` directly and never fires it, so the
+     * Integration suite mirrors that exact core step in its dispatch helper.
+     *
      * @param mixed $result
      * @param mixed $server
      * @param mixed $request
      * @return mixed
      */
-    public static function attachProfile($result, $server, $request)
-    {
-        if (!self::armed()) {
+    // `rest_post_dispatch` always passes ($result, $server, $request); the filter
+    // signature is fixed by WordPress — $server/$request are unused by design.
+    // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed
+    public static function attach_profile( $result, $server, $request ) {
+        if ( ! self::armed() ) {
             return $result;
         }
-        self::mark('respond');
-        if (!$result instanceof \WP_REST_Response) {
+        self::mark( 'respond' );
+        if ( ! $result instanceof \WP_REST_Response ) {
             return $result;
         }
-        $header = self::headerValue();
-        if ($header === '') {
+        $header = self::header_value();
+        if ( $header === '' ) {
             return $result;
         }
-        $result->header(self::HEADER, $header);
+        $result->header( self::HEADER, $header );
 
         return $result;
     }
@@ -195,41 +194,36 @@ final class RequestProfiler
     /**
      * Map a REST route to the published endpoint token (exact allowlist, no echo).
      */
-    public static function endpointForRoute(?string $route): string
-    {
-        return self::ENDPOINTS[$route ?? ''] ?? 'other';
+    public static function endpoint_for_route( ?string $route ): string {
+        return self::ENDPOINTS[ $route ?? '' ] ?? 'other';
     }
 
     /**
      * Begin observing one CPMS-layer query. Returns null unless armed (callers pass
-     * the token straight to `queryEnd()`).
+     * the token straight to `query_end()`).
      */
-    public static function queryStart(): ?int
-    {
-        return self::armed() ? self::nowNs() : null;
+    public static function query_start(): ?int {
+        return self::armed() ? self::now_ns() : null;
     }
 
     /**
      * Finish observing one CPMS-layer query (count +1, accumulate wall time).
      */
-    public static function queryEnd(?int $startNs): void
-    {
-        if ($startNs === null || !self::armed()) {
+    public static function query_end( ?int $start_ns ): void {
+        if ( $start_ns === null || ! self::armed() ) {
             return;
         }
-        self::$cpmsQueries++;
-        $elapsed = self::nowNs() - $startNs;
-        self::$cpmsDbNs += $elapsed > 0 ? $elapsed : 0;
+        ++self::$cpms_queries;
+        $elapsed          = self::now_ns() - $start_ns;
+        self::$cpms_db_ns += $elapsed > 0 ? $elapsed : 0;
     }
 
-    public static function cpmsQueryCount(): int
-    {
-        return self::$cpmsQueries;
+    public static function cpms_query_count(): int {
+        return self::$cpms_queries;
     }
 
-    public static function cpmsDbNs(): int
-    {
-        return self::$cpmsDbNs;
+    public static function cpms_db_ns(): int {
+        return self::$cpms_db_ns;
     }
 
     /**
@@ -238,91 +232,92 @@ final class RequestProfiler
      *
      * @return array<string, mixed>|null
      */
-    public static function snapshot(): ?array
-    {
-        if (!self::armed()) {
+    public static function snapshot(): ?array {
+        if ( ! self::armed() ) {
             return null;
         }
-        foreach (self::PHASES as $phase) {
-            if (!isset(self::$markers[$phase])) {
+        foreach ( self::PHASES as $phase ) {
+            if ( ! isset( self::$markers[ $phase ] ) ) {
                 return null;
             }
         }
-        $boot = self::$markers['boot'];
-        $init = self::$markers['api_init'];
+        $boot     = self::$markers['boot'];
+        $init     = self::$markers['api_init'];
         $dispatch = self::$markers['dispatch'];
-        $respond = self::$markers['respond'];
-        foreach ([$boot, $init, $dispatch, $respond] as $marker) {
-            if ($marker['t_ns'] < 0 || $marker['cpms_q'] < 0 || $marker['cpms_db_ns'] < 0 || $marker['wp_q'] < 0) {
+        $respond  = self::$markers['respond'];
+        foreach ( [$boot, $init, $dispatch, $respond] as $marker ) {
+            if ( $marker['t_ns'] < 0 || $marker['cpms_q'] < 0 || $marker['cpms_db_ns'] < 0 || $marker['wp_q'] < 0 ) {
                 return null;
             }
         }
-        foreach (['t_ns', 'cpms_q', 'cpms_db_ns', 'wp_q'] as $key) {
-            if ($init[$key] < $boot[$key] || $dispatch[$key] < $init[$key] || $respond[$key] < $dispatch[$key]) {
+        foreach ( ['t_ns', 'cpms_q', 'cpms_db_ns', 'wp_q'] as $key ) {
+            if ( $init[ $key ] < $boot[ $key ] || $dispatch[ $key ] < $init[ $key ]
+                || $respond[ $key ] < $dispatch[ $key ] ) {
                 return null;
             }
         }
 
-        $tBoot = self::ms($init['t_ns'] - $boot['t_ns']);
-        $tInit = self::ms($dispatch['t_ns'] - $init['t_ns']);
-        $tDispatch = self::ms($respond['t_ns'] - $dispatch['t_ns']);
-        $dbBoot = self::ms($init['cpms_db_ns'] - $boot['cpms_db_ns']);
-        $dbInit = self::ms($dispatch['cpms_db_ns'] - $init['cpms_db_ns']);
-        $dbDispatch = self::ms($respond['cpms_db_ns'] - $dispatch['cpms_db_ns']);
+        $t_boot     = self::ms( $init['t_ns'] - $boot['t_ns'] );
+        $t_init     = self::ms( $dispatch['t_ns'] - $init['t_ns'] );
+        $t_dispatch = self::ms( $respond['t_ns'] - $dispatch['t_ns'] );
+
+        $db_boot     = self::ms( $init['cpms_db_ns'] - $boot['cpms_db_ns'] );
+        $db_init     = self::ms( $dispatch['cpms_db_ns'] - $init['cpms_db_ns'] );
+        $db_dispatch = self::ms( $respond['cpms_db_ns'] - $dispatch['cpms_db_ns'] );
 
         return [
-            'schema' => self::SCHEMA,
-            'endpoint' => self::$endpoint,
-            't_total_ms' => round($tBoot + $tInit + $tDispatch, 3),
-            't_boot_ms' => $tBoot,
-            't_init_ms' => $tInit,
-            't_dispatch_ms' => $tDispatch,
-            'cpms_q' => $respond['cpms_q'] - $boot['cpms_q'],
-            'cpms_q_boot' => $init['cpms_q'] - $boot['cpms_q'],
-            'cpms_q_init' => $dispatch['cpms_q'] - $init['cpms_q'],
-            'cpms_q_dispatch' => $respond['cpms_q'] - $dispatch['cpms_q'],
-            'cpms_db_ms' => round($dbBoot + $dbInit + $dbDispatch, 3),
-            'cpms_db_ms_boot' => $dbBoot,
-            'cpms_db_ms_init' => $dbInit,
-            'cpms_db_ms_dispatch' => $dbDispatch,
-            'wp_q' => $respond['wp_q'] - $boot['wp_q'],
-            'wp_q_boot' => $init['wp_q'] - $boot['wp_q'],
-            'wp_q_init' => $dispatch['wp_q'] - $init['wp_q'],
-            'wp_q_dispatch' => $respond['wp_q'] - $dispatch['wp_q'],
+            'schema'              => self::SCHEMA,
+            'endpoint'            => self::$endpoint,
+            't_total_ms'          => round( $t_boot + $t_init + $t_dispatch, 3 ),
+            't_boot_ms'           => $t_boot,
+            't_init_ms'           => $t_init,
+            't_dispatch_ms'       => $t_dispatch,
+            'cpms_q'              => $respond['cpms_q'] - $boot['cpms_q'],
+            'cpms_q_boot'         => $init['cpms_q'] - $boot['cpms_q'],
+            'cpms_q_init'         => $dispatch['cpms_q'] - $init['cpms_q'],
+            'cpms_q_dispatch'     => $respond['cpms_q'] - $dispatch['cpms_q'],
+            'cpms_db_ms'          => round( $db_boot + $db_init + $db_dispatch, 3 ),
+            'cpms_db_ms_boot'     => $db_boot,
+            'cpms_db_ms_init'     => $db_init,
+            'cpms_db_ms_dispatch' => $db_dispatch,
+            'wp_q'                => $respond['wp_q'] - $boot['wp_q'],
+            'wp_q_boot'           => $init['wp_q'] - $boot['wp_q'],
+            'wp_q_init'           => $dispatch['wp_q'] - $init['wp_q'],
+            'wp_q_dispatch'       => $respond['wp_q'] - $dispatch['wp_q'],
         ];
     }
 
     /**
      * The single-line header payload, or '' when no valid snapshot exists.
      */
-    public static function headerValue(): string
-    {
+    public static function header_value(): string {
         $snapshot = self::snapshot();
-        if ($snapshot === null) {
+        if ( $snapshot === null ) {
             return '';
         }
-        $json = json_encode($snapshot, JSON_UNESCAPED_SLASHES);
+        // `json_encode` (not `wp_json_encode`) keeps this class unit-testable without
+        // WordPress; the payload is numeric-only allowlisted keys (no UTF-8 repair needed).
+        // phpcs:ignore WordPress.WP.AlternativeFunctions.json_encode_json_encode
+        $json = json_encode( $snapshot, JSON_UNESCAPED_SLASHES );
 
-        return is_string($json) ? $json : '';
+        return is_string( $json ) ? $json : '';
     }
 
-    private static function ms(int $ns): float
-    {
-        return round($ns / 1_000_000, 3);
+    private static function ms( int $ns ): float {
+        return round( $ns / 1_000_000, 3 );
     }
 
     /**
      * The `$wpdb->num_queries` total, or -1 when unavailable (which refuses the
      * snapshot — an unknown total is never zero-filled).
      */
-    private static function wpQueryCount(): int
-    {
+    private static function wp_query_count(): int {
         $wpdb = $GLOBALS['wpdb'] ?? null;
-        if (!$wpdb instanceof \wpdb) {
+        if ( ! $wpdb instanceof \wpdb ) {
             return -1;
         }
         $count = $wpdb->num_queries;
 
-        return is_int($count) ? $count : -1;
+        return is_int( $count ) ? $count : -1;
     }
 }

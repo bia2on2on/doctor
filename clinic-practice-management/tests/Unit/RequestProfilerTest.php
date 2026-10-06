@@ -67,8 +67,8 @@ final class RequestProfilerTest extends TestCase
     {
         $this->assertFalse(RequestProfiler::armed());
         $this->assertNull(RequestProfiler::snapshot());
-        $this->assertSame('', RequestProfiler::headerValue());
-        $this->assertSame(0, RequestProfiler::cpmsQueryCount());
+        $this->assertSame('', RequestProfiler::header_value());
+        $this->assertSame(0, RequestProfiler::cpms_query_count());
     }
 
     /**
@@ -142,9 +142,9 @@ final class RequestProfilerTest extends TestCase
 
     public function testEndpointMappingAllowlist(): void
     {
-        $this->assertSame('health', RequestProfiler::endpointForRoute('/clinic/v1/health'));
-        $this->assertSame('availability', RequestProfiler::endpointForRoute('/clinic/v1/availability'));
-        $this->assertSame('wp-json-root', RequestProfiler::endpointForRoute('/'));
+        $this->assertSame('health', RequestProfiler::endpoint_for_route('/clinic/v1/health'));
+        $this->assertSame('availability', RequestProfiler::endpoint_for_route('/clinic/v1/availability'));
+        $this->assertSame('wp-json-root', RequestProfiler::endpoint_for_route('/'));
 
         $adversarial = [
             null,
@@ -164,7 +164,7 @@ final class RequestProfilerTest extends TestCase
             str_repeat('a', 5000),
         ];
         foreach ($adversarial as $i => $route) {
-            $mapped = RequestProfiler::endpointForRoute($route);
+            $mapped = RequestProfiler::endpoint_for_route($route);
             $this->assertSame('other', $mapped, "adversarial route #{$i} must map to 'other'");
             $this->assertContains(
                 $mapped,
@@ -182,7 +182,7 @@ final class RequestProfilerTest extends TestCase
         RequestProfiler::mark('respond', 4000, 2, 900, 15);
 
         $this->assertNull(RequestProfiler::snapshot());
-        $this->assertSame('', RequestProfiler::headerValue());
+        $this->assertSame('', RequestProfiler::header_value());
     }
 
     public function testSnapshotNullWhenMarkersIncomplete(): void
@@ -245,7 +245,7 @@ final class RequestProfilerTest extends TestCase
         RequestProfiler::mark('respond', 8_999_999, 30, 7_500_000, 52);
 
         $this->assertNull(RequestProfiler::snapshot(), 'a backwards clock must refuse the snapshot');
-        $this->assertSame('', RequestProfiler::headerValue());
+        $this->assertSame('', RequestProfiler::header_value());
     }
 
     public function testSnapshotRefusesCounterRegression(): void
@@ -300,7 +300,7 @@ final class RequestProfilerTest extends TestCase
         RequestProfiler::mark('dispatch', 3_000_000, 1, 250_000, 12);
         RequestProfiler::mark('respond', 4_000_000, 2, 500_000, 13);
 
-        $header = RequestProfiler::headerValue();
+        $header = RequestProfiler::header_value();
         $this->assertNotSame('', $header);
         $this->assertStringNotContainsString("\n", $header);
         $this->assertStringNotContainsString("\r", $header);
@@ -355,11 +355,11 @@ final class RequestProfilerTest extends TestCase
 
     public function testQueryObservationDisarmedIsNoop(): void
     {
-        $this->assertNull(RequestProfiler::queryStart());
-        RequestProfiler::queryEnd(null);
-        RequestProfiler::queryEnd(123456);
-        $this->assertSame(0, RequestProfiler::cpmsQueryCount());
-        $this->assertSame(0, RequestProfiler::cpmsDbNs());
+        $this->assertNull(RequestProfiler::query_start());
+        RequestProfiler::query_end(null);
+        RequestProfiler::query_end(123456);
+        $this->assertSame(0, RequestProfiler::cpms_query_count());
+        $this->assertSame(0, RequestProfiler::cpms_db_ns());
     }
 
     public function testQueryObservationAccumulatesWhenArmed(): void
@@ -371,12 +371,12 @@ final class RequestProfilerTest extends TestCase
         RequestProfiler::mark('api_init', 2_000_000, null, null, 11);
         RequestProfiler::mark('dispatch', 3_000_000, null, null, 12);
         for ($i = 0; $i < 3; $i++) {
-            $start = RequestProfiler::queryStart();
+            $start = RequestProfiler::query_start();
             $this->assertIsInt($start);
-            RequestProfiler::queryEnd($start);
+            RequestProfiler::query_end($start);
         }
-        $this->assertSame(3, RequestProfiler::cpmsQueryCount());
-        $this->assertGreaterThanOrEqual(0, RequestProfiler::cpmsDbNs());
+        $this->assertSame(3, RequestProfiler::cpms_query_count());
+        $this->assertGreaterThanOrEqual(0, RequestProfiler::cpms_db_ns());
         RequestProfiler::mark('respond', 4_000_000, null, null, 13);
 
         $snapshot = RequestProfiler::snapshot();
@@ -393,14 +393,14 @@ final class RequestProfilerTest extends TestCase
         RequestProfiler::reset();
 
         RequestProfiler::mark('boot', 1_000_000, 0, 0, 10);
-        $start = RequestProfiler::queryStart();
-        RequestProfiler::queryEnd($start);
-        $this->assertSame(1, RequestProfiler::cpmsQueryCount());
+        $start = RequestProfiler::query_start();
+        RequestProfiler::query_end($start);
+        $this->assertSame(1, RequestProfiler::cpms_query_count());
 
         RequestProfiler::reset();
 
-        $this->assertSame(0, RequestProfiler::cpmsQueryCount());
-        $this->assertSame(0, RequestProfiler::cpmsDbNs());
+        $this->assertSame(0, RequestProfiler::cpms_query_count());
+        $this->assertSame(0, RequestProfiler::cpms_db_ns());
         $this->assertNull(RequestProfiler::snapshot());
         // Re-arming still resolves from the (still set) server flag.
         $this->assertTrue(RequestProfiler::armed());
