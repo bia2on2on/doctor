@@ -192,9 +192,9 @@ function cpms_pilot_job_start_main( array $args ): void {
                 "'$.pilot_measurement_correlation')) = %s AND started_at IS NOT NULL",
                 [ $job_type, $token ]
             );
-            $wake_after          = cpms_pilot_job_start_wake_state();
-            $lock_after          = cpms_pilot_job_start_cron_lock_state();
-            $tick_age            = 'NOT_RETRIEVED';
+            $wake_after         = cpms_pilot_job_start_wake_state();
+            $lock_after         = cpms_pilot_job_start_cron_lock_state();
+            $tick_age           = 'NOT_RETRIEVED';
             try {
                 // Queue's own persisted tick marker (bounded age, no timestamp echo):
                 // distinguishes "wake callback ran" from "nothing ran at all".
