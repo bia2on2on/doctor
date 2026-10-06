@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Infrastructure\Db;
 
+use ClinicCore\Infrastructure\Profiling\RequestProfiler;
 use RuntimeException;
 use wpdb;
 
@@ -73,7 +74,12 @@ final class CpmsDb
 
     public function query(string $sql, array $params = []): bool
     {
+        // Phase 17 profiling: observed only when the server-side profiler is armed
+        // (one memoized check otherwise); counted even on SQL error, matching
+        // `$wpdb->num_queries` semantics.
+        $profile_start = RequestProfiler::query_start();
         $ok = $this->wpdb->query($this->prepare($sql, $params)) !== false; // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        RequestProfiler::query_end( $profile_start );
         $this->ensureNoSqlError();
 
         return $ok;
@@ -86,7 +92,9 @@ final class CpmsDb
      */
     public function execute(string $sql, array $params = []): int
     {
+        $profile_start = RequestProfiler::query_start();
         $result = $this->wpdb->query($this->prepare($sql, $params)); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        RequestProfiler::query_end( $profile_start );
         $this->ensureNoSqlError();
 
         return is_int($result) ? $result : 0;
@@ -97,7 +105,9 @@ final class CpmsDb
      */
     public function fetchRow(string $sql, array $params = []): ?array
     {
+        $profile_start = RequestProfiler::query_start();
         $row = $this->wpdb->get_row($this->prepare($sql, $params), ARRAY_A); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        RequestProfiler::query_end( $profile_start );
         $this->ensureNoSqlError();
 
         return $row === null ? null : (array) $row;
@@ -108,7 +118,9 @@ final class CpmsDb
      */
     public function fetchAll(string $sql, array $params = []): array
     {
+        $profile_start = RequestProfiler::query_start();
         $rows = $this->wpdb->get_results($this->prepare($sql, $params), ARRAY_A); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        RequestProfiler::query_end( $profile_start );
         $this->ensureNoSqlError();
 
         return is_array($rows) ? array_map(static fn ($r) => (array) $r, $rows) : [];
@@ -116,7 +128,9 @@ final class CpmsDb
 
     public function fetchValue(string $sql, array $params = []): mixed
     {
+        $profile_start = RequestProfiler::query_start();
         $value = $this->wpdb->get_var($this->prepare($sql, $params)); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        RequestProfiler::query_end( $profile_start );
         $this->ensureNoSqlError();
 
         return $value;
@@ -129,7 +143,9 @@ final class CpmsDb
     {
         // wpdb::insert در موفقیت int (تعداد ردیف) و در خطا false برمی‌گرداند —
         // نه bool؛ بدون این نرمال‌سازی هر insert موفق TypeError می‌داد.
+        $profile_start = RequestProfiler::query_start();
         $ok = $this->wpdb->insert($this->table($table), $data) !== false; // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+        RequestProfiler::query_end( $profile_start );
         $this->ensureNoSqlError();
 
         return $ok;
@@ -141,6 +157,7 @@ final class CpmsDb
      */
     public function update(string $table, array $data, array $where): int
     {
+        $profile_start = RequestProfiler::query_start();
         $result = $this->wpdb->update(
             $this->table($table),
             $data,
@@ -148,6 +165,7 @@ final class CpmsDb
             array_fill(0, count($data), '%s'),
             array_fill(0, count($where), '%s')
         );
+        RequestProfiler::query_end( $profile_start );
         $this->ensureNoSqlError();
 
         return (int) $result;
@@ -158,11 +176,13 @@ final class CpmsDb
      */
     public function delete(string $table, array $where): int
     {
+        $profile_start = RequestProfiler::query_start();
         $result = $this->wpdb->delete(
             $this->table($table),
             $where,
             array_fill(0, count($where), '%s')
         );
+        RequestProfiler::query_end( $profile_start );
         $this->ensureNoSqlError();
 
         return (int) $result;
@@ -184,14 +204,20 @@ final class CpmsDb
      */
     public function transactional(callable $fn)
     {
+        $profile_start = RequestProfiler::query_start();
         $this->wpdb->query('/*cpms*/ START TRANSACTION'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        RequestProfiler::query_end( $profile_start );
         try {
             $result = $fn();
+            $profile_commit = RequestProfiler::query_start();
             $this->wpdb->query('/*cpms*/ COMMIT'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            RequestProfiler::query_end( $profile_commit );
 
             return $result;
         } catch (\Throwable $e) {
+            $profile_rollback = RequestProfiler::query_start();
             $this->wpdb->query('/*cpms*/ ROLLBACK'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            RequestProfiler::query_end( $profile_rollback );
             throw $e;
         }
     }
