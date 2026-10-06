@@ -738,15 +738,14 @@ final class ClinicianAdminPage
      * این فقط برای پنهان/نمایش‌دادن لینک‌های راهنماست؛ خود مقصد render و
      * همهٔ عملیات همچنان مجوز و عضویت را دوباره بررسی می‌کنند.
      */
-    public static function canCurrentUserAccessPage(): bool
-    {
-        $actorUserId = (int) get_current_user_id();
-        if ($actorUserId <= 0 || !current_user_can(RolesAndCapabilities::CONFIG)) {
+    public static function can_current_user_access_page(): bool {
+        $actor_user_id = (int) get_current_user_id();
+        if ( $actor_user_id <= 0 || ! current_user_can( RolesAndCapabilities::CONFIG ) ) {
             return false;
         }
 
         try {
-            return self::tryEstablishAuthorizedScope($actorUserId, RolesAndCapabilities::CONFIG) !== null;
+            return self::tryEstablishAuthorizedScope( $actor_user_id, RolesAndCapabilities::CONFIG ) !== null;
         } catch (\Throwable) {
             return false;
         }

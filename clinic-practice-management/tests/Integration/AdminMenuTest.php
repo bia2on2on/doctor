@@ -105,7 +105,7 @@ final class AdminMenuTest extends WP_UnitTestCase
             }
         }
         $this->assertNotNull($rolesMenu, 'صفحهٔ مجوزهای پیشرفته باید در منو ثبت شود');
-        $this->assertSame('مجوزهای پیشرفته', $rolesMenu[1] ?? null, 'عنوان منوی مجوزهای پیشرفته باید از مدیریت پرسنل متمایز باشد');
+        $this->assertSame('مجوزهای پیشرفته', $rolesMenu[0] ?? null, 'عنوان منوی مجوزهای پیشرفته باید از مدیریت پرسنل متمایز باشد');
 
         ob_start();
         RoleCapabilitiesPage::render();

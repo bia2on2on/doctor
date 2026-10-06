@@ -99,10 +99,11 @@ final class CpmsSetupWizard
         $settings = App::settings();
         $steps = self::steps();
         $index = self::currentStepIndex();
-        if (isset($_GET['step']) && is_string($_GET['step'])) {
-            $requestedStep = sanitize_key(wp_unslash($_GET['step'])); // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- whitelisted read-only navigation
-            if (in_array($requestedStep, array_column($steps, 'id'), true)) {
-                $index = self::stepIndexById($requestedStep);
+        // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only selector; values are restricted to registered steps.
+        if ( isset( $_GET['step'] ) && is_string( $_GET['step'] ) ) {
+            $requested_step = sanitize_key( wp_unslash( $_GET['step'] ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only, registry-whitelisted navigation value.
+            if ( in_array( $requested_step, array_column( $steps, 'id' ), true ) ) {
+                $index = self::stepIndexById( $requested_step );
             }
         }
         $step = $steps[$index];
@@ -130,13 +131,19 @@ final class CpmsSetupWizard
 
             <nav aria-label="گام‌های راه‌اندازی" style="display:flex;gap:8px;flex-wrap:wrap;margin:16px 0;">
                 <?php foreach ($steps as $i => $s) : ?>
-                    <?php $current = $i === $index; $done = $i < $index; ?>
-                    <a data-cpms-wizard-step="<?php echo esc_attr($s['id']); ?>"
-                       href="<?php echo esc_url(self::stepUrl($s['id'])); ?>"
-                       aria-current="<?php echo $current ? 'step' : 'false'; ?>"
-                       class="dashicons-before <?php echo esc_attr($current ? 'dashicons-star-filled' : ($done ? 'dashicons-yes' : 'dashicons-marker')); ?>"
-                       style="display:inline-block;text-decoration:none;<?php echo $current ? 'background:#2271b1;color:#fff;padding:2px 8px;border-radius:3px;' : ($done ? 'color:#00a32a;' : 'color:#787c82;'); ?>">
-                        <?php echo esc_html((string) ($i + 1) . '. ' . $s['title']); ?>
+                    <?php
+                    $current = $i === $index;
+                    $done = $i < $index;
+                    $icon_class = $current ? 'dashicons-star-filled' : ( $done ? 'dashicons-yes' : 'dashicons-marker' );
+                    $icon_style = $current ? 'background:#2271b1;color:#fff;padding:2px 8px;border-radius:3px;' : ( $done ? 'color:#00a32a;' : 'color:#787c82;' );
+                    ?>
+                    <a
+                        data-cpms-wizard-step="<?php echo esc_attr( $s['id'] ); ?>"
+                        href="<?php echo esc_url( self::step_url( $s['id'] ) ); ?>"
+                        aria-current="<?php echo $current ? 'step' : 'false'; ?>"
+                        class="dashicons-before <?php echo esc_attr( $icon_class ); ?>"
+                        style="display:inline-block;text-decoration:none;<?php echo esc_attr( $icon_style ); ?>">
+                        <?php echo esc_html( (string) ( $i + 1 ) . '. ' . $s['title'] ); ?>
                     </a>
                 <?php endforeach; ?>
             </nav>
@@ -175,15 +182,14 @@ final class CpmsSetupWizard
     /**
      * URL یک گام فقط از registry گام‌های ویزارد ساخته می‌شود.
      */
-    private static function stepUrl(string $stepId): string
-    {
-        if (!in_array($stepId, array_column(self::steps(), 'id'), true)) {
-            return admin_url('admin.php?page=' . self::PAGE_SLUG);
+    private static function step_url( string $step_id ): string {
+        if ( ! in_array( $step_id, array_column( self::steps(), 'id' ), true ) ) {
+            return admin_url( 'admin.php?page=' . self::PAGE_SLUG );
         }
 
         return add_query_arg(
-            ['page' => self::PAGE_SLUG, 'step' => $stepId],
-            admin_url('admin.php')
+            [ 'page' => self::PAGE_SLUG, 'step' => $step_id ],
+            admin_url( 'admin.php' )
         );
     }
 
@@ -247,7 +253,7 @@ final class CpmsSetupWizard
                 self::renderHealth();
                 break;
             case 'review':
-                self::renderReview($settings);
+                self::render_review( $settings );
                 break;
             case 'finish':
                 self::renderFinish($settings);
@@ -257,41 +263,37 @@ final class CpmsSetupWizard
         }
     }
 
-    private static function openStepForm(string $stepId, string $extraNotice = ''): void
-    {
+    private static function open_step_form( string $step_id, string $extra_notice = '' ): void {
         ?>
-        <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
-            <?php wp_nonce_field('cpms_wizard_save', '_wpnonce'); ?>
+        <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+            <?php wp_nonce_field( 'cpms_wizard_save', '_wpnonce' ); ?>
             <input type="hidden" name="action" value="cpms_wizard_save">
-            <input type="hidden" name="step" value="<?php echo esc_attr($stepId); ?>">
-            <?php echo $extraNotice; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- HTML از کد داخل همین کلاس ساخته می‌شود ?>
+            <input type="hidden" name="step" value="<?php echo esc_attr( $step_id ); ?>">
+            <?php echo $extra_notice; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- HTML از کد داخل همین کلاس ساخته می‌شود ?>
         <?php
     }
 
-    private static function submitStepForm(string $stepId, string $submitLabel): void
-    {
+    private static function submit_step_form( string $step_id, string $submit_label ): void {
         ?>
             <p class="submit">
-                <button type="submit" class="button button-primary button-large"><?php echo esc_html($submitLabel); ?></button>
-                <?php if ($stepId !== 'finish') : ?>
-                    <a class="button" href="<?php echo esc_url(self::stepUrl('review')); ?>">پرش به بازبینی</a>
+                <button type="submit" class="button button-primary button-large"><?php echo esc_html( $submit_label ); ?></button>
+                <?php if ( $step_id !== 'finish' ) : ?>
+                    <a class="button" href="<?php echo esc_url( self::step_url( 'review' ) ); ?>">پرش به بازبینی</a>
                 <?php endif; ?>
             </p>
         <?php
     }
 
-    private static function closeStepForm(): void
-    {
+    private static function close_step_form(): void {
         ?>
         </form>
         <?php
     }
 
-    private static function formTag(string $stepId, string $submitLabel, string $extraNotice = ''): void
-    {
-        self::openStepForm($stepId, $extraNotice);
-        self::submitStepForm($stepId, $submitLabel);
-        self::closeStepForm();
+    private static function form_tag( string $step_id, string $submit_label, string $extra_notice = '' ): void {
+        self::open_step_form( $step_id, $extra_notice );
+        self::submit_step_form( $step_id, $submit_label );
+        self::close_step_form();
     }
 
     private static function renderWelcome(): void
@@ -299,12 +301,12 @@ final class CpmsSetupWizard
         ?>
         <div class="card">
             <h2>چه کاری انجام می‌شود؟</h2>
-            <p>این راهنما در <?php echo esc_html((string) count(self::steps())); ?> گام به شما کمک می‌کند مطب را به‌صورت امن راه‌اندازی کنید؛ از اطلاعات کلینیک و رزرو تا بررسی سلامت و شروع عملیات.</p>
+            <p>این راهنما در <?php echo esc_html( (string) count( self::steps() ) ); ?> گام به شما کمک می‌کند مطب را به‌صورت امن راه‌اندازی کنید؛ از اطلاعات کلینیک و رزرو تا بررسی سلامت و شروع عملیات.</p>
             <p>همهٔ مراحل ذخیره می‌شوند؛ اگر وسط کار خارج شوید، از همان‌جا ادامه می‌دهید.</p>
             <p><strong>توجه:</strong> این صفحه هیچ دادهٔ پزشکی/حساس بیمار را نمایش یا ذخیره نمی‌کند.</p>
         </div>
         <?php
-        self::formTag('welcome', 'شروع');
+        self::form_tag( 'welcome', 'شروع' );
     }
 
     private static function renderClinic(Settings $settings): void
@@ -332,7 +334,7 @@ final class CpmsSetupWizard
         }
 
         ?>
-        <?php self::openStepForm('clinic'); ?>
+        <?php self::open_step_form( 'clinic' ); ?>
         <div class="card">
             <h2>مشخصات کلینیک</h2>
             <table class="form-table" role="presentation">
@@ -350,9 +352,9 @@ final class CpmsSetupWizard
                 </tr>
             </table>
             <p class="description">این اطلاعات فقط برای شناسایی کلینیک است و هیچ دادهٔ پزشکی در آن نیست. منبع canonical: cpms_clinics — timezone عملیاتی از Location است و اینجا ویرایش نمی‌شود.</p>
-            <?php self::submitStepForm('clinic', 'ذخیره و ادامه'); ?>
+            <?php self::submit_step_form( 'clinic', 'ذخیره و ادامه' ); ?>
         </div>
-        <?php self::closeStepForm(); ?>
+        <?php self::close_step_form();
     }
 
     private static function renderBooking(Settings $settings): void
@@ -363,20 +365,20 @@ final class CpmsSetupWizard
         $future = (int) $settings->get('booking.max_future_days', 60);
         $cancel = (int) $settings->get('booking.cancel_deadline_hours', 24);
         ?>
-        <?php self::openStepForm('booking'); ?>
+        <?php self::open_step_form( 'booking' ); ?>
         <div class="card">
             <h2>تنظیم پیش‌فرض رزرو</h2>
             <table class="form-table" role="presentation">
-                <tr><th><label for="b1">مدت هر نوبت (دقیقه)</label></th><td><input type="number" id="b1" name="duration" min="5" max="240" required value="<?php echo esc_attr((string) $duration); ?>"></td></tr>
-                <tr><th><label for="b2">ظرفیت هر زمان‌بازه</label></th><td><input type="number" id="b2" name="capacity" min="1" max="20" required value="<?php echo esc_attr((string) $capacity); ?>"></td></tr>
-                <tr><th><label for="b3">حداقل فاصلهٔ رزرو (ساعت)</label></th><td><input type="number" id="b3" name="lead" min="1" max="72" required value="<?php echo esc_attr((string) $lead); ?>"></td></tr>
-                <tr><th><label for="b4">سقف رزرو آینده (روز)</label></th><td><input type="number" id="b4" name="future" min="1" max="365" required value="<?php echo esc_attr((string) $future); ?>"></td></tr>
-                <tr><th><label for="b5">مهلت لغو (ساعت)</label></th><td><input type="number" id="b5" name="cancel" min="0" max="168" required value="<?php echo esc_attr((string) $cancel); ?>"></td></tr>
+                <tr><th><label for="b1">مدت هر نوبت (دقیقه)</label></th><td><input type="number" id="b1" name="duration" min="5" max="240" required value="<?php echo esc_attr( (string) $duration ); ?>"></td></tr>
+                <tr><th><label for="b2">ظرفیت هر زمان‌بازه</label></th><td><input type="number" id="b2" name="capacity" min="1" max="20" required value="<?php echo esc_attr( (string) $capacity ); ?>"></td></tr>
+                <tr><th><label for="b3">حداقل فاصلهٔ رزرو (ساعت)</label></th><td><input type="number" id="b3" name="lead" min="1" max="72" required value="<?php echo esc_attr( (string) $lead ); ?>"></td></tr>
+                <tr><th><label for="b4">سقف رزرو آینده (روز)</label></th><td><input type="number" id="b4" name="future" min="1" max="365" required value="<?php echo esc_attr( (string) $future ); ?>"></td></tr>
+                <tr><th><label for="b5">مهلت لغو (ساعت)</label></th><td><input type="number" id="b5" name="cancel" min="0" max="168" required value="<?php echo esc_attr( (string) $cancel ); ?>"></td></tr>
             </table>
             <p class="description">پس از ذخیره، همین مقادیر به‌عنوان پیش‌فرض در رزرو نوبت استفاده می‌شوند.</p>
-            <?php self::submitStepForm('booking', 'ذخیره و ادامه'); ?>
+            <?php self::submit_step_form( 'booking', 'ذخیره و ادامه' ); ?>
         </div>
-        <?php self::closeStepForm(); ?>
+        <?php self::close_step_form();
     }
 
     private static function renderUsers(): void
@@ -405,39 +407,39 @@ final class CpmsSetupWizard
             </p>
         </div>
         <?php
-        self::formTag('users', 'ادامه');
+        self::form_tag( 'users', 'ادامه' );
     }
 
     private static function renderDoctors(): void
     {
         $count = count(App::clinicianRepository()->listAll(App::scope()->clinicId, false));
-        $canManageClinicians = ClinicianAdminPage::canCurrentUserAccessPage();
+        $can_manage_clinicians = ClinicianAdminPage::can_current_user_access_page();
         ?>
         <div class="card">
             <h2>پزشکان</h2>
             <p>پزشکان را اضافه و به کاربر و برنامهٔ کاری متصل کنید. افزودن پزشک بدون حذف تاریخچه انجام می‌شود.</p>
             <p>تعداد پزشکان فعال: <strong><?php echo esc_html((string) $count); ?></strong></p>
-            <?php if ($canManageClinicians) : ?>
-                <p><a class="button" data-cpms-wizard-action="clinicians" href="<?php echo esc_url(admin_url('admin.php?page=cpms-clinicians')); ?>">رفتن به «پزشکان و برنامه کاری»</a></p>
+            <?php if ( $can_manage_clinicians ) : ?>
+                <p><a class="button" data-cpms-wizard-action="clinicians" href="<?php echo esc_url( admin_url( 'admin.php?page=cpms-clinicians' ) ); ?>">رفتن به «پزشکان و برنامه کاری»</a></p>
             <?php endif; ?>
         </div>
         <?php
-        self::formTag('doctors', 'ادامه');
+        self::form_tag( 'doctors', 'ادامه' );
     }
 
     private static function renderSchedules(): void
     {
-        $canManageClinicians = ClinicianAdminPage::canCurrentUserAccessPage();
+        $can_manage_clinicians = ClinicianAdminPage::can_current_user_access_page();
         ?>
         <div class="card">
             <h2>برنامه کاری هفتگی</h2>
             <p>برنامهٔ هفتگی هر پزشک (۷ روز) و استثناها (تعطیلی/مرخصی) از صفحهٔ «پزشکان و برنامه کاری» تنظیم می‌شود.</p>
-            <?php if ($canManageClinicians) : ?>
-                <p><a class="button" data-cpms-wizard-action="clinicians" href="<?php echo esc_url(admin_url('admin.php?page=cpms-clinicians')); ?>">رفتن به تنظیم برنامه</a></p>
+            <?php if ( $can_manage_clinicians ) : ?>
+                <p><a class="button" data-cpms-wizard-action="clinicians" href="<?php echo esc_url( admin_url( 'admin.php?page=cpms-clinicians' ) ); ?>">رفتن به تنظیم برنامه</a></p>
             <?php endif; ?>
         </div>
         <?php
-        self::formTag('schedules', 'ادامه');
+        self::form_tag( 'schedules', 'ادامه' );
     }
 
     private static function renderSms(Settings $settings): void
@@ -473,7 +475,7 @@ final class CpmsSetupWizard
             <p><a class="button" href="<?php echo esc_url(admin_url('admin.php?page=cpms-settings')); ?>">رفتن به تنظیمات بکاپ</a></p>
         </div>
         <?php
-        self::formTag('backup', 'ادامه');
+        self::form_tag( 'backup', 'ادامه' );
     }
 
     private static function renderLicense(): void
@@ -485,10 +487,10 @@ final class CpmsSetupWizard
             <h2>مجوز (اختیاری)</h2>
             <p>فعال‌سازی/وضعیت مجوز از صفحهٔ سلامت سیستم قابل مشاهده و مدیریت است.</p>
             <p>وضعیت مجوز: <strong><?php echo esc_html($status); ?></strong></p>
-            <p><a class="button" data-cpms-wizard-action="system" href="<?php echo esc_url(admin_url('admin.php?page=cpms-system')); ?>">رفتن به سلامت/مجوز</a></p>
+            <p><a class="button" data-cpms-wizard-action="system" href="<?php echo esc_url( admin_url( 'admin.php?page=cpms-system' ) ); ?>">رفتن به سلامت/مجوز</a></p>
         </div>
         <?php
-        self::formTag('license', 'ادامه');
+        self::form_tag( 'license', 'ادامه' );
     }
 
     private static function renderHealth(): void
@@ -518,54 +520,52 @@ final class CpmsSetupWizard
                 </tbody>
             </table>
             <p class="description">در صورت وجود وضعیت «fail»، پیش از شروع عملیات آن را برطرف کنید؛ می‌توانید بعداً به این صفحه برگردید.</p>
-            <p><a class="button" data-cpms-wizard-action="system" href="<?php echo esc_url(admin_url('admin.php?page=cpms-system')); ?>">بازکردن جزئیات و ابزارهای سیستم</a></p>
+            <p><a class="button" data-cpms-wizard-action="system" href="<?php echo esc_url( admin_url( 'admin.php?page=cpms-system' ) ); ?>">بازکردن جزئیات و ابزارهای سیستم</a></p>
         </div>
         <?php
-        self::formTag('health', 'ادامه');
+        self::form_tag( 'health', 'ادامه' );
     }
 
-    private static function canonicalClinicName(Settings $settings): string
-    {
+    private static function canonical_clinic_name( Settings $settings ): string {
         try {
             $scope = ScopeContext::tryGet() ?? App::scope();
-            $row = App::clinicRepository()->find((int) $scope->clinicId);
-            if (is_array($row)) {
+            $row = App::clinicRepository()->find( (int) $scope->clinicId );
+            if ( is_array( $row ) ) {
                 // An empty canonical value is a real blocker; never mask it with stale settings.
-                return trim((string) ($row['name'] ?? ''));
+                return trim( (string) ( $row['name'] ?? '' ) );
             }
         } catch (\Throwable) {
             // Fallback is limited to legacy installs where the canonical row is unavailable.
         }
 
-        return trim((string) ($settings->get('setup.clinic.name', '') ?? ''));
+        return trim( (string) ( $settings->get( 'setup.clinic.name', '' ) ?? '' ) );
     }
 
-    private static function renderPrerequisiteLinks(string $clinicName, int $doctorCount): void
-    {
-        $clinicMissing = trim($clinicName) === '';
-        $cliniciansMissing = $doctorCount === 0;
-        if (!$clinicMissing && !$cliniciansMissing) {
+    private static function render_prerequisite_links( string $clinic_name, int $doctor_count ): void {
+        $clinic_missing     = trim( $clinic_name ) === '';
+        $clinicians_missing = $doctor_count === 0;
+        if ( ! $clinic_missing && ! $clinicians_missing ) {
             return;
         }
 
-        $canManageScopedClinic = ClinicianAdminPage::canCurrentUserAccessPage();
+        $can_manage_scoped_clinic = ClinicianAdminPage::can_current_user_access_page();
         ?>
         <ul class="cpms-wizard-prerequisite-actions">
-            <?php if ($clinicMissing) : ?>
+            <?php if ( $clinic_missing ) : ?>
                 <li>
                     اطلاعات کلینیک ثبت نشده است.
-                    <?php if ($canManageScopedClinic) : ?>
-                        <a data-cpms-wizard-action="clinic" href="<?php echo esc_url(self::stepUrl('clinic')); ?>">اصلاح مشخصات کلینیک</a>
+                    <?php if ( $can_manage_scoped_clinic ) : ?>
+                        <a data-cpms-wizard-action="clinic" href="<?php echo esc_url( self::step_url( 'clinic' ) ); ?>">اصلاح مشخصات کلینیک</a>
                     <?php else : ?>
                         <span>برای اصلاح، عضویت فعال در کلینیک و مجوز پیکربندی لازم است.</span>
                     <?php endif; ?>
                 </li>
             <?php endif; ?>
-            <?php if ($cliniciansMissing) : ?>
+            <?php if ( $clinicians_missing ) : ?>
                 <li>
                     پزشک فعالی ثبت نشده است.
-                    <?php if ($canManageScopedClinic) : ?>
-                        <a data-cpms-wizard-action="clinicians" href="<?php echo esc_url(admin_url('admin.php?page=cpms-clinicians')); ?>">افزودن/مدیریت پزشک</a>
+                    <?php if ( $can_manage_scoped_clinic ) : ?>
+                        <a data-cpms-wizard-action="clinicians" href="<?php echo esc_url( admin_url( 'admin.php?page=cpms-clinicians' ) ); ?>">افزودن/مدیریت پزشک</a>
                     <?php else : ?>
                         <span>برای مدیریت پزشکان، عضویت فعال در کلینیک و مجوز پیکربندی لازم است.</span>
                     <?php endif; ?>
@@ -575,53 +575,51 @@ final class CpmsSetupWizard
         <?php
     }
 
-    private static function renderReview(Settings $settings): void
-    {
-        $clinicName = self::canonicalClinicName($settings);
-        $doctorCount = count(App::clinicianRepository()->listAll(App::scope()->clinicId, false));
+    private static function render_review( Settings $settings ): void {
+        $clinic_name  = self::canonical_clinic_name( $settings );
+        $doctor_count = count( App::clinicianRepository()->listAll( App::scope()->clinicId, false ) );
         ?>
         <div class="card">
             <h2>بازبینی پیش از شروع</h2>
             <table class="form-table" role="presentation">
-                <tr><th>نام کلینیک</th><td><?php echo esc_html($clinicName !== '' ? $clinicName : '—'); ?></td></tr>
-                <tr><th>پزشکان فعال</th><td><?php echo esc_html((string) $doctorCount); ?></td></tr>
+                <tr><th>نام کلینیک</th><td><?php echo esc_html( $clinic_name !== '' ? $clinic_name : '—' ); ?></td></tr>
+                <tr><th>پزشکان فعال</th><td><?php echo esc_html( (string) $doctor_count ); ?></td></tr>
                 <tr><th>دسترسی مدیریت</th><td>cpms_config (مدیر)</td></tr>
             </table>
             <p>برای تکمیل، اطلاعات کلینیک و دست‌کم یک پزشک فعال لازم است.</p>
-            <?php self::renderPrerequisiteLinks($clinicName, $doctorCount); ?>
+            <?php self::render_prerequisite_links( $clinic_name, $doctor_count ); ?>
         </div>
         <?php
-        self::formTag('review', 'ذخیره و ادامه');
+        self::form_tag( 'review', 'ذخیره و ادامه' );
     }
 
     private static function renderFinish(Settings $settings): void
     {
-        $clinicName = self::canonicalClinicName($settings);
-        $doctorCount = count(App::clinicianRepository()->listAll(App::scope()->clinicId, false));
-        $ready = $clinicName !== '' && $doctorCount > 0;
+        $clinic_name  = self::canonical_clinic_name( $settings );
+        $doctor_count = count( App::clinicianRepository()->listAll( App::scope()->clinicId, false ) );
+        $ready        = $clinic_name !== '' && $doctor_count > 0;
         ?>
         <div class="card">
             <h2>شروع عملیات کلینیک</h2>
-            <?php if ($ready) : ?>
+            <?php if ( $ready ) : ?>
                 <p>🎉 همهٔ پیش‌نیازهای الزامی برآورده شده‌اند. با فشردن دکمهٔ بالا، راه‌اندازی تکمیل و وضعیت «آمادهٔ شروع عملیات» ثبت می‌شود.</p>
             <?php else : ?>
                 <p style="color:#b26b00;">⚠️ هنوز همهٔ پیش‌نیازهای الزامی (اطلاعات کلینیک + یک پزشک فعال) برآورده نشده است.</p>
-                <?php self::renderPrerequisiteLinks($clinicName, $doctorCount); ?>
+                <?php self::render_prerequisite_links( $clinic_name, $doctor_count ); ?>
             <?php endif; ?>
         </div>
         <?php
-        self::formTag('finish', 'تکمیل راه‌اندازی');
-        self::renderRestartForm();
+        self::form_tag( 'finish', 'تکمیل راه‌اندازی' );
+        self::render_restart_form();
     }
 
-    private static function renderRestartForm(): void
-    {
+    private static function render_restart_form(): void {
         ?>
         <div class="card">
             <h2>بازنشانی پیشرفت راه‌اندازی</h2>
             <p>این کار فقط مرحلهٔ راه‌اندازی را از ابتدا آغاز می‌کند. هیچ دادهٔ کلینیک، کاربر، عضویت، پزشک، بیمار، نوبت یا سابقهٔ بالینی حذف یا تغییر نمی‌کند.</p>
-            <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
-                <?php wp_nonce_field('cpms_wizard_restart', '_wpnonce'); ?>
+            <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+                <?php wp_nonce_field( 'cpms_wizard_restart', '_wpnonce' ); ?>
                 <input type="hidden" name="action" value="cpms_wizard_restart">
                 <p class="submit">
                     <button type="submit" class="button">شروع دوباره — فقط بازنشانی پیشرفت</button>
@@ -671,7 +669,7 @@ final class CpmsSetupWizard
 
         if ($error !== '') {
             set_transient(self::NOTICE_KEY, 'خطا: ' . $error, 60);
-            wp_safe_redirect(self::stepUrl($step));
+            wp_safe_redirect( self::step_url( $step ) );
             exit;
         }
 
@@ -799,10 +797,10 @@ final class CpmsSetupWizard
      */
     public static function saveBooking(Settings $settings, array $post, int $updatedBy): string
     {
-        foreach (['duration', 'capacity', 'lead', 'future', 'cancel'] as $requiredKey) {
-            if (!array_key_exists($requiredKey, $post)
-                || !is_scalar($post[$requiredKey])
-                || trim((string) $post[$requiredKey]) === ''
+        foreach ( [ 'duration', 'capacity', 'lead', 'future', 'cancel' ] as $required_key ) {
+            if ( ! array_key_exists( $required_key, $post )
+                || ! is_scalar( $post[ $required_key ] )
+                || trim( (string) $post[ $required_key ] ) === ''
             ) {
                 return 'تمام گزینه‌های تنظیم رزرو الزامی هستند.';
             }
@@ -866,9 +864,9 @@ final class CpmsSetupWizard
      */
     private static function isReadyToOperate(Settings $settings): bool
     {
-        $clinicName = self::canonicalClinicName($settings);
+        $clinic_name = self::canonical_clinic_name( $settings );
         $doctors = count(App::clinicianRepository()->listAll(App::scope()->clinicId, false));
 
-        return $clinicName !== '' && $doctors > 0;
+        return $clinic_name !== '' && $doctors > 0;
     }
 }
