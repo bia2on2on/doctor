@@ -348,7 +348,7 @@ jobs:
       - name: Phase 17 queue first-start — autonomous fast wake, 100 synthetic jobs
         run: |
           set -euo pipefail
-          TEMP_DIR=$(mktemp -d /tmp/cpms-job-start-auto.XXXXXX)
+          TEMP_DIR=$(mktemp -d /tmp/cpms-job-start.auto-XXXXXX)
           chmod 700 "$TEMP_DIR"
           trap 'unset CPMS_JOB_START_TOKEN CPMS_JOB_START_RAW_PATH CPMS_JOB_START_MODE; rm -rf "$TEMP_DIR"' EXIT
           # Natural preconditions only (no queue/lock manipulation): the site's own HTTP
