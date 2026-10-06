@@ -276,53 +276,11 @@ jobs:
           sudo chmod -R 777 "$STORAGE_OUT"
 
       # ---------- Apache (production-like) ----------
-      - name: Apache + mod_php + hardening
-        run: |
-          sudo tee /etc/apache2/sites-available/pilot.conf >/dev/null <<CONF
-          <VirtualHost *:8080>
-            DocumentRoot $WP_DIR
-            <Directory $WP_DIR>
-              AllowOverride All
-              Require all granted
-            </Directory>
-            ErrorLog \${APACHE_LOG_DIR}/pilot-error.log
-            CustomLog \${APACHE_LOG_DIR}/pilot-access.log combined
-          </VirtualHost>
-          CONF
-          sudo sed -i 's/^Listen 80$/Listen 8080/' /etc/apache2/ports.conf
-          sudo a2dissite 000-default >/dev/null && sudo a2ensite pilot >/dev/null
-          sudo a2enmod rewrite >/dev/null   # WP pretty permalinks (/wp-json/...)
-          sudo sed -i 's/^ServerTokens .*/ServerTokens Prod/' /etc/apache2/conf-available/security.conf
-          sudo sed -i 's/^ServerSignature .*/ServerSignature Off/' /etc/apache2/conf-available/security.conf
-          # Apache از mod_php اپت (8.3) استفاده می‌کند؛ همه iniهای apache2 را harden می‌کنیم
-          for INI in /etc/php/*/apache2/php.ini; do
-            sudo sed -i 's/^expose_php = .*/expose_php = Off/' "$INI"
-            sudo sed -i 's/^display_errors = .*/display_errors = Off/' "$INI"
-          done
-          sudo chmod a+rx /home/runner
-          sudo chmod -R a+rX "$WP_DIR"
-          sudo chown -R www-data:www-data "$WP_DIR/wp-content/uploads" 2>/dev/null || true
-          # apache2.service: PrivateTmp=true → DocumentRoot نباید زیر /tmp باشد
-          sudo apache2ctl configtest && sudo service apache2 start
-          sleep 2
-          echo "--- vhost ---"; sudo cat /etc/apache2/sites-available/pilot.conf
-          echo "--- htaccess ---"; ls -la "$WP_DIR/.htaccess" "$WP_DIR/index.php" 2>&1
-          echo "--- modules ---"; apache2ctl -M 2>/dev/null | grep -E 'rewrite|php' || sudo apache2ctl -M | grep -E 'rewrite|php'
-          echo "--- pretty /wp-json/ ---"
-          curl -s -o /tmp/root.json -w 'HTTP %{http_code}\n' "$WP_URL/wp-json/"
-          head -c 200 /tmp/root.json; echo
-          echo "--- plain ?rest_route=/ ---"
-          curl -s -o /tmp/rest.json -w 'HTTP %{http_code}\n' "$WP_URL/?rest_route=/"
-          head -c 200 /tmp/rest.json; echo
-          echo "--- homepage ---"
-          curl -s -o /tmp/home.html -w 'HTTP %{http_code}\n' "$WP_URL/"
-          if ! grep -q 200 <(curl -s -o /dev/null -w '%{http_code}' "$WP_URL/?rest_route=/"); then
-            echo 'WP ITSELF NOT SERVING (rest_route)'; exit 1
-          fi
-          curl -s -o /dev/null -w '%{http_code}\n' "$WP_URL/wp-json/" | grep -q 200 || { echo 'PRETTY PERMALINKS BROKEN (rewrite)'; exit 1; }
-
       # ---------- Phase 17 autonomous fast-wake first-start measurement ----------
-      # MEASURED FIRST, on the naturally fresh disposable staging state. WordPress core
+      # MEASURED FIRST, on the freshest possible disposable staging state: directly
+      # after the single seeded Clinic exists and BEFORE any later step performs Web
+      # requests that may themselves enqueue jobs and request a fast wake (whose
+      # deferred spawn can hold core's 60 s doing_cron lock). WordPress core
       # allows at most one cron spawn per 60 s through its own `doing_cron` lock, and
       # wp-cron.php only clears that lock when its request actually finishes; a previous
       # step that dispatched a loopback spawn (the ordinary enqueue does that too) can
@@ -376,6 +334,51 @@ jobs:
             echo 'Phase 17 job-start sample set: autonomous (production fast-wake path only; no tick call; the same loopback pass may also run other due core cron events); first persisted claim; 100 synthetic non-PHI samples; no latency threshold.'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Apache + mod_php + hardening
+        run: |
+          sudo tee /etc/apache2/sites-available/pilot.conf >/dev/null <<CONF
+          <VirtualHost *:8080>
+            DocumentRoot $WP_DIR
+            <Directory $WP_DIR>
+              AllowOverride All
+              Require all granted
+            </Directory>
+            ErrorLog \${APACHE_LOG_DIR}/pilot-error.log
+            CustomLog \${APACHE_LOG_DIR}/pilot-access.log combined
+          </VirtualHost>
+          CONF
+          sudo sed -i 's/^Listen 80$/Listen 8080/' /etc/apache2/ports.conf
+          sudo a2dissite 000-default >/dev/null && sudo a2ensite pilot >/dev/null
+          sudo a2enmod rewrite >/dev/null   # WP pretty permalinks (/wp-json/...)
+          sudo sed -i 's/^ServerTokens .*/ServerTokens Prod/' /etc/apache2/conf-available/security.conf
+          sudo sed -i 's/^ServerSignature .*/ServerSignature Off/' /etc/apache2/conf-available/security.conf
+          # Apache از mod_php اپت (8.3) استفاده می‌کند؛ همه iniهای apache2 را harden می‌کنیم
+          for INI in /etc/php/*/apache2/php.ini; do
+            sudo sed -i 's/^expose_php = .*/expose_php = Off/' "$INI"
+            sudo sed -i 's/^display_errors = .*/display_errors = Off/' "$INI"
+          done
+          sudo chmod a+rx /home/runner
+          sudo chmod -R a+rX "$WP_DIR"
+          sudo chown -R www-data:www-data "$WP_DIR/wp-content/uploads" 2>/dev/null || true
+          # apache2.service: PrivateTmp=true → DocumentRoot نباید زیر /tmp باشد
+          sudo apache2ctl configtest && sudo service apache2 start
+          sleep 2
+          echo "--- vhost ---"; sudo cat /etc/apache2/sites-available/pilot.conf
+          echo "--- htaccess ---"; ls -la "$WP_DIR/.htaccess" "$WP_DIR/index.php" 2>&1
+          echo "--- modules ---"; apache2ctl -M 2>/dev/null | grep -E 'rewrite|php' || sudo apache2ctl -M | grep -E 'rewrite|php'
+          echo "--- pretty /wp-json/ ---"
+          curl -s -o /tmp/root.json -w 'HTTP %{http_code}\n' "$WP_URL/wp-json/"
+          head -c 200 /tmp/root.json; echo
+          echo "--- plain ?rest_route=/ ---"
+          curl -s -o /tmp/rest.json -w 'HTTP %{http_code}\n' "$WP_URL/?rest_route=/"
+          head -c 200 /tmp/rest.json; echo
+          echo "--- homepage ---"
+          curl -s -o /tmp/home.html -w 'HTTP %{http_code}\n' "$WP_URL/"
+          if ! grep -q 200 <(curl -s -o /dev/null -w '%{http_code}' "$WP_URL/?rest_route=/"); then
+            echo 'WP ITSELF NOT SERVING (rest_route)'; exit 1
+          fi
+          curl -s -o /dev/null -w '%{http_code}\n' "$WP_URL/wp-json/" | grep -q 200 || { echo 'PRETTY PERMALINKS BROKEN (rewrite)'; exit 1; }
+
       # ---------- Phase 17 background-job first-start measurement (control) ----------
       # Runs AFTER the autonomous pass so this step's own explicit production tick can no
       # longer contaminate it (it is the control, measured on the same disposable install).
@@ -399,7 +402,10 @@ jobs:
             echo "::error::synthetic job enqueue refused by the fail-closed preconditions (${ENQ_DIAG})"; exit 1
           fi
           ENQ_DIAG=$(grep -h '^DIAG ' "$TEMP_DIR/enqueue.log" | tr '\n' ' ' || true)
-          if ! TICK_OUTPUT=$(WP_HOME="$WP_DIR" php "$PLUGIN_DIR/bin/cpms" jobs tick --limit=200 2>/dev/null); then
+          # Limit is raised above the 100-row sample so leftover rows from the
+          # earlier autonomous pass (if it was not adjudicated) cannot saturate the
+          # tick and leave this control's own samples unclaimed.
+          if ! TICK_OUTPUT=$(WP_HOME="$WP_DIR" php "$PLUGIN_DIR/bin/cpms" jobs tick --limit=500 2>/dev/null); then
             echo '::error::explicit production-path tick failed'; exit 1
           fi
           if [[ ! "$TICK_OUTPUT" =~ ^Processed[[:space:]][0-9]+[[:space:]]job[(]s[)]$ ]]; then
