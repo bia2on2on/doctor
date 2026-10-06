@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Tests\Integration;
 
+use ClinicCore\Admin\ClinicianAdminPage;
 use ClinicCore\Admin\CpmsAdminMenu;
 use ClinicCore\Admin\CpmsSetupWizard;
 use ClinicCore\Application\Scope\ScopeContext;
@@ -430,6 +431,21 @@ final class SetupWizardTest extends WP_UnitTestCase
                 );
             }
         }
+    }
+
+    public function testClinicianPageAccessCheckDoesNotMutateScopeContext(): void
+    {
+        $this->authorizeConfigUser();
+        $scopeBefore = ScopeContext::tryGet();
+        $this->assertNotNull($scopeBefore, 'پیش‌شرط: helper باید Scope صریح موجود را برقرار کرده باشد');
+
+        $this->assertTrue(ClinicianAdminPage::can_current_user_access_page());
+        $this->assertSame($scopeBefore, ScopeContext::tryGet(), 'بررسی لینک پزشکان نباید Scope موجود را جایگزین کند');
+
+        ScopeContext::clear();
+        $this->assertNull(ScopeContext::tryGet(), 'پیش‌شرط: مسیر بدون Scope صریح');
+        $this->assertTrue(ClinicianAdminPage::can_current_user_access_page());
+        $this->assertNull(ScopeContext::tryGet(), 'بررسی لینک پزشکان نباید Scope جدیدی در context بنویسد');
     }
 
     public function testSaveClinicRejectsMissingNameExplicitly(): void
