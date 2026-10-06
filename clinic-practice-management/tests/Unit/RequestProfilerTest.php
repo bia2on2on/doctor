@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ClinicCore\Tests\Unit;
 
 use ClinicCore\Infrastructure\Profiling\RequestProfiler;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -339,9 +340,11 @@ final class RequestProfilerTest extends TestCase
             $this->assertGreaterThanOrEqual(0, $decoded[$field]);
         }
 
+        // NOTE: the allowlisted key names `wp_q*` are asserted exactly above; the
+        // leak scan below covers everything else (no SQL/data/secret-shaped content).
         foreach (
             [
-                'SELECT', 'select', 'FROM', 'WHERE', 'clinic/v1', 'wp_', 'wp-',
+                'SELECT', 'select', 'FROM', 'WHERE', 'clinic/v1', 'wp-',
                 'Cookie', 'cookie', 'nonce', 'Nonce', 'Bearer', 'password', 'secret',
                 'Authorization', '/home', 'C:\\', '<?php', '$_SERVER', 'HTTP_',
             ] as $forbidden

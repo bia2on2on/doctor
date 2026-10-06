@@ -369,6 +369,198 @@ def read_diagnostics(directory: Path, expected_count: int) -> Dict[str, Any]:
     return {"schema": DIAGNOSTIC_SCHEMA, "status": "ok", "static": static, "measurements": rows}
 
 
+class ProfilingInputRefused(ValueError):
+    """The profiling input cannot be validated — no profiling evidence may be published."""
+
+
+def _profiling_int(value: Any, field: str, low: int, high: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ProfilingInputRefused(f"{field}: expected integer, got {type(value).__name__}")
+    if not low <= value <= high:
+        raise ProfilingInputRefused(f"{field}: integer out of range {low}..{high}")
+    return value
+
+
+def _profiling_number(value: Any, field: str, low: float, high: float) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ProfilingInputRefused(f"{field}: expected number, got {type(value).__name__}")
+    number = float(value)
+    if not math.isfinite(number):
+        raise ProfilingInputRefused(f"{field}: not a finite number")
+    if not low <= number <= high:
+        raise ProfilingInputRefused(f"{field}: number out of range {low}..{high}")
+    return number
+
+
+def _validate_profiling_params(raw: Any) -> Dict[str, int]:
+    if not isinstance(raw, dict) or set(raw) != set(SAFE_PROFILING_PARAMS_FIELDS):
+        raise ProfilingInputRefused("profiling.params: unexpected field set")
+    return {
+        "samples_per_endpoint": _profiling_int(
+            raw["samples_per_endpoint"], "profiling.params.samples_per_endpoint", 1, PROFILING_MAX_SAMPLES
+        ),
+        "warmup_per_endpoint": _profiling_int(
+            raw["warmup_per_endpoint"], "profiling.params.warmup_per_endpoint", 0, PROFILING_MAX_SAMPLES
+        ),
+        "concurrency": _profiling_int(
+            raw["concurrency"], "profiling.params.concurrency", 1, MAX_CONCURRENCY
+        ),
+    }
+
+
+def _validate_profiling_sample(raw: Any, tsv_endpoint: str, lineno: int) -> Dict[str, Any]:
+    """Validate one `cpms.req-profile/1` header payload against the TSV row label.
+
+    The sample endpoint must equal the TSV endpoint (which itself must be one of the
+    three fixed profiling endpoints), so a mis-targeted request can never be silently
+    attributed to another endpoint.
+    """
+    where = f"profiling.samples.tsv line {lineno}"
+    if not isinstance(raw, dict) or set(raw) != set(SAFE_PROFILING_SAMPLE_FIELDS):
+        raise ProfilingInputRefused(f"{where}: unexpected profile field set")
+    if raw["schema"] != PROFILING_SCHEMA:
+        raise ProfilingInputRefused(f"{where}: unexpected profile schema")
+    endpoint = raw["endpoint"]
+    if endpoint != tsv_endpoint or endpoint not in SAFE_PROFILING_ENDPOINTS:
+        raise ProfilingInputRefused(f"{where}: profile endpoint does not match the TSV row")
+    checked: Dict[str, Any] = {"schema": PROFILING_SCHEMA, "endpoint": endpoint}
+    for field in ("t_total_ms", "t_boot_ms", "t_init_ms", "t_dispatch_ms",
+                  "cpms_db_ms", "cpms_db_ms_boot", "cpms_db_ms_init", "cpms_db_ms_dispatch"):
+        checked[field] = _profiling_number(raw[field], f"{where}.{field}", 0.0, MAX_LATENCY_MS)
+    for field in ("cpms_q", "cpms_q_boot", "cpms_q_init", "cpms_q_dispatch",
+                  "wp_q", "wp_q_boot", "wp_q_init", "wp_q_dispatch"):
+        checked[field] = _profiling_int(raw[field], f"{where}.{field}", 0, PROFILING_MAX_QUERIES)
+    # Totals equal segment sums: exact for integer counts, tolerant for rounded ms.
+    for total, parts in (("t_total_ms", ("t_boot_ms", "t_init_ms", "t_dispatch_ms")),
+                         ("cpms_db_ms", ("cpms_db_ms_boot", "cpms_db_ms_init", "cpms_db_ms_dispatch"))):
+        if abs(checked[total] - sum(checked[part] for part in parts)) > 0.002:
+            raise ProfilingInputRefused(f"{where}: {total} does not equal its segment sum")
+    for total, parts in (("cpms_q", ("cpms_q_boot", "cpms_q_init", "cpms_q_dispatch")),
+                         ("wp_q", ("wp_q_boot", "wp_q_init", "wp_q_dispatch"))):
+        if checked[total] != sum(checked[part] for part in parts):
+            raise ProfilingInputRefused(f"{where}: {total} does not equal its segment sum")
+    return checked
+
+
+def read_profiling(directory: Path) -> Dict[str, Any]:
+    """Read the profiling pass input: `profiling.params.json` + `profiling.samples.tsv`.
+
+    The TSV carries `endpoint \\t http_code \\t profile_json` per sample. Blank lines are
+    tolerated (trailing newline); anything else malformed refuses the whole batch —
+    partial profiling evidence is never produced.
+    """
+    if not directory.is_dir():
+        raise ProfilingInputRefused("profiling_directory_missing")
+    params_path = directory / "profiling.params.json"
+    samples_path = directory / "profiling.samples.tsv"
+    if not params_path.is_file():
+        raise ProfilingInputRefused("profiling_params_missing")
+    if not samples_path.is_file():
+        raise ProfilingInputRefused("profiling_samples_missing")
+    try:
+        params = _validate_profiling_params(json.loads(params_path.read_text(encoding="utf-8")))
+    except json.JSONDecodeError as exc:
+        raise ProfilingInputRefused(f"profiling.params: malformed JSON ({exc})")
+    samples: List[Dict[str, Any]] = []
+    for lineno, line in enumerate(samples_path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip():
+            continue
+        cells = line.split("\t")
+        if len(cells) != 3:
+            raise ProfilingInputRefused(f"profiling.samples.tsv line {lineno}: expected 3 tab cells")
+        tsv_endpoint, http_code, payload = cells
+        if tsv_endpoint not in SAFE_PROFILING_ENDPOINTS:
+            raise ProfilingInputRefused(
+                f"profiling.samples.tsv line {lineno}: not a fixed profiling endpoint"
+            )
+        try:
+            code = int(http_code.strip())
+        except ValueError:
+            raise ProfilingInputRefused(
+                f"profiling.samples.tsv line {lineno}: http_code is not an integer"
+            )
+        if code != 200:
+            raise ProfilingInputRefused(
+                f"profiling.samples.tsv line {lineno}: expected HTTP 200, got {code}"
+            )
+        try:
+            raw = json.loads(payload)
+        except json.JSONDecodeError as exc:
+            raise ProfilingInputRefused(
+                f"profiling.samples.tsv line {lineno}: malformed profile JSON ({exc})"
+            )
+        samples.append(_validate_profiling_sample(raw, tsv_endpoint, lineno))
+    if not samples:
+        raise ProfilingInputRefused("profiling.samples: no samples")
+    return {
+        "schema": PROFILING_BATCH_SCHEMA,
+        "status": "ok",
+        "params": params,
+        "samples": samples,
+    }
+
+
+def aggregate_profiling(batch: Any) -> Dict[str, Any]:
+    """Aggregate validated samples into per-endpoint profiling evidence.
+
+    Every fixed endpoint must contribute exactly `samples_per_endpoint` samples.
+    CPMS-layer counts must be constant across a endpoint's samples (the measured
+    request paths are deterministic at c=1 — variance is refused as non-evidence);
+    `$wpdb` totals are published as min/max because core-level per-request work may
+    legitimately vary. Timings are published as mean/max.
+    """
+    if not isinstance(batch, dict) or batch.get("schema") != PROFILING_BATCH_SCHEMA:
+        raise ProfilingInputRefused("profiling.batch: unexpected batch")
+    if batch.get("status") != "ok":
+        raise ProfilingInputRefused("profiling.batch: batch is not ok")
+    params = batch.get("params")
+    samples = batch.get("samples")
+    if not isinstance(params, dict):
+        raise ProfilingInputRefused("profiling.batch: params are not an object")
+    expected = params.get("samples_per_endpoint")
+    if isinstance(expected, bool) or not isinstance(expected, int) or expected < 1:
+        raise ProfilingInputRefused("profiling.batch: invalid samples_per_endpoint")
+    if not isinstance(samples, list) or not samples:
+        raise ProfilingInputRefused("profiling.batch: samples are not a non-empty list")
+    grouped: Dict[str, List[Dict[str, Any]]] = {endpoint: [] for endpoint in SAFE_PROFILING_ENDPOINTS}
+    for sample in samples:
+        endpoint = sample.get("endpoint") if isinstance(sample, dict) else None
+        if endpoint not in grouped:
+            raise ProfilingInputRefused("profiling.batch: sample with unexpected endpoint")
+        grouped[endpoint].append(sample)
+    endpoints: Dict[str, Dict[str, Any]] = {}
+    for endpoint in SAFE_PROFILING_ENDPOINTS:
+        rows = grouped[endpoint]
+        if len(rows) != expected:
+            raise ProfilingInputRefused(
+                f"profiling.batch: endpoint {endpoint} has {len(rows)} samples, expected {expected}"
+            )
+        for field in ("cpms_q", "cpms_q_boot", "cpms_q_init", "cpms_q_dispatch"):
+            values = {row[field] for row in rows}
+            if len(values) != 1:
+                raise ProfilingInputRefused(
+                    f"profiling.batch: endpoint {endpoint} {field} is not constant across samples"
+                )
+        aggregate: Dict[str, Any] = {"n": expected}
+        for sample_field, stem in (("t_total_ms", "t_total"), ("t_boot_ms", "t_boot"),
+                                  ("t_init_ms", "t_init"), ("t_dispatch_ms", "t_dispatch"),
+                                  ("cpms_db_ms", "cpms_db_total"), ("cpms_db_ms_boot", "cpms_db_boot"),
+                                  ("cpms_db_ms_init", "cpms_db_init"),
+                                  ("cpms_db_ms_dispatch", "cpms_db_dispatch")):
+            values = [float(row[sample_field]) for row in rows]
+            aggregate[stem + "_mean_ms"] = round(sum(values) / len(values), 3)
+            aggregate[stem + "_max_ms"] = round(max(values), 3)
+        for field in ("cpms_q", "cpms_q_boot", "cpms_q_init", "cpms_q_dispatch"):
+            aggregate[field] = rows[0][field]
+        for sample_field, stem in (("wp_q", "wp_q"), ("wp_q_boot", "wp_q_boot"),
+                                  ("wp_q_init", "wp_q_init"), ("wp_q_dispatch", "wp_q_dispatch")):
+            values = [row[sample_field] for row in rows]
+            aggregate[stem + "_min"] = min(values)
+            aggregate[stem + "_max"] = max(values)
+        endpoints[endpoint] = aggregate
+    return {"endpoints": endpoints}
+
+
 # ---------------------------------------------------------------------------
 # Report
 # ---------------------------------------------------------------------------
@@ -398,7 +590,8 @@ ADJUDICATION = (
 
 
 def build_report(measurements: List[Dict[str, Any]], meta: Dict[str, Any],
-                 diagnostics: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                 diagnostics: Optional[Dict[str, Any]] = None,
+                 profiling: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     if diagnostics is not None and diagnostics.get("status") == "ok":
         by_seq = {row["seq"]: row for row in diagnostics["measurements"]}
         for measurement in measurements:
@@ -438,6 +631,7 @@ def build_report(measurements: List[Dict[str, Any]], meta: Dict[str, Any],
         "latency_threshold_enforced": False,
         "nfr_perf_pass_claim": False,
         "diagnostics": diagnostics,
+        "profiling": profiling,
         "measurement_count": len(measurements),
         "measurements": measurements,
     }
@@ -547,12 +741,86 @@ def render_legacy_lines(report: Dict[str, Any]) -> List[str]:
 # (fail closed) and nothing is published.
 # ---------------------------------------------------------------------------
 
-SAFE_EVIDENCE_SCHEMA = "cpms.pilot-bench-evidence/2"
+SAFE_EVIDENCE_SCHEMA = "cpms.pilot-bench-evidence/3"
 SAFE_EVIDENCE_PURPOSE = (
     "Phase 17 — allowlisted privacy-safe projection of one Pilot/Staging benchmark run; "
     "measurement only, no NFR-PERF adjudication, no raw benchmark bytes, no free-form text, "
     "no unallowlisted environment metadata"
 )
+
+# Request-level profiling (Phase 17 comparative profiling — measurement only).
+# The profiling pass takes sequential c=1 samples per endpoint with the server-side
+# opt-in profiler armed; each sample is the allowlisted `cpms.req-profile/1` header
+# payload (monotonic segment times, CPMS-layer query count/DB time, `$wpdb` totals —
+# no SQL, no values, no PHI, no paths). The `/3` schema adds exactly one top-level
+# block with per-endpoint aggregates; every `/2` field is preserved verbatim.
+PROFILING_SCHEMA = "cpms.req-profile/1"
+PROFILING_BATCH_SCHEMA = "cpms.req-profile-batch/1"
+SAFE_PROFILING_ENDPOINTS: Tuple[str, ...] = ("health", "availability", "wp-json-root")
+SAFE_PROFILING_PARAMS_FIELDS: Tuple[str, ...] = (
+    "samples_per_endpoint",
+    "warmup_per_endpoint",
+    "concurrency",
+)
+SAFE_PROFILING_SAMPLE_FIELDS: Tuple[str, ...] = (
+    "schema",
+    "endpoint",
+    "t_total_ms",
+    "t_boot_ms",
+    "t_init_ms",
+    "t_dispatch_ms",
+    "cpms_q",
+    "cpms_q_boot",
+    "cpms_q_init",
+    "cpms_q_dispatch",
+    "cpms_db_ms",
+    "cpms_db_ms_boot",
+    "cpms_db_ms_init",
+    "cpms_db_ms_dispatch",
+    "wp_q",
+    "wp_q_boot",
+    "wp_q_init",
+    "wp_q_dispatch",
+)
+SAFE_PROFILING_FIELDS: Tuple[str, ...] = (
+    "samples_per_endpoint",
+    "warmup_per_endpoint",
+    "concurrency",
+    "endpoints",
+)
+SAFE_PROFILING_ENDPOINT_FIELDS: Tuple[str, ...] = (
+    "n",
+    "t_total_mean_ms",
+    "t_total_max_ms",
+    "t_boot_mean_ms",
+    "t_boot_max_ms",
+    "t_init_mean_ms",
+    "t_init_max_ms",
+    "t_dispatch_mean_ms",
+    "t_dispatch_max_ms",
+    "cpms_db_total_mean_ms",
+    "cpms_db_total_max_ms",
+    "cpms_db_boot_mean_ms",
+    "cpms_db_boot_max_ms",
+    "cpms_db_init_mean_ms",
+    "cpms_db_init_max_ms",
+    "cpms_db_dispatch_mean_ms",
+    "cpms_db_dispatch_max_ms",
+    "cpms_q",
+    "cpms_q_boot",
+    "cpms_q_init",
+    "cpms_q_dispatch",
+    "wp_q_min",
+    "wp_q_max",
+    "wp_q_boot_min",
+    "wp_q_boot_max",
+    "wp_q_init_min",
+    "wp_q_init_max",
+    "wp_q_dispatch_min",
+    "wp_q_dispatch_max",
+)
+PROFILING_MAX_SAMPLES = 10_000
+PROFILING_MAX_QUERIES = 1_000_000
 
 # The endpoint LABEL is a constant mapped from the endpoint KEY. Free-form
 # manifest/report text (human labels, query strings, paths, `ab` banner echo)
@@ -573,6 +841,7 @@ SAFE_TOP_LEVEL_FIELDS: Tuple[str, ...] = (
     "binding",
     "measurement_count",
     "diagnostics",
+    "profiling",
     "measurements",
 )
 SAFE_BINDING_KEYS: Tuple[str, ...] = ("run_id", "run_attempt", "event_name", "head_sha", "ref")
@@ -835,6 +1104,84 @@ def _validate_safe_diagnostics(raw: Any) -> Dict[str, Any]:
     return result
 
 
+def _checked_profiling_endpoint(raw: Any, endpoint: str, expected_n: int) -> Dict[str, Any]:
+    """Validate one per-endpoint profiling aggregate (shared by projection + re-validation)."""
+    where = f"profiling.endpoints.{endpoint}"
+    if not isinstance(raw, dict) or set(raw) != set(SAFE_PROFILING_ENDPOINT_FIELDS):
+        raise EvidenceRefused(f"{where}: unexpected field set")
+    checked: Dict[str, Any] = {}
+    checked["n"] = _safe_int(raw["n"], where + ".n", expected_n, expected_n)
+    for field in SAFE_PROFILING_ENDPOINT_FIELDS:
+        if field == "n":
+            continue
+        if field.startswith("cpms_q") or field.startswith("wp_q"):
+            checked[field] = _safe_int(raw[field], where + "." + field, 0, PROFILING_MAX_QUERIES)
+        else:
+            checked[field] = _safe_number(raw[field], where + "." + field, 0.0, MAX_LATENCY_MS)
+    # Means preserve the per-sample segment sums (within rounding); maxima do not —
+    # each maximum may come from a different sample, so no max invariant is asserted.
+    for total, parts in (("t_total_mean_ms",
+                          ("t_boot_mean_ms", "t_init_mean_ms", "t_dispatch_mean_ms")),
+                         ("cpms_db_total_mean_ms",
+                          ("cpms_db_boot_mean_ms", "cpms_db_init_mean_ms",
+                           "cpms_db_dispatch_mean_ms"))):
+        if abs(checked[total] - sum(checked[part] for part in parts)) > 0.01:
+            raise EvidenceRefused(f"{where}: {total} does not equal its segment sum")
+    for total, parts in (("cpms_q", ("cpms_q_boot", "cpms_q_init", "cpms_q_dispatch")),):
+        if checked[total] != sum(checked[part] for part in parts):
+            raise EvidenceRefused(f"{where}: {total} does not equal its segment sum")
+    for stem in ("wp_q", "wp_q_boot", "wp_q_init", "wp_q_dispatch"):
+        if checked[stem + "_min"] > checked[stem + "_max"]:
+            raise EvidenceRefused(f"{where}: {stem} minimum exceeds maximum")
+    return checked
+
+
+def _project_safe_profiling(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict) or raw.get("schema") != PROFILING_BATCH_SCHEMA or raw.get("status") != "ok":
+        raise EvidenceRefused("report.profiling: missing or not-ok")
+    try:
+        params = _validate_profiling_params(raw.get("params"))
+    except ProfilingInputRefused as exc:
+        raise EvidenceRefused(f"report.profiling.params: {exc}")
+    aggregates = raw.get("aggregates")
+    if not isinstance(aggregates, dict):
+        raise EvidenceRefused("report.profiling.aggregates: expected object")
+    endpoints_in = aggregates.get("endpoints")
+    if not isinstance(endpoints_in, dict) or set(endpoints_in) != set(SAFE_PROFILING_ENDPOINTS):
+        raise EvidenceRefused("report.profiling.aggregates.endpoints: expected exactly the fixed endpoints")
+    endpoints = {
+        endpoint: _checked_profiling_endpoint(endpoints_in[endpoint], endpoint, params["samples_per_endpoint"])
+        for endpoint in SAFE_PROFILING_ENDPOINTS
+    }
+    return {
+        "samples_per_endpoint": params["samples_per_endpoint"],
+        "warmup_per_endpoint": params["warmup_per_endpoint"],
+        "concurrency": params["concurrency"],
+        "endpoints": endpoints,
+    }
+
+
+def _validate_safe_profiling(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict) or set(raw) != set(SAFE_PROFILING_FIELDS):
+        raise EvidenceRefused("evidence.profiling: unexpected field set")
+    samples = _safe_int(raw["samples_per_endpoint"], "profiling.samples_per_endpoint", 1, PROFILING_MAX_SAMPLES)
+    warmup = _safe_int(raw["warmup_per_endpoint"], "profiling.warmup_per_endpoint", 0, PROFILING_MAX_SAMPLES)
+    concurrency = _safe_int(raw["concurrency"], "profiling.concurrency", 1, MAX_CONCURRENCY)
+    endpoints_in = raw["endpoints"]
+    if not isinstance(endpoints_in, dict) or set(endpoints_in) != set(SAFE_PROFILING_ENDPOINTS):
+        raise EvidenceRefused("evidence.profiling.endpoints: expected exactly the fixed endpoints")
+    endpoints = {
+        endpoint: _checked_profiling_endpoint(endpoints_in[endpoint], endpoint, samples)
+        for endpoint in SAFE_PROFILING_ENDPOINTS
+    }
+    return {
+        "samples_per_endpoint": samples,
+        "warmup_per_endpoint": warmup,
+        "concurrency": concurrency,
+        "endpoints": endpoints,
+    }
+
+
 def build_safe_evidence(report: Dict[str, Any]) -> Dict[str, Any]:
     """Project a parsed+scanned benchmark report onto the allowlisted evidence schema.
 
@@ -862,6 +1209,7 @@ def build_safe_evidence(report: Dict[str, Any]) -> Dict[str, Any]:
     diagnostics = _project_safe_diagnostics(report.get("diagnostics"))
     if len(diagnostics["measurements"]) != len(measurements_in):
         raise EvidenceRefused("report.diagnostics.measurements: does not match benchmark row count")
+    profiling = _project_safe_profiling(report.get("profiling"))
 
     rows: List[Dict[str, Any]] = []
     for index, raw in enumerate(measurements_in, start=1):
@@ -897,6 +1245,7 @@ def build_safe_evidence(report: Dict[str, Any]) -> Dict[str, Any]:
         "binding": binding,
         "measurement_count": len(rows),
         "diagnostics": diagnostics,
+        "profiling": profiling,
         "measurements": rows,
     }
 
@@ -917,6 +1266,7 @@ def validate_safe_evidence(evidence: Any) -> Dict[str, Any]:
         raise EvidenceRefused("evidence.purpose: unexpected value")
     binding = _validate_binding(evidence["binding"])
     diagnostics = _validate_safe_diagnostics(evidence["diagnostics"])
+    profiling = _validate_safe_profiling(evidence["profiling"])
     measurements = evidence["measurements"]
     if not isinstance(measurements, list) or not measurements:
         raise EvidenceRefused("evidence.measurements: expected a non-empty list")
@@ -930,6 +1280,7 @@ def validate_safe_evidence(evidence: Any) -> Dict[str, Any]:
         "binding": binding,
         "measurement_count": len(rows),
         "diagnostics": diagnostics,
+        "profiling": profiling,
         "measurements": rows,
     }
 
@@ -972,6 +1323,29 @@ def render_safe_evidence_markdown(evidence: Dict[str, Any]) -> str:
             "{ab_cpu_avg_pct}/{ab_cpu_max_pct} | {server_cpu_avg_pct}/{server_cpu_max_pct} | "
             "{server_rss_max_mb} | {server_process_count_max} |".format(
                 seq=diagnostic_row["seq"], **resource
+            )
+        )
+    profiling = evidence["profiling"]
+    lines += [
+        "",
+        "### Request-level profiling (allowlisted)",
+        "",
+        "Sequential c=1 samples per endpoint: {samples} ({warmup} warm-up requests discarded "
+        "each). Same run/head; times are server-side segment means/maxima in ms; counts are "
+        "per-request queries.".format(
+            samples=profiling["samples_per_endpoint"], warmup=profiling["warmup_per_endpoint"]
+        ),
+        "",
+        "| endpoint | n | t_total mean/max ms | t_boot mean ms | t_init mean ms | t_dispatch mean ms | cpms_q boot/init/dispatch | cpms_db_total mean/max ms | wp_q min/max |",
+        "|---|---|---|---|---|---|---|---|---|",
+    ]
+    for endpoint in SAFE_PROFILING_ENDPOINTS:
+        aggregate = profiling["endpoints"][endpoint]
+        lines.append(
+            "| {endpoint} | {n} | {t_total_mean_ms}/{t_total_max_ms} | {t_boot_mean_ms} | "
+            "{t_init_mean_ms} | {t_dispatch_mean_ms} | {cpms_q_boot}/{cpms_q_init}/{cpms_q_dispatch} | "
+            "{cpms_db_total_mean_ms}/{cpms_db_total_max_ms} | {wp_q_min}/{wp_q_max} |".format(
+                endpoint=endpoint, **aggregate
             )
         )
     lines += [
@@ -1115,6 +1489,26 @@ def run(args: argparse.Namespace) -> int:
                 "error_code": str(exc),
             }
             failures.append("DIAGNOSTIC MEASUREMENT FAILURE: %s" % exc)
+    profiling: Optional[Dict[str, Any]] = None
+    profiling_dir = getattr(args, "profiling_dir", "") or ""
+    if profiling_dir:
+        try:
+            batch = read_profiling(Path(profiling_dir))
+            profiling = {
+                "schema": PROFILING_BATCH_SCHEMA,
+                "status": "ok",
+                "params": batch["params"],
+                "aggregates": aggregate_profiling(batch),
+            }
+        except ProfilingInputRefused as exc:
+            # Distinct collection failure, like diagnostics: fail closed before any
+            # safe publication; never reported as an ab/product correctness failure.
+            profiling = {
+                "schema": PROFILING_BATCH_SCHEMA,
+                "status": "measurement_failed",
+                "error_code": str(exc),
+            }
+            failures.append("PROFILING MEASUREMENT FAILURE: %s" % exc)
 
     for entry in entries:
         raw_path = raw_dir / entry["raw"]
@@ -1153,7 +1547,7 @@ def run(args: argparse.Namespace) -> int:
             }
         )
 
-    report = build_report(measurements, meta, diagnostics)
+    report = build_report(measurements, meta, diagnostics, profiling)
     markdown = render_markdown(report)
     legacy = render_legacy_lines(report)
     payload = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
@@ -1711,6 +2105,19 @@ def _selftests() -> int:
                              if isinstance(measurements, list) else []),
         }
 
+    with tempfile.TemporaryDirectory() as _profiling_tmp:
+        _write_profiling_tree(Path(_profiling_tmp), per_endpoint=3, warmup=5)
+        _profiling_batch = read_profiling(Path(_profiling_tmp))
+        _profiling_aggregates = aggregate_profiling(_profiling_batch)
+
+    def _profiling_for() -> Dict[str, Any]:
+        return {
+            "schema": PROFILING_BATCH_SCHEMA,
+            "status": "ok",
+            "params": dict(_profiling_batch["params"]),
+            "aggregates": json.loads(json.dumps(_profiling_aggregates)),
+        }
+
     def _report(measurements, run=None, **extra):
         report = {
             "schema": "cpms.pilot-benchmark/2",
@@ -1721,6 +2128,8 @@ def _selftests() -> int:
         report.update(extra)
         if "diagnostics" not in report:
             report["diagnostics"] = _diagnostic_for(measurements)
+        if "profiling" not in report:
+            report["profiling"] = _profiling_for()
         return report
 
     def _refuses(name: str, report: Any) -> None:
@@ -1966,6 +2375,9 @@ def _selftests() -> int:
             (diag3 / ("level-%03d.json" % diagnostic_row["seq"])).write_text(
                 json.dumps(diagnostic_row), encoding="utf-8"
             )
+        prof3 = root3 / "profiling"
+        prof3.mkdir()
+        _write_profiling_tree(prof3, per_endpoint=3, warmup=5)
         out3 = root3 / "out" / "bench"
         ev_prefix = root3 / "out" / "bench.evidence"
         rc7 = run(argparse.Namespace(
@@ -1973,7 +2385,8 @@ def _selftests() -> int:
             meta=["run_id=37361708008", "run_attempt=1", "head_sha=" + "b" * 40,
                   "event_name=push", "ref=arena/1ffa1d19-doctor",
                   "runner=GitHub Actions 24.04", "php_cli=8.1"],
-            diagnostics_dir=str(diag3), fail_file="", evidence_prefix=str(ev_prefix),
+            diagnostics_dir=str(diag3), profiling_dir=str(prof3),
+            fail_file="", evidence_prefix=str(ev_prefix),
         ))
         check("evidence-e2e-rc-zero", rc7 == 0, "rc=%s" % rc7)
         ev3 = json.loads(Path(str(ev_prefix) + ".json").read_text(encoding="utf-8"))
@@ -2003,6 +2416,12 @@ def _selftests() -> int:
         check("evidence-e2e-no-env-metadata",
               "runner" not in ev3 and "php_cli" not in ev3
               and "GitHub Actions" not in md3 and "8.1" not in md3)
+        check("evidence-e2e-schema-3", ev3["schema"] == "cpms.pilot-bench-evidence/3")
+        check("evidence-e2e-profiling-present",
+              set(ev3["profiling"]["endpoints"]) == {"health", "availability", "wp-json-root"}
+              and ev3["profiling"]["endpoints"]["health"]["n"] == 3)
+        check("evidence-e2e-profiling-md",
+              "### Request-level profiling (allowlisted)" in md3)
 
         # a non-2xx measurement keeps rc=1 and must NOT produce a publishable projection
         (raw3 / "900-non2xx.ab.txt").write_text(FIXTURE_NON2XX, encoding="utf-8")
@@ -2025,10 +2444,9 @@ def _selftests() -> int:
               and not Path(str(ev_prefix2) + ".md").exists())
 
     # 9) request-level profiling contract (Phase 17 comparative profiling — measurement
-    #    only). RED: `read_profiling` / `aggregate_profiling` / the `/3` evidence
-    #    projection do not exist yet — the first missing name raises NameError, which the
-    #    wrapper below records as one deterministic RED line. GREEN must make every
-    #    check in this block pass without touching any check above.
+    #    only). The NameError wrapper is a permanent contract tripwire: if the
+    #    profiling reader/aggregator or the `/3` evidence projection ever goes missing,
+    #    `--test` fails loudly here instead of somewhere obscure.
     def _profiling_checks() -> None:
         check("profiling-names-exist", callable(read_profiling) and callable(aggregate_profiling))
 
@@ -2295,6 +2713,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--diagnostics-dir",
         default="",
         help="read static.json and one level-*.json per benchmark row from the bounded native diagnostic helper",
+    )
+    parser.add_argument(
+        "--profiling-dir",
+        default="",
+        help="read profiling.params.json + profiling.samples.tsv from the request-level profiling pass",
     )
     parser.add_argument("--out-prefix", default="/tmp/cpms-bench/cpms-pilot-benchmark")
     parser.add_argument(
