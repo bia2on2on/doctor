@@ -417,7 +417,7 @@ final class SetupWizardTest extends WP_UnitTestCase
             $_GET['clinic_id'] = (string) $clinicId;
             $html = $this->renderWizardStep('finish');
 
-            $this->assertStringContainsString('data-cpms-wizard-action="clinic"', $html, 'پیوند گام کلینیک برای مدیر مجاز ویرایش باید در دسترس باشد');
+            $this->assertStringNotContainsString('data-cpms-wizard-action="clinic"', $html, 'شناسهٔ Clinic در URL جایگزین عضویت و مجوز ویرایش Clinic نیست');
             $this->assertStringNotContainsString('data-cpms-wizard-action="clinicians"', $html, 'شناسهٔ Clinic در URL جایگزین عضویت و مجوز scoped نیست');
         } finally {
             $_GET = $previousGet;

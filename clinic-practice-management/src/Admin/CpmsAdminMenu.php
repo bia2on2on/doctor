@@ -30,7 +30,7 @@ final class CpmsAdminMenu
         'cpms-system' => 'سلامت سیستم',
         'cpms-settings' => 'فنی و لاگ',
         'cpms-clinicians' => 'پزشکان و برنامه کاری',
-        'cpms-roles' => 'کاربران و دسترسی‌ها',
+        'cpms-roles' => 'مجوزهای پیشرفته',
         'cpms-sms' => 'پیامک و اعلان‌ها',
     ];
 

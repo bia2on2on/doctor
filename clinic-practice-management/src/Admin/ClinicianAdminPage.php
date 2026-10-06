@@ -733,6 +733,26 @@ final class ClinicianAdminPage
     }
 
     /**
+     * آیا کاربر جاری می‌تواند صفحهٔ Clinic-scoped پزشکان را ببیند؟
+     *
+     * این فقط برای پنهان/نمایش‌دادن لینک‌های راهنماست؛ خود مقصد render و
+     * همهٔ عملیات همچنان مجوز و عضویت را دوباره بررسی می‌کنند.
+     */
+    public static function canCurrentUserAccessPage(): bool
+    {
+        $actorUserId = (int) get_current_user_id();
+        if ($actorUserId <= 0 || !current_user_can(RolesAndCapabilities::CONFIG)) {
+            return false;
+        }
+
+        try {
+            return self::tryEstablishAuthorizedScope($actorUserId, RolesAndCapabilities::CONFIG) !== null;
+        } catch (\Throwable) {
+            return false;
+        }
+    }
+
+    /**
      * نسخهٔ بدون خروج برای render (برمی‌گرداند null به‌جای back/wp_die).
      */
     private static function tryEstablishAuthorizedScope(int $actorUserId, string $permission): ?ClinicScope

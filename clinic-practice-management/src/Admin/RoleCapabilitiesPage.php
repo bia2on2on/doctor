@@ -164,8 +164,8 @@ final class RoleCapabilitiesPage
     {
         add_submenu_page(
             CpmsAdminMenu::parentSlug(),
-            'دسترسی‌ها (فنی)',
-            'دسترسی‌ها (فنی)',
+            'مجوزهای پیشرفته',
+            'مجوزهای پیشرفته',
             'manage_options',
             'cpms-roles',
             [self::class, 'render']
@@ -185,7 +185,7 @@ final class RoleCapabilitiesPage
         $overrides = RolesAndCapabilities::overrides();
         ?>
 <div class="wrap" dir="rtl">
-    <h1>کاربران و دسترسی‌ها</h1>
+    <h1>مجوزهای پیشرفته</h1>
 
     <?php if (is_string($notice) && $notice !== '') : ?>
         <div class="notice notice-success is-dismissible"><p><?php echo esc_html($notice); ?></p></div>
