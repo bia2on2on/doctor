@@ -276,64 +276,6 @@ jobs:
           sudo chmod -R 777 "$STORAGE_OUT"
 
       # ---------- Apache (production-like) ----------
-      # ---------- Phase 17 autonomous fast-wake first-start measurement ----------
-      # MEASURED FIRST, on the freshest possible disposable staging state: directly
-      # after the single seeded Clinic exists and BEFORE any later step performs Web
-      # requests that may themselves enqueue jobs and request a fast wake (whose
-      # deferred spawn can hold core's 60 s doing_cron lock). WordPress core
-      # allows at most one cron spawn per 60 s through its own `doing_cron` lock, and
-      # wp-cron.php only clears that lock when its request actually finishes; a previous
-      # step that dispatched a loopback spawn (the ordinary enqueue does that too) can
-      # therefore leave a lock that makes core legitimately refuse the NEXT spawn. Running
-      # the autonomous pass first removes that experimental contamination. No lock is
-      # cleared/reset/bypassed, no WordPress cron protection is weakened and no tick is
-      # called anywhere in this step: the ONLY trigger for these 100 rows is the production
-      # fast-wake path that the ordinary enqueue itself requested (installation-wide
-      # `cpms_jobs_wake` single event + WordPress-native non-blocking loopback spawn through
-      # spawn_cron()). The bounded wait is observation only — it neither ticks nor mutates
-      # the queue. Diagnostics below are fixed-key booleans / bounded integers only (never
-      # a URL, filesystem path, token, job id, payload, SQL or free-form error text).
-      - name: Phase 17 queue first-start — autonomous fast wake, 100 synthetic jobs
-        run: |
-          set -euo pipefail
-          TEMP_DIR=$(mktemp -d /tmp/cpms-job-start-auto.XXXXXX)
-          chmod 700 "$TEMP_DIR"
-          trap 'unset CPMS_JOB_START_TOKEN CPMS_JOB_START_RAW_PATH CPMS_JOB_START_MODE; rm -rf "$TEMP_DIR"' EXIT
-          export CPMS_JOB_START_MODE=autonomous
-          export CPMS_JOB_START_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
-          export CPMS_JOB_START_RAW_PATH="$TEMP_DIR/raw.json"
-          if ! WP_HOME="$WP_DIR" php bin/pilot-job-start.php enqueue >"$TEMP_DIR/enqueue.log" 2>&1; then
-            ENQ_DIAG=$(grep -h '^DIAG ' "$TEMP_DIR/enqueue.log" | tr '\n' ' ' || true)
-            echo "::error::synthetic job enqueue refused by the fail-closed preconditions (${ENQ_DIAG})"; exit 1
-          fi
-          ENQ_DIAG=$(grep -h '^DIAG ' "$TEMP_DIR/enqueue.log" | tr '\n' ' ' || true)
-          COLLECT_DIAG=''
-          if ! WP_HOME="$WP_DIR" php bin/pilot-job-start.php collect >"$TEMP_DIR/collect.log" 2>&1; then
-            COLLECT_DIAG=$(grep -h '^DIAG ' "$TEMP_DIR/collect.log" | tr '\n' ' ' || true)
-            {
-              echo 'Phase 17 autonomous fast-wake diagnostics (fixed keys; booleans/bounded integers only):'
-              echo "  ${ENQ_DIAG}${COLLECT_DIAG}"
-            } >> "$GITHUB_STEP_SUMMARY"
-            echo "::warning::autonomous first-start evidence was NOT adjudicated within the bounded wait (no tick was called; minute fallback untouched) — diagnostics: ${ENQ_DIAG}${COLLECT_DIAG}"
-            echo 'Phase 17 autonomous job-start: NOT ADJUDICATED (bounded wait expired); published job-start block stays explicit_tick.' >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-          COLLECT_DIAG=$(grep -h '^DIAG ' "$TEMP_DIR/collect.log" | tr '\n' ' ' || true)
-          if ! python3 bin/pilot-job-start.py --raw "$TEMP_DIR/raw.json" --out /tmp/cpms-pilot-job-start-autonomous.json; then
-            {
-              echo 'Phase 17 autonomous fast-wake diagnostics (fixed keys; booleans/bounded integers only):'
-              echo "  ${ENQ_DIAG}${COLLECT_DIAG}"
-            } >> "$GITHUB_STEP_SUMMARY"
-            echo '::warning::autonomous first-start aggregate refused (fail closed) — the run-bound job-start block stays explicit_tick'
-            echo 'Phase 17 autonomous job-start: AGGREGATE REFUSED (fail closed); published job-start block stays explicit_tick.' >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-          {
-            echo 'Phase 17 autonomous fast-wake diagnostics (fixed keys; booleans/bounded integers only):'
-            echo "  ${ENQ_DIAG}${COLLECT_DIAG}"
-            echo 'Phase 17 job-start sample set: autonomous (production fast-wake path only; no tick call; the same loopback pass may also run other due core cron events); first persisted claim; 100 synthetic non-PHI samples; no latency threshold.'
-          } >> "$GITHUB_STEP_SUMMARY"
-
       - name: Apache + mod_php + hardening
         run: |
           sudo tee /etc/apache2/sites-available/pilot.conf >/dev/null <<CONF
@@ -378,6 +320,82 @@ jobs:
             echo 'WP ITSELF NOT SERVING (rest_route)'; exit 1
           fi
           curl -s -o /dev/null -w '%{http_code}\n' "$WP_URL/wp-json/" | grep -q 200 || { echo 'PRETTY PERMALINKS BROKEN (rewrite)'; exit 1; }
+
+      # ---------- Phase 17 autonomous fast-wake first-start measurement ----------
+      # PLACEMENT — harness ordering only; production source is UNTOUCHED:
+      #   * runs AFTER the Apache + mod_php step above has PROVEN the site-local HTTP
+      #     path is serving (`?rest_route=/` and `/wp-json/` both HTTP 200). The
+      #     production fast wake dispatches a WordPress-native non-blocking loopback to
+      #     the site's OWN wp-cron.php (site_url() derived); with no listener answering
+      #     that loopback, core's own `doing_cron` lock stays behind — wp-cron.php only
+      #     clears it when its request actually finishes — and core then legitimately
+      #     refuses the NEXT spawn (observed before this fix: spawn refused, wake event
+      #     never consumed, 0/100 started, lock still present ~23 s later).
+      #   * runs BEFORE the later web-traffic-heavy steps (seeded journeys, smoke
+      #     workflows, REST spot checks, benchmark) so unrelated activity cannot hold
+      #     core's 60 s spawn lock inside the measurement window.
+      #   * NO lock is cleared/reset/overridden, WP_CRON_LOCK_TIMEOUT is untouched, no
+      #     retry/polling is added to product code, no daemon/dependency/permission is
+      #     added and the queue cadence is unchanged. This is also the FIRST enqueue in
+      #     this install, so the natural preconditions are exactly: site serving +
+      #     CPMS health reachable through the production HTTP path.
+      #   * NO tick is called anywhere in this step (the explicit-tick CONTROL follows
+      #     it): the ONLY trigger for these 100 rows is the production fast-wake path
+      #     that the ordinary enqueue itself requested. The bounded wait below is
+      #     observation only — it neither ticks nor mutates the queue.
+      #   * Diagnostics are fixed-key booleans / bounded integers only (never a URL,
+      #     filesystem path, token, job id, payload, SQL or free-form error text).
+      - name: Phase 17 queue first-start — autonomous fast wake, 100 synthetic jobs
+        run: |
+          set -euo pipefail
+          TEMP_DIR=$(mktemp -d /tmp/cpms-job-start-auto.XXXXXX)
+          chmod 700 "$TEMP_DIR"
+          trap 'unset CPMS_JOB_START_TOKEN CPMS_JOB_START_RAW_PATH CPMS_JOB_START_MODE; rm -rf "$TEMP_DIR"' EXIT
+          # Natural preconditions only (no queue/lock manipulation): the site's own HTTP
+          # path must be serving and the production enqueue path's health endpoint must
+          # answer through it before any synthetic row is enqueued.
+          SITE_HTTP=$(curl -s -o /dev/null -w '%{http_code}' "$WP_URL/?rest_route=/" || true)
+          HEALTH_BODY="$TEMP_DIR/health.json"
+          HEALTH_HTTP=$(curl -s -o "$HEALTH_BODY" -w '%{http_code}' "$WP_URL/wp-json/clinic/v1/health" || true)
+          if [ "$SITE_HTTP" != "200" ] || [ "$HEALTH_HTTP" != "200" ] || ! grep -q '"ok":true' "$HEALTH_BODY"; then
+            echo "::error::autonomous measurement preconditions not met (site_http=$SITE_HTTP cpms_health_http=$HEALTH_HTTP)"; exit 1
+          fi
+          PRE_DIAG="DIAG workflow.site_http_status=$SITE_HTTP DIAG workflow.cpms_health_http_status=$HEALTH_HTTP "
+          export CPMS_JOB_START_MODE=autonomous
+          export CPMS_JOB_START_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
+          export CPMS_JOB_START_RAW_PATH="$TEMP_DIR/raw.json"
+          if ! WP_HOME="$WP_DIR" php bin/pilot-job-start.php enqueue >"$TEMP_DIR/enqueue.log" 2>&1; then
+            ENQ_DIAG=$(grep -h '^DIAG ' "$TEMP_DIR/enqueue.log" | tr '\n' ' ' || true)
+            echo "::error::synthetic job enqueue refused by the fail-closed preconditions (${PRE_DIAG}${ENQ_DIAG})"; exit 1
+          fi
+          ENQ_DIAG=$(grep -h '^DIAG ' "$TEMP_DIR/enqueue.log" | tr '\n' ' ' || true)
+          COLLECT_DIAG=''
+          if ! WP_HOME="$WP_DIR" php bin/pilot-job-start.php collect >"$TEMP_DIR/collect.log" 2>&1; then
+            COLLECT_DIAG=$(grep -h '^DIAG ' "$TEMP_DIR/collect.log" | tr '\n' ' ' || true)
+            {
+              echo 'Phase 17 autonomous fast-wake diagnostics (fixed keys; booleans/bounded integers only):'
+              echo "  ${PRE_DIAG}${ENQ_DIAG}${COLLECT_DIAG}"
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning::autonomous first-start evidence was NOT adjudicated within the bounded wait (no tick was called; minute fallback untouched) — diagnostics: ${PRE_DIAG}${ENQ_DIAG}${COLLECT_DIAG}"
+            echo 'Phase 17 autonomous job-start: NOT ADJUDICATED (bounded wait expired); published job-start block stays explicit_tick.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          COLLECT_DIAG=$(grep -h '^DIAG ' "$TEMP_DIR/collect.log" | tr '\n' ' ' || true)
+          if ! python3 bin/pilot-job-start.py --raw "$TEMP_DIR/raw.json" --out /tmp/cpms-pilot-job-start-autonomous.json; then
+            {
+              echo 'Phase 17 autonomous fast-wake diagnostics (fixed keys; booleans/bounded integers only):'
+              echo "  ${PRE_DIAG}${ENQ_DIAG}${COLLECT_DIAG}"
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo '::warning::autonomous first-start aggregate refused (fail closed) — the run-bound job-start block stays explicit_tick'
+            echo 'Phase 17 autonomous job-start: AGGREGATE REFUSED (fail closed); published job-start block stays explicit_tick.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          {
+            echo 'Phase 17 autonomous fast-wake diagnostics (fixed keys; booleans/bounded integers only):'
+            echo "  ${PRE_DIAG}${ENQ_DIAG}${COLLECT_DIAG}"
+            echo 'Phase 17 job-start sample set: autonomous (production fast-wake path only; no tick call; the same loopback pass may also run other due core cron events); first persisted claim; 100 synthetic non-PHI samples; no latency threshold.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
 
       # ---------- Phase 17 background-job first-start measurement (control) ----------
       # Runs AFTER the autonomous pass so this step's own explicit production tick can no
