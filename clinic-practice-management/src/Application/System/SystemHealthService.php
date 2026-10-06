@@ -24,6 +24,12 @@ use ClinicCore\Settings\Settings;
  * با دسته‌بندی خالص (قابل واحدتست): failهای حیاتی → UNSUPPORTED؛ فقط
  * warning → SUPPORTED_WITH_WARNINGS.
  *
+ * Phase 18 Slice 18-1 — سازگاریِ زمان‌اجرا برای کف‌هایِ اعلام‌شده: دو چکِ
+ * `wp.version` (WordPress >= 6.4) و `db.mysql_version` (MySQL >= 8.0) به
+ * چک‌هایِ حیاتی اضافه شده‌اند. فقط تشخیص/گزارش است: هیچ قفلِ بالینی، قفلِ
+ * داده، محدودیتِ بکاپ/بازیابی یا رفتارِ مخربی اضافه نمی‌شود و نقطهٔ عمومی
+ * `/clinic/v1/health` گسترش نمی‌یابد. سیاستِ MariaDB اعلام نمی‌شود.
+ *
  * Live Network تست (سرور لایسنس/خروجی) عمداً اینجا اجرا نمی‌شود — فقط
  * پیکربندی بررسی می‌شود (BLOCKED_BY_ENVIRONMENT برای تأیید زنده).
  */
@@ -39,10 +45,24 @@ final class SystemHealthService
     public const HOST_SUPPORTED_WITH_WARNINGS = 'SUPPORTED_WITH_WARNINGS';
     public const HOST_UNSUPPORTED = 'UNSUPPORTED';
 
+    /**
+     * کفِ اعلام‌شدهٔ وردپرس — برگرفته از هدرِ افزونه (`Requires at least: 6.4`)؛
+     * عددِ جدیدی اعلام نمی‌شود.
+     */
+    public const MIN_WORDPRESS_VERSION = '6.4';
+
+    /**
+     * کفِ اعلام‌شدهٔ MySQL — برگرفته از SRS §2.2 (محیط اجرا)؛ عددِ جدیدی
+     * اعلام نمی‌شود. سیاستِ MariaDB در اینجا گسترش/اعلام نمی‌شود.
+     */
+    public const MIN_MYSQL_VERSION = '8.0';
+
     /** چک‌های حیاتی برای پشتیبانی میزبان */
     private const CRITICAL_KEYS = [
         'php.version',
+        'wp.version',
         'db.reachable',
+        'db.mysql_version',
         'db.migrated',
         'storage.files',
         'storage.backups',
@@ -92,6 +112,10 @@ final class SystemHealthService
         $mem = (int) ini_get('memory_limit');
         $add('php.memory', 'PHP memory_limit', $mem <= 0 || $mem >= 128 ? self::PASS : self::WARNING, ini_get('memory_limit') ?: '?');
 
+        // ---------- وردپرس (کفِ اعلام‌شده — spec §40) ----------
+        $wpCheck = self::wordPressVersionCheck($this->runningWordPressVersion());
+        $add($wpCheck['key'], $wpCheck['label'], $wpCheck['status'], $wpCheck['detail']);
+
         // ---------- دیتابیس ----------
         $dbOk = false;
         try {
@@ -100,6 +124,10 @@ final class SystemHealthService
             $dbOk = false;
         }
         $add('db.reachable', 'دیتابیس', $dbOk ? self::PASS : self::FAIL, $dbOk ? 'اتصال برقرار است' : 'عدم دسترسی به دیتابیس');
+
+        // کفِ اعلام‌شدهٔ MySQL — گزارشِ سطحِ نصب (بدون PHI).
+        $dbCheck = self::databaseServerVersionCheck($this->databaseServerVersion());
+        $add($dbCheck['key'], $dbCheck['label'], $dbCheck['status'], $dbCheck['detail']);
 
         $migrated = false;
         $schemaVersion = '';
@@ -189,6 +217,89 @@ final class SystemHealthService
     }
 
     /**
+     * چکِ سازگاریِ نسخهٔ وردپرسِ در حال اجرا با کفِ اعلام‌شده (Spec §40).
+     *
+     * خالص و قابل‌واحدتست (بدون WP/DB). منبعِ نسخه در `run()` از
+     * `get_bloginfo('version')` می‌آید — همان منبعی که `BackupService` و
+     * `LicenseService` برای گزارش نسخهٔ وردپرس استفاده می‌کنند.
+     *
+     * مدرکِ ناموجود/ناخوانا/ناتجزیه‌پذیر ⇒ `UNKNOWN` (هرگز `PASS` —
+     * fail-closed؛ ادعایِ تأییدنشده تولید نمی‌شود).
+     *
+     * @return array{key:string,label:string,status:string,detail:string}
+     */
+    public static function wordPressVersionCheck(?string $version): array
+    {
+        $key = 'wp.version';
+        $label = 'نسخهٔ وردپرس';
+        $parsed = self::parseVersion($version);
+
+        if ($parsed === null) {
+            return [
+                'key' => $key,
+                'label' => $label,
+                'status' => self::UNKNOWN,
+                'detail' => 'نسخهٔ وردپرس در دسترس نیست یا قابل‌تشخیص نیست — برآورده‌شدنِ کفِ '
+                    . self::MIN_WORDPRESS_VERSION . ' تأییدپذیر نیست',
+            ];
+        }
+
+        return [
+            'key' => $key,
+            'label' => $label,
+            'status' => version_compare($parsed, self::MIN_WORDPRESS_VERSION, '>=') ? self::PASS : self::FAIL,
+            'detail' => trim((string) $version) . ' — کفِ اعلام‌شده: ' . self::MIN_WORDPRESS_VERSION,
+        ];
+    }
+
+    /**
+     * چکِ نسخهٔ سرور دیتابیس با کفِ اعلام‌شدهٔ MySQL (SRS §2.2).
+     *
+     * خالص و قابل‌واحدتست. منبعِ نسخه در `run()` خودِ سرور است
+     * (`SELECT VERSION()`)، چون فقط سرور می‌تواند دربارهٔ خودش مدرک بدهد.
+     *
+     * سیاستِ MariaDB در اینجا اعلام/گسترش نمی‌شود: مدرکِ MariaDB مدرکِ
+     * «MySQL ≥ 8.0» نیست، پس `PASS` تولید نمی‌کند و در عین حال ادعایِ
+     * نادرستِ «زیرِ کف» (`FAIL`) هم نمی‌سازد ⇒ `UNKNOWN` (fail-closed).
+     *
+     * @return array{key:string,label:string,status:string,detail:string}
+     */
+    public static function databaseServerVersionCheck(?string $version): array
+    {
+        $key = 'db.mysql_version';
+        $label = 'نسخهٔ سرور دیتابیس (MySQL)';
+        $raw = trim((string) $version);
+
+        if ($raw !== '' && stripos($raw, 'mariadb') !== false) {
+            return [
+                'key' => $key,
+                'label' => $label,
+                'status' => self::UNKNOWN,
+                'detail' => 'MariaDB شناسایی شد — کفِ اعلام‌شده فقط MySQL '
+                    . self::MIN_MYSQL_VERSION . ' است و سیاستِ MariaDB اعلام نشده است',
+            ];
+        }
+
+        $parsed = self::parseVersion($raw);
+        if ($parsed === null) {
+            return [
+                'key' => $key,
+                'label' => $label,
+                'status' => self::UNKNOWN,
+                'detail' => 'نسخهٔ سرور دیتابیس در دسترس نیست یا قابل‌تشخیص نیست — برآورده‌شدنِ کفِ MySQL '
+                    . self::MIN_MYSQL_VERSION . ' تأییدپذیر نیست',
+            ];
+        }
+
+        return [
+            'key' => $key,
+            'label' => $label,
+            'status' => version_compare($parsed, self::MIN_MYSQL_VERSION, '>=') ? self::PASS : self::FAIL,
+            'detail' => $raw . ' — کفِ اعلام‌شده: MySQL ' . self::MIN_MYSQL_VERSION,
+        ];
+    }
+
+    /**
      * دسته‌بندی خالص وضعیت میزبان — واحدتست.
      *
      * @param list<array{key:string,label:string,status:string,detail:string}> $checks
@@ -220,6 +331,62 @@ final class SystemHealthService
     }
 
     // ================= private =================
+
+    /**
+     * نسخهٔ وردپرسِ در حال اجرا (منبعِ زنده) یا null اگر قابل‌تشخیص نباشد.
+     *
+     * `get_bloginfo()` بیرون از وردپرس وجود ندارد؛ نبودش «نسخهٔ نامعلوم»
+     * است، نه «نسخهٔ تأییدشده».
+     */
+    private function runningWordPressVersion(): ?string
+    {
+        if (!function_exists('get_bloginfo')) {
+            return null;
+        }
+        $version = get_bloginfo('version');
+
+        return is_string($version) && trim($version) !== '' ? trim($version) : null;
+    }
+
+    /**
+     * نسخهٔ سرور دیتابیس از خودِ سرور (`SELECT VERSION()`) یا null اگر
+     * قابل‌خواندن نباشد.
+     *
+     * فقط یک برچسبِ نسخه خوانده می‌شود — بدون PHI، بدون دادهٔ tenant و بدون
+     * هیچ اثرِ تغییردهنده (read-only).
+     */
+    private function databaseServerVersion(): ?string
+    {
+        try {
+            $version = $this->db->fetchValue('SELECT VERSION()');
+        } catch (\Throwable) {
+            return null;
+        }
+
+        return is_string($version) && trim($version) !== '' ? trim($version) : null;
+    }
+
+    /**
+     * استخراجِ بخشِ عددیِ آغازینِ یک رشتهٔ نسخه — کوچک و قطعی.
+     *
+     * `8.0.33-0ubuntu0.22.04.1` ⇒ `8.0.33` · `6.7.2` ⇒ `6.7.2` ·
+     * `banana` و `''` ⇒ null (یعنی غیرقابل‌اتکا، نه «کمتر از کف»).
+     */
+    private static function parseVersion(?string $version): ?string
+    {
+        if ($version === null) {
+            return null;
+        }
+        $trimmed = trim($version);
+        if ($trimmed === '') {
+            return null;
+        }
+        if (preg_match('/^\d+(?:\.\d+)*/', $trimmed, $m) !== 1) {
+            return null;
+        }
+
+        return $m[0];
+    }
 
     private function isMigrated(): bool
     {
