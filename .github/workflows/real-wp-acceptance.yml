@@ -122,6 +122,73 @@ jobs:
           wp config set DISALLOW_FILE_EDIT true --raw --allow-root
           wp core install --url="$WP_URL" --title="CPMS Acceptance" --admin_user="$ADMIN_USER" --admin_password="$ADMIN_PASS" --admin_email=admin@acc.local --skip-email --allow-root
 
+      # Phase 18 Slice 18-4 — bounded coexistence, on one clean-WP prefix only.
+      # The other prefix remains the existing no-third-party control. All packages
+      # come from the WordPress.org directory through WP-CLI with exact versions;
+      # the runner is the supported WP 6.7.2 / PHP 8.2 host used by this workflow.
+      # Set rationale: The SEO Framework (SEO/query filters); Contact Form 7
+      # (form shortcode/admin + frontend hooks); Autoptimize (asset/output caching);
+      # Wordfence (security/auth hooks); WooCommerce (large admin/REST/schema footprint).
+      - name: Download pinned representative plugins from WordPress.org (pre-CPMS)
+        if: matrix.prefix == 'wp_'
+        run: |
+          set -Eeuo pipefail
+          cat > /tmp/acc/coexistence-plugin-pins.tsv <<'EOF'
+          autodescription 5.1.4
+          contact-form-7 6.1.7
+          autoptimize 3.1.16
+          wordfence 9.0.2
+          woocommerce 10.4.4
+          EOF
+          while read -r slug version; do
+            [ -n "$slug" ] || continue
+            if ! wp plugin install "$slug" --version="$version" --path="$WP_DIR" --allow-root; then
+              echo "::error::C-class WordPress.org/WP-CLI plugin download or installation failure for ${slug}@${version}; CPMS is not installed and this is not CPMS compatibility evidence."
+              exit 1
+            fi
+            installed_version="$(wp plugin get "$slug" --field=version --path="$WP_DIR" --allow-root)"
+            if [ "$installed_version" != "$version" ]; then
+              echo "::error::D-class coexistence fixture verification failure: ${slug} expected ${version}, installed ${installed_version:-unknown}."
+              exit 1
+            fi
+            echo "retrieved ${slug}@${installed_version} from the pinned WordPress.org plugin distribution"
+          done < /tmp/acc/coexistence-plugin-pins.tsv
+          wp plugin list --format=json --path="$WP_DIR" --allow-root > /tmp/acc/coexistence-installed-plugins.json
+
+      - name: Activate representative plugins and prove the clean baseline (before CPMS)
+        if: matrix.prefix == 'wp_'
+        run: |
+          set -Eeuo pipefail
+          while read -r slug version; do
+            [ -n "$slug" ] || continue
+            if ! wp plugin activate "$slug" --path="$WP_DIR" --allow-root; then
+              echo "::error::Independent pre-CPMS plugin activation failure for ${slug}@${version}; CPMS is absent, so do not attribute this to CPMS or silently replace the plugin."
+              exit 1
+            fi
+          done < /tmp/acc/coexistence-plugin-pins.tsv
+          if ! wp eval 'echo "third-party-only WordPress bootstrap: OK";' --path="$WP_DIR" --allow-root; then
+            echo '::error::Independent pre-CPMS WordPress/plugin bootstrap failure; CPMS is absent, so this is not CPMS coexistence evidence.'
+            exit 1
+          fi
+          while read -r slug version; do
+            [ -n "$slug" ] || continue
+            wp plugin is-active "$slug" --path="$WP_DIR" --allow-root
+            installed_version="$(wp plugin get "$slug" --field=version --path="$WP_DIR" --allow-root)"
+            [ "$installed_version" = "$version" ] || { echo "::error::D-class baseline version mismatch for ${slug}: ${installed_version:-unknown} != ${version}"; exit 1; }
+          done < /tmp/acc/coexistence-plugin-pins.tsv
+          wp plugin list --status=active --format=json --path="$WP_DIR" --allow-root > /tmp/acc/coexistence-active-before-cpms.json
+          if [ -f "$WP_DIR/wp-content/debug.log" ]; then
+            cp "$WP_DIR/wp-content/debug.log" /tmp/acc/coexistence-debug-before-cpms.log
+            if grep -qE 'PHP Fatal error|PHP Parse error|PHP Error:|Uncaught|There has been a critical error' /tmp/acc/coexistence-debug-before-cpms.log; then
+              echo '::error::Independent pre-CPMS PHP fatal/error in the third-party-only baseline; this run cannot attribute it to CPMS.'
+              grep -nE 'PHP Fatal error|PHP Parse error|PHP Error:|Uncaught|There has been a critical error' /tmp/acc/coexistence-debug-before-cpms.log | tail -10
+              exit 1
+            fi
+          else
+            : > /tmp/acc/coexistence-debug-before-cpms.log
+          fi
+          echo 'clean WordPress loads successfully with all five pinned third-party plugins active and CPMS not yet installed'
+
       # ---------- 3) نصب از ZIP + فعال‌سازی (Migration خودکار) ----------
       - name: Install ZIP → activate (migration runs in activation hook)
         run: |
@@ -433,6 +500,23 @@ jobs:
           cat /tmp/acc/public-page.env >> "$GITHUB_ENV"
           cat /tmp/acc/public-page.env
 
+      - name: Phase 18 Slice 18-4 — record active coexistence set before existing smoke
+        if: matrix.prefix == 'wp_'
+        run: |
+          set -Eeuo pipefail
+          while read -r slug version; do
+            [ -n "$slug" ] || continue
+            wp plugin is-active "$slug" --path="$WP_DIR" --allow-root
+            installed_version="$(wp plugin get "$slug" --field=version --path="$WP_DIR" --allow-root)"
+            [ "$installed_version" = "$version" ] || { echo "::error::D-class pre-smoke plugin drift: ${slug}@${installed_version:-unknown}, expected ${version}."; exit 1; }
+            echo "active before smoke: ${slug}@${installed_version}"
+          done < /tmp/acc/coexistence-plugin-pins.tsv
+          wp plugin is-active clinic-practice-management --path="$WP_DIR" --allow-root
+          cpms_version="$(wp plugin get clinic-practice-management --field=version --path="$WP_DIR" --allow-root)"
+          test -n "$cpms_version"
+          echo "active before smoke: clinic-practice-management@${cpms_version} (current official release ZIP)"
+          wp plugin list --status=active --format=json --path="$WP_DIR" --allow-root > /tmp/acc/coexistence-active-before-smoke.json
+
       # ---------- 6) پذیرش مرورگری ----------
       - name: Browser acceptance — all 5 roles (Admin/Manager/Doctor/Secretary/Accountant) menus + denial
         run: |
@@ -450,6 +534,67 @@ jobs:
           RC=$?
           cat /tmp/acc/acceptance.log
           if [ "$RC" -ne 0 ]; then echo "ACCEPTANCE FAILED (rc=$RC)"; exit "$RC"; fi
+
+      - name: Phase 18 Slice 18-4 — coexistence evidence after existing Real WP smoke
+        if: matrix.prefix == 'wp_'
+        run: |
+          set -Eeuo pipefail
+          # These named assertions prove the existing smoke exercised the intended
+          # authenticated system, tenant-aware operation, and public booking path.
+          for expected in \
+            'PASS admin.cpms-system.health_rendered' \
+            'PASS secretary.patients.create_success' \
+            'PASS secretary.patients.search_results' \
+            'PASS public-booking.http200' \
+            'PASS public-booking.a1_http200' \
+            'PASS public-booking.a1_reached_product_route' \
+            'PASS public-booking.a4_http200'; do
+            grep -Fq "$expected" /tmp/acc/acceptance.log || { echo "::error::Existing Real WP smoke did not prove: $expected"; exit 1; }
+          done
+
+          while read -r slug version; do
+            [ -n "$slug" ] || continue
+            wp plugin is-active "$slug" --path="$WP_DIR" --allow-root
+            installed_version="$(wp plugin get "$slug" --field=version --path="$WP_DIR" --allow-root)"
+            [ "$installed_version" = "$version" ] || { echo "::error::D-class post-smoke plugin drift: ${slug}@${installed_version:-unknown}, expected ${version}."; exit 1; }
+            echo "still active after smoke: ${slug}@${installed_version}"
+          done < /tmp/acc/coexistence-plugin-pins.tsv
+          wp plugin is-active clinic-practice-management --path="$WP_DIR" --allow-root
+          cpms_version="$(wp plugin get clinic-practice-management --field=version --path="$WP_DIR" --allow-root)"
+          test -n "$cpms_version"
+          echo "still active after smoke: clinic-practice-management@${cpms_version}"
+          wp plugin list --status=active --format=json --path="$WP_DIR" --allow-root > /tmp/acc/coexistence-active-after-smoke.json
+
+          HEALTH_HTTP="$(curl -sS -o /tmp/acc/coexistence-health.json -w '%{http_code}' "$WP_URL/wp-json/clinic/v1/health")"
+          echo "anonymous CPMS health: HTTP ${HEALTH_HTTP}"
+          [ "$HEALTH_HTTP" = '200' ] || { echo '::error::Public CPMS health endpoint failed with representative plugins active.'; exit 1; }
+          python3 - /tmp/acc/coexistence-health.json <<'PY'
+          import json
+          import sys
+          with open(sys.argv[1], encoding='utf-8') as source:
+              payload = json.load(source)
+          if payload.get('data', {}).get('ok') is not True:
+              raise SystemExit('public CPMS health payload did not report data.ok=true')
+          print('anonymous CPMS health payload: data.ok=true')
+          PY
+          if [ -f "$WP_DIR/wp-content/debug.log" ] && grep -qE 'PHP Fatal error|PHP Parse error|PHP Error:|Uncaught|There has been a critical error' "$WP_DIR/wp-content/debug.log"; then
+            echo '::error::PHP fatal/error appeared in debug.log during the active coexistence run.'
+            grep -nE 'PHP Fatal error|PHP Parse error|PHP Error:|Uncaught|There has been a critical error' "$WP_DIR/wp-content/debug.log" | tail -10
+            exit 1
+          fi
+          {
+            echo '## Phase 18 Slice 18-4 — bounded WordPress plugin coexistence'
+            echo '- Existing Real WordPress browser smoke passed with the complete pinned set and CPMS release ZIP active.'
+            echo '- Smoke anchors: authenticated CPMS system health; secretary Clinic-scoped patient create/search; anonymous booking page + A1 availability + A4 quote.'
+            echo '- Public `/wp-json/clinic/v1/health`: HTTP 200 and `data.ok=true` while all six plugins remained active.'
+            echo '- No PHP fatal/parse/error, uncaught exception, or WordPress critical-error marker in the exercised run log.'
+            echo '- WordPress.org plugin packages (exact pins):'
+          } >> "$GITHUB_STEP_SUMMARY"
+          while read -r slug version; do
+            [ -n "$slug" ] || continue
+            echo "  - \`${slug}@${version}\`" >> "$GITHUB_STEP_SUMMARY"
+          done < /tmp/acc/coexistence-plugin-pins.tsv
+          echo '- Active-state snapshots before/after the smoke are attached to the existing Real WP acceptance artifact.' >> "$GITHUB_STEP_SUMMARY"
 
       # ---------- 6.5) اثبات فنی: پوستهٔ مستقلِ CPMS (Phase 9 Slice 3 — فقط proof) ----------
       # NON-PRODUCTION: فیکسچرها (mu-plugin رهگیرِ template_include + دو تمِ کنترلیِ
