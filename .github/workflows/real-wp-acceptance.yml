@@ -146,7 +146,8 @@ jobs:
             install_log="/tmp/acc/coexistence-install-${slug}.log"
             if ! wp plugin install "$package_url" --path="$WP_DIR" --allow-root > "$install_log" 2>&1; then
               cat "$install_log"
-              echo "::error::Pinned WordPress.org package retrieval/installation failed for ${slug}@${version} before CPMS was installed; see ${install_log} in the artifact to classify C (transport/provider) versus D (pin/fixture). This is not CPMS compatibility evidence."
+              diagnostic="$(tail -20 "$install_log" | tr '\n\r' '  ' | sed 's/%/%25/g' | cut -c1-1600)"
+              echo "::error::Pinned WordPress.org package retrieval/installation failed for ${slug}@${version} before CPMS was installed; inspect the diagnostic and artifact to classify C (transport/provider) versus D (pin/fixture). This is not CPMS compatibility evidence. WP-CLI: ${diagnostic}"
               exit 1
             fi
             cat "$install_log"
@@ -636,6 +637,7 @@ jobs:
       - name: PHP/WP/Apache logs review
         if: always()
         run: |
+          mkdir -p /tmp/acc/logs
           cp "$WP_DIR/wp-content/debug.log" /tmp/acc/logs/ 2>/dev/null || echo '(no debug.log)' > /tmp/acc/logs/debug.log.missing
           sudo cp /var/log/apache2/acc-error.log /tmp/acc/logs/apache-error.log 2>/dev/null || true
           sudo cp /var/log/apache2/acc-access.log /tmp/acc/logs/apache-access.log 2>/dev/null || true
@@ -722,6 +724,14 @@ jobs:
             echo '- debug.log tail:'
             echo '```'
             tail -15 /tmp/acc/logs/debug.log 2>/dev/null || echo '(بدون debug.log)'
+            echo '```'
+            echo '- pinned pre-CPMS WordPress.org package install logs:'
+            echo '```'
+            for f in /tmp/acc/coexistence-install-*.log; do
+              [ -f "$f" ] || continue
+              echo "--- $(basename "$f") ---"
+              tail -40 "$f"
+            done
             echo '```'
             echo "artifacts: rwp-acceptance-${{ matrix.prefix }} (screenshots/logs/results.json)"
           } > /tmp/acc/evidence-comment.md
