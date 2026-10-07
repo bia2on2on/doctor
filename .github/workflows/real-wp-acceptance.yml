@@ -629,9 +629,11 @@ jobs:
           # redirect target, content type, sanitized response head and a fatal-error count —
           # because a bare "failed" annotation cannot separate C (transport/provider) from D
           # (fixture) from a real product regression. No secret/PHI is published.
-          HEALTH_META="$(curl -sS -o /tmp/acc/coexistence-health.json -w '%{http_code}|%{content_type}|%{redirect_url}' "$WP_URL/wp-json/clinic/v1/health")" || HEALTH_META='000|transport-error|'
+          # This acceptance site deliberately uses plain permalinks, so route REST through
+          # WordPress's rest_route query rather than Apache's unavailable /wp-json rewrite.
+          HEALTH_META="$(curl -sS -o /tmp/acc/coexistence-health.json -w '%{http_code}|%{content_type}|%{redirect_url}' "$WP_URL/?rest_route=/clinic/v1/health")" || HEALTH_META='000|transport-error|'
           HEALTH_HTTP="${HEALTH_META%%|*}"
-          echo "anonymous CPMS health: HTTP ${HEALTH_HTTP}"
+          echo "anonymous CPMS health (plain permalink): HTTP ${HEALTH_HTTP}"
           if [ "$HEALTH_HTTP" != '200' ]; then
             FATAL_COUNT="$(grep -cE 'PHP Fatal error|Uncaught|There has been a critical error' "$WP_DIR/wp-content/debug.log" 2>/dev/null || true)"
             {
@@ -664,7 +666,7 @@ jobs:
             echo '- Smoke anchors: authenticated CPMS system health; secretary Clinic-scoped patient create/search; anonymous booking page + A1 availability + A4 quote.'
             echo '- WooCommerce 10.3.8 coexistence: every authorized CPMS persona above was served on its own wp-admin screen (no third-party redirect to the store front-end).'
             echo '- Non-widening proof (same run, real browser): doctor/secretary/manager/accountant got NO access to `admin.php?page=wc-admin`; doctor got none of `edit.php`/`users.php`; secretary got none of `options-general.php`; an unknown `page=cpms-*` selector was not exempted. Denial mechanism per check is recorded in `logs/*-denial.json`.'
-            echo '- Public `/wp-json/clinic/v1/health`: HTTP 200 and `data.ok=true` while all six plugins (five pinned + CPMS) remained active.'
+            echo '- Public `/?rest_route=/clinic/v1/health`: HTTP 200 and `data.ok=true` while all six plugins (five pinned + CPMS) remained active.'
             echo '- No PHP fatal/parse/error, uncaught exception, or WordPress critical-error marker in the exercised run log.'
             echo '- WordPress.org plugin packages (exact pins):'
           } >> "$GITHUB_STEP_SUMMARY"
