@@ -1,0 +1,653 @@
+name: Third-Party Compatibility Baseline (Phase 18 Lane A)
+
+# Phase 18 — third-party compatibility MEASUREMENT baseline.
+#
+# This workflow measures how the owner-frozen 20 third-party products behave on a
+# clean, CPMS-free WordPress.  It installs no CPMS code, changes no CPMS code and
+# makes no CPMS claim: taxonomy category A and B are unreachable here.
+#
+# ISOLATION INVARIANT (the whole point of the architecture)
+#   one subject  ==  one matrix leg  ==  one GitHub Actions job
+#   every job therefore gets, from GitHub itself and not from us:
+#     - a fresh runner            (no process, file or port state from another subject)
+#     - a fresh `services: mysql` container and a fresh database
+#     - a fresh WordPress filesystem, extracted from the official 6.7.2 tarball
+#   CPMS is never installed, and its absence is asserted in the filesystem, the
+#   plugin set, the option table and the database BEFORE and AFTER activation.
+#   There is deliberately no aggregate "activate one, deactivate, test the next"
+#   baseline anywhere in this file — that pattern cannot attribute a failure.
+#
+# REPEAT-ONCE PATH
+#   Any material FAIL must be repeated once in a fresh environment before causal
+#   attribution. A `workflow_dispatch` run of this workflow is that path: one
+#   subject is one job, so every subject already gets a fresh runner, container
+#   and WordPress. Per-subject dispatch filtering was deliberately NOT added —
+#   it would need a planning job plus `fromJSON` matrix indirection to save
+#   runner minutes, and the per-subject pins, SHA-256 and environment already
+#   recorded in each result are the deterministic rerun evidence.
+#
+# LANE SCOPE
+#   Implemented now : Lane A only — WordPress 6.7.2 / PHP 8.2 / MySQL 8 / Apache
+#                     + real Chromium, mirroring the proven Real WordPress
+#                     Acceptance harness.
+#   NOT implemented : Lane B (current-ecosystem matrix) and any CPMS coexistence
+#                     run. The lane's WordPress, PHP, MySQL and server pins are
+#                     single workflow-level constants below; adding Lane B later
+#                     means widening those constants and the matrix, not
+#                     rewriting the per-subject job body, the probes or the
+#                     result contract.
+#
+# COMMERCIAL SUBJECTS
+#   WP Rocket and Gravity Forms are commercial.  No nulled or unofficial source is
+#   ever used, no commercial package is ever committed, and no credential is ever
+#   printed, logged or uploaded.  Without lawful owner-provisioned material they
+#   report NOT RUN, and the 18-product free matrix is unaffected.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  # Same shape as the repository's other gates: PR runs keyed by PR number, main
+  # runs keyed by the unique run id so post-merge evidence is never superseded.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref == 'refs/heads/main' && format('main-run-{0}', github.run_id) || github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('ref-{0}', github.ref) }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  # Narrowest set this workflow needs.
+  contents: read # reads the probe tooling in .github/third-party-baseline/
+  actions: read # required by actions/download-artifact@v4 to aggregate evidence across jobs
+
+env:
+  LANE: A
+  WP_VERSION: '6.7.2'
+  PHP_VERSION: '8.2'
+  WP_DIR: /home/runner/tpb/wp
+  WP_URL: http://localhost:8080
+  PROBE_DIR: /tmp/tpb-probe
+  EVIDENCE_DIR: /tmp/tpb
+  # Ephemeral local-only credentials for a throwaway WordPress on an ephemeral
+  # runner. They are not secrets, they protect nothing, they hold no PHI and they
+  # die with the job — the same convention the Real WordPress Acceptance harness
+  # already uses.
+  TPB_ADMIN_USER: tpb_admin
+  TPB_ADMIN_PASS: Tpb-Baseline-2026!
+
+jobs:
+  subject-baseline:
+    name: "Baseline ${{ matrix.id }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    strategy:
+      # One subject failing must never cancel another subject's evidence.
+      fail-fast: false
+      matrix:
+        include:
+          # ---- owner-frozen 20 products (Lane A) ----
+          - id: litespeed-cache
+            name: LiteSpeed Cache
+            slug: litespeed-cache
+            version: '7.9.1'
+            source: wordpress_org
+            kind: subject
+            deps: '-'
+            unavailable_feature: server-level page caching (LSCache)
+            unavailable_reason: >-
+              LSCache page caching needs a LiteSpeed web server; this lane runs
+              Apache/mod_php, so that single feature cannot execute here
+          - id: wp-rocket
+            name: WP Rocket
+            slug: wp-rocket
+            version: '3.23.5.1'
+            source: commercial_package
+            kind: subject
+            deps: '-'
+            unavailable_feature: ''
+            unavailable_reason: ''
+          - id: wordpress-seo
+            name: Yoast SEO
+            slug: wordpress-seo
+            version: '26.8'
+            source: wordpress_org
+            kind: subject
+            deps: '-'
+            unavailable_feature: ''
+            unavailable_reason: ''
+          - id: seo-by-rank-math
+            name: Rank Math SEO
+            slug: seo-by-rank-math
+            version: '1.0.280'
+            source: wordpress_org
+            kind: subject
+            deps: '-'
+            unavailable_feature: ''
+            unavailable_reason: ''
+          - id: persian-woocommerce
+            name: Persian WooCommerce
+            slug: persian-woocommerce
+            version: '9.3.5'
+            source: wordpress_org
+            kind: subject
+            deps: woocommerce=10.3.8
+            unavailable_feature: ''
+            unavailable_reason: ''
+          - id: gravityforms
+            name: Gravity Forms
+            slug: gravityforms
+            version: '3.1.0'
+            source: commercial_credential
+            kind: subject
+            deps: '-'
+            unavailable_feature: ''
+            unavailable_reason: ''
+          - id: woocommerce
+            name: WooCommerce
+            slug: woocommerce
+            version: '10.3.8'
+            source: wordpress_org
+            kind: subject
+            deps: '-'
+            unavailable_feature: ''
+            unavailable_reason: ''
+          - id: elementor
+            name: Elementor
+            slug: elementor
+            version: '4.0.9'
+            source: wordpress_org
+            kind: subject
+            deps: '-'
+            unavailable_feature: ''
+            unavailable_reason: ''
+          # Deliberately NO Elementor dependency here. Branding is not evidence:
+          # this leg starts solo and records the exact `Requires Plugins` header
+          # of the installed 2.8.4 package as the dependency evidence.
+          - id: persian-elementor
+            name: Persian Elementor
+            slug: persian-elementor
+            version: '2.8.4'
+            source: wordpress_org
+            kind: subject
+            deps: '-'
+            unavailable_feature: ''
+            unavailable_reason: ''
+          - id: wp-parsidate
+            name: WP Parsi Date
+            slug: wp-parsidate
+            version: '6.4'
+            source: wordpress_org
+            kind: subject
+            deps: '-'
+            unavailable_feature: ''
+            unavailable_reason: ''
+          - id: persian-woocommerce-sms
+            name: Persian WooCommerce SMS
+            slug: persian-woocommerce-sms
+            version: '7.1.1'
+            source: wordpress_org
+            kind: subject
+            deps: woocommerce=10.3.8
+            unavailable_feature: ''
+            unavailable_reason: ''
+          - id: contact-form-7
+            name: Contact Form 7
+            slug: contact-form-7
+            version: '6.1.7'
+            source: wordpress_org
+            kind: subject
+            deps: '-'
+            unavailable_feature: ''
+            unavailable_reason: ''
+          - id: wordfence
+            name: Wordfence Security
+            slug: wordfence
+            version: '9.0.2'
+            source: wordpress_org
+            kind: subject
+            deps: '-'
+            unavailable_feature: ''
+            unavailable_reason: ''
+          - id: really-simple-ssl
+            name: Really Simple SSL
+            slug: really-simple-ssl
+            version: '9.8.3'
+            source: wordpress_org
+            kind: subject
+            deps: '-'
+            unavailable_feature: ''
+            unavailable_reason: ''
+          - id: redirection
+            name: Redirection
+            slug: redirection
+            version: '5.10.1'
+            source: wordpress_org
+            kind: subject
+            deps: '-'
+            unavailable_feature: ''
+            unavailable_reason: ''
+          - id: polylang
+            name: Polylang
+            slug: polylang
+            version: '3.8.10'
+            source: wordpress_org
+            kind: subject
+            deps: '-'
+            unavailable_feature: ''
+            unavailable_reason: ''
+          - id: user-role-editor
+            name: User Role Editor
+            slug: user-role-editor
+            version: '4.66.2'
+            source: wordpress_org
+            kind: subject
+            deps: '-'
+            unavailable_feature: ''
+            unavailable_reason: ''
+          - id: autoptimize
+            name: Autoptimize
+            slug: autoptimize
+            version: '3.1.16'
+            source: wordpress_org
+            kind: subject
+            deps: '-'
+            unavailable_feature: ''
+            unavailable_reason: ''
+          - id: advanced-custom-fields
+            name: Advanced Custom Fields
+            slug: advanced-custom-fields
+            version: '6.8.10'
+            source: wordpress_org
+            kind: subject
+            deps: '-'
+            unavailable_feature: ''
+            unavailable_reason: ''
+          - id: wp-crontrol
+            name: WP Crontrol
+            slug: wp-crontrol
+            version: '1.21.2'
+            source: wordpress_org
+            kind: subject
+            deps: '-'
+            unavailable_feature: ''
+            unavailable_reason: ''
+
+          # ---- dependency-only control ----
+          # A subject that declares a dependency is only attributable once the
+          # dependency ALONE is proven healthy in an equally clean environment.
+          # One shared control leg for the one distinct pinned dependency in this
+          # matrix (WooCommerce 10.3.8), covering both persian-woocommerce and
+          # persian-woocommerce-sms. No combination legs are created.
+          - id: dep-control-woocommerce
+            name: 'Dependency-only control: WooCommerce (no subject)'
+            slug: woocommerce
+            version: '10.3.8'
+            source: wordpress_org
+            kind: dependency-control
+            deps: '-'
+            unavailable_feature: ''
+            unavailable_reason: ''
+
+    services:
+      # A fresh MySQL container per job — this is what makes the database half of
+      # the isolation invariant true without any cleanup step of our own.
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1"
+          --health-interval=10s --health-timeout=5s --health-retries=20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Record subject identity
+        run: |
+          set -Eeuo pipefail
+          mkdir -p "$EVIDENCE_DIR" "$PROBE_DIR"
+          python3 .github/third-party-baseline/probe.py subject \
+            --store "$EVIDENCE_DIR/evidence.json" \
+            --id "${{ matrix.id }}" \
+            --name "${{ matrix.name }}" \
+            --slug "${{ matrix.slug }}" \
+            --version "${{ matrix.version }}" \
+            --source "${{ matrix.source }}" \
+            --kind "${{ matrix.kind }}" \
+            --deps "${{ matrix.deps }}" \
+            --unavailable-feature "${{ matrix.unavailable_feature }}" \
+            --unavailable-reason "${{ matrix.unavailable_reason }}"
+
+      # ------------------------------------------------------------------ #
+      # Commercial subjects. These run BEFORE any provisioning, so a missing
+      # lawful package or credential can never fail the free matrix, and no
+      # credential is ever needed for this workflow to be valid.
+      # ------------------------------------------------------------------ #
+      - name: 'Commercial: WP Rocket — owner-supplied licensed package only'
+        if: matrix.source == 'commercial_package' && matrix.id == 'wp-rocket'
+        env:
+          # The secure future input mechanism, wired for detection in this stage:
+          # a short-lived, owner-provisioned presigned URL to the licensed ZIP from
+          # the owner's own wp-rocket.me account, plus its SHA-256.
+          #
+          # Why this shape:
+          #   - the URL is a repository secret, so GitHub masks it in every log;
+          #   - it is never expanded into a log line or a process argument list;
+          #   - no commercial package bytes ever enter the repository, an artifact
+          #     or this step's output — nothing about the contents is printed;
+          #   - the owner provisions it out of band. It is never pasted into chat.
+          #
+          # The licensed install/activation path is deliberately NOT implemented in
+          # this stage, so this subject reports NOT RUN either way. That is a
+          # deliberate fail-closed choice: it must never be possible for a
+          # provisioned secret to produce an unadjudicated subject with no result.
+          TPB_COMMERCIAL_PACKAGE_URL: ${{ secrets.TPB_WPROCKET_LICENSED_PACKAGE_URL }}
+          TPB_COMMERCIAL_PACKAGE_SHA256: ${{ secrets.TPB_WPROCKET_LICENSED_PACKAGE_SHA256 }}
+        run: |
+          set -Eeuo pipefail
+          REASON='NOT RUN — OWNER-SUPPLIED LICENSED TEST PACKAGE REQUIRED'
+          if [ -z "${TPB_COMMERCIAL_PACKAGE_URL:-}" ]; then
+            echo "$REASON"
+            echo '::notice::WP Rocket is commercial. No nulled or unofficial source is used, no commercial package is committed, and no credential is required for this workflow to be valid.'
+          else
+            REASON='NOT RUN — OWNER-SUPPLIED LICENSED PACKAGE DETECTED, LICENSED INSTALL PATH NOT IMPLEMENTED IN THIS STAGE'
+            echo "$REASON"
+            echo '::notice::A lawful owner-supplied package URL is provisioned. Its value and SHA-256 are never printed. The licensed install path is intentionally not implemented yet, so this subject stays NOT RUN rather than becoming an unadjudicated result.'
+          fi
+          python3 .github/third-party-baseline/probe.py finalize \
+            --store "$EVIDENCE_DIR/evidence.json" \
+            --out "$EVIDENCE_DIR/subject-result.json" \
+            --subject-id "${{ matrix.id }}" --not-run "$REASON"
+
+      - name: 'Commercial: Gravity Forms — official vendor mechanism only'
+        if: matrix.source == 'commercial_credential' && matrix.id == 'gravityforms'
+        env:
+          # Owner-provisioned Gravity Forms license key. The only accepted future
+          # mechanism is the official Gravity Forms CLI add-on (`wp gf install`),
+          # which reads the GF_LICENSE_KEY constant; the key would be written into
+          # this job's wp-config.php from the environment by a shell builtin, so it
+          # never reaches argv, a log line, an artifact or the repository.
+          #
+          # As with WP Rocket the install path is deliberately not implemented in
+          # this stage, so this subject reports NOT RUN either way and a
+          # provisioned secret can never produce an unadjudicated result.
+          GF_LICENSE_KEY: ${{ secrets.TPB_GRAVITYFORMS_LICENSE_KEY }}
+        run: |
+          set -Eeuo pipefail
+          REASON='NOT RUN — OWNER-SUPPLIED LICENSED CREDENTIAL REQUIRED'
+          if [ -z "${GF_LICENSE_KEY:-}" ]; then
+            echo "$REASON"
+            echo '::notice::Gravity Forms is commercial. The only accepted mechanism is the official vendor CLI with an owner-provisioned license key; no credential is required for this workflow to be valid, and its absence never fails the free-plugin matrix.'
+          else
+            REASON='NOT RUN — OWNER-SUPPLIED LICENSED CREDENTIAL DETECTED, OFFICIAL VENDOR INSTALL PATH NOT IMPLEMENTED IN THIS STAGE'
+            echo "$REASON"
+            echo '::notice::A lawful owner-provisioned credential is present. It is never printed, logged or persisted. The official vendor install path is intentionally not implemented yet, so this subject stays NOT RUN.'
+          fi
+          python3 .github/third-party-baseline/probe.py finalize \
+            --store "$EVIDENCE_DIR/evidence.json" \
+            --out "$EVIDENCE_DIR/subject-result.json" \
+            --subject-id "${{ matrix.id }}" --not-run "$REASON"
+
+      - name: 'Commercial: no mechanism wired for this subject'
+        if: >-
+          startsWith(matrix.source, 'commercial')
+          && matrix.id != 'wp-rocket'
+          && matrix.id != 'gravityforms'
+        run: |
+          set -Eeuo pipefail
+          REASON='NOT RUN — OWNER-SUPPLIED LICENSED TEST PACKAGE REQUIRED'
+          echo "$REASON"
+          python3 .github/third-party-baseline/probe.py finalize \
+            --store "$EVIDENCE_DIR/evidence.json" \
+            --out "$EVIDENCE_DIR/subject-result.json" \
+            --subject-id "${{ matrix.id }}" --not-run "$REASON"
+
+      # ------------------------------------------------------------------ #
+      # Everything below runs only for WordPress.org packages.
+      # ------------------------------------------------------------------ #
+      - uses: shivammathur/setup-php@v2
+        if: matrix.source == 'wordpress_org'
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: mysqli, curl, mbstring, xml, zip, gd, sodium, intl
+          coverage: none
+
+      - name: Tooling (apache2 + mod_php pinned to the lane PHP + wp-cli + chromium)
+        if: matrix.source == 'wordpress_org'
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          # The lane pins PHP 8.2, so the module Apache loads must be 8.2 too —
+          # the distro default mod_php is not acceptable evidence for a pinned lane.
+          # The redirect deliberately runs as the runner user: /tmp/apt.log is
+          # runner-writable and is only read back by this same step. Root output
+          # must not need a root-owned log file.
+          # shellcheck disable=SC2024
+          if ! sudo apt-get install -y -qq \
+               "libapache2-mod-php${PHP_VERSION}" \
+               "php${PHP_VERSION}-mysql" "php${PHP_VERSION}-mbstring" \
+               "php${PHP_VERSION}-xml" "php${PHP_VERSION}-curl" \
+               "php${PHP_VERSION}-zip" "php${PHP_VERSION}-gd" \
+               "php${PHP_VERSION}-intl" "php${PHP_VERSION}-opcache" \
+               apache2 mysql-client > /tmp/apt.log 2>&1; then
+            tail -30 /tmp/apt.log
+            echo "::error::Class C environment failure: PHP ${PHP_VERSION} Apache module is not installable on this runner. Refusing to measure a lane on the wrong PHP."
+            exit 1
+          fi
+          curl -sS https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o /tmp/wp-cli.phar
+          sudo mv /tmp/wp-cli.phar /usr/local/bin/wp && sudo chmod +x /usr/local/bin/wp
+          wp --allow-root --version
+          (pip install --quiet playwright 2>/dev/null || pip install --quiet --break-system-packages playwright)
+          python3 -m playwright install --with-deps chromium > /tmp/pw.log 2>&1 || { tail -10 /tmp/pw.log; exit 1; }
+
+      - name: Clean WordPress on this job's own database
+        if: matrix.source == 'wordpress_org'
+        run: |
+          set -Eeuo pipefail
+          # Per-subject database name: defence in depth on top of the fact that
+          # the MySQL container itself is fresh for this job.
+          DB_NAME="tpb_${LANE}_$(printf '%s' "${{ matrix.id }}" | tr -c 'a-z0-9' '_' | tr '[:upper:]' '[:lower:]')"
+          echo "DB_NAME=$DB_NAME" >> "$GITHUB_ENV"
+
+          curl -sSfL "https://wordpress.org/wordpress-${WP_VERSION}.tar.gz" -o /tmp/wp.tar.gz
+          echo "wp_tarball_sha256=$(sha256sum /tmp/wp.tar.gz | cut -d' ' -f1)"
+          tar -xzf /tmp/wp.tar.gz -C /tmp && mv /tmp/wordpress "$WP_DIR"
+          rm -f /tmp/wp.tar.gz
+
+          mysql -h 127.0.0.1 -P 3306 -uroot -proot \
+            -e "CREATE DATABASE $DB_NAME CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+
+          cd "$WP_DIR"
+          wp config create --dbname="$DB_NAME" --dbuser=root --dbpass=root \
+            --dbhost=127.0.0.1:3306 --dbprefix='wp_' --skip-salts --allow-root
+          wp config shuffle-salts --allow-root
+          # Production-sane and log-driven, like the proven acceptance harness.
+          wp config set WP_DEBUG true --raw --allow-root
+          wp config set WP_DEBUG_LOG true --raw --allow-root
+          wp config set WP_DEBUG_DISPLAY false --raw --allow-root
+          wp config set DISALLOW_FILE_EDIT true --raw --allow-root
+          wp core install --url="$WP_URL" --title="Phase 18 Third-Party Baseline" \
+            --admin_user="$TPB_ADMIN_USER" --admin_password="$TPB_ADMIN_PASS" \
+            --admin_email=tpb@baseline.local --skip-email --allow-root
+          echo "installed wordpress $(wp core version --allow-root) into $WP_DIR on database $DB_NAME"
+
+      - name: Apache + mod_php + out-of-tree runtime probe
+        if: matrix.source == 'wordpress_org'
+        run: |
+          set -Eeuo pipefail
+          # Load exactly the lane's PHP module and no other.
+          for MOD in /etc/apache2/mods-enabled/php*.load; do
+            [ -e "$MOD" ] || continue
+            sudo a2dismod "$(basename "$MOD" .load)" >/dev/null || true
+          done
+          sudo a2enmod "php${PHP_VERSION}" >/dev/null
+          sudo a2enmod rewrite >/dev/null
+
+          # The runtime probe lives OUTSIDE the WordPress filesystem (an Apache
+          # alias into /tmp), so proving the serving PHP version never writes a
+          # single file into the tree under measurement. It exposes only the PHP
+          # version, the SAPI and the server banner — never phpinfo().
+          cat > "$PROBE_DIR/php-probe.php" <<'PHPEOF'
+          <?php
+          header('Content-Type: application/json');
+          echo json_encode([
+              'php_version'     => PHP_VERSION,
+              'php_sapi'        => PHP_SAPI,
+              'server_software' => isset($_SERVER['SERVER_SOFTWARE']) ? $_SERVER['SERVER_SOFTWARE'] : '',
+          ]);
+          PHPEOF
+
+          cat > /tmp/tpb-vhost.conf <<CONF
+          <VirtualHost *:8080>
+            DocumentRoot $WP_DIR
+            <Directory $WP_DIR>
+              AllowOverride All
+              Require all granted
+            </Directory>
+            Alias /__tpb_probe__/ $PROBE_DIR/
+            <Directory $PROBE_DIR>
+              Require all denied
+              <Files "php-probe.php">
+                Require all granted
+              </Files>
+            </Directory>
+            ErrorLog \${APACHE_LOG_DIR}/tpb-error.log
+            CustomLog \${APACHE_LOG_DIR}/tpb-access.log combined
+          </VirtualHost>
+          CONF
+          sudo cp /tmp/tpb-vhost.conf /etc/apache2/sites-available/tpb.conf
+          sudo sed -i 's/^Listen 80$/Listen 8080/' /etc/apache2/ports.conf
+          sudo a2dissite 000-default >/dev/null && sudo a2ensite tpb >/dev/null
+          for INI in /etc/php/*/apache2/php.ini; do
+            sudo sed -i 's/^display_errors = .*/display_errors = Off/' "$INI"
+          done
+
+          # Documented deviation from the Real WordPress Acceptance harness, which
+          # deliberately keeps wp-content read-only for PHP. Several subjects
+          # legitimately write their own runtime directories there (Wordfence
+          # wflogs, LiteSpeed cache, uploads). A read-only wp-content would turn
+          # ordinary product behaviour into class C environment noise, so the web
+          # user gets write access and the actual state is recorded as evidence.
+          sudo chmod a+rx /home/runner
+          sudo chmod -R a+rX "$WP_DIR"
+          sudo chown -R www-data:www-data "$WP_DIR/wp-content"
+          sudo apache2ctl configtest && sudo service apache2 start
+          sleep 2
+
+          echo "TPB_PROBE_URL=$WP_URL/__tpb_probe__/php-probe.php" >> "$GITHUB_ENV"
+          curl -sS "$WP_URL/__tpb_probe__/php-probe.php"
+          echo
+          if sudo -u www-data test -w "$WP_DIR/wp-content"; then
+            echo 'wp-content writable by the web user (recorded as an environment fact)'
+          else
+            echo 'wp-content NOT writable by the web user (recorded as an environment fact)'
+          fi
+
+      - name: 'Baseline probes BEFORE activation (CPMS must be absent)'
+        if: matrix.source == 'wordpress_org'
+        run: |
+          set -Eeuo pipefail
+          # Hard structural guard first, so the evidence probe is never the only
+          # thing standing between CPMS and this baseline.
+          test ! -e "$WP_DIR/wp-content/plugins/clinic-practice-management" \
+            || { echo '::error::CPMS plugin directory present in a baseline job — aborting (class D).'; exit 1; }
+          python3 .github/third-party-baseline/probe.py wp \
+            --store "$EVIDENCE_DIR/evidence.json" --phase pre \
+            --wp-dir "$WP_DIR" --wp-url "$WP_URL" --probe-url "$TPB_PROBE_URL" \
+            --expect-wp-version "$WP_VERSION" --expect-php "$PHP_VERSION"
+
+      - name: Install the exact pinned package(s) — fail closed, never substitute
+        if: matrix.source == 'wordpress_org'
+        run: |
+          set -Eeuo pipefail
+          python3 .github/third-party-baseline/probe.py install \
+            --store "$EVIDENCE_DIR/evidence.json" \
+            --wp-dir "$WP_DIR" --package-dir "$EVIDENCE_DIR" \
+            --subject-slug "${{ matrix.slug }}" \
+            --subject-version "${{ matrix.version }}" \
+            --deps "${{ matrix.deps }}"
+
+      # INTERPRETATION BOUNDARY, recorded here so it is not a silent judgement
+      # call: this lane serves the site over plain http://localhost:8080, which is
+      # the environment the Real WordPress Acceptance harness already uses. A
+      # subject that forces HTTP -> HTTPS on the front page therefore makes
+      # `front_page_http_200_post` fail. That is recorded as product behaviour with
+      # the full redirect chain as evidence; the harness never disables the
+      # product's own HTTPS setting to obtain green, and a reviewer who judges the
+      # missing TLS to be environmental reclassifies it to C from that recorded
+      # chain rather than from a guess.
+      - name: 'Baseline probes AFTER activation'
+        if: matrix.source == 'wordpress_org'
+        run: |
+          set -Eeuo pipefail
+          python3 .github/third-party-baseline/probe.py wp \
+            --store "$EVIDENCE_DIR/evidence.json" --phase post \
+            --wp-dir "$WP_DIR" --wp-url "$WP_URL" --probe-url "$TPB_PROBE_URL" \
+            --expect-wp-version "$WP_VERSION" --expect-php "$PHP_VERSION"
+          python3 .github/third-party-baseline/probe.py browser \
+            --store "$EVIDENCE_DIR/evidence.json" --phase post \
+            --wp-url "$WP_URL" --out-dir "$EVIDENCE_DIR"
+
+      - name: Finalize the machine-readable subject result
+        if: always() && matrix.source == 'wordpress_org'
+        run: |
+          set -Eeuo pipefail
+          python3 .github/third-party-baseline/probe.py finalize \
+            --store "$EVIDENCE_DIR/evidence.json" \
+            --out "$EVIDENCE_DIR/subject-result.json" \
+            --subject-id "${{ matrix.id }}" \
+            --deps "${{ matrix.deps }}" \
+            --expect-wp-version "$WP_VERSION" --expect-php "$PHP_VERSION"
+          python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("STATE:", d["state"]); print("counts:", d["counts"]); print("taxonomy:", d["taxonomy"])' "$EVIDENCE_DIR/subject-result.json"
+
+      - name: Per-subject evidence artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tpb-${{ matrix.id }}
+          # Explicit allowlist: evidence and screenshots only. No package ZIP, no
+          # wp-config.php, no cookie jar, no credential, no PHI (none exists).
+          path: |
+            ${{ env.EVIDENCE_DIR }}/subject-result.json
+            ${{ env.EVIDENCE_DIR }}/evidence.json
+            ${{ env.EVIDENCE_DIR }}/provenance.json
+            ${{ env.EVIDENCE_DIR }}/front.png
+            ${{ env.EVIDENCE_DIR }}/wp-admin.png
+          if-no-files-found: warn
+          retention-days: 14
+
+  summary:
+    name: Aggregate evidence summary
+    needs: subject-baseline
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download per-subject evidence
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/tpb-results
+          pattern: tpb-*
+
+      - name: Build the human-readable summary
+        run: |
+          set -Eeuo pipefail
+          python3 .github/third-party-baseline/report.py \
+            --results-dir /tmp/tpb-results \
+            --out-dir /tmp/tpb-summary \
+            --lane "$LANE" \
+            --head-sha "$GITHUB_SHA" \
+            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          cat /tmp/tpb-summary/summary.md
+
+      - name: Summary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tpb-summary
+          path: /tmp/tpb-summary/
+          retention-days: 14
