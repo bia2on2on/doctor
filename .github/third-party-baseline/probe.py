@@ -13,6 +13,20 @@ Subcommands
     browser   real-browser probes (Chromium through Playwright)
     finalize  derive the machine-readable subject result from recorded evidence
 
+WHY THE PROBES AVOID THE WORDPRESS RUNTIME
+    The environment half of the evidence (WordPress version, PHP version, MySQL
+    version, table counts, option values, active plugins, administrator role,
+    CPMS absence) is read from the filesystem and from MySQL directly, not
+    through WP-CLI.  Exact-head evidence on ebc253b proved why this matters:
+    activating elementor 4.0.9 or persian-woocommerce 9.3.5 makes WP-CLI itself
+    fatal (`Call to undefined function is_plugin_active()`), so every `wp eval`
+    probe returned empty and the harness recorded "PHP version expected 8.2,
+    observed ''" as an *environment* failure. That was a misattribution: the PHP
+    version never changed, the product broke the probe channel. Reading these
+    facts without the WordPress runtime removes the whole misattribution class,
+    and WP-CLI bootstrap health is kept as its own explicit product-behaviour
+    check so the breakage is still reported — correctly classified.
+
 Evidence model — every recorded check carries:
     status   PASS | FAIL | INFO | FEATURE UNAVAILABLE | UNEXECUTED | NOT RUN
     klass    product-behavior | environment | harness-fixture
@@ -33,7 +47,6 @@ construction and are never emitted; see ``classify()``.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import http.cookiejar
 import json
 import os
@@ -45,7 +58,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 PASS = "PASS"
 FAIL = "FAIL"
@@ -66,6 +79,22 @@ WORDPRESS_ORG_PACKAGE = "https://downloads.wordpress.org/plugin/{slug}.{version}
 USER_AGENT = "cpms-phase18-third-party-baseline/1.0 (+github-actions)"
 MAX_REDIRECTS = 10
 BROWSER_TIMEOUT_MS = 60_000
+DB_PREFIX = "wp_"
+
+
+# --------------------------------------------------------------------------- #
+# Annotations
+# --------------------------------------------------------------------------- #
+def annotate(level: str, message: Any) -> None:
+    """Emit a GitHub Actions check-run annotation.
+
+    This matters more than it looks: raw job logs *and* artifacts are both served
+    from ``*.blob.core.windows.net``, which review tooling outside the runner
+    cannot reach. Check-run annotations are the only failure channel that stays
+    readable, so every material failure is mirrored into one.
+    """
+    safe = str(message).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    print(f"::{level}::{safe[:1600]}")
 
 
 # --------------------------------------------------------------------------- #
@@ -123,14 +152,8 @@ def http_request(
     if headers:
         req_headers.update(headers)
     result: Dict[str, Any] = {
-        "status": 0,
-        "final_url": url,
-        "redirects": 0,
-        "chain": [],
-        "looped": False,
-        "loop_reason": "",
-        "body": "",
-        "transport_error": "",
+        "status": 0, "final_url": url, "redirects": 0, "chain": [],
+        "looped": False, "loop_reason": "", "body": "", "transport_error": "",
     }
     try:
         with opener.open(urllib.request.Request(url, data=data, headers=req_headers),
@@ -175,6 +198,8 @@ def download(url: str, dest: str, attempts: int = 3) -> None:
 
 
 def sha256_of(path: str) -> str:
+    import hashlib
+
     digest = hashlib.sha256()
     with open(path, "rb") as handle:
         for chunk in iter(lambda: handle.read(1 << 20), b""):
@@ -188,7 +213,8 @@ def sha256_of(path: str) -> str:
 def run(cmd: List[str], timeout: int = 300) -> Dict[str, Any]:
     """Run a command capturing output; never raises on a non-zero exit code."""
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                              check=False)
         return {"rc": proc.returncode, "stdout": proc.stdout, "stderr": proc.stderr}
     except Exception as exc:  # noqa: BLE001
         return {"rc": 127, "stdout": "", "stderr": f"{type(exc).__name__}: {exc}"}
@@ -196,6 +222,32 @@ def run(cmd: List[str], timeout: int = 300) -> Dict[str, Any]:
 
 def wp_cli(args: List[str], wp_dir: str, timeout: int = 300) -> Dict[str, Any]:
     return run(["wp", *args, f"--path={wp_dir}", "--allow-root"], timeout=timeout)
+
+
+def mysql_query(sql: str, db_name: str) -> Dict[str, Any]:
+    """Query this job's own database directly, without the WordPress runtime."""
+    return run(["mysql", "-h", "127.0.0.1", "-P", "3306", "-uroot", "-proot",
+                "-N", "-B", "--default-character-set=utf8mb4",
+                "-e", sql, db_name], timeout=120)
+
+
+def scalar(sql: str, db_name: str) -> Tuple[bool, str, str]:
+    """Return (ok, value, diagnostic) for a single-value query."""
+    result = mysql_query(sql, db_name)
+    if result["rc"] != 0:
+        return False, "", (result["stderr"] or f"mysql exited {result['rc']}").strip()[:400]
+    return True, (result["stdout"] or "").strip(), ""
+
+
+def unserialize_strings(serialized: str) -> List[str]:
+    """Extract the strings from a simple serialized PHP array of strings.
+
+    Enough for ``active_plugins``; avoids needing a PHP runtime to read one
+    option, which is exactly the independence this harness needs.
+    """
+    if not serialized.startswith("a:"):
+        return []
+    return re.findall(r's:\d+:"((?:[^"\\]|\\.)*)"', serialized)
 
 
 # --------------------------------------------------------------------------- #
@@ -224,14 +276,8 @@ class Store:
                material: bool = False, phase: str = "",
                expected: Any = None, observed: Any = None) -> None:
         self.data["checks"].append({
-            "name": name,
-            "status": status,
-            "klass": klass,
-            "material": bool(material),
-            "phase": phase,
-            "detail": detail,
-            "expected": expected,
-            "observed": observed,
+            "name": name, "status": status, "klass": klass, "material": bool(material),
+            "phase": phase, "detail": detail, "expected": expected, "observed": observed,
         })
 
     def check(self, name: str, ok: bool, klass: str, detail: Any = "",
@@ -241,6 +287,10 @@ class Store:
                     expected, observed)
         return ok
 
+    def unexecuted(self, name: str, klass: str, reason: str, phase: str) -> None:
+        """Record a check that could not run, instead of inventing a verdict."""
+        self.record(name, UNEXECUTED, klass, reason, False, phase, observed=reason[:400])
+
     def save(self) -> None:
         os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
         with open(self.path, "w", encoding="utf-8") as handle:
@@ -248,19 +298,7 @@ class Store:
             handle.write("\n")
 
 
-def annotate(level: str, message: Any) -> None:
-    """Emit a GitHub Actions check-run annotation.
-
-    This matters more than it looks: raw job logs *and* artifacts are both served
-    from ``*.blob.core.windows.net``, which review tooling outside the runner
-    cannot reach. Check-run annotations are the only failure channel that stays
-    readable, so every material failure is mirrored into one.
-    """
-    safe = str(message).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
-    print(f"::{level}::{safe[:1600]}")
-
-
-def annotate_failures(store: "Store", start: int) -> None:
+def annotate_failures(store: Store, start: int) -> None:
     """Mirror the material failures recorded since ``start`` into annotations."""
     for check in store.data["checks"][start:]:
         if check["status"] == FAIL and check["material"]:
@@ -272,7 +310,104 @@ def annotate_failures(store: "Store", start: int) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Shared probes
+# Runtime-independent readers
+# --------------------------------------------------------------------------- #
+def read_wp_core_version(wp_dir: str) -> str:
+    """Read the WordPress version from wp-includes/version.php (no PHP needed)."""
+    path = os.path.join(wp_dir, "wp-includes", "version.php")
+    if not os.path.isfile(path):
+        return ""
+    with open(path, encoding="utf-8", errors="replace") as handle:
+        match = re.search(r"\$wp_version\s*=\s*'([^']+)'", handle.read())
+    return match.group(1) if match else ""
+
+
+def read_plugin_headers(wp_dir: str) -> List[Dict[str, Any]]:
+    """Parse installed plugin headers straight off disk.
+
+    Deliberately not `wp eval get_plugins()`: a subject that makes WP-CLI fatal
+    must not be able to erase the dependency evidence about itself.
+    """
+    plugins_dir = os.path.join(wp_dir, "wp-content", "plugins")
+    headers: List[Dict[str, Any]] = []
+    if not os.path.isdir(plugins_dir):
+        return headers
+    for entry in sorted(os.listdir(plugins_dir)):
+        directory = os.path.join(plugins_dir, entry)
+        if not os.path.isdir(directory):
+            continue
+        for name in sorted(os.listdir(directory)):
+            if not name.endswith(".php"):
+                continue
+            path = os.path.join(directory, name)
+            try:
+                with open(path, encoding="utf-8", errors="replace") as handle:
+                    head = handle.read(8192)
+            except OSError:
+                continue
+            if "Plugin Name:" not in head:
+                continue
+
+            def field(label: str) -> str:
+                found = re.search(rf"^[ \t\/*#@]*{label}:\s*(.+)$", head,
+                                  re.IGNORECASE | re.MULTILINE)
+                return found.group(1).strip() if found else ""
+
+            requires = field("Requires Plugins")
+            headers.append({
+                "slug": entry,
+                "file": f"{entry}/{name}",
+                "name": field("Plugin Name"),
+                "version": field("Version"),
+                "requires_plugins": [r.strip() for r in requires.split(",") if r.strip()],
+                "requires_php": field("Requires PHP"),
+                "requires_wp": field("Requires at least"),
+            })
+            break
+    return headers
+
+
+def db_active_plugins(db_name: str) -> Tuple[bool, List[str], str]:
+    ok, value, diag = scalar(
+        f"SELECT option_value FROM {DB_PREFIX}options WHERE option_name='active_plugins'",
+        db_name)
+    if not ok:
+        return False, [], diag
+    return True, sorted(unserialize_strings(value)), ""
+
+
+def db_option(db_name: str, name: str) -> Tuple[bool, str, str]:
+    return scalar(f"SELECT option_value FROM {DB_PREFIX}options WHERE option_name='{name}'",
+                  db_name)
+
+
+def db_count(db_name: str, sql: str) -> Tuple[bool, int, str]:
+    ok, value, diag = scalar(sql, db_name)
+    if not ok:
+        return False, -1, diag
+    return True, int(value), "" if value.lstrip("-").isdigit() else "non-numeric result"
+
+
+def db_administrator_roles(db_name: str) -> Tuple[bool, str, str]:
+    return scalar(
+        "SELECT meta_value FROM " + DB_PREFIX + "usermeta WHERE meta_key='"
+        + DB_PREFIX + "capabilities' AND meta_value LIKE '%administrator%'", db_name)
+
+
+def debug_log_state(wp_dir: str) -> Dict[str, Any]:
+    path = os.path.join(wp_dir, "wp-content", "debug.log")
+    if not os.path.isfile(path):
+        return {"exists": False, "lines": 0, "fatal": 0, "warning": 0, "samples": []}
+    with open(path, encoding="utf-8", errors="replace") as handle:
+        lines = handle.read().splitlines()
+    fatal = [ln for ln in lines if re.search(r"Fatal error|Uncaught", ln)]
+    warning = [ln for ln in lines if re.search(r"\b(Warning|Notice|Deprecated)\b", ln)]
+    return {"exists": True, "lines": len(lines), "fatal": len(fatal),
+            "warning": len(warning), "samples": (fatal + warning)[:20]}
+
+
+# --------------------------------------------------------------------------- #
+# Shared HTTP probes
 # --------------------------------------------------------------------------- #
 def admin_credentials() -> tuple[str, str]:
     """Credentials come from the environment — never from argv or a log line."""
@@ -282,10 +417,8 @@ def admin_credentials() -> tuple[str, str]:
 def admin_login_session(base_url: str) -> Dict[str, Any]:
     """Prove a real administrator login and session over plain HTTP."""
     user, password = admin_credentials()
-    outcome: Dict[str, Any] = {
-        "ok": False, "login_status": 0, "admin_status": 0,
-        "admin_final_url": "", "marker_found": False, "error": "",
-    }
+    outcome: Dict[str, Any] = {"ok": False, "login_status": 0, "admin_status": 0,
+                               "admin_final_url": "", "marker_found": False, "error": ""}
     if not user or not password:
         outcome["error"] = "TPB_ADMIN_USER/TPB_ADMIN_PASS not provided"
         return outcome
@@ -329,8 +462,7 @@ def admin_ajax_probe(base_url: str) -> Dict[str, Any]:
     body = probe["body"].strip()
     negative = http_request(f"{base_url}/wp-admin/__tpb_negative_control__.php")
     return {
-        "status": probe["status"],
-        "body": body[:80],
+        "status": probe["status"], "body": body[:80],
         "reached_wp_layer": probe["status"] in (200, 400) and body == "0",
         "transport_error": probe["transport_error"],
         "negative_status": negative["status"],
@@ -341,16 +473,14 @@ def admin_ajax_probe(base_url: str) -> Dict[str, Any]:
 def web_runtime_probe(probe_url: str) -> Dict[str, Any]:
     """Read PHP/SAPI/server identity from the Apache probe alias, outside WP."""
     response = http_request(probe_url, timeout=30)
-    payload: Dict[str, Any] = {"php_version": "", "php_sapi": "",
-                               "server_software": "", "transport_error": response["transport_error"]}
+    payload: Dict[str, Any] = {"php_version": "", "php_sapi": "", "server_software": "",
+                               "transport_error": response["transport_error"]}
     if response["status"] == 200:
         try:
             parsed = json.loads(response["body"])
-            payload.update({
-                "php_version": parsed.get("php_version", ""),
-                "php_sapi": parsed.get("php_sapi", ""),
-                "server_software": parsed.get("server_software", ""),
-            })
+            payload.update({"php_version": parsed.get("php_version", ""),
+                            "php_sapi": parsed.get("php_sapi", ""),
+                            "server_software": parsed.get("server_software", "")})
         except json.JSONDecodeError:
             payload["transport_error"] = "probe response was not JSON"
     else:
@@ -358,7 +488,7 @@ def web_runtime_probe(probe_url: str) -> Dict[str, Any]:
     return payload
 
 
-def cpms_absence(wp_dir: str) -> Dict[str, Any]:
+def cpms_absence(wp_dir: str, db_name: str) -> Dict[str, Any]:
     """CPMS must be absent from the filesystem, plugin set, options and tables."""
     plugin_files: List[str] = []
     for root, _dirs, files in os.walk(wp_dir):
@@ -366,70 +496,26 @@ def cpms_absence(wp_dir: str) -> Dict[str, Any]:
             if name == "clinic-practice-management.php":
                 plugin_files.append(os.path.relpath(os.path.join(root, name), wp_dir))
 
-    listing = wp_cli(["plugin", "list", "--format=json"], wp_dir)
-    entries: List[str] = []
-    if listing["rc"] == 0:
-        try:
-            for entry in json.loads(listing["stdout"] or "[]"):
-                name = str(entry.get("name", ""))
-                if "clinic-practice-management" in name or name.startswith("cpms"):
-                    entries.append(name)
-        except json.JSONDecodeError:
-            listing["rc"] = 1
+    ok_active, active, _diag = db_active_plugins(db_name)
+    entries = [p for p in active
+               if "clinic-practice-management" in p or "cpms" in p.split("/")[0]]
 
-    # CPMS tables are "{wpdb->prefix}{cpms prefix}{name}" (CpmsDb::table), so
-    # match any table containing "cpms_" whatever the prefix is.
-    tables = wp_cli([
-        "db", "query",
-        "SELECT COUNT(*) FROM information_schema.tables "
-        "WHERE table_schema = DATABASE() AND table_name LIKE '%cpms\\_%'",
-        "--skip-column-names",
-    ], wp_dir)
-    raw_tables = (tables["stdout"] or "").strip()
-
-    options = wp_cli(["option", "list", "--search=*cpms*", "--format=json"], wp_dir)
-    raw_options = (options["stdout"] or "").strip()
+    ok_tables, tables, _diag = db_count(
+        db_name,
+        "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() "
+        "AND table_name LIKE '%cpms\\_%'")
+    ok_options, options, _diag = db_count(
+        db_name, f"SELECT COUNT(*) FROM {DB_PREFIX}options WHERE option_name LIKE '%cpms%'")
 
     return {
         "plugin_dir_present": os.path.isdir(
             os.path.join(wp_dir, "wp-content", "plugins", "clinic-practice-management")),
         "plugin_files_found": plugin_files,
         "plugin_entries_found": entries,
-        "table_count": int(raw_tables) if raw_tables.isdigit() else -1,
-        "cpms_option_count": (0 if not raw_options else len(json.loads(raw_options)))
-        if options["rc"] == 0 else -1,
-        "wp_cli_rc": listing["rc"],
+        "table_count": tables if ok_tables else -1,
+        "cpms_option_count": options if ok_options else -1,
+        "active_plugins_readable": ok_active,
     }
-
-
-def active_plugins(wp_dir: str) -> List[str]:
-    listing = wp_cli(["plugin", "list", "--status=active", "--format=json"], wp_dir)
-    try:
-        return sorted(str(e.get("name", "")) for e in json.loads(listing["stdout"] or "[]"))
-    except json.JSONDecodeError:
-        return []
-
-
-def table_count(wp_dir: str) -> int:
-    result = wp_cli([
-        "db", "query",
-        "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE()",
-        "--skip-column-names",
-    ], wp_dir)
-    value = (result["stdout"] or "").strip()
-    return int(value) if value.isdigit() else -1
-
-
-def debug_log_state(wp_dir: str) -> Dict[str, Any]:
-    path = os.path.join(wp_dir, "wp-content", "debug.log")
-    if not os.path.isfile(path):
-        return {"exists": False, "lines": 0, "fatal": 0, "warning": 0, "samples": []}
-    with open(path, encoding="utf-8", errors="replace") as handle:
-        lines = handle.read().splitlines()
-    fatal = [ln for ln in lines if re.search(r"Fatal error|Uncaught", ln)]
-    warning = [ln for ln in lines if re.search(r"\b(Warning|Notice|Deprecated)\b", ln)]
-    return {"exists": True, "lines": len(lines), "fatal": len(fatal),
-            "warning": len(warning), "samples": (fatal + warning)[:20]}
 
 
 # --------------------------------------------------------------------------- #
@@ -437,19 +523,18 @@ def debug_log_state(wp_dir: str) -> Dict[str, Any]:
 # --------------------------------------------------------------------------- #
 def cmd_subject(args: argparse.Namespace) -> int:
     store = Store(args.store)
-    store.subject(
-        id=args.id, name=args.name, slug=args.slug,
-        version_requested=args.version, source_type=args.source, kind=args.kind,
-        lane=args.lane,
-        dependencies=[d for d in (args.deps or "").split(",") if d and d != "-"],
-    )
+    store.subject(id=args.id, name=args.name, slug=args.slug,
+                  version_requested=args.version, source_type=args.source, kind=args.kind,
+                  lane=args.lane,
+                  dependencies=[d for d in (args.deps or "").split(",") if d and d != "-"])
     if args.unavailable_feature:
         # Marked for that one feature only: not a PASS, and not a whole-plugin FAIL.
         store.record(f"feature::{args.unavailable_feature}", UNAVAILABLE, UNAVAILABLE_KLASS,
                      f"{args.unavailable_reason} - FEATURE UNAVAILABLE for this feature only",
                      False)
     store.save()
-    print(f"[probe:subject] {args.id} lane={args.lane} deps={store.data['subject']['dependencies']}")
+    print(f"[probe:subject] {args.id} lane={args.lane} "
+          f"deps={store.data['subject']['dependencies']}")
     return 0
 
 
@@ -459,87 +544,93 @@ def cmd_subject(args: argparse.Namespace) -> int:
 def cmd_wp(args: argparse.Namespace) -> int:
     store = Store(args.store)
     phase = args.phase
+    db_name = args.db_name
     base_url = args.wp_url.rstrip("/")
     start = len(store.data["checks"])
     store.fact(f"phase_{phase}_executed", True)
 
-    # -- runtime / server identity ----------------------------------------- #
+    # -- runtime / server identity (no WordPress involved) ------------------ #
     runtime = web_runtime_probe(args.probe_url)
     for key, value in (("web_php_version", runtime["php_version"]),
                        ("web_php_sapi", runtime["php_sapi"]),
                        ("server_software", runtime["server_software"])):
         store.fact(f"{key}_{phase}", value)
     if runtime["transport_error"]:
-        store.check(f"web_runtime_probe_{phase}", False, ENVIRONMENT,
-                    runtime["transport_error"], True, phase, observed=runtime["transport_error"])
+        store.check(f"web_runtime_probe_{phase}", False, HARNESS, runtime["transport_error"],
+                    True, phase, observed=runtime["transport_error"])
     store.check(f"php_web_version_exact_{phase}",
                 runtime["php_version"].startswith(args.expect_php), ENVIRONMENT,
                 "the PHP serving HTTP must match the frozen Lane A pin", True, phase,
                 args.expect_php, runtime["php_version"])
-    store.record(f"server_identity_{phase}", INFO, ENVIRONMENT, {
-        "server_software": runtime["server_software"],
-        "php_sapi": runtime["php_sapi"],
-        "web_php_version": runtime["php_version"],
-    }, phase=phase)
+    store.record(f"server_identity_{phase}", INFO, ENVIRONMENT,
+                 {"server_software": runtime["server_software"],
+                  "php_sapi": runtime["php_sapi"],
+                  "web_php_version": runtime["php_version"]}, phase=phase)
 
-    core = wp_cli(["core", "version"], args.wp_dir)
-    wp_version = (core["stdout"] or "").strip()
+    wp_version = read_wp_core_version(args.wp_dir)
     store.fact(f"wp_core_version_{phase}", wp_version)
-    store.check(f"wp_bootstrap_{phase}", core["rc"] == 0 and bool(wp_version), ENVIRONMENT,
-                (core["stderr"] or "").strip()[:400], True, phase,
-                observed=wp_version or core["stderr"][:200])
     store.check(f"wp_core_version_exact_{phase}", wp_version == args.expect_wp_version,
                 ENVIRONMENT, "WordPress core must equal the frozen Lane A pin", True, phase,
                 args.expect_wp_version, wp_version)
 
-    cli_version = (wp_cli(["eval", "echo PHP_VERSION;"], args.wp_dir)["stdout"] or "").strip()
+    cli = run(["php", "-r", "echo PHP_VERSION;"])
+    cli_version = (cli["stdout"] or "").strip()
     store.fact(f"cli_php_version_{phase}", cli_version)
     store.check(f"php_cli_version_exact_{phase}", cli_version.startswith(args.expect_php),
-                ENVIRONMENT, "WP-CLI PHP must match the frozen Lane A pin", True, phase,
-                args.expect_php, cli_version)
+                ENVIRONMENT,
+                "read with `php -r`, never through WP-CLI, so a subject that breaks "
+                "WP-CLI cannot fake a PHP version failure", True, phase,
+                args.expect_php, cli_version or cli["stderr"][:200])
 
-    mysql = wp_cli(["db", "query", "SELECT VERSION()", "--skip-column-names"], args.wp_dir)
-    store.fact(f"mysql_version_{phase}", (mysql["stdout"] or "").strip())
-    store.record(f"mysql_version_{phase}", PASS if mysql["rc"] == 0 else FAIL, ENVIRONMENT,
-                 "MySQL server version serving this subject", True, phase,
-                 observed=(mysql["stdout"] or mysql["stderr"]).strip()[:200])
+    ok, mysql_version, diag = scalar("SELECT VERSION()", db_name)
+    store.fact(f"mysql_version_{phase}", mysql_version)
+    store.record(f"mysql_version_{phase}", PASS if ok else FAIL, ENVIRONMENT,
+                 diag or "MySQL server version serving this subject", True, phase,
+                 observed=mysql_version or diag)
 
-    tz = (wp_cli(["eval", "echo get_option('timezone_string').'|'.date_default_timezone_get();"],
-                 args.wp_dir)["stdout"] or "").strip()
-    locale = (wp_cli(["eval", "echo get_option('WPLANG').'|'.get_locale();"],
-                     args.wp_dir)["stdout"] or "").strip()
+    ok_tz, tz, diag_tz = db_option(db_name, "timezone_string")
+    ok_lang, lang, diag_lang = db_option(db_name, "WPLANG")
     store.fact(f"timezone_{phase}", tz)
-    store.fact(f"locale_{phase}", locale)
-    store.record(f"timezone_and_locale_{phase}", PASS, ENVIRONMENT,
-                 {"timezone": tz, "locale": locale}, phase=phase)
+    store.fact(f"locale_{phase}", lang)
+    if ok_tz and ok_lang:
+        store.record(f"timezone_and_locale_{phase}", PASS, ENVIRONMENT,
+                     {"timezone": tz, "WPLANG": lang}, phase=phase)
+    else:
+        store.check(f"timezone_and_locale_{phase}", False, ENVIRONMENT,
+                    diag_tz or diag_lang, True, phase, observed=diag_tz or diag_lang)
 
-    roles = wp_cli(["user", "get", os.environ.get("TPB_ADMIN_USER", ""), "--field=roles"],
-                   args.wp_dir)
-    role_value = (roles["stdout"] or "").strip()
-    store.check(f"administrator_login_capability_{phase}",
-                roles["rc"] == 0 and "administrator" in role_value, ENVIRONMENT,
-                "the baseline administrator must exist with the administrator role", True, phase,
-                "administrator", role_value or roles["stderr"][:200])
+    ok_roles, roles_value, diag_roles = db_administrator_roles(db_name)
+    store.check(f"administrator_login_capability_{phase}", ok_roles and bool(roles_value),
+                ENVIRONMENT,
+                diag_roles or "an administrator account must exist in this job's database",
+                True, phase, "administrator", roles_value[:120] or diag_roles)
 
-    # -- plugin set --------------------------------------------------------- #
-    plugins = active_plugins(args.wp_dir)
+    # -- plugin set, read from the option table ---------------------------- #
+    ok_active, plugins, diag_active = db_active_plugins(db_name)
     store.fact(f"active_plugins_{phase}", plugins)
-    if phase == "pre":
+    if not ok_active:
+        store.check(f"active_plugins_readable_{phase}", False, ENVIRONMENT, diag_active,
+                    True, phase, observed=diag_active)
+    elif phase == "pre":
         store.check("active_plugins_baseline_clean_pre", plugins == [], HARNESS,
                     "a clean baseline has no active plugin before the subject is installed",
                     True, phase, [], plugins)
     else:
         expected = sorted(store.data["facts"].get("expected_active_post", []))
         store.check("subject_active_after_activation",
-                    expected and all(p in plugins for p in expected), PRODUCT,
-                    "every expected plugin must still be active after activation", True, phase,
-                    expected, plugins)
+                    bool(expected) and all(any(p.startswith(e + "/") or p == e
+                                               for p in plugins) for e in expected),
+                    PRODUCT, "every expected plugin must still be active after activation",
+                    True, phase, expected, plugins)
 
     # -- database ----------------------------------------------------------- #
-    count = table_count(args.wp_dir)
-    store.fact(f"table_count_{phase}", count)
-    store.record(f"table_count_{phase}", PASS if count >= 0 else FAIL, ENVIRONMENT,
-                 "table count in this subject's own database", True, phase, observed=count)
+    ok_count, count, diag_count = db_count(
+        db_name, "SELECT COUNT(*) FROM information_schema.tables "
+                 "WHERE table_schema = DATABASE()")
+    store.fact(f"table_count_{phase}", count if ok_count else -1)
+    store.record(f"table_count_{phase}", PASS if ok_count else FAIL, ENVIRONMENT,
+                 diag_count or "table count in this subject's own database", True, phase,
+                 observed=count if ok_count else diag_count)
 
     # -- public surfaces ---------------------------------------------------- #
     front = http_request(f"{base_url}/")
@@ -559,8 +650,9 @@ def cmd_wp(args: argparse.Namespace) -> int:
     store.check(f"rest_index_reachable_{phase}",
                 rest["status"] == 200 and '"namespaces"' in rest["body"],
                 PRODUCT if phase == "post" else ENVIRONMENT,
-                {"status": rest["status"], "transport_error": rest["transport_error"]}, True,
-                phase, "HTTP 200 JSON index", rest["status"])
+                {"status": rest["status"], "transport_error": rest["transport_error"],
+                 "body_head": rest["body"][:160]}, True, phase,
+                "HTTP 200 JSON index", rest["status"])
 
     ajax = admin_ajax_probe(base_url)
     store.fact(f"admin_ajax_{phase}", ajax)
@@ -568,7 +660,8 @@ def cmd_wp(args: argparse.Namespace) -> int:
                 PRODUCT if phase == "post" else ENVIRONMENT,
                 "admin-ajax with no action must be answered by WordPress itself (body '0', "
                 "HTTP 200/400); a correct application response, not a failure", True, phase,
-                "HTTP 200/400 with body '0'", {"status": ajax["status"], "body": ajax["body"]})
+                "HTTP 200/400 with body '0'",
+                {"status": ajax["status"], "body": ajax["body"]})
     store.check(f"admin_ajax_negative_control_{phase}", ajax["negative_distinguishable"],
                 HARNESS, "a path that cannot exist must 404, proving that answer is WordPress",
                 True, phase, 404, ajax["negative_status"])
@@ -600,7 +693,7 @@ def cmd_wp(args: argparse.Namespace) -> int:
                          False, phase, observed=log["warning"])
 
     # -- CPMS absence ------------------------------------------------------- #
-    absence = cpms_absence(args.wp_dir)
+    absence = cpms_absence(args.wp_dir, db_name)
     store.fact(f"cpms_absence_{phase}", absence)
     store.check(f"cpms_plugin_directory_absent_{phase}",
                 not absence["plugin_dir_present"] and not absence["plugin_files_found"],
@@ -608,15 +701,28 @@ def cmd_wp(args: argparse.Namespace) -> int:
                 "no clinic-practice-management directory or plugin file",
                 absence["plugin_files_found"])
     store.check(f"cpms_plugin_entry_absent_{phase}",
-                not absence["plugin_entries_found"] and absence["wp_cli_rc"] == 0, HARNESS,
-                absence["plugin_entries_found"] or absence["wp_cli_rc"], True, phase,
-                "wp plugin list succeeds and contains no CPMS entry",
+                absence["active_plugins_readable"] and not absence["plugin_entries_found"],
+                HARNESS, absence["plugin_entries_found"], True, phase,
+                "the active-plugins option is readable and contains no CPMS entry",
                 absence["plugin_entries_found"])
     store.check(f"cpms_tables_absent_{phase}", absence["table_count"] == 0, HARNESS,
                 "no CPMS table may exist in this subject's database", True, phase,
                 0, absence["table_count"])
     store.check(f"cpms_options_absent_{phase}", absence["cpms_option_count"] == 0, HARNESS,
                 "no cpms_* option may exist", True, phase, 0, absence["cpms_option_count"])
+
+    # -- WP-CLI bootstrap health, as its own product-behaviour check -------- #
+    # Legitimate compatibility evidence: a subject that makes WP-CLI fatal is a
+    # real finding. It is recorded here as product behaviour instead of being
+    # allowed to masquerade as a broken environment probe.
+    bootstrap = wp_cli(["eval", "echo 1;"], args.wp_dir, timeout=120)
+    store.fact(f"wp_cli_bootstrap_{phase}",
+               {"rc": bootstrap["rc"], "stderr": bootstrap["stderr"][:800]})
+    store.check(f"wp_cli_bootstrap_{phase}",
+                bootstrap["rc"] == 0 and "1" in (bootstrap["stdout"] or ""),
+                PRODUCT if phase == "post" else ENVIRONMENT,
+                (bootstrap["stderr"] or "").strip()[:600], True, phase,
+                "WP-CLI must bootstrap", bootstrap["rc"])
 
     annotate_failures(store, start)
     store.save()
@@ -703,46 +809,27 @@ def cmd_install(args: argparse.Namespace) -> int:
                         (activation["stdout"] + activation["stderr"])[:800], True, phase,
                         0, activation["rc"])
 
-    # Dependency evidence is read from the exact installed package metadata —
-    # branding and naming are never accepted as proof of a dependency.
-    headers: List[Dict[str, Any]] = []
-    if not hard_fail:
-        listing = wp_cli([
-            "eval",
-            "require_once ABSPATH.'wp-admin/includes/plugin.php';"
-            "foreach (get_plugins() as $file => $data) {"
-            "echo json_encode(['file'=>$file,"
-            "'slug'=>dirname($file)==='.'?basename($file,'.php'):dirname($file),"
-            "'name'=>$data['Name'],'version'=>$data['Version'],"
-            "'requires_plugins'=>$data['RequiresPlugins']??[],"
-            "'requires_php'=>$data['RequiresPHP']??'',"
-            "'requires_wp'=>$data['RequiresWP']??'']).\"\\n\";}",
-        ], args.wp_dir)
-        for line in (listing["stdout"] or "").splitlines():
-            line = line.strip()
-            if line.startswith("{"):
-                try:
-                    headers.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue
-        store.check("plugin_header_metadata_read", listing["rc"] == 0 and bool(headers),
-                    HARNESS, "dependency needs must come from the exact package metadata",
-                    True, phase, observed=len(headers))
-        for header in headers:
-            store.record(f"requires_plugins::{header.get('slug')}", INFO, PRODUCT,
-                         "declared `Requires Plugins` header of the exact installed package; "
-                         "recorded as evidence instead of assuming a dependency",
-                         phase=phase, observed=header.get("requires_plugins") or [])
+    # Dependency evidence is read from the exact installed package's own header,
+    # straight off disk — branding is never accepted as proof of a dependency,
+    # and a subject that breaks WP-CLI cannot erase the evidence about itself.
+    headers = read_plugin_headers(args.wp_dir) if not hard_fail else []
+    store.check("plugin_header_metadata_read", bool(headers) or hard_fail, HARNESS,
+                "dependency needs must come from the exact package metadata", True, phase,
+                observed=len(headers))
+    for header in headers:
+        store.record(f"requires_plugins::{header['slug']}", INFO, PRODUCT,
+                     "declared `Requires Plugins` header of the exact installed package; "
+                     "recorded as evidence instead of assuming a dependency",
+                     phase=phase, observed=header["requires_plugins"])
 
     annotate_failures(store, start)
     store.fact("provenance", provenance)
-    store.fact("expected_active_post",
-               [e["slug"] for e in provenance if e["installed_version"]])
+    store.fact("expected_active_post", [e["slug"] for e in provenance if e["installed_version"]])
     store.fact("plugin_headers", headers)
 
-    with open(os.path.join(args.package_dir, "provenance.json"), "w", encoding="utf-8") as handle:
-        json.dump(provenance, handle, indent=2)
-        handle.write("\n")
+    with open(os.path.join(args.package_dir, "provenance.json"), "w", encoding="utf-8") as h:
+        json.dump(provenance, h, indent=2)
+        h.write("\n")
     store.save()
 
     print(f"[probe:install] pairs={len(pairs)} installed={installed} hard_fail={hard_fail}")
@@ -848,6 +935,7 @@ def cmd_browser(args: argparse.Namespace) -> int:
         except Exception as exc:  # noqa: BLE001 - a browser failure is evidence
             store.check("browser_probe_executed", False, HARNESS,
                         f"{type(exc).__name__}: {exc}"[:600], True, phase)
+            annotate_failures(store, start)
             browser.close()
             store.save()
             return 0
@@ -970,8 +1058,7 @@ def cmd_finalize(args: argparse.Namespace) -> int:
         "counts": counts,
         "taxonomy": taxonomy,
         "table_counts": {
-            "before_activation": pre_tables,
-            "after_activation": post_tables,
+            "before_activation": pre_tables, "after_activation": post_tables,
             "delta": (post_tables - pre_tables)
             if isinstance(pre_tables, int) and isinstance(post_tables, int) else None,
         },
@@ -998,20 +1085,14 @@ def cmd_finalize(args: argparse.Namespace) -> int:
         "reproduction": {
             "command": "gh workflow run third-party-baseline.yml",
             "note": "one subject == one job == fresh runner + fresh MySQL + fresh WordPress",
-            "pinned_environment": {
-                "wordpress": args.expect_wp_version, "php": args.expect_php,
-                "mysql_image": args.mysql_image, "server": args.server,
-            },
+            "pinned_environment": {"wordpress": args.expect_wp_version, "php": args.expect_php,
+                                   "mysql_image": args.mysql_image, "server": args.server},
             "subject": args.subject_id, "dependencies": args.deps,
         },
-        "github": {
-            "run_id": env.get("GITHUB_RUN_ID", ""),
-            "run_attempt": env.get("GITHUB_RUN_ATTEMPT", ""),
-            "job": env.get("GITHUB_JOB", ""),
-            "head_sha": env.get("GITHUB_SHA", ""),
-            "ref": env.get("GITHUB_REF", ""),
-            "run_url": run_url,
-        },
+        "github": {"run_id": env.get("GITHUB_RUN_ID", ""),
+                   "run_attempt": env.get("GITHUB_RUN_ATTEMPT", ""),
+                   "job": env.get("GITHUB_JOB", ""), "head_sha": env.get("GITHUB_SHA", ""),
+                   "ref": env.get("GITHUB_REF", ""), "run_url": run_url},
     }
 
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
@@ -1020,11 +1101,14 @@ def cmd_finalize(args: argparse.Namespace) -> int:
         handle.write("\n")
     store.save()
 
+    # The state is mirrored into an annotation because the artifact that carries
+    # it lives on blob storage, unreachable from outside the runner.
+    annotate("notice" if state in (PASS, NOT_RUN) else "warning",
+             f"SUBJECT {args.subject_id} STATE={state} counts={json.dumps(counts)} "
+             f"taxonomy={json.dumps(taxonomy)}")
     print(f"[probe:finalize] {args.subject_id} -> {state}")
     if reason:
         print(f"[probe:finalize] reason: {reason}")
-    for code in taxonomy:
-        print(f"[probe:finalize] taxonomy: {code}")
     return 0
 
 
@@ -1054,6 +1138,7 @@ def build_parser() -> argparse.ArgumentParser:
     wp_p.add_argument("--wp-dir", required=True)
     wp_p.add_argument("--wp-url", required=True)
     wp_p.add_argument("--probe-url", required=True)
+    wp_p.add_argument("--db-name", required=True)
     wp_p.add_argument("--expect-wp-version", required=True)
     wp_p.add_argument("--expect-php", required=True)
     wp_p.set_defaults(func=cmd_wp)

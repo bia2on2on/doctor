@@ -564,11 +564,13 @@ jobs:
               Require all granted
             </Directory>
             Alias /__tpb_probe__/ $PROBE_DIR/
+              # Exact-head evidence on ebc253b showed HTTP 403 here on every leg:
+              # "Require all denied" at the Directory level combined with a
+              # Files override did not grant access. This directory holds only
+              # php-probe.php, which reports the PHP version, SAPI and server
+              # banner - never phpinfo() and never any site data.
             <Directory $PROBE_DIR>
-              Require all denied
-              <Files "php-probe.php">
-                Require all granted
-              </Files>
+              Require all granted
             </Directory>
             ErrorLog \${APACHE_LOG_DIR}/tpb-error.log
             CustomLog \${APACHE_LOG_DIR}/tpb-access.log combined
@@ -629,6 +631,7 @@ jobs:
           python3 .github/third-party-baseline/probe.py wp \
             --store "$EVIDENCE_DIR/evidence.json" --phase pre \
             --wp-dir "$WP_DIR" --wp-url "$WP_URL" --probe-url "$TPB_PROBE_URL" \
+            --db-name "$DB_NAME" \
             --expect-wp-version "$WP_VERSION" --expect-php "$PHP_VERSION"
 
       - name: Install the exact pinned package(s) — fail closed, never substitute
@@ -658,6 +661,7 @@ jobs:
           python3 .github/third-party-baseline/probe.py wp \
             --store "$EVIDENCE_DIR/evidence.json" --phase post \
             --wp-dir "$WP_DIR" --wp-url "$WP_URL" --probe-url "$TPB_PROBE_URL" \
+            --db-name "$DB_NAME" \
             --expect-wp-version "$WP_VERSION" --expect-php "$PHP_VERSION"
           python3 .github/third-party-baseline/probe.py browser \
             --store "$EVIDENCE_DIR/evidence.json" --phase post \
