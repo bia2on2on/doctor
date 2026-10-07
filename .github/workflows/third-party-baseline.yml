@@ -587,9 +587,16 @@ jobs:
           # wflogs, LiteSpeed cache, uploads). A read-only wp-content would turn
           # ordinary product behaviour into class C environment noise, so the web
           # user gets write access and the actual state is recorded as evidence.
+          #
+          # Shared-host layout, and the reason it is not a plain `chown
+          # www-data`: `wp plugin install` later runs as the CLI user, so the
+          # runner must keep ownership while Apache gets group write access, with
+          # setgid so anything a plugin creates stays group-owned too.
           sudo chmod a+rx /home/runner
           sudo chmod -R a+rX "$WP_DIR"
-          sudo chown -R www-data:www-data "$WP_DIR/wp-content"
+          sudo chown -R "$(id -un)":www-data "$WP_DIR/wp-content"
+          sudo chmod -R g+w "$WP_DIR/wp-content"
+          sudo find "$WP_DIR/wp-content" -type d -exec chmod g+s {} +
           if ! sudo apache2ctl configtest 2>&1 \
                | tee /tmp/apache-configtest.log > /dev/null; then
             echo "::error::Class C environment failure: Apache configuration is invalid. configtest diagnostic: $(tail -20 /tmp/apache-configtest.log | tr '\n\r' '  ' | sed 's/%/%25/g' | cut -c1-1600)"

@@ -248,6 +248,29 @@ class Store:
             handle.write("\n")
 
 
+def annotate(level: str, message: Any) -> None:
+    """Emit a GitHub Actions check-run annotation.
+
+    This matters more than it looks: raw job logs *and* artifacts are both served
+    from ``*.blob.core.windows.net``, which review tooling outside the runner
+    cannot reach. Check-run annotations are the only failure channel that stays
+    readable, so every material failure is mirrored into one.
+    """
+    safe = str(message).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    print(f"::{level}::{safe[:1600]}")
+
+
+def annotate_failures(store: "Store", start: int) -> None:
+    """Mirror the material failures recorded since ``start`` into annotations."""
+    for check in store.data["checks"][start:]:
+        if check["status"] == FAIL and check["material"]:
+            annotate("error",
+                     f"{check['name']} FAILED (class candidate: {check['klass']}) "
+                     f"expected={json.dumps(check['expected'], ensure_ascii=False)[:300]} "
+                     f"observed={json.dumps(check['observed'], ensure_ascii=False)[:600]} "
+                     f"detail={json.dumps(check['detail'], ensure_ascii=False)[:400]}")
+
+
 # --------------------------------------------------------------------------- #
 # Shared probes
 # --------------------------------------------------------------------------- #
@@ -437,6 +460,7 @@ def cmd_wp(args: argparse.Namespace) -> int:
     store = Store(args.store)
     phase = args.phase
     base_url = args.wp_url.rstrip("/")
+    start = len(store.data["checks"])
     store.fact(f"phase_{phase}_executed", True)
 
     # -- runtime / server identity ----------------------------------------- #
@@ -594,6 +618,7 @@ def cmd_wp(args: argparse.Namespace) -> int:
     store.check(f"cpms_options_absent_{phase}", absence["cpms_option_count"] == 0, HARNESS,
                 "no cpms_* option may exist", True, phase, 0, absence["cpms_option_count"])
 
+    annotate_failures(store, start)
     store.save()
     print(f"[probe:wp] phase={phase} checks={len(store.data['checks'])}")
     return 0
@@ -610,6 +635,7 @@ def cmd_install(args: argparse.Namespace) -> int:
     """
     store = Store(args.store)
     phase = "install"
+    start = len(store.data["checks"])
     os.makedirs(args.package_dir, exist_ok=True)
 
     pairs: List[tuple[str, str, str]] = []
@@ -708,6 +734,7 @@ def cmd_install(args: argparse.Namespace) -> int:
                          "recorded as evidence instead of assuming a dependency",
                          phase=phase, observed=header.get("requires_plugins") or [])
 
+    annotate_failures(store, start)
     store.fact("provenance", provenance)
     store.fact("expected_active_post",
                [e["slug"] for e in provenance if e["installed_version"]])
@@ -738,6 +765,7 @@ def cmd_browser(args: argparse.Namespace) -> int:
 
     store = Store(args.store)
     phase = args.phase
+    start = len(store.data["checks"])
     base_url = args.wp_url.rstrip("/")
     user, password = admin_credentials()
 
@@ -866,6 +894,7 @@ def cmd_browser(args: argparse.Namespace) -> int:
                      "recorded only - not bypassed, not answered, no setting weakened",
                      phase=phase, observed=notices[:20])
 
+    annotate_failures(store, start)
     store.save()
     print(f"[probe:browser] console_errors={len(console_errors)} page_errors={len(page_errors)}")
     return 0
