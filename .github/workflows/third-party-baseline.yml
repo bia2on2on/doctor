@@ -420,23 +420,51 @@ jobs:
         run: |
           set -Eeuo pipefail
           sudo apt-get update -qq
+
           # The lane pins PHP 8.2, so the module Apache loads must be 8.2 too —
-          # the distro default mod_php is not acceptable evidence for a pinned lane.
-          # The redirect deliberately runs as the runner user: /tmp/apt.log is
-          # runner-writable and is only read back by this same step. Root output
-          # must not need a root-owned log file.
-          # shellcheck disable=SC2024
+          # the distro default mod_php is not acceptable evidence for a pinned
+          # lane. On ubuntu-latest (24.04) the distro default PHP is 8.3 and the
+          # versioned php8.2 packages, including libapache2-mod-php8.2, exist
+          # ONLY in Ondrej Sury's PPA. It is therefore added explicitly and
+          # idempotently here instead of relying on whichever apt sources
+          # shivammathur/setup-php happened to leave configured.
+          # `| tee` keeps the command's own exit status because `set -o pipefail`
+          # is active, and avoids redirecting a root command's output as the
+          # invoking user.
+          apt_diag() { tail -25 "$1" | tr '\n\r' '  ' | sed 's/%/%25/g' | cut -c1-1600; }
+
+          if ! command -v add-apt-repository > /dev/null 2>&1; then
+            if ! sudo apt-get install -y -qq software-properties-common 2>&1 \
+                 | tee /tmp/apt-ppa.log > /dev/null; then
+              echo "::error::Class C environment failure: software-properties-common is not installable. apt diagnostic: $(apt_diag /tmp/apt-ppa.log)"
+              exit 1
+            fi
+          fi
+          if ! sudo add-apt-repository -y ppa:ondrej/php 2>&1 \
+               | tee /tmp/apt-ppa.log > /dev/null; then
+            echo "::error::Class C environment failure: ppa:ondrej/php could not be added, so PHP ${PHP_VERSION} cannot be provisioned for Apache. apt diagnostic: $(apt_diag /tmp/apt-ppa.log)"
+            exit 1
+          fi
+          sudo apt-get update -qq
+
           if ! sudo apt-get install -y -qq \
                "libapache2-mod-php${PHP_VERSION}" \
                "php${PHP_VERSION}-mysql" "php${PHP_VERSION}-mbstring" \
                "php${PHP_VERSION}-xml" "php${PHP_VERSION}-curl" \
                "php${PHP_VERSION}-zip" "php${PHP_VERSION}-gd" \
                "php${PHP_VERSION}-intl" "php${PHP_VERSION}-opcache" \
-               apache2 mysql-client > /tmp/apt.log 2>&1; then
-            tail -30 /tmp/apt.log
-            echo "::error::Class C environment failure: PHP ${PHP_VERSION} Apache module is not installable on this runner. Refusing to measure a lane on the wrong PHP."
+               apache2 mysql-client 2>&1 | tee /tmp/apt.log > /dev/null; then
+            # The apt tail is emitted as an annotation on purpose: raw job-log
+            # blobs live on *.blob.core.windows.net, which is not retrievable
+            # from the review sandbox, whereas check-run annotations are. That
+            # keeps the first causal error recoverable without the blob.
+            echo "::error::Class C environment failure: PHP ${PHP_VERSION} Apache module is not installable on this runner. Refusing to measure a lane on the wrong PHP. apt diagnostic: $(apt_diag /tmp/apt.log)"
             exit 1
           fi
+          # Prove the exact module is present before Apache is ever configured.
+          test -e "/etc/apache2/mods-available/php${PHP_VERSION}.load" || {
+            echo "::error::Class C environment failure: php${PHP_VERSION}.load is absent after installation, so the lane PHP cannot be served by Apache."
+            exit 1; }
           curl -sS https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o /tmp/wp-cli.phar
           sudo mv /tmp/wp-cli.phar /usr/local/bin/wp && sudo chmod +x /usr/local/bin/wp
           wp --allow-root --version
