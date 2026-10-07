@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -24,7 +25,8 @@ WP_DIR = os.environ.get("WP_DIR", "/home/runner/rwp")
 OUT = Path("/tmp/acc")
 ACTIVE_JSON = OUT / "coexistence-confirm-active.json"
 ACTIVE_WRITER = OUT / "coexistence-confirm-set-active.php"
-POLICY_TRACE = OUT / "woocommerce-admin-policy.jsonl"
+TRACE_DIR = OUT / "coexistence-observer"
+POLICY_TRACE = TRACE_DIR / "woocommerce-admin-policy.jsonl"
 MU_DIR = Path(WP_DIR) / "wp-content" / "mu-plugins"
 MU_FILE = MU_DIR / "arena-woocommerce-policy-observer.php"
 CPMS = "clinic-practice-management"
@@ -111,7 +113,7 @@ add_action('wp_ajax_arena_rwp_coexistence_identity', static function () {
     foreach (['manage_options','edit_posts','manage_woocommerce','view_admin_dashboard','cpms_queue_read','cpms_patient_read','cpms_patient_create'] as $cap) {
         $caps[$cap] = current_user_can($cap);
     }
-    file_put_contents('/tmp/acc/woocommerce-admin-policy.jsonl', wp_json_encode([
+    file_put_contents('/tmp/acc/coexistence-observer/woocommerce-admin-policy.jsonl', wp_json_encode([
         'kind' => 'identity_probe',
         'user_login' => (string) $user->user_login,
         'roles' => array_values((array) $user->roles),
@@ -166,7 +168,7 @@ add_filter('woocommerce_prevent_admin_access', static function ($prevent_access)
         'redirect_method' => $method,
         'woocommerce_stack' => $stack,
     ];
-    file_put_contents('/tmp/acc/woocommerce-admin-policy.jsonl', wp_json_encode($record) . PHP_EOL, FILE_APPEND | LOCK_EX);
+    file_put_contents('/tmp/acc/coexistence-observer/woocommerce-admin-policy.jsonl', wp_json_encode($record) . PHP_EOL, FILE_APPEND | LOCK_EX);
     return $prevent_access; // observation only: preserve WooCommerce's value unchanged.
 }, PHP_INT_MAX, 1);
 ''',
@@ -275,6 +277,8 @@ def read_policy_trace() -> list[dict]:
 
 
 def main() -> int:
+    OUT.mkdir(parents=True, exist_ok=True)
+    original_out_mode = stat.S_IMODE(OUT.stat().st_mode)
     pin_path = OUT / "coexistence-plugin-pins.tsv"
     if not pin_path.is_file():
         raise ConfirmationError("pinned plugin manifest is missing")
@@ -310,6 +314,21 @@ def main() -> int:
     observer_installed = False
     restore_error = None
     try:
+        OUT.chmod(0o711)
+        TRACE_DIR.mkdir(mode=0o711, exist_ok=True)
+        TRACE_DIR.chmod(0o711)
+        print(
+            "CONFIRM observer trace directory modes="
+            + json.dumps(
+                {
+                    "original_out": oct(original_out_mode),
+                    "out": oct(stat.S_IMODE(OUT.stat().st_mode)),
+                    "trace": oct(stat.S_IMODE(TRACE_DIR.stat().st_mode)),
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
         install_observer()
         observer_installed = True
         target = [path for path in original if slug(path) in {CPMS, WOOCOMMERCE}]
@@ -368,6 +387,11 @@ def main() -> int:
             MU_FILE.unlink(missing_ok=True)
         ACTIVE_JSON.unlink(missing_ok=True)
         ACTIVE_WRITER.unlink(missing_ok=True)
+        try:
+            OUT.chmod(original_out_mode)
+        except Exception as exc:
+            restore_error = restore_error or exc
+            print(f"CONFIRM OUTPUT DIRECTORY RESTORE ERROR: {type(exc).__name__}", flush=True)
     return 1 if restore_error else 0
 
 
