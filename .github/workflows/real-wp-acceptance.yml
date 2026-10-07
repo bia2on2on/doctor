@@ -24,10 +24,8 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
-  # contents: write for the existing commit evidence; issues: write for the
-  # bounded confirmation summary on the pull request (not its ephemeral merge SHA).
+  # contents: write for the existing and bounded exact-PR-head commit evidence.
   contents: write
-  issues: write
   actions: read
 
 env:
@@ -565,7 +563,7 @@ jobs:
             exit "$RC"
           fi
 
-      - name: Publish bounded policy confirmation to PR issue
+      - name: Publish bounded policy confirmation to exact PR head
         if: always() && github.event_name == 'pull_request' && matrix.prefix == 'wp_' && steps.browser_acceptance.outcome == 'failure'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -678,8 +676,8 @@ jobs:
           raise SystemExit(0 if complete else 1)
           PY
           cat /tmp/acc/coexistence-confirmation-summary.md
-          if ! gh api "repos/$GH_REPOSITORY/issues/$PR_NUMBER/comments" --method POST -F body=@/tmp/acc/coexistence-confirmation-summary.md --jq '.id'; then
-            echo '::error::Could not publish the bounded confirmation to the PR issue; evidence remains unavailable and acceptance is not PASS.'
+          if ! gh api "repos/$GH_REPOSITORY/commits/$PR_HEAD_SHA/comments" --method POST -F body=@/tmp/acc/coexistence-confirmation-summary.md --jq '.id'; then
+            echo '::error::Could not publish the bounded confirmation to the exact PR head; evidence remains unavailable and acceptance is not PASS.'
             exit 1
           fi
           if [ "$PUBLISH_STATE" -ne 0 ]; then
