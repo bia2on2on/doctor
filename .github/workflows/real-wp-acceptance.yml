@@ -771,16 +771,12 @@ jobs:
           import re
 
           root = Path('/tmp/acc')
-          phase_dir = root / 'log-gate-phases'
+          phase_dir = Path('/tmp/log-gate-phases')
           debug_gate = re.compile(r'PHP Fatal error|Uncaught|There has been a critical error')
           apache_gate = re.compile(r'PHP Fatal error|Uncaught')
 
-          def source_category(line):
-              match = re.search(r'\bin\s+((?:/|[A-Za-z]:[\\/])[^\s]+)', line)
-              if not match:
-                  return 'PHP/WP runtime (source path absent)'
-              path = match.group(1).replace('\\', '/').rstrip(':,.)')
-              lower = path.lower()
+          def source_category_from_path(path):
+              lower = path.replace('\\', '/').lower()
               if '/wp-content/plugins/clinic-practice-management/' in lower:
                   return 'CPMS PHP source'
               if '/wp-content/plugins/woocommerce/' in lower:
@@ -801,7 +797,26 @@ jobs:
                   return 'PHP/Apache runtime'
               return 'other PHP source (path redacted)'
 
-          def safe_record(line):
+          def source_category(line):
+              match = re.search(r'\bin\s+((?:/|[A-Za-z]:[\\/])[^\s]+)', line)
+              if not match:
+                  return 'PHP/WP runtime (source path absent)'
+              return source_category_from_path(match.group(1).rstrip(':,.)'))
+
+          frame_re = re.compile(r'#\d+\s+((?:/|[A-Za-z]:[\\/])\S+?)\(\d+\):\s*([A-Za-z_][A-Za-z0-9_\\]*(?:(?:::|->)[A-Za-z_][A-Za-z0-9_]*)?|\{closure\})\s*\(')
+
+          def safe_frames(line, following):
+              frames = []
+              for candidate in [line, *following]:
+                  for match in frame_re.finditer(candidate):
+                      item = source_category_from_path(match.group(1)) + '::' + match.group(2)
+                      if item not in frames:
+                          frames.append(item)
+                      if len(frames) == 4:
+                          return ' > '.join(frames)
+              return ' > '.join(frames) if frames else 'no safe stack frames captured'
+
+          def safe_record(line, following):
               if 'PHP Fatal error' in line:
                   severity = 'PHP_FATAL'
               elif 'Uncaught' in line:
@@ -810,30 +825,37 @@ jobs:
                   severity = 'WP_CRITICAL_MARKER'
               source = source_category(line)
               signature = 'message redacted'
-              patterns = [
-                  (r'Call to undefined function\s+([A-Za-z_][A-Za-z0-9_\\]*)\s*\(', 'undefined function {}()'),
-                  (r'Call to undefined method\s+([A-Za-z_][A-Za-z0-9_\\]*)::([A-Za-z_][A-Za-z0-9_]*)', 'undefined method {}::{}()'),
-                  (r'Cannot redeclare (?:function )?([A-Za-z_][A-Za-z0-9_\\]*)', 'redeclared function {}'),
-                  (r'Too few arguments to function ([A-Za-z_][A-Za-z0-9_\\:]*)', 'too few arguments to {}'),
-                  (r'Class [\"\']([A-Za-z_][A-Za-z0-9_\\]*)[\"\'] not found', 'missing class {}'),
-                  (r'Call to a member function ([A-Za-z_][A-Za-z0-9_]*)\(\) on null', 'member call on null: {}()'),
-              ]
-              for pattern, template in patterns:
-                  match = re.search(pattern, line)
-                  if match:
-                      signature = template.format(*match.groups())
-                      break
+              type_arg = re.search(r'Argument #(\d+)(?:\s+\(\$[A-Za-z_][A-Za-z0-9_]*\))?\s+must be of type ([A-Za-z_][A-Za-z0-9_\\|?&\[\]]*), ([A-Za-z_][A-Za-z0-9_\\]*) given', line)
+              callable_match = re.search(r'([A-Za-z_][A-Za-z0-9_\\]*(?:::[A-Za-z_][A-Za-z0-9_]*)?)\(\): Argument #', line)
+              if type_arg:
+                  owner = callable_match.group(1) if callable_match else 'callable'
+                  signature = f'TypeError: {owner} argument #{type_arg.group(1)} expects {type_arg.group(2)}, got {type_arg.group(3)}'
               else:
-                  if 'There has been a critical error' in line or 'critical error' in line:
-                      signature = 'WordPress critical-error marker'
+                  patterns = [
+                      (r'Call to undefined function\s+([A-Za-z_][A-Za-z0-9_\\]*)\s*\(', 'undefined function {}()'),
+                      (r'Call to undefined method\s+([A-Za-z_][A-Za-z0-9_\\]*)::([A-Za-z_][A-Za-z0-9_]*)', 'undefined method {}::{}()'),
+                      (r'Cannot redeclare (?:function )?([A-Za-z_][A-Za-z0-9_\\]*)', 'redeclared function {}'),
+                      (r'Too few arguments to function ([A-Za-z_][A-Za-z0-9_\\:]*)', 'too few arguments to {}'),
+                      (r'Class ["\']([A-Za-z_][A-Za-z0-9_\\]*)["\'] not found', 'missing class {}'),
+                      (r'Call to a member function ([A-Za-z_][A-Za-z0-9_]*)\(\) on null', 'member call on null: {}()'),
+                      (r'Cannot access offset of type ([A-Za-z_]+) on ([A-Za-z_]+)', 'invalid offset types: {} on {}'),
+                      (r'Unsupported operand types: ([A-Za-z_]+) \+ ([A-Za-z_]+)', 'unsupported operand types: {} + {}'),
+                  ]
+                  for pattern, template in patterns:
+                      match = re.search(pattern, line)
+                      if match:
+                          signature = template.format(*match.groups())
+                          break
                   else:
-                      uncaught = re.search(r'Uncaught\s+([A-Za-z_][A-Za-z0-9_\\]*)', line)
-                      if uncaught:
-                          signature = 'uncaught ' + uncaught.group(1) + ' (message redacted)'
-                      elif severity == 'PHP_FATAL':
-                          signature = 'PHP fatal (message redacted)'
-              return severity, source, signature
-
+                      if 'There has been a critical error' in line or 'critical error' in line:
+                          signature = 'WordPress critical-error marker'
+                      else:
+                          uncaught = re.search(r'Uncaught\s+([A-Za-z_][A-Za-z0-9_\\]*)', line)
+                          if uncaught:
+                              signature = 'uncaught ' + uncaught.group(1) + ' (message redacted)'
+                          elif severity == 'PHP_FATAL':
+                              signature = 'PHP fatal (message redacted)'
+              return severity, source, signature, safe_frames(line, following)
           snapshots = {
               'debug.log': [
                   ('pre-CPMS baseline', root / 'coexistence-debug-before-cpms.log'),
@@ -853,7 +875,7 @@ jobs:
           }
           counts = {}
           available = {}
-          print('log_gate_diagnostic_version=1; raw messages, absolute paths and request data suppressed')
+          print('log_gate_diagnostic_version=2; raw messages, absolute paths and request data suppressed')
           for log_name, phases in snapshots.items():
               for phase, path in phases:
                   phase_counts = Counter()
@@ -861,10 +883,19 @@ jobs:
                   available[(log_name, phase)] = present
                   if present:
                       try:
-                          for line in path.read_text(encoding='utf-8', errors='replace').splitlines():
+                          lines = path.read_text(encoding='utf-8', errors='replace').splitlines()
+                          for line_index, line in enumerate(lines):
                               gate = debug_gate if log_name == 'debug.log' else apache_gate
                               if gate.search(line):
-                                  phase_counts[safe_record(line)] += 1
+                                  following = []
+                                  for candidate in lines[line_index + 1:line_index + 12]:
+                                      if gate.search(candidate):
+                                          break
+                                      if frame_re.search(candidate):
+                                          following.append(candidate)
+                                      elif following and not candidate.strip():
+                                          break
+                                  phase_counts[safe_record(line, following)] += 1
                       except OSError:
                           available[(log_name, phase)] = False
                   counts[(log_name, phase)] = phase_counts
@@ -875,7 +906,7 @@ jobs:
               if not available.get((log_name, 'final')):
                   continue
               for index, (key, total) in enumerate(sorted(final.items()), 1):
-                  severity, source, signature = key
+                  severity, source, signature, stack = key
                   phase_values = [(phase, counts[(log_name, phase)].get(key, 0)) for phase, _ in phases if available[(log_name, phase)]]
                   first_seen = next((phase for phase, value in phase_values if value > 0), 'not seen in available snapshots')
                   deltas = []
@@ -900,7 +931,7 @@ jobs:
                       delta = counts[(log_name, 'final')].get(key, 0) - counts[(log_name, 'after HTTP smoke')].get(key, 0)
                       if delta > 0:
                           deltas.append(f'post-HTTP work before final capture=+{delta}')
-                  print(f'match[{index}] log={log_name}; severity={severity}; source={source}; signature={signature}; count={total}; pre_cpms_count={pre_cpms}; first_seen={first_seen}; new_in={", ".join(deltas) if deltas else "no phase delta proved"}')
+                  print(f'match[{index}] log={log_name}; severity={severity}; source={source}; signature={signature}; stack={stack}; count={total}; pre_cpms_count={pre_cpms}; first_seen={first_seen}; new_in={", ".join(deltas) if deltas else "no phase delta proved"}')
           PY
           then
             printf '%s\n' 'diagnostic_status=failed; raw log contents suppressed; unchanged gate remains authoritative' > /tmp/acc/log-gate-summary.txt
