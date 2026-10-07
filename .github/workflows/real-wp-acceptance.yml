@@ -24,8 +24,7 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
-  # contents: write فقط برای انتشار Evidence به‌صورت Commit Comment
-  # (لاگ خام Job در برخی محیط‌ها خوانده نمی‌شود — الگوی مستند ریپو).
+  # contents: write for the existing acceptance evidence comments.
   contents: write
   actions: read
 
@@ -122,6 +121,111 @@ jobs:
           wp config set DISALLOW_FILE_EDIT true --raw --allow-root
           wp core install --url="$WP_URL" --title="CPMS Acceptance" --admin_user="$ADMIN_USER" --admin_password="$ADMIN_PASS" --admin_email=admin@acc.local --skip-email --allow-root
 
+      # Phase 18 Slice 18-4 — bounded coexistence, on one clean-WP prefix only.
+      # The other prefix remains the existing no-third-party control. All packages
+      # come from the WordPress.org directory through WP-CLI with exact versions;
+      # the runner is the supported WP 6.7.2 / PHP 8.2 host used by this workflow.
+      # Set rationale: The SEO Framework (SEO/query filters); Contact Form 7
+      # (form shortcode/admin + frontend hooks); Autoptimize (asset/output caching);
+      # Wordfence (security/auth hooks); WooCommerce (product/order/customer/checkout
+      # flows, its own wp-admin menu and admin-access policy). WooCommerce is REQUIRED
+      # by the frozen Product Decision (a clinic may sell lawful products alongside
+      # clinical operations), so it is the commerce member of this set.
+      # PRESERVED CAUSAL EVIDENCE (the reason this run doubles as the coexistence gate): on head
+      # a1788f66c14f1d624668cbee10d683b030c887c5, run 37611352785 reproduced the conflict
+      # with CPMS + WooCommerce 10.3.8 alone — doctor/secretary wp-admin requests were
+      # redirected to the WooCommerce My Account page while woocommerce_prevent_admin_access
+      # evaluated to true inside WC_Admin::prevent_admin_access. That was a third-party
+      # lock-down policy, not a CPMS security defect. The fix is a CPMS-owned scoped
+      # exception (ClinicCore\Admin\Compatibility\WooCommerceAdminAccess) on that public
+      # filter: allowlisted CPMS page + authentication + that page's own existing
+      # capability, everything else untouched. The earlier Easy Digital Downloads
+      # substitution was a temporary workaround and is removed.
+      # Claim boundary: this run proves this exact five-plugin set on this WP/PHP host
+      # only — no category-wide WooCommerce compatibility claim.
+      - name: Download pinned representative plugins from WordPress.org (pre-CPMS)
+        if: matrix.prefix == 'wp_'
+        run: |
+          set -Eeuo pipefail
+          cat > /tmp/acc/coexistence-plugin-pins.tsv <<'EOF'
+          autodescription 5.1.4
+          contact-form-7 6.1.7
+          autoptimize 3.1.16
+          wordfence 9.0.2
+          woocommerce 10.3.8
+          EOF
+          while read -r slug version; do
+            [ -n "$slug" ] || continue
+            package_url="https://downloads.wordpress.org/plugin/${slug}.${version}.zip"
+            install_log="/tmp/acc/coexistence-install-${slug}.log"
+            if ! wp plugin install "$package_url" --path="$WP_DIR" --allow-root > "$install_log" 2>&1; then
+              cat "$install_log"
+              diagnostic="$(tail -20 "$install_log" | tr '\n\r' '  ' | sed 's/%/%25/g' | cut -c1-1600)"
+              echo "::error::Pinned WordPress.org package retrieval/installation failed for ${slug}@${version} before CPMS was installed; inspect the diagnostic and artifact to classify C (transport/provider) versus D (pin/fixture). This is not CPMS compatibility evidence. WP-CLI: ${diagnostic}"
+              exit 1
+            fi
+            cat "$install_log"
+            installed_version="$(wp plugin get "$slug" --field=version --path="$WP_DIR" --allow-root)"
+            if [ "$installed_version" != "$version" ]; then
+              echo "::error::D-class coexistence fixture verification failure: ${slug} expected ${version}, installed ${installed_version:-unknown}."
+              exit 1
+            fi
+            echo "retrieved ${slug}@${installed_version} from the pinned WordPress.org plugin distribution"
+          done < /tmp/acc/coexistence-plugin-pins.tsv
+          wp plugin list --format=json --path="$WP_DIR" --allow-root > /tmp/acc/coexistence-installed-plugins.json
+
+          # Inspect the exact source inside the just-verified WooCommerce 10.3.8 package.
+          # This avoids treating an adjacent Git tag as evidence for the frozen plugin pin.
+          WC_ADMIN_SOURCE="$WP_DIR/wp-content/plugins/woocommerce/includes/admin/class-wc-admin.php"
+          test -f "$WC_ADMIN_SOURCE" || { echo '::error::D-class source inspection failed: expected WC_Admin source file is missing from the exact WooCommerce package.'; exit 1; }
+          WC_ADMIN_METHOD_LINE="$(grep -n -m1 -E 'function[[:space:]]+prevent_admin_access[[:space:]]*\(' "$WC_ADMIN_SOURCE" | cut -d: -f1)"
+          test -n "$WC_ADMIN_METHOD_LINE" || { echo '::error::D-class source inspection failed: WC_Admin::prevent_admin_access was not found in the exact WooCommerce package.'; exit 1; }
+          {
+            printf 'verified_plugin_version=%s\n' "$(wp plugin get woocommerce --field=version --path="$WP_DIR" --allow-root)"
+            printf 'source_path=%s\n' 'wp-content/plugins/woocommerce/includes/admin/class-wc-admin.php'
+            printf 'prevent_admin_access_line=%s\n' "$WC_ADMIN_METHOD_LINE"
+            echo '--- exact 10.3.8 filter/hook references ---'
+            grep -n -C 3 -E 'prevent_admin_access|woocommerce_prevent_admin_access' "$WC_ADMIN_SOURCE" | head -100
+            echo '--- exact 10.3.8 method excerpt (bounded to 60 source lines) ---'
+            sed -n "${WC_ADMIN_METHOD_LINE},$((WC_ADMIN_METHOD_LINE + 59))p" "$WC_ADMIN_SOURCE"
+          } > /tmp/acc/woocommerce-10.3.8-admin-access-source.txt
+          grep -q 'woocommerce_prevent_admin_access' /tmp/acc/woocommerce-10.3.8-admin-access-source.txt || { echo '::error::D-class source inspection failed: the exact method excerpt did not contain the public policy filter.'; exit 1; }
+          cat /tmp/acc/woocommerce-10.3.8-admin-access-source.txt
+
+      - name: Activate representative plugins and prove the clean baseline (before CPMS)
+        if: matrix.prefix == 'wp_'
+        run: |
+          set -Eeuo pipefail
+          while read -r slug version; do
+            [ -n "$slug" ] || continue
+            if ! wp plugin activate "$slug" --path="$WP_DIR" --allow-root; then
+              echo "::error::Independent pre-CPMS plugin activation failure for ${slug}@${version}; CPMS is absent, so do not attribute this to CPMS or silently replace the plugin."
+              exit 1
+            fi
+          done < /tmp/acc/coexistence-plugin-pins.tsv
+          if ! wp eval 'echo "third-party-only WordPress bootstrap: OK";' --path="$WP_DIR" --allow-root; then
+            echo '::error::Independent pre-CPMS WordPress/plugin bootstrap failure; CPMS is absent, so this is not CPMS coexistence evidence.'
+            exit 1
+          fi
+          while read -r slug version; do
+            [ -n "$slug" ] || continue
+            wp plugin is-active "$slug" --path="$WP_DIR" --allow-root
+            installed_version="$(wp plugin get "$slug" --field=version --path="$WP_DIR" --allow-root)"
+            [ "$installed_version" = "$version" ] || { echo "::error::D-class baseline version mismatch for ${slug}: ${installed_version:-unknown} != ${version}"; exit 1; }
+          done < /tmp/acc/coexistence-plugin-pins.tsv
+          wp plugin list --status=active --format=json --path="$WP_DIR" --allow-root > /tmp/acc/coexistence-active-before-cpms.json
+          if [ -f "$WP_DIR/wp-content/debug.log" ]; then
+            cp "$WP_DIR/wp-content/debug.log" /tmp/acc/coexistence-debug-before-cpms.log
+            if grep -qE 'PHP Fatal error|PHP Parse error|PHP Error:|Uncaught|There has been a critical error' /tmp/acc/coexistence-debug-before-cpms.log; then
+              echo '::error::Independent pre-CPMS PHP fatal/error in the third-party-only baseline; this run cannot attribute it to CPMS.'
+              grep -nE 'PHP Fatal error|PHP Parse error|PHP Error:|Uncaught|There has been a critical error' /tmp/acc/coexistence-debug-before-cpms.log | tail -10
+              exit 1
+            fi
+          else
+            : > /tmp/acc/coexistence-debug-before-cpms.log
+          fi
+          echo 'clean WordPress loads successfully with all five pinned third-party plugins active and CPMS not yet installed'
+
       # ---------- 3) نصب از ZIP + فعال‌سازی (Migration خودکار) ----------
       - name: Install ZIP → activate (migration runs in activation hook)
         run: |
@@ -151,6 +255,14 @@ jobs:
       - name: Migration failure must NOT be recorded as success (D3)
         run: |
           PREFIX='${{ matrix.prefix }}'
+          if [ "$PREFIX" = 'wp_' ]; then
+            mkdir -p /tmp/log-gate-phases 2>/dev/null || :
+            if [ -f "$WP_DIR/wp-content/debug.log" ]; then
+              cp "$WP_DIR/wp-content/debug.log" /tmp/log-gate-phases/debug-before-d3.log 2>/dev/null || :
+            else
+              : > /tmp/log-gate-phases/debug-before-d3.log 2>/dev/null || :
+            fi
+          fi
           MDIR="$WP_DIR/wp-content/plugins/clinic-practice-management/src/Migrations"
           # فایل‌های افزونه متعلق به root‌اند (wp-cli allow-root نصب کرده) → sudo
           sudo tee "$MDIR/2999_01_01_9999_acceptance_broken.php" >/dev/null <<'PHPEOF'
@@ -189,8 +301,16 @@ jobs:
           }
           echo "not-recorded OK (schema_migrations بدون 2999_01_01_9999)\n";
           PHPEOF
+          # Bounded WooCommerce exception / D3 disclosure: WooCommerce 10.3.8's WP-CLI
+          # after_wp_load hook fires rest_api_init before eval-file enters the synthetic
+          # migration-failure probe's catch boundary, which would mask the probe's own
+          # fail-loud result. --skip-plugins=woocommerce is therefore scoped ONLY to this
+          # synthetic D3 WP-CLI invocation: it does not change plugin activation state and
+          # does not disable WooCommerce for any real HTTP request. WooCommerce is an active,
+          # verified member of the final five-plugin coexistence set; the browser smoke and
+          # the public health check below run with it (and the other four) fully active.
           # بدون pipe-masking: وضعیت خروجی واقعی probe تعیین‌کننده است
-          wp eval-file /tmp/acc/probe-broken.php --path="$WP_DIR" --allow-root > /tmp/acc/migration-failure-probe.txt 2>&1
+          wp eval-file /tmp/acc/probe-broken.php --skip-plugins=woocommerce --path="$WP_DIR" --allow-root > /tmp/acc/migration-failure-probe.txt 2>&1
           RC=$?
           cat /tmp/acc/migration-failure-probe.txt
           if [ "$RC" -ne 0 ]; then echo 'D3 PROBE FAILED'; exit "$RC"; fi
@@ -198,6 +318,13 @@ jobs:
           sudo rm -f "$MDIR/2999_01_01_9999_acceptance_broken.php"
           wp eval '\ClinicCore\Bootstrap\App::migrations()->migrate();' --path="$WP_DIR" --allow-root
           echo 're-migrate after probe removal: OK (no-op idempotent)'
+          if [ "$PREFIX" = 'wp_' ]; then
+            if [ -f "$WP_DIR/wp-content/debug.log" ]; then
+              cp "$WP_DIR/wp-content/debug.log" /tmp/log-gate-phases/debug-after-d3.log 2>/dev/null || :
+            else
+              : > /tmp/log-gate-phases/debug-after-d3.log 2>/dev/null || :
+            fi
+          fi
 
       # ---------- کاربران نقش‌محور + دادهٔ پایه ----------
       - name: Role users + storage خارج webroot
@@ -433,8 +560,33 @@ jobs:
           cat /tmp/acc/public-page.env >> "$GITHUB_ENV"
           cat /tmp/acc/public-page.env
 
+      - name: Phase 18 Slice 18-4 — record active coexistence set before existing smoke
+        if: matrix.prefix == 'wp_'
+        run: |
+          set -Eeuo pipefail
+          while read -r slug version; do
+            [ -n "$slug" ] || continue
+            wp plugin is-active "$slug" --path="$WP_DIR" --allow-root
+            installed_version="$(wp plugin get "$slug" --field=version --path="$WP_DIR" --allow-root)"
+            [ "$installed_version" = "$version" ] || { echo "::error::D-class pre-smoke plugin drift: ${slug}@${installed_version:-unknown}, expected ${version}."; exit 1; }
+            echo "active before smoke: ${slug}@${installed_version}"
+          done < /tmp/acc/coexistence-plugin-pins.tsv
+          wp plugin is-active clinic-practice-management --path="$WP_DIR" --allow-root
+          cpms_version="$(wp plugin get clinic-practice-management --field=version --path="$WP_DIR" --allow-root)"
+          test -n "$cpms_version"
+          echo "active before smoke: clinic-practice-management@${cpms_version} (current official release ZIP)"
+          wp plugin list --status=active --format=json --path="$WP_DIR" --allow-root > /tmp/acc/coexistence-active-before-smoke.json
+          mkdir -p /tmp/log-gate-phases 2>/dev/null || :
+          if [ -f "$WP_DIR/wp-content/debug.log" ]; then
+            cp "$WP_DIR/wp-content/debug.log" /tmp/log-gate-phases/debug-before-http.log 2>/dev/null || :
+          else
+            : > /tmp/log-gate-phases/debug-before-http.log 2>/dev/null || :
+          fi
+          sudo cp /var/log/apache2/acc-error.log /tmp/log-gate-phases/apache-before-http.log 2>/dev/null || :
+
       # ---------- 6) پذیرش مرورگری ----------
       - name: Browser acceptance — all 5 roles (Admin/Manager/Doctor/Secretary/Accountant) menus + denial
+        id: browser_acceptance
         run: |
           # بدون pipe-masking: وضعیت خروجی واقعی اسکریپت تعیین‌کننده است
           BASE="$WP_URL" \
@@ -451,13 +603,118 @@ jobs:
           cat /tmp/acc/acceptance.log
           if [ "$RC" -ne 0 ]; then echo "ACCEPTANCE FAILED (rc=$RC)"; exit "$RC"; fi
 
+      - name: Phase 18 Slice 18-4 — coexistence evidence after existing Real WP smoke
+        if: matrix.prefix == 'wp_'
+        run: |
+          set -Eeuo pipefail
+          # These named assertions prove the existing smoke exercised the intended
+          # authenticated system, tenant-aware operation, and public booking path.
+          for expected in \
+            'PASS admin.cpms-system.health_rendered' \
+            'PASS secretary.patients.create_success' \
+            'PASS secretary.patients.search_results' \
+            'PASS public-booking.http200' \
+            'PASS public-booking.a1_http200' \
+            'PASS public-booking.a1_reached_product_route' \
+            'PASS public-booking.a4_http200' \
+            'PASS doctor.coexistence.doctor_page.served_on_cpms_admin_screen' \
+            'PASS doctor.coexistence.doctor_patients_page.served_on_cpms_admin_screen' \
+            'PASS secretary.coexistence.queue_page.served_on_cpms_admin_screen' \
+            'PASS secretary.coexistence.patients_page.served_on_cpms_admin_screen' \
+            'PASS manager.coexistence.system_page.served_on_cpms_admin_screen' \
+            'PASS accountant.coexistence.finance_page.served_on_cpms_admin_screen' \
+            'PASS doctor.doctor-denied-woo-admin.not_granted' \
+            'PASS secretary.secretary-denied-woo-admin.not_granted' \
+            'PASS manager.manager-denied-woo-admin.not_granted' \
+            'PASS accountant.accountant-denied-woo-admin.not_granted' \
+            'PASS doctor.doctor-denied-core-posts.not_granted' \
+            'PASS secretary.secretary-denied-core-settings.not_granted' \
+            'PASS doctor.doctor-denied-spoofed-page.not_granted'; do
+            grep -Fq "$expected" /tmp/acc/acceptance.log || { echo "::error::Existing Real WP smoke did not prove: $expected"; exit 1; }
+          done
+
+          while read -r slug version; do
+            [ -n "$slug" ] || continue
+            wp plugin is-active "$slug" --path="$WP_DIR" --allow-root
+            installed_version="$(wp plugin get "$slug" --field=version --path="$WP_DIR" --allow-root)"
+            [ "$installed_version" = "$version" ] || { echo "::error::D-class post-smoke plugin drift: ${slug}@${installed_version:-unknown}, expected ${version}."; exit 1; }
+            echo "still active after smoke: ${slug}@${installed_version}"
+          done < /tmp/acc/coexistence-plugin-pins.tsv
+          wp plugin is-active clinic-practice-management --path="$WP_DIR" --allow-root
+          cpms_version="$(wp plugin get clinic-practice-management --field=version --path="$WP_DIR" --allow-root)"
+          test -n "$cpms_version"
+          echo "still active after smoke: clinic-practice-management@${cpms_version}"
+          wp plugin list --status=active --format=json --path="$WP_DIR" --allow-root > /tmp/acc/coexistence-active-after-smoke.json
+
+          # Gate is deliberately unchanged (HTTP 200 AND data.ok=true). The extra records below
+          # exist only so a failure is adjudicable from published evidence — exact status,
+          # redirect target, content type, sanitized response head and a fatal-error count —
+          # because a bare "failed" annotation cannot separate C (transport/provider) from D
+          # (fixture) from a real product regression. No secret/PHI is published.
+          # This acceptance site deliberately uses plain permalinks, so route REST through
+          # WordPress's rest_route query rather than Apache's unavailable /wp-json rewrite.
+          HEALTH_META="$(curl -sS -o /tmp/acc/coexistence-health.json -w '%{http_code}|%{content_type}|%{redirect_url}' "$WP_URL/?rest_route=/clinic/v1/health")" || HEALTH_META='000|transport-error|'
+          HEALTH_HTTP="${HEALTH_META%%|*}"
+          echo "anonymous CPMS health (plain permalink): HTTP ${HEALTH_HTTP}"
+          if [ "$HEALTH_HTTP" != '200' ]; then
+            FATAL_COUNT="$(grep -cE 'PHP Fatal error|Uncaught|There has been a critical error' "$WP_DIR/wp-content/debug.log" 2>/dev/null || true)"
+            {
+              printf 'http_status=%s\n' "$HEALTH_HTTP"
+              printf 'http_status_content_type_redirect=%s\n' "$HEALTH_META"
+              printf 'response_head=%s\n' "$(head -c 400 /tmp/acc/coexistence-health.json 2>/dev/null | tr '\n\r' '  ' | sed -E 's/[A-Za-z0-9+\/=_-]{24,}/[opaque]/g' | cut -c1-240)"
+              printf 'debug_log_fatal_count=%s\n' "${FATAL_COUNT:-no-debug-log}"
+            } > /tmp/acc/coexistence-health-failure.txt
+            cat /tmp/acc/coexistence-health-failure.txt
+            echo '::error::Public CPMS health endpoint failed with representative plugins active (bounded diagnostics: coexistence-health-failure.txt in the artifact and the evidence comment).'
+            exit 1
+          fi
+          python3 - /tmp/acc/coexistence-health.json <<'PY'
+          import json
+          import sys
+          with open(sys.argv[1], encoding='utf-8') as source:
+              payload = json.load(source)
+          if payload.get('data', {}).get('ok') is not True:
+              raise SystemExit('public CPMS health payload did not report data.ok=true')
+          print('anonymous CPMS health payload: data.ok=true')
+          PY
+          if [ -f "$WP_DIR/wp-content/debug.log" ] && grep -qE 'PHP Fatal error|PHP Parse error|PHP Error:|Uncaught|There has been a critical error' "$WP_DIR/wp-content/debug.log"; then
+            echo '::error::PHP fatal/error appeared in debug.log during the active coexistence run.'
+            grep -nE 'PHP Fatal error|PHP Parse error|PHP Error:|Uncaught|There has been a critical error' "$WP_DIR/wp-content/debug.log" | tail -10
+            exit 1
+          fi
+          {
+            echo '## Phase 18 Slice 18-4 — bounded WordPress plugin coexistence'
+            echo '- Existing Real WordPress browser smoke passed with the complete pinned set and CPMS release ZIP active.'
+            echo '- Smoke anchors: authenticated CPMS system health; secretary Clinic-scoped patient create/search; anonymous booking page + A1 availability + A4 quote.'
+            echo '- WooCommerce 10.3.8 coexistence: every authorized CPMS persona above was served on its own wp-admin screen (no third-party redirect to the store front-end).'
+            echo '- Non-widening proof (same run, real browser): doctor/secretary/manager/accountant got NO access to `admin.php?page=wc-admin`; doctor got none of `edit.php`/`users.php`; secretary got none of `options-general.php`; an unknown `page=cpms-*` selector was not exempted. Denial mechanism per check is recorded in `logs/*-denial.json`.'
+            echo '- Public `/?rest_route=/clinic/v1/health`: HTTP 200 and `data.ok=true` while all six plugins (five pinned + CPMS) remained active.'
+            echo '- No PHP fatal/parse/error, uncaught exception, or WordPress critical-error marker in the exercised run log.'
+            echo '- WordPress.org plugin packages (exact pins):'
+          } >> "$GITHUB_STEP_SUMMARY"
+          while read -r slug version; do
+            [ -n "$slug" ] || continue
+            echo "  - \`${slug}@${version}\`" >> "$GITHUB_STEP_SUMMARY"
+          done < /tmp/acc/coexistence-plugin-pins.tsv
+          echo '- Active-state snapshots before/after the smoke are attached to the existing Real WP acceptance artifact.' >> "$GITHUB_STEP_SUMMARY"
+          mkdir -p /tmp/log-gate-phases 2>/dev/null || :
+          if [ -f "$WP_DIR/wp-content/debug.log" ]; then
+            cp "$WP_DIR/wp-content/debug.log" /tmp/log-gate-phases/debug-after-http.log 2>/dev/null || :
+          else
+            : > /tmp/log-gate-phases/debug-after-http.log 2>/dev/null || :
+          fi
+          sudo cp /var/log/apache2/acc-error.log /tmp/log-gate-phases/apache-after-http.log 2>/dev/null || :
+
       # ---------- 6.5) اثبات فنی: پوستهٔ مستقلِ CPMS (Phase 9 Slice 3 — فقط proof) ----------
-      # NON-PRODUCTION: فیکسچرها (mu-plugin رهگیرِ template_include + دو تمِ کنترلیِ
-      # متفاوت) از tests/Fixtures کپی می‌شوند و هرگز داخل release ZIP نیستند
-      # (whitelist سیاست bin/build-release.sh). ماتریس: {Plain, Pretty} × {alpha, beta}
-      # با positive-control و REST/نشستِ وردپرس + logout واقعی — خروجی در
-      # /tmp/acc/shell-proof.log و shell-proof-results.json (artifact + commit comment).
+      # NON-PRODUCTION: فیکسچرهای پوسته/پیوند یکتا فقط روی control با prefix=clinic_ اجرا می‌شوند.
+      # شواهد run 37638771326: در wp_، پس از موفقیت HTTP smoke، همین theme-activation proof
+      # باعث PHP_FATAL در WooCommerce FileV2 → WP_Filesystem_FTPext → ftp_nlist(FTP\Connection|null)
+      # شد؛ summary فازی آن را فقط در پنجرهٔ standalone shell proof ثبت کرد. مسیر commerce/CPMS
+      # عوض نمی‌شود: این proof مستقل در control باقی می‌ماند و gate سخت‌گیرانهٔ wp_ فقط روی
+      # smoke واقعیِ پنج افزونهٔ فعال اجرا می‌شود (هیچ خطایی allowlist یا نادیده گرفته نمی‌شود).
+      # فیکسچرها هرگز داخل release ZIP نیستند (whitelist سیاست bin/build-release.sh).
       - name: "Technical proof — standalone CPMS shell (theme independence + Plain/Pretty)"
+        if: matrix.prefix == 'clinic_'
         run: |
           set -o pipefail
           sudo mkdir -p "$WP_DIR/wp-content/mu-plugins" "$WP_DIR/wp-content/mu-plugins/cpms-shell-proof-fixture"
@@ -487,27 +744,193 @@ jobs:
       - name: PHP/WP/Apache logs review
         if: always()
         run: |
+          mkdir -p /tmp/acc/logs
           cp "$WP_DIR/wp-content/debug.log" /tmp/acc/logs/ 2>/dev/null || echo '(no debug.log)' > /tmp/acc/logs/debug.log.missing
           sudo cp /var/log/apache2/acc-error.log /tmp/acc/logs/apache-error.log 2>/dev/null || true
           sudo cp /var/log/apache2/acc-access.log /tmp/acc/logs/apache-access.log 2>/dev/null || true
           sudo chmod -R a+r /tmp/acc/logs/ || true
-          echo '===== debug.log (tail) ====='
-          tail -40 /tmp/acc/logs/debug.log 2>/dev/null || echo '(debug.log موجود نشد — یعنی هیچ خطای PHP ثبت نشده)'
-          echo '===== apache error (tail) ====='
-          tail -20 /tmp/acc/logs/apache-error.log 2>/dev/null || true
+          DEBUG_BYTES=0
+          APACHE_BYTES=0
+          [ ! -f /tmp/acc/logs/debug.log ] || DEBUG_BYTES="$(wc -c < /tmp/acc/logs/debug.log)"
+          [ ! -f /tmp/acc/logs/apache-error.log ] || APACHE_BYTES="$(wc -c < /tmp/acc/logs/apache-error.log)"
+          echo "PHP/WP/Apache log files captured for final gate; raw contents suppressed. debug.log_bytes=${DEBUG_BYTES}; apache_error_bytes=${APACHE_BYTES}"
 
       - name: Log gate — بدون Fatal/Critical در لاگ PHP/WP
         if: always()
         run: |
-          if [ -f /tmp/acc/logs/debug.log ]; then
-            if grep -qE 'PHP Fatal error|Uncaught|There has been a critical error' /tmp/acc/logs/debug.log; then
-              echo 'FATAL/CRITICAL IN debug.log:'; grep -nE 'PHP Fatal error|Uncaught|critical error' /tmp/acc/logs/debug.log | tail -10; exit 1
-            fi
+          # Diagnostic only: publish safe signatures and phase counts; keep the existing grep gate authoritative.
+          if ! python3 - > /tmp/acc/log-gate-summary.txt 2>/dev/null <<'PY'
+          from collections import Counter
+          from pathlib import Path
+          import re
+
+          root = Path('/tmp/acc')
+          phase_dir = Path('/tmp/log-gate-phases')
+          debug_gate = re.compile(r'PHP Fatal error|Uncaught|There has been a critical error')
+          apache_gate = re.compile(r'PHP Fatal error|Uncaught')
+
+          def source_category_from_path(path):
+              lower = path.replace('\\', '/').lower()
+              if '/wp-content/plugins/clinic-practice-management/' in lower:
+                  return 'CPMS PHP source'
+              if '/wp-content/plugins/woocommerce/' in lower:
+                  return 'WooCommerce PHP source'
+              if '/wp-content/plugins/' in lower:
+                  rest = lower.split('/wp-content/plugins/', 1)[1]
+                  slug = rest.split('/', 1)[0]
+                  return 'third-party plugin:' + (slug if re.fullmatch(r'[a-z0-9_-]{1,80}', slug) else 'redacted')
+              if '/wp-content/themes/' in lower:
+                  rest = lower.split('/wp-content/themes/', 1)[1]
+                  slug = rest.split('/', 1)[0]
+                  return 'theme:' + (slug if re.fullmatch(r'[a-z0-9_-]{1,80}', slug) else 'redacted')
+              if '/wp-includes/' in lower or '/wp-admin/' in lower:
+                  return 'WordPress core PHP source'
+              if '/mu-plugins/' in lower or '/tmp/acc/' in lower:
+                  return 'acceptance fixture/harness'
+              if '/usr/' in lower or '/opt/' in lower:
+                  return 'PHP/Apache runtime'
+              return 'other PHP source (path redacted)'
+
+          def source_category(line):
+              match = re.search(r'\bin\s+((?:/|[A-Za-z]:[\\/])[^\s]+)', line)
+              if not match:
+                  return 'PHP/WP runtime (source path absent)'
+              return source_category_from_path(match.group(1).rstrip(':,.)'))
+
+          frame_re = re.compile(r'#\d+\s+((?:/|[A-Za-z]:[\\/])\S+?)\(\d+\):\s*([A-Za-z_][A-Za-z0-9_\\]*(?:(?:::|->)[A-Za-z_][A-Za-z0-9_]*)?|\{closure\})\s*\(')
+
+          def safe_frames(line, following):
+              frames = []
+              for candidate in [line, *following]:
+                  for match in frame_re.finditer(candidate):
+                      item = source_category_from_path(match.group(1)) + '::' + match.group(2)
+                      if item not in frames:
+                          frames.append(item)
+                      if len(frames) == 4:
+                          return ' > '.join(frames)
+              return ' > '.join(frames) if frames else 'no safe stack frames captured'
+
+          def safe_record(line, following):
+              if 'PHP Fatal error' in line:
+                  severity = 'PHP_FATAL'
+              elif 'Uncaught' in line:
+                  severity = 'UNCAUGHT'
+              else:
+                  severity = 'WP_CRITICAL_MARKER'
+              source = source_category(line)
+              signature = 'message redacted'
+              type_arg = re.search(r'Argument #(\d+)(?:\s+\(\$[A-Za-z_][A-Za-z0-9_]*\))?\s+must be of type ([A-Za-z_][A-Za-z0-9_\\|?&\[\]]*), ([A-Za-z_][A-Za-z0-9_\\]*) given', line)
+              callable_match = re.search(r'([A-Za-z_][A-Za-z0-9_\\]*(?:::[A-Za-z_][A-Za-z0-9_]*)?)\(\): Argument #', line)
+              if type_arg:
+                  owner = callable_match.group(1) if callable_match else 'callable'
+                  signature = f'TypeError: {owner} argument #{type_arg.group(1)} expects {type_arg.group(2)}, got {type_arg.group(3)}'
+              else:
+                  patterns = [
+                      (r'Call to undefined function\s+([A-Za-z_][A-Za-z0-9_\\]*)\s*\(', 'undefined function {}()'),
+                      (r'Call to undefined method\s+([A-Za-z_][A-Za-z0-9_\\]*)::([A-Za-z_][A-Za-z0-9_]*)', 'undefined method {}::{}()'),
+                      (r'Cannot redeclare (?:function )?([A-Za-z_][A-Za-z0-9_\\]*)', 'redeclared function {}'),
+                      (r'Too few arguments to function ([A-Za-z_][A-Za-z0-9_\\:]*)', 'too few arguments to {}'),
+                      (r'Class ["\']([A-Za-z_][A-Za-z0-9_\\]*)["\'] not found', 'missing class {}'),
+                      (r'Call to a member function ([A-Za-z_][A-Za-z0-9_]*)\(\) on null', 'member call on null: {}()'),
+                      (r'Cannot access offset of type ([A-Za-z_]+) on ([A-Za-z_]+)', 'invalid offset types: {} on {}'),
+                      (r'Unsupported operand types: ([A-Za-z_]+) \+ ([A-Za-z_]+)', 'unsupported operand types: {} + {}'),
+                  ]
+                  for pattern, template in patterns:
+                      match = re.search(pattern, line)
+                      if match:
+                          signature = template.format(*match.groups())
+                          break
+                  else:
+                      if 'There has been a critical error' in line or 'critical error' in line:
+                          signature = 'WordPress critical-error marker'
+                      else:
+                          uncaught = re.search(r'Uncaught\s+([A-Za-z_][A-Za-z0-9_\\]*)', line)
+                          if uncaught:
+                              signature = 'uncaught ' + uncaught.group(1) + ' (message redacted)'
+                          elif severity == 'PHP_FATAL':
+                              signature = 'PHP fatal (message redacted)'
+              return severity, source, signature, safe_frames(line, following)
+          snapshots = {
+              'debug.log': [
+                  ('pre-CPMS baseline', root / 'coexistence-debug-before-cpms.log'),
+                  ('before D3', phase_dir / 'debug-before-d3.log'),
+                  ('after D3', phase_dir / 'debug-after-d3.log'),
+                  ('before HTTP smoke', phase_dir / 'debug-before-http.log'),
+                  ('after HTTP smoke', phase_dir / 'debug-after-http.log'),
+                  ('final', root / 'logs' / 'debug.log'),
+              ],
+              'apache-error.log': [
+                  ('before HTTP smoke', phase_dir / 'apache-before-http.log'),
+                  ('after HTTP smoke', phase_dir / 'apache-after-http.log'),
+                  ('final', root / 'logs' / 'apache-error.log'),
+              ],
+          }
+          counts = {}
+          available = {}
+          print('log_gate_diagnostic_version=2; raw messages, absolute paths and request data suppressed')
+          for log_name, phases in snapshots.items():
+              for phase, path in phases:
+                  phase_counts = Counter()
+                  present = path.is_file()
+                  available[(log_name, phase)] = present
+                  if present:
+                      try:
+                          lines = path.read_text(encoding='utf-8', errors='replace').splitlines()
+                          for line_index, line in enumerate(lines):
+                              gate = debug_gate if log_name == 'debug.log' else apache_gate
+                              if gate.search(line):
+                                  following = []
+                                  for candidate in lines[line_index + 1:line_index + 12]:
+                                      if gate.search(candidate):
+                                          break
+                                      if frame_re.search(candidate):
+                                          following.append(candidate)
+                                      elif following and not candidate.strip():
+                                          break
+                                  phase_counts[safe_record(line, following)] += 1
+                      except OSError:
+                          available[(log_name, phase)] = False
+                  counts[(log_name, phase)] = phase_counts
+              final = counts.get((log_name, 'final'), Counter())
+              final_status = str(sum(final.values())) if available.get((log_name, 'final')) else 'not-captured'
+              snapshot_status = ','.join(f'{phase}={"captured" if available[(log_name, phase)] else "unavailable"}' for phase, _ in phases)
+              print(f'log={log_name}; final_gate_matching_lines={final_status}; snapshots={snapshot_status}')
+              if not available.get((log_name, 'final')):
+                  continue
+              for index, (key, total) in enumerate(sorted(final.items()), 1):
+                  severity, source, signature, stack = key
+                  phase_values = [(phase, counts[(log_name, phase)].get(key, 0)) for phase, _ in phases if available[(log_name, phase)]]
+                  first_seen = next((phase for phase, value in phase_values if value > 0), 'not seen in available snapshots')
+                  deltas = []
+                  transitions = {
+                      ('pre-CPMS baseline', 'before D3'): 'CPMS activation/pre-D3 setup',
+                      ('before D3', 'after D3'): 'intentional D3 injection window',
+                      ('after D3', 'before HTTP smoke'): 'post-D3/pre-HTTP setup',
+                      ('before HTTP smoke', 'after HTTP smoke'): 'real HTTP/browser coexistence smoke',
+                      ('after HTTP smoke', 'final'): 'post-smoke/final log capture',
+                  }
+                  for (earlier, later), label in transitions.items():
+                      if available.get((log_name, earlier)) and available.get((log_name, later)):
+                          delta = counts[(log_name, later)].get(key, 0) - counts[(log_name, earlier)].get(key, 0)
+                          if delta > 0:
+                              deltas.append(f'{label}=+{delta}')
+                  if available.get((log_name, 'pre-CPMS baseline')):
+                      pre_cpms = counts[(log_name, 'pre-CPMS baseline')].get(key, 0)
+                  else:
+                      pre_cpms = 'not-applicable'
+                  print(f'match[{index}] log={log_name}; severity={severity}; source={source}; signature={signature}; stack={stack}; count={total}; pre_cpms_count={pre_cpms}; first_seen={first_seen}; new_in={", ".join(deltas) if deltas else "no phase delta proved"}')
+          PY
+          then
+            printf '%s\n' 'diagnostic_status=failed; raw log contents suppressed; unchanged gate remains authoritative' > /tmp/acc/log-gate-summary.txt
           fi
-          if [ -f /tmp/acc/logs/apache-error.log ]; then
-            if grep -qE 'PHP Fatal error|Uncaught' /tmp/acc/logs/apache-error.log; then
-              echo 'FATAL IN apache error log:'; grep -nE 'PHP Fatal error|Uncaught' /tmp/acc/logs/apache-error.log | tail -10; exit 1
-            fi
+          cat /tmp/acc/log-gate-summary.txt
+          if [ -f /tmp/acc/logs/debug.log ] && grep -qE 'PHP Fatal error|Uncaught|There has been a critical error' /tmp/acc/logs/debug.log; then
+            echo 'LOG GATE: FAIL — existing fatal/uncaught/critical pattern matched debug.log; see sanitized summary.'
+            exit 1
+          fi
+          if [ -f /tmp/acc/logs/apache-error.log ] && grep -qE 'PHP Fatal error|Uncaught' /tmp/acc/logs/apache-error.log; then
+            echo 'LOG GATE: FAIL — existing fatal/uncaught pattern matched apache-error.log; see sanitized summary.'
+            exit 1
           fi
           echo 'LOG GATE: clean (بدون Fatal/Uncaught/Critical)'
 
@@ -554,6 +977,14 @@ jobs:
             echo '```'
             cat /tmp/acc/acceptance.log 2>/dev/null || echo '(مرحلهٔ مرورگر اجرا نشد)'
             echo '```'
+            echo '- coexistence gate lines (every FAIL plus the named coexistence checks):'
+            echo '```'
+            grep -E '^FAIL|coexistence\.|\.not_granted|no_woo_redirect' /tmp/acc/acceptance.log 2>/dev/null | head -60 || echo '(no coexistence/FAIL lines)'
+            echo '```'
+            echo '- public CPMS health failure diagnostics (only present if the gate failed):'
+            echo '```'
+            cat /tmp/acc/coexistence-health-failure.txt 2>/dev/null || echo '(health gate did not fail)'
+            echo '```'
             echo '- standalone shell technical proof (Phase 9 Slice 3 — NON-PRODUCTION fixture):'
             echo '```'
             cat /tmp/acc/shell-proof.log 2>/dev/null || echo '(shell proof اجرا نشد)'
@@ -566,13 +997,21 @@ jobs:
             echo '```'
             cat /tmp/acc/logs/*-login.json 2>/dev/null || echo '(no login failure)'
             echo '```'
-            echo '- PHP fatal lines in debug.log:'
+            echo '- sanitized PHP/WP/Apache final log-gate summary:'
             echo '```'
-            grep -E 'Fatal|Uncaught' /tmp/acc/logs/debug.log 2>/dev/null | tail -8 || echo '(none)'
+            cat /tmp/acc/log-gate-summary.txt 2>/dev/null || echo '(sanitized summary unavailable; gate remains authoritative)'
             echo '```'
-            echo '- debug.log tail:'
+            echo '- pinned pre-CPMS WordPress.org package install logs:'
             echo '```'
-            tail -15 /tmp/acc/logs/debug.log 2>/dev/null || echo '(بدون debug.log)'
+            for f in /tmp/acc/coexistence-install-*.log; do
+              [ -f "$f" ] || continue
+              echo "--- $(basename "$f") ---"
+              tail -40 "$f"
+            done
+            echo '```'
+            echo '- exact WooCommerce 10.3.8 WC_Admin source evidence (read from the pinned installed package):'
+            echo '```'
+            cat /tmp/acc/woocommerce-10.3.8-admin-access-source.txt 2>/dev/null || echo '(source inspection not reached)'
             echo '```'
             echo "artifacts: rwp-acceptance-${{ matrix.prefix }} (screenshots/logs/results.json)"
           } > /tmp/acc/evidence-comment.md

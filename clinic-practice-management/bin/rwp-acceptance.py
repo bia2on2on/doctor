@@ -271,6 +271,19 @@ def write_safe_page_record(tag, name, status, critical_error, denied=None):
         json.dump(record, f, ensure_ascii=False, indent=2)
 
 
+def landed_outside_wp_admin(page):
+    """True when the browser is no longer on any /wp-admin/ screen (a policy redirect away).
+
+    Used as *denial* evidence: a third-party lock-down that sends the caller out of wp-admin
+    granted nothing. It is never used to pass a positive CPMS page check — those require the
+    final URL to still be the requested CPMS admin screen.
+    """
+    try:
+        return not urlparse(page.url).path.startswith("/wp-admin/")
+    except Exception:
+        return False
+
+
 def goto_admin(page, tag, path, shot_name):
     resp = page.goto(f"{BASE}/wp-admin/{path}", wait_until="domcontentloaded")
     page.wait_for_timeout(1200)  # settle کوتاه برای رندر/JS (بدون مکث طولانی)
@@ -297,6 +310,11 @@ def assert_denied(page, tag, path, name):
     صفحهٔ 403 از wp_die استفاده می‌کند که کلاس `wp-die-message` و HTTP 403 بودن را
     به‌صورت عمدی دارد؛ بنابراین این ناوبریِ «انتظارِ رد» را از شمارش خطاهای مرورگر
     ایزوله می‌کنیم تا خطایِ شبکهٔ 403 (که پیامِ درستِ رد است) گیتِ «بدون خطا» را قرمز نکند.
+
+    With the third-party admin lock-down active, an unauthorized request can also be answered
+    by a policy redirect out of wp-admin. That is accepted as a denial — nothing was granted —
+    and `logs/<tag>-<name>-denial.json` records which mechanism produced it, so a policy
+    redirect is never silently counted as a WordPress 403.
     """
     before_c = len(console_errors)
     before_p = len(page_errors)
@@ -305,18 +323,65 @@ def assert_denied(page, tag, path, name):
     status = resp.status if resp else 0
     body = page.content()
     page.screenshot(path=f"{OUT}/screenshots/{name}.png", full_page=True)
-    denied = (
+    denied_by = ""
+    if (
         status in (401, 403)
         or "not allowed to access this page" in (body or "").lower()
         or "دسترسی ندارید" in (body or "")
         or "You need a higher level of permission" in (body or "")
-    )
+    ):
+        denied_by = "wp-die-403"
+    elif landed_outside_wp_admin(page):
+        # A third-party admin lock-down (WooCommerce) redirected this unauthorized request out
+        # of wp-admin. Access was still NOT granted; the mechanism is recorded separately so a
+        # policy redirect is never silently equated with a WordPress 403.
+        denied_by = "policy-redirect-out-of-wp-admin"
+    denied = denied_by != ""
     write_safe_page_record(tag, name, status, CRITICAL_RE.search(body or "") is not None, denied=denied)
-    check(f"{tag}.direct.{name}.denied", denied, f"HTTP {status} (باید DENIED باشد)")
+    with open(f"{OUT}/logs/{tag}-{name}-denial.json", "w") as f:
+        json.dump({"screen": name, "http_status": int(status), "denied_by": denied_by or "none"}, f, ensure_ascii=False, indent=2)
+    check(f"{tag}.direct.{name}.denied", denied, f"HTTP {status} (باید DENIED باشد) — mechanism={denied_by or 'none'}")
     # فقط ردِ عمدی را می‌سنجیم؛ خطاهای مرورگر این ناوبری (403 resource-load) خارج از گیت است.
     del console_errors[before_c:]
     del page_errors[before_p:]
     return denied
+
+
+def assert_served_on_admin_screen(page, tag, expect_fragment, name):
+    """Positive coexistence proof: the authorized CPMS request must still be served *inside*
+    wp-admin at the requested screen — a third-party redirect to the store front-end (even a
+    200 one) means the CPMS page was never reached."""
+    outside = landed_outside_wp_admin(page)
+    check(
+        f"{tag}.{name}.served_on_cpms_admin_screen",
+        (not outside) and (expect_fragment in page.url),
+        f"final_url={page.url} (expected to still carry {expect_fragment})",
+    )
+
+
+def assert_not_granted(page, tag, path, name):
+    """Widening guard: a screen the caller is not authorized to use (WooCommerce admin, core
+    admin screens, a spoofed `page=cpms-*`) must end either in a WordPress denial or in a
+    redirect out of wp-admin. A 200 that stays on a /wp-admin/ screen means the compatibility
+    exception widened access → FAIL."""
+    before_c = len(console_errors)
+    before_p = len(page_errors)
+    resp = page.goto(f"{BASE}/wp-admin/{path}", wait_until="domcontentloaded")
+    page.wait_for_timeout(700)
+    status = resp.status if resp else 0
+    body = page.content()
+    page.screenshot(path=f"{OUT}/screenshots/{name}.png", full_page=True)
+    crit = CRITICAL_RE.search(body or "")
+    granted = status == 200 and not landed_outside_wp_admin(page) and crit is None
+    write_safe_page_record(tag, name, status, crit is not None, denied=not granted)
+    check(
+        f"{tag}.{name}.not_granted",
+        not granted,
+        f"HTTP {status} — url={page.url} (must NOT be a granted 200 on a wp-admin screen)",
+    )
+    del console_errors[before_c:]
+    del page_errors[before_p:]
+    return not granted
 
 
 def assert_no_overflow(page, tag, name):
@@ -1110,6 +1175,15 @@ with sync_playwright() as p:
         status, body = goto_admin(page, "doctor", "admin.php?page=cpms-doctor", "cpms-doctor")
         check("doctor.menu.has_cpms_doctor", "admin.php?page=cpms-doctor" in (body or ""), "منوی «امروز پزشک» باید دیده شود")
         check("doctor.menu.has_patients", "page=cpms-patients" in (body or ""), "منوی «بیماران» برای پزشک باید دیده شود")
+        # Coexistence: the authorized CPMS screen must be served in wp-admin (no third-party
+        # redirect to the store front-end), and nothing else may be gained from it.
+        assert_served_on_admin_screen(page, "doctor", "page=cpms-doctor", "coexistence.doctor_page")
+        goto_admin(page, "doctor", "admin.php?page=cpms-patients", "cpms-doctor-patients")
+        assert_served_on_admin_screen(page, "doctor", "page=cpms-patients", "coexistence.doctor_patients_page")
+        assert_not_granted(page, "doctor", "admin.php?page=wc-admin", "doctor-denied-woo-admin")
+        assert_not_granted(page, "doctor", "edit.php", "doctor-denied-core-posts")
+        assert_not_granted(page, "doctor", "users.php", "doctor-denied-core-users")
+        assert_not_granted(page, "doctor", "admin.php?page=cpms-coexistence-spoof", "doctor-denied-spoofed-page")
     page.close()
     dctx.close()
 
@@ -1159,6 +1233,15 @@ with sync_playwright() as p:
         empty = page.content()
         check("secretary.patients.empty_state", "بیماری یافت نشد" in (empty or ""), "جستجوی بی‌نتیجه باید «بیماری یافت نشد» بدهد")
         page.screenshot(path=f"{OUT}/screenshots/cpms-patients-empty.png", full_page=True)
+        # Coexistence: secretary's own CPMS screens stay in wp-admin; no WooCommerce/core access.
+        goto_admin(page, "secretary", "admin.php?page=cpms-queue", "cpms-secretary-queue")
+        assert_served_on_admin_screen(page, "secretary", "page=cpms-queue", "coexistence.queue_page")
+        goto_admin(page, "secretary", "admin.php?page=cpms-patients", "cpms-secretary-patients")
+        assert_served_on_admin_screen(page, "secretary", "page=cpms-patients", "coexistence.patients_page")
+        assert_not_granted(page, "secretary", "admin.php?page=wc-admin", "secretary-denied-woo-admin")
+        assert_not_granted(page, "secretary", "admin.php?page=woocommerce", "secretary-denied-woo-parent")
+        assert_not_granted(page, "secretary", "options-general.php", "secretary-denied-core-settings")
+        assert_not_granted(page, "secretary", "admin.php?page=cpms-doctor-admin", "secretary-denied-spoofed-page")
     page.close()
     sctx.close()
 
@@ -1193,6 +1276,11 @@ with sync_playwright() as p:
             # دسترسی مستقیم به بالینی/ماتریس فنی → DENIED (نه فقط مخفی).
             assert_denied(page, "manager", "admin.php?page=cpms-doctor", "cpms-mgr-denied-doctor")
             assert_denied(page, "manager", "admin.php?page=cpms-roles", "cpms-mgr-denied-roles")
+            # Coexistence: the manager's own CPMS screen stays served inside wp-admin, while
+            # the store's admin surface stays unreachable through the same session.
+            goto_admin(page, "manager", "admin.php?page=cpms-system", "cpms-mgr-system")
+            assert_served_on_admin_screen(page, "manager", "page=cpms-system", "coexistence.system_page")
+            assert_not_granted(page, "manager", "admin.php?page=wc-admin", "manager-denied-woo-admin")
             # Schedule evidence under the authorized persona (Slice 6A): the
             # «مدیریت برنامه» link and the schedule page only render with an
             # active trusted Clinic membership + scoped CONFIG.
@@ -1247,6 +1335,11 @@ with sync_playwright() as p:
             assert_denied(page, "accountant", "admin.php?page=cpms-doctor", "cpms-acc-denied-doctor")
             assert_denied(page, "accountant", "admin.php?page=cpms-staff", "cpms-acc-denied-staff")
             assert_denied(page, "accountant", "admin.php?page=cpms-patients", "cpms-acc-denied-patients")
+            # Return to the accountant's allowed screen after the direct-denial probes above.
+            goto_admin(page, "accountant", "admin.php?page=cpms-finance", "cpms-acc-finance-coexistence")
+            # Coexistence: finance screen is served in wp-admin; store admin stays closed.
+            assert_served_on_admin_screen(page, "accountant", "page=cpms-finance", "coexistence.finance_page")
+            assert_not_granted(page, "accountant", "admin.php?page=wc-admin", "accountant-denied-woo-admin")
         page.close()
         acctx.close()
 

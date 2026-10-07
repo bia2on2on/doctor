@@ -7,6 +7,7 @@ namespace ClinicCore\Bootstrap;
 use ClinicCore\Admin\ClinicianAdminPage;
 use ClinicCore\Admin\CpmsAdminMenu;
 use ClinicCore\Admin\CpmsAssets;
+use ClinicCore\Admin\Compatibility\WooCommerceAdminAccess;
 use ClinicCore\Admin\CpmsSetupWizard;
 use ClinicCore\Admin\LocationAdminPage;
 use ClinicCore\Admin\PatientAdminPage;
@@ -336,6 +337,10 @@ final class App
         // Correlation helperها (cpms_request_id/cpms_session_id) در فایل اصلی
         // افزونه تعریف می‌شوند — خارج از boot تا در همه Contextها (CLI، Test،
         // درخواست‌های زودهنگام) قطعاً موجود باشند.
+
+        // Coexistence with a third-party wp-admin lock-down policy (WooCommerce):
+        // one scoped filter callback, allowlist + existing page capability only.
+        WooCommerceAdminAccess::register();
 
         // Admin UX — منوی Top-Level «مدیریت مطب» + داشبورد + IA (Chunk A)
         CpmsAdminMenu::register();
