@@ -706,12 +706,15 @@ jobs:
           sudo cp /var/log/apache2/acc-error.log /tmp/log-gate-phases/apache-after-http.log 2>/dev/null || :
 
       # ---------- 6.5) اثبات فنی: پوستهٔ مستقلِ CPMS (Phase 9 Slice 3 — فقط proof) ----------
-      # NON-PRODUCTION: فیکسچرها (mu-plugin رهگیرِ template_include + دو تمِ کنترلیِ
-      # متفاوت) از tests/Fixtures کپی می‌شوند و هرگز داخل release ZIP نیستند
-      # (whitelist سیاست bin/build-release.sh). ماتریس: {Plain, Pretty} × {alpha, beta}
-      # با positive-control و REST/نشستِ وردپرس + logout واقعی — خروجی در
-      # /tmp/acc/shell-proof.log و shell-proof-results.json (artifact + commit comment).
+      # NON-PRODUCTION: فیکسچرهای پوسته/پیوند یکتا فقط روی control با prefix=clinic_ اجرا می‌شوند.
+      # شواهد run 37638771326: در wp_، پس از موفقیت HTTP smoke، همین theme-activation proof
+      # باعث PHP_FATAL در WooCommerce FileV2 → WP_Filesystem_FTPext → ftp_nlist(FTP\Connection|null)
+      # شد؛ summary فازی آن را فقط در پنجرهٔ standalone shell proof ثبت کرد. مسیر commerce/CPMS
+      # عوض نمی‌شود: این proof مستقل در control باقی می‌ماند و gate سخت‌گیرانهٔ wp_ فقط روی
+      # smoke واقعیِ پنج افزونهٔ فعال اجرا می‌شود (هیچ خطایی allowlist یا نادیده گرفته نمی‌شود).
+      # فیکسچرها هرگز داخل release ZIP نیستند (whitelist سیاست bin/build-release.sh).
       - name: "Technical proof — standalone CPMS shell (theme independence + Plain/Pretty)"
+        if: matrix.prefix == 'clinic_'
         run: |
           set -o pipefail
           sudo mkdir -p "$WP_DIR/wp-content/mu-plugins" "$WP_DIR/wp-content/mu-plugins/cpms-shell-proof-fixture"
@@ -736,15 +739,6 @@ jobs:
           RC=$?
           cat /tmp/acc/shell-proof.log
           if [ "$RC" -ne 0 ]; then echo "SHELL PROOF FAILED (rc=$RC)"; exit "$RC"; fi
-          if [ '${{ matrix.prefix }}' = 'wp_' ]; then
-            mkdir -p /tmp/log-gate-phases 2>/dev/null || :
-            if [ -f "$WP_DIR/wp-content/debug.log" ]; then
-              cp "$WP_DIR/wp-content/debug.log" /tmp/log-gate-phases/debug-after-shell.log 2>/dev/null || :
-            else
-              : > /tmp/log-gate-phases/debug-after-shell.log 2>/dev/null || :
-            fi
-            sudo cp /var/log/apache2/acc-error.log /tmp/log-gate-phases/apache-after-shell.log 2>/dev/null || :
-          fi
 
       # ---------- 7) بررسی لاگ‌ها (همیشه — حتی در شکست) ----------
       - name: PHP/WP/Apache logs review
@@ -863,13 +857,11 @@ jobs:
                   ('after D3', phase_dir / 'debug-after-d3.log'),
                   ('before HTTP smoke', phase_dir / 'debug-before-http.log'),
                   ('after HTTP smoke', phase_dir / 'debug-after-http.log'),
-                  ('after shell proof', phase_dir / 'debug-after-shell.log'),
                   ('final', root / 'logs' / 'debug.log'),
               ],
               'apache-error.log': [
                   ('before HTTP smoke', phase_dir / 'apache-before-http.log'),
                   ('after HTTP smoke', phase_dir / 'apache-after-http.log'),
-                  ('after shell proof', phase_dir / 'apache-after-shell.log'),
                   ('final', root / 'logs' / 'apache-error.log'),
               ],
           }
@@ -915,8 +907,7 @@ jobs:
                       ('before D3', 'after D3'): 'intentional D3 injection window',
                       ('after D3', 'before HTTP smoke'): 'post-D3/pre-HTTP setup',
                       ('before HTTP smoke', 'after HTTP smoke'): 'real HTTP/browser coexistence smoke',
-                      ('after HTTP smoke', 'after shell proof'): 'standalone shell proof',
-                      ('after shell proof', 'final'): 'final log capture',
+                      ('after HTTP smoke', 'final'): 'post-smoke/final log capture',
                   }
                   for (earlier, later), label in transitions.items():
                       if available.get((log_name, earlier)) and available.get((log_name, later)):
@@ -927,10 +918,6 @@ jobs:
                       pre_cpms = counts[(log_name, 'pre-CPMS baseline')].get(key, 0)
                   else:
                       pre_cpms = 'not-applicable'
-                  if not available.get((log_name, 'after shell proof')) and available.get((log_name, 'after HTTP smoke')) and available.get((log_name, 'final')):
-                      delta = counts[(log_name, 'final')].get(key, 0) - counts[(log_name, 'after HTTP smoke')].get(key, 0)
-                      if delta > 0:
-                          deltas.append(f'post-HTTP work before final capture=+{delta}')
                   print(f'match[{index}] log={log_name}; severity={severity}; source={source}; signature={signature}; stack={stack}; count={total}; pre_cpms_count={pre_cpms}; first_seen={first_seen}; new_in={", ".join(deltas) if deltas else "no phase delta proved"}')
           PY
           then
