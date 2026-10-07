@@ -67,7 +67,7 @@ env:
   PHP_VERSION: '8.2'
   WP_DIR: /home/runner/tpb/wp
   WP_URL: http://localhost:8080
-  PROBE_DIR: /tmp/tpb-probe
+  PROBE_DIR: /var/www/tpb-probe
   EVIDENCE_DIR: /tmp/tpb
   # Ephemeral local-only credentials for a throwaway WordPress on an ephemeral
   # runner. They are not secrets, they protect nothing, they hold no PHI and they
@@ -308,7 +308,10 @@ jobs:
       - name: Record subject identity
         run: |
           set -Eeuo pipefail
-          mkdir -p "$EVIDENCE_DIR" "$PROBE_DIR"
+          mkdir -p "$EVIDENCE_DIR"
+          # /var/www needs root; the probe lives outside the WordPress tree
+          # under measurement either way, which is the actual invariant.
+          sudo mkdir -p "$PROBE_DIR"
           python3 .github/third-party-baseline/probe.py subject \
             --store "$EVIDENCE_DIR/evidence.json" \
             --id "${{ matrix.id }}" \
@@ -546,7 +549,7 @@ jobs:
           # alias into /tmp), so proving the serving PHP version never writes a
           # single file into the tree under measurement. It exposes only the PHP
           # version, the SAPI and the server banner — never phpinfo().
-          cat > "$PROBE_DIR/php-probe.php" <<'PHPEOF'
+          sudo tee "$PROBE_DIR/php-probe.php" > /dev/null <<'PHPEOF'
           <?php
           header('Content-Type: application/json');
           echo json_encode([
@@ -555,6 +558,8 @@ jobs:
               'server_software' => isset($_SERVER['SERVER_SOFTWARE']) ? $_SERVER['SERVER_SOFTWARE'] : '',
           ]);
           PHPEOF
+          sudo chown -R www-data:www-data "$PROBE_DIR"
+          sudo chmod 755 "$PROBE_DIR" && sudo chmod 644 "$PROBE_DIR/php-probe.php"
 
           # The runtime probe is served from its OWN virtual host with its own
           # DocumentRoot, not from an Alias inside the WordPress vhost.
@@ -566,6 +571,16 @@ jobs:
           # A vhost whose DocumentRoot IS the probe directory is the canonical
           # Apache pattern (it is the shape of the shipped 000-default site) and
           # removes that interaction entirely.
+          #
+          # The probe directory lives under /var/www, not /tmp. Run f069d7f proved
+          # the /tmp location was not a filesystem problem at all: the directory
+          # was drwxr-xr-x and the probe -rw-r--r--, both vhosts were bound, and
+          # Apache still answered with its authorization 403 page. Ubuntu's
+          # apache2.conf denies / by default ("Require all denied") and explicitly
+          # grants /var/www/ ("Require all granted"), so /var/www is the location
+          # the distribution already trusts - it is still outside the WordPress
+          # filesystem under measurement, which is the only invariant that matters
+          # here.
           #
           # The probe exposes only the PHP version, the SAPI and the server
           # banner - never phpinfo() and never any site data.
@@ -635,22 +650,36 @@ jobs:
           # outside the runner. Now it fails closed with the real reason.
           PROBE_STATUS="$(curl -sS -o /tmp/probe-body.txt -w '%{http_code}' "$TPB_PROBE_URL" || true)"
           if [ "$PROBE_STATUS" != "200" ]; then
-            {
-              echo "probe diagnostic for $TPB_PROBE_URL (HTTP $PROBE_STATUS)"
-              echo "-- body --"; head -c 300 /tmp/probe-body.txt 2>/dev/null || true
-              echo "-- ls -ld --"
-              ls -ld /tmp "$PROBE_DIR" "$PROBE_DIR/php-probe.php" 2>&1 || true
-              echo "-- www-data --"; id www-data 2>&1 || true
-              echo "-- apache2ctl -S --"; sudo apache2ctl -S 2>&1 || true
-              echo "-- ports.conf --"; cat /etc/apache2/ports.conf 2>&1 || true
-              echo "-- probe access log --"
-              sudo tail -5 /var/log/apache2/tpb-probe-access.log 2>&1 || true
-              echo "-- probe error log --"
-              sudo tail -20 /var/log/apache2/tpb-probe-error.log 2>&1 || true
-              echo "-- main error log --"
-              sudo tail -20 /var/log/apache2/tpb-error.log 2>&1 || true
-            } > /tmp/probe-diagnostic.log 2>&1
-            echo "::error::Class D harness failure: the out-of-tree PHP runtime probe did not answer with HTTP 200 (got $PROBE_STATUS). Refusing to measure the lane PHP on a probe that cannot speak. diagnostic: $(tr '\n\r' '  ' < /tmp/probe-diagnostic.log | sed 's/%/%25/g' | cut -c1-1600)"
+            # One annotation per section, each written to its own file. A single
+            # annotation is capped, and run f069d7f lost the Apache error log -
+            # the one section that names the refusing rule - to that cap.
+            DIAG=/tmp/probe-diag
+            rm -rf "$DIAG" && mkdir -p "$DIAG"
+            { echo "HTTP $PROBE_STATUS for $TPB_PROBE_URL"; head -c 300 /tmp/probe-body.txt; } \
+              > "$DIAG/01-response.log" 2>&1 || true
+            find /var /var/www "$PROBE_DIR" "$PROBE_DIR/php-probe.php" \
+              -maxdepth 0 -printf '%M %u:%g %p\n' 2>&1 \
+              | tee "$DIAG/02-permissions.log" > /dev/null || true
+            # Can the web user actually read the probe? Separates authz from DAC.
+            sudo -u www-data head -1 "$PROBE_DIR/php-probe.php" 2>&1 \
+              | tee "$DIAG/03-wwwdata-can-read.log" > /dev/null || true
+            id www-data 2>&1 | tee "$DIAG/04-wwwdata-id.log" > /dev/null || true
+            sudo apache2ctl -M 2>&1 | grep -iE 'authz|alias|php' \
+              | tee "$DIAG/05-modules.log" > /dev/null || true
+            sudo apache2ctl -S 2>&1 | tee "$DIAG/06-vhosts.log" > /dev/null || true
+            sudo cat /etc/apache2/sites-enabled/tpb.conf 2>&1 \
+              | tee "$DIAG/07-vhost-conf.log" > /dev/null || true
+            grep -nE 'Require|<Directory' /etc/apache2/apache2.conf 2>&1 \
+              | tee "$DIAG/08-global-access-rules.log" > /dev/null || true
+            sudo tail -30 /var/log/apache2/tpb-probe-error.log 2>&1 \
+              | tee "$DIAG/09-probe-error-log.log" > /dev/null || true
+            sudo tail -10 /var/log/apache2/tpb-probe-access.log 2>&1 \
+              | tee "$DIAG/10-probe-access-log.log" > /dev/null || true
+            echo "::error::Class D harness failure: the out-of-tree PHP runtime probe did not answer with HTTP 200 (got $PROBE_STATUS) at $TPB_PROBE_URL. Refusing to measure the lane PHP on a probe that cannot speak."
+            for SECTION in "$DIAG"/*.log; do
+              [ -e "$SECTION" ] || continue
+              echo "::error::probe diagnostic $(basename "$SECTION"): $(tr '\n\r' '  ' < "$SECTION" | sed 's/%/%25/g' | cut -c1-1400)"
+            done
             exit 1
           fi
           echo "runtime probe answers 200: $(cat /tmp/probe-body.txt)"
