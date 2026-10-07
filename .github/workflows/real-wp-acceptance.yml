@@ -88,7 +88,7 @@ jobs:
         run: |
           php -l clinic-practice-management/bin/cpms
           python3 -m py_compile clinic-practice-management/bin/rwp-acceptance.py
-          python3 -m py_compile clinic-practice-management/bin/rwp-coexistence-isolate.py
+          python3 -m py_compile clinic-practice-management/bin/rwp-coexistence-confirm.py
           python3 -m py_compile clinic-practice-management/bin/rwp-shell-proof.py
           python3 -m py_compile clinic-practice-management/bin/acceptance-isolation-check.py
           bash -n clinic-practice-management/bin/build-release.sh
@@ -551,16 +551,16 @@ jobs:
           cat /tmp/acc/acceptance.log
           if [ "$RC" -ne 0 ]; then echo "ACCEPTANCE FAILED (rc=$RC)"; exit "$RC"; fi
 
-      - name: Isolate observed custom-role wp-admin redirect across bounded plugin subsets (failure-only)
+      - name: Confirm isolated WooCommerce admin-access policy (failure-only, no bypass)
         if: always() && matrix.prefix == 'wp_' && steps.browser_acceptance.outcome == 'failure'
         run: |
           set +e
-          python3 clinic-practice-management/bin/rwp-coexistence-isolate.py > /tmp/acc/coexistence-isolation.log 2>&1
+          python3 clinic-practice-management/bin/rwp-coexistence-confirm.py > /tmp/acc/coexistence-confirmation.log 2>&1
           RC=$?
-          cat /tmp/acc/coexistence-isolation.log
-          cat /tmp/acc/coexistence-isolation.log >> /tmp/acc/acceptance.log
+          cat /tmp/acc/coexistence-confirmation.log
+          cat /tmp/acc/coexistence-confirmation.log >> /tmp/acc/acceptance.log
           if [ "$RC" -ne 0 ]; then
-            echo "::error::Coexistence subset isolation did not complete cleanly (rc=$RC); do not attribute the redirect from incomplete evidence."
+            echo "::error::Targeted redirect-policy confirmation did not complete/restore cleanly (rc=$RC); do not attribute the redirect from incomplete evidence."
             exit "$RC"
           fi
 
