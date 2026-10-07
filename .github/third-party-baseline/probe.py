@@ -299,10 +299,16 @@ class Store:
 
 
 def annotate_failures(store: Store, start: int) -> None:
-    """Mirror the material failures recorded since ``start`` into annotations."""
+    """Mirror every failure recorded since ``start`` into annotations.
+
+    Material failures become errors, recorded-only failures become warnings. Both
+    are mirrored because raw job logs and artifacts are unreachable from outside
+    the runner; run 37680547043 left the single recorded-only failure on all 15
+    PARTIAL subjects completely unreadable for exactly that reason.
+    """
     for check in store.data["checks"][start:]:
-        if check["status"] == FAIL and check["material"]:
-            annotate("error",
+        if check["status"] == FAIL:
+            annotate("error" if check["material"] else "warning",
                      f"{check['name']} FAILED (class candidate: {check['klass']}) "
                      f"expected={json.dumps(check['expected'], ensure_ascii=False)[:300]} "
                      f"observed={json.dumps(check['observed'], ensure_ascii=False)[:600]} "
@@ -867,79 +873,119 @@ def cmd_browser(args: argparse.Namespace) -> int:
     ajax: Dict[str, Any] = {}
     rest_status = 0
 
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(args=["--no-sandbox"])
-        context = browser.new_context(viewport={"width": 1366, "height": 900},
-                                      user_agent=USER_AGENT)
-        page = context.new_page()
-        page.on("console", lambda m: console_errors.append(m.text[:300])
-                if m.type == "error" else None)
-        page.on("pageerror", lambda e: page_errors.append(str(e)[:300]))
+    def record_probe_failure(name: str, klass: str, detail: str, material: bool = True) -> None:
+        """A browser sub-probe that could not run is recorded, not fatal.
 
-        def on_request_failed(request) -> None:  # noqa: ANN001
-            entry = f"{request.resource_type} {request.url[:200]}"
-            important = request.url.startswith(base_url) and request.resource_type in (
-                "document", "script", "stylesheet", "xhr", "fetch")
-            (failed_important if important else failed_other).append(entry)
+        One subject breaking wp-login.php used to raise inside the single try
+        block, which aborted every remaining browser probe AND was recorded as a
+        harness-fixture failure. Exact-head run 37680547043 showed both effects on
+        elementor and persian-woocommerce: `Page.fill` timed out waiting for
+        input[name='log'] because the product had already replaced the login page
+        with a PHP fatal. That is product behaviour with a downstream consequence,
+        not a harness defect, and it must not cost the other browser evidence.
+        """
+        store.check(name, False, klass, detail[:600], material, phase)
 
-        page.on("requestfailed", on_request_failed)
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(args=["--no-sandbox"])
+            context = browser.new_context(viewport={"width": 1366, "height": 900},
+                                          user_agent=USER_AGENT)
+            page = context.new_page()
+            page.on("console", lambda m: console_errors.append(m.text[:300])
+                    if m.type == "error" else None)
+            page.on("pageerror", lambda e: page_errors.append(str(e)[:300]))
 
-        def walk_redirects(response) -> List[Dict[str, Any]]:  # noqa: ANN001
-            chain: List[Dict[str, Any]] = []
-            seen = set()
-            current = response.request.redirected_from if response else None
-            while current is not None and current.url not in seen:
-                seen.add(current.url)
-                chain.append({"url": current.url[:200]})
-                current = current.redirected_from
-            return chain
+            def on_request_failed(request) -> None:  # noqa: ANN001
+                entry = f"{request.resource_type} {request.url[:200]}"
+                important = request.url.startswith(base_url) and request.resource_type in (
+                    "document", "script", "stylesheet", "xhr", "fetch")
+                (failed_important if important else failed_other).append(entry)
 
-        try:
-            response = page.goto(f"{base_url}/", wait_until="domcontentloaded",
-                                 timeout=BROWSER_TIMEOUT_MS)
-            nav = {"front_status": response.status if response else 0,
-                   "front_url": page.url, "front_redirects": walk_redirects(response)}
-            page.screenshot(path=os.path.join(args.out_dir, "front.png"))
-            screenshots.append("front.png")
+            page.on("requestfailed", on_request_failed)
 
-            page.goto(f"{base_url}/wp-login.php", wait_until="domcontentloaded",
-                      timeout=BROWSER_TIMEOUT_MS)
-            page.fill("input[name='log']", user)
-            page.fill("input[name='pwd']", password)
-            page.click("input#wp-submit")
-            page.wait_for_load_state("domcontentloaded", timeout=BROWSER_TIMEOUT_MS)
-            login["final_url"] = page.url
-            login["ok"] = "/wp-admin/" in page.url and "wp-login.php" not in page.url
-            if not login["ok"]:
-                login["error"] = f"landed on {page.url}"
-            else:
-                page.screenshot(path=os.path.join(args.out_dir, "wp-admin.png"))
-                screenshots.append("wp-admin.png")
-                # Setup wizards / HTTPS recommendations / license and enrollment
-                # prompts are RECORDED here. They are never dismissed, bypassed or
-                # answered, and no product setting is weakened to reach green.
-                for element in page.query_selector_all(".notice, .updated, .error"):
-                    text = (element.inner_text() or "").strip()
-                    if text:
-                        notices.append(text[:300])
+            def walk_redirects(response) -> List[Dict[str, Any]]:  # noqa: ANN001
+                chain: List[Dict[str, Any]] = []
+                seen = set()
+                current = response.request.redirected_from if response else None
+                while current is not None and current.url not in seen:
+                    seen.add(current.url)
+                    chain.append({"url": current.url[:200]})
+                    current = current.redirected_from
+                return chain
 
-            rest = page.goto(f"{base_url}/?rest_route=/", wait_until="domcontentloaded",
-                             timeout=BROWSER_TIMEOUT_MS)
-            rest_status = rest.status if rest else 0
+            try:
+                response = page.goto(f"{base_url}/", wait_until="domcontentloaded",
+                                     timeout=BROWSER_TIMEOUT_MS)
+                nav = {"front_status": response.status if response else 0,
+                       "front_url": page.url, "front_redirects": walk_redirects(response)}
+                page.screenshot(path=os.path.join(args.out_dir, "front.png"))
+                screenshots.append("front.png")
+            except Exception as exc:  # noqa: BLE001
+                record_probe_failure("browser_front_page_navigated", PRODUCT,
+                                     f"{type(exc).__name__}: {exc}")
 
-            api = context.request.get(f"{base_url}/wp-admin/admin-ajax.php",
-                                      timeout=BROWSER_TIMEOUT_MS)
-            body = api.text().strip()
-            ajax = {"status": api.status, "body": body[:80],
-                    "reached_wp_layer": api.status in (200, 400) and body == "0"}
-        except Exception as exc:  # noqa: BLE001 - a browser failure is evidence
-            store.check("browser_probe_executed", False, HARNESS,
-                        f"{type(exc).__name__}: {exc}"[:600], True, phase)
-            annotate_failures(store, start)
+            try:
+                page.goto(f"{base_url}/wp-login.php", wait_until="domcontentloaded",
+                          timeout=BROWSER_TIMEOUT_MS)
+                # Ask whether the form exists instead of blindly filling it. A
+                # subject that fataled has no login form, and waiting 30s for one
+                # only converts product damage into an apparent harness defect.
+                if page.query_selector("input[name='log']") is None:
+                    login = {"ok": False, "final_url": page.url,
+                             "error": "the login form is absent from wp-login.php after "
+                                      "activation; recorded as product behaviour"}
+                else:
+                    page.fill("input[name='log']", user)
+                    page.fill("input[name='pwd']", password)
+                    page.click("input#wp-submit")
+                    page.wait_for_load_state("domcontentloaded",
+                                             timeout=BROWSER_TIMEOUT_MS)
+                    login["final_url"] = page.url
+                    login["ok"] = ("/wp-admin/" in page.url
+                                   and "wp-login.php" not in page.url)
+                    if not login["ok"]:
+                        login["error"] = f"landed on {page.url}"
+                    else:
+                        page.screenshot(path=os.path.join(args.out_dir, "wp-admin.png"))
+                        screenshots.append("wp-admin.png")
+                        # Setup wizards / HTTPS recommendations / license and
+                        # enrollment prompts are RECORDED here. They are never
+                        # dismissed, bypassed or answered, and no product setting
+                        # is weakened to reach green.
+                        for element in page.query_selector_all(".notice, .updated, .error"):
+                            text = (element.inner_text() or "").strip()
+                            if text:
+                                notices.append(text[:300])
+            except Exception as exc:  # noqa: BLE001
+                login = {"ok": False, "final_url": page.url,
+                         "error": f"{type(exc).__name__}: {exc}"[:300]}
+
+            try:
+                rest = page.goto(f"{base_url}/?rest_route=/",
+                                 wait_until="domcontentloaded", timeout=BROWSER_TIMEOUT_MS)
+                rest_status = rest.status if rest else 0
+            except Exception as exc:  # noqa: BLE001
+                record_probe_failure("browser_rest_index_navigated", PRODUCT,
+                                     f"{type(exc).__name__}: {exc}")
+
+            try:
+                api = context.request.get(f"{base_url}/wp-admin/admin-ajax.php",
+                                          timeout=BROWSER_TIMEOUT_MS)
+                body = api.text().strip()
+                ajax = {"status": api.status, "body": body[:80],
+                        "reached_wp_layer": api.status in (200, 400) and body == "0"}
+            except Exception as exc:  # noqa: BLE001
+                ajax = {"status": 0, "body": "", "reached_wp_layer": False,
+                        "error": f"{type(exc).__name__}: {exc}"[:200]}
             browser.close()
-            store.save()
-            return 0
-        browser.close()
+    except Exception as exc:  # noqa: BLE001 - only a browser that cannot start at all
+        store.check("browser_probe_executed", False, HARNESS,
+                    f"the browser itself could not run: {type(exc).__name__}: {exc}"[:600],
+                    True, phase)
+        annotate_failures(store, start)
+        store.save()
+        return 0
 
     store.fact(f"browser_{phase}", {
         "nav": nav, "login": login, "rest_status": rest_status, "admin_ajax": ajax,
