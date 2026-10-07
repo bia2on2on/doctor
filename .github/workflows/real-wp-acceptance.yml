@@ -127,15 +127,22 @@ jobs:
       # the runner is the supported WP 6.7.2 / PHP 8.2 host used by this workflow.
       # Set rationale: The SEO Framework (SEO/query filters); Contact Form 7
       # (form shortcode/admin + frontend hooks); Autoptimize (asset/output caching);
-      # Wordfence (security/auth hooks); Easy Digital Downloads (digital commerce,
-      # checkout/customer/order flows and broad plugin hooks). EDD is the single
-      # credential-free WordPress.org commerce replacement, pinned below.
-      # WooCommerce 10.3.8 is excluded after run 37611352785 on head
-      # a1788f66c14f1d624668cbee10d683b030c887c5 recorded its own admin-access
-      # policy returning true for authenticated CPMS custom roles. This is a bounded
-      # third-party policy conflict/non-claim, not a CPMS security defect or a
-      # category-wide WooCommerce compatibility claim. No policy bypass or CPMS
-      # capability/auth change was made.
+      # Wordfence (security/auth hooks); WooCommerce (product/order/customer/checkout
+      # flows, its own wp-admin menu and admin-access policy). WooCommerce is REQUIRED
+      # by the frozen Product Decision (a clinic may sell lawful products alongside
+      # clinical operations), so it is the commerce member of this set.
+      # PRESERVED CAUSAL EVIDENCE (the reason this run doubles as the coexistence gate): on head
+      # a1788f66c14f1d624668cbee10d683b030c887c5, run 37611352785 reproduced the conflict
+      # with CPMS + WooCommerce 10.3.8 alone — doctor/secretary wp-admin requests were
+      # redirected to the WooCommerce My Account page while woocommerce_prevent_admin_access
+      # evaluated to true inside WC_Admin::prevent_admin_access. That was a third-party
+      # lock-down policy, not a CPMS security defect. The fix is a CPMS-owned scoped
+      # exception (ClinicCore\Admin\Compatibility\WooCommerceAdminAccess) on that public
+      # filter: allowlisted CPMS page + authentication + that page's own existing
+      # capability, everything else untouched. The earlier Easy Digital Downloads
+      # substitution was a temporary workaround and is removed.
+      # Claim boundary: this run proves this exact five-plugin set on this WP/PHP host
+      # only — no category-wide WooCommerce compatibility claim.
       - name: Download pinned representative plugins from WordPress.org (pre-CPMS)
         if: matrix.prefix == 'wp_'
         run: |
@@ -145,7 +152,7 @@ jobs:
           contact-form-7 6.1.7
           autoptimize 3.1.16
           wordfence 9.0.2
-          easy-digital-downloads 3.7.1
+          woocommerce 10.3.8
           EOF
           while read -r slug version; do
             [ -n "$slug" ] || continue
@@ -268,15 +275,14 @@ jobs:
           }
           echo "not-recorded OK (schema_migrations بدون 2999_01_01_9999)\n";
           PHPEOF
-          # Bounded WooCommerce non-claim / D3 disclosure: WooCommerce 10.3.8's
-          # WP-CLI after_wp_load hook invoked rest_api_init before eval-file
-          # entered the synthetic failure probe's catch boundary. WooCommerce is
-          # excluded from the final representative set after that policy conflict
-          # was confirmed. The --skip-plugins=woocommerce option is scoped only
-          # to this synthetic D3 WP-CLI invocation; it does not change plugin
-          # activation state or disable any selected plugin during real HTTP smoke.
-          # All five selected representative plugins remain active and are checked
-          # before/after the wp_ browser smoke; clinic_ stays the no-third-party control.
+          # Bounded WooCommerce exception / D3 disclosure: WooCommerce 10.3.8's WP-CLI
+          # after_wp_load hook fires rest_api_init before eval-file enters the synthetic
+          # migration-failure probe's catch boundary, which would mask the probe's own
+          # fail-loud result. --skip-plugins=woocommerce is therefore scoped ONLY to this
+          # synthetic D3 WP-CLI invocation: it does not change plugin activation state and
+          # does not disable WooCommerce for any real HTTP request. WooCommerce is an active,
+          # verified member of the final five-plugin coexistence set; the browser smoke and
+          # the public health check below run with it (and the other four) fully active.
           # بدون pipe-masking: وضعیت خروجی واقعی probe تعیین‌کننده است
           wp eval-file /tmp/acc/probe-broken.php --skip-plugins=woocommerce --path="$WP_DIR" --allow-root > /tmp/acc/migration-failure-probe.txt 2>&1
           RC=$?
@@ -570,7 +576,20 @@ jobs:
             'PASS public-booking.http200' \
             'PASS public-booking.a1_http200' \
             'PASS public-booking.a1_reached_product_route' \
-            'PASS public-booking.a4_http200'; do
+            'PASS public-booking.a4_http200' \
+            'PASS doctor.coexistence.doctor_page.served_on_cpms_admin_screen' \
+            'PASS doctor.coexistence.doctor_patients_page.served_on_cpms_admin_screen' \
+            'PASS secretary.coexistence.queue_page.served_on_cpms_admin_screen' \
+            'PASS secretary.coexistence.patients_page.served_on_cpms_admin_screen' \
+            'PASS manager.coexistence.system_page.served_on_cpms_admin_screen' \
+            'PASS accountant.coexistence.finance_page.served_on_cpms_admin_screen' \
+            'PASS doctor.doctor-denied-woo-admin.not_granted' \
+            'PASS secretary.secretary-denied-woo-admin.not_granted' \
+            'PASS manager.manager-denied-woo-admin.not_granted' \
+            'PASS accountant.accountant-denied-woo-admin.not_granted' \
+            'PASS doctor.doctor-denied-core-posts.not_granted' \
+            'PASS secretary.secretary-denied-core-settings.not_granted' \
+            'PASS doctor.doctor-denied-spoofed-page.not_granted'; do
             grep -Fq "$expected" /tmp/acc/acceptance.log || { echo "::error::Existing Real WP smoke did not prove: $expected"; exit 1; }
           done
 
@@ -587,9 +606,26 @@ jobs:
           echo "still active after smoke: clinic-practice-management@${cpms_version}"
           wp plugin list --status=active --format=json --path="$WP_DIR" --allow-root > /tmp/acc/coexistence-active-after-smoke.json
 
-          HEALTH_HTTP="$(curl -sS -o /tmp/acc/coexistence-health.json -w '%{http_code}' "$WP_URL/wp-json/clinic/v1/health")"
+          # Gate is deliberately unchanged (HTTP 200 AND data.ok=true). The extra records below
+          # exist only so a failure is adjudicable from published evidence — exact status,
+          # redirect target, content type, sanitized response head and a fatal-error count —
+          # because a bare "failed" annotation cannot separate C (transport/provider) from D
+          # (fixture) from a real product regression. No secret/PHI is published.
+          HEALTH_META="$(curl -sS -o /tmp/acc/coexistence-health.json -w '%{http_code}|%{content_type}|%{redirect_url}' "$WP_URL/wp-json/clinic/v1/health")" || HEALTH_META='000|transport-error|'
+          HEALTH_HTTP="${HEALTH_META%%|*}"
           echo "anonymous CPMS health: HTTP ${HEALTH_HTTP}"
-          [ "$HEALTH_HTTP" = '200' ] || { echo '::error::Public CPMS health endpoint failed with representative plugins active.'; exit 1; }
+          if [ "$HEALTH_HTTP" != '200' ]; then
+            FATAL_COUNT="$(grep -cE 'PHP Fatal error|Uncaught|There has been a critical error' "$WP_DIR/wp-content/debug.log" 2>/dev/null || true)"
+            {
+              printf 'http_status=%s\n' "$HEALTH_HTTP"
+              printf 'http_status_content_type_redirect=%s\n' "$HEALTH_META"
+              printf 'response_head=%s\n' "$(head -c 400 /tmp/acc/coexistence-health.json 2>/dev/null | tr '\n\r' '  ' | sed -E 's/[A-Za-z0-9+\/=_-]{24,}/[opaque]/g' | cut -c1-240)"
+              printf 'debug_log_fatal_count=%s\n' "${FATAL_COUNT:-no-debug-log}"
+            } > /tmp/acc/coexistence-health-failure.txt
+            cat /tmp/acc/coexistence-health-failure.txt
+            echo '::error::Public CPMS health endpoint failed with representative plugins active (bounded diagnostics: coexistence-health-failure.txt in the artifact and the evidence comment).'
+            exit 1
+          fi
           python3 - /tmp/acc/coexistence-health.json <<'PY'
           import json
           import sys
@@ -608,7 +644,9 @@ jobs:
             echo '## Phase 18 Slice 18-4 — bounded WordPress plugin coexistence'
             echo '- Existing Real WordPress browser smoke passed with the complete pinned set and CPMS release ZIP active.'
             echo '- Smoke anchors: authenticated CPMS system health; secretary Clinic-scoped patient create/search; anonymous booking page + A1 availability + A4 quote.'
-            echo '- Public `/wp-json/clinic/v1/health`: HTTP 200 and `data.ok=true` while all six plugins remained active.'
+            echo '- WooCommerce 10.3.8 coexistence: every authorized CPMS persona above was served on its own wp-admin screen (no third-party redirect to the store front-end).'
+            echo '- Non-widening proof (same run, real browser): doctor/secretary/manager/accountant got NO access to `admin.php?page=wc-admin`; doctor got none of `edit.php`/`users.php`; secretary got none of `options-general.php`; an unknown `page=cpms-*` selector was not exempted. Denial mechanism per check is recorded in `logs/*-denial.json`.'
+            echo '- Public `/wp-json/clinic/v1/health`: HTTP 200 and `data.ok=true` while all six plugins (five pinned + CPMS) remained active.'
             echo '- No PHP fatal/parse/error, uncaught exception, or WordPress critical-error marker in the exercised run log.'
             echo '- WordPress.org plugin packages (exact pins):'
           } >> "$GITHUB_STEP_SUMMARY"
@@ -721,6 +759,14 @@ jobs:
             echo '- browser acceptance:'
             echo '```'
             cat /tmp/acc/acceptance.log 2>/dev/null || echo '(مرحلهٔ مرورگر اجرا نشد)'
+            echo '```'
+            echo '- coexistence gate lines (every FAIL plus the named coexistence checks):'
+            echo '```'
+            grep -E '^FAIL|coexistence\.|\.not_granted|no_woo_redirect' /tmp/acc/acceptance.log 2>/dev/null | head -60 || echo '(no coexistence/FAIL lines)'
+            echo '```'
+            echo '- public CPMS health failure diagnostics (only present if the gate failed):'
+            echo '```'
+            cat /tmp/acc/coexistence-health-failure.txt 2>/dev/null || echo '(health gate did not fail)'
             echo '```'
             echo '- standalone shell technical proof (Phase 9 Slice 3 — NON-PRODUCTION fixture):'
             echo '```'
