@@ -255,6 +255,14 @@ jobs:
       - name: Migration failure must NOT be recorded as success (D3)
         run: |
           PREFIX='${{ matrix.prefix }}'
+          if [ "$PREFIX" = 'wp_' ]; then
+            mkdir -p /tmp/log-gate-phases 2>/dev/null || :
+            if [ -f "$WP_DIR/wp-content/debug.log" ]; then
+              cp "$WP_DIR/wp-content/debug.log" /tmp/log-gate-phases/debug-before-d3.log 2>/dev/null || :
+            else
+              : > /tmp/log-gate-phases/debug-before-d3.log 2>/dev/null || :
+            fi
+          fi
           MDIR="$WP_DIR/wp-content/plugins/clinic-practice-management/src/Migrations"
           # فایل‌های افزونه متعلق به root‌اند (wp-cli allow-root نصب کرده) → sudo
           sudo tee "$MDIR/2999_01_01_9999_acceptance_broken.php" >/dev/null <<'PHPEOF'
@@ -310,6 +318,13 @@ jobs:
           sudo rm -f "$MDIR/2999_01_01_9999_acceptance_broken.php"
           wp eval '\ClinicCore\Bootstrap\App::migrations()->migrate();' --path="$WP_DIR" --allow-root
           echo 're-migrate after probe removal: OK (no-op idempotent)'
+          if [ "$PREFIX" = 'wp_' ]; then
+            if [ -f "$WP_DIR/wp-content/debug.log" ]; then
+              cp "$WP_DIR/wp-content/debug.log" /tmp/log-gate-phases/debug-after-d3.log 2>/dev/null || :
+            else
+              : > /tmp/log-gate-phases/debug-after-d3.log 2>/dev/null || :
+            fi
+          fi
 
       # ---------- کاربران نقش‌محور + دادهٔ پایه ----------
       - name: Role users + storage خارج webroot
@@ -561,6 +576,13 @@ jobs:
           test -n "$cpms_version"
           echo "active before smoke: clinic-practice-management@${cpms_version} (current official release ZIP)"
           wp plugin list --status=active --format=json --path="$WP_DIR" --allow-root > /tmp/acc/coexistence-active-before-smoke.json
+          mkdir -p /tmp/log-gate-phases 2>/dev/null || :
+          if [ -f "$WP_DIR/wp-content/debug.log" ]; then
+            cp "$WP_DIR/wp-content/debug.log" /tmp/log-gate-phases/debug-before-http.log 2>/dev/null || :
+          else
+            : > /tmp/log-gate-phases/debug-before-http.log 2>/dev/null || :
+          fi
+          sudo cp /var/log/apache2/acc-error.log /tmp/log-gate-phases/apache-before-http.log 2>/dev/null || :
 
       # ---------- 6) پذیرش مرورگری ----------
       - name: Browser acceptance — all 5 roles (Admin/Manager/Doctor/Secretary/Accountant) menus + denial
@@ -675,6 +697,13 @@ jobs:
             echo "  - \`${slug}@${version}\`" >> "$GITHUB_STEP_SUMMARY"
           done < /tmp/acc/coexistence-plugin-pins.tsv
           echo '- Active-state snapshots before/after the smoke are attached to the existing Real WP acceptance artifact.' >> "$GITHUB_STEP_SUMMARY"
+          mkdir -p /tmp/log-gate-phases 2>/dev/null || :
+          if [ -f "$WP_DIR/wp-content/debug.log" ]; then
+            cp "$WP_DIR/wp-content/debug.log" /tmp/log-gate-phases/debug-after-http.log 2>/dev/null || :
+          else
+            : > /tmp/log-gate-phases/debug-after-http.log 2>/dev/null || :
+          fi
+          sudo cp /var/log/apache2/acc-error.log /tmp/log-gate-phases/apache-after-http.log 2>/dev/null || :
 
       # ---------- 6.5) اثبات فنی: پوستهٔ مستقلِ CPMS (Phase 9 Slice 3 — فقط proof) ----------
       # NON-PRODUCTION: فیکسچرها (mu-plugin رهگیرِ template_include + دو تمِ کنترلیِ
@@ -707,6 +736,15 @@ jobs:
           RC=$?
           cat /tmp/acc/shell-proof.log
           if [ "$RC" -ne 0 ]; then echo "SHELL PROOF FAILED (rc=$RC)"; exit "$RC"; fi
+          if [ '${{ matrix.prefix }}' = 'wp_' ]; then
+            mkdir -p /tmp/log-gate-phases 2>/dev/null || :
+            if [ -f "$WP_DIR/wp-content/debug.log" ]; then
+              cp "$WP_DIR/wp-content/debug.log" /tmp/log-gate-phases/debug-after-shell.log 2>/dev/null || :
+            else
+              : > /tmp/log-gate-phases/debug-after-shell.log 2>/dev/null || :
+            fi
+            sudo cp /var/log/apache2/acc-error.log /tmp/log-gate-phases/apache-after-shell.log 2>/dev/null || :
+          fi
 
       # ---------- 7) بررسی لاگ‌ها (همیشه — حتی در شکست) ----------
       - name: PHP/WP/Apache logs review
@@ -717,23 +755,164 @@ jobs:
           sudo cp /var/log/apache2/acc-error.log /tmp/acc/logs/apache-error.log 2>/dev/null || true
           sudo cp /var/log/apache2/acc-access.log /tmp/acc/logs/apache-access.log 2>/dev/null || true
           sudo chmod -R a+r /tmp/acc/logs/ || true
-          echo '===== debug.log (tail) ====='
-          tail -40 /tmp/acc/logs/debug.log 2>/dev/null || echo '(debug.log موجود نشد — یعنی هیچ خطای PHP ثبت نشده)'
-          echo '===== apache error (tail) ====='
-          tail -20 /tmp/acc/logs/apache-error.log 2>/dev/null || true
+          DEBUG_BYTES=0
+          APACHE_BYTES=0
+          [ ! -f /tmp/acc/logs/debug.log ] || DEBUG_BYTES="$(wc -c < /tmp/acc/logs/debug.log)"
+          [ ! -f /tmp/acc/logs/apache-error.log ] || APACHE_BYTES="$(wc -c < /tmp/acc/logs/apache-error.log)"
+          echo "PHP/WP/Apache log files captured for final gate; raw contents suppressed. debug.log_bytes=${DEBUG_BYTES}; apache_error_bytes=${APACHE_BYTES}"
 
       - name: Log gate — بدون Fatal/Critical در لاگ PHP/WP
         if: always()
         run: |
-          if [ -f /tmp/acc/logs/debug.log ]; then
-            if grep -qE 'PHP Fatal error|Uncaught|There has been a critical error' /tmp/acc/logs/debug.log; then
-              echo 'FATAL/CRITICAL IN debug.log:'; grep -nE 'PHP Fatal error|Uncaught|critical error' /tmp/acc/logs/debug.log | tail -10; exit 1
-            fi
+          # Diagnostic only: publish safe signatures and phase counts; keep the existing grep gate authoritative.
+          if ! python3 - > /tmp/acc/log-gate-summary.txt 2>/dev/null <<'PY'
+          from collections import Counter
+          from pathlib import Path
+          import re
+
+          root = Path('/tmp/acc')
+          phase_dir = root / 'log-gate-phases'
+          debug_gate = re.compile(r'PHP Fatal error|Uncaught|There has been a critical error')
+          apache_gate = re.compile(r'PHP Fatal error|Uncaught')
+
+          def source_category(line):
+              match = re.search(r'\bin\s+((?:/|[A-Za-z]:[\\/])[^\s]+)', line)
+              if not match:
+                  return 'PHP/WP runtime (source path absent)'
+              path = match.group(1).replace('\\', '/').rstrip(':,.)')
+              lower = path.lower()
+              if '/wp-content/plugins/clinic-practice-management/' in lower:
+                  return 'CPMS PHP source'
+              if '/wp-content/plugins/woocommerce/' in lower:
+                  return 'WooCommerce PHP source'
+              if '/wp-content/plugins/' in lower:
+                  rest = lower.split('/wp-content/plugins/', 1)[1]
+                  slug = rest.split('/', 1)[0]
+                  return 'third-party plugin:' + (slug if re.fullmatch(r'[a-z0-9_-]{1,80}', slug) else 'redacted')
+              if '/wp-content/themes/' in lower:
+                  rest = lower.split('/wp-content/themes/', 1)[1]
+                  slug = rest.split('/', 1)[0]
+                  return 'theme:' + (slug if re.fullmatch(r'[a-z0-9_-]{1,80}', slug) else 'redacted')
+              if '/wp-includes/' in lower or '/wp-admin/' in lower:
+                  return 'WordPress core PHP source'
+              if '/mu-plugins/' in lower or '/tmp/acc/' in lower:
+                  return 'acceptance fixture/harness'
+              if '/usr/' in lower or '/opt/' in lower:
+                  return 'PHP/Apache runtime'
+              return 'other PHP source (path redacted)'
+
+          def safe_record(line):
+              if 'PHP Fatal error' in line:
+                  severity = 'PHP_FATAL'
+              elif 'Uncaught' in line:
+                  severity = 'UNCAUGHT'
+              else:
+                  severity = 'WP_CRITICAL_MARKER'
+              source = source_category(line)
+              signature = 'message redacted'
+              patterns = [
+                  (r'Call to undefined function\s+([A-Za-z_][A-Za-z0-9_\\]*)\s*\(', 'undefined function {}()'),
+                  (r'Call to undefined method\s+([A-Za-z_][A-Za-z0-9_\\]*)::([A-Za-z_][A-Za-z0-9_]*)', 'undefined method {}::{}()'),
+                  (r'Cannot redeclare (?:function )?([A-Za-z_][A-Za-z0-9_\\]*)', 'redeclared function {}'),
+                  (r'Too few arguments to function ([A-Za-z_][A-Za-z0-9_\\:]*)', 'too few arguments to {}'),
+                  (r'Class [\"\']([A-Za-z_][A-Za-z0-9_\\]*)[\"\'] not found', 'missing class {}'),
+                  (r'Call to a member function ([A-Za-z_][A-Za-z0-9_]*)\(\) on null', 'member call on null: {}()'),
+              ]
+              for pattern, template in patterns:
+                  match = re.search(pattern, line)
+                  if match:
+                      signature = template.format(*match.groups())
+                      break
+              else:
+                  if 'There has been a critical error' in line or 'critical error' in line:
+                      signature = 'WordPress critical-error marker'
+                  else:
+                      uncaught = re.search(r'Uncaught\s+([A-Za-z_][A-Za-z0-9_\\]*)', line)
+                      if uncaught:
+                          signature = 'uncaught ' + uncaught.group(1) + ' (message redacted)'
+                      elif severity == 'PHP_FATAL':
+                          signature = 'PHP fatal (message redacted)'
+              return severity, source, signature
+
+          snapshots = {
+              'debug.log': [
+                  ('pre-CPMS baseline', root / 'coexistence-debug-before-cpms.log'),
+                  ('before D3', phase_dir / 'debug-before-d3.log'),
+                  ('after D3', phase_dir / 'debug-after-d3.log'),
+                  ('before HTTP smoke', phase_dir / 'debug-before-http.log'),
+                  ('after HTTP smoke', phase_dir / 'debug-after-http.log'),
+                  ('after shell proof', phase_dir / 'debug-after-shell.log'),
+                  ('final', root / 'logs' / 'debug.log'),
+              ],
+              'apache-error.log': [
+                  ('before HTTP smoke', phase_dir / 'apache-before-http.log'),
+                  ('after HTTP smoke', phase_dir / 'apache-after-http.log'),
+                  ('after shell proof', phase_dir / 'apache-after-shell.log'),
+                  ('final', root / 'logs' / 'apache-error.log'),
+              ],
+          }
+          counts = {}
+          available = {}
+          print('log_gate_diagnostic_version=1; raw messages, absolute paths and request data suppressed')
+          for log_name, phases in snapshots.items():
+              for phase, path in phases:
+                  phase_counts = Counter()
+                  present = path.is_file()
+                  available[(log_name, phase)] = present
+                  if present:
+                      try:
+                          for line in path.read_text(encoding='utf-8', errors='replace').splitlines():
+                              gate = debug_gate if log_name == 'debug.log' else apache_gate
+                              if gate.search(line):
+                                  phase_counts[safe_record(line)] += 1
+                      except OSError:
+                          available[(log_name, phase)] = False
+                  counts[(log_name, phase)] = phase_counts
+              final = counts.get((log_name, 'final'), Counter())
+              final_status = str(sum(final.values())) if available.get((log_name, 'final')) else 'not-captured'
+              snapshot_status = ','.join(f'{phase}={"captured" if available[(log_name, phase)] else "unavailable"}' for phase, _ in phases)
+              print(f'log={log_name}; final_gate_matching_lines={final_status}; snapshots={snapshot_status}')
+              if not available.get((log_name, 'final')):
+                  continue
+              for index, (key, total) in enumerate(sorted(final.items()), 1):
+                  severity, source, signature = key
+                  phase_values = [(phase, counts[(log_name, phase)].get(key, 0)) for phase, _ in phases if available[(log_name, phase)]]
+                  first_seen = next((phase for phase, value in phase_values if value > 0), 'not seen in available snapshots')
+                  deltas = []
+                  transitions = {
+                      ('pre-CPMS baseline', 'before D3'): 'CPMS activation/pre-D3 setup',
+                      ('before D3', 'after D3'): 'intentional D3 injection window',
+                      ('after D3', 'before HTTP smoke'): 'post-D3/pre-HTTP setup',
+                      ('before HTTP smoke', 'after HTTP smoke'): 'real HTTP/browser coexistence smoke',
+                      ('after HTTP smoke', 'after shell proof'): 'standalone shell proof',
+                      ('after shell proof', 'final'): 'final log capture',
+                  }
+                  for (earlier, later), label in transitions.items():
+                      if available.get((log_name, earlier)) and available.get((log_name, later)):
+                          delta = counts[(log_name, later)].get(key, 0) - counts[(log_name, earlier)].get(key, 0)
+                          if delta > 0:
+                              deltas.append(f'{label}=+{delta}')
+                  if available.get((log_name, 'pre-CPMS baseline')):
+                      pre_cpms = counts[(log_name, 'pre-CPMS baseline')].get(key, 0)
+                  else:
+                      pre_cpms = 'not-applicable'
+                  if not available.get((log_name, 'after shell proof')) and available.get((log_name, 'after HTTP smoke')) and available.get((log_name, 'final')):
+                      delta = counts[(log_name, 'final')].get(key, 0) - counts[(log_name, 'after HTTP smoke')].get(key, 0)
+                      if delta > 0:
+                          deltas.append(f'post-HTTP work before final capture=+{delta}')
+                  print(f'match[{index}] log={log_name}; severity={severity}; source={source}; signature={signature}; count={total}; pre_cpms_count={pre_cpms}; first_seen={first_seen}; new_in={", ".join(deltas) if deltas else "no phase delta proved"}')
+          PY
+          then
+            printf '%s\n' 'diagnostic_status=failed; raw log contents suppressed; unchanged gate remains authoritative' > /tmp/acc/log-gate-summary.txt
           fi
-          if [ -f /tmp/acc/logs/apache-error.log ]; then
-            if grep -qE 'PHP Fatal error|Uncaught' /tmp/acc/logs/apache-error.log; then
-              echo 'FATAL IN apache error log:'; grep -nE 'PHP Fatal error|Uncaught' /tmp/acc/logs/apache-error.log | tail -10; exit 1
-            fi
+          cat /tmp/acc/log-gate-summary.txt
+          if [ -f /tmp/acc/logs/debug.log ] && grep -qE 'PHP Fatal error|Uncaught|There has been a critical error' /tmp/acc/logs/debug.log; then
+            echo 'LOG GATE: FAIL — existing fatal/uncaught/critical pattern matched debug.log; see sanitized summary.'
+            exit 1
+          fi
+          if [ -f /tmp/acc/logs/apache-error.log ] && grep -qE 'PHP Fatal error|Uncaught' /tmp/acc/logs/apache-error.log; then
+            echo 'LOG GATE: FAIL — existing fatal/uncaught pattern matched apache-error.log; see sanitized summary.'
+            exit 1
           fi
           echo 'LOG GATE: clean (بدون Fatal/Uncaught/Critical)'
 
@@ -800,13 +979,9 @@ jobs:
             echo '```'
             cat /tmp/acc/logs/*-login.json 2>/dev/null || echo '(no login failure)'
             echo '```'
-            echo '- PHP fatal lines in debug.log:'
+            echo '- sanitized PHP/WP/Apache final log-gate summary:'
             echo '```'
-            grep -E 'Fatal|Uncaught' /tmp/acc/logs/debug.log 2>/dev/null | tail -8 || echo '(none)'
-            echo '```'
-            echo '- debug.log tail:'
-            echo '```'
-            tail -15 /tmp/acc/logs/debug.log 2>/dev/null || echo '(بدون debug.log)'
+            cat /tmp/acc/log-gate-summary.txt 2>/dev/null || echo '(sanitized summary unavailable; gate remains authoritative)'
             echo '```'
             echo '- pinned pre-CPMS WordPress.org package install logs:'
             echo '```'
