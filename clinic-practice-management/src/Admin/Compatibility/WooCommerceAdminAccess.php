@@ -45,8 +45,8 @@ use ClinicCore\Auth\RolesAndCapabilities;
  *
  * @package ClinicCore\Admin\Compatibility
  */
-final class WooCommerceAdminAccess
-{
+final class WooCommerceAdminAccess {
+
     /** Public WooCommerce filter that carries its admin-access policy verdict. */
     public const FILTER = 'woocommerce_prevent_admin_access';
 
@@ -80,9 +80,8 @@ final class WooCommerceAdminAccess
         'cpms-patients'           => RolesAndCapabilities::PATIENT_READ,
     ];
 
-    public static function register(): void
-    {
-        add_filter(self::FILTER, [self::class, 'allow_authorized_cpms_page'], 10, 1);
+    public static function register(): void {
+        add_filter( self::FILTER, [self::class, 'allow_authorized_cpms_page'], 10, 1 );
     }
 
     /**
@@ -90,24 +89,23 @@ final class WooCommerceAdminAccess
      *
      * @param bool $prevent_access WooCommerce's own verdict for this request.
      */
-    public static function allow_authorized_cpms_page(bool $prevent_access): bool
-    {
+    public static function allow_authorized_cpms_page( bool $prevent_access ): bool {
         global $pagenow;
 
         // Network/user admin screens never serve a CPMS page — leave the policy untouched.
-        if (is_network_admin() || is_user_admin()) {
+        if ( is_network_admin() || is_user_admin() ) {
             return $prevent_access;
         }
 
         return self::decide(
             $prevent_access,
-            is_string($pagenow) ? $pagenow : '',
+            is_string( $pagenow ) ? $pagenow : '',
             // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only selector; never authority (registry + registration + capability below).
             $_GET['page'] ?? null,
             is_user_logged_in(),
             self::PAGES,
-            static fn (string $capability): bool => current_user_can($capability),
-            static fn (string $slug, string $capability): bool => self::is_registered_page($slug, $capability)
+            static fn ( string $capability ): bool => current_user_can( $capability ),
+            static fn ( string $slug, string $capability ): bool => self::is_registered_page( $slug, $capability )
         );
     }
 
@@ -134,42 +132,42 @@ final class WooCommerceAdminAccess
         callable $page_is_registered
     ): bool {
         // Nothing to relax — the policy already allows this request.
-        if ($prevent_access === false) {
+        if ( $prevent_access === false ) {
             return false;
         }
 
         // An anonymous request must never gain a coexistence exception.
-        if ($is_authenticated === false) {
+        if ( $is_authenticated === false ) {
             return $prevent_access;
         }
 
         // Only the screen that serves CPMS pages — nothing else in wp-admin.
-        if ($admin_screen !== self::CPMS_ADMIN_SCREEN) {
+        if ( $admin_screen !== self::CPMS_ADMIN_SCREEN ) {
             return $prevent_access;
         }
 
         // Fail closed for absent/non-string selectors, and for anything CPMS does not own.
-        if (!is_string($requested_page) || $requested_page === '') {
+        if ( ! is_string( $requested_page ) || $requested_page === '' ) {
             return $prevent_access;
         }
 
-        if (!array_key_exists($requested_page, $pages)) {
+        if ( ! array_key_exists( $requested_page, $pages ) ) {
             return $prevent_access;
         }
 
         // A registry entry without a real capability can only mean a defect → fail closed.
-        $capability = $pages[$requested_page];
-        if (!is_string($capability) || $capability === '') {
+        $capability = $pages[ $requested_page ];
+        if ( ! is_string( $capability ) || $capability === '' ) {
             return $prevent_access;
         }
 
         // The page's own existing authorization stays authoritative.
-        if ($capability_granted($capability) !== true) {
+        if ( $capability_granted( $capability ) !== true ) {
             return $prevent_access;
         }
 
         // The page must actually be registered for this request under that same capability.
-        if ($page_is_registered($requested_page, $capability) !== true) {
+        if ( $page_is_registered( $requested_page, $capability ) !== true ) {
             return $prevent_access;
         }
 
@@ -186,23 +184,22 @@ final class WooCommerceAdminAccess
      *
      * Fail-closed: missing or malformed menu globals, and no matching entry, both mean "not registered".
      */
-    public static function is_registered_page(string $slug, string $capability): bool
-    {
+    public static function is_registered_page( string $slug, string $capability ): bool {
         global $menu, $submenu;
 
-        if (!is_array($menu) && !is_array($submenu)) {
+        if ( ! is_array( $menu ) && ! is_array( $submenu ) ) {
             return false;
         }
 
-        foreach ((array) $menu as $item) {
-            if (self::entry_matches($item, $slug, $capability)) {
+        foreach ( (array) $menu as $item ) {
+            if ( self::entry_matches( $item, $slug, $capability ) ) {
                 return true;
             }
         }
 
-        foreach ((array) $submenu as $group) {
-            foreach ((array) $group as $item) {
-                if (self::entry_matches($item, $slug, $capability)) {
+        foreach ( (array) $submenu as $group ) {
+            foreach ( (array) $group as $item ) {
+                if ( self::entry_matches( $item, $slug, $capability ) ) {
                     return true;
                 }
             }
@@ -214,12 +211,11 @@ final class WooCommerceAdminAccess
     /**
      * WordPress menu row shape: [0] => menu title, [1] => capability, [2] => slug.
      */
-    private static function entry_matches(mixed $item, string $slug, string $capability): bool
-    {
-        return is_array($item)
-            && isset($item[1], $item[2])
-            && is_string($item[1])
-            && is_string($item[2])
+    private static function entry_matches( mixed $item, string $slug, string $capability ): bool {
+        return is_array( $item )
+            && isset( $item[1], $item[2] )
+            && is_string( $item[1] )
+            && is_string( $item[2] )
             && $item[2] === $slug
             && $item[1] === $capability;
     }

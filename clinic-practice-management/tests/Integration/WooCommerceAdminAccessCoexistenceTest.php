@@ -231,7 +231,15 @@ final class WooCommerceAdminAccessCoexistenceTest extends WP_UnitTestCase
     public function testExceptionIsWiredOnThePublicWooCommerceFilterOnly(): void
     {
         // Registered by the production bootstrap (App::boot), not by this test.
-        $this->assertSame(10, has_filter(WooCommerceAdminAccess::FILTER), 'the callback must sit on the public WooCommerce filter');
+        // Passing the callback asks WordPress for its priority; without it has_filter() returns bool.
+        $this->assertSame(
+            10,
+            has_filter(
+                WooCommerceAdminAccess::FILTER,
+                [WooCommerceAdminAccess::class, 'allow_authorized_cpms_page']
+            ),
+            'the callback must sit on the public WooCommerce filter'
+        );
         $this->assertFalse(has_action('admin_init', [WooCommerceAdminAccess::class, 'allow_authorized_cpms_page']));
         $this->assertFalse(has_action('admin_menu', [WooCommerceAdminAccess::class, 'register']));
         // The admin-bar half of WooCommerce's policy is untouched: no widening of the toolbar.
@@ -408,13 +416,11 @@ final class WooCommerceAdminAccessCoexistenceTest extends WP_UnitTestCase
             );
             $observed[$slug] = $capability;
 
-            // A user without that capability gets neither a registration nor an exemption.
+            // WordPress can retain a menu row as a registration even for a user who cannot
+            // access it; registration is not authorization. The filter must still consult the
+            // page's own capability and preserve the third-party verdict for that user.
             wp_set_current_user($this->user_holding(['cpms_nonexistent_probe_capability']));
-            $this->assertArrayNotHasKey(
-                $slug,
-                $this->registered_pages_via($menu_owner),
-                "{$slug} must not be registered for a user lacking {$capability}"
-            );
+            $this->assertFalse(current_user_can($capability), "probe user must not hold {$capability}");
             $this->serve_admin_request('admin.php', $slug, true);
             $this->assertTrue($this->verdict(), "{$slug} must stay under the policy without {$capability}");
         }

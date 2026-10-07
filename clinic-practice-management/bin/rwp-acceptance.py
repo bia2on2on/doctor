@@ -1335,6 +1335,8 @@ with sync_playwright() as p:
             assert_denied(page, "accountant", "admin.php?page=cpms-doctor", "cpms-acc-denied-doctor")
             assert_denied(page, "accountant", "admin.php?page=cpms-staff", "cpms-acc-denied-staff")
             assert_denied(page, "accountant", "admin.php?page=cpms-patients", "cpms-acc-denied-patients")
+            # Return to the accountant's allowed screen after the direct-denial probes above.
+            goto_admin(page, "accountant", "admin.php?page=cpms-finance", "cpms-acc-finance-coexistence")
             # Coexistence: finance screen is served in wp-admin; store admin stays closed.
             assert_served_on_admin_screen(page, "accountant", "page=cpms-finance", "coexistence.finance_page")
             assert_not_granted(page, "accountant", "admin.php?page=wc-admin", "accountant-denied-woo-admin")
