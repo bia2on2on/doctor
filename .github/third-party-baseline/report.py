@@ -70,7 +70,9 @@ def render_markdown(results: List[Dict[str, Any]], meta: Dict[str, Any],
         "",
         "Each subject ran in its own GitHub Actions job: fresh runner, fresh MySQL "
         "container and database, fresh WordPress filesystem. CPMS was never installed "
-        "in any job, and its absence was asserted before and after activation.",
+        "in any job, and its absence was asserted before and after the subject under "
+        "test was applied — a pinned plugin for the product legs, the locale fixture "
+        "for the Persian baseline leg.",
         "",
         f"- lane: **{meta['lane']}**",
         f"- head SHA: `{meta['head_sha']}`",
@@ -79,16 +81,20 @@ def render_markdown(results: List[Dict[str, Any]], meta: Dict[str, Any],
         "",
         "## Results",
         "",
-        "| State | Subject | Pin | WP | PHP (web) | MySQL | Tables before → after | CPMS absent |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| State | Subject | Pin | Locale / TZ | WP | PHP (web) | MySQL | Tables before → after | CPMS absent |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for result in results:
         subject, environment = result["subject"], result["environment"]
         tables, absence = result.get("table_counts", {}), result.get("cpms_absence", {})
+        locale = environment.get("locale") or ""
+        timezone = environment.get("timezone") or ""
+        locale_cell = " · ".join(p for p in (locale, timezone) if p) or "–"
         lines.append(
-            "| {state} | `{sid}` | {version} | {wp} | {php} | {mysql} | {before} → {after} | {cpms} |"
+            "| {state} | `{sid}` | {version} | {locale} | {wp} | {php} | {mysql} "
+            "| {before} → {after} | {cpms} |"
             .format(state=result["state"], sid=subject.get("id", ""),
-                    version=subject.get("version_requested", ""),
+                    version=subject.get("version_requested", ""), locale=locale_cell,
                     wp=environment.get("wordpress") or "", php=environment.get("php_web") or "",
                     mysql=environment.get("mysql") or "",
                     before=tables.get("before_activation"), after=tables.get("after_activation"),
@@ -101,9 +107,12 @@ def render_markdown(results: List[Dict[str, Any]], meta: Dict[str, Any],
         lines.append("No material failure. Nothing to attribute.")
     else:
         lines += [
-            "CPMS is absent from every job, so no third-party result can be category A "
+            "CPMS is absent from every job, so no result can be category A "
             "or B. Category E does not exist. A genuine third-party failure is reported "
-            "as `THIRD-PARTY BASELINE FAILURE - no CPMS classification applicable`.",
+            "as `THIRD-PARTY BASELINE FAILURE - no CPMS classification applicable`; the "
+            "Persian baseline leg installs no third-party product, so its product-class "
+            "failures are reported as `LOCALE BASELINE FAILURE - no CPMS classification "
+            "applicable` rather than being attributed to a product it never ran.",
             "",
         ]
         for result in failures:

@@ -2,16 +2,50 @@ name: Third-Party Compatibility Baseline (Phase 18 Lane A)
 
 # Phase 18 — third-party compatibility MEASUREMENT baseline.
 #
-# This workflow measures how the owner-frozen 20 third-party products behave on a
-# clean, CPMS-free WordPress.  It installs no CPMS code, changes no CPMS code and
-# makes no CPMS claim: taxonomy category A and B are unreachable here.
+# CURRENT CAMPAIGN TARGET (owner-directed, frozen at implementation time)
+#   WordPress 7.1.3  ·  PHP 8.3  ·  MySQL 8.4.11  ·  Apache + real Chromium
+#   19 independently isolated plugin subjects, one WooCommerce dependency-only
+#   control, and one clean fa_IR WordPress baseline.  21 jobs.
+#
+# This workflow measures how 19 frozen third-party products behave on a clean,
+# CPMS-free WordPress.  One additional leg measures a clean Persian (fa_IR)
+# WordPress environment with no plugin at all.  It installs no CPMS code, changes
+# no CPMS code and makes no CPMS claim: taxonomy category A and B are unreachable
+# here.
+#
+# WHY THE LANE MOVED OFF 6.7.2 / 8.2
+#   The pins were re-frozen against the current stable ecosystem, and the pins
+#   themselves forced the move rather than preference: Contact Form 7 6.2
+#   declares `Requires at least: 7.1` and `Requires PHP: 8.3`, and WooCommerce
+#   11.2.0 declares `Requires at least: 7.0`. Neither can activate on the
+#   previous 6.7.2 / 8.2 lane at all. The historical WP 6.7.2 / PHP 8.2 campaign
+#   is NOT re-run here; its evidence is preserved in the existing GitHub runs of
+#   this workflow on `main` and is not modified, re-adjudicated or superseded by
+#   anything in this file.
+#
+# THE PERSIAN BASELINE LEG IS NOT A PRODUCT LEG
+#   `locale-baseline-fa-ir` installs nothing. Its subject under test is the
+#   Persian WordPress environment itself: WordPress 7.1.3 / PHP 8.3 / MySQL
+#   8.4.11 / Apache with locale fa_IR and an explicit Asia/Tehran site timezone.
+#   That timezone is a property of THIS TEST FIXTURE only; it is not a statement
+#   about any production site, and it carries no Location-level authority because
+#   CPMS — which owns Location timezones — is absent.
+#
+#   It measures locale loading, RTL admin, administrator login/session, public
+#   page, REST, admin-ajax, UTF-8 Persian text round trip, PHP and browser errors,
+#   unexpected redirects and exact environment identity. It deliberately does NOT
+#   measure CPMS Jalali/Shamsi calendars, patients, bookings, Location-timezone
+#   authority, authorization or Clinic A/B isolation — each of those needs CPMS
+#   and belongs to a later coexistence slice. The probe records that boundary
+#   inside the artifact itself so the absence of those claims cannot be read as
+#   coverage.
 #
 # ISOLATION INVARIANT (the whole point of the architecture)
 #   one subject  ==  one matrix leg  ==  one GitHub Actions job
 #   every job therefore gets, from GitHub itself and not from us:
 #     - a fresh runner            (no process, file or port state from another subject)
 #     - a fresh `services: mysql` container and a fresh database
-#     - a fresh WordPress filesystem, extracted from the official 6.7.2 tarball
+#     - a fresh WordPress filesystem, extracted from the official 7.1.3 tarball
 #   CPMS is never installed, and its absence is asserted in the filesystem, the
 #   plugin set, the option table and the database BEFORE and AFTER activation.
 #   There is deliberately no aggregate "activate one, deactivate, test the next"
@@ -27,21 +61,40 @@ name: Third-Party Compatibility Baseline (Phase 18 Lane A)
 #   recorded in each result are the deterministic rerun evidence.
 #
 # LANE SCOPE
-#   Implemented now : Lane A only — WordPress 6.7.2 / PHP 8.2 / MySQL 8 / Apache
-#                     + real Chromium, mirroring the proven Real WordPress
+#   Implemented now : one lane — WordPress 7.1.3 / PHP 8.3 / MySQL 8.4.11 /
+#                     Apache + real Chromium, mirroring the proven Real WordPress
 #                     Acceptance harness.
-#   NOT implemented : Lane B (current-ecosystem matrix) and any CPMS coexistence
-#                     run. The lane's WordPress, PHP, MySQL and server pins are
-#                     single workflow-level constants below; adding Lane B later
-#                     means widening those constants and the matrix, not
-#                     rewriting the per-subject job body, the probes or the
-#                     result contract.
+#   NOT implemented : a second concurrent lane (the historical 6.7.2 / 8.2
+#                     campaign stays closed, with its evidence in the existing
+#                     runs) and any CPMS coexistence run. The lane's WordPress,
+#                     PHP, MySQL and server pins are single workflow-level
+#                     constants below; widening to a second lane later means
+#                     widening those constants and the matrix, not rewriting the
+#                     per-subject job body, the probes or the result contract.
 #
-# COMMERCIAL SUBJECTS
-#   WP Rocket and Gravity Forms are commercial.  No nulled or unofficial source is
-#   ever used, no commercial package is ever committed, and no credential is ever
-#   printed, logged or uploaded.  Without lawful owner-provisioned material they
-#   report NOT RUN, and the 18-product free matrix is unaffected.
+# COMMERCIAL SUBJECTS ARE OUT OF THE ACTIVE MATRIX — AND DID NOT FAIL
+#   WP Rocket 3.23.5.1 and Gravity Forms 3.1.0 were carried in the historical
+#   WP 6.7.2 / PHP 8.2 campaign and reported **NOT RUN — OWNER-SUPPLIED LICENSED
+#   PACKAGE/CREDENTIAL REQUIRED**. That is what their result was: no lawful
+#   owner-provisioned material existed, so nothing was ever retrieved, installed
+#   or measured. It is emphatically NOT a compatibility failure, and nothing in
+#   this file may be read as one.
+#
+#   Their historical NOT RUN evidence is preserved untouched in the existing
+#   GitHub runs of this workflow on `main` (per-subject `tpb-wp-rocket` and
+#   `tpb-gravityforms` artifacts and the aggregated `tpb-summary`). They are
+#   simply not re-run here, so this campaign's 21 legs are all executable and no
+#   leg can report NOT RUN.
+#
+#   The lawful path is unchanged and still the only accepted one, for whenever the
+#   owner chooses to re-add either subject: a repository secret holding a
+#   short-lived owner-provisioned presigned URL plus its SHA-256 for WP Rocket
+#   (`TPB_WPROCKET_LICENSED_PACKAGE_URL` / `_SHA256`), or an owner-provisioned
+#   license key consumed only by the official Gravity Forms CLI add-on
+#   (`TPB_GRAVITYFORMS_LICENSE_KEY`). No nulled or unofficial source is ever
+#   used, no commercial package is ever committed, and no credential is ever
+#   printed, logged or uploaded. No credential is required for this workflow to
+#   be valid.
 
 on:
   workflow_dispatch:
@@ -63,8 +116,14 @@ permissions:
 
 env:
   LANE: A
-  WP_VERSION: '6.7.2'
-  PHP_VERSION: '8.2'
+  WP_VERSION: '7.1.3'
+  PHP_VERSION: '8.3'
+  # The campaign's frozen database pin, expressed as the major.minor the probe
+  # asserts the RUNNING server actually reports. `services:` is resolved before
+  # the workflow-level `env` context exists, so the image reference itself has to
+  # be written literally in the job below; this constant is the matching
+  # assertion, and the two are deliberately kept adjacent so they cannot drift.
+  MYSQL_EXPECT: '8.4'
   WP_DIR: /home/runner/tpb/wp
   WP_URL: http://localhost:8080
   PROBE_DIR: /var/www/tpb-probe
@@ -87,31 +146,34 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # ---- owner-frozen 20 products (Lane A) ----
+          # ---- 19 frozen subjects (current-ecosystem lane) ----
+          #
+          # Every pin below was verified against the live WordPress.org plugins
+          # API (api.wordpress.org/plugins/info/1.2) at freeze time, and every
+          # `version` equals that API's `version` exactly. The trailing comment
+          # on each leg records the package's own declared `Requires at least`
+          # and `Requires PHP` headers, so a reader can see the pin satisfies
+          # the 7.1.3 / 8.3 lane without re-querying anything. No version here
+          # was substituted, rounded or approximated: `probe.py install` fails
+          # closed if the retrieved package is not byte-exactly this pin.
+          #
+          # `contact-form-7` 6.2 is the pin that forced this lane's PHP: it
+          # declares `Requires PHP: 8.3` and `Requires at least: 7.1`, so it
+          # cannot activate on the historical 8.2 / 6.7.2 lane at all.
           - id: litespeed-cache
             name: LiteSpeed Cache
             slug: litespeed-cache
-            version: '7.9.1'
+            version: '7.9.1'  # requires WP 6.0, PHP 7.4
             source: wordpress_org
             kind: subject
             deps: '-'
-            unavailable_feature: server-level page caching (LSCache)
+            unavailable_feature: 'server-level page caching (LSCache)'
             unavailable_reason: >-
-              LSCache page caching needs a LiteSpeed web server; this lane runs
-              Apache/mod_php, so that single feature cannot execute here
-          - id: wp-rocket
-            name: WP Rocket
-            slug: wp-rocket
-            version: '3.23.5.1'
-            source: commercial_package
-            kind: subject
-            deps: '-'
-            unavailable_feature: ''
-            unavailable_reason: ''
+              LSCache page caching needs a LiteSpeed web server; this lane runs Apache/mod_php, so that single feature cannot execute here
           - id: wordpress-seo
             name: Yoast SEO
             slug: wordpress-seo
-            version: '26.8'
+            version: '28.6'  # requires WP 6.9, PHP 7.4
             source: wordpress_org
             kind: subject
             deps: '-'
@@ -120,7 +182,7 @@ jobs:
           - id: seo-by-rank-math
             name: Rank Math SEO
             slug: seo-by-rank-math
-            version: '1.0.280'
+            version: '1.0.280'  # requires WP 6.7, PHP 7.4
             source: wordpress_org
             kind: subject
             deps: '-'
@@ -129,25 +191,16 @@ jobs:
           - id: persian-woocommerce
             name: Persian WooCommerce
             slug: persian-woocommerce
-            version: '9.3.5'
+            version: '10.0.5'  # requires WP 6.8, PHP 7.4
             source: wordpress_org
             kind: subject
-            deps: woocommerce=10.3.8
-            unavailable_feature: ''
-            unavailable_reason: ''
-          - id: gravityforms
-            name: Gravity Forms
-            slug: gravityforms
-            version: '3.1.0'
-            source: commercial_credential
-            kind: subject
-            deps: '-'
+            deps: 'woocommerce=11.2.0'
             unavailable_feature: ''
             unavailable_reason: ''
           - id: woocommerce
             name: WooCommerce
             slug: woocommerce
-            version: '10.3.8'
+            version: '11.2.0'  # requires WP 7.0, PHP 7.4 — also the dependency-control subject below
             source: wordpress_org
             kind: subject
             deps: '-'
@@ -156,19 +209,16 @@ jobs:
           - id: elementor
             name: Elementor
             slug: elementor
-            version: '4.0.9'
+            version: '4.3.4'  # requires WP 6.8, PHP 7.4
             source: wordpress_org
             kind: subject
             deps: '-'
             unavailable_feature: ''
             unavailable_reason: ''
-          # Deliberately NO Elementor dependency here. Branding is not evidence:
-          # this leg starts solo and records the exact `Requires Plugins` header
-          # of the installed 2.8.4 package as the dependency evidence.
           - id: persian-elementor
             name: Persian Elementor
             slug: persian-elementor
-            version: '2.8.4'
+            version: '2.8.4'  # requires WP 5.0, PHP 7.4
             source: wordpress_org
             kind: subject
             deps: '-'
@@ -177,7 +227,7 @@ jobs:
           - id: wp-parsidate
             name: WP Parsi Date
             slug: wp-parsidate
-            version: '6.4'
+            version: '6.4'  # requires WP 5.3, PHP 7.4
             source: wordpress_org
             kind: subject
             deps: '-'
@@ -186,16 +236,16 @@ jobs:
           - id: persian-woocommerce-sms
             name: Persian WooCommerce SMS
             slug: persian-woocommerce-sms
-            version: '7.1.1'
+            version: '7.2.3'  # requires WP 6.8, PHP 7.4
             source: wordpress_org
             kind: subject
-            deps: woocommerce=10.3.8
+            deps: 'woocommerce=11.2.0'
             unavailable_feature: ''
             unavailable_reason: ''
           - id: contact-form-7
             name: Contact Form 7
             slug: contact-form-7
-            version: '6.1.7'
+            version: '6.2'  # requires WP 7.1, PHP 8.3 — the pin that fixed this lane at PHP 8.3
             source: wordpress_org
             kind: subject
             deps: '-'
@@ -204,7 +254,7 @@ jobs:
           - id: wordfence
             name: Wordfence Security
             slug: wordfence
-            version: '9.0.2'
+            version: '9.0.2'  # requires WP 4.7, PHP 7.0
             source: wordpress_org
             kind: subject
             deps: '-'
@@ -213,7 +263,7 @@ jobs:
           - id: really-simple-ssl
             name: Really Simple SSL
             slug: really-simple-ssl
-            version: '9.8.3'
+            version: '9.8.3'  # requires WP 6.6, PHP 7.4
             source: wordpress_org
             kind: subject
             deps: '-'
@@ -222,7 +272,7 @@ jobs:
           - id: redirection
             name: Redirection
             slug: redirection
-            version: '5.10.1'
+            version: '5.10.1'  # requires WP 6.7, PHP 7.4
             source: wordpress_org
             kind: subject
             deps: '-'
@@ -231,7 +281,7 @@ jobs:
           - id: polylang
             name: Polylang
             slug: polylang
-            version: '3.8.10'
+            version: '3.8.10'  # requires WP 6.5, PHP 7.4
             source: wordpress_org
             kind: subject
             deps: '-'
@@ -240,7 +290,7 @@ jobs:
           - id: user-role-editor
             name: User Role Editor
             slug: user-role-editor
-            version: '4.66.2'
+            version: '4.66.2'  # requires WP 4.7, PHP 7.4
             source: wordpress_org
             kind: subject
             deps: '-'
@@ -249,7 +299,7 @@ jobs:
           - id: autoptimize
             name: Autoptimize
             slug: autoptimize
-            version: '3.1.16'
+            version: '3.1.16'  # requires WP 5.3, PHP 7.4
             source: wordpress_org
             kind: subject
             deps: '-'
@@ -258,7 +308,7 @@ jobs:
           - id: advanced-custom-fields
             name: Advanced Custom Fields
             slug: advanced-custom-fields
-            version: '6.8.10'
+            version: '6.8.10'  # requires WP 6.2, PHP 7.4
             source: wordpress_org
             kind: subject
             deps: '-'
@@ -267,34 +317,93 @@ jobs:
           - id: wp-crontrol
             name: WP Crontrol
             slug: wp-crontrol
-            version: '1.21.2'
+            version: '1.21.2'  # requires WP 6.6, PHP 7.4
+            source: wordpress_org
+            kind: subject
+            deps: '-'
+            unavailable_feature: ''
+            unavailable_reason: ''
+          - id: loco-translate
+            name: Loco Translate
+            slug: loco-translate
+            version: '2.8.9'  # requires WP 6.6, PHP 7.4
             source: wordpress_org
             kind: subject
             deps: '-'
             unavailable_feature: ''
             unavailable_reason: ''
 
+          # ---- independent Persian WordPress baseline (NO plugin installed) ----
+          # `kind: locale-baseline` is the single discriminator the job body uses.
+          # It skips the install step, swaps the post-phase "subject still active"
+          # check for "the plugin set is still empty", and adds the locale/RTL/
+          # UTF-8/timezone probes. Every other leg keeps `kind: subject` or
+          # `dependency-control`.
+          #
+          # `source: wordpress_org` is kept so this leg reuses the exact same
+          # provisioning path as the product legs — the official WordPress.org
+          # core distribution, the same PHP 8.3 module, the same Apache vhosts,
+          # the same out-of-tree runtime probe. `slug`/`version` are `-` because
+          # there is no package: the fixture is the locale and the timezone.
+          #
+          # `site_timezone: Asia/Tehran` is explicit and applies to THIS fixture
+          # only. `admin_dir: rtl` is passed to the browser probe, which asserts
+          # the direction of the document a real Chromium instance rendered.
+          - id: locale-baseline-fa-ir
+            name: 'Persian WordPress baseline (fa_IR, Asia/Tehran) — no plugin'
+            slug: '-'
+            version: '-'
+            source: wordpress_org
+            kind: locale-baseline
+            deps: '-'
+            unavailable_feature: ''
+            unavailable_reason: ''
+            locale: fa_IR
+            site_timezone: Asia/Tehran
+            admin_dir: rtl
+
           # ---- dependency-only control ----
           # A subject that declares a dependency is only attributable once the
           # dependency ALONE is proven healthy in an equally clean environment.
           # One shared control leg for the one distinct pinned dependency in this
-          # matrix (WooCommerce 10.3.8), covering both persian-woocommerce and
+          # matrix (WooCommerce 11.2.0), covering both persian-woocommerce and
           # persian-woocommerce-sms. No combination legs are created.
+          #
+          # This leg is mandatory even though the historical campaign found
+          # elementor and persian-woocommerce failing: a failing baseline is the
+          # finding, not a reason to drop the subject.
           - id: dep-control-woocommerce
             name: 'Dependency-only control: WooCommerce (no subject)'
             slug: woocommerce
-            version: '10.3.8'
+            version: '11.2.0'  # requires WP 7.0, PHP 7.4
             source: wordpress_org
             kind: dependency-control
             deps: '-'
             unavailable_feature: ''
             unavailable_reason: ''
-
     services:
       # A fresh MySQL container per job — this is what makes the database half of
       # the isolation invariant true without any cleanup step of our own.
+      #
+      # WHY THIS EXACT REFERENCE, AND WHY IT CHANGES NO AUTHENTICATION SEMANTICS
+      #   The historical campaign used the floating tag `mysql:8`. Verified
+      #   against the Docker Hub registry API before freezing: `mysql:8` and
+      #   `mysql:8.4.11` resolve to the SAME image index digest
+      #   sha256:6ea90827b1100f8f2ae306a539f86d2c264a26ed435a2a9f75551dd5c3aeb242.
+      #   Pinning 8.4.11 therefore freezes byte-for-byte the image the earlier
+      #   baseline already ran on — it removes the float, it does not migrate
+      #   anything, and it cannot silently alter the authentication mechanism.
+      #
+      #   The mechanism on that image is recorded as evidence, not assumed: MySQL
+      #   8.4 removed `default_authentication_plugin` and ships
+      #   `mysql_native_password` DISABLED by default, so the server authenticates
+      #   with `caching_sha2_password`. `probe.py` asserts the plugin the root
+      #   account actually uses on every leg, so a future image change that moved
+      #   the mechanism would fail loudly instead of passing quietly. Enabling the
+      #   deprecated `--mysql-native-password=ON` to dodge that would be reaching
+      #   for legacy auth and is deliberately NOT done.
       mysql:
-        image: mysql:8
+        image: mysql:8.4.11
         env:
           MYSQL_ROOT_PASSWORD: root
         ports: ['3306:3306']
@@ -322,92 +431,29 @@ jobs:
             --kind "${{ matrix.kind }}" \
             --deps "${{ matrix.deps }}" \
             --unavailable-feature "${{ matrix.unavailable_feature }}" \
-            --unavailable-reason "${{ matrix.unavailable_reason }}"
+            --unavailable-reason "${{ matrix.unavailable_reason }}" \
+            --locale "${{ matrix.locale }}" \
+            --site-timezone "${{ matrix.site_timezone }}"
 
       # ------------------------------------------------------------------ #
-      # Commercial subjects. These run BEFORE any provisioning, so a missing
-      # lawful package or credential can never fail the free matrix, and no
-      # credential is ever needed for this workflow to be valid.
+# NO COMMERCIAL SUBJECT STEPS HERE — BY OWNER DECISION, NOT BY OMISSION
+#   WP Rocket and Gravity Forms are no longer legs of this matrix, so the three
+#   `NOT RUN` steps that served them are gone with them: a step whose `if:` can
+#   never be true is dead weight, and leaving it would imply a subject this
+#   campaign still intends to run.
+#
+#   Their historical result was **NOT RUN — OWNER-SUPPLIED LICENSED PACKAGE /
+#   CREDENTIAL REQUIRED**, which means nothing was ever retrieved, installed or
+#   measured. That is NOT a compatibility failure and must never be reported as
+#   one. The evidence stands untouched in the existing GitHub runs of this
+#   workflow on `main` (artifacts `tpb-wp-rocket`, `tpb-gravityforms`,
+#   `tpb-summary`). The only accepted mechanism for re-adding either subject is
+#   documented in the COMMERCIAL SUBJECTS block at the top of this file.
+#
+#   Consequence, stated plainly: every one of the 21 legs in this campaign is
+#   executable, so no leg can report NOT RUN and the aggregate summary carries no
+#   unadjudicated subject.
       # ------------------------------------------------------------------ #
-      - name: 'Commercial: WP Rocket — owner-supplied licensed package only'
-        if: matrix.source == 'commercial_package' && matrix.id == 'wp-rocket'
-        env:
-          # The secure future input mechanism, wired for detection in this stage:
-          # a short-lived, owner-provisioned presigned URL to the licensed ZIP from
-          # the owner's own wp-rocket.me account, plus its SHA-256.
-          #
-          # Why this shape:
-          #   - the URL is a repository secret, so GitHub masks it in every log;
-          #   - it is never expanded into a log line or a process argument list;
-          #   - no commercial package bytes ever enter the repository, an artifact
-          #     or this step's output — nothing about the contents is printed;
-          #   - the owner provisions it out of band. It is never pasted into chat.
-          #
-          # The licensed install/activation path is deliberately NOT implemented in
-          # this stage, so this subject reports NOT RUN either way. That is a
-          # deliberate fail-closed choice: it must never be possible for a
-          # provisioned secret to produce an unadjudicated subject with no result.
-          TPB_COMMERCIAL_PACKAGE_URL: ${{ secrets.TPB_WPROCKET_LICENSED_PACKAGE_URL }}
-          TPB_COMMERCIAL_PACKAGE_SHA256: ${{ secrets.TPB_WPROCKET_LICENSED_PACKAGE_SHA256 }}
-        run: |
-          set -Eeuo pipefail
-          REASON='NOT RUN — OWNER-SUPPLIED LICENSED TEST PACKAGE REQUIRED'
-          if [ -z "${TPB_COMMERCIAL_PACKAGE_URL:-}" ]; then
-            echo "$REASON"
-            echo '::notice::WP Rocket is commercial. No nulled or unofficial source is used, no commercial package is committed, and no credential is required for this workflow to be valid.'
-          else
-            REASON='NOT RUN — OWNER-SUPPLIED LICENSED PACKAGE DETECTED, LICENSED INSTALL PATH NOT IMPLEMENTED IN THIS STAGE'
-            echo "$REASON"
-            echo '::notice::A lawful owner-supplied package URL is provisioned. Its value and SHA-256 are never printed. The licensed install path is intentionally not implemented yet, so this subject stays NOT RUN rather than becoming an unadjudicated result.'
-          fi
-          python3 .github/third-party-baseline/probe.py finalize \
-            --store "$EVIDENCE_DIR/evidence.json" \
-            --out "$EVIDENCE_DIR/subject-result.json" \
-            --subject-id "${{ matrix.id }}" --not-run "$REASON"
-
-      - name: 'Commercial: Gravity Forms — official vendor mechanism only'
-        if: matrix.source == 'commercial_credential' && matrix.id == 'gravityforms'
-        env:
-          # Owner-provisioned Gravity Forms license key. The only accepted future
-          # mechanism is the official Gravity Forms CLI add-on (`wp gf install`),
-          # which reads the GF_LICENSE_KEY constant; the key would be written into
-          # this job's wp-config.php from the environment by a shell builtin, so it
-          # never reaches argv, a log line, an artifact or the repository.
-          #
-          # As with WP Rocket the install path is deliberately not implemented in
-          # this stage, so this subject reports NOT RUN either way and a
-          # provisioned secret can never produce an unadjudicated result.
-          GF_LICENSE_KEY: ${{ secrets.TPB_GRAVITYFORMS_LICENSE_KEY }}
-        run: |
-          set -Eeuo pipefail
-          REASON='NOT RUN — OWNER-SUPPLIED LICENSED CREDENTIAL REQUIRED'
-          if [ -z "${GF_LICENSE_KEY:-}" ]; then
-            echo "$REASON"
-            echo '::notice::Gravity Forms is commercial. The only accepted mechanism is the official vendor CLI with an owner-provisioned license key; no credential is required for this workflow to be valid, and its absence never fails the free-plugin matrix.'
-          else
-            REASON='NOT RUN — OWNER-SUPPLIED LICENSED CREDENTIAL DETECTED, OFFICIAL VENDOR INSTALL PATH NOT IMPLEMENTED IN THIS STAGE'
-            echo "$REASON"
-            echo '::notice::A lawful owner-provisioned credential is present. It is never printed, logged or persisted. The official vendor install path is intentionally not implemented yet, so this subject stays NOT RUN.'
-          fi
-          python3 .github/third-party-baseline/probe.py finalize \
-            --store "$EVIDENCE_DIR/evidence.json" \
-            --out "$EVIDENCE_DIR/subject-result.json" \
-            --subject-id "${{ matrix.id }}" --not-run "$REASON"
-
-      - name: 'Commercial: no mechanism wired for this subject'
-        if: >-
-          startsWith(matrix.source, 'commercial')
-          && matrix.id != 'wp-rocket'
-          && matrix.id != 'gravityforms'
-        run: |
-          set -Eeuo pipefail
-          REASON='NOT RUN — OWNER-SUPPLIED LICENSED TEST PACKAGE REQUIRED'
-          echo "$REASON"
-          python3 .github/third-party-baseline/probe.py finalize \
-            --store "$EVIDENCE_DIR/evidence.json" \
-            --out "$EVIDENCE_DIR/subject-result.json" \
-            --subject-id "${{ matrix.id }}" --not-run "$REASON"
-
       # ------------------------------------------------------------------ #
       # Everything below runs only for WordPress.org packages.
       # ------------------------------------------------------------------ #
@@ -424,13 +470,20 @@ jobs:
           set -Eeuo pipefail
           sudo apt-get update -qq
 
-          # The lane pins PHP 8.2, so the module Apache loads must be 8.2 too —
-          # the distro default mod_php is not acceptable evidence for a pinned
-          # lane. On ubuntu-latest (24.04) the distro default PHP is 8.3 and the
-          # versioned php8.2 packages, including libapache2-mod-php8.2, exist
-          # ONLY in Ondrej Sury's PPA. It is therefore added explicitly and
-          # idempotently here instead of relying on whichever apt sources
-          # shivammathur/setup-php happened to leave configured.
+          # The lane pins PHP 8.3, so the module Apache loads must be 8.3 too —
+          # whatever mod_php the distro happens to enable is not acceptable
+          # evidence for a pinned lane, and the exact versioned packages are
+          # installed by name rather than by metapackage.
+          #
+          # The PPA is still added, and deliberately so. On ubuntu-latest (24.04)
+          # 8.3 IS the distro default, so unlike the previous 8.2 lane the PPA is
+          # no longer strictly required to obtain `libapache2-mod-php8.3`. It is
+          # kept anyway because it is what guarantees the *versioned* php8.3-*
+          # packages resolve identically across runner image revisions, instead of
+          # depending on which metapackages the image happens to carry. Adding it
+          # is idempotent and does not change which PHP module is loaded: the
+          # `php${PHP_VERSION}.load` assertion below is what actually enforces the
+          # pin, and it fails closed.
           # `| tee` keeps the command's own exit status because `set -o pipefail`
           # is active, and avoids redirecting a root command's output as the
           # invoking user.
@@ -701,10 +754,78 @@ jobs:
             --store "$EVIDENCE_DIR/evidence.json" --phase pre \
             --wp-dir "$WP_DIR" --wp-url "$WP_URL" --probe-url "$TPB_PROBE_URL" \
             --db-name "$DB_NAME" \
-            --expect-wp-version "$WP_VERSION" --expect-php "$PHP_VERSION"
+            --expect-wp-version "$WP_VERSION" --expect-php "$PHP_VERSION" \
+            --expect-mysql "$MYSQL_EXPECT"
+
+      # The Persian baseline leg's "subject" enters the environment here, in the
+      # same position the install step occupies for a product leg. That is why the
+      # pre-phase probes above are the BEFORE evidence and the post-phase probes
+      # below are the AFTER evidence for this leg too: the existing two-phase
+      # structure is reused rather than a third phase being invented.
+      - name: 'Apply the fa_IR / Asia/Tehran locale fixture (locale-baseline leg only)'
+        if: matrix.kind == 'locale-baseline'
+        run: |
+          set -Eeuo pipefail
+          LOCALE="${{ matrix.locale }}"
+          SITE_TZ="${{ matrix.site_timezone }}"
+          ann() { tail -20 "$1" | tr '\n\r' '  ' | sed 's/%/%25/g' | cut -c1-1400; }
+
+          # Fail closed on an under-specified fixture: a locale leg without an
+          # explicit locale AND an explicit timezone is not the fixture this
+          # slice claims to measure.
+          if [ -z "$LOCALE" ] || [ -z "$SITE_TZ" ]; then
+            echo "::error::Class D harness failure: a locale-baseline leg must pin both a locale and an explicit site timezone (got locale='$LOCALE' timezone='$SITE_TZ')."
+            exit 1
+          fi
+
+          cd "$WP_DIR"
+          # Official WordPress.org translation distribution, exact locale, no
+          # substitute. A retrieval failure is an environment failure, never a
+          # reason to fall back to another language pack or to English.
+          if ! wp language core install "$LOCALE" --allow-root > /tmp/wp-lang.log 2>&1; then
+            echo "::error::Class C environment failure: the official $LOCALE core translation package could not be installed from translate.wordpress.org. diagnostic: $(ann /tmp/wp-lang.log)"
+            exit 1
+          fi
+          if ! wp language core activate "$LOCALE" --allow-root >> /tmp/wp-lang.log 2>&1; then
+            echo "::error::Class C environment failure: the $LOCALE core translation package installed but could not be activated. diagnostic: $(ann /tmp/wp-lang.log)"
+            exit 1
+          fi
+
+          # gmt_offset is DERIVED from the pinned IANA zone by PHP itself, never
+          # written as a guessed literal. Iran abolished DST in 2022, so the
+          # current offset is fixed — but the harness records what PHP actually
+          # returns instead of trusting that fact.
+          #
+          # The snippet goes through a quoted heredoc into a file rather than
+          # `php -r '...'`: inside single quotes the shell would leave `$argv` and
+          # `$tz` alone (they are PHP variables), but that is indistinguishable
+          # from a quoting mistake to both a reader and a linter, so it is not
+          # written that way.
+          cat > /tmp/tpb-tz-offset.php <<'PHPEOF'
+          <?php
+          $tz = new DateTimeZone($argv[1]);
+          printf('%.2f', (new DateTime('now', $tz))->getOffset() / 3600);
+          PHPEOF
+          TZ_OFFSET="$(php /tmp/tpb-tz-offset.php "$SITE_TZ")"
+          echo "derived gmt_offset for $SITE_TZ from PHP: $TZ_OFFSET"
+          wp option update timezone_string "$SITE_TZ" --allow-root > /tmp/wp-tz.log 2>&1
+          wp option update gmt_offset "$TZ_OFFSET" --allow-root >> /tmp/wp-tz.log 2>&1
+
+          # Prove the catalogues are on disk before any probe depends on them; the
+          # probe re-asserts this independently so a fixture that silently half-
+          # applied cannot pass on the strength of this step alone.
+          for MO in "$LOCALE.mo" "admin-$LOCALE.mo"; do
+            test -s "$WP_DIR/wp-content/languages/$MO" || {
+              echo "::error::Class C environment failure: wp-content/languages/$MO is missing or empty after activating $LOCALE."
+              exit 1; }
+          done
+          echo "locale fixture applied: WPLANG=$(wp option get WPLANG --allow-root) timezone_string=$(wp option get timezone_string --allow-root) gmt_offset=$(wp option get gmt_offset --allow-root)"
 
       - name: Install the exact pinned package(s) — fail closed, never substitute
-        if: matrix.source == 'wordpress_org'
+        # The Persian baseline leg installs no package at all. Gated on `kind`
+        # rather than on the presence of a locale field so the condition cannot
+        # depend on how GitHub evaluates an unset matrix key.
+        if: matrix.source == 'wordpress_org' && matrix.kind != 'locale-baseline'
         run: |
           set -Eeuo pipefail
           python3 .github/third-party-baseline/probe.py install \
@@ -725,16 +846,34 @@ jobs:
       # chain rather than from a guess.
       - name: 'Baseline probes AFTER activation'
         if: matrix.source == 'wordpress_org'
+        # "Activation" is the subject entering the environment: a pinned plugin
+        # for a product leg, the fa_IR/Asia/Tehran locale fixture for the
+        # locale-baseline leg. The probe set is identical either way.
         run: |
           set -Eeuo pipefail
           python3 .github/third-party-baseline/probe.py wp \
             --store "$EVIDENCE_DIR/evidence.json" --phase post \
             --wp-dir "$WP_DIR" --wp-url "$WP_URL" --probe-url "$TPB_PROBE_URL" \
             --db-name "$DB_NAME" \
-            --expect-wp-version "$WP_VERSION" --expect-php "$PHP_VERSION"
+            --expect-wp-version "$WP_VERSION" --expect-php "$PHP_VERSION" \
+            --expect-mysql "$MYSQL_EXPECT"
           python3 .github/third-party-baseline/probe.py browser \
             --store "$EVIDENCE_DIR/evidence.json" --phase post \
-            --wp-url "$WP_URL" --out-dir "$EVIDENCE_DIR"
+            --wp-url "$WP_URL" --out-dir "$EVIDENCE_DIR" \
+            --expect-dir "${{ matrix.admin_dir }}"
+
+      - name: 'Persian locale / RTL / UTF-8 / timezone probes (locale-baseline leg only)'
+        if: matrix.kind == 'locale-baseline'
+        run: |
+          set -Eeuo pipefail
+          python3 .github/third-party-baseline/probe.py locale \
+            --store "$EVIDENCE_DIR/evidence.json" --phase post \
+            --wp-dir "$WP_DIR" --wp-url "$WP_URL" --probe-url "$TPB_PROBE_URL" \
+            --db-name "$DB_NAME" \
+            --expect-locale "${{ matrix.locale }}" \
+            --expect-timezone "${{ matrix.site_timezone }}" \
+            --expect-wp-version "$WP_VERSION" --expect-php "$PHP_VERSION" \
+            --expect-mysql-major "${MYSQL_EXPECT%%.*}"
 
       - name: Finalize the machine-readable subject result
         if: always() && matrix.source == 'wordpress_org'
@@ -745,7 +884,8 @@ jobs:
             --out "$EVIDENCE_DIR/subject-result.json" \
             --subject-id "${{ matrix.id }}" \
             --deps "${{ matrix.deps }}" \
-            --expect-wp-version "$WP_VERSION" --expect-php "$PHP_VERSION"
+            --expect-wp-version "$WP_VERSION" --expect-php "$PHP_VERSION" \
+            --mysql-image 'mysql:8.4.11'
           python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("STATE:", d["state"]); print("counts:", d["counts"]); print("taxonomy:", d["taxonomy"])' "$EVIDENCE_DIR/subject-result.json"
 
       - name: Per-subject evidence artifact
