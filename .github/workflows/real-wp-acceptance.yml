@@ -264,8 +264,14 @@ jobs:
           }
           echo "not-recorded OK (schema_migrations بدون 2999_01_01_9999)\n";
           PHPEOF
+          # WooCommerce 10.3.8's WP-CLI after_wp_load hook invokes
+          # rest_api_init before eval-file starts; CPMS's ordinary
+          # ensureMigrated callback sees this intentionally broken migration
+          # outside the probe's try/catch. Skip only WooCommerce for this one
+          # synthetic CLI command (do not change activation); all five remain
+          # active and are re-verified for the browser coexistence smoke.
           # بدون pipe-masking: وضعیت خروجی واقعی probe تعیین‌کننده است
-          wp eval-file /tmp/acc/probe-broken.php --path="$WP_DIR" --allow-root > /tmp/acc/migration-failure-probe.txt 2>&1
+          wp eval-file /tmp/acc/probe-broken.php --skip-plugins=woocommerce --path="$WP_DIR" --allow-root > /tmp/acc/migration-failure-probe.txt 2>&1
           RC=$?
           cat /tmp/acc/migration-failure-probe.txt
           if [ "$RC" -ne 0 ]; then echo 'D3 PROBE FAILED'; exit "$RC"; fi
