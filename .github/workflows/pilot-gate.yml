@@ -1447,7 +1447,7 @@ jobs:
           curl -sS https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o /tmp/wp-cli.phar
           sudo mv /tmp/wp-cli.phar /usr/local/bin/wp && sudo chmod +x /usr/local/bin/wp
           (pip install --quiet playwright 2>/dev/null || pip install --quiet --break-system-packages playwright)
-          python3 -m playwright install --with-deps chromium > /tmp/pw.log 2>&1 || { tail -10 /tmp/pw.log; exit 1; }
+          python3 -m playwright install --with-deps chromium firefox webkit > /tmp/pw.log 2>&1 || { tail -10 /tmp/pw.log; exit 1; }
       - name: WP + Plugin از Artifact + داده حداقلی Synthetic
         run: |
           mysql -h127.0.0.1 -P3306 -uroot -proot -e "CREATE DATABASE $DB_MAIN;"
@@ -1810,6 +1810,38 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # Reuse the same authenticated admin/public-booking smoke on Firefox and
+      # WebKit, bounded to phone + tablet widths; no extra copy or product setup.
+      - name: Firefox/WebKit compatibility smoke (390×844 + 768×1024)
+        env:
+          BASE: http://localhost:8080
+          RESP_PASS: 'Pilot-Gate-2026!'
+          RESP_DOCTOR_PASS: 'Pilot-Gate-2026!'
+        run: |
+          COMPAT_FAILED=0
+          for engine in firefox webkit; do
+            log="/tmp/resp-${engine}.log"
+            set +e
+            RESP_BROWSER="$engine" python3 bin/pilot-responsive.py > "$log" 2>&1
+            rc=$?
+            set -e
+            cat "$log"
+            if [ "$rc" -ne 0 ]; then
+              echo "::error::${engine} compatibility smoke failed (exit=${rc})"
+              COMPAT_FAILED=1
+            fi
+          done
+          {
+            echo '## Firefox/WebKit compatibility smoke (390×844 + 768×1024)'
+            for engine in firefox webkit; do
+              echo "### ${engine}"
+              echo '```'
+              grep -E '^(INFO browser_engine=|PASS|FAIL)' "/tmp/resp-${engine}.log" 2>/dev/null || echo '(log missing)'
+              echo '```'
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+          test "$COMPAT_FAILED" -eq 0
+
       # Phase 8 Slice 2 — سفرِ کاملِ بیمار روی مرورگرِ واقعی (scoping از انتخاب).
       # OTP از مسیرِ فقط-تست (پتچِ code_hash در DB با همان الگوی Integration)
       # خوانده می‌شود؛ service واقعیِ OtpService بدون bypass. شواهد فقط
@@ -1996,8 +2028,16 @@ jobs:
             cat /tmp/resp-public-page.env 2>/dev/null || echo '(RESP_PUBLIC_PAGE not produced — anonymous surface NOT exercised)'
             echo '--- PASS/FAIL summary (per viewport) ---'
             grep -E '^(PASS|FAIL)' /tmp/resp.log 2>/dev/null || echo '(resp.log missing)'
-            echo '--- INFO (cross-origin / advisory) ---'
+            echo '--- INFO (cross-origin / advisory; includes Chromium runtime version) ---'
             grep -E '^INFO' /tmp/resp.log 2>/dev/null || echo '(none)'
+            for engine in firefox webkit; do
+              echo "--- ${engine} compatibility (runtime version + PASS/FAIL) ---"
+              if [ -s "/tmp/resp-${engine}.log" ]; then
+                grep -E '^(INFO browser_engine=|PASS|FAIL)' "/tmp/resp-${engine}.log" || true
+              else
+                echo 'NOT RUN / log not produced'
+              fi
+            done
             echo '```'
           } > /tmp/resp-evidence.md
           PR=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number' 2>/dev/null || true)
