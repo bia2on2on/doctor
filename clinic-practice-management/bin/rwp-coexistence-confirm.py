@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import os
-import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -25,8 +24,7 @@ WP_DIR = os.environ.get("WP_DIR", "/home/runner/rwp")
 OUT = Path("/tmp/acc")
 ACTIVE_JSON = OUT / "coexistence-confirm-active.json"
 ACTIVE_WRITER = OUT / "coexistence-confirm-set-active.php"
-TRACE_DIR = OUT / "coexistence-observer"
-POLICY_TRACE = TRACE_DIR / "woocommerce-admin-policy.jsonl"
+TRACE_OPTION = "arena_rwp_coexistence_policy_trace"
 MU_DIR = Path(WP_DIR) / "wp-content" / "mu-plugins"
 MU_FILE = MU_DIR / "arena-woocommerce-policy-observer.php"
 CPMS = "clinic-practice-management"
@@ -101,23 +99,30 @@ def install_observer() -> None:
     MU_DIR.mkdir(parents=True, exist_ok=True)
     if MU_FILE.exists():
         raise ConfirmationError("temporary WooCommerce observer path already exists")
-    POLICY_TRACE.write_text("", encoding="utf-8")
-    POLICY_TRACE.chmod(0o666)
     try:
         MU_FILE.write_text(
             r'''<?php
 /** Temporary read-only identity/policy observer; removed after this failed-only probe. */
+function arena_rwp_coexistence_record(array $record): void {
+    $key = 'arena_rwp_coexistence_policy_trace';
+    $rows = get_option($key, []);
+    if (!is_array($rows)) {
+        $rows = [];
+    }
+    $rows[] = $record;
+    update_option($key, $rows, false);
+}
 add_action('wp_ajax_arena_rwp_coexistence_identity', static function () {
     $user = wp_get_current_user();
     $caps = [];
     foreach (['manage_options','edit_posts','manage_woocommerce','view_admin_dashboard','cpms_queue_read','cpms_patient_read','cpms_patient_create'] as $cap) {
         $caps[$cap] = current_user_can($cap);
     }
-    file_put_contents('/tmp/acc/coexistence-observer/woocommerce-admin-policy.jsonl', wp_json_encode([
+    arena_rwp_coexistence_record([
         'kind' => 'identity_probe',
         'user_login' => (string) $user->user_login,
         'roles' => array_values((array) $user->roles),
-    ]) . PHP_EOL, FILE_APPEND | LOCK_EX);
+    ]);
     wp_send_json_success([
         'login' => (string) $user->user_login,
         'roles' => array_values((array) $user->roles),
@@ -168,7 +173,7 @@ add_filter('woocommerce_prevent_admin_access', static function ($prevent_access)
         'redirect_method' => $method,
         'woocommerce_stack' => $stack,
     ];
-    file_put_contents('/tmp/acc/coexistence-observer/woocommerce-admin-policy.jsonl', wp_json_encode($record) . PHP_EOL, FILE_APPEND | LOCK_EX);
+    arena_rwp_coexistence_record($record);
     return $prevent_access; // observation only: preserve WooCommerce's value unchanged.
 }, PHP_INT_MAX, 1);
 ''',
@@ -265,20 +270,14 @@ def route_check(browser, persona: str) -> dict:
 
 
 def read_policy_trace() -> list[dict]:
-    if not POLICY_TRACE.exists():
-        return []
-    rows = []
-    for line in POLICY_TRACE.read_text(encoding="utf-8").splitlines():
-        try:
-            rows.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue
+    rows = wp_json(f"echo wp_json_encode(get_option('{TRACE_OPTION}', []));")
+    if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+        raise ConfirmationError("temporary policy trace option has an unexpected shape")
     return rows
 
 
 def main() -> int:
     OUT.mkdir(parents=True, exist_ok=True)
-    original_out_mode = stat.S_IMODE(OUT.stat().st_mode)
     pin_path = OUT / "coexistence-plugin-pins.tsv"
     if not pin_path.is_file():
         raise ConfirmationError("pinned plugin manifest is missing")
@@ -289,6 +288,15 @@ def main() -> int:
     }
     if pins.get(WOOCOMMERCE) != "10.3.8":
         raise ConfirmationError("unexpected WooCommerce pin for policy confirmation")
+    trace_option_exists = wp_json(
+        "global $wpdb; "
+        "$name = 'arena_rwp_coexistence_policy_trace'; "
+        "$sql = $wpdb->prepare('SELECT option_id FROM ' . $wpdb->options . ' WHERE option_name = %s', $name); "
+        "$exists = $wpdb->get_var($sql) !== null; "
+        "echo wp_json_encode($exists);"
+    )
+    if trace_option_exists:
+        raise ConfirmationError("temporary policy trace option already exists; refusing to overwrite it")
 
     original = active_files()
     original_slugs = {slug(item) for item in original}
@@ -314,21 +322,7 @@ def main() -> int:
     observer_installed = False
     restore_error = None
     try:
-        OUT.chmod(0o711)
-        TRACE_DIR.mkdir(mode=0o711, exist_ok=True)
-        TRACE_DIR.chmod(0o711)
-        print(
-            "CONFIRM observer trace directory modes="
-            + json.dumps(
-                {
-                    "original_out": oct(original_out_mode),
-                    "out": oct(stat.S_IMODE(OUT.stat().st_mode)),
-                    "trace": oct(stat.S_IMODE(TRACE_DIR.stat().st_mode)),
-                },
-                sort_keys=True,
-            ),
-            flush=True,
-        )
+        print("CONFIRM trace backend=temporary WordPress option", flush=True)
         install_observer()
         observer_installed = True
         target = [path for path in original if slug(path) in {CPMS, WOOCOMMERCE}]
@@ -342,8 +336,7 @@ def main() -> int:
             browser = playwright.chromium.launch()
             results = []
             for persona in ("doctor", "secretary"):
-                POLICY_TRACE.write_text("", encoding="utf-8")
-                POLICY_TRACE.chmod(0o666)
+                wp(["eval", f"delete_option('{TRACE_OPTION}'); update_option('{TRACE_OPTION}', [], false);"])
                 route = route_check(browser, persona)
                 evidence = {
                     "route": route,
@@ -388,10 +381,16 @@ def main() -> int:
         ACTIVE_JSON.unlink(missing_ok=True)
         ACTIVE_WRITER.unlink(missing_ok=True)
         try:
-            OUT.chmod(original_out_mode)
+            leftover = wp_json(
+                f"delete_option('{TRACE_OPTION}'); "
+                f"echo wp_json_encode(get_option('{TRACE_OPTION}', '__arena_missing__'));"
+            )
+            if leftover != "__arena_missing__":
+                raise ConfirmationError("temporary policy trace option was not removed")
+            print("CONFIRM temporary policy trace option removed", flush=True)
         except Exception as exc:
             restore_error = restore_error or exc
-            print(f"CONFIRM OUTPUT DIRECTORY RESTORE ERROR: {type(exc).__name__}", flush=True)
+            print(f"CONFIRM TRACE OPTION CLEANUP ERROR: {type(exc).__name__}", flush=True)
     return 1 if restore_error else 0
 
 
