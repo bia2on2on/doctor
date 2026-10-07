@@ -1307,10 +1307,10 @@ jobs:
           if-no-files-found: ignore
 
   # ============================================================
-  # 3) Upgrade path — main (F8) → RC (F9) روی نصب واقعی
+  # 3) Upgrade path — pinned pre-#191 main snapshot → current candidate
   # ============================================================
   upgrade-test:
-    name: Upgrade path (main → RC)
+    name: Upgrade path (pinned pre-#191 source → candidate)
     runs-on: ubuntu-latest
     needs: release-artifact
     services:
@@ -1326,6 +1326,10 @@ jobs:
       WP_DIR: /home/runner/www
       WP_URL: http://localhost:8080
       DB_MAIN: cpms_main
+      # Immutable first parent of merge commit 8088c455 (PR #191): the
+      # immediately preceding main CPMS source for Phase 18 Slice 18-2.
+      PREVIOUS_CPMS_REF: 053c1ea3e2f27f1f6def25d487b8916a12bc4fa4
+      UPGRADE_FIXTURE_PATH: /tmp/cpms-upgrade-baseline.json
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
@@ -1337,7 +1341,7 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq mysql-client
           curl -sS https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o /tmp/wp-cli.phar
           sudo mv /tmp/wp-cli.phar /usr/local/bin/wp && sudo chmod +x /usr/local/bin/wp
-      - name: WP + نصب نسخه قبلی (origin/main = F8)
+      - name: WordPress + pinned previous CPMS source
         run: |
           mysql -h127.0.0.1 -P3306 -uroot -proot -e "CREATE DATABASE $DB_MAIN;"
           curl -sS https://wordpress.org/wordpress-6.7.2.tar.gz -o /tmp/wp.tar.gz
@@ -1346,88 +1350,35 @@ jobs:
           wp config create --dbname="$DB_MAIN" --dbuser=root --dbpass=root --dbhost=127.0.0.1:3306 --dbprefix=cpmswp_ --skip-salts --allow-root
           wp config shuffle-salts --allow-root
           wp core install --url="$WP_URL" --title="Upgrade Test" --admin_user=up_admin --admin_password='Up-2026!' --admin_email=up@local.test --skip-email --allow-root
-          # «نسخه قبلی» = F8-final (کد) — main هنوز merge نشده؛ sha پین‌شده
-          PREV_REF=$(git -C "$GITHUB_WORKSPACE" rev-parse f11f6e0 || echo origin/main)
-          git -C "$GITHUB_WORKSPACE" archive "$PREV_REF" clinic-practice-management | tar -x -C /tmp
-          mv /tmp/clinic-practice-management "$WP_DIR/wp-content/plugins/"
+
+          # Fail closed: never fall back to a mutable origin/main or current code.
+          git -C "$GITHUB_WORKSPACE" cat-file -e "${PREVIOUS_CPMS_REF}^{commit}"
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse 8088c455c4735eb62413c56b107f1d52d9060ac4^1)" = "$PREVIOUS_CPMS_REF"
+          git -C "$GITHUB_WORKSPACE" merge-base --is-ancestor "$PREVIOUS_CPMS_REF" "${GITHUB_SHA:?}"
+          mkdir -p /tmp/upgrade-previous-source "$WP_DIR/wp-content/plugins"
+          git -C "$GITHUB_WORKSPACE" archive "$PREVIOUS_CPMS_REF" clinic-practice-management | tar -x -C /tmp/upgrade-previous-source
+          mv /tmp/upgrade-previous-source/clinic-practice-management "$WP_DIR/wp-content/plugins/"
           wp plugin activate clinic-practice-management --path="$WP_DIR" --allow-root
-          cat > /tmp/check-schema.php <<'PHPEOF'
-          <?php
-          require getenv('WP_HOME') . '/wp-load.php';
-          $v = \ClinicCore\Bootstrap\App::migrations()->currentVersion();
-          echo "schema on previous (F8): $v\n";
-          exit($v === '2026_09_07_0005' ? 0 : 1);
-          PHPEOF
-          WP_HOME="$WP_DIR" php /tmp/check-schema.php
-      - name: داده Legacy (نصب فعال با داده واقعی‌نما Synthetic)
+
+          # Seed through the pinned previous app; this is an old-code install,
+          # not a downgrade/rollback of current migrations.
+          WP_HOME="$WP_DIR" php "$GITHUB_WORKSPACE/clinic-practice-management/tests/bin/upgrade-path-fixture.php" seed
+      - name: Replace plugin files and migrate forward without resetting the database
         run: |
-          wp user create up_doctor 'doc@up.local' --user_pass='Up-2026!' --role=cpms_doctor --path="$WP_DIR" --allow-root
-          cat > /tmp/legacy-seed.php <<'PHPEOF'
-          <?php
-          require getenv('WP_HOME') . '/wp-load.php';
-          global $wpdb;
-          $db = \ClinicCore\Bootstrap\App::db();
-          $now = $db->nowUtcSql();
-          $uid = (int) get_user_by('login', 'up_doctor')->ID;
-          $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_clinicians') . ' (clinic_id, full_name, wp_user_id, is_active, created_at, updated_at) VALUES (1, %s, %d, 1, %s, %s)', 'دکتر ارتقا (Synthetic)', $uid, $now, $now));
-          $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_clinicians') . ' (clinic_id, full_name, wp_user_id, is_active, created_at, updated_at) VALUES (1, %s, NULL, 1, %s, %s)', 'دکتر بدون پیوند (Synthetic)', $now, $now));
-          $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_patients') . ' (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at) VALUES (1, %s, %s, %s, %s, %s, %s, %s)', 'SYN-UP-001', 'بیمار', 'ارتقا (Synthetic)', '09120007777', 'active', $now, $now));
-          // idempotency legacy: context_id = NULL (پیش از Migration 0006) + یک کلید در دو endpoint
-          $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_idempotency_keys') . ' (`key`, clinic_id, wp_user_id, endpoint, context_id, status, response_code, response_json, created_at) VALUES (%s, 1, %d, %s, NULL, 1, 200, %s, %s)', 'up-legacy-key-1', $uid, 'booking/confirm', '{}', $now));
-          $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_idempotency_keys') . ' (`key`, clinic_id, wp_user_id, endpoint, context_id, status, response_code, response_json, created_at) VALUES (%s, 1, %d, %s, NULL, 1, 200, %s, %s)', 'up-legacy-key-1', $uid, 'invoices/payments', '{}', $now));
-          echo "legacy data: 2 clinicians (1 linked) + 1 patient + 2 legacy idem rows (NULL context)\n";
-          PHPEOF
-          WP_HOME="$WP_DIR" php /tmp/legacy-seed.php
-      - name: آپدیت به RC (جایگزینی فایلها + migrate = همان فرایند تولید)
-        run: |
-          echo "run_id=${{ github.run_id }} run_head_sha=${{ github.sha }}"
           gh run download "${{ github.run_id }}" -n release-zip -D /tmp/release --repo "$GITHUB_REPOSITORY"
           rm -rf "$WP_DIR/wp-content/plugins/clinic-practice-management"
           unzip -q /tmp/release/clinic-practice-management-1.0.0.zip -d "$WP_DIR/wp-content/plugins/"
           cd "$WP_DIR/wp-content/plugins/clinic-practice-management"
           WP_HOME="$WP_DIR" php bin/cpms migrate
-          WP_HOME="$WP_DIR" php bin/cpms status
-          echo '== post-upgrade verification =='
-          cat > /tmp/upgrade-check.php <<'PHPEOF'
-          <?php
-          require getenv('WP_HOME') . '/wp-load.php';
-          global $wpdb;
-          $db = \ClinicCore\Bootstrap\App::db();
-          $v = \ClinicCore\Bootstrap\App::migrations()->currentVersion();
-          echo "schema: $v\n";
-          if ($v !== '2026_09_26_0023') { exit(1); }
-          foreach ($wpdb->get_results('SELECT `key`, endpoint, context_id, status FROM ' . $db->table('cpms_idempotency_keys'), ARRAY_A) as $r) {
-              echo 'idem: ' . $r['key'] . ' @ ' . $r['endpoint'] . ' ctx=' . var_export($r['context_id'], true) . ' status=' . $r['status'] . "\n";
-          }
-          echo 'patients=' . (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $db->table('cpms_patients')) . "\n";
-          echo 'clinicians=' . (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $db->table('cpms_clinicians')) . "\n";
-          // NULL→0 نرمال‌سازی
-          $nullCtx = (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $db->table('cpms_idempotency_keys') . ' WHERE context_id IS NULL');
-          if ($nullCtx !== 0) { echo "context_id NULL remains: $nullCtx\n"; exit(1); }
-          echo "context_id normalized to 0 ✓\n";
-          // F10 — نصب pre-F10 با دادهٔ legacy: باید ACTIVATION_GRACE (مهلت ۳۰ روزه)
-          // بگیرد نه ACTIVATION_PENDING (تصمیم کارفرما — بدون اختلال ناگهانی)
-          $state = \ClinicCore\Bootstrap\App::licenseService()->currentState();
-          $meta = \ClinicCore\Bootstrap\App::licenseService()->statusMeta();
-          echo 'license: ' . $state['status'] . ' (' . $state['reason'] . ') window=' . (string) ($meta['activation_window_type'] ?? 'n/a') . "\n";
-          if ($state['status'] !== 'activation_grace') { echo "expected ACTIVATION_GRACE on pre-F10 upgrade, got " . $state['status'] . "\n"; exit(1); }
-          if (($meta['activation_window_type'] ?? '') !== 'migration') { echo "expected window type migration\n"; exit(1); }
-          echo "F10 migration grace OK (ACTIVATION_GRACE / migration — 30 days)\n";
-          PHPEOF
-          WP_HOME="$WP_DIR" php /tmp/upgrade-check.php
-          IDX=$(mysql -h127.0.0.1 -P3306 -uroot -proot -N -e "SELECT DISTINCT index_name FROM information_schema.statistics WHERE table_schema='$DB_MAIN' AND table_name='cpmswp_cpms_idempotency_keys';" | tr '\n' ' ')
-          echo "idem indexes: $IDX"
-          echo "$IDX" | grep -q 'u_idem_scope' || { echo 'u_idem_scope MISSING'; exit 1; }
-          IDX2=$(mysql -h127.0.0.1 -P3306 -uroot -proot -N -e "SELECT DISTINCT index_name FROM information_schema.statistics WHERE table_schema='$DB_MAIN' AND table_name='cpmswp_cpms_clinicians';" | tr '\n' ' ')
-          echo "clinician indexes: $IDX2"
-          echo "$IDX2" | grep -q 'u_clinician_user' || { echo 'u_clinician_user MISSING'; exit 1; }
+          WP_HOME="$WP_DIR" php "$GITHUB_WORKSPACE/clinic-practice-management/tests/bin/upgrade-path-fixture.php" verify
           echo 'UPGRADE PATH OK ✓'
           {
-            echo '## Upgrade Path (main/F8 → RC/F9 روی نصب واقعی)'
+            echo '## Upgrade Compatibility (pinned pre-#191 source → candidate artifact)'
             echo '```'
-            echo 'F8 schema: 2026_09_07_0005 → RC schema: 2026_09_26_0023 (F10/window_sec + Phase 2: org/location/membership/identity foundation + identity mobile/links + idempotency clinic scope + Phase 8 Slice 2: OTP challenge clinic binding)'
-            echo 'legacy idem NULL→0 normalized; u_idem_scope + u_clinician_user present; داده دست‌نخورده'
-            echo 'pre-F10 install: ACTIVATION_GRACE (مهلت مهاجرت ۳۰ روزه) — بدون اختلال ناگهانی'
+            echo "previous CPMS source: $PREVIOUS_CPMS_REF"
+            echo 'schema: 2026_09_26_0023 → 2026_09_26_0023 (no migration added in this slice)'
+            echo 'synthetic Organization → Clinic → Location scopes: 2; preserved representative rows: 20'
+            echo 'current migration CLI + two safe runner repeats + tenant-aware reads: verified'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
