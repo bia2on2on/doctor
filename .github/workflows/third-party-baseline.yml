@@ -480,26 +480,54 @@ jobs:
           DB_NAME="tpb_${LANE}_$(printf '%s' "${{ matrix.id }}" | tr -c 'a-z0-9' '_' | tr '[:upper:]' '[:lower:]')"
           echo "DB_NAME=$DB_NAME" >> "$GITHUB_ENV"
 
-          curl -sSfL "https://wordpress.org/wordpress-${WP_VERSION}.tar.gz" -o /tmp/wp.tar.gz
+          # Every failure point below emits an annotation on purpose: raw job-log
+          # blobs are served from *.blob.core.windows.net, which is not
+          # retrievable from the review sandbox, whereas check-run annotations
+          # are. Without them a provisioning failure here is undiagnosable.
+          ann() { tail -20 "$1" | tr '\n\r' '  ' | sed 's/%/%25/g' | cut -c1-1600; }
+
+          if ! curl -sSfL "https://wordpress.org/wordpress-${WP_VERSION}.tar.gz" -o /tmp/wp.tar.gz; then
+            echo "::error::Class C environment failure: the official WordPress ${WP_VERSION} tarball could not be retrieved. Failing closed; no substitute source and no other version is used."
+            exit 1
+          fi
           echo "wp_tarball_sha256=$(sha256sum /tmp/wp.tar.gz | cut -d' ' -f1)"
-          tar -xzf /tmp/wp.tar.gz -C /tmp && mv /tmp/wordpress "$WP_DIR"
+          tar -xzf /tmp/wp.tar.gz -C /tmp
+          test -f /tmp/wordpress/wp-settings.php || {
+            echo "::error::Class C environment failure: the retrieved tarball did not contain WordPress core files."
+            exit 1; }
+          # WP_DIR is two levels below the runner home, so its parent must exist
+          # before the extracted tree can be moved into place.
+          mkdir -p "$(dirname "$WP_DIR")"
+          mv /tmp/wordpress "$WP_DIR"
           rm -f /tmp/wp.tar.gz
 
-          mysql -h 127.0.0.1 -P 3306 -uroot -proot \
-            -e "CREATE DATABASE $DB_NAME CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+          if ! mysql -h 127.0.0.1 -P 3306 -uroot -proot \
+               -e "CREATE DATABASE $DB_NAME CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" \
+               > /tmp/mysql.log 2>&1; then
+            echo "::error::Class C environment failure: could not create database $DB_NAME on this job's fresh MySQL container. mysql diagnostic: $(ann /tmp/mysql.log)"
+            exit 1
+          fi
 
           cd "$WP_DIR"
-          wp config create --dbname="$DB_NAME" --dbuser=root --dbpass=root \
-            --dbhost=127.0.0.1:3306 --dbprefix='wp_' --skip-salts --allow-root
+          if ! wp config create --dbname="$DB_NAME" --dbuser=root --dbpass=root \
+               --dbhost=127.0.0.1:3306 --dbprefix='wp_' --skip-salts --allow-root \
+               > /tmp/wp-config.log 2>&1; then
+            echo "::error::Provisioning failure (class C environment unless the diagnostic shows a harness defect): wp config create failed. diagnostic: $(ann /tmp/wp-config.log)"
+            exit 1
+          fi
           wp config shuffle-salts --allow-root
           # Production-sane and log-driven, like the proven acceptance harness.
           wp config set WP_DEBUG true --raw --allow-root
           wp config set WP_DEBUG_LOG true --raw --allow-root
           wp config set WP_DEBUG_DISPLAY false --raw --allow-root
           wp config set DISALLOW_FILE_EDIT true --raw --allow-root
-          wp core install --url="$WP_URL" --title="Phase 18 Third-Party Baseline" \
-            --admin_user="$TPB_ADMIN_USER" --admin_password="$TPB_ADMIN_PASS" \
-            --admin_email=tpb@baseline.local --skip-email --allow-root
+          if ! wp core install --url="$WP_URL" --title="Phase 18 Third-Party Baseline" \
+               --admin_user="$TPB_ADMIN_USER" --admin_password="$TPB_ADMIN_PASS" \
+               --admin_email=tpb@baseline.local --skip-email --allow-root \
+               > /tmp/wp-install.log 2>&1; then
+            echo "::error::Provisioning failure (class C environment unless the diagnostic shows a harness defect): wp core install failed. diagnostic: $(ann /tmp/wp-install.log)"
+            exit 1
+          fi
           echo "installed wordpress $(wp core version --allow-root) into $WP_DIR on database $DB_NAME"
 
       - name: Apache + mod_php + out-of-tree runtime probe
@@ -562,8 +590,17 @@ jobs:
           sudo chmod a+rx /home/runner
           sudo chmod -R a+rX "$WP_DIR"
           sudo chown -R www-data:www-data "$WP_DIR/wp-content"
-          sudo apache2ctl configtest && sudo service apache2 start
+          if ! sudo apache2ctl configtest 2>&1 \
+               | tee /tmp/apache-configtest.log > /dev/null; then
+            echo "::error::Class C environment failure: Apache configuration is invalid. configtest diagnostic: $(tail -20 /tmp/apache-configtest.log | tr '\n\r' '  ' | sed 's/%/%25/g' | cut -c1-1600)"
+            exit 1
+          fi
+          sudo service apache2 start
           sleep 2
+          if ! curl -sS -o /dev/null -w '' "$WP_URL/"; then
+            echo "::error::Class C environment failure: Apache is not answering on $WP_URL after start."
+            exit 1
+          fi
 
           echo "TPB_PROBE_URL=$WP_URL/__tpb_probe__/php-probe.php" >> "$GITHUB_ENV"
           curl -sS "$WP_URL/__tpb_probe__/php-probe.php"
