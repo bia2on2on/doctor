@@ -276,6 +276,25 @@ def goto_admin(page, tag, path, shot_name):
     page.wait_for_timeout(1200)  # settle کوتاه برای رندر/JS (بدون مکث طولانی)
     status = resp.status if resp else 0
     body = page.content()
+    if tag in {"doctor", "secretary"}:
+        # Targeted, non-sensitive persona diagnosis for representative-plugin
+        # coexistence and its no-third-party control. Capture routing, logged-in
+        # admin-bar identity, actual rendered CPMS
+        # menu hrefs, and the patient-create form presence; never log page text,
+        # form values, nonces, or clinical data.
+        try:
+            diagnostic = page.evaluate("""() => ({
+                url: location.href,
+                adminBar: document.querySelector('#wp-admin-bar-my-account .ab-item')?.innerText || null,
+                cpmsMenuHrefs: [...document.querySelectorAll('#adminmenu a[href]')]
+                    .map((a) => a.getAttribute('href'))
+                    .filter((href) => href && href.includes('cpms-')),
+                patientCreateForm: !!document.querySelector('#cp_pat_first'),
+                patientCreateDeniedNotice: document.body.innerText.includes('تنها مجاز به جستجو'),
+            })""")
+            print(f"DIAGNOSTIC {tag}.{shot_name} — {json.dumps(diagnostic, ensure_ascii=False)}", flush=True)
+        except Exception as exc:
+            print(f"DIAGNOSTIC {tag}.{shot_name} — unavailable:{type(exc).__name__}", flush=True)
     page.screenshot(path=f"{OUT}/screenshots/{shot_name}.png", full_page=True)
     crit = CRITICAL_RE.search(body or "")
     write_safe_page_record(tag, shot_name, status, crit is not None)
