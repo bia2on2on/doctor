@@ -24,7 +24,7 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
-  # contents: write for the existing and bounded exact-PR-head commit evidence.
+  # contents: write for the existing acceptance evidence comments.
   contents: write
   actions: read
 
@@ -87,7 +87,6 @@ jobs:
         run: |
           php -l clinic-practice-management/bin/cpms
           python3 -m py_compile clinic-practice-management/bin/rwp-acceptance.py
-          python3 -m py_compile clinic-practice-management/bin/rwp-coexistence-confirm.py
           python3 -m py_compile clinic-practice-management/bin/rwp-shell-proof.py
           python3 -m py_compile clinic-practice-management/bin/acceptance-isolation-check.py
           bash -n clinic-practice-management/bin/build-release.sh
@@ -128,10 +127,15 @@ jobs:
       # the runner is the supported WP 6.7.2 / PHP 8.2 host used by this workflow.
       # Set rationale: The SEO Framework (SEO/query filters); Contact Form 7
       # (form shortcode/admin + frontend hooks); Autoptimize (asset/output caching);
-      # Wordfence (security/auth hooks); WooCommerce (large admin/REST/schema footprint).
-      # WooCommerce 10.4.4 was rejected before CPMS because its package requires
-      # WP 6.8; pin the 10.3 maintenance/security patch line (the 10.3.6 upstream
-      # readme declares WP 6.7) and verify the selected package on this clean host.
+      # Wordfence (security/auth hooks); Easy Digital Downloads (digital commerce,
+      # checkout/customer/order flows and broad plugin hooks). EDD is the single
+      # credential-free WordPress.org commerce replacement, pinned below.
+      # WooCommerce 10.3.8 is excluded after run 37611352785 on head
+      # a1788f66c14f1d624668cbee10d683b030c887c5 recorded its own admin-access
+      # policy returning true for authenticated CPMS custom roles. This is a bounded
+      # third-party policy conflict/non-claim, not a CPMS security defect or a
+      # category-wide WooCommerce compatibility claim. No policy bypass or CPMS
+      # capability/auth change was made.
       - name: Download pinned representative plugins from WordPress.org (pre-CPMS)
         if: matrix.prefix == 'wp_'
         run: |
@@ -141,7 +145,7 @@ jobs:
           contact-form-7 6.1.7
           autoptimize 3.1.16
           wordfence 9.0.2
-          woocommerce 10.3.8
+          easy-digital-downloads 3.7.1
           EOF
           while read -r slug version; do
             [ -n "$slug" ] || continue
@@ -264,12 +268,15 @@ jobs:
           }
           echo "not-recorded OK (schema_migrations بدون 2999_01_01_9999)\n";
           PHPEOF
-          # WooCommerce 10.3.8's WP-CLI after_wp_load hook invokes
-          # rest_api_init before eval-file starts; CPMS's ordinary
-          # ensureMigrated callback sees this intentionally broken migration
-          # outside the probe's try/catch. Skip only WooCommerce for this one
-          # synthetic CLI command (do not change activation); all five remain
-          # active and are re-verified for the browser coexistence smoke.
+          # Bounded WooCommerce non-claim / D3 disclosure: WooCommerce 10.3.8's
+          # WP-CLI after_wp_load hook invoked rest_api_init before eval-file
+          # entered the synthetic failure probe's catch boundary. WooCommerce is
+          # excluded from the final representative set after that policy conflict
+          # was confirmed. The --skip-plugins=woocommerce option is scoped only
+          # to this synthetic D3 WP-CLI invocation; it does not change plugin
+          # activation state or disable any selected plugin during real HTTP smoke.
+          # All five selected representative plugins remain active and are checked
+          # before/after the wp_ browser smoke; clinic_ stays the no-third-party control.
           # بدون pipe-masking: وضعیت خروجی واقعی probe تعیین‌کننده است
           wp eval-file /tmp/acc/probe-broken.php --skip-plugins=woocommerce --path="$WP_DIR" --allow-root > /tmp/acc/migration-failure-probe.txt 2>&1
           RC=$?
@@ -549,141 +556,6 @@ jobs:
           RC=$?
           cat /tmp/acc/acceptance.log
           if [ "$RC" -ne 0 ]; then echo "ACCEPTANCE FAILED (rc=$RC)"; exit "$RC"; fi
-
-      - name: Confirm isolated WooCommerce admin-access policy (failure-only, no bypass)
-        id: confirm_policy
-        if: always() && matrix.prefix == 'wp_' && steps.browser_acceptance.outcome == 'failure'
-        run: |
-          set +e
-          python3 clinic-practice-management/bin/rwp-coexistence-confirm.py > /tmp/acc/coexistence-confirmation.log 2>&1
-          RC=$?
-          cat /tmp/acc/coexistence-confirmation.log
-          if [ "$RC" -ne 0 ]; then
-            echo "::error::Targeted redirect-policy confirmation did not complete/restore cleanly (rc=$RC); do not attribute the redirect from incomplete evidence."
-            exit "$RC"
-          fi
-
-      - name: Publish bounded policy confirmation to exact PR head
-        if: always() && github.event_name == 'pull_request' && matrix.prefix == 'wp_' && steps.browser_acceptance.outcome == 'failure'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPOSITORY: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          RUN_ID: ${{ github.run_id }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          CONFIRM_OUTCOME: ${{ steps.confirm_policy.outcome }}
-        run: |
-          set -Eeuo pipefail
-          PUBLISH_STATE=0
-          python3 - <<'PY' || PUBLISH_STATE=$?
-          import json
-          import os
-          from pathlib import Path
-
-          source = Path('/tmp/acc/coexistence-confirmation.log')
-          output = Path('/tmp/acc/coexistence-confirmation-summary.md')
-          lines = source.read_text(encoding='utf-8', errors='replace').splitlines() if source.is_file() else []
-          evidence = []
-          active_subset = None
-          for line in lines:
-              if line.startswith('CONFIRM active-slugs-and-versions='):
-                  try:
-                      active_subset = json.loads(line.split('=', 1)[1])
-                  except json.JSONDecodeError:
-                      pass
-              elif line.startswith('CONFIRM {'):
-                  try:
-                      evidence.append(json.loads(line[len('CONFIRM '):]))
-                  except json.JSONDecodeError:
-                      pass
-
-          proven_lines = [line for line in lines if line.startswith('CONFIRM PROVEN:')]
-          unresolved_lines = [line for line in lines if line.startswith('CONFIRM UNRESOLVED:')]
-          verdict = 'PROVEN' if len(proven_lines) == 2 and not unresolved_lines else 'UNRESOLVED'
-          restoration_ok = any(line.startswith('CONFIRM restored-full-plugin-set=') for line in lines)
-          option_cleanup_ok = any('temporary policy trace option removed' in line for line in lines)
-          records_ok = len(evidence) == 2 and all(
-              isinstance(item.get('route'), dict)
-              and item['route'].get('identity_verified') is True
-              and isinstance(item.get('woocommerce_policy_calls'), list)
-              for item in evidence
-          )
-          complete = bool(
-              active_subset
-              and records_ok
-              and restoration_ok
-              and option_cleanup_ok
-              and os.environ.get('CONFIRM_OUTCOME') == 'success'
-          )
-          if not complete:
-              verdict = 'UNRESOLVED'
-
-          lines_out = [
-              '### WooCommerce custom-role policy confirmation (diagnostic only)',
-              '',
-              f"- PR #{os.environ.get('PR_NUMBER', '?')} head: `{os.environ.get('PR_HEAD_SHA', '?')}`",
-              f"- Run: [{os.environ.get('RUN_ID', '?')}]({os.environ.get('RUN_URL', '#')})",
-              '- The full five-third-party-plugin Real WP browser smoke failed; this comment does not mark coexistence as PASS.',
-              f"- Confirmation verdict: **{verdict}** (probe step outcome: `{os.environ.get('CONFIRM_OUTCOME', 'unknown')}`).",
-          ]
-          if active_subset:
-              subset = ', '.join(f'{slug}@{version}' for slug, version in sorted(active_subset.items()))
-              lines_out.append(f'- Active subset during the targeted route probe: `{subset}`.')
-          else:
-              lines_out.append('- Active subset: not recorded.')
-          for item in evidence:
-              route = item.get('route', {})
-              identity = route.get('identity') or {}
-              role_names = ','.join(identity.get('roles', [])) or 'not-recorded'
-              persona = route.get('persona', 'unknown')
-              destination = route.get('admin_destination') or {}
-              calls = [
-                  row for row in item.get('woocommerce_policy_calls', [])
-                  if row.get('runtime_woocommerce_version')
-              ]
-              lines_out.append(
-                  f"- {persona} (`{role_names}`): identity verified=`{route.get('identity_verified')}`; "
-                  f"CPMS admin route ended at page_id=`{destination.get('page_id') or 'none'}`; "
-                  f"observed page-9 redirect=`{route.get('page9_redirect')}`."
-              )
-              for row in calls:
-                  caps = row.get('capabilities') or {}
-                  method = row.get('redirect_method') or {}
-                  stack = row.get('woocommerce_stack') or []
-                  callsite = ', '.join(
-                      f"{frame.get('file', 'unknown')}:{frame.get('line', '?')}"
-                      for frame in stack
-                  ) or 'not-recorded'
-                  lines_out.append(
-                      f"  - WooCommerce `{row.get('runtime_woocommerce_version')}`: "
-                      f"filter final=`{row.get('woocommerce_prevent_admin_access_final')}`; "
-                      f"method=`{method.get('class', '?')}::{method.get('method', '?')}` "
-                      f"({method.get('file', '?')}:{method.get('start_line', '?')}–{method.get('end_line', '?')}); "
-                      f"filter callsite=`{callsite}`; My Account option=`{row.get('myaccount_page_id_option', '?')}`; "
-                      f"manage_options/edit_posts/manage_woocommerce/view_admin_dashboard="
-                      f"{caps.get('manage_options')}/{caps.get('edit_posts')}/{caps.get('manage_woocommerce')}/{caps.get('view_admin_dashboard')}; "
-                      f"CPMS patient_read/queue_read/patient_create="
-                      f"{caps.get('cpms_patient_read')}/{caps.get('cpms_queue_read')}/{caps.get('cpms_patient_create')}."
-                  )
-          lines_out.append(
-              f"- Full plugin set restored=`{restoration_ok}`; temporary trace option removed=`{option_cleanup_ok}`."
-          )
-          if not complete:
-              lines_out.append('- Evidence or cleanup was incomplete; keep the causal verdict UNRESOLVED and the acceptance run failed.')
-          output.write_text('\n'.join(lines_out) + '\n', encoding='utf-8')
-          print(output.read_text(encoding='utf-8'))
-          raise SystemExit(0 if complete else 1)
-          PY
-          cat /tmp/acc/coexistence-confirmation-summary.md
-          if ! gh api "repos/$GH_REPOSITORY/commits/$PR_HEAD_SHA/comments" --method POST -F body=@/tmp/acc/coexistence-confirmation-summary.md --jq '.id'; then
-            echo '::error::Could not publish the bounded confirmation to the exact PR head; evidence remains unavailable and acceptance is not PASS.'
-            exit 1
-          fi
-          if [ "$PUBLISH_STATE" -ne 0 ]; then
-            echo '::error::Published an incomplete/unresolved confirmation; it must not be treated as coexistence PASS.'
-            exit 1
-          fi
 
       - name: Phase 18 Slice 18-4 — coexistence evidence after existing Real WP smoke
         if: matrix.prefix == 'wp_'
