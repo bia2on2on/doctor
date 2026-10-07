@@ -556,6 +556,19 @@ jobs:
           ]);
           PHPEOF
 
+          # The runtime probe is served from its OWN virtual host with its own
+          # DocumentRoot, not from an Alias inside the WordPress vhost.
+          #
+          # Why: two exact-head runs (ebc253b and c60d75f) returned HTTP 403 for
+          # the aliased probe path on EVERY leg of EVERY subject, while the
+          # WordPress front page served 200 from the same vhost - so the vhost was
+          # active and only the Alias + <Directory> interaction refused access.
+          # A vhost whose DocumentRoot IS the probe directory is the canonical
+          # Apache pattern (it is the shape of the shipped 000-default site) and
+          # removes that interaction entirely.
+          #
+          # The probe exposes only the PHP version, the SAPI and the server
+          # banner - never phpinfo() and never any site data.
           cat > /tmp/tpb-vhost.conf <<CONF
           <VirtualHost *:8080>
             DocumentRoot $WP_DIR
@@ -563,21 +576,24 @@ jobs:
               AllowOverride All
               Require all granted
             </Directory>
-            Alias /__tpb_probe__/ $PROBE_DIR/
-              # Exact-head evidence on ebc253b showed HTTP 403 here on every leg:
-              # "Require all denied" at the Directory level combined with a
-              # Files override did not grant access. This directory holds only
-              # php-probe.php, which reports the PHP version, SAPI and server
-              # banner - never phpinfo() and never any site data.
-            <Directory $PROBE_DIR>
-              Require all granted
-            </Directory>
             ErrorLog \${APACHE_LOG_DIR}/tpb-error.log
             CustomLog \${APACHE_LOG_DIR}/tpb-access.log combined
+          </VirtualHost>
+          <VirtualHost *:8081>
+            DocumentRoot $PROBE_DIR
+            <Directory $PROBE_DIR>
+              Options -Indexes
+              AllowOverride None
+              Require all granted
+            </Directory>
+            ErrorLog \${APACHE_LOG_DIR}/tpb-probe-error.log
+            CustomLog \${APACHE_LOG_DIR}/tpb-probe-access.log combined
           </VirtualHost>
           CONF
           sudo cp /tmp/tpb-vhost.conf /etc/apache2/sites-available/tpb.conf
           sudo sed -i 's/^Listen 80$/Listen 8080/' /etc/apache2/ports.conf
+          grep -qx 'Listen 8081' /etc/apache2/ports.conf || echo 'Listen 8081' \
+            | sudo tee -a /etc/apache2/ports.conf > /dev/null
           sudo a2dissite 000-default >/dev/null && sudo a2ensite tpb >/dev/null
           for INI in /etc/php/*/apache2/php.ini; do
             sudo sed -i 's/^display_errors = .*/display_errors = Off/' "$INI"
@@ -611,9 +627,33 @@ jobs:
             exit 1
           fi
 
-          echo "TPB_PROBE_URL=$WP_URL/__tpb_probe__/php-probe.php" >> "$GITHUB_ENV"
-          curl -sS "$WP_URL/__tpb_probe__/php-probe.php"
-          echo
+          TPB_PROBE_URL="http://localhost:8081/php-probe.php"
+          echo "TPB_PROBE_URL=$TPB_PROBE_URL" >> "$GITHUB_ENV"
+          # Prove the probe actually answers before any evidence depends on it.
+          # This step used to print the probe body to stdout and move on, so a
+          # campaign-wide HTTP 403 cost two full CI cycles to diagnose from
+          # outside the runner. Now it fails closed with the real reason.
+          PROBE_STATUS="$(curl -sS -o /tmp/probe-body.txt -w '%{http_code}' "$TPB_PROBE_URL" || true)"
+          if [ "$PROBE_STATUS" != "200" ]; then
+            {
+              echo "probe diagnostic for $TPB_PROBE_URL (HTTP $PROBE_STATUS)"
+              echo "-- body --"; head -c 300 /tmp/probe-body.txt 2>/dev/null || true
+              echo "-- ls -ld --"
+              ls -ld /tmp "$PROBE_DIR" "$PROBE_DIR/php-probe.php" 2>&1 || true
+              echo "-- www-data --"; id www-data 2>&1 || true
+              echo "-- apache2ctl -S --"; sudo apache2ctl -S 2>&1 || true
+              echo "-- ports.conf --"; cat /etc/apache2/ports.conf 2>&1 || true
+              echo "-- probe access log --"
+              sudo tail -5 /var/log/apache2/tpb-probe-access.log 2>&1 || true
+              echo "-- probe error log --"
+              sudo tail -20 /var/log/apache2/tpb-probe-error.log 2>&1 || true
+              echo "-- main error log --"
+              sudo tail -20 /var/log/apache2/tpb-error.log 2>&1 || true
+            } > /tmp/probe-diagnostic.log 2>&1
+            echo "::error::Class D harness failure: the out-of-tree PHP runtime probe did not answer with HTTP 200 (got $PROBE_STATUS). Refusing to measure the lane PHP on a probe that cannot speak. diagnostic: $(tr '\n\r' '  ' < /tmp/probe-diagnostic.log | sed 's/%/%25/g' | cut -c1-1600)"
+            exit 1
+          fi
+          echo "runtime probe answers 200: $(cat /tmp/probe-body.txt)"
           if sudo -u www-data test -w "$WP_DIR/wp-content"; then
             echo 'wp-content writable by the web user (recorded as an environment fact)'
           else
