@@ -142,10 +142,14 @@ jobs:
           EOF
           while read -r slug version; do
             [ -n "$slug" ] || continue
-            if ! wp plugin install "$slug" --version="$version" --path="$WP_DIR" --allow-root; then
-              echo "::error::C-class WordPress.org/WP-CLI plugin download or installation failure for ${slug}@${version}; CPMS is not installed and this is not CPMS compatibility evidence."
+            package_url="https://downloads.wordpress.org/plugin/${slug}.${version}.zip"
+            install_log="/tmp/acc/coexistence-install-${slug}.log"
+            if ! wp plugin install "$package_url" --path="$WP_DIR" --allow-root > "$install_log" 2>&1; then
+              cat "$install_log"
+              echo "::error::Pinned WordPress.org package retrieval/installation failed for ${slug}@${version} before CPMS was installed; see ${install_log} in the artifact to classify C (transport/provider) versus D (pin/fixture). This is not CPMS compatibility evidence."
               exit 1
             fi
+            cat "$install_log"
             installed_version="$(wp plugin get "$slug" --field=version --path="$WP_DIR" --allow-root)"
             if [ "$installed_version" != "$version" ]; then
               echo "::error::D-class coexistence fixture verification failure: ${slug} expected ${version}, installed ${installed_version:-unknown}."
