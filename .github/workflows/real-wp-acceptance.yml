@@ -533,6 +533,7 @@ jobs:
 
       # ---------- 6) پذیرش مرورگری ----------
       - name: Browser acceptance — all 5 roles (Admin/Manager/Doctor/Secretary/Accountant) menus + denial
+        id: browser_acceptance
         run: |
           # بدون pipe-masking: وضعیت خروجی واقعی اسکریپت تعیین‌کننده است
           BASE="$WP_URL" \
@@ -548,6 +549,58 @@ jobs:
           RC=$?
           cat /tmp/acc/acceptance.log
           if [ "$RC" -ne 0 ]; then echo "ACCEPTANCE FAILED (rc=$RC)"; exit "$RC"; fi
+
+      - name: Diagnose coexistence menu/capability assertions (failure-only, synthetic)
+        if: always() && matrix.prefix == 'wp_' && steps.browser_acceptance.outcome == 'failure'
+        run: |
+          set +e
+          {
+            echo '=== active plugin versions (non-sensitive) ==='
+            wp plugin list --status=active --fields=name,version,status --format=table --path="$WP_DIR" --allow-root
+            echo '=== CPMS role override option (if configured) ==='
+            wp option get cpms_role_caps_override --format=json --path="$WP_DIR" --allow-root 2>/dev/null || echo '(not configured)'
+            for login in "$DOCTOR_USER" "$SECRETARY_USER"; do
+              echo "=== role/capability/menu diagnostic: $login ==="
+              wp --path="$WP_DIR" --allow-root --user="$login" eval '
+                $u = wp_get_current_user();
+                $role_key = $u->roles[0] ?? "";
+                $role = $role_key !== "" ? get_role($role_key) : null;
+                echo "roles=" . wp_json_encode($u->roles) . "\n";
+                foreach (["cpms_queue_read", "cpms_patient_read", "cpms_patient_create"] as $cap) {
+                    $role_has = $role !== null && !empty($role->capabilities[$cap]);
+                    printf("cap.%s role=%d user=%d\n", $cap, $role_has, current_user_can($cap));
+                }
+                global $wp_filter;
+                $hook = $wp_filter["user_has_cap"] ?? null;
+                if ($hook instanceof WP_Hook) {
+                    foreach ($hook->callbacks as $priority => $callbacks) {
+                        foreach ($callbacks as $callback) {
+                            $fn = $callback["function"];
+                            if (is_string($fn)) { $name = $fn; }
+                            elseif (is_array($fn)) { $name = (is_object($fn[0]) ? get_class($fn[0]) : $fn[0]) . "::" . $fn[1]; }
+                            else { $name = "closure"; }
+                            echo "filter.user_has_cap={$name}@{$priority}\n";
+                        }
+                    }
+                }
+                do_action("admin_menu");
+                foreach (($GLOBALS["menu"] ?? []) as $item) {
+                    $slug = (string) ($item[2] ?? "");
+                    if (str_contains($slug, "cpms-")) {
+                        printf("top-menu slug=%s cap=%s\n", $slug, (string) ($item[1] ?? ""));
+                    }
+                }
+                foreach (($GLOBALS["submenu"] ?? []) as $parent => $items) {
+                    foreach ($items as $item) {
+                        $slug = (string) ($item[2] ?? "");
+                        if (str_contains($slug, "cpms-")) {
+                            printf("sub-menu parent=%s slug=%s cap=%s\n", $parent, $slug, (string) ($item[1] ?? ""));
+                        }
+                    }
+                }
+              ' || echo "diagnostic command failed for $login"
+            done
+          } | tee /tmp/acc/coexistence-failure-diagnostics.log | tee -a /tmp/acc/acceptance.log
 
       - name: Phase 18 Slice 18-4 — coexistence evidence after existing Real WP smoke
         if: matrix.prefix == 'wp_'
