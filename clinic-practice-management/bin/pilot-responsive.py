@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""pilot-responsive.py — Responsive smoke (NFR-UI-3/5) روی محیط واقعی با Chromium.
+"""pilot-responsive.py — responsive smoke on real WordPress using Playwright.
 
 اجرا (Workflow):  BASE=http://localhost:8080 ADMIN_PASS=... python3 bin/pilot-responsive.py
 خروجی: اسکرین‌شات‌ها در pilot-screenshots/ + خطوط PASS/FAIL + JSON summary؛ exit≠0 در شکست.
 
-Viewportها: 390×844 (موبایل) / 360×800 (موبایل کوچک) / 768×1024 (تبلت عمودی) /
-1024×768 (تبلت افقی) / 1366×768 (لپ‌تاپ) / 1440×900 (دسکتاپ)
+Chromium ماتریس کامل شش‌عرضی را حفظ می‌کند: 360×800، 390×844، 768×1024،
+1024×768، 1366×768 و 1440×900. اجرای bounded برای Firefox و WebKit همان صفحات
+و تعامل را فقط در 390×844 و 768×1024 اجرا می‌کند.
 معیار: بدون Overflow افقی (scrollWidth ≤ innerWidth+1) + رندر موفق (بدون HTTP 5xx) +
 بدون خطای Console (type=error) + بدون Uncaught Exception + بدون Request شکست‌خورده.
 Payload فرانت (JS/CSS bytes + تعداد منابع) به‌صورت INFO گزارش می‌شود (NFR-PERF-2/3).
@@ -22,9 +23,9 @@ Login می‌کردند)، پس ساختاراً نمی‌توانست به یک
 
 وقتی این متغیر تنظیم **نباشد**، رفتار فایل دقیقاً همان رفتارِ پیشین است
 (همان چهار صفحه، همان Login، همان معیارها) — یعنی هیچ ریسکی برای گیتِ موجود
-ساخته نمی‌شود. وقتی تنظیم باشد، یک صفحهٔ عمومی به همان شش Viewport اضافه
-می‌شود و علاوه بر معیارهای عمومیِ بالا، قراردادِ Phase 8 Slice 1 هم روی
-مرورگرِ واقعی بررسی می‌شود: رندرِ آنونیم بدون redirect به Login، پیوندِ صریحِ
+ساخته نمی‌شود. وقتی تنظیم باشد، یک صفحهٔ عمومی به Chromium با شش Viewport و
+به اجرای Firefox/WebKit با دو Viewport نماینده اضافه می‌شود. قراردادِ Slice 1
+روی هر engine بررسی می‌شود: رندرِ آنونیم بدون redirect به Login، پیوندِ صریحِ
 Clinic، RTL/fa، موفقیتِ A1 موجود، انتخابِ نوبت ⇒ A4 موجود، گذارِ وضعیتِ
 قابل‌مشاهده، نبودِ PHI در زیردرختِ سطح، و بارِ شرطیِ assetها.
 
@@ -43,6 +44,7 @@ import os
 import re
 import sys
 import time
+from importlib.metadata import version as package_version
 from urllib.parse import parse_qs, urlparse
 
 from playwright.sync_api import sync_playwright
@@ -52,9 +54,12 @@ ADMIN_USER = os.environ.get("RESP_USER", "pilot_secretary")
 ADMIN_PASS = os.environ["RESP_PASS"]
 DOCTOR_USER = os.environ.get("RESP_DOCTOR", "pilot_doctor")
 DOCTOR_PASS = os.environ["RESP_DOCTOR_PASS"]
-OUT = "pilot-screenshots"
+BROWSER_ENGINE = os.environ.get("RESP_BROWSER", "chromium").strip().lower()
+if BROWSER_ENGINE not in {"chromium", "firefox", "webkit"}:
+    raise SystemExit("RESP_BROWSER must be chromium, firefox, or webkit")
 
-VIEWPORTS = [
+# Preserve the established Chromium matrix; bound other engines to a phone and tablet.
+CHROMIUM_VIEWPORTS = [
     ("mobile-small-360", 360, 800),
     ("mobile-390", 390, 844),
     ("tablet-portrait-768", 768, 1024),
@@ -62,6 +67,17 @@ VIEWPORTS = [
     ("laptop-1366", 1366, 768),
     ("desktop-1440", 1440, 900),
 ]
+COMPAT_VIEWPORTS = [
+    ("mobile-390", 390, 844),
+    ("tablet-portrait-768", 768, 1024),
+]
+VIEWPORTS = CHROMIUM_VIEWPORTS if BROWSER_ENGINE == "chromium" else COMPAT_VIEWPORTS
+OUT = "pilot-screenshots" if BROWSER_ENGINE == "chromium" else f"pilot-screenshots/{BROWSER_ENGINE}"
+RESULTS_FILE = (
+    "pilot-responsive-results.json"
+    if BROWSER_ENGINE == "chromium"
+    else f"pilot-responsive-results-{BROWSER_ENGINE}.json"
+)
 
 # (کاربر, slug/URL, عنوان)
 PAGES = [
@@ -305,7 +321,12 @@ def check_assets_are_conditional(browser):
 
 
 with sync_playwright() as p:
-    browser = p.chromium.launch()
+    browser = getattr(p, BROWSER_ENGINE).launch()
+    print(
+        f"INFO browser_engine={BROWSER_ENGINE} browser_version={browser.version} "
+        f"playwright_version={package_version('playwright')} "
+        f"viewports={','.join(vp[0] for vp in VIEWPORTS)}"
+    )
     for user, url, title in PAGES:
         is_public = user == "anonymous"
         if is_public:
@@ -355,6 +376,13 @@ with sync_playwright() as p:
                     login(page, username, password)
                 target = url if str(url).startswith("http") else f"{BASE}{url}"
                 page.goto(target, wait_until="networkidle")
+                if not is_public:
+                    target_url = urlparse(target)
+                    current_url = urlparse(page.url)
+                    expected_page = parse_qs(target_url.query).get("page", [])
+                    actual_page = parse_qs(current_url.query).get("page", [])
+                    if current_url.path != target_url.path or actual_page != expected_page:
+                        raise RuntimeError("admin navigation did not remain on the requested CPMS page")
                 time.sleep(1.2)  # رندر صف/داشبورد (poll اولیه)
                 sw = page.evaluate("document.documentElement.scrollWidth")
                 iw = page.evaluate("window.innerWidth")
@@ -444,7 +472,7 @@ with sync_playwright() as p:
 
     browser.close()
 
-with open("pilot-responsive-results.json", "w", encoding="utf-8") as f:
+with open(RESULTS_FILE, "w", encoding="utf-8") as f:
     json.dump({"ok": not failures, "results": results}, f, ensure_ascii=False, indent=1)
 print(json.dumps({"ok": not failures, "count": len(results), "failed": failures}, ensure_ascii=False))
 sys.exit(1 if failures else 0)
