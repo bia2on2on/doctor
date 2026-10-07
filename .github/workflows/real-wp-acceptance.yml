@@ -129,6 +129,9 @@ jobs:
       # Set rationale: The SEO Framework (SEO/query filters); Contact Form 7
       # (form shortcode/admin + frontend hooks); Autoptimize (asset/output caching);
       # Wordfence (security/auth hooks); WooCommerce (large admin/REST/schema footprint).
+      # WooCommerce 10.4.4 was rejected before CPMS because its package requires
+      # WP 6.8; pin the 10.3 maintenance/security patch line (the 10.3.6 upstream
+      # readme declares WP 6.7) and verify the selected package on this clean host.
       - name: Download pinned representative plugins from WordPress.org (pre-CPMS)
         if: matrix.prefix == 'wp_'
         run: |
@@ -138,7 +141,7 @@ jobs:
           contact-form-7 6.1.7
           autoptimize 3.1.16
           wordfence 9.0.2
-          woocommerce 10.4.4
+          woocommerce 10.3.8
           EOF
           while read -r slug version; do
             [ -n "$slug" ] || continue
