@@ -382,6 +382,193 @@ def verdict(store, complete):
     }
 
 
+_SAFE_CHECK_NAME = re.compile(r"[A-Za-z0-9_.:/-]{1,160}")
+_SAFE_VERSION = re.compile(r"[0-9]{1,4}(?:[.][0-9A-Za-z-]{1,20}){1,3}")
+_SAFE_LOCALE = re.compile(r"[a-z]{2,3}_[A-Z]{2}")
+_SAFE_PLUGIN_FILE = re.compile(r"[A-Za-z0-9_.-]{1,100}[.]php")
+_STAGE_A_ANNOTATION_LIMIT = 1400
+_STAGE_A_ANNOTATION_BLOCKERS = 8
+_STAGE_A_SUMMARY_BLOCKERS = 32
+_STAGE_A_CHECK_NAME_LIMIT = 64
+_STAGE_A_SUMMARY_LIMIT = 6000
+
+
+def _is_stage_a_blocker(check):
+    if not isinstance(check, dict):
+        return False
+    return (check.get("status") == probe.UNEXECUTED
+            or (bool(check.get("material")) and check.get("status") != probe.PASS))
+
+
+def _visible_check_name(check):
+    name = check.get("name") if isinstance(check, dict) else None
+    if not isinstance(name, str) or not _SAFE_CHECK_NAME.fullmatch(name):
+        return "[check-name omitted]"
+    if len(name) > _STAGE_A_CHECK_NAME_LIMIT:
+        return name[:_STAGE_A_CHECK_NAME_LIMIT - 3] + "..."
+    return name
+
+
+def _safe_version_list(value):
+    values = value if isinstance(value, (list, tuple)) else [value]
+    if not values or len(values) > 4:
+        return None
+    if any(not isinstance(item, str) or not _SAFE_VERSION.fullmatch(item) for item in values):
+        return None
+    return list(values)
+
+
+def _safe_plugin_names(value, paths=False):
+    if not isinstance(value, (list, tuple)) or len(value) > len(PINS) + 1:
+        return None
+    allowed = set(PINS) | {"clinic-practice-management"}
+    result = []
+    for item in value:
+        if not isinstance(item, str):
+            return None
+        if paths:
+            pieces = item.split("/", 1)
+            if (len(pieces) != 2 or pieces[0] not in allowed
+                    or not _SAFE_PLUGIN_FILE.fullmatch(pieces[1])):
+                return None
+            result.append(pieces[0])
+        else:
+            if item not in allowed:
+                return None
+            result.append(item)
+    return result
+
+
+def _safe_expected_observed(check):
+    """Format only allowlisted, non-sensitive identity/version/count values.
+
+    Never inspect or emit ``detail``: it can contain raw command output, URLs,
+    logs, credentials, or user-provided content. Unknown schemas are omitted.
+    """
+    name = check.get("name", "")
+    expected, observed = check.get("expected"), check.get("observed")
+
+    if name == "exact_active_group":
+        expected_names = _safe_plugin_names(expected)
+        observed_names = _safe_plugin_names(observed, paths=True)
+        if expected_names is not None and observed_names is not None:
+            missing = sorted(set(expected_names) - set(observed_names))
+            unexpected = sorted(set(observed_names) - set(expected_names))
+            missing_text = ",".join(missing) if missing else "none"
+            unexpected_text = ",".join(unexpected) if unexpected else "none"
+            return (f"expected_active={len(expected_names)} pinned slugs; "
+                    f"observed_active={len(observed_names)} paths; "
+                    f"missing={missing_text}; unexpected={unexpected_text}")
+
+    version_check = re.fullmatch(r"unchanged_version::([a-z0-9-]+)", name)
+    if version_check and version_check.group(1) in PINS:
+        expected_versions = _safe_version_list(expected)
+        observed_versions = _safe_version_list(observed)
+        if expected_versions is not None and observed_versions is not None:
+            return (f"expected={','.join(expected_versions)}; "
+                    f"observed={','.join(observed_versions)}")
+
+    if name in {"mysql_full_version_exact", "wp_full_version_exact"}:
+        expected_versions = _safe_version_list(expected)
+        observed_versions = _safe_version_list(observed)
+        if expected_versions is not None and observed_versions is not None:
+            return (f"expected={','.join(expected_versions)}; "
+                    f"observed={','.join(observed_versions)}")
+
+    if name == "locale_exact" and expected == "fa_IR":
+        if isinstance(observed, str) and _SAFE_LOCALE.fullmatch(observed):
+            return f"expected={expected}; observed={observed}"
+
+    if (name.startswith("no_php_fatal::")
+            or name.startswith("activation_output_no_php_fatal::")):
+        if (isinstance(expected, int) and not isinstance(expected, bool)
+                and isinstance(observed, int) and not isinstance(observed, bool)
+                and 0 <= expected <= 100000 and 0 <= observed <= 100000):
+            return f"expected_count={expected}; observed_count={observed}"
+
+    return None
+
+
+def stage_a_failure_visibility(stage_a, stage_b_status):
+    """Build bounded, sanitized visibility for the all-19 Stage A block only."""
+    if GROUP != "combined-nineteen" or not isinstance(stage_a, dict):
+        return None
+    if stage_a.get("status") == "PASS" and stage_a.get("complete") is True:
+        return None
+
+    stage_status = stage_a.get("status")
+    if stage_status not in {"PASS", "FAIL", "NOT RUN"}:
+        stage_status = "UNKNOWN"
+    if stage_b_status not in {"PASS", "FAIL", "NOT RUN"}:
+        stage_b_status = "UNKNOWN"
+
+    raw_blockers = stage_a.get("blocking_checks", [])
+    ordered = [check for check in raw_blockers if _is_stage_a_blocker(check)] \
+        if isinstance(raw_blockers, list) else []
+    first = stage_a.get("first_causal_check")
+    if not _is_stage_a_blocker(first):
+        first = ordered[0] if ordered else None
+
+    first_name = _visible_check_name(first) if first else "not recorded"
+    first_status = first.get("status") if isinstance(first, dict) else ""
+    if first_status not in {probe.FAIL, probe.UNEXECUTED}:
+        first_status = "UNKNOWN"
+    first_material = "material" if first and bool(first.get("material")) else "non-material"
+    first_text = f"{first_name} [{first_status}; {first_material}]" if first else first_name
+
+    def blocker_text(check):
+        name = _visible_check_name(check)
+        status = check.get("status")
+        if status == probe.UNEXECUTED:
+            label = "UNEXECUTED (blocks)"
+        elif status == probe.FAIL and bool(check.get("material")):
+            label = "MATERIAL FAIL"
+        else:
+            label = "BLOCKED"
+        return f"{name} [{label}]"
+
+    annotation_items = [blocker_text(check) for check in ordered[:_STAGE_A_ANNOTATION_BLOCKERS]]
+    annotation_list = ", ".join(annotation_items) if annotation_items else "none recorded"
+    omitted_annotation = max(0, len(ordered) - len(annotation_items))
+    if omitted_annotation:
+        annotation_list += f", +{omitted_annotation} more in A/result.json"
+
+    safe_detail = _safe_expected_observed(first) if first else None
+    annotation = (f"Stage A block | group={GROUP} | Stage A={stage_status} | "
+                  f"Stage B={stage_b_status} | first_causal_check={first_text} | "
+                  f"ordered_blockers({len(ordered)})={annotation_list}")
+    if safe_detail:
+        annotation += f" | safe expected/observed: {safe_detail}"
+    if len(annotation) > _STAGE_A_ANNOTATION_LIMIT:
+        annotation = annotation[:_STAGE_A_ANNOTATION_LIMIT - 3] + "..."
+
+    lines = [
+        "### Stage A blocker visibility",
+        f"- Group: `{GROUP}`",
+        f"- Stage A: **{stage_status}**",
+        f"- First causal check recorded: `{first_text}`",
+        f"- Ordered material FAIL / UNEXECUTED blockers ({len(ordered)}):",
+    ]
+    if ordered:
+        for index, check in enumerate(ordered[:_STAGE_A_SUMMARY_BLOCKERS], 1):
+            lines.append(f"  {index}. `{blocker_text(check)}`")
+        remaining = max(0, len(ordered) - _STAGE_A_SUMMARY_BLOCKERS)
+        if remaining:
+            lines.append(f"  - {remaining} additional blockers omitted here; full ordered list remains in `A/result.json`.")
+    else:
+        lines.append("  - No check-level blocker was recorded; Stage A did not complete successfully.")
+    if safe_detail:
+        lines.append(f"- Safe expected/observed values for the first blocker: `{safe_detail}`")
+    else:
+        lines.append("- Expected/observed details omitted: no allowlisted safe scalar values were available.")
+    lines.append(f"- Stage B: **{stage_b_status}**")
+    markdown = "\n".join(lines)
+    if len(markdown) > _STAGE_A_SUMMARY_LIMIT:
+        markdown = markdown[:_STAGE_A_SUMMARY_LIMIT - 70] + "\n- Summary bounded; full evidence remains in `A/result.json`."
+
+    return {"annotation": annotation, "markdown": markdown}
+
+
 class Slice:
     def __init__(self, root, wp_dir, url, db_name):
         self.root = Path(root)
@@ -1438,6 +1625,10 @@ class Slice:
         if UNAVAILABLE:
             text += "".join(f"- FEATURE UNAVAILABLE — {name}: {reason}\n"
                             for name, reason in UNAVAILABLE.items())
+        visibility = stage_a_failure_visibility(summary["stage_a"], summary["stage_b"].get("status"))
+        if visibility:
+            text += "\n" + visibility["markdown"] + "\n"
+            probe.annotate("error", visibility["annotation"])
         (self.root / "summary.md").write_text(text)
         print(text)
         if os.environ.get("GITHUB_STEP_SUMMARY"):

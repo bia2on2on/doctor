@@ -869,6 +869,102 @@ class CombinedNineteenGroupTests(unittest.TestCase):
             lane_slice.begin_b()
         self.assertFalse((lane_slice.root / "B/started.json").exists())
 
+    def test_stage_a_failure_visibility_is_bounded_sanitized_and_keeps_failure(self):
+        lane_slice = self.module.Slice(self.root / "visibility", str(self.root / "wp"),
+                                       "http://example.test", "fixture")
+        lane_slice.init()
+        sensitive = ("Authorization: Bearer test-token-DO-NOT-EMIT; Cookie=session-DO-NOT-EMIT; "
+                     "https://user:pass@example.invalid/?patient=Jane-Doe")
+        store = lane_slice.store("A")
+        store.check("mysql_full_version_exact", False, self.module.probe.ENVIRONMENT,
+                    sensitive, expected="8.4.11", observed="8.4.10")
+        store.check("unchanged_version::woocommerce", False, self.module.probe.HARNESS,
+                    sensitive, expected="11.2.0", observed=["11.1.9"])
+        store.unexecuted("browser_session_check", self.module.probe.HARNESS, sensitive, "post")
+        store.save()
+        result = self.module.verdict(store, True)
+        self.assertEqual(result["status"], "FAIL")
+        self.module.save(lane_slice.root / "A/result.json", result)
+
+        summary_file = self.root / "github-step-summary.md"
+        annotations = []
+        with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(summary_file)}), \
+                patch.object(self.module.probe, "annotate",
+                             side_effect=lambda level, message: annotations.append((level, message))), \
+                patch.object(lane_slice, "stage_b") as stage_b, \
+                contextlib.redirect_stdout(io.StringIO()):
+            exit_code = lane_slice.finalize({})
+
+        self.assertEqual(exit_code, 1, "a material Stage A failure must remain nonzero")
+        stage_b.assert_not_called()
+        self.assertFalse((lane_slice.root / "B/started.json").exists())
+        summary = (lane_slice.root / "summary.md").read_text()
+        step_summary = summary_file.read_text()
+        self.assertIn("Stage A blocker visibility", summary)
+        self.assertIn("group=combined-nineteen", annotations[0][1])
+        self.assertEqual(len(annotations), 1)
+        self.assertEqual(annotations[0][0], "error")
+        visible = annotations[0][1] + "\n" + summary + "\n" + step_summary
+        for marker in ("Stage A=FAIL", "Stage B=NOT RUN", "mysql_full_version_exact",
+                       "unchanged_version::woocommerce", "browser_session_check",
+                       "UNEXECUTED (blocks)", "expected=8.4.11; observed=8.4.10"):
+            self.assertIn(marker, visible)
+        for forbidden in ("test-token-DO-NOT-EMIT", "session-DO-NOT-EMIT", "Authorization:",
+                          "Cookie=", "example.invalid", "patient=Jane-Doe", "Jane-Doe"):
+            self.assertNotIn(forbidden, visible)
+        self.assertLessEqual(len(annotations[0][1]), self.module._STAGE_A_ANNOTATION_LIMIT)
+        preserved = self.module.load(lane_slice.root / "A/result.json")
+        self.assertEqual(preserved["blocking_checks"][0]["detail"], sensitive)
+        self.assertEqual(preserved["blocking_checks"][2]["observed"], sensitive[:400])
+        self.assertIn("Stage B (after CPMS activation): **NOT RUN**", summary)
+
+    def test_visibility_caps_annotation_and_ordered_summary_for_many_blockers(self):
+        store = self.module.probe.Store(str(self.root / "many-evidence.json"))
+        for index in range(50):
+            store.check(f"synthetic_blocker_{index:02}", False, self.module.probe.PRODUCT)
+        result = self.module.verdict(store, True)
+        visibility = self.module.stage_a_failure_visibility(result, "NOT RUN")
+
+        self.assertIsNotNone(visibility)
+        self.assertLessEqual(len(visibility["annotation"]), self.module._STAGE_A_ANNOTATION_LIMIT)
+        self.assertLessEqual(len(visibility["markdown"]), self.module._STAGE_A_SUMMARY_LIMIT)
+        self.assertIn("ordered_blockers(50)", visibility["annotation"])
+        self.assertIn("synthetic_blocker_00", visibility["annotation"])
+        self.assertIn("synthetic_blocker_01", visibility["annotation"])
+        self.assertLess(visibility["annotation"].index("synthetic_blocker_00"),
+                        visibility["annotation"].index("synthetic_blocker_01"))
+        self.assertIn("synthetic_blocker_00", visibility["markdown"])
+        self.assertIn("synthetic_blocker_31", visibility["markdown"])
+        self.assertNotIn("synthetic_blocker_32", visibility["markdown"])
+        self.assertIn("18 additional blockers omitted", visibility["markdown"])
+        self.assertIn("full ordered list remains in `A/result.json`", visibility["markdown"])
+
+    def test_healthy_stage_a_and_b_keep_pass_result_without_failure_annotation(self):
+        lane_slice = self.module.Slice(self.root / "healthy", str(self.root / "wp"),
+                                       "http://example.test", "fixture")
+        lane_slice.init()
+        store = lane_slice.store("A")
+        store.check("sentinel", True, self.module.probe.PRODUCT)
+        result = self.module.verdict(store, True)
+        self.assertEqual(result["status"], "PASS")
+        self.module.save(lane_slice.root / "A/result.json", result)
+        self.module.save(lane_slice.root / "B/started.json", {"stage_a": "PASS"})
+        annotations = []
+        summary_file = self.root / "healthy-step-summary.md"
+        with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(summary_file)}), \
+                patch.object(self.module.probe, "annotate",
+                             side_effect=lambda level, message: annotations.append((level, message))), \
+                patch.object(lane_slice, "stage_b", return_value={"status": "PASS"}) as stage_b, \
+                contextlib.redirect_stdout(io.StringIO()):
+            exit_code = lane_slice.finalize({})
+
+        self.assertEqual(exit_code, 0)
+        stage_b.assert_called_once_with({})
+        self.assertEqual(annotations, [])
+        self.assertIn("Stage A (CPMS absent): **PASS**", summary_file.read_text())
+        self.assertIn("Stage B (after CPMS activation): **PASS**", summary_file.read_text())
+        self.assertNotIn("Stage A blocker visibility", summary_file.read_text())
+
 
 class PermissionDiagnosisTests(unittest.TestCase):
     def setUp(self):
