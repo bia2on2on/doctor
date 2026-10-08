@@ -1,12 +1,15 @@
 name: Persian five-plugin coexistence (Phase 18)
 
-# Three independent pinned groups, one workflow. Each job is a separate runner,
-# evidence root and artifact; no result is a union or substitute for another.
-#   coexistence                         -> persian-five (original accepted group, unchanged)
-#   coexistence-security-authentication -> wordfence 9.0.2 + really-simple-ssl 9.8.3
-#   coexistence-combined-ten            -> one approved ten-plugin combined group
-#                                          installed and activated together, no CPMS
-#                                          until Stage B. Not a union of the other two.
+# Six independent pinned groups, one workflow. Each job is a separate runner,
+# WordPress tree, MySQL service/database, evidence root and artifact; no result
+# is a union or substitute for another. The accepted 5-, 2- and 10-plugin jobs
+# and pins remain unchanged; three final scenarios are additive.
+#   coexistence                         -> accepted persian-five, unchanged
+#   coexistence-security-authentication -> accepted Wordfence + Really Simple SSL, unchanged
+#   coexistence-combined-ten            -> accepted ten-plugin group, unchanged
+#   coexistence-persian-woocommerce-diagnosis -> CPMS-free permission diagnosis
+#   coexistence-persian-woocommerce-sms  -> SMS + WooCommerce, then CPMS only after healthy A
+#   coexistence-combined-nineteen       -> all 19 authoritative free-plugin pins together
 
 on:
   workflow_dispatch:
@@ -53,3 +56,41 @@ jobs:
     with:
       persian_coexistence: true
       coexistence_group: combined-ten
+
+  coexistence-persian-woocommerce-diagnosis:
+    # CPMS is prohibited for this standalone activation/permission diagnosis.
+    # The canonical environment is preserved; any permission contrast runs only
+    # in a separately cloned disposable WordPress/database.
+    uses: ./.github/workflows/real-wp-acceptance.yml
+    permissions:
+      contents: write
+      actions: read
+    with:
+      persian_coexistence: true
+      coexistence_group: persian-woocommerce-diagnosis
+      coexistence_stage_b: false
+
+  coexistence-persian-woocommerce-sms:
+    # Clean pair baseline first. The existing Stage A/B interlock allows CPMS
+    # only when all material Stage A checks are healthy and complete.
+    uses: ./.github/workflows/real-wp-acceptance.yml
+    permissions:
+      contents: write
+      actions: read
+    with:
+      persian_coexistence: true
+      coexistence_group: persian-woocommerce-sms
+      coexistence_stage_b: true
+
+  coexistence-combined-nineteen:
+    # Exact authoritative free-plugin subject set, simultaneously active in one
+    # clean environment. Known pre-CPMS failures remain installed and visible;
+    # Stage B is reachable only through the reusable fail-closed interlock.
+    uses: ./.github/workflows/real-wp-acceptance.yml
+    permissions:
+      contents: write
+      actions: read
+    with:
+      persian_coexistence: true
+      coexistence_group: combined-nineteen
+      coexistence_stage_b: true

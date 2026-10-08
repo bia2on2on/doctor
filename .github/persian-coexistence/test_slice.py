@@ -7,6 +7,8 @@ import io
 import json
 import os
 from pathlib import Path
+import re
+import shutil
 import tempfile
 import subprocess
 import threading
@@ -19,7 +21,7 @@ lane = importlib.util.module_from_spec(SPEC)
 # The historical tests below assert the frozen five-plugin scenario (WooCommerce
 # subject). Pin that explicitly so an ambient COEX_GROUP (CI sets it per job) cannot
 # silently change them. Group-specific behaviour is tested via load_group().
-with patch.dict(os.environ, {"COEX_GROUP": "persian-five"}):
+with patch.dict(os.environ, {"COEX_GROUP": "persian-five", "COEX_STAGE_B": "true"}):
     SPEC.loader.exec_module(lane)
 
 
@@ -240,6 +242,7 @@ class SliceTests(unittest.TestCase):
         summary = lane.load(self.slice.root / "summary.json")
         self.assertEqual(summary["stage_a"]["status"], "FAIL")
         self.assertEqual(summary["stage_b"]["status"], "NOT RUN")
+        self.assertIn("Stage A failed or was incomplete", summary["stage_b"]["reason"])
         self.assertEqual((self.slice.root / "A/debug.log").read_bytes(), b"PHP Fatal error: original\n")
 
     def test_pre_activation_warning_not_counted_as_b_error(self):
@@ -377,10 +380,10 @@ class SliceTests(unittest.TestCase):
         self.assertEqual(lane.PINS["woocommerce"], "11.2.0")
 
 
-def load_group(group):
-    """Fresh run.py module bound to one COEX_GROUP (the workflow's selector).
+def load_group(group, stage_b=True):
+    """Fresh run.py module bound to one workflow group/Stage B selector.
     group=None loads with COEX_GROUP unset, exercising the real default."""
-    with patch.dict(os.environ, {}):
+    with patch.dict(os.environ, {"COEX_STAGE_B": str(stage_b).lower()}):
         if group is None:
             os.environ.pop("COEX_GROUP", None)
         else:
@@ -389,6 +392,25 @@ def load_group(group):
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
     return module
+
+
+def authoritative_subject_pins():
+    """Read only kind=subject pins from the frozen third-party baseline matrix."""
+    matrix_path = Path(__file__).parents[1] / "workflows/third-party-baseline.yml"
+    text = matrix_path.read_text(encoding="utf-8")
+    matrix = text.split("      matrix:\n", 1)[1]
+    section = matrix.split("        include:\n", 1)[1].split("    services:\n", 1)[0]
+    pins = {}
+    for entry in re.split(r"(?m)^          - id: ", section)[1:]:
+        kind = re.search(r"(?m)^            kind:\s*(\S+)", entry)
+        if not kind or kind.group(1) != "subject":
+            continue
+        slug = re.search(r"(?m)^            slug:\s*['\"]?([^\s'\"]+)", entry)
+        version = re.search(r"(?m)^            version:\s*['\"]?([^\s'\"]+)", entry)
+        if not slug or not version:
+            raise AssertionError("authoritative subject matrix entry lacks slug/version")
+        pins[slug.group(1)] = version.group(1)
+    return pins
 
 
 class GroupSelectionTests(unittest.TestCase):
@@ -425,6 +447,59 @@ class GroupSelectionTests(unittest.TestCase):
         self.assertNotIn("security plugin hardening", load_group("persian-five").NOT_RUN)
         for key in ("Clinic A/B isolation", "synthetic broken migration"):
             self.assertIn(key, module.NOT_RUN)
+
+    def test_final_all_nineteen_exactly_matches_authoritative_free_subject_matrix(self):
+        module = load_group("combined-nineteen")
+        expected = authoritative_subject_pins()
+        self.assertEqual(len(expected), 19)
+        self.assertEqual(module.PINS, expected)
+        self.assertEqual(module.SUBJECT, "contact-form-7")
+        self.assertEqual(module.GROUPS["combined-nineteen"]["root"], "coexistence-combined-nineteen")
+        self.assertEqual(module.GROUPS["combined-nineteen"]["artifact"],
+                         "persian-coexistence-combined-nineteen")
+        self.assertTrue(module.STAGE_B_ENABLED)
+        self.assertNotIn("wp-rocket", module.PINS)
+        self.assertNotIn("gravityforms", module.PINS)
+        # The known Persian WooCommerce failure is retained as a simultaneous member.
+        self.assertEqual(module.PINS["persian-woocommerce"], "10.0.5")
+        self.assertEqual(module.PINS["woocommerce"], "11.2.0")
+        self.assertEqual(module.PINS["persian-woocommerce-sms"], "7.2.3")
+
+    def test_new_sms_and_diagnostic_groups_have_independent_pins_and_b_boundaries(self):
+        sms = load_group("persian-woocommerce-sms")
+        self.assertEqual(sms.PINS, {"woocommerce": "11.2.0",
+                                    "persian-woocommerce-sms": "7.2.3"})
+        self.assertEqual(sms.SUBJECT, "persian-woocommerce-sms")
+        self.assertTrue(sms.STAGE_B_ENABLED)
+        sms_a_only = load_group("persian-woocommerce-sms", stage_b=False)
+        self.assertFalse(sms_a_only.STAGE_B_ENABLED)
+        self.assertIn("real SMS delivery", sms.NOT_RUN)
+        self.assertIn("no live provider", sms.NOT_RUN["real SMS delivery"])
+
+        diagnosis = load_group("persian-woocommerce-diagnosis")
+        self.assertEqual(diagnosis.PINS, {"woocommerce": "11.2.0",
+                                          "persian-woocommerce": "10.0.5"})
+        self.assertFalse(diagnosis.STAGE_B_ENABLED)
+        self.assertIn("CPMS coexistence", diagnosis.NOT_RUN)
+        self.assertNotIn("permission experiment", diagnosis.NOT_RUN)
+
+        roots = {module.GROUPS[group]["root"] for module, group in (
+            (sms, "persian-woocommerce-sms"), (diagnosis, "persian-woocommerce-diagnosis"),
+            (load_group("combined-nineteen"), "combined-nineteen"))}
+        artifacts = {module.GROUPS[group]["artifact"] for module, group in (
+            (sms, "persian-woocommerce-sms"), (diagnosis, "persian-woocommerce-diagnosis"),
+            (load_group("combined-nineteen"), "combined-nineteen"))}
+        self.assertEqual(len(roots), 3)
+        self.assertEqual(len(artifacts), 3)
+
+    def test_new_workflow_jobs_use_independent_groups_and_diagnostic_disables_stage_b(self):
+        workflow = (Path(__file__).parents[1] / "workflows/persian-coexistence.yml").read_text()
+        for job in ("coexistence-persian-woocommerce-diagnosis",
+                    "coexistence-persian-woocommerce-sms", "coexistence-combined-nineteen"):
+            self.assertIn(f"  {job}:\n", workflow)
+        self.assertIn("coexistence_group: persian-woocommerce-diagnosis\n      coexistence_stage_b: false", workflow)
+        self.assertIn("coexistence_group: persian-woocommerce-sms\n      coexistence_stage_b: true", workflow)
+        self.assertIn("coexistence_group: combined-nineteen\n      coexistence_stage_b: true", workflow)
 
     def test_unknown_group_fails_closed_at_import(self):
         with self.assertRaises(SystemExit):
@@ -672,6 +747,413 @@ class CombinedTenGroupTests(unittest.TestCase):
                          "NOT RUN")
 
 
+class CombinedNineteenGroupTests(unittest.TestCase):
+    """Exact free-plugin identity and fail-closed interlock; no runtime claim."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.module = load_group("combined-nineteen")
+
+    def test_all_nineteen_packages_install_before_any_activation(self):
+        from urllib.parse import urlparse
+
+        calls, events = [], []
+        args = argparse.Namespace(store=str(self.root / "install.json"), wp_dir="", wp_url="",
+                                  db_name="fixture", package_dir=str(self.root), no_retry=True)
+        args.subject_slug = self.module.SUBJECT
+        args.subject_version = self.module.PINS[self.module.SUBJECT]
+        args.deps = ",".join(f"{slug}={version}" for slug, version in self.module.PINS.items()
+                             if slug != self.module.SUBJECT)
+        args.activation_observer = lambda timing: events.append(timing)
+
+        def download(url, dest, **_kwargs):
+            name = Path(urlparse(url).path).name
+            slug = next(item for item in self.module.PINS if name.startswith(item + "."))
+            with zipfile.ZipFile(dest, "w") as archive:
+                archive.writestr(f"{slug}/{slug}.php",
+                                 f"<?php\n/*\nPlugin Name: Fixture\nVersion: {self.module.PINS[slug]}\n*/")
+            return []
+
+        def cli(command, _wp_dir, **_kwargs):
+            operation = command[1]
+            if operation == "install":
+                package = Path(command[2]).name
+                slug = next(item for item in self.module.PINS if package.startswith(item + "-"))
+                calls.append((operation, slug))
+                return {"rc": 0, "stdout": "ok", "stderr": ""}
+            if operation == "get":
+                return {"rc": 0, "stdout": self.module.PINS[command[2]], "stderr": ""}
+            if operation == "activate":
+                calls.append((operation, command[2]))
+                events.append("activate::" + command[2])
+                return {"rc": 0, "stdout": "ok", "stderr": ""}
+            return {"rc": 0, "stdout": "ok", "stderr": ""}
+
+        headers = [{"slug": slug, "version": version, "name": slug, "requires_plugins": []}
+                   for slug, version in self.module.PINS.items()]
+        with patch.object(self.module.probe, "download", side_effect=download), \
+                patch.object(self.module.probe, "wp_cli", side_effect=cli), \
+                patch.object(self.module.probe, "read_plugin_headers", return_value=headers), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.module.probe.cmd_install(args), 0)
+
+        installs = [index for index, call in enumerate(calls) if call[0] == "install"]
+        activates = [index for index, call in enumerate(calls) if call[0] == "activate"]
+        self.assertEqual(len(installs), 19)
+        self.assertEqual(len(activates), 19)
+        self.assertGreater(min(activates), max(installs))
+        active_order = [calls[index][1] for index in activates]
+        self.assertEqual(active_order[0], "woocommerce")
+        self.assertEqual(active_order[-1], "contact-form-7")
+        self.assertLess(active_order.index("woocommerce"), active_order.index("persian-woocommerce"))
+        self.assertLess(active_order.index("woocommerce"), active_order.index("persian-woocommerce-sms"))
+        self.assertLess(active_order.index("elementor"), active_order.index("persian-elementor"))
+        self.assertNotIn("deactivate", [call[0] for call in calls])
+        self.assertEqual(events[0], "before_activation")
+        self.assertEqual(events[-1], "after_activation::contact-form-7")
+        store = self.module.probe.Store(args.store)
+        self.assertEqual(set(store.data["facts"]["expected_active_post"]), set(self.module.PINS))
+        self.assertFalse(self.module.blockers(store.data["checks"]))
+
+    def identity_slice(self, name, headers, active):
+        lane_slice = self.module.Slice(self.root / name, str(self.root / "wp"),
+                                       "http://example.test", "fixture")
+        lane_slice.init()
+        with patch.object(self.module.probe, "read_plugin_headers", return_value=headers), \
+                patch.object(self.module.probe, "db_active_plugins", return_value=active), \
+                patch.object(self.module.probe, "scalar", return_value=(True, "8.4.11", "")), \
+                patch.object(self.module.probe, "web_runtime_probe", return_value={
+                    "php_version": "8.3.30", "transport_error": ""}), \
+                patch.object(self.module.probe, "run", return_value={"rc": 0, "stdout": "8.3.30", "stderr": ""}), \
+                patch.object(self.module.probe, "read_wp_core_version", return_value="7.1.3"), \
+                patch.object(self.module.probe, "db_option", return_value=(True, "fa_IR", "")):
+            lane_slice.identity("A")
+        return lane_slice
+
+    def test_identity_requires_exactly_all_nineteen_active_at_exact_versions(self):
+        exact = [{"slug": slug, "version": version} for slug, version in self.module.PINS.items()]
+        active = (True, [f"{slug}/{slug}.php" for slug in self.module.PINS], "")
+        exact_slice = self.identity_slice("exact", exact, active)
+        self.assertEqual(self.module.verdict(exact_slice.store("A"), True)["status"], "PASS")
+
+        omitted = (True, [f"{slug}/{slug}.php" for slug in self.module.PINS
+                          if slug != "persian-woocommerce-sms"], "")
+        omitted_slice = self.identity_slice("omitted", exact, omitted)
+        omitted_checks = {item["name"]: item for item in omitted_slice.store("A").data["checks"]}
+        self.assertEqual(omitted_checks["exact_active_group"]["status"], "FAIL")
+
+        drifted = [{"slug": item["slug"],
+                    "version": "10.0.4" if item["slug"] == "persian-woocommerce" else item["version"]}
+                   for item in exact]
+        drift_slice = self.identity_slice("drift", drifted, active)
+        drift_checks = {item["name"]: item for item in drift_slice.store("A").data["checks"]}
+        self.assertEqual(drift_checks["unchanged_version::persian-woocommerce"]["status"], "FAIL")
+        self.assertEqual(self.module.verdict(drift_slice.store("A"), True)["status"], "FAIL")
+
+    def test_material_stage_a_failure_refuses_b_and_preserves_first_cause(self):
+        lane_slice = self.module.Slice(self.root / "interlock", str(self.root / "wp"),
+                                       "http://example.test", "fixture")
+        lane_slice.init()
+        store = lane_slice.store("A")
+        store.check("persian_woocommerce_front_redirect_loop", False,
+                    self.module.probe.PRODUCT, "first observed causal failure")
+        store.check("downstream_browser", False, self.module.probe.PRODUCT, "later finding")
+        store.save()
+        result = self.module.verdict(store, True)
+        self.assertEqual(result["first_causal_check"]["name"],
+                         "persian_woocommerce_front_redirect_loop")
+        self.module.save(lane_slice.root / "A/result.json", result)
+        with self.assertRaisesRegex(RuntimeError, "Stage B refused"):
+            lane_slice.begin_b()
+        self.assertFalse((lane_slice.root / "B/started.json").exists())
+
+    def test_stage_a_failure_visibility_is_bounded_sanitized_and_keeps_failure(self):
+        lane_slice = self.module.Slice(self.root / "visibility", str(self.root / "wp"),
+                                       "http://example.test", "fixture")
+        lane_slice.init()
+        sensitive = ("Authorization: Bearer test-token-DO-NOT-EMIT; Cookie=session-DO-NOT-EMIT; "
+                     "https://user:pass@example.invalid/?patient=Jane-Doe")
+        store = lane_slice.store("A")
+        store.check("mysql_full_version_exact", False, self.module.probe.ENVIRONMENT,
+                    sensitive, expected="8.4.11", observed="8.4.10")
+        store.check("unchanged_version::woocommerce", False, self.module.probe.HARNESS,
+                    sensitive, expected="11.2.0", observed=["11.1.9"])
+        store.unexecuted("browser_session_check", self.module.probe.HARNESS, sensitive, "post")
+        store.save()
+        result = self.module.verdict(store, True)
+        self.assertEqual(result["status"], "FAIL")
+        self.module.save(lane_slice.root / "A/result.json", result)
+
+        summary_file = self.root / "github-step-summary.md"
+        annotations = []
+        with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(summary_file)}), \
+                patch.object(self.module.probe, "annotate",
+                             side_effect=lambda level, message: annotations.append((level, message))), \
+                patch.object(lane_slice, "stage_b") as stage_b, \
+                contextlib.redirect_stdout(io.StringIO()):
+            exit_code = lane_slice.finalize({})
+
+        self.assertEqual(exit_code, 1, "a material Stage A failure must remain nonzero")
+        stage_b.assert_not_called()
+        self.assertFalse((lane_slice.root / "B/started.json").exists())
+        summary = (lane_slice.root / "summary.md").read_text()
+        step_summary = summary_file.read_text()
+        self.assertIn("Stage A blocker visibility", summary)
+        self.assertIn("group=combined-nineteen", annotations[0][1])
+        self.assertEqual(len(annotations), 1)
+        self.assertEqual(annotations[0][0], "error")
+        visible = annotations[0][1] + "\n" + summary + "\n" + step_summary
+        for marker in ("Stage A=FAIL", "Stage B=NOT RUN", "mysql_full_version_exact",
+                       "unchanged_version::woocommerce", "browser_session_check",
+                       "UNEXECUTED (blocks)", "expected=8.4.11; observed=8.4.10"):
+            self.assertIn(marker, visible)
+        for forbidden in ("test-token-DO-NOT-EMIT", "session-DO-NOT-EMIT", "Authorization:",
+                          "Cookie=", "example.invalid", "patient=Jane-Doe", "Jane-Doe"):
+            self.assertNotIn(forbidden, visible)
+        self.assertLessEqual(len(annotations[0][1]), self.module._STAGE_A_ANNOTATION_LIMIT)
+        preserved = self.module.load(lane_slice.root / "A/result.json")
+        self.assertEqual(preserved["blocking_checks"][0]["detail"], sensitive)
+        self.assertEqual(preserved["blocking_checks"][2]["observed"], sensitive[:400])
+        self.assertIn("Stage B (after CPMS activation): **NOT RUN**", summary)
+
+    def test_visibility_caps_annotation_and_ordered_summary_for_many_blockers(self):
+        store = self.module.probe.Store(str(self.root / "many-evidence.json"))
+        for index in range(50):
+            store.check(f"synthetic_blocker_{index:02}", False, self.module.probe.PRODUCT)
+        result = self.module.verdict(store, True)
+        visibility = self.module.stage_a_failure_visibility(result, "NOT RUN")
+
+        self.assertIsNotNone(visibility)
+        self.assertLessEqual(len(visibility["annotation"]), self.module._STAGE_A_ANNOTATION_LIMIT)
+        self.assertLessEqual(len(visibility["markdown"]), self.module._STAGE_A_SUMMARY_LIMIT)
+        self.assertIn("ordered_blockers(50)", visibility["annotation"])
+        self.assertIn("synthetic_blocker_00", visibility["annotation"])
+        self.assertIn("synthetic_blocker_01", visibility["annotation"])
+        self.assertLess(visibility["annotation"].index("synthetic_blocker_00"),
+                        visibility["annotation"].index("synthetic_blocker_01"))
+        self.assertIn("synthetic_blocker_00", visibility["markdown"])
+        self.assertIn("synthetic_blocker_31", visibility["markdown"])
+        self.assertNotIn("synthetic_blocker_32", visibility["markdown"])
+        self.assertIn("18 additional blockers omitted", visibility["markdown"])
+        self.assertIn("full ordered list remains in `A/result.json`", visibility["markdown"])
+
+    def test_healthy_stage_a_and_b_keep_pass_result_without_failure_annotation(self):
+        lane_slice = self.module.Slice(self.root / "healthy", str(self.root / "wp"),
+                                       "http://example.test", "fixture")
+        lane_slice.init()
+        store = lane_slice.store("A")
+        store.check("sentinel", True, self.module.probe.PRODUCT)
+        result = self.module.verdict(store, True)
+        self.assertEqual(result["status"], "PASS")
+        self.module.save(lane_slice.root / "A/result.json", result)
+        self.module.save(lane_slice.root / "B/started.json", {"stage_a": "PASS"})
+        annotations = []
+        summary_file = self.root / "healthy-step-summary.md"
+        with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(summary_file)}), \
+                patch.object(self.module.probe, "annotate",
+                             side_effect=lambda level, message: annotations.append((level, message))), \
+                patch.object(lane_slice, "stage_b", return_value={"status": "PASS"}) as stage_b, \
+                contextlib.redirect_stdout(io.StringIO()):
+            exit_code = lane_slice.finalize({})
+
+        self.assertEqual(exit_code, 0)
+        stage_b.assert_called_once_with({})
+        self.assertEqual(annotations, [])
+        self.assertIn("Stage A (CPMS absent): **PASS**", summary_file.read_text())
+        self.assertIn("Stage B (after CPMS activation): **PASS**", summary_file.read_text())
+        self.assertNotIn("Stage A blocker visibility", summary_file.read_text())
+
+
+class PermissionDiagnosisTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.module = load_group("persian-woocommerce-diagnosis")
+        self.slice = self.module.Slice(self.root / "diagnosis", str(self.root / "wp"),
+                                       "http://example.test", "fixture")
+        self.slice.init()
+
+    def test_phase_parser_separates_php_warnings_from_material_fatals(self):
+        result = self.module.php_diagnostic_summary(
+            "PHP Warning: permission warning\nDeprecated: old call\nPHP Fatal error: redirect bootstrap failed")
+        self.assertEqual(result["warning_count"], 2)
+        self.assertEqual(result["fatal_count"], 1)
+        self.assertIn("PHP Fatal error: redirect bootstrap failed", result["fatal_samples"])
+
+    def test_third_party_failure_is_not_automatically_classified_as_d(self):
+        store = self.slice.store("A")
+        store.check("third_party_activation_redirect_loop", False,
+                    self.module.probe.PRODUCT, "bounded canonical chain evidence")
+        store.save()
+        with patch.object(self.slice, "log_bytes", return_value={"debug": b"", "apache": b""}), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.slice.end_a(True), 0)
+        result = self.module.load(self.slice.root / "A/result.json")
+        self.assertEqual(result["status"], "FAIL")
+        self.assertTrue(result["measurement_complete"])
+        self.assertIsNone(result["failure_category"])
+        summary = self.module.load(self.slice.root / "summary.json")
+        self.assertIn("Permission diagnosis only", summary["claim"])
+
+    def test_stage_b_is_prohibited_even_after_a_forged_healthy_stage_a(self):
+        store = self.slice.store("A")
+        store.check("all_required_probes", True, self.module.probe.PRODUCT)
+        store.save()
+        self.module.save(self.slice.root / "A/result.json", self.module.verdict(store, True))
+        with self.assertRaisesRegex(RuntimeError, "Stage B prohibited"):
+            self.slice.begin_b()
+        self.assertFalse((self.slice.root / "B/started.json").exists())
+
+    def test_permission_experiment_is_not_run_or_mutated_when_not_required(self):
+        plugins = self.root / "wp/wp-content/plugins/persian-woocommerce"
+        plugins.mkdir(parents=True)
+        marker = plugins / ".activated"
+        marker.write_text("canonical-marker")
+        before = marker.stat().st_mode
+        snapshot = {"sentinels": [], "sentinel_exists": False}
+        result = self.slice.run_permission_layout_experiment(snapshot)
+        self.assertEqual(result["status"], "NOT RUN")
+        self.assertFalse(result["canonical_results_substituted"])
+        self.assertEqual(marker.read_text(), "canonical-marker")
+        self.assertEqual(marker.stat().st_mode, before)
+        self.assertFalse((self.root / "wp-permission-experiment").exists())
+
+    def test_required_permission_experiment_changes_only_cloned_directory_and_cleans_up(self):
+        canonical_wp = Path(self.slice.wp_dir)
+        plugin_dir = canonical_wp / "wp-content/plugins/persian-woocommerce"
+        plugin_dir.mkdir(parents=True)
+        plugin_dir.chmod(0o755)
+        marker = plugin_dir / ".activated"
+        marker.write_text("canonical marker")
+        marker.chmod(0o640)
+        (canonical_wp / "wp-config.php").write_text(
+            "<?php\ndefine( 'DB_NAME', 'fixture' );\n", encoding="utf-8")
+        (canonical_wp / "wp-content/debug.log").write_text("before\n", encoding="utf-8")
+        canonical_mode = plugin_dir.stat().st_mode
+        canonical_marker = marker.read_bytes()
+        snapshot = self.slice.sentinel_snapshot()
+        self.slice._diagnostic["canonical_unlink_test"] = {"can_remove_sentinel": False}
+        gid = os.getgid()
+        self.slice._diagnostic["web_server_identity"] = {
+            "effective_user": "www-data", "effective_gid": gid,
+        }
+        clone_wp = canonical_wp.with_name(canonical_wp.name + "-permission-experiment")
+        commands, tee_inputs, database_sql = [], [], []
+
+        def fake_run(command, **_kwargs):
+            commands.append(command)
+            if len(command) >= 3 and command[1:3] == ["cp", "-a"]:
+                shutil.copytree(command[-2], command[-1], copy_function=shutil.copy2)
+            elif command[:2] == ["mysql", "-h"] and "-e" in command:
+                statement = command[command.index("-e") + 1]
+                database_sql.append(statement)
+            elif command[:2] == ["sudo", "cat"] and command[-1] == "/etc/apache2/ports.conf":
+                return {"rc": 0, "stdout": "Listen 8080\nListen 8081\n", "stderr": ""}
+            elif command[:2] == ["sudo", "cat"]:
+                return {"rc": 0, "stdout": "", "stderr": ""}
+            elif "chgrp" in command:
+                os.chown(command[-1], -1, int(command[-2]))
+            elif "chmod" in command:
+                os.chmod(command[-1], int(command[command.index("--") + 1], 8))
+            elif "install" in command:
+                target = Path(command[-1])
+                target.write_bytes(b"")
+                target.chmod(int(command[command.index("-m") + 1], 8))
+            elif "-u" in command and "rm" in command:
+                Path(command[-1]).unlink(missing_ok=True)
+            elif "rm" in command and "-rf" in command:
+                shutil.rmtree(command[-1], ignore_errors=False)
+            elif "rm" in command and "-f" in command and "arena-unlink-canary" in command[-1]:
+                Path(command[-1]).unlink(missing_ok=True)
+            return {"rc": 0, "stdout": "", "stderr": ""}
+
+        def fake_subprocess_run(command, **kwargs):
+            if command[0] == "mysqldump":
+                return subprocess.CompletedProcess(command, 0, b"fixture dump", b"")
+            if command[0] == "mysql":
+                return subprocess.CompletedProcess(command, 0, b"", b"")
+            if command[:2] == ["sudo", "tee"]:
+                tee_inputs.append((command, kwargs.get("input", "")))
+                target = command[-1]
+                if target == str(clone_wp / "wp-config.php"):
+                    Path(target).write_text(kwargs["input"], encoding="utf-8")
+                return subprocess.CompletedProcess(command, 0, kwargs.get("input", ""), "")
+            raise AssertionError(f"unexpected subprocess: {command}")
+
+        response = lambda url, timeout=20: {"request_url": url, "status": 200,
+                                             "location": "", "content_type": "text/html",
+                                             "transport_error": ""}
+        with patch.object(self.module.probe, "scalar", return_value=(True, "0", "")), \
+                patch.object(self.module.probe, "run", side_effect=fake_run), \
+                patch.object(self.module.subprocess, "run", side_effect=fake_subprocess_run), \
+                patch.object(self.module, "diagnostic_http_once", side_effect=response):
+            experiment = self.slice.run_permission_layout_experiment(snapshot)
+
+        self.assertEqual(experiment["status"], "COMPLETE", experiment.get("reason"))
+        self.assertFalse(experiment["canonical_results_substituted"])
+        self.assertTrue(experiment["cleanup"]["all_created_resources_removed"])
+        self.assertFalse(clone_wp.exists())
+        self.assertEqual(plugin_dir.stat().st_mode, canonical_mode)
+        self.assertEqual(marker.read_bytes(), canonical_marker)
+        self.assertEqual(len(experiment["permission_changes"]), 1)
+        change = experiment["permission_changes"][0]
+        self.assertEqual(change["path_relative_to_cloned_wp"], "wp-content/plugins/persian-woocommerce")
+        self.assertEqual(change["before"]["mode_octal"], "0755")
+        self.assertEqual(change["after"]["mode_octal"], "0775")
+        self.assertIn("group-write bit added", change["exact_changes"])
+        self.assertTrue(change["files_changed"] is False)
+        self.assertTrue(change["plugin_source_changed"] is False)
+        self.assertTrue(change["canonical_environment_changed"] is False)
+        self.assertTrue(change["application_authorization_or_roles_changed"] is False)
+        self.assertTrue(experiment["environment"]["is_separate_disposable_clone"])
+        self.assertEqual(experiment["web_unlink_test"]["can_remove_sentinel"], True)
+        self.assertTrue(any("fixture_pwperm" in statement for statement in database_sql))
+        self.assertTrue(any("DROP DATABASE" in statement for statement in database_sql))
+        clone_mode_commands = [command for command in commands if "chmod" in command or "chgrp" in command]
+        self.assertEqual(len(clone_mode_commands), 2)
+        for command in clone_mode_commands:
+            self.assertTrue(Path(command[-1]).is_relative_to(clone_wp))
+        self.assertTrue(any("fixture_pwperm" in text for _command, text in tee_inputs))
+
+    def test_unlink_permission_uses_disposable_canary_not_actual_sentinel(self):
+        plugins = self.root / "wp/wp-content/plugins/persian-woocommerce"
+        plugins.mkdir(parents=True)
+        marker = plugins / ".activated"
+        marker.write_text("must survive")
+        marker.chmod(0o640)
+        snapshot = self.slice.sentinel_snapshot()
+        created_canaries = []
+
+        def fake_run(command, **_kwargs):
+            if "install" in command:
+                target = Path(command[-1])
+                target.write_bytes(b"")
+                mode_index = command.index("-m") + 1
+                target.chmod(int(command[mode_index], 8))
+                created_canaries.append(target)
+                return {"rc": 0, "stdout": "", "stderr": ""}
+            if "-u" in command:
+                return {"rc": 1, "stdout": "", "stderr": "Permission denied"}
+            if "rm" in command and "-f" in command:
+                Path(command[-1]).unlink(missing_ok=True)
+                return {"rc": 0, "stdout": "", "stderr": ""}
+            return {"rc": 0, "stdout": "", "stderr": ""}
+
+        identity = {"effective_user": "www-data", "effective_uid": 33, "effective_gid": 33}
+        with patch.object(self.module.probe, "run", side_effect=fake_run):
+            observed = self.slice.test_web_user_can_remove_sentinel(snapshot, identity)
+        self.assertTrue(observed["attempted"])
+        self.assertFalse(observed["can_remove_sentinel"])
+        self.assertTrue(observed["sentinel_preserved"])
+        self.assertEqual(marker.read_text(), "must survive")
+        self.assertTrue(created_canaries)
+        self.assertFalse(created_canaries[0].exists())
+        self.assertIn("actual .activated file was never removed", observed["method"])
+
+
 class HTTPTests(unittest.TestCase):
     def test_real_redirect_evidence_and_single_attempt_failure(self):
         class Handler(BaseHTTPRequestHandler):
@@ -702,6 +1184,41 @@ class HTTPTests(unittest.TestCase):
                     lane.probe.download(url + "/fail", str(Path(tmp) / "pin.zip"), no_retry=True)
                 sleep.assert_not_called()
             self.assertEqual(Handler.requests.count("/fail"), 1)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
+    def test_diagnostic_redirect_loop_is_bounded_and_preserves_each_http_status(self):
+        module = load_group("persian-woocommerce-diagnosis")
+
+        class Handler(BaseHTTPRequestHandler):
+            requests = []
+            def do_GET(self):
+                self.requests.append(self.path)
+                self.send_response(302)
+                self.send_header("Location", "/two" if self.path == "/one" else "/one")
+                self.end_headers()
+            def log_message(self, *args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            callbacks = []
+            start = f"http://127.0.0.1:{server.server_port}/one"
+            result = module.diagnostic_navigation(
+                start, max_redirects=5,
+                after_response=lambda index, response: callbacks.append((index, response["status"])))
+            self.assertEqual(result["initial_status"], 302)
+            self.assertEqual(result["final_status"], 302)
+            self.assertEqual([response["status"] for response in result["responses"]], [302, 302])
+            self.assertEqual(result["redirect_count"], 2)
+            self.assertTrue(result["looped_or_bounded"])
+            self.assertEqual(result["stopped_reason"], "redirect target revisited")
+            self.assertEqual(Handler.requests, ["/one", "/two"])
+            self.assertEqual(callbacks, [(0, 302), (1, 302)])
         finally:
             server.shutdown()
             server.server_close()

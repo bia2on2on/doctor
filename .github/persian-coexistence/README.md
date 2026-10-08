@@ -1,9 +1,177 @@
-# Phase 18 — bounded Persian five-plugin coexistence
+# Phase 18 — bounded Persian plugin coexistence campaign
 
-Measurement infrastructure only. **No compatibility claim without actual runtime
-Stage A and Stage B evidence.** A successful workflow is not product acceptance;
+Measurement infrastructure only. **No compatibility claim without the scenario's
+required runtime evidence.** A successful workflow is not product acceptance;
 NOT RUN is never PASS. No automatic product fixes or per-plugin-baseline union
-expectation is applied.
+expectation is applied. The historical Phase 18 sections below remain as a record;
+the additive final scenarios in this current-scope section define the expanded
+workflow behavior.
+
+## Current scope — three additive, independent scenarios (2026-10-08)
+
+`.github/workflows/persian-coexistence.yml` now calls the existing reusable
+`real-wp-acceptance.yml` for six independently scoped jobs. The accepted five-,
+two-, and ten-plugin groups, their pins and their evidence roots are unchanged;
+these three jobs are additive. Each call receives its own runner, clean WordPress
+tree, MySQL service/database, logs, Stage A/B gate and artifact. Unique group keys
+prevent cancellation or evidence mixing. They may run concurrently; no scenario
+is a union, substitute or prerequisite for another.
+
+| New job / group | Exact CPMS-free Stage A subject set | Stage B boundary |
+| --- | --- | --- |
+| `coexistence-persian-woocommerce-diagnosis` / `persian-woocommerce-diagnosis` | `woocommerce` 11.2.0 + `persian-woocommerce` 10.0.5 | Explicitly disabled; this scenario never installs CPMS |
+| `coexistence-persian-woocommerce-sms` / `persian-woocommerce-sms` | `woocommerce` 11.2.0 + `persian-woocommerce-sms` 7.2.3 | Reused Stage B is eligible only after materially healthy, complete A |
+| `coexistence-combined-nineteen` / `combined-nineteen` | All 19 authoritative free-plugin subjects below, simultaneously active | Reused Stage B is eligible only after materially healthy, complete A |
+
+The original five-plugin lane remains `persian-five`; its selection and pins are
+unchanged. The two-plugin security/authentication lane remains
+`security-authentication`; the accepted ten-plugin lane remains `combined-ten`.
+The diagnosis job passes `coexistence_stage_b: false` explicitly, and `run.py`
+also rejects `begin_b()` for this group even if a healthy-looking A result were
+forged. For the other new groups the caller explicitly enables the existing
+fail-closed Stage A/B interlock.
+
+### Persian WooCommerce activation and permission diagnosis (CPMS absent)
+
+The canonical lane is a clean WordPress **7.1.3**, PHP **8.3**, MySQL **8.4.11**,
+`fa_IR` environment with only WooCommerce **11.2.0** and Persian WooCommerce
+**10.0.5** as the group subjects. Existing third-party baseline retrieval,
+identity, bootstrap, locale, browser and public-page probes are reused. CPMS is
+absent, no CPMS ZIP is built or installed, and the output makes no CPMS
+compatibility attribution.
+
+The separate `identity.php` endpoint runs under Apache/mod_php on the isolated
+8081 vhost and reports only the effective UID/GID, resolved account/group names,
+PHP version/SAPI and JSON status. It does not bootstrap WordPress or expose
+`phpinfo()`. `run.py` records the distinct WP-CLI runner identity. The activation
+observer snapshots the Persian WooCommerce `.activated` sentinel immediately
+after each WP-CLI activation (before another WP-CLI bootstrap) and again after
+that observation. Snapshots include path, existence, UID/GID, mode, size and
+other available file metadata. A same-parent canary with matching sentinel
+ownership/group/mode tests whether the Apache user can unlink it; the actual
+sentinel is never the unlink target, and the canary is cleaned up and checked.
+
+Canonical HTTP GETs are captured separately from WP-CLI: the first request and
+subsequent requests preserve every response status and `Location`; redirects are
+followed manually, same-origin only, with a ten-hop ceiling and loop detection.
+The sentinel is resampled after each response/redirect hop. WordPress debug and
+Apache error logs are retained as full snapshots and phase deltas around
+activation, WP-CLI observations, canonical requests and (if needed) the clone
+experiment. Warnings/notices/deprecations and fatal/parse/uncaught errors remain
+phase-specific evidence; PHP/browser failures are not silently collapsed into a
+single result.
+
+A permission counterfactual is attempted **only** if the canonical activation
+left a sentinel and the canary proves the Apache user cannot unlink a matching
+file in the same parent. It uses a distinct cloned WordPress directory, a copied
+and separately named database (`<canonical>_pwperm`), a separate local URL/8082
+vhost and separate logs. The clone's `wp-config.php` and home/site URL are pointed
+to that disposable database/URL; the listener/vhost are temporary scaffolding.
+The only permission-layout subject change is the cloned
+`wp-content/plugins/persian-woocommerce` directory: its group becomes Apache's
+effective GID and group-write/group-execute are added if absent. Before/after
+owner, group and mode plus the exact mode bits changed are recorded. No files,
+plugin source, canonical directory/database, application roles, capabilities or
+authorization checks are changed. The experiment never substitutes for the
+canonical observation. Cleanup of the cloned directory/database, listener and
+vhost is recorded and must succeed for the conditional experiment to count as
+complete. If the condition is not met, it is explicitly `NOT RUN` rather than
+creating an unnecessary alternate layout.
+
+Evidence is kept under `coexistence-persian-woocommerce-diagnosis/`, especially
+`A/diagnostic.json`, `A/diagnostic/logs/`, `A/evidence.json` and `A/result.json`.
+The canonical activation/permission observations, any conditional clone result,
+normal third-party probes, non-material warnings and unavailable features stay
+separate. This workflow does not automatically assign A/B/C/D: third-party
+behavior is evidence, not a fifth category. A/B/C/D require evidence-backed
+review; no result is automatically labeled D.
+
+### Persian WooCommerce SMS group
+
+The independent baseline pins exactly WooCommerce **11.2.0** and Persian
+WooCommerce SMS **7.2.3**. Stage A begins with clean WordPress and CPMS absent. It
+records exact package/version/active-set identity, bootstrap and administrator
+login, public pages, core REST/AJAX, `fa_IR`/RTL documents, redirects, browser
+errors and PHP diagnostics. A materially failed or incomplete A produces
+`Stage A FAIL` and `Stage B NOT RUN`; it is never treated as evidence of CPMS
+incompatibility.
+
+Only a complete materially healthy A reaches the existing reusable Stage B:
+install CPMS afterward, verify migrations through the current latest migration
+`2026_09_26_0023_handwriting_prescription_paper.php`, run the administrator,
+doctor, secretary, manager and accountant personas, verify authorization
+denials, booking, REST/AJAX, RTL, exact plugin versions/active set and post-CPMS
+PHP/browser diagnostics. Existing required acceptance anchors remain in force.
+Real SMS delivery is always `NOT RUN` unless a provider is configured and
+successful provider delivery evidence exists. Plugin activation or a local
+fixture is not delivery evidence. No provider secret was added.
+
+### Final all-19 free-plugin combined scenario
+
+The 19 exact pins are fixed in `run.py` from the authoritative subject matrix in
+`.github/workflows/third-party-baseline.yml`; the focused test compares the
+scenario's set and versions directly to that matrix. Every subject is installed
+before activation and all remain active together. WP Rocket and Gravity Forms
+are not subjects. The known individual Persian WooCommerce CPMS-free baseline
+failure stays installed and visible; it is not removed, disabled, patched or
+substituted to make the combined run pass.
+
+| # | Free plugin slug | Exact pin |
+| ---: | --- | ---: |
+| 1 | `litespeed-cache` | 7.9.1 |
+| 2 | `wordpress-seo` | 28.6 |
+| 3 | `seo-by-rank-math` | 1.0.280 |
+| 4 | `persian-woocommerce` | 10.0.5 |
+| 5 | `woocommerce` | 11.2.0 |
+| 6 | `elementor` | 4.3.4 |
+| 7 | `persian-elementor` | 2.8.4 |
+| 8 | `wp-parsidate` | 6.4 |
+| 9 | `persian-woocommerce-sms` | 7.2.3 |
+| 10 | `contact-form-7` | 6.2 |
+| 11 | `wordfence` | 9.0.2 |
+| 12 | `really-simple-ssl` | 9.8.3 |
+| 13 | `redirection` | 5.10.1 |
+| 14 | `polylang` | 3.8.10 |
+| 15 | `user-role-editor` | 4.66.2 |
+| 16 | `autoptimize` | 3.1.16 |
+| 17 | `advanced-custom-fields` | 6.8.10 |
+| 18 | `wp-crontrol` | 1.21.2 |
+| 19 | `loco-translate` | 2.8.9 |
+
+Stage A, while CPMS is absent, asserts exactly those versions and active
+identities and reuses the existing bootstrap/admin login, public pages,
+REST/AJAX, `fa_IR`/RTL, PHP/browser and bounded-redirect probes. The first
+material causal failure is retained. A material failure or incomplete evidence
+means Stage A FAIL, Stage B NOT RUN and **no CPMS installation**. In particular,
+the known individual Persian WooCommerce baseline failure cannot be reclassified
+as a CPMS defect because a combined A failure happened before CPMS existed.
+
+After healthy complete A only, the same Stage B contract applies: migrations,
+five operational role personas, authorization denials, booking, REST/AJAX,
+RTL, exact plugin versions/active set and post-CPMS diagnostics. The group
+explicitly records real SMS delivery and Contact Form 7 submission/email as
+`NOT RUN`, and LiteSpeed server-level cache as unavailable on Apache. It does
+not infer feature success from installation or activation.
+
+### Evidence categories and interpretation
+
+Keep these sources distinct: individual third-party baselines; the existing
+combined third-party baseline; each new CPMS-free combined Stage A; and a
+post-CPMS Stage B coexistence observation. `NOT RUN`, an unavailable feature,
+a non-material warning and a material failure are distinct states. A successful
+workflow means only that the measurement job completed its defined handling; it
+does not mean product PASS. Stage B is never run when Stage A is materially
+unhealthy or incomplete. The only review taxonomy is A=current-change regression,
+B=pre-existing CPMS defect, C=infrastructure/environment, and D=test/fixture
+defect. Third-party behavior is evidence, not a fifth category. Unsupported
+causes remain unassigned; no automatic D classification is made.
+
+Artifacts use unique names
+`persian-coexistence-persian-woocommerce-diagnosis-wp_`,
+`persian-coexistence-persian-woocommerce-sms-wp_` and
+`persian-coexistence-combined-nineteen-wp_`. Each root contains the scenario's
+`summary.json`/`summary.md`, `A/` evidence and, only when reached, `B/` evidence.
+No group result is merged into another group's verdict.
 
 ## Frozen lane
 
@@ -356,3 +524,36 @@ historical head; standalone ShellCheck 0.11.0 reports the same 10 pre-existing
 diagnostics. No suppressions, ruleset changes or Actions upgrades were added.
 The correction touches infrastructure/tests/docs only; actual five-plugin
 coexistence after this correction remains unproven until new runtime evidence.
+
+## Additive scenario implementation validation (2026-10-08)
+
+This is a harness validation record, **not** a runtime compatibility result:
+
+- `python3 -m py_compile` passes for `run.py` and `test_slice.py`; Pyflakes 4.0.3
+  reports no findings.
+- **52 focused tests pass; one is explicitly skipped** because this sandbox does
+  not contain the external unmodified WordPress source required by the existing
+  core-semantics test. New coverage compares all 19 exact versions with the
+  authoritative subject matrix, verifies install-before-activation and exact
+  active identity, pins old 5/2/10 groups, tests A-to-B refusal, confirms the
+  diagnosis Stage B prohibition, distinguishes warning/fatal phase diagnostics,
+  exercises bounded redirect-loop evidence and simulates the conditional cloned
+  permission experiment including cleanup and
+  canonical-environment preservation.
+- Actionlint WASM checked all **6** repository workflows with **0 findings**.
+  ShellCheck 0.11.0 checked all **24** reusable-workflow `run` blocks; the **16**
+  findings are unchanged from the base workflow, with no added finding.
+- PHP **8.3.33 WASM** `-l` reports no syntax errors for the new `identity.php`
+  endpoint or the reused standalone `runtime.php`. This does not prove an Apache
+  mod_php/posix integration.
+- `git diff --check` passes. Scope review: only `.github/` measurement workflow,
+  diagnostic, focused test and documentation files changed; the authoritative
+  third-party baseline, plugin source, CPMS product, migrations, authorization,
+  accepted pins and prior result artifacts are untouched.
+
+**NOT RUN locally:** official WordPress/plugin distribution retrieval, clean
+WordPress + Apache + MySQL runtime, browser acceptance, or actual Stage A/Stage B
+execution of any new scenario. The all-19 Stage B is therefore NOT RUN and there
+is no all-19 CPMS compatibility claim. The SMS provider delivery is also NOT RUN.
+Only future workflow artifacts can establish those runtime findings; a green
+measurement workflow alone is not product PASS.
