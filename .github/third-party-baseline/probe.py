@@ -295,13 +295,16 @@ class _TrustedHostRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 
 def download(url: str, dest: str, attempts: int = 3,
-             allowed_redirect_hosts: Optional[frozenset] = None) -> List[Dict[str, Any]]:
+             allowed_redirect_hosts: Optional[frozenset] = None,
+             no_retry: bool = False) -> List[Dict[str, Any]]:
     """Retrieve a package or raise; return the recorded redirect chain.
 
     No fallback to another version, ever.  ``allowed_redirect_hosts`` is opt-in:
     unset keeps the previous plain behaviour for every existing call site, and the
     returned chain is empty for those, so nothing about their evidence changes.
     """
+    if no_retry:
+        attempts = 1
     last = ""
     status = 0
     used = attempts
@@ -324,14 +327,16 @@ def download(url: str, dest: str, attempts: int = 3,
                 # A 404 is the server's definitive answer, not a transient
                 # failure. Retrying it only delays the caller's decision.
                 break
-            time.sleep(2 * attempt)
+            if not no_retry:
+                time.sleep(2 * attempt)
         except UntrustedRedirect as exc:
             # Never retry a refused redirect: the condition is deterministic and
             # retrying would just ask to be sent somewhere untrusted again.
             raise RetrievalError(str(exc), status) from exc
         except Exception as exc:  # noqa: BLE001
             last = f"{type(exc).__name__}: {exc}"
-            time.sleep(2 * attempt)
+            if not no_retry:
+                time.sleep(2 * attempt)
     raise RetrievalError(f"retrieval failed after {used} attempt(s): {last}", status)
 
 
@@ -359,7 +364,12 @@ def run(cmd: List[str], timeout: int = 300) -> Dict[str, Any]:
 
 
 def wp_cli(args: List[str], wp_dir: str, timeout: int = 300) -> Dict[str, Any]:
-    return run(["wp", *args, f"--path={wp_dir}", "--allow-root"], timeout=timeout)
+    result = run(["wp", *args, f"--path={wp_dir}", "--allow-root"], timeout=timeout)
+    # Opt-in raw causal evidence for the bounded group; never log argv/credentials.
+    if os.environ.get("TPB_RAW_COMMAND_LOG"):
+        with open(os.environ["TPB_RAW_COMMAND_LOG"], "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(result, ensure_ascii=False) + "\n")
+    return result
 
 
 def mysql_query(sql: str, db_name: str) -> Dict[str, Any]:
@@ -1156,7 +1166,8 @@ def cmd_install(args: argparse.Namespace) -> int:
 
         # -- 1. the official versioned ZIP, always tried first -------------- #
         try:
-            entry["redirect_chain"] = download(url, zip_path)
+            entry["redirect_chain"] = download(url, zip_path,
+                                               no_retry=getattr(args, "no_retry", False))
         except RetrievalError as exc:
             entry["versioned_url_status"] = exc.status
             if exc.status != 404 or slug not in OFFICIAL_STABLE_FALLBACK_SLUGS:
@@ -1619,7 +1630,7 @@ def cmd_locale(args: argparse.Namespace) -> int:
     store.check("fa_no_unexpected_redirect", no_redirects, ENVIRONMENT,
                 "a Persian locale must not introduce a redirect on the front page, the "
                 "login page or the admin; any hop is recorded with its chain",
-                True, phase, 0, chains)
+                not getattr(args, "record_only_redirects", False), phase, 0, chains)
     store.check("fa_front_page_locale_and_rtl",
                 front["status"] == 200 and front_root["lang"] == "fa-IR"
                 and front_root["dir"] == "rtl"
@@ -1709,6 +1720,24 @@ def cmd_browser(args: argparse.Namespace) -> int:
             context = browser.new_context(viewport={"width": 1366, "height": 900},
                                           user_agent=USER_AGENT)
             page = context.new_page()
+            # Opt-in untruncated causal stream for the bounded group. Never
+            # capture request bodies, cookies, Authorization or response headers
+            # other than the redirect target. Historical subjects stay unchanged.
+            raw_browser_log = os.environ.get("TPB_RAW_BROWSER_LOG")
+            if raw_browser_log:
+                def raw_event(kind, detail):
+                    with open(raw_browser_log, "a", encoding="utf-8") as handle:
+                        handle.write(json.dumps({"kind": kind, "detail": detail},
+                                                ensure_ascii=False) + "\n")
+                page.on("console", lambda m: raw_event("console::" + m.type, {
+                    "message": m.text, "location": m.location}))
+                page.on("pageerror", lambda e: raw_event("pageerror", {
+                    "message": str(e), "stack": getattr(e, "stack", "")}))
+                page.on("requestfailed", lambda r: raw_event("requestfailed", {
+                    "url": r.url, "resource_type": r.resource_type, "failure": r.failure}))
+                page.on("response", lambda r: raw_event("navigation", {
+                    "url": r.url, "status": r.status, "location": r.header_value("location")})
+                    if r.request.is_navigation_request() else None)
             page.on("console", lambda m: console_errors.append(m.text[:300])
                     if m.type == "error" else None)
             page.on("pageerror", lambda e: page_errors.append(str(e)[:300]))
@@ -1736,6 +1765,9 @@ def cmd_browser(args: argparse.Namespace) -> int:
                                      timeout=BROWSER_TIMEOUT_MS)
                 nav = {"front_status": response.status if response else 0,
                        "front_url": page.url, "front_redirects": walk_redirects(response)}
+                if getattr(args, "require_computed_rtl", False):
+                    nav["computed_dir"] = page.evaluate(
+                        "() => getComputedStyle(document.documentElement).direction")
                 page.screenshot(path=os.path.join(args.out_dir, "front.png"))
                 screenshots.append("front.png")
             except Exception as exc:  # noqa: BLE001
@@ -1783,6 +1815,9 @@ def cmd_browser(args: argparse.Namespace) -> int:
                                             "text": persian_text_evidence(
                                                 probed.get("text", "")),
                                             "url": page.url}
+                                if getattr(args, "require_computed_rtl", False):
+                                    document["computed_dir"] = page.evaluate(
+                                        "() => getComputedStyle(document.documentElement).direction")
                             except Exception as exc:  # noqa: BLE001
                                 document = {"dir": "", "lang": "", "url": page.url,
                                             "error": f"{type(exc).__name__}: {exc}"[:300]}
@@ -1858,6 +1893,11 @@ def cmd_browser(args: argparse.Namespace) -> int:
                     "the rendered admin must contain real Persian text, which is what "
                     "distinguishes a loaded locale from a configured one", True, phase,
                     ">= 50 Persian characters", admin_text)
+    if getattr(args, "require_computed_rtl", False):
+        for surface, observed in (("front", nav), ("admin", document)):
+            store.check(f"browser_{surface}_computed_rtl", observed.get("computed_dir") == "rtl",
+                        PRODUCT, "computed CSS direction, not only an HTML attribute",
+                        True, phase, "rtl", observed.get("computed_dir"))
     store.check("browser_rest_index", rest_status == 200, PRODUCT,
                 "REST index must load in a real browser", True, phase, 200, rest_status)
     store.check("browser_admin_ajax_wp_layer", ajax.get("reached_wp_layer") is True, PRODUCT,
@@ -2078,6 +2118,8 @@ def build_parser() -> argparse.ArgumentParser:
     install_p.add_argument("--subject-slug", required=True)
     install_p.add_argument("--subject-version", required=True)
     install_p.add_argument("--deps", default="-")
+    install_p.add_argument("--no-retry", action="store_true",
+                           help="single package attempt, no waiting (bounded coexistence)")
     install_p.set_defaults(func=cmd_install)
 
     browser_p = sub.add_parser("browser", help="real-browser probes")
