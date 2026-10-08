@@ -469,6 +469,209 @@ class GroupSelectionTests(unittest.TestCase):
         return args
 
 
+class CombinedTenGroupTests(unittest.TestCase):
+    """The single approved ten-plugin combined scenario.
+
+    Local harness/group-selection proof only: no real WordPress, MySQL, Apache or
+    browser runs here, so none of this is a compatibility claim.
+    """
+
+    APPROVED_TEN = {
+        "wordpress-seo": "28.6",
+        "seo-by-rank-math": "1.0.280",
+        "litespeed-cache": "7.9.1",
+        "autoptimize": "3.1.16",
+        "user-role-editor": "4.66.2",
+        "advanced-custom-fields": "6.8.10",
+        "wp-crontrol": "1.21.2",
+        "redirection": "5.10.1",
+        "polylang": "3.8.10",
+        "contact-form-7": "6.2",
+    }
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.module = load_group("combined-ten")
+        self.env = patch.dict(os.environ, {"TPB_RAW_COMMAND_LOG": "", "GITHUB_STEP_SUMMARY": ""})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+
+    def slice(self, name="combined"):
+        lane_slice = self.module.Slice(self.root / name, str(self.root / "wp"),
+                                       "http://example.test", "fixture")
+        lane_slice.init()
+        return lane_slice
+
+    def test_combined_group_pins_exactly_the_approved_ten_plugins(self):
+        self.assertEqual(self.module.PINS, self.APPROVED_TEN)
+        self.assertEqual(len(self.module.PINS), 10)
+        self.assertEqual(self.module.SUBJECT, "contact-form-7")
+        self.assertEqual(self.module.GROUPS["combined-ten"]["root"], "coexistence-combined-ten")
+        self.assertEqual(self.module.GROUPS["combined-ten"]["artifact"],
+                         "persian-coexistence-combined-ten")
+        # Persian WooCommerce stays out of this group; its existing third-party
+        # baseline FAIL must remain the visible, unchanged finding elsewhere.
+        self.assertNotIn("persian-woocommerce", self.module.PINS)
+        five, security = load_group("persian-five"), load_group("security-authentication")
+        for slug in self.module.PINS:
+            self.assertNotIn(slug, five.PINS)
+            self.assertNotIn(slug, security.PINS)
+        # The combined group's own scope limits are not inherited by the others.
+        self.assertIn("competing SEO plugin configuration", self.module.NOT_RUN)
+        self.assertIn("authored third-party configuration", self.module.NOT_RUN)
+        for other in (five, security):
+            self.assertNotIn("competing SEO plugin configuration", other.NOT_RUN)
+        # Shared inherited scope limits stay in force for this group too.
+        for key in ("Clinic A/B isolation", "synthetic broken migration"):
+            self.assertIn(key, self.module.NOT_RUN)
+
+    def test_preserved_groups_and_their_evidence_roots_are_unchanged(self):
+        five, security = load_group("persian-five"), load_group("security-authentication")
+        self.assertEqual(five.PINS, {"loco-translate": "2.8.9", "wp-parsidate": "6.4",
+                                     "elementor": "4.3.4", "persian-elementor": "2.8.4",
+                                     "woocommerce": "11.2.0"})
+        self.assertEqual(five.SUBJECT, "woocommerce")
+        self.assertEqual(five.GROUPS["persian-five"]["root"], "coexistence")
+        self.assertEqual(five.GROUPS["persian-five"]["artifact"], "persian-coexistence")
+        self.assertEqual(five.UNAVAILABLE, {})
+        self.assertEqual(security.PINS, {"wordfence": "9.0.2", "really-simple-ssl": "9.8.3"})
+        self.assertEqual(security.SUBJECT, "wordfence")
+        self.assertEqual(security.GROUPS["security-authentication"]["root"],
+                         "coexistence-security-authentication")
+        self.assertEqual(security.GROUPS["security-authentication"]["artifact"],
+                         "persian-coexistence-security-authentication")
+        groups = [five.GROUPS["persian-five"], security.GROUPS["security-authentication"],
+                  self.module.GROUPS["combined-ten"]]
+        # Three separate evidence roots and artifacts: no group overwrites another.
+        self.assertEqual(len({g["root"] for g in groups}), 3)
+        self.assertEqual(len({g["artifact"] for g in groups}), 3)
+
+    def test_all_ten_are_installed_together_and_none_is_ever_deactivated(self):
+        from urllib.parse import urlparse
+        calls, events = [], []
+        args = argparse.Namespace(store=str(self.root / "combined-install.json"), wp_dir="", wp_url="",
+                                  db_name="", package_dir=str(self.root), no_retry=True)
+        args.subject_slug = self.module.SUBJECT
+        args.subject_version = self.module.PINS[self.module.SUBJECT]
+        args.deps = ",".join(f"{s}={v}" for s, v in self.module.PINS.items() if s != self.module.SUBJECT)
+        args.activation_observer = lambda timing: events.append(timing)
+
+        def download(url, dest, **kwargs):
+            name = Path(urlparse(url).path).name
+            slug = next(s for s in self.module.PINS if name.startswith(s + "."))
+            with zipfile.ZipFile(dest, "w") as archive:
+                archive.writestr(f"{slug}/{slug}.php",
+                                 f"<?php\n/*\nPlugin Name: Fixture\nVersion: {self.module.PINS[slug]}\n*/")
+            return []
+
+        def cli(command, wp_dir, **kwargs):
+            calls.append(command[1])
+            if command[1] == "activate":
+                events.append("activate::" + command[2])
+            value = self.module.PINS[command[2]] if command[1] == "get" else "ok"
+            return {"rc": 0, "stdout": value, "stderr": ""}
+
+        headers = [{"slug": s, "version": v, "name": s, "requires_plugins": []}
+                   for s, v in self.module.PINS.items()]
+        with patch.object(self.module.probe, "download", side_effect=download), \
+                patch.object(self.module.probe, "wp_cli", side_effect=cli), \
+                patch.object(self.module.probe, "read_plugin_headers", return_value=headers), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.module.probe.cmd_install(args), 0)
+        installs = [i for i, c in enumerate(calls) if c == "install"]
+        activates = [i for i, c in enumerate(calls) if c == "activate"]
+        self.assertEqual(len(installs), 10)
+        self.assertEqual(len(activates), 10)
+        # The approved combination is one simultaneously active set: every plugin
+        # is installed before any activation starts, and nothing is deactivated to
+        # simulate a clean combination.
+        self.assertGreater(min(activates), max(installs))
+        self.assertNotIn("deactivate", calls)
+        self.assertEqual(events, ["before_activation"] + [event for slug in self.module.PINS
+                                                          for event in (f"activate::{slug}",
+                                                                        f"after_activation::{slug}")])
+        store = self.module.probe.Store(args.store)
+        self.assertEqual(sorted(store.data["facts"]["expected_active_post"]), sorted(self.APPROVED_TEN))
+        self.assertFalse(self.module.blockers(store.data["checks"]))
+
+    def identity_checks(self, name, headers, active):
+        lane_slice = self.slice(name)
+        with patch.object(self.module.probe, "read_plugin_headers", return_value=headers), \
+                patch.object(self.module.probe, "db_active_plugins", return_value=active), \
+                patch.object(self.module.probe, "scalar", return_value=(True, "8.4.11", "")), \
+                patch.object(self.module.probe, "web_runtime_probe", return_value={"php_version": "8.3.30"}), \
+                patch.object(self.module.probe, "run", return_value={"rc": 0, "stdout": "8.3.30"}), \
+                patch.object(self.module.probe, "read_wp_core_version", return_value="7.1.3"), \
+                patch.object(self.module.probe, "db_option", return_value=(True, "fa_IR", "")):
+            lane_slice.identity("A")
+        return lane_slice
+
+    def test_every_exact_version_is_required_and_drift_blocks_stage_a(self):
+        exact = [{"slug": s, "version": v} for s, v in self.module.PINS.items()]
+        active = (True, [f"{s}/{s}.php" for s in self.module.PINS], "")
+        for name, drift in (("exact", {}), ("one-drift", {"polylang": "3.8.9"}),
+                            ("seo-drift", {"wordpress-seo": "28.7", "seo-by-rank-math": "1.0.281"})):
+            with self.subTest(drift=drift):
+                headers = [{"slug": h["slug"], "version": drift.get(h["slug"], h["version"])} for h in exact]
+                lane_slice = self.identity_checks(name, headers, active)
+                drifted = sorted(c["name"] for c in lane_slice.store("A").data["checks"]
+                                 if c["name"].startswith("unchanged_version::") and c["status"] == "FAIL")
+                self.assertEqual(drifted, sorted(f"unchanged_version::{s}" for s in drift))
+                self.assertEqual(self.module.verdict(lane_slice.store("A"), True)["status"],
+                                 "FAIL" if drift else "PASS")
+
+    def test_nine_of_ten_active_is_not_the_approved_combination(self):
+        exact = [{"slug": s, "version": v} for s, v in self.module.PINS.items()]
+        short = (True, [f"{s}/{s}.php" for s in self.module.PINS if s != "wp-crontrol"], "")
+        lane_slice = self.identity_checks("short-active", exact, short)
+        checks = {c["name"]: c for c in lane_slice.store("A").data["checks"]}
+        self.assertEqual(checks["exact_active_group"]["status"], "FAIL")
+        result = self.module.verdict(lane_slice.store("A"), True)
+        self.assertEqual(result["status"], "FAIL")
+        self.assertEqual(result["first_causal_check"]["name"], "exact_active_group")
+
+    def test_stage_a_failure_blocks_stage_b_for_the_combined_group(self):
+        lane_slice = self.slice("interlock")
+        store = lane_slice.store("A")
+        store.check("combined_group_bootstrap", False, self.module.probe.PRODUCT, "first causal fatal")
+        store.save()
+        result = self.module.verdict(store, True)
+        self.assertEqual(result["status"], "FAIL")
+        self.assertEqual(result["first_causal_check"]["detail"], "first causal fatal")
+        self.module.save(lane_slice.root / "A/result.json", result)
+        with self.assertRaisesRegex(RuntimeError, "Stage B refused"):
+            lane_slice.begin_b()
+        self.assertFalse((lane_slice.root / "B/started.json").exists())
+
+    def test_group_baseline_is_machine_readable_and_declares_unavailable_features(self):
+        summary = json.loads((self.slice("baseline").root / "summary.json").read_text())
+        self.assertEqual(summary["group"], "combined-ten")
+        self.assertEqual(summary["pins"], self.APPROVED_TEN)
+        self.assertEqual(summary["stage_a"]["status"], "NOT RUN")
+        self.assertEqual(summary["stage_b"]["status"], "NOT RUN")
+        self.assertEqual(summary["environment"], {"wordpress": "7.1.3", "php": "8.3",
+                                                  "mysql": "8.4.11", "locale": "fa_IR"})
+        self.assertIn("LiteSpeed Cache server-level page cache", summary["unavailable_features"])
+        self.assertIn("outbound mail/MTA", summary["unavailable_features"])
+
+    def test_finalize_keeps_stage_verdicts_separate_and_reports_unavailable_features(self):
+        lane_slice = self.slice("finalize")
+        store = lane_slice.store("A")
+        store.check("sentinel", True, self.module.probe.PRODUCT)
+        store.save()
+        self.module.save(lane_slice.root / "A/result.json", self.module.verdict(store, True))
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(lane_slice.finalize({}), 1)  # Stage B NOT RUN is never PASS
+        text = (lane_slice.root / "summary.md").read_text()
+        self.assertIn("Stage A (CPMS absent): **PASS**", text)
+        self.assertIn("Stage B (after CPMS activation): **NOT RUN**", text)
+        self.assertIn("FEATURE UNAVAILABLE — LiteSpeed Cache server-level page cache", text)
+        self.assertEqual(json.loads((lane_slice.root / "summary.json").read_text())["stage_b"]["status"],
+                         "NOT RUN")
+
+
 class HTTPTests(unittest.TestCase):
     def test_real_redirect_evidence_and_single_attempt_failure(self):
         class Handler(BaseHTTPRequestHandler):
