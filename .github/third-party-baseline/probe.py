@@ -83,6 +83,31 @@ THIRD_PARTY_BASELINE = "THIRD-PARTY BASELINE FAILURE - no CPMS classification ap
 LOCALE_BASELINE = "LOCALE BASELINE FAILURE - no CPMS classification applicable"
 WORDPRESS_ORG_PACKAGE = "https://downloads.wordpress.org/plugin/{slug}.{version}.zip"
 
+# --- narrow official-stable retrieval fallback ------------------------------ #
+# Two subjects, listed by name, for one specific provider condition and nothing
+# else. WordPress.org reports both of these at a stable version (10.0.5 and
+# 7.2.3) but publishes NO version tag for them, so the versioned ZIP URL
+# `<slug>.<version>.zip` returns HTTP 404 while the plugin's own API
+# `download_link` is the unversioned `.../plugin/<slug>.zip`. Verified on the live
+# plugins API: every other subject in this matrix has a versioned
+# `download_link`; only these two do not.
+#
+# This is deliberately NOT a download framework. A slug that is not listed here
+# keeps the exact previous behaviour: versioned URL, three bounded attempts, fail
+# closed, no fallback of any kind. Adding a slug means naming it here and
+# accepting that its package is fetched from the official stable URL after the
+# API has been made to prove the version matches the frozen pin.
+OFFICIAL_STABLE_FALLBACK_SLUGS = frozenset({
+    "persian-woocommerce",
+    "persian-woocommerce-sms",
+})
+WORDPRESS_ORG_PLUGIN_API = "https://api.wordpress.org/plugins/info/1.2/"
+# The only host a package may ever be retrieved from. GitHub mirrors, vendor
+# mirrors, unofficial download sites and nulled packages are all excluded by
+# this allowlist rather than by a blocklist that could be added to.
+WORDPRESS_ORG_DOWNLOAD_HOST = "downloads.wordpress.org"
+WORDPRESS_ORG_DOWNLOAD_PREFIX = "/plugin/"
+
 # The authentication plugin the frozen MySQL image is expected to use. MySQL 8.4
 # removed `default_authentication_plugin` and ships `mysql_native_password`
 # DISABLED by default, so `caching_sha2_password` is the mechanism every
@@ -228,20 +253,86 @@ def http_request(
     return result
 
 
-def download(url: str, dest: str, attempts: int = 3) -> None:
-    """Retrieve a package or raise. No fallback to another version, ever."""
+class RetrievalError(RuntimeError):
+    """A package retrieval that did not succeed, carrying the last HTTP status.
+
+    Subclasses ``RuntimeError`` so every existing handler keeps working
+    unchanged; the status is what lets a caller tell a *confirmed* 404 (a
+    definitive answer from the server: this version tag does not exist) apart
+    from a transport hiccup that a retry might still fix.
+    """
+
+    def __init__(self, message: str, status: int = 0) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+class UntrustedRedirect(Exception):
+    """A retrieval was redirected off the allowlisted distribution host."""
+
+
+class _TrustedHostRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Follows redirects only while every hop stays on an allowlisted host."""
+
+    def __init__(self, allowed_hosts: frozenset) -> None:
+        super().__init__()
+        self.allowed = allowed_hosts
+        self.chain: List[Dict[str, Any]] = []
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
+        parts = urllib.parse.urlsplit(newurl)
+        host = parts.netloc.lower().split("@")[-1].split(":")[0]
+        self.chain.append({"from": req.full_url, "to": newurl,
+                           "status": int(code), "host": host})
+        if host not in self.allowed:
+            # Refuse here rather than after the bytes arrive: following the hop
+            # first and inspecting afterwards would already have fetched a
+            # package from a host this harness must never retrieve from.
+            raise UntrustedRedirect(
+                f"refusing redirect to untrusted host {host!r} (allowed: "
+                f"{sorted(self.allowed)})")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def download(url: str, dest: str, attempts: int = 3,
+             allowed_redirect_hosts: Optional[frozenset] = None) -> List[Dict[str, Any]]:
+    """Retrieve a package or raise; return the recorded redirect chain.
+
+    No fallback to another version, ever.  ``allowed_redirect_hosts`` is opt-in:
+    unset keeps the previous plain behaviour for every existing call site, and the
+    returned chain is empty for those, so nothing about their evidence changes.
+    """
     last = ""
+    status = 0
+    used = attempts
+    handler: Any = (_TrustedHostRedirectHandler(allowed_redirect_hosts)
+                    if allowed_redirect_hosts is not None
+                    else urllib.request.HTTPRedirectHandler())
+    opener = urllib.request.build_opener(handler)
     for attempt in range(1, attempts + 1):
+        used = attempt
         try:
-            request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-            with urllib.request.urlopen(request, timeout=300) as response, \
-                    open(dest, "wb") as handle:
+            request = opener.open(
+                urllib.request.Request(url, headers={"User-Agent": USER_AGENT}), timeout=300)
+            with request as response, open(dest, "wb") as handle:
                 shutil.copyfileobj(response, handle)
-            return
+            return list(getattr(handler, "chain", []))
+        except urllib.error.HTTPError as exc:
+            status = int(exc.code)
+            last = f"HTTPError: {exc}"
+            if status == 404:
+                # A 404 is the server's definitive answer, not a transient
+                # failure. Retrying it only delays the caller's decision.
+                break
+            time.sleep(2 * attempt)
+        except UntrustedRedirect as exc:
+            # Never retry a refused redirect: the condition is deterministic and
+            # retrying would just ask to be sent somewhere untrusted again.
+            raise RetrievalError(str(exc), status) from exc
         except Exception as exc:  # noqa: BLE001
             last = f"{type(exc).__name__}: {exc}"
             time.sleep(2 * attempt)
-    raise RuntimeError(f"retrieval failed after {attempts} attempts: {last}")
+    raise RetrievalError(f"retrieval failed after {used} attempt(s): {last}", status)
 
 
 def sha256_of(path: str) -> str:
@@ -418,6 +509,156 @@ def read_plugin_headers(wp_dir: str) -> List[Dict[str, Any]]:
             })
             break
     return headers
+
+
+# --------------------------------------------------------------------------- #
+# Official-stable retrieval fallback (allowlisted slugs only)
+# --------------------------------------------------------------------------- #
+def wordpress_org_plugin_info(slug: str, timeout: int = 60) -> Dict[str, Any]:
+    """Query the official WordPress.org plugins API for one canonical slug.
+
+    Never raises.  Returns ``{"error": ...}`` on any failure, so a caller always
+    has to look at the result rather than at an exception path.
+    """
+    params = urllib.parse.urlencode({
+        "action": "plugin_information",
+        "request[slug]": slug,
+        # Trim the response to the fields this harness actually adjudicates on;
+        # `versions` in particular is enormous and irrelevant here.
+        **{f"request[fields][{f}]": "0" for f in (
+            "sections", "description", "short_description", "contributors", "ratings",
+            "screenshots", "banners", "icons", "reviews", "support_threads", "versions",
+            "tags", "upgrade_notice")},
+    })
+    url = f"{WORDPRESS_ORG_PLUGIN_API}?{params}"
+    try:
+        request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read(200_000).decode("utf-8", "replace")
+    except Exception as exc:  # noqa: BLE001 - an unreachable API is evidence, not a crash
+        return {"error": f"{type(exc).__name__}: {exc}"}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        # A malformed body is refused outright: guessing at a partial parse would
+        # be exactly how a wrong package ends up installed.
+        return {"error": f"malformed JSON from the plugins API: {exc}",
+                "body_head": raw[:200]}
+    if not isinstance(parsed, dict):
+        return {"error": f"plugins API returned {type(parsed).__name__}, expected an object",
+                "body_head": raw[:200]}
+    if parsed.get("error"):
+        return {"error": f"plugins API reported an error: {parsed.get('error')}"}
+    return parsed
+
+
+def validate_official_stable_source(slug: str, expected_version: str,
+                                    info: Dict[str, Any]) -> Tuple[str, str]:
+    """Return ``(download_url, rejection_reason)`` for an API response.
+
+    Every condition is a hard requirement, and the reason string is specific so a
+    refusal in CI names the condition that failed instead of leaving a reviewer to
+    reconstruct it.
+    """
+    if info.get("error"):
+        return "", str(info["error"])
+    if not isinstance(info, dict):
+        return "", "the plugins API response was not an object"
+
+    api_slug = info.get("slug")
+    if api_slug != slug:
+        # Exact canonical slug equality. This is what stops a fuzzy match, a
+        # renamed plugin or a lookalike slug from being accepted.
+        return "", f"API slug {api_slug!r} is not exactly the frozen slug {slug!r}"
+
+    api_version = info.get("version")
+    if api_version != expected_version:
+        return "", (f"API stable version {api_version!r} does not equal the frozen "
+                    f"expected version {expected_version!r}; refusing to install a "
+                    f"different version")
+
+    link = info.get("download_link") or ""
+    parts = urllib.parse.urlsplit(link)
+    host = parts.netloc.lower().split("@")[-1].split(":")[0]
+    if parts.scheme != "https":
+        return "", f"download_link scheme {parts.scheme!r} is not https"
+    if host != WORDPRESS_ORG_DOWNLOAD_HOST:
+        # This is the allowlist doing its job: a GitHub mirror, a vendor mirror,
+        # an unofficial download site or a nulled package all fail here.
+        return "", (f"download_link host {host!r} is not the official WordPress.org "
+                    f"distribution host {WORDPRESS_ORG_DOWNLOAD_HOST!r}")
+    if not parts.path.startswith(WORDPRESS_ORG_DOWNLOAD_PREFIX):
+        return "", (f"download_link path {parts.path!r} is not under "
+                    f"{WORDPRESS_ORG_DOWNLOAD_PREFIX!r}")
+    if parts.query or parts.fragment:
+        return "", f"download_link carries an unexpected query/fragment: {link!r}"
+    return link, ""
+
+
+def inspect_zip_plugin_identity(zip_path: str, slug: str,
+                                expected_version: str) -> Dict[str, Any]:
+    """Read the plugin's own headers out of the downloaded ZIP, before installing.
+
+    Proves the archive is the plugin it claims to be: one top-level directory
+    named after the slug, a PHP file inside carrying a ``Plugin Name`` header, and
+    a ``Version`` header equal to the frozen pin. Done before ``wp plugin install``
+    so a wrong or tampered package is rejected on its own contents rather than
+    after it has been unpacked into the tree under measurement.
+    """
+    outcome: Dict[str, Any] = {"ok": False, "reason": "", "top_level": [],
+                               "plugin_file": "", "header_name": "",
+                               "header_version": "", "header_slug_dir": ""}
+    try:
+        import zipfile
+
+        with zipfile.ZipFile(zip_path) as archive:
+            bad = archive.testzip()
+            if bad is not None:
+                outcome["reason"] = f"corrupt entry in the package: {bad}"
+                return outcome
+            names = archive.namelist()
+            top = sorted({n.split("/")[0] for n in names if n.split("/")[0]})
+            outcome["top_level"] = top[:10]
+            candidates = [n for n in names
+                          if n.count("/") == 1 and n.lower().endswith(".php")]
+            header = ""
+            plugin_file = ""
+            for name in sorted(candidates):
+                try:
+                    head = archive.read(name)[:8192].decode("utf-8", "replace")
+                except Exception:  # noqa: BLE001
+                    continue
+                if "Plugin Name:" not in head:
+                    continue
+                header, plugin_file = head, name
+                break
+    except Exception as exc:  # noqa: BLE001
+        outcome["reason"] = f"the package could not be read as a ZIP: {type(exc).__name__}: {exc}"
+        return outcome
+
+    if not header:
+        outcome["reason"] = "no PHP file with a `Plugin Name:` header was found in the package"
+        return outcome
+
+    def field(label: str) -> str:
+        found = re.search(rf"^[ \t\/*#@]*{label}:\s*(.+)$", header,
+                          re.IGNORECASE | re.MULTILINE)
+        return found.group(1).strip() if found else ""
+
+    outcome["plugin_file"] = plugin_file
+    outcome["header_name"] = field("Plugin Name")
+    outcome["header_version"] = field("Version")
+    outcome["header_slug_dir"] = plugin_file.split("/")[0]
+
+    if outcome["header_version"] != expected_version:
+        outcome["reason"] = (f"package header Version {outcome['header_version']!r} does not "
+                             f"equal the frozen pin {expected_version!r}")
+    elif outcome["header_slug_dir"] != slug:
+        outcome["reason"] = (f"package top-level directory {outcome['header_slug_dir']!r} does "
+                             f"not equal the frozen slug {slug!r}")
+    else:
+        outcome["ok"] = True
+    return outcome
 
 
 def db_active_plugins(db_name: str) -> Tuple[bool, List[str], str]:
@@ -912,19 +1153,108 @@ def cmd_install(args: argparse.Namespace) -> int:
         }
         provenance.append(entry)
         zip_path = os.path.join(args.package_dir, f"{slug}-{version}.zip")
+
+        # -- 1. the official versioned ZIP, always tried first -------------- #
         try:
-            download(url, zip_path)
-        except RuntimeError as exc:
-            store.check(f"package_retrieved::{slug}", False, HARNESS,
-                        f"{exc}. Failing closed: no latest-version and no alternate-version "
-                        "substitution. Separate C (transport/provider) from D (bad pin).",
-                        True, phase, url, str(exc))
-            hard_fail = True
-            continue
+            entry["redirect_chain"] = download(url, zip_path)
+        except RetrievalError as exc:
+            entry["versioned_url_status"] = exc.status
+            if exc.status != 404 or slug not in OFFICIAL_STABLE_FALLBACK_SLUGS:
+                # Unchanged for every other subject, and unchanged for any
+                # non-404 failure on these two: fail closed, no substitution.
+                store.check(f"package_retrieved::{slug}", False, HARNESS,
+                            f"{exc}. Failing closed: no latest-version and no "
+                            "alternate-version substitution. Separate C "
+                            "(transport/provider) from D (bad pin).",
+                            True, phase, url, str(exc))
+                hard_fail = True
+                continue
+
+            # -- 2. confirmed 404 on an allowlisted slug: official stable ---- #
+            # The version tag does not exist on WordPress.org, so the official
+            # plugins API is asked for the canonical slug's own download_link —
+            # and made to prove the version first.
+            store.record(f"package_versioned_url_404::{slug}", INFO, HARNESS,
+                         "the official versioned ZIP returned a confirmed HTTP 404; this "
+                         "slug publishes no version tag, so the official stable package is "
+                         "retrieved instead after the API proves the version",
+                         phase=phase, observed={"url": url, "status": exc.status})
+
+            info = wordpress_org_plugin_info(slug)
+            source_url, rejection = validate_official_stable_source(slug, version, info)
+            entry["api_slug"] = info.get("slug", "")
+            entry["api_version_at_retrieval"] = info.get("version", "")
+            entry["api_download_link"] = info.get("download_link", "")
+            entry["api_rejection"] = rejection
+            store.check(f"official_stable_source_validated::{slug}", bool(source_url), HARNESS,
+                        rejection or "the official API must return the exact canonical slug, "
+                                     "a stable version equal to the frozen pin, and an "
+                                     "official WordPress.org distribution URL",
+                        True, phase,
+                        {"slug": slug, "version": version,
+                         "host": WORDPRESS_ORG_DOWNLOAD_HOST},
+                        {"api_slug": entry["api_slug"],
+                         "api_version": entry["api_version_at_retrieval"],
+                         "download_link": entry["api_download_link"],
+                         "rejection": rejection})
+            if not source_url:
+                hard_fail = True
+                continue
+
+            try:
+                entry["redirect_chain"] = download(
+                    source_url, zip_path,
+                    allowed_redirect_hosts=frozenset({WORDPRESS_ORG_DOWNLOAD_HOST}))
+            except RetrievalError as exc2:
+                entry["source_url"] = source_url
+                store.check(f"package_retrieved::{slug}", False, HARNESS,
+                            f"{exc2}. Failing closed: the official stable package could not "
+                            "be retrieved, and no mirror, GitHub source, vendor source or "
+                            "alternate version is substituted for it.",
+                            True, phase, source_url, str(exc2))
+                hard_fail = True
+                continue
+            entry["source_type"] = "wordpress_org_official_stable_fallback"
+            entry["source_url"] = source_url
+
+        # -- 3. identity, then SHA-256, then install ------------------------- #
         entry["sha256"] = sha256_of(zip_path)
         store.record(f"package_sha256::{slug}", PASS, HARNESS,
                      "SHA-256 of the exact retrieved package", phase=phase,
                      observed=entry["sha256"])
+
+        identity = inspect_zip_plugin_identity(zip_path, slug, version)
+        entry["package_identity"] = identity
+        store.check(f"package_identity_verified::{slug}", identity["ok"], HARNESS,
+                    identity["reason"] or "the package must contain one top-level directory "
+                                          "named after the frozen slug, with a Plugin Name "
+                                          "header whose Version equals the frozen pin",
+                    True, phase, {"slug": slug, "version": version}, identity)
+        if not identity["ok"]:
+            hard_fail = True
+            os.remove(zip_path)
+            continue
+
+        if entry["source_type"] == "wordpress_org_official_stable_fallback":
+            # The API is asked a SECOND time, immediately before install: if the
+            # provider moved its stable version between metadata retrieval and
+            # installation, the bytes already downloaded no longer correspond to
+            # the pin and must not be installed.
+            recheck = wordpress_org_plugin_info(slug)
+            recheck_version = recheck.get("version", "")
+            entry["api_version_at_install"] = recheck_version
+            stable_now = (recheck_version == version
+                          and recheck.get("slug") == slug
+                          and not recheck.get("error"))
+            store.check(f"official_stable_version_unchanged::{slug}", stable_now, HARNESS,
+                        recheck.get("error", "")
+                        or "the official stable version must not move between metadata "
+                           "retrieval and installation",
+                        True, phase, version, recheck_version or recheck.get("error"))
+            if not stable_now:
+                hard_fail = True
+                os.remove(zip_path)
+                continue
 
         install = wp_cli(["plugin", "install", zip_path], args.wp_dir)
         if install["rc"] != 0:
@@ -942,6 +1272,25 @@ def cmd_install(args: argparse.Namespace) -> int:
                     version, installed_version)
         if installed_version != version:
             hard_fail = True
+
+        # The installed slug is verified from the tree on disk, not from what
+        # WP-CLI claims: the directory must be named after the frozen slug and the
+        # package inside must carry a `Plugin Name` header. This is what proves
+        # the bytes that were downloaded are the plugin the subject names — and it
+        # still works if the subject makes WP-CLI fatal.
+        installed_headers = [h for h in read_plugin_headers(args.wp_dir)
+                             if h.get("slug") == slug]
+        entry["installed_header_version"] = (installed_headers[0].get("version", "")
+                                             if installed_headers else "")
+        entry["installed_header_name"] = (installed_headers[0].get("name", "")
+                                          if installed_headers else "")
+        store.check(f"installed_slug_present::{slug}", bool(installed_headers), HARNESS,
+                    f"a plugin directory named exactly {slug!r} with a `Plugin Name` header "
+                    "must exist under wp-content/plugins after installation",
+                    True, phase, slug, entry["installed_header_name"] or "not found")
+        if not installed_headers:
+            hard_fail = True
+
         # The package is deleted once installed; it never reaches an artifact.
         os.remove(zip_path)
         installed.append(slug)

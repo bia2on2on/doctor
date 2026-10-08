@@ -825,6 +825,21 @@ jobs:
         # The Persian baseline leg installs no package at all. Gated on `kind`
         # rather than on the presence of a locale field so the condition cannot
         # depend on how GitHub evaluates an unset matrix key.
+        #
+        # TWO LEGS TAKE A NARROW RETRIEVAL FALLBACK: persian-woocommerce (10.0.5)
+        # and persian-woocommerce-sms (7.2.3). WordPress.org reports both at a
+        # stable version but publishes no version tag for either, so the versioned
+        # ZIP `<slug>.<version>.zip` is a confirmed HTTP 404 while the plugins API
+        # serves the unversioned `.../plugin/<slug>.zip`. Every other leg's
+        # download_link is versioned and none of them can reach the fallback.
+        # probe.py names those two slugs in OFFICIAL_STABLE_FALLBACK_SLUGS and
+        # nothing else may enter it. The fallback is 404-triggered only, and it
+        # makes the official API prove the canonical slug and the exact pinned
+        # version before, and again immediately after, the download; the package
+        # identity is then read out of the ZIP itself and the installed slug and
+        # version are verified before activation. A GitHub mirror, a vendor
+        # mirror, an unofficial download site or a different version is refused
+        # outright, never substituted.
         if: matrix.source == 'wordpress_org' && matrix.kind != 'locale-baseline'
         run: |
           set -Eeuo pipefail
