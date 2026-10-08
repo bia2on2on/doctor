@@ -18,10 +18,27 @@ on:
       coexistence_group:
         # Selects one pinned group in .github/persian-coexistence/run.py (GROUPS).
         # Unknown values fail closed in the init step. The default is the original group.
-        description: persian-five, security-authentication or combined-ten
+        description: Pinned group key from .github/persian-coexistence/run.py
         type: string
         default: persian-five
+      coexistence_stage_b:
+        description: Allow CPMS Stage B only after a materially healthy complete Stage A
+        type: boolean
+        default: true
   workflow_dispatch:
+    inputs:
+      persian_coexistence:
+        description: Run only the bounded fa_IR Stage A/B coexistence slice
+        type: boolean
+        default: false
+      coexistence_group:
+        description: Pinned group key from .github/persian-coexistence/run.py
+        type: string
+        default: persian-five
+      coexistence_stage_b:
+        description: Allow CPMS Stage B only after a materially healthy complete Stage A
+        type: boolean
+        default: true
   push:
     branches: [main]
   pull_request:
@@ -44,6 +61,7 @@ permissions:
 env:
   PERSIAN_COEXISTENCE: ${{ inputs.persian_coexistence && 'true' || 'false' }}
   COEX_GROUP: ${{ inputs.coexistence_group || 'persian-five' }}
+  COEX_STAGE_B: ${{ inputs.coexistence_stage_b && 'true' || 'false' }}
   WP_VERSION: ${{ inputs.persian_coexistence && '7.1.3' || '6.7.2' }}
   APACHE_PHP_SUFFIX: ${{ inputs.persian_coexistence && '8.3' || '' }}
   PHP_VERSION: ${{ inputs.persian_coexistence && '8.3' || '8.2' }}
@@ -113,6 +131,7 @@ jobs:
       - name: Lint ابزار Acceptance
         run: |
           php -l .github/persian-coexistence/runtime.php
+          php -l .github/persian-coexistence/identity.php
           python3 -m unittest discover -s .github/persian-coexistence -p 'test_*.py'
           php -l clinic-practice-management/bin/cpms
           python3 -m py_compile clinic-practice-management/bin/rwp-acceptance.py
@@ -178,6 +197,9 @@ jobs:
             sudo chmod 666 "$WP_DIR/wp-content/debug.log"
             sudo mkdir -p /var/www/cpms-runtime
             sudo cp .github/persian-coexistence/runtime.php /var/www/cpms-runtime/index.php
+            if [ "$COEX_GROUP" = 'persian-woocommerce-diagnosis' ]; then
+              sudo cp .github/persian-coexistence/identity.php /var/www/cpms-runtime/identity.php
+            fi
             echo 'Listen 8081' | sudo tee /etc/apache2/conf-enabled/cpms-runtime.conf >/dev/null
             sudo tee -a /etc/apache2/conf-enabled/cpms-runtime.conf >/dev/null <<'CONF'
           <VirtualHost *:8081>
@@ -303,6 +325,7 @@ jobs:
 
       # ---------- 1) ZIP رسمی ریلیز ----------
       - name: Build official release ZIP (bin/build-release.sh)
+        if: ${{ !inputs.persian_coexistence || inputs.coexistence_stage_b }}
         run: |
           bash clinic-practice-management/bin/build-release.sh
           ls -la clinic-practice-management/dist/
@@ -312,11 +335,12 @@ jobs:
           mkdir -p /tmp/acc
 
       - name: Stage B boundary — preserve logs before CPMS installation/activation
-        if: inputs.persian_coexistence
+        if: inputs.persian_coexistence && inputs.coexistence_stage_b
         run: python3 .github/persian-coexistence/run.py begin-b
 
       # ---------- 3) نصب از ZIP + فعال‌سازی (Migration خودکار) ----------
       - name: Install ZIP → activate (migration runs in activation hook)
+        if: ${{ !inputs.persian_coexistence || inputs.coexistence_stage_b }}
         id: cpms_install
         run: |
           set -Eeuo pipefail
@@ -326,6 +350,7 @@ jobs:
 
       # ---------- 4) تأیید مستقیم DB ----------
       - name: Direct DB verification (tables + schema version)
+        if: ${{ !inputs.persian_coexistence || inputs.coexistence_stage_b }}
         id: migrations
         run: |
           PREFIX='${{ matrix.prefix }}'
@@ -422,6 +447,7 @@ jobs:
 
       # ---------- کاربران نقش‌محور + دادهٔ پایه ----------
       - name: Role users + storage خارج webroot
+        if: ${{ !inputs.persian_coexistence || inputs.coexistence_stage_b }}
         id: roles
         run: |
           wp user create "$DOCTOR_USER" 'doc@acc.local' --user_pass="$DOCTOR_PASS" --role=cpms_doctor --path="$WP_DIR" --allow-root
@@ -556,6 +582,7 @@ jobs:
       # بدون این fixture، سطح عمومیِ آنونیم در Real-WP Acceptance اصلاً exercised
       # نمی‌شد و defectِ ساختِ URLِ A1 در Plain permalinks دیده نمی‌شد.
       - name: Public booking page fixture (Plain permalinks)
+        if: ${{ !inputs.persian_coexistence || inputs.coexistence_stage_b }}
         id: booking
         run: |
           PL="$(wp option get permalink_structure --path="$WP_DIR" --allow-root 2>/dev/null || true)"
@@ -652,6 +679,7 @@ jobs:
 
       # ---------- 6) پذیرش مرورگری ----------
       - name: Browser acceptance — all 5 roles (Admin/Manager/Doctor/Secretary/Accountant) menus + denial
+        if: ${{ !inputs.persian_coexistence || inputs.coexistence_stage_b }}
         id: browser_acceptance
         run: |
           # بدون pipe-masking: وضعیت خروجی واقعی اسکریپت تعیین‌کننده است
@@ -1011,7 +1039,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ inputs.persian_coexistence && (inputs.coexistence_group == 'security-authentication' && 'persian-coexistence-security-authentication' || (inputs.coexistence_group == 'combined-ten' && 'persian-coexistence-combined-ten' || 'persian-coexistence')) || 'rwp-acceptance' }}-${{ matrix.prefix }}
+          name: ${{ inputs.persian_coexistence && (inputs.coexistence_group == 'persian-five' && 'persian-coexistence' || format('persian-coexistence-{0}', inputs.coexistence_group)) || 'rwp-acceptance' }}-${{ matrix.prefix }}
           path: |
             /tmp/acc/
             !/tmp/acc/**/*.zip
