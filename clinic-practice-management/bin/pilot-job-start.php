@@ -185,7 +185,7 @@ function cpms_pilot_job_start_main( array $args ): void {
             // Explicit control, immediately BEFORE the explicit tick: the exact 100-row
             // batch must still be queued and unstarted, and the environment quiescent.
             // Any batch row already started means it is NOT explicit processing → refuse.
-            $batch_rows   = (int) $db->fetchValue(
+            $batch_rows = (int) $db->fetchValue(
                 'SELECT COUNT(*) FROM ' . $table .
                 ' WHERE type = %s AND JSON_UNQUOTE(JSON_EXTRACT(payload_json, ' .
                 "'$.pilot_measurement_correlation')) = %s",
@@ -281,7 +281,7 @@ function cpms_pilot_job_start_main( array $args ): void {
         $status_counts = [ 'queued' => 0, 'processing' => 0, 'success' => 0, 'failed' => 0, 'other' => 0 ];
         foreach ( $rows as $row ) {
             $status_key = (string) ( $row['status'] ?? '' );
-            $status_counts[ isset( $status_counts[ $status_key ] ) ? $status_key : 'other' ]++;
+            ++$status_counts[ isset( $status_counts[ $status_key ] ) ? $status_key : 'other' ];
         }
         foreach ( $status_counts as $status_key => $status_count ) {
             cpms_pilot_job_start_diag( 'collect.status_' . $status_key, (string) $status_count );
@@ -449,7 +449,7 @@ function cpms_pilot_job_start_quiescence_diag(): bool {
     $lock = cpms_pilot_job_start_cron_lock_state();
     $wake = cpms_pilot_job_start_wake_state();
     try {
-        $free      = App::db()->fetchValue( 'SELECT IS_FREE_LOCK(%s)', [ App::TICK_LOCK ] );
+        $free = App::db()->fetchValue( 'SELECT IS_FREE_LOCK(%s)', [ App::TICK_LOCK ] );
         $tick_free = null !== $free && 1 === (int) $free;
     } catch ( \Throwable ) {
         $tick_free = false;
