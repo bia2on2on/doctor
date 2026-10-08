@@ -47,6 +47,14 @@ class JobStartRefused(ValueError):
     """Input cannot support a privacy-safe, exact first-start measurement."""
 
 
+# Explicit-tick control: the production CLI prints exactly one of these lines
+# (bin/cpms `jobs tick`). Only the processed form is ever a success; a skipped lock
+# is NOT explicit processing, whatever its numeric meaning.
+TICK_PROCESSED_PATTERN = re.compile(r"Processed ([0-9]{1,6}) job\(s\)")
+TICK_SKIPPED_HELD = "Another tick is running; skipped."
+TICK_SKIPPED_UNAVAILABLE = "Tick skipped (lock unavailable)."
+
+
 def _exact_fields(value: Any, fields: Tuple[str, ...], label: str) -> Dict[str, Any]:
     if not isinstance(value, dict) or set(value) != set(fields):
         raise JobStartRefused(label + "_field_set")
@@ -74,13 +82,41 @@ def _nearest_rank(values: List[int], percentile: int) -> int:
     return sorted(values)[math.ceil(percentile * len(values) / 100) - 1]
 
 
-def aggregate_raw_job_start(raw: Any) -> Dict[str, Any]:
+def parse_tick_output(text: str, returncode: int) -> int:
+    """Classify the captured explicit `jobs tick` output; return its processed count.
+
+    Fail closed: a non-zero exit, a skipped-lock line, an unexpected line or any
+    extra output is refused. Returns the numeric count only for the exact
+    single-line ``Processed N job(s)`` form. The raw text is never echoed.
+    """
+    if isinstance(returncode, bool) or not isinstance(returncode, int) or returncode != 0:
+        raise JobStartRefused("tick_exit_nonzero")
+    lines = text.splitlines()
+    if len(lines) != 1:
+        raise JobStartRefused("tick_output_not_single_line")
+    line = lines[0].strip()
+    if line == TICK_SKIPPED_HELD:
+        raise JobStartRefused("tick_skipped_lock_held")
+    if line == TICK_SKIPPED_UNAVAILABLE:
+        raise JobStartRefused("tick_skipped_lock_unavailable")
+    match = TICK_PROCESSED_PATTERN.fullmatch(line)
+    if match is None:
+        raise JobStartRefused("tick_output_unexpected")
+    return int(match.group(1))
+
+
+def aggregate_raw_job_start(raw: Any, tick_processed: Any = None) -> Dict[str, Any]:
     """Validate the bounded producer file and return only allowlisted aggregates.
 
     Start latency is persisted ``started_at - created_at`` for each exact
     ``backup.run`` sample. ``attempts == max_attempts == 1`` proves that
     ``started_at`` is the first and only claim timestamp, not a retry overwrite.
     All timestamps must retain the queue's current UTC, whole-second format.
+
+    ``tick_processed`` (explicit control only) is the processed count parsed from
+    the explicit tick. The JobsDispatcher counts successful completions, so every
+    batch row that succeeded must be covered by that tick's count; otherwise the
+    batch was not shown to be processed by the explicit tick and nothing is published.
     """
     raw_obj = _exact_fields(raw, RAW_FIELDS, "raw")
     if raw_obj["schema"] != RAW_SCHEMA or raw_obj["status"] != "ok":
@@ -98,6 +134,7 @@ def aggregate_raw_job_start(raw: Any) -> Dict[str, Any]:
     latencies: List[int] = []
     not_started_count = 0
     processing_failure_count = 0
+    success_count = 0
     for index, value in enumerate(samples, start=1):
         sample = _exact_fields(value, SAMPLE_FIELDS, "sample_" + str(index))
         created_at = _timestamp(sample["created_at"], "created_at")
@@ -125,11 +162,20 @@ def aggregate_raw_job_start(raw: Any) -> Dict[str, Any]:
         latencies.append(delta_ms)
         if status == "failed":
             processing_failure_count += 1
+        else:
+            success_count += 1
 
     if not_started_count:
         raise JobStartRefused("not_started")
     if len(latencies) != declared:
         raise JobStartRefused("started_sample_count")
+    if tick_processed is not None:
+        if isinstance(tick_processed, bool) or not isinstance(tick_processed, int) or tick_processed < 0:
+            raise JobStartRefused("tick_processed_integer")
+        if mode != "explicit_tick":
+            raise JobStartRefused("tick_output_on_non_explicit_mode")
+        if tick_processed < success_count:
+            raise JobStartRefused("tick_processed_below_batch")
 
     ordered = sorted(latencies)
     result = {
@@ -274,6 +320,40 @@ def _selftests() -> int:
         "correlation": "sensitive-token"
     }))
 
+    # Explicit-tick control: the captured CLI output must be the exact processed form.
+    def tick_refuses(name: str, text: str, rc: int = 0) -> None:
+        try:
+            parse_tick_output(text, rc)
+        except JobStartRefused:
+            check(name, True)
+            return
+        check(name, False)
+
+    check("tick-processed-batch-parses", parse_tick_output("Processed 100 job(s)\n", 0) == 100)
+    tick_refuses("tick-skipped-lock-held-is-never-success", "Another tick is running; skipped.\n")
+    tick_refuses("tick-skipped-lock-unavailable-is-never-success", "Tick skipped (lock unavailable).\n")
+    tick_refuses("tick-nonzero-exit-refused", "Processed 100 job(s)\n", 1)
+    tick_refuses("tick-boolean-exit-refused", "Processed 100 job(s)\n", True)
+    tick_refuses("tick-extra-output-line-refused", "Processed 100 job(s)\nPHP Warning: sentinel\n")
+    tick_refuses("tick-empty-output-refused", "")
+    tick_refuses("tick-negative-count-refused", "Processed -1 job(s)\n")
+    tick_refuses("tick-unexpected-wording-refused", "Processed 100 jobs\n")
+
+    def aggregate_with_tick_refuses(name: str, mode: str, processed: int) -> None:
+        try:
+            aggregate_raw_job_start(_fixture_raw(mode), processed)
+        except JobStartRefused:
+            check(name, True)
+            return
+        check(name, False)
+
+    covered = aggregate_raw_job_start(_fixture_raw(), 100)
+    check("explicit-tick-covering-batch-publishes", covered["p50_ms"] == valid["p50_ms"])
+    aggregate_with_tick_refuses("explicit-tick-processed-zero-refused-when-batch-succeeded",
+                                "explicit_tick", 0)
+    aggregate_with_tick_refuses("explicit-tick-processed-below-batch-refused", "explicit_tick", 99)
+    aggregate_with_tick_refuses("tick-count-never-attaches-to-autonomous-mode", "autonomous", 100)
+
     with tempfile.TemporaryDirectory() as temporary_directory:
         raw_path = Path(temporary_directory) / "raw.json"
         raw_path.write_text(json.dumps(_fixture_raw()), encoding="utf-8")
@@ -300,6 +380,8 @@ def main(argv: List[str] | None = None) -> int:
     parser.add_argument("--test", action="store_true", help="run deterministic self-tests")
     parser.add_argument("--raw", default="", help="private raw queue sample JSON path")
     parser.add_argument("--out", default="", help="write the safe aggregate JSON path")
+    parser.add_argument("--tick-output", default="", help="captured stdout of the explicit tick (explicit control)")
+    parser.add_argument("--tick-rc", type=int, default=0, help="exit status of the explicit tick")
     args = parser.parse_args(argv)
 
     if args.test:
@@ -307,9 +389,24 @@ def main(argv: List[str] | None = None) -> int:
     if not args.raw or not args.out:
         parser.error("--raw and --out are required unless --test is used")
     try:
-        aggregate = aggregate_raw_job_start(read_raw_file(Path(args.raw)))
+        tick_processed = None
+        if args.tick_output:
+            try:
+                tick_text = Path(args.tick_output).read_text(encoding="utf-8")
+            except (OSError, UnicodeError) as exc:
+                raise JobStartRefused("tick_output_unreadable") from exc
+            tick_processed = parse_tick_output(tick_text, args.tick_rc)
+            print("DIAG tick.outcome=processed")
+            print("DIAG tick.processed=%d" % min(tick_processed, 999999))
+        aggregate = aggregate_raw_job_start(read_raw_file(Path(args.raw)), tick_processed)
         write_aggregate(Path(args.out), aggregate)
-    except (JobStartRefused, OSError, ValueError):
+    except JobStartRefused as refused:
+        # Fixed reason code only (never free-form text); the explicit control prints it.
+        print("DIAG refusal_reason=%s" % refused.args[0])
+        print("JOB_START: evidence refused; no aggregate was published", file=sys.stderr)
+        return 1
+    except (OSError, ValueError):
+        print("DIAG refusal_reason=io_or_value")
         print("JOB_START: evidence refused; no aggregate was published", file=sys.stderr)
         return 1
     print("JOB_START: 100 {mode} samples aggregated; no latency threshold applied".format(

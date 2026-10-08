@@ -12,6 +12,7 @@ declare(strict_types=1);
 
 use ClinicCore\Application\Jobs\JobWake;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Infrastructure\Queue\JobQueue;
 
 if ( 'cli' !== PHP_SAPI ) {
     exit( 1 );
@@ -67,6 +68,11 @@ function cpms_pilot_job_start_main( array $args ): void {
         // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fwrite -- CLI fixed-key probe output; WP_Filesystem is not available here.
         fwrite( STDOUT, $lock['present'] ? "1\n" : "0\n" );
         exit( 0 );
+    }
+    if ( 'quiet' === $action ) {
+        // READ-ONLY bounded quiescence probe for the explicit-tick control (exit 0 =
+        // quiescent). Observes only; it never enqueues, claims, ticks or clears state.
+        exit( cpms_pilot_job_start_quiescence_diag() ? 0 : 1 );
     }
     $token = getenv( 'CPMS_JOB_START_TOKEN' );
     if ( ! is_string( $token ) || 1 !== preg_match( '/\A[a-f0-9]{32}\z/D', $token ) ) {
@@ -124,6 +130,14 @@ function cpms_pilot_job_start_main( array $args ): void {
             cpms_pilot_job_start_diag( 'enqueue.wake_event_pending_before', $wake_before['pending'] ? 'true' : 'false' );
             cpms_pilot_job_start_diag( 'enqueue.wake_event_due_delta_ms_before', (string) $wake_before['due_delta_ms'] );
 
+            // Explicit control: the SAME production JobQueue class without the optional
+            // advisory JobWake collaborator (its constructor parameter is nullable by
+            // design). This fixture therefore cannot schedule `cpms_jobs_wake` or a
+            // loopback spawn, so it cannot be drained by autonomous wake before the
+            // explicit CLI tick. The autonomous pass keeps the production instance.
+            $queue = 'autonomous' === $mode ? App::jobs() : new JobQueue( $db, App::op() );
+            cpms_pilot_job_start_diag( 'enqueue.wake_collaborator', 'autonomous' === $mode ? 'production' : 'absent' );
+
             // Pure observer (never alters the response): records whether WordPress
             // actually started the site-local cron loopback in this process's
             // deferred shutdown spawn.
@@ -144,7 +158,7 @@ function cpms_pilot_job_start_main( array $args ): void {
             }
 
             for ( $index = 0; $index < $sample_count; $index++ ) {
-                $id = App::jobs()->enqueue(
+                $id = $queue->enqueue(
                     $job_type,
                     [ 'pilot_measurement_correlation' => $token ],
                     priority: $priority,
@@ -163,6 +177,31 @@ function cpms_pilot_job_start_main( array $args ): void {
                 if ( false === wp_next_scheduled( JobWake::HOOK ) ) {
                     cpms_pilot_job_start_refuse( 'enqueue_wake_not_pending' );
                 }
+            }
+            exit( 0 );
+        }
+
+        if ( 'precheck' === $action ) {
+            // Explicit control, immediately BEFORE the explicit tick: the exact 100-row
+            // batch must still be queued and unstarted, and the environment quiescent.
+            // Any batch row already started means it is NOT explicit processing → refuse.
+            $batch_rows   = (int) $db->fetchValue(
+                'SELECT COUNT(*) FROM ' . $table .
+                ' WHERE type = %s AND JSON_UNQUOTE(JSON_EXTRACT(payload_json, ' .
+                "'$.pilot_measurement_correlation')) = %s",
+                [ $job_type, $token ]
+            );
+            $batch_queued = (int) $db->fetchValue(
+                'SELECT COUNT(*) FROM ' . $table .
+                ' WHERE type = %s AND JSON_UNQUOTE(JSON_EXTRACT(payload_json, ' .
+                "'$.pilot_measurement_correlation')) = %s AND status = %s AND started_at IS NULL AND attempts = 0",
+                [ $job_type, $token, JobQueue::QUEUED ]
+            );
+            cpms_pilot_job_start_diag( 'precheck.batch_rows', (string) min( $batch_rows, 100000 ) );
+            cpms_pilot_job_start_diag( 'precheck.batch_queued_unstarted', (string) min( $batch_queued, 100000 ) );
+            $quiescent = cpms_pilot_job_start_quiescence_diag();
+            if ( $sample_count !== $batch_rows || $sample_count !== $batch_queued || ! $quiescent ) {
+                cpms_pilot_job_start_refuse( 'precheck' );
             }
             exit( 0 );
         }
@@ -235,6 +274,17 @@ function cpms_pilot_job_start_main( array $args ): void {
         if ( $sample_count !== count( $rows ) ) {
             cpms_pilot_job_start_diag( 'collect.rows_found', (string) count( $rows ) );
             cpms_pilot_job_start_refuse( 'collect_row_count' );
+        }
+
+        // Bounded status counts only (fixed keys, integers): lets a failed explicit
+        // control say whether the batch was unstarted, in-flight, or terminal.
+        $status_counts = [ 'queued' => 0, 'processing' => 0, 'success' => 0, 'failed' => 0, 'other' => 0 ];
+        foreach ( $rows as $row ) {
+            $status_key = (string) ( $row['status'] ?? '' );
+            ++$status_counts[ isset( $status_counts[ $status_key ] ) ? $status_key : 'other' ];
+        }
+        foreach ( $status_counts as $status_key => $status_count ) {
+            cpms_pilot_job_start_diag( 'collect.status_' . $status_key, (string) $status_count );
         }
 
         $samples = [];
@@ -382,6 +432,33 @@ function cpms_pilot_job_start_cron_lock_state(): array {
     $age = (int) round( ( microtime( true ) - (float) $lock ) * 1000 );
 
     return [ 'present' => true, 'age_ms' => max( -600000, min( 600000, $age ) ) ];
+}
+
+/**
+ * Read-only quiescence probe (fixed-key diagnostics; never mutates state).
+ *
+ * Quiescent = no WordPress cron spawn in flight (`doing_cron` transient absent) AND
+ * no runner currently holds the production tick lock (`App::TICK_LOCK`). A pending
+ * wake event is reported but does not block: in this step nothing can spawn cron
+ * (DISABLE_WP_CRON; the explicit enqueue requests no wake; the explicit tick's own
+ * shutdown spawn runs only after its batch has been processed).
+ *
+ * @return bool
+ */
+function cpms_pilot_job_start_quiescence_diag(): bool {
+    $lock = cpms_pilot_job_start_cron_lock_state();
+    $wake = cpms_pilot_job_start_wake_state();
+    try {
+        $free      = App::db()->fetchValue( 'SELECT IS_FREE_LOCK(%s)', [ App::TICK_LOCK ] );
+        $tick_free = null !== $free && 1 === (int) $free;
+    } catch ( \Throwable ) {
+        $tick_free = false;
+    }
+    cpms_pilot_job_start_diag( 'quiet.doing_cron_lock_present', $lock['present'] ? 'true' : 'false' );
+    cpms_pilot_job_start_diag( 'quiet.wake_event_pending', $wake['pending'] ? 'true' : 'false' );
+    cpms_pilot_job_start_diag( 'quiet.tick_lock_free', $tick_free ? 'true' : 'false' );
+
+    return ! $lock['present'] && $tick_free;
 }
 
 /**

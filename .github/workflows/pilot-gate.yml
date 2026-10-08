@@ -412,8 +412,19 @@ jobs:
 
 
       # ---------- Phase 17 background-job first-start measurement (control) ----------
-      # Runs AFTER the autonomous pass so this step's own explicit production tick can no
-      # longer contaminate it (it is the control, measured on the same disposable install).
+      # Runs AFTER the autonomous pass and is the EXPLICIT control. Its 100 synthetic rows are
+      # enqueued through the same production JobQueue class WITHOUT the advisory JobWake
+      # collaborator, so this fixture requests no cpms_jobs_wake event and no loopback spawn.
+      # Before the tick the step waits (bounded, read-only) for quiescence: no WordPress cron
+      # spawn in flight (doing_cron absent) and the production tick lock free. Immediately
+      # before the tick it re-checks that all 100 rows are still queued and unstarted. The
+      # production CLI tick then runs once (bounded, output captured). Publication requires
+      # the captured output to be the exact `Processed N job(s)` form, N to cover the batch's
+      # successful rows, and every row to be started with a terminal outcome. A skipped-lock
+      # result is NEVER success. Every refusal writes fixed-key diagnostics (booleans, bounded
+      # integers, fixed reason codes) to the step summary: no URL, path, token, job id,
+      # payload, SQL or raw CLI text. Quiescence + the precheck narrow the window to the
+      # production lock; they are not a hermetic exclusivity proof.
       # runTick() processes the GLOBAL due queue; only the 100 token-correlated rows are
       # aggregated. Do not interpret the tick as isolated to the 100 samples.
       # The System Cron step below starts the daemon and performs its manual tick first;
@@ -426,31 +437,95 @@ jobs:
           PLUGIN_DIR="$WP_DIR/wp-content/plugins/clinic-practice-management"
           TEMP_DIR=$(mktemp -d /tmp/cpms-job-start.XXXXXX)
           chmod 700 "$TEMP_DIR"
-          trap 'unset CPMS_JOB_START_TOKEN CPMS_JOB_START_RAW_PATH; rm -rf "$TEMP_DIR"' EXIT
+          trap 'unset CPMS_JOB_START_TOKEN CPMS_JOB_START_RAW_PATH CPMS_JOB_START_MODE; rm -rf "$TEMP_DIR"' EXIT
+          export CPMS_JOB_START_MODE=explicit_tick
           export CPMS_JOB_START_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
           export CPMS_JOB_START_RAW_PATH="$TEMP_DIR/raw.json"
+          QUIET_DIAG='not-probed'
+          ENQ_DIAG='not-run'
+          PRECHECK_DIAG='not-run'
+          TICK_DIAG='not-run'
+          COLLECT_DIAG='not-run'
+          AGG_DIAG='not-run'
+
+          diag_of() { grep -h '^DIAG ' "$1" 2>/dev/null | tr '\n' ' ' || true; }
+
+          # Fixed-key refusal: the summary and the annotation carry only the reason code.
+          control_fail() {
+            {
+              echo '### Phase 17 explicit-tick control — refused (fail closed; no explicit-processing claim)'
+              echo "- refusal: $1"
+              echo "- quiescence: ${QUIET_DIAG}"
+              echo "- enqueue: ${ENQ_DIAG}"
+              echo "- precheck: ${PRECHECK_DIAG}"
+              echo "- tick: ${TICK_DIAG}"
+              echo "- collect: ${COLLECT_DIAG}"
+              echo "- aggregate: ${AGG_DIAG}"
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::explicit-tick control refused ($1); fixed-key diagnostics are in the step summary"
+            exit 1
+          }
+
+          # 1) Bounded, read-only quiescence wait. The 2 s pause only paces the probe; the
+          #    quiescence condition itself is the synchronization mechanism.
+          Q_START=$(date +%s)
+          until WP_HOME="$WP_DIR" php bin/pilot-job-start.php quiet >"$TEMP_DIR/quiet.log" 2>&1; do
+            QUIET_DIAG=$(diag_of "$TEMP_DIR/quiet.log")
+            if [ $(( $(date +%s) - Q_START )) -ge 75 ]; then
+              control_fail quiescence_not_reached
+            fi
+            sleep 2
+          done
+          QUIET_DIAG=$(diag_of "$TEMP_DIR/quiet.log")
+
+          # 2) Explicit fixture: production enqueue WITHOUT the advisory wake collaborator.
           if ! WP_HOME="$WP_DIR" php bin/pilot-job-start.php enqueue >"$TEMP_DIR/enqueue.log" 2>&1; then
-            ENQ_DIAG=$(grep -h '^DIAG ' "$TEMP_DIR/enqueue.log" | tr '\n' ' ' || true)
-            echo "::error::synthetic job enqueue refused by the fail-closed preconditions (${ENQ_DIAG})"; exit 1
+            ENQ_DIAG=$(diag_of "$TEMP_DIR/enqueue.log")
+            control_fail enqueue_refused
           fi
-          ENQ_DIAG=$(grep -h '^DIAG ' "$TEMP_DIR/enqueue.log" | tr '\n' ' ' || true)
-          # Limit is raised above the 100-row sample so leftover rows from the
-          # earlier autonomous pass (if it was not adjudicated) cannot saturate the
-          # tick and leave this control's own samples unclaimed.
-          if ! TICK_OUTPUT=$(WP_HOME="$WP_DIR" php "$PLUGIN_DIR/bin/cpms" jobs tick --limit=500 2>/dev/null); then
-            echo '::error::explicit production-path tick failed'; exit 1
+          ENQ_DIAG=$(diag_of "$TEMP_DIR/enqueue.log")
+
+          # 3) Immediately before the tick: all 100 rows still queued and unstarted, still quiescent.
+          if ! WP_HOME="$WP_DIR" php bin/pilot-job-start.php precheck >"$TEMP_DIR/precheck.log" 2>&1; then
+            PRECHECK_DIAG=$(diag_of "$TEMP_DIR/precheck.log")
+            control_fail precheck_refused
           fi
-          if [[ ! "$TICK_OUTPUT" =~ ^Processed[[:space:]][0-9]+[[:space:]]job[(]s[)]$ ]]; then
-            echo '::error::production tick did not return its safe processed-count form'; exit 1
+          PRECHECK_DIAG=$(diag_of "$TEMP_DIR/precheck.log")
+
+          # 4) Production CLI tick (App::runTick: GET_LOCK, recurring schedule, claim loop).
+          #    Output is captured and bounded. The limit is above the 100-row batch so that
+          #    leftovers from an unadjudicated autonomous pass cannot saturate the tick.
+          TICK_RC=0
+          timeout 120 env WP_HOME="$WP_DIR" php "$PLUGIN_DIR/bin/cpms" jobs tick --limit=500 \
+            >"$TEMP_DIR/tick.out" 2>"$TEMP_DIR/tick.err" || TICK_RC=$?
+          TICK_DIAG="rc=${TICK_RC} stdout_bytes=$(wc -c <"$TEMP_DIR/tick.out") stderr_bytes=$(wc -c <"$TEMP_DIR/tick.err")"
+
+          # 5) Collect the batch's exact queue state, then aggregate with the captured tick evidence.
+          if ! WP_HOME="$WP_DIR" php bin/pilot-job-start.php collect >"$TEMP_DIR/collect.log" 2>&1; then
+            COLLECT_DIAG=$(diag_of "$TEMP_DIR/collect.log")
+            control_fail collect_refused
           fi
-          if ! WP_HOME="$WP_DIR" php bin/pilot-job-start.php collect >/dev/null 2>&1; then
-            echo '::error::synthetic sample collection refused'; exit 1
+          COLLECT_DIAG=$(diag_of "$TEMP_DIR/collect.log")
+
+          set +e
+          python3 bin/pilot-job-start.py --raw "$TEMP_DIR/raw.json" --out /tmp/cpms-pilot-job-start.json \
+            --tick-output "$TEMP_DIR/tick.out" --tick-rc "$TICK_RC" \
+            >"$TEMP_DIR/aggregate.log" 2>"$TEMP_DIR/aggregate.err"
+          AGG_RC=$?
+          set -e
+          AGG_DIAG=$(diag_of "$TEMP_DIR/aggregate.log")
+          if [ "$AGG_RC" -ne 0 ]; then
+            control_fail "aggregate_refused ${AGG_DIAG}"
           fi
-          python3 bin/pilot-job-start.py --raw "$TEMP_DIR/raw.json" --out /tmp/cpms-pilot-job-start.json
+
           {
-            echo 'Phase 17 explicit control diagnostics (fixed keys only):'
-            echo "  ${ENQ_DIAG}"
-            echo 'Phase 17 job-start sample set: explicit_tick control; first persisted claim; 100 synthetic non-PHI samples; no latency threshold.'
+            echo '### Phase 17 explicit-tick control (fixed-key diagnostics)'
+            echo "- quiescence: ${QUIET_DIAG}"
+            echo "- enqueue: ${ENQ_DIAG}"
+            echo "- precheck: ${PRECHECK_DIAG}"
+            echo "- tick: ${TICK_DIAG} ${AGG_DIAG}"
+            echo "- collect: ${COLLECT_DIAG}"
+            echo 'Phase 17 job-start sample set: explicit_tick control; the fixture requested no wake; first persisted claim; 100 synthetic non-PHI samples; no latency threshold.'
           } >> "$GITHUB_STEP_SUMMARY"
 
       # ---------- System Cron verification ----------
