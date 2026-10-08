@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Bounded orchestration, not a second acceptance/browser implementation."""
 import argparse
+from datetime import datetime, timezone
 import importlib.util
 import json
 import os
@@ -48,6 +49,16 @@ NOT_RUN = {
     "standalone shell/theme switching": "NOT RUN — separate existing control, outside this group",
     "Location timezone override/isolation matrix": "NOT RUN — existing booking fixture reads trusted Location timezone; site locale/timezone is not authority",
 }
+
+
+# Only these public option values are emitted; no credentials, config or DB dump.
+TIMEZONE_EVAL = """
+echo 'CPMS_TIMEZONE:' . wp_json_encode([
+    'timezone_string' => get_option('timezone_string'),
+    'effective_gmt_offset' => get_option('gmt_offset'),
+    'php_derived_offset' => (new DateTimeImmutable('now', new DateTimeZone('Asia/Tehran')))->getOffset() / 3600,
+]);
+"""
 
 
 def save(path, data):
@@ -191,11 +202,66 @@ class Slice:
                     and not facts.get("failed_important_requests"), probe.PRODUCT, facts)
         store.save()
 
+    def observe_timezone(self, timing):
+        sample = {"timing": timing, "captured_at": datetime.now(timezone.utc).isoformat()}
+        errors = []
+        result = probe.wp_cli(["eval", TIMEZONE_EVAL], self.wp_dir)
+        # Read persisted rows after this bootstrap as well, so a write triggered
+        # by the diagnostic request itself cannot hide behind an earlier SQL read.
+        for option in ("timezone_string", "gmt_offset"):
+            ok, value, error = probe.db_option(self.db_name, option)
+            sample["raw_" + option] = value if ok else None
+            if not ok:
+                errors.append(f"raw {option} unavailable: {error}")
+        try:
+            if result["rc"] != 0:
+                raise ValueError(f"WP bootstrap/eval rc={result['rc']}; see commands.jsonl")
+            body = result["stdout"].split("CPMS_TIMEZONE:", 1)[1]
+            observed, _ = json.JSONDecoder().raw_decode(body)
+            for key in ("timezone_string", "effective_gmt_offset", "php_derived_offset"):
+                sample[key] = observed[key]
+        except (ValueError, IndexError, KeyError, TypeError) as exc:
+            errors.append(str(exc))
+        sample["errors"] = errors
+        path = self.root / "A/timezone.json"
+        save(path, [*load(path, []), sample])
+        return sample
+
+    def check_timezones(self):
+        samples = load(self.root / "A/timezone.json", [])
+        store = self.store("A")
+        required = {"after_core_install", "after_locale_setup", "after_timezone_configuration",
+                    "before_activation", "before_locale_probe", "after_stage_a_probes"} | {f"after_activation::{s}" for s in PINS}
+        store.check("timezone_timing_complete", required <= {s["timing"] for s in samples},
+                    probe.HARNESS, "Missing diagnostic evidence is not a pass")
+        configured = None
+        for sample in samples:
+            timing = sample["timing"]
+            if timing == "after_timezone_configuration":
+                configured = sample
+            store.check(f"timezone_snapshot_readable::{timing}", not sample["errors"],
+                        probe.HARNESS, sample)
+            if configured is None:
+                continue  # Initial defaults / locale setup are observations, not the configured fixture.
+            store.check(f"timezone_settings_stable::{timing}",
+                        sample.get("raw_timezone_string") == "Asia/Tehran"
+                        and sample.get("timezone_string") == "Asia/Tehran"
+                        and sample.get("raw_gmt_offset") == configured.get("raw_gmt_offset"),
+                        probe.PRODUCT, sample,
+                        expected={"timezone_string": "Asia/Tehran", "raw_gmt_offset": configured.get("raw_gmt_offset")})
+            try:
+                agrees = abs(float(sample["effective_gmt_offset"]) - float(sample["php_derived_offset"])) < 0.000001
+            except (KeyError, TypeError, ValueError):
+                agrees = False
+            store.check(f"timezone_effective_offset::{timing}", agrees, probe.ENVIRONMENT, sample)
+        store.save()
+
     def stage_a(self):
         store = self.store("A")
         store.subject(id="persian-five", kind="plugin-group", pins=PINS, cpms="ABSENT")
         store.save()
         os.environ["TPB_RAW_COMMAND_LOG"] = str(self.root / "A/commands.jsonl")
+        self.observe_timezone("after_core_install")
         # Fixture timezone only; no CPMS Location exists yet. Never copied into
         # Location data. Reused public booking fixture reads its Location row.
         for name, command in (
@@ -205,22 +271,25 @@ class Slice:
         ):
             if not self.cli(store, name, command):
                 return self.end_a(False)
-        offset = probe.run(["php", "-r",
-                            "echo (new DateTimeImmutable('now', new DateTimeZone('Asia/Tehran')))->getOffset() / 3600;"])
-        if offset["rc"] != 0 or not re.fullmatch(r"-?\d+(?:\.\d+)?", offset["stdout"]):
-            raise RuntimeError(f"cannot derive fixture offset: {offset}")
-        if not self.cli(store, "fixture_derived_offset", ["option", "update", "gmt_offset", offset["stdout"]]):
-            return self.end_a(False)
+            if name == "fa_pack_active":
+                self.observe_timezone("after_locale_setup")
+        # A named timezone is authoritative in WordPress. Do not force a raw
+        # offset: get_option('gmt_offset') is dynamically filtered by core.
+        self.observe_timezone("after_timezone_configuration")
         args = self.args("A")
         args.subject_slug, args.subject_version = "woocommerce", PINS["woocommerce"]
         args.deps = ",".join(f"{s}={v}" for s, v in PINS.items() if s != "woocommerce")
         args.package_dir, args.no_retry = str(self.root / "A"), True
+        args.activation_observer = self.observe_timezone
         if probe.cmd_install(args):
             return self.end_a(False)
         probe.cmd_wp(args)
+        args.timezone_snapshot = self.observe_timezone("before_locale_probe")
         probe.cmd_locale(args)
         self.browser("A")
         self.identity("A")
+        self.observe_timezone("after_stage_a_probes")
+        self.check_timezones()
         return self.end_a(True)
 
     def end_a(self, complete):

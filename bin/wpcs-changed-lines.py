@@ -15,7 +15,7 @@ Exit codes:
 Contract
 --------
 Run with the CI job's working directory (the `phpcs` invocation domain — in
-`.github/workflows/ci.yml` that is `clinic-practice-management/`), this script
+`.github/workflows/ci.yml` that is now the repository root), this script
 writes the two artifacts the WPCS job consumes:
 
   --files-out  (default /tmp/wpcs-files.txt)
@@ -637,7 +637,27 @@ def _run_cli(args: Sequence[str], cwd: str) -> tuple:
     return proc.returncode, proc.stdout
 
 
+def test_root_scope_includes_php_harness(base: Path) -> None:
+    """Root mode covers both product and .github PHP with one PHPCS path domain."""
+    repo = _fixture_init(base, "root-harness-scope")
+    _fixture_write(repo, "plugin/src/Thing.php", "<?php\n")
+    baseline = _fixture_commit(repo, "baseline")
+    harness = ".github/persian-coexistence/runtime.php"
+    _fixture_write(repo, harness, f"<?php\n{VIOLATING_LINE}\n")
+    _fixture_write(repo, "plugin/src/Thing.php", f"<?php\n{VIOLATING_LINE}\n")
+    _fixture_commit(repo, "add PHP harness and product violation")
+    result = collect(baseline, str(base / "root-files.txt"), str(base / "root-added.txt"),
+                     cwd=str(repo), log=_silent)
+    _check(set(result.phpcs_paths) == {harness, "plugin/src/Thing.php"},
+           "repository-root scope omitted a changed PHP file")
+    _check(f"{harness}:2" in result.added_keys and "plugin/src/Thing.php:2" in result.added_keys,
+           "added-line filter cannot address both harness and product violations")
+    _check(result.inspections[0].numstat_added == len(result.inspections[0].added_lines),
+           "harness added lines disagree with numstat")
+
+
 SELF_TESTS = (
+    ("repository-root scope includes .github PHP and product violations", test_root_scope_includes_php_harness),
     ("corrected path handling collects the added violating line (defect reproduced in legacy form)",
      test_added_violating_line_is_collected),
     ("deletion-only / no-added-line changes never falsely fail", test_deletion_only_change_does_not_fail),

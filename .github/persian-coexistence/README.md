@@ -54,8 +54,9 @@ recorded cause and full command output. Stage A failure is a **pre-CPMS group or
 environment finding**, never a CPMS defect. No later error replaces the first
 blocking check. Incomplete setup/probes cannot become PASS.
 
-`Asia/Tehran` and a PHP-derived offset belong **only to the site fixture**. They
-are not copied into any CPMS Location. No product settings or plugin behavior are
+`Asia/Tehran` belongs **only to the site fixture**. Its effective offset is
+checked against PHP, not forced into the raw `gmt_offset` option. Neither the
+site timezone nor its derived offset is copied into any CPMS Location. No product settings or plugin behavior are
 weakened to make the group pass.
 
 ### Stage B — only after healthy Stage A
@@ -112,7 +113,7 @@ patch. This slice does not reinterpret past results or change that campaign: it
 omits that optional legacy assertion and independently requires the complete
 `SELECT VERSION()` value to equal `8.4.11`.
 
-## Validation and prerequisite checkpoint
+## Initial implementation validation and prerequisite checkpoint
 
 At implementation start (2026-10-08): no open PRs; clean assigned branch
 `arena/f72cf6e0-doctor`; HEAD and authoritative main were
@@ -128,7 +129,7 @@ check runs were completed/success; the five workflows were completed/success:
 Latest migration remains `2026_09_26_0023_handwriting_prescription_paper.php`.
 This closure check is not an assertion that every third-party baseline passed.
 
-Local validation:
+Local validation at the initial implementation head:
 
 - **19 focused tests pass**: gate/NOT RUN behavior, first-error preservation,
   zero-exit measurement failures, activation failure, skipped acceptance steps,
@@ -152,3 +153,107 @@ Local validation:
 Chromium, Stage A and Stage B product execution. This sandbox cannot reach the
 WordPress distribution hosts. Runtime acceptance must come from the workflow,
 not from these local harness tests or from a green workflow badge alone.
+
+
+## PR #197 — narrow blocker recovery
+
+Historical head `872d3fe2d004818f0fb000782a43384afb8ec83d` had exactly two failed
+checks: WPCS changed code (`113240763213`) and coexistence (`113240765742`).
+Main/base remained `49694214385889b2f957df95abe85f13f21710cf`. Run `37756057664`
+recorded `fa_gmt_offset_agrees_with_php` expected 3.5 / observed 0.0. Its CPMS
+builder, boundary, installation, migrations and browser steps were **skipped**;
+Stage B actually was **NOT RUN**. Artifact retrieval from this sandbox is blocked
+by the blob-storage host restriction; check annotations and job steps were read
+through the GitHub API. No new coexistence result is inferred from them.
+
+### WPCS correction (no exemption or relaxed rule)
+
+Use the existing collector's repository-root mode for **both** collection and
+PHPCS, with explicit repository-root `--basepath`. This includes `.github/` PHP
+in the same added-line domain as product PHP, retaining the original ratchet,
+exclusions and every sniff. `-q` removes progress/footer text, not violations,
+from the JSON report. A new mixed root-harness/product regression supplements
+the four existing collector self-tests.
+
+The standalone runtime probe now uses integer-format JSON version components and
+literal engine-SAPI values, avoiding a WordPress-only encoder recommendation
+without loading WordPress or suppressing any sniff. It no longer reports the
+optional server banner; actual PHP version and SAPI remain measured. Unsupported
+SAPIs return 503. Actual PHPCS 3.13.6 + WPCS 3.4.1 inspected this exact file with
+zero errors/warnings. An injected unescaped request value in a temporary copy of
+the **same path** produced both nonce and escaping findings, which the real
+collector's added-line keys matched. The file was not merely discovered/skipped.
+
+### Proven timezone oracle defect, not an inferred plugin modification
+
+The historical sequence was: English core installation → install/activate fa_IR
+→ set `timezone_string=Asia/Tehran` → request a PHP-derived raw `gmt_offset=3.5`
+through WP-CLI → install all five packages → activate them → locale probe reading
+`gmt_offset` directly from MySQL.
+
+WordPress 7.1.3 code evidence (tag commit
+`fc9832bef919c2a08541248db23af90d14ffb082`):
+
+- [`wp-admin/includes/schema.php`, lines 387–410](https://github.com/WordPress/WordPress/blob/fc9832bef919c2a08541248db23af90d14ffb082/wp-admin/includes/schema.php#L387)
+  initializes an English installation's empty timezone and zero offset.
+- [`default-filters.php`, line 499](https://github.com/WordPress/WordPress/blob/fc9832bef919c2a08541248db23af90d14ffb082/wp-includes/default-filters.php#L499)
+  installs `wp_timezone_override_offset` on `pre_option_gmt_offset`.
+- [`functions.php`, lines 6669–6692](https://github.com/WordPress/WordPress/blob/fc9832bef919c2a08541248db23af90d14ffb082/wp-includes/functions.php#L6669)
+  documents and implements the named-timezone-derived override;
+  [`get_option()`](https://github.com/WordPress/WordPress/blob/fc9832bef919c2a08541248db23af90d14ffb082/wp-includes/option.php#L123)
+  returns the filter value **before reading the stored row**.
+- [`WP-CLI Option_Command::update`, lines 433–463](https://github.com/wp-cli/entity-command/blob/2e68f985fd3173edf5f806c3c57e0082b3b79c2e/src/Option_Command.php#L433)
+  sanitizes the requested value and the effective `get_option()` value. If equal,
+  it reports success/unchanged without a write. Core's `sanitize_option()` makes
+  both values the same numeric string here. Locale activation updates `WPLANG`,
+  not these timezone options (`Core_Language_Command::activate_language`).
+
+Small runtime reproduction: unmodified WordPress 7.1.3 APIs/default filters and
+object cache under PHP 8.3.33 WASM, no plugins or MySQL. Only the two persisted-row
+values were seeded in `alloptions`; option/filter/sanitization code was real.
+Executing the upstream WP-CLI update method with command-I/O shims also produced
+`Value passed for 'gmt_offset' option is unchanged.`
+
+| Moment | Raw stored offset | Effective get_option | PHP-derived |
+| --- | --- | --- | --- |
+| Initial core defaults | 0 | 0 | 3.5 (reference Asia/Tehran) |
+| Named timezone configured | 0 | 3.5 | 3.5 |
+| Historical WP-CLI offset update, no plugins | 0 | 3.5 | 3.5 |
+
+Thus **raw 0 is legitimate WordPress option semantics**. Comparing that stored
+fallback to the active named zone was the defect in this slice's test oracle.
+This proves the mismatch without plugins; it does **not** prove that the five
+plugins never modify settings in a real run.
+
+The redundant raw-offset write is removed. `A/timezone.json` now records UTC
+capture time, raw/effective timezone string, raw stored offset, effective
+`get_option('gmt_offset')`, PHP DateTimeZone-derived offset and read errors:
+after core install, after fa_IR setup, after timezone configuration, after all
+packages are installed/before activation, after **each** plugin activation, and
+immediately before the locale probe, and after the Stage A HTTP/browser probes.
+Only these two option rows are queried;
+no credentials or unrelated database contents are collected.
+
+The opt-in group oracle compares the **effective** offset to PHP. Raw values
+remain evidence; changes to raw offset or raw/effective timezone after fixture
+configuration, wrong effective offset, missing samples and unreadable diagnostics
+still materially fail Stage A and prevent Stage B. Historical baseline defaults,
+including their existing raw-value oracle and no observer calls, are unchanged.
+No CPMS code, migrations, pins, authorization or Location authority changed.
+
+Recovery validation: **27 focused tests pass**, including a real core-semantics
+reproduction; **5/5 collector self-tests pass**; positive/negative actual WPCS
+inspection described above passes. Run the core reproduction test with
+`CPMS_WP_SOURCE=/path/to/wordpress-7.1.3 CPMS_TEST_PHP=/path/to/php` when running
+`python3 -m unittest discover -s .github/persian-coexistence -p 'test_*.py'`.
+Without that external source the one core-runtime test is explicitly skipped,
+not passed. This is still **not** an actual five-plugin Stage A/B acceptance run.
+
+Recovery syntax/static review: Python compile + pyflakes pass; PHP 8.3 syntax
+passes for both the standalone probe and core reproduction, and for the embedded
+read-only timezone eval. Bash syntax passes for all 46 run blocks in the relevant
+workflows. Actionlint 1.17.0 reports the same 18 pre-existing diagnostics as the
+historical head; standalone ShellCheck 0.11.0 reports the same 10 pre-existing
+diagnostics. No suppressions, ruleset changes or Actions upgrades were added.
+The correction touches infrastructure/tests/docs only; actual five-plugin
+coexistence after this correction remains unproven until new runtime evidence.

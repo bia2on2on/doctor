@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import subprocess
 import threading
 import unittest
 from unittest.mock import patch
@@ -33,6 +34,154 @@ class SliceTests(unittest.TestCase):
         store.check("sentinel", True, lane.probe.PRODUCT)
         store.save()
         lane.save(self.slice.root / "A/result.json", lane.verdict(store, True))
+
+    def timezone_samples(self):
+        names = ["after_core_install", "after_locale_setup", "after_timezone_configuration",
+                 "before_activation", *[f"after_activation::{s}" for s in lane.PINS], "before_locale_probe", "after_stage_a_probes"]
+        return [{"timing": name, "raw_timezone_string": "Asia/Tehran" if i >= 2 else "",
+                 "timezone_string": "Asia/Tehran" if i >= 2 else "", "raw_gmt_offset": "0",
+                 "effective_gmt_offset": 3.5 if i >= 2 else 0, "php_derived_offset": 3.5, "errors": []}
+                for i, name in enumerate(names)]
+
+    def test_named_timezone_allows_raw_zero_without_forcing_it(self):
+        lane.save(self.slice.root / "A/timezone.json", self.timezone_samples())
+        self.slice.check_timezones()
+        self.assertEqual(lane.verdict(self.slice.store("A"), True)["status"], "PASS")
+
+    def test_raw_or_effective_timezone_changes_block_stage_b(self):
+        for field, changed in (("raw_gmt_offset", "4"), ("timezone_string", "UTC"),
+                               ("raw_timezone_string", "UTC"), ("effective_gmt_offset", 0)):
+            with self.subTest(field=field):
+                lane.save(self.slice.root / "A/evidence.json", {"subject": {}, "facts": {}, "checks": []})
+                samples = self.timezone_samples()
+                samples[-2][field] = changed
+                lane.save(self.slice.root / "A/timezone.json", samples)
+                self.slice.check_timezones()
+                result = lane.verdict(self.slice.store("A"), True)
+                self.assertEqual(result["status"], "FAIL")
+                lane.save(self.slice.root / "A/result.json", result)
+                with self.assertRaisesRegex(RuntimeError, "Stage B refused"):
+                    self.slice.begin_b()
+
+    def test_missing_timezone_timing_fails_closed(self):
+        lane.save(self.slice.root / "A/timezone.json", self.timezone_samples()[:-1])
+        self.slice.check_timezones()
+        self.assertEqual(lane.verdict(self.slice.store("A"), True)["status"], "FAIL")
+
+    def test_timezone_snapshot_is_bounded_and_preserves_raw_vs_effective(self):
+        payload = {"timezone_string": "Asia/Tehran", "effective_gmt_offset": 3.5, "php_derived_offset": 3.5}
+        with patch.object(lane.probe, "db_option", side_effect=[(True, "Asia/Tehran", ""), (True, "0", "")]) as db, \
+                patch.object(lane.probe, "wp_cli", return_value={"rc": 0, "stdout": "CPMS_TIMEZONE:" + json.dumps(payload)}) as cli:
+            sample = self.slice.observe_timezone("before_activation")
+        self.assertEqual([c.args[1] for c in db.call_args_list], ["timezone_string", "gmt_offset"])
+        self.assertEqual(cli.call_args.args[0][0], "eval")
+        self.assertEqual(sample["raw_gmt_offset"], "0")
+        self.assertEqual(sample["effective_gmt_offset"], 3.5)
+        self.assertEqual(set(sample), {"timing", "captured_at", "errors", "raw_timezone_string", "raw_gmt_offset", *payload})
+
+    def test_stage_a_does_not_write_raw_offset_and_observes_activation_order(self):
+        commands, samples = [], []
+        def cli(store, name, args):
+            commands.append(args)
+            return True
+        def observe(timing):
+            samples.append(timing)
+            return {"effective_gmt_offset": 3.5}
+        def install(args):
+            args.activation_observer("before_activation")
+            for slug in lane.PINS:
+                args.activation_observer(f"after_activation::{slug}")
+            return 0
+        with patch.object(self.slice, "cli", side_effect=cli), \
+                patch.object(self.slice, "observe_timezone", side_effect=observe), \
+                patch.object(lane.probe, "cmd_install", side_effect=install), \
+                patch.object(lane.probe, "cmd_wp"), patch.object(lane.probe, "cmd_locale"), \
+                patch.object(self.slice, "check_timezones"), patch.object(self.slice, "browser"), \
+                patch.object(self.slice, "identity"), patch.object(self.slice, "end_a", return_value=0):
+            self.assertEqual(self.slice.stage_a(), 0)
+        self.assertEqual(commands, [["language", "core", "install", "fa_IR"],
+                                   ["language", "core", "activate", "fa_IR"],
+                                   ["option", "update", "timezone_string", "Asia/Tehran"]])
+        self.assertEqual(samples, [s["timing"] for s in self.timezone_samples()])
+
+    @unittest.skipUnless(os.environ.get("CPMS_WP_SOURCE"), "unmodified WordPress source not supplied")
+    def test_actual_wordpress_timezone_option_semantics(self):
+        php = os.environ.get("CPMS_TEST_PHP", "php")
+        script = Path(__file__).parent / "tests/timezone-semantics.php"
+        result = subprocess.run([php, str(script), os.environ["CPMS_WP_SOURCE"]],
+                                capture_output=True, text=True, check=True)
+        data = json.loads(result.stdout)
+        self.assertEqual(data["initial_effective"], "0")
+        self.assertEqual(data["raw_gmt_offset"], "0")
+        self.assertEqual(data["effective_gmt_offset"], 3.5)
+        self.assertEqual(data["php_derived_offset"], 3.5)
+        self.assertTrue(data["wp_cli_update_is_noop"])
+
+    def test_locale_oracle_default_unchanged_and_group_effective_value_gated(self):
+        for raw, effective, expected in (("3.5", None, "PASS"), ("0", None, "FAIL"),
+                                          ("0", 3.5, "PASS"), ("0", 0, "FAIL"),
+                                          ("0", "missing", "UNEXECUTED")):
+            with self.subTest(raw=raw, effective=effective):
+                args = self.slice.args("A")
+                args.store = str(self.root / f"oracle-{raw}-{effective}.json")
+                if effective is not None:
+                    args.timezone_snapshot = {} if effective == "missing" else {"effective_gmt_offset": effective}
+                options = {"WPLANG": "fa_IR", "timezone_string": "Asia/Tehran", "gmt_offset": raw}
+                response = {"status": 200, "body": '<html lang="fa-IR" dir="rtl">آزمون</html>',
+                            "content_type": "text/html; charset=UTF-8", "transport_error": "",
+                            "redirects": 0, "chain": [], "looped": False, "final_url": "http://example.test/"}
+                with patch.object(lane.probe, "read_wp_core_version", return_value="7.1.3"), \
+                        patch.object(lane.probe, "web_runtime_probe", return_value={"php_version": "8.3.33", "transport_error": ""}), \
+                        patch.object(lane.probe, "db_option", side_effect=lambda db, key: (True, options[key], "")), \
+                        patch.object(lane.probe, "scalar", return_value=(True, "1", "")), \
+                        patch.object(lane.probe, "mysql_query", return_value={"rc": 0, "stdout": "", "stderr": ""}), \
+                        patch.object(lane.probe, "run", return_value={"rc": 0, "stdout": "Asia/Tehran 12600 2026-10-08", "stderr": ""}), \
+                        patch.object(lane.probe, "http_request", return_value=response), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    lane.probe.cmd_locale(args)
+                checks = lane.probe.Store(args.store).data["checks"]
+                offset_check = next(c for c in checks if c["name"] == "fa_gmt_offset_agrees_with_php")
+                self.assertEqual(offset_check["status"], expected)
+                if effective is None:
+                    self.assertIn("stored gmt_offset", offset_check["detail"])
+                self.assertTrue(any(c["name"] == "fa_gmt_offset_recorded" for c in checks))
+
+    def test_installer_default_and_opt_in_activation_observer(self):
+        from urllib.parse import urlparse
+        for with_observer in (False, True):
+            events = []
+            args = self.slice.args("A")
+            args.store = str(self.root / f"installer-{with_observer}.json")
+            args.package_dir = str(self.root)
+            args.subject_slug, args.subject_version = "woocommerce", lane.PINS["woocommerce"]
+            args.deps = ",".join(f"{s}={v}" for s, v in lane.PINS.items() if s != "woocommerce")
+            args.no_retry = True
+            if with_observer:
+                args.activation_observer = lambda timing: events.append(timing)
+            def download(url, dest, **kwargs):
+                name = Path(urlparse(url).path).name
+                slug = next(s for s in lane.PINS if name.startswith(s + "."))
+                with zipfile.ZipFile(dest, "w") as archive:
+                    archive.writestr(f"{slug}/{slug}.php", f"<?php\n/*\nPlugin Name: Fixture\nVersion: {lane.PINS[slug]}\n*/")
+                return []
+            def cli(command, wp_dir, **kwargs):
+                if command[1] == "activate":
+                    events.append("activate::" + command[2])
+                value = lane.PINS[command[2]] if command[1] == "get" else "ok"
+                return {"rc": 0, "stdout": value, "stderr": ""}
+            headers = [{"slug": s, "version": v, "name": s, "requires_plugins": []} for s, v in lane.PINS.items()]
+            with patch.object(lane.probe, "download", side_effect=download), \
+                    patch.object(lane.probe, "wp_cli", side_effect=cli), \
+                    patch.object(lane.probe, "read_plugin_headers", return_value=headers), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(lane.probe.cmd_install(args), 0)
+            expected = ["before_activation"] if with_observer else []
+            for slug in lane.PINS:
+                expected.append("activate::" + slug)
+                if with_observer:
+                    expected.append("after_activation::" + slug)
+            self.assertEqual(events, expected)
+            self.assertFalse(lane.blockers(lane.probe.Store(args.store).data["checks"]))
 
     def test_empty_or_incomplete_is_not_pass(self):
         store = self.slice.store("A")

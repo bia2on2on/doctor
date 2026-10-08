@@ -1306,9 +1306,16 @@ def cmd_install(args: argparse.Namespace) -> int:
         os.remove(zip_path)
         installed.append(slug)
 
+    # Optional read-only timing evidence for the coexistence group. It writes
+    # a separate file, never this in-flight Store; historical baseline is unchanged.
+    observer = getattr(args, "activation_observer", None)
+    if observer:
+        observer("before_activation")
     if not hard_fail:
         for slug in installed:
             activation = wp_cli(["plugin", "activate", slug], args.wp_dir)
+            if observer:
+                observer(f"after_activation::{slug}")
             for entry in provenance:
                 if entry["slug"] == slug:
                     entry["activation_rc"] = activation["rc"]
@@ -1414,8 +1421,10 @@ def cmd_locale(args: argparse.Namespace) -> int:
     ok_gmt, gmt_offset, _diag_gmt = db_option(db_name, "gmt_offset")
     store.fact("fa_gmt_offset_option", gmt_offset)
     store.record("fa_gmt_offset_recorded", INFO, ENVIRONMENT,
-                 "the derived gmt_offset stored alongside timezone_string; recorded as "
-                 "evidence, never hand-set to a guessed value", phase=phase,
+                 ("raw stored gmt_offset fallback; the effective named-timezone offset is checked separately"
+                  if getattr(args, "timezone_snapshot", None) is not None else
+                  "the derived gmt_offset stored alongside timezone_string; recorded as "
+                  "evidence, never hand-set to a guessed value"), phase=phase,
                  observed={"gmt_offset": gmt_offset if ok_gmt else _diag_gmt})
 
     # The pinned IANA zone must be a timezone PHP itself accepts, and the offset
@@ -1436,20 +1445,23 @@ def cmd_locale(args: argparse.Namespace) -> int:
                 (tz_probe["stderr"] or "").strip()[:400]
                 or "PHP must accept the pinned IANA timezone", True, phase,
                 args.expect_timezone, tz_out or tz_probe["stderr"][:200])
-    if ok_php_tz and gmt_offset:
-        # Cross-check the stored option against what PHP derives, so a stale or
-        # guessed gmt_offset is visible in the evidence instead of silently
-        # disagreeing with the IANA zone the site claims.
+    # Historical subjects retain their existing stored-value oracle. The bounded
+    # group supplies a timed effective-option snapshot: core's named-timezone
+    # pre_option filter may legitimately leave the raw gmt_offset row at zero.
+    snapshot = getattr(args, "timezone_snapshot", None)
+    offset_value = snapshot.get("effective_gmt_offset") if snapshot is not None else gmt_offset
+    offset_source = "effective get_option('gmt_offset')" if snapshot is not None else "stored gmt_offset"
+    if ok_php_tz and (gmt_offset or snapshot is not None):
         try:
             derived = round(int(offset_seconds) / 3600, 2)
-            stored = round(float(gmt_offset), 2)
-            store.check("fa_gmt_offset_agrees_with_php", derived == stored, ENVIRONMENT,
-                        "the stored gmt_offset must agree with the offset PHP derives "
-                        "from the pinned IANA zone", True, phase, derived, stored)
-        except ValueError:
+            observed_offset = round(float(offset_value), 2)
+            store.check("fa_gmt_offset_agrees_with_php", derived == observed_offset, ENVIRONMENT,
+                        f"the {offset_source} must agree with the offset PHP derives "
+                        "from the pinned IANA zone", True, phase, derived, observed_offset)
+        except (TypeError, ValueError):
             store.record("fa_gmt_offset_agrees_with_php", UNEXECUTED, HARNESS,
                          "gmt_offset was not numeric, so the cross-check could not run",
-                         False, phase, observed={"gmt_offset": gmt_offset})
+                         False, phase, observed={"gmt_offset": offset_value})
 
     # -- the translation package actually landed on disk -------------------- #
     languages_dir = os.path.join(args.wp_dir, "wp-content", "languages")
