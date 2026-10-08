@@ -1,4 +1,5 @@
 """Local harness tests/fault injection, NOT real WordPress compatibility proof."""
+import argparse
 import contextlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
@@ -15,7 +16,11 @@ import zipfile
 
 SPEC = importlib.util.spec_from_file_location("coexistence", Path(__file__).with_name("run.py"))
 lane = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(lane)
+# The historical tests below assert the frozen five-plugin scenario (WooCommerce
+# subject). Pin that explicitly so an ambient COEX_GROUP (CI sets it per job) cannot
+# silently change them. Group-specific behaviour is tested via load_group().
+with patch.dict(os.environ, {"COEX_GROUP": "persian-five"}):
+    SPEC.loader.exec_module(lane)
 
 
 class SliceTests(unittest.TestCase):
@@ -370,6 +375,98 @@ class SliceTests(unittest.TestCase):
             "persian-elementor": "2.8.4", "woocommerce": "11.2.0"})
         self.assertNotIn("persian-woocommerce", lane.PINS)
         self.assertEqual(lane.PINS["woocommerce"], "11.2.0")
+
+
+def load_group(group):
+    """Fresh run.py module bound to one COEX_GROUP (the workflow's selector).
+    group=None loads with COEX_GROUP unset, exercising the real default."""
+    with patch.dict(os.environ, {}):
+        if group is None:
+            os.environ.pop("COEX_GROUP", None)
+        else:
+            os.environ["COEX_GROUP"] = group
+        spec = importlib.util.spec_from_file_location(f"coexistence_{group}", Path(__file__).with_name("run.py"))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    return module
+
+
+class GroupSelectionTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+
+    FROZEN_FIVE = {"loco-translate": "2.8.9", "wp-parsidate": "6.4", "elementor": "4.3.4",
+                   "persian-elementor": "2.8.4", "woocommerce": "11.2.0"}
+
+    def test_default_group_is_the_unchanged_five_plugin_scenario(self):
+        for group in ("persian-five", None):  # explicit selection and COEX_GROUP unset
+            with self.subTest(group=group):
+                module = load_group(group)
+                self.assertEqual(module.GROUP, "persian-five")
+                self.assertEqual(module.SUBJECT, "woocommerce")
+                self.assertEqual(module.PINS, self.FROZEN_FIVE)
+                self.assertEqual(module.GROUPS["persian-five"]["root"], "coexistence")
+                self.assertEqual(module.GROUPS["persian-five"]["artifact"], "persian-coexistence")
+        self.assertEqual(lane.PINS, self.FROZEN_FIVE)
+
+    def test_security_group_pins_exactly_the_approved_two_plugins(self):
+        module = load_group("security-authentication")
+        self.assertEqual(module.PINS, {"wordfence": "9.0.2", "really-simple-ssl": "9.8.3"})
+        self.assertEqual(module.SUBJECT, "wordfence")
+        self.assertEqual(module.GROUPS["security-authentication"]["root"], "coexistence-security-authentication")
+        self.assertEqual(module.GROUPS["security-authentication"]["artifact"],
+                         "persian-coexistence-security-authentication")
+        # The security group must not inherit or disturb the five-plugin pins.
+        for slug in module.PINS:
+            self.assertNotIn(slug, load_group("persian-five").PINS)
+        self.assertIn("security plugin hardening", module.NOT_RUN)
+        self.assertNotIn("security plugin hardening", load_group("persian-five").NOT_RUN)
+        for key in ("Clinic A/B isolation", "synthetic broken migration"):
+            self.assertIn(key, module.NOT_RUN)
+
+    def test_unknown_group_fails_closed_at_import(self):
+        with self.assertRaises(SystemExit):
+            load_group("no-such-group")
+
+    def test_security_installer_installs_dependency_before_subject(self):
+        module = load_group("security-authentication")
+        from urllib.parse import urlparse
+        events = []
+        args = self.slice_args(module)
+        args.subject_slug, args.subject_version = module.SUBJECT, module.PINS[module.SUBJECT]
+        args.deps = ",".join(f"{s}={v}" for s, v in module.PINS.items() if s != module.SUBJECT)
+        args.activation_observer = lambda timing: events.append(timing)
+
+        def download(url, dest, **kwargs):
+            name = Path(urlparse(url).path).name
+            slug = next(s for s in module.PINS if name.startswith(s + "."))
+            with zipfile.ZipFile(dest, "w") as archive:
+                archive.writestr(f"{slug}/{slug}.php", f"<?php\n/*\nPlugin Name: Fixture\nVersion: {module.PINS[slug]}\n*/")
+            return []
+
+        def cli(command, wp_dir, **kwargs):
+            if command[1] == "activate":
+                events.append("activate::" + command[2])
+            value = module.PINS[command[2]] if command[1] == "get" else "ok"
+            return {"rc": 0, "stdout": value, "stderr": ""}
+
+        headers = [{"slug": s, "version": v, "name": s, "requires_plugins": []} for s, v in module.PINS.items()]
+        with patch.object(module.probe, "download", side_effect=download), \
+                patch.object(module.probe, "wp_cli", side_effect=cli), \
+                patch.object(module.probe, "read_plugin_headers", return_value=headers), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(module.probe.cmd_install(args), 0)
+        self.assertEqual(events, ["before_activation",
+                                  "activate::really-simple-ssl", "after_activation::really-simple-ssl",
+                                  "activate::wordfence", "after_activation::wordfence"])
+        self.assertFalse(module.blockers(module.probe.Store(args.store).data["checks"]))
+
+    def slice_args(self, module):
+        args = argparse.Namespace(store=str(self.root / "security-installer.json"), wp_dir="", wp_url="",
+                                  db_name="", package_dir=str(self.root), no_retry=True)
+        return args
 
 
 class HTTPTests(unittest.TestCase):

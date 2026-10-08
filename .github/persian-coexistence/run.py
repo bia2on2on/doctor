@@ -15,13 +15,43 @@ SPEC = importlib.util.spec_from_file_location(
 probe = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(probe)
 
-PINS = {
-    "loco-translate": "2.8.9",
-    "wp-parsidate": "6.4",
-    "elementor": "4.3.4",
-    "persian-elementor": "2.8.4",
-    "woocommerce": "11.2.0",
+# Selectable pinned groups. The reusable workflow passes COEX_GROUP; the default
+# is the original accepted five-plugin group, so that run is unchanged. Each group
+# has its own evidence root and artifact, and its own subject (installed last).
+GROUPS = {
+    "persian-five": {
+        "pins": {
+            "loco-translate": "2.8.9",
+            "wp-parsidate": "6.4",
+            "elementor": "4.3.4",
+            "persian-elementor": "2.8.4",
+            "woocommerce": "11.2.0",
+        },
+        "subject": "woocommerce",
+        "root": "coexistence",
+        "artifact": "persian-coexistence",
+        "title": "Persian five-plugin coexistence",
+        "not_run": {},
+    },
+    "security-authentication": {
+        "pins": {
+            "wordfence": "9.0.2",
+            "really-simple-ssl": "9.8.3",
+        },
+        "subject": "wordfence",
+        "root": "coexistence-security-authentication",
+        "artifact": "persian-coexistence-security-authentication",
+        "title": "Persian security/authentication group (wordfence + really-simple-ssl)",
+        "not_run": {
+            "security plugin hardening": "NOT RUN — Wordfence firewall/2FA and Really Simple SSL HTTPS enforcement are not configured or exercised; default settings only, never weakened",
+        },
+    },
 }
+GROUP = os.environ.get("COEX_GROUP", "persian-five")
+if GROUP not in GROUPS:
+    raise SystemExit(f"unknown COEX_GROUP {GROUP!r}; expected one of {sorted(GROUPS)}")
+PINS = GROUPS[GROUP]["pins"]
+SUBJECT = GROUPS[GROUP]["subject"]
 FATAL = re.compile(r"PHP (?:Fatal error|Parse error|Error:)|Uncaught|There has been a critical error")
 REQUIRED_ACCEPTANCE = (
     "admin.cpms-system.health_rendered", "secretary.patients.create_success",
@@ -49,6 +79,7 @@ NOT_RUN = {
     "standalone shell/theme switching": "NOT RUN — separate existing control, outside this group",
     "Location timezone override/isolation matrix": "NOT RUN — existing booking fixture reads trusted Location timezone; site locale/timezone is not authority",
 }
+NOT_RUN.update(GROUPS[GROUP]["not_run"])
 
 
 # Only these public option values are emitted; no credentials, config or DB dump.
@@ -117,7 +148,7 @@ class Slice:
     def init(self):
         save(self.root / "summary.json", {
             "stage_a": {"status": "NOT RUN"}, "stage_b": {"status": "NOT RUN"},
-            "pins": PINS, "not_run": NOT_RUN,
+            "group": GROUP, "pins": PINS, "not_run": NOT_RUN,
             "source_sha": os.environ.get("GITHUB_SHA", "local"),
             "candidate_head_sha": os.environ.get("COEX_HEAD_SHA", "local"),
             "base_sha": os.environ.get("COEX_BASE_SHA", ""),
@@ -258,7 +289,7 @@ class Slice:
 
     def stage_a(self):
         store = self.store("A")
-        store.subject(id="persian-five", kind="plugin-group", pins=PINS, cpms="ABSENT")
+        store.subject(id=GROUP, kind="plugin-group", pins=PINS, cpms="ABSENT")
         store.save()
         os.environ["TPB_RAW_COMMAND_LOG"] = str(self.root / "A/commands.jsonl")
         self.observe_timezone("after_core_install")
@@ -277,8 +308,8 @@ class Slice:
         # offset: get_option('gmt_offset') is dynamically filtered by core.
         self.observe_timezone("after_timezone_configuration")
         args = self.args("A")
-        args.subject_slug, args.subject_version = "woocommerce", PINS["woocommerce"]
-        args.deps = ",".join(f"{s}={v}" for s, v in PINS.items() if s != "woocommerce")
+        args.subject_slug, args.subject_version = SUBJECT, PINS[SUBJECT]
+        args.deps = ",".join(f"{s}={v}" for s, v in PINS.items() if s != SUBJECT)
         args.package_dir, args.no_retry = str(self.root / "A"), True
         args.activation_observer = self.observe_timezone
         if probe.cmd_install(args):
@@ -368,11 +399,11 @@ class Slice:
                 summary["stage_b"] = {"status": "FAIL", "reason": "incomplete Stage B; see B/exception.txt"}
         summary["not_run"] = NOT_RUN
         save(self.root / "summary.json", summary)
-        text = ("## Persian five-plugin coexistence\n"
+        text = (f"## {GROUPS[GROUP]['title']}\n"
                 f"- Stage A (CPMS absent): **{summary['stage_a']['status']}**\n"
                 f"- Stage B (after CPMS activation): **{summary['stage_b']['status']}**\n"
                 "- Workflow success is not product acceptance. No union of individual baselines is assumed.\n"
-                "- Raw evidence: `persian-coexistence-wp_` artifact, `coexistence/A` and `coexistence/B`.\n"
+                f"- Raw evidence: `{GROUPS[GROUP]['artifact']}-wp_` artifact, `{GROUPS[GROUP]['root']}/A` and `{GROUPS[GROUP]['root']}/B`.\n"
                 + "".join(f"- {name}: {reason}\n" for name, reason in NOT_RUN.items()))
         (self.root / "summary.md").write_text(text)
         print(text)
@@ -386,7 +417,7 @@ def main():
     parser = argparse.ArgumentParser(__doc__)
     parser.add_argument("command", choices=("init", "stage-a", "begin-b", "finalize"))
     args = parser.parse_args()
-    lane = Slice("/tmp/acc/coexistence", os.environ["WP_DIR"], os.environ["WP_URL"], os.environ["DB_NAME"])
+    lane = Slice(f"/tmp/acc/{GROUPS[GROUP]['root']}", os.environ["WP_DIR"], os.environ["WP_URL"], os.environ["DB_NAME"])
     try:
         if args.command == "finalize":
             return lane.finalize(json.loads(os.environ.get("COEX_STEPS", "{}")))

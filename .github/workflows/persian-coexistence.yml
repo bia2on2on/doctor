@@ -1,5 +1,10 @@
 name: Persian five-plugin coexistence (Phase 18)
 
+# Two independent pinned groups, one workflow. Each job is a separate runner,
+# evidence root and artifact; neither result is a union or substitute for the other.
+#   coexistence                         -> persian-five (original accepted group, unchanged)
+#   coexistence-security-authentication -> wordfence 9.0.2 + really-simple-ssl 9.8.3
+
 on:
   workflow_dispatch:
   pull_request:
@@ -21,3 +26,13 @@ jobs:
       actions: read
     with:
       persian_coexistence: true
+
+  coexistence-security-authentication:
+    # Same reusable harness; only the pinned group differs (see run.py GROUPS).
+    uses: ./.github/workflows/real-wp-acceptance.yml
+    permissions:
+      contents: write
+      actions: read
+    with:
+      persian_coexistence: true
+      coexistence_group: security-authentication
