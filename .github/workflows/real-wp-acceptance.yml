@@ -18,7 +18,7 @@ on:
       coexistence_group:
         # Selects one pinned group in .github/persian-coexistence/run.py (GROUPS).
         # Unknown values fail closed in the init step. The default is the original group.
-        description: persian-five or security-authentication
+        description: persian-five, security-authentication or combined-ten
         type: string
         default: persian-five
   workflow_dispatch:
@@ -1011,7 +1011,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ inputs.persian_coexistence && (inputs.coexistence_group == 'security-authentication' && 'persian-coexistence-security-authentication' || 'persian-coexistence') || 'rwp-acceptance' }}-${{ matrix.prefix }}
+          name: ${{ inputs.persian_coexistence && (inputs.coexistence_group == 'security-authentication' && 'persian-coexistence-security-authentication' || (inputs.coexistence_group == 'combined-ten' && 'persian-coexistence-combined-ten' || 'persian-coexistence')) || 'rwp-acceptance' }}-${{ matrix.prefix }}
           path: |
             /tmp/acc/
             !/tmp/acc/**/*.zip

@@ -46,6 +46,39 @@ GROUPS = {
             "security plugin hardening": "NOT RUN — Wordfence firewall/2FA and Really Simple SSL HTTPS enforcement are not configured or exercised; default settings only, never weakened",
         },
     },
+    # One combined lane: all ten approved plugins installed into the same clean
+    # WordPress and activated together (cmd_install installs every pin first and
+    # only then activates the whole set; nothing is deactivated along the way).
+    # Yoast SEO and Rank Math both ship competing SEO stacks and stay at their
+    # own defaults: neither is configured to disable or defer to the other, so a
+    # material clash is measured, never tuned away.
+    "combined-ten": {
+        "pins": {
+            "wordpress-seo": "28.6",
+            "seo-by-rank-math": "1.0.280",
+            "litespeed-cache": "7.9.1",
+            "autoptimize": "3.1.16",
+            "user-role-editor": "4.66.2",
+            "advanced-custom-fields": "6.8.10",
+            "wp-crontrol": "1.21.2",
+            "redirection": "5.10.1",
+            "polylang": "3.8.10",
+            "contact-form-7": "6.2",
+        },
+        "subject": "contact-form-7",
+        "root": "coexistence-combined-ten",
+        "artifact": "persian-coexistence-combined-ten",
+        "title": "Persian combined ten-plugin coexistence (approved combined group)",
+        "not_run": {
+            "competing SEO plugin configuration": "NOT RUN — wordpress-seo 28.6 and seo-by-rank-math 1.0.280 both keep default settings; neither is disabled, unhooked or configured to defer to the other, so their raw coexistence is what is measured",
+            "authored third-party configuration": "NOT RUN — no redirect rules, Polylang languages/strings, ACF field groups, User Role Editor role or capability edits and no WP Crontrol cron edits are authored; default activation behaviour only, never weakened",
+            "Contact Form 7 submission handling": "NOT RUN — no form submission is posted and no mail path exists in the isolated fixture; only default activation, bootstrap and front/admin serving are measured",
+        },
+        "unavailable": {
+            "LiteSpeed Cache server-level page cache": "this lane serves Apache, and that cache requires a LiteSpeed web server, so it can be neither enabled nor benchmarked here. Any such runtime finding is preserved as recorded evidence; no web server, plugin setting or product behaviour is changed to hide it",
+            "outbound mail/MTA": "the isolated runner has no MTA/SMTP, so no plugin mail delivery (including Contact Form 7) is observable",
+        },
+    },
 }
 GROUP = os.environ.get("COEX_GROUP", "persian-five")
 if GROUP not in GROUPS:
@@ -80,6 +113,10 @@ NOT_RUN = {
     "Location timezone override/isolation matrix": "NOT RUN — existing booking fixture reads trusted Location timezone; site locale/timezone is not authority",
 }
 NOT_RUN.update(GROUPS[GROUP]["not_run"])
+# Structurally unavailable features of the frozen lane. These are declared scope
+# limits, not measured results: an actual runtime FEATURE UNAVAILABLE finding
+# stays visible in the evidence and is never worked around by reconfiguration.
+UNAVAILABLE = GROUPS[GROUP].get("unavailable", {})
 
 
 # Only these public option values are emitted; no credentials, config or DB dump.
@@ -149,6 +186,7 @@ class Slice:
         save(self.root / "summary.json", {
             "stage_a": {"status": "NOT RUN"}, "stage_b": {"status": "NOT RUN"},
             "group": GROUP, "pins": PINS, "not_run": NOT_RUN,
+            "unavailable_features": UNAVAILABLE,
             "source_sha": os.environ.get("GITHUB_SHA", "local"),
             "candidate_head_sha": os.environ.get("COEX_HEAD_SHA", "local"),
             "base_sha": os.environ.get("COEX_BASE_SHA", ""),
@@ -398,6 +436,7 @@ class Slice:
                 (self.root / "B/exception.txt").write_text(traceback.format_exc())
                 summary["stage_b"] = {"status": "FAIL", "reason": "incomplete Stage B; see B/exception.txt"}
         summary["not_run"] = NOT_RUN
+        summary["unavailable_features"] = UNAVAILABLE
         save(self.root / "summary.json", summary)
         text = (f"## {GROUPS[GROUP]['title']}\n"
                 f"- Stage A (CPMS absent): **{summary['stage_a']['status']}**\n"
@@ -405,6 +444,9 @@ class Slice:
                 "- Workflow success is not product acceptance. No union of individual baselines is assumed.\n"
                 f"- Raw evidence: `{GROUPS[GROUP]['artifact']}-wp_` artifact, `{GROUPS[GROUP]['root']}/A` and `{GROUPS[GROUP]['root']}/B`.\n"
                 + "".join(f"- {name}: {reason}\n" for name, reason in NOT_RUN.items()))
+        if UNAVAILABLE:
+            text += "".join(f"- FEATURE UNAVAILABLE — {name}: {reason}\n"
+                            for name, reason in UNAVAILABLE.items())
         (self.root / "summary.md").write_text(text)
         print(text)
         if os.environ.get("GITHUB_STEP_SUMMARY"):

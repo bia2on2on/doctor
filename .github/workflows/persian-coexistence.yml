@@ -1,9 +1,12 @@
 name: Persian five-plugin coexistence (Phase 18)
 
-# Two independent pinned groups, one workflow. Each job is a separate runner,
-# evidence root and artifact; neither result is a union or substitute for the other.
+# Three independent pinned groups, one workflow. Each job is a separate runner,
+# evidence root and artifact; no result is a union or substitute for another.
 #   coexistence                         -> persian-five (original accepted group, unchanged)
 #   coexistence-security-authentication -> wordfence 9.0.2 + really-simple-ssl 9.8.3
+#   coexistence-combined-ten            -> one approved ten-plugin combined group
+#                                          installed and activated together, no CPMS
+#                                          until Stage B. Not a union of the other two.
 
 on:
   workflow_dispatch:
@@ -36,3 +39,17 @@ jobs:
     with:
       persian_coexistence: true
       coexistence_group: security-authentication
+
+  coexistence-combined-ten:
+    # One combined scenario: the ten approved plugins are installed into the same
+    # clean fa_IR WordPress and activated together. Stage A measures that group
+    # with CPMS absent; the existing Stage A/B interlock decides whether Stage B
+    # (CPMS installed after all ten) runs at all. Verdict is not a union of the
+    # five-plugin or security-group results, and workflow green is not PASS.
+    uses: ./.github/workflows/real-wp-acceptance.yml
+    permissions:
+      contents: write
+      actions: read
+    with:
+      persian_coexistence: true
+      coexistence_group: combined-ten

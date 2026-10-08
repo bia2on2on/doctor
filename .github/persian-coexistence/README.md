@@ -145,6 +145,73 @@ Stage B on any material Stage A failure. Verdicts for the two groups are separat
   standalone theme switching remain **NOT RUN** (see `NOT_RUN` in `summary.json`).
 - No product-code change. No automatic fix. Workflow success is not product PASS.
 
+## Combined ten-plugin group (third pinned group, same harness)
+
+One **combined** scenario: all ten approved plugins live in the **same** clean
+isolated WordPress at the same time. Same frozen lane as the other two groups —
+WordPress **7.1.3**, PHP **8.3** (CLI and serving mod_php), MySQL **8.4.11**,
+`fa_IR`, `Asia/Tehran` site fixture only:
+
+| # | Slug | Pin |
+| --- | --- | --- |
+| 1 | `wordpress-seo` | 28.6 |
+| 2 | `seo-by-rank-math` | 1.0.280 |
+| 3 | `litespeed-cache` | 7.9.1 |
+| 4 | `autoptimize` | 3.1.16 |
+| 5 | `user-role-editor` | 4.66.2 |
+| 6 | `advanced-custom-fields` | 6.8.10 |
+| 7 | `wp-crontrol` | 1.21.2 |
+| 8 | `redirection` | 5.10.1 |
+| 9 | `polylang` | 3.8.10 |
+| 10 | `contact-form-7` | 6.2 |
+
+**Simultaneous, not simulated.** `probe.cmd_install` retrieves and installs all
+ten exact pinned packages first and only then activates the set, one activation
+per plugin, in the declared order with `contact-form-7` last as the subject. No
+plugin is deactivated along the way, so the measured state is a genuinely
+simultaneously active combination rather than a sequence of activate/deactivate
+cycles. `identity()` then requires the active set to equal exactly these ten
+slugs (plus `clinic-practice-management` in Stage B) and every header version to
+equal its pin; nine of ten active, or one drifted version, fails Stage A.
+
+**Competing SEO plugins are measured, not tuned.** Yoast SEO and Rank Math both
+install their own SEO stack. Neither is disabled, unhooked or configured to defer
+to the other, and no product or plugin setting is weakened. If their coexistence
+produces a material failure it is preserved as the Stage A finding and Stage B is
+**not** run — the existing `begin-b` interlock refuses CPMS installation without a
+materially healthy, complete Stage A.
+
+**LiteSpeed on Apache.** `litespeed-cache` 7.9.1 is installed and activated, but
+its server-level page cache requires a LiteSpeed web server and this lane serves
+Apache. That is recorded under `unavailable_features` in `summary.json`/`summary.md`
+as **FEATURE UNAVAILABLE**, not as a pass and not as a plugin defect; nothing is
+reconfigured to hide it.
+
+**Selection (smallest mechanism, unchanged for the other groups).**
+`persian-coexistence.yml` gains a third job, `coexistence-combined-ten`, calling
+the same reusable `real-wp-acceptance.yml` with `coexistence_group: combined-ten`
+→ `COEX_GROUP`. Evidence root `coexistence-combined-ten/`, artifact
+`persian-coexistence-combined-ten-wp_`. The five-plugin job, the
+security/authentication job, their pins, roots, artifacts and workflow name are
+untouched; the concurrency key already includes the group, so the three jobs never
+cancel each other.
+
+**Evidence separation.** `summary.json` keeps `stage_a`, `stage_b`, `pins`,
+`not_run` and `unavailable_features` as separate machine-readable fields, and
+`A/result.json` / `B/result.json` keep `status`, `first_causal_check`,
+`blocking_checks` (material) and `warnings` (non-material) apart. Stage B is
+reported `NOT RUN` whenever the boundary is not reached — it is never folded into
+a Stage A verdict, and a green workflow is not compatibility. This group says
+nothing about the other nine plugins of the wider campaign; **no 19-plugin claim
+is made**. Persian WooCommerce is deliberately **not** in this group, and its
+existing third-party baseline FAIL is unchanged.
+
+**NOT RUN in this group:** authored third-party configuration (redirect rules,
+Polylang languages/strings, ACF field groups, User Role Editor role/capability
+edits, WP Crontrol cron edits), Contact Form 7 submission handling, and the
+four scope limits inherited by every group. No CPMS product code, migration,
+authorization or existing test was changed for this group.
+
 ## Initial implementation validation and prerequisite checkpoint
 
 At implementation start (2026-10-08): no open PRs; clean assigned branch
