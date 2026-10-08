@@ -4,6 +4,36 @@
 > Do **not** use a previous chat session as memory.
 >
 
+<a id="phase18-closure"></a>
+
+## Phase 18 — Compatibility: ✅ CLOSED (TECHNICALLY CLOSED WITH DOCUMENTED LIMITATIONS)
+
+**Anchor:** merge of **PR #200** ("Add three isolated Persian coexistence scenarios") — `main` = **`c9d39540cae69cea79ec10b1c2568389e9038bf0`** (MERGED 2026-10-08T18:07:50Z; base `main`, head `arena/d9de6936-doctor`). Post-merge check-run state on that exact SHA: **47 check runs, 46 `success`, 1 `failure`** (`coexistence-combined-nineteen / Real WP Acceptance (prefix wp_)`). Required release gates on that SHA — CI, Real WordPress Acceptance, Closure Gate, Pilot/Staging Readiness Gate — and the Third-Party Compatibility Baseline workflow all completed `success`. The parent workflow *Persian five-plugin coexistence (Phase 18)* concluded `failure` solely because of the all-19 lane below.
+
+**Closure basis:** requester decision recorded 2026-10-08 (no separate Owner-decision document exists in the repository). This is a bounded technical closure of the Phase 18 compatibility campaign, not a commercial, release, or go-live claim.
+
+**Accepted compatibility evidence (job conclusions on `c9d3954`):**
+- **19 individual third-party baselines** executed and documented (`Third-Party Compatibility Baseline (Phase 18 Lane A)`: 19 `Baseline <slug>` jobs + `Aggregate evidence summary`, all `success`).
+- Coexistence groups, each on its own runner / clean WordPress / MySQL / artifact (job `success`):
+  - 5-plugin Persian core — Elementor, Persian Elementor, WooCommerce, WP-Parsidate, Loco Translate (fa_IR locale), with CPMS.
+  - 2-plugin security/authentication — Wordfence, Really Simple SSL, with CPMS.
+  - 10-plugin combined group — Yoast SEO, Rank Math, LiteSpeed Cache, Autoptimize, User Role Editor, ACF, WP Crontrol, Redirection, Polylang, Contact Form 7, with CPMS.
+  - Persian WooCommerce SMS group — WooCommerce 11.2.0 + Persian WooCommerce SMS 7.2.3, with CPMS.
+  - Persian WooCommerce diagnostic lane — WooCommerce 11.2.0 + Persian WooCommerce 10.0.5, **CPMS-free** (Stage B explicitly disabled).
+
+**Accepted limitations (documented, not PASS-washed):**
+1. **All-19 combined lane (`coexistence-combined-nineteen`): Stage A FAILED; Stage B NOT RUN.** Recorded cause (requester diagnosis): Persian WooCommerce 10.0.5 post-activation redirect loop, `timezone_snapshot_readable`. The run logs could not be retrieved independently from this environment, so this cause is recorded as reported. **No CPMS defect is introduced or implied.** Per the workflow contract, a materially failing Stage A never reaches Stage B, and NOT RUN is never PASS. This lane is intentionally a non-required measurement check.
+2. **WP Rocket and Gravity Forms are excluded** by Product Decision (unlicensed third-party package policy). They are not part of any Phase 18 claim.
+3. **LiteSpeed server-level cache: FEATURE UNAVAILABLE on standard Apache environments.** Not claimed as verified.
+4. **Live SMS delivery is unconfigured and unexercised.** The SMS group verifies coexistence only, not delivery.
+5. **Full multi-tenant Clinic A/B isolation under third-party coexistence is deferred** to future integration drills. It is not claimed by Phase 18.
+
+**Non-claims:** no release / go-live / commercial readiness; no NFR compliance; no Persian WooCommerce 10.0.5 compatibility beyond the diagnostic lane; no all-19 combined compatibility. No product code, tests, migrations, or schema changed in this closure.
+
+**Active phase pointer:** **Phase 19 — Automated Testing is now ACTIVE** (per roadmap row). Phase 19 scope is not started by this closure.
+
+---
+
 <a id="phase17-closure"></a>
 
 ## Phase 17 — Performance: ✅ FORMALLY CLOSED / TECHNICALLY COMPLETE (BOUNDED)
