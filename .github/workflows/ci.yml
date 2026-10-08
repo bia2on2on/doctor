@@ -496,13 +496,17 @@ jobs:
       # تغییراتِ صرفاً حذفی (بدونِ خطِ add شده) مجازند: هر فایل واقعاً inspect
       # می‌شود و --numstat برایش ۰ خطِ add شده اعلام می‌کند.
       # ------------------------------------------------------------------
+      # Both collection and PHPCS use the repository-root path domain, including
+      # PHP harness files under .github/. Keep the existing rules/ratchet intact.
       - name: Collect changed PHP files and added lines (WPCS scope)
+        working-directory: ${{ github.workspace }}
         run: |
           set -o pipefail
           python3 "$GITHUB_WORKSPACE/bin/wpcs-changed-lines.py" \
             --baseline "${WPCS_BASELINE:?baseline not set}" 2>&1 | tee /tmp/wpcs-collect.log
 
       - name: Run WPCS (violations on added lines)
+        working-directory: ${{ github.workspace }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -513,7 +517,9 @@ jobs:
           # گزارش کامل JSON (خطا + هشدار) روی کل فایل‌های تغییرکرده؛
           # فیلترِ خطوط add شده در step بعدی انجام می‌شود.
           set +e
-          vendor/bin/phpcs --standard=phpcs.xml.dist --report=json \
+          clinic-practice-management/vendor/bin/phpcs -q \
+            --standard=clinic-practice-management/phpcs.xml.dist \
+            --basepath="$GITHUB_WORKSPACE" --report=json \
             $(cat /tmp/wpcs-files.txt) > /tmp/wpcs.json 2>/tmp/wpcs-stderr.log
           rc=$?
           set -e
