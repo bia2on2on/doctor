@@ -16,7 +16,11 @@ import zipfile
 
 SPEC = importlib.util.spec_from_file_location("coexistence", Path(__file__).with_name("run.py"))
 lane = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(lane)
+# The historical tests below assert the frozen five-plugin scenario (WooCommerce
+# subject). Pin that explicitly so an ambient COEX_GROUP (CI sets it per job) cannot
+# silently change them. Group-specific behaviour is tested via load_group().
+with patch.dict(os.environ, {"COEX_GROUP": "persian-five"}):
+    SPEC.loader.exec_module(lane)
 
 
 class SliceTests(unittest.TestCase):
@@ -374,8 +378,13 @@ class SliceTests(unittest.TestCase):
 
 
 def load_group(group):
-    """Fresh run.py module bound to one COEX_GROUP (the workflow's selector)."""
-    with patch.dict(os.environ, {"COEX_GROUP": group}):
+    """Fresh run.py module bound to one COEX_GROUP (the workflow's selector).
+    group=None loads with COEX_GROUP unset, exercising the real default."""
+    with patch.dict(os.environ, {}):
+        if group is None:
+            os.environ.pop("COEX_GROUP", None)
+        else:
+            os.environ["COEX_GROUP"] = group
         spec = importlib.util.spec_from_file_location(f"coexistence_{group}", Path(__file__).with_name("run.py"))
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
@@ -388,13 +397,19 @@ class GroupSelectionTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
 
+    FROZEN_FIVE = {"loco-translate": "2.8.9", "wp-parsidate": "6.4", "elementor": "4.3.4",
+                   "persian-elementor": "2.8.4", "woocommerce": "11.2.0"}
+
     def test_default_group_is_the_unchanged_five_plugin_scenario(self):
-        module = load_group("persian-five")
-        self.assertEqual(module.GROUP, "persian-five")
-        self.assertEqual(module.SUBJECT, "woocommerce")
-        self.assertEqual(module.GROUPS["persian-five"]["root"], "coexistence")
-        self.assertEqual(module.GROUPS["persian-five"]["artifact"], "persian-coexistence")
-        self.assertEqual(module.PINS, lane.PINS)
+        for group in ("persian-five", None):  # explicit selection and COEX_GROUP unset
+            with self.subTest(group=group):
+                module = load_group(group)
+                self.assertEqual(module.GROUP, "persian-five")
+                self.assertEqual(module.SUBJECT, "woocommerce")
+                self.assertEqual(module.PINS, self.FROZEN_FIVE)
+                self.assertEqual(module.GROUPS["persian-five"]["root"], "coexistence")
+                self.assertEqual(module.GROUPS["persian-five"]["artifact"], "persian-coexistence")
+        self.assertEqual(lane.PINS, self.FROZEN_FIVE)
 
     def test_security_group_pins_exactly_the_approved_two_plugins(self):
         module = load_group("security-authentication")
