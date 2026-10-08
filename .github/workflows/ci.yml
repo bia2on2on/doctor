@@ -167,7 +167,11 @@ jobs:
         with:
           php-version: '8.2'
           extensions: mbstring, xml, mysqli, pcntl, curl
-          coverage: none
+          # Phase 19 / Slice 19-1: PCOV is installed ONLY for the focused
+          # AuthorizationService coverage step. pcov.enabled=0 keeps every other
+          # Integration step uninstrumented; that step re-enables it with -d.
+          coverage: pcov
+          ini-values: pcov.enabled=0
 
       # WP 6.7 test lib به PHPUnit\Util\Test::parseTestMethodAnnotations() وابسته است
       # که در PHPUnit 10/11 حذف شده (polyfills این بخش را پوشش نمی‌دهد) → برای
@@ -211,6 +215,101 @@ jobs:
             /tmp/phpunit-int-junit.xml
           if-no-files-found: warn
           retention-days: 7
+
+      # ------------------------------------------------------------------
+      # Phase 19 / Slice 19-1 — AuthorizationService focused line coverage.
+      #
+      # ONE extra PHPUnit invocation of the EXISTING Integration test file
+      # tests/Integration/AuthorizationServiceTest.php against the same real
+      # WordPress/MySQL environment. No test is duplicated. PCOV is enabled only
+      # for this command (-d pcov.enabled=1); the suite above ran uninstrumented.
+      # The coverage filter is the directory that contains the target class.
+      # Failures are fail-closed: see bin/authorization-coverage-guard.py.
+      # Measurement only — no threshold, no product change.
+      # ------------------------------------------------------------------
+      - name: AuthorizationService focused coverage run (PCOV; existing Integration test)
+        run: |
+          set -o pipefail
+          mkdir -p /tmp/authz-coverage
+          php -d pcov.enabled=1 -r 'echo json_encode(["pcov_loaded"=>extension_loaded("pcov"),"pcov_enabled"=>extension_loaded("pcov") && (bool) ini_get("pcov.enabled"),"pcov_version"=>(phpversion("pcov") ?: null),"php_version"=>PHP_VERSION]), "\n";' > /tmp/authz-coverage/driver.json
+          cat /tmp/authz-coverage/driver.json
+          php -d memory_limit=1G vendor/bin/phpunit --version > /tmp/authz-coverage/phpunit-version.txt
+          cat /tmp/authz-coverage/phpunit-version.txt
+          set +e
+          php -d pcov.enabled=1 -d memory_limit=1G vendor/bin/phpunit --no-configuration \
+            --bootstrap tests/integration-bootstrap.php \
+            --coverage-clover /tmp/authz-coverage/clover.xml \
+            --coverage-filter "$PWD/src/Application/Authorization" \
+            --log-junit /tmp/authz-coverage/junit.xml \
+            tests/Integration/AuthorizationServiceTest.php > /tmp/authz-coverage/phpunit.log 2>&1
+          echo $? > /tmp/authz-coverage/phpunit.rc
+          set -e
+          tail -n 60 /tmp/authz-coverage/phpunit.log
+
+      - name: AuthorizationService coverage guard (fail-closed; includes negative-control self-test)
+        if: always()
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          EVENT_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -o pipefail
+          python3 bin/authorization-coverage-guard.py --test
+          set +e
+          python3 bin/authorization-coverage-guard.py \
+            --clover /tmp/authz-coverage/clover.xml \
+            --target src/Application/Authorization/AuthorizationService.php \
+            --source src/Application/Authorization/AuthorizationService.php \
+            --driver-json /tmp/authz-coverage/driver.json \
+            --phpunit-version-file /tmp/authz-coverage/phpunit-version.txt \
+            --phpunit-rc-file /tmp/authz-coverage/phpunit.rc \
+            --phpunit-log /tmp/authz-coverage/phpunit.log \
+            --out-dir /tmp/authz-coverage/summary \
+            --commit "$HEAD_SHA" --event-sha "$EVENT_SHA" \
+            --run-id "$RUN_ID" --run-attempt "$RUN_ATTEMPT"
+          GUARD_RC=$?
+          set -e
+          if [ -f /tmp/authz-coverage/summary/authz-coverage-summary.md ]; then
+            cat /tmp/authz-coverage/summary/authz-coverage-summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$GUARD_RC"
+
+      - name: Archive AuthorizationService coverage artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: authz-coverage-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            /tmp/authz-coverage/clover.xml
+            /tmp/authz-coverage/junit.xml
+            /tmp/authz-coverage/driver.json
+            /tmp/authz-coverage/phpunit-version.txt
+            /tmp/authz-coverage/phpunit.rc
+            /tmp/authz-coverage/summary/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Mirror AuthorizationService coverage summary onto the PR
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          if [ -z "$PR_NUMBER" ]; then
+            echo 'AuthorizationService coverage: not a pull_request run — mirror skipped.'
+            exit 0
+          fi
+          {
+            echo "### AuthorizationService coverage (run ${{ github.run_id }}, attempt ${{ github.run_attempt }})"
+            if [ -f /tmp/authz-coverage/summary/authz-coverage-summary.md ]; then
+              cat /tmp/authz-coverage/summary/authz-coverage-summary.md
+            else
+              echo '**FAIL** — the coverage guard produced no summary (fail-closed).'
+            fi
+          } > /tmp/authz-coverage-pr.md
+          gh pr comment "$PR_NUMBER" --body-file /tmp/authz-coverage-pr.md \
+            || echo '::notice::AuthorizationService coverage PR mirror failed (non-fatal; guard verdict remains blocking)'
 
       # ------------------------------------------------------------------
       # RED 1 (test-only): PROCESS-FRESH multi-Clinic REST bootstrap probe.
