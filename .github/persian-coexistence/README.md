@@ -113,6 +113,38 @@ patch. This slice does not reinterpret past results or change that campaign: it
 omits that optional legacy assertion and independently requires the complete
 `SELECT VERSION()` value to equal `8.4.11`.
 
+## Security/authentication group (second pinned group, same harness)
+
+Same frozen lane: WordPress **7.1.3**, PHP **8.3** (CLI and serving mod_php),
+MySQL **8.4.11**, `fa_IR`. The approved pins are `wordfence` **9.0.2** and
+`really-simple-ssl` **9.8.3**. Wordfence is the subject (installed last);
+Really Simple SSL is installed and activated first as its dependency pin.
+
+**Selection (smallest mechanism).** `persian-coexistence.yml` has a second job,
+`coexistence-security-authentication`, that calls the same reusable
+`real-wp-acceptance.yml` with `coexistence_group: security-authentication`. That
+input becomes `COEX_GROUP`. `run.py` `GROUPS` maps it to its pins, subject,
+evidence root and artifact. Unset or `persian-five` selects the original group,
+whose job and inputs are unchanged. An unknown value fails closed at `init`. The
+concurrency key includes the group, so the two jobs never cancel each other.
+The workflow name is kept unchanged so the accepted five-plugin check identity
+does not change; the security run is the second job in that same workflow run.
+
+**Independent evidence.** Root `coexistence-security-authentication/`
+(`A/`, `B/`, `summary.json`), artifact `persian-coexistence-security-authentication-wp_`.
+Stage A and Stage B gates are the same ones described above, including refusal of
+Stage B on any material Stage A failure. Verdicts for the two groups are separate.
+
+**Scope limits.**
+- The reused acceptance denials for `wc-admin` / `woocommerce` screens
+  (`*-denied-woo-*`) are measured without WooCommerce installed. They prove that
+  the screens are not granted, not that a WooCommerce lock-down exists.
+- Wordfence firewall/2FA settings and Really Simple SSL HTTPS enforcement are not
+  configured or exercised; default settings only. Nothing is weakened to pass.
+- Clinic A/B isolation, the synthetic broken migration, timezone matrix, and
+  standalone theme switching remain **NOT RUN** (see `NOT_RUN` in `summary.json`).
+- No product-code change. No automatic fix. Workflow success is not product PASS.
+
 ## Initial implementation validation and prerequisite checkpoint
 
 At implementation start (2026-10-08): no open PRs; clean assigned branch

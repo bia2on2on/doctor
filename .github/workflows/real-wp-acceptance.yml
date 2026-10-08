@@ -12,9 +12,15 @@ on:
   workflow_call:
     inputs:
       persian_coexistence:
-        description: Run only the bounded fa_IR five-plugin A/B slice
+        description: Run only the bounded fa_IR A/B slice
         type: boolean
         default: false
+      coexistence_group:
+        # Selects one pinned group in .github/persian-coexistence/run.py (GROUPS).
+        # Unknown values fail closed in the init step. The default is the original group.
+        description: persian-five or security-authentication
+        type: string
+        default: persian-five
   workflow_dispatch:
   push:
     branches: [main]
@@ -25,7 +31,8 @@ concurrency:
   # PR runs are keyed by PR number; non-PR runs by their full ref. Event names
   # keep pull_request and push evidence in separate cancellation domains.
   # Main refs add the unique run ID so even a pending main run is never replaced.
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref == 'refs/heads/main' && format('main-run-{0}', github.run_id) || github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('ref-{0}', github.ref) }}
+  # The coexistence group is part of the key: two groups on one PR must not cancel each other.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref == 'refs/heads/main' && format('main-run-{0}', github.run_id) || github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('ref-{0}', github.ref) }}${{ inputs.coexistence_group && format('-{0}', inputs.coexistence_group) || '' }}
   # Preserve every main-ref run as post-merge evidence; superseded non-main work may stop.
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
@@ -36,6 +43,7 @@ permissions:
 
 env:
   PERSIAN_COEXISTENCE: ${{ inputs.persian_coexistence && 'true' || 'false' }}
+  COEX_GROUP: ${{ inputs.coexistence_group || 'persian-five' }}
   WP_VERSION: ${{ inputs.persian_coexistence && '7.1.3' || '6.7.2' }}
   APACHE_PHP_SUFFIX: ${{ inputs.persian_coexistence && '8.3' || '' }}
   PHP_VERSION: ${{ inputs.persian_coexistence && '8.3' || '8.2' }}
@@ -183,7 +191,7 @@ jobs:
           # فایل wp-content برای PHP قابل‌نوشتن نیست (اثبات شرایط میزبان واقعی)
           sudo -u www-data test -w "$WP_DIR/wp-content" && echo 'wp-content writable by php' || echo 'wp-content NOT writable by php (میزبان واقعی)'
 
-      - name: Stage A — five plugins without CPMS (fail closed)
+      - name: Stage A — pinned coexistence group without CPMS (fail closed)
         if: inputs.persian_coexistence
         id: stage_a
         run: python3 .github/persian-coexistence/run.py stage-a
@@ -1003,7 +1011,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ inputs.persian_coexistence && 'persian-coexistence' || 'rwp-acceptance' }}-${{ matrix.prefix }}
+          name: ${{ inputs.persian_coexistence && (inputs.coexistence_group == 'security-authentication' && 'persian-coexistence-security-authentication' || 'persian-coexistence') || 'rwp-acceptance' }}-${{ matrix.prefix }}
           path: |
             /tmp/acc/
             !/tmp/acc/**/*.zip
