@@ -108,6 +108,19 @@ final class ClinicalService
             [(int) $visit['patient_id']]
         ) ?: [];
 
+        // SRS A-5 / ADR-0027: same-Clinic membership is not shared-care policy.
+        // Keep the shared record readable, but return doctor_private notes only
+        // to the Visit's persisted clinician and only with the separate private
+        // note capability; no inter-doctor sharing policy is currently approved.
+        $canReadPrivateNotes = $this->ownsVisit($actorUserId, $visit)
+            && user_can($actorUserId, RolesAndCapabilities::PRIVATE_NOTE_READ)
+            && App::authorization_service()->can(
+                $actorUserId,
+                (int) $visit['clinic_id'],
+                RolesAndCapabilities::PRIVATE_NOTE_READ
+            );
+        $noteVisibility = $canReadPrivateNotes ? null : ['patient_visible'];
+
         $rxRows = $this->prescriptions->forVisit($visitId);
         $rxList = [];
         foreach ($rxRows as $rx) {
@@ -137,7 +150,7 @@ final class ClinicalService
                 'consultation_completed_at' => $visit['consultation_completed_at'],
             ],
             'patient' => $this->patientMedicalView($patient),
-            'notes' => array_map([$this, 'presentNote'], $this->notes->forVisit($visitId, null)),
+            'notes' => array_map([$this, 'presentNote'], $this->notes->forVisit($visitId, $noteVisibility)),
             'prescriptions' => $rxList,
             'recommendations' => array_map([$this, 'presentRecommendation'], $this->recommendations->forVisit($visitId)),
             'follow_ups' => array_map([$this, 'presentFollowUp'], $this->followUps->forVisit($visitId)),
@@ -172,8 +185,16 @@ final class ClinicalService
      */
     public function addNote(int $actorUserId, int $visitId, array $input): array
     {
-        $this->requireRole($actorUserId, 'doctor', 'ثبت یادداشت بالینی');
         $visit = $this->requireVisit($visitId);
+        // Bind the mutation to the trusted active Clinic before service-level
+        // role/capability checks; a Clinic-B membership cannot act in Clinic A's
+        // request context against Clinic B's Visit.
+        $this->assertVisitInActiveClinic($visit);
+        $this->requireRole($actorUserId, 'doctor', 'ثبت یادداشت بالینی');
+        // B-01: a peer doctor may read permitted shared clinical data, but may
+        // create notes only on the Visit owned by their persisted clinician.
+        // Keep this new object-denial path side-effect-free (no clinical/audit row).
+        $this->requireOwnVisit($actorUserId, $visit, false, 'ویزیت یافت نشد');
 
         $category = (string) ($input['category'] ?? '');
         $visibility = (string) ($input['visibility'] ?? 'patient_visible');
@@ -451,11 +472,29 @@ final class ClinicalService
             'prescription',
             $prescriptionId
         );
-        $rx = $this->db->transactional(function () use ($prescriptionId, $clinicId): array {
+        $rx = $this->db->transactional(function () use ($actorUserId, $prescriptionId, $clinicId): array {
             $rx = $this->prescriptions->findForUpdateForClinic($prescriptionId, $clinicId);
             if ($rx === null) {
                 throw ClinicalException::of('CLINIC_NOT_FOUND', 'نسخه یافت نشد', 404);
             }
+
+            // Re-establish the durable Visit relationship while the prescription
+            // is locked. Clinic, patient, and clinician must all agree before a
+            // state transition; a caller must own the Visit's persisted clinician.
+            $visit = $this->visits->find((int) $rx['visit_id']);
+            if (
+                $visit === null
+                || (int) $rx['clinic_id'] !== $clinicId
+                || (int) $visit['clinic_id'] !== $clinicId
+                || (int) $visit['patient_id'] !== (int) $rx['patient_id']
+                || (int) $visit['clinician_id'] !== (int) $rx['clinician_id']
+            ) {
+                throw ClinicalException::of('CLINIC_NOT_FOUND', 'نسخه یافت نشد', 404);
+            }
+            // Match the existing not-found response and perform no audit/clinical
+            // mutation on an object-ownership rejection.
+            $this->requireOwnVisit($actorUserId, $visit, false, 'نسخه یافت نشد');
+
             if ((string) $rx['status'] === 'finalized') {
                 throw ClinicalException::of('CLINIC_INVALID_TRANSITION', 'این نسخه قبلاً نهایی شده است', 409, ['status' => 'finalized']);
             }
@@ -1387,23 +1426,53 @@ final class ClinicalService
     }
 
     /**
-     * ماتریس 4.3 — نسخه‌نویسی فقط روی «ویزیت خودش»: clinician متصل به کاربر.
+     * B-01 — persisted clinician ownership for the Visit's durable clinician id.
+     *
+     * Existing callers retain their audited-denial behavior. New Phase 1B guards
+     * may opt into the established non-enumerating 404 without an audit write.
      */
-    private function requireOwnVisit(int $actorUserId, array $visit): void
-    {
-        $clinicianId = $this->db->fetchValue(
-            'SELECT id FROM ' . $this->db->table('cpms_clinicians') . ' WHERE wp_user_id = %d AND is_active = 1 LIMIT 1',
-            [$actorUserId]
-        );
-        if ($clinicianId === null || (int) $clinicianId !== (int) $visit['clinician_id']) {
-            $this->auditAndThrow(
-                $actorUserId,
-                'visit',
-                (int) $visit['id'],
-                (int) $visit['patient_id'],
-                'نسخه فقط برای ویزیت خودِ پزشک قابل ثبت است (ماتریس 4.3 — حساب شما به این پزشک/ویزیت متصل نیست)'
-            );
+    private function requireOwnVisit(
+        int $actorUserId,
+        array $visit,
+        bool $auditFailure = true,
+        string $notFoundMessage = 'ویزیت یافت نشد'
+    ): void {
+        if ($this->ownsVisit($actorUserId, $visit)) {
+            return;
         }
+        if (!$auditFailure) {
+            throw ClinicalException::of('CLINIC_NOT_FOUND', $notFoundMessage, 404);
+        }
+
+        $this->auditAndThrow(
+            $actorUserId,
+            'visit',
+            (int) $visit['id'],
+            (int) $visit['patient_id'],
+            'نسخه فقط برای ویزیت خودِ پزشک قابل ثبت است (ماتریس 4.3 — حساب شما به این پزشک/ویزیت متصل نیست)'
+        );
+    }
+
+    /**
+     * A raw clinician id is never authority: match the Visit's persisted clinician
+     * against an active clinician row durably linked to the authenticated user.
+     *
+     * @param array<string, mixed> $visit
+     */
+    private function ownsVisit(int $actorUserId, array $visit): bool
+    {
+        $visitClinicianId = (int) ($visit['clinician_id'] ?? 0);
+        if ($actorUserId <= 0 || $visitClinicianId <= 0) {
+            return false;
+        }
+
+        $ownedClinicianId = $this->db->fetchValue(
+            'SELECT id FROM ' . $this->db->table('cpms_clinicians') .
+            ' WHERE id = %d AND wp_user_id = %d AND is_active = 1 LIMIT 1',
+            [$visitClinicianId, $actorUserId]
+        );
+
+        return $ownedClinicianId !== null && (int) $ownedClinicianId === $visitClinicianId;
     }
 
     /**
