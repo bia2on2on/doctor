@@ -4,6 +4,24 @@
 > Do **not** use a previous chat session as memory.
 >
 
+## Phase 19 — current-scope checkpoint: narrow quarantine of Persian WooCommerce 10.0.5 (2026-10-09)
+
+Owner decision executed 2026-10-09: the **active** combined coexistence scenario
+(`.github/persian-coexistence/run.py` group `combined-nineteen`) now installs and
+activates **18** authoritative free-plugin pins; `persian-woocommerce` **10.0.5** is
+temporarily excluded from that combined set only. Every other retained plugin keeps its
+exact unchanged pin. This is **not** a declaration that Persian WooCommerce is universally
+incompatible with CPMS; the version remains covered by the unchanged independent
+`coexistence-persian-woocommerce-diagnosis` (CPMS-free, Stage B prohibited by design),
+`coexistence-persian-woocommerce-sms` and core-WooCommerce lanes, and by the untouched
+third-party-baseline subject matrix, which still pins and measures it individually. It may
+be re-evaluated in a separate action. The group key, job, evidence root and artifact keep
+the historical `combined-nineteen` identity so the Phase 18 all-19 record below stays
+addressable under its original names; that Stage A failure is preserved as recorded and is
+not reclassified as PASS. Fail-closed Stage A/B semantics, deterministic install/activation
+verification and all product code, migrations, authorization, tenancy, licensing and
+clinical behavior are unchanged.
+
 <a id="phase18-closure"></a>
 
 ## Phase 18 — Compatibility: ✅ CLOSED (TECHNICALLY CLOSED WITH DOCUMENTED LIMITATIONS)

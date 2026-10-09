@@ -9,7 +9,10 @@ name: Persian five-plugin coexistence (Phase 18)
 #   coexistence-combined-ten            -> accepted ten-plugin group, unchanged
 #   coexistence-persian-woocommerce-diagnosis -> CPMS-free permission diagnosis
 #   coexistence-persian-woocommerce-sms  -> SMS + WooCommerce, then CPMS only after healthy A
-#   coexistence-combined-nineteen       -> all 19 authoritative free-plugin pins together
+#   coexistence-combined-nineteen       -> combined campaign identity; 18 active pins
+#                                          (Phase 19: Persian WooCommerce 10.0.5 is
+#                                          quarantined from this active set only and
+#                                          stays covered by the lanes above)
 
 on:
   workflow_dispatch:
@@ -83,9 +86,13 @@ jobs:
       coexistence_stage_b: true
 
   coexistence-combined-nineteen:
-    # Exact authoritative free-plugin subject set, simultaneously active in one
-    # clean environment. Known pre-CPMS failures remain installed and visible;
-    # Stage B is reachable only through the reusable fail-closed interlock.
+    # Combined authoritative free-plugin set, simultaneously active in one clean
+    # environment (18 pins since the Phase 19 quarantine; the historical job/group
+    # name stays so Phase 18 evidence keeps its original identity). Excluded
+    # Persian WooCommerce 10.0.5 remains measured by its own lanes above; its old
+    # Stage A failure stays recorded and is not reclassified. Other known pre-CPMS
+    # findings remain installed and visible. Stage B is reachable only through the
+    # reusable fail-closed interlock.
     uses: ./.github/workflows/real-wp-acceptance.yml
     permissions:
       contents: write
