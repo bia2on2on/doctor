@@ -299,8 +299,11 @@ final class AuthorizationServiceTest extends WP_UnitTestCase
     }
 
     /**
-     * Membership does not imply permission; explicit DENY beats both the role preset and an
-     * explicit GRANT, and the typed outcome is AUTH_DENIED (the Clinic membership itself is valid).
+     * Membership does not imply permission: an ACTIVE membership whose role preset lacks the
+     * permission is the typed AUTH_DENIED (not AUTH_NO_MEMBERSHIP), and an explicit DENY revokes
+     * a permission the role preset grants. That a later DENY replaces an explicit GRANT on the
+     * same capability is already proven in testExplicitDenyOverridesGrantAndPreset; a membership
+     * holds one effect row per capability (UNIQUE), so no GRANT-vs-DENY ordering exists to pin.
      */
     public function testAuthorizeTypesMissingPermissionAndExplicitDenyAsDenied(): void
     {
@@ -321,14 +324,7 @@ final class AuthorizationServiceTest extends WP_UnitTestCase
         // Explicit DENY overrides the role preset.
         $membership->set_capability($memId, 'cpms_patient_read', 'deny');
         $this->assertTypedDenial('AUTH_DENIED', 403, fn() => $svc->authorize($this->doctorUserId, $this->clinicA, 'cpms_patient_read'), 'explicit deny over role preset');
-
-        // Explicit GRANT allows a non-preset permission; a later explicit DENY overrides that grant.
-        $membership->set_capability($memId, 'cpms_export', 'grant');
-        $svc->authorize($this->doctorUserId, $this->clinicA, 'cpms_export');
-        self::assertTrue($svc->can($this->doctorUserId, $this->clinicA, 'cpms_export'), 'control: explicit grant is allowed');
-        $membership->set_capability($memId, 'cpms_export', 'deny');
-        $this->assertTypedDenial('AUTH_DENIED', 403, fn() => $svc->authorize($this->doctorUserId, $this->clinicA, 'cpms_export'), 'explicit deny over explicit grant');
-        self::assertFalse($svc->can($this->doctorUserId, $this->clinicA, 'cpms_export'), 'can() agrees with authorize()');
+        self::assertFalse($svc->can($this->doctorUserId, $this->clinicA, 'cpms_patient_read'), 'can() agrees with authorize()');
     }
 
     /**
