@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Tests\Integration;
 
+use ClinicCore\Application\Authorization\AuthorizationException;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
 use WP_UnitTestCase;
@@ -16,6 +17,15 @@ use WP_UnitTestCase;
  *  DENY: unauthenticated, non-member, suspended, without permission,
  *        admin without membership, cross-clinic object, untrusted clinic mismatch.
  *  MULTI-CLINIC: same actor independently authorized in Clinic A and B, no fallback.
+ *
+ * Phase 19 — security regression coverage (test-only; no product change). Adds the
+ * typed authorize() outcomes consumed by FinanceService/HandwritingService, the
+ * canForObject()/authorizeForObject() delegation and denial paths, fail-closed
+ * invalid identity handling, suspension and override scoping. Object-owner Clinic ids
+ * in these cases always come from persistence, never from a caller-supplied literal.
+ * The malformed-repository-row guards in can() are intentionally NOT exercised: the
+ * repository and database wrapper are final and the rows come from an
+ * auto-increment key, so no supported contract reaches them.
  */
 final class AuthorizationServiceTest extends WP_UnitTestCase
 {
@@ -263,6 +273,303 @@ final class AuthorizationServiceTest extends WP_UnitTestCase
         self::assertFalse($svc->can($this->multiClinicUserId, 0, 'cpms_patient_read'));
     }
 
+    // ------------------------------------------------------------------
+    // Phase 19 — typed authorize() outcomes
+    // ------------------------------------------------------------------
+
+    /**
+     * Authenticated identity alone is not Clinic authority: every actor below is a real
+     * authenticated WP user, yet none holds an ACTIVE membership in the requested Clinic.
+     */
+    public function testAuthorizeTypesAuthenticatedActorsWithoutMembershipAsNoMembership(): void
+    {
+        $svc = $this->authzService();
+
+        $cases = [
+            'authenticated non-member' => [$this->nonMemberUserId, $this->clinicA, 'cpms_patient_read'],
+            'WP administrator holding global manage_options/cpms_config' => [$this->adminUserId, $this->clinicA, 'cpms_config'],
+            'member of Clinic A requesting Clinic B' => [$this->doctorUserId, $this->clinicB, 'cpms_patient_read'],
+            'well-formed but unknown Clinic id' => [$this->multiClinicUserId, 999999999, 'cpms_patient_read'],
+        ];
+        foreach ($cases as $label => [$actor, $clinic, $permission]) {
+            $e = $this->assertTypedDenial('AUTH_NO_MEMBERSHIP', 403, fn() => $svc->authorize($actor, $clinic, $permission), $label);
+            self::assertSame(['clinic_id' => $clinic], $e->getData(), $label . ': denial data carries only the requested Clinic id');
+            self::assertFalse($svc->can($actor, $clinic, $permission), $label . ': can() agrees with authorize()');
+        }
+    }
+
+    /**
+     * Membership does not imply permission: an ACTIVE membership whose role preset lacks the
+     * permission is the typed AUTH_DENIED (not AUTH_NO_MEMBERSHIP), and an explicit DENY revokes
+     * a permission the role preset grants. That a later DENY replaces an explicit GRANT on the
+     * same capability is already proven in testExplicitDenyOverridesGrantAndPreset; a membership
+     * holds one effect row per capability (UNIQUE), so no GRANT-vs-DENY ordering exists to pin.
+     */
+    public function testAuthorizeTypesMissingPermissionAndExplicitDenyAsDenied(): void
+    {
+        $svc = $this->authzService();
+        $membership = App::membership_service();
+        $mem = $membership->membership_for($this->clinicA, $this->doctorUserId);
+        self::assertNotNull($mem);
+        $memId = (int) $mem['id'];
+
+        // Active membership whose role preset lacks the permission.
+        $e = $this->assertTypedDenial('AUTH_DENIED', 403, fn() => $svc->authorize($this->doctorUserId, $this->clinicA, 'cpms_export'), 'member without the permission');
+        self::assertSame(['clinic_id' => $this->clinicA, 'permission' => 'cpms_export'], $e->getData());
+
+        // Control: the same actor and Clinic are authorized for a preset permission.
+        $svc->authorize($this->doctorUserId, $this->clinicA, 'cpms_patient_read');
+        self::assertTrue($svc->can($this->doctorUserId, $this->clinicA, 'cpms_patient_read'), 'control: preset permission is allowed');
+
+        // Explicit DENY overrides the role preset.
+        $membership->set_capability($memId, 'cpms_patient_read', 'deny');
+        $this->assertTypedDenial('AUTH_DENIED', 403, fn() => $svc->authorize($this->doctorUserId, $this->clinicA, 'cpms_patient_read'), 'explicit deny over role preset');
+        self::assertFalse($svc->can($this->doctorUserId, $this->clinicA, 'cpms_patient_read'), 'can() agrees with authorize()');
+    }
+
+    /**
+     * A membership is not a permission source by itself: a role key without a CPMS preset
+     * (the patient role carries no staff capabilities; "administrator" is only a WP role
+     * label) confers nothing, so no "administrator bypass" exists through role_key either.
+     */
+    public function testMembershipWhoseRoleHasNoPresetConfersNoPermission(): void
+    {
+        $svc = $this->authzService();
+        $membership = App::membership_service();
+        $userId = $this->makeUser('authz_norole_' . bin2hex(random_bytes(4)), 'subscriber');
+        $memId = $membership->create_membership($this->clinicA, $userId, 'cpms_patient');
+
+        foreach (['cpms_patient', 'administrator'] as $roleKey) {
+            $membership->set_role_key($memId, $roleKey);
+            foreach (['cpms_patient_read', 'cpms_config'] as $permission) {
+                $label = 'active membership with role_key ' . $roleKey . ' / ' . $permission;
+                self::assertFalse($svc->can($userId, $this->clinicA, $permission), $label . ': can() denies');
+                $this->assertTypedDenial('AUTH_DENIED', 403, fn() => $svc->authorize($userId, $this->clinicA, $permission), $label);
+            }
+        }
+    }
+
+    /**
+     * Suspended membership fails closed with its own typed outcome, stays Clinic-scoped,
+     * is not rescued by a retained explicit grant, and follows durable status on reactivation.
+     */
+    public function testSuspendedMembershipIsTypedClinicScopedAndFollowsDurableStatus(): void
+    {
+        $svc = $this->authzService();
+        $membership = App::membership_service();
+
+        // Pre-existing suspended fixture: typed as suspended, not as "no membership".
+        $e = $this->assertTypedDenial('AUTH_SUSPENDED', 403, fn() => $svc->authorize($this->suspendedUserId, $this->clinicA, 'cpms_patient_read'), 'suspended member');
+        self::assertSame(['clinic_id' => $this->clinicA], $e->getData());
+
+        // Control: the multi-Clinic actor is authorized in both Clinics before suspension.
+        $svc->authorize($this->multiClinicUserId, $this->clinicA, 'cpms_patient_read');
+        $svc->authorize($this->multiClinicUserId, $this->clinicB, 'cpms_patient_read');
+        $memA = $membership->membership_for($this->clinicA, $this->multiClinicUserId);
+        self::assertNotNull($memA);
+        $memAId = (int) $memA['id'];
+
+        // Retain an explicit grant on the membership that is about to be suspended.
+        $membership->set_capability($memAId, 'cpms_export', 'grant');
+        self::assertTrue($svc->can($this->multiClinicUserId, $this->clinicA, 'cpms_export'), 'control: grant applies while active');
+
+        $membership->suspend_membership($memAId);
+
+        // Suspended in A: even preset and explicitly granted permissions are refused...
+        self::assertFalse($svc->can($this->multiClinicUserId, $this->clinicA, 'cpms_patient_read'), 'suspended: preset permission refused');
+        self::assertFalse($svc->can($this->multiClinicUserId, $this->clinicA, 'cpms_export'), 'suspended: retained explicit grant is inert');
+        $this->assertTypedDenial('AUTH_SUSPENDED', 403, fn() => $svc->authorize($this->multiClinicUserId, $this->clinicA, 'cpms_patient_read'), 'suspended in Clinic A');
+        // ...while the independent Clinic B membership is untouched.
+        $svc->authorize($this->multiClinicUserId, $this->clinicB, 'cpms_patient_read');
+        self::assertTrue($svc->can($this->multiClinicUserId, $this->clinicB, 'cpms_patient_read'), 'suspension in A does not reach B');
+
+        // Reactivation restores exactly what the durable rows say.
+        $membership->reactivate_membership($memAId);
+        self::assertTrue($svc->can($this->multiClinicUserId, $this->clinicA, 'cpms_patient_read'), 'reactivated: preset permission allowed again');
+        self::assertTrue($svc->can($this->multiClinicUserId, $this->clinicA, 'cpms_export'), 'reactivated: retained grant applies again');
+    }
+
+    /**
+     * Invalid actor/Clinic/permission inputs fail closed with typed client errors. The multi-Clinic
+     * actor (two valid memberships) proves an invalid Clinic id is never resolved to "one of its" Clinics.
+     */
+    public function testAuthorizeRejectsInvalidActorClinicAndPermissionWithTypedErrors(): void
+    {
+        $svc = $this->authzService();
+
+        foreach ([0, -1] as $actor) {
+            self::assertFalse($svc->can($actor, $this->clinicA, 'cpms_patient_read'), 'invalid actor ' . $actor . ': can() denies');
+            $this->assertTypedDenial('AUTH_UNAUTHENTICATED', 401, fn() => $svc->authorize($actor, $this->clinicA, 'cpms_patient_read'), 'invalid actor ' . $actor);
+        }
+
+        foreach ([0, -1] as $clinic) {
+            $this->assertTypedDenial('AUTH_INVALID_CLINIC', 400, fn() => $svc->authorize($this->multiClinicUserId, $clinic, 'cpms_patient_read'), 'invalid Clinic ' . $clinic . ' for a multi-Clinic actor');
+        }
+
+        foreach (['', ' ', "\t\n"] as $i => $permission) {
+            self::assertFalse($svc->can($this->doctorUserId, $this->clinicA, $permission), 'blank permission #' . $i . ': can() denies');
+            $this->assertTypedDenial('AUTH_INVALID_PERMISSION', 400, fn() => $svc->authorize($this->doctorUserId, $this->clinicA, $permission), 'blank permission #' . $i);
+        }
+
+        // Authentication failure is reported as such even when the other inputs are also invalid.
+        $this->assertTypedDenial('AUTH_UNAUTHENTICATED', 401, fn() => $svc->authorize(0, 0, ''), 'unauthenticated takes precedence over invalid inputs');
+    }
+
+    /**
+     * Explicit grants/denies live on one membership, so they never cross the Clinic boundary.
+     */
+    public function testExplicitGrantAndDenyAreScopedToTheirOwnMembership(): void
+    {
+        $svc = $this->authzService();
+        $membership = App::membership_service();
+        $memA = $membership->membership_for($this->clinicA, $this->multiClinicUserId);
+        $memB = $membership->membership_for($this->clinicB, $this->multiClinicUserId);
+        self::assertNotNull($memA);
+        self::assertNotNull($memB);
+        self::assertNotSame((int) $memA['id'], (int) $memB['id'], 'two distinct durable memberships');
+
+        // A grant held only through the Clinic A membership is not authority in Clinic B.
+        $membership->set_capability((int) $memA['id'], 'cpms_export', 'grant');
+        self::assertTrue($svc->can($this->multiClinicUserId, $this->clinicA, 'cpms_export'), 'grant applies in A');
+        self::assertFalse($svc->can($this->multiClinicUserId, $this->clinicB, 'cpms_export'), 'a grant in A is not authority in B');
+        $this->assertTypedDenial('AUTH_DENIED', 403, fn() => $svc->authorize($this->multiClinicUserId, $this->clinicB, 'cpms_export'), 'grant in A, requested in B');
+
+        // A deny held only through the Clinic B membership does not reach Clinic A.
+        $membership->set_capability((int) $memB['id'], 'cpms_patient_read', 'deny');
+        self::assertFalse($svc->can($this->multiClinicUserId, $this->clinicB, 'cpms_patient_read'), 'deny applies in B');
+        $this->assertTypedDenial('AUTH_DENIED', 403, fn() => $svc->authorize($this->multiClinicUserId, $this->clinicB, 'cpms_patient_read'), 'deny in B');
+        self::assertTrue($svc->can($this->multiClinicUserId, $this->clinicA, 'cpms_patient_read'), 'a deny in B does not reach A');
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 19 — canForObject() / authorizeForObject() delegation and denial
+    // ------------------------------------------------------------------
+
+    /**
+     * Same-Clinic ownership is necessary, never sufficient: canForObject() must still pass the
+     * full scoped check (active membership, permission, explicit deny) for the agreeing Clinic.
+     */
+    public function testCanForObjectDelegatesToTheScopedPermissionCheckForSameClinicObjects(): void
+    {
+        $svc = $this->authzService();
+        $patientId = $this->createPatientInClinic($this->clinicA, 'authz-delegate-bool');
+        $ownerClinicId = $this->getPatientClinicIdFromPersistence($patientId);
+        self::assertSame($this->clinicA, $ownerClinicId, 'durable owner read from persistence is Clinic A');
+
+        self::assertTrue($svc->canForObject($this->doctorUserId, $this->clinicA, 'cpms_patient_read', $ownerClinicId), 'active member with the permission');
+        self::assertFalse($svc->canForObject($this->doctorUserId, $this->clinicA, 'cpms_export', $ownerClinicId), 'active member without the permission');
+        self::assertFalse($svc->canForObject($this->nonMemberUserId, $this->clinicA, 'cpms_patient_read', $ownerClinicId), 'authenticated non-member');
+        self::assertFalse($svc->canForObject($this->adminUserId, $this->clinicA, 'cpms_config', $ownerClinicId), 'WP administrator without membership');
+        self::assertFalse($svc->canForObject($this->suspendedUserId, $this->clinicA, 'cpms_patient_read', $ownerClinicId), 'suspended member');
+
+        // Explicit DENY still wins when the ownership check passes.
+        $mem = App::membership_service()->membership_for($this->clinicA, $this->doctorUserId);
+        self::assertNotNull($mem);
+        App::membership_service()->set_capability((int) $mem['id'], 'cpms_patient_read', 'deny');
+        self::assertFalse($svc->canForObject($this->doctorUserId, $this->clinicA, 'cpms_patient_read', $ownerClinicId), 'explicit deny overrides the preset through delegation');
+    }
+
+    /**
+     * authorizeForObject() delegates to authorize() for a same-Clinic object and preserves each
+     * precise typed outcome (and its HTTP status) instead of collapsing them.
+     */
+    public function testAuthorizeForObjectDelegatesTypedOutcomesForSameClinicObjects(): void
+    {
+        $svc = $this->authzService();
+        $patientId = $this->createPatientInClinic($this->clinicA, 'authz-delegate-typed');
+        $ownerClinicId = $this->getPatientClinicIdFromPersistence($patientId);
+        self::assertSame($this->clinicA, $ownerClinicId, 'durable owner read from persistence is Clinic A');
+
+        // Allow: the delegated check passes without throwing.
+        $svc->authorizeForObject($this->doctorUserId, $this->clinicA, 'cpms_patient_read', $ownerClinicId);
+        self::assertTrue($svc->canForObject($this->doctorUserId, $this->clinicA, 'cpms_patient_read', $ownerClinicId), 'control: allowed');
+
+        $cases = [
+            'authenticated non-member' => ['AUTH_NO_MEMBERSHIP', 403, $this->nonMemberUserId, 'cpms_patient_read'],
+            'WP administrator without membership' => ['AUTH_NO_MEMBERSHIP', 403, $this->adminUserId, 'cpms_config'],
+            'suspended member' => ['AUTH_SUSPENDED', 403, $this->suspendedUserId, 'cpms_patient_read'],
+            'active member without the permission' => ['AUTH_DENIED', 403, $this->doctorUserId, 'cpms_export'],
+            'blank permission' => ['AUTH_INVALID_PERMISSION', 400, $this->doctorUserId, ''],
+        ];
+        foreach ($cases as $label => [$code, $status, $actor, $permission]) {
+            $this->assertTypedDenial($code, $status, fn() => $svc->authorizeForObject($actor, $this->clinicA, $permission, $ownerClinicId), $label);
+            self::assertFalse($svc->canForObject($actor, $this->clinicA, $permission, $ownerClinicId), $label . ': canForObject() agrees');
+        }
+
+        // Explicit DENY keeps its typed outcome through delegation.
+        $mem = App::membership_service()->membership_for($this->clinicA, $this->doctorUserId);
+        self::assertNotNull($mem);
+        App::membership_service()->set_capability((int) $mem['id'], 'cpms_patient_read', 'deny');
+        $this->assertTypedDenial('AUTH_DENIED', 403, fn() => $svc->authorizeForObject($this->doctorUserId, $this->clinicA, 'cpms_patient_read', $ownerClinicId), 'explicit deny through delegation');
+    }
+
+    /**
+     * Invalid or unestablished identity never defaults to another Clinic: a missing durable owner
+     * (no row => 0), an invalid trusted Clinic, or two equal invalid ids are refused, even for an
+     * actor that is authorized in a real Clinic.
+     */
+    public function testObjectAuthorizationFailsClosedOnInvalidIdentityAndOwnership(): void
+    {
+        $svc = $this->authzService();
+        $patientId = $this->createPatientInClinic($this->clinicA, 'authz-invalid-ids');
+        $ownerClinicId = $this->getPatientClinicIdFromPersistence($patientId);
+        self::assertSame($this->clinicA, $ownerClinicId, 'durable owner read from persistence is Clinic A');
+
+        // Control: valid actor + valid trusted Clinic + valid durable owner is allowed.
+        self::assertTrue($svc->canForObject($this->multiClinicUserId, $this->clinicA, 'cpms_patient_read', $ownerClinicId), 'control: allowed');
+        $svc->authorizeForObject($this->multiClinicUserId, $this->clinicA, 'cpms_patient_read', $ownerClinicId);
+
+        // Invalid actor ids are authentication failures whatever the Clinic and object are.
+        foreach ([0, -1] as $actor) {
+            self::assertFalse($svc->canForObject($actor, $this->clinicA, 'cpms_patient_read', $ownerClinicId), 'invalid actor ' . $actor);
+            $this->assertTypedDenial('AUTH_UNAUTHENTICATED', 401, fn() => $svc->authorizeForObject($actor, $this->clinicA, 'cpms_patient_read', $ownerClinicId), 'invalid actor ' . $actor);
+        }
+
+        // An owner Clinic that cannot be established from persistence is normalized to 0 by the caller.
+        $missingOwner = $this->getPatientClinicIdFromPersistence(999999999) ?? 0;
+        self::assertSame(0, $missingOwner, 'a missing durable row yields no owner Clinic');
+
+        $cases = [
+            'invalid trusted Clinic 0 with a valid durable owner' => [0, $ownerClinicId],
+            'invalid trusted Clinic -1 with a valid durable owner' => [-1, $ownerClinicId],
+            'missing durable owner (no row) under a valid trusted Clinic' => [$this->clinicA, $missingOwner],
+            'invalid durable owner -1 under a valid trusted Clinic' => [$this->clinicA, -1],
+            'two equal invalid ids (0 and 0) are not a match' => [0, 0],
+        ];
+        foreach ($cases as $label => [$clinic, $owner]) {
+            self::assertFalse($svc->canForObject($this->multiClinicUserId, $clinic, 'cpms_patient_read', $owner), $label . ': canForObject() denies');
+            $this->assertTypedDenial('AUTH_INVALID_CLINIC', 400, fn() => $svc->authorizeForObject($this->multiClinicUserId, $clinic, 'cpms_patient_read', $owner), $label);
+        }
+
+        // Authentication failure is reported as such even when the ids are also invalid.
+        $this->assertTypedDenial('AUTH_UNAUTHENTICATED', 401, fn() => $svc->authorizeForObject(0, 0, 'cpms_patient_read', 0), 'unauthenticated takes precedence over invalid ids');
+    }
+
+    /**
+     * Raw ids are not authority: a caller that supplies a Clinic id agreeing with the object's
+     * durable owner (or two equal arbitrary ids) still needs a durable ACTIVE membership there.
+     */
+    public function testAgreeingButUntrustedClinicAndOwnerIdsConferNoAuthority(): void
+    {
+        $svc = $this->authzService();
+
+        // Object durably owned by Clinic B; the doctor is a member of Clinic A only.
+        $patientId = $this->createPatientInClinic($this->clinicB, 'authz-agreeing-ids');
+        $ownerClinicId = $this->getPatientClinicIdFromPersistence($patientId);
+        self::assertSame($this->clinicB, $ownerClinicId, 'durable owner read from persistence is Clinic B');
+
+        // Supplying Clinic B makes the two ids agree; agreement alone is not authority.
+        self::assertFalse($svc->canForObject($this->doctorUserId, $this->clinicB, 'cpms_patient_read', $ownerClinicId), 'agreeing ids without membership in the owner Clinic');
+        $this->assertTypedDenial('AUTH_NO_MEMBERSHIP', 403, fn() => $svc->authorizeForObject($this->doctorUserId, $this->clinicB, 'cpms_patient_read', $ownerClinicId), 'agreeing ids without membership (not a cross-Clinic mismatch)');
+
+        // Two equal, well-formed but arbitrary ids behave the same way.
+        self::assertFalse($svc->canForObject($this->doctorUserId, 999999999, 'cpms_patient_read', 999999999), 'equal arbitrary ids');
+        $this->assertTypedDenial('AUTH_NO_MEMBERSHIP', 403, fn() => $svc->authorizeForObject($this->doctorUserId, 999999999, 'cpms_patient_read', 999999999), 'equal arbitrary ids');
+
+        // Control: an actor with a durable ACTIVE membership in the owner Clinic is allowed.
+        self::assertTrue($svc->canForObject($this->multiClinicUserId, $this->clinicB, 'cpms_patient_read', $ownerClinicId), 'control: member of the owner Clinic');
+    }
+
     /**
      * Helper: create a real persisted patient owned by a specific clinic.
      * Uses normal fixture conventions (direct $wpdb insert) — smallest existing
@@ -306,5 +613,28 @@ final class AuthorizationServiceTest extends WP_UnitTestCase
             )
         );
         return $val === null ? null : (int) $val;
+    }
+
+    /**
+     * Helper: assert that $call is refused with one specific typed AuthorizationException.
+     *
+     * Asserts the stable error code and HTTP status; the exception is returned so callers can
+     * inspect its data. A call that is authorized (throws nothing) fails the test, and a call
+     * refused with a different typed outcome fails on the code assertion.
+     *
+     * @param callable():mixed $call
+     */
+    private function assertTypedDenial(string $expectedCode, int $expectedHttpStatus, callable $call, string $context): AuthorizationException
+    {
+        try {
+            $call();
+        } catch (AuthorizationException $e) {
+            self::assertSame($expectedCode, $e->getErrorCode(), $context . ': typed error code');
+            self::assertSame($expectedHttpStatus, $e->getHttpStatus(), $context . ': HTTP status');
+
+            return $e;
+        }
+
+        self::fail($context . ': expected ' . $expectedCode . ' but the call was authorized');
     }
 }
