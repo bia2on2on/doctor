@@ -498,7 +498,7 @@ final class ClinicalService
             if ($rx === null) {
                 throw ClinicalException::of('CLINIC_NOT_FOUND', 'نسخه یافت نشد', 404);
             }
-            $this->require_own_clinician( $actorUserId, (int) $rx['clinician_id'], 'نسخه یافت نشد' ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
+            $this->require_own_clinician_for_update( $actorUserId, (int) $rx['clinician_id'], 'نسخه یافت نشد' ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
             if ((string) $rx['status'] === 'finalized') {
                 throw ClinicalException::of('CLINIC_INVALID_TRANSITION', 'این نسخه قبلاً نهایی شده است', 409, ['status' => 'finalized']);
             }
@@ -1524,18 +1524,38 @@ final class ClinicalService
     }
 
     /**
-     * Phase 1B B-01 — doctor-specific operation guard on a persisted clinician id.
+     * Phase 1B acceptance Blocker 2 — obtain a narrow locking read of the persisted
+     * clinician identity row inside an existing transaction mutation boundary.
      *
-     * Reuses the established non-enumerating denial semantics (`CLINIC_NOT_FOUND`
-     * 404) and performs no clinical or audit mutation, so a rejected operation is
-     * indistinguishable from a nonexistent object.
+     * Lock order: prescription row -> clinician identity row.
+     *
+     * Validates:
+     * - clinician row exists;
+     * - clinician row is active (`is_active = 1`);
+     * - clinician belongs to the prescription's persisted clinician identity (`id = $clinician_id`);
+     * - durable `wp_user_id` matches the authenticated actor.
+     *
+     * Throws non-enumerating 404 (`CLINIC_NOT_FOUND`) on any mismatch with zero
+     * mutation, which rolls back the enclosing transaction.
      */
-    private function require_own_clinician( int $actor_user_id, int $clinician_id, string $not_found_message ): void {
-        if ( $clinician_id > 0 && $this->is_active_clinician_of_user( $clinician_id, $actor_user_id ) ) {
-            return;
+    private function require_own_clinician_for_update( int $actor_user_id, int $clinician_id, string $not_found_message ): void {
+        if ( $clinician_id <= 0 || $actor_user_id <= 0 ) {
+            throw ClinicalException::of( 'CLINIC_NOT_FOUND', $not_found_message, 404 );
         }
 
-        throw ClinicalException::of( 'CLINIC_NOT_FOUND', $not_found_message, 404 );
+        $clinician = $this->db->fetchRowForUpdate(
+            'SELECT id, wp_user_id, is_active FROM ' . $this->db->table( 'cpms_clinicians' ) .
+            ' WHERE id = %d LIMIT 1',
+            [ $clinician_id ]
+        );
+
+        if ( null === $clinician
+            || (int) ( $clinician['id'] ?? 0 ) !== $clinician_id
+            || (int) ( $clinician['is_active'] ?? 0 ) !== 1
+            || (int) ( $clinician['wp_user_id'] ?? 0 ) !== $actor_user_id
+        ) {
+            throw ClinicalException::of( 'CLINIC_NOT_FOUND', $not_found_message, 404 );
+        }
     }
 
     /**
