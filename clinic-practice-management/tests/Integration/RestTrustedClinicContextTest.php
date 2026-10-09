@@ -6,6 +6,7 @@ namespace ClinicCore\Tests\Integration;
 
 use ClinicCore\Application\Scope\ClinicScope;
 use ClinicCore\Application\Scope\ScopeContext;
+use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Rest\RestClinicContext;
 use WP_REST_Request;
@@ -1031,7 +1032,360 @@ final class RestTrustedClinicContextTest extends WP_UnitTestCase
         $this->assertSame([], array_column(App::smsService()->logs(60099, null, 1, 10)['items'], 'id'), 'Clinic بدون ردیف → خالی (نه دادهٔ دیگران)');
     }
 
+    // ================= Phase 1B B-01/B-02 — TEST-ONLY authorization contract =================
+
+    /**
+     * Expected RED on the unmodified Phase 1B implementation: a Clinic doctor
+     * with the default private-note capability must not gain another doctor's
+     * private notes merely by reading the shared clinical record; no approved
+     * inter-doctor shared-care policy currently exists. The shared record read
+     * and patient-visible note remain available.
+     */
+    public function testPhase1BSharedRecordReadHidesAnotherDoctorsPrivateNotes(): void
+    {
+        $owner = $this->makeStaff('cpms_doctor');
+        $peer = $this->makeStaff('cpms_doctor');
+        cpms_test_seed_membership($owner, $this->clinicA, 'cpms_doctor');
+        cpms_test_seed_membership($peer, $this->clinicA, 'cpms_doctor');
+        $ownerClinicianId = $this->insertClinician($this->clinicA, $owner, 'Dr Phase1B Note Owner');
+        $this->insertClinician($this->clinicA, $peer, 'Dr Phase1B Note Peer');
+        $patientId = $this->insertPatient($this->clinicA, 'Phase1BPrivate');
+        $this->insertVisit($this->clinicA, $this->locA, $ownerClinicianId, $patientId);
+        $visitId = $this->lastVisitId($this->clinicA);
+
+        self::assertTrue(App::authorization_service()->can($peer, $this->clinicA, RolesAndCapabilities::MEDICAL_READ));
+        self::assertTrue(App::authorization_service()->can($peer, $this->clinicA, RolesAndCapabilities::PRIVATE_NOTE_READ));
+
+        wp_set_current_user($owner);
+        $private = $this->dispatch('POST', self::NS . '/visits/' . $visitId . '/notes', [
+            'category' => 'private_note',
+            'visibility' => 'doctor_private',
+            'content_text' => 'phase1b-owner-only-private-note',
+        ], ['X-CPMS-Clinic-Id' => (string) $this->clinicA]);
+        $this->assertSame(200, $private->get_status(), (string) json_encode($private->get_data(), JSON_UNESCAPED_UNICODE));
+        $shared = $this->dispatch('POST', self::NS . '/visits/' . $visitId . '/notes', [
+            'category' => 'chief_complaint',
+            'visibility' => 'patient_visible',
+            'content_text' => 'phase1b-shared-clinical-note',
+        ], ['X-CPMS-Clinic-Id' => (string) $this->clinicA]);
+        $this->assertSame(200, $shared->get_status(), (string) json_encode($shared->get_data(), JSON_UNESCAPED_UNICODE));
+
+        wp_set_current_user($peer);
+        $record = $this->dispatch('GET', self::NS . '/visits/' . $visitId . '/record', [], [
+            'X-CPMS-Clinic-Id' => (string) $this->clinicA,
+        ]);
+        $this->assertSame(200, $record->get_status(), 'MEDICAL_READ still permits shared clinical record reading');
+        $notes = $this->payload($record)['notes'] ?? [];
+        $contents = array_column($notes, 'content_text');
+        $this->assertContains('phase1b-shared-clinical-note', $contents);
+        $this->assertNotContains('phase1b-owner-only-private-note', $contents);
+    }
+
+    /** A scoped MEDICAL_READ grant alone must never expose doctor_private notes. */
+    public function testPhase1BMedicalReadDoesNotImplyPrivateNoteRead(): void
+    {
+        $owner = $this->makeStaff('cpms_doctor');
+        $reader = $this->makeStaff('cpms_doctor');
+        cpms_test_seed_membership($owner, $this->clinicA, 'cpms_doctor');
+        $readerMembership = cpms_test_seed_membership($reader, $this->clinicA, 'cpms_doctor');
+        App::membership_service()->set_capability(
+            $readerMembership,
+            RolesAndCapabilities::PRIVATE_NOTE_READ,
+            'deny'
+        );
+        $clinicianId = $this->insertClinician($this->clinicA, $owner, 'Dr Phase1B Cap Owner');
+        $this->insertClinician($this->clinicA, $reader, 'Dr Phase1B Cap Reader');
+        $patientId = $this->insertPatient($this->clinicA, 'Phase1BCap');
+        $this->insertVisit($this->clinicA, $this->locA, $clinicianId, $patientId);
+        $visitId = $this->lastVisitId($this->clinicA);
+
+        self::assertTrue(App::authorization_service()->can($reader, $this->clinicA, RolesAndCapabilities::MEDICAL_READ));
+        self::assertFalse(App::authorization_service()->can($reader, $this->clinicA, RolesAndCapabilities::PRIVATE_NOTE_READ));
+
+        wp_set_current_user($owner);
+        $created = $this->dispatch('POST', self::NS . '/visits/' . $visitId . '/notes', [
+            'category' => 'private_note',
+            'visibility' => 'doctor_private',
+            'content_text' => 'phase1b-medical-read-only-secret',
+        ], ['X-CPMS-Clinic-Id' => (string) $this->clinicA]);
+        $this->assertSame(200, $created->get_status(), (string) json_encode($created->get_data(), JSON_UNESCAPED_UNICODE));
+
+        wp_set_current_user($reader);
+        $record = $this->dispatch('GET', self::NS . '/visits/' . $visitId . '/record', [], [
+            'X-CPMS-Clinic-Id' => (string) $this->clinicA,
+        ]);
+        $this->assertSame(200, $record->get_status(), 'denying private-note access must not disable shared MEDICAL_READ');
+        $contents = array_column($this->payload($record)['notes'] ?? [], 'content_text');
+        $this->assertNotContains('phase1b-medical-read-only-secret', $contents);
+    }
+
+    /** Same-Clinic peer note creation is a safe 404 and has no clinical/audit side effect. */
+    public function testPhase1BPeerCannotCreateNoteOnAnotherDoctorsVisit(): void
+    {
+        $owner = $this->makeStaff('cpms_doctor');
+        $peer = $this->makeStaff('cpms_doctor');
+        cpms_test_seed_membership($owner, $this->clinicA, 'cpms_doctor');
+        cpms_test_seed_membership($peer, $this->clinicA, 'cpms_doctor');
+        $clinicianId = $this->insertClinician($this->clinicA, $owner, 'Dr Phase1B E8 Owner');
+        $this->insertClinician($this->clinicA, $peer, 'Dr Phase1B E8 Peer');
+        $patientId = $this->insertPatient($this->clinicA, 'Phase1BE8');
+        $this->insertVisit($this->clinicA, $this->locA, $clinicianId, $patientId);
+        $visitId = $this->lastVisitId($this->clinicA);
+        wp_set_current_user($peer);
+
+        $body = [
+            'category' => 'clinical_note',
+            'visibility' => 'patient_visible',
+            'content_text' => 'phase1b-rejected-peer-note',
+        ];
+        $notesBefore = $this->clinicalNoteCount($this->clinicA, $visitId);
+        $auditBefore = $this->auditCount();
+        $attempt = $this->dispatch('POST', self::NS . '/visits/' . $visitId . '/notes', $body, [
+            'X-CPMS-Clinic-Id' => (string) $this->clinicA,
+        ]);
+        $notesAfter = $this->clinicalNoteCount($this->clinicA, $visitId);
+        $auditAfter = $this->auditCount();
+        $missing = $this->dispatch('POST', self::NS . '/visits/' . $this->missingId('cpms_visits') . '/notes', $body, [
+            'X-CPMS-Clinic-Id' => (string) $this->clinicA,
+        ]);
+        $diagnostic = sprintf(
+            'response=%s; note_rows=%d->%d; audit_rows=%d->%d',
+            (string) json_encode($attempt->get_data(), JSON_UNESCAPED_UNICODE),
+            $notesBefore,
+            $notesAfter,
+            $auditBefore,
+            $auditAfter
+        );
+
+        $this->assertSame($this->responseErrorIdentity($missing), $this->responseErrorIdentity($attempt), $diagnostic);
+        $this->assertSame($notesBefore, $notesAfter, 'Rejected E8 write must not create a clinical note');
+        $this->assertSame($auditBefore, $auditAfter, 'Rejected E8 write must not append an audit row');
+    }
+
+    /** Same-Clinic peer prescription finalization is a safe 404 and is side-effect-free. */
+    public function testPhase1BPeerCannotFinalizeAnotherDoctorsPrescription(): void
+    {
+        $owner = $this->makeStaff('cpms_doctor');
+        $peer = $this->makeStaff('cpms_doctor');
+        cpms_test_seed_membership($owner, $this->clinicA, 'cpms_doctor');
+        cpms_test_seed_membership($peer, $this->clinicA, 'cpms_doctor');
+        $clinicianId = $this->insertClinician($this->clinicA, $owner, 'Dr Phase1B RX Owner');
+        $this->insertClinician($this->clinicA, $peer, 'Dr Phase1B RX Peer');
+        $patientId = $this->insertPatient($this->clinicA, 'Phase1BRx');
+        $this->insertVisit($this->clinicA, $this->locA, $clinicianId, $patientId);
+        $visitId = $this->lastVisitId($this->clinicA);
+        $prescriptionId = $this->insertRx($this->clinicA, $visitId, $clinicianId);
+        wp_set_current_user($peer);
+
+        $before = App::db()->fetchRow(
+            'SELECT status, finalized_at, updated_at FROM ' . App::db()->table('cpms_prescriptions') . ' WHERE id = %d',
+            [$prescriptionId]
+        );
+        $auditBefore = $this->auditCount();
+        $attempt = $this->dispatch('POST', self::NS . '/prescriptions/' . $prescriptionId . '/finalize', [], [
+            'X-CPMS-Clinic-Id' => (string) $this->clinicA,
+        ]);
+        $after = App::db()->fetchRow(
+            'SELECT status, finalized_at, updated_at FROM ' . App::db()->table('cpms_prescriptions') . ' WHERE id = %d',
+            [$prescriptionId]
+        );
+        $auditAfter = $this->auditCount();
+        $missing = $this->dispatch('POST', self::NS . '/prescriptions/' . $this->missingId('cpms_prescriptions') . '/finalize', [], [
+            'X-CPMS-Clinic-Id' => (string) $this->clinicA,
+        ]);
+        $diagnostic = sprintf(
+            'response=%s; prescription_before=%s; prescription_after=%s; audit_rows=%d->%d',
+            (string) json_encode($attempt->get_data(), JSON_UNESCAPED_UNICODE),
+            (string) json_encode($before, JSON_UNESCAPED_UNICODE),
+            (string) json_encode($after, JSON_UNESCAPED_UNICODE),
+            $auditBefore,
+            $auditAfter
+        );
+
+        $this->assertSame($this->responseErrorIdentity($missing), $this->responseErrorIdentity($attempt), $diagnostic);
+        $this->assertSame($before, $after, 'Rejected E11 write must not finalize or touch the prescription');
+        $this->assertSame($auditBefore, $auditAfter, 'Rejected E11 write must not append an audit row');
+    }
+
+    /** A dual-member doctor cannot use trusted Clinic A context to mutate Clinic B. */
+    public function testPhase1BDualClinicDoctorCannotCreateNoteOutsideTrustedClinic(): void
+    {
+        $fixture = $this->seedDualClinicVisitB('e8');
+        $doctor = $fixture['doctor'];
+        $visitB = $fixture['visit_id'];
+        self::assertNotNull(App::membership_service()->membership_for($this->clinicA, $doctor));
+        self::assertNotNull(App::membership_service()->membership_for($this->clinicB, $doctor));
+        wp_set_current_user($doctor);
+
+        $body = [
+            'category' => 'clinical_note',
+            'visibility' => 'patient_visible',
+            'content_text' => 'phase1b-cross-clinic-rejected-note',
+        ];
+        $notesBeforeB = $this->clinicNoteCount($this->clinicB);
+        $auditBefore = $this->auditCount();
+        $auditBeforeB = $this->auditCount($this->clinicB);
+        $attempt = $this->dispatch('POST', self::NS . '/visits/' . $visitB . '/notes', $body, [
+            'X-CPMS-Clinic-Id' => (string) $this->clinicA,
+        ]);
+        $notesAfterB = $this->clinicNoteCount($this->clinicB);
+        $auditAfter = $this->auditCount();
+        $auditAfterB = $this->auditCount($this->clinicB);
+        $missing = $this->dispatch('POST', self::NS . '/visits/' . $this->missingId('cpms_visits') . '/notes', $body, [
+            'X-CPMS-Clinic-Id' => (string) $this->clinicA,
+        ]);
+        $diagnostic = sprintf(
+            'response=%s; clinic_b_notes=%d->%d; all_audit=%d->%d; clinic_b_audit=%d->%d',
+            (string) json_encode($attempt->get_data(), JSON_UNESCAPED_UNICODE),
+            $notesBeforeB,
+            $notesAfterB,
+            $auditBefore,
+            $auditAfter,
+            $auditBeforeB,
+            $auditAfterB
+        );
+
+        $this->assertSame($this->responseErrorIdentity($missing), $this->responseErrorIdentity($attempt), $diagnostic);
+        $this->assertSame($notesBeforeB, $notesAfterB, 'Clinic B clinical records must remain unchanged');
+        $this->assertSame($auditBefore, $auditAfter, 'Rejected cross-Clinic write must not append any audit row');
+        $this->assertSame($auditBeforeB, $auditAfterB, 'Clinic B audit records must remain unchanged');
+    }
+
+    /** Own-Visit creation/finalization and shared patient-visible reads remain valid. */
+    public function testPhase1BOwnerCanCreateAndFinalizeOwnVisitRecords(): void
+    {
+        $owner = $this->makeStaff('cpms_doctor');
+        cpms_test_seed_membership($owner, $this->clinicA, 'cpms_doctor');
+        $clinicianId = $this->insertClinician($this->clinicA, $owner, 'Dr Phase1B Positive');
+        $patientId = $this->insertPatient($this->clinicA, 'Phase1BPositive');
+        $this->insertVisit($this->clinicA, $this->locA, $clinicianId, $patientId);
+        $visitId = $this->lastVisitId($this->clinicA);
+        wp_set_current_user($owner);
+
+        $headers = ['X-CPMS-Clinic-Id' => (string) $this->clinicA];
+        $note = $this->dispatch('POST', self::NS . '/visits/' . $visitId . '/notes', [
+            'category' => 'clinical_note',
+            'visibility' => 'patient_visible',
+            'content_text' => 'phase1b-authorized-own-visit-note',
+        ], $headers);
+        $this->assertSame(200, $note->get_status(), (string) json_encode($note->get_data(), JSON_UNESCAPED_UNICODE));
+        $privateNote = $this->dispatch('POST', self::NS . '/visits/' . $visitId . '/notes', [
+            'category' => 'private_note',
+            'visibility' => 'doctor_private',
+            'content_text' => 'phase1b-authorized-own-private-note',
+        ], $headers);
+        $this->assertSame(200, $privateNote->get_status(), (string) json_encode($privateNote->get_data(), JSON_UNESCAPED_UNICODE));
+        $ownRecord = $this->dispatch('GET', self::NS . '/visits/' . $visitId . '/record', [], $headers);
+        $this->assertSame(200, $ownRecord->get_status());
+        $ownNoteContents = array_column($this->payload($ownRecord)['notes'] ?? [], 'content_text');
+        $this->assertContains('phase1b-authorized-own-private-note', $ownNoteContents);
+
+        $draft = $this->dispatch('POST', self::NS . '/visits/' . $visitId . '/prescriptions', [
+            'items' => [[
+                'generic_name' => 'Acetaminophen',
+                'dose' => '500 mg',
+                'frequency' => 'once daily',
+            ]],
+            'is_patient_visible' => true,
+        ], $headers);
+        $this->assertSame(200, $draft->get_status(), (string) json_encode($draft->get_data(), JSON_UNESCAPED_UNICODE));
+        $prescriptionId = (int) ($this->payload($draft)['id'] ?? 0);
+        $this->assertGreaterThan(0, $prescriptionId);
+
+        $finalized = $this->dispatch('POST', self::NS . '/prescriptions/' . $prescriptionId . '/finalize', [], $headers);
+        $this->assertSame(200, $finalized->get_status(), (string) json_encode($finalized->get_data(), JSON_UNESCAPED_UNICODE));
+        $this->assertSame('finalized', (string) ($this->payload($finalized)['status'] ?? ''));
+    }
+
     // ================= fixtures =================
+
+    /**
+     * @return array{doctor: int, visit_id: int, patient_id: int, clinician_id: int, membership_a: int, membership_b: int}
+     */
+    private function seedDualClinicVisitB(string $purpose): array
+    {
+        $slug = 'rest-ctx-phase1b-' . $purpose . '-' . bin2hex(random_bytes(3));
+        $this->insertClinic($this->clinicB, $slug);
+        $locationB = $this->insertLocation($this->clinicB, $slug . '-loc');
+
+        $doctor = $this->makeStaff('cpms_doctor');
+        $membershipA = cpms_test_seed_membership($doctor, $this->clinicA, 'cpms_doctor');
+        $membershipB = cpms_test_seed_membership($doctor, $this->clinicB, 'cpms_doctor');
+        $clinicianId = $this->insertClinician($this->clinicA, $doctor, 'Dr Phase1B Cross ' . $purpose);
+        $patientId = $this->insertPatient($this->clinicB, 'Phase1BCross' . $purpose);
+        $this->insertVisit($this->clinicB, $locationB, $clinicianId, $patientId);
+
+        return [
+            'doctor' => $doctor,
+            'visit_id' => $this->lastVisitId($this->clinicB),
+            'patient_id' => $patientId,
+            'clinician_id' => $clinicianId,
+            'membership_a' => $membershipA,
+            'membership_b' => $membershipB,
+        ];
+    }
+
+    private function clinicalNoteCount(int $clinicId, int $visitId): int
+    {
+        return (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_clinical_notes') . ' WHERE clinic_id = %d AND visit_id = %d',
+            [$clinicId, $visitId]
+        );
+    }
+
+    private function clinicNoteCount(int $clinicId): int
+    {
+        return (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_clinical_notes') . ' WHERE clinic_id = %d',
+            [$clinicId]
+        );
+    }
+
+    private function auditCount(?int $clinicId = null): int
+    {
+        if ($clinicId === null) {
+            return (int) App::db()->fetchValue('SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs'));
+        }
+
+        return (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE clinic_id = %d',
+            [$clinicId]
+        );
+    }
+
+    private function missingId(string $table): int
+    {
+        $missing = (int) App::db()->fetchValue(
+            'SELECT COALESCE(MAX(id), 0) + 1 FROM ' . App::db()->table($table)
+        );
+        self::assertGreaterThan(0, $missing, 'پیش‌شرط: شناسهٔ تهی باید مثبت باشد');
+
+        return $missing;
+    }
+
+    /** @return array{status: int, code: string, message: string, data: mixed} */
+    private function responseErrorIdentity(WP_REST_Response $response): array
+    {
+        $body = $response->get_data();
+        if ($body instanceof \WP_Error) {
+            $code = $body->get_error_code();
+
+            return [
+                'status' => $response->get_status(),
+                'code' => $code,
+                'message' => $body->get_error_message($code),
+                'data' => $body->get_error_data($code),
+            ];
+        }
+        $body = is_array($body) ? $body : [];
+
+        return [
+            'status' => $response->get_status(),
+            'code' => (string) ($body['code'] ?? ''),
+            'message' => (string) ($body['message'] ?? ''),
+            'data' => $body['data'] ?? null,
+        ];
+    }
 
     /** @return list<int> شناسه‌های ردیف‌های لاگ در پاسخ REST */
     private function smsLogIds(WP_REST_Response $res): array
