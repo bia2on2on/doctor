@@ -7,10 +7,14 @@ real REST, and the real database. Profile state is not faked in JavaScript.
 Fixture env (written by pilot-slice4-profile-fixture.php; not printed):
   PROFILE_ONE=login|pass|user_id|patient_id|link_id|clinic_id
   PROFILE_MULTI=login|pass|user_id|link_a|link_b|patient_a|patient_b|clinic_a|clinic_b|foreign_link|inactive_link
+  PROFILE_OBJECT_PAIR=PatientA login/pass/user/link/patient/Clinic + PatientB login/pass/user/link/patient/Clinic
 
-Evidence lines are PASS/FAIL/INFO/SHOT with booleans and non-sensitive ids only.
+Phase 19 reuses the existing GET /patient/me route for a valid-session, valid-
+nonce cross-account object-authorization probe. Evidence lines are PASS/FAIL/
+INFO/SHOT with booleans and non-sensitive ids only; no PHI or nonce is printed.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -74,6 +78,21 @@ MULTI = {
     "clinic_b": int(_multi[8]),
     "foreign_link": int(_multi[9]),
     "inactive_link": int(_multi[10]),
+}
+_pair = _parts("PROFILE_OBJECT_PAIR", 12)
+OBJECT_PAIR = {
+    "patient_a_login": _pair[0],
+    "patient_a_password": _pair[1],
+    "patient_a_user_id": int(_pair[2]),
+    "patient_a_link_id": int(_pair[3]),
+    "patient_a_id": int(_pair[4]),
+    "patient_a_clinic_id": int(_pair[5]),
+    "patient_b_login": _pair[6],
+    "patient_b_password": _pair[7],
+    "patient_b_user_id": int(_pair[8]),
+    "patient_b_link_id": int(_pair[9]),
+    "patient_b_id": int(_pair[10]),
+    "patient_b_clinic_id": int(_pair[11]),
 }
 
 # Slice 7 TEST-ONLY RED — My Files on the existing C3/C4/E17 backend.
@@ -163,7 +182,7 @@ def assert_profile_url(url):
 
 
 def patient_col(patient_id, column):
-    allowed = {"first_name", "last_name", "address", "national_id", "mobile", "phone"}
+    allowed = {"mrn", "first_name", "last_name", "address", "national_id", "mobile", "phone"}
     if column not in allowed:
         raise RuntimeError("column not allowed")
     return dbs(f"SELECT {column} FROM {T('cpms_patients')} WHERE id={int(patient_id)}")
@@ -171,6 +190,50 @@ def patient_col(patient_id, column):
 
 def clinic_name(clinic_id):
     return dbs(f"SELECT name FROM {T('cpms_clinics')} WHERE id={int(clinic_id)}")
+
+
+def get_profile_me(page, link_id):
+    """Read one record through the existing profile route using shell nonce/session."""
+    return page.evaluate(
+        """async (linkId) => {
+            const node = document.querySelector('script.cpms-patient-portal__config');
+            if (!node) { throw new Error('patient portal config missing'); }
+            const cfg = JSON.parse(node.textContent || '{}');
+            const url = new URL(cfg.rest_root, window.location.origin);
+            const route = String(cfg.profile_me_path || '/patient/me').replace(/^\\/+/, '');
+            if (url.searchParams.has('rest_route')) {
+                const root = (url.searchParams.get('rest_route') || '').replace(/\\/+$/, '');
+                url.searchParams.set('rest_route', root + '/' + route);
+            } else {
+                url.pathname = url.pathname.replace(/\\/+$/, '') + '/' + route;
+            }
+            url.searchParams.set('link_id', String(linkId));
+            const response = await fetch(url.toString(), {
+                method: 'GET',
+                credentials: 'same-origin',
+                headers: { 'X-WP-Nonce': cfg.nonce }
+            });
+            const body = await response.json().catch(() => null);
+            return { status: response.status, body: body };
+        }""",
+        int(link_id),
+    )
+
+
+def has_patient_record_fields(value):
+    """Detect a returned patient resource while allowing a plain 404 envelope."""
+    patient_fields = {
+        "id", "patient_id", "mrn", "first_name", "last_name", "mobile",
+        "national_id", "birth_date", "gender", "address", "phone",
+        "emergency_contact_name", "emergency_contact_phone",
+    }
+    if isinstance(value, dict):
+        return bool(patient_fields.intersection(value)) or any(
+            has_patient_record_fields(item) for item in value.values()
+        )
+    if isinstance(value, list):
+        return any(has_patient_record_fields(item) for item in value)
+    return False
 
 
 def profile_audits(patient_id):
@@ -198,9 +261,9 @@ def new_page(browser, run):
     }
 
     def on_request(req):
-        if not req.url.startswith(BASE) or "/clinic/v1" not in req.url:
-            return
         route = wp_route(req.url)
+        if not req.url.startswith(BASE) or not (route == "/clinic/v1" or route.startswith("/clinic/v1/")):
+            return
         if route.endswith("/patient/me"):
             headers = {k.lower(): v for k, v in req.headers.items()}
             item = {
@@ -217,9 +280,10 @@ def new_page(browser, run):
                 state["gets"].append(item)
 
     def on_response(resp):
-        if not resp.url.startswith(BASE) or "/clinic/v1" not in resp.url:
+        route = wp_route(resp.url)
+        if not resp.url.startswith(BASE) or not (route == "/clinic/v1" or route.startswith("/clinic/v1/")):
             return
-        state["rest"].append((resp.request.method, wp_route(resp.url), resp.status))
+        state["rest"].append((resp.request.method, route, resp.status))
 
     def on_console(msg):
         if msg.type != "error":
@@ -679,6 +743,168 @@ def run_multi(browser, run, capture_before, capture_after):
         ctx.close()
 
 
+def run_foreign_patient_object_denial(browser):
+    """Phase 19: the same valid Patient A session/nonce cannot read Patient B."""
+    key = "profile-valid-session-foreign-patient-denial"
+    run = {"vp": "laptop-1366", "w": 1366, "h": 768}
+    ctx, page, state = new_page(browser, run)
+    nonce_headers = []
+    stage = "fixture-integrity"
+    capture_handler = None
+    try:
+        if (
+            OBJECT_PAIR["patient_a_user_id"] == OBJECT_PAIR["patient_b_user_id"]
+            or OBJECT_PAIR["patient_a_id"] == OBJECT_PAIR["patient_b_id"]
+            or OBJECT_PAIR["patient_a_link_id"] == OBJECT_PAIR["patient_b_link_id"]
+            or OBJECT_PAIR["patient_a_clinic_id"] != OBJECT_PAIR["patient_b_clinic_id"]
+            or OBJECT_PAIR["patient_a_user_id"] != MULTI["user_id"]
+            or OBJECT_PAIR["patient_a_link_id"] != MULTI["link_a"]
+            or OBJECT_PAIR["patient_a_id"] != MULTI["patient_a"]
+            or OBJECT_PAIR["patient_a_clinic_id"] != MULTI["clinic_a"]
+            or OBJECT_PAIR["patient_b_link_id"] != MULTI["foreign_link"]
+        ):
+            raise RuntimeError("Patient A/B identities are not distinct and same-Clinic")
+        own_link = db1(
+            f"SELECT COUNT(*) FROM {T('cpms_patient_user_links')}"
+            f" WHERE id={OBJECT_PAIR['patient_a_link_id']}"
+            f" AND wp_user_id={OBJECT_PAIR['patient_a_user_id']}"
+            f" AND patient_id={OBJECT_PAIR['patient_a_id']}"
+            f" AND clinic_id={OBJECT_PAIR['patient_a_clinic_id']}"
+        )
+        foreign_link = db1(
+            f"SELECT COUNT(*) FROM {T('cpms_patient_user_links')}"
+            f" WHERE id={OBJECT_PAIR['patient_b_link_id']}"
+            f" AND wp_user_id={OBJECT_PAIR['patient_b_user_id']}"
+            f" AND patient_id={OBJECT_PAIR['patient_b_id']}"
+            f" AND clinic_id={OBJECT_PAIR['patient_b_clinic_id']}"
+        )
+        if own_link != 1 or foreign_link != 1:
+            raise RuntimeError("durable Patient A/B links do not match their distinct account owners")
+
+        stage = "patient-a-login"
+        login(page, OBJECT_PAIR["patient_a_login"], OBJECT_PAIR["patient_a_password"])
+        open_profile(page)
+        cfg = read_config(page)
+
+        def auth_session_fingerprint():
+            cookies = ctx.cookies(BASE)
+            auth_cookies = sorted(
+                (cookie.get("name", ""), cookie.get("value", ""))
+                for cookie in cookies
+                if cookie.get("name", "").startswith(("wordpress_logged_in_", "wordpress_sec_"))
+            )
+            if not auth_cookies:
+                return ""
+            return hashlib.sha256(json.dumps(auth_cookies, separators=(",", ":")).encode()).hexdigest()
+
+        a_session_fingerprint = auth_session_fingerprint()
+        if not a_session_fingerprint:
+            raise RuntimeError("Patient A WordPress authenticated session cookie was not present")
+        published_links = sorted(int(record.get("link_id") or 0) for record in (cfg.get("profile_records") or []))
+        if published_links != sorted([MULTI["link_a"], MULTI["link_b"]]):
+            raise RuntimeError("Patient A session did not resolve to exactly its own active profile links")
+        if OBJECT_PAIR["patient_b_link_id"] in published_links:
+            raise RuntimeError("Patient B link appeared in Patient A server-rendered identity")
+
+        def capture_profile_nonce(request):
+            if request.method == "GET" and wp_route(request.url) == ME_ROUTE:
+                headers = {name.lower(): value for name, value in request.headers.items()}
+                nonce_headers.append(headers.get("x-wp-nonce", ""))
+
+        capture_handler = capture_profile_nonce
+        page.on("request", capture_handler)
+        expected_nonce = cfg["nonce"]
+
+        stage = "patient-a-own-resource"
+        gets_before = len(state["gets"])
+        rest_before = len(state["rest"])
+        own_result = get_profile_me(page, OBJECT_PAIR["patient_a_link_id"])
+        own_status = own_result.get("status") if isinstance(own_result, dict) else None
+        own_body = own_result.get("body") if isinstance(own_result, dict) else None
+        own_record = own_body.get("data") if isinstance(own_body, dict) else None
+        own_code = own_body.get("code") if isinstance(own_body, dict) else None
+        if (
+            own_status != 200
+            or not isinstance(own_record, dict)
+            or int(own_record.get("id") or 0) != OBJECT_PAIR["patient_a_id"]
+            or own_record.get("first_name") != patient_col(OBJECT_PAIR["patient_a_id"], "first_name")
+            or own_record.get("address") != patient_col(OBJECT_PAIR["patient_a_id"], "address")
+        ):
+            raise RuntimeError(
+                f"Patient A own profile did not return its allowed resource: status={own_status} code={own_code or 'missing'}"
+            )
+        own_requests = state["gets"][gets_before:]
+        if (
+            len(own_requests) != 1
+            or not own_requests[0]["has_nonce"]
+            or not own_requests[0]["same_origin"]
+            or not nonce_headers
+            or nonce_headers[0] != expected_nonce
+        ):
+            raise RuntimeError("Patient A own profile request did not use its same-origin shell nonce")
+        assert_profile_url(own_requests[0]["url"])
+        own_query = parse_qs(urlparse(own_requests[0]["url"]).query, keep_blank_values=True)
+        if own_query.get("link_id", [""])[0] != str(OBJECT_PAIR["patient_a_link_id"]):
+            raise RuntimeError("Patient A allowed request did not use the Patient A link selector")
+        if auth_session_fingerprint() != a_session_fingerprint:
+            raise RuntimeError("Patient A authenticated WordPress session changed after the own-resource read")
+
+        stage = "patient-b-foreign-object-attempt"
+        foreign_result = get_profile_me(page, OBJECT_PAIR["patient_b_link_id"])
+        foreign_status = foreign_result.get("status") if isinstance(foreign_result, dict) else None
+        foreign_body = foreign_result.get("body") if isinstance(foreign_result, dict) else None
+        foreign_code = foreign_body.get("code") if isinstance(foreign_body, dict) else None
+        b_markers = [
+            patient_col(OBJECT_PAIR["patient_b_id"], field)
+            for field in ("mrn", "first_name", "last_name", "address", "mobile", "national_id")
+        ]
+        foreign_json = json.dumps(foreign_body, ensure_ascii=False, sort_keys=True)
+        foreign_has_patient_data = has_patient_record_fields(foreign_body) or any(
+            marker and marker in foreign_json for marker in b_markers
+        )
+        if foreign_status != 404 or foreign_code != "CLINIC_NOT_FOUND":
+            raise RuntimeError(
+                f"foreign response was not object authorization: status={foreign_status} code={foreign_code or 'missing'} patient_b_data_returned={foreign_has_patient_data}"
+            )
+        foreign_requests = state["gets"][gets_before + 1:]
+        if (
+            len(foreign_requests) != 1
+            or not foreign_requests[0]["has_nonce"]
+            or not foreign_requests[0]["same_origin"]
+            or len(nonce_headers) != 2
+            or nonce_headers[1] != expected_nonce
+            or nonce_headers[0] != nonce_headers[1]
+        ):
+            raise RuntimeError("Patient B attempt did not reuse Patient A session and exact valid nonce")
+        assert_profile_url(foreign_requests[0]["url"])
+        foreign_query = parse_qs(urlparse(foreign_requests[0]["url"]).query, keep_blank_values=True)
+        if foreign_query.get("link_id", [""])[0] != str(OBJECT_PAIR["patient_b_link_id"]):
+            raise RuntimeError("foreign request did not target Patient B's equivalent profile selector")
+
+        if foreign_has_patient_data:
+            raise RuntimeError("foreign denial response returned Patient B data")
+        if auth_session_fingerprint() != a_session_fingerprint:
+            raise RuntimeError("Patient B attempt did not preserve Patient A's authenticated WordPress session")
+        probe_responses = state["rest"][rest_before:]
+        if probe_responses != [("GET", ME_ROUTE, 200), ("GET", ME_ROUTE, 404)]:
+            raise RuntimeError("object-authorization probe did not produce exactly the allowed and denied server responses")
+        if len(state["gets"]) != gets_before + 2 or state["puts"]:
+            raise RuntimeError("object-authorization probe issued unexpected profile traffic or mutation")
+        assert_quiet(state, "valid-CSRF foreign-patient object authorization")
+        ok(
+            key,
+            "Patient A own profile allowed; Patient B same-Clinic, different-account profile denied server-side",
+            f"patient_a_user_id={OBJECT_PAIR['patient_a_user_id']} patient_b_user_id={OBJECT_PAIR['patient_b_user_id']} users_distinct=True patients_distinct=True same_clinic=True own_status=200 foreign_status=404 code=CLINIC_NOT_FOUND same_patient_a_session=True same_valid_nonce=True patient_b_data_returned=False",
+        )
+    except Exception as exc:
+        fail(key, f"valid-CSRF foreign-patient object authorization at {stage}", str(exc)[:240])
+    finally:
+        nonce_headers.clear()
+        if capture_handler is not None:
+            page.remove_listener("request", capture_handler)
+        ctx.close()
+
+
 def run_visits_readonly(browser, run):
     """Slice 5 TEST-ONLY RED: actual shell/JS/REST, no mocked clinical response."""
     key = "visits-list-detail-selector-" + run["vp"]
@@ -1092,6 +1318,7 @@ def main():
                 capture_before=(run["vp"] == "laptop-1366"),
                 capture_after=(run["vp"] == "laptop-1366"),
             )
+        run_foreign_patient_object_denial(browser)
         for run in VIEWPORTS:
             run_visits_one(browser, run)
             run_visits_readonly(browser, run)
