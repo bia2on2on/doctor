@@ -117,13 +117,7 @@ final class ClinicalService
          * capability AND the Clinic-scoped permission). No inter-doctor sharing policy
          * is approved today, so nothing broader is invented here.
          */
-        $can_read_private_notes = $this->owns_visit( $actorUserId, $visit ) // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
-            && user_can( $actorUserId, RolesAndCapabilities::PRIVATE_NOTE_READ ) // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
-            && App::authorization_service()->can(
-                $actorUserId, // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
-                (int) $visit['clinic_id'],
-                RolesAndCapabilities::PRIVATE_NOTE_READ
-            );
+        $can_read_private_notes = $this->can_read_private_notes( $actorUserId, $visit ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
 
         // Query-level visibility filter (FR-8.4 / P-6) — never a post-read PHP filter.
         $note_visibility = $can_read_private_notes ? null : [ 'patient_visible' ];
@@ -483,22 +477,28 @@ final class ClinicalService
             $prescriptionId
         );
         /*
-         * Phase 1B B-01 — clinician ownership for the doctor-specific finalization
-         * step, evaluated BEFORE the transaction: this is the established pattern of
-         * `updateNote()` in this service (rejection checks run outside the
-         * transaction so nothing is mutated and no audit row is written). The read
-         * keeps the trusted-Clinic predicate, so a prescription of another Clinic is
-         * never loaded. `cpms_prescriptions.clinician_id` is immutable — no code path
-         * updates it — so this pre-check is race-safe, while the Clinic predicate and
-         * the Draft→Finalized transition stay locked inside the transaction below and
-         * remain the authority of the mutation boundary.
+         * Phase 1B acceptance Blocker 2 — the ownership verdict is derived INSIDE the
+         * protected mutation boundary, after `findForUpdateForClinic()` has taken the
+         * row lock, because it depends on mutable clinician fields (`wp_user_id`,
+         * `is_active`): a reassignment or deactivation committed before the transition
+         * must invalidate finalization. This mirrors the convention documented in
+         * `updateNote()` (authoritative re-check under the FOR UPDATE lock). The
+         * identity re-read is a plain consistent read taken after the row lock, so it
+         * adds no lock and cannot invert lock order; the trusted-Clinic predicate, the
+         * row lock and the Draft→Finalized semantics are unchanged. Denial throws
+         * inside the transaction → ROLLBACK → zero clinical mutation, no audit row and
+         * the same non-enumerating `CLINIC_NOT_FOUND` 404. The closure is bound to a
+         * variable first so this legacy multi-line call keeps its original bytes
+         * (PEAR.Functions.FunctionCallSignature requires the open parenthesis to be the
+         * last content on a multi-line call line; reformatting it would re-indent about
+         * 30 out-of-scope legacy lines).
          */
-        $this->require_own_prescription_clinician( $actorUserId, $prescriptionId, $clinicId ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
-        $rx = $this->db->transactional(function () use ($prescriptionId, $clinicId): array {
+        $finalize_rx = function () use ( $actorUserId, $prescriptionId, $clinicId ): array { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
             $rx = $this->prescriptions->findForUpdateForClinic($prescriptionId, $clinicId);
             if ($rx === null) {
                 throw ClinicalException::of('CLINIC_NOT_FOUND', 'نسخه یافت نشد', 404);
             }
+            $this->require_own_clinician( $actorUserId, (int) $rx['clinician_id'], 'نسخه یافت نشد' ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
             if ((string) $rx['status'] === 'finalized') {
                 throw ClinicalException::of('CLINIC_INVALID_TRANSITION', 'این نسخه قبلاً نهایی شده است', 409, ['status' => 'finalized']);
             }
@@ -513,7 +513,8 @@ final class ClinicalService
             }
 
             return $rx;
-        });
+        };
+        $rx = $this->db->transactional( $finalize_rx );
 
         $this->audit->log(
             'PRESCRIPTION_FINALIZED',
@@ -1150,7 +1151,9 @@ final class ClinicalService
         );
 
         $complaint = null;
-        foreach ($this->notes->forVisit($visitId, null) as $note) {
+        $can_read_private_notes = $this->can_read_private_notes( $actorUserId, $visit ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
+        $note_visibility        = $can_read_private_notes ? null : [ 'patient_visible' ];
+        foreach ( $this->notes->forVisit( $visitId, $note_visibility ) as $note ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
             if ((string) $note['category'] === 'chief_complaint') {
                 $complaint = (string) $note['content_text'];
                 break;
@@ -1361,9 +1364,18 @@ final class ClinicalService
             );
         }
         if ($isDoctor && ($type === 'all' || $type === 'note')) {
+            $has_private_read  = user_can( $actorUserId, RolesAndCapabilities::PRIVATE_NOTE_READ ) // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
+                && App::authorization_service()->can(
+                    $actorUserId, // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
+                    $trustedClinicId,
+                    RolesAndCapabilities::PRIVATE_NOTE_READ
+                );
+            $own_clinician_id  = $has_private_read ? $this->active_clinician_id_of_user( $actorUserId ) : null; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
+            $search_visibility = null !== $own_clinician_id ? null : [ 'patient_visible' ];
+
             $results['notes'] = array_map(
-                fn (array $row): array => $this->presentSearchHit($row),
-                $this->notes->search(App::scope()->clinicId, $q, null, $from, $to, 20)
+                fn ( array $row ): array => $this->presentSearchHit( $row ),
+                $this->notes->search( App::scope()->clinicId, $q, $search_visibility, $from, $to, 20, $own_clinician_id ) // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
             );
         }
         if ($isDoctor && ($type === 'all' || $type === 'rx')) {
@@ -1450,6 +1462,47 @@ final class ClinicalService
     }
 
     /**
+     * Phase 1B B-01 / Blocker 1 — does this actor have authority to read `doctor_private`
+     * notes for this Visit?
+     *
+     * Authority requires THREE conjuncts:
+     * 1. The actor durably owns the Visit's persisted clinician (active clinician linked
+     *    to this WP user);
+     * 2. The actor has the global `cpms_private_note_read` capability;
+     * 3. The actor has the scoped `cpms_private_note_read` permission in this Clinic
+     *    (an explicit scoped DENY in the Clinic membership revokes access).
+     *
+     * @param array<string, mixed> $visit Durable Visit row from the repository.
+     */
+    private function can_read_private_notes( int $actor_user_id, array $visit ): bool {
+        return $this->owns_visit( $actor_user_id, $visit )
+            && user_can( $actor_user_id, RolesAndCapabilities::PRIVATE_NOTE_READ )
+            && App::authorization_service()->can(
+                $actor_user_id,
+                (int) $visit['clinic_id'],
+                RolesAndCapabilities::PRIVATE_NOTE_READ
+            );
+    }
+
+    /**
+     * Phase 1B acceptance Blocker 1 — resolve the active clinician profile for an
+     * actor. One profile per user (`u_clinician_user`). Returns null if unlinked
+     * or inactive.
+     */
+    private function active_clinician_id_of_user( int $actor_user_id ): ?int {
+        if ( $actor_user_id <= 0 ) {
+            return null;
+        }
+
+        $clinician_id = $this->db->fetchValue(
+            'SELECT id FROM ' . $this->db->table( 'cpms_clinicians' ) . ' WHERE wp_user_id = %d AND is_active = 1 LIMIT 1',
+            [ $actor_user_id ]
+        );
+
+        return null !== $clinician_id && (int) $clinician_id > 0 ? (int) $clinician_id : null;
+    }
+
+    /**
      * Phase 1B B-01 — does this actor durably own the Visit's persisted clinician?
      *
      * A raw clinician/Visit id is never authorization authority: the Visit's stored
@@ -1480,29 +1533,6 @@ final class ClinicalService
         }
 
         throw ClinicalException::of( 'CLINIC_NOT_FOUND', $not_found_message, 404 );
-    }
-
-    /**
-     * Phase 1B B-01 — E11 finalization must act on the actor's own prescription.
-     *
-     * The persisted `clinician_id` is read WITH the trusted-Clinic predicate, so a
-     * prescription of another Clinic is never loaded and its existence is never
-     * disclosed. A missing row, a dangling `clinician_id` (`0`), or a clinician not
-     * durably linked to this authenticated user all fail closed with the same
-     * non-enumerating `CLINIC_NOT_FOUND` and zero clinical/audit mutation.
-     */
-    private function require_own_prescription_clinician( int $actor_user_id, int $prescription_id, int $clinic_id ): void {
-        $clinician_id = $this->db->fetchValue(
-            'SELECT clinician_id FROM ' . $this->db->table( 'cpms_prescriptions' ) .
-            ' WHERE id = %d AND clinic_id = %d LIMIT 1',
-            [ $prescription_id, $clinic_id ]
-        );
-
-        if ( null === $clinician_id ) {
-            throw ClinicalException::of( 'CLINIC_NOT_FOUND', 'نسخه یافت نشد', 404 );
-        }
-
-        $this->require_own_clinician( $actor_user_id, (int) $clinician_id, 'نسخه یافت نشد' );
     }
 
     /**
