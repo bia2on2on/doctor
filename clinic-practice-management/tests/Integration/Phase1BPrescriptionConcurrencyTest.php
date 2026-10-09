@@ -48,13 +48,16 @@ final class Phase1BPrescriptionConcurrencyTest extends WP_UnitTestCase
 
         global $wpdb;
         $now = App::db()->nowUtcSql();
+        $orgId = (int) ($wpdb->get_var('SELECT organization_id FROM ' . $wpdb->prefix . 'cpms_clinics WHERE id = 1') ?: 1);
 
         // 1. Clinic
+        $slug = 'p1b-conc-' . bin2hex(random_bytes(3));
         $wpdb->query(
             $wpdb->prepare(
-                'INSERT INTO ' . $wpdb->prefix . 'cpms_clinics (name, subdomain, is_active, created_at, updated_at) VALUES (%s, %s, 1, %s, %s)',
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_clinics (organization_id, name, slug, timezone, created_at, updated_at) VALUES (%d, %s, %s, "Asia/Tehran", %s, %s)',
+                $orgId,
                 'Phase1B Concurrency Clinic',
-                'p1b-conc-' . bin2hex(random_bytes(3)),
+                $slug,
                 $now,
                 $now
             )
@@ -64,9 +67,10 @@ final class Phase1BPrescriptionConcurrencyTest extends WP_UnitTestCase
         // 2. Primary Location
         $wpdb->query(
             $wpdb->prepare(
-                'INSERT INTO ' . $wpdb->prefix . 'cpms_locations (clinic_id, name, is_primary, is_active, created_at, updated_at) VALUES (%d, %s, 1, 1, %s, %s)',
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_locations (clinic_id, name, slug, timezone, is_primary, is_active, created_at, updated_at) VALUES (%d, %s, %s, "Asia/Tehran", 1, 1, %s, %s)',
                 $this->clinicId,
                 'Primary Location',
+                $slug . '-loc',
                 $now,
                 $now
             )
@@ -170,13 +174,12 @@ final class Phase1BPrescriptionConcurrencyTest extends WP_UnitTestCase
         // 3. Prescription
         $wpdb->query(
             $wpdb->prepare(
-                'INSERT INTO ' . $wpdb->prefix . 'cpms_prescriptions (clinic_id, location_id, visit_id, patient_id, clinician_id, prescription_number, status, created_at, updated_at) VALUES (%d, %d, %d, %d, %d, %s, "draft", %s, %s)',
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_prescriptions (clinic_id, prescription_number, visit_id, patient_id, clinician_id, status, is_patient_visible, created_at, updated_at) VALUES (%d, %s, %d, %d, %d, "draft", 1, %s, %s)',
                 $this->clinicId,
-                $this->locationId,
+                'RX-CONC-' . bin2hex(random_bytes(3)),
                 $visitId,
                 $patientId,
                 $this->clinicianId,
-                'RX-CONC-' . bin2hex(random_bytes(3)),
                 $now,
                 $now
             )
@@ -267,13 +270,12 @@ final class Phase1BPrescriptionConcurrencyTest extends WP_UnitTestCase
         // 3. Prescription
         $wpdb->query(
             $wpdb->prepare(
-                'INSERT INTO ' . $wpdb->prefix . 'cpms_prescriptions (clinic_id, location_id, visit_id, patient_id, clinician_id, prescription_number, status, created_at, updated_at) VALUES (%d, %d, %d, %d, %d, %s, "draft", %s, %s)',
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_prescriptions (clinic_id, prescription_number, visit_id, patient_id, clinician_id, status, is_patient_visible, created_at, updated_at) VALUES (%d, %s, %d, %d, %d, "draft", 1, %s, %s)',
                 $this->clinicId,
-                $this->locationId,
+                'RX-REV-' . bin2hex(random_bytes(3)),
                 $visitId,
                 $patientId,
                 $this->clinicianId,
-                'RX-REV-' . bin2hex(random_bytes(3)),
                 $now,
                 $now
             )
@@ -297,12 +299,12 @@ final class Phase1BPrescriptionConcurrencyTest extends WP_UnitTestCase
         // Main connection attempts finalization
         wp_set_current_user($this->doctorUserId);
         $headers = ['X-CPMS-Clinic-Id' => (string) $this->clinicId];
-        $auditBefore = (int) App::db()->fetchValue('SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_log'), []);
+        $auditBefore = (int) App::db()->fetchValue('SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs'), []);
         $attempt = $this->dispatch('POST', self::NS . '/prescriptions/' . $prescriptionId . '/finalize', [], $headers);
         $missing = $this->dispatch('POST', self::NS . '/prescriptions/999999999/finalize', [], $headers);
 
         $this->assertSame('draft', $this->rxStatus($prescriptionId), 'revoked identity must leave the prescription draft');
-        $this->assertSame($auditBefore, (int) App::db()->fetchValue('SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_log'), []), 'revoked-identity denial must append no audit row');
+        $this->assertSame($auditBefore, (int) App::db()->fetchValue('SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs'), []), 'revoked-identity denial must append no audit row');
         $this->assertSame($missing->get_status(), $attempt->get_status(), 'revoked-identity denial must stay non-enumerating');
     }
 
