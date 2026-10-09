@@ -143,11 +143,13 @@ final class ClinicalNoteRepository
         if ( null !== $own_clinician_id ) {
             if ( $own_clinician_id > 0 ) {
                 $where .= ' AND (visibility = %s OR visit_id IN (SELECT id FROM ' . $this->db->table( 'cpms_visits' ) . ' WHERE clinic_id = %d AND clinician_id = %d))';
+
                 $params[] = 'patient_visible';
                 $params[] = $clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
                 $params[] = $own_clinician_id;
             } else {
                 $where .= ' AND visibility = %s';
+
                 $params[] = 'patient_visible';
             }
         }

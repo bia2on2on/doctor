@@ -514,6 +514,7 @@ final class ClinicalService
 
             return $rx;
         };
+
         $rx = $this->db->transactional( $finalize_rx );
 
         $this->audit->log(
@@ -1364,13 +1365,15 @@ final class ClinicalService
             );
         }
         if ($isDoctor && ($type === 'all' || $type === 'note')) {
-            $has_private_read  = user_can( $actorUserId, RolesAndCapabilities::PRIVATE_NOTE_READ ) // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
+            $has_private_read = user_can( $actorUserId, RolesAndCapabilities::PRIVATE_NOTE_READ ) // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
                 && App::authorization_service()->can(
                     $actorUserId, // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
-                    $trustedClinicId,
+                    $trustedClinicId, // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
                     RolesAndCapabilities::PRIVATE_NOTE_READ
                 );
-            $own_clinician_id  = $has_private_read ? $this->active_clinician_id_of_user( $actorUserId ) : null; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
+
+            $own_clinician_id = $has_private_read ? $this->active_clinician_id_of_user( $actorUserId ) : null; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
+
             $search_visibility = null !== $own_clinician_id ? null : [ 'patient_visible' ];
 
             $results['notes'] = array_map(
