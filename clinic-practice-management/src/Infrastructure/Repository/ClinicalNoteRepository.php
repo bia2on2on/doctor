@@ -129,9 +129,31 @@ final class ClinicalNoteRepository
      * @param list<string>|null $visibility
      * @return list<array<string, mixed>>
      */
-    public function search(int $clinicId, string $q, ?array $visibility, string $from, string $to, int $limit = 25): array
+    public function search( int $clinicId, string $q, ?array $visibility, string $from, string $to, int $limit = 25, ?int $own_clinician_id = null ): array // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
     {
         [$where, $params] = $this->visibilityWhere('clinic_id = %d', [$clinicId], $visibility, false);
+        /*
+         * Phase 1B acceptance Blocker 1A — E18 disclosure predicate in SQL: a
+         * `doctor_private` row is returned only when its Visit's persisted clinician
+         * is the requesting actor's own ACTIVE clinician profile (`0` = none, i.e.
+         * private rows are excluded entirely). Unauthorized private content is
+         * therefore never retrieved for snippet serialization; patient-visible rows
+         * and the Clinic/date/LIKE predicates are unchanged.
+         */
+        if ( null !== $own_clinician_id ) {
+            if ( $own_clinician_id > 0 ) {
+                $where .= ' AND (visibility = %s OR visit_id IN (SELECT id FROM ' . $this->db->table( 'cpms_visits' ) . ' WHERE clinic_id = %d AND clinician_id = %d))';
+
+                $params[] = 'patient_visible';
+                $params[] = $clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
+                $params[] = $own_clinician_id;
+            } else {
+                $where .= ' AND visibility = %s';
+
+                $params[] = 'patient_visible';
+            }
+        }
+
         $sql = 'SELECT * FROM ' . $this->db->table('cpms_clinical_notes') .
             ' WHERE ' . $where . ' AND content_text LIKE %s' .
             ' AND created_at >= %s AND created_at < %s' .
