@@ -117,13 +117,21 @@ GROUPS = {
             "real SMS delivery": "NOT RUN — no live provider is configured and no successful provider delivery evidence exists; activation is not delivery evidence",
         },
     },
-    # Exact 19 free subjects from the authoritative third-party-baseline matrix.
+    # Combined free-plugin campaign selected from the authoritative
+    # third-party-baseline matrix. The group key, evidence root and artifact name
+    # `combined-nineteen` remain the historical campaign identity so the Phase 18
+    # all-19 evidence stays addressable and unrenamed under its original record.
+    # Phase 19 owner decision (2026-10-09): Persian WooCommerce 10.0.5 is
+    # temporarily excluded from this ACTIVE pin set only — 18 authoritative free
+    # pins remain. This quarantine is not a universal incompatibility declaration;
+    # the version keeps its independent persian-woocommerce-diagnosis lane (and its
+    # SMS pair), and the unchanged third-party-baseline subject matrix still pins
+    # and measures it individually. It may be re-evaluated in a separate action.
     # WooCommerce precedes its Persian add-ons during activation; all packages
     # are still installed before any plugin is activated, and CF7 remains last.
     "combined-nineteen": {
         "pins": {
             "woocommerce": "11.2.0",
-            "persian-woocommerce": "10.0.5",
             "persian-woocommerce-sms": "7.2.3",
             "litespeed-cache": "7.9.1",
             "wordpress-seo": "28.6",
@@ -145,7 +153,9 @@ GROUPS = {
         "subject": "contact-form-7",
         "root": "coexistence-combined-nineteen",
         "artifact": "persian-coexistence-combined-nineteen",
-        "title": "Persian final all-19-plugin combined compatibility scenario",
+        # Truthful active-set label; `nineteen` survives only as the historical
+        # group/root/artifact identity of the campaign, not as a plugin count.
+        "title": "Persian combined compatibility scenario (18 active plugins; Persian WooCommerce 10.0.5 quarantined)",
         "not_run": {
             "real SMS delivery": "NOT RUN — no live provider is configured and no successful provider delivery evidence exists; activation is not delivery evidence",
             "authored third-party configuration": "NOT RUN — plugin-specific forms, rules, custom fields, translations, roles, cron actions, security services and cache settings are not authored or weakened; default activation behaviour only",
@@ -490,7 +500,7 @@ def _safe_expected_observed(check):
 
 
 def stage_a_failure_visibility(stage_a, stage_b_status):
-    """Build bounded, sanitized visibility for the all-19 Stage A block only."""
+    """Build bounded, sanitized visibility for the combined-campaign Stage A block only."""
     if GROUP != "combined-nineteen" or not isinstance(stage_a, dict):
         return None
     if stage_a.get("status") == "PASS" and stage_a.get("complete") is True:

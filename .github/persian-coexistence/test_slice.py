@@ -448,22 +448,38 @@ class GroupSelectionTests(unittest.TestCase):
         for key in ("Clinic A/B isolation", "synthetic broken migration"):
             self.assertIn(key, module.NOT_RUN)
 
-    def test_final_all_nineteen_exactly_matches_authoritative_free_subject_matrix(self):
+    def test_combined_active_set_is_authoritative_matrix_except_quarantined_plugin(self):
         module = load_group("combined-nineteen")
         expected = authoritative_subject_pins()
+        # The authoritative matrix itself is unchanged and still holds 19 free
+        # subjects, Persian WooCommerce 10.0.5 included.
         self.assertEqual(len(expected), 19)
-        self.assertEqual(module.PINS, expected)
+        self.assertEqual(expected["persian-woocommerce"], "10.0.5")
+        # The Phase 19 owner decision quarantines exactly one subject from this
+        # active scenario; every other plugin keeps its exact authoritative pin.
+        self.assertEqual(len(module.PINS), 18)
+        self.assertEqual(module.PINS, {slug: version for slug, version in expected.items()
+                                       if slug != "persian-woocommerce"})
+        self.assertNotIn("persian-woocommerce", module.PINS)
         self.assertEqual(module.SUBJECT, "contact-form-7")
+        # The historical identity survives untouched so Phase 18 all-19 evidence
+        # remains addressable under its original names.
         self.assertEqual(module.GROUPS["combined-nineteen"]["root"], "coexistence-combined-nineteen")
         self.assertEqual(module.GROUPS["combined-nineteen"]["artifact"],
                          "persian-coexistence-combined-nineteen")
         self.assertTrue(module.STAGE_B_ENABLED)
         self.assertNotIn("wp-rocket", module.PINS)
         self.assertNotIn("gravityforms", module.PINS)
-        # The known Persian WooCommerce failure is retained as a simultaneous member.
-        self.assertEqual(module.PINS["persian-woocommerce"], "10.0.5")
         self.assertEqual(module.PINS["woocommerce"], "11.2.0")
         self.assertEqual(module.PINS["persian-woocommerce-sms"], "7.2.3")
+        # Exclusion narrows only this combined scenario: the independent Persian
+        # WooCommerce lanes keep their exact pins and CPMS-free/Stage-B boundaries.
+        diagnosis = load_group("persian-woocommerce-diagnosis")
+        self.assertEqual(diagnosis.PINS, {"woocommerce": "11.2.0", "persian-woocommerce": "10.0.5"})
+        self.assertFalse(diagnosis.STAGE_B_ENABLED)
+        self.assertEqual(module.GROUPS["combined-nineteen"]["title"],
+                         "Persian combined compatibility scenario (18 active plugins; "
+                         "Persian WooCommerce 10.0.5 quarantined)")
 
     def test_new_sms_and_diagnostic_groups_have_independent_pins_and_b_boundaries(self):
         sms = load_group("persian-woocommerce-sms")
@@ -756,7 +772,7 @@ class CombinedNineteenGroupTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.module = load_group("combined-nineteen")
 
-    def test_all_nineteen_packages_install_before_any_activation(self):
+    def test_all_active_packages_install_before_any_activation(self):
         from urllib.parse import urlparse
 
         calls, events = [], []
@@ -801,13 +817,16 @@ class CombinedNineteenGroupTests(unittest.TestCase):
 
         installs = [index for index, call in enumerate(calls) if call[0] == "install"]
         activates = [index for index, call in enumerate(calls) if call[0] == "activate"]
-        self.assertEqual(len(installs), 19)
-        self.assertEqual(len(activates), 19)
+        self.assertEqual(len(installs), 18)
+        self.assertEqual(len(activates), 18)
+        self.assertEqual(len(self.module.PINS), 18)
         self.assertGreater(min(activates), max(installs))
         active_order = [calls[index][1] for index in activates]
         self.assertEqual(active_order[0], "woocommerce")
         self.assertEqual(active_order[-1], "contact-form-7")
-        self.assertLess(active_order.index("woocommerce"), active_order.index("persian-woocommerce"))
+        # Quarantined by the Phase 19 decision: never installed nor activated in
+        # this active scenario; its independent lanes own that measurement.
+        self.assertNotIn("persian-woocommerce", active_order)
         self.assertLess(active_order.index("woocommerce"), active_order.index("persian-woocommerce-sms"))
         self.assertLess(active_order.index("elementor"), active_order.index("persian-elementor"))
         self.assertNotIn("deactivate", [call[0] for call in calls])
@@ -832,7 +851,7 @@ class CombinedNineteenGroupTests(unittest.TestCase):
             lane_slice.identity("A")
         return lane_slice
 
-    def test_identity_requires_exactly_all_nineteen_active_at_exact_versions(self):
+    def test_identity_requires_exactly_all_active_plugins_at_exact_versions(self):
         exact = [{"slug": slug, "version": version} for slug, version in self.module.PINS.items()]
         active = (True, [f"{slug}/{slug}.php" for slug in self.module.PINS], "")
         exact_slice = self.identity_slice("exact", exact, active)
@@ -844,12 +863,21 @@ class CombinedNineteenGroupTests(unittest.TestCase):
         omitted_checks = {item["name"]: item for item in omitted_slice.store("A").data["checks"]}
         self.assertEqual(omitted_checks["exact_active_group"]["status"], "FAIL")
 
+        # The active set must also fail closed if the quarantined plugin somehow
+        # reappears: exclusion is enforced by the exact identity, not by luck.
+        quarantined = (True, [f"{slug}/{slug}.php" for slug in self.module.PINS]
+                       + ["persian-woocommerce/persian-woocommerce.php"], "")
+        quarantine_slice = self.identity_slice("quarantined-active", exact, quarantined)
+        quarantine_checks = {item["name"]: item for item in quarantine_slice.store("A").data["checks"]}
+        self.assertEqual(quarantine_checks["exact_active_group"]["status"], "FAIL")
+        self.assertEqual(self.module.verdict(quarantine_slice.store("A"), True)["status"], "FAIL")
+
         drifted = [{"slug": item["slug"],
-                    "version": "10.0.4" if item["slug"] == "persian-woocommerce" else item["version"]}
+                    "version": "7.9.0" if item["slug"] == "litespeed-cache" else item["version"]}
                    for item in exact]
         drift_slice = self.identity_slice("drift", drifted, active)
         drift_checks = {item["name"]: item for item in drift_slice.store("A").data["checks"]}
-        self.assertEqual(drift_checks["unchanged_version::persian-woocommerce"]["status"], "FAIL")
+        self.assertEqual(drift_checks["unchanged_version::litespeed-cache"]["status"], "FAIL")
         self.assertEqual(self.module.verdict(drift_slice.store("A"), True)["status"], "FAIL")
 
     def test_material_stage_a_failure_refuses_b_and_preserves_first_cause(self):

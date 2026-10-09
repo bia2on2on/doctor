@@ -21,7 +21,7 @@ is a union, substitute or prerequisite for another.
 | --- | --- | --- |
 | `coexistence-persian-woocommerce-diagnosis` / `persian-woocommerce-diagnosis` | `woocommerce` 11.2.0 + `persian-woocommerce` 10.0.5 | Explicitly disabled; this scenario never installs CPMS |
 | `coexistence-persian-woocommerce-sms` / `persian-woocommerce-sms` | `woocommerce` 11.2.0 + `persian-woocommerce-sms` 7.2.3 | Reused Stage B is eligible only after materially healthy, complete A |
-| `coexistence-combined-nineteen` / `combined-nineteen` | All 19 authoritative free-plugin subjects below, simultaneously active | Reused Stage B is eligible only after materially healthy, complete A |
+| `coexistence-combined-nineteen` / `combined-nineteen` | 18 of the 19 authoritative free-plugin subjects below, simultaneously active (Persian WooCommerce 10.0.5 excluded by the Phase 19 quarantine; name kept as the historical scenario identity) | Reused Stage B is eligible only after materially healthy, complete A |
 
 The original five-plugin lane remains `persian-five`; its selection and pins are
 unchanged. The two-plugin security/authentication lane remains
@@ -106,45 +106,58 @@ Real SMS delivery is always `NOT RUN` unless a provider is configured and
 successful provider delivery evidence exists. Plugin activation or a local
 fixture is not delivery evidence. No provider secret was added.
 
-### Final all-19 free-plugin combined scenario
+### Final free-plugin combined scenario (18 active pins; one quarantine)
 
-The 19 exact pins are fixed in `run.py` from the authoritative subject matrix in
+The exact pins are fixed in `run.py` from the authoritative subject matrix in
 `.github/workflows/third-party-baseline.yml`; the focused test compares the
-scenario's set and versions directly to that matrix. Every subject is installed
-before activation and all remain active together. WP Rocket and Gravity Forms
-are not subjects. The known individual Persian WooCommerce CPMS-free baseline
-failure stays installed and visible; it is not removed, disabled, patched or
-substituted to make the combined run pass.
+scenario's set and versions directly to that matrix. Every active subject is
+installed before activation and all remain active together. WP Rocket and
+Gravity Forms are not subjects.
 
-| # | Free plugin slug | Exact pin |
-| ---: | --- | ---: |
-| 1 | `litespeed-cache` | 7.9.1 |
-| 2 | `wordpress-seo` | 28.6 |
-| 3 | `seo-by-rank-math` | 1.0.280 |
-| 4 | `persian-woocommerce` | 10.0.5 |
-| 5 | `woocommerce` | 11.2.0 |
-| 6 | `elementor` | 4.3.4 |
-| 7 | `persian-elementor` | 2.8.4 |
-| 8 | `wp-parsidate` | 6.4 |
-| 9 | `persian-woocommerce-sms` | 7.2.3 |
-| 10 | `contact-form-7` | 6.2 |
-| 11 | `wordfence` | 9.0.2 |
-| 12 | `really-simple-ssl` | 9.8.3 |
-| 13 | `redirection` | 5.10.1 |
-| 14 | `polylang` | 3.8.10 |
-| 15 | `user-role-editor` | 4.66.2 |
-| 16 | `autoptimize` | 3.1.16 |
-| 17 | `advanced-custom-fields` | 6.8.10 |
-| 18 | `wp-crontrol` | 1.21.2 |
-| 19 | `loco-translate` | 2.8.9 |
+Phase 19 owner decision (2026-10-09): **Persian WooCommerce 10.0.5 is
+temporarily excluded from this active combined set** — 18 of the 19 authoritative
+free subjects remain, each at its unchanged exact pin. This is a narrow
+quarantine for the combined scenario, **not** a declaration that Persian
+WooCommerce is universally incompatible with CPMS. The version keeps its
+independent CPMS-free diagnosis lane and SMS pair above, and the unchanged
+third-party-baseline subject matrix still measures and pins it individually; the
+combined campaign may re-evaluate it in a separate action. The historical group
+key, job, evidence root and artifact keep the `combined-nineteen` identity so the
+Phase 18 all-19 run and its recorded Stage A failure remain addressable under
+their original names; that evidence is preserved, not rewritten or reclassified.
 
-Stage A, while CPMS is absent, asserts exactly those versions and active
-identities and reuses the existing bootstrap/admin login, public pages,
-REST/AJAX, `fa_IR`/RTL, PHP/browser and bounded-redirect probes. The first
-material causal failure is retained. A material failure or incomplete evidence
-means Stage A FAIL, Stage B NOT RUN and **no CPMS installation**. In particular,
-the known individual Persian WooCommerce baseline failure cannot be reclassified
-as a CPMS defect because a combined A failure happened before CPMS existed.
+| # | Free plugin slug | Exact pin | Active in combined scenario |
+| ---: | --- | ---: | --- |
+| 1 | `litespeed-cache` | 7.9.1 | yes |
+| 2 | `wordpress-seo` | 28.6 | yes |
+| 3 | `seo-by-rank-math` | 1.0.280 | yes |
+| 4 | `persian-woocommerce` | 10.0.5 | no — Phase 19 quarantine; covered by the diagnosis lane and its individual baseline |
+| 5 | `woocommerce` | 11.2.0 | yes |
+| 6 | `elementor` | 4.3.4 | yes |
+| 7 | `persian-elementor` | 2.8.4 | yes |
+| 8 | `wp-parsidate` | 6.4 | yes |
+| 9 | `persian-woocommerce-sms` | 7.2.3 | yes |
+| 10 | `contact-form-7` | 6.2 | yes |
+| 11 | `wordfence` | 9.0.2 | yes |
+| 12 | `really-simple-ssl` | 9.8.3 | yes |
+| 13 | `redirection` | 5.10.1 | yes |
+| 14 | `polylang` | 3.8.10 | yes |
+| 15 | `user-role-editor` | 4.66.2 | yes |
+| 16 | `autoptimize` | 3.1.16 | yes |
+| 17 | `advanced-custom-fields` | 6.8.10 | yes |
+| 18 | `wp-crontrol` | 1.21.2 | yes |
+| 19 | `loco-translate` | 2.8.9 | yes |
+
+Stage A, while CPMS is absent, asserts exactly those versions and the active
+set above (18 plugins; any extra active plugin, including the quarantined one,
+fails the exact-identity check) and reuses the existing bootstrap/admin login,
+public pages, REST/AJAX, `fa_IR`/RTL, PHP/browser and bounded-redirect probes.
+The first material causal failure is retained. A material failure or incomplete
+evidence means Stage A FAIL, Stage B NOT RUN and **no CPMS installation**. The
+Phase 18 all-19 Stage A failure (reported Persian WooCommerce post-activation
+redirect loop) stays on record under that historical name: excluding the plugin
+narrowly neither converts that result into PASS nor attributes any combined
+failure to CPMS, because Stage A runs before CPMS exists.
 
 After healthy complete A only, the same Stage B contract applies: migrations,
 five operational role personas, authorization denials, booking, REST/AJAX,
