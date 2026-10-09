@@ -830,8 +830,11 @@ final class RestTrustedClinicContextTest extends WP_UnitTestCase
         $doctor = $this->makeStaff('cpms_doctor');
         cpms_test_seed_membership($doctor, $this->clinicA, 'cpms_doctor');
         cpms_test_seed_membership($doctor, $this->clinicB, 'cpms_doctor');
+        // One Clinician profile per WP user (u_clinician_user UNIQUE): multi-Clinic
+        // participation is membership, not a second clinician row. The previous
+        // second insert silently failed and persisted clinician_id = 0 on rxB.
         $clinicianA = $this->insertClinician($this->clinicA, $doctor, 'Dr RxScopeA');
-        $clinicianB = $this->insertClinician($this->clinicB, $doctor, 'Dr RxScopeB');
+        $clinicianB = $clinicianA;
         wp_set_current_user($doctor);
 
         $visitA = $this->lastVisitId($this->clinicA);
@@ -877,8 +880,9 @@ final class RestTrustedClinicContextTest extends WP_UnitTestCase
         $doctor = $this->makeStaff('cpms_doctor');
         cpms_test_seed_membership($doctor, $this->clinicA, 'cpms_doctor');
         cpms_test_seed_membership($doctor, $this->clinicB, 'cpms_doctor');
+        // Same single-profile rule as above: rxB carries the actor's real clinician.
         $clinicianA = $this->insertClinician($this->clinicA, $doctor, 'Dr RxSeqA');
-        $clinicianB = $this->insertClinician($this->clinicB, $doctor, 'Dr RxSeqB');
+        $clinicianB = $clinicianA;
         wp_set_current_user($doctor);
 
         $rxA = $this->insertRx($this->clinicA, $this->lastVisitId($this->clinicA), $clinicianA);

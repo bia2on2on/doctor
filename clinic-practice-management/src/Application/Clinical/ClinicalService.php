@@ -126,7 +126,7 @@ final class ClinicalService
             );
 
         // Query-level visibility filter (FR-8.4 / P-6) — never a post-read PHP filter.
-        $note_visibility = $can_read_private_notes ? null : [ 'patient_visible' ];
+        $note_visibility = $can_read_private_notes ? null : [ 'patient_visible' ]; // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- Legacy PSR-style assignment spacing kept inside this camelCase service.
 
         $rxRows = $this->prescriptions->forVisit($visitId);
         $rxList = [];
