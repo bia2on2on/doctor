@@ -742,11 +742,15 @@ final class FinanceClinicIsolationTest extends WP_UnitTestCase
         $id = (int) $visit['id'];
         App::visitService()->transition($fx['doctor'], $id, 'call');
         App::visitService()->transition($fx['doctor'], $id, 'start');
-        App::clinicalService()->addNote($fx['doctor'], $id, [
-            'category' => 'chief_complaint',
-            'visibility' => 'patient_visible',
-            'content_text' => 'درد و تهوع',
-        ]);
+        // Phase 1B B-02: the clinical write is Clinic-scoped like the REST boundary,
+        // so this fixture establishes the same explicit trusted Clinic as walkIn above.
+        $this->withScope((int) $fx['clinic'], function () use ($fx, $id): void {
+            App::clinicalService()->addNote($fx['doctor'], $id, [
+                'category' => 'chief_complaint',
+                'visibility' => 'patient_visible',
+                'content_text' => 'درد و تهوع',
+            ]);
+        });
         App::clinicalService()->completeConsultation($fx['doctor'], $id);
 
         return $id;

@@ -1119,15 +1119,23 @@ final class RestTrustedClinicContextTest extends WP_UnitTestCase
         $this->assertNotContains('phase1b-medical-read-only-secret', $contents);
     }
 
-    /** Same-Clinic peer note creation is a safe 404 and has no clinical/audit side effect. */
-    public function testPhase1BPeerCannotCreateNoteOnAnotherDoctorsVisit(): void
+    /**
+     * POSITIVE CONTROL (policy preserved, NOT a defect): same-Clinic note authoring
+     * by a scoped `cpms_note_create` holder stays authorized even when the Visit
+     * belongs to another clinician of the same Clinic. This is the accepted
+     * shared-care boundary (permission matrix §4.3 note rows + the existing
+     * ClinicalFilesScopedAuthorizationTest regressions); no narrower own-Visit rule
+     * for note creation is authorized by a current Product Decision, so none is
+     * invented here. The peer still must not see the owner's doctor_private notes
+     * (covered by the two private-note regressions above).
+     */
+    public function testPhase1BSameClinicPeerNoteAuthoringRemainsAuthorized(): void
     {
         $owner = $this->makeStaff('cpms_doctor');
         $peer = $this->makeStaff('cpms_doctor');
         cpms_test_seed_membership($owner, $this->clinicA, 'cpms_doctor');
         cpms_test_seed_membership($peer, $this->clinicA, 'cpms_doctor');
         $clinicianId = $this->insertClinician($this->clinicA, $owner, 'Dr Phase1B E8 Owner');
-        $this->insertClinician($this->clinicA, $peer, 'Dr Phase1B E8 Peer');
         $patientId = $this->insertPatient($this->clinicA, 'Phase1BE8');
         $this->insertVisit($this->clinicA, $this->locA, $clinicianId, $patientId);
         $visitId = $this->lastVisitId($this->clinicA);
@@ -1136,30 +1144,27 @@ final class RestTrustedClinicContextTest extends WP_UnitTestCase
         $body = [
             'category' => 'clinical_note',
             'visibility' => 'patient_visible',
-            'content_text' => 'phase1b-rejected-peer-note',
+            'content_text' => 'phase1b-authorized-same-clinic-peer-note',
         ];
-        $notesBefore = $this->clinicalNoteCount($this->clinicA, $visitId);
-        $auditBefore = $this->auditCount();
         $attempt = $this->dispatch('POST', self::NS . '/visits/' . $visitId . '/notes', $body, [
             'X-CPMS-Clinic-Id' => (string) $this->clinicA,
         ]);
-        $notesAfter = $this->clinicalNoteCount($this->clinicA, $visitId);
-        $auditAfter = $this->auditCount();
-        $missing = $this->dispatch('POST', self::NS . '/visits/' . $this->missingId('cpms_visits') . '/notes', $body, [
+        $this->assertSame(200, $attempt->get_status(), (string) json_encode($attempt->get_data(), JSON_UNESCAPED_UNICODE));
+        $this->assertSame(1, $this->clinicalNoteCount($this->clinicA, $visitId));
+
+        // A peer without the scoped permission is still denied by the existing
+        // capability boundary — the widened path above is permission-gated.
+        $denied = $this->makeStaff('cpms_doctor');
+        $deniedMembership = cpms_test_seed_membership($denied, $this->clinicA, 'cpms_doctor');
+        App::membership_service()->set_capability($deniedMembership, RolesAndCapabilities::NOTE_CREATE, 'deny');
+        wp_set_current_user($denied);
+        $notesBefore = $this->clinicalNoteCount($this->clinicA, $visitId);
+        $rejected = $this->dispatch('POST', self::NS . '/visits/' . $visitId . '/notes', $body, [
             'X-CPMS-Clinic-Id' => (string) $this->clinicA,
         ]);
-        $diagnostic = sprintf(
-            'response=%s; note_rows=%d->%d; audit_rows=%d->%d',
-            (string) json_encode($attempt->get_data(), JSON_UNESCAPED_UNICODE),
-            $notesBefore,
-            $notesAfter,
-            $auditBefore,
-            $auditAfter
-        );
-
-        $this->assertSame($this->responseErrorIdentity($missing), $this->responseErrorIdentity($attempt), $diagnostic);
-        $this->assertSame($notesBefore, $notesAfter, 'Rejected E8 write must not create a clinical note');
-        $this->assertSame($auditBefore, $auditAfter, 'Rejected E8 write must not append an audit row');
+        $this->assertSame(403, $rejected->get_status(), (string) json_encode($rejected->get_data(), JSON_UNESCAPED_UNICODE));
+        $this->assertSame('CLINIC_PERMISSION_DENIED', $this->errorCode($rejected));
+        $this->assertSame($notesBefore, $this->clinicalNoteCount($this->clinicA, $visitId), 'Denied write creates no note');
     }
 
     /** Same-Clinic peer prescription finalization is a safe 404 and is side-effect-free. */
