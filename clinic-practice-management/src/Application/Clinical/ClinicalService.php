@@ -126,7 +126,7 @@ final class ClinicalService
             );
 
         // Query-level visibility filter (FR-8.4 / P-6) — never a post-read PHP filter.
-        $note_visibility = $can_read_private_notes ? null : [ 'patient_visible' ]; // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- Legacy PSR-style assignment spacing kept inside this camelCase service.
+        $note_visibility = $can_read_private_notes ? null : [ 'patient_visible' ];
 
         $rxRows = $this->prescriptions->forVisit($visitId);
         $rxList = [];
@@ -482,23 +482,24 @@ final class ClinicalService
             'prescription',
             $prescriptionId
         );
-        $rx = $this->db->transactional( function () use ( $actorUserId, $prescriptionId, $clinicId ): array { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
-            $rx = $this->prescriptions->findForUpdateForClinic( $prescriptionId, $clinicId ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
-            if ( null === $rx ) {
-                throw ClinicalException::of( 'CLINIC_NOT_FOUND', 'نسخه یافت نشد', 404 );
+        /*
+         * Phase 1B B-01 — clinician ownership for the doctor-specific finalization
+         * step, evaluated BEFORE the transaction: this is the established pattern of
+         * `updateNote()` in this service (rejection checks run outside the
+         * transaction so nothing is mutated and no audit row is written). The read
+         * keeps the trusted-Clinic predicate, so a prescription of another Clinic is
+         * never loaded. `cpms_prescriptions.clinician_id` is immutable — no code path
+         * updates it — so this pre-check is race-safe, while the Clinic predicate and
+         * the Draft→Finalized transition stay locked inside the transaction below and
+         * remain the authority of the mutation boundary.
+         */
+        $this->require_own_prescription_clinician( $actorUserId, $prescriptionId, $clinicId ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
+        $rx = $this->db->transactional(function () use ($prescriptionId, $clinicId): array {
+            $rx = $this->prescriptions->findForUpdateForClinic($prescriptionId, $clinicId);
+            if ($rx === null) {
+                throw ClinicalException::of('CLINIC_NOT_FOUND', 'نسخه یافت نشد', 404);
             }
-
-            /*
-             * Phase 1B B-01 — clinician ownership for the doctor-specific
-             * finalization step: the same own-record rule `createPrescription()`
-             * already applies, evaluated on the persisted `clinician_id` of the
-             * locked row (server-derived identity; raw ids are selectors only).
-             * Rejection reuses the existing non-enumerating not-found response
-             * and performs zero clinical/audit mutation.
-             */
-            $this->require_own_clinician( $actorUserId, (int) $rx['clinician_id'], 'نسخه یافت نشد' ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
-
-            if ( (string) $rx['status'] === 'finalized' ) {
+            if ((string) $rx['status'] === 'finalized') {
                 throw ClinicalException::of('CLINIC_INVALID_TRANSITION', 'این نسخه قبلاً نهایی شده است', 409, ['status' => 'finalized']);
             }
             if ((string) $rx['status'] === 'voided') {
@@ -1479,6 +1480,29 @@ final class ClinicalService
         }
 
         throw ClinicalException::of( 'CLINIC_NOT_FOUND', $not_found_message, 404 );
+    }
+
+    /**
+     * Phase 1B B-01 — E11 finalization must act on the actor's own prescription.
+     *
+     * The persisted `clinician_id` is read WITH the trusted-Clinic predicate, so a
+     * prescription of another Clinic is never loaded and its existence is never
+     * disclosed. A missing row, a dangling `clinician_id` (`0`), or a clinician not
+     * durably linked to this authenticated user all fail closed with the same
+     * non-enumerating `CLINIC_NOT_FOUND` and zero clinical/audit mutation.
+     */
+    private function require_own_prescription_clinician( int $actor_user_id, int $prescription_id, int $clinic_id ): void {
+        $clinician_id = $this->db->fetchValue(
+            'SELECT clinician_id FROM ' . $this->db->table( 'cpms_prescriptions' ) .
+            ' WHERE id = %d AND clinic_id = %d LIMIT 1',
+            [ $prescription_id, $clinic_id ]
+        );
+
+        if ( null === $clinician_id ) {
+            throw ClinicalException::of( 'CLINIC_NOT_FOUND', 'نسخه یافت نشد', 404 );
+        }
+
+        $this->require_own_clinician( $actor_user_id, (int) $clinician_id, 'نسخه یافت نشد' );
     }
 
     /**
