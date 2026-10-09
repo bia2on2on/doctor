@@ -1306,6 +1306,273 @@ final class RestTrustedClinicContextTest extends WP_UnitTestCase
         $this->assertSame('finalized', (string) ($this->payload($finalized)['status'] ?? ''));
     }
 
+    /**
+     * ACCEPTANCE BLOCKER 1A (class B — pre-existing product defect, newly
+     * demonstrated): E18 global search reads notes with unrestricted visibility,
+     * so a same-Clinic peer doctor receives `doctor_private` content as a snippet.
+     * `cpms_search` (+`cpms_medical_read`) alone must never authorize private-note
+     * disclosure; patient-visible notes stay searchable, and the role-aware
+     * secretary boundary must not widen.
+     */
+    public function testPhase1BPeerCannotRetrievePrivateNoteSnippetThroughGlobalSearch(): void
+    {
+        $owner = $this->makeStaff('cpms_doctor');
+        $peer = $this->makeStaff('cpms_doctor');
+        $secretary = $this->makeStaff('cpms_secretary');
+        cpms_test_seed_membership($owner, $this->clinicA, 'cpms_doctor');
+        cpms_test_seed_membership($peer, $this->clinicA, 'cpms_doctor');
+        cpms_test_seed_membership($secretary, $this->clinicA, 'cpms_secretary');
+        $clinicianId = $this->insertClinician($this->clinicA, $owner, 'Dr Phase1B Search Owner');
+        $this->insertClinician($this->clinicA, $peer, 'Dr Phase1B Search Peer');
+        $patientId = $this->insertPatient($this->clinicA, 'Phase1BSearch');
+        $this->insertVisit($this->clinicA, $this->locA, $clinicianId, $patientId);
+        $visitId = $this->lastVisitId($this->clinicA);
+        $headers = ['X-CPMS-Clinic-Id' => (string) $this->clinicA];
+
+        wp_set_current_user($owner);
+        $private = $this->dispatch('POST', self::NS . '/visits/' . $visitId . '/notes', [
+            'category' => 'private_note',
+            'visibility' => 'doctor_private',
+            'content_text' => 'phase1bsearchprivatesecret',
+        ], $headers);
+        $this->assertSame(200, $private->get_status(), (string) json_encode($private->get_data(), JSON_UNESCAPED_UNICODE));
+        $shared = $this->dispatch('POST', self::NS . '/visits/' . $visitId . '/notes', [
+            'category' => 'clinical_note',
+            'visibility' => 'patient_visible',
+            'content_text' => 'phase1bsearchsharednote',
+        ], $headers);
+        $this->assertSame(200, $shared->get_status(), (string) json_encode($shared->get_data(), JSON_UNESCAPED_UNICODE));
+
+        wp_set_current_user($peer);
+        $peerSearch = $this->dispatch('GET', self::NS . '/search', ['q' => 'phase1bsearch', 'type' => 'note'], $headers);
+        $this->assertSame(200, $peerSearch->get_status(), (string) json_encode($peerSearch->get_data(), JSON_UNESCAPED_UNICODE));
+        $peerSnippets = array_column($this->payload($peerSearch)['results']['notes'] ?? [], 'snippet');
+        $this->assertStringNotContainsString(
+            'phase1bsearchprivatesecret',
+            (string) json_encode($peerSearch->get_data(), JSON_UNESCAPED_UNICODE),
+            'a same-Clinic peer must not retrieve another clinician\'s private-note content through search'
+        );
+        $this->assertContains('phase1bsearchsharednote', $peerSnippets, 'patient-visible notes stay searchable for authorized same-Clinic readers');
+
+        wp_set_current_user($secretary);
+        $secretarySearch = $this->dispatch('GET', self::NS . '/search', ['q' => 'phase1bsearch', 'type' => 'note'], $headers);
+        $this->assertSame(200, $secretarySearch->get_status(), (string) json_encode($secretarySearch->get_data(), JSON_UNESCAPED_UNICODE));
+        $this->assertSame([], $this->payload($secretarySearch)['results']['notes'] ?? [], 'secretary note results must stay empty (role-aware boundary not widened)');
+    }
+
+    /** ACCEPTANCE BLOCKER 1A — `cpms_medical_read` + `cpms_search` without private-note authority is not disclosure authority. */
+    public function testPhase1BMedicalReadAndSearchDoNotImplyPrivateNoteRead(): void
+    {
+        $owner = $this->makeStaff('cpms_doctor');
+        $reader = $this->makeStaff('cpms_doctor');
+        cpms_test_seed_membership($owner, $this->clinicA, 'cpms_doctor');
+        $readerMembership = cpms_test_seed_membership($reader, $this->clinicA, 'cpms_doctor');
+        App::membership_service()->set_capability($readerMembership, RolesAndCapabilities::PRIVATE_NOTE_READ, 'deny');
+        $clinicianId = $this->insertClinician($this->clinicA, $owner, 'Dr Phase1B Search Cap Owner');
+        $this->insertClinician($this->clinicA, $reader, 'Dr Phase1B Search Cap Reader');
+        $patientId = $this->insertPatient($this->clinicA, 'Phase1BSearchCap');
+        $this->insertVisit($this->clinicA, $this->locA, $clinicianId, $patientId);
+        $visitId = $this->lastVisitId($this->clinicA);
+        $headers = ['X-CPMS-Clinic-Id' => (string) $this->clinicA];
+
+        self::assertTrue(App::authorization_service()->can($reader, $this->clinicA, RolesAndCapabilities::MEDICAL_READ));
+        self::assertTrue(App::authorization_service()->can($reader, $this->clinicA, RolesAndCapabilities::SEARCH));
+        self::assertFalse(App::authorization_service()->can($reader, $this->clinicA, RolesAndCapabilities::PRIVATE_NOTE_READ));
+
+        wp_set_current_user($owner);
+        $created = $this->dispatch('POST', self::NS . '/visits/' . $visitId . '/notes', [
+            'category' => 'private_note',
+            'visibility' => 'doctor_private',
+            'content_text' => 'phase1bsearchcapsecret',
+        ], $headers);
+        $this->assertSame(200, $created->get_status(), (string) json_encode($created->get_data(), JSON_UNESCAPED_UNICODE));
+
+        wp_set_current_user($reader);
+        $search = $this->dispatch('GET', self::NS . '/search', ['q' => 'phase1bsearchcap', 'type' => 'note'], $headers);
+        $this->assertSame(200, $search->get_status(), 'denying private-note access must not disable search itself');
+        $this->assertStringNotContainsString(
+            'phase1bsearchcapsecret',
+            (string) json_encode($search->get_data(), JSON_UNESCAPED_UNICODE),
+            'explicit scoped PRIVATE_NOTE_READ deny must stay effective in search'
+        );
+    }
+
+    /**
+     * ACCEPTANCE BLOCKER 1A/1B — the owning clinician is NOT exempt: with an
+     * explicit scoped `PRIVATE_NOTE_READ` deny, private-note content must not be
+     * retrievable through E7, E18 search or the prescription-print preparation
+     * (`chief_complaint`), while patient-visible content stays available.
+     */
+    public function testPhase1BOwnerWithExplicitScopedDenyLosesPrivateNotesEverywhere(): void
+    {
+        $owner = $this->makeStaff('cpms_doctor');
+        $ownerMembership = cpms_test_seed_membership($owner, $this->clinicA, 'cpms_doctor');
+        App::membership_service()->set_capability($ownerMembership, RolesAndCapabilities::PRIVATE_NOTE_READ, 'deny');
+        $clinicianId = $this->insertClinician($this->clinicA, $owner, 'Dr Phase1B Denied Owner');
+        $patientId = $this->insertPatient($this->clinicA, 'Phase1BDeniedOwner');
+        $this->insertVisit($this->clinicA, $this->locA, $clinicianId, $patientId);
+        $visitId = $this->lastVisitId($this->clinicA);
+        $headers = ['X-CPMS-Clinic-Id' => (string) $this->clinicA];
+
+        self::assertTrue(App::authorization_service()->can($owner, $this->clinicA, RolesAndCapabilities::PRIVATE_NOTE_CREATE));
+        self::assertFalse(App::authorization_service()->can($owner, $this->clinicA, RolesAndCapabilities::PRIVATE_NOTE_READ));
+
+        wp_set_current_user($owner);
+        $privateComplaint = $this->dispatch('POST', self::NS . '/visits/' . $visitId . '/notes', [
+            'category' => 'chief_complaint',
+            'visibility' => 'doctor_private',
+            'content_text' => 'phase1bdeniedownerprivatecomplaint',
+        ], $headers);
+        $this->assertSame(200, $privateComplaint->get_status(), (string) json_encode($privateComplaint->get_data(), JSON_UNESCAPED_UNICODE));
+        $sharedComplaint = $this->dispatch('POST', self::NS . '/visits/' . $visitId . '/notes', [
+            'category' => 'clinical_note',
+            'visibility' => 'patient_visible',
+            'content_text' => 'phase1bdeniedownersharednote',
+        ], $headers);
+        $this->assertSame(200, $sharedComplaint->get_status(), (string) json_encode($sharedComplaint->get_data(), JSON_UNESCAPED_UNICODE));
+        $prescriptionId = $this->insertRx($this->clinicA, $visitId, $clinicianId);
+
+        $record = $this->dispatch('GET', self::NS . '/visits/' . $visitId . '/record', [], $headers);
+        $this->assertSame(200, $record->get_status());
+        $recordContents = array_column($this->payload($record)['notes'] ?? [], 'content_text');
+        $this->assertNotContains('phase1bdeniedownerprivatecomplaint', $recordContents);
+        $this->assertContains('phase1bdeniedownersharednote', $recordContents);
+
+        $search = $this->dispatch('GET', self::NS . '/search', ['q' => 'phase1bdeniedowner', 'type' => 'note'], $headers);
+        $this->assertSame(200, $search->get_status(), (string) json_encode($search->get_data(), JSON_UNESCAPED_UNICODE));
+        $this->assertStringNotContainsString(
+            'phase1bdeniedownerprivatecomplaint',
+            (string) json_encode($search->get_data(), JSON_UNESCAPED_UNICODE),
+            'explicit scoped deny must stay effective for the owning clinician in search'
+        );
+
+        $view = $this->printView($owner, $visitId, $prescriptionId);
+        $this->assertStringNotContainsString(
+            'phase1bdeniedownerprivatecomplaint',
+            (string) json_encode($view, JSON_UNESCAPED_UNICODE),
+            'prescription print must not carry private-note text into chief_complaint under an explicit deny'
+        );
+    }
+
+    /**
+     * POSITIVE CONTROL (legitimate workflow preserved): the owning clinician with
+     * BOTH the global capability and the scoped `PRIVATE_NOTE_READ` permission keeps
+     * private-note access through E7, E18 search and prescription print.
+     */
+    public function testPhase1BAuthorizedOwnerRetainsPrivateNotesInRecordSearchAndPrint(): void
+    {
+        $owner = $this->makeStaff('cpms_doctor');
+        cpms_test_seed_membership($owner, $this->clinicA, 'cpms_doctor');
+        $clinicianId = $this->insertClinician($this->clinicA, $owner, 'Dr Phase1B Allowed Owner');
+        $patientId = $this->insertPatient($this->clinicA, 'Phase1BAllowedOwner');
+        $this->insertVisit($this->clinicA, $this->locA, $clinicianId, $patientId);
+        $visitId = $this->lastVisitId($this->clinicA);
+        $headers = ['X-CPMS-Clinic-Id' => (string) $this->clinicA];
+
+        self::assertTrue(user_can($owner, RolesAndCapabilities::PRIVATE_NOTE_READ));
+        self::assertTrue(App::authorization_service()->can($owner, $this->clinicA, RolesAndCapabilities::PRIVATE_NOTE_READ));
+
+        wp_set_current_user($owner);
+        $privateComplaint = $this->dispatch('POST', self::NS . '/visits/' . $visitId . '/notes', [
+            'category' => 'chief_complaint',
+            'visibility' => 'doctor_private',
+            'content_text' => 'phase1ballowedownerprivatecomplaint',
+        ], $headers);
+        $this->assertSame(200, $privateComplaint->get_status(), (string) json_encode($privateComplaint->get_data(), JSON_UNESCAPED_UNICODE));
+        $prescriptionId = $this->insertRx($this->clinicA, $visitId, $clinicianId);
+
+        $record = $this->dispatch('GET', self::NS . '/visits/' . $visitId . '/record', [], $headers);
+        $this->assertContains(
+            'phase1ballowedownerprivatecomplaint',
+            array_column($this->payload($record)['notes'] ?? [], 'content_text'),
+            'owning clinician with both permissions keeps E7 private-note access'
+        );
+
+        $search = $this->dispatch('GET', self::NS . '/search', ['q' => 'phase1ballowedowner', 'type' => 'note'], $headers);
+        $this->assertStringContainsString(
+            'phase1ballowedownerprivatecomplaint',
+            (string) json_encode($search->get_data(), JSON_UNESCAPED_UNICODE),
+            'owning clinician with both permissions keeps search access to their own private notes'
+        );
+
+        $view = $this->printView($owner, $visitId, $prescriptionId);
+        $this->assertSame('phase1ballowedownerprivatecomplaint', (string) ($view['chief_complaint'] ?? ''), 'print keeps the authorized owner\'s private chief complaint');
+    }
+
+    /**
+     * ACCEPTANCE BLOCKER 2 (sequential revocation — explicitly NOT a concurrency
+     * proof): deactivating the owning clinician identity before the finalization
+     * request must deny with the existing non-enumerating semantics, leave the
+     * prescription `draft` and append no audit row.
+     */
+    public function testPhase1BDeactivatedClinicianIdentityDeniesFinalization(): void
+    {
+        global $wpdb;
+        $owner = $this->makeStaff('cpms_doctor');
+        cpms_test_seed_membership($owner, $this->clinicA, 'cpms_doctor');
+        $clinicianId = $this->insertClinician($this->clinicA, $owner, 'Dr Phase1B Deactivated');
+        $patientId = $this->insertPatient($this->clinicA, 'Phase1BDeactivated');
+        $this->insertVisit($this->clinicA, $this->locA, $clinicianId, $patientId);
+        $visitId = $this->lastVisitId($this->clinicA);
+        $prescriptionId = $this->insertRx($this->clinicA, $visitId, $clinicianId);
+        wp_set_current_user($owner);
+        $headers = ['X-CPMS-Clinic-Id' => (string) $this->clinicA];
+
+        $wpdb->update($wpdb->prefix . 'cpms_clinicians', ['is_active' => 0], ['id' => $clinicianId]); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $auditBefore = $this->auditCount();
+        $attempt = $this->dispatch('POST', self::NS . '/prescriptions/' . $prescriptionId . '/finalize', [], $headers);
+        $missing = $this->dispatch('POST', self::NS . '/prescriptions/' . $this->missingId('cpms_prescriptions') . '/finalize', [], $headers);
+
+        $this->assertSame('draft', $this->rxStatus($prescriptionId), 'revoked identity must leave the prescription draft');
+        $this->assertSame($auditBefore, $this->auditCount(), 'revoked-identity denial must append no audit row');
+        $this->assertSame($this->responseErrorIdentity($missing), $this->responseErrorIdentity($attempt), 'revoked-identity denial must stay non-enumerating');
+    }
+
+    /**
+     * ACCEPTANCE BLOCKER 2 (sequential reassignment — explicitly NOT a concurrency
+     * proof): moving the durable `wp_user_id` link of the owning clinician profile to
+     * another user must deny finalization for the original actor and keep the row
+     * `draft`, while the trusted-Clinic predicate and Draft→Finalized semantics stay
+     * intact for the legitimate owner of another prescription.
+     */
+    public function testPhase1BReassignedClinicianIdentityDeniesFinalization(): void
+    {
+        global $wpdb;
+        $owner = $this->makeStaff('cpms_doctor');
+        $other = $this->makeStaff('cpms_doctor');
+        cpms_test_seed_membership($owner, $this->clinicA, 'cpms_doctor');
+        cpms_test_seed_membership($other, $this->clinicA, 'cpms_doctor');
+        $clinicianId = $this->insertClinician($this->clinicA, $owner, 'Dr Phase1B Reassigned');
+        $patientId = $this->insertPatient($this->clinicA, 'Phase1BReassigned');
+        $this->insertVisit($this->clinicA, $this->locA, $clinicianId, $patientId);
+        $visitId = $this->lastVisitId($this->clinicA);
+        $prescriptionId = $this->insertRx($this->clinicA, $visitId, $clinicianId);
+        $headers = ['X-CPMS-Clinic-Id' => (string) $this->clinicA];
+
+        $wpdb->update($wpdb->prefix . 'cpms_clinicians', ['wp_user_id' => $other], ['id' => $clinicianId]); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        wp_set_current_user($owner);
+        $auditBefore = $this->auditCount();
+        $attempt = $this->dispatch('POST', self::NS . '/prescriptions/' . $prescriptionId . '/finalize', [], $headers);
+        $missing = $this->dispatch('POST', self::NS . '/prescriptions/' . $this->missingId('cpms_prescriptions') . '/finalize', [], $headers);
+
+        $this->assertSame('draft', $this->rxStatus($prescriptionId), 'reassigned identity must leave the prescription draft');
+        $this->assertSame($auditBefore, $this->auditCount(), 'reassigned-identity denial must append no audit row');
+        $this->assertSame($this->responseErrorIdentity($missing), $this->responseErrorIdentity($attempt), 'reassigned-identity denial must stay non-enumerating');
+    }
+
+    /** Prescription print preparation (wp-admin page path) with an explicit trusted Clinic scope. */
+    private function printView(int $actorUserId, int $visitId, int $prescriptionId): array
+    {
+        wp_set_current_user($actorUserId);
+        $previous = ScopeContext::tryGet();
+        App::replaceExplicitScope(ClinicScope::forClinic($this->clinicA));
+        try {
+            return App::clinicalService()->prescriptionForPrint($actorUserId, $visitId, $prescriptionId);
+        } finally {
+            App::replaceExplicitScope($previous);
+        }
+    }
+
     // ================= fixtures =================
 
     /**
