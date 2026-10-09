@@ -18,7 +18,7 @@
 >
 > **تعارض شناخته‌شدهٔ اسناد با واقعیت:** [`drift-register.md`](drift-register.md)
 
-> **🤖 راهنمای ایجنت‌ها (الزام شروع کار):** هر ایجنت (AI یا انسان) پیش از هر کاری [`agent-guide.md`](agent-guide.md) را کامل بخواند — وضعیت فازها، قواعد الزامی کارفرما، الگوهای کد، دام‌های شناخته‌شده، فازهای باقی‌مانده و **پروتکل لاگ کار ایجنت‌ها (§9–10: هر ایجنت ورودی خود را append می‌کند)**.
+> **🤖 راهنمای ایجنت‌ها (الزام شروع کار):** ابتدا [`agent-guide.md`](agent-guide.md) را به‌عنوان راهنمای شروع و فهرست موضوعی بخوانید؛ سپس فقط اسناد مرتبط با تسک را باز کنید. تاریخچهٔ کامل قبلی بدون حذف در [`agent-guide-archive-2026-10-09.md`](agent-guide-archive-2026-10-09.md) حفظ شده است. ورودی‌های جدیدِ append-only در [`agent-log.md`](agent-log.md) ثبت می‌شوند.
 
 > **وضعیت تاریخی (2026-09-08 — snapshot):** همهٔ فازهای تاریخی `F1..F10` + Pilot/Staging Gate + Closure Gate + Remediation انجام و merge شده‌اند (۹ PR؛ آخرین = #9 MERGED). نسخهٔ منتشرشده `1.0.0`.
 > **به‌روزرسانی 2026-09-12:** **C10 = CLOSED — پذیرش/بستن رسمی با تصمیم صریح مالک** (بستهٔ شواهد در `origin/main` = `bdb135e9`، PR #25 MERGED؛ فقط دامنهٔ محدودشدهٔ بازبینی شواهد عملکرد — بدون ادعای NFR/بار/مقیاس‌پذیری/آمادگی تجاری؛ **Phase 2 همچنان IN PROGRESS**؛ Phase 3 / Phase 17 NOT STARTED *(🔴 تاریخی — اکنون **Phase 3 = COMPLETED / FROZEN** در `ebf8588`؛ رجوع به «به‌روزرسانی 2026-09-16» بالا)*؛ End Gate فاز ۲ تعریف/اجرا نشده). الزام دائمی توپولوژی‌های استقرار در [ADR-0031](adr/ADR-0031-organization-clinic-location-scoped-authorization.md) §«الزام دائمی محصول: یک هسته، سه توپولوژی استقرار» ثبت شد.
@@ -65,7 +65,9 @@
 | [`architecture/phase0.5-target-model.md`](architecture/phase0.5-target-model.md) | مدل هدف، ERD، برنامهٔ Migration، Decision Register (Q1..Q13) |
 | [`drift-register.md`](drift-register.md) | تعارض اسناد با معماری هدف + فاز مالک هر مورد |
 | [`architecture/phase2-tenant-context-remediation-design.md`](architecture/phase2-tenant-context-remediation-design.md) | **🔴 APPROVED DESIGN DIRECTION — NOT YET IMPLEMENTED** — طراحی ترمیم Tenant Context در Jobهای پس‌زمینه / timezone عملیاتیِ Location / پیکربندی SMS per-Clinic (**شامل credentialِ sealed**) / انتساب tenant در لاگ عملیاتی / طبقه‌بندیِ **T/S/W** برای **۱۵ نوعِ واقعیِ ثبت‌شده** (§A-3) + **۶ سوالِ طراحیِ پیش از هر migration آینده** (بدونِ رزروِ شماره) + مشخصاتِ **۱۴ تستِ RED ‏(RT-1..RT-14)**. **بازبینیِ مستقلِ معماری 2026-09-12 → حکمِ مالک `B`؛ اصلاحاتِ C-1..C-9 اعمال شد** (**فقط طراحی — هیچ پیاده‌سازی/تستی انجام نشده**) |
-| [`agent-guide.md`](agent-guide.md) | راهنمای عملیاتی ایجنت‌ها + قواعد الزامی |
+| [`agent-guide.md`](agent-guide.md) | راهنمای شروع و فهرست موضوعی؛ برای همهٔ تسک‌ها |
+| [`agent-log.md`](agent-log.md) | دفتر append-only ورودی‌های جدید ایجنت‌ها |
+| [`agent-guide-archive-2026-10-09.md`](agent-guide-archive-2026-10-09.md) | نسخهٔ کامل و بایت‌به‌بایتِ راهنمای پیشین + تاریخچه؛ فقط برای مراجعهٔ موردی |
 | [`governance/engineering-tooling.md`](governance/engineering-tooling.md) | قرارداد واحد و authoritative ابزارها/Skills، مرز نصب و وابستگی، GitHub Connectivity / Action Window و بازیابی |
 
 ---

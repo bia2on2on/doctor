@@ -1,26 +1,52 @@
-# CPMS — سیستم مدیریت مطب (Clinic Practice Management System)
+# CPMS — سیستم مدیریت مطب
 
-افزونه WordPress تجاری برای مدیریت کامل مطب — PHP 8.1+ / MySQL 8 / WordPress 6.4+ — تک‌کلینیک در V1.
-سازگاری (شواهد Closure Gate): runtime کامل از ZIP ریلیز روی WP 6.4 / 6.5 / 6.6 / 6.7.2 و PHP 8.1–8.4 — PASS.
+**Clinic Practice Management System (CPMS)** یک افزونهٔ WordPress برای مدیریت فرایندهای مطب است. کد افزونه در `clinic-practice-management/` قرار دارد و مستندات فنی در `docs/` نگهداری می‌شوند.
 
-> ## 🤖 ایجنت‌ها (AI/انسان) — قبل از هر کاری:
-> **[`docs/agent-guide.md`](docs/agent-guide.md)** را کامل بخوانید — راهنمای جامع ادامه پروژه:
-> وضعیت فازها، قواعد الزامی کارفرما، الگوهای کد، دام‌های شناخته‌شده، فازهای باقی‌مانده و
-> **پروتکل لاگ کار (§9–10): هر ایجنت ورودی خود را در انتهای آن فایل append می‌کند.**
+> **برای ایجنت‌ها و مشارکت‌کنندگان:** پیش از شروع، [`AGENTS.md`](AGENTS.md) را بخوانید و طبق آن به راهنمای عملیاتی [`docs/agent-guide.md`](docs/agent-guide.md) مراجعه کنید. وضعیت فازها و ترتیب کار را از [نقشهٔ راه رسمی](docs/roadmap/roadmap.md) بررسی کنید؛ از چک‌پوینت‌ها و گزارش‌های تاریخی به‌عنوان وضعیت فعلی استفاده نکنید.
 
-## ساختار Repo
+## فناوری‌ها و پیش‌نیازها
 
-| مسیر | محتوا |
+- WordPress 6.4 یا بالاتر
+- PHP 8.1 یا بالاتر (ماتریس CI: نسخه‌های 8.1 تا 8.4)
+- MySQL 8
+- Composer 2 برای نصب وابستگی‌ها و اجرای ابزارهای توسعه
+
+## ساختار مخزن
+
+| مسیر | کاربرد |
 |---|---|
-| `clinic-practice-management/` | کد افزونه (`src/` با namespace `ClinicCore\`، تست‌ها در `tests/`، CLI در `bin/cpms`) |
-| `docs/` | مستندات پروژه — شروع از [`docs/README.md`](docs/README.md) (ایندکس کامل) |
-| `docs/roadmap/roadmap.md` | فازبندی و DoD هر فاز (منبع حقیقت فازها) |
-| `docs/phase-reports/` | گزارش تکمیل هر فاز (F1–F4 ✅) |
-| `.github/workflows/ci.yml` | CI: Unit (PHP 8.1–8.4) + Integration (WP 6.7.2 + MySQL 8) |
+| `clinic-practice-management/` | افزونهٔ WordPress |
+| `clinic-practice-management/src/` | کد اصلی افزونه با namespace `ClinicCore\` |
+| `clinic-practice-management/tests/Unit/` | تست‌های واحد |
+| `clinic-practice-management/tests/Integration/` | تست‌های یکپارچه‌سازی WordPress/MySQL |
+| `clinic-practice-management/bin/cpms` | ابزار خط فرمان افزونه |
+| `docs/` | معماری، تصمیم‌ها، API، امنیت، تست و راهنماهای پروژه |
+| `docs/adr/` | تصمیم‌های معماری ثبت‌شده (ADR) |
+| `.github/workflows/` | گردش‌کارهای CI و پذیرش |
 
-## وضعیت (2026-09-05)
+برای نقشهٔ مستندات، به [`docs/README.md`](docs/README.md) و برای اطلاعات فنی نصب/CLI به [`clinic-practice-management/README.md`](clinic-practice-management/README.md) مراجعه کنید.
 
-**کامل و CI سبز:** F1 هسته | F2 احراز هویت | F2.5 پیامک | F3 نوبت‌دهی | **F4 مراجعه/صف**
-**بعدی (نیازمند تأیید کارفرما):** F5 بالینی → F6 مالی → F7 دست‌خط → F8 اعلان/گزارش → F9 Hardening (Go-Live V1)
+## شروع توسعه
 
-مایلستون M1 رسیده: بیمار واقعی می‌تواند آنلاین نوبت بگیرد.
+```bash
+cd clinic-practice-management
+composer install
+```
+
+اجرای تست‌ها:
+
+```bash
+composer test          # اجرای مجموعه‌تست‌های تعریف‌شده در phpunit.xml
+composer test:unit     # فقط تست‌های Unit
+```
+
+تست‌های یکپارچه‌سازی به محیط WordPress و MySQL نیاز دارند؛ جزئیات را در [برنامهٔ تست](docs/testing/testing-plan.md) و گردش‌کار [CI](.github/workflows/ci.yml) ببینید.
+
+## اصول مشارکت
+
+- پیش از تغییر، محدودهٔ تسک، وضعیت مخزن و اسناد مرجع مرتبط را بررسی کنید.
+- قراردادهای امنیت، مجوزها، محدوده‌بندی Clinic/Location و معماری ثبت‌شده در ADRها را رعایت کنید.
+- تغییرات را محدود نگه دارید و تست‌ها و مستندات مرتبط را همراه آن به‌روز کنید.
+- برای وضعیت و محدودیت‌های شناخته‌شده، [ثبت انحراف مستندات](docs/drift-register.md) را نیز بررسی کنید.
+
+جزئیات قواعد اجرا، الگوهای کدنویسی و روند تحویل در [`docs/agent-guide.md`](docs/agent-guide.md) است.
