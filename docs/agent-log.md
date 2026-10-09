@@ -74,3 +74,22 @@
   - متد `require_own_clinician_for_update()` در `ClinicalService` برای اخذ قفل باریک `FOR UPDATE` روی ردیف `cpms_clinicians` پس از اخذ قفل نسخه (`findForUpdateForClinic`) پیاده‌سازی شد (ترتیب قفل‌ها: `cpms_prescriptions -> cpms_clinicians`). در صورت غیرفعال بودن پزشک، عدم تطابق `wp_user_id` یا عدم وجود رکورد، خطای ۴۰۴ non-enumerating صادر و کل تراکنش rollback می‌شود.
   - دو تست همزمانی واقعی دو اتصال (`freshMysqli`) در `RestTrustedClinicContextTest.php` اضافه شد: (۱) قفل ردیف پزشک توسط اتصال مستقل باعث بلوکه شدن نهایی‌سازی نسخه تا زمان آزادسازی قفل می‌شود؛ (۲) غیرفعال‌سازی پزشک توسط اتصال مستقل بلافاصله در خواندن قفل‌دار مشاهده شده و عملیات با وضعیت `draft` و صفر جهش رد می‌شود.
 - **اعتبارسنجی:** تمامی فایل‌های PHP بدون خطای نحوی parse شدند؛ `git diff --check` بدون خطا؛ بدون افزودن migration، نقش یا سیاست جدید؛ PR #208 همچنان در وضعیت DRAFT باقی می‌ماند.
+
+### [2026-10-09 18:30 UTC] — Arena agent (fixed branch `arena/cb45567b-doctor`; one DRAFT PR #208 against `main`) — تثبیت کامل مانع امنیتی E11، آزمون همزمانی دو اتصال مستقل و پاس شدن ۴۷ چک
+
+- **مبنای شروع و بازیابی:** head مبنای شروع `c1f82e0` با پیاده‌سازی خواندن قفل‌دار `fetchRowForUpdate` روی `cpms_clinicians` بود. برای جلوگیری از تداخل تراکنش‌های fixtureهای commitشده در آزمون‌های همزمانی دواتصاله با `WP_UnitTestCase`، آزمون‌های همزمانی به کلاس اختصاصی و مستقل `Phase1BPrescriptionConcurrencyTest` منتقل شدند.
+- **دامنه و تغییرات:**
+  - کلاس مستقل `Phase1BPrescriptionConcurrencyTest` برای آزمون‌های همزمانی دو اتصال (`freshMysqli`) اضافه شد:
+    ۱. آزمون سریال‌سازی قفل (`testPhase1BTwoConnectionClinicianLockSerializesPrescriptionFinalization`): اتصال مستقل قفل انحصاری `FOR UPDATE` روی ردیف `cpms_clinicians` می‌گیرد و تراکنش نهایی‌سازی در زمان انتظار قفل معطل می‌ماند، و پس از آزادسازی قفل توسط اتصال مستقل بدون خرابی نهایی می‌شود.
+    ۲. آزمون لغو همزمان هویت (`testPhase1BTwoConnectionConcurrentRevocationDeniesFinalization`): اتصال مستقل وضعیت `is_active = 0` را روی پزشک اعمال و commit می‌کند؛ خواندن قفل‌دار تراکنش نهایی‌سازی بلافاصله لغو را مشاهده کرده و با خطای ۴۰۴ امن (`CLINIC_NOT_FOUND`)، وضعیت `draft` و بدون هیچ جهش یا لاگ audit نهایی‌سازی را رد می‌کند.
+  - پاک‌سازی کامل و امن سطرهای آزمون در `tearDown` با دستورهای مجزا و بدون آسیب به سایر آزمون‌های مجموعه.
+  - هیچ نقش/مجوز جدید، مهاجرت schema، وابستگی یا تنظیم جدیدی اضافه نشد و PR #208 در وضعیت DRAFT باقی ماند.
+- **اعتبارسنجی (Head دقیق `03e9830fe8e841c10e23b514a473ac4296647523`):**
+  - تمامی ۴۷ چک روی head دقیق با موفقیت پاس شدند (۴۷/۴۷ GREEN):
+    - CI `37985072462` (شامل Integration با ۱۶۴۴ تست و ۵۴۴۴۷ assertion، WPCS بدون خطا، PHPStan، Unit Tests PHP 8.1/8.2/8.3/8.4، Tenant Tripwire).
+    - Real WordPress Acceptance `37985072380` (۲/۲ موفقیت).
+    - Third-Party Compatibility Baseline `37985072371` (۲۲/۲۲ موفقیت).
+    - Persian five-plugin coexistence `37985072632` (۶/۶ موفقیت).
+    - Closure Gate `37985065534` (۵/۵ موفقیت).
+    - Pilot/Staging Readiness Gate `37985065515` (۴/۴ موفقیت).
+- **تحویل و موارد باز:** PR #208 به عنوان DRAFT باز است و ادغام نشده است. کلیه الزامات امنیتی E11 و موانع پذیرش فاز 1B با شواهد عینی همزمانی و سریال‌سازی قفل مرتفع شدند.
