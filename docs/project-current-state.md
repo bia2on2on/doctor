@@ -4,7 +4,63 @@
 > Do **not** use a previous chat session as memory.
 >
 
+<a id="phase19-closure"></a>
+
+## Phase 19 — Automated Testing: ✅ FORMALLY CLOSED / TECHNICALLY COMPLETE (BOUNDED)
+
+**Technical Director decision (recorded 2026-10-09):** Phase 19 — Automated Testing is **FORMALLY CLOSED / TECHNICALLY COMPLETE (BOUNDED)**.
+
+**Closure anchor (verified live 2026-10-09 UTC):** authoritative GitHub `main` = fetched `origin/main` = session `HEAD` = **`4cd5046d1ed8baf3734a7c6742d20f191ab40626`**, the exact merge SHA of **PR #206** ("Phase 19: close Pilot Accountant and Patient profile acceptance gaps", MERGED 2026-10-09T08:26:18Z); **no open PRs** at this checkpoint. Latest migration unchanged **`2026_09_26_0023_handwriting_prescription_paper.php`**. This is a bounded technical closure, not a commercial-readiness decision.
+
+**Exact merge-SHA closure evidence (native `push → main`, `head_sha=4cd5046d1ed8baf3734a7c6742d20f191ab40626`):** all six required workflow families terminal `completed` / `success`:
+
+| Required workflow family | Exact `push → main` run | Result |
+|---|---:|---|
+| CI | [37904949031](https://github.com/bia2on2on/doctor/actions/runs/37904949031) | `completed / success` |
+| Real WordPress Acceptance (ZIP → clean WP → browser) | [37904948997](https://github.com/bia2on2on/doctor/actions/runs/37904948997) | `completed / success` |
+| Closure Gate (GO-LIVE evidence closure) | [37904949025](https://github.com/bia2on2on/doctor/actions/runs/37904949025) | `completed / success` |
+| Pilot/Staging Readiness Gate | [37904949046](https://github.com/bia2on2on/doctor/actions/runs/37904949046) | `completed / success` |
+| Third-Party Compatibility Baseline (Phase 18 Lane A) | [37904949059](https://github.com/bia2on2on/doctor/actions/runs/37904949059) | `completed / success` |
+| Persian five-plugin coexistence (Phase 18) | [37904949409](https://github.com/bia2on2on/doctor/actions/runs/37904949409) | `completed / success` |
+
+The exact merge-SHA check-runs/check-suites API reports **47/47 check runs `completed`/`success`** across **6** check suites. These workflow/check results prove exact merge-SHA gate closure only.
+
+**Delivered bounded Phase 19 scope (merged Phase 19 PRs #201–#206):**
+- Existing automated test infrastructure strengthened (Integration suite growth; PR #205 evidence: `OK (1630 tests, 54334 assertions)` = +10 tests / +249 assertions over PR #204's last posted evidence, 0 failures).
+- AuthorizationService focused PCOV line-coverage measurement (PR #202, Slice 19-1: one extra PHPUnit invocation inside the existing CI Integration job, PCOV enabled only for that command, Clover + JUnit output, coverage filter `src/Application/Authorization`).
+- Fail-closed coverage guard `bin/authorization-coverage-guard.py` (driver, PHPUnit exit/terminal summary, report presence/XML, target presence, executable-line count, metric consistency; 13 negative controls + 1 positive control in CI; **no percentage threshold** — it fails only on missing/invalid measurement).
+- AuthorizationService security regression tests (PR #205, test-only: +10 tests on the real `MembershipRepository` / MySQL path — typed `AUTH_NO_MEMBERSHIP` / `AUTH_DENIED` / `AUTH_SUSPENDED` / 401 / 400 distinctions, membership ≠ permission, explicit DENY revocation, role-without-preset confers nothing, cross-Clinic grant/deny scoping, `canForObject()` / `authorizeForObject()` same-Clinic delegation with ownership necessary-but-never-sufficient, fail-closed invalid identity/ownership; all pass against **unmodified** production code — no product RED).
+- **Measured PR-head baseline: 59/62 executable lines = 95.16%** for `src/Application/Authorization/AuthorizationService.php` (PR #205 exact-head `3a2fc2c3d14b30f8b6ccfc03e0942c1c7dbde8aa` evidence; baseline 45/62 = 72.58%). **Evidence honesty:** this is a **PR-head** measurement and is **NOT** attributed to the merge SHA — no merge-SHA numeric coverage artifact was independently retrieved there. A line-coverage percentage is **not** a security-correctness claim.
+- Real membership/permission/object-ownership tests (above), alongside the existing real two-Clinic and multi-Location isolation evidence (`ClinicTenantIsolationTest`, `FinanceClinicIsolationTest`, `C7FinanceObjectIdIsolationTest`, `C7ScheduleObjectIdIsolationTest`, `Phase2MultiLocationTemporalRedTest`, `ExportClinicIsolationTest`, `ReportsClinicIsolationTest`, and related suites).
+- Corrected deterministic explicit-tick Pilot control (PR #203, harness only: no-wake fixture, read-only `quiet` probe, `precheck`, strict tick-output parsing; the autonomous Pilot step remains byte-identical to `main`).
+- Preserved autonomous fast-wake acceptance (Phase 17 run-bound evidence unchanged — runs `37521600403` / `37524176843`; the minute fallback remains).
+- Real WordPress acceptance (Real WP Acceptance family, both `clinic_` and `wp_` prefixes, `success` on the closure merge SHA).
+- Browser acceptance for **Patient, Doctor, Secretary, Accountant, Clinic Manager, and authorized System Administrator** (Pilot/Staging + Real WP Acceptance browser steps on the closure merge SHA; PR #206 added the Accountant finance journey + forbidden reception-search denial and the valid-session Patient A/B ownership denial — same valid Patient A session with the exact valid nonce requesting Patient B yields the canonical server-side 404 with no Patient B data).
+- Accountant finance journey and forbidden reception denial (PR #206: synthetic `cpms_accountant` user with Clinic-scoped membership using only the existing role preset; permitted finance summary result; valid-nonce reception-search denial; Secretary journey preserved).
+
+**Bounded non-claims (explicitly preserved — not completed/demonstrated):**
+- No human exploratory acceptance performed.
+- Screenshot pixels **NOT INSPECTED**.
+- No exhaustive visual/UX acceptance.
+- No universal browser/device compatibility.
+- Some persona-specific responsive/RTL checks **NOT RUN**.
+- Separate Patient B browser login **NOT RUN** (the Patient A/B ownership denial used one valid Patient A session, not a Patient B login).
+- No universal security-correctness claim from the coverage percentage.
+- No production/commercial/go-live readiness claim.
+
+**Compatibility preservation (unchanged by this closure):**
+- The historical **Persian WooCommerce 10.0.5 combined-19 failure** (Phase 18 all-19 lane: Stage A FAILED / Stage B NOT RUN) is preserved as recorded; combined-19 is **NOT** reclassified as PASS.
+- Its **quarantine from the current combined-18 campaign** (PR #204; current-scope checkpoint below) is preserved.
+- **Independent Persian WooCommerce coverage** is preserved (unchanged `coexistence-persian-woocommerce-diagnosis`, `coexistence-persian-woocommerce-sms`, and the third-party-baseline subject matrix).
+- **Mandatory core WooCommerce compatibility** is preserved (the core `woocommerce` baseline remains an individual subject; the Persian coexistence workflow family above succeeded on the closure merge SHA).
+
+**Roadmap ordering preserved:** Phase 19 = CLOSED. The future **Custom Role & Permission Management** workstream remains **frozen after Phase 19 and before Phase 20** — not implemented, not reordered. **Phase 20 is NOT started** by this closure. **Phase 19 closure ≠ commercial readiness.**
+
+---
+
 ## Phase 19 — current-scope checkpoint: narrow quarantine of Persian WooCommerce 10.0.5 (2026-10-09)
+
+> **Phase 19 status (updated 2026-10-09):** Phase 19 — Automated Testing is now **FORMALLY CLOSED / TECHNICALLY COMPLETE (BOUNDED)** — see [Phase 19 closure](#phase19-closure). This checkpoint is preserved unchanged below as the quarantine record.
 
 Owner decision executed 2026-10-09: the **active** combined coexistence scenario
 (`.github/persian-coexistence/run.py` group `combined-nineteen`) now installs and
@@ -48,7 +104,7 @@ clinical behavior are unchanged.
 
 **Non-claims:** no release / go-live / commercial readiness; no NFR compliance; no Persian WooCommerce 10.0.5 compatibility beyond the diagnostic lane; no all-19 combined compatibility. No product code, tests, migrations, or schema changed in this closure.
 
-**Active phase pointer:** **Phase 19 — Automated Testing is now ACTIVE** (per roadmap row). Phase 19 scope is not started by this closure.
+**Active phase pointer (historical at this Phase 18 closure checkpoint; corrected 2026-10-09 — superseded by [the Phase 19 formal closure](#phase19-closure)):** at this checkpoint **Phase 19 — Automated Testing** was the active phase pointer (advanced 2026-10-08); Phase 19 is now **FORMALLY CLOSED / TECHNICALLY COMPLETE (BOUNDED)** at `4cd5046d1ed8baf3734a7c6742d20f191ab40626` (PR #206). The frozen future **Custom Role & Permission Management** workstream remains after Phase 19 and before Phase 20; **Phase 20 is NOT started**.
 
 ---
 
