@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace ClinicCore\Tests\Integration;
 
+use ClinicCore\Application\Clinical\ClinicalException;
+use ClinicCore\Application\Scope\ClinicScope;
 use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
@@ -110,7 +112,6 @@ final class Phase1BPrescriptionConcurrencyTest extends WP_UnitTestCase
     public function testPhase1BTwoConnectionClinicianLockSerializesPrescriptionFinalization(): void
     {
         global $wpdb;
-        $now = App::db()->nowUtcSql();
 
         $doctorUserId = $this->makeUser('p1b_conc_doc', RolesAndCapabilities::ROLE_DOCTOR);
         cpms_test_seed_membership($doctorUserId, $this->clinicId, RolesAndCapabilities::ROLE_DOCTOR);
@@ -133,17 +134,19 @@ final class Phase1BPrescriptionConcurrencyTest extends WP_UnitTestCase
         // Main connection: short lock wait timeout -> finalization must block on clinician row lock
         $wpdb->query('SET SESSION innodb_lock_wait_timeout = 2');
 
+        $previous = ScopeContext::tryGet();
+        App::replaceExplicitScope(ClinicScope::forClinic($this->clinicId));
         wp_set_current_user($doctorUserId);
-        $headers = ['X-CPMS-Clinic-Id' => (string) $this->clinicId];
+
         $blocked = false;
         try {
-            $res = $this->dispatch('POST', self::NS . '/prescriptions/' . $prescriptionId . '/finalize', [], $headers);
-            if ($res->get_status() !== 200) {
-                $blocked = true;
-            }
+            App::clinicalService()->finalizePrescription($doctorUserId, $prescriptionId);
         } catch (\Throwable $e) {
             $blocked = true;
+        } finally {
+            App::replaceExplicitScope($previous);
         }
+
         $this->assertTrue($blocked, 'Finalization must block or fail when clinician row lock is held');
         $this->assertSame('draft', $this->rxStatus($prescriptionId), 'Prescription must remain draft while blocked');
 
@@ -155,9 +158,14 @@ final class Phase1BPrescriptionConcurrencyTest extends WP_UnitTestCase
         $wpdb->query('SET SESSION innodb_lock_wait_timeout = DEFAULT');
 
         // After lock release, finalization completes successfully
-        $success = $this->dispatch('POST', self::NS . '/prescriptions/' . $prescriptionId . '/finalize', [], $headers);
-        $this->assertSame(200, $success->get_status());
-        $this->assertSame('finalized', $this->rxStatus($prescriptionId));
+        App::replaceExplicitScope(ClinicScope::forClinic($this->clinicId));
+        try {
+            $res = App::clinicalService()->finalizePrescription($doctorUserId, $prescriptionId);
+            $this->assertSame('finalized', $this->rxStatus($prescriptionId));
+            $this->assertSame($prescriptionId, (int) ($res['id'] ?? 0));
+        } finally {
+            App::replaceExplicitScope($previous);
+        }
     }
 
     /**
@@ -191,15 +199,31 @@ final class Phase1BPrescriptionConcurrencyTest extends WP_UnitTestCase
         $conn->query('COMMIT');
         $conn->close();
 
-        // Main connection attempts finalization
+        // Main connection attempts finalization through ClinicalService
+        $previous = ScopeContext::tryGet();
+        App::replaceExplicitScope(ClinicScope::forClinic($this->clinicId));
         wp_set_current_user($doctorUserId);
-        $headers = ['X-CPMS-Clinic-Id' => (string) $this->clinicId];
         $auditBefore = (int) App::db()->fetchValue('SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs'), []);
-        $attempt = $this->dispatch('POST', self::NS . '/prescriptions/' . $prescriptionId . '/finalize', [], $headers);
-        $missing = $this->dispatch('POST', self::NS . '/prescriptions/' . $this->missingId('cpms_prescriptions') . '/finalize', [], $headers);
 
+        $denied = false;
+        try {
+            App::clinicalService()->finalizePrescription($doctorUserId, $prescriptionId);
+        } catch (ClinicalException $e) {
+            $denied = true;
+            $this->assertSame('CLINIC_NOT_FOUND', $e->errorCode);
+            $this->assertSame(404, $e->httpStatus);
+        } finally {
+            App::replaceExplicitScope($previous);
+        }
+
+        $this->assertTrue($denied, 'revoked clinician must be denied with non-enumerating 404');
         $this->assertSame('draft', $this->rxStatus($prescriptionId), 'revoked identity must leave the prescription draft');
         $this->assertSame($auditBefore, (int) App::db()->fetchValue('SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs'), []), 'revoked-identity denial must append no audit row');
+
+        // Also verify REST endpoint returns the identical non-enumerating 404 as a non-existent prescription
+        $headers = ['X-CPMS-Clinic-Id' => (string) $this->clinicId];
+        $attempt = $this->dispatch('POST', self::NS . '/prescriptions/' . $prescriptionId . '/finalize', [], $headers);
+        $missing = $this->dispatch('POST', self::NS . '/prescriptions/' . $this->missingId('cpms_prescriptions') . '/finalize', [], $headers);
         $this->assertSame($this->responseErrorIdentity($missing), $this->responseErrorIdentity($attempt), 'revoked-identity denial must stay non-enumerating');
     }
 
