@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace ClinicCore\Tests\Integration;
 
+use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Settings\Settings;
 use WP_UnitTestCase;
 
 /**
@@ -24,6 +26,7 @@ final class Phase1BPrescriptionConcurrencyTest extends WP_UnitTestCase
 {
     private const NS = '/cpms/v1';
 
+    private int $orgId = 0;
     private int $clinicId = 0;
     private int $locationId = 0;
     private int $doctorUserId = 0;
@@ -45,19 +48,34 @@ final class Phase1BPrescriptionConcurrencyTest extends WP_UnitTestCase
     {
         parent::setUp();
         App::migrations()->migrate();
+        Settings::flushCache();
+        App::resetScope();
+        ScopeContext::clear();
+        wp_set_current_user(0);
 
         global $wpdb;
         $now = App::db()->nowUtcSql();
-        $orgId = (int) ($wpdb->get_var('SELECT organization_id FROM ' . $wpdb->prefix . 'cpms_clinics WHERE id = 1') ?: 1);
+        $unique = bin2hex(random_bytes(4));
+
+        // 0. Organization
+        $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_organizations (name, slug, status, created_at, updated_at) VALUES (%s, %s, "active", %s, %s)',
+                'Org P1B Conc ' . $unique,
+                'p1b-org-' . $unique,
+                $now,
+                $now
+            )
+        );
+        $this->orgId = (int) $wpdb->insert_id;
 
         // 1. Clinic
-        $slug = 'p1b-conc-' . bin2hex(random_bytes(3));
         $wpdb->query(
             $wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_clinics (organization_id, name, slug, timezone, created_at, updated_at) VALUES (%d, %s, %s, "Asia/Tehran", %s, %s)',
-                $orgId,
-                'Phase1B Concurrency Clinic',
-                $slug,
+                $this->orgId,
+                'Phase1B Concurrency Clinic ' . $unique,
+                'p1b-conc-' . $unique,
                 $now,
                 $now
             )
@@ -70,7 +88,7 @@ final class Phase1BPrescriptionConcurrencyTest extends WP_UnitTestCase
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_locations (clinic_id, name, slug, timezone, is_primary, is_active, created_at, updated_at) VALUES (%d, %s, %s, "Asia/Tehran", 1, 1, %s, %s)',
                 $this->clinicId,
                 'Primary Location',
-                $slug . '-loc',
+                'p1b-loc-' . $unique,
                 $now,
                 $now
             )
@@ -97,26 +115,41 @@ final class Phase1BPrescriptionConcurrencyTest extends WP_UnitTestCase
 
     protected function tearDown(): void
     {
-        global $wpdb;
+        $this->purgeFixture();
+        Settings::flushCache();
+        ScopeContext::clear();
+        App::resetScope();
+        wp_set_current_user(0);
 
-        foreach ($this->prescriptionIds as $rxId) {
-            $wpdb->query($wpdb->prepare('DELETE FROM ' . $wpdb->prefix . 'cpms_prescription_items WHERE prescription_id = %d', $rxId));
-            $wpdb->query($wpdb->prepare('DELETE FROM ' . $wpdb->prefix . 'cpms_prescriptions WHERE id = %d', $rxId));
+        parent::tearDown();
+    }
+
+    private function purgeFixture(): void
+    {
+        if ($this->clinicId <= 0) {
+            return;
         }
-        foreach ($this->visitIds as $visitId) {
-            $wpdb->query($wpdb->prepare('DELETE FROM ' . $wpdb->prefix . 'cpms_visits WHERE id = %d', $visitId));
+
+        global $wpdb;
+        $c = (int) $this->clinicId;
+
+        $wpdb->query('SET FOREIGN_KEY_CHECKS = 0');
+        $wpdb->query($wpdb->prepare('DELETE FROM ' . $wpdb->prefix . 'cpms_prescription_items WHERE prescription_id IN (SELECT id FROM ' . $wpdb->prefix . 'cpms_prescriptions WHERE clinic_id = %d)', $c));
+        $wpdb->query($wpdb->prepare('DELETE FROM ' . $wpdb->prefix . 'cpms_prescriptions WHERE clinic_id = %d', $c));
+        $wpdb->query($wpdb->prepare('DELETE FROM ' . $wpdb->prefix . 'cpms_visits WHERE clinic_id = %d', $c));
+        $wpdb->query($wpdb->prepare('DELETE FROM ' . $wpdb->prefix . 'cpms_patients WHERE clinic_id = %d', $c));
+        $wpdb->query($wpdb->prepare('DELETE FROM ' . $wpdb->prefix . 'cpms_clinicians WHERE clinic_id = %d', $c));
+        $wpdb->query($wpdb->prepare('DELETE FROM ' . $wpdb->prefix . 'cpms_clinic_memberships WHERE clinic_id = %d', $c));
+        $wpdb->query($wpdb->prepare('DELETE FROM ' . $wpdb->prefix . 'cpms_locations WHERE clinic_id = %d', $c));
+        $wpdb->query($wpdb->prepare('DELETE FROM ' . $wpdb->prefix . 'cpms_audit_logs WHERE clinic_id = %d', $c));
+        $wpdb->query($wpdb->prepare('DELETE FROM ' . $wpdb->prefix . 'cpms_settings WHERE clinic_id = %d', $c));
+        $wpdb->query($wpdb->prepare('DELETE FROM ' . $wpdb->prefix . 'cpms_clinics WHERE id = %d', $c));
+        if ($this->orgId > 0) {
+            $wpdb->query($wpdb->prepare('DELETE FROM ' . $wpdb->prefix . 'cpms_organizations WHERE id = %d', (int) $this->orgId));
         }
-        foreach ($this->patientIds as $patientId) {
-            $wpdb->query($wpdb->prepare('DELETE FROM ' . $wpdb->prefix . 'cpms_patients WHERE id = %d', $patientId));
-        }
-        if ($this->clinicianId > 0) {
-            $wpdb->query($wpdb->prepare('DELETE FROM ' . $wpdb->prefix . 'cpms_clinicians WHERE id = %d', $this->clinicianId));
-        }
-        if ($this->clinicId > 0) {
-            $wpdb->query($wpdb->prepare('DELETE FROM ' . $wpdb->prefix . 'cpms_memberships WHERE clinic_id = %d', $this->clinicId));
-            $wpdb->query($wpdb->prepare('DELETE FROM ' . $wpdb->prefix . 'cpms_locations WHERE clinic_id = %d', $this->clinicId));
-            $wpdb->query($wpdb->prepare('DELETE FROM ' . $wpdb->prefix . 'cpms_clinics WHERE id = %d', $this->clinicId));
-        }
+        $wpdb->query('SET FOREIGN_KEY_CHECKS = 1');
+        $wpdb->query('COMMIT');
+
         foreach ($this->userIds as $userId) {
             $wpdb->delete($wpdb->usermeta, ['user_id' => $userId], ['%d']);
             $wpdb->delete($wpdb->users, ['ID' => $userId], ['%d']);
@@ -126,8 +159,6 @@ final class Phase1BPrescriptionConcurrencyTest extends WP_UnitTestCase
         $this->visitIds = [];
         $this->patientIds = [];
         $this->userIds = [];
-
-        parent::tearDown();
     }
 
     /**
