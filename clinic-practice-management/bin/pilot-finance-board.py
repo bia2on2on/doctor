@@ -25,6 +25,14 @@ while proving that no non-GET REST request is issued across the complete
 receipt open → print → close flow (the listener is attached before the open).
 No server-side document is produced.
 
+Phase 19 — in a separate browser context, a genuine synthetic cpms_accountant
+logs in, proves current-session WordPress user ID/role, reaches the existing
+accountant-authorized wp-admin finance screen, reads a seeded open-invoice
+balance through the existing finance summary, and sends a direct reception
+patient-search request with the same valid session nonce. The server must deny
+that forbidden operation without returning patient data. The existing Secretary
+finance board journey above remains intact and continues to run separately.
+
 The harness reuses the EXISTING pilot gate entry point (fixture + Playwright in
 the responsive job); no new browser infrastructure is added. Pixels are emitted
 as artifacts and are not interpreted as visual approval here.
@@ -43,6 +51,11 @@ BASE = os.environ.get("BASE", "http://localhost:8080").rstrip("/")
 URL = os.environ["FINANCE_BOARD_URL"]
 LOGIN = os.environ["FINANCE_BOARD_LOGIN"]
 PASSWORD = os.environ["FINANCE_BOARD_PASS"]
+ACCOUNTANT_LOGIN = os.environ["FINANCE_BOARD_ACCOUNTANT_LOGIN"]
+ACCOUNTANT_PASSWORD = os.environ["FINANCE_BOARD_ACCOUNTANT_PASS"]
+ACCOUNTANT_USER_ID = int(os.environ["FINANCE_BOARD_ACCOUNTANT_USER_ID"])
+ACCOUNTANT_CLINIC_ID = int(os.environ["FINANCE_BOARD_ACCOUNTANT_CLINIC_ID"])
+ACCOUNTANT_INVOICE_ID = int(os.environ["FINANCE_BOARD_ACCOUNTANT_INVOICE_ID"])
 CLINIC_ID = os.environ["FINANCE_BOARD_CLINIC_ID"]
 LOCATION_ID = os.environ["FINANCE_BOARD_LOCATION_ID"]
 INVOICE_PATIENT = os.environ["FINANCE_BOARD_INVOICE_PATIENT"]
@@ -116,6 +129,240 @@ def rest_classifier_self_test():
         require(not is_rest_url(url), "slice5 listener classifier: non-REST request stays non-REST (" + url + ")")
 
 
+def rest_route(url):
+    """Return the WordPress REST route for pretty or plain permalinks."""
+    parsed = urlparse(url)
+    if "/wp-json/" in parsed.path:
+        return parsed.path.split("/wp-json", 1)[1].rstrip("/") or "/"
+    route = parse_qs(parsed.query, keep_blank_values=True).get("rest_route", [""])[0]
+    return route.rstrip("/") or "/"
+
+
+def accountant_finance_journey(browser):
+    """Exercise the existing accountant-authorized wp-admin finance surface.
+
+    The shared Staff Portal awaiting-payment board deliberately requires
+    QUEUE_READ, which the Accountant role does not have. This journey therefore
+    uses the existing cpms-finance admin surface and its existing finance REST
+    summary, then probes a real reception REST route with the same valid session
+    and nonce. It never widens the role or substitutes a Secretary persona.
+    """
+    account_context = browser.new_context(
+        viewport={"width": 1366, "height": 768},
+        locale="fa-IR",
+        ignore_https_errors=True,
+    )
+    page = account_context.new_page()
+    observed_nonces = {"summary": [], "reception": []}
+    stage = "login"
+
+    def capture_authorized_requests(request):
+        route = rest_route(request.url)
+        headers = {key.lower(): value for key, value in request.headers.items()}
+        if request.method == "GET" and route == "/clinic/v1/finance/summary":
+            observed_nonces["summary"].append(headers.get("x-wp-nonce", ""))
+        if request.method == "GET" and route == "/clinic/v1/staff/portal/reception/patients/search":
+            observed_nonces["reception"].append(headers.get("x-wp-nonce", ""))
+
+    def prove(condition, message):
+        if not condition:
+            raise AssertionError(message)
+        require(True, message)
+
+    try:
+        page.goto(BASE + "/wp-login.php", wait_until="networkidle")
+        page.fill("#user_login", ACCOUNTANT_LOGIN)
+        page.fill("#user_pass", ACCOUNTANT_PASSWORD)
+        page.click("#wp-submit")
+        page.wait_for_load_state("networkidle")
+        prove("wp-login.php" not in page.url, "Accountant: real WordPress login succeeds")
+
+        stage = "self-identity"
+        profile_response = page.goto(BASE + "/wp-admin/profile.php", wait_until="networkidle")
+        prove(
+            profile_response is not None and profile_response.status == 200
+            and page.locator("#user_login").input_value() == ACCOUNTANT_LOGIN,
+            "Accountant: authenticated WordPress profile identifies the fixture login",
+        )
+
+        stage = "finance-surface"
+        finance_response = page.goto(BASE + "/wp-admin/admin.php?page=cpms-finance", wait_until="networkidle")
+        prove(
+            finance_response is not None and finance_response.status == 200
+            and page.locator("#cpms-fin-wrap").count() == 1,
+            "Accountant: existing authorized cpms-finance screen is served",
+        )
+        prove(
+            "مالی و تسویه" in page.locator("#cpms-fin-wrap").inner_text(),
+            "Accountant: finance screen content is present",
+        )
+
+        identity = page.evaluate(
+            """async () => {
+                const cfg = window.CPMS_FIN;
+                const url = new URL(cfg.rest_url, window.location.origin);
+                if (url.searchParams.has('rest_route')) {
+                    url.searchParams.set('rest_route', '/wp/v2/users/me');
+                } else {
+                    url.pathname = url.pathname.replace(/\\/clinic\\/v1\\/?$/, '/wp/v2/users/me');
+                    url.search = '';
+                }
+                url.searchParams.set('context', 'edit');
+                const response = await fetch(url.toString(), {
+                    credentials: 'same-origin',
+                    headers: { 'X-WP-Nonce': cfg.nonce }
+                });
+                const body = await response.json().catch(() => null);
+                return {
+                    status: response.status,
+                    user_id: body && body.id,
+                    roles: body && body.roles
+                };
+            }"""
+        )
+        prove(
+            identity.get("status") == 200 and identity.get("user_id") == ACCOUNTANT_USER_ID
+            and identity.get("roles") == ["cpms_accountant"],
+            f"Accountant: authenticated REST identity is user_id={ACCOUNTANT_USER_ID} role=cpms_accountant",
+        )
+
+        stage = "role-boundary"
+        capabilities = page.evaluate(
+            """() => ({
+                invoice: !!window.CPMS_FIN.can_invoice,
+                payment: !!window.CPMS_FIN.can_payment,
+                queue: !!window.CPMS_FIN.can_queue,
+                config: !!window.CPMS_FIN.can_config
+            })"""
+        )
+        prove(
+            capabilities == {"invoice": True, "payment": True, "queue": False, "config": False}
+            and page.locator("#cpms-fin-tab-awaiting").count() == 0
+            and page.locator("#cpms-fin-tab-services").count() == 0,
+            "Accountant: existing finance capabilities are present without queue or system-config access",
+        )
+
+        page.on("request", capture_authorized_requests)
+        expected_nonce = page.evaluate("() => window.CPMS_FIN.nonce")
+        summary_before = len(observed_nonces["summary"])
+        stage = "permitted-finance-operation"
+        with page.expect_response(
+            lambda response: response.request.method == "GET"
+            and rest_route(response.url) == "/clinic/v1/finance/summary",
+            timeout=20000,
+        ) as summary_info:
+            page.locator("#cpms-fin-summary-btn").click()
+        summary_response = summary_info.value
+        summary_body = summary_response.json()
+        summary_data = summary_body.get("data") if isinstance(summary_body, dict) else None
+        open_balances = summary_data.get("open_balances") if isinstance(summary_data, dict) else None
+        open_invoices = open_balances.get("invoices") if isinstance(open_balances, dict) else None
+        invoice_rows = open_invoices if isinstance(open_invoices, list) else []
+        accountant_invoice = next(
+            (item for item in invoice_rows if isinstance(item, dict) and int(item.get("id") or 0) == ACCOUNTANT_INVOICE_ID),
+            None,
+        )
+        balance_matches = False
+        if accountant_invoice is not None:
+            try:
+                balance_matches = float(accountant_invoice.get("balance") or 0) == 500000.0
+            except (TypeError, ValueError):
+                pass
+        invoice_is_open = accountant_invoice is not None and accountant_invoice.get("status") == "open"
+        if (
+            summary_response.status != 200
+            or not isinstance(summary_data, dict)
+            or not isinstance(summary_data.get("revenue"), dict)
+            or not isinstance(open_balances, dict)
+            or accountant_invoice is None
+            or not balance_matches
+            or not invoice_is_open
+        ):
+            raise AssertionError(
+                f"finance summary evidence: status={summary_response.status} fixture_invoice_present={accountant_invoice is not None} balance_matches={balance_matches} invoice_open={invoice_is_open}"
+            )
+        prove(
+            True,
+            "Accountant: existing finance summary returns the authorized synthetic open-invoice balance",
+        )
+        summary_nonces = observed_nonces["summary"][summary_before:]
+        prove(
+            len(summary_nonces) == 1 and bool(expected_nonce)
+            and summary_nonces[0] == expected_nonce,
+            "Accountant: permitted finance REST operation used the page's valid session nonce",
+        )
+        page.wait_for_function(
+            "document.querySelector('#cpms-fin-stats') && document.querySelector('#cpms-fin-stats').children.length >= 5",
+            timeout=10000,
+        )
+
+        stage = "forbidden-reception-operation"
+        reception_before = len(observed_nonces["reception"])
+        denial = page.evaluate(
+            """async () => {
+                const cfg = window.CPMS_FIN;
+                const url = new URL(cfg.rest_url, window.location.origin);
+                const route = 'staff/portal/reception/patients/search';
+                if (url.searchParams.has('rest_route')) {
+                    const root = (url.searchParams.get('rest_route') || '').replace(/\\/+$/, '');
+                    url.searchParams.set('rest_route', root + '/' + route);
+                } else {
+                    url.pathname = url.pathname.replace(/\\/+$/, '') + '/' + route;
+                }
+                url.searchParams.set('q', 'SYN-PILOT-ACCOUNTANT-DENIAL');
+                const response = await fetch(url.toString(), {
+                    method: 'GET',
+                    credentials: 'same-origin',
+                    headers: { 'X-WP-Nonce': cfg.nonce }
+                });
+                const body = await response.json().catch(() => null);
+                return { status: response.status, body: body };
+            }"""
+        )
+        denial_status = denial.get("status") if isinstance(denial, dict) else None
+        denial_body = denial.get("body") if isinstance(denial, dict) else None
+        denial_code = denial_body.get("code") if isinstance(denial_body, dict) else None
+        patient_keys = {"id", "patient_id", "patients", "first_name", "last_name", "mrn", "mobile", "national_id"}
+
+        def contains_patient_payload(value):
+            if isinstance(value, dict):
+                return bool(patient_keys.intersection(value)) or any(contains_patient_payload(item) for item in value.values())
+            if isinstance(value, list):
+                return any(contains_patient_payload(item) for item in value)
+            return False
+        denial_has_patient_data = contains_patient_payload(denial_body)
+        if (
+            denial_status != 403
+            or denial_code != "CLINIC_PERMISSION_DENIED"
+            or denial_has_patient_data
+        ):
+            raise AssertionError(
+                f"reception probe evidence: status={denial_status} code={denial_code or 'missing'} patient_data_returned={denial_has_patient_data}"
+            )
+        prove(
+            True,
+            "Accountant: direct reception patient-search REST request is server-denied without patient data",
+        )
+        reception_nonces = observed_nonces["reception"][reception_before:]
+        prove(
+            len(reception_nonces) == 1 and bool(expected_nonce)
+            and reception_nonces[0] == expected_nonce,
+            "Accountant: forbidden reception request used the same valid authenticated session nonce",
+        )
+        require(
+            f"Accountant: evidence user_id={ACCOUNTANT_USER_ID} role=cpms_accountant clinic_id={ACCOUNTANT_CLINIC_ID}; finance summary=200 invoice_id={ACCOUNTANT_INVOICE_ID}; reception search=403 CLINIC_PERMISSION_DENIED",
+            "Accountant: compact role/session and authorization evidence",
+        )
+    except AssertionError as exc:
+        require(False, f"Accountant journey failed at {stage}: {exc}")
+    except Exception as exc:
+        require(False, f"Accountant journey failed at {stage} ({type(exc).__name__})")
+    finally:
+        observed_nonces["summary"].clear()
+        observed_nonces["reception"].clear()
+        account_context.close()
+
+
 def open_receipt(page, row):
     """Ask a settled row for its read-only receipt and wait for the panel.
 
@@ -137,6 +384,7 @@ def open_receipt(page, row):
 
 with sync_playwright() as playwright:
     browser = playwright.chromium.launch(headless=True)
+    accountant_finance_journey(browser)
     context = browser.new_context(viewport={"width": 1366, "height": 768}, locale="fa-IR")
     page = context.new_page()
     page_errors = []
@@ -642,7 +890,7 @@ if failures:
     print(f"FAILURES {len(failures)}")
     sys.exit(1)
 print(
-    "PASS Phase 12 Staff Portal Finance board + first-issuance + manual capture "
+    "PASS Phase 19 Accountant finance identity/operation/denial + preserved Phase 12 Secretary Staff Portal Finance board + first-issuance + manual capture "
     "(1 real partial, 1 real exact settlement) + paid checkout "
     "(1 real paid -> checked_out) browser acceptance"
 )

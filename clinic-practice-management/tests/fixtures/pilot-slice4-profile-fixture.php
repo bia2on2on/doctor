@@ -5,7 +5,9 @@
  * Creates:
  *   - one pure patient with exactly one active link (auto-resolved Profile);
  *   - one pure patient with two active links in two Clinics, plus a foreign
- *     link and an archived link that must not appear in the selector.
+ *     link and an archived link that must not appear in the selector;
+ *   - a same-Clinic, different-account Patient A/B pair for valid-session
+ *     object-authorization acceptance on the existing /patient/me route.
  *
  * Stdout is redacted. Secrets (password, mobile, national id) go only to
  * /tmp/portal-profile.env for the following browser step.
@@ -44,6 +46,7 @@ $mobiles = [
 
 $passOne = 'P9S4One-' . $uniq . '-2026!';
 $passMulti = 'P9S4Multi-' . $uniq . '-2026!';
+$passForeign = 'P9S4Foreign-' . $uniq . '-2026!';
 
 $wpdb->query($wpdb->prepare(
     'INSERT INTO ' . $db->table('cpms_organizations') . ' (name, slug, status, created_at, updated_at) VALUES (%s, %s, %s, %s, %s)',
@@ -197,7 +200,7 @@ $linkA = $link($clinicA, $patientA, $userMulti, $mobiles['a'], 1);
 $linkB = $link($clinicB, $patientB, $userMulti, $mobiles['b'], 0);
 
 $loginForeign = 'p9s4_foreign_' . $uniq;
-$userForeign = $makeUser($loginForeign, $passMulti);
+$userForeign = $makeUser($loginForeign, $passForeign);
 $patientForeign = $makePatient($clinicA, 'SYN-P9S4-F-' . $uniq, 'SynF', 'Foreign', $mobiles['f'], 'active', $validNid(4), 'addr-f');
 $linkForeign = $link($clinicA, $patientForeign, $userForeign, $mobiles['f'], 1);
 
@@ -227,6 +230,25 @@ foreach ($multiRecords as $row) {
     }
 }
 
+// Phase 19 — materialize a same-Clinic object-authorization pair. Patient A
+// and Patient B are active records owned by distinct cpms_patient accounts;
+// their Clinic is equal so the browser denial isolates patient ownership.
+$objectPairA = \ClinicCore\Bootstrap\App::patientService()->me($userMulti, $linkA);
+$objectPairB = \ClinicCore\Bootstrap\App::patientService()->me($userForeign, $linkForeign);
+$objectPairForeignClinicId = (int) $wpdb->get_var($wpdb->prepare(
+    'SELECT clinic_id FROM ' . $db->table('cpms_patients') . ' WHERE id = %d',
+    $patientForeign
+));
+if (
+    $userMulti === $userForeign
+    || $patientA === $patientForeign
+    || $linkA === $linkForeign
+    || $clinicA !== $objectPairForeignClinicId
+    || (int) ($objectPairA['id'] ?? 0) !== $patientA
+    || (int) ($objectPairB['id'] ?? 0) !== $patientForeign
+) {
+    profile_fail('Patient A/B same-Clinic distinct-account fixture mismatch');
+}
 // Slice 5 TEST-ONLY RED: reuse these authenticated linked records for a real
 // read-only Visits browser journey. No new harness, migration or product path.
 $visits = [];
@@ -461,15 +483,22 @@ $env = 'VISITS_PAIR=' . implode('|', array_slice($visits, 0, 2)) . "\n"
     . 'FILES_ONE=' . $fileOne . '|' . $fileOneUp . '|' . $filesJalali . '|' . $filesLocal->format('Y-m-d') . "\n"
     . 'PROFILE_ONE=' . $loginOne . '|' . $passOne . '|' . $userOne . '|' . $patientOne . '|' . $linkOne . '|' . $clinicOne . "\n"
     . 'PROFILE_MULTI=' . $loginMulti . '|' . $passMulti . '|' . $userMulti . '|' . $linkA . '|' . $linkB . '|' . $patientA . '|' . $patientB . '|' . $clinicA . '|' . $clinicB . '|' . $linkForeign . '|' . $linkInactive . "\n"
+    . 'PROFILE_OBJECT_PAIR=' . implode('|', [$loginMulti, $passMulti, $userMulti, $linkA, $patientA, $clinicA, $loginForeign, $passForeign, $userForeign, $linkForeign, $patientForeign, $clinicA]) . "\n"
     . 'PROFILE_PUBLIC=one_user=' . $userOne . ' one_patient=' . $patientOne . ' one_link=' . $linkOne . ' one_clinic=' . $clinicOne
     . ' multi_user=' . $userMulti . ' link_a=' . $linkA . ' link_b=' . $linkB
     . ' patient_a=' . $patientA . ' patient_b=' . $patientB
     . ' clinic_a=' . $clinicA . ' clinic_b=' . $clinicB
-    . ' foreign_link=' . $linkForeign . ' inactive_link=' . $linkInactive . "\n";
+    . ' foreign_user=' . $userForeign . ' foreign_patient=' . $patientForeign
+    . ' foreign_link=' . $linkForeign . ' inactive_link=' . $linkInactive
+    . ' object_pair_users_distinct=' . ($userMulti !== $userForeign ? 'True' : 'False')
+    . ' object_pair_clinic_same=' . ($clinicA === $objectPairForeignClinicId ? 'True' : 'False') . "\n";
 if (file_put_contents('/tmp/portal-profile.env', $env) === false) {
     profile_fail('could not write env file');
 }
 
 echo 'PROFILE_FIXTURE_OK clinics=3 links_one=1 links_multi=2 decoys=2' . "\n";
 echo 'PROFILE_PUBLIC=one_user=' . $userOne . ' one_link=' . $linkOne . ' link_a=' . $linkA . ' link_b=' . $linkB
+    . ' object_pair_users_distinct=' . ($userMulti !== $userForeign ? 'True' : 'False')
+    . ' object_pair_clinic_same=' . ($clinicA === $objectPairForeignClinicId ? 'True' : 'False')
+    . ' foreign_user=' . $userForeign . ' foreign_patient=' . $patientForeign
     . ' foreign_link=' . $linkForeign . ' inactive_link=' . $linkInactive . "\n";

@@ -34,6 +34,75 @@ if ($clinicId <= 0 || $locationId <= 0 || $secretaryId <= 0 || $clinicianId <= 0
 $now = $db->nowUtcSql();
 $date = (new DateTimeImmutable('now', new DateTimeZone('Asia/Tehran')))->format('Y-m-d');
 $nonce = substr(bin2hex(random_bytes(4)), 0, 8);
+
+// Phase 19 — an independent synthetic Accountant identity for the existing
+// Pilot browser gate. Use only the established role preset and a durable active
+// Clinic membership; no capability grants and no Location assignment.
+$accountantLogin = 'pilot_fin_acc_' . $nonce;
+$accountantPassword = wp_generate_password(28, true, false);
+$accountantId = wp_create_user($accountantLogin, $accountantPassword, $accountantLogin . '@pilot.local');
+if (is_wp_error($accountantId) || (int) $accountantId <= 0) {
+    fwrite(STDERR, "FINANCE_BOARD_FIXTURE_ERROR: Accountant user seed failed\n");
+    exit(1);
+}
+$accountantId = (int) $accountantId;
+$accountantUser = new WP_User($accountantId);
+$accountantUser->set_role(\ClinicCore\Auth\RolesAndCapabilities::ROLE_ACCOUNTANT);
+$accountantMembershipId = \ClinicCore\Bootstrap\App::membership_service()->create_membership(
+    $clinicId,
+    $accountantId,
+    \ClinicCore\Auth\RolesAndCapabilities::ROLE_ACCOUNTANT
+);
+$accountantMembership = \ClinicCore\Bootstrap\App::membership_service()->membership_for($clinicId, $accountantId);
+$accountantRole = get_role(\ClinicCore\Auth\RolesAndCapabilities::ROLE_ACCOUNTANT);
+$accountantRoleCaps = $accountantRole instanceof WP_Role ? $accountantRole->capabilities : array();
+$expectedAccountantCaps = array_fill_keys(
+    array_merge(\ClinicCore\Auth\RolesAndCapabilities::ACCOUNTANT_CAPS, array('read')),
+    true
+);
+ksort($accountantRoleCaps);
+ksort($expectedAccountantCaps);
+$forbiddenAccountantCaps = array(
+    \ClinicCore\Auth\RolesAndCapabilities::PATIENT_READ,
+    \ClinicCore\Auth\RolesAndCapabilities::APPT_READ,
+    \ClinicCore\Auth\RolesAndCapabilities::VISIT_READ,
+    \ClinicCore\Auth\RolesAndCapabilities::QUEUE_READ,
+    \ClinicCore\Auth\RolesAndCapabilities::QUEUE_CHECKIN,
+    \ClinicCore\Auth\RolesAndCapabilities::MEDICAL_READ,
+    \ClinicCore\Auth\RolesAndCapabilities::PRIVATE_NOTE_READ,
+    \ClinicCore\Auth\RolesAndCapabilities::RX_READ,
+    \ClinicCore\Auth\RolesAndCapabilities::FILE_READ,
+);
+$accountantOverrides = (int) $wpdb->get_var($wpdb->prepare(
+    'SELECT COUNT(*) FROM ' . $db->table('cpms_membership_capabilities') . ' WHERE membership_id = %d',
+    $accountantMembershipId
+));
+if (
+    $accountantUser->roles !== array(\ClinicCore\Auth\RolesAndCapabilities::ROLE_ACCOUNTANT)
+    || $accountantRoleCaps !== $expectedAccountantCaps
+    || $accountantMembership === null
+    || (int) $accountantMembership['clinic_id'] !== $clinicId
+    || (int) $accountantMembership['wp_user_id'] !== $accountantId
+    || (string) $accountantMembership['role_key'] !== \ClinicCore\Auth\RolesAndCapabilities::ROLE_ACCOUNTANT
+    || (string) $accountantMembership['status'] !== 'active'
+    || (string) $accountantMembership['scope_mode'] !== 'clinic'
+    || $accountantOverrides !== 0
+    || !$accountantUser->has_cap(\ClinicCore\Auth\RolesAndCapabilities::FINANCE_READ)
+    || !$accountantUser->has_cap(\ClinicCore\Auth\RolesAndCapabilities::INVOICE_READ)
+    || !$accountantUser->has_cap(\ClinicCore\Auth\RolesAndCapabilities::INVOICE_CREATE)
+    || !$accountantUser->has_cap(\ClinicCore\Auth\RolesAndCapabilities::PAYMENT_CREATE)
+) {
+    fwrite(STDERR, "FINANCE_BOARD_FIXTURE_ERROR: Accountant role or membership contract mismatch\n");
+    exit(1);
+}
+foreach ($forbiddenAccountantCaps as $forbiddenCap) {
+    if ($accountantUser->has_cap($forbiddenCap)) {
+        fwrite(STDERR, "FINANCE_BOARD_FIXTURE_ERROR: Accountant received a forbidden capability\n");
+        exit(1);
+    }
+}
+echo 'FINANCE_BOARD_ACCOUNTANT_PUBLIC=user_id=' . $accountantId . ' role=cpms_accountant membership_role=cpms_accountant membership_active=True membership_capability_overrides=0 finance_read=True invoice_read=True queue_read=False patient_read=False clinical_read=False' . "\n";
+
 $patients = array(
     array('Synthetic Invoice ' . $nonce, 'invoice'),
     array('Synthetic NoInvoice ' . $nonce, 'noinvoice'),
@@ -318,6 +387,11 @@ $env = array(
     'FINANCE_BOARD_URL'       => $portalUrl,
     'FINANCE_BOARD_LOGIN'     => $login,
     'FINANCE_BOARD_PASS'      => $password,
+    'FINANCE_BOARD_ACCOUNTANT_LOGIN' => $accountantLogin,
+    'FINANCE_BOARD_ACCOUNTANT_PASS' => $accountantPassword,
+    'FINANCE_BOARD_ACCOUNTANT_USER_ID' => (string) $accountantId,
+    'FINANCE_BOARD_ACCOUNTANT_CLINIC_ID' => (string) $clinicId,
+    'FINANCE_BOARD_ACCOUNTANT_INVOICE_ID' => (string) $captureInvoiceId,
     'FINANCE_BOARD_CLINIC_ID' => (string) $clinicId,
     'FINANCE_BOARD_LOCATION_ID' => (string) $locationId,
     'FINANCE_BOARD_INVOICE_PATIENT' => $patients[0][0] . ' Fixture',
