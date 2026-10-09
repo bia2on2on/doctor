@@ -26,11 +26,8 @@ final class Phase1BPrescriptionConcurrencyTest extends WP_UnitTestCase
 {
     private const NS = '/cpms/v1';
 
-    private int $orgId = 0;
-    private int $clinicId = 0;
+    private int $clinicId = 1;
     private int $locationId = 0;
-    private int $doctorUserId = 0;
-    private int $clinicianId = 0;
 
     /** @var list<int> */
     private array $prescriptionIds = [];
@@ -40,6 +37,9 @@ final class Phase1BPrescriptionConcurrencyTest extends WP_UnitTestCase
 
     /** @var list<int> */
     private array $patientIds = [];
+
+    /** @var list<int> */
+    private array $clinicianIds = [];
 
     /** @var list<int> */
     private array $userIds = [];
@@ -54,111 +54,50 @@ final class Phase1BPrescriptionConcurrencyTest extends WP_UnitTestCase
         wp_set_current_user(0);
 
         global $wpdb;
-        $now = App::db()->nowUtcSql();
-        $unique = bin2hex(random_bytes(4));
-
-        // 0. Organization
-        $wpdb->query(
+        $this->locationId = (int) $wpdb->get_var(
             $wpdb->prepare(
-                'INSERT INTO ' . $wpdb->prefix . 'cpms_organizations (name, slug, status, created_at, updated_at) VALUES (%s, %s, "active", %s, %s)',
-                'Org P1B Conc ' . $unique,
-                'p1b-org-' . $unique,
-                $now,
-                $now
+                'SELECT id FROM ' . $wpdb->prefix . 'cpms_locations WHERE clinic_id = %d AND is_primary = 1 LIMIT 1',
+                $this->clinicId
             )
         );
-        $this->orgId = (int) $wpdb->insert_id;
-
-        // 1. Clinic
-        $wpdb->query(
-            $wpdb->prepare(
-                'INSERT INTO ' . $wpdb->prefix . 'cpms_clinics (organization_id, name, slug, timezone, created_at, updated_at) VALUES (%d, %s, %s, "Asia/Tehran", %s, %s)',
-                $this->orgId,
-                'Phase1B Concurrency Clinic ' . $unique,
-                'p1b-conc-' . $unique,
-                $now,
-                $now
-            )
-        );
-        $this->clinicId = (int) $wpdb->insert_id;
-
-        // 2. Primary Location
-        $wpdb->query(
-            $wpdb->prepare(
-                'INSERT INTO ' . $wpdb->prefix . 'cpms_locations (clinic_id, name, slug, timezone, is_primary, is_active, created_at, updated_at) VALUES (%d, %s, %s, "Asia/Tehran", 1, 1, %s, %s)',
-                $this->clinicId,
-                'Primary Location',
-                'p1b-loc-' . $unique,
-                $now,
-                $now
-            )
-        );
-        $this->locationId = (int) $wpdb->insert_id;
-
-        // 3. Doctor User
-        $this->doctorUserId = $this->makeUser('p1b_conc_doc', RolesAndCapabilities::ROLE_DOCTOR);
-        cpms_test_seed_membership($this->doctorUserId, $this->clinicId, RolesAndCapabilities::ROLE_DOCTOR);
-
-        // 4. Clinician Profile
-        $wpdb->query(
-            $wpdb->prepare(
-                'INSERT INTO ' . $wpdb->prefix . 'cpms_clinicians (clinic_id, wp_user_id, full_name, is_active, created_at, updated_at) VALUES (%d, %d, %s, 1, %s, %s)',
-                $this->clinicId,
-                $this->doctorUserId,
-                'Dr Phase1B Concurrency',
-                $now,
-                $now
-            )
-        );
-        $this->clinicianId = (int) $wpdb->insert_id;
     }
 
     protected function tearDown(): void
     {
-        $this->purgeFixture();
+        global $wpdb;
+
+        foreach ($this->prescriptionIds as $rxId) {
+            $wpdb->query($wpdb->prepare('DELETE FROM ' . $wpdb->prefix . 'cpms_prescription_items WHERE prescription_id = %d', $rxId));
+            $wpdb->query($wpdb->prepare('DELETE FROM ' . $wpdb->prefix . 'cpms_prescriptions WHERE id = %d', $rxId));
+        }
+        foreach ($this->visitIds as $visitId) {
+            $wpdb->query($wpdb->prepare('DELETE FROM ' . $wpdb->prefix . 'cpms_visits WHERE id = %d', $visitId));
+        }
+        foreach ($this->patientIds as $patientId) {
+            $wpdb->query($wpdb->prepare('DELETE FROM ' . $wpdb->prefix . 'cpms_patients WHERE id = %d', $patientId));
+        }
+        foreach ($this->clinicianIds as $clinicianId) {
+            $wpdb->query($wpdb->prepare('DELETE FROM ' . $wpdb->prefix . 'cpms_clinicians WHERE id = %d', $clinicianId));
+        }
+        foreach ($this->userIds as $userId) {
+            $wpdb->query($wpdb->prepare('DELETE FROM ' . $wpdb->prefix . 'cpms_clinic_memberships WHERE wp_user_id = %d', $userId));
+            $wpdb->delete($wpdb->usermeta, ['user_id' => $userId], ['%d']);
+            $wpdb->delete($wpdb->users, ['ID' => $userId], ['%d']);
+        }
+        $wpdb->query('COMMIT');
+
+        $this->prescriptionIds = [];
+        $this->visitIds = [];
+        $this->patientIds = [];
+        $this->clinicianIds = [];
+        $this->userIds = [];
+
         Settings::flushCache();
         ScopeContext::clear();
         App::resetScope();
         wp_set_current_user(0);
 
         parent::tearDown();
-    }
-
-    private function purgeFixture(): void
-    {
-        if ($this->clinicId <= 0) {
-            return;
-        }
-
-        global $wpdb;
-        $c = (int) $this->clinicId;
-
-        $wpdb->query('SET FOREIGN_KEY_CHECKS = 0');
-        $wpdb->query($wpdb->prepare('DELETE FROM ' . $wpdb->prefix . 'cpms_prescription_items WHERE prescription_id IN (SELECT id FROM ' . $wpdb->prefix . 'cpms_prescriptions WHERE clinic_id = %d)', $c));
-        $wpdb->query($wpdb->prepare('DELETE FROM ' . $wpdb->prefix . 'cpms_prescriptions WHERE clinic_id = %d', $c));
-        $wpdb->query($wpdb->prepare('DELETE FROM ' . $wpdb->prefix . 'cpms_visits WHERE clinic_id = %d', $c));
-        $wpdb->query($wpdb->prepare('DELETE FROM ' . $wpdb->prefix . 'cpms_patients WHERE clinic_id = %d', $c));
-        $wpdb->query($wpdb->prepare('DELETE FROM ' . $wpdb->prefix . 'cpms_clinicians WHERE clinic_id = %d', $c));
-        $wpdb->query($wpdb->prepare('DELETE FROM ' . $wpdb->prefix . 'cpms_clinic_memberships WHERE clinic_id = %d', $c));
-        $wpdb->query($wpdb->prepare('DELETE FROM ' . $wpdb->prefix . 'cpms_locations WHERE clinic_id = %d', $c));
-        $wpdb->query($wpdb->prepare('DELETE FROM ' . $wpdb->prefix . 'cpms_audit_logs WHERE clinic_id = %d', $c));
-        $wpdb->query($wpdb->prepare('DELETE FROM ' . $wpdb->prefix . 'cpms_settings WHERE clinic_id = %d', $c));
-        $wpdb->query($wpdb->prepare('DELETE FROM ' . $wpdb->prefix . 'cpms_clinics WHERE id = %d', $c));
-        if ($this->orgId > 0) {
-            $wpdb->query($wpdb->prepare('DELETE FROM ' . $wpdb->prefix . 'cpms_organizations WHERE id = %d', (int) $this->orgId));
-        }
-        $wpdb->query('SET FOREIGN_KEY_CHECKS = 1');
-        $wpdb->query('COMMIT');
-
-        foreach ($this->userIds as $userId) {
-            $wpdb->delete($wpdb->usermeta, ['user_id' => $userId], ['%d']);
-            $wpdb->delete($wpdb->users, ['ID' => $userId], ['%d']);
-        }
-
-        $this->prescriptionIds = [];
-        $this->visitIds = [];
-        $this->patientIds = [];
-        $this->userIds = [];
     }
 
     /**
@@ -173,50 +112,13 @@ final class Phase1BPrescriptionConcurrencyTest extends WP_UnitTestCase
         global $wpdb;
         $now = App::db()->nowUtcSql();
 
-        // 1. Patient
-        $wpdb->query(
-            $wpdb->prepare(
-                'INSERT INTO ' . $wpdb->prefix . 'cpms_patients (clinic_id, mrn, first_name, last_name, status, created_at, updated_at) VALUES (%d, %s, "Conc", "Patient", "active", %s, %s)',
-                $this->clinicId,
-                'MRN-CONC-' . bin2hex(random_bytes(3)),
-                $now,
-                $now
-            )
-        );
-        $patientId = (int) $wpdb->insert_id;
-        $this->patientIds[] = $patientId;
+        $doctorUserId = $this->makeUser('p1b_conc_doc', RolesAndCapabilities::ROLE_DOCTOR);
+        cpms_test_seed_membership($doctorUserId, $this->clinicId, RolesAndCapabilities::ROLE_DOCTOR);
 
-        // 2. Visit
-        $wpdb->query(
-            $wpdb->prepare(
-                'INSERT INTO ' . $wpdb->prefix . 'cpms_visits (clinic_id, clinician_id, patient_id, source, status, visit_date, check_in_at, created_at, updated_at) VALUES (%d, %d, %d, "scheduled", "in_consultation", %s, %s, %s, %s)',
-                $this->clinicId,
-                $this->clinicianId,
-                $patientId,
-                gmdate('Y-m-d'),
-                $now,
-                $now,
-                $now
-            )
-        );
-        $visitId = (int) $wpdb->insert_id;
-        $this->visitIds[] = $visitId;
-
-        // 3. Prescription
-        $wpdb->query(
-            $wpdb->prepare(
-                'INSERT INTO ' . $wpdb->prefix . 'cpms_prescriptions (clinic_id, prescription_number, visit_id, patient_id, clinician_id, status, is_patient_visible, created_at, updated_at) VALUES (%d, %s, %d, %d, %d, "draft", 1, %s, %s)',
-                $this->clinicId,
-                'RX-CONC-' . bin2hex(random_bytes(3)),
-                $visitId,
-                $patientId,
-                $this->clinicianId,
-                $now,
-                $now
-            )
-        );
-        $prescriptionId = (int) $wpdb->insert_id;
-        $this->prescriptionIds[] = $prescriptionId;
+        $clinicianId = $this->insertClinician($this->clinicId, $doctorUserId, 'Dr Phase1B Concurrency Lock');
+        $patientId = $this->insertPatient($this->clinicId, 'Phase1BConcurrencyLock');
+        $visitId = $this->insertVisit($this->clinicId, $this->locationId, $clinicianId, $patientId);
+        $prescriptionId = $this->insertRx($this->clinicId, $visitId, $clinicianId);
 
         // Commit fixture rows so the independent MySQL connection sees them
         $wpdb->query('COMMIT');
@@ -224,14 +126,14 @@ final class Phase1BPrescriptionConcurrencyTest extends WP_UnitTestCase
         $conn = $this->freshMysqli();
         $conn->query('START TRANSACTION');
         $locked = $conn->query(
-            'SELECT id FROM ' . App::db()->table('cpms_clinicians') . ' WHERE id = ' . (int) $this->clinicianId . ' FOR UPDATE'
+            'SELECT id FROM ' . App::db()->table('cpms_clinicians') . ' WHERE id = ' . (int) $clinicianId . ' FOR UPDATE'
         );
         $this->assertNotFalse($locked, 'Independent connection must acquire row lock on cpms_clinicians');
 
         // Main connection: short lock wait timeout -> finalization must block on clinician row lock
         $wpdb->query('SET SESSION innodb_lock_wait_timeout = 2');
 
-        wp_set_current_user($this->doctorUserId);
+        wp_set_current_user($doctorUserId);
         $headers = ['X-CPMS-Clinic-Id' => (string) $this->clinicId];
         $blocked = false;
         try {
@@ -249,13 +151,13 @@ final class Phase1BPrescriptionConcurrencyTest extends WP_UnitTestCase
         $conn->query('ROLLBACK');
         $conn->close();
 
+        // Restore default timeout
+        $wpdb->query('SET SESSION innodb_lock_wait_timeout = DEFAULT');
+
         // After lock release, finalization completes successfully
         $success = $this->dispatch('POST', self::NS . '/prescriptions/' . $prescriptionId . '/finalize', [], $headers);
         $this->assertSame(200, $success->get_status());
         $this->assertSame('finalized', $this->rxStatus($prescriptionId));
-
-        // Restore default timeout
-        $wpdb->query('SET SESSION innodb_lock_wait_timeout = DEFAULT');
     }
 
     /**
@@ -267,52 +169,14 @@ final class Phase1BPrescriptionConcurrencyTest extends WP_UnitTestCase
     public function testPhase1BTwoConnectionConcurrentRevocationDeniesFinalization(): void
     {
         global $wpdb;
-        $now = App::db()->nowUtcSql();
 
-        // 1. Patient
-        $wpdb->query(
-            $wpdb->prepare(
-                'INSERT INTO ' . $wpdb->prefix . 'cpms_patients (clinic_id, mrn, first_name, last_name, status, created_at, updated_at) VALUES (%d, %s, "Revoke", "Patient", "active", %s, %s)',
-                $this->clinicId,
-                'MRN-REV-' . bin2hex(random_bytes(3)),
-                $now,
-                $now
-            )
-        );
-        $patientId = (int) $wpdb->insert_id;
-        $this->patientIds[] = $patientId;
+        $doctorUserId = $this->makeUser('p1b_rev_doc', RolesAndCapabilities::ROLE_DOCTOR);
+        cpms_test_seed_membership($doctorUserId, $this->clinicId, RolesAndCapabilities::ROLE_DOCTOR);
 
-        // 2. Visit
-        $wpdb->query(
-            $wpdb->prepare(
-                'INSERT INTO ' . $wpdb->prefix . 'cpms_visits (clinic_id, clinician_id, patient_id, source, status, visit_date, check_in_at, created_at, updated_at) VALUES (%d, %d, %d, "scheduled", "in_consultation", %s, %s, %s, %s)',
-                $this->clinicId,
-                $this->clinicianId,
-                $patientId,
-                gmdate('Y-m-d'),
-                $now,
-                $now,
-                $now
-            )
-        );
-        $visitId = (int) $wpdb->insert_id;
-        $this->visitIds[] = $visitId;
-
-        // 3. Prescription
-        $wpdb->query(
-            $wpdb->prepare(
-                'INSERT INTO ' . $wpdb->prefix . 'cpms_prescriptions (clinic_id, prescription_number, visit_id, patient_id, clinician_id, status, is_patient_visible, created_at, updated_at) VALUES (%d, %s, %d, %d, %d, "draft", 1, %s, %s)',
-                $this->clinicId,
-                'RX-REV-' . bin2hex(random_bytes(3)),
-                $visitId,
-                $patientId,
-                $this->clinicianId,
-                $now,
-                $now
-            )
-        );
-        $prescriptionId = (int) $wpdb->insert_id;
-        $this->prescriptionIds[] = $prescriptionId;
+        $clinicianId = $this->insertClinician($this->clinicId, $doctorUserId, 'Dr Phase1B Two-Conn Revoke');
+        $patientId = $this->insertPatient($this->clinicId, 'Phase1BTwoConnRevoke');
+        $visitId = $this->insertVisit($this->clinicId, $this->locationId, $clinicianId, $patientId);
+        $prescriptionId = $this->insertRx($this->clinicId, $visitId, $clinicianId);
 
         // Commit fixture rows so the independent MySQL connection sees them
         $wpdb->query('COMMIT');
@@ -321,22 +185,127 @@ final class Phase1BPrescriptionConcurrencyTest extends WP_UnitTestCase
         $conn = $this->freshMysqli();
         $conn->query('START TRANSACTION');
         $updated = $conn->query(
-            'UPDATE ' . App::db()->table('cpms_clinicians') . ' SET is_active = 0 WHERE id = ' . (int) $this->clinicianId
+            'UPDATE ' . App::db()->table('cpms_clinicians') . ' SET is_active = 0 WHERE id = ' . (int) $clinicianId
         );
         $this->assertNotFalse($updated);
         $conn->query('COMMIT');
         $conn->close();
 
         // Main connection attempts finalization
-        wp_set_current_user($this->doctorUserId);
+        wp_set_current_user($doctorUserId);
         $headers = ['X-CPMS-Clinic-Id' => (string) $this->clinicId];
         $auditBefore = (int) App::db()->fetchValue('SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs'), []);
         $attempt = $this->dispatch('POST', self::NS . '/prescriptions/' . $prescriptionId . '/finalize', [], $headers);
-        $missing = $this->dispatch('POST', self::NS . '/prescriptions/999999999/finalize', [], $headers);
+        $missing = $this->dispatch('POST', self::NS . '/prescriptions/' . $this->missingId('cpms_prescriptions') . '/finalize', [], $headers);
 
         $this->assertSame('draft', $this->rxStatus($prescriptionId), 'revoked identity must leave the prescription draft');
         $this->assertSame($auditBefore, (int) App::db()->fetchValue('SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs'), []), 'revoked-identity denial must append no audit row');
-        $this->assertSame($missing->get_status(), $attempt->get_status(), 'revoked-identity denial must stay non-enumerating');
+        $this->assertSame($this->responseErrorIdentity($missing), $this->responseErrorIdentity($attempt), 'revoked-identity denial must stay non-enumerating');
+    }
+
+    private function insertClinician(int $clinicId, int $wpUserId, string $name): int
+    {
+        global $wpdb;
+        $now = App::db()->nowUtcSql();
+        $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_clinicians (clinic_id, full_name, wp_user_id, is_active, created_at, updated_at)
+                 VALUES (%d, %s, %d, 1, %s, %s)',
+                $clinicId,
+                $name,
+                $wpUserId,
+                $now,
+                $now
+            )
+        );
+        $id = (int) $wpdb->insert_id;
+        $this->clinicianIds[] = $id;
+
+        return $id;
+    }
+
+    private function insertPatient(int $clinicId, string $lastName): int
+    {
+        global $wpdb;
+        $now = App::db()->nowUtcSql();
+        $seq = random_int(1000, 999999);
+        $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_patients
+                     (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at)
+                 VALUES (%d, %s, %s, %s, %s, "active", %s, %s)',
+                $clinicId,
+                'MR-P1BCONC-' . $seq . '-' . $clinicId,
+                'Patient',
+                $lastName,
+                '0913' . sprintf('%07d', $seq),
+                $now,
+                $now
+            )
+        );
+        $id = (int) $wpdb->insert_id;
+        $this->patientIds[] = $id;
+
+        return $id;
+    }
+
+    private function insertVisit(int $clinicId, int $locationId, int $clinicianId, int $patientId): int
+    {
+        global $wpdb;
+        $now = App::db()->nowUtcSql();
+        $today = gmdate('Y-m-d');
+        $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_visits
+                     (clinic_id, location_id, clinician_id, patient_id, source, status, visit_date, check_in_at, waiting_since, called_at, active, created_at, updated_at)
+                 VALUES (%d, %d, %d, %d, "walk_in", "waiting", %s, %s, %s, %s, 1, %s, %s)',
+                $clinicId,
+                $locationId,
+                $clinicianId,
+                $patientId,
+                $today,
+                $today . ' 10:00:00.000',
+                $today . ' 10:00:00.000',
+                $today . ' 10:05:00.000',
+                $now,
+                $now
+            )
+        );
+        $id = (int) $wpdb->insert_id;
+        $this->visitIds[] = $id;
+
+        return $id;
+    }
+
+    private function insertRx(int $clinicId, int $visitId, int $clinicianId): int
+    {
+        global $wpdb;
+        $now = App::db()->nowUtcSql();
+        $patientId = (int) $wpdb->get_var(
+            $wpdb->prepare(
+                'SELECT patient_id FROM ' . $wpdb->prefix . 'cpms_visits WHERE id = %d',
+                $visitId
+            )
+        );
+        $seq = random_int(100000, 9999999);
+        $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_prescriptions
+                     (clinic_id, prescription_number, visit_id, patient_id, clinician_id, status, is_patient_visible, created_at, updated_at)
+                 VALUES (%d, %s, %d, %d, %d, "draft", 1, %s, %s)',
+                $clinicId,
+                'RX-P1BCONC-' . $seq . '-' . $clinicId,
+                $visitId,
+                $patientId,
+                $clinicianId,
+                $now,
+                $now
+            )
+        );
+        $id = (int) $wpdb->insert_id;
+        $this->prescriptionIds[] = $id;
+
+        return $id;
     }
 
     private function rxStatus(int $id): string
@@ -345,6 +314,40 @@ final class Phase1BPrescriptionConcurrencyTest extends WP_UnitTestCase
             'SELECT status FROM ' . App::db()->table('cpms_prescriptions') . ' WHERE id = %d LIMIT 1',
             [$id]
         ) ?? '');
+    }
+
+    private function missingId(string $table): int
+    {
+        $missing = (int) App::db()->fetchValue(
+            'SELECT COALESCE(MAX(id), 0) + 1 FROM ' . App::db()->table($table)
+        );
+        self::assertGreaterThan(0, $missing, 'precondition: missing ID must be positive');
+
+        return $missing;
+    }
+
+    /** @return array{status: int, code: string, message: string, data: mixed} */
+    private function responseErrorIdentity(\WP_REST_Response $response): array
+    {
+        $body = $response->get_data();
+        if ($body instanceof \WP_Error) {
+            $code = $body->get_error_code();
+
+            return [
+                'status' => $response->get_status(),
+                'code' => $code,
+                'message' => $body->get_error_message($code),
+                'data' => $body->get_error_data($code),
+            ];
+        }
+        $body = is_array($body) ? $body : [];
+
+        return [
+            'status' => $response->get_status(),
+            'code' => (string) ($body['code'] ?? ''),
+            'message' => (string) ($body['message'] ?? ''),
+            'data' => $body['data'] ?? null,
+        ];
     }
 
     private function freshMysqli(): \mysqli
@@ -384,10 +387,8 @@ final class Phase1BPrescriptionConcurrencyTest extends WP_UnitTestCase
     private function dispatch(string $method, string $route, array $body = [], array $headers = []): \WP_REST_Response
     {
         $request = new \WP_REST_Request($method, $route);
-        if ($method === 'GET') {
-            $request->set_query_params($body);
-        } else {
-            $request->set_body_params($body);
+        foreach ($body as $key => $value) {
+            $request->set_param($key, $value);
         }
         $request->set_header('X-WP-Nonce', wp_create_nonce('wp_rest'));
         foreach ($headers as $k => $v) {
