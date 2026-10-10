@@ -6,17 +6,29 @@ namespace ClinicCore\Tests\Integration;
 
 use ClinicCore\Application\Booking\BookingService;
 use ClinicCore\Application\Booking\ScheduleService;
+use ClinicCore\Application\Notifications\SmsService;
 use ClinicCore\Application\Scope\ClinicScope;
 use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Booking\BookingException;
+use ClinicCore\Domain\Booking\BookingWindow;
+use ClinicCore\Domain\Licensing\LicenseDecision;
+use ClinicCore\Domain\Licensing\LicenseGate;
+use ClinicCore\Infrastructure\Audit\AuditLogger;
+use ClinicCore\Infrastructure\Db\CpmsDb;
+use ClinicCore\Infrastructure\Logging\OpLogger;
+use ClinicCore\Infrastructure\Queue\JobQueue;
 use ClinicCore\Infrastructure\Repository\AppointmentRepository;
 use ClinicCore\Infrastructure\Repository\LocationRepository;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
 use ClinicCore\Infrastructure\Repository\PatientRepository;
 use ClinicCore\Infrastructure\Repository\ScheduleRepository;
 use ClinicCore\Infrastructure\Repository\SlotRepository;
+use ClinicCore\Infrastructure\Security\Idempotency;
+use ClinicCore\Infrastructure\Sms\CredentialVault;
+use ClinicCore\Infrastructure\Sms\SmsProviderRegistry;
 use ClinicCore\Settings\Settings;
+use ClinicCore\Settings\SettingsFactory;
 use DateTimeImmutable;
 use DateTimeZone;
 use WP_REST_Request;
@@ -431,11 +443,18 @@ final class SchedulingLocationLocalBoundaryRedTest extends WP_UnitTestCase
     {
         global $wpdb;
         $svc = $this->newBookingService();
-        $date = '2026-11-01';
-        $time = '01:30:00';
+        $repeated = $this->futureRepeatedLocalWallTime(self::TZ_WEST_HOLD);
+        $date = $repeated['date'];
+        $time = $repeated['time'];
+        $this->allowFutureTransitionBooking();
         $ambiguousSlotId = $this->insertSlot($this->clinicianHold, $this->locNewYork, $date, $time);
 
-        $available = $this->flattenAvailabilityIds($svc->availability($this->clinicianHold, '2026-10-31', '2026-11-02'));
+        $repeatedWall = new DateTimeImmutable($date . ' ' . $time, new DateTimeZone(self::TZ_WEST_HOLD));
+        $available = $this->flattenAvailabilityIds($svc->availability(
+            $this->clinicianHold,
+            $repeatedWall->modify('-1 day')->format('Y-m-d'),
+            $repeatedWall->modify('+1 day')->format('Y-m-d')
+        ));
         self::assertNotContains(
             $ambiguousSlotId,
             $available,
@@ -569,15 +588,17 @@ final class SchedulingLocationLocalBoundaryRedTest extends WP_UnitTestCase
     public function testStaffCreateLocksLocationBeforeFinalTimezoneValidation(): void
     {
         if (!function_exists('pcntl_fork') || !function_exists('stream_socket_pair') || !class_exists('mysqli')) {
-            self::markTestSkipped('pcntl, stream_socket_pair, and mysqli are required for the independent-connection race proof.');
+            self::markTestSkipped('pcntl, stream_socket_pair, and mysqli are required for the independent-session race proof.');
         }
 
         global $wpdb;
-        $svc = $this->newBookingService();
-        $date = '2026-11-01';
-        $time = '01:30:00';
-        // The first read sees this valid, unambiguous timezone. The separate
-        // connection switches it to New York while holding the Location lock.
+        $repeated = $this->futureRepeatedLocalWallTime(self::TZ_WEST_HOLD);
+        $date = $repeated['date'];
+        $time = $repeated['time'];
+        $this->allowFutureTransitionBooking();
+
+        // Preflight must see this committed valid timezone. The writer then
+        // changes the same row to New York, but holds its transaction open.
         $wpdb->update(
             App::db()->table('cpms_locations'),
             ['timezone' => 'Asia/Tokyo', 'updated_at' => App::db()->nowUtcSql()],
@@ -591,71 +612,190 @@ final class SchedulingLocationLocalBoundaryRedTest extends WP_UnitTestCase
         ));
         self::assertGreaterThan(0, $patientId, 'fixture: persisted Clinic Patient');
 
-        // This fixture must be visible to the independently connected writer.
+        $before = [
+            'appointments' => (int) $wpdb->get_var($wpdb->prepare(
+                'SELECT COUNT(*) FROM ' . App::db()->table('cpms_appointments') . ' WHERE slot_id = %d',
+                $slotId
+            )),
+            'patients' => (int) $wpdb->get_var($wpdb->prepare(
+                'SELECT COUNT(*) FROM ' . App::db()->table('cpms_patients') . ' WHERE clinic_id = %d',
+                $this->clinicId
+            )),
+            'links' => (int) $wpdb->get_var($wpdb->prepare(
+                'SELECT COUNT(*) FROM ' . App::db()->table('cpms_patient_user_links') . ' WHERE wp_user_id = %d',
+                $staffUserId
+            )),
+            'audits' => (int) $wpdb->get_var($wpdb->prepare(
+                'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE clinic_id = %d',
+                $this->clinicId
+            )),
+            'patient' => App::db()->fetchRow(
+                'SELECT first_name, last_name, mobile, status FROM ' . App::db()->table('cpms_patients') . ' WHERE id = %d',
+                [$patientId]
+            ),
+        ];
+        self::assertIsArray($before['patient']);
+
+        // Make fixture writes visible to all independent sessions before fork.
         $wpdb->query('COMMIT'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        $pipes = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
-        if ($pipes === false) {
-            self::markTestSkipped('Cannot create independent-process synchronization pipe.');
+        $prefix = $wpdb->prefix;
+        $writerPipes = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+        $bookingPipes = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+        if ($writerPipes === false || $bookingPipes === false) {
+            self::markTestSkipped('Cannot create independent-process synchronization pipes.');
         }
-        [$parentPipe, $childPipe] = $pipes;
-        $pid = pcntl_fork();
-        if ($pid === -1) {
-            self::fail('pcntl_fork failed');
-        }
-        if ($pid === 0) {
-            fclose($parentPipe);
-            $mysqli = @new \mysqli($wpdb->dbhost, $wpdb->dbuser, $wpdb->dbpassword, $wpdb->dbname);
-            if ($mysqli->connect_errno !== 0) {
-                fwrite($childPipe, "error\n");
-                exit(2);
-            }
-            $mysqli->set_charset('utf8mb4');
-            $locationTable = App::db()->table('cpms_locations');
-            $mysqli->begin_transaction();
-            $locked = $mysqli->query('SELECT id FROM ' . $locationTable . ' WHERE id = ' . (int) $this->locNewYork . ' FOR UPDATE');
-            $updated = $locked !== false && $mysqli->query(
-                "UPDATE {$locationTable} SET timezone = 'America/New_York' WHERE id = " . (int) $this->locNewYork
-            ) !== false;
-            fwrite($childPipe, $updated ? "locked\n" : "error\n");
-            if ($updated) {
-                // Give the parent time to perform its pre-transaction read,
-                // lock the Slot, then block on this Location row.
-                usleep(750000);
-                $mysqli->commit();
-                exit(0);
-            }
-            $mysqli->rollback();
-            exit(2);
-        }
+        [$writerParent, $writerChild] = $writerPipes;
+        [$bookingParent, $bookingChild] = $bookingPipes;
+        $writerPid = null;
+        $bookingPid = null;
+        $writerReleased = false;
+        $writerStatus = null;
+        $bookingStatus = null;
+        $observer = null;
 
-        fclose($childPipe);
-        stream_set_timeout($parentPipe, 3);
-        self::assertSame("locked\n", fgets($parentPipe), 'fixture: independent writer holds the Location row');
-
-        $error = null;
         try {
-            $this->withScope($this->clinicId, function () use ($svc, $staffUserId, $patientId, $date, $time, $slotId): void {
-                $svc->createByStaff($staffUserId, $patientId, $this->clinicianHold, $date, $time, null, $slotId);
-            });
-        } catch (BookingException $e) {
-            $error = $e;
-        }
-        pcntl_waitpid($pid, $status);
-        fclose($parentPipe);
+            $writerPid = pcntl_fork();
+            if ($writerPid === -1) {
+                self::fail('pcntl_fork failed for the independent Location writer');
+            }
+            if ($writerPid === 0) {
+                fclose($writerParent);
+                fclose($bookingParent);
+                fclose($bookingChild);
+                $this->locationTimezoneWriterChild($writerChild, $this->locNewYork);
+            }
+            fclose($writerChild);
 
-        self::assertTrue(pcntl_wifexited($status) && pcntl_wexitstatus($status) === 0, 'independent Location writer committed its timezone update');
-        self::assertInstanceOf(BookingException::class, $error, 'final protected validation must observe the committed New York timezone');
-        self::assertSame('CLINIC_VALIDATION_FAILED', $error->errorCode);
-        self::assertSame(0, (int) $wpdb->get_var($wpdb->prepare(
-            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_appointments') . ' WHERE slot_id = %d',
-            $slotId
-        )));
-        $slot = App::db()->fetchRow(
-            'SELECT booked_count FROM ' . App::db()->table('cpms_schedule_slots') . ' WHERE id = %d',
-            [$slotId]
-        );
-        self::assertIsArray($slot);
-        self::assertSame(0, (int) $slot['booked_count']);
+            $writerMessage = $this->readSynchronizationLine($writerParent, 5);
+            self::assertIsString($writerMessage, 'writer must report its held Location lock before booking starts');
+            self::assertMatchesRegularExpression('/^writer_locked:[1-9][0-9]*$/', $writerMessage);
+            $writerConnectionId = (int) substr($writerMessage, strlen('writer_locked:'));
+
+            $bookingPid = pcntl_fork();
+            if ($bookingPid === -1) {
+                self::fail('pcntl_fork failed for the independent BookingService actor');
+            }
+            if ($bookingPid === 0) {
+                fclose($bookingParent);
+                fclose($writerParent);
+                $this->staffBookingChild(
+                    $bookingChild,
+                    $prefix,
+                    $this->clinicId,
+                    $staffUserId,
+                    $patientId,
+                    $this->clinicianHold,
+                    $date,
+                    $time,
+                    $slotId
+                );
+            }
+            fclose($bookingChild);
+
+            $bookingMessage = $this->readSynchronizationLine($bookingParent, 5);
+            self::assertIsString($bookingMessage, 'booking actor must report its own fresh DB connection before product execution');
+            self::assertMatchesRegularExpression('/^booking_connected:[1-9][0-9]*$/', $bookingMessage);
+            $bookingConnectionId = (int) substr($bookingMessage, strlen('booking_connected:'));
+            self::assertNotSame($writerConnectionId, $bookingConnectionId, 'writer and BookingService actor must use distinct DB sessions');
+            self::assertNotSame(getmypid(), $writerPid, 'writer must be a distinct process');
+            self::assertNotSame(getmypid(), $bookingPid, 'booking actor must be a distinct process');
+
+            $observer = $this->freshMysqli();
+            // This bounded state poll is the synchronization oracle: a matching
+            // InnoDB wait edge can exist only after BookingService accepted the
+            // Tokyo preflight, entered its transaction, locked Slot, and then
+            // blocked on the writer's still-held Location row.
+            self::assertTrue(
+                $this->waitForLocationLockContention($observer, $bookingConnectionId, $writerConnectionId, 5),
+                'mandatory interleaving not observed: BookingService never became blocked by the writer-held Location row'
+            );
+
+            // Independently prove the first half of that interleaving: the
+            // blocked booking transaction owns the Slot lock, so NOWAIT must
+            // fail immediately rather than becoming a timing-based assertion.
+            $slotProbe = $this->freshMysqli();
+            try {
+                $slotResult = @$slotProbe->query(
+                    'SELECT id FROM ' . App::db()->table('cpms_schedule_slots') . ' WHERE id = ' . $slotId . ' FOR UPDATE NOWAIT'
+                );
+                self::assertFalse($slotResult, 'booking actor must retain the Slot lock while blocked on Location');
+                self::assertSame(3572, $slotProbe->errno, 'NOWAIT must prove a live Slot-row conflict, not a timeout or unrelated SQL error');
+            } finally {
+                @$slotProbe->close();
+            }
+
+            // Commit is deliberately impossible before both required facts above
+            // are observed. No sleep participates in correctness.
+            self::assertSame(7, fwrite($writerParent, "commit\n"), 'parent must release the writer only after the observed contention');
+            $writerReleased = true;
+
+            $bookingOutcomeLine = $this->readSynchronizationLine($bookingParent, 5);
+            self::assertIsString($bookingOutcomeLine, 'booking actor must finish after writer commit');
+            $bookingOutcome = json_decode($bookingOutcomeLine, true);
+            self::assertIsArray($bookingOutcome, 'booking actor must return structured outcome evidence');
+            self::assertSame('booking_exception', $bookingOutcome['result'] ?? null, 'final protected validation must reject after the authoritative timezone commit');
+            self::assertSame('CLINIC_VALIDATION_FAILED', $bookingOutcome['code'] ?? null, 'committed repeated New York wall time must be rejected');
+            self::assertSame($bookingConnectionId, (int) ($bookingOutcome['connection_id'] ?? 0), 'outcome must come from the announced fresh BookingService session');
+            self::assertTrue((bool) ($bookingOutcome['own_wpdb_connected'] ?? false), 'BookingService actor must own its wpdb connection');
+
+            $writerStatus = $this->waitForChildExit($writerPid, 5);
+            $bookingStatus = $this->waitForChildExit($bookingPid, 5);
+            self::assertIsInt($writerStatus, 'writer must exit within the bounded cleanup window');
+            self::assertIsInt($bookingStatus, 'booking actor must exit within the bounded cleanup window');
+            self::assertTrue(pcntl_wifexited($writerStatus) && pcntl_wexitstatus($writerStatus) === 0, 'writer must commit its intended Location timezone update');
+            self::assertTrue(pcntl_wifexited($bookingStatus) && pcntl_wexitstatus($bookingStatus) === 0, 'booking actor must terminate cleanly after the rejection');
+
+            self::assertSame('America/New_York', $this->locationTimezone($this->locNewYork), 'final validation must consume the writer-committed authoritative timezone');
+            self::assertSame($before['appointments'], (int) $wpdb->get_var($wpdb->prepare(
+                'SELECT COUNT(*) FROM ' . App::db()->table('cpms_appointments') . ' WHERE slot_id = %d',
+                $slotId
+            )), 'rejected staff booking must not create an appointment');
+            self::assertSame($before['patients'], (int) $wpdb->get_var($wpdb->prepare(
+                'SELECT COUNT(*) FROM ' . App::db()->table('cpms_patients') . ' WHERE clinic_id = %d',
+                $this->clinicId
+            )), 'rejected staff booking must not create or alter Patients');
+            self::assertSame($before['links'], (int) $wpdb->get_var($wpdb->prepare(
+                'SELECT COUNT(*) FROM ' . App::db()->table('cpms_patient_user_links') . ' WHERE wp_user_id = %d',
+                $staffUserId
+            )), 'rejected staff booking must not create or alter Patient/User links');
+            self::assertSame($before['audits'], (int) $wpdb->get_var($wpdb->prepare(
+                'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE clinic_id = %d',
+                $this->clinicId
+            )), 'rejected staff booking must not emit a success audit');
+            self::assertSame($before['patient'], App::db()->fetchRow(
+                'SELECT first_name, last_name, mobile, status FROM ' . App::db()->table('cpms_patients') . ' WHERE id = %d',
+                [$patientId]
+            ), 'rejected staff booking must leave the existing Patient unchanged');
+            $slot = App::db()->fetchRow(
+                'SELECT booked_count, held_count FROM ' . App::db()->table('cpms_schedule_slots') . ' WHERE id = %d',
+                [$slotId]
+            );
+            self::assertIsArray($slot);
+            self::assertSame(0, (int) $slot['booked_count'], 'rejected staff booking must not consume capacity');
+            self::assertSame(0, (int) $slot['held_count'], 'rejected staff booking must not create or retain a hold');
+            $this->assertRaceLocksReleased($slotId, $this->locNewYork);
+        } finally {
+            if (!$writerReleased && is_resource($writerParent)) {
+                @fwrite($writerParent, "rollback\n");
+            }
+            if ($writerPid !== null && $writerStatus === null) {
+                $writerStatus = $this->waitForChildExit($writerPid, 5);
+                $this->terminateUnreapedChild($writerPid, $writerStatus);
+            }
+            if ($bookingPid !== null && $bookingStatus === null) {
+                $bookingStatus = $this->waitForChildExit($bookingPid, 5);
+                $this->terminateUnreapedChild($bookingPid, $bookingStatus);
+            }
+            if ($observer instanceof \mysqli) {
+                @$observer->close();
+            }
+            if (is_resource($writerParent)) {
+                fclose($writerParent);
+            }
+            if (is_resource($bookingParent)) {
+                fclose($bookingParent);
+            }
+        }
     }
 
     // =================================================================
@@ -771,6 +911,280 @@ final class SchedulingLocationLocalBoundaryRedTest extends WP_UnitTestCase
             'اینورینت ۸: اسلاتِ متعلق به Location با timezone نامعتبر (' . self::TZ_INVALID . ') '
             . 'باید fail-closed از availability حذف شود؛ فیلتر فعلی هیچ درکی از timezone Location ندارد و آن را نشان می‌دهد.'
         );
+    }
+
+    /**
+     * Select a real future fallback transition from IANA data. The midpoint of
+     * the repeated local interval is represented as a wall-clock date/time and
+     * is proved ambiguous before it reaches the product path.
+     *
+     * @return array{date: string, time: string, transition_utc: int}
+     */
+    private function futureRepeatedLocalWallTime(string $timezone): array
+    {
+        $now = time();
+        $from = $now + 2 * DAY_IN_SECONDS;
+        $to = $now + 400 * DAY_IN_SECONDS;
+        $zone = new DateTimeZone($timezone);
+        $transitions = $zone->getTransitions($from, $to);
+        if ($transitions === false) {
+            self::markTestSkipped('Environment does not expose IANA transition data for ' . $timezone . '.');
+        }
+
+        for ($i = 1, $count = count($transitions); $i < $count; $i++) {
+            $beforeOffset = (int) $transitions[$i - 1]['offset'];
+            $afterOffset = (int) $transitions[$i]['offset'];
+            if ($afterOffset >= $beforeOffset) {
+                continue;
+            }
+            $transitionUtc = (int) $transitions[$i]['ts'];
+            $wallTimestamp = $transitionUtc + $afterOffset + intdiv($beforeOffset - $afterOffset, 2);
+            $firstUtc = $wallTimestamp - $beforeOffset;
+            $secondUtc = $wallTimestamp - $afterOffset;
+            $wall = gmdate('Y-m-d H:i:s', $wallTimestamp);
+
+            self::assertNotSame($firstUtc, $secondUtc, 'fixture: fallback must map one wall time to two distinct UTC instants');
+            self::assertSame($wall, gmdate('Y-m-d H:i:s', $firstUtc + $beforeOffset), 'fixture: first offset must reproduce repeated wall time');
+            self::assertSame($wall, gmdate('Y-m-d H:i:s', $secondUtc + $afterOffset), 'fixture: second offset must reproduce repeated wall time');
+            self::assertNull(
+                BookingWindow::slotUtcInstant(substr($wall, 0, 10), substr($wall, 11), $zone),
+                'fixture: selected IANA transition midpoint must be rejected as a repeated Location-local wall time'
+            );
+
+            return [
+                'date' => substr($wall, 0, 10),
+                'time' => substr($wall, 11),
+                'transition_utc' => $transitionUtc,
+            ];
+        }
+
+        self::markTestSkipped('No future repeated local-time interval found for ' . $timezone . ' within bounded IANA search window.');
+    }
+
+    private function allowFutureTransitionBooking(): void
+    {
+        (new Settings(App::db(), $this->clinicId, App::audit()))->set('booking.max_future_days', 400);
+        Settings::flushCache();
+    }
+
+    private function locationTimezoneWriterChild($pipe, int $locationId): void
+    {
+        global $wpdb;
+        $mysqli = null;
+        try {
+            $mysqli = $this->freshMysqli();
+            $mysqli->query('SET SESSION innodb_lock_wait_timeout = 5'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $mysqli->begin_transaction();
+            $locations = App::db()->table('cpms_locations');
+            $locked = $mysqli->query('SELECT id FROM ' . $locations . ' WHERE id = ' . $locationId . ' FOR UPDATE');
+            $updated = $locked !== false && $mysqli->query(
+                "UPDATE {$locations} SET timezone = 'America/New_York' WHERE id = " . $locationId
+            ) !== false;
+            if (!$updated) {
+                @fwrite($pipe, "writer_error\n");
+                $mysqli->rollback();
+                exit(2);
+            }
+            @fwrite($pipe, 'writer_locked:' . $mysqli->thread_id . "\n");
+            $command = $this->readSynchronizationLine($pipe, 5);
+            if ($command === 'commit') {
+                $mysqli->commit();
+                exit(0);
+            }
+            $mysqli->rollback();
+            exit(3);
+        } catch (\Throwable $e) {
+            @fwrite($pipe, "writer_error\n");
+            if ($mysqli instanceof \mysqli) {
+                @$mysqli->rollback();
+            }
+            exit(2);
+        } finally {
+            if ($mysqli instanceof \mysqli) {
+                @$mysqli->close();
+            }
+            if (is_resource($pipe)) {
+                fclose($pipe);
+            }
+        }
+    }
+
+    private function staffBookingChild(
+        $pipe,
+        string $prefix,
+        int $clinicId,
+        int $staffUserId,
+        int $patientId,
+        int $clinicianId,
+        string $date,
+        string $time,
+        int $slotId
+    ): void {
+        $wdb = null;
+        try {
+            global $wpdb;
+            $wdb = new \wpdb(DB_USER, DB_PASSWORD, DB_NAME, DB_HOST);
+            $wdb->set_prefix($prefix);
+            $wpdb = $wdb;
+            remove_all_filters('query');
+            $wdb->has_connected = false;
+            $wdb->init_charset();
+            $wdb->check_connection();
+            $connectionId = (int) $wdb->get_var('SELECT CONNECTION_ID()');
+            if ($connectionId <= 0) {
+                throw new \RuntimeException('fresh BookingService wpdb connection was not established');
+            }
+            ScopeContext::set(ClinicScope::forClinic($clinicId));
+            @fwrite($pipe, 'booking_connected:' . $connectionId . "\n");
+
+            $cpms = new CpmsDb($wdb);
+            $op = new OpLogger($cpms);
+            $audit = new AuditLogger($cpms, $op);
+            $factory = new SettingsFactory($cpms, $audit);
+            $sms = new SmsService(
+                $cpms,
+                $factory,
+                new SmsProviderRegistry(),
+                new CredentialVault(),
+                $audit,
+                $op,
+                new JobQueue($cpms, $op),
+                static fn (): int => $clinicId
+            );
+            $service = new BookingService(
+                $cpms,
+                new SlotRepository($cpms),
+                new AppointmentRepository($cpms),
+                new PatientRepository($cpms),
+                $factory,
+                new SchedulingLocationLocalAllowAllLicenseGate(),
+                $audit,
+                $op,
+                new Idempotency($cpms),
+                $sms,
+                null,
+                new MembershipRepository($cpms)
+            );
+
+            try {
+                $service->createByStaff($staffUserId, $patientId, $clinicianId, $date, $time, null, $slotId);
+                $outcome = ['result' => 'unexpected_success'];
+            } catch (BookingException $e) {
+                $outcome = ['result' => 'booking_exception', 'code' => $e->errorCode];
+            }
+            $outcome['connection_id'] = $connectionId;
+            $outcome['own_wpdb_connected'] = true;
+            @fwrite($pipe, json_encode($outcome, JSON_UNESCAPED_UNICODE) . "\n");
+            exit(0);
+        } catch (\Throwable $e) {
+            @fwrite($pipe, json_encode([
+                'result' => 'fatal',
+                'detail' => get_class($e) . ': ' . $e->getMessage(),
+            ], JSON_UNESCAPED_UNICODE) . "\n");
+            exit(2);
+        } finally {
+            ScopeContext::clear();
+            if ($wdb instanceof \wpdb) {
+                @$wdb->close();
+            }
+            if (is_resource($pipe)) {
+                fclose($pipe);
+            }
+        }
+    }
+
+    private function freshMysqli(): \mysqli
+    {
+        global $wpdb;
+        $mysqli = @new \mysqli($wpdb->dbhost, $wpdb->dbuser, $wpdb->dbpassword, $wpdb->dbname);
+        if ($mysqli->connect_errno !== 0) {
+            throw new \RuntimeException('fresh mysqli connection failed: ' . $mysqli->connect_error);
+        }
+        $mysqli->set_charset('utf8mb4');
+
+        return $mysqli;
+    }
+
+    private function readSynchronizationLine($pipe, int $seconds): ?string
+    {
+        stream_set_timeout($pipe, $seconds);
+        $line = fgets($pipe);
+        $meta = stream_get_meta_data($pipe);
+        if ($line === false || !empty($meta['timed_out'])) {
+            return null;
+        }
+
+        return rtrim($line, "\r\n");
+    }
+
+    private function waitForLocationLockContention(\mysqli $observer, int $bookingConnectionId, int $writerConnectionId, int $seconds): bool
+    {
+        $deadline = microtime(true) + $seconds;
+        $sql = 'SELECT COUNT(*) FROM information_schema.INNODB_LOCK_WAITS waits '
+            . 'INNER JOIN information_schema.INNODB_TRX requesting ON requesting.trx_id = waits.requesting_trx_id '
+            . 'INNER JOIN information_schema.INNODB_TRX blocking ON blocking.trx_id = waits.blocking_trx_id '
+            . 'WHERE requesting.trx_mysql_thread_id = ' . $bookingConnectionId . ' '
+            . 'AND blocking.trx_mysql_thread_id = ' . $writerConnectionId;
+        do {
+            $result = $observer->query($sql);
+            if ($result === false) {
+                throw new \RuntimeException('Cannot inspect InnoDB lock waits: ' . $observer->error);
+            }
+            $row = $result->fetch_row();
+            $result->free();
+            if ((int) ($row[0] ?? 0) > 0) {
+                return true;
+            }
+            usleep(10000);
+        } while (microtime(true) < $deadline);
+
+        return false;
+    }
+
+    private function waitForChildExit(int $pid, int $seconds): ?int
+    {
+        $deadline = microtime(true) + $seconds;
+        do {
+            $status = 0;
+            $waited = pcntl_waitpid($pid, $status, WNOHANG);
+            if ($waited === $pid) {
+                return $status;
+            }
+            usleep(10000);
+        } while (microtime(true) < $deadline);
+
+        return null;
+    }
+
+    private function terminateUnreapedChild(int $pid, ?int $status): void
+    {
+        if ($status !== null) {
+            return;
+        }
+        if (function_exists('posix_kill')) {
+            @posix_kill($pid, SIGTERM);
+        }
+        $reaped = $this->waitForChildExit($pid, 2);
+        if ($reaped === null) {
+            pcntl_waitpid($pid, $ignoredStatus);
+        }
+    }
+
+    private function assertRaceLocksReleased(int $slotId, int $locationId): void
+    {
+        $probe = $this->freshMysqli();
+        try {
+            $probe->begin_transaction();
+            self::assertNotFalse($probe->query(
+                'SELECT id FROM ' . App::db()->table('cpms_schedule_slots') . ' WHERE id = ' . $slotId . ' FOR UPDATE NOWAIT'
+            ), 'Slot lock must be released after rejected booking');
+            self::assertNotFalse($probe->query(
+                'SELECT id FROM ' . App::db()->table('cpms_locations') . ' WHERE id = ' . $locationId . ' FOR UPDATE NOWAIT'
+            ), 'Location lock must be released after writer commit and booking rollback');
+        } finally {
+            @$probe->rollback();
+            @$probe->close();
+        }
     }
 
     // =================================================================
@@ -1134,5 +1548,25 @@ final class SchedulingLocationLocalBoundaryRedTest extends WP_UnitTestCase
         $wpdb->query(
             'DELETE FROM ' . App::db()->table('cpms_jobs') . ' WHERE type IN ("slots.generate","holds.expire")' // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         );
+    }
+}
+
+
+/** Test-only child wiring: license policy is intentionally outside this lock-order regression. */
+final class SchedulingLocationLocalAllowAllLicenseGate implements LicenseGate
+{
+    public function assert(string $operation, array $context = []): LicenseDecision
+    {
+        return LicenseDecision::allow();
+    }
+
+    public function state(): string
+    {
+        return 'active';
+    }
+
+    public function isReadOnly(): bool
+    {
+        return false;
     }
 }
