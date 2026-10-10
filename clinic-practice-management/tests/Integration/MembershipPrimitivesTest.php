@@ -385,4 +385,114 @@ final class MembershipPrimitivesTest extends WP_UnitTestCase
             self::assertSame('CLINIC_MEMBERSHIP_NOT_FOUND', $e->error_code);
         }
     }
+
+    /**
+     * BLOCKER 2 — strict role-key anchoring on membership creation.
+     *
+     * The membership write path must reject trailing-newline and other
+     * malformed role keys exactly like CustomRolePolicy (absolute \A...\z
+     * anchoring — a bare `$` accepts a single trailing newline in PCRE) and a
+     * failed validation must create no membership row.
+     */
+    public function testCreateMembershipRejectsMalformedRoleKeysIncludingTrailingNewline(): void
+    {
+        $uid = $this->newUser('member_rolekey_strict');
+        $malformed = [
+            "cpms_doctor\n",
+            "team_alpha\n",
+            "cpms_doctor\r\n",
+            "\ncpms_doctor",
+            ' cpms_doctor',
+            'cpms_doctor ',
+            'cpms doctor',
+            'cpms-doctor',
+            '',
+            'a',
+            '0lead',
+            'cpms_doctor!',
+            str_repeat('k', 65),
+        ];
+
+        foreach ($malformed as $bad) {
+            try {
+                $this->service->create_membership($this->clinicA, $uid, $bad);
+                self::fail('malformed role_key must be rejected on create: ' . var_export($bad, true));
+            } catch (MembershipException $e) {
+                self::assertSame('CLINIC_MEMBERSHIP_INVALID_VALUE', $e->error_code);
+            }
+        }
+
+        global $wpdb;
+        $count = (int) $wpdb->get_var($wpdb->prepare(
+            'SELECT COUNT(*) FROM ' . $wpdb->prefix . 'cpms_clinic_memberships WHERE wp_user_id = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $uid
+        ));
+        self::assertSame(0, $count, 'failed role_key validation must leave no membership row behind');
+    }
+
+    /**
+     * BLOCKER 2 — strict role-key anchoring on reassignment (set_role_key),
+     * with the existing membership state preserved verbatim on failure.
+     */
+    public function testSetRoleKeyRejectsMalformedKeysAndLeavesMembershipUnchanged(): void
+    {
+        global $wpdb;
+        $uid = $this->newUser('member_rolekey_reassign');
+        $mid = $this->service->create_membership($this->clinicA, $uid, 'cpms_doctor');
+        self::assertGreaterThan(0, $mid);
+
+        $before = $wpdb->get_row($wpdb->prepare(
+            'SELECT role_key, status, scope_mode, is_primary FROM ' . $wpdb->prefix . 'cpms_clinic_memberships WHERE id = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $mid
+        ), ARRAY_A);
+        self::assertIsArray($before);
+
+        foreach (["cpms_receptionist\n", "cpms_owner\n", 'cpms-receptionist', 'cpms_receptionist '] as $bad) {
+            try {
+                $this->service->set_role_key($mid, $bad);
+                self::fail('malformed role_key must be rejected on reassignment: ' . var_export($bad, true));
+            } catch (MembershipException $e) {
+                self::assertSame('CLINIC_MEMBERSHIP_INVALID_VALUE', $e->error_code);
+            }
+        }
+
+        $after = $wpdb->get_row($wpdb->prepare(
+            'SELECT role_key, status, scope_mode, is_primary FROM ' . $wpdb->prefix . 'cpms_clinic_memberships WHERE id = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $mid
+        ), ARRAY_A);
+        self::assertSame($before, $after, 'failed reassignment must leave the existing membership state unchanged');
+
+        // A valid reassignment still works (accepted vocabulary unchanged).
+        $this->service->set_role_key($mid, 'cpms_owner');
+        self::assertSame(
+            'cpms_owner',
+            (string) $wpdb->get_var($wpdb->prepare(
+                'SELECT role_key FROM ' . $wpdb->prefix . 'cpms_clinic_memberships WHERE id = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $mid
+            )),
+            'valid role keys (built-in and custom) must remain accepted'
+        );
+    }
+
+    /**
+     * BLOCKER 2 — the accepted role vocabulary is preserved: well-formed
+     * built-in AND custom role keys remain valid; strict anchoring only
+     * removes malformed strings (trailing newlines and friends).
+     */
+    public function testValidBuiltInAndCustomRoleKeysRemainAccepted(): void
+    {
+        $uidA = $this->newUser('member_rolekey_valid_a');
+        $uidB = $this->newUser('member_rolekey_valid_b');
+
+        self::assertGreaterThan(0, $this->service->create_membership($this->clinicA, $uidA, 'cpms_doctor'));
+        self::assertGreaterThan(0, $this->service->create_membership($this->clinicA, $uidB, 'team_alpha'));
+
+        global $wpdb;
+        $keys = (array) $wpdb->get_col($wpdb->prepare(
+            'SELECT role_key FROM ' . $wpdb->prefix . 'cpms_clinic_memberships WHERE wp_user_id IN (%d, %d) ORDER BY role_key', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $uidA,
+            $uidB
+        ));
+        self::assertSame(['cpms_doctor', 'team_alpha'], $keys, 'well-formed built-in and custom role keys must remain accepted');
+    }
 }
