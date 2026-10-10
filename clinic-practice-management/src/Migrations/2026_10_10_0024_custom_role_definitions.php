@@ -26,8 +26,19 @@ return [
         $caps    = $db->table( 'cpms_custom_role_capabilities' );
         $clinics = $db->table( 'cpms_clinics' );
 
-        $db->query(
-            "CREATE TABLE IF NOT EXISTS {$defs} (
+        // Real-table guard (same pattern as MigrationRunner::ensureSchemaTable):
+        // under the WP test suite the query filter rewrites CREATE TABLE to
+        // CREATE TEMPORARY TABLE, and a temporary shadow with a FOREIGN KEY is
+        // rejected by InnoDB (errno 150) even when the real table exists. When
+        // the real table is already present the CREATE is skipped entirely, so
+        // an idempotent migrate() can never attempt a shadow create.
+        $defs_exists = (int) $db->fetchValue(
+            'SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = %s',
+            [ $defs ]
+        ) > 0;
+        if ( ! $defs_exists ) {
+            $db->query(
+                "CREATE TABLE IF NOT EXISTS {$defs} (
             `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
             `clinic_id` BIGINT UNSIGNED NOT NULL,
             `role_key` VARCHAR(64) NOT NULL,
@@ -41,10 +52,16 @@ return [
             CONSTRAINT `fk_customrole_clinic` FOREIGN KEY (`clinic_id`)
                 REFERENCES {$clinics} (`id`) ON DELETE CASCADE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
-        );
+            );
+        }
 
-        $db->query(
-            "CREATE TABLE IF NOT EXISTS {$caps} (
+        $caps_exists = (int) $db->fetchValue(
+            'SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = %s',
+            [ $caps ]
+        ) > 0;
+        if ( ! $caps_exists ) {
+            $db->query(
+                "CREATE TABLE IF NOT EXISTS {$caps} (
             `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
             `role_def_id` BIGINT UNSIGNED NOT NULL,
             `capability` VARCHAR(64) NOT NULL,
@@ -54,7 +71,8 @@ return [
             CONSTRAINT `fk_customrolecap_def` FOREIGN KEY (`role_def_id`)
                 REFERENCES {$defs} (`id`) ON DELETE CASCADE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
-        );
+            );
+        }
     },
     'down'        => function ( CpmsDb $db ): void {
         $db->query( 'DROP TABLE IF EXISTS ' . $db->table( 'cpms_custom_role_capabilities' ) );
