@@ -991,6 +991,70 @@ final class SchedulingLocationLocalBoundaryRedTest extends WP_UnitTestCase
 
         $waits = [];
         $signals = [];
+        $attempt = 0;
+        try {
+            self::cleanupKnownChild(
+                741,
+                null,
+                static function (int $pid, int $seconds) use (&$waits, &$attempt): int|false|null {
+                    $waits[] = [$pid, $seconds];
+                    ++$attempt;
+                    if ($attempt === 1) {
+                        throw new \RuntimeException('first wait error before successful reap');
+                    }
+
+                    return 17;
+                },
+                static function (int $pid, int $signal) use (&$signals): bool {
+                    $signals[] = [$pid, $signal];
+
+                    return true;
+                }
+            );
+            self::fail('the first unexpected wait error must remain visible after a later reap');
+        } catch (\RuntimeException $e) {
+            self::assertSame('first wait error before successful reap', $e->getPrevious()?->getMessage());
+        }
+        self::assertSame([
+            [741, self::RACE_GRACEFUL_REAP_TIMEOUT_SECONDS],
+            [741, self::RACE_TERMINATION_REAP_TIMEOUT_SECONDS],
+        ], $waits, 'a confirmed reap must stop the cleanup state machine');
+        self::assertSame([[741, SIGTERM]], $signals, 'a confirmed reap must prevent SIGKILL');
+
+        $waits = [];
+        $signals = [];
+        $attempt = 0;
+        try {
+            self::cleanupKnownChild(
+                852,
+                null,
+                static function (int $pid, int $seconds) use (&$waits, &$attempt): int|false|null {
+                    $waits[] = [$pid, $seconds];
+                    ++$attempt;
+                    if ($attempt === 1) {
+                        throw new \RuntimeException('first wait error before ECHILD');
+                    }
+
+                    return false;
+                },
+                static function (int $pid, int $signal) use (&$signals): bool {
+                    $signals[] = [$pid, $signal];
+
+                    return true;
+                }
+            );
+            self::fail('the first unexpected wait error must remain visible after ECHILD');
+        } catch (\RuntimeException $e) {
+            self::assertSame('first wait error before ECHILD', $e->getPrevious()?->getMessage());
+        }
+        self::assertSame([
+            [852, self::RACE_GRACEFUL_REAP_TIMEOUT_SECONDS],
+            [852, self::RACE_TERMINATION_REAP_TIMEOUT_SECONDS],
+        ], $waits, 'confirmed ECHILD must stop the cleanup state machine');
+        self::assertSame([[852, SIGTERM]], $signals, 'confirmed ECHILD must prevent SIGKILL');
+
+        $waits = [];
+        $signals = [];
         try {
             self::cleanupKnownChild(
                 987,
@@ -1510,18 +1574,30 @@ final class SchedulingLocationLocalBoundaryRedTest extends WP_UnitTestCase
 
         $waitError = null;
         $status = self::waitForCleanup($pid, self::RACE_GRACEFUL_REAP_TIMEOUT_SECONDS, $waitForExit, $waitError);
-        if ($status !== null && $waitError === null) {
-            return $status;
+        if ($status !== null) {
+            return self::terminalCleanupResult($status, $waitError);
         }
         $sendSignal($pid, SIGTERM);
 
         $status = self::waitForCleanup($pid, self::RACE_TERMINATION_REAP_TIMEOUT_SECONDS, $waitForExit, $waitError);
-        if ($status !== null && $waitError === null) {
-            return $status;
+        if ($status !== null) {
+            return self::terminalCleanupResult($status, $waitError);
         }
         $sendSignal($pid, SIGKILL);
 
         $status = self::waitForCleanup($pid, self::RACE_TERMINATION_REAP_TIMEOUT_SECONDS, $waitForExit, $waitError);
+        if ($status !== null) {
+            return self::terminalCleanupResult($status, $waitError);
+        }
+        if ($waitError instanceof \Throwable) {
+            throw new \RuntimeException('Unexpected child wait error during bounded cleanup.', 0, $waitError);
+        }
+
+        return null;
+    }
+
+    private static function terminalCleanupResult(int|false $status, ?\Throwable $waitError): int|false
+    {
         if ($waitError instanceof \Throwable) {
             throw new \RuntimeException('Unexpected child wait error during bounded cleanup.', 0, $waitError);
         }
