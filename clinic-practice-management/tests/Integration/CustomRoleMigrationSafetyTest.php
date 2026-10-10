@@ -364,7 +364,7 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
     {
         $defs    = App::db()->table('cpms_custom_role_defs');
         $clinics = App::db()->table('cpms_clinics');
-        $pair    = $withPairIndex ? ', KEY idx_probe_pair (id, role_key)' : '';
+        $pair    = $withPairIndex ? ', UNIQUE KEY idx_probe_pair (id, role_key)' : '';
 
         return "CREATE TABLE {$defs} ("
             . ' id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,'

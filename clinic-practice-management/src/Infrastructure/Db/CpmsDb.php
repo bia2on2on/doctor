@@ -188,6 +188,16 @@ final class CpmsDb
         return (int) $result;
     }
 
+    private function tx_control( string $sql ): void {
+        $profile_start = RequestProfiler::query_start();
+        $result        = $this->wpdb->query( $sql ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        RequestProfiler::query_end( $profile_start );
+        if ( false === $result || '' !== $this->wpdb->last_error ) {
+            $error = '' !== $this->wpdb->last_error ? $this->wpdb->last_error : 'unknown error';
+            throw new RuntimeException( 'transaction control failed (' . $sql . '): ' . $error );
+        }
+    }
+
     /**
      * Transaction + Row Lock انتخابی.
      *
@@ -198,24 +208,14 @@ final class CpmsDb
      *
      * @template T
      *
-     * @param callable(): T $fn
+     * @param callable(): T $callback
      *
      * @return T
      */
-    private function tx_control( string $sql ): void {
-        $profile_start = RequestProfiler::query_start();
-        $result = $this->wpdb->query( $sql ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        RequestProfiler::query_end( $profile_start );
-        if ( false === $result || '' !== $this->wpdb->last_error ) {
-            $error = '' !== $this->wpdb->last_error ? $this->wpdb->last_error : 'unknown error';
-            throw new RuntimeException( 'transaction control failed (' . $sql . '): ' . $error );
-        }
-    }
-
-    public function transactional( callable $fn ) {
+    public function transactional( callable $callback ) {
         $this->tx_control( '/*cpms*/ START TRANSACTION' );
         try {
-            $result = $fn();
+            $result = $callback();
         } catch ( \Throwable $e ) {
             try {
                 $this->tx_control( '/*cpms*/ ROLLBACK' );
