@@ -16,7 +16,10 @@ require $wpHome . '/wp-load.php';
 $mode = $argv[1] ?? '';
 $previousRef = (string) getenv('PREVIOUS_CPMS_REF');
 $baselinePath = getenv('UPGRADE_FIXTURE_PATH');
-$latestSchema = '2026_09_26_0023';
+// Schema reached by the PINNED PREVIOUS source at seed time.
+$expectedPreviousVersion = '2026_09_26_0023';
+// Schema the CANDIDATE artifact must reach after migrating forward.
+$expectedCandidateVersion = '2026_10_10_0024';
 
 $fail = static function (string $message): void {
     fwrite(STDERR, 'UPGRADE_PATH_FAILED: ' . $message . "\n");
@@ -188,7 +191,7 @@ $insertRecord = static function (string $shortTable, array $row) use ($db, $asse
 if ($mode === 'seed') {
     $assert(!is_file($baselinePath), 'refusing to replace an existing pre-upgrade snapshot.');
     $schemaVersion = App::migrations()->currentVersion();
-    $assert($schemaVersion === $latestSchema, 'pinned previous source did not reach its expected schema.');
+    $assert($schemaVersion === $expectedPreviousVersion, 'pinned previous source did not reach its expected schema.');
 
     $admin = get_user_by('login', 'up_admin');
     $assert(is_object($admin) && isset($admin->ID), 'synthetic WordPress actor is missing.');
@@ -393,14 +396,14 @@ $assert(is_string($baselineJson), 'pre-upgrade snapshot could not be read.');
 $baseline = json_decode($baselineJson, true, 512, JSON_THROW_ON_ERROR);
 $assert(is_array($baseline), 'pre-upgrade snapshot has an invalid format.');
 $assert(($baseline['previous_source'] ?? null) === $previousRef, 'snapshot source does not match the pinned previous source.');
-$assert(($baseline['schema_version'] ?? null) === $latestSchema, 'snapshot does not represent the expected previous schema.');
+$assert(($baseline['schema_version'] ?? null) === $expectedPreviousVersion, 'snapshot does not represent the expected previous schema.');
 $assert(is_array($baseline['tenants'] ?? null) && count($baseline['tenants']) === 2, 'snapshot does not contain two tenant scopes.');
 $tenants = $baseline['tenants'];
 
 $firstPass = App::migrations()->migrate();
 $assert($firstPass === [], 'migration runner changed an already-upgraded schema.');
 $currentVersion = App::migrations()->currentVersion();
-$assert($currentVersion === $latestSchema, 'current migration runner did not reach the expected schema.');
+$assert($currentVersion === $expectedCandidateVersion, 'current migration runner did not reach the expected schema.');
 $secondPass = App::migrations()->migrate();
 $assert($secondPass === [], 'second migration pass was not a safe no-op.');
 

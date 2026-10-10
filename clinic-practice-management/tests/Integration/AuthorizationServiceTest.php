@@ -130,9 +130,12 @@ final class AuthorizationServiceTest extends WP_UnitTestCase
 
     private function authzService(): \ClinicCore\Application\Authorization\AuthorizationService
     {
-        // Real repository path, not mock
+        // Real repository path, not mock (production wiring: memberships + Clinic-local custom roles)
         $repo = new MembershipRepository(App::db());
-        return new \ClinicCore\Application\Authorization\AuthorizationService($repo);
+        return new \ClinicCore\Application\Authorization\AuthorizationService(
+            $repo,
+            new \ClinicCore\Infrastructure\Repository\CustomRoleRepository(App::db())
+        );
     }
 
     public function testAllowAuthenticatedActiveMemberWithRequiredPermission(): void

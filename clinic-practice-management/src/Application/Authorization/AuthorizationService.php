@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace ClinicCore\Application\Authorization;
 
+use ClinicCore\Auth\CustomRolePolicy;
 use ClinicCore\Auth\RolesAndCapabilities;
+use ClinicCore\Infrastructure\Repository\CustomRoleRepository;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
 
 /**
@@ -21,6 +23,16 @@ use ClinicCore\Infrastructure\Repository\MembershipRepository;
  *  8. Permission resolution (verified against existing schema): explicit membership deny > explicit membership grant > role preset > deny by default.
  *  9. Job authorization/scope behavior remains unchanged.
  * 10. No schema/migration change.
+ * 11. Later authorized extension — Custom Role & Permission Management Slice 1
+ *     (decision record: docs/decisions/2026-10-10-custom-role-permission-management-model.md;
+ *     supersedes item 10's "no schema change" for this slice only, via
+ *     Migration 2026_10_10_0024): custom role keys resolve ONLY through
+ *     Clinic-local custom definitions of the exact membership Clinic
+ *     (CustomRoleRepository); built-in role keys never consult custom
+ *     definitions; missing/inactive/malformed/foreign definitions supply
+ *     nothing (fail closed); this is not a second authorization engine —
+ *     precedence above is unchanged. When no CustomRoleRepository is wired,
+ *     custom keys resolve to nothing (fail closed).
  *
  * Verified data model:
  *  - cpms_clinic_memberships: (clinic_id, wp_user_id) UNIQUE, status active/suspended, role_key as attribute
@@ -45,7 +57,8 @@ use ClinicCore\Infrastructure\Repository\MembershipRepository;
 final class AuthorizationService
 {
     public function __construct(
-        private readonly MembershipRepository $memberships
+        private readonly MembershipRepository $memberships,
+        private readonly ?CustomRoleRepository $customRoles = null
     ) {
     }
 
@@ -107,12 +120,24 @@ final class AuthorizationService
             }
         }
 
-        // Role preset (clinic-scoped via membership role_key, not WP global role)
+        // Role capabilities (clinic-scoped via membership role_key, not WP global role).
+        // Built-in keys resolve ONLY through the registered preset map; custom keys
+        // resolve ONLY through Clinic-local custom-role definitions of the exact
+        // membership Clinic. Built-in keys never consult custom definitions
+        // (collision inertness), and an unwired repository fails closed to nothing.
         $roleKey = (string) ($membership['role_key'] ?? '');
         if ($roleKey !== '') {
-            $presetMap = RolesAndCapabilities::capsMap($roleKey);
-            if (isset($presetMap[$permission]) && $presetMap[$permission] === true) {
-                return true;
+            if (CustomRolePolicy::isBuiltInRoleKey($roleKey)) {
+                $presetMap = RolesAndCapabilities::capsMap($roleKey);
+                if (isset($presetMap[$permission]) && $presetMap[$permission] === true) {
+                    return true;
+                }
+            } elseif ($this->customRoles !== null) {
+                foreach ($this->customRoles->active_capabilities_for($clinicId, $roleKey) as $customCapability) {
+                    if ($customCapability === $permission) {
+                        return true;
+                    }
+                }
             }
         }
 
