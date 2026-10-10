@@ -566,6 +566,98 @@ final class SchedulingLocationLocalBoundaryRedTest extends WP_UnitTestCase
         self::assertSame($time, (string) $legacySlot['slot_time']);
     }
 
+    public function testStaffCreateLocksLocationBeforeFinalTimezoneValidation(): void
+    {
+        if (!function_exists('pcntl_fork') || !function_exists('stream_socket_pair') || !class_exists('mysqli')) {
+            self::markTestSkipped('pcntl, stream_socket_pair, and mysqli are required for the independent-connection race proof.');
+        }
+
+        global $wpdb;
+        $svc = $this->newBookingService();
+        $date = '2026-11-01';
+        $time = '01:30:00';
+        // The first read sees this valid, unambiguous timezone. The separate
+        // connection switches it to New York while holding the Location lock.
+        $wpdb->update(
+            App::db()->table('cpms_locations'),
+            ['timezone' => 'Asia/Tokyo', 'updated_at' => App::db()->nowUtcSql()],
+            ['id' => $this->locNewYork]
+        );
+        $slotId = $this->insertSlot($this->clinicianHold, $this->locNewYork, $date, $time);
+        $staffUserId = $this->makePatientUser();
+        $patientId = (int) $wpdb->get_var($wpdb->prepare(
+            'SELECT patient_id FROM ' . App::db()->table('cpms_patient_user_links') . ' WHERE wp_user_id = %d LIMIT 1',
+            $staffUserId
+        ));
+        self::assertGreaterThan(0, $patientId, 'fixture: persisted Clinic Patient');
+
+        // This fixture must be visible to the independently connected writer.
+        $wpdb->query('COMMIT'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $pipes = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+        if ($pipes === false) {
+            self::markTestSkipped('Cannot create independent-process synchronization pipe.');
+        }
+        [$parentPipe, $childPipe] = $pipes;
+        $pid = pcntl_fork();
+        if ($pid === -1) {
+            self::fail('pcntl_fork failed');
+        }
+        if ($pid === 0) {
+            fclose($parentPipe);
+            $mysqli = @new \mysqli($wpdb->dbhost, $wpdb->dbuser, $wpdb->dbpassword, $wpdb->dbname);
+            if ($mysqli->connect_errno !== 0) {
+                fwrite($childPipe, "error\n");
+                exit(2);
+            }
+            $mysqli->set_charset('utf8mb4');
+            $locationTable = App::db()->table('cpms_locations');
+            $mysqli->begin_transaction();
+            $locked = $mysqli->query('SELECT id FROM ' . $locationTable . ' WHERE id = ' . (int) $this->locNewYork . ' FOR UPDATE');
+            $updated = $locked !== false && $mysqli->query(
+                "UPDATE {$locationTable} SET timezone = 'America/New_York' WHERE id = " . (int) $this->locNewYork
+            ) !== false;
+            fwrite($childPipe, $updated ? "locked\n" : "error\n");
+            if ($updated) {
+                // Give the parent time to perform its pre-transaction read,
+                // lock the Slot, then block on this Location row.
+                usleep(750000);
+                $mysqli->commit();
+                exit(0);
+            }
+            $mysqli->rollback();
+            exit(2);
+        }
+
+        fclose($childPipe);
+        stream_set_timeout($parentPipe, 3);
+        self::assertSame("locked\n", fgets($parentPipe), 'fixture: independent writer holds the Location row');
+
+        $error = null;
+        try {
+            $this->withScope($this->clinicId, function () use ($svc, $staffUserId, $patientId, $date, $time, $slotId): void {
+                $svc->createByStaff($staffUserId, $patientId, $this->clinicianHold, $date, $time, null, $slotId);
+            });
+        } catch (BookingException $e) {
+            $error = $e;
+        }
+        pcntl_waitpid($pid, $status);
+        fclose($parentPipe);
+
+        self::assertTrue(pcntl_wifexited($status) && pcntl_wexitstatus($status) === 0, 'independent Location writer committed its timezone update');
+        self::assertInstanceOf(BookingException::class, $error, 'final protected validation must observe the committed New York timezone');
+        self::assertSame('CLINIC_VALIDATION_FAILED', $error->errorCode);
+        self::assertSame(0, (int) $wpdb->get_var($wpdb->prepare(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_appointments') . ' WHERE slot_id = %d',
+            $slotId
+        )));
+        $slot = App::db()->fetchRow(
+            'SELECT booked_count FROM ' . App::db()->table('cpms_schedule_slots') . ' WHERE id = %d',
+            [$slotId]
+        );
+        self::assertIsArray($slot);
+        self::assertSame(0, (int) $slot['booked_count']);
+    }
+
     // =================================================================
     // RED/T6 — اینورینت ۵: impact() باید از مرز «امروز محلیِ Locationِ هر اسلات» استفاده کند
     // =================================================================

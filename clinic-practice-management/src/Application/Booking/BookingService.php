@@ -649,24 +649,31 @@ final class BookingService
             return $this->replayOrInFlight($check, $wpUserId);
         }
 
-        if ($patient === null) {
-            // N-1: کاربر جدید (OTP verified) — Patient در زمان confirm ساخته
-            // می‌شود، اکنون با نام‌های اعتبارسنجی‌شده (تصمیم مالک ۲).
-            $patient = $this->createMinimalPatient($holdClinicId, $mobile, $wpUserId, $newPatientNames);
-        }
-        $patientId = (int) $patient['id'];
         $slotId = (int) $hold['slot_id'];
         $holdId = (int) $hold['id'];
 
         try {
-            [$apptId, $appt, $slot] = $this->db->transactional(function () use (
-                $holdId, $slotId, $patientId, $wpUserId, $reason
+            [$apptId, $appt, $slot, $patientId, $patientWasCreated] = $this->db->transactional(function () use (
+                $holdId, $slotId, $wpUserId, $reason, $patient, $newPatientNames, $holdClinicId, $mobile
             ): array {
                 $slot = $this->slots->findForUpdate($slotId);
                 if ($slot === null || (int) $slot['is_open'] !== 1) {
                     throw BookingException::of('CLINIC_SLOT_TAKEN', 'اسلات دیگر در دسترس نیست', 409);
                 }
+                // The final DST decision is made on the locked persisted Slot
+                // before a new Patient, link, or audit can be created.
                 $this->assert_slot_has_bookable_local_time( $slot );
+
+                $confirmedPatient = $patient;
+                $patientWasCreated = false;
+                if ($confirmedPatient === null) {
+                    // N-1: create the new Patient inside the same protected
+                    // mutation boundary, after the final Slot validation.
+                    $confirmedPatient = $this->createMinimalPatient($holdClinicId, $mobile, $wpUserId, $newPatientNames);
+                    $patientWasCreated = true;
+                }
+                $patientId = (int) $confirmedPatient['id'];
+
                 $dup = $this->appointments->findActiveForPatientSlot($patientId, $slotId, self::ACTIVE_STATUSES);
                 if ($dup !== null) {
                     throw BookingException::of('CLINIC_DUPLICATE_APPOINTMENT', 'شما قبلاً در این ساعت نوبت دارید', 409);
@@ -712,7 +719,7 @@ final class BookingService
 
                 $appt = $this->appointments->find($apptId);
 
-                return [$apptId, $appt, $slot];
+                return [$apptId, $appt, $slot, $patientId, $patientWasCreated];
             });
         } catch (Throwable $e) {
             // آزادسازی ظرفیت Hold + کلید Idempotency (خارج از Transaction رول‌بک‌شده)
@@ -728,6 +735,12 @@ final class BookingService
         $view = $this->appointmentView($appt);
         $this->idem->complete($idemKey, self::EP_CONFIRM, $wpUserId, null, 200, $view, $idemClinicId);
 
+        if ($patientWasCreated) {
+            $this->audit('PATIENT_CREATED', $wpUserId, 'patient', 'patient', $patientId, $patientId, null, [
+                'auto' => 'booking_confirm',
+                'mobile' => MobileValidator::mask($mobile),
+            ]);
+        }
         $this->audit('APPOINTMENT_CREATED', $wpUserId, 'patient', 'appointment', $apptId, $patientId, null, $view, [
             'mobile' => MobileValidator::mask($mobile),
         ]);
@@ -1064,22 +1077,38 @@ final class BookingService
         }
         // N-3: Staff (حضوری/فوری) بدون min-lead — فقط Window + افق آینده، با Location timezone
         $locationTz = $this->resolveLocationTimezone((int) $resolvedSlot['location_id'], $trustedClinicId);
-        $this->assertWindowWithTimezone($slotDate, $slotTime, $locationTz, 0, $this->settingsFor($trustedClinicId));
+        $settings = $this->settingsFor($trustedClinicId);
+        $this->assertWindowWithTimezone($slotDate, $slotTime, $locationTz, 0, $settings);
 
         try {
             [$apptId, $appt, $slot] = $this->db->transactional(function () use (
-                $patientId, $clinicianId, $slotDate, $slotTime, $reason, $resolvedSlot
+                $patientId, $clinicianId, $slotDate, $slotTime, $reason, $resolvedSlot, $trustedClinicId, $settings
             ): array {
-                $slot = $resolvedSlot;
-                // Re-fetch for update to ensure concurrency safety
-                $slotForUpdate = $this->slots->findForUpdate((int) $slot['id']);
-                if ($slotForUpdate === null) {
-                    $slotForUpdate = $slot;
-                }
-                $slot = $slotForUpdate;
-                if ((int) $slot['is_open'] !== 1) {
+                // Lock the persisted Slot first (the established booking lock),
+                // then lock its Location before the final timezone decision.
+                // Location updates lock only that Location row, so this order
+                // introduces no inverse Slot lock in the Location writer.
+                $slot = $this->slots->findForUpdate((int) $resolvedSlot['id']);
+                if (
+                    $slot === null
+                    || (int) $slot['clinic_id'] !== $trustedClinicId
+                    || (int) $slot['clinician_id'] !== $clinicianId
+                    || (int) $slot['is_open'] !== 1
+                ) {
                     throw BookingException::of('CLINIC_NOT_FOUND', 'اسلات یافت نشد — ممکن است Schedule پزشک برای این روز تعریف نشده باشد', 404);
                 }
+                $lockedLocationTz = $this->resolveLocationTimezone(
+                    (int) $slot['location_id'],
+                    $trustedClinicId,
+                    true
+                );
+                $this->assertWindowWithTimezone(
+                    (string) $slot['slot_date'],
+                    (string) $slot['slot_time'],
+                    $lockedLocationTz,
+                    0,
+                    $settings
+                );
                 $slotId = (int) $slot['id'];
 
                 $dup = $this->appointments->findActiveForPatientSlot($patientId, $slotId, self::ACTIVE_STATUSES);
@@ -1356,16 +1385,16 @@ final class BookingService
      * Validates Location belongs to same Clinic and timezone is valid IANA.
      * Fail-closed on invalid/missing.
      */
-    private function resolveLocationTimezone(int $locationId, int $clinicId): \DateTimeZone
+    private function resolveLocationTimezone(int $locationId, int $clinicId, bool $forUpdate = false): \DateTimeZone
     {
         if ($locationId <= 0 || $clinicId <= 0) {
             throw BookingException::of('CLINIC_VALIDATION_FAILED', 'شناسه Location نامعتبر است');
         }
 
-        $row = $this->db->fetchRow(
-            'SELECT id, clinic_id, timezone FROM ' . $this->db->table('cpms_locations') . ' WHERE id = %d LIMIT 1',
-            [$locationId]
-        );
+        $sql = 'SELECT id, clinic_id, timezone FROM ' . $this->db->table('cpms_locations') . ' WHERE id = %d LIMIT 1';
+        $row = $forUpdate
+            ? $this->db->fetchRowForUpdate($sql, [$locationId])
+            : $this->db->fetchRow($sql, [$locationId]);
         if ($row === null) {
             throw BookingException::of('CLINIC_NOT_FOUND', 'Location یافت نشد', 404);
         }
@@ -1373,7 +1402,7 @@ final class BookingService
             throw BookingException::of('CLINIC_VALIDATION_FAILED', 'Location به کلینیک دیگری تعلق دارد', 422);
         }
         $tzName = trim((string) ($row['timezone'] ?? ''));
-        if ($tzName === '') {
+        if ($tzName === '' || !in_array($tzName, timezone_identifiers_list(), true)) {
             throw BookingException::of('CLINIC_VALIDATION_FAILED', 'Timezone Location نامعتبر است');
         }
         try {
@@ -1753,8 +1782,6 @@ final class BookingService
             'is_primary' => 1,
             'linked_at' => $nowSql,
         ]);
-        $this->audit('PATIENT_CREATED', $wpUserId, 'patient', 'patient', $id, $id, null, ['auto' => 'booking_confirm', 'mobile' => MobileValidator::mask($mobile)]);
-
         return (array) $this->patients->find($id);
     }
 
