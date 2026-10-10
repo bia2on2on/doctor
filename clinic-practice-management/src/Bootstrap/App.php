@@ -719,7 +719,8 @@ final class App
         static $service = null;
         if ($service === null) {
             $service = new \ClinicCore\Application\Authorization\AuthorizationService(
-                new MembershipRepository(self::db())
+                new MembershipRepository( self::db() ),
+                new \ClinicCore\Infrastructure\Repository\CustomRoleRepository( self::db() )
             );
         }
 
