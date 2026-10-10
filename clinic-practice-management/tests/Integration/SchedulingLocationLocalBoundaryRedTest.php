@@ -706,7 +706,13 @@ final class SchedulingLocationLocalBoundaryRedTest extends WP_UnitTestCase
             // Tokyo preflight, entered its transaction, locked Slot, and then
             // blocked on the writer's still-held Location row.
             self::assertTrue(
-                $this->waitForLocationLockContention($observer, $bookingConnectionId, $writerConnectionId, 5),
+                $this->waitForLocationLockContention(
+                    $observer,
+                    $bookingConnectionId,
+                    $writerConnectionId,
+                    $this->locNewYork,
+                    10
+                ),
                 'mandatory interleaving not observed: BookingService never became blocked by the writer-held Location row'
             );
 
@@ -986,7 +992,10 @@ final class SchedulingLocationLocalBoundaryRedTest extends WP_UnitTestCase
                 exit(2);
             }
             @fwrite($pipe, 'writer_locked:' . $mysqli->thread_id . "\n");
-            $command = $this->readSynchronizationLine($pipe, 5);
+            // The parent waits for observable lock evidence before issuing this
+            // command. Allow enough bounded headroom for that evidence probe on
+            // a contended CI runner; the timeout only triggers rollback.
+            $command = $this->readSynchronizationLine($pipe, 15);
             if ($command === 'commit') {
                 $mysqli->commit();
                 exit(0);
@@ -1117,18 +1126,34 @@ final class SchedulingLocationLocalBoundaryRedTest extends WP_UnitTestCase
         return rtrim($line, "\r\n");
     }
 
-    private function waitForLocationLockContention(\mysqli $observer, int $bookingConnectionId, int $writerConnectionId, int $seconds): bool
-    {
+    private function waitForLocationLockContention(
+        \mysqli $observer,
+        int $bookingConnectionId,
+        int $writerConnectionId,
+        int $locationId,
+        int $seconds
+    ): bool {
         $deadline = microtime(true) + $seconds;
-        $sql = 'SELECT COUNT(*) FROM information_schema.INNODB_LOCK_WAITS waits '
-            . 'INNER JOIN information_schema.INNODB_TRX requesting ON requesting.trx_id = waits.requesting_trx_id '
-            . 'INNER JOIN information_schema.INNODB_TRX blocking ON blocking.trx_id = waits.blocking_trx_id '
-            . 'WHERE requesting.trx_mysql_thread_id = ' . $bookingConnectionId . ' '
-            . 'AND blocking.trx_mysql_thread_id = ' . $writerConnectionId;
+        $locationTable = $observer->real_escape_string(App::db()->table('cpms_locations'));
+        // MySQL 8.4 removed the INFORMATION_SCHEMA INNODB_LOCK_* tables.
+        // Performance Schema gives the exact requesting/blocking sessions and
+        // the blocking Location record, rather than inferring contention from
+        // a timeout or a mere matching transaction state.
+        $sql = 'SELECT COUNT(*) FROM performance_schema.data_lock_waits waits '
+            . 'INNER JOIN performance_schema.threads requesting '
+            . 'ON requesting.thread_id = waits.requesting_thread_id '
+            . 'INNER JOIN performance_schema.threads blocking '
+            . 'ON blocking.thread_id = waits.blocking_thread_id '
+            . 'INNER JOIN performance_schema.data_locks blocking_lock '
+            . 'ON blocking_lock.engine_lock_id = waits.blocking_engine_lock_id '
+            . 'WHERE requesting.processlist_id = ' . $bookingConnectionId . ' '
+            . 'AND blocking.processlist_id = ' . $writerConnectionId . ' '
+            . "AND blocking_lock.object_schema = DATABASE() AND blocking_lock.object_name = '{$locationTable}' "
+            . "AND blocking_lock.lock_type = 'RECORD' AND blocking_lock.lock_data = '{$locationId}'";
         do {
             $result = $observer->query($sql);
             if ($result === false) {
-                throw new \RuntimeException('Cannot inspect InnoDB lock waits: ' . $observer->error);
+                throw new \RuntimeException('Cannot inspect Performance Schema lock waits: ' . $observer->error);
             }
             $row = $result->fetch_row();
             $result->free();
