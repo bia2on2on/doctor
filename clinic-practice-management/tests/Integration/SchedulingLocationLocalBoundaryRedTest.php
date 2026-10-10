@@ -458,8 +458,9 @@ final class SchedulingLocationLocalBoundaryRedTest extends WP_UnitTestCase
         // A hold that pre-dates this policy must not be converted into an
         // appointment if its persisted slot later resolves to a repeated time.
         $patientUserId = $this->makePatientUser();
-        $legacySlotId = $this->insertSlot($this->clinicianHold, $this->locNewYork, $date, '03:00:00');
-        $hold = $svc->hold($patientUserId, $this->clinicianHold, $date, '03:00:00', $legacySlotId);
+        $legacyClinicianId = $this->insertClinician('Dr Legacy Hold');
+        $legacySlotId = $this->insertSlot($legacyClinicianId, $this->locNewYork, $date, '03:00:00');
+        $hold = $svc->hold($patientUserId, $legacyClinicianId, $date, '03:00:00', $legacySlotId);
         self::assertNotEmpty($hold['hold_token']);
         $wpdb->query($wpdb->prepare(
             'UPDATE ' . App::db()->table('cpms_schedule_slots') . ' SET slot_time = %s WHERE id = %d',

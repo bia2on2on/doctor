@@ -8,7 +8,6 @@ use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Auth\RolesAndCapabilities;
-use ClinicCore\Domain\Booking\BookingWindow;
 use ClinicCore\Domain\Licensing\LicenseGate;
 use ClinicCore\Domain\Machine\AppointmentMachine;
 use ClinicCore\Domain\Machine\InvalidTransitionException;
@@ -1685,19 +1684,24 @@ final class VisitService
      */
     private function appointmentUtcInstant(array $appt, DateTimeZone $tz): ?DateTimeImmutable
     {
-        $instant = BookingWindow::slotUtcInstant(
-            (string) ($appt['slot_date'] ?? ''),
-            (string) ($appt['slot_time'] ?? ''),
-            $tz
-        );
-        if ( $instant === null ) {
-            $this->opLog?->warning('visit.appointment_datetime_unresolvable', [
-                'appointment_id' => (int) ($appt['id'] ?? 0),
-                'location_id' => (int) ($appt['location_id'] ?? 0),
-            ]);
+        $date = $appt['slot_date'] ?? '';
+        $time = $appt['slot_time'] ?? '';
+        if ( $date === '' || $time === '' ) {
+            return null;
         }
 
-        return $instant;
+        $dateStr = trim((string) $date) . ' ' . trim((string) $time);
+        // Try H:i:s first, then H:i
+        $local = DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $dateStr, $tz);
+        if ( $local === false ) {
+            $local = DateTimeImmutable::createFromFormat('Y-m-d H:i', $dateStr, $tz);
+        }
+        if ( $local === false ) {
+            $this->opLog?->warning('visit.appointment_datetime_parse_failed', ['slot_date' => $date, 'slot_time' => $time]);
+            return null;
+        }
+
+        return $local->setTimezone(new DateTimeZone('UTC'));
     }
 
     /**
