@@ -58,7 +58,7 @@ final class AuthorizationService
 {
     public function __construct(
         private readonly MembershipRepository $memberships,
-        private readonly ?CustomRoleRepository $customRoles = null
+        private readonly ?CustomRoleRepository $custom_roles = null
     ) {
     }
 
@@ -125,16 +125,16 @@ final class AuthorizationService
         // resolve ONLY through Clinic-local custom-role definitions of the exact
         // membership Clinic. Built-in keys never consult custom definitions
         // (collision inertness), and an unwired repository fails closed to nothing.
-        $roleKey = (string) ($membership['role_key'] ?? '');
-        if ($roleKey !== '') {
-            if (CustomRolePolicy::isBuiltInRoleKey($roleKey)) {
-                $presetMap = RolesAndCapabilities::capsMap($roleKey);
-                if (isset($presetMap[$permission]) && $presetMap[$permission] === true) {
+        $role_key = (string) ( $membership['role_key'] ?? '' );
+        if ( $role_key !== '' ) {
+            if ( CustomRolePolicy::is_built_in_role_key( $role_key ) ) {
+                $preset_map = RolesAndCapabilities::capsMap( $role_key );
+                if ( isset( $preset_map[ $permission ] ) && $preset_map[ $permission ] === true ) {
                     return true;
                 }
-            } elseif ($this->customRoles !== null) {
-                foreach ($this->customRoles->active_capabilities_for($clinicId, $roleKey) as $customCapability) {
-                    if ($customCapability === $permission) {
+            } elseif ( $this->custom_roles !== null ) {
+                foreach ( $this->custom_roles->active_capabilities_for( (int) $membership['clinic_id'], $role_key ) as $custom_capability ) {
+                    if ( $custom_capability === $permission ) {
                         return true;
                     }
                 }

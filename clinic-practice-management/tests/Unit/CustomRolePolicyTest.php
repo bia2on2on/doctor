@@ -67,7 +67,7 @@ final class CustomRolePolicyTest extends TestCase
 
     public function testEditableCapabilitiesCoverCatalogueExactly(): void
     {
-        $editable   = CustomRolePolicy::editableCapabilities();
+        $editable   = CustomRolePolicy::editable_capabilities();
         $sensitive  = self::ALL_SENSITIVE;
         $catalogue  = RolesAndCapabilities::ALL_CAPS;
 
@@ -96,7 +96,7 @@ final class CustomRolePolicyTest extends TestCase
     {
         foreach (self::ALL_SENSITIVE as $cap) {
             self::assertFalse(
-                CustomRolePolicy::isEditableCapability($cap),
+                CustomRolePolicy::is_editable_capability($cap),
                 "sensitive capability {$cap} must not be editable in V1"
             );
         }
@@ -132,7 +132,7 @@ final class CustomRolePolicyTest extends TestCase
 
         foreach ($forbidden as $cap) {
             self::assertFalse(
-                CustomRolePolicy::isEditableCapability($cap),
+                CustomRolePolicy::is_editable_capability($cap),
                 'non-catalogue capability must not be editable: ' . var_export($cap, true)
             );
         }
@@ -152,14 +152,14 @@ final class CustomRolePolicyTest extends TestCase
             'cpms_config',
         ];
 
-        $clean = CustomRolePolicy::sanitizeCapabilitySet($input);
+        $clean = CustomRolePolicy::sanitize_capability_set($input);
 
         self::assertSame(['cpms_appt_read', 'cpms_patient_read'], $clean, 'only unique editable capabilities survive, sorted');
     }
 
     public function testSanitizeCapabilitySetIgnoresNonStringValuesAndArrayKeys(): void
     {
-        $clean = CustomRolePolicy::sanitizeCapabilitySet([
+        $clean = CustomRolePolicy::sanitize_capability_set([
             'cpms_patient_read',
             'cpms_fake_cap',
             null,
@@ -175,8 +175,8 @@ final class CustomRolePolicyTest extends TestCase
     public function testBuiltInRoleKeysAreExactlyTheRegisteredPresetKeys(): void
     {
         foreach (self::ALL_BUILT_IN_ROLE_KEYS as $key) {
-            self::assertTrue(CustomRolePolicy::isBuiltInRoleKey($key), "built-in key {$key} must be recognized");
-            self::assertFalse(CustomRolePolicy::isDefinableRoleKey($key), "built-in key {$key} must not be definable");
+            self::assertTrue(CustomRolePolicy::is_built_in_role_key($key), "built-in key {$key} must be recognized");
+            self::assertFalse(CustomRolePolicy::is_definable_role_key($key), "built-in key {$key} must not be definable");
         }
 
         self::assertSame(
@@ -191,15 +191,15 @@ final class CustomRolePolicyTest extends TestCase
             'built-in set must match the registered CPMS roles'
         );
 
-        self::assertFalse(CustomRolePolicy::isBuiltInRoleKey('cx_frontdesk'));
+        self::assertFalse(CustomRolePolicy::is_built_in_role_key('cx_frontdesk'));
     }
 
     public function testRoleKeyFormatIsStrictAndArrayKeyCoercionSafe(): void
     {
         $valid = ['cx_frontdesk', 'role_a1', 'a_b', 'my_custom_role', 'x9'];
         foreach ($valid as $key) {
-            self::assertTrue(CustomRolePolicy::isWellFormedRoleKey($key), "key must be well-formed: {$key}");
-            self::assertTrue(CustomRolePolicy::isDefinableRoleKey($key), "key must be definable: {$key}");
+            self::assertTrue(CustomRolePolicy::is_well_formed_role_key($key), "key must be well-formed: {$key}");
+            self::assertTrue(CustomRolePolicy::is_definable_role_key($key), "key must be definable: {$key}");
         }
 
         $invalid = [
@@ -220,14 +220,14 @@ final class CustomRolePolicyTest extends TestCase
             str_repeat('k', 65),
         ];
         foreach ($invalid as $key) {
-            self::assertFalse(CustomRolePolicy::isWellFormedRoleKey($key), 'key must be rejected: ' . var_export($key, true));
-            self::assertFalse(CustomRolePolicy::isDefinableRoleKey($key), 'key must not be definable: ' . var_export($key, true));
+            self::assertFalse(CustomRolePolicy::is_well_formed_role_key($key), 'key must be rejected: ' . var_export($key, true));
+            self::assertFalse(CustomRolePolicy::is_definable_role_key($key), 'key must not be definable: ' . var_export($key, true));
         }
 
         // PHP array-key coercion guard: numeric strings would become integer array
         // keys; the format must reject them so role keys are never coerced.
         foreach (['123', '0123', '7', '0'] as $numeric) {
-            self::assertFalse(CustomRolePolicy::isWellFormedRoleKey($numeric));
+            self::assertFalse(CustomRolePolicy::is_well_formed_role_key($numeric));
             self::assertTrue(ctype_digit($numeric));
         }
     }

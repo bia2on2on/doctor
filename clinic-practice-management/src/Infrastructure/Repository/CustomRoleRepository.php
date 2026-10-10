@@ -7,35 +7,32 @@ namespace ClinicCore\Infrastructure\Repository;
 use ClinicCore\Auth\CustomRolePolicy;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 
-/**
- * Repository — Clinic-local custom-role definitions (Slice 1; Product Decision
- * record: docs/decisions/2026-10-10-custom-role-permission-management-model.md).
- *
- * Tables (Migration 2026_10_10_0024):
- *  - cpms_custom_role_defs: UNIQUE(clinic_id, role_key), status active/inactive,
- *    monotonic `version` (forward-only: updates only advance the version).
- *  - cpms_custom_role_capabilities: UNIQUE(role_def_id, capability).
- *
- * Boundary rules (security contract):
- *  - EVERY write path validates role keys and capabilities through
- *    CustomRolePolicy and rejects the whole write on any violation (all-or-
- *    nothing). Future writers must go through these methods; raw SQL bypass is
- *    additionally neutralized by the read path.
- *  - The authorization read path (active_capabilities_for) re-filters stored
- *    rows through CustomRolePolicy: a definition row that is missing, inactive,
- *    malformed, foreign-Clinic, or contains a non-allowlisted capability can
- *    never supply that capability — fail closed, no first-row-wins, no
- *    cross-Clinic fallback.
- *  - This repository stores and resolves NOTHING by itself: permission
- *    precedence stays exclusively in AuthorizationService.
- */
-final class CustomRoleRepository
-{
+// Repository — Clinic-local custom-role definitions (Slice 1; Product Decision
+// record: docs/decisions/2026-10-10-custom-role-permission-management-model.md).
+//
+// Tables (Migration 2026_10_10_0024):
+//  - cpms_custom_role_defs: UNIQUE(clinic_id, role_key), status active/inactive,
+//    monotonic `version` (forward-only: updates only advance the version).
+//  - cpms_custom_role_capabilities: UNIQUE(role_def_id, capability).
+//
+// Boundary rules (security contract):
+//  - EVERY write path validates role keys and capabilities through
+//    CustomRolePolicy and rejects the whole write on any violation (all-or-
+//    nothing). Future writers must go through these methods; raw SQL bypass is
+//    additionally neutralized by the read path.
+//  - The authorization read path (active_capabilities_for) re-filters stored
+//    rows through CustomRolePolicy: a definition row that is missing, inactive,
+//    malformed, foreign-Clinic, or contains a non-allowlisted capability can
+//    never supply that capability — fail closed, no first-row-wins, no
+//    cross-Clinic fallback.
+//  - This repository stores and resolves NOTHING by itself: permission
+//    precedence stays exclusively in AuthorizationService.
+final class CustomRoleRepository {
+
     public const STATUS_ACTIVE   = 'active';
     public const STATUS_INACTIVE = 'inactive';
 
-    public function __construct(private readonly CpmsDb $db)
-    {
+    public function __construct( private readonly CpmsDb $db ) {
     }
 
     /**
@@ -45,45 +42,44 @@ final class CustomRoleRepository
      *
      * @return list<string>
      */
-    public function active_capabilities_for(int $clinic_id, string $role_key): array
-    {
-        if ($clinic_id <= 0) {
+    public function active_capabilities_for( int $clinic_id, string $role_key ): array {
+        if ( $clinic_id <= 0 ) {
             return [];
         }
         // Malformed keys and built-in-key collisions never resolve here.
-        if (!CustomRolePolicy::isDefinableRoleKey($role_key)) {
+        if ( ! CustomRolePolicy::is_definable_role_key( $role_key ) ) {
             return [];
         }
 
         $def = $this->db->fetchRow(
-            'SELECT id FROM ' . $this->db->table('cpms_custom_role_defs') .
+            'SELECT id FROM ' . $this->db->table( 'cpms_custom_role_defs' ) .
             " WHERE clinic_id = %d AND role_key = %s AND status = 'active' LIMIT 1",
             [ $clinic_id, $role_key ]
         );
-        if ($def === null) {
+        if ( $def === null ) {
             return [];
         }
-        $defId = (int) ( $def['id'] ?? 0 );
-        if ($defId <= 0) {
+        $def_id = (int) ( $def['id'] ?? 0 );
+        if ( $def_id <= 0 ) {
             return [];
         }
 
         $rows = $this->db->fetchAll(
-            'SELECT capability FROM ' . $this->db->table('cpms_custom_role_capabilities') .
+            'SELECT capability FROM ' . $this->db->table( 'cpms_custom_role_capabilities' ) .
             ' WHERE role_def_id = %d ORDER BY capability',
-            [ $defId ]
+            [ $def_id ]
         );
 
         $stored = [];
         foreach ( ( is_array( $rows ) ? $rows : [] ) as $row ) {
-            if (is_array($row)) {
+            if ( is_array( $row ) ) {
                 $stored[] = (string) ( $row['capability'] ?? '' );
             }
         }
 
         // Defense in depth: even a raw-SQL writer cannot make a non-allowlisted
         // capability operational.
-        return CustomRolePolicy::sanitizeCapabilitySet($stored);
+        return CustomRolePolicy::sanitize_capability_set( $stored );
     }
 
     /**
@@ -97,52 +93,53 @@ final class CustomRoleRepository
      *
      * @return int new definition id
      */
-    public function define(int $clinic_id, string $role_key, array $capabilities): int
-    {
-        if ($clinic_id <= 0) {
-            throw new \InvalidArgumentException('clinic_id must be > 0 for a custom role definition');
+    public function define( int $clinic_id, string $role_key, array $capabilities ): int {
+        if ( $clinic_id <= 0 ) {
+            throw new \InvalidArgumentException( 'clinic_id must be > 0 for a custom role definition' );
         }
-        if (!CustomRolePolicy::isDefinableRoleKey($role_key)) {
-            throw new \InvalidArgumentException('role key is not definable (format or built-in collision): ' . $role_key);
+        if ( ! CustomRolePolicy::is_definable_role_key( $role_key ) ) {
+            throw new \InvalidArgumentException( 'role key is not definable (format or built-in collision): ' . $role_key );
         }
-        $clean = self::requireEditableCapabilities($capabilities);
+        $clean = self::require_editable_capabilities( $capabilities );
 
         $existing = $this->db->fetchValue(
-            'SELECT id FROM ' . $this->db->table('cpms_custom_role_defs') .
+            'SELECT id FROM ' . $this->db->table( 'cpms_custom_role_defs' ) .
             ' WHERE clinic_id = %d AND role_key = %s LIMIT 1',
             [ $clinic_id, $role_key ]
         );
-        if ($existing !== null) {
-            throw new \RuntimeException('custom role key already defined for this clinic: ' . $role_key);
+        if ( $existing !== null ) {
+            throw new \RuntimeException( 'custom role key already defined for this clinic: ' . $role_key );
         }
 
         $now = $this->db->nowUtcSql();
-        $this->db->transactional(function () use ( $clinic_id, $role_key, $clean, $now ): void {
-            $ok = $this->db->insert(
-                'cpms_custom_role_defs',
-                [
-                    'clinic_id'  => $clinic_id,
-                    'role_key'   => $role_key,
-                    'status'     => self::STATUS_ACTIVE,
-                    'version'    => 1,
-                    'created_at' => $now,
-                    'updated_at' => $now,
-                ]
-            );
-            if (!$ok) {
-                // UNIQUE backstop (race): define-once semantics.
-                throw new \RuntimeException('custom role key already defined for this clinic: ' . $role_key);
+        $this->db->transactional(
+            function () use ( $clinic_id, $role_key, $clean, $now ): void {
+                $ok = $this->db->insert(
+                    'cpms_custom_role_defs',
+                    [
+                        'clinic_id'  => $clinic_id,
+                        'role_key'   => $role_key,
+                        'status'     => self::STATUS_ACTIVE,
+                        'version'    => 1,
+                        'created_at' => $now,
+                        'updated_at' => $now,
+                    ]
+                );
+                if ( ! $ok ) {
+                    // UNIQUE backstop (race): define-once semantics.
+                    throw new \RuntimeException( 'custom role key already defined for this clinic: ' . $role_key );
+                }
+                $this->insert_capability_rows( (int) $this->db->wpdb_last_insert_id(), $clean, $now );
             }
-            $this->insertCapabilityRows((int) $this->db->wpdb_last_insert_id(), $clean, $now);
-        });
+        );
 
         $id = (int) $this->db->fetchValue(
-            'SELECT id FROM ' . $this->db->table('cpms_custom_role_defs') .
+            'SELECT id FROM ' . $this->db->table( 'cpms_custom_role_defs' ) .
             ' WHERE clinic_id = %d AND role_key = %s LIMIT 1',
             [ $clinic_id, $role_key ]
         );
-        if ($id <= 0) {
-            throw new \RuntimeException('custom role definition insert failed for key: ' . $role_key);
+        if ( $id <= 0 ) {
+            throw new \RuntimeException( 'custom role definition insert failed for key: ' . $role_key );
         }
 
         return $id;
@@ -159,24 +156,25 @@ final class CustomRoleRepository
      *
      * @return bool false when no such definition exists
      */
-    public function replace_capabilities(int $clinic_id, string $role_key, array $capabilities): bool
-    {
-        $defId = $this->requireDefinition($clinic_id, $role_key);
-        if ($defId <= 0) {
+    public function replace_capabilities( int $clinic_id, string $role_key, array $capabilities ): bool {
+        $def_id = $this->require_definition( $clinic_id, $role_key );
+        if ( $def_id <= 0 ) {
             return false;
         }
-        $clean = self::requireEditableCapabilities($capabilities);
+        $clean = self::require_editable_capabilities( $capabilities );
 
         $now = $this->db->nowUtcSql();
-        $this->db->transactional(function () use ( $defId, $clean, $now ): void {
-            $this->db->delete('cpms_custom_role_capabilities', [ 'role_def_id' => $defId ]);
-            $this->insertCapabilityRows($defId, $clean, $now);
-            $this->db->query(
-                'UPDATE ' . $this->db->table('cpms_custom_role_defs') .
-                ' SET version = version + 1, updated_at = %s WHERE id = %d',
-                [ $now, $defId ]
-            );
-        });
+        $this->db->transactional(
+            function () use ( $def_id, $clean, $now ): void {
+                $this->db->delete( 'cpms_custom_role_capabilities', [ 'role_def_id' => $def_id ] );
+                $this->insert_capability_rows( $def_id, $clean, $now );
+                $this->db->query(
+                    'UPDATE ' . $this->db->table( 'cpms_custom_role_defs' ) .
+                    ' SET version = version + 1, updated_at = %s WHERE id = %d',
+                    [ $now, $def_id ]
+                );
+            }
+        );
 
         return true;
     }
@@ -190,20 +188,19 @@ final class CustomRoleRepository
      *
      * @return bool false when no such definition exists
      */
-    public function set_status(int $clinic_id, string $role_key, string $status): bool
-    {
-        $defId = $this->requireDefinition($clinic_id, $role_key);
-        if ($defId <= 0) {
+    public function set_status( int $clinic_id, string $role_key, string $status ): bool {
+        $def_id = $this->require_definition( $clinic_id, $role_key );
+        if ( $def_id <= 0 ) {
             return false;
         }
-        if (!in_array($status, [ self::STATUS_ACTIVE, self::STATUS_INACTIVE ], true)) {
-            throw new \InvalidArgumentException('status must be active or inactive: ' . $status);
+        if ( ! in_array( $status, [ self::STATUS_ACTIVE, self::STATUS_INACTIVE ], true ) ) {
+            throw new \InvalidArgumentException( 'status must be active or inactive: ' . $status );
         }
 
         $this->db->query(
-            'UPDATE ' . $this->db->table('cpms_custom_role_defs') .
+            'UPDATE ' . $this->db->table( 'cpms_custom_role_defs' ) .
             ' SET status = %s, version = version + 1, updated_at = %s WHERE id = %d',
-            [ $status, $this->db->nowUtcSql(), $defId ]
+            [ $status, $this->db->nowUtcSql(), $def_id ]
         );
 
         return true;
@@ -212,17 +209,16 @@ final class CustomRoleRepository
     /**
      * @return int definition id, 0 when absent
      */
-    private function requireDefinition(int $clinic_id, string $role_key): int
-    {
-        if ($clinic_id <= 0) {
-            throw new \InvalidArgumentException('clinic_id must be > 0 for a custom role definition');
+    private function require_definition( int $clinic_id, string $role_key ): int {
+        if ( $clinic_id <= 0 ) {
+            throw new \InvalidArgumentException( 'clinic_id must be > 0 for a custom role definition' );
         }
-        if (!CustomRolePolicy::isDefinableRoleKey($role_key)) {
-            throw new \InvalidArgumentException('role key is not definable (format or built-in collision): ' . $role_key);
+        if ( ! CustomRolePolicy::is_definable_role_key( $role_key ) ) {
+            throw new \InvalidArgumentException( 'role key is not definable (format or built-in collision): ' . $role_key );
         }
 
         $id = $this->db->fetchValue(
-            'SELECT id FROM ' . $this->db->table('cpms_custom_role_defs') .
+            'SELECT id FROM ' . $this->db->table( 'cpms_custom_role_defs' ) .
             ' WHERE clinic_id = %d AND role_key = %s LIMIT 1',
             [ $clinic_id, $role_key ]
         );
@@ -241,19 +237,18 @@ final class CustomRoleRepository
      *
      * @return list<string> unique, sorted
      */
-    private static function requireEditableCapabilities(array $capabilities): array
-    {
+    private static function require_editable_capabilities( array $capabilities ): array {
         $clean = [];
-        foreach ($capabilities as $capability) {
-            if (!is_string($capability) || !CustomRolePolicy::isEditableCapability($capability)) {
+        foreach ( $capabilities as $capability ) {
+            if ( ! is_string( $capability ) || ! CustomRolePolicy::is_editable_capability( $capability ) ) {
                 throw new \InvalidArgumentException(
-                    'capability not allowed in a custom role definition: ' . ( is_string($capability) ? $capability : gettype($capability) )
+                    'capability not allowed in a custom role definition: ' . ( is_string( $capability ) ? $capability : gettype( $capability ) )
                 );
             }
-            $clean[$capability] = true;
+            $clean[ $capability ] = true;
         }
-        $list = array_keys($clean);
-        sort($list);
+        $list = array_keys( $clean );
+        sort( $list );
 
         return $list;
     }
@@ -261,9 +256,8 @@ final class CustomRoleRepository
     /**
      * @param list<string> $capabilities
      */
-    private function insertCapabilityRows(int $role_def_id, array $capabilities, string $now): void
-    {
-        foreach ($capabilities as $capability) {
+    private function insert_capability_rows( int $role_def_id, array $capabilities, string $now ): void {
+        foreach ( $capabilities as $capability ) {
             $this->db->insert(
                 'cpms_custom_role_capabilities',
                 [
