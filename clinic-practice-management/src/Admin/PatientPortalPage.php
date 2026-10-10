@@ -304,9 +304,10 @@ final class PatientPortalPage
 
         // اصلاح بین‌فازی: «تماس با مطب» از Clinic Profileِ رسمی (cpms_clinics.phone)
         //ِ Clinicِ resolve‌شده از زمینهٔ قابل‌اعتمادِ پورتال (linked_recordsِ کاربر
-        // جاری) خوانده می‌شود. زمینهٔ نامعلوم/مبهم (۰ یا >۱ رکورد)، Clinicِ یافت‌نشده،
-        // خطای Query یا phoneِ خالی ⇒ fail-closed و حذف امنِ خط تماس — بدون
-        // fallback به کلید legacyِ نصب و بدون حدس‌زدن Clinic.
+        // جاری) خوانده می‌شود. رکوردهای معتبر باید دقیقاً یک Clinicِ متمایز را
+        // شناسایی کنند؛ در غیر این صورت (۰ یا چند Clinicِ متمایز)، Clinicِ
+        // یافت‌نشده، خطای Query یا phoneِ خالی ⇒ fail-closed و حذف امنِ خط تماس —
+        // بدون fallback به کلید legacyِ نصب و بدون حدس‌زدن Clinic.
         $phone = self::contact_phone(
             $profile_records,
             static function ( int $clinic_id ): ?string {
@@ -1020,8 +1021,11 @@ final class PatientPortalPage
      * (رکوردهای linkedِ کاربرِ جاری).
      *
      * Fail-closed:
-     *  - زمینهٔ نامعلوم (۰ رکورد) یا مبهم (>۱ رکورد) ⇒ '' — همان degradeِ موجود
-     *    (انتخابِ صریحِ Clinic در sectionهای پورتال)؛ هیچ Clinicی ضمنی انتخاب نمی‌شود.
+     *  - اگر رکوردهای معتبرِ linked دقیقاً یک Clinicِ متمایز را شناسایی نکنند
+     *    (۰ رکورد، شناسهٔ نامعتبر، یا چند Clinicِ متمایز) ⇒ '' — همان degradeِ
+     *    موجود (انتخابِ صریحِ Clinic در sectionهای پورتال)؛ هیچ Clinicی ضمنی
+     *    انتخاب نمی‌شود (no first-Clinic fallback) و چند لینکِ فعال به یک
+     *    Clinicِ مشترک، ابهامِ کاذب ایجاد نمی‌کند.
      *  - Clinicِ یافت‌نشده یا خطای Query ⇒ ''.
      *  - phoneِ canonicalِ خالی ⇒ '' (ارائهٔ خالیِ امنِ موجود).
      *  - بدون fallback به کلید legacyِ نصب (`clinic.phone`).
@@ -1031,17 +1035,29 @@ final class PatientPortalPage
      */
     public static function contact_phone( array $profile_records, callable $canonical_phone ): string
     {
-        if ( count( $profile_records ) !== 1 ) {
-            return '';
+        // Derive the distinct valid Clinic identities from the trusted linked
+        // records. Several active links to the SAME Clinic are ONE Clinic and
+        // must not create false ambiguity; zero or multiple DISTINCT Clinics
+        // fail closed. The IDs come from the server-side linked-records query
+        // — a raw request Clinic ID is never an authorization input.
+        $clinic_ids = [];
+        foreach ( $profile_records as $record ) {
+            if ( ! is_array( $record ) ) {
+                continue;
+            }
+            $clinic_id = (int) ( $record['clinic_id'] ?? 0 );
+            if ( $clinic_id > 0 ) {
+                $clinic_ids[ $clinic_id ] = true;
+            }
         }
 
-        $clinic_id = (int) ( $profile_records[0]['clinic_id'] ?? 0 );
-        if ( $clinic_id <= 0 ) {
+        $distinct = array_keys( $clinic_ids );
+        if ( count( $distinct ) !== 1 ) {
             return '';
         }
 
         try {
-            $phone = $canonical_phone( $clinic_id );
+            $phone = $canonical_phone( (int) $distinct[0] );
         } catch ( \Throwable $e ) {
             return '';
         }
