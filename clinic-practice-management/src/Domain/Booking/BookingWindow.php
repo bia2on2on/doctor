@@ -180,7 +180,7 @@ final class BookingWindow
         if ($local->format('Y-m-d H:i:s') !== $normalized) {
             return null;
         }
-        if ( self::is_repeated_local_wall_time( $normalized, $locationTz ) ) {
+        if ( self::is_repeated_local_wall_time( $normalized, $locationTz ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established public helper parameter.
             return null;
         }
 
@@ -211,14 +211,14 @@ final class BookingWindow
         }
 
         for ( $i = 1, $count = count( $transitions ); $i < $count; ++$i ) {
-            $before_offset = (int) $transitions[ $i - 1 ][ 'offset' ];
+            $before_offset = (int) $transitions[ $i - 1 ]['offset'];
 
-            $after_offset = (int) $transitions[ $i ][ 'offset' ];
+            $after_offset = (int) $transitions[ $i ]['offset'];
             if ( $after_offset >= $before_offset ) {
                 continue;
             }
 
-            $transition_timestamp = (int) $transitions[ $i ][ 'ts' ];
+            $transition_timestamp = (int) $transitions[ $i ]['ts'];
 
             $repeated_start = $transition_timestamp + $after_offset;
 

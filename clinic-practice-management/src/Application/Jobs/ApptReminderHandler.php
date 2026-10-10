@@ -485,8 +485,10 @@ final class ApptReminderHandler
 
                 return false;
             }
-            $local_reference = $referenceUtc->setTimezone( $location_zone );
+            $local_reference = $referenceUtc->setTimezone( $location_zone ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established method parameter.
+
             $today = $local_reference->format( 'Y-m-d' );
+
             $tomorrow = $local_reference->modify( '+1 day' )->format( 'Y-m-d' );
 
             return (string) $row['slot_date'] === $today || (string) $row['slot_date'] === $tomorrow;
