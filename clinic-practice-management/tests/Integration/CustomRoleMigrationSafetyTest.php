@@ -187,7 +187,9 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
                 self::assertSame(1, (int) $wpdb->get_var("SELECT COUNT(*) FROM {$caps}"), 'exactly the valid capability must remain'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
             } finally {
                 // Deterministic cleanup: fresh empty tables at 0024 again.
-                App::migrations()->rollbackOne();
+                $wpdb->query("DELETE FROM {$wpdb->prefix}cpms_schema_migrations WHERE version = '" . self::NEW_VERSION . "'"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $wpdb->query("DROP TABLE IF EXISTS {$caps}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $wpdb->query("DROP TABLE IF EXISTS {$defs}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 App::migrations()->migrate();
             }
         });
@@ -205,9 +207,8 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
         global $wpdb;
         $defs = App::db()->table('cpms_custom_role_defs');
 
-        $thrown = false;
         try {
-            $this->withRealTables(function () use ($wpdb, $defs, &$thrown): void {
+            $this->withRealTables(function () use ($wpdb, $defs): void {
                 // Back to 0023: real custom-role tables gone, 0024 unrecorded.
                 self::assertSame(self::NEW_VERSION, App::migrations()->rollbackOne());
                 self::assertSame(self::PREVIOUS_VERSION, App::migrations()->currentVersion());
@@ -218,13 +219,16 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
                 $ok = $wpdb->query("INSERT INTO {$defs} (id) VALUES (1)"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 self::assertNotFalse($ok, 'marker row must be inserted');
 
+                $migrate_failed = false;
+                $error_message  = '';
                 try {
                     App::migrations()->migrate();
-                    self::fail('migrate() must fail loudly on a malformed pre-existing defs table');
                 } catch (\RuntimeException $e) {
-                    $thrown = true;
-                    self::assertStringContainsString('migration 0024', $e->getMessage(), 'the failure must clearly name the schema contract violation');
+                    $migrate_failed = true;
+                    $error_message  = $e->getMessage();
                 }
+                self::assertTrue($migrate_failed, 'migrate() must fail loudly on a malformed pre-existing defs table');
+                self::assertStringContainsString('migration 0024', $error_message, 'the failure must clearly name the schema contract violation');
             });
 
             // Assertions against persisted state (outside the DDL window):
@@ -237,13 +241,9 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
             self::assertSame(['id'], $cols, 'the malformed table must remain untouched');
             self::assertSame(1, (int) $wpdb->get_var("SELECT COUNT(*) FROM {$defs}"), 'existing rows must remain unchanged'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         } finally {
-            $this->withRealTables(static function () use ($wpdb, $defs): void {
-                $wpdb->query("DROP TABLE IF EXISTS {$defs}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                App::migrations()->migrate();
-            });
+            $this->restoreFreshSchema();
         }
 
-        self::assertTrue($thrown, 'the schema contract violation must throw');
         self::assertSame(self::NEW_VERSION, App::migrations()->currentVersion(), 'suite schema must be restored after the test');
     }
 
@@ -258,9 +258,8 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
         $defs = App::db()->table('cpms_custom_role_defs');
         $caps = App::db()->table('cpms_custom_role_capabilities');
 
-        $thrown = false;
         try {
-            $this->withRealTables(function () use ($wpdb, $defs, $caps, &$thrown): void {
+            $this->withRealTables(function () use ($wpdb, $defs, $caps): void {
                 self::assertSame(self::NEW_VERSION, App::migrations()->rollbackOne());
                 self::assertSame(self::PREVIOUS_VERSION, App::migrations()->currentVersion());
 
@@ -271,13 +270,16 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
                 $ok = $wpdb->query("INSERT INTO {$caps} (role_def_id, capability, created_at) VALUES (1, 'cpms_patient_read', UTC_TIMESTAMP(3))"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 self::assertNotFalse($ok, 'marker row must be inserted');
 
+                $migrate_failed = false;
+                $error_message  = '';
                 try {
                     App::migrations()->migrate();
-                    self::fail('migrate() must fail loudly on a malformed pre-existing caps table');
                 } catch (\RuntimeException $e) {
-                    $thrown = true;
-                    self::assertStringContainsString('migration 0024', $e->getMessage());
+                    $migrate_failed = true;
+                    $error_message  = $e->getMessage();
                 }
+                self::assertTrue($migrate_failed, 'migrate() must fail loudly on a malformed pre-existing caps table');
+                self::assertStringContainsString('migration 0024', $error_message);
             });
 
             self::assertSame(
@@ -287,14 +289,28 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
             );
             self::assertSame(1, (int) $wpdb->get_var("SELECT COUNT(*) FROM {$caps}"), 'existing rows must remain unchanged'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         } finally {
-            $this->withRealTables(static function () use ($wpdb, $defs, $caps): void {
-                $wpdb->query("DROP TABLE IF EXISTS {$caps}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                $wpdb->query("DROP TABLE IF EXISTS {$defs}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                App::migrations()->migrate();
-            });
+            $this->restoreFreshSchema();
         }
 
-        self::assertTrue($thrown, 'the schema contract violation must throw');
         self::assertSame(self::NEW_VERSION, App::migrations()->currentVersion(), 'suite schema must be restored after the test');
+    }
+
+    /**
+     * Deterministic suite-state restore: drop both custom-role tables, unrecord
+     * 0024 and re-run the migration so later tests always see a complete,
+     * freshly-created schema (independent of what a failing test left behind).
+     */
+    private function restoreFreshSchema(): void
+    {
+        global $wpdb;
+        $defs = App::db()->table('cpms_custom_role_defs');
+        $caps = App::db()->table('cpms_custom_role_capabilities');
+
+        $this->withRealTables(static function () use ($wpdb, $defs, $caps): void {
+            $wpdb->query("DELETE FROM {$wpdb->prefix}cpms_schema_migrations WHERE version = '" . self::NEW_VERSION . "'"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $wpdb->query("DROP TABLE IF EXISTS {$caps}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $wpdb->query("DROP TABLE IF EXISTS {$defs}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            App::migrations()->migrate();
+        });
     }
 }

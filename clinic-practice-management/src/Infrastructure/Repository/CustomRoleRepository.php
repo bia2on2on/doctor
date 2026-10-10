@@ -129,7 +129,11 @@ final class CustomRoleRepository {
                     // UNIQUE backstop (race): define-once semantics.
                     throw new \RuntimeException( 'custom role key already defined for this clinic: ' . $role_key );
                 }
-                $this->insert_capability_rows( (int) $this->db->wpdb_last_insert_id(), $clean, $now );
+                $new_def_id = (int) $this->db->wpdb_last_insert_id();
+                if ( $new_def_id <= 0 ) {
+                    throw new \RuntimeException( 'custom role definition insert produced no row id: ' . $role_key );
+                }
+                $this->insert_capability_rows( $new_def_id, $clean, $now );
             }
         );
 
@@ -166,13 +170,26 @@ final class CustomRoleRepository {
         $now = $this->db->nowUtcSql();
         $this->db->transactional(
             function () use ( $def_id, $clean, $now ): void {
-                $this->db->delete( 'cpms_custom_role_capabilities', [ 'role_def_id' => $def_id ] );
+                // Every write is checked; a failure throws inside the
+                // transaction so the previous capability set and version are
+                // preserved and a partial replacement can never persist.
+                $cleared = $this->db->query(
+                    'DELETE FROM ' . $this->db->table( 'cpms_custom_role_capabilities' ) .
+                    ' WHERE role_def_id = %d',
+                    [ $def_id ]
+                );
+                if ( ! $cleared ) {
+                    throw new \RuntimeException( 'custom role capability reset failed for definition: ' . $def_id );
+                }
                 $this->insert_capability_rows( $def_id, $clean, $now );
-                $this->db->query(
+                $advanced = $this->db->execute(
                     'UPDATE ' . $this->db->table( 'cpms_custom_role_defs' ) .
                     ' SET version = version + 1, updated_at = %s WHERE id = %d',
                     [ $now, $def_id ]
                 );
+                if ( $advanced !== 1 ) {
+                    throw new \RuntimeException( 'custom role version advance failed for definition: ' . $def_id );
+                }
             }
         );
 
@@ -197,10 +214,18 @@ final class CustomRoleRepository {
             throw new \InvalidArgumentException( 'status must be active or inactive: ' . $status );
         }
 
-        $this->db->query(
-            'UPDATE ' . $this->db->table( 'cpms_custom_role_defs' ) .
-            ' SET status = %s, version = version + 1, updated_at = %s WHERE id = %d',
-            [ $status, $this->db->nowUtcSql(), $def_id ]
+        $now = $this->db->nowUtcSql();
+        $this->db->transactional(
+            function () use ( $def_id, $status, $now ): void {
+                $updated = $this->db->execute(
+                    'UPDATE ' . $this->db->table( 'cpms_custom_role_defs' ) .
+                    ' SET status = %s, version = version + 1, updated_at = %s WHERE id = %d',
+                    [ $status, $now, $def_id ]
+                );
+                if ( $updated !== 1 ) {
+                    throw new \RuntimeException( 'custom role status update failed for definition: ' . $def_id );
+                }
+            }
         );
 
         return true;
@@ -257,8 +282,11 @@ final class CustomRoleRepository {
      * @param list<string> $capabilities
      */
     private function insert_capability_rows( int $role_def_id, array $capabilities, string $now ): void {
+        if ( $role_def_id <= 0 ) {
+            throw new \InvalidArgumentException( 'role_def_id must be > 0 for capability persistence' );
+        }
         foreach ( $capabilities as $capability ) {
-            $this->db->insert(
+            $written = $this->db->insert(
                 'cpms_custom_role_capabilities',
                 [
                     'role_def_id' => $role_def_id,
@@ -266,6 +294,11 @@ final class CustomRoleRepository {
                     'created_at'  => $now,
                 ]
             );
+            if ( ! $written ) {
+                // Fail loud inside the surrounding transaction: no partial
+                // capability set may ever persist.
+                throw new \RuntimeException( 'custom role capability insert failed for definition: ' . $role_def_id );
+            }
         }
     }
 }
