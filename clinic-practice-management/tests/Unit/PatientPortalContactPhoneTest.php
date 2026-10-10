@@ -29,10 +29,10 @@ final class PatientPortalContactPhoneTest extends TestCase
     /**
      * @return array<string, mixed> A linked-record row as produced by PatientService::linked_records().
      */
-    private static function linkedRecord( int $clinicId ): array
+    private static function linkedRecord( int $clinicId, ?int $linkId = null ): array
     {
         return [
-            'link_id'              => 100 + $clinicId,
+            'link_id'              => $linkId ?? ( 100 + $clinicId ),
             'clinic_id'            => $clinicId,
             'clinic_name'          => 'Clinic ' . $clinicId,
             'patient_id'           => 500 + $clinicId,
@@ -162,6 +162,48 @@ final class PatientPortalContactPhoneTest extends TestCase
 
         self::assertSame( '', $phone, 'A record without a positive clinic_id must fail closed.' );
         self::assertSame( [], $calls, 'No lookup may run on an invalid trusted identifier.' );
+    }
+
+    public function testMultipleLinksToSameClinicDoNotCreateFalseAmbiguity(): void
+    {
+        // Regression: linked_records() may return several active links that all
+        // durably belong to the SAME Clinic — that is ONE distinct Clinic, not
+        // ambiguity. The canonical phone must resolve.
+        $calls = [];
+
+        $phone = PatientPortalPage::contact_phone(
+            [ self::linkedRecord( 7, 107 ), self::linkedRecord( 7, 108 ) ],
+            static function ( int $clinicId ) use ( &$calls ): ?string {
+                $calls[] = $clinicId;
+
+                return $clinicId === 7 ? '+98-21-555-0100' : null;
+            }
+        );
+
+        self::assertSame( '+98-21-555-0100', $phone, 'Multiple active links to the SAME Clinic must resolve that one Clinic.' );
+        self::assertSame( [ 7 ], $calls, 'The canonical lookup runs exactly once, for the single distinct Clinic.' );
+    }
+
+    public function testRowsWithoutValidClinicIdentityAreNotEligible(): void
+    {
+        // Only rows with a valid Clinic identity are eligible; if the eligible
+        // rows identify exactly one Clinic, it resolves.
+        $calls = [];
+
+        $phone = PatientPortalPage::contact_phone(
+            [
+                [ 'link_id' => 11, 'clinic_id' => 7, 'clinic_name' => 'Clinic 7' ],
+                [ 'link_id' => 12, 'clinic_name' => 'broken-record' ],
+            ],
+            static function ( int $clinicId ) use ( &$calls ): ?string {
+                $calls[] = $clinicId;
+
+                return '+98-21-555-0100';
+            }
+        );
+
+        self::assertSame( '+98-21-555-0100', $phone );
+        self::assertSame( [ 7 ], $calls, 'Only the valid Clinic identity is looked up.' );
     }
 
     public function testTwoClinicIsolationUsesOnlyTheOwnLinkedClinicPhone(): void

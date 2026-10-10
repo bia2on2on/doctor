@@ -204,6 +204,33 @@ final class PatientPortalContactPhoneTest extends WP_UnitTestCase
         self::assertStringNotContainsString( self::LEGACY_PHONE, $html );
     }
 
+    public function testTwoLinksToSameClinicRenderCanonicalPhoneNotLegacy(): void
+    {
+        // Regression (acceptance blocker): two distinct active patient links that
+        // both durably belong to the SAME Clinic must NOT suppress the canonical
+        // phone — one distinct Clinic, one canonical cpms_clinics.phone.
+        $this->setCanonicalClinicPhone( $this->seedClinicId, self::CANONICAL_PHONE_A );
+
+        $patientA = $this->makePatientInClinic( $this->seedClinicId, 'same' );
+        $patientB = $this->makePatientInClinic( $this->seedClinicId, 'same' );
+        $userId   = $this->makePurePatientUser( 'same' );
+        $this->linkUserToClinic( $userId, $this->seedClinicId, $patientA['patient_id'], $patientA['mobile'], true );
+        $this->linkUserToClinic( $userId, $this->seedClinicId, $patientB['patient_id'], $patientB['mobile'], false );
+
+        $html = $this->renderPortalAs( $userId );
+
+        self::assertStringContainsString(
+            '(تلفن: <b dir="ltr">' . self::CANONICAL_PHONE_A . '</b>)',
+            $html,
+            'Multiple links to the SAME Clinic must not create false ambiguity — the canonical phone renders.'
+        );
+        self::assertStringNotContainsString(
+            self::LEGACY_PHONE,
+            $html,
+            'The obsolete global clinic.phone value must never render.'
+        );
+    }
+
     public function testTwoLinkedClinicsFailClosedWithoutAnyPhone(): void
     {
         $this->setCanonicalClinicPhone( $this->seedClinicId, self::CANONICAL_PHONE_A );
