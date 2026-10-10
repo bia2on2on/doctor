@@ -77,6 +77,12 @@ final class SchedulingLocationLocalBoundaryRedTest extends WP_UnitTestCase
     private const TZ_INVALID = 'Invalid/NotAZone';
     private const CLINIC_TZ = 'UTC';                 // عمداً با همهٔ Locationها متفاوت
 
+    private const RACE_CONNECTION_TIMEOUT_SECONDS = 5;
+    private const RACE_LOCATION_WAIT_TIMEOUT_SECONDS = 10;
+    private const RACE_WRITER_COMMAND_TIMEOUT_SECONDS = 30;
+    private const RACE_GRACEFUL_REAP_TIMEOUT_SECONDS = 5;
+    private const RACE_TERMINATION_REAP_TIMEOUT_SECONDS = 2;
+
     private int $orgId = 0;
     private int $clinicId = 0;
     private int $locTehran = 0;
@@ -587,8 +593,15 @@ final class SchedulingLocationLocalBoundaryRedTest extends WP_UnitTestCase
 
     public function testStaffCreateLocksLocationBeforeFinalTimezoneValidation(): void
     {
-        if (!function_exists('pcntl_fork') || !function_exists('stream_socket_pair') || !class_exists('mysqli')) {
-            self::markTestSkipped('pcntl, stream_socket_pair, and mysqli are required for the independent-session race proof.');
+        if (
+            !function_exists('pcntl_fork')
+            || !function_exists('posix_kill')
+            || !defined('SIGTERM')
+            || !defined('SIGKILL')
+            || !function_exists('stream_socket_pair')
+            || !class_exists('mysqli')
+        ) {
+            self::markTestSkipped('pcntl/posix signals, stream_socket_pair, and mysqli are required for the independent-session race proof.');
         }
 
         global $wpdb;
@@ -654,28 +667,27 @@ final class SchedulingLocationLocalBoundaryRedTest extends WP_UnitTestCase
         $observer = null;
 
         try {
-            $writerPid = pcntl_fork();
-            if ($writerPid === -1) {
-                self::fail('pcntl_fork failed for the independent Location writer');
-            }
-            if ($writerPid === 0) {
+            $writerFork = pcntl_fork();
+            if ($writerFork === 0) {
                 fclose($writerParent);
                 fclose($bookingParent);
                 fclose($bookingChild);
                 $this->locationTimezoneWriterChild($writerChild, $this->locNewYork);
+                exit(2);
             }
-            fclose($writerChild);
+            if ($writerFork < 1) {
+                self::fail('pcntl_fork failed for the independent Location writer');
+            }
+            $writerPid = $writerFork;
+            self::closeSynchronizationPipe($writerChild);
 
-            $writerMessage = $this->readSynchronizationLine($writerParent, 5);
+            $writerMessage = $this->readSynchronizationLine($writerParent, self::RACE_CONNECTION_TIMEOUT_SECONDS);
             self::assertIsString($writerMessage, 'writer must report its held Location lock before booking starts');
             self::assertMatchesRegularExpression('/^writer_locked:[1-9][0-9]*$/', $writerMessage);
             $writerConnectionId = (int) substr($writerMessage, strlen('writer_locked:'));
 
-            $bookingPid = pcntl_fork();
-            if ($bookingPid === -1) {
-                self::fail('pcntl_fork failed for the independent BookingService actor');
-            }
-            if ($bookingPid === 0) {
+            $bookingFork = pcntl_fork();
+            if ($bookingFork === 0) {
                 fclose($bookingParent);
                 fclose($writerParent);
                 $this->staffBookingChild(
@@ -689,10 +701,15 @@ final class SchedulingLocationLocalBoundaryRedTest extends WP_UnitTestCase
                     $time,
                     $slotId
                 );
+                exit(2);
             }
-            fclose($bookingChild);
+            if ($bookingFork < 1) {
+                self::fail('pcntl_fork failed for the independent BookingService actor');
+            }
+            $bookingPid = $bookingFork;
+            self::closeSynchronizationPipe($bookingChild);
 
-            $bookingMessage = $this->readSynchronizationLine($bookingParent, 5);
+            $bookingMessage = $this->readSynchronizationLine($bookingParent, self::RACE_CONNECTION_TIMEOUT_SECONDS);
             self::assertIsString($bookingMessage, 'booking actor must report its own fresh DB connection before product execution');
             self::assertMatchesRegularExpression('/^booking_connected:[1-9][0-9]*$/', $bookingMessage);
             $bookingConnectionId = (int) substr($bookingMessage, strlen('booking_connected:'));
@@ -711,7 +728,7 @@ final class SchedulingLocationLocalBoundaryRedTest extends WP_UnitTestCase
                     $bookingConnectionId,
                     $writerConnectionId,
                     $this->locNewYork,
-                    10
+                    self::RACE_LOCATION_WAIT_TIMEOUT_SECONDS
                 ),
                 'mandatory interleaving not observed: BookingService never became blocked by the writer-held Location row'
             );
@@ -735,7 +752,7 @@ final class SchedulingLocationLocalBoundaryRedTest extends WP_UnitTestCase
             self::assertSame(7, fwrite($writerParent, "commit\n"), 'parent must release the writer only after the observed contention');
             $writerReleased = true;
 
-            $bookingOutcomeLine = $this->readSynchronizationLine($bookingParent, 5);
+            $bookingOutcomeLine = $this->readSynchronizationLine($bookingParent, self::RACE_CONNECTION_TIMEOUT_SECONDS);
             self::assertIsString($bookingOutcomeLine, 'booking actor must finish after writer commit');
             $bookingOutcome = json_decode($bookingOutcomeLine, true);
             self::assertIsArray($bookingOutcome, 'booking actor must return structured outcome evidence');
@@ -744,8 +761,8 @@ final class SchedulingLocationLocalBoundaryRedTest extends WP_UnitTestCase
             self::assertSame($bookingConnectionId, (int) ($bookingOutcome['connection_id'] ?? 0), 'outcome must come from the announced fresh BookingService session');
             self::assertTrue((bool) ($bookingOutcome['own_wpdb_connected'] ?? false), 'BookingService actor must own its wpdb connection');
 
-            $writerStatus = $this->waitForChildExit($writerPid, 5);
-            $bookingStatus = $this->waitForChildExit($bookingPid, 5);
+            $writerStatus = $this->waitForChildExit($writerPid, self::RACE_GRACEFUL_REAP_TIMEOUT_SECONDS);
+            $bookingStatus = $this->waitForChildExit($bookingPid, self::RACE_GRACEFUL_REAP_TIMEOUT_SECONDS);
             self::assertIsInt($writerStatus, 'writer must exit within the bounded cleanup window');
             self::assertIsInt($bookingStatus, 'booking actor must exit within the bounded cleanup window');
             self::assertTrue(pcntl_wifexited($writerStatus) && pcntl_wexitstatus($writerStatus) === 0, 'writer must commit its intended Location timezone update');
@@ -784,24 +801,111 @@ final class SchedulingLocationLocalBoundaryRedTest extends WP_UnitTestCase
             if (!$writerReleased && is_resource($writerParent)) {
                 @fwrite($writerParent, "rollback\n");
             }
-            if ($writerPid !== null && $writerStatus === null) {
-                $writerStatus = $this->waitForChildExit($writerPid, 5);
-                $this->terminateUnreapedChild($writerPid, $writerStatus);
-            }
-            if ($bookingPid !== null && $bookingStatus === null) {
-                $bookingStatus = $this->waitForChildExit($bookingPid, 5);
-                $this->terminateUnreapedChild($bookingPid, $bookingStatus);
-            }
+            $this->reapOrTerminateKnownChild($writerPid, $writerStatus);
+            $this->reapOrTerminateKnownChild($bookingPid, $bookingStatus);
             if ($observer instanceof \mysqli) {
                 @$observer->close();
             }
-            if (is_resource($writerParent)) {
-                fclose($writerParent);
-            }
-            if (is_resource($bookingParent)) {
-                fclose($bookingParent);
-            }
+            self::closeSynchronizationPipe($writerParent);
+            self::closeSynchronizationPipe($writerChild);
+            self::closeSynchronizationPipe($bookingParent);
+            self::closeSynchronizationPipe($bookingChild);
         }
+    }
+
+    public function testRaceCleanupGuardsPidsAndBoundsTermination(): void
+    {
+        if (!defined('SIGTERM') || !defined('SIGKILL')) {
+            self::markTestSkipped('POSIX signal constants are required for cleanup helper coverage.');
+        }
+
+        $waits = [];
+        $signals = [];
+        $neverWait = static function (int $pid, int $seconds) use (&$waits): int {
+            $waits[] = [$pid, $seconds];
+
+            return 0;
+        };
+        $neverSignal = static function (int $pid, int $signal) use (&$signals): bool {
+            $signals[] = [$pid, $signal];
+
+            return true;
+        };
+        self::assertNull(self::cleanupKnownChild(-1, null, $neverWait, $neverSignal));
+        self::assertNull(self::cleanupKnownChild(0, null, $neverWait, $neverSignal));
+        self::assertNull(self::cleanupKnownChild(null, null, $neverWait, $neverSignal));
+        self::assertSame([], $waits, 'fork failure and invalid PIDs must never reach wait or kill callbacks');
+        self::assertSame([], $signals, 'fork failure and invalid PIDs must never reach wait or kill callbacks');
+
+        $waits = [];
+        $signals = [];
+        $alreadyExited = self::cleanupKnownChild(
+            123,
+            null,
+            static function (int $pid, int $seconds) use (&$waits): int {
+                $waits[] = [$pid, $seconds];
+
+                return 0;
+            },
+            static function (int $pid, int $signal) use (&$signals): bool {
+                $signals[] = [$pid, $signal];
+
+                return true;
+            }
+        );
+        self::assertSame(0, $alreadyExited, 'an already-exited child must be reaped without signalling');
+        self::assertSame([[123, self::RACE_GRACEFUL_REAP_TIMEOUT_SECONDS]], $waits);
+        self::assertSame([], $signals);
+
+        $waits = [];
+        $signals = [];
+        $outcomes = [null, null, 0];
+        $terminated = self::cleanupKnownChild(
+            456,
+            null,
+            static function (int $pid, int $seconds) use (&$waits, &$outcomes): int|false|null {
+                $waits[] = [$pid, $seconds];
+
+                return array_shift($outcomes);
+            },
+            static function (int $pid, int $signal) use (&$signals): bool {
+                $signals[] = [$pid, $signal];
+
+                return true;
+            }
+        );
+        self::assertSame(0, $terminated, 'bounded escalation must return the final reap status');
+        self::assertSame([
+            [456, self::RACE_GRACEFUL_REAP_TIMEOUT_SECONDS],
+            [456, self::RACE_TERMINATION_REAP_TIMEOUT_SECONDS],
+            [456, self::RACE_TERMINATION_REAP_TIMEOUT_SECONDS],
+        ], $waits, 'timeout escalation must use only the three bounded reap windows');
+        self::assertSame([[456, SIGTERM], [456, SIGKILL]], $signals, 'only the recorded positive child PID may be signalled');
+    }
+
+    public function testRaceSynchronizationFailureClosesAllPipeEnds(): void
+    {
+        if (!function_exists('stream_socket_pair')) {
+            self::markTestSkipped('stream_socket_pair is required for synchronization cleanup coverage.');
+        }
+        $pipes = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+        if ($pipes === false) {
+            self::markTestSkipped('Cannot create synchronization pipes.');
+        }
+        [$parent, $child] = $pipes;
+        $failureObserved = false;
+        try {
+            throw new \RuntimeException('deterministic synchronization failure');
+        } catch (\RuntimeException) {
+            $failureObserved = true;
+        } finally {
+            self::closeSynchronizationPipe($parent);
+            self::closeSynchronizationPipe($child);
+        }
+
+        self::assertTrue($failureObserved);
+        self::assertFalse(is_resource($parent), 'failure cleanup must close the parent synchronization pipe');
+        self::assertFalse(is_resource($child), 'failure cleanup must close the child synchronization pipe');
     }
 
     // =================================================================
@@ -992,10 +1096,12 @@ final class SchedulingLocationLocalBoundaryRedTest extends WP_UnitTestCase
                 exit(2);
             }
             @fwrite($pipe, 'writer_locked:' . $mysqli->thread_id . "\n");
-            // The parent waits for observable lock evidence before issuing this
-            // command. Allow enough bounded headroom for that evidence probe on
-            // a contended CI runner; the timeout only triggers rollback.
-            $command = $this->readSynchronizationLine($pipe, 15);
+            // The writer is already locked when this wait starts. Thirty seconds
+            // exceeds the parent booking-connection (5s) and lock-observation
+            // (10s) budgets with 15s bounded headroom for the Slot NOWAIT probe.
+            // This is timeout safety only; the pipe/Performance-Schema state is
+            // still the synchronization oracle.
+            $command = $this->readSynchronizationLine($pipe, self::RACE_WRITER_COMMAND_TIMEOUT_SECONDS);
             if ($command === 'commit') {
                 $mysqli->commit();
                 exit(0);
@@ -1166,8 +1272,11 @@ final class SchedulingLocationLocalBoundaryRedTest extends WP_UnitTestCase
         return false;
     }
 
-    private function waitForChildExit(int $pid, int $seconds): ?int
+    private function waitForChildExit(int $pid, int $seconds): int|false|null
     {
+        if ($pid <= 0 || $seconds <= 0) {
+            return false;
+        }
         $deadline = microtime(true) + $seconds;
         do {
             $status = 0;
@@ -1175,24 +1284,67 @@ final class SchedulingLocationLocalBoundaryRedTest extends WP_UnitTestCase
             if ($waited === $pid) {
                 return $status;
             }
+            if ($waited === -1) {
+                // It was already reaped elsewhere (or is no longer our child).
+                // Do not signal a PID which could subsequently be reused.
+                return false;
+            }
             usleep(10000);
         } while (microtime(true) < $deadline);
 
         return null;
     }
 
-    private function terminateUnreapedChild(int $pid, ?int $status): void
+    private function reapOrTerminateKnownChild(?int $pid, int|false|null $status): int|false|null
     {
+        return self::cleanupKnownChild(
+            $pid,
+            $status,
+            fn (int $childPid, int $seconds): int|false|null => $this->waitForChildExit($childPid, $seconds),
+            static function (int $childPid, int $signal): bool {
+                return function_exists('posix_kill') && @posix_kill($childPid, $signal);
+            }
+        );
+    }
+
+    /**
+     * This deterministic seam makes cleanup safety testable without creating
+     * synthetic fork failures or signalling any runner process.
+     *
+     * @param callable(int, int): (int|false|null) $waitForExit
+     * @param callable(int, int): bool $sendSignal
+     */
+    private static function cleanupKnownChild(
+        ?int $pid,
+        int|false|null $status,
+        callable $waitForExit,
+        callable $sendSignal
+    ): int|false|null {
+        if ($status !== null || $pid === null || $pid <= 0) {
+            return $status;
+        }
+
+        $status = $waitForExit($pid, self::RACE_GRACEFUL_REAP_TIMEOUT_SECONDS);
         if ($status !== null) {
-            return;
+            return $status;
         }
-        if (function_exists('posix_kill')) {
-            @posix_kill($pid, SIGTERM);
+        $sendSignal($pid, SIGTERM);
+
+        $status = $waitForExit($pid, self::RACE_TERMINATION_REAP_TIMEOUT_SECONDS);
+        if ($status !== null) {
+            return $status;
         }
-        $reaped = $this->waitForChildExit($pid, 2);
-        if ($reaped === null) {
-            pcntl_waitpid($pid, $ignoredStatus);
+        $sendSignal($pid, SIGKILL);
+
+        return $waitForExit($pid, self::RACE_TERMINATION_REAP_TIMEOUT_SECONDS);
+    }
+
+    private static function closeSynchronizationPipe(&$pipe): void
+    {
+        if (is_resource($pipe)) {
+            @fclose($pipe);
         }
+        $pipe = null;
     }
 
     private function assertRaceLocksReleased(int $slotId, int $locationId): void
