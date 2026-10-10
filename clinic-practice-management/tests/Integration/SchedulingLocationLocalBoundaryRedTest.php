@@ -457,7 +457,10 @@ final class SchedulingLocationLocalBoundaryRedTest extends WP_UnitTestCase
 
         // A hold that pre-dates this policy must not be converted into an
         // appointment if its persisted slot later resolves to a repeated time.
-        $patientUserId = $this->makePatientUser();
+        // This OTP-shaped identity deliberately has no Patient or Patient/User
+        // link. Confirm would create both on a valid slot, so it exposes whether
+        // the final locked DST check happens before every identity side effect.
+        [$patientUserId, $mobile] = $this->makeUnlinkedOtpUser();
         $legacyClinicianId = $this->insertClinician('Dr Legacy Hold');
         $legacySlotId = $this->insertSlot($legacyClinicianId, $this->locNewYork, $date, '03:00:00');
         $hold = $svc->hold($patientUserId, $legacyClinicianId, $date, '03:00:00', $legacySlotId);
@@ -468,8 +471,24 @@ final class SchedulingLocationLocalBoundaryRedTest extends WP_UnitTestCase
             $legacySlotId
         ));
 
+        // Snapshot after HOLD_CREATED: the rejected confirm itself must add no
+        // Patient, link, clinical record, audit entry, or retained idem state.
+        $patientsBefore = (int) $wpdb->get_var($wpdb->prepare(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_patients') . ' WHERE clinic_id = %d',
+            $this->clinicId
+        ));
+        $linksBefore = (int) $wpdb->get_var($wpdb->prepare(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_patient_user_links') . ' WHERE wp_user_id = %d',
+            $patientUserId
+        ));
+        $auditsBefore = (int) $wpdb->get_var($wpdb->prepare(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE clinic_id = %d',
+            $this->clinicId
+        ));
+        $idemKey = 'dst-policy-confirm-' . bin2hex(random_bytes(4));
+
         try {
-            $svc->confirm((string) $hold['hold_token'], $patientUserId, null, 'dst-policy-confirm-' . bin2hex(random_bytes(4)));
+            $svc->confirm((string) $hold['hold_token'], $patientUserId, null, $idemKey, 'Legacy', 'Fixture');
             self::fail('A legacy hold for a repeated Location-local wall time must not confirm.');
         } catch (BookingException $e) {
             self::assertSame('CLINIC_VALIDATION_FAILED', $e->errorCode);
@@ -483,6 +502,61 @@ final class SchedulingLocationLocalBoundaryRedTest extends WP_UnitTestCase
             )),
             'Failed confirmation must not create an appointment from an ambiguous legacy hold.'
         );
+        self::assertSame(
+            $patientsBefore,
+            (int) $wpdb->get_var($wpdb->prepare(
+                'SELECT COUNT(*) FROM ' . App::db()->table('cpms_patients') . ' WHERE clinic_id = %d',
+                $this->clinicId
+            )),
+            'Rejected confirm must leave existing unrelated Patients unchanged.'
+        );
+        self::assertSame(
+            0,
+            (int) $wpdb->get_var($wpdb->prepare(
+                'SELECT COUNT(*) FROM ' . App::db()->table('cpms_patients') . ' WHERE clinic_id = %d AND mobile = %s',
+                $this->clinicId,
+                $mobile
+            )),
+            'Rejected confirm must not create the previously unlinked Patient.'
+        );
+        self::assertSame(
+            $linksBefore,
+            (int) $wpdb->get_var($wpdb->prepare(
+                'SELECT COUNT(*) FROM ' . App::db()->table('cpms_patient_user_links') . ' WHERE wp_user_id = %d',
+                $patientUserId
+            )),
+            'Rejected confirm must not create a Patient/User link.'
+        );
+        self::assertSame(
+            $auditsBefore,
+            (int) $wpdb->get_var($wpdb->prepare(
+                'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE clinic_id = %d',
+                $this->clinicId
+            )),
+            'Rejected confirm must not emit Patient or success audit side effects.'
+        );
+        self::assertSame(
+            0,
+            (int) $wpdb->get_var($wpdb->prepare(
+                'SELECT COUNT(*) FROM ' . App::db()->table('cpms_idempotency_keys') . ' WHERE `key` = %s AND clinic_id = %d',
+                $idemKey,
+                $this->clinicId
+            )),
+            'Rejected confirm must release its idempotency reservation.'
+        );
+        $releasedHold = App::db()->fetchRow(
+            'SELECT status FROM ' . App::db()->table('cpms_slot_holds') . ' WHERE token = %s',
+            [(string) $hold['hold_token']]
+        );
+        self::assertIsArray($releasedHold);
+        self::assertSame('released', (string) $releasedHold['status'], 'Rejected confirm preserves established hold release behavior.');
+        $slotCounts = App::db()->fetchRow(
+            'SELECT booked_count, held_count FROM ' . App::db()->table('cpms_schedule_slots') . ' WHERE id = %d',
+            [$legacySlotId]
+        );
+        self::assertIsArray($slotCounts);
+        self::assertSame(0, (int) $slotCounts['booked_count']);
+        self::assertSame(0, (int) $slotCounts['held_count'], 'Rejected confirm releases the prior hold capacity.');
         $legacySlot = App::db()->fetchRow(
             'SELECT slot_date, slot_time FROM ' . App::db()->table('cpms_schedule_slots') . ' WHERE id = %d',
             [$legacySlotId]
@@ -823,6 +897,23 @@ final class SchedulingLocationLocalBoundaryRedTest extends WP_UnitTestCase
         );
 
         return $userId;
+    }
+
+    /**
+     * @return array{0: int, 1: string} user id + OTP-shaped server mobile
+     */
+    private function makeUnlinkedOtpUser(): array
+    {
+        $mobile = '0912' . random_int(1000000, 9999999);
+        $login = 'p6s2_unlinked_' . bin2hex(random_bytes(3));
+        $userId = (int) wp_create_user($login, 'pass-12345', $mobile . '@otp.cpms.local');
+        self::assertGreaterThan(0, $userId, 'fixture: unlinked OTP user must be created');
+        $user = get_userdata($userId);
+        if ($user !== false) {
+            $user->set_role('cpms_patient');
+        }
+
+        return [$userId, $mobile];
     }
 
     // ---------------- Fixture lifecycle ----------------
