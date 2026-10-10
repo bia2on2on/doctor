@@ -202,24 +202,40 @@ final class CpmsDb
      *
      * @return T
      */
-    public function transactional(callable $fn)
-    {
+    private function tx_control( string $sql ): void {
         $profile_start = RequestProfiler::query_start();
-        $this->wpdb->query('/*cpms*/ START TRANSACTION'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $result = $this->wpdb->query( $sql ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         RequestProfiler::query_end( $profile_start );
+        if ( false === $result || '' !== $this->wpdb->last_error ) {
+            $error = '' !== $this->wpdb->last_error ? $this->wpdb->last_error : 'unknown error';
+            throw new RuntimeException( 'transaction control failed (' . $sql . '): ' . $error );
+        }
+    }
+
+    public function transactional( callable $fn ) {
+        $this->tx_control( '/*cpms*/ START TRANSACTION' );
         try {
             $result = $fn();
-            $profile_commit = RequestProfiler::query_start();
-            $this->wpdb->query('/*cpms*/ COMMIT'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-            RequestProfiler::query_end( $profile_commit );
-
-            return $result;
-        } catch (\Throwable $e) {
-            $profile_rollback = RequestProfiler::query_start();
-            $this->wpdb->query('/*cpms*/ ROLLBACK'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-            RequestProfiler::query_end( $profile_rollback );
+        } catch ( \Throwable $e ) {
+            try {
+                $this->tx_control( '/*cpms*/ ROLLBACK' );
+            } catch ( \Throwable $rollback_ex ) {
+                throw new RuntimeException( 'transaction rollback failed: ' . $rollback_ex->getMessage(), 0, $e );
+            }
             throw $e;
         }
+        try {
+            $this->tx_control( '/*cpms*/ COMMIT' );
+        } catch ( \Throwable $commit_ex ) {
+            try {
+                $this->tx_control( '/*cpms*/ ROLLBACK' );
+            } catch ( \Throwable $rollback_ex ) {
+                throw new RuntimeException( 'transaction commit failed and rollback also failed: ' . $rollback_ex->getMessage(), 0, $commit_ex );
+            }
+            throw $commit_ex;
+        }
+
+        return $result;
     }
 
     /**

@@ -53,7 +53,7 @@ return [
         $require_columns = static function ( string $table, array $expect ) use ( $db ): void {
             foreach ( $expect as $column => $spec ) {
                 $row = $db->fetchRow(
-                    'SELECT DATA_TYPE, COLUMN_TYPE, IS_NULLABLE, CHARACTER_MAXIMUM_LENGTH FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND COLUMN_NAME = %s',
+                    'SELECT DATA_TYPE, COLUMN_TYPE, IS_NULLABLE, CHARACTER_MAXIMUM_LENGTH, EXTRA, COLUMN_KEY FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND COLUMN_NAME = %s',
                     [ $table, $column ]
                 );
                 if ( $row === null ) {
@@ -74,6 +74,9 @@ return [
                 if ( isset( $spec['enum_contains'] ) && ! str_contains( strtolower( (string) ( $row['COLUMN_TYPE'] ?? '' ) ), strtolower( (string) $spec['enum_contains'] ) ) ) {
                     throw new \RuntimeException( 'migration 0024: existing table ' . $table . '.' . $column . ' has unexpected enum values' );
                 }
+                if ( 'id' === $column && ! str_contains( strtolower( (string) ( $row['EXTRA'] ?? '' ) ), 'auto_increment' ) ) {
+                    throw new \RuntimeException( 'migration 0024: existing table ' . $table . '.' . $column . ' must be AUTO_INCREMENT' );
+                }
             }
         };
         $require_index   = static function ( string $table, string $index, array $columns, bool $unique ) use ( $db ): void {
@@ -89,13 +92,35 @@ return [
                 if ( $unique && (int) ( $row['NON_UNIQUE'] ?? 1 ) !== 0 ) {
                     throw new \RuntimeException( 'migration 0024: existing table ' . $table . ' index ' . $index . ' must be UNIQUE' );
                 }
+                if ( ! $unique && (int) ( $row['NON_UNIQUE'] ?? 0 ) !== 1 ) {
+                    throw new \RuntimeException( 'migration 0024: existing table ' . $table . ' index ' . $index . ' must be NON-UNIQUE' );
+                }
                 $actual[] = (string) ( $row['COLUMN_NAME'] ?? '' );
             }
             if ( $actual !== $columns ) {
                 throw new \RuntimeException( 'migration 0024: existing table ' . $table . ' index ' . $index . ' must span (' . implode( ', ', $columns ) . ')' );
             }
         };
-        $require_fk      = static function ( string $table, string $constraint, string $column, string $ref_table, string $ref_column ) use ( $db ): void {
+        $require_pk      = static function ( string $table, array $columns ) use ( $db ): void {
+            $rows = $db->fetchAll(
+                'SELECT COLUMN_NAME, NON_UNIQUE FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND INDEX_NAME = %s ORDER BY SEQ_IN_INDEX',
+                [ $table, 'PRIMARY' ]
+            );
+            if ( $rows === [] ) {
+                throw new \RuntimeException( 'migration 0024: existing table ' . $table . ' fails the required schema contract (missing PRIMARY KEY)' );
+            }
+            $actual = [];
+            foreach ( $rows as $row ) {
+                if ( (int) ( $row['NON_UNIQUE'] ?? 1 ) !== 0 ) {
+                    throw new \RuntimeException( 'migration 0024: existing table ' . $table . ' PRIMARY KEY must be UNIQUE' );
+                }
+                $actual[] = (string) ( $row['COLUMN_NAME'] ?? '' );
+            }
+            if ( $actual !== $columns ) {
+                throw new \RuntimeException( 'migration 0024: existing table ' . $table . ' PRIMARY KEY must span (' . implode( ', ', $columns ) . ')' );
+            }
+        };
+        $require_fk      = static function ( string $table, string $constraint, array $columns, string $ref_table, array $ref_columns ) use ( $db ): void {
             $rows = $db->fetchAll(
                 'SELECT kcu.COLUMN_NAME, kcu.REFERENCED_TABLE_NAME, kcu.REFERENCED_COLUMN_NAME, rc.DELETE_RULE' .
                 ' FROM information_schema.KEY_COLUMN_USAGE kcu' .
@@ -107,14 +132,18 @@ return [
             if ( $rows === [] ) {
                 throw new \RuntimeException( 'migration 0024: existing table ' . $table . ' fails the required schema contract (missing foreign key ' . $constraint . ')' );
             }
-            $first = $rows[0];
-            if (
-                (string) ( $first['COLUMN_NAME'] ?? '' ) !== $column
-                || (string) ( $first['REFERENCED_TABLE_NAME'] ?? '' ) !== $ref_table
-                || (string) ( $first['REFERENCED_COLUMN_NAME'] ?? '' ) !== $ref_column
-                || strtoupper( (string) ( $first['DELETE_RULE'] ?? '' ) ) !== 'CASCADE'
-            ) {
-                throw new \RuntimeException( 'migration 0024: existing table ' . $table . ' foreign key ' . $constraint . ' must reference ' . $ref_table . '(' . $ref_column . ') ON DELETE CASCADE' );
+            if ( count( $rows ) !== count( $columns ) || count( $rows ) !== count( $ref_columns ) ) {
+                throw new \RuntimeException( 'migration 0024: existing table ' . $table . ' foreign key ' . $constraint . ' must reference ' . $ref_table . '(' . implode( ', ', $ref_columns ) . ') ON DELETE CASCADE' );
+            }
+            foreach ( $rows as $idx => $row ) {
+                if (
+                    (string) ( $row['COLUMN_NAME'] ?? '' ) !== (string) $columns[ $idx ]
+                    || (string) ( $row['REFERENCED_TABLE_NAME'] ?? '' ) !== $ref_table
+                    || (string) ( $row['REFERENCED_COLUMN_NAME'] ?? '' ) !== (string) $ref_columns[ $idx ]
+                    || strtoupper( (string) ( $row['DELETE_RULE'] ?? '' ) ) !== 'CASCADE'
+                ) {
+                    throw new \RuntimeException( 'migration 0024: existing table ' . $table . ' foreign key ' . $constraint . ' must reference ' . $ref_table . '(' . implode( ', ', $ref_columns ) . ') ON DELETE CASCADE' );
+                }
             }
         };
 
@@ -131,9 +160,10 @@ return [
                     'updated_at' => [ 'type' => 'datetime' ],
                 ]
             );
+            $require_pk( $defs, [ 'id' ] );
             $require_index( $defs, 'u_custom_role', [ 'clinic_id', 'role_key' ], true );
             $require_index( $defs, 'idx_custom_role_status', [ 'clinic_id', 'status' ], false );
-            $require_fk( $defs, 'fk_customrole_clinic', 'clinic_id', $clinics, 'id' );
+            $require_fk( $defs, 'fk_customrole_clinic', [ 'clinic_id' ], $clinics, [ 'id' ] );
         }
 
         if ( $caps_exists ) {
@@ -146,8 +176,9 @@ return [
                     'created_at'  => [ 'type' => 'datetime' ],
                 ]
             );
+            $require_pk( $caps, [ 'id' ] );
             $require_index( $caps, 'u_custom_role_cap', [ 'role_def_id', 'capability' ], true );
-            $require_fk( $caps, 'fk_customrolecap_def', 'role_def_id', $defs, 'id' );
+            $require_fk( $caps, 'fk_customrolecap_def', [ 'role_def_id' ], $defs, [ 'id' ] );
         }
 
         if ( ! $defs_exists ) {

@@ -59,32 +59,54 @@ App::migrations()->migrate();
  * تست دست‌نخورده می‌ماند و Production این filter را ندارد.
  */
 $GLOBALS['__cpms_sp_stack'] = [];
-tests_add_filter('query', static function ($query) {
-    $q = trim((string) $query);
-    if (!str_starts_with($q, '/*cpms*/')) {
+tests_add_filter(
+    'query',
+    static function ( $query ) {
+        $q = trim( (string) $query );
+        // Real (non-TEMPORARY) DDL performs an implicit COMMIT that ends the
+        // enclosing transaction and destroys its savepoints. The WP test harness
+        // normally hides CREATE/DROP TABLE behind CREATE TEMPORARY TABLE /
+        // DROP TEMPORARY TABLE (no implicit commit). When tests use
+        // withRealTables() the temporary rewrite is suspended and real DDL is
+        // executed inside transactional() — without clearing here the following
+        // RELEASE SAVEPOINT would target a savepoint that no longer exists.
+        // Detecting real DDL and clearing the stack turns the next COMMIT /
+        // ROLLBACK into a harmless no-op (SELECT 1) instead of a real
+        // COMMIT/ROLLBACK that would break the outer WP test transaction.
+        if ( preg_match( '/\A\s*(CREATE|DROP|ALTER|TRUNCATE|RENAME)\s+/i', $q ) ) {
+            $is_temporary = (bool) preg_match( '/\A\s*(CREATE|DROP)\s+TEMPORARY\s+/i', $q );
+            if ( ! $is_temporary ) {
+                $GLOBALS['__cpms_sp_stack'] = [];
+
+                return $query;
+            }
+        }
+        if ( ! str_starts_with( $q, '/*cpms*/' ) ) {
+            return $query;
+        }
+        $verb  = trim( substr( $q, strlen( '/*cpms*/' ) ) );
+        $stack = &$GLOBALS['__cpms_sp_stack'];
+        if ( 'START TRANSACTION' === $verb ) {
+            $name = 'cpms_sp_' . count( $stack );
+            $stack[] = $name;
+
+            return 'SAVEPOINT ' . $name;
+        }
+        if ( 'COMMIT' === $verb ) {
+            $name = array_pop( $stack );
+
+            return null === $name ? 'SELECT 1' : 'RELEASE SAVEPOINT ' . $name;
+        }
+        if ( 'ROLLBACK' === $verb ) {
+            $name = array_pop( $stack );
+
+            return null === $name ? 'SELECT 1' : 'ROLLBACK TO SAVEPOINT ' . $name;
+        }
+
         return $query;
-    }
-    $verb = trim(substr($q, strlen('/*cpms*/')));
-    $stack = &$GLOBALS['__cpms_sp_stack'];
-    if ($verb === 'START TRANSACTION') {
-        $name = 'cpms_sp_' . count($stack);
-        $stack[] = $name;
-
-        return 'SAVEPOINT ' . $name;
-    }
-    if ($verb === 'COMMIT') {
-        $name = array_pop($stack);
-
-        return $name === null ? $verb : 'RELEASE SAVEPOINT ' . $name;
-    }
-    if ($verb === 'ROLLBACK') {
-        $name = array_pop($stack);
-
-        return $name === null ? $verb : 'ROLLBACK TO SAVEPOINT ' . $name;
-    }
-
-    return $query;
-});
+    },
+    20
+);
 
 /*
  * ── Fixture عضویت (C6 — Trusted REST Context) ─────────────────────────────

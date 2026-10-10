@@ -634,7 +634,7 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
         // Phase 2 — FK points at the right table but does not cascade.
         $this->assertMalformedSchemaRejected(
             'fk_customrolecap_def wrong delete rule',
-            function () use ($seedDef, $defs): void {
+            function () use ($seedDef, $caps, $defs): void {
                 $defId = $seedDef();
                 $this->assertSqlSucceeds(
                     $this->capsDdl(
