@@ -681,7 +681,7 @@ final class BookingService
                     if ( $confirmed_patient === null ) {
                         // N-1: create the new Patient inside the same protected
                         // mutation boundary, after the final Slot validation.
-                        $confirmed_patient = $this->createMinimalPatient( $hold_clinic_id, $mobile, $wp_user_id, $new_patient_names );
+                        $confirmed_patient   = $this->createMinimalPatient( $hold_clinic_id, $mobile, $wp_user_id, $new_patient_names );
                         $patient_was_created = true;
                     }
                     $patient_id = (int) $confirmed_patient['id'];
@@ -727,7 +727,7 @@ final class BookingService
                     $this->machineCheck( 'new', 'book_final', 'patient' );
 
                     $this->db->query(
-                        'UPDATE ' . $this->db->table('cpms_slot_holds') . " SET status = 'converted' WHERE id = %d AND status = 'active'",
+                        'UPDATE ' . $this->db->table( 'cpms_slot_holds' ) . " SET status = 'converted' WHERE id = %d AND status = 'active'",
                         [ $hold_id ]
                     );
 
@@ -789,8 +789,8 @@ final class BookingService
             'booking.confirmed',
             [
                 'appointment_id' => $appt_id,
-                'slot_id' => (int) $hold['slot_id'],
-                'wp_user_id' => (int) $hold['holder_wp_user_id'],
+                'slot_id'        => (int) $hold['slot_id'],
+                'wp_user_id'     => (int) $hold['holder_wp_user_id'],
             ]
         );
 
@@ -1095,7 +1095,7 @@ final class BookingService
      */
     public function createByStaff(int $actorUserId, int $patientId, int $clinicianId, string $slotDate, string $slotTime, ?string $reason, ?int $slotId = null): array
     {
-        $staff_input = compact(
+        $staff_input       = compact(
             'actorUserId',
             'patientId',
             'clinicianId',
@@ -1104,13 +1104,13 @@ final class BookingService
             'reason',
             'slotId'
         );
-        $actor_user_id      = (int) $staff_input['actorUserId'];
-        $patient_id         = (int) $staff_input['patientId'];
-        $clinician_id       = (int) $staff_input['clinicianId'];
-        $slot_date          = (string) $staff_input['slotDate'];
-        $slot_time          = (string) $staff_input['slotTime'];
-        $reason_value       = $staff_input['reason'];
-        $requested_slot_id  = $staff_input['slotId'] === null ? null : (int) $staff_input['slotId'];
+        $actor_user_id     = (int) $staff_input['actorUserId'];
+        $patient_id        = (int) $staff_input['patientId'];
+        $clinician_id      = (int) $staff_input['clinicianId'];
+        $slot_date         = (string) $staff_input['slotDate'];
+        $slot_time         = (string) $staff_input['slotTime'];
+        $reason_value      = $staff_input['reason'];
+        $requested_slot_id = $staff_input['slotId'] === null ? null : (int) $staff_input['slotId'];
 
         $this->assertLicense( LicenseGate::OP_APPOINTMENT_BOOK );
 
@@ -1151,7 +1151,7 @@ final class BookingService
             (int) $resolved_slot['location_id'],
             $trusted_clinic_id
         );
-        $settings = $this->settingsFor( $trusted_clinic_id );
+        $settings    = $this->settingsFor( $trusted_clinic_id );
         $this->assertWindowWithTimezone( $slot_date, $slot_time, $location_tz, 0, $settings );
 
         try {
@@ -1522,8 +1522,7 @@ final class BookingService
      * Lock the exact Location row after the Slot lock before the final staff
      * write validation. Location writers hold only their Location row.
      */
-    private function resolve_location_timezone_for_update( int $location_id, int $clinic_id ): \DateTimeZone
-    {
+    private function resolve_location_timezone_for_update( int $location_id, int $clinic_id ): \DateTimeZone {
         if ( $location_id <= 0 || $clinic_id <= 0 ) {
             throw BookingException::of( 'CLINIC_VALIDATION_FAILED', 'شناسه Location نامعتبر است' );
         }
