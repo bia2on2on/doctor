@@ -76,6 +76,7 @@ namespace ClinicCore\Rest;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Booking\BookingException;
+use ClinicCore\Domain\Booking\BookingWindow;
 use ClinicCore\Domain\Time\Jalali;
 use ClinicCore\Domain\Visits\VisitException;
 use ClinicCore\Infrastructure\Repository\AppointmentRepository;
@@ -551,11 +552,14 @@ final class ReceptionPortalController extends RestBase {
 		if ( null === $resolved['location_id'] ) {
 			return $this->success( [ 'appointments' => [] ] );
 		}
-		$clinic_id   = (int) $resolved['clinic_id'];
-		$location_id = (int) $resolved['location_id'];
-		$timezone    = $this->operational_timezone( (string) ( $resolved['timezone'] ?? '' ), $location_id, $clinic_id );
-		$today       = ( new \DateTimeImmutable( 'now', new \DateTimeZone( $timezone ) ) )->format( 'Y-m-d' );
-		$through     = $this->plus_days( $today, $this->booking_horizon_days( $clinic_id ) );
+		$clinic_id     = (int) $resolved['clinic_id'];
+		$location_id   = (int) $resolved['location_id'];
+		$location_zone = $this->operational_timezone( (string) ( $resolved['timezone'] ?? '' ), $location_id, $clinic_id );
+		if ( null === $location_zone ) {
+			return $this->success( [ 'appointments' => [] ] );
+		}
+		$today   = ( new \DateTimeImmutable( 'now', new \DateTimeZone( 'UTC' ) ) )->setTimezone( $location_zone )->format( 'Y-m-d' );
+		$through = $this->plus_days( $today, $this->booking_horizon_days( $clinic_id ) );
 		return $this->success( [ 'appointments' => $this->appointments->list_for_reception_upcoming( $clinic_id, $location_id, $today, $through ) ] );
 	}
 
@@ -1028,9 +1032,14 @@ final class ReceptionPortalController extends RestBase {
 			return $this->success( $this->empty_slot_day( $clinician_id ) );
 		}
 
-		$clinic_id   = (int) $resolved['clinic_id'];
-		$location_id = (int) $resolved['location_id'];
-		$timezone    = $this->operational_timezone( (string) ( $resolved['timezone'] ?? '' ), $location_id, $clinic_id );
+		$clinic_id     = (int) $resolved['clinic_id'];
+		$location_id   = (int) $resolved['location_id'];
+		$location_zone = $this->operational_timezone( (string) ( $resolved['timezone'] ?? '' ), $location_id, $clinic_id );
+		if ( null === $location_zone ) {
+			// Same bounded empty read as 0 eligible Locations; an unusable
+			// persisted timezone must never select UTC or another Location.
+			return $this->success( $this->empty_slot_day( $clinician_id ) );
+		}
 
 		// Doctor selector: eligible for the trusted Clinic AND the trusted
 		// Location through the delivered Slice 4 contract; home-Clinic metadata
@@ -1040,7 +1049,7 @@ final class ReceptionPortalController extends RestBase {
 			return $this->error( 'CLINIC_NOT_FOUND', 404, 'پزشک یافت نشد' );
 		}
 
-		$now_local        = ( new \DateTimeImmutable( 'now', new \DateTimeZone( 'UTC' ) ) )->setTimezone( new \DateTimeZone( $timezone ) );
+		$now_local        = ( new \DateTimeImmutable( 'now', new \DateTimeZone( 'UTC' ) ) )->setTimezone( $location_zone );
 		$operational_date = $now_local->format( 'Y-m-d' );
 		$horizon_days     = $this->booking_horizon_days( $clinic_id );
 		$horizon_end      = $this->plus_days( $operational_date, $horizon_days );
@@ -1067,6 +1076,9 @@ final class ReceptionPortalController extends RestBase {
 		$local_now = $now_local->format( 'H:i:s' );
 		foreach ( $rows as $row ) {
 			$time = substr( (string) $row['slot_time'], 0, 8 );
+			if ( null === BookingWindow::slotUtcInstant( $date, $time, $location_zone ) ) {
+				continue;
+			}
 			// On the operational day an already-started slot is never offered:
 			// the delegated staff create would only reject it, so the read stays
 			// honest about what reception can book right now.
@@ -1086,7 +1098,7 @@ final class ReceptionPortalController extends RestBase {
 				'clinic_id'        => $clinic_id,
 				'location_id'      => $location_id,
 				'location_name'    => $resolved['location_name'],
-				'timezone'         => $timezone,
+				'timezone'         => $location_zone->getName(),
 				'clinician_id'     => $clinician_id,
 				'clinician_name'   => (string) ( $clinicians[0]['name'] ?? '' ),
 				'date'             => $date,
@@ -1200,8 +1212,10 @@ final class ReceptionPortalController extends RestBase {
 			return $this->error( 'CLINIC_INTERNAL_ERROR', 500, 'ثبت نوبت انجام نشد' );
 		}
 
-		$timezone         = $this->operational_timezone( (string) ( $resolved['timezone'] ?? '' ), $location_id, $clinic_id );
-		$operational_date = ( new \DateTimeImmutable( 'now', new \DateTimeZone( 'UTC' ) ) )->setTimezone( new \DateTimeZone( $timezone ) )->format( 'Y-m-d' );
+		$location_zone    = $this->operational_timezone( (string) ( $resolved['timezone'] ?? '' ), $location_id, $clinic_id );
+		$operational_date = $location_zone instanceof \DateTimeZone
+			? ( new \DateTimeImmutable( 'now', new \DateTimeZone( 'UTC' ) ) )->setTimezone( $location_zone )->format( 'Y-m-d' )
+			: null;
 
 		return $this->success(
 			[
@@ -1519,8 +1533,10 @@ final class ReceptionPortalController extends RestBase {
 			return $this->error( 'CLINIC_INTERNAL_ERROR', 500, 'جابه‌جایی نوبت انجام نشد' );
 		}
 
-		$timezone         = $this->operational_timezone( (string) ( $resolved['timezone'] ?? '' ), $location_id, $clinic_id );
-		$operational_date = ( new \DateTimeImmutable( 'now', new \DateTimeZone( 'UTC' ) ) )->setTimezone( new \DateTimeZone( $timezone ) )->format( 'Y-m-d' );
+		$location_zone    = $this->operational_timezone( (string) ( $resolved['timezone'] ?? '' ), $location_id, $clinic_id );
+		$operational_date = $location_zone instanceof \DateTimeZone
+			? ( new \DateTimeImmutable( 'now', new \DateTimeZone( 'UTC' ) ) )->setTimezone( $location_zone )->format( 'Y-m-d' )
+			: null;
 		$new_date         = (string) ( $view['date'] ?? $slot_date );
 
 		// Bounded reception response: the replacement appointment identity/status
@@ -1571,24 +1587,17 @@ final class ReceptionPortalController extends RestBase {
 	}
 
 	/**
-	 * Operational timezone of the trusted Location. Mirrors the established
-	 * operational-day contract: an unresolved/invalid persisted timezone falls
-	 * back to the UTC frame and is recorded — never silently presented as the
-	 * Location truth.
+	 * Operational timezone of the trusted Location. An unresolved/invalid
+	 * persisted value is never substituted with UTC or another authority.
 	 */
-	private function operational_timezone( string $timezone, int $location_id, int $clinic_id ): string {
+	private function operational_timezone( string $timezone, int $location_id, int $clinic_id ): ?\DateTimeZone {
 		$name = trim( $timezone );
-		$zone = null;
-		if ( '' !== $name ) {
+		if ( '' !== $name && in_array( $name, timezone_identifiers_list(), true ) ) {
 			try {
-				$zone = new \DateTimeZone( $name );
+				return new \DateTimeZone( $name );
 			} catch ( \Throwable $e ) {
 				unset( $e );
-				$zone = null;
 			}
-		}
-		if ( null !== $zone ) {
-			return $name;
 		}
 
 		App::op()->warning(
@@ -1599,7 +1608,7 @@ final class ReceptionPortalController extends RestBase {
 			]
 		);
 
-		return 'UTC';
+		return null;
 	}
 
 	/**

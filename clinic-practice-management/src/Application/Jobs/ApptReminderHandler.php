@@ -6,6 +6,7 @@ namespace ClinicCore\Application\Jobs;
 
 use ClinicCore\Application\Notifications\NotificationService;
 use ClinicCore\Application\Notifications\SmsService;
+use ClinicCore\Domain\Booking\BookingWindow;
 use ClinicCore\Domain\Notifications\NotificationEvents;
 use ClinicCore\Domain\Sms\SmsEvents;
 use ClinicCore\Domain\Time\Jalali;
@@ -466,10 +467,29 @@ final class ApptReminderHandler
         }
 
         try {
-            $locationZone = new DateTimeZone($timezone);
-            $localReference = $referenceUtc->setTimezone($locationZone);
-            $today = $localReference->format('Y-m-d');
-            $tomorrow = $localReference->modify('+1 day')->format('Y-m-d');
+            $location_zone = new DateTimeZone( $timezone );
+            if (
+                BookingWindow::slotUtcInstant(
+                    (string) ( $row['slot_date'] ?? '' ),
+                    (string) ( $row['slot_time'] ?? '' ),
+                    $location_zone
+                ) === null
+            ) {
+                $this->op->warning(
+                    'appt.reminder_slot_time_unresolvable',
+                    [
+                        'appointment_id' => (int) ( $row['id'] ?? 0 ),
+                        'location_id'    => (int) ( $row['location_id'] ?? 0 ),
+                    ]
+                );
+
+                return false;
+            }
+            $local_reference = $referenceUtc->setTimezone( $location_zone ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established method parameter.
+
+            $today = $local_reference->format( 'Y-m-d' );
+
+            $tomorrow = $local_reference->modify( '+1 day' )->format( 'Y-m-d' );
 
             return (string) $row['slot_date'] === $today || (string) $row['slot_date'] === $tomorrow;
         } catch (\Exception) {

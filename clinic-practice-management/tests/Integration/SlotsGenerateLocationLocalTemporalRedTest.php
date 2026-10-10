@@ -323,7 +323,7 @@ final class SlotsGenerateLocationLocalTemporalRedTest extends WP_UnitTestCase
      *
      * @return array{0: DateTimeImmutable, 1: DateTimeImmutable}  reference UTC instants before/after
      */
-    private function runProductionSweep(): array
+    private function runProductionSweep(array $payload = []): array
     {
         global $wpdb;
         $db = App::db();
@@ -335,7 +335,7 @@ final class SlotsGenerateLocationLocalTemporalRedTest extends WP_UnitTestCase
 
         $queue = App::jobs();
         $before = new DateTimeImmutable('now', new DateTimeZone('UTC'));
-        $jobId = $queue->enqueue('slots.generate', [], $before, 3, 1);
+        $jobId = $queue->enqueue('slots.generate', $payload, $before, 3, 1);
         self::assertGreaterThan(0, $jobId, 'job enqueued');
 
         $tickResult = App::runTick(20);
@@ -465,5 +465,78 @@ final class SlotsGenerateLocationLocalTemporalRedTest extends WP_UnitTestCase
                 . 'default timezone changed. php=' . self::TZ_BEHIND . ' -> [' . implode(',', $runBehindBehind) . '] '
                 . 'php=' . self::TZ_AHEAD . ' -> [' . implode(',', $runAheadBehind) . ']'
         );
+    }
+
+    public function testGenerationExcludesRepeatedNewYorkWallTimesButKeepsNeighbors(): void
+    {
+        global $wpdb;
+        $db = App::db();
+        $timezone = new DateTimeZone('America/New_York');
+        self::assertContains('America/New_York', timezone_identifiers_list());
+
+        $reference = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+        $transitions = $timezone->getTransitions($reference->modify('+1 day')->getTimestamp(), $reference->modify('+370 days')->getTimestamp());
+        self::assertIsArray($transitions);
+        $fallBack = null;
+        for ($i = 1, $count = count($transitions); $i < $count; ++$i) {
+            if ((int) $transitions[$i]['offset'] < (int) $transitions[$i - 1]['offset']) {
+                $fallBack = (new DateTimeImmutable('@' . (int) $transitions[$i]['ts']))->setTimezone($timezone);
+                break;
+            }
+        }
+        if (!$fallBack instanceof DateTimeImmutable) {
+            self::fail('fixture: New York must have an upcoming fall-back transition');
+        }
+
+        $date = $fallBack->format('Y-m-d');
+        $anchor = new DateTimeImmutable($reference->setTimezone($timezone)->format('Y-m-d') . ' 00:00:00', new DateTimeZone('UTC'));
+        $target = new DateTimeImmutable($date . ' 00:00:00', new DateTimeZone('UTC'));
+        $horizon = (int) (($target->getTimestamp() - $anchor->getTimestamp()) / 86400);
+        self::assertGreaterThan(0, $horizon, 'fixture: fall-back date must be after the Location-local current day');
+        self::assertLessThanOrEqual(365, $horizon, 'fixture: upcoming fall-back must fit the supported generation horizon');
+
+        $now = $db->nowUtcSql();
+        $suffix = bin2hex(random_bytes(4));
+        $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $db->table('cpms_locations') . ' (clinic_id, name, slug, timezone, is_primary, is_active, created_at, updated_at)'
+            . ' VALUES (%d, %s, %s, %s, 0, 1, %s, %s)',
+            $this->clinicId,
+            'DST Location',
+            'dst-location-' . $suffix,
+            'America/New_York',
+            $now,
+            $now
+        ));
+        $locationId = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $locationId, 'fixture: DST Location persisted');
+
+        // PHP w=0..6 maps to the product's Iranian weekday 1..6,0.
+        $weekday = ((int) $target->format('w') + 1) % 7;
+        $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $db->table('cpms_schedule') . '
+                (clinic_id, location_id, clinician_id, day_of_week, start_time, end_time,
+                 appointment_duration_min, slot_capacity, is_active, created_at, updated_at)
+             VALUES (%d, %d, %d, %d, %s, %s, 30, 1, 1, %s, %s)',
+            $this->clinicId,
+            $locationId,
+            $this->clinicianId,
+            $weekday,
+            '00:30:00',
+            '03:00:00',
+            $now,
+            $now
+        ));
+
+        $this->runProductionSweep(['horizon_days' => $horizon]);
+        $times = $wpdb->get_col($wpdb->prepare(
+            'SELECT slot_time FROM ' . $db->table('cpms_schedule_slots')
+                . ' WHERE clinician_id = %d AND location_id = %d AND slot_date = %s ORDER BY slot_time',
+            $this->clinicianId,
+            $locationId,
+            $date
+        ));
+        $times = array_values(array_map('strval', (array) $times));
+
+        self::assertSame(['00:30:00', '02:00:00', '02:30:00'], $times);
     }
 }

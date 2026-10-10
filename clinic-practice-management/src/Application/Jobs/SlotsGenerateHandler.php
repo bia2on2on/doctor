@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Application\Jobs;
 
+use ClinicCore\Domain\Booking\BookingWindow;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Logging\OpLogger;
 use ClinicCore\Settings\SettingsFactory;
@@ -351,7 +352,12 @@ final class SlotsGenerateHandler
             [$clinician['clinician_id'], $clinicId, $date, $locationId]
         );
 
-        return SlotGenerator::generateDay(
+        $location_tz = $this->locationTimezone( (string) ( $clinician['location_timezone'] ?? '' ) );
+        if ( null === $location_tz ) {
+            throw new DomainException( 'Location timezone is invalid.' );
+        }
+
+        $slots = SlotGenerator::generateDay(
             [
                 'start' => substr((string) $clinician['start_time'], 0, 5),
                 'end' => substr((string) $clinician['end_time'], 0, 5),
@@ -364,6 +370,13 @@ final class SlotsGenerateHandler
                 'start' => $e['start_time'] !== null ? substr((string) $e['start_time'], 0, 5) : null,
                 'end' => $e['end_time'] !== null ? substr((string) $e['end_time'], 0, 5) : null,
             ], $exceptions)
+        );
+
+        return array_values(
+            array_filter(
+                $slots,
+                static fn ( string $time ): bool => null !== BookingWindow::slotUtcInstant( $date, $time, $location_tz )
+            )
         );
     }
 }

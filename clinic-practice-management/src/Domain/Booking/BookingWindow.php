@@ -158,7 +158,7 @@ final class BookingWindow
     /**
      * تبدیل wall-clock محلی Location به لحظه UTC (Two-Clock rule).
      *
-     * @return DateTimeImmutable|null null = فرمت نامعتبر
+     * @return DateTimeImmutable|null null = فرمت نامعتبر یا wall-clock ناموجود/تکراری
      */
     public static function slotUtcInstant(string $slotDate, string $slotTime, DateTimeZone $locationTz): ?DateTimeImmutable
     {
@@ -180,7 +180,54 @@ final class BookingWindow
         if ($local->format('Y-m-d H:i:s') !== $normalized) {
             return null;
         }
+        if ( self::is_repeated_local_wall_time( $normalized, $locationTz ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established public helper parameter.
+            return null;
+        }
 
         return $local->setTimezone(new DateTimeZone('UTC'));
+    }
+
+    /**
+     * DATE+TIME storage has no offset/fold field. When an IANA transition moves
+     * the clock backward, reject the repeated interval rather than inheriting
+     * PHP's implicit first/second-occurrence selection.
+     */
+    private static function is_repeated_local_wall_time( string $normalized, DateTimeZone $location_tz ): bool {
+        $wall_clock = DateTimeImmutable::createFromFormat(
+            'Y-m-d H:i:s',
+            $normalized,
+            new DateTimeZone( 'UTC' )
+        );
+        if ( false === $wall_clock || $wall_clock->format( 'Y-m-d H:i:s' ) !== $normalized ) {
+            return true;
+        }
+
+        $wall_timestamp = $wall_clock->getTimestamp();
+        // A transition can be projected across the UTC day boundary by an IANA
+        // offset, so inspect a deliberately wider UTC window around the local day.
+        $transitions = $location_tz->getTransitions( $wall_timestamp - 172800, $wall_timestamp + 172800 );
+        if ( false === $transitions ) {
+            return true;
+        }
+
+        for ( $i = 1, $count = count( $transitions ); $i < $count; ++$i ) {
+            $before_offset = (int) $transitions[ $i - 1 ]['offset'];
+
+            $after_offset = (int) $transitions[ $i ]['offset'];
+            if ( $after_offset >= $before_offset ) {
+                continue;
+            }
+
+            $transition_timestamp = (int) $transitions[ $i ]['ts'];
+
+            $repeated_start = $transition_timestamp + $after_offset;
+
+            $repeated_end = $transition_timestamp + $before_offset;
+            if ( $wall_timestamp >= $repeated_start && $wall_timestamp < $repeated_end ) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

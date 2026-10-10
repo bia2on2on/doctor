@@ -201,6 +201,63 @@ final class Phase11ReceptionAppointmentCreateRedTest extends WP_UnitTestCase
         self::assertSame(0, $this->queueCount($fx['clinic']), 'A1: NO queue entry created');
     }
 
+    public function testA1_ReceptionSlotsFailClosedForInvalidOrMissingLocationTimezone(): void
+    {
+        global $wpdb;
+        $fx = $this->stage('a1_timezone');
+        $this->seedMembership($fx['secretary'], $fx['clinic'], 'cpms_secretary');
+        wp_set_current_user($fx['secretary']);
+
+        $tehran = self::TZ;
+        $tokyo = 'Asia/Tokyo';
+        $now = App::db()->nowUtcSql();
+        self::assertNotFalse(
+            $wpdb->update(
+                App::db()->table('cpms_locations'),
+                ['timezone' => $tokyo, 'updated_at' => $now],
+                ['id' => $fx['locB']]
+            ),
+            'fixture: second trusted Location uses a different valid IANA timezone'
+        );
+
+        $dateA = $this->localDate($tehran);
+        $dateB = $this->localDate($tokyo);
+        // c2 is eligible at both persisted Locations, making an unsafe first-
+        // Location fallback observable rather than hidden by clinician scope.
+        $slotA = $this->insertSlot($fx['clinic'], $fx['locA'], $fx['c2'], $dateA, $this->futureTime($tehran));
+        $slotB = $this->insertSlot($fx['clinic'], $fx['locB'], $fx['c2'], $dateB, $this->futureTime($tokyo));
+
+        $validA = $this->slots($fx, $fx['c2'], $fx['locA'], $dateA);
+        self::assertSame(200, $validA->get_status(), 'valid Location A timezone remains readable');
+        self::assertContains($slotA, $this->slotIds($validA));
+        self::assertNotContains($slotB, $this->slotIds($validA));
+
+        $validB = $this->slots($fx, $fx['c2'], $fx['locB'], $dateB);
+        self::assertSame(200, $validB->get_status(), 'valid Location B timezone remains readable');
+        self::assertContains($slotB, $this->slotIds($validB));
+        self::assertNotContains($slotA, $this->slotIds($validB));
+
+        self::assertNotFalse(
+            $wpdb->update(App::db()->table('cpms_locations'), ['timezone' => 'Invalid/Reception-TZ'], ['id' => $fx['locA']]),
+            'fixture: persisted invalid timezone'
+        );
+        $invalid = $this->slots($fx, $fx['c2'], $fx['locA'], $dateA);
+        self::assertSame(200, $invalid->get_status(), 'invalid timezone retains the established empty read envelope');
+        self::assertSame([], $this->slotIds($invalid), 'invalid Location timezone must not advertise its own or another Location\'s slots');
+
+        self::assertNotFalse(
+            $wpdb->update(App::db()->table('cpms_locations'), ['timezone' => ''], ['id' => $fx['locA']]),
+            'fixture: persisted missing timezone'
+        );
+        $missing = $this->slots($fx, $fx['c2'], $fx['locA'], $dateA);
+        self::assertSame(200, $missing->get_status(), 'missing timezone retains the established empty read envelope');
+        self::assertSame([], $this->slotIds($missing), 'missing Location timezone must fail closed without UTC, Clinic, or first-Location fallback');
+
+        $validBAfterInvalidA = $this->slots($fx, $fx['c2'], $fx['locB'], $dateB);
+        self::assertSame(200, $validBAfterInvalidA->get_status());
+        self::assertContains($slotB, $this->slotIds($validBAfterInvalidA), 'a different valid Location remains independently operational');
+    }
+
     // ============ A2 — Access ============
 
     public function testA2_AccessRoleCapabilityNonceMembership(): void
