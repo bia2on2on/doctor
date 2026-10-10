@@ -552,8 +552,8 @@ final class ReceptionPortalController extends RestBase {
 		if ( null === $resolved['location_id'] ) {
 			return $this->success( [ 'appointments' => [] ] );
 		}
-		$clinic_id    = (int) $resolved['clinic_id'];
-		$location_id  = (int) $resolved['location_id'];
+		$clinic_id     = (int) $resolved['clinic_id'];
+		$location_id   = (int) $resolved['location_id'];
 		$location_zone = $this->operational_timezone( (string) ( $resolved['timezone'] ?? '' ), $location_id, $clinic_id );
 		if ( null === $location_zone ) {
 			return $this->success( [ 'appointments' => [] ] );
@@ -1032,8 +1032,8 @@ final class ReceptionPortalController extends RestBase {
 			return $this->success( $this->empty_slot_day( $clinician_id ) );
 		}
 
-		$clinic_id    = (int) $resolved['clinic_id'];
-		$location_id  = (int) $resolved['location_id'];
+		$clinic_id     = (int) $resolved['clinic_id'];
+		$location_id   = (int) $resolved['location_id'];
 		$location_zone = $this->operational_timezone( (string) ( $resolved['timezone'] ?? '' ), $location_id, $clinic_id );
 		if ( null === $location_zone ) {
 			// Same bounded empty read as 0 eligible Locations; an unusable
@@ -1048,7 +1048,6 @@ final class ReceptionPortalController extends RestBase {
 		if ( [] === $clinicians ) {
 			return $this->error( 'CLINIC_NOT_FOUND', 404, 'پزشک یافت نشد' );
 		}
-
 
 		$now_local        = ( new \DateTimeImmutable( 'now', new \DateTimeZone( 'UTC' ) ) )->setTimezone( $location_zone );
 		$operational_date = $now_local->format( 'Y-m-d' );
@@ -1213,7 +1212,7 @@ final class ReceptionPortalController extends RestBase {
 			return $this->error( 'CLINIC_INTERNAL_ERROR', 500, 'ثبت نوبت انجام نشد' );
 		}
 
-		$location_zone = $this->operational_timezone( (string) ( $resolved['timezone'] ?? '' ), $location_id, $clinic_id );
+		$location_zone    = $this->operational_timezone( (string) ( $resolved['timezone'] ?? '' ), $location_id, $clinic_id );
 		$operational_date = $location_zone instanceof \DateTimeZone
 			? ( new \DateTimeImmutable( 'now', new \DateTimeZone( 'UTC' ) ) )->setTimezone( $location_zone )->format( 'Y-m-d' )
 			: null;
@@ -1534,7 +1533,7 @@ final class ReceptionPortalController extends RestBase {
 			return $this->error( 'CLINIC_INTERNAL_ERROR', 500, 'جابه‌جایی نوبت انجام نشد' );
 		}
 
-		$location_zone = $this->operational_timezone( (string) ( $resolved['timezone'] ?? '' ), $location_id, $clinic_id );
+		$location_zone    = $this->operational_timezone( (string) ( $resolved['timezone'] ?? '' ), $location_id, $clinic_id );
 		$operational_date = $location_zone instanceof \DateTimeZone
 			? ( new \DateTimeImmutable( 'now', new \DateTimeZone( 'UTC' ) ) )->setTimezone( $location_zone )->format( 'Y-m-d' )
 			: null;
