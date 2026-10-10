@@ -301,7 +301,7 @@ final class BookingService
             [$today, $nowTime] = $localNowCache[$tzName];
             $date = (string) $row['slot_date'];
             $time = substr((string) $row['slot_time'], 0, 8);
-            if (BookingWindow::slotUtcInstant($date, $time, $tz) === null) {
+            if ( BookingWindow::slotUtcInstant( $date, $time, $tz ) === null ) {
                 continue; // nonexistent/repeated Location-local wall time: never offer it
             }
             if ($date > $today || ($date === $today && $time > $nowTime)) {
@@ -666,7 +666,7 @@ final class BookingService
                 if ($slot === null || (int) $slot['is_open'] !== 1) {
                     throw BookingException::of('CLINIC_SLOT_TAKEN', 'اسلات دیگر در دسترس نیست', 409);
                 }
-                $this->assertSlotHasBookableLocalTime($slot);
+                $this->assert_slot_has_bookable_local_time( $slot );
                 $dup = $this->appointments->findActiveForPatientSlot($patientId, $slotId, self::ACTIVE_STATUSES);
                 if ($dup !== null) {
                     throw BookingException::of('CLINIC_DUPLICATE_APPOINTMENT', 'شما قبلاً در این ساعت نوبت دارید', 409);
@@ -1390,18 +1390,19 @@ final class BookingService
      *
      * @param array<string, mixed> $slot
      */
-    private function assertSlotHasBookableLocalTime(array $slot): void
-    {
-        $locationTz = $this->resolveLocationTimezone(
-            (int) ($slot['location_id'] ?? 0),
-            (int) ($slot['clinic_id'] ?? 0)
+    private function assert_slot_has_bookable_local_time( array $slot ): void {
+        $location_tz = $this->resolveLocationTimezone(
+            (int) ( $slot['location_id'] ?? 0 ),
+            (int) ( $slot['clinic_id'] ?? 0 )
         );
-        if (BookingWindow::slotUtcInstant(
-            (string) ($slot['slot_date'] ?? ''),
-            (string) ($slot['slot_time'] ?? ''),
-            $locationTz
-        ) === null) {
-            throw BookingException::of('CLINIC_VALIDATION_FAILED', 'تاریخ/ساعت نوبت نامعتبر است');
+        if (
+            BookingWindow::slotUtcInstant(
+                (string) ( $slot['slot_date'] ?? '' ),
+                (string) ( $slot['slot_time'] ?? '' ),
+                $location_tz
+            ) === null
+        ) {
+            throw BookingException::of( 'CLINIC_VALIDATION_FAILED', 'تاریخ/ساعت نوبت نامعتبر است' );
         }
     }
 

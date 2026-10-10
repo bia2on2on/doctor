@@ -180,7 +180,7 @@ final class BookingWindow
         if ($local->format('Y-m-d H:i:s') !== $normalized) {
             return null;
         }
-        if (self::isRepeatedLocalWallTime($normalized, $locationTz)) {
+        if ( self::is_repeated_local_wall_time( $normalized, $locationTz ) ) {
             return null;
         }
 
@@ -192,36 +192,38 @@ final class BookingWindow
      * the clock backward, reject the repeated interval rather than inheriting
      * PHP's implicit first/second-occurrence selection.
      */
-    private static function isRepeatedLocalWallTime(string $normalized, DateTimeZone $locationTz): bool
-    {
-        $wallClock = DateTimeImmutable::createFromFormat(
+    private static function is_repeated_local_wall_time( string $normalized, DateTimeZone $location_tz ): bool {
+        $wall_clock = DateTimeImmutable::createFromFormat(
             'Y-m-d H:i:s',
             $normalized,
-            new DateTimeZone('UTC')
+            new DateTimeZone( 'UTC' )
         );
-        if ($wallClock === false || $wallClock->format('Y-m-d H:i:s') !== $normalized) {
+        if ( false === $wall_clock || $wall_clock->format( 'Y-m-d H:i:s' ) !== $normalized ) {
             return true;
         }
 
-        $wallTimestamp = $wallClock->getTimestamp();
+        $wall_timestamp = $wall_clock->getTimestamp();
         // A transition can be projected across the UTC day boundary by an IANA
         // offset, so inspect a deliberately wider UTC window around the local day.
-        $transitions = $locationTz->getTransitions($wallTimestamp - 172800, $wallTimestamp + 172800);
-        if ($transitions === false) {
+        $transitions = $location_tz->getTransitions( $wall_timestamp - 172800, $wall_timestamp + 172800 );
+        if ( false === $transitions ) {
             return true;
         }
 
-        for ($i = 1, $count = count($transitions); $i < $count; ++$i) {
-            $beforeOffset = (int) $transitions[$i - 1]['offset'];
-            $afterOffset = (int) $transitions[$i]['offset'];
-            if ($afterOffset >= $beforeOffset) {
+        for ( $i = 1, $count = count( $transitions ); $i < $count; ++$i ) {
+            $before_offset = (int) $transitions[ $i - 1 ][ 'offset' ];
+
+            $after_offset = (int) $transitions[ $i ][ 'offset' ];
+            if ( $after_offset >= $before_offset ) {
                 continue;
             }
 
-            $transitionTimestamp = (int) $transitions[$i]['ts'];
-            $repeatedStart = $transitionTimestamp + $afterOffset;
-            $repeatedEnd = $transitionTimestamp + $beforeOffset;
-            if ($wallTimestamp >= $repeatedStart && $wallTimestamp < $repeatedEnd) {
+            $transition_timestamp = (int) $transitions[ $i ][ 'ts' ];
+
+            $repeated_start = $transition_timestamp + $after_offset;
+
+            $repeated_end = $transition_timestamp + $before_offset;
+            if ( $wall_timestamp >= $repeated_start && $wall_timestamp < $repeated_end ) {
                 return true;
             }
         }

@@ -216,7 +216,7 @@ final class SlotsGenerateHandler
                 $dateObj = $anchor->add(new DateInterval('P' . $day . 'D'));
                 $date = $dateObj->format('Y-m-d');
                 try {
-                    $slots = $this->generateDaySlots($clinician, $clinicId, $date, $dateObj, $locationId, $locationTz);
+                    $slots = $this->generateDaySlots($clinician, $clinicId, $date, $dateObj, $locationId);
                 } catch (DomainException $e) {
                     $this->op->warning('SLOTS_GEN_SKIP', ['clinician_id' => $clinician['clinician_id'], 'date' => $date, 'error' => $e->getMessage()]);
                     continue;
@@ -317,14 +317,7 @@ final class SlotsGenerateHandler
      *
      * @return list<string>
      */
-    private function generateDaySlots(
-        array $clinician,
-        int $clinicId,
-        string $date,
-        DateTimeImmutable $dateObj,
-        int $locationId,
-        DateTimeZone $locationTz
-    ): array
+    private function generateDaySlots(array $clinician, int $clinicId, string $date, DateTimeImmutable $dateObj, int $locationId): array
     {
         // day_of_week: 0=شنبه ... 6=جمعه (هفته ایرانی) — تبدیل از 'w': 0=یک‌شنبه ... 6=شنبه.
         // Weekday is read off the Location-local calendar date object, so it never
@@ -359,6 +352,11 @@ final class SlotsGenerateHandler
             [$clinician['clinician_id'], $clinicId, $date, $locationId]
         );
 
+        $location_tz = $this->locationTimezone( (string) ( $clinician['location_timezone'] ?? '' ) );
+        if ( null === $location_tz ) {
+            throw new DomainException( 'Location timezone is invalid.' );
+        }
+
         $slots = SlotGenerator::generateDay(
             [
                 'start' => substr((string) $clinician['start_time'], 0, 5),
@@ -374,9 +372,11 @@ final class SlotsGenerateHandler
             ], $exceptions)
         );
 
-        return array_values(array_filter(
-            $slots,
-            static fn (string $time): bool => BookingWindow::slotUtcInstant($date, $time, $locationTz) !== null
-        ));
+        return array_values(
+            array_filter(
+                $slots,
+                static fn ( string $time ): bool => null !== BookingWindow::slotUtcInstant( $date, $time, $location_tz )
+            )
+        );
     }
 }

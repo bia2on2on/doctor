@@ -467,22 +467,27 @@ final class ApptReminderHandler
         }
 
         try {
-            $locationZone = new DateTimeZone($timezone);
-            if (BookingWindow::slotUtcInstant(
-                (string) ($row['slot_date'] ?? ''),
-                (string) ($row['slot_time'] ?? ''),
-                $locationZone
-            ) === null) {
-                $this->op->warning('appt.reminder_slot_time_unresolvable', [
-                    'appointment_id' => (int) ($row['id'] ?? 0),
-                    'location_id' => (int) ($row['location_id'] ?? 0),
-                ]);
+            $location_zone = new DateTimeZone( $timezone );
+            if (
+                BookingWindow::slotUtcInstant(
+                    (string) ( $row['slot_date'] ?? '' ),
+                    (string) ( $row['slot_time'] ?? '' ),
+                    $location_zone
+                ) === null
+            ) {
+                $this->op->warning(
+                    'appt.reminder_slot_time_unresolvable',
+                    [
+                        'appointment_id' => (int) ( $row['id'] ?? 0 ),
+                        'location_id'    => (int) ( $row['location_id'] ?? 0 ),
+                    ]
+                );
 
                 return false;
             }
-            $localReference = $referenceUtc->setTimezone($locationZone);
-            $today = $localReference->format('Y-m-d');
-            $tomorrow = $localReference->modify('+1 day')->format('Y-m-d');
+            $local_reference = $referenceUtc->setTimezone( $location_zone );
+            $today = $local_reference->format( 'Y-m-d' );
+            $tomorrow = $local_reference->modify( '+1 day' )->format( 'Y-m-d' );
 
             return (string) $row['slot_date'] === $today || (string) $row['slot_date'] === $tomorrow;
         } catch (\Exception) {
