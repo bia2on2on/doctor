@@ -6,6 +6,7 @@ namespace ClinicCore\Application\Jobs;
 
 use ClinicCore\Application\Notifications\NotificationService;
 use ClinicCore\Application\Notifications\SmsService;
+use ClinicCore\Domain\Booking\BookingWindow;
 use ClinicCore\Domain\Notifications\NotificationEvents;
 use ClinicCore\Domain\Sms\SmsEvents;
 use ClinicCore\Domain\Time\Jalali;
@@ -467,6 +468,18 @@ final class ApptReminderHandler
 
         try {
             $locationZone = new DateTimeZone($timezone);
+            if (BookingWindow::slotUtcInstant(
+                (string) ($row['slot_date'] ?? ''),
+                (string) ($row['slot_time'] ?? ''),
+                $locationZone
+            ) === null) {
+                $this->op->warning('appt.reminder_slot_time_unresolvable', [
+                    'appointment_id' => (int) ($row['id'] ?? 0),
+                    'location_id' => (int) ($row['location_id'] ?? 0),
+                ]);
+
+                return false;
+            }
             $localReference = $referenceUtc->setTimezone($locationZone);
             $today = $localReference->format('Y-m-d');
             $tomorrow = $localReference->modify('+1 day')->format('Y-m-d');

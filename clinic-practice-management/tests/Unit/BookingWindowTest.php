@@ -165,6 +165,24 @@ final class BookingWindowTest extends TestCase
         // DATE+TIME has no offset/fold field, so this repeated local value has no
         // unique appointment instant. It must not inherit PHP's arbitrary choice.
         $this->assertNull(BookingWindow::slotUtcInstant('2026-11-01', '01:30:00', $timezone));
+        $this->assertSame(
+            BookingWindow::CODE_INVALID,
+            BookingWindow::checkRequestWithTimezone(
+                '2026-11-01',
+                '01:30:00',
+                $timezone,
+                new DateTimeImmutable('2026-10-01 00:00:00', new DateTimeZone('UTC')),
+                0,
+                60
+            )
+        );
+
+        $before = BookingWindow::slotUtcInstant('2026-11-01', '00:59:00', $timezone);
+        $after = BookingWindow::slotUtcInstant('2026-11-01', '02:00:00', $timezone);
+        $this->assertNotNull($before);
+        $this->assertNotNull($after);
+        $this->assertSame('2026-11-01T04:59:00Z', $before->format('Y-m-d\\TH:i:s\\Z'));
+        $this->assertSame('2026-11-01T07:00:00Z', $after->format('Y-m-d\\TH:i:s\\Z'));
     }
 
     public function testDistinctLocationsAndAmbientTimezoneDoNotChangeOrdinaryConversion(): void

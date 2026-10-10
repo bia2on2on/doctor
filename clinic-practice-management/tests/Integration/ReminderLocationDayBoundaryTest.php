@@ -255,6 +255,47 @@ final class ReminderLocationDayBoundaryTest extends WP_UnitTestCase
         );
     }
 
+    public function testAmbiguousLegacyAppointmentIsPreservedAndNotReminded(): void
+    {
+        global $wpdb;
+        $db = App::db();
+        $locationId = self::FX_T_LOC_A_ID;
+        $now = $db->nowUtcSql();
+        $timezone = 'America/New_York';
+        self::assertContains($timezone, timezone_identifiers_list());
+        $reference = new DateTimeImmutable('2026-11-01 12:00:00', new DateTimeZone('UTC'));
+
+        $this->setLocationTimezone($locationId, $timezone, $now);
+        try {
+            $patient = $this->fxTInsertPatient();
+            $appointmentId = $this->fxTInsertAppointment(
+                $locationId,
+                '2026-11-01',
+                '01:30:00',
+                'confirmed',
+                null,
+                $patient
+            );
+
+            self::assertSame(0, $this->runReminderJob([], $reference));
+            self::assertSame(
+                0,
+                $this->reminderNotificationCount(self::FX_T_CLINIC_ID, $appointmentId, $patient),
+                'A legacy repeated wall time must not be assigned an arbitrary reminder instant.'
+            );
+            $row = $wpdb->get_row($wpdb->prepare(
+                'SELECT slot_date, slot_time, status FROM ' . $db->table('cpms_appointments') . ' WHERE id = %d',
+                $appointmentId
+            ), ARRAY_A);
+            self::assertIsArray($row);
+            self::assertSame('2026-11-01', (string) $row['slot_date']);
+            self::assertSame('01:30:00', (string) $row['slot_time']);
+            self::assertSame('confirmed', (string) $row['status']);
+        } finally {
+            $this->setLocationTimezone($locationId, self::TZ_A, $now);
+        }
+    }
+
     // =================================================================
     // T3-T4 — negative calendar-day control (outside the day set)
     // =================================================================

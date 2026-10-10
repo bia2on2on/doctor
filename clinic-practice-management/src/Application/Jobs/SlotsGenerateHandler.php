@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Application\Jobs;
 
+use ClinicCore\Domain\Booking\BookingWindow;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Logging\OpLogger;
 use ClinicCore\Settings\SettingsFactory;
@@ -215,7 +216,7 @@ final class SlotsGenerateHandler
                 $dateObj = $anchor->add(new DateInterval('P' . $day . 'D'));
                 $date = $dateObj->format('Y-m-d');
                 try {
-                    $slots = $this->generateDaySlots($clinician, $clinicId, $date, $dateObj, $locationId);
+                    $slots = $this->generateDaySlots($clinician, $clinicId, $date, $dateObj, $locationId, $locationTz);
                 } catch (DomainException $e) {
                     $this->op->warning('SLOTS_GEN_SKIP', ['clinician_id' => $clinician['clinician_id'], 'date' => $date, 'error' => $e->getMessage()]);
                     continue;
@@ -316,7 +317,14 @@ final class SlotsGenerateHandler
      *
      * @return list<string>
      */
-    private function generateDaySlots(array $clinician, int $clinicId, string $date, DateTimeImmutable $dateObj, int $locationId): array
+    private function generateDaySlots(
+        array $clinician,
+        int $clinicId,
+        string $date,
+        DateTimeImmutable $dateObj,
+        int $locationId,
+        DateTimeZone $locationTz
+    ): array
     {
         // day_of_week: 0=شنبه ... 6=جمعه (هفته ایرانی) — تبدیل از 'w': 0=یک‌شنبه ... 6=شنبه.
         // Weekday is read off the Location-local calendar date object, so it never
@@ -351,7 +359,7 @@ final class SlotsGenerateHandler
             [$clinician['clinician_id'], $clinicId, $date, $locationId]
         );
 
-        return SlotGenerator::generateDay(
+        $slots = SlotGenerator::generateDay(
             [
                 'start' => substr((string) $clinician['start_time'], 0, 5),
                 'end' => substr((string) $clinician['end_time'], 0, 5),
@@ -365,5 +373,10 @@ final class SlotsGenerateHandler
                 'end' => $e['end_time'] !== null ? substr((string) $e['end_time'], 0, 5) : null,
             ], $exceptions)
         );
+
+        return array_values(array_filter(
+            $slots,
+            static fn (string $time): bool => BookingWindow::slotUtcInstant($date, $time, $locationTz) !== null
+        ));
     }
 }

@@ -427,6 +427,70 @@ final class SchedulingLocationLocalBoundaryRedTest extends WP_UnitTestCase
         self::assertContains($slotId, $availabilityIds, 'context: availability همان اسلات را آینده نشان داده است');
     }
 
+    public function testRepeatedNewYorkSlotIsNeverOfferedHeldOrConfirmed(): void
+    {
+        global $wpdb;
+        $svc = $this->newBookingService();
+        $date = '2026-11-01';
+        $time = '01:30:00';
+        $ambiguousSlotId = $this->insertSlot($this->clinicianHold, $this->locNewYork, $date, $time);
+
+        $available = $this->flattenAvailabilityIds($svc->availability($this->clinicianHold, '2026-10-31', '2026-11-02'));
+        self::assertNotContains(
+            $ambiguousSlotId,
+            $available,
+            'A repeated America/New_York wall time must be hidden from public availability.'
+        );
+
+        foreach (['quote', 'hold'] as $path) {
+            try {
+                if ($path === 'quote') {
+                    $svc->quote($this->clinicianHold, $date, $time, $ambiguousSlotId);
+                } else {
+                    $svc->hold($this->makePatientUser(), $this->clinicianHold, $date, $time, $ambiguousSlotId);
+                }
+                self::fail('Repeated Location-local wall time must be rejected by ' . $path . '.');
+            } catch (BookingException $e) {
+                self::assertSame('CLINIC_VALIDATION_FAILED', $e->errorCode);
+            }
+        }
+
+        // A hold that pre-dates this policy must not be converted into an
+        // appointment if its persisted slot later resolves to a repeated time.
+        $patientUserId = $this->makePatientUser();
+        $legacySlotId = $this->insertSlot($this->clinicianHold, $this->locNewYork, $date, '03:00:00');
+        $hold = $svc->hold($patientUserId, $this->clinicianHold, $date, '03:00:00', $legacySlotId);
+        self::assertNotEmpty($hold['hold_token']);
+        $wpdb->query($wpdb->prepare(
+            'UPDATE ' . App::db()->table('cpms_schedule_slots') . ' SET slot_time = %s WHERE id = %d',
+            $time,
+            $legacySlotId
+        ));
+
+        try {
+            $svc->confirm((string) $hold['hold_token'], $patientUserId, null, 'dst-policy-confirm-' . bin2hex(random_bytes(4)));
+            self::fail('A legacy hold for a repeated Location-local wall time must not confirm.');
+        } catch (BookingException $e) {
+            self::assertSame('CLINIC_VALIDATION_FAILED', $e->errorCode);
+        }
+
+        self::assertSame(
+            0,
+            (int) $wpdb->get_var($wpdb->prepare(
+                'SELECT COUNT(*) FROM ' . App::db()->table('cpms_appointments') . ' WHERE slot_id = %d',
+                $legacySlotId
+            )),
+            'Failed confirmation must not create an appointment from an ambiguous legacy hold.'
+        );
+        $legacySlot = App::db()->fetchRow(
+            'SELECT slot_date, slot_time FROM ' . App::db()->table('cpms_schedule_slots') . ' WHERE id = %d',
+            [$legacySlotId]
+        );
+        self::assertIsArray($legacySlot);
+        self::assertSame($date, (string) $legacySlot['slot_date']);
+        self::assertSame($time, (string) $legacySlot['slot_time']);
+    }
+
     // =================================================================
     // RED/T6 — اینورینت ۵: impact() باید از مرز «امروز محلیِ Locationِ هر اسلات» استفاده کند
     // =================================================================

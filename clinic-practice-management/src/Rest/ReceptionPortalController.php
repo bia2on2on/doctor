@@ -76,6 +76,7 @@ namespace ClinicCore\Rest;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Booking\BookingException;
+use ClinicCore\Domain\Booking\BookingWindow;
 use ClinicCore\Domain\Time\Jalali;
 use ClinicCore\Domain\Visits\VisitException;
 use ClinicCore\Infrastructure\Repository\AppointmentRepository;
@@ -1040,7 +1041,8 @@ final class ReceptionPortalController extends RestBase {
 			return $this->error( 'CLINIC_NOT_FOUND', 404, 'پزشک یافت نشد' );
 		}
 
-		$now_local        = ( new \DateTimeImmutable( 'now', new \DateTimeZone( 'UTC' ) ) )->setTimezone( new \DateTimeZone( $timezone ) );
+		$location_zone    = new \DateTimeZone( $timezone );
+		$now_local        = ( new \DateTimeImmutable( 'now', new \DateTimeZone( 'UTC' ) ) )->setTimezone( $location_zone );
 		$operational_date = $now_local->format( 'Y-m-d' );
 		$horizon_days     = $this->booking_horizon_days( $clinic_id );
 		$horizon_end      = $this->plus_days( $operational_date, $horizon_days );
@@ -1067,6 +1069,9 @@ final class ReceptionPortalController extends RestBase {
 		$local_now = $now_local->format( 'H:i:s' );
 		foreach ( $rows as $row ) {
 			$time = substr( (string) $row['slot_time'], 0, 8 );
+			if ( null === BookingWindow::slotUtcInstant( $date, $time, $location_zone ) ) {
+				continue;
+			}
 			// On the operational day an already-started slot is never offered:
 			// the delegated staff create would only reject it, so the read stays
 			// honest about what reception can book right now.

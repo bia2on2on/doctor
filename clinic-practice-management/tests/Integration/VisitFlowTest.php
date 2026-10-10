@@ -417,6 +417,45 @@ final class VisitFlowTest extends WP_UnitTestCase
         $this->assertSame(0, is_array($resZero) ? ($resZero['processed'] ?? 0) : (int) $resZero);
     }
 
+    public function testNoShowSweepPreservesAmbiguousLegacyAppointment(): void
+    {
+        global $wpdb;
+        $db = App::db();
+        $location = $db->fetchRow(
+            'SELECT id, timezone FROM ' . $db->table('cpms_locations') . ' WHERE clinic_id = %d AND is_primary = 1 LIMIT 1',
+            [1]
+        );
+        self::assertIsArray($location);
+        self::assertContains('America/New_York', timezone_identifiers_list());
+        $locationId = (int) $location['id'];
+        $originalTimezone = (string) $location['timezone'];
+
+        $wpdb->query($wpdb->prepare(
+            'UPDATE ' . $db->table('cpms_locations') . ' SET timezone = %s WHERE id = %d',
+            'America/New_York',
+            $locationId
+        ));
+        try {
+            $appointmentId = $this->makeAppointment($this->patientId, $this->clinicianId, '2025-11-02', '01:30:00');
+            App::visitService()->processNoShows();
+
+            $row = $db->fetchRow(
+                'SELECT status, slot_date, slot_time FROM ' . $db->table('cpms_appointments') . ' WHERE id = %d',
+                [$appointmentId]
+            );
+            self::assertIsArray($row);
+            self::assertSame('confirmed', (string) $row['status']);
+            self::assertSame('2025-11-02', (string) $row['slot_date']);
+            self::assertSame('01:30:00', (string) $row['slot_time']);
+        } finally {
+            $wpdb->query($wpdb->prepare(
+                'UPDATE ' . $db->table('cpms_locations') . ' SET timezone = %s WHERE id = %d',
+                $originalTimezone,
+                $locationId
+            ));
+        }
+    }
+
     // ================= Helpers =================
 
     private function makeUser(string $login, string $role): int
