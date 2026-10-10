@@ -76,7 +76,7 @@ return [
                 }
             }
         };
-        $require_index = static function ( string $table, string $index, array $columns, bool $unique ) use ( $db ): void {
+        $require_index     = static function ( string $table, string $index, array $columns, bool $unique ) use ( $db ): void {
             $rows = $db->fetchAll(
                 'SELECT COLUMN_NAME, NON_UNIQUE FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND INDEX_NAME = %s ORDER BY SEQ_IN_INDEX',
                 [ $table, $index ]
@@ -95,7 +95,7 @@ return [
                 throw new \RuntimeException( 'migration 0024: existing table ' . $table . ' index ' . $index . ' must span (' . implode( ', ', $columns ) . ')' );
             }
         };
-        $require_fk = static function ( string $table, string $constraint, string $column, string $ref_table, string $ref_column ) use ( $db ): void {
+        $require_fk        = static function ( string $table, string $constraint, string $column, string $ref_table, string $ref_column ) use ( $db ): void {
             $rows = $db->fetchAll(
                 'SELECT kcu.COLUMN_NAME, kcu.REFERENCED_TABLE_NAME, kcu.REFERENCED_COLUMN_NAME, rc.DELETE_RULE' .
                 ' FROM information_schema.KEY_COLUMN_USAGE kcu' .

@@ -291,11 +291,11 @@ final class CustomRoleRepositoryTransactionTest extends WP_UnitTestCase
             'define() must persist exactly the validated set at version 1'
         );
 
-        $this->repo->replace_capabilities($this->clinicId, 'team_txn_ok', ['cpms_consult_read']);
+        $this->repo->replace_capabilities($this->clinicId, 'team_txn_ok', ['cpms_visit_read']);
         self::assertSame(
             [
                 'def'  => ['status' => 'active', 'version' => 2],
-                'caps' => ['cpms_consult_read'],
+                'caps' => ['cpms_visit_read'],
             ],
             $this->fetchState('team_txn_ok'),
             'a successful replacement must atomically persist the complete approved set and advance the version exactly once'
