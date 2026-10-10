@@ -598,6 +598,8 @@ final class SchedulingLocationLocalBoundaryRedTest extends WP_UnitTestCase
             || !function_exists('posix_kill')
             || !defined('SIGTERM')
             || !defined('SIGKILL')
+            || !defined('PCNTL_EINTR')
+            || !defined('PCNTL_ECHILD')
             || !function_exists('stream_socket_pair')
             || !class_exists('mysqli')
         ) {
@@ -798,18 +800,33 @@ final class SchedulingLocationLocalBoundaryRedTest extends WP_UnitTestCase
             self::assertSame(0, (int) $slot['held_count'], 'rejected staff booking must not create or retain a hold');
             $this->assertRaceLocksReleased($slotId, $this->locNewYork);
         } finally {
-            if (!$writerReleased && is_resource($writerParent)) {
-                @fwrite($writerParent, "rollback\n");
+            try {
+                if (!$writerReleased && is_resource($writerParent)) {
+                    @fwrite($writerParent, "rollback\n");
+                }
+                $cleanupError = null;
+                try {
+                    $this->reapOrTerminateKnownChild($writerPid, $writerStatus);
+                } catch (\Throwable $e) {
+                    $cleanupError = $e;
+                }
+                try {
+                    $this->reapOrTerminateKnownChild($bookingPid, $bookingStatus);
+                } catch (\Throwable $e) {
+                    $cleanupError ??= $e;
+                }
+                if ($cleanupError instanceof \Throwable) {
+                    throw $cleanupError;
+                }
+            } finally {
+                if ($observer instanceof \mysqli) {
+                    @$observer->close();
+                }
+                self::closeSynchronizationPipe($writerParent);
+                self::closeSynchronizationPipe($writerChild);
+                self::closeSynchronizationPipe($bookingParent);
+                self::closeSynchronizationPipe($bookingChild);
             }
-            $this->reapOrTerminateKnownChild($writerPid, $writerStatus);
-            $this->reapOrTerminateKnownChild($bookingPid, $bookingStatus);
-            if ($observer instanceof \mysqli) {
-                @$observer->close();
-            }
-            self::closeSynchronizationPipe($writerParent);
-            self::closeSynchronizationPipe($writerChild);
-            self::closeSynchronizationPipe($bookingParent);
-            self::closeSynchronizationPipe($bookingChild);
         }
     }
 
@@ -881,6 +898,132 @@ final class SchedulingLocationLocalBoundaryRedTest extends WP_UnitTestCase
             [456, self::RACE_TERMINATION_REAP_TIMEOUT_SECONDS],
         ], $waits, 'timeout escalation must use only the three bounded reap windows');
         self::assertSame([[456, SIGTERM], [456, SIGKILL]], $signals, 'only the recorded positive child PID may be signalled');
+    }
+
+    public function testRaceWaitRetriesEintrAndDoesNotHideOtherErrors(): void
+    {
+        if (!defined('PCNTL_EINTR') || !defined('PCNTL_ECHILD')) {
+            self::markTestSkipped('PCNTL wait error constants are required for EINTR cleanup coverage.');
+        }
+
+        $clock = 0.0;
+        $waitCalls = 0;
+        $outcomes = [[-1, 0, PCNTL_EINTR], [789, 0, 0]];
+        $reaped = self::waitForChildExitUsing(
+            789,
+            5,
+            static function (int $pid) use (&$waitCalls, &$outcomes): array {
+                ++$waitCalls;
+
+                return array_shift($outcomes);
+            },
+            static function () use (&$clock): float {
+                return $clock;
+            },
+            static function () use (&$clock): void {
+                $clock += 1.0;
+            }
+        );
+        self::assertSame(0, $reaped, 'EINTR must retry rather than falsely reporting the child reaped');
+        self::assertSame(2, $waitCalls, 'EINTR must cause another wait attempt');
+        self::assertSame(1.0, $clock, 'EINTR retry must remain within the original deadline');
+
+        $clock = 0.0;
+        $waits = [];
+        $signals = [];
+        $repeatedEintr = static function (int $pid, int $seconds) use (&$clock, &$waits): int|false|null {
+            $waits[] = [$pid, $seconds];
+
+            return self::waitForChildExitUsing(
+                $pid,
+                $seconds,
+                static fn (int $ignored): array => [-1, 0, PCNTL_EINTR],
+                static function () use (&$clock): float {
+                    return $clock;
+                },
+                static function () use (&$clock): void {
+                    $clock += 1.0;
+                }
+            );
+        };
+        $timedOut = self::cleanupKnownChild(
+            456,
+            null,
+            $repeatedEintr,
+            static function (int $pid, int $signal) use (&$signals): bool {
+                $signals[] = [$pid, $signal];
+
+                return true;
+            }
+        );
+        self::assertNull($timedOut, 'repeated EINTR must reach the bounded timeout path, not false ECHILD success');
+        self::assertSame([
+            [456, self::RACE_GRACEFUL_REAP_TIMEOUT_SECONDS],
+            [456, self::RACE_TERMINATION_REAP_TIMEOUT_SECONDS],
+            [456, self::RACE_TERMINATION_REAP_TIMEOUT_SECONDS],
+        ], $waits);
+        self::assertSame([[456, SIGTERM], [456, SIGKILL]], $signals);
+        self::assertSame(9.0, $clock, 'EINTR retries must not reset or extend cleanup deadlines');
+
+        $signals = [];
+        $echild = self::cleanupKnownChild(
+            654,
+            null,
+            static function (int $pid, int $seconds): int|false|null {
+                return self::waitForChildExitUsing(
+                    $pid,
+                    $seconds,
+                    static fn (int $ignored): array => [-1, 0, PCNTL_ECHILD],
+                    static fn (): float => 0.0,
+                    static function (): void {
+                        self::fail('confirmed ECHILD must not poll or signal');
+                    }
+                );
+            },
+            static function (int $pid, int $signal) use (&$signals): bool {
+                $signals[] = [$pid, $signal];
+
+                return true;
+            }
+        );
+        self::assertFalse($echild, 'confirmed ECHILD is not a child reap status');
+        self::assertSame([], $signals, 'confirmed ECHILD must never signal a potentially reused PID');
+
+        $waits = [];
+        $signals = [];
+        try {
+            self::cleanupKnownChild(
+                987,
+                null,
+                static function (int $pid, int $seconds) use (&$waits): int|false|null {
+                    $waits[] = [$pid, $seconds];
+
+                    return self::waitForChildExitUsing(
+                        $pid,
+                        $seconds,
+                        static fn (int $ignored): array => [-1, 0, 12345],
+                        static fn (): float => 0.0,
+                        static function (): void {
+                            self::fail('unexpected wait errors must not be retried as success');
+                        }
+                    );
+                },
+                static function (int $pid, int $signal) use (&$signals): bool {
+                    $signals[] = [$pid, $signal];
+
+                    return true;
+                }
+            );
+            self::fail('unexpected wait errors must remain visible after bounded escalation');
+        } catch (\RuntimeException $e) {
+            self::assertStringContainsString('Unexpected child wait error', $e->getMessage());
+        }
+        self::assertSame([
+            [987, self::RACE_GRACEFUL_REAP_TIMEOUT_SECONDS],
+            [987, self::RACE_TERMINATION_REAP_TIMEOUT_SECONDS],
+            [987, self::RACE_TERMINATION_REAP_TIMEOUT_SECONDS],
+        ], $waits);
+        self::assertSame([[987, SIGTERM], [987, SIGKILL]], $signals, 'unexpected wait errors must not silently pass');
     }
 
     public function testRaceSynchronizationFailureClosesAllPipeEnds(): void
@@ -1274,23 +1417,64 @@ final class SchedulingLocationLocalBoundaryRedTest extends WP_UnitTestCase
 
     private function waitForChildExit(int $pid, int $seconds): int|false|null
     {
+        return self::waitForChildExitUsing(
+            $pid,
+            $seconds,
+            static function (int $childPid): array {
+                $status = 0;
+                $waited = pcntl_waitpid($childPid, $status, WNOHANG);
+
+                return [$waited, $status, $waited === -1 ? pcntl_get_last_error() : 0];
+            },
+            static fn (): float => microtime(true),
+            static function (): void {
+                usleep(10000);
+            }
+        );
+    }
+
+    /**
+     * A false result means confirmed ECHILD only; null means the original
+     * bounded deadline elapsed. Other wait errors are never cleanup success.
+     *
+     * @param callable(int): array{0: int, 1: int, 2: int} $waitpid
+     * @param callable(): float $clock
+     * @param callable(): void $pause
+     */
+    private static function waitForChildExitUsing(
+        int $pid,
+        int $seconds,
+        callable $waitpid,
+        callable $clock,
+        callable $pause
+    ): int|false|null {
         if ($pid <= 0 || $seconds <= 0) {
             return false;
         }
-        $deadline = microtime(true) + $seconds;
+        $deadline = $clock() + $seconds;
         do {
-            $status = 0;
-            $waited = pcntl_waitpid($pid, $status, WNOHANG);
+            [$waited, $status, $error] = $waitpid($pid);
             if ($waited === $pid) {
                 return $status;
             }
             if ($waited === -1) {
-                // It was already reaped elsewhere (or is no longer our child).
-                // Do not signal a PID which could subsequently be reused.
-                return false;
+                if ($error === PCNTL_EINTR) {
+                    // Keep the original deadline: interruption is neither a
+                    // reap nor permission to abandon required cleanup.
+                    $pause();
+                    continue;
+                }
+                if ($error === PCNTL_ECHILD) {
+                    // No longer waitable: never signal a potentially reused PID.
+                    return false;
+                }
+                throw new \RuntimeException('pcntl_waitpid failed for a known child: ' . pcntl_strerror($error));
             }
-            usleep(10000);
-        } while (microtime(true) < $deadline);
+            if ($waited !== 0) {
+                throw new \RuntimeException('pcntl_waitpid returned an unexpected value: ' . $waited);
+            }
+            $pause();
+        } while ($clock() < $deadline);
 
         return null;
     }
@@ -1324,19 +1508,43 @@ final class SchedulingLocationLocalBoundaryRedTest extends WP_UnitTestCase
             return $status;
         }
 
-        $status = $waitForExit($pid, self::RACE_GRACEFUL_REAP_TIMEOUT_SECONDS);
-        if ($status !== null) {
+        $waitError = null;
+        $status = self::waitForCleanup($pid, self::RACE_GRACEFUL_REAP_TIMEOUT_SECONDS, $waitForExit, $waitError);
+        if ($status !== null && $waitError === null) {
             return $status;
         }
         $sendSignal($pid, SIGTERM);
 
-        $status = $waitForExit($pid, self::RACE_TERMINATION_REAP_TIMEOUT_SECONDS);
-        if ($status !== null) {
+        $status = self::waitForCleanup($pid, self::RACE_TERMINATION_REAP_TIMEOUT_SECONDS, $waitForExit, $waitError);
+        if ($status !== null && $waitError === null) {
             return $status;
         }
         $sendSignal($pid, SIGKILL);
 
-        return $waitForExit($pid, self::RACE_TERMINATION_REAP_TIMEOUT_SECONDS);
+        $status = self::waitForCleanup($pid, self::RACE_TERMINATION_REAP_TIMEOUT_SECONDS, $waitForExit, $waitError);
+        if ($waitError instanceof \Throwable) {
+            throw new \RuntimeException('Unexpected child wait error during bounded cleanup.', 0, $waitError);
+        }
+
+        return $status;
+    }
+
+    /**
+     * @param callable(int, int): (int|false|null) $waitForExit
+     */
+    private static function waitForCleanup(
+        int $pid,
+        int $seconds,
+        callable $waitForExit,
+        ?\Throwable &$waitError
+    ): int|false|null {
+        try {
+            return $waitForExit($pid, $seconds);
+        } catch (\Throwable $e) {
+            $waitError ??= $e;
+
+            return null;
+        }
     }
 
     private static function closeSynchronizationPipe(&$pipe): void
