@@ -513,31 +513,45 @@ final class Phase9Slice1PatientPortalSelfCancelRedTest extends WP_UnitTestCase
 
     /**
      * G4 — multi-Clinic install: a pure patient has no membership, so App::scope()
-     * is ambiguous (CLINIC_SCOPE_REQUIRED). The portal must still render (C1 + C2)
-     * and only drop the Clinic phone line — never fatal, never guess a Clinic.
+     * is ambiguous (CLINIC_SCOPE_REQUIRED). The portal must still render (C1 + C2).
+     * Cross-phase correction: the contact phone resolves through the trusted
+     * linked-records context (sole linked Clinic → canonical cpms_clinics.phone),
+     * never through scope and never from the legacy `clinic.phone` settings key —
+     * so the linked Clinic's canonical phone still renders under an ambiguous
+     * scope, and no Clinic is ever guessed.
      */
     public function testPortalRendersForPatientWhenClinicScopeIsAmbiguous(): void
     {
         $fx = $this->buildOwnedConfirmedUpcomingAppointmentFixture('g4');
         $this->assertFixtureMaterialized($fx);
 
-        // Baseline (single Clinic): the contact line is rendered when a phone is configured.
-        App::settings()->set('clinic.phone', '021-12345678');
+        global $wpdb;
+
+        // Baseline (single Clinic): the contact line renders the canonical Clinic
+        // Profile phone (cpms_clinics.phone); a stale legacy settings value must
+        // not override it.
+        $wpdb->update(
+            $wpdb->prefix . 'cpms_clinics',
+            ['phone' => '021-12345678', 'updated_at' => App::db()->nowUtcSql()],
+            ['id' => $fx['clinic_id']]
+        );
+        App::settings()->set('clinic.phone', '021-00000000');
         $single = $this->renderPortalAs($fx['user_id']);
-        self::assertStringContainsString('021-12345678', $single, 'precondition: single-Clinic render shows the Clinic phone.');
+        self::assertStringContainsString('021-12345678', $single, 'precondition: single-Clinic render shows the canonical Clinic Profile phone.');
+        self::assertStringNotContainsString('021-00000000', $single, 'precondition: stale legacy clinic.phone settings value must not render.');
 
         // Second Clinic (same Organization) → ambiguous system scope for a membership-less patient.
-        global $wpdb;
         $orgId = (int) $wpdb->get_var($wpdb->prepare('SELECT organization_id FROM ' . $wpdb->prefix . 'cpms_clinics WHERE id = %d', $fx['clinic_id']));
         self::assertGreaterThan(0, $orgId, 'precondition: seeded Clinic has an Organization.');
         $now = App::db()->nowUtcSql();
         $slug = 'p9s1-g4-' . bin2hex(random_bytes(3));
         $inserted = $wpdb->query($wpdb->prepare(
-            'INSERT INTO ' . $wpdb->prefix . 'cpms_clinics (organization_id, name, slug, timezone, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, %s)',
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_clinics (organization_id, name, slug, timezone, phone, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, %s, %s)',
             $orgId,
             'Clinic ' . $slug,
             $slug,
             'Asia/Tehran',
+            '021-99999999',
             $now,
             $now
         ));
@@ -561,8 +575,9 @@ final class Phase9Slice1PatientPortalSelfCancelRedTest extends WP_UnitTestCase
         self::assertCount(1, $actions, 'GREEN G4: C1 action still rendered in a multi-Clinic install.');
         self::assertSame((string) $fx['appointment_id'], $this->attributeValue($actions[0], 'data-appointment-id'));
         self::assertCount(1, $this->configScriptPayloads($html), 'GREEN G4: C2 config still published in a multi-Clinic install.');
-        self::assertStringNotContainsString('021-12345678', $html, 'GREEN G4: no Clinic phone is guessed when the scope is ambiguous.');
-        self::assertStringNotContainsString('تلفن:', $html, 'GREEN G4: the contact-phone fragment is omitted, not faked.');
+        self::assertStringContainsString('021-12345678', $html, 'GREEN G4: the sole linked Clinic canonical phone renders via the trusted context even when scope is ambiguous.');
+        self::assertStringNotContainsString('021-99999999', $html, 'GREEN G4: the other Clinic phone is never guessed (no cross-Clinic leakage).');
+        self::assertStringNotContainsString('021-00000000', $html, 'GREEN G4: the legacy clinic.phone settings value never renders.');
     }
 
     private function resetScriptHandle(string $handle): void
