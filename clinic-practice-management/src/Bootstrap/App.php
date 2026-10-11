@@ -705,7 +705,7 @@ final class App
         static $service = null;
         if ( $service === null ) {
             $service = new \ClinicCore\Application\Roles\CustomRoleManagementService(
-                new TrustedClinicEstablisher( self::db(), new MembershipRepository( self::db() ) ),
+                new \ClinicCore\Application\Scope\TrustedClinicEstablisher( self::db(), new MembershipRepository( self::db() ) ),
                 self::authorization_service(),
                 new \ClinicCore\Infrastructure\Repository\CustomRoleRepository( self::db() ),
                 self::audit()
