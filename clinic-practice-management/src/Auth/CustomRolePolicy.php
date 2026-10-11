@@ -106,6 +106,98 @@ final class CustomRolePolicy {
     }
 
     /**
+     * Upper bound (in Unicode code points) of a display name. Bounded validation
+     * is required; the bound is script-agnostic (no Persian-only rule, no
+     * locale-dependent counting — mb_strlen counts code points, so a combining
+     * script is not punished for being encoded in several code units).
+     */
+    public const DISPLAY_NAME_MAX_CODE_POINTS = 120;
+
+    /**
+     * Fail-closed normalization of a custom-role display name. Purely
+     * script-agnostic: it never assumes a language, alphabet or direction.
+     *
+     * - line breaks and tabs become spaces;
+     * - C0/C1/DEL controls are removed (invalid UTF-8 collapses to '' => rejected
+     *   by is_acceptable_display_name(), i.e. fail closed);
+     * - whitespace runs collapse to one space and the result is trimmed;
+     * - Unicode format characters such as ZWNJ (U+200C) are deliberately KEPT:
+     *   they are orthographically required in Persian/Arabic text, so stripping
+     *   them would corrupt legitimate display names.
+     */
+    public static function sanitize_display_name( string $display_name ): string {
+        if ( str_contains( $display_name, "\0" ) ) {
+            return '';
+        }
+        $value = str_replace( [ "\r\n", "\r", "\n", "\t" ], ' ', $display_name );
+
+        $stripped = preg_replace( '/[\x00-\x1F\x7F-\x9F]/u', '', $value );
+        if ( $stripped === null ) {
+            return ''; // invalid UTF-8 — fail closed, never partially normalize
+        }
+
+        $collapsed = preg_replace( '/[\s\p{Z}]+/u', ' ', $stripped );
+        if ( $collapsed === null ) {
+            return '';
+        }
+
+        return trim( $collapsed );
+    }
+
+    /**
+     * Bounded, Unicode-general acceptance rule for display names. Accepts any
+     * script (Latin, Persian, Arabic, CJK, Cyrillic, Hebrew, …) as long as the
+     * name is non-empty, within the code-point bound, stable under
+     * normalization, and contains at least one letter or number of any script.
+     */
+    public static function is_acceptable_display_name( string $display_name ): bool {
+        $normalized = self::sanitize_display_name( $display_name );
+        if ( $normalized === '' ) {
+            return false;
+        }
+        if ( mb_strlen( $normalized ) > self::DISPLAY_NAME_MAX_CODE_POINTS ) {
+            return false;
+        }
+        if ( $normalized !== self::sanitize_display_name( $normalized ) ) {
+            return false; // must be a fixed point: no hidden re-normalization
+        }
+
+        return preg_match( '/[\p{L}\p{N}]/u', $normalized ) === 1;
+    }
+
+    /**
+     * Capabilities an editor may delegate: the intersection of the V1-editable
+     * catalogue and the editor's own effective Clinic-scoped capability set
+     * (Product Decision 4 of the approved model — "a role editor must never
+     * grant capabilities exceeding the editor's own effective authority").
+     *
+     * Fail closed: an unknown/blank effective entry adds nothing, and a
+     * sensitive capability is never delegable even if the editor happens to
+     * hold it (sensitive capabilities are non-delegable by decision).
+     *
+     * @param array<array-key, mixed> $effective_capabilities
+     * @return list<string>
+     */
+    public static function delegable_capabilities( array $effective_capabilities ): array {
+        $effective = [];
+        foreach ( $effective_capabilities as $capability ) {
+            if ( is_string( $capability ) && $capability !== '' ) {
+                $effective[ $capability ] = true;
+            }
+        }
+
+        $delegable = [];
+        foreach ( self::editable_capabilities() as $capability ) {
+            if ( isset( $effective[ $capability ] ) ) {
+                $delegable[] = $capability;
+            }
+        }
+        sort( $delegable );
+
+        return $delegable;
+    }
+
+    /**
      * Fail-closed normalization used at both persistence-write boundaries and
      * the authorization read path: only strings that are editable capabilities
      * survive; everything else (unknown, WordPress, WooCommerce, sensitive,

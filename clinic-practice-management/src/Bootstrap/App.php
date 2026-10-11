@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ClinicCore\Bootstrap;
 
 use ClinicCore\Admin\ClinicianAdminPage;
+use ClinicCore\Admin\CustomRoleDefinitionsPage;
 use ClinicCore\Admin\CpmsAdminMenu;
 use ClinicCore\Admin\CpmsAssets;
 use ClinicCore\Admin\Compatibility\WooCommerceAdminAccess;
@@ -353,6 +354,7 @@ final class App
         SystemPage::register();
         ClinicianAdminPage::register(); // ADR-0031 / Part 2 — Setup UI پزشک + برنامه هفتگی
         RoleCapabilitiesPage::register(); // ADR-0030 / Part 1 — مدیریت دسترسی نقش‌ها
+        CustomRoleDefinitionsPage::register(); // Custom Role Slice 2 — نقش‌های سفارشی Clinic-local (تعریف/نام/مجوزها)
         PatientPortalPage::register(); // ADR-0030 / Part 1 — مقصد بیمار بعد از OTP
         PrescriptionPrintPage::register(); // ADR-0031 / Part 2 — چاپ نسخه (P12)
         SmsSettingsPage::register();
@@ -688,6 +690,25 @@ final class App
                 self::db(),
                 self::locationRepository(),
                 self::authorization_service(),
+                self::audit()
+            );
+        }
+
+        return $service;
+    }
+
+    /**
+     * سرویس مدیریت نقش سفارشی (Custom Role Slice 2) — Clinic-local،
+     * authority از TrustedClinicEstablisher + AuthorizationService می‌آید.
+     */
+    public static function custom_role_management_service(): \ClinicCore\Application\Roles\CustomRoleManagementService
+    {
+        static $service = null;
+        if ($service === null) {
+            $service = new \ClinicCore\Application\Roles\CustomRoleManagementService(
+                new TrustedClinicEstablisher( self::db(), new MembershipRepository( self::db() ) ),
+                self::authorization_service(),
+                new \ClinicCore\Infrastructure\Repository\CustomRoleRepository( self::db() ),
                 self::audit()
             );
         }
