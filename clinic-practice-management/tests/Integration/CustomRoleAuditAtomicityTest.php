@@ -158,7 +158,13 @@ final class CustomRoleAuditAtomicityTest extends WP_UnitTestCase
         $this->failAuditInserts();
         $thrown = null;
         try {
-            $this->service()->replace_capabilities($this->managerUserId, $this->clinicA, 'crat_caps', ['cpms_search', 'cpms_export']);
+            // Both capabilities are inside the manager preset AND the V1-editable
+            // catalogue, so the write really proceeds and the injected audit
+            // failure is the ONLY thing that can stop it. (An earlier revision of
+            // this test used a non-delegable capability, which made the service
+            // refuse the request before any write — a false green that proved
+            // nothing; the message assertion below makes that impossible now.)
+            $this->service()->replace_capabilities($this->managerUserId, $this->clinicA, 'crat_caps', ['cpms_report_read', 'cpms_search']);
         } catch (\RuntimeException $e) {
             $thrown = $e;
         } finally {
@@ -166,6 +172,11 @@ final class CustomRoleAuditAtomicityTest extends WP_UnitTestCase
         }
 
         self::assertNotNull($thrown, 'a failed audit persistence during capability replacement must fail the call');
+        self::assertStringContainsString(
+            'audit',
+            strtolower($thrown->getMessage()),
+            'the call must fail because the audit event could not be persisted — not because of a validation refusal'
+        );
 
         $stored = (new CustomRoleRepository(App::db()))->definition_for($this->clinicA, 'crat_caps');
         self::assertNotNull($stored);
