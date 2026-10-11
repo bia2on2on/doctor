@@ -43,6 +43,15 @@
 - Writes go through a validating repository boundary (all-or-nothing capability/key validation); the authorization read path re-filters stored rows, so a future writer cannot bypass capability validation.
 - No membership migration, no assignment, no archive lifecycle in this slice.
 
+## 3b. Slice 2 — authorized Clinic-local definition management (implemented)
+
+- **Surface:** list, create, display-name edit and permitted-capability replacement for Clinic-local custom-role *definitions*. No assignment, archive, delete or status management; no WordPress-global role registration; no React/SPA/build dependency.
+- **Authority (decisions 3 + 5):** the requested Clinic is a selector only. `TrustedClinicEstablisher` resolves it against durable persistence (ACTIVE membership + real Clinic + ACTIVE Organization), then `AuthorizationService::can(actor, clinic, cpms_config)` decides effective management authority. WordPress `manage_options`/`administrator` status is never consulted, so an administrator without an explicit durable membership in that Clinic is denied — there is no implicit all-Clinic, first-Clinic or `clinic_id = 0` authority. An administrator (or single-doctor installation owner) acquires authority exactly the existing way: an explicit Clinic membership carrying `cpms_config` (the built-in `cpms_manager` preset, managed on the existing Users & Access page). No parallel bootstrap authority mechanism is introduced.
+- **Bounded delegation (decision 4 + 6):** the grantable set is `CustomRolePolicy::editable_capabilities()` ∩ the editor's own effective capability set, decided per capability by the existing `AuthorizationService` (so an explicit membership DENY can never be bypassed by writing a custom role). Sensitive capabilities — including `cpms_config`/`cpms_sms_config` themselves — are never delegable, so the management authority cannot be replicated into a custom role.
+- **Object ownership:** every mutation reads the durable definition row scoped to the trusted Clinic and re-checks it through `AuthorizationService::authorizeForObject`; a key that exists in another Clinic is not addressable (no cross-Clinic fallback).
+- **Display names (internationalization):** persistent, Unicode-general (`display_name VARCHAR(190)` utf8mb4, nullable), validated in code points (≤120) with no Persian-only or single-language rule. Unicode format characters such as ZWNJ are preserved; control characters are stripped; a malformed stored value falls back to the immutable technical key. The technical `role_key` stays immutable and independent of the display name.
+- **Audit:** every successful mutation is written to the hash-chained audit log with the explicit Clinic, actor, role key and before/after change set; refused writes are not audited as changes and never partially persist (the durable `version` only advances on a committed write).
+
 ## 4. Workstream ordering and non-claims
 
 - The Custom Role & Permission Management workstream remains **before Phase 20** and is not resequenced.
