@@ -19,7 +19,7 @@ $baselinePath = getenv('UPGRADE_FIXTURE_PATH');
 // Schema reached by the PINNED PREVIOUS source at seed time.
 $expectedPreviousVersion = '2026_09_26_0023';
 // Schema the CANDIDATE artifact must reach after migrating forward.
-$expectedCandidateVersion = '2026_10_10_0024';
+$expectedCandidateVersion = '2026_10_11_0025';
 
 $fail = static function (string $message): void {
     fwrite(STDERR, 'UPGRADE_PATH_FAILED: ' . $message . "\n");

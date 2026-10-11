@@ -25,7 +25,16 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
 {
     use RealTableMigrations;
 
+    /** The custom-role persistence migration (Slice 1). */
     private const NEW_VERSION = '2026_10_10_0024';
+
+    /**
+     * Slice 2 adds a forward-only follow-up migration (display_name column), so
+     * the 0024 tables are no longer the head of the migration chain. The
+     * custom-role schema safety assertions below still target 0024 explicitly;
+     * "head" assertions target this version.
+     */
+    private const HEAD_VERSION = '2026_10_11_0025';
 
     protected function setUp(): void
     {
@@ -50,7 +59,9 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
         $appliedSecond = $this->withRealTables(static fn (): array => App::migrations()->migrate());
 
         self::assertSame([], $appliedSecond, 'second migrate() must be a no-op (idempotent)');
-        self::assertSame(self::NEW_VERSION, App::migrations()->currentVersion(), 'migration 2026_10_10_0024 must be the current version');
+        self::assertContains(self::NEW_VERSION, App::migrations()->applied(), 'migration 2026_10_10_0024 must be applied');
+        self::assertContains(self::HEAD_VERSION, App::migrations()->applied(), 'migration 2026_10_11_0025 must be applied');
+        self::assertSame(self::HEAD_VERSION, App::migrations()->currentVersion(), 'the custom-role migrations must be the current head');
 
         foreach (['cpms_custom_role_defs', 'cpms_custom_role_capabilities'] as $short) {
             $table = App::db()->table($short);
@@ -127,13 +138,15 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
 
         $this->withRealTables(function () use ($wpdb, $defs, $caps): void {
             try {
+                self::assertSame(self::HEAD_VERSION, App::migrations()->rollbackOne(), 'rollbackOne() must roll back the display-name migration first');
                 $rolled = App::migrations()->rollbackOne();
-                self::assertSame(self::NEW_VERSION, $rolled, 'rollbackOne() must roll back 0024 first');
+                self::assertSame(self::NEW_VERSION, $rolled, 'rollbackOne() must then roll back 0024');
                 self::assertSame(self::PREVIOUS_VERSION, App::migrations()->currentVersion(), 'version must sit at 0023 before the fresh migration');
 
                 $applied = App::migrations()->migrate();
                 self::assertContains(self::NEW_VERSION, $applied, 'normal fresh migration must apply 0024');
-                self::assertSame(self::NEW_VERSION, App::migrations()->currentVersion());
+                self::assertContains(self::HEAD_VERSION, $applied, 'normal fresh migration must apply the display-name migration too');
+                self::assertSame(self::HEAD_VERSION, App::migrations()->currentVersion());
 
                 // Repeat migration is safe (idempotent no-op).
                 self::assertSame([], App::migrations()->migrate(), 'repeat migration must be a no-op');
@@ -187,14 +200,14 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
                 self::assertSame(1, (int) $wpdb->get_var("SELECT COUNT(*) FROM {$caps}"), 'exactly the valid capability must remain'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
             } finally {
                 // Deterministic cleanup: fresh empty tables at 0024 again.
-                $wpdb->query("DELETE FROM {$wpdb->prefix}cpms_schema_migrations WHERE version = '" . self::NEW_VERSION . "'"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $wpdb->query("DELETE FROM {$wpdb->prefix}cpms_schema_migrations WHERE version IN ('" . self::NEW_VERSION . "', '" . self::HEAD_VERSION . "')"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 $wpdb->query("DROP TABLE IF EXISTS {$caps}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 $wpdb->query("DROP TABLE IF EXISTS {$defs}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 App::migrations()->migrate();
             }
         });
 
-        self::assertSame(self::NEW_VERSION, App::migrations()->currentVersion());
+        self::assertSame(self::HEAD_VERSION, App::migrations()->currentVersion());
     }
 
     /**
@@ -210,6 +223,8 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
         try {
             $this->withRealTables(function () use ($wpdb, $defs): void {
                 // Back to 0023: real custom-role tables gone, 0024 unrecorded.
+                self::assertSame(self::HEAD_VERSION, App::migrations()->rollbackOne());
+                self::assertSame(self::HEAD_VERSION, App::migrations()->rollbackOne());
                 self::assertSame(self::NEW_VERSION, App::migrations()->rollbackOne());
                 self::assertSame(self::PREVIOUS_VERSION, App::migrations()->currentVersion());
 
@@ -244,7 +259,7 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
             $this->restoreFreshSchema();
         }
 
-        self::assertSame(self::NEW_VERSION, App::migrations()->currentVersion(), 'suite schema must be restored after the test');
+        self::assertSame(self::HEAD_VERSION, App::migrations()->currentVersion(), 'suite schema must be restored after the test');
     }
 
     /**
@@ -292,7 +307,7 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
             $this->restoreFreshSchema();
         }
 
-        self::assertSame(self::NEW_VERSION, App::migrations()->currentVersion(), 'suite schema must be restored after the test');
+        self::assertSame(self::HEAD_VERSION, App::migrations()->currentVersion(), 'suite schema must be restored after the test');
     }
 
     // ------------------------------------------------------------------
@@ -327,7 +342,8 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
         try {
             $this->withRealTables(function () use ($label, $createMalformed, $probeTable, $expectedColumns, &$beforeRows, &$beforeCols): void {
                 global $wpdb;
-                self::assertSame(self::NEW_VERSION, App::migrations()->rollbackOne(), $label . ': rollbackOne() must undo 0024 first');
+                self::assertSame(self::HEAD_VERSION, App::migrations()->rollbackOne(), $label . ': rollbackOne() must undo the display-name migration first');
+                self::assertSame(self::NEW_VERSION, App::migrations()->rollbackOne(), $label . ': rollbackOne() must then undo 0024');
                 self::assertSame(self::PREVIOUS_VERSION, App::migrations()->currentVersion(), $label . ': version must sit at 0023');
 
                 $createMalformed();
@@ -386,7 +402,7 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
             $this->restoreFreshSchema();
         }
 
-        self::assertSame(self::NEW_VERSION, App::migrations()->currentVersion(), $label . ': suite schema must be restored');
+        self::assertSame(self::HEAD_VERSION, App::migrations()->currentVersion(), $label . ': suite schema must be restored');
     }
 
     /**
@@ -699,7 +715,7 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
         $cross_clinics = $wpdb->prefix . 'cpms_clinics';
 
         // 1. Establish actual migration state after setUp().
-        self::assertSame( self::NEW_VERSION, App::migrations()->currentVersion(), 'setUp must leave migration at 0024' );
+        self::assertSame( self::HEAD_VERSION, App::migrations()->currentVersion(), 'setUp must leave the custom-role migrations at head' );
 
         $beforeRows = null;
         $beforeCols = null;
@@ -707,7 +723,8 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
 
         try {
             $this->withRealTables(function () use ($wpdb, $defs, $caps, $cross_db, $cross_clinics, &$beforeRows, &$beforeCols, &$crossParentId): void {
-                // 2. Roll back 0024 BEFORE constructing malformed schema.
+                // 2. Roll back the display-name migration, then 0024, BEFORE constructing malformed schema.
+                self::assertSame( self::HEAD_VERSION, App::migrations()->rollbackOne(), 'rollbackOne must undo the display-name migration' );
                 $rolled = App::migrations()->rollbackOne();
                 self::assertSame( self::NEW_VERSION, $rolled, 'rollbackOne must undo 0024' );
                 self::assertSame( self::PREVIOUS_VERSION, App::migrations()->currentVersion(), 'version must sit at 0023 before fixture' );
@@ -821,7 +838,7 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
                     if ( false === $ok && '' !== $wpdb->last_error && '' === $cleanupError ) {
                         $cleanupError = $wpdb->last_error;
                     }
-                    $ok = $wpdb->query( "DELETE FROM {$wpdb->prefix}cpms_schema_migrations WHERE version = '" . self::NEW_VERSION . "'" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                    $ok = $wpdb->query( "DELETE FROM {$wpdb->prefix}cpms_schema_migrations WHERE version IN ('" . self::NEW_VERSION . "', '" . self::HEAD_VERSION . "')" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                     if ( false === $ok && '' !== $wpdb->last_error && '' === $cleanupError ) {
                         $cleanupError = $wpdb->last_error;
                     }
@@ -844,7 +861,7 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
             }
         }
 
-        self::assertSame( self::NEW_VERSION, App::migrations()->currentVersion(), 'suite schema must be restored after cross-schema test' );
+        self::assertSame( self::HEAD_VERSION, App::migrations()->currentVersion(), 'suite schema must be restored after cross-schema test' );
     }
 
     /**
@@ -861,7 +878,7 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
         $cleanupError = '';
         try {
             $this->withRealTables(function () use ($wpdb, $defs, $caps, &$cleanupError): void {
-                $ok = $wpdb->query("DELETE FROM {$wpdb->prefix}cpms_schema_migrations WHERE version = '" . self::NEW_VERSION . "'"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $ok = $wpdb->query("DELETE FROM {$wpdb->prefix}cpms_schema_migrations WHERE version IN ('" . self::NEW_VERSION . "', '" . self::HEAD_VERSION . "')"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 if ( false === $ok && '' !== $wpdb->last_error && '' === $cleanupError ) {
                     $cleanupError = $wpdb->last_error;
                 }
