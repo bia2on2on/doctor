@@ -321,12 +321,22 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
     {
         global $wpdb;
 
+        $beforeRows = null;
+        $beforeCols = null;
+
         try {
-            $this->withRealTables(function () use ($label, $createMalformed): void {
+            $this->withRealTables(function () use ($label, $createMalformed, $probeTable, &$beforeRows, &$beforeCols): void {
+                global $wpdb;
                 self::assertSame(self::NEW_VERSION, App::migrations()->rollbackOne(), $label . ': rollbackOne() must undo 0024 first');
                 self::assertSame(self::PREVIOUS_VERSION, App::migrations()->currentVersion(), $label . ': version must sit at 0023');
 
                 $createMalformed();
+
+                // Capture exact before snapshot (structure + data) before the failing migration.
+                $beforeCols = array_map( 'strval', (array) $wpdb->get_col( "SHOW COLUMNS FROM {$probeTable}" ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $beforeRows = $wpdb->get_results( "SELECT * FROM {$probeTable} ORDER BY id", ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                self::assertSame( $expectedColumns, $beforeCols, $label . ': malformed table must have expected columns before migration' );
+                self::assertCount( 1, (array) $beforeRows, $label . ': exactly one marker row must exist before migration' );
 
                 $migrate_failed = false;
                 $error_message  = '';
@@ -346,27 +356,23 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
                 App::migrations()->currentVersion(),
                 $label . ': migration 0024 must never be recorded after the failure'
             );
-            $cols = array_map('strval', (array) $wpdb->get_col("SHOW COLUMNS FROM {$probeTable}")); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-            self::assertSame($expectedColumns, $cols, $label . ': the malformed table must remain untouched');
-            $rows = $wpdb->get_results( "SELECT * FROM {$probeTable} ORDER BY id", ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-            self::assertCount( 1, $rows, $label . ': exactly one marker row must remain' );
-            // Verify the marker row's exact values were not mutated (fail-loud must not touch data).
-            $marker = $rows[0];
-            // Phase 1 uses id=7, Phase 2 uses id=9, other phases use id=1 — accept any of them as proof the row was not mutated.
-            self::assertContains( (int) ( $marker['id'] ?? $marker['ID'] ?? 0 ), [1, 7, 9], $label . ': marker row id must remain one of the inserted probe ids' );
-            // For defs probe the marker role_key must still be the probe value; for caps probe the capability must remain.
+            $afterCols = array_map('strval', (array) $wpdb->get_col("SHOW COLUMNS FROM {$probeTable}")); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $afterRows = $wpdb->get_results( "SELECT * FROM {$probeTable} ORDER BY id", ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            self::assertSame($beforeCols, $afterCols, $label . ': table structure must remain exactly unchanged (before vs after)');
+            self::assertEquals($beforeRows, $afterRows, $label . ': marker row must remain exactly unchanged (before vs after)');
+            // Also verify the captured before snapshot contained legitimate probe values (not arbitrary).
+            $marker = $afterRows[0];
             if ( str_contains( $probeTable, 'cpms_custom_role_defs' ) ) {
                 $found_key = (string) ( $marker['role_key'] ?? '' );
                 self::assertTrue(
                     str_contains( $found_key, 'probe_' ),
-                    $label . ': marker role_key must remain a probe value, got ' . $found_key
+                    $label . ': marker role_key must be a legitimate probe value, got ' . $found_key
                 );
             } else {
                 $found_cap = (string) ( $marker['capability'] ?? '' );
-                // Caps marker is either 'cpms_patient_read' or 'probe_pair' depending on phase.
                 self::assertTrue(
                     $found_cap === 'cpms_patient_read' || $found_cap === 'probe_pair',
-                    $label . ': marker capability must remain probe value, got ' . $found_cap
+                    $label . ': marker capability must be legitimate probe value, got ' . $found_cap
                 );
             }
         } finally {
@@ -674,117 +680,130 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
     /**
      * Cross-schema FK regression — the validator must reject a FK that points
      * to a same-named parent table in another schema (REFERENCED_TABLE_SCHEMA
-     * must match DATABASE()). If the database cannot construct the fixture
-     * (e.g. no CREATE DATABASE privilege), the test records that the defect
-     * cannot be reproduced and does not manufacture a failure.
+     * must match DATABASE()). 12-step runtime proof with exact preservation.
      */
     public function testCrossSchemaForeignKeyFailsMigration(): void
     {
         global $wpdb;
-        $defs         = App::db()->table( 'cpms_custom_role_defs' );
-        $current_db   = (string) $wpdb->get_var( 'SELECT DATABASE()' ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        $cross_db     = $current_db . '_cross';
+        $defs          = App::db()->table( 'cpms_custom_role_defs' );
+        $caps          = App::db()->table( 'cpms_custom_role_capabilities' );
+        $current_db    = (string) $wpdb->get_var( 'SELECT DATABASE()' ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $cross_db      = $current_db . '_cross';
         $cross_clinics = $wpdb->prefix . 'cpms_clinics';
 
-        // Try to create the cross-schema fixture; if the server prevents it,
-        // record the evidence and do not claim a false product RED.
-        $can_create = true;
-        $error      = '';
-        $this->withRealTables(function () use ($wpdb, $defs, $current_db, $cross_db, $cross_clinics, &$can_create, &$error): void {
-            // Back to 0023
-            $wpdb->query( "DROP DATABASE IF EXISTS `{$cross_db}`" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-            $created = $wpdb->query( "CREATE DATABASE `{$cross_db}`" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-            if ( false === $created ) {
-                $can_create = false;
-                $error = $wpdb->last_error;
+        // 1. Establish actual migration state after setUp().
+        self::assertSame( self::NEW_VERSION, App::migrations()->currentVersion(), 'setUp must leave migration at 0024' );
 
-                return;
-            }
-            $ok = $wpdb->query( "CREATE TABLE `{$cross_db}`.`{$cross_clinics}` ( `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, PRIMARY KEY (id) ) ENGINE=InnoDB" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-            if ( false === $ok ) {
-                $can_create = false;
-                $error = $wpdb->last_error;
-                $wpdb->query( "DROP DATABASE IF EXISTS `{$cross_db}`" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $beforeRows = null;
+        $beforeCols = null;
+        $crossParentId = null;
 
-                return;
-            }
-            // Also create a valid defs table that references the cross-schema parent.
-            // Use withRealTables to ensure real DDL, then immediately drop for cleanup.
-            $wpdb->query( "DROP TABLE IF EXISTS `{$cross_db}`.`{$cross_clinics}`" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-            $wpdb->query( "DROP DATABASE IF EXISTS `{$cross_db}`" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        });
-
-        if ( ! $can_create ) {
-            // Cannot construct cross-schema fixture in this environment — record
-            // evidence and verify the migration fix is still present (schema check).
-            self::assertStringContainsString( '', $error, 'cross-schema fixture not constructible in this environment — defect cannot be reproduced, migration schema check remains justified' );
-            // Verify the validator now checks REFERENCED_TABLE_SCHEMA (code level).
-            $migration = file_get_contents( dirname( __DIR__, 2 ) . '/src/Migrations/2026_10_10_0024_custom_role_definitions.php' );
-            self::assertStringContainsString( 'REFERENCED_TABLE_SCHEMA', $migration, 'migration must validate REFERENCED_TABLE_SCHEMA' );
-            self::assertStringContainsString( 'SELECT DATABASE()', $migration, 'migration must compare against current DATABASE()' );
-
-            return;
-        }
-
-        // If we can create cross-schema, do the full malformed-schema proof.
-        $this->withRealTables(function () use ($wpdb, $defs, $cross_db, $cross_clinics, $current_db): void {
-            $wpdb->query( "CREATE DATABASE `{$cross_db}`" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-            $wpdb->query( "CREATE TABLE `{$cross_db}`.`{$cross_clinics}` ( `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, PRIMARY KEY (id) ) ENGINE=InnoDB" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-            // Now create malformed defs that points to cross-schema parent.
-            $clinics = App::db()->table( 'cpms_clinics' );
-            // We need to reference the cross-schema table; the information_schema will show REFERENCED_TABLE_SCHEMA = cross_db.
-            $ok = $wpdb->query( // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                "CREATE TABLE {$defs} ("
-                . ' id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,'
-                . ' clinic_id BIGINT UNSIGNED NOT NULL,'
-                . ' role_key VARCHAR(64) NOT NULL,'
-                . " status ENUM('active','inactive') NOT NULL DEFAULT 'active',"
-                . ' version INT UNSIGNED NOT NULL DEFAULT 1,'
-                . ' created_at DATETIME(3) NOT NULL,'
-                . ' updated_at DATETIME(3) NOT NULL,'
-                . ' PRIMARY KEY (id),'
-                . ' UNIQUE KEY u_custom_role (clinic_id, role_key),'
-                . ' KEY idx_custom_role_status (clinic_id, status),'
-                . " CONSTRAINT fk_customrole_clinic FOREIGN KEY (clinic_id) REFERENCES `{$cross_db}`.`{$cross_clinics}` (id) ON DELETE CASCADE"
-                . ' ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
-            );
-            // If FK creation itself fails due to server restriction, treat as not reproducible.
-            if ( false === $ok ) {
-                $wpdb->query( "DROP DATABASE IF EXISTS `{$cross_db}`" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                self::markTestSkipped( 'cross-schema FK not supported in this MySQL configuration: ' . $wpdb->last_error );
-
-                return;
-            }
-            $wpdb->query( "INSERT INTO {$defs} (clinic_id, role_key, status, version, created_at, updated_at) VALUES (1, 'probe_cross', 'active', 1, UTC_TIMESTAMP(3), UTC_TIMESTAMP(3))" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        });
-
-        // Now test that migration rejects it because REFERENCED_TABLE_SCHEMA != DATABASE()
-        global $wpdb;
-        $caught = false;
-        $msg = '';
         try {
-            $this->withRealTables(function (): void {
-                Self::assertSame( self::NEW_VERSION, App::migrations()->rollbackOne() );
-                App::migrations()->migrate();
-            });
-        } catch ( \RuntimeException $e ) {
-            $caught = true;
-            $msg = $e->getMessage();
-        } finally {
-            // Cleanup cross DB
-            $this->withRealTables(function () use ($wpdb, $cross_db): void {
+            $this->withRealTables(function () use ($wpdb, $defs, $caps, $cross_db, $cross_clinics, &$beforeRows, &$beforeCols, &$crossParentId): void {
+                // 2. Roll back 0024 BEFORE constructing malformed schema.
+                $rolled = App::migrations()->rollbackOne();
+                self::assertSame( self::NEW_VERSION, $rolled, 'rollbackOne must undo 0024' );
+                self::assertSame( self::PREVIOUS_VERSION, App::migrations()->currentVersion(), 'version must sit at 0023 before fixture' );
+
+                // 3. Create cross-schema referenced parent table (check every result).
+                // Ensure clean slate.
                 $wpdb->query( "DROP DATABASE IF EXISTS `{$cross_db}`" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                $defs = App::db()->table( 'cpms_custom_role_defs' );
-                $caps = App::db()->table( 'cpms_custom_role_capabilities' );
+                $created = $wpdb->query( "CREATE DATABASE `{$cross_db}`" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                if ( false === $created ) {
+                    self::markTestSkipped( 'cross-schema FK fixture not constructible: CREATE DATABASE failed: ' . $wpdb->last_error );
+                    return;
+                }
+                self::assertNotFalse( $created, 'CREATE DATABASE must succeed: ' . $wpdb->last_error );
+                $ok = $wpdb->query( "CREATE TABLE `{$cross_db}`.`{$cross_clinics}` ( `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, PRIMARY KEY (id) ) ENGINE=InnoDB" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                self::assertNotFalse( $ok, 'cross-schema parent table must be created: ' . $wpdb->last_error );
+                $ok = $wpdb->query( "INSERT INTO `{$cross_db}`.`{$cross_clinics}` (id) VALUES (1)" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                self::assertNotFalse( $ok, 'cross-schema parent row must be inserted: ' . $wpdb->last_error );
+                $crossParentId = (int) $wpdb->get_var( "SELECT id FROM `{$cross_db}`.`{$cross_clinics}` WHERE id = 1" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                self::assertSame( 1, $crossParentId, 'cross parent id must be 1' );
+
+                // 4. Construct malformed local table with actual FK referencing external schema.
+                $ok = $wpdb->query( // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                    "CREATE TABLE {$defs} ("
+                    . ' id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,'
+                    . ' clinic_id BIGINT UNSIGNED NOT NULL,'
+                    . ' role_key VARCHAR(64) NOT NULL,'
+                    . " status ENUM('active','inactive') NOT NULL DEFAULT 'active',"
+                    . ' version INT UNSIGNED NOT NULL DEFAULT 1,'
+                    . ' created_at DATETIME(3) NOT NULL,'
+                    . ' updated_at DATETIME(3) NOT NULL,'
+                    . ' PRIMARY KEY (id),'
+                    . ' UNIQUE KEY u_custom_role (clinic_id, role_key),'
+                    . ' KEY idx_custom_role_status (clinic_id, status),'
+                    . " CONSTRAINT fk_customrole_clinic FOREIGN KEY (clinic_id) REFERENCES `{$cross_db}`.`{$cross_clinics}` (id) ON DELETE CASCADE"
+                    . ' ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
+                );
+                if ( false === $ok ) {
+                    // Do not treat unrelated CREATE TABLE errors as unsupported cross-schema FK — but if FK creation fails due to server restriction, report it.
+                    $wpdb->query( "DROP DATABASE IF EXISTS `{$cross_db}`" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                    self::markTestSkipped( 'cross-schema FK not supported: CREATE TABLE with cross-schema FK failed: ' . $wpdb->last_error );
+                    return;
+                }
+                self::assertNotFalse( $ok, 'malformed local defs with cross-schema FK must be created: ' . $wpdb->last_error );
+
+                // 5. Insert and verify required parent and local marker records.
+                $ok = $wpdb->query( "INSERT INTO {$defs} (clinic_id, role_key, status, version, created_at, updated_at) VALUES (1, 'probe_cross', 'active', 1, UTC_TIMESTAMP(3), UTC_TIMESTAMP(3))" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                self::assertNotFalse( $ok, 'local marker row must be inserted: ' . $wpdb->last_error );
+                $localCount = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$defs} WHERE role_key = 'probe_cross'" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                self::assertSame( 1, $localCount, 'local marker must be exactly one' );
+
+                // 6 is covered by every assertNotFalse above; 7 — do not rollback again before validation.
+
+                // Capture exact before snapshot for preservation check.
+                $beforeCols = array_map( 'strval', (array) $wpdb->get_col( "SHOW COLUMNS FROM {$defs}" ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $beforeRows = $wpdb->get_results( "SELECT * FROM {$defs} ORDER BY id", ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                self::assertCount( 1, (array) $beforeRows, 'exactly one marker row before migration' );
+
+                // 8. Execute real migration validator against malformed schema.
+                $migrate_failed = false;
+                $error_message  = '';
+                try {
+                    App::migrations()->migrate();
+                } catch (\RuntimeException $e) {
+                    $migrate_failed = true;
+                    $error_message  = $e->getMessage();
+                }
+
+                // 9. Assert precise expected schema-contract rejection.
+                self::assertTrue( $migrate_failed, 'migrate must fail loudly on cross-schema FK' );
+                self::assertStringContainsString( 'migration 0024', $error_message, 'failure must name migration 0024' );
+                // The validator mentions the violated FK contract.
+                self::assertStringContainsString( 'fk_customrole_clinic', strtolower( $error_message ), 'failure must mention fk_customrole_clinic' );
+            });
+
+            // If the test was skipped due to permissions, the withRealTables closure returned early and beforeRows remains null — do not assert further.
+            if ( null === $beforeRows ) {
+                // Check if the test was marked skipped (PHPUnit will have recorded it). We still need to clean up.
+                return;
+            }
+
+            // 10. Assert migration version remains 0023.
+            self::assertSame( self::PREVIOUS_VERSION, App::migrations()->currentVersion(), 'migration 0024 must never be recorded after cross-schema failure' );
+
+            // 11. Assert exact malformed table structure and marker-row values remain unchanged.
+            $afterCols = array_map( 'strval', (array) $wpdb->get_col( "SHOW COLUMNS FROM {$defs}" ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $afterRows = $wpdb->get_results( "SELECT * FROM {$defs} ORDER BY id", ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            self::assertSame( $beforeCols, $afterCols, 'cross-schema malformed table columns must remain exactly unchanged' );
+            self::assertEquals( $beforeRows, $afterRows, 'cross-schema marker row must remain exactly unchanged (before vs after)' );
+            $marker = $afterRows[0];
+            self::assertSame( 'probe_cross', (string) ( $marker['role_key'] ?? '' ), 'marker role_key must remain probe_cross' );
+            self::assertSame( 1, (int) ( $marker['clinic_id'] ?? 0 ), 'marker clinic_id must remain 1' );
+        } finally {
+            // 12. Restore normal schema safely for subsequent tests.
+            $this->withRealTables(function () use ($wpdb, $cross_db, $defs, $caps): void {
+                $wpdb->query( "DROP DATABASE IF EXISTS `{$cross_db}`" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 $wpdb->query( "DELETE FROM {$wpdb->prefix}cpms_schema_migrations WHERE version = '" . self::NEW_VERSION . "'" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 $wpdb->query( "DROP TABLE IF EXISTS {$caps}" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 $wpdb->query( "DROP TABLE IF EXISTS {$defs}" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 App::migrations()->migrate();
             });
         }
-        self::assertTrue( $caught, 'cross-schema FK must be rejected, migration must fail loudly' );
-        self::assertStringContainsString( 'migration 0024', $msg );
-        self::assertStringContainsString( $current_db, $msg, 'error must mention expected schema' );
+
+        self::assertSame( self::NEW_VERSION, App::migrations()->currentVersion(), 'suite schema must be restored after cross-schema test' );
     }
 
     /**

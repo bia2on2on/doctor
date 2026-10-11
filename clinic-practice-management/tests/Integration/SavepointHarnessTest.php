@@ -175,4 +175,69 @@ final class SavepointHarnessTest extends WP_UnitTestCase
         self::assertTrue( $thrown, 'unexpected empty stack without DDL must fail loudly, not silently become SELECT 1' );
         self::assertStringContainsString( 'transaction control failed', strtolower( $msg ) );
     }
+
+    /**
+     * COMMENTED TEMPORARY DDL — the classifier previously mis-identified
+     * `CREATE /* comment */ TEMPORARY TABLE` as real DDL (because it only
+     * stripped leading comments). That caused an implicit-commit flag to be
+     * set and the subsequent ROLLBACK (from a controlled callback failure)
+     * was rewritten to SELECT 1, so the persistent marker was NOT rolled back.
+     * This test proves the fix: with correct inline-comment handling the
+     * statement is recognised as TEMPORARY, the flag stays false, and the
+     * rollback correctly removes the marker.
+     */
+    public function testCommentedTemporaryDdlDoesNotDestroyRollback(): void
+    {
+        global $wpdb;
+        $db          = App::db();
+        $markerTable = $wpdb->prefix . 'cpms_harness_marker';
+
+        // Create a real (non-TEMPORARY) marker table outside any transactional.
+        $this->withRealTables(function () use ($wpdb, $markerTable): void {
+            $ok = $wpdb->query( "CREATE TABLE IF NOT EXISTS {$markerTable} ( id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, value VARCHAR(64) NOT NULL, PRIMARY KEY (id) ) ENGINE=InnoDB" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            self::assertNotFalse( $ok, 'marker table must be created: ' . $wpdb->last_error );
+            $wpdb->query( "DELETE FROM {$markerTable}" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        });
+
+        // Verify the server actually accepts `CREATE /* comment */ TEMPORARY`.
+        $this->withRealTables(function () use ($wpdb): void {
+            $tmpCheck = App::db()->table( 'cpms_harness_tmp_syntax_check_' . bin2hex( random_bytes( 2 ) ) );
+            $ok = $wpdb->query( "CREATE /* inline comment */ TEMPORARY TABLE {$tmpCheck} ( id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, PRIMARY KEY (id) ) ENGINE=InnoDB" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            self::assertNotFalse( $ok, 'MySQL must accept CREATE /* comment */ TEMPORARY: ' . $wpdb->last_error );
+            $wpdb->query( "DROP TEMPORARY TABLE IF EXISTS {$tmpCheck}" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        });
+
+        $thrown = false;
+        try {
+            $db->transactional(function () use ($wpdb, $markerTable): void {
+                $ok = $wpdb->query( $wpdb->prepare( "INSERT INTO {$markerTable} (value) VALUES (%s)", 'probe_marker' ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                self::assertNotFalse( $ok, 'marker insert must succeed: ' . $wpdb->last_error );
+                // This is TEMPORARY with an inline comment — must NOT be treated as real DDL.
+                $tmp = App::db()->table( 'cpms_harness_probe_commented_tmp_' . bin2hex( random_bytes( 2 ) ) );
+                $ok2 = $wpdb->query( "CREATE /* inline comment */ TEMPORARY TABLE {$tmp} ( id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, PRIMARY KEY (id) ) ENGINE=InnoDB" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                self::assertNotFalse( $ok2, 'commented TEMPORARY DDL inside transactional must succeed: ' . $wpdb->last_error );
+                // Controlled failure forces a ROLLBACK — the marker must be rolled back.
+                throw new \RuntimeException( 'controlled rollback trigger' );
+            });
+        } catch ( \Throwable $e ) {
+            if ( str_contains( $e->getMessage(), 'controlled rollback trigger' ) ) {
+                $thrown = true;
+            } else {
+                throw $e;
+            }
+        }
+
+        self::assertTrue( $thrown, 'controlled rollback trigger must be observed' );
+        $count = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$markerTable} WHERE value = 'probe_marker'" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        self::assertSame( 0, $count, 'commented TEMPORARY DDL must not destroy rollback — marker must be rolled back to 0' );
+
+        // Cleanup marker table (real).
+        $this->withRealTables(function () use ($wpdb, $markerTable): void {
+            $wpdb->query( "DROP TABLE IF EXISTS {$markerTable}" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        });
+        // Ensure harness stack is clean for next test.
+        $GLOBALS['__cpms_sp_stack'] = [];
+        $GLOBALS['__cpms_ddl_seen_since_start'] = false;
+    }
 }
+
