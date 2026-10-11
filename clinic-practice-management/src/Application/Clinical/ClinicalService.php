@@ -1364,7 +1364,11 @@ final class ClinicalService
                 $this->patients->search(App::scope()->clinicId, $q, 20)
             );
         }
-        if ($isDoctor && ($type === 'all' || $type === 'note')) {
+        // Clinic-local authority is required in addition to the WP-global doctor
+        // role: the WP role never supplies scoped clinical read (membership DENY
+        // and Clinic-local presets win).
+        if ($isDoctor && ($type === 'all' || $type === 'note')
+            && App::authorization_service()->can($actorUserId, $trustedClinicId, RolesAndCapabilities::MEDICAL_READ)) {
             $has_private_read = user_can( $actorUserId, RolesAndCapabilities::PRIVATE_NOTE_READ ) // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
                 && App::authorization_service()->can(
                     $actorUserId, // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
@@ -1381,7 +1385,8 @@ final class ClinicalService
                 $this->notes->search( App::scope()->clinicId, $q, $search_visibility, $from, $to, 20, $own_clinician_id ) // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
             );
         }
-        if ($isDoctor && ($type === 'all' || $type === 'rx')) {
+        if ($isDoctor && ($type === 'all' || $type === 'rx')
+            && App::authorization_service()->can($actorUserId, $trustedClinicId, RolesAndCapabilities::RX_READ)) {
             $results['prescriptions'] = array_map(
                 fn (array $rx): array => $this->presentPrescription($rx, $this->prescriptions->itemsFor((int) $rx['id'])),
                 $this->prescriptions->searchByDrug(App::scope()->clinicId, $q, $from, $to, 20)
