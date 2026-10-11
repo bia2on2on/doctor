@@ -101,7 +101,7 @@ incompatibility.
 
 Only a complete materially healthy A reaches the existing reusable Stage B:
 install CPMS afterward, verify migrations through the current latest migration
-`2026_10_10_0024_custom_role_definitions.php`, run the administrator,
+`2026_10_11_0025_custom_role_display_name.php`, run the administrator,
 doctor, secretary, manager and accountant personas, verify authorization
 denials, booking, REST/AJAX, RTL, exact plugin versions/active set and post-CPMS
 PHP/browser diagnostics. Existing required acceptance anchors remain in force.
@@ -250,7 +250,7 @@ rechecks the persisted Stage A gate and snapshots logs **before** installation /
 activation. A failed boundary blocks installation as well.
 
 Reuse is literal: the existing workflow installs the ZIP, verifies tables and
-schema `2026_10_10_0024`, seeds existing role/membership and public-booking fixtures,
+schema `2026_10_11_0025`, seeds existing role/membership and public-booking fixtures,
 and invokes the existing `rwp-acceptance.py`. Administrator, doctor, secretary,
 manager and accountant access, authorization denials, public booking A1/A4 and
 RTL are required by named evidence anchors and by every existing browser result.
