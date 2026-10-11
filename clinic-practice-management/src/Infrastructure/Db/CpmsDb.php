@@ -232,7 +232,7 @@ final class CpmsDb
         } else {
             $this->tx_control( '/*cpms*/ SAVEPOINT ' . $savepoint );
         }
-        $this->tx_depth++;
+        ++$this->tx_depth;
 
         try {
             try {
@@ -262,7 +262,7 @@ final class CpmsDb
 
             return $result;
         } finally {
-            $this->tx_depth--;
+            --$this->tx_depth;
         }
     }
 
