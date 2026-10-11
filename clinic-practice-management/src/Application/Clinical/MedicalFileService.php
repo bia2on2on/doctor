@@ -477,6 +477,7 @@ final class MedicalFileService
         $table = App::db()->table( 'cpms_visits' );
         $sql   = 'SELECT clinic_id, patient_id FROM ' . $table . ' WHERE id = %d LIMIT 1';
         $visit = App::db()->fetchRow( $sql, [ $visitId ] );
+
         $clinic_ok  = null !== $visit && (int) $visit['clinic_id'] === $patientClinicId;
         $patient_ok = null !== $visit && (int) $visit['patient_id'] === $patientId;
         if ( ! $clinic_ok || ! $patient_ok ) {

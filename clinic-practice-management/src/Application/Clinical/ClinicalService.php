@@ -139,6 +139,10 @@ final class ClinicalService
             ['via' => 'record_endpoint']
         );
 
+        // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host variables
+        $visit_files = $this->visit_owned_files( $this->files->forVisit( $visitId ), $visit );
+        // phpcs:enable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
+
         return [
             'visit' => [
                 'id' => (int) $visit['id'],
@@ -165,9 +169,7 @@ final class ClinicalService
                 'file_size' => (int) $f['file_size'],
                 'uploaded_by_wp_user_id' => (int) $f['uploaded_by_wp_user_id'],
                 'created_at' => (string) $f['created_at'],
-            // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host variables
-            ], $this->visit_owned_files( $this->files->forVisit( $visitId ), $visit ) ),
-            // phpcs:enable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
+            ], $visit_files ),
             'past_visits' => array_map(static fn (array $v): array => [
                 'id' => (int) $v['id'],
                 'visit_date' => (string) $v['visit_date'],
