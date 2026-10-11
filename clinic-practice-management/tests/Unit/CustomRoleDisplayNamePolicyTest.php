@@ -62,10 +62,20 @@ final class CustomRoleDisplayNamePolicyTest extends TestCase
 
     public function testStripsControlCharactersAndCollapsesWhitespace(): void
     {
-        $hostile = "  Lead\u{0000}Role\n\t  Two   ";
+        // C0 controls other than NUL are stripped; line breaks/tabs become spaces
+        // and whitespace runs collapse.
+        $hostile = "  Lead\u{0001}Role\n\t  Two   ";
 
         self::assertSame('LeadRole Two', CustomRolePolicy::sanitize_display_name($hostile));
         self::assertTrue(CustomRolePolicy::is_acceptable_display_name($hostile));
+    }
+
+    public function testNulByteFailsClosed(): void
+    {
+        // A NUL byte is never normalizable text: the whole value is refused
+        // rather than silently truncated at the NUL.
+        self::assertSame('', CustomRolePolicy::sanitize_display_name("Lead\u{0000}Role"));
+        self::assertFalse(CustomRolePolicy::is_acceptable_display_name("Lead\u{0000}Role"));
     }
 
     public function testRejectsInvalidUtf8FailClosed(): void

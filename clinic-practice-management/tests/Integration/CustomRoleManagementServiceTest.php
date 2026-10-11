@@ -308,7 +308,7 @@ final class CustomRoleManagementServiceTest extends WP_UnitTestCase
 
     public function testBuiltInAndMalformedRoleKeysAreRefused(): void
     {
-        foreach (['cpms_doctor', '1abc', 'UPPER', 'ab', 'has-dash'] as $key) {
+        foreach (['cpms_doctor', '1abc', 'UPPER', 'a', 'has-dash', ''] as $key) {
             try {
                 $this->service()->create($this->managerUserId, $this->clinicA, $key, 'Key test', ['cpms_patient_read']);
                 self::fail("role key {$key} must be refused");
@@ -366,8 +366,16 @@ final class CustomRoleManagementServiceTest extends WP_UnitTestCase
     {
         self::assertFalse($this->service()->can_manage($this->suspendedUserId, $this->clinicA));
 
-        $this->expectException(AuthorizationException::class);
-        $this->service()->create($this->suspendedUserId, $this->clinicA, 'crm_suspended', 'Suspended', ['cpms_patient_read']);
+        // A suspended membership has no trusted Clinic scope (the establisher
+        // refuses it) and no scoped permission — both are denials.
+        try {
+            $this->service()->create($this->suspendedUserId, $this->clinicA, 'crm_suspended', 'Suspended', ['cpms_patient_read']);
+            self::fail('a suspended membership must be denied');
+        } catch (ScopeRequiredException|AuthorizationException $e) {
+            self::assertTrue(true, 'denied as expected');
+        }
+
+        self::assertNull((new CustomRoleRepository(App::db()))->definition_for($this->clinicA, 'crm_suspended'));
     }
 
     public function testNonMemberIsDenied(): void
