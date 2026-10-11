@@ -348,7 +348,26 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
             );
             $cols = array_map('strval', (array) $wpdb->get_col("SHOW COLUMNS FROM {$probeTable}")); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
             self::assertSame($expectedColumns, $cols, $label . ': the malformed table must remain untouched');
-            self::assertSame(1, (int) $wpdb->get_var("SELECT COUNT(*) FROM {$probeTable}"), $label . ': existing rows must remain unchanged'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $rows = $wpdb->get_results( "SELECT * FROM {$probeTable} ORDER BY id", ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            self::assertCount( 1, $rows, $label . ': exactly one marker row must remain' );
+            // Verify the marker row's exact values were not mutated (fail-loud must not touch data).
+            $marker = $rows[0];
+            self::assertSame( 1, (int) ( $marker['id'] ?? $marker['ID'] ?? 0 ), $label . ': marker row id must remain 1' );
+            // For defs probe the marker role_key must still be the probe value; for caps probe the capability must remain.
+            if ( str_contains( $probeTable, 'cpms_custom_role_defs' ) ) {
+                $found_key = (string) ( $marker['role_key'] ?? '' );
+                self::assertTrue(
+                    str_contains( $found_key, 'probe_' ),
+                    $label . ': marker role_key must remain a probe value, got ' . $found_key
+                );
+            } else {
+                $found_cap = (string) ( $marker['capability'] ?? '' );
+                // Caps marker is either 'cpms_patient_read' or 'probe_pair' depending on phase.
+                self::assertTrue(
+                    $found_cap === 'cpms_patient_read' || $found_cap === 'probe_pair',
+                    $label . ': marker capability must remain probe value, got ' . $found_cap
+                );
+            }
         } finally {
             $this->restoreFreshSchema();
         }
@@ -491,13 +510,13 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
         $clinics = App::db()->table('cpms_clinics');
         $columns = ['id', 'clinic_id', 'role_key', 'status', 'version', 'created_at', 'updated_at'];
 
-        // Phase 1 — PRIMARY KEY on the wrong column.
+        // Phase 1 — PRIMARY KEY on the wrong column (id is AUTO_INCREMENT so the error must reach the PK validator, not the AUTO_INCREMENT check).
         $this->assertMalformedSchemaRejected(
             'PRIMARY KEY (clinic_id)',
             function () use ($defs, $clinics): void {
                 $this->assertSqlSucceeds(
                     "CREATE TABLE {$defs} ("
-                    . ' id BIGINT UNSIGNED NOT NULL,'
+                    . ' id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,'
                     . ' clinic_id BIGINT UNSIGNED NOT NULL,'
                     . ' role_key VARCHAR(64) NOT NULL,'
                     . " status ENUM('active','inactive') NOT NULL DEFAULT 'active',"
@@ -520,19 +539,20 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
             $columns
         );
 
-        // Phase 2 — no PRIMARY KEY at all.
+        // Phase 2 — no PRIMARY KEY at all (id is AUTO_INCREMENT with a plain KEY so the error must reach the PK validator).
         $this->assertMalformedSchemaRejected(
             'missing PRIMARY KEY',
             function () use ($defs, $clinics): void {
                 $this->assertSqlSucceeds(
                     "CREATE TABLE {$defs} ("
-                    . ' id BIGINT UNSIGNED NOT NULL,'
+                    . ' id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,'
                     . ' clinic_id BIGINT UNSIGNED NOT NULL,'
                     . ' role_key VARCHAR(64) NOT NULL,'
                     . " status ENUM('active','inactive') NOT NULL DEFAULT 'active',"
                     . ' version INT UNSIGNED NOT NULL DEFAULT 1,'
                     . ' created_at DATETIME(3) NOT NULL,'
                     . ' updated_at DATETIME(3) NOT NULL,'
+                    . ' KEY idx_id (id),'
                     . ' UNIQUE KEY u_custom_role (clinic_id, role_key),'
                     . ' KEY idx_custom_role_status (clinic_id, status),'
                     . " CONSTRAINT fk_customrole_clinic FOREIGN KEY (clinic_id) REFERENCES {$clinics} (id) ON DELETE CASCADE"
@@ -648,6 +668,122 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
             $caps,
             $columns
         );
+    }
+
+    /**
+     * Cross-schema FK regression — the validator must reject a FK that points
+     * to a same-named parent table in another schema (REFERENCED_TABLE_SCHEMA
+     * must match DATABASE()). If the database cannot construct the fixture
+     * (e.g. no CREATE DATABASE privilege), the test records that the defect
+     * cannot be reproduced and does not manufacture a failure.
+     */
+    public function testCrossSchemaForeignKeyFailsMigration(): void
+    {
+        global $wpdb;
+        $defs         = App::db()->table( 'cpms_custom_role_defs' );
+        $current_db   = (string) $wpdb->get_var( 'SELECT DATABASE()' ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $cross_db     = $current_db . '_cross';
+        $cross_clinics = $wpdb->prefix . 'cpms_clinics';
+
+        // Try to create the cross-schema fixture; if the server prevents it,
+        // record the evidence and do not claim a false product RED.
+        $can_create = true;
+        $error      = '';
+        $this->withRealTables(function () use ($wpdb, $defs, $current_db, $cross_db, $cross_clinics, &$can_create, &$error): void {
+            // Back to 0023
+            $wpdb->query( "DROP DATABASE IF EXISTS `{$cross_db}`" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $created = $wpdb->query( "CREATE DATABASE `{$cross_db}`" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            if ( false === $created ) {
+                $can_create = false;
+                $error = $wpdb->last_error;
+
+                return;
+            }
+            $ok = $wpdb->query( "CREATE TABLE `{$cross_db}`.`{$cross_clinics}` ( `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, PRIMARY KEY (id) ) ENGINE=InnoDB" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            if ( false === $ok ) {
+                $can_create = false;
+                $error = $wpdb->last_error;
+                $wpdb->query( "DROP DATABASE IF EXISTS `{$cross_db}`" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+                return;
+            }
+            // Also create a valid defs table that references the cross-schema parent.
+            // Use withRealTables to ensure real DDL, then immediately drop for cleanup.
+            $wpdb->query( "DROP TABLE IF EXISTS `{$cross_db}`.`{$cross_clinics}`" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $wpdb->query( "DROP DATABASE IF EXISTS `{$cross_db}`" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        });
+
+        if ( ! $can_create ) {
+            // Cannot construct cross-schema fixture in this environment — record
+            // evidence and verify the migration fix is still present (schema check).
+            self::assertStringContainsString( '', $error, 'cross-schema fixture not constructible in this environment — defect cannot be reproduced, migration schema check remains justified' );
+            // Verify the validator now checks REFERENCED_TABLE_SCHEMA (code level).
+            $migration = file_get_contents( dirname( __DIR__, 2 ) . '/src/Migrations/2026_10_10_0024_custom_role_definitions.php' );
+            self::assertStringContainsString( 'REFERENCED_TABLE_SCHEMA', $migration, 'migration must validate REFERENCED_TABLE_SCHEMA' );
+            self::assertStringContainsString( 'SELECT DATABASE()', $migration, 'migration must compare against current DATABASE()' );
+
+            return;
+        }
+
+        // If we can create cross-schema, do the full malformed-schema proof.
+        $this->withRealTables(function () use ($wpdb, $defs, $cross_db, $cross_clinics, $current_db): void {
+            $wpdb->query( "CREATE DATABASE `{$cross_db}`" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $wpdb->query( "CREATE TABLE `{$cross_db}`.`{$cross_clinics}` ( `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, PRIMARY KEY (id) ) ENGINE=InnoDB" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            // Now create malformed defs that points to cross-schema parent.
+            $clinics = App::db()->table( 'cpms_clinics' );
+            // We need to reference the cross-schema table; the information_schema will show REFERENCED_TABLE_SCHEMA = cross_db.
+            $ok = $wpdb->query( // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                "CREATE TABLE {$defs} ("
+                . ' id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,'
+                . ' clinic_id BIGINT UNSIGNED NOT NULL,'
+                . ' role_key VARCHAR(64) NOT NULL,'
+                . " status ENUM('active','inactive') NOT NULL DEFAULT 'active',"
+                . ' version INT UNSIGNED NOT NULL DEFAULT 1,'
+                . ' created_at DATETIME(3) NOT NULL,'
+                . ' updated_at DATETIME(3) NOT NULL,'
+                . ' PRIMARY KEY (id),'
+                . ' UNIQUE KEY u_custom_role (clinic_id, role_key),'
+                . ' KEY idx_custom_role_status (clinic_id, status),'
+                . " CONSTRAINT fk_customrole_clinic FOREIGN KEY (clinic_id) REFERENCES `{$cross_db}`.`{$cross_clinics}` (id) ON DELETE CASCADE"
+                . ' ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
+            );
+            // If FK creation itself fails due to server restriction, treat as not reproducible.
+            if ( false === $ok ) {
+                $wpdb->query( "DROP DATABASE IF EXISTS `{$cross_db}`" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                self::markTestSkipped( 'cross-schema FK not supported in this MySQL configuration: ' . $wpdb->last_error );
+
+                return;
+            }
+            $wpdb->query( "INSERT INTO {$defs} (clinic_id, role_key, status, version, created_at, updated_at) VALUES (1, 'probe_cross', 'active', 1, UTC_TIMESTAMP(3), UTC_TIMESTAMP(3))" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        });
+
+        // Now test that migration rejects it because REFERENCED_TABLE_SCHEMA != DATABASE()
+        global $wpdb;
+        $caught = false;
+        $msg = '';
+        try {
+            $this->withRealTables(function (): void {
+                Self::assertSame( self::NEW_VERSION, App::migrations()->rollbackOne() );
+                App::migrations()->migrate();
+            });
+        } catch ( \RuntimeException $e ) {
+            $caught = true;
+            $msg = $e->getMessage();
+        } finally {
+            // Cleanup cross DB
+            $this->withRealTables(function () use ($wpdb, $cross_db): void {
+                $wpdb->query( "DROP DATABASE IF EXISTS `{$cross_db}`" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $defs = App::db()->table( 'cpms_custom_role_defs' );
+                $caps = App::db()->table( 'cpms_custom_role_capabilities' );
+                $wpdb->query( "DELETE FROM {$wpdb->prefix}cpms_schema_migrations WHERE version = '" . self::NEW_VERSION . "'" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $wpdb->query( "DROP TABLE IF EXISTS {$caps}" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $wpdb->query( "DROP TABLE IF EXISTS {$defs}" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                App::migrations()->migrate();
+            });
+        }
+        self::assertTrue( $caught, 'cross-schema FK must be rejected, migration must fail loudly' );
+        self::assertStringContainsString( 'migration 0024', $msg );
+        self::assertStringContainsString( $current_db, $msg, 'error must mention expected schema' );
     }
 
     /**

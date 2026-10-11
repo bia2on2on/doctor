@@ -59,24 +59,35 @@ App::migrations()->migrate();
  * تست دست‌نخورده می‌ماند و Production این filter را ندارد.
  */
 $GLOBALS['__cpms_sp_stack'] = [];
+$GLOBALS['__cpms_ddl_seen_since_start'] = false;
 tests_add_filter(
     'query',
     static function ( $query ) {
         $q = trim( (string) $query );
+        // Strip leading SQL comments (/* ... */) for DDL detection — callers
+        // may prefix DDL with comments (e.g. WordPress or test helpers).
+        $q_nocomments = preg_replace( '/\\A\\s*(?:\\/\\*.*?\\*\\/\\s*)*/s', '', $q );
+        $q_nocomments = trim( (string) $q_nocomments );
         // Real (non-TEMPORARY) DDL performs an implicit COMMIT that ends the
         // enclosing transaction and destroys its savepoints. The WP test harness
         // normally hides CREATE/DROP TABLE behind CREATE TEMPORARY TABLE /
         // DROP TEMPORARY TABLE (no implicit commit). When tests use
         // withRealTables() the temporary rewrite is suspended and real DDL is
-        // executed inside transactional() — without clearing here the following
-        // RELEASE SAVEPOINT would target a savepoint that no longer exists.
-        // Detecting real DDL and clearing the stack turns the next COMMIT /
-        // ROLLBACK into a harmless no-op (SELECT 1) instead of a real
-        // COMMIT/ROLLBACK that would break the outer WP test transaction.
-        if ( preg_match( '/\A\s*(CREATE|DROP|ALTER|TRUNCATE|RENAME)\s+/i', $q ) ) {
-            $is_temporary = (bool) preg_match( '/\A\s*(CREATE|DROP)\s+TEMPORARY\s+/i', $q );
+        // executed inside transactional(). We must distinguish real DDL from
+        // temporary-table operations, preserve the original DDL execution, and
+        // only treat an empty-stack COMMIT/ROLLBACK as a harmless no-op when
+        // a real DDL was observed since the last START — otherwise an
+        // unexpected empty stack must remain observable (fail loudly) and must
+        // not be silently hidden or claim rollback of committed DDL.
+        if ( preg_match( '/\\A\\s*(CREATE|DROP|ALTER|TRUNCATE|RENAME)\\s+/i', $q_nocomments ) ) {
+            $is_temporary = (bool) preg_match( '/\\A\\s*(CREATE|DROP)\\s+TEMPORARY\\s+/i', $q_nocomments );
             if ( ! $is_temporary ) {
-                $GLOBALS['__cpms_sp_stack'] = [];
+                // Mark that a real DDL was seen since the last START; do not
+                // clear the stack yet — wait until the next COMMIT/ROLLBACK
+                // where we can prove the DDL boundary. This preserves the
+                // original DDL execution and keeps genuine RELEASE/ROLLBACK
+                // failures observable when no DDL was involved.
+                $GLOBALS['__cpms_ddl_seen_since_start'] = true;
 
                 return $query;
             }
@@ -89,18 +100,46 @@ tests_add_filter(
         if ( 'START TRANSACTION' === $verb ) {
             $name = 'cpms_sp_' . count( $stack );
             $stack[] = $name;
+            $GLOBALS['__cpms_ddl_seen_since_start'] = false;
 
             return 'SAVEPOINT ' . $name;
         }
         if ( 'COMMIT' === $verb ) {
             $name = array_pop( $stack );
+            if ( null === $name ) {
+                // Empty stack: only a proven real DDL boundary justifies a
+                // no-op. Otherwise the unexpected loss must remain observable
+                // — return a failing savepoint so tx_control reports the error
+                // and the test fails loudly instead of silently committing the
+                // outer WP transaction.
+                if ( ! empty( $GLOBALS['__cpms_ddl_seen_since_start'] ) ) {
+                    $GLOBALS['__cpms_ddl_seen_since_start'] = false;
+                    $GLOBALS['__cpms_sp_stack'] = [];
 
-            return null === $name ? 'SELECT 1' : 'RELEASE SAVEPOINT ' . $name;
+                    return 'SELECT 1';
+                }
+
+                return 'RELEASE SAVEPOINT cpms_sp_does_not_exist';
+            }
+            $GLOBALS['__cpms_ddl_seen_since_start'] = false;
+
+            return 'RELEASE SAVEPOINT ' . $name;
         }
         if ( 'ROLLBACK' === $verb ) {
             $name = array_pop( $stack );
+            if ( null === $name ) {
+                if ( ! empty( $GLOBALS['__cpms_ddl_seen_since_start'] ) ) {
+                    $GLOBALS['__cpms_ddl_seen_since_start'] = false;
+                    $GLOBALS['__cpms_sp_stack'] = [];
 
-            return null === $name ? 'SELECT 1' : 'ROLLBACK TO SAVEPOINT ' . $name;
+                    return 'SELECT 1';
+                }
+
+                return 'ROLLBACK TO SAVEPOINT cpms_sp_does_not_exist';
+            }
+            $GLOBALS['__cpms_ddl_seen_since_start'] = false;
+
+            return 'ROLLBACK TO SAVEPOINT ' . $name;
         }
 
         return $query;
