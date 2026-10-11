@@ -395,6 +395,18 @@ final class FirstPracticeSetupTest extends WP_UnitTestCase
     public function testTwoConnectionsCannotBothConsumeTheBootstrap(): void
     {
         $clinicId = (int) $this->seed_baseline['clinic_id'];
+
+        /*
+         * Green two-connection protocol (same as ConcurrencyTest /
+         * VisitConcurrencyTest): the WP test suite runs every test inside an
+         * open parent transaction whose InnoDB row locks conflict with — and
+         * block — independent connections. Commit it first so the seed Clinic
+         * row is in committed state for connA/connB; cleanup below is therefore
+         * manual (tearDown's ROLLBACK can no longer undo committed rows).
+         */
+        global $wpdb;
+        $wpdb->query('COMMIT'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
         $connA = $this->freshMysqli();
         $connB = $this->freshMysqli();
 
@@ -406,7 +418,7 @@ final class FirstPracticeSetupTest extends WP_UnitTestCase
                 'SELECT first_setup_claimed_at FROM ' . $this->table('cpms_clinics') .
                 ' WHERE id = ' . $clinicId . ' FOR UPDATE'
             );
-            self::assertNotFalse($resA);
+            self::assertNotFalse($resA, 'connA clinic-row lock acquisition failed: ' . $connA->error);
 
             // Connection B must not enter the critical section while A holds it.
             // PHP 8.1+ mysqli throws mysqli_sql_exception on errors (it does not
@@ -454,7 +466,7 @@ final class FirstPracticeSetupTest extends WP_UnitTestCase
                 'SELECT first_setup_claimed_at FROM ' . $this->table('cpms_clinics') .
                 ' WHERE id = ' . $clinicId . ' FOR UPDATE'
             );
-            self::assertNotFalse($resB2);
+            self::assertNotFalse($resB2, 'connB post-commit read failed: ' . $connB->error);
             $rowB = $resB2->fetch_assoc();
             self::assertNotEmpty($rowB['first_setup_claimed_at']);
             $okB = $connB->query(
@@ -466,12 +478,17 @@ final class FirstPracticeSetupTest extends WP_UnitTestCase
             self::assertSame(0, (int) $connB->affected_rows, 'second connection must consume zero rows');
             $connB->query('ROLLBACK');
         } finally {
-            // Restore the seed marker (committed outside the test transaction).
+            /*
+             * Manual committed-fixture cleanup: drop any open connA transaction
+             * first (the success path already COMMITs the consumed marker; a
+             * failure path may still hold one), then reset the marker in
+             * autocommit mode so the reset actually persists for later tests.
+             */
+            $connA->query('ROLLBACK');
             $connA->query(
                 'UPDATE ' . $this->table('cpms_clinics') .
                 ' SET first_setup_claimed_at = NULL WHERE id = ' . $clinicId
             );
-            $connA->query('ROLLBACK');
             $connA->close();
             $connB->close();
         }
