@@ -100,7 +100,6 @@ final class FinanceService
         if ( $this->services->existsWithCode( $clinic_id, $code ) ) {
             throw FinanceException::of( 'CLINIC_POLICY_VIOLATION', 'کد خدمت تکراری است', 409, [ 'code' => $code ] );
         }
-
         // F2-3 (atomic service catalog): the service-row write and its mandatory
         // audit event share ONE transaction boundary. AuditLogger is fail-closed,
         // so without this boundary the row would already be committed while the
@@ -131,7 +130,6 @@ final class FinanceService
                     ],
                     [ 'op' => 'service_create' ]
                 );
-
                 return [
                     'id'        => $service_id,
                     'code'      => $code,
@@ -160,7 +158,6 @@ final class FinanceService
         if ( $this->services->existsWithCode( $clinic_id, $code, $id ) ) {
             throw FinanceException::of( 'CLINIC_POLICY_VIOLATION', 'کد خدمت تکراری است', 409, [ 'code' => $code ] );
         }
-
         // F2-3 (atomic service catalog): update + mandatory audit in ONE boundary.
         return $this->db->transactional(
             function () use ( $actor_user_id, $clinic_id, $id, $code, $name, $price, $existing ): array {
@@ -191,7 +188,6 @@ final class FinanceService
                     ],
                     [ 'op' => 'service_update' ]
                 );
-
                 return [
                     'id'    => $id,
                     'code'  => $code,
@@ -214,7 +210,6 @@ final class FinanceService
         if ( $existing === null || ! $this->rowBelongsToTrustedClinic( $existing ) ) {
             throw FinanceException::of( 'CLINIC_NOT_FOUND', 'خدمت یافت نشد', 404 );
         }
-
         // F2-3 (atomic service catalog): deactivation + mandatory audit in ONE
         // boundary — a failed audit must leave the service active.
         return $this->db->transactional(
@@ -230,7 +225,6 @@ final class FinanceService
                     [ 'service.is_active' => 0 ],
                     [ 'op' => 'service_deactivate' ]
                 );
-
                 return [
                     'id'        => $id,
                     'is_active' => false,
