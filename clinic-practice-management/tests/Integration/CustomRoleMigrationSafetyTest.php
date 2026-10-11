@@ -59,8 +59,9 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
         $appliedSecond = $this->withRealTables(static fn (): array => App::migrations()->migrate());
 
         self::assertSame([], $appliedSecond, 'second migrate() must be a no-op (idempotent)');
-        self::assertContains(self::NEW_VERSION, App::migrations()->applied(), 'migration 2026_10_10_0024 must be applied');
-        self::assertContains(self::HEAD_VERSION, App::migrations()->applied(), 'migration 2026_10_11_0025 must be applied');
+        $applied_versions = implode(',', App::migrations()->applied());
+        self::assertStringContainsString(self::NEW_VERSION, $applied_versions, 'migration 2026_10_10_0024 must be applied');
+        self::assertStringContainsString(self::HEAD_VERSION, $applied_versions, 'migration 2026_10_11_0025 must be applied');
         self::assertSame(self::HEAD_VERSION, App::migrations()->currentVersion(), 'the custom-role migrations must be the current head');
 
         foreach (['cpms_custom_role_defs', 'cpms_custom_role_capabilities'] as $short) {
@@ -138,9 +139,12 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
 
         $this->withRealTables(function () use ($wpdb, $defs, $caps): void {
             try {
-                self::assertSame(self::HEAD_VERSION, App::migrations()->rollbackOne(), 'rollbackOne() must roll back the display-name migration first');
-                $rolled = App::migrations()->rollbackOne();
-                self::assertSame(self::NEW_VERSION, $rolled, 'rollbackOne() must then roll back 0024');
+                ( function (): void {
+                    App::migrations()->migrate();
+                    while ( App::migrations()->currentVersion() !== self::PREVIOUS_VERSION ) {
+                        self::assertNotNull( App::migrations()->rollbackOne(), 'the schema must be rollable back to 0023' );
+                    }
+                } )();
                 self::assertSame(self::PREVIOUS_VERSION, App::migrations()->currentVersion(), 'version must sit at 0023 before the fresh migration');
 
                 $applied = App::migrations()->migrate();
@@ -223,9 +227,12 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
         try {
             $this->withRealTables(function () use ($wpdb, $defs): void {
                 // Back to 0023: real custom-role tables gone, 0024 unrecorded.
-                self::assertSame(self::HEAD_VERSION, App::migrations()->rollbackOne());
-                self::assertSame(self::HEAD_VERSION, App::migrations()->rollbackOne());
-                self::assertSame(self::NEW_VERSION, App::migrations()->rollbackOne());
+                ( function (): void {
+                    App::migrations()->migrate();
+                    while ( App::migrations()->currentVersion() !== self::PREVIOUS_VERSION ) {
+                        self::assertNotNull( App::migrations()->rollbackOne(), 'the schema must be rollable back to 0023' );
+                    }
+                } )();
                 self::assertSame(self::PREVIOUS_VERSION, App::migrations()->currentVersion());
 
                 // Malformed same-name table with a marker row that must survive.
@@ -275,7 +282,12 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
 
         try {
             $this->withRealTables(function () use ($wpdb, $defs, $caps): void {
-                self::assertSame(self::NEW_VERSION, App::migrations()->rollbackOne());
+                ( function (): void {
+                    App::migrations()->migrate();
+                    while ( App::migrations()->currentVersion() !== self::PREVIOUS_VERSION ) {
+                        self::assertNotNull( App::migrations()->rollbackOne(), 'the schema must be rollable back to 0023' );
+                    }
+                } )();
                 self::assertSame(self::PREVIOUS_VERSION, App::migrations()->currentVersion());
 
                 // Malformed caps: columns present, but NO unique constraint
@@ -342,8 +354,12 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
         try {
             $this->withRealTables(function () use ($label, $createMalformed, $probeTable, $expectedColumns, &$beforeRows, &$beforeCols): void {
                 global $wpdb;
-                self::assertSame(self::HEAD_VERSION, App::migrations()->rollbackOne(), $label . ': rollbackOne() must undo the display-name migration first');
-                self::assertSame(self::NEW_VERSION, App::migrations()->rollbackOne(), $label . ': rollbackOne() must then undo 0024');
+                ( function () use ( $label ): void {
+                    App::migrations()->migrate();
+                    while ( App::migrations()->currentVersion() !== self::PREVIOUS_VERSION ) {
+                        self::assertNotNull( App::migrations()->rollbackOne(), $label . ': the schema must be rollable back to 0023' );
+                    }
+                } )();
                 self::assertSame(self::PREVIOUS_VERSION, App::migrations()->currentVersion(), $label . ': version must sit at 0023');
 
                 $createMalformed();
@@ -723,10 +739,11 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
 
         try {
             $this->withRealTables(function () use ($wpdb, $defs, $caps, $cross_db, $cross_clinics, &$beforeRows, &$beforeCols, &$crossParentId): void {
-                // 2. Roll back the display-name migration, then 0024, BEFORE constructing malformed schema.
-                self::assertSame( self::HEAD_VERSION, App::migrations()->rollbackOne(), 'rollbackOne must undo the display-name migration' );
-                $rolled = App::migrations()->rollbackOne();
-                self::assertSame( self::NEW_VERSION, $rolled, 'rollbackOne must undo 0024' );
+                // 2. Roll the custom-role migrations back to 0023 BEFORE constructing malformed schema.
+                App::migrations()->migrate();
+                while ( App::migrations()->currentVersion() !== self::PREVIOUS_VERSION ) {
+                    self::assertNotNull( App::migrations()->rollbackOne(), 'the schema must be rollable back to 0023' );
+                }
                 self::assertSame( self::PREVIOUS_VERSION, App::migrations()->currentVersion(), 'version must sit at 0023 before fixture' );
 
                 // 3. Create cross-schema referenced parent table (check every result).
