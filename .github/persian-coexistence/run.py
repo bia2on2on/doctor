@@ -105,9 +105,13 @@ GROUPS = {
         },
     },
     "persian-woocommerce-sms": {
+        # 2026-10-11: upstream stable moved 7.2.3 -> 7.3.0 (WordPress.org plugins
+        # API). The pin is exact and the harness still verifies the advertised
+        # stable version plus the downloaded ZIP identity; historical 7.2.3
+        # evidence stays recorded under its own run dates.
         "pins": {
             "woocommerce": "11.2.0",
-            "persian-woocommerce-sms": "7.2.3",
+            "persian-woocommerce-sms": "7.3.0",
         },
         "subject": "persian-woocommerce-sms",
         "root": "coexistence-persian-woocommerce-sms",
@@ -132,7 +136,7 @@ GROUPS = {
     "combined-nineteen": {
         "pins": {
             "woocommerce": "11.2.0",
-            "persian-woocommerce-sms": "7.2.3",
+            "persian-woocommerce-sms": "7.3.0",
             "litespeed-cache": "7.9.1",
             "wordpress-seo": "28.6",
             "seo-by-rank-math": "1.0.280",

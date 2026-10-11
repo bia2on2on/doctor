@@ -471,7 +471,7 @@ class GroupSelectionTests(unittest.TestCase):
         self.assertNotIn("wp-rocket", module.PINS)
         self.assertNotIn("gravityforms", module.PINS)
         self.assertEqual(module.PINS["woocommerce"], "11.2.0")
-        self.assertEqual(module.PINS["persian-woocommerce-sms"], "7.2.3")
+        self.assertEqual(module.PINS["persian-woocommerce-sms"], "7.3.0")
         # Exclusion narrows only this combined scenario: the independent Persian
         # WooCommerce lanes keep their exact pins and CPMS-free/Stage-B boundaries.
         diagnosis = load_group("persian-woocommerce-diagnosis")
@@ -484,7 +484,7 @@ class GroupSelectionTests(unittest.TestCase):
     def test_new_sms_and_diagnostic_groups_have_independent_pins_and_b_boundaries(self):
         sms = load_group("persian-woocommerce-sms")
         self.assertEqual(sms.PINS, {"woocommerce": "11.2.0",
-                                    "persian-woocommerce-sms": "7.2.3"})
+                                    "persian-woocommerce-sms": "7.3.0"})
         self.assertEqual(sms.SUBJECT, "persian-woocommerce-sms")
         self.assertTrue(sms.STAGE_B_ENABLED)
         sms_a_only = load_group("persian-woocommerce-sms", stage_b=False)

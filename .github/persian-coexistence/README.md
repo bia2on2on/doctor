@@ -20,7 +20,7 @@ is a union, substitute or prerequisite for another.
 | New job / group | Exact CPMS-free Stage A subject set | Stage B boundary |
 | --- | --- | --- |
 | `coexistence-persian-woocommerce-diagnosis` / `persian-woocommerce-diagnosis` | `woocommerce` 11.2.0 + `persian-woocommerce` 10.0.5 | Explicitly disabled; this scenario never installs CPMS |
-| `coexistence-persian-woocommerce-sms` / `persian-woocommerce-sms` | `woocommerce` 11.2.0 + `persian-woocommerce-sms` 7.2.3 | Reused Stage B is eligible only after materially healthy, complete A |
+| `coexistence-persian-woocommerce-sms` / `persian-woocommerce-sms` | `woocommerce` 11.2.0 + `persian-woocommerce-sms` 7.3.0 | Reused Stage B is eligible only after materially healthy, complete A |
 | `coexistence-combined-nineteen` / `combined-nineteen` | 18 of the 19 authoritative free-plugin subjects below, simultaneously active (Persian WooCommerce 10.0.5 excluded by the Phase 19 quarantine; name kept as the historical scenario identity) | Reused Stage B is eligible only after materially healthy, complete A |
 
 The original five-plugin lane remains `persian-five`; its selection and pins are
@@ -89,7 +89,10 @@ review; no result is automatically labeled D.
 ### Persian WooCommerce SMS group
 
 The independent baseline pins exactly WooCommerce **11.2.0** and Persian
-WooCommerce SMS **7.2.3**. Stage A begins with clean WordPress and CPMS absent. It
+WooCommerce SMS **7.3.0** (was 7.2.3 until the upstream release of 2026-10-11, when
+WordPress.org started advertising 7.3.0 as stable; results recorded before that
+date remain valid for the pin they measured). Stage A begins with clean WordPress
+and CPMS absent. It
 records exact package/version/active-set identity, bootstrap and administrator
 login, public pages, core REST/AJAX, `fa_IR`/RTL documents, redirects, browser
 errors and PHP diagnostics. A materially failed or incomplete A produces
@@ -136,7 +139,7 @@ their original names; that evidence is preserved, not rewritten or reclassified.
 | 6 | `elementor` | 4.3.4 | yes |
 | 7 | `persian-elementor` | 2.8.4 | yes |
 | 8 | `wp-parsidate` | 6.4 | yes |
-| 9 | `persian-woocommerce-sms` | 7.2.3 | yes |
+| 9 | `persian-woocommerce-sms` | 7.3.0 | yes |
 | 10 | `contact-form-7` | 6.2 | yes |
 | 11 | `wordfence` | 9.0.2 | yes |
 | 12 | `really-simple-ssl` | 9.8.3 | yes |
