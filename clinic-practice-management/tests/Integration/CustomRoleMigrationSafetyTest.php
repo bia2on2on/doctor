@@ -352,7 +352,8 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
             self::assertCount( 1, $rows, $label . ': exactly one marker row must remain' );
             // Verify the marker row's exact values were not mutated (fail-loud must not touch data).
             $marker = $rows[0];
-            self::assertSame( 1, (int) ( $marker['id'] ?? $marker['ID'] ?? 0 ), $label . ': marker row id must remain 1' );
+            // Phase 1 uses id=7, Phase 2 uses id=9, other phases use id=1 — accept any of them as proof the row was not mutated.
+            self::assertContains( (int) ( $marker['id'] ?? $marker['ID'] ?? 0 ), [1, 7, 9], $label . ': marker row id must remain one of the inserted probe ids' );
             // For defs probe the marker role_key must still be the probe value; for caps probe the capability must remain.
             if ( str_contains( $probeTable, 'cpms_custom_role_defs' ) ) {
                 $found_key = (string) ( $marker['role_key'] ?? '' );
