@@ -411,7 +411,7 @@ final class MembershipService {
     }
 
     private function assert_role_key( string $role_key ): void {
-        if ( ! preg_match( '/^[a-z][a-z0-9_]{1,63}$/', $role_key ) ) {
+        if ( ! preg_match( '/\A[a-z][a-z0-9_]{1,63}\z/', $role_key ) ) {
             throw MembershipException::invalid_value(
                 'role_key',
                 __( 'قالب مجاز: حروف کوچک/عدد/زیرخط، حداقل ۲ نویسه.', 'cpms' )

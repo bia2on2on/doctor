@@ -59,32 +59,101 @@ App::migrations()->migrate();
  * تست دست‌نخورده می‌ماند و Production این filter را ندارد.
  */
 $GLOBALS['__cpms_sp_stack'] = [];
-tests_add_filter('query', static function ($query) {
-    $q = trim((string) $query);
-    if (!str_starts_with($q, '/*cpms*/')) {
+$GLOBALS['__cpms_ddl_seen_since_start'] = false;
+tests_add_filter(
+    'query',
+    static function ( $query ) {
+        $q = trim( (string) $query );
+        // Strip leading SQL comments (/* ... */) for DDL detection — callers
+        // may prefix DDL with comments (e.g. WordPress or test helpers).
+        $q_nocomments = preg_replace( '/\\A\\s*(?:\\/\\*.*?\\*\\/\\s*)*/s', '', $q );
+        $q_nocomments = trim( (string) $q_nocomments );
+        // Real (non-TEMPORARY) DDL performs an implicit COMMIT that ends the
+        // enclosing transaction and destroys its savepoints. The WP test harness
+        // normally hides CREATE/DROP TABLE behind CREATE TEMPORARY TABLE /
+        // DROP TEMPORARY TABLE (no implicit commit). When tests use
+        // withRealTables() the temporary rewrite is suspended and real DDL is
+        // executed inside transactional(). We must distinguish real DDL from
+        // temporary-table operations, preserve the original DDL execution, and
+        // only treat an empty-stack COMMIT/ROLLBACK as a harmless no-op when
+        // a real DDL was observed since the last START — otherwise an
+        // unexpected empty stack must remain observable (fail loudly) and must
+        // not be silently hidden or claim rollback of committed DDL.
+        if ( preg_match( '/\\A\\s*(CREATE|DROP|ALTER|TRUNCATE|RENAME)\\s+/i', $q_nocomments ) ) {
+            // For TEMPORARY check, normalize inline comments to space so
+            // `CREATE /* comment */ TEMPORARY`, `CREATE -- comment\nTEMPORARY`,
+            // and `CREATE # comment\nTEMPORARY` are correctly recognised as
+            // temporary (not real). Real DDL `CREATE /* comment */ TABLE` remains
+            // real because it lacks TEMPORARY. Only valid MySQL comment syntax
+            // is handled (-- requires following whitespace, # to end of line).
+            $q_temp_normalized = preg_replace( '/\\/\\*.*?\\*\\//s', ' ', $q_nocomments );
+            $q_temp_normalized = preg_replace( '/--[ \t].*?(?:\\r\\n|\\n|\\r|$)/', ' ', (string) $q_temp_normalized );
+            $q_temp_normalized = preg_replace( '/#[^\\r\\n]*/', ' ', (string) $q_temp_normalized );
+            $q_temp_normalized = preg_replace( '/\\s+/', ' ', (string) $q_temp_normalized );
+            $q_temp_normalized = trim( (string) $q_temp_normalized );
+            $is_temporary      = (bool) preg_match( '/\\A\\s*(CREATE|DROP)\\s+TEMPORARY\\s+/i', $q_temp_normalized );
+            if ( ! $is_temporary ) {
+                // Mark that a real DDL was seen since the last START; do not
+                // clear the stack yet — wait until the next COMMIT/ROLLBACK
+                // where we can prove the DDL boundary. This preserves the
+                // original DDL execution and keeps genuine RELEASE/ROLLBACK
+                // failures observable when no DDL was involved.
+                $GLOBALS['__cpms_ddl_seen_since_start'] = true;
+
+                return $query;
+            }
+        }
+        if ( ! str_starts_with( $q, '/*cpms*/' ) ) {
+            return $query;
+        }
+        $verb  = trim( substr( $q, strlen( '/*cpms*/' ) ) );
+        $stack = &$GLOBALS['__cpms_sp_stack'];
+        if ( 'START TRANSACTION' === $verb ) {
+            $name = 'cpms_sp_' . count( $stack );
+            $stack[] = $name;
+            $GLOBALS['__cpms_ddl_seen_since_start'] = false;
+
+            return 'SAVEPOINT ' . $name;
+        }
+        if ( 'COMMIT' === $verb ) {
+            // Real DDL performs an implicit COMMIT that destroys all savepoints.
+            // If a real DDL was observed since the last START, the stack is stale
+            // (savepoints no longer exist) — treat COMMIT as a harmless no-op
+            // and clear the entire stack, regardless of whether the stack is
+            // empty or still contains entries.
+            if ( ! empty( $GLOBALS['__cpms_ddl_seen_since_start'] ) ) {
+                $GLOBALS['__cpms_ddl_seen_since_start'] = false;
+                $GLOBALS['__cpms_sp_stack'] = [];
+
+                return 'SELECT 1';
+            }
+            $name = array_pop( $stack );
+            if ( null === $name ) {
+                // No DDL boundary proven — unexpected empty stack must fail loudly.
+                return 'RELEASE SAVEPOINT cpms_sp_does_not_exist';
+            }
+
+            return 'RELEASE SAVEPOINT ' . $name;
+        }
+        if ( 'ROLLBACK' === $verb ) {
+            if ( ! empty( $GLOBALS['__cpms_ddl_seen_since_start'] ) ) {
+                $GLOBALS['__cpms_ddl_seen_since_start'] = false;
+                $GLOBALS['__cpms_sp_stack'] = [];
+
+                return 'SELECT 1';
+            }
+            $name = array_pop( $stack );
+            if ( null === $name ) {
+                return 'ROLLBACK TO SAVEPOINT cpms_sp_does_not_exist';
+            }
+
+            return 'ROLLBACK TO SAVEPOINT ' . $name;
+        }
+
         return $query;
-    }
-    $verb = trim(substr($q, strlen('/*cpms*/')));
-    $stack = &$GLOBALS['__cpms_sp_stack'];
-    if ($verb === 'START TRANSACTION') {
-        $name = 'cpms_sp_' . count($stack);
-        $stack[] = $name;
-
-        return 'SAVEPOINT ' . $name;
-    }
-    if ($verb === 'COMMIT') {
-        $name = array_pop($stack);
-
-        return $name === null ? $verb : 'RELEASE SAVEPOINT ' . $name;
-    }
-    if ($verb === 'ROLLBACK') {
-        $name = array_pop($stack);
-
-        return $name === null ? $verb : 'ROLLBACK TO SAVEPOINT ' . $name;
-    }
-
-    return $query;
-});
+    },
+    20
+);
 
 /*
  * ── Fixture عضویت (C6 — Trusted REST Context) ─────────────────────────────
