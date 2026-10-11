@@ -939,6 +939,274 @@ final class ClinicalFilesScopedAuthorizationTest extends WP_UnitTestCase
      * an ACTIVE membership in $clinicId plus an explicit membership deny for
      * $permission — precisely the shape a capability-only check cannot see.
      */
+    /*
+     * PR #216 remediation (RED): patient search, doctor_private files, visit/file association.
+     */
+
+    public function testRedAccountantWithSearchButNoPatientReadGetsNoPatientRecords(): void
+    {
+        $accountant = $this->makeUser('ps_accountant', RolesAndCapabilities::ROLE_ACCOUNTANT);
+        $this->createMembership($accountant, $this->clinicA, RolesAndCapabilities::ROLE_ACCOUNTANT);
+        $patient = $this->createPatient($this->clinicA);
+        $mrn = (string) App::db()->fetchValue(
+            'SELECT mrn FROM ' . App::db()->table('cpms_patients') . ' WHERE id = %d',
+            [$patient]
+        );
+        $this->bindHarnessScope($this->clinicA);
+        self::assertTrue($this->authz()->can($accountant, $this->clinicA, RolesAndCapabilities::SEARCH), 'precondition: SEARCH held');
+        self::assertFalse($this->authz()->can($accountant, $this->clinicA, RolesAndCapabilities::PATIENT_READ), 'precondition: no PATIENT_READ');
+
+        $patientsOnly = App::clinicalService()->globalSearch($accountant, $mrn, 'patient');
+        $all = App::clinicalService()->globalSearch($accountant, $mrn, 'all');
+
+        self::assertSame([], $patientsOnly['results']['patients'] ?? [], 'SEARCH-only actor must receive no patient identifiers or PII');
+        self::assertSame([], $all['results']['patients'] ?? [], 'SEARCH-only actor must receive no patient identifiers or PII (all)');
+    }
+
+    public function testLegitimateSecretaryFindsPatientByMrn(): void
+    {
+        $secretary = $this->makeUser('ps_secretary', RolesAndCapabilities::ROLE_SECRETARY);
+        $this->createMembership($secretary, $this->clinicA, RolesAndCapabilities::ROLE_SECRETARY);
+        $patient = $this->createPatient($this->clinicA);
+        $mrn = (string) App::db()->fetchValue(
+            'SELECT mrn FROM ' . App::db()->table('cpms_patients') . ' WHERE id = %d',
+            [$patient]
+        );
+        $this->bindHarnessScope($this->clinicA);
+
+        $result = App::clinicalService()->globalSearch($secretary, $mrn, 'patient');
+        $ids = array_map(static fn (array $p): int => (int) $p['id'], $result['results']['patients'] ?? []);
+
+        self::assertContains($patient, $ids, 'control: PATIENT_READ holder keeps patient search');
+    }
+
+    public function testExplicitPatientReadDenyOverridesSecretaryPresetInSearch(): void
+    {
+        $secretary = $this->makeUser('ps_secretary_deny', RolesAndCapabilities::ROLE_SECRETARY);
+        $membershipId = $this->createMembership($secretary, $this->clinicA, RolesAndCapabilities::ROLE_SECRETARY);
+        App::membership_service()->set_capability($membershipId, RolesAndCapabilities::PATIENT_READ, 'deny');
+        $patient = $this->createPatient($this->clinicA);
+        $mrn = (string) App::db()->fetchValue(
+            'SELECT mrn FROM ' . App::db()->table('cpms_patients') . ' WHERE id = %d',
+            [$patient]
+        );
+        $this->bindHarnessScope($this->clinicA);
+
+        $result = App::clinicalService()->globalSearch($secretary, $mrn, 'patient');
+
+        self::assertSame([], $result['results']['patients'] ?? [], 'explicit PATIENT_READ deny must hide patient results');
+    }
+
+    public function testRedWpDoctorSecretaryMemberCannotStreamDoctorPrivateFile(): void
+    {
+        $doctor = $this->authorizedDoctorIn($this->clinicA, 'dp_doc_stream');
+        $visitId = $this->createVisitFixture($this->clinicA, $doctor);
+        $patient = $this->patientOfVisit($visitId);
+        $this->bindHarnessScope($this->clinicA);
+        $fileId = $this->uploadViaService($doctor, $patient, 'doctor_private', 'dp-stream.pdf');
+
+        $mixed = $this->wpDoctorSecretaryMember($this->clinicA, 'dp_mixed_stream');
+        $this->bindHarnessScope($this->clinicA);
+        self::assertTrue($this->authz()->can($mixed, $this->clinicA, RolesAndCapabilities::FILE_READ), 'precondition: ordinary FILE_READ held');
+        self::assertFalse($this->authz()->can($mixed, $this->clinicA, RolesAndCapabilities::PRIVATE_NOTE_READ), 'precondition: no doctor-private authority');
+
+        $threw = false;
+        try {
+            App::medicalFileService()->stream($mixed, $fileId);
+        } catch (ClinicalException $e) {
+            $threw = true;
+        }
+
+        self::assertTrue($threw, 'WP-global cpms_doctor + secretary membership must not stream a doctor_private file');
+    }
+
+    public function testRedWpDoctorSecretaryMemberCannotListDoctorPrivateFiles(): void
+    {
+        $doctor = $this->authorizedDoctorIn($this->clinicA, 'dp_doc_list');
+        $visitId = $this->createVisitFixture($this->clinicA, $doctor);
+        $patient = $this->patientOfVisit($visitId);
+        $this->bindHarnessScope($this->clinicA);
+        $fileId = $this->uploadViaService($doctor, $patient, 'doctor_private', 'dp-list.pdf');
+
+        $mixed = $this->wpDoctorSecretaryMember($this->clinicA, 'dp_mixed_list');
+        $this->bindHarnessScope($this->clinicA);
+
+        $listed = array_map(static fn (array $f): int => (int) $f['id'], App::medicalFileService()->staffFiles($mixed, $patient));
+
+        self::assertNotContains($fileId, $listed, 'WP-global cpms_doctor + secretary membership must not list doctor_private files');
+    }
+
+    public function testRedWpDoctorSecretaryMemberCannotUploadDoctorPrivateFile(): void
+    {
+        $mixed = $this->wpDoctorSecretaryMember($this->clinicA, 'dp_mixed_upload');
+        $patient = $this->createPatient($this->clinicA);
+        $this->bindHarnessScope($this->clinicA);
+
+        $threw = false;
+        $id = 0;
+        try {
+            $row = App::medicalFileService()->upload(
+                $mixed,
+                $this->uploadedFileArgs('dp-upload.pdf', $this->pdfContent()),
+                $patient,
+                null,
+                'document',
+                'doctor_private'
+            );
+            $id = (int) ($row['id'] ?? 0);
+        } catch (ClinicalException $e) {
+            $threw = true;
+        }
+        if ($id > 0) {
+            $this->trackStoredFile($id);
+        }
+
+        self::assertTrue($threw, 'WP-global cpms_doctor + secretary membership must not upload doctor_private files');
+    }
+
+    public function testLegitimateDoctorStreamsAndListsOwnClinicDoctorPrivateFile(): void
+    {
+        $doctor = $this->authorizedDoctorIn($this->clinicA, 'dp_doc_ok');
+        $visitId = $this->createVisitFixture($this->clinicA, $doctor);
+        $patient = $this->patientOfVisit($visitId);
+        $this->bindHarnessScope($this->clinicA);
+        $fileId = $this->uploadViaService($doctor, $patient, 'doctor_private', 'dp-ok.pdf');
+
+        $listed = array_map(static fn (array $f): int => (int) $f['id'], App::medicalFileService()->staffFiles($doctor, $patient));
+        $streamed = App::medicalFileService()->stream($doctor, $fileId);
+
+        self::assertContains($fileId, $listed, 'control: same-Clinic doctor with doctor-private authority lists the file');
+        self::assertIsArray($streamed, 'control: same-Clinic doctor streams the file without denial');
+    }
+
+    public function testRedStaffUploadRejectsVisitOfAnotherClinic(): void
+    {
+        $doctorA = $this->authorizedDoctorIn($this->clinicA, 'vx_doc_a');
+        $visitA = $this->createVisitFixture($this->clinicA, $doctorA);
+        $secB = $this->makeUser('vx_sec_b', RolesAndCapabilities::ROLE_SECRETARY);
+        $this->createMembership($secB, $this->clinicB, RolesAndCapabilities::ROLE_SECRETARY);
+        $patientB = $this->createPatient($this->clinicB);
+        $this->bindHarnessScope($this->clinicB);
+        $rowsBefore = $this->attachmentRowCount();
+        $bytesBefore = $this->storedByteCount();
+
+        $threw = false;
+        $id = 0;
+        try {
+            $row = App::medicalFileService()->upload(
+                $secB,
+                $this->uploadedFileArgs('vx-b.pdf', $this->pdfContent()),
+                $patientB,
+                $visitA,
+                'document',
+                'patient_visible'
+            );
+            $id = (int) ($row['id'] ?? 0);
+        } catch (ClinicalException $e) {
+            $threw = true;
+        }
+        if ($id > 0) {
+            $this->trackStoredFile($id);
+        }
+
+        self::assertTrue($threw, 'Clinic B upload must not accept a Clinic A visit_id');
+        self::assertSame($rowsBefore, $this->attachmentRowCount(), 'no metadata row may survive the rejected upload');
+        self::assertSame($bytesBefore, $this->storedByteCount(), 'no bytes may survive the rejected upload');
+    }
+
+    public function testRedStaffUploadRejectsVisitOfAnotherPatientInSameClinic(): void
+    {
+        $doctorA = $this->authorizedDoctorIn($this->clinicA, 'vp_doc_a');
+        $visitA = $this->createVisitFixture($this->clinicA, $doctorA);
+        $otherPatient = $this->createPatient($this->clinicA);
+        $secA = $this->makeUser('vp_sec_a', RolesAndCapabilities::ROLE_SECRETARY);
+        $this->createMembership($secA, $this->clinicA, RolesAndCapabilities::ROLE_SECRETARY);
+        $this->bindHarnessScope($this->clinicA);
+        $rowsBefore = $this->attachmentRowCount();
+
+        $threw = false;
+        $id = 0;
+        try {
+            $row = App::medicalFileService()->upload(
+                $secA,
+                $this->uploadedFileArgs('vp-a.pdf', $this->pdfContent()),
+                $otherPatient,
+                $visitA,
+                'document',
+                'patient_visible'
+            );
+            $id = (int) ($row['id'] ?? 0);
+        } catch (ClinicalException $e) {
+            $threw = true;
+        }
+        if ($id > 0) {
+            $this->trackStoredFile($id);
+        }
+
+        self::assertTrue($threw, 'a file must not be attached to a visit of a different patient');
+        self::assertSame($rowsBefore, $this->attachmentRowCount(), 'no metadata row may survive the rejected upload');
+    }
+
+    public function testLegitimateSameClinicSamePatientVisitUploadIsAccepted(): void
+    {
+        $doctorA = $this->authorizedDoctorIn($this->clinicA, 'vok_doc_a');
+        $visitA = $this->createVisitFixture($this->clinicA, $doctorA);
+        $patient = $this->patientOfVisit($visitA);
+        $secA = $this->makeUser('vok_sec_a', RolesAndCapabilities::ROLE_SECRETARY);
+        $this->createMembership($secA, $this->clinicA, RolesAndCapabilities::ROLE_SECRETARY);
+        $this->bindHarnessScope($this->clinicA);
+
+        $row = App::medicalFileService()->upload(
+            $secA,
+            $this->uploadedFileArgs('vok-a.pdf', $this->pdfContent()),
+            $patient,
+            $visitA,
+            'document',
+            'patient_visible'
+        );
+        $this->trackStoredFile((int) $row['id']);
+
+        self::assertSame($visitA, (int) $row['visit_id'], 'control: same Clinic + same patient visit is accepted');
+    }
+
+    public function testRedVisitRecordExcludesMismatchedForeignFileMetadata(): void
+    {
+        $doctorA = $this->authorizedDoctorIn($this->clinicA, 'vr_doc_a');
+        $visitA = $this->createVisitFixture($this->clinicA, $doctorA);
+        $patientB = $this->createPatient($this->clinicB);
+        $this->bindHarnessScope($this->clinicA);
+
+        // Legacy-shaped mismatched row: Clinic B patient file attached to a Clinic A visit.
+        $relative = $this->writeRawStoredFile($this->clinicB, 'vr-legacy.pdf');
+        $foreignId = $this->insertAttachmentRow($this->clinicB, $patientB, $relative, 'vr-legacy.pdf', $doctorA);
+        App::db()->query(
+            'UPDATE ' . App::db()->table('cpms_medical_attachments') . ' SET visit_id = %d WHERE id = %d',
+            [$visitA, $foreignId]
+        );
+
+        $record = App::clinicalService()->record($doctorA, $visitA);
+        $ids = array_map(static fn (array $f): int => (int) $f['id'], $record['files'] ?? []);
+
+        self::assertNotContains($foreignId, $ids, 'visit record must not expose a file of another Clinic/patient');
+    }
+
+    private function patientOfVisit(int $visitId): int
+    {
+        return (int) App::db()->fetchValue(
+            'SELECT patient_id FROM ' . App::db()->table('cpms_visits') . ' WHERE id = %d',
+            [$visitId]
+        );
+    }
+
+    /** WP-global cpms_doctor user whose Clinic membership is only the secretary preset. */
+    private function wpDoctorSecretaryMember(int $clinicId, string $login): int
+    {
+        $user = $this->makeUser($login, RolesAndCapabilities::ROLE_DOCTOR);
+        $this->createMembership($user, $clinicId, RolesAndCapabilities::ROLE_SECRETARY);
+
+        return $user;
+    }
+
     private function doctorWithScopedDeny(int $clinicId, string $permission, string $login): int
     {
         $actor = $this->makeUser($login, RolesAndCapabilities::ROLE_DOCTOR);
