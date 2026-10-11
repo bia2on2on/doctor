@@ -1367,8 +1367,7 @@ final class ClinicalService
         // Clinic-local authority is required in addition to the WP-global doctor
         // role: the WP role never supplies scoped clinical read (membership DENY
         // and Clinic-local presets win).
-        if ($isDoctor && ($type === 'all' || $type === 'note')
-            && App::authorization_service()->can($actorUserId, $trustedClinicId, RolesAndCapabilities::MEDICAL_READ)) {
+        if ($isDoctor && ($type === 'all' || $type === 'note') && $this->has_clinic_read($actorUserId, $trustedClinicId, RolesAndCapabilities::MEDICAL_READ)) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing,Generic.WhiteSpace.ArbitraryParenthesesSpacing,PEAR.Functions.FunctionCallSignature -- Existing legacy camelCase/spacing preserved in this branch.
             $has_private_read = user_can( $actorUserId, RolesAndCapabilities::PRIVATE_NOTE_READ ) // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
                 && App::authorization_service()->can(
                     $actorUserId, // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
@@ -1385,8 +1384,7 @@ final class ClinicalService
                 $this->notes->search( App::scope()->clinicId, $q, $search_visibility, $from, $to, 20, $own_clinician_id ) // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
             );
         }
-        if ($isDoctor && ($type === 'all' || $type === 'rx')
-            && App::authorization_service()->can($actorUserId, $trustedClinicId, RolesAndCapabilities::RX_READ)) {
+        if ($isDoctor && ($type === 'all' || $type === 'rx') && $this->has_clinic_read($actorUserId, $trustedClinicId, RolesAndCapabilities::RX_READ)) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing,Generic.WhiteSpace.ArbitraryParenthesesSpacing,PEAR.Functions.FunctionCallSignature -- Existing legacy camelCase/spacing preserved in this branch.
             $results['prescriptions'] = array_map(
                 fn (array $rx): array => $this->presentPrescription($rx, $this->prescriptions->itemsFor((int) $rx['id'])),
                 $this->prescriptions->searchByDrug(App::scope()->clinicId, $q, $from, $to, 20)
@@ -1437,6 +1435,16 @@ final class ClinicalService
         if ((int) $visit['clinic_id'] !== $this->trustedClinicId()) {
             throw ClinicalException::of('CLINIC_NOT_FOUND', 'ویزیت یافت نشد', 404);
         }
+    }
+
+    /**
+     * Clinic-local read authority for a search branch. Decided only by the
+     * shared AuthorizationService (durable membership + preset/override); the
+     * WP-global doctor role never substitutes for it.
+     */
+    private function has_clinic_read( int $actor_user_id, int $clinic_id, string $capability ): bool
+    {
+        return App::authorization_service()->can( $actor_user_id, $clinic_id, $capability );
     }
 
     /** Clinic مجازِ جریان (Phase 2) — مبهَم ⇒ Fail‑Closed. */
