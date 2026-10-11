@@ -177,14 +177,14 @@ final class SavepointHarnessTest extends WP_UnitTestCase
     }
 
     /**
-     * COMMENTED TEMPORARY DDL — the classifier previously mis-identified
-     * `CREATE /* comment */ TEMPORARY TABLE` as real DDL (because it only
-     * stripped leading comments). That caused an implicit-commit flag to be
-     * set and the subsequent ROLLBACK (from a controlled callback failure)
-     * was rewritten to SELECT 1, so the persistent marker was NOT rolled back.
-     * This test proves the fix: with correct inline-comment handling the
-     * statement is recognised as TEMPORARY, the flag stays false, and the
-     * rollback correctly removes the marker.
+     * COMMENTED TEMPORARY DDL - the classifier previously mis-identified
+     * CREATE with inline block-comment before TEMPORARY as real DDL
+     * (because it only stripped leading comments). That caused an
+     * implicit-commit flag to be set and the subsequent ROLLBACK (from a
+     * controlled callback failure) was rewritten to SELECT 1, so the
+     * persistent marker was NOT rolled back. This test proves the fix:
+     * with correct inline-comment handling the statement is recognised as
+     * TEMPORARY, the flag stays false, and rollback correctly removes marker.
      */
     public function testCommentedTemporaryDdlDoesNotDestroyRollback(): void
     {
