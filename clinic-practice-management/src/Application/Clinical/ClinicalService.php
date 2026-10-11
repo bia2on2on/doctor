@@ -165,7 +165,12 @@ final class ClinicalService
                 'file_size' => (int) $f['file_size'],
                 'uploaded_by_wp_user_id' => (int) $f['uploaded_by_wp_user_id'],
                 'created_at' => (string) $f['created_at'],
-            ], $this->files->forVisit($visitId)),
+            ], array_values(array_filter(
+                $this->files->forVisit($visitId),
+                // fail-closed read: فقط فایلِ همان Clinic و همان بیمارِ ویزیت (ردیف‌های ناسازگار قدیمی حذف می‌شوند)
+                static fn (array $f): bool => (int) $f['clinic_id'] === (int) $visit['clinic_id']
+                    && (int) $f['patient_id'] === (int) $visit['patient_id']
+            ))),
             'past_visits' => array_map(static fn (array $v): array => [
                 'id' => (int) $v['id'],
                 'visit_date' => (string) $v['visit_date'],
