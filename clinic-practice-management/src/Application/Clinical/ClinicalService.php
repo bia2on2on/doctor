@@ -165,12 +165,7 @@ final class ClinicalService
                 'file_size' => (int) $f['file_size'],
                 'uploaded_by_wp_user_id' => (int) $f['uploaded_by_wp_user_id'],
                 'created_at' => (string) $f['created_at'],
-            ], array_values(array_filter(
-                $this->files->forVisit($visitId),
-                // fail-closed read: فقط فایلِ همان Clinic و همان بیمارِ ویزیت (ردیف‌های ناسازگار قدیمی حذف می‌شوند)
-                static fn (array $f): bool => (int) $f['clinic_id'] === (int) $visit['clinic_id']
-                    && (int) $f['patient_id'] === (int) $visit['patient_id']
-            ))),
+            ], $this->visitOwnedFiles($this->files->forVisit($visitId), $visit)),
             'past_visits' => array_map(static fn (array $v): array => [
                 'id' => (int) $v['id'],
                 'visit_date' => (string) $v['visit_date'],
@@ -1356,7 +1351,8 @@ final class ClinicalService
         $isDoctor = $user !== false && in_array(RolesAndCapabilities::ROLE_DOCTOR, (array) ($user->roles ?? []), true);
 
         $results = ['patients' => [], 'notes' => [], 'prescriptions' => []];
-        if (($type === 'all' || $type === 'patient') && $this->has_clinic_read($actorUserId, $trustedClinicId, RolesAndCapabilities::PATIENT_READ)) { // phpcs:ignore WordPress.NamingConvention.ValidVariableName.VariableNotSnakeCase -- established camelCase local
+        // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host variables
+        if (($type === 'all' || $type === 'patient') && $this->has_clinic_read($actorUserId, $trustedClinicId, RolesAndCapabilities::PATIENT_READ)) {
             $results['patients'] = array_map(
                 fn (array $row): array => [
                     'id' => (int) $row['id'],
@@ -1369,6 +1365,7 @@ final class ClinicalService
                 $this->patients->search(App::scope()->clinicId, $q, 20)
             );
         }
+        // phpcs:enable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
         // Clinic-local authority is required in addition to the WP-global doctor
         // role: the WP role never supplies scoped clinical read (membership DENY
         // and Clinic-local presets win).
@@ -1447,6 +1444,26 @@ final class ClinicalService
      * shared AuthorizationService (durable membership + preset/override); the
      * WP-global doctor role never substitutes for it.
      */
+    // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host variables
+    /**
+     * Fail-closed read: فقط فایل‌های همان Clinic و همان بیمارِ ویزیت (ردیف ناسازگار قدیمی حذف می‌شود).
+     *
+     * @param list<array<string, mixed>> $files
+     * @param array<string, mixed>       $visit
+     * @return list<array<string, mixed>>
+     */
+    private function visitOwnedFiles(array $files, array $visit): array
+    {
+        $clinicId = (int) $visit['clinic_id'];
+        $patientId = (int) $visit['patient_id'];
+
+        return array_values(array_filter(
+            $files,
+            static fn (array $f): bool => (int) $f['clinic_id'] === $clinicId && (int) $f['patient_id'] === $patientId
+        ));
+    }
+    // phpcs:enable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
+
     private function has_clinic_read( int $actor_user_id, int $clinic_id, string $capability ): bool {
         return App::authorization_service()->can( $actor_user_id, $clinic_id, $capability );
     }
