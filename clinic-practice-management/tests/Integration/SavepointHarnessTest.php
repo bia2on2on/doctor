@@ -68,10 +68,13 @@ final class SavepointHarnessTest extends WP_UnitTestCase
             // Ensure stack is clean for next test even if cleanup fails — preserve original failure.
             $GLOBALS['__cpms_sp_stack'] = [];
             $GLOBALS['__cpms_ddl_seen_since_start'] = false;
-            if ( '' !== $cleanupError ) {
-                self::assertSame( '', $cleanupError, 'SavepointHarnessTest tearDown cleanup must succeed: ' . $cleanupError );
+            try {
+                if ( '' !== $cleanupError ) {
+                    self::assertSame( '', $cleanupError, 'SavepointHarnessTest tearDown cleanup must succeed: ' . $cleanupError );
+                }
+            } finally {
+                parent::tearDown();
             }
-            parent::tearDown();
         }
     }
 
@@ -230,12 +233,15 @@ final class SavepointHarnessTest extends WP_UnitTestCase
         });
 
         $thrown = false;
+        $tmpName = '';
+        $originalFailure = '';
         try {
-            $db->transactional(function () use ($wpdb, $markerTable): void {
+            $db->transactional(function () use ($wpdb, $markerTable, &$tmpName): void {
                 $ok = $wpdb->query( $wpdb->prepare( "INSERT INTO {$markerTable} (value) VALUES (%s)", 'probe_marker' ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 self::assertNotFalse( $ok, 'marker insert must succeed: ' . $wpdb->last_error );
                 // This is TEMPORARY with an inline comment — must NOT be treated as real DDL.
                 $tmp = App::db()->table( 'cpms_harness_probe_commented_tmp_' . bin2hex( random_bytes( 2 ) ) );
+                $tmpName = $tmp;
                 $ok2 = $wpdb->query( "CREATE /* inline comment */ TEMPORARY TABLE {$tmp} ( id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, PRIMARY KEY (id) ) ENGINE=InnoDB" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 self::assertNotFalse( $ok2, 'commented TEMPORARY DDL inside transactional must succeed: ' . $wpdb->last_error );
                 // Controlled failure forces a ROLLBACK — the marker must be rolled back.
@@ -249,25 +255,37 @@ final class SavepointHarnessTest extends WP_UnitTestCase
             }
         }
 
-        self::assertTrue( $thrown, 'controlled rollback trigger must be observed' );
-        $count = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$markerTable} WHERE value = 'probe_marker'" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        self::assertSame( 0, $count, 'commented TEMPORARY DDL must not destroy rollback — marker must be rolled back to 0' );
-
-        // Cleanup marker table (real) - check result and preserve original failure.
-        $cleanupError = '';
         try {
-            $this->withRealTables(function () use ($wpdb, $markerTable, &$cleanupError): void {
+            self::assertTrue( $thrown, 'controlled rollback trigger must be observed' );
+            $count = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$markerTable} WHERE value = 'probe_marker'" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            self::assertSame( 0, $count, 'commented TEMPORARY DDL must not destroy rollback — marker must be rolled back to 0' );
+        } catch ( \Throwable $assertionError ) {
+            $originalFailure = $assertionError->getMessage();
+            throw $assertionError;
+        } finally {
+            // Guarantee DROP TEMPORARY TABLE for the randomly named temp table - MySQL does not remove it on rollback.
+            $cleanupError = '';
+            $this->withRealTables(function () use ($wpdb, $markerTable, $tmpName, &$cleanupError): void {
+                if ( '' !== $tmpName ) {
+                    $ok = $wpdb->query( "DROP TEMPORARY TABLE IF EXISTS {$tmpName}" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                    if ( false === $ok && '' !== $wpdb->last_error && '' === $cleanupError ) {
+                        $cleanupError = $wpdb->last_error;
+                    }
+                }
                 $ok = $wpdb->query( "DROP TABLE IF EXISTS {$markerTable}" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                if ( false === $ok && '' !== $wpdb->last_error ) {
+                if ( false === $ok && '' !== $wpdb->last_error && '' === $cleanupError ) {
                     $cleanupError = $wpdb->last_error;
                 }
             });
-        } finally {
             $GLOBALS['__cpms_sp_stack'] = [];
             $GLOBALS['__cpms_ddl_seen_since_start'] = false;
             if ( '' !== $cleanupError ) {
-                // Do not silently ignore cleanup failure - report it, but preserve original test failure if any.
-                self::assertSame( '', $cleanupError, 'marker table cleanup must succeed: ' . $cleanupError );
+                if ( '' !== $originalFailure ) {
+                    // Preserve original test failure, but make cleanup failure observable.
+                    self::assertSame( '', $cleanupError, 'cleanup must succeed (original failure: ' . $originalFailure . '): ' . $cleanupError );
+                } else {
+                    self::assertSame( '', $cleanupError, 'marker table cleanup must succeed: ' . $cleanupError );
+                }
             }
         }
     }
@@ -293,11 +311,14 @@ final class SavepointHarnessTest extends WP_UnitTestCase
         });
 
         $thrown = false;
+        $tmpName = '';
+        $originalFailure = '';
         try {
-            $db->transactional(function () use ($wpdb, $markerTable): void {
+            $db->transactional(function () use ($wpdb, $markerTable, &$tmpName): void {
                 $ok = $wpdb->query( $wpdb->prepare( "INSERT INTO {$markerTable} (value) VALUES (%s)", 'probe_dash' ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 self::assertNotFalse( $ok, 'marker insert must succeed: ' . $wpdb->last_error );
                 $tmp = App::db()->table( 'cpms_harness_probe_dash_tmp_' . bin2hex( random_bytes( 2 ) ) );
+                $tmpName = $tmp;
                 $ok2 = $wpdb->query( "CREATE -- dash comment\nTEMPORARY TABLE {$tmp} ( id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, PRIMARY KEY (id) ) ENGINE=InnoDB" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 self::assertNotFalse( $ok2, 'dash-commented TEMPORARY inside transactional must succeed: ' . $wpdb->last_error );
                 throw new \RuntimeException( 'controlled dash rollback' );
@@ -310,25 +331,36 @@ final class SavepointHarnessTest extends WP_UnitTestCase
             }
         }
 
-        self::assertTrue( $thrown, 'controlled dash rollback must be observed' );
-        $count = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$markerTable} WHERE value = 'probe_dash'" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        self::assertSame( 0, $count, 'dash-commented TEMPORARY must not destroy rollback' );
-
-        $cleanupError = '';
         try {
-            $this->withRealTables(function () use ($wpdb, $markerTable, &$cleanupError): void {
+            self::assertTrue( $thrown, 'controlled dash rollback must be observed' );
+            $count = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$markerTable} WHERE value = 'probe_dash'" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            self::assertSame( 0, $count, 'dash-commented TEMPORARY must not destroy rollback' );
+        } catch ( \Throwable $assertionError ) {
+            $originalFailure = $assertionError->getMessage();
+            throw $assertionError;
+        } finally {
+            $cleanupError = '';
+            $this->withRealTables(function () use ($wpdb, $markerTable, $tmpName, &$cleanupError): void {
+                if ( '' !== $tmpName ) {
+                    $ok = $wpdb->query( "DROP TEMPORARY TABLE IF EXISTS {$tmpName}" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                    if ( false === $ok && '' !== $wpdb->last_error && '' === $cleanupError ) {
+                        $cleanupError = $wpdb->last_error;
+                    }
+                }
                 $ok = $wpdb->query( "DROP TABLE IF EXISTS {$markerTable}" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                if ( false === $ok && '' !== $wpdb->last_error ) {
+                if ( false === $ok && '' !== $wpdb->last_error && '' === $cleanupError ) {
                     $cleanupError = $wpdb->last_error;
                 }
-                // Remove any leftover temp tables (defensive)
                 $wpdb->query( "DROP TEMPORARY TABLE IF EXISTS {$markerTable}" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
             });
-        } finally {
             $GLOBALS['__cpms_sp_stack'] = [];
             $GLOBALS['__cpms_ddl_seen_since_start'] = false;
             if ( '' !== $cleanupError ) {
-                self::assertSame( '', $cleanupError, 'cleanup must succeed: ' . $cleanupError );
+                if ( '' !== $originalFailure ) {
+                    self::assertSame( '', $cleanupError, 'cleanup must succeed (original: ' . $originalFailure . '): ' . $cleanupError );
+                } else {
+                    self::assertSame( '', $cleanupError, 'cleanup must succeed: ' . $cleanupError );
+                }
             }
         }
     }
@@ -353,11 +385,14 @@ final class SavepointHarnessTest extends WP_UnitTestCase
         });
 
         $thrown = false;
+        $tmpName = '';
+        $originalFailure = '';
         try {
-            $db->transactional(function () use ($wpdb, $markerTable): void {
+            $db->transactional(function () use ($wpdb, $markerTable, &$tmpName): void {
                 $ok = $wpdb->query( $wpdb->prepare( "INSERT INTO {$markerTable} (value) VALUES (%s)", 'probe_hash' ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 self::assertNotFalse( $ok, 'marker insert must succeed: ' . $wpdb->last_error );
                 $tmp = App::db()->table( 'cpms_harness_probe_hash_tmp_' . bin2hex( random_bytes( 2 ) ) );
+                $tmpName = $tmp;
                 $ok2 = $wpdb->query( "CREATE # hash comment\nTEMPORARY TABLE {$tmp} ( id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, PRIMARY KEY (id) ) ENGINE=InnoDB" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 self::assertNotFalse( $ok2, 'hash-commented TEMPORARY inside transactional must succeed: ' . $wpdb->last_error );
                 throw new \RuntimeException( 'controlled hash rollback' );
@@ -370,24 +405,36 @@ final class SavepointHarnessTest extends WP_UnitTestCase
             }
         }
 
-        self::assertTrue( $thrown, 'controlled hash rollback must be observed' );
-        $count = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$markerTable} WHERE value = 'probe_hash'" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        self::assertSame( 0, $count, 'hash-commented TEMPORARY must not destroy rollback' );
-
-        $cleanupError = '';
         try {
-            $this->withRealTables(function () use ($wpdb, $markerTable, &$cleanupError): void {
+            self::assertTrue( $thrown, 'controlled hash rollback must be observed' );
+            $count = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$markerTable} WHERE value = 'probe_hash'" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            self::assertSame( 0, $count, 'hash-commented TEMPORARY must not destroy rollback' );
+        } catch ( \Throwable $assertionError ) {
+            $originalFailure = $assertionError->getMessage();
+            throw $assertionError;
+        } finally {
+            $cleanupError = '';
+            $this->withRealTables(function () use ($wpdb, $markerTable, $tmpName, &$cleanupError): void {
+                if ( '' !== $tmpName ) {
+                    $ok = $wpdb->query( "DROP TEMPORARY TABLE IF EXISTS {$tmpName}" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                    if ( false === $ok && '' !== $wpdb->last_error && '' === $cleanupError ) {
+                        $cleanupError = $wpdb->last_error;
+                    }
+                }
                 $ok = $wpdb->query( "DROP TABLE IF EXISTS {$markerTable}" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                if ( false === $ok && '' !== $wpdb->last_error ) {
+                if ( false === $ok && '' !== $wpdb->last_error && '' === $cleanupError ) {
                     $cleanupError = $wpdb->last_error;
                 }
                 $wpdb->query( "DROP TEMPORARY TABLE IF EXISTS {$markerTable}" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
             });
-        } finally {
             $GLOBALS['__cpms_sp_stack'] = [];
             $GLOBALS['__cpms_ddl_seen_since_start'] = false;
             if ( '' !== $cleanupError ) {
-                self::assertSame( '', $cleanupError, 'cleanup must succeed: ' . $cleanupError );
+                if ( '' !== $originalFailure ) {
+                    self::assertSame( '', $cleanupError, 'cleanup must succeed (original: ' . $originalFailure . '): ' . $cleanupError );
+                } else {
+                    self::assertSame( '', $cleanupError, 'cleanup must succeed: ' . $cleanupError );
+                }
             }
         }
     }

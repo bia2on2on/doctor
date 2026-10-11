@@ -821,10 +821,18 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
                     if ( false === $ok && '' !== $wpdb->last_error && '' === $cleanupError ) {
                         $cleanupError = $wpdb->last_error;
                     }
-                    $wpdb->query( "DELETE FROM {$wpdb->prefix}cpms_schema_migrations WHERE version = '" . self::NEW_VERSION . "'" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                    // Remove any leftover temporary tables from the test
-                    $wpdb->query( "DROP TEMPORARY TABLE IF EXISTS {$defs}" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                    $wpdb->query( "DROP TEMPORARY TABLE IF EXISTS {$caps}" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                    $ok = $wpdb->query( "DELETE FROM {$wpdb->prefix}cpms_schema_migrations WHERE version = '" . self::NEW_VERSION . "'" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                    if ( false === $ok && '' !== $wpdb->last_error && '' === $cleanupError ) {
+                        $cleanupError = $wpdb->last_error;
+                    }
+                    $ok = $wpdb->query( "DROP TEMPORARY TABLE IF EXISTS {$defs}" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                    if ( false === $ok && '' !== $wpdb->last_error && '' === $cleanupError ) {
+                        $cleanupError = $wpdb->last_error;
+                    }
+                    $ok = $wpdb->query( "DROP TEMPORARY TABLE IF EXISTS {$caps}" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                    if ( false === $ok && '' !== $wpdb->last_error && '' === $cleanupError ) {
+                        $cleanupError = $wpdb->last_error;
+                    }
                     App::migrations()->migrate();
                 });
             } finally {
@@ -853,18 +861,27 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
         $cleanupError = '';
         try {
             $this->withRealTables(function () use ($wpdb, $defs, $caps, &$cleanupError): void {
-                $wpdb->query("DELETE FROM {$wpdb->prefix}cpms_schema_migrations WHERE version = '" . self::NEW_VERSION . "'"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $ok = $wpdb->query("DELETE FROM {$wpdb->prefix}cpms_schema_migrations WHERE version = '" . self::NEW_VERSION . "'"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                if ( false === $ok && '' !== $wpdb->last_error && '' === $cleanupError ) {
+                    $cleanupError = $wpdb->last_error;
+                }
                 // Drop child before parent (caps has FK to defs)
                 $ok = $wpdb->query("DROP TABLE IF EXISTS {$caps}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 if ( false === $ok && '' !== $wpdb->last_error && '' === $cleanupError ) {
                     $cleanupError = $wpdb->last_error;
                 }
-                $wpdb->query("DROP TEMPORARY TABLE IF EXISTS {$caps}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $ok = $wpdb->query("DROP TEMPORARY TABLE IF EXISTS {$caps}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                if ( false === $ok && '' !== $wpdb->last_error && '' === $cleanupError ) {
+                    $cleanupError = $wpdb->last_error;
+                }
                 $ok = $wpdb->query("DROP TABLE IF EXISTS {$defs}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 if ( false === $ok && '' !== $wpdb->last_error && '' === $cleanupError ) {
                     $cleanupError = $wpdb->last_error;
                 }
-                $wpdb->query("DROP TEMPORARY TABLE IF EXISTS {$defs}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $ok = $wpdb->query("DROP TEMPORARY TABLE IF EXISTS {$defs}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                if ( false === $ok && '' !== $wpdb->last_error && '' === $cleanupError ) {
+                    $cleanupError = $wpdb->last_error;
+                }
                 App::migrations()->migrate();
             });
         } finally {
