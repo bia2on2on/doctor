@@ -20,6 +20,19 @@ $baselinePath = getenv('UPGRADE_FIXTURE_PATH');
 $expectedPreviousVersion = '2026_09_26_0023';
 // Schema the CANDIDATE artifact must reach after migrating forward.
 $expectedCandidateVersion = '2026_10_11_0026';
+/*
+ * Reviewed additive schema evolution of the CANDIDATE over the pinned previous
+ * release — the only shared-table drift this upgrade may introduce. Migration
+ * 2026_10_11_0026 adds the one-shot first-setup consumption marker; every
+ * pre-existing column must survive unchanged and anything beyond this pin
+ * fails closed in cpms_upgrade_schema_compare().
+ */
+$expectedAdditiveColumns = [
+    'cpms_clinics' => [
+        'first_setup_claimed_at' => ['type' => 'datetime(3)', 'nullable' => 'YES'],
+    ],
+];
+require_once __DIR__ . '/upgrade-path-schema-compare.php';
 
 $fail = static function (string $message): void {
     fwrite(STDERR, 'UPGRADE_PATH_FAILED: ' . $message . "\n");
@@ -410,9 +423,10 @@ $assert($secondPass === [], 'second migration pass was not a safe no-op.');
 $currentSchema = $schemaSnapshot();
 $previousSchema = $baseline['schema_columns'] ?? [];
 $assert(is_array($previousSchema), 'pre-upgrade schema snapshot is invalid.');
+$schemaDiff = cpms_upgrade_schema_compare($previousSchema, $currentSchema, $expectedAdditiveColumns);
 $assert(
-    $currentSchema === $previousSchema,
-    'current schema differs from the immediately preceding application schema.'
+    $schemaDiff === null,
+    'current schema differs from the immediately preceding application schema: ' . (string) $schemaDiff
 );
 
 $assertTenantRelationships($tenants);
