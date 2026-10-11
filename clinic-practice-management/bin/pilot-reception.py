@@ -72,10 +72,20 @@ def shot(page, name):
     print(f"SHOT {name}")
 
 
+# Repository-native `--test` convention (bin/wpcs-changed-lines.py, the
+# bin/pilot-bench-*.py self-tests): the deterministic correlation self-test runs
+# without WordPress, without a browser and without the acceptance env.
+SELFTEST = "--test" in sys.argv[1:]
+
+
 def parts(name, n):
     raw = os.environ.get(name, "").strip()
     values = [p.strip() for p in raw.split("|")]
     if len(values) < n or not values[0]:
+        if SELFTEST:
+            # --test never reads the live acceptance fixtures: it exercises the
+            # pure destination-read correlation, so the env must not be required.
+            return ["0"] * n
         raise SystemExit(f"{name} must carry {n} pipe-separated parts")
     return values
 
@@ -1558,6 +1568,48 @@ def slot_read_responses(state, since=0):
     return [r for r in state["rest"][since:] if r["route"].rstrip("/") == SLOT_READ_PATH]
 
 
+def request_snapshot(request):
+    """One /clinic/v1 request in the SAME {method, route, query, headers} shape
+    `new_page` records, so exactly one correlation rule applies to both the live
+    Playwright capture and the recorded request history."""
+    return {
+        "method": str(request.method or ""),
+        "route": route_of(request.url),
+        "query": dict(parse_qsl(urlparse(request.url).query, keep_blank_values=True)),
+        "headers": {str(k).lower(): v for k, v in (request.headers or {}).items()},
+    }
+
+
+def slot_read_bound(read, location_id, clinician_id, date):
+    """Correlation of ONE slot read: a bounded GET of the reception slots endpoint
+    bound to the trusted operational Location header and to the explicitly
+    selected clinician — and to the destination date:
+
+      * `date` = "YYYY-MM-DD": the request must carry exactly that date. The panel
+        appends `date` only after an explicit date selection.
+      * `date` = None: the request must carry NO date at all. Opening the panel
+        and switching the destination clinician both reset the date to null
+        before the read, so a request that carries a date cannot be that read.
+
+    A path-only predicate accepts all of those requests, so a read of ANOTHER
+    clinician/date still in flight can be captured instead of the destination read
+    — the reception-reschedule-desktop-1366 mismatch this correlation removes.
+    """
+    if str(read.get("method") or "") != "GET":
+        return False
+    if str(read.get("route") or "").rstrip("/") != SLOT_READ_PATH:
+        return False
+    headers = {str(k).lower(): v for k, v in (read.get("headers") or {}).items()}
+    if str(headers.get("x-cpms-location-id", "")) != str(location_id):
+        return False
+    query = read.get("query") or {}
+    if str(query.get("clinician_id", "")) != str(clinician_id):
+        return False
+    if date is None:
+        return "date" not in query
+    return "date" in query and str(query["date"]) == str(date)
+
+
 def wait_slot_reads_settled(page, state, timeout_ms=SLOT_READ_SETTLE_TIMEOUT_MS):
     """Deterministic baseline barrier: every slot read initiated so far has its
     response recorded, i.e. nothing relevant is still in flight.
@@ -2271,6 +2323,31 @@ def run_reschedule_journey(browser, vp):
     # CURRENT trusted Location; the journey captures exactly that response.
     slot_read_filter = lambda r: r.request.method == "GET" and route_of(r.url) == "/clinic/v1" + SLOTS_ROUTE
     dest_read_value = None
+
+    def capture_destination_read(action, clinician_id, date, label):
+        """Capture THE destination slot read of exactly this (Location, clinician,
+        date) around one UI action. The live predicate is correlated — never
+        path-only — and the recorded history must show exactly one such read, so a
+        read of another clinician/date can neither satisfy nor bypass this gate.
+        """
+        wait_slot_reads_settled(page, state)
+        before = len(state["reqs"])
+        with page.expect_response(
+            lambda r: slot_read_bound(request_snapshot(r.request), PUB["loc_tehran"], clinician_id, date),
+            timeout=15000,
+        ) as captured:
+            action()
+        wait_slot_reads_settled(page, state)
+        reads = [
+            r
+            for r in slot_read_requests(state, before)
+            if slot_read_bound(r, PUB["loc_tehran"], clinician_id, date)
+        ]
+        if len(reads) != 1:
+            raise RuntimeError(f"{label}: exactly one destination slot read must answer, got {len(reads)}")
+        assert_bounded_slot_read(reads[0], PUB["loc_tehran"], expected_clinician=clinician_id, expected_date=date, page=page)
+        return captured.value
+
     key = f"reception-reschedule-{tag}"
     stage = "login"
     ctx, page, state = new_page(browser, vp)
@@ -2370,12 +2447,17 @@ def run_reschedule_journey(browser, vp):
             if not action_time or not action_time.strip():
                 raise RuntimeError("the upcoming source row must expose a non-empty data-appointment-time on its reschedule action")
             current_time = action_time.strip()
-        with page.expect_response(slot_read_filter, timeout=15000) as opened_read:
-            source_row.locator('[data-role="sr-reschedule-open"]').click()
+        # The panel resets its date to null before this first read, so the open
+        # read carries the current clinician and NO date. For a same-day,
+        # same-doctor destination this first read IS the destination read; the
+        # other viewports replace it below.
+        dest_read_value = capture_destination_read(
+            lambda: source_row.locator('[data-role="sr-reschedule-open"]').click(),
+            RESCHEDULE["c1"],
+            None,
+            "reschedule-open",
+        )
         page.wait_for_selector('[data-section="sr-reschedule"]', state="visible", timeout=10000)
-        # For a same-day, same-doctor destination this first read IS the
-        # destination read; the other viewports replace it below.
-        dest_read_value = opened_read.value
         context_text = (page.locator('[data-role="sr-reschedule-context"]').inner_text() or "").strip()
         if f"Reschedule {tag.split('-')[0].capitalize()}" not in context_text or current_time not in context_text:
             raise RuntimeError(f"the panel must show the current patient/time context, got {context_text}")
@@ -2391,9 +2473,14 @@ def run_reschedule_journey(browser, vp):
         if clinician_select.input_value() != str(RESCHEDULE["c1"]):
             raise RuntimeError("the current doctor must be the initially selectable destination")
         if dest_doctor != RESCHEDULE["c1"]:
-            with page.expect_response(slot_read_filter, timeout=15000) as switched_read:
-                clinician_select.select_option(str(dest_doctor))
-            dest_read_value = switched_read.value
+            # Switching the destination clinician resets the panel date to null,
+            # so this read carries the new clinician and NO date.
+            dest_read_value = capture_destination_read(
+                lambda: clinician_select.select_option(str(dest_doctor)),
+                dest_doctor,
+                None,
+                "reschedule-destination-clinician",
+            )
             # Changing the destination doctor clears the stale slot state.
             if page.locator('[data-role="sr-reschedule-slot"][aria-pressed="true"]').count() != 0:
                 raise RuntimeError("changing the destination doctor must clear the previous slot selection")
@@ -2404,9 +2491,14 @@ def run_reschedule_journey(browser, vp):
         if not same_day:
             if date_select.locator(f'option[value="{dest_date}"]').count() != 1:
                 raise RuntimeError("the Location-local destination date must be selectable")
-            with page.expect_response(slot_read_filter, timeout=15000) as dated_read:
-                date_select.select_option(dest_date)
-            dest_read_value = dated_read.value
+            # An explicit date selection is the ONLY panel state that appends
+            # `date`, so this read must carry exactly the selected destination date.
+            dest_read_value = capture_destination_read(
+                lambda: date_select.select_option(dest_date),
+                dest_doctor,
+                dest_date,
+                "reschedule-destination-date",
+            )
         elif date_select.input_value() != dest_date:
             raise RuntimeError(f"a same-day destination must default to the operational date, got {date_select.input_value()}")
         wait_reschedule_slot(page, dest_slot)
@@ -2420,6 +2512,11 @@ def run_reschedule_journey(browser, vp):
         last_slots = last_slots.get("data", last_slots) if isinstance(last_slots, dict) else {}
         if int(last_slots.get("location_id") or 0) != PUB["loc_tehran"]:
             raise RuntimeError(f"the destination slot read must stay in the CURRENT trusted Location, got {last_slots.get('location_id')}")
+        if str(last_slots.get("date") or "") != str(dest_date):
+            raise RuntimeError(
+                "the destination slot read must answer for the selected destination date, "
+                f"got {last_slots.get('date')} vs {dest_date}"
+            )
         offered = set(int(s.get("slot_id") or 0) for s in (last_slots.get("slots") or []))
         rendered = set(reschedule_slot_ids(page))
         if not rendered or not rendered.issubset(offered):
@@ -2731,6 +2828,51 @@ def assert_fixture_operational_date_contract():
     )
 
 
+def _selftests():
+    """Deterministic self-test of the destination slot-read correlation.
+
+    No WordPress, no browser, no acceptance env: it proves the rule that binds a
+    captured slot read to the selected Location, clinician and destination date —
+    including the stale/mismatched captures the historical
+    `reception-reschedule-desktop-1366` failure is attributed to. A path-only
+    predicate fails these cases; the correlation below must not.
+    """
+    location = 11
+    other_location = 12
+    clinician = 21
+    other_clinician = 22
+    day = "2026-10-12"
+    other_day = "2026-10-13"
+
+    def read(method="GET", route=SLOT_READ_PATH, query=None, location_header=location):
+        headers = {} if location_header is None else {"x-cpms-location-id": str(location_header)}
+        return {"method": method, "route": route, "query": dict(query or {}), "headers": headers}
+
+    dated = {"clinician_id": str(clinician), "date": day}
+    cases = [
+        ("the intended dated destination read", read(query=dated), clinician, day, True),
+        ("the intended open/switch read (no date yet)", read(query={"clinician_id": str(clinician)}), clinician, None, True),
+        ("a stale read of another clinician", read(query={"clinician_id": str(other_clinician), "date": day}), clinician, day, False),
+        ("a stale read of another date", read(query={"clinician_id": str(clinician), "date": other_day}), clinician, day, False),
+        ("a dated destination read that omits the date", read(query={"clinician_id": str(clinician)}), clinician, day, False),
+        ("an open/switch read that already carries a date", read(query=dated), clinician, None, False),
+        ("a read of another Location", read(query=dated, location_header=other_location), clinician, day, False),
+        ("a read without the trusted Location header", read(query=dated, location_header=None), clinician, day, False),
+        ("a non-GET slot read", read(method="POST", query=dated), clinician, day, False),
+        ("a read of another route", read(route="/clinic/v1/staff/portal/reception/board", query=dated), clinician, day, False),
+    ]
+    failed = []
+    for label, snapshot, expected_clinician, expected_date, expected in cases:
+        actual = slot_read_bound(snapshot, location, expected_clinician, expected_date)
+        if actual != expected:
+            failed.append(f"{label}: expected bound={expected}, got bound={actual}")
+    total = len(cases)
+    for line in failed:
+        print(f"FAIL pilot-reception correlation self-test — {line}")
+    print(f"pilot-reception correlation self-test: {total - len(failed)}/{total} checks passed")
+    return 1 if failed else 0
+
+
 def main():
     if not RECEPTION_URL or not STAFF_URL:
         raise SystemExit("RECEPTION_URL / STAFF_PORTAL_URL must be set by the fixture")
@@ -2822,4 +2964,6 @@ def main():
 
 
 if __name__ == "__main__":
+    if SELFTEST:
+        sys.exit(_selftests())
     main()

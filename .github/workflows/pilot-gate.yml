@@ -2052,6 +2052,10 @@ jobs:
           BASE: http://localhost:8080
         run: |
           python3 -m py_compile bin/pilot-reception.py
+          # Deterministic correlation self-test first: it proves the destination
+          # slot read is bound to the selected Location/clinician/date (no browser,
+          # no WordPress, no acceptance env required) before the live journey runs.
+          python3 bin/pilot-reception.py --test
           python3 bin/pilot-reception.py | tee /tmp/reception.log
           BROWSER_EXIT="${PIPESTATUS[0]}"
           if [ "${BROWSER_EXIT}" != "0" ]; then
