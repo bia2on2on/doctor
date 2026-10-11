@@ -409,14 +409,27 @@ final class FirstPracticeSetupTest extends WP_UnitTestCase
             self::assertNotFalse($resA);
 
             // Connection B must not enter the critical section while A holds it.
+            // PHP 8.1+ mysqli throws mysqli_sql_exception on errors (it does not
+            // return false), so the lock-wait timeout is caught explicitly.
             self::assertTrue($connB->query('SET SESSION innodb_lock_wait_timeout = 2'));
             self::assertTrue($connB->query('START TRANSACTION'));
-            $resB = $connB->query(
-                'SELECT first_setup_claimed_at FROM ' . $this->table('cpms_clinics') .
-                ' WHERE id = ' . $clinicId . ' FOR UPDATE'
-            );
-            self::assertFalse($resB, 'second connection must block on the Clinic row lock');
-            $errB = (string) $connB->error;
+            $blocked = false;
+            $errB    = '';
+            try {
+                $resB = $connB->query(
+                    'SELECT first_setup_claimed_at FROM ' . $this->table('cpms_clinics') .
+                    ' WHERE id = ' . $clinicId . ' FOR UPDATE'
+                );
+                if ($resB instanceof \mysqli_result) {
+                    $resB->free();
+                }
+                $errB    = (string) $connB->error;
+                $blocked = ($resB === false);
+            } catch (\mysqli_sql_exception $e) {
+                $blocked = true;
+                $errB    = $e->getMessage();
+            }
+            self::assertTrue($blocked, 'second connection must block on the Clinic row lock');
             self::assertStringContainsString('Lock wait timeout', $errB);
             $connB->query('ROLLBACK');
 
