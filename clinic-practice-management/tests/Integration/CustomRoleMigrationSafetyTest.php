@@ -29,12 +29,13 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
     private const NEW_VERSION = '2026_10_10_0024';
 
     /**
-     * Slice 2 adds a forward-only follow-up migration (display_name column), so
-     * the 0024 tables are no longer the head of the migration chain. The
-     * custom-role schema safety assertions below still target 0024 explicitly;
-     * "head" assertions target this version.
+     * Slice 2 adds a forward-only follow-up migration (display_name column) and
+     * Slice 3A adds the first-setup marker column, so the 0024 tables are no
+     * longer the head of the migration chain. The custom-role schema safety
+     * assertions below still target 0024 explicitly; "head" assertions target
+     * this version.
      */
-    private const HEAD_VERSION = '2026_10_11_0025';
+    private const HEAD_VERSION = '2026_10_11_0026';
 
     protected function setUp(): void
     {
@@ -61,7 +62,7 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
         self::assertSame([], $appliedSecond, 'second migrate() must be a no-op (idempotent)');
         $applied_versions = implode(',', App::migrations()->applied());
         self::assertStringContainsString(self::NEW_VERSION, $applied_versions, 'migration 2026_10_10_0024 must be applied');
-        self::assertStringContainsString(self::HEAD_VERSION, $applied_versions, 'migration 2026_10_11_0025 must be applied');
+        self::assertStringContainsString(self::HEAD_VERSION, $applied_versions, 'migration 2026_10_11_0026 must be applied');
         self::assertSame(self::HEAD_VERSION, App::migrations()->currentVersion(), 'the custom-role migrations must be the current head');
 
         foreach (['cpms_custom_role_defs', 'cpms_custom_role_capabilities'] as $short) {

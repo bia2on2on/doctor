@@ -27,6 +27,8 @@ final class CustomRoleDisplayNameMigrationTest extends WP_UnitTestCase
 
     private const VERSION = '2026_10_11_0025';
     private const PREVIOUS_VERSION = '2026_10_10_0024';
+    /** Slice 3A adds the first-setup marker column after this migration. */
+    private const HEAD_VERSION = '2026_10_11_0026';
 
     protected function setUp(): void
     {
@@ -49,7 +51,7 @@ final class CustomRoleDisplayNameMigrationTest extends WP_UnitTestCase
         $defs = App::db()->table('cpms_custom_role_defs');
 
         self::assertSame([], $this->withRealTables(static fn (): array => App::migrations()->migrate()), 'repeat migrate() must be a no-op');
-        self::assertSame(self::VERSION, App::migrations()->currentVersion());
+        self::assertSame(self::HEAD_VERSION, App::migrations()->currentVersion(), 'later forward-only migrations advance the head');
 
         $column = $wpdb->get_row("SHOW FULL COLUMNS FROM {$defs} LIKE 'display_name'", ARRAY_A); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         self::assertIsArray($column, 'display_name column must exist');
@@ -109,8 +111,10 @@ final class CustomRoleDisplayNameMigrationTest extends WP_UnitTestCase
         $defs = App::db()->table('cpms_custom_role_defs');
 
         $this->withRealTables(function () use ($wpdb, $defs): void {
+            $rolledHead = App::migrations()->rollbackOne();
+            self::assertSame(self::HEAD_VERSION, $rolledHead, 'later migrations must roll back before the display-name migration');
             $rolled = App::migrations()->rollbackOne();
-            self::assertSame(self::VERSION, $rolled, 'the display-name migration must be the first to roll back');
+            self::assertSame(self::VERSION, $rolled, 'the display-name migration must roll back before 0024');
             self::assertSame(self::PREVIOUS_VERSION, App::migrations()->currentVersion());
 
             $gone = $wpdb->get_row("SHOW COLUMNS FROM {$defs} LIKE 'display_name'", ARRAY_A); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
@@ -133,6 +137,7 @@ final class CustomRoleDisplayNameMigrationTest extends WP_UnitTestCase
 
         try {
             $this->withRealTables(function () use ($wpdb, $defs): void {
+                self::assertSame(self::HEAD_VERSION, App::migrations()->rollbackOne());
                 self::assertSame(self::VERSION, App::migrations()->rollbackOne());
                 self::assertSame(self::PREVIOUS_VERSION, App::migrations()->currentVersion());
 
@@ -171,7 +176,7 @@ final class CustomRoleDisplayNameMigrationTest extends WP_UnitTestCase
             });
         }
 
-        self::assertSame(self::VERSION, App::migrations()->currentVersion(), 'suite schema must be restored');
+        self::assertSame(self::HEAD_VERSION, App::migrations()->currentVersion(), 'suite schema must be restored');
         $column = $wpdb->get_row("SHOW COLUMNS FROM {$defs} LIKE 'display_name'", ARRAY_A); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         self::assertIsArray($column, 'the well-formed column must be restored after cleanup');
         self::assertSame('YES', strtoupper((string) $column['Null']));
