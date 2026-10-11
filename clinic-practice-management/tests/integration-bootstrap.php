@@ -105,39 +105,36 @@ tests_add_filter(
             return 'SAVEPOINT ' . $name;
         }
         if ( 'COMMIT' === $verb ) {
+            // Real DDL performs an implicit COMMIT that destroys all savepoints.
+            // If a real DDL was observed since the last START, the stack is stale
+            // (savepoints no longer exist) — treat COMMIT as a harmless no-op
+            // and clear the entire stack, regardless of whether the stack is
+            // empty or still contains entries.
+            if ( ! empty( $GLOBALS['__cpms_ddl_seen_since_start'] ) ) {
+                $GLOBALS['__cpms_ddl_seen_since_start'] = false;
+                $GLOBALS['__cpms_sp_stack'] = [];
+
+                return 'SELECT 1';
+            }
             $name = array_pop( $stack );
             if ( null === $name ) {
-                // Empty stack: only a proven real DDL boundary justifies a
-                // no-op. Otherwise the unexpected loss must remain observable
-                // — return a failing savepoint so tx_control reports the error
-                // and the test fails loudly instead of silently committing the
-                // outer WP transaction.
-                if ( ! empty( $GLOBALS['__cpms_ddl_seen_since_start'] ) ) {
-                    $GLOBALS['__cpms_ddl_seen_since_start'] = false;
-                    $GLOBALS['__cpms_sp_stack'] = [];
-
-                    return 'SELECT 1';
-                }
-
+                // No DDL boundary proven — unexpected empty stack must fail loudly.
                 return 'RELEASE SAVEPOINT cpms_sp_does_not_exist';
             }
-            $GLOBALS['__cpms_ddl_seen_since_start'] = false;
 
             return 'RELEASE SAVEPOINT ' . $name;
         }
         if ( 'ROLLBACK' === $verb ) {
+            if ( ! empty( $GLOBALS['__cpms_ddl_seen_since_start'] ) ) {
+                $GLOBALS['__cpms_ddl_seen_since_start'] = false;
+                $GLOBALS['__cpms_sp_stack'] = [];
+
+                return 'SELECT 1';
+            }
             $name = array_pop( $stack );
             if ( null === $name ) {
-                if ( ! empty( $GLOBALS['__cpms_ddl_seen_since_start'] ) ) {
-                    $GLOBALS['__cpms_ddl_seen_since_start'] = false;
-                    $GLOBALS['__cpms_sp_stack'] = [];
-
-                    return 'SELECT 1';
-                }
-
                 return 'ROLLBACK TO SAVEPOINT cpms_sp_does_not_exist';
             }
-            $GLOBALS['__cpms_ddl_seen_since_start'] = false;
 
             return 'ROLLBACK TO SAVEPOINT ' . $name;
         }

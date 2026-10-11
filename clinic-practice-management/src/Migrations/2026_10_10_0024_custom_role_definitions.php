@@ -121,8 +121,9 @@ return [
             }
         };
         $require_fk      = static function ( string $table, string $constraint, array $columns, string $ref_table, array $ref_columns ) use ( $db ): void {
-            $current_schema = (string) $db->fetchValue( 'SELECT DATABASE()' );
-            $rows = $db->fetchAll(
+            $current_schema = (string) $db->fetchValue( 'SELECT DATABASE()' ); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning
+
+            $rows           = $db->fetchAll(
                 'SELECT kcu.COLUMN_NAME, kcu.REFERENCED_TABLE_NAME, kcu.REFERENCED_COLUMN_NAME, kcu.REFERENCED_TABLE_SCHEMA, rc.DELETE_RULE' .
                 ' FROM information_schema.KEY_COLUMN_USAGE kcu' .
                 ' JOIN information_schema.REFERENTIAL_CONSTRAINTS rc ON rc.CONSTRAINT_SCHEMA = kcu.CONSTRAINT_SCHEMA AND rc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME AND rc.TABLE_NAME = kcu.TABLE_NAME' .
