@@ -169,8 +169,8 @@ final class ClinicalService
                 'file_size' => (int) $f['file_size'],
                 'uploaded_by_wp_user_id' => (int) $f['uploaded_by_wp_user_id'],
                 'created_at' => (string) $f['created_at'],
-            ],
-            $visit_files
+                ],
+                $visit_files
             ),
             'past_visits' => array_map(static fn (array $v): array => [
                 'id' => (int) $v['id'],
