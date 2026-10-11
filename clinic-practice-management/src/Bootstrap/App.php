@@ -701,10 +701,9 @@ final class App
      * سرویس مدیریت نقش سفارشی (Custom Role Slice 2) — Clinic-local،
      * authority از TrustedClinicEstablisher + AuthorizationService می‌آید.
      */
-    public static function custom_role_management_service(): \ClinicCore\Application\Roles\CustomRoleManagementService
-    {
+    public static function custom_role_management_service(): \ClinicCore\Application\Roles\CustomRoleManagementService {
         static $service = null;
-        if ($service === null) {
+        if ( $service === null ) {
             $service = new \ClinicCore\Application\Roles\CustomRoleManagementService(
                 new TrustedClinicEstablisher( self::db(), new MembershipRepository( self::db() ) ),
                 self::authorization_service(),

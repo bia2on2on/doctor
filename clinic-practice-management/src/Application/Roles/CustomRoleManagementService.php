@@ -48,9 +48,9 @@ use ClinicCore\Infrastructure\Repository\CustomRoleRepository;
  * There is deliberately NO delete, NO archive, NO status toggle, NO role
  * assignment and NO WordPress-global role registration in this surface.
  */
-final class CustomRoleManagementService
-{
-    public const AUDIT_DEFINED            = 'CUSTOM_ROLE_DEFINED';
+final class CustomRoleManagementService {
+
+    public const AUDIT_DEFINED              = 'CUSTOM_ROLE_DEFINED';
     public const AUDIT_DISPLAY_NAME_CHANGED = 'CUSTOM_ROLE_DISPLAY_NAME_CHANGED';
     public const AUDIT_CAPABILITIES_CHANGED = 'CUSTOM_ROLE_CAPABILITIES_CHANGED';
 
@@ -292,9 +292,9 @@ final class CustomRoleManagementService
         // trusted by itself, and a forged value cannot conjure a membership.
         $scope = $this->scope->establish( $actor_wp_user_id, $requested_clinic_id );
 
-        $this->authorization->authorize( $actor_wp_user_id, $scope->clinicId, RolesAndCapabilities::CONFIG );
+        $this->authorization->authorize( $actor_wp_user_id, $scope->clinicId, RolesAndCapabilities::CONFIG ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope::$clinicId is the existing published scope API.
 
-        return $scope->clinicId;
+        return $scope->clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope::$clinicId is the existing published scope API.
     }
 
     /**

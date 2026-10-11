@@ -27,556 +27,499 @@ use ClinicCore\Bootstrap\App;
  *    Backend مستقل از UI همان مجموعه را دوباره اعتبارسنجی می‌کند (all-or-nothing).
  *  - Nonce (CSRF) روی هر action، Sanitize روی هر ورودی، خروجی Escape‌شده.
  *  - کلید فنی نقش immutable است: فرم rename فقط نام نمایشی را تغییر می‌دهد.
- *  - هیچ Assign/Archive/Delete/Status در این صفحه وجود ندارد و هیچ نقش
+ *  - هیچ Assign/Archive/Delete/Status در این صفحه نیست و هیچ نقش
  *    WordPress-global ثبت نمی‌شود. نام‌های نمایشی Unicode-عمومی‌اند (بدون قاعدهٔ
- *    فارسی‌محور) و هر متن با توابع ترجمهٔ وردپرس رندر می‌شود.
+ *    فارسی‌محور) و متن‌ها با توابع ترجمهٔ وردپرس رندر می‌شوند.
  */
-final class CustomRoleDefinitionsPage
-{
-    public const PAGE_SLUG = 'cpms-custom-roles';
+final class CustomRoleDefinitionsPage {
 
-    private const NONCE_CREATE = 'cpms_custom_role_create';
-    private const NONCE_RENAME = 'cpms_custom_role_rename';
-    private const NONCE_CAPS   = 'cpms_custom_role_caps';
-    private const NOTICE_KEY   = 'cpms_custom_roles_notice';
+	public const PAGE_SLUG = 'cpms-custom-roles';
 
-    public static function register(): void
-    {
-        add_action('admin_menu', [self::class, 'menu']);
-        add_action('admin_post_cpms_custom_role_create', [self::class, 'handleCreate']);
-        add_action('admin_post_cpms_custom_role_rename', [self::class, 'handleRename']);
-        add_action('admin_post_cpms_custom_role_caps', [self::class, 'handleReplaceCapabilities']);
-    }
+	private const NONCE_CREATE = 'cpms_custom_role_create';
+	private const NONCE_RENAME = 'cpms_custom_role_rename';
+	private const NONCE_CAPS   = 'cpms_custom_role_caps';
+	private const NOTICE_KEY   = 'cpms_custom_roles_notice';
 
-    public static function menu(): void
-    {
-        add_submenu_page(
-            CpmsAdminMenu::parentSlug(),
-            __('نقش‌های سفارشی', 'cpms'),
-            __('نقش‌های سفارشی', 'cpms'),
-            RolesAndCapabilities::CONFIG,
-            self::PAGE_SLUG,
-            [self::class, 'render']
-        );
-    }
+	public static function register(): void {
+		add_action( 'admin_menu', [ self::class, 'menu' ] );
+		add_action( 'admin_post_cpms_custom_role_create', [ self::class, 'handle_create' ] );
+		add_action( 'admin_post_cpms_custom_role_rename', [ self::class, 'handle_rename' ] );
+		add_action( 'admin_post_cpms_custom_role_caps', [ self::class, 'handle_replace_capabilities' ] );
+	}
 
-    public static function render(): void
-    {
-        if (!current_user_can(RolesAndCapabilities::CONFIG)) {
-            wp_die(esc_html__('دسترسی ندارید', 'cpms'), 403);
-        }
+	public static function menu(): void {
+		add_submenu_page(
+			CpmsAdminMenu::parentSlug(),
+			__( 'نقش‌های سفارشی', 'cpms' ),
+			__( 'نقش‌های سفارشی', 'cpms' ),
+			RolesAndCapabilities::CONFIG,
+			self::PAGE_SLUG,
+			[ self::class, 'render' ]
+		);
+	}
 
-        $actor = (int) get_current_user_id();
-        $notice = self::pullNotice();
+	public static function render(): void {
+		if ( ! current_user_can( RolesAndCapabilities::CONFIG ) ) {
+			wp_die( esc_html__( 'دسترسی ندارید', 'cpms' ), 403 );
+		}
 
-        // Selector is display context only; every read/write re-establishes the
-        // trusted Clinic inside the service.
-        $clinicId = self::selectedClinicId();
-        $choices = self::manageableClinics($actor);
+		$actor  = (int) get_current_user_id();
+		$notice = self::pull_notice();
 
-        ?>
-        <div class="wrap" dir="rtl">
-            <h1><?php echo esc_html__('نقش‌های سفارشی', 'cpms'); ?></h1>
+		// Selector is display context only; every read/write re-establishes the
+		// trusted Clinic inside the service.
+		$choices   = self::manageable_clinics( $actor );
+		$clinic_id = self::selected_clinic_id( $choices );
 
-            <?php self::renderNotice($notice); ?>
+		echo '<div class="wrap" dir="rtl">';
+		echo '<h1>' . esc_html__( 'نقش‌های سفارشی', 'cpms' ) . '</h1>';
 
-            <div class="notice notice-info inline">
-                <p>
-                    <?php echo esc_html__('نقش سفارشی مخصوص همین Clinic است؛ کلید فنی نقش پس از ساخت هرگز تغییر نمی‌کند و فقط نام نمایشی قابل ویرایش است.', 'cpms'); ?>
-                    <?php echo esc_html__('شما فقط می‌توانید مجوزهایی را بدهید که خودتان در همین Clinic دارید؛ مجوزهای حساس قابل واگذاری نیستند.', 'cpms'); ?>
-                </p>
-            </div>
+		self::render_notice( $notice );
 
-            <?php if ($choices === []) : ?>
-                <div class="notice notice-warning inline">
-                    <p><?php echo esc_html__('برای مدیریت نقش سفارشی، ابتدا باید عضویت فعالِ همین Clinic با مجوز پیکربندی (cpms_config) داشته باشید. وضعیت Administrator وردپرس به‌تنهایی مجوز Clinic ایجاد نمی‌کند.', 'cpms'); ?></p>
-                </div>
-            <?php else : ?>
+		echo '<div class="notice notice-info inline"><p>';
+		echo esc_html__( 'نقش سفارشی مخصوص همین Clinic است؛ کلید فنی نقش پس از ساخت هرگز تغییر نمی‌کند و فقط نام نمایشی قابل ویرایش است.', 'cpms' ) . ' ';
+		echo esc_html__( 'شما فقط می‌توانید مجوزهایی را بدهید که خودتان در همین Clinic دارید؛ مجوزهای حساس قابل واگذاری نیستند.', 'cpms' );
+		echo '</p></div>';
 
-                <form method="get" action="<?php echo esc_url(admin_url('admin.php')); ?>" style="margin:12px 0">
-                    <input type="hidden" name="page" value="<?php echo esc_attr(self::PAGE_SLUG); ?>">
-                    <label for="cpms-custom-role-clinic"><?php echo esc_html__('Clinic', 'cpms'); ?></label>
-                    <select name="cpms_clinic_id" id="cpms-custom-role-clinic">
-                        <?php foreach ($choices as $choice) : ?>
-                            <option value="<?php echo esc_attr((string) $choice['clinic_id']); ?>" <?php selected($clinicId, $choice['clinic_id']); ?>>
-                                <?php echo esc_html($choice['clinic_name'] . ' (#' . $choice['clinic_id'] . ')'); ?>
-                            </option>
-                        <?php endforeach; ?>
-                    </select>
-                    <button type="submit" class="button"><?php echo esc_html__('نمایش', 'cpms'); ?></button>
-                </form>
+		if ( [] === $choices ) {
+			echo '<div class="notice notice-warning inline"><p>';
+			echo esc_html__( 'برای مدیریت نقش سفارشی، ابتدا باید عضویت فعالِ همین Clinic با مجوز پیکربندی (cpms_config) داشته باشید. وضعیت Administrator وردپرس به‌تنهایی مجوز Clinic ایجاد نمی‌کند.', 'cpms' );
+			echo '</p></div></div>';
 
-                <?php
-                if ($clinicId <= 0) {
-                    echo '<p>' . esc_html__('Clinic معتبری انتخاب نشده است.', 'cpms') . '</p>';
-                    return;
-                }
+			return;
+		}
 
-                try {
-                    $listing      = App::custom_role_management_service()->list_definitions($actor, $clinicId);
-                    $delegable    = App::custom_role_management_service()->delegable_capabilities($actor, $clinicId);
-                } catch (ScopeRequiredException|AuthorizationException|CustomRoleManagementException $e) {
-                    echo '<div class="notice notice-error inline"><p>' . esc_html__('دسترسی مدیریت نقش سفارشی برای این Clinic مجاز نیست.', 'cpms') . '</p></div>';
-                    return;
-                }
+		self::render_clinic_selector( $choices, $clinic_id );
 
-                self::renderList($listing['definitions']);
+		if ( $clinic_id <= 0 ) {
+			echo '<p>' . esc_html__( 'Clinic معتبری انتخاب نشده است.', 'cpms' ) . '</p></div>';
 
-                if ($delegable === []) {
-                    ?>
-                    <div class="notice notice-warning inline"><p>
-                        <?php echo esc_html__('در حال حاضر هیچ مجوز قابل واگذاری ندارید؛ بنابراین ساخت یا ویرایش نقش سفارشی ممکن نیست.', 'cpms'); ?>
-                    </p></div>
-                    <?php
-                } else {
-                    self::renderCreateForm($clinicId, $delegable);
-                    foreach ($listing['definitions'] as $definition) {
-                        self::renderEditForms($clinicId, $definition, $delegable);
-                    }
-                }
-                ?>
-            <?php endif; ?>
-        </div>
-        <?php
-    }
+			return;
+		}
 
-    public static function handleCreate(): void
-    {
-        self::assertEntry();
-        check_admin_referer(self::NONCE_CREATE);
+		try {
+			$listing   = App::custom_role_management_service()->list_definitions( $actor, $clinic_id );
+			$delegable = App::custom_role_management_service()->delegable_capabilities( $actor, $clinic_id );
+		} catch ( ScopeRequiredException | AuthorizationException | CustomRoleManagementException $e ) {
+			echo '<div class="notice notice-error inline"><p>';
+			echo esc_html__( 'دسترسی مدیریت نقش سفارشی برای این Clinic مجاز نیست.', 'cpms' );
+			echo '</p></div></div>';
 
-        $roleKey = isset($_POST['role_key']) && is_string($_POST['role_key'])
-            ? sanitize_key(wp_unslash($_POST['role_key']))
-            : '';
-        $displayName = isset($_POST['display_name']) && is_string($_POST['display_name'])
-            ? sanitize_text_field(wp_unslash($_POST['display_name']))
-            : '';
-        $clinicId = self::postedClinicId();
-        $capabilities = self::postedCapabilities();
+			return;
+		}
 
-        try {
-            $created = App::custom_role_management_service()->create(
-                (int) get_current_user_id(),
-                $clinicId,
-                $roleKey,
-                $displayName,
-                $capabilities
-            );
-            self::setNotice('success', sprintf(
-                /* translators: 1: immutable role key, 2: custom role display name */
-                __('نقش سفارشی «%2$s» با کلید فنی %1$s ساخته شد.', 'cpms'),
-                $created['role_key'],
-                $created['display_name']
-            ));
-        } catch (CustomRoleManagementException $e) {
-            self::setNotice('error', self::describeFailure($e));
-        } catch (ScopeRequiredException|AuthorizationException $e) {
-            self::setNotice('error', __('دسترسی مدیریت نقش سفارشی برای این Clinic مجاز نیست.', 'cpms'));
-        }
+		self::render_list( $listing['definitions'] );
 
-        self::redirectBack($clinicId);
-    }
+		if ( [] === $delegable ) {
+			echo '<div class="notice notice-warning inline"><p>';
+			echo esc_html__( 'در حال حاضر هیچ مجوز قابل واگذاری ندارید؛ بنابراین ساخت یا ویرایش نقش سفارشی ممکن نیست.', 'cpms' );
+			echo '</p></div>';
+		} else {
+			self::render_create_form( $clinic_id, $delegable );
+			foreach ( $listing['definitions'] as $definition ) {
+				self::render_edit_forms( $clinic_id, $definition, $delegable );
+			}
+		}
 
-    public static function handleRename(): void
-    {
-        self::assertEntry();
-        check_admin_referer(self::NONCE_RENAME);
+		echo '</div>';
+	}
 
-        $roleKey = isset($_POST['role_key']) && is_string($_POST['role_key'])
-            ? sanitize_key(wp_unslash($_POST['role_key']))
-            : '';
-        $displayName = isset($_POST['display_name']) && is_string($_POST['display_name'])
-            ? sanitize_text_field(wp_unslash($_POST['display_name']))
-            : '';
-        $clinicId = self::postedClinicId();
+	public static function handle_create(): void {
+		self::assert_entry();
+		check_admin_referer( self::NONCE_CREATE );
 
-        try {
-            $renamed = App::custom_role_management_service()->rename(
-                (int) get_current_user_id(),
-                $clinicId,
-                $roleKey,
-                $displayName
-            );
-            self::setNotice('success', sprintf(
-                /* translators: 1: immutable role key, 2: new custom role display name */
-                __('نام نمایشی نقش %1$s به «%2$s» تغییر کرد (کلید فنی بدون تغییر).', 'cpms'),
-                $renamed['role_key'],
-                $renamed['display_name']
-            ));
-        } catch (CustomRoleManagementException $e) {
-            self::setNotice('error', self::describeFailure($e));
-        } catch (ScopeRequiredException|AuthorizationException $e) {
-            self::setNotice('error', __('دسترسی مدیریت نقش سفارشی برای این Clinic مجاز نیست.', 'cpms'));
-        }
+		$clinic_id    = absint( wp_unslash( $_POST['cpms_clinic_id'] ?? 0 ) );
+		$role_key     = sanitize_key( wp_unslash( (string) ( $_POST['role_key'] ?? '' ) ) );
+		$display_name = sanitize_text_field( wp_unslash( (string) ( $_POST['display_name'] ?? '' ) ) );
+		$capabilities = self::sanitize_capability_input( wp_unslash( $_POST['capabilities'] ?? [] ) );
 
-        self::redirectBack($clinicId);
-    }
+		try {
+			$created = App::custom_role_management_service()->create(
+				(int) get_current_user_id(),
+				$clinic_id,
+				$role_key,
+				$display_name,
+				$capabilities
+			);
+			self::set_notice(
+				'success',
+				sprintf(
+					/* translators: 1: immutable technical role key, 2: custom role display name. */
+					__( 'نقش سفارشی «%2$s» با کلید فنی %1$s ساخته شد.', 'cpms' ),
+					$created['role_key'],
+					$created['display_name']
+				)
+			);
+		} catch ( CustomRoleManagementException $e ) {
+			self::set_notice( 'error', self::describe_failure( $e ) );
+		} catch ( ScopeRequiredException | AuthorizationException $e ) {
+			self::set_notice( 'error', __( 'دسترسی مدیریت نقش سفارشی برای این Clinic مجاز نیست.', 'cpms' ) );
+		}
 
-    public static function handleReplaceCapabilities(): void
-    {
-        self::assertEntry();
-        check_admin_referer(self::NONCE_CAPS);
+		self::redirect_back( $clinic_id );
+	}
 
-        $roleKey = isset($_POST['role_key']) && is_string($_POST['role_key'])
-            ? sanitize_key(wp_unslash($_POST['role_key']))
-            : '';
-        $clinicId = self::postedClinicId();
-        $capabilities = self::postedCapabilities();
+	public static function handle_rename(): void {
+		self::assert_entry();
+		check_admin_referer( self::NONCE_RENAME );
 
-        try {
-            $updated = App::custom_role_management_service()->replace_capabilities(
-                (int) get_current_user_id(),
-                $clinicId,
-                $roleKey,
-                $capabilities
-            );
-            self::setNotice('success', sprintf(
-                /* translators: 1: immutable role key, 2: revision number */
-                __('مجوزهای نقش %1$s ذخیره شد (نسخه %2$d).', 'cpms'),
-                $updated['role_key'],
-                $updated['version']
-            ));
-        } catch (CustomRoleManagementException $e) {
-            self::setNotice('error', self::describeFailure($e));
-        } catch (ScopeRequiredException|AuthorizationException $e) {
-            self::setNotice('error', __('دسترسی مدیریت نقش سفارشی برای این Clinic مجاز نیست.', 'cpms'));
-        }
+		$clinic_id    = absint( wp_unslash( $_POST['cpms_clinic_id'] ?? 0 ) );
+		$role_key     = sanitize_key( wp_unslash( (string) ( $_POST['role_key'] ?? '' ) ) );
+		$display_name = sanitize_text_field( wp_unslash( (string) ( $_POST['display_name'] ?? '' ) ) );
 
-        self::redirectBack($clinicId);
-    }
+		try {
+			$renamed = App::custom_role_management_service()->rename(
+				(int) get_current_user_id(),
+				$clinic_id,
+				$role_key,
+				$display_name
+			);
+			self::set_notice(
+				'success',
+				sprintf(
+					/* translators: 1: immutable technical role key, 2: new custom role display name. */
+					__( 'نام نمایشی نقش %1$s به «%2$s» تغییر کرد (کلید فنی بدون تغییر).', 'cpms' ),
+					$renamed['role_key'],
+					$renamed['display_name']
+				)
+			);
+		} catch ( CustomRoleManagementException $e ) {
+			self::set_notice( 'error', self::describe_failure( $e ) );
+		} catch ( ScopeRequiredException | AuthorizationException $e ) {
+			self::set_notice( 'error', __( 'دسترسی مدیریت نقش سفارشی برای این Clinic مجاز نیست.', 'cpms' ) );
+		}
 
-    // ================= view helpers =================
+		self::redirect_back( $clinic_id );
+	}
 
-    /**
-     * @param list<array{clinic_id:int, id:int, role_key:string, display_name:string|null, status:string, version:int, updated_at:string, capabilities:list<string>}> $definitions
-     */
-    private static function renderList(array $definitions): void
-    {
-        ?>
-        <h2 class="title"><?php echo esc_html__('نقش‌های سفارشی این Clinic', 'cpms'); ?></h2>
-        <?php if ($definitions === []) : ?>
-            <p><?php echo esc_html__('هنوز نقش سفارشی‌ای برای این Clinic تعریف نشده است.', 'cpms'); ?></p>
-        <?php else : ?>
-            <table class="widefat striped">
-                <thead>
-                <tr>
-                    <th scope="col"><?php echo esc_html__('نام نمایشی', 'cpms'); ?></th>
-                    <th scope="col"><?php echo esc_html__('کلید فنی (تغییرناپذیر)', 'cpms'); ?></th>
-                    <th scope="col"><?php echo esc_html__('وضعیت', 'cpms'); ?></th>
-                    <th scope="col"><?php echo esc_html__('نسخه', 'cpms'); ?></th>
-                    <th scope="col"><?php echo esc_html__('مجوزها', 'cpms'); ?></th>
-                </tr>
-                </thead>
-                <tbody>
-                <?php foreach ($definitions as $definition) : ?>
-                    <tr>
-                        <td>
-                            <?php
-                            echo esc_html(
-                                $definition['display_name'] !== null && $definition['display_name'] !== ''
-                                    ? $definition['display_name']
-                                    : $definition['role_key']
-                            );
-                            ?>
-                        </td>
-                        <td><code dir="ltr"><?php echo esc_html($definition['role_key']); ?></code></td>
-                        <td><?php echo esc_html($definition['status']); ?></td>
-                        <td><?php echo esc_html((string) $definition['version']); ?></td>
-                        <td>
-                            <?php
-                            echo $definition['capabilities'] === []
-                                ? esc_html__('بدون مجوز', 'cpms')
-                                : esc_html(implode('، ', $definition['capabilities']));
-                            ?>
-                        </td>
-                    </tr>
-                <?php endforeach; ?>
-                </tbody>
-            </table>
-        <?php endif;
-    }
+	public static function handle_replace_capabilities(): void {
+		self::assert_entry();
+		check_admin_referer( self::NONCE_CAPS );
 
-    /**
-     * @param list<string> $delegable
-     */
-    private static function renderCreateForm(int $clinicId, array $delegable): void
-    {
-        ?>
-        <h2 class="title"><?php echo esc_html__('تعریف نقش سفارشی جدید', 'cpms'); ?></h2>
-        <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
-            <input type="hidden" name="action" value="cpms_custom_role_create">
-            <input type="hidden" name="cpms_clinic_id" value="<?php echo esc_attr((string) $clinicId); ?>">
-            <?php wp_nonce_field(self::NONCE_CREATE); ?>
+		$clinic_id    = absint( wp_unslash( $_POST['cpms_clinic_id'] ?? 0 ) );
+		$role_key     = sanitize_key( wp_unslash( (string) ( $_POST['role_key'] ?? '' ) ) );
+		$capabilities = self::sanitize_capability_input( wp_unslash( $_POST['capabilities'] ?? [] ) );
 
-            <table class="form-table" role="presentation">
-                <tr>
-                    <th scope="row">
-                        <label for="cpms-custom-role-key"><?php echo esc_html__('کلید فنی نقش', 'cpms'); ?></label>
-                    </th>
-                    <td>
-                        <input name="role_key" id="cpms-custom-role-key" type="text" dir="ltr" required
-                               pattern="[a-z][a-z0-9_]{1,63}"
-                               value="" class="regular-text">
-                        <p class="description">
-                            <?php echo esc_html__('حروف کوچک لاتین، رقم و زیرخط؛ با حرف شروع می‌شود (۲ تا ۶۴ کاراکتر). این کلید پس از ساخت تغییر نمی‌کند و با نقش‌های داخلی CPMS تداخل ندارد.', 'cpms'); ?>
-                        </p>
-                    </td>
-                </tr>
-                <tr>
-                    <th scope="row">
-                        <label for="cpms-custom-role-name"><?php echo esc_html__('نام نمایشی', 'cpms'); ?></label>
-                    </th>
-                    <td>
-                        <input name="display_name" id="cpms-custom-role-name" type="text" required
-                               maxlength="<?php echo esc_attr((string) CustomRolePolicy::DISPLAY_NAME_MAX_CODE_POINTS); ?>"
-                               value="" class="regular-text">
-                        <p class="description">
-                            <?php echo esc_html__('هر زبانی مجاز است (فارسی، لاتین، عربی، CJK و …). حداکثر ۱۲۰ کاراکتر.', 'cpms'); ?>
-                        </p>
-                    </td>
-                </tr>
-            </table>
+		try {
+			$updated = App::custom_role_management_service()->replace_capabilities(
+				(int) get_current_user_id(),
+				$clinic_id,
+				$role_key,
+				$capabilities
+			);
+			self::set_notice(
+				'success',
+				sprintf(
+					/* translators: 1: immutable technical role key, 2: durable revision number. */
+					__( 'مجوزهای نقش %1$s ذخیره شد (نسخه %2$d).', 'cpms' ),
+					$updated['role_key'],
+					$updated['version']
+				)
+			);
+		} catch ( CustomRoleManagementException $e ) {
+			self::set_notice( 'error', self::describe_failure( $e ) );
+		} catch ( ScopeRequiredException | AuthorizationException $e ) {
+			self::set_notice( 'error', __( 'دسترسی مدیریت نقش سفارشی برای این Clinic مجاز نیست.', 'cpms' ) );
+		}
 
-            <?php self::renderCapabilityCheckboxes('capabilities', [], $delegable); ?>
+		self::redirect_back( $clinic_id );
+	}
 
-            <p><button type="submit" class="button button-primary"><?php echo esc_html__('ساخت نقش سفارشی', 'cpms'); ?></button></p>
-        </form>
-        <?php
-    }
+	// ================= view helpers =================
 
-    /**
-     * @param array{clinic_id:int, id:int, role_key:string, display_name:string|null, status:string, version:int, capabilities:list<string>} $definition
-     * @param list<string> $delegable
-     */
-    private static function renderEditForms(int $clinicId, array $definition, array $delegable): void
-    {
-        $roleKey = $definition['role_key'];
-        ?>
-        <h2 class="title">
-            <?php echo esc_html(
-                $definition['display_name'] !== null && $definition['display_name'] !== ''
-                    ? $definition['display_name']
-                    : $roleKey
-            ); ?>
-            <code dir="ltr"><?php echo esc_html($roleKey); ?></code>
-        </h2>
+	/**
+	 * @param list<array{clinic_id:int, clinic_name:string}> $choices
+	 */
+	private static function render_clinic_selector( array $choices, int $clinic_id ): void {
+		echo '<form method="get" action="' . esc_url( admin_url( 'admin.php' ) ) . '" style="margin:12px 0">';
+		echo '<input type="hidden" name="page" value="' . esc_attr( self::PAGE_SLUG ) . '">';
+		echo '<label for="cpms-custom-role-clinic">' . esc_html__( 'Clinic', 'cpms' ) . '</label> ';
+		echo '<select name="cpms_clinic_id" id="cpms-custom-role-clinic">';
 
-        <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin-bottom:10px">
-            <input type="hidden" name="action" value="cpms_custom_role_rename">
-            <input type="hidden" name="cpms_clinic_id" value="<?php echo esc_attr((string) $clinicId); ?>">
-            <input type="hidden" name="role_key" value="<?php echo esc_attr($roleKey); ?>">
-            <?php wp_nonce_field(self::NONCE_RENAME); ?>
-            <label for="cpms-rename-<?php echo esc_attr($roleKey); ?>"><?php echo esc_html__('ویرایش نام نمایشی', 'cpms'); ?></label>
-            <input name="display_name" id="cpms-rename-<?php echo esc_attr($roleKey); ?>" type="text" required
-                   maxlength="<?php echo esc_attr((string) CustomRolePolicy::DISPLAY_NAME_MAX_CODE_POINTS); ?>"
-                   value="<?php echo esc_attr((string) ($definition['display_name'] ?? '')); ?>" class="regular-text">
-            <button type="submit" class="button"><?php echo esc_html__('ذخیره نام', 'cpms'); ?></button>
-        </form>
+		foreach ( $choices as $choice ) {
+			echo '<option value="' . esc_attr( (string) $choice['clinic_id'] ) . '" ' . selected( $clinic_id, $choice['clinic_id'], false ) . '>';
+			echo esc_html( $choice['clinic_name'] . ' (#' . $choice['clinic_id'] . ')' );
+			echo '</option>';
+		}
 
-        <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
-            <input type="hidden" name="action" value="cpms_custom_role_caps">
-            <input type="hidden" name="cpms_clinic_id" value="<?php echo esc_attr((string) $clinicId); ?>">
-            <input type="hidden" name="role_key" value="<?php echo esc_attr($roleKey); ?>">
-            <?php wp_nonce_field(self::NONCE_CAPS); ?>
+		echo '</select> <button type="submit" class="button">' . esc_html__( 'نمایش', 'cpms' ) . '</button>';
+		echo '</form>';
+	}
 
-            <?php self::renderCapabilityCheckboxes('capabilities', $definition['capabilities'], $delegable); ?>
+	/**
+	 * @param list<array{clinic_id:int, id:int, role_key:string, display_name:string|null, status:string, version:int, updated_at:string, capabilities:list<string>}> $definitions
+	 */
+	private static function render_list( array $definitions ): void {
+		echo '<h2 class="title">' . esc_html__( 'نقش‌های سفارشی این Clinic', 'cpms' ) . '</h2>';
 
-            <p>
-                <button type="submit" class="button button-secondary"><?php echo esc_html__('ذخیره مجوزهای مجاز', 'cpms'); ?></button>
-            </p>
-        </form>
-        <?php
-    }
+		if ( [] === $definitions ) {
+			echo '<p>' . esc_html__( 'هنوز نقش سفارشی‌ای برای این Clinic تعریف نشده است.', 'cpms' ) . '</p>';
 
-    /**
-     * Renders ONLY the capabilities the current actor may delegate in this
-     * Clinic. The backend re-validates the same set independently, so tampering
-     * with the form cannot widen it.
-     *
-     * @param list<string> $selected
-     * @param list<string> $delegable
-     */
-    private static function renderCapabilityCheckboxes(string $fieldName, array $selected, array $delegable): void
-    {
-        ?>
-        <fieldset>
-            <legend><?php echo esc_html__('مجوزهای قابل واگذاری (بر پایه اختیار مؤثر شما در این Clinic)', 'cpms'); ?></legend>
-            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:4px 16px">
-                <?php foreach ($delegable as $capability) : ?>
-                    <label>
-                        <input type="checkbox" name="<?php echo esc_attr($fieldName); ?>[]"
-                               value="<?php echo esc_attr($capability); ?>"
-                            <?php checked(in_array($capability, $selected, true)); ?>>
-                        <code dir="ltr"><?php echo esc_html($capability); ?></code>
-                    </label>
-                <?php endforeach; ?>
-            </div>
-        </fieldset>
-        <?php
-    }
+			return;
+		}
 
-    /**
-     * Non-verbose failure description. Domain reason codes are
-     * mapped to translated messages; raw request values are never echoed back.
-     */
-    private static function describeFailure(CustomRoleManagementException $e): string
-    {
-        switch ($e->reason_code()) {
-            case CustomRoleManagementException::CODE_INVALID_ROLE_KEY:
-                return __('کلید فنی نقش معتبر نیست (حروف کوچک لاتین، شروع با حرف، ۲ تا ۶۴ کاراکتر، بدون تداخل با نقش‌های داخلی).', 'cpms');
-            case CustomRoleManagementException::CODE_INVALID_DISPLAY_NAME:
-                return __('نام نمایشی معتبر نیست: نباید خالی باشد، باید حداکثر ۱۲۰ کاراکتر باشد و حداقل یک حرف یا رقم داشته باشد.', 'cpms');
-            case CustomRoleManagementException::CODE_CAPABILITY_NOT_ALLOWED:
-                return __('یکی از مجوزهای انتخابی در فهرست مجاز نیست (مجوز حساس، وردپرس، ووکامرس یا ناشناخته حذف شد و ذخیره انجام نشد).', 'cpms');
-            case CustomRoleManagementException::CODE_CAPABILITY_NOT_DELEGABLE:
-                return __('یکی از مجوزهای انتخابی خارج از اختیار مؤثر شما در این Clinic است؛ هیچ تغییری ذخیره نشد.', 'cpms');
-            case CustomRoleManagementException::CODE_KEY_CONFLICT:
-                return __('این کلید فنی در همین Clinic قبلاً تعریف شده است.', 'cpms');
-            case CustomRoleManagementException::CODE_NOT_FOUND:
-            default:
-                return __('نقش سفارشی موردنظر در این Clinic یافت نشد.', 'cpms');
-        }
-    }
+		echo '<table class="widefat striped"><thead><tr>';
+		echo '<th scope="col">' . esc_html__( 'نام نمایشی', 'cpms' ) . '</th>';
+		echo '<th scope="col">' . esc_html__( 'کلید فنی (تغییرناپذیر)', 'cpms' ) . '</th>';
+		echo '<th scope="col">' . esc_html__( 'وضعیت', 'cpms' ) . '</th>';
+		echo '<th scope="col">' . esc_html__( 'نسخه', 'cpms' ) . '</th>';
+		echo '<th scope="col">' . esc_html__( 'مجوزها', 'cpms' ) . '</th>';
+		echo '</tr></thead><tbody>';
 
-    // ================= request helpers =================
+		foreach ( $definitions as $definition ) {
+			$label = ( null !== $definition['display_name'] && '' !== $definition['display_name'] )
+				? $definition['display_name']
+				: $definition['role_key'];
 
-    private static function assertEntry(): void
-    {
-        if (!current_user_can(RolesAndCapabilities::CONFIG)) {
-            wp_die(esc_html__('دسترسی ندارید', 'cpms'), 403);
-        }
-    }
+			echo '<tr>';
+			echo '<td>' . esc_html( $label ) . '</td>';
+			echo '<td><code dir="ltr">' . esc_html( $definition['role_key'] ) . '</code></td>';
+			echo '<td>' . esc_html( $definition['status'] ) . '</td>';
+			echo '<td>' . esc_html( (string) $definition['version'] ) . '</td>';
+			echo '<td>';
+			echo ( [] === $definition['capabilities'] )
+				? esc_html__( 'بدون مجوز', 'cpms' )
+				: esc_html( implode( '، ', $definition['capabilities'] ) );
+			echo '</td>';
+			echo '</tr>';
+		}
 
-    /**
-     * @return list<array{clinic_id:int, clinic_name:string}>
-     */
-    private static function manageableClinics(int $actorUserId): array
-    {
-        if ($actorUserId <= 0) {
-            return [];
-        }
+		echo '</tbody></table>';
+	}
 
-        $service = App::custom_role_management_service();
-        $choices = [];
-        foreach (App::membership_service()->active_memberships_for_user($actorUserId) as $membership) {
-            $id = (int) ($membership['clinic_id'] ?? 0);
-            if ($id <= 0 || !$service->can_manage($actorUserId, $id)) {
-                continue;
-            }
-            $choices[] = [
-                'clinic_id'   => $id,
-                'clinic_name' => (string) ($membership['clinic_name'] ?? ('Clinic #' . $id)),
-            ];
-        }
+	/**
+	 * @param list<string> $delegable
+	 */
+	private static function render_create_form( int $clinic_id, array $delegable ): void {
+		echo '<h2 class="title">' . esc_html__( 'تعریف نقش سفارشی جدید', 'cpms' ) . '</h2>';
+		echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '">';
+		echo '<input type="hidden" name="action" value="cpms_custom_role_create">';
+		echo '<input type="hidden" name="cpms_clinic_id" value="' . esc_attr( (string) $clinic_id ) . '">';
+		wp_nonce_field( self::NONCE_CREATE );
 
-        return $choices;
-    }
+		echo '<table class="form-table" role="presentation"><tr>';
+		echo '<th scope="row"><label for="cpms-custom-role-key">' . esc_html__( 'کلید فنی نقش', 'cpms' ) . '</label></th>';
+		echo '<td><input name="role_key" id="cpms-custom-role-key" type="text" dir="ltr" required pattern="[a-z][a-z0-9_]{1,63}" value="" class="regular-text">';
+		echo '<p class="description">' . esc_html__( 'حروف کوچک لاتین، رقم و زیرخط؛ با حرف شروع می‌شود (۲ تا ۶۴ کاراکتر). این کلید پس از ساخت تغییر نمی‌کند و با نقش‌های داخلی CPMS تداخل ندارد.', 'cpms' ) . '</p>';
+		echo '</td></tr><tr>';
+		echo '<th scope="row"><label for="cpms-custom-role-name">' . esc_html__( 'نام نمایشی', 'cpms' ) . '</label></th>';
+		echo '<td><input name="display_name" id="cpms-custom-role-name" type="text" required maxlength="' . esc_attr( (string) CustomRolePolicy::DISPLAY_NAME_MAX_CODE_POINTS ) . '" value="" class="regular-text">';
+		echo '<p class="description">' . esc_html__( 'هر زبانی مجاز است (فارسی، لاتین، عربی، CJK و …). حداکثر ۱۲۰ کاراکتر.', 'cpms' ) . '</p>';
+		echo '</td></tr></table>';
 
-    /**
-     * Display-only selector value: restricted to Clinics the actor may actually
-     * manage, so an arbitrary value cannot even be selected in the UI. The
-     * service still re-validates it against persistence on every use.
-     */
-    private static function selectedClinicId(): int
-    {
-        $requested = self::requestedClinicId();
-        $choices = self::manageableClinics((int) get_current_user_id());
-        if ($choices === []) {
-            return 0;
-        }
-        foreach ($choices as $choice) {
-            if ($choice['clinic_id'] === $requested) {
-                return $requested;
-            }
-        }
+		self::render_capability_checkboxes( 'capabilities', [], $delegable );
 
-        return $choices[0]['clinic_id'];
-    }
+		echo '<p><button type="submit" class="button button-primary">' . esc_html__( 'ساخت نقش سفارشی', 'cpms' ) . '</button></p>';
+		echo '</form>';
+	}
 
-    private static function requestedClinicId(): int
-    {
-        // Read-only selector; nonce is not applicable to a GET filter.
-        if (!isset($_GET['cpms_clinic_id']) || !is_scalar($_GET['cpms_clinic_id'])) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
-            return 0;
-        }
+	/**
+	 * @param array{clinic_id:int, id:int, role_key:string, display_name:string|null, status:string, version:int, capabilities:list<string>} $definition
+	 * @param list<string> $delegable
+	 */
+	private static function render_edit_forms( int $clinic_id, array $definition, array $delegable ): void {
+		$role_key = $definition['role_key'];
+		$label    = ( null !== $definition['display_name'] && '' !== $definition['display_name'] )
+			? $definition['display_name']
+			: $role_key;
 
-        return absint(wp_unslash((string) $_GET['cpms_clinic_id'])); // phpcs:ignore WordPress.Security.NonceVerification.Recommended
-    }
+		echo '<h2 class="title">' . esc_html( $label ) . ' <code dir="ltr">' . esc_html( $role_key ) . '</code></h2>';
 
-    private static function postedClinicId(): int
-    {
-        if (!isset($_POST['cpms_clinic_id']) || !is_scalar($_POST['cpms_clinic_id'])) {
-            return 0;
-        }
+		echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '" style="margin-bottom:10px">';
+		echo '<input type="hidden" name="action" value="cpms_custom_role_rename">';
+		echo '<input type="hidden" name="cpms_clinic_id" value="' . esc_attr( (string) $clinic_id ) . '">';
+		echo '<input type="hidden" name="role_key" value="' . esc_attr( $role_key ) . '">';
+		wp_nonce_field( self::NONCE_RENAME );
+		echo '<label for="cpms-rename-' . esc_attr( $role_key ) . '">' . esc_html__( 'ویرایش نام نمایشی', 'cpms' ) . '</label> ';
+		echo '<input name="display_name" id="cpms-rename-' . esc_attr( $role_key ) . '" type="text" required maxlength="' . esc_attr( (string) CustomRolePolicy::DISPLAY_NAME_MAX_CODE_POINTS ) . '" value="' . esc_attr( (string) ( $definition['display_name'] ?? '' ) ) . '" class="regular-text"> ';
+		echo '<button type="submit" class="button">' . esc_html__( 'ذخیره نام', 'cpms' ) . '</button>';
+		echo '</form>';
 
-        return absint(wp_unslash((string) $_POST['cpms_clinic_id']));
-    }
+		echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '">';
+		echo '<input type="hidden" name="action" value="cpms_custom_role_caps">';
+		echo '<input type="hidden" name="cpms_clinic_id" value="' . esc_attr( (string) $clinic_id ) . '">';
+		echo '<input type="hidden" name="role_key" value="' . esc_attr( $role_key ) . '">';
+		wp_nonce_field( self::NONCE_CAPS );
 
-    /**
-     * @return list<string>
-     */
-    private static function postedCapabilities(): array
-    {
-        if (!isset($_POST['capabilities']) || !is_array($_POST['capabilities'])) {
-            return [];
-        }
+		self::render_capability_checkboxes( 'capabilities', $definition['capabilities'], $delegable );
 
-        $raw = wp_unslash($_POST['capabilities']); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- each value is sanitize_key()d below and strictly allowlist-validated in the service.
-        $capabilities = [];
-        foreach ((array) $raw as $candidate) {
-            if (is_string($candidate)) {
-                $capabilities[] = sanitize_key($candidate);
-            }
-        }
+		echo '<p><button type="submit" class="button button-secondary">' . esc_html__( 'ذخیره مجوزهای مجاز', 'cpms' ) . '</button></p>';
+		echo '</form>';
+	}
 
-        return array_values(array_unique($capabilities));
-    }
+	/**
+	 * Renders ONLY the capabilities the current actor may delegate in this
+	 * Clinic. The backend re-validates the same set independently, so tampering
+	 * with the form cannot widen it.
+	 *
+	 * @param list<string> $selected
+	 * @param list<string> $delegable
+	 */
+	private static function render_capability_checkboxes( string $field_name, array $selected, array $delegable ): void {
+		echo '<fieldset>';
+		echo '<legend>' . esc_html__( 'مجوزهای قابل واگذاری (بر پایه اختیار مؤثر شما در این Clinic)', 'cpms' ) . '</legend>';
+		echo '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:4px 16px">';
 
-    private static function redirectBack(int $clinicId): void
-    {
-        $args = ['page' => self::PAGE_SLUG];
-        if ($clinicId > 0) {
-            $args['cpms_clinic_id'] = $clinicId;
-        }
-        wp_safe_redirect(add_query_arg($args, admin_url('admin.php')));
-        exit;
-    }
+		foreach ( $delegable as $capability ) {
+			echo '<label>';
+			echo '<input type="checkbox" name="' . esc_attr( $field_name ) . '[]" value="' . esc_attr( $capability ) . '" ' . checked( in_array( $capability, $selected, true ), true, false ) . '> ';
+			echo '<code dir="ltr">' . esc_html( $capability ) . '</code>';
+			echo '</label>';
+		}
 
-    private static function setNotice(string $type, string $message): void
-    {
-        set_transient(self::NOTICE_KEY . '_' . (int) get_current_user_id(), ['type' => $type, 'message' => $message], 60);
-    }
+		echo '</div></fieldset>';
+	}
 
-    /**
-     * @return array{type:string, message:string}|null
-     */
-    private static function pullNotice(): ?array
-    {
-        $key = self::NOTICE_KEY . '_' . (int) get_current_user_id();
-        $notice = get_transient($key);
-        if ($notice === false) {
-            return null;
-        }
-        delete_transient($key);
-        if (!is_array($notice) || !isset($notice['message']) || !is_string($notice['message'])) {
-            return null;
-        }
+	/**
+	 * Non-verbose failure description. Domain reason codes are mapped to
+	 * translated messages; raw request values are never echoed back.
+	 */
+	private static function describe_failure( CustomRoleManagementException $e ): string {
+		switch ( $e->reason_code() ) {
+			case CustomRoleManagementException::CODE_INVALID_ROLE_KEY:
+				return __( 'کلید فنی نقش معتبر نیست (حروف کوچک لاتین، شروع با حرف، ۲ تا ۶۴ کاراکتر، بدون تداخل با نقش‌های داخلی).', 'cpms' );
+			case CustomRoleManagementException::CODE_INVALID_DISPLAY_NAME:
+				return __( 'نام نمایشی معتبر نیست: نباید خالی باشد، باید حداکثر ۱۲۰ کاراکتر باشد و حداقل یک حرف یا رقم داشته باشد.', 'cpms' );
+			case CustomRoleManagementException::CODE_CAPABILITY_NOT_ALLOWED:
+				return __( 'یکی از مجوزهای انتخابی در فهرست مجاز نیست (مجوز حساس، وردپرس، ووکامرس یا ناشناخته حذف شد و ذخیره انجام نشد).', 'cpms' );
+			case CustomRoleManagementException::CODE_CAPABILITY_NOT_DELEGABLE:
+				return __( 'یکی از مجوزهای انتخابی خارج از اختیار مؤثر شما در این Clinic است؛ هیچ تغییری ذخیره نشد.', 'cpms' );
+			case CustomRoleManagementException::CODE_KEY_CONFLICT:
+				return __( 'این کلید فنی در همین Clinic قبلاً تعریف شده است.', 'cpms' );
+			default:
+				return __( 'نقش سفارشی موردنظر در این Clinic یافت نشد.', 'cpms' );
+		}
+	}
 
-        return [
-            'type'    => (isset($notice['type']) && $notice['type'] === 'success') ? 'success' : 'error',
-            'message' => $notice['message'],
-        ];
-    }
+	// ================= request helpers =================
 
-    /**
-     * @param array{type:string, message:string}|null $notice
-     */
-    private static function renderNotice(?array $notice): void
-    {
-        if ($notice === null) {
-            return;
-        }
-        $class = $notice['type'] === 'success' ? 'notice notice-success is-dismissible' : 'notice notice-error';
-        echo '<div class="' . esc_attr($class) . '"><p>' . esc_html($notice['message']) . '</p></div>';
-    }
+	private static function assert_entry(): void {
+		if ( ! current_user_can( RolesAndCapabilities::CONFIG ) ) {
+			wp_die( esc_html__( 'دسترسی ندارید', 'cpms' ), 403 );
+		}
+	}
+
+	/**
+	 * @return list<array{clinic_id:int, clinic_name:string}>
+	 */
+	private static function manageable_clinics( int $actor_wp_user_id ): array {
+		if ( $actor_wp_user_id <= 0 ) {
+			return [];
+		}
+
+		$service = App::custom_role_management_service();
+		$choices = [];
+		foreach ( App::membership_service()->active_memberships_for_user( $actor_wp_user_id ) as $membership ) {
+			$clinic_id = (int) ( $membership['clinic_id'] ?? 0 );
+			if ( $clinic_id <= 0 || ! $service->can_manage( $actor_wp_user_id, $clinic_id ) ) {
+				continue;
+			}
+			$choices[] = [
+				'clinic_id'   => $clinic_id,
+				'clinic_name' => (string) ( $membership['clinic_name'] ?? ( 'Clinic #' . $clinic_id ) ),
+			];
+		}
+
+		return $choices;
+	}
+
+	/**
+	 * Display-only selector value: restricted to Clinics the actor may actually
+	 * manage, so an arbitrary value cannot even be selected in the UI. The
+	 * service still re-validates it against persistence on every use.
+	 *
+	 * @param list<array{clinic_id:int, clinic_name:string}> $choices
+	 */
+	private static function selected_clinic_id( array $choices ): int {
+		if ( [] === $choices ) {
+			return 0;
+		}
+
+		$requested = self::requested_clinic_id();
+		foreach ( $choices as $choice ) {
+			if ( $choice['clinic_id'] === $requested ) {
+				return $requested;
+			}
+		}
+
+		return (int) $choices[0]['clinic_id'];
+	}
+
+	private static function requested_clinic_id(): int {
+		// Read-only display filter: no state change, therefore no nonce applies.
+		if ( ! isset( $_GET['cpms_clinic_id'] ) || ! is_scalar( $_GET['cpms_clinic_id'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+			return 0;
+		}
+
+		return absint( wp_unslash( (string) $_GET['cpms_clinic_id'] ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+	}
+
+	/**
+	 * Normalizes the submitted capability checkboxes. Receives the already
+	 * unslashed request value from a handler that verified the nonce and the
+	 * capability gate first; every element is sanitized here and the full set is
+	 * strictly allowlist-validated by the management service afterwards.
+	 *
+	 * @param mixed $submitted
+	 *
+	 * @return list<string>
+	 */
+	private static function sanitize_capability_input( mixed $submitted ): array {
+		if ( ! is_array( $submitted ) ) {
+			return [];
+		}
+
+		$clean = [];
+		foreach ( $submitted as $candidate ) {
+			if ( is_string( $candidate ) ) {
+				$clean[] = sanitize_key( $candidate );
+			}
+		}
+
+		return array_values( array_unique( $clean ) );
+	}
+
+	private static function redirect_back( int $clinic_id ): void {
+		$args = [ 'page' => self::PAGE_SLUG ];
+		if ( $clinic_id > 0 ) {
+			$args['cpms_clinic_id'] = $clinic_id;
+		}
+		wp_safe_redirect( add_query_arg( $args, admin_url( 'admin.php' ) ) );
+		exit;
+	}
+
+	private static function set_notice( string $type, string $message ): void {
+		set_transient( self::NOTICE_KEY . '_' . (int) get_current_user_id(), [ 'type' => $type, 'message' => $message ], 60 );
+	}
+
+	/**
+	 * @return array{type:string, message:string}|null
+	 */
+	private static function pull_notice(): ?array {
+		$key    = self::NOTICE_KEY . '_' . (int) get_current_user_id();
+		$notice = get_transient( $key );
+		if ( false === $notice ) {
+			return null;
+		}
+		delete_transient( $key );
+		if ( ! is_array( $notice ) || ! isset( $notice['message'] ) || ! is_string( $notice['message'] ) ) {
+			return null;
+		}
+
+		return [
+			'type'    => ( isset( $notice['type'] ) && 'success' === $notice['type'] ) ? 'success' : 'error',
+			'message' => $notice['message'],
+		];
+	}
+
+	/**
+	 * @param array{type:string, message:string}|null $notice
+	 */
+	private static function render_notice( ?array $notice ): void {
+		if ( null === $notice ) {
+			return;
+		}
+		$class = ( 'success' === $notice['type'] ) ? 'notice notice-success is-dismissible' : 'notice notice-error';
+		echo '<div class="' . esc_attr( $class ) . '"><p>' . esc_html( $notice['message'] ) . '</p></div>';
+	}
 }

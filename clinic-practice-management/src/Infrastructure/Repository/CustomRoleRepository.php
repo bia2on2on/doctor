@@ -99,7 +99,7 @@ final class CustomRoleRepository {
             if ( $id <= 0 || ! CustomRolePolicy::is_definable_role_key( $key ) ) {
                 continue;
             }
-            $status = (string) ( $row['status'] ?? '' );
+            $status        = (string) ( $row['status'] ?? '' );
             $definitions[] = [
                 'clinic_id'    => $clinic_id,
                 'id'           => $id,
@@ -137,7 +137,7 @@ final class CustomRoleRepository {
             return null;
         }
 
-        $id         = (int) ( $row['id'] ?? 0 );
+        $id           = (int) ( $row['id'] ?? 0 );
         $owner_clinic = (int) ( $row['clinic_id'] ?? 0 );
         if ( $id <= 0 || $owner_clinic !== $clinic_id ) {
             // Defensive: the SELECT is already Clinic-scoped; a mismatching
@@ -210,7 +210,7 @@ final class CustomRoleRepository {
         if ( ! CustomRolePolicy::is_definable_role_key( $role_key ) ) {
             throw new \InvalidArgumentException( 'role key is not definable (format or built-in collision): ' . $role_key );
         }
-        $clean = self::require_editable_capabilities( $capabilities );
+        $clean              = self::require_editable_capabilities( $capabilities );
         $clean_display_name = self::optional_display_name( $display_name );
 
         $existing = $this->db->fetchValue(
