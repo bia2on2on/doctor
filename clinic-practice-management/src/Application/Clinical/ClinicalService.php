@@ -1351,7 +1351,7 @@ final class ClinicalService
         $isDoctor = $user !== false && in_array(RolesAndCapabilities::ROLE_DOCTOR, (array) ($user->roles ?? []), true);
 
         $results = ['patients' => [], 'notes' => [], 'prescriptions' => []];
-        if ($type === 'all' || $type === 'patient') {
+        if (($type === 'all' || $type === 'patient') && $this->has_clinic_read($actorUserId, $trustedClinicId, RolesAndCapabilities::PATIENT_READ)) { // phpcs:ignore WordPress.NamingConvention.ValidVariableName.VariableNotSnakeCase -- established camelCase local
             $results['patients'] = array_map(
                 fn (array $row): array => [
                     'id' => (int) $row['id'],

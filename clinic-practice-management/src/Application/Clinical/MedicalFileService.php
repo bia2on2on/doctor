@@ -167,7 +167,7 @@ final class MedicalFileService
             'patient',
             $patientId
         );
-        $onlyVisible = !$this->canSeePrivate($actorUserId);
+        $onlyVisible = !$this->canSeePrivate($actorUserId, $durableClinicId);
 
         return array_map([$this, 'presentFile'], $this->files->forPatient($patientId, $onlyVisible));
     }
@@ -377,6 +377,17 @@ final class MedicalFileService
                 'patient',
                 $patientId
             );
+            // doctor_private = سطح Private (P-6): ثبت آن علاوه بر نقش سراسری پزشک،
+            // به اختیار Clinic-scoped «ایجاد یادداشت خصوصی» نیاز دارد.
+            if ($visibility === 'doctor_private') {
+                $this->authorizeScoped(
+                    $actorUserId,
+                    $patientClinicId,
+                    RolesAndCapabilities::PRIVATE_NOTE_CREATE,
+                    'patient',
+                    $patientId
+                );
+            }
         } else {
             // مسیر بیمار (Phase 9 Slice 7): رکوردِ هدف همین حالا از طریقِ
             // `PatientService::require_selected_patient` حل و تأیید شده — پس
@@ -388,6 +399,11 @@ final class MedicalFileService
             if ( $resolved_id !== $patientId || $resolved_clinic_id !== $patientClinicId ) {
                 $this->auditAndThrow( $actorUserId, 'patient', $patientId, 'دسترسی به این فایل مجاز نیست' ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- پارامترهای قدیمیِ متدِ میزبان.
             }
+        }
+        // C-V: visit_id باید به همان Clinic و همان بیمار تعلق داشته باشد. رد ⇒ پیش از
+        // هر نوشتن (نه بایت، نه ردیف متادیتا)؛ پاسخ مشابه «یافت نشد».
+        if ($visitId !== null) {
+            $this->assertVisitOfPatient($visitId, $patientClinicId, $patientId);
         }
         $storagePath = $this->storageFor($patientClinicId)->store($content, $patientClinicId, $extension);
 
@@ -436,13 +452,34 @@ final class MedicalFileService
         return is_string($mime) && $mime !== '' ? $mime : null;
     }
 
-    private function canSeePrivate(int $actorUserId): bool
+    /**
+     * doctor_private فقط با هر دو: نقش سراسری پزشک (سیاست قبلی) و اختیار
+     * Clinic-scoped «خواندن یادداشت خصوصی» در Clinicِ همین فایل. عضویتِ منشی
+     * با FILE_READ به‌تنهایی این دسترسی را نمی‌دهد.
+     */
+    private function canSeePrivate(int $actorUserId, int $durableClinicId): bool
     {
         $user = get_userdata($actorUserId);
 
         return $user !== false
             && in_array(RolesAndCapabilities::ROLE_DOCTOR, (array) $user->roles, true)
-            && user_can($actorUserId, RolesAndCapabilities::FILE_READ);
+            && user_can($actorUserId, RolesAndCapabilities::FILE_READ)
+            && $durableClinicId > 0
+            && App::authorization_service()->can($actorUserId, $durableClinicId, RolesAndCapabilities::PRIVATE_NOTE_READ);
+    }
+
+    /**
+     * visit_id فقط وقتی معتبر است که ردیف ویزیت در همان Clinic و همان بیمار باشد.
+     */
+    private function assertVisitOfPatient(int $visitId, int $patientClinicId, int $patientId): void
+    {
+        $visit = App::db()->fetchRow(
+            'SELECT clinic_id, patient_id FROM ' . App::db()->table('cpms_visits') . ' WHERE id = %d LIMIT 1',
+            [$visitId]
+        );
+        if ($visit === null || (int) $visit['clinic_id'] !== $patientClinicId || (int) $visit['patient_id'] !== $patientId) {
+            throw ClinicalException::of('CLINIC_NOT_FOUND', 'مراجعه یافت نشد', 404);
+        }
     }
 
     /**
@@ -774,6 +811,11 @@ final class MedicalFileService
             'file',
             $fileId
         );
+
+        // doctor_private: اختیار خصوصی Clinic-scoped لازم است (نقش سراسری کافی نیست).
+        if ((string) ( $row['visibility'] ?? '' ) === 'doctor_private' && !$this->canSeePrivate($actorUserId, $durableClinicId)) {
+            $this->auditAndThrow($actorUserId, 'file', $fileId, 'دسترسی به این فایل مجاز نیست', 'فایل یافت نشد');
+        }
     }
 
     /**
