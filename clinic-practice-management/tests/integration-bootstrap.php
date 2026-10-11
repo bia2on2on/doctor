@@ -80,11 +80,15 @@ tests_add_filter(
         // unexpected empty stack must remain observable (fail loudly) and must
         // not be silently hidden or claim rollback of committed DDL.
         if ( preg_match( '/\\A\\s*(CREATE|DROP|ALTER|TRUNCATE|RENAME)\\s+/i', $q_nocomments ) ) {
-            // For TEMPORARY check, normalize inline block comments to space so
-            // `CREATE /* comment */ TEMPORARY` is correctly recognised as
+            // For TEMPORARY check, normalize inline comments to space so
+            // `CREATE /* comment */ TEMPORARY`, `CREATE -- comment\nTEMPORARY`,
+            // and `CREATE # comment\nTEMPORARY` are correctly recognised as
             // temporary (not real). Real DDL `CREATE /* comment */ TABLE` remains
-            // real because it lacks TEMPORARY.
+            // real because it lacks TEMPORARY. Only valid MySQL comment syntax
+            // is handled (-- requires following whitespace, # to end of line).
             $q_temp_normalized = preg_replace( '/\\/\\*.*?\\*\\//s', ' ', $q_nocomments );
+            $q_temp_normalized = preg_replace( '/--[ \t].*?(?:\\r\\n|\\n|\\r|$)/', ' ', (string) $q_temp_normalized );
+            $q_temp_normalized = preg_replace( '/#[^\\r\\n]*/', ' ', (string) $q_temp_normalized );
             $q_temp_normalized = preg_replace( '/\\s+/', ' ', (string) $q_temp_normalized );
             $q_temp_normalized = trim( (string) $q_temp_normalized );
             $is_temporary      = (bool) preg_match( '/\\A\\s*(CREATE|DROP)\\s+TEMPORARY\\s+/i', $q_temp_normalized );

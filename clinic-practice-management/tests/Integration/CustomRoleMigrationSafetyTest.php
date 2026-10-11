@@ -791,23 +791,49 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
             // 10. Assert migration version remains 0023.
             self::assertSame( self::PREVIOUS_VERSION, App::migrations()->currentVersion(), 'migration 0024 must never be recorded after cross-schema failure' );
 
-            // 11. Assert exact malformed table structure and marker-row values remain unchanged.
-            $afterCols = array_map( 'strval', (array) $wpdb->get_col( "SHOW COLUMNS FROM {$defs}" ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-            $afterRows = $wpdb->get_results( "SELECT * FROM {$defs} ORDER BY id", ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            // 11. Assert exact malformed table structure and marker-row values remain unchanged (with real-table mode).
+            $afterCols = null;
+            $afterRows = null;
+            $this->withRealTables(function () use ($wpdb, $defs, &$afterCols, &$afterRows): void {
+                $afterCols = array_map( 'strval', (array) $wpdb->get_col( "SHOW COLUMNS FROM {$defs}" ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $afterRows = $wpdb->get_results( "SELECT * FROM {$defs} ORDER BY id", ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            });
             self::assertSame( $beforeCols, $afterCols, 'cross-schema malformed table columns must remain exactly unchanged' );
             self::assertEquals( $beforeRows, $afterRows, 'cross-schema marker row must remain exactly unchanged (before vs after)' );
             $marker = $afterRows[0];
             self::assertSame( 'probe_cross', (string) ( $marker['role_key'] ?? '' ), 'marker role_key must remain probe_cross' );
             self::assertSame( 1, (int) ( $marker['clinic_id'] ?? 0 ), 'marker clinic_id must remain 1' );
         } finally {
-            // 12. Restore normal schema safely for subsequent tests.
-            $this->withRealTables(function () use ($wpdb, $cross_db, $defs, $caps): void {
-                $wpdb->query( "DROP DATABASE IF EXISTS `{$cross_db}`" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                $wpdb->query( "DELETE FROM {$wpdb->prefix}cpms_schema_migrations WHERE version = '" . self::NEW_VERSION . "'" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                $wpdb->query( "DROP TABLE IF EXISTS {$caps}" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                $wpdb->query( "DROP TABLE IF EXISTS {$defs}" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                App::migrations()->migrate();
-            });
+            // 12. Restore normal schema safely for subsequent tests - drop child before parent, check failures, preserve original.
+            $cleanupError = '';
+            try {
+                $this->withRealTables(function () use ($wpdb, $cross_db, $defs, $caps, &$cleanupError): void {
+                    // Drop local child (defs has FK to cross_db) before external parent.
+                    $ok = $wpdb->query( "DROP TABLE IF EXISTS {$defs}" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                    if ( false === $ok && '' !== $wpdb->last_error ) {
+                        $cleanupError = $wpdb->last_error;
+                    }
+                    $ok = $wpdb->query( "DROP TABLE IF EXISTS {$caps}" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                    if ( false === $ok && '' !== $wpdb->last_error && '' === $cleanupError ) {
+                        $cleanupError = $wpdb->last_error;
+                    }
+                    $ok = $wpdb->query( "DROP DATABASE IF EXISTS `{$cross_db}`" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                    if ( false === $ok && '' !== $wpdb->last_error && '' === $cleanupError ) {
+                        $cleanupError = $wpdb->last_error;
+                    }
+                    $wpdb->query( "DELETE FROM {$wpdb->prefix}cpms_schema_migrations WHERE version = '" . self::NEW_VERSION . "'" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                    // Remove any leftover temporary tables from the test
+                    $wpdb->query( "DROP TEMPORARY TABLE IF EXISTS {$defs}" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                    $wpdb->query( "DROP TEMPORARY TABLE IF EXISTS {$caps}" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                    App::migrations()->migrate();
+                });
+            } finally {
+                if ( '' !== $cleanupError ) {
+                    // Preserve original test failure if any, but report cleanup failure.
+                    // Use assert to make it visible without silently ignoring.
+                    self::assertSame( '', $cleanupError, 'cross-schema cleanup must succeed: ' . $cleanupError );
+                }
+            }
         }
 
         self::assertSame( self::NEW_VERSION, App::migrations()->currentVersion(), 'suite schema must be restored after cross-schema test' );
@@ -824,11 +850,27 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
         $defs = App::db()->table('cpms_custom_role_defs');
         $caps = App::db()->table('cpms_custom_role_capabilities');
 
-        $this->withRealTables(static function () use ($wpdb, $defs, $caps): void {
-            $wpdb->query("DELETE FROM {$wpdb->prefix}cpms_schema_migrations WHERE version = '" . self::NEW_VERSION . "'"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-            $wpdb->query("DROP TABLE IF EXISTS {$caps}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-            $wpdb->query("DROP TABLE IF EXISTS {$defs}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-            App::migrations()->migrate();
-        });
+        $cleanupError = '';
+        try {
+            $this->withRealTables(function () use ($wpdb, $defs, $caps, &$cleanupError): void {
+                $wpdb->query("DELETE FROM {$wpdb->prefix}cpms_schema_migrations WHERE version = '" . self::NEW_VERSION . "'"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                // Drop child before parent (caps has FK to defs)
+                $ok = $wpdb->query("DROP TABLE IF EXISTS {$caps}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                if ( false === $ok && '' !== $wpdb->last_error && '' === $cleanupError ) {
+                    $cleanupError = $wpdb->last_error;
+                }
+                $wpdb->query("DROP TEMPORARY TABLE IF EXISTS {$caps}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $ok = $wpdb->query("DROP TABLE IF EXISTS {$defs}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                if ( false === $ok && '' !== $wpdb->last_error && '' === $cleanupError ) {
+                    $cleanupError = $wpdb->last_error;
+                }
+                $wpdb->query("DROP TEMPORARY TABLE IF EXISTS {$defs}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                App::migrations()->migrate();
+            });
+        } finally {
+            if ( '' !== $cleanupError ) {
+                self::assertSame( '', $cleanupError, 'restoreFreshSchema cleanup must succeed: ' . $cleanupError );
+            }
+        }
     }
 }
