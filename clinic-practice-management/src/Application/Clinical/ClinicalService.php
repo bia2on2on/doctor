@@ -1442,8 +1442,7 @@ final class ClinicalService
      * shared AuthorizationService (durable membership + preset/override); the
      * WP-global doctor role never substitutes for it.
      */
-    private function has_clinic_read( int $actor_user_id, int $clinic_id, string $capability ): bool
-    {
+    private function has_clinic_read( int $actor_user_id, int $clinic_id, string $capability ): bool {
         return App::authorization_service()->can( $actor_user_id, $clinic_id, $capability );
     }
 
