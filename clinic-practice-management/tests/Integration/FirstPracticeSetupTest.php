@@ -423,12 +423,15 @@ final class FirstPracticeSetupTest extends WP_UnitTestCase
             // A consumes the one-shot marker (guarded update — same guard as the
             // service) and commits.
             $now = App::db()->nowUtcSql();
-            $affected = $connA->query(
+            $okA = $connA->query(
                 'UPDATE ' . $this->table('cpms_clinics') .
                 " SET first_setup_claimed_at = '" . $connA->real_escape_string($now) . "'" .
                 ' WHERE id = ' . $clinicId . ' AND first_setup_claimed_at IS NULL'
             );
-            self::assertSame(1, (int) $affected);
+            // mysqli::query() returns bool for UPDATE — the affected-row count is
+            // the separate affected_rows property (exactly 1 row consumed).
+            self::assertTrue((bool) $okA);
+            self::assertSame(1, (int) $connA->affected_rows);
             self::assertTrue($connA->query('COMMIT'));
 
             // B retries after A commits: the marker is consumed and B's guarded
@@ -441,12 +444,13 @@ final class FirstPracticeSetupTest extends WP_UnitTestCase
             self::assertNotFalse($resB2);
             $rowB = $resB2->fetch_assoc();
             self::assertNotEmpty($rowB['first_setup_claimed_at']);
-            $affectedB = $connB->query(
+            $okB = $connB->query(
                 'UPDATE ' . $this->table('cpms_clinics') .
                 " SET first_setup_claimed_at = '" . $connB->real_escape_string($now) . "'" .
                 ' WHERE id = ' . $clinicId . ' AND first_setup_claimed_at IS NULL'
             );
-            self::assertSame(0, (int) $affectedB);
+            self::assertTrue((bool) $okB);
+            self::assertSame(0, (int) $connB->affected_rows, 'second connection must consume zero rows');
             $connB->query('ROLLBACK');
         } finally {
             // Restore the seed marker (committed outside the test transaction).

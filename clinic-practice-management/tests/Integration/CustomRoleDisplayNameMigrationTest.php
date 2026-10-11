@@ -176,7 +176,7 @@ final class CustomRoleDisplayNameMigrationTest extends WP_UnitTestCase
             });
         }
 
-        self::assertSame(self::VERSION, App::migrations()->currentVersion(), 'suite schema must be restored');
+        self::assertSame(self::HEAD_VERSION, App::migrations()->currentVersion(), 'suite schema must be restored');
         $column = $wpdb->get_row("SHOW COLUMNS FROM {$defs} LIKE 'display_name'", ARRAY_A); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         self::assertIsArray($column, 'the well-formed column must be restored after cleanup');
         self::assertSame('YES', strtoupper((string) $column['Null']));
