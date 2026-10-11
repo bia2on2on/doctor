@@ -91,78 +91,152 @@ final class FinanceService
      * @param array<string, mixed> $input
      * @return array<string, mixed>
      */
-    public function createService(int $actorUserId, array $input): array
-    {
-        $this->requireCap($actorUserId, RolesAndCapabilities::CONFIG, 'services.config');
-        $clinicId = $this->requireTrustedClinicId();
-        $this->authorizeScoped($actorUserId, $clinicId, RolesAndCapabilities::CONFIG, 'services.config');
-        [$code, $name, $price] = $this->validateServiceInput($input, null);
-        if ($this->services->existsWithCode($clinicId, $code)) {
-            throw FinanceException::of('CLINIC_POLICY_VIOLATION', 'کد خدمت تکراری است', 409, ['code' => $code]);
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- established public service-catalog API name; renaming it is a breaking change outside this fix.
+    public function createService( int $actor_user_id, array $input ): array {
+        $this->requireCap( $actor_user_id, RolesAndCapabilities::CONFIG, 'services.config' );
+        $clinic_id = $this->requireTrustedClinicId();
+        $this->authorizeScoped( $actor_user_id, $clinic_id, RolesAndCapabilities::CONFIG, 'services.config' );
+        [ $code, $name, $price ] = $this->validateServiceInput( $input, null );
+        if ( $this->services->existsWithCode( $clinic_id, $code ) ) {
+            throw FinanceException::of( 'CLINIC_POLICY_VIOLATION', 'کد خدمت تکراری است', 409, [ 'code' => $code ] );
         }
-        $id = $this->services->insert($clinicId, [
-            'code' => $code,
-            'name' => $name,
-            'price' => $price,
-        ]);
-        $this->audit->log('SETTING_UPDATE', $this->actor($actorUserId), 'service', $id, null, null, [
-            'code' => $code, 'name' => $name, 'price' => $price, 'is_active' => 1,
-        ], ['op' => 'service_create']);
 
-        return ['id' => $id, 'code' => $code, 'name' => $name, 'price' => $price, 'is_active' => true];
+        // F2-3 (atomic service catalog): the service-row write and its mandatory
+        // audit event share ONE transaction boundary. AuditLogger is fail-closed,
+        // so without this boundary the row would already be committed while the
+        // REST boundary answered 500 (CLINIC_INTERNAL_ERROR) — a mutation with no
+        // audit trail.
+        return $this->db->transactional(
+            function () use ( $actor_user_id, $clinic_id, $code, $name, $price ): array {
+                $service_id = $this->services->insert(
+                    $clinic_id,
+                    [
+                        'code'  => $code,
+                        'name'  => $name,
+                        'price' => $price,
+                    ]
+                );
+                $this->audit->log(
+                    'SETTING_UPDATE',
+                    $this->actor( $actor_user_id ),
+                    'service',
+                    $service_id,
+                    null,
+                    null,
+                    [
+                        'code'      => $code,
+                        'name'      => $name,
+                        'price'     => $price,
+                        'is_active' => 1,
+                    ],
+                    [ 'op' => 'service_create' ]
+                );
+
+                return [
+                    'id'        => $service_id,
+                    'code'      => $code,
+                    'name'      => $name,
+                    'price'     => $price,
+                    'is_active' => true,
+                ];
+            }
+        );
     }
 
     /**
      * @param array<string, mixed> $input
      * @return array<string, mixed>
      */
-    public function updateService(int $actorUserId, int $id, array $input): array
-    {
-        $this->requireCap($actorUserId, RolesAndCapabilities::CONFIG, 'services.config');
-        $clinicId = $this->requireTrustedClinicId();
-        $this->authorizeScoped($actorUserId, $clinicId, RolesAndCapabilities::CONFIG, 'services.config');
-        $existing = $this->services->find($id);
-        if ($existing === null || !$this->rowBelongsToTrustedClinic($existing)) {
-            throw FinanceException::of('CLINIC_NOT_FOUND', 'خدمت یافت نشد', 404);
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- established public service-catalog API name; renaming it is a breaking change outside this fix.
+    public function updateService( int $actor_user_id, int $id, array $input ): array {
+        $this->requireCap( $actor_user_id, RolesAndCapabilities::CONFIG, 'services.config' );
+        $clinic_id = $this->requireTrustedClinicId();
+        $this->authorizeScoped( $actor_user_id, $clinic_id, RolesAndCapabilities::CONFIG, 'services.config' );
+        $existing = $this->services->find( $id );
+        if ( $existing === null || ! $this->rowBelongsToTrustedClinic( $existing ) ) {
+            throw FinanceException::of( 'CLINIC_NOT_FOUND', 'خدمت یافت نشد', 404 );
         }
-        [$code, $name, $price] = $this->validateServiceInput($input, $existing);
-        if ($this->services->existsWithCode($clinicId, $code, $id)) {
-            throw FinanceException::of('CLINIC_POLICY_VIOLATION', 'کد خدمت تکراری است', 409, ['code' => $code]);
+        [ $code, $name, $price ] = $this->validateServiceInput( $input, $existing );
+        if ( $this->services->existsWithCode( $clinic_id, $code, $id ) ) {
+            throw FinanceException::of( 'CLINIC_POLICY_VIOLATION', 'کد خدمت تکراری است', 409, [ 'code' => $code ] );
         }
-        $this->services->update($clinicId, $id, ['code' => $code, 'name' => $name, 'price' => $price]);
-        $this->audit->log('SETTING_UPDATE', $this->actor($actorUserId), 'service', $id, null, [
-            'service.code' => (string) $existing['code'],
-            'service.name' => (string) $existing['name'],
-            'service.price' => (float) $existing['price'],
-        ], [
-            'service.code' => $code,
-            'service.name' => $name,
-            'service.price' => $price,
-        ], ['op' => 'service_update']);
 
-        return ['id' => $id, 'code' => $code, 'name' => $name, 'price' => $price];
+        // F2-3 (atomic service catalog): update + mandatory audit in ONE boundary.
+        return $this->db->transactional(
+            function () use ( $actor_user_id, $clinic_id, $id, $code, $name, $price, $existing ): array {
+                $this->services->update(
+                    $clinic_id,
+                    $id,
+                    [
+                        'code'  => $code,
+                        'name'  => $name,
+                        'price' => $price,
+                    ]
+                );
+                $this->audit->log(
+                    'SETTING_UPDATE',
+                    $this->actor( $actor_user_id ),
+                    'service',
+                    $id,
+                    null,
+                    [
+                        'service.code'  => (string) $existing['code'],
+                        'service.name'  => (string) $existing['name'],
+                        'service.price' => (float) $existing['price'],
+                    ],
+                    [
+                        'service.code'  => $code,
+                        'service.name'  => $name,
+                        'service.price' => $price,
+                    ],
+                    [ 'op' => 'service_update' ]
+                );
+
+                return [
+                    'id'    => $id,
+                    'code'  => $code,
+                    'name'  => $name,
+                    'price' => $price,
+                ];
+            }
+        );
     }
 
     /**
      * @return array<string, mixed>
      */
-    public function deactivateService(int $actorUserId, int $id): array
-    {
-        $this->requireCap($actorUserId, RolesAndCapabilities::CONFIG, 'services.config');
-        $clinicId = $this->requireTrustedClinicId();
-        $this->authorizeScoped($actorUserId, $clinicId, RolesAndCapabilities::CONFIG, 'services.config');
-        $existing = $this->services->find($id);
-        if ($existing === null || !$this->rowBelongsToTrustedClinic($existing)) {
-            throw FinanceException::of('CLINIC_NOT_FOUND', 'خدمت یافت نشد', 404);
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- established public service-catalog API name; renaming it is a breaking change outside this fix.
+    public function deactivateService( int $actor_user_id, int $id ): array {
+        $this->requireCap( $actor_user_id, RolesAndCapabilities::CONFIG, 'services.config' );
+        $clinic_id = $this->requireTrustedClinicId();
+        $this->authorizeScoped( $actor_user_id, $clinic_id, RolesAndCapabilities::CONFIG, 'services.config' );
+        $existing = $this->services->find( $id );
+        if ( $existing === null || ! $this->rowBelongsToTrustedClinic( $existing ) ) {
+            throw FinanceException::of( 'CLINIC_NOT_FOUND', 'خدمت یافت نشد', 404 );
         }
-        $this->services->update($clinicId, $id, ['is_active' => 0]);
-        $this->audit->log('SETTING_UPDATE', $this->actor($actorUserId), 'service', $id, null, [
-            'service.is_active' => 1,
-        ], [
-            'service.is_active' => 0,
-        ], ['op' => 'service_deactivate']);
 
-        return ['id' => $id, 'is_active' => false];
+        // F2-3 (atomic service catalog): deactivation + mandatory audit in ONE
+        // boundary — a failed audit must leave the service active.
+        return $this->db->transactional(
+            function () use ( $actor_user_id, $clinic_id, $id ): array {
+                $this->services->update( $clinic_id, $id, [ 'is_active' => 0 ] );
+                $this->audit->log(
+                    'SETTING_UPDATE',
+                    $this->actor( $actor_user_id ),
+                    'service',
+                    $id,
+                    null,
+                    [ 'service.is_active' => 1 ],
+                    [ 'service.is_active' => 0 ],
+                    [ 'op' => 'service_deactivate' ]
+                );
+
+                return [
+                    'id'        => $id,
+                    'is_active' => false,
+                ];
+            }
+        );
     }
 
     // ================= D12 — صدور فاکتور =================
