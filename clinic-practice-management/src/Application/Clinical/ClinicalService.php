@@ -165,7 +165,9 @@ final class ClinicalService
                 'file_size' => (int) $f['file_size'],
                 'uploaded_by_wp_user_id' => (int) $f['uploaded_by_wp_user_id'],
                 'created_at' => (string) $f['created_at'],
-            ], $this->visitOwnedFiles($this->files->forVisit($visitId), $visit)),
+            // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host variables
+            ], $this->visit_owned_files( $this->files->forVisit( $visitId ), $visit ) ),
+            // phpcs:enable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
             'past_visits' => array_map(static fn (array $v): array => [
                 'id' => (int) $v['id'],
                 'visit_date' => (string) $v['visit_date'],
@@ -1352,7 +1354,7 @@ final class ClinicalService
 
         $results = ['patients' => [], 'notes' => [], 'prescriptions' => []];
         // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host variables
-        if (($type === 'all' || $type === 'patient') && $this->has_clinic_read($actorUserId, $trustedClinicId, RolesAndCapabilities::PATIENT_READ)) {
+        if ( ( $type === 'all' || $type === 'patient' ) && $this->has_clinic_read( $actorUserId, $trustedClinicId, RolesAndCapabilities::PATIENT_READ ) ) {
             $results['patients'] = array_map(
                 fn (array $row): array => [
                     'id' => (int) $row['id'],
@@ -1444,7 +1446,6 @@ final class ClinicalService
      * shared AuthorizationService (durable membership + preset/override); the
      * WP-global doctor role never substitutes for it.
      */
-    // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host variables
     /**
      * Fail-closed read: فقط فایل‌های همان Clinic و همان بیمارِ ویزیت (ردیف ناسازگار قدیمی حذف می‌شود).
      *
@@ -1452,17 +1453,18 @@ final class ClinicalService
      * @param array<string, mixed>       $visit
      * @return list<array<string, mixed>>
      */
-    private function visitOwnedFiles(array $files, array $visit): array
-    {
-        $clinicId = (int) $visit['clinic_id'];
-        $patientId = (int) $visit['patient_id'];
+    private function visit_owned_files( array $files, array $visit ): array {
+        $clinic_id  = (int) $visit['clinic_id'];
+        $patient_id = (int) $visit['patient_id'];
+        $owned      = [];
+        foreach ( $files as $file ) {
+            if ( (int) $file['clinic_id'] === $clinic_id && (int) $file['patient_id'] === $patient_id ) {
+                $owned[] = $file;
+            }
+        }
 
-        return array_values(array_filter(
-            $files,
-            static fn (array $f): bool => (int) $f['clinic_id'] === $clinicId && (int) $f['patient_id'] === $patientId
-        ));
+        return $owned;
     }
-    // phpcs:enable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
 
     private function has_clinic_read( int $actor_user_id, int $clinic_id, string $capability ): bool {
         return App::authorization_service()->can( $actor_user_id, $clinic_id, $capability );

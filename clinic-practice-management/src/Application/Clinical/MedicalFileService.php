@@ -168,7 +168,7 @@ final class MedicalFileService
             $patientId
         );
             // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host variables
-        $onlyVisible = !$this->canSeePrivate($actorUserId, $durableClinicId);
+        $onlyVisible = ! $this->can_see_private( $actorUserId, $durableClinicId );
             // phpcs:enable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
 
         return array_map([$this, 'presentFile'], $this->files->forPatient($patientId, $onlyVisible));
@@ -380,16 +380,11 @@ final class MedicalFileService
                 $patientId
             );
             // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host variables
+            // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host variables
             // doctor_private = سطح Private (P-6): ثبت آن علاوه بر نقش سراسری پزشک،
             // به اختیار Clinic-scoped «ایجاد یادداشت خصوصی» نیاز دارد.
-            if ($visibility === 'doctor_private') {
-                $this->authorizeScoped(
-                    $actorUserId,
-                    $patientClinicId,
-                    RolesAndCapabilities::PRIVATE_NOTE_CREATE,
-                    'patient',
-                    $patientId
-                );
+            if ( $visibility === 'doctor_private' ) {
+                $this->authorizeScoped( $actorUserId, $patientClinicId, RolesAndCapabilities::PRIVATE_NOTE_CREATE, 'patient', $patientId );
             }
             // phpcs:enable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
         } else {
@@ -407,8 +402,8 @@ final class MedicalFileService
         // C-V: visit_id باید به همان Clinic و همان بیمار تعلق داشته باشد. رد ⇒ پیش از
         // هر نوشتن (نه بایت، نه ردیف متادیتا)؛ پاسخ مشابه «یافت نشد».
         // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host variables
-        if ($visitId !== null) {
-            $this->assertVisitOfPatient($visitId, $patientClinicId, $patientId);
+        if ( $visitId !== null ) {
+            $this->assert_visit_of_patient( $visitId, $patientClinicId, $patientId );
         }
         // phpcs:enable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
         $storagePath = $this->storageFor($patientClinicId)->store($content, $patientClinicId, $extension);
@@ -460,32 +455,32 @@ final class MedicalFileService
 
     // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host variables
     /**
-     * doctor_private فقط با هر دو: نقش سراسری پزشک (سیاست قبلی) و اختیار
-     * Clinic-scoped «خواندن یادداشت خصوصی» در Clinicِ همین فایل. عضویتِ منشی
-     * با FILE_READ به‌تنهایی این دسترسی را نمی‌دهد.
+     * doctor_private فقط با هر دو: نقش سراسری پزشک (سیاست قبلی) و اختیار Clinic-scoped
+     * «خواندن یادداشت خصوصی» در Clinicِ همین فایل. عضویتِ منشی با FILE_READ به‌تنهایی کافی نیست.
      */
-    private function canSeePrivate(int $actorUserId, int $durableClinicId): bool
-    {
-        $user = get_userdata($actorUserId);
+    private function can_see_private( int $actorUserId, int $durableClinicId ): bool {
+        $user = get_userdata( $actorUserId );
+        if ( false === $user || ! in_array( RolesAndCapabilities::ROLE_DOCTOR, (array) $user->roles, true ) ) {
+            return false;
+        }
+        if ( $durableClinicId <= 0 || ! user_can( $actorUserId, RolesAndCapabilities::FILE_READ ) ) {
+            return false;
+        }
 
-        return $user !== false
-            && in_array(RolesAndCapabilities::ROLE_DOCTOR, (array) $user->roles, true)
-            && user_can($actorUserId, RolesAndCapabilities::FILE_READ)
-            && $durableClinicId > 0
-            && App::authorization_service()->can($actorUserId, $durableClinicId, RolesAndCapabilities::PRIVATE_NOTE_READ);
+        return App::authorization_service()->can( $actorUserId, $durableClinicId, RolesAndCapabilities::PRIVATE_NOTE_READ );
     }
 
     /**
      * visit_id فقط وقتی معتبر است که ردیف ویزیت در همان Clinic و همان بیمار باشد.
      */
-    private function assertVisitOfPatient(int $visitId, int $patientClinicId, int $patientId): void
-    {
-        $visit = App::db()->fetchRow(
-            'SELECT clinic_id, patient_id FROM ' . App::db()->table('cpms_visits') . ' WHERE id = %d LIMIT 1',
-            [$visitId]
-        );
-        if ($visit === null || (int) $visit['clinic_id'] !== $patientClinicId || (int) $visit['patient_id'] !== $patientId) {
-            throw ClinicalException::of('CLINIC_NOT_FOUND', 'مراجعه یافت نشد', 404);
+    private function assert_visit_of_patient( int $visitId, int $patientClinicId, int $patientId ): void {
+        $table = App::db()->table( 'cpms_visits' );
+        $sql   = 'SELECT clinic_id, patient_id FROM ' . $table . ' WHERE id = %d LIMIT 1';
+        $visit = App::db()->fetchRow( $sql, [ $visitId ] );
+        $clinic_ok  = null !== $visit && (int) $visit['clinic_id'] === $patientClinicId;
+        $patient_ok = null !== $visit && (int) $visit['patient_id'] === $patientId;
+        if ( ! $clinic_ok || ! $patient_ok ) {
+            throw ClinicalException::of( 'CLINIC_NOT_FOUND', 'مراجعه یافت نشد', 404 );
         }
     }
     // phpcs:enable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
@@ -820,10 +815,11 @@ final class MedicalFileService
             $fileId
         );
 
-        // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host variables
         // doctor_private: اختیار خصوصی Clinic-scoped لازم است (نقش سراسری کافی نیست).
-        if ((string) ( $row['visibility'] ?? '' ) === 'doctor_private' && !$this->canSeePrivate($actorUserId, $durableClinicId)) {
-            $this->auditAndThrow($actorUserId, 'file', $fileId, 'دسترسی به این فایل مجاز نیست', 'فایل یافت نشد');
+        // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host variables
+        $visibility = (string) ( $row['visibility'] ?? '' );
+        if ( 'doctor_private' === $visibility && ! $this->can_see_private( $actorUserId, $durableClinicId ) ) {
+            $this->auditAndThrow( $actorUserId, 'file', $fileId, 'دسترسی به این فایل مجاز نیست', 'فایل یافت نشد' );
         }
         // phpcs:enable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
     }
