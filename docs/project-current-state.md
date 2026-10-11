@@ -92,7 +92,8 @@ clinical behavior are unchanged.
   - 5-plugin Persian core — Elementor, Persian Elementor, WooCommerce, WP-Parsidate, Loco Translate (fa_IR locale), with CPMS.
   - 2-plugin security/authentication — Wordfence, Really Simple SSL, with CPMS.
   - 10-plugin combined group — Yoast SEO, Rank Math, LiteSpeed Cache, Autoptimize, User Role Editor, ACF, WP Crontrol, Redirection, Polylang, Contact Form 7, with CPMS.
-  - Persian WooCommerce SMS group — WooCommerce 11.2.0 + Persian WooCommerce SMS 7.2.3, with CPMS.
+  - Persian WooCommerce SMS group — WooCommerce 11.2.0 + Persian WooCommerce SMS 7.3.0 (pin moved
+    from 7.2.3 on 2026-10-11 when WordPress.org released 7.3.0 as the stable version), with CPMS.
   - Persian WooCommerce diagnostic lane — WooCommerce 11.2.0 + Persian WooCommerce 10.0.5, **CPMS-free** (Stage B explicitly disabled).
 
 **Accepted limitations (documented, not PASS-washed):**

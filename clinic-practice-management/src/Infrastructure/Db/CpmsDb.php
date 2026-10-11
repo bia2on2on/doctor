@@ -24,6 +24,12 @@ final class CpmsDb
 {
     private bool $strict = false;
 
+    /**
+     * عمق تراکنش‌های بازِ همین اتصال (فقط برای transactional()). صفر = هیچ
+     * تراکنش CpmsDb فعال نیست. مقدار همیشه در finally کاهش می‌یابد.
+     */
+    private int $tx_depth = 0;
+
     public function __construct(private readonly wpdb $wpdb, private string $prefix = 'cpms_')
     {
     }
@@ -213,29 +219,66 @@ final class CpmsDb
      * @return T
      */
     public function transactional( callable $callback ) {
-        $this->tx_control( '/*cpms*/ START TRANSACTION' );
-        try {
-            $result = $callback();
-        } catch ( \Throwable $e ) {
-            try {
-                $this->tx_control( '/*cpms*/ ROLLBACK' );
-            } catch ( \Throwable $rollback_ex ) {
-                throw new RuntimeException( 'transaction rollback failed: ' . $rollback_ex->getMessage(), 0, $e );
-            }
-            throw $e;
+        // F2-1 (atomicidade): فراخوانی تودرتو نباید COMMIT ضمنی روی تراکنش
+        // بیرونی بزند. MySQL با START TRANSACTION تراکنش باز را COMMIT
+        // می‌کند، پس هر فراخوانیِ تودرتو به SAVEPOINT تبدیل می‌شود: مرزِ
+        // تراکنشِ سطحِ صفر همان بیرونی می‌ماند و شکستِ داخلی فقط تا همان
+        // Savepoint عقب می‌رود. نامِ Savepoint با «nested_» از نام‌های
+        // bootstrap تست جدا نگه داشته می‌شود.
+        $savepoint = $this->tx_depth > 0 ? 'cpms_sp_nested_' . $this->tx_depth : null;
+
+        if ( $savepoint === null ) {
+            $this->tx_control( '/*cpms*/ START TRANSACTION' );
+        } else {
+            $this->tx_control( '/*cpms*/ SAVEPOINT ' . $savepoint );
         }
+        ++$this->tx_depth;
+
         try {
-            $this->tx_control( '/*cpms*/ COMMIT' );
-        } catch ( \Throwable $commit_ex ) {
             try {
-                $this->tx_control( '/*cpms*/ ROLLBACK' );
-            } catch ( \Throwable $rollback_ex ) {
-                throw new RuntimeException( 'transaction commit failed and rollback also failed: ' . $rollback_ex->getMessage(), 0, $commit_ex );
+                $result = $callback();
+            } catch ( \Throwable $e ) {
+                try {
+                    $this->undo( $savepoint );
+                } catch ( \Throwable $rollback_ex ) {
+                    throw new RuntimeException( 'transaction rollback failed: ' . $rollback_ex->getMessage(), 0, $e );
+                }
+                throw $e;
             }
-            throw $commit_ex;
+            try {
+                if ( $savepoint === null ) {
+                    $this->tx_control( '/*cpms*/ COMMIT' );
+                } else {
+                    $this->tx_control( '/*cpms*/ RELEASE SAVEPOINT ' . $savepoint );
+                }
+            } catch ( \Throwable $commit_ex ) {
+                try {
+                    $this->undo( $savepoint );
+                } catch ( \Throwable $rollback_ex ) {
+                    throw new RuntimeException( 'transaction commit failed and rollback also failed: ' . $rollback_ex->getMessage(), 0, $commit_ex );
+                }
+                throw $commit_ex;
+            }
+
+            return $result;
+        } finally {
+            --$this->tx_depth;
+        }
+    }
+
+    /**
+     * بازگردانی دقیق: در تراکنش سطح صفر ROLLBACK کامل، در تودرتو صرفاً
+     * ROLLBACK TO SAVEPOINT + آزادسازی آن (تراکنش بیرونی دست‌نخورده می‌ماند).
+     */
+    private function undo( ?string $savepoint ): void {
+        if ( $savepoint === null ) {
+            $this->tx_control( '/*cpms*/ ROLLBACK' );
+
+            return;
         }
 
-        return $result;
+        $this->tx_control( '/*cpms*/ ROLLBACK TO SAVEPOINT ' . $savepoint );
+        $this->tx_control( '/*cpms*/ RELEASE SAVEPOINT ' . $savepoint );
     }
 
     /**

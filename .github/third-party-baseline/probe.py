@@ -86,7 +86,8 @@ WORDPRESS_ORG_PACKAGE = "https://downloads.wordpress.org/plugin/{slug}.{version}
 # --- narrow official-stable retrieval fallback ------------------------------ #
 # Two subjects, listed by name, for one specific provider condition and nothing
 # else. WordPress.org reports both of these at a stable version (10.0.5 and
-# 7.2.3) but publishes NO version tag for them, so the versioned ZIP URL
+# 7.3.0 since 2026-10-11; 7.2.3 before that) but publishes NO version tag for
+# them — the live versions map stops at 7.2.1 — so the versioned ZIP URL
 # `<slug>.<version>.zip` returns HTTP 404 while the plugin's own API
 # `download_link` is the unversioned `.../plugin/<slug>.zip`. Verified on the live
 # plugins API: every other subject in this matrix has a versioned

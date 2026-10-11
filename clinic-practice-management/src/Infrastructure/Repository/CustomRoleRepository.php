@@ -64,22 +64,132 @@ final class CustomRoleRepository {
             return [];
         }
 
-        $rows = $this->db->fetchAll(
-            'SELECT capability FROM ' . $this->db->table( 'cpms_custom_role_capabilities' ) .
-            ' WHERE role_def_id = %d ORDER BY capability',
-            [ $def_id ]
-        );
-
-        $stored = [];
-        foreach ( ( is_array( $rows ) ? $rows : [] ) as $row ) {
-            if ( is_array( $row ) ) {
-                $stored[] = (string) ( $row['capability'] ?? '' );
-            }
-        }
-
         // Defense in depth: even a raw-SQL writer cannot make a non-allowlisted
         // capability operational.
-        return CustomRolePolicy::sanitize_capability_set( $stored );
+        return CustomRolePolicy::sanitize_capability_set( $this->stored_capabilities( $def_id ) );
+    }
+
+    /**
+     * Clinic-scoped list of definitions for a management surface. Fail closed:
+     * an invalid Clinic yields [], and a stored row that cannot be a definable
+     * custom-role key is omitted rather than displayed as manageable. Stored
+     * capabilities are re-filtered through CustomRolePolicy (a raw-SQL writer
+     * can never surface a sensitive/unknown capability as granted).
+     *
+     * @return list<array{clinic_id:int, id:int, role_key:string, display_name:string|null, status:string, version:int, updated_at:string, capabilities:list<string>}>
+     */
+    public function list_definitions( int $clinic_id ): array {
+        if ( $clinic_id <= 0 ) {
+            return [];
+        }
+
+        $rows = $this->db->fetchAll(
+            'SELECT id, role_key, display_name, status, version, updated_at FROM ' . $this->db->table( 'cpms_custom_role_defs' ) .
+            ' WHERE clinic_id = %d ORDER BY role_key ASC',
+            [ $clinic_id ]
+        );
+
+        $definitions = [];
+        foreach ( ( is_array( $rows ) ? $rows : [] ) as $row ) {
+            if ( ! is_array( $row ) ) {
+                continue;
+            }
+            $id  = (int) ( $row['id'] ?? 0 );
+            $key = (string) ( $row['role_key'] ?? '' );
+            if ( $id <= 0 || ! CustomRolePolicy::is_definable_role_key( $key ) ) {
+                continue;
+            }
+            $status        = (string) ( $row['status'] ?? '' );
+            $definitions[] = [
+                'clinic_id'    => $clinic_id,
+                'id'           => $id,
+                'role_key'     => $key,
+                'display_name' => self::normalize_stored_display_name( $row['display_name'] ?? null ),
+                'status'       => self::STATUS_INACTIVE === $status ? self::STATUS_INACTIVE : self::STATUS_ACTIVE,
+                'version'      => (int) ( $row['version'] ?? 0 ),
+                'updated_at'   => (string) ( $row['updated_at'] ?? '' ),
+                'capabilities' => CustomRolePolicy::sanitize_capability_set( $this->stored_capabilities( $id ) ),
+            ];
+        }
+
+        return $definitions;
+    }
+
+    /**
+     * Durable, Clinic-scoped definition record — the object-ownership source for
+     * management writes. Returns null when the (clinic_id, role_key) pair does
+     * not exist, so a key that lives in another Clinic can never be addressed
+     * through this Clinic (no cross-Clinic fallback, no first-row selection).
+     *
+     * @return array{clinic_id:int, id:int, role_key:string, display_name:string|null, status:string, version:int, capabilities:list<string>}|null
+     */
+    public function definition_for( int $clinic_id, string $role_key ): ?array {
+        if ( $clinic_id <= 0 || ! CustomRolePolicy::is_definable_role_key( $role_key ) ) {
+            return null;
+        }
+
+        $row = $this->db->fetchRow(
+            'SELECT id, clinic_id, role_key, display_name, status, version FROM ' . $this->db->table( 'cpms_custom_role_defs' ) .
+            ' WHERE clinic_id = %d AND role_key = %s LIMIT 1',
+            [ $clinic_id, $role_key ]
+        );
+        if ( $row === null ) {
+            return null;
+        }
+
+        $id           = (int) ( $row['id'] ?? 0 );
+        $owner_clinic = (int) ( $row['clinic_id'] ?? 0 );
+        if ( $id <= 0 || $owner_clinic !== $clinic_id ) {
+            // Defensive: the SELECT is already Clinic-scoped; a mismatching
+            // durable owner is treated as "not addressable here" (fail closed).
+            return null;
+        }
+        $status = (string) ( $row['status'] ?? '' );
+
+        return [
+            'clinic_id'    => $owner_clinic,
+            'id'           => $id,
+            'role_key'     => (string) ( $row['role_key'] ?? '' ),
+            'display_name' => self::normalize_stored_display_name( $row['display_name'] ?? null ),
+            'status'       => self::STATUS_INACTIVE === $status ? self::STATUS_INACTIVE : self::STATUS_ACTIVE,
+            'version'      => (int) ( $row['version'] ?? 0 ),
+            'capabilities' => CustomRolePolicy::sanitize_capability_set( $this->stored_capabilities( $id ) ),
+        ];
+    }
+
+    /**
+     * Set/refresh the human-facing display name of an existing definition.
+     *
+     * The technical `role_key` and the capability set are untouched: a rename
+     * must never change identity or permissions. Versioned, forward-only, atomic
+     * (a rejected name leaves the stored value and version unchanged).
+     *
+     * @throws \InvalidArgumentException invalid Clinic, role key, or display name
+     *
+     * @return bool false when no such definition exists
+     */
+    public function set_display_name( int $clinic_id, string $role_key, string $display_name ): bool {
+        $def_id = $this->require_definition( $clinic_id, $role_key );
+        if ( $def_id <= 0 ) {
+            return false;
+        }
+        $clean = self::require_display_name( $display_name );
+
+        $now = $this->db->nowUtcSql();
+        $this->db->transactional(
+            function () use ( $def_id, $clean, $now ): void {
+                $updated = $this->db->execute(
+                    'UPDATE ' . $this->db->table( 'cpms_custom_role_defs' ) .
+                    ' SET display_name = %s, version = version + 1, updated_at = %s WHERE id = %d',
+                    [ $clean, $now, $def_id ]
+                );
+                if ( $updated !== 1 ) {
+                    throw new \RuntimeException( 'custom role display name update failed for definition: ' . $def_id );
+                }
+            }
+        );
+
+        return true;
     }
 
     /**
@@ -88,19 +198,20 @@ final class CustomRoleRepository {
      *
      * @param array<array-key, mixed> $capabilities
      *
-     * @throws \InvalidArgumentException invalid Clinic, role key, or capability set
+     * @throws \InvalidArgumentException invalid Clinic, role key, capability set, or display name
      * @throws \RuntimeException definition already exists
      *
      * @return int new definition id
      */
-    public function define( int $clinic_id, string $role_key, array $capabilities ): int {
+    public function define( int $clinic_id, string $role_key, array $capabilities, ?string $display_name = null ): int {
         if ( $clinic_id <= 0 ) {
             throw new \InvalidArgumentException( 'clinic_id must be > 0 for a custom role definition' );
         }
         if ( ! CustomRolePolicy::is_definable_role_key( $role_key ) ) {
             throw new \InvalidArgumentException( 'role key is not definable (format or built-in collision): ' . $role_key );
         }
-        $clean = self::require_editable_capabilities( $capabilities );
+        $clean              = self::require_editable_capabilities( $capabilities );
+        $clean_display_name = self::optional_display_name( $display_name );
 
         $existing = $this->db->fetchValue(
             'SELECT id FROM ' . $this->db->table( 'cpms_custom_role_defs' ) .
@@ -113,16 +224,17 @@ final class CustomRoleRepository {
 
         $now = $this->db->nowUtcSql();
         $this->db->transactional(
-            function () use ( $clinic_id, $role_key, $clean, $now ): void {
+            function () use ( $clinic_id, $role_key, $clean, $clean_display_name, $now ): void {
                 $ok = $this->db->insert(
                     'cpms_custom_role_defs',
                     [
-                        'clinic_id'  => $clinic_id,
-                        'role_key'   => $role_key,
-                        'status'     => self::STATUS_ACTIVE,
-                        'version'    => 1,
-                        'created_at' => $now,
-                        'updated_at' => $now,
+                        'clinic_id'    => $clinic_id,
+                        'role_key'     => $role_key,
+                        'display_name' => $clean_display_name,
+                        'status'       => self::STATUS_ACTIVE,
+                        'version'      => 1,
+                        'created_at'   => $now,
+                        'updated_at'   => $now,
                     ]
                 );
                 if ( ! $ok ) {
@@ -229,6 +341,79 @@ final class CustomRoleRepository {
         );
 
         return true;
+    }
+
+    /**
+     * @return list<string> raw stored capability strings (NOT allowlist-filtered)
+     */
+    private function stored_capabilities( int $role_def_id ): array {
+        if ( $role_def_id <= 0 ) {
+            return [];
+        }
+        $rows = $this->db->fetchAll(
+            'SELECT capability FROM ' . $this->db->table( 'cpms_custom_role_capabilities' ) .
+            ' WHERE role_def_id = %d ORDER BY capability',
+            [ $role_def_id ]
+        );
+
+        $stored = [];
+        foreach ( ( is_array( $rows ) ? $rows : [] ) as $row ) {
+            if ( is_array( $row ) ) {
+                $stored[] = (string) ( $row['capability'] ?? '' );
+            }
+        }
+
+        return $stored;
+    }
+
+    /**
+     * Read-side normalization of a stored display name: an unset, malformed or
+     * unacceptable stored value is reported as null (never as a misleading
+     * label), so the UI falls back to the immutable technical key.
+     */
+    private static function normalize_stored_display_name( mixed $stored ): ?string {
+        if ( ! is_string( $stored ) ) {
+            return null;
+        }
+        if ( ! CustomRolePolicy::is_acceptable_display_name( $stored ) ) {
+            return null;
+        }
+
+        return CustomRolePolicy::sanitize_display_name( $stored );
+    }
+
+    /**
+     * Optional display name for the define() path (legacy/Slice-1 callers may
+     * omit it). When provided it must satisfy the bounded Unicode contract.
+     *
+     * @throws \InvalidArgumentException
+     */
+    private static function optional_display_name( ?string $display_name ): ?string {
+        if ( $display_name === null ) {
+            return null;
+        }
+
+        return self::require_display_name( $display_name );
+    }
+
+    /**
+     * Strict display-name validation for write paths (all-or-nothing, fail
+     * closed). Deliberately script-agnostic: it accepts any Unicode text that is
+     * non-empty, within the code-point bound and stable under normalization —
+     * there is no Persian-only (or any single-language) rule.
+     *
+     * @throws \InvalidArgumentException
+     */
+    private static function require_display_name( string $display_name ): string {
+        if ( ! CustomRolePolicy::is_acceptable_display_name( $display_name ) ) {
+            throw new \InvalidArgumentException(
+                'display name is not acceptable (must be non-empty, at most '
+                . CustomRolePolicy::DISPLAY_NAME_MAX_CODE_POINTS
+                . ' characters, and contain at least one letter or number)'
+            );
+        }
+
+        return CustomRolePolicy::sanitize_display_name( $display_name );
     }
 
     /**

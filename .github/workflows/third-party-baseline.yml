@@ -236,7 +236,12 @@ jobs:
           - id: persian-woocommerce-sms
             name: Persian WooCommerce SMS
             slug: persian-woocommerce-sms
-            version: '7.2.3'  # requires WP 6.8, PHP 7.4
+            # 2026-10-11: WordPress.org published stable 7.3.0 (plugins API
+            # version + last_updated 2026-10-11 09:44 GMT); the frozen pin moved
+            # 7.2.3 -> 7.3.0. Exact-version verification is unchanged: the API
+            # must advertise this exact stable version before and after the
+            # download, and the ZIP's own header identity is verified.
+            version: '7.3.0'  # requires WP 6.8, PHP 7.4
             source: wordpress_org
             kind: subject
             deps: 'woocommerce=11.2.0'
@@ -827,7 +832,8 @@ jobs:
         # depend on how GitHub evaluates an unset matrix key.
         #
         # TWO LEGS TAKE A NARROW RETRIEVAL FALLBACK: persian-woocommerce (10.0.5)
-        # and persian-woocommerce-sms (7.2.3). WordPress.org reports both at a
+        # and persian-woocommerce-sms (7.2.3 until 2026-10-11, now pinned 7.3.0).
+        # WordPress.org reports both at a
         # stable version but publishes no version tag for either, so the versioned
         # ZIP `<slug>.<version>.zip` is a confirmed HTTP 404 while the plugins API
         # serves the unversioned `.../plugin/<slug>.zip`. Every other leg's
