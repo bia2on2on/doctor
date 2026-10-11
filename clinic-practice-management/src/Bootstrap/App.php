@@ -10,6 +10,7 @@ use ClinicCore\Admin\CpmsAdminMenu;
 use ClinicCore\Admin\CpmsAssets;
 use ClinicCore\Admin\Compatibility\WooCommerceAdminAccess;
 use ClinicCore\Admin\CpmsSetupWizard;
+use ClinicCore\Admin\FirstPracticeSetupPage;
 use ClinicCore\Admin\LocationAdminPage;
 use ClinicCore\Admin\PatientAdminPage;
 use ClinicCore\Admin\PatientPortalPage;
@@ -348,6 +349,7 @@ final class App
         CpmsAssets::register(); // Chunk F — assets اسکوپ‌شدهٔ صفحات CPMS (CSS/JS محلی، فقط در صفحات CPMS)
         CpmsSetupWizard::register(); // Chunk B — راه‌اندازی گام‌به‌گام (self-service, resumable)
         StaffManagementPage::register(); // Chunk C — کاربران و دسترسی‌ها (staff/user management)
+        FirstPracticeSetupPage::register(); // Custom Role Slice 3A — راه‌اندازی اولیهٔ مطب (one-shot first-practice bootstrap)
         LocationAdminPage::register(); // Phase 4 — شعبه‌ها (Location master data: create + name/timezone update)
 
         SettingsAdmin::register();
@@ -710,6 +712,23 @@ final class App
                 new \ClinicCore\Infrastructure\Repository\CustomRoleRepository( self::db() ),
                 self::audit(),
                 self::db()
+            );
+        }
+
+        return $service;
+    }
+
+    /**
+     * سرویس راه‌اندازی اولیهٔ مطب (Custom Role Slice 3A) — one-shot first-practice
+     * bootstrap؛ مجوز نهایی پس از آن فقط از MembershipService/AuthorizationService.
+     */
+    public static function first_practice_setup_service(): \ClinicCore\Application\Onboarding\FirstPracticeSetupService {
+        static $service = null;
+        if ( $service === null ) {
+            $service = new \ClinicCore\Application\Onboarding\FirstPracticeSetupService(
+                self::db(),
+                new MembershipRepository( self::db() ),
+                self::audit()
             );
         }
 
