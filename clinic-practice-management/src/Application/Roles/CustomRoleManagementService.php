@@ -10,6 +10,7 @@ use ClinicCore\Application\Scope\TrustedClinicEstablisher;
 use ClinicCore\Auth\CustomRolePolicy;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Infrastructure\Audit\AuditLogger;
+use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Repository\CustomRoleRepository;
 
 /**
@@ -60,7 +61,8 @@ final class CustomRoleManagementService {
         private readonly TrustedClinicEstablisher $scope,
         private readonly AuthorizationService $authorization,
         private readonly CustomRoleRepository $roles,
-        private readonly AuditLogger $audit
+        private readonly AuditLogger $audit,
+        private readonly CpmsDb $db
     ) {
     }
 
@@ -150,33 +152,40 @@ final class CustomRoleManagementService {
             throw CustomRoleManagementException::key_conflict( $role_key );
         }
 
-        $definition_id = $this->roles->define( $clinic_id, $role_key, $clean_capabilities, $clean_display_name );
+        // Atomicidade (F2-1): تعریف نقش و رویداد Audit اجباری آن در یک مرزِ
+        // تراکنش. شکست ذخیره‌سازی Audit کل تعریف (و ردیف‌های capability)
+        // را عقب می‌برد؛ هیچ نقشِ بدونِ Audit و هیچ «موفقیتِ کاذب» نمی‌ماند.
+        return $this->db->transactional(
+            function () use ( $actor_wp_user_id, $clinic_id, $role_key, $clean_display_name, $clean_capabilities ): array {
+                $definition_id = $this->roles->define( $clinic_id, $role_key, $clean_capabilities, $clean_display_name );
 
-        $this->audit->log(
-            self::AUDIT_DEFINED,
-            [ 'wp_user_id' => $actor_wp_user_id, 'role' => 'clinic_manager' ],
-            self::RESOURCE_TYPE,
-            $definition_id,
-            null,
-            null,
-            [
-                'role_key'     => $role_key,
-                'display_name' => $clean_display_name,
-                'version'      => 1,
-                'capabilities' => $clean_capabilities,
-            ],
-            [ 'clinic_id' => $clinic_id ],
-            $clinic_id
+                $this->audit->log(
+                    self::AUDIT_DEFINED,
+                    [ 'wp_user_id' => $actor_wp_user_id, 'role' => 'clinic_manager' ],
+                    self::RESOURCE_TYPE,
+                    $definition_id,
+                    null,
+                    null,
+                    [
+                        'role_key'     => $role_key,
+                        'display_name' => $clean_display_name,
+                        'version'      => 1,
+                        'capabilities' => $clean_capabilities,
+                    ],
+                    [ 'clinic_id' => $clinic_id ],
+                    $clinic_id
+                );
+
+                return [
+                    'clinic_id'    => $clinic_id,
+                    'id'           => $definition_id,
+                    'role_key'     => $role_key,
+                    'display_name' => $clean_display_name,
+                    'version'      => 1,
+                    'capabilities' => $clean_capabilities,
+                ];
+            }
         );
-
-        return [
-            'clinic_id'    => $clinic_id,
-            'id'           => $definition_id,
-            'role_key'     => $role_key,
-            'display_name' => $clean_display_name,
-            'version'      => 1,
-            'capabilities' => $clean_capabilities,
-        ];
     }
 
     /**
@@ -195,31 +204,36 @@ final class CustomRoleManagementService {
 
         $clean_display_name = $this->require_display_name( $display_name );
 
-        $updated = $this->roles->set_display_name( $clinic_id, $role_key, $clean_display_name );
-        if ( ! $updated ) {
-            throw CustomRoleManagementException::not_found( $role_key );
-        }
+        // Atomicidade (F2-1): نام نمایشی و رویداد Audit اجباری آن در یک مرز.
+        return $this->db->transactional(
+            function () use ( $actor_wp_user_id, $clinic_id, $role_key, $clean_display_name, $existing ): array {
+                $updated = $this->roles->set_display_name( $clinic_id, $role_key, $clean_display_name );
+                if ( ! $updated ) {
+                    throw CustomRoleManagementException::not_found( $role_key );
+                }
 
-        $this->audit->log(
-            self::AUDIT_DISPLAY_NAME_CHANGED,
-            [ 'wp_user_id' => $actor_wp_user_id, 'role' => 'clinic_manager' ],
-            self::RESOURCE_TYPE,
-            (int) $existing['id'],
-            null,
-            [ 'role_key' => $role_key, 'display_name' => $existing['display_name'], 'version' => (int) $existing['version'] ],
-            [ 'role_key' => $role_key, 'display_name' => $clean_display_name, 'version' => (int) $existing['version'] + 1 ],
-            [ 'clinic_id' => $clinic_id ],
-            $clinic_id
+                $this->audit->log(
+                    self::AUDIT_DISPLAY_NAME_CHANGED,
+                    [ 'wp_user_id' => $actor_wp_user_id, 'role' => 'clinic_manager' ],
+                    self::RESOURCE_TYPE,
+                    (int) $existing['id'],
+                    null,
+                    [ 'role_key' => $role_key, 'display_name' => $existing['display_name'], 'version' => (int) $existing['version'] ],
+                    [ 'role_key' => $role_key, 'display_name' => $clean_display_name, 'version' => (int) $existing['version'] + 1 ],
+                    [ 'clinic_id' => $clinic_id ],
+                    $clinic_id
+                );
+
+                return [
+                    'clinic_id'    => $clinic_id,
+                    'id'           => (int) $existing['id'],
+                    'role_key'     => $role_key,
+                    'display_name' => $clean_display_name,
+                    'version'      => (int) $existing['version'] + 1,
+                    'capabilities' => $existing['capabilities'],
+                ];
+            }
         );
-
-        return [
-            'clinic_id'    => $clinic_id,
-            'id'           => (int) $existing['id'],
-            'role_key'     => $role_key,
-            'display_name' => $clean_display_name,
-            'version'      => (int) $existing['version'] + 1,
-            'capabilities' => $existing['capabilities'],
-        ];
     }
 
     /**
@@ -248,31 +262,37 @@ final class CustomRoleManagementService {
 
         $clean_capabilities = $this->require_delegable_capabilities( $actor_wp_user_id, $clinic_id, $capabilities );
 
-        $replaced = $this->roles->replace_capabilities( $clinic_id, $role_key, $clean_capabilities );
-        if ( ! $replaced ) {
-            throw CustomRoleManagementException::not_found( $role_key );
-        }
+        // Atomicidade (F2-1): جایگزینی capability و رویداد Audit اجباری آن در
+        // یک مرز — شکست Audit، مجموعهٔ قبلی و version را دست‌نخورده نگه می‌دارد.
+        return $this->db->transactional(
+            function () use ( $actor_wp_user_id, $clinic_id, $role_key, $clean_capabilities, $existing ): array {
+                $replaced = $this->roles->replace_capabilities( $clinic_id, $role_key, $clean_capabilities );
+                if ( ! $replaced ) {
+                    throw CustomRoleManagementException::not_found( $role_key );
+                }
 
-        $this->audit->log(
-            self::AUDIT_CAPABILITIES_CHANGED,
-            [ 'wp_user_id' => $actor_wp_user_id, 'role' => 'clinic_manager' ],
-            self::RESOURCE_TYPE,
-            (int) $existing['id'],
-            null,
-            [ 'role_key' => $role_key, 'capabilities' => $existing['capabilities'], 'version' => (int) $existing['version'] ],
-            [ 'role_key' => $role_key, 'capabilities' => $clean_capabilities, 'version' => (int) $existing['version'] + 1 ],
-            [ 'clinic_id' => $clinic_id ],
-            $clinic_id
+                $this->audit->log(
+                    self::AUDIT_CAPABILITIES_CHANGED,
+                    [ 'wp_user_id' => $actor_wp_user_id, 'role' => 'clinic_manager' ],
+                    self::RESOURCE_TYPE,
+                    (int) $existing['id'],
+                    null,
+                    [ 'role_key' => $role_key, 'capabilities' => $existing['capabilities'], 'version' => (int) $existing['version'] ],
+                    [ 'role_key' => $role_key, 'capabilities' => $clean_capabilities, 'version' => (int) $existing['version'] + 1 ],
+                    [ 'clinic_id' => $clinic_id ],
+                    $clinic_id
+                );
+
+                return [
+                    'clinic_id'    => $clinic_id,
+                    'id'           => (int) $existing['id'],
+                    'role_key'     => $role_key,
+                    'display_name' => $existing['display_name'],
+                    'version'      => (int) $existing['version'] + 1,
+                    'capabilities' => $clean_capabilities,
+                ];
+            }
         );
-
-        return [
-            'clinic_id'    => $clinic_id,
-            'id'           => (int) $existing['id'],
-            'role_key'     => $role_key,
-            'display_name' => $existing['display_name'],
-            'version'      => (int) $existing['version'] + 1,
-            'capabilities' => $clean_capabilities,
-        ];
     }
 
     // ================= internals =================

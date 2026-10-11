@@ -33,6 +33,9 @@ final class AuditLogger
      * @param array<string, mixed>|null $after
      * @param array<string, mixed> $meta
      *
+     * @throws \RuntimeException اگر INSERT رویداد ثبت نشود (fail-closed؛ هیچ
+     *                           رویداد Audit بی‌ثبت و هیچ «موفقیتِ کاذب»)
+     *
      * @return int id رکورد Audit
      */
     public function log(
@@ -94,9 +97,19 @@ final class AuditLogger
             $row['prev_hash'] = $prevHash;
             $row['row_hash'] = HashChain::computeRowHash($prevHash, HashChain::fieldsFor($row));
 
-            $this->db->insert('cpms_audit_logs', $row);
+            // F2-1: یک رویداد Audit که ذخیره نشده باشد هرگز نباید «موفق» به
+            // نظر برسد. wpdb در حالت non-strict فقط false برمی‌گرداند؛ قبلاً
+            // این نتیجه نادیده گرفته می‌شد و فراخوان نتیجهٔ 0 (بی‌معنا) را
+            // موفق تلقی می‌کرد. اکنون شکست ذخیره‌سازی Exception می‌دهد تا
+            // تراکنشِ دربرگیرنده (مرزِ mutation + audit) fail-closed عقب
+            // برود. پیام فقط نام action را دارد — هیچ دادهٔ درخواست/PHI.
+            $persisted = $this->db->insert( 'cpms_audit_logs', $row );
+            $audit_id  = (int) $this->db->wpdb_last_insert_id();
+            if ( ! $persisted || $audit_id <= 0 ) {
+                throw new \RuntimeException( 'audit event was not persisted: ' . $action );
+            }
 
-            return (int) $this->db->wpdb_last_insert_id();
+            return $audit_id;
         });
     }
 

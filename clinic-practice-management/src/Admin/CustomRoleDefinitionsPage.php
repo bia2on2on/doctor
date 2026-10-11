@@ -154,6 +154,8 @@ final class CustomRoleDefinitionsPage {
 			self::set_notice( 'error', self::describe_failure( $e ) );
 		} catch ( ScopeRequiredException | AuthorizationException $e ) {
 			self::set_notice( 'error', __( 'دسترسی مدیریت نقش سفارشی برای این Clinic مجاز نیست.', 'cpms' ) );
+		} catch ( \RuntimeException $e ) {
+			self::report_infrastructure_failure( $e, __FUNCTION__ );
 		}
 
 		self::redirect_back( $clinic_id );
@@ -187,6 +189,8 @@ final class CustomRoleDefinitionsPage {
 			self::set_notice( 'error', self::describe_failure( $e ) );
 		} catch ( ScopeRequiredException | AuthorizationException $e ) {
 			self::set_notice( 'error', __( 'دسترسی مدیریت نقش سفارشی برای این Clinic مجاز نیست.', 'cpms' ) );
+		} catch ( \RuntimeException $e ) {
+			self::report_infrastructure_failure( $e, __FUNCTION__ );
 		}
 
 		self::redirect_back( $clinic_id );
@@ -220,6 +224,8 @@ final class CustomRoleDefinitionsPage {
 			self::set_notice( 'error', self::describe_failure( $e ) );
 		} catch ( ScopeRequiredException | AuthorizationException $e ) {
 			self::set_notice( 'error', __( 'دسترسی مدیریت نقش سفارشی برای این Clinic مجاز نیست.', 'cpms' ) );
+		} catch ( \RuntimeException $e ) {
+			self::report_infrastructure_failure( $e, __FUNCTION__ );
 		}
 
 		self::redirect_back( $clinic_id );
@@ -490,6 +496,22 @@ final class CustomRoleDefinitionsPage {
 
 	private static function set_notice( string $type, string $message ): void {
 		set_transient( self::NOTICE_KEY . '_' . (int) get_current_user_id(), [ 'type' => $type, 'message' => $message ], 60 );
+	}
+
+	/**
+	 * بن‌بستِ زیرساختی (مثلاً ثبت‌نشدن رویداد Audit): هیچ تغییری commit نشده و
+	 * پیام موفقیت نباید نمایش داده شود. رویداد برای Ops لاگ می‌شود (بدون دادهٔ
+	 * درخواست/PHI) و کاربر پیام قطعی می‌بیند — نه یک خطای مرگبار نیمه‌کاره.
+	 */
+	private static function report_infrastructure_failure( \RuntimeException $failure, string $handler ): void {
+		App::op()->error(
+			'CUSTOM_ROLE_MUTATION_FAILED',
+			[
+				'handler'   => $handler,
+				'exception' => get_class( $failure ),
+			]
+		);
+		self::set_notice( 'error', __( 'عملیات انجام نشد و هیچ تغییری ثبت نگردید. لطفاً دوباره تلاش کنید.', 'cpms' ) );
 	}
 
 	/**

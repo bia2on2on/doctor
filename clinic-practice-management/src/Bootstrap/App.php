@@ -708,7 +708,8 @@ final class App
                 new \ClinicCore\Application\Scope\TrustedClinicEstablisher( self::db(), new MembershipRepository( self::db() ) ),
                 self::authorization_service(),
                 new \ClinicCore\Infrastructure\Repository\CustomRoleRepository( self::db() ),
-                self::audit()
+                self::audit(),
+                self::db()
             );
         }
 
