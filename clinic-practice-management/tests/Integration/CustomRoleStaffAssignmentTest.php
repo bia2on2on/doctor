@@ -422,30 +422,35 @@ final class CustomRoleStaffAssignmentTest extends WP_UnitTestCase
 
     public function testFailedAuditRollsBackTheMembershipRoleUpdate(): void
     {
-        $this->definitions()->create($this->managerUserId, $this->clinicA, 'sr_atomic', 'Atomic role', ['cpms_patient_read']);
+        $this->definitions()->create($this->managerUserId, $this->clinicA, 'sr_atomic', 'Atomic role', ['cpms_report_read']);
         self::assertSame(RolesAndCapabilities::ROLE_SECRETARY, (string) $this->membership($this->clinicA, $this->secretaryUserId)['role_key']);
 
         $this->failAuditInserts();
+        $thrown = null;
         try {
             $this->service()->assign($this->managerUserId, $this->clinicA, $this->secretaryUserId, 'sr_atomic');
-            self::fail('an assignment whose audit event cannot be persisted must fail');
         } catch (\Throwable $e) {
-            self::assertTrue(true);
+            $thrown = $e;
         } finally {
             $this->restoreAuditInserts();
         }
+        self::assertNotNull($thrown, 'an assignment whose audit event cannot be persisted must fail');
 
         self::assertSame(
             RolesAndCapabilities::ROLE_SECRETARY,
             (string) $this->membership($this->clinicA, $this->secretaryUserId)['role_key'],
             'no partial assignment may survive a failed audit event'
         );
-        self::assertFalse(App::authorization_service()->can($this->secretaryUserId, $this->clinicA, 'cpms_patient_read'));
+        self::assertFalse(
+            App::authorization_service()->can($this->secretaryUserId, $this->clinicA, 'cpms_report_read'),
+            'the rollback must leave the membership with the built-in secretary preset only'
+        );
         self::assertSame(0, $this->auditCount(CustomRoleAssignmentService::AUDIT_ASSIGNED));
 
         // The machinery is healthy afterwards: a second, unfaulted attempt works.
         $assigned = $this->service()->assign($this->managerUserId, $this->clinicA, $this->secretaryUserId, 'sr_atomic');
         self::assertTrue($assigned['changed']);
+        self::assertTrue(App::authorization_service()->can($this->secretaryUserId, $this->clinicA, 'cpms_report_read'));
         self::assertSame(1, $this->auditCount(CustomRoleAssignmentService::AUDIT_ASSIGNED));
         self::assertTrue(App::audit()->verifyChain()['ok'], 'the hash chain must stay valid');
     }
@@ -490,7 +495,7 @@ final class CustomRoleStaffAssignmentTest extends WP_UnitTestCase
 
         self::assertStringContainsString('sr_vis', $html, 'the Clinic-local role must be visible in the staff listing');
         self::assertStringContainsString('Visible role', $html, 'the custom display name must be visible');
-        self::assertStringContainsString('cpms_attach_', $html, 'membership-based staff must appear even when the WP-global role is not a CPMS role');
+        self::assertStringContainsString('sr_attach_', $html, 'membership-based staff must appear even when the WP-global role is not a CPMS role');
         // The other Clinic's member must never leak into this Clinic's listing.
         self::assertStringNotContainsString('sr_foreign_', $html);
         // The assignment surface offers only delegable, ACTIVE definitions.
@@ -652,7 +657,7 @@ final class CustomRoleStaffAssignmentTest extends WP_UnitTestCase
         $plainManager = $this->makeUser('sr_mgr_plain_' . bin2hex(random_bytes(2)));
         cpms_test_seed_membership($plainManager, $this->clinicA, RolesAndCapabilities::ROLE_MANAGER);
         try {
-            $this->service()->assign($plainManager, $this->clinicA, $this->foreignTargetUserId, 'sr_reception_cash');
+            $this->service()->assign($plainManager, $this->clinicA, $this->membershipOnlyUserId, 'sr_reception_cash');
             self::fail('an assigner without the finance capabilities must not delegate them');
         } catch (CustomRoleAssignmentException $e) {
             self::assertSame(CustomRoleAssignmentException::CODE_CAPABILITY_NOT_DELEGABLE, $e->reason_code());

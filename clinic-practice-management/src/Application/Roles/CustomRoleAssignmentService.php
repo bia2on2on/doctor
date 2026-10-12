@@ -159,7 +159,7 @@ final class CustomRoleAssignmentService {
 
         // The target's Clinic owner is read from durable storage, not from the
         // request; a non-member (or a member of another Clinic only) is refused.
-        $target = $this->memberships->find_active( $clinic_id, $target_wp_user_id );
+        $target        = $this->memberships->find_active( $clinic_id, $target_wp_user_id );
         $membership_id = $target === null ? 0 : (int) ( $target['id'] ?? 0 );
         if ( $target === null || $membership_id <= 0 || (int) ( $target['clinic_id'] ?? 0 ) !== $clinic_id ) {
             throw CustomRoleAssignmentException::target_membership_required();
@@ -232,11 +232,11 @@ final class CustomRoleAssignmentService {
                         'membership_status' => 'active',
                     ],
                     [
-                        'clinic_id'     => $clinic_id,
-                        'wp_user_id'    => $target_wp_user_id,
-                        'role_key'      => $role_key,
-                        'capabilities'  => $capabilities,
-                        'scope'         => 'clinic_local_membership',
+                        'clinic_id'    => $clinic_id,
+                        'wp_user_id'   => $target_wp_user_id,
+                        'role_key'     => $role_key,
+                        'capabilities' => $capabilities,
+                        'scope'        => 'clinic_local_membership',
                     ],
                     [ 'clinic_id' => $clinic_id, 'wp_global_role_modified' => false ],
                     $clinic_id
