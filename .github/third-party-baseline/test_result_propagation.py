@@ -304,6 +304,13 @@ class DiagnosticExceptionTests(PropagationCase):
         policy = getattr(probe, "DIAGNOSTIC_EXCEPTION", {"required_checks": ()})
         checks += [check(name, probe.PASS, probe.PRODUCT)
                    for name in sorted(policy.get("required_checks", ()))]
+        # cmd_browser derives these two material verdicts unconditionally from the
+        # facts it records, so authentic browser evidence always carries them. A
+        # fixture without them could not be a consistent cmd_browser execution.
+        checks += [check("browser_admin_login_session", probe.PASS, probe.PRODUCT,
+                         material=True),
+                   check("browser_admin_ajax_wp_layer", probe.PASS, probe.PRODUCT,
+                         material=True)]
         checks.append(check("php_warnings_after_activation", probe.FAIL, probe.PRODUCT,
                             detail="non-fatal PHP diagnostics recorded; recorded only"))
         return checks + list(extra)
@@ -343,9 +350,11 @@ class DiagnosticExceptionTests(PropagationCase):
         # Raw result preserved: state, counts and taxonomy are untouched.
         self.assertEqual(result["state"], probe.FAIL)
         self.assertNotEqual(result["state"], probe.PASS)
-        # 7 accepted material failures + the recorded-only PHP-warning finding.
+        # 7 accepted material failures + the recorded-only PHP-warning finding,
+        # plus the two material browser verdicts cmd_browser always derives from
+        # its own facts (both PASS in the accepted signature).
         self.assertEqual(result["counts"]["FAIL"], 8)
-        self.assertEqual(result["counts"]["PASS"], 10)
+        self.assertEqual(result["counts"]["PASS"], 12)
         self.assertEqual(result["taxonomy"], [probe.THIRD_PARTY_BASELINE])
         self.assertIs(result["ci_gate"]["blocking"], False)
         self.assertEqual(result["ci_gate"]["disposition"], "diagnostic-only-nonblocking-fail")
@@ -533,18 +542,126 @@ class DiagnosticExceptionTests(PropagationCase):
                                             "document": document}})
                 self.assert_blocking(completed, result, f"document={document!r}")
 
-    def test_producer_failure_branch_records_are_accepted_shape_wise(self):
-        # The producer's own failure branches for the two sub-probes no required
-        # verdict is derived from. They are real observations of a browser that ran.
-        facts = {"browser_post": {
+    # -- the browser facts and the verdicts derived from them must agree ------ #
+    # cmd_browser derives `browser_admin_login_session` from `login.ok` and
+    # `browser_admin_ajax_wp_layer` from `admin_ajax.reached_wp_layer`, always and
+    # unconditionally, so a genuine evidence record carries both verdicts and they
+    # cannot disagree with the facts. Accepting evidence that no cmd_browser run
+    # could have produced is the defect these cases pin.
+    def reasons(self, result):
+        return result["ci_gate"]["diagnostic_exception"]["reasons"]
+
+    def checks_without(self, *names):
+        return [row for row in self.historical_checks() if row["name"] not in names]
+
+    def checks_with(self, *replacement):
+        """Replace rows by identifier, so no duplicate identifier is introduced."""
+        replaced = {row["name"] for row in replacement}
+        return ([row for row in self.historical_checks() if row["name"] not in replaced]
+                + list(replacement))
+
+    def failed_login_facts(self):
+        return {"browser_post": {
             **self.FACTS["browser_post"],
             "login": {"ok": False, "final_url": "http://localhost:8080/wp-login.php",
-                      "error": "the login form is absent from wp-login.php after activation"},
-            "admin_ajax": {"status": 0, "body": "", "reached_wp_layer": False},
-        }}
-        completed, result = self.run_case(facts=facts)
+                      "error": "the login form is absent from wp-login.php after activation"}}}
+
+    def failed_admin_ajax_facts(self):
+        return {"browser_post": {
+            **self.FACTS["browser_post"],
+            "admin_ajax": {"status": 0, "body": "", "reached_wp_layer": False}}}
+
+    def test_consistent_login_success_fact_and_verdict_is_accepted(self):
+        completed, result = self.run_case()
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         self.assertIs(result["ci_gate"]["diagnostic_exception"]["applies"], True)
+        rows = {row["name"]: row["status"] for row in result["checks"]}
+        self.assertEqual(rows["browser_admin_login_session"], probe.PASS)
+
+    def test_contradictory_login_fact_and_verdict_blocks(self):
+        # The recorded verdict says PASS while the fact it was derived from says the
+        # session did not complete: no cmd_browser execution produces that pair.
+        completed, result = self.run_case(facts=self.failed_login_facts())
+        self.assert_blocking(completed, result, "login.ok False against a PASS verdict")
+        self.assertTrue(any("contradicts the recorded browser_admin_login_session" in reason
+                            for reason in self.reasons(result)))
+        self.assertFalse(any("outside the accepted signature" in reason
+                             for reason in self.reasons(result)),
+                         "this blocks because the evidence is inconsistent, not because a "
+                         "failure was added")
+
+    def test_missing_login_verdict_blocks(self):
+        completed, result = self.run_case(checks=self.checks_without("browser_admin_login_session"))
+        self.assert_blocking(completed, result, "the derived login verdict was not recorded")
+        self.assertTrue(any("browser_admin_login_session" in reason
+                            for reason in self.reasons(result)))
+
+    def test_consistent_login_failure_fact_and_verdict_blocks_as_an_extra_material_failure(self):
+        # Consistent, but the failure is not one of the seven approved identifiers,
+        # so it is an additional material failure and blocks on its own. It is NOT
+        # reported as a contradiction, and the login operation is never required to
+        # succeed for the accepted signature.
+        checks = self.checks_with(check("browser_admin_login_session", probe.FAIL,
+                                        probe.PRODUCT, material=True,
+                                        detail="the login form is absent"))
+        completed, result = self.run_case(checks=checks, facts=self.failed_login_facts())
+        self.assert_blocking(completed, result, "a material FAIL outside the accepted seven")
+        self.assertTrue(any("outside the accepted signature" in reason
+                            and "browser_admin_login_session" in reason
+                            for reason in self.reasons(result)))
+        self.assertFalse(any("contradicts the recorded browser_admin_login_session" in reason
+                             for reason in self.reasons(result)))
+
+    def test_consistent_admin_ajax_success_fact_and_verdict_is_accepted(self):
+        completed, result = self.run_case()
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertIs(result["ci_gate"]["diagnostic_exception"]["applies"], True)
+        rows = {row["name"]: row["status"] for row in result["checks"]}
+        self.assertEqual(rows["browser_admin_ajax_wp_layer"], probe.PASS)
+
+    def test_contradictory_admin_ajax_fact_and_verdict_blocks(self):
+        completed, result = self.run_case(facts=self.failed_admin_ajax_facts())
+        self.assert_blocking(completed, result,
+                             "reached_wp_layer False against a PASS verdict")
+        self.assertTrue(any("contradicts the recorded browser_admin_ajax_wp_layer" in reason
+                            for reason in self.reasons(result)))
+
+    def test_missing_admin_ajax_verdict_blocks(self):
+        completed, result = self.run_case(checks=self.checks_without("browser_admin_ajax_wp_layer"))
+        self.assert_blocking(completed, result, "the derived admin-ajax verdict was not recorded")
+        self.assertTrue(any("browser_admin_ajax_wp_layer" in reason
+                            for reason in self.reasons(result)))
+
+    def test_consistent_admin_ajax_failure_fact_and_verdict_blocks_as_an_extra_material_failure(self):
+        checks = self.checks_with(check("browser_admin_ajax_wp_layer", probe.FAIL,
+                                        probe.PRODUCT, material=True,
+                                        detail="admin-ajax did not reach WordPress"))
+        completed, result = self.run_case(checks=checks, facts=self.failed_admin_ajax_facts())
+        self.assert_blocking(completed, result, "a material FAIL outside the accepted seven")
+        self.assertTrue(any("outside the accepted signature" in reason
+                            and "browser_admin_ajax_wp_layer" in reason
+                            for reason in self.reasons(result)))
+        self.assertFalse(any("contradicts the recorded browser_admin_ajax_wp_layer" in reason
+                             for reason in self.reasons(result)))
+
+    def test_genuinely_additional_material_failure_blocks(self):
+        # A further browser verdict the producer emits from the same facts, outside
+        # the approved seven: consistent facts do not make it acceptable.
+        extra = check("browser_no_redirect_loop", probe.FAIL, probe.PRODUCT, material=True)
+        completed, result = self.run_case(checks=self.historical_checks(extra=[extra]))
+        self.assert_blocking(completed, result, "a genuinely additional material FAIL")
+
+    def test_authentic_historical_evidence_remains_eligible_and_retains_raw_fail(self):
+        completed, result = self.run_case()
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertEqual(result["state"], probe.FAIL)
+        self.assertEqual(result["counts"]["FAIL"], 8)
+        self.assertIs(result["ci_gate"]["diagnostic_exception"]["applies"], True)
+        # The seven approved product failures are still recorded as material FAILs:
+        # the exception never requires a failing operation to succeed.
+        failed = {row["name"] for row in result["checks"]
+                  if row["status"] == probe.FAIL and row["material"]}
+        self.assertEqual(failed, set(self.MATERIAL_FAILURES))
 
     def test_incomplete_browser_evidence_blocks(self):
         for missing in ("nav", "login", "rest_status", "admin_ajax", "document"):

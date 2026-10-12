@@ -2046,13 +2046,28 @@ CHECK_STATUSES = (PASS, FAIL, INFO, UNAVAILABLE, UNEXECUTED, NOT_RUN)
 CHECK_CLASSES = (PRODUCT, ENVIRONMENT, HARNESS, UNAVAILABLE_KLASS, UNEXECUTED_KLASS)
 CHECK_ROW_KEYS = ("name", "status", "klass", "material", "phase", "detail")
 
+# The two browser sub-probe outcomes cmd_browser mirrors into their own material
+# verdict rows: `store.check("browser_admin_login_session", login["ok"], ...)` and
+# `store.check("browser_admin_ajax_wp_layer", ajax.get("reached_wp_layer") is True,
+# ...)`, both unconditionally, both at the phase the browser probe ran. The
+# recorded verdict is derived from exactly the fact value, so the two must agree —
+# a record carrying one and not the other, or carrying values that contradict each
+# other, cannot be a genuine cmd_browser execution. (The two other browser facts
+# are asserted by required verdicts: `browser_front_page_render` is computed as
+# `nav["front_status"] == 200` and `browser_rest_index` as `rest_status == 200`.)
+BROWSER_FACT_VERDICTS = (
+    ("login", "ok", "browser_admin_login_session"),
+    ("admin_ajax", "reached_wp_layer", "browser_admin_ajax_wp_layer"),
+)
+
 
 def is_int(value: Any) -> bool:
     """True for a real integer. ``bool`` is an ``int`` in Python and is excluded."""
     return isinstance(value, int) and not isinstance(value, bool)
 
 
-def browser_execution_problems(browser: Any) -> List[str]:
+def browser_execution_problems(browser: Any,
+                               recorded: Dict[str, Any] | None = None) -> List[str]:
     """Problems with the browser probe's own evidence record.
 
     The expected shape is the one ``cmd_browser`` actually writes through
@@ -2130,6 +2145,27 @@ def browser_execution_problems(browser: Any) -> List[str]:
                             f"{ajax.get('body')!r}")
         if not isinstance(ajax.get("reached_wp_layer"), bool):
             problems.append("admin_ajax.reached_wp_layer is not the recorded boolean")
+
+    # The producer derives one material verdict per fact below, so the delivered
+    # evidence must carry it and must not contradict it. Nothing here requires the
+    # *operations* to have succeeded: a recorded FAIL keeps its raw FAIL and simply
+    # has to match the fact, and — not being one of the seven approved identifiers —
+    # an additional material failure blocks on its own, as it always has.
+    for group, key, name in BROWSER_FACT_VERDICTS:
+        container = browser.get(group)
+        value = container.get(key) if isinstance(container, dict) else None
+        if not isinstance(value, bool):
+            continue  # already reported above as a type problem
+        row = (recorded or {}).get(name)
+        if row is None:
+            problems.append(f"{group}.{key} is recorded but the {name} verdict the "
+                            "producer derives from it was not recorded, so the browser "
+                            "evidence is not self-consistent")
+            continue
+        expected_status = PASS if value is True else FAIL
+        if row.get("status") != expected_status or row.get("phase") != "post":
+            problems.append(f"{group}.{key}={value!r} contradicts the recorded {name} "
+                            f"verdict {row.get('status')!r} at phase {row.get('phase')!r}")
 
     document = browser.get("document")
     if not isinstance(document, dict):
@@ -2262,7 +2298,7 @@ def diagnostic_exception(subject: Dict[str, Any], facts: Dict[str, Any],
     else:
         # Key presence alone is not execution: the recorded values must be the ones
         # a real browser run produces.
-        browser_problems = browser_execution_problems(browser)
+        browser_problems = browser_execution_problems(browser, recorded)
         if browser_problems:
             reasons.append("the recorded browser evidence is not from a real browser run: "
                            + "; ".join(browser_problems[:6]))

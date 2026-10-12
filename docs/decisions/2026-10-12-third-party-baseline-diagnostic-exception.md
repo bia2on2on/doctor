@@ -71,13 +71,23 @@ when **all** of the following hold:
    with that verdict — `browser_front_page_render` is computed as
    `nav["front_status"] == 200` and `browser_rest_index` as `rest_status == 200`,
    so a record claiming those PASSes while carrying another value is inconsistent
-   evidence and blocks; (b) values no required verdict is derived from
-   (`login.ok`, `admin_ajax.status`/`body`) are checked for type only — a browser
-   login that did not complete, or a failed admin-ajax request, is a real
-   observation of a probe that executed, and demanding a *successful* one would
-   invent an expectation the producer never pinned (and, for this subject, would
-   contradict the accepted signature, which contains the failing
-   `admin_ajax_wp_layer_reachable_post`). A fabricated record cannot unlock the
+   evidence and blocks; and (b) the two further facts the producer mirrors into
+   their own material verdict rows must be accompanied by those verdicts and agree
+   with them — `cmd_browser` records
+   `store.check("browser_admin_login_session", login["ok"], PRODUCT, ...)` and
+   `store.check("browser_admin_ajax_wp_layer", ajax.get("reached_wp_layer") is
+   True, PRODUCT, ...)` unconditionally at the phase it ran, so a record whose
+   `login.ok` or `admin_ajax.reached_wp_layer` is not matched by the corresponding
+   recorded verdict at phase `post`, or is contradicted by it, cannot be a genuine
+   `cmd_browser` execution and blocks. This is reconciliation, never a demand for
+   success: a recorded `FAIL` keeps its raw `FAIL` and — not being one of the seven
+   approved identifiers — blocks as an additional material failure, so a browser
+   login or admin-ajax request that genuinely failed is still never required to
+   succeed. Values no verdict is derived from (`admin_ajax.status`/`body`) are
+   checked for type only, for the same reason: demanding their success would invent
+   an expectation the producer never pinned and would contradict this subject's own
+   accepted signature, which contains the failing
+   `admin_ajax_wp_layer_reachable_post`. A fabricated record cannot unlock the
    exception on its own: the ten required verdicts, the seven pinned identifiers
    and the duplicate/malformed-row rules are all still enforced. No generic schema
    validator is involved, and each required probe identifier pinned in `probe.py`
