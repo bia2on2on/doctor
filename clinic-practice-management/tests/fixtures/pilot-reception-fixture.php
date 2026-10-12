@@ -474,7 +474,13 @@ foreach (['MOBILE', 'TABLET', 'DESKTOP'] as $resIndex => $resTag) {
 $upcomingProof = [];
 $upcomingDestToday = $nowTehran->add(new DateInterval('PT90M'));
 if ($upcomingDestToday->format('Y-m-d') !== $todayTehran) {
-    $upcomingDestToday = $nowTehran->setTime(23, 54);
+    // The reception slots read correctly hides already-started same-day slots.
+    // Keep this late-day proof in the last minute instead of seeding 23:54, which
+    // can already be past when the fixture runs around 23:54.
+    $upcomingDestToday = $nowTehran->setTime(23, 59);
+}
+if ($upcomingDestToday <= $nowTehran->add(new DateInterval('PT3M'))) {
+    rp_fail('upcoming same-day destination must retain a three-minute browser runway');
 }
 foreach (['future' => [$tomorrowTehran, '13:00:00', $nowTehran->add(new DateInterval('P2D'))->format('Y-m-d'), '15:00:00'],
           'today' => [$tomorrowTehran, '14:00:00', $todayTehran, $upcomingDestToday->format('H:i:s')]] as $kind => $spec) {
