@@ -9,6 +9,7 @@ use ClinicCore\Application\Authorization\AuthorizationException;
 use ClinicCore\Application\Roles\CustomRoleManagementException;
 use ClinicCore\Application\Roles\CustomRoleManagementService;
 use ClinicCore\Application\Roles\CustomRoleAssignmentService;
+use ClinicCore\Application\Roles\CustomRoleAssignmentException;
 use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Application\Scope\TrustedClinicEstablisher;
 use ClinicCore\Application\Authorization\AuthorizationService;
@@ -19,6 +20,8 @@ use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Logging\OpLogger;
 use ClinicCore\Infrastructure\Repository\CustomRoleRepository;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
+use RuntimeException;
+use Throwable;
 use WP_UnitTestCase;
 
 /**
@@ -32,6 +35,10 @@ use WP_UnitTestCase;
  */
 final class CustomRoleLifecycleTest extends WP_UnitTestCase
 {
+    private const RACE_SIGNAL_TIMEOUT_SECONDS = 10;
+    private const RACE_WAIT_TIMEOUT_SECONDS = 10;
+    private const RACE_CHILD_LOCK_WAIT_TIMEOUT_SECONDS = 20;
+    private const RACE_POLL_INTERVAL_MICROSECONDS = 20000;
     private int $clinicA;
     private int $clinicB;
     private int $managerA;
@@ -259,84 +266,158 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
 
     // ---------------------------------------------------------------------
     // Genuine MySQL concurrency proof: independent WPDB connections and a
-    // committed fixture, following ConcurrencyTest's integration protocol.
+    // committed fixture, verified with the exact Performance Schema wait-edge
+    // pattern used by SchedulingLocationLocalBoundaryRedTest.
     // ---------------------------------------------------------------------
 
     public function testAssignmentWaitsForLockedDefinitionAndRevalidatesAfterDeactivation(): void
     {
-        if (!function_exists('pcntl_fork')) {
-            self::markTestSkipped('pcntl_fork is required for the real two-connection MySQL race test');
+        if (!function_exists('pcntl_fork') || !function_exists('stream_socket_pair') || !class_exists('mysqli')) {
+            self::markTestSkipped('Requires pcntl, stream_socket_pair, and MySQLi for independent MySQL connections.');
         }
 
-        // Repository-only seeding keeps this concurrency fixture free of a
-        // committed create-audit row; lifecycle auditing is covered separately.
+        // Keep the repository-seeded definition free of a create-audit row. The
+        // target is an existing active membership, as the assignment contract requires.
         $raceRoleKey = 'crl_race_' . bin2hex(random_bytes(3));
         $definitionId = (new CustomRoleRepository(App::db()))->define($this->clinicA, $raceRoleKey, ['cpms_search']);
         $targetUser = $this->makeUser('crl_race_target_' . bin2hex(random_bytes(3)));
-        $targetMembership = App::membership_service()->create_membership($this->clinicA, $targetUser, RolesAndCapabilities::ROLE_SECRETARY);
+        $targetMembershipId = App::membership_service()->create_membership(
+            $this->clinicA,
+            $targetUser,
+            RolesAndCapabilities::ROLE_SECRETARY
+        );
         $clinicId = $this->clinicA;
         $managerId = $this->managerA;
+        $targetWpUserBefore = get_userdata($targetUser);
+        self::assertInstanceOf(\WP_User::class, $targetWpUserBefore);
+        $targetWpRolesBefore = (array) $targetWpUserBefore->roles;
 
         // A forked connection cannot observe the WP test transaction's uncommitted
-        // fixtures. Commit them explicitly and clean these fixture rows below.
+        // fixtures. Commit them explicitly and clean only these fixture rows below.
         global $wpdb;
-        $wpdb->query('COMMIT');
+        $wpdb->query('COMMIT'); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+        $parentConnectionId = (int) App::db()->wpdb()->get_var('SELECT CONNECTION_ID()'); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+        self::assertGreaterThan(0, $parentConnectionId);
 
         $childPid = 0;
-        $childFinished = false;
-        $lockWasWaited = false;
+        $childReaped = false;
+        $childStatus = 0;
+        $childConnectionId = 0;
         $childOutcome = '';
-        $queryHooks = isset($GLOBALS['wp_filter']['query']) ? clone $GLOBALS['wp_filter']['query'] : null;
-        [$parentPipe, $childPipe] = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
-        self::assertIsResource($parentPipe);
-        self::assertIsResource($childPipe);
-
+        $childQueryFingerprint = '';
+        $childLockQuery = '';
+        $parentPipe = null;
+        $observer = null;
+        $mysqlVersion = '';
+        $parentLockBefore = null;
+        $parentLockAfter = null;
+        $waitEvidence = null;
+        $waitEvidenceAfterTransition = null;
+        $parentTransactionWhileWaiting = null;
+        $childTransactionWhileWaiting = null;
+        $parentTransactionAfterTransition = null;
+        $childTransactionAfterTransition = null;
         $targetRoleAfter = '';
+        $definitionStatusAfter = '';
+        $targetWpRolesAfter = [];
         $deactivationAuditCount = 0;
+        $assignmentAuditCount = 0;
+        $queryHooks = isset($GLOBALS['wp_filter']['query']) ? clone $GLOBALS['wp_filter']['query'] : null;
+
+        // Keep the race independent of the test-bootstrap query shims. B installs
+        // a one-shot observer for its actual target locking query below.
         remove_all_filters('query');
+
         try {
             App::db()->transactional(function () use (
                 $clinicId,
                 $definitionId,
                 $managerId,
                 $targetUser,
-                $targetMembership,
                 $raceRoleKey,
-                $parentPipe,
-                $childPipe,
+                $parentConnectionId,
                 &$childPid,
-                &$childFinished,
-                &$lockWasWaited,
-                &$childOutcome,
-                &$targetRoleAfter
+                &$childReaped,
+                &$childStatus,
+                &$childConnectionId,
+                &$childQueryFingerprint,
+                &$childLockQuery,
+                &$parentPipe,
+                &$observer,
+                &$mysqlVersion,
+                &$parentLockBefore,
+                &$parentLockAfter,
+                &$waitEvidence,
+                &$waitEvidenceAfterTransition,
+                &$parentTransactionWhileWaiting,
+                &$childTransactionWhileWaiting,
+                &$parentTransactionAfterTransition,
+                &$childTransactionAfterTransition
             ): void {
-                $locked = App::db()->fetchRowForUpdate(
+                $activeParentConnectionId = (int) App::db()->wpdb()->get_var('SELECT CONNECTION_ID()'); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+                self::assertSame($parentConnectionId, $activeParentConnectionId, 'The locking transaction must remain on the captured parent connection.');
+
+                $lockedDefinition = App::db()->fetchRowForUpdate(
                     'SELECT id, status, version FROM ' . App::db()->table('cpms_custom_role_defs') . ' WHERE id = %d AND clinic_id = %d',
                     [$definitionId, $clinicId]
                 );
-                self::assertNotNull($locked);
-                self::assertSame('active', (string) $locked['status']);
+                self::assertIsArray($lockedDefinition);
+                self::assertSame('active', $lockedDefinition['status']);
+
+                // Observe from a third, independent connection. This proves A
+                // already owns the exact primary-key record before B is forked.
+                $observer = $this->freshMysqli();
+                $versionResult = $observer->query('SELECT VERSION()');
+                if ($versionResult === false) {
+                    throw new RuntimeException('Could not read the CI MySQL server version: ' . $observer->error);
+                }
+                $versionRow = $versionResult->fetch_row();
+                $versionResult->free();
+                $mysqlVersion = (string) ($versionRow[0] ?? 'unknown');
+                $parentLockBefore = $this->customRoleDefinitionLockForConnection(
+                    $observer,
+                    $parentConnectionId,
+                    $definitionId
+                );
+                self::assertIsArray(
+                    $parentLockBefore,
+                    'Parent A must hold a granted X record lock on the exact custom-role definition row before child B starts.'
+                );
+
+                $pipes = [];
+                if (stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP, $pipes) !== true) {
+                    throw new RuntimeException('Could not create the parent/child synchronization pipe.');
+                }
 
                 $childPid = pcntl_fork();
                 if ($childPid === -1) {
-                    self::fail('pcntl_fork failed');
+                    fclose($pipes[0]);
+                    fclose($pipes[1]);
+                    throw new RuntimeException('Could not fork the independent MySQL assignment connection.');
                 }
+
                 if ($childPid === 0) {
-                    fclose($parentPipe);
-                    $exitCode = 1;
+                    fclose($pipes[0]);
+                    $childPipe = $pipes[1];
                     $wpdb2 = null;
                     try {
                         $wpdb2 = $this->freshWpdb();
-                        $connectionId = (int) $wpdb2->get_var('SELECT CONNECTION_ID()'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                        $connectionId = (int) $wpdb2->get_var('SELECT CONNECTION_ID()'); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+                        if ($connectionId <= 0) {
+                            throw new RuntimeException('Child B did not receive a valid MySQL connection id.');
+                        }
 
-                        // The child uses a genuinely independent MySQL connection;
-                        // the parent removed the test suite SAVEPOINT query shim.
+                        // B is a separate WPDB/MySQL session; remove inherited test
+                        // query shims, but keep the production locking query intact.
                         remove_all_filters('query');
+                        if ($wpdb2->query('SET SESSION innodb_lock_wait_timeout = ' . self::RACE_CHILD_LOCK_WAIT_TIMEOUT_SECONDS) === false) { // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+                            throw new RuntimeException('Could not bound child B\'s InnoDB row-lock wait: ' . $wpdb2->last_error);
+                        }
                         $db2 = new CpmsDb($wpdb2);
                         $memberships2 = new MembershipRepository($db2);
                         $roles2 = new CustomRoleRepository($db2);
                         $authorization2 = new AuthorizationService($memberships2, $roles2);
-                        $assignment2 = new CustomRoleAssignmentService(
+                        $assignmentService = new CustomRoleAssignmentService(
                             new TrustedClinicEstablisher($db2, $memberships2),
                             $authorization2,
                             $memberships2,
@@ -344,124 +425,373 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
                             new AuditLogger($db2, new OpLogger($db2)),
                             $db2
                         );
-                        $outcome = 'unexpected';
+                        $roleDefinitionsTable = strtolower($db2->table('cpms_custom_role_defs'));
+                        $lockQuerySent = false;
+
+                        // Signal only when B is about to execute the production
+                        // target-row SELECT ... FOR UPDATE, not merely before assign().
+                        add_filter(
+                            'query',
+                            static function ($query) use (
+                                $childPipe,
+                                $connectionId,
+                                $roleDefinitionsTable,
+                                $definitionId,
+                                $clinicId,
+                                &$lockQuerySent
+                            ) {
+                                $sql = strtolower(trim((string) preg_replace('/\s+/', ' ', trim((string) $query))));
+                                $expectedPredicate = 'where id = ' . $definitionId . ' and clinic_id = ' . $clinicId;
+                                if (
+                                    !$lockQuerySent
+                                    && str_contains($sql, 'from ' . $roleDefinitionsTable . ' ')
+                                    && str_contains($sql, $expectedPredicate)
+                                    && preg_match('/\bfor\s+update\s*$/', $sql) === 1
+                                ) {
+                                    $lockQuerySent = true;
+                                    $fingerprint = hash('sha256', $sql);
+                                    $queryBase64 = base64_encode($sql);
+                                    fwrite($childPipe, 'LOCK_QUERY:' . $connectionId . ':' . $fingerprint . ':' . $queryBase64 . "\n");
+                                    fflush($childPipe);
+                                }
+
+                                return $query;
+                            },
+                            0
+                        );
+
+                        $outcome = 'assigned';
                         try {
-                            $db2->transactional(function () use ($assignment2, $managerId, $clinicId, $targetUser, $raceRoleKey, $connectionId, $childPipe, &$outcome): void {
-                                // Signal only when the independent connection and transaction are ready,
-                                // immediately before the production assignment attempts the locked row.
+                            // Keep an unexpected success reversible; the production
+                            // service itself still owns its atomic savepoint/audit path.
+                            $db2->transactional(function () use (
+                                $assignmentService,
+                                $managerId,
+                                $clinicId,
+                                $targetUser,
+                                $raceRoleKey,
+                                $childPipe,
+                                $connectionId,
+                                &$outcome
+                            ): void {
                                 fwrite($childPipe, 'READY:' . $connectionId . "\n");
                                 fflush($childPipe);
-
                                 try {
-                                    $assignment2->assign($managerId, $clinicId, $targetUser, $raceRoleKey);
+                                    $assignmentService->assign($managerId, $clinicId, $targetUser, $raceRoleKey);
                                     $outcome = 'assigned';
-                                } catch (\ClinicCore\Application\Roles\CustomRoleAssignmentException $e) {
-                                    $outcome = 'denied:' . $e->reason_code();
+                                } catch (CustomRoleAssignmentException $exception) {
+                                    $outcome = 'denied:' . $exception->reason_code();
                                 }
-                                throw new \RuntimeException('intentional race-fixture rollback');
+
+                                throw new RuntimeException('intentional race-fixture rollback');
                             });
-                        } catch (\RuntimeException $e) {
-                            if ($e->getMessage() !== 'intentional race-fixture rollback') {
-                                throw $e;
+                        } catch (RuntimeException $exception) {
+                            if ($exception->getMessage() !== 'intentional race-fixture rollback') {
+                                throw $exception;
                             }
+                        }
+
+                        if (!$lockQuerySent) {
+                            $outcome = 'missing-target-lock-query:' . $outcome;
                         }
                         fwrite($childPipe, 'RESULT:' . $outcome . "\n");
                         fflush($childPipe);
-                        $exitCode = 0;
-                    } catch (\Throwable $e) {
-                        fwrite($childPipe, 'ERROR:' . get_class($e) . "\n");
+                        if ($wpdb2 instanceof \wpdb) {
+                            $wpdb2->close();
+                        }
+                        fclose($childPipe);
+                        exit(0);
+                    } catch (Throwable $exception) {
+                        fwrite($childPipe, 'ERROR:' . get_class($exception) . ':' . $exception->getMessage() . "\n");
                         fflush($childPipe);
+                        if ($wpdb2 instanceof \wpdb) {
+                            $wpdb2->close();
+                        }
+                        fclose($childPipe);
+                        exit(1);
                     }
-                    if ($wpdb2 instanceof \wpdb) {
-                        $wpdb2->close();
-                    }
-                    fclose($childPipe);
-                    exit($exitCode);
                 }
 
-                fclose($childPipe);
-                stream_set_timeout($parentPipe, 10);
-                $ready = fgets($parentPipe);
-                self::assertIsString($ready);
-                self::assertStringStartsWith('READY:', $ready, 'the second MySQL connection must start before the transition');
-                $connectionId = (int) substr(trim($ready), 6);
-                self::assertGreaterThan(0, $connectionId);
+                fclose($pipes[1]);
+                $parentPipe = $pipes[0];
 
-                $deadline = microtime(true) + 8.0;
-                while (microtime(true) < $deadline) {
-                    $state = App::db()->fetchValue(
-                        'SELECT trx_state FROM information_schema.innodb_trx WHERE trx_mysql_thread_id = %d LIMIT 1',
-                        [$connectionId]
+                $readyLine = $this->readRaceLine($parentPipe, self::RACE_SIGNAL_TIMEOUT_SECONDS);
+                self::assertIsString($readyLine, 'Child B did not report its independent connection as ready within the bounded timeout.');
+                self::assertMatchesRegularExpression('/^READY:[1-9][0-9]*$/', $readyLine);
+                $childConnectionId = (int) substr($readyLine, strlen('READY:'));
+                self::assertNotSame($parentConnectionId, $childConnectionId, 'A and B must use genuinely independent MySQL connections.');
+
+                $queryLine = $this->readRaceLine($parentPipe, self::RACE_SIGNAL_TIMEOUT_SECONDS);
+                if (!is_string($queryLine)) {
+                    $diagnostics = [
+                        'mysql_version' => $mysqlVersion,
+                        'parent_connection_id' => $parentConnectionId,
+                        'child_connection_id' => $childConnectionId,
+                        'parent_lock_before_child' => $parentLockBefore,
+                        'parent_transaction' => $this->innodbTransactionForConnection($observer, $parentConnectionId),
+                        'child_transaction' => $this->innodbTransactionForConnection($observer, $childConnectionId),
+                        'parent_definition_locks' => $this->customRoleDefinitionLocksForConnection($observer, $parentConnectionId),
+                        'child_definition_locks' => $this->customRoleDefinitionLocksForConnection($observer, $childConnectionId),
+                        'matching_wait_edge' => $this->customRoleDefinitionWaitEdge(
+                            $observer,
+                            $childConnectionId,
+                            $parentConnectionId,
+                            $definitionId
+                        ),
+                    ];
+                    self::fail(
+                        'Child B did not signal its target assignment SELECT ... FOR UPDATE within the bounded timeout. Evidence: '
+                        . json_encode($diagnostics, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)
                     );
-                    if ($state === 'LOCK WAIT') {
-                        $lockWasWaited = true;
+                }
+                self::assertMatchesRegularExpression('/^LOCK_QUERY:[1-9][0-9]*:[a-f0-9]{64}:[A-Za-z0-9+\/=]+$/', $queryLine);
+                $queryParts = explode(':', $queryLine, 4);
+                self::assertSame($childConnectionId, (int) $queryParts[1], 'The query-arrival signal must come from the same child connection observed by MySQL.');
+                $childQueryFingerprint = $queryParts[2];
+                $decodedQuery = base64_decode($queryParts[3], true);
+                self::assertIsString($decodedQuery, 'The child must provide its normalized locking SQL for evidence.');
+                $childLockQuery = $decodedQuery;
+                self::assertSame($childQueryFingerprint, hash('sha256', $childLockQuery));
+                self::assertStringContainsString(
+                    'from ' . strtolower(App::db()->table('cpms_custom_role_defs')) . ' ',
+                    $childLockQuery
+                );
+                self::assertStringContainsString(
+                    'where id = ' . $definitionId . ' and clinic_id = ' . $clinicId,
+                    $childLockQuery
+                );
+                self::assertStringEndsWith('for update', $childLockQuery);
+
+                // Poll current Performance Schema state. The interval only
+                // throttles observation; success requires the exact lock-wait edge.
+                $deadline = microtime(true) + self::RACE_WAIT_TIMEOUT_SECONDS;
+                do {
+                    $waitEvidence = $this->customRoleDefinitionWaitEdge(
+                        $observer,
+                        $childConnectionId,
+                        $parentConnectionId,
+                        $definitionId
+                    );
+                    if ($waitEvidence !== null) {
                         break;
                     }
-                    $waited = pcntl_waitpid($childPid, $status, WNOHANG);
+
+                    $waited = pcntl_waitpid($childPid, $childStatus, WNOHANG);
                     if ($waited === $childPid) {
-                        $childFinished = true;
+                        $childReaped = true;
                         break;
                     }
-                    usleep(20_000);
+                    if ($waited === -1) {
+                        throw new RuntimeException('Could not inspect the child process while awaiting the MySQL lock edge.');
+                    }
+
+                    usleep(self::RACE_POLL_INTERVAL_MICROSECONDS);
+                } while (microtime(true) < $deadline);
+
+                if ($waitEvidence === null) {
+                    $diagnostics = [
+                        'mysql_version' => $mysqlVersion,
+                        'parent_connection_id' => $parentConnectionId,
+                        'child_connection_id' => $childConnectionId,
+                        'child_lock_query_sha256' => $childQueryFingerprint,
+                        'parent_lock_before_child' => $parentLockBefore,
+                        'parent_transaction' => $this->innodbTransactionForConnection($observer, $parentConnectionId),
+                        'child_transaction' => $this->innodbTransactionForConnection($observer, $childConnectionId),
+                        'parent_definition_locks' => $this->customRoleDefinitionLocksForConnection($observer, $parentConnectionId),
+                        'child_definition_locks' => $this->customRoleDefinitionLocksForConnection($observer, $childConnectionId),
+                        'wait_edge' => null,
+                    ];
+                    self::fail(
+                        'Did not observe B blocked by A on the exact custom-role definition row before the bounded deadline. Evidence: '
+                        . json_encode($diagnostics, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)
+                    );
                 }
 
-                // Deactivation is the authorized production lifecycle operation,
-                // performed while the assignment is observed waiting on the same
-                // locked definition row. Status and audit commit atomically.
+                self::assertSame((string) $childConnectionId, (string) $waitEvidence['requesting_connection_id']);
+                self::assertSame((string) $parentConnectionId, (string) $waitEvidence['blocking_connection_id']);
+                self::assertTrue(
+                    $waitEvidence['requesting_lock_data'] === null
+                    || trim((string) $waitEvidence['requesting_lock_data']) === (string) $definitionId,
+                    'B must request the same definition record held by A when MySQL exposes requester LOCK_DATA.'
+                );
+                self::assertSame((string) $definitionId, trim((string) $waitEvidence['blocking_lock_data']));
+                self::assertSame('WAITING', $waitEvidence['requesting_lock_status']);
+                self::assertSame('GRANTED', $waitEvidence['blocking_lock_status']);
+                self::assertSame($parentLockBefore['lock_id'], $waitEvidence['blocking_lock_id']);
+                self::assertSame($parentLockBefore['transaction_id'], $waitEvidence['blocking_transaction_id']);
+                self::assertNotSame($waitEvidence['requesting_transaction_id'], $waitEvidence['blocking_transaction_id']);
+
+                $parentTransactionWhileWaiting = $this->innodbTransactionForConnection($observer, $parentConnectionId);
+                $childTransactionWhileWaiting = $this->innodbTransactionForConnection($observer, $childConnectionId);
+                self::assertIsArray($parentTransactionWhileWaiting, 'Parent A must still have an open InnoDB transaction while B waits.');
+                self::assertIsArray($childTransactionWhileWaiting, 'Child B must still have an open InnoDB transaction while its assignment waits.');
+                self::assertSame('RUNNING', $parentTransactionWhileWaiting['trx_state']);
+                self::assertSame('LOCK WAIT', $childTransactionWhileWaiting['trx_state']);
+
                 $deactivated = $this->deactivate($managerId, $clinicId, $raceRoleKey, 1);
                 self::assertSame('inactive', $deactivated['status']);
-                $targetRoleAfter = (string) App::db()->fetchValue(
-                    'SELECT role_key FROM ' . App::db()->table('cpms_clinic_memberships') . ' WHERE id = %d',
-                    [$targetMembership]
-                );
-            });
-            $deactivationAuditCount = $this->statusAuditCount('CUSTOM_ROLE_DEACTIVATED', $definitionId);
 
-            if (!$childFinished && $childPid > 0) {
-                pcntl_waitpid($childPid, $status);
-                $childFinished = true;
+                // The nested lifecycle operation must not release A's outer row
+                // lock; B must remain blocked until A commits status and audit.
+                $parentLockAfter = $this->customRoleDefinitionLockForConnection(
+                    $observer,
+                    $parentConnectionId,
+                    $definitionId
+                );
+                $waitEvidenceAfterTransition = $this->customRoleDefinitionWaitEdge(
+                    $observer,
+                    $childConnectionId,
+                    $parentConnectionId,
+                    $definitionId
+                );
+                self::assertIsArray($parentLockAfter, 'A must continue holding the definition record lock after deactivation and before commit.');
+                self::assertIsArray($waitEvidenceAfterTransition, 'B must remain blocked by A until A commits the deactivation.');
+                self::assertSame($parentLockBefore['lock_id'], $parentLockAfter['lock_id']);
+                self::assertSame($waitEvidence['requesting_lock_id'], $waitEvidenceAfterTransition['requesting_lock_id']);
+                self::assertSame($waitEvidence['blocking_lock_id'], $waitEvidenceAfterTransition['blocking_lock_id']);
+
+                $parentTransactionAfterTransition = $this->innodbTransactionForConnection($observer, $parentConnectionId);
+                $childTransactionAfterTransition = $this->innodbTransactionForConnection($observer, $childConnectionId);
+                self::assertIsArray($parentTransactionAfterTransition);
+                self::assertIsArray($childTransactionAfterTransition);
+                self::assertSame('RUNNING', $parentTransactionAfterTransition['trx_state']);
+                self::assertSame('LOCK WAIT', $childTransactionAfterTransition['trx_state']);
+            });
+
+            // The callback has returned and A has committed. B can now finish its
+            // locking read and must validate the current, inactive row state.
+            if (!$childReaped && $childPid > 0) {
+                $waited = pcntl_waitpid($childPid, $childStatus);
+                if ($waited !== $childPid) {
+                    throw new RuntimeException('Could not reap child B after parent A committed.');
+                }
+                $childReaped = true;
             }
-            stream_set_timeout($parentPipe, 1);
-            while (($line = fgets($parentPipe)) !== false) {
+
+            $resultLines = [];
+            if (is_resource($parentPipe)) {
+                stream_set_timeout($parentPipe, self::RACE_SIGNAL_TIMEOUT_SECONDS);
+                while (($line = fgets($parentPipe)) !== false) {
+                    $resultLines[] = rtrim($line, "\r\n");
+                }
+                fclose($parentPipe);
+                $parentPipe = null;
+            }
+            foreach ($resultLines as $line) {
                 if (str_starts_with($line, 'RESULT:')) {
-                    $childOutcome = trim(substr($line, 7));
-                }
-                if (str_starts_with($line, 'ERROR:')) {
-                    $childOutcome = trim($line);
+                    $childOutcome = substr($line, strlen('RESULT:'));
+                } elseif (str_starts_with($line, 'ERROR:')) {
+                    $childOutcome = $line;
                 }
             }
+
+            self::assertTrue(pcntl_wifexited($childStatus), 'Child B must exit normally after A commits. Child result: ' . $childOutcome);
+            self::assertSame(0, pcntl_wexitstatus($childStatus), 'Child B must not encounter a connection or infrastructure error. Child result: ' . $childOutcome);
+            self::assertSame(
+                'denied:' . CustomRoleAssignmentException::CODE_DEFINITION_NOT_ACTIVE,
+                $childOutcome,
+                'B must resume after A commits, read the authoritative inactive status, and deny the stale assignment.'
+            );
+
+            $definitionStatusAfter = (string) App::db()->fetchValue(
+                'SELECT status FROM ' . App::db()->table('cpms_custom_role_defs') . ' WHERE id = %d AND clinic_id = %d',
+                [$definitionId, $clinicId]
+            );
+            $targetRoleAfter = (string) App::db()->fetchValue(
+                'SELECT role_key FROM ' . App::db()->table('cpms_clinic_memberships') . ' WHERE id = %d AND clinic_id = %d',
+                [$targetMembershipId, $clinicId]
+            );
+            clean_user_cache($targetUser);
+            $targetWpUserAfter = get_userdata($targetUser);
+            self::assertInstanceOf(\WP_User::class, $targetWpUserAfter);
+            $targetWpRolesAfter = (array) $targetWpUserAfter->roles;
+            $deactivationAuditCount = $this->statusAuditCount('CUSTOM_ROLE_DEACTIVATED', $definitionId);
+            $assignmentAuditCount = $this->customRoleAssignmentAuditCount($clinicId, $targetMembershipId);
+
+            self::assertSame('inactive', $definitionStatusAfter, 'A must commit the definition status before B resumes.');
+            self::assertSame(RolesAndCapabilities::ROLE_SECRETARY, $targetRoleAfter, 'A denied assignment must not mutate the existing membership role.');
+            self::assertSame($targetWpRolesBefore, $targetWpRolesAfter, 'Assignment must never mutate the target WordPress-global roles.');
+            self::assertSame(0, $assignmentAuditCount, 'A denied assignment must not append a role-assigned audit event.');
+            self::assertSame(1, $deactivationAuditCount, 'A must commit exactly one deactivation audit event with its status change.');
+
+            fwrite(
+                STDERR,
+                'CUSTOM_ROLE_LIFECYCLE_CONCURRENCY_EVIDENCE '
+                . json_encode(
+                    [
+                        'mysql_version' => $mysqlVersion,
+                        'mysql_schema' => DB_NAME,
+                        'assignment_lock_query' => $childLockQuery,
+                        'parent' => [
+                            'connection_id' => $parentConnectionId,
+                            'transaction_id' => $parentLockBefore['transaction_id'],
+                            'definition_lock_id' => $parentLockBefore['lock_id'],
+                            'lock_after_deactivation_before_commit' => $parentLockAfter['lock_id'],
+                            'transaction_state_while_child_waited' => $parentTransactionWhileWaiting['trx_state'],
+                            'transaction_state_after_deactivation_before_commit' => $parentTransactionAfterTransition['trx_state'],
+                        ],
+                        'child' => [
+                            'connection_id' => $childConnectionId,
+                            'transaction_id' => $waitEvidence['requesting_transaction_id'],
+                            'assignment_lock_query_sha256' => $childQueryFingerprint,
+                            'requesting_lock_id' => $waitEvidence['requesting_lock_id'],
+                            'transaction_state_while_waiting' => $childTransactionWhileWaiting['trx_state'],
+                            'transaction_state_after_deactivation_before_commit' => $childTransactionAfterTransition['trx_state'],
+                        ],
+                        'wait_edge' => [
+                            'requesting_connection_id' => $waitEvidence['requesting_connection_id'],
+                            'blocking_connection_id' => $waitEvidence['blocking_connection_id'],
+                            'requesting_lock_id' => $waitEvidence['requesting_lock_id'],
+                            'blocking_lock_id' => $waitEvidence['blocking_lock_id'],
+                            'requesting_lock_mode' => $waitEvidence['requesting_lock_mode'],
+                            'requesting_lock_status' => $waitEvidence['requesting_lock_status'],
+                            'blocking_lock_mode' => $waitEvidence['blocking_lock_mode'],
+                            'blocking_lock_status' => $waitEvidence['blocking_lock_status'],
+                            'table' => App::db()->table('cpms_custom_role_defs'),
+                            'index' => 'PRIMARY',
+                            'lock_data' => $waitEvidence['requesting_lock_data'],
+                        ],
+                        'same_wait_edge_after_deactivation_before_commit' => $waitEvidenceAfterTransition !== null,
+                        'child_outcome_after_parent_commit' => $childOutcome,
+                        'definition_status_after_parent_commit' => $definitionStatusAfter,
+                        'membership_role_after' => $targetRoleAfter,
+                        'wordpress_roles_before' => $targetWpRolesBefore,
+                        'wordpress_roles_after' => $targetWpRolesAfter,
+                        'assignment_audit_count_after' => $assignmentAuditCount,
+                        'deactivation_audit_count_after' => $deactivationAuditCount,
+                    ],
+                    JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR
+                )
+                . PHP_EOL
+            );
         } finally {
+            if ($observer instanceof \mysqli) {
+                $observer->close();
+            }
+
+            if ($childPid > 0 && !$childReaped) {
+                pcntl_waitpid($childPid, $childStatus);
+                $childReaped = true;
+            }
+
+            if (is_resource($parentPipe)) {
+                fclose($parentPipe);
+            }
+
             // Restore WordPress' integration bootstrap query handlers before
-            // fixture cleanup and the PHPUnit tearDown rollback.
-            if ($queryHooks !== null) {
+            // fixture cleanup and PHPUnit tearDown rollback.
+            if ($queryHooks instanceof WP_Hook) {
                 $GLOBALS['wp_filter']['query'] = $queryHooks;
             } else {
                 unset($GLOBALS['wp_filter']['query']);
             }
-            if (!$childFinished && $childPid > 0) {
-                pcntl_waitpid($childPid, $childStatus);
-            }
-            if (is_resource($parentPipe)) {
-                fclose($parentPipe);
-            }
-            if (is_resource($childPipe)) {
-                fclose($childPipe);
-            }
+
             $this->cleanupCommittedRaceFixtures(
                 [$this->clinicA, $this->clinicB],
                 [$managerId, $this->managerB, $this->suspendedManager, $this->member, $this->nonMember, $targetUser],
                 $definitionId
             );
         }
-
-        self::assertSame(1, $deactivationAuditCount, 'the committed status transition must have exactly one audit event before test-fixture cleanup');
-        self::assertTrue(
-            $lockWasWaited,
-            'the assignment connection must be observed waiting on the locked custom-role row; child_finished=' .
-                ($childFinished ? 'yes' : 'no') . ', child_outcome=' . $childOutcome
-        );
-        self::assertSame('denied:CUSTOM_ROLE_ASSIGNMENT_DEFINITION_NOT_ACTIVE', $childOutcome, 'the assignment must re-read status after the lock is released');
-        self::assertSame(RolesAndCapabilities::ROLE_SECRETARY, $targetRoleAfter, 'the failed concurrent assignment must not change the existing membership');
     }
 
     // ---------------------------------------------------------------------
@@ -654,6 +984,203 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
         $this->auditFault = null;
         global $wpdb;
         $wpdb->suppress_errors($this->previousSuppression);
+    }
+
+    private function freshMysqli(): \mysqli
+    {
+        global $wpdb;
+        try {
+            $connection = new \mysqli($wpdb->dbhost, $wpdb->dbuser, $wpdb->dbpassword, $wpdb->dbname);
+        } catch (\mysqli_sql_exception $exception) {
+            throw new RuntimeException('Could not open the independent Performance Schema observer connection.', 0, $exception);
+        }
+        if ($connection->connect_errno !== 0) {
+            throw new RuntimeException('Could not open the independent Performance Schema observer connection: ' . $connection->connect_error);
+        }
+
+        if (!$connection->set_charset('utf8mb4')) {
+            throw new RuntimeException('Could not set the observer connection character set: ' . $connection->error);
+        }
+
+        return $connection;
+    }
+
+    /**
+     * @return array{transaction_id:string,lock_id:string,lock_mode:string,lock_status:string,lock_data:string}|null
+     */
+    private function customRoleDefinitionLockForConnection(\mysqli $observer, int $connectionId, int $definitionId): ?array
+    {
+        $table = $observer->real_escape_string(App::db()->table('cpms_custom_role_defs'));
+        $lockData = $observer->real_escape_string((string) $definitionId);
+        $connectionId = (int) $connectionId;
+        $sql =
+            'SELECT locks.engine_transaction_id AS transaction_id, locks.engine_lock_id AS lock_id,' .
+            ' locks.lock_mode AS lock_mode, locks.lock_status AS lock_status, locks.lock_data AS lock_data' .
+            ' FROM performance_schema.data_locks AS locks' .
+            ' INNER JOIN performance_schema.threads AS threads ON threads.thread_id = locks.thread_id' .
+            ' WHERE threads.processlist_id = ' . $connectionId .
+            ' AND locks.object_schema = DATABASE()' .
+            " AND locks.object_name = '{$table}'" .
+            " AND locks.index_name = 'PRIMARY'" .
+            " AND locks.lock_type = 'RECORD'" .
+            " AND locks.lock_mode LIKE 'X%'" .
+            " AND locks.lock_status = 'GRANTED'" .
+            " AND locks.lock_data = '{$lockData}' LIMIT 1";
+        $result = $observer->query($sql);
+        if ($result === false) {
+            throw new RuntimeException('Could not inspect the parent definition lock: ' . $observer->error);
+        }
+
+        $row = $result->fetch_assoc();
+        $result->free();
+
+        return is_array($row) ? $row : null;
+    }
+
+    /**
+     * @return array<string,string|null>|null
+     */
+    private function customRoleDefinitionWaitEdge(
+        \mysqli $observer,
+        int $requestingConnectionId,
+        int $blockingConnectionId,
+        int $definitionId
+    ): ?array {
+        $table = $observer->real_escape_string(App::db()->table('cpms_custom_role_defs'));
+        $lockData = $observer->real_escape_string((string) $definitionId);
+        $requestingConnectionId = (int) $requestingConnectionId;
+        $blockingConnectionId = (int) $blockingConnectionId;
+        $sql =
+            'SELECT waits.requesting_engine_transaction_id AS requesting_transaction_id,' .
+            ' waits.blocking_engine_transaction_id AS blocking_transaction_id,' .
+            ' waits.requesting_engine_lock_id AS requesting_lock_id,' .
+            ' waits.blocking_engine_lock_id AS blocking_lock_id,' .
+            ' requesting_lock.lock_mode AS requesting_lock_mode,' .
+            ' requesting_lock.lock_status AS requesting_lock_status,' .
+            ' requesting_lock.lock_data AS requesting_lock_data,' .
+            ' blocking_lock.lock_mode AS blocking_lock_mode,' .
+            ' blocking_lock.lock_status AS blocking_lock_status,' .
+            ' blocking_lock.lock_data AS blocking_lock_data,' .
+            ' requesting_thread.processlist_id AS requesting_connection_id,' .
+            ' blocking_thread.processlist_id AS blocking_connection_id' .
+            ' FROM performance_schema.data_lock_waits AS waits' .
+            ' INNER JOIN performance_schema.data_locks AS requesting_lock' .
+            ' ON requesting_lock.engine_lock_id = waits.requesting_engine_lock_id' .
+            ' INNER JOIN performance_schema.data_locks AS blocking_lock' .
+            ' ON blocking_lock.engine_lock_id = waits.blocking_engine_lock_id' .
+            ' INNER JOIN performance_schema.threads AS requesting_thread' .
+            ' ON requesting_thread.thread_id = requesting_lock.thread_id' .
+            ' INNER JOIN performance_schema.threads AS blocking_thread' .
+            ' ON blocking_thread.thread_id = blocking_lock.thread_id' .
+            ' WHERE requesting_thread.processlist_id = ' . $requestingConnectionId .
+            ' AND blocking_thread.processlist_id = ' . $blockingConnectionId .
+            ' AND requesting_lock.object_schema = DATABASE()' .
+            " AND requesting_lock.object_name = '{$table}'" .
+            " AND requesting_lock.index_name = 'PRIMARY'" .
+            " AND requesting_lock.lock_type = 'RECORD'" .
+            " AND requesting_lock.lock_mode LIKE 'X%'" .
+            " AND requesting_lock.lock_status = 'WAITING'" .
+            ' AND blocking_lock.object_schema = DATABASE()' .
+            " AND blocking_lock.object_name = '{$table}'" .
+            " AND blocking_lock.index_name = 'PRIMARY'" .
+            " AND blocking_lock.lock_type = 'RECORD'" .
+            " AND blocking_lock.lock_mode LIKE 'X%'" .
+            " AND blocking_lock.lock_status = 'GRANTED'" .
+            " AND blocking_lock.lock_data = '{$lockData}' LIMIT 1";
+        $result = $observer->query($sql);
+        if ($result === false) {
+            throw new RuntimeException('Could not inspect the exact InnoDB lock-wait edge: ' . $observer->error);
+        }
+
+        $row = $result->fetch_assoc();
+        $result->free();
+
+        return is_array($row) ? $row : null;
+    }
+
+    /**
+     * @return array<string,string>|null
+     */
+    private function innodbTransactionForConnection(\mysqli $observer, int $connectionId): ?array
+    {
+        $connectionId = (int) $connectionId;
+        $sql =
+            'SELECT trx_id AS transaction_id, trx_state, trx_operation_state,' .
+            ' trx_requested_lock_id, trx_mysql_thread_id' .
+            ' FROM information_schema.innodb_trx' .
+            ' WHERE trx_mysql_thread_id = ' . $connectionId . ' LIMIT 1';
+        $result = $observer->query($sql);
+        if ($result === false) {
+            throw new RuntimeException('Could not inspect the InnoDB transaction state: ' . $observer->error);
+        }
+
+        $row = $result->fetch_assoc();
+        $result->free();
+
+        return is_array($row) ? $row : null;
+    }
+
+    /**
+     * @return list<array<string,string|null>>
+     */
+    private function customRoleDefinitionLocksForConnection(\mysqli $observer, int $connectionId): array
+    {
+        $table = $observer->real_escape_string(App::db()->table('cpms_custom_role_defs'));
+        $connectionId = (int) $connectionId;
+        $sql =
+            'SELECT locks.engine_transaction_id AS transaction_id, locks.engine_lock_id AS lock_id,' .
+            ' locks.object_name, locks.index_name, locks.lock_type, locks.lock_mode,' .
+            ' locks.lock_status, locks.lock_data' .
+            ' FROM performance_schema.data_locks AS locks' .
+            ' INNER JOIN performance_schema.threads AS threads ON threads.thread_id = locks.thread_id' .
+            ' WHERE threads.processlist_id = ' . $connectionId .
+            ' AND locks.object_schema = DATABASE()' .
+            " AND locks.object_name = '{$table}' LIMIT 20";
+        $result = $observer->query($sql);
+        if ($result === false) {
+            throw new RuntimeException('Could not inspect definition-row lock diagnostics: ' . $observer->error);
+        }
+
+        $rows = [];
+        while ($row = $result->fetch_assoc()) {
+            $rows[] = $row;
+        }
+        $result->free();
+
+        return $rows;
+    }
+
+    /**
+     * @param resource $pipe
+     */
+    private function readRaceLine($pipe, int $timeoutSeconds): ?string
+    {
+        if (!is_resource($pipe)) {
+            return null;
+        }
+
+        stream_set_timeout($pipe, $timeoutSeconds);
+        $line = fgets($pipe);
+        $metadata = stream_get_meta_data($pipe);
+        if ($line === false || ($metadata['timed_out'] ?? false)) {
+            return null;
+        }
+
+        return rtrim($line, "\r\n");
+    }
+
+    private function customRoleAssignmentAuditCount(int $clinicId, int $membershipId): int
+    {
+        return (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') .
+            ' WHERE clinic_id = %d AND action = %s AND resource_type = %s AND resource_id = %d',
+            [
+                $clinicId,
+                CustomRoleAssignmentService::AUDIT_ASSIGNED,
+                CustomRoleAssignmentService::RESOURCE_TYPE,
+                $membershipId,
+            ]
+        );
     }
 
     private function freshWpdb(): \wpdb
