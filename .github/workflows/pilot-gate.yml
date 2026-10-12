@@ -2040,7 +2040,7 @@ jobs:
           reception_local_day="$(TZ=Asia/Tehran date +%F)"
           reception_fake_epoch="$(TZ=Asia/Tehran date -d "${reception_local_day} 12:00:00" +%s)"
           test "$(TZ=Asia/Tehran date -d "@${reception_fake_epoch}" '+%F %T')" = "${reception_local_day} 12:00:00"
-          faketime_lib="$(ldconfig -p | awk '/libfaketime\.so\.1 / {print $NF; exit}')"
+          faketime_lib="$(ldconfig -p | awk '/libfaketime[.]so[.]1 / {print $NF; exit}')"
           test -f "${faketime_lib}"
           echo "RECEPTION_FAKE_EPOCH=${reception_fake_epoch}" >> "$GITHUB_ENV"
           echo "RECEPTION_FAKETIME_LIB=${faketime_lib}" >> "$GITHUB_ENV"
@@ -2055,7 +2055,7 @@ jobs:
           php_clock="$(env FAKETIME_FMT=%s FAKETIME="${reception_fake_epoch}" FAKETIME_DONT_FAKE_MONOTONIC=1 LD_PRELOAD="${faketime_lib}" php -r 'echo (new DateTimeImmutable("now", new DateTimeZone("Asia/Tehran")))->format("Y-m-d H:i:s");')"
           test "${php_clock}" = "${reception_local_day} 12:00:00"
           apache_pid="$(pgrep -xo apache2)"
-          grep -Fq 'libfaketime.so.1' "/proc/${apache_pid}/maps"
+          sudo grep -Fq 'libfaketime.so.1' "/proc/${apache_pid}/maps"
           echo "Reception PHP/Apache test clock: ${reception_local_day} 12:00:00 Asia/Tehran"
 
       - name: Reception fixture — two Locations + today's booked rows + empty Location
