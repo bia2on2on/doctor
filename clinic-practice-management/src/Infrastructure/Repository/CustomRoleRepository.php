@@ -169,10 +169,22 @@ final class CustomRoleRepository {
             return null;
         }
 
-        $row = $this->db->fetchRowForUpdate(
-            'SELECT id, clinic_id, role_key, display_name, status, version FROM ' . $this->db->table( 'cpms_custom_role_defs' ) .
+        $definition_id = (int) $this->db->fetchValue(
+            'SELECT id FROM ' . $this->db->table( 'cpms_custom_role_defs' ) .
             ' WHERE clinic_id = %d AND role_key = %s LIMIT 1',
             [ $clinic_id, $role_key ]
+        );
+        if ( $definition_id <= 0 ) {
+            return null;
+        }
+
+        // Resolve the immutable key first, then take the locking read by primary
+        // key. A waiting transaction reads the current committed status/version
+        // after the lock is granted, not the earlier consistent-read snapshot.
+        $row = $this->db->fetchRowForUpdate(
+            'SELECT id, clinic_id, role_key, display_name, status, version FROM ' . $this->db->table( 'cpms_custom_role_defs' ) .
+            ' WHERE id = %d AND clinic_id = %d LIMIT 1',
+            [ $definition_id, $clinic_id ]
         );
         if ( $row === null ) {
             return null;
@@ -180,7 +192,8 @@ final class CustomRoleRepository {
 
         $id           = (int) ( $row['id'] ?? 0 );
         $owner_clinic = (int) ( $row['clinic_id'] ?? 0 );
-        if ( $id <= 0 || $owner_clinic !== $clinic_id ) {
+        if ( $id <= 0 || $id !== $definition_id || $owner_clinic !== $clinic_id
+            || (string) ( $row['role_key'] ?? '' ) !== $role_key ) {
             return null;
         }
 

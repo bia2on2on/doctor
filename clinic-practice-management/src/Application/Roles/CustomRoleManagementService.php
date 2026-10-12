@@ -55,8 +55,8 @@ final class CustomRoleManagementService {
     public const AUDIT_DEFINED              = 'CUSTOM_ROLE_DEFINED';
     public const AUDIT_DISPLAY_NAME_CHANGED = 'CUSTOM_ROLE_DISPLAY_NAME_CHANGED';
     public const AUDIT_CAPABILITIES_CHANGED = 'CUSTOM_ROLE_CAPABILITIES_CHANGED';
-    public const AUDIT_DEACTIVATED = 'CUSTOM_ROLE_DEACTIVATED';
-    public const AUDIT_REACTIVATED = 'CUSTOM_ROLE_REACTIVATED';
+    public const AUDIT_DEACTIVATED          = 'CUSTOM_ROLE_DEACTIVATED';
+    public const AUDIT_REACTIVATED          = 'CUSTOM_ROLE_REACTIVATED';
 
     public const RESOURCE_TYPE = 'custom_role_definition';
 
@@ -430,15 +430,15 @@ final class CustomRoleManagementService {
                     throw CustomRoleManagementException::stale_version();
                 }
 
-                $next_version = $current_version + 1;
-                $before       = [
+                $next_version     = $current_version + 1;
+                $before           = [
                     'role_key'     => (string) $existing['role_key'],
                     'display_name' => $existing['display_name'],
                     'status'       => (string) $existing['status'],
                     'version'      => $current_version,
                     'capabilities' => $existing['capabilities'],
                 ];
-                $after        = $before;
+                $after            = $before;
                 $after['status']  = $new_status;
                 $after['version'] = $next_version;
 

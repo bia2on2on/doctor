@@ -34,8 +34,8 @@ final class CustomRoleDefinitionsPage {
 
 	public const PAGE_SLUG = 'cpms-custom-roles';
 
-	private const NONCE_CREATE = 'cpms_custom_role_create';
-	private const NONCE_RENAME = 'cpms_custom_role_rename';
+	private const NONCE_CREATE     = 'cpms_custom_role_create';
+	private const NONCE_RENAME     = 'cpms_custom_role_rename';
 	private const NONCE_CAPS       = 'cpms_custom_role_caps';
 	private const NONCE_DEACTIVATE = 'cpms_custom_role_deactivate';
 	private const NONCE_REACTIVATE = 'cpms_custom_role_reactivate';
@@ -247,7 +247,7 @@ final class CustomRoleDefinitionsPage {
 
 	private static function handle_status_change( bool $is_reactivate ): void {
 		self::assert_entry();
-		$nonce_action  = $is_reactivate ? self::NONCE_REACTIVATE : self::NONCE_DEACTIVATE;
+		$nonce_action = $is_reactivate ? self::NONCE_REACTIVATE : self::NONCE_DEACTIVATE;
 		check_admin_referer( $nonce_action );
 
 		$clinic_id        = absint( wp_unslash( $_POST['cpms_clinic_id'] ?? 0 ) );
@@ -358,10 +358,10 @@ final class CustomRoleDefinitionsPage {
 	 * @param array{clinic_id:int, id:int, role_key:string, display_name:string|null, status:string, version:int, capabilities:list<string>} $definition
 	 */
 	private static function render_lifecycle_form( int $clinic_id, array $definition ): void {
-		$is_active   = 'active' === $definition['status'];
-		$action      = $is_active ? 'cpms_custom_role_deactivate' : 'cpms_custom_role_reactivate';
-		$nonce       = $is_active ? self::NONCE_DEACTIVATE : self::NONCE_REACTIVATE;
-		$explanation = $is_active
+		$is_active    = 'active' === $definition['status'];
+		$action       = $is_active ? 'cpms_custom_role_deactivate' : 'cpms_custom_role_reactivate';
+		$nonce        = $is_active ? self::NONCE_DEACTIVATE : self::NONCE_REACTIVATE;
+		$explanation  = $is_active
 			? __( 'با غیرفعال‌سازی، این تعریف و تخصیص‌های موجود حفظ می‌شوند اما نقش دیگر هیچ اختیار مشتق‌شده‌ای نمی‌دهد؛ GRANT/DENY عضویت تغییر نمی‌کند.', 'cpms' )
 			: __( 'با فعال‌سازی دوباره، اختیار و حدود واگذاری فعلی بررسی می‌شود؛ تخصیص‌ها و GRANT/DENY عضویت حفظ شده‌اند.', 'cpms' );
 		$confirmation = $is_active
@@ -376,8 +376,8 @@ final class CustomRoleDefinitionsPage {
 		echo '<input type="hidden" name="role_key" value="' . esc_attr( $definition['role_key'] ) . '">';
 		echo '<input type="hidden" name="version" value="' . esc_attr( (string) $definition['version'] ) . '">';
 		wp_nonce_field( $nonce );
-		$onclick = esc_attr( 'return confirm(' . wp_json_encode( $confirmation ) . ');' );
-		echo '<button type="submit" class="button" onclick="' . $onclick . '">' . esc_html( $button_label ) . '</button>';
+		$onclick = 'return confirm(' . wp_json_encode( $confirmation ) . ');';
+		echo '<button type="submit" class="button" onclick="' . esc_attr( $onclick ) . '">' . esc_html( $button_label ) . '</button>';
 		echo '</form>';
 	}
 
