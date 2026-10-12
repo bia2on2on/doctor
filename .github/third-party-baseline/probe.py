@@ -41,6 +41,25 @@ The subject state is derived, never asserted by hand:
              UNAVAILABLE
     PASS     every check PASS or INFO
 
+RESULT PROPAGATION — the state is only useful if it reaches the job conclusion
+    ``finalize`` therefore exits non-zero for FAIL and zero for PASS, PARTIAL and
+    NOT RUN.  A material failure, an environment failure and a missing evidence
+    phase all derive FAIL, so all three turn the subject job red and the required
+    gate cannot report success over an unmeasured subject:
+      * FAIL    — a material check failed (product behaviour, environment
+                  provisioning, harness/fixture) or the post-activation evidence
+                  phase never ran.  Blocking.  The class distinction survives in
+                  ``taxonomy``: C stays infrastructure, D stays harness, and only
+                  a product-class failure is called a compatibility failure.
+      * PARTIAL — recorded, non-material findings (a recorded-only FAIL, FEATURE
+                  UNAVAILABLE, UNEXECUTED).  Intentionally non-blocking, and never
+                  rendered as PASS: state, reason and counts travel with the
+                  artifact and into the aggregate summary.
+      * NOT RUN — no lawful owner-supplied material existed.  Not a failure and
+                  not a PASS.
+    An ``::error::`` annotation alone never fails a step, so the exit status — not
+    the annotation — is the gate.
+
 CPMS is never installed here, so taxonomy category A and B are unreachable by
 construction and are never emitted; see ``classify()``.
 """
@@ -1986,19 +2005,20 @@ def cmd_finalize(args: argparse.Namespace) -> int:
     for check in checks:
         counts[check["status"]] = counts.get(check["status"], 0) + 1
 
+    material_failures = [c for c in checks if c["material"] and c["status"] == FAIL]
+    # Intentionally non-blocking, and never a PASS: a recorded-only FAIL, a
+    # feature this lane cannot execute, and a check that could not run at all.
+    non_blocking = [c for c in checks if c["status"] in (UNAVAILABLE, UNEXECUTED)
+                    or (c["status"] == FAIL and not c["material"])]
     if args.not_run:
         state, reason = NOT_RUN, args.not_run
+    elif material_failures:
+        state, reason = FAIL, ""
+    elif non_blocking:
+        state = "PARTIAL"
+        reason = "; ".join(sorted({f"{c['name']}={c['status']}" for c in non_blocking}))[:600]
     else:
-        material_failures = [c for c in checks if c["material"] and c["status"] == FAIL]
-        soft = [c for c in checks if c["status"] in (UNAVAILABLE, UNEXECUTED)
-                or (c["status"] == FAIL and not c["material"])]
-        if material_failures:
-            state, reason = FAIL, ""
-        elif soft:
-            state = "PARTIAL"
-            reason = "; ".join(sorted({f"{c['name']}={c['status']}" for c in soft}))[:600]
-        else:
-            state, reason = PASS, ""
+        state, reason = PASS, ""
 
     taxonomy = sorted({classify(c, subject.get("kind", ""))
                        for c in checks if c["status"] == FAIL and c["material"]})
@@ -2017,6 +2037,15 @@ def cmd_finalize(args: argparse.Namespace) -> int:
         "reason": reason,
         "counts": counts,
         "taxonomy": taxonomy,
+        # Result-propagation contract, stated inside the artifact so neither a
+        # reader nor the aggregate has to infer it from a job conclusion.
+        "ci_gate": {
+            "blocking": state == FAIL,
+            "rule": "FAIL fails the subject job and the aggregate summary; PARTIAL "
+                    "and NOT RUN are non-blocking and neither is ever rendered as PASS",
+            "non_blocking_findings": sorted({f"{c['name']}={c['status']}"
+                                              for c in non_blocking}),
+        },
         "table_counts": {
             "before_activation": pre_tables, "after_activation": post_tables,
             "delta": (post_tables - pre_tables)
@@ -2062,13 +2091,26 @@ def cmd_finalize(args: argparse.Namespace) -> int:
     store.save()
 
     # The state is mirrored into an annotation because the artifact that carries
-    # it lives on blob storage, unreachable from outside the runner.
-    annotate("notice" if state in (PASS, NOT_RUN) else "warning",
+    # it lives on blob storage, unreachable from outside the runner. FAIL is an
+    # error-level annotation because it also fails the step below.
+    annotate("notice" if state in (PASS, NOT_RUN) else
+             ("error" if state == FAIL else "warning"),
              f"SUBJECT {args.subject_id} STATE={state} counts={json.dumps(counts)} "
              f"taxonomy={json.dumps(taxonomy)}")
     print(f"[probe:finalize] {args.subject_id} -> {state}")
     if reason:
         print(f"[probe:finalize] reason: {reason}")
+    if state == FAIL:
+        # The exit status is the gate. An `::error::` annotation never fails a
+        # step on its own, so a material failure that only annotated the run left
+        # a green job behind and the required gate claimed a measurement that did
+        # not happen. Only FAIL blocks; PARTIAL and NOT RUN stay non-blocking.
+        blockers = sorted({f"{c['name']}={c['status']}" for c in material_failures})
+        print(f"::error::SUBJECT {args.subject_id} STATE=FAIL — this subject job must "
+              f"fail so the required gate cannot pass over an unmeasured or failed "
+              f"subject. material failures: {json.dumps(blockers)} "
+              f"taxonomy={json.dumps(taxonomy)}")
+        return 1
     return 0
 
 

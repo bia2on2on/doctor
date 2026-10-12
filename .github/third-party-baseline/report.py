@@ -9,6 +9,12 @@ Nothing here re-adjudicates a subject: the per-subject state and taxonomy were
 already derived by ``probe.py`` from recorded evidence.  This module collects,
 orders and renders, and it fails loudly on malformed or missing input rather
 than quietly presenting an incomplete campaign as complete.
+
+RESULT PROPAGATION: this aggregate exits non-zero when any subject result says
+``FAIL`` (a material failure, an environment failure or a missing evidence phase
+must never be aggregated away) and when the delivered evidence is unreadable,
+malformed or empty.  ``PARTIAL`` and ``NOT RUN`` are non-blocking: they are
+rendered as themselves and never as ``PASS``.
 """
 
 from __future__ import annotations
@@ -78,6 +84,10 @@ def render_markdown(results: List[Dict[str, Any]], meta: Dict[str, Any],
         f"- head SHA: `{meta['head_sha']}`",
         f"- run: {meta['run_url']}",
         "- subjects: " + " · ".join(f"{state} {totals.get(state, 0)}" for state in STATE_ORDER),
+        "- gate: " + ("**RED — a material subject FAIL was recorded, so this aggregate "
+                      "concludes `failure` too.**" if totals.get("FAIL", 0) else
+                      "**no material subject FAIL. PARTIAL is recorded evidence below, "
+                      "never a PASS.**"),
         "",
         "## Results",
         "",
@@ -129,6 +139,17 @@ def render_markdown(results: List[Dict[str, Any]], meta: Dict[str, Any],
                       "subject is one job, so a fresh `workflow_dispatch` run of this "
                       "workflow reproduces it on a fresh runner, container and WordPress.",
                       "", "```", "gh workflow run third-party-baseline.yml", "```", ""]
+
+    partial = [r for r in results if r["state"] == "PARTIAL"]
+    if partial:
+        lines += ["## PARTIAL — recorded, non-blocking, never rendered as PASS", ""]
+        lines += [f"- `{r['subject'].get('id')}` — {r.get('reason') or 'recorded findings'}"
+                  for r in partial]
+        lines += ["",
+                  "PARTIAL means the subject was measured and no material check failed, "
+                  "while at least one finding was recorded (a recorded-only FAIL, a "
+                  "FEATURE UNAVAILABLE, or an UNEXECUTED check). It is not a PASS and it "
+                  "does not fail the gate.", ""]
 
     not_run = [r for r in results if r["state"] == "NOT RUN"]
     if not_run:
@@ -184,6 +205,17 @@ def main() -> int:
     for result in results:
         totals[result["state"]] += 1
 
+    # A subject whose derived state is FAIL was not measured, or measured a
+    # material failure. The aggregate must go red with it: a green summary over a
+    # red subject is exactly the propagation defect this check exists to prevent.
+    failed = [r for r in results if r["state"] == "FAIL"]
+    for result in failed:
+        blockers = sorted({f"{c['name']}={c['status']}" for c in result["checks"]
+                           if c.get("material") and c.get("status") == "FAIL"})
+        print(f"::error::subject {result['subject'].get('id')} STATE=FAIL "
+              f"taxonomy={json.dumps(result.get('taxonomy') or [])} "
+              f"material failures: {json.dumps(blockers)}")
+
     markdown = render_markdown(results, meta, totals)
     os.makedirs(args.out_dir, exist_ok=True)
     json_path = os.path.join(args.out_dir, "summary.json")
@@ -200,11 +232,14 @@ def main() -> int:
         with open(step_summary, "a", encoding="utf-8") as handle:
             handle.write(markdown)
 
-    print(f"[report] subjects={len(results)} totals={totals} problems={len(problems)}")
+    print(f"[report] subjects={len(results)} totals={totals} problems={len(problems)} "
+          f"failed={len(failed)}")
     print(f"[report] wrote {json_path}")
-    # A malformed subject result is a class D harness defect: the campaign is
-    # incomplete and must not be presented as a clean aggregate.
-    return 1 if problems else 0
+    # A malformed subject result is a class D harness defect, and a FAIL subject is
+    # a material failure or unmeasured subject: in both cases the campaign is
+    # incomplete or red and must not be presented as a clean aggregate. The
+    # summary above is still written before this exit so the evidence survives.
+    return 1 if (problems or failed) else 0
 
 
 if __name__ == "__main__":
