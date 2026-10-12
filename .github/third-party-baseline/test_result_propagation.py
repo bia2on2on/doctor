@@ -86,12 +86,12 @@ class PropagationCase(unittest.TestCase):
         self.root = Path(self.tmp.name)
 
     def store(self, subject_id: str, checks: list, facts: dict | None = None,
-              kind: str = "subject") -> Path:
+              kind: str = "subject", subject: dict | None = None) -> Path:
         path = self.root / subject_id / "evidence.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({
             "subject": {"id": subject_id, "kind": kind, "slug": subject_id,
-                        "version_requested": "0.0.0"},
+                        "version_requested": "0.0.0", **(subject or {})},
             "facts": {"phase_post_executed": True, **(facts or {})},
             "checks": checks,
         }, indent=2) + "\n", encoding="utf-8")
@@ -107,16 +107,19 @@ class PropagationCase(unittest.TestCase):
         result = json.loads(out.read_text(encoding="utf-8")) if out.exists() else {}
         return completed, result
 
-    def aggregate(self, subject_dirs: list, extra=()):
-        """Run the real aggregate CLI over real ``finalize`` output."""
+    def deliver(self, subject_id: str) -> Path:
+        """Copy one produced artifact into the results tree the way the job does."""
+        target = self.root / "results" / subject_id
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "subject-result.json").write_text(
+            (self.root / subject_id / "subject-result.json").read_text(encoding="utf-8"),
+            encoding="utf-8")
+        return target / "subject-result.json"
+
+    def report_run(self, extra=()):
+        """Run the real aggregate CLI over whatever is in the results tree."""
         results_dir, out_dir = self.root / "results", self.root / "summary"
         results_dir.mkdir(exist_ok=True)
-        for subject_id in subject_dirs:
-            target = results_dir / subject_id
-            target.mkdir(exist_ok=True)
-            source = self.root / subject_id / "subject-result.json"
-            (target / "subject-result.json").write_text(
-                source.read_text(encoding="utf-8"), encoding="utf-8")
         completed = subprocess.run(
             [sys.executable, str(REPORT), "--results-dir", str(results_dir),
              "--out-dir", str(out_dir), "--lane", "A", "--head-sha", "0" * 40,
@@ -127,6 +130,12 @@ class PropagationCase(unittest.TestCase):
         return (completed,
                 json.loads(summary.read_text(encoding="utf-8")) if summary.exists() else {},
                 markdown.read_text(encoding="utf-8") if markdown.exists() else "")
+
+    def aggregate(self, subject_dirs: list, extra=()):
+        """Deliver artifacts, then run the real aggregate CLI over them."""
+        for subject_id in subject_dirs:
+            self.deliver(subject_id)
+        return self.report_run(extra)
 
 
 class SubjectStateTests(PropagationCase):
@@ -228,6 +237,167 @@ class SubjectStateTests(PropagationCase):
         self.assertIs(result["ci_gate"]["blocking"], False)
 
 
+class DiagnosticExceptionTests(PropagationCase):
+    """The one owner-approved diagnostic exception: exact signature or nothing.
+
+    The historical signature is the one recorded independently in the published
+    per-subject evidence of the `main` merge SHA `b925f873…`: slug
+    `persian-woocommerce`, version `10.0.5`, dependency `woocommerce=11.2.0`, and
+    these seven material product-class post-activation check identifiers (plus one
+    recorded-only, non-material PHP-warning finding). The identifiers — not any
+    message text and not a failure count — are what the policy pins.
+    """
+
+    MATERIAL_FAILURES = (
+        "admin_ajax_wp_layer_reachable_post",
+        "admin_login_session_post",
+        "front_page_http_200_post",
+        "no_redirect_loop_front_post",
+        "rest_index_reachable_post",
+        "wp_admin_reachable_post",
+        "wp_cli_bootstrap_post",
+    )
+    SUBJECT = {"slug": "persian-woocommerce", "version_requested": "10.0.5",
+               "dependencies": ["woocommerce=11.2.0"]}
+    FACTS = {"browser_post": {"nav": {"front_status": 200}, "rest_status": 200}}
+
+    def historical_checks(self, material=None, extra=()):
+        material = self.MATERIAL_FAILURES if material is None else material
+        checks = [check(name, probe.FAIL, probe.PRODUCT, material=True,
+                        detail="recorded historical failure")
+                  for name in material]
+        # Read through the policy so the fixture cannot pin a different contract
+        # than the harness; the explicit policy test below pins the policy itself.
+        policy = getattr(probe, "DIAGNOSTIC_EXCEPTION", {"required_checks": ()})
+        checks += [check(name, probe.PASS, probe.PRODUCT)
+                   for name in sorted(policy.get("required_checks", ()))]
+        checks.append(check("php_warnings_after_activation", probe.FAIL, probe.PRODUCT,
+                            detail="non-fatal PHP diagnostics recorded; recorded only"))
+        return checks + list(extra)
+
+    def run_case(self, checks=None, subject=None, facts=None, kind="subject"):
+        store = self.store("persian-woocommerce",
+                           self.historical_checks() if checks is None else checks,
+                           facts=dict(self.FACTS) if facts is None else facts,
+                           kind=kind, subject=dict(self.SUBJECT) if subject is None else subject)
+        return self.finalize("persian-woocommerce", store)
+
+    def assert_blocking(self, completed, result, why=""):
+        self.assertNotEqual(completed.returncode, 0, f"must block: {why}")
+        self.assertEqual(result["state"], probe.FAIL, "raw state must stay FAIL")
+        self.assertIs(result["ci_gate"]["blocking"], True, why)
+        self.assertIs(result["ci_gate"]["diagnostic_exception"]["applies"], False, why)
+
+    def test_policy_pins_identity_identifiers_and_probe_evidence(self):
+        policy = probe.DIAGNOSTIC_EXCEPTION
+        self.assertEqual(policy["slug"], "persian-woocommerce")
+        self.assertEqual(policy["version"], "10.0.5")
+        self.assertEqual(tuple(policy["dependencies"]), ("woocommerce=11.2.0",))
+        self.assertEqual(set(policy["material_failures"]), set(self.MATERIAL_FAILURES))
+        self.assertEqual(tuple(policy["required_facts"]),
+                         ("phase_post_executed", "browser_post"))
+        self.assertEqual(set(policy["required_checks"]), {
+            "php_web_version_exact_post", "wp_core_version_exact_post",
+            "timezone_and_locale_post", "administrator_login_capability_post",
+            "admin_ajax_negative_control_post", "cpms_tables_absent_post",
+            "cpms_options_absent_post", "browser_front_page_render",
+            "browser_rest_index", "browser_no_uncaught_page_errors"})
+
+    # -- the accepted signature --------------------------------------------- #
+    def test_exact_historical_signature_is_diagnostic_only_not_blocking(self):
+        completed, result = self.run_case()
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        # Raw result preserved: state, counts and taxonomy are untouched.
+        self.assertEqual(result["state"], probe.FAIL)
+        self.assertNotEqual(result["state"], probe.PASS)
+        # 7 accepted material failures + the recorded-only PHP-warning finding.
+        self.assertEqual(result["counts"]["FAIL"], 8)
+        self.assertEqual(result["counts"]["PASS"], 10)
+        self.assertEqual(result["taxonomy"], [probe.THIRD_PARTY_BASELINE])
+        self.assertIs(result["ci_gate"]["blocking"], False)
+        self.assertEqual(result["ci_gate"]["disposition"], "diagnostic-only-nonblocking-fail")
+        self.assertIs(result["ci_gate"]["diagnostic_exception"]["applies"], True)
+        self.assertIn("STATE=FAIL", completed.stdout)
+        self.assertIn("NOT a compatibility PASS", completed.stdout)
+
+    # -- every way the signature can differ must block ----------------------- #
+    def test_same_slug_other_version_blocks(self):
+        completed, result = self.run_case(subject={**self.SUBJECT, "version_requested": "10.0.6"})
+        self.assert_blocking(completed, result, "another version")
+
+    def test_other_slug_same_version_and_signature_blocks(self):
+        completed, result = self.run_case(subject={**self.SUBJECT, "slug": "wp-parsidate"})
+        self.assert_blocking(completed, result, "another plugin")
+
+    def test_changed_dependency_identity_blocks(self):
+        completed, result = self.run_case(
+            subject={**self.SUBJECT, "dependencies": ["woocommerce=11.3.0"]})
+        self.assert_blocking(completed, result, "another dependency version")
+
+    def test_incomplete_accepted_signature_blocks(self):
+        completed, result = self.run_case(
+            checks=self.historical_checks(material=self.MATERIAL_FAILURES[:-1]))
+        self.assert_blocking(completed, result, "one accepted failure is missing")
+
+    def test_additional_material_failure_blocks(self):
+        extra = check("browser_front_page_render", probe.FAIL, probe.PRODUCT, material=True)
+        completed, result = self.run_case(checks=self.historical_checks(extra=[extra]))
+        self.assert_blocking(completed, result, "an additional material failure")
+
+    def test_provisioning_failure_c_blocks(self):
+        extra = check("php_web_version_exact_post", probe.FAIL, probe.ENVIRONMENT, material=True)
+        completed, result = self.run_case(checks=self.historical_checks(extra=[extra]))
+        self.assert_blocking(completed, result, "an environment failure")
+        self.assertIn("C (infrastructure/environment)", result["taxonomy"])
+
+    def test_harness_fixture_failure_d_blocks(self):
+        extra = check("plugin_header_metadata_read", probe.FAIL, probe.HARNESS, material=True)
+        completed, result = self.run_case(checks=self.historical_checks(extra=[extra]))
+        self.assert_blocking(completed, result, "a harness/fixture failure")
+        self.assertIn("D (test/test-infrastructure/fixture defect)", result["taxonomy"])
+
+    def test_missing_post_activation_phase_blocks(self):
+        # The real harness records nothing when the phase never ran; an explicit
+        # False is the same evidence and is what the store helper can express.
+        completed, result = self.run_case(
+            facts={"phase_post_executed": False, "browser_post": {"nav": {}}})
+        self.assert_blocking(completed, result, "the post phase never ran")
+
+    def test_missing_browser_probe_evidence_blocks(self):
+        completed, result = self.run_case(facts={})
+        self.assert_blocking(completed, result,
+                             "no positive evidence that the browser probe executed")
+
+    def test_missing_required_probe_verdict_blocks(self):
+        checks = [c for c in self.historical_checks() if c["name"] != "browser_rest_index"]
+        completed, result = self.run_case(checks=checks)
+        self.assert_blocking(completed, result, "a required probe verdict is absent")
+
+    def test_reproduced_failure_names_without_probe_evidence_block(self):
+        # Identical failure identifiers, identical version, but no probe-execution
+        # evidence at all: the exception must not be reachable by name alone.
+        completed, result = self.run_case(
+            checks=[check(name, probe.FAIL, probe.PRODUCT, material=True)
+                    for name in self.MATERIAL_FAILURES], facts={})
+        self.assert_blocking(completed, result, "no probe-execution evidence")
+
+    # -- non-FAIL states never acquire the exception -------------------------- #
+    def test_clean_pass_and_partial_never_apply_the_exception(self):
+        for label, checks in (
+                ("pass", [PASS_CHECK]),
+                ("partial", [PASS_CHECK, check("php_warnings_after_activation", probe.FAIL,
+                                               probe.PRODUCT, detail="recorded only")])):
+            store = self.store(f"{label}-subject", checks,
+                               facts=dict(self.FACTS), subject=dict(self.SUBJECT))
+            completed, result = self.finalize(f"{label}-subject", store)
+            self.assertEqual(completed.returncode, 0, label)
+            self.assertIs(result["ci_gate"]["blocking"], False, label)
+            self.assertIs(result["ci_gate"]["diagnostic_exception"]["applies"], False, label)
+            if label == "partial":
+                self.assertEqual(result["state"], "PARTIAL")
+                self.assertNotEqual(result["state"], probe.PASS)
+
+
 class AggregatePropagationTests(PropagationCase):
 
     def build(self, subject_id: str, checks: list, facts: dict | None = None, kind="subject"):
@@ -275,6 +445,59 @@ class AggregatePropagationTests(PropagationCase):
         completed, _summary, _markdown = self.aggregate([])
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("refusing to publish an empty summary", completed.stdout)
+
+    def diagnostic_subject(self, subject_id="persian-woocommerce", **overrides):
+        case = DiagnosticExceptionTests("test_exact_historical_signature_is_diagnostic_only_not_blocking")
+        case.root = self.root  # reuse this test's temporary directory
+        store = self.store(subject_id, case.historical_checks(),
+                           facts=dict(case.FACTS), subject={**case.SUBJECT, **overrides})
+        completed, result = self.finalize(subject_id, store)
+        self.assertTrue(result, f"{subject_id} produced no artifact: {completed.stderr}")
+
+    def test_aggregate_accepts_the_diagnostic_exception_and_preserves_raw_fail_counts(self):
+        self.diagnostic_subject()
+        self.build("clean-subject", [PASS_CHECK, ENV_PASS_CHECK])
+        completed, summary, markdown = self.aggregate(["persian-woocommerce", "clean-subject"])
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        # The raw FAIL subject is preserved and reported as itself, never merged.
+        self.assertEqual(summary["totals"]["FAIL"], 1)
+        self.assertEqual(summary["totals"]["PASS"], 1)
+        self.assertEqual(summary["dispositions"]["fail_subjects"], ["persian-woocommerce"])
+        self.assertEqual(summary["dispositions"]["accepted_diagnostic_exceptions"],
+                         ["persian-woocommerce"])
+        self.assertEqual(summary["dispositions"]["blocking_failures"], [])
+        fail_row = [line for line in markdown.splitlines() if "| `persian-woocommerce` |" in line]
+        self.assertEqual(len(fail_row), 1)
+        self.assertTrue(fail_row[0].startswith("| FAIL |"), fail_row[0])
+        self.assertIn("diagnostic-only", markdown)
+        self.assertIn("NOT a compatibility PASS", markdown)
+
+    def test_aggregate_blocks_on_a_changed_signature_even_if_the_artifact_claims_otherwise(self):
+        # Defence in depth: the artifact's own boolean is not trusted. The
+        # delivered evidence carries one extra material failure, so the aggregate
+        # must re-derive "blocking" and refuse.
+        self.diagnostic_subject()
+        path = self.deliver("persian-woocommerce")
+        result = json.loads(path.read_text(encoding="utf-8"))
+        result["checks"].append(check("browser_front_page_render", probe.FAIL, probe.PRODUCT,
+                                      material=True))
+        self.assertIs(result["ci_gate"]["blocking"], False)  # producer marker claims otherwise
+        path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+        completed, summary, _markdown = self.report_run()
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertEqual(summary["dispositions"]["blocking_failures"], ["persian-woocommerce"])
+        self.assertEqual(summary["dispositions"]["accepted_diagnostic_exceptions"], [])
+
+    def test_aggregate_blocks_on_a_fail_subject_without_a_gate_marker(self):
+        self.build("material-fail", [check("front_page_http_200_post", probe.FAIL,
+                                           probe.PRODUCT, material=True)])
+        path = self.deliver("material-fail")
+        result = json.loads(path.read_text(encoding="utf-8"))
+        result.pop("ci_gate", None)  # a producer that never emitted a disposition
+        path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+        completed, summary, _markdown = self.report_run()
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertEqual(summary["dispositions"]["blocking_failures"], ["material-fail"])
 
     def test_aggregate_publishes_evidence_even_when_red(self):
         self.build("material-fail", [check("front_page_http_200_post", probe.FAIL,

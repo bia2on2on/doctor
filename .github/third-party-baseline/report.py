@@ -15,6 +15,13 @@ RESULT PROPAGATION: this aggregate exits non-zero when any subject result says
 must never be aggregated away) and when the delivered evidence is unreadable,
 malformed or empty.  ``PARTIAL`` and ``NOT RUN`` are non-blocking: they are
 rendered as themselves and never as ``PASS``.
+
+The single owner-approved diagnostic exception is honoured, and only it: a
+``FAIL`` subject is treated as non-blocking only when the delivered evidence
+re-derives that exception (identity, accepted failure identifiers and positive
+probe-execution evidence), never because the artifact asserts it.  The raw
+``FAIL``, its counts and its taxonomy stay in the summary; the exception is
+reported as an accepted diagnostic disposition, never as a compatibility pass.
 """
 
 from __future__ import annotations
@@ -24,6 +31,12 @@ import json
 import os
 import sys
 from typing import Any, Dict, List
+
+# The diagnostic policy lives in probe.py, beside the checks it is written
+# against. It is re-applied here so the aggregate's exit status does not depend
+# on a producer-supplied boolean.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from probe import diagnostic_exception  # noqa: E402
 
 STATE_ORDER = ["FAIL", "PARTIAL", "PASS", "NOT RUN"]
 REQUIRED_KEYS = ("schema", "subject", "state", "checks", "environment")
@@ -69,6 +82,34 @@ def absent_flag(phase: Dict[str, Any] | None) -> str:
     return "yes" if clean else "NO"
 
 
+def disposition(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Re-derive the gate disposition of one delivered subject result.
+
+    A ``FAIL`` subject blocks unless the delivered evidence itself satisfies the
+    single approved diagnostic exception.
+    """
+    if result["state"] != "FAIL":
+        return {"blocking": False, "diagnostic": None}
+    diagnostic = diagnostic_exception(result.get("subject") or {},
+                                      result.get("facts") or {},
+                                      result.get("checks") or [])
+    return {"blocking": not diagnostic["applies"], "diagnostic": diagnostic}
+
+
+def gate_line(results: List[Dict[str, Any]], totals: Dict[str, int]) -> str:
+    blocking = [r for r in results if disposition(r)["blocking"]]
+    accepted = [r for r in results if r["state"] == "FAIL" and not disposition(r)["blocking"]]
+    if blocking:
+        return (f"**RED — {len(blocking)} genuinely blocking subject FAIL: this aggregate "
+                f"concludes `failure` too.**")
+    if accepted:
+        return (f"**no blocking subject FAIL. {len(accepted)} material FAIL subject(s) "
+                f"recorded and accepted as diagnostic-only exceptions — NOT compatibility "
+                f"PASSes. PARTIAL is recorded evidence, never a PASS.**")
+    return ("**no material subject FAIL. PARTIAL is recorded evidence below, "
+            "never a PASS.**")
+
+
 def render_markdown(results: List[Dict[str, Any]], meta: Dict[str, Any],
                     totals: Dict[str, int]) -> str:
     lines: List[str] = [
@@ -84,10 +125,7 @@ def render_markdown(results: List[Dict[str, Any]], meta: Dict[str, Any],
         f"- head SHA: `{meta['head_sha']}`",
         f"- run: {meta['run_url']}",
         "- subjects: " + " · ".join(f"{state} {totals.get(state, 0)}" for state in STATE_ORDER),
-        "- gate: " + ("**RED — a material subject FAIL was recorded, so this aggregate "
-                      "concludes `failure` too.**" if totals.get("FAIL", 0) else
-                      "**no material subject FAIL. PARTIAL is recorded evidence below, "
-                      "never a PASS.**"),
+        "- gate: " + gate_line(results, totals),
         "",
         "## Results",
         "",
@@ -126,19 +164,33 @@ def render_markdown(results: List[Dict[str, Any]], meta: Dict[str, Any],
             "",
         ]
         for result in failures:
-            lines.append(f"### `{result['subject'].get('id')}` — FAIL")
+            gate = disposition(result)
+            label = ("BLOCKING" if gate["blocking"]
+                     else "diagnostic-only, accepted, non-blocking — NOT a compatibility PASS")
+            lines.append(f"### `{result['subject'].get('id')}` — FAIL ({label})")
             lines.append("")
             for check in result["checks"]:
                 if check.get("material") and check.get("status") == "FAIL":
                     observed = json.dumps(check.get("observed"), ensure_ascii=False)[:220]
                     lines.append(f"- `{check['name']}` — class **{check['klass']}** — "
                                  f"observed `{observed}`")
-            lines += ["", f"- taxonomy: {', '.join(result.get('taxonomy') or ['unclassified'])}",
-                      "",
-                      "**Repeat once in a fresh environment before causal attribution:** one "
-                      "subject is one job, so a fresh `workflow_dispatch` run of this "
-                      "workflow reproduces it on a fresh runner, container and WordPress.",
-                      "", "```", "gh workflow run third-party-baseline.yml", "```", ""]
+            lines += ["", f"- taxonomy: {', '.join(result.get('taxonomy') or ['unclassified'])}"]
+            if gate["blocking"]:
+                lines += ["",
+                          "**Repeat once in a fresh environment before causal attribution:** one "
+                          "subject is one job, so a fresh `workflow_dispatch` run of this "
+                          "workflow reproduces it on a fresh runner, container and WordPress.",
+                          "", "```", "gh workflow run third-party-baseline.yml", "```"]
+            else:
+                lines += ["",
+                          "This subject is the single owner-approved diagnostic exception: its "
+                          "raw FAIL state, counts, taxonomy and artifacts are preserved, and its "
+                          "gate disposition is non-blocking. It is not a compatibility PASS.",
+                          f"- accepted policy: {gate['diagnostic']['policy']}",
+                          "- accepted material failures: "
+                          + ", ".join(f"`{name}`" for name in
+                                      gate["diagnostic"]["accepted_material_failures"])]
+            lines.append("")
 
     partial = [r for r in results if r["state"] == "PARTIAL"]
     if partial:
@@ -208,11 +260,19 @@ def main() -> int:
     # A subject whose derived state is FAIL was not measured, or measured a
     # material failure. The aggregate must go red with it: a green summary over a
     # red subject is exactly the propagation defect this check exists to prevent.
+    # The only FAIL that does not block is the one approved diagnostic exception,
+    # and it is re-derived here from the delivered evidence, not trusted.
     failed = [r for r in results if r["state"] == "FAIL"]
+    blocking = [r for r in failed if disposition(r)["blocking"]]
+    accepted = [r for r in failed if not disposition(r)["blocking"]]
     for result in failed:
         blockers = sorted({f"{c['name']}={c['status']}" for c in result["checks"]
                            if c.get("material") and c.get("status") == "FAIL"})
-        print(f"::error::subject {result['subject'].get('id')} STATE=FAIL "
+        reason = ("diagnostic-only accepted exception (non-blocking, NOT a compatibility "
+                  "PASS)" if not disposition(result)["blocking"]
+                  else "blocking: " + "; ".join(disposition(result)["diagnostic"]["reasons"]))
+        print(f"::{'warning' if not disposition(result)['blocking'] else 'error'}::subject "
+              f"{result['subject'].get('id')} STATE=FAIL ({reason}) "
               f"taxonomy={json.dumps(result.get('taxonomy') or [])} "
               f"material failures: {json.dumps(blockers)}")
 
@@ -221,7 +281,18 @@ def main() -> int:
     json_path = os.path.join(args.out_dir, "summary.json")
     with open(json_path, "w", encoding="utf-8") as handle:
         json.dump({"schema": "cpms-phase18-third-party-baseline-summary/v1", "meta": meta,
-                   "totals": totals, "problems": problems, "subjects": results},
+                   "totals": totals, "problems": problems,
+                   # Raw FAIL subjects are never merged into PARTIAL: the summary
+                   # carries the actual FAIL subjects, the accepted diagnostic
+                   # exceptions and the genuinely blocking failures separately.
+                   "dispositions": {
+                       "fail_subjects": [r["subject"].get("id") for r in failed],
+                       "accepted_diagnostic_exceptions": [r["subject"].get("id") for r in accepted],
+                       "blocking_failures": [r["subject"].get("id") for r in blocking],
+                       "partial_subjects": [r["subject"].get("id") for r in results
+                                            if r["state"] == "PARTIAL"],
+                   },
+                   "subjects": results},
                   handle, indent=2)
         handle.write("\n")
     with open(os.path.join(args.out_dir, "summary.md"), "w", encoding="utf-8") as handle:
@@ -233,13 +304,15 @@ def main() -> int:
             handle.write(markdown)
 
     print(f"[report] subjects={len(results)} totals={totals} problems={len(problems)} "
-          f"failed={len(failed)}")
+          f"fail={len(failed)} blocking={len(blocking)} "
+          f"accepted_diagnostic={[r['subject'].get('id') for r in accepted]}")
     print(f"[report] wrote {json_path}")
-    # A malformed subject result is a class D harness defect, and a FAIL subject is
-    # a material failure or unmeasured subject: in both cases the campaign is
-    # incomplete or red and must not be presented as a clean aggregate. The
+    # A malformed subject result is a class D harness defect, and a blocking FAIL
+    # subject is a material failure or an unmeasured subject: in both cases the
+    # campaign is incomplete or red and must not be presented as a clean aggregate.
+    # Only the explicitly re-derived diagnostic exception is non-blocking; the
     # summary above is still written before this exit so the evidence survives.
-    return 1 if (problems or failed) else 0
+    return 1 if (problems or blocking) else 0
 
 
 if __name__ == "__main__":

@@ -51,6 +51,13 @@ RESULT PROPAGATION — the state is only useful if it reaches the job conclusion
                   phase never ran.  Blocking.  The class distinction survives in
                   ``taxonomy``: C stays infrastructure, D stays harness, and only
                   a product-class failure is called a compatibility failure.
+                  ONE exception exists and it is deliberately narrow: the
+                  owner-approved historical diagnostic signature for
+                  persian-woocommerce 10.0.5 (see DIAGNOSTIC_EXCEPTION).  It keeps
+                  the raw state FAIL, keeps every count, taxonomy entry, check and
+                  artifact, requires positive evidence that the expected probes
+                  executed, and only changes the gate disposition — an accepted
+                  diagnostic FAIL is not blocking, and it is never a PASS.
       * PARTIAL — recorded, non-material findings (a recorded-only FAIL, FEATURE
                   UNAVAILABLE, UNEXECUTED).  Intentionally non-blocking, and never
                   rendered as PASS: state, reason and counts travel with the
@@ -1963,6 +1970,121 @@ def cmd_browser(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------- #
+# The single owner-approved historical diagnostic exception
+# --------------------------------------------------------------------------- #
+# persian-woocommerce 10.0.5 fails materially on this lane. That failure was
+# independently recorded before this policy existed — per-subject artifact plus
+# `SUBJECT persian-woocommerce STATE=FAIL` check-run annotation and one
+# `::error::` annotation per failing check — on the `main` merge SHA
+# b925f873c1eb822b394531a8e2906c204c0850da and again on the correction head.
+# The owner decision (2026-10-12, documented in
+# docs/decisions/2026-10-12-third-party-baseline-diagnostic-exception.md) accepts
+# exactly that signature as a DIAGNOSTIC-ONLY, NON-BLOCKING exception.
+#
+# What this exception is NOT:
+#   * it is NOT a compatibility PASS, and nothing may render it as one;
+#   * it does not change the subject result: state stays FAIL, and counts,
+#     taxonomy, every check and every artifact are preserved unchanged;
+#   * it covers no other slug, no other version, no other dependency, and no
+#     changed, additional or missing material failure.
+#
+# POSITIVE-EVIDENCE RULE (the reason this is not a count comparison): a matching
+# number of failures proves nothing. The exception requires the pinned subject
+# identity, the exact pinned set of material failing CHECK IDENTIFIERS (never
+# message text), all of them product-class and post-activation, AND positive
+# evidence that the expected probes actually EXECUTED — the post-activation phase
+# marker, the browser-probe fact, and one recorded verdict per required probe.
+# A missing phase, a missing probe verdict, an extra material failure, a
+# different class or a different version all fall outside the policy and block.
+DIAGNOSTIC_EXCEPTION: Dict[str, Any] = {
+    "owner_decision": "2026-10-12: diagnostic-only, non-blocking, persian-woocommerce 10.0.5 only",
+    "slug": "persian-woocommerce",
+    "version": "10.0.5",
+    "dependencies": ("woocommerce=11.2.0",),
+    # Stable check identifiers recorded by the historical failure, verbatim.
+    "material_failures": frozenset({
+        "admin_ajax_wp_layer_reachable_post",
+        "admin_login_session_post",
+        "front_page_http_200_post",
+        "no_redirect_loop_front_post",
+        "rest_index_reachable_post",
+        "wp_admin_reachable_post",
+        "wp_cli_bootstrap_post",
+    }),
+    # Verdicts that must exist before the exception may apply: they prove the
+    # WordPress/HTTP/database probes and the browser probe really ran.
+    "required_checks": frozenset({
+        "php_web_version_exact_post",
+        "wp_core_version_exact_post",
+        "timezone_and_locale_post",
+        "administrator_login_capability_post",
+        "admin_ajax_negative_control_post",
+        "cpms_tables_absent_post",
+        "cpms_options_absent_post",
+        "browser_front_page_render",
+        "browser_rest_index",
+        "browser_no_uncaught_page_errors",
+    }),
+    # Facts that prove the post-activation phases completed.
+    "required_facts": ("phase_post_executed", "browser_post"),
+}
+
+
+def diagnostic_exception(subject: Dict[str, Any], facts: Dict[str, Any],
+                         checks: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Evaluate the one approved diagnostic exception against recorded evidence.
+
+    Returns the disposition, never a verdict about compatibility: ``applies`` is
+    true only when the recorded evidence is the accepted signature in full. The
+    caller keeps the raw subject state exactly as derived.
+    """
+    policy = DIAGNOSTIC_EXCEPTION
+    recorded = {check["name"]: check for check in checks}
+    expected = set(policy["material_failures"])
+    observed = {check["name"] for check in checks
+                if check["material"] and check["status"] == FAIL}
+
+    reasons: List[str] = []
+    if not (subject.get("slug") == policy["slug"]
+            and subject.get("version_requested") == policy["version"]
+            and tuple(subject.get("dependencies") or ()) == policy["dependencies"]):
+        reasons.append(
+            "subject identity is not the approved exception subject "
+            f"(expected slug={policy['slug']!r} version={policy['version']!r} "
+            f"dependencies={list(policy['dependencies'])!r}, got slug="
+            f"{subject.get('slug')!r} version={subject.get('version_requested')!r} "
+            f"dependencies={subject.get('dependencies')!r})")
+
+    absent = sorted(expected - observed)
+    if absent:
+        reasons.append(f"the accepted failure signature is incomplete: {absent}")
+    outside = sorted(name for name in observed
+                     if name not in expected
+                     or recorded[name]["klass"] != PRODUCT
+                     or recorded[name]["phase"] != "post")
+    if outside:
+        reasons.append(f"material failures outside the accepted signature: {outside}")
+
+    missing_evidence = [f"fact {key}" for key in policy["required_facts"]
+                        if facts.get(key) in (None, False)]
+    missing_evidence += [f"check {name}" for name in sorted(policy["required_checks"])
+                         if name not in recorded]
+    if missing_evidence:
+        reasons.append("no positive evidence that the expected probes executed: "
+                       + ", ".join(missing_evidence))
+
+    return {
+        "applies": not reasons,
+        "policy": policy["owner_decision"],
+        "subject": {"slug": subject.get("slug"),
+                    "version": subject.get("version_requested"),
+                    "dependencies": list(subject.get("dependencies") or ())},
+        "accepted_material_failures": sorted(expected),
+        "reasons": reasons,
+    }
+
+
+# --------------------------------------------------------------------------- #
 # subcommand: finalize
 # --------------------------------------------------------------------------- #
 def classify(check: Dict[str, Any], kind: str = "") -> str:
@@ -2026,6 +2148,12 @@ def cmd_finalize(args: argparse.Namespace) -> int:
     if forbidden:  # pragma: no cover - guarded invariant
         raise SystemExit(f"refusing to emit forbidden taxonomy category: {forbidden}")
 
+    # Raw result and gate disposition are separate: the state above is never
+    # rewritten by the diagnostic policy, it only decides whether this subject
+    # blocks the required gate.
+    diagnostic = diagnostic_exception(subject, facts, checks)
+    blocking = state == FAIL and not diagnostic["applies"]
+
     pre_tables, post_tables = facts.get("table_count_pre"), facts.get("table_count_post")
     env = os.environ
     run_url = (f"{env.get('GITHUB_SERVER_URL', '')}/{env.get('GITHUB_REPOSITORY', '')}"
@@ -2039,12 +2167,19 @@ def cmd_finalize(args: argparse.Namespace) -> int:
         "taxonomy": taxonomy,
         # Result-propagation contract, stated inside the artifact so neither a
         # reader nor the aggregate has to infer it from a job conclusion.
+        # `blocking` is the gate disposition; `state` above is the raw result.
         "ci_gate": {
-            "blocking": state == FAIL,
-            "rule": "FAIL fails the subject job and the aggregate summary; PARTIAL "
-                    "and NOT RUN are non-blocking and neither is ever rendered as PASS",
+            "blocking": blocking,
+            "disposition": ("blocking-fail" if blocking else
+                            "diagnostic-only-nonblocking-fail" if state == FAIL else
+                            "non-blocking" if state in (PASS, "PARTIAL") else "not-run"),
+            "rule": "FAIL fails the subject job and the aggregate summary unless the "
+                    "single owner-approved diagnostic exception applies to the exact "
+                    "recorded signature; PARTIAL and NOT RUN are non-blocking and "
+                    "neither is ever rendered as PASS",
             "non_blocking_findings": sorted({f"{c['name']}={c['status']}"
                                               for c in non_blocking}),
+            "diagnostic_exception": diagnostic,
         },
         "table_counts": {
             "before_activation": pre_tables, "after_activation": post_tables,
@@ -2091,25 +2226,39 @@ def cmd_finalize(args: argparse.Namespace) -> int:
     store.save()
 
     # The state is mirrored into an annotation because the artifact that carries
-    # it lives on blob storage, unreachable from outside the runner. FAIL is an
-    # error-level annotation because it also fails the step below.
+    # it lives on blob storage, unreachable from outside the runner. A blocking
+    # FAIL is an error-level annotation because it also fails the step below; an
+    # accepted diagnostic FAIL stays a warning, but still announces the raw FAIL
+    # so it can never be read as a compatibility PASS.
     annotate("notice" if state in (PASS, NOT_RUN) else
-             ("error" if state == FAIL else "warning"),
+             ("error" if blocking else "warning"),
              f"SUBJECT {args.subject_id} STATE={state} counts={json.dumps(counts)} "
-             f"taxonomy={json.dumps(taxonomy)}")
-    print(f"[probe:finalize] {args.subject_id} -> {state}")
+             f"taxonomy={json.dumps(taxonomy)}"
+             + (" — DIAGNOSTIC-ONLY accepted exception, non-blocking, NOT a compatibility "
+                "PASS" if state == FAIL and not blocking else ""))
+    print(f"[probe:finalize] {args.subject_id} -> {state}"
+          f"{' (diagnostic-only, non-blocking)' if state == FAIL and not blocking else ''}")
     if reason:
         print(f"[probe:finalize] reason: {reason}")
+    if state == FAIL and not blocking:
+        print(f"::warning::SUBJECT {args.subject_id} STATE=FAIL — diagnostic-only accepted "
+              f"exception (non-blocking, NOT a compatibility PASS). accepted material "
+              f"failures: {json.dumps(diagnostic['accepted_material_failures'])} "
+              f"taxonomy={json.dumps(taxonomy)}")
+        return 0
     if state == FAIL:
         # The exit status is the gate. An `::error::` annotation never fails a
         # step on its own, so a material failure that only annotated the run left
         # a green job behind and the required gate claimed a measurement that did
-        # not happen. Only FAIL blocks; PARTIAL and NOT RUN stay non-blocking.
+        # not happen. Only a blocking FAIL blocks; PARTIAL and NOT RUN stay
+        # non-blocking, and the accepted diagnostic signature does not block
+        # either — but its subject state remains FAIL.
         blockers = sorted({f"{c['name']}={c['status']}" for c in material_failures})
         print(f"::error::SUBJECT {args.subject_id} STATE=FAIL — this subject job must "
               f"fail so the required gate cannot pass over an unmeasured or failed "
               f"subject. material failures: {json.dumps(blockers)} "
-              f"taxonomy={json.dumps(taxonomy)}")
+              f"taxonomy={json.dumps(taxonomy)} "
+              f"diagnostic_exception={'not applicable: ' + '; '.join(diagnostic['reasons']) if diagnostic['reasons'] else 'unexpected'}")
         return 1
     return 0
 
