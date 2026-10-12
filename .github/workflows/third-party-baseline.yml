@@ -60,6 +60,73 @@ name: Third-Party Compatibility Baseline (Phase 18 Lane A)
 #   runner minutes, and the per-subject pins, SHA-256 and environment already
 #   recorded in each result are the deterministic rerun evidence.
 #
+# RESULT PROPAGATION CONTRACT (the reason the exit status, not an annotation, is
+# the gate)
+#   `probe.py finalize` derives each subject state from recorded evidence and now
+#   exits NON-ZERO for FAIL, zero for PASS / PARTIAL / NOT RUN. Before this, a
+#   material post-activation FAIL was recorded in the artifact and mirrored into
+#   an `::error::` annotation — and an annotation never fails a step — so the
+#   subject job concluded `success` and a green workflow did not prove that every
+#   subject passed. The three-way distinction is deliberate:
+#     FAIL     blocks.  Material product failure, environment/provisioning
+#              failure and a missing post-activation evidence phase all derive
+#              FAIL, and all three must turn the gate red instead of being
+#              reported as a measured subject. Taxonomy still separates C
+#              (infrastructure) and D (harness) from a real compatibility FAIL.
+#     PARTIAL  does NOT block, and is never rendered as PASS.  A recorded-only
+#              FAIL, FEATURE UNAVAILABLE and UNEXECUTED are recorded findings; the
+#              state, the reason and the counts travel in the artifact, in the
+#              step annotation and in the aggregate summary.
+#     NOT RUN  is neither a failure nor a PASS: no lawful owner-supplied material
+#              existed, so nothing was measured.
+#   The aggregate summary job is fail-closed twice over: it requires every matrix
+#   leg to have concluded `success` (so a failed, timed-out or cancelled leg is
+#   never silently missing from the campaign) and it fails when any delivered
+#   subject result says FAIL. `test_result_propagation.py` proves both exit-code
+#   contracts deterministically, and is run by the summary job so a later
+#   weakening of this wiring goes red in CI rather than staying invisible.
+#
+# ONE DIAGNOSTIC EXCEPTION — persian-woocommerce 10.0.5 ONLY (owner decision
+# 2026-10-12, docs/decisions/2026-10-12-third-party-baseline-diagnostic-exception.md)
+#   The owner accepted the independently recorded persian-woocommerce 10.0.5
+#   failure as a DIAGNOSTIC-ONLY, NON-BLOCKING result. The harness implements it
+#   as a signature check in `probe.py` (DIAGNOSTIC_EXCEPTION) and NOT as a waiver
+#   of the propagation rule: the subject's raw state stays FAIL with its counts,
+#   taxonomy and artifacts untouched, and only the gate disposition changes.
+#   The exception demands, in the delivered evidence itself:
+#     - the exact pinned identity: slug `persian-woocommerce`, version `10.0.5`,
+#       declared dependency `woocommerce=11.2.0`;
+#     - the exact pinned set of material failing CHECK IDENTIFIERS (all
+#       product-class, all post-activation) — never a count, never message text;
+#     - positive, substantive proof that the expected probes executed: the
+#       post-activation phase marker, the browser probe's own evidence object
+#       (`nav`/`login`/`rest_status`/`admin_ajax`/`document` — an absent, empty or
+#       truncated object is not execution; its recorded values must be the ones a
+#       real browser run produces, the values a required verdict is derived from
+#       must agree with that verdict, and the two further verdicts the producer
+#       derives from those facts (`browser_admin_login_session` from `login.ok`,
+#       `browser_admin_ajax_wp_layer` from `admin_ajax.reached_wp_layer`) must be
+#       recorded, agree with them and keep the fixed classification the producer
+#       writes them with (product class, material, post phase) — a missing,
+#       contradicted or relabelled verdict is not execution evidence, and a
+#       downgraded row would hide a product failure behind the accepted
+#       signature), and a recorded SUCCESSFUL
+#       post-activation verdict for every required probe (never-recorded,
+#       UNEXECUTED, wrong-phase or FAILed verdicts do not prove execution);
+#     - unambiguous evidence: every row must be the recorded check shape and no
+#       check identifier may appear twice, because the policy's lookups are
+#       name-keyed and a duplicate row could hide a class C/D failure behind a
+#       later product/post row with the same identifier. Raw rows are preserved.
+#   Anything else blocks: another slug or version, a changed or additional
+#   material failure, a missing verdict, a missing phase, an environment (C) or
+#   harness (D) failure, duplicated or malformed rows, and an unexpected
+#   matrix-leg failure. No blanket `continue-on-error`, no disabled probe, no
+#   removed matrix leg and no pin change is involved anywhere in this policy, and
+#   `report.py` re-derives the exception from the delivered evidence rather than
+#   trusting the boolean. The summary job additionally reconciles the delivered
+#   campaign against this workflow's own matrix (exact set equality) so an
+#   incomplete artifact set can never be aggregated as a complete campaign.
+#
 # LANE SCOPE
 #   Implemented now : one lane — WordPress 7.1.3 / PHP 8.3 / MySQL 8.4.11 /
 #                     Apache + real Chromium, mirroring the proven Real WordPress
@@ -896,18 +963,35 @@ jobs:
             --expect-wp-version "$WP_VERSION" --expect-php "$PHP_VERSION" \
             --expect-mysql-major "${MYSQL_EXPECT%%.*}"
 
-      - name: Finalize the machine-readable subject result
+      - name: Finalize the machine-readable subject result (fails the subject job on a material FAIL)
         if: always() && matrix.source == 'wordpress_org'
         run: |
           set -Eeuo pipefail
+          # `probe.py finalize` exits non-zero when the derived state is FAIL: a
+          # material failure, an environment/provisioning failure, or a missing
+          # post-activation evidence phase. That exit status IS the gate — an
+          # `::error::` annotation never fails a step, which is how a material
+          # post-activation FAIL used to leave a green job behind. PARTIAL and
+          # NOT RUN stay non-blocking and are never reported as PASS.
+          #
+          # The exit code is captured so the state is still printed for the
+          # reviewer, then re-raised so the job conclusion matches the state.
+          rc=0
           python3 .github/third-party-baseline/probe.py finalize \
             --store "$EVIDENCE_DIR/evidence.json" \
             --out "$EVIDENCE_DIR/subject-result.json" \
             --subject-id "${{ matrix.id }}" \
             --deps "${{ matrix.deps }}" \
             --expect-wp-version "$WP_VERSION" --expect-php "$PHP_VERSION" \
-            --mysql-image 'mysql:8.4.11'
-          python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("STATE:", d["state"]); print("counts:", d["counts"]); print("taxonomy:", d["taxonomy"])' "$EVIDENCE_DIR/subject-result.json"
+            --mysql-image 'mysql:8.4.11' || rc=$?
+          if [ -f "$EVIDENCE_DIR/subject-result.json" ]; then
+            python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("STATE:", d["state"]); print("counts:", d["counts"]); print("taxonomy:", d["taxonomy"]); print("ci_gate:", d["ci_gate"])' "$EVIDENCE_DIR/subject-result.json"
+          fi
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::subject ${{ matrix.id }} finalized with a blocking state; failing this job so the required gate cannot report success."
+            exit "$rc"
+          fi
+
 
       - name: Per-subject evidence artifact
         if: always()
@@ -940,18 +1024,58 @@ jobs:
           path: /tmp/tpb-results
           pattern: tpb-*
 
-      - name: Build the human-readable summary
+      - name: Assert every subject leg concluded success (fail-closed completeness)
+        if: always()
         run: |
           set -Eeuo pipefail
+          # A leg that failed, timed out or was cancelled delivers no (or stale)
+          # evidence, and its absence must never be readable as a clean campaign.
+          # This is the matrix-level half of the result-propagation contract;
+          # `report.py` below is the artifact-level half.
+          if [ "${{ needs.subject-baseline.result }}" != "success" ]; then
+            echo "::error::the subject matrix concluded '${{ needs.subject-baseline.result }}', not 'success'. The campaign is incomplete: no leg may be missing, cancelled or failed while the aggregate is presented as green."
+            exit 1
+          fi
+
+      - name: Build the human-readable summary (fails closed on any material subject FAIL)
+        if: always()
+        run: |
+          set -Eeuo pipefail
+          # Same shape as the subject jobs: capture the exit code so the evidence
+          # is still printed and published, then re-raise it so a red campaign
+          # cannot be published as a green aggregate.
+          rc=0
+          # --expect-matrix points at this workflow: the expected subject set is
+          # read from the matrix that actually ran, never from a second
+          # hand-maintained list, and a missing, unexpected, duplicated or
+          # identity-inconsistent subject result is a blocking aggregate problem.
           python3 .github/third-party-baseline/report.py \
             --results-dir /tmp/tpb-results \
             --out-dir /tmp/tpb-summary \
+            --expect-matrix .github/workflows/third-party-baseline.yml \
             --lane "$LANE" \
             --head-sha "$GITHUB_SHA" \
-            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          cat /tmp/tpb-summary/summary.md
+            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" || rc=$?
+          if [ -f /tmp/tpb-summary/summary.md ]; then
+            cat /tmp/tpb-summary/summary.md
+          fi
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::aggregate summary is red: at least one subject result says FAIL (or the delivered evidence was unreadable, malformed or empty). The summary artifacts above are still published."
+            exit "$rc"
+          fi
+
+      - name: Result-propagation self-tests (deterministic fixtures; fails closed)
+        if: always()
+        run: |
+          set -Eeuo pipefail
+          # Proves the two exit-code contracts this workflow depends on: a material
+          # FAIL reaches the job conclusion, PARTIAL and NOT RUN stay green without
+          # ever being rendered as PASS, and the wiring in this file cannot be
+          # weakened unnoticed. No WordPress, no network, no database.
+          python3 .github/third-party-baseline/test_result_propagation.py
 
       - name: Summary artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: tpb-summary

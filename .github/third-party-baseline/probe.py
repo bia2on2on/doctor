@@ -41,6 +41,32 @@ The subject state is derived, never asserted by hand:
              UNAVAILABLE
     PASS     every check PASS or INFO
 
+RESULT PROPAGATION — the state is only useful if it reaches the job conclusion
+    ``finalize`` therefore exits non-zero for FAIL and zero for PASS, PARTIAL and
+    NOT RUN.  A material failure, an environment failure and a missing evidence
+    phase all derive FAIL, so all three turn the subject job red and the required
+    gate cannot report success over an unmeasured subject:
+      * FAIL    — a material check failed (product behaviour, environment
+                  provisioning, harness/fixture) or the post-activation evidence
+                  phase never ran.  Blocking.  The class distinction survives in
+                  ``taxonomy``: C stays infrastructure, D stays harness, and only
+                  a product-class failure is called a compatibility failure.
+                  ONE exception exists and it is deliberately narrow: the
+                  owner-approved historical diagnostic signature for
+                  persian-woocommerce 10.0.5 (see DIAGNOSTIC_EXCEPTION).  It keeps
+                  the raw state FAIL, keeps every count, taxonomy entry, check and
+                  artifact, requires positive evidence that the expected probes
+                  executed, and only changes the gate disposition — an accepted
+                  diagnostic FAIL is not blocking, and it is never a PASS.
+      * PARTIAL — recorded, non-material findings (a recorded-only FAIL, FEATURE
+                  UNAVAILABLE, UNEXECUTED).  Intentionally non-blocking, and never
+                  rendered as PASS: state, reason and counts travel with the
+                  artifact and into the aggregate summary.
+      * NOT RUN — no lawful owner-supplied material existed.  Not a failure and
+                  not a PASS.
+    An ``::error::`` annotation alone never fails a step, so the exit status — not
+    the annotation — is the gate.
+
 CPMS is never installed here, so taxonomy category A and B are unreachable by
 construction and are never emitted; see ``classify()``.
 """
@@ -1944,6 +1970,376 @@ def cmd_browser(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------- #
+# The single owner-approved historical diagnostic exception
+# --------------------------------------------------------------------------- #
+# persian-woocommerce 10.0.5 fails materially on this lane. That failure was
+# independently recorded before this policy existed — per-subject artifact plus
+# `SUBJECT persian-woocommerce STATE=FAIL` check-run annotation and one
+# `::error::` annotation per failing check — on the `main` merge SHA
+# b925f873c1eb822b394531a8e2906c204c0850da and again on the correction head.
+# The owner decision (2026-10-12, documented in
+# docs/decisions/2026-10-12-third-party-baseline-diagnostic-exception.md) accepts
+# exactly that signature as a DIAGNOSTIC-ONLY, NON-BLOCKING exception.
+#
+# What this exception is NOT:
+#   * it is NOT a compatibility PASS, and nothing may render it as one;
+#   * it does not change the subject result: state stays FAIL, and counts,
+#     taxonomy, every check and every artifact are preserved unchanged;
+#   * it covers no other slug, no other version, no other dependency, and no
+#     changed, additional or missing material failure.
+#
+# POSITIVE-EVIDENCE RULE (the reason this is not a count comparison): a matching
+# number of failures proves nothing. The exception requires the pinned subject
+# identity, the exact pinned set of material failing CHECK IDENTIFIERS (never
+# message text), all of them product-class and post-activation, AND positive
+# evidence that the expected probes actually EXECUTED — the post-activation phase
+# marker, the browser-probe fact, and one recorded verdict per required probe.
+# A missing phase, a missing probe verdict, an extra material failure, a
+# different class or a different version all fall outside the policy and block.
+DIAGNOSTIC_EXCEPTION: Dict[str, Any] = {
+    "owner_decision": "2026-10-12: diagnostic-only, non-blocking, persian-woocommerce 10.0.5 only",
+    "slug": "persian-woocommerce",
+    "version": "10.0.5",
+    "dependencies": ("woocommerce=11.2.0",),
+    # Stable check identifiers recorded by the historical failure, verbatim.
+    "material_failures": frozenset({
+        "admin_ajax_wp_layer_reachable_post",
+        "admin_login_session_post",
+        "front_page_http_200_post",
+        "no_redirect_loop_front_post",
+        "rest_index_reachable_post",
+        "wp_admin_reachable_post",
+        "wp_cli_bootstrap_post",
+    }),
+    # Verdicts that must exist AND be a recorded successful post-activation
+    # verdict before the exception may apply: they prove the WordPress / HTTP /
+    # database probes and the browser probe really ran and produced a real
+    # result. These ten are deliberately disjoint from the seven accepted
+    # failures below — an expected material FAIL is evidence of an executed probe
+    # that found a failure, and is never treated as an unexecuted one. A subject
+    # that did not reach one of these verdicts, recorded it as UNEXECUTED, or
+    # left it FAIL is not the accepted signature and blocks.
+    "required_checks": frozenset({
+        "php_web_version_exact_post",
+        "wp_core_version_exact_post",
+        "timezone_and_locale_post",
+        "administrator_login_capability_post",
+        "admin_ajax_negative_control_post",
+        "cpms_tables_absent_post",
+        "cpms_options_absent_post",
+        "browser_front_page_render",
+        "browser_rest_index",
+        "browser_no_uncaught_page_errors",
+    }),
+    # Facts that prove the post-activation phases completed.
+    "required_facts": ("phase_post_executed", "browser_post"),
+    # The evidence record the browser probe always writes when it executes
+    # (cmd_browser's `store.fact(f"browser_{phase}", ...)`). An absent, empty or
+    # truncated object is not browser execution evidence. The values inside it
+    # are validated against the producer's own contract by
+    # ``browser_execution_problems``, never against an invented expectation.
+    "browser_evidence_keys": ("nav", "login", "rest_status", "admin_ajax", "document"),
+}
+
+# The complete vocabulary Store.record() writes, used to reject malformed rows.
+CHECK_STATUSES = (PASS, FAIL, INFO, UNAVAILABLE, UNEXECUTED, NOT_RUN)
+CHECK_CLASSES = (PRODUCT, ENVIRONMENT, HARNESS, UNAVAILABLE_KLASS, UNEXECUTED_KLASS)
+CHECK_ROW_KEYS = ("name", "status", "klass", "material", "phase", "detail")
+
+# The two browser sub-probe outcomes cmd_browser mirrors into their own material
+# verdict rows: `store.check("browser_admin_login_session", login["ok"], ...)` and
+# `store.check("browser_admin_ajax_wp_layer", ajax.get("reached_wp_layer") is True,
+# ...)`, both unconditionally, both at the phase the browser probe ran. The
+# recorded verdict is derived from exactly the fact value, so the two must agree —
+# a record carrying one and not the other, or carrying values that contradict each
+# other, cannot be a genuine cmd_browser execution; and both rows carry that fixed
+# classification (product class, material, post phase), so a relabelled one is not
+# evidence about this subject at all. (The two other browser facts
+# are asserted by required verdicts: `browser_front_page_render` is computed as
+# `nav["front_status"] == 200` and `browser_rest_index` as `rest_status == 200`.)
+BROWSER_FACT_VERDICTS = (
+    ("login", "ok", "browser_admin_login_session"),
+    ("admin_ajax", "reached_wp_layer", "browser_admin_ajax_wp_layer"),
+)
+
+
+def is_int(value: Any) -> bool:
+    """True for a real integer. ``bool`` is an ``int`` in Python and is excluded."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def browser_execution_problems(browser: Any,
+                               recorded: Dict[str, Any] | None = None) -> List[str]:
+    """Problems with the browser probe's own evidence record.
+
+    The expected shape is the one ``cmd_browser`` actually writes through
+    ``store.fact(f"browser_{phase}", ...)``; nothing here is invented:
+
+      nav         {"front_status": int, "front_url": str, "front_redirects": list}
+                  — written only after the front page was really navigated, so an
+                  absent/empty nav is the marker of a browser that did not get there
+      login       {"ok": bool, "final_url": str, "error": str} — always written
+      rest_status int — the real REST index status the browser saw
+      admin_ajax  {"status": int, "body": str, "reached_wp_layer": bool}
+      document    the admin document probe; a product leg passes no --expect-dir,
+                  so cmd_browser leaves it ``{}`` there and that is legitimate. When
+                  it is populated, the keys its own two branches always set are
+                  checked. Absence of the RTL probe is never treated as malformed.
+
+    A truncated or placeholder object yields problems; a record produced by a real
+    browser run never does.
+    """
+    if not isinstance(browser, dict):
+        return ["the recorded browser evidence is not an object"]
+    problems: List[str] = []
+
+    nav = browser.get("nav")
+    if not isinstance(nav, dict) or not nav:
+        problems.append("nav is absent or empty, so no front-page navigation was recorded")
+    else:
+        # 200 is what the required `browser_front_page_render` verdict asserts, and
+        # the producer records the response status, which is an int.
+        if not is_int(nav.get("front_status")) or nav["front_status"] != 200:
+            problems.append(f"nav.front_status is not the 200 the front-page probe "
+                            f"recorded: {nav.get('front_status')!r}")
+        if not isinstance(nav.get("front_url"), str) or not nav["front_url"]:
+            problems.append("nav.front_url is absent or empty")
+        if not isinstance(nav.get("front_redirects"), list):
+            problems.append("nav.front_redirects is not a list")
+
+    login = browser.get("login")
+    if not isinstance(login, dict) or not login:
+        problems.append("login is absent or empty, so no admin session was recorded")
+    else:
+        # The record shape only. Whether the session completed is NOT asserted here:
+        # no required verdict is derived from `login.ok`, and demanding a completed
+        # session would invent an expectation the producer never pinned. A failed
+        # browser login is a real observation and, being material, would have to
+        # appear as one of the seven pinned identifiers to be accepted at all.
+        if not isinstance(login.get("ok"), bool):
+            problems.append(f"login.ok is not the recorded boolean: {login.get('ok')!r}")
+        if not isinstance(login.get("final_url"), str) or not login["final_url"]:
+            problems.append("login.final_url is absent or empty")
+        if not isinstance(login.get("error"), str):
+            problems.append("login.error is not a string")
+
+    # 200 is what the required `browser_rest_index` verdict asserts, and the
+    # producer records the response status, which is an int.
+    if not is_int(browser.get("rest_status")) or browser["rest_status"] != 200:
+        problems.append(f"rest_status is not the 200 the REST index probe recorded: "
+                        f"{browser.get('rest_status')!r}")
+
+    ajax = browser.get("admin_ajax")
+    if not isinstance(ajax, dict) or not ajax:
+        problems.append("admin_ajax is absent or empty")
+    else:
+        # Record shape only, for the same reason as `login`: the browser-level
+        # admin-ajax outcome is not asserted by any required verdict, and this very
+        # subject's accepted signature contains a failed admin-ajax probe, so the
+        # observed values (`status` 0 and an empty `body` in the producer's own
+        # failure branch) must stay acceptable. A fabricated one cannot unlock the
+        # exception on its own: the ten required verdicts are still enforced.
+        if not is_int(ajax.get("status")):
+            problems.append(f"admin_ajax.status is not the recorded integer: "
+                            f"{ajax.get('status')!r}")
+        if not isinstance(ajax.get("body"), str):
+            problems.append(f"admin_ajax.body is not the recorded string: "
+                            f"{ajax.get('body')!r}")
+        if not isinstance(ajax.get("reached_wp_layer"), bool):
+            problems.append("admin_ajax.reached_wp_layer is not the recorded boolean")
+
+    # The producer derives one material verdict per fact below, so the delivered
+    # evidence must carry it and must not contradict it. Nothing here requires the
+    # *operations* to have succeeded: a recorded FAIL keeps its raw FAIL and simply
+    # has to match the fact, and — not being one of the seven approved identifiers —
+    # an additional material failure blocks on its own, as it always has.
+    for group, key, name in BROWSER_FACT_VERDICTS:
+        container = browser.get(group)
+        value = container.get(key) if isinstance(container, dict) else None
+        if not isinstance(value, bool):
+            continue  # already reported above as a type problem
+        row = (recorded or {}).get(name)
+        if row is None:
+            problems.append(f"{group}.{key} is recorded but the {name} verdict the "
+                            "producer derives from it was not recorded, so the browser "
+                            "evidence is not self-consistent")
+            continue
+        expected_status = PASS if value is True else FAIL
+        if row.get("status") != expected_status or row.get("phase") != "post":
+            problems.append(f"{group}.{key}={value!r} contradicts the recorded {name} "
+                            f"verdict {row.get('status')!r} at phase {row.get('phase')!r}")
+        # The producer writes both of these rows with one fixed classification:
+        # product class, material, post phase. A row that differs is a relabelled
+        # verdict — a product FAIL downgraded to a recorded-only finding, or moved to
+        # another class, leaves the material failure set and would let a real product
+        # failure hide behind the accepted historical signature, so it blocks.
+        if (row.get("klass") != PRODUCT or row.get("material") is not True
+                or row.get("phase") != "post"):
+            problems.append(f"the recorded {name} verdict is not the producer's own "
+                            f"product-class, material, post-phase verdict (klass="
+                            f"{row.get('klass')!r} material={row.get('material')!r} "
+                            f"phase={row.get('phase')!r})")
+
+    document = browser.get("document")
+    if not isinstance(document, dict):
+        problems.append("document is not an object")
+    elif document:
+        # Both populated branches always set `dir`/`lang`/`url`; only the successful
+        # `evaluate` branch adds `text` and only the RTL legs add `computed_dir`, so
+        # nothing beyond the always-present keys is demanded. `dir` may legitimately
+        # be "" when the page declares no direction.
+        for key in ("dir", "lang"):
+            if not isinstance(document.get(key), str):
+                problems.append(f"document.{key} is not a string in a populated document "
+                                f"record")
+        if not isinstance(document.get("url"), str) or not document["url"]:
+            problems.append("document.url is absent or empty in a populated document "
+                            "record")
+    return problems
+
+
+def malformed_rows(checks: Any) -> List[str]:
+    """Descriptions of rows that are not the record shape ``Store.record`` writes.
+
+    A row this harness did not write cannot be adjudicated from, so it is
+    reported rather than skipped — an unreadable verdict must never be treated as
+    an absent one, and never as a passing one.
+    """
+    if not isinstance(checks, list):
+        return ["the recorded checks are not a list of rows"]
+    problems: List[str] = []
+    for index, row in enumerate(checks):
+        if not isinstance(row, dict) or not set(CHECK_ROW_KEYS) <= set(row):
+            problems.append(f"row {index} is not a recorded check row")
+        elif row["status"] not in CHECK_STATUSES:
+            problems.append(f"row {index} ({row['name']!r}) has an out-of-contract "
+                            f"status {row['status']!r}")
+        elif row["klass"] not in CHECK_CLASSES:
+            problems.append(f"row {index} ({row['name']!r}) has an out-of-contract "
+                            f"class {row['klass']!r}")
+        elif not isinstance(row["material"], bool):
+            problems.append(f"row {index} ({row['name']!r}) has a non-boolean material flag")
+    return problems
+
+
+def well_formed_rows(checks: Any) -> List[Dict[str, Any]]:
+    """The rows of ``checks`` that are the recorded shape, in order."""
+    if not isinstance(checks, list):
+        return []
+    return [row for row in checks
+            if isinstance(row, dict) and set(CHECK_ROW_KEYS) <= set(row)]
+
+
+def diagnostic_exception(subject: Dict[str, Any], facts: Dict[str, Any],
+                         checks: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Evaluate the one approved diagnostic exception against recorded evidence.
+
+    Returns the disposition, never a verdict about compatibility: ``applies`` is
+    true only when the recorded evidence is the accepted signature in full. The
+    caller keeps the raw subject state exactly as derived.
+
+    The evidence is read straight from the raw recorded rows — the shape
+    ``Store.record`` writes: ``name``/``status``/``klass``/``material``/``phase``/
+    ``detail`` — and nothing here is inferred from a failure count or from
+    free-form message text.
+    """
+    policy = DIAGNOSTIC_EXCEPTION
+    reasons: List[str] = []
+
+    if not isinstance(subject, dict):
+        subject = {}
+        reasons.append("the delivered subject record is not a mapping")
+    if not isinstance(facts, dict):
+        facts = {}
+        reasons.append("the delivered facts record is not a mapping")
+    broken_rows = malformed_rows(checks)
+    if broken_rows:
+        reasons.append("the evidence rows are malformed: " + "; ".join(broken_rows[:6]))
+
+    rows = well_formed_rows(checks)
+    # -- raw rows first: duplicate identifiers ------------------------------ #
+    # Every lookup below is name-keyed, so a duplicated identifier is folded onto
+    # whichever row comes last. That fold is exactly how a class C/D failure
+    # could be hidden behind a later product/post row with the same identifier,
+    # so duplicates are rejected outright, before any dict or set conversion.
+    names = [row["name"] for row in rows]
+    duplicates = sorted({str(name) for name in set(names) if names.count(name) > 1})
+    if duplicates:
+        reasons.append(
+            "duplicate check identifiers make the evidence ambiguous, so the accepted "
+            f"signature cannot be identified: {duplicates}")
+
+    recorded = {row["name"]: row for row in rows}
+    expected = set(policy["material_failures"])
+    observed = {row["name"] for row in rows
+                if row["material"] and row["status"] == FAIL}
+
+    # -- exact pinned identity --------------------------------------------- #
+    if not (subject.get("slug") == policy["slug"]
+            and subject.get("version_requested") == policy["version"]
+            and tuple(subject.get("dependencies") or ()) == policy["dependencies"]):
+        reasons.append(
+            "subject identity is not the approved exception subject "
+            f"(expected slug={policy['slug']!r} version={policy['version']!r} "
+            f"dependencies={list(policy['dependencies'])!r}, got slug="
+            f"{subject.get('slug')!r} version={subject.get('version_requested')!r} "
+            f"dependencies={subject.get('dependencies')!r})")
+
+    # -- the exact accepted failing set, by stable identifier --------------- #
+    absent = sorted(expected - observed)
+    if absent:
+        reasons.append(f"the accepted failure signature is incomplete: {absent}")
+    outside = sorted(name for name in observed
+                     if name not in expected
+                     or recorded[name]["klass"] != PRODUCT
+                     or recorded[name]["phase"] != "post")
+    if outside:
+        reasons.append(f"material failures outside the accepted signature: {outside}")
+
+    # -- positive, substantive probe-execution evidence --------------------- #
+    if facts.get("phase_post_executed") is not True:
+        reasons.append("the post-activation probe phase is not recorded as executed")
+
+    browser = facts.get("browser_post")
+    missing_keys = (sorted(set(policy["browser_evidence_keys"]) - set(browser))
+                    if isinstance(browser, dict) else [])
+    if not isinstance(browser, dict) or missing_keys:
+        reasons.append(
+            "the browser probe's recorded evidence object is absent, empty or truncated "
+            f"(missing {missing_keys or 'the object itself'}), so browser execution is "
+            "not proven")
+    else:
+        # Key presence alone is not execution: the recorded values must be the ones
+        # a real browser run produces.
+        browser_problems = browser_execution_problems(browser, recorded)
+        if browser_problems:
+            reasons.append("the recorded browser evidence is not from a real browser run: "
+                           + "; ".join(browser_problems[:6]))
+
+    unexecuted = [name for name in sorted(policy["required_checks"])
+                  if name not in recorded]
+    unproven = [f"{name}={recorded[name]['status']!r}@phase{recorded[name]['phase']!r}"
+                for name in sorted(policy["required_checks"]) if name in recorded
+                and not (recorded[name]["status"] == PASS
+                         and recorded[name]["phase"] == "post")]
+    if unexecuted or unproven:
+        reasons.append(
+            "no recorded successful post-activation verdict for every required probe "
+            f"(never recorded: {unexecuted}; not an executed success: {unproven})")
+
+    return {
+        "applies": not reasons,
+        "policy": policy["owner_decision"],
+        "subject": {"slug": subject.get("slug"),
+                    "version": subject.get("version_requested"),
+                    "dependencies": list(subject.get("dependencies") or ())},
+        "accepted_material_failures": sorted(expected),
+        "duplicate_identifiers": duplicates,
+        "reasons": reasons,
+    }
+
+
+# --------------------------------------------------------------------------- #
 # subcommand: finalize
 # --------------------------------------------------------------------------- #
 def classify(check: Dict[str, Any], kind: str = "") -> str:
@@ -1981,30 +2377,49 @@ def cmd_finalize(args: argparse.Namespace) -> int:
                      "evidence exists for this subject in this environment",
                      True, "post", "post probes executed", "post probes absent")
 
-    checks = store.data["checks"]
+    raw_checks = store.data["checks"]
+    # A recorded row this harness did not write cannot be adjudicated from. It is
+    # reported as a harness/fixture failure and excluded from counting, while the
+    # raw rows are preserved verbatim in the artifact below.
+    broken_rows = malformed_rows(raw_checks)
+    if broken_rows:
+        store.record("evidence_rows_well_formed", FAIL, HARNESS,
+                     "; ".join(broken_rows[:6]), True, "post",
+                     "every recorded row is the check shape this harness writes",
+                     broken_rows[:6])
+        raw_checks = store.data["checks"]
+
+    checks = well_formed_rows(raw_checks)
     counts: Dict[str, int] = {}
     for check in checks:
         counts[check["status"]] = counts.get(check["status"], 0) + 1
 
+    material_failures = [c for c in checks if c["material"] and c["status"] == FAIL]
+    # Intentionally non-blocking, and never a PASS: a recorded-only FAIL, a
+    # feature this lane cannot execute, and a check that could not run at all.
+    non_blocking = [c for c in checks if c["status"] in (UNAVAILABLE, UNEXECUTED)
+                    or (c["status"] == FAIL and not c["material"])]
     if args.not_run:
         state, reason = NOT_RUN, args.not_run
+    elif material_failures:
+        state, reason = FAIL, ""
+    elif non_blocking:
+        state = "PARTIAL"
+        reason = "; ".join(sorted({f"{c['name']}={c['status']}" for c in non_blocking}))[:600]
     else:
-        material_failures = [c for c in checks if c["material"] and c["status"] == FAIL]
-        soft = [c for c in checks if c["status"] in (UNAVAILABLE, UNEXECUTED)
-                or (c["status"] == FAIL and not c["material"])]
-        if material_failures:
-            state, reason = FAIL, ""
-        elif soft:
-            state = "PARTIAL"
-            reason = "; ".join(sorted({f"{c['name']}={c['status']}" for c in soft}))[:600]
-        else:
-            state, reason = PASS, ""
+        state, reason = PASS, ""
 
     taxonomy = sorted({classify(c, subject.get("kind", ""))
                        for c in checks if c["status"] == FAIL and c["material"]})
     forbidden = [code for code in taxonomy if code[:2] in ("A ", "B ", "E ")]
     if forbidden:  # pragma: no cover - guarded invariant
         raise SystemExit(f"refusing to emit forbidden taxonomy category: {forbidden}")
+
+    # Raw result and gate disposition are separate: the state above is never
+    # rewritten by the diagnostic policy, it only decides whether this subject
+    # blocks the required gate.
+    diagnostic = diagnostic_exception(subject, facts, checks)
+    blocking = state == FAIL and not diagnostic["applies"]
 
     pre_tables, post_tables = facts.get("table_count_pre"), facts.get("table_count_post")
     env = os.environ
@@ -2017,6 +2432,22 @@ def cmd_finalize(args: argparse.Namespace) -> int:
         "reason": reason,
         "counts": counts,
         "taxonomy": taxonomy,
+        # Result-propagation contract, stated inside the artifact so neither a
+        # reader nor the aggregate has to infer it from a job conclusion.
+        # `blocking` is the gate disposition; `state` above is the raw result.
+        "ci_gate": {
+            "blocking": blocking,
+            "disposition": ("blocking-fail" if blocking else
+                            "diagnostic-only-nonblocking-fail" if state == FAIL else
+                            "non-blocking" if state in (PASS, "PARTIAL") else "not-run"),
+            "rule": "FAIL fails the subject job and the aggregate summary unless the "
+                    "single owner-approved diagnostic exception applies to the exact "
+                    "recorded signature; PARTIAL and NOT RUN are non-blocking and "
+                    "neither is ever rendered as PASS",
+            "non_blocking_findings": sorted({f"{c['name']}={c['status']}"
+                                              for c in non_blocking}),
+            "diagnostic_exception": diagnostic,
+        },
         "table_counts": {
             "before_activation": pre_tables, "after_activation": post_tables,
             "delta": (post_tables - pre_tables)
@@ -2036,7 +2467,9 @@ def cmd_finalize(args: argparse.Namespace) -> int:
             "timezone": facts.get("timezone_post", facts.get("timezone_pre")),
             "locale": facts.get("locale_post", facts.get("locale_pre")),
         },
-        "checks": checks,
+        # Every raw recorded row, exactly as delivered — malformed rows are
+        # preserved here, not repaired, filtered or rewritten.
+        "checks": raw_checks,
         "facts": facts,
         # Deterministic follow-up rerun evidence. Any material FAIL must be
         # repeated once in a fresh environment before causal attribution; a
@@ -2062,13 +2495,40 @@ def cmd_finalize(args: argparse.Namespace) -> int:
     store.save()
 
     # The state is mirrored into an annotation because the artifact that carries
-    # it lives on blob storage, unreachable from outside the runner.
-    annotate("notice" if state in (PASS, NOT_RUN) else "warning",
+    # it lives on blob storage, unreachable from outside the runner. A blocking
+    # FAIL is an error-level annotation because it also fails the step below; an
+    # accepted diagnostic FAIL stays a warning, but still announces the raw FAIL
+    # so it can never be read as a compatibility PASS.
+    annotate("notice" if state in (PASS, NOT_RUN) else
+             ("error" if blocking else "warning"),
              f"SUBJECT {args.subject_id} STATE={state} counts={json.dumps(counts)} "
-             f"taxonomy={json.dumps(taxonomy)}")
-    print(f"[probe:finalize] {args.subject_id} -> {state}")
+             f"taxonomy={json.dumps(taxonomy)}"
+             + (" — DIAGNOSTIC-ONLY accepted exception, non-blocking, NOT a compatibility "
+                "PASS" if state == FAIL and not blocking else ""))
+    print(f"[probe:finalize] {args.subject_id} -> {state}"
+          f"{' (diagnostic-only, non-blocking)' if state == FAIL and not blocking else ''}")
     if reason:
         print(f"[probe:finalize] reason: {reason}")
+    if state == FAIL and not blocking:
+        print(f"::warning::SUBJECT {args.subject_id} STATE=FAIL — diagnostic-only accepted "
+              f"exception (non-blocking, NOT a compatibility PASS). accepted material "
+              f"failures: {json.dumps(diagnostic['accepted_material_failures'])} "
+              f"taxonomy={json.dumps(taxonomy)}")
+        return 0
+    if state == FAIL:
+        # The exit status is the gate. An `::error::` annotation never fails a
+        # step on its own, so a material failure that only annotated the run left
+        # a green job behind and the required gate claimed a measurement that did
+        # not happen. Only a blocking FAIL blocks; PARTIAL and NOT RUN stay
+        # non-blocking, and the accepted diagnostic signature does not block
+        # either — but its subject state remains FAIL.
+        blockers = sorted({f"{c['name']}={c['status']}" for c in material_failures})
+        print(f"::error::SUBJECT {args.subject_id} STATE=FAIL — this subject job must "
+              f"fail so the required gate cannot pass over an unmeasured or failed "
+              f"subject. material failures: {json.dumps(blockers)} "
+              f"taxonomy={json.dumps(taxonomy)} "
+              f"diagnostic_exception={'not applicable: ' + '; '.join(diagnostic['reasons']) if diagnostic['reasons'] else 'unexpected'}")
+        return 1
     return 0
 
 
