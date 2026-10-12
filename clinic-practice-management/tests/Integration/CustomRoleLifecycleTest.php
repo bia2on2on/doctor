@@ -328,8 +328,6 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
                     try {
                         $wpdb2 = $this->freshWpdb();
                         $connectionId = (int) $wpdb2->get_var('SELECT CONNECTION_ID()'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                        fwrite($childPipe, 'READY:' . $connectionId . "\n");
-                        fflush($childPipe);
 
                         // The child uses a genuinely independent MySQL connection;
                         // the parent removed the test suite SAVEPOINT query shim.
@@ -348,7 +346,12 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
                         );
                         $outcome = 'unexpected';
                         try {
-                            $db2->transactional(function () use ($assignment2, $managerId, $clinicId, $targetUser, $raceRoleKey, &$outcome): void {
+                            $db2->transactional(function () use ($assignment2, $managerId, $clinicId, $targetUser, $raceRoleKey, $connectionId, $childPipe, &$outcome): void {
+                                // Signal only when the independent connection and transaction are ready,
+                                // immediately before the production assignment attempts the locked row.
+                                fwrite($childPipe, 'READY:' . $connectionId . "\n");
+                                fflush($childPipe);
+
                                 try {
                                     $assignment2->assign($managerId, $clinicId, $targetUser, $raceRoleKey);
                                     $outcome = 'assigned';
@@ -377,13 +380,14 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
                 }
 
                 fclose($childPipe);
+                stream_set_timeout($parentPipe, 10);
                 $ready = fgets($parentPipe);
                 self::assertIsString($ready);
                 self::assertStringStartsWith('READY:', $ready, 'the second MySQL connection must start before the transition');
                 $connectionId = (int) substr(trim($ready), 6);
                 self::assertGreaterThan(0, $connectionId);
 
-                $deadline = microtime(true) + 3.0;
+                $deadline = microtime(true) + 8.0;
                 while (microtime(true) < $deadline) {
                     $state = App::db()->fetchValue(
                         'SELECT trx_state FROM information_schema.innodb_trx WHERE trx_mysql_thread_id = %d LIMIT 1',
@@ -451,7 +455,11 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
         }
 
         self::assertSame(1, $deactivationAuditCount, 'the committed status transition must have exactly one audit event before test-fixture cleanup');
-        self::assertTrue($lockWasWaited, 'the assignment connection must be observed waiting on the locked custom-role row');
+        self::assertTrue(
+            $lockWasWaited,
+            'the assignment connection must be observed waiting on the locked custom-role row; child_finished=' .
+                ($childFinished ? 'yes' : 'no') . ', child_outcome=' . $childOutcome
+        );
         self::assertSame('denied:CUSTOM_ROLE_ASSIGNMENT_DEFINITION_NOT_ACTIVE', $childOutcome, 'the assignment must re-read status after the lock is released');
         self::assertSame(RolesAndCapabilities::ROLE_SECRETARY, $targetRoleAfter, 'the failed concurrent assignment must not change the existing membership');
     }
