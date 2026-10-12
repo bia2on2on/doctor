@@ -90,8 +90,11 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
     public function testAuthorizedManagerDeactivatesRoleWithoutChangingMembershipOverridesOrWordPressRoles(): void
     {
         $role = $this->createRole('crl_staff', ['cpms_patient_read', 'cpms_search']);
-        $membershipId = App::membership_service()->create_membership($this->clinicA, $this->member, 'crl_staff');
         $membershipRepository = new MembershipRepository(App::db());
+        $memberMembership = $membershipRepository->find($this->clinicA, $this->member);
+        self::assertNotNull($memberMembership);
+        $membershipId = (int) $memberMembership['id'];
+        $membershipRepository->update(['role_key' => 'crl_staff'], ['id' => $membershipId]);
         $membershipRepository->set_capability($membershipId, 'cpms_patient_read', 'deny');
         $membershipRepository->set_capability($membershipId, 'cpms_report_read', 'grant');
         $beforeOverrides = $membershipRepository->capabilities_for($membershipId);
@@ -127,8 +130,12 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
     public function testReactivationRestoresOnlyRoleDerivedAuthorityAndKeepsExplicitDenyPrecedence(): void
     {
         $this->createRole('crl_restore', ['cpms_search', 'cpms_patient_read']);
-        $membershipId = App::membership_service()->create_membership($this->clinicA, $this->member, 'crl_restore');
-        (new MembershipRepository(App::db()))->set_capability($membershipId, 'cpms_search', 'deny');
+        $membershipRepository = new MembershipRepository(App::db());
+        $memberMembership = $membershipRepository->find($this->clinicA, $this->member);
+        self::assertNotNull($memberMembership);
+        $membershipId = (int) $memberMembership['id'];
+        $membershipRepository->update(['role_key' => 'crl_restore'], ['id' => $membershipId]);
+        $membershipRepository->set_capability($membershipId, 'cpms_search', 'deny');
 
         $this->deactivate($this->managerA, $this->clinicA, 'crl_restore', 1);
         self::assertFalse(App::authorization_service()->can($this->member, $this->clinicA, 'cpms_patient_read'));
@@ -434,10 +441,14 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
             if (is_resource($childPipe)) {
                 fclose($childPipe);
             }
+            $preservedClinicId = $this->statusAuditCount('CUSTOM_ROLE_DEACTIVATED', $definitionId) > 0
+                ? $this->clinicA
+                : 0;
             $this->cleanupCommittedRaceFixtures(
                 [$this->clinicA, $this->clinicB],
                 [$managerId, $this->managerB, $this->suspendedManager, $this->member, $this->nonMember, $targetUser],
-                $this->clinicA
+                $definitionId,
+                $preservedClinicId
             );
         }
 
@@ -649,17 +660,30 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
     }
 
     /**
-     * Removes committed fixture users/memberships. The deactivation audit event
-     * is append-only, so its test Clinic and inactive definition remain as the
-     * corresponding durable historical record; the unused second Clinic is
-     * removed.
+     * Removes committed race-fixture users, memberships, and role definition.
+     * If deactivation committed its append-only audit event, retain only the
+     * event's Clinic and inactive definition as historical evidence.
      *
      * @param list<int> $clinicIds
      * @param list<int> $userIds
      */
-    private function cleanupCommittedRaceFixtures(array $clinicIds, array $userIds, int $preservedClinicId): void
-    {
+    private function cleanupCommittedRaceFixtures(
+        array $clinicIds,
+        array $userIds,
+        int $definitionId,
+        int $preservedClinicId
+    ): void {
         $db = App::db();
+        if ($preservedClinicId === 0) {
+            $db->query(
+                'DELETE FROM ' . $db->table('cpms_custom_role_capabilities') . ' WHERE role_def_id = %d',
+                [$definitionId]
+            );
+            $db->query(
+                'DELETE FROM ' . $db->table('cpms_custom_role_defs') . ' WHERE id = %d',
+                [$definitionId]
+            );
+        }
         foreach ($clinicIds as $clinicId) {
             $memberships = $db->fetchAll(
                 'SELECT id FROM ' . $db->table('cpms_clinic_memberships') . ' WHERE clinic_id = %d',
