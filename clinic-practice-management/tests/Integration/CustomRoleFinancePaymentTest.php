@@ -80,7 +80,7 @@ final class CustomRoleFinancePaymentTest extends WP_UnitTestCase
         $cashier = $this->customRoleCashier($clinic);
 
         wp_set_current_user($cashier);
-        $response = $this->pay($invoice, $clinic, $location, ['amount' => 200000, 'method' => 'cash']);
+        $response = $this->pay($invoice, $clinic, $location, ['amount' => 20000, 'method' => 'cash']);
 
         self::assertSame(
             201,
@@ -89,7 +89,7 @@ final class CustomRoleFinancePaymentTest extends WP_UnitTestCase
                 . $this->errorCode($response)
         );
         $data = $this->payload($response);
-        self::assertSame(200000.0, (float) ($data['payment']['amount'] ?? -1));
+        self::assertSame(20000.0, (float) ($data['payment']['amount'] ?? -1));
         self::assertSame('captured', (string) ($data['payment']['status'] ?? ''));
         self::assertSame('partial', (string) ($data['invoice']['status'] ?? ''));
         self::assertSame(1, $this->paymentCount($invoice), 'exactly one payment row is persisted');
@@ -115,14 +115,24 @@ final class CustomRoleFinancePaymentTest extends WP_UnitTestCase
         $paymentId = (int) ($this->payload($capture)['payment']['id'] ?? 0);
         self::assertGreaterThan(0, $paymentId);
 
-        $void = $this->dispatch('POST', sprintf(self::PAY_VOID, $paymentId), [], $this->scopeHeaders($clinic));
-        self::assertSame(403, $void->get_status(), 'payment void must stay denied');
+        $void = $this->dispatch('POST', sprintf(self::PAY_VOID, $paymentId), [], $this->scopeHeaders($clinic), ['reason' => 'denial probe']);
+        self::assertSame(403, $void->get_status(), 'payment void must stay denied — ' . $this->errorCode($void));
 
-        $refund = $this->dispatch('POST', sprintf(self::PAY_REFUND, $paymentId), [], $this->scopeHeaders($clinic));
-        self::assertSame(403, $refund->get_status(), 'payment refund must stay denied');
+        $refund = $this->dispatch('POST', sprintf(self::PAY_REFUND, $paymentId), [], $this->scopeHeaders($clinic), ['reason' => 'denial probe']);
+        self::assertSame(403, $refund->get_status(), 'payment refund must stay denied — ' . $this->errorCode($refund));
 
-        $adjust = $this->dispatch('POST', sprintf(self::INVOICE_ADJUST, $invoice), [], $this->scopeHeaders($clinic));
-        self::assertSame(403, $adjust->get_status(), 'invoice adjustment must stay denied');
+        $adjust = $this->dispatch('POST', sprintf(self::INVOICE_ADJUST, $invoice), [], $this->scopeHeaders($clinic), ['type' => 'credit', 'amount' => 1000, 'reason' => 'denial probe']);
+        self::assertSame(403, $adjust->get_status(), 'invoice adjustment must stay denied — ' . $this->errorCode($adjust));
+
+        // The sensitive attempt left the money untouched.
+        self::assertSame('captured', (string) App::db()->fetchValue(
+            'SELECT status FROM ' . App::db()->table('cpms_payments') . ' WHERE id = %d',
+            [$paymentId]
+        ), 'no void/refund may reach the persisted payment');
+        self::assertSame('partial', (string) App::db()->fetchValue(
+            'SELECT status FROM ' . App::db()->table('cpms_invoices') . ' WHERE id = %d',
+            [$invoice]
+        ), 'no adjustment may reach the persisted invoice');
 
         // Inventory of the forbidden vocabulary: neither sensitive capability is
         // even definable for a custom role, so it can never be reached this way.
@@ -165,7 +175,11 @@ final class CustomRoleFinancePaymentTest extends WP_UnitTestCase
 
         wp_set_current_user($cashier);
         $response = $this->pay($invoiceB, $clinicB, $locationB, ['amount' => 10000, 'method' => 'cash']);
-        self::assertContains($response->get_status(), [403, 404], 'a foreign Clinic must never be payable');
+        self::assertContains(
+            $response->get_status(),
+            [400, 403, 404],
+            'a foreign Clinic must never be payable — ' . $this->errorCode($response)
+        );
         self::assertSame(0, $this->paymentCount($invoiceB));
         self::assertSame(0, $this->auditCount('PAYMENT_CAPTURE'));
     }

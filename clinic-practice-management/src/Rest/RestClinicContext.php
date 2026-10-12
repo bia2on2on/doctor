@@ -322,7 +322,7 @@ final class RestClinicContext
         // and the delegated service still decide capability and object ownership
         // (fail closed), and non-members are still refused. Patient memberships
         // are deliberately excluded — this is the staff surface.
-        return self::has_active_staff_membership_in_request( $userId, $request );
+        return self::has_active_staff_membership_in_request( (int) get_current_user_id(), $request );
     }
 
     /**
