@@ -361,7 +361,7 @@ final class MedicalFileService
         if ( $visibility === 'doctor_private' ) {
             $patientClinicId = $this->patientClinicId( $patientId );
             if ( $patientClinicId === 0 ) {
-                throw ClinicalException::of('CLINIC_NOT_FOUND', 'بیمار یافت نشد', 404);
+                throw ClinicalException::of( 'CLINIC_NOT_FOUND', 'بیمار یافت نشد', 404 );
             }
             $this->assertPrivateFileUploadAuthority(
                 $actorUserId,
@@ -387,7 +387,7 @@ final class MedicalFileService
         if ( $patientClinicId === 0 ) {
             $patientClinicId = $this->patientClinicId( $patientId );
             if ( $patientClinicId === 0 ) {
-                throw ClinicalException::of('CLINIC_NOT_FOUND', 'بیمار یافت نشد', 404);
+                throw ClinicalException::of( 'CLINIC_NOT_FOUND', 'بیمار یافت نشد', 404 );
             }
         }
         // phpcs:enable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
