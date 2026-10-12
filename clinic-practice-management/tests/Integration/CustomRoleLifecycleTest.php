@@ -781,7 +781,7 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
 
             // Restore WordPress' integration bootstrap query handlers before
             // fixture cleanup and PHPUnit tearDown rollback.
-            if ($queryHooks instanceof WP_Hook) {
+            if ($queryHooks !== null) {
                 $GLOBALS['wp_filter']['query'] = $queryHooks;
             } else {
                 unset($GLOBALS['wp_filter']['query']);
