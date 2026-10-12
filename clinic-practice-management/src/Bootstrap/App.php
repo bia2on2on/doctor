@@ -719,6 +719,26 @@ final class App
     }
 
     /**
+     * سرویس انتساب نقش سفارشی به پرسنل موجود (Custom Role Slice 3B) —
+     * membership-only، Clinic-local، bounded-delegation، Auditشده.
+     */
+    public static function custom_role_assignment_service(): \ClinicCore\Application\Roles\CustomRoleAssignmentService {
+        static $service = null;
+        if ( $service === null ) {
+            $service = new \ClinicCore\Application\Roles\CustomRoleAssignmentService(
+                new \ClinicCore\Application\Scope\TrustedClinicEstablisher( self::db(), new MembershipRepository( self::db() ) ),
+                self::authorization_service(),
+                new MembershipRepository( self::db() ),
+                new \ClinicCore\Infrastructure\Repository\CustomRoleRepository( self::db() ),
+                self::audit(),
+                self::db()
+            );
+        }
+
+        return $service;
+    }
+
+    /**
      * سرویس راه‌اندازی اولیهٔ مطب (Custom Role Slice 3A) — one-shot first-practice
      * bootstrap؛ مجوز نهایی پس از آن فقط از MembershipService/AuthorizationService.
      */
