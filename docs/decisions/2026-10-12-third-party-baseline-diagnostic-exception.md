@@ -79,7 +79,13 @@ when **all** of the following hold:
    True, PRODUCT, ...)` unconditionally at the phase it ran, so a record whose
    `login.ok` or `admin_ajax.reached_wp_layer` is not matched by the corresponding
    recorded verdict at phase `post`, or is contradicted by it, cannot be a genuine
-   `cmd_browser` execution and blocks. This is reconciliation, never a demand for
+   `cmd_browser` execution and blocks. Those two rows must also carry the fixed
+   classification `cmd_browser` writes them with — `klass` = `product-behavior`,
+   `material` exactly `true`, `phase` = `post`. A relabelled row (a product `FAIL`
+   downgraded to a recorded-only finding, or moved to another class or phase) leaves
+   the material failure set, so without this rule a real product failure could hide
+   behind the accepted signature and be granted the diagnostic exception; it is
+   therefore treated as inconsistent evidence and blocks. This is reconciliation, never a demand for
    success: a recorded `FAIL` keeps its raw `FAIL` and — not being one of the seven
    approved identifiers — blocks as an additional material failure, so a browser
    login or admin-ajax request that genuinely failed is still never required to

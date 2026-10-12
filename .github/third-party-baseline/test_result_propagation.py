@@ -644,6 +644,67 @@ class DiagnosticExceptionTests(PropagationCase):
         self.assertFalse(any("contradicts the recorded browser_admin_ajax_wp_layer" in reason
                              for reason in self.reasons(result)))
 
+    def verdict_row(self, name, status, klass=probe.PRODUCT, material=True, phase=None):
+        """One derived-verdict row, relabelled the way a downgrade would look."""
+        row = check(name, status, klass, material=material)
+        if phase is not None:
+            row["phase"] = phase
+        return row
+
+    # cmd_browser writes both derived verdicts with a fixed classification:
+    # product class, material, post phase. A relabelled row (a product FAIL
+    # downgraded to a recorded-only finding, moved to another class, or recorded on
+    # another phase) drops out of the material failure set and would hide a real
+    # product failure behind the accepted historical signature.
+    def test_login_fail_relabelled_non_material_blocks(self):
+        checks = self.checks_with(self.verdict_row("browser_admin_login_session", probe.FAIL,
+                                                   material=False))
+        completed, result = self.run_case(checks=checks, facts=self.failed_login_facts())
+        self.assert_blocking(completed, result, "a product FAIL downgraded to material=False")
+        self.assertTrue(any("browser_admin_login_session" in reason for reason in self.reasons(result)))
+
+    def test_admin_ajax_fail_relabelled_non_material_blocks(self):
+        checks = self.checks_with(self.verdict_row("browser_admin_ajax_wp_layer", probe.FAIL,
+                                                   material=False))
+        completed, result = self.run_case(checks=checks, facts=self.failed_admin_ajax_facts())
+        self.assert_blocking(completed, result, "a product FAIL downgraded to material=False")
+        self.assertTrue(any("browser_admin_ajax_wp_layer" in reason for reason in self.reasons(result)))
+
+    def test_login_verdict_wrong_class_blocks(self):
+        checks = self.checks_with(self.verdict_row("browser_admin_login_session", probe.FAIL,
+                                                   klass=probe.ENVIRONMENT, material=False))
+        completed, result = self.run_case(checks=checks, facts=self.failed_login_facts())
+        self.assert_blocking(completed, result, "the login verdict recorded under another class")
+        self.assertTrue(any("browser_admin_login_session" in reason and "klass" in reason
+                            for reason in self.reasons(result)))
+
+    def test_admin_ajax_verdict_wrong_class_blocks(self):
+        checks = self.checks_with(self.verdict_row("browser_admin_ajax_wp_layer", probe.FAIL,
+                                                   klass=probe.HARNESS, material=False))
+        completed, result = self.run_case(checks=checks, facts=self.failed_admin_ajax_facts())
+        self.assert_blocking(completed, result, "the admin-ajax verdict recorded under another class")
+        self.assertTrue(any("browser_admin_ajax_wp_layer" in reason and "klass" in reason
+                            for reason in self.reasons(result)))
+
+    def test_login_verdict_on_the_wrong_phase_blocks(self):
+        checks = self.checks_with(self.verdict_row("browser_admin_login_session", probe.FAIL,
+                                                   material=False, phase="pre"))
+        completed, result = self.run_case(checks=checks, facts=self.failed_login_facts())
+        self.assert_blocking(completed, result, "the login verdict moved to another phase")
+
+    def test_consistent_producer_shaped_verdict_rows_are_accepted(self):
+        # Both derived rows exactly as cmd_browser writes them: product class,
+        # material, post phase, agreeing with their facts.
+        completed, result = self.run_case()
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertIs(result["ci_gate"]["diagnostic_exception"]["applies"], True)
+        rows = {row["name"]: row for row in result["checks"]}
+        for name in ("browser_admin_login_session", "browser_admin_ajax_wp_layer"):
+            self.assertEqual(rows[name]["status"], probe.PASS)
+            self.assertEqual(rows[name]["klass"], probe.PRODUCT)
+            self.assertIs(rows[name]["material"], True)
+            self.assertEqual(rows[name]["phase"], "post")
+
     def test_genuinely_additional_material_failure_blocks(self):
         # A further browser verdict the producer emits from the same facts, outside
         # the approved seven: consistent facts do not make it acceptable.

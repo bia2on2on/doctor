@@ -2052,7 +2052,9 @@ CHECK_ROW_KEYS = ("name", "status", "klass", "material", "phase", "detail")
 # ...)`, both unconditionally, both at the phase the browser probe ran. The
 # recorded verdict is derived from exactly the fact value, so the two must agree —
 # a record carrying one and not the other, or carrying values that contradict each
-# other, cannot be a genuine cmd_browser execution. (The two other browser facts
+# other, cannot be a genuine cmd_browser execution; and both rows carry that fixed
+# classification (product class, material, post phase), so a relabelled one is not
+# evidence about this subject at all. (The two other browser facts
 # are asserted by required verdicts: `browser_front_page_render` is computed as
 # `nav["front_status"] == 200` and `browser_rest_index` as `rest_status == 200`.)
 BROWSER_FACT_VERDICTS = (
@@ -2166,6 +2168,17 @@ def browser_execution_problems(browser: Any,
         if row.get("status") != expected_status or row.get("phase") != "post":
             problems.append(f"{group}.{key}={value!r} contradicts the recorded {name} "
                             f"verdict {row.get('status')!r} at phase {row.get('phase')!r}")
+        # The producer writes both of these rows with one fixed classification:
+        # product class, material, post phase. A row that differs is a relabelled
+        # verdict — a product FAIL downgraded to a recorded-only finding, or moved to
+        # another class, leaves the material failure set and would let a real product
+        # failure hide behind the accepted historical signature, so it blocks.
+        if (row.get("klass") != PRODUCT or row.get("material") is not True
+                or row.get("phase") != "post"):
+            problems.append(f"the recorded {name} verdict is not the producer's own "
+                            f"product-class, material, post-phase verdict (klass="
+                            f"{row.get('klass')!r} material={row.get('material')!r} "
+                            f"phase={row.get('phase')!r})")
 
     document = browser.get("document")
     if not isinstance(document, dict):

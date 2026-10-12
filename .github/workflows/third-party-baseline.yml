@@ -106,8 +106,11 @@ name: Third-Party Compatibility Baseline (Phase 18 Lane A)
 #       must agree with that verdict, and the two further verdicts the producer
 #       derives from those facts (`browser_admin_login_session` from `login.ok`,
 #       `browser_admin_ajax_wp_layer` from `admin_ajax.reached_wp_layer`) must be
-#       recorded and agree with them — a missing or contradicted verdict is not
-#       execution evidence), and a recorded SUCCESSFUL
+#       recorded, agree with them and keep the fixed classification the producer
+#       writes them with (product class, material, post phase) — a missing,
+#       contradicted or relabelled verdict is not execution evidence, and a
+#       downgraded row would hide a product failure behind the accepted
+#       signature), and a recorded SUCCESSFUL
 #       post-activation verdict for every required probe (never-recorded,
 #       UNEXECUTED, wrong-phase or FAILed verdicts do not prove execution);
 #     - unambiguous evidence: every row must be the recorded check shape and no
