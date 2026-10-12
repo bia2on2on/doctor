@@ -216,7 +216,7 @@
 - **Preserved:** the exact seven approved material failure identifiers, the raw `FAIL` state/counts/taxonomy, the raw rows in the artifact, the duplicate/malformed-row rules, the required-verdict rules and the diagnostic-only, non-blocking, explicit "NOT a compatibility PASS" disposition.
 - **Not modified:** no plugin pin, no probe disabled, no matrix leg removed, no assertion weakened, no previously accepted correction reopened, no CPMS product code, no merge, no manual dispatch for green.
 
-### [2026-10-12 14:05 UTC] — Arena agent (fixed branch `arena/3ae97438-doctor`; DRAFT PR #219) — Custom Role Management Slice 3B: Clinic-local custom-role assignment for existing staff
+### [2026-10-12 13:40 UTC] — Arena agent (fixed branch `arena/3ae97438-doctor`; DRAFT PR #219) — Custom Role Management Slice 3B: Clinic-local custom-role assignment for existing staff
 
 - **Authorization:** window receipt `2026-10-12T11:22:00Z` (UTC); the work continued past the nominal safe stop only because the PR was already open and unmerged, with every later action forward-only (formatter fixes, one arity repair, this log entry). No code change was made after the final green evidence head `b31a904…` — this entry is documentation only.
 - **Preflight (live):** `main` = `origin/main` = `a4af1c2df8df35706a940403c2a41b25a4b98dc4`; exactly **one** open PR (#219, DRAFT, base `main`, head `arena/3ae97438-doctor`, `MERGEABLE`, unmerged); latest migration `2026_10_11_0026_clinic_first_setup_marker.php`; `git diff --check` clean. No reset, clean, rebase, force-push, history rewrite or retrigger-only commit was used.
